@@ -1,0 +1,8 @@
+{
+  "containerPort": 3000,
+  "dockerfilePath": "Dockerfile",
+  "buildArgs": {},
+  "envParams": {
+    "NODE_ENV": "production"
+  }
+}
