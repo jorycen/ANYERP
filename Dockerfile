@@ -14,7 +14,7 @@ RUN npm install --production
 COPY . .
 
 # 暴露端口 (微信云托管默认监听 80，但可以在内部映射)
-EXPOSE 3000
+EXPOSE 80
 
 # 启动命令
 CMD ["node", "src/index.js"]
