@@ -1,0 +1,6 @@
+node_modules/
+any-erp-backend.zip
+deploy-package/
+*.log
+.env
+.DS_Store
