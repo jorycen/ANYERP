@@ -36,22 +36,13 @@ async function login(ctx) {
     ctx.throw(401, '账号已被禁用');
   }
 
-  // 查询角色
-  const staffRoles = await StaffRole.findAll({
-    where: { staff_id: staff.staff_id.toString() }
-  });
-
-  const roleCodes = staffRoles.map(sr => sr.role_id);
-  const roles = roleCodes.length > 0 ? await Role.findAll({ where: { role_id: roleCodes } }) : [];
-  const actualRoleCodes = roles.map(r => r.role_code);
-
   // 老板角色拥有所有区域权限
-  let regionCodes = [];
-  if (actualRoleCodes.includes('boss')) {
-    regionCodes = ['CD', 'CQ', 'DS', '*'];
-  } else {
+  const roleCode = staff.role_code;
+  let regionCodes = ['CD', 'CQ', 'DS', '*']; // 默认老板有所有权限
+  if (roleCode !== 'boss') {
+    // 非老板查询区域权限
     const regionPermissions = await RegionPermission.findAll({
-      where: { staff_id: staff.staff_id.toString() }
+      where: { staff_id: String(staff.staff_id) }
     });
     regionCodes = regionPermissions.map(rp => rp.region_code);
   }
@@ -61,7 +52,7 @@ async function login(ctx) {
     {
       staffId: staff.staff_id,
       phone: staff.phone,
-      roleCode: staff.role_code
+      roleCode: roleCode
     },
     config.jwt.secret,
     { expiresIn: config.jwt.expiresIn }
@@ -73,11 +64,7 @@ async function login(ctx) {
       staffId: staff.staff_id,
       name: staff.name,
       phone: staff.phone,
-      roleCode: staff.role_code,
-      roleName: roles[0]?.name || '员工',
-      roles: actualRoleCodes,
-      storeId: staff.store_id,
-      regionId: staff.region_id,
+      roleCode: roleCode,
       regionCodes
     }
   };
