@@ -38,40 +38,22 @@ async function login(ctx) {
 
   // 查询角色
   const staffRoles = await StaffRole.findAll({
-    where: { staff_id: staff.staff_id },
-    include: [{ model: Role }]
+    where: { staff_id: staff.staff_id.toString() }
   });
 
-  // 查询菜单权限
-  const roleIds = staffRoles.map(sr => sr.role_id);
-  const roleMenus = await RoleMenu.findAll({
-    where: { role_id: roleIds },
-    include: [{ model: Menu }]
-  });
-  const menuIds = [...new Set(roleMenus.map(rm => rm.menu_id))];
-  const menus = await Menu.findAll({
-    where: { menu_id: menuIds, status: 1 },
-    order: [['sort_order', 'ASC']]
-  });
-
-  // 查询区域权限
-  const regionPermissions = await RegionPermission.findAll({
-    where: { staff_id: staff.staff_id }
-  });
+  const roleCodes = staffRoles.map(sr => sr.role_id);
+  const roles = roleCodes.length > 0 ? await Role.findAll({ where: { role_id: roleCodes } }) : [];
+  const actualRoleCodes = roles.map(r => r.role_code);
 
   // 老板角色拥有所有区域权限
-  const roleCodes = staffRoles.map(sr => sr.Role?.role_code || 'staff');
-  let regionCodes = regionPermissions.map(rp => rp.region_code);
-  if (roleCodes.includes('boss')) {
+  let regionCodes = [];
+  if (actualRoleCodes.includes('boss')) {
     regionCodes = ['CD', 'CQ', 'DS', '*'];
-  }
-
-  // 查询门店信息
-  let storeInfo = null;
-  if (staff.store_id) {
-    storeInfo = await Store.findByPk(staff.store_id, {
-      include: [{ model: Region }]
+  } else {
+    const regionPermissions = await RegionPermission.findAll({
+      where: { staff_id: staff.staff_id.toString() }
     });
+    regionCodes = regionPermissions.map(rp => rp.region_code);
   }
 
   // 生成 token
@@ -92,13 +74,11 @@ async function login(ctx) {
       name: staff.name,
       phone: staff.phone,
       roleCode: staff.role_code,
-      roleName: staffRoles[0]?.Role?.name || '员工',
-      roles: roleCodes,
+      roleName: roles[0]?.name || '员工',
+      roles: actualRoleCodes,
       storeId: staff.store_id,
-      storeName: storeInfo?.name,
       regionId: staff.region_id,
-      regionCodes,
-      menus: buildMenuTree(menus)
+      regionCodes
     }
   };
 }
