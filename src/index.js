@@ -63,6 +63,42 @@ apiRouter.get('/health', async (ctx) => {
   }
 });
 
+// 调试登录
+apiRouter.post('/auth/debug', async (ctx) => {
+  try {
+    const { Staff } = require('./models');
+    const bcrypt = require('bcryptjs');
+    const { phone, password } = ctx.request.body;
+
+    const staff = await Staff.findOne({
+      where: { phone, is_deleted: 0 }
+    });
+
+    if (!staff) {
+      ctx.body = { code: 404, message: '用户不存在' };
+      return;
+    }
+
+    const isValid = await bcrypt.compare(password, staff.password_hash);
+
+    ctx.body = {
+      code: 0,
+      data: {
+        found: true,
+        staffId: staff.staff_id,
+        name: staff.name,
+        phone: staff.phone,
+        roleCode: staff.role_code,
+        status: staff.status,
+        passwordHash: staff.password_hash ? '***' : null,
+        passwordValid: isValid
+      }
+    };
+  } catch (err) {
+    ctx.body = { code: 500, message: err.message, stack: err.stack };
+  }
+});
+
 // 公开接口（无需鉴权）
 apiRouter.use('/auth', authRouter.routes());
 
