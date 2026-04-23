@@ -1,6 +1,10 @@
 node_modules/
 any-erp-backend.zip
 deploy-package/
+frontend/dist/
+frontend/dist-web/
+frontend/web/dist/
+web/dist/
 *.log
 .env
 .DS_Store
