@@ -52,6 +52,17 @@ router.get('/', async (ctx) => {
 // API 路由组
 const apiRouter = new Router({ prefix: '/api/v1' });
 
+// 健康检查
+apiRouter.get('/health', async (ctx) => {
+  try {
+    const { sequelize } = require('./models');
+    await sequelize.authenticate();
+    ctx.body = { code: 0, message: '数据库连接正常' };
+  } catch (err) {
+    ctx.body = { code: 500, message: '数据库错误', error: err.message };
+  }
+});
+
 // 公开接口（无需鉴权）
 apiRouter.use('/auth', authRouter.routes());
 
