@@ -1,7 +1,7 @@
 import axios from 'axios'
 
 const api = axios.create({
-  baseURL: '/api/v1',
+  baseURL: 'https://cloud1-249791-6-1410946266.sh.run.tcloudbase.com/api/v1',
   timeout: 30000
 })
 

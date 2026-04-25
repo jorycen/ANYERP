@@ -3,7 +3,7 @@ import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
   plugins: [vue()],
-  base: './',
+  base: '/anyerp/',
   build: {
     outDir: 'dist'
   },
@@ -13,7 +13,8 @@ export default defineConfig({
       '/api': {
         target: 'https://cloud1-249791-6-1410946266.sh.run.tcloudbase.com',
         changeOrigin: true,
-        secure: false
+        secure: false,
+        rewrite: (path) => path.replace(/^\/api/, '/api/v1')
       }
     }
   }
