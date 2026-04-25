@@ -53,6 +53,8 @@ export default {
   createPurchaseRequest: (data) => api.post('/purchase/create-request', data),
   approvePurchaseRequest: (id, data) => api.post(`/purchase/approve-request/${id}`, data),
   getSupplierList: () => api.get('/purchase/supplier-list'),
+  createSupplier: (data) => api.post('/purchase/supplier', data),
+  updateSupplier: (id, data) => api.put(`/purchase/supplier/${id}`, data),
 
   // Finance
   getDailyStatement: (params) => api.get('/finance/daily-statement', { params }),
@@ -69,6 +71,8 @@ export default {
 
   // Store
   getStoreList: (params) => api.get('/store/list', { params }),
+  createStore: (data) => api.post('/store/create', data),
+  updateStore: (id, data) => api.put(`/store/update/${id}`, data),
 
   // Report
   getSalesReport: (params) => api.get('/report/sales', { params }),

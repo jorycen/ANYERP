@@ -77,6 +77,45 @@
         </el-tab-pane>
       </el-tabs>
     </el-card>
+
+    <!-- 添加支出对话框 -->
+    <el-dialog v-model="expenseDialogVisible" title="添加支出" width="500px" @close="handleDialogClose">
+      <el-form :model="expenseForm" label-width="100px">
+        <el-form-item label="支出类型" required>
+          <el-select v-model="expenseForm.expenseType" placeholder="请选择类型" style="width: 100%">
+            <el-option label="办公用品" value="办公用品" />
+            <el-option label="水电费" value="水电费" />
+            <el-option label="运费" value="运费" />
+            <el-option label="维修费" value="维修费" />
+            <el-option label="工资" value="工资" />
+            <el-option label="其他" value="其他" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="门店" required>
+          <el-select v-model="expenseForm.storeId" placeholder="请选择门店" style="width: 100%">
+            <el-option v-for="s in stores" :key="s.store_id" :label="s.name" :value="s.store_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="金额" required>
+          <el-input-number v-model="expenseForm.amount" :min="0" :precision="2" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="支付方式">
+          <el-select v-model="expenseForm.paymentMethod" placeholder="请选择" style="width: 100%">
+            <el-option label="现金" value="cash" />
+            <el-option label="微信支付" value="wechat" />
+            <el-option label="支付宝" value="alipay" />
+            <el-option label="银行转账" value="bank" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="expenseForm.remark" type="textarea" rows="3" placeholder="支出备注" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="expenseDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleExpenseSubmit" :loading="submitLoading">确定</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -92,6 +131,9 @@ const expenseData = ref([])
 const total = ref(0)
 const expenseTotal = ref(0)
 
+const expenseDialogVisible = ref(false)
+const submitLoading = ref(false)
+
 const queryParams = reactive({
   page: 1,
   pageSize: 20,
@@ -102,6 +144,14 @@ const queryParams = reactive({
 const expenseQuery = reactive({
   page: 1,
   pageSize: 20
+})
+
+const expenseForm = reactive({
+  expenseType: '',
+  storeId: '',
+  amount: 0,
+  paymentMethod: 'cash',
+  remark: ''
 })
 
 onMounted(() => {
@@ -145,7 +195,60 @@ const loadStores = async () => {
   }
 }
 
-const handleAddExpense = () => ElMessage.info('添加支出功能开发中')
+const handleAddExpense = () => {
+  resetForm()
+  expenseDialogVisible.value = true
+}
+
+const handleExpenseSubmit = async () => {
+  if (!expenseForm.expenseType) {
+    ElMessage.warning('请选择支出类型')
+    return
+  }
+  if (!expenseForm.storeId) {
+    ElMessage.warning('请选择门店')
+    return
+  }
+  if (expenseForm.amount <= 0) {
+    ElMessage.warning('请输入正确的金额')
+    return
+  }
+
+  submitLoading.value = true
+  try {
+    const data = {
+      expenseType: expenseForm.expenseType,
+      storeId: expenseForm.storeId,
+      amount: expenseForm.amount,
+      paymentMethod: expenseForm.paymentMethod,
+      remark: expenseForm.remark
+    }
+    const res = await api.createExpense(data)
+    if (res.code === 0) {
+      ElMessage.success('添加成功')
+      expenseDialogVisible.value = false
+      loadExpenseData()
+    } else {
+      ElMessage.error(res.message || '添加失败')
+    }
+  } catch (err) {
+    ElMessage.error('添加失败')
+  } finally {
+    submitLoading.value = false
+  }
+}
+
+const handleDialogClose = () => {
+  resetForm()
+}
+
+const resetForm = () => {
+  expenseForm.expenseType = ''
+  expenseForm.storeId = ''
+  expenseForm.amount = 0
+  expenseForm.paymentMethod = 'cash'
+  expenseForm.remark = ''
+}
 </script>
 
 <style scoped>
