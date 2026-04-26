@@ -3,7 +3,7 @@
  */
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const { Staff, Role, Menu, RoleMenu, StaffRole, RegionPermission, Store, Region } = require('../../models');
+const { Staff, Role, Menu, RoleMenu, StaffRole, Store, Region } = require('../../models');
 const config = require('../../config');
 
 /**
@@ -54,16 +54,13 @@ async function login(ctx) {
     order: [['sort_order', 'ASC']]
   });
 
-  // 查询区域权限
-  const regionPermissions = await RegionPermission.findAll({
-    where: { staff_id: staff.staff_id }
-  });
-
   // 老板角色拥有所有区域权限
   const roleCodes = staffRoles.map(sr => sr.Role?.role_code || 'staff');
-  let regionCodes = regionPermissions.map(rp => rp.region_code);
+  let regionCodes = [];
   if (roleCodes.includes('boss')) {
-    regionCodes = ['CD', 'CQ', 'DS', '*'];
+    regionCodes = ['*'];
+  } else if (staff.region_id) {
+    regionCodes = [staff.region_id];
   }
 
   // 查询门店信息
