@@ -460,14 +460,14 @@ Region.hasMany(Store, { foreignKey: 'region_id', sourceKey: 'region_id' });
 Store.belongsTo(Region, { foreignKey: 'region_id', targetKey: 'region_id' });
 
 Staff.belongsTo(Distributor, { foreignKey: 'distributor_id', targetKey: 'distributor_id' });
-Staff.belongsTo(Store, { foreignKey: 'store_id', targetKey: 'store_id' });
-Staff.belongsTo(Region, { foreignKey: 'region_id', targetKey: 'region_id' });
+Staff.belongsTo(Store, { foreignKey: 'store_id', targetKey: 'store_id', as: 'Store' });
+Staff.belongsTo(Region, { foreignKey: 'region_id', targetKey: 'region_id', as: 'Region' });
 
 // 权限关联
 Role.belongsToMany(Menu, { through: RoleMenu, foreignKey: 'role_id', otherKey: 'menu_id' });
 Menu.belongsToMany(Role, { through: RoleMenu, foreignKey: 'menu_id', otherKey: 'role_id' });
 
-Staff.belongsToMany(Role, { through: StaffRole, foreignKey: 'staff_id', otherKey: 'role_id' });
+Staff.belongsToMany(Role, { through: StaffRole, foreignKey: 'staff_id', otherKey: 'role_id', as: 'Roles' });
 Role.belongsToMany(Staff, { through: StaffRole, foreignKey: 'role_id', otherKey: 'staff_id' });
 
 Staff.hasMany(RegionPermission, { foreignKey: 'staff_id', sourceKey: 'staff_id', as: 'RegionPermissions' });

@@ -1,4 +1,4 @@
-FROM registry.tencentcloud.com/tencentyun/tencent-serverless-nodejs:18
+FROM node:18-alpine
 
 WORKDIR /app
 
