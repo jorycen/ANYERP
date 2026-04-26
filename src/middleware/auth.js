@@ -18,12 +18,8 @@ async function authMiddleware(ctx, next) {
     // 验证 token
     const decoded = jwt.verify(token, config.jwt.secret);
 
-    // 查询用户信息
-    const staff = await Staff.findByPk(decoded.staffId, {
-      include: [
-        { model: RegionPermission, as: 'regionPermissions' }
-      ]
-    });
+    // 查询用户信息 - 不再使用 RegionPermission，避免别名问题
+    const staff = await Staff.findByPk(decoded.staffId);
 
     if (!staff) {
       ctx.throw(401, '用户不存在');
@@ -32,6 +28,11 @@ async function authMiddleware(ctx, next) {
     if (staff.status !== 1) {
       ctx.throw(401, '账号已被禁用');
     }
+
+    // 老板角色拥有所有区域权限，其他角色使用 staff.region_id
+    const regionCodes = staff.role_code === 'boss'
+      ? ['*']
+      : (staff.region_id ? [staff.region_id] : []);
 
     // 将用户信息挂载到 ctx
     ctx.state.user = {
@@ -42,13 +43,8 @@ async function authMiddleware(ctx, next) {
       distributorId: staff.distributor_id,
       storeId: staff.store_id,
       regionId: staff.region_id,
-      regionCodes: staff.regionPermissions?.map(p => p.region_code) || []
+      regionCodes
     };
-
-    // 老板角色拥有所有区域权限
-    if (staff.role_code === 'boss') {
-      ctx.state.user.regionCodes = ['CD', 'CQ', 'DS', '*'];
-    }
 
     await next();
 

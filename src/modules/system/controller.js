@@ -106,9 +106,9 @@ async function getUsers(ctx) {
     where,
     attributes: { exclude: ['password_hash'] },
     include: [
-      { model: Role, as: 'roles', through: { attributes: [] } },
-      { model: Region, as: 'region' },
-      { model: RegionPermission, as: 'regionPermissions' }
+      { model: Role, as: 'Roles', through: { attributes: [] } },
+      { model: Region, as: 'Region' },
+      { model: RegionPermission, as: 'RegionPermissions' }
     ],
     order: [['create_time', 'DESC']],
     limit: Number(pageSize),
