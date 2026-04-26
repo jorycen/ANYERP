@@ -21,7 +21,7 @@ async function authMiddleware(ctx, next) {
     // 查询用户信息
     const staff = await Staff.findByPk(decoded.staffId, {
       include: [
-        { model: RegionPermission, as: 'regionPermissions' }
+        { model: RegionPermission }
       ]
     });
 
@@ -42,7 +42,7 @@ async function authMiddleware(ctx, next) {
       distributorId: staff.distributor_id,
       storeId: staff.store_id,
       regionId: staff.region_id,
-      regionCodes: staff.regionPermissions?.map(p => p.region_code) || []
+      regionCodes: staff.RegionPermissions?.map(p => p.region_code) || []
     };
 
     // 老板角色拥有所有区域权限
