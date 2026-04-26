@@ -4,7 +4,7 @@
  */
 const jwt = require('jsonwebtoken');
 const config = require('../config');
-const { Staff, RegionPermission } = require('../models');
+const { Staff } = require('../models');
 
 async function authMiddleware(ctx, next) {
   // 获取 token
@@ -19,11 +19,7 @@ async function authMiddleware(ctx, next) {
     const decoded = jwt.verify(token, config.jwt.secret);
 
     // 查询用户信息
-    const staff = await Staff.findByPk(decoded.staffId, {
-      include: [
-        { model: RegionPermission, as: 'RegionPermissions' }
-      ]
-    });
+    const staff = await Staff.findByPk(decoded.staffId);
 
     if (!staff) {
       ctx.throw(401, '用户不存在');
@@ -34,6 +30,11 @@ async function authMiddleware(ctx, next) {
     }
 
     // 将用户信息挂载到 ctx
+    // 老板角色拥有所有区域权限，其他角色使用 staff.region_id
+    const regionCodes = staff.role_code === 'boss'
+      ? ['*']  // 老板拥有所有权限
+      : (staff.region_id ? [staff.region_id] : []);
+
     ctx.state.user = {
       staffId: staff.staff_id,
       name: staff.name,
@@ -42,13 +43,8 @@ async function authMiddleware(ctx, next) {
       distributorId: staff.distributor_id,
       storeId: staff.store_id,
       regionId: staff.region_id,
-      regionCodes: staff.RegionPermissions?.map(p => p.region_code) || []
+      regionCodes
     };
-
-    // 老板角色拥有所有区域权限
-    if (staff.role_code === 'boss') {
-      ctx.state.user.regionCodes = ['CD', 'CQ', 'DS', '*'];
-    }
 
     await next();
 
