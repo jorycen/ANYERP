@@ -470,8 +470,8 @@ Menu.belongsToMany(Role, { through: RoleMenu, foreignKey: 'menu_id', otherKey: '
 Staff.belongsToMany(Role, { through: StaffRole, foreignKey: 'staff_id', otherKey: 'role_id' });
 Role.belongsToMany(Staff, { through: StaffRole, foreignKey: 'role_id', otherKey: 'staff_id' });
 
-Staff.hasMany(RegionPermission, { foreignKey: 'staff_id', sourceKey: 'staff_id' });
-RegionPermission.belongsTo(Staff, { foreignKey: 'staff_id', targetKey: 'staff_id' });
+Staff.hasMany(RegionPermission, { foreignKey: 'staff_id', sourceKey: 'staff_id', as: 'RegionPermissions' });
+RegionPermission.belongsTo(Staff, { foreignKey: 'staff_id', targetKey: 'staff_id', as: 'Staff' });
 
 // 商品关联
 Product.hasMany(ProductPn, { foreignKey: 'product_id', sourceKey: 'product_id' });

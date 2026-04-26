@@ -21,7 +21,7 @@ async function authMiddleware(ctx, next) {
     // 查询用户信息
     const staff = await Staff.findByPk(decoded.staffId, {
       include: [
-        { model: RegionPermission }
+        { model: RegionPermission, as: 'RegionPermissions' }
       ]
     });
 
