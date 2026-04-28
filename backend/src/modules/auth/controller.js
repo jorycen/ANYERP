@@ -21,7 +21,7 @@ async function login(ctx) {
     where: { phone, is_deleted: 0 },
     include: [
       { model: Role, as: 'Roles', through: { attributes: [] } },
-      { model: Store, include: [{ model: Region }] }
+      { model: Store, as: 'Store', include: [{ model: Region, as: 'Region' }] }
     ]
   });
 
@@ -102,7 +102,7 @@ async function getUserInfo(ctx) {
   const staff = await Staff.findByPk(user.staffId, {
     include: [
       { model: Role, as: 'Roles', through: { attributes: [] } },
-      { model: Store, include: [{ model: Region }] }
+      { model: Store, as: 'Store', include: [{ model: Region, as: 'Region' }] }
     ]
   });
 
