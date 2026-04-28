@@ -16,9 +16,13 @@ async function login(ctx) {
     ctx.throw(400, '请输入手机号和密码');
   }
 
-  // 查询用户
+  // 查询用户（包含角色信息）
   const staff = await Staff.findOne({
-    where: { phone, is_deleted: 0 }
+    where: { phone, is_deleted: 0 },
+    include: [
+      { model: Role, as: 'Roles', through: { attributes: [] } },
+      { model: Store, include: [{ model: Region }] }
+    ]
   });
 
   if (!staff) {
@@ -36,14 +40,12 @@ async function login(ctx) {
     ctx.throw(401, '账号已被禁用');
   }
 
-  // 查询角色
-  const staffRoles = await StaffRole.findAll({
-    where: { staff_id: staff.staff_id },
-    include: [{ model: Role }]
-  });
+  // 获取角色信息
+  const roles = staff.Roles || [];
+  const roleCodes = roles.map(r => r.role_code);
 
   // 查询菜单权限
-  const roleIds = staffRoles.map(sr => sr.role_id);
+  const roleIds = roles.map(r => r.role_id);
   const roleMenus = await RoleMenu.findAll({
     where: { role_id: roleIds },
     include: [{ model: Menu }]
@@ -55,20 +57,11 @@ async function login(ctx) {
   });
 
   // 老板角色拥有所有区域权限
-  const roleCodes = staffRoles.map(sr => sr.Role?.role_code || 'staff');
   let regionCodes = [];
   if (roleCodes.includes('boss')) {
     regionCodes = ['*'];
   } else if (staff.region_id) {
     regionCodes = [staff.region_id];
-  }
-
-  // 查询门店信息
-  let storeInfo = null;
-  if (staff.store_id) {
-    storeInfo = await Store.findByPk(staff.store_id, {
-      include: [{ model: Region }]
-    });
   }
 
   // 生成 token
@@ -89,10 +82,10 @@ async function login(ctx) {
       name: staff.name,
       phone: staff.phone,
       roleCode: staff.role_code,
-      roleName: staffRoles[0]?.Role?.name || '员工',
+      roleName: roles[0]?.name || '员工',
       roles: roleCodes,
       storeId: staff.store_id,
-      storeName: storeInfo?.name,
+      storeName: staff.Store?.name,
       regionId: staff.region_id,
       regionCodes,
       menus: buildMenuTree(menus)
@@ -108,7 +101,8 @@ async function getUserInfo(ctx) {
 
   const staff = await Staff.findByPk(user.staffId, {
     include: [
-      { model: Store, include: [Region] }
+      { model: Role, as: 'Roles', through: { attributes: [] } },
+      { model: Store, include: [{ model: Region }] }
     ]
   });
 
@@ -117,12 +111,8 @@ async function getUserInfo(ctx) {
   }
 
   // 查询角色和菜单
-  const staffRoles = await StaffRole.findAll({
-    where: { staff_id: user.staffId },
-    include: [{ model: Role }]
-  });
-
-  const roleIds = staffRoles.map(sr => sr.role_id);
+  const roles = staff.Roles || [];
+  const roleIds = roles.map(r => r.role_id);
   const roleMenus = await RoleMenu.findAll({
     where: { role_id: roleIds }
   });
@@ -133,7 +123,7 @@ async function getUserInfo(ctx) {
     order: [['sort_order', 'ASC']]
   });
 
-  const roleCodes = staffRoles.map(sr => sr.Role?.role_code || 'staff');
+  const roleCodes = roles.map(r => r.role_code);
 
   ctx.body = {
     staffId: staff.staff_id,
