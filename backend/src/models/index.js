@@ -15,7 +15,7 @@ const Region = sequelize.define('Region', {
   name: { type: DataTypes.STRING(128), allowNull: false },
   sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
   status: { type: DataTypes.TINYINT, defaultValue: 1 }
-}, { tableName: 't_region', timestamps: false });
+}, { tableName: 'T_REGION', timestamps: false });
 
 // 经销商
 const Distributor = sequelize.define('Distributor', {
@@ -27,7 +27,7 @@ const Distributor = sequelize.define('Distributor', {
   address: { type: DataTypes.STRING(512) },
   status: { type: DataTypes.TINYINT, defaultValue: 1 },
   is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 }
-}, { tableName: 't_distributor', timestamps: false });
+}, { tableName: 'T_DISTRIBUTOR', timestamps: false });
 
 // 门店
 const Store = sequelize.define('Store', {
@@ -39,7 +39,7 @@ const Store = sequelize.define('Store', {
   phone: { type: DataTypes.STRING(32) },
   status: { type: DataTypes.TINYINT, defaultValue: 1 },
   is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 }
-}, { tableName: 't_store', timestamps: false });
+}, { tableName: 'T_STORE', timestamps: false });
 
 // 员工
 const Staff = sequelize.define('Staff', {
@@ -53,7 +53,7 @@ const Staff = sequelize.define('Staff', {
   role_code: { type: DataTypes.STRING(32), defaultValue: 'staff' },
   status: { type: DataTypes.TINYINT, defaultValue: 1 },
   is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 }
-}, { tableName: 't_staff', timestamps: false });
+}, { tableName: 'T_STAFF', timestamps: false });
 
 // ----------------------------------------
 // 权限模型
@@ -70,7 +70,7 @@ const Menu = sequelize.define('Menu', {
   icon: { type: DataTypes.STRING(64) },
   sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
   status: { type: DataTypes.TINYINT, defaultValue: 1 }
-}, { tableName: 't_menu', timestamps: false });
+}, { tableName: 'T_MENU', timestamps: false });
 
 // 角色
 const Role = sequelize.define('Role', {
@@ -80,17 +80,17 @@ const Role = sequelize.define('Role', {
   description: { type: DataTypes.STRING(512) },
   is_system: { type: DataTypes.TINYINT(1), defaultValue: 0 },
   status: { type: DataTypes.TINYINT, defaultValue: 1 }
-}, { tableName: 't_role', timestamps: false });
+}, { tableName: 'T_ROLE', timestamps: false });
 
 // 角色菜单关联
 const RoleMenu = sequelize.define('RoleMenu', {
   id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true }
-}, { tableName: 't_role_menu', timestamps: false });
+}, { tableName: 'T_ROLE_MENU', timestamps: false });
 
 // 员工角色关联
 const StaffRole = sequelize.define('StaffRole', {
   id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true }
-}, { tableName: 't_staff_role', timestamps: false });
+}, { tableName: 'T_STAFF_ROLE', timestamps: false });
 
 // 区域权限
 const RegionPermission = sequelize.define('RegionPermission', {
@@ -99,7 +99,7 @@ const RegionPermission = sequelize.define('RegionPermission', {
   region_code: { type: DataTypes.STRING(32), allowNull: false },
   can_view: { type: DataTypes.TINYINT(1), defaultValue: 1 },
   can_manage: { type: DataTypes.TINYINT(1), defaultValue: 0 }
-}, { tableName: 't_region_permission', timestamps: false });
+}, { tableName: 'T_REGION_PERMISSION', timestamps: false });
 
 // ----------------------------------------
 // 商品模型
@@ -120,7 +120,7 @@ const Product = sequelize.define('Product', {
   remark: { type: DataTypes.STRING(512) },
   status: { type: DataTypes.TINYINT, defaultValue: 1 },
   is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 }
-}, { tableName: 't_product', timestamps: false });
+}, { tableName: 'T_PRODUCT', timestamps: false });
 
 // PN料号
 const ProductPn = sequelize.define('ProductPn', {
@@ -131,7 +131,7 @@ const ProductPn = sequelize.define('ProductPn', {
   is_primary: { type: DataTypes.TINYINT(1), defaultValue: 0 },
   status: { type: DataTypes.TINYINT, defaultValue: 1 },
   is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 }
-}, { tableName: 't_product_pn', timestamps: false });
+}, { tableName: 'T_PRODUCT_PN', timestamps: false });
 
 // SN序列号
 const ProductSn = sequelize.define('ProductSn', {
@@ -149,7 +149,7 @@ const ProductSn = sequelize.define('ProductSn', {
   batch_no: { type: DataTypes.STRING(64) },
   remark: { type: DataTypes.STRING(255) },
   is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 }
-}, { tableName: 't_product_sn', timestamps: false });
+}, { tableName: 'T_PRODUCT_SN', timestamps: false });
 
 // ----------------------------------------
 // 库房模型
@@ -163,7 +163,7 @@ const Location = sequelize.define('Location', {
   type: { type: DataTypes.STRING(32), defaultValue: 'normal' },
   is_sellable: { type: DataTypes.TINYINT(1), defaultValue: 1 },
   status: { type: DataTypes.TINYINT, defaultValue: 1 }
-}, { tableName: 't_location', timestamps: false });
+}, { tableName: 'T_LOCATION', timestamps: false });
 
 // 库存预警配置
 const InventoryWarning = sequelize.define('InventoryWarning', {
@@ -174,7 +174,7 @@ const InventoryWarning = sequelize.define('InventoryWarning', {
   aging_days: { type: DataTypes.INTEGER, defaultValue: 90 },
   warning_type: { type: DataTypes.STRING(32) },
   status: { type: DataTypes.TINYINT, defaultValue: 1 }
-}, { tableName: 't_inventory_warning', timestamps: false });
+}, { tableName: 'T_INVENTORY_WARNING', timestamps: false });
 
 // ----------------------------------------
 // 采购模型
@@ -189,7 +189,7 @@ const Supplier = sequelize.define('Supplier', {
   address: { type: DataTypes.STRING(512) },
   status: { type: DataTypes.TINYINT, defaultValue: 1 },
   is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 }
-}, { tableName: 't_supplier', timestamps: false });
+}, { tableName: 'T_SUPPLIER', timestamps: false });
 
 // 采购申请
 const PurchaseRequest = sequelize.define('PurchaseRequest', {
@@ -203,7 +203,7 @@ const PurchaseRequest = sequelize.define('PurchaseRequest', {
   apply_user: { type: DataTypes.STRING(64) },
   approve_user: { type: DataTypes.STRING(64) },
   approve_comment: { type: DataTypes.STRING(512) }
-}, { tableName: 't_purchase_request', timestamps: false });
+}, { tableName: 'T_PURCHASE_REQUEST', timestamps: false });
 
 // 采购申请明细
 const PurchaseRequestItem = sequelize.define('PurchaseRequestItem', {
@@ -215,7 +215,7 @@ const PurchaseRequestItem = sequelize.define('PurchaseRequestItem', {
   quantity: { type: DataTypes.INTEGER, allowNull: false },
   unit_price: { type: DataTypes.DECIMAL(12, 2) },
   subtotal: { type: DataTypes.DECIMAL(12, 2) }
-}, { tableName: 't_purchase_request_item', timestamps: false });
+}, { tableName: 'T_PURCHASE_REQUEST_ITEM', timestamps: false });
 
 // 采购单
 const PurchaseOrder = sequelize.define('PurchaseOrder', {
@@ -228,7 +228,7 @@ const PurchaseOrder = sequelize.define('PurchaseOrder', {
   total_quantity: { type: DataTypes.INTEGER },
   status: { type: DataTypes.STRING(32), defaultValue: 'purchased' },
   create_user: { type: DataTypes.STRING(64) }
-}, { tableName: 't_purchase_order', timestamps: false });
+}, { tableName: 'T_PURCHASE_ORDER', timestamps: false });
 
 // 采购单明细
 const PurchaseOrderItem = sequelize.define('PurchaseOrderItem', {
@@ -240,7 +240,7 @@ const PurchaseOrderItem = sequelize.define('PurchaseOrderItem', {
   quantity: { type: DataTypes.INTEGER, allowNull: false },
   unit_price: { type: DataTypes.DECIMAL(12, 2) },
   subtotal: { type: DataTypes.DECIMAL(12, 2) }
-}, { tableName: 't_purchase_order_item', timestamps: false });
+}, { tableName: 'T_PURCHASE_ORDER_ITEM', timestamps: false });
 
 // ----------------------------------------
 // 销售模型
@@ -267,7 +267,7 @@ const Order = sequelize.define('Order', {
   subsidy_id: { type: DataTypes.STRING(32) },
   remark: { type: DataTypes.TEXT },
   is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 }
-}, { tableName: 't_order', timestamps: false });
+}, { tableName: 'T_ORDER', timestamps: false });
 
 // 订单明细
 const OrderItem = sequelize.define('OrderItem', {
@@ -283,7 +283,7 @@ const OrderItem = sequelize.define('OrderItem', {
   sale_price: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
   quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
   subtotal: { type: DataTypes.DECIMAL(12, 2), allowNull: false }
-}, { tableName: 't_order_item', timestamps: false });
+}, { tableName: 'T_ORDER_ITEM', timestamps: false });
 
 // 订单支付记录
 const OrderPayment = sequelize.define('OrderPayment', {
@@ -292,7 +292,7 @@ const OrderPayment = sequelize.define('OrderPayment', {
   payment_method: { type: DataTypes.STRING(64), allowNull: false },
   amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
   payment_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
-}, { tableName: 't_order_payment', timestamps: false });
+}, { tableName: 'T_ORDER_PAYMENT', timestamps: false });
 
 // 订单附件
 const OrderAttachment = sequelize.define('OrderAttachment', {
@@ -300,7 +300,7 @@ const OrderAttachment = sequelize.define('OrderAttachment', {
   order_id: { type: DataTypes.STRING(32), allowNull: false },
   attach_type: { type: DataTypes.STRING(64) },
   file_url: { type: DataTypes.STRING(1024), allowNull: false }
-}, { tableName: 't_order_attachment', timestamps: false });
+}, { tableName: 'T_ORDER_ATTACHMENT', timestamps: false });
 
 // ----------------------------------------
 // 库房操作模型
@@ -317,7 +317,7 @@ const Inbound = sequelize.define('Inbound', {
   total_quantity: { type: DataTypes.INTEGER },
   status: { type: DataTypes.STRING(32), defaultValue: 'pending' },
   create_user: { type: DataTypes.STRING(64) }
-}, { tableName: 't_inbound', timestamps: false });
+}, { tableName: 'T_INBOUND', timestamps: false });
 
 // 入库明细
 const InboundItem = sequelize.define('InboundItem', {
@@ -330,7 +330,7 @@ const InboundItem = sequelize.define('InboundItem', {
   sn_code: { type: DataTypes.STRING(128) },
   unit_price: { type: DataTypes.DECIMAL(12, 2) },
   quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 }
-}, { tableName: 't_inbound_item', timestamps: false });
+}, { tableName: 'T_INBOUND_ITEM', timestamps: false });
 
 // 出库单
 const Outbound = sequelize.define('Outbound', {
@@ -343,7 +343,7 @@ const Outbound = sequelize.define('Outbound', {
   total_quantity: { type: DataTypes.INTEGER },
   status: { type: DataTypes.STRING(32), defaultValue: 'pending' },
   create_user: { type: DataTypes.STRING(64) }
-}, { tableName: 't_outbound', timestamps: false });
+}, { tableName: 'T_OUTBOUND', timestamps: false });
 
 // 出库明细
 const OutboundItem = sequelize.define('OutboundItem', {
@@ -353,7 +353,7 @@ const OutboundItem = sequelize.define('OutboundItem', {
   sn_id: { type: DataTypes.STRING(32) },
   sn_code: { type: DataTypes.STRING(128) },
   quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 }
-}, { tableName: 't_outbound_item', timestamps: false });
+}, { tableName: 'T_OUTBOUND_ITEM', timestamps: false });
 
 // 调拨单
 const Transfer = sequelize.define('Transfer', {
@@ -365,7 +365,7 @@ const Transfer = sequelize.define('Transfer', {
   status: { type: DataTypes.STRING(32), defaultValue: 'pending' },
   apply_user: { type: DataTypes.STRING(64) },
   confirm_user: { type: DataTypes.STRING(64) }
-}, { tableName: 't_transfer', timestamps: false });
+}, { tableName: 'T_TRANSFER', timestamps: false });
 
 // 调拨明细
 const TransferItem = sequelize.define('TransferItem', {
@@ -375,7 +375,7 @@ const TransferItem = sequelize.define('TransferItem', {
   sn_id: { type: DataTypes.STRING(32) },
   sn_code: { type: DataTypes.STRING(128) },
   quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 }
-}, { tableName: 't_transfer_item', timestamps: false });
+}, { tableName: 'T_TRANSFER_ITEM', timestamps: false });
 
 // ----------------------------------------
 // 财务模型
@@ -396,7 +396,7 @@ const DailyStatement = sequelize.define('DailyStatement', {
   status: { type: DataTypes.STRING(32), defaultValue: 'draft' },
   submit_staff: { type: DataTypes.STRING(64) },
   confirm_staff: { type: DataTypes.STRING(64) }
-}, { tableName: 't_daily_statement', timestamps: false });
+}, { tableName: 'T_DAILY_STATEMENT', timestamps: false });
 
 // 支出记录
 const Expense = sequelize.define('Expense', {
@@ -410,7 +410,7 @@ const Expense = sequelize.define('Expense', {
   remark: { type: DataTypes.STRING(512) },
   create_user: { type: DataTypes.STRING(64) },
   is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 }
-}, { tableName: 't_expense', timestamps: false });
+}, { tableName: 'T_EXPENSE', timestamps: false });
 
 // -------------------------------------------
 // 字典模型
@@ -424,7 +424,7 @@ const CustomerSource = sequelize.define('CustomerSource', {
   level: { type: DataTypes.INTEGER, defaultValue: 1 },
   sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
   status: { type: DataTypes.TINYINT, defaultValue: 1 }
-}, { tableName: 't_dict_customer_source', timestamps: false });
+}, { tableName: 'T_DICT_CUSTOMER_SOURCE', timestamps: false });
 
 // 支付方式
 const PaymentMethod = sequelize.define('PaymentMethod', {
@@ -434,7 +434,7 @@ const PaymentMethod = sequelize.define('PaymentMethod', {
   icon: { type: DataTypes.STRING(64) },
   sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
   status: { type: DataTypes.TINYINT, defaultValue: 1 }
-}, { tableName: 't_dict_payment_method', timestamps: false });
+}, { tableName: 'T_DICT_PAYMENT_METHOD', timestamps: false });
 
 // 附加服务费
 const SupplementItem = sequelize.define('SupplementItem', {
@@ -443,7 +443,7 @@ const SupplementItem = sequelize.define('SupplementItem', {
   amount: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
   is_active: { type: DataTypes.TINYINT(1), defaultValue: 1 },
   sort_order: { type: DataTypes.INTEGER, defaultValue: 0 }
-}, { tableName: 't_dict_supplement_item', timestamps: false });
+}, { tableName: 'T_DICT_SUPPLEMENT_ITEM', timestamps: false });
 
 // ----------------------------------------
 // 关联关系定义
