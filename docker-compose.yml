@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DB_HOST=sh-cynosdbmysql-grp-lpycb6gi.sql.tencentcdb.com
+      - DB_PORT=29244
+      - DB_NAME=cloud1-8glwjlnq4c74f7f1
+      - DB_USER=ainuoyun
+      - DB_PASSWORD=lx123456.
+      - JWT_SECRET=any-erp-secret-key-2024
+    restart: unless-stopped

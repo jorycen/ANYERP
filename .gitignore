@@ -1,0 +1,51 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment and local config
+.env
+.env.*
+!.env.example
+tmp_login.json
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Database/runtime data
+data/
+backup/
+*.db
+*.sqlite
+*.sqlite3
+*.ibd
+ibdata*
+undo_*
+
+# Certificates and private keys
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cert
+
+# Packaged/bundled runtime artifacts
+backend-package/mysql-8.0.36.zip
+backend-package/mysql-8.0.36-winx64/
+deploy-package/
