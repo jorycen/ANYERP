@@ -2,7 +2,7 @@
  * 库房管理控制器
  * 优化版：非SN商品直接操作聚合库存，SN商品同时维护SN记录和聚合库存
  */
-const { sequelize, ProductSn, Product, ProductPn, Store, Location, InventoryWarning, Inbound, InboundItem, ReturnStock, ReturnStockItem, PurchaseRequest, Payable, Supplier, Inventory, SnLog, Order, OrderItem, Transfer, TransferItem } = require('../../models');
+const { sequelize, ProductSn, Product, ProductPn, ProductPrice, Store, Location, InventoryWarning, Inbound, InboundItem, ReturnStock, ReturnStockItem, PurchaseRequest, Payable, Supplier, Inventory, SnLog, Order, OrderItem, Transfer, TransferItem } = require('../../models');
 const { Op } = require('sequelize');
 const { generateInboundNo, generateOutboundNo, generateTransferNo, generateUUID, generateBatchNo, paginate, formatPaginatedResult } = require('../../utils');
 
@@ -26,12 +26,15 @@ async function getList(ctx) {
       productWhere[Op.or] = [
         { name: { [Op.like]: `%${keyword}%` } },
         { product_code: { [Op.like]: `%${keyword}%` } },
-        { manufacturer_code: { [Op.like]: `%${keyword}%` } }
+        { config: { [Op.like]: `%${keyword}%` } },
+        { manufacturer_code: { [Op.like]: `%${keyword}%` } },
+        { remark: { [Op.like]: `%${keyword}%` } }
       ];
     }
 
     const { count, rows: products } = await Product.findAndCountAll({
       where: productWhere,
+      include: [{ model: ProductPrice, attributes: ['standard_price'] }],
       order: [['create_time', 'DESC']],
       ...paginate({}, { page, pageSize })
     });
@@ -47,16 +50,6 @@ async function getList(ctx) {
       where: inventoryWhere,
       include: [{ model: Store, attributes: ['store_id', 'name'] }]
     });
-
-    const pnRecords = await ProductPn.findAll({
-      where: { product_id: { [Op.in]: productIds }, is_deleted: 0 },
-      order: [['is_primary', 'DESC'], ['create_time', 'DESC']]
-    });
-    const pnByProduct = {};
-    for (const pn of pnRecords) {
-      if (!pnByProduct[pn.product_id]) pnByProduct[pn.product_id] = [];
-      pnByProduct[pn.product_id].push(pn.pn_code);
-    }
 
     const allStoreMap = new Map();
     stores.forEach(s => allStoreMap.set(s.store_id, s.name));
@@ -106,10 +99,10 @@ async function getList(ctx) {
         product_id: p.product_id,
         category: p.category || '',
         product_name: p.name || '',
-        spec: p.config || p.spec || '',
+        spec: p.config || '',
         product_code: p.product_code || '',
-        manufacturer_code: (pnByProduct[p.product_id] || []).join(', '),
-        standard_price: p.standard_price,
+        manufacturer_code: p.manufacturer_code || '',
+        standard_price: p.ProductPrice ? p.ProductPrice.standard_price : 0,
         need_sn: p.need_sn || 0,
         normal_qty: inv.normal_qty,
         regular_qty: inv.regular_qty,

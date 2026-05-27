@@ -36,6 +36,9 @@
         </el-tab-pane>
 
         <el-tab-pane label="角色管理" name="roles">
+          <div class="filter-bar">
+            <el-button type="primary" @click="handleAddRole">新增角色</el-button>
+          </div>
           <el-table :data="roleData" stripe border>
             <el-table-column prop="role_id" label="ID" width="80" />
             <el-table-column prop="name" label="角色名称" width="120" />
@@ -46,9 +49,11 @@
                 <el-tag :type="row.is_system ? 'warning' : 'info'">{{ row.is_system ? '是' : '否' }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="100">
+            <el-table-column label="操作" width="220">
               <template #default="{ row }">
                 <el-button link type="primary" @click="handleRoleMenus(row)">菜单权限</el-button>
+                <el-button link type="primary" :disabled="!!row.is_system" @click="handleEditRole(row)">编辑</el-button>
+                <el-button link type="danger" :disabled="!!row.is_system" @click="handleDeleteRole(row)">删除</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -435,6 +440,24 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="roleDialogVisible" :title="roleDialogTitle" width="500px" @close="resetRoleForm">
+      <el-form :model="roleForm" label-width="100px">
+        <el-form-item label="角色名称" required>
+          <el-input v-model="roleForm.name" placeholder="请输入角色名称" />
+        </el-form-item>
+        <el-form-item label="角色代码" required>
+          <el-input v-model="roleForm.roleCode" placeholder="如：sales_lead" :disabled="!!roleForm.roleId" />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="roleForm.description" type="textarea" :rows="3" placeholder="请输入角色说明" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="roleDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleRoleSubmit" :loading="submitLoading">确定</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 角色菜单权限对话框 -->
     <el-dialog v-model="menuDialogVisible" title="菜单权限" width="400px">
       <el-form label-width="100px">
@@ -472,8 +495,10 @@ const stores = ref([])
 const userDialogVisible = ref(false)
 const storeDialogVisible = ref(false)
 const menuDialogVisible = ref(false)
+const roleDialogVisible = ref(false)
 const submitLoading = ref(false)
 const dialogTitle = ref('新增用户')
+const roleDialogTitle = ref('新增角色')
 const currentUser = ref(null)
 const currentRole = ref(null)
 const dialogStoreIds = ref([])
@@ -487,6 +512,13 @@ const userForm = reactive({
   roleCode: '',
   storeIds: [],
   status: 1
+})
+
+const roleForm = reactive({
+  roleId: null,
+  name: '',
+  roleCode: '',
+  description: ''
 })
 
 const storeIndeterminate = computed(() => {
@@ -538,6 +570,76 @@ const loadRoles = async () => {
     const res = await api.getRoles()
     if (res.code === 0) roleData.value = res.data || []
   } catch (err) { ElMessage.error('加载角色失败') }
+}
+
+const handleAddRole = () => {
+  roleDialogTitle.value = '新增角色'
+  resetRoleForm()
+  roleDialogVisible.value = true
+}
+
+const handleEditRole = (row) => {
+  if (row.is_system) return
+  roleDialogTitle.value = '编辑角色'
+  roleForm.roleId = row.role_id
+  roleForm.name = row.name || ''
+  roleForm.roleCode = row.role_code || ''
+  roleForm.description = row.description || ''
+  roleDialogVisible.value = true
+}
+
+const handleRoleSubmit = async () => {
+  if (!roleForm.name.trim()) { ElMessage.warning('请输入角色名称'); return }
+  if (!roleForm.roleCode.trim()) { ElMessage.warning('请输入角色代码'); return }
+
+  submitLoading.value = true
+  try {
+    const data = {
+      name: roleForm.name.trim(),
+      roleCode: roleForm.roleCode.trim(),
+      description: roleForm.description.trim()
+    }
+    const res = roleForm.roleId
+      ? await api.updateRole(roleForm.roleId, data)
+      : await api.createRole(data)
+
+    if (res.code === 0) {
+      ElMessage.success(roleForm.roleId ? '更新成功' : '创建成功')
+      roleDialogVisible.value = false
+      await loadRoles()
+    } else {
+      ElMessage.error(res.message || '保存失败')
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || err.message || '保存失败')
+  } finally {
+    submitLoading.value = false
+  }
+}
+
+const handleDeleteRole = async (row) => {
+  if (row.is_system) return
+  try {
+    await ElMessageBox.confirm(`确认删除角色"${row.name}"？`, '确认删除', { type: 'warning' })
+    const res = await api.deleteRole(row.role_id)
+    if (res.code === 0) {
+      ElMessage.success('删除成功')
+      await loadRoles()
+    } else {
+      ElMessage.error(res.message || '删除失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') {
+      ElMessage.error(err.response?.data?.message || err.message || '删除失败')
+    }
+  }
+}
+
+const resetRoleForm = () => {
+  roleForm.roleId = null
+  roleForm.name = ''
+  roleForm.roleCode = ''
+  roleForm.description = ''
 }
 
 const loadMenus = async () => {

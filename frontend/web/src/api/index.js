@@ -177,6 +177,13 @@ export default {
   setPrice: (data) => api.post('/product/price/set', data),
   refreshCostPrice: (productId) => api.post(`/product/price/refresh-cost/${productId}`),
   batchRefreshCost: (data) => api.post('/product/price/batch-refresh-cost', data),
+  importPrices: (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post('/product/price/import', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+  },
 
   // Store
   getStoreList: (params) => api.get('/store/list', { params }),
@@ -193,6 +200,9 @@ export default {
   // System
   getMenus: () => api.get('/system/menus'),
   getRoles: () => api.get('/system/roles'),
+  createRole: (data) => api.post('/system/role', data),
+  updateRole: (roleId, data) => api.put(`/system/role/${roleId}`, data),
+  deleteRole: (roleId) => api.delete(`/system/role/${roleId}`),
   getRoleMenus: (roleId) => api.get(`/system/role-menus/${roleId}`),
   assignMenus: (roleId, data) => api.post(`/system/role-menus/${roleId}`, data),
   getUsers: (params) => api.get('/system/users', { params }),

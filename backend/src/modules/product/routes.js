@@ -8,7 +8,7 @@ const {
   getBarcodes, addBarcode, deleteBarcode,
   getCategoryTree, createCategory, updateCategory, deleteCategory,
   getCategoryFields, saveCategoryFields, getCategoryFieldConfig,
-  getPriceList, setPrice, refreshCostPrice, batchRefreshCost,
+  getPriceList, setPrice, refreshCostPrice, batchRefreshCost, importPrices,
   getPnList, addPn, searchProduct
 } = require('./controller');
 
@@ -46,6 +46,7 @@ router.get('/price/list', getPriceList);
 router.post('/price/set', setPrice);
 router.post('/price/refresh-cost/:productId', refreshCostPrice);
 router.post('/price/batch-refresh-cost', batchRefreshCost);
+router.post('/price/import', upload.single('file'), importPrices);
 
 // PN管理
 router.get('/pn-list', getPnList);

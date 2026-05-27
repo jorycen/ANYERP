@@ -2,12 +2,15 @@
  * 系统管理路由
  */
 const Router = require('koa-router');
-const { getMenus, getRoles, getRoleMenus, assignMenus, getUsers, createUser, updateUser, getUserRegions, assignUserRegions } = require('./controller');
+const { getMenus, getRoles, createRole, updateRole, deleteRole, getRoleMenus, assignMenus, getUsers, createUser, updateUser, getUserRegions, assignUserRegions } = require('./controller');
 
 const router = new Router();
 
 router.get('/menus', getMenus);
 router.get('/roles', getRoles);
+router.post('/role', createRole);
+router.put('/role/:roleId', updateRole);
+router.delete('/role/:roleId', deleteRole);
 router.get('/role-menus/:roleId', getRoleMenus);
 router.post('/role-menus/:roleId', assignMenus);
 router.get('/users', getUsers);

@@ -156,6 +156,7 @@
             <el-button type="success" @click="handleBatchRefreshCost" :loading="batchRefreshLoading" :disabled="selectedPriceRows.length === 0">
               批量刷新成本 ({{ selectedPriceRows.length }})
             </el-button>
+            <el-button type="warning" @click="handlePriceImport">批量导入定价</el-button>
           </div>
 
           <el-table :data="priceTableData" stripe border v-loading="priceLoading" @selection-change="onPriceSelectionChange" ref="priceTableRef">
@@ -429,6 +430,26 @@
       <template #footer>
         <el-button @click="importDialogVisible = false">取消</el-button>
         <el-button type="primary" @click="handleImportSubmit" :loading="importLoading" :disabled="!importFile">开始导入</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="priceImportDialogVisible" title="批量导入定价" width="700px">
+      <div class="import-tips">
+        <p>下载模板后填写商品编码、标准售价、最低售价。系统优先按商品编码匹配商品。</p>
+        <el-button type="primary" size="small" @click="downloadPriceTemplate">下载定价模板</el-button>
+      </div>
+      <div class="upload-area">
+        <el-upload :auto-upload="false" :show-file-list="false" :on-change="handlePriceFileChange" accept=".xlsx,.xls" drag>
+          <el-icon class="el-icon--upload"><Upload /></el-icon>
+          <div class="el-upload__text">将文件拖到此处，或<em>点击上传</em></div>
+        </el-upload>
+        <div v-if="priceImportFile" class="selected-file">
+          <el-tag closable @close="clearPriceFile">{{ priceImportFile.name }}</el-tag>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="priceImportDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handlePriceImportSubmit" :loading="priceImportLoading" :disabled="!priceImportFile">开始导入</el-button>
       </template>
     </el-dialog>
 
@@ -802,6 +823,9 @@ const priceLoading = ref(false); const priceTableData = ref([]); const priceTota
 const priceParams = reactive({ page: 1, pageSize: 20, keyword: '' })
 const priceTableRef = ref(null); const selectedPriceRows = ref([])
 const batchRefreshLoading = ref(false)
+const priceImportDialogVisible = ref(false)
+const priceImportFile = ref(null)
+const priceImportLoading = ref(false)
 
 const loadPriceData = async () => {
   priceLoading.value = true
@@ -845,6 +869,53 @@ const handleBatchRefreshCost = async () => {
     } else ElMessage.error(res.message || '失败')
   } catch (err) { ElMessage.error(err?.response?.data?.message || '失败') }
   finally { batchRefreshLoading.value = false }
+}
+
+const handlePriceImport = () => {
+  priceImportFile.value = null
+  priceImportDialogVisible.value = true
+}
+
+const handlePriceFileChange = (file) => {
+  priceImportFile.value = file.raw
+}
+
+const clearPriceFile = () => {
+  priceImportFile.value = null
+}
+
+const downloadPriceTemplate = () => {
+  const data = [{
+    '商品编码': '',
+    '商品名称': '',
+    '标准售价': '',
+    '最低售价': ''
+  }]
+  const ws = XLSX.utils.json_to_sheet(data)
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, '定价模板')
+  ws['!cols'] = [{ wch: 16 }, { wch: 24 }, { wch: 12 }, { wch: 12 }]
+  XLSX.writeFile(wb, '商品定价导入模板.xlsx')
+}
+
+const handlePriceImportSubmit = async () => {
+  if (!priceImportFile.value) { ElMessage.warning('请选择文件'); return }
+  priceImportLoading.value = true
+  try {
+    const res = await api.importPrices(priceImportFile.value)
+    if (res.code === 0) {
+      importResult.success = res.data.success
+      importResult.failed = res.data.failed
+      importResult.errors = res.data.errors || []
+      priceImportDialogVisible.value = false
+      importResultVisible.value = true
+      loadPriceData()
+    } else ElMessage.error(res.message || '导入失败')
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || '导入失败')
+  } finally {
+    priceImportLoading.value = false
+  }
 }
 
 // ========== PN管理 ==========

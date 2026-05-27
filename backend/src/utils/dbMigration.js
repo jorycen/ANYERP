@@ -69,6 +69,7 @@ async function runMigrations() {
     await checkAndAddColumn('T_PRODUCT', 'CREATE_TIME', 'DATETIME COMMENT "创建时间"', 'CONFIG');
     await checkAndAddColumn('T_PRODUCT_SN', 'PN_CODE', 'VARCHAR(64) COMMENT "PN料号"', 'PRODUCT_ID');
     await checkAndAddColumn('T_PRODUCT_SN', 'INVENTORY_TYPE', 'VARCHAR(32) DEFAULT "normal_qty" COMMENT "库存类型"', 'STATUS');
+    await checkAndAddColumn('T_PRODUCT', 'MANUFACTURER_CODE', 'VARCHAR(512) COMMENT "manufacturer code"', 'CONFIG');
     await checkAndCreateTable('T_SN_LOG', `
       CREATE TABLE T_SN_LOG (
         LOG_ID VARCHAR(32) NOT NULL,
@@ -559,6 +560,34 @@ async function migrateProductData() {
       `SELECT DISTINCT CATEGORY FROM T_PRODUCT WHERE CATEGORY IS NOT NULL AND CATEGORY != '' AND IS_DELETED = 0`,
       { type: sequelize.QueryTypes.SELECT }
     );
+
+    await sequelize.query(`
+      UPDATE T_PRODUCT p
+      LEFT JOIN (
+        SELECT PRODUCT_ID,
+               GROUP_CONCAT(BARCODE_CODE ORDER BY SORT_ORDER ASC, BARCODE_ID ASC SEPARATOR ', ') AS CODES
+        FROM T_PRODUCT_BARCODE
+        WHERE BARCODE_TYPE = 'manufacturer' AND STATUS = 1
+        GROUP BY PRODUCT_ID
+      ) b ON b.PRODUCT_ID = p.PRODUCT_ID
+      SET p.MANUFACTURER_CODE = b.CODES
+      WHERE (p.MANUFACTURER_CODE IS NULL OR p.MANUFACTURER_CODE = '')
+        AND b.CODES IS NOT NULL AND b.CODES != ''
+    `);
+
+    await sequelize.query(`
+      UPDATE T_PRODUCT p
+      LEFT JOIN (
+        SELECT PRODUCT_ID,
+               GROUP_CONCAT(PN_CODE ORDER BY IS_PRIMARY DESC, PN_ID ASC SEPARATOR ', ') AS CODES
+        FROM T_PRODUCT_PN
+        WHERE IS_DELETED = 0
+        GROUP BY PRODUCT_ID
+      ) pn ON pn.PRODUCT_ID = p.PRODUCT_ID
+      SET p.MANUFACTURER_CODE = pn.CODES
+      WHERE (p.MANUFACTURER_CODE IS NULL OR p.MANUFACTURER_CODE = '')
+        AND pn.CODES IS NOT NULL AND pn.CODES != ''
+    `);
 
     if (categories && categories.length > 0) {
       let catCount = 0;

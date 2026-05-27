@@ -37,6 +37,95 @@ async function getRoles(ctx) {
 /**
  * 获取角色的菜单权限
  */
+function normalizeRoleCode(roleCode) {
+  return String(roleCode || '').trim();
+}
+
+function validateRoleInput(ctx, body, isUpdate = false) {
+  const name = String(body.name || '').trim();
+  const roleCode = normalizeRoleCode(body.roleCode || body.role_code);
+  const description = String(body.description || '').trim();
+
+  if (!isUpdate || name) {
+    if (!name) ctx.throw(400, '请输入角色名称');
+  }
+  if (!isUpdate || roleCode) {
+    if (!roleCode) ctx.throw(400, '请输入角色代码');
+    if (!/^[A-Za-z][A-Za-z0-9_-]{1,31}$/.test(roleCode)) {
+      ctx.throw(400, '角色代码需以字母开头，可包含字母、数字、下划线和中划线，长度2-32位');
+    }
+  }
+
+  return { name, roleCode, description };
+}
+
+async function createRole(ctx) {
+  const { name, roleCode, description } = validateRoleInput(ctx, ctx.request.body);
+
+  const exist = await Role.findOne({ where: { role_code: roleCode, status: 1 } });
+  if (exist) ctx.throw(400, '角色代码已存在');
+
+  const role = await Role.create({
+    role_id: generateUUID(),
+    role_code: roleCode,
+    name,
+    description,
+    is_system: 0,
+    status: 1
+  });
+
+  ctx.body = { code: 0, message: '角色创建成功', data: { roleId: role.role_id } };
+}
+
+async function updateRole(ctx) {
+  const { roleId } = ctx.params;
+  const role = await Role.findByPk(roleId);
+  if (!role || role.status === 0) ctx.throw(404, '角色不存在');
+  if (role.is_system) ctx.throw(400, '系统角色不可编辑');
+
+  const oldRoleCode = role.role_code;
+  const { name, roleCode, description } = validateRoleInput(ctx, ctx.request.body, true);
+  const updateData = {};
+  if (name) updateData.name = name;
+  if (Object.prototype.hasOwnProperty.call(ctx.request.body, 'description')) updateData.description = description;
+  if (roleCode && roleCode !== oldRoleCode) {
+    const exist = await Role.findOne({
+      where: {
+        role_code: roleCode,
+        role_id: { [Op.ne]: roleId },
+        status: 1
+      }
+    });
+    if (exist) ctx.throw(400, '角色代码已存在');
+    updateData.role_code = roleCode;
+  }
+
+  await role.update(updateData);
+  if (updateData.role_code) {
+    await Staff.update({ role_code: updateData.role_code }, {
+      where: { role_code: oldRoleCode, is_deleted: 0 }
+    });
+  }
+
+  ctx.body = { code: 0, message: '角色更新成功' };
+}
+
+async function deleteRole(ctx) {
+  const { roleId } = ctx.params;
+  const role = await Role.findByPk(roleId);
+  if (!role || role.status === 0) ctx.throw(404, '角色不存在');
+  if (role.is_system) ctx.throw(400, '系统角色不可删除');
+
+  const userCount = await Staff.count({ where: { role_code: role.role_code, is_deleted: 0 } });
+  if (userCount > 0) ctx.throw(400, '该角色已有用户使用，不能删除');
+
+  await RoleMenu.destroy({ where: { role_id: roleId } });
+  await StaffRole.destroy({ where: { role_id: roleId } });
+  await role.update({ status: 0 });
+
+  ctx.body = { code: 0, message: '角色删除成功' };
+}
+
 async function getRoleMenus(ctx) {
   const { roleId } = ctx.params;
   const roleMenus = await RoleMenu.findAll({
@@ -299,6 +388,9 @@ function buildMenuTree(menus) {
 module.exports = {
   getMenus,
   getRoles,
+  createRole,
+  updateRole,
+  deleteRole,
   getRoleMenus,
   assignMenus,
   getUsers,

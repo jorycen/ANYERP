@@ -118,6 +118,7 @@ const Product = sequelize.define('Product', {
   name: { type: DataTypes.STRING(255), allowNull: false },
   category: { type: DataTypes.STRING(512), allowNull: true, comment: '分类路径: 一级/二级/三级' },
   config: { type: DataTypes.STRING(512), allowNull: true, comment: '厂商商品名称' },
+  manufacturer_code: { type: DataTypes.STRING(512), allowNull: true, comment: 'manufacturer code' },
   need_sn: { type: DataTypes.TINYINT(1), defaultValue: 0 },
   need_imei: { type: DataTypes.TINYINT(1), defaultValue: 0 },
   unit: { type: DataTypes.STRING(16), defaultValue: '台' },

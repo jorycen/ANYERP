@@ -9,7 +9,7 @@ const { generateOrderNo, generateUUID, paginate, formatPaginatedResult } = requi
  * 销售订单列表
  */
 async function list(ctx) {
-  const { storeId, startDate, endDate, customerPhone, page = 1, pageSize = 20 } = ctx.query;
+  const { storeId, startDate, endDate, customerPhone, orderNo, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
 
   const where = { is_deleted: 0 };
@@ -28,6 +28,9 @@ async function list(ctx) {
   }
   if (customerPhone) {
     where.customer_phone = { [Op.like]: `%${customerPhone}%` };
+  }
+  if (orderNo) {
+    where.order_no = { [Op.like]: `%${orderNo}%` };
   }
 
   const stores = await Store.findAll({ where: whereStore });

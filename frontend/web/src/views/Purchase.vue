@@ -265,7 +265,7 @@
         <span style="font-weight: bold;">商品：{{ currentAllocateProduct?.productName || '-' }}</span>
         <span style="margin-left: 24px; font-weight: bold;">总数量：{{ currentAllocateProduct?.quantity || 0 }}</span>
         <span style="margin-left: 24px; color: #409EFF; font-weight: bold;">已分配：{{ allocatedTotalQuantity }}</span>
-        <span style="margin-left: 24px; color: #F56C6C; font-weight: bold;">待分配：{{ currentAllocateProduct?.quantity - allocatedTotalQuantity }}</span>
+        <span style="margin-left: 24px; color: #F56C6C; font-weight: bold;">待分配：{{ remainingAllocateQuantity }}</span>
       </div>
       <el-table :data="storeAllocationList" stripe border max-height="400">
         <el-table-column prop="storeName" label="门店名称" min-width="150" />
@@ -392,9 +392,14 @@ const supplierForm = reactive({
   status: 1
 })
 
+const toNumber = (value) => {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : 0
+}
+
 const totalAmount = computed(() => {
   return requestForm.items.reduce((sum, item) => {
-    return sum + (item.price * item.quantity || 0)
+    return sum + (toNumber(item.price) * toNumber(item.quantity))
   }, 0)
 })
 
@@ -405,8 +410,12 @@ const actualTotal = computed(() => {
 
 const allocatedTotalQuantity = computed(() => {
   return storeAllocationList.value.reduce((sum, item) => {
-    return sum + (item.quantity || 0)
+    return sum + toNumber(item.quantity)
   }, 0)
+})
+
+const remainingAllocateQuantity = computed(() => {
+  return toNumber(currentAllocateProduct.value?.quantity) - allocatedTotalQuantity.value
 })
 
 onMounted(() => {
@@ -735,8 +744,8 @@ const handleSubmit = async () => {
     }
 
     // 校验分配数量总和等于商品数量
-    const allocatedQty = item.storeAllocations.reduce((sum, alloc) => sum + (alloc.quantity || 0), 0)
-    if (allocatedQty !== item.quantity) {
+    const allocatedQty = item.storeAllocations.reduce((sum, alloc) => sum + toNumber(alloc.quantity), 0)
+    if (allocatedQty !== toNumber(item.quantity)) {
       ElMessage.warning(`「${productName}」分配数量(${allocatedQty})必须等于采购数量(${item.quantity})`)
       return
     }
@@ -797,7 +806,7 @@ const getStatusText = (status) => {
 }
 
 const handleAllocateStore = (row, index) => {
-  if (!row.quantity || row.quantity <= 0) {
+  if (toNumber(row.quantity) <= 0) {
     ElMessage.warning('请先输入商品数量')
     return
   }
@@ -814,7 +823,7 @@ const handleAllocateStore = (row, index) => {
     return {
       storeId: store.store_id,
       storeName: store.name,
-      quantity: existing?.quantity || 0
+      quantity: toNumber(existing?.quantity)
     }
   })
   
@@ -822,21 +831,23 @@ const handleAllocateStore = (row, index) => {
 }
 
 const validateAllocation = () => {
-  if (allocatedTotalQuantity.value > (currentAllocateProduct.value?.quantity || 0)) {
+  if (allocatedTotalQuantity.value > toNumber(currentAllocateProduct.value?.quantity)) {
     ElMessage.warning('分配数量不能超过总数量')
   }
 }
 
 const handleSaveAllocation = () => {
   const totalAllocated = allocatedTotalQuantity.value
-  const totalQuantity = currentAllocateProduct.value?.quantity || 0
+  const totalQuantity = toNumber(currentAllocateProduct.value?.quantity)
   
   if (totalAllocated > totalQuantity) {
     ElMessage.warning('分配数量不能超过总数量')
     return
   }
   
-  const validAllocations = storeAllocationList.value.filter(a => a.quantity > 0)
+  const validAllocations = storeAllocationList.value
+    .map(a => ({ ...a, quantity: toNumber(a.quantity) }))
+    .filter(a => a.quantity > 0)
   
   if (currentAllocateIndex.value >= 0) {
     requestForm.items[currentAllocateIndex.value].storeAllocations = validAllocations

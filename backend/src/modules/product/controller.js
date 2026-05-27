@@ -65,6 +65,46 @@ function buildAttributesFromCols(cols, extras) {
   return Object.keys(attrs).length > 0 ? attrs : null;
 }
 
+function splitCodes(value) {
+  return String(value || '')
+    .split(/[,;\uFF0C\uFF1B\s]+/)
+    .map(code => code.trim())
+    .filter(Boolean);
+}
+
+function getManufacturerCodes(barcodes, fallback) {
+  const codes = [];
+  if (Array.isArray(barcodes)) {
+    for (const bc of barcodes) {
+      if ((bc.type || 'manufacturer') === 'manufacturer' && bc.code) {
+        codes.push(String(bc.code).trim());
+      }
+    }
+  }
+  splitCodes(fallback).forEach(code => codes.push(code));
+  return [...new Set(codes.filter(Boolean))];
+}
+
+function appendCode(existing, code) {
+  const codes = splitCodes(existing);
+  const value = String(code || '').trim();
+  if (value && !codes.includes(value)) codes.push(value);
+  return codes.join(', ');
+}
+
+function parseMoney(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const num = Number(String(value).replace(/[,￥¥\s]/g, ''));
+  return Number.isFinite(num) ? num : null;
+}
+
+function getRowValue(row, keys) {
+  for (const key of keys) {
+    if (row[key] !== undefined && row[key] !== null && row[key] !== '') return row[key];
+  }
+  return undefined;
+}
+
 async function resolveCategoryPath(categoryId) {
   if (!categoryId) return '';
   const parts = [];
@@ -178,6 +218,7 @@ async function getProductList(ctx) {
       name: p.name,
       config: p.config || '',
       category: p.category || '',
+      manufacturer_code: p.manufacturer_code || '',
       brand: p.brand || '',
       series: p.series || '',
       model: p.model || '',
@@ -188,7 +229,7 @@ async function getProductList(ctx) {
       gpu: p.gpu || '',
       accessory_type: p.accessory_type || '',
       extras,
-      manufacturer_codes: allBarcodes.filter(b => b.type === 'manufacturer').map(b => b.code),
+      manufacturer_codes: splitCodes(p.manufacturer_code).length > 0 ? splitCodes(p.manufacturer_code) : allBarcodes.filter(b => b.type === 'manufacturer').map(b => b.code),
       barcodes: allBarcodes,
       create_time: p.create_time || '',
       status: p.status
@@ -199,7 +240,7 @@ async function getProductList(ctx) {
 }
 
 async function createProduct(ctx) {
-  const { name, categoryId, config, needSn, needImei, unit, remark, barcodes, attributes, status = 1 } = ctx.request.body;
+  const { name, categoryId, config, needSn, needImei, unit, remark, barcodes, attributes, status = 1, manufacturerCode, manufacturer_code } = ctx.request.body;
 
   const productId = generateUUID();
   const categoryPath = categoryId ? await resolveCategoryPath(categoryId) : '';
@@ -231,6 +272,8 @@ async function createProduct(ctx) {
     ctx.throw(400, '商品名称不能为空');
   }
 
+  const manufacturerCodes = getManufacturerCodes(barcodes, manufacturerCode || manufacturer_code);
+
   let lastError;
   for (let attempt = 0; attempt < 5; attempt++) {
     const productCode = await generateProductCode(Product);
@@ -241,6 +284,7 @@ async function createProduct(ctx) {
         name: finalName,
         category: categoryPath,
         config: config || '',
+        manufacturer_code: manufacturerCodes.join(', '),
         brand: cols.brand || null,
         series: cols.series || null,
         model: cols.model || null,
@@ -309,7 +353,7 @@ async function createProduct(ctx) {
 async function updateProduct(ctx) {
   const { productId } = ctx.params;
   const body = ctx.request.body;
-  const { name, categoryId, config, needSn, needImei, unit, remark, barcodes, status, attributes } = body;
+  const { name, categoryId, config, needSn, needImei, unit, remark, barcodes, status, attributes, manufacturerCode, manufacturer_code } = body;
 
   const product = await Product.findByPk(productId);
   if (!product) {
@@ -333,6 +377,9 @@ async function updateProduct(ctx) {
   if (needImei !== undefined) updateData.need_imei = needImei ? 1 : 0;
   if (unit !== undefined) updateData.unit = unit;
   if (remark !== undefined) updateData.remark = remark;
+  if (manufacturerCode !== undefined || manufacturer_code !== undefined) {
+    updateData.manufacturer_code = getManufacturerCodes([], manufacturerCode || manufacturer_code).join(', ');
+  }
   if (attributes !== undefined) {
     updateData.brand = cols.brand || null;
     updateData.series = cols.series || null;
@@ -344,6 +391,10 @@ async function updateProduct(ctx) {
     updateData.gpu = cols.gpu || null;
     updateData.accessory_type = cols.accessory_type || null;
     updateData.extras = Object.keys(extras).length > 0 ? JSON.stringify(extras) : null;
+  }
+
+  if (barcodes !== undefined) {
+    updateData.manufacturer_code = getManufacturerCodes(barcodes, manufacturerCode || manufacturer_code).join(', ');
   }
 
   await product.update(updateData);
@@ -714,6 +765,79 @@ async function batchRefreshCost(ctx) {
 
 // ===== 其他 =====
 
+async function importPrices(ctx) {
+  if (!ctx.file) {
+    ctx.throw(400, '请上传文件');
+  }
+
+  const workbook = XLSX.read(ctx.file.buffer, { type: 'buffer' });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+  const results = { success: 0, failed: 0, errors: [] };
+
+  for (const [index, row] of rows.entries()) {
+    try {
+      const productCode = String(getRowValue(row, ['商品编码', '商品代码', 'product_code', 'productCode']) || '').trim();
+      const productName = String(getRowValue(row, ['商品名称', 'name']) || '').trim();
+      const standardPrice = parseMoney(getRowValue(row, ['标准售价', '销售定价', 'standard_price', 'standardPrice']));
+      const minSalePrice = parseMoney(getRowValue(row, ['最低售价', '最低销售价', 'min_sale_price', 'minSalePrice']));
+
+      if (!productCode && !productName) {
+        results.failed++;
+        results.errors.push({ row: index + 2, product: row, message: '请填写商品编码或商品名称' });
+        continue;
+      }
+      if (standardPrice === null && minSalePrice === null) {
+        results.failed++;
+        results.errors.push({ row: index + 2, product: row, message: '请至少填写标准售价或最低售价' });
+        continue;
+      }
+      if ((standardPrice !== null && standardPrice < 0) || (minSalePrice !== null && minSalePrice < 0)) {
+        results.failed++;
+        results.errors.push({ row: index + 2, product: row, message: '价格不能为负数' });
+        continue;
+      }
+
+      const productWhere = { is_deleted: 0 };
+      if (productCode) productWhere.product_code = productCode;
+      else productWhere.name = productName;
+
+      const product = await Product.findOne({ where: productWhere });
+      if (!product) {
+        results.failed++;
+        results.errors.push({ row: index + 2, product: row, message: '商品不存在' });
+        continue;
+      }
+
+      const existingPrice = await ProductPrice.findOne({ where: { product_id: product.product_id } });
+      const payload = {
+        standard_price: standardPrice !== null ? standardPrice : (existingPrice?.standard_price || 0),
+        min_sale_price: minSalePrice !== null ? minSalePrice : (existingPrice?.min_sale_price || 0),
+        effective_time: new Date(),
+        create_user: ctx.state.user?.name || 'system'
+      };
+
+      if (existingPrice) {
+        await existingPrice.update(payload);
+      } else {
+        await ProductPrice.create({
+          price_id: generateUUID(),
+          product_id: product.product_id,
+          cost_price: 0,
+          ...payload
+        });
+      }
+
+      results.success++;
+    } catch (error) {
+      results.failed++;
+      results.errors.push({ row: index + 2, product: row, message: error.message || '导入失败' });
+    }
+  }
+
+  ctx.body = { code: 0, data: results, message: '价格导入完成' };
+}
+
 async function getPnList(ctx) {
   const { productId, keyword, page = 1, pageSize = 20 } = ctx.query;
 
@@ -759,6 +883,11 @@ async function addPn(ctx) {
     barcode: barcode || '',
     is_primary: isPrimary ? 1 : 0
   });
+
+  const product = await Product.findByPk(productId);
+  if (product) {
+    await product.update({ manufacturer_code: appendCode(product.manufacturer_code, pnCode) });
+  }
 
   ctx.body = { code: 0, pnId, message: 'PN添加成功' };
 }
@@ -1070,6 +1199,7 @@ async function importProducts(ctx) {
         const productData = {
           name: finalName,
           category: categoryPath || '',
+          manufacturer_code: splitCodes(manufacturerCodes).join(', '),
           config: attrMap['厂商商品名称'] || attrMap['产品配置'] || attrMap['config'] || '',
           brand: cols.brand || null,
           series: cols.series || null,
@@ -1280,7 +1410,8 @@ async function exportProducts(ctx) {
 
   // 输出Excel
   const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-  ctx.set('Content-Disposition', `attachment; filename=商品导出_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  const filename = `商品导出_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  ctx.set('Content-Disposition', `attachment; filename="products.xlsx"; filename*=UTF-8''${encodeURIComponent(filename)}`);
   ctx.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   ctx.body = buffer;
 }
@@ -1309,6 +1440,6 @@ module.exports = {
     ctx.body = { code: 0, message: '删除成功' };
   },
   getCategoryTree, createCategory, updateCategory, deleteCategory,
-  getPriceList, setPrice, refreshCostPrice, batchRefreshCost,
+  getPriceList, setPrice, refreshCostPrice, batchRefreshCost, importPrices,
   getPnList, addPn, searchProduct
 };

@@ -682,7 +682,7 @@ const loadSummary = async () => {
     const res = await api.getInventoryList(summaryQuery)
     if (res.code === 0) {
       summaryData.value = res.data?.list || []
-      summaryTotal.value = res.data?.total || 0
+      summaryTotal.value = res.data?.pagination?.total || res.data?.total || 0
     }
   } catch (err) {
     ElMessage.error('加载库存数据失败')
@@ -697,7 +697,7 @@ const loadInboundList = async () => {
     const res = await api.getInboundList(inboundQuery)
     if (res.code === 0) {
       inboundList.value = res.data?.list || []
-      inboundTotal.value = res.data?.total || 0
+      inboundTotal.value = res.data?.pagination?.total || res.data?.total || 0
     }
   } catch (err) {
     ElMessage.error('加载入库单列表失败')
@@ -952,7 +952,7 @@ const loadSnData = async () => {
     })
     if (res.code === 0) {
       snTableData.value = res.data?.list || []
-      snTotal.value = res.data?.total || 0
+      snTotal.value = res.data?.pagination?.total || res.data?.total || 0
     }
   } catch (err) {
     ElMessage.error('加载SN数据失败')
