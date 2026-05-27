@@ -122,13 +122,19 @@ function paginate(query, { page = 1, pageSize = 20 }) {
  * 格式化分页结果
  */
 function formatPaginatedResult(data, { page, pageSize, count }) {
+  const total = Number(count) || 0;
+  const currentPageSize = Math.min(Number(pageSize) || 20, 100);
   return {
     list: data,
+    total,
+    page: Number(page),
+    pageSize: currentPageSize,
+    totalPages: Math.ceil(total / currentPageSize),
     pagination: {
-      total: count,
+      total,
       page: Number(page),
-      pageSize: Number(pageSize),
-      totalPages: Math.ceil(count / pageSize)
+      pageSize: currentPageSize,
+      totalPages: Math.ceil(total / currentPageSize)
     }
   };
 }

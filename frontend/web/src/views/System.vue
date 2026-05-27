@@ -560,7 +560,7 @@ const onSysTabChange = (tabName) => {
 
 const loadUsers = async () => {
   try {
-    const res = await api.getUsers()
+    const res = await api.getUsers({ page: 1, pageSize: 100 })
     if (res.code === 0) userData.value = res.data?.list || []
   } catch (err) { ElMessage.error('加载用户失败') }
 }
@@ -651,7 +651,7 @@ const loadMenus = async () => {
 
 const loadStores = async () => {
   try {
-    const res = await api.getStoreList()
+    const res = await api.getStoreList({ page: 1, pageSize: 100 })
     if (res.code === 0) stores.value = res.data?.list || res.data || []
   } catch (err) { console.error('Failed to load stores') }
 }

@@ -114,7 +114,7 @@ const loadRegions = async () => {
 const loadData = async () => {
   loading.value = true
   try {
-    const params = { keyword: queryParams.keyword || '', regionName: queryParams.regionName || '' }
+    const params = { keyword: queryParams.keyword || '', regionName: queryParams.regionName || '', page: 1, pageSize: 100 }
     const res = await api.getStoreList(params)
     if (res && res.code === 0) {
       const list = res.data?.list

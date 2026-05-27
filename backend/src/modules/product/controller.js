@@ -838,6 +838,63 @@ async function importPrices(ctx) {
   ctx.body = { code: 0, data: results, message: '价格导入完成' };
 }
 
+async function importCostRefresh(ctx) {
+  if (!ctx.file) {
+    ctx.throw(400, '请上传文件');
+  }
+
+  const workbook = XLSX.read(ctx.file.buffer, { type: 'buffer' });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+  const results = { success: 0, failed: 0, errors: [] };
+
+  for (const [index, row] of rows.entries()) {
+    try {
+      const productCode = String(getRowValue(row, ['商品编码', '商品代码', 'product_code', 'productCode']) || '').trim();
+      const productName = String(getRowValue(row, ['商品名称', 'name']) || '').trim();
+
+      if (!productCode && !productName) {
+        results.failed++;
+        results.errors.push({ row: index + 2, product: row, message: '请填写商品编码或商品名称' });
+        continue;
+      }
+
+      const productWhere = { is_deleted: 0 };
+      if (productCode) productWhere.product_code = productCode;
+      else productWhere.name = productName;
+
+      const product = await Product.findOne({ where: productWhere });
+      if (!product) {
+        results.failed++;
+        results.errors.push({ row: index + 2, product: row, message: '商品不存在' });
+        continue;
+      }
+
+      const costPrice = await calculateFifoCost(product.product_id);
+      const existingPrice = await ProductPrice.findOne({ where: { product_id: product.product_id } });
+
+      if (existingPrice) {
+        await existingPrice.update({ cost_price: costPrice });
+      } else {
+        await ProductPrice.create({
+          price_id: generateUUID(),
+          product_id: product.product_id,
+          cost_price: costPrice,
+          standard_price: 0,
+          min_sale_price: 0
+        });
+      }
+
+      results.success++;
+    } catch (error) {
+      results.failed++;
+      results.errors.push({ row: index + 2, product: row, message: error.message || '成本刷新失败' });
+    }
+  }
+
+  ctx.body = { code: 0, data: results, message: '成本批量刷新完成' };
+}
+
 async function getPnList(ctx) {
   const { productId, keyword, page = 1, pageSize = 20 } = ctx.query;
 
@@ -987,7 +1044,7 @@ async function searchProduct(ctx) {
       pn_list: p.need_sn === 1 ? [...(snPnsByProduct[p.product_id] || [])] : []
     }));
 
-  ctx.body = formatPaginatedResult(list, { page, pageSize, count: list.length });
+  ctx.body = formatPaginatedResult(list, { page, pageSize, count: storeId ? list.length : count });
 }
 
 // ==================== 分类字段配置 ====================
@@ -1440,6 +1497,6 @@ module.exports = {
     ctx.body = { code: 0, message: '删除成功' };
   },
   getCategoryTree, createCategory, updateCategory, deleteCategory,
-  getPriceList, setPrice, refreshCostPrice, batchRefreshCost, importPrices,
+  getPriceList, setPrice, refreshCostPrice, batchRefreshCost, importPrices, importCostRefresh,
   getPnList, addPn, searchProduct
 };

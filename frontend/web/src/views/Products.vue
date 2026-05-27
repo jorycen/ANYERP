@@ -156,6 +156,7 @@
             <el-button type="success" @click="handleBatchRefreshCost" :loading="batchRefreshLoading" :disabled="selectedPriceRows.length === 0">
               批量刷新成本 ({{ selectedPriceRows.length }})
             </el-button>
+            <el-button type="success" plain @click="handleCostImport">批量刷新成本导入</el-button>
             <el-button type="warning" @click="handlePriceImport">批量导入定价</el-button>
           </div>
 
@@ -450,6 +451,26 @@
       <template #footer>
         <el-button @click="priceImportDialogVisible = false">取消</el-button>
         <el-button type="primary" @click="handlePriceImportSubmit" :loading="priceImportLoading" :disabled="!priceImportFile">开始导入</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="costImportDialogVisible" title="批量刷新成本" width="700px">
+      <div class="import-tips">
+        <p>下载模板后填写商品编码或商品名称，系统会按库存入库记录重新计算并刷新库存成本。</p>
+        <el-button type="primary" size="small" @click="downloadCostTemplate">下载成本刷新模板</el-button>
+      </div>
+      <div class="upload-area">
+        <el-upload :auto-upload="false" :show-file-list="false" :on-change="handleCostFileChange" accept=".xlsx,.xls" drag>
+          <el-icon class="el-icon--upload"><Upload /></el-icon>
+          <div class="el-upload__text">将文件拖到此处，或 <em>点击上传</em></div>
+        </el-upload>
+        <div v-if="costImportFile" class="selected-file">
+          <el-tag closable @close="clearCostFile">{{ costImportFile.name }}</el-tag>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="costImportDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleCostImportSubmit" :loading="costImportLoading" :disabled="!costImportFile">开始刷新</el-button>
       </template>
     </el-dialog>
 
@@ -826,6 +847,9 @@ const batchRefreshLoading = ref(false)
 const priceImportDialogVisible = ref(false)
 const priceImportFile = ref(null)
 const priceImportLoading = ref(false)
+const costImportDialogVisible = ref(false)
+const costImportFile = ref(null)
+const costImportLoading = ref(false)
 
 const loadPriceData = async () => {
   priceLoading.value = true
@@ -833,7 +857,7 @@ const loadPriceData = async () => {
     const res = await api.getPriceList(priceParams)
     if (res.code === 0) {
       priceTableData.value = (res.data?.list || []).map(p => ({ ...p, _editing: false, _stdPrice: p.standard_price || 0, _minPrice: p.min_sale_price || 0 }))
-      priceTotal.value = res.data?.total || 0
+      priceTotal.value = res.data?.pagination?.total || res.data?.total || 0
     }
   } catch (err) { ElMessage.error(err?.response?.data?.message || '加载失败') }
   finally { priceLoading.value = false }
@@ -915,6 +939,51 @@ const handlePriceImportSubmit = async () => {
     ElMessage.error(err?.response?.data?.message || '导入失败')
   } finally {
     priceImportLoading.value = false
+  }
+}
+
+const handleCostImport = () => {
+  costImportFile.value = null
+  costImportDialogVisible.value = true
+}
+
+const handleCostFileChange = (file) => {
+  costImportFile.value = file.raw
+}
+
+const clearCostFile = () => {
+  costImportFile.value = null
+}
+
+const downloadCostTemplate = () => {
+  const data = [{
+    '商品编码': '',
+    '商品名称': ''
+  }]
+  const ws = XLSX.utils.json_to_sheet(data)
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, '成本刷新模板')
+  ws['!cols'] = [{ wch: 16 }, { wch: 24 }]
+  XLSX.writeFile(wb, '商品成本刷新模板.xlsx')
+}
+
+const handleCostImportSubmit = async () => {
+  if (!costImportFile.value) { ElMessage.warning('请选择文件'); return }
+  costImportLoading.value = true
+  try {
+    const res = await api.importCostRefresh(costImportFile.value)
+    if (res.code === 0) {
+      importResult.success = res.data.success
+      importResult.failed = res.data.failed
+      importResult.errors = res.data.errors || []
+      costImportDialogVisible.value = false
+      importResultVisible.value = true
+      loadPriceData()
+    } else ElMessage.error(res.message || '刷新失败')
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || '刷新失败')
+  } finally {
+    costImportLoading.value = false
   }
 }
 

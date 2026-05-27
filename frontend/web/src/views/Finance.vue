@@ -341,7 +341,8 @@
             v-model:current-page="accountQuery.page"
             v-model:page-size="accountQuery.pageSize"
             :total="accountTotal"
-            layout="total, prev, pager, next"
+            layout="total, sizes, prev, pager, next"
+            @size-change="loadAccountList"
             @current-change="loadAccountList"
           />
         </el-tab-pane>
@@ -533,8 +534,9 @@
         v-model:current-page="accountTxnQuery.page"
         v-model:page-size="accountTxnQuery.pageSize"
         :total="accountTxnTotal"
-        layout="total, prev, pager, next"
+        layout="total, sizes, prev, pager, next"
         style="margin-top: 12px;"
+        @size-change="loadAccountTransactions"
         @current-change="loadAccountTransactions"
       />
     </el-dialog>
@@ -764,7 +766,7 @@ const loadDailyData = async () => {
     const res = await api.getDailyDetails(params)
     if (res.code === 0) {
       dailyDetails.value = res.data?.list || []
-      dailyTotal.value = res.data?.total || 0
+      dailyTotal.value = res.data?.pagination?.total || res.data?.total || 0
       dailyTotalAmount.value = res.data?.totalAmount || 0
     }
     selectedDetailIds.value = []
@@ -835,7 +837,7 @@ const loadExpenseData = async () => {
     const res = await api.getExpenseList(params)
     if (res.code === 0) {
       expenseData.value = res.data?.list || []
-      expenseTotal.value = res.data?.total || 0
+      expenseTotal.value = res.data?.pagination?.total || res.data?.total || 0
     }
   } catch (err) {
     ElMessage.error('加载数据失败')
@@ -853,7 +855,7 @@ const loadExpenseSettleData = async () => {
     const res = await api.getExpenseList(params)
     if (res.code === 0) {
       expenseSettleData.value = res.data?.list || []
-      expenseSettleTotal.value = res.data?.total || 0
+      expenseSettleTotal.value = res.data?.pagination?.total || res.data?.total || 0
     }
   } catch (err) {
     ElMessage.error('加载结算单失败')
@@ -959,7 +961,7 @@ const loadPayableData = async () => {
     const res = await api.getPayableList(params)
     if (res.code === 0) {
       payableData.value = res.data?.list || []
-      payableTotal.value = res.data?.total || 0
+      payableTotal.value = res.data?.pagination?.total || res.data?.total || 0
     }
   } catch (err) {
     console.error('Failed to load payables')
@@ -975,7 +977,7 @@ const loadSettlementData = async () => {
     const res = await api.getSettlementList(params)
     if (res.code === 0) {
       settlementData.value = res.data?.list || []
-      settlementTotal.value = res.data?.total || 0
+      settlementTotal.value = res.data?.pagination?.total || res.data?.total || 0
     }
   } catch (err) {
     console.error('Failed to load settlements')
@@ -990,7 +992,7 @@ const loadRebateList = async () => {
     const res = await api.getRebateList(params)
     if (res.code === 0) {
       rebateData.value = res.data?.list || []
-      rebateTotal.value = res.data?.total || 0
+      rebateTotal.value = res.data?.pagination?.total || res.data?.total || 0
     }
   } catch (err) {
     console.error('Failed to load rebate list')

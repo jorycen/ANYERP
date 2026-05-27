@@ -397,6 +397,17 @@ const toNumber = (value) => {
   return Number.isFinite(number) ? number : 0
 }
 
+const toQuantity = (value) => {
+  const number = Number(value)
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0
+}
+
+const normalizeAllocationQuantity = (value, totalQuantity) => {
+  const quantity = toQuantity(value)
+  const total = toQuantity(totalQuantity)
+  return quantity <= total ? quantity : 0
+}
+
 const totalAmount = computed(() => {
   return requestForm.items.reduce((sum, item) => {
     return sum + (toNumber(item.price) * toNumber(item.quantity))
@@ -410,12 +421,12 @@ const actualTotal = computed(() => {
 
 const allocatedTotalQuantity = computed(() => {
   return storeAllocationList.value.reduce((sum, item) => {
-    return sum + toNumber(item.quantity)
+    return sum + toQuantity(item.quantity)
   }, 0)
 })
 
 const remainingAllocateQuantity = computed(() => {
-  return toNumber(currentAllocateProduct.value?.quantity) - allocatedTotalQuantity.value
+  return toQuantity(currentAllocateProduct.value?.quantity) - allocatedTotalQuantity.value
 })
 
 onMounted(() => {
@@ -446,7 +457,7 @@ const loadData = async () => {
     const res = await api.getPurchaseRequestList(queryParams)
     if (res.code === 0) {
       tableData.value = res.data?.list || []
-      total.value = res.data?.total || 0
+      total.value = res.data?.pagination?.total || res.data?.total || 0
     }
   } catch (err) {
     ElMessage.error('加载数据失败')
@@ -458,7 +469,7 @@ const loadSuppliers = async () => {
     const res = await api.getSupplierList(supplierQuery)
     if (res.code === 0) {
       supplierData.value = res.data?.list || []
-      supplierTotal.value = res.data?.total || 0
+      supplierTotal.value = res.data?.pagination?.total || res.data?.total || 0
     }
   } catch (err) {
     console.error('Failed to load suppliers')
@@ -744,8 +755,9 @@ const handleSubmit = async () => {
     }
 
     // 校验分配数量总和等于商品数量
-    const allocatedQty = item.storeAllocations.reduce((sum, alloc) => sum + toNumber(alloc.quantity), 0)
-    if (allocatedQty !== toNumber(item.quantity)) {
+    const itemQuantity = toQuantity(item.quantity)
+    const allocatedQty = item.storeAllocations.reduce((sum, alloc) => sum + normalizeAllocationQuantity(alloc.quantity, itemQuantity), 0)
+    if (allocatedQty !== itemQuantity) {
       ElMessage.warning(`「${productName}」分配数量(${allocatedQty})必须等于采购数量(${item.quantity})`)
       return
     }
@@ -806,7 +818,8 @@ const getStatusText = (status) => {
 }
 
 const handleAllocateStore = (row, index) => {
-  if (toNumber(row.quantity) <= 0) {
+  const totalQuantity = toQuantity(row.quantity)
+  if (totalQuantity <= 0) {
     ElMessage.warning('请先输入商品数量')
     return
   }
@@ -814,6 +827,7 @@ const handleAllocateStore = (row, index) => {
   const product = products.value.find(p => p.product_id === row.productId)
   currentAllocateProduct.value = {
     ...row,
+    quantity: totalQuantity,
     productName: product?.name || ''
   }
   currentAllocateIndex.value = index
@@ -823,7 +837,7 @@ const handleAllocateStore = (row, index) => {
     return {
       storeId: store.store_id,
       storeName: store.name,
-      quantity: toNumber(existing?.quantity)
+      quantity: normalizeAllocationQuantity(existing?.quantity, totalQuantity)
     }
   })
   
@@ -831,14 +845,14 @@ const handleAllocateStore = (row, index) => {
 }
 
 const validateAllocation = () => {
-  if (allocatedTotalQuantity.value > toNumber(currentAllocateProduct.value?.quantity)) {
+  if (allocatedTotalQuantity.value > toQuantity(currentAllocateProduct.value?.quantity)) {
     ElMessage.warning('分配数量不能超过总数量')
   }
 }
 
 const handleSaveAllocation = () => {
   const totalAllocated = allocatedTotalQuantity.value
-  const totalQuantity = toNumber(currentAllocateProduct.value?.quantity)
+  const totalQuantity = toQuantity(currentAllocateProduct.value?.quantity)
   
   if (totalAllocated > totalQuantity) {
     ElMessage.warning('分配数量不能超过总数量')
@@ -846,7 +860,7 @@ const handleSaveAllocation = () => {
   }
   
   const validAllocations = storeAllocationList.value
-    .map(a => ({ ...a, quantity: toNumber(a.quantity) }))
+    .map(a => ({ ...a, quantity: toQuantity(a.quantity) }))
     .filter(a => a.quantity > 0)
   
   if (currentAllocateIndex.value >= 0) {

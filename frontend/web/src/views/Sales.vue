@@ -405,7 +405,7 @@ const loadData = async () => {
     const res = await api.getSalesList(params)
     if (res.code === 0) {
       tableData.value = res.data?.list || []
-      total.value = res.data?.total || 0
+      total.value = res.data?.pagination?.total || res.data?.total || 0
     }
   } catch (err) {
     ElMessage.error('加载销售数据失败: ' + (err.message || ''))
