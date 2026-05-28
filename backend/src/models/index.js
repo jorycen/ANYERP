@@ -315,8 +315,11 @@ const Supplier = sequelize.define('Supplier', {
   phone: { type: DataTypes.STRING(32) },
   address: { type: DataTypes.STRING(512) },
   invoice_type: { type: DataTypes.STRING(32) },
+  remark: { type: DataTypes.STRING(512) },
   status: { type: DataTypes.TINYINT, defaultValue: 1 },
-  is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 }
+  is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_SUPPLIER', timestamps: false });
 
 const SupplierPaymentAccount = sequelize.define('SupplierPaymentAccount', {

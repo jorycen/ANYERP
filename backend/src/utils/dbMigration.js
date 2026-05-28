@@ -89,6 +89,9 @@ async function runMigrations() {
       )
     `);
     await checkAndAddColumn('T_SUPPLIER', 'INVOICE_TYPE', 'VARCHAR(32) COMMENT "发票类型"', 'ADDRESS');
+    await checkAndAddColumn('T_SUPPLIER', 'REMARK', 'VARCHAR(512) COMMENT "备注"', 'INVOICE_TYPE');
+    await checkAndAddColumn('T_SUPPLIER', 'CREATE_TIME', 'DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT "创建时间"', 'IS_DELETED');
+    await checkAndAddColumn('T_SUPPLIER', 'UPDATE_TIME', 'DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT "更新时间"', 'CREATE_TIME');
     await checkAndCreateTable('T_SUPPLIER_PAYMENT_ACCOUNT', `
       CREATE TABLE T_SUPPLIER_PAYMENT_ACCOUNT (
         ACCOUNT_ID VARCHAR(32) NOT NULL COMMENT '供应商付款账户ID',

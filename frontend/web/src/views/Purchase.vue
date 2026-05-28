@@ -491,6 +491,7 @@ const loadSuppliers = async () => {
     }
   } catch (err) {
     console.error('Failed to load suppliers')
+    ElMessage.error(err.response?.data?.message || '加载供应商失败')
   }
 }
 
@@ -680,13 +681,15 @@ const handleSupplierSubmit = async () => {
     if (res.code === 0) {
       ElMessage.success(supplierForm.supplierId ? '更新成功' : '创建成功')
       supplierDialogVisible.value = false
-      loadSuppliers()
-      loadAllSuppliers()
+      supplierQuery.page = 1
+      await loadSuppliers()
+      await loadAllSuppliers()
     } else {
       ElMessage.error(res.message || '操作失败')
     }
   } catch (err) {
-    ElMessage.error('操作失败')
+    const msg = err.response?.data?.message || err.message || '操作失败'
+    ElMessage.error(msg)
   } finally {
     supplierLoading.value = false
   }

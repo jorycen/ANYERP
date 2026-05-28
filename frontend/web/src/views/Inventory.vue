@@ -289,17 +289,10 @@
                 <el-input v-model="r.snCode" placeholder="SN码" size="small" />
               </template>
             </el-table-column>
-            <el-table-column label="库存类型" width="140">
+            <el-table-column label="入库库位" width="140">
               <template #default="{ row: r }">
                 <el-select v-model="r.inventoryType" size="small" style="width: 120px">
                   <el-option v-for="it in INVENTORY_TYPES" :key="it.value" :label="it.label" :value="it.value" />
-                </el-select>
-              </template>
-            </el-table-column>
-            <el-table-column label="入库库位" width="160">
-              <template #default="{ row: r }">
-                <el-select v-model="r.locationId" size="small" clearable placeholder="库位" style="width: 140px">
-                  <el-option v-for="loc in inboundLocations" :key="loc.location_id" :label="loc.name" :value="loc.location_id" />
                 </el-select>
               </template>
             </el-table-column>
@@ -313,17 +306,10 @@
           <!-- 非SN商品：按库位拆分数量 -->
           <el-table v-else :data="item.qtyRows" stripe border size="small" class="sn-table">
             <el-table-column type="index" label="#" width="50" />
-            <el-table-column label="库存类型" width="160">
+            <el-table-column label="入库库位" width="160">
               <template #default="{ row: r }">
                 <el-select v-model="r.inventoryType" size="small" style="width: 140px">
                   <el-option v-for="it in INVENTORY_TYPES" :key="it.value" :label="it.label" :value="it.value" />
-                </el-select>
-              </template>
-            </el-table-column>
-            <el-table-column label="入库库位" width="160">
-              <template #default="{ row: r }">
-                <el-select v-model="r.locationId" size="small" clearable placeholder="库位" style="width: 140px">
-                  <el-option v-for="loc in inboundLocations" :key="loc.location_id" :label="loc.name" :value="loc.location_id" />
                 </el-select>
               </template>
             </el-table-column>
