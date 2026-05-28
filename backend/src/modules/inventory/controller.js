@@ -257,7 +257,11 @@ async function updateSn(ctx) {
     }
 
     const exists = await ProductSn.findOne({
-      where: { sn_code: newSnCode.trim(), is_deleted: 0 }
+      where: {
+        pn_code: sn.pn_code || '',
+        sn_code: newSnCode.trim(),
+        is_deleted: 0
+      }
     });
     if (exists && exists.sn_id !== snId) {
       ctx.throw(400, `SN码 [${newSnCode}] 已被使用`);
@@ -698,13 +702,14 @@ async function executeInbound(ctx) {
         }
 
         const pnCode = normalizePnCode(item.pnCode || dbItem.pn_code || splitCodes(product.manufacturer_code)[0] || '');
+        const snCode = item.snCode.trim();
 
         const existingSn = await ProductSn.findOne({
-          where: { sn_code: item.snCode, is_deleted: 0 },
+          where: { pn_code: pnCode, sn_code: snCode, is_deleted: 0 },
           transaction: t
         });
         if (existingSn) {
-          ctx.throw(400, `SN码 [${item.snCode}] 已存在`);
+          ctx.throw(400, `PN码 [${pnCode || '-'}] 下的SN码 [${snCode}] 已存在`);
         }
 
         await ProductSn.create({
@@ -712,7 +717,7 @@ async function executeInbound(ctx) {
           product_id: dbItem.product_id,
           product_name: dbItem.product_name || '',
           pn_code: pnCode,
-          sn_code: item.snCode,
+          sn_code: snCode,
           status: 'in_stock',
           inventory_type: inventoryType,
           store_id: inbound.store_id,
@@ -724,7 +729,7 @@ async function executeInbound(ctx) {
         }, { transaction: t });
 
         await dbItem.update({
-          sn_code: item.snCode,
+          sn_code: snCode,
           pn_code: pnCode,
           remark: item.remark,
           location_id: locationId,
@@ -1192,7 +1197,13 @@ async function executeReturn(ctx) {
       if (product && product.need_sn === 1 && item.sn_code) {
         const snCode = item.sn_code;
         const snRecord = await ProductSn.findOne({
-          where: { sn_code: snCode, store_id: inbound.store_id, status: 'in_stock', is_deleted: 0 },
+          where: {
+            pn_code: item.pn_code || '',
+            sn_code: snCode,
+            store_id: inbound.store_id,
+            status: 'in_stock',
+            is_deleted: 0
+          },
           transaction: t
         });
 

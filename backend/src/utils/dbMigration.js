@@ -56,6 +56,54 @@ async function checkAndCreateTable(tableName, createSql) {
   }
 }
 
+async function checkAndAddIndex(tableName, indexName, createIndexSql) {
+  try {
+    const [result] = await sequelize.query(
+      `SELECT COUNT(*) as cnt
+       FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = ?
+       AND INDEX_NAME = ?`,
+      { replacements: [tableName, indexName], type: sequelize.QueryTypes.SELECT }
+    );
+
+    if (result.cnt === 0) {
+      await sequelize.query(createIndexSql);
+      console.log(`[DB Migration] 已添加索引: ${tableName}.${indexName}`);
+      return true;
+    }
+    console.log(`[DB Migration] 索引已存在: ${tableName}.${indexName}`);
+    return false;
+  } catch (error) {
+    console.error(`[DB Migration] 检查索引失败: ${tableName}.${indexName} - ${error.message}`);
+    return false;
+  }
+}
+
+async function dropProductSnGlobalUniqueIndex() {
+  try {
+    const indexes = await sequelize.query(
+      `SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS columns
+       FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'T_PRODUCT_SN'
+       AND NON_UNIQUE = 0
+       GROUP BY INDEX_NAME`,
+      { type: sequelize.QueryTypes.SELECT }
+    );
+
+    for (const idx of indexes) {
+      const columns = String(idx.columns || '').toUpperCase();
+      if (columns === 'SN_CODE') {
+        await sequelize.query(`ALTER TABLE T_PRODUCT_SN DROP INDEX \`${idx.INDEX_NAME}\``);
+        console.log(`[DB Migration] 已删除SN全局唯一索引: ${idx.INDEX_NAME}`);
+      }
+    }
+  } catch (error) {
+    console.error(`[DB Migration] 删除SN全局唯一索引失败 - ${error.message}`);
+  }
+}
+
 async function runMigrations() {
   console.log('[DB Migration] 开始检查数据库结构...');
   
@@ -69,6 +117,9 @@ async function runMigrations() {
     await checkAndAddColumn('T_PRODUCT', 'CREATE_TIME', 'DATETIME COMMENT "创建时间"', 'CONFIG');
     await checkAndAddColumn('T_PRODUCT_SN', 'PN_CODE', 'VARCHAR(64) COMMENT "PN料号"', 'PRODUCT_ID');
     await checkAndAddColumn('T_PRODUCT_SN', 'INVENTORY_TYPE', 'VARCHAR(32) DEFAULT "normal_qty" COMMENT "库存类型"', 'STATUS');
+    await dropProductSnGlobalUniqueIndex();
+    await checkAndAddIndex('T_PRODUCT_SN', 'uk_product_sn_pn_sn', 'ALTER TABLE T_PRODUCT_SN ADD UNIQUE KEY uk_product_sn_pn_sn (PN_CODE, SN_CODE)');
+    await checkAndAddIndex('T_PRODUCT_SN', 'idx_product_sn_code', 'ALTER TABLE T_PRODUCT_SN ADD INDEX idx_product_sn_code (SN_CODE)');
     await checkAndAddColumn('T_PRODUCT', 'MANUFACTURER_CODE', 'VARCHAR(512) COMMENT "manufacturer code"', 'CONFIG');
     await checkAndCreateTable('T_SN_LOG', `
       CREATE TABLE T_SN_LOG (

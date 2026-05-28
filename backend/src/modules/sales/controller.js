@@ -124,15 +124,18 @@ async function create(ctx) {
         ctx.throw(400, `商品 ${item.productName} 需要SN管理，请选择SN码`);
       }
 
-      const snRecord = await ProductSn.findOne({
-        where: {
+      const snWhere = {
           sn_code: item.snCode.trim(),
           product_id: item.productId,
           store_id: actualStoreId,
           status: 'in_stock',
           is_deleted: 0
-        }
-      });
+      };
+      if (item.pnCode && item.pnCode.trim()) {
+        snWhere.pn_code = item.pnCode.trim();
+      }
+
+      const snRecord = await ProductSn.findOne({ where: snWhere });
       if (!snRecord) {
         ctx.throw(400, `SN码 [${item.snCode}] 在当前门店不存在或已售出`);
       }
@@ -279,9 +282,9 @@ async function detail(ctx) {
       attributes: ['sn_code', 'pn_code', 'inventory_type'],
       raw: true
     });
-    const snMap = new Map(snRows.map(sn => [sn.sn_code, sn]));
+    const snMap = new Map(snRows.map(sn => [`${sn.pn_code || ''}|${sn.sn_code}`, sn]));
     result.OrderItems = items.map(item => {
-      const sn = snMap.get(item.sn_code);
+      const sn = snMap.get(`${item.pn_code || ''}|${item.sn_code}`) || snRows.find(row => row.sn_code === item.sn_code);
       return {
         ...item,
         pn_code: item.pn_code || sn?.pn_code || '',

@@ -236,6 +236,15 @@
             <el-table-column label="收款账户" min-width="220" show-overflow-tooltip>
               <template #default="{ row }">
                 <span>{{ getSettlementPaymentAccountText(row) }}</span>
+                <el-button
+                  v-if="row.other_payment_image"
+                  link
+                  type="primary"
+                  size="small"
+                  @click="openSettlementPaymentImage(row)"
+                >
+                  查看图片
+                </el-button>
               </template>
             </el-table-column>
             <el-table-column prop="total_amount" label="结算金额" width="120">
@@ -251,8 +260,8 @@
             <el-table-column prop="create_time" label="创建时间" width="160" />
             <el-table-column label="操作" width="120">
               <template #default="{ row }">
-                <el-button v-if="row.status === 'unpaid'" link type="success" @click="handleConfirmPayment(row)">
-                  已付款
+                <el-button v-if="row.status === 'unpaid'" type="warning" size="small" @click="handleConfirmPayment(row)">
+                  立即付款
                 </el-button>
               </template>
             </el-table-column>
@@ -319,6 +328,7 @@
         <el-tab-pane label="结算账户" name="account">
           <div class="filter-bar">
             <el-button type="primary" @click="openAccountTransactionDialog()">记账</el-button>
+            <el-button @click="refreshAccountBalances">刷新余额</el-button>
           </div>
           <el-table :data="accountList" stripe border>
             <el-table-column prop="account_name" label="账户名称" width="200" />
@@ -418,6 +428,13 @@
           确认结算
         </el-button>
       </template>
+    </el-dialog>
+
+    <el-dialog v-model="settlementImageVisible" title="付款凭证图片" width="720px">
+      <div class="settlement-image-preview">
+        <img v-if="settlementImageSrc" :src="settlementImageSrc" alt="付款凭证图片" />
+        <el-empty v-else description="暂无图片" />
+      </div>
     </el-dialog>
 
     <!-- 添加支出对话框 -->
@@ -679,6 +696,8 @@ const otherPaymentFileList = ref([])
 const settlementData = ref([])
 const settlementTotal = ref(0)
 const settlementStatusFilter = ref('')
+const settlementImageVisible = ref(false)
+const settlementImageSrc = ref('')
 
 // 返利管理
 const rebateDialogVisible = ref(false)
@@ -814,6 +833,11 @@ const getSettlementPaymentAccountText = (row) => {
     return `其他：${row.other_payment_remark}`
   }
   return '-'
+}
+
+const openSettlementPaymentImage = (row) => {
+  settlementImageSrc.value = row.other_payment_image || ''
+  settlementImageVisible.value = true
 }
 
 const resetPaymentAccountFields = () => {
@@ -1383,6 +1407,12 @@ const loadAccountList = async () => {
   }
 }
 
+const refreshAccountBalances = async () => {
+  await loadAccountList()
+  await loadSettlementAccounts()
+  ElMessage.success('余额已刷新')
+}
+
 const openAccountDetail = async (row) => {
   accountDetailRow.value = row
   accountDetailBalance.value = row.balance || 0
@@ -1520,5 +1550,16 @@ const handleAccountTxnSubmit = async () => {
 }
 .settlement-section {
   margin-top: 20px;
+}
+.settlement-image-preview {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 240px;
+}
+.settlement-image-preview img {
+  max-width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
 }
 </style>

@@ -160,7 +160,7 @@ const ProductSn = sequelize.define('ProductSn', {
   product_id: { type: DataTypes.STRING(32), allowNull: false },
   pn_code: { type: DataTypes.STRING(64) },
   pn_id: { type: DataTypes.STRING(32) },
-  sn_code: { type: DataTypes.STRING(128), unique: true, allowNull: false },
+  sn_code: { type: DataTypes.STRING(128), allowNull: false },
   imei1: { type: DataTypes.STRING(32) },
   imei2: { type: DataTypes.STRING(32) },
   status: { type: DataTypes.STRING(32), defaultValue: 'in_stock' },

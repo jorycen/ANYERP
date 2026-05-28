@@ -95,7 +95,17 @@
     <el-dialog v-model="requestDialogVisible" title="新建采购申请" width="700px" @close="handleDialogClose">
       <el-form :model="requestForm" label-width="100px">
         <el-form-item label="供应商" required>
-          <el-select v-model="requestForm.supplierId" placeholder="请选择供应商" style="width: 100%" @change="onSupplierChange">
+          <el-select
+            v-model="requestForm.supplierId"
+            placeholder="请输入供应商关键字"
+            style="width: 100%"
+            filterable
+            remote
+            clearable
+            :remote-method="searchRequestSuppliers"
+            @visible-change="onRequestSupplierVisibleChange"
+            @change="onSupplierChange"
+          >
             <el-option v-for="s in allSuppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
           </el-select>
         </el-form-item>
@@ -347,6 +357,7 @@ const allStores = ref([])
 const allStoresLoaded = ref(false)
 const products = ref([])
 const productSearchKeyword = ref('')
+const supplierSearchKeyword = ref('')
 const total = ref(0)
 const supplierTotal = ref(0)
 
@@ -497,12 +508,27 @@ const loadSuppliers = async () => {
 
 const loadAllSuppliers = async () => {
   try {
-    const res = await api.getAllSuppliers()
+    const params = supplierSearchKeyword.value
+      ? { keyword: supplierSearchKeyword.value, page: 1, pageSize: 50 }
+      : null
+    const res = params ? await api.getSupplierList(params) : await api.getAllSuppliers()
     if (res.code === 0) {
-      allSuppliers.value = res.data || []
+      allSuppliers.value = params ? (res.data?.list || []) : (res.data || [])
     }
   } catch (err) {
     console.error('Failed to load all suppliers')
+  }
+}
+
+const searchRequestSuppliers = async (keyword) => {
+  supplierSearchKeyword.value = keyword || ''
+  await loadAllSuppliers()
+}
+
+const onRequestSupplierVisibleChange = async (visible) => {
+  if (visible) {
+    supplierSearchKeyword.value = ''
+    await loadAllSuppliers()
   }
 }
 
