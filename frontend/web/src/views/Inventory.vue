@@ -33,7 +33,7 @@
             </el-table-column>
             <el-table-column prop="normal_qty" label="现有库存" width="100">
               <template #default="{ row }">
-                <el-popover placement="bottom" :width="180" trigger="hover" v-if="row.normal_qty > 0">
+                <el-popover placement="bottom" :width="260" trigger="hover" v-if="row.normal_qty > 0">
                   <template #default>
                     <div class="stock-breakdown">
                       <div class="breakdown-item">
@@ -47,6 +47,13 @@
                       <div class="breakdown-item">
                         <span class="breakdown-label">纯二批：</span>
                         <span class="breakdown-value">{{ row.second_qty || 0 }}</span>
+                      </div>
+                      <div v-if="row.store_stock_info && row.store_stock_info.length" class="breakdown-locations">
+                        <div class="breakdown-title">门店 / 库位</div>
+                        <div v-for="loc in row.store_stock_info" :key="`${loc.store_id}-${loc.location_id || 'none'}`" class="breakdown-item">
+                          <span class="breakdown-label">{{ loc.store_name }} / {{ loc.location_name || '未指定库位' }}：</span>
+                          <span class="breakdown-value">{{ loc.normal_qty || 0 }}</span>
+                        </div>
                       </div>
                     </div>
                   </template>
@@ -266,6 +273,7 @@
             <el-select v-model="item.pnCode" placeholder="选择或输入厂商编码" size="small" clearable filterable allow-create style="width: 220px">
               <el-option v-for="pn in (item.pns || [])" :key="pn.pn_id || pn.pn_code" :label="pn.pn_code" :value="pn.pn_code" />
             </el-select>
+            <el-button size="small" type="primary" link @click="openAddPnDialog(item)">新增</el-button>
           </div>
 
           <!-- SN商品：每行一个SN -->
@@ -281,10 +289,17 @@
                 <el-input v-model="r.snCode" placeholder="SN码" size="small" />
               </template>
             </el-table-column>
+            <el-table-column label="库存类型" width="140">
+              <template #default="{ row: r }">
+                <el-select v-model="r.inventoryType" size="small" style="width: 120px">
+                  <el-option v-for="it in INVENTORY_TYPES" :key="it.value" :label="it.label" :value="it.value" />
+                </el-select>
+              </template>
+            </el-table-column>
             <el-table-column label="入库库位" width="160">
               <template #default="{ row: r }">
-                <el-select v-model="r.inventoryType" size="small" style="width: 140px">
-                  <el-option v-for="it in INVENTORY_TYPES" :key="it.value" :label="it.label" :value="it.value" />
+                <el-select v-model="r.locationId" size="small" clearable placeholder="库位" style="width: 140px">
+                  <el-option v-for="loc in inboundLocations" :key="loc.location_id" :label="loc.name" :value="loc.location_id" />
                 </el-select>
               </template>
             </el-table-column>
@@ -298,10 +313,17 @@
           <!-- 非SN商品：按库位拆分数量 -->
           <el-table v-else :data="item.qtyRows" stripe border size="small" class="sn-table">
             <el-table-column type="index" label="#" width="50" />
-            <el-table-column label="入库库位" width="180">
+            <el-table-column label="库存类型" width="160">
               <template #default="{ row: r }">
-                <el-select v-model="r.inventoryType" size="small" style="width: 160px">
+                <el-select v-model="r.inventoryType" size="small" style="width: 140px">
                   <el-option v-for="it in INVENTORY_TYPES" :key="it.value" :label="it.label" :value="it.value" />
+                </el-select>
+              </template>
+            </el-table-column>
+            <el-table-column label="入库库位" width="160">
+              <template #default="{ row: r }">
+                <el-select v-model="r.locationId" size="small" clearable placeholder="库位" style="width: 140px">
+                  <el-option v-for="loc in inboundLocations" :key="loc.location_id" :label="loc.name" :value="loc.location_id" />
                 </el-select>
               </template>
             </el-table-column>
@@ -559,6 +581,7 @@ const currentInbound = ref(null)
 const executeInboundVisible = ref(false)
 const inboundLoading = ref(false)
 const executeProducts = ref([])
+const inboundLocations = ref([])
 const addPnVisible = ref(false)
 const addPnTarget = ref(null)
 const addPnPnCode = ref('')
@@ -722,6 +745,13 @@ const openExecuteDialog = async (row) => {
     const res = await api.getInboundDetail(row.inbound_id)
     if (res.code === 0) {
       currentInbound.value = res.data
+      inboundLocations.value = []
+      try {
+        const locRes = await api.getLocationsByStore(res.data.store_id)
+        if (locRes.code === 0) inboundLocations.value = locRes.data || []
+      } catch (err) {
+        inboundLocations.value = []
+      }
 
       const pnMap = res.data.product_pns || {}
 
@@ -747,12 +777,14 @@ const openExecuteDialog = async (row) => {
             group.snRows.push({
               snCode: '',
               inventoryType: 'normal_qty',
+              locationId: inboundLocations.value[0]?.location_id || '',
               remark: ''
             })
           }
         } else {
           group.qtyRows.push({
             inventoryType: 'normal_qty',
+            locationId: inboundLocations.value[0]?.location_id || '',
             quantity: qty,
             remark: ''
           })
@@ -773,6 +805,7 @@ const addQtyRow = (item) => {
   const remaining = item.quantity - allocatedQty(item)
   item.qtyRows.push({
     inventoryType: 'normal_qty',
+    locationId: inboundLocations.value[0]?.location_id || '',
     quantity: Math.max(1, remaining),
     remark: ''
   })
@@ -841,7 +874,7 @@ const submitInbound = async () => {
           snCode: snRow.snCode,
           quantity: 1,
           inventoryType: snRow.inventoryType || 'normal_qty',
-          locationId: '',
+          locationId: snRow.locationId || '',
           remark: snRow.remark
         })
       }
@@ -855,7 +888,7 @@ const submitInbound = async () => {
           snCode: '',
           quantity: qty,
           inventoryType: qtyRow.inventoryType || 'normal_qty',
-          locationId: '',
+          locationId: qtyRow.locationId || '',
           remark: qtyRow.remark
         })
       }
@@ -1293,9 +1326,19 @@ const getInboundStatusText = (status) => {
   font-size: 13px;
   line-height: 2;
 }
+.breakdown-locations {
+  border-top: 1px solid #ebeef5;
+  margin-top: 6px;
+  padding-top: 6px;
+}
+.breakdown-title {
+  color: #606266;
+  font-weight: 600;
+}
 .breakdown-item {
   display: flex;
   justify-content: space-between;
+  gap: 12px;
 }
 .breakdown-label {
   color: #909399;

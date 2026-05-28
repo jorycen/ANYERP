@@ -89,6 +89,24 @@ async function runMigrations() {
       )
     `);
     await checkAndAddColumn('T_SUPPLIER', 'INVOICE_TYPE', 'VARCHAR(32) COMMENT "发票类型"', 'ADDRESS');
+    await checkAndCreateTable('T_SUPPLIER_PAYMENT_ACCOUNT', `
+      CREATE TABLE T_SUPPLIER_PAYMENT_ACCOUNT (
+        ACCOUNT_ID VARCHAR(32) NOT NULL COMMENT '供应商付款账户ID',
+        SUPPLIER_ID VARCHAR(32) NOT NULL COMMENT '供应商ID',
+        COMPANY_NAME VARCHAR(255) COMMENT '公司名称',
+        TAX_NO VARCHAR(64) COMMENT '税号',
+        BANK_NAME VARCHAR(128) COMMENT '开户行',
+        ACCOUNT_NUMBER VARCHAR(128) COMMENT '账号',
+        REMARK VARCHAR(512) COMMENT '备注',
+        SORT_ORDER INT DEFAULT 0 COMMENT '排序',
+        STATUS TINYINT DEFAULT 1 COMMENT '状态',
+        IS_DELETED TINYINT(1) DEFAULT 0 COMMENT '是否删除',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+        PRIMARY KEY (ACCOUNT_ID),
+        KEY idx_supplier_payment_supplier (SUPPLIER_ID)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='供应商付款账户表'
+    `);
     await checkAndAddColumn('T_PURCHASE_REQUEST', 'INVOICE_TYPE', 'VARCHAR(32) COMMENT "发票类型"', 'SUPPLIER_ID');
     await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'STORE_ALLOCATIONS', 'TEXT COMMENT "门店分配"', 'QUANTITY');
     await checkAndAddColumn('T_INBOUND', 'PURCHASE_REQUEST_ID', 'VARCHAR(32) COMMENT "采购申请ID"', 'INBOUND_NO');
@@ -214,6 +232,10 @@ async function runMigrations() {
         KEY idx_settlement_status (STATUS)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='结算单表'
     `);
+    await checkAndAddColumn('T_SETTLEMENT', 'SUPPLIER_ACCOUNT_ID', 'VARCHAR(32) COMMENT "供应商付款账户ID"', 'SUPPLIER_NAME');
+    await checkAndAddColumn('T_SETTLEMENT', 'SUPPLIER_ACCOUNT_SNAPSHOT', 'TEXT COMMENT "供应商付款账户快照"', 'SUPPLIER_ACCOUNT_ID');
+    await checkAndAddColumn('T_SETTLEMENT', 'OTHER_PAYMENT_REMARK', 'TEXT COMMENT "其他付款说明"', 'SUPPLIER_ACCOUNT_SNAPSHOT');
+    await checkAndAddColumn('T_SETTLEMENT', 'OTHER_PAYMENT_IMAGE', 'LONGTEXT COMMENT "其他付款图片"', 'OTHER_PAYMENT_REMARK');
 
     await checkAndCreateTable('T_SETTLEMENT_ITEM', `
       CREATE TABLE T_SETTLEMENT_ITEM (

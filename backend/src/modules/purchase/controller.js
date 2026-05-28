@@ -1,7 +1,7 @@
 /**
  * 采购管理控制器
  */
-const { sequelize, PurchaseRequest, PurchaseRequestItem, Supplier, Store, Product, Inbound, InboundItem, Payable, SupplierRebate } = require('../../models');
+const { sequelize, PurchaseRequest, PurchaseRequestItem, Supplier, SupplierPaymentAccount, Store, Product, Inbound, InboundItem, Payable, SupplierRebate } = require('../../models');
 const { Op } = require('sequelize');
 const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate, formatPaginatedResult } = require('../../utils');
 const { recordRebateDeduction, _getRebateBalance } = require('../finance/rebateController');
@@ -444,7 +444,9 @@ async function getSupplierList(ctx) {
 
   const { count, rows } = await Supplier.findAndCountAll({
     where,
+    include: [{ model: SupplierPaymentAccount, as: 'paymentAccounts', where: { is_deleted: 0 }, required: false }],
     order: [['create_time', 'DESC']],
+    distinct: true,
     ...paginate({}, { page, pageSize })
   });
 
@@ -459,6 +461,7 @@ async function getAllSuppliers(ctx) {
 
   const rows = await Supplier.findAll({
     where,
+    include: [{ model: SupplierPaymentAccount, as: 'paymentAccounts', where: { is_deleted: 0 }, required: false }],
     order: [['create_time', 'DESC']]
   });
 
@@ -469,7 +472,7 @@ async function getAllSuppliers(ctx) {
  * 创建供应商
  */
 async function createSupplier(ctx) {
-  const { name, contact, phone, address, invoiceType, remark, status = 1 } = ctx.request.body;
+  const { name, contact, phone, address, invoiceType, remark, status = 1, paymentAccounts = [] } = ctx.request.body;
 
   if (!name) {
     ctx.throw(400, '供应商名称不能为空');
@@ -477,17 +480,21 @@ async function createSupplier(ctx) {
 
   const supplierId = generateId('SP');
 
-  await Supplier.create({
-    supplier_id: supplierId,
-    name,
-    contact: contact || '',
-    phone: phone || '',
-    address: address || '',
-    invoice_type: invoiceType || '',
-    remark: remark || '',
-    status,
-    create_time: new Date(),
-    update_time: new Date()
+  await sequelize.transaction(async (transaction) => {
+    await Supplier.create({
+      supplier_id: supplierId,
+      name,
+      contact: contact || '',
+      phone: phone || '',
+      address: address || '',
+      invoice_type: invoiceType || '',
+      remark: remark || '',
+      status,
+      create_time: new Date(),
+      update_time: new Date()
+    }, { transaction });
+
+    await saveSupplierPaymentAccounts(supplierId, paymentAccounts, transaction);
   });
 
   ctx.body = { code: 0, message: '创建成功' };
@@ -498,7 +505,7 @@ async function createSupplier(ctx) {
  */
 async function updateSupplier(ctx) {
   const { id } = ctx.params;
-  const { name, contact, phone, address, invoiceType, remark, status } = ctx.request.body;
+  const { name, contact, phone, address, invoiceType, remark, status, paymentAccounts } = ctx.request.body;
 
   const supplier = await Supplier.findOne({
     where: { supplier_id: id, is_deleted: 0 }
@@ -508,18 +515,52 @@ async function updateSupplier(ctx) {
     ctx.throw(404, '供应商不存在');
   }
 
-  await supplier.update({
-    name: name || supplier.name,
-    contact: contact !== undefined ? contact : supplier.contact,
-    phone: phone !== undefined ? phone : supplier.phone,
-    address: address !== undefined ? address : supplier.address,
-    invoice_type: invoiceType !== undefined ? invoiceType : supplier.invoice_type,
-    remark: remark !== undefined ? remark : supplier.remark,
-    status: status !== undefined ? status : supplier.status,
-    update_time: new Date()
+  await sequelize.transaction(async (transaction) => {
+    await supplier.update({
+      name: name || supplier.name,
+      contact: contact !== undefined ? contact : supplier.contact,
+      phone: phone !== undefined ? phone : supplier.phone,
+      address: address !== undefined ? address : supplier.address,
+      invoice_type: invoiceType !== undefined ? invoiceType : supplier.invoice_type,
+      remark: remark !== undefined ? remark : supplier.remark,
+      status: status !== undefined ? status : supplier.status,
+      update_time: new Date()
+    }, { transaction });
+
+    if (Array.isArray(paymentAccounts)) {
+      await saveSupplierPaymentAccounts(id, paymentAccounts, transaction);
+    }
   });
 
   ctx.body = { code: 0, message: '更新成功' };
+}
+
+async function saveSupplierPaymentAccounts(supplierId, paymentAccounts, transaction) {
+  await SupplierPaymentAccount.update(
+    { is_deleted: 1, status: 0, update_time: new Date() },
+    { where: { supplier_id: supplierId }, transaction }
+  );
+
+  const validAccounts = (paymentAccounts || []).filter(acc =>
+    acc.companyName || acc.company_name || acc.taxNo || acc.tax_no || acc.bankName || acc.bank_name || acc.accountNumber || acc.account_number || acc.remark
+  );
+
+  for (const [index, acc] of validAccounts.entries()) {
+    await SupplierPaymentAccount.create({
+      account_id: generateUUID(),
+      supplier_id: supplierId,
+      company_name: acc.companyName || acc.company_name || '',
+      tax_no: acc.taxNo || acc.tax_no || '',
+      bank_name: acc.bankName || acc.bank_name || '',
+      account_number: acc.accountNumber || acc.account_number || '',
+      remark: acc.remark || '',
+      sort_order: index,
+      status: 1,
+      is_deleted: 0,
+      create_time: new Date(),
+      update_time: new Date()
+    }, { transaction });
+  }
 }
 
 /**

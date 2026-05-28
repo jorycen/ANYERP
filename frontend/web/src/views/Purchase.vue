@@ -287,7 +287,7 @@
     </el-dialog>
 
     <!-- 供应商对话框 -->
-    <el-dialog v-model="supplierDialogVisible" :title="supplierDialogTitle" width="500px" @close="handleSupplierDialogClose">
+    <el-dialog v-model="supplierDialogVisible" :title="supplierDialogTitle" width="860px" @close="handleSupplierDialogClose">
       <el-form :model="supplierForm" label-width="100px">
         <el-form-item label="供应商名称" required>
           <el-input v-model="supplierForm.name" placeholder="请输入供应商名称" />
@@ -307,6 +307,23 @@
         <el-form-item label="状态">
           <el-switch v-model="supplierForm.status" :active-value="1" :inactive-value="0" />
           <span class="ml-10">{{ supplierForm.status === 1 ? '正常' : '停用' }}</span>
+        </el-form-item>
+        <el-form-item label="付款信息">
+          <div class="supplier-accounts">
+            <div
+              v-for="(account, index) in supplierForm.paymentAccounts"
+              :key="index"
+              class="supplier-account-row"
+            >
+              <el-input v-model="account.companyName" placeholder="公司名称" />
+              <el-input v-model="account.taxNo" placeholder="税号" />
+              <el-input v-model="account.bankName" placeholder="开户行" />
+              <el-input v-model="account.accountNumber" placeholder="账号" />
+              <el-input v-model="account.remark" placeholder="备注" />
+              <el-button type="danger" link @click="removeSupplierAccount(index)">删除</el-button>
+            </div>
+            <el-button type="primary" link @click="addSupplierAccount">添加付款账户</el-button>
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -389,7 +406,8 @@ const supplierForm = reactive({
   phone: '',
   address: '',
   remark: '',
-  status: 1
+  status: 1,
+  paymentAccounts: []
 })
 
 const toNumber = (value) => {
@@ -603,6 +621,7 @@ const handleEditSupplier = (row) => {
   supplierForm.address = row.address || ''
   supplierForm.remark = row.remark || ''
   supplierForm.status = row.status
+  supplierForm.paymentAccounts = normalizeSupplierAccounts(row.paymentAccounts || row.SupplierPaymentAccounts || [])
   supplierDialogVisible.value = true
 }
 
@@ -647,7 +666,8 @@ const handleSupplierSubmit = async () => {
       phone: supplierForm.phone,
       address: supplierForm.address,
       remark: supplierForm.remark,
-      status: supplierForm.status
+      status: supplierForm.status,
+      paymentAccounts: normalizeSupplierAccounts(supplierForm.paymentAccounts)
     }
 
     let res
@@ -684,6 +704,34 @@ const resetSupplierForm = () => {
   supplierForm.address = ''
   supplierForm.remark = ''
   supplierForm.status = 1
+  supplierForm.paymentAccounts = []
+}
+
+const normalizeSupplierAccounts = (accounts = []) => {
+  return accounts
+    .map(account => ({
+      accountId: account.accountId || account.account_id || '',
+      companyName: account.companyName || account.company_name || '',
+      taxNo: account.taxNo || account.tax_no || '',
+      bankName: account.bankName || account.bank_name || '',
+      accountNumber: account.accountNumber || account.account_number || '',
+      remark: account.remark || ''
+    }))
+    .filter(account => account.companyName || account.taxNo || account.bankName || account.accountNumber || account.remark)
+}
+
+const addSupplierAccount = () => {
+  supplierForm.paymentAccounts.push({
+    companyName: supplierForm.name || '',
+    taxNo: '',
+    bankName: '',
+    accountNumber: '',
+    remark: ''
+  })
+}
+
+const removeSupplierAccount = (index) => {
+  supplierForm.paymentAccounts.splice(index, 1)
 }
 
 const searchProducts = async (keyword) => {
@@ -924,6 +972,16 @@ const handleAllocateDialogClose = () => {
 }
 .summary-item span {
   color: #f56c6c;
+}
+.supplier-accounts {
+  width: 100%;
+}
+.supplier-account-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr)) 44px;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
 }
 .no-spinner :deep(input[type='number'])::-webkit-inner-spin-button,
 .no-spinner :deep(input[type='number'])::-webkit-outer-spin-button {

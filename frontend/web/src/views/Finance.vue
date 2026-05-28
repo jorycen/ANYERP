@@ -233,6 +233,11 @@
           <el-table :data="settlementData" stripe border>
             <el-table-column prop="settlement_no" label="结算单号" width="180" />
             <el-table-column prop="supplier_name" label="供应商" width="120" />
+            <el-table-column label="收款账户" min-width="220" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span>{{ getSettlementPaymentAccountText(row) }}</span>
+              </template>
+            </el-table-column>
             <el-table-column prop="total_amount" label="结算金额" width="120">
               <template #default="{ row }">¥{{ row.total_amount }}</template>
             </el-table-column>
@@ -357,11 +362,41 @@
             <el-option v-for="s in suppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
           </el-select>
         </el-form-item>
+        <el-form-item label="收款账户" required>
+          <el-select v-model="settlementForm.paymentAccountType" placeholder="请选择收款账户" style="width: 100%" @change="onPaymentAccountTypeChange">
+            <el-option
+              v-for="account in currentSupplierPaymentAccounts"
+              :key="account.accountId"
+              :label="formatSupplierAccountLabel(account)"
+              :value="`saved:${account.accountId}`"
+            />
+            <el-option label="其他" value="other" />
+          </el-select>
+        </el-form-item>
+        <template v-if="settlementForm.paymentAccountType === 'other'">
+          <el-form-item label="其他说明" required>
+            <el-input v-model="settlementForm.otherPaymentRemark" type="textarea" rows="2" placeholder="请输入结算账户说明" />
+          </el-form-item>
+          <el-form-item label="凭证图片" required>
+            <el-upload
+              :auto-upload="false"
+              :limit="1"
+              accept="image/*"
+              :file-list="otherPaymentFileList"
+              :on-change="handleOtherPaymentImageChange"
+              :on-remove="handleOtherPaymentImageRemove"
+              :on-exceed="handleOtherPaymentImageExceed"
+            >
+              <el-button>上传图片</el-button>
+            </el-upload>
+          </el-form-item>
+        </template>
       </el-form>
 
       <div v-if="unpaidList.length > 0">
         <el-table :data="unpaidList" stripe border @selection-change="onSelectionChange" ref="settlementTableRef">
           <el-table-column type="selection" width="50" />
+          <el-table-column prop="supplier_name" label="供应商" width="130" />
           <el-table-column prop="request_no" label="采购单号" width="180" />
           <el-table-column prop="total_amount" label="应付金额" width="130">
             <template #default="{ row }">¥{{ row.total_amount }}</template>
@@ -373,8 +408,8 @@
           结算总金额：<strong class="total-amount">¥{{ settlementTotalAmount }}</strong>
         </div>
       </div>
-      <div v-else-if="settlementForm.supplierId">
-        <el-empty description="该供应商没有待结算的应付款" />
+      <div v-else>
+        <el-empty :description="settlementForm.supplierId ? '该供应商没有待结算的应付款' : '暂无待结算应付款'" />
       </div>
 
       <template #footer>
@@ -640,6 +675,7 @@ const settlementLoading = ref(false)
 const unpaidList = ref([])
 const selectedPayables = ref([])
 const settlementTableRef = ref(null)
+const otherPaymentFileList = ref([])
 const settlementData = ref([])
 const settlementTotal = ref(0)
 const settlementStatusFilter = ref('')
@@ -675,7 +711,11 @@ const settlementQuery = reactive({
 })
 
 const settlementForm = reactive({
-  supplierId: ''
+  supplierId: '',
+  paymentAccountType: '',
+  supplierAccountId: '',
+  otherPaymentRemark: '',
+  otherPaymentImage: ''
 })
 
 const accountList = ref([])
@@ -730,6 +770,59 @@ const selectedPayableIds = computed(() => selectedPayables.value.map(p => p.paya
 const settlementTotalAmount = computed(() => {
   return selectedPayables.value.reduce((sum, p) => sum + parseFloat(p.total_amount || 0), 0).toFixed(2)
 })
+
+const effectiveSettlementSupplierId = computed(() => {
+  if (settlementForm.supplierId) return settlementForm.supplierId
+  const supplierIds = [...new Set(selectedPayables.value.map(p => p.supplier_id).filter(Boolean))]
+  return supplierIds.length === 1 ? supplierIds[0] : ''
+})
+
+const currentSupplierPaymentAccounts = computed(() => {
+  const supplier = suppliers.value.find(s => s.supplier_id === effectiveSettlementSupplierId.value)
+  const accounts = supplier?.paymentAccounts || supplier?.SupplierPaymentAccounts || []
+  return accounts
+    .map(account => ({
+      accountId: account.accountId || account.account_id || '',
+      companyName: account.companyName || account.company_name || '',
+      taxNo: account.taxNo || account.tax_no || '',
+      bankName: account.bankName || account.bank_name || '',
+      accountNumber: account.accountNumber || account.account_number || '',
+      remark: account.remark || ''
+    }))
+    .filter(account => account.accountId)
+})
+
+const formatSupplierAccountLabel = (account) => {
+  const company = account.companyName || '未填写公司'
+  const bank = account.bankName || '未填写开户行'
+  const accountNo = account.accountNumber || '未填写账号'
+  return `${company} / ${bank} / ${accountNo}`
+}
+
+const getSettlementPaymentAccountText = (row) => {
+  if (row.supplier_account_snapshot_parsed) {
+    return formatSupplierAccountLabel(row.supplier_account_snapshot_parsed)
+  }
+  if (row.supplier_account_snapshot) {
+    try {
+      return formatSupplierAccountLabel(JSON.parse(row.supplier_account_snapshot))
+    } catch (err) {
+      return row.supplier_account_snapshot
+    }
+  }
+  if (row.other_payment_remark) {
+    return `其他：${row.other_payment_remark}`
+  }
+  return '-'
+}
+
+const resetPaymentAccountFields = () => {
+  settlementForm.paymentAccountType = ''
+  settlementForm.supplierAccountId = ''
+  settlementForm.otherPaymentRemark = ''
+  settlementForm.otherPaymentImage = ''
+  otherPaymentFileList.value = []
+}
 
 onMounted(() => {
   loadStores()
@@ -1048,16 +1141,25 @@ const resetRebateForm = () => {
   rebateForm.remark = ''
 }
 
-const openSettlementDialog = () => {
+const openSettlementDialog = async () => {
   settlementForm.supplierId = ''
+  resetPaymentAccountFields()
   unpaidList.value = []
   selectedPayables.value = []
   settlementDialogVisible.value = true
+  try {
+    const res = await api.getPayableList({ status: 'unpaid', page: 1, pageSize: 100 })
+    if (res.code === 0) unpaidList.value = res.data?.list || []
+  } catch (err) {
+    ElMessage.error('获取应付款失败')
+  }
 }
 
 const onSupplierChange = async (supplierId) => {
+  resetPaymentAccountFields()
   if (!supplierId) {
-    unpaidList.value = []
+    const res = await api.getPayableList({ status: 'unpaid', page: 1, pageSize: 100 })
+    if (res.code === 0) unpaidList.value = res.data?.list || []
     return
   }
   try {
@@ -1073,6 +1175,41 @@ const onSupplierChange = async (supplierId) => {
 
 const onSelectionChange = (selection) => {
   selectedPayables.value = selection
+  if (settlementForm.paymentAccountType !== 'other') {
+    settlementForm.paymentAccountType = ''
+    settlementForm.supplierAccountId = ''
+  }
+}
+
+const onPaymentAccountTypeChange = (value) => {
+  settlementForm.supplierAccountId = ''
+  settlementForm.otherPaymentRemark = ''
+  settlementForm.otherPaymentImage = ''
+  otherPaymentFileList.value = []
+
+  if (value && value.startsWith('saved:')) {
+    settlementForm.supplierAccountId = value.replace('saved:', '')
+  }
+}
+
+const handleOtherPaymentImageChange = (file) => {
+  const rawFile = file.raw
+  if (!rawFile) return
+  const reader = new FileReader()
+  reader.onload = (event) => {
+    settlementForm.otherPaymentImage = event.target?.result || ''
+    otherPaymentFileList.value = [file]
+  }
+  reader.readAsDataURL(rawFile)
+}
+
+const handleOtherPaymentImageRemove = () => {
+  settlementForm.otherPaymentImage = ''
+  otherPaymentFileList.value = []
+}
+
+const handleOtherPaymentImageExceed = () => {
+  ElMessage.warning('只能上传一张图片')
 }
 
 const handleSettlementSubmit = async () => {
@@ -1083,9 +1220,43 @@ const handleSettlementSubmit = async () => {
 
   settlementLoading.value = true
   try {
+    let supplierId = settlementForm.supplierId
+    if (!supplierId) {
+      const supplierIds = [...new Set(selectedPayables.value.map(p => p.supplier_id).filter(Boolean))]
+      if (supplierIds.length !== 1) {
+        ElMessage.warning('请选择同一供应商的应付款，或先选择供应商筛选')
+        settlementLoading.value = false
+        return
+      }
+      supplierId = supplierIds[0]
+    }
+
+    const paymentAccountType = settlementForm.paymentAccountType
+    const isOtherPaymentAccount = paymentAccountType === 'other'
+    if (isOtherPaymentAccount) {
+      if (!settlementForm.otherPaymentRemark.trim()) {
+        ElMessage.warning('请选择其他账户时必须填写说明')
+        settlementLoading.value = false
+        return
+      }
+      if (!settlementForm.otherPaymentImage) {
+        ElMessage.warning('请选择其他账户时必须上传图片')
+        settlementLoading.value = false
+        return
+      }
+    } else if (!settlementForm.supplierAccountId) {
+      ElMessage.warning('请选择供应商付款账户')
+      settlementLoading.value = false
+      return
+    }
+
     const res = await api.createSettlement({
-      supplierId: settlementForm.supplierId,
-      payableIds: selectedPayables.value.map(p => p.payable_id)
+      supplierId,
+      payableIds: selectedPayables.value.map(p => p.payable_id),
+      paymentAccountType: isOtherPaymentAccount ? 'other' : 'saved',
+      supplierAccountId: isOtherPaymentAccount ? '' : settlementForm.supplierAccountId,
+      otherPaymentRemark: isOtherPaymentAccount ? settlementForm.otherPaymentRemark.trim() : '',
+      otherPaymentImage: isOtherPaymentAccount ? settlementForm.otherPaymentImage : ''
     })
 
     if (res.code === 0) {
@@ -1135,6 +1306,7 @@ const doConfirmPayment = async () => {
 
 const resetSettlementForm = () => {
   settlementForm.supplierId = ''
+  resetPaymentAccountFields()
   unpaidList.value = []
   selectedPayables.value = []
 }

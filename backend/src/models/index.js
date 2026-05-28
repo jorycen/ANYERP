@@ -319,6 +319,21 @@ const Supplier = sequelize.define('Supplier', {
   is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 }
 }, { tableName: 'T_SUPPLIER', timestamps: false });
 
+const SupplierPaymentAccount = sequelize.define('SupplierPaymentAccount', {
+  account_id: { type: DataTypes.STRING(32), primaryKey: true },
+  supplier_id: { type: DataTypes.STRING(32), allowNull: false },
+  company_name: { type: DataTypes.STRING(255) },
+  tax_no: { type: DataTypes.STRING(64) },
+  bank_name: { type: DataTypes.STRING(128) },
+  account_number: { type: DataTypes.STRING(128) },
+  remark: { type: DataTypes.STRING(512) },
+  sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
+  status: { type: DataTypes.TINYINT, defaultValue: 1 },
+  is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_SUPPLIER_PAYMENT_ACCOUNT', timestamps: false });
+
 // 采购申请
 const PurchaseRequest = sequelize.define('PurchaseRequest', {
   request_id: { type: DataTypes.STRING(32), primaryKey: true },
@@ -599,6 +614,10 @@ const Settlement = sequelize.define('Settlement', {
   settlement_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
   supplier_id: { type: DataTypes.STRING(32), allowNull: false },
   supplier_name: { type: DataTypes.STRING(255) },
+  supplier_account_id: { type: DataTypes.STRING(32) },
+  supplier_account_snapshot: { type: DataTypes.TEXT },
+  other_payment_remark: { type: DataTypes.TEXT },
+  other_payment_image: { type: DataTypes.TEXT('long') },
   total_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
   status: { type: DataTypes.STRING(32), defaultValue: 'unpaid' },
   create_user: { type: DataTypes.STRING(64) },
@@ -835,6 +854,9 @@ InboundItem.belongsTo(Inbound, { foreignKey: 'inbound_id', targetKey: 'inbound_i
 Supplier.hasMany(Payable, { foreignKey: 'supplier_id', sourceKey: 'supplier_id' });
 Payable.belongsTo(Supplier, { foreignKey: 'supplier_id', targetKey: 'supplier_id' });
 
+Supplier.hasMany(SupplierPaymentAccount, { foreignKey: 'supplier_id', sourceKey: 'supplier_id', as: 'paymentAccounts' });
+SupplierPaymentAccount.belongsTo(Supplier, { foreignKey: 'supplier_id', targetKey: 'supplier_id' });
+
 Supplier.hasMany(Settlement, { foreignKey: 'supplier_id', sourceKey: 'supplier_id' });
 Settlement.belongsTo(Supplier, { foreignKey: 'supplier_id', targetKey: 'supplier_id' });
 
@@ -910,6 +932,7 @@ module.exports = {
   SettlementAccount,
   SettlementAccountTransaction,
   Payable,
+  SupplierPaymentAccount,
   Settlement,
   SettlementItem,
   SupplierRebate,

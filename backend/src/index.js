@@ -44,7 +44,11 @@ const PORT = process.env.PORT || 3000;
 app.use(errorHandler);
 app.use(responseFormatter);
 app.use(cors());
-app.use(bodyParser());
+app.use(bodyParser({
+  jsonLimit: '10mb',
+  formLimit: '10mb',
+  textLimit: '10mb'
+}));
 
 // API 路由组
 const apiRouter = new Router({ prefix: '/api/v1' });

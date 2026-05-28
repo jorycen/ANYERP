@@ -2,9 +2,21 @@
  * 库房管理控制器
  * 优化版：非SN商品直接操作聚合库存，SN商品同时维护SN记录和聚合库存
  */
-const { sequelize, ProductSn, Product, ProductPn, ProductPrice, Store, Location, InventoryWarning, Inbound, InboundItem, ReturnStock, ReturnStockItem, PurchaseRequest, Payable, Supplier, Inventory, SnLog, Order, OrderItem, Transfer, TransferItem } = require('../../models');
+const { sequelize, ProductSn, Product, ProductPn, ProductPrice, ProductBarcode, Store, Location, InventoryWarning, Inbound, InboundItem, ReturnStock, ReturnStockItem, PurchaseRequest, Payable, Supplier, Inventory, SnLog, Order, OrderItem, Transfer, TransferItem } = require('../../models');
 const { Op } = require('sequelize');
 const { generateInboundNo, generateOutboundNo, generateTransferNo, generateUUID, generateBatchNo, paginate, formatPaginatedResult } = require('../../utils');
+
+function splitCodes(value) {
+  return String(value || '')
+    .split(/[,，\s]+/)
+    .map(code => code.trim())
+    .filter(Boolean);
+}
+
+function normalizePnCode(value) {
+  const code = String(value || '').trim();
+  return code.length > 64 ? code.slice(0, 64) : code;
+}
 
 /**
  * 库存聚合列表 - 按商品汇总，显示5种库存数量
@@ -54,6 +66,13 @@ async function getList(ctx) {
     const allStoreMap = new Map();
     stores.forEach(s => allStoreMap.set(s.store_id, s.name));
 
+    const locations = await Location.findAll({
+      where: storeIds.length > 0 ? { store_id: { [Op.in]: storeIds }, status: 1 } : { status: 1 },
+      raw: true
+    });
+    const locationMap = new Map();
+    locations.forEach(loc => locationMap.set(loc.location_id, loc.name));
+
     const invMap = {};
     const storeStockMap = {};
     for (const inv of inventories) {
@@ -86,8 +105,45 @@ async function getList(ctx) {
         storeStockMap[inv.product_id].push({
           store_id: inv.store_id,
           store_name: storeName,
+          location_id: '',
+          location_name: '未指定库位',
           normal_qty: effectiveNormal
         });
+      }
+    }
+
+    if (productIds.length > 0) {
+      const snRows = await ProductSn.findAll({
+        where: {
+          product_id: { [Op.in]: productIds },
+          status: 'in_stock',
+          is_deleted: 0,
+          ...(storeIds.length > 0 ? { store_id: { [Op.in]: storeIds } } : {})
+        },
+        attributes: ['product_id', 'store_id', 'location_id'],
+        raw: true
+      });
+      const snLocationMap = {};
+      for (const sn of snRows) {
+        const key = `${sn.store_id || ''}|${sn.location_id || ''}`;
+        if (!snLocationMap[sn.product_id]) snLocationMap[sn.product_id] = {};
+        if (!snLocationMap[sn.product_id][key]) {
+          snLocationMap[sn.product_id][key] = {
+            store_id: sn.store_id || '',
+            store_name: allStoreMap.get(sn.store_id) || sn.store_id || '未知门店',
+            location_id: sn.location_id || '',
+            location_name: sn.location_id ? (locationMap.get(sn.location_id) || sn.location_id) : '未指定库位',
+            normal_qty: 0
+          };
+        }
+        snLocationMap[sn.product_id][key].normal_qty += 1;
+      }
+
+      for (const [productId, rowsByLocation] of Object.entries(snLocationMap)) {
+        const rows = Object.values(rowsByLocation);
+        if (rows.length > 0) {
+          storeStockMap[productId] = rows;
+        }
       }
     }
 
@@ -489,6 +545,10 @@ async function getInboundDetail(ctx) {
       const pnRecords = await ProductPn.findAll({
         where: { product_id: { [Op.in]: productIds }, is_deleted: 0 }
       });
+      const barcodeRecords = await ProductBarcode.findAll({
+        where: { product_id: { [Op.in]: productIds }, barcode_type: 'manufacturer', status: 1 },
+        raw: true
+      });
       const pnMap = {};
       for (const pn of pnRecords) {
         if (!pnMap[pn.product_id]) pnMap[pn.product_id] = [];
@@ -497,6 +557,34 @@ async function getInboundDetail(ctx) {
           pn_code: pn.pn_code,
           product_name: pn.product_name || ''
         });
+      }
+
+      for (const bc of barcodeRecords) {
+        if (!bc.barcode_code) continue;
+        if (!pnMap[bc.product_id]) pnMap[bc.product_id] = [];
+        if (!pnMap[bc.product_id].some(p => p.pn_code === bc.barcode_code)) {
+          pnMap[bc.product_id].push({
+            pn_id: '',
+            pn_code: bc.barcode_code,
+            product_name: ''
+          });
+        }
+      }
+
+      for (const product of products) {
+        const manufacturerCodes = splitCodes(product.manufacturer_code);
+        if (manufacturerCodes.length > 0) {
+          if (!pnMap[product.product_id]) pnMap[product.product_id] = [];
+          for (const code of manufacturerCodes) {
+            if (!pnMap[product.product_id].some(p => p.pn_code === code)) {
+              pnMap[product.product_id].push({
+                pn_id: '',
+                pn_code: code,
+                product_name: product.name || ''
+              });
+            }
+          }
+        }
       }
 
       for (const item of items) {
@@ -609,7 +697,7 @@ async function executeInbound(ctx) {
           ctx.throw(400, `商品 ${dbItem.product_name} 需要SN管理，SN码不能为空`);
         }
 
-        const pnCode = item.pnCode || dbItem.pn_code || `AUTO-${(dbItem.product_name || 'PN').replace(/\s+/g, '')}-${Date.now()}`;
+        const pnCode = normalizePnCode(item.pnCode || dbItem.pn_code || splitCodes(product.manufacturer_code)[0] || '');
 
         const existingSn = await ProductSn.findOne({
           where: { sn_code: item.snCode, is_deleted: 0 },
@@ -643,7 +731,7 @@ async function executeInbound(ctx) {
           inventory_type: inventoryType
         }, { transaction: t });
       } else {
-        const pnCode = item.pnCode || '';
+        const pnCode = normalizePnCode(item.pnCode || dbItem.pn_code || splitCodes(product.manufacturer_code)[0] || '');
 
         await dbItem.update({
           pn_code: pnCode,
@@ -653,16 +741,17 @@ async function executeInbound(ctx) {
         }, { transaction: t });
       }
 
-      if (item.pnCode && item.pnCode.trim() !== '') {
+      const savedPnCode = normalizePnCode(item.pnCode || dbItem.pn_code || splitCodes(product.manufacturer_code)[0] || '');
+      if (savedPnCode) {
         const existingPn = await ProductPn.findOne({
-          where: { pn_code: item.pnCode.trim(), is_deleted: 0 },
+          where: { pn_code: savedPnCode, is_deleted: 0 },
           transaction: t
         });
         if (!existingPn) {
           await ProductPn.create({
             pn_id: generateUUID(),
             product_id: item.productId,
-            pn_code: item.pnCode.trim(),
+            pn_code: savedPnCode,
             barcode: '',
             is_primary: 0,
             status: 1,
@@ -685,24 +774,33 @@ async function executeInbound(ctx) {
 
     if (inbound.purchase_request_id) {
       const allInbounds = await Inbound.findAll({
-        where: { purchase_request_id: inbound.purchase_request_id }
+        where: { purchase_request_id: inbound.purchase_request_id },
+        transaction: t
       });
-      const allCompleted = allInbounds.every(ib => ib.status === 'completed');
+      const request = await PurchaseRequest.findByPk(inbound.purchase_request_id, { transaction: t });
+      if (request && request.supplier_id) {
+        const completedInbounds = allInbounds.filter(ib => ib.status === 'completed');
+        const completedAmount = completedInbounds.reduce((sum, ib) => sum + parseFloat(ib.total_amount || 0), 0);
+        const allCompleted = allInbounds.length > 0 && allInbounds.every(ib => ib.status === 'completed');
+        const rebateDeduction = parseFloat(request.rebate_deduction || 0);
+        const totalAmount = allCompleted && rebateDeduction > 0
+          ? parseFloat(request.actual_total || completedAmount)
+          : completedAmount;
 
-      if (allCompleted) {
-        const request = await PurchaseRequest.findByPk(inbound.purchase_request_id);
-        if (request && request.supplier_id) {
+        if (totalAmount > 0) {
           const existingPayable = await Payable.findOne({
-            where: { request_id: inbound.purchase_request_id }
+            where: { request_id: inbound.purchase_request_id },
+            transaction: t
           });
-          if (!existingPayable) {
-            const supplier = await Supplier.findByPk(request.supplier_id);
-            const rawTotal = allInbounds.reduce((sum, ib) => sum + parseFloat(ib.total_amount || 0), 0);
-            const rebateDeduction = parseFloat(request.rebate_deduction || 0);
-            const totalAmount = rebateDeduction > 0
-              ? parseFloat(request.actual_total || rawTotal)
-              : rawTotal;
-
+          if (existingPayable) {
+            if (existingPayable.status !== 'paid') {
+              await existingPayable.update({
+                total_amount: totalAmount,
+                paid_amount: existingPayable.status === 'unpaid' ? 0 : existingPayable.paid_amount
+              }, { transaction: t });
+            }
+          } else {
+            const supplier = await Supplier.findByPk(request.supplier_id, { transaction: t });
             await Payable.create({
               payable_id: generateUUID(),
               supplier_id: request.supplier_id,
@@ -713,7 +811,7 @@ async function executeInbound(ctx) {
               paid_amount: 0,
               status: 'unpaid',
               create_time: new Date()
-            });
+            }, { transaction: t });
           }
         }
       }

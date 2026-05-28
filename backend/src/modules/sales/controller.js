@@ -148,7 +148,11 @@ async function create(ctx) {
         const inv = await Inventory.findOne({
           where: { product_id: item.productId, store_id: actualStoreId }
         });
-        const totalStock = inv ? ((inv.normal_qty || 0) + (inv.display_qty || 0)) : 0;
+        const normalStock = inv ? Math.max(
+          Number(inv.normal_qty || 0),
+          Number(inv.regular_qty || 0) + Number(inv.subsidy_qty || 0) + Number(inv.second_qty || 0)
+        ) : 0;
+        const totalStock = inv ? (normalStock + Number(inv.display_qty || 0)) : 0;
         if (totalStock < quantity) {
           ctx.throw(400, `商品 ${item.productName} 库存不足(可用:${totalStock}, 需要:${quantity})`);
         }
@@ -266,7 +270,28 @@ async function detail(ctx) {
     ctx.throw(404, '订单不存在');
   }
 
-  ctx.body = order;
+  const result = order.toJSON();
+  const items = result.OrderItems || [];
+  const snCodes = items.map(item => item.sn_code).filter(Boolean);
+  if (snCodes.length > 0) {
+    const snRows = await ProductSn.findAll({
+      where: { sn_code: { [Op.in]: snCodes } },
+      attributes: ['sn_code', 'pn_code', 'inventory_type'],
+      raw: true
+    });
+    const snMap = new Map(snRows.map(sn => [sn.sn_code, sn]));
+    result.OrderItems = items.map(item => {
+      const sn = snMap.get(item.sn_code);
+      return {
+        ...item,
+        pn_code: item.pn_code || sn?.pn_code || '',
+        sn_code: item.sn_code || '',
+        inventory_type: item.inventory_type || sn?.inventory_type || ''
+      };
+    });
+  }
+
+  ctx.body = result;
 }
 
 /**
@@ -507,9 +532,34 @@ async function _deductInventory(productId, storeId, inventoryType, quantity) {
     where: { product_id: productId, store_id: storeId }
   });
   if (inv) {
-    const currentVal = inv[column] || 0;
-    const newVal = Math.max(0, currentVal - quantity);
-    await inv.update({ [column]: newVal });
+    const qty = Number(quantity) || 0;
+    const detailColumns = ['regular_qty', 'subsidy_qty', 'second_qty'];
+    const detailTotal = detailColumns.reduce((sum, key) => sum + Number(inv[key] || 0), 0);
+    const currentVal = column === 'normal_qty'
+      ? Math.max(Number(inv.normal_qty || 0), detailTotal)
+      : Number(inv[column] || 0);
+    const deductFromColumn = Math.min(currentVal, qty);
+    let remaining = qty - deductFromColumn;
+    const payload = { [column]: currentVal - deductFromColumn };
+
+    if (column === 'normal_qty') {
+      let detailRemaining = deductFromColumn;
+      for (const detailColumn of detailColumns) {
+        if (detailRemaining <= 0) break;
+        const currentDetail = Number(inv[detailColumn] || 0);
+        const deduct = Math.min(currentDetail, detailRemaining);
+        payload[detailColumn] = currentDetail - deduct;
+        detailRemaining -= deduct;
+      }
+
+      if (remaining > 0) {
+        const displayQty = Number(inv.display_qty || 0);
+        const displayDeduct = Math.min(displayQty, remaining);
+        payload.display_qty = displayQty - displayDeduct;
+      }
+    }
+
+    await inv.update(payload);
   }
 }
 
