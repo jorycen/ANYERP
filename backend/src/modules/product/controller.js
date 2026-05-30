@@ -909,7 +909,7 @@ async function getPnList(ctx) {
 
   const { count, rows } = await ProductPn.findAndCountAll({
     where,
-    include: [{ model: Product, attributes: ['name', 'product_code'] }],
+    include: [{ model: Product, attributes: ['name', 'product_code', 'need_sn'] }],
     order: [['pn_code', 'ASC']],
     ...paginate({}, { page: parseInt(page), pageSize: parseInt(pageSize) })
   });
@@ -951,6 +951,8 @@ async function addPn(ctx) {
 
 async function searchProduct(ctx) {
   const { keyword, storeId, page = 1, pageSize = 10 } = ctx.query;
+  const pageNum = parseInt(page);
+  const sizeNum = parseInt(pageSize);
 
   if (!keyword || keyword.trim() === '') {
     ctx.body = formatPaginatedResult([], { page, pageSize, count: 0 });
@@ -1005,46 +1007,104 @@ async function searchProduct(ctx) {
 
   where[Op.or] = orConditions;
 
-  const { count, rows } = await Product.findAndCountAll({
+  const rows = await Product.findAll({
     where,
-    attributes: ['product_id', 'product_code', 'name', 'category', 'need_sn', 'unit'],
+    attributes: ['product_id', 'product_code', 'name', 'category', 'manufacturer_code', 'need_sn', 'unit'],
     include: [
       { model: ProductPrice, attributes: ['standard_price', 'min_sale_price'] }
     ],
     order: [['product_code', 'DESC']],
-    ...paginate({}, { page: parseInt(page), pageSize: parseInt(pageSize) }),
-    distinct: true
   });
+  const count = rows.length;
 
   const productIds = rows.map(p => p.product_id);
-
-  let inventoryMap = {};
-  if (storeId) {
-    const { Inventory } = require('../../models');
-    const inventories = await Inventory.findAll({
-      where: { product_id: { [Op.in]: productIds }, store_id: storeId }
-    });
-    for (const inv of inventories) {
-      inventoryMap[inv.product_id] = (inv.normal_qty || 0) + (inv.display_qty || 0);
+  const pnRecords = productIds.length > 0
+    ? await ProductPn.findAll({
+        where: { product_id: { [Op.in]: productIds }, is_deleted: 0 },
+        attributes: ['product_id', 'pn_code', 'is_primary'],
+        order: [['is_primary', 'DESC'], ['pn_code', 'ASC']],
+        raw: true
+      })
+    : [];
+  const productPnMap = {};
+  for (const pn of pnRecords) {
+    if (!productPnMap[pn.product_id]) productPnMap[pn.product_id] = [];
+    if (pn.pn_code && !productPnMap[pn.product_id].includes(pn.pn_code)) {
+      productPnMap[pn.product_id].push(pn.pn_code);
     }
   }
 
-  const list = rows
-    .filter(p => !storeId || (inventoryMap[p.product_id] || 0) > 0)
-    .map(p => ({
-      product_id: p.product_id,
-      product_code: p.product_code,
-      name: p.name,
-      spec: p.specs_json ? JSON.stringify(p.specs_json) : '',
-      standard_price: p.ProductPrice ? p.ProductPrice.standard_price : 0,
-      min_sale_price: p.ProductPrice ? p.ProductPrice.min_sale_price : 0,
-      need_sn: p.need_sn,
-      unit: p.unit,
-      stock_qty: storeId ? (inventoryMap[p.product_id] || 0) : null,
-      pn_list: p.need_sn === 1 ? [...(snPnsByProduct[p.product_id] || [])] : []
-    }));
+  const inventoryMap = {};
+  if (productIds.length > 0) {
+    const inventories = await Inventory.findAll({
+      where: { product_id: { [Op.in]: productIds } },
+      raw: true
+    });
+    for (const inv of inventories) {
+      const productId = inv.product_id;
+      if (!inventoryMap[productId]) {
+        inventoryMap[productId] = { current: 0, other: 0, total: 0 };
+      }
 
-  ctx.body = formatPaginatedResult(list, { page, pageSize, count: storeId ? list.length : count });
+      const normalStock = Math.max(
+        Number(inv.normal_qty || 0),
+        Number(inv.regular_qty || 0) + Number(inv.subsidy_qty || 0) + Number(inv.second_qty || 0)
+      );
+      const stockQty = normalStock + Number(inv.display_qty || 0);
+
+      inventoryMap[productId].total += stockQty;
+      if (storeId && inv.store_id === storeId) {
+        inventoryMap[productId].current += stockQty;
+      } else {
+        inventoryMap[productId].other += stockQty;
+      }
+    }
+  }
+
+  const splitPnCodes = (value) => String(value || '').split(new RegExp('[,\\s\\uFF0C\\u3001]+')).map(v => v.trim()).filter(Boolean);
+
+  const list = rows
+    .map(p => {
+      const stock = inventoryMap[p.product_id] || { current: 0, other: 0, total: 0 };
+      const stockRank = stock.current > 0 ? 0 : (stock.other > 0 ? 1 : 2);
+      const pnList = [
+        ...(productPnMap[p.product_id] || []),
+        ...splitPnCodes(p.manufacturer_code),
+        ...(p.need_sn === 1 ? [...(snPnsByProduct[p.product_id] || [])] : [])
+      ];
+      const uniquePnList = [...new Set(pnList)];
+      return {
+        product_id: p.product_id,
+        product_code: p.product_code,
+        name: p.name,
+        spec: p.specs_json ? JSON.stringify(p.specs_json) : '',
+        standard_price: p.ProductPrice ? p.ProductPrice.standard_price : 0,
+        min_sale_price: p.ProductPrice ? p.ProductPrice.min_sale_price : 0,
+        need_sn: p.need_sn,
+        unit: p.unit,
+        stock_qty: storeId ? stock.current : stock.total,
+        current_store_stock_qty: stock.current,
+        other_store_stock_qty: stock.other,
+        total_stock_qty: stock.total,
+        stock_rank: stockRank,
+        pn: uniquePnList[0] || '',
+        pn_list: uniquePnList
+      };
+    })
+    .sort((a, b) => {
+      if (a.stock_rank !== b.stock_rank) return a.stock_rank - b.stock_rank;
+      if (a.stock_rank === 0 && b.current_store_stock_qty !== a.current_store_stock_qty) {
+        return b.current_store_stock_qty - a.current_store_stock_qty;
+      }
+      if (a.stock_rank === 1 && b.other_store_stock_qty !== a.other_store_stock_qty) {
+        return b.other_store_stock_qty - a.other_store_stock_qty;
+      }
+      return String(b.product_code || '').localeCompare(String(a.product_code || ''));
+    });
+
+  const offset = (pageNum - 1) * sizeNum;
+  const pagedList = list.slice(offset, offset + sizeNum);
+  ctx.body = formatPaginatedResult(pagedList, { page: pageNum, pageSize: sizeNum, count });
 }
 
 // ==================== 分类字段配置 ====================

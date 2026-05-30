@@ -91,7 +91,7 @@ async function create(ctx) {
     customerName, customerPhone, customerSource,
     items, payments, discountAmount = 0,
     nationalSubsidy = 0, educationSubsidy = 0,
-    invoiceStatus = '不开票', remark, storeId
+    invoiceStatus = '不开票', remark, storeId, status, orderStatus
   } = ctx.request.body;
 
   const orderNo = generateOrderNo();
@@ -117,67 +117,9 @@ async function create(ctx) {
       ctx.throw(400, `商品 ${item.productId} 不存在`);
     }
 
-    const quantity = item.quantity || 1;
-
-    if (product.need_sn === 1) {
-      if (!item.snCode || item.snCode.trim() === '') {
-        ctx.throw(400, `商品 ${item.productName} 需要SN管理，请选择SN码`);
-      }
-
-      const snWhere = {
-          sn_code: item.snCode.trim(),
-          product_id: item.productId,
-          store_id: actualStoreId,
-          status: 'in_stock',
-          is_deleted: 0
-      };
-      if (item.pnCode && item.pnCode.trim()) {
-        snWhere.pn_code = item.pnCode.trim();
-      }
-
-      const snRecord = await ProductSn.findOne({ where: snWhere });
-      if (!snRecord) {
-        ctx.throw(400, `SN码 [${item.snCode}] 在当前门店不存在或已售出`);
-      }
-
-      if (item.pnCode && snRecord.pn_code && item.pnCode.trim() !== snRecord.pn_code) {
-        ctx.throw(400, `SN码 [${item.snCode}] 的厂商编码(${snRecord.pn_code})与所选编码(${item.pnCode})不一致`);
-      }
-
-      item.snId = snRecord.sn_id;
-      item.inventoryType = snRecord.inventory_type || 'normal_qty';
-    } else {
-      if (actualStoreId) {
-        const inv = await Inventory.findOne({
-          where: { product_id: item.productId, store_id: actualStoreId }
-        });
-        const normalStock = inv ? Math.max(
-          Number(inv.normal_qty || 0),
-          Number(inv.regular_qty || 0) + Number(inv.subsidy_qty || 0) + Number(inv.second_qty || 0)
-        ) : 0;
-        const totalStock = inv ? (normalStock + Number(inv.display_qty || 0)) : 0;
-        if (totalStock < quantity) {
-          ctx.throw(400, `商品 ${item.productName} 库存不足(可用:${totalStock}, 需要:${quantity})`);
-        }
-      }
-    }
-
-    if (item.pnCode && item.pnCode.trim()) {
-      const pnExists = await ProductPn.findOne({
-        where: { product_id: item.productId, pn_code: item.pnCode.trim(), is_deleted: 0 }
-      });
-      if (!pnExists) {
-        const pnInSn = await ProductSn.findOne({
-          where: { product_id: item.productId, pn_code: item.pnCode.trim(), status: 'in_stock', is_deleted: 0 }
-        });
-        if (!pnInSn) {
-          ctx.throw(400, `厂商编码 [${item.pnCode}] 在商品 ${item.productName} 中不存在`);
-        }
-      }
-    }
   }
 
-  const orderStatus = needsApproval ? 'pending_approval' : 'completed';
+  const finalOrderStatus = status || orderStatus || (needsApproval ? 'pending_approval' : '未归档');
 
   const order = await Order.create({
     order_id: orderId,
@@ -193,7 +135,7 @@ async function create(ctx) {
     education_subsidy: educationSubsidy,
     actual_payment: actualPayment,
     invoice_status: invoiceStatus,
-    order_status: orderStatus,
+    order_status: finalOrderStatus,
     remark: remark || (needsApproval ? '售价低于定价, 待审批' : '')
   });
 
@@ -213,37 +155,12 @@ async function create(ctx) {
     });
   }
 
-  // 不需要审批的订单直接扣减库存
-  if (!needsApproval) {
-    for (const item of items) {
-      const product = productMap.get(item.productId);
-      const quantity = item.quantity || 1;
-
-      if (product && product.need_sn === 1) {
-        if (item.snId) {
-          await ProductSn.update(
-            { status: 'sold' },
-            { where: { sn_id: item.snId } }
-          );
-        }
-      }
-
-      if (actualStoreId) {
-        await _deductInventory(item.productId, actualStoreId, item.inventoryType || 'normal_qty', quantity);
-      }
-    }
-  }
-
   for (const payment of payments) {
     await OrderPayment.create({
       order_id: orderId,
       payment_method: payment.method,
       amount: payment.amount
     });
-  }
-
-  if (!needsApproval) {
-    syncToDailyStatement(orderId, actualStoreId).catch(err => console.error('[DailySync] create error:', err.message));
   }
 
   ctx.body = {
@@ -315,43 +232,13 @@ async function approve(ctx) {
     ctx.throw(400, '该订单无需审批');
   }
 
-  // 扣减库存
-  const items = await OrderItem.findAll({ where: { order_id: orderId } });
-  const productIds = [...new Set(items.map(i => i.product_id))];
-  const products = await Product.findAll({ where: { product_id: { [Op.in]: productIds } } });
-  const productMap = new Map();
-  products.forEach(p => productMap.set(p.product_id, p));
-
-  for (const item of items) {
-    const product = productMap.get(item.product_id);
-    const quantity = item.quantity || 1;
-
-    let inventoryType = 'normal_qty';
-
-    if (product && product.need_sn === 1) {
-      if (item.sn_id) {
-        const snRecord = await ProductSn.findByPk(item.sn_id);
-        if (snRecord) {
-          inventoryType = snRecord.inventory_type || 'normal_qty';
-          await snRecord.update({ status: 'sold' });
-        }
-      }
-    }
-
-    if (order.store_id) {
-      await _deductInventory(item.product_id, order.store_id, inventoryType, quantity);
-    }
-  }
-
   await order.update({
-    order_status: 'completed',
+    order_status: '未归档',
     remark: (order.remark || '') + '\n已审批通过',
     update_time: new Date()
   });
 
-  syncToDailyStatement(orderId, order.store_id).catch(err => console.error('[DailySync] approve error:', err.message));
-
-  ctx.body = { code: 0, message: '审批通过，订单已完成' };
+  ctx.body = { code: 0, message: '审批通过，订单待归档' };
 }
 
 /**
@@ -393,6 +280,14 @@ async function update(ctx) {
   const order = await Order.findByPk(orderId);
   if (!order) {
     ctx.throw(404, '订单不存在');
+  }
+
+  const nextStatus = data.order_status || data.status;
+  if (isArchiveStatus(nextStatus) && !isArchiveStatus(order.order_status)) {
+    await validateAndDeductInventoryForArchive(order);
+    data.order_status = '已归档';
+    data.status = '已归档';
+    syncToDailyStatement(orderId, order.store_id).catch(err => console.error('[DailySync] archive error:', err.message));
   }
 
   await order.update(data);
@@ -456,13 +351,12 @@ async function paymentMethods(ctx) {
 
 async function getProductPns(ctx) {
   const { storeId, productId } = ctx.params;
+  const product = await Product.findByPk(productId);
+  if (!product) {
+    ctx.throw(404, '商品不存在');
+  }
 
-  const pnRecords = await ProductPn.findAll({
-    where: { product_id: productId, is_deleted: 0 }
-  });
-
-  let snPns = [];
-  if (storeId) {
+  if (product.need_sn === 1) {
     const snRecords = await ProductSn.findAll({
       where: {
         product_id: productId,
@@ -474,15 +368,30 @@ async function getProductPns(ctx) {
       group: ['pn_code'],
       raw: true
     });
-    snPns = snRecords.map(s => s.pn_code).filter(Boolean);
+    ctx.body = { code: 0, data: snRecords.map(s => s.pn_code).filter(Boolean) };
+    return;
   }
 
-  const allPnCodes = new Set();
+  const inv = storeId ? await Inventory.findOne({ where: { product_id: productId, store_id: storeId } }) : null;
+  const normalStock = inv ? Math.max(
+    Number(inv.normal_qty || 0),
+    Number(inv.regular_qty || 0) + Number(inv.subsidy_qty || 0) + Number(inv.second_qty || 0)
+  ) : 0;
+  const totalStock = inv ? normalStock + Number(inv.display_qty || 0) : 0;
+  if (totalStock <= 0) {
+    ctx.body = { code: 0, data: [] };
+    return;
+  }
+
+  const pnRecords = await ProductPn.findAll({
+    where: { product_id: productId, is_deleted: 0 },
+    attributes: ['pn_code'],
+    order: [['pn_code', 'ASC']],
+    raw: true
+  });
+  const allPnCodes = new Set((product.manufacturer_code || '').split(/[,\s，、]+/).filter(Boolean));
   for (const pn of pnRecords) {
     if (pn.pn_code) allPnCodes.add(pn.pn_code);
-  }
-  for (const code of snPns) {
-    allPnCodes.add(code);
   }
 
   ctx.body = { code: 0, data: [...allPnCodes] };
@@ -517,6 +426,95 @@ async function getProductSns(ctx) {
       inventory_type: s.inventory_type
     }))
   };
+}
+
+function isArchiveStatus(status) {
+  return ['已归档', 'completed', 'archived'].includes(String(status || ''));
+}
+
+function archiveError(message) {
+  const error = new Error(message);
+  error.status = 400;
+  return error;
+}
+
+async function validateAndDeductInventoryForArchive(order) {
+  const items = await OrderItem.findAll({ where: { order_id: order.order_id } });
+  if (!items.length) {
+    throw archiveError('订单中没有商品，无法归档');
+  }
+
+  const productIds = [...new Set(items.map(i => i.product_id).filter(Boolean))];
+  const products = await Product.findAll({ where: { product_id: { [Op.in]: productIds } } });
+  const productMap = new Map(products.map(product => [product.product_id, product]));
+  const operations = [];
+
+  for (const item of items) {
+    const product = productMap.get(item.product_id);
+    if (!product) {
+      throw archiveError(`商品 ${item.product_id || item.product_name || ''} 不存在`);
+    }
+
+    const quantity = Number(item.quantity || 1);
+    if (product.need_sn === 1) {
+      const snCode = String(item.sn_code || '').trim();
+      if (!snCode) {
+        throw archiveError(`商品 ${item.product_name || product.name} 需要SN管理，请先补充SN码后再归档`);
+      }
+
+      const snWhere = {
+        sn_code: snCode,
+        product_id: item.product_id,
+        store_id: order.store_id,
+        status: 'in_stock',
+        is_deleted: 0
+      };
+      if (item.pn_code) snWhere.pn_code = item.pn_code;
+
+      const snRecord = await ProductSn.findOne({ where: snWhere });
+      if (!snRecord) {
+        throw archiveError(`SN码 [${snCode}] 在当前门店没有可用库存，不能归档`);
+      }
+
+      operations.push({
+        item,
+        product,
+        quantity,
+        snRecord,
+        inventoryType: snRecord.inventory_type || 'normal_qty'
+      });
+    } else {
+      const inv = await Inventory.findOne({
+        where: { product_id: item.product_id, store_id: order.store_id }
+      });
+      const normalStock = inv ? Math.max(
+        Number(inv.normal_qty || 0),
+        Number(inv.regular_qty || 0) + Number(inv.subsidy_qty || 0) + Number(inv.second_qty || 0)
+      ) : 0;
+      const totalStock = inv ? normalStock + Number(inv.display_qty || 0) : 0;
+      if (totalStock < quantity) {
+        throw archiveError(`商品 ${item.product_name || product.name} 库存不足(可用:${totalStock}, 需要:${quantity})，不能归档`);
+      }
+
+      operations.push({
+        item,
+        product,
+        quantity,
+        inventoryType: 'normal_qty'
+      });
+    }
+  }
+
+  for (const op of operations) {
+    if (op.snRecord) {
+      await op.snRecord.update({ status: 'sold' });
+      if (!op.item.sn_id) {
+        await op.item.update({ sn_id: op.snRecord.sn_id });
+      }
+    }
+
+    await _deductInventory(op.item.product_id, order.store_id, op.inventoryType, op.quantity);
+  }
 }
 
 module.exports = { list, create, detail, update, stats, approve, reject, paymentMethods, getProductPns, getProductSns };

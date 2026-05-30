@@ -132,7 +132,7 @@
                     <el-option
                       v-for="p in row.searchOptions"
                       :key="p.product_id"
-                      :label="`${p.name} [${p.product_code}] ¥${p.standard_price}${p.stock_qty != null ? ' 库存:' + p.stock_qty : ''}`"
+                      :label="formatProductOptionLabel(p)"
                       :value="p.product_id"
                     />
                   </el-select>
@@ -151,6 +151,7 @@
                     style="width: 100%"
                     :loading="row.pnLoading"
                     @change="onPnChange($index)"
+                    @blur="onPnBlur($index)"
                   >
                     <el-option v-for="pn in (row.pnList || [])" :key="pn" :label="pn" :value="pn" />
                   </el-select>
@@ -570,19 +571,53 @@ const remoteSearchProduct = async (query, index) => {
   }
 }
 
+const formatProductOptionLabel = (product) => {
+  const price = product.standard_price ?? 0
+  let stockText = ''
+  if (product.current_store_stock_qty > 0) {
+    stockText = ` 当前门店库存:${product.current_store_stock_qty}`
+  } else if (product.other_store_stock_qty > 0) {
+    stockText = ` 其他门店库存:${product.other_store_stock_qty}`
+  } else if (product.stock_qty != null || product.total_stock_qty != null) {
+    stockText = ' 无库存'
+  }
+  return `${product.name} [${product.product_code}] ¥${price}${stockText}`
+}
+
+const normalizePnCodes = (value) => {
+  if (!value) return []
+  if (Array.isArray(value)) {
+    return value.map(v => typeof v === 'string' ? v : (v?.pn_code || v?.pnCode || v?.pn || '')).filter(Boolean)
+  }
+  return String(value).split(new RegExp('[,\\s\\uFF0C\\u3001]+')).map(v => v.trim()).filter(Boolean)
+}
+
+const getMatchedPnCodes = (product) => {
+  const codes = [
+    ...normalizePnCodes(product?.pn_list),
+    ...normalizePnCodes(product?.pnList),
+    ...normalizePnCodes(product?.pn_code),
+    ...normalizePnCodes(product?.pn),
+    ...normalizePnCodes(product?.manufacturer_code),
+    ...normalizePnCodes(product?.manufacturerCode)
+  ]
+  return [...new Set(codes)]
+}
+
 const onProductChange = async (productId, index) => {
   const opts = orderForm.items[index].searchOptions || []
   const found = opts.find(p => p.product_id === productId)
   if (found) {
+    const matchedPns = getMatchedPnCodes(found)
     orderForm.items[index].productName = found.name
     orderForm.items[index].salePrice = parseFloat(found.standard_price) || 0
     orderForm.items[index].needSn = found.need_sn === 1
     orderForm.items[index].standardPrice = parseFloat(found.standard_price) || 0
     orderForm.items[index].minSalePrice = parseFloat(found.min_sale_price) || 0
     orderForm.items[index].belowMinPrice = false
-    orderForm.items[index].pnCode = ''
+    orderForm.items[index].pnCode = matchedPns[0] || ''
     orderForm.items[index].snCode = ''
-    orderForm.items[index].pnList = []
+    orderForm.items[index].pnList = matchedPns
     orderForm.items[index].snList = []
     orderForm.items[index].snId = ''
     orderForm.items[index].stockQty = found.stock_qty
@@ -594,13 +629,18 @@ const onProductChange = async (productId, index) => {
         const pnRes = await api.getProductPns(orderForm.storeId, productId)
         console.log('[onProductChange] PN result:', pnRes)
         if (pnRes.code === 0 && pnRes.data && pnRes.data.length > 0) {
-          orderForm.items[index].pnList = pnRes.data
-          orderForm.items[index].pnCode = pnRes.data[0]
-          console.log('[onProductChange] set pnList:', pnRes.data, 'default pnCode:', pnRes.data[0])
+          const mergedPns = [...new Set([...matchedPns, ...pnRes.data])]
+          orderForm.items[index].pnList = mergedPns
+          if (!orderForm.items[index].pnCode) {
+            orderForm.items[index].pnCode = mergedPns[0]
+          }
+          console.log('[onProductChange] set pnList:', mergedPns, 'default pnCode:', orderForm.items[index].pnCode)
           if (found.need_sn === 1) {
             console.log('[onProductChange] product needs SN, loading SN list...')
             await loadSnList(index)
           }
+        } else if (found.need_sn === 1 && orderForm.items[index].pnCode) {
+          await loadSnList(index)
         }
       } catch (e) { console.error('[onProductChange] error loading PNs:', e) }
       finally { orderForm.items[index].pnLoading = false }
@@ -648,6 +688,10 @@ const onPnChange = async (index) => {
     console.log('[onPnChange] PN changed, reloading SN list for pn:', item.pnCode)
     await loadSnList(index)
   }
+}
+
+const onPnBlur = async (index) => {
+  await onPnChange(index)
 }
 
 const onPriceChange = (index) => {
