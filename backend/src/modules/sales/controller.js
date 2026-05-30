@@ -39,12 +39,7 @@ async function list(ctx) {
   const user = ctx.state.user;
 
   const where = { is_deleted: 0 };
-  const whereStore = {};
-
-  if (!user.regionCodes.includes('*')) {
-    whereStore.region_id = user.regionCodes;
-  }
-  if (storeId) whereStore.store_id = storeId;
+  const regionCodes = Array.isArray(user.regionCodes) ? user.regionCodes.filter(Boolean) : [];
 
   const dateRange = buildChinaDateRange(startDate, endDate);
   if (dateRange) {
@@ -63,9 +58,19 @@ async function list(ctx) {
     where.create_user = { [Op.like]: `%${createUser}%` };
   }
 
-  const stores = await Store.findAll({ where: whereStore });
-  const storeIds = stores.map(s => s.store_id);
-  where.store_id = storeIds;
+  if (storeId) {
+    where.store_id = storeId;
+  } else if (user.storeId && !['boss', 'admin'].includes(user.roleCode)) {
+    where.store_id = user.storeId;
+  } else if (regionCodes.length > 0 && !regionCodes.includes('*')) {
+    const stores = await Store.findAll({ where: { region_id: regionCodes } });
+    const storeIds = stores.map(s => s.store_id);
+    if (storeIds.length === 0) {
+      ctx.body = formatPaginatedResult([], { page, pageSize, count: 0 });
+      return;
+    }
+    where.store_id = storeIds;
+  }
 
   const itemWhere = {};
   if (pnCode) itemWhere.pn_code = { [Op.like]: `%${pnCode}%` };
