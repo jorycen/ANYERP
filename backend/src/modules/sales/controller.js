@@ -5,11 +5,37 @@ const { Order, OrderItem, OrderPayment, OrderAttachment, Store, Staff, Product, 
 const { Op } = require('sequelize');
 const { generateOrderNo, generateUUID, paginate, formatPaginatedResult } = require('../../utils');
 
+function chinaDateBoundary(dateText, endOfDay = false) {
+  if (!dateText) return null;
+  const value = String(dateText).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return new Date(`${value}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`);
+  }
+  return new Date(value);
+}
+
+function buildChinaDateRange(startDate, endDate) {
+  const range = {};
+  if (startDate) {
+    const start = chinaDateBoundary(startDate, false);
+    if (!isNaN(start.getTime())) range[Op.gte] = start;
+  }
+  if (endDate) {
+    const end = chinaDateBoundary(endDate, true);
+    if (!isNaN(end.getTime())) range[Op.lte] = end;
+  }
+  return Object.keys(range).length ? range : null;
+}
+
 /**
  * 销售订单列表
  */
 async function list(ctx) {
-  const { storeId, startDate, endDate, customerPhone, orderNo, page = 1, pageSize = 20 } = ctx.query;
+  const {
+    storeId, startDate, endDate, customerPhone, orderNo,
+    status, createUser, pnCode, snCode,
+    page = 1, pageSize = 20
+  } = ctx.query;
   const user = ctx.state.user;
 
   const where = { is_deleted: 0 };
@@ -20,11 +46,9 @@ async function list(ctx) {
   }
   if (storeId) whereStore.store_id = storeId;
 
-  if (startDate) {
-    where.create_time = { [Op.gte]: new Date(startDate) };
-  }
-  if (endDate) {
-    where.create_time = { ...where.create_time, [Op.lte]: new Date(endDate + ' 23:59:59') };
+  const dateRange = buildChinaDateRange(startDate, endDate);
+  if (dateRange) {
+    where.create_time = dateRange;
   }
   if (customerPhone) {
     where.customer_phone = { [Op.like]: `%${customerPhone}%` };
@@ -32,18 +56,34 @@ async function list(ctx) {
   if (orderNo) {
     where.order_no = { [Op.like]: `%${orderNo}%` };
   }
+  if (status) {
+    where.order_status = status;
+  }
+  if (createUser) {
+    where.create_user = { [Op.like]: `%${createUser}%` };
+  }
 
   const stores = await Store.findAll({ where: whereStore });
   const storeIds = stores.map(s => s.store_id);
   where.store_id = storeIds;
 
+  const itemWhere = {};
+  if (pnCode) itemWhere.pn_code = { [Op.like]: `%${pnCode}%` };
+  if (snCode) itemWhere.sn_code = { [Op.like]: `%${snCode}%` };
+  const itemInclude = { model: OrderItem };
+  if (Object.keys(itemWhere).length > 0) {
+    itemInclude.where = itemWhere;
+    itemInclude.required = true;
+  }
+
   const { count, rows } = await Order.findAndCountAll({
     where,
     include: [
       { model: Store },
-      { model: OrderItem },
+      itemInclude,
       { model: OrderPayment }
     ],
+    distinct: true,
     order: [['create_time', 'DESC']],
     ...paginate({}, { page, pageSize })
   });
