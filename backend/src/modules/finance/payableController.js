@@ -1,7 +1,7 @@
 /**
  * 应付管理控制器
  */
-const { Payable, Settlement, SettlementItem, Supplier, SupplierPaymentAccount, Inbound, PurchaseRequest, SettlementAccount, SettlementAccountTransaction, sequelize } = require('../../models');
+const { Payable, Settlement, SettlementItem, Supplier, Inbound, PurchaseRequest, SettlementAccount, SettlementAccountTransaction, sequelize } = require('../../models');
 const { Op } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult } = require('../../utils');
 const moment = require('moment');
@@ -50,14 +50,7 @@ async function getUnpaidBySupplier(ctx) {
  * 创建结算单
  */
 async function createSettlement(ctx) {
-  const {
-    supplierId,
-    payableIds,
-    supplierAccountId,
-    paymentAccountType = 'saved',
-    otherPaymentRemark,
-    otherPaymentImage
-  } = ctx.request.body;
+  const { supplierId, payableIds } = ctx.request.body;
   const user = ctx.state.user;
 
   if (!supplierId) {
@@ -85,111 +78,40 @@ async function createSettlement(ctx) {
     ctx.throw(400, '没有可结算的应付款项');
   }
 
-  let supplierAccountSnapshot = null;
-  let finalSupplierAccountId = null;
-  let finalOtherPaymentRemark = null;
-  let finalOtherPaymentImage = null;
-
-  if (paymentAccountType === 'other') {
-    if (!otherPaymentRemark || !String(otherPaymentRemark).trim()) {
-      ctx.throw(400, '请选择其他账户时必须填写说明');
-    }
-    if (!otherPaymentImage) {
-      ctx.throw(400, '请选择其他账户时必须上传凭证图片');
-    }
-    finalOtherPaymentRemark = String(otherPaymentRemark).trim();
-    finalOtherPaymentImage = otherPaymentImage;
-  } else {
-    if (!supplierAccountId) {
-      ctx.throw(400, '请选择供应商付款账户');
-    }
-
-    const supplierAccount = await SupplierPaymentAccount.findOne({
-      where: {
-        account_id: supplierAccountId,
-        supplier_id: supplierId,
-        status: 1,
-        is_deleted: 0
-      }
-    });
-
-    if (!supplierAccount) {
-      ctx.throw(404, '供应商付款账户不存在或已停用');
-    }
-
-    finalSupplierAccountId = supplierAccount.account_id;
-    supplierAccountSnapshot = JSON.stringify({
-      accountId: supplierAccount.account_id,
-      companyName: supplierAccount.company_name || '',
-      taxNo: supplierAccount.tax_no || '',
-      bankName: supplierAccount.bank_name || '',
-      accountNumber: supplierAccount.account_number || '',
-      remark: supplierAccount.remark || ''
-    });
-  }
-
   const settlementId = generateUUID();
   const dateStr = moment().format('YYYYMMDD');
   const seq = `S${dateStr}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`;
   let totalAmount = 0;
 
-  const settlement = await sequelize.transaction(async (transaction) => {
-    const created = await Settlement.create({
-      settlement_id: settlementId,
-      settlement_no: seq,
-      supplier_id: supplierId,
-      supplier_name: supplier.name,
-      supplier_account_id: finalSupplierAccountId,
-      supplier_account_snapshot: supplierAccountSnapshot,
-      other_payment_remark: finalOtherPaymentRemark,
-      other_payment_image: finalOtherPaymentImage,
-      total_amount: 0,
-      status: 'unpaid',
-      create_user: user.name || user.phone
-    }, { transaction });
-
-    for (const payable of payables) {
-      totalAmount += parseFloat(payable.total_amount);
-
-      await SettlementItem.create({
-        settlement_id: settlementId,
-        payable_id: payable.payable_id,
-        request_no: payable.request_no,
-        amount: payable.total_amount
-      }, { transaction });
-
-      await payable.update({
-        status: 'settling',
-        paid_amount: payable.total_amount
-      }, { transaction });
-    }
-
-    await created.update({ total_amount: totalAmount }, { transaction });
-    return created;
+  const settlement = await Settlement.create({
+    settlement_id: settlementId,
+    settlement_no: seq,
+    supplier_id: supplierId,
+    supplier_name: supplier.name,
+    total_amount: 0,
+    status: 'unpaid',
+    create_user: user.name || user.phone
   });
 
-  ctx.body = { code: 0, message: '结算单创建成功', data: settlement };
-}
+  for (const payable of payables) {
+    totalAmount += parseFloat(payable.total_amount);
 
-function parseJsonText(value, fallback = null) {
-  if (!value) return fallback;
-  try {
-    return JSON.parse(value);
-  } catch (err) {
-    return fallback;
+    await SettlementItem.create({
+      settlement_id: settlementId,
+      payable_id: payable.payable_id,
+      request_no: payable.request_no,
+      amount: payable.total_amount
+    });
+
+    await payable.update({
+      status: 'settling',
+      paid_amount: payable.total_amount
+    });
   }
-}
 
-function normalizeSettlement(row) {
-  const data = row.toJSON ? row.toJSON() : row;
-  return {
-    ...data,
-    supplier_account_snapshot_parsed: parseJsonText(data.supplier_account_snapshot)
-  };
-}
+  await settlement.update({ total_amount: totalAmount });
 
-function normalizeSettlements(rows) {
-  return rows.map(normalizeSettlement);
+  ctx.body = { code: 0, message: '结算单创建成功', data: settlement };
 }
 
 /**
@@ -213,7 +135,7 @@ async function getSettlementList(ctx) {
     ...paginate({}, { page, pageSize })
   });
 
-  ctx.body = formatPaginatedResult(normalizeSettlements(rows), { page, pageSize, count });
+  ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
 }
 
 /**

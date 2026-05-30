@@ -22,13 +22,7 @@ api.interceptors.request.use(
 
 // Response interceptor
 api.interceptors.response.use(
-  response => {
-    const payload = response.data
-    if (payload?.data?.pagination && payload.data.total === undefined) {
-      payload.data.total = payload.data.pagination.total || 0
-    }
-    return payload
-  },
+  response => response.data,
   error => {
     if (error.response?.status === 401) {
       localStorage.removeItem('token')
@@ -187,13 +181,6 @@ export default {
     const formData = new FormData();
     formData.append('file', file);
     return api.post('/product/price/import', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    });
-  },
-  importCostRefresh: (file) => {
-    const formData = new FormData();
-    formData.append('file', file);
-    return api.post('/product/price/import-cost-refresh', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     });
   },

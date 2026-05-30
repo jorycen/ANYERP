@@ -16,11 +16,11 @@ docker build -t any-erp-backend:latest .
 
 # 本地测试
 docker run -p 3000:3000 \
-  -e DB_HOST=sh-cynosdbmysql-grp-lpycb6gi.sql.tencentcdb.com \
-  -e DB_PORT=29244 \
-  -e DB_NAME=cloud1-8glwjlnq4c74f7f1 \
-  -e DB_USER=ainuoyun \
-  -e DB_PASSWORD=lx123456. \
+  -e DB_HOST=your-db-host.example.com \
+  -e DB_PORT=3306 \
+  -e DB_NAME=any_erp \
+  -e DB_USER=your-db-user \
+  -e DB_PASSWORD=your-db-password \
   any-erp-backend:latest
 ```
 
@@ -60,12 +60,12 @@ docker push registry.tencent.tencent.com/your_namespace/any-erp-backend:v1.0.0
    ```
    NODE_ENV = production
    PORT = 3000
-   DB_HOST = sh-cynosdbmysql-grp-lpycb6gi.sql.tencentcdb.com
-   DB_PORT = 29244
-   DB_NAME = cloud1-8glwjlnq4c74f7f1
-   DB_USER = ainuoyun
-   DB_PASSWORD = lx123456.
-   JWT_SECRET = any-erp-secret-key-2024
+   DB_HOST = your-db-host.example.com
+   DB_PORT = 3306
+   DB_NAME = any_erp
+   DB_USER = your-db-user
+   DB_PASSWORD = your-db-password
+   JWT_SECRET = your-jwt-secret
    ```
 
 3. **端口配置**：
@@ -96,7 +96,7 @@ docker push registry.tencent.tencent.com/your_namespace/any-erp-backend:v1.0.0
 import cloudbase from '@cloudbase/js-sdk'
 
 const app = cloudbase.init({
-    env: 'cloud1-8glwjlnq4c74f7f1',
+    env: 'any_erp',
     region: 'ap-shanghai'
 })
 

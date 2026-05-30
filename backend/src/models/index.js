@@ -797,6 +797,9 @@ ReturnStock.belongsTo(Store, { foreignKey: 'store_id', targetKey: 'store_id' });
 Transfer.hasMany(TransferItem, { foreignKey: 'transfer_id', sourceKey: 'transfer_id' });
 TransferItem.belongsTo(Transfer, { foreignKey: 'transfer_id', targetKey: 'transfer_id' });
 
+Product.hasMany(TransferItem, { foreignKey: 'product_id', sourceKey: 'product_id' });
+TransferItem.belongsTo(Product, { foreignKey: 'product_id', targetKey: 'product_id' });
+
 Transfer.belongsTo(Store, { foreignKey: 'from_store_id', targetKey: 'store_id', as: 'FromStore' });
 Transfer.belongsTo(Store, { foreignKey: 'to_store_id', targetKey: 'store_id', as: 'ToStore' });
 

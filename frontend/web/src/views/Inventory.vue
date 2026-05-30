@@ -143,6 +143,10 @@
         </el-tab-pane>
 
         <el-tab-pane label="调拨管理" name="transfer">
+          <div class="filter-bar">
+            <el-button type="primary" @click="openTransferApplyDialog">发起调拨申请</el-button>
+            <el-button @click="loadTransferLists">刷新</el-button>
+          </div>
           <div class="transfer-section">
             <div class="section-title">调拨出库</div>
             <el-table :data="transferOutList" stripe border>
@@ -156,7 +160,7 @@
               <el-table-column label="调拨商品" min-width="200">
                 <template #default="{ row }">
                   <span v-for="(item, i) in (row.TransferItems || [])" :key="i">
-                    {{ item.sn_code || item.product_id }}{{ i < (row.TransferItems || []).length - 1 ? '、' : '' }}
+                    {{ formatTransferItemLabel(item) }}{{ i < (row.TransferItems || []).length - 1 ? '、' : '' }}
                   </span>
                 </template>
               </el-table-column>
@@ -191,7 +195,7 @@
               <el-table-column label="调拨商品" min-width="200">
                 <template #default="{ row }">
                   <span v-for="(item, i) in (row.TransferItems || [])" :key="i">
-                    {{ item.sn_code || item.product_id }}{{ i < (row.TransferItems || []).length - 1 ? '、' : '' }}
+                    {{ formatTransferItemLabel(item) }}{{ i < (row.TransferItems || []).length - 1 ? '、' : '' }}
                   </span>
                 </template>
               </el-table-column>
@@ -493,22 +497,57 @@
     <el-dialog v-model="transferDialogVisible" title="新增调拨" width="600px" @close="resetTransferForm">
       <el-form label-width="100px">
         <el-form-item label="调出门店">
-          <el-input :model-value="transferForm.fromStoreName" disabled />
+          <el-select
+            v-model="transferForm.fromStoreId"
+            placeholder="请选择调出门店"
+            style="width: 100%"
+            :disabled="transferFromStoreDisabled"
+            @change="onTransferFromStoreChange"
+          >
+            <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
+          </el-select>
         </el-form-item>
         <el-form-item label="调入门店">
           <el-select v-model="transferForm.toStoreId" placeholder="请选择调入门店" style="width: 100%">
             <el-option v-for="store in availableStores" :key="store.store_id" :label="store.name" :value="store.store_id" />
           </el-select>
         </el-form-item>
+        <el-form-item label="添加商品">
+          <div class="transfer-add-row">
+            <el-select
+              v-model="transferAddForm.productId"
+              placeholder="搜索调拨商品"
+              filterable
+              remote
+              clearable
+              :remote-method="searchTransferProducts"
+              @change="onTransferProductChange"
+              style="flex: 1"
+              :disabled="!transferForm.fromStoreId"
+            >
+              <el-option
+                v-for="item in transferProductOptions"
+                :key="item.product_id"
+                :label="(item.product_name || item.product_id) + ' / ' + (item.need_sn === 1 ? 'SN' : '\u6570\u91cf') + ' / \u5e93\u5b58 ' + (item.normal_qty || 0)"
+                :value="item.product_id"
+              />
+            </el-select>
+                        <el-input-number v-model="transferAddForm.quantity" :min="1" :precision="0" style="width: 120px" />
+            <el-button type="primary" @click="addTransferProductItem">添加</el-button>
+          </div>
+        </el-form-item>
       </el-form>
 
       <h4 class="mt-20">调拨商品</h4>
       <el-table :data="transferForm.items" stripe border size="small">
-        <el-table-column label="SN码" width="180">
-          <template #default="{ row: item }">{{ item.snCode }}</template>
-        </el-table-column>
         <el-table-column label="商品名称" min-width="140">
           <template #default="{ row: item }">{{ item.productName }}</template>
+        </el-table-column>
+        <el-table-column label="SN码" width="180">
+          <template #default="{ row: item }">{{ item.snCode || '\u6309\u5546\u54c1\u6570\u91cf\u7533\u8bf7' }}</template>
+        </el-table-column>
+        <el-table-column label="数量" width="100">
+          <template #default="{ row: item }">{{ item.quantity }}</template>
         </el-table-column>
         <el-table-column label="操作" width="80" align="center">
           <template #default="{ $index: idx }">
@@ -614,15 +653,30 @@ const transferDialogVisible = ref(false)
 const transferLoading = ref(false)
 const transferOutList = ref([])
 const transferInList = ref([])
+const transferProductOptions = ref([])
+const transferSnOptions = ref([])
 const transferForm = reactive({
   fromStoreId: '',
   fromStoreName: '',
   toStoreId: '',
   items: []
 })
+const transferAddForm = reactive({
+  productId: '',
+  snId: '',
+  quantity: 1
+})
 
 const availableStores = computed(() => {
   return stores.value.filter(s => s.store_id !== transferForm.fromStoreId)
+})
+
+const transferFromStoreDisabled = computed(() => {
+  return isStoreUser() || transferForm.items.length > 0
+})
+
+const selectedTransferProduct = computed(() => {
+  return transferProductOptions.value.find(item => item.product_id === transferAddForm.productId) || null
 })
 
 onMounted(() => {
@@ -1044,11 +1098,11 @@ const openSnTrace = async (row) => {
   traceLoading.value = true
   traceTimeline.value = []
   try {
-    const res = await api.snTrace(row.sn_code)
+    const res = await api.snTrace(row.sn_code, { pnCode: row.pn_code || '' })
     if (res.code === 0) {
       traceTimeline.value = res.data?.timeline || []
       traceCurrentStatus.value = res.data?.currentStatus || ''
-      traceProductName.value = res.data?.productName || ''
+      traceProductName.value = res.data?.productName || row.product_name || row.product_id || '-'
     }
   } catch (err) {
     ElMessage.error('查询SN追踪失败')
@@ -1061,7 +1115,7 @@ const goToOrder = async (row) => {
   traceSnCode.value = row.sn_code
   traceLoading.value = true
   try {
-    const res = await api.snTrace(row.sn_code)
+    const res = await api.snTrace(row.sn_code, { pnCode: row.pn_code || '' })
     if (res.code === 0) {
       const saleEvents = (res.data?.timeline || []).filter(e => e.type === 'sale')
       if (saleEvents.length > 0 && saleEvents[0].ref_id) {
@@ -1079,6 +1133,126 @@ const goToOrder = async (row) => {
 
 const goToOrderFromTrace = (orderId) => {
   window.open(`/#/sales?orderId=${orderId}`, '_blank')
+}
+
+const getStoreName = (storeId) => {
+  return stores.value.find(store => store.store_id === storeId)?.name || ''
+}
+
+const openTransferApplyDialog = async () => {
+  resetTransferForm()
+  if (isStoreUser()) {
+    transferForm.fromStoreId = getStoreId()
+    transferForm.fromStoreName = getStoreName(transferForm.fromStoreId)
+  }
+  transferDialogVisible.value = true
+  if (transferForm.fromStoreId) {
+    await searchTransferProducts('')
+  }
+}
+
+const onTransferFromStoreChange = async (storeId) => {
+  transferForm.fromStoreName = getStoreName(storeId)
+  transferForm.toStoreId = transferForm.toStoreId === storeId ? '' : transferForm.toStoreId
+  transferForm.items = []
+  transferAddForm.productId = ''
+  transferAddForm.snId = ''
+  transferAddForm.quantity = 1
+  transferProductOptions.value = []
+  transferSnOptions.value = []
+  if (storeId) {
+    await searchTransferProducts('')
+  }
+}
+
+const searchTransferProducts = async (keyword = '') => {
+  if (!transferForm.fromStoreId) {
+    transferProductOptions.value = []
+    return
+  }
+  try {
+    const res = await api.getInventoryList({
+      storeId: transferForm.fromStoreId,
+      keyword,
+      page: 1,
+      pageSize: 50
+    })
+    if (res.code === 0) {
+      transferProductOptions.value = (res.data?.list || []).filter(item => Number(item.normal_qty || 0) > 0)
+    }
+  } catch (err) {
+    ElMessage.error('搜索可调拨商品失败')
+  }
+}
+
+const onTransferProductChange = async () => {
+  transferAddForm.snId = ''
+  transferAddForm.quantity = 1
+  transferSnOptions.value = []
+}
+
+const loadTransferProductSns = async () => {
+  if (!transferForm.fromStoreId || !transferAddForm.productId) return
+  try {
+    const res = await api.getSnList({
+      productId: transferAddForm.productId,
+      storeId: transferForm.fromStoreId,
+      status: 'in_stock',
+      page: 1,
+      pageSize: 100
+    })
+    if (res.code === 0) {
+      transferSnOptions.value = res.data?.list || []
+    }
+  } catch (err) {
+    ElMessage.error('加载可调拨SN失败')
+  }
+}
+
+const addTransferProductItem = () => {
+  if (!transferForm.fromStoreId) {
+    ElMessage.warning('\u8bf7\u9009\u62e9\u8c03\u51fa\u95e8\u5e97')
+    return
+  }
+  const product = transferProductOptions.value.find(item => item.product_id === transferAddForm.productId)
+  if (!product) {
+    ElMessage.warning('\u8bf7\u9009\u62e9\u8c03\u62e8\u5546\u54c1')
+    return
+  }
+
+  const quantity = Number(transferAddForm.quantity || 0)
+  const availableQty = Number(product.normal_qty || 0)
+  if (quantity <= 0) {
+    ElMessage.warning('\u8bf7\u8f93\u5165\u8c03\u62e8\u6570\u91cf')
+    return
+  }
+  if (quantity > availableQty) {
+    ElMessage.warning('\u8c03\u62e8\u6570\u91cf\u4e0d\u80fd\u8d85\u8fc7\u5e93\u5b58 ' + availableQty)
+    return
+  }
+
+  const existing = transferForm.items.find(item => !item.snId && item.productId === product.product_id)
+  if (existing) {
+    const nextQty = Number(existing.quantity || 0) + quantity
+    if (nextQty > availableQty) {
+      ElMessage.warning('\u8be5\u5546\u54c1\u7d2f\u8ba1\u8c03\u62e8\u6570\u91cf\u4e0d\u80fd\u8d85\u8fc7\u5e93\u5b58 ' + availableQty)
+      return
+    }
+    existing.quantity = nextQty
+  } else {
+    transferForm.items.push({
+      snId: null,
+      snCode: '',
+      productId: product.product_id,
+      productName: product.product_name || product.name || '',
+      quantity
+    })
+  }
+
+  transferAddForm.productId = ''
+  transferAddForm.snId = ''
+  transferAddForm.quantity = 1
+  transferSnOptions.value = []
 }
 
 const openTransferDialog = (row) => {
@@ -1109,14 +1283,29 @@ const openTransferDialog = (row) => {
   transferDialogVisible.value = true
 }
 
+const formatTransferItemLabel = (item) => {
+  const name = item.product_name || item.productName || item.product_id || '-'
+  if (item.sn_code) return `${name} / SN:${item.sn_code}`
+  return `${name} x${item.quantity || 0}`
+}
+
 const resetTransferForm = () => {
   transferForm.fromStoreId = ''
   transferForm.fromStoreName = ''
   transferForm.toStoreId = ''
   transferForm.items = []
+  transferAddForm.productId = ''
+  transferAddForm.snId = ''
+  transferAddForm.quantity = 1
+  transferProductOptions.value = []
+  transferSnOptions.value = []
 }
 
 const submitTransfer = async () => {
+  if (!transferForm.fromStoreId) {
+    ElMessage.warning('请选择调出门店')
+    return
+  }
   if (!transferForm.toStoreId) {
     ElMessage.warning('请选择调入门店')
     return

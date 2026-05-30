@@ -295,6 +295,7 @@ async function updateSn(ctx) {
 async function snTrace(ctx) {
   try {
     const { snCode } = ctx.params;
+    const { pnCode } = ctx.query;
 
     if (!snCode) {
       ctx.throw(400, 'SN码不能为空');
@@ -419,18 +420,25 @@ async function snTrace(ctx) {
 
     timeline.sort((a, b) => new Date(b.time) - new Date(a.time));
 
+    const snWhere = { sn_code: snCode, is_deleted: 0 };
+    if (pnCode) {
+      snWhere.pn_code = pnCode;
+    }
+
     const sn = await ProductSn.findOne({
-      where: { sn_code: snCode, is_deleted: 0 }
+      where: snWhere,
+      include: [{ model: Product, attributes: ['name'] }]
     });
+    const snData = sn ? sn.toJSON() : null;
 
     ctx.body = {
       code: 0,
       data: {
         snCode,
-        currentStatus: sn ? sn.status : 'unknown',
-        productId: sn ? sn.product_id : '',
-        productName: sn ? sn.product_name : '',
-        storeId: sn ? sn.store_id : '',
+        currentStatus: snData ? snData.status : 'unknown',
+        productId: snData ? snData.product_id : '',
+        productName: snData ? (snData.product_name || snData.Product?.name || '') : '',
+        storeId: snData ? snData.store_id : '',
         timeline
       }
     };
@@ -647,6 +655,40 @@ async function updateInventory(productId, storeId, field, delta, transaction) {
 
   const newVal = Math.max(0, (inv[field] || 0) + delta);
   await inv.update({ [field]: newVal }, { transaction });
+}
+
+
+async function getTransferableStock(product, productId, storeId, transaction) {
+  const inventory = await Inventory.findOne({
+    where: { product_id: productId, store_id: storeId },
+    transaction
+  });
+  const inventoryQty = inventory ? Number(inventory.normal_qty || 0) : 0;
+
+  if (Number(product.need_sn) !== 1) {
+    return inventoryQty;
+  }
+
+  const snQty = await ProductSn.count({
+    where: {
+      product_id: productId,
+      store_id: storeId,
+      status: 'in_stock',
+      is_deleted: 0
+    },
+    transaction
+  });
+
+  return Math.max(inventoryQty, snQty);
+}
+
+function normalizeTransferItem(raw) {
+  const productId = raw.productId || raw.product_id;
+  const snId = raw.snId || raw.sn_id || null;
+  const snCode = raw.snCode || raw.sn_code || '';
+  const quantity = Math.max(parseInt(raw.quantity || raw.qty || 1, 10), 1);
+
+  return { productId, snId, snCode, quantity };
 }
 
 /**
@@ -896,21 +938,89 @@ async function transfer(ctx) {
   const t = await sequelize.transaction();
   try {
     const user = ctx.state.user;
-    const { fromStoreId, toStoreId, items } = ctx.request.body;
+    const { fromStoreId, toStoreId } = ctx.request.body;
+    const rawItems = Array.isArray(ctx.request.body.items) ? ctx.request.body.items : [];
+    const items = rawItems.map(normalizeTransferItem);
 
     if (!fromStoreId || !toStoreId) {
-      ctx.throw(400, '调出门店和调入门店不能为空');
+      ctx.throw(400, '?????????????');
     }
     if (fromStoreId === toStoreId) {
-      ctx.throw(400, '调出门店和调入门店不能相同');
+      ctx.throw(400, '?????????????');
     }
-    if (!items || items.length === 0) {
-      ctx.throw(400, '调拨商品不能为空');
+    if (items.length === 0) {
+      ctx.throw(400, '????????');
+    }
+    if (items.some(item => !item.productId)) {
+      ctx.throw(400, '?????????');
+    }
+
+    const productIds = [...new Set(items.map(item => item.productId))];
+    const products = await Product.findAll({
+      where: { product_id: { [Op.in]: productIds }, is_deleted: 0 },
+      transaction: t
+    });
+    const productMap = new Map(products.map(product => [product.product_id, product]));
+    const normalizedItems = [];
+
+    for (const item of items) {
+      const product = productMap.get(item.productId);
+      if (!product) {
+        ctx.throw(400, `????????${item.productId || '-'}`);
+      }
+
+      if (item.snId || item.snCode) {
+        if (!item.snId || !item.snCode) {
+          ctx.throw(400, `?? ${product.name} ?SN?????`);
+        }
+        const sn = await ProductSn.findOne({
+          where: {
+            sn_id: item.snId,
+            sn_code: item.snCode,
+            product_id: item.productId,
+            store_id: fromStoreId,
+            status: 'in_stock',
+            is_deleted: 0
+          },
+          transaction: t
+        });
+        if (!sn) {
+          ctx.throw(400, `SN?[${item.snCode}]???????????`);
+        }
+        normalizedItems.push({ ...item, quantity: 1, productName: product.name });
+        continue;
+      }
+
+      const quantity = Math.max(parseInt(item.quantity || 1, 10), 1);
+      const availableQty = await getTransferableStock(product, item.productId, fromStoreId, t);
+      if (availableQty < quantity) {
+        ctx.throw(400, `?? ${product.name} ????????${availableQty}???${quantity}`);
+      }
+
+      if (Number(product.need_sn) === 1) {
+        for (let i = 0; i < quantity; i++) {
+          normalizedItems.push({
+            productId: item.productId,
+            snId: null,
+            snCode: '',
+            quantity: 1,
+            productName: product.name
+          });
+        }
+      } else {
+        normalizedItems.push({
+          productId: item.productId,
+          snId: null,
+          snCode: '',
+          quantity,
+          productName: product.name
+        });
+      }
     }
 
     const transferNo = generateTransferNo();
     const transferId = generateUUID();
-    const totalQuantity = items.reduce((sum, item) => sum + (item.quantity || 1), 0);
+    const totalQuantity = normalizedItems.reduce((sum, item) => sum + Number(item.quantity || 1), 0);
 
     await Transfer.create({
       transfer_id: transferId,
@@ -922,7 +1032,7 @@ async function transfer(ctx) {
       apply_user: user.name || user.staffId
     }, { transaction: t });
 
-    for (const item of items) {
+    for (const item of normalizedItems) {
       await TransferItem.create({
         transfer_id: transferId,
         product_id: item.productId,
@@ -939,25 +1049,22 @@ async function transfer(ctx) {
           product_id: item.productId,
           store_id: fromStoreId,
           action: 'transfer_out',
-          remark: `调拨申请：${fromStoreId} → ${toStoreId}，单号：${transferNo}`,
+          remark: `?????${fromStoreId} -> ${toStoreId}????${transferNo}`,
           create_user: user.name || user.staffId
         }, { transaction: t });
       }
     }
 
     await t.commit();
-    ctx.body = { code: 0, data: { transferId, transferNo }, message: '调拨申请已创建' };
+    ctx.body = { code: 0, data: { transferId, transferNo }, message: '???????' };
   } catch (err) {
     await t.rollback();
     if (err.status) ctx.throw(err.status, err.message);
     console.error('transfer error:', err);
-    ctx.throw(500, '创建调拨申请失败');
+    ctx.throw(500, '????????');
   }
 }
 
-/**
- * 调拨列表
- */
 async function getTransferList(ctx) {
   try {
     const { status, fromStoreId, toStoreId, page = 1, pageSize = 20 } = ctx.query;
@@ -978,8 +1085,22 @@ async function getTransferList(ctx) {
       ...paginate({}, { page, pageSize })
     });
 
+    const productIds = [...new Set(rows.flatMap(row => (row.TransferItems || []).map(item => item.product_id)).filter(Boolean))];
+    const products = productIds.length > 0
+      ? await Product.findAll({ where: { product_id: { [Op.in]: productIds } }, attributes: ['product_id', 'name', 'need_sn'] })
+      : [];
+    const productMap = new Map(products.map(product => [product.product_id, product]));
+
     const list = rows.map(row => {
       const data = row.toJSON();
+      data.TransferItems = (data.TransferItems || []).map(item => {
+        const product = productMap.get(item.product_id);
+        return {
+          ...item,
+          product_name: product?.name || '',
+          need_sn: product?.need_sn || 0
+        };
+      });
       return {
         ...data,
         from_store_name: data.FromStore?.name || '',
@@ -1004,38 +1125,79 @@ async function confirmTransferOut(ctx) {
     const { transferId } = ctx.request.body;
 
     const transfer = await Transfer.findByPk(transferId, {
-      include: [{ model: TransferItem }]
+      include: [{ model: TransferItem }],
+      transaction: t
     });
 
     if (!transfer) {
-      ctx.throw(404, '调拨单不存在');
+      ctx.throw(404, '??????');
     }
     if (transfer.status !== 'pending') {
-      ctx.throw(400, '当前状态不允许确认出库');
+      ctx.throw(400, '???????????');
     }
 
     const items = transfer.TransferItems || [];
+    const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean))];
+    const products = productIds.length > 0
+      ? await Product.findAll({ where: { product_id: { [Op.in]: productIds } }, transaction: t })
+      : [];
+    const productMap = new Map(products.map(product => [product.product_id, product]));
 
     for (const item of items) {
-      if (item.sn_id && item.sn_code) {
-        await ProductSn.update(
+      const product = productMap.get(item.product_id);
+      let snId = item.sn_id;
+      let snCode = item.sn_code;
+      const quantity = Number(item.quantity || 1);
+
+      if (!snId && !snCode && product && Number(product.need_sn) === 1) {
+        const sn = await ProductSn.findOne({
+          where: {
+            product_id: item.product_id,
+            store_id: transfer.from_store_id,
+            status: 'in_stock',
+            is_deleted: 0
+          },
+          transaction: t
+        });
+        if (!sn) {
+          ctx.throw(400, `?? ${product.name} ?????SN?????SN??`);
+        }
+        snId = sn.sn_id;
+        snCode = sn.sn_code;
+        await item.update({ sn_id: snId, sn_code: snCode, quantity: 1 }, { transaction: t });
+      }
+
+      if (snId && snCode) {
+        const [updated] = await ProductSn.update(
           { status: 'transferring' },
-          { where: { sn_id: item.sn_id }, transaction: t }
+          {
+            where: {
+              sn_id: snId,
+              product_id: item.product_id,
+              store_id: transfer.from_store_id,
+              status: 'in_stock',
+              is_deleted: 0
+            },
+            transaction: t
+          }
         );
+        if (updated === 0) {
+          ctx.throw(400, `SN?[${snCode}]???????????`);
+        }
 
         await SnLog.create({
           log_id: generateUUID(),
-          sn_id: item.sn_id,
-          sn_code: item.sn_code,
+          sn_id: snId,
+          sn_code: snCode,
           product_id: item.product_id,
           store_id: transfer.from_store_id,
           action: 'transfer_out_confirm',
-          remark: `调拨出库确认：${transfer.from_store_id} → ${transfer.to_store_id}，单号：${transfer.transfer_no}`,
+          remark: `???????${transfer.from_store_id} -> ${transfer.to_store_id}????${transfer.transfer_no}`,
           create_user: user.name || user.staffId
         }, { transaction: t });
       }
 
-      await updateInventory(item.product_id, transfer.from_store_id, 'normal_qty', -(item.quantity || 1), t);
+      await updateInventory(item.product_id, transfer.from_store_id, 'normal_qty', -quantity, t);
     }
 
     await transfer.update({
@@ -1044,18 +1206,15 @@ async function confirmTransferOut(ctx) {
     }, { transaction: t });
 
     await t.commit();
-    ctx.body = { code: 0, message: '调拨出库确认成功' };
+    ctx.body = { code: 0, message: '????????' };
   } catch (err) {
     await t.rollback();
     if (err.status) ctx.throw(err.status, err.message);
     console.error('confirmTransferOut error:', err);
-    ctx.throw(500, '确认调拨出库失败');
+    ctx.throw(500, '????????');
   }
 }
 
-/**
- * 确认调拨入库（目标门店操作）
- */
 async function confirmTransferIn(ctx) {
   const t = await sequelize.transaction();
   try {

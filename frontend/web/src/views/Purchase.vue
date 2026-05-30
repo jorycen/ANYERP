@@ -95,17 +95,7 @@
     <el-dialog v-model="requestDialogVisible" title="新建采购申请" width="700px" @close="handleDialogClose">
       <el-form :model="requestForm" label-width="100px">
         <el-form-item label="供应商" required>
-          <el-select
-            v-model="requestForm.supplierId"
-            placeholder="请输入供应商关键字"
-            style="width: 100%"
-            filterable
-            remote
-            clearable
-            :remote-method="searchRequestSuppliers"
-            @visible-change="onRequestSupplierVisibleChange"
-            @change="onSupplierChange"
-          >
+          <el-select v-model="requestForm.supplierId" placeholder="请选择供应商" style="width: 100%" @change="onSupplierChange">
             <el-option v-for="s in allSuppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
           </el-select>
         </el-form-item>
@@ -297,7 +287,7 @@
     </el-dialog>
 
     <!-- 供应商对话框 -->
-    <el-dialog v-model="supplierDialogVisible" :title="supplierDialogTitle" width="860px" @close="handleSupplierDialogClose">
+    <el-dialog v-model="supplierDialogVisible" :title="supplierDialogTitle" width="500px" @close="handleSupplierDialogClose">
       <el-form :model="supplierForm" label-width="100px">
         <el-form-item label="供应商名称" required>
           <el-input v-model="supplierForm.name" placeholder="请输入供应商名称" />
@@ -317,23 +307,6 @@
         <el-form-item label="状态">
           <el-switch v-model="supplierForm.status" :active-value="1" :inactive-value="0" />
           <span class="ml-10">{{ supplierForm.status === 1 ? '正常' : '停用' }}</span>
-        </el-form-item>
-        <el-form-item label="付款信息">
-          <div class="supplier-accounts">
-            <div
-              v-for="(account, index) in supplierForm.paymentAccounts"
-              :key="index"
-              class="supplier-account-row"
-            >
-              <el-input v-model="account.companyName" placeholder="公司名称" />
-              <el-input v-model="account.taxNo" placeholder="税号" />
-              <el-input v-model="account.bankName" placeholder="开户行" />
-              <el-input v-model="account.accountNumber" placeholder="账号" />
-              <el-input v-model="account.remark" placeholder="备注" />
-              <el-button type="danger" link @click="removeSupplierAccount(index)">删除</el-button>
-            </div>
-            <el-button type="primary" link @click="addSupplierAccount">添加付款账户</el-button>
-          </div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -357,7 +330,6 @@ const allStores = ref([])
 const allStoresLoaded = ref(false)
 const products = ref([])
 const productSearchKeyword = ref('')
-const supplierSearchKeyword = ref('')
 const total = ref(0)
 const supplierTotal = ref(0)
 
@@ -417,24 +389,12 @@ const supplierForm = reactive({
   phone: '',
   address: '',
   remark: '',
-  status: 1,
-  paymentAccounts: []
+  status: 1
 })
 
 const toNumber = (value) => {
   const number = Number(value)
   return Number.isFinite(number) ? number : 0
-}
-
-const toQuantity = (value) => {
-  const number = Number(value)
-  return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0
-}
-
-const normalizeAllocationQuantity = (value, totalQuantity) => {
-  const quantity = toQuantity(value)
-  const total = toQuantity(totalQuantity)
-  return quantity <= total ? quantity : 0
 }
 
 const totalAmount = computed(() => {
@@ -450,12 +410,12 @@ const actualTotal = computed(() => {
 
 const allocatedTotalQuantity = computed(() => {
   return storeAllocationList.value.reduce((sum, item) => {
-    return sum + toQuantity(item.quantity)
+    return sum + toNumber(item.quantity)
   }, 0)
 })
 
 const remainingAllocateQuantity = computed(() => {
-  return toQuantity(currentAllocateProduct.value?.quantity) - allocatedTotalQuantity.value
+  return toNumber(currentAllocateProduct.value?.quantity) - allocatedTotalQuantity.value
 })
 
 onMounted(() => {
@@ -486,7 +446,7 @@ const loadData = async () => {
     const res = await api.getPurchaseRequestList(queryParams)
     if (res.code === 0) {
       tableData.value = res.data?.list || []
-      total.value = res.data?.pagination?.total || res.data?.total || 0
+      total.value = res.data?.total || 0
     }
   } catch (err) {
     ElMessage.error('加载数据失败')
@@ -498,37 +458,21 @@ const loadSuppliers = async () => {
     const res = await api.getSupplierList(supplierQuery)
     if (res.code === 0) {
       supplierData.value = res.data?.list || []
-      supplierTotal.value = res.data?.pagination?.total || res.data?.total || 0
+      supplierTotal.value = res.data?.total || 0
     }
   } catch (err) {
     console.error('Failed to load suppliers')
-    ElMessage.error(err.response?.data?.message || '加载供应商失败')
   }
 }
 
 const loadAllSuppliers = async () => {
   try {
-    const params = supplierSearchKeyword.value
-      ? { keyword: supplierSearchKeyword.value, page: 1, pageSize: 50 }
-      : null
-    const res = params ? await api.getSupplierList(params) : await api.getAllSuppliers()
+    const res = await api.getAllSuppliers()
     if (res.code === 0) {
-      allSuppliers.value = params ? (res.data?.list || []) : (res.data || [])
+      allSuppliers.value = res.data || []
     }
   } catch (err) {
     console.error('Failed to load all suppliers')
-  }
-}
-
-const searchRequestSuppliers = async (keyword) => {
-  supplierSearchKeyword.value = keyword || ''
-  await loadAllSuppliers()
-}
-
-const onRequestSupplierVisibleChange = async (visible) => {
-  if (visible) {
-    supplierSearchKeyword.value = ''
-    await loadAllSuppliers()
   }
 }
 
@@ -648,7 +592,6 @@ const handleEditSupplier = (row) => {
   supplierForm.address = row.address || ''
   supplierForm.remark = row.remark || ''
   supplierForm.status = row.status
-  supplierForm.paymentAccounts = normalizeSupplierAccounts(row.paymentAccounts || row.SupplierPaymentAccounts || [])
   supplierDialogVisible.value = true
 }
 
@@ -693,8 +636,7 @@ const handleSupplierSubmit = async () => {
       phone: supplierForm.phone,
       address: supplierForm.address,
       remark: supplierForm.remark,
-      status: supplierForm.status,
-      paymentAccounts: normalizeSupplierAccounts(supplierForm.paymentAccounts)
+      status: supplierForm.status
     }
 
     let res
@@ -707,15 +649,13 @@ const handleSupplierSubmit = async () => {
     if (res.code === 0) {
       ElMessage.success(supplierForm.supplierId ? '更新成功' : '创建成功')
       supplierDialogVisible.value = false
-      supplierQuery.page = 1
-      await loadSuppliers()
-      await loadAllSuppliers()
+      loadSuppliers()
+      loadAllSuppliers()
     } else {
       ElMessage.error(res.message || '操作失败')
     }
   } catch (err) {
-    const msg = err.response?.data?.message || err.message || '操作失败'
-    ElMessage.error(msg)
+    ElMessage.error('操作失败')
   } finally {
     supplierLoading.value = false
   }
@@ -733,34 +673,6 @@ const resetSupplierForm = () => {
   supplierForm.address = ''
   supplierForm.remark = ''
   supplierForm.status = 1
-  supplierForm.paymentAccounts = []
-}
-
-const normalizeSupplierAccounts = (accounts = []) => {
-  return accounts
-    .map(account => ({
-      accountId: account.accountId || account.account_id || '',
-      companyName: account.companyName || account.company_name || '',
-      taxNo: account.taxNo || account.tax_no || '',
-      bankName: account.bankName || account.bank_name || '',
-      accountNumber: account.accountNumber || account.account_number || '',
-      remark: account.remark || ''
-    }))
-    .filter(account => account.companyName || account.taxNo || account.bankName || account.accountNumber || account.remark)
-}
-
-const addSupplierAccount = () => {
-  supplierForm.paymentAccounts.push({
-    companyName: supplierForm.name || '',
-    taxNo: '',
-    bankName: '',
-    accountNumber: '',
-    remark: ''
-  })
-}
-
-const removeSupplierAccount = (index) => {
-  supplierForm.paymentAccounts.splice(index, 1)
 }
 
 const searchProducts = async (keyword) => {
@@ -832,9 +744,8 @@ const handleSubmit = async () => {
     }
 
     // 校验分配数量总和等于商品数量
-    const itemQuantity = toQuantity(item.quantity)
-    const allocatedQty = item.storeAllocations.reduce((sum, alloc) => sum + normalizeAllocationQuantity(alloc.quantity, itemQuantity), 0)
-    if (allocatedQty !== itemQuantity) {
+    const allocatedQty = item.storeAllocations.reduce((sum, alloc) => sum + toNumber(alloc.quantity), 0)
+    if (allocatedQty !== toNumber(item.quantity)) {
       ElMessage.warning(`「${productName}」分配数量(${allocatedQty})必须等于采购数量(${item.quantity})`)
       return
     }
@@ -895,8 +806,7 @@ const getStatusText = (status) => {
 }
 
 const handleAllocateStore = (row, index) => {
-  const totalQuantity = toQuantity(row.quantity)
-  if (totalQuantity <= 0) {
+  if (toNumber(row.quantity) <= 0) {
     ElMessage.warning('请先输入商品数量')
     return
   }
@@ -904,7 +814,6 @@ const handleAllocateStore = (row, index) => {
   const product = products.value.find(p => p.product_id === row.productId)
   currentAllocateProduct.value = {
     ...row,
-    quantity: totalQuantity,
     productName: product?.name || ''
   }
   currentAllocateIndex.value = index
@@ -914,7 +823,7 @@ const handleAllocateStore = (row, index) => {
     return {
       storeId: store.store_id,
       storeName: store.name,
-      quantity: normalizeAllocationQuantity(existing?.quantity, totalQuantity)
+      quantity: toNumber(existing?.quantity)
     }
   })
   
@@ -922,14 +831,14 @@ const handleAllocateStore = (row, index) => {
 }
 
 const validateAllocation = () => {
-  if (allocatedTotalQuantity.value > toQuantity(currentAllocateProduct.value?.quantity)) {
+  if (allocatedTotalQuantity.value > toNumber(currentAllocateProduct.value?.quantity)) {
     ElMessage.warning('分配数量不能超过总数量')
   }
 }
 
 const handleSaveAllocation = () => {
   const totalAllocated = allocatedTotalQuantity.value
-  const totalQuantity = toQuantity(currentAllocateProduct.value?.quantity)
+  const totalQuantity = toNumber(currentAllocateProduct.value?.quantity)
   
   if (totalAllocated > totalQuantity) {
     ElMessage.warning('分配数量不能超过总数量')
@@ -937,7 +846,7 @@ const handleSaveAllocation = () => {
   }
   
   const validAllocations = storeAllocationList.value
-    .map(a => ({ ...a, quantity: toQuantity(a.quantity) }))
+    .map(a => ({ ...a, quantity: toNumber(a.quantity) }))
     .filter(a => a.quantity > 0)
   
   if (currentAllocateIndex.value >= 0) {
@@ -1001,16 +910,6 @@ const handleAllocateDialogClose = () => {
 }
 .summary-item span {
   color: #f56c6c;
-}
-.supplier-accounts {
-  width: 100%;
-}
-.supplier-account-row {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr)) 44px;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 8px;
 }
 .no-spinner :deep(input[type='number'])::-webkit-inner-spin-button,
 .no-spinner :deep(input[type='number'])::-webkit-outer-spin-button {

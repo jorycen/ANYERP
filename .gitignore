@@ -2,50 +2,36 @@
 node_modules/
 **/node_modules/
 
-# Build output
+# Builds
 dist/
-build/
-coverage/
-*.tsbuildinfo
+**/dist/
+frontend/dist-web/
+backend/public/
+*.zip
 
-# Logs
+# Runtime data and logs
+data/
+backup/
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
+tmp_*.json
+query
+*.tmp
+*.timestamp-*.mjs
 
-# Environment and local config
+# Local environment
 .env
 .env.*
 !.env.example
-tmp_login.json
+
+# Generated or packaged copies
+backend-package/
+backend-clean/
+deploy-package/
 
 # OS/editor files
 .DS_Store
 Thumbs.db
-.idea/
-.vscode/
+*.swp
 
-# Database/runtime data
-data/
-backup/
-*.db
-*.sqlite
-*.sqlite3
-*.ibd
-ibdata*
-undo_*
-
-# Certificates and private keys
-*.pem
-*.key
-*.p12
-*.pfx
-*.crt
-*.cert
-
-# Packaged/bundled runtime artifacts
-backend-package/mysql-8.0.36.zip
-backend-package/mysql-8.0.36-winx64/
-deploy-package/
+# Conflict copies
+*冲突副本*

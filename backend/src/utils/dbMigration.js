@@ -56,54 +56,6 @@ async function checkAndCreateTable(tableName, createSql) {
   }
 }
 
-async function checkAndAddIndex(tableName, indexName, createIndexSql) {
-  try {
-    const [result] = await sequelize.query(
-      `SELECT COUNT(*) as cnt
-       FROM information_schema.STATISTICS
-       WHERE TABLE_SCHEMA = DATABASE()
-       AND TABLE_NAME = ?
-       AND INDEX_NAME = ?`,
-      { replacements: [tableName, indexName], type: sequelize.QueryTypes.SELECT }
-    );
-
-    if (result.cnt === 0) {
-      await sequelize.query(createIndexSql);
-      console.log(`[DB Migration] 已添加索引: ${tableName}.${indexName}`);
-      return true;
-    }
-    console.log(`[DB Migration] 索引已存在: ${tableName}.${indexName}`);
-    return false;
-  } catch (error) {
-    console.error(`[DB Migration] 检查索引失败: ${tableName}.${indexName} - ${error.message}`);
-    return false;
-  }
-}
-
-async function dropProductSnGlobalUniqueIndex() {
-  try {
-    const indexes = await sequelize.query(
-      `SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS columns
-       FROM information_schema.STATISTICS
-       WHERE TABLE_SCHEMA = DATABASE()
-       AND TABLE_NAME = 'T_PRODUCT_SN'
-       AND NON_UNIQUE = 0
-       GROUP BY INDEX_NAME`,
-      { type: sequelize.QueryTypes.SELECT }
-    );
-
-    for (const idx of indexes) {
-      const columns = String(idx.columns || '').toUpperCase();
-      if (columns === 'SN_CODE') {
-        await sequelize.query(`ALTER TABLE T_PRODUCT_SN DROP INDEX \`${idx.INDEX_NAME}\``);
-        console.log(`[DB Migration] 已删除SN全局唯一索引: ${idx.INDEX_NAME}`);
-      }
-    }
-  } catch (error) {
-    console.error(`[DB Migration] 删除SN全局唯一索引失败 - ${error.message}`);
-  }
-}
-
 async function runMigrations() {
   console.log('[DB Migration] 开始检查数据库结构...');
   
@@ -117,9 +69,6 @@ async function runMigrations() {
     await checkAndAddColumn('T_PRODUCT', 'CREATE_TIME', 'DATETIME COMMENT "创建时间"', 'CONFIG');
     await checkAndAddColumn('T_PRODUCT_SN', 'PN_CODE', 'VARCHAR(64) COMMENT "PN料号"', 'PRODUCT_ID');
     await checkAndAddColumn('T_PRODUCT_SN', 'INVENTORY_TYPE', 'VARCHAR(32) DEFAULT "normal_qty" COMMENT "库存类型"', 'STATUS');
-    await dropProductSnGlobalUniqueIndex();
-    await checkAndAddIndex('T_PRODUCT_SN', 'uk_product_sn_pn_sn', 'ALTER TABLE T_PRODUCT_SN ADD UNIQUE KEY uk_product_sn_pn_sn (PN_CODE, SN_CODE)');
-    await checkAndAddIndex('T_PRODUCT_SN', 'idx_product_sn_code', 'ALTER TABLE T_PRODUCT_SN ADD INDEX idx_product_sn_code (SN_CODE)');
     await checkAndAddColumn('T_PRODUCT', 'MANUFACTURER_CODE', 'VARCHAR(512) COMMENT "manufacturer code"', 'CONFIG');
     await checkAndCreateTable('T_SN_LOG', `
       CREATE TABLE T_SN_LOG (
@@ -140,27 +89,6 @@ async function runMigrations() {
       )
     `);
     await checkAndAddColumn('T_SUPPLIER', 'INVOICE_TYPE', 'VARCHAR(32) COMMENT "发票类型"', 'ADDRESS');
-    await checkAndAddColumn('T_SUPPLIER', 'REMARK', 'VARCHAR(512) COMMENT "备注"', 'INVOICE_TYPE');
-    await checkAndAddColumn('T_SUPPLIER', 'CREATE_TIME', 'DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT "创建时间"', 'IS_DELETED');
-    await checkAndAddColumn('T_SUPPLIER', 'UPDATE_TIME', 'DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT "更新时间"', 'CREATE_TIME');
-    await checkAndCreateTable('T_SUPPLIER_PAYMENT_ACCOUNT', `
-      CREATE TABLE T_SUPPLIER_PAYMENT_ACCOUNT (
-        ACCOUNT_ID VARCHAR(32) NOT NULL COMMENT '供应商付款账户ID',
-        SUPPLIER_ID VARCHAR(32) NOT NULL COMMENT '供应商ID',
-        COMPANY_NAME VARCHAR(255) COMMENT '公司名称',
-        TAX_NO VARCHAR(64) COMMENT '税号',
-        BANK_NAME VARCHAR(128) COMMENT '开户行',
-        ACCOUNT_NUMBER VARCHAR(128) COMMENT '账号',
-        REMARK VARCHAR(512) COMMENT '备注',
-        SORT_ORDER INT DEFAULT 0 COMMENT '排序',
-        STATUS TINYINT DEFAULT 1 COMMENT '状态',
-        IS_DELETED TINYINT(1) DEFAULT 0 COMMENT '是否删除',
-        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-        UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-        PRIMARY KEY (ACCOUNT_ID),
-        KEY idx_supplier_payment_supplier (SUPPLIER_ID)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='供应商付款账户表'
-    `);
     await checkAndAddColumn('T_PURCHASE_REQUEST', 'INVOICE_TYPE', 'VARCHAR(32) COMMENT "发票类型"', 'SUPPLIER_ID');
     await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'STORE_ALLOCATIONS', 'TEXT COMMENT "门店分配"', 'QUANTITY');
     await checkAndAddColumn('T_INBOUND', 'PURCHASE_REQUEST_ID', 'VARCHAR(32) COMMENT "采购申请ID"', 'INBOUND_NO');
@@ -286,10 +214,6 @@ async function runMigrations() {
         KEY idx_settlement_status (STATUS)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='结算单表'
     `);
-    await checkAndAddColumn('T_SETTLEMENT', 'SUPPLIER_ACCOUNT_ID', 'VARCHAR(32) COMMENT "供应商付款账户ID"', 'SUPPLIER_NAME');
-    await checkAndAddColumn('T_SETTLEMENT', 'SUPPLIER_ACCOUNT_SNAPSHOT', 'TEXT COMMENT "供应商付款账户快照"', 'SUPPLIER_ACCOUNT_ID');
-    await checkAndAddColumn('T_SETTLEMENT', 'OTHER_PAYMENT_REMARK', 'TEXT COMMENT "其他付款说明"', 'SUPPLIER_ACCOUNT_SNAPSHOT');
-    await checkAndAddColumn('T_SETTLEMENT', 'OTHER_PAYMENT_IMAGE', 'LONGTEXT COMMENT "其他付款图片"', 'OTHER_PAYMENT_REMARK');
 
     await checkAndCreateTable('T_SETTLEMENT_ITEM', `
       CREATE TABLE T_SETTLEMENT_ITEM (

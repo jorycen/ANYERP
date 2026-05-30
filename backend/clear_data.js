@@ -2,11 +2,11 @@ const mysql = require('mysql2/promise');
 const readline = require('readline');
 
 const config = {
-  host: 'sh-cynosdbmysql-grp-lpycb6gi.sql.tencentcdb.com',
-  port: 29244,
-  user: 'ainuoyun',
-  password: 'lx123456.',
-  database: 'cloud1-8glwjlnq4c74f7f1',
+  host: process.env.DB_HOST || '127.0.0.1',
+  port: Number(process.env.DB_PORT || 3306),
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'any_erp',
   charset: 'utf8mb4'
 };
 
