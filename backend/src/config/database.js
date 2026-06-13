@@ -17,6 +17,8 @@ const sequelize = new Sequelize(
   }
 );
 
+console.log(`[DB Config] MySQL ${config.database.username}@${config.database.host}:${config.database.port}/${config.database.database}`);
+
 module.exports = {
   sequelize,
   Sequelize

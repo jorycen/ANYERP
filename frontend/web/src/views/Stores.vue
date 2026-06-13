@@ -62,6 +62,7 @@
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
+        <el-button v-if="!editStoreId" type="info" @click="saveStoreDraft">保存草稿</el-button>
         <el-button type="primary" @click="handleSubmit" :loading="submitLoading">确定</el-button>
       </template>
     </el-dialog>
@@ -72,8 +73,10 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
+import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 
 const tableData = ref([])
+const STORE_DRAFT_KEY = 'store-create'
 const loading = ref(false)
 const regions = ref([])
 const dialogVisible = ref(false)
@@ -133,6 +136,7 @@ const loadData = async () => {
 const handleCreate = () => {
   dialogTitle.value = '新增门店'
   resetForm()
+  restoreStoreDraft()
   dialogVisible.value = true
 }
 
@@ -209,6 +213,9 @@ const handleSubmit = async () => {
 
     if (res.code === 0) {
       ElMessage.success(editStoreId.value ? '更新成功' : '创建成功')
+      if (!editStoreId.value) {
+        clearDraft(STORE_DRAFT_KEY)
+      }
       dialogVisible.value = false
       loadData()
     } else {
@@ -233,6 +240,18 @@ const resetForm = () => {
   storeForm.phone = ''
   storeForm.address = ''
   storeForm.status = 1
+}
+
+const saveStoreDraft = () => {
+  saveDraft(STORE_DRAFT_KEY, cloneDraft(storeForm))
+  ElMessage.success('草稿已保存')
+}
+
+const restoreStoreDraft = () => {
+  const draft = loadDraft(STORE_DRAFT_KEY)
+  if (!draft) return
+  Object.assign(storeForm, draft)
+  ElMessage.success('已恢复上次草稿')
 }
 </script>
 

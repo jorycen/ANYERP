@@ -3,8 +3,38 @@
  */
 const Router = require('koa-router');
 const { getDailyDetails, getDailyStatement, getDailyStatementDetail, batchSettle, getSettlementSummary, createExpense, getExpenseList, submitExpense, payExpense, getSettlementAccountsWithBalance, getAccountTransactions, addAccountTransaction } = require('./controller');
-const { getPayableList, getUnpaidBySupplier, createSettlement, getSettlementList, confirmPayment } = require('./payableController');
-const { addRebate, getRebateList, getRebateBalance } = require('./rebateController');
+const {
+  getPayableList,
+  getUnpaidBySupplier,
+  createSettlement,
+  getSettlementList,
+  getSettlementDetail,
+  submitSettlement,
+  confirmSettlement,
+  voidSettlement,
+  getPaymentCandidates,
+  exportPaymentCandidates,
+  validatePaymentImport,
+  commitPaymentImport,
+  getPaymentBatches,
+  getPaymentBatchDetail,
+  voidPaymentBatch,
+  confirmPayment,
+  cancelPayment
+} = require('./payableController');
+const {
+  addRebate,
+  getRebateList,
+  getRebateBalance,
+  getRebateSummary,
+  createManufacturerPolicy,
+  updateManufacturerPolicy,
+  getManufacturerPolicyList,
+  importManufacturerPrices,
+  getManufacturerPriceHistory,
+  getRebateEstimateList,
+  getCostAdjustmentList
+} = require('./rebateController');
 const { requireRole } = require('../../middleware/permission');
 
 const router = new Router();
@@ -25,11 +55,31 @@ router.get('/payable-list', getPayableList);
 router.get('/unpaid-by-supplier', getUnpaidBySupplier);
 router.post('/create-settlement', createSettlement);
 router.get('/settlement-list', getSettlementList);
+router.get('/settlement/:id', getSettlementDetail);
+router.post('/settlement/submit', submitSettlement);
+router.post('/settlement/confirm', confirmSettlement);
+router.post('/settlement/void', voidSettlement);
+router.get('/settlement-payment/candidates', getPaymentCandidates);
+router.get('/settlement-payment/export', exportPaymentCandidates);
+router.post('/settlement-payment/import/validate', validatePaymentImport);
+router.post('/settlement-payment/import/commit', commitPaymentImport);
+router.get('/settlement-payment/batches', getPaymentBatches);
+router.get('/settlement-payment/batch/:id', getPaymentBatchDetail);
+router.post('/settlement-payment/batch/void', voidPaymentBatch);
 router.post('/confirm-payment', confirmPayment);
+router.post('/cancel-payment', cancelPayment);
 
 router.post('/add-rebate', addRebate);
 router.get('/rebate-list', getRebateList);
 router.get('/rebate-balance', getRebateBalance);
+router.get('/rebate-summary', getRebateSummary);
+router.post('/manufacturer-policy', createManufacturerPolicy);
+router.put('/manufacturer-policy/:policyId', updateManufacturerPolicy);
+router.get('/manufacturer-policy-list', getManufacturerPolicyList);
+router.post('/manufacturer-price/import', importManufacturerPrices);
+router.get('/manufacturer-price-history', getManufacturerPriceHistory);
+router.get('/rebate-estimate-list', getRebateEstimateList);
+router.get('/sales-cost-adjustment-list', getCostAdjustmentList);
 
 router.get('/settlement-accounts/balance', getSettlementAccountsWithBalance);
 router.get('/settlement-account/:accountId/transactions', getAccountTransactions);

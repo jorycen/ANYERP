@@ -22,7 +22,13 @@ api.interceptors.request.use(
 
 // Response interceptor
 api.interceptors.response.use(
-  response => response.data,
+  response => {
+    const payload = response.data
+    if (payload?.data?.pagination && payload.data.total === undefined) {
+      payload.data.total = payload.data.pagination.total || 0
+    }
+    return payload
+  },
   error => {
     if (error.response?.status === 401) {
       localStorage.removeItem('token')
@@ -63,7 +69,13 @@ export default {
   updateSales: (id, data) => api.put(`/sales/${id}`, data),
   approveOrder: (id) => api.post(`/sales/${id}/approve`),
   rejectOrder: (id, data) => api.post(`/sales/${id}/reject`, data),
+  recalculateSalesSettlementCost: (id) => api.post(`/sales/${id}/recalculate-settlement-cost`),
   getPaymentMethods: () => api.get('/sales/payment-methods'),
+  getDepositList: (params) => api.get('/sales/deposits', { params }),
+  createDeposit: (data) => api.post('/sales/deposits', data),
+  archiveDeposit: (id) => api.post(`/sales/deposits/${id}/archive`),
+  refundDeposit: (id, data) => api.post(`/sales/deposits/${id}/refund`, data),
+  getAvailableDeposits: (params) => api.get('/sales/deposits/available', { params }),
   getProductPns: (storeId, productId) => api.get(`/sales/product-pns/${storeId}/${productId}`),
   getProductSns: (storeId, productId, pnCode) => api.get(`/sales/product-sns/${storeId}/${productId}`, { params: { pnCode } }),
 
@@ -71,10 +83,13 @@ export default {
   getInventoryList: (params) => api.get('/inventory/list', { params }),
   getSnList: (params) => api.get('/inventory/sn-list', { params }),
   updateSn: (snId, data) => api.put(`/inventory/sn/${snId}`, data),
-  snTrace: (snCode) => api.get(`/inventory/sn-trace/${encodeURIComponent(snCode)}`),
+  snTrace: (snCode, params) => api.get(`/inventory/sn-trace/${encodeURIComponent(snCode)}`, { params }),
   getInboundList: (params) => api.get('/inventory/inbound-list', { params }),
   getInboundDetail: (inboundId) => api.get(`/inventory/inbound-detail/${inboundId}`),
   executeInbound: (data) => api.post('/inventory/execute-inbound', data),
+  getReturnList: (params) => api.get('/inventory/return-list', { params }),
+  requestReturn: (data) => api.post('/inventory/request-return', data),
+  approveReturn: (data) => api.post('/inventory/approve-return', data),
   executeReturn: (data) => api.post('/inventory/execute-return', data),
   getLocationsByStore: (storeId) => api.get(`/inventory/locations/${storeId}`),
   inbound: (data) => api.post('/inventory/inbound', data),
@@ -83,6 +98,10 @@ export default {
   getTransferList: (params) => api.get('/inventory/transfer-list', { params }),
   confirmTransferOut: (data) => api.post('/inventory/transfer/confirm-out', data),
   confirmTransferIn: (data) => api.post('/inventory/transfer/confirm-in', data),
+  getConversionList: (params) => api.get('/inventory/conversion-list', { params }),
+  getConversionDetail: (id) => api.get(`/inventory/conversion/${id}`),
+  createConversion: (data) => api.post('/inventory/conversion', data),
+  voidConversion: (id, data) => api.post(`/inventory/conversion/${id}/void`, data),
 
   // Purchase
   getPurchaseRequestList: (params) => api.get('/purchase/request-list', { params }),
@@ -95,6 +114,7 @@ export default {
   createSupplier: (data) => api.post('/purchase/supplier', data),
   updateSupplier: (id, data) => api.put(`/purchase/supplier/${id}`, data),
   deleteSupplier: (id) => api.delete(`/purchase/supplier/${id}`),
+  sortSuppliers: (data) => api.post('/purchase/supplier/sort', data),
 
   // Finance
   getDailyDetails: (params) => api.get('/finance/daily-details', { params }),
@@ -110,13 +130,58 @@ export default {
   getUnpaidBySupplier: (params) => api.get('/finance/unpaid-by-supplier', { params }),
   createSettlement: (data) => api.post('/finance/create-settlement', data),
   getSettlementList: (params) => api.get('/finance/settlement-list', { params }),
+  getSettlementDetail: (id) => api.get(`/finance/settlement/${id}`),
+  submitSettlement: (data) => api.post('/finance/settlement/submit', data),
+  confirmSettlement: (data) => api.post('/finance/settlement/confirm', data),
+  voidSettlement: (data) => api.post('/finance/settlement/void', data),
+  getSettlementPaymentCandidates: (params) => api.get('/finance/settlement-payment/candidates', { params }),
+  exportSettlementPayments: (params) => exportApi.get('/finance/settlement-payment/export', {
+    params,
+    responseType: 'blob'
+  }).then(response => {
+    const url = window.URL.createObjectURL(new Blob([response.data], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    }))
+    const link = document.createElement('a')
+    link.href = url
+    let fileName = `应付实际付款_${new Date().toISOString().slice(0, 10)}.xlsx`
+    const contentDisposition = response.headers['content-disposition']
+    if (contentDisposition) {
+      const encodedMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)
+      const fileNameMatch = contentDisposition.match(/filename="?([^";]+)"?/i)
+      if (encodedMatch && encodedMatch[1]) {
+        fileName = decodeURIComponent(encodedMatch[1])
+      } else if (fileNameMatch && fileNameMatch[1]) {
+        fileName = fileNameMatch[1].replace(/['"]/g, '')
+      }
+    }
+    link.setAttribute('download', fileName)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+  }),
+  validateSettlementPaymentImport: (data) => api.post('/finance/settlement-payment/import/validate', data),
+  commitSettlementPaymentImport: (data) => api.post('/finance/settlement-payment/import/commit', data),
+  getSettlementPaymentBatches: (params) => api.get('/finance/settlement-payment/batches', { params }),
+  getSettlementPaymentBatchDetail: (id) => api.get(`/finance/settlement-payment/batch/${id}`),
+  voidSettlementPaymentBatch: (data) => api.post('/finance/settlement-payment/batch/void', data),
   confirmPayment: (data) => api.post('/finance/confirm-payment', data),
+  cancelPayment: (data) => api.post('/finance/cancel-payment', data),
   getSettlementAccountsBalance: (params) => api.get('/finance/settlement-accounts/balance', { params }),
   getAccountTransactions: (accountId, params) => api.get(`/finance/settlement-account/${accountId}/transactions`, { params }),
   addAccountTransaction: (data) => api.post('/finance/settlement-account/transaction', data),
   addRebate: (data) => api.post('/finance/add-rebate', data),
   getRebateList: (params) => api.get('/finance/rebate-list', { params }),
   getRebateBalance: (params) => api.get('/finance/rebate-balance', { params }),
+  getRebateSummary: () => api.get('/finance/rebate-summary'),
+  createManufacturerPolicy: (data) => api.post('/finance/manufacturer-policy', data),
+  updateManufacturerPolicy: (id, data) => api.put(`/finance/manufacturer-policy/${id}`, data),
+  getManufacturerPolicyList: (params) => api.get('/finance/manufacturer-policy-list', { params }),
+  importManufacturerPrices: (data) => api.post('/finance/manufacturer-price/import', data),
+  getManufacturerPriceHistory: (params) => api.get('/finance/manufacturer-price-history', { params }),
+  getRebateEstimateList: (params) => api.get('/finance/rebate-estimate-list', { params }),
+  getSalesCostAdjustmentList: (params) => api.get('/finance/sales-cost-adjustment-list', { params }),
 
   // Product
   getProductList: (params) => api.get('/product/list', { params }),
@@ -138,15 +203,20 @@ export default {
       responseType: 'blob' 
     }).then(response => {
       // 创建下载链接
-      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const url = window.URL.createObjectURL(new Blob([response.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      }));
       const link = document.createElement('a');
       link.href = url;
       // 从响应头中获取文件名
       let fileName = `商品导出_${new Date().toISOString().slice(0, 10)}.xlsx`;
       const contentDisposition = response.headers['content-disposition'];
       if (contentDisposition) {
-        const fileNameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-        if (fileNameMatch && fileNameMatch[1]) {
+        const encodedMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+        const fileNameMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+        if (encodedMatch && encodedMatch[1]) {
+          fileName = decodeURIComponent(encodedMatch[1]);
+        } else if (fileNameMatch && fileNameMatch[1]) {
           fileName = fileNameMatch[1].replace(/['"]/g, '');
         }
       }
@@ -168,6 +238,7 @@ export default {
   createCategory: (data) => api.post('/product/category', data),
   updateCategory: (id, data) => api.put(`/product/category/${id}`, data),
   deleteCategory: (id) => api.delete(`/product/category/${id}`),
+  sortCategories: (data) => api.post('/product/category/sort', data),
   // 分类字段配置
   getCategoryFields: (categoryId) => api.get('/product/category/fields', { params: { categoryId } }),
   saveCategoryFields: (data) => api.post('/product/category/fields', data),
@@ -177,10 +248,25 @@ export default {
   setPrice: (data) => api.post('/product/price/set', data),
   refreshCostPrice: (productId) => api.post(`/product/price/refresh-cost/${productId}`),
   batchRefreshCost: (data) => api.post('/product/price/batch-refresh-cost', data),
+  getPriceChangeHistory: (params) => api.get('/product/price/history', { params }),
+  validateImportPrices: (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post('/product/price/import/validate', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+  },
   importPrices: (file) => {
     const formData = new FormData();
     formData.append('file', file);
     return api.post('/product/price/import', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+  },
+  importCostRefresh: (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post('/product/price/import-cost-refresh', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     });
   },
@@ -196,6 +282,7 @@ export default {
   // Report
   getSalesReport: (params) => api.get('/report/sales', { params }),
   getInventoryReport: (params) => api.get('/report/inventory', { params }),
+  getEmployeePerformanceReport: (params) => api.get('/report/employee-performance', { params }),
 
   // System
   getMenus: () => api.get('/system/menus'),

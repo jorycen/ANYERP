@@ -2,7 +2,24 @@
  * 销售管理路由
  */
 const Router = require('koa-router');
-const { list, create, detail, update, stats, approve, reject, paymentMethods, getProductPns, getProductSns } = require('./controller');
+const {
+  list,
+  create,
+  detail,
+  update,
+  stats,
+  approve,
+  reject,
+  paymentMethods,
+  listDeposits,
+  createDeposit,
+  archiveDeposit,
+  refundDeposit,
+  availableDeposits,
+  getProductPns,
+  getProductSns,
+  recalculateSettlementCost
+} = require('./controller');
 const { enforceStoreOwnership } = require('../../middleware/permission');
 
 const router = new Router();
@@ -10,6 +27,11 @@ const router = new Router();
 router.get('/list', list);
 router.get('/stats', stats);
 router.get('/payment-methods', paymentMethods);
+router.get('/deposits', listDeposits);
+router.post('/deposits', enforceStoreOwnership, createDeposit);
+router.get('/deposits/available', availableDeposits);
+router.post('/deposits/:depositId/archive', enforceStoreOwnership, archiveDeposit);
+router.post('/deposits/:depositId/refund', enforceStoreOwnership, refundDeposit);
 router.get('/product-pns/:storeId/:productId', getProductPns);
 router.get('/product-sns/:storeId/:productId', getProductSns);
 router.post('/create', enforceStoreOwnership, create);
@@ -17,5 +39,6 @@ router.get('/:orderId', detail);
 router.put('/:orderId', enforceStoreOwnership, update);
 router.post('/:orderId/approve', approve);
 router.post('/:orderId/reject', reject);
+router.post('/:orderId/recalculate-settlement-cost', recalculateSettlementCost);
 
 module.exports = router;

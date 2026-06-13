@@ -56,6 +56,165 @@ async function checkAndCreateTable(tableName, createSql) {
   }
 }
 
+async function checkAndAddIndex(tableName, indexName, createIndexSql) {
+  try {
+    const [result] = await sequelize.query(
+      `SELECT COUNT(*) as cnt
+       FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = ?
+       AND INDEX_NAME = ?`,
+      { replacements: [tableName, indexName], type: sequelize.QueryTypes.SELECT }
+    );
+
+    if (result.cnt === 0) {
+      await sequelize.query(createIndexSql);
+      console.log(`[DB Migration] 已添加索引: ${tableName}.${indexName}`);
+      return true;
+    }
+    console.log(`[DB Migration] 索引已存在: ${tableName}.${indexName}`);
+    return false;
+  } catch (error) {
+    console.error(`[DB Migration] 检查索引失败: ${tableName}.${indexName} - ${error.message}`);
+    return false;
+  }
+}
+
+async function dropProductSnGlobalUniqueIndex() {
+  try {
+    const indexes = await sequelize.query(
+      `SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS columns
+       FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'T_PRODUCT_SN'
+       AND NON_UNIQUE = 0
+       GROUP BY INDEX_NAME`,
+      { type: sequelize.QueryTypes.SELECT }
+    );
+
+    for (const idx of indexes) {
+      const columns = String(idx.columns || '').toUpperCase();
+      if (columns === 'SN_CODE') {
+        await sequelize.query(`ALTER TABLE T_PRODUCT_SN DROP INDEX \`${idx.INDEX_NAME}\``);
+        console.log(`[DB Migration] 已删除SN全局唯一索引: ${idx.INDEX_NAME}`);
+      }
+    }
+  } catch (error) {
+    console.error(`[DB Migration] 删除SN全局唯一索引失败 - ${error.message}`);
+  }
+}
+
+async function normalizeInventoryLocationIndex() {
+  try {
+    await sequelize.query("UPDATE T_INVENTORY SET LOCATION_ID = '' WHERE LOCATION_ID IS NULL");
+
+    const indexes = await sequelize.query(
+      `SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS columns
+       FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'T_INVENTORY'
+       AND NON_UNIQUE = 0
+       GROUP BY INDEX_NAME`,
+      { type: sequelize.QueryTypes.SELECT }
+    );
+
+    for (const idx of indexes) {
+      const columns = String(idx.columns || '').toUpperCase();
+      if (columns === 'PRODUCT_ID,STORE_ID') {
+        await sequelize.query(`ALTER TABLE T_INVENTORY DROP INDEX \`${idx.INDEX_NAME}\``);
+        console.log(`[DB Migration] Dropped inventory product/store unique index: ${idx.INDEX_NAME}`);
+      }
+    }
+
+    await checkAndAddIndex(
+      'T_INVENTORY',
+      'uk_product_store_location',
+      'ALTER TABLE T_INVENTORY ADD UNIQUE KEY uk_product_store_location (PRODUCT_ID, STORE_ID, LOCATION_ID)'
+    );
+  } catch (error) {
+    console.error(`[DB Migration] Normalize inventory location index failed - ${error.message}`);
+  }
+}
+
+async function initializeSupplierSortOrder() {
+  try {
+    const [stat] = await sequelize.query(
+      `SELECT COUNT(*) AS total, COALESCE(MAX(SORT_ORDER), 0) AS maxSort
+       FROM T_SUPPLIER
+       WHERE IS_DELETED = 0`,
+      { type: sequelize.QueryTypes.SELECT }
+    );
+
+    if (!stat || Number(stat.total) === 0 || Number(stat.maxSort) > 0) {
+      return;
+    }
+
+    const rows = await sequelize.query(
+      `SELECT SUPPLIER_ID
+       FROM T_SUPPLIER
+       WHERE IS_DELETED = 0
+       ORDER BY CREATE_TIME DESC, SUPPLIER_ID ASC`,
+      { type: sequelize.QueryTypes.SELECT }
+    );
+
+    for (const [index, row] of rows.entries()) {
+      await sequelize.query(
+        `UPDATE T_SUPPLIER SET SORT_ORDER = ? WHERE SUPPLIER_ID = ?`,
+        { replacements: [index, row.SUPPLIER_ID] }
+      );
+    }
+
+    console.log(`[DB Migration] 已初始化 ${rows.length} 个供应商排序值`);
+  } catch (error) {
+    console.error(`[DB Migration] 初始化供应商排序失败 - ${error.message}`);
+  }
+}
+
+async function initializeCategorySortOrder() {
+  try {
+    const [stat] = await sequelize.query(
+      `SELECT COUNT(*) AS total, COALESCE(MAX(SORT_ORDER), 0) AS maxSort
+       FROM T_PRODUCT_CATEGORY
+       WHERE STATUS = 1`,
+      { type: sequelize.QueryTypes.SELECT }
+    );
+
+    if (!stat || Number(stat.total) === 0 || Number(stat.maxSort) > 0) {
+      return;
+    }
+
+    const rows = await sequelize.query(
+      `SELECT CATEGORY_ID, PARENT_ID
+       FROM T_PRODUCT_CATEGORY
+       WHERE STATUS = 1
+       ORDER BY LEVEL ASC, NAME ASC, CATEGORY_ID ASC`,
+      { type: sequelize.QueryTypes.SELECT }
+    );
+
+    const grouped = new Map();
+    for (const row of rows) {
+      const parentId = row.PARENT_ID || '__root__';
+      if (!grouped.has(parentId)) grouped.set(parentId, []);
+      grouped.get(parentId).push(row);
+    }
+
+    let count = 0;
+    for (const siblings of grouped.values()) {
+      for (const [index, row] of siblings.entries()) {
+        await sequelize.query(
+          `UPDATE T_PRODUCT_CATEGORY SET SORT_ORDER = ? WHERE CATEGORY_ID = ?`,
+          { replacements: [index, row.CATEGORY_ID] }
+        );
+        count++;
+      }
+    }
+
+    console.log(`[DB Migration] 已初始化 ${count} 个商品分类排序值`);
+  } catch (error) {
+    console.error(`[DB Migration] 初始化商品分类排序失败 - ${error.message}`);
+  }
+}
+
 async function runMigrations() {
   console.log('[DB Migration] 开始检查数据库结构...');
   
@@ -69,6 +228,10 @@ async function runMigrations() {
     await checkAndAddColumn('T_PRODUCT', 'CREATE_TIME', 'DATETIME COMMENT "创建时间"', 'CONFIG');
     await checkAndAddColumn('T_PRODUCT_SN', 'PN_CODE', 'VARCHAR(64) COMMENT "PN料号"', 'PRODUCT_ID');
     await checkAndAddColumn('T_PRODUCT_SN', 'INVENTORY_TYPE', 'VARCHAR(32) DEFAULT "normal_qty" COMMENT "库存类型"', 'STATUS');
+    await checkAndAddColumn('T_PRODUCT_SN', 'ORIGINAL_PICKUP_PRICE', 'DECIMAL(12,2) DEFAULT 0 COMMENT "原始提货价"', 'INBOUND_PRICE');
+    await dropProductSnGlobalUniqueIndex();
+    await checkAndAddIndex('T_PRODUCT_SN', 'uk_product_sn_pn_sn', 'ALTER TABLE T_PRODUCT_SN ADD UNIQUE KEY uk_product_sn_pn_sn (PN_CODE, SN_CODE)');
+    await checkAndAddIndex('T_PRODUCT_SN', 'idx_product_sn_code', 'ALTER TABLE T_PRODUCT_SN ADD INDEX idx_product_sn_code (SN_CODE)');
     await checkAndAddColumn('T_PRODUCT', 'MANUFACTURER_CODE', 'VARCHAR(512) COMMENT "manufacturer code"', 'CONFIG');
     await checkAndCreateTable('T_SN_LOG', `
       CREATE TABLE T_SN_LOG (
@@ -89,6 +252,29 @@ async function runMigrations() {
       )
     `);
     await checkAndAddColumn('T_SUPPLIER', 'INVOICE_TYPE', 'VARCHAR(32) COMMENT "发票类型"', 'ADDRESS');
+    await checkAndAddColumn('T_SUPPLIER', 'REMARK', 'VARCHAR(512) COMMENT "备注"', 'INVOICE_TYPE');
+    await checkAndAddColumn('T_SUPPLIER', 'SORT_ORDER', 'INT DEFAULT 0 COMMENT "排序"', 'REMARK');
+    await checkAndAddColumn('T_SUPPLIER', 'CREATE_TIME', 'DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT "创建时间"', 'IS_DELETED');
+    await checkAndAddColumn('T_SUPPLIER', 'UPDATE_TIME', 'DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT "更新时间"', 'CREATE_TIME');
+    await initializeSupplierSortOrder();
+    await checkAndCreateTable('T_SUPPLIER_PAYMENT_ACCOUNT', `
+      CREATE TABLE T_SUPPLIER_PAYMENT_ACCOUNT (
+        ACCOUNT_ID VARCHAR(32) NOT NULL COMMENT '供应商付款账户ID',
+        SUPPLIER_ID VARCHAR(32) NOT NULL COMMENT '供应商ID',
+        COMPANY_NAME VARCHAR(255) COMMENT '公司名称',
+        TAX_NO VARCHAR(64) COMMENT '税号',
+        BANK_NAME VARCHAR(128) COMMENT '开户行',
+        ACCOUNT_NUMBER VARCHAR(128) COMMENT '账号',
+        REMARK VARCHAR(512) COMMENT '备注',
+        SORT_ORDER INT DEFAULT 0 COMMENT '排序',
+        STATUS TINYINT DEFAULT 1 COMMENT '状态',
+        IS_DELETED TINYINT(1) DEFAULT 0 COMMENT '是否删除',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+        PRIMARY KEY (ACCOUNT_ID),
+        KEY idx_supplier_payment_supplier (SUPPLIER_ID)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='供应商付款账户表'
+    `);
     await checkAndAddColumn('T_PURCHASE_REQUEST', 'INVOICE_TYPE', 'VARCHAR(32) COMMENT "发票类型"', 'SUPPLIER_ID');
     await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'STORE_ALLOCATIONS', 'TEXT COMMENT "门店分配"', 'QUANTITY');
     await checkAndAddColumn('T_INBOUND', 'PURCHASE_REQUEST_ID', 'VARCHAR(32) COMMENT "采购申请ID"', 'INBOUND_NO');
@@ -97,6 +283,57 @@ async function runMigrations() {
     await checkAndAddColumn('T_INBOUND_ITEM', 'LOCATION_ID', 'VARCHAR(32) COMMENT "库位ID"', 'STORE_ALLOCATIONS');
     await checkAndAddColumn('T_INBOUND_ITEM', 'INVENTORY_TYPE', 'VARCHAR(32) DEFAULT "normal_qty" COMMENT "入库库存类型"', 'LOCATION_ID');
     await checkAndAddColumn('T_INVENTORY', 'UPDATE_TIME', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT "更新时间"', 'PENDING_QTY');
+    await checkAndAddColumn('T_INVENTORY', 'LOCATION_ID', 'VARCHAR(32) NOT NULL DEFAULT "" COMMENT "库位ID"', 'STORE_ID');
+    await normalizeInventoryLocationIndex();
+
+    await checkAndCreateTable('T_INVENTORY_CONVERSION', `
+      CREATE TABLE T_INVENTORY_CONVERSION (
+        CONVERSION_ID VARCHAR(32) NOT NULL COMMENT '库存转换单ID',
+        CONVERSION_NO VARCHAR(64) NOT NULL COMMENT '库存转换单号',
+        CONVERSION_TYPE VARCHAR(32) NOT NULL COMMENT '转换类型:split-拆分,assemble-组装',
+        STORE_ID VARCHAR(32) NOT NULL COMMENT '门店ID',
+        STATUS VARCHAR(32) DEFAULT 'completed' COMMENT '状态:completed-已完成,voided-已冲销',
+        TOTAL_SOURCE_COST DECIMAL(12,2) DEFAULT 0 COMMENT '来源总成本',
+        TOTAL_TARGET_COST DECIMAL(12,2) DEFAULT 0 COMMENT '目标总成本',
+        SERVICE_COST DECIMAL(12,2) DEFAULT 0 COMMENT '组装服务成本',
+        REMARK VARCHAR(512) COMMENT '备注',
+        VOID_REASON VARCHAR(512) COMMENT '冲销原因',
+        CREATE_USER VARCHAR(64) COMMENT '创建人',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        VOID_USER VARCHAR(64) COMMENT '冲销人',
+        VOID_TIME DATETIME COMMENT '冲销时间',
+        PRIMARY KEY (CONVERSION_ID),
+        UNIQUE KEY uk_inventory_conversion_no (CONVERSION_NO),
+        KEY idx_inventory_conversion_store (STORE_ID),
+        KEY idx_inventory_conversion_type_status (CONVERSION_TYPE, STATUS)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='库存拆分组装转换单'
+    `);
+
+    await checkAndCreateTable('T_INVENTORY_CONVERSION_ITEM', `
+      CREATE TABLE T_INVENTORY_CONVERSION_ITEM (
+        ITEM_ID BIGINT(20) NOT NULL AUTO_INCREMENT COMMENT '明细ID',
+        CONVERSION_ID VARCHAR(32) NOT NULL COMMENT '转换单ID',
+        LINE_ROLE VARCHAR(32) NOT NULL COMMENT '行角色:source-来源,target-目标,service-服务成本',
+        PRODUCT_ID VARCHAR(32) COMMENT '商品ID',
+        PRODUCT_NAME VARCHAR(255) COMMENT '商品名称快照',
+        PN_CODE VARCHAR(64) COMMENT 'PN快照',
+        SN_ID VARCHAR(32) COMMENT 'SN ID',
+        SN_CODE VARCHAR(128) COMMENT 'SN快照',
+        SOURCE_SN_ID VARCHAR(32) COMMENT '来源SN ID',
+        SOURCE_SN_CODE VARCHAR(128) COMMENT '来源SN快照',
+        QUANTITY INT DEFAULT 1 COMMENT '数量',
+        UNIT_COST DECIMAL(12,2) DEFAULT 0 COMMENT '单位成本',
+        TOTAL_COST DECIMAL(12,2) DEFAULT 0 COMMENT '总成本',
+        INVENTORY_TYPE VARCHAR(32) DEFAULT 'normal_qty' COMMENT '库存类型',
+        LOCATION_ID VARCHAR(32) COMMENT '库位ID',
+        REMARK VARCHAR(512) COMMENT '备注',
+        PRIMARY KEY (ITEM_ID),
+        KEY idx_conversion_item_conversion (CONVERSION_ID),
+        KEY idx_conversion_item_product (PRODUCT_ID),
+        KEY idx_conversion_item_sn (SN_ID),
+        KEY idx_conversion_item_source_sn (SOURCE_SN_ID)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='库存拆分组装转换明细'
+    `);
 
     await checkAndCreateTable('T_RETURN_STOCK', `
       CREATE TABLE T_RETURN_STOCK (
@@ -135,6 +372,33 @@ async function runMigrations() {
         KEY idx_sn_id (SN_ID)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='退库明细表'
     `);
+
+    await checkAndAddColumn('T_RETURN_STOCK', 'PURCHASE_REQUEST_ID', 'VARCHAR(32) COMMENT "采购申请ID"', 'STORE_ID');
+    await checkAndAddColumn('T_RETURN_STOCK', 'SUPPLIER_ID', 'VARCHAR(32) COMMENT "供应商ID"', 'PURCHASE_REQUEST_ID');
+    await checkAndAddColumn('T_RETURN_STOCK', 'SUPPLIER_NAME', 'VARCHAR(255) COMMENT "供应商名称"', 'SUPPLIER_ID');
+    await checkAndAddColumn('T_RETURN_STOCK', 'STATUS', "VARCHAR(32) DEFAULT 'pending' COMMENT '状态:pending/approved/rejected/completed'", 'REASON');
+    await checkAndAddColumn('T_RETURN_STOCK', 'APPROVE_USER', 'VARCHAR(64) COMMENT "审批人"', 'STATUS');
+    await checkAndAddColumn('T_RETURN_STOCK', 'APPROVE_COMMENT', 'VARCHAR(512) COMMENT "审批备注"', 'APPROVE_USER');
+    await checkAndAddColumn('T_RETURN_STOCK', 'APPROVE_TIME', 'DATETIME COMMENT "审批时间"', 'APPROVE_COMMENT');
+    await checkAndAddColumn('T_RETURN_STOCK', 'EXECUTE_USER', 'VARCHAR(64) COMMENT "执行人"', 'APPROVE_TIME');
+    await checkAndAddColumn('T_RETURN_STOCK', 'EXECUTE_TIME', 'DATETIME COMMENT "执行时间"', 'EXECUTE_USER');
+    await checkAndAddColumn('T_RETURN_STOCK', 'PAYABLE_ID', 'VARCHAR(32) COMMENT "负向应付ID"', 'EXECUTE_TIME');
+    await checkAndAddColumn('T_RETURN_STOCK_ITEM', 'LOCATION_ID', 'VARCHAR(32) COMMENT "库位ID"', 'UNIT_PRICE');
+    await checkAndAddColumn('T_RETURN_STOCK_ITEM', 'INVENTORY_TYPE', 'VARCHAR(32) DEFAULT "normal_qty" COMMENT "库存类型"', 'LOCATION_ID');
+    await checkAndAddColumn('T_RETURN_STOCK_ITEM', 'PRODUCT_TYPE', 'VARCHAR(32) COMMENT "货型"', 'INVENTORY_TYPE');
+    try {
+      await sequelize.query(`
+        UPDATE T_RETURN_STOCK rs
+        JOIN T_INBOUND i ON rs.INBOUND_ID = i.INBOUND_ID
+        SET rs.STATUS = 'completed',
+            rs.EXECUTE_TIME = COALESCE(rs.EXECUTE_TIME, rs.CREATE_TIME),
+            rs.EXECUTE_USER = COALESCE(rs.EXECUTE_USER, rs.CREATE_USER)
+        WHERE rs.STATUS = 'pending'
+          AND i.STATUS = 'returned'
+      `);
+    } catch (error) {
+      console.warn('[DB Migration] normalize old return stock status skipped:', error.message);
+    }
 
     await checkAndCreateTable('T_EXPENSE', `
       CREATE TABLE T_EXPENSE (
@@ -204,9 +468,13 @@ async function runMigrations() {
         SUPPLIER_ID VARCHAR(32) NOT NULL COMMENT '供应商ID',
         SUPPLIER_NAME VARCHAR(255) COMMENT '供应商名称',
         TOTAL_AMOUNT DECIMAL(12,2) NOT NULL COMMENT '结算金额',
-        STATUS VARCHAR(32) DEFAULT 'unpaid' COMMENT '状态:unpaid/paid',
+        PAID_AMOUNT DECIMAL(12,2) DEFAULT 0 COMMENT '已付金额',
+        STATUS VARCHAR(32) DEFAULT 'draft' COMMENT '结算单状态:draft/confirmed/voided',
+        PAYMENT_STATUS VARCHAR(32) DEFAULT 'unpaid' COMMENT '付款状态:unpaid/partial_paid/paid',
         CREATE_USER VARCHAR(64) COMMENT '制单人',
         CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        CONFIRMED_TIME TIMESTAMP NULL COMMENT '确认时间',
+        VOIDED_TIME TIMESTAMP NULL COMMENT '作废时间',
         PAID_TIME TIMESTAMP NULL COMMENT '付款时间',
         PRIMARY KEY (SETTLEMENT_ID),
         UNIQUE KEY uni_settlement_no (SETTLEMENT_NO),
@@ -214,6 +482,25 @@ async function runMigrations() {
         KEY idx_settlement_status (STATUS)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='结算单表'
     `);
+    await checkAndAddColumn('T_SETTLEMENT', 'SUPPLIER_ACCOUNT_ID', 'VARCHAR(32) COMMENT "供应商付款账户ID"', 'SUPPLIER_NAME');
+    await checkAndAddColumn('T_SETTLEMENT', 'SUPPLIER_ACCOUNT_SNAPSHOT', 'TEXT COMMENT "供应商付款账户快照"', 'SUPPLIER_ACCOUNT_ID');
+    await checkAndAddColumn('T_SETTLEMENT', 'OTHER_PAYMENT_REMARK', 'TEXT COMMENT "其他付款说明"', 'SUPPLIER_ACCOUNT_SNAPSHOT');
+    await checkAndAddColumn('T_SETTLEMENT', 'OTHER_PAYMENT_IMAGE', 'LONGTEXT COMMENT "其他付款图片"', 'OTHER_PAYMENT_REMARK');
+    await checkAndAddColumn('T_SETTLEMENT', 'PAID_AMOUNT', 'DECIMAL(12,2) DEFAULT 0 COMMENT "已付金额"', 'TOTAL_AMOUNT');
+    await checkAndAddColumn('T_SETTLEMENT', 'PAYMENT_STATUS', 'VARCHAR(32) DEFAULT "unpaid" COMMENT "付款状态:unpaid/partial_paid/paid"', 'STATUS');
+    await checkAndAddColumn('T_SETTLEMENT', 'CONFIRMED_TIME', 'TIMESTAMP NULL COMMENT "确认时间"', 'CREATE_TIME');
+    await checkAndAddColumn('T_SETTLEMENT', 'VOIDED_TIME', 'TIMESTAMP NULL COMMENT "作废时间"', 'CONFIRMED_TIME');
+    try {
+      await sequelize.query(`
+        UPDATE T_SETTLEMENT
+        SET STATUS = 'confirmed',
+            CONFIRMED_TIME = COALESCE(CONFIRMED_TIME, CREATE_TIME)
+        WHERE STATUS = 'pending'
+      `);
+      console.log('[DB Migration] 已将旧待确认应付结算单归一为待付款');
+    } catch (error) {
+      console.warn('[DB Migration] normalize pending settlements skipped:', error.message);
+    }
 
     await checkAndCreateTable('T_SETTLEMENT_ITEM', `
       CREATE TABLE T_SETTLEMENT_ITEM (
@@ -227,6 +514,54 @@ async function runMigrations() {
         KEY idx_si_payable (PAYABLE_ID)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='结算明细表'
     `);
+
+    await checkAndCreateTable('T_SETTLEMENT_PAYMENT_BATCH', `
+      CREATE TABLE T_SETTLEMENT_PAYMENT_BATCH (
+        BATCH_ID VARCHAR(32) NOT NULL COMMENT '付款批次ID',
+        BATCH_NO VARCHAR(64) NOT NULL COMMENT '付款批次号',
+        ACCOUNT_ID VARCHAR(64) NOT NULL COMMENT '结算账户ID',
+        ACCOUNT_NAME VARCHAR(128) COMMENT '结算账户名称',
+        TOTAL_AMOUNT DECIMAL(12,2) NOT NULL COMMENT '付款总金额',
+        TOTAL_COUNT INT DEFAULT 0 COMMENT '付款笔数',
+        STATUS VARCHAR(32) DEFAULT 'active' COMMENT '状态:active/voided',
+        REMARK VARCHAR(512) COMMENT '备注',
+        CREATE_USER VARCHAR(64) COMMENT '导入人',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '导入时间',
+        VOID_USER VARCHAR(64) COMMENT '撤销人',
+        VOID_TIME TIMESTAMP NULL COMMENT '撤销时间',
+        VOID_REASON VARCHAR(512) COMMENT '撤销原因',
+        PRIMARY KEY (BATCH_ID),
+        UNIQUE KEY uni_payment_batch_no (BATCH_NO),
+        KEY idx_payment_batch_account (ACCOUNT_ID),
+        KEY idx_payment_batch_status (STATUS)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='应付付款批次表'
+    `);
+
+    await checkAndCreateTable('T_SETTLEMENT_PAYMENT_RECORD', `
+      CREATE TABLE T_SETTLEMENT_PAYMENT_RECORD (
+        PAYMENT_ID VARCHAR(32) NOT NULL COMMENT '付款记录ID',
+        BATCH_ID VARCHAR(32) NOT NULL COMMENT '付款批次ID',
+        SETTLEMENT_ID VARCHAR(32) NOT NULL COMMENT '结算单ID',
+        SETTLEMENT_NO VARCHAR(64) NOT NULL COMMENT '结算单号',
+        SUPPLIER_NAME VARCHAR(255) COMMENT '供应商名称',
+        ACCOUNT_ID VARCHAR(64) NOT NULL COMMENT '结算账户ID',
+        AMOUNT DECIMAL(12,2) NOT NULL COMMENT '本次付款金额',
+        PAYMENT_TIME TIMESTAMP NULL COMMENT '付款时间',
+        REMARK VARCHAR(512) COMMENT '备注',
+        IMPORT_KEY VARCHAR(128) COMMENT '导入标识',
+        TRANSACTION_ID VARCHAR(64) COMMENT '账户流水ID',
+        STATUS VARCHAR(32) DEFAULT 'active' COMMENT '状态:active/voided',
+        CREATE_USER VARCHAR(64) COMMENT '导入人',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        VOID_TRANSACTION_ID VARCHAR(64) COMMENT '撤销流水ID',
+        PRIMARY KEY (PAYMENT_ID),
+        KEY idx_payment_record_batch (BATCH_ID),
+        KEY idx_payment_record_settlement (SETTLEMENT_ID),
+        KEY idx_payment_record_import_key (IMPORT_KEY),
+        KEY idx_payment_record_status (STATUS)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='应付付款记录表'
+    `);
+    await checkAndAddColumn('T_SETTLEMENT_PAYMENT_RECORD', 'IMPORT_KEY', 'VARCHAR(128) COMMENT "导入标识"', 'REMARK');
 
     await checkAndCreateTable('T_SUPPLIER_REBATE', `
       CREATE TABLE T_SUPPLIER_REBATE (
@@ -246,6 +581,128 @@ async function runMigrations() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='供应商返利表'
     `);
 
+    await checkAndCreateTable('T_MANUFACTURER_REBATE_POLICY', `
+      CREATE TABLE T_MANUFACTURER_REBATE_POLICY (
+        POLICY_ID VARCHAR(32) NOT NULL COMMENT '政策ID',
+        SUPPLIER_ID VARCHAR(32) NOT NULL COMMENT '供应商/厂家ID',
+        SUPPLIER_NAME VARCHAR(255) COMMENT '供应商/厂家名称',
+        POLICY_NAME VARCHAR(128) NOT NULL COMMENT '政策名称',
+        POLICY_TYPE VARCHAR(32) DEFAULT 'activity' COMMENT '政策类型:p0_difference/activity/education/other',
+        PRODUCT_ID VARCHAR(32) COMMENT '商品ID',
+        PRODUCT_NAME VARCHAR(255) COMMENT '商品名称',
+        PN VARCHAR(64) COMMENT 'PN',
+        MODEL VARCHAR(128) COMMENT '型号',
+        START_DATE DATE COMMENT '开始日期',
+        END_DATE DATE COMMENT '结束日期',
+        REBATE_CALCULATION_TYPE VARCHAR(32) DEFAULT 'fixed_amount' COMMENT '返利计算方式:fixed_amount/percentage',
+        REBATE_AMOUNT DECIMAL(12,2) DEFAULT 0 COMMENT '固定返利金额',
+        REBATE_RATE DECIMAL(8,4) DEFAULT 0 COMMENT '返利比例',
+        AFFECT_SALES_SETTLEMENT_COST TINYINT(1) DEFAULT 0 COMMENT '是否影响销售结算成本',
+        COST_ADJUSTMENT_TYPE VARCHAR(32) DEFAULT 'fixed_amount' COMMENT '成本调整方式:fixed_amount/percentage/custom_rule',
+        COST_ADJUSTMENT_VALUE DECIMAL(12,4) DEFAULT 0 COMMENT '成本调整值',
+        MAX_COST_ADJUSTMENT_AMOUNT DECIMAL(12,2) NULL COMMENT '最大成本调整金额',
+        COST_ADJUSTMENT_REMARK VARCHAR(512) COMMENT '成本调整说明',
+        REMARK VARCHAR(512) COMMENT '备注',
+        STATUS TINYINT DEFAULT 1 COMMENT '状态',
+        CREATE_USER VARCHAR(64) COMMENT '创建人',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        UPDATE_USER VARCHAR(64) COMMENT '更新人',
+        UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+        PRIMARY KEY (POLICY_ID),
+        KEY idx_mrp_supplier (SUPPLIER_ID),
+        KEY idx_mrp_pn (PN),
+        KEY idx_mrp_product (PRODUCT_ID),
+        KEY idx_mrp_status (STATUS)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='厂家返利政策表'
+    `);
+
+    await checkAndCreateTable('T_MANUFACTURER_PRICE_HISTORY', `
+      CREATE TABLE T_MANUFACTURER_PRICE_HISTORY (
+        ID VARCHAR(32) NOT NULL COMMENT 'ID',
+        SUPPLIER_ID VARCHAR(32) NOT NULL COMMENT '供应商/厂家ID',
+        SUPPLIER_NAME VARCHAR(255) COMMENT '供应商/厂家名称',
+        PRODUCT_ID VARCHAR(32) COMMENT '商品ID',
+        PRODUCT_NAME VARCHAR(255) COMMENT '商品名称',
+        PN VARCHAR(64) NOT NULL COMMENT 'PN',
+        MODEL VARCHAR(128) COMMENT '型号',
+        EFFECTIVE_DATE DATE NOT NULL COMMENT '生效日期',
+        EXPIRE_DATE DATE NULL COMMENT '失效日期',
+        PICKUP_PRICE DECIMAL(12,2) NOT NULL COMMENT '厂家提货价',
+        P0_PRICE DECIMAL(12,2) NULL COMMENT 'P0价',
+        IMPORT_BATCH_NO VARCHAR(64) COMMENT '导入批次号',
+        SOURCE_FILE_URL VARCHAR(512) COMMENT '来源文件',
+        REMARK VARCHAR(512) COMMENT '备注',
+        CREATED_BY VARCHAR(64) COMMENT '创建人',
+        CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        UPDATED_BY VARCHAR(64) COMMENT '更新人',
+        UPDATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+        PRIMARY KEY (ID),
+        KEY idx_mph_supplier_pn_date (SUPPLIER_ID, PN, EFFECTIVE_DATE),
+        KEY idx_mph_pn_date (PN, EFFECTIVE_DATE),
+        KEY idx_mph_product (PRODUCT_ID)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='厂家价格历史表'
+    `);
+
+    await checkAndCreateTable('T_REBATE_ESTIMATE', `
+      CREATE TABLE T_REBATE_ESTIMATE (
+        ESTIMATE_ID VARCHAR(32) NOT NULL COMMENT '返利预估ID',
+        SALES_ORDER_ID VARCHAR(32) NOT NULL COMMENT '销售订单ID',
+        SALES_ORDER_NO VARCHAR(64) COMMENT '销售单号',
+        SALES_ORDER_ITEM_ID BIGINT(20) COMMENT '销售明细ID',
+        SUPPLIER_ID VARCHAR(32) COMMENT '供应商/厂家ID',
+        SUPPLIER_NAME VARCHAR(255) COMMENT '供应商/厂家名称',
+        PRODUCT_ID VARCHAR(32) COMMENT '商品ID',
+        PRODUCT_NAME VARCHAR(255) COMMENT '商品名称',
+        PN VARCHAR(64) COMMENT 'PN',
+        SN VARCHAR(128) COMMENT 'SN',
+        POLICY_ID VARCHAR(32) COMMENT '政策ID',
+        POLICY_NAME VARCHAR(128) COMMENT '政策名称',
+        POLICY_TYPE VARCHAR(32) COMMENT '政策类型',
+        REBATE_ESTIMATE_AMOUNT DECIMAL(12,2) DEFAULT 0 COMMENT '返利预估金额',
+        STATUS VARCHAR(32) DEFAULT 'estimated' COMMENT '状态:estimated/confirmed/received/written_off',
+        REMARK VARCHAR(512) COMMENT '备注',
+        CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        UPDATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+        PRIMARY KEY (ESTIMATE_ID),
+        KEY idx_rebate_estimate_order (SALES_ORDER_ID),
+        KEY idx_rebate_estimate_policy (POLICY_ID),
+        KEY idx_rebate_estimate_status (STATUS)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='厂家返利预估表'
+    `);
+
+    await checkAndCreateTable('T_SALES_SETTLEMENT_COST_ADJUSTMENT', `
+      CREATE TABLE T_SALES_SETTLEMENT_COST_ADJUSTMENT (
+        ID VARCHAR(32) NOT NULL COMMENT 'ID',
+        SALES_ORDER_ID VARCHAR(32) NOT NULL COMMENT '销售订单ID',
+        SALES_ORDER_NO VARCHAR(64) COMMENT '销售单号',
+        SALES_ORDER_ITEM_ID BIGINT(20) COMMENT '销售明细ID',
+        SUPPLIER_ID VARCHAR(32) COMMENT '供应商/厂家ID',
+        SUPPLIER_NAME VARCHAR(255) COMMENT '供应商/厂家名称',
+        PRODUCT_ID VARCHAR(32) COMMENT '商品ID',
+        PRODUCT_NAME VARCHAR(255) COMMENT '商品名称',
+        PN VARCHAR(64) COMMENT 'PN',
+        SN VARCHAR(128) COMMENT 'SN',
+        ORIGINAL_INVENTORY_COST DECIMAL(12,2) DEFAULT 0 COMMENT '原始库存成本',
+        ORIGINAL_PICKUP_PRICE DECIMAL(12,2) DEFAULT 0 COMMENT '原始提货价',
+        CURRENT_PICKUP_PRICE_AT_SALE DECIMAL(12,2) DEFAULT 0 COMMENT '销售时厂家当前提货价',
+        POLICY_ID VARCHAR(32) COMMENT '政策ID',
+        POLICY_NAME VARCHAR(128) COMMENT '政策名称',
+        POLICY_TYPE VARCHAR(32) COMMENT '政策类型',
+        REBATE_ESTIMATE_ID VARCHAR(32) COMMENT '返利预估ID',
+        REBATE_ESTIMATE_AMOUNT DECIMAL(12,2) DEFAULT 0 COMMENT '返利预估金额',
+        AFFECT_SALES_SETTLEMENT_COST TINYINT(1) DEFAULT 0 COMMENT '是否影响销售结算成本',
+        COST_ADJUSTMENT_AMOUNT DECIMAL(12,2) DEFAULT 0 COMMENT '成本调整金额',
+        FINAL_SALES_SETTLEMENT_COST DECIMAL(12,2) DEFAULT 0 COMMENT '最终销售结算成本',
+        REMARK VARCHAR(512) COMMENT '备注',
+        CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        UPDATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+        PRIMARY KEY (ID),
+        KEY idx_ssca_order (SALES_ORDER_ID),
+        KEY idx_ssca_item (SALES_ORDER_ITEM_ID),
+        KEY idx_ssca_policy (POLICY_ID)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='销售结算成本调整明细表'
+    `);
+
     await checkAndAddColumn('T_PURCHASE_REQUEST', 'REBATE_DEDUCTION', 'DECIMAL(12,2) DEFAULT 0.00 COMMENT "返利抵扣"', 'TOTAL_AMOUNT');
     await checkAndAddColumn('T_PURCHASE_REQUEST', 'ACTUAL_TOTAL', 'DECIMAL(12,2) DEFAULT 0.00 COMMENT "抵扣后实际总价"', 'REBATE_DEDUCTION');
 
@@ -261,9 +718,98 @@ async function runMigrations() {
 
     await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'PRODUCT_TYPE', 'VARCHAR(32) COMMENT "货型：正规货/国补货/纯二批"', 'SUBTOTAL');
     await checkAndAddColumn('T_INBOUND_ITEM', 'PRODUCT_TYPE', 'VARCHAR(32) COMMENT "货型：正规货/国补货/纯二批"', 'INVENTORY_TYPE');
+    await checkAndAddColumn('T_INBOUND_ITEM', 'ORIGINAL_PICKUP_PRICE', 'DECIMAL(12,2) DEFAULT 0 COMMENT "原始提货价"', 'UNIT_PRICE');
     await checkAndAddColumn('T_INVENTORY', 'REGULAR_QTY', 'INT DEFAULT 0 COMMENT "正规货数量"', 'NORMAL_QTY');
     await checkAndAddColumn('T_INVENTORY', 'SUBSIDY_QTY', 'INT DEFAULT 0 COMMENT "国补货数量"', 'REGULAR_QTY');
     await checkAndAddColumn('T_INVENTORY', 'SECOND_QTY', 'INT DEFAULT 0 COMMENT "纯二批数量"', 'SUBSIDY_QTY');
+
+    await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'REBATE_DEDUCTION', 'DECIMAL(12,2) DEFAULT 0.00 COMMENT "item rebate deduction"', 'SUBTOTAL');
+
+    await checkAndAddColumn('T_ORDER_ITEM', 'ORIGINAL_INVENTORY_COST', 'DECIMAL(12,2) DEFAULT 0 COMMENT "原始库存成本"', 'SUBTOTAL');
+    await checkAndAddColumn('T_ORDER_ITEM', 'ORIGINAL_PICKUP_PRICE', 'DECIMAL(12,2) DEFAULT 0 COMMENT "原始提货价"', 'ORIGINAL_INVENTORY_COST');
+    await checkAndAddColumn('T_ORDER_ITEM', 'CURRENT_PICKUP_PRICE_AT_SALE', 'DECIMAL(12,2) DEFAULT 0 COMMENT "销售时厂家当前提货价"', 'ORIGINAL_PICKUP_PRICE');
+    await checkAndAddColumn('T_ORDER_ITEM', 'P0_DIFFERENCE_AMOUNT', 'DECIMAL(12,2) DEFAULT 0 COMMENT "P差金额"', 'CURRENT_PICKUP_PRICE_AT_SALE');
+    await checkAndAddColumn('T_ORDER_ITEM', 'COST_ADJUSTMENT_AMOUNT', 'DECIMAL(12,2) DEFAULT 0 COMMENT "政策成本调整金额"', 'P0_DIFFERENCE_AMOUNT');
+    await checkAndAddColumn('T_ORDER_ITEM', 'SALES_SETTLEMENT_COST', 'DECIMAL(12,2) DEFAULT 0 COMMENT "销售结算成本"', 'COST_ADJUSTMENT_AMOUNT');
+    await checkAndAddColumn('T_ORDER_ITEM', 'SALES_GROSS_PROFIT', 'DECIMAL(12,2) DEFAULT 0 COMMENT "销售毛利"', 'SALES_SETTLEMENT_COST');
+    await checkAndAddColumn('T_ORDER_PAYMENT', 'DEPOSIT_ID', 'VARCHAR(32) COMMENT "定金单ID"', 'PAYMENT_METHOD');
+
+    await checkAndCreateTable('T_DEPOSIT_ORDER', `
+      CREATE TABLE T_DEPOSIT_ORDER (
+        DEPOSIT_ID VARCHAR(32) NOT NULL COMMENT '定金单ID',
+        DEPOSIT_NO VARCHAR(64) NOT NULL COMMENT '定金单号',
+        STORE_ID VARCHAR(32) NOT NULL COMMENT '门店ID',
+        CUSTOMER_NAME VARCHAR(64) COMMENT '客户姓名',
+        CUSTOMER_PHONE VARCHAR(32) COMMENT '客户电话',
+        CUSTOMER_SOURCE VARCHAR(64) COMMENT '客户来源',
+        AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '定金金额',
+        REDEEMED_AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '已核销金额',
+        REFUNDED_AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '已退款金额',
+        STATUS VARCHAR(32) DEFAULT 'submitted' COMMENT '状态:submitted/archived/redeemed/refunded/voided',
+        RELATED_ORDER_ID VARCHAR(32) COMMENT '核销销售订单ID',
+        RELATED_ORDER_NO VARCHAR(64) COMMENT '核销销售订单号',
+        REMARK TEXT COMMENT '备注',
+        CREATE_STAFF_ID BIGINT(20) COMMENT '收取定金店员ID',
+        CREATE_USER VARCHAR(64) COMMENT '收取定金店员',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        ARCHIVE_USER VARCHAR(64) COMMENT '归档人',
+        ARCHIVE_TIME DATETIME COMMENT '归档时间',
+        UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+        IS_DELETED TINYINT(1) DEFAULT 0 COMMENT '是否删除',
+        PRIMARY KEY (DEPOSIT_ID),
+        UNIQUE KEY uk_deposit_no (DEPOSIT_NO),
+        KEY idx_deposit_store (STORE_ID),
+        KEY idx_deposit_staff_status (CREATE_STAFF_ID, STATUS),
+        KEY idx_deposit_customer (CUSTOMER_PHONE)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='定金单'
+    `);
+
+    await checkAndCreateTable('T_DEPOSIT_REFUND', `
+      CREATE TABLE T_DEPOSIT_REFUND (
+        REFUND_ID VARCHAR(32) NOT NULL COMMENT '退款记录ID',
+        REFUND_NO VARCHAR(64) NOT NULL COMMENT '退款记录号',
+        DEPOSIT_ID VARCHAR(32) NOT NULL COMMENT '定金单ID',
+        AMOUNT DECIMAL(12,2) NOT NULL COMMENT '退款金额',
+        REASON VARCHAR(512) COMMENT '退款原因',
+        CREATE_STAFF_ID BIGINT(20) COMMENT '记录人ID',
+        CREATE_USER VARCHAR(64) COMMENT '记录人',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        PRIMARY KEY (REFUND_ID),
+        UNIQUE KEY uk_deposit_refund_no (REFUND_NO),
+        KEY idx_deposit_refund_deposit (DEPOSIT_ID)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='定金退款记录'
+    `);
+
+    await checkAndCreateTable('T_DEPOSIT_REDEMPTION', `
+      CREATE TABLE T_DEPOSIT_REDEMPTION (
+        REDEMPTION_ID VARCHAR(32) NOT NULL COMMENT '核销记录ID',
+        DEPOSIT_ID VARCHAR(32) NOT NULL COMMENT '定金单ID',
+        ORDER_ID VARCHAR(32) NOT NULL COMMENT '销售订单ID',
+        ORDER_NO VARCHAR(64) COMMENT '销售订单号',
+        AMOUNT DECIMAL(12,2) NOT NULL COMMENT '核销金额',
+        STATUS VARCHAR(32) DEFAULT 'active' COMMENT '状态:active/voided',
+        VOID_REASON VARCHAR(512) COMMENT '作废原因',
+        VOID_TIME DATETIME COMMENT '作废时间',
+        CREATE_STAFF_ID BIGINT(20) COMMENT '核销人ID',
+        CREATE_USER VARCHAR(64) COMMENT '核销人',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        PRIMARY KEY (REDEMPTION_ID),
+        KEY idx_deposit_redemption_deposit (DEPOSIT_ID),
+        KEY idx_deposit_redemption_order (ORDER_ID)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='定金核销记录'
+    `);
+
+    await checkAndAddColumn('T_DEPOSIT_ORDER', 'REDEEMED_AMOUNT', 'DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT "已核销金额"', 'AMOUNT');
+    await checkAndAddColumn('T_DEPOSIT_ORDER', 'REFUNDED_AMOUNT', 'DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT "已退款金额"', 'REDEEMED_AMOUNT');
+    await checkAndAddColumn('T_DEPOSIT_ORDER', 'RELATED_ORDER_ID', 'VARCHAR(32) COMMENT "核销销售订单ID"', 'STATUS');
+    await checkAndAddColumn('T_DEPOSIT_ORDER', 'RELATED_ORDER_NO', 'VARCHAR(64) COMMENT "核销销售订单号"', 'RELATED_ORDER_ID');
+    await checkAndAddColumn('T_DEPOSIT_REDEMPTION', 'STATUS', 'VARCHAR(32) DEFAULT "active" COMMENT "状态:active/voided"', 'AMOUNT');
+    await checkAndAddColumn('T_DEPOSIT_REDEMPTION', 'VOID_REASON', 'VARCHAR(512) COMMENT "作废原因"', 'STATUS');
+    await checkAndAddColumn('T_DEPOSIT_REDEMPTION', 'VOID_TIME', 'DATETIME COMMENT "作废时间"', 'VOID_REASON');
+    await sequelize.query(`
+      INSERT IGNORE INTO T_DICT_PAYMENT_METHOD (METHOD_ID, NAME, CODE, ICON, SORT_ORDER, STATUS)
+      VALUES ('PM_DEPOSIT', '定金', 'deposit', 'deposit-icon', 99, 1)
+    `);
 
     await checkAndCreateTable('T_DAILY_STATEMENT', `
       CREATE TABLE T_DAILY_STATEMENT (
@@ -421,6 +967,7 @@ async function runMigrations() {
         KEY idx_level (LEVEL)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商品分类表'
     `);
+    await initializeCategorySortOrder();
 
     await checkAndCreateTable('T_PRODUCT_PRICE', `
       CREATE TABLE T_PRODUCT_PRICE (
@@ -435,6 +982,54 @@ async function runMigrations() {
         PRIMARY KEY (PRICE_ID),
         UNIQUE KEY uk_product (PRODUCT_ID)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商品价格表'
+    `);
+
+    await checkAndCreateTable('T_PRODUCT_PRICE_IMPORT_BATCH', `
+      CREATE TABLE T_PRODUCT_PRICE_IMPORT_BATCH (
+        BATCH_ID VARCHAR(32) NOT NULL COMMENT '批次ID',
+        BATCH_NO VARCHAR(64) NOT NULL COMMENT '批次号',
+        SOURCE_FILE_NAME VARCHAR(255) COMMENT '来源文件名',
+        TOTAL_ROWS INT DEFAULT 0 COMMENT '导入行数',
+        TOTAL_PRODUCTS INT DEFAULT 0 COMMENT '影响商品数',
+        TOTAL_CHANGES INT DEFAULT 0 COMMENT '价格变更条数',
+        STATUS VARCHAR(32) DEFAULT 'effective' COMMENT '状态:effective/pending/failed',
+        REMARK VARCHAR(512) COMMENT '备注',
+        CREATE_USER VARCHAR(64) COMMENT '导入人',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '导入时间',
+        PRIMARY KEY (BATCH_ID),
+        UNIQUE KEY uk_product_price_batch_no (BATCH_NO),
+        KEY idx_product_price_batch_status (STATUS)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商品价格导入批次表'
+    `);
+
+    await checkAndCreateTable('T_PRODUCT_PRICE_CHANGE_LOG', `
+      CREATE TABLE T_PRODUCT_PRICE_CHANGE_LOG (
+        CHANGE_ID VARCHAR(32) NOT NULL COMMENT '变更ID',
+        BATCH_ID VARCHAR(32) COMMENT '批次ID',
+        BATCH_NO VARCHAR(64) COMMENT '批次号',
+        ROW_NO INT COMMENT 'Excel行号',
+        PRODUCT_ID VARCHAR(32) NOT NULL COMMENT '商品ID',
+        PRODUCT_CODE VARCHAR(32) COMMENT '商品编码',
+        PRODUCT_NAME VARCHAR(255) COMMENT '商品名称快照',
+        MANUFACTURER_CODE VARCHAR(128) COMMENT '厂商编码',
+        PRICE_FIELD VARCHAR(32) NOT NULL COMMENT '价格字段:standard_price/min_sale_price',
+        OLD_PRICE DECIMAL(12,2) DEFAULT 0 COMMENT '调整前价格',
+        NEW_PRICE DECIMAL(12,2) NOT NULL COMMENT '调整后价格',
+        EFFECTIVE_TIME DATETIME NOT NULL COMMENT '生效时间',
+        SOURCE VARCHAR(32) DEFAULT 'import' COMMENT '来源:import/manual',
+        CHANGE_REASON VARCHAR(512) COMMENT '调价原因',
+        REMARK VARCHAR(512) COMMENT '备注',
+        STATUS VARCHAR(32) DEFAULT 'pending' COMMENT '状态:pending/effective/failed',
+        CREATE_USER VARCHAR(64) COMMENT '操作人',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        APPLIED_TIME DATETIME COMMENT '实际生效时间',
+        FAIL_REASON VARCHAR(512) COMMENT '失败原因',
+        PRIMARY KEY (CHANGE_ID),
+        KEY idx_price_change_product (PRODUCT_ID),
+        KEY idx_price_change_batch (BATCH_ID),
+        KEY idx_price_change_status_time (STATUS, EFFECTIVE_TIME),
+        KEY idx_price_change_field (PRICE_FIELD)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商品价格变更记录表'
     `);
 
     await checkAndAddColumn('T_PRODUCT', 'ATTRIBUTES', 'TEXT COMMENT "动态属性JSON"', 'SPECS_JSON');
@@ -655,11 +1250,17 @@ async function migrateProductData() {
 
 async function seedPermissionData() {
   try {
+    const uuid = require('crypto').randomUUID;
     const [roleCount] = await sequelize.query(
       "SELECT COUNT(*) as cnt FROM T_ROLE",
       { type: sequelize.QueryTypes.SELECT }
     );
     if (roleCount.cnt > 0) {
+      await sequelize.query(`
+        UPDATE T_MENU
+        SET STATUS = 0
+        WHERE MENU_CODE = 'paymentManagement'
+      `);
       console.log('[DB Migration] 权限数据已存在, 跳过种子');
       return;
     }
@@ -676,7 +1277,6 @@ async function seedPermissionData() {
       ['system', '系统设置', null, 'menu', '/system', 'Setting', 9]
     ];
 
-    const uuid = require('crypto').randomUUID;
     for (const m of menus) {
       await sequelize.query(
         `INSERT IGNORE INTO T_MENU (MENU_ID, MENU_CODE, NAME, PARENT_ID, MENU_TYPE, PATH, ICON, SORT_ORDER, STATUS) 

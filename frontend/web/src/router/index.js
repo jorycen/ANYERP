@@ -12,7 +12,10 @@ const routes = [
   { path: '/product/:pathMatch(.*)*', redirect: '/products' },
   { path: '/purchase/:pathMatch(.*)*', redirect: '/purchase' },
   { path: '/sales/:pathMatch(.*)*', redirect: '/sales' },
-  { path: '/finance/:pathMatch(.*)*', redirect: '/finance' },
+  { path: '/finance/daily', redirect: '/finance' },
+  { path: '/finance/expense', redirect: '/finance' },
+  { path: '/finance/report', redirect: '/finance' },
+  { path: '/payment-management/:pathMatch(.*)*', redirect: '/finance/payment' },
   { path: '/inventory/:pathMatch(.*)*', redirect: '/inventory' },
   { path: '/system/:pathMatch(.*)*', redirect: '/system' },
   { path: '/reports/:pathMatch(.*)*', redirect: '/reports' },
@@ -44,6 +47,12 @@ const routes = [
       {
         path: 'finance',
         name: 'Finance',
+        component: () => import('../views/Finance.vue'),
+        meta: { roles: ['finance', 'admin', 'boss'] }
+      },
+      {
+        path: 'finance/payment',
+        name: 'FinancePayment',
         component: () => import('../views/Finance.vue'),
         meta: { roles: ['finance', 'admin', 'boss'] }
       },

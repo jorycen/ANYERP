@@ -251,6 +251,7 @@
       </el-form>
       <template #footer>
         <el-button @click="userDialogVisible = false">取消</el-button>
+        <el-button v-if="!userForm.staffId" type="info" @click="saveSystemDraft('user-create', userForm)">保存草稿</el-button>
         <el-button type="primary" @click="handleUserSubmit" :loading="submitLoading">确定</el-button>
       </template>
     </el-dialog>
@@ -266,6 +267,7 @@
       </el-form>
       <template #footer>
         <el-button @click="customerSourceDialogVisible = false">取消</el-button>
+        <el-button v-if="!editingCsId" type="info" @click="saveSystemDraft('customer-source-create', csForm)">保存草稿</el-button>
         <el-button type="primary" @click="handleCsSubmit" :loading="submitLoading">确定</el-button>
       </template>
     </el-dialog>
@@ -323,6 +325,7 @@
       </el-form>
       <template #footer>
         <el-button @click="paymentMethodDialogVisible = false">取消</el-button>
+        <el-button v-if="!editingPmId" type="info" @click="savePaymentMethodDraft">保存草稿</el-button>
         <el-button type="primary" @click="handlePmSubmit" :loading="submitLoading">确定</el-button>
       </template>
     </el-dialog>
@@ -363,6 +366,7 @@
         </el-form>
         <template #footer>
           <el-button @click="saFormDialogVisible = false">取消</el-button>
+          <el-button v-if="!editingSaId" type="info" @click="saveSystemDraft('settlement-account-create', saForm)">保存草稿</el-button>
           <el-button type="primary" @click="handleSaSubmit" :loading="submitLoading">确定</el-button>
         </template>
       </el-dialog>
@@ -382,6 +386,7 @@
       </el-form>
       <template #footer>
         <el-button @click="supplementItemDialogVisible = false">取消</el-button>
+        <el-button v-if="!editingSiId" type="info" @click="saveSystemDraft('supplement-item-create', siForm)">保存草稿</el-button>
         <el-button type="primary" @click="handleSiSubmit" :loading="submitLoading">确定</el-button>
       </template>
     </el-dialog>
@@ -417,6 +422,7 @@
       </el-form>
       <template #footer>
         <el-button @click="cfDialogVisible = false">取消</el-button>
+        <el-button type="info" @click="saveCategoryFieldDraft">保存草稿</el-button>
         <el-button type="primary" @click="cfConfirmField">确定</el-button>
       </template>
     </el-dialog>
@@ -454,6 +460,7 @@
       </el-form>
       <template #footer>
         <el-button @click="roleDialogVisible = false">取消</el-button>
+        <el-button v-if="!roleForm.roleId" type="info" @click="saveSystemDraft('role-create', roleForm)">保存草稿</el-button>
         <el-button type="primary" @click="handleRoleSubmit" :loading="submitLoading">确定</el-button>
       </template>
     </el-dialog>
@@ -485,6 +492,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
+import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 
 const activeTab = ref('users')
 const userData = ref([])
@@ -503,6 +511,20 @@ const currentUser = ref(null)
 const currentRole = ref(null)
 const dialogStoreIds = ref([])
 const menuTreeRef = ref(null)
+
+const saveSystemDraft = (key, data) => {
+  saveDraft(`system:${key}`, cloneDraft(data))
+  ElMessage.success('草稿已保存')
+}
+
+const restoreSystemDraft = (key, target) => {
+  const draft = loadDraft(`system:${key}`)
+  if (!draft) return
+  Object.assign(target, draft)
+  ElMessage.success('已恢复上次草稿')
+}
+
+const clearSystemDraft = (key) => clearDraft(`system:${key}`)
 
 const userForm = reactive({
   staffId: null,
@@ -575,6 +597,7 @@ const loadRoles = async () => {
 const handleAddRole = () => {
   roleDialogTitle.value = '新增角色'
   resetRoleForm()
+  restoreSystemDraft('role-create', roleForm)
   roleDialogVisible.value = true
 }
 
@@ -605,6 +628,7 @@ const handleRoleSubmit = async () => {
 
     if (res.code === 0) {
       ElMessage.success(roleForm.roleId ? '更新成功' : '创建成功')
+      if (!roleForm.roleId) clearSystemDraft('role-create')
       roleDialogVisible.value = false
       await loadRoles()
     } else {
@@ -659,6 +683,7 @@ const loadStores = async () => {
 const handleAddUser = () => {
   dialogTitle.value = '新增用户'
   resetUserForm()
+  restoreSystemDraft('user-create', userForm)
   userDialogVisible.value = true
 }
 
@@ -734,6 +759,7 @@ const handleUserSubmit = async () => {
 
     if (res.code === 0) {
       ElMessage.success('保存成功')
+      if (!userForm.staffId) clearSystemDraft('user-create')
       userDialogVisible.value = false
       loadUsers()
     } else {
@@ -840,6 +866,7 @@ const openCustomerSourceDialog = (row, parentId) => {
     csForm.name = ''
     csForm.parentId = ''
     csForm.sortOrder = (customerSourceData.value.length || 0) + 1
+    restoreSystemDraft('customer-source-create', csForm)
   }
   customerSourceDialogVisible.value = true
 }
@@ -861,6 +888,7 @@ const handleCsSubmit = async () => {
     }
     if (res.code === 0) {
       ElMessage.success(editingCsId.value ? '更新成功' : '创建成功')
+      if (!editingCsId.value) clearSystemDraft('customer-source-create')
       customerSourceDialogVisible.value = false
       loadCustomerSources()
     } else {
@@ -977,6 +1005,7 @@ const openPaymentMethodDialog = (row) => {
     pmForm.settlementAccountId = ''
     pmForm.isGlobal = true
     pmForm.sortOrder = (paymentMethodData.value.length || 0) + 1
+    restorePaymentMethodDraft()
   }
   paymentMethodDialogVisible.value = true
 }
@@ -989,6 +1018,24 @@ const onPmIsGlobalChange = () => {
 
 const onPmStoreChecked = (row) => {
   if (!row.checked) row.accountId = ''
+}
+
+const savePaymentMethodDraft = () => {
+  saveDraft('system:payment-method-create', {
+    pmForm: cloneDraft(pmForm),
+    pmStoreConfigRows: cloneDraft(pmStoreConfigRows.value)
+  })
+  ElMessage.success('草稿已保存')
+}
+
+const restorePaymentMethodDraft = () => {
+  const draft = loadDraft('system:payment-method-create')
+  if (!draft) return
+  Object.assign(pmForm, draft.pmForm || {})
+  if (Array.isArray(draft.pmStoreConfigRows)) {
+    pmStoreConfigRows.value = draft.pmStoreConfigRows
+  }
+  ElMessage.success('已恢复上次草稿')
 }
 
 const handlePmSubmit = async () => {
@@ -1015,6 +1062,7 @@ const handlePmSubmit = async () => {
     }
     if (res.code === 0) {
       ElMessage.success(editingPmId.value ? '更新成功' : '创建成功')
+      if (!editingPmId.value) clearSystemDraft('payment-method-create')
       paymentMethodDialogVisible.value = false
       loadPaymentMethods()
     } else { ElMessage.error(res.message || '操作失败') }
@@ -1108,6 +1156,7 @@ const openSettlementAccountDialog = (row) => {
     saForm.bankName = ''
     saForm.accountNumber = ''
     saForm.sortOrder = 0
+    restoreSystemDraft('settlement-account-create', saForm)
   }
   saFormDialogVisible.value = true
 }
@@ -1125,6 +1174,7 @@ const handleSaSubmit = async () => {
     }
     if (res.code === 0) {
       ElMessage.success(editingSaId.value ? '更新成功' : '创建成功')
+      if (!editingSaId.value) clearSystemDraft('settlement-account-create')
       saFormDialogVisible.value = false
       loadSettlementAccountsForMgmt()
       loadSettlementAccounts()
@@ -1206,6 +1256,7 @@ const openSupplementItemDialog = (row) => {
     siForm.name = ''
     siForm.amount = 0
     siForm.sortOrder = (supplementItemData.value.length || 0) + 1
+    restoreSystemDraft('supplement-item-create', siForm)
   }
   supplementItemDialogVisible.value = true
 }
@@ -1223,6 +1274,7 @@ const handleSiSubmit = async () => {
     }
     if (res.code === 0) {
       ElMessage.success(editingSiId.value ? '更新成功' : '创建成功')
+      if (!editingSiId.value) clearSystemDraft('supplement-item-create')
       supplementItemDialogVisible.value = false
       loadSupplementItems()
     } else { ElMessage.error(res.message || '操作失败') }
@@ -1323,6 +1375,7 @@ const cfAddField = () => {
   cfFieldForm.placeholder = ''
   cfFieldForm.required = false
   cfOptionInput.value = ''
+  restoreCategoryFieldDraft()
   cfDialogVisible.value = true
 }
 
@@ -1356,8 +1409,26 @@ const cfConfirmField = () => {
     cfFields.value[cfEditingIndex.value] = item
   } else {
     cfFields.value.push(item)
+    clearDraft('system:category-field-create')
   }
   cfDialogVisible.value = false
+}
+
+const saveCategoryFieldDraft = () => {
+  saveDraft('system:category-field-create', {
+    cfFieldForm: cloneDraft(cfFieldForm),
+    cfOptionInput: cfOptionInput.value
+  })
+  ElMessage.success('草稿已保存')
+}
+
+const restoreCategoryFieldDraft = () => {
+  const draft = loadDraft('system:category-field-create')
+  if (!draft?.cfFieldForm) return
+  Object.assign(cfFieldForm, draft.cfFieldForm)
+  cfFieldForm.options = Array.isArray(draft.cfFieldForm.options) ? draft.cfFieldForm.options : []
+  cfOptionInput.value = draft.cfOptionInput || ''
+  ElMessage.success('已恢复上次草稿')
 }
 
 const cfDeleteField = (row) => {

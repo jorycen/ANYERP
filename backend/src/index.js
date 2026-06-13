@@ -27,6 +27,7 @@ const dictRouter = require('./modules/dict/routes');
 const { errorHandler } = require('./middleware/errorHandler');
 const { responseFormatter } = require('./middleware/responseFormatter');
 const { authMiddleware } = require('./middleware/auth');
+const { applyPendingProductPriceChanges } = require('./modules/product/controller');
 
 const app = new Koa();
 
@@ -92,5 +93,16 @@ app.listen(PORT, () => {
   console.log(`ANY-ERP 服务已启动: http://localhost:${PORT}`);
   console.log(`API地址: http://localhost:${PORT}/api/v1`);
 });
+
+setInterval(async () => {
+  try {
+    const count = await applyPendingProductPriceChanges();
+    if (count > 0) {
+      console.log(`[ProductPrice] 已生效 ${count} 条预约价格变更`);
+    }
+  } catch (error) {
+    console.error('[ProductPrice] 预约价格生效任务失败:', error.message);
+  }
+}, 60 * 1000);
 
 module.exports = app;

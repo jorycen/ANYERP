@@ -58,7 +58,10 @@ async function getDailyDetails(ctx) {
 
   const { count, rows } = await DailyStatementDetail.findAndCountAll({
     where,
-    order: [['detail_id', 'DESC']],
+    order: [
+      [Sequelize.literal('CASE WHEN settled = 0 THEN 0 ELSE 1 END'), 'ASC'],
+      ['detail_id', 'DESC']
+    ],
     ...paginate({}, { page, pageSize })
   });
 

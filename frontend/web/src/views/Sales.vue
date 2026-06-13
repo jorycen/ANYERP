@@ -4,7 +4,10 @@
       <template #header>
         <div class="card-header">
           <span>销售订单</span>
-          <el-button type="primary" @click="handleCreate">新建订单</el-button>
+          <div>
+            <el-button @click="openDepositManager">定金管理</el-button>
+            <el-button type="primary" @click="handleCreate">新建订单</el-button>
+          </div>
         </div>
       </template>
 
@@ -235,13 +238,38 @@
               </el-checkbox>
             </el-checkbox-group>
             <div class="payment-amounts mt-10">
-              <el-input
-                v-for="pm in selectedPayments"
-                :key="pm"
-                v-model="paymentAmounts[pm]"
-                :placeholder="getPaymentName(pm)"
-                style="width: 150px; margin-right: 10px"
-              />
+              <template v-for="pm in selectedPayments" :key="pm">
+                <div v-if="isDepositPaymentName(pm)" class="deposit-payment-row">
+                  <el-select
+                    v-model="orderForm.depositId"
+                    placeholder="选择待核销定金单"
+                    filterable
+                    style="width: 320px"
+                    :loading="depositLoading"
+                    @visible-change="(visible) => visible && loadAvailableDeposits()"
+                    @change="onDepositChange"
+                  >
+                    <el-option
+                      v-for="deposit in availableDepositList"
+                      :key="deposit.deposit_id"
+                      :label="`${deposit.deposit_no} ${deposit.customer_name} ¥${deposit.available_amount || deposit.amount}`"
+                      :value="deposit.deposit_id"
+                    />
+                  </el-select>
+                  <el-input
+                    v-model="paymentAmounts[pm]"
+                    disabled
+                    placeholder="定金金额"
+                    style="width: 150px"
+                  />
+                </div>
+                <el-input
+                  v-else
+                  v-model="paymentAmounts[pm]"
+                  :placeholder="getPaymentName(pm)"
+                  style="width: 150px; margin-right: 10px"
+                />
+              </template>
             </div>
           </div>
         </el-form-item>
@@ -255,18 +283,20 @@
           <div class="summary-item">国补: <span>-¥{{ orderForm.nationalSubsidy.toFixed(2) }}</span></div>
           <div class="summary-item">教补: <span>-¥{{ orderForm.educationSubsidy.toFixed(2) }}</span></div>
           <div class="summary-item">折扣: <span>-¥{{ orderForm.discountAmount.toFixed(2) }}</span></div>
+          <div class="summary-item" v-if="selectedDeposit">定金抵扣: <span>-¥{{ Number(selectedDeposit.available_amount || selectedDeposit.amount || 0).toFixed(2) }}</span></div>
           <div class="summary-item total">实付金额: <span>¥{{ actualPayment.toFixed(2) }}</span></div>
         </div>
       </el-form>
 
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
+        <el-button type="info" @click="saveOrderDraft">保存草稿</el-button>
         <el-button type="primary" @click="handleSubmit" :loading="submitLoading">确定</el-button>
       </template>
     </el-dialog>
 
     <!-- 订单详情对话框 -->
-    <el-dialog v-model="detailVisible" title="订单详情" width="800px">
+    <el-dialog v-model="detailVisible" title="订单详情" width="1000px">
       <div v-if="currentOrder" class="order-detail">
         <el-descriptions :column="2" border>
           <el-descriptions-item label="订单号">{{ currentOrder.order_no }}</el-descriptions-item>
@@ -298,11 +328,26 @@
           <el-table-column prop="subtotal" label="小计" width="100">
             <template #default="{ row }">¥{{ row.subtotal }}</template>
           </el-table-column>
+          <el-table-column v-if="orderCanSeeOriginalCost" prop="original_inventory_cost" label="原始成本" width="100">
+            <template #default="{ row }">{{ row.original_inventory_cost === undefined ? '-' : `¥${row.original_inventory_cost || 0}` }}</template>
+          </el-table-column>
+          <el-table-column v-if="orderHasSettlementCost" prop="cost_adjustment_amount" label="政策调整" width="100">
+            <template #default="{ row }">{{ row.sales_settlement_cost === null || row.sales_settlement_cost === undefined ? '-' : `-¥${row.cost_adjustment_amount || 0}` }}</template>
+          </el-table-column>
+          <el-table-column v-if="orderHasSettlementCost" prop="sales_settlement_cost" label="结算成本" width="100">
+            <template #default="{ row }">{{ row.sales_settlement_cost === null || row.sales_settlement_cost === undefined ? '-' : `¥${row.sales_settlement_cost || 0}` }}</template>
+          </el-table-column>
+          <el-table-column v-if="orderHasSettlementCost" prop="sales_gross_profit" label="销售毛利" width="100">
+            <template #default="{ row }">{{ row.sales_gross_profit === null || row.sales_gross_profit === undefined ? '-' : `¥${row.sales_gross_profit || 0}` }}</template>
+          </el-table-column>
         </el-table>
 
         <h4 class="mt-20" v-if="currentOrder.OrderPayments?.length">支付记录</h4>
         <el-table :data="currentOrder.OrderPayments || []" border size="small">
           <el-table-column prop="payment_method" label="支付方式" />
+          <el-table-column label="绑定定金单" width="190">
+            <template #default="{ row }">{{ row.DepositOrder?.deposit_no || '-' }}</template>
+          </el-table-column>
           <el-table-column prop="amount" label="金额" width="120">
             <template #default="{ row }">¥{{ row.amount }}</template>
           </el-table-column>
@@ -319,15 +364,95 @@
         <el-button type="danger" @click="confirmReject" :loading="rejectLoading">确认拒绝</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="depositDialogVisible" title="定金管理" width="1050px">
+      <div class="filter-bar">
+        <el-select v-model="depositQuery.status" placeholder="状态" clearable style="width: 140px">
+          <el-option label="全部" value="" />
+          <el-option label="已提交" value="submitted" />
+          <el-option label="已归档" value="archived" />
+          <el-option label="已核销" value="redeemed" />
+          <el-option label="已退款" value="refunded" />
+        </el-select>
+        <el-input v-model="depositQuery.customerPhone" placeholder="客户电话" clearable style="width: 180px" />
+        <el-button type="primary" @click="loadDeposits">搜索</el-button>
+        <el-button type="primary" @click="openDepositCreate">新建定金单</el-button>
+      </div>
+      <el-table :data="depositList" border stripe v-loading="depositListLoading">
+        <el-table-column prop="deposit_no" label="定金单号" width="180" />
+        <el-table-column label="门店" width="130">
+          <template #default="{ row }">{{ row.Store?.name || '-' }}</template>
+        </el-table-column>
+        <el-table-column prop="customer_name" label="客户" width="100" />
+        <el-table-column prop="customer_phone" label="电话" width="120" />
+        <el-table-column prop="amount" label="金额" width="100">
+          <template #default="{ row }">¥{{ row.amount }}</template>
+        </el-table-column>
+        <el-table-column prop="create_user" label="收定金人" width="100" />
+        <el-table-column prop="status" label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag :type="getDepositStatusType(row.status)">{{ getDepositStatusText(row.status) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="create_time" label="创建时间" width="160">
+          <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" fixed="right" width="160">
+          <template #default="{ row }">
+            <el-button v-if="row.status === 'submitted'" link type="success" @click="archiveDeposit(row)">归档</el-button>
+            <el-button v-if="['submitted', 'archived'].includes(row.status)" link type="danger" @click="refundDeposit(row)">退款</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-pagination
+        v-model:current-page="depositQuery.page"
+        v-model:page-size="depositQuery.pageSize"
+        :total="depositTotal"
+        :page-sizes="[10, 20, 50]"
+        layout="total, sizes, prev, pager, next"
+        @size-change="loadDeposits"
+        @current-change="loadDeposits"
+      />
+    </el-dialog>
+
+    <el-dialog v-model="depositCreateVisible" title="新建定金单" width="560px" @close="resetDepositForm">
+      <el-form :model="depositForm" label-width="90px">
+        <el-form-item label="门店">
+          <el-select v-model="depositForm.storeId" placeholder="选择门店" :disabled="isStoreUser()" v-loading="storesLoading">
+            <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="客户姓名">
+          <el-input v-model="depositForm.customerName" placeholder="请输入客户姓名" />
+        </el-form-item>
+        <el-form-item label="联系电话">
+          <el-input v-model="depositForm.customerPhone" placeholder="请输入联系电话" />
+        </el-form-item>
+        <el-form-item label="定金金额">
+          <el-input v-model="depositForm.amount" placeholder="请输入定金金额" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="depositForm.remark" type="textarea" :rows="2" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="depositCreateVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitDeposit" :loading="depositSubmitLoading">确定</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import { getStoreId, isStoreUser, hasRole } from '../utils/user'
+import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 
+const route = useRoute()
+const SALES_ORDER_DRAFT_KEY = 'sales-order-create'
 const stores = ref([])
 const storesLoaded = ref(false)
 const storesLoading = ref(false)
@@ -342,6 +467,12 @@ const dialogTitle = ref('新建订单')
 const currentOrder = ref(null)
 
 const canApprove = computed(() => hasRole(['manager']))
+const orderHasSettlementCost = computed(() => {
+  return (currentOrder.value?.OrderItems || []).some(item => item.sales_settlement_cost !== null && item.sales_settlement_cost !== undefined)
+})
+const orderCanSeeOriginalCost = computed(() => {
+  return (currentOrder.value?.OrderItems || []).some(item => item.original_inventory_cost !== undefined)
+})
 
 const queryParams = reactive({
   page: 1,
@@ -353,6 +484,29 @@ const queryParams = reactive({
 
 const selectedPayments = ref([])
 const paymentAmounts = reactive({})
+const availableDepositList = ref([])
+const depositLoading = ref(false)
+const depositDialogVisible = ref(false)
+const depositCreateVisible = ref(false)
+const depositListLoading = ref(false)
+const depositSubmitLoading = ref(false)
+const depositList = ref([])
+const depositTotal = ref(0)
+
+const depositQuery = reactive({
+  page: 1,
+  pageSize: 20,
+  status: '',
+  customerPhone: ''
+})
+
+const depositForm = reactive({
+  storeId: '',
+  customerName: '',
+  customerPhone: '',
+  amount: '',
+  remark: ''
+})
 
 const orderForm = reactive({
   orderId: null,
@@ -363,6 +517,7 @@ const orderForm = reactive({
   customerSourceL1: '',
   customerSourceL2: '',
   invoiceStatus: '不开票',
+  depositId: '',
   items: [],
   nationalSubsidy: 0,
   educationSubsidy: 0,
@@ -385,6 +540,10 @@ const actualPayment = computed(() => {
   return Math.max(0, totalAmount.value - (orderForm.nationalSubsidy || 0) - (orderForm.educationSubsidy || 0) - (orderForm.discountAmount || 0))
 })
 
+const selectedDeposit = computed(() => {
+  return availableDepositList.value.find(item => item.deposit_id === orderForm.depositId) || null
+})
+
 onMounted(() => {
   if (isStoreUser()) {
     queryParams.storeId = getStoreId()
@@ -393,6 +552,33 @@ onMounted(() => {
   loadStores()
   loadPaymentMethods()
   loadCustomerSources()
+  openRouteOrderDetail()
+})
+
+watch(() => route.query.orderId, () => {
+  openRouteOrderDetail()
+})
+
+watch(selectedPayments, (payments) => {
+  const hasDeposit = payments.some(isDepositPaymentName)
+  if (hasDeposit) {
+    loadAvailableDeposits()
+  } else {
+    orderForm.depositId = ''
+    Object.keys(paymentAmounts).forEach(key => {
+      if (isDepositPaymentName(key)) delete paymentAmounts[key]
+    })
+  }
+})
+
+watch(() => [orderForm.customerPhone, orderForm.storeId], () => {
+  if (selectedPayments.value.some(isDepositPaymentName)) {
+    orderForm.depositId = ''
+    Object.keys(paymentAmounts).forEach(key => {
+      if (isDepositPaymentName(key)) paymentAmounts[key] = 0
+    })
+    loadAvailableDeposits()
+  }
 })
 
 const loadData = async () => {
@@ -437,14 +623,22 @@ const loadPaymentMethods = async () => {
     const res = await api.getPaymentMethods()
     if (res.code === 0) {
       paymentMethods.value = res.data || []
+      ensureDepositPaymentMethod()
     }
   } catch (err) {
     paymentMethods.value = [
       { method_id: '1', code: 'cash', name: '现金' },
       { method_id: '2', code: 'wechat', name: '微信支付' },
       { method_id: '3', code: 'alipay', name: '支付宝' },
-      { method_id: '4', code: 'bank', name: '银行转账' }
+      { method_id: '4', code: 'bank', name: '银行转账' },
+      { method_id: 'PM_DEPOSIT', code: 'deposit', name: '定金' }
     ]
+  }
+}
+
+const ensureDepositPaymentMethod = () => {
+  if (!paymentMethods.value.some(pm => isDepositPaymentName(pm.name) || pm.code === 'deposit')) {
+    paymentMethods.value.push({ method_id: 'PM_DEPOSIT', code: 'deposit', name: '定金' })
   }
 }
 
@@ -477,18 +671,178 @@ const getPaymentName = (name) => {
   return pm ? pm.name : name
 }
 
+const isDepositPaymentName = (name) => {
+  const value = String(name || '').trim().toLowerCase()
+  return value === '定金' || value === 'deposit'
+}
+
+const loadAvailableDeposits = async () => {
+  if (!orderForm.customerPhone || !orderForm.storeId) {
+    availableDepositList.value = []
+    return
+  }
+  depositLoading.value = true
+  try {
+    const res = await api.getAvailableDeposits({
+      customerPhone: orderForm.customerPhone,
+      storeId: orderForm.storeId
+    })
+    if (res.code === 0) {
+      availableDepositList.value = res.data || []
+      if (orderForm.depositId) onDepositChange(orderForm.depositId)
+    }
+  } catch (err) {
+    availableDepositList.value = []
+  } finally {
+    depositLoading.value = false
+  }
+}
+
+const onDepositChange = (depositId) => {
+  const deposit = availableDepositList.value.find(item => item.deposit_id === depositId)
+  const methodName = selectedPayments.value.find(isDepositPaymentName) || '定金'
+  paymentAmounts[methodName] = deposit ? Number(deposit.available_amount || deposit.amount || 0).toFixed(2) : 0
+}
+
 const handleCreate = () => {
   dialogTitle.value = '新建订单'
   resetForm()
   if (isStoreUser()) {
     orderForm.storeId = getStoreId()
   }
+  restoreOrderDraft()
   dialogVisible.value = true
 }
 
 const handleView = async (row) => {
+  await openOrderDetail(row.order_id)
+}
+
+const openDepositManager = () => {
+  depositDialogVisible.value = true
+  loadDeposits()
+}
+
+const loadDeposits = async () => {
+  depositListLoading.value = true
   try {
-    const res = await api.getSalesDetail(row.order_id)
+    const params = { ...depositQuery }
+    const res = await api.getDepositList(params)
+    if (res.code === 0) {
+      depositList.value = res.data?.list || []
+      depositTotal.value = res.data?.pagination?.total || res.data?.total || 0
+    }
+  } catch (err) {
+    ElMessage.error('加载定金单失败')
+  } finally {
+    depositListLoading.value = false
+  }
+}
+
+const openDepositCreate = () => {
+  resetDepositForm()
+  if (isStoreUser()) {
+    depositForm.storeId = getStoreId()
+  }
+  depositCreateVisible.value = true
+}
+
+const resetDepositForm = () => {
+  depositForm.storeId = ''
+  depositForm.customerName = ''
+  depositForm.customerPhone = ''
+  depositForm.amount = ''
+  depositForm.remark = ''
+}
+
+const submitDeposit = async () => {
+  if (!depositForm.storeId) {
+    ElMessage.warning('请选择门店')
+    return
+  }
+  if (!depositForm.customerName || !depositForm.customerPhone) {
+    ElMessage.warning('请填写客户信息')
+    return
+  }
+  if (Number(depositForm.amount || 0) <= 0) {
+    ElMessage.warning('定金金额必须大于0')
+    return
+  }
+  depositSubmitLoading.value = true
+  try {
+    const res = await api.createDeposit({
+      storeId: depositForm.storeId,
+      customerName: depositForm.customerName,
+      customerPhone: depositForm.customerPhone,
+      amount: depositForm.amount,
+      remark: depositForm.remark
+    })
+    if (res.code === 0) {
+      ElMessage.success(res.data?.message || '定金单已提交')
+      depositCreateVisible.value = false
+      loadDeposits()
+    } else {
+      ElMessage.error(res.message || '创建定金单失败')
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '创建定金单失败')
+  } finally {
+    depositSubmitLoading.value = false
+  }
+}
+
+const archiveDeposit = async (row) => {
+  try {
+    await ElMessageBox.confirm(`确认归档定金单 ${row.deposit_no}？`, '归档确认', { type: 'warning' })
+    const res = await api.archiveDeposit(row.deposit_id)
+    if (res.code === 0) {
+      ElMessage.success(res.data?.message || '定金单已归档')
+      loadDeposits()
+    } else {
+      ElMessage.error(res.message || '归档失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') {
+      ElMessage.error(err.response?.data?.message || '归档失败')
+    }
+  }
+}
+
+const refundDeposit = async (row) => {
+  try {
+    const { value } = await ElMessageBox.prompt('请输入退款原因', `退款记录 ${row.deposit_no}`, {
+      inputType: 'textarea',
+      confirmButtonText: '确认',
+      cancelButtonText: '取消'
+    })
+    const res = await api.refundDeposit(row.deposit_id, {
+      amount: row.amount,
+      reason: value || ''
+    })
+    if (res.code === 0) {
+      ElMessage.success(res.data?.message || '退款记录已生成')
+      loadDeposits()
+    } else {
+      ElMessage.error(res.message || '退款失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') {
+      ElMessage.error(err.response?.data?.message || '退款失败')
+    }
+  }
+}
+
+const openRouteOrderDetail = async () => {
+  const orderId = route.query.orderId
+  if (orderId) {
+    await openOrderDetail(orderId)
+  }
+}
+
+const openOrderDetail = async (orderId) => {
+  if (!orderId) return
+  try {
+    const res = await api.getSalesDetail(orderId)
     if (res.code === 0) {
       currentOrder.value = res.data
       detailVisible.value = true
@@ -513,13 +867,36 @@ const resetForm = () => {
   orderForm.customerSourceL1 = ''
   orderForm.customerSourceL2 = ''
   orderForm.invoiceStatus = '不开票'
+  orderForm.depositId = ''
   orderForm.items = []
   orderForm.nationalSubsidy = 0
   orderForm.educationSubsidy = 0
   orderForm.discountAmount = 0
   orderForm.remark = ''
   selectedPayments.value = []
+  availableDepositList.value = []
   Object.keys(paymentAmounts).forEach(k => delete paymentAmounts[k])
+}
+
+const saveOrderDraft = () => {
+  saveDraft(SALES_ORDER_DRAFT_KEY, {
+    orderForm: cloneDraft(orderForm),
+    selectedPayments: cloneDraft(selectedPayments.value),
+    paymentAmounts: cloneDraft(paymentAmounts)
+  })
+  ElMessage.success('草稿已保存')
+}
+
+const restoreOrderDraft = () => {
+  const draft = loadDraft(SALES_ORDER_DRAFT_KEY)
+  if (!draft) return
+  if (draft.orderForm) {
+    Object.assign(orderForm, draft.orderForm)
+  }
+  selectedPayments.value = Array.isArray(draft.selectedPayments) ? draft.selectedPayments : []
+  Object.keys(paymentAmounts).forEach(k => delete paymentAmounts[k])
+  Object.assign(paymentAmounts, draft.paymentAmounts || {})
+  ElMessage.success('已恢复上次草稿')
 }
 
 const addItem = () => {
@@ -735,6 +1112,11 @@ const handleSubmit = async () => {
     ElMessage.warning('支付金额与实付金额不匹配')
     return
   }
+  const depositPayment = selectedPayments.value.find(isDepositPaymentName)
+  if (depositPayment && !orderForm.depositId) {
+    ElMessage.warning('请选择需要核销的定金单')
+    return
+  }
 
   submitLoading.value = true
   try {
@@ -756,7 +1138,8 @@ const handleSubmit = async () => {
       })),
       payments: selectedPayments.value.map(pm => ({
         method: pm,
-        amount: paymentAmounts[pm] || 0
+        amount: paymentAmounts[pm] || 0,
+        depositId: isDepositPaymentName(pm) ? orderForm.depositId : undefined
       })),
       nationalSubsidy: orderForm.nationalSubsidy,
       educationSubsidy: orderForm.educationSubsidy,
@@ -771,6 +1154,7 @@ const handleSubmit = async () => {
       } else {
         ElMessage.success(res.data?.message || '订单创建成功')
       }
+      clearDraft(SALES_ORDER_DRAFT_KEY)
       dialogVisible.value = false
       loadData()
     } else {
@@ -848,6 +1232,28 @@ const getStatusText = (status) => {
   const texts = { completed: '已完成', pending_approval: '待审批', cancelled: '已取消' }
   return texts[status] || status
 }
+
+const getDepositStatusType = (status) => {
+  const types = {
+    submitted: 'warning',
+    archived: 'success',
+    redeemed: 'info',
+    refunded: 'danger',
+    voided: 'danger'
+  }
+  return types[status] || 'info'
+}
+
+const getDepositStatusText = (status) => {
+  const texts = {
+    submitted: '已提交',
+    archived: '已归档',
+    redeemed: '已核销',
+    refunded: '已退款',
+    voided: '已作废'
+  }
+  return texts[status] || status
+}
 </script>
 
 <style scoped>
@@ -873,6 +1279,13 @@ const getStatusText = (status) => {
   border: 1px solid #ebeef5;
   padding: 10px;
   border-radius: 4px;
+}
+.deposit-payment-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-right: 10px;
+  margin-bottom: 8px;
 }
 .order-summary {
   background: #f5f7fa;

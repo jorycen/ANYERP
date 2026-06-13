@@ -67,7 +67,7 @@
             <el-table-column prop="display_qty" label="铺货仓库存" width="110" />
             <el-table-column prop="demo_qty" label="样机库存" width="100" />
             <el-table-column prop="unsellable_qty" label="不可售库存" width="110" />
-            <el-table-column prop="pending_qty" label="待入库库存" width="110" />
+            <el-table-column prop="pending_qty" label="占用库存" width="110" />
             <el-table-column label="查看序列号" width="120">
               <template #default="{ row }">
                 <el-button v-if="row.need_sn === 1" link type="primary" @click="openSnDialog(row)">查看序列号</el-button>
@@ -94,6 +94,7 @@
               <el-option label="全部" value="" />
               <el-option label="待入库" value="pending" />
               <el-option label="已完成" value="completed" />
+              <el-option label="已退库" value="returned" />
             </el-select>
             <el-select v-model="inboundQuery.storeId" placeholder="门店" clearable style="width: 150px" @change="loadInboundList">
               <el-option label="全部门店" :value="''" />
@@ -123,7 +124,7 @@
               <template #default="{ row }">
                 <el-button link type="primary" @click="viewInboundDetail(row)">查看</el-button>
                 <el-button link type="success" @click="openExecuteDialog(row)" v-if="row.status === 'pending'">入库</el-button>
-                <el-button link type="danger" @click="executeReturn(row)" v-if="row.status === 'completed'">退库</el-button>
+                <el-button link type="danger" @click="openReturnRequestDialog(row)" v-if="row.status === 'completed'">申请退库</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -136,6 +137,54 @@
             @size-change="loadInboundList"
             @current-change="loadInboundList"
           />
+
+          <div class="transfer-section mt-30">
+            <div class="section-title">退库申请</div>
+            <div class="filter-bar">
+              <el-select v-model="returnQuery.status" placeholder="状态" clearable style="width: 140px" @change="loadReturnList">
+                <el-option label="全部" value="" />
+                <el-option label="待审批" value="pending" />
+                <el-option label="待执行" value="approved" />
+                <el-option label="已拒绝" value="rejected" />
+                <el-option label="已退库" value="completed" />
+              </el-select>
+              <el-button @click="loadReturnList">刷新</el-button>
+            </div>
+            <el-table :data="returnList" stripe border>
+              <el-table-column prop="return_no" label="退库单号" width="190" />
+              <el-table-column prop="inbound_no" label="原入库单" width="180" />
+              <el-table-column prop="store_name" label="门店" width="120" />
+              <el-table-column prop="supplier_name" label="供应商" min-width="150" />
+              <el-table-column prop="total_quantity" label="数量" width="80" />
+              <el-table-column prop="total_amount" label="退库金额" width="120">
+                <template #default="{ row }">¥{{ row.total_amount }}</template>
+              </el-table-column>
+              <el-table-column prop="status" label="状态" width="100">
+                <template #default="{ row }">
+                  <el-tag :type="getReturnStatusType(row.status)">{{ getReturnStatusText(row.status) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="create_user" label="申请人" width="100" />
+              <el-table-column prop="create_time" label="申请时间" width="160">
+                <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="190">
+                <template #default="{ row }">
+                  <el-button v-if="row.status === 'pending'" link type="success" @click="approveReturn(row, 'approved')">通过</el-button>
+                  <el-button v-if="row.status === 'pending'" link type="danger" @click="approveReturn(row, 'rejected')">拒绝</el-button>
+                  <el-button v-if="row.status === 'approved'" link type="primary" @click="executeApprovedReturn(row)">执行退库</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <el-pagination
+              v-model:current-page="returnQuery.page"
+              v-model:page-size="returnQuery.pageSize"
+              :total="returnTotal"
+              layout="total, sizes, prev, pager, next"
+              @size-change="loadReturnList"
+              @current-change="loadReturnList"
+            />
+          </div>
         </el-tab-pane>
 
         <el-tab-pane label="SN追踪" name="sn-trace">
@@ -217,6 +266,72 @@
             </el-table>
           </div>
         </el-tab-pane>
+
+        <el-tab-pane label="拆装管理" name="conversion">
+          <div class="filter-bar">
+            <el-button type="primary" @click="openConversionDialog('split')">新建拆分</el-button>
+            <el-button type="success" @click="openConversionDialog('assemble')">新建组装</el-button>
+            <el-select v-model="conversionQuery.conversionType" placeholder="类型" clearable style="width: 120px" @change="loadConversionList">
+              <el-option label="全部" value="" />
+              <el-option label="拆分" value="split" />
+              <el-option label="组装" value="assemble" />
+            </el-select>
+            <el-select v-model="conversionQuery.status" placeholder="状态" clearable style="width: 120px" @change="loadConversionList">
+              <el-option label="全部" value="" />
+              <el-option label="已完成" value="completed" />
+              <el-option label="已冲销" value="voided" />
+            </el-select>
+            <el-select v-model="conversionQuery.storeId" placeholder="门店" clearable style="width: 150px" @change="loadConversionList">
+              <el-option label="全部门店" :value="''" />
+              <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
+            </el-select>
+            <el-button @click="loadConversionList">刷新</el-button>
+          </div>
+
+          <el-table :data="conversionList" stripe border v-loading="conversionLoading">
+            <el-table-column prop="conversion_no" label="单号" width="190" />
+            <el-table-column prop="conversion_type" label="类型" width="90">
+              <template #default="{ row }">
+                <el-tag :type="row.conversion_type === 'assemble' ? 'success' : 'primary'">{{ getConversionTypeText(row.conversion_type) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="store_name" label="门店" width="130" />
+            <el-table-column prop="source_summary" label="来源商品" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="target_summary" label="目标商品" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="total_source_cost" label="来源成本" width="110">
+              <template #default="{ row }">¥{{ row.total_source_cost || 0 }}</template>
+            </el-table-column>
+            <el-table-column prop="service_cost" label="服务成本" width="110">
+              <template #default="{ row }">¥{{ row.service_cost || 0 }}</template>
+            </el-table-column>
+            <el-table-column prop="total_target_cost" label="目标成本" width="110">
+              <template #default="{ row }">¥{{ row.total_target_cost || 0 }}</template>
+            </el-table-column>
+            <el-table-column prop="status" label="状态" width="90">
+              <template #default="{ row }">
+                <el-tag :type="row.status === 'completed' ? 'success' : 'info'">{{ getConversionStatusText(row.status) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="create_time" label="创建时间" width="160">
+              <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="150">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="viewConversionDetail(row)">查看</el-button>
+                <el-button v-if="row.status === 'completed'" link type="danger" @click="handleVoidConversion(row)">冲销</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <el-pagination
+            v-model:current-page="conversionQuery.page"
+            v-model:page-size="conversionQuery.pageSize"
+            :total="conversionTotal"
+            layout="total, sizes, prev, pager, next"
+            @size-change="loadConversionList"
+            @current-change="loadConversionList"
+          />
+        </el-tab-pane>
       </el-tabs>
     </el-card>
 
@@ -240,6 +355,9 @@
         <el-table :data="currentInbound.items || []" stripe border size="small">
           <el-table-column label="商品名称" min-width="140">
             <template #default="{ row }">{{ row.product_name }}</template>
+          </el-table-column>
+          <el-table-column label="PN码" width="140">
+            <template #default="{ row }">{{ row.pn_code || '-' }}</template>
           </el-table-column>
           <el-table-column prop="unit_price" label="单价" width="100">
             <template #default="{ row }">¥{{ row.unit_price }}</template>
@@ -293,7 +411,7 @@
                 <el-input v-model="r.snCode" placeholder="SN码" size="small" />
               </template>
             </el-table-column>
-            <el-table-column label="入库库位" width="140">
+            <el-table-column label="库存类型" width="140">
               <template #default="{ row: r }">
                 <el-select v-model="r.inventoryType" size="small" style="width: 120px">
                   <el-option v-for="it in INVENTORY_TYPES" :key="it.value" :label="it.label" :value="it.value" />
@@ -307,10 +425,10 @@
             </el-table-column>
           </el-table>
 
-          <!-- 非SN商品：按库位拆分数量 -->
+          <!-- 非SN商品：按库存类型拆分数量 -->
           <el-table v-else :data="item.qtyRows" stripe border size="small" class="sn-table">
             <el-table-column type="index" label="#" width="50" />
-            <el-table-column label="入库库位" width="160">
+            <el-table-column label="库存类型" width="160">
               <template #default="{ row: r }">
                 <el-select v-model="r.inventoryType" size="small" style="width: 140px">
                   <el-option v-for="it in INVENTORY_TYPES" :key="it.value" :label="it.label" :value="it.value" />
@@ -334,9 +452,9 @@
             </el-table-column>
           </el-table>
 
-          <!-- 非SN：添加库位行 -->
+          <!-- 非SN：添加库存类型行 -->
           <div v-if="!item.needSn" style="margin-top: 6px">
-            <el-button size="small" type="primary" link @click="addQtyRow(item)">+ 添加库位</el-button>
+            <el-button size="small" type="primary" link @click="addQtyRow(item)">+ 添加库存类型</el-button>
             <span style="margin-left: 12px; font-size: 12px; color: #909399">
               已分配 {{ allocatedQty(item) }} / {{ item.quantity }}
               <span v-if="allocatedQty(item) !== item.quantity" style="color: #f56c6c">（数量不匹配）</span>
@@ -346,6 +464,7 @@
       </div>
       <template #footer>
         <el-button @click="executeInboundVisible = false">取消</el-button>
+        <el-button type="info" @click="saveInboundDraft">保存草稿</el-button>
         <el-button type="primary" @click="submitInbound" :loading="inboundLoading">确认入库</el-button>
       </template>
     </el-dialog>
@@ -366,8 +485,8 @@
       </template>
     </el-dialog>
 
-    <!-- 执行退库对话框 -->
-    <el-dialog v-model="executeReturnVisible" title="执行退库" width="600px">
+    <!-- 发起退库申请对话框 -->
+    <el-dialog v-model="executeReturnVisible" title="发起退库申请" width="600px">
       <div v-if="currentInbound">
         <el-descriptions :column="1" border>
           <el-descriptions-item label="入库单号">{{ currentInbound.inbound_no }}</el-descriptions-item>
@@ -384,7 +503,7 @@
       </div>
       <template #footer>
         <el-button @click="executeReturnVisible = false">取消</el-button>
-        <el-button type="danger" @click="submitReturn" :loading="returnLoading">确认退库</el-button>
+        <el-button type="danger" @click="submitReturn" :loading="returnLoading">提交申请</el-button>
       </template>
     </el-dialog>
 
@@ -558,19 +677,386 @@
 
       <template #footer>
         <el-button @click="transferDialogVisible = false">取消</el-button>
+        <el-button type="info" @click="saveTransferDraft">保存草稿</el-button>
         <el-button type="primary" @click="submitTransfer" :loading="transferLoading">确认调拨</el-button>
       </template>
+    </el-dialog>
+
+    <el-dialog v-model="transferOutConfirmVisible" title="确认调拨出库" width="760px" @close="resetTransferOutConfirm">
+      <div v-if="transferOutConfirmRow">
+        <el-descriptions :column="2" border size="small" style="margin-bottom: 14px;">
+          <el-descriptions-item label="调拨单号">{{ transferOutConfirmRow.transfer_no }}</el-descriptions-item>
+          <el-descriptions-item label="调出门店">{{ transferOutConfirmRow.from_store_name }}</el-descriptions-item>
+          <el-descriptions-item label="调入门店">{{ transferOutConfirmRow.to_store_name }}</el-descriptions-item>
+          <el-descriptions-item label="数量">{{ transferOutConfirmRow.total_quantity }}</el-descriptions-item>
+        </el-descriptions>
+
+        <el-table :data="transferOutSnRows" stripe border size="small" v-loading="transferOutSnLoading">
+          <el-table-column prop="productName" label="商品名称" min-width="180" />
+          <el-table-column label="选择SN" min-width="240">
+            <template #default="{ row }">
+              <el-select v-model="row.snId" placeholder="请选择SN" filterable clearable style="width: 100%">
+                <el-option
+                  v-for="sn in row.snOptions"
+                  :key="sn.sn_id"
+                  :label="`${sn.sn_code}${sn.pn_code ? ' / PN:' + sn.pn_code : ''}`"
+                  :value="sn.sn_id"
+                  :disabled="isConfirmSnDisabled(sn.sn_id, row)"
+                />
+              </el-select>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+
+      <template #footer>
+        <el-button @click="transferOutConfirmVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitConfirmTransferOut" :loading="transferOutConfirmLoading">确认出库</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="conversionDialogVisible" :title="conversionForm.conversionType === 'assemble' ? '新建组装单' : '新建拆分单'" width="1100px" @close="resetConversionForm">
+      <el-form label-width="100px">
+        <el-form-item label="转换门店">
+          <el-select v-model="conversionForm.storeId" placeholder="请选择门店" style="width: 260px" :disabled="isStoreUser()" @change="onConversionStoreChange">
+            <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="conversionForm.conversionType === 'assemble'" label="服务成本">
+          <el-input-number v-model="conversionForm.serviceCost" :min="0" :precision="2" style="width: 180px" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="conversionForm.remark" type="textarea" :rows="2" placeholder="可填写拆分/组装原因" />
+        </el-form-item>
+      </el-form>
+
+      <div class="conversion-grid">
+        <div>
+          <div class="section-title">{{ conversionForm.conversionType === 'assemble' ? '组件商品' : '被拆商品' }}</div>
+          <div class="conversion-add-row">
+            <el-select
+              v-model="conversionSourceAdd.productId"
+              placeholder="搜索来源商品"
+              filterable
+              remote
+              clearable
+              :remote-method="searchConversionSourceProducts"
+              @change="onConversionSourceProductChange"
+              style="flex: 1"
+              :disabled="!conversionForm.storeId"
+            >
+              <el-option
+                v-for="item in conversionSourceOptions"
+                :key="item.product_id"
+                :label="`${item.product_name || item.name || item.product_id} / 库存 ${item.normal_qty || 0}`"
+                :value="item.product_id"
+              />
+            </el-select>
+            <el-select v-if="selectedConversionSourceProduct?.need_sn === 1" v-model="conversionSourceAdd.snId" placeholder="选择SN" filterable clearable style="width: 210px" @change="onConversionSourceSnChange">
+              <el-option v-for="sn in conversionSourceSnOptions" :key="sn.sn_id" :label="`${sn.sn_code}${sn.pn_code ? ' / PN:' + sn.pn_code : ''} / 成本:${sn.inbound_price || 0}`" :value="sn.sn_id" />
+            </el-select>
+            <el-input-number v-else v-model="conversionSourceAdd.quantity" :min="1" :precision="0" :disabled="conversionForm.conversionType === 'split'" style="width: 110px" />
+            <el-input-number v-model="conversionSourceAdd.unitCost" :min="0" :precision="2" :controls="false" placeholder="成本" style="width: 130px" />
+            <el-button type="primary" @click="addConversionSourceItem">添加</el-button>
+          </div>
+
+          <el-table :data="conversionForm.sourceItems" stripe border size="small">
+            <el-table-column prop="productName" label="商品" min-width="150" />
+            <el-table-column prop="snCode" label="SN" width="150">
+              <template #default="{ row }">{{ row.snCode || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="pnCode" label="PN" width="130">
+              <template #default="{ row }">{{ row.pnCode || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="quantity" label="数量" width="70" />
+            <el-table-column prop="unitCost" label="单位成本" width="110">
+              <template #default="{ row }">¥{{ row.unitCost || 0 }}</template>
+            </el-table-column>
+            <el-table-column prop="totalCost" label="总成本" width="110">
+              <template #default="{ row }">¥{{ row.totalCost || 0 }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="70">
+              <template #default="{ $index }">
+                <el-button link type="danger" @click="conversionForm.sourceItems.splice($index, 1)">移除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <div>
+          <div class="section-title">{{ conversionForm.conversionType === 'assemble' ? '组装成品' : '拆出商品' }}</div>
+          <div class="conversion-add-row">
+            <el-select
+              v-model="conversionTargetAdd.productId"
+              placeholder="搜索目标商品"
+              filterable
+              remote
+              clearable
+              :remote-method="searchConversionTargetProducts"
+              @change="onConversionTargetProductChange"
+              style="flex: 1"
+            >
+              <el-option v-for="item in conversionTargetOptions" :key="item.product_id" :label="item.name || item.product_name || item.product_id" :value="item.product_id" />
+            </el-select>
+            <el-input v-if="selectedConversionTargetProduct?.need_sn === 1" v-model="conversionTargetAdd.snCode" placeholder="目标SN" style="width: 180px" />
+            <el-input v-model="conversionTargetAdd.pnCode" placeholder="PN" style="width: 150px" />
+            <el-input-number v-if="selectedConversionTargetProduct?.need_sn !== 1" v-model="conversionTargetAdd.quantity" :min="1" :precision="0" style="width: 110px" />
+            <el-input-number v-model="conversionTargetAdd.unitCost" :min="0" :precision="2" :controls="false" placeholder="请输入商品价格" style="width: 130px" />
+            <el-button @click="openConversionProductDialog">新建商品</el-button>
+            <el-button type="primary" @click="addConversionTargetItem">添加</el-button>
+          </div>
+
+          <el-table :data="conversionForm.targetItems" stripe border size="small">
+            <el-table-column prop="productName" label="商品" min-width="150" />
+            <el-table-column prop="snCode" label="SN" width="150">
+              <template #default="{ row }">{{ row.snCode || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="pnCode" label="PN" width="130">
+              <template #default="{ row }">{{ row.pnCode || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="quantity" label="数量" width="70" />
+            <el-table-column prop="unitCost" label="单位成本" width="110">
+              <template #default="{ row }">¥{{ row.unitCost || 0 }}</template>
+            </el-table-column>
+            <el-table-column prop="totalCost" label="总成本" width="110">
+              <template #default="{ row }">¥{{ row.totalCost || 0 }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="70">
+              <template #default="{ $index }">
+                <el-button link type="danger" @click="conversionForm.targetItems.splice($index, 1)">移除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </div>
+
+      <div class="conversion-cost-check" :class="{ invalid: !conversionCostMatched }">
+        <template v-if="conversionForm.conversionType === 'split'">
+          来源成本：¥{{ conversionSourceTotal }}　
+          拆出金额：¥{{ conversionTargetTotal }}　
+          拆分后原商品成本：¥{{ conversionSplitRemainingCost }}
+        </template>
+        <template v-else>
+          来源成本：¥{{ conversionSourceTotal }}　
+          服务成本：¥{{ conversionServiceCost }}　
+          目标成本：¥{{ conversionTargetTotal }}　
+          应等于：¥{{ conversionExpectedTargetTotal }}
+        </template>
+      </div>
+
+      <template #footer>
+        <el-button @click="conversionDialogVisible = false">取消</el-button>
+        <el-button type="primary" :disabled="!conversionCostMatched" :loading="conversionSubmitLoading" @click="submitConversion">确认执行</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="conversionProductDialogVisible" title="新建目标商品" width="750px" @close="resetConversionProductForm">
+      <el-form :model="conversionProductForm" label-width="100px">
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item label="商品编码">
+              <el-input model-value="(系统自动生成)" disabled />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="商品分类">
+              <el-tree-select
+                v-model="conversionProductForm.categoryId"
+                :data="conversionProductCategoryTree"
+                :props="{ label: 'name', value: 'category_id', children: 'children' }"
+                placeholder="请选择分类"
+                clearable
+                check-strictly
+                style="width: 100%"
+                @change="onConversionProductCategoryChange"
+              />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-divider content-position="left">商品属性</el-divider>
+        <el-row :gutter="16">
+          <el-col :span="8">
+            <el-form-item label="品牌" label-width="75px">
+              <el-input v-model="conversionProductForm.brand" placeholder="如：联想" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="系列" label-width="75px">
+              <el-input v-model="conversionProductForm.series" placeholder="如：拯救者" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="型号" label-width="75px">
+              <el-input v-model="conversionProductForm.model" placeholder="如：Y9000P" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="处理器" label-width="75px">
+              <el-input v-model="conversionProductForm.processor" placeholder="如：Ultra9 285" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="内存" label-width="75px">
+              <el-input v-model="conversionProductForm.memory" placeholder="如：32GB" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="存储" label-width="75px">
+              <el-input v-model="conversionProductForm.storage" placeholder="如：2T" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="颜色" label-width="75px">
+              <el-input v-model="conversionProductForm.color" placeholder="如：黑" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="显卡" label-width="75px">
+              <el-input v-model="conversionProductForm.gpu" placeholder="如：RTX4090" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="配件类别" label-width="75px">
+              <el-input v-model="conversionProductForm.accessory_type" placeholder="如：贴膜/保护壳" size="small" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <div v-if="conversionProductCategoryFields.length > 0" style="margin-bottom: 12px; padding: 10px; background: #f5f7fa; border-radius: 4px;">
+          <el-divider content-position="left" style="margin: 0 0 10px 0;">{{ conversionProductCategoryFieldName }} 补充字段</el-divider>
+          <el-row :gutter="16">
+            <el-col :span="8" v-for="field in conversionProductExtraFields" :key="field.field_key">
+              <el-form-item :label="field.field_label" :required="field.required" label-width="75px">
+                <el-select
+                  v-if="field.field_type === 'select'"
+                  v-model="conversionProductForm.attributes[field.field_key]"
+                  :placeholder="field.placeholder || ('请选择' + field.field_label)"
+                  size="small"
+                  clearable
+                  style="width: 100%"
+                >
+                  <el-option v-for="opt in field.options" :key="opt" :label="opt" :value="opt" />
+                </el-select>
+                <el-input
+                  v-else
+                  v-model="conversionProductForm.attributes[field.field_key]"
+                  :placeholder="field.placeholder || field.field_label"
+                  size="small"
+                />
+              </el-form-item>
+            </el-col>
+          </el-row>
+        </div>
+
+        <el-form-item label="商品名称">
+          <span style="font-weight: 600; font-size: 14px;">{{ conversionProductName || '（请填写上方属性）' }}</span>
+        </el-form-item>
+        <el-form-item label="商品简称">
+          <el-input v-model="conversionProductForm.customName" placeholder="如需覆盖自动拼装名称，请在此输入" size="small" style="width: 300px;" />
+        </el-form-item>
+        <el-form-item label="厂商商品名称">
+          <el-input v-model="conversionProductForm.config" placeholder="厂商商品名称" />
+        </el-form-item>
+        <el-row :gutter="20">
+          <el-col :span="8">
+            <el-form-item label="需要SN码">
+              <el-switch v-model="conversionProductForm.needSn" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="状态">
+              <el-switch v-model="conversionProductForm.status" :active-value="1" :inactive-value="0" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="单位">
+              <el-input v-model="conversionProductForm.unit" placeholder="台" size="small" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="详细配置">
+          <el-input v-model="conversionProductForm.remark" type="textarea" rows="2" placeholder="详细配置信息" />
+        </el-form-item>
+
+        <el-divider content-position="left">厂商编码 / 69码</el-divider>
+        <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+          <el-input v-model="conversionProductNewBarcode" placeholder="条码内容" style="width: 180px" @keyup.enter="addConversionProductBarcode" />
+          <el-select v-model="conversionProductBarcodeType" style="width: 120px">
+            <el-option label="厂商编码" value="manufacturer" />
+            <el-option label="69码" value="barcode69" />
+          </el-select>
+          <el-button type="primary" @click="addConversionProductBarcode">添加</el-button>
+        </div>
+        <el-table :data="conversionProductForm.barcodes" stripe border size="small" max-height="200" v-if="conversionProductForm.barcodes.length > 0">
+          <el-table-column label="类型" width="100">
+            <template #default="{ row }">
+              <el-tag :type="row.type === 'manufacturer' ? '' : 'success'" size="small">
+                {{ row.type === 'manufacturer' ? '厂商编码' : '69码' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="code" label="条码内容" />
+          <el-table-column label="操作" width="60">
+            <template #default="{ $index }">
+              <el-button link type="danger" size="small" @click="conversionProductForm.barcodes.splice($index, 1)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-else description="暂未添加条码" :image-size="40" />
+      </el-form>
+      <template #footer>
+        <el-button @click="conversionProductDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="conversionProductSubmitLoading" @click="submitConversionProduct">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="conversionDetailVisible" title="拆装单详情" width="900px">
+      <div v-if="currentConversion">
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="单号">{{ currentConversion.conversion_no }}</el-descriptions-item>
+          <el-descriptions-item label="类型">{{ getConversionTypeText(currentConversion.conversion_type) }}</el-descriptions-item>
+          <el-descriptions-item label="门店">{{ currentConversion.store_name }}</el-descriptions-item>
+          <el-descriptions-item label="状态">{{ getConversionStatusText(currentConversion.status) }}</el-descriptions-item>
+          <el-descriptions-item label="来源成本">¥{{ currentConversion.total_source_cost || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="目标成本">¥{{ currentConversion.total_target_cost || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="服务成本">¥{{ currentConversion.service_cost || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="创建时间">{{ formatDate(currentConversion.create_time) }}</el-descriptions-item>
+        </el-descriptions>
+        <h4 class="mt-20">明细</h4>
+        <el-table :data="currentConversion.items || []" stripe border size="small">
+          <el-table-column label="行类型" width="90">
+            <template #default="{ row }">{{ getConversionLineRoleText(row.line_role) }}</template>
+          </el-table-column>
+          <el-table-column prop="product_name" label="商品" min-width="160" />
+          <el-table-column prop="pn_code" label="PN" width="130" />
+          <el-table-column prop="sn_code" label="SN" width="150" />
+          <el-table-column prop="source_sn_code" label="来源SN" width="150" />
+          <el-table-column prop="quantity" label="数量" width="70" />
+          <el-table-column prop="unit_cost" label="单位成本" width="110">
+            <template #default="{ row }">¥{{ row.unit_cost || 0 }}</template>
+          </el-table-column>
+          <el-table-column prop="total_cost" label="总成本" width="110">
+            <template #default="{ row }">¥{{ row.total_cost || 0 }}</template>
+          </el-table-column>
+        </el-table>
+      </div>
     </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, onMounted, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import { getStoreId, isStoreUser } from '../utils/user'
 import SnTrace from './SnTrace.vue'
+import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 
+const router = useRouter()
+const TRANSFER_DRAFT_KEY = 'inventory-transfer-create'
+const inboundDraftKey = () => currentInbound.value?.inbound_id ? `inventory-inbound-execute:${currentInbound.value.inbound_id}` : ''
 const mainTab = ref('summary')
 const stores = ref([])
 const storesLoaded = ref(false)
@@ -598,6 +1084,14 @@ const inboundQuery = reactive({
   storeId: ''
 })
 
+const returnList = ref([])
+const returnTotal = ref(0)
+const returnQuery = reactive({
+  page: 1,
+  pageSize: 20,
+  status: ''
+})
+
 // 入库单详情
 const inboundDetailVisible = ref(false)
 const currentInbound = ref(null)
@@ -606,7 +1100,6 @@ const currentInbound = ref(null)
 const executeInboundVisible = ref(false)
 const inboundLoading = ref(false)
 const executeProducts = ref([])
-const inboundLocations = ref([])
 const addPnVisible = ref(false)
 const addPnTarget = ref(null)
 const addPnPnCode = ref('')
@@ -655,6 +1148,11 @@ const transferOutList = ref([])
 const transferInList = ref([])
 const transferProductOptions = ref([])
 const transferSnOptions = ref([])
+const transferOutConfirmVisible = ref(false)
+const transferOutConfirmLoading = ref(false)
+const transferOutSnLoading = ref(false)
+const transferOutConfirmRow = ref(null)
+const transferOutSnRows = ref([])
 const transferForm = reactive({
   fromStoreId: '',
   fromStoreName: '',
@@ -679,10 +1177,118 @@ const selectedTransferProduct = computed(() => {
   return transferProductOptions.value.find(item => item.product_id === transferAddForm.productId) || null
 })
 
+// 拆分/组装
+const conversionLoading = ref(false)
+const conversionSubmitLoading = ref(false)
+const conversionDialogVisible = ref(false)
+const conversionDetailVisible = ref(false)
+const conversionList = ref([])
+const conversionTotal = ref(0)
+const currentConversion = ref(null)
+const conversionSourceOptions = ref([])
+const conversionTargetOptions = ref([])
+const conversionSourceSnOptions = ref([])
+const conversionProductDialogVisible = ref(false)
+const conversionProductSubmitLoading = ref(false)
+const conversionProductCategoryTree = ref([])
+const conversionProductCategoryFields = ref([])
+const conversionProductCategoryFieldName = ref('')
+const conversionProductNewBarcode = ref('')
+const conversionProductBarcodeType = ref('manufacturer')
+const conversionQuery = reactive({
+  page: 1,
+  pageSize: 20,
+  conversionType: '',
+  status: '',
+  storeId: ''
+})
+const conversionForm = reactive({
+  conversionType: 'split',
+  storeId: '',
+  serviceCost: 0,
+  remark: '',
+  sourceItems: [],
+  targetItems: []
+})
+const conversionSourceAdd = reactive({
+  productId: '',
+  snId: '',
+  quantity: 1,
+  unitCost: 0
+})
+const conversionTargetAdd = reactive({
+  productId: '',
+  pnCode: '',
+  snCode: '',
+  quantity: 1,
+  unitCost: 0
+})
+const conversionProductForm = reactive({
+  categoryId: '',
+  config: '',
+  brand: '',
+  series: '',
+  model: '',
+  processor: '',
+  memory: '',
+  storage: '',
+  color: '',
+  gpu: '',
+  accessory_type: '',
+  unit: '台',
+  needSn: false,
+  needImei: false,
+  remark: '',
+  status: 1,
+  barcodes: [],
+  attributes: {},
+  customName: ''
+})
+const selectedConversionSourceProduct = computed(() => {
+  return conversionSourceOptions.value.find(item => item.product_id === conversionSourceAdd.productId) || null
+})
+const selectedConversionTargetProduct = computed(() => {
+  return conversionTargetOptions.value.find(item => item.product_id === conversionTargetAdd.productId) || null
+})
+const conversionSourceTotal = computed(() => roundMoney(conversionForm.sourceItems.reduce((sum, item) => sum + Number(item.totalCost || 0), 0)))
+const conversionTargetTotal = computed(() => roundMoney(conversionForm.targetItems.reduce((sum, item) => sum + Number(item.totalCost || 0), 0)))
+const conversionServiceCost = computed(() => conversionForm.conversionType === 'assemble' ? roundMoney(conversionForm.serviceCost || 0) : 0)
+const conversionExpectedTargetTotal = computed(() => roundMoney(conversionSourceTotal.value + conversionServiceCost.value))
+const conversionSplitRemainingCost = computed(() => roundMoney(conversionSourceTotal.value - conversionTargetTotal.value))
+const conversionProductStandardFields = ['brand', 'series', 'model', 'processor', 'memory', 'storage', 'color', 'gpu', 'accessory_type']
+const conversionProductExtraFields = computed(() => {
+  return conversionProductCategoryFields.value.filter(field => !conversionProductStandardFields.includes(field.field_key))
+})
+const conversionProductName = computed(() => {
+  if (conversionProductForm.customName) return conversionProductForm.customName
+  const parts = []
+  for (const field of conversionProductStandardFields) {
+    if (conversionProductForm[field]) parts.push(conversionProductForm[field])
+  }
+  for (const field of conversionProductCategoryFields.value) {
+    if (!conversionProductStandardFields.includes(field.field_key) && conversionProductForm.attributes[field.field_key]) {
+      parts.push(conversionProductForm.attributes[field.field_key])
+    }
+  }
+  return parts.join(' ')
+})
+const conversionCostMatched = computed(() => {
+  if (conversionForm.sourceItems.length === 0 || conversionForm.targetItems.length === 0) return false
+  if (conversionForm.conversionType === 'split') {
+    return conversionForm.sourceItems.length === 1 &&
+      conversionTargetTotal.value > 0 &&
+      conversionTargetTotal.value <= conversionSourceTotal.value &&
+      conversionSplitRemainingCost.value >= 0
+  }
+  return Math.abs(conversionTargetTotal.value - conversionExpectedTargetTotal.value) <= 0.01
+})
+
 onMounted(() => {
   if (isStoreUser()) {
     inboundQuery.storeId = getStoreId()
     summaryQuery.storeId = getStoreId()
+    conversionQuery.storeId = getStoreId()
+    conversionForm.storeId = getStoreId()
   }
   loadStores()
   loadCategories()
@@ -690,6 +1296,7 @@ onMounted(() => {
     loadSummary()
   } else if (mainTab.value === 'inbound') {
     loadInboundList()
+    loadReturnList()
   }
 })
 
@@ -702,9 +1309,16 @@ const onTabChange = (tabName) => {
     if (inboundList.value.length === 0) {
       loadInboundList()
     }
+    if (returnList.value.length === 0) {
+      loadReturnList()
+    }
   } else if (tabName === 'transfer') {
     if (transferOutList.value.length === 0 && transferInList.value.length === 0) {
       loadTransferLists()
+    }
+  } else if (tabName === 'conversion') {
+    if (conversionList.value.length === 0) {
+      loadConversionList()
     }
   }
   // sn-trace tab does not need preloading
@@ -767,6 +1381,18 @@ const loadInboundList = async () => {
   }
 }
 
+const loadReturnList = async () => {
+  try {
+    const res = await api.getReturnList(returnQuery)
+    if (res.code === 0) {
+      returnList.value = res.data?.list || []
+      returnTotal.value = res.data?.pagination?.total || res.data?.total || 0
+    }
+  } catch (err) {
+    ElMessage.error('加载退库申请失败')
+  }
+}
+
 const viewInboundDetail = async (row) => {
   try {
     const res = await api.getInboundDetail(row.inbound_id)
@@ -785,13 +1411,6 @@ const openExecuteDialog = async (row) => {
     const res = await api.getInboundDetail(row.inbound_id)
     if (res.code === 0) {
       currentInbound.value = res.data
-      inboundLocations.value = []
-      try {
-        const locRes = await api.getLocationsByStore(res.data.store_id)
-        if (locRes.code === 0) inboundLocations.value = locRes.data || []
-      } catch (err) {
-        inboundLocations.value = []
-      }
 
       const pnMap = res.data.product_pns || {}
 
@@ -817,14 +1436,14 @@ const openExecuteDialog = async (row) => {
             group.snRows.push({
               snCode: '',
               inventoryType: 'normal_qty',
-              locationId: inboundLocations.value[0]?.location_id || '',
+              locationId: '',
               remark: ''
             })
           }
         } else {
           group.qtyRows.push({
             inventoryType: 'normal_qty',
-            locationId: inboundLocations.value[0]?.location_id || '',
+            locationId: '',
             quantity: qty,
             remark: ''
           })
@@ -834,6 +1453,7 @@ const openExecuteDialog = async (row) => {
       }
 
       executeProducts.value = productGroups
+      restoreInboundDraft()
       executeInboundVisible.value = true
     }
   } catch (err) {
@@ -845,7 +1465,7 @@ const addQtyRow = (item) => {
   const remaining = item.quantity - allocatedQty(item)
   item.qtyRows.push({
     inventoryType: 'normal_qty',
-    locationId: inboundLocations.value[0]?.location_id || '',
+    locationId: '',
     quantity: Math.max(1, remaining),
     remark: ''
   })
@@ -955,6 +1575,7 @@ const submitInbound = async () => {
 
     if (res.code === 0) {
       ElMessage.success('入库完成')
+      clearDraft(inboundDraftKey())
       executeInboundVisible.value = false
       loadInboundList()
     } else {
@@ -972,7 +1593,23 @@ const resetInboundForm = () => {
   executeProducts.value = []
 }
 
-const executeReturn = (row) => {
+const saveInboundDraft = () => {
+  const key = inboundDraftKey()
+  if (!key) return
+  saveDraft(key, cloneDraft(executeProducts.value))
+  ElMessage.success('草稿已保存')
+}
+
+const restoreInboundDraft = () => {
+  const key = inboundDraftKey()
+  if (!key) return
+  const draft = loadDraft(key)
+  if (!draft) return
+  executeProducts.value = Array.isArray(draft) ? draft : executeProducts.value
+  ElMessage.success('已恢复上次草稿')
+}
+
+const openReturnRequestDialog = (row) => {
   currentInbound.value = row
   returnReason.value = ''
   executeReturnVisible.value = true
@@ -981,22 +1618,81 @@ const executeReturn = (row) => {
 const submitReturn = async () => {
   returnLoading.value = true
   try {
-    const res = await api.executeReturn({
+    const res = await api.requestReturn({
       inboundId: currentInbound.value.inbound_id,
       reason: returnReason.value
     })
 
     if (res.code === 0) {
-      ElMessage.success('退库完成')
+      ElMessage.success(res.message || '退库申请已提交')
       executeReturnVisible.value = false
+      loadInboundList()
+      loadReturnList()
+    } else {
+      ElMessage.error(res.message || '退库申请失败')
+    }
+  } catch (err) {
+    const msg = err.response?.data?.message || err.message || '退库申请失败'
+    ElMessage.error(msg)
+  } finally {
+    returnLoading.value = false
+  }
+}
+
+const approveReturn = async (row, action) => {
+  const isReject = action === 'rejected'
+  try {
+    const result = await ElMessageBox.prompt(
+      isReject ? '请输入拒绝原因' : '可填写审批备注',
+      isReject ? '拒绝退库申请' : '审批退库申请',
+      {
+        confirmButtonText: isReject ? '确认拒绝' : '确认通过',
+        cancelButtonText: '取消',
+        inputType: 'textarea',
+        inputPlaceholder: '审批备注'
+      }
+    )
+    const res = await api.approveReturn({
+      returnId: row.return_id,
+      action,
+      comment: result.value || ''
+    })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '审批成功')
+      loadReturnList()
+    } else {
+      ElMessage.error(res.message || '审批失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') {
+      const msg = err.response?.data?.message || err.message || '审批失败'
+      ElMessage.error(msg)
+    }
+  }
+}
+
+const executeApprovedReturn = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认执行退库申请 ${row.return_no} 吗？执行后将扣减库存，并生成负向应付冲减供应商结算。`,
+      '执行退库',
+      { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' }
+    )
+    returnLoading.value = true
+    const res = await api.executeReturn({ returnId: row.return_id })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '退库执行成功')
+      loadReturnList()
       loadInboundList()
       loadSummary()
     } else {
-      ElMessage.error(res.message || '退库失败')
+      ElMessage.error(res.message || '退库执行失败')
     }
   } catch (err) {
-    const msg = err.response?.data?.message || err.message || '退库失败'
-    ElMessage.error(msg)
+    if (err !== 'cancel') {
+      const msg = err.response?.data?.message || err.message || '退库执行失败'
+      ElMessage.error(msg)
+    }
   } finally {
     returnLoading.value = false
   }
@@ -1119,7 +1815,7 @@ const goToOrder = async (row) => {
     if (res.code === 0) {
       const saleEvents = (res.data?.timeline || []).filter(e => e.type === 'sale')
       if (saleEvents.length > 0 && saleEvents[0].ref_id) {
-        window.open(`/#/sales?orderId=${saleEvents[0].ref_id}`, '_blank')
+        goToOrderFromTrace(saleEvents[0].ref_id)
       } else {
         ElMessage.info('未找到关联的销售订单')
       }
@@ -1132,7 +1828,9 @@ const goToOrder = async (row) => {
 }
 
 const goToOrderFromTrace = (orderId) => {
-  window.open(`/#/sales?orderId=${orderId}`, '_blank')
+  if (!orderId) return
+  traceDialogVisible.value = false
+  router.push({ name: 'Sales', query: { orderId } })
 }
 
 const getStoreName = (storeId) => {
@@ -1145,6 +1843,7 @@ const openTransferApplyDialog = async () => {
     transferForm.fromStoreId = getStoreId()
     transferForm.fromStoreName = getStoreName(transferForm.fromStoreId)
   }
+  restoreTransferDraft()
   transferDialogVisible.value = true
   if (transferForm.fromStoreId) {
     await searchTransferProducts('')
@@ -1301,6 +2000,19 @@ const resetTransferForm = () => {
   transferSnOptions.value = []
 }
 
+const saveTransferDraft = () => {
+  saveDraft(TRANSFER_DRAFT_KEY, cloneDraft(transferForm))
+  ElMessage.success('草稿已保存')
+}
+
+const restoreTransferDraft = () => {
+  const draft = loadDraft(TRANSFER_DRAFT_KEY)
+  if (!draft) return
+  Object.assign(transferForm, draft)
+  transferForm.items = Array.isArray(draft.items) ? draft.items : []
+  ElMessage.success('已恢复上次草稿')
+}
+
 const submitTransfer = async () => {
   if (!transferForm.fromStoreId) {
     ElMessage.warning('请选择调出门店')
@@ -1323,6 +2035,7 @@ const submitTransfer = async () => {
     })
     if (res.code === 0) {
       ElMessage.success('调拨申请已创建')
+      clearDraft(TRANSFER_DRAFT_KEY)
       transferDialogVisible.value = false
       resetTransferForm()
       loadSnData()
@@ -1356,6 +2069,21 @@ const loadTransferLists = async () => {
 }
 
 const handleConfirmTransferOut = async (row) => {
+  const snItems = (row.TransferItems || []).filter(item => Number(item.need_sn || 0) === 1 && !item.sn_id)
+  if (snItems.length > 0) {
+    transferOutConfirmRow.value = row
+    transferOutSnRows.value = snItems.map(item => ({
+      itemId: item.item_id,
+      productId: item.product_id,
+      productName: item.product_name || item.product_id || '-',
+      snId: '',
+      snOptions: []
+    }))
+    transferOutConfirmVisible.value = true
+    await loadTransferOutSnOptions(row)
+    return
+  }
+
   try {
     await ElMessageBox.confirm(
       `确认将调拨单 ${row.transfer_no} 的商品从「${row.from_store_name}」出库吗？`,
@@ -1375,6 +2103,74 @@ const handleConfirmTransferOut = async (row) => {
       ElMessage.error(msg)
     }
   }
+}
+
+const loadTransferOutSnOptions = async (row) => {
+  transferOutSnLoading.value = true
+  try {
+    const productIds = [...new Set(transferOutSnRows.value.map(item => item.productId).filter(Boolean))]
+    const optionsMap = {}
+    await Promise.all(productIds.map(async (productId) => {
+      const res = await api.getSnList({
+        productId,
+        storeId: row.from_store_id,
+        status: 'in_stock',
+        page: 1,
+        pageSize: 500
+      })
+      optionsMap[productId] = res.code === 0 ? (res.data?.list || []) : []
+    }))
+    transferOutSnRows.value.forEach(item => {
+      item.snOptions = optionsMap[item.productId] || []
+    })
+  } catch (err) {
+    ElMessage.error('加载可选SN失败')
+  } finally {
+    transferOutSnLoading.value = false
+  }
+}
+
+const isConfirmSnDisabled = (snId, currentRow) => {
+  return transferOutSnRows.value.some(row => row !== currentRow && row.snId === snId)
+}
+
+const submitConfirmTransferOut = async () => {
+  if (!transferOutConfirmRow.value) return
+  const missing = transferOutSnRows.value.find(row => !row.snId)
+  if (missing) {
+    ElMessage.warning(`请选择 ${missing.productName} 的SN`)
+    return
+  }
+
+  transferOutConfirmLoading.value = true
+  try {
+    const res = await api.confirmTransferOut({
+      transferId: transferOutConfirmRow.value.transfer_id,
+      items: transferOutSnRows.value.map(row => ({ itemId: row.itemId, snId: row.snId }))
+    })
+    if (res.code === 0) {
+      ElMessage.success('调拨出库确认成功')
+      transferOutConfirmVisible.value = false
+      resetTransferOutConfirm()
+      loadTransferLists()
+      loadSummary()
+      loadSnData()
+    } else {
+      ElMessage.error(res.message || '确认出库失败')
+    }
+  } catch (err) {
+    const msg = err.response?.data?.message || err.message || '确认出库失败'
+    ElMessage.error(msg)
+  } finally {
+    transferOutConfirmLoading.value = false
+  }
+}
+
+const resetTransferOutConfirm = () => {
+  transferOutConfirmRow.value = null
+  transferOutSnRows.value = []
+  transferOutSnLoading.value = false
+  transferOutConfirmLoading.value = false
 }
 
 const handleConfirmTransferIn = async (row) => {
@@ -1397,6 +2193,469 @@ const handleConfirmTransferIn = async (row) => {
       ElMessage.error(msg)
     }
   }
+}
+
+function roundMoney(value) {
+  return Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100
+}
+
+const loadConversionList = async () => {
+  conversionLoading.value = true
+  try {
+    const res = await api.getConversionList(conversionQuery)
+    if (res.code === 0) {
+      conversionList.value = res.data?.list || []
+      conversionTotal.value = res.data?.pagination?.total || res.data?.total || 0
+    }
+  } catch (err) {
+    ElMessage.error('加载拆装单失败')
+  } finally {
+    conversionLoading.value = false
+  }
+}
+
+const openConversionDialog = async (type) => {
+  resetConversionForm()
+  conversionForm.conversionType = type
+  if (isStoreUser()) {
+    conversionForm.storeId = getStoreId()
+  }
+  conversionDialogVisible.value = true
+  if (conversionForm.storeId) {
+    await searchConversionSourceProducts('')
+  }
+  await searchConversionTargetProducts('')
+}
+
+const resetConversionForm = () => {
+  conversionForm.conversionType = conversionForm.conversionType || 'split'
+  conversionForm.storeId = isStoreUser() ? getStoreId() : ''
+  conversionForm.serviceCost = 0
+  conversionForm.remark = ''
+  conversionForm.sourceItems = []
+  conversionForm.targetItems = []
+  conversionSourceAdd.productId = ''
+  conversionSourceAdd.snId = ''
+  conversionSourceAdd.quantity = 1
+  conversionSourceAdd.unitCost = 0
+  conversionTargetAdd.productId = ''
+  conversionTargetAdd.pnCode = ''
+  conversionTargetAdd.snCode = ''
+  conversionTargetAdd.quantity = 1
+  conversionTargetAdd.unitCost = 0
+  conversionSourceOptions.value = []
+  conversionTargetOptions.value = []
+  conversionSourceSnOptions.value = []
+}
+
+const onConversionStoreChange = async () => {
+  conversionForm.sourceItems = []
+  conversionSourceAdd.productId = ''
+  conversionSourceAdd.snId = ''
+  conversionSourceOptions.value = []
+  conversionSourceSnOptions.value = []
+  if (conversionForm.storeId) {
+    await searchConversionSourceProducts('')
+  }
+}
+
+const searchConversionSourceProducts = async (keyword = '') => {
+  if (!conversionForm.storeId) {
+    conversionSourceOptions.value = []
+    return
+  }
+  try {
+    const res = await api.getInventoryList({
+      storeId: conversionForm.storeId,
+      keyword,
+      page: 1,
+      pageSize: 50
+    })
+    if (res.code === 0) {
+      conversionSourceOptions.value = (res.data?.list || []).filter(item => Number(item.normal_qty || 0) > 0)
+    }
+  } catch (err) {
+    ElMessage.error('搜索来源商品失败')
+  }
+}
+
+const searchConversionTargetProducts = async (keyword = '') => {
+  try {
+    const res = await api.getProductList({
+      keyword,
+      page: 1,
+      pageSize: 50
+    })
+    if (res.code === 0) {
+      conversionTargetOptions.value = res.data?.list || []
+    }
+  } catch (err) {
+    ElMessage.error('搜索目标商品失败')
+  }
+}
+
+const loadConversionProductCategoryTree = async () => {
+  if (conversionProductCategoryTree.value.length > 0) return
+  try {
+    const res = await api.getCategoryTree()
+    if (res.code === 0) conversionProductCategoryTree.value = res.data || []
+  } catch (err) {
+    ElMessage.error('加载商品分类失败')
+  }
+}
+
+const onConversionProductCategoryChange = async (value) => {
+  conversionProductForm.attributes = {}
+  conversionProductCategoryFields.value = []
+  conversionProductCategoryFieldName.value = ''
+  if (!value) return
+
+  try {
+    const res = await api.getCategoryFieldConfig(value)
+    if (res.code === 0 && res.data?.fields) {
+      conversionProductCategoryFields.value = res.data.fields
+      conversionProductCategoryFieldName.value = res.data.categoryName || ''
+    }
+  } catch (err) {
+    ElMessage.error('加载分类字段失败')
+  }
+}
+
+const resetConversionProductForm = () => {
+  conversionProductForm.categoryId = ''
+  conversionProductForm.config = ''
+  conversionProductForm.brand = ''
+  conversionProductForm.series = ''
+  conversionProductForm.model = ''
+  conversionProductForm.processor = ''
+  conversionProductForm.memory = ''
+  conversionProductForm.storage = ''
+  conversionProductForm.color = ''
+  conversionProductForm.gpu = ''
+  conversionProductForm.accessory_type = ''
+  conversionProductForm.unit = '台'
+  conversionProductForm.needSn = false
+  conversionProductForm.needImei = false
+  conversionProductForm.remark = ''
+  conversionProductForm.status = 1
+  conversionProductForm.barcodes = []
+  conversionProductForm.attributes = {}
+  conversionProductForm.customName = ''
+  conversionProductCategoryFields.value = []
+  conversionProductCategoryFieldName.value = ''
+  conversionProductNewBarcode.value = ''
+  conversionProductBarcodeType.value = 'manufacturer'
+}
+
+const openConversionProductDialog = async () => {
+  resetConversionProductForm()
+  await loadConversionProductCategoryTree()
+  conversionProductDialogVisible.value = true
+}
+
+const addConversionProductBarcode = () => {
+  const code = conversionProductNewBarcode.value.trim()
+  if (!code) {
+    ElMessage.warning('请输入条码')
+    return
+  }
+  conversionProductForm.barcodes.push({ type: conversionProductBarcodeType.value, code })
+  conversionProductNewBarcode.value = ''
+}
+
+const buildConversionProductPayload = () => {
+  const finalName = conversionProductName.value
+  if (!finalName) {
+    ElMessage.warning('请填写商品属性或商品简称')
+    return null
+  }
+
+  const attributes = {}
+  for (const field of conversionProductStandardFields) {
+    if (conversionProductForm[field]) attributes[field] = conversionProductForm[field]
+  }
+  for (const [key, value] of Object.entries(conversionProductForm.attributes)) {
+    if (!conversionProductStandardFields.includes(key) && value) attributes[key] = value
+  }
+
+  return {
+    name: finalName,
+    categoryId: conversionProductForm.categoryId || null,
+    config: conversionProductForm.config,
+    unit: conversionProductForm.unit,
+    needSn: conversionProductForm.needSn ? 1 : 0,
+    needImei: conversionProductForm.needImei ? 1 : 0,
+    remark: conversionProductForm.remark,
+    status: conversionProductForm.status,
+    barcodes: conversionProductForm.barcodes,
+    attributes: Object.keys(attributes).length > 0 ? attributes : null
+  }
+}
+
+const selectNewConversionTargetProduct = async (productId, fallbackProduct) => {
+  await searchConversionTargetProducts(fallbackProduct.name || '')
+  let product = conversionTargetOptions.value.find(item => item.product_id === productId)
+  if (!product) {
+    product = fallbackProduct
+    conversionTargetOptions.value.unshift(product)
+  }
+  conversionTargetAdd.productId = product.product_id
+  onConversionTargetProductChange()
+}
+
+const submitConversionProduct = async () => {
+  const data = buildConversionProductPayload()
+  if (!data) return
+
+  conversionProductSubmitLoading.value = true
+  try {
+    const res = await api.createProduct(data)
+    if (res.code === 0) {
+      const productId = res.productId || res.data?.productId
+      const manufacturerCode = data.barcodes
+        .filter(item => item.type === 'manufacturer' && item.code)
+        .map(item => item.code)
+        .join(', ')
+      await selectNewConversionTargetProduct(productId, {
+        product_id: productId,
+        name: data.name,
+        product_name: data.name,
+        manufacturer_code: manufacturerCode,
+        need_sn: data.needSn ? 1 : 0,
+        cost_price: 0
+      })
+      conversionProductDialogVisible.value = false
+      ElMessage.success('商品创建成功，已自动选择')
+    } else {
+      ElMessage.error(res.message || '商品创建失败')
+    }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || err?.message || '商品创建失败')
+  } finally {
+    conversionProductSubmitLoading.value = false
+  }
+}
+
+const onConversionSourceProductChange = async () => {
+  conversionSourceAdd.snId = ''
+  conversionSourceAdd.quantity = 1
+  conversionSourceAdd.unitCost = 0
+  conversionSourceSnOptions.value = []
+  const product = selectedConversionSourceProduct.value
+  if (product?.need_sn === 1 && conversionForm.storeId) {
+    try {
+      const res = await api.getSnList({
+        productId: product.product_id,
+        storeId: conversionForm.storeId,
+        status: 'in_stock',
+        page: 1,
+        pageSize: 200
+      })
+      if (res.code === 0) {
+        conversionSourceSnOptions.value = res.data?.list || []
+      }
+    } catch (err) {
+      ElMessage.error('加载来源SN失败')
+    }
+  } else if (product) {
+    conversionSourceAdd.unitCost = roundMoney(product.cost_price || 0)
+  }
+}
+
+const onConversionSourceSnChange = () => {
+  const sn = conversionSourceSnOptions.value.find(item => item.sn_id === conversionSourceAdd.snId)
+  conversionSourceAdd.unitCost = roundMoney(sn?.inbound_price || 0)
+}
+
+const onConversionTargetProductChange = () => {
+  const product = selectedConversionTargetProduct.value
+  conversionTargetAdd.pnCode = product?.manufacturer_code ? String(product.manufacturer_code).split(/[,，\s]+/)[0] : ''
+  conversionTargetAdd.snCode = ''
+  conversionTargetAdd.quantity = 1
+  conversionTargetAdd.unitCost = roundMoney(product?.cost_price || 0)
+}
+
+const addConversionSourceItem = () => {
+  const product = selectedConversionSourceProduct.value
+  if (!product) {
+    ElMessage.warning('请选择来源商品')
+    return
+  }
+
+  let sn = null
+  let quantity = Number(conversionSourceAdd.quantity || 1)
+  let unitCost = roundMoney(conversionSourceAdd.unitCost || 0)
+  if (product.need_sn === 1) {
+    sn = conversionSourceSnOptions.value.find(item => item.sn_id === conversionSourceAdd.snId)
+    if (!sn) {
+      ElMessage.warning('请选择来源SN')
+      return
+    }
+    if (conversionForm.sourceItems.some(item => item.snId === sn.sn_id)) {
+      ElMessage.warning('该SN已添加')
+      return
+    }
+    quantity = 1
+    unitCost = unitCost > 0 ? unitCost : roundMoney(sn.inbound_price || 0)
+  }
+
+  if (conversionForm.conversionType === 'split' && conversionForm.sourceItems.length > 0) {
+    ElMessage.warning('拆分单一次只能选择一个被拆商品')
+    return
+  }
+  if (conversionForm.conversionType === 'split' && quantity !== 1) {
+    ElMessage.warning('拆分单被拆商品数量只能为1')
+    return
+  }
+  if (quantity <= 0 || unitCost <= 0) {
+    ElMessage.warning('数量和成本必须大于0')
+    return
+  }
+  if (product.need_sn !== 1 && quantity > Number(product.normal_qty || 0)) {
+    ElMessage.warning(`来源商品库存不足，可用 ${product.normal_qty || 0}`)
+    return
+  }
+
+  conversionForm.sourceItems.push({
+    productId: product.product_id,
+    productName: product.product_name || product.name || '',
+    pnCode: sn?.pn_code || (product.manufacturer_code ? String(product.manufacturer_code).split(/[,，\s]+/)[0] : ''),
+    snId: sn?.sn_id || '',
+    snCode: sn?.sn_code || '',
+    quantity,
+    unitCost,
+    totalCost: roundMoney(quantity * unitCost),
+    inventoryType: sn?.inventory_type || 'normal_qty',
+    locationId: sn?.location_id || ''
+  })
+
+  conversionSourceAdd.productId = ''
+  conversionSourceAdd.snId = ''
+  conversionSourceAdd.quantity = 1
+  conversionSourceAdd.unitCost = 0
+  conversionSourceSnOptions.value = []
+}
+
+const addConversionTargetItem = () => {
+  const product = selectedConversionTargetProduct.value
+  if (!product) {
+    ElMessage.warning('请选择目标商品')
+    return
+  }
+
+  const quantity = product.need_sn === 1 ? 1 : Number(conversionTargetAdd.quantity || 1)
+  const unitCost = roundMoney(conversionTargetAdd.unitCost || 0)
+  if (quantity <= 0 || unitCost <= 0) {
+    ElMessage.warning('数量和成本必须大于0')
+    return
+  }
+  if (product.need_sn === 1 && !conversionTargetAdd.snCode.trim()) {
+    ElMessage.warning('目标商品需要录入SN')
+    return
+  }
+
+  conversionForm.targetItems.push({
+    productId: product.product_id,
+    productName: product.name || product.product_name || '',
+    pnCode: conversionTargetAdd.pnCode,
+    snCode: conversionTargetAdd.snCode.trim(),
+    quantity,
+    unitCost,
+    totalCost: roundMoney(quantity * unitCost),
+    inventoryType: 'normal_qty',
+    locationId: ''
+  })
+
+  conversionTargetAdd.productId = ''
+  conversionTargetAdd.pnCode = ''
+  conversionTargetAdd.snCode = ''
+  conversionTargetAdd.quantity = 1
+  conversionTargetAdd.unitCost = 0
+}
+
+const submitConversion = async () => {
+  if (!conversionForm.storeId) {
+    ElMessage.warning('请选择转换门店')
+    return
+  }
+  if (!conversionCostMatched.value) {
+    ElMessage.warning(conversionForm.conversionType === 'split' ? '拆出金额不能超过来源成本' : '成本不守恒，不能执行')
+    return
+  }
+
+  conversionSubmitLoading.value = true
+  try {
+    const res = await api.createConversion({
+      conversionType: conversionForm.conversionType,
+      storeId: conversionForm.storeId,
+      serviceCost: conversionForm.serviceCost,
+      remark: conversionForm.remark,
+      sourceItems: conversionForm.sourceItems,
+      targetItems: conversionForm.targetItems
+    })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '库存转换已完成')
+      conversionDialogVisible.value = false
+      loadConversionList()
+      loadSummary()
+    } else {
+      ElMessage.error(res.message || '库存转换失败')
+    }
+  } catch (err) {
+    const msg = err.response?.data?.message || err.message || '库存转换失败'
+    ElMessage.error(msg)
+  } finally {
+    conversionSubmitLoading.value = false
+  }
+}
+
+const viewConversionDetail = async (row) => {
+  try {
+    const res = await api.getConversionDetail(row.conversion_id)
+    if (res.code === 0) {
+      currentConversion.value = res.data
+      conversionDetailVisible.value = true
+    }
+  } catch (err) {
+    ElMessage.error('加载拆装单详情失败')
+  }
+}
+
+const handleVoidConversion = async (row) => {
+  try {
+    const result = await ElMessageBox.prompt(
+      `确认冲销拆装单 ${row.conversion_no} 吗？已销售或占用的目标SN不能冲销。`,
+      '冲销拆装单',
+      { confirmButtonText: '确认冲销', cancelButtonText: '取消', inputPlaceholder: '冲销原因' }
+    )
+    const res = await api.voidConversion(row.conversion_id, { reason: result.value || '' })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '冲销成功')
+      loadConversionList()
+      loadSummary()
+    } else {
+      ElMessage.error(res.message || '冲销失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') {
+      const msg = err.response?.data?.message || err.message || '冲销失败'
+      ElMessage.error(msg)
+    }
+  }
+}
+
+const getConversionTypeText = (type) => {
+  return type === 'assemble' ? '组装' : '拆分'
+}
+
+const getConversionStatusText = (status) => {
+  const map = { completed: '已完成', voided: '已冲销' }
+  return map[status] || status
+}
+
+const getConversionLineRoleText = (role) => {
+  const map = { source: '来源', target: '目标', service: '服务' }
+  return map[role] || role
 }
 
 const getTransferStatusType = (status) => {
@@ -1438,6 +2697,16 @@ const getInboundStatusType = (status) => {
 
 const getInboundStatusText = (status) => {
   const texts = { pending: '待入库', completed: '已完成', returned: '已退库' }
+  return texts[status] || status
+}
+
+const getReturnStatusType = (status) => {
+  const types = { pending: 'warning', approved: 'primary', rejected: 'danger', completed: 'success' }
+  return types[status] || 'info'
+}
+
+const getReturnStatusText = (status) => {
+  const texts = { pending: '待审批', approved: '待执行', rejected: '已拒绝', completed: '已退库' }
   return texts[status] || status
 }
 </script>
@@ -1489,6 +2758,31 @@ const getInboundStatusText = (status) => {
 }
 .transfer-section {
   margin-bottom: 20px;
+}
+.conversion-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+.conversion-add-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.conversion-cost-check {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
+  background: #f5f7fa;
+  color: #303133;
+  font-weight: 600;
+}
+.conversion-cost-check.invalid {
+  border-color: #f56c6c;
+  background: #fef0f0;
+  color: #c45656;
 }
 .section-title {
   font-size: 16px;

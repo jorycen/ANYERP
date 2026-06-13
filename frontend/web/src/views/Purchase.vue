@@ -72,8 +72,10 @@
                 <el-tag :type="row.status === 1 ? 'success' : 'danger'">{{ row.status === 1 ? '正常' : '停用' }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="180">
-              <template #default="{ row }">
+            <el-table-column label="操作" width="260">
+              <template #default="{ row, $index }">
+                <el-button link type="primary" :disabled="$index === 0" @click="moveSupplier($index, -1)">上移</el-button>
+                <el-button link type="primary" :disabled="$index === supplierData.length - 1" @click="moveSupplier($index, 1)">下移</el-button>
                 <el-button link type="primary" @click="handleEditSupplier(row)">编辑</el-button>
                 <el-button link type="danger" @click="handleDeleteSupplier(row)">删除</el-button>
               </template>
@@ -95,7 +97,17 @@
     <el-dialog v-model="requestDialogVisible" title="新建采购申请" width="700px" @close="handleDialogClose">
       <el-form :model="requestForm" label-width="100px">
         <el-form-item label="供应商" required>
-          <el-select v-model="requestForm.supplierId" placeholder="请选择供应商" style="width: 100%" @change="onSupplierChange">
+          <el-select
+            v-model="requestForm.supplierId"
+            placeholder="请输入供应商关键字"
+            style="width: 100%"
+            filterable
+            remote
+            clearable
+            :remote-method="searchRequestSuppliers"
+            @visible-change="onRequestSupplierVisibleChange"
+            @change="onSupplierChange"
+          >
             <el-option v-for="s in allSuppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
           </el-select>
         </el-form-item>
@@ -122,7 +134,8 @@
             <div style="margin-bottom: 6px; font-size: 13px; color: #909399;">
               供应商返利余额：¥{{ rebateBalance.toFixed(2) }}
             </div>
-            <el-input v-model="requestForm.rebateDeduction" placeholder="0" style="width: 240px" />
+            <el-input v-model="requestForm.rebateDeduction" placeholder="0" style="width: 240px" @change="onTotalRebateChange" />
+            <el-button link type="primary" @click="allocateTotalRebateToItems">平摊到商品</el-button>
           </div>
         </el-form-item>
 
@@ -166,6 +179,18 @@
                 </div>
                 <el-button type="primary" size="small" @click="handleAllocateStore(item, idx)" style="flex-shrink: 0;">分配</el-button>
               </div>
+              <div v-if="requestForm.supplierId && rebateBalance > 0" class="item-rebate-row">
+                <span>逐单返利</span>
+                <el-input
+                  v-model="item.rebateDeduction"
+                  type="number"
+                  placeholder="0"
+                  size="small"
+                  class="no-spinner"
+                  @change="onItemRebateChange"
+                />
+                <span>抵扣后：¥{{ Math.max(0, itemSubtotal(item) - toNumber(item.rebateDeduction)).toFixed(2) }}</span>
+              </div>
             </div>
             <el-button type="primary" size="small" @click="addRequestItem">添加商品</el-button>
           </div>
@@ -173,16 +198,17 @@
 
         <div class="order-summary">
           <div class="summary-item total">申请金额: <span>¥{{ totalAmount.toFixed(2) }}</span></div>
-          <div v-if="requestForm.rebateDeduction > 0" class="summary-item deduction" style="color: #67c23a;">
-            返利抵扣: <span>-¥{{ requestForm.rebateDeduction }}</span>
+          <div v-if="rebateDeductionAmount > 0" class="summary-item deduction" style="color: #67c23a;">
+            返利抵扣: <span>-¥{{ rebateDeductionAmount.toFixed(2) }}</span>
           </div>
-          <div v-if="requestForm.rebateDeduction > 0" class="summary-item actual">
+          <div v-if="rebateDeductionAmount > 0" class="summary-item actual">
             实际应付: <span style="color: #f56c6c; font-weight: 700;">¥{{ actualTotal.toFixed(2) }}</span>
           </div>
         </div>
       </el-form>
       <template #footer>
         <el-button @click="requestDialogVisible = false">取消</el-button>
+        <el-button type="info" @click="savePurchaseRequestDraft">保存草稿</el-button>
         <el-button type="primary" @click="handleSubmit" :loading="submitLoading">提交申请</el-button>
       </template>
     </el-dialog>
@@ -287,7 +313,7 @@
     </el-dialog>
 
     <!-- 供应商对话框 -->
-    <el-dialog v-model="supplierDialogVisible" :title="supplierDialogTitle" width="500px" @close="handleSupplierDialogClose">
+    <el-dialog v-model="supplierDialogVisible" :title="supplierDialogTitle" width="860px" @close="handleSupplierDialogClose">
       <el-form :model="supplierForm" label-width="100px">
         <el-form-item label="供应商名称" required>
           <el-input v-model="supplierForm.name" placeholder="请输入供应商名称" />
@@ -308,9 +334,27 @@
           <el-switch v-model="supplierForm.status" :active-value="1" :inactive-value="0" />
           <span class="ml-10">{{ supplierForm.status === 1 ? '正常' : '停用' }}</span>
         </el-form-item>
+        <el-form-item label="付款信息">
+          <div class="supplier-accounts">
+            <div
+              v-for="(account, index) in supplierForm.paymentAccounts"
+              :key="index"
+              class="supplier-account-row"
+            >
+              <el-input v-model="account.companyName" placeholder="公司名称" />
+              <el-input v-model="account.taxNo" placeholder="税号" />
+              <el-input v-model="account.bankName" placeholder="开户行" />
+              <el-input v-model="account.accountNumber" placeholder="账号" />
+              <el-input v-model="account.remark" placeholder="备注" />
+              <el-button type="danger" link @click="removeSupplierAccount(index)">删除</el-button>
+            </div>
+            <el-button type="primary" link @click="addSupplierAccount">添加付款账户</el-button>
+          </div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="supplierDialogVisible = false">取消</el-button>
+        <el-button v-if="!supplierForm.supplierId" type="info" @click="saveSupplierDraft">保存草稿</el-button>
         <el-button type="primary" @click="handleSupplierSubmit" :loading="supplierLoading">确定</el-button>
       </template>
     </el-dialog>
@@ -321,8 +365,11 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
+import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 
 const activeTab = ref('request')
+const PURCHASE_REQUEST_DRAFT_KEY = 'purchase-request-create'
+const SUPPLIER_DRAFT_KEY = 'supplier-create'
 const tableData = ref([])
 const supplierData = ref([])
 const allSuppliers = ref([])
@@ -330,6 +377,7 @@ const allStores = ref([])
 const allStoresLoaded = ref(false)
 const products = ref([])
 const productSearchKeyword = ref('')
+const supplierSearchKeyword = ref('')
 const total = ref(0)
 const supplierTotal = ref(0)
 
@@ -358,7 +406,7 @@ const queryParams = reactive({
 
 const supplierQuery = reactive({
   page: 1,
-  pageSize: 20,
+  pageSize: 100,
   keyword: ''
 })
 
@@ -389,12 +437,24 @@ const supplierForm = reactive({
   phone: '',
   address: '',
   remark: '',
-  status: 1
+  status: 1,
+  paymentAccounts: []
 })
 
 const toNumber = (value) => {
   const number = Number(value)
   return Number.isFinite(number) ? number : 0
+}
+
+const toQuantity = (value) => {
+  const number = Number(value)
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0
+}
+
+const normalizeAllocationQuantity = (value, totalQuantity) => {
+  const quantity = toQuantity(value)
+  const total = toQuantity(totalQuantity)
+  return quantity <= total ? quantity : 0
 }
 
 const totalAmount = computed(() => {
@@ -403,19 +463,26 @@ const totalAmount = computed(() => {
   }, 0)
 })
 
+const itemSubtotal = (item) => {
+  return toNumber(item.price) * toNumber(item.quantity)
+}
+
+const rebateDeductionAmount = computed(() => {
+  return Math.min(toNumber(requestForm.rebateDeduction), totalAmount.value, rebateBalance.value || totalAmount.value)
+})
+
 const actualTotal = computed(() => {
-  const deduction = Math.min(parseFloat(requestForm.rebateDeduction || 0), totalAmount.value)
-  return totalAmount.value - deduction
+  return totalAmount.value - rebateDeductionAmount.value
 })
 
 const allocatedTotalQuantity = computed(() => {
   return storeAllocationList.value.reduce((sum, item) => {
-    return sum + toNumber(item.quantity)
+    return sum + toQuantity(item.quantity)
   }, 0)
 })
 
 const remainingAllocateQuantity = computed(() => {
-  return toNumber(currentAllocateProduct.value?.quantity) - allocatedTotalQuantity.value
+  return toQuantity(currentAllocateProduct.value?.quantity) - allocatedTotalQuantity.value
 })
 
 onMounted(() => {
@@ -446,7 +513,7 @@ const loadData = async () => {
     const res = await api.getPurchaseRequestList(queryParams)
     if (res.code === 0) {
       tableData.value = res.data?.list || []
-      total.value = res.data?.total || 0
+      total.value = res.data?.pagination?.total || res.data?.total || 0
     }
   } catch (err) {
     ElMessage.error('加载数据失败')
@@ -458,21 +525,60 @@ const loadSuppliers = async () => {
     const res = await api.getSupplierList(supplierQuery)
     if (res.code === 0) {
       supplierData.value = res.data?.list || []
-      supplierTotal.value = res.data?.total || 0
+      supplierTotal.value = res.data?.pagination?.total || res.data?.total || 0
     }
   } catch (err) {
     console.error('Failed to load suppliers')
+    ElMessage.error(err.response?.data?.message || '加载供应商失败')
   }
 }
 
 const loadAllSuppliers = async () => {
   try {
-    const res = await api.getAllSuppliers()
+    const params = supplierSearchKeyword.value
+      ? { keyword: supplierSearchKeyword.value, status: 1, page: 1, pageSize: 50 }
+      : null
+    const res = params ? await api.getSupplierList(params) : await api.getAllSuppliers()
     if (res.code === 0) {
-      allSuppliers.value = res.data || []
+      allSuppliers.value = params ? (res.data?.list || []) : (res.data || [])
     }
   } catch (err) {
     console.error('Failed to load all suppliers')
+  }
+}
+
+const moveSupplier = async (index, direction) => {
+  const targetIndex = index + direction
+  if (targetIndex < 0 || targetIndex >= supplierData.value.length) return
+
+  const sorted = [...supplierData.value]
+  ;[sorted[index], sorted[targetIndex]] = [sorted[targetIndex], sorted[index]]
+
+  try {
+    const res = await api.sortSuppliers({
+      items: sorted.map((item, idx) => ({ id: item.supplier_id, sortOrder: idx }))
+    })
+    if (res.code === 0) {
+      ElMessage.success('排序已更新')
+      await loadSuppliers()
+      await loadAllSuppliers()
+    } else {
+      ElMessage.error(res.message || '排序失败')
+    }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || '排序失败')
+  }
+}
+
+const searchRequestSuppliers = async (keyword) => {
+  supplierSearchKeyword.value = keyword || ''
+  await loadAllSuppliers()
+}
+
+const onRequestSupplierVisibleChange = async (visible) => {
+  if (visible) {
+    supplierSearchKeyword.value = ''
+    await loadAllSuppliers()
   }
 }
 
@@ -489,6 +595,7 @@ const loadProducts = async () => {
 
 const handleCreate = () => {
   resetForm()
+  restorePurchaseRequestDraft()
   requestDialogVisible.value = true
 }
 
@@ -579,6 +686,7 @@ const handleRevokeSubmit = async () => {
 const handleAddSupplier = () => {
   supplierDialogTitle.value = '新增供应商'
   resetSupplierForm()
+  restoreSupplierDraft()
   supplierDialogVisible.value = true
 }
 
@@ -592,6 +700,7 @@ const handleEditSupplier = (row) => {
   supplierForm.address = row.address || ''
   supplierForm.remark = row.remark || ''
   supplierForm.status = row.status
+  supplierForm.paymentAccounts = normalizeSupplierAccounts(row.paymentAccounts || row.SupplierPaymentAccounts || [])
   supplierDialogVisible.value = true
 }
 
@@ -636,7 +745,8 @@ const handleSupplierSubmit = async () => {
       phone: supplierForm.phone,
       address: supplierForm.address,
       remark: supplierForm.remark,
-      status: supplierForm.status
+      status: supplierForm.status,
+      paymentAccounts: normalizeSupplierAccounts(supplierForm.paymentAccounts)
     }
 
     let res
@@ -648,14 +758,19 @@ const handleSupplierSubmit = async () => {
 
     if (res.code === 0) {
       ElMessage.success(supplierForm.supplierId ? '更新成功' : '创建成功')
+      if (!supplierForm.supplierId) {
+        clearDraft(SUPPLIER_DRAFT_KEY)
+      }
       supplierDialogVisible.value = false
-      loadSuppliers()
-      loadAllSuppliers()
+      supplierQuery.page = 1
+      await loadSuppliers()
+      await loadAllSuppliers()
     } else {
       ElMessage.error(res.message || '操作失败')
     }
   } catch (err) {
-    ElMessage.error('操作失败')
+    const msg = err.response?.data?.message || err.message || '操作失败'
+    ElMessage.error(msg)
   } finally {
     supplierLoading.value = false
   }
@@ -673,6 +788,48 @@ const resetSupplierForm = () => {
   supplierForm.address = ''
   supplierForm.remark = ''
   supplierForm.status = 1
+  supplierForm.paymentAccounts = []
+}
+
+const saveSupplierDraft = () => {
+  saveDraft(SUPPLIER_DRAFT_KEY, cloneDraft(supplierForm))
+  ElMessage.success('草稿已保存')
+}
+
+const restoreSupplierDraft = () => {
+  const draft = loadDraft(SUPPLIER_DRAFT_KEY)
+  if (!draft) return
+  Object.assign(supplierForm, draft)
+  supplierForm.supplierId = null
+  supplierForm.paymentAccounts = Array.isArray(draft.paymentAccounts) ? draft.paymentAccounts : []
+  ElMessage.success('已恢复上次草稿')
+}
+
+const normalizeSupplierAccounts = (accounts = []) => {
+  return accounts
+    .map(account => ({
+      accountId: account.accountId || account.account_id || '',
+      companyName: account.companyName || account.company_name || '',
+      taxNo: account.taxNo || account.tax_no || '',
+      bankName: account.bankName || account.bank_name || '',
+      accountNumber: account.accountNumber || account.account_number || '',
+      remark: account.remark || ''
+    }))
+    .filter(account => account.companyName || account.taxNo || account.bankName || account.accountNumber || account.remark)
+}
+
+const addSupplierAccount = () => {
+  supplierForm.paymentAccounts.push({
+    companyName: supplierForm.name || '',
+    taxNo: '',
+    bankName: '',
+    accountNumber: '',
+    remark: ''
+  })
+}
+
+const removeSupplierAccount = (index) => {
+  supplierForm.paymentAccounts.splice(index, 1)
 }
 
 const searchProducts = async (keyword) => {
@@ -693,6 +850,9 @@ const onSupplierChange = async (supplierId) => {
     requestForm.invoiceType = supplier.invoice_type
   }
   requestForm.rebateDeduction = 0
+  requestForm.items.forEach(item => {
+    item.rebateDeduction = 0
+  })
   if (supplierId) {
     try {
       const res = await api.getRebateBalance({ supplierId })
@@ -707,6 +867,67 @@ const onSupplierChange = async (supplierId) => {
   }
 }
 
+const allocateTotalRebateToItems = () => {
+  const totalCents = Math.round(rebateDeductionAmount.value * 100)
+  if (totalCents <= 0 || requestForm.items.length === 0) {
+    requestForm.items.forEach(item => {
+      item.rebateDeduction = 0
+    })
+    requestForm.rebateDeduction = 0
+    return
+  }
+
+  const candidates = requestForm.items
+    .map((item, index) => ({ index, cap: Math.max(0, Math.round(itemSubtotal(item) * 100)) }))
+    .filter(item => item.cap > 0)
+
+  if (candidates.length === 0) return
+
+  const cappedTotal = Math.min(totalCents, candidates.reduce((sum, item) => sum + item.cap, 0))
+  const allocations = new Array(requestForm.items.length).fill(0)
+  const base = Math.floor(cappedTotal / candidates.length)
+  let extra = cappedTotal % candidates.length
+
+  candidates.forEach(item => {
+    const share = base + (extra > 0 ? 1 : 0)
+    allocations[item.index] = Math.min(share, item.cap)
+    if (extra > 0) extra -= 1
+  })
+
+  let remaining = cappedTotal - allocations.reduce((sum, amount) => sum + amount, 0)
+  for (const item of candidates) {
+    if (remaining <= 0) break
+    const capacity = item.cap - allocations[item.index]
+    if (capacity <= 0) continue
+    const add = Math.min(capacity, remaining)
+    allocations[item.index] += add
+    remaining -= add
+  }
+
+  requestForm.items.forEach((item, index) => {
+    item.rebateDeduction = (allocations[index] / 100).toFixed(2)
+  })
+  requestForm.rebateDeduction = (allocations.reduce((sum, amount) => sum + amount, 0) / 100).toFixed(2)
+}
+
+const onTotalRebateChange = () => {
+  requestForm.rebateDeduction = rebateDeductionAmount.value.toFixed(2)
+  allocateTotalRebateToItems()
+}
+
+const onItemRebateChange = () => {
+  const maxTotal = Math.min(rebateBalance.value || totalAmount.value, totalAmount.value)
+  let remaining = maxTotal
+  let total = 0
+  requestForm.items.forEach(item => {
+    const amount = Math.min(toNumber(item.rebateDeduction), itemSubtotal(item), remaining)
+    item.rebateDeduction = amount > 0 ? amount.toFixed(2) : 0
+    remaining -= amount
+    total += amount
+  })
+  requestForm.rebateDeduction = total.toFixed(2)
+}
+
 const onProductChange = (index) => {
   const product = products.value.find(p => p.product_id === requestForm.items[index].productId)
   if (product) {
@@ -715,12 +936,22 @@ const onProductChange = (index) => {
   }
 }
 
+const onItemAmountChange = () => {
+  onItemRebateChange()
+}
+
 const addRequestItem = () => {
-  requestForm.items.push({ productId: '', productName: '', price: 0, quantity: 1, storeAllocations: [] })
+  requestForm.items.push({ productId: '', productName: '', price: 0, quantity: 1, rebateDeduction: 0, storeAllocations: [] })
+  if (toNumber(requestForm.rebateDeduction) > 0) {
+    allocateTotalRebateToItems()
+  }
 }
 
 const removeRequestItem = (index) => {
   requestForm.items.splice(index, 1)
+  if (toNumber(requestForm.rebateDeduction) > 0) {
+    allocateTotalRebateToItems()
+  }
 }
 
 const handleSubmit = async () => {
@@ -744,11 +975,17 @@ const handleSubmit = async () => {
     }
 
     // 校验分配数量总和等于商品数量
-    const allocatedQty = item.storeAllocations.reduce((sum, alloc) => sum + toNumber(alloc.quantity), 0)
-    if (allocatedQty !== toNumber(item.quantity)) {
+    const itemQuantity = toQuantity(item.quantity)
+    const allocatedQty = item.storeAllocations.reduce((sum, alloc) => sum + normalizeAllocationQuantity(alloc.quantity, itemQuantity), 0)
+    if (allocatedQty !== itemQuantity) {
       ElMessage.warning(`「${productName}」分配数量(${allocatedQty})必须等于采购数量(${item.quantity})`)
       return
     }
+  }
+
+  if (rebateDeductionAmount.value > 0 && rebateDeductionAmount.value > rebateBalance.value) {
+    ElMessage.warning('返利抵扣不能超过供应商返利余额')
+    return
   }
 
   submitLoading.value = true
@@ -757,19 +994,21 @@ const handleSubmit = async () => {
       supplierId: requestForm.supplierId,
       invoiceType: requestForm.invoiceType,
       remark: requestForm.remark,
-      rebateDeduction: requestForm.rebateDeduction,
+      rebateDeduction: rebateDeductionAmount.value,
       items: requestForm.items.map(item => ({
         productId: item.productId,
         productName: item.productName,
         price: item.price,
         quantity: item.quantity,
         productType: requestForm.productType || '正规货',
+        rebateDeduction: Math.min(toNumber(item.rebateDeduction), itemSubtotal(item)),
         storeAllocations: item.storeAllocations
       }))
     }
     const res = await api.createPurchaseRequest(data)
     if (res.code === 0) {
       ElMessage.success('提交成功')
+      clearDraft(PURCHASE_REQUEST_DRAFT_KEY)
       requestDialogVisible.value = false
       loadData()
     } else {
@@ -795,6 +1034,21 @@ const resetForm = () => {
   requestForm.items = []
 }
 
+const savePurchaseRequestDraft = () => {
+  saveDraft(PURCHASE_REQUEST_DRAFT_KEY, cloneDraft(requestForm))
+  ElMessage.success('草稿已保存')
+}
+
+const restorePurchaseRequestDraft = () => {
+  const draft = loadDraft(PURCHASE_REQUEST_DRAFT_KEY)
+  if (!draft) return
+  Object.assign(requestForm, draft)
+  requestForm.items = Array.isArray(draft.items)
+    ? draft.items.map(item => ({ rebateDeduction: 0, ...item }))
+    : []
+  ElMessage.success('已恢复上次草稿')
+}
+
 const getStatusType = (status) => {
   const types = { pending: 'warning', approved: 'success', rejected: 'danger', purchased: 'info', revoked: 'info' }
   return types[status] || 'info'
@@ -806,7 +1060,8 @@ const getStatusText = (status) => {
 }
 
 const handleAllocateStore = (row, index) => {
-  if (toNumber(row.quantity) <= 0) {
+  const totalQuantity = toQuantity(row.quantity)
+  if (totalQuantity <= 0) {
     ElMessage.warning('请先输入商品数量')
     return
   }
@@ -814,6 +1069,7 @@ const handleAllocateStore = (row, index) => {
   const product = products.value.find(p => p.product_id === row.productId)
   currentAllocateProduct.value = {
     ...row,
+    quantity: totalQuantity,
     productName: product?.name || ''
   }
   currentAllocateIndex.value = index
@@ -823,7 +1079,7 @@ const handleAllocateStore = (row, index) => {
     return {
       storeId: store.store_id,
       storeName: store.name,
-      quantity: toNumber(existing?.quantity)
+      quantity: normalizeAllocationQuantity(existing?.quantity, totalQuantity)
     }
   })
   
@@ -831,14 +1087,14 @@ const handleAllocateStore = (row, index) => {
 }
 
 const validateAllocation = () => {
-  if (allocatedTotalQuantity.value > toNumber(currentAllocateProduct.value?.quantity)) {
+  if (allocatedTotalQuantity.value > toQuantity(currentAllocateProduct.value?.quantity)) {
     ElMessage.warning('分配数量不能超过总数量')
   }
 }
 
 const handleSaveAllocation = () => {
   const totalAllocated = allocatedTotalQuantity.value
-  const totalQuantity = toNumber(currentAllocateProduct.value?.quantity)
+  const totalQuantity = toQuantity(currentAllocateProduct.value?.quantity)
   
   if (totalAllocated > totalQuantity) {
     ElMessage.warning('分配数量不能超过总数量')
@@ -846,7 +1102,7 @@ const handleSaveAllocation = () => {
   }
   
   const validAllocations = storeAllocationList.value
-    .map(a => ({ ...a, quantity: toNumber(a.quantity) }))
+    .map(a => ({ ...a, quantity: toQuantity(a.quantity) }))
     .filter(a => a.quantity > 0)
   
   if (currentAllocateIndex.value >= 0) {
@@ -884,6 +1140,20 @@ const handleAllocateDialogClose = () => {
   padding: 10px;
   border-radius: 4px;
 }
+.item-rebate-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: #fff7e8;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #606266;
+}
+.item-rebate-row .el-input {
+  width: 120px;
+}
 .mt-10 {
   margin-top: 10px;
 }
@@ -910,6 +1180,16 @@ const handleAllocateDialogClose = () => {
 }
 .summary-item span {
   color: #f56c6c;
+}
+.supplier-accounts {
+  width: 100%;
+}
+.supplier-account-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr)) 44px;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
 }
 .no-spinner :deep(input[type='number'])::-webkit-inner-spin-button,
 .no-spinner :deep(input[type='number'])::-webkit-outer-spin-button {

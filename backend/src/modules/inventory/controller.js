@@ -2,8 +2,8 @@
  * 库房管理控制器
  * 优化版：非SN商品直接操作聚合库存，SN商品同时维护SN记录和聚合库存
  */
-const { sequelize, ProductSn, Product, ProductPn, ProductPrice, ProductBarcode, Store, Location, InventoryWarning, Inbound, InboundItem, ReturnStock, ReturnStockItem, PurchaseRequest, Payable, Supplier, Inventory, SnLog, Order, OrderItem, Transfer, TransferItem } = require('../../models');
-const { Op } = require('sequelize');
+const { sequelize, ProductSn, Product, ProductPn, ProductPrice, ProductBarcode, Store, Location, InventoryWarning, Inbound, InboundItem, ReturnStock, ReturnStockItem, PurchaseRequest, Payable, Supplier, Inventory, SnLog, Order, OrderItem, Transfer, TransferItem, InventoryConversion, InventoryConversionItem } = require('../../models');
+const { Op, Sequelize } = require('sequelize');
 const { generateInboundNo, generateOutboundNo, generateTransferNo, generateUUID, generateBatchNo, paginate, formatPaginatedResult } = require('../../utils');
 
 function splitCodes(value) {
@@ -16,6 +16,116 @@ function splitCodes(value) {
 function normalizePnCode(value) {
   const code = String(value || '').trim();
   return code.length > 64 ? code.slice(0, 64) : code;
+}
+
+function getSalesInventoryQty(inv) {
+  return Math.max(
+    Number(inv.normal_qty || 0),
+    Number(inv.regular_qty || 0) + Number(inv.subsidy_qty || 0) + Number(inv.second_qty || 0)
+  );
+}
+
+async function buildSalesStockMap(productIds, storeId = '') {
+  const uniqueProductIds = [...new Set((productIds || []).filter(Boolean))];
+  const stockMap = {};
+  if (uniqueProductIds.length === 0) return stockMap;
+
+  const inventories = await Inventory.findAll({
+    where: { product_id: { [Op.in]: uniqueProductIds } },
+    raw: true
+  });
+  const storeIds = [...new Set(inventories.map(inv => inv.store_id).filter(Boolean))];
+  const stores = storeIds.length
+    ? await Store.findAll({ where: { store_id: { [Op.in]: storeIds } }, attributes: ['store_id', 'name'], raw: true })
+    : [];
+  const storeNameMap = new Map(stores.map(store => [store.store_id, store.name]));
+
+  for (const inv of inventories) {
+    const productId = inv.product_id;
+    if (!stockMap[productId]) {
+      stockMap[productId] = { current: 0, other: 0, total: 0, stores: [], currentStore: null, otherStores: [] };
+    }
+
+    const qty = getSalesInventoryQty(inv);
+    if (qty <= 0) continue;
+
+    const storeRow = {
+      store_id: inv.store_id || '',
+      store_name: storeNameMap.get(inv.store_id) || inv.store_id || '未知门店',
+      normal_qty: qty,
+      is_current: Boolean(storeId && inv.store_id === storeId)
+    };
+
+    stockMap[productId].stores.push(storeRow);
+    stockMap[productId].total += qty;
+    if (storeId && inv.store_id === storeId) {
+      stockMap[productId].current += qty;
+      stockMap[productId].currentStore = storeRow;
+    } else {
+      stockMap[productId].other += qty;
+      stockMap[productId].otherStores.push(storeRow);
+    }
+  }
+
+  return stockMap;
+}
+
+async function buildSalesCountMap(productIds) {
+  const uniqueProductIds = [...new Set((productIds || []).filter(Boolean))];
+  const salesMap = {};
+  if (uniqueProductIds.length === 0) return salesMap;
+
+  const now = new Date();
+  const date7 = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const date30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const rows = await sequelize.query(
+    `SELECT oi.PRODUCT_ID AS product_id,
+            SUM(CASE WHEN o.CREATE_TIME >= :date7 THEN oi.QUANTITY ELSE 0 END) AS sales_7_qty,
+            SUM(CASE WHEN o.CREATE_TIME >= :date30 THEN oi.QUANTITY ELSE 0 END) AS sales_30_qty
+       FROM T_ORDER_ITEM oi
+       INNER JOIN T_ORDER o ON oi.ORDER_ID = o.ORDER_ID
+      WHERE oi.PRODUCT_ID IN (:productIds)
+        AND (o.ORDER_STATUS IS NULL OR o.ORDER_STATUS NOT IN ('cancelled', 'rejected'))
+      GROUP BY oi.PRODUCT_ID`,
+    { replacements: { productIds: uniqueProductIds, date7, date30 }, type: Sequelize.QueryTypes.SELECT }
+  );
+
+  rows.forEach(row => {
+    salesMap[row.product_id] = {
+      sales_7_qty: Number(row.sales_7_qty || 0),
+      sales_30_qty: Number(row.sales_30_qty || 0)
+    };
+  });
+  return salesMap;
+}
+
+const INVENTORY_CATEGORY_KEYWORDS = {
+  computer: ['电脑', '笔记本', '台式机', '一体机', '主机'],
+  tablet: ['平板', 'pad', 'ipad'],
+  phone: ['手机', 'iphone'],
+  accessory: ['配件', '鼠标', '键盘', '手柄', '支架', '摄像头', '保护夹', '保护壳', '贴膜', '充电器', '耳机', '数据线', 'u盘', '杯', '包', '硬盘', '打印机', '内存', '膜']
+};
+
+function includesAny(text, keywords) {
+  return keywords.some(keyword => text.includes(keyword));
+}
+
+function getInventoryCategoryRank(category, accessoryType, name, config) {
+  const categoryText = String(category || '').toLowerCase();
+  if (includesAny(categoryText, INVENTORY_CATEGORY_KEYWORDS.computer)) return 0;
+  if (includesAny(categoryText, INVENTORY_CATEGORY_KEYWORDS.tablet)) return 1;
+  if (includesAny(categoryText, INVENTORY_CATEGORY_KEYWORDS.phone)) return 2;
+  if (includesAny(categoryText, INVENTORY_CATEGORY_KEYWORDS.accessory)) return 3;
+
+  const accessoryText = String(accessoryType || '').toLowerCase();
+  if (accessoryText) return 3;
+
+  const text = [name, config].map(value => String(value || '')).join(' ').toLowerCase();
+  if (includesAny(text, INVENTORY_CATEGORY_KEYWORDS.accessory)) return 3;
+  if (includesAny(text, INVENTORY_CATEGORY_KEYWORDS.computer)) return 0;
+  if (includesAny(text, INVENTORY_CATEGORY_KEYWORDS.tablet)) return 1;
+  if (includesAny(text, INVENTORY_CATEGORY_KEYWORDS.phone)) return 2;
+  return 4;
 }
 
 /**
@@ -44,14 +154,16 @@ async function getList(ctx) {
       ];
     }
 
-    const { count, rows: products } = await Product.findAndCountAll({
+    const products = await Product.findAll({
       where: productWhere,
-      include: [{ model: ProductPrice, attributes: ['standard_price'] }],
-      order: [['create_time', 'DESC']],
-      ...paginate({}, { page, pageSize })
+      include: [{ model: ProductPrice, attributes: ['standard_price', 'cost_price'] }],
+      order: [['create_time', 'DESC']]
     });
+    const count = products.length;
 
     const productIds = products.map(p => p.product_id);
+    const allStockMap = await buildSalesStockMap(productIds, storeId);
+    const salesMap = await buildSalesCountMap(productIds);
 
     const inventoryWhere = { product_id: { [Op.in]: productIds } };
     if (storeIds.length > 0) {
@@ -102,11 +214,12 @@ async function getList(ctx) {
 
       if ((effectiveNormal) > 0) {
         const storeName = inv.Store?.name || allStoreMap.get(inv.store_id) || inv.store_id;
+        const locationId = inv.location_id || '';
         storeStockMap[inv.product_id].push({
           store_id: inv.store_id,
           store_name: storeName,
-          location_id: '',
-          location_name: '未指定库位',
+          location_id: locationId,
+          location_name: locationId ? (locationMap.get(locationId) || locationId) : '未指定库位',
           normal_qty: effectiveNormal
         });
       }
@@ -147,10 +260,12 @@ async function getList(ctx) {
       }
     }
 
-    const rows = products.map(p => {
+    const sortedRows = products.map(p => {
       const inv = invMap[p.product_id] || {
         normal_qty: 0, regular_qty: 0, subsidy_qty: 0, second_qty: 0, display_qty: 0, demo_qty: 0, unsellable_qty: 0, pending_qty: 0
       };
+      const stock = allStockMap[p.product_id] || { current: 0, other: 0, total: 0, stores: [], otherStores: [] };
+      const sales = salesMap[p.product_id] || { sales_7_qty: 0, sales_30_qty: 0 };
       return {
         product_id: p.product_id,
         category: p.category || '',
@@ -159,6 +274,7 @@ async function getList(ctx) {
         product_code: p.product_code || '',
         manufacturer_code: p.manufacturer_code || '',
         standard_price: p.ProductPrice ? p.ProductPrice.standard_price : 0,
+        cost_price: p.ProductPrice ? p.ProductPrice.cost_price : 0,
         need_sn: p.need_sn || 0,
         normal_qty: inv.normal_qty,
         regular_qty: inv.regular_qty,
@@ -168,9 +284,30 @@ async function getList(ctx) {
         demo_qty: inv.demo_qty,
         unsellable_qty: inv.unsellable_qty,
         pending_qty: inv.pending_qty,
-        store_stock_info: storeStockMap[p.product_id] || []
+        current_store_stock_qty: stock.current,
+        other_store_stock_qty: stock.other,
+        total_stock_qty: stock.total,
+        current_store_name: stock.currentStore?.store_name || '',
+        store_stock_info: stock.stores || storeStockMap[p.product_id] || [],
+        other_store_stock_info: stock.otherStores || [],
+        sales_7_qty: sales.sales_7_qty,
+        sales_30_qty: sales.sales_30_qty,
+        _category_rank: getInventoryCategoryRank(p.category, p.accessory_type, p.name, p.config),
+        _create_time: p.create_time
       };
+    }).sort((a, b) => {
+      const aHasStock = Number(a.normal_qty || 0) > 0 ? 0 : 1;
+      const bHasStock = Number(b.normal_qty || 0) > 0 ? 0 : 1;
+      if (aHasStock !== bHasStock) return aHasStock - bHasStock;
+      if (a._category_rank !== b._category_rank) return a._category_rank - b._category_rank;
+      return new Date(b._create_time || 0).getTime() - new Date(a._create_time || 0).getTime();
     });
+
+    const currentPage = Math.max(Number(page) || 1, 1);
+    const currentPageSize = Math.max(Number(pageSize) || 20, 1);
+    const rows = sortedRows
+      .slice((currentPage - 1) * currentPageSize, currentPage * currentPageSize)
+      .map(({ _category_rank, _create_time, ...row }) => row);
 
     ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
   } catch (error) {
@@ -184,7 +321,7 @@ async function getList(ctx) {
  */
 async function getSnList(ctx) {
   try {
-    const { productId, storeId, status, snCode, page = 1, pageSize = 20 } = ctx.query;
+    const { productId, storeId, currentStoreId, status, snCode, page = 1, pageSize = 20 } = ctx.query;
 
     const where = { is_deleted: 0 };
     if (productId) where.product_id = productId;
@@ -214,7 +351,10 @@ async function getSnList(ctx) {
 
     for (const sn of rows) {
       if (sn.product_id) {
-        sn.dataValues.Product = await Product.findByPk(sn.product_id, { attributes: ['name', 'category', 'need_sn'] });
+        sn.dataValues.Product = await Product.findByPk(sn.product_id, {
+          attributes: ['product_id', 'name', 'category', 'config', 'brand', 'series', 'model', 'need_sn'],
+          include: [{ model: ProductPrice, attributes: ['standard_price', 'min_sale_price'] }]
+        });
       }
       if (sn.store_id) {
         sn.dataValues.Store = await Store.findByPk(sn.store_id, { attributes: ['name', 'region_id'] });
@@ -224,11 +364,39 @@ async function getSnList(ctx) {
       }
     }
 
+    const productIds = rows.map(row => row.product_id).filter(Boolean);
+    const stockMap = await buildSalesStockMap(productIds, currentStoreId || storeId || '');
+    const salesMap = await buildSalesCountMap(productIds);
+
     const flatRows = rows.map(row => {
       const data = row.toJSON();
+      const price = data.Product?.ProductPrice || {};
+      const stock = stockMap[data.product_id] || { current: 0, other: 0, total: 0 };
+      const sales = salesMap[data.product_id] || { sales_7_qty: 0, sales_30_qty: 0 };
       return {
         ...data,
         product_name: data.Product?.name || '',
+        name: data.Product?.name || '',
+        category: data.Product?.category || '',
+        config: data.Product?.config || '',
+        spec: data.Product?.config || '',
+        brand: data.Product?.brand || '',
+        series: data.Product?.series || '',
+        model: data.Product?.model || '',
+        standard_price: price.standard_price || 0,
+        min_sale_price: price.min_sale_price || 0,
+        settlement_price: price.min_sale_price || price.standard_price || 0,
+        need_sn: data.Product?.need_sn || 0,
+        current_store_stock_qty: stock.current,
+        other_store_stock_qty: stock.other,
+        total_stock_qty: stock.total,
+        current_store_name: stock.currentStore?.store_name || '',
+        store_stock_info: stock.stores || [],
+        other_store_stock_info: stock.otherStores || [],
+        sales_7_qty: sales.sales_7_qty,
+        sales_30_qty: sales.sales_30_qty,
+        stock_qty: currentStoreId || storeId ? stock.current : stock.total,
+        stock_rank: stock.current > 0 ? 0 : (stock.total > 0 ? 1 : 2),
         store_name: data.Store?.name || '',
         location_name: data.Location?.name || ''
       };
@@ -631,9 +799,35 @@ async function getInboundDetail(ctx) {
  * @param {number} delta 变化量（入库为正，退库为负）
  * @param {object} transaction Sequelize事务
  */
-async function updateInventory(productId, storeId, field, delta, transaction) {
+async function updateInventory(productId, storeId, field, delta, transaction, locationId = '') {
+  const normalizedLocationId = locationId || '';
+
+  if (delta < 0 && !normalizedLocationId) {
+    let remaining = Math.abs(delta);
+    const rows = await Inventory.findAll({
+      where: { product_id: productId, store_id: storeId },
+      order: [
+        [sequelize.literal(`CASE WHEN LOCATION_ID = '' THEN 1 ELSE 0 END`), 'ASC'],
+        [field, 'DESC']
+      ],
+      transaction
+    });
+
+    for (const row of rows) {
+      if (remaining <= 0) break;
+      const current = Number(row[field] || 0);
+      if (current <= 0) continue;
+      const deduct = Math.min(current, remaining);
+      await row.update({ [field]: current - deduct }, { transaction });
+      remaining -= deduct;
+    }
+
+    if (remaining <= 0) return;
+    delta = -remaining;
+  }
+
   let inv = await Inventory.findOne({
-    where: { product_id: productId, store_id: storeId },
+    where: { product_id: productId, store_id: storeId, location_id: normalizedLocationId },
     transaction
   });
 
@@ -642,6 +836,7 @@ async function updateInventory(productId, storeId, field, delta, transaction) {
       inventory_id: generateUUID(),
       product_id: productId,
       store_id: storeId,
+      location_id: normalizedLocationId,
       normal_qty: 0,
       regular_qty: 0,
       subsidy_qty: 0,
@@ -697,6 +892,10 @@ function normalizeTransferItem(raw) {
 async function executeInbound(ctx) {
   const VALID_INVENTORY_TYPES = ['normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty'];
   const PRODUCT_TYPE_TO_FIELD = {
+    '服务商全资源': 'regular_qty',
+    '含税仅国补': 'subsidy_qty',
+    '含税无国补': 'regular_qty',
+    '未税': 'second_qty',
     '正规货': 'regular_qty',
     '国补货': 'subsidy_qty',
     '纯二批': 'second_qty'
@@ -737,6 +936,7 @@ async function executeInbound(ctx) {
         ? item.inventoryType
         : 'normal_qty';
       const locationId = item.locationId || null;
+      const originalPickupPrice = Number(item.originalPickupPrice || item.original_pickup_price || dbItem.original_pickup_price || dbItem.unit_price || 0);
 
       if (product.need_sn === 1) {
         if (!item.snCode || item.snCode.trim() === '') {
@@ -747,7 +947,13 @@ async function executeInbound(ctx) {
         const snCode = item.snCode.trim();
 
         const existingSn = await ProductSn.findOne({
-          where: { pn_code: pnCode, sn_code: snCode, is_deleted: 0 },
+          where: {
+            product_id: dbItem.product_id,
+            pn_code: pnCode,
+            sn_code: snCode,
+            status: { [Op.in]: ['in_stock', 'transferring'] },
+            is_deleted: 0
+          },
           transaction: t
         });
         if (existingSn) {
@@ -766,6 +972,7 @@ async function executeInbound(ctx) {
           location_id: locationId,
           inbound_time: new Date(),
           inbound_price: dbItem.unit_price,
+          original_pickup_price: originalPickupPrice,
           remark: item.remark || '',
           is_deleted: 0
         }, { transaction: t });
@@ -775,6 +982,7 @@ async function executeInbound(ctx) {
           pn_code: pnCode,
           remark: item.remark,
           location_id: locationId,
+          original_pickup_price: originalPickupPrice,
           inventory_type: inventoryType
         }, { transaction: t });
       } else {
@@ -784,6 +992,7 @@ async function executeInbound(ctx) {
           pn_code: pnCode,
           remark: item.remark,
           location_id: locationId,
+          original_pickup_price: originalPickupPrice,
           inventory_type: inventoryType
         }, { transaction: t });
       }
@@ -807,62 +1016,17 @@ async function executeInbound(ctx) {
         }
       }
 
-      await updateInventory(item.productId, inbound.store_id, inventoryType, quantity, t);
+      await updateInventory(item.productId, inbound.store_id, inventoryType, quantity, t, locationId);
 
       if (inventoryType === 'normal_qty' && dbItem.product_type) {
         const typeField = PRODUCT_TYPE_TO_FIELD[dbItem.product_type];
         if (typeField) {
-          await updateInventory(item.productId, inbound.store_id, typeField, quantity, t);
+          await updateInventory(item.productId, inbound.store_id, typeField, quantity, t, locationId);
         }
       }
     }
 
     await inbound.update({ status: 'completed', update_time: new Date() }, { transaction: t });
-
-    if (inbound.purchase_request_id) {
-      const allInbounds = await Inbound.findAll({
-        where: { purchase_request_id: inbound.purchase_request_id },
-        transaction: t
-      });
-      const request = await PurchaseRequest.findByPk(inbound.purchase_request_id, { transaction: t });
-      if (request && request.supplier_id) {
-        const completedInbounds = allInbounds.filter(ib => ib.status === 'completed');
-        const completedAmount = completedInbounds.reduce((sum, ib) => sum + parseFloat(ib.total_amount || 0), 0);
-        const allCompleted = allInbounds.length > 0 && allInbounds.every(ib => ib.status === 'completed');
-        const rebateDeduction = parseFloat(request.rebate_deduction || 0);
-        const totalAmount = allCompleted && rebateDeduction > 0
-          ? parseFloat(request.actual_total || completedAmount)
-          : completedAmount;
-
-        if (totalAmount > 0) {
-          const existingPayable = await Payable.findOne({
-            where: { request_id: inbound.purchase_request_id },
-            transaction: t
-          });
-          if (existingPayable) {
-            if (existingPayable.status !== 'paid') {
-              await existingPayable.update({
-                total_amount: totalAmount,
-                paid_amount: existingPayable.status === 'unpaid' ? 0 : existingPayable.paid_amount
-              }, { transaction: t });
-            }
-          } else {
-            const supplier = await Supplier.findByPk(request.supplier_id, { transaction: t });
-            await Payable.create({
-              payable_id: generateUUID(),
-              supplier_id: request.supplier_id,
-              supplier_name: supplier ? supplier.name : '',
-              request_id: inbound.purchase_request_id,
-              request_no: request.request_no,
-              total_amount: totalAmount,
-              paid_amount: 0,
-              status: 'unpaid',
-              create_time: new Date()
-            }, { transaction: t });
-          }
-        }
-      }
-    }
 
     await t.commit();
     ctx.body = { code: 0, message: '入库完成' };
@@ -1123,6 +1287,12 @@ async function confirmTransferOut(ctx) {
   try {
     const user = ctx.state.user;
     const { transferId } = ctx.request.body;
+    const selectedSnByItemId = new Map(
+      (Array.isArray(ctx.request.body.items) ? ctx.request.body.items : [])
+        .filter(item => item && item.itemId && item.snId)
+        .map(item => [String(item.itemId), item.snId])
+    );
+    const selectedSnIds = new Set();
 
     const transfer = await Transfer.findByPk(transferId, {
       include: [{ model: TransferItem }],
@@ -1149,9 +1319,22 @@ async function confirmTransferOut(ctx) {
       let snCode = item.sn_code;
       const quantity = Number(item.quantity || 1);
 
-      if (!snId && !snCode && product && Number(product.need_sn) === 1) {
+      if (!snId && product && Number(product.need_sn) === 1) {
+        snId = selectedSnByItemId.get(String(item.item_id)) || '';
+        if (!snId) {
+          ctx.throw(400, `商品 ${product.name} 需要选择SN后才能确认出库`);
+        }
+      }
+
+      if (snId && !snCode) {
+        if (selectedSnIds.has(snId)) {
+          ctx.throw(400, '同一个SN不能重复选择');
+        }
+        selectedSnIds.add(snId);
+
         const sn = await ProductSn.findOne({
           where: {
+            sn_id: snId,
             product_id: item.product_id,
             store_id: transfer.from_store_id,
             status: 'in_stock',
@@ -1160,11 +1343,16 @@ async function confirmTransferOut(ctx) {
           transaction: t
         });
         if (!sn) {
-          ctx.throw(400, `?? ${product.name} ?????SN?????SN??`);
+          ctx.throw(400, `商品 ${product?.name || item.product_id} 选择的SN不在当前门店可用库存中`);
         }
         snId = sn.sn_id;
         snCode = sn.sn_code;
         await item.update({ sn_id: snId, sn_code: snCode, quantity: 1 }, { transaction: t });
+      } else if (snId) {
+        if (selectedSnIds.has(snId)) {
+          ctx.throw(400, '同一个SN不能重复选择');
+        }
+        selectedSnIds.add(snId);
       }
 
       if (snId && snCode) {
@@ -1290,10 +1478,624 @@ function generateReturnNo() {
   return `RTN${year}${month}${day}${hour}${minute}${second}${random}`;
 }
 
+function getProductTypeInventoryField(productType) {
+  const map = {
+    '服务商全资源': 'regular_qty',
+    '含税仅国补': 'subsidy_qty',
+    '含税无国补': 'regular_qty',
+    '未税': 'second_qty',
+    '正规货': 'regular_qty',
+    '国补货': 'subsidy_qty',
+    '纯二批': 'second_qty'
+  };
+  return map[productType] || null;
+}
+
+function generateConversionNo(type = 'split') {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const hour = String(now.getHours()).padStart(2, '0');
+  const minute = String(now.getMinutes()).padStart(2, '0');
+  const second = String(now.getSeconds()).padStart(2, '0');
+  const random = Math.floor(Math.random() * 900) + 100;
+  return `${type === 'assemble' ? 'ASM' : 'SPL'}${year}${month}${day}${hour}${minute}${second}${random}`;
+}
+
+function money(value) {
+  return Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
+}
+
+function normalizeConversionType(value) {
+  return value === 'assemble' ? 'assemble' : 'split';
+}
+
+async function ensurePn(productId, pnCode, transaction) {
+  const code = normalizePnCode(pnCode);
+  if (!code) return null;
+  let pn = await ProductPn.findOne({ where: { pn_code: code, is_deleted: 0 }, transaction });
+  if (!pn) {
+    pn = await ProductPn.create({
+      pn_id: generateUUID(),
+      product_id: productId,
+      pn_code: code,
+      barcode: '',
+      is_primary: 0,
+      status: 1,
+      is_deleted: 0
+    }, { transaction });
+  }
+  return pn;
+}
+
+async function setProductCostPrice(productId, costPrice, user, transaction) {
+  let price = await ProductPrice.findOne({ where: { product_id: productId }, transaction });
+  const payload = {
+    cost_price: money(costPrice),
+    effective_time: new Date(),
+    create_user: user.name || user.staffId || 'system'
+  };
+  if (price) {
+    await price.update(payload, { transaction });
+  } else {
+    await ProductPrice.create({
+      price_id: generateUUID(),
+      product_id: productId,
+      standard_price: 0,
+      min_sale_price: 0,
+      status: 1,
+      ...payload
+    }, { transaction });
+  }
+}
+
+async function getAvailableQty(productId, storeId, inventoryType, locationId, transaction) {
+  const column = inventoryType || 'normal_qty';
+  const where = { product_id: productId, store_id: storeId };
+  if (locationId) where.location_id = locationId;
+  const rows = await Inventory.findAll({ where, transaction });
+  return rows.reduce((sum, inv) => {
+    if (column === 'normal_qty') {
+      const detailTotal = Number(inv.regular_qty || 0) + Number(inv.subsidy_qty || 0) + Number(inv.second_qty || 0);
+      return sum + Math.max(Number(inv.normal_qty || 0), detailTotal);
+    }
+    return sum + Number(inv[column] || 0);
+  }, 0);
+}
+
+async function buildConversionSourceRows(sourceItems, conversionType, storeId, transaction) {
+  if (!Array.isArray(sourceItems) || sourceItems.length === 0) {
+    const label = conversionType === 'assemble' ? '组装组件' : '被拆商品';
+    const err = new Error(`请添加${label}`);
+    err.status = 400;
+    throw err;
+  }
+
+  const rows = [];
+  for (const raw of sourceItems) {
+    const productId = raw.productId || raw.product_id;
+    const product = await Product.findByPk(productId, { transaction });
+    if (!product || product.is_deleted === 1) {
+      const err = new Error(`来源商品不存在：${productId || ''}`);
+      err.status = 400;
+      throw err;
+    }
+
+    let snRecord = null;
+    let inventoryType = raw.inventoryType || raw.inventory_type || 'normal_qty';
+    let locationId = raw.locationId || raw.location_id || '';
+    let quantity = Math.max(1, parseInt(raw.quantity, 10) || 1);
+    let pnCode = normalizePnCode(raw.pnCode || raw.pn_code || splitCodes(product.manufacturer_code)[0] || '');
+    let snCode = String(raw.snCode || raw.sn_code || '').trim();
+
+    if (Number(product.need_sn) === 1) {
+      if (!raw.snId && !raw.sn_id && !snCode) {
+        const err = new Error(`来源商品 ${product.name} 需要SN管理，请选择SN`);
+        err.status = 400;
+        throw err;
+      }
+      const snWhere = {
+        product_id: product.product_id,
+        store_id: storeId,
+        status: 'in_stock',
+        is_deleted: 0
+      };
+      if (raw.snId || raw.sn_id) snWhere.sn_id = raw.snId || raw.sn_id;
+      if (snCode) snWhere.sn_code = snCode;
+      if (pnCode) snWhere.pn_code = pnCode;
+      snRecord = await ProductSn.findOne({ where: snWhere, transaction });
+      if (!snRecord) {
+        const err = new Error(`来源商品 ${product.name} 未找到可转换的在库SN`);
+        err.status = 400;
+        throw err;
+      }
+      quantity = 1;
+      inventoryType = snRecord.inventory_type || inventoryType;
+      locationId = snRecord.location_id || locationId || '';
+      pnCode = snRecord.pn_code || pnCode;
+      snCode = snRecord.sn_code || snCode;
+    } else {
+      const available = await getAvailableQty(product.product_id, storeId, inventoryType, locationId, transaction);
+      if (available < quantity) {
+        const err = new Error(`来源商品 ${product.name} 库存不足，可用 ${available}，需要 ${quantity}`);
+        err.status = 400;
+        throw err;
+      }
+    }
+
+    let fallbackCost = 0;
+    if (Number(product.need_sn) !== 1) {
+      const price = await ProductPrice.findOne({ where: { product_id: product.product_id }, transaction });
+      fallbackCost = Number(price?.cost_price || 0);
+    }
+    const unitCost = Number(product.need_sn) === 1
+      ? money(snRecord?.inbound_price ?? raw.unitCost ?? raw.unit_cost ?? 0)
+      : money(conversionType === 'split' && fallbackCost > 0 ? fallbackCost : (raw.unitCost ?? raw.unit_cost ?? fallbackCost));
+    if (unitCost <= 0) {
+      const err = new Error(`来源商品 ${product.name} 的单位成本必须大于0`);
+      err.status = 400;
+      throw err;
+    }
+
+    rows.push({
+      line_role: 'source',
+      product,
+      product_id: product.product_id,
+      product_name: product.name,
+      pn_code: pnCode,
+      sn_id: snRecord?.sn_id || raw.snId || raw.sn_id || null,
+      sn_code: snCode,
+      quantity,
+      unit_cost: unitCost,
+      total_cost: money(unitCost * quantity),
+      inventory_type: inventoryType,
+      location_id: locationId,
+      snRecord,
+      remark: raw.remark || ''
+    });
+  }
+  return rows;
+}
+
+async function buildConversionTargetRows(targetItems, conversionType, storeId, sourceRows, transaction) {
+  if (!Array.isArray(targetItems) || targetItems.length === 0) {
+    const label = conversionType === 'assemble' ? '组装成品' : '拆出商品';
+    const err = new Error(`请添加${label}`);
+    err.status = 400;
+    throw err;
+  }
+
+  const defaultSourceSn = sourceRows.length === 1 ? sourceRows[0] : null;
+  const rows = [];
+  for (const raw of targetItems) {
+    const productId = raw.productId || raw.product_id;
+    const product = await Product.findByPk(productId, { transaction });
+    if (!product || product.is_deleted === 1) {
+      const err = new Error(`目标商品不存在：${productId || ''}`);
+      err.status = 400;
+      throw err;
+    }
+
+    const inventoryType = raw.inventoryType || raw.inventory_type || 'normal_qty';
+    const locationId = raw.locationId || raw.location_id || '';
+    const quantity = Number(product.need_sn) === 1 ? 1 : Math.max(1, parseInt(raw.quantity, 10) || 1);
+    const unitCost = money(raw.unitCost ?? raw.unit_cost ?? 0);
+    const totalCost = money(raw.totalCost ?? raw.total_cost ?? unitCost * quantity);
+    const finalUnitCost = unitCost > 0 ? unitCost : money(totalCost / quantity);
+    const pnCode = normalizePnCode(raw.pnCode || raw.pn_code || splitCodes(product.manufacturer_code)[0] || '');
+    const snCode = String(raw.snCode || raw.sn_code || '').trim();
+
+    if (totalCost <= 0 || finalUnitCost <= 0) {
+      const err = new Error(`目标商品 ${product.name} 的成本必须大于0`);
+      err.status = 400;
+      throw err;
+    }
+
+    if (Number(product.need_sn) === 1) {
+      if (!snCode) {
+        const err = new Error(`目标商品 ${product.name} 需要SN管理，请录入SN`);
+        err.status = 400;
+        throw err;
+      }
+      const existingSn = await ProductSn.findOne({
+        where: { pn_code: pnCode, sn_code: snCode, is_deleted: 0 },
+        transaction
+      });
+      if (existingSn) {
+        const err = new Error(`PN码 [${pnCode || '-'}] 下的SN码 [${snCode}] 已存在`);
+        err.status = 400;
+        throw err;
+      }
+    }
+
+    rows.push({
+      line_role: 'target',
+      product,
+      product_id: product.product_id,
+      product_name: product.name,
+      pn_code: pnCode,
+      sn_id: null,
+      sn_code: snCode,
+      source_sn_id: raw.sourceSnId || raw.source_sn_id || defaultSourceSn?.sn_id || null,
+      source_sn_code: raw.sourceSnCode || raw.source_sn_code || defaultSourceSn?.sn_code || '',
+      quantity,
+      unit_cost: finalUnitCost,
+      total_cost: totalCost,
+      inventory_type: inventoryType,
+      location_id: locationId,
+      remark: raw.remark || ''
+    });
+  }
+  return rows;
+}
+
+async function createConversionItem(conversionId, row, transaction) {
+  return InventoryConversionItem.create({
+    conversion_id: conversionId,
+    line_role: row.line_role,
+    product_id: row.product_id || null,
+    product_name: row.product_name || '',
+    pn_code: row.pn_code || '',
+    sn_id: row.sn_id || null,
+    sn_code: row.sn_code || '',
+    source_sn_id: row.source_sn_id || null,
+    source_sn_code: row.source_sn_code || '',
+    quantity: row.quantity || 1,
+    unit_cost: row.unit_cost || 0,
+    total_cost: row.total_cost || 0,
+    inventory_type: row.inventory_type || 'normal_qty',
+    location_id: row.location_id || '',
+    remark: row.remark || ''
+  }, { transaction });
+}
+
+async function getConversionList(ctx) {
+  const { conversionType, status, storeId, page = 1, pageSize = 20 } = ctx.query;
+  const where = {};
+  if (conversionType) where.conversion_type = conversionType;
+  if (status) where.status = status;
+  if (storeId) where.store_id = storeId;
+
+  const { count, rows } = await InventoryConversion.findAndCountAll({
+    where,
+    include: [
+      { model: Store, attributes: ['store_id', 'name'] },
+      { model: InventoryConversionItem, as: 'items' }
+    ],
+    order: [['create_time', 'DESC']],
+    limit: parseInt(pageSize, 10),
+    offset: (parseInt(page, 10) - 1) * parseInt(pageSize, 10),
+    distinct: true
+  });
+
+  const list = rows.map(row => {
+    const data = row.toJSON();
+    const items = data.items || [];
+    const sourceNames = items.filter(item => item.line_role === 'source').map(item => item.product_name || item.product_id);
+    const targetNames = items.filter(item => item.line_role === 'target').map(item => item.product_name || item.product_id);
+    return {
+      ...data,
+      store_name: data.Store?.name || data.store_id,
+      source_summary: sourceNames.join('、'),
+      target_summary: targetNames.join('、')
+    };
+  });
+
+  ctx.body = formatPaginatedResult(list, { page, pageSize, count });
+}
+
+async function getConversionDetail(ctx) {
+  const { conversionId } = ctx.params;
+  const conversion = await InventoryConversion.findByPk(conversionId, {
+    include: [
+      { model: Store, attributes: ['store_id', 'name'] },
+      { model: InventoryConversionItem, as: 'items' }
+    ]
+  });
+  if (!conversion) ctx.throw(404, '库存转换单不存在');
+
+  const data = conversion.toJSON();
+  ctx.body = {
+    code: 0,
+    data: {
+      ...data,
+      store_name: data.Store?.name || data.store_id
+    }
+  };
+}
+
+async function createConversion(ctx) {
+  const t = await sequelize.transaction();
+  try {
+    const body = ctx.request.body || {};
+    const user = ctx.state.user || {};
+    const conversionType = normalizeConversionType(body.conversionType || body.conversion_type);
+    const storeId = body.storeId || body.store_id;
+    const serviceCost = conversionType === 'assemble' ? money(body.serviceCost ?? body.service_cost ?? 0) : 0;
+
+    if (!storeId) ctx.throw(400, '请选择转换门店');
+    if (serviceCost < 0) ctx.throw(400, '组装服务成本不能小于0');
+
+    const store = await Store.findByPk(storeId, { transaction: t });
+    if (!store) ctx.throw(400, '转换门店不存在');
+
+    const sourceRows = await buildConversionSourceRows(body.sourceItems || body.source_items, conversionType, storeId, t);
+    const targetRows = await buildConversionTargetRows(body.targetItems || body.target_items, conversionType, storeId, sourceRows, t);
+
+    const totalSourceCost = money(sourceRows.reduce((sum, item) => sum + Number(item.total_cost || 0), 0));
+    const totalTargetCost = money(targetRows.reduce((sum, item) => sum + Number(item.total_cost || 0), 0));
+    const expectedTargetCost = money(totalSourceCost + serviceCost);
+    if (conversionType === 'split') {
+      if (sourceRows.length !== 1 || Number(sourceRows[0].quantity || 1) !== 1) {
+        ctx.throw(400, '拆分单一次只能选择一个被拆商品，且数量必须为1');
+      }
+      if (totalTargetCost <= 0) {
+        ctx.throw(400, '拆出商品价格合计必须大于0');
+      }
+      if (totalTargetCost - totalSourceCost > 0.01) {
+        ctx.throw(400, `拆出商品价格合计 ${totalTargetCost} 不能超过被拆商品当前成本 ${totalSourceCost}`);
+      }
+    } else if (Math.abs(totalTargetCost - expectedTargetCost) > 0.01) {
+      ctx.throw(400, `成本不守恒：目标成本 ${totalTargetCost} 必须等于来源成本 ${totalSourceCost}${serviceCost ? ` + 服务成本 ${serviceCost}` : ''}`);
+    }
+
+    const conversionId = generateUUID();
+    const conversionNo = generateConversionNo(conversionType);
+    await InventoryConversion.create({
+      conversion_id: conversionId,
+      conversion_no: conversionNo,
+      conversion_type: conversionType,
+      store_id: storeId,
+      status: 'completed',
+      total_source_cost: totalSourceCost,
+      total_target_cost: totalTargetCost,
+      service_cost: serviceCost,
+      remark: body.remark || '',
+      create_user: user.name || user.staffId || '',
+      create_time: new Date()
+    }, { transaction: t });
+
+    const sourceStatus = conversionType === 'assemble' ? 'assembled' : 'split';
+    const sourceAction = conversionType === 'assemble' ? 'inventory_assemble_source' : 'inventory_split_source';
+    const targetAction = conversionType === 'assemble' ? 'inventory_assemble_target' : 'inventory_split_target';
+    const splitRemainingCost = conversionType === 'split' ? money(totalSourceCost - totalTargetCost) : 0;
+
+    for (const row of sourceRows) {
+      if (row.snRecord) {
+        const updatePayload = conversionType === 'split'
+          ? { inbound_price: splitRemainingCost }
+          : { status: sourceStatus };
+        await row.snRecord.update(updatePayload, { transaction: t });
+        await SnLog.create({
+          log_id: generateUUID(),
+          sn_id: row.snRecord.sn_id,
+          sn_code: row.snRecord.sn_code,
+          product_id: row.product_id,
+          product_name: row.product_name,
+          store_id: storeId,
+          action: sourceAction,
+          remark: conversionType === 'split'
+            ? `库存拆分来源成本调整，单号：${conversionNo}，拆分前成本：${totalSourceCost}，拆出金额：${totalTargetCost}，剩余成本：${splitRemainingCost}`
+            : `库存组装来源，单号：${conversionNo}`,
+          create_user: user.name || user.staffId
+        }, { transaction: t });
+      } else if (conversionType === 'split') {
+        await setProductCostPrice(row.product_id, splitRemainingCost, user, t);
+      }
+      if (conversionType !== 'split') {
+        await updateInventory(row.product_id, storeId, row.inventory_type, -Number(row.quantity || 1), t, row.location_id);
+      }
+      await createConversionItem(conversionId, {
+        ...row,
+        remark: conversionType === 'split'
+          ? [row.remark, `拆分前成本:${totalSourceCost};拆出金额:${totalTargetCost};拆分后原商品成本:${splitRemainingCost}`].filter(Boolean).join(' ')
+          : row.remark
+      }, t);
+    }
+
+    for (const row of targetRows) {
+      let snId = null;
+      if (Number(row.product.need_sn) === 1) {
+        await ensurePn(row.product_id, row.pn_code, t);
+        snId = generateUUID();
+        await ProductSn.create({
+          sn_id: snId,
+          product_id: row.product_id,
+          pn_code: row.pn_code,
+          sn_code: row.sn_code,
+          status: 'in_stock',
+          inventory_type: row.inventory_type,
+          store_id: storeId,
+          location_id: row.location_id || null,
+          inbound_time: new Date(),
+          inbound_price: row.unit_cost,
+          original_pickup_price: row.unit_cost,
+          batch_no: conversionNo,
+          remark: `库存${conversionType === 'assemble' ? '组装' : '拆分'}生成，单号：${conversionNo}`,
+          is_deleted: 0
+        }, { transaction: t });
+        await SnLog.create({
+          log_id: generateUUID(),
+          sn_id: snId,
+          sn_code: row.sn_code,
+          product_id: row.product_id,
+          product_name: row.product_name,
+          store_id: storeId,
+          action: targetAction,
+          remark: `库存${conversionType === 'assemble' ? '组装' : '拆分'}生成，单号：${conversionNo}`,
+          create_user: user.name || user.staffId
+        }, { transaction: t });
+      }
+
+      await updateInventory(row.product_id, storeId, row.inventory_type, Number(row.quantity || 1), t, row.location_id);
+      await createConversionItem(conversionId, { ...row, sn_id: snId }, t);
+    }
+
+    if (serviceCost > 0) {
+      await createConversionItem(conversionId, {
+        line_role: 'service',
+        product_name: '组装服务成本',
+        quantity: 1,
+        unit_cost: serviceCost,
+        total_cost: serviceCost,
+        remark: body.serviceRemark || body.service_remark || ''
+      }, t);
+    }
+
+    await t.commit();
+    ctx.body = { code: 0, data: { conversionId, conversionNo }, message: '库存转换已完成' };
+  } catch (error) {
+    await t.rollback();
+    if (error.status) ctx.throw(error.status, error.message);
+    console.error('createConversion error:', error);
+    ctx.throw(500, error.message || '库存转换失败');
+  }
+}
+
+async function voidConversion(ctx) {
+  const t = await sequelize.transaction();
+  try {
+    const { conversionId } = ctx.params;
+    const { reason = '' } = ctx.request.body || {};
+    const user = ctx.state.user || {};
+    const conversion = await InventoryConversion.findByPk(conversionId, {
+      include: [{ model: InventoryConversionItem, as: 'items' }],
+      transaction: t
+    });
+    if (!conversion) ctx.throw(404, '库存转换单不存在');
+    if (conversion.status === 'voided') ctx.throw(400, '该转换单已冲销');
+
+    const items = conversion.items || [];
+    const targetItems = items.filter(item => item.line_role === 'target');
+    const sourceItems = items.filter(item => item.line_role === 'source');
+
+    for (const item of targetItems) {
+      if (item.sn_id) {
+        const sn = await ProductSn.findByPk(item.sn_id, { transaction: t });
+        if (!sn || sn.status !== 'in_stock') {
+          ctx.throw(400, `目标SN ${item.sn_code || item.sn_id} 已被销售、占用或不存在，不能冲销`);
+        }
+      } else {
+        const available = await getAvailableQty(item.product_id, conversion.store_id, item.inventory_type || 'normal_qty', item.location_id || '', t);
+        if (available < Number(item.quantity || 1)) {
+          ctx.throw(400, `目标商品 ${item.product_name || item.product_id} 库存不足，不能冲销`);
+        }
+      }
+    }
+
+    const reverseAction = conversion.conversion_type === 'assemble' ? 'inventory_assemble_void' : 'inventory_split_void';
+
+    for (const item of targetItems) {
+      if (item.sn_id) {
+        const sn = await ProductSn.findByPk(item.sn_id, { transaction: t });
+        await sn.update({ status: 'voided' }, { transaction: t });
+        await SnLog.create({
+          log_id: generateUUID(),
+          sn_id: item.sn_id,
+          sn_code: item.sn_code,
+          product_id: item.product_id,
+          product_name: item.product_name,
+          store_id: conversion.store_id,
+          action: reverseAction,
+          remark: `库存转换冲销，单号：${conversion.conversion_no}`,
+          create_user: user.name || user.staffId
+        }, { transaction: t });
+      }
+      await updateInventory(item.product_id, conversion.store_id, item.inventory_type || 'normal_qty', -Number(item.quantity || 1), t, item.location_id || '');
+    }
+
+    for (const item of sourceItems) {
+      if (item.sn_id) {
+        const sn = await ProductSn.findByPk(item.sn_id, { transaction: t });
+        if (sn) {
+          const sourceUpdate = conversion.conversion_type === 'split'
+            ? { inbound_price: money(item.unit_cost || 0) }
+            : { status: 'in_stock' };
+          await sn.update(sourceUpdate, { transaction: t });
+          await SnLog.create({
+            log_id: generateUUID(),
+            sn_id: item.sn_id,
+            sn_code: item.sn_code,
+            product_id: item.product_id,
+            product_name: item.product_name,
+            store_id: conversion.store_id,
+            action: reverseAction,
+            remark: conversion.conversion_type === 'split'
+              ? `库存拆分冲销恢复来源SN成本，单号：${conversion.conversion_no}，恢复成本：${money(item.unit_cost || 0)}`
+              : `库存转换冲销恢复来源SN，单号：${conversion.conversion_no}`,
+            create_user: user.name || user.staffId
+          }, { transaction: t });
+        }
+      } else if (conversion.conversion_type === 'split' && item.product_id) {
+        await setProductCostPrice(item.product_id, item.unit_cost || 0, user, t);
+      }
+      if (conversion.conversion_type !== 'split') {
+        await updateInventory(item.product_id, conversion.store_id, item.inventory_type || 'normal_qty', Number(item.quantity || 1), t, item.location_id || '');
+      }
+    }
+
+    await conversion.update({
+      status: 'voided',
+      void_reason: reason,
+      void_user: user.name || user.staffId || '',
+      void_time: new Date()
+    }, { transaction: t });
+
+    await t.commit();
+    ctx.body = { code: 0, message: '库存转换单已冲销' };
+  } catch (error) {
+    await t.rollback();
+    if (error.status) ctx.throw(error.status, error.message);
+    console.error('voidConversion error:', error);
+    ctx.throw(500, error.message || '库存转换冲销失败');
+  }
+}
+
+async function getReturnStockWithItems(returnId, transaction) {
+  return ReturnStock.findByPk(returnId, {
+    include: [{ model: ReturnStockItem, as: 'items' }],
+    transaction
+  });
+}
+
 /**
- * 执行退库
+ * 查询退库申请列表
  */
-async function executeReturn(ctx) {
+async function getReturnList(ctx) {
+  const { status, inboundId, page = 1, pageSize = 20 } = ctx.query;
+  const where = {};
+  if (status) where.status = status;
+  if (inboundId) where.inbound_id = inboundId;
+
+  const { count, rows } = await ReturnStock.findAndCountAll({
+    where,
+    include: [{ model: ReturnStockItem, as: 'items' }],
+    order: [[sequelize.literal("CASE WHEN STATUS = 'pending' THEN 0 WHEN STATUS = 'approved' THEN 1 ELSE 2 END"), 'ASC'], ['create_time', 'DESC']],
+    ...paginate({}, { page, pageSize })
+  });
+
+  const storeIds = [...new Set(rows.map(row => row.store_id).filter(Boolean))];
+  const stores = storeIds.length > 0
+    ? await Store.findAll({ where: { store_id: { [Op.in]: storeIds } }, attributes: ['store_id', 'name'] })
+    : [];
+  const storeMap = new Map(stores.map(store => [store.store_id, store.name]));
+
+  const list = rows.map(row => {
+    const data = row.toJSON();
+    return {
+      ...data,
+      store_name: storeMap.get(data.store_id) || ''
+    };
+  });
+
+  ctx.body = formatPaginatedResult(list, { page, pageSize, count });
+}
+
+/**
+ * 发起退库申请
+ */
+async function requestReturn(ctx) {
   const t = await sequelize.transaction();
   try {
     const { inboundId, reason } = ctx.request.body;
@@ -1301,7 +2103,18 @@ async function executeReturn(ctx) {
 
     const inbound = await Inbound.findByPk(inboundId, { transaction: t });
     if (!inbound) ctx.throw(404, '入库单不存在');
-    if (inbound.status !== 'completed') ctx.throw(400, '只有已完成的入库单才能退库');
+    if (inbound.status !== 'completed') ctx.throw(400, '只有已完成的入库单才能发起退库申请');
+
+    const activeReturn = await ReturnStock.findOne({
+      where: {
+        inbound_id: inboundId,
+        status: { [Op.in]: ['pending', 'approved'] }
+      },
+      transaction: t
+    });
+    if (activeReturn) {
+      ctx.throw(400, '该入库单已有待处理的退库申请');
+    }
 
     const items = await InboundItem.findAll({
       where: { inbound_id: inboundId },
@@ -1316,10 +2129,12 @@ async function executeReturn(ctx) {
     const productMap = new Map();
     products.forEach(p => productMap.set(p.product_id, p));
 
-    const allProductSns = await ProductSn.findAll({
-      where: { store_id: inbound.store_id, status: 'in_stock', is_deleted: 0 },
-      transaction: t
-    });
+    const request = inbound.purchase_request_id
+      ? await PurchaseRequest.findByPk(inbound.purchase_request_id, { transaction: t })
+      : null;
+    const supplier = request?.supplier_id
+      ? await Supplier.findByPk(request.supplier_id, { transaction: t })
+      : null;
 
     let totalQuantity = 0;
     let totalAmount = 0;
@@ -1333,18 +2148,16 @@ async function executeReturn(ctx) {
       inbound_id: inboundId,
       inbound_no: inbound.inbound_no,
       store_id: inbound.store_id,
+      purchase_request_id: inbound.purchase_request_id || '',
+      supplier_id: request?.supplier_id || '',
+      supplier_name: supplier?.name || '',
       total_quantity: 0,
       total_amount: 0,
       reason: reason || '',
-      create_user: user.name,
+      status: 'pending',
+      create_user: user.name || user.staffId,
       create_time: new Date()
     }, { transaction: t });
-
-    const snMap = new Map();
-    allProductSns.forEach(sn => {
-      if (!snMap.has(sn.product_id)) snMap.set(sn.product_id, []);
-      snMap.get(sn.product_id).push(sn);
-    });
 
     for (const item of items) {
       const product = productMap.get(item.product_id);
@@ -1353,36 +2166,39 @@ async function executeReturn(ctx) {
       totalQuantity += quantity;
       totalAmount += (Number(item.unit_price) || 0) * quantity;
 
-      if (product && product.need_sn === 1 && item.sn_code) {
-        const snCode = item.sn_code;
-        const snRecord = await ProductSn.findOne({
+      if (product && product.need_sn === 1) {
+        const snRecords = await ProductSn.findAll({
           where: {
-            pn_code: item.pn_code || '',
-            sn_code: snCode,
+            product_id: item.product_id,
+            ...(item.pn_code ? { pn_code: item.pn_code } : {}),
             store_id: inbound.store_id,
             status: 'in_stock',
             is_deleted: 0
           },
+          order: [['inbound_time', 'ASC']],
+          limit: quantity,
           transaction: t
         });
-
-        await ReturnStockItem.create({
-          return_id: returnId,
-          product_id: item.product_id,
-          product_name: item.product_name || '',
-          pn_code: item.pn_code || '',
-          sn_code: snCode,
-          sn_id: snRecord ? snRecord.sn_id : null,
-          quantity: 1,
-          unit_price: item.unit_price,
-          remark: ''
-        }, { transaction: t });
-
-        if (snRecord) {
-          await snRecord.update({ status: 'returned', remark: (snRecord.remark || '') + ' [退库]' }, { transaction: t });
+        if (snRecords.length < quantity) {
+          ctx.throw(400, `商品 ${item.product_name || item.product_id} 当前在库SN数量不足，不能发起退库`);
         }
 
-        await updateInventory(item.product_id, inbound.store_id, inventoryType, -1, t);
+        for (const snRecord of snRecords) {
+          await ReturnStockItem.create({
+            return_id: returnId,
+            product_id: item.product_id,
+            product_name: item.product_name || '',
+            pn_code: snRecord.pn_code || item.pn_code || '',
+            sn_code: snRecord.sn_code || '',
+            sn_id: snRecord.sn_id,
+            quantity: 1,
+            unit_price: item.unit_price,
+            location_id: snRecord.location_id || item.location_id || '',
+            inventory_type: snRecord.inventory_type || inventoryType,
+            product_type: item.product_type || '',
+            remark: ''
+          }, { transaction: t });
+        }
       } else {
         await ReturnStockItem.create({
           return_id: returnId,
@@ -1393,10 +2209,11 @@ async function executeReturn(ctx) {
           sn_id: null,
           quantity: quantity,
           unit_price: item.unit_price,
+          location_id: item.location_id || '',
+          inventory_type: inventoryType,
+          product_type: item.product_type || '',
           remark: ''
         }, { transaction: t });
-
-        await updateInventory(item.product_id, inbound.store_id, inventoryType, -quantity, t);
       }
     }
 
@@ -1405,10 +2222,139 @@ async function executeReturn(ctx) {
       { where: { return_id: returnId }, transaction: t }
     );
 
+    await t.commit();
+    ctx.body = { code: 0, returnId, returnNo, message: '退库申请已提交，待审批' };
+  } catch (error) {
+    await t.rollback();
+    console.error('Error in requestReturn:', error);
+    throw error;
+  }
+}
+
+/**
+ * 审批退库申请
+ */
+async function approveReturn(ctx) {
+  const t = await sequelize.transaction();
+  try {
+    const { returnId, action = 'approved', comment = '' } = ctx.request.body;
+    const user = ctx.state.user;
+
+    const returnStock = await ReturnStock.findByPk(returnId, { transaction: t });
+    if (!returnStock) ctx.throw(404, '退库申请不存在');
+    if (returnStock.status !== 'pending') ctx.throw(400, '只有待审批的退库申请才能审批');
+
+    const nextStatus = action === 'rejected' ? 'rejected' : 'approved';
+    await returnStock.update({
+      status: nextStatus,
+      approve_user: user.name || user.staffId,
+      approve_comment: comment || '',
+      approve_time: new Date()
+    }, { transaction: t });
+
+    await t.commit();
+    ctx.body = { code: 0, message: nextStatus === 'approved' ? '退库申请已通过' : '退库申请已拒绝' };
+  } catch (error) {
+    await t.rollback();
+    console.error('Error in approveReturn:', error);
+    throw error;
+  }
+}
+
+/**
+ * 执行已审批退库
+ */
+async function executeReturn(ctx) {
+  const t = await sequelize.transaction();
+  try {
+    const { returnId } = ctx.request.body;
+    const user = ctx.state.user;
+
+    const returnStock = await getReturnStockWithItems(returnId, t);
+    if (!returnStock) ctx.throw(404, '退库申请不存在');
+    if (returnStock.status !== 'approved') ctx.throw(400, '只有已审批通过的退库申请才能执行退库');
+
+    const inbound = await Inbound.findByPk(returnStock.inbound_id, { transaction: t });
+    if (!inbound) ctx.throw(404, '入库单不存在');
+    if (inbound.status !== 'completed') ctx.throw(400, '当前入库单状态不能执行退库');
+
+    const items = returnStock.items || [];
+    if (items.length === 0) ctx.throw(400, '退库申请没有商品明细');
+
+    for (const item of items) {
+      const quantity = Number(item.quantity || 1);
+      const inventoryType = item.inventory_type || 'normal_qty';
+      const locationId = item.location_id || '';
+
+      if (item.sn_id) {
+        const snRecord = await ProductSn.findOne({
+          where: {
+            sn_id: item.sn_id,
+            store_id: returnStock.store_id,
+            status: 'in_stock',
+            is_deleted: 0
+          },
+          transaction: t
+        });
+        if (!snRecord) {
+          ctx.throw(400, `SN ${item.sn_code || item.sn_id} 当前不在库，不能执行退库`);
+        }
+
+        await snRecord.update({
+          status: 'returned',
+          remark: `${snRecord.remark || ''} [退库:${returnStock.return_no}]`
+        }, { transaction: t });
+
+        await SnLog.create({
+          log_id: generateUUID(),
+          sn_id: item.sn_id,
+          sn_code: item.sn_code,
+          product_id: item.product_id,
+          product_name: item.product_name || '',
+          store_id: returnStock.store_id,
+          action: 'return',
+          remark: `采购退库：${returnStock.return_no}`,
+          create_user: user.name || user.staffId
+        }, { transaction: t });
+      }
+
+      await updateInventory(item.product_id, returnStock.store_id, inventoryType, -quantity, t, locationId);
+
+      if (inventoryType === 'normal_qty' && item.product_type) {
+        const typeField = getProductTypeInventoryField(item.product_type);
+        if (typeField) {
+          await updateInventory(item.product_id, returnStock.store_id, typeField, -quantity, t, locationId);
+        }
+      }
+    }
+
+    let payableId = '';
+    if (returnStock.supplier_id) {
+      payableId = generateUUID();
+      await Payable.create({
+        payable_id: payableId,
+        supplier_id: returnStock.supplier_id,
+        supplier_name: returnStock.supplier_name || '',
+        request_id: returnStock.return_id,
+        request_no: returnStock.return_no,
+        total_amount: -Math.abs(Number(returnStock.total_amount || 0)),
+        paid_amount: 0,
+        status: 'unpaid',
+        create_time: new Date()
+      }, { transaction: t });
+    }
+
+    await returnStock.update({
+      status: 'completed',
+      execute_user: user.name || user.staffId,
+      execute_time: new Date(),
+      payable_id: payableId
+    }, { transaction: t });
+
     await inbound.update({ status: 'returned', update_time: new Date() }, { transaction: t });
 
     await t.commit();
-    ctx.body = { code: 0, returnId, returnNo, message: '退库成功' };
+    ctx.body = { code: 0, returnId, payableId, message: '退库已执行，已生成负向应付' };
   } catch (error) {
     await t.rollback();
     console.error('Error in executeReturn:', error);
@@ -1439,6 +2385,9 @@ module.exports = {
   getInboundList,
   getInboundDetail,
   executeInbound,
+  getReturnList,
+  requestReturn,
+  approveReturn,
   executeReturn,
   inbound,
   outbound,
@@ -1446,6 +2395,10 @@ module.exports = {
   getTransferList,
   confirmTransferOut,
   confirmTransferIn,
+  getConversionList,
+  getConversionDetail,
+  createConversion,
+  voidConversion,
   getLocationsByStore,
   updateSn,
   snTrace

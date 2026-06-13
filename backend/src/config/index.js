@@ -1,6 +1,41 @@
 /**
  * 配置文件
  */
+const fs = require('fs');
+const path = require('path');
+
+function loadEnvFile(filePath) {
+  if (!fs.existsSync(filePath)) return;
+
+  const content = fs.readFileSync(filePath, 'utf8');
+  content.split(/\r?\n/).forEach(line => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) return;
+
+    const eqIndex = trimmed.indexOf('=');
+    if (eqIndex === -1) return;
+
+    const key = trimmed.slice(0, eqIndex).trim();
+    let value = trimmed.slice(eqIndex + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+
+    if (!process.env[key]) {
+      process.env[key] = value;
+    }
+  });
+}
+
+const rootDir = path.resolve(__dirname, '../../..');
+loadEnvFile(path.join(rootDir, '.env'));
+loadEnvFile(path.join(rootDir, 'backend', '.env'));
+loadEnvFile(path.join(rootDir, '.env.local'));
+loadEnvFile(path.join(rootDir, 'backend', '.env.local'));
+
 module.exports = {
   // 数据库配置
   database: {
