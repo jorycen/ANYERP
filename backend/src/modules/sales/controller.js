@@ -130,6 +130,127 @@ async function checkPriceApproval(items) {
 /**
  * 创建销售订单
  */
+function firstNonEmpty(source, keys, defaultValue = '') {
+  for (const key of keys) {
+    const value = source && source[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      return typeof value === 'string' ? value.trim() : value;
+    }
+  }
+  return defaultValue;
+}
+
+function pickOrderItemsPayload(data = {}) {
+  const candidates = [
+    data.items,
+    data.goods,
+    data.OrderItems,
+    data.orderItems,
+    data.order_items,
+    data.productItems,
+    data.saleItems,
+    data.salesItems,
+    data.itemList,
+    data.goodsList,
+    data.products
+  ];
+  return candidates.find(Array.isArray) || [];
+}
+
+function normalizeOrderItemInput(item = {}) {
+  const rawSalePrice = firstNonEmpty(item, ['salePrice', 'sale_price', 'SALE_PRICE', 'unitPrice', 'unit_price', 'price'], null);
+  const rawQuantity = firstNonEmpty(item, ['quantity', 'QUANTITY'], null);
+  const rawSubtotal = firstNonEmpty(item, ['subtotal', 'SUBTOTAL'], null);
+  const salePrice = rawSalePrice === null ? undefined : Number(rawSalePrice);
+  const quantity = rawQuantity === null ? undefined : (Number(rawQuantity) || 1);
+  const subtotal = rawSubtotal === null
+    ? (salePrice !== undefined && quantity !== undefined ? salePrice * quantity : undefined)
+    : Number(rawSubtotal);
+
+  return {
+    item_id: firstNonEmpty(item, ['itemId', 'item_id', 'ITEM_ID', 'orderItemId', 'order_item_id', '_id', 'id']),
+    product_id: firstNonEmpty(item, ['productId', 'product_id', 'PRODUCT_ID']),
+    product_name: firstNonEmpty(item, ['productName', 'product_name', 'PRODUCT_NAME', 'name']),
+    pn_code: firstNonEmpty(item, ['pnCode', 'pn_code', 'PN_CODE', 'pn', 'PN']),
+    mtm_code: firstNonEmpty(item, ['mtmCode', 'mtm_code', 'MTM_CODE']),
+    sn_id: firstNonEmpty(item, ['snId', 'sn_id', 'SN_ID', 'inventoryId', 'inventory_id', 'INVENTORY_ID', 'inventorySnId', 'inventory_sn_id']),
+    sn_code: firstNonEmpty(item, ['snCode', 'sn_code', 'SN_CODE', 'sn', 'SN', 'serialNo', 'serial_no', 'productSn', 'product_sn']),
+    imei1: firstNonEmpty(item, ['imei1', 'imei_1', 'IMEI1']),
+    imei2: firstNonEmpty(item, ['imei2', 'imei_2', 'IMEI2']),
+    sale_price: salePrice,
+    quantity,
+    subtotal
+  };
+}
+
+function compactUpdatePayload(payload) {
+  const result = {};
+  Object.keys(payload).forEach(key => {
+    const value = payload[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      result[key] = value;
+    }
+  });
+  return result;
+}
+
+function findMatchingOrderItem(existingItems, existingById, normalized, index) {
+  if (normalized.item_id && existingById.has(String(normalized.item_id))) {
+    return existingById.get(String(normalized.item_id));
+  }
+  const byProductPn = existingItems.find(item =>
+    normalized.product_id &&
+    String(item.product_id || '') === String(normalized.product_id) &&
+    (!normalized.pn_code || String(item.pn_code || '') === String(normalized.pn_code))
+  );
+  return byProductPn || existingItems[index];
+}
+
+async function syncOrderItemsFromPayload(order, data = {}) {
+  const rawItems = pickOrderItemsPayload(data);
+  if (!Array.isArray(rawItems) || rawItems.length === 0) return [];
+
+  const existingItems = await OrderItem.findAll({
+    where: { order_id: order.order_id },
+    order: [['item_id', 'ASC']]
+  });
+  const existingById = new Map(existingItems.map(item => [String(item.item_id), item]));
+  const results = [];
+
+  for (let index = 0; index < rawItems.length; index++) {
+    const normalized = normalizeOrderItemInput(rawItems[index]);
+    const existing = findMatchingOrderItem(existingItems, existingById, normalized, index);
+    if (!existing) continue;
+
+    const updatePayload = compactUpdatePayload({
+      product_id: normalized.product_id,
+      product_name: normalized.product_name,
+      pn_code: normalized.pn_code,
+      mtm_code: normalized.mtm_code,
+      sn_id: normalized.sn_id,
+      sn_code: normalized.sn_code,
+      imei1: normalized.imei1,
+      imei2: normalized.imei2,
+      sale_price: normalized.sale_price,
+      quantity: normalized.quantity,
+      subtotal: normalized.subtotal
+    });
+
+    if (Object.keys(updatePayload).length === 0) continue;
+    await existing.update(updatePayload);
+    Object.assign(existing, updatePayload);
+    results.push({ item_id: existing.item_id, updated: updatePayload });
+  }
+
+  console.log('[Sales] synced order items from payload:', JSON.stringify({
+    orderId: order.order_id,
+    orderNo: order.order_no,
+    payloadCount: rawItems.length,
+    results
+  }));
+  return results;
+}
+
 async function create(ctx) {
   const user = ctx.state.user;
   const {
@@ -329,7 +450,8 @@ async function update(ctx) {
 
   const nextStatus = data.order_status || data.status;
   if (isArchiveStatus(nextStatus) && !isArchiveStatus(order.order_status)) {
-    await validateAndDeductInventoryForArchive(order);
+    await syncOrderItemsFromPayload(order, data);
+    await validateAndDeductInventoryForArchive(order, data);
     data.order_status = '已归档';
     data.status = '已归档';
     syncToDailyStatement(orderId, order.store_id).catch(err => console.error('[DailySync] archive error:', err.message));
@@ -342,6 +464,32 @@ async function update(ctx) {
 /**
  * 销售统计
  */
+async function updateOrderItems(ctx) {
+  const data = ctx.request.body || {};
+  const orderNo = firstNonEmpty(data, ['orderNo', 'order_no', 'ORDER_NO']);
+  const orderId = firstNonEmpty(data, ['orderId', 'order_id', 'ORDER_ID']);
+
+  if (!orderId && !orderNo) {
+    ctx.throw(400, 'Order number is required');
+  }
+
+  const order = await Order.findOne({ where: orderId ? { order_id: orderId } : { order_no: orderNo } });
+  if (!order) {
+    ctx.throw(404, 'Order not found');
+  }
+
+  const results = await syncOrderItemsFromPayload(order, data);
+  ctx.body = {
+    code: 0,
+    message: 'Order items updated',
+    data: {
+      orderId: order.order_id,
+      orderNo: order.order_no,
+      results
+    }
+  };
+}
+
 async function stats(ctx) {
   const { storeId, startDate, endDate } = ctx.query;
   const user = ctx.state.user;
@@ -483,8 +631,9 @@ function archiveError(message) {
   return error;
 }
 
-async function validateAndDeductInventoryForArchive(order) {
-  const items = await OrderItem.findAll({ where: { order_id: order.order_id } });
+async function validateAndDeductInventoryForArchive(order, payload = {}) {
+  await syncOrderItemsFromPayload(order, payload);
+  const items = await OrderItem.findAll({ where: { order_id: order.order_id }, order: [['item_id', 'ASC']] });
   if (!items.length) {
     throw archiveError('订单中没有商品，无法归档');
   }
@@ -562,7 +711,7 @@ async function validateAndDeductInventoryForArchive(order) {
   }
 }
 
-module.exports = { list, create, detail, update, stats, approve, reject, paymentMethods, getProductPns, getProductSns };
+module.exports = { list, create, detail, update, updateOrderItems, stats, approve, reject, paymentMethods, getProductPns, getProductSns };
 
 const INVENTORY_COLUMN_MAP = {
   normal_qty: 'normal_qty',
