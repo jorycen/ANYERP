@@ -121,7 +121,8 @@ async function list(ctx) {
  * 检查销售价格是否需要审批（价格从ProductPrice表读取）
  */
 async function checkPriceApproval(items) {
-  const productIds = [...new Set(items.map(i => i.productId).filter(Boolean))];
+  const normalizedItems = (items || []).map(item => applyOrderItemDefaults(normalizeOrderItemInput(item)));
+  const productIds = [...new Set(normalizedItems.map(i => i.product_id).filter(Boolean))];
   if (productIds.length === 0) return [];
 
   const productPrices = await ProductPrice.findAll({
@@ -131,21 +132,151 @@ async function checkPriceApproval(items) {
   productPrices.forEach(p => priceMap.set(p.product_id, p));
 
   const belowPriceItems = [];
-  for (const item of items) {
-    const price = priceMap.get(item.productId);
+  for (const item of normalizedItems) {
+    const price = priceMap.get(item.product_id);
     if (!price || !price.min_sale_price || parseFloat(price.min_sale_price) <= 0) continue;
     const minPrice = parseFloat(price.min_sale_price);
-    if (parseFloat(item.salePrice) < minPrice) {
+    if (parseFloat(item.sale_price) < minPrice) {
       belowPriceItems.push({
-        productId: item.productId,
-        productName: item.productName,
-        salePrice: item.salePrice,
+        productId: item.product_id,
+        productName: item.product_name,
+        salePrice: item.sale_price,
         standardPrice: price.standard_price,
         minSalePrice: price.min_sale_price
       });
     }
   }
   return belowPriceItems;
+}
+
+function firstNonEmpty(source, keys, defaultValue = '') {
+  for (const key of keys) {
+    const value = source && source[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      return typeof value === 'string' ? value.trim() : value;
+    }
+  }
+  return defaultValue;
+}
+
+function pickOrderItemsPayload(data = {}) {
+  const candidates = [
+    data.items,
+    data.goods,
+    data.OrderItems,
+    data.orderItems,
+    data.order_items,
+    data.productItems,
+    data.saleItems,
+    data.salesItems,
+    data.itemList,
+    data.goodsList,
+    data.products
+  ];
+  return candidates.find(Array.isArray) || [];
+}
+
+function normalizeOrderItemInput(item = {}) {
+  const rawSalePrice = firstNonEmpty(item, ['salePrice', 'sale_price', 'SALE_PRICE', 'unitPrice', 'unit_price', 'price'], null);
+  const rawQuantity = firstNonEmpty(item, ['quantity', 'QUANTITY'], null);
+  const rawSubtotal = firstNonEmpty(item, ['subtotal', 'SUBTOTAL'], null);
+  const salePrice = rawSalePrice === null ? undefined : Number(rawSalePrice);
+  const quantity = rawQuantity === null ? undefined : (Number(rawQuantity) || 1);
+  const subtotal = rawSubtotal === null
+    ? (salePrice !== undefined && quantity !== undefined ? salePrice * quantity : undefined)
+    : Number(rawSubtotal);
+  const snId = firstNonEmpty(item, ['snId', 'sn_id', 'SN_ID', 'inventoryId', 'inventory_id', 'INVENTORY_ID', 'inventorySnId', 'inventory_sn_id']);
+  const snCode = firstNonEmpty(item, ['snCode', 'sn_code', 'SN_CODE', 'sn', 'SN', 'serialNo', 'serial_no', 'productSn', 'product_sn']);
+
+  return {
+    item_id: firstNonEmpty(item, ['itemId', 'item_id', 'ITEM_ID', 'orderItemId', 'order_item_id', '_id', 'id']),
+    product_id: firstNonEmpty(item, ['productId', 'product_id', 'PRODUCT_ID']),
+    product_name: firstNonEmpty(item, ['productName', 'product_name', 'PRODUCT_NAME', 'name']),
+    pn_code: firstNonEmpty(item, ['pnCode', 'pn_code', 'PN_CODE', 'pn', 'PN']),
+    mtm_code: firstNonEmpty(item, ['mtmCode', 'mtm_code', 'MTM_CODE']),
+    sn_id: snId,
+    sn_code: snCode,
+    imei1: firstNonEmpty(item, ['imei1', 'imei_1', 'IMEI1']),
+    imei2: firstNonEmpty(item, ['imei2', 'imei_2', 'IMEI2']),
+    sale_price: salePrice,
+    quantity,
+    subtotal
+  };
+}
+
+function applyOrderItemDefaults(item) {
+  const salePrice = Number(item.sale_price || 0);
+  const quantity = Number(item.quantity || 1) || 1;
+  const subtotal = item.subtotal === undefined || item.subtotal === null
+    ? salePrice * quantity
+    : Number(item.subtotal || 0);
+  return Object.assign({}, item, {
+    sale_price: salePrice,
+    quantity,
+    subtotal
+  });
+}
+
+function compactUpdatePayload(payload) {
+  const result = {};
+  Object.keys(payload).forEach(key => {
+    const value = payload[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      result[key] = value;
+    }
+  });
+  return result;
+}
+
+async function syncOrderItemsFromPayload(order, data = {}, transaction = null) {
+  const rawItems = pickOrderItemsPayload(data);
+  if (!Array.isArray(rawItems) || rawItems.length === 0) return [];
+
+  const existingItems = await OrderItem.findAll({
+    where: { order_id: order.order_id },
+    order: [['item_id', 'ASC']],
+    transaction
+  });
+  const existingById = new Map(existingItems.map(item => [String(item.item_id), item]));
+  const results = [];
+
+  for (let index = 0; index < rawItems.length; index++) {
+    const normalized = normalizeOrderItemInput(rawItems[index]);
+    const existing = normalized.item_id
+      ? existingById.get(String(normalized.item_id))
+      : existingItems[index];
+    if (!existing) continue;
+
+    const updatePayload = compactUpdatePayload({
+      product_id: normalized.product_id,
+      product_name: normalized.product_name,
+      pn_code: normalized.pn_code,
+      mtm_code: normalized.mtm_code,
+      sn_id: normalized.sn_id,
+      sn_code: normalized.sn_code,
+      imei1: normalized.imei1,
+      imei2: normalized.imei2,
+      sale_price: normalized.sale_price,
+      quantity: normalized.quantity,
+      subtotal: normalized.subtotal
+    });
+
+    if (Object.keys(updatePayload).length === 0) continue;
+    await existing.update(updatePayload, { transaction });
+    results.push({
+      item_id: existing.item_id,
+      updated: updatePayload
+    });
+  }
+
+  if (results.length) {
+    console.log('[Sales] synced order items from payload:', JSON.stringify({
+      orderId: order.order_id,
+      orderNo: order.order_no,
+      results
+    }));
+  }
+  return results;
 }
 
 /**
@@ -171,7 +302,8 @@ async function create(ctx) {
   const orderId = generateUUID();
   const actualStoreId = storeId || user.storeId || '';
 
-  const totalAmount = items.reduce((sum, item) => sum + Number(item.subtotal || 0), 0);
+  const normalizedItems = items.map(item => applyOrderItemDefaults(normalizeOrderItemInput(item)));
+  const totalAmount = normalizedItems.reduce((sum, item) => sum + Number(item.subtotal || 0), 0);
   const actualPayment = Math.max(0, money(totalAmount - Number(discountAmount) - Number(nationalSubsidy) - Number(educationSubsidy)));
   const paymentTotal = money(payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0));
   if (Math.abs(paymentTotal - actualPayment) > 0.01) {
@@ -185,17 +317,17 @@ async function create(ctx) {
   const belowPriceItems = await checkPriceApproval(items);
   const needsApproval = belowPriceItems.length > 0;
 
-  const productIds = [...new Set(items.map(i => i.productId).filter(Boolean))];
+  const productIds = [...new Set(normalizedItems.map(i => i.product_id).filter(Boolean))];
   const products = await Product.findAll({
     where: { product_id: { [Op.in]: productIds } }
   });
   const productMap = new Map();
   products.forEach(p => productMap.set(p.product_id, p));
 
-  for (const item of items) {
-    const product = productMap.get(item.productId);
+  for (const item of normalizedItems) {
+    const product = productMap.get(item.product_id);
     if (!product) {
-      ctx.throw(400, `商品 ${item.productId} 不存在`);
+      ctx.throw(400, `商品 ${item.product_id} 不存在`);
     }
 
   }
@@ -232,17 +364,17 @@ async function create(ctx) {
     remark: remark || (needsApproval ? '售价低于定价, 待审批' : '')
   }, { transaction });
 
-  for (const item of items) {
+  for (const item of normalizedItems) {
     await OrderItem.create({
       order_id: orderId,
-      product_id: item.productId,
-      product_name: item.productName,
-      pn_code: item.pnCode,
-      sn_id: item.snId,
-      sn_code: item.snCode,
+      product_id: item.product_id,
+      product_name: item.product_name,
+      pn_code: item.pn_code,
+      sn_id: item.sn_id,
+      sn_code: item.sn_code,
       imei1: item.imei1,
       imei2: item.imei2,
-      sale_price: item.salePrice,
+      sale_price: item.sale_price,
       quantity: item.quantity || 1,
       subtotal: item.subtotal
     }, { transaction });
@@ -406,6 +538,8 @@ async function update(ctx) {
 
   const nextStatus = data.order_status || data.status;
   await sequelize.transaction(async (transaction) => {
+    await syncOrderItemsFromPayload(order, data, transaction);
+
     if (isArchiveStatus(nextStatus) && !isArchiveStatus(order.order_status)) {
       await validateAndDeductInventoryForArchive(order, transaction);
       await calculateSalesSettlementCosts(order, transaction);
@@ -420,6 +554,37 @@ async function update(ctx) {
     await order.update(data, { transaction });
   });
   ctx.body = { message: '订单更新成功' };
+}
+
+async function updateOrderItems(ctx) {
+  const data = ctx.request.body || {};
+  const orderNo = firstNonEmpty(data, ['orderNo', 'order_no', 'ORDER_NO']);
+  const orderId = firstNonEmpty(data, ['orderId', 'order_id', 'ORDER_ID']);
+
+  const where = orderId ? { order_id: orderId } : { order_no: orderNo };
+  if (!orderId && !orderNo) {
+    ctx.throw(400, '订单编号不能为空');
+  }
+
+  const order = await Order.findOne({ where });
+  if (!order) {
+    ctx.throw(404, '订单不存在');
+  }
+
+  let results = [];
+  await sequelize.transaction(async (transaction) => {
+    results = await syncOrderItemsFromPayload(order, data, transaction);
+  });
+
+  ctx.body = {
+    code: 0,
+    message: '订单明细更新成功',
+    data: {
+      orderId: order.order_id,
+      orderNo: order.order_no,
+      results
+    }
+  };
 }
 
 /**
@@ -1335,6 +1500,7 @@ module.exports = {
   create,
   detail,
   update,
+  updateOrderItems,
   stats,
   approve,
   reject,

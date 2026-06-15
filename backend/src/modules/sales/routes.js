@@ -7,6 +7,7 @@ const {
   create,
   detail,
   update,
+  updateOrderItems,
   stats,
   approve,
   reject,
@@ -35,6 +36,8 @@ router.post('/deposits/:depositId/refund', enforceStoreOwnership, refundDeposit)
 router.get('/product-pns/:storeId/:productId', getProductPns);
 router.get('/product-sns/:storeId/:productId', getProductSns);
 router.post('/create', enforceStoreOwnership, create);
+router.put('/order-items', enforceStoreOwnership, updateOrderItems);
+router.post('/order-items', enforceStoreOwnership, updateOrderItems);
 router.get('/:orderId', detail);
 router.put('/:orderId', enforceStoreOwnership, update);
 router.post('/:orderId/approve', approve);
