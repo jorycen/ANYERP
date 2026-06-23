@@ -4,12 +4,19 @@
 const { sequelize, PurchaseRequest, PurchaseRequestItem, Supplier, SupplierPaymentAccount, Store, Product, Inbound, InboundItem, Payable, SupplierRebate } = require('../../models');
 const { Op } = require('sequelize');
 const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate, formatPaginatedResult } = require('../../utils');
-const { recordRebateDeduction, _getRebateBalance } = require('../finance/rebateController');
+const { recordRebateDeduction, recordSupplierRebateAccountTransaction, _getRebateBalance } = require('../finance/rebateController');
 
 function toMoney(value) {
   const amount = Number(value);
   if (!Number.isFinite(amount) || amount <= 0) return 0;
   return Math.round(amount * 100) / 100;
+}
+
+function assertStoreVisible(ctx, storeId) {
+  const allowed = ctx.state.user.accessibleStoreIds || [];
+  if (!allowed.includes('*') && !allowed.map(String).includes(String(storeId || ''))) {
+    ctx.throw(403, '无权访问该门店采购数据');
+  }
 }
 
 function allocateRebateByItems(items, amount) {
@@ -60,15 +67,13 @@ async function getRequestList(ctx) {
   const whereStore = {};
 
   // 区域权限过滤
-  if (!user.regionCodes.includes('*')) {
-    whereStore.region_id = user.regionCodes;
+  if (!user.accessibleStoreIds.includes('*')) {
+    whereStore.store_id = user.accessibleStoreIds;
   }
 
   const stores = await Store.findAll({ where: whereStore });
   const storeIds = stores.map(s => s.store_id);
-  if (storeIds.length > 0) {
-    where.store_id = storeIds;
-  }
+  where.store_id = storeIds;
 
   if (status) where.status = status;
 
@@ -80,8 +85,9 @@ async function getRequestList(ctx) {
       { model: PurchaseRequestItem, as: 'items' }
     ],
     order: [
-      [sequelize.literal("FIELD(PurchaseRequest.status, 'pending', 'approved', 'revoked')"), 'ASC'],
-      ['create_time', 'DESC']
+      [sequelize.literal("CASE WHEN `PurchaseRequest`.`status` = 'pending' THEN 0 ELSE 1 END"), 'ASC'],
+      ['create_time', 'DESC'],
+      ['request_id', 'DESC']
     ],
     ...paginate({}, { page, pageSize })
   });
@@ -125,6 +131,7 @@ async function getRequestDetail(ctx) {
   if (!request) {
     ctx.throw(404, '采购申请不存在');
   }
+  assertStoreVisible(ctx, request.store_id);
 
   const result = request.toJSON();
   result.store_name = result.Store?.name || '';
@@ -223,8 +230,8 @@ async function createRequest(ctx) {
   // 如果还是没有，尝试从用户的区域权限查找一个门店
   if (!finalStoreId) {
     const whereStore = {};
-    if (!user.regionCodes.includes('*')) {
-      whereStore.region_id = user.regionCodes;
+    if (!user.accessibleStoreIds.includes('*')) {
+      whereStore.store_id = user.accessibleStoreIds;
     }
     const stores = await Store.findAll({ where: whereStore, limit: 1 });
     if (stores.length > 0) {
@@ -331,6 +338,7 @@ async function approveRequest(ctx) {
   if (!request) {
     ctx.throw(404, '采购申请不存在');
   }
+  assertStoreVisible(ctx, request.store_id);
 
   const transaction = await sequelize.transaction();
   try {
@@ -464,6 +472,7 @@ async function revokeRequest(ctx) {
   if (!request) {
     ctx.throw(404, '采购申请不存在');
   }
+  assertStoreVisible(ctx, request.store_id);
 
   if (request.status !== 'approved') {
     ctx.throw(400, '只有已通过的采购申请才能撤销');
@@ -497,7 +506,7 @@ async function revokeRequest(ctx) {
     });
 
     if (request.rebate_deduction && parseFloat(request.rebate_deduction) > 0) {
-      const currentBalance = await _getRebateBalance(request.supplier_id);
+      const currentBalance = await _getRebateBalance(request.supplier_id, transaction);
       const newBalance = currentBalance + parseFloat(request.rebate_deduction);
       const supplier = await Supplier.findByPk(request.supplier_id);
       await SupplierRebate.create({
@@ -509,8 +518,14 @@ async function revokeRequest(ctx) {
         balance: newBalance,
         related_no: request.request_no,
         remark: `采购申请 ${request.request_no} 撤销，退回返利抵扣`,
+        status: 'active',
+        source_type: 'purchase_reversal',
         create_user: user.name || user.phone
       }, { transaction });
+      await recordSupplierRebateAccountTransaction(
+        request.supplier_id, 'income', request.rebate_deduction,
+        '采购撤销退回返利抵扣', request.request_no, user.name || user.phone, transaction
+      );
     }
 
     await request.update({

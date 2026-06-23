@@ -191,6 +191,10 @@
           <SnTrace />
         </el-tab-pane>
 
+        <el-tab-pane v-if="canManageResourceRights" label="库存资源权益" name="resource-rights" lazy>
+          <InventoryResourceRights />
+        </el-tab-pane>
+
         <el-tab-pane label="调拨管理" name="transfer">
           <div class="filter-bar">
             <el-button type="primary" @click="openTransferApplyDialog">发起调拨申请</el-button>
@@ -1050,14 +1054,16 @@ import { ref, reactive, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
-import { getStoreId, isStoreUser } from '../utils/user'
+import { getStoreId, getRoleCode, isStoreUser } from '../utils/user'
 import SnTrace from './SnTrace.vue'
+import InventoryResourceRights from '../components/InventoryResourceRights.vue'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 
 const router = useRouter()
 const TRANSFER_DRAFT_KEY = 'inventory-transfer-create'
 const inboundDraftKey = () => currentInbound.value?.inbound_id ? `inventory-inbound-execute:${currentInbound.value.inbound_id}` : ''
 const mainTab = ref('summary')
+const canManageResourceRights = computed(() => ['boss', 'admin', 'finance', 'manager'].includes(getRoleCode()))
 const stores = ref([])
 const storesLoaded = ref(false)
 const categories = ref([])
@@ -2411,6 +2417,11 @@ const submitConversionProduct = async () => {
   try {
     const res = await api.createProduct(data)
     if (res.code === 0) {
+      if (res.pendingApproval) {
+        conversionProductDialogVisible.value = false
+        ElMessage.success('新建商品申请已提交，审批通过后才能作为拆装目标商品')
+        return
+      }
       const productId = res.productId || res.data?.productId
       const manufacturerCode = data.barcodes
         .filter(item => item.type === 'manufacturer' && item.code)

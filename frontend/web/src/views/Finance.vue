@@ -381,6 +381,7 @@
             <el-table-column prop="remark" label="备注" min-width="140" />
             <el-table-column prop="create_user" label="操作人" width="100" />
             <el-table-column prop="create_time" label="时间" width="160" />
+            <el-table-column label="操作" width="90"><template #default="{row}"><el-button v-if="row.status !== 'reversed' && (!row.source_type || row.source_type === 'manual')" link type="danger" @click="reverseRebate(row)">冲销</el-button><el-tag v-else-if="row.status === 'reversed'" type="info">已冲销</el-tag></template></el-table-column>
           </el-table>
 
           <el-pagination
@@ -490,13 +491,18 @@
           </div>
         </el-tab-pane>
 
-        <el-tab-pane label="结算账户" name="account">
+        <el-tab-pane label="资源权益核销与成本调整" name="resource-rights" lazy>
+          <InventoryResourceRights finance-only />
+        </el-tab-pane>
+
+        <el-tab-pane label="账户中心" name="account">
           <div class="filter-bar">
             <el-button type="primary" @click="openAccountTransactionDialog()">记账</el-button>
             <el-button @click="refreshAccountBalances">刷新余额</el-button>
           </div>
           <el-table :data="accountList" stripe border>
             <el-table-column prop="account_name" label="账户名称" width="200" />
+            <el-table-column label="账户类型" width="120"><template #default="{row}">{{ accountTypeText(row.account_type) }}</template></el-table-column>
             <el-table-column label="银行" min-width="140">
               <template #default="{ row }">{{ row.bank_name || '-' }}</template>
             </el-table-column>
@@ -720,15 +726,21 @@
       </div>
     </el-dialog>
 
-    <el-dialog v-model="purchaseDetailVisible" title="采购订单详情" width="760px">
+    <el-dialog v-model="purchaseDetailVisible" title="采购申请详情" width="900px">
       <div v-if="purchaseDetail">
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="采购单号">{{ purchaseDetail.request_no || '-' }}</el-descriptions-item>
           <el-descriptions-item label="供应商">{{ purchaseDetail.supplier_name || purchaseDetail.Supplier?.name || '-' }}</el-descriptions-item>
           <el-descriptions-item label="申请门店">{{ purchaseDetail.store_name || purchaseDetail.Store?.name || '-' }}</el-descriptions-item>
           <el-descriptions-item label="状态">{{ purchaseDetail.status || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="申请金额">¥{{ purchaseDetail.total_amount || 0 }}</el-descriptions-item>
-          <el-descriptions-item label="实际应付">¥{{ purchaseDetail.actual_total || purchaseDetail.total_amount || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="申请金额">¥{{ formatMoney(purchaseDetail.total_amount) }}</el-descriptions-item>
+          <el-descriptions-item label="是否使用返利">
+            <el-tag :type="hasPurchaseRebateDeduction(purchaseDetail) ? 'success' : 'info'">
+              {{ hasPurchaseRebateDeduction(purchaseDetail) ? '是' : '否' }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="返利抵扣">-¥{{ formatMoney(purchaseDetail.rebate_deduction) }}</el-descriptions-item>
+          <el-descriptions-item label="实际应付">¥{{ formatMoney(purchaseActualAmount(purchaseDetail)) }}</el-descriptions-item>
           <el-descriptions-item label="申请时间">{{ purchaseDetail.create_time ? formatDate(purchaseDetail.create_time) : '-' }}</el-descriptions-item>
           <el-descriptions-item label="备注">{{ purchaseDetail.reason || purchaseDetail.remark || '-' }}</el-descriptions-item>
         </el-descriptions>
@@ -740,7 +752,13 @@
             <template #default="{ row }">¥{{ row.unit_price || 0 }}</template>
           </el-table-column>
           <el-table-column prop="subtotal" label="小计" width="110">
-            <template #default="{ row }">¥{{ row.subtotal || 0 }}</template>
+            <template #default="{ row }">¥{{ formatMoney(purchaseItemSubtotal(row)) }}</template>
+          </el-table-column>
+          <el-table-column prop="rebate_deduction" label="返利抵扣" width="110">
+            <template #default="{ row }">-¥{{ formatMoney(row.rebate_deduction) }}</template>
+          </el-table-column>
+          <el-table-column label="抵扣后金额" width="120">
+            <template #default="{ row }">¥{{ formatMoney(purchaseItemActualAmount(row)) }}</template>
           </el-table-column>
         </el-table>
       </div>
@@ -984,6 +1002,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted, nextTick } from 'vue'
+import InventoryResourceRights from '../components/InventoryResourceRights.vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as XLSX from 'xlsx'
@@ -1025,6 +1044,34 @@ const payableDateRange = ref([])
 const payableSupplierFilter = ref('')
 const purchaseDetailVisible = ref(false)
 const purchaseDetail = ref(null)
+
+const toNumber = (value) => {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : 0
+}
+
+const formatMoney = (value) => toNumber(value).toFixed(2)
+
+const hasPurchaseRebateDeduction = (request) => toNumber(request?.rebate_deduction) > 0
+
+const purchaseActualAmount = (request) => {
+  const total = toNumber(request?.total_amount)
+  const rebate = toNumber(request?.rebate_deduction)
+  const actual = toNumber(request?.actual_total)
+  if (actual > 0 || total === 0) return actual
+  return Math.max(0, total - rebate)
+}
+
+const purchaseItemSubtotal = (item) => {
+  const subtotal = toNumber(item?.subtotal)
+  if (subtotal > 0) return subtotal
+  return toNumber(item?.unit_price) * toNumber(item?.quantity)
+}
+
+const purchaseItemActualAmount = (item) => {
+  return Math.max(0, purchaseItemSubtotal(item) - toNumber(item?.rebate_deduction))
+}
+
 const expenseSettleQuery = reactive({
   page: 1,
   pageSize: 20
@@ -1491,7 +1538,7 @@ const loadPaymentMethods = async () => {
 const loadSettlementAccounts = async () => {
   try {
     const res = await api.getSettlementAccountsBalance({ page: 1, pageSize: 500 })
-    if (res.code === 0) settlementAccounts.value = res.data?.list || []
+    if (res.code === 0) settlementAccounts.value = (res.data?.list || []).filter(account => account.account_type !== 'SUPPLIER_REBATE')
   } catch (err) { console.error('Failed to load settlement accounts') }
 }
 
@@ -1658,6 +1705,17 @@ const openRebateDialog = () => {
 const saveRebateDraft = () => {
   saveDraft(FINANCE_REBATE_DRAFT_KEY, cloneDraft(rebateForm))
   ElMessage.success('草稿已保存')
+}
+
+const reverseRebate = async row => {
+  try {
+    const { value } = await ElMessageBox.prompt('请输入冲销原因', '返利冲销', { inputPattern: /\S+/, inputErrorMessage: '必须填写冲销原因' })
+    await api.reverseRebate(row.rebate_id, { reason: value })
+    ElMessage.success('返利记录已冲销')
+    await Promise.all([loadRebateList(), loadRebateSummary()])
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err.response?.data?.message || '冲销失败')
+  }
 }
 
 const resetManufacturerPolicyForm = () => {
@@ -2155,6 +2213,7 @@ const refreshAccountBalances = async () => {
   await loadSettlementAccounts()
   ElMessage.success('余额已刷新')
 }
+const accountTypeText = value => ({ FUND:'资金账户', SUPPLIER_REBATE:'供应商返利', CARE_CREDIT:'Care可用金' }[value] || '资金账户')
 
 const moveAccount = async (index, direction) => {
   const targetIndex = index + direction

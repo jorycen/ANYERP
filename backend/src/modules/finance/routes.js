@@ -16,6 +16,7 @@ const {
   exportPaymentCandidates,
   validatePaymentImport,
   commitPaymentImport,
+  createDirectPayment,
   getPaymentBatches,
   getPaymentBatchDetail,
   voidPaymentBatch,
@@ -27,6 +28,7 @@ const {
   getRebateList,
   getRebateBalance,
   getRebateSummary,
+  reverseRebate,
   createManufacturerPolicy,
   updateManufacturerPolicy,
   getManufacturerPolicyList,
@@ -63,6 +65,7 @@ router.get('/settlement-payment/candidates', getPaymentCandidates);
 router.get('/settlement-payment/export', exportPaymentCandidates);
 router.post('/settlement-payment/import/validate', validatePaymentImport);
 router.post('/settlement-payment/import/commit', commitPaymentImport);
+router.post('/settlement-payment/direct', createDirectPayment);
 router.get('/settlement-payment/batches', getPaymentBatches);
 router.get('/settlement-payment/batch/:id', getPaymentBatchDetail);
 router.post('/settlement-payment/batch/void', voidPaymentBatch);
@@ -73,6 +76,7 @@ router.post('/add-rebate', addRebate);
 router.get('/rebate-list', getRebateList);
 router.get('/rebate-balance', getRebateBalance);
 router.get('/rebate-summary', getRebateSummary);
+router.post('/rebate/:rebateId/reverse', reverseRebate);
 router.post('/manufacturer-policy', createManufacturerPolicy);
 router.put('/manufacturer-policy/:policyId', updateManufacturerPolicy);
 router.get('/manufacturer-policy-list', getManufacturerPolicyList);

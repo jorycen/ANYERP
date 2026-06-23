@@ -26,7 +26,7 @@ const dictRouter = require('./modules/dict/routes');
 // 导入中间件
 const { errorHandler } = require('./middleware/errorHandler');
 const { responseFormatter } = require('./middleware/responseFormatter');
-const { authMiddleware } = require('./middleware/auth');
+const { authMiddleware, storeAccessMiddleware } = require('./middleware/auth');
 const { applyPendingProductPriceChanges } = require('./modules/product/controller');
 
 const app = new Koa();
@@ -59,6 +59,7 @@ apiRouter.use('/auth', authRouter.routes());
 
 // 需要鉴权的接口
 apiRouter.use(authMiddleware);
+apiRouter.use(storeAccessMiddleware);
 apiRouter.use('/sales', salesRouter.routes());
 apiRouter.use('/inventory', inventoryRouter.routes());
 apiRouter.use('/purchase', purchaseRouter.routes());

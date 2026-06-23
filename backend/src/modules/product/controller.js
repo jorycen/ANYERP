@@ -9,6 +9,7 @@ const {
   ProductBarcode,
   ProductCategory,
   ProductCategoryField,
+  ProductApplication,
   ProductPrice,
   ProductPriceImportBatch,
   ProductPriceChangeLog,
@@ -19,6 +20,7 @@ const { Op, Sequelize } = require('sequelize');
 const { sequelize } = require('../../config/database');
 const { generateProductCode, generateUUID, generateId, paginate, formatPaginatedResult } = require('../../utils');
 const XLSX = require('xlsx');
+const { getUserRoles } = require('../../middleware/permission');
 
 // 字段标识到数据库列名的映射（field_key → DB column）
 const FIELD_TO_COLUMN = {
@@ -65,6 +67,21 @@ function splitAttributes(attributes) {
     }
   }
   return { cols, extras };
+}
+
+function parseProductExtras(value) {
+  if (!value) return {};
+  if (typeof value === 'object') return value;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function getProductAttributeValue(product, column, mappedExtras) {
+  return product[column] || mappedExtras[column] || '';
 }
 
 function buildAttributesFromCols(cols, extras) {
@@ -380,7 +397,8 @@ async function getProductList(ctx) {
 
   const list = rows.map(p => {
     const allBarcodes = (p.ProductBarcodes || []).map(b => ({ barcode_id: b.barcode_id, type: b.barcode_type, code: b.barcode_code }));
-    const extras = p.extras ? (typeof p.extras === 'string' ? JSON.parse(p.extras) : p.extras) : {};
+    const extras = parseProductExtras(p.extras);
+    const { cols: mappedExtras } = splitAttributes(extras);
     return {
       product_id: p.product_id,
       product_code: p.product_code,
@@ -388,15 +406,15 @@ async function getProductList(ctx) {
       config: p.config || '',
       category: p.category || '',
       manufacturer_code: p.manufacturer_code || '',
-      brand: p.brand || '',
-      series: p.series || '',
-      model: p.model || '',
-      processor: p.processor || '',
-      memory: p.memory || '',
-      storage: p.storage || '',
-      color: p.color || '',
-      gpu: p.gpu || '',
-      accessory_type: p.accessory_type || '',
+      brand: getProductAttributeValue(p, 'brand', mappedExtras),
+      series: getProductAttributeValue(p, 'series', mappedExtras),
+      model: getProductAttributeValue(p, 'model', mappedExtras),
+      processor: getProductAttributeValue(p, 'processor', mappedExtras),
+      memory: getProductAttributeValue(p, 'memory', mappedExtras),
+      storage: getProductAttributeValue(p, 'storage', mappedExtras),
+      color: getProductAttributeValue(p, 'color', mappedExtras),
+      gpu: getProductAttributeValue(p, 'gpu', mappedExtras),
+      accessory_type: getProductAttributeValue(p, 'accessory_type', mappedExtras),
       extras,
       manufacturer_codes: splitCodes(p.manufacturer_code).length > 0 ? splitCodes(p.manufacturer_code) : allBarcodes.filter(b => b.type === 'manufacturer').map(b => b.code),
       barcodes: allBarcodes,
@@ -408,19 +426,12 @@ async function getProductList(ctx) {
   ctx.body = formatPaginatedResult(list, { page, pageSize, count });
 }
 
-async function createProduct(ctx) {
-  const { name, categoryId, config, needSn, needImei, unit, remark, barcodes, attributes, status = 1, manufacturerCode, manufacturer_code } = ctx.request.body;
-
-  const productId = generateUUID();
-  const categoryPath = categoryId ? await resolveCategoryPath(categoryId) : '';
-
+async function resolveProductApplicationName(body) {
+  const { name, categoryId, attributes } = body;
   let parsedAttrs = attributes;
   if (typeof attributes === 'string') {
     try { parsedAttrs = JSON.parse(attributes); } catch { parsedAttrs = {}; }
   }
-
-  const { cols, extras } = splitAttributes(parsedAttrs);
-
   let finalName = name || '';
   if (!finalName && parsedAttrs && typeof parsedAttrs === 'object') {
     const fields = await ProductCategoryField.findAll({
@@ -437,15 +448,39 @@ async function createProduct(ctx) {
       finalName = parts.join(' ') || name || '';
     }
   }
-  if (!finalName) {
-    ctx.throw(400, '商品名称不能为空');
-  }
+  return { finalName: String(finalName || '').trim(), parsedAttrs: parsedAttrs || {} };
+}
+
+function productApplicationPayload(body, finalName, parsedAttrs) {
+  return {
+    name: finalName,
+    categoryId: body.categoryId || null,
+    config: body.config || '',
+    needSn: body.needSn ? 1 : 0,
+    needImei: body.needImei ? 1 : 0,
+    unit: body.unit || '台',
+    remark: body.remark || '',
+    barcodes: Array.isArray(body.barcodes) ? body.barcodes.map(item => ({ type: item.type || 'manufacturer', code: item.code || '' })).filter(item => item.code) : [],
+    attributes: parsedAttrs,
+    status: 1,
+    manufacturerCode: body.manufacturerCode || body.manufacturer_code || ''
+  };
+}
+
+async function createProductRecord(body, transaction = null) {
+  const { name, categoryId, config, needSn, needImei, unit, remark, barcodes, attributes, status = 1, manufacturerCode, manufacturer_code } = body;
+  const productId = generateUUID();
+  const categoryPath = categoryId ? await resolveCategoryPath(categoryId) : '';
+  const { finalName, parsedAttrs } = await resolveProductApplicationName(body);
+  if (!finalName) throw new Error('商品名称不能为空');
+
+  const { cols, extras } = splitAttributes(parsedAttrs);
 
   const manufacturerCodes = getManufacturerCodes(barcodes, manufacturerCode || manufacturer_code);
-
   let lastError;
+  let productCode = '';
   for (let attempt = 0; attempt < 5; attempt++) {
-    const productCode = await generateProductCode(Product);
+    productCode = await generateProductCode(Product);
     try {
       await Product.create({
         product_id: productId,
@@ -470,43 +505,9 @@ async function createProduct(ctx) {
         remark: remark || '',
         create_time: new Date(),
         status
-      });
-
-      // 创建条码
-      if (barcodes && Array.isArray(barcodes)) {
-        for (const bc of barcodes) {
-          if (bc.code) {
-            await ProductBarcode.create({
-              barcode_id: generateUUID(),
-              product_id: productId,
-              barcode_type: bc.type || 'manufacturer',
-              barcode_code: bc.code,
-              sort_order: 0,
-              status: 1
-            });
-
-            if ((bc.type || 'manufacturer') === 'manufacturer') {
-              const existingPn = await ProductPn.findOne({
-                where: { pn_code: bc.code, is_deleted: 0 }
-              });
-              if (!existingPn) {
-                await ProductPn.create({
-                  pn_id: generateUUID(),
-                  product_id: productId,
-                  pn_code: bc.code,
-                  barcode: bc.code,
-                  is_primary: 0,
-                  status: 1,
-                  is_deleted: 0
-                });
-              }
-            }
-          }
-        }
-      }
-
-      ctx.body = { code: 0, productId, productCode, message: '商品创建成功' };
-      return;
+      }, { transaction });
+      lastError = null;
+      break;
     } catch (err) {
       if (err.name === 'SequelizeUniqueConstraintError') {
         lastError = err;
@@ -515,8 +516,164 @@ async function createProduct(ctx) {
       throw err;
     }
   }
+  if (lastError) throw new Error('商品编码生成冲突，请重试');
 
-  ctx.throw(409, '商品编码生成冲突，请重试');
+  if (barcodes && Array.isArray(barcodes)) {
+    for (const bc of barcodes) {
+      if (!bc.code) continue;
+      await ProductBarcode.create({
+        barcode_id: generateUUID(),
+        product_id: productId,
+        barcode_type: bc.type || 'manufacturer',
+        barcode_code: bc.code,
+        sort_order: 0,
+        status: 1
+      }, { transaction });
+
+      if ((bc.type || 'manufacturer') === 'manufacturer') {
+        const existingPn = await ProductPn.findOne({
+          where: { pn_code: bc.code, is_deleted: 0 },
+          transaction
+        });
+        if (!existingPn) {
+          await ProductPn.create({
+            pn_id: generateUUID(),
+            product_id: productId,
+            pn_code: bc.code,
+            barcode: bc.code,
+            is_primary: 0,
+            status: 1,
+            is_deleted: 0
+          }, { transaction });
+        }
+      }
+    }
+  }
+
+  return { productId, productCode, productName: finalName };
+}
+
+async function createProduct(ctx) {
+  const created = await createProductRecord(ctx.request.body);
+  ctx.body = { code: 0, ...created, message: '商品创建成功' };
+}
+
+async function submitProductApplication(ctx) {
+  const { finalName, parsedAttrs } = await resolveProductApplicationName(ctx.request.body);
+  if (!finalName) ctx.throw(400, '商品名称不能为空');
+  if (!ctx.request.body.categoryId) ctx.throw(400, '商品分类不能为空');
+
+  const categoryPath = await resolveCategoryPath(ctx.request.body.categoryId);
+  const payload = productApplicationPayload(ctx.request.body, finalName, parsedAttrs);
+  const applicationId = generateUUID();
+  const applicationNo = `PA${Date.now()}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`;
+  await ProductApplication.create({
+    application_id: applicationId,
+    application_no: applicationNo,
+    product_name: finalName,
+    category_id: ctx.request.body.categoryId,
+    category_name: categoryPath,
+    payload_json: payload,
+    applicant_staff_id: ctx.state.user.staffId,
+    applicant_name: ctx.state.user.name,
+    distributor_id: ctx.state.user.distributorId || '',
+    status: 'pending',
+    create_time: new Date(),
+    update_time: new Date()
+  });
+
+  ctx.body = {
+    code: 0,
+    applicationId,
+    applicationNo,
+    pendingApproval: true,
+    status: 'pending',
+    message: '新建商品申请已提交，审批通过后生成正式商品'
+  };
+}
+
+function canReviewProductApplication(user) {
+  const roles = getUserRoles(user);
+  return roles.some(role => ['finance', 'purchaser', 'admin', 'boss'].includes(role));
+}
+
+async function getProductApplicationList(ctx) {
+  const page = Number(ctx.query.page || 1);
+  const pageSize = Number(ctx.query.pageSize || 20);
+  const where = {};
+  if (ctx.query.status) where.status = ctx.query.status;
+
+  if (!canReviewProductApplication(ctx.state.user)) {
+    where.applicant_staff_id = ctx.state.user.staffId;
+  } else if (!getUserRoles(ctx.state.user).includes('boss')) {
+    where.distributor_id = ctx.state.user.distributorId || '';
+  }
+
+  const { limit, offset } = paginate({}, { page, pageSize });
+  const { rows, count } = await ProductApplication.findAndCountAll({
+    where,
+    order: [['create_time', 'DESC']],
+    limit,
+    offset
+  });
+  ctx.body = {
+    code: 0,
+    data: formatPaginatedResult(rows.map(row => row.toJSON()), { page, pageSize, count })
+  };
+}
+
+async function reviewProductApplication(ctx) {
+  const { applicationId } = ctx.params;
+  const { action, comment = '' } = ctx.request.body;
+  if (!['approved', 'rejected'].includes(action)) ctx.throw(400, '审批结果不正确');
+  if (action === 'rejected' && !String(comment).trim()) ctx.throw(400, '拒绝时必须填写审批意见');
+
+  const transaction = await sequelize.transaction();
+  try {
+    const application = await ProductApplication.findByPk(applicationId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!application) ctx.throw(404, '商品申请不存在');
+    if (application.status !== 'pending') ctx.throw(400, '该申请已完成审批');
+    if (Number(application.applicant_staff_id) === Number(ctx.state.user.staffId)) {
+      ctx.throw(403, '申请人不能审批自己的商品申请');
+    }
+    if (!getUserRoles(ctx.state.user).includes('boss') && application.distributor_id !== (ctx.state.user.distributorId || '')) {
+      ctx.throw(403, '无权审批其他经销商的商品申请');
+    }
+
+    let created = null;
+    if (action === 'approved') {
+      const payload = typeof application.payload_json === 'string'
+        ? JSON.parse(application.payload_json)
+        : application.payload_json;
+      created = await createProductRecord(payload, transaction);
+    }
+
+    await application.update({
+      status: action,
+      review_staff_id: ctx.state.user.staffId,
+      review_user_name: ctx.state.user.name,
+      review_comment: String(comment || '').trim(),
+      review_time: new Date(),
+      product_id: created ? created.productId : null,
+      update_time: new Date()
+    }, { transaction });
+    await transaction.commit();
+
+    ctx.body = {
+      code: 0,
+      applicationId,
+      status: action,
+      productId: created ? created.productId : null,
+      productCode: created ? created.productCode : null,
+      message: action === 'approved' ? '审批通过，正式商品已创建' : '商品申请已拒绝'
+    };
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  }
 }
 
 async function updateProduct(ctx) {
@@ -859,25 +1016,39 @@ async function getPriceList(ctx) {
 
   const productWhere = { is_deleted: 0 };
   if (keyword) {
+    const keywordLike = `%${keyword}%`;
     const matchedPnRows = await ProductPn.findAll({
       where: {
         is_deleted: 0,
-        pn_code: { [Op.like]: `%${keyword}%` }
+        pn_code: { [Op.like]: keywordLike }
       },
       attributes: ['product_id'],
       raw: true
     });
-    const matchedProductIds = [...new Set(matchedPnRows.map(row => row.product_id).filter(Boolean))];
+    const matchedBarcodeRows = await ProductBarcode.findAll({
+      where: {
+        barcode_type: 'manufacturer',
+        barcode_code: { [Op.like]: keywordLike },
+        status: 1
+      },
+      attributes: ['product_id'],
+      raw: true
+    });
+    const matchedProductIds = [...new Set([
+      ...matchedPnRows.map(row => row.product_id),
+      ...matchedBarcodeRows.map(row => row.product_id)
+    ].filter(Boolean))];
     productWhere[Op.or] = [
-      { name: { [Op.like]: `%${keyword}%` } },
-      { product_code: { [Op.like]: `%${keyword}%` } },
+      { name: { [Op.like]: keywordLike } },
+      { product_code: { [Op.like]: keywordLike } },
+      { manufacturer_code: { [Op.like]: keywordLike } },
       ...(matchedProductIds.length > 0 ? [{ product_id: { [Op.in]: matchedProductIds } }] : [])
     ];
   }
 
   const { count, rows } = await Product.findAndCountAll({
     where: productWhere,
-    attributes: ['product_id', 'product_code', 'name', 'unit', 'category'],
+    attributes: ['product_id', 'product_code', 'manufacturer_code', 'name', 'unit', 'category'],
     include: [
       { model: ProductPrice, attributes: ['price_id', 'standard_price', 'min_sale_price', 'cost_price'] }
     ],
@@ -886,9 +1057,32 @@ async function getPriceList(ctx) {
     distinct: true
   });
 
+  const productIds = rows.map(p => p.product_id).filter(Boolean);
+  const barcodeRows = productIds.length > 0
+    ? await ProductBarcode.findAll({
+        where: {
+          product_id: { [Op.in]: productIds },
+          barcode_type: 'manufacturer',
+          status: 1
+        },
+        attributes: ['product_id', 'barcode_code'],
+        order: [['sort_order', 'ASC']],
+        raw: true
+      })
+    : [];
+  const manufacturerCodeMap = new Map();
+  for (const row of barcodeRows) {
+    const list = manufacturerCodeMap.get(row.product_id) || [];
+    if (row.barcode_code) list.push(row.barcode_code);
+    manufacturerCodeMap.set(row.product_id, list);
+  }
+
   const list = rows.map(p => ({
     product_id: p.product_id,
     product_code: p.product_code,
+    manufacturer_code: splitCodes(p.manufacturer_code).length > 0
+      ? splitCodes(p.manufacturer_code).join(', ')
+      : (manufacturerCodeMap.get(p.product_id) || []).join(', '),
     name: p.name,
     unit: p.unit,
     category_name: p.category || '',
@@ -1929,7 +2123,7 @@ async function importProducts(ctx) {
       
       if (!finalName) {
         results.failed++;
-        results.errors.push({ product: row, message: '商品名称不能为空（请填写"商品名称"列或确保分类字段能拼装出名称）' });
+        results.errors.push({ row: rowIndex + 2, product: row, message: '商品名称不能为空（请填写"商品名称"列或确保分类字段能拼装出名称）' });
         continue;
       }
 
@@ -2042,7 +2236,7 @@ async function importProducts(ctx) {
       }
       // 打印详细错误日志
       console.error(`[导入失败] 第 ${rowIndex+1} 行:`, error);
-      results.errors.push({ product: row, message: errorMessage });
+      results.errors.push({ row: rowIndex + 2, product: row, message: errorMessage });
     }
   }
 
@@ -2130,20 +2324,21 @@ async function exportProducts(ctx) {
     const allBarcodes = (p.ProductBarcodes || []);
     const manufacturerCodes = allBarcodes.filter(b => b.barcode_type === 'manufacturer').map(b => b.barcode_code).join(',');
     const barcode69List = allBarcodes.filter(b => b.barcode_type === 'barcode69').map(b => b.barcode_code).join(',');
+    const { cols: mappedExtras } = splitAttributes(parseProductExtras(p.extras));
 
     return {
       '商品编码': p.product_code,
       '商品名称': p.name,
       '商品分类': p.category || '',
-      '品牌': p.brand || '',
-      '系列': p.series || '',
-      '型号': p.model || '',
-      '处理器': p.processor || '',
-      '内存': p.memory || '',
-      '存储': p.storage || '',
-      '颜色': p.color || '',
-      '显卡': p.gpu || '',
-      '配件类别': p.accessory_type || '',
+      '品牌': getProductAttributeValue(p, 'brand', mappedExtras),
+      '系列': getProductAttributeValue(p, 'series', mappedExtras),
+      '型号': getProductAttributeValue(p, 'model', mappedExtras),
+      '处理器': getProductAttributeValue(p, 'processor', mappedExtras),
+      '内存': getProductAttributeValue(p, 'memory', mappedExtras),
+      '存储': getProductAttributeValue(p, 'storage', mappedExtras),
+      '颜色': getProductAttributeValue(p, 'color', mappedExtras),
+      '显卡': getProductAttributeValue(p, 'gpu', mappedExtras),
+      '配件类别': getProductAttributeValue(p, 'accessory_type', mappedExtras),
       '厂商商品名称': p.config || '',
       '单位': p.unit || '台',
       '需要SN码': p.need_sn === 1 ? '是' : '否',
@@ -2177,7 +2372,8 @@ async function exportProducts(ctx) {
 }
 
 module.exports = {
-  getProductList, createProduct, updateProduct, deleteProduct, togglePause, importProducts, exportProducts,
+  getProductList, createProduct, submitProductApplication, getProductApplicationList, reviewProductApplication,
+  updateProduct, deleteProduct, togglePause, importProducts, exportProducts,
   getCategoryFields, saveCategoryFields, getCategoryFieldConfig,
   getBarcodes: async (ctx) => {
     const { productId } = ctx.query;

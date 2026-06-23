@@ -4,7 +4,7 @@
  */
 const jwt = require('jsonwebtoken');
 const config = require('../config');
-const { Staff } = require('../models');
+const { Staff, Role, RegionPermission, StaffStorePermission, Store } = require('../models');
 
 async function authMiddleware(ctx, next) {
   // 获取 token
@@ -19,7 +19,9 @@ async function authMiddleware(ctx, next) {
     const decoded = jwt.verify(token, config.jwt.secret);
 
     // 查询用户信息
-    const staff = await Staff.findByPk(decoded.staffId);
+    const staff = await Staff.findByPk(decoded.staffId, {
+      include: [{ model: Role, as: 'Roles', through: { attributes: [] }, where: { status: 1 }, required: false }]
+    });
 
     if (!staff) {
       ctx.throw(401, '用户不存在');
@@ -29,21 +31,40 @@ async function authMiddleware(ctx, next) {
       ctx.throw(401, '账号已被禁用');
     }
 
-    // 将用户信息挂载到 ctx
-    // 老板角色拥有所有区域权限，其他角色使用 staff.region_id
-    const regionCodes = staff.role_code === 'boss'
-      ? ['*']  // 老板拥有所有权限
-      : (staff.region_id ? [staff.region_id] : []);
+    let roles = (staff.Roles || []).map(role => role.role_code);
+    if (roles.length === 0 && staff.role_code) roles = [staff.role_code];
+    roles = [...new Set(roles)];
+
+    const permissions = await RegionPermission.findAll({
+      where: { staff_id: staff.staff_id, can_view: 1 },
+      attributes: ['region_code']
+    });
+    const regionCodes = roles.includes('boss')
+      ? ['*']
+      : [...new Set([staff.region_id, ...permissions.map(item => item.region_code)].filter(Boolean))];
+    const storePermissions = roles.includes('boss') ? [] : await StaffStorePermission.findAll({
+      where: { staff_id: staff.staff_id },
+      attributes: ['store_id'],
+      include: [{ model: Store, attributes: [], required: true, where: { is_deleted: 0, status: 1 } }],
+      raw: true
+    });
+    const accessibleStoreIds = roles.includes('boss')
+      ? ['*']
+      : [...new Set(storePermissions.map(item => String(item.store_id)).filter(Boolean))];
+    const legacyStoreId = staff.store_id ? String(staff.store_id) : '';
+    const effectiveStoreId = roles.includes('boss') || accessibleStoreIds.includes(legacyStoreId) ? staff.store_id : null;
 
     ctx.state.user = {
       staffId: staff.staff_id,
       name: staff.name,
       phone: staff.phone,
       roleCode: staff.role_code,
+      roles,
       distributorId: staff.distributor_id,
-      storeId: staff.store_id,
+      storeId: effectiveStoreId,
       regionId: staff.region_id,
-      regionCodes
+      regionCodes,
+      accessibleStoreIds
     };
 
     await next();
@@ -59,6 +80,42 @@ async function authMiddleware(ctx, next) {
 }
 
 /**
+ * 拦截显式传入的未授权门店。列表接口仍需在查询层按 accessibleStoreIds 过滤。
+ */
+async function storeAccessMiddleware(ctx, next) {
+  const user = ctx.state.user;
+  if (!user || user.roles?.includes('boss') || user.accessibleStoreIds?.includes('*')) return next();
+  if (ctx.path.startsWith('/api/v1/system/')) return next();
+  if (ctx.path === '/api/v1/store/create' && ctx.method === 'POST') return next();
+
+  const allowed = new Set((user.accessibleStoreIds || []).map(String));
+  const storeBusinessPrefixes = ['/api/v1/sales', '/api/v1/inventory', '/api/v1/purchase', '/api/v1/finance', '/api/v1/report', '/api/v1/store'];
+  if (allowed.size === 0 && storeBusinessPrefixes.some(prefix => ctx.path.startsWith(prefix))) {
+    ctx.throw(403, '当前账号尚未分配门店');
+  }
+  const isStoreKey = key => /store_?ids?$/.test(key.toLowerCase());
+  const requested = [];
+  const collect = value => {
+    if (!value || typeof value !== 'object') return;
+    for (const [key, item] of Object.entries(value)) {
+      if (isStoreKey(key)) {
+        const values = Array.isArray(item) ? item : [item];
+        requested.push(...values.filter(Boolean).map(String));
+      } else if (item && typeof item === 'object') {
+        collect(item);
+      }
+    }
+  };
+  collect(ctx.query);
+  collect(ctx.request.body);
+
+  if (requested.some(storeId => !allowed.has(storeId))) {
+    ctx.throw(403, allowed.size === 0 ? '当前账号尚未分配门店' : '无权访问该门店');
+  }
+  await next();
+}
+
+/**
  * 区域数据权限检查中间件
  * 用于检查用户是否有权访问特定区域的数据
  */
@@ -70,7 +127,7 @@ function regionAuth(regionField = 'region_id') {
                         ctx.params.region_code;
 
     // 老板和系统管理员拥有所有权限
-    if (user.roleCode === 'boss' || user.regionCodes.includes('*')) {
+    if (user.roles?.includes('boss') || user.regionCodes.includes('*')) {
       return await next();
     }
 
@@ -83,4 +140,4 @@ function regionAuth(regionField = 'region_id') {
   };
 }
 
-module.exports = { authMiddleware, regionAuth };
+module.exports = { authMiddleware, regionAuth, storeAccessMiddleware };

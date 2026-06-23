@@ -11,6 +11,7 @@ const {
   stats,
   approve,
   reject,
+  auxiliaryStaff,
   paymentMethods,
   listDeposits,
   createDeposit,
@@ -27,6 +28,7 @@ const router = new Router();
 
 router.get('/list', list);
 router.get('/stats', stats);
+router.get('/auxiliary-staff', auxiliaryStaff);
 router.get('/payment-methods', paymentMethods);
 router.get('/deposits', listDeposits);
 router.post('/deposits', enforceStoreOwnership, createDeposit);

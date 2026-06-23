@@ -9,7 +9,7 @@
 
       <el-tabs v-model="activeTab" @tab-change="onTabChange">
         <!-- ========== Tab 1: 商品管理 ========== -->
-        <el-tab-pane label="商品管理" name="product">
+        <el-tab-pane v-if="!productApprovalOnly" label="商品管理" name="product">
           <div class="filter-bar">
             <div>
               <el-input v-model="queryParams.keyword" placeholder="商品名称/编码/详细配置" clearable style="width: 240px" @keyup.enter="loadData" />
@@ -97,7 +97,7 @@
         </el-tab-pane>
 
         <!-- ========== Tab 2: 分类管理 ========== -->
-        <el-tab-pane label="分类管理" name="category">
+        <el-tab-pane v-if="!productApprovalOnly" label="分类管理" name="category">
           <div class="filter-bar">
             <el-button type="primary" @click="handleAddCategory(null)">新增一级分类</el-button>
           </div>
@@ -155,9 +155,9 @@
         </el-tab-pane>
 
         <!-- ========== Tab 3: 价格管理 ========== -->
-        <el-tab-pane label="价格管理" name="price">
+        <el-tab-pane v-if="!productApprovalOnly" label="价格管理" name="price">
           <div class="filter-bar">
-            <el-input v-model="priceParams.keyword" placeholder="商品名称/编码" clearable style="width: 200px" @keyup.enter="loadPriceData" />
+            <el-input v-model="priceParams.keyword" placeholder="商品名称/商品编码/厂商编码" clearable style="width: 240px" @keyup.enter="loadPriceData" />
             <el-button type="primary" @click="loadPriceData">搜索</el-button>
             <el-button type="success" @click="handleBatchRefreshCost" :loading="batchRefreshLoading" :disabled="selectedPriceRows.length === 0">
               批量刷新成本 ({{ selectedPriceRows.length }})
@@ -169,6 +169,9 @@
           <el-table :data="priceTableData" stripe border v-loading="priceLoading" @selection-change="onPriceSelectionChange" ref="priceTableRef">
             <el-table-column type="selection" width="50" />
             <el-table-column prop="product_code" label="商品编码" width="130" />
+            <el-table-column label="厂商编码" width="150" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.manufacturer_code || '-' }}</template>
+            </el-table-column>
             <el-table-column prop="name" label="商品名称" min-width="150" />
             <el-table-column prop="category_name" label="分类" width="150" show-overflow-tooltip />
             <el-table-column prop="unit" label="单位" width="60" />
@@ -217,6 +220,52 @@
             @current-change="loadPriceData"
           />
         </el-tab-pane>
+
+        <el-tab-pane label="新建商品审批" name="approval">
+          <div class="filter-bar">
+            <el-select v-model="applicationParams.status" placeholder="审批状态" clearable style="width: 160px" @change="loadProductApplications">
+              <el-option label="全部" value="" />
+              <el-option label="待审批" value="pending" />
+              <el-option label="已通过" value="approved" />
+              <el-option label="已拒绝" value="rejected" />
+            </el-select>
+            <el-button type="primary" @click="loadProductApplications">刷新</el-button>
+          </div>
+          <el-table :data="productApplications" stripe border v-loading="applicationLoading">
+            <el-table-column prop="application_no" label="申请单号" width="190" />
+            <el-table-column prop="product_name" label="商品名称" min-width="240" show-overflow-tooltip />
+            <el-table-column prop="category_name" label="商品分类" width="180" show-overflow-tooltip />
+            <el-table-column prop="applicant_name" label="申请人" width="100" />
+            <el-table-column label="申请时间" width="165">
+              <template #default="{ row }">{{ formatTime(row.create_time) }}</template>
+            </el-table-column>
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="productApplicationStatusType(row.status)">{{ productApplicationStatusText(row.status) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="review_user_name" label="审批人" width="100" />
+            <el-table-column prop="review_comment" label="审批意见" min-width="160" show-overflow-tooltip />
+            <el-table-column label="操作" width="150" fixed="right">
+              <template #default="{ row }">
+                <template v-if="row.status === 'pending' && canReviewProductApplications">
+                  <el-button link type="success" :disabled="isOwnProductApplication(row)" @click="reviewProductApplication(row, 'approved')">通过</el-button>
+                  <el-button link type="danger" :disabled="isOwnProductApplication(row)" @click="reviewProductApplication(row, 'rejected')">拒绝</el-button>
+                </template>
+                <span v-else class="text-muted">-</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-pagination
+            v-model:current-page="applicationParams.page"
+            v-model:page-size="applicationParams.pageSize"
+            :total="applicationTotal"
+            :page-sizes="[10, 20, 50]"
+            layout="total, sizes, prev, pager, next"
+            @size-change="loadProductApplications"
+            @current-change="loadProductApplications"
+          />
+        </el-tab-pane>
       </el-tabs>
     </el-card>
 
@@ -263,10 +312,7 @@
         </div>
 
         <el-form-item label="商品名称">
-          <span style="font-weight: 600; font-size: 14px;">{{ computedProductName || '（请填写补充字段或商品简称）' }}</span>
-        </el-form-item>
-        <el-form-item label="商品简称">
-          <el-input v-model="productForm.customName" placeholder="如需覆盖自动拼装名称，请在此输入" size="small" style="width: 300px;" />
+          <span style="font-weight: 600; font-size: 14px;">{{ computedProductName || '（请填写补充字段）' }}</span>
         </el-form-item>
         <el-form-item label="厂商商品名称">
           <el-input v-model="productForm.config" placeholder="厂商商品名称" />
@@ -395,7 +441,7 @@
     <el-dialog v-model="priceImportDialogVisible" title="批量导入定价" width="700px">
       <div class="import-tips">
         <p>填写商品编码或厂商编码，二者任填一个即可。厂商编码对应多个商品时会同步更新全部商品。</p>
-        <p>只更新定价和最低售价；生效时间为空表示立即生效。上传后先校验，确认导入时只导入校验通过的记录。</p>
+        <p>只更新定价和最低售价；生效时间为空表示立即生效。点击立即导入时校验，异常记录跳过，正常记录直接导入。</p>
         <el-button type="primary" size="small" @click="downloadPriceTemplate">下载定价模板</el-button>
       </div>
       <div class="upload-area">
@@ -413,7 +459,7 @@
         :closable="false"
         style="margin-top: 16px;"
       >
-        校验完成：可导入 <strong>{{ priceImportValidation.success }}</strong> 行，
+        导入完成：成功 <strong>{{ priceImportValidation.success }}</strong> 行，
         异常 <strong>{{ priceImportValidation.failed }}</strong> 行，
         影响 <strong>{{ priceImportValidation.affectedProducts }}</strong> 个商品，
         价格变更 <strong>{{ priceImportValidation.priceChanges }}</strong> 条
@@ -437,7 +483,7 @@
       <template #footer>
         <el-button @click="priceImportDialogVisible = false">取消</el-button>
         <el-button v-if="priceImportValidation.errors.length > 0" @click="downloadPriceImportErrors">下载异常记录</el-button>
-        <el-button type="primary" @click="handlePriceImportSubmit" :loading="priceImportLoading" :disabled="!priceImportFile || priceImportValidating || !priceImportValidation.canImport">确认导入</el-button>
+        <el-button type="primary" @click="handlePriceImportSubmit" :loading="priceImportLoading" :disabled="!priceImportFile">立即导入</el-button>
       </template>
     </el-dialog>
 
@@ -529,7 +575,13 @@ import * as XLSX from 'xlsx'
 import api from '../api'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 
-const activeTab = ref('product')
+const currentUserInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
+const currentRoleCode = currentUserInfo.roleCode || ''
+const currentRoleCodes = Array.isArray(currentUserInfo.roles) && currentUserInfo.roles.length
+  ? currentUserInfo.roles
+  : String(currentRoleCode).split(',').map(item => item.trim()).filter(Boolean)
+const productApprovalOnly = currentRoleCodes.length > 0 && currentRoleCodes.every(role => ['finance', 'purchaser'].includes(role))
+const activeTab = ref(productApprovalOnly ? 'approval' : 'product')
 const productDraftKey = () => productForm.productId ? `product-edit:${productForm.productId}` : 'product-create'
 
 // ========== 商品管理 ==========
@@ -538,6 +590,11 @@ const tableData = ref([])
 const total = ref(0)
 const queryParams = reactive({ page: 1, pageSize: 20, keyword: '', categoryId: '' })
 const categoryTree = ref([])
+const canReviewProductApplications = ['finance', 'purchaser', 'admin', 'boss'].some(role => currentRoleCodes.includes(role))
+const productApplications = ref([])
+const applicationLoading = ref(false)
+const applicationTotal = ref(0)
+const applicationParams = reactive({ page: 1, pageSize: 20, status: '' })
 
 const dialogVisible = ref(false)
 const dialogTitle = ref('新建商品')
@@ -570,8 +627,7 @@ const productForm = reactive({
   remark: '',
   status: 1,
   barcodes: [],
-  attributes: {},
-  customName: ''
+  attributes: {}
 })
 
 const addFormBarcode = () => {
@@ -582,14 +638,13 @@ const addFormBarcode = () => {
 const removeFormBarcode = (index) => { productForm.barcodes.splice(index, 1) }
 
 const computedProductName = computed(() => {
-  if (productForm.customName) return productForm.customName
   const parts = []
   for (const field of categoryFields.value) {
     if (productForm.attributes[field.field_key]) {
       parts.push(productForm.attributes[field.field_key])
     }
   }
-  return parts.join(' ') || ''
+  return parts.join(' ') || productForm.name || ''
 })
 
 const standardFields = ['brand', 'series', 'model', 'processor', 'memory', 'storage', 'color', 'gpu', 'accessory_type']
@@ -711,7 +766,6 @@ const handleEdit = async (row) => {
   productForm.remark = row.remark || ''
   productForm.status = row.status || 1
   productForm.barcodes = (row.barcodes || []).map(b => ({ type: b.type, code: b.code }))
-  productForm.customName = ''
   categoryFields.value = []
   categoryFieldCatName.value = ''
 
@@ -776,7 +830,6 @@ const resetForm = () => {
   productForm.status = 1
   productForm.barcodes = []
   productForm.attributes = {}
-  productForm.customName = ''
   categoryFields.value = []
   categoryFieldCatName.value = ''
   formNewBarcode.value = ''
@@ -809,7 +862,7 @@ const restoreProductDraft = () => {
 
 const handleSubmit = async () => {
   const finalName = computedProductName.value || productForm.name
-  if (!finalName) { ElMessage.warning('请填写补充字段或商品简称'); return }
+  if (!finalName) { ElMessage.warning('请填写补充字段'); return }
   submitLoading.value = true
   try {
     const attributes = {}
@@ -835,10 +888,16 @@ const handleSubmit = async () => {
       res = await api.createProduct(data)
     }
     if (res.code === 0) {
-      ElMessage.success(productForm.productId ? '更新成功' : '创建成功')
+      const isApplication = !productForm.productId && res.pendingApproval
+      ElMessage.success(isApplication ? '新建商品申请已提交，等待审批' : (productForm.productId ? '更新成功' : '创建成功'))
       clearDraft(productDraftKey())
       dialogVisible.value = false
-      loadData()
+      if (isApplication) {
+        activeTab.value = 'approval'
+        loadProductApplications()
+      } else {
+        loadData()
+      }
     } else { ElMessage.error(res.message || '操作失败') }
   } catch (err) {
     ElMessage.error(err?.response?.data?.message || err?.message || '操作失败')
@@ -928,7 +987,6 @@ const batchRefreshLoading = ref(false)
 const priceImportDialogVisible = ref(false)
 const priceImportFile = ref(null)
 const priceImportLoading = ref(false)
-const priceImportValidating = ref(false)
 const priceImportValidated = ref(false)
 const priceImportValidation = reactive({ success: 0, failed: 0, errors: [], affectedProducts: 0, priceChanges: 0, canImport: false })
 const costImportDialogVisible = ref(false)
@@ -995,9 +1053,9 @@ const handlePriceImport = () => {
   priceImportDialogVisible.value = true
 }
 
-const handlePriceFileChange = async (file) => {
+const handlePriceFileChange = (file) => {
   priceImportFile.value = file.raw
-  await validatePriceImportFile()
+  resetPriceImportValidation()
 }
 
 const clearPriceFile = () => {
@@ -1013,35 +1071,6 @@ const resetPriceImportValidation = () => {
   priceImportValidation.affectedProducts = 0
   priceImportValidation.priceChanges = 0
   priceImportValidation.canImport = false
-}
-
-const validatePriceImportFile = async () => {
-  resetPriceImportValidation()
-  if (!priceImportFile.value) return
-  priceImportValidating.value = true
-  try {
-    const res = await api.validateImportPrices(priceImportFile.value)
-    if (res.code === 0) {
-      priceImportValidation.success = res.data.success || 0
-      priceImportValidation.failed = res.data.failed || 0
-      priceImportValidation.errors = res.data.errors || []
-      priceImportValidation.affectedProducts = res.data.affectedProducts || 0
-      priceImportValidation.priceChanges = res.data.priceChanges || 0
-      priceImportValidation.canImport = !!res.data.canImport
-      priceImportValidated.value = true
-      if (priceImportValidation.canImport) {
-        ElMessage.success('校验完成，请确认导入')
-      } else {
-        ElMessage.warning('校验完成，没有可导入的有效记录')
-      }
-    } else {
-      ElMessage.error(res.message || '校验失败')
-    }
-  } catch (err) {
-    ElMessage.error(err?.response?.data?.message || '校验失败')
-  } finally {
-    priceImportValidating.value = false
-  }
 }
 
 const downloadPriceTemplate = () => {
@@ -1063,27 +1092,34 @@ const downloadPriceTemplate = () => {
 
 const handlePriceImportSubmit = async () => {
   if (!priceImportFile.value) { ElMessage.warning('请选择文件'); return }
-  if (!priceImportValidated.value) {
-    await validatePriceImportFile()
-  }
-  if (!priceImportValidation.canImport) {
-    ElMessage.warning('没有可导入的有效记录')
-    return
-  }
+  resetPriceImportValidation()
   priceImportLoading.value = true
   try {
     const res = await api.importPrices(priceImportFile.value)
     if (res.code === 0) {
-      importResult.success = res.data.success
-      importResult.failed = res.data.failed
-      importResult.errors = res.data.errors || []
-      importResult.affectedProducts = res.data.affectedProducts || 0
-      importResult.pending = res.data.pending || 0
-      importResult.effective = res.data.effective || 0
-      importResult.batchNo = res.data.batchNo || ''
-      priceImportDialogVisible.value = false
-      importResultVisible.value = true
+      const data = res.data || {}
+      priceImportValidation.success = data.success || 0
+      priceImportValidation.failed = data.failed || 0
+      priceImportValidation.errors = data.errors || []
+      priceImportValidation.affectedProducts = data.affectedProducts || 0
+      priceImportValidation.priceChanges = data.priceChanges || 0
+      priceImportValidation.canImport = false
+      priceImportValidated.value = true
       loadPriceData()
+      if (priceImportValidation.failed > 0) {
+        priceImportFile.value = null
+        ElMessage.warning(`已导入 ${priceImportValidation.success} 行，${priceImportValidation.failed} 行异常，请下载异常记录修改后重新导入`)
+      } else {
+        importResult.success = data.success || 0
+        importResult.failed = data.failed || 0
+        importResult.errors = []
+        importResult.affectedProducts = data.affectedProducts || 0
+        importResult.pending = data.pending || 0
+        importResult.effective = data.effective || 0
+        importResult.batchNo = data.batchNo || ''
+        priceImportDialogVisible.value = false
+        importResultVisible.value = true
+      }
     } else ElMessage.error(res.message || '导入失败')
   } catch (err) {
     ElMessage.error(err?.response?.data?.message || '导入失败')
@@ -1249,6 +1285,20 @@ const downloadTemplate = () => {
   ws['!cols'] = Array(19).fill(null).map(() => ({ wch: 14 }))
   XLSX.writeFile(wb, '商品导入模板.xlsx')
 }
+
+const getProductImportErrorMessage = (source) => {
+  const payload = source?.response?.data || source || {}
+  const errors = payload?.data?.errors || payload?.errors || []
+  const details = Array.isArray(errors)
+    ? errors.slice(0, 3).map(item => {
+        const row = item?.row ? `第${item.row}行：` : ''
+        return `${row}${item?.message || item?.reason || ''}`
+      }).filter(Boolean)
+    : []
+  const message = payload?.message || payload?.error || source?.message || '导入失败'
+  return details.length > 0 ? `${message}；${details.join('；')}` : message
+}
+
 const handleImportSubmit = async () => {
   if (!importFile.value) { ElMessage.warning('请选择文件'); return }
   importLoading.value = true
@@ -1258,20 +1308,66 @@ const handleImportSubmit = async () => {
       importResult.success = res.data.success; importResult.failed = res.data.failed; importResult.errors = res.data.errors || []
       importResult.affectedProducts = 0; importResult.pending = 0; importResult.effective = 0; importResult.batchNo = ''
       importDialogVisible.value = false; importResultVisible.value = true; loadData()
-    } else ElMessage.error(res.message || '导入失败')
-  } catch (err) { ElMessage.error(err?.response?.data?.message || '导入失败') }
+    } else ElMessage.error(getProductImportErrorMessage(res))
+  } catch (err) { ElMessage.error(getProductImportErrorMessage(err)) }
   finally { importLoading.value = false }
 }
 
 const formatNum = (v) => { if (v === null || v === undefined) return '0.00'; return Number(v).toFixed(2) }
 const formatTime = (t) => { if (!t) return '-'; const d = new Date(t); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0') }
 
+const loadProductApplications = async () => {
+  applicationLoading.value = true
+  try {
+    const res = await api.getProductApplicationList(applicationParams)
+    if (res.code === 0) {
+      productApplications.value = res.data?.list || []
+      applicationTotal.value = res.data?.pagination?.total || res.data?.total || 0
+    }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || '商品申请加载失败')
+  } finally {
+    applicationLoading.value = false
+  }
+}
+
+const productApplicationStatusText = (status) => ({ pending: '待审批', approved: '已通过', rejected: '已拒绝' }[status] || status)
+const productApplicationStatusType = (status) => ({ pending: 'warning', approved: 'success', rejected: 'danger' }[status] || 'info')
+const isOwnProductApplication = (row) => Number(row.applicant_staff_id) === Number(currentUserInfo.staffId || currentUserInfo.id)
+
+const reviewProductApplication = async (row, action) => {
+  try {
+    let comment = ''
+    if (action === 'rejected') {
+      const prompt = await ElMessageBox.prompt('请输入拒绝原因', '拒绝商品申请', {
+        confirmButtonText: '确定拒绝', cancelButtonText: '取消', inputValidator: value => Boolean(String(value || '').trim()), inputErrorMessage: '拒绝原因不能为空'
+      })
+      comment = prompt.value
+    } else {
+      await ElMessageBox.confirm(`确认通过商品「${row.product_name}」的新建申请？`, '审批确认', { type: 'warning' })
+    }
+    const res = await api.reviewProductApplication(row.application_id, { action, comment })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '审批完成')
+      await loadProductApplications()
+      if (action === 'approved') loadData()
+    }
+  } catch (err) {
+    if (err === 'cancel' || err === 'close') return
+    ElMessage.error(err?.response?.data?.message || err?.message || '审批失败')
+  }
+}
+
 const onTabChange = (tab) => {
   if (tab === 'product') loadData()
   else if (tab === 'category') loadCategoryTree()
   else if (tab === 'price') loadPriceData()
+  else if (tab === 'approval') loadProductApplications()
 }
-onMounted(() => { loadData(); loadCategoryTree() })
+onMounted(() => {
+  if (productApprovalOnly) loadProductApplications()
+  else { loadData(); loadCategoryTree() }
+})
 </script>
 
 <style scoped>

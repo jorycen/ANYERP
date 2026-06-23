@@ -13,7 +13,7 @@ const {
   SettlementAccountTransaction,
   sequelize
 } = require('../../models');
-const { Op } = require('sequelize');
+const { Op, col, where } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult } = require('../../utils');
 const moment = require('moment');
 const XLSX = require('xlsx');
@@ -247,14 +247,17 @@ function makePaymentImportKey(settlement) {
 }
 
 async function getCurrentAccountBalance(accountId, transaction = null) {
-  const latestTx = await SettlementAccountTransaction.findOne({
-    attributes: ['balance_after'],
-    where: { account_id: accountId },
-    order: [['create_time', 'DESC'], ['transaction_id', 'DESC']],
-    raw: true,
-    transaction
-  });
-  return latestTx ? (Number(latestTx.balance_after) || 0) : 0;
+  const [incomeAmount, expenseAmount] = await Promise.all([
+    SettlementAccountTransaction.sum('amount', {
+      where: { account_id: accountId, type: 'income' },
+      transaction
+    }),
+    SettlementAccountTransaction.sum('amount', {
+      where: { account_id: accountId, type: 'expense' },
+      transaction
+    })
+  ]);
+  return roundAmount(Number(incomeAmount || 0) - Number(expenseAmount || 0));
 }
 
 async function refreshSettlementPaymentState(settlement, transaction = null) {
@@ -445,18 +448,19 @@ async function cancelPayment(ctx) {
 }
 
 function buildPaymentCandidateWhere(query = {}) {
-  const where = {
+  const candidateWhere = {
     status: 'confirmed',
-    payment_status: { [Op.ne]: 'paid' }
+    payment_status: { [Op.ne]: 'paid' },
+    [Op.and]: where(col('total_amount'), Op.gt, col('paid_amount'))
   };
-  if (query.supplierId) where.supplier_id = query.supplierId;
-  if (query.paymentStatus) where.payment_status = query.paymentStatus;
+  if (query.supplierId) candidateWhere.supplier_id = query.supplierId;
+  if (query.paymentStatus) candidateWhere.payment_status = query.paymentStatus;
   if (query.startDate || query.endDate) {
-    where.create_time = {};
-    if (query.startDate) where.create_time[Op.gte] = new Date(`${query.startDate}T00:00:00.000+08:00`);
-    if (query.endDate) where.create_time[Op.lte] = new Date(`${query.endDate}T23:59:59.999+08:00`);
+    candidateWhere.create_time = {};
+    if (query.startDate) candidateWhere.create_time[Op.gte] = new Date(`${query.startDate}T00:00:00.000+08:00`);
+    if (query.endDate) candidateWhere.create_time[Op.lte] = new Date(`${query.endDate}T23:59:59.999+08:00`);
   }
-  return where;
+  return candidateWhere;
 }
 
 async function getPaymentCandidates(ctx) {
@@ -660,6 +664,12 @@ async function commitPaymentImport(ctx) {
   const batchNo = `PB${moment().format('YYYYMMDDHHmmss')}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`;
 
   await sequelize.transaction(async (transaction) => {
+    const lockedAccount = await SettlementAccount.findOne({
+      where: { account_id: accountId, status: 1 },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!lockedAccount) ctx.throw(400, '付款账户不存在或已停用');
     let balance = await getCurrentAccountBalance(accountId, transaction);
 
     await SettlementPaymentBatch.create({
@@ -675,6 +685,23 @@ async function commitPaymentImport(ctx) {
     }, { transaction });
 
     for (const row of result.validRows) {
+      const settlement = await Settlement.findByPk(row.settlementId, {
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      if (!settlement || settlement.status !== 'confirmed' || settlement.payment_status === 'paid') {
+        ctx.throw(400, `结算单 ${row.settlementNo} 当前状态不可付款`);
+      }
+
+      const activePaidAmount = await SettlementPaymentRecord.sum('amount', {
+        where: { settlement_id: row.settlementId, status: 'active' },
+        transaction
+      });
+      const remainingAmount = roundAmount(Number(settlement.total_amount || 0) - Number(activePaidAmount || 0));
+      if (row.amount > remainingAmount) {
+        ctx.throw(400, `结算单 ${row.settlementNo} 本次付款金额超过剩余未付款金额 ${remainingAmount}`);
+      }
+
       const transactionId = generateUUID();
       balance = roundAmount(balance - row.amount);
 
@@ -705,10 +732,6 @@ async function commitPaymentImport(ctx) {
         create_user: user.name || user.staffId
       }, { transaction });
 
-      const settlement = await Settlement.findByPk(row.settlementId, {
-        include: [{ model: SettlementItem, as: 'items' }],
-        transaction
-      });
       await refreshSettlementPaymentState(settlement, transaction);
     }
   });
@@ -717,6 +740,111 @@ async function commitPaymentImport(ctx) {
     code: 0,
     message: '付款导入成功',
     data: { batchId, batchNo, totalAmount: result.totalAmount, totalCount: result.validRows.length }
+  };
+}
+
+async function createDirectPayment(ctx) {
+  const { settlementId, accountId, amount } = ctx.request.body;
+  const user = ctx.state.user;
+  const paymentAmount = roundAmount(amount);
+
+  if (!settlementId) ctx.throw(400, '结算单ID不能为空');
+  if (!accountId) ctx.throw(400, '请选择付款账户');
+  if (!Number.isFinite(Number(amount)) || paymentAmount <= 0) {
+    ctx.throw(400, '本次付款金额必须大于0');
+  }
+
+  const batchId = generateUUID();
+  const paymentId = generateUUID();
+  const batchNo = `PB${moment().format('YYYYMMDDHHmmss')}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`;
+  let result = null;
+
+  await sequelize.transaction(async (transaction) => {
+    const account = await SettlementAccount.findOne({
+      where: { account_id: accountId, status: 1 },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!account) ctx.throw(400, '付款账户不存在或已停用');
+
+    const settlement = await Settlement.findByPk(settlementId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!settlement) ctx.throw(404, '结算单不存在');
+    if (settlement.status !== 'confirmed' || settlement.payment_status === 'paid') {
+      ctx.throw(400, '当前结算单不可付款');
+    }
+
+    const activePaidAmount = await SettlementPaymentRecord.sum('amount', {
+      where: { settlement_id: settlementId, status: 'active' },
+      transaction
+    });
+    const remainingAmount = roundAmount(Number(settlement.total_amount || 0) - Number(activePaidAmount || 0));
+    if (paymentAmount > remainingAmount) {
+      ctx.throw(400, `本次付款金额超过剩余未付款金额 ${remainingAmount}`);
+    }
+
+    const balanceBefore = roundAmount(await getCurrentAccountBalance(accountId, transaction));
+    const balanceAfter = roundAmount(balanceBefore - paymentAmount);
+    const transactionId = generateUUID();
+    const operator = user.name || user.staffId;
+
+    await SettlementPaymentBatch.create({
+      batch_id: batchId,
+      batch_no: batchNo,
+      account_id: accountId,
+      account_name: account.account_name,
+      total_amount: paymentAmount,
+      total_count: 1,
+      status: 'active',
+      remark: '单笔立即付款',
+      create_user: operator
+    }, { transaction });
+
+    await SettlementAccountTransaction.create({
+      transaction_id: transactionId,
+      account_id: accountId,
+      type: 'expense',
+      amount: paymentAmount,
+      balance_after: balanceAfter,
+      description: `应付付款：${settlement.settlement_no} 供应商：${settlement.supplier_name || ''}`,
+      related_ref: batchNo,
+      create_user: operator
+    }, { transaction });
+
+    await SettlementPaymentRecord.create({
+      payment_id: paymentId,
+      batch_id: batchId,
+      settlement_id: settlementId,
+      settlement_no: settlement.settlement_no,
+      supplier_name: settlement.supplier_name || '',
+      account_id: accountId,
+      amount: paymentAmount,
+      payment_time: new Date(),
+      remark: '单笔立即付款',
+      import_key: `DIRECT:${paymentId}`,
+      transaction_id: transactionId,
+      status: 'active',
+      create_user: operator
+    }, { transaction });
+
+    const paymentState = await refreshSettlementPaymentState(settlement, transaction);
+    result = {
+      batchId,
+      batchNo,
+      paymentId,
+      amount: paymentAmount,
+      balanceBefore,
+      balanceAfter,
+      paymentStatus: paymentState.paymentStatus
+    };
+  });
+
+  ctx.body = {
+    code: 0,
+    message: result.balanceAfter < 0 ? '付款登记成功，账户余额已为负数' : '付款登记成功',
+    data: result
   };
 }
 
@@ -757,6 +885,10 @@ async function voidPaymentBatch(ctx) {
   if (batch.status === 'voided') ctx.throw(400, '付款批次已撤销');
 
   await sequelize.transaction(async (transaction) => {
+    await SettlementAccount.findByPk(batch.account_id, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
     let balance = await getCurrentAccountBalance(batch.account_id, transaction);
     const records = batch.records || [];
 
@@ -782,8 +914,8 @@ async function voidPaymentBatch(ctx) {
       }, { transaction });
 
       const settlement = await Settlement.findByPk(record.settlement_id, {
-        include: [{ model: SettlementItem, as: 'items' }],
-        transaction
+        transaction,
+        lock: transaction.LOCK.UPDATE
       });
       if (settlement) {
         await refreshSettlementPaymentState(settlement, transaction);
@@ -814,6 +946,7 @@ module.exports = {
   exportPaymentCandidates,
   validatePaymentImport,
   commitPaymentImport,
+  createDirectPayment,
   getPaymentBatches,
   getPaymentBatchDetail,
   voidPaymentBatch,

@@ -20,11 +20,14 @@ const {
   ManufacturerPriceHistory,
   ManufacturerRebatePolicy,
   RebateEstimate,
+  ResourceSettlement,
   SalesSettlementCostAdjustment,
   sequelize
 } = require('../../models');
 const { Op } = require('sequelize');
 const { generateOrderNo, generateUUID, paginate, formatPaginatedResult } = require('../../utils');
+const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement } = require('../inventory/resourceRights');
+const { getUserRoles } = require('../../middleware/permission');
 
 function chinaDateBoundary(dateText, endOfDay = false) {
   if (!dateText) return null;
@@ -51,6 +54,55 @@ function buildChinaDateRange(startDate, endDate) {
 /**
  * 销售订单列表
  */
+async function auxiliaryStaff(ctx) {
+  const user = ctx.state.user || {};
+  const distributorId = user.distributorId;
+  if (!distributorId) ctx.throw(403, '当前账号未绑定经销商');
+
+  const rows = await Staff.findAll({
+    where: {
+      distributor_id: distributorId,
+      is_deleted: 0,
+      status: 1
+    },
+    attributes: ['staff_id', 'name', 'phone', 'role_code', 'store_id', 'distributor_id'],
+    include: [
+      { model: Store, as: 'Store', attributes: ['store_id', 'name'], required: false },
+      {
+        model: Store,
+        as: 'AssignedStores',
+        attributes: ['store_id', 'name'],
+        through: { attributes: [] },
+        required: false,
+        where: { is_deleted: 0, status: 1 }
+      }
+    ],
+    order: [['store_id', 'ASC'], ['name', 'ASC']]
+  });
+
+  const list = rows.map(row => {
+    const data = row.toJSON();
+    const assignedStores = data.AssignedStores || [];
+    const primaryStore = data.Store || assignedStores[0] || null;
+    const storeNames = assignedStores.map(store => store.name).filter(Boolean);
+    if (primaryStore && primaryStore.name && !storeNames.includes(primaryStore.name)) {
+      storeNames.unshift(primaryStore.name);
+    }
+
+    return {
+      staffId: data.staff_id,
+      name: data.name,
+      phone: data.phone,
+      roleCode: data.role_code || 'staff',
+      distributorId: data.distributor_id,
+      storeId: primaryStore ? primaryStore.store_id : (data.store_id || ''),
+      storeName: storeNames.join('、') || ''
+    };
+  });
+
+  ctx.body = { code: 0, data: list };
+}
+
 async function list(ctx) {
   const {
     storeId, startDate, endDate, customerPhone, orderNo,
@@ -60,7 +112,7 @@ async function list(ctx) {
   const user = ctx.state.user;
 
   const where = { is_deleted: 0 };
-  const regionCodes = Array.isArray(user.regionCodes) ? user.regionCodes.filter(Boolean) : [];
+  const accessibleStoreIds = Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds.filter(Boolean) : [];
 
   const dateRange = buildChinaDateRange(startDate, endDate);
   if (dateRange) {
@@ -81,16 +133,12 @@ async function list(ctx) {
 
   if (storeId) {
     where.store_id = storeId;
-  } else if (user.storeId && !['boss', 'admin'].includes(user.roleCode)) {
-    where.store_id = user.storeId;
-  } else if (regionCodes.length > 0 && !regionCodes.includes('*')) {
-    const stores = await Store.findAll({ where: { region_id: regionCodes } });
-    const storeIds = stores.map(s => s.store_id);
-    if (storeIds.length === 0) {
+  } else if (!accessibleStoreIds.includes('*')) {
+    if (accessibleStoreIds.length === 0) {
       ctx.body = formatPaginatedResult([], { page, pageSize, count: 0 });
       return;
     }
-    where.store_id = storeIds;
+    where.store_id = accessibleStoreIds;
   }
 
   const itemWhere = {};
@@ -159,6 +207,10 @@ function firstNonEmpty(source, keys, defaultValue = '') {
   return defaultValue;
 }
 
+function toBoolean(value) {
+  return value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+}
+
 function pickOrderItemsPayload(data = {}) {
   const candidates = [
     data.items,
@@ -176,6 +228,15 @@ function pickOrderItemsPayload(data = {}) {
   return candidates.find(Array.isArray) || [];
 }
 
+function selectedResourcesFromJson(value) {
+  try {
+    const parsed = Array.isArray(value) ? value : JSON.parse(value || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
 function normalizeOrderItemInput(item = {}) {
   const rawSalePrice = firstNonEmpty(item, ['salePrice', 'sale_price', 'SALE_PRICE', 'unitPrice', 'unit_price', 'price'], null);
   const rawQuantity = firstNonEmpty(item, ['quantity', 'QUANTITY'], null);
@@ -187,6 +248,9 @@ function normalizeOrderItemInput(item = {}) {
     : Number(rawSubtotal);
   const snId = firstNonEmpty(item, ['snId', 'sn_id', 'SN_ID', 'inventoryId', 'inventory_id', 'INVENTORY_ID', 'inventorySnId', 'inventory_sn_id']);
   const snCode = firstNonEmpty(item, ['snCode', 'sn_code', 'SN_CODE', 'sn', 'SN', 'serialNo', 'serial_no', 'productSn', 'product_sn']);
+  const rawResourceTypes = firstNonEmpty(item, ['selectedResourceTypes', 'selected_resource_types'], []);
+  let selectedResourceTypes = selectedResourcesFromJson(rawResourceTypes);
+  selectedResourceTypes = [...new Set(selectedResourceTypes.map(value => String(value || '').trim()).filter(Boolean))];
 
   return {
     item_id: firstNonEmpty(item, ['itemId', 'item_id', 'ITEM_ID', 'orderItemId', 'order_item_id', '_id', 'id']),
@@ -198,6 +262,10 @@ function normalizeOrderItemInput(item = {}) {
     sn_code: snCode,
     imei1: firstNonEmpty(item, ['imei1', 'imei_1', 'IMEI1']),
     imei2: firstNonEmpty(item, ['imei2', 'imei_2', 'IMEI2']),
+    use_gov_subsidy: selectedResourceTypes.includes('GOV_SUBSIDY') || toBoolean(firstNonEmpty(item, ['useGovSubsidy', 'use_gov_subsidy'], false)),
+    use_edu_subsidy: selectedResourceTypes.includes('EDU_SUBSIDY') || toBoolean(firstNonEmpty(item, ['useEduSubsidy', 'use_edu_subsidy'], false)),
+    use_sales_report: selectedResourceTypes.includes('SALES_REPORT') || toBoolean(firstNonEmpty(item, ['useSalesReport', 'use_sales_report'], false)),
+    selected_resource_types: selectedResourceTypes,
     sale_price: salePrice,
     quantity,
     subtotal
@@ -246,6 +314,10 @@ async function syncOrderItemsFromPayload(order, data = {}, transaction = null) {
       ? existingById.get(String(normalized.item_id))
       : existingItems[index];
     if (!existing) continue;
+    const hasLockedResource = Number(existing.use_gov_subsidy) || Number(existing.use_edu_subsidy) || Number(existing.use_sales_report) || selectedResourcesFromJson(existing.selected_resource_types).length > 0;
+    if (hasLockedResource && ((normalized.sn_id && normalized.sn_id !== existing.sn_id) || (normalized.sn_code && normalized.sn_code !== existing.sn_code))) {
+      throw Object.assign(new Error('订单已锁定SN资源权益，不能直接更换SN；请取消订单后重新开单'), { status: 409 });
+    }
 
     const updatePayload = compactUpdatePayload({
       product_id: normalized.product_id,
@@ -288,7 +360,7 @@ async function create(ctx) {
     customerName, customerPhone, customerSource,
     items, payments = [], discountAmount = 0,
     nationalSubsidy = 0, educationSubsidy = 0,
-    invoiceStatus = '不开票', remark, storeId, status, orderStatus
+    invoiceStatus = '不开票', remark, storeId, status, orderStatus, untaxedInvoiceConfirmed = false
   } = ctx.request.body;
 
   if (!Array.isArray(items) || items.length === 0) {
@@ -330,6 +402,25 @@ async function create(ctx) {
       ctx.throw(400, `商品 ${item.product_id} 不存在`);
     }
 
+  }
+
+  const snItems = normalizedItems.filter(item => item.sn_id || item.sn_code);
+  if (Number(nationalSubsidy) > 0 && !normalizedItems.some(item => item.use_gov_subsidy)) {
+    if (snItems.length !== 1) ctx.throw(400, '订单包含多台SN商品，请明确选择使用国补权益的机器');
+    snItems[0].use_gov_subsidy = true;
+    snItems[0].selected_resource_types = [...new Set([...(snItems[0].selected_resource_types || []), 'GOV_SUBSIDY'])];
+  }
+  if (Number(educationSubsidy) > 0 && !normalizedItems.some(item => item.use_edu_subsidy)) {
+    if (snItems.length !== 1) ctx.throw(400, '订单包含多台SN商品，请明确选择使用教育补贴权益的机器');
+    snItems[0].use_edu_subsidy = true;
+    snItems[0].selected_resource_types = [...new Set([...(snItems[0].selected_resource_types || []), 'EDU_SUBSIDY'])];
+  }
+  if (invoiceStatus && invoiceStatus !== '不开票' && snItems.length) {
+    const snWhere = snItems.map(item => item.sn_id ? { sn_id: item.sn_id } : { sn_code: item.sn_code, product_id: item.product_id });
+    const selectedSns = await ProductSn.findAll({ where: { [Op.or]: snWhere, is_deleted: 0 } });
+    if (selectedSns.some(sn => sn.tax_type === 'UNTAXED') && !untaxedInvoiceConfirmed) {
+      ctx.throw(409, '该机器为未税库存，请确认是否允许开票销售');
+    }
   }
 
   const finalOrderStatus = status || orderStatus || (needsApproval ? 'pending_approval' : '未归档');
@@ -376,7 +467,11 @@ async function create(ctx) {
       imei2: item.imei2,
       sale_price: item.sale_price,
       quantity: item.quantity || 1,
-      subtotal: item.subtotal
+      subtotal: item.subtotal,
+      use_gov_subsidy: item.use_gov_subsidy ? 1 : 0,
+      use_edu_subsidy: item.use_edu_subsidy ? 1 : 0,
+      use_sales_report: item.use_sales_report ? 1 : 0,
+      selected_resource_types: JSON.stringify(item.selected_resource_types || [])
     }, { transaction });
   }
 
@@ -401,6 +496,8 @@ async function create(ctx) {
   }
 
   await reserveInventoryForOrder({ order_id: orderId, store_id: actualStoreId }, transaction);
+  const createdItems = await OrderItem.findAll({ where: { order_id: orderId }, transaction });
+  await lockSaleRights({ order_id: orderId, order_no: orderNo, create_user: user.name }, createdItems, transaction);
   });
 
   ctx.body = {
@@ -431,23 +528,27 @@ async function detail(ctx) {
     ctx.throw(404, '订单不存在');
   }
 
+  assertStoreVisible(order.store_id, ctx.state.user);
+
   const result = order.toJSON();
   const items = result.OrderItems || [];
   const snCodes = items.map(item => item.sn_code).filter(Boolean);
   if (snCodes.length > 0) {
     const snRows = await ProductSn.findAll({
       where: { sn_code: { [Op.in]: snCodes } },
-      attributes: ['sn_code', 'pn_code', 'inventory_type'],
+      attributes: ['sn_id', 'sn_code', 'pn_code', 'inventory_type', 'tax_type'],
       raw: true
     });
     const snMap = new Map(snRows.map(sn => [`${sn.pn_code || ''}|${sn.sn_code}`, sn]));
+    const summaryMap = await summariesForSns(snRows);
     result.OrderItems = items.map(item => {
       const sn = snMap.get(`${item.pn_code || ''}|${item.sn_code}`) || snRows.find(row => row.sn_code === item.sn_code);
       return {
         ...item,
         pn_code: item.pn_code || sn?.pn_code || '',
         sn_code: item.sn_code || '',
-        inventory_type: item.inventory_type || sn?.inventory_type || ''
+        inventory_type: item.inventory_type || sn?.inventory_type || '',
+        resource_summary: sn ? summaryMap.get(sn.sn_id) : null
       };
     });
   }
@@ -472,12 +573,13 @@ async function approve(ctx) {
   const user = ctx.state.user;
 
   const allowedRoles = ['boss', 'admin', 'manager'];
-  if (!allowedRoles.includes(user.roleCode)) {
+  if (!getUserRoles(user).some(role => allowedRoles.includes(role))) {
     ctx.throw(403, '仅店长或经销商总账号可以审批');
   }
 
   const order = await Order.findByPk(orderId);
   if (!order) ctx.throw(404, '订单不存在');
+  assertStoreVisible(order.store_id, user);
   if (order.order_status !== 'pending_approval') {
     ctx.throw(400, '该订单无需审批');
   }
@@ -499,12 +601,13 @@ async function reject(ctx) {
   const user = ctx.state.user;
 
   const allowedRoles = ['boss', 'admin', 'manager'];
-  if (!allowedRoles.includes(user.roleCode)) {
+  if (!getUserRoles(user).some(role => allowedRoles.includes(role))) {
     ctx.throw(403, '仅店长或经销商总账号可以审批');
   }
 
   const order = await Order.findByPk(orderId);
   if (!order) ctx.throw(404, '订单不存在');
+  assertStoreVisible(order.store_id, user);
   if (order.order_status !== 'pending_approval') {
     ctx.throw(400, '该订单无需审批');
   }
@@ -513,6 +616,8 @@ async function reject(ctx) {
 
   await sequelize.transaction(async (transaction) => {
     await releaseReservedInventoryForOrder(order, transaction);
+    const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+    await releaseSaleRights(order, items, transaction);
     await releaseDepositRedemptionForOrder(order, transaction, '订单审批拒绝');
     await order.update({
       order_status: 'cancelled',
@@ -536,18 +641,24 @@ async function update(ctx) {
     ctx.throw(404, '订单不存在');
   }
 
+  assertStoreVisible(order.store_id, ctx.state.user);
+
   const nextStatus = data.order_status || data.status;
   await sequelize.transaction(async (transaction) => {
     await syncOrderItemsFromPayload(order, data, transaction);
 
     if (isArchiveStatus(nextStatus) && !isArchiveStatus(order.order_status)) {
       await validateAndDeductInventoryForArchive(order, transaction);
+      const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+      await finishSaleRights(order, items, transaction);
       await calculateSalesSettlementCosts(order, transaction);
       data.order_status = '已归档';
       data.status = '已归档';
       syncToDailyStatement(orderId, order.store_id).catch(err => console.error('[DailySync] archive error:', err.message));
     } else if (isCancelStatus(nextStatus) && !isCancelStatus(order.order_status) && !isArchiveStatus(order.order_status)) {
       await releaseReservedInventoryForOrder(order, transaction);
+      const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+      await releaseSaleRights(order, items, transaction);
       await releaseDepositRedemptionForOrder(order, transaction, '订单取消');
     }
 
@@ -570,6 +681,8 @@ async function updateOrderItems(ctx) {
   if (!order) {
     ctx.throw(404, '订单不存在');
   }
+
+  assertStoreVisible(order.store_id, ctx.state.user);
 
   let results = [];
   await sequelize.transaction(async (transaction) => {
@@ -595,8 +708,8 @@ async function stats(ctx) {
   const user = ctx.state.user;
 
   const whereStore = {};
-  if (!user.regionCodes.includes('*')) {
-    whereStore.region_id = user.regionCodes;
+  if (!user.accessibleStoreIds.includes('*')) {
+    whereStore.store_id = user.accessibleStoreIds;
   }
   if (storeId) whereStore.store_id = storeId;
 
@@ -651,8 +764,8 @@ async function listDeposits(ctx) {
   if (customerPhone) where.customer_phone = { [Op.like]: `%${customerPhone}%` };
   if (storeId) {
     where.store_id = storeId;
-  } else if (user.storeId && !['boss', 'admin'].includes(user.roleCode)) {
-    where.store_id = user.storeId;
+  } else if (!user.accessibleStoreIds.includes('*')) {
+    where.store_id = user.accessibleStoreIds;
   }
 
   const { count, rows } = await DepositOrder.findAndCountAll({
@@ -780,6 +893,7 @@ async function availableDeposits(ctx) {
   };
   if (customerPhone) where.customer_phone = customerPhone;
   if (storeId) where.store_id = storeId;
+  else if (!user.accessibleStoreIds.includes('*')) where.store_id = user.accessibleStoreIds;
 
   const rows = await DepositOrder.findAll({
     where,
@@ -860,17 +974,19 @@ async function getProductSns(ctx) {
 
   const snRecords = await ProductSn.findAll({
     where,
-    attributes: ['sn_id', 'sn_code', 'pn_code', 'inventory_type'],
+    attributes: ['sn_id', 'sn_code', 'pn_code', 'inventory_type', 'tax_type'],
     order: [['sn_code', 'ASC']]
   });
 
+  const summaryMap = await summariesForSns(snRecords);
   ctx.body = {
     code: 0,
     data: snRecords.map(s => ({
       sn_id: s.sn_id,
       sn_code: s.sn_code,
       pn_code: s.pn_code,
-      inventory_type: s.inventory_type
+      inventory_type: s.inventory_type,
+      ...summaryMap.get(s.sn_id)
     }))
   };
 }
@@ -878,7 +994,7 @@ async function getProductSns(ctx) {
 async function recalculateSettlementCost(ctx) {
   const { orderId } = ctx.params;
   const user = ctx.state.user;
-  const roles = String(user.roleCode || '').split(',').map(role => role.trim());
+  const roles = getUserRoles(user);
   if (!roles.some(role => ['boss', 'admin', 'finance'].includes(role))) {
     ctx.throw(403, '无权重算销售结算成本');
   }
@@ -942,10 +1058,13 @@ function assertDepositCreator(deposit, user, message = '只能核销自己收的
 }
 
 function assertDepositStoreVisible(deposit, user) {
-  const roleCode = String(user.roleCode || '');
-  if (['boss', 'admin'].includes(roleCode)) return;
-  if (user.storeId && String(deposit.store_id || '') !== String(user.storeId)) {
-    const error = new Error('无权访问该门店定金单');
+  assertStoreVisible(deposit.store_id, user, '无权访问该门店定金单');
+}
+
+function assertStoreVisible(storeId, user, message = '无权访问该门店数据') {
+  if (user.accessibleStoreIds?.includes('*')) return;
+  if (!(user.accessibleStoreIds || []).map(String).includes(String(storeId || ''))) {
+    const error = new Error(message);
     error.status = 403;
     throw error;
   }
@@ -1035,8 +1154,7 @@ async function releaseDepositRedemptionForOrder(order, transaction = null, reaso
 }
 
 function canSeeCost(user) {
-  const roleCode = String(user.roleCode || '');
-  return ['boss', 'admin', 'finance', 'manager'].some(role => roleCode.split(',').map(r => r.trim()).includes(role));
+  return getUserRoles(user).some(role => ['boss', 'admin', 'finance', 'manager'].includes(role));
 }
 
 async function findCurrentManufacturerPrice({ productId, pn, saleDate, transaction = null }) {
@@ -1167,6 +1285,15 @@ async function createEstimateAndAdjustment({
     remark
   }, { transaction });
 
+  await createPendingSettlement({
+    sourceType: 'MANUFACTURER_REBATE', sourceId: estimateId,
+    sn: { sn_id: item.sn_id || `NO_SN_${item.item_id}`, sn_code: item.sn_code || '', product_id: item.product_id },
+    resourceType: 'MANUFACTURER_REBATE', amount: rebateAmount,
+    counterpartyId: priceHistory?.supplier_id || policy?.supplier_id || null,
+    counterpartyName: priceHistory?.supplier_name || policy?.supplier_name || '',
+    remark: `销售订单 ${order.order_no} 厂商返利预估到账确认`, transaction
+  });
+
   await SalesSettlementCostAdjustment.create({
     id: generateUUID(),
     sales_order_id: order.order_id,
@@ -1201,6 +1328,13 @@ async function calculateSalesSettlementCosts(order, transaction = null, options 
   if (existing > 0 && !options.force) return;
 
   if (options.force) {
+    const estimates = await RebateEstimate.findAll({ where: { sales_order_id: order.order_id }, attributes: ['estimate_id'], transaction });
+    const estimateIds = estimates.map(item => item.estimate_id);
+    if (estimateIds.length > 0) {
+      const settledCount = await ResourceSettlement.count({ where: { source_type: 'MANUFACTURER_REBATE', source_id: { [Op.in]: estimateIds }, status: 'SETTLED' }, transaction });
+      if (settledCount > 0) throw Object.assign(new Error('该订单的厂商返利已下账，不能重算'), { status: 409 });
+      await ResourceSettlement.destroy({ where: { source_type: 'MANUFACTURER_REBATE', source_id: { [Op.in]: estimateIds }, status: 'PENDING' }, transaction });
+    }
     await SalesSettlementCostAdjustment.destroy({ where: { sales_order_id: order.order_id }, transaction });
     await RebateEstimate.destroy({ where: { sales_order_id: order.order_id }, transaction });
   }
@@ -1504,6 +1638,7 @@ module.exports = {
   stats,
   approve,
   reject,
+  auxiliaryStaff,
   paymentMethods,
   listDeposits,
   createDeposit,

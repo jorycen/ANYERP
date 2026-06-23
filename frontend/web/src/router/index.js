@@ -75,7 +75,7 @@ const routes = [
         path: 'system',
         name: 'System',
         component: () => import('../views/System.vue'),
-        meta: { roles: ['manager', 'admin', 'boss'] }
+        meta: { roles: ['admin', 'boss'] }
       }
     ]
   }
@@ -89,7 +89,9 @@ const router = createRouter({
 router.beforeEach((to, from, next) => {
   const token = localStorage.getItem('token')
   const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
-  const roleCode = userInfo.roleCode || ''
+  const userRoles = Array.isArray(userInfo.roles) && userInfo.roles.length
+    ? userInfo.roles
+    : String(userInfo.roleCode || '').split(',').map(role => role.trim()).filter(Boolean)
 
   if (to.path !== '/login' && !token) {
     next('/login')
@@ -101,7 +103,7 @@ router.beforeEach((to, from, next) => {
     return
   }
 
-  if (to.meta.roles && !to.meta.roles.includes(roleCode)) {
+  if (to.meta.roles && !userRoles.some(role => to.meta.roles.includes(role))) {
     next('/')
     return
   }

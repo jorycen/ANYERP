@@ -13,6 +13,13 @@ function splitCodes(value) {
     .filter(Boolean);
 }
 
+function assertStoreVisible(ctx, storeId) {
+  const allowed = ctx.state.user.accessibleStoreIds || [];
+  if (!allowed.includes('*') && !allowed.map(String).includes(String(storeId || ''))) {
+    ctx.throw(403, '无权访问该门店库存数据');
+  }
+}
+
 function normalizePnCode(value) {
   const code = String(value || '').trim();
   return code.length > 64 ? code.slice(0, 64) : code;
@@ -137,6 +144,7 @@ async function getList(ctx) {
     const user = ctx.state.user;
 
     const whereStore = {};
+    if (!user.accessibleStoreIds.includes('*')) whereStore.store_id = user.accessibleStoreIds;
     if (storeId) whereStore.store_id = storeId;
 
     const stores = await Store.findAll({ where: whereStore });
@@ -166,9 +174,7 @@ async function getList(ctx) {
     const salesMap = await buildSalesCountMap(productIds);
 
     const inventoryWhere = { product_id: { [Op.in]: productIds } };
-    if (storeIds.length > 0) {
-      inventoryWhere.store_id = { [Op.in]: storeIds };
-    }
+    inventoryWhere.store_id = { [Op.in]: storeIds };
 
     const inventories = await Inventory.findAll({
       where: inventoryWhere,
@@ -179,7 +185,7 @@ async function getList(ctx) {
     stores.forEach(s => allStoreMap.set(s.store_id, s.name));
 
     const locations = await Location.findAll({
-      where: storeIds.length > 0 ? { store_id: { [Op.in]: storeIds }, status: 1 } : { status: 1 },
+      where: { store_id: { [Op.in]: storeIds }, status: 1 },
       raw: true
     });
     const locationMap = new Map();
@@ -231,7 +237,7 @@ async function getList(ctx) {
           product_id: { [Op.in]: productIds },
           status: 'in_stock',
           is_deleted: 0,
-          ...(storeIds.length > 0 ? { store_id: { [Op.in]: storeIds } } : {})
+          store_id: { [Op.in]: storeIds }
         },
         attributes: ['product_id', 'store_id', 'location_id'],
         raw: true
@@ -322,6 +328,7 @@ async function getList(ctx) {
 async function getSnList(ctx) {
   try {
     const { productId, storeId, currentStoreId, status, snCode, page = 1, pageSize = 20 } = ctx.query;
+    const user = ctx.state.user;
 
     const where = { is_deleted: 0 };
     if (productId) where.product_id = productId;
@@ -330,11 +337,10 @@ async function getSnList(ctx) {
       where.store_id = storeId;
     } else {
       const whereStore = {};
+      if (!user.accessibleStoreIds.includes('*')) whereStore.store_id = user.accessibleStoreIds;
       const stores = await Store.findAll({ where: whereStore });
       const storeIds = stores.map(s => s.store_id);
-      if (storeIds.length > 0) {
-        where.store_id = { [Op.in]: storeIds };
-      }
+      where.store_id = { [Op.in]: storeIds };
     }
 
     if (status) where.status = status;
@@ -626,6 +632,7 @@ async function getInboundList(ctx) {
 
     const where = {};
     if (storeId) where.store_id = storeId;
+    else if (!ctx.state.user.accessibleStoreIds.includes('*')) where.store_id = ctx.state.user.accessibleStoreIds;
     if (status) where.status = status;
 
     const { count, rows } = await Inbound.findAndCountAll({
@@ -694,6 +701,7 @@ async function getInboundDetail(ctx) {
 
     const inbound = await Inbound.findByPk(inboundId);
     if (!inbound) ctx.throw(404, '入库单不存在');
+    assertStoreVisible(ctx, inbound.store_id);
 
     const items = await InboundItem.findAll({ where: { inbound_id: inboundId } });
     const store = await Store.findByPk(inbound.store_id);
@@ -1237,6 +1245,12 @@ async function getTransferList(ctx) {
     if (status) where.status = status;
     if (fromStoreId) where.from_store_id = fromStoreId;
     if (toStoreId) where.to_store_id = toStoreId;
+    if (!ctx.state.user.accessibleStoreIds.includes('*') && !fromStoreId && !toStoreId) {
+      where[Op.or] = [
+        { from_store_id: { [Op.in]: ctx.state.user.accessibleStoreIds } },
+        { to_store_id: { [Op.in]: ctx.state.user.accessibleStoreIds } }
+      ];
+    }
 
     const { count, rows } = await Transfer.findAndCountAll({
       where,
@@ -1302,6 +1316,7 @@ async function confirmTransferOut(ctx) {
     if (!transfer) {
       ctx.throw(404, '??????');
     }
+    assertStoreVisible(ctx, transfer.from_store_id);
     if (transfer.status !== 'pending') {
       ctx.throw(400, '???????????');
     }
@@ -1416,6 +1431,7 @@ async function confirmTransferIn(ctx) {
     if (!transfer) {
       ctx.throw(404, '调拨单不存在');
     }
+    assertStoreVisible(ctx, transfer.to_store_id);
     if (transfer.status !== 'out_confirmed') {
       ctx.throw(400, '当前状态不允许确认入库');
     }
@@ -1756,6 +1772,7 @@ async function getConversionList(ctx) {
   if (conversionType) where.conversion_type = conversionType;
   if (status) where.status = status;
   if (storeId) where.store_id = storeId;
+  else if (!ctx.state.user.accessibleStoreIds.includes('*')) where.store_id = ctx.state.user.accessibleStoreIds;
 
   const { count, rows } = await InventoryConversion.findAndCountAll({
     where,
@@ -1794,6 +1811,7 @@ async function getConversionDetail(ctx) {
     ]
   });
   if (!conversion) ctx.throw(404, '库存转换单不存在');
+  assertStoreVisible(ctx, conversion.store_id);
 
   const data = conversion.toJSON();
   ctx.body = {
@@ -1964,6 +1982,7 @@ async function voidConversion(ctx) {
       transaction: t
     });
     if (!conversion) ctx.throw(404, '库存转换单不存在');
+    assertStoreVisible(ctx, conversion.store_id);
     if (conversion.status === 'voided') ctx.throw(400, '该转换单已冲销');
 
     const items = conversion.items || [];
@@ -2067,6 +2086,7 @@ async function getReturnList(ctx) {
   const where = {};
   if (status) where.status = status;
   if (inboundId) where.inbound_id = inboundId;
+  if (!ctx.state.user.accessibleStoreIds.includes('*')) where.store_id = ctx.state.user.accessibleStoreIds;
 
   const { count, rows } = await ReturnStock.findAndCountAll({
     where,

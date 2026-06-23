@@ -214,7 +214,7 @@
     </el-dialog>
 
     <!-- 查看采购申请对话框 -->
-    <el-dialog v-model="viewDialogVisible" title="采购申请详情" width="700px">
+    <el-dialog v-model="viewDialogVisible" title="采购申请详情" width="860px">
       <div v-if="currentRequest">
         <el-descriptions :column="2" border>
           <el-descriptions-item label="申请单号">{{ currentRequest.request_no }}</el-descriptions-item>
@@ -224,7 +224,14 @@
           <el-descriptions-item label="供应商">{{ currentRequest.supplier_name }}</el-descriptions-item>
           <el-descriptions-item label="发票类型">{{ currentRequest.invoice_type || '-' }}</el-descriptions-item>
           <el-descriptions-item label="申请门店">{{ currentRequest.store_name }}</el-descriptions-item>
-          <el-descriptions-item label="申请金额">¥{{ currentRequest.total_amount }}</el-descriptions-item>
+          <el-descriptions-item label="申请金额">¥{{ formatMoney(currentRequest.total_amount) }}</el-descriptions-item>
+          <el-descriptions-item label="是否使用返利">
+            <el-tag :type="hasRebateDeduction(currentRequest) ? 'success' : 'info'">
+              {{ hasRebateDeduction(currentRequest) ? '是' : '否' }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="返利抵扣">-¥{{ formatMoney(currentRequest.rebate_deduction) }}</el-descriptions-item>
+          <el-descriptions-item label="实际应付">¥{{ formatMoney(requestActualAmount(currentRequest)) }}</el-descriptions-item>
           <el-descriptions-item label="申请时间">{{ formatDate(currentRequest.create_time) }}</el-descriptions-item>
           <el-descriptions-item label="备注" :span="2">{{ currentRequest.remark || '-' }}</el-descriptions-item>
         </el-descriptions>
@@ -237,7 +244,13 @@
           </el-table-column>
           <el-table-column prop="quantity" label="数量" width="80" />
           <el-table-column label="小计" width="100">
-            <template #default="{ row }">¥{{ (row.unit_price * row.quantity).toFixed(2) }}</template>
+            <template #default="{ row }">¥{{ formatMoney(requestItemSubtotal(row)) }}</template>
+          </el-table-column>
+          <el-table-column label="返利抵扣" width="110">
+            <template #default="{ row }">-¥{{ formatMoney(row.rebate_deduction) }}</template>
+          </el-table-column>
+          <el-table-column label="抵扣后金额" width="120">
+            <template #default="{ row }">¥{{ formatMoney(requestItemActualAmount(row)) }}</template>
           </el-table-column>
           <el-table-column label="门店分配" min-width="200">
             <template #default="{ row }">
@@ -444,6 +457,28 @@ const supplierForm = reactive({
 const toNumber = (value) => {
   const number = Number(value)
   return Number.isFinite(number) ? number : 0
+}
+
+const formatMoney = (value) => toNumber(value).toFixed(2)
+
+const hasRebateDeduction = (request) => toNumber(request?.rebate_deduction) > 0
+
+const requestActualAmount = (request) => {
+  const total = toNumber(request?.total_amount)
+  const rebate = toNumber(request?.rebate_deduction)
+  const actual = toNumber(request?.actual_total)
+  if (actual > 0 || total === 0) return actual
+  return Math.max(0, total - rebate)
+}
+
+const requestItemSubtotal = (item) => {
+  const subtotal = toNumber(item?.subtotal)
+  if (subtotal > 0) return subtotal
+  return toNumber(item?.unit_price) * toNumber(item?.quantity)
+}
+
+const requestItemActualAmount = (item) => {
+  return Math.max(0, requestItemSubtotal(item) - toNumber(item?.rebate_deduction))
 }
 
 const toQuantity = (value) => {

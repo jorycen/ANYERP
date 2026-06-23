@@ -4,7 +4,7 @@
       <template #header>
         <div class="card-header">
           <span>销售订单</span>
-          <div>
+          <div class="sales-actions">
             <el-button @click="openDepositManager">定金管理</el-button>
             <el-button type="primary" @click="handleCreate">新建订单</el-button>
           </div>
@@ -23,38 +23,45 @@
           <el-option label="已取消" value="cancelled" />
         </el-select>
         <el-date-picker v-model="queryParams.date" type="date" placeholder="选择日期" style="width: 160px" />
-        <el-button type="primary" @click="loadData">搜索</el-button>
+        <el-button type="primary" :loading="loading" @click="loadData">搜索</el-button>
       </div>
 
-      <el-table :data="tableData" stripe border>
-        <el-table-column prop="order_no" label="订单号" width="180" />
-        <el-table-column label="门店" width="130">
-          <template #default="{ row }">{{ row.Store?.name || '-' }}</template>
-        </el-table-column>
-        <el-table-column prop="create_time" label="创建时间" width="160">
-          <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
-        </el-table-column>
-        <el-table-column prop="customer_name" label="客户姓名" width="100" />
-        <el-table-column prop="customer_phone" label="联系电话" width="120" />
-        <el-table-column prop="total_amount" label="订单金额" width="100">
-          <template #default="{ row }">¥{{ row.total_amount }}</template>
-        </el-table-column>
-        <el-table-column prop="actual_payment" label="实付金额" width="100">
-          <template #default="{ row }">¥{{ row.actual_payment }}</template>
-        </el-table-column>
-        <el-table-column prop="order_status" label="状态" width="110">
-          <template #default="{ row }">
-            <el-tag :type="getStatusType(row.order_status)">{{ getStatusText(row.order_status) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="240" fixed="right">
-          <template #default="{ row }">
-            <el-button link type="primary" @click="handleView(row)">查看</el-button>
-            <el-button link type="success" @click="handleApprove(row)" v-if="row.order_status === 'pending_approval' && canApprove">审批通过</el-button>
-            <el-button link type="danger" @click="handleReject(row)" v-if="row.order_status === 'pending_approval' && canApprove">拒绝</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+      <div class="sales-table-scroll">
+        <table class="sales-order-table">
+          <thead>
+            <tr>
+              <th>订单号</th>
+              <th>门店</th>
+              <th>创建时间</th>
+              <th>客户姓名</th>
+              <th>联系电话</th>
+              <th class="money-column">订单金额</th>
+              <th class="money-column">实付金额</th>
+              <th>状态</th>
+              <th class="operation-column">操作</th>
+            </tr>
+          </thead>
+          <tbody v-if="!loading && tableData.length">
+            <tr v-for="row in tableData" :key="row.order_id">
+              <td>{{ row.order_no || '-' }}</td>
+              <td>{{ row.Store?.name || '-' }}</td>
+              <td>{{ formatDate(row.create_time) }}</td>
+              <td>{{ row.customer_name || '-' }}</td>
+              <td>{{ row.customer_phone || '-' }}</td>
+              <td class="money-column">¥{{ row.total_amount || 0 }}</td>
+              <td class="money-column">¥{{ row.actual_payment || 0 }}</td>
+              <td><el-tag :type="getStatusType(row.order_status)">{{ getStatusText(row.order_status) }}</el-tag></td>
+              <td class="operation-column">
+              <el-button link type="primary" @click="handleView(row)">查看</el-button>
+              <el-button link type="success" @click="handleApprove(row)" v-if="row.order_status === 'pending_approval' && canApprove">审批通过</el-button>
+              <el-button link type="danger" @click="handleReject(row)" v-if="row.order_status === 'pending_approval' && canApprove">拒绝</el-button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="loading" class="sales-table-state">正在加载销售订单...</div>
+        <div v-else-if="tableData.length === 0" class="sales-table-state">暂无销售订单</div>
+      </div>
 
       <el-pagination
         v-model:current-page="queryParams.page"
@@ -68,7 +75,7 @@
     </el-card>
 
     <!-- 新建/编辑订单对话框 -->
-    <el-dialog v-model="dialogVisible" :title="dialogTitle" width="950px" @close="handleDialogClose">
+    <el-dialog v-model="dialogVisible" :title="dialogTitle" width="950px" class="sales-order-dialog" @close="handleDialogClose">
       <el-form :model="orderForm" label-width="90px">
         <el-row :gutter="20">
           <el-col :span="8">
@@ -114,9 +121,9 @@
         </el-row>
 
         <!-- 商品明细 -->
-        <el-form-item label="商品明细">
+        <el-form-item label="商品明细" class="product-details-item">
           <div class="items-table">
-            <el-table :data="orderForm.items" border size="small">
+            <el-table :data="orderForm.items" border size="small" scrollbar-always-on>
               <el-table-column label="商品名称" min-width="200">
                 <template #default="{ row, $index }">
                   <el-select
@@ -171,17 +178,31 @@
                       filterable
                       style="width: 100%"
                       :loading="row.snLoading"
-                      @change="(val) => { const sn = (row.snList || []).find(s => s.sn_code === val); row.snId = sn ? sn.sn_id : ''; }"
+                      @change="(val) => onSnChange(val, $index)"
                     >
                       <el-option
                         v-for="sn in (row.snList || [])"
                         :key="sn.sn_id"
-                        :label="sn.sn_code + (sn.inventory_type && sn.inventory_type !== 'normal_qty' ? ' [' + sn.inventory_type + ']' : '')"
+                        :label="`${sn.sn_code} [${sn.sales_resource_label || '普通现货'}]`"
                         :value="sn.sn_code"
                       />
                     </el-select>
                   </template>
                   <el-input v-else v-model="row.snCode" placeholder="无SN" size="small" disabled />
+                </template>
+              </el-table-column>
+              <el-table-column label="货品销售标签 / 可用权益" min-width="250">
+                <template #default="{ row }">
+                  <template v-if="row.selectedSn">
+                    <div><el-tag size="small" :type="row.selectedSn.warning_message ? 'warning' : 'success'">{{ row.selectedSn.sales_resource_label }}</el-tag></div>
+                    <div class="resource-checks">
+                      <el-checkbox-group v-model="row.selectedResourceTypes">
+                        <el-checkbox v-for="resource in saleResourceCategories" :key="resource.category_code" :value="resource.category_code" :disabled="!resourceAvailable(row, resource.category_code)">{{ resource.short_name || resource.name }}</el-checkbox>
+                      </el-checkbox-group>
+                    </div>
+                    <div v-if="row.selectedSn.warning_message" class="resource-warning">{{ row.selectedSn.warning_message }}</div>
+                  </template>
+                  <span v-else class="muted">选择SN后自动显示</span>
                 </template>
               </el-table-column>
               <el-table-column label="单价" width="120">
@@ -321,6 +342,10 @@
           <el-table-column prop="product_name" label="商品名称" />
           <el-table-column prop="pn_code" label="PN码" width="120" />
           <el-table-column prop="sn_code" label="SN码" width="150" />
+          <el-table-column label="货品销售标签" min-width="190"><template #default="{row}">
+            <el-tag v-if="row.resource_summary">{{ row.resource_summary.sales_resource_label }}</el-tag>
+            <span v-else>-</span>
+          </template></el-table-column>
           <el-table-column prop="sale_price" label="单价" width="100">
             <template #default="{ row }">¥{{ row.sale_price }}</template>
           </el-table-column>
@@ -459,6 +484,7 @@ const storesLoading = ref(false)
 const paymentMethods = ref([])
 const tableData = ref([])
 const total = ref(0)
+const loading = ref(false)
 
 const dialogVisible = ref(false)
 const detailVisible = ref(false)
@@ -524,6 +550,7 @@ const orderForm = reactive({
   discountAmount: 0,
   remark: ''
 })
+const saleResourceCategories = ref([])
 
 const rejectDialogVisible = ref(false)
 const rejectLoading = ref(false)
@@ -544,16 +571,30 @@ const selectedDeposit = computed(() => {
   return availableDepositList.value.find(item => item.deposit_id === orderForm.depositId) || null
 })
 
-onMounted(() => {
+onMounted(async () => {
   if (isStoreUser()) {
     queryParams.storeId = getStoreId()
   }
-  loadData()
-  loadStores()
-  loadPaymentMethods()
-  loadCustomerSources()
-  openRouteOrderDetail()
+  await Promise.allSettled([
+    loadData(),
+    loadStores(),
+    loadPaymentMethods(),
+    loadCustomerSources(),
+    loadSaleResourceCategories()
+  ])
+  await openRouteOrderDetail()
 })
+
+const loadSaleResourceCategories = async () => {
+  try {
+    const res = await api.getResourceCategories({ activeOnly: 1 })
+    const rows = Array.isArray(res?.data) ? res.data : []
+    saleResourceCategories.value = rows.filter(item => item.supports_sale_use)
+  } catch (error) {
+    console.error('[Sales] 加载资源类别失败:', error)
+    saleResourceCategories.value = []
+  }
+}
 
 watch(() => route.query.orderId, () => {
   openRouteOrderDetail()
@@ -582,6 +623,8 @@ watch(() => [orderForm.customerPhone, orderForm.storeId], () => {
 })
 
 const loadData = async () => {
+  if (loading.value) return
+  loading.value = true
   try {
     const params = { ...queryParams }
     if (params.date) {
@@ -596,6 +639,8 @@ const loadData = async () => {
     }
   } catch (err) {
     ElMessage.error('加载销售数据失败: ' + (err.message || ''))
+  } finally {
+    loading.value = false
   }
 }
 
@@ -918,7 +963,12 @@ const addItem = () => {
     pnList: [],
     snList: [],
     pnLoading: false,
-    snLoading: false
+    snLoading: false,
+    selectedSn: null,
+    selectedResourceTypes: [],
+    useGovSubsidy: false,
+    useEduSubsidy: false,
+    useSalesReport: false
   })
 }
 
@@ -997,6 +1047,11 @@ const onProductChange = async (productId, index) => {
     orderForm.items[index].pnList = matchedPns
     orderForm.items[index].snList = []
     orderForm.items[index].snId = ''
+    orderForm.items[index].selectedSn = null
+    orderForm.items[index].selectedResourceTypes = []
+    orderForm.items[index].useGovSubsidy = false
+    orderForm.items[index].useEduSubsidy = false
+    orderForm.items[index].useSalesReport = false
     orderForm.items[index].stockQty = found.stock_qty
 
     if (orderForm.storeId && productId) {
@@ -1061,10 +1116,30 @@ const onPnChange = async (index) => {
   const item = orderForm.items[index]
   item.snCode = ''
   item.snId = ''
+  item.selectedSn = null
+  item.selectedResourceTypes = []
+  item.useGovSubsidy = false
+  item.useEduSubsidy = false
+  item.useSalesReport = false
   if (item.needSn) {
     console.log('[onPnChange] PN changed, reloading SN list for pn:', item.pnCode)
     await loadSnList(index)
   }
+}
+
+const onSnChange = (value, index) => {
+  const item = orderForm.items[index]
+  const sn = (item.snList || []).find(row => row.sn_code === value)
+  item.snId = sn?.sn_id || ''
+  item.selectedSn = sn || null
+  item.selectedResourceTypes = []
+  item.useGovSubsidy = false
+  item.useEduSubsidy = false
+  item.useSalesReport = false
+}
+
+const resourceAvailable = (item, type) => {
+  return item.selectedSn?.rights?.some(right => right.resource_type === type && right.current_status === 'AVAILABLE') || false
 }
 
 const onPnBlur = async (index) => {
@@ -1120,12 +1195,18 @@ const handleSubmit = async () => {
 
   submitLoading.value = true
   try {
+    let untaxedInvoiceConfirmed = false
+    if (orderForm.invoiceStatus !== '不开票' && orderForm.items.some(item => item.selectedSn?.tax_type === 'UNTAXED')) {
+      await ElMessageBox.confirm('该机器为未税库存，请确认是否允许开票销售。', '未税库存提醒', { type: 'warning', confirmButtonText: '确认继续', cancelButtonText: '返回修改' })
+      untaxedInvoiceConfirmed = true
+    }
     const data = {
       storeId: orderForm.storeId,
       customerName: orderForm.customerName,
       customerPhone: orderForm.customerPhone,
       customerSource: orderForm.customerSource,
       invoiceStatus: orderForm.invoiceStatus,
+      untaxedInvoiceConfirmed,
       items: orderForm.items.map(item => ({
         productId: item.productId,
         productName: item.productName,
@@ -1134,7 +1215,11 @@ const handleSubmit = async () => {
         snId: item.snId || '',
         salePrice: item.salePrice,
         quantity: item.quantity,
-        subtotal: item.salePrice * item.quantity
+        subtotal: item.salePrice * item.quantity,
+        useGovSubsidy: item.useGovSubsidy,
+        useEduSubsidy: item.useEduSubsidy,
+        useSalesReport: item.useSalesReport,
+        selectedResourceTypes: item.selectedResourceTypes || []
       })),
       payments: selectedPayments.value.map(pm => ({
         method: pm,
@@ -1161,6 +1246,7 @@ const handleSubmit = async () => {
       ElMessage.error(res.message || '创建失败')
     }
   } catch (err) {
+    if (err === 'cancel' || err === 'close') return
     const msg = err.response?.data?.message || '创建订单失败'
     ElMessage.error(msg)
   } finally {
@@ -1257,20 +1343,127 @@ const getDepositStatusText = (status) => {
 </script>
 
 <style scoped>
+:global(.sales-order-dialog) {
+  max-width: calc(100vw - 32px);
+}
+:global(.sales-order-dialog .el-dialog__body) {
+  overflow-x: hidden;
+}
 .card-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 16px;
+}
+.card-header > div {
+  display: flex;
+  flex-shrink: 0;
+}
+.sales-actions {
+  align-items: center;
+  gap: 8px;
+}
+.sales-actions :deep(.el-button + .el-button) {
+  margin-left: 0;
 }
 .filter-bar {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 16px;
 }
+.sales-page {
+  width: 100%;
+  min-width: 0;
+}
+.sales-table-scroll {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--el-border-color-lighter);
+}
+.sales-order-table {
+  width: 100%;
+  min-width: 1120px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.sales-order-table th,
+.sales-order-table td {
+  box-sizing: border-box;
+  height: 48px;
+  padding: 0 12px;
+  border-right: 1px solid var(--el-border-color-lighter);
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  color: var(--el-text-color-regular);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sales-order-table th {
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-secondary);
+  font-weight: 600;
+}
+.sales-order-table tbody tr:nth-child(even) {
+  background: var(--el-fill-color-lighter);
+}
+.sales-order-table tbody tr:hover {
+  background: var(--el-fill-color-light);
+}
+.sales-order-table .money-column {
+  width: 110px;
+  text-align: right;
+}
+.sales-order-table .operation-column {
+  width: 230px;
+}
+.sales-table-state {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 1120px;
+  padding: 42px 16px;
+  color: var(--el-text-color-secondary);
+  text-align: center;
+  white-space: nowrap;
+}
 .items-table {
-  border: 1px solid #ebeef5;
-  padding: 10px;
-  border-radius: 4px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  padding: 12px;
+  overflow: hidden;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  background: var(--el-fill-color-blank);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 4%);
+}
+.product-details-item {
+  align-items: flex-start;
+}
+.product-details-item :deep(.el-form-item__content) {
+  min-width: 0;
+  max-width: calc(100% - 90px);
+}
+.items-table :deep(.el-table) {
+  width: 100% !important;
+  max-width: 100%;
+  border-radius: 6px;
+}
+.items-table :deep(.el-table__inner-wrapper),
+.items-table :deep(.el-scrollbar),
+.items-table :deep(.el-scrollbar__wrap) {
+  max-width: 100%;
+}
+.items-table :deep(.el-table__header th) {
+  background: var(--el-fill-color-light);
+}
+.items-table > .el-button {
+  margin-top: 12px;
 }
 .mt-10 { margin-top: 10px; }
 .mt-20 { margin-top: 20px; }
@@ -1293,6 +1486,9 @@ const getDepositStatusText = (status) => {
   border-radius: 4px;
   margin-top: 20px;
 }
+.resource-checks { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.resource-warning { color: #e6a23c; font-size: 12px; line-height: 1.4; }
+.muted { color: #909399; font-size: 12px; }
 .summary-item {
   display: flex;
   justify-content: space-between;

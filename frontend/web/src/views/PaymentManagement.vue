@@ -33,7 +33,7 @@
         </div>
       </div>
 
-      <el-table :data="paymentCandidateData" stripe border>
+      <el-table v-loading="paymentCandidatesLoading" :data="paymentCandidateData" stripe border>
         <el-table-column prop="settlement_no" label="结算单号" width="180">
           <template #default="{ row }">
             <el-button link type="primary" @click="openSettlementDetail(row)">
@@ -43,13 +43,13 @@
         </el-table-column>
         <el-table-column prop="supplier_name" label="供应商" width="150" />
         <el-table-column prop="total_amount" label="结算金额" width="120">
-          <template #default="{ row }">¥{{ row.total_amount }}</template>
+          <template #default="{ row }">¥{{ formatAmount(row.total_amount) }}</template>
         </el-table-column>
         <el-table-column prop="paid_amount" label="已付金额" width="120">
-          <template #default="{ row }">¥{{ row.paid_amount || 0 }}</template>
+          <template #default="{ row }">¥{{ formatAmount(row.paid_amount) }}</template>
         </el-table-column>
         <el-table-column prop="remaining_amount" label="剩余应付" width="120">
-          <template #default="{ row }">¥{{ row.remaining_amount }}</template>
+          <template #default="{ row }">¥{{ formatAmount(row.remaining_amount) }}</template>
         </el-table-column>
         <el-table-column prop="payment_status" label="付款状态" width="110">
           <template #default="{ row }">
@@ -60,6 +60,11 @@
         </el-table-column>
         <el-table-column prop="confirmed_time" label="提交时间" width="170">
           <template #default="{ row }">{{ formatDateTime(row.confirmed_time) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="110" fixed="right">
+          <template #default="{ row }">
+            <el-button v-if="Number(row.remaining_amount) > 0" link type="primary" @click="openImmediatePayment(row)">立即付款</el-button>
+          </template>
         </el-table-column>
       </el-table>
 
@@ -81,11 +86,11 @@
         </el-select>
       </div>
 
-      <el-table :data="paymentBatchData" stripe border>
+      <el-table v-loading="paymentBatchesLoading" :data="paymentBatchData" stripe border>
         <el-table-column prop="batch_no" label="付款批次号" width="190" />
         <el-table-column prop="account_name" label="付款账户" width="180" />
         <el-table-column prop="total_amount" label="付款总额" width="120">
-          <template #default="{ row }">¥{{ row.total_amount }}</template>
+          <template #default="{ row }">¥{{ formatAmount(row.total_amount) }}</template>
         </el-table-column>
         <el-table-column prop="total_count" label="笔数" width="80" />
         <el-table-column prop="status" label="状态" width="90">
@@ -95,8 +100,8 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="create_user" label="导入人" width="110" />
-        <el-table-column prop="create_time" label="导入时间" width="170">
+        <el-table-column prop="create_user" label="操作人" width="110" />
+        <el-table-column prop="create_time" label="操作时间" width="170">
           <template #default="{ row }">{{ formatDateTime(row.create_time) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="160">
@@ -154,6 +159,53 @@
       </div>
     </el-dialog>
 
+    <el-dialog v-model="immediatePaymentVisible" title="付款登记" width="560px">
+      <el-descriptions v-if="immediatePaymentSettlement" :column="1" border size="small">
+        <el-descriptions-item label="结算单号">{{ immediatePaymentSettlement.settlement_no || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="供应商">{{ immediatePaymentSettlement.supplier_name || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="剩余应付">¥{{ formatAmount(immediatePaymentRemaining) }}</el-descriptions-item>
+      </el-descriptions>
+
+      <el-form label-width="100px" class="mt-20">
+        <el-form-item label="付款金额" required>
+          <el-input-number
+            v-model="immediatePaymentForm.amount"
+            :min="0.01"
+            :max="immediatePaymentRemaining"
+            :precision="2"
+            :step="100"
+            controls-position="right"
+            style="width: 100%"
+          />
+        </el-form-item>
+        <el-form-item label="付款账户" required>
+          <el-select v-model="immediatePaymentForm.accountId" placeholder="请选择付款账户" filterable style="width: 100%">
+            <el-option
+              v-for="acc in settlementAccounts"
+              :key="acc.account_id"
+              :label="formatSettlementAccountOption(acc)"
+              :value="acc.account_id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+
+      <el-alert
+        v-if="immediatePaymentAccount"
+        :title="`当前余额 ¥${formatAmount(immediatePaymentAccount.balance)}，付款后余额 ¥${formatAmount(immediatePaymentProjectedBalance)}`"
+        :type="immediatePaymentProjectedBalance < 0 ? 'warning' : 'info'"
+        show-icon
+        :closable="false"
+      />
+
+      <template #footer>
+        <el-button @click="immediatePaymentVisible = false">取消</el-button>
+        <el-button type="primary" :loading="immediatePaymentSubmitting" @click="submitImmediatePayment">
+          确定付款
+        </el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="paymentImportPreviewVisible" title="付款导入确认" width="860px">
       <div v-if="paymentImportErrors.length > 0">
         <el-alert title="导入校验失败，整批未处理" type="error" show-icon :closable="false" />
@@ -206,7 +258,7 @@
           <el-descriptions-item label="付款总额">¥{{ paymentBatchDetail.total_amount || 0 }}</el-descriptions-item>
           <el-descriptions-item label="付款笔数">{{ paymentBatchDetail.total_count || 0 }}</el-descriptions-item>
           <el-descriptions-item label="状态">{{ paymentBatchDetail.status === 'active' ? '正常' : '已撤销' }}</el-descriptions-item>
-          <el-descriptions-item label="导入时间">{{ formatDateTime(paymentBatchDetail.create_time) }}</el-descriptions-item>
+          <el-descriptions-item label="操作时间">{{ formatDateTime(paymentBatchDetail.create_time) }}</el-descriptions-item>
           <el-descriptions-item label="撤销时间">{{ formatDateTime(paymentBatchDetail.void_time) }}</el-descriptions-item>
           <el-descriptions-item label="撤销原因">{{ paymentBatchDetail.void_reason || '-' }}</el-descriptions-item>
         </el-descriptions>
@@ -246,9 +298,11 @@ const settlementAccounts = ref([])
 const paymentAccountId = ref('')
 const paymentCandidateData = ref([])
 const paymentCandidateTotal = ref(0)
+const paymentCandidatesLoading = ref(false)
 const paymentCandidateStatusFilter = ref('')
 const paymentBatchData = ref([])
 const paymentBatchTotal = ref(0)
+const paymentBatchesLoading = ref(false)
 const paymentBatchStatusFilter = ref('')
 const settlementDetailVisible = ref(false)
 const settlementDetail = ref(null)
@@ -260,6 +314,10 @@ const paymentImportErrors = ref([])
 const paymentImportCommitting = ref(false)
 const paymentBatchDetailVisible = ref(false)
 const paymentBatchDetail = ref(null)
+const immediatePaymentVisible = ref(false)
+const immediatePaymentSettlement = ref(null)
+const immediatePaymentSubmitting = ref(false)
+const immediatePaymentForm = reactive({ accountId: '', amount: 0 })
 
 const paymentCandidateQuery = reactive({ page: 1, pageSize: 20 })
 const paymentBatchQuery = reactive({ page: 1, pageSize: 20 })
@@ -267,6 +325,14 @@ const paymentBatchQuery = reactive({ page: 1, pageSize: 20 })
 const selectedPaymentAccountName = computed(() => {
   const account = settlementAccounts.value.find(acc => acc.account_id === paymentAccountId.value)
   return account ? formatSettlementAccountOption(account) : '-'
+})
+
+const immediatePaymentRemaining = computed(() => Number(immediatePaymentSettlement.value?.remaining_amount || 0))
+const immediatePaymentAccount = computed(() => {
+  return settlementAccounts.value.find(acc => acc.account_id === immediatePaymentForm.accountId) || null
+})
+const immediatePaymentProjectedBalance = computed(() => {
+  return Number(immediatePaymentAccount.value?.balance || 0) - Number(immediatePaymentForm.amount || 0)
 })
 
 onMounted(() => {
@@ -278,6 +344,8 @@ onMounted(() => {
 const formatSettlementAccountOption = (account) => {
   return `${account.account_name || '-'}（余额：¥${Number(account.balance || 0).toFixed(2)}）`
 }
+
+const formatAmount = (amount) => Number(amount || 0).toFixed(2)
 
 const formatDateTime = (time) => {
   if (!time) return '-'
@@ -313,13 +381,14 @@ const getPaymentStatusTagType = (status) => {
 const loadSettlementAccounts = async () => {
   try {
     const res = await api.getSettlementAccountsBalance({ page: 1, pageSize: 500 })
-    if (res.code === 0) settlementAccounts.value = res.data?.list || []
+    if (res.code === 0) settlementAccounts.value = (res.data?.list || []).filter(account => account.account_type !== 'SUPPLIER_REBATE')
   } catch (err) {
     ElMessage.error('加载付款账户失败')
   }
 }
 
 const loadPaymentCandidates = async () => {
+  paymentCandidatesLoading.value = true
   try {
     const params = { ...paymentCandidateQuery }
     if (paymentCandidateStatusFilter.value) params.paymentStatus = paymentCandidateStatusFilter.value
@@ -330,10 +399,13 @@ const loadPaymentCandidates = async () => {
     }
   } catch (err) {
     ElMessage.error('加载待付款清单失败')
+  } finally {
+    paymentCandidatesLoading.value = false
   }
 }
 
 const loadPaymentBatches = async () => {
+  paymentBatchesLoading.value = true
   try {
     const params = { ...paymentBatchQuery }
     if (paymentBatchStatusFilter.value) params.status = paymentBatchStatusFilter.value
@@ -344,6 +416,8 @@ const loadPaymentBatches = async () => {
     }
   } catch (err) {
     ElMessage.error('加载付款批次失败')
+  } finally {
+    paymentBatchesLoading.value = false
   }
 }
 
@@ -358,6 +432,68 @@ const openSettlementDetail = async (row) => {
     }
   } catch (err) {
     ElMessage.error(err.response?.data?.message || '加载结算单详情失败')
+  }
+}
+
+const openImmediatePayment = (row) => {
+  immediatePaymentSettlement.value = row
+  immediatePaymentForm.accountId = paymentAccountId.value || ''
+  immediatePaymentForm.amount = Number(row.remaining_amount || 0)
+  immediatePaymentVisible.value = true
+}
+
+const submitImmediatePayment = async () => {
+  const settlement = immediatePaymentSettlement.value
+  const amount = Number(immediatePaymentForm.amount)
+  if (!settlement) return
+  if (!immediatePaymentForm.accountId) {
+    ElMessage.warning('请选择付款账户')
+    return
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    ElMessage.warning('付款金额必须大于0')
+    return
+  }
+  if (amount > immediatePaymentRemaining.value) {
+    ElMessage.warning('付款金额不能超过剩余应付金额')
+    return
+  }
+
+  if (immediatePaymentProjectedBalance.value < 0) {
+    try {
+      await ElMessageBox.confirm(
+        `账户余额不足，本次付款后余额为 ¥${formatAmount(immediatePaymentProjectedBalance.value)}。仍要登记付款吗？`,
+        '余额不足提示',
+        { confirmButtonText: '继续付款', cancelButtonText: '取消', type: 'warning' }
+      )
+    } catch (err) {
+      if (err === 'cancel' || err === 'close') return
+      throw err
+    }
+  }
+
+  immediatePaymentSubmitting.value = true
+  try {
+    const res = await api.createDirectSettlementPayment({
+      settlementId: settlement.settlement_id,
+      accountId: immediatePaymentForm.accountId,
+      amount
+    })
+    if (res.code === 0) {
+      immediatePaymentVisible.value = false
+      if (Number(res.data?.balanceAfter) < 0) {
+        ElMessage.warning(`${res.message}，付款后余额 ¥${formatAmount(res.data.balanceAfter)}`)
+      } else {
+        ElMessage.success(res.message || '付款登记成功')
+      }
+      await Promise.all([loadPaymentCandidates(), loadPaymentBatches(), loadSettlementAccounts()])
+    } else {
+      ElMessage.error(res.message || '付款登记失败')
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '付款登记失败')
+  } finally {
+    immediatePaymentSubmitting.value = false
   }
 }
 

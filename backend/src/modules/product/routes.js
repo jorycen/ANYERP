@@ -4,13 +4,15 @@
 const Router = require('koa-router');
 const multer = require('@koa/multer');
 const {
-  getProductList, createProduct, updateProduct, deleteProduct, togglePause, importProducts, exportProducts,
+  getProductList, submitProductApplication, getProductApplicationList, reviewProductApplication,
+  updateProduct, deleteProduct, togglePause, importProducts, exportProducts,
   getBarcodes, addBarcode, deleteBarcode,
   getCategoryTree, createCategory, updateCategory, deleteCategory, sortCategories,
   getCategoryFields, saveCategoryFields, getCategoryFieldConfig,
   getPriceList, setPrice, refreshCostPrice, batchRefreshCost, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory,
   getPnList, addPn, searchProduct
 } = require('./controller');
+const { requireRole } = require('../../middleware/permission');
 
 const router = new Router();
 const upload = multer();
@@ -19,7 +21,11 @@ const upload = multer();
 router.get('/list', getProductList);
 router.get('/search', searchProduct);
 router.get('/export', exportProducts);
-router.post('/create', createProduct);
+router.get('/application-list', getProductApplicationList);
+router.post('/application', submitProductApplication);
+router.post('/application/:applicationId/review', requireRole('finance', 'purchaser'), reviewProductApplication);
+// 兼容现有客户端：手工新建商品统一转为审批申请。
+router.post('/create', submitProductApplication);
 router.put('/update/:productId', updateProduct);
 router.delete('/delete/:productId', deleteProduct);
 router.post('/toggle-pause/:productId', togglePause);

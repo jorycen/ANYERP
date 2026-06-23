@@ -5,6 +5,14 @@ const { DailyStatement, DailyStatementDetail, Expense, Store, Order, OrderPaymen
 const { Op, Sequelize, fn, col } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult } = require('../../utils');
 
+async function getAccountBalance(accountId) {
+  const [incomeAmount, expenseAmount] = await Promise.all([
+    SettlementAccountTransaction.sum('amount', { where: { account_id: accountId, type: 'income' } }),
+    SettlementAccountTransaction.sum('amount', { where: { account_id: accountId, type: 'expense' } })
+  ]);
+  return Math.round((Number(incomeAmount || 0) - Number(expenseAmount || 0)) * 100) / 100;
+}
+
 /**
  * 日结清单（逐条显示 - 按收款方式）
  * 直接查询 DailyStatementDetail 平铺展示
@@ -30,8 +38,8 @@ async function getDailyDetails(ctx) {
   }
 
   const storeWhere = {};
-  if (!user.regionCodes.includes('*')) {
-    storeWhere.region_id = user.regionCodes;
+  if (!user.accessibleStoreIds.includes('*')) {
+    storeWhere.store_id = user.accessibleStoreIds;
   }
   if (storeId) {
     storeWhere.store_id = storeId;
@@ -119,8 +127,8 @@ async function getDailyStatement(ctx) {
   const where = {};
   const whereStore = {};
 
-  if (!user.regionCodes.includes('*')) {
-    whereStore.region_id = user.regionCodes;
+  if (!user.accessibleStoreIds.includes('*')) {
+    whereStore.store_id = user.accessibleStoreIds;
   }
   if (storeId) whereStore.store_id = storeId;
 
@@ -186,13 +194,7 @@ async function payExpense(ctx) {
 
   if (settleAccountId) {
     const amount = parseFloat(record.amount) || 0;
-    const latestTx = await SettlementAccountTransaction.findOne({
-      attributes: ['balance_after'],
-      where: { account_id: settleAccountId },
-      order: [['create_time', 'DESC'], ['transaction_id', 'DESC']],
-      raw: true
-    });
-    const currentBalance = latestTx ? (Number(latestTx.balance_after) || 0) : 0;
+    const currentBalance = await getAccountBalance(settleAccountId);
     const balanceAfter = currentBalance - amount;
 
     await SettlementAccountTransaction.create({
@@ -305,13 +307,7 @@ async function batchSettle(ctx) {
   }
 
   for (const [accountId, settledAmount] of Object.entries(accountSettledMap)) {
-    const latestTx = await SettlementAccountTransaction.findOne({
-      attributes: ['balance_after'],
-      where: { account_id: accountId },
-      order: [['create_time', 'DESC'], ['transaction_id', 'DESC']],
-      raw: true
-    });
-    const currentBalance = latestTx ? (Number(latestTx.balance_after) || 0) : 0;
+    const currentBalance = await getAccountBalance(accountId);
     const balanceAfter = currentBalance + settledAmount;
 
     await SettlementAccountTransaction.create({
@@ -396,8 +392,8 @@ async function getExpenseList(ctx) {
   const where = { is_deleted: 0 };
   const whereStore = {};
 
-  if (!user.regionCodes.includes('*')) {
-    whereStore.region_id = user.regionCodes;
+  if (!user.accessibleStoreIds.includes('*')) {
+    whereStore.store_id = user.accessibleStoreIds;
   }
   if (storeId) whereStore.store_id = storeId;
 
@@ -452,17 +448,15 @@ async function getSettlementAccountsWithBalance(ctx) {
 
     if (accountIds.length > 0) {
       try {
-        const latestTxs = await SettlementAccountTransaction.findAll({
-          attributes: ['account_id', 'balance_after', 'create_time'],
+        const accountTransactions = await SettlementAccountTransaction.findAll({
+          attributes: ['account_id', 'type', 'amount'],
           where: { account_id: accountIds },
-          order: [['create_time', 'DESC'], ['transaction_id', 'DESC']],
           raw: true
         });
 
-        for (const tx of latestTxs) {
-          if (!(tx.account_id in balanceMap)) {
-            balanceMap[tx.account_id] = Number(tx.balance_after) || 0;
-          }
+        for (const tx of accountTransactions) {
+          const amount = Number(tx.amount) || 0;
+          balanceMap[tx.account_id] = (balanceMap[tx.account_id] || 0) + (tx.type === 'income' ? amount : -amount);
         }
       } catch (e) {
         console.error('查询账户余额失败(表可能尚未创建):', e.message);
@@ -471,7 +465,7 @@ async function getSettlementAccountsWithBalance(ctx) {
 
     const list = rows.map(row => ({
       ...row.toJSON(),
-      balance: balanceMap[row.account_id] || 0
+      balance: Math.round((balanceMap[row.account_id] || 0) * 100) / 100
     }));
 
     ctx.body = formatPaginatedResult(list, { page, pageSize, count });
@@ -494,18 +488,13 @@ async function getAccountTransactions(ctx) {
     ...paginate({}, { page, pageSize })
   });
 
-  const latestTx = await SettlementAccountTransaction.findOne({
-    attributes: ['balance_after'],
-    where: { account_id: accountId },
-    order: [['create_time', 'DESC'], ['transaction_id', 'DESC']],
-    raw: true
-  });
+  const currentBalance = await getAccountBalance(accountId);
 
   ctx.body = {
     code: 0,
     data: {
       account,
-      currentBalance: latestTx ? (Number(latestTx.balance_after) || 0) : 0,
+      currentBalance,
       list: rows,
       pagination: {
         total: count,
@@ -527,15 +516,9 @@ async function addAccountTransaction(ctx) {
 
   const account = await SettlementAccount.findByPk(accountId);
   if (!account) ctx.throw(404, '结算账户不存在');
+  if (account.account_type === 'SUPPLIER_REBATE') ctx.throw(400, '供应商返利请在返利管理中上账、抵扣或冲销');
 
-  const latestTx = await SettlementAccountTransaction.findOne({
-    attributes: ['balance_after'],
-    where: { account_id: accountId },
-    order: [['create_time', 'DESC'], ['transaction_id', 'DESC']],
-    raw: true
-  });
-
-  const currentBalance = latestTx ? (Number(latestTx.balance_after) || 0) : 0;
+  const currentBalance = await getAccountBalance(accountId);
   const balanceAfter = type === 'income'
     ? currentBalance + Number(amount)
     : currentBalance - Number(amount);

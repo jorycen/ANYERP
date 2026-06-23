@@ -9,6 +9,8 @@ const {
   ManufacturerPriceHistory,
   RebateEstimate,
   SalesSettlementCostAdjustment,
+  SettlementAccount,
+  SettlementAccountTransaction,
   sequelize
 } = require('../../models');
 const { Op } = require('sequelize');
@@ -28,6 +30,19 @@ function parseDate(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+async function recordSupplierRebateAccountTransaction(supplierId, type, amount, description, relatedRef, user, transaction = null) {
+  const account = await SettlementAccount.findOne({ where: { account_type: 'SUPPLIER_REBATE', supplier_id: supplierId, status: 1 }, transaction });
+  if (!account) return;
+  const income = Number(await SettlementAccountTransaction.sum('amount', { where: { account_id: account.account_id, type: 'income' }, transaction }) || 0);
+  const expense = Number(await SettlementAccountTransaction.sum('amount', { where: { account_id: account.account_id, type: 'expense' }, transaction }) || 0);
+  const numericAmount = Number(amount || 0);
+  await SettlementAccountTransaction.create({
+    transaction_id: generateUUID(), account_id: account.account_id, type, amount: numericAmount,
+    balance_after: income - expense + (type === 'income' ? numericAmount : -numericAmount),
+    description, related_ref: relatedRef || '', create_user: user
+  }, { transaction });
+}
+
 /**
  * 返利上账
  */
@@ -41,21 +56,53 @@ async function addRebate(ctx) {
   const supplier = await Supplier.findByPk(supplierId);
   if (!supplier) ctx.throw(404, '供应商不存在');
 
-  const currentBalance = await _getRebateBalance(supplierId);
-  const newBalance = currentBalance + parseFloat(amount);
-
-  await SupplierRebate.create({
-    rebate_id: generateUUID(),
-    supplier_id: supplierId,
-    supplier_name: supplier.name,
-    type: 'credit',
-    amount: parseFloat(amount),
-    balance: newBalance,
-    remark: remark || '',
-    create_user: user.name || user.phone
+  const newBalance = await sequelize.transaction(async transaction => {
+    const currentBalance = await _getRebateBalance(supplierId, transaction);
+    const nextBalance = currentBalance + parseFloat(amount);
+    await SupplierRebate.create({
+      rebate_id: generateUUID(), supplier_id: supplierId, supplier_name: supplier.name,
+      type: 'credit', amount: parseFloat(amount), balance: nextBalance, remark: remark || '',
+      status: 'active', source_type: 'manual', create_user: user.name || user.phone
+    }, { transaction });
+    await recordSupplierRebateAccountTransaction(supplierId, 'income', amount, '手工返利上账', '', user.name || user.phone, transaction);
+    return nextBalance;
   });
 
   ctx.body = { code: 0, message: '返利上账成功', data: { balance: newBalance } };
+}
+
+async function reverseRebate(ctx) {
+  const original = await SupplierRebate.findByPk(ctx.params.rebateId);
+  if (!original) ctx.throw(404, '返利记录不存在');
+  if (original.status === 'reversed') ctx.throw(409, '该返利记录已冲销');
+  if (!['manual', null, ''].includes(original.source_type)) ctx.throw(400, '业务自动生成的返利不能在此手工冲销');
+  const reason = String(ctx.request.body?.reason || '').trim();
+  if (!reason) ctx.throw(400, '请输入冲销原因');
+
+  await sequelize.transaction(async transaction => {
+    const locked = await SupplierRebate.findByPk(original.rebate_id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (locked.status === 'reversed') ctx.throw(409, '该返利记录已冲销');
+    const latest = await SupplierRebate.findOne({
+      where: { supplier_id: locked.supplier_id }, order: [['create_time', 'DESC'], ['rebate_id', 'DESC']],
+      transaction, lock: transaction.LOCK.UPDATE
+    });
+    const reverseType = locked.type === 'credit' ? 'debit' : 'credit';
+    const amount = Number(locked.amount || 0);
+    const balance = Number(latest?.balance || 0) + (reverseType === 'credit' ? amount : -amount);
+    await SupplierRebate.create({
+      rebate_id: generateUUID(), supplier_id: locked.supplier_id, supplier_name: locked.supplier_name,
+      type: reverseType, amount, balance, related_no: locked.related_no,
+      remark: `冲销：${reason}`, status: 'active', source_type: 'manual_reversal',
+      source_id: locked.rebate_id, reversal_of: locked.rebate_id,
+      create_user: ctx.state.user.name || ctx.state.user.phone
+    }, { transaction });
+    await recordSupplierRebateAccountTransaction(
+      locked.supplier_id, reverseType === 'credit' ? 'income' : 'expense', amount,
+      `返利冲销：${reason}`, locked.related_no, ctx.state.user.name || ctx.state.user.phone, transaction
+    );
+    await locked.update({ status: 'reversed' }, { transaction });
+  });
+  ctx.body = { code: 0, message: '返利记录已冲销' };
 }
 
 /**
@@ -130,11 +177,12 @@ async function getRebateSummary(ctx) {
   ctx.body = { code: 0, data: { list, totalBalance } };
 }
 
-async function _getRebateBalance(supplierId) {
+async function _getRebateBalance(supplierId, transaction = null) {
   const result = await SupplierRebate.findOne({
     attributes: ['balance'],
     where: { supplier_id: supplierId },
-    order: [['create_time', 'DESC']]
+    order: [['create_time', 'DESC']],
+    transaction
   });
   return parseFloat(result?.get('balance') || 0);
 }
@@ -143,22 +191,17 @@ async function _getRebateBalance(supplierId) {
  * 记录返利抵扣（采购申请用）
  */
 async function recordRebateDeduction(supplierId, supplierName, amount, relatedNo, remark, user) {
-  const currentBalance = await _getRebateBalance(supplierId);
-  const newBalance = currentBalance - parseFloat(amount);
-
-  await SupplierRebate.create({
-    rebate_id: generateUUID(),
-    supplier_id: supplierId,
-    supplier_name: supplierName,
-    type: 'debit',
-    amount: parseFloat(amount),
-    balance: newBalance,
-    related_no: relatedNo,
-    remark: remark || '',
-    create_user: user
+  return sequelize.transaction(async transaction => {
+    const currentBalance = await _getRebateBalance(supplierId, transaction);
+    const newBalance = currentBalance - parseFloat(amount);
+    await SupplierRebate.create({
+      rebate_id: generateUUID(), supplier_id: supplierId, supplier_name: supplierName,
+      type: 'debit', amount: parseFloat(amount), balance: newBalance, related_no: relatedNo,
+      remark: remark || '', status: 'active', source_type: 'purchase', create_user: user
+    }, { transaction });
+    await recordSupplierRebateAccountTransaction(supplierId, 'expense', amount, '采购返利抵扣', relatedNo, user, transaction);
+    return newBalance;
   });
-
-  return newBalance;
 }
 
 async function createManufacturerPolicy(ctx) {
@@ -400,6 +443,7 @@ module.exports = {
   getRebateList,
   getRebateBalance,
   getRebateSummary,
+  reverseRebate,
   createManufacturerPolicy,
   updateManufacturerPolicy,
   getManufacturerPolicyList,
@@ -408,5 +452,6 @@ module.exports = {
   getRebateEstimateList,
   getCostAdjustmentList,
   recordRebateDeduction,
+  recordSupplierRebateAccountTransaction,
   _getRebateBalance
 };

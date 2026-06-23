@@ -219,6 +219,17 @@ async function runMigrations() {
   console.log('[DB Migration] 开始检查数据库结构...');
   
   try {
+    await checkAndCreateTable('T_STAFF_STORE_PERMISSION', `
+      CREATE TABLE T_STAFF_STORE_PERMISSION (
+        ID BIGINT NOT NULL AUTO_INCREMENT,
+        STAFF_ID BIGINT NOT NULL,
+        STORE_ID VARCHAR(32) NOT NULL,
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (ID),
+        UNIQUE KEY uk_staff_store (STAFF_ID, STORE_ID),
+        KEY idx_staff_store_store (STORE_ID)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='员工可访问门店'
+    `);
     await checkAndAddColumn('T_PRODUCT', 'T_CODE', 'VARCHAR(64) COMMENT "老厂商编码备份"', 'STATUS');
     await checkAndAddColumn('T_PRODUCT', 'T_BARCODE', 'VARCHAR(64) COMMENT "老69码备份"', 'T_CODE');
     await checkAndAddColumn('T_PRODUCT', 'T_STANDARD_PRICE', 'DECIMAL(12,2) COMMENT "老标准售价备份"', 'T_BARCODE');
@@ -229,9 +240,97 @@ async function runMigrations() {
     await checkAndAddColumn('T_PRODUCT_SN', 'PN_CODE', 'VARCHAR(64) COMMENT "PN料号"', 'PRODUCT_ID');
     await checkAndAddColumn('T_PRODUCT_SN', 'INVENTORY_TYPE', 'VARCHAR(32) DEFAULT "normal_qty" COMMENT "库存类型"', 'STATUS');
     await checkAndAddColumn('T_PRODUCT_SN', 'ORIGINAL_PICKUP_PRICE', 'DECIMAL(12,2) DEFAULT 0 COMMENT "原始提货价"', 'INBOUND_PRICE');
+    await checkAndAddColumn('T_PRODUCT_SN', 'TAX_TYPE', 'VARCHAR(32) DEFAULT "UNKNOWN" COMMENT "税务属性:TAX_INCLUDED/UNTAXED/UNKNOWN"', 'ORIGINAL_PICKUP_PRICE');
+    await checkAndAddColumn('T_PRODUCT_SN', 'SOURCE_TYPE', 'VARCHAR(32) DEFAULT "OTHER" COMMENT "货源性质"', 'TAX_TYPE');
     await dropProductSnGlobalUniqueIndex();
     await checkAndAddIndex('T_PRODUCT_SN', 'uk_product_sn_pn_sn', 'ALTER TABLE T_PRODUCT_SN ADD UNIQUE KEY uk_product_sn_pn_sn (PN_CODE, SN_CODE)');
     await checkAndAddIndex('T_PRODUCT_SN', 'idx_product_sn_code', 'ALTER TABLE T_PRODUCT_SN ADD INDEX idx_product_sn_code (SN_CODE)');
+    await checkAndCreateTable('T_INVENTORY_RESOURCE_RIGHT', `
+      CREATE TABLE T_INVENTORY_RESOURCE_RIGHT (
+        RIGHT_ID VARCHAR(32) NOT NULL, SN_ID VARCHAR(32) NOT NULL, SN_CODE VARCHAR(128) NOT NULL,
+        PRODUCT_ID VARCHAR(32) NOT NULL, RESOURCE_TYPE VARCHAR(32) NOT NULL,
+        INITIAL_STATUS VARCHAR(32) NOT NULL DEFAULT 'NOT_APPLICABLE',
+        CURRENT_STATUS VARCHAR(32) NOT NULL DEFAULT 'NOT_APPLICABLE', AMOUNT DECIMAL(12,2) DEFAULT 0,
+        SOURCE VARCHAR(128), LOCKED_SOURCE_TYPE VARCHAR(32), LOCKED_SOURCE_ID VARCHAR(32),
+        REMARK VARCHAR(512), VERSION INT DEFAULT 0,
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (RIGHT_ID), UNIQUE KEY uk_sn_resource (SN_ID, RESOURCE_TYPE),
+        KEY idx_resource_right_sn_code (SN_CODE), KEY idx_resource_right_status (RESOURCE_TYPE, CURRENT_STATUS)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='SN资源权益当前状态'
+    `);
+    await checkAndCreateTable('T_RESOURCE_CATEGORY', `
+      CREATE TABLE T_RESOURCE_CATEGORY (
+        CATEGORY_ID VARCHAR(32) NOT NULL, CATEGORY_CODE VARCHAR(32) NOT NULL, NAME VARCHAR(128) NOT NULL,
+        SHORT_NAME VARCHAR(64), DEFAULT_ACCOUNT_ID VARCHAR(64), SUPPORTS_SALE_USE TINYINT(1) DEFAULT 1,
+        SUPPORTS_COMPANY_CLAIM TINYINT(1) DEFAULT 1, SORT_ORDER INT DEFAULT 0, STATUS TINYINT(1) DEFAULT 1,
+        REMARK VARCHAR(512), CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (CATEGORY_ID), UNIQUE KEY uk_resource_category_code (CATEGORY_CODE),
+        KEY idx_resource_category_status (STATUS, SORT_ORDER)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='资源权益类别配置'
+    `);
+    await checkAndCreateTable('T_RESOURCE_RIGHT_CHANGE_ORDER', `
+      CREATE TABLE T_RESOURCE_RIGHT_CHANGE_ORDER (
+        CHANGE_ID VARCHAR(32) NOT NULL, CHANGE_ORDER_NO VARCHAR(64) NOT NULL,
+        SN_ID VARCHAR(32) NOT NULL, SN_CODE VARCHAR(128) NOT NULL, PRODUCT_ID VARCHAR(32) NOT NULL,
+        RESOURCE_TYPE VARCHAR(32) NOT NULL, BEFORE_STATUS VARCHAR(32) NOT NULL, AFTER_STATUS VARCHAR(32) NOT NULL,
+        CHANGE_AMOUNT DECIMAL(12,2) DEFAULT 0, CHANGE_REASON VARCHAR(32) NOT NULL,
+        APPROVAL_STATUS VARCHAR(32) DEFAULT 'approved', RELATED_ORDER_ID VARCHAR(32), RELATED_SALE_ORDER_ID VARCHAR(32),
+        ATTACHMENT_URL VARCHAR(1000), APPLICANT_STAFF_ID BIGINT, APPLICANT_NAME VARCHAR(64),
+        REVIEWER_STAFF_ID BIGINT, REVIEWER_NAME VARCHAR(64), REVIEW_COMMENT VARCHAR(512), REVIEW_TIME DATETIME,
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP, REMARK VARCHAR(512),
+        PRIMARY KEY (CHANGE_ID), UNIQUE KEY uk_resource_change_no (CHANGE_ORDER_NO),
+        KEY idx_resource_change_sn (SN_ID, CREATE_TIME), KEY idx_resource_change_approval (APPROVAL_STATUS, CREATE_TIME),
+        KEY idx_resource_change_sale (RELATED_SALE_ORDER_ID)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='资源权益变更及审批单'
+    `);
+    await checkAndCreateTable('T_PRODUCT_RESOURCE_COST_CONFIG', `
+      CREATE TABLE T_PRODUCT_RESOURCE_COST_CONFIG (
+        CONFIG_ID VARCHAR(32) NOT NULL, PRODUCT_ID VARCHAR(32) NOT NULL, RESOURCE_TYPE VARCHAR(32) NOT NULL,
+        COST_AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0, STATUS TINYINT(1) DEFAULT 1, REMARK VARCHAR(512),
+        CREATE_USER VARCHAR(64), CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UPDATE_USER VARCHAR(64), UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (CONFIG_ID), UNIQUE KEY uk_product_resource_cost (PRODUCT_ID, RESOURCE_TYPE)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商品资源类型成本定义'
+    `);
+    await checkAndCreateTable('T_INVENTORY_RESOURCE_COST_ADJUSTMENT', `
+      CREATE TABLE T_INVENTORY_RESOURCE_COST_ADJUSTMENT (
+        ADJUSTMENT_ID VARCHAR(32) NOT NULL, SN_ID VARCHAR(32) NOT NULL, SN_CODE VARCHAR(128) NOT NULL,
+        PRODUCT_ID VARCHAR(32) NOT NULL, RESOURCE_TYPE VARCHAR(32) NOT NULL,
+        ADJUSTMENT_AMOUNT DECIMAL(12,2) NOT NULL, BEFORE_PRODUCT_COST DECIMAL(12,2) DEFAULT 0,
+        AFTER_PRODUCT_COST DECIMAL(12,2) DEFAULT 0, SOURCE_TYPE VARCHAR(32) NOT NULL, SOURCE_ID VARCHAR(32) NOT NULL,
+        AFFECT_SALES_SETTLEMENT_COST TINYINT(1) DEFAULT 0,
+        OPERATOR_ID BIGINT, OPERATOR_NAME VARCHAR(64), CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP, REMARK VARCHAR(512),
+        PRIMARY KEY (ADJUSTMENT_ID), UNIQUE KEY uk_resource_cost_source (SOURCE_TYPE, SOURCE_ID),
+        KEY idx_resource_cost_sn (SN_ID, CREATE_TIME), KEY idx_resource_cost_product (PRODUCT_ID, RESOURCE_TYPE)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='产品资源成本调整流水'
+    `);
+    await checkAndCreateTable('T_RESOURCE_SETTLEMENT', `
+      CREATE TABLE T_RESOURCE_SETTLEMENT (
+        SETTLEMENT_ID VARCHAR(32) NOT NULL, SETTLEMENT_NO VARCHAR(64) NOT NULL,
+        SOURCE_TYPE VARCHAR(32) NOT NULL, SOURCE_ID VARCHAR(64) NOT NULL, BATCH_NO VARCHAR(64),
+        SN_ID VARCHAR(32) NOT NULL, SN_CODE VARCHAR(128) NOT NULL, PRODUCT_ID VARCHAR(32) NOT NULL,
+        RESOURCE_TYPE VARCHAR(32) NOT NULL, COUNTERPARTY_ID VARCHAR(32), COUNTERPARTY_NAME VARCHAR(255), AMOUNT DECIMAL(12,2) NOT NULL,
+        STATUS VARCHAR(32) DEFAULT 'PENDING', TARGET_ACCOUNT_ID VARCHAR(64), SETTLED_AT DATETIME,
+        SETTLED_BY BIGINT, SETTLED_BY_NAME VARCHAR(64), CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        REMARK VARCHAR(512), PRIMARY KEY (SETTLEMENT_ID), UNIQUE KEY uk_resource_settlement_no (SETTLEMENT_NO),
+        UNIQUE KEY uk_resource_settlement_source (SOURCE_TYPE, SOURCE_ID, RESOURCE_TYPE),
+        KEY idx_resource_settlement_status (STATUS, CREATE_TIME), KEY idx_resource_settlement_sn (SN_ID, RESOURCE_TYPE)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='资源权益待下账及到账记录'
+    `);
+    await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'COUNTERPARTY_ID', 'VARCHAR(32) COMMENT "来源供应商或结算对象ID"', 'RESOURCE_TYPE');
+    await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'COUNTERPARTY_NAME', 'VARCHAR(255) COMMENT "来源供应商或结算对象名称"', 'COUNTERPARTY_ID');
+    await checkAndAddColumn('T_ORDER_ITEM', 'SELECTED_RESOURCE_TYPES', 'TEXT COMMENT "动态选择的资源类别JSON"', 'USE_SALES_REPORT');
+    await sequelize.query(`
+      INSERT IGNORE INTO T_RESOURCE_CATEGORY
+        (CATEGORY_ID, CATEGORY_CODE, NAME, SHORT_NAME, SUPPORTS_SALE_USE, SUPPORTS_COMPANY_CLAIM, SORT_ORDER, STATUS)
+      VALUES
+        ('RC_GOV_SUBSIDY', 'GOV_SUBSIDY', '国补资格', '国补', 1, 1, 10, 1),
+        ('RC_EDU_SUBSIDY', 'EDU_SUBSIDY', '教育补贴资格', '教育补贴', 1, 1, 20, 1),
+        ('RC_SALES_REPORT', 'SALES_REPORT', '销量报号资格', '销量报号', 1, 1, 30, 1),
+        ('RC_MANUFACTURER_REBATE', 'MANUFACTURER_REBATE', '厂商返利', '厂商返利', 0, 0, 40, 1)
+    `);
     await checkAndAddColumn('T_PRODUCT', 'MANUFACTURER_CODE', 'VARCHAR(512) COMMENT "manufacturer code"', 'CONFIG');
     await checkAndCreateTable('T_SN_LOG', `
       CREATE TABLE T_SN_LOG (
@@ -580,6 +679,10 @@ async function runMigrations() {
         KEY idx_rebate_type (TYPE)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='供应商返利表'
     `);
+    await checkAndAddColumn('T_SUPPLIER_REBATE', 'STATUS', 'VARCHAR(32) DEFAULT "active" COMMENT "active/reversed"', 'REMARK');
+    await checkAndAddColumn('T_SUPPLIER_REBATE', 'SOURCE_TYPE', 'VARCHAR(32) DEFAULT "manual" COMMENT "manual/resource_settlement/purchase"', 'STATUS');
+    await checkAndAddColumn('T_SUPPLIER_REBATE', 'SOURCE_ID', 'VARCHAR(64) COMMENT "来源ID"', 'SOURCE_TYPE');
+    await checkAndAddColumn('T_SUPPLIER_REBATE', 'REVERSAL_OF', 'VARCHAR(32) COMMENT "被冲销返利ID"', 'SOURCE_ID');
 
     await checkAndCreateTable('T_MANUFACTURER_REBATE_POLICY', `
       CREATE TABLE T_MANUFACTURER_REBATE_POLICY (
@@ -669,6 +772,19 @@ async function runMigrations() {
         KEY idx_rebate_estimate_status (STATUS)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='厂家返利预估表'
     `);
+    await sequelize.query(`
+      INSERT IGNORE INTO T_RESOURCE_SETTLEMENT
+        (SETTLEMENT_ID, SETTLEMENT_NO, SOURCE_TYPE, SOURCE_ID, SN_ID, SN_CODE, PRODUCT_ID,
+         RESOURCE_TYPE, COUNTERPARTY_ID, COUNTERPARTY_NAME, AMOUNT, STATUS, TARGET_ACCOUNT_ID, CREATE_TIME, REMARK)
+      SELECT MD5(CONCAT('REBATE:', e.ESTIMATE_ID)), CONCAT('RST-REB-', e.ESTIMATE_ID),
+             'MANUFACTURER_REBATE', e.ESTIMATE_ID,
+             COALESCE(NULLIF(e.SN, ''), MD5(CONCAT('NO_SN:', e.ESTIMATE_ID))), COALESCE(e.SN, ''), COALESCE(e.PRODUCT_ID, ''),
+             'MANUFACTURER_REBATE', e.SUPPLIER_ID, e.SUPPLIER_NAME, e.REBATE_ESTIMATE_AMOUNT, 'PENDING',
+             (SELECT c.DEFAULT_ACCOUNT_ID FROM T_RESOURCE_CATEGORY c WHERE c.CATEGORY_CODE = 'MANUFACTURER_REBATE' LIMIT 1),
+             e.CREATED_AT, CONCAT('历史厂商返利预估迁移：', COALESCE(e.SALES_ORDER_NO, ''))
+      FROM T_REBATE_ESTIMATE e
+      WHERE e.REBATE_ESTIMATE_AMOUNT > 0 AND e.STATUS IN ('estimated', 'confirmed')
+    `);
 
     await checkAndCreateTable('T_SALES_SETTLEMENT_COST_ADJUSTMENT', `
       CREATE TABLE T_SALES_SETTLEMENT_COST_ADJUSTMENT (
@@ -703,6 +819,58 @@ async function runMigrations() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='销售结算成本调整明细表'
     `);
 
+    await checkAndCreateTable('T_PERFORMANCE_PROFIT_ADJUSTMENT', `
+      CREATE TABLE T_PERFORMANCE_PROFIT_ADJUSTMENT (
+        ADJUSTMENT_ID VARCHAR(32) NOT NULL COMMENT '调整申请ID',
+        ADJUSTMENT_NO VARCHAR(64) NOT NULL COMMENT '调整申请单号',
+        ORDER_ID VARCHAR(32) NOT NULL COMMENT '销售订单ID',
+        ORDER_NO VARCHAR(64) NOT NULL COMMENT '销售订单号',
+        STORE_ID VARCHAR(32) NOT NULL COMMENT '门店ID',
+        EMPLOYEE_NAME VARCHAR(64) COMMENT '业绩归属员工',
+        ADJUSTMENT_TYPE VARCHAR(16) NOT NULL COMMENT '类型:increase/decrease',
+        AMOUNT DECIMAL(12,2) NOT NULL COMMENT '调整绝对金额',
+        SIGNED_AMOUNT DECIMAL(12,2) NOT NULL COMMENT '有符号调整金额',
+        BASE_GROSS_PROFIT DECIMAL(12,2) DEFAULT 0 COMMENT '申请时订单归档毛利快照',
+        REASON VARCHAR(1000) NOT NULL COMMENT '调整原因',
+        STATUS VARCHAR(32) DEFAULT 'pending_finance' COMMENT '状态:pending_finance/pending_admin/approved/rejected',
+        APPLICANT_STAFF_ID BIGINT(20) NOT NULL COMMENT '申请人ID',
+        APPLICANT_NAME VARCHAR(64) NOT NULL COMMENT '申请人',
+        FINANCE_REVIEWER_ID BIGINT(20) COMMENT '财务初审人ID',
+        FINANCE_REVIEWER_NAME VARCHAR(64) COMMENT '财务初审人',
+        FINANCE_REVIEW_COMMENT VARCHAR(512) COMMENT '财务审核意见',
+        FINANCE_REVIEW_TIME DATETIME COMMENT '财务审核时间',
+        ADMIN_REVIEWER_ID BIGINT(20) COMMENT 'admin复审人ID',
+        ADMIN_REVIEWER_NAME VARCHAR(64) COMMENT 'admin复审人',
+        ADMIN_REVIEW_COMMENT VARCHAR(512) COMMENT 'admin审核意见',
+        ADMIN_REVIEW_TIME DATETIME COMMENT 'admin审核时间',
+        REJECT_STAGE VARCHAR(32) COMMENT '拒绝阶段',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '申请时间',
+        UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+        PRIMARY KEY (ADJUSTMENT_ID),
+        UNIQUE KEY uk_performance_profit_adjustment_no (ADJUSTMENT_NO),
+        KEY idx_ppa_order_status (ORDER_ID, STATUS),
+        KEY idx_ppa_applicant (APPLICANT_STAFF_ID, CREATE_TIME),
+        KEY idx_ppa_status_time (STATUS, CREATE_TIME)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='员工业绩毛利调整申请表'
+    `);
+
+    await checkAndCreateTable('T_PERFORMANCE_PROFIT_ADJUSTMENT_ATTACHMENT', `
+      CREATE TABLE T_PERFORMANCE_PROFIT_ADJUSTMENT_ATTACHMENT (
+        ATTACHMENT_ID VARCHAR(32) NOT NULL COMMENT '附件ID',
+        ADJUSTMENT_ID VARCHAR(32) NOT NULL COMMENT '调整申请ID',
+        ORIGINAL_NAME VARCHAR(255) NOT NULL COMMENT '原始文件名',
+        STORAGE_NAME VARCHAR(255) NOT NULL COMMENT '存储文件名',
+        MIME_TYPE VARCHAR(128) COMMENT '文件类型',
+        FILE_SIZE BIGINT(20) DEFAULT 0 COMMENT '文件大小',
+        FILE_PATH VARCHAR(1024) NOT NULL COMMENT '服务端存储路径',
+        UPLOAD_STAFF_ID BIGINT(20) NOT NULL COMMENT '上传人ID',
+        UPLOAD_USER VARCHAR(64) COMMENT '上传人',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '上传时间',
+        PRIMARY KEY (ATTACHMENT_ID),
+        KEY idx_ppaa_adjustment (ADJUSTMENT_ID)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='员工业绩毛利调整附件表'
+    `);
+
     await checkAndAddColumn('T_PURCHASE_REQUEST', 'REBATE_DEDUCTION', 'DECIMAL(12,2) DEFAULT 0.00 COMMENT "返利抵扣"', 'TOTAL_AMOUNT');
     await checkAndAddColumn('T_PURCHASE_REQUEST', 'ACTUAL_TOTAL', 'DECIMAL(12,2) DEFAULT 0.00 COMMENT "抵扣后实际总价"', 'REBATE_DEDUCTION');
 
@@ -732,6 +900,9 @@ async function runMigrations() {
     await checkAndAddColumn('T_ORDER_ITEM', 'COST_ADJUSTMENT_AMOUNT', 'DECIMAL(12,2) DEFAULT 0 COMMENT "政策成本调整金额"', 'P0_DIFFERENCE_AMOUNT');
     await checkAndAddColumn('T_ORDER_ITEM', 'SALES_SETTLEMENT_COST', 'DECIMAL(12,2) DEFAULT 0 COMMENT "销售结算成本"', 'COST_ADJUSTMENT_AMOUNT');
     await checkAndAddColumn('T_ORDER_ITEM', 'SALES_GROSS_PROFIT', 'DECIMAL(12,2) DEFAULT 0 COMMENT "销售毛利"', 'SALES_SETTLEMENT_COST');
+    await checkAndAddColumn('T_ORDER_ITEM', 'USE_GOV_SUBSIDY', 'TINYINT(1) DEFAULT 0 COMMENT "本行使用国补权益"', 'SALES_GROSS_PROFIT');
+    await checkAndAddColumn('T_ORDER_ITEM', 'USE_EDU_SUBSIDY', 'TINYINT(1) DEFAULT 0 COMMENT "本行使用教育补贴权益"', 'USE_GOV_SUBSIDY');
+    await checkAndAddColumn('T_ORDER_ITEM', 'USE_SALES_REPORT', 'TINYINT(1) DEFAULT 0 COMMENT "本行使用销量报号权益"', 'USE_EDU_SUBSIDY');
     await checkAndAddColumn('T_ORDER_PAYMENT', 'DEPOSIT_ID', 'VARCHAR(32) COMMENT "定金单ID"', 'PAYMENT_METHOD');
 
     await checkAndCreateTable('T_DEPOSIT_ORDER', `
@@ -879,6 +1050,14 @@ async function runMigrations() {
         PRIMARY KEY (ACCOUNT_ID),
         KEY idx_status (STATUS)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='结算账号表'
+    `);
+    await checkAndAddColumn('T_SETTLEMENT_ACCOUNT', 'ACCOUNT_TYPE', 'VARCHAR(32) DEFAULT "FUND" COMMENT "FUND/SUPPLIER_REBATE/CARE_CREDIT"', 'ACCOUNT_NUMBER');
+    await checkAndAddColumn('T_SETTLEMENT_ACCOUNT', 'SUPPLIER_ID', 'VARCHAR(32) COMMENT "供应商返利账户对应供应商"', 'ACCOUNT_TYPE');
+    await checkAndAddColumn('T_SETTLEMENT_ACCOUNT', 'USAGE_NOTE', 'VARCHAR(512) COMMENT "账户用途及限制"', 'SUPPLIER_ID');
+    await sequelize.query(`
+      INSERT IGNORE INTO T_SETTLEMENT_ACCOUNT
+        (ACCOUNT_ID, ACCOUNT_NAME, BANK_NAME, ACCOUNT_NUMBER, ACCOUNT_TYPE, USAGE_NOTE, SORT_ORDER, STATUS)
+      VALUES ('ACC_CARE_CREDIT_DEFAULT', 'Care卡可用金', '', '', 'CARE_CREDIT', '仅用于购买延保等指定商品或服务', 900, 1)
     `);
 
     await checkAndCreateTable('T_DICT_PAYMENT_METHOD', `
@@ -1062,6 +1241,33 @@ async function runMigrations() {
     `);
 
     await checkAndAddColumn('T_PRODUCT_CATEGORY_FIELD', 'FIELD_PLACEHOLDER', 'VARCHAR(128) COMMENT \'输入提示词\'', 'FIELD_OPTIONS');
+
+    await checkAndCreateTable('T_PRODUCT_APPLICATION', `
+      CREATE TABLE IF NOT EXISTS T_PRODUCT_APPLICATION (
+        APPLICATION_ID VARCHAR(32) NOT NULL COMMENT '申请ID',
+        APPLICATION_NO VARCHAR(64) NOT NULL COMMENT '申请单号',
+        PRODUCT_NAME VARCHAR(255) NOT NULL COMMENT '拟新建商品名称',
+        CATEGORY_ID VARCHAR(32) COMMENT '商品分类ID',
+        CATEGORY_NAME VARCHAR(512) COMMENT '商品分类路径',
+        PAYLOAD_JSON JSON NOT NULL COMMENT '商品创建参数快照',
+        APPLICANT_STAFF_ID BIGINT NOT NULL COMMENT '申请人员工ID',
+        APPLICANT_NAME VARCHAR(64) NOT NULL COMMENT '申请人姓名',
+        DISTRIBUTOR_ID VARCHAR(32) COMMENT '所属经销商',
+        STATUS VARCHAR(32) DEFAULT 'pending' COMMENT 'pending/approved/rejected',
+        REVIEW_STAFF_ID BIGINT COMMENT '审批人员工ID',
+        REVIEW_USER_NAME VARCHAR(64) COMMENT '审批人姓名',
+        REVIEW_COMMENT VARCHAR(512) COMMENT '审批意见',
+        REVIEW_TIME DATETIME COMMENT '审批时间',
+        PRODUCT_ID VARCHAR(32) COMMENT '审批后生成的商品ID',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '申请时间',
+        UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (APPLICATION_ID),
+        UNIQUE KEY uk_product_application_no (APPLICATION_NO),
+        KEY idx_product_application_status (STATUS, CREATE_TIME),
+        KEY idx_product_application_applicant (APPLICANT_STAFF_ID, CREATE_TIME),
+        KEY idx_product_application_distributor (DISTRIBUTOR_ID, CREATE_TIME)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='新建商品审批申请'
+    `);
 
     await migrateProductData();
 
@@ -1251,15 +1457,41 @@ async function migrateProductData() {
 async function seedPermissionData() {
   try {
     const uuid = require('crypto').randomUUID;
+    await sequelize.query(
+      `INSERT IGNORE INTO T_MENU (MENU_ID, MENU_CODE, NAME, PARENT_ID, MENU_TYPE, PATH, ICON, SORT_ORDER, STATUS)
+       VALUES (?, 'reports', '报表统计', NULL, 'menu', '/reports', 'DataAnalysis', 8, 1)`,
+      { replacements: [uuid().replace(/-/g, '').substring(0, 32)] }
+    );
     const [roleCount] = await sequelize.query(
       "SELECT COUNT(*) as cnt FROM T_ROLE",
       { type: sequelize.QueryTypes.SELECT }
     );
     if (roleCount.cnt > 0) {
       await sequelize.query(`
+        INSERT IGNORE INTO T_STAFF_ROLE (STAFF_ID, ROLE_ID)
+        SELECT s.STAFF_ID, r.ROLE_ID
+        FROM T_STAFF s
+        JOIN T_ROLE r ON r.ROLE_CODE = s.ROLE_CODE AND r.STATUS = 1
+        WHERE s.IS_DELETED = 0
+      `);
+      await sequelize.query(`
         UPDATE T_MENU
         SET STATUS = 0
         WHERE MENU_CODE = 'paymentManagement'
+      `);
+      await sequelize.query(`
+        INSERT IGNORE INTO T_ROLE_MENU (ROLE_ID, MENU_ID)
+        SELECT r.ROLE_ID, m.MENU_ID
+        FROM T_ROLE r
+        JOIN T_MENU m ON m.MENU_CODE = 'reports'
+        WHERE r.STATUS = 1 AND m.STATUS = 1
+      `);
+      await sequelize.query(`
+        INSERT IGNORE INTO T_ROLE_MENU (ROLE_ID, MENU_ID)
+        SELECT r.ROLE_ID, m.MENU_ID
+        FROM T_ROLE r
+        JOIN T_MENU m ON m.MENU_CODE = 'products'
+        WHERE r.ROLE_CODE IN ('finance', 'purchaser') AND r.STATUS = 1 AND m.STATUS = 1
       `);
       console.log('[DB Migration] 权限数据已存在, 跳过种子');
       return;
@@ -1313,8 +1545,8 @@ async function seedPermissionData() {
     const roleMenus = {
       boss:   ['home', 'sales', 'inventory', 'purchase', 'finance', 'products', 'stores', 'reports', 'system'],
       admin:  ['home', 'sales', 'inventory', 'purchase', 'finance', 'products', 'stores', 'reports', 'system'],
-      finance: ['home', 'finance'],
-      purchaser: ['home', 'purchase'],
+      finance: ['home', 'finance', 'products', 'reports'],
+      purchaser: ['home', 'purchase', 'products', 'reports'],
       manager: ['home', 'sales', 'inventory', 'products', 'reports', 'stores', 'system'],
       clerk:   ['home', 'sales', 'inventory', 'reports']
     };
@@ -1336,9 +1568,12 @@ async function seedPermissionData() {
 
     await sequelize.query(
       `INSERT IGNORE INTO T_STAFF_ROLE (STAFF_ID, ROLE_ID)
-       SELECT 1, ROLE_ID FROM T_ROLE WHERE ROLE_CODE = 'boss'`
+       SELECT s.STAFF_ID, r.ROLE_ID
+       FROM T_STAFF s
+       JOIN T_ROLE r ON r.ROLE_CODE = s.ROLE_CODE AND r.STATUS = 1
+       WHERE s.IS_DELETED = 0`
     );
-    console.log('[DB Migration] boss用户已绑定角色');
+    console.log('[DB Migration] 现有用户角色关联已补齐');
   } catch (error) {
     console.error('[DB Migration] 种子权限数据失败:', error.message);
   }

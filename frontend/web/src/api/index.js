@@ -84,6 +84,19 @@ export default {
   getSnList: (params) => api.get('/inventory/sn-list', { params }),
   updateSn: (snId, data) => api.put(`/inventory/sn/${snId}`, data),
   snTrace: (snCode, params) => api.get(`/inventory/sn-trace/${encodeURIComponent(snCode)}`, { params }),
+  getResourceRights: (params) => api.get('/inventory/resource-rights', { params }),
+  getSnResourceRights: (snId) => api.get(`/inventory/sn/${snId}/resource-rights`),
+  saveSnResourceRights: (snId, data) => api.put(`/inventory/sn/${snId}/resource-rights`, data),
+  getResourceRightChanges: (params) => api.get('/inventory/resource-rights/changes', { params }),
+  submitResourceClaim: (data) => api.post('/inventory/resource-rights/claim', data),
+  reviewResourceClaim: (id, data) => api.post(`/inventory/resource-rights/claim/${id}/review`, data),
+  getProductResourceCostConfigs: (params) => api.get('/inventory/resource-rights/cost-configs', { params }),
+  getResourceCostAdjustments: (params) => api.get('/inventory/resource-rights/cost-adjustments', { params }),
+  saveProductResourceCostConfig: (data) => api.post('/inventory/resource-rights/cost-configs', data),
+  getResourceCategories: (params) => api.get('/inventory/resource-categories', { params }),
+  saveResourceCategory: (data) => api.post('/inventory/resource-categories', data),
+  getResourceSettlements: (params) => api.get('/inventory/resource-settlements', { params }),
+  settleResource: (settlementId, data = {}) => api.post(`/inventory/resource-settlements/${settlementId}/settle`, data),
   getInboundList: (params) => api.get('/inventory/inbound-list', { params }),
   getInboundDetail: (inboundId) => api.get(`/inventory/inbound-detail/${inboundId}`),
   executeInbound: (data) => api.post('/inventory/execute-inbound', data),
@@ -163,6 +176,7 @@ export default {
   }),
   validateSettlementPaymentImport: (data) => api.post('/finance/settlement-payment/import/validate', data),
   commitSettlementPaymentImport: (data) => api.post('/finance/settlement-payment/import/commit', data),
+  createDirectSettlementPayment: (data) => api.post('/finance/settlement-payment/direct', data),
   getSettlementPaymentBatches: (params) => api.get('/finance/settlement-payment/batches', { params }),
   getSettlementPaymentBatchDetail: (id) => api.get(`/finance/settlement-payment/batch/${id}`),
   voidSettlementPaymentBatch: (data) => api.post('/finance/settlement-payment/batch/void', data),
@@ -175,6 +189,7 @@ export default {
   getRebateList: (params) => api.get('/finance/rebate-list', { params }),
   getRebateBalance: (params) => api.get('/finance/rebate-balance', { params }),
   getRebateSummary: () => api.get('/finance/rebate-summary'),
+  reverseRebate: (id, data) => api.post(`/finance/rebate/${id}/reverse`, data),
   createManufacturerPolicy: (data) => api.post('/finance/manufacturer-policy', data),
   updateManufacturerPolicy: (id, data) => api.put(`/finance/manufacturer-policy/${id}`, data),
   getManufacturerPolicyList: (params) => api.get('/finance/manufacturer-policy-list', { params }),
@@ -186,7 +201,9 @@ export default {
   // Product
   getProductList: (params) => api.get('/product/list', { params }),
   searchProduct: (params) => api.get('/product/search', { params }),
-  createProduct: (data) => api.post('/product/create', data),
+  createProduct: (data) => api.post('/product/application', data),
+  getProductApplicationList: (params) => api.get('/product/application-list', { params }),
+  reviewProductApplication: (id, data) => api.post(`/product/application/${id}/review`, data),
   updateProduct: (id, data) => api.put(`/product/update/${id}`, data),
   deleteProduct: (id) => api.delete(`/product/delete/${id}`),
   togglePause: (id) => api.post(`/product/toggle-pause/${id}`),
@@ -283,6 +300,15 @@ export default {
   getSalesReport: (params) => api.get('/report/sales', { params }),
   getInventoryReport: (params) => api.get('/report/inventory', { params }),
   getEmployeePerformanceReport: (params) => api.get('/report/employee-performance', { params }),
+  getProfitAdjustments: (params) => api.get('/report/profit-adjustments', { params }),
+  createProfitAdjustment: (data) => api.post('/report/profit-adjustments', data, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  }),
+  approveProfitAdjustment: (adjustmentId, data) => api.post(`/report/profit-adjustments/${adjustmentId}/approve`, data),
+  rejectProfitAdjustment: (adjustmentId, data) => api.post(`/report/profit-adjustments/${adjustmentId}/reject`, data),
+  downloadProfitAdjustmentAttachment: (attachmentId) => exportApi.get(`/report/profit-adjustment-attachments/${attachmentId}/download`, {
+    responseType: 'blob'
+  }),
 
   // System
   getMenus: () => api.get('/system/menus'),

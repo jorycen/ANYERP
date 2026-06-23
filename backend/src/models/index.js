@@ -98,6 +98,14 @@ const StaffRole = sequelize.define('StaffRole', {
   role_id: { type: DataTypes.STRING(32), allowNull: false }
 }, { tableName: 'T_STAFF_ROLE', timestamps: false });
 
+// 员工门店权限。门店范围必须精确到门店，不能复用区域权限代替。
+const StaffStorePermission = sequelize.define('StaffStorePermission', {
+  id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true },
+  staff_id: { type: DataTypes.BIGINT(20), allowNull: false },
+  store_id: { type: DataTypes.STRING(32), allowNull: false },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_STAFF_STORE_PERMISSION', timestamps: false });
+
 // 区域权限
 const RegionPermission = sequelize.define('RegionPermission', {
   id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true },
@@ -170,10 +178,129 @@ const ProductSn = sequelize.define('ProductSn', {
   inbound_time: { type: DataTypes.DATE },
   inbound_price: { type: DataTypes.DECIMAL(12, 2) },
   original_pickup_price: { type: DataTypes.DECIMAL(12, 2) },
+  tax_type: { type: DataTypes.STRING(32), defaultValue: 'UNKNOWN', comment: 'TAX_INCLUDED/UNTAXED/UNKNOWN' },
+  source_type: { type: DataTypes.STRING(32), defaultValue: 'OTHER', comment: '库存货源性质' },
   batch_no: { type: DataTypes.STRING(64) },
   remark: { type: DataTypes.STRING(255) },
   is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 }
 }, { tableName: 'T_PRODUCT_SN', timestamps: false });
+
+// SN资源权益当前状态。库存本体与可变权益分离。
+const InventoryResourceRight = sequelize.define('InventoryResourceRight', {
+  right_id: { type: DataTypes.STRING(32), primaryKey: true },
+  sn_id: { type: DataTypes.STRING(32), allowNull: false },
+  sn_code: { type: DataTypes.STRING(128), allowNull: false },
+  product_id: { type: DataTypes.STRING(32), allowNull: false },
+  resource_type: { type: DataTypes.STRING(32), allowNull: false },
+  initial_status: { type: DataTypes.STRING(32), allowNull: false, defaultValue: 'NOT_APPLICABLE' },
+  current_status: { type: DataTypes.STRING(32), allowNull: false, defaultValue: 'NOT_APPLICABLE' },
+  amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  source: { type: DataTypes.STRING(128) },
+  locked_source_type: { type: DataTypes.STRING(32) },
+  locked_source_id: { type: DataTypes.STRING(32) },
+  remark: { type: DataTypes.STRING(512) },
+  version: { type: DataTypes.INTEGER, defaultValue: 0 },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_INVENTORY_RESOURCE_RIGHT', timestamps: false });
+
+// 可配置资源类别。代码仅作为内部稳定标识，业务界面展示名称。
+const ResourceCategory = sequelize.define('ResourceCategory', {
+  category_id: { type: DataTypes.STRING(32), primaryKey: true },
+  category_code: { type: DataTypes.STRING(32), unique: true, allowNull: false },
+  name: { type: DataTypes.STRING(128), allowNull: false },
+  short_name: { type: DataTypes.STRING(64) },
+  default_account_id: { type: DataTypes.STRING(64) },
+  supports_sale_use: { type: DataTypes.TINYINT(1), defaultValue: 1 },
+  supports_company_claim: { type: DataTypes.TINYINT(1), defaultValue: 1 },
+  sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
+  status: { type: DataTypes.TINYINT(1), defaultValue: 1 },
+  remark: { type: DataTypes.STRING(512) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_RESOURCE_CATEGORY', timestamps: false });
+
+// 权益变更单兼作不可删除的状态流水；套回申请由财务审批。
+const ResourceRightChangeOrder = sequelize.define('ResourceRightChangeOrder', {
+  change_id: { type: DataTypes.STRING(32), primaryKey: true },
+  change_order_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
+  sn_id: { type: DataTypes.STRING(32), allowNull: false },
+  sn_code: { type: DataTypes.STRING(128), allowNull: false },
+  product_id: { type: DataTypes.STRING(32), allowNull: false },
+  resource_type: { type: DataTypes.STRING(32), allowNull: false },
+  before_status: { type: DataTypes.STRING(32), allowNull: false },
+  after_status: { type: DataTypes.STRING(32), allowNull: false },
+  change_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  change_reason: { type: DataTypes.STRING(32), allowNull: false },
+  approval_status: { type: DataTypes.STRING(32), defaultValue: 'approved' },
+  related_order_id: { type: DataTypes.STRING(32) },
+  related_sale_order_id: { type: DataTypes.STRING(32) },
+  attachment_url: { type: DataTypes.STRING(1000) },
+  applicant_staff_id: { type: DataTypes.BIGINT(20) },
+  applicant_name: { type: DataTypes.STRING(64) },
+  reviewer_staff_id: { type: DataTypes.BIGINT(20) },
+  reviewer_name: { type: DataTypes.STRING(64) },
+  review_comment: { type: DataTypes.STRING(512) },
+  review_time: { type: DataTypes.DATE },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  remark: { type: DataTypes.STRING(512) }
+}, { tableName: 'T_RESOURCE_RIGHT_CHANGE_ORDER', timestamps: false });
+
+// 商品+资源类型成本定义，不参与销售结算成本自动扣减。
+const ProductResourceCostConfig = sequelize.define('ProductResourceCostConfig', {
+  config_id: { type: DataTypes.STRING(32), primaryKey: true },
+  product_id: { type: DataTypes.STRING(32), allowNull: false },
+  resource_type: { type: DataTypes.STRING(32), allowNull: false },
+  cost_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  status: { type: DataTypes.TINYINT(1), defaultValue: 1 },
+  remark: { type: DataTypes.STRING(512) },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_user: { type: DataTypes.STRING(64) },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_PRODUCT_RESOURCE_COST_CONFIG', timestamps: false });
+
+// 产品资源成本流水，与厂家政策及销售结算成本流水隔离。
+const InventoryResourceCostAdjustment = sequelize.define('InventoryResourceCostAdjustment', {
+  adjustment_id: { type: DataTypes.STRING(32), primaryKey: true },
+  sn_id: { type: DataTypes.STRING(32), allowNull: false },
+  sn_code: { type: DataTypes.STRING(128), allowNull: false },
+  product_id: { type: DataTypes.STRING(32), allowNull: false },
+  resource_type: { type: DataTypes.STRING(32), allowNull: false },
+  adjustment_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  before_product_cost: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  after_product_cost: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  source_type: { type: DataTypes.STRING(32), allowNull: false },
+  source_id: { type: DataTypes.STRING(32), allowNull: false },
+  affect_sales_settlement_cost: { type: DataTypes.TINYINT(1), defaultValue: 0 },
+  operator_id: { type: DataTypes.BIGINT(20) },
+  operator_name: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  remark: { type: DataTypes.STRING(512) }
+}, { tableName: 'T_INVENTORY_RESOURCE_COST_ADJUSTMENT', timestamps: false });
+
+// 权益使用/套回后形成的待下账记录；下账后才进入真实资金或受限额度账户。
+const ResourceSettlement = sequelize.define('ResourceSettlement', {
+  settlement_id: { type: DataTypes.STRING(32), primaryKey: true },
+  settlement_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
+  source_type: { type: DataTypes.STRING(32), allowNull: false },
+  source_id: { type: DataTypes.STRING(64), allowNull: false },
+  batch_no: { type: DataTypes.STRING(64) },
+  sn_id: { type: DataTypes.STRING(32), allowNull: false },
+  sn_code: { type: DataTypes.STRING(128), allowNull: false },
+  product_id: { type: DataTypes.STRING(32), allowNull: false },
+  resource_type: { type: DataTypes.STRING(32), allowNull: false },
+  counterparty_id: { type: DataTypes.STRING(32) },
+  counterparty_name: { type: DataTypes.STRING(255) },
+  amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  status: { type: DataTypes.STRING(32), defaultValue: 'PENDING' },
+  target_account_id: { type: DataTypes.STRING(64) },
+  settled_at: { type: DataTypes.DATE },
+  settled_by: { type: DataTypes.BIGINT(20) },
+  settled_by_name: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  remark: { type: DataTypes.STRING(512) }
+}, { tableName: 'T_RESOURCE_SETTLEMENT', timestamps: false });
 
 // 商品条码（厂商编码/69码，一个商品可有多个）
 const ProductBarcode = sequelize.define('ProductBarcode', {
@@ -223,6 +350,27 @@ const ProductCategoryField = sequelize.define('ProductCategoryField', {
   required: { type: DataTypes.TINYINT, defaultValue: 0 },
   status: { type: DataTypes.TINYINT, defaultValue: 1 }
 }, { tableName: 'T_PRODUCT_CATEGORY_FIELD', timestamps: false });
+
+// 新建商品申请（审批通过后才写入正式商品主表）
+const ProductApplication = sequelize.define('ProductApplication', {
+  application_id: { type: DataTypes.STRING(32), primaryKey: true },
+  application_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
+  product_name: { type: DataTypes.STRING(255), allowNull: false },
+  category_id: { type: DataTypes.STRING(32) },
+  category_name: { type: DataTypes.STRING(512) },
+  payload_json: { type: DataTypes.JSON, allowNull: false },
+  applicant_staff_id: { type: DataTypes.BIGINT(20), allowNull: false },
+  applicant_name: { type: DataTypes.STRING(64), allowNull: false },
+  distributor_id: { type: DataTypes.STRING(32) },
+  status: { type: DataTypes.STRING(32), defaultValue: 'pending' },
+  review_staff_id: { type: DataTypes.BIGINT(20) },
+  review_user_name: { type: DataTypes.STRING(64) },
+  review_comment: { type: DataTypes.STRING(512) },
+  review_time: { type: DataTypes.DATE },
+  product_id: { type: DataTypes.STRING(32) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_PRODUCT_APPLICATION', timestamps: false });
 
 // 商品价格（与商品基础信息分离）
 const ProductPrice = sequelize.define('ProductPrice', {
@@ -548,7 +696,11 @@ const OrderItem = sequelize.define('OrderItem', {
   p0_difference_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   cost_adjustment_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   sales_settlement_cost: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
-  sales_gross_profit: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 }
+  sales_gross_profit: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  use_gov_subsidy: { type: DataTypes.TINYINT(1), defaultValue: 0 },
+  use_edu_subsidy: { type: DataTypes.TINYINT(1), defaultValue: 0 },
+  use_sales_report: { type: DataTypes.TINYINT(1), defaultValue: 0 },
+  selected_resource_types: { type: DataTypes.TEXT }
 }, { tableName: 'T_ORDER_ITEM', timestamps: false });
 
 // 订单支付记录
@@ -914,6 +1066,10 @@ const RebateEstimate = sequelize.define('RebateEstimate', {
   rebate_estimate_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   status: { type: DataTypes.STRING(32), defaultValue: 'estimated' },
   remark: { type: DataTypes.STRING(512) },
+  status: { type: DataTypes.STRING(32), defaultValue: 'active' },
+  source_type: { type: DataTypes.STRING(32), defaultValue: 'manual' },
+  source_id: { type: DataTypes.STRING(64) },
+  reversal_of: { type: DataTypes.STRING(32) },
   created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
   updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_REBATE_ESTIMATE', timestamps: false });
@@ -945,6 +1101,48 @@ const SalesSettlementCostAdjustment = sequelize.define('SalesSettlementCostAdjus
   created_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
   updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_SALES_SETTLEMENT_COST_ADJUSTMENT', timestamps: false });
+
+// 员工业绩毛利调整申请，不改写订单原始毛利。
+const PerformanceProfitAdjustment = sequelize.define('PerformanceProfitAdjustment', {
+  adjustment_id: { type: DataTypes.STRING(32), primaryKey: true },
+  adjustment_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
+  order_id: { type: DataTypes.STRING(32), allowNull: false },
+  order_no: { type: DataTypes.STRING(64), allowNull: false },
+  store_id: { type: DataTypes.STRING(32), allowNull: false },
+  employee_name: { type: DataTypes.STRING(64) },
+  adjustment_type: { type: DataTypes.STRING(16), allowNull: false },
+  amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  signed_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  base_gross_profit: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  reason: { type: DataTypes.STRING(1000), allowNull: false },
+  status: { type: DataTypes.STRING(32), defaultValue: 'pending_finance' },
+  applicant_staff_id: { type: DataTypes.BIGINT(20), allowNull: false },
+  applicant_name: { type: DataTypes.STRING(64), allowNull: false },
+  finance_reviewer_id: { type: DataTypes.BIGINT(20) },
+  finance_reviewer_name: { type: DataTypes.STRING(64) },
+  finance_review_comment: { type: DataTypes.STRING(512) },
+  finance_review_time: { type: DataTypes.DATE },
+  admin_reviewer_id: { type: DataTypes.BIGINT(20) },
+  admin_reviewer_name: { type: DataTypes.STRING(64) },
+  admin_review_comment: { type: DataTypes.STRING(512) },
+  admin_review_time: { type: DataTypes.DATE },
+  reject_stage: { type: DataTypes.STRING(32) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_PERFORMANCE_PROFIT_ADJUSTMENT', timestamps: false });
+
+const PerformanceProfitAdjustmentAttachment = sequelize.define('PerformanceProfitAdjustmentAttachment', {
+  attachment_id: { type: DataTypes.STRING(32), primaryKey: true },
+  adjustment_id: { type: DataTypes.STRING(32), allowNull: false },
+  original_name: { type: DataTypes.STRING(255), allowNull: false },
+  storage_name: { type: DataTypes.STRING(255), allowNull: false },
+  mime_type: { type: DataTypes.STRING(128) },
+  file_size: { type: DataTypes.BIGINT(20), defaultValue: 0 },
+  file_path: { type: DataTypes.STRING(1024), allowNull: false },
+  upload_staff_id: { type: DataTypes.BIGINT(20), allowNull: false },
+  upload_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_PERFORMANCE_PROFIT_ADJUSTMENT_ATTACHMENT', timestamps: false });
 
 // -------------------------------------------
 // 字典模型
@@ -978,6 +1176,9 @@ const SettlementAccount = sequelize.define('SettlementAccount', {
   account_name: { type: DataTypes.STRING(128), allowNull: false, comment: '账号名称' },
   bank_name: { type: DataTypes.STRING(128), comment: '开户行' },
   account_number: { type: DataTypes.STRING(128), comment: '账号' },
+  account_type: { type: DataTypes.STRING(32), defaultValue: 'FUND', comment: 'FUND/SUPPLIER_REBATE/CARE_CREDIT' },
+  supplier_id: { type: DataTypes.STRING(32) },
+  usage_note: { type: DataTypes.STRING(512) },
   sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
   status: { type: DataTypes.TINYINT, defaultValue: 1 }
 }, { tableName: 'T_SETTLEMENT_ACCOUNT', timestamps: false });
@@ -1037,6 +1238,11 @@ Menu.belongsToMany(Role, { through: RoleMenu, foreignKey: 'menu_id', otherKey: '
 Staff.belongsToMany(Role, { through: StaffRole, foreignKey: 'staff_id', otherKey: 'role_id', as: 'Roles' });
 Role.belongsToMany(Staff, { through: StaffRole, foreignKey: 'role_id', otherKey: 'staff_id' });
 
+Staff.belongsToMany(Store, { through: StaffStorePermission, foreignKey: 'staff_id', otherKey: 'store_id', as: 'AssignedStores' });
+Store.belongsToMany(Staff, { through: StaffStorePermission, foreignKey: 'store_id', otherKey: 'staff_id', as: 'AssignedStaff' });
+StaffStorePermission.belongsTo(Staff, { foreignKey: 'staff_id', targetKey: 'staff_id' });
+StaffStorePermission.belongsTo(Store, { foreignKey: 'store_id', targetKey: 'store_id' });
+
 Staff.hasMany(RegionPermission, { foreignKey: 'staff_id', sourceKey: 'staff_id', as: 'RegionPermissions' });
 RegionPermission.belongsTo(Staff, { foreignKey: 'staff_id', targetKey: 'staff_id', as: 'Staff' });
 
@@ -1049,6 +1255,18 @@ ProductSn.belongsTo(Product, { foreignKey: 'product_id', targetKey: 'product_id'
 
 ProductPn.hasMany(ProductSn, { foreignKey: 'pn_id', sourceKey: 'pn_id' });
 ProductSn.belongsTo(ProductPn, { foreignKey: 'pn_id', targetKey: 'pn_id' });
+
+ProductSn.hasMany(InventoryResourceRight, { foreignKey: 'sn_id', sourceKey: 'sn_id', as: 'resourceRights' });
+InventoryResourceRight.belongsTo(ProductSn, { foreignKey: 'sn_id', targetKey: 'sn_id' });
+Product.hasMany(InventoryResourceRight, { foreignKey: 'product_id', sourceKey: 'product_id' });
+InventoryResourceRight.belongsTo(Product, { foreignKey: 'product_id', targetKey: 'product_id' });
+Product.hasMany(ProductResourceCostConfig, { foreignKey: 'product_id', sourceKey: 'product_id', as: 'resourceCostConfigs' });
+ProductResourceCostConfig.belongsTo(Product, { foreignKey: 'product_id', targetKey: 'product_id' });
+ResourceRightChangeOrder.belongsTo(ProductSn, { foreignKey: 'sn_id', targetKey: 'sn_id' });
+InventoryResourceCostAdjustment.belongsTo(ProductSn, { foreignKey: 'sn_id', targetKey: 'sn_id' });
+ResourceCategory.belongsTo(SettlementAccount, { foreignKey: 'default_account_id', targetKey: 'account_id', as: 'DefaultAccount' });
+ResourceSettlement.belongsTo(ResourceCategory, { foreignKey: 'resource_type', targetKey: 'category_code', as: 'ResourceCategory' });
+ResourceSettlement.belongsTo(SettlementAccount, { foreignKey: 'target_account_id', targetKey: 'account_id', as: 'TargetAccount' });
 
 Product.hasMany(ProductBarcode, { foreignKey: 'product_id', sourceKey: 'product_id' });
 ProductBarcode.belongsTo(Product, { foreignKey: 'product_id', targetKey: 'product_id' });
@@ -1122,6 +1340,10 @@ Order.hasMany(SalesSettlementCostAdjustment, { foreignKey: 'sales_order_id', sou
 SalesSettlementCostAdjustment.belongsTo(Order, { foreignKey: 'sales_order_id', targetKey: 'order_id' });
 OrderItem.hasMany(SalesSettlementCostAdjustment, { foreignKey: 'sales_order_item_id', sourceKey: 'item_id', as: 'costAdjustments' });
 SalesSettlementCostAdjustment.belongsTo(OrderItem, { foreignKey: 'sales_order_item_id', targetKey: 'item_id' });
+Order.hasMany(PerformanceProfitAdjustment, { foreignKey: 'order_id', sourceKey: 'order_id', as: 'performanceProfitAdjustments' });
+PerformanceProfitAdjustment.belongsTo(Order, { foreignKey: 'order_id', targetKey: 'order_id' });
+PerformanceProfitAdjustment.hasMany(PerformanceProfitAdjustmentAttachment, { foreignKey: 'adjustment_id', sourceKey: 'adjustment_id', as: 'attachments' });
+PerformanceProfitAdjustmentAttachment.belongsTo(PerformanceProfitAdjustment, { foreignKey: 'adjustment_id', targetKey: 'adjustment_id' });
 Product.hasMany(OrderItem, { foreignKey: 'product_id', sourceKey: 'product_id' });
 OrderItem.belongsTo(Product, { foreignKey: 'product_id', targetKey: 'product_id' });
 
@@ -1231,14 +1453,22 @@ module.exports = {
   Role,
   RoleMenu,
   StaffRole,
+  StaffStorePermission,
   RegionPermission,
   Product,
   ProductPn,
   ProductSn,
+  ResourceCategory,
+  InventoryResourceRight,
+  ResourceRightChangeOrder,
+  ProductResourceCostConfig,
+  InventoryResourceCostAdjustment,
+  ResourceSettlement,
   ProductBarcode,
   SnLog,
   ProductCategory,
   ProductCategoryField,
+  ProductApplication,
   ProductPrice,
   ProductPriceImportBatch,
   ProductPriceChangeLog,
@@ -1286,5 +1516,7 @@ module.exports = {
   SupplierRebate,
   RebateEstimate,
   SalesSettlementCostAdjustment,
+  PerformanceProfitAdjustment,
+  PerformanceProfitAdjustmentAttachment,
   Inventory
 };

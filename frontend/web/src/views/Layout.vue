@@ -178,6 +178,10 @@ const handleCommand = async (command) => {
   height: 100vh;
 }
 
+.layout-container > .el-container {
+  min-width: 0;
+}
+
 .sidebar {
   background: #304156;
   overflow-y: auto;
@@ -210,6 +214,11 @@ const handleCommand = async (command) => {
   justify-content: space-between;
   background: #fff;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+}
+
+.main-content {
+  min-width: 0;
+  overflow: auto;
 }
 
 .header-right {

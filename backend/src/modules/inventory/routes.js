@@ -4,6 +4,7 @@
 const Router = require('koa-router');
 const { getList, getSnList, getInboundList, getInboundDetail, executeInbound, getReturnList, requestReturn, approveReturn, executeReturn, inbound, outbound, transfer, getTransferList, confirmTransferOut, confirmTransferIn, getConversionList, getConversionDetail, createConversion, voidConversion, getLocationsByStore, updateSn, snTrace } = require('./controller');
 const { enforceStoreOwnership } = require('../../middleware/permission');
+const resourceRights = require('./resourceRights');
 
 const router = new Router();
 
@@ -11,6 +12,19 @@ router.get('/list', getList);
 router.get('/sn-list', getSnList);
 router.put('/sn/:snId', updateSn);
 router.get('/sn-trace/:snCode', snTrace);
+router.get('/resource-rights', resourceRights.listRights);
+router.get('/resource-rights/changes', resourceRights.listChanges);
+router.get('/resource-rights/cost-configs', resourceRights.listCostConfigs);
+router.get('/resource-rights/cost-adjustments', resourceRights.listCostAdjustments);
+router.post('/resource-rights/cost-configs', resourceRights.saveCostConfig);
+router.get('/resource-categories', resourceRights.listResourceCategories);
+router.post('/resource-categories', resourceRights.saveResourceCategory);
+router.get('/resource-settlements', resourceRights.listResourceSettlements);
+router.post('/resource-settlements/:settlementId/settle', resourceRights.settleResource);
+router.post('/resource-rights/claim', resourceRights.submitClaim);
+router.post('/resource-rights/claim/:changeId/review', resourceRights.reviewClaim);
+router.get('/sn/:snId/resource-rights', resourceRights.snRights);
+router.put('/sn/:snId/resource-rights', resourceRights.saveSnRights);
 router.get('/inbound-list', getInboundList);
 router.get('/inbound-detail/:inboundId', getInboundDetail);
 router.post('/execute-inbound', enforceStoreOwnership, executeInbound);
