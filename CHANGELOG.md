@@ -2,6 +2,8 @@
 
 ## 2026-06-25
 
+* Cloud cleanup scripts now load database settings from `cloud-db.env`, with `cloud-db.env.example` provided as a template and `cloud-db.env` ignored by git.
+
 * 用户管理列表新增“停用/启用”快捷操作，停用账号后账号无法继续登录。
 * 登录接口和全局鉴权统一返回“账号已停用”，停用账号已有 token 在下一次接口请求时失效。
 * 账号信息和修改密码接口纳入同一鉴权链路，避免停用账号访问账号相关接口。

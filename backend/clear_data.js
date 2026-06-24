@@ -9,6 +9,45 @@ const target = (args.find(arg => arg.startsWith('--target=')) || '').split('=')[
 const dryRun = args.includes('--dry-run');
 
 const requiredCloudEnv = ['DB_HOST', 'DB_USER', 'DB_NAME'];
+const envFiles = [
+  path.resolve(__dirname, '..', 'cloud-db.env'),
+  path.resolve(__dirname, 'cloud-db.env')
+];
+
+function stripWrappingQuotes(value) {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function loadEnvFile(filePath) {
+  if (!fs.existsSync(filePath)) return false;
+
+  const content = fs.readFileSync(filePath, 'utf8');
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+
+    const separatorIndex = line.indexOf('=');
+    if (separatorIndex <= 0) continue;
+
+    const key = line.slice(0, separatorIndex).trim();
+    const value = stripWrappingQuotes(line.slice(separatorIndex + 1));
+    if (!/^[A-Z0-9_]+$/.test(key)) continue;
+    if (!Object.prototype.hasOwnProperty.call(process.env, key)) {
+      process.env[key] = value;
+    }
+  }
+
+  return true;
+}
+
+const loadedEnvFile = envFiles.find(loadEnvFile) || '';
 
 const config = {
   host: process.env.DB_HOST,
@@ -177,7 +216,7 @@ function validateCloudTarget() {
   if (missing.length > 0) {
     throw new Error(
       `Missing required cloud DB environment variables: ${missing.join(', ')}. ` +
-      'Set DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME before running.'
+      'Create cloud-db.env from cloud-db.env.example or set DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME before running.'
     );
   }
 
@@ -296,6 +335,7 @@ async function main() {
   console.log('==========================================');
   console.log('  ANY-ERP cloud test data cleanup');
   console.log('==========================================');
+  console.log(`Env file: ${loadedEnvFile || '(not loaded)'}`);
   console.log(`Database: ${config.user || '(missing user)'}@${config.host || '(missing host)'}:${config.port}/${config.database || '(missing database)'}`);
   console.log(`Target: ${target || '(not specified)'}`);
 

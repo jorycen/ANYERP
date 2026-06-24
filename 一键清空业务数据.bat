@@ -8,9 +8,10 @@ echo   Keep config, users, stores, suppliers, products
 echo ==========================================
 echo.
 echo DB config comes from:
-echo   DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME
+echo   cloud-db.env or DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME
 echo.
 echo Make sure these variables point to the CLOUD database.
+echo If cloud-db.env does not exist, copy cloud-db.env.example and fill it first.
 echo This script will ask for CLEAR_TEST_DATA before deleting anything.
 echo.
 

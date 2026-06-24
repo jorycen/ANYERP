@@ -23,6 +23,7 @@ query
 .env
 .env.*
 !.env.example
+cloud-db.env
 
 # Generated or packaged copies
 backend-package/
