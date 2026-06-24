@@ -28,7 +28,7 @@ async function authMiddleware(ctx, next) {
     }
 
     if (staff.status !== 1) {
-      ctx.throw(401, '账号已被禁用');
+      ctx.throw(401, '账号已停用');
     }
 
     let roles = (staff.Roles || []).map(role => role.role_code);

@@ -37,7 +37,7 @@ async function login(ctx) {
 
   // 检查状态
   if (staff.status !== 1) {
-    ctx.throw(401, '账号已被禁用');
+    ctx.throw(401, '账号已停用');
   }
 
   // 获取角色信息 - 优先从关联表, 回退到 staff.role_code

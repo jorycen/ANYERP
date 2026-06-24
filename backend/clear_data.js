@@ -1,108 +1,354 @@
+const fs = require('fs');
+const path = require('path');
 const mysql = require('mysql2/promise');
 const readline = require('readline');
 
+const CONFIRM_PHRASE = 'CLEAR_TEST_DATA';
+const args = process.argv.slice(2);
+const target = (args.find(arg => arg.startsWith('--target=')) || '').split('=')[1] || '';
+const dryRun = args.includes('--dry-run');
+
+const requiredCloudEnv = ['DB_HOST', 'DB_USER', 'DB_NAME'];
+
 const config = {
-  host: process.env.DB_HOST || '127.0.0.1',
+  host: process.env.DB_HOST,
   port: Number(process.env.DB_PORT || 3306),
-  user: process.env.DB_USER || 'root',
+  user: process.env.DB_USER,
   password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'any_erp',
+  database: process.env.DB_NAME,
   charset: 'utf8mb4'
 };
 
-const TABLES = [
-  'T_PRODUCT',
-  'T_PRODUCT_PN',
-  'T_PRODUCT_SN',
-  'T_PRODUCT_BARCODE',
-  'T_PRODUCT_PRICE',
-  'T_SN_LOG',
-  'T_INVENTORY_WARNING',
-  'T_ORDER',
-  'T_ORDER_ITEM',
-  'T_ORDER_PAYMENT',
-  'T_ORDER_ATTACHMENT',
-  'T_INVENTORY',
-  'T_OUTBOUND',
-  'T_OUTBOUND_ITEM',
-  'T_TRANSFER',
-  'T_TRANSFER_ITEM',
-  'T_RETURN_STOCK',
-  'T_RETURN_STOCK_ITEM',
-  'T_INBOUND',
-  'T_INBOUND_ITEM',
-  'T_PURCHASE_REQUEST',
-  'T_PURCHASE_REQUEST_ITEM',
-  'T_PURCHASE_ORDER',
-  'T_PURCHASE_ORDER_ITEM',
-  'T_DAILY_STATEMENT',
-  'T_DAILY_STATEMENT_DETAIL',
-  'T_SETTLEMENT',
-  'T_SETTLEMENT_ITEM',
-  'T_EXPENSE',
-  'T_SETTLEMENT_ACCOUNT_TRANSACTION',
-  'T_PAYABLE',
-  'T_SUPPLIER_REBATE',
-];
+const tableGroups = {
+  'inventory and SN': [
+    'T_INVENTORY_RESOURCE_RIGHT',
+    'T_RESOURCE_RIGHT_CHANGE_ORDER',
+    'T_INVENTORY_RESOURCE_COST_ADJUSTMENT',
+    'T_RESOURCE_SETTLEMENT',
+    'T_PRODUCT_SN',
+    'T_SN_LOG',
+    'T_INVENTORY'
+  ],
+  'inventory documents': [
+    'T_INVENTORY_CONVERSION_ITEM',
+    'T_INVENTORY_CONVERSION',
+    'T_TRANSFER_ITEM',
+    'T_TRANSFER',
+    'T_RETURN_STOCK_ITEM',
+    'T_RETURN_STOCK',
+    'T_OUTBOUND_ITEM',
+    'T_OUTBOUND',
+    'T_INBOUND_ITEM',
+    'T_INBOUND'
+  ],
+  'purchase records': [
+    'T_PURCHASE_REQUEST_ITEM',
+    'T_PURCHASE_REQUEST',
+    'T_PURCHASE_ORDER_ITEM',
+    'T_PURCHASE_ORDER'
+  ],
+  'sales and deposits': [
+    'T_DEPOSIT_REDEMPTION',
+    'T_DEPOSIT_REFUND',
+    'T_DEPOSIT_ORDER',
+    'T_ORDER_PAYMENT',
+    'T_ORDER_ATTACHMENT',
+    'T_ORDER_ITEM',
+    'T_ORDER'
+  ],
+  'approval records': [
+    'T_PERFORMANCE_PROFIT_ADJUSTMENT_ATTACHMENT',
+    'T_PERFORMANCE_PROFIT_ADJUSTMENT',
+    'T_PRODUCT_APPLICATION'
+  ],
+  'finance records': [
+    'T_SETTLEMENT_PAYMENT_RECORD',
+    'T_SETTLEMENT_PAYMENT_BATCH',
+    'T_SETTLEMENT_ITEM',
+    'T_SETTLEMENT',
+    'T_PAYABLE',
+    'T_EXPENSE',
+    'T_DAILY_STATEMENT_DETAIL',
+    'T_DAILY_STATEMENT',
+    'T_SETTLEMENT_ACCOUNT_TRANSACTION',
+    'T_SUPPLIER_REBATE',
+    'T_REBATE_ESTIMATE',
+    'T_SALES_SETTLEMENT_COST_ADJUSTMENT'
+  ],
+  'manufacturer policy and price history': [
+    'T_MANUFACTURER_REBATE_POLICY',
+    'T_MANUFACTURER_PRICE_HISTORY',
+    'T_PRODUCT_PRICE_CHANGE_LOG',
+    'T_PRODUCT_PRICE_IMPORT_BATCH'
+  ]
+};
 
-function askConfirm() {
+const preservedGroups = {
+  organization: [
+    'T_REGION',
+    'T_DISTRIBUTOR',
+    'T_STORE',
+    'T_STAFF',
+    'T_ROLE',
+    'T_MENU',
+    'T_ROLE_MENU',
+    'T_STAFF_ROLE',
+    'T_STAFF_STORE_PERMISSION',
+    'T_REGION_PERMISSION'
+  ],
+  products: [
+    'T_PRODUCT',
+    'T_PRODUCT_PN',
+    'T_PRODUCT_BARCODE',
+    'T_PRODUCT_CATEGORY',
+    'T_PRODUCT_CATEGORY_FIELD',
+    'T_PRODUCT_PRICE'
+  ],
+  configuration: [
+    'T_SUPPLIER',
+    'T_SUPPLIER_PAYMENT_ACCOUNT',
+    'T_LOCATION',
+    'T_RESOURCE_CATEGORY',
+    'T_PRODUCT_RESOURCE_COST_CONFIG',
+    'T_DICT_CUSTOMER_SOURCE',
+    'T_DICT_PAYMENT_METHOD',
+    'T_DICT_PAYMENT_METHOD_STORE',
+    'T_DICT_SUPPLEMENT_ITEM',
+    'T_SETTLEMENT_ACCOUNT',
+    'T_INVENTORY_WARNING'
+  ]
+};
+
+const tablesToClear = Object.values(tableGroups).flat();
+
+function ask(question) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    rl.question('\n⚠ 以上 32 张表数据将被清空，是否确认？(输入 yes 确认): ', (answer) => {
+  return new Promise(resolve => {
+    rl.question(question, answer => {
       rl.close();
-      resolve(answer.trim().toLowerCase() === 'yes');
+      resolve(answer.trim());
     });
   });
 }
 
-async function main() {
-  console.log('==========================================');
-  console.log('  ANY-ERP 业务数据一键清空脚本');
-  console.log('==========================================');
-  console.log('\n将清空以下业务表（系统设置表不受影响）：\n');
+function assertSafeTableName(table) {
+  if (!/^[A-Z0-9_]+$/.test(table)) {
+    throw new Error(`Unsafe table name: ${table}`);
+  }
+}
 
-  const groups = {
-    '商品信息': ['T_PRODUCT', 'T_PRODUCT_PN', 'T_PRODUCT_SN', 'T_PRODUCT_BARCODE', 'T_PRODUCT_PRICE', 'T_SN_LOG', 'T_INVENTORY_WARNING'],
-    '销售订单': ['T_ORDER', 'T_ORDER_ITEM', 'T_ORDER_PAYMENT', 'T_ORDER_ATTACHMENT'],
-    '库存信息': ['T_INVENTORY', 'T_OUTBOUND', 'T_OUTBOUND_ITEM', 'T_TRANSFER', 'T_TRANSFER_ITEM', 'T_RETURN_STOCK', 'T_RETURN_STOCK_ITEM'],
-    '入库单': ['T_INBOUND', 'T_INBOUND_ITEM'],
-    '采购申请/订单': ['T_PURCHASE_REQUEST', 'T_PURCHASE_REQUEST_ITEM', 'T_PURCHASE_ORDER', 'T_PURCHASE_ORDER_ITEM'],
-    '日结/结算': ['T_DAILY_STATEMENT', 'T_DAILY_STATEMENT_DETAIL', 'T_SETTLEMENT', 'T_SETTLEMENT_ITEM'],
-    '费用': ['T_EXPENSE', 'T_SETTLEMENT_ACCOUNT_TRANSACTION'],
-    '应付/返利': ['T_PAYABLE', 'T_SUPPLIER_REBATE'],
-  };
+function tableSql(table) {
+  assertSafeTableName(table);
+  return `\`${table}\``;
+}
 
-  for (const [name, tables] of Object.entries(groups)) {
-    console.log(`  【${name}】: ${tables.join(', ')}`);
+function timestampForFile() {
+  const pad = value => String(value).padStart(2, '0');
+  const now = new Date();
+  return [
+    now.getFullYear(),
+    pad(now.getMonth() + 1),
+    pad(now.getDate())
+  ].join('') + '-' + [
+    pad(now.getHours()),
+    pad(now.getMinutes()),
+    pad(now.getSeconds())
+  ].join('');
+}
+
+function formatValue(conn, value) {
+  if (value === null || value === undefined) return 'NULL';
+  if (Buffer.isBuffer(value)) return `X'${value.toString('hex')}'`;
+  if (value instanceof Date) return conn.escape(value);
+  if (typeof value === 'object') return conn.escape(JSON.stringify(value));
+  return conn.escape(value);
+}
+
+function validateCloudTarget() {
+  if (target !== 'cloud') {
+    console.log('\nThis script is only for cloud cleanup before production launch.');
+    console.log('To prevent accidental cleanup, pass --target=cloud explicitly.');
+    console.log('\nPreview: node clear_data.js --target=cloud --dry-run');
+    console.log('Execute: node clear_data.js --target=cloud');
+    return false;
   }
 
-  console.log('\n✅ 保留：商品分类、字段配置、结算账户、收款方式、库位、供应商等');
-
-  const confirmed = await askConfirm();
-  if (!confirmed) {
-    console.log('❌ 已取消，未执行清空操作。');
-    process.exit(0);
-    return;
+  const missing = requiredCloudEnv.filter(name => !process.env[name]);
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required cloud DB environment variables: ${missing.join(', ')}. ` +
+      'Set DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME before running.'
+    );
   }
 
-  let conn;
-  try {
-    conn = await mysql.createConnection(config);
-    console.log('\n--- 开始清空 ---');
-    await conn.query('SET FOREIGN_KEY_CHECKS = 0');
+  const localHosts = new Set(['127.0.0.1', 'localhost', '::1']);
+  if (localHosts.has(String(config.host).toLowerCase())) {
+    throw new Error(
+      `DB_HOST is ${config.host}. Refusing cloud cleanup against a local database host.`
+    );
+  }
 
-    for (const table of TABLES) {
-      await conn.query(`TRUNCATE TABLE ${table}`);
-      console.log(`  ✓ ${table}`);
+  return true;
+}
+
+async function getExistingTables(conn) {
+  const [rows] = await conn.query(
+    'SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = ?',
+    [config.database]
+  );
+  return new Set(rows.map(row => row.TABLE_NAME));
+}
+
+async function getTableCounts(conn, tables) {
+  const counts = {};
+  for (const table of tables) {
+    const [rows] = await conn.query(`SELECT COUNT(*) AS count FROM ${tableSql(table)}`);
+    counts[table] = Number(rows[0]?.count || 0);
+  }
+  return counts;
+}
+
+async function writeBackup(conn, tables, counts) {
+  const backupDir = path.join(__dirname, 'backups');
+  fs.mkdirSync(backupDir, { recursive: true });
+
+  const backupPath = path.join(
+    backupDir,
+    `test-data-cleanup-${config.database}-${timestampForFile()}.sql`
+  );
+
+  const out = fs.createWriteStream(backupPath, { encoding: 'utf8' });
+  out.write('-- ANY-ERP test data cleanup backup\n');
+  out.write(`-- Database: ${config.database}\n`);
+  out.write(`-- Created at: ${new Date().toISOString()}\n`);
+  out.write('-- This file backs up only tables cleared by clear_data.js.\n\n');
+  out.write('SET FOREIGN_KEY_CHECKS = 0;\n\n');
+
+  for (const table of tables) {
+    out.write(`-- ${table}: ${counts[table] || 0} rows\n`);
+    out.write(`DELETE FROM ${tableSql(table)};\n`);
+
+    if (!counts[table]) {
+      out.write('\n');
+      continue;
     }
 
-    await conn.query('SET FOREIGN_KEY_CHECKS = 1');
-    console.log(`\n=== ✅ 清空完成！共 ${TABLES.length} 张表 ===`);
-  } catch (err) {
-    console.error('\n❌ 清空失败:', err.message);
-    process.exit(1);
+    const [rows] = await conn.query(`SELECT * FROM ${tableSql(table)}`);
+    for (const row of rows) {
+      const columns = Object.keys(row);
+      if (columns.length === 0) continue;
+      const columnSql = columns.map(column => `\`${column}\``).join(', ');
+      const valueSql = columns.map(column => formatValue(conn, row[column])).join(', ');
+      out.write(`INSERT INTO ${tableSql(table)} (${columnSql}) VALUES (${valueSql});\n`);
+    }
+    out.write('\n');
+  }
+
+  out.write('SET FOREIGN_KEY_CHECKS = 1;\n');
+  await new Promise((resolve, reject) => {
+    out.on('error', reject);
+    out.end(resolve);
+  });
+
+  return backupPath;
+}
+
+async function clearTables(conn, tables) {
+  await conn.query('SET FOREIGN_KEY_CHECKS = 0');
+  try {
+    for (const table of tables) {
+      await conn.query(`DELETE FROM ${tableSql(table)}`);
+      try {
+        await conn.query(`ALTER TABLE ${tableSql(table)} AUTO_INCREMENT = 1`);
+      } catch (error) {
+        // Some tables do not have auto-increment keys.
+      }
+      console.log(`  cleared ${table}`);
+    }
   } finally {
-    if (conn) await conn.end();
+    await conn.query('SET FOREIGN_KEY_CHECKS = 1');
+  }
+}
+
+function printGroups(title, groups) {
+  console.log(`\n${title}`);
+  for (const [name, tables] of Object.entries(groups)) {
+    console.log(`  [${name}] ${tables.join(', ')}`);
+  }
+}
+
+function printCounts(counts) {
+  const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+  console.log('\nTables to clear and current row counts:');
+  for (const [groupName, tables] of Object.entries(tableGroups)) {
+    const groupTotal = tables.reduce((sum, table) => sum + Number(counts[table] || 0), 0);
+    console.log(`\n  [${groupName}] total ${groupTotal} rows`);
+    for (const table of tables) {
+      if (Object.prototype.hasOwnProperty.call(counts, table)) {
+        console.log(`    ${table}: ${counts[table]} rows`);
+      }
+    }
+  }
+  console.log(`\nCleanup total: ${total} rows`);
+}
+
+async function main() {
+  console.log('==========================================');
+  console.log('  ANY-ERP cloud test data cleanup');
+  console.log('==========================================');
+  console.log(`Database: ${config.user || '(missing user)'}@${config.host || '(missing host)'}:${config.port}/${config.database || '(missing database)'}`);
+  console.log(`Target: ${target || '(not specified)'}`);
+
+  try {
+    if (!validateCloudTarget()) return;
+
+    printGroups('\nWill clear:', tableGroups);
+    printGroups('\nWill keep:', preservedGroups);
+    console.log('\nNote: T_PRODUCT_PRICE is kept. Import batches and price change history are cleared.');
+
+    const conn = await mysql.createConnection(config);
+    try {
+      const existingTables = await getExistingTables(conn);
+      const existingClearTables = tablesToClear.filter(table => existingTables.has(table));
+      const missingTables = tablesToClear.filter(table => !existingTables.has(table));
+
+      if (missingTables.length > 0) {
+        console.log(`\nMissing tables will be skipped: ${missingTables.join(', ')}`);
+      }
+
+      const counts = await getTableCounts(conn, existingClearTables);
+      printCounts(counts);
+
+      if (dryRun) {
+        console.log('\nDry run only. No backup or delete was executed.');
+        return;
+      }
+
+      console.log('\nThis operation will delete test business data from the CLOUD database.');
+      console.log('A backup SQL file for the cleared tables will be written before deletion.');
+      const answer = await ask(`Type ${CONFIRM_PHRASE} to continue: `);
+      if (answer !== CONFIRM_PHRASE) {
+        console.log('Canceled. No data was deleted.');
+        return;
+      }
+
+      console.log('\n--- Backing up tables to be cleared ---');
+      const backupPath = await writeBackup(conn, existingClearTables, counts);
+      console.log(`Backup completed: ${backupPath}`);
+
+      console.log('\n--- Clearing test business data ---');
+      await clearTables(conn, existingClearTables);
+
+      const afterCounts = await getTableCounts(conn, existingClearTables);
+      const remaining = Object.values(afterCounts).reduce((sum, count) => sum + count, 0);
+      console.log(`\nCleanup completed. Remaining rows in cleared tables: ${remaining}`);
+      console.log('Kept config, users, roles, stores, suppliers, product master data, and current product prices.');
+    } finally {
+      await conn.end();
+    }
+  } catch (error) {
+    console.error(`\nCleanup failed: ${error.message}`);
+    process.exitCode = 1;
   }
 }
 

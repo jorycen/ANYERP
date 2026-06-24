@@ -26,10 +26,17 @@
                 <el-tag :type="row.status === 1 ? 'success' : 'danger'">{{ row.status === 1 ? '正常' : '停用' }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="170">
+            <el-table-column label="操作" width="230">
               <template #default="{ row }">
                 <el-button link type="primary" @click="handleEditUser(row)">编辑</el-button>
                 <el-button v-if="!row.is_boss" link type="primary" @click="handleAssignStore(row)">分配门店</el-button>
+                <el-button
+                  link
+                  :type="row.status === 1 ? 'danger' : 'success'"
+                  @click="handleToggleUserStatus(row)"
+                >
+                  {{ row.status === 1 ? '停用' : '启用' }}
+                </el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -813,6 +820,29 @@ const handleUserSubmit = async () => {
     ElMessage.error(err.response?.data?.message || '保存失败')
   } finally {
     submitLoading.value = false
+  }
+}
+
+const handleToggleUserStatus = async (row) => {
+  const nextStatus = row.status === 1 ? 0 : 1
+  const actionText = nextStatus === 1 ? '启用' : '停用'
+  try {
+    await ElMessageBox.confirm(
+      `确认${actionText}账号"${row.name}"？${nextStatus === 0 ? '停用后该账号将无法登录，已登录状态也会在下次请求时失效。' : ''}`,
+      `确认${actionText}`,
+      { type: nextStatus === 1 ? 'warning' : 'error' }
+    )
+    const res = await api.updateUser(row.staff_id, { status: nextStatus })
+    if (res.code === 0) {
+      ElMessage.success(`${actionText}成功`)
+      await loadUsers()
+    } else {
+      ElMessage.error(res.message || `${actionText}失败`)
+    }
+  } catch (err) {
+    if (err !== 'cancel') {
+      ElMessage.error(err.response?.data?.message || err.message || `${actionText}失败`)
+    }
   }
 }
 

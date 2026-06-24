@@ -239,7 +239,7 @@ async function createUser(ctx) {
       phone,
       password_hash: hash,
       role_code: roles[0].role_code,
-      status: status !== undefined ? status : 1
+      status: normalizeStaffStatus(ctx, status, 1)
     }, { transaction });
     await StaffRole.bulkCreate(uniqueRoleIds.map(roleId => ({ staff_id: staff.staff_id, role_id: roleId })), { transaction });
     await transaction.commit();
@@ -274,7 +274,7 @@ async function updateUser(ctx) {
   const updateData = {};
   if (name) updateData.name = name;
   if (phone) updateData.phone = phone;
-  if (status !== undefined) updateData.status = status;
+  if (status !== undefined) updateData.status = normalizeStaffStatus(ctx, status);
   if (roleIds !== undefined) {
     if (!Array.isArray(roleIds) || roleIds.length === 0) ctx.throw(400, '请至少选择一个角色');
     const uniqueRoleIds = [...new Set(roleIds.map(String))];
@@ -348,6 +348,13 @@ function ensureManageableStaff(ctx, staff) {
   if (ctx.state.user.roles.includes('boss')) return;
   if ((staff.Roles || []).some(role => role.role_code === 'boss') || staff.role_code === 'boss') ctx.throw(403, '无权管理BOSS账号');
   if (staff.distributor_id !== ctx.state.user.distributorId) ctx.throw(403, '无权管理其他经销商的用户');
+}
+
+function normalizeStaffStatus(ctx, status, defaultValue = undefined) {
+  if (status === undefined || status === null || status === '') return defaultValue;
+  const normalized = Number(status);
+  if (![0, 1].includes(normalized)) ctx.throw(400, '用户状态只能是启用或停用');
+  return normalized;
 }
 
 async function replaceRegionPermissions(ctx, staff, storeIds) {

@@ -28,6 +28,7 @@ query
 backend-package/
 backend-clean/
 deploy-package/
+backend/backups/
 
 # OS/editor files
 .DS_Store
