@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 2026-06-26
+
+* Sales deposit APIs now include mini-program compatibility routes for older endpoint names such as `deposit-list`, `deposit-create`, `deposit-available`, `archive-deposit`, and `refund-deposit`.
+* Backend database access now uses explicit Sequelize/mysql2 pool settings with configurable max/min connections, acquire timeout, idle eviction, connect timeout, and bounded query retry.
+* Backend startup now warms up the database connection, runs migrations, performs a post-migration warmup, and only then starts listening for API traffic.
+* Transient database connection failures are returned as HTTP 503 so clients can distinguish recoverable cold-start or connection-lost cases from business validation errors.
+* Web HTTP clients now retry idempotent requests on network errors and 500/502/503/504 responses, with 1s/2s backoff and no blind retry for write operations.
+* Environment templates now include database pool and retry settings for cloud deployment tuning.
+
 ## 2026-06-25
 
 * `一键清空业务数据.bat` now shows the full cloud business cleanup scope before running the production-launch cleanup script.

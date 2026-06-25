@@ -2,11 +2,56 @@ import axios from 'axios'
 import router from '../router'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1'
+const RETRYABLE_STATUS_CODES = new Set([500, 502, 503, 504])
+const IDEMPOTENT_METHODS = new Set(['get', 'head', 'options'])
+const MAX_RETRY_COUNT = 2
+const RETRY_BASE_DELAY = 1000
 
 const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: 30000
 })
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function isRetryableError(error) {
+  const method = (error.config?.method || 'get').toLowerCase()
+  if (!IDEMPOTENT_METHODS.has(method)) {
+    return false
+  }
+  if (error.code === 'ERR_CANCELED') {
+    return false
+  }
+  if (!error.response) {
+    return true
+  }
+  return RETRYABLE_STATUS_CODES.has(error.response.status)
+}
+
+function attachResponseInterceptor(client, onSuccess, onUnauthorized) {
+  client.interceptors.response.use(
+    onSuccess,
+    async error => {
+      if (error.response?.status === 401) {
+        onUnauthorized()
+        return Promise.reject(error)
+      }
+
+      const config = error.config || {}
+      config.__retryCount = config.__retryCount || 0
+
+      if (config.__retryCount < MAX_RETRY_COUNT && isRetryableError(error)) {
+        config.__retryCount += 1
+        await sleep(RETRY_BASE_DELAY * 2 ** (config.__retryCount - 1))
+        return client.request(config)
+      }
+
+      return Promise.reject(error)
+    }
+  )
+}
 
 // Request interceptor
 api.interceptors.request.use(
@@ -20,8 +65,8 @@ api.interceptors.request.use(
   error => Promise.reject(error)
 )
 
-// Response interceptor
-api.interceptors.response.use(
+attachResponseInterceptor(
+  api,
   response => {
     const payload = response.data
     if (payload?.data?.pagination && payload.data.total === undefined) {
@@ -29,13 +74,10 @@ api.interceptors.response.use(
     }
     return payload
   },
-  error => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('token')
-      localStorage.removeItem('userInfo')
-      router.push('/login')
-    }
-    return Promise.reject(error)
+  () => {
+    localStorage.removeItem('token')
+    localStorage.removeItem('userInfo')
+    router.push('/login')
   }
 )
 
@@ -54,6 +96,16 @@ exportApi.interceptors.request.use(
     return config
   },
   error => Promise.reject(error)
+)
+
+attachResponseInterceptor(
+  exportApi,
+  response => response,
+  () => {
+    localStorage.removeItem('token')
+    localStorage.removeItem('userInfo')
+    router.push('/login')
+  }
 )
 
 export default {

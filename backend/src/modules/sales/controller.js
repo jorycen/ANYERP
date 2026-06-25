@@ -819,6 +819,7 @@ async function archiveDeposit(ctx) {
   const { depositId } = ctx.params;
   const user = ctx.state.user;
 
+  if (!depositId) ctx.throw(400, '缺少定金单ID');
   const deposit = await DepositOrder.findOne({ where: { deposit_id: depositId, is_deleted: 0 } });
   if (!deposit) ctx.throw(404, '定金单不存在');
   assertDepositStoreVisible(deposit, user);
@@ -841,6 +842,7 @@ async function refundDeposit(ctx) {
   const user = ctx.state.user;
   const { amount, reason } = ctx.request.body || {};
 
+  if (!depositId) ctx.throw(400, '缺少定金单ID');
   await sequelize.transaction(async (transaction) => {
     const deposit = await DepositOrder.findOne({
       where: { deposit_id: depositId, is_deleted: 0 },

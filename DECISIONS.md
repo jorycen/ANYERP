@@ -1,5 +1,37 @@
 # 决策记录
 
+## 2026-06-26 Database access stability for mini program and cloud MySQL
+
+Decision time: 2026-06-26
+
+Decision:
+* The standard data access path is mini program or web client -> backend HTTP API -> Tencent Cloud MySQL.
+* Clients must not connect to MySQL directly or carry database credentials.
+* The backend owns database connection lifecycle management through the Sequelize/mysql2 pool.
+* Backend startup must warm up the database connection before exposing the API service.
+* Transient database connection failures use bounded retries with exponential backoff, not high-frequency heartbeat pings.
+* Client HTTP retry is limited to idempotent requests to avoid duplicate business writes.
+
+Reason:
+* Tencent Cloud serverless and lightweight database environments can close idle resources or introduce cold-start latency.
+* Database connection recovery belongs in the backend because it has the credentials, pool, timeout, and permission context.
+* A connection pool reuses stable connections and avoids per-request connection churn.
+* Bounded retry handles cold-start and connection-lost cases without masking persistent database failures.
+* Blindly retrying write requests from the client can duplicate orders, payments, inventory movements, or approvals.
+
+Alternatives:
+* Keep the client or cloud function layer directly accessing the database.
+* Add frequent heartbeat pings to keep the database awake.
+* Create a new database connection for every request.
+* Centralize database access in the backend API with pooled connections, startup warmup, and bounded retry.
+
+Final choice:
+* Use backend-only database access with Sequelize pooling, startup warmup, query retry, transient DB errors reported as 503, and idempotent client HTTP retry.
+
+Status: confirmed
+
+---
+
 ## 2026-06-25 Production launch cleanup includes account center balances
 
 Decision time: 2026-06-25
