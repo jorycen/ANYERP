@@ -445,9 +445,58 @@ const OrderPayment = sequelize.define('OrderPayment', {
   payment_id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true },
   order_id: { type: DataTypes.STRING(32), allowNull: false },
   payment_method: { type: DataTypes.STRING(64), allowNull: false },
+  deposit_id: { type: DataTypes.STRING(32) },
   amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
   payment_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_ORDER_PAYMENT', timestamps: false });
+
+const DepositOrder = sequelize.define('DepositOrder', {
+  deposit_id: { type: DataTypes.STRING(32), primaryKey: true },
+  deposit_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
+  store_id: { type: DataTypes.STRING(32), allowNull: false },
+  customer_name: { type: DataTypes.STRING(64) },
+  customer_phone: { type: DataTypes.STRING(32) },
+  customer_source: { type: DataTypes.STRING(64) },
+  amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  redeemed_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  refunded_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  status: { type: DataTypes.STRING(32), defaultValue: 'submitted' },
+  related_order_id: { type: DataTypes.STRING(32) },
+  related_order_no: { type: DataTypes.STRING(64) },
+  remark: { type: DataTypes.TEXT },
+  create_staff_id: { type: DataTypes.BIGINT(20) },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  archive_user: { type: DataTypes.STRING(64) },
+  archive_time: { type: DataTypes.DATE },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 }
+}, { tableName: 'T_DEPOSIT_ORDER', timestamps: false });
+
+const DepositRefund = sequelize.define('DepositRefund', {
+  refund_id: { type: DataTypes.STRING(32), primaryKey: true },
+  refund_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
+  deposit_id: { type: DataTypes.STRING(32), allowNull: false },
+  amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  reason: { type: DataTypes.STRING(512) },
+  create_staff_id: { type: DataTypes.BIGINT(20) },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_DEPOSIT_REFUND', timestamps: false });
+
+const DepositRedemption = sequelize.define('DepositRedemption', {
+  redemption_id: { type: DataTypes.STRING(32), primaryKey: true },
+  deposit_id: { type: DataTypes.STRING(32), allowNull: false },
+  order_id: { type: DataTypes.STRING(32), allowNull: false },
+  order_no: { type: DataTypes.STRING(64) },
+  amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  status: { type: DataTypes.STRING(32), defaultValue: 'active' },
+  void_reason: { type: DataTypes.STRING(512) },
+  void_time: { type: DataTypes.DATE },
+  create_staff_id: { type: DataTypes.BIGINT(20) },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_DEPOSIT_REDEMPTION', timestamps: false });
 
 // 订单附件
 const OrderAttachment = sequelize.define('OrderAttachment', {
@@ -817,6 +866,16 @@ OrderItem.belongsTo(Product, { foreignKey: 'product_id', targetKey: 'product_id'
 
 Order.hasMany(OrderPayment, { foreignKey: 'order_id', sourceKey: 'order_id' });
 OrderPayment.belongsTo(Order, { foreignKey: 'order_id', targetKey: 'order_id' });
+OrderPayment.belongsTo(DepositOrder, { foreignKey: 'deposit_id', targetKey: 'deposit_id' });
+DepositOrder.hasMany(OrderPayment, { foreignKey: 'deposit_id', sourceKey: 'deposit_id' });
+DepositOrder.belongsTo(Store, { foreignKey: 'store_id', targetKey: 'store_id' });
+Store.hasMany(DepositOrder, { foreignKey: 'store_id', sourceKey: 'store_id' });
+DepositOrder.hasMany(DepositRefund, { foreignKey: 'deposit_id', sourceKey: 'deposit_id', as: 'refunds' });
+DepositRefund.belongsTo(DepositOrder, { foreignKey: 'deposit_id', targetKey: 'deposit_id' });
+DepositOrder.hasMany(DepositRedemption, { foreignKey: 'deposit_id', sourceKey: 'deposit_id', as: 'redemptions' });
+DepositRedemption.belongsTo(DepositOrder, { foreignKey: 'deposit_id', targetKey: 'deposit_id' });
+Order.hasMany(DepositRedemption, { foreignKey: 'order_id', sourceKey: 'order_id', as: 'depositRedemptions' });
+DepositRedemption.belongsTo(Order, { foreignKey: 'order_id', targetKey: 'order_id' });
 
 Order.hasMany(OrderAttachment, { foreignKey: 'order_id', sourceKey: 'order_id' });
 OrderAttachment.belongsTo(Order, { foreignKey: 'order_id', targetKey: 'order_id' });
@@ -919,6 +978,9 @@ module.exports = {
   Order,
   OrderItem,
   OrderPayment,
+  DepositOrder,
+  DepositRefund,
+  DepositRedemption,
   OrderAttachment,
   Inbound,
   InboundItem,

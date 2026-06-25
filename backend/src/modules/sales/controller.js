@@ -1,7 +1,7 @@
 /**
  * 销售管理控制器
  */
-const { Order, OrderItem, OrderPayment, OrderAttachment, Store, Staff, Product, ProductPn, ProductSn, ProductPrice, Inventory, PaymentMethod, sequelize } = require('../../models');
+const { Order, OrderItem, OrderPayment, DepositOrder, DepositRefund, OrderAttachment, Store, Staff, Product, ProductPn, ProductSn, ProductPrice, Inventory, PaymentMethod, sequelize } = require('../../models');
 const { Op } = require('sequelize');
 const { generateOrderNo, generateUUID, paginate, formatPaginatedResult } = require('../../utils');
 
@@ -542,6 +542,226 @@ async function paymentMethods(ctx) {
   ctx.body = { code: 0, data: methods, message: 'success' };
 }
 
+async function buildStoreScope(user, explicitStoreId) {
+  if (explicitStoreId) return explicitStoreId;
+  if (user.storeId && !['boss', 'admin'].includes(user.roleCode)) return user.storeId;
+
+  const regionCodes = Array.isArray(user.regionCodes) ? user.regionCodes.filter(Boolean) : [];
+  if (regionCodes.length > 0 && !regionCodes.includes('*')) {
+    const stores = await Store.findAll({ where: { region_id: regionCodes } });
+    return stores.map(store => store.store_id);
+  }
+
+  return null;
+}
+
+async function assertDepositVisible(deposit, user) {
+  if (['boss', 'admin'].includes(user.roleCode)) return;
+  if (user.storeId && String(deposit.store_id || '') === String(user.storeId)) return;
+
+  const regionCodes = Array.isArray(user.regionCodes) ? user.regionCodes.filter(Boolean) : [];
+  if (regionCodes.includes('*')) return;
+  if (regionCodes.length > 0) {
+    const store = await Store.findOne({ where: { store_id: deposit.store_id, region_id: regionCodes } });
+    if (store) return;
+  }
+
+  ctxThrow(403, '无权访问该门店定金单');
+}
+
+function ctxThrow(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  throw error;
+}
+
+function money(value) {
+  const number = Number(value || 0);
+  return Math.round(number * 100) / 100;
+}
+
+function generateBusinessNo(prefix) {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mi = String(now.getMinutes()).padStart(2, '0');
+  const ss = String(now.getSeconds()).padStart(2, '0');
+  const random = String(Math.floor(Math.random() * 10000)).padStart(4, '0');
+  return `${prefix}${yyyy}${mm}${dd}${hh}${mi}${ss}${random}`;
+}
+
+function getDepositAvailableAmount(deposit) {
+  return money(Number(deposit.amount || 0) - Number(deposit.redeemed_amount || 0) - Number(deposit.refunded_amount || 0));
+}
+
+async function listDeposits(ctx) {
+  const { storeId, status, customerPhone, page = 1, pageSize = 20 } = ctx.query;
+  const user = ctx.state.user;
+  const where = { is_deleted: 0 };
+
+  if (status) where.status = status;
+  if (customerPhone) where.customer_phone = { [Op.like]: `%${customerPhone}%` };
+
+  const storeScope = await buildStoreScope(user, storeId);
+  if (Array.isArray(storeScope) && storeScope.length === 0) {
+    ctx.body = formatPaginatedResult([], { page, pageSize, count: 0 });
+    return;
+  }
+  if (storeScope) where.store_id = storeScope;
+
+  const { count, rows } = await DepositOrder.findAndCountAll({
+    where,
+    include: [{ model: Store }],
+    distinct: true,
+    order: [['create_time', 'DESC']],
+    ...paginate({}, { page, pageSize })
+  });
+
+  ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+async function createDeposit(ctx) {
+  const user = ctx.state.user;
+  const {
+    storeId, store_id,
+    customerName, customerPhone, customerSource,
+    amount, remark
+  } = ctx.request.body;
+  const actualStoreId = storeId || store_id || user.storeId || '';
+  const depositAmount = money(amount);
+
+  if (!actualStoreId) ctx.throw(400, '请选择门店');
+  if (!customerName || !customerPhone) ctx.throw(400, '请填写客户信息');
+  if (depositAmount <= 0) ctx.throw(400, '定金金额必须大于0');
+
+  const depositId = generateUUID();
+  const depositNo = generateBusinessNo('DEP');
+
+  await DepositOrder.create({
+    deposit_id: depositId,
+    deposit_no: depositNo,
+    store_id: actualStoreId,
+    customer_name: customerName,
+    customer_phone: customerPhone,
+    customer_source: customerSource || '',
+    amount: depositAmount,
+    redeemed_amount: 0,
+    refunded_amount: 0,
+    status: 'submitted',
+    remark: remark || '',
+    create_staff_id: user.staffId,
+    create_user: user.name
+  });
+
+  ctx.body = { depositId, depositNo, message: '定金单已提交，待归档' };
+}
+
+async function archiveDeposit(ctx) {
+  const { depositId } = ctx.params;
+  const user = ctx.state.user;
+
+  if (!depositId) ctx.throw(400, '缺少定金单ID');
+  const deposit = await DepositOrder.findOne({ where: { deposit_id: depositId, is_deleted: 0 } });
+  if (!deposit) ctx.throw(404, '定金单不存在');
+  await assertDepositVisible(deposit, user);
+  if (deposit.status !== 'submitted') {
+    ctx.throw(400, '只有已提交的定金单可以归档');
+  }
+
+  await deposit.update({
+    status: 'archived',
+    archive_user: user.name,
+    archive_time: new Date(),
+    update_time: new Date()
+  });
+
+  ctx.body = { message: '定金单已归档' };
+}
+
+async function refundDeposit(ctx) {
+  const { depositId } = ctx.params;
+  const user = ctx.state.user;
+  const { amount, reason } = ctx.request.body || {};
+
+  if (!depositId) ctx.throw(400, '缺少定金单ID');
+  await sequelize.transaction(async (transaction) => {
+    const deposit = await DepositOrder.findOne({
+      where: { deposit_id: depositId, is_deleted: 0 },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!deposit) ctx.throw(404, '定金单不存在');
+    await assertDepositVisible(deposit, user);
+    if (String(deposit.create_staff_id || '') !== String(user.staffId || '') && !['boss', 'admin', 'manager'].includes(user.roleCode)) {
+      ctx.throw(403, '只能退款自己收的定金单');
+    }
+    if (!['submitted', 'archived'].includes(deposit.status)) {
+      ctx.throw(400, '只有未核销的定金单可以退款');
+    }
+
+    const availableAmount = getDepositAvailableAmount(deposit);
+    const refundAmount = amount === undefined || amount === null || amount === ''
+      ? availableAmount
+      : money(amount);
+    if (refundAmount <= 0) ctx.throw(400, '退款金额必须大于0');
+    if (Math.abs(refundAmount - availableAmount) > 0.01) {
+      ctx.throw(400, '定金当前只支持全额退款记录');
+    }
+
+    await DepositRefund.create({
+      refund_id: generateUUID(),
+      refund_no: generateBusinessNo('DRF'),
+      deposit_id: deposit.deposit_id,
+      amount: refundAmount,
+      reason: reason || '',
+      create_staff_id: user.staffId,
+      create_user: user.name
+    }, { transaction });
+
+    await deposit.update({
+      refunded_amount: refundAmount,
+      status: 'refunded',
+      update_time: new Date()
+    }, { transaction });
+  });
+
+  ctx.body = { message: '定金退款记录已生成' };
+}
+
+async function availableDeposits(ctx) {
+  const user = ctx.state.user;
+  const { customerPhone, storeId } = ctx.query;
+  const where = {
+    is_deleted: 0,
+    status: 'archived',
+    create_staff_id: user.staffId
+  };
+  if (customerPhone) where.customer_phone = customerPhone;
+
+  const storeScope = await buildStoreScope(user, storeId);
+  if (Array.isArray(storeScope) && storeScope.length === 0) {
+    ctx.body = { code: 0, data: [], message: 'success' };
+    return;
+  }
+  if (storeScope) where.store_id = storeScope;
+
+  const rows = await DepositOrder.findAll({
+    where,
+    order: [['archive_time', 'DESC'], ['create_time', 'DESC']]
+  });
+
+  const availableRows = rows
+    .filter(row => getDepositAvailableAmount(row) > 0)
+    .map(row => ({
+      ...row.toJSON(),
+      available_amount: getDepositAvailableAmount(row)
+    }));
+
+  ctx.body = { code: 0, data: availableRows, message: 'success' };
+}
+
 async function getProductPns(ctx) {
   const { storeId, productId } = ctx.params;
   const product = await Product.findByPk(productId);
@@ -711,7 +931,24 @@ async function validateAndDeductInventoryForArchive(order, payload = {}) {
   }
 }
 
-module.exports = { list, create, detail, update, updateOrderItems, stats, approve, reject, paymentMethods, getProductPns, getProductSns };
+module.exports = {
+  list,
+  create,
+  detail,
+  update,
+  updateOrderItems,
+  stats,
+  approve,
+  reject,
+  paymentMethods,
+  listDeposits,
+  createDeposit,
+  archiveDeposit,
+  refundDeposit,
+  availableDeposits,
+  getProductPns,
+  getProductSns
+};
 
 const INVENTORY_COLUMN_MAP = {
   normal_qty: 'normal_qty',
