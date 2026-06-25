@@ -2,6 +2,8 @@
 
 ## 2026-06-25
 
+* `一键清空业务数据.bat` now shows the full cloud business cleanup scope before running the production-launch cleanup script.
+
 * Cloud cleanup now explicitly includes sales orders, inventory data, inbound documents, resource rights, transfers, split/assembly documents, purchase records, daily statements, expenses, pending payables, payables, rebates, and account center balance sources.
 
 * Account center definitions are preserved, while balances are cleared by deleting `T_SETTLEMENT_ACCOUNT_TRANSACTION` and `T_SUPPLIER_REBATE`; preserved account tables with future stored balance columns will be backed up and reset to zero.
