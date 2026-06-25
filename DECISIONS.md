@@ -1,5 +1,32 @@
 # 决策记录
 
+## 2026-06-25 Production launch cleanup includes account center balances
+
+Decision time: 2026-06-25
+
+Decision:
+* The production launch cleanup must clear sales orders, inventory data, inbound documents, inventory resource rights, transfers, split/assembly documents, purchase records, daily statements, expenses, pending payables, payables, rebates, and account center balance sources.
+* Settlement account definitions and supplier payment account definitions are kept as master data.
+* Account center balances are cleared by removing settlement account transactions and supplier rebate records.
+* If preserved account master tables contain stored balance columns in the future, the cleanup script must back them up and reset those balance columns to zero.
+
+Reason:
+* Formal launch requires all test operational and finance balances to be removed so reports, inventory, payables, rebates, and account balances start from clean production data.
+* Account definitions are reusable configuration; deleting them would create avoidable setup work and risk inconsistent payment method mapping.
+* Balances in the current design are derived from transaction and rebate records, so clearing those sources is the correct minimal cleanup path.
+
+Alternatives:
+* Delete all account definitions and recreate them before launch.
+* Keep account definitions and clear only the balance source records.
+* Add stored-balance reset support for future schema changes.
+
+Final choice:
+* Keep account definitions, clear balance source records, and reset future stored balance columns if they exist.
+
+Status: confirmed
+
+---
+
 ## 2026-06-25 正式启用前测试数据清理范围
 
 决策时间：2026-06-25

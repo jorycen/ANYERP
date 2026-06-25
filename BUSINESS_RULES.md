@@ -1,5 +1,16 @@
 # BUSINESS_RULES.md
 
+## Production Launch Data Cleanup Rules
+
+Rules:
+* Formal launch cleanup keeps system configuration, organization permissions, stores, users, suppliers, supplier payment accounts, product master data, and current product prices.
+* Formal launch cleanup clears sales orders, inventory data, inbound documents, inventory resource rights, transfers, split/assembly documents, purchase records, daily statements, expenses, pending payables, payables, rebates, and account center balance sources.
+* Settlement account definitions are kept. Account center balances must restart from zero by clearing settlement account transactions and supplier rebate records.
+* If a preserved account master table later adds stored balance columns, the cleanup script must back up that table and reset those balance columns to zero.
+* No cloud cleanup may run without a dry-run preview, target confirmation, backup, and explicit `CLEAR_TEST_DATA` confirmation.
+
+---
+
 ## 文档目的
 
 本文件用于沉淀企业经营经验。

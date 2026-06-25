@@ -2,6 +2,10 @@
 
 ## 2026-06-25
 
+* Cloud cleanup now explicitly includes sales orders, inventory data, inbound documents, resource rights, transfers, split/assembly documents, purchase records, daily statements, expenses, pending payables, payables, rebates, and account center balance sources.
+
+* Account center definitions are preserved, while balances are cleared by deleting `T_SETTLEMENT_ACCOUNT_TRANSACTION` and `T_SUPPLIER_REBATE`; preserved account tables with future stored balance columns will be backed up and reset to zero.
+
 * Cloud cleanup scripts now load database settings from `cloud-db.env`, with `cloud-db.env.example` provided as a template and `cloud-db.env` ignored by git.
 
 * 用户管理列表新增“停用/启用”快捷操作，停用账号后账号无法继续登录。

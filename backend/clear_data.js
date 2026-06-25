@@ -59,7 +59,7 @@ const config = {
 };
 
 const tableGroups = {
-  'inventory and SN': [
+  'inventory, SN, resource rights, account posting': [
     'T_INVENTORY_RESOURCE_RIGHT',
     'T_RESOURCE_RIGHT_CHANGE_ORDER',
     'T_INVENTORY_RESOURCE_COST_ADJUSTMENT',
@@ -68,7 +68,7 @@ const tableGroups = {
     'T_SN_LOG',
     'T_INVENTORY'
   ],
-  'inventory documents': [
+  'inbound, transfer, split/assembly, stock documents': [
     'T_INVENTORY_CONVERSION_ITEM',
     'T_INVENTORY_CONVERSION',
     'T_TRANSFER_ITEM',
@@ -100,7 +100,7 @@ const tableGroups = {
     'T_PERFORMANCE_PROFIT_ADJUSTMENT',
     'T_PRODUCT_APPLICATION'
   ],
-  'finance records': [
+  'daily statements, expenses, payables, rebates, account balance sources': [
     'T_SETTLEMENT_PAYMENT_RECORD',
     'T_SETTLEMENT_PAYMENT_BATCH',
     'T_SETTLEMENT_ITEM',
@@ -160,6 +160,11 @@ const preservedGroups = {
 
 const tablesToClear = Object.values(tableGroups).flat();
 
+const balanceResetTargets = {
+  T_SETTLEMENT_ACCOUNT: ['BALANCE', 'CURRENT_BALANCE', 'AVAILABLE_BALANCE'],
+  T_SUPPLIER_PAYMENT_ACCOUNT: ['BALANCE', 'CURRENT_BALANCE', 'AVAILABLE_BALANCE']
+};
+
 function ask(question) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise(resolve => {
@@ -179,6 +184,11 @@ function assertSafeTableName(table) {
 function tableSql(table) {
   assertSafeTableName(table);
   return `\`${table}\``;
+}
+
+function columnSql(column) {
+  assertSafeTableName(column);
+  return `\`${column}\``;
 }
 
 function timestampForFile() {
@@ -238,6 +248,27 @@ async function getExistingTables(conn) {
   return new Set(rows.map(row => row.TABLE_NAME));
 }
 
+async function getExistingColumns(conn, table) {
+  const [rows] = await conn.query(
+    'SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?',
+    [config.database, table]
+  );
+  return new Set(rows.map(row => row.COLUMN_NAME));
+}
+
+async function getBalanceResetPlan(conn, existingTables) {
+  const plan = [];
+  for (const [table, candidateColumns] of Object.entries(balanceResetTargets)) {
+    if (!existingTables.has(table)) continue;
+    const existingColumns = await getExistingColumns(conn, table);
+    const columns = candidateColumns.filter(column => existingColumns.has(column));
+    if (columns.length > 0) {
+      plan.push({ table, columns });
+    }
+  }
+  return plan;
+}
+
 async function getTableCounts(conn, tables) {
   const counts = {};
   for (const table of tables) {
@@ -260,7 +291,7 @@ async function writeBackup(conn, tables, counts) {
   out.write('-- ANY-ERP test data cleanup backup\n');
   out.write(`-- Database: ${config.database}\n`);
   out.write(`-- Created at: ${new Date().toISOString()}\n`);
-  out.write('-- This file backs up only tables cleared by clear_data.js.\n\n');
+  out.write('-- This file backs up tables cleared by clear_data.js and any preserved tables with stored balances reset by the cleanup.\n\n');
   out.write('SET FOREIGN_KEY_CHECKS = 0;\n\n');
 
   for (const table of tables) {
@@ -309,6 +340,20 @@ async function clearTables(conn, tables) {
   }
 }
 
+async function resetStoredBalances(conn, plan) {
+  console.log('\n--- Resetting stored account balances, if any ---');
+  if (plan.length === 0) {
+    console.log('  no stored balance columns found; balances come from cleared account transactions and rebate records');
+    return;
+  }
+
+  for (const { table, columns } of plan) {
+    const assignments = columns.map(column => `${columnSql(column)} = 0`).join(', ');
+    await conn.query(`UPDATE ${tableSql(table)} SET ${assignments}`);
+    console.log(`  reset ${table}.${columns.join(', ')}`);
+  }
+}
+
 function printGroups(title, groups) {
   console.log(`\n${title}`);
   for (const [name, tables] of Object.entries(groups)) {
@@ -331,6 +376,17 @@ function printCounts(counts) {
   console.log(`\nCleanup total: ${total} rows`);
 }
 
+function printBalanceResetPlan(plan) {
+  console.log('\nStored account balance columns to reset:');
+  if (plan.length === 0) {
+    console.log('  none detected; account center balances are derived from transaction tables that will be cleared');
+    return;
+  }
+  for (const { table, columns } of plan) {
+    console.log(`  ${table}: ${columns.join(', ')}`);
+  }
+}
+
 async function main() {
   console.log('==========================================');
   console.log('  ANY-ERP cloud test data cleanup');
@@ -345,12 +401,16 @@ async function main() {
     printGroups('\nWill clear:', tableGroups);
     printGroups('\nWill keep:', preservedGroups);
     console.log('\nNote: T_PRODUCT_PRICE is kept. Import batches and price change history are cleared.');
+    console.log('Account center definitions are kept. Balances are cleared by deleting settlement account transactions and supplier rebate records.');
 
     const conn = await mysql.createConnection(config);
     try {
       const existingTables = await getExistingTables(conn);
       const existingClearTables = tablesToClear.filter(table => existingTables.has(table));
       const missingTables = tablesToClear.filter(table => !existingTables.has(table));
+      const balanceResetPlan = await getBalanceResetPlan(conn, existingTables);
+      const balanceResetTables = balanceResetPlan.map(item => item.table);
+      const backupTables = Array.from(new Set([...existingClearTables, ...balanceResetTables]));
 
       if (missingTables.length > 0) {
         console.log(`\nMissing tables will be skipped: ${missingTables.join(', ')}`);
@@ -358,6 +418,7 @@ async function main() {
 
       const counts = await getTableCounts(conn, existingClearTables);
       printCounts(counts);
+      printBalanceResetPlan(balanceResetPlan);
 
       if (dryRun) {
         console.log('\nDry run only. No backup or delete was executed.');
@@ -365,7 +426,7 @@ async function main() {
       }
 
       console.log('\nThis operation will delete test business data from the CLOUD database.');
-      console.log('A backup SQL file for the cleared tables will be written before deletion.');
+      console.log('A backup SQL file for cleared tables and any reset balance tables will be written before deletion.');
       const answer = await ask(`Type ${CONFIRM_PHRASE} to continue: `);
       if (answer !== CONFIRM_PHRASE) {
         console.log('Canceled. No data was deleted.');
@@ -373,11 +434,13 @@ async function main() {
       }
 
       console.log('\n--- Backing up tables to be cleared ---');
-      const backupPath = await writeBackup(conn, existingClearTables, counts);
+      const backupCounts = await getTableCounts(conn, backupTables);
+      const backupPath = await writeBackup(conn, backupTables, backupCounts);
       console.log(`Backup completed: ${backupPath}`);
 
       console.log('\n--- Clearing test business data ---');
       await clearTables(conn, existingClearTables);
+      await resetStoredBalances(conn, balanceResetPlan);
 
       const afterCounts = await getTableCounts(conn, existingClearTables);
       const remaining = Object.values(afterCounts).reduce((sum, count) => sum + count, 0);
