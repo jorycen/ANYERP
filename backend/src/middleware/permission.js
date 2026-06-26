@@ -16,18 +16,24 @@
  *   - 采购管理: purchaser/admin/boss
  */
 
+function getUserRoles(user) {
+  if (Array.isArray(user?.roles) && user.roles.length > 0) {
+    return [...new Set(user.roles.map(role => String(role).trim()).filter(Boolean))];
+  }
+  return String(user?.roleCode || '')
+    .split(',')
+    .map(role => role.trim())
+    .filter(Boolean);
+}
+
+function hasAnyRole(user, allowedRoles) {
+  const roles = getUserRoles(user);
+  return roles.includes('boss') || roles.includes('admin') || roles.some(role => allowedRoles.includes(role));
+}
+
 function requireRole(...allowedRoles) {
   return async (ctx, next) => {
-    const { roleCode } = ctx.state.user;
-
-    if (roleCode === 'boss' || roleCode === 'admin') {
-      return await next();
-    }
-
-    const userRoles = (roleCode || '').split(',').map(s => s.trim());
-    const hasRole = userRoles.some(r => allowedRoles.includes(r));
-
-    if (!hasRole) {
+    if (!hasAnyRole(ctx.state.user, allowedRoles)) {
       ctx.throw(403, '无权访问此功能');
     }
 
@@ -41,17 +47,13 @@ function requireRole(...allowedRoles) {
  * 写入操作强制绑定 store_id = ctx.state.user.storeId
  */
 function storeGuard(ctx) {
-  const { roleCode, storeId } = ctx.state.user;
-
-  if (roleCode === 'boss' || roleCode === 'admin' || roleCode === 'finance' || roleCode === 'purchaser') {
-    return null;
-  }
-
-  if (!storeId) {
-    ctx.throw(403, '未绑定门店, 无权操作');
-  }
-
-  return storeId;
+  const user = ctx.state.user;
+  if (getUserRoles(user).includes('boss')) return null;
+  const storeIds = (user.accessibleStoreIds || []).map(String);
+  if (storeIds.length === 0) ctx.throw(403, '当前账号尚未分配门店');
+  const requestedStoreId = ctx.request.body?.storeId || ctx.request.body?.store_id || ctx.query?.storeId || ctx.query?.store_id || '';
+  if (requestedStoreId && !storeIds.includes(String(requestedStoreId))) ctx.throw(403, '无权操作该门店');
+  return requestedStoreId || (storeIds.length === 1 ? storeIds[0] : null);
 }
 
 /**
@@ -77,4 +79,4 @@ function filterByStore(ctx, queryObj = ctx.query) {
   }
 }
 
-module.exports = { requireRole, storeGuard, enforceStoreOwnership, filterByStore };
+module.exports = { getUserRoles, hasAnyRole, requireRole, storeGuard, enforceStoreOwnership, filterByStore };

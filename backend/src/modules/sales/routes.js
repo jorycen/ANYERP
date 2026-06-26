@@ -11,6 +11,7 @@ const {
   stats,
   approve,
   reject,
+  auxiliaryStaff,
   paymentMethods,
   listDeposits,
   createDeposit,
@@ -18,7 +19,8 @@ const {
   refundDeposit,
   availableDeposits,
   getProductPns,
-  getProductSns
+  getProductSns,
+  recalculateSettlementCost
 } = require('./controller');
 const { enforceStoreOwnership } = require('../../middleware/permission');
 
@@ -35,6 +37,7 @@ function normalizeDepositId(ctx, next) {
 
 router.get('/list', list);
 router.get('/stats', stats);
+router.get('/auxiliary-staff', auxiliaryStaff);
 router.get('/payment-methods', paymentMethods);
 router.get('/deposits', listDeposits);
 router.post('/deposits', enforceStoreOwnership, createDeposit);
@@ -64,5 +67,6 @@ router.get('/:orderId', detail);
 router.put('/:orderId', enforceStoreOwnership, update);
 router.post('/:orderId/approve', approve);
 router.post('/:orderId/reject', reject);
+router.post('/:orderId/recalculate-settlement-cost', recalculateSettlementCost);
 
 module.exports = router;

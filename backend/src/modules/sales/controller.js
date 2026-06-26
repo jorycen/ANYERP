@@ -1,9 +1,33 @@
 /**
  * 销售管理控制器
  */
-const { Order, OrderItem, OrderPayment, DepositOrder, DepositRefund, OrderAttachment, Store, Staff, Product, ProductPn, ProductSn, ProductPrice, Inventory, PaymentMethod, sequelize } = require('../../models');
+const {
+  Order,
+  OrderItem,
+  OrderPayment,
+  OrderAttachment,
+  DepositOrder,
+  DepositRefund,
+  DepositRedemption,
+  Store,
+  Staff,
+  Product,
+  ProductPn,
+  ProductSn,
+  ProductPrice,
+  Inventory,
+  PaymentMethod,
+  ManufacturerPriceHistory,
+  ManufacturerRebatePolicy,
+  RebateEstimate,
+  ResourceSettlement,
+  SalesSettlementCostAdjustment,
+  sequelize
+} = require('../../models');
 const { Op } = require('sequelize');
 const { generateOrderNo, generateUUID, paginate, formatPaginatedResult } = require('../../utils');
+const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement } = require('../inventory/resourceRights');
+const { getUserRoles } = require('../../middleware/permission');
 
 function chinaDateBoundary(dateText, endOfDay = false) {
   if (!dateText) return null;
@@ -30,6 +54,55 @@ function buildChinaDateRange(startDate, endDate) {
 /**
  * 销售订单列表
  */
+async function auxiliaryStaff(ctx) {
+  const user = ctx.state.user || {};
+  const distributorId = user.distributorId;
+  if (!distributorId) ctx.throw(403, '当前账号未绑定经销商');
+
+  const rows = await Staff.findAll({
+    where: {
+      distributor_id: distributorId,
+      is_deleted: 0,
+      status: 1
+    },
+    attributes: ['staff_id', 'name', 'phone', 'role_code', 'store_id', 'distributor_id'],
+    include: [
+      { model: Store, as: 'Store', attributes: ['store_id', 'name'], required: false },
+      {
+        model: Store,
+        as: 'AssignedStores',
+        attributes: ['store_id', 'name'],
+        through: { attributes: [] },
+        required: false,
+        where: { is_deleted: 0, status: 1 }
+      }
+    ],
+    order: [['store_id', 'ASC'], ['name', 'ASC']]
+  });
+
+  const list = rows.map(row => {
+    const data = row.toJSON();
+    const assignedStores = data.AssignedStores || [];
+    const primaryStore = data.Store || assignedStores[0] || null;
+    const storeNames = assignedStores.map(store => store.name).filter(Boolean);
+    if (primaryStore && primaryStore.name && !storeNames.includes(primaryStore.name)) {
+      storeNames.unshift(primaryStore.name);
+    }
+
+    return {
+      staffId: data.staff_id,
+      name: data.name,
+      phone: data.phone,
+      roleCode: data.role_code || 'staff',
+      distributorId: data.distributor_id,
+      storeId: primaryStore ? primaryStore.store_id : (data.store_id || ''),
+      storeName: storeNames.join('、') || ''
+    };
+  });
+
+  ctx.body = { code: 0, data: list };
+}
+
 async function list(ctx) {
   const {
     storeId, startDate, endDate, customerPhone, orderNo,
@@ -39,7 +112,7 @@ async function list(ctx) {
   const user = ctx.state.user;
 
   const where = { is_deleted: 0 };
-  const regionCodes = Array.isArray(user.regionCodes) ? user.regionCodes.filter(Boolean) : [];
+  const accessibleStoreIds = Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds.filter(Boolean) : [];
 
   const dateRange = buildChinaDateRange(startDate, endDate);
   if (dateRange) {
@@ -60,16 +133,12 @@ async function list(ctx) {
 
   if (storeId) {
     where.store_id = storeId;
-  } else if (user.storeId && !['boss', 'admin'].includes(user.roleCode)) {
-    where.store_id = user.storeId;
-  } else if (regionCodes.length > 0 && !regionCodes.includes('*')) {
-    const stores = await Store.findAll({ where: { region_id: regionCodes } });
-    const storeIds = stores.map(s => s.store_id);
-    if (storeIds.length === 0) {
+  } else if (!accessibleStoreIds.includes('*')) {
+    if (accessibleStoreIds.length === 0) {
       ctx.body = formatPaginatedResult([], { page, pageSize, count: 0 });
       return;
     }
-    where.store_id = storeIds;
+    where.store_id = accessibleStoreIds;
   }
 
   const itemWhere = {};
@@ -100,7 +169,8 @@ async function list(ctx) {
  * 检查销售价格是否需要审批（价格从ProductPrice表读取）
  */
 async function checkPriceApproval(items) {
-  const productIds = [...new Set(items.map(i => i.productId).filter(Boolean))];
+  const normalizedItems = (items || []).map(item => applyOrderItemDefaults(normalizeOrderItemInput(item)));
+  const productIds = [...new Set(normalizedItems.map(i => i.product_id).filter(Boolean))];
   if (productIds.length === 0) return [];
 
   const productPrices = await ProductPrice.findAll({
@@ -110,15 +180,15 @@ async function checkPriceApproval(items) {
   productPrices.forEach(p => priceMap.set(p.product_id, p));
 
   const belowPriceItems = [];
-  for (const item of items) {
-    const price = priceMap.get(item.productId);
+  for (const item of normalizedItems) {
+    const price = priceMap.get(item.product_id);
     if (!price || !price.min_sale_price || parseFloat(price.min_sale_price) <= 0) continue;
     const minPrice = parseFloat(price.min_sale_price);
-    if (parseFloat(item.salePrice) < minPrice) {
+    if (parseFloat(item.sale_price) < minPrice) {
       belowPriceItems.push({
-        productId: item.productId,
-        productName: item.productName,
-        salePrice: item.salePrice,
+        productId: item.product_id,
+        productName: item.product_name,
+        salePrice: item.sale_price,
         standardPrice: price.standard_price,
         minSalePrice: price.min_sale_price
       });
@@ -127,9 +197,6 @@ async function checkPriceApproval(items) {
   return belowPriceItems;
 }
 
-/**
- * 创建销售订单
- */
 function firstNonEmpty(source, keys, defaultValue = '') {
   for (const key of keys) {
     const value = source && source[key];
@@ -138,6 +205,10 @@ function firstNonEmpty(source, keys, defaultValue = '') {
     }
   }
   return defaultValue;
+}
+
+function toBoolean(value) {
+  return value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
 }
 
 function pickOrderItemsPayload(data = {}) {
@@ -157,6 +228,15 @@ function pickOrderItemsPayload(data = {}) {
   return candidates.find(Array.isArray) || [];
 }
 
+function selectedResourcesFromJson(value) {
+  try {
+    const parsed = Array.isArray(value) ? value : JSON.parse(value || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
 function normalizeOrderItemInput(item = {}) {
   const rawSalePrice = firstNonEmpty(item, ['salePrice', 'sale_price', 'SALE_PRICE', 'unitPrice', 'unit_price', 'price'], null);
   const rawQuantity = firstNonEmpty(item, ['quantity', 'QUANTITY'], null);
@@ -166,6 +246,11 @@ function normalizeOrderItemInput(item = {}) {
   const subtotal = rawSubtotal === null
     ? (salePrice !== undefined && quantity !== undefined ? salePrice * quantity : undefined)
     : Number(rawSubtotal);
+  const snId = firstNonEmpty(item, ['snId', 'sn_id', 'SN_ID', 'inventoryId', 'inventory_id', 'INVENTORY_ID', 'inventorySnId', 'inventory_sn_id']);
+  const snCode = firstNonEmpty(item, ['snCode', 'sn_code', 'SN_CODE', 'sn', 'SN', 'serialNo', 'serial_no', 'productSn', 'product_sn']);
+  const rawResourceTypes = firstNonEmpty(item, ['selectedResourceTypes', 'selected_resource_types'], []);
+  let selectedResourceTypes = selectedResourcesFromJson(rawResourceTypes);
+  selectedResourceTypes = [...new Set(selectedResourceTypes.map(value => String(value || '').trim()).filter(Boolean))];
 
   return {
     item_id: firstNonEmpty(item, ['itemId', 'item_id', 'ITEM_ID', 'orderItemId', 'order_item_id', '_id', 'id']),
@@ -173,14 +258,31 @@ function normalizeOrderItemInput(item = {}) {
     product_name: firstNonEmpty(item, ['productName', 'product_name', 'PRODUCT_NAME', 'name']),
     pn_code: firstNonEmpty(item, ['pnCode', 'pn_code', 'PN_CODE', 'pn', 'PN']),
     mtm_code: firstNonEmpty(item, ['mtmCode', 'mtm_code', 'MTM_CODE']),
-    sn_id: firstNonEmpty(item, ['snId', 'sn_id', 'SN_ID', 'inventoryId', 'inventory_id', 'INVENTORY_ID', 'inventorySnId', 'inventory_sn_id']),
-    sn_code: firstNonEmpty(item, ['snCode', 'sn_code', 'SN_CODE', 'sn', 'SN', 'serialNo', 'serial_no', 'productSn', 'product_sn']),
+    sn_id: snId,
+    sn_code: snCode,
     imei1: firstNonEmpty(item, ['imei1', 'imei_1', 'IMEI1']),
     imei2: firstNonEmpty(item, ['imei2', 'imei_2', 'IMEI2']),
+    use_gov_subsidy: selectedResourceTypes.includes('GOV_SUBSIDY') || toBoolean(firstNonEmpty(item, ['useGovSubsidy', 'use_gov_subsidy'], false)),
+    use_edu_subsidy: selectedResourceTypes.includes('EDU_SUBSIDY') || toBoolean(firstNonEmpty(item, ['useEduSubsidy', 'use_edu_subsidy'], false)),
+    use_sales_report: selectedResourceTypes.includes('SALES_REPORT') || toBoolean(firstNonEmpty(item, ['useSalesReport', 'use_sales_report'], false)),
+    selected_resource_types: selectedResourceTypes,
     sale_price: salePrice,
     quantity,
     subtotal
   };
+}
+
+function applyOrderItemDefaults(item) {
+  const salePrice = Number(item.sale_price || 0);
+  const quantity = Number(item.quantity || 1) || 1;
+  const subtotal = item.subtotal === undefined || item.subtotal === null
+    ? salePrice * quantity
+    : Number(item.subtotal || 0);
+  return Object.assign({}, item, {
+    sale_price: salePrice,
+    quantity,
+    subtotal
+  });
 }
 
 function compactUpdatePayload(payload) {
@@ -194,33 +296,28 @@ function compactUpdatePayload(payload) {
   return result;
 }
 
-function findMatchingOrderItem(existingItems, existingById, normalized, index) {
-  if (normalized.item_id && existingById.has(String(normalized.item_id))) {
-    return existingById.get(String(normalized.item_id));
-  }
-  const byProductPn = existingItems.find(item =>
-    normalized.product_id &&
-    String(item.product_id || '') === String(normalized.product_id) &&
-    (!normalized.pn_code || String(item.pn_code || '') === String(normalized.pn_code))
-  );
-  return byProductPn || existingItems[index];
-}
-
-async function syncOrderItemsFromPayload(order, data = {}) {
+async function syncOrderItemsFromPayload(order, data = {}, transaction = null) {
   const rawItems = pickOrderItemsPayload(data);
   if (!Array.isArray(rawItems) || rawItems.length === 0) return [];
 
   const existingItems = await OrderItem.findAll({
     where: { order_id: order.order_id },
-    order: [['item_id', 'ASC']]
+    order: [['item_id', 'ASC']],
+    transaction
   });
   const existingById = new Map(existingItems.map(item => [String(item.item_id), item]));
   const results = [];
 
   for (let index = 0; index < rawItems.length; index++) {
     const normalized = normalizeOrderItemInput(rawItems[index]);
-    const existing = findMatchingOrderItem(existingItems, existingById, normalized, index);
+    const existing = normalized.item_id
+      ? existingById.get(String(normalized.item_id))
+      : existingItems[index];
     if (!existing) continue;
+    const hasLockedResource = Number(existing.use_gov_subsidy) || Number(existing.use_edu_subsidy) || Number(existing.use_sales_report) || selectedResourcesFromJson(existing.selected_resource_types).length > 0;
+    if (hasLockedResource && ((normalized.sn_id && normalized.sn_id !== existing.sn_id) || (normalized.sn_code && normalized.sn_code !== existing.sn_code))) {
+      throw Object.assign(new Error('订单已锁定SN资源权益，不能直接更换SN；请取消订单后重新开单'), { status: 409 });
+    }
 
     const updatePayload = compactUpdatePayload({
       product_id: normalized.product_id,
@@ -237,57 +334,110 @@ async function syncOrderItemsFromPayload(order, data = {}) {
     });
 
     if (Object.keys(updatePayload).length === 0) continue;
-    await existing.update(updatePayload);
-    Object.assign(existing, updatePayload);
-    results.push({ item_id: existing.item_id, updated: updatePayload });
+    await existing.update(updatePayload, { transaction });
+    results.push({
+      item_id: existing.item_id,
+      updated: updatePayload
+    });
   }
 
-  console.log('[Sales] synced order items from payload:', JSON.stringify({
-    orderId: order.order_id,
-    orderNo: order.order_no,
-    payloadCount: rawItems.length,
-    results
-  }));
+  if (results.length) {
+    console.log('[Sales] synced order items from payload:', JSON.stringify({
+      orderId: order.order_id,
+      orderNo: order.order_no,
+      results
+    }));
+  }
   return results;
 }
 
+/**
+ * 创建销售订单
+ */
 async function create(ctx) {
   const user = ctx.state.user;
   const {
     customerName, customerPhone, customerSource,
-    items, payments, discountAmount = 0,
+    items, payments = [], discountAmount = 0,
     nationalSubsidy = 0, educationSubsidy = 0,
-    invoiceStatus = '不开票', remark, storeId, status, orderStatus
+    invoiceStatus = '不开票', remark, storeId, status, orderStatus, untaxedInvoiceConfirmed = false
   } = ctx.request.body;
+
+  if (!Array.isArray(items) || items.length === 0) {
+    ctx.throw(400, '订单中没有商品');
+  }
+  if (!Array.isArray(payments) || payments.length === 0) {
+    ctx.throw(400, '请填写收款方式');
+  }
 
   const orderNo = generateOrderNo();
   const orderId = generateUUID();
   const actualStoreId = storeId || user.storeId || '';
 
-  const totalAmount = items.reduce((sum, item) => sum + Number(item.subtotal || 0), 0);
-  const actualPayment = totalAmount - Number(discountAmount) - Number(nationalSubsidy) - Number(educationSubsidy);
+  const normalizedItems = items.map(item => applyOrderItemDefaults(normalizeOrderItemInput(item)));
+  const totalAmount = normalizedItems.reduce((sum, item) => sum + Number(item.subtotal || 0), 0);
+  const actualPayment = Math.max(0, money(totalAmount - Number(discountAmount) - Number(nationalSubsidy) - Number(educationSubsidy)));
+  const paymentTotal = money(payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0));
+  if (Math.abs(paymentTotal - actualPayment) > 0.01) {
+    ctx.throw(400, '收款金额与订单实付金额不一致');
+  }
+  const depositPayments = payments.filter(isDepositPayment);
+  if (depositPayments.length > 1) {
+    ctx.throw(400, '一张正式订单只能绑定一张定金单');
+  }
 
   const belowPriceItems = await checkPriceApproval(items);
   const needsApproval = belowPriceItems.length > 0;
 
-  const productIds = [...new Set(items.map(i => i.productId).filter(Boolean))];
+  const productIds = [...new Set(normalizedItems.map(i => i.product_id).filter(Boolean))];
   const products = await Product.findAll({
     where: { product_id: { [Op.in]: productIds } }
   });
   const productMap = new Map();
   products.forEach(p => productMap.set(p.product_id, p));
 
-  for (const item of items) {
-    const product = productMap.get(item.productId);
+  for (const item of normalizedItems) {
+    const product = productMap.get(item.product_id);
     if (!product) {
-      ctx.throw(400, `商品 ${item.productId} 不存在`);
+      ctx.throw(400, `商品 ${item.product_id} 不存在`);
     }
 
   }
 
+  const snItems = normalizedItems.filter(item => item.sn_id || item.sn_code);
+  if (Number(nationalSubsidy) > 0 && !normalizedItems.some(item => item.use_gov_subsidy)) {
+    if (snItems.length !== 1) ctx.throw(400, '订单包含多台SN商品，请明确选择使用国补权益的机器');
+    snItems[0].use_gov_subsidy = true;
+    snItems[0].selected_resource_types = [...new Set([...(snItems[0].selected_resource_types || []), 'GOV_SUBSIDY'])];
+  }
+  if (Number(educationSubsidy) > 0 && !normalizedItems.some(item => item.use_edu_subsidy)) {
+    if (snItems.length !== 1) ctx.throw(400, '订单包含多台SN商品，请明确选择使用教育补贴权益的机器');
+    snItems[0].use_edu_subsidy = true;
+    snItems[0].selected_resource_types = [...new Set([...(snItems[0].selected_resource_types || []), 'EDU_SUBSIDY'])];
+  }
+  if (invoiceStatus && invoiceStatus !== '不开票' && snItems.length) {
+    const snWhere = snItems.map(item => item.sn_id ? { sn_id: item.sn_id } : { sn_code: item.sn_code, product_id: item.product_id });
+    const selectedSns = await ProductSn.findAll({ where: { [Op.or]: snWhere, is_deleted: 0 } });
+    if (selectedSns.some(sn => sn.tax_type === 'UNTAXED') && !untaxedInvoiceConfirmed) {
+      ctx.throw(409, '该机器为未税库存，请确认是否允许开票销售');
+    }
+  }
+
   const finalOrderStatus = status || orderStatus || (needsApproval ? 'pending_approval' : '未归档');
 
-  const order = await Order.create({
+  await sequelize.transaction(async (transaction) => {
+  let redeemedDeposit = null;
+  if (depositPayments.length === 1) {
+    redeemedDeposit = await validateDepositRedemption({
+      payment: depositPayments[0],
+      user,
+      customerPhone,
+      actualPayment,
+      transaction
+    });
+  }
+
+  await Order.create({
     order_id: orderId,
     order_no: orderNo,
     store_id: actualStoreId,
@@ -303,31 +453,52 @@ async function create(ctx) {
     invoice_status: invoiceStatus,
     order_status: finalOrderStatus,
     remark: remark || (needsApproval ? '售价低于定价, 待审批' : '')
-  });
+  }, { transaction });
 
-  for (const item of items) {
+  for (const item of normalizedItems) {
     await OrderItem.create({
       order_id: orderId,
-      product_id: item.productId,
-      product_name: item.productName,
-      pn_code: item.pnCode,
-      sn_id: item.snId,
-      sn_code: item.snCode,
+      product_id: item.product_id,
+      product_name: item.product_name,
+      pn_code: item.pn_code,
+      sn_id: item.sn_id,
+      sn_code: item.sn_code,
       imei1: item.imei1,
       imei2: item.imei2,
-      sale_price: item.salePrice,
+      sale_price: item.sale_price,
       quantity: item.quantity || 1,
-      subtotal: item.subtotal
-    });
+      subtotal: item.subtotal,
+      use_gov_subsidy: item.use_gov_subsidy ? 1 : 0,
+      use_edu_subsidy: item.use_edu_subsidy ? 1 : 0,
+      use_sales_report: item.use_sales_report ? 1 : 0,
+      selected_resource_types: JSON.stringify(item.selected_resource_types || [])
+    }, { transaction });
   }
 
   for (const payment of payments) {
     await OrderPayment.create({
       order_id: orderId,
       payment_method: payment.method,
+      deposit_id: isDepositPayment(payment) ? redeemedDeposit.deposit.deposit_id : null,
       amount: payment.amount
+    }, { transaction });
+  }
+
+  if (redeemedDeposit) {
+    await redeemDepositForOrder({
+      deposit: redeemedDeposit.deposit,
+      orderId,
+      orderNo,
+      amount: redeemedDeposit.amount,
+      user,
+      transaction
     });
   }
+
+  await reserveInventoryForOrder({ order_id: orderId, store_id: actualStoreId }, transaction);
+  const createdItems = await OrderItem.findAll({ where: { order_id: orderId }, transaction });
+  await lockSaleRights({ order_id: orderId, order_no: orderNo, create_user: user.name }, createdItems, transaction);
+  });
 
   ctx.body = {
     orderId, orderNo,
@@ -347,7 +518,8 @@ async function detail(ctx) {
     include: [
       { model: Store },
       { model: OrderItem },
-      { model: OrderPayment },
+      { model: OrderPayment, include: [{ model: DepositOrder }] },
+      { model: DepositRedemption, as: 'depositRedemptions' },
       { model: OrderAttachment }
     ]
   });
@@ -356,24 +528,37 @@ async function detail(ctx) {
     ctx.throw(404, '订单不存在');
   }
 
+  assertStoreVisible(order.store_id, ctx.state.user);
+
   const result = order.toJSON();
   const items = result.OrderItems || [];
   const snCodes = items.map(item => item.sn_code).filter(Boolean);
   if (snCodes.length > 0) {
     const snRows = await ProductSn.findAll({
       where: { sn_code: { [Op.in]: snCodes } },
-      attributes: ['sn_code', 'pn_code', 'inventory_type'],
+      attributes: ['sn_id', 'sn_code', 'pn_code', 'inventory_type', 'tax_type'],
       raw: true
     });
     const snMap = new Map(snRows.map(sn => [`${sn.pn_code || ''}|${sn.sn_code}`, sn]));
+    const summaryMap = await summariesForSns(snRows);
     result.OrderItems = items.map(item => {
       const sn = snMap.get(`${item.pn_code || ''}|${item.sn_code}`) || snRows.find(row => row.sn_code === item.sn_code);
       return {
         ...item,
         pn_code: item.pn_code || sn?.pn_code || '',
         sn_code: item.sn_code || '',
-        inventory_type: item.inventory_type || sn?.inventory_type || ''
+        inventory_type: item.inventory_type || sn?.inventory_type || '',
+        resource_summary: sn ? summaryMap.get(sn.sn_id) : null
       };
+    });
+  }
+  if (!canSeeCost(ctx.state.user)) {
+    result.OrderItems = (result.OrderItems || items).map(item => {
+      const sanitized = { ...item };
+      delete sanitized.original_inventory_cost;
+      delete sanitized.original_pickup_price;
+      delete sanitized.current_pickup_price_at_sale;
+      return sanitized;
     });
   }
 
@@ -388,12 +573,13 @@ async function approve(ctx) {
   const user = ctx.state.user;
 
   const allowedRoles = ['boss', 'admin', 'manager'];
-  if (!allowedRoles.includes(user.roleCode)) {
+  if (!getUserRoles(user).some(role => allowedRoles.includes(role))) {
     ctx.throw(403, '仅店长或经销商总账号可以审批');
   }
 
   const order = await Order.findByPk(orderId);
   if (!order) ctx.throw(404, '订单不存在');
+  assertStoreVisible(order.store_id, user);
   if (order.order_status !== 'pending_approval') {
     ctx.throw(400, '该订单无需审批');
   }
@@ -415,22 +601,29 @@ async function reject(ctx) {
   const user = ctx.state.user;
 
   const allowedRoles = ['boss', 'admin', 'manager'];
-  if (!allowedRoles.includes(user.roleCode)) {
+  if (!getUserRoles(user).some(role => allowedRoles.includes(role))) {
     ctx.throw(403, '仅店长或经销商总账号可以审批');
   }
 
   const order = await Order.findByPk(orderId);
   if (!order) ctx.throw(404, '订单不存在');
+  assertStoreVisible(order.store_id, user);
   if (order.order_status !== 'pending_approval') {
     ctx.throw(400, '该订单无需审批');
   }
 
   const { reason } = ctx.request.body;
 
-  await order.update({
-    order_status: 'cancelled',
-    remark: (order.remark || '') + '\n审批拒绝: ' + (reason || '无'),
-    update_time: new Date()
+  await sequelize.transaction(async (transaction) => {
+    await releaseReservedInventoryForOrder(order, transaction);
+    const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+    await releaseSaleRights(order, items, transaction);
+    await releaseDepositRedemptionForOrder(order, transaction, '订单审批拒绝');
+    await order.update({
+      order_status: 'cancelled',
+      remark: (order.remark || '') + '\n审批拒绝: ' + (reason || '无'),
+      update_time: new Date()
+    }, { transaction });
   });
 
   ctx.body = { code: 0, message: '已拒绝' };
@@ -448,40 +641,57 @@ async function update(ctx) {
     ctx.throw(404, '订单不存在');
   }
 
-  const nextStatus = data.order_status || data.status;
-  if (isArchiveStatus(nextStatus) && !isArchiveStatus(order.order_status)) {
-    await syncOrderItemsFromPayload(order, data);
-    await validateAndDeductInventoryForArchive(order, data);
-    data.order_status = '已归档';
-    data.status = '已归档';
-    syncToDailyStatement(orderId, order.store_id).catch(err => console.error('[DailySync] archive error:', err.message));
-  }
+  assertStoreVisible(order.store_id, ctx.state.user);
 
-  await order.update(data);
+  const nextStatus = data.order_status || data.status;
+  await sequelize.transaction(async (transaction) => {
+    await syncOrderItemsFromPayload(order, data, transaction);
+
+    if (isArchiveStatus(nextStatus) && !isArchiveStatus(order.order_status)) {
+      await validateAndDeductInventoryForArchive(order, transaction);
+      const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+      await finishSaleRights(order, items, transaction);
+      await calculateSalesSettlementCosts(order, transaction);
+      data.order_status = '已归档';
+      data.status = '已归档';
+      syncToDailyStatement(orderId, order.store_id).catch(err => console.error('[DailySync] archive error:', err.message));
+    } else if (isCancelStatus(nextStatus) && !isCancelStatus(order.order_status) && !isArchiveStatus(order.order_status)) {
+      await releaseReservedInventoryForOrder(order, transaction);
+      const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+      await releaseSaleRights(order, items, transaction);
+      await releaseDepositRedemptionForOrder(order, transaction, '订单取消');
+    }
+
+    await order.update(data, { transaction });
+  });
   ctx.body = { message: '订单更新成功' };
 }
 
-/**
- * 销售统计
- */
 async function updateOrderItems(ctx) {
   const data = ctx.request.body || {};
   const orderNo = firstNonEmpty(data, ['orderNo', 'order_no', 'ORDER_NO']);
   const orderId = firstNonEmpty(data, ['orderId', 'order_id', 'ORDER_ID']);
 
+  const where = orderId ? { order_id: orderId } : { order_no: orderNo };
   if (!orderId && !orderNo) {
-    ctx.throw(400, 'Order number is required');
+    ctx.throw(400, '订单编号不能为空');
   }
 
-  const order = await Order.findOne({ where: orderId ? { order_id: orderId } : { order_no: orderNo } });
+  const order = await Order.findOne({ where });
   if (!order) {
-    ctx.throw(404, 'Order not found');
+    ctx.throw(404, '订单不存在');
   }
 
-  const results = await syncOrderItemsFromPayload(order, data);
+  assertStoreVisible(order.store_id, ctx.state.user);
+
+  let results = [];
+  await sequelize.transaction(async (transaction) => {
+    results = await syncOrderItemsFromPayload(order, data, transaction);
+  });
+
   ctx.body = {
     code: 0,
-    message: 'Order items updated',
+    message: '订单明细更新成功',
     data: {
       orderId: order.order_id,
       orderNo: order.order_no,
@@ -490,13 +700,16 @@ async function updateOrderItems(ctx) {
   };
 }
 
+/**
+ * 销售统计
+ */
 async function stats(ctx) {
   const { storeId, startDate, endDate } = ctx.query;
   const user = ctx.state.user;
 
   const whereStore = {};
-  if (!user.regionCodes.includes('*')) {
-    whereStore.region_id = user.regionCodes;
+  if (!user.accessibleStoreIds.includes('*')) {
+    whereStore.store_id = user.accessibleStoreIds;
   }
   if (storeId) whereStore.store_id = storeId;
 
@@ -542,60 +755,6 @@ async function paymentMethods(ctx) {
   ctx.body = { code: 0, data: methods, message: 'success' };
 }
 
-async function buildStoreScope(user, explicitStoreId) {
-  if (explicitStoreId) return explicitStoreId;
-  if (user.storeId && !['boss', 'admin'].includes(user.roleCode)) return user.storeId;
-
-  const regionCodes = Array.isArray(user.regionCodes) ? user.regionCodes.filter(Boolean) : [];
-  if (regionCodes.length > 0 && !regionCodes.includes('*')) {
-    const stores = await Store.findAll({ where: { region_id: regionCodes } });
-    return stores.map(store => store.store_id);
-  }
-
-  return null;
-}
-
-async function assertDepositVisible(deposit, user) {
-  if (['boss', 'admin'].includes(user.roleCode)) return;
-  if (user.storeId && String(deposit.store_id || '') === String(user.storeId)) return;
-
-  const regionCodes = Array.isArray(user.regionCodes) ? user.regionCodes.filter(Boolean) : [];
-  if (regionCodes.includes('*')) return;
-  if (regionCodes.length > 0) {
-    const store = await Store.findOne({ where: { store_id: deposit.store_id, region_id: regionCodes } });
-    if (store) return;
-  }
-
-  ctxThrow(403, '无权访问该门店定金单');
-}
-
-function ctxThrow(status, message) {
-  const error = new Error(message);
-  error.status = status;
-  throw error;
-}
-
-function money(value) {
-  const number = Number(value || 0);
-  return Math.round(number * 100) / 100;
-}
-
-function generateBusinessNo(prefix) {
-  const now = new Date();
-  const yyyy = now.getFullYear();
-  const mm = String(now.getMonth() + 1).padStart(2, '0');
-  const dd = String(now.getDate()).padStart(2, '0');
-  const hh = String(now.getHours()).padStart(2, '0');
-  const mi = String(now.getMinutes()).padStart(2, '0');
-  const ss = String(now.getSeconds()).padStart(2, '0');
-  const random = String(Math.floor(Math.random() * 10000)).padStart(4, '0');
-  return `${prefix}${yyyy}${mm}${dd}${hh}${mi}${ss}${random}`;
-}
-
-function getDepositAvailableAmount(deposit) {
-  return money(Number(deposit.amount || 0) - Number(deposit.redeemed_amount || 0) - Number(deposit.refunded_amount || 0));
-}
-
 async function listDeposits(ctx) {
   const { storeId, status, customerPhone, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
@@ -603,13 +762,11 @@ async function listDeposits(ctx) {
 
   if (status) where.status = status;
   if (customerPhone) where.customer_phone = { [Op.like]: `%${customerPhone}%` };
-
-  const storeScope = await buildStoreScope(user, storeId);
-  if (Array.isArray(storeScope) && storeScope.length === 0) {
-    ctx.body = formatPaginatedResult([], { page, pageSize, count: 0 });
-    return;
+  if (storeId) {
+    where.store_id = storeId;
+  } else if (!user.accessibleStoreIds.includes('*')) {
+    where.store_id = user.accessibleStoreIds;
   }
-  if (storeScope) where.store_id = storeScope;
 
   const { count, rows } = await DepositOrder.findAndCountAll({
     where,
@@ -665,7 +822,7 @@ async function archiveDeposit(ctx) {
   if (!depositId) ctx.throw(400, '缺少定金单ID');
   const deposit = await DepositOrder.findOne({ where: { deposit_id: depositId, is_deleted: 0 } });
   if (!deposit) ctx.throw(404, '定金单不存在');
-  await assertDepositVisible(deposit, user);
+  assertDepositStoreVisible(deposit, user);
   if (deposit.status !== 'submitted') {
     ctx.throw(400, '只有已提交的定金单可以归档');
   }
@@ -693,10 +850,8 @@ async function refundDeposit(ctx) {
       lock: transaction.LOCK.UPDATE
     });
     if (!deposit) ctx.throw(404, '定金单不存在');
-    await assertDepositVisible(deposit, user);
-    if (String(deposit.create_staff_id || '') !== String(user.staffId || '') && !['boss', 'admin', 'manager'].includes(user.roleCode)) {
-      ctx.throw(403, '只能退款自己收的定金单');
-    }
+    assertDepositStoreVisible(deposit, user);
+    assertDepositCreator(deposit, user, '只能退款自己收的定金单');
     if (!['submitted', 'archived'].includes(deposit.status)) {
       ctx.throw(400, '只有未核销的定金单可以退款');
     }
@@ -739,13 +894,8 @@ async function availableDeposits(ctx) {
     create_staff_id: user.staffId
   };
   if (customerPhone) where.customer_phone = customerPhone;
-
-  const storeScope = await buildStoreScope(user, storeId);
-  if (Array.isArray(storeScope) && storeScope.length === 0) {
-    ctx.body = { code: 0, data: [], message: 'success' };
-    return;
-  }
-  if (storeScope) where.store_id = storeScope;
+  if (storeId) where.store_id = storeId;
+  else if (!user.accessibleStoreIds.includes('*')) where.store_id = user.accessibleStoreIds;
 
   const rows = await DepositOrder.findAll({
     where,
@@ -826,19 +976,43 @@ async function getProductSns(ctx) {
 
   const snRecords = await ProductSn.findAll({
     where,
-    attributes: ['sn_id', 'sn_code', 'pn_code', 'inventory_type'],
+    attributes: ['sn_id', 'sn_code', 'pn_code', 'inventory_type', 'tax_type'],
     order: [['sn_code', 'ASC']]
   });
 
+  const summaryMap = await summariesForSns(snRecords);
   ctx.body = {
     code: 0,
     data: snRecords.map(s => ({
       sn_id: s.sn_id,
       sn_code: s.sn_code,
       pn_code: s.pn_code,
-      inventory_type: s.inventory_type
+      inventory_type: s.inventory_type,
+      ...summaryMap.get(s.sn_id)
     }))
   };
+}
+
+async function recalculateSettlementCost(ctx) {
+  const { orderId } = ctx.params;
+  const user = ctx.state.user;
+  const roles = getUserRoles(user);
+  if (!roles.some(role => ['boss', 'admin', 'finance'].includes(role))) {
+    ctx.throw(403, '无权重算销售结算成本');
+  }
+
+  const order = await Order.findByPk(orderId);
+  if (!order) ctx.throw(404, '订单不存在');
+  if (!isArchiveStatus(order.order_status)) {
+    ctx.throw(400, '只有已归档订单可以重算销售结算成本');
+  }
+
+  await sequelize.transaction(async (transaction) => {
+    await calculateSalesSettlementCosts(order, transaction, { force: true });
+    await order.update({ update_time: new Date() }, { transaction });
+  });
+
+  ctx.body = { code: 0, message: '销售结算成本已重算' };
 }
 
 function isArchiveStatus(status) {
@@ -851,15 +1025,533 @@ function archiveError(message) {
   return error;
 }
 
-async function validateAndDeductInventoryForArchive(order, payload = {}) {
-  await syncOrderItemsFromPayload(order, payload);
-  const items = await OrderItem.findAll({ where: { order_id: order.order_id }, order: [['item_id', 'ASC']] });
+function money(value) {
+  const number = Number(value || 0);
+  return Math.round(number * 100) / 100;
+}
+
+function generateBusinessNo(prefix) {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mi = String(now.getMinutes()).padStart(2, '0');
+  const ss = String(now.getSeconds()).padStart(2, '0');
+  const random = String(Math.floor(Math.random() * 10000)).padStart(4, '0');
+  return `${prefix}${yyyy}${mm}${dd}${hh}${mi}${ss}${random}`;
+}
+
+function isDepositPayment(payment) {
+  const method = String(payment?.method || payment?.payment_method || '').trim().toLowerCase();
+  return method === '定金' || method === 'deposit';
+}
+
+function getDepositAvailableAmount(deposit) {
+  return money(Number(deposit.amount || 0) - Number(deposit.redeemed_amount || 0) - Number(deposit.refunded_amount || 0));
+}
+
+function assertDepositCreator(deposit, user, message = '只能核销自己收的定金单') {
+  if (String(deposit.create_staff_id || '') !== String(user.staffId || '')) {
+    const error = new Error(message);
+    error.status = 403;
+    throw error;
+  }
+}
+
+function assertDepositStoreVisible(deposit, user) {
+  assertStoreVisible(deposit.store_id, user, '无权访问该门店定金单');
+}
+
+function assertStoreVisible(storeId, user, message = '无权访问该门店数据') {
+  if (user.accessibleStoreIds?.includes('*')) return;
+  if (!(user.accessibleStoreIds || []).map(String).includes(String(storeId || ''))) {
+    const error = new Error(message);
+    error.status = 403;
+    throw error;
+  }
+}
+
+async function validateDepositRedemption({ payment, user, customerPhone, actualPayment, transaction }) {
+  const depositId = payment.depositId || payment.deposit_id;
+  if (!depositId) {
+    throw archiveError('请选择需要核销的定金单');
+  }
+  const deposit = await DepositOrder.findOne({
+    where: { deposit_id: depositId, is_deleted: 0 },
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  if (!deposit) {
+    throw archiveError('定金单不存在');
+  }
+  assertDepositCreator(deposit, user);
+  if (deposit.status !== 'archived') {
+    throw archiveError('只有已归档且未核销的定金单可以抵扣订单');
+  }
+  if (customerPhone && deposit.customer_phone && String(customerPhone).trim() !== String(deposit.customer_phone).trim()) {
+    throw archiveError('定金单客户电话与当前订单客户电话不一致');
+  }
+
+  const availableAmount = getDepositAvailableAmount(deposit);
+  if (availableAmount <= 0) {
+    throw archiveError('定金单没有可核销余额');
+  }
+  if (Math.abs(money(payment.amount) - availableAmount) > 0.01) {
+    throw archiveError('定金抵扣金额必须等于定金单可用金额，不能手工修改');
+  }
+  if (availableAmount - actualPayment > 0.01) {
+    throw archiveError('定金金额大于订单实付金额，当前不支持部分核销');
+  }
+
+  return { deposit, amount: availableAmount };
+}
+
+async function redeemDepositForOrder({ deposit, orderId, orderNo, amount, user, transaction }) {
+  await DepositRedemption.create({
+    redemption_id: generateUUID(),
+    deposit_id: deposit.deposit_id,
+    order_id: orderId,
+    order_no: orderNo,
+    amount,
+    status: 'active',
+    create_staff_id: user.staffId,
+    create_user: user.name
+  }, { transaction });
+
+  await deposit.update({
+    redeemed_amount: amount,
+    status: 'redeemed',
+    related_order_id: orderId,
+    related_order_no: orderNo,
+    update_time: new Date()
+  }, { transaction });
+}
+
+async function releaseDepositRedemptionForOrder(order, transaction = null, reason = '订单取消') {
+  const redemptions = await DepositRedemption.findAll({
+    where: { order_id: order.order_id, status: 'active' },
+    transaction
+  });
+  for (const redemption of redemptions) {
+    const deposit = await DepositOrder.findByPk(redemption.deposit_id, {
+      transaction,
+      lock: transaction?.LOCK?.UPDATE
+    });
+    if (deposit && deposit.status === 'redeemed') {
+      await deposit.update({
+        redeemed_amount: 0,
+        status: 'archived',
+        related_order_id: null,
+        related_order_no: null,
+        update_time: new Date()
+      }, { transaction });
+    }
+    await redemption.update({
+      status: 'voided',
+      void_reason: reason,
+      void_time: new Date()
+    }, { transaction });
+  }
+}
+
+function canSeeCost(user) {
+  return getUserRoles(user).some(role => ['boss', 'admin', 'finance', 'manager'].includes(role));
+}
+
+async function findCurrentManufacturerPrice({ productId, pn, saleDate, transaction = null }) {
+  if (!pn) return null;
+  const date = saleDate || new Date();
+  return ManufacturerPriceHistory.findOne({
+    where: {
+      pn,
+      [Op.and]: [
+        { effective_date: { [Op.lte]: date } },
+        {
+          [Op.or]: [
+            { expire_date: null },
+            { expire_date: { [Op.gte]: date } }
+          ]
+        },
+        {
+          [Op.or]: [
+            { product_id: productId },
+            { product_id: null },
+            { product_id: '' }
+          ]
+        }
+      ]
+    },
+    order: [['effective_date', 'DESC'], ['created_at', 'DESC']],
+    transaction
+  });
+}
+
+async function findActiveManufacturerPolicies({ supplierId, productId, pn, saleDate, transaction = null }) {
+  if (!supplierId) return [];
+  const date = saleDate || new Date();
+  return ManufacturerRebatePolicy.findAll({
+    where: {
+      supplier_id: supplierId,
+      status: 1,
+      [Op.and]: [
+        {
+          [Op.or]: [
+            { start_date: null },
+            { start_date: { [Op.lte]: date } }
+          ]
+        },
+        {
+          [Op.or]: [
+            { end_date: null },
+            { end_date: { [Op.gte]: date } }
+          ]
+        },
+        {
+          [Op.or]: [
+            { product_id: productId },
+            { product_id: null },
+            { product_id: '' }
+          ]
+        },
+        {
+          [Op.or]: [
+            { pn },
+            { pn: null },
+            { pn: '' }
+          ]
+        }
+      ]
+    },
+    order: [['create_time', 'DESC']],
+    transaction
+  });
+}
+
+function calculatePolicyRebate(policy, baseAmount) {
+  if (policy.rebate_calculation_type === 'percentage') {
+    return money(baseAmount * Number(policy.rebate_rate || 0) / 100);
+  }
+  return money(policy.rebate_amount || 0);
+}
+
+function calculateCostAdjustment(policy, rebateAmount) {
+  if (!policy.affect_sales_settlement_cost) return 0;
+  let amount = 0;
+  if (policy.cost_adjustment_type === 'fixed_amount') {
+    amount = Number(policy.cost_adjustment_value || 0);
+  } else if (policy.cost_adjustment_type === 'percentage') {
+    amount = rebateAmount * Number(policy.cost_adjustment_value || 0) / 100;
+  } else {
+    amount = 0;
+  }
+  const max = Number(policy.max_cost_adjustment_amount || 0);
+  if (max > 0) amount = Math.min(amount, max);
+  return money(amount);
+}
+
+async function createEstimateAndAdjustment({
+  order,
+  item,
+  priceHistory,
+  policy,
+  policyName,
+  policyType,
+  rebateAmount,
+  affectCost,
+  costAdjustmentAmount,
+  originalInventoryCost,
+  originalPickupPrice,
+  currentPickupPrice,
+  finalSalesSettlementCost,
+  remark,
+  transaction
+}) {
+  const estimateId = generateUUID();
+  await RebateEstimate.create({
+    estimate_id: estimateId,
+    sales_order_id: order.order_id,
+    sales_order_no: order.order_no,
+    sales_order_item_id: item.item_id,
+    supplier_id: priceHistory?.supplier_id || policy?.supplier_id || '',
+    supplier_name: priceHistory?.supplier_name || policy?.supplier_name || '',
+    product_id: item.product_id,
+    product_name: item.product_name,
+    pn: item.pn_code,
+    sn: item.sn_code,
+    policy_id: policy?.policy_id || null,
+    policy_name: policyName,
+    policy_type: policyType,
+    rebate_estimate_amount: rebateAmount,
+    status: 'estimated',
+    remark
+  }, { transaction });
+
+  await createPendingSettlement({
+    sourceType: 'MANUFACTURER_REBATE', sourceId: estimateId,
+    sn: { sn_id: item.sn_id || `NO_SN_${item.item_id}`, sn_code: item.sn_code || '', product_id: item.product_id },
+    resourceType: 'MANUFACTURER_REBATE', amount: rebateAmount,
+    counterpartyId: priceHistory?.supplier_id || policy?.supplier_id || null,
+    counterpartyName: priceHistory?.supplier_name || policy?.supplier_name || '',
+    remark: `销售订单 ${order.order_no} 厂商返利预估到账确认`, transaction
+  });
+
+  await SalesSettlementCostAdjustment.create({
+    id: generateUUID(),
+    sales_order_id: order.order_id,
+    sales_order_no: order.order_no,
+    sales_order_item_id: item.item_id,
+    supplier_id: priceHistory?.supplier_id || policy?.supplier_id || '',
+    supplier_name: priceHistory?.supplier_name || policy?.supplier_name || '',
+    product_id: item.product_id,
+    product_name: item.product_name,
+    pn: item.pn_code,
+    sn: item.sn_code,
+    original_inventory_cost: originalInventoryCost,
+    original_pickup_price: originalPickupPrice,
+    current_pickup_price_at_sale: currentPickupPrice,
+    policy_id: policy?.policy_id || null,
+    policy_name: policyName,
+    policy_type: policyType,
+    rebate_estimate_id: estimateId,
+    rebate_estimate_amount: rebateAmount,
+    affect_sales_settlement_cost: affectCost ? 1 : 0,
+    cost_adjustment_amount: costAdjustmentAmount,
+    final_sales_settlement_cost: finalSalesSettlementCost,
+    remark
+  }, { transaction });
+}
+
+async function calculateSalesSettlementCosts(order, transaction = null, options = {}) {
+  const existing = await SalesSettlementCostAdjustment.count({
+    where: { sales_order_id: order.order_id },
+    transaction
+  });
+  if (existing > 0 && !options.force) return;
+
+  if (options.force) {
+    const estimates = await RebateEstimate.findAll({ where: { sales_order_id: order.order_id }, attributes: ['estimate_id'], transaction });
+    const estimateIds = estimates.map(item => item.estimate_id);
+    if (estimateIds.length > 0) {
+      const settledCount = await ResourceSettlement.count({ where: { source_type: 'MANUFACTURER_REBATE', source_id: { [Op.in]: estimateIds }, status: 'SETTLED' }, transaction });
+      if (settledCount > 0) throw Object.assign(new Error('该订单的厂商返利已下账，不能重算'), { status: 409 });
+      await ResourceSettlement.destroy({ where: { source_type: 'MANUFACTURER_REBATE', source_id: { [Op.in]: estimateIds }, status: 'PENDING' }, transaction });
+    }
+    await SalesSettlementCostAdjustment.destroy({ where: { sales_order_id: order.order_id }, transaction });
+    await RebateEstimate.destroy({ where: { sales_order_id: order.order_id }, transaction });
+  }
+
+  const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+  const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean))];
+  const productPrices = await ProductPrice.findAll({ where: { product_id: { [Op.in]: productIds } }, transaction });
+  const priceMap = new Map(productPrices.map(price => [price.product_id, price]));
+  const saleDate = order.create_time || new Date();
+
+  for (const item of items) {
+    const snRecord = item.sn_code
+      ? await ProductSn.findOne({ where: { sn_code: item.sn_code, product_id: item.product_id }, transaction })
+      : null;
+    const productPrice = priceMap.get(item.product_id);
+    const originalInventoryCost = money(snRecord?.inbound_price || productPrice?.cost_price || 0);
+    const originalPickupPrice = money(snRecord?.original_pickup_price || snRecord?.inbound_price || item.original_pickup_price || 0);
+    const priceHistory = await findCurrentManufacturerPrice({
+      productId: item.product_id,
+      pn: item.pn_code,
+      saleDate,
+      transaction
+    });
+    const currentPickupPrice = money(priceHistory?.pickup_price || 0);
+    const p0DifferenceAmount = originalPickupPrice > currentPickupPrice && currentPickupPrice > 0
+      ? money(originalPickupPrice - currentPickupPrice)
+      : 0;
+
+    let totalCostAdjustment = 0;
+    const pendingRows = [];
+
+    if (p0DifferenceAmount > 0) {
+      totalCostAdjustment += p0DifferenceAmount;
+      pendingRows.push({
+        policy: null,
+        policyName: 'P差',
+        policyType: 'p0_difference',
+        rebateAmount: p0DifferenceAmount,
+        affectCost: true,
+        costAdjustmentAmount: p0DifferenceAmount,
+        remark: 'P差 = 原始提货价 - 销售时厂家当前提货价'
+      });
+    }
+
+    const policies = await findActiveManufacturerPolicies({
+      supplierId: priceHistory?.supplier_id,
+      productId: item.product_id,
+      pn: item.pn_code,
+      saleDate,
+      transaction
+    });
+
+    for (const policy of policies) {
+      if (policy.policy_type === 'p0_difference') continue;
+      const rebateAmount = calculatePolicyRebate(policy, originalInventoryCost);
+      if (rebateAmount <= 0) continue;
+      const costAdjustmentAmount = calculateCostAdjustment(policy, rebateAmount);
+      totalCostAdjustment += costAdjustmentAmount;
+      pendingRows.push({
+        policy,
+        policyName: policy.policy_name,
+        policyType: policy.policy_type,
+        rebateAmount,
+        affectCost: !!policy.affect_sales_settlement_cost,
+        costAdjustmentAmount,
+        remark: policy.cost_adjustment_remark || policy.remark || ''
+      });
+    }
+
+    totalCostAdjustment = money(totalCostAdjustment);
+    const finalSalesSettlementCost = money(Math.max(0, originalInventoryCost - totalCostAdjustment));
+    const salesGrossProfit = money(Number(item.subtotal || 0) - finalSalesSettlementCost * Number(item.quantity || 1));
+
+    for (const row of pendingRows) {
+      await createEstimateAndAdjustment({
+        order,
+        item,
+        priceHistory,
+        policy: row.policy,
+        policyName: row.policyName,
+        policyType: row.policyType,
+        rebateAmount: row.rebateAmount,
+        affectCost: row.affectCost,
+        costAdjustmentAmount: row.costAdjustmentAmount,
+        originalInventoryCost,
+        originalPickupPrice,
+        currentPickupPrice,
+        finalSalesSettlementCost,
+        remark: row.remark,
+        transaction
+      });
+    }
+
+    await item.update({
+      original_inventory_cost: originalInventoryCost,
+      original_pickup_price: originalPickupPrice,
+      current_pickup_price_at_sale: currentPickupPrice,
+      p0_difference_amount: p0DifferenceAmount,
+      cost_adjustment_amount: totalCostAdjustment,
+      sales_settlement_cost: finalSalesSettlementCost,
+      sales_gross_profit: salesGrossProfit
+    }, { transaction });
+  }
+}
+
+function isCancelStatus(status) {
+  return ['cancelled', 'canceled', '已取消', '作废'].includes(String(status || ''));
+}
+
+async function reserveInventoryForOrder(order, transaction = null) {
+  const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+  if (!items.length) {
+    throw archiveError('订单中没有商品，无法占用库存');
+  }
+
+  const productIds = [...new Set(items.map(i => i.product_id).filter(Boolean))];
+  const products = await Product.findAll({ where: { product_id: { [Op.in]: productIds } }, transaction });
+  const productMap = new Map(products.map(product => [product.product_id, product]));
+  const operations = [];
+
+  for (const item of items) {
+    const product = productMap.get(item.product_id);
+    if (!product) {
+      throw archiveError(`商品 ${item.product_id || item.product_name || ''} 不存在`);
+    }
+
+    const quantity = Number(item.quantity || 1);
+    if (product.need_sn === 1) {
+      const snCode = String(item.sn_code || '').trim();
+      if (!snCode) {
+        throw archiveError(`商品 ${item.product_name || product.name} 需要SN管理，请先填写SN码`);
+      }
+
+      const snWhere = {
+        sn_code: snCode,
+        product_id: item.product_id,
+        store_id: order.store_id,
+        status: 'in_stock',
+        is_deleted: 0
+      };
+      if (item.pn_code) snWhere.pn_code = item.pn_code;
+
+      const snRecord = await ProductSn.findOne({ where: snWhere, transaction });
+      if (!snRecord) {
+        throw archiveError(`SN码 [${snCode}] 在当前门店没有可用库存，不能提交订单`);
+      }
+
+      operations.push({ item, quantity, snRecord, inventoryType: snRecord.inventory_type || 'normal_qty' });
+    } else {
+      await assertAvailableInventory(item, product, order.store_id, quantity, '提交订单', transaction);
+      operations.push({ item, quantity, inventoryType: 'normal_qty' });
+    }
+  }
+
+  for (const op of operations) {
+    if (op.snRecord) {
+      await op.snRecord.update({ status: 'reserved' }, { transaction });
+      if (!op.item.sn_id) {
+        await op.item.update({ sn_id: op.snRecord.sn_id }, { transaction });
+      }
+    }
+    await _moveInventoryToPending(op.item.product_id, order.store_id, op.inventoryType, op.quantity, transaction);
+  }
+}
+
+async function releaseReservedInventoryForOrder(order, transaction = null) {
+  const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+  for (const item of items) {
+    const quantity = Number(item.quantity || 1);
+    let inventoryType = 'normal_qty';
+
+    if (item.sn_code) {
+      const snWhere = {
+        sn_code: String(item.sn_code).trim(),
+        product_id: item.product_id,
+        store_id: order.store_id,
+        status: 'reserved',
+        is_deleted: 0
+      };
+      if (item.pn_code) snWhere.pn_code = item.pn_code;
+      const snRecord = await ProductSn.findOne({ where: snWhere, transaction });
+      if (snRecord) {
+        inventoryType = snRecord.inventory_type || 'normal_qty';
+        await snRecord.update({ status: 'in_stock' }, { transaction });
+      }
+    }
+
+    await _releasePendingInventory(item.product_id, order.store_id, inventoryType, quantity, transaction);
+  }
+}
+
+async function assertAvailableInventory(item, product, storeId, quantity, actionText, transaction = null) {
+  const inv = await Inventory.findOne({
+    where: { product_id: item.product_id, store_id: storeId },
+    transaction
+  });
+  const normalStock = inv ? Math.max(
+    Number(inv.normal_qty || 0),
+    Number(inv.regular_qty || 0) + Number(inv.subsidy_qty || 0) + Number(inv.second_qty || 0)
+  ) : 0;
+  const totalStock = inv ? normalStock + Number(inv.display_qty || 0) : 0;
+  if (totalStock < quantity) {
+    throw archiveError(`商品 ${item.product_name || product.name} 库存不足(可用:${totalStock}, 需要:${quantity})，不能${actionText}`);
+  }
+  return inv;
+}
+
+async function validateAndDeductInventoryForArchive(order, transaction = null) {
+  const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
   if (!items.length) {
     throw archiveError('订单中没有商品，无法归档');
   }
 
   const productIds = [...new Set(items.map(i => i.product_id).filter(Boolean))];
-  const products = await Product.findAll({ where: { product_id: { [Op.in]: productIds } } });
+  const products = await Product.findAll({ where: { product_id: { [Op.in]: productIds } }, transaction });
   const productMap = new Map(products.map(product => [product.product_id, product]));
   const operations = [];
 
@@ -880,12 +1572,12 @@ async function validateAndDeductInventoryForArchive(order, payload = {}) {
         sn_code: snCode,
         product_id: item.product_id,
         store_id: order.store_id,
-        status: 'in_stock',
+        status: { [Op.in]: ['reserved', 'in_stock'] },
         is_deleted: 0
       };
       if (item.pn_code) snWhere.pn_code = item.pn_code;
 
-      const snRecord = await ProductSn.findOne({ where: snWhere });
+      const snRecord = await ProductSn.findOne({ where: snWhere, transaction });
       if (!snRecord) {
         throw archiveError(`SN码 [${snCode}] 在当前门店没有可用库存，不能归档`);
       }
@@ -895,17 +1587,20 @@ async function validateAndDeductInventoryForArchive(order, payload = {}) {
         product,
         quantity,
         snRecord,
-        inventoryType: snRecord.inventory_type || 'normal_qty'
+        inventoryType: snRecord.inventory_type || 'normal_qty',
+        fromPending: snRecord.status === 'reserved'
       });
     } else {
       const inv = await Inventory.findOne({
-        where: { product_id: item.product_id, store_id: order.store_id }
+        where: { product_id: item.product_id, store_id: order.store_id },
+        transaction
       });
+      const pendingStock = inv ? Number(inv.pending_qty || 0) : 0;
       const normalStock = inv ? Math.max(
         Number(inv.normal_qty || 0),
         Number(inv.regular_qty || 0) + Number(inv.subsidy_qty || 0) + Number(inv.second_qty || 0)
       ) : 0;
-      const totalStock = inv ? normalStock + Number(inv.display_qty || 0) : 0;
+      const totalStock = inv ? normalStock + Number(inv.display_qty || 0) + pendingStock : 0;
       if (totalStock < quantity) {
         throw archiveError(`商品 ${item.product_name || product.name} 库存不足(可用:${totalStock}, 需要:${quantity})，不能归档`);
       }
@@ -914,20 +1609,25 @@ async function validateAndDeductInventoryForArchive(order, payload = {}) {
         item,
         product,
         quantity,
-        inventoryType: 'normal_qty'
+        inventoryType: 'normal_qty',
+        fromPending: pendingStock >= quantity
       });
     }
   }
 
   for (const op of operations) {
     if (op.snRecord) {
-      await op.snRecord.update({ status: 'sold' });
+      await op.snRecord.update({ status: 'sold' }, { transaction });
       if (!op.item.sn_id) {
-        await op.item.update({ sn_id: op.snRecord.sn_id });
+        await op.item.update({ sn_id: op.snRecord.sn_id }, { transaction });
       }
     }
 
-    await _deductInventory(op.item.product_id, order.store_id, op.inventoryType, op.quantity);
+    if (op.fromPending) {
+      await _finalizePendingInventory(op.item.product_id, order.store_id, op.quantity, transaction);
+    } else {
+      await _deductInventory(op.item.product_id, order.store_id, op.inventoryType, op.quantity, transaction);
+    }
   }
 }
 
@@ -940,6 +1640,7 @@ module.exports = {
   stats,
   approve,
   reject,
+  auxiliaryStaff,
   paymentMethods,
   listDeposits,
   createDeposit,
@@ -947,7 +1648,8 @@ module.exports = {
   refundDeposit,
   availableDeposits,
   getProductPns,
-  getProductSns
+  getProductSns,
+  recalculateSettlementCost
 };
 
 const INVENTORY_COLUMN_MAP = {
@@ -958,10 +1660,11 @@ const INVENTORY_COLUMN_MAP = {
   pending_qty: 'pending_qty'
 };
 
-async function _deductInventory(productId, storeId, inventoryType, quantity) {
+async function _deductInventory(productId, storeId, inventoryType, quantity, transaction = null) {
   const column = INVENTORY_COLUMN_MAP[inventoryType] || 'normal_qty';
   const inv = await Inventory.findOne({
-    where: { product_id: productId, store_id: storeId }
+    where: { product_id: productId, store_id: storeId },
+    transaction
   });
   if (inv) {
     const qty = Number(quantity) || 0;
@@ -991,8 +1694,78 @@ async function _deductInventory(productId, storeId, inventoryType, quantity) {
       }
     }
 
-    await inv.update(payload);
+    await inv.update(payload, { transaction });
   }
+}
+
+async function _moveInventoryToPending(productId, storeId, inventoryType, quantity, transaction = null) {
+  const column = INVENTORY_COLUMN_MAP[inventoryType] || 'normal_qty';
+  const inv = await Inventory.findOne({
+    where: { product_id: productId, store_id: storeId },
+    transaction
+  });
+  if (!inv) {
+    throw archiveError(`商品 ${productId} 库存不存在，不能占用`);
+  }
+
+  const qty = Number(quantity) || 0;
+  const detailColumns = ['regular_qty', 'subsidy_qty', 'second_qty'];
+  const detailTotal = detailColumns.reduce((sum, key) => sum + Number(inv[key] || 0), 0);
+  const currentVal = column === 'normal_qty'
+    ? Math.max(Number(inv.normal_qty || 0), detailTotal)
+    : Number(inv[column] || 0);
+  const deductFromColumn = Math.min(currentVal, qty);
+  let remaining = qty - deductFromColumn;
+  const payload = {
+    [column]: currentVal - deductFromColumn,
+    pending_qty: Number(inv.pending_qty || 0) + qty
+  };
+
+  if (column === 'normal_qty') {
+    let detailRemaining = deductFromColumn;
+    for (const detailColumn of detailColumns) {
+      if (detailRemaining <= 0) break;
+      const currentDetail = Number(inv[detailColumn] || 0);
+      const deduct = Math.min(currentDetail, detailRemaining);
+      payload[detailColumn] = currentDetail - deduct;
+      detailRemaining -= deduct;
+    }
+
+    if (remaining > 0) {
+      const displayQty = Number(inv.display_qty || 0);
+      const displayDeduct = Math.min(displayQty, remaining);
+      payload.display_qty = displayQty - displayDeduct;
+    }
+  }
+
+  await inv.update(payload, { transaction });
+}
+
+async function _finalizePendingInventory(productId, storeId, quantity, transaction = null) {
+  const inv = await Inventory.findOne({
+    where: { product_id: productId, store_id: storeId },
+    transaction
+  });
+  if (!inv) return;
+  const qty = Number(quantity) || 0;
+  await inv.update({
+    pending_qty: Math.max(0, Number(inv.pending_qty || 0) - qty)
+  }, { transaction });
+}
+
+async function _releasePendingInventory(productId, storeId, inventoryType, quantity, transaction = null) {
+  const column = INVENTORY_COLUMN_MAP[inventoryType] || 'normal_qty';
+  const inv = await Inventory.findOne({
+    where: { product_id: productId, store_id: storeId },
+    transaction
+  });
+  if (!inv) return;
+  const qty = Number(quantity) || 0;
+  const releaseQty = Math.min(Number(inv.pending_qty || 0), qty);
+  await inv.update({
+    pending_qty: Math.max(0, Number(inv.pending_qty || 0) - releaseQty),
+    [column]: Number(inv[column] || 0) + releaseQty
+  }, { transaction });
 }
 
 /**

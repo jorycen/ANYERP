@@ -64,8 +64,8 @@
               <template #default="{ row }">
                 <el-button
                   v-if="parseFloat(row.settled || 0) === 0"
-                  link
-                  type="success"
+                  size="small"
+                  type="warning"
                   @click="handleSettleDetail(row)"
                 >下账</el-button>
                 <span v-else style="color: #67c23a; font-size: 12px;">已下账</span>
@@ -154,7 +154,7 @@
               <el-table-column label="状态" width="90">
                 <template #default="{ row }">
                   <el-tag :type="row.status === 'paid' ? 'success' : 'warning'" size="small">
-                    {{ row.status === 'paid' ? '已付款' : '支付中' }}
+                    {{ row.status === 'paid' ? '已付款' : '付款中' }}
                   </el-tag>
                 </template>
               </el-table-column>
@@ -190,11 +190,33 @@
         <el-tab-pane label="应付管理" name="payable">
           <div class="filter-bar">
             <span style="font-weight: bold; line-height: 32px;">待付款清单</span>
-            <el-button type="primary" @click="openSettlementDialog">结算</el-button>
+            <el-button type="primary" @click="openSettlementDialog">生成结算单</el-button>
+          </div>
+
+          <div class="filter-bar">
+            <el-date-picker
+              v-model="payableDateRange"
+              type="daterange"
+              range-separator="至"
+              start-placeholder="开始日期"
+              end-placeholder="结束日期"
+              value-format="YYYY-MM-DD"
+              style="width: 260px"
+              @change="onPayableFilterChange"
+            />
+            <el-select v-model="payableSupplierFilter" placeholder="供应商筛选" clearable filterable style="width: 180px" @change="onPayableFilterChange">
+              <el-option v-for="s in suppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
+            </el-select>
           </div>
 
           <el-table :data="payableData" stripe border>
-            <el-table-column prop="request_no" label="采购单号" width="180" />
+            <el-table-column prop="request_no" label="采购单号" width="180">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="openPurchaseRequestDetail(row)">
+                  {{ row.request_no || '-' }}
+                </el-button>
+              </template>
+            </el-table-column>
             <el-table-column prop="supplier_name" label="供应商" width="120" />
             <el-table-column prop="total_amount" label="应付金额" width="120">
               <template #default="{ row }">¥{{ row.total_amount }}</template>
@@ -208,6 +230,11 @@
               </template>
             </el-table-column>
             <el-table-column prop="create_time" label="创建时间" width="160" />
+            <el-table-column label="操作" width="100">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="openSingleSettlementDialog(row)">结算</el-button>
+              </template>
+            </el-table-column>
           </el-table>
 
           <el-pagination
@@ -221,10 +248,17 @@
 
           <div class="settlement-section">
             <div class="filter-bar">
-              <span style="font-weight: bold; line-height: 32px;">结算单列表</span>
-              <el-select v-model="settlementStatusFilter" placeholder="状态筛选" clearable style="width: 130px" @change="loadSettlementData">
+              <span style="font-weight: bold; line-height: 32px;">应付结算单管理</span>
+              <el-select v-model="settlementStatusFilter" placeholder="结算状态" clearable style="width: 130px" @change="loadSettlementData">
                 <el-option label="全部" value="" />
-                <el-option label="付款中" value="unpaid" />
+                <el-option label="草稿" value="draft" />
+                <el-option label="待付款" value="confirmed" />
+                <el-option label="已作废" value="voided" />
+              </el-select>
+              <el-select v-model="settlementPaymentStatusFilter" placeholder="付款状态" clearable style="width: 130px" @change="loadSettlementData">
+                <el-option label="全部" value="" />
+                <el-option label="未付款" value="unpaid" />
+                <el-option label="部分付款" value="partial_paid" />
                 <el-option label="已付款" value="paid" />
               </el-select>
             </div>
@@ -233,21 +267,48 @@
           <el-table :data="settlementData" stripe border>
             <el-table-column prop="settlement_no" label="结算单号" width="180" />
             <el-table-column prop="supplier_name" label="供应商" width="120" />
+            <el-table-column label="收款账户" min-width="220" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span>{{ getSettlementPaymentAccountText(row) }}</span>
+                <el-button
+                  v-if="row.other_payment_image"
+                  link
+                  type="primary"
+                  size="small"
+                  @click="openSettlementPaymentImage(row)"
+                >
+                  查看图片
+                </el-button>
+              </template>
+            </el-table-column>
             <el-table-column prop="total_amount" label="结算金额" width="120">
               <template #default="{ row }">¥{{ row.total_amount }}</template>
             </el-table-column>
             <el-table-column prop="status" label="状态" width="100">
               <template #default="{ row }">
-                <el-tag :type="row.status === 'paid' ? 'success' : 'warning'">
-                  {{ row.status === 'paid' ? '已付款' : '付款中' }}
+                <el-tag :type="getSettlementStatusTagType(row.status)">
+                  {{ getSettlementStatusText(row.status) }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="payment_status" label="付款状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="getPaymentStatusTagType(row.payment_status)">
+                  {{ getPaymentStatusText(row.payment_status) }}
                 </el-tag>
               </template>
             </el-table-column>
             <el-table-column prop="create_time" label="创建时间" width="160" />
-            <el-table-column label="操作" width="120">
+            <el-table-column label="操作" width="220">
               <template #default="{ row }">
-                <el-button v-if="row.status === 'unpaid'" link type="success" @click="handleConfirmPayment(row)">
-                  已付款
+                <el-button link type="primary" @click="openSettlementDetail(row)">
+                  详情
+                </el-button>
+                <el-button v-if="row.status === 'draft'" link type="warning" @click="handleSubmitSettlement(row)">
+                  提交
+                </el-button>
+                <el-button v-if="row.status !== 'voided'" link type="danger" @click="handleVoidSettlement(row)">
+                  作废
                 </el-button>
               </template>
             </el-table-column>
@@ -261,11 +322,16 @@
             @size-change="loadSettlementData"
             @current-change="loadSettlementData"
           />
+
+        </el-tab-pane>
+
+        <el-tab-pane label="付款管理" name="payment" lazy>
+          <PaymentManagement embedded />
         </el-tab-pane>
 
         <el-tab-pane label="返利管理" name="rebate">
           <div class="filter-bar">
-            <el-button type="success" @click="rebateDialogVisible = true; loadRebateSuppliers()">返利上账</el-button>
+            <el-button type="success" @click="openRebateDialog">返利上账</el-button>
             <el-select v-model="rebateSupplierFilter" placeholder="供应商筛选" clearable style="width: 150px" @change="loadRebateList">
               <el-option v-for="s in suppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
             </el-select>
@@ -274,6 +340,22 @@
               <el-option label="上账" value="credit" />
               <el-option label="抵扣" value="debit" />
             </el-select>
+          </div>
+
+          <div class="rebate-summary">
+            <div class="rebate-summary-header">
+              <span>返利余额汇总</span>
+              <strong>总余额：¥{{ Number(rebateSummaryTotal).toFixed(2) }}</strong>
+            </div>
+            <el-table :data="rebateSummary" stripe border size="small" empty-text="暂无返利余额">
+              <el-table-column prop="supplier_name" label="供应商" min-width="160" />
+              <el-table-column label="当前返利余额" width="140">
+                <template #default="{ row }">¥{{ Number(row.balance || 0).toFixed(2) }}</template>
+              </el-table-column>
+              <el-table-column label="最后变动时间" width="170">
+                <template #default="{ row }">{{ row.last_time ? formatDate(row.last_time) : '-' }}</template>
+              </el-table-column>
+            </el-table>
           </div>
 
           <el-table :data="rebateData" stripe border>
@@ -299,6 +381,7 @@
             <el-table-column prop="remark" label="备注" min-width="140" />
             <el-table-column prop="create_user" label="操作人" width="100" />
             <el-table-column prop="create_time" label="时间" width="160" />
+            <el-table-column label="操作" width="90"><template #default="{row}"><el-button v-if="row.status !== 'reversed' && (!row.source_type || row.source_type === 'manual')" link type="danger" @click="reverseRebate(row)">冲销</el-button><el-tag v-else-if="row.status === 'reversed'" type="info">已冲销</el-tag></template></el-table-column>
           </el-table>
 
           <el-pagination
@@ -309,14 +392,117 @@
             @size-change="loadRebateList"
             @current-change="loadRebateList"
           />
+
+          <div class="settlement-section">
+            <div class="filter-bar">
+              <span style="font-weight: bold; line-height: 32px;">厂家政策</span>
+              <el-button type="primary" @click="openManufacturerPolicyDialog()">新增政策</el-button>
+              <el-select v-model="manufacturerPolicySupplierFilter" placeholder="供应商/厂家" clearable filterable style="width: 180px" @change="loadManufacturerPolicies">
+                <el-option v-for="s in suppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
+              </el-select>
+              <el-input v-model="manufacturerPolicyPnFilter" placeholder="PN" clearable style="width: 140px" @keyup.enter="loadManufacturerPolicies" />
+              <el-button @click="loadManufacturerPolicies">搜索</el-button>
+            </div>
+            <el-table :data="manufacturerPolicyData" stripe border>
+              <el-table-column prop="supplier_name" label="供应商/厂家" width="140" />
+              <el-table-column prop="policy_name" label="政策名称" width="160" />
+              <el-table-column prop="policy_type" label="类型" width="110" />
+              <el-table-column prop="pn" label="PN" width="130" />
+              <el-table-column prop="rebate_amount" label="返利金额" width="110">
+                <template #default="{ row }">¥{{ row.rebate_amount || 0 }}</template>
+              </el-table-column>
+              <el-table-column label="影响成本" width="90">
+                <template #default="{ row }">
+                  <el-tag :type="row.affect_sales_settlement_cost ? 'success' : 'info'">
+                    {{ row.affect_sales_settlement_cost ? '是' : '否' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="cost_adjustment_type" label="调整方式" width="120" />
+              <el-table-column prop="cost_adjustment_value" label="调整值" width="100" />
+              <el-table-column label="操作" width="90">
+                <template #default="{ row }">
+                  <el-button link type="primary" @click="openManufacturerPolicyDialog(row)">编辑</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+
+          <div class="settlement-section">
+            <div class="filter-bar">
+              <span style="font-weight: bold; line-height: 32px;">厂家价格管理</span>
+              <el-upload
+                :auto-upload="false"
+                :show-file-list="false"
+                accept=".xlsx,.xls"
+                :on-change="handleManufacturerPriceImport"
+              >
+                <el-button type="success">导入价格表</el-button>
+              </el-upload>
+              <el-select v-model="manufacturerPriceSupplierFilter" placeholder="供应商/厂家" clearable filterable style="width: 180px" @change="loadManufacturerPrices">
+                <el-option v-for="s in suppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
+              </el-select>
+              <el-input v-model="manufacturerPricePnFilter" placeholder="PN" clearable style="width: 140px" @keyup.enter="loadManufacturerPrices" />
+              <el-button @click="loadManufacturerPrices">搜索</el-button>
+            </div>
+            <el-table :data="manufacturerPriceData" stripe border>
+              <el-table-column prop="supplier_name" label="供应商/厂家" width="140" />
+              <el-table-column prop="pn" label="PN" width="130" />
+              <el-table-column prop="model" label="型号" width="130" />
+              <el-table-column prop="pickup_price" label="提货价" width="110">
+                <template #default="{ row }">¥{{ row.pickup_price }}</template>
+              </el-table-column>
+              <el-table-column prop="p0_price" label="P0价" width="110">
+                <template #default="{ row }">¥{{ row.p0_price || 0 }}</template>
+              </el-table-column>
+              <el-table-column prop="effective_date" label="生效日期" width="160">
+                <template #default="{ row }">{{ formatDate(row.effective_date) }}</template>
+              </el-table-column>
+              <el-table-column prop="expire_date" label="失效日期" width="160">
+                <template #default="{ row }">{{ formatDate(row.expire_date) }}</template>
+              </el-table-column>
+              <el-table-column prop="import_batch_no" label="导入批次" width="160" />
+            </el-table>
+          </div>
+
+          <div class="settlement-section">
+            <div class="filter-bar">
+              <span style="font-weight: bold; line-height: 32px;">销售结算成本调整明细</span>
+              <el-input v-model="costAdjustmentOrderFilter" placeholder="销售单号" clearable style="width: 160px" @keyup.enter="loadCostAdjustments" />
+              <el-input v-model="costAdjustmentPnFilter" placeholder="PN" clearable style="width: 140px" @keyup.enter="loadCostAdjustments" />
+              <el-button @click="loadCostAdjustments">搜索</el-button>
+            </div>
+            <el-table :data="costAdjustmentData" stripe border>
+              <el-table-column prop="sales_order_no" label="销售单号" width="170" />
+              <el-table-column prop="product_name" label="商品" min-width="160" />
+              <el-table-column prop="pn" label="PN" width="130" />
+              <el-table-column prop="sn" label="SN" width="150" />
+              <el-table-column prop="policy_name" label="政策" width="140" />
+              <el-table-column prop="rebate_estimate_amount" label="返利预估" width="110">
+                <template #default="{ row }">¥{{ row.rebate_estimate_amount || 0 }}</template>
+              </el-table-column>
+              <el-table-column prop="cost_adjustment_amount" label="成本调整" width="110">
+                <template #default="{ row }">-¥{{ row.cost_adjustment_amount || 0 }}</template>
+              </el-table-column>
+              <el-table-column prop="final_sales_settlement_cost" label="结算成本" width="110">
+                <template #default="{ row }">¥{{ row.final_sales_settlement_cost || 0 }}</template>
+              </el-table-column>
+            </el-table>
+          </div>
         </el-tab-pane>
 
-        <el-tab-pane label="结算账户" name="account">
+        <el-tab-pane label="资源权益核销与成本调整" name="resource-rights" lazy>
+          <InventoryResourceRights finance-only />
+        </el-tab-pane>
+
+        <el-tab-pane label="账户中心" name="account">
           <div class="filter-bar">
             <el-button type="primary" @click="openAccountTransactionDialog()">记账</el-button>
+            <el-button @click="refreshAccountBalances">刷新余额</el-button>
           </div>
           <el-table :data="accountList" stripe border>
             <el-table-column prop="account_name" label="账户名称" width="200" />
+            <el-table-column label="账户类型" width="120"><template #default="{row}">{{ accountTypeText(row.account_type) }}</template></el-table-column>
             <el-table-column label="银行" min-width="140">
               <template #default="{ row }">{{ row.bank_name || '-' }}</template>
             </el-table-column>
@@ -330,8 +516,10 @@
                 </span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="140">
-              <template #default="{ row }">
+            <el-table-column label="操作" width="240">
+              <template #default="{ row, $index }">
+                <el-button link type="primary" :disabled="$index === 0" @click="moveAccount($index, -1)">上移</el-button>
+                <el-button link type="primary" :disabled="$index === accountList.length - 1" @click="moveAccount($index, 1)">下移</el-button>
                 <el-button link type="primary" @click="openAccountDetail(row)">查询</el-button>
                 <el-button link type="primary" @click="openAccountEdit(row)">编辑</el-button>
               </template>
@@ -357,6 +545,35 @@
             <el-option v-for="s in suppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
           </el-select>
         </el-form-item>
+        <el-form-item label="收款账户" required>
+          <el-select v-model="settlementForm.paymentAccountType" placeholder="请选择收款账户" style="width: 100%" @change="onPaymentAccountTypeChange">
+            <el-option
+              v-for="account in currentSupplierPaymentAccounts"
+              :key="account.accountId"
+              :label="formatSupplierAccountLabel(account)"
+              :value="`saved:${account.accountId}`"
+            />
+            <el-option label="其他" value="other" />
+          </el-select>
+        </el-form-item>
+        <template v-if="settlementForm.paymentAccountType === 'other'">
+          <el-form-item label="其他说明" required>
+            <el-input v-model="settlementForm.otherPaymentRemark" type="textarea" rows="2" placeholder="请输入结算账户说明" />
+          </el-form-item>
+          <el-form-item label="凭证图片" required>
+            <el-upload
+              :auto-upload="false"
+              :limit="1"
+              accept="image/*"
+              :file-list="otherPaymentFileList"
+              :on-change="handleOtherPaymentImageChange"
+              :on-remove="handleOtherPaymentImageRemove"
+              :on-exceed="handleOtherPaymentImageExceed"
+            >
+              <el-button>上传图片</el-button>
+            </el-upload>
+          </el-form-item>
+        </template>
       </el-form>
 
       <div v-if="unpaidList.length > 0">
@@ -370,7 +587,7 @@
           <el-table-column prop="create_time" label="创建时间" width="160" />
         </el-table>
         <div class="settlement-total">
-          已选 <strong>{{ selectedPayableIds.length }}</strong> 项，
+          已选<strong>{{ selectedPayableIds.length }}</strong> 项，
           结算总金额：<strong class="total-amount">¥{{ settlementTotalAmount }}</strong>
         </div>
       </div>
@@ -380,13 +597,21 @@
 
       <template #footer>
         <el-button @click="settlementDialogVisible = false">取消</el-button>
+        <el-button type="info" @click="saveSettlementDraft">保存草稿</el-button>
         <el-button type="primary" @click="handleSettlementSubmit" :loading="settlementLoading" :disabled="selectedPayableIds.length === 0">
-          确认结算
+          生成结算单
         </el-button>
       </template>
     </el-dialog>
 
-    <!-- 添加支出对话框 -->
+    <el-dialog v-model="settlementImageVisible" title="付款凭证图片" width="720px">
+      <div class="settlement-image-preview">
+        <img v-if="settlementImageSrc" :src="settlementImageSrc" alt="付款凭证图片" />
+        <el-empty v-else description="暂无图片" />
+      </div>
+    </el-dialog>
+
+    <!-- 添加支出对话框-->
     <el-dialog v-model="expenseDialogVisible" title="添加费用" width="500px" @close="handleDialogClose">
       <el-form :model="expenseForm" label-width="100px">
         <el-form-item label="支出类型" required>
@@ -421,6 +646,7 @@
       </el-form>
       <template #footer>
         <el-button @click="expenseDialogVisible = false">取消</el-button>
+        <el-button type="info" @click="saveExpenseDraft">保存草稿</el-button>
         <el-button type="primary" @click="handleExpenseSubmit" :loading="submitLoading">确定</el-button>
       </template>
     </el-dialog>
@@ -442,7 +668,7 @@
             <el-option
               v-for="acc in settlementAccounts"
               :key="acc.account_id"
-              :label="`${acc.account_name} - ${acc.bank_name || ''}（${acc.account_number || ''}）`"
+              :label="formatSettlementAccountOption(acc)"
               :value="acc.account_id"
             />
           </el-select>
@@ -454,33 +680,88 @@
       </template>
     </el-dialog>
 
-    <!-- 确认付款对话框（应付结算） -->
-    <el-dialog v-model="payablePayVisible" title="确认付款" width="450px">
-      <el-form label-width="100px">
-        <el-form-item label="结算单号">
-          <span>{{ payablePayRow?.settlement_no || '-' }}</span>
-        </el-form-item>
-        <el-form-item label="供应商">
-          <span>{{ payablePayRow?.supplier_name || '-' }}</span>
-        </el-form-item>
-        <el-form-item label="金额">
-          <span style="color: #e6a23c; font-weight: bold;">¥{{ payablePayRow?.total_amount || 0 }}</span>
-        </el-form-item>
-        <el-form-item label="结算账号" required>
-          <el-select v-model="payablePayAccountId" placeholder="请选择结算账号" style="width: 100%" filterable>
-            <el-option
-              v-for="acc in settlementAccounts"
-              :key="acc.account_id"
-              :label="`${acc.account_name} - ${acc.bank_name || ''}（${acc.account_number || ''}）`"
-              :value="acc.account_id"
-            />
-          </el-select>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="payablePayVisible = false">取消</el-button>
-        <el-button type="success" @click="doConfirmPayment" :loading="payablePayLoading">确认已付</el-button>
-      </template>
+    <el-dialog v-model="settlementDetailVisible" title="应付结算单详情" width="820px">
+      <div v-if="settlementDetail">
+        <el-descriptions :column="2" border size="small">
+          <el-descriptions-item label="结算单号">{{ settlementDetail.settlement_no || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="供应商">{{ settlementDetail.supplier_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="结算金额">¥{{ settlementDetail.total_amount || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="已付金额">¥{{ settlementDetail.paid_amount || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="结算状态">
+            <el-tag :type="getSettlementStatusTagType(settlementDetail.status)">
+              {{ getSettlementStatusText(settlementDetail.status) }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="付款状态">
+            <el-tag :type="getPaymentStatusTagType(settlementDetail.payment_status)">
+              {{ getPaymentStatusText(settlementDetail.payment_status) }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="收款账户">{{ getSettlementPaymentAccountText(settlementDetail) }}</el-descriptions-item>
+          <el-descriptions-item label="创建人">{{ settlementDetail.create_user || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="创建时间">{{ formatDateTime(settlementDetail.create_time) }}</el-descriptions-item>
+          <el-descriptions-item label="提交时间">{{ formatDateTime(settlementDetail.confirmed_time) }}</el-descriptions-item>
+          <el-descriptions-item label="作废时间">{{ formatDateTime(settlementDetail.voided_time) }}</el-descriptions-item>
+        </el-descriptions>
+
+        <el-table :data="settlementDetail.items || []" stripe border class="mt-20">
+          <el-table-column prop="request_no" label="采购单号" min-width="180" />
+          <el-table-column prop="amount" label="结算金额" width="130">
+            <template #default="{ row }">¥{{ row.amount }}</template>
+          </el-table-column>
+          <el-table-column prop="payable_id" label="应付款ID" min-width="180" show-overflow-tooltip />
+        </el-table>
+
+        <el-table :data="settlementDetail.payments || []" stripe border class="mt-20">
+          <el-table-column prop="settlement_no" label="结算单号" width="180" />
+          <el-table-column prop="amount" label="付款金额" width="120">
+            <template #default="{ row }">¥{{ row.amount }}</template>
+          </el-table-column>
+          <el-table-column prop="payment_time" label="付款时间" width="160">
+            <template #default="{ row }">{{ formatDateTime(row.payment_time) }}</template>
+          </el-table-column>
+          <el-table-column prop="batch_id" label="付款批次ID" min-width="180" show-overflow-tooltip />
+          <el-table-column prop="remark" label="备注" min-width="140" />
+        </el-table>
+      </div>
+    </el-dialog>
+
+    <el-dialog v-model="purchaseDetailVisible" title="采购申请详情" width="900px">
+      <div v-if="purchaseDetail">
+        <el-descriptions :column="2" border size="small">
+          <el-descriptions-item label="采购单号">{{ purchaseDetail.request_no || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="供应商">{{ purchaseDetail.supplier_name || purchaseDetail.Supplier?.name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="申请门店">{{ purchaseDetail.store_name || purchaseDetail.Store?.name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="状态">{{ purchaseDetail.status || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="申请金额">¥{{ formatMoney(purchaseDetail.total_amount) }}</el-descriptions-item>
+          <el-descriptions-item label="是否使用返利">
+            <el-tag :type="hasPurchaseRebateDeduction(purchaseDetail) ? 'success' : 'info'">
+              {{ hasPurchaseRebateDeduction(purchaseDetail) ? '是' : '否' }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="返利抵扣">-¥{{ formatMoney(purchaseDetail.rebate_deduction) }}</el-descriptions-item>
+          <el-descriptions-item label="实际应付">¥{{ formatMoney(purchaseActualAmount(purchaseDetail)) }}</el-descriptions-item>
+          <el-descriptions-item label="申请时间">{{ purchaseDetail.create_time ? formatDate(purchaseDetail.create_time) : '-' }}</el-descriptions-item>
+          <el-descriptions-item label="备注">{{ purchaseDetail.reason || purchaseDetail.remark || '-' }}</el-descriptions-item>
+        </el-descriptions>
+        <el-table :data="purchaseDetail.items || purchaseDetail.PurchaseRequestItems || []" stripe border size="small" style="margin-top: 14px;">
+          <el-table-column prop="product_name" label="商品名称" min-width="180" />
+          <el-table-column prop="pn_code" label="PN码" width="140" />
+          <el-table-column prop="quantity" label="数量" width="80" />
+          <el-table-column prop="unit_price" label="单价" width="110">
+            <template #default="{ row }">¥{{ row.unit_price || 0 }}</template>
+          </el-table-column>
+          <el-table-column prop="subtotal" label="小计" width="110">
+            <template #default="{ row }">¥{{ formatMoney(purchaseItemSubtotal(row)) }}</template>
+          </el-table-column>
+          <el-table-column prop="rebate_deduction" label="返利抵扣" width="110">
+            <template #default="{ row }">-¥{{ formatMoney(row.rebate_deduction) }}</template>
+          </el-table-column>
+          <el-table-column label="抵扣后金额" width="120">
+            <template #default="{ row }">¥{{ formatMoney(purchaseItemActualAmount(row)) }}</template>
+          </el-table-column>
+        </el-table>
+      </div>
     </el-dialog>
 
     <!-- 返利上账对话框 -->
@@ -500,7 +781,132 @@
       </el-form>
       <template #footer>
         <el-button @click="rebateDialogVisible = false">取消</el-button>
+        <el-button type="info" @click="saveRebateDraft">保存草稿</el-button>
         <el-button type="success" @click="handleRebateSubmit" :loading="rebateLoading">确认上账</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 厂家政策对话框 -->
+    <el-dialog
+      v-model="manufacturerPolicyDialogVisible"
+      :title="manufacturerPolicyEditingId ? '编辑厂家政策' : '新增厂家政策'"
+      width="720px"
+      @close="resetManufacturerPolicyForm"
+    >
+      <el-form :model="manufacturerPolicyForm" label-width="130px">
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item label="供应商/厂家" required>
+              <el-select v-model="manufacturerPolicyForm.supplierId" filterable placeholder="请选择供应商" style="width: 100%">
+                <el-option v-for="s in suppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="政策名称" required>
+              <el-input v-model="manufacturerPolicyForm.policyName" placeholder="如 P差政策/活动补贴" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="政策类型">
+              <el-select v-model="manufacturerPolicyForm.policyType" style="width: 100%">
+                <el-option label="P差" value="p0_difference" />
+                <el-option label="活动补贴" value="activity" />
+                <el-option label="教育补贴" value="education" />
+                <el-option label="其他" value="other" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="状态">
+              <el-switch v-model="manufacturerPolicyForm.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="PN">
+              <el-input v-model="manufacturerPolicyForm.pn" placeholder="为空表示按其他条件匹配" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="型号">
+              <el-input v-model="manufacturerPolicyForm.model" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="开始日期">
+              <el-date-picker v-model="manufacturerPolicyForm.startDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="结束日期">
+              <el-date-picker v-model="manufacturerPolicyForm.endDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="返利计算方式">
+              <el-select v-model="manufacturerPolicyForm.rebateCalculationType" style="width: 100%">
+                <el-option label="固定金额" value="fixed_amount" />
+                <el-option label="按比例" value="percentage" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item :label="manufacturerPolicyForm.rebateCalculationType === 'percentage' ? '返利比例(%)' : '返利金额'">
+              <el-input-number
+                v-if="manufacturerPolicyForm.rebateCalculationType === 'percentage'"
+                v-model="manufacturerPolicyForm.rebateRate"
+                :min="0"
+                :precision="2"
+                style="width: 100%"
+              />
+              <el-input-number
+                v-else
+                v-model="manufacturerPolicyForm.rebateAmount"
+                :min="0"
+                :precision="2"
+                style="width: 100%"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="影响销售成本">
+              <el-switch v-model="manufacturerPolicyForm.affectSalesSettlementCost" active-text="是" inactive-text="否" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="成本调整方式">
+              <el-select v-model="manufacturerPolicyForm.costAdjustmentType" style="width: 100%">
+                <el-option label="固定金额" value="fixed_amount" />
+                <el-option label="按返利比例" value="percentage" />
+                <el-option label="自定义规则(预留)" value="custom_rule" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="成本调整值">
+              <el-input-number v-model="manufacturerPolicyForm.costAdjustmentValue" :min="0" :precision="2" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="调整上限">
+              <el-input-number v-model="manufacturerPolicyForm.maxCostAdjustmentAmount" :min="0" :precision="2" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="24">
+            <el-form-item label="成本调整说明">
+              <el-input v-model="manufacturerPolicyForm.costAdjustmentRemark" type="textarea" rows="2" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="24">
+            <el-form-item label="备注">
+              <el-input v-model="manufacturerPolicyForm.remark" type="textarea" rows="2" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+      </el-form>
+      <template #footer>
+        <el-button @click="manufacturerPolicyDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="manufacturerPolicyLoading" @click="handleManufacturerPolicySubmit">保存</el-button>
       </template>
     </el-dialog>
 
@@ -542,7 +948,7 @@
       />
     </el-dialog>
 
-    <!-- 编辑账户对话框 -->
+    <!-- 编辑账户对话框-->
     <el-dialog v-model="accountEditVisible" title="编辑账户信息" width="420px">
       <el-form :model="accountEditForm" label-width="100px">
         <el-form-item label="账户名称" required>
@@ -587,6 +993,7 @@
       </el-form>
       <template #footer>
         <el-button @click="accountTxnDialogVisible = false">取消</el-button>
+        <el-button type="info" @click="saveAccountTxnDraft">保存草稿</el-button>
         <el-button type="primary" @click="handleAccountTxnSubmit" :loading="accountTxnLoading">确认</el-button>
       </template>
     </el-dialog>
@@ -594,11 +1001,21 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, nextTick } from 'vue'
+import InventoryResourceRights from '../components/InventoryResourceRights.vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import * as XLSX from 'xlsx'
 import api from '../api'
+import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
+import PaymentManagement from './PaymentManagement.vue'
 
-const activeTab = ref('daily')
+const route = useRoute()
+const activeTab = ref(route.path === '/finance/payment' ? 'payment' : 'daily')
+const FINANCE_EXPENSE_DRAFT_KEY = 'finance-expense-create'
+const FINANCE_REBATE_DRAFT_KEY = 'finance-rebate-create'
+const FINANCE_SETTLEMENT_DRAFT_KEY = 'finance-settlement-create'
+const FINANCE_ACCOUNT_TXN_DRAFT_KEY = 'finance-account-transaction-create'
 const stores = ref([])
 const dailyDetails = ref([])
 const dailyTotal = ref(0)
@@ -623,10 +1040,38 @@ const payExpenseRow = ref(null)
 const payExpenseMethod = ref('银行转账')
 const payExpenseAccountId = ref('')
 const payExpenseLoading = ref(false)
-const payablePayVisible = ref(false)
-const payablePayRow = ref(null)
-const payablePayAccountId = ref('')
-const payablePayLoading = ref(false)
+const payableDateRange = ref([])
+const payableSupplierFilter = ref('')
+const purchaseDetailVisible = ref(false)
+const purchaseDetail = ref(null)
+
+const toNumber = (value) => {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : 0
+}
+
+const formatMoney = (value) => toNumber(value).toFixed(2)
+
+const hasPurchaseRebateDeduction = (request) => toNumber(request?.rebate_deduction) > 0
+
+const purchaseActualAmount = (request) => {
+  const total = toNumber(request?.total_amount)
+  const rebate = toNumber(request?.rebate_deduction)
+  const actual = toNumber(request?.actual_total)
+  if (actual > 0 || total === 0) return actual
+  return Math.max(0, total - rebate)
+}
+
+const purchaseItemSubtotal = (item) => {
+  const subtotal = toNumber(item?.subtotal)
+  if (subtotal > 0) return subtotal
+  return toNumber(item?.unit_price) * toNumber(item?.quantity)
+}
+
+const purchaseItemActualAmount = (item) => {
+  return Math.max(0, purchaseItemSubtotal(item) - toNumber(item?.rebate_deduction))
+}
+
 const expenseSettleQuery = reactive({
   page: 1,
   pageSize: 20
@@ -641,18 +1086,38 @@ const settlementLoading = ref(false)
 const unpaidList = ref([])
 const selectedPayables = ref([])
 const settlementTableRef = ref(null)
+const otherPaymentFileList = ref([])
 const settlementData = ref([])
 const settlementTotal = ref(0)
 const settlementStatusFilter = ref('')
+const settlementPaymentStatusFilter = ref('')
+const settlementImageVisible = ref(false)
+const settlementImageSrc = ref('')
+const settlementDetailVisible = ref(false)
+const settlementDetail = ref(null)
 
 // 返利管理
 const rebateDialogVisible = ref(false)
 const rebateLoading = ref(false)
 const rebateData = ref([])
 const rebateTotal = ref(0)
+const rebateSummary = ref([])
+const rebateSummaryTotal = ref(0)
 const rebateSupplierFilter = ref('')
 const rebateTypeFilter = ref('')
 const allRebateSuppliers = ref([])
+const manufacturerPolicyData = ref([])
+const manufacturerPolicySupplierFilter = ref('')
+const manufacturerPolicyPnFilter = ref('')
+const manufacturerPolicyDialogVisible = ref(false)
+const manufacturerPolicyLoading = ref(false)
+const manufacturerPolicyEditingId = ref('')
+const manufacturerPriceData = ref([])
+const manufacturerPriceSupplierFilter = ref('')
+const manufacturerPricePnFilter = ref('')
+const costAdjustmentData = ref([])
+const costAdjustmentOrderFilter = ref('')
+const costAdjustmentPnFilter = ref('')
 
 const rebateQuery = reactive({
   page: 1,
@@ -663,6 +1128,26 @@ const rebateForm = reactive({
   supplierId: '',
   amount: 0,
   remark: ''
+})
+
+const manufacturerPolicyForm = reactive({
+  supplierId: '',
+  policyName: '',
+  policyType: 'activity',
+  pn: '',
+  model: '',
+  startDate: '',
+  endDate: '',
+  rebateCalculationType: 'fixed_amount',
+  rebateAmount: 0,
+  rebateRate: 0,
+  affectSalesSettlementCost: true,
+  costAdjustmentType: 'fixed_amount',
+  costAdjustmentValue: 0,
+  maxCostAdjustmentAmount: null,
+  costAdjustmentRemark: '',
+  remark: '',
+  status: 1
 })
 
 const payableQuery = reactive({
@@ -676,7 +1161,11 @@ const settlementQuery = reactive({
 })
 
 const settlementForm = reactive({
-  supplierId: ''
+  supplierId: '',
+  paymentAccountType: '',
+  supplierAccountId: '',
+  otherPaymentRemark: '',
+  otherPaymentImage: ''
 })
 
 const accountList = ref([])
@@ -732,6 +1221,110 @@ const settlementTotalAmount = computed(() => {
   return selectedPayables.value.reduce((sum, p) => sum + parseFloat(p.total_amount || 0), 0).toFixed(2)
 })
 
+const formatSettlementAccountOption = (account) => {
+  return `${account.account_name || '-'}（余额：¥${Number(account.balance || 0).toFixed(2)}）`
+}
+
+const effectiveSettlementSupplierId = computed(() => {
+  if (settlementForm.supplierId) return settlementForm.supplierId
+  const supplierIds = [...new Set(selectedPayables.value.map(p => p.supplier_id).filter(Boolean))]
+  return supplierIds.length === 1 ? supplierIds[0] : ''
+})
+
+const currentSupplierPaymentAccounts = computed(() => {
+  const supplier = suppliers.value.find(s => s.supplier_id === effectiveSettlementSupplierId.value)
+  const accounts = supplier?.paymentAccounts || supplier?.SupplierPaymentAccounts || []
+  return accounts
+    .map(account => ({
+      accountId: account.accountId || account.account_id || '',
+      companyName: account.companyName || account.company_name || '',
+      taxNo: account.taxNo || account.tax_no || '',
+      bankName: account.bankName || account.bank_name || '',
+      accountNumber: account.accountNumber || account.account_number || '',
+      remark: account.remark || ''
+    }))
+    .filter(account => account.accountId)
+})
+
+const formatSupplierAccountLabel = (account) => {
+  const company = account.companyName || '未填写公司'
+  const bank = account.bankName || '未填写开户行'
+  const accountNo = account.accountNumber || '未填写账号'
+  return `${company} / ${bank} / ${accountNo}`
+}
+
+const getSettlementPaymentAccountText = (row) => {
+  if (row.supplier_account_snapshot_parsed) {
+    return formatSupplierAccountLabel(row.supplier_account_snapshot_parsed)
+  }
+  if (row.supplier_account_snapshot) {
+    try {
+      return formatSupplierAccountLabel(JSON.parse(row.supplier_account_snapshot))
+    } catch (err) {
+      return row.supplier_account_snapshot
+    }
+  }
+  if (row.other_payment_remark) {
+    return `其他：${row.other_payment_remark}`
+  }
+  return '-'
+}
+
+const getSettlementStatusText = (status) => {
+  const map = {
+    draft: '草稿',
+    confirmed: '待付款',
+    voided: '已作废',
+    unpaid: '草稿',
+    paid: '待付款',
+    cancelled: '已作废'
+  }
+  return map[status] || status || '-'
+}
+
+const getSettlementStatusTagType = (status) => {
+  const map = {
+    draft: 'info',
+    confirmed: 'warning',
+    voided: 'danger',
+    unpaid: 'info',
+    paid: 'warning',
+    cancelled: 'danger'
+  }
+  return map[status] || 'info'
+}
+
+const getPaymentStatusText = (status) => {
+  const map = {
+    unpaid: '未付款',
+    partial_paid: '部分付款',
+    paid: '已付款'
+  }
+  return map[status] || status || '未付款'
+}
+
+const getPaymentStatusTagType = (status) => {
+  const map = {
+    unpaid: 'info',
+    partial_paid: 'warning',
+    paid: 'success'
+  }
+  return map[status] || 'info'
+}
+
+const openSettlementPaymentImage = (row) => {
+  settlementImageSrc.value = row.other_payment_image || ''
+  settlementImageVisible.value = true
+}
+
+const resetPaymentAccountFields = () => {
+  settlementForm.paymentAccountType = ''
+  settlementForm.supplierAccountId = ''
+  settlementForm.otherPaymentRemark = ''
+  settlementForm.otherPaymentImage = ''
+  otherPaymentFileList.value = []
+}
+
 onMounted(() => {
   loadStores()
   loadPaymentMethods()
@@ -743,6 +1336,10 @@ onMounted(() => {
   loadSuppliers()
   loadSettlementData()
   loadRebateList()
+  loadRebateSummary()
+  loadManufacturerPolicies()
+  loadManufacturerPrices()
+  loadCostAdjustments()
   loadAccountList()
 })
 
@@ -866,7 +1463,7 @@ const loadExpenseSettleData = async () => {
 const handleSubmitExpense = async (row) => {
   try {
     await ElMessageBox.confirm(
-      `确认将费用 [${row.expense_no}] ¥${row.amount} 提交报销？`,
+      `确认将费用[${row.expense_no}] ¥${row.amount} 提交报销？`,
       '报销确认',
       { confirmButtonText: '确认报销', cancelButtonText: '取消', type: 'warning' }
     )
@@ -940,8 +1537,8 @@ const loadPaymentMethods = async () => {
 
 const loadSettlementAccounts = async () => {
   try {
-    const res = await api.getAllSettlementAccounts()
-    if (res.code === 0) settlementAccounts.value = res.data || []
+    const res = await api.getSettlementAccountsBalance({ page: 1, pageSize: 500 })
+    if (res.code === 0) settlementAccounts.value = (res.data?.list || []).filter(account => account.account_type !== 'SUPPLIER_REBATE')
   } catch (err) { console.error('Failed to load settlement accounts') }
 }
 
@@ -959,6 +1556,11 @@ const loadSuppliers = async () => {
 const loadPayableData = async () => {
   try {
     const params = { ...payableQuery, status: 'unpaid' }
+    if (payableSupplierFilter.value) params.supplierId = payableSupplierFilter.value
+    if (Array.isArray(payableDateRange.value) && payableDateRange.value.length === 2) {
+      params.startDate = payableDateRange.value[0]
+      params.endDate = payableDateRange.value[1]
+    }
     const res = await api.getPayableList(params)
     if (res.code === 0) {
       payableData.value = res.data?.list || []
@@ -969,11 +1571,38 @@ const loadPayableData = async () => {
   }
 }
 
+const onPayableFilterChange = () => {
+  payableQuery.page = 1
+  loadPayableData()
+}
+
+const openPurchaseRequestDetail = async (row) => {
+  if (!row.request_id) {
+    ElMessage.warning('该应付款未关联采购订单')
+    return
+  }
+  try {
+    const res = await api.getPurchaseRequestDetail(row.request_id)
+    if (res.code === 0) {
+      purchaseDetail.value = res.data || null
+      purchaseDetailVisible.value = true
+    } else {
+      ElMessage.error(res.message || '加载采购订单失败')
+    }
+  } catch (err) {
+    const msg = err.response?.data?.message || err.message || '加载采购订单失败'
+    ElMessage.error(msg)
+  }
+}
+
 const loadSettlementData = async () => {
   try {
     const params = { ...settlementQuery }
     if (settlementStatusFilter.value) {
       params.status = settlementStatusFilter.value
+    }
+    if (settlementPaymentStatusFilter.value) {
+      params.paymentStatus = settlementPaymentStatusFilter.value
     }
     const res = await api.getSettlementList(params)
     if (res.code === 0) {
@@ -982,6 +1611,18 @@ const loadSettlementData = async () => {
     }
   } catch (err) {
     console.error('Failed to load settlements')
+  }
+}
+
+const loadRebateSummary = async () => {
+  try {
+    const res = await api.getRebateSummary()
+    if (res.code === 0) {
+      rebateSummary.value = res.data?.list || []
+      rebateSummaryTotal.value = Number(res.data?.totalBalance || 0)
+    }
+  } catch (err) {
+    console.error('Failed to load rebate summary')
   }
 }
 
@@ -1030,8 +1671,10 @@ const handleRebateSubmit = async () => {
     })
     if (res.code === 0) {
       ElMessage.success('返利上账成功')
+      clearDraft(FINANCE_REBATE_DRAFT_KEY)
       rebateDialogVisible.value = false
       loadRebateList()
+      loadRebateSummary()
     } else {
       ElMessage.error(res.message || '操作失败')
     }
@@ -1049,20 +1692,235 @@ const resetRebateForm = () => {
   rebateForm.remark = ''
 }
 
+const openRebateDialog = () => {
+  const draft = loadDraft(FINANCE_REBATE_DRAFT_KEY)
+  if (draft) {
+    Object.assign(rebateForm, draft)
+    ElMessage.success('已恢复上次草稿')
+  }
+  rebateDialogVisible.value = true
+  loadRebateSuppliers()
+}
+
+const saveRebateDraft = () => {
+  saveDraft(FINANCE_REBATE_DRAFT_KEY, cloneDraft(rebateForm))
+  ElMessage.success('草稿已保存')
+}
+
+const reverseRebate = async row => {
+  try {
+    const { value } = await ElMessageBox.prompt('请输入冲销原因', '返利冲销', { inputPattern: /\S+/, inputErrorMessage: '必须填写冲销原因' })
+    await api.reverseRebate(row.rebate_id, { reason: value })
+    ElMessage.success('返利记录已冲销')
+    await Promise.all([loadRebateList(), loadRebateSummary()])
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err.response?.data?.message || '冲销失败')
+  }
+}
+
+const resetManufacturerPolicyForm = () => {
+  manufacturerPolicyEditingId.value = ''
+  Object.assign(manufacturerPolicyForm, {
+    supplierId: '',
+    policyName: '',
+    policyType: 'activity',
+    pn: '',
+    model: '',
+    startDate: '',
+    endDate: '',
+    rebateCalculationType: 'fixed_amount',
+    rebateAmount: 0,
+    rebateRate: 0,
+    affectSalesSettlementCost: true,
+    costAdjustmentType: 'fixed_amount',
+    costAdjustmentValue: 0,
+    maxCostAdjustmentAmount: null,
+    costAdjustmentRemark: '',
+    remark: '',
+    status: 1
+  })
+}
+
+const openManufacturerPolicyDialog = (row = null) => {
+  resetManufacturerPolicyForm()
+  if (row) {
+    manufacturerPolicyEditingId.value = row.policy_id
+    Object.assign(manufacturerPolicyForm, {
+      supplierId: row.supplier_id || '',
+      policyName: row.policy_name || '',
+      policyType: row.policy_type || 'activity',
+      pn: row.pn || '',
+      model: row.model || '',
+      startDate: row.start_date ? String(row.start_date).slice(0, 10) : '',
+      endDate: row.end_date ? String(row.end_date).slice(0, 10) : '',
+      rebateCalculationType: row.rebate_calculation_type || 'fixed_amount',
+      rebateAmount: Number(row.rebate_amount || 0),
+      rebateRate: Number(row.rebate_rate || 0),
+      affectSalesSettlementCost: Boolean(row.affect_sales_settlement_cost),
+      costAdjustmentType: row.cost_adjustment_type || 'fixed_amount',
+      costAdjustmentValue: Number(row.cost_adjustment_value || 0),
+      maxCostAdjustmentAmount: row.max_cost_adjustment_amount === null || row.max_cost_adjustment_amount === undefined ? null : Number(row.max_cost_adjustment_amount),
+      costAdjustmentRemark: row.cost_adjustment_remark || '',
+      remark: row.remark || '',
+      status: row.status === 0 ? 0 : 1
+    })
+  }
+  manufacturerPolicyDialogVisible.value = true
+}
+
+const handleManufacturerPolicySubmit = async () => {
+  if (!manufacturerPolicyForm.supplierId) {
+    ElMessage.warning('请选择供应商/厂家')
+    return
+  }
+  if (!manufacturerPolicyForm.policyName) {
+    ElMessage.warning('请输入政策名称')
+    return
+  }
+  manufacturerPolicyLoading.value = true
+  try {
+    const payload = cloneDraft(manufacturerPolicyForm)
+    const res = manufacturerPolicyEditingId.value
+      ? await api.updateManufacturerPolicy(manufacturerPolicyEditingId.value, payload)
+      : await api.createManufacturerPolicy(payload)
+    if (res.code === 0) {
+      ElMessage.success(res.message || '厂家政策已保存')
+      manufacturerPolicyDialogVisible.value = false
+      loadManufacturerPolicies()
+    } else {
+      ElMessage.error(res.message || '保存失败')
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '保存失败')
+  } finally {
+    manufacturerPolicyLoading.value = false
+  }
+}
+
+const loadManufacturerPolicies = async () => {
+  try {
+    const params = { page: 1, pageSize: 100 }
+    if (manufacturerPolicySupplierFilter.value) params.supplierId = manufacturerPolicySupplierFilter.value
+    if (manufacturerPolicyPnFilter.value) params.pn = manufacturerPolicyPnFilter.value
+    const res = await api.getManufacturerPolicyList(params)
+    if (res.code === 0) {
+      manufacturerPolicyData.value = res.data?.list || []
+    }
+  } catch (err) {
+    ElMessage.error('加载厂家政策失败')
+  }
+}
+
+const loadManufacturerPrices = async () => {
+  try {
+    const params = { page: 1, pageSize: 100 }
+    if (manufacturerPriceSupplierFilter.value) params.supplierId = manufacturerPriceSupplierFilter.value
+    if (manufacturerPricePnFilter.value) params.pn = manufacturerPricePnFilter.value
+    const res = await api.getManufacturerPriceHistory(params)
+    if (res.code === 0) {
+      manufacturerPriceData.value = res.data?.list || []
+    }
+  } catch (err) {
+    ElMessage.error('加载厂家价格失败')
+  }
+}
+
+const loadCostAdjustments = async () => {
+  try {
+    const params = { page: 1, pageSize: 100 }
+    if (costAdjustmentOrderFilter.value) params.orderNo = costAdjustmentOrderFilter.value
+    if (costAdjustmentPnFilter.value) params.pn = costAdjustmentPnFilter.value
+    const res = await api.getSalesCostAdjustmentList(params)
+    if (res.code === 0) {
+      costAdjustmentData.value = res.data?.list || []
+    }
+  } catch (err) {
+    ElMessage.error('加载销售结算成本明细失败')
+  }
+}
+
+const readWorkbookRows = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader()
+  reader.onload = (event) => {
+    try {
+      const data = new Uint8Array(event.target.result)
+      const workbook = XLSX.read(data, { type: 'array' })
+      const sheet = workbook.Sheets[workbook.SheetNames[0]]
+      resolve(XLSX.utils.sheet_to_json(sheet, { defval: '' }))
+    } catch (err) {
+      reject(err)
+    }
+  }
+  reader.onerror = reject
+  reader.readAsArrayBuffer(file)
+})
+
+const handleManufacturerPriceImport = async (uploadFile) => {
+  const file = uploadFile.raw
+  if (!file) return
+  try {
+    const rows = await readWorkbookRows(file)
+    if (!rows.length) {
+      ElMessage.warning('价格表没有可导入的数据')
+      return
+    }
+    const res = await api.importManufacturerPrices({ rows, sourceFileUrl: file.name })
+    if (res.code === 0) {
+      ElMessage.success(`${res.message || '导入成功'}，共 ${res.data?.count || rows.length} 条`)
+      loadManufacturerPrices()
+    } else {
+      const errors = res.data?.errors || []
+      const preview = errors.slice(0, 3).map(e => `第${e.row}行：${e.message}`).join('；')
+      ElMessage.error(preview || res.message || '导入失败')
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '导入价格表失败')
+  }
+}
+
 const openSettlementDialog = async () => {
   settlementForm.supplierId = ''
+  resetPaymentAccountFields()
   unpaidList.value = []
   selectedPayables.value = []
   settlementDialogVisible.value = true
   try {
     const res = await api.getPayableList({ status: 'unpaid', page: 1, pageSize: 100 })
     if (res.code === 0) unpaidList.value = res.data?.list || []
+    restoreSettlementDraft()
+  } catch (err) {
+    ElMessage.error('获取应付款失败')
+  }
+}
+
+const openSingleSettlementDialog = async (row) => {
+  settlementForm.supplierId = row.supplier_id || ''
+  resetPaymentAccountFields()
+  unpaidList.value = []
+  selectedPayables.value = []
+  settlementDialogVisible.value = true
+
+  try {
+    const res = settlementForm.supplierId
+      ? await api.getUnpaidBySupplier({ supplierId: settlementForm.supplierId })
+      : await api.getPayableList({ status: 'unpaid', page: 1, pageSize: 100 })
+
+    if (res.code === 0) {
+      unpaidList.value = Array.isArray(res.data) ? res.data : (res.data?.list || [])
+      await nextTick()
+      const target = unpaidList.value.find(item => item.payable_id === row.payable_id)
+      if (target && settlementTableRef.value) {
+        settlementTableRef.value.toggleRowSelection(target, true)
+        selectedPayables.value = [target]
+      }
+    }
   } catch (err) {
     ElMessage.error('获取应付款失败')
   }
 }
 
 const onSupplierChange = async (supplierId) => {
+  resetPaymentAccountFields()
   if (!supplierId) {
     const res = await api.getPayableList({ status: 'unpaid', page: 1, pageSize: 100 })
     if (res.code === 0) unpaidList.value = res.data?.list || []
@@ -1081,6 +1939,37 @@ const onSupplierChange = async (supplierId) => {
 
 const onSelectionChange = (selection) => {
   selectedPayables.value = selection
+}
+
+const onPaymentAccountTypeChange = (value) => {
+  settlementForm.supplierAccountId = ''
+  settlementForm.otherPaymentRemark = ''
+  settlementForm.otherPaymentImage = ''
+  otherPaymentFileList.value = []
+
+  if (value && value.startsWith('saved:')) {
+    settlementForm.supplierAccountId = value.replace('saved:', '')
+  }
+}
+
+const handleOtherPaymentImageChange = (file) => {
+  const rawFile = file.raw
+  if (!rawFile) return
+  const reader = new FileReader()
+  reader.onload = (event) => {
+    settlementForm.otherPaymentImage = event.target?.result || ''
+    otherPaymentFileList.value = [file]
+  }
+  reader.readAsDataURL(rawFile)
+}
+
+const handleOtherPaymentImageRemove = () => {
+  settlementForm.otherPaymentImage = ''
+  otherPaymentFileList.value = []
+}
+
+const handleOtherPaymentImageExceed = () => {
+  ElMessage.warning('只能上传一张图片')
 }
 
 const handleSettlementSubmit = async () => {
@@ -1102,13 +1991,37 @@ const handleSettlementSubmit = async () => {
       supplierId = supplierIds[0]
     }
 
+    const paymentAccountType = settlementForm.paymentAccountType
+    const isOtherPaymentAccount = paymentAccountType === 'other'
+    if (isOtherPaymentAccount) {
+      if (!settlementForm.otherPaymentRemark.trim()) {
+        ElMessage.warning('请选择其他账户时必须填写说明')
+        settlementLoading.value = false
+        return
+      }
+      if (!settlementForm.otherPaymentImage) {
+        ElMessage.warning('请选择其他账户时必须上传图片')
+        settlementLoading.value = false
+        return
+      }
+    } else if (!settlementForm.supplierAccountId) {
+      ElMessage.warning('请选择供应商付款账号')
+      settlementLoading.value = false
+      return
+    }
+
     const res = await api.createSettlement({
       supplierId,
-      payableIds: selectedPayables.value.map(p => p.payable_id)
+      payableIds: selectedPayables.value.map(p => p.payable_id),
+      paymentAccountType: isOtherPaymentAccount ? 'other' : 'saved',
+      supplierAccountId: isOtherPaymentAccount ? '' : settlementForm.supplierAccountId,
+      otherPaymentRemark: isOtherPaymentAccount ? settlementForm.otherPaymentRemark.trim() : '',
+      otherPaymentImage: isOtherPaymentAccount ? settlementForm.otherPaymentImage : ''
     })
 
     if (res.code === 0) {
       ElMessage.success('结算单创建成功')
+      clearDraft(FINANCE_SETTLEMENT_DRAFT_KEY)
       settlementDialogVisible.value = false
       loadPayableData()
       loadSettlementData()
@@ -1123,43 +2036,95 @@ const handleSettlementSubmit = async () => {
   }
 }
 
-const handleConfirmPayment = (row) => {
-  payablePayRow.value = row
-  payablePayAccountId.value = ''
-  payablePayVisible.value = true
+const openSettlementDetail = async (row) => {
+  try {
+    const res = await api.getSettlementDetail(row.settlement_id)
+    if (res.code === 0) {
+      settlementDetail.value = res.data || null
+      settlementDetailVisible.value = true
+    } else {
+      ElMessage.error(res.message || '加载结算单详情失败')
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载结算单详情失败')
+  }
 }
 
-const doConfirmPayment = async () => {
-  if (!payablePayAccountId.value) {
-    ElMessage.warning('请选择结算账号')
-    return
-  }
-  payablePayLoading.value = true
+const handleSubmitSettlement = async (row) => {
   try {
-    const res = await api.confirmPayment({ settlementId: payablePayRow.value.settlement_id, settlementAccountId: payablePayAccountId.value })
+    await ElMessageBox.confirm(
+      `确认提交结算单 ${row.settlement_no || ''}？提交后将进入付款管理待处理。`,
+      '提交结算单',
+      { confirmButtonText: '提交', cancelButtonText: '取消', type: 'warning' }
+    )
+    const res = await api.submitSettlement({ settlementId: row.settlement_id })
     if (res.code === 0) {
-      ElMessage.success('付款确认成功')
-      payablePayVisible.value = false
+      ElMessage.success(res.message || '结算单已提交，已进入待付款')
+      loadSettlementData()
+    } else {
+      ElMessage.error(res.message || '提交失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') {
+      ElMessage.error(err.response?.data?.message || '提交失败')
+    }
+  }
+}
+
+const handleVoidSettlement = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认作废结算单 ${row.settlement_no || ''}？作废后不会回到待付款清单。`,
+      '作废确认',
+      { confirmButtonText: '确认作废', cancelButtonText: '取消', type: 'warning' }
+    )
+    const res = await api.voidSettlement({ settlementId: row.settlement_id })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '结算单已作废')
       loadPayableData()
       loadSettlementData()
     } else {
-      ElMessage.error(res.message || '操作失败')
+      ElMessage.error(res.message || '作废失败')
     }
   } catch (err) {
-    ElMessage.error('操作失败')
-  } finally {
-    payablePayLoading.value = false
+    if (err !== 'cancel') {
+      ElMessage.error(err.response?.data?.message || '作废失败')
+    }
   }
 }
 
 const resetSettlementForm = () => {
   settlementForm.supplierId = ''
+  resetPaymentAccountFields()
   unpaidList.value = []
   selectedPayables.value = []
 }
 
+const saveSettlementDraft = () => {
+  saveDraft(FINANCE_SETTLEMENT_DRAFT_KEY, {
+    settlementForm: cloneDraft(settlementForm),
+    selectedPayableIds: cloneDraft(selectedPayableIds.value)
+  })
+  ElMessage.success('草稿已保存')
+}
+
+const restoreSettlementDraft = () => {
+  const draft = loadDraft(FINANCE_SETTLEMENT_DRAFT_KEY)
+  if (!draft) return
+  Object.assign(settlementForm, draft.settlementForm || {})
+  const ids = new Set(draft.selectedPayableIds || [])
+  selectedPayables.value = unpaidList.value.filter(item => ids.has(item.payable_id))
+  nextTick(() => {
+    unpaidList.value.forEach(row => {
+      settlementTableRef.value?.toggleRowSelection(row, ids.has(row.payable_id))
+    })
+  })
+  ElMessage.success('已恢复上次草稿')
+}
+
 const handleAddExpense = () => {
   resetForm()
+  restoreExpenseDraft()
   expenseDialogVisible.value = true
 }
 
@@ -1189,6 +2154,7 @@ const handleExpenseSubmit = async () => {
     const res = await api.createExpense(data)
     if (res.code === 0) {
       ElMessage.success('添加成功')
+      clearDraft(FINANCE_EXPENSE_DRAFT_KEY)
       expenseDialogVisible.value = false
       loadExpenseData()
     } else {
@@ -1203,6 +2169,18 @@ const handleExpenseSubmit = async () => {
 
 const handleDialogClose = () => {
   resetForm()
+}
+
+const saveExpenseDraft = () => {
+  saveDraft(FINANCE_EXPENSE_DRAFT_KEY, cloneDraft(expenseForm))
+  ElMessage.success('草稿已保存')
+}
+
+const restoreExpenseDraft = () => {
+  const draft = loadDraft(FINANCE_EXPENSE_DRAFT_KEY)
+  if (!draft) return
+  Object.assign(expenseForm, draft)
+  ElMessage.success('已恢复上次草稿')
 }
 
 const resetForm = () => {
@@ -1227,6 +2205,36 @@ const loadAccountList = async () => {
     }
   } catch (err) {
     ElMessage.error('加载账户列表失败')
+  }
+}
+
+const refreshAccountBalances = async () => {
+  await loadAccountList()
+  await loadSettlementAccounts()
+  ElMessage.success('余额已刷新')
+}
+const accountTypeText = value => ({ FUND:'资金账户', SUPPLIER_REBATE:'供应商返利', CARE_CREDIT:'Care可用金' }[value] || '资金账户')
+
+const moveAccount = async (index, direction) => {
+  const targetIndex = index + direction
+  if (targetIndex < 0 || targetIndex >= accountList.value.length) return
+
+  const sorted = [...accountList.value]
+  ;[sorted[index], sorted[targetIndex]] = [sorted[targetIndex], sorted[index]]
+
+  try {
+    const res = await api.sortSettlementAccounts({
+      items: sorted.map((item, idx) => ({ id: item.account_id, sortOrder: idx }))
+    })
+    if (res.code === 0) {
+      ElMessage.success('排序已更新')
+      await loadAccountList()
+      await loadSettlementAccounts()
+    } else {
+      ElMessage.error(res.message || '排序失败')
+    }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || '排序失败')
   }
 }
 
@@ -1258,6 +2266,7 @@ const openAccountTransactionDialog = (row) => {
   accountTxnForm.amount = 0
   accountTxnForm.description = ''
   accountTxnForm.relatedRef = ''
+  restoreAccountTxnDraft()
   accountTxnDialogVisible.value = true
 }
 
@@ -1315,6 +2324,7 @@ const handleAccountTxnSubmit = async () => {
     })
     if (res.code === 0) {
       ElMessage.success('记账成功')
+      clearDraft(FINANCE_ACCOUNT_TXN_DRAFT_KEY)
       accountTxnDialogVisible.value = false
       loadAccountList()
       if (accountDetailVisible.value) {
@@ -1330,6 +2340,18 @@ const handleAccountTxnSubmit = async () => {
     accountTxnLoading.value = false
   }
 }
+
+const saveAccountTxnDraft = () => {
+  saveDraft(FINANCE_ACCOUNT_TXN_DRAFT_KEY, cloneDraft(accountTxnForm))
+  ElMessage.success('草稿已保存')
+}
+
+const restoreAccountTxnDraft = () => {
+  const draft = loadDraft(FINANCE_ACCOUNT_TXN_DRAFT_KEY)
+  if (!draft) return
+  Object.assign(accountTxnForm, draft)
+  ElMessage.success('已恢复上次草稿')
+}
 </script>
 
 <style scoped>
@@ -1341,6 +2363,20 @@ const handleAccountTxnSubmit = async () => {
 .el-pagination {
   margin-top: 16px;
   justify-content: flex-end;
+}
+.rebate-summary {
+  margin-bottom: 16px;
+}
+.rebate-summary-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 14px;
+  color: #303133;
+}
+.rebate-summary-header strong {
+  color: #67c23a;
 }
 .daily-summary {
   margin-top: 12px;
@@ -1367,5 +2403,16 @@ const handleAccountTxnSubmit = async () => {
 }
 .settlement-section {
   margin-top: 20px;
+}
+.settlement-image-preview {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 240px;
+}
+.settlement-image-preview img {
+  max-width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
 }
 </style>

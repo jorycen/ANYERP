@@ -3,20 +3,21 @@
  */
 const Router = require('koa-router');
 const { getMenus, getRoles, createRole, updateRole, deleteRole, getRoleMenus, assignMenus, getUsers, createUser, updateUser, getUserRegions, assignUserRegions } = require('./controller');
+const { requireRole } = require('../../middleware/permission');
 
 const router = new Router();
 
 router.get('/menus', getMenus);
 router.get('/roles', getRoles);
-router.post('/role', createRole);
-router.put('/role/:roleId', updateRole);
-router.delete('/role/:roleId', deleteRole);
+router.post('/role', requireRole('admin', 'boss'), createRole);
+router.put('/role/:roleId', requireRole('admin', 'boss'), updateRole);
+router.delete('/role/:roleId', requireRole('admin', 'boss'), deleteRole);
 router.get('/role-menus/:roleId', getRoleMenus);
-router.post('/role-menus/:roleId', assignMenus);
-router.get('/users', getUsers);
-router.post('/user', createUser);
-router.put('/user/:staffId', updateUser);
-router.get('/user-regions/:staffId', getUserRegions);
-router.post('/assign-user-regions/:staffId', assignUserRegions);
+router.post('/role-menus/:roleId', requireRole('admin', 'boss'), assignMenus);
+router.get('/users', requireRole('admin', 'boss'), getUsers);
+router.post('/user', requireRole('admin', 'boss'), createUser);
+router.put('/user/:staffId', requireRole('admin', 'boss'), updateUser);
+router.get('/user-regions/:staffId', requireRole('admin', 'boss'), getUserRegions);
+router.post('/assign-user-regions/:staffId', requireRole('admin', 'boss'), assignUserRegions);
 
 module.exports = router;

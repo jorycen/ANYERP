@@ -4,13 +4,15 @@
 const Router = require('koa-router');
 const multer = require('@koa/multer');
 const {
-  getProductList, createProduct, updateProduct, deleteProduct, togglePause, importProducts, exportProducts,
+  getProductList, submitProductApplication, getProductApplicationList, reviewProductApplication,
+  updateProduct, deleteProduct, togglePause, importProducts, exportProducts,
   getBarcodes, addBarcode, deleteBarcode,
-  getCategoryTree, createCategory, updateCategory, deleteCategory,
+  getCategoryTree, createCategory, updateCategory, deleteCategory, sortCategories,
   getCategoryFields, saveCategoryFields, getCategoryFieldConfig,
-  getPriceList, setPrice, refreshCostPrice, batchRefreshCost, importPrices,
+  getPriceList, setPrice, refreshCostPrice, batchRefreshCost, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory,
   getPnList, addPn, searchProduct
 } = require('./controller');
+const { requireRole } = require('../../middleware/permission');
 
 const router = new Router();
 const upload = multer();
@@ -19,7 +21,11 @@ const upload = multer();
 router.get('/list', getProductList);
 router.get('/search', searchProduct);
 router.get('/export', exportProducts);
-router.post('/create', createProduct);
+router.get('/application-list', getProductApplicationList);
+router.post('/application', submitProductApplication);
+router.post('/application/:applicationId/review', requireRole('finance', 'purchaser'), reviewProductApplication);
+// 兼容现有客户端：手工新建商品统一转为审批申请。
+router.post('/create', submitProductApplication);
 router.put('/update/:productId', updateProduct);
 router.delete('/delete/:productId', deleteProduct);
 router.post('/toggle-pause/:productId', togglePause);
@@ -32,6 +38,7 @@ router.delete('/barcode/:barcodeId', deleteBarcode);
 
 // 商品分类
 router.get('/category/tree', getCategoryTree);
+router.post('/category/sort', sortCategories);
 router.post('/category', createCategory);
 router.put('/category/:categoryId', updateCategory);
 router.delete('/category/:categoryId', deleteCategory);
@@ -46,7 +53,10 @@ router.get('/price/list', getPriceList);
 router.post('/price/set', setPrice);
 router.post('/price/refresh-cost/:productId', refreshCostPrice);
 router.post('/price/batch-refresh-cost', batchRefreshCost);
+router.post('/price/import/validate', upload.single('file'), validateImportPrices);
 router.post('/price/import', upload.single('file'), importPrices);
+router.post('/price/import-cost-refresh', upload.single('file'), importCostRefresh);
+router.get('/price/history', getPriceChangeHistory);
 
 // PN管理
 router.get('/pn-list', getPnList);

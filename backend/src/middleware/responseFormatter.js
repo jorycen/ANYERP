@@ -4,8 +4,16 @@
 async function responseFormatter(ctx, next) {
   await next();
 
-  // 如果 body 是流（文件流），不处理
-  if (ctx.body && typeof ctx.body.pipe === 'function') {
+  // 如果 body 是流或二进制文件，不处理
+  if (ctx.body && (typeof ctx.body.pipe === 'function' || Buffer.isBuffer(ctx.body))) {
+    return;
+  }
+
+  const contentType = ctx.response.get('Content-Type') || '';
+  if (
+    contentType.includes('application/octet-stream') ||
+    contentType.includes('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  ) {
     return;
   }
 

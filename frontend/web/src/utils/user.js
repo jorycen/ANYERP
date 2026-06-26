@@ -10,6 +10,12 @@ export function getRoleCode() {
   return getUserInfo().roleCode || ''
 }
 
+export function getRoleCodes() {
+  const user = getUserInfo()
+  if (Array.isArray(user.roles) && user.roles.length > 0) return user.roles
+  return String(user.roleCode || '').split(',').map(role => role.trim()).filter(Boolean)
+}
+
 export function getStoreId() {
   return getUserInfo().storeId || ''
 }
@@ -19,11 +25,11 @@ export function getStoreName() {
 }
 
 export function isStoreUser() {
-  const rc = getRoleCode()
-  return rc === 'clerk' || rc === 'manager'
+  const roles = getRoleCodes()
+  return roles.some(role => role === 'clerk' || role === 'manager')
 }
 
 export function hasRole(roles) {
-  const rc = getRoleCode()
-  return rc === 'boss' || rc === 'admin' || roles.includes(rc)
+  const currentRoles = getRoleCodes()
+  return currentRoles.includes('boss') || currentRoles.includes('admin') || currentRoles.some(role => roles.includes(role))
 }

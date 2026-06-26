@@ -42,10 +42,10 @@ async function getRegionList(ctx) {
 async function getAllStores(ctx) {
   const user = ctx.state.user;
 
-  const where = { is_deleted: 0 };
+  const where = { is_deleted: 0, status: 1 };
 
-  if (!user.regionCodes.includes('*') && user.regionCodes.length > 0) {
-    where.region_id = user.regionCodes;
+  if (!user.accessibleStoreIds.includes('*')) {
+    where.store_id = user.accessibleStoreIds;
   }
 
   const rows = await Store.findAll({
@@ -67,8 +67,8 @@ async function getStoreList(ctx) {
   const where = { is_deleted: 0 };
 
   // 区域权限过滤
-  if (!user.regionCodes.includes('*')) {
-    where.region_id = user.regionCodes;
+  if (!user.accessibleStoreIds.includes('*')) {
+    where.store_id = user.accessibleStoreIds;
   }
 
   // 按区域名称过滤
@@ -179,7 +179,7 @@ async function updateStore(ctx) {
   }
 
   // 区域权限检查
-  if (!user.regionCodes.includes('*') && !user.regionCodes.includes(store.region_id)) {
+  if (!user.accessibleStoreIds.includes('*') && !user.accessibleStoreIds.includes(String(store.store_id))) {
     ctx.throw(403, '无权操作该门店');
   }
 
@@ -224,7 +224,7 @@ async function deleteStore(ctx) {
   }
 
   // 区域权限检查
-  if (!user.regionCodes.includes('*') && !user.regionCodes.includes(store.region_id)) {
+  if (!user.accessibleStoreIds.includes('*') && !user.accessibleStoreIds.includes(String(store.store_id))) {
     ctx.throw(403, '无权操作该门店');
   }
 

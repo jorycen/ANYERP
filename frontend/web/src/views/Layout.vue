@@ -82,7 +82,10 @@ const iconMap = {
   House, Sell, Box, ShoppingCart, Money, Goods, Shop, DataAnalysis, Setting, User
 }
 
-const activeMenu = computed(() => route.path)
+const activeMenu = computed(() => {
+  if (route.path.startsWith('/finance')) return '/finance'
+  return route.path
+})
 
 const pageTitles = {
   '/': '首页',
@@ -90,6 +93,7 @@ const pageTitles = {
   '/inventory': '库存管理',
   '/purchase': '采购管理',
   '/finance': '财务管理',
+  '/finance/payment': '付款管理',
   '/products': '商品管理',
   '/stores': '门店管理',
   '/reports': '报表统计',
@@ -98,7 +102,7 @@ const pageTitles = {
 
 const pageTitle = computed(() => pageTitles[route.path] || '')
 
-const validPaths = ['/', '/sales', '/inventory', '/purchase', '/finance', '/products', '/stores', '/reports', '/system']
+const validPaths = ['/', '/sales', '/inventory', '/purchase', '/finance', '/finance/payment', '/payment-management', '/products', '/stores', '/reports', '/system']
 
 onMounted(() => {
   const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
@@ -113,7 +117,7 @@ onMounted(() => {
   }
   userName.value = userInfo.name || '管理员'
   roleName.value = userInfo.roleName || ''
-  menuTree.value = buildMenuTree(menus)
+  menuTree.value = stripPaymentManagementMenu(buildMenuTree(menus))
 })
 
 function getDefaultMenus() {
@@ -121,6 +125,7 @@ function getDefaultMenus() {
     { menuCode: 'home', name: '首页', path: '/', icon: 'House' },
     { menuCode: 'sales', name: '销售管理', path: '/sales', icon: 'Sell' },
     { menuCode: 'inventory', name: '库存管理', path: '/inventory', icon: 'Box' },
+    { menuCode: 'finance', name: '财务管理', path: '/finance', icon: 'Money' },
     { menuCode: 'reports', name: '报表统计', path: '/reports', icon: 'DataAnalysis' }
   ]
 }
@@ -139,6 +144,15 @@ function buildMenuTree(menus) {
     return item
   })
   return flat
+}
+
+function stripPaymentManagementMenu(menus) {
+  return menus
+    .filter(menu => menu.path !== '/payment-management' && menu.path !== '/finance/payment' && menu.menuCode !== 'paymentManagement')
+    .map(menu => ({
+      ...menu,
+      children: stripPaymentManagementMenu(menu.children || [])
+    }))
 }
 
 const handleCommand = async (command) => {
@@ -162,6 +176,10 @@ const handleCommand = async (command) => {
 <style scoped>
 .layout-container {
   height: 100vh;
+}
+
+.layout-container > .el-container {
+  min-width: 0;
 }
 
 .sidebar {
@@ -196,6 +214,11 @@ const handleCommand = async (command) => {
   justify-content: space-between;
   background: #fff;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+}
+
+.main-content {
+  min-width: 0;
+  overflow: auto;
 }
 
 .header-right {

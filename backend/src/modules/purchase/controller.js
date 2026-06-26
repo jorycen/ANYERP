@@ -1,10 +1,60 @@
 /**
  * 采购管理控制器
  */
-const { sequelize, PurchaseRequest, PurchaseRequestItem, Supplier, Store, Product, Inbound, InboundItem, Payable, SupplierRebate } = require('../../models');
+const { sequelize, PurchaseRequest, PurchaseRequestItem, Supplier, SupplierPaymentAccount, Store, Product, Inbound, InboundItem, Payable, SupplierRebate } = require('../../models');
 const { Op } = require('sequelize');
 const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate, formatPaginatedResult } = require('../../utils');
-const { recordRebateDeduction, _getRebateBalance } = require('../finance/rebateController');
+const { recordRebateDeduction, recordSupplierRebateAccountTransaction, _getRebateBalance } = require('../finance/rebateController');
+
+function toMoney(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
+  return Math.round(amount * 100) / 100;
+}
+
+function assertStoreVisible(ctx, storeId) {
+  const allowed = ctx.state.user.accessibleStoreIds || [];
+  if (!allowed.includes('*') && !allowed.map(String).includes(String(storeId || ''))) {
+    ctx.throw(403, '无权访问该门店采购数据');
+  }
+}
+
+function allocateRebateByItems(items, amount) {
+  const totalCents = Math.round(toMoney(amount) * 100);
+  const allocations = new Array(items.length).fill(0);
+  if (totalCents <= 0 || items.length === 0) return allocations;
+
+  const candidates = items
+    .map((item, index) => ({
+      index,
+      cap: Math.max(0, Math.round(Number(item.price || 0) * Number(item.quantity || 0) * 100))
+    }))
+    .filter(item => item.cap > 0);
+
+  if (candidates.length === 0) return allocations;
+
+  const cappedTotal = Math.min(totalCents, candidates.reduce((sum, item) => sum + item.cap, 0));
+  const base = Math.floor(cappedTotal / candidates.length);
+  let extra = cappedTotal % candidates.length;
+
+  for (const item of candidates) {
+    const share = base + (extra > 0 ? 1 : 0);
+    allocations[item.index] = Math.min(share, item.cap);
+    if (extra > 0) extra -= 1;
+  }
+
+  let remaining = cappedTotal - allocations.reduce((sum, value) => sum + value, 0);
+  for (const item of candidates) {
+    if (remaining <= 0) break;
+    const capacity = item.cap - allocations[item.index];
+    if (capacity <= 0) continue;
+    const add = Math.min(capacity, remaining);
+    allocations[item.index] += add;
+    remaining -= add;
+  }
+
+  return allocations.map(value => value / 100);
+}
 
 /**
  * 采购申请列表
@@ -17,15 +67,13 @@ async function getRequestList(ctx) {
   const whereStore = {};
 
   // 区域权限过滤
-  if (!user.regionCodes.includes('*')) {
-    whereStore.region_id = user.regionCodes;
+  if (!user.accessibleStoreIds.includes('*')) {
+    whereStore.store_id = user.accessibleStoreIds;
   }
 
   const stores = await Store.findAll({ where: whereStore });
   const storeIds = stores.map(s => s.store_id);
-  if (storeIds.length > 0) {
-    where.store_id = storeIds;
-  }
+  where.store_id = storeIds;
 
   if (status) where.status = status;
 
@@ -37,8 +85,9 @@ async function getRequestList(ctx) {
       { model: PurchaseRequestItem, as: 'items' }
     ],
     order: [
-      [sequelize.literal("FIELD(PurchaseRequest.status, 'pending', 'approved', 'revoked')"), 'ASC'],
-      ['create_time', 'DESC']
+      [sequelize.literal("CASE WHEN `PurchaseRequest`.`status` = 'pending' THEN 0 ELSE 1 END"), 'ASC'],
+      ['create_time', 'DESC'],
+      ['request_id', 'DESC']
     ],
     ...paginate({}, { page, pageSize })
   });
@@ -82,6 +131,7 @@ async function getRequestDetail(ctx) {
   if (!request) {
     ctx.throw(404, '采购申请不存在');
   }
+  assertStoreVisible(ctx, request.store_id);
 
   const result = request.toJSON();
   result.store_name = result.Store?.name || '';
@@ -134,8 +184,15 @@ async function createRequest(ctx) {
   const requestNo = generateRequestNo();
   const requestId = generateUUID();
 
-  const totalAmount = items.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0);
-  const deduction = Math.min(parseFloat(rebateDeduction || 0), totalAmount);
+  const totalAmount = toMoney(items.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0));
+  const rawItemDeductions = items.map(item => toMoney(item.rebateDeduction || 0));
+  const itemDeductionTotal = toMoney(rawItemDeductions.reduce((sum, amount) => sum + amount, 0));
+  const itemRebateAllocations = itemDeductionTotal > 0
+    ? rawItemDeductions.map((amount, index) => Math.min(amount, toMoney(Number(items[index].price || 0) * Number(items[index].quantity || 0))))
+    : allocateRebateByItems(items, Math.min(toMoney(rebateDeduction || 0), totalAmount));
+  const deduction = itemDeductionTotal > 0
+    ? Math.min(toMoney(itemRebateAllocations.reduce((sum, amount) => sum + amount, 0)), totalAmount)
+    : Math.min(toMoney(rebateDeduction || 0), totalAmount);
   const actualTotal = totalAmount - deduction;
 
   // 如果有返利抵扣，验证并记录
@@ -173,8 +230,8 @@ async function createRequest(ctx) {
   // 如果还是没有，尝试从用户的区域权限查找一个门店
   if (!finalStoreId) {
     const whereStore = {};
-    if (!user.regionCodes.includes('*')) {
-      whereStore.region_id = user.regionCodes;
+    if (!user.accessibleStoreIds.includes('*')) {
+      whereStore.store_id = user.accessibleStoreIds;
     }
     const stores = await Store.findAll({ where: whereStore, limit: 1 });
     if (stores.length > 0) {
@@ -202,7 +259,8 @@ async function createRequest(ctx) {
   });
 
   // 创建明细
-  for (const item of items) {
+  for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+    const item = items[itemIndex];
     const productId = item.productId || '';
     const quantity = item.quantity || 0;
     const unitPrice = item.price || 0;
@@ -216,12 +274,54 @@ async function createRequest(ctx) {
       quantity: quantity,
       unit_price: unitPrice,
       subtotal: subtotal,
+      rebate_deduction: itemRebateAllocations[itemIndex] || 0,
       product_type: productType || item.productType || '',
       store_allocations: item.storeAllocations ? JSON.stringify(item.storeAllocations) : null
     });
   }
 
   ctx.body = { code: 0, message: '采购申请提交成功', requestId, requestNo };
+}
+
+async function ensurePayableForApprovedRequest(request, user, transaction = null) {
+  if (!request.supplier_id) return;
+
+  const amount = parseFloat(
+    request.actual_total !== null && request.actual_total !== undefined
+      ? request.actual_total
+      : request.total_amount
+  ) || 0;
+  if (amount <= 0) return;
+
+  const existingPayable = await Payable.findOne({
+    where: { request_id: request.request_id },
+    transaction
+  });
+
+  if (existingPayable) {
+    if (existingPayable.status !== 'paid') {
+      await existingPayable.update({
+        supplier_id: request.supplier_id,
+        request_no: request.request_no,
+        total_amount: amount,
+        paid_amount: existingPayable.status === 'unpaid' ? 0 : existingPayable.paid_amount
+      }, { transaction });
+    }
+    return;
+  }
+
+  const supplier = await Supplier.findByPk(request.supplier_id, { transaction });
+  await Payable.create({
+    payable_id: generateUUID(),
+    supplier_id: request.supplier_id,
+    supplier_name: supplier ? supplier.name : '',
+    request_id: request.request_id,
+    request_no: request.request_no,
+    total_amount: amount,
+    paid_amount: 0,
+    status: 'unpaid',
+    create_time: new Date()
+  }, { transaction });
 }
 
 /**
@@ -238,20 +338,26 @@ async function approveRequest(ctx) {
   if (!request) {
     ctx.throw(404, '采购申请不存在');
   }
+  assertStoreVisible(ctx, request.store_id);
 
+  const transaction = await sequelize.transaction();
+  try {
   await request.update({
     status,
     approve_user: user.name,
     approve_comment: comment,
     update_time: new Date()
-  });
+  }, { transaction });
 
   // 如果审批通过，自动生成入库单
   if (status === 'approved' && request.items && request.items.length > 0) {
+    await ensurePayableForApprovedRequest(request, user, transaction);
+
     // 获取所有商品信息备用
     const productIds = request.items.map(item => item.product_id);
     const products = await Product.findAll({
-      where: { product_id: { [Op.in]: productIds } }
+      where: { product_id: { [Op.in]: productIds } },
+      transaction
     });
     const productMap = new Map();
     products.forEach(p => productMap.set(p.product_id, p));
@@ -321,7 +427,7 @@ async function approveRequest(ctx) {
         create_user: user.name,
         create_time: new Date(),
         update_time: new Date()
-      });
+      }, { transaction });
 
       // 创建入库明细
       for (const item of items) {
@@ -337,12 +443,17 @@ async function approveRequest(ctx) {
             storeId: storeId,
             quantity: item.allocatedQuantity || item.quantity
           }])
-        });
+        }, { transaction });
       }
     }
   }
 
+  await transaction.commit();
   ctx.body = { code: 0, message: '审批完成' };
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  }
 }
 
 /**
@@ -361,6 +472,7 @@ async function revokeRequest(ctx) {
   if (!request) {
     ctx.throw(404, '采购申请不存在');
   }
+  assertStoreVisible(ctx, request.store_id);
 
   if (request.status !== 'approved') {
     ctx.throw(400, '只有已通过的采购申请才能撤销');
@@ -394,7 +506,7 @@ async function revokeRequest(ctx) {
     });
 
     if (request.rebate_deduction && parseFloat(request.rebate_deduction) > 0) {
-      const currentBalance = await _getRebateBalance(request.supplier_id);
+      const currentBalance = await _getRebateBalance(request.supplier_id, transaction);
       const newBalance = currentBalance + parseFloat(request.rebate_deduction);
       const supplier = await Supplier.findByPk(request.supplier_id);
       await SupplierRebate.create({
@@ -406,8 +518,14 @@ async function revokeRequest(ctx) {
         balance: newBalance,
         related_no: request.request_no,
         remark: `采购申请 ${request.request_no} 撤销，退回返利抵扣`,
+        status: 'active',
+        source_type: 'purchase_reversal',
         create_user: user.name || user.phone
       }, { transaction });
+      await recordSupplierRebateAccountTransaction(
+        request.supplier_id, 'income', request.rebate_deduction,
+        '采购撤销退回返利抵扣', request.request_no, user.name || user.phone, transaction
+      );
     }
 
     await request.update({
@@ -432,9 +550,12 @@ async function revokeRequest(ctx) {
  * 供应商列表
  */
 async function getSupplierList(ctx) {
-  const { keyword, page = 1, pageSize = 20 } = ctx.query;
+  const { keyword, status, page = 1, pageSize = 20 } = ctx.query;
 
   const where = { is_deleted: 0 };
+  if (status !== undefined && status !== '') {
+    where.status = Number(status);
+  }
   if (keyword) {
     where[Op.or] = [
       { name: { [Op.like]: `%${keyword}%` } },
@@ -444,7 +565,9 @@ async function getSupplierList(ctx) {
 
   const { count, rows } = await Supplier.findAndCountAll({
     where,
-    order: [['create_time', 'DESC']],
+    include: [{ model: SupplierPaymentAccount, as: 'paymentAccounts', where: { is_deleted: 0 }, required: false }],
+    order: [['sort_order', 'ASC'], ['create_time', 'DESC']],
+    distinct: true,
     ...paginate({}, { page, pageSize })
   });
 
@@ -455,11 +578,12 @@ async function getSupplierList(ctx) {
  * 获取所有供应商（不分页，用于下拉选择）
  */
 async function getAllSuppliers(ctx) {
-  const where = { is_deleted: 0 };
+  const where = { is_deleted: 0, status: 1 };
 
   const rows = await Supplier.findAll({
     where,
-    order: [['create_time', 'DESC']]
+    include: [{ model: SupplierPaymentAccount, as: 'paymentAccounts', where: { is_deleted: 0 }, required: false }],
+    order: [['sort_order', 'ASC'], ['create_time', 'DESC']]
   });
 
   ctx.body = { code: 0, data: rows };
@@ -469,7 +593,7 @@ async function getAllSuppliers(ctx) {
  * 创建供应商
  */
 async function createSupplier(ctx) {
-  const { name, contact, phone, address, invoiceType, remark, status = 1 } = ctx.request.body;
+  const { name, contact, phone, address, invoiceType, remark, status = 1, paymentAccounts = [] } = ctx.request.body;
 
   if (!name) {
     ctx.throw(400, '供应商名称不能为空');
@@ -477,17 +601,22 @@ async function createSupplier(ctx) {
 
   const supplierId = generateId('SP');
 
-  await Supplier.create({
-    supplier_id: supplierId,
-    name,
-    contact: contact || '',
-    phone: phone || '',
-    address: address || '',
-    invoice_type: invoiceType || '',
-    remark: remark || '',
-    status,
-    create_time: new Date(),
-    update_time: new Date()
+  await sequelize.transaction(async (transaction) => {
+    await Supplier.create({
+      supplier_id: supplierId,
+      name,
+      contact: contact || '',
+      phone: phone || '',
+      address: address || '',
+      invoice_type: invoiceType || '',
+      remark: remark || '',
+      sort_order: await Supplier.count({ where: { is_deleted: 0 }, transaction }),
+      status,
+      create_time: new Date(),
+      update_time: new Date()
+    }, { transaction });
+
+    await saveSupplierPaymentAccounts(supplierId, paymentAccounts, transaction);
   });
 
   ctx.body = { code: 0, message: '创建成功' };
@@ -498,7 +627,7 @@ async function createSupplier(ctx) {
  */
 async function updateSupplier(ctx) {
   const { id } = ctx.params;
-  const { name, contact, phone, address, invoiceType, remark, status } = ctx.request.body;
+  const { name, contact, phone, address, invoiceType, remark, sortOrder, status, paymentAccounts } = ctx.request.body;
 
   const supplier = await Supplier.findOne({
     where: { supplier_id: id, is_deleted: 0 }
@@ -508,18 +637,53 @@ async function updateSupplier(ctx) {
     ctx.throw(404, '供应商不存在');
   }
 
-  await supplier.update({
-    name: name || supplier.name,
-    contact: contact !== undefined ? contact : supplier.contact,
-    phone: phone !== undefined ? phone : supplier.phone,
-    address: address !== undefined ? address : supplier.address,
-    invoice_type: invoiceType !== undefined ? invoiceType : supplier.invoice_type,
-    remark: remark !== undefined ? remark : supplier.remark,
-    status: status !== undefined ? status : supplier.status,
-    update_time: new Date()
+  await sequelize.transaction(async (transaction) => {
+    await supplier.update({
+      name: name || supplier.name,
+      contact: contact !== undefined ? contact : supplier.contact,
+      phone: phone !== undefined ? phone : supplier.phone,
+      address: address !== undefined ? address : supplier.address,
+      invoice_type: invoiceType !== undefined ? invoiceType : supplier.invoice_type,
+      remark: remark !== undefined ? remark : supplier.remark,
+      sort_order: sortOrder !== undefined ? sortOrder : supplier.sort_order,
+      status: status !== undefined ? status : supplier.status,
+      update_time: new Date()
+    }, { transaction });
+
+    if (Array.isArray(paymentAccounts)) {
+      await saveSupplierPaymentAccounts(id, paymentAccounts, transaction);
+    }
   });
 
   ctx.body = { code: 0, message: '更新成功' };
+}
+
+async function saveSupplierPaymentAccounts(supplierId, paymentAccounts, transaction) {
+  await SupplierPaymentAccount.update(
+    { is_deleted: 1, status: 0, update_time: new Date() },
+    { where: { supplier_id: supplierId }, transaction }
+  );
+
+  const validAccounts = (paymentAccounts || []).filter(acc =>
+    acc.companyName || acc.company_name || acc.taxNo || acc.tax_no || acc.bankName || acc.bank_name || acc.accountNumber || acc.account_number || acc.remark
+  );
+
+  for (const [index, acc] of validAccounts.entries()) {
+    await SupplierPaymentAccount.create({
+      account_id: generateUUID(),
+      supplier_id: supplierId,
+      company_name: acc.companyName || acc.company_name || '',
+      tax_no: acc.taxNo || acc.tax_no || '',
+      bank_name: acc.bankName || acc.bank_name || '',
+      account_number: acc.accountNumber || acc.account_number || '',
+      remark: acc.remark || '',
+      sort_order: index,
+      status: 1,
+      is_deleted: 0,
+      create_time: new Date(),
+      update_time: new Date()
+    }, { transaction });
+  }
 }
 
 /**
@@ -540,6 +704,25 @@ async function deleteSupplier(ctx) {
   ctx.body = { code: 0, message: '删除成功' };
 }
 
+async function sortSuppliers(ctx) {
+  const { items } = ctx.request.body;
+  if (!Array.isArray(items)) {
+    ctx.throw(400, '排序数据格式无效');
+  }
+
+  await sequelize.transaction(async (transaction) => {
+    for (const item of items) {
+      if (!item.id) continue;
+      await Supplier.update(
+        { sort_order: item.sortOrder, update_time: new Date() },
+        { where: { supplier_id: item.id, is_deleted: 0 }, transaction }
+      );
+    }
+  });
+
+  ctx.body = { code: 0, message: '排序更新成功' };
+}
+
 module.exports = {
   getRequestList,
   getRequestDetail,
@@ -550,5 +733,6 @@ module.exports = {
   getAllSuppliers,
   createSupplier,
   updateSupplier,
-  deleteSupplier
+  deleteSupplier,
+  sortSuppliers
 };

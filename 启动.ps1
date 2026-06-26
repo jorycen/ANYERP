@@ -7,18 +7,21 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Write-Host ""
 Write-Host "[1/2] Starting Backend..." -ForegroundColor Yellow
 $backendDir = Join-Path $ScriptDir "backend"
-$existingBackend = Get-Process -Name "node" -ErrorAction SilentlyContinue
-if ($existingBackend) {
-    Write-Host "  [OK] Backend already running" -ForegroundColor Green
-} else {
-    Start-Process -FilePath "node" -ArgumentList "src/index.js" -WindowStyle Hidden -WorkingDirectory $backendDir
-    Start-Sleep -Seconds 3
-    $running = Get-Process -Name "node" -ErrorAction SilentlyContinue
-    if ($running) {
-        Write-Host "  [OK] Backend started (port 3000)" -ForegroundColor Green
-    } else {
-        Write-Host "  [FAIL] Backend failed to start" -ForegroundColor Red
+$backendConnections = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue
+if ($backendConnections) {
+    $backendProcessIds = $backendConnections | Select-Object -ExpandProperty OwningProcess -Unique
+    foreach ($processId in $backendProcessIds) {
+        Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
     }
+    Start-Sleep -Seconds 2
+}
+Start-Process -FilePath "node" -ArgumentList "src/index.js" -WindowStyle Hidden -WorkingDirectory $backendDir
+Start-Sleep -Seconds 3
+$running = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue
+if ($running) {
+    Write-Host "  [OK] Backend started (port 3000)" -ForegroundColor Green
+} else {
+    Write-Host "  [FAIL] Backend failed to start" -ForegroundColor Red
 }
 
 Write-Host ""

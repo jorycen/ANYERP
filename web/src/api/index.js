@@ -1,9 +1,32 @@
 import axios from 'axios'
 
+const RETRYABLE_STATUS_CODES = new Set([500, 502, 503, 504])
+const IDEMPOTENT_METHODS = new Set(['get', 'head', 'options'])
+const MAX_RETRY_COUNT = 2
+const RETRY_BASE_DELAY = 1000
+
 const api = axios.create({
   baseURL: '/api/v1',
   timeout: 30000
 })
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function isRetryableError(error) {
+  const method = (error.config?.method || 'get').toLowerCase()
+  if (!IDEMPOTENT_METHODS.has(method)) {
+    return false
+  }
+  if (error.code === 'ERR_CANCELED') {
+    return false
+  }
+  if (!error.response) {
+    return true
+  }
+  return RETRYABLE_STATUS_CODES.has(error.response.status)
+}
 
 // Request interceptor
 api.interceptors.request.use(
@@ -17,15 +40,25 @@ api.interceptors.request.use(
   error => Promise.reject(error)
 )
 
-// Response interceptor
 api.interceptors.response.use(
   response => response.data,
-  error => {
+  async error => {
     if (error.response?.status === 401) {
       localStorage.removeItem('token')
       localStorage.removeItem('userInfo')
       window.location.href = '/login'
+      return Promise.reject(error)
     }
+
+    const config = error.config || {}
+    config.__retryCount = config.__retryCount || 0
+
+    if (config.__retryCount < MAX_RETRY_COUNT && isRetryableError(error)) {
+      config.__retryCount += 1
+      await sleep(RETRY_BASE_DELAY * 2 ** (config.__retryCount - 1))
+      return api.request(config)
+    }
+
     return Promise.reject(error)
   }
 )

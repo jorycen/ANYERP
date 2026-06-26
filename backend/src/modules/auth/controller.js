@@ -3,7 +3,7 @@
  */
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const { Staff, Role, Menu, RoleMenu, StaffRole, Store, Region } = require('../../models');
+const { Staff, Role, Menu, RoleMenu, StaffRole, StaffStorePermission, Store, Region } = require('../../models');
 const config = require('../../config');
 
 /**
@@ -20,7 +20,7 @@ async function login(ctx) {
   const staff = await Staff.findOne({
     where: { phone, is_deleted: 0 },
     include: [
-      { model: Role, as: 'Roles' },
+      { model: Role, as: 'Roles', where: { status: 1 }, required: false },
       { model: Store, as: 'Store', include: [{ model: Region, as: 'Region' }] }
     ]
   });
@@ -37,7 +37,7 @@ async function login(ctx) {
 
   // 检查状态
   if (staff.status !== 1) {
-    ctx.throw(401, '账号已被禁用');
+    ctx.throw(401, '账号已停用');
   }
 
   // 获取角色信息 - 优先从关联表, 回退到 staff.role_code
@@ -48,6 +48,14 @@ async function login(ctx) {
     });
   }
   const roleCodes = roles.map(r => r.role_code);
+  const roleNames = roles.map(r => r.name);
+  const assignedStoreIds = roleCodes.includes('boss') ? ['*'] : (await StaffStorePermission.findAll({
+    where: { staff_id: staff.staff_id },
+    attributes: ['store_id'],
+    include: [{ model: Store, attributes: [], required: true, where: { is_deleted: 0, status: 1 } }],
+    raw: true
+  })).map(item => String(item.store_id));
+  const effectiveStoreId = roleCodes.includes('boss') || assignedStoreIds.includes(String(staff.store_id || '')) ? staff.store_id : null;
 
   // 查询菜单权限
   const roleIds = roles.map(r => r.role_id);
@@ -87,12 +95,14 @@ async function login(ctx) {
       name: staff.name,
       phone: staff.phone,
       roleCode: staff.role_code,
-      roleName: roles[0]?.name || '员工',
+      roleName: roleNames.join('、') || '员工',
+      roleNames,
       roles: roleCodes,
-      storeId: staff.store_id,
-      storeName: staff.Store?.name,
+      storeId: effectiveStoreId,
+      storeName: effectiveStoreId ? staff.Store?.name : '',
       regionId: staff.region_id,
       regionCodes,
+      storeIds: assignedStoreIds,
       menus: buildMenuTree(menus)
     }
   };
@@ -106,7 +116,7 @@ async function getUserInfo(ctx) {
 
   const staff = await Staff.findByPk(user.staffId, {
     include: [
-      { model: Role, as: 'Roles' },
+      { model: Role, as: 'Roles', where: { status: 1 }, required: false },
       { model: Store, as: 'Store', include: [{ model: Region, as: 'Region' }] }
     ]
   });
@@ -134,17 +144,21 @@ async function getUserInfo(ctx) {
   });
 
   const roleCodes = roles.map(r => r.role_code);
+  const roleNames = roles.map(r => r.name);
 
   ctx.body = {
     staffId: staff.staff_id,
     name: staff.name,
     phone: staff.phone,
     roleCode: staff.role_code,
+    roleName: roleNames.join('、') || '员工',
+    roleNames,
     roles: roleCodes,
-    storeId: staff.store_id,
-    storeName: staff.Store?.name,
+    storeId: user.storeId,
+    storeName: user.storeId ? staff.Store?.name : '',
     regionId: staff.region_id,
     regionCodes: user.regionCodes,
+    storeIds: user.accessibleStoreIds,
     menus: buildMenuTree(menus)
   };
 }

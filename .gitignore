@@ -7,6 +7,7 @@ dist/
 **/dist/
 frontend/dist-web/
 backend/public/
+backend/uploads/
 *.zip
 
 # Runtime data and logs
@@ -22,11 +23,13 @@ query
 .env
 .env.*
 !.env.example
+cloud-db.env
 
 # Generated or packaged copies
 backend-package/
 backend-clean/
 deploy-package/
+backend/backups/
 
 # OS/editor files
 .DS_Store

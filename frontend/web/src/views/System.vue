@@ -15,21 +15,28 @@
             <el-table-column prop="staff_id" label="ID" width="80" />
             <el-table-column prop="name" label="姓名" width="120" />
             <el-table-column prop="phone" label="手机号" width="130" />
-            <el-table-column prop="role_code" label="角色" width="100">
+            <el-table-column label="角色" min-width="160">
               <template #default="{ row }">
-                <el-tag>{{ row.role_code }}</el-tag>
+                <el-tag v-for="roleName in row.role_names" :key="roleName" class="mr-1">{{ roleName }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="store_name" label="门店" width="120" />
+            <el-table-column prop="store_name" label="门店" min-width="180" show-overflow-tooltip />
             <el-table-column prop="status" label="状态" width="80">
               <template #default="{ row }">
                 <el-tag :type="row.status === 1 ? 'success' : 'danger'">{{ row.status === 1 ? '正常' : '停用' }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="150">
+            <el-table-column label="操作" width="230">
               <template #default="{ row }">
                 <el-button link type="primary" @click="handleEditUser(row)">编辑</el-button>
-                <el-button link type="primary" @click="handleAssignStore(row)">分配门店</el-button>
+                <el-button v-if="!row.is_boss" link type="primary" @click="handleAssignStore(row)">分配门店</el-button>
+                <el-button
+                  link
+                  :type="row.status === 1 ? 'danger' : 'success'"
+                  @click="handleToggleUserStatus(row)"
+                >
+                  {{ row.status === 1 ? '停用' : '启用' }}
+                </el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -42,7 +49,6 @@
           <el-table :data="roleData" stripe border>
             <el-table-column prop="role_id" label="ID" width="80" />
             <el-table-column prop="name" label="角色名称" width="120" />
-            <el-table-column prop="role_code" label="角色代码" width="120" />
             <el-table-column prop="description" label="描述" min-width="150" />
             <el-table-column prop="is_system" label="系统角色" width="100">
               <template #default="{ row }">
@@ -62,9 +68,24 @@
         <el-tab-pane label="菜单管理" name="menus">
           <el-tree :data="menuData" :props="{ label: 'name', children: 'children' }" default-expand-all>
             <template #default="{ data }">
-              <span>{{ data.name }} ({{ data.menu_code }})</span>
+              <span>{{ data.name }} ({{ data.menuCode }})</span>
             </template>
           </el-tree>
+        </el-tab-pane>
+
+        <el-tab-pane label="资源类别管理" name="resourceCategories">
+          <div class="filter-bar"><el-button type="primary" @click="openResourceCategory()">新增资源类别</el-button><el-button @click="openSaMgmtDialog">账户管理</el-button></div>
+          <el-alert title="资源类别新增后会自动出现在SN权益维护和销售订单中；停用只影响新业务，历史记录继续保留。默认到账账户决定财务点击下账后金额进入哪里。" type="info" :closable="false" style="margin-bottom:12px" />
+          <el-table :data="resourceCategoryData" stripe border>
+            <el-table-column prop="sort_order" label="排序" width="70" />
+            <el-table-column prop="name" label="类别名称" min-width="150" />
+            <el-table-column prop="short_name" label="简称" width="120" />
+            <el-table-column label="销售使用" width="90"><template #default="{row}">{{ row.supports_sale_use ? '是' : '否' }}</template></el-table-column>
+            <el-table-column label="公司套回" width="90"><template #default="{row}">{{ row.supports_company_claim ? '是' : '否' }}</template></el-table-column>
+            <el-table-column label="默认到账账户" min-width="170"><template #default="{row}">{{ row.DefaultAccount?.account_name || '未配置' }}</template></el-table-column>
+            <el-table-column label="状态" width="90"><template #default="{row}"><el-tag :type="row.status ? 'success' : 'info'">{{ row.status ? '启用' : '停用' }}</el-tag></template></el-table-column>
+            <el-table-column label="操作" width="90"><template #default="{row}"><el-button link type="primary" @click="openResourceCategory(row)">编辑</el-button></template></el-table-column>
+          </el-table>
         </el-tab-pane>
 
         <el-tab-pane label="客户来源管理" name="customerSource">
@@ -231,28 +252,33 @@
           <el-input v-model="userForm.password" type="password" placeholder="请输入初始密码" />
         </el-form-item>
         <el-form-item label="角色" required>
-          <el-select v-model="userForm.roleCode" placeholder="请选择角色" style="width: 100%">
-            <el-option v-for="r in roleData" :key="r.role_id" :label="r.name" :value="r.role_code" />
+          <el-select v-model="userForm.roleIds" multiple collapse-tags collapse-tags-tooltip placeholder="请选择一个或多个角色" style="width: 100%">
+            <el-option v-for="r in roleData" :key="r.role_id" :label="r.name" :value="r.role_id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="门店">
-          <div style="width: 100%">
-            <el-checkbox :indeterminate="storeIndeterminate" :checked="storeCheckAll" @change="handleStoreCheckAll">
-              全选
-            </el-checkbox>
-            <el-checkbox-group v-model="userForm.storeIds" style="margin-top: 8px">
-              <el-checkbox v-for="s in stores" :key="s.store_id" :label="s.store_id">{{ s.name }}</el-checkbox>
-            </el-checkbox-group>
-          </div>
-        </el-form-item>
+        <el-form-item label="门店">当前经销商下所有门店</el-form-item>
         <el-form-item label="状态">
           <el-switch v-model="userForm.status" :active-value="1" :inactive-value="0" />
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="userDialogVisible = false">取消</el-button>
+        <el-button v-if="!userForm.staffId" type="info" @click="saveSystemDraft('user-create', userForm)">保存草稿</el-button>
         <el-button type="primary" @click="handleUserSubmit" :loading="submitLoading">确定</el-button>
       </template>
+    </el-dialog>
+
+    <el-dialog v-model="resourceCategoryDialog" :title="resourceCategoryForm.categoryId ? '编辑资源类别' : '新增资源类别'" width="560px">
+      <el-form :model="resourceCategoryForm" label-width="120px">
+        <el-form-item label="类别名称" required><el-input v-model="resourceCategoryForm.name" /></el-form-item>
+        <el-form-item label="简称"><el-input v-model="resourceCategoryForm.shortName" /></el-form-item>
+        <el-form-item label="默认到账账户" required><el-select v-model="resourceCategoryForm.defaultAccountId" filterable clearable style="width:100%"><el-option v-for="a in resourceAccountOptions" :key="a.account_id" :label="`${a.account_name}（${accountTypeText(a.account_type)}）`" :value="a.account_id" /></el-select></el-form-item>
+        <el-form-item label="适用场景"><el-checkbox v-model="resourceCategoryForm.supportsSaleUse">销售使用</el-checkbox><el-checkbox v-model="resourceCategoryForm.supportsCompanyClaim">公司套回</el-checkbox></el-form-item>
+        <el-form-item label="排序"><el-input-number v-model="resourceCategoryForm.sortOrder" :min="0" /></el-form-item>
+        <el-form-item label="启用"><el-switch v-model="resourceCategoryForm.status" :active-value="1" :inactive-value="0" /></el-form-item>
+        <el-form-item label="备注"><el-input v-model="resourceCategoryForm.remark" type="textarea" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="resourceCategoryDialog=false">取消</el-button><el-button type="primary" :loading="submitLoading" @click="saveResourceCategory">保存</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="customerSourceDialogVisible" :title="csDialogTitle" width="500px" @close="resetCsForm">
@@ -266,6 +292,7 @@
       </el-form>
       <template #footer>
         <el-button @click="customerSourceDialogVisible = false">取消</el-button>
+        <el-button v-if="!editingCsId" type="info" @click="saveSystemDraft('customer-source-create', csForm)">保存草稿</el-button>
         <el-button type="primary" @click="handleCsSubmit" :loading="submitLoading">确定</el-button>
       </template>
     </el-dialog>
@@ -323,6 +350,7 @@
       </el-form>
       <template #footer>
         <el-button @click="paymentMethodDialogVisible = false">取消</el-button>
+        <el-button v-if="!editingPmId" type="info" @click="savePaymentMethodDraft">保存草稿</el-button>
         <el-button type="primary" @click="handlePmSubmit" :loading="submitLoading">确定</el-button>
       </template>
     </el-dialog>
@@ -334,6 +362,7 @@
       <el-table :data="settlementAccountData" stripe border size="small">
         <el-table-column prop="sort_order" label="排序" width="60" />
         <el-table-column prop="account_name" label="账号名称" min-width="160" />
+        <el-table-column label="账户类型" width="120"><template #default="{row}">{{ accountTypeText(row.account_type) }}</template></el-table-column>
         <el-table-column prop="bank_name" label="开户行" width="140" />
         <el-table-column prop="account_number" label="账号" min-width="180" />
         <el-table-column label="操作" width="180">
@@ -351,18 +380,26 @@
           <el-form-item label="账号名称" required>
             <el-input v-model="saForm.accountName" placeholder="请输入账号名称" />
           </el-form-item>
+          <el-form-item label="账户类型" required>
+            <el-select v-model="saForm.accountType" style="width:100%"><el-option label="资金账户" value="FUND" /><el-option label="供应商返利" value="SUPPLIER_REBATE" /><el-option label="Care可用金" value="CARE_CREDIT" /></el-select>
+          </el-form-item>
+          <el-form-item v-if="saForm.accountType === 'SUPPLIER_REBATE'" label="供应商" required>
+            <el-select v-model="saForm.supplierId" filterable style="width:100%"><el-option v-for="s in accountSuppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" /></el-select>
+          </el-form-item>
           <el-form-item label="开户行">
             <el-input v-model="saForm.bankName" placeholder="请输入开户行" />
           </el-form-item>
           <el-form-item label="账号">
             <el-input v-model="saForm.accountNumber" placeholder="请输入账号" />
           </el-form-item>
+          <el-form-item label="用途限制"><el-input v-model="saForm.usageNote" type="textarea" placeholder="如：仅用于购买延保商品" /></el-form-item>
           <el-form-item label="排序">
             <el-input v-model="saForm.sortOrder" />
           </el-form-item>
         </el-form>
         <template #footer>
           <el-button @click="saFormDialogVisible = false">取消</el-button>
+          <el-button v-if="!editingSaId" type="info" @click="saveSystemDraft('settlement-account-create', saForm)">保存草稿</el-button>
           <el-button type="primary" @click="handleSaSubmit" :loading="submitLoading">确定</el-button>
         </template>
       </el-dialog>
@@ -382,6 +419,7 @@
       </el-form>
       <template #footer>
         <el-button @click="supplementItemDialogVisible = false">取消</el-button>
+        <el-button v-if="!editingSiId" type="info" @click="saveSystemDraft('supplement-item-create', siForm)">保存草稿</el-button>
         <el-button type="primary" @click="handleSiSubmit" :loading="submitLoading">确定</el-button>
       </template>
     </el-dialog>
@@ -417,6 +455,7 @@
       </el-form>
       <template #footer>
         <el-button @click="cfDialogVisible = false">取消</el-button>
+        <el-button type="info" @click="saveCategoryFieldDraft">保存草稿</el-button>
         <el-button type="primary" @click="cfConfirmField">确定</el-button>
       </template>
     </el-dialog>
@@ -426,12 +465,24 @@
       <el-form label-width="100px">
         <el-form-item label="用户">{{ currentUser?.name }}</el-form-item>
         <el-form-item label="可访问门店">
-          <el-checkbox :indeterminate="storeDialogIndeterminate" :checked="storeDialogCheckAll" @change="handleStoreDialogCheckAll">
-            全选
-          </el-checkbox>
-          <el-checkbox-group v-model="dialogStoreIds" style="margin-top: 8px">
-            <el-checkbox v-for="s in stores" :key="s.store_id" :label="s.store_id">{{ s.name }}</el-checkbox>
-          </el-checkbox-group>
+          <div class="store-permission-selector">
+            <div class="store-select-all">
+              <el-checkbox
+                :indeterminate="storeDialogIndeterminate"
+                :model-value="storeDialogCheckAll"
+                @change="handleStoreDialogCheckAll"
+              >
+                全选
+              </el-checkbox>
+              <span class="store-selected-count">已选 {{ dialogStoreIds.length }}/{{ assignableStores.length }}</span>
+            </div>
+            <el-checkbox-group v-if="assignableStores.length" v-model="dialogStoreIds" class="store-checkbox-list">
+              <el-checkbox v-for="s in assignableStores" :key="s.store_id" :label="s.store_id">
+                {{ s.name }}
+              </el-checkbox>
+            </el-checkbox-group>
+            <el-empty v-else description="暂无可分配门店" :image-size="60" />
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -445,15 +496,13 @@
         <el-form-item label="角色名称" required>
           <el-input v-model="roleForm.name" placeholder="请输入角色名称" />
         </el-form-item>
-        <el-form-item label="角色代码" required>
-          <el-input v-model="roleForm.roleCode" placeholder="如：sales_lead" :disabled="!!roleForm.roleId" />
-        </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="roleForm.description" type="textarea" :rows="3" placeholder="请输入角色说明" />
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="roleDialogVisible = false">取消</el-button>
+        <el-button v-if="!roleForm.roleId" type="info" @click="saveSystemDraft('role-create', roleForm)">保存草稿</el-button>
         <el-button type="primary" @click="handleRoleSubmit" :loading="submitLoading">确定</el-button>
       </template>
     </el-dialog>
@@ -468,7 +517,7 @@
             :data="menuData"
             :props="{ label: 'name', children: 'children' }"
             show-checkbox
-            node-key="menu_id"
+            node-key="menuId"
             default-expand-all
           />
         </el-form-item>
@@ -482,15 +531,21 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
+import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 
 const activeTab = ref('users')
 const userData = ref([])
 const roleData = ref([])
 const menuData = ref([])
 const stores = ref([])
+const assignableStores = ref([])
+const resourceCategoryData = ref([])
+const resourceAccountOptions = ref([])
+const resourceCategoryDialog = ref(false)
+const resourceCategoryForm = reactive({ categoryId:'', name:'', shortName:'', defaultAccountId:'', supportsSaleUse:true, supportsCompanyClaim:true, sortOrder:0, status:1, remark:'' })
 
 const userDialogVisible = ref(false)
 const storeDialogVisible = ref(false)
@@ -504,43 +559,45 @@ const currentRole = ref(null)
 const dialogStoreIds = ref([])
 const menuTreeRef = ref(null)
 
+const saveSystemDraft = (key, data) => {
+  saveDraft(`system:${key}`, cloneDraft(data))
+  ElMessage.success('草稿已保存')
+}
+
+const restoreSystemDraft = (key, target) => {
+  const draft = loadDraft(`system:${key}`)
+  if (!draft) return
+  Object.assign(target, draft)
+  ElMessage.success('已恢复上次草稿')
+}
+
+const clearSystemDraft = (key) => clearDraft(`system:${key}`)
+
 const userForm = reactive({
   staffId: null,
   name: '',
   phone: '',
   password: '',
-  roleCode: '',
-  storeIds: [],
+  roleIds: [],
   status: 1
 })
 
 const roleForm = reactive({
   roleId: null,
   name: '',
-  roleCode: '',
   description: ''
 })
 
-const storeIndeterminate = computed(() => {
-  const len = userForm.storeIds.length
-  return len > 0 && len < stores.value.length
-})
-const storeCheckAll = computed(() => {
-  return stores.value.length > 0 && userForm.storeIds.length === stores.value.length
-})
 const storeDialogIndeterminate = computed(() => {
   const len = dialogStoreIds.value.length
-  return len > 0 && len < stores.value.length
+  return len > 0 && len < assignableStores.value.length
 })
 const storeDialogCheckAll = computed(() => {
-  return stores.value.length > 0 && dialogStoreIds.value.length === stores.value.length
+  return assignableStores.value.length > 0 && dialogStoreIds.value.length === assignableStores.value.length
 })
 
-function handleStoreCheckAll(checked) {
-  userForm.storeIds = checked ? stores.value.map(s => s.store_id) : []
-}
 function handleStoreDialogCheckAll(checked) {
-  dialogStoreIds.value = checked ? stores.value.map(s => s.store_id) : []
+  dialogStoreIds.value = checked ? assignableStores.value.map(s => s.store_id) : []
 }
 
 onMounted(() => {
@@ -549,7 +606,27 @@ onMounted(() => {
   loadMenus()
   loadStores()
   loadCustomerSources()
+  loadResourceCategories()
 })
+
+const loadResourceCategories = async () => {
+  try { const res = await api.getResourceCategories({}); resourceCategoryData.value = res.data || [] } catch (err) { ElMessage.error('加载资源类别失败') }
+}
+const openResourceCategory = async (row = null) => {
+  const accounts = await api.getAllSettlementAccounts(); resourceAccountOptions.value = accounts.data || []
+  Object.assign(resourceCategoryForm, row ? {
+    categoryId:row.category_id,name:row.name,shortName:row.short_name||'',defaultAccountId:row.default_account_id||'',
+    supportsSaleUse:!!row.supports_sale_use,supportsCompanyClaim:!!row.supports_company_claim,sortOrder:Number(row.sort_order||0),status:Number(row.status),remark:row.remark||''
+  } : {categoryId:'',name:'',shortName:'',defaultAccountId:'',supportsSaleUse:true,supportsCompanyClaim:true,sortOrder:0,status:1,remark:''})
+  resourceCategoryDialog.value = true
+}
+const saveResourceCategory = async () => {
+  if (!resourceCategoryForm.name.trim()) return ElMessage.warning('请输入类别名称')
+  if (!resourceCategoryForm.defaultAccountId) return ElMessage.warning('请选择默认到账账户')
+  submitLoading.value=true
+  try { await api.saveResourceCategory(resourceCategoryForm); ElMessage.success('资源类别已保存'); resourceCategoryDialog.value=false; await loadResourceCategories() }
+  catch(err){ ElMessage.error(err.response?.data?.message||'保存失败') } finally { submitLoading.value=false }
+}
 
 const onSysTabChange = (tabName) => {
   if (tabName === 'customerSource' && customerSourceData.value.length === 0) loadCustomerSources()
@@ -575,6 +652,7 @@ const loadRoles = async () => {
 const handleAddRole = () => {
   roleDialogTitle.value = '新增角色'
   resetRoleForm()
+  restoreSystemDraft('role-create', roleForm)
   roleDialogVisible.value = true
 }
 
@@ -583,20 +661,17 @@ const handleEditRole = (row) => {
   roleDialogTitle.value = '编辑角色'
   roleForm.roleId = row.role_id
   roleForm.name = row.name || ''
-  roleForm.roleCode = row.role_code || ''
   roleForm.description = row.description || ''
   roleDialogVisible.value = true
 }
 
 const handleRoleSubmit = async () => {
   if (!roleForm.name.trim()) { ElMessage.warning('请输入角色名称'); return }
-  if (!roleForm.roleCode.trim()) { ElMessage.warning('请输入角色代码'); return }
 
   submitLoading.value = true
   try {
     const data = {
       name: roleForm.name.trim(),
-      roleCode: roleForm.roleCode.trim(),
       description: roleForm.description.trim()
     }
     const res = roleForm.roleId
@@ -605,6 +680,7 @@ const handleRoleSubmit = async () => {
 
     if (res.code === 0) {
       ElMessage.success(roleForm.roleId ? '更新成功' : '创建成功')
+      if (!roleForm.roleId) clearSystemDraft('role-create')
       roleDialogVisible.value = false
       await loadRoles()
     } else {
@@ -638,7 +714,6 @@ const handleDeleteRole = async (row) => {
 const resetRoleForm = () => {
   roleForm.roleId = null
   roleForm.name = ''
-  roleForm.roleCode = ''
   roleForm.description = ''
 }
 
@@ -659,6 +734,7 @@ const loadStores = async () => {
 const handleAddUser = () => {
   dialogTitle.value = '新增用户'
   resetUserForm()
+  restoreSystemDraft('user-create', userForm)
   userDialogVisible.value = true
 }
 
@@ -669,16 +745,8 @@ const handleEditUser = async (row) => {
   userForm.name = row.name
   userForm.phone = row.phone
   userForm.password = ''
-  userForm.roleCode = row.role_code
+  userForm.roleIds = [...(row.role_ids || [])]
   userForm.status = row.status
-  userForm.storeIds = []
-
-  try {
-    const res = await api.getUserRegions(row.staff_id)
-    if (res.code === 0 && res.data?.storeIds) {
-      userForm.storeIds = res.data.storeIds
-    }
-  } catch (err) {}
 
   userDialogVisible.value = true
 }
@@ -686,17 +754,27 @@ const handleEditUser = async (row) => {
 const handleAssignStore = async (row) => {
   currentUser.value = row
   dialogStoreIds.value = []
+  assignableStores.value = []
   try {
+    if (stores.value.length === 0) await loadStores()
     const res = await api.getUserRegions(row.staff_id)
     if (res.code === 0 && res.data?.storeIds) {
       dialogStoreIds.value = res.data.storeIds
+      // 兼容尚未重启的旧后端：旧接口只有 storeIds/regionCodes，
+      // 可选门店使用系统页已加载的门店列表。
+      assignableStores.value = (res.data.availableStores?.length ? res.data.availableStores : stores.value) || []
     }
-  } catch (err) {}
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载门店范围失败')
+    return
+  }
   storeDialogVisible.value = true
 }
 
 const handleRoleMenus = async (row) => {
   currentRole.value = row
+  menuDialogVisible.value = true
+  await nextTick()
   try {
     const res = await api.getRoleMenus(row.role_id)
     if (res.code === 0) {
@@ -705,22 +783,20 @@ const handleRoleMenus = async (row) => {
   } catch (err) {
     console.error('Failed to load role menus')
   }
-  menuDialogVisible.value = true
 }
 
 const handleUserSubmit = async () => {
   if (!userForm.name) { ElMessage.warning('请输入姓名'); return }
   if (!userForm.phone) { ElMessage.warning('请输入手机号'); return }
   if (!userForm.staffId && !userForm.password) { ElMessage.warning('请输入初始密码'); return }
-  if (!userForm.roleCode) { ElMessage.warning('请选择角色'); return }
+  if (userForm.roleIds.length === 0) { ElMessage.warning('请至少选择一个角色'); return }
 
   submitLoading.value = true
   try {
     const data = {
       name: userForm.name,
       phone: userForm.phone,
-      roleCode: userForm.roleCode,
-      storeIds: userForm.storeIds,
+      roleIds: userForm.roleIds,
       status: userForm.status
     }
 
@@ -734,6 +810,7 @@ const handleUserSubmit = async () => {
 
     if (res.code === 0) {
       ElMessage.success('保存成功')
+      if (!userForm.staffId) clearSystemDraft('user-create')
       userDialogVisible.value = false
       loadUsers()
     } else {
@@ -746,6 +823,29 @@ const handleUserSubmit = async () => {
   }
 }
 
+const handleToggleUserStatus = async (row) => {
+  const nextStatus = row.status === 1 ? 0 : 1
+  const actionText = nextStatus === 1 ? '启用' : '停用'
+  try {
+    await ElMessageBox.confirm(
+      `确认${actionText}账号"${row.name}"？${nextStatus === 0 ? '停用后该账号将无法登录，已登录状态也会在下次请求时失效。' : ''}`,
+      `确认${actionText}`,
+      { type: nextStatus === 1 ? 'warning' : 'error' }
+    )
+    const res = await api.updateUser(row.staff_id, { status: nextStatus })
+    if (res.code === 0) {
+      ElMessage.success(`${actionText}成功`)
+      await loadUsers()
+    } else {
+      ElMessage.error(res.message || `${actionText}失败`)
+    }
+  } catch (err) {
+    if (err !== 'cancel') {
+      ElMessage.error(err.response?.data?.message || err.message || `${actionText}失败`)
+    }
+  }
+}
+
 const handleStoreDialogSubmit = async () => {
   submitLoading.value = true
   try {
@@ -755,18 +855,22 @@ const handleStoreDialogSubmit = async () => {
     if (res.code === 0) {
       ElMessage.success('分配成功')
       storeDialogVisible.value = false
+      await loadUsers()
     } else {
       ElMessage.error(res.message || '分配失败')
     }
   } catch (err) {
-    ElMessage.error('分配失败')
+    ElMessage.error(err.response?.data?.message || err.message || '分配失败')
   } finally {
     submitLoading.value = false
   }
 }
 
 const handleMenuSubmit = async () => {
-  const checkedKeys = menuTreeRef.value?.getCheckedKeys() || []
+  const checkedKeys = [
+    ...(menuTreeRef.value?.getCheckedKeys(false) || []),
+    ...(menuTreeRef.value?.getHalfCheckedKeys() || [])
+  ]
   submitLoading.value = true
   try {
     const res = await api.assignMenus(currentRole.value.role_id, {
@@ -790,8 +894,7 @@ const resetUserForm = () => {
   userForm.name = ''
   userForm.phone = ''
   userForm.password = ''
-  userForm.roleCode = ''
-  userForm.storeIds = []
+  userForm.roleIds = []
   userForm.status = 1
 }
 
@@ -840,6 +943,7 @@ const openCustomerSourceDialog = (row, parentId) => {
     csForm.name = ''
     csForm.parentId = ''
     csForm.sortOrder = (customerSourceData.value.length || 0) + 1
+    restoreSystemDraft('customer-source-create', csForm)
   }
   customerSourceDialogVisible.value = true
 }
@@ -861,6 +965,7 @@ const handleCsSubmit = async () => {
     }
     if (res.code === 0) {
       ElMessage.success(editingCsId.value ? '更新成功' : '创建成功')
+      if (!editingCsId.value) clearSystemDraft('customer-source-create')
       customerSourceDialogVisible.value = false
       loadCustomerSources()
     } else {
@@ -977,6 +1082,7 @@ const openPaymentMethodDialog = (row) => {
     pmForm.settlementAccountId = ''
     pmForm.isGlobal = true
     pmForm.sortOrder = (paymentMethodData.value.length || 0) + 1
+    restorePaymentMethodDraft()
   }
   paymentMethodDialogVisible.value = true
 }
@@ -989,6 +1095,24 @@ const onPmIsGlobalChange = () => {
 
 const onPmStoreChecked = (row) => {
   if (!row.checked) row.accountId = ''
+}
+
+const savePaymentMethodDraft = () => {
+  saveDraft('system:payment-method-create', {
+    pmForm: cloneDraft(pmForm),
+    pmStoreConfigRows: cloneDraft(pmStoreConfigRows.value)
+  })
+  ElMessage.success('草稿已保存')
+}
+
+const restorePaymentMethodDraft = () => {
+  const draft = loadDraft('system:payment-method-create')
+  if (!draft) return
+  Object.assign(pmForm, draft.pmForm || {})
+  if (Array.isArray(draft.pmStoreConfigRows)) {
+    pmStoreConfigRows.value = draft.pmStoreConfigRows
+  }
+  ElMessage.success('已恢复上次草稿')
 }
 
 const handlePmSubmit = async () => {
@@ -1015,6 +1139,7 @@ const handlePmSubmit = async () => {
     }
     if (res.code === 0) {
       ElMessage.success(editingPmId.value ? '更新成功' : '创建成功')
+      if (!editingPmId.value) clearSystemDraft('payment-method-create')
       paymentMethodDialogVisible.value = false
       loadPaymentMethods()
     } else { ElMessage.error(res.message || '操作失败') }
@@ -1075,7 +1200,9 @@ const saFormDialogVisible = ref(false)
 const settlementAccountData = ref([])
 const saDialogTitle = ref('新增结算账号')
 const editingSaId = ref(null)
-const saForm = reactive({ accountName: '', bankName: '', accountNumber: '', sortOrder: 0 })
+const accountSuppliers = ref([])
+const saForm = reactive({ accountName: '', accountType: 'FUND', supplierId: '', bankName: '', accountNumber: '', usageNote: '', sortOrder: 0 })
+const accountTypeText = value => ({ FUND:'资金账户', SUPPLIER_REBATE:'供应商返利', CARE_CREDIT:'Care可用金' }[value] || '资金账户')
 
 const openSaMgmtDialog = async () => {
   saMgmtDialogVisible.value = true
@@ -1094,12 +1221,16 @@ const handleSaMgmtClose = () => {
 }
 
 const openSettlementAccountDialog = (row) => {
+  if (accountSuppliers.value.length === 0) api.getSupplierList({page:1,pageSize:500}).then(res => { accountSuppliers.value = res.data?.list || res.data || [] })
   if (row) {
     saDialogTitle.value = '编辑结算账号'
     editingSaId.value = row.account_id
     saForm.accountName = row.account_name
     saForm.bankName = row.bank_name
     saForm.accountNumber = row.account_number
+    saForm.accountType = row.account_type || 'FUND'
+    saForm.supplierId = row.supplier_id || ''
+    saForm.usageNote = row.usage_note || ''
     saForm.sortOrder = row.sort_order || 0
   } else {
     saDialogTitle.value = '新增结算账号'
@@ -1107,7 +1238,11 @@ const openSettlementAccountDialog = (row) => {
     saForm.accountName = ''
     saForm.bankName = ''
     saForm.accountNumber = ''
+    saForm.accountType = 'FUND'
+    saForm.supplierId = ''
+    saForm.usageNote = ''
     saForm.sortOrder = 0
+    restoreSystemDraft('settlement-account-create', saForm)
   }
   saFormDialogVisible.value = true
 }
@@ -1117,7 +1252,7 @@ const handleSaSubmit = async () => {
   submitLoading.value = true
   try {
     let res
-    const data = { accountName: saForm.accountName, bankName: saForm.bankName, accountNumber: saForm.accountNumber, sortOrder: saForm.sortOrder }
+    const data = { accountName: saForm.accountName, accountType: saForm.accountType, supplierId: saForm.supplierId, bankName: saForm.bankName, accountNumber: saForm.accountNumber, usageNote: saForm.usageNote, sortOrder: saForm.sortOrder }
     if (editingSaId.value) {
       res = await api.updateSettlementAccount(editingSaId.value, data)
     } else {
@@ -1125,6 +1260,7 @@ const handleSaSubmit = async () => {
     }
     if (res.code === 0) {
       ElMessage.success(editingSaId.value ? '更新成功' : '创建成功')
+      if (!editingSaId.value) clearSystemDraft('settlement-account-create')
       saFormDialogVisible.value = false
       loadSettlementAccountsForMgmt()
       loadSettlementAccounts()
@@ -1171,8 +1307,11 @@ const saveSaSort = async () => {
 
 const resetSaForm = () => {
   saForm.accountName = ''
+  saForm.accountType = 'FUND'
+  saForm.supplierId = ''
   saForm.bankName = ''
   saForm.accountNumber = ''
+  saForm.usageNote = ''
   saForm.sortOrder = 0
   editingSaId.value = null
 }
@@ -1206,6 +1345,7 @@ const openSupplementItemDialog = (row) => {
     siForm.name = ''
     siForm.amount = 0
     siForm.sortOrder = (supplementItemData.value.length || 0) + 1
+    restoreSystemDraft('supplement-item-create', siForm)
   }
   supplementItemDialogVisible.value = true
 }
@@ -1223,6 +1363,7 @@ const handleSiSubmit = async () => {
     }
     if (res.code === 0) {
       ElMessage.success(editingSiId.value ? '更新成功' : '创建成功')
+      if (!editingSiId.value) clearSystemDraft('supplement-item-create')
       supplementItemDialogVisible.value = false
       loadSupplementItems()
     } else { ElMessage.error(res.message || '操作失败') }
@@ -1323,6 +1464,7 @@ const cfAddField = () => {
   cfFieldForm.placeholder = ''
   cfFieldForm.required = false
   cfOptionInput.value = ''
+  restoreCategoryFieldDraft()
   cfDialogVisible.value = true
 }
 
@@ -1356,8 +1498,26 @@ const cfConfirmField = () => {
     cfFields.value[cfEditingIndex.value] = item
   } else {
     cfFields.value.push(item)
+    clearDraft('system:category-field-create')
   }
   cfDialogVisible.value = false
+}
+
+const saveCategoryFieldDraft = () => {
+  saveDraft('system:category-field-create', {
+    cfFieldForm: cloneDraft(cfFieldForm),
+    cfOptionInput: cfOptionInput.value
+  })
+  ElMessage.success('草稿已保存')
+}
+
+const restoreCategoryFieldDraft = () => {
+  const draft = loadDraft('system:category-field-create')
+  if (!draft?.cfFieldForm) return
+  Object.assign(cfFieldForm, draft.cfFieldForm)
+  cfFieldForm.options = Array.isArray(draft.cfFieldForm.options) ? draft.cfFieldForm.options : []
+  cfOptionInput.value = draft.cfOptionInput || ''
+  ElMessage.success('已恢复上次草稿')
 }
 
 const cfDeleteField = (row) => {
@@ -1429,5 +1589,41 @@ const cfResetFieldForm = () => {
 <style scoped>
 .filter-bar {
   margin-bottom: 16px;
+}
+
+.store-permission-selector {
+  width: 100%;
+  min-width: 0;
+}
+
+.store-select-all {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.store-selected-count {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
+.store-checkbox-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  padding-top: 12px;
+}
+
+.store-checkbox-list :deep(.el-checkbox) {
+  min-width: 0;
+  margin-right: 0;
+}
+
+.store-checkbox-list :deep(.el-checkbox__label) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>
