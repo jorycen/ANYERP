@@ -17,10 +17,11 @@ const reportRouter = require('./modules/report/routes');
 const systemRouter = require('./modules/system/routes');
 const dictRouter = require('./modules/dict/routes');
 
-const { warmupDatabase } = require('./config/database');
+const { ensureDatabaseReady, markDatabaseUnhealthy } = require('./config/database');
 const { runMigrations } = require('./utils/dbMigration');
 const { errorHandler } = require('./middleware/errorHandler');
 const { responseFormatter } = require('./middleware/responseFormatter');
+const { databaseRecoveryMiddleware, databaseHealth } = require('./middleware/databaseRecovery');
 const { authMiddleware, storeAccessMiddleware } = require('./middleware/auth');
 const { applyPendingProductPriceChanges } = require('./modules/product/controller');
 
@@ -38,6 +39,8 @@ app.use(bodyParser({
 
 const apiRouter = new Router({ prefix: '/api/v1' });
 
+apiRouter.get('/health/db', databaseHealth);
+apiRouter.use(databaseRecoveryMiddleware);
 apiRouter.use('/auth', authRouter.routes());
 
 apiRouter.use(authMiddleware);
@@ -82,17 +85,29 @@ function startBackgroundJobs() {
   }, 60 * 1000);
 }
 
-async function startServer() {
-  try {
-    await warmupDatabase('startup warmup');
-    await runMigrations();
-    await warmupDatabase('post-migration warmup');
+function initializeDatabaseInBackground(retryDelayMs = Number(process.env.DB_STARTUP_RECOVERY_RETRY_MS || 60000)) {
+  (async () => {
+    try {
+      await ensureDatabaseReady('startup database activation', { force: true });
+      await runMigrations();
+      await ensureDatabaseReady('post-migration database activation', { force: true });
+      console.log('[Startup] database initialization completed');
+    } catch (error) {
+      markDatabaseUnhealthy(error);
+      console.error('[Startup] database initialization failed, will retry in background:', error.message);
+      setTimeout(() => initializeDatabaseInBackground(retryDelayMs), retryDelayMs).unref?.();
+    }
+  })();
+}
 
+function startServer() {
+  try {
     app.listen(PORT, () => {
       console.log(`ANY-ERP server started: http://localhost:${PORT}`);
       console.log(`API: http://localhost:${PORT}/api/v1`);
     });
 
+    initializeDatabaseInBackground();
     startBackgroundJobs();
   } catch (error) {
     console.error('[Startup] failed to initialize server:', error);

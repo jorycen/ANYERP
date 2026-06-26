@@ -1,4 +1,4 @@
-const { isTransientDatabaseError } = require('../config/database');
+const { isTransientDatabaseError, markDatabaseUnhealthy, recoverDatabaseInBackground } = require('../config/database');
 
 async function errorHandler(ctx, next) {
   try {
@@ -10,6 +10,8 @@ async function errorHandler(ctx, next) {
     if (isTransientDatabaseError(err)) {
       status = 503;
       message = 'Database connection is temporarily unavailable. Please retry later.';
+      markDatabaseUnhealthy(err);
+      recoverDatabaseInBackground('post-error database recovery');
     } else if (err.name === 'SequelizeValidationError') {
       status = 400;
       message = 'Validation error: ' + err.errors.map(e => `${e.path}: ${e.message}`).join(', ');

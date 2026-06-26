@@ -2,9 +2,14 @@
 
 ## 2026-06-26
 
+* Backend startup no longer exits when cloud MySQL is sleeping or temporarily unreachable; the HTTP service starts first, while database activation and migrations continue in a bounded background recovery loop.
+* API requests now trigger database activation before entering business routes when the backend has marked the database as unavailable.
+* Transient database connection errors mark the database as unhealthy and start background recovery, so subsequent mini-program retries do not depend on manual database login.
+* Added unauthenticated `GET /api/v1/health/db` for checking backend/database readiness separately.
+* Environment templates now include `DB_ACTIVATION_RETRY_DELAYS_MS` and `DB_STARTUP_RECOVERY_RETRY_MS`.
 * Sales deposit APIs now include mini-program compatibility routes for older endpoint names such as `deposit-list`, `deposit-create`, `deposit-available`, `archive-deposit`, and `refund-deposit`.
 * Backend database access now uses explicit Sequelize/mysql2 pool settings with configurable max/min connections, acquire timeout, idle eviction, connect timeout, and bounded query retry.
-* Backend startup now warms up the database connection, runs migrations, performs a post-migration warmup, and only then starts listening for API traffic.
+* Backend startup warms up the database connection, runs migrations, and performs a post-migration warmup through recoverable background initialization instead of blocking HTTP startup.
 * Transient database connection failures are returned as HTTP 503 so clients can distinguish recoverable cold-start or connection-lost cases from business validation errors.
 * Web HTTP clients now retry idempotent requests on network errors and 500/502/503/504 responses, with 1s/2s backoff and no blind retry for write operations.
 * Environment templates now include database pool and retry settings for cloud deployment tuning.

@@ -1,5 +1,35 @@
 # 决策记录
 
+## 2026-06-26 Recoverable database activation for sleeping cloud MySQL
+
+Decision time: 2026-06-26
+
+Decision:
+* The backend HTTP service must start even when cloud MySQL is sleeping or temporarily unreachable.
+* Startup database activation and migrations run in a bounded background recovery loop instead of forcing the process to exit.
+* Protected API requests trigger database activation before entering business routes when the database is marked unavailable.
+* Transient database connection errors mark the database unhealthy and start background recovery.
+* Recovery uses bounded exponential retry and a low-frequency startup retry interval, not a high-frequency heartbeat.
+* Add an unauthenticated database readiness endpoint for operational diagnosis.
+
+Reason:
+* If the backend process exits during database sleep, mini-program traffic can no longer trigger the database resume path.
+* Tencent cloud database wake-up can take longer than a single short connection timeout.
+* The API layer must remain alive so the first business request can act as the activation trigger.
+* Manual database login should not be part of the production recovery path.
+
+Alternatives:
+* Keep failing backend startup when database warmup fails.
+* Use frequent ping heartbeats to keep the database awake.
+* Start HTTP first and recover database availability through request-triggered and background activation.
+
+Final choice:
+* Start HTTP first, run database initialization in recoverable background mode, gate API routes on `ensureDatabaseReady`, and expose `GET /api/v1/health/db`.
+
+Status: confirmed
+
+---
+
 ## 2026-06-26 Database access stability for mini program and cloud MySQL
 
 Decision time: 2026-06-26

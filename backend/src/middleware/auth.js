@@ -83,4 +83,8 @@ function regionAuth(regionField = 'region_id') {
   };
 }
 
-module.exports = { authMiddleware, regionAuth };
+async function storeAccessMiddleware(ctx, next) {
+  await next();
+}
+
+module.exports = { authMiddleware, regionAuth, storeAccessMiddleware };

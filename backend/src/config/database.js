@@ -29,6 +29,17 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function parseRetryDelays(value, fallback) {
+  if (!value) return fallback;
+
+  const delays = String(value)
+    .split(',')
+    .map(item => Number(item.trim()))
+    .filter(item => Number.isInteger(item) && item >= 0);
+
+  return delays.length > 0 ? delays : fallback;
+}
+
 function getErrorText(error) {
   return [
     error?.name,
@@ -50,11 +61,20 @@ function isTransientDatabaseError(error) {
 }
 
 const poolMax = parseInteger(process.env.DB_POOL_MAX, 10);
-const poolMin = Math.min(parseInteger(process.env.DB_POOL_MIN, 0), poolMax);
+const poolMin = Math.min(parseInteger(process.env.DB_POOL_MIN, 1), poolMax);
 const connectTimeout = parseInteger(process.env.DB_CONNECT_TIMEOUT_MS, 10000);
 const acquireTimeout = parseInteger(process.env.DB_POOL_ACQUIRE_MS, 10000);
 const idleTimeout = parseInteger(process.env.DB_POOL_IDLE_MS, 60000);
 const evictInterval = parseInteger(process.env.DB_POOL_EVICT_MS, 30000);
+const activationRetryDelays = parseRetryDelays(
+  process.env.DB_ACTIVATION_RETRY_DELAYS_MS,
+  [1000, 2000, 4000, 8000, 16000]
+);
+
+let databaseReady = false;
+let databaseRecoveryPromise = null;
+let lastDatabaseError = null;
+let lastDatabaseReadyAt = null;
 
 const sequelize = new Sequelize(
   config.database.database,
@@ -108,13 +128,64 @@ async function withDatabaseRetry(operation, label = 'database operation', retryD
   throw lastError;
 }
 
-async function warmupDatabase(label = 'startup warmup') {
+async function warmupDatabase(label = 'startup warmup', retryDelays = activationRetryDelays) {
   await withDatabaseRetry(async () => {
     await sequelize.authenticate();
     await sequelize.query('SELECT 1');
-  }, label);
+  }, label, retryDelays);
+
+  databaseReady = true;
+  lastDatabaseError = null;
+  lastDatabaseReadyAt = new Date();
 
   console.log(`[DB] ${label} completed`);
+}
+
+async function ensureDatabaseReady(label = 'database activation', options = {}) {
+  if (databaseReady && !options.force) {
+    return;
+  }
+
+  if (databaseRecoveryPromise) {
+    return databaseRecoveryPromise;
+  }
+
+  const retryDelays = options.retryDelays || activationRetryDelays;
+  databaseRecoveryPromise = warmupDatabase(label, retryDelays)
+    .catch(error => {
+      databaseReady = false;
+      lastDatabaseError = error;
+      throw error;
+    })
+    .finally(() => {
+      databaseRecoveryPromise = null;
+    });
+
+  return databaseRecoveryPromise;
+}
+
+function markDatabaseUnhealthy(error) {
+  databaseReady = false;
+  lastDatabaseError = error || lastDatabaseError;
+}
+
+function recoverDatabaseInBackground(label = 'background database recovery') {
+  ensureDatabaseReady(label).catch(error => {
+    console.error(`[DB] ${label} failed:`, error.message);
+  });
+}
+
+function getDatabaseStatus() {
+  return {
+    ready: databaseReady,
+    recovering: Boolean(databaseRecoveryPromise),
+    lastReadyAt: lastDatabaseReadyAt,
+    lastError: lastDatabaseError ? {
+      name: lastDatabaseError.name,
+      code: lastDatabaseError.code || lastDatabaseError.parent?.code || lastDatabaseError.original?.code,
+      message: lastDatabaseError.message
+    } : null
+  };
 }
 
 console.log(
@@ -125,6 +196,10 @@ module.exports = {
   sequelize,
   Sequelize,
   warmupDatabase,
+  ensureDatabaseReady,
+  markDatabaseUnhealthy,
+  recoverDatabaseInBackground,
+  getDatabaseStatus,
   withDatabaseRetry,
   isTransientDatabaseError
 };
