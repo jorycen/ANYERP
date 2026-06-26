@@ -395,6 +395,38 @@
 
           <div class="settlement-section">
             <div class="filter-bar">
+              <span style="font-weight: bold; line-height: 32px;">返利对账（含PO奖励）</span>
+              <el-input v-model="rebateEstimateOrderFilter" placeholder="销售单号" clearable style="width: 160px" @keyup.enter="loadRebateEstimates" />
+              <el-select v-model="rebateEstimateSupplierFilter" placeholder="供应商" clearable filterable style="width: 180px" @change="loadRebateEstimates">
+                <el-option v-for="s in suppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
+              </el-select>
+              <el-select v-model="rebateEstimateStatusFilter" placeholder="状态" clearable style="width: 130px" @change="loadRebateEstimates">
+                <el-option label="待确认" value="estimated" />
+                <el-option label="已到账" value="received" />
+              </el-select>
+              <el-button @click="loadRebateEstimates">搜索</el-button>
+            </div>
+            <el-table :data="rebateEstimateData" stripe border empty-text="暂无返利对账记录">
+              <el-table-column prop="sales_order_no" label="销售单号" width="170" />
+              <el-table-column prop="supplier_name" label="供应商" min-width="140" />
+              <el-table-column prop="product_name" label="商品" min-width="180" />
+              <el-table-column prop="sn" label="SN" min-width="150" />
+              <el-table-column prop="policy_name" label="政策/权益" min-width="140" />
+              <el-table-column label="类型" width="110">
+                <template #default="{ row }">{{ row.policy_type === 'PO_REWARD' ? 'PO奖励' : row.policy_type }}</template>
+              </el-table-column>
+              <el-table-column label="预估金额" width="120">
+                <template #default="{ row }">¥{{ Number(row.rebate_estimate_amount || 0).toFixed(2) }}</template>
+              </el-table-column>
+              <el-table-column label="状态" width="100">
+                <template #default="{ row }"><el-tag :type="row.status === 'received' ? 'success' : 'warning'">{{ row.status === 'received' ? '已到账' : '待确认' }}</el-tag></template>
+              </el-table-column>
+              <el-table-column prop="created_at" label="生成时间" width="170" />
+            </el-table>
+          </div>
+
+          <div class="settlement-section">
+            <div class="filter-bar">
               <span style="font-weight: bold; line-height: 32px;">厂家政策</span>
               <el-button type="primary" @click="openManufacturerPolicyDialog()">新增政策</el-button>
               <el-select v-model="manufacturerPolicySupplierFilter" placeholder="供应商/厂家" clearable filterable style="width: 180px" @change="loadManufacturerPolicies">
@@ -1106,6 +1138,10 @@ const rebateSummaryTotal = ref(0)
 const rebateSupplierFilter = ref('')
 const rebateTypeFilter = ref('')
 const allRebateSuppliers = ref([])
+const rebateEstimateData = ref([])
+const rebateEstimateOrderFilter = ref('')
+const rebateEstimateSupplierFilter = ref('')
+const rebateEstimateStatusFilter = ref('')
 const manufacturerPolicyData = ref([])
 const manufacturerPolicySupplierFilter = ref('')
 const manufacturerPolicyPnFilter = ref('')
@@ -1337,6 +1373,7 @@ onMounted(() => {
   loadSettlementData()
   loadRebateList()
   loadRebateSummary()
+  loadRebateEstimates()
   loadManufacturerPolicies()
   loadManufacturerPrices()
   loadCostAdjustments()
@@ -1808,6 +1845,19 @@ const loadManufacturerPolicies = async () => {
     }
   } catch (err) {
     ElMessage.error('加载厂家政策失败')
+  }
+}
+
+const loadRebateEstimates = async () => {
+  try {
+    const params = { page: 1, pageSize: 100 }
+    if (rebateEstimateOrderFilter.value) params.orderNo = rebateEstimateOrderFilter.value
+    if (rebateEstimateSupplierFilter.value) params.supplierId = rebateEstimateSupplierFilter.value
+    if (rebateEstimateStatusFilter.value) params.status = rebateEstimateStatusFilter.value
+    const res = await api.getRebateEstimateList(params)
+    if (res.code === 0) rebateEstimateData.value = res.data?.list || []
+  } catch (err) {
+    ElMessage.error('加载返利对账记录失败')
   }
 }
 

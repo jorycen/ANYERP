@@ -192,6 +192,12 @@ const InventoryResourceRight = sequelize.define('InventoryResourceRight', {
   sn_code: { type: DataTypes.STRING(128), allowNull: false },
   product_id: { type: DataTypes.STRING(32), allowNull: false },
   resource_type: { type: DataTypes.STRING(32), allowNull: false },
+  rule_config_id: { type: DataTypes.STRING(32) },
+  source_request_id: { type: DataTypes.STRING(32) },
+  source_request_item_id: { type: DataTypes.BIGINT(20) },
+  source_inbound_id: { type: DataTypes.STRING(32) },
+  supplier_id: { type: DataTypes.STRING(32) },
+  supplier_name: { type: DataTypes.STRING(255) },
   initial_status: { type: DataTypes.STRING(32), allowNull: false, defaultValue: 'NOT_APPLICABLE' },
   current_status: { type: DataTypes.STRING(32), allowNull: false, defaultValue: 'NOT_APPLICABLE' },
   amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
@@ -210,9 +216,17 @@ const ResourceCategory = sequelize.define('ResourceCategory', {
   category_code: { type: DataTypes.STRING(32), unique: true, allowNull: false },
   name: { type: DataTypes.STRING(128), allowNull: false },
   short_name: { type: DataTypes.STRING(64) },
+  resource_kind: { type: DataTypes.STRING(32), defaultValue: 'SALE_USE' },
   default_account_id: { type: DataTypes.STRING(64) },
+  supports_purchase_select: { type: DataTypes.TINYINT(1), defaultValue: 1 },
   supports_sale_use: { type: DataTypes.TINYINT(1), defaultValue: 1 },
   supports_company_claim: { type: DataTypes.TINYINT(1), defaultValue: 1 },
+  trigger_on_sale: { type: DataTypes.TINYINT(1), defaultValue: 0 },
+  generates_settlement: { type: DataTypes.TINYINT(1), defaultValue: 1 },
+  generates_staff_care_credit: { type: DataTypes.TINYINT(1), defaultValue: 0 },
+  affects_performance_profit: { type: DataTypes.TINYINT(1), defaultValue: 0 },
+  performance_profit_ratio: { type: DataTypes.DECIMAL(8, 4), defaultValue: 100 },
+  rule_config_json: { type: DataTypes.TEXT },
   sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
   status: { type: DataTypes.TINYINT(1), defaultValue: 1 },
   remark: { type: DataTypes.STRING(512) },
@@ -251,7 +265,17 @@ const ProductResourceCostConfig = sequelize.define('ProductResourceCostConfig', 
   config_id: { type: DataTypes.STRING(32), primaryKey: true },
   product_id: { type: DataTypes.STRING(32), allowNull: false },
   resource_type: { type: DataTypes.STRING(32), allowNull: false },
+  supplier_id: { type: DataTypes.STRING(32) },
+  supplier_name: { type: DataTypes.STRING(255) },
   cost_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  calculation_type: { type: DataTypes.STRING(32), defaultValue: 'fixed_amount' },
+  calculation_value: { type: DataTypes.DECIMAL(12, 4), defaultValue: 0 },
+  effective_start: { type: DataTypes.DATE },
+  effective_end: { type: DataTypes.DATE },
+  trigger_condition: { type: DataTypes.STRING(64), defaultValue: 'sale_archived' },
+  affects_performance_profit: { type: DataTypes.TINYINT(1), defaultValue: 0 },
+  performance_profit_ratio: { type: DataTypes.DECIMAL(8, 4), defaultValue: 100 },
+  rule_config_json: { type: DataTypes.TEXT },
   status: { type: DataTypes.TINYINT(1), defaultValue: 1 },
   remark: { type: DataTypes.STRING(512) },
   create_user: { type: DataTypes.STRING(64) },
@@ -301,6 +325,28 @@ const ResourceSettlement = sequelize.define('ResourceSettlement', {
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
   remark: { type: DataTypes.STRING(512) }
 }, { tableName: 'T_RESOURCE_SETTLEMENT', timestamps: false });
+
+// 销售个人 Care 可用金流水。该额度归属销售个人，不归属客户。
+const StaffCareCreditTransaction = sequelize.define('StaffCareCreditTransaction', {
+  transaction_id: { type: DataTypes.STRING(32), primaryKey: true },
+  staff_id: { type: DataTypes.BIGINT(20) },
+  staff_name: { type: DataTypes.STRING(64), allowNull: false },
+  type: { type: DataTypes.STRING(32), allowNull: false, defaultValue: 'income' },
+  amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  balance_after: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  source_type: { type: DataTypes.STRING(32), allowNull: false },
+  source_id: { type: DataTypes.STRING(64), allowNull: false },
+  order_id: { type: DataTypes.STRING(32) },
+  order_no: { type: DataTypes.STRING(64) },
+  order_item_id: { type: DataTypes.BIGINT(20) },
+  sn_id: { type: DataTypes.STRING(32) },
+  sn_code: { type: DataTypes.STRING(128) },
+  product_id: { type: DataTypes.STRING(32) },
+  resource_type: { type: DataTypes.STRING(32) },
+  status: { type: DataTypes.STRING(32), defaultValue: 'active' },
+  remark: { type: DataTypes.STRING(512) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_STAFF_CARE_CREDIT_TRANSACTION', timestamps: false });
 
 // 商品条码（厂商编码/69码，一个商品可有多个）
 const ProductBarcode = sequelize.define('ProductBarcode', {
@@ -619,7 +665,8 @@ const PurchaseRequestItem = sequelize.define('PurchaseRequestItem', {
   subtotal: { type: DataTypes.DECIMAL(12, 2) },
   rebate_deduction: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   product_type: { type: DataTypes.STRING(32), comment: '货型：正规货/国补货/纯二批' },
-  store_allocations: { type: DataTypes.TEXT }
+  store_allocations: { type: DataTypes.TEXT },
+  selected_resource_types: { type: DataTypes.TEXT }
 }, { tableName: 'T_PURCHASE_REQUEST_ITEM', timestamps: false });
 
 // 采购单
@@ -656,6 +703,7 @@ const Order = sequelize.define('Order', {
   order_id: { type: DataTypes.STRING(32), primaryKey: true },
   order_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
   store_id: { type: DataTypes.STRING(32), allowNull: false },
+  create_staff_id: { type: DataTypes.BIGINT(20) },
   create_user: { type: DataTypes.STRING(64) },
   customer_name: { type: DataTypes.STRING(64) },
   customer_phone: { type: DataTypes.STRING(32) },
@@ -808,7 +856,9 @@ const InboundItem = sequelize.define('InboundItem', {
   location_id: { type: DataTypes.STRING(32) },
   inventory_type: { type: DataTypes.STRING(32), defaultValue: 'normal_qty' },
   product_type: { type: DataTypes.STRING(32), comment: '货型：正规货/国补货/纯二批' },
-  store_allocations: { type: DataTypes.TEXT }
+  store_allocations: { type: DataTypes.TEXT },
+  selected_resource_types: { type: DataTypes.TEXT },
+  purchase_request_item_id: { type: DataTypes.BIGINT(20) }
 }, { tableName: 'T_INBOUND_ITEM', timestamps: false });
 
 // 出库单
@@ -1267,6 +1317,7 @@ InventoryResourceCostAdjustment.belongsTo(ProductSn, { foreignKey: 'sn_id', targ
 ResourceCategory.belongsTo(SettlementAccount, { foreignKey: 'default_account_id', targetKey: 'account_id', as: 'DefaultAccount' });
 ResourceSettlement.belongsTo(ResourceCategory, { foreignKey: 'resource_type', targetKey: 'category_code', as: 'ResourceCategory' });
 ResourceSettlement.belongsTo(SettlementAccount, { foreignKey: 'target_account_id', targetKey: 'account_id', as: 'TargetAccount' });
+StaffCareCreditTransaction.belongsTo(Staff, { foreignKey: 'staff_id', targetKey: 'staff_id' });
 
 Product.hasMany(ProductBarcode, { foreignKey: 'product_id', sourceKey: 'product_id' });
 ProductBarcode.belongsTo(Product, { foreignKey: 'product_id', targetKey: 'product_id' });
@@ -1464,6 +1515,7 @@ module.exports = {
   ProductResourceCostConfig,
   InventoryResourceCostAdjustment,
   ResourceSettlement,
+  StaffCareCreditTransaction,
   ProductBarcode,
   SnLog,
   ProductCategory,

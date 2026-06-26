@@ -1,7 +1,7 @@
 /**
  * 采购管理控制器
  */
-const { sequelize, PurchaseRequest, PurchaseRequestItem, Supplier, SupplierPaymentAccount, Store, Product, Inbound, InboundItem, Payable, SupplierRebate } = require('../../models');
+const { sequelize, PurchaseRequest, PurchaseRequestItem, Supplier, SupplierPaymentAccount, Store, Product, Inbound, InboundItem, Payable, SupplierRebate, ResourceCategory } = require('../../models');
 const { Op } = require('sequelize');
 const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate, formatPaginatedResult } = require('../../utils');
 const { recordRebateDeduction, recordSupplierRebateAccountTransaction, _getRebateBalance } = require('../finance/rebateController');
@@ -54,6 +54,17 @@ function allocateRebateByItems(items, amount) {
   }
 
   return allocations.map(value => value / 100);
+}
+
+function normalizeSelectedResourceTypes(value) {
+  if (Array.isArray(value)) return [...new Set(value.filter(Boolean).map(String))];
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? [...new Set(parsed.filter(Boolean).map(String))] : [];
+  } catch (_) {
+    return [];
+  }
 }
 
 /**
@@ -181,6 +192,20 @@ async function createRequest(ctx) {
     ctx.throw(400, '请选择供应商');
   }
 
+  const selectedTypeSet = new Set();
+  for (const item of items) {
+    normalizeSelectedResourceTypes(item.selectedResourceTypes || item.selected_resource_types).forEach(type => selectedTypeSet.add(type));
+  }
+  if (selectedTypeSet.size > 0) {
+    const validCategories = await ResourceCategory.findAll({
+      where: { category_code: { [Op.in]: [...selectedTypeSet] }, status: 1, supports_purchase_select: 1 }
+    });
+    const validSet = new Set(validCategories.map(row => row.category_code));
+    for (const type of selectedTypeSet) {
+      if (!validSet.has(type)) ctx.throw(400, `资源权益 ${type} 不存在、已停用或不允许采购勾选`);
+    }
+  }
+
   const requestNo = generateRequestNo();
   const requestId = generateUUID();
 
@@ -276,7 +301,8 @@ async function createRequest(ctx) {
       subtotal: subtotal,
       rebate_deduction: itemRebateAllocations[itemIndex] || 0,
       product_type: productType || item.productType || '',
-      store_allocations: item.storeAllocations ? JSON.stringify(item.storeAllocations) : null
+      store_allocations: item.storeAllocations ? JSON.stringify(item.storeAllocations) : null,
+      selected_resource_types: JSON.stringify(normalizeSelectedResourceTypes(item.selectedResourceTypes || item.selected_resource_types))
     });
   }
 
@@ -399,7 +425,9 @@ async function approveRequest(ctx) {
         storeItemsMap.get(storeId).push({
           ...item.toJSON(),
           product_name: productName,
-          allocatedQuantity: alloc.quantity || item.quantity
+          allocatedQuantity: alloc.quantity || item.quantity,
+          selected_resource_types: item.selected_resource_types || '[]',
+          purchase_request_item_id: item.item_id
         });
       }
     }
@@ -439,6 +467,8 @@ async function approveRequest(ctx) {
           unit_price: item.unit_price,
           quantity: item.allocatedQuantity || item.quantity,
           product_type: item.product_type || '',
+          selected_resource_types: item.selected_resource_types || '[]',
+          purchase_request_item_id: item.purchase_request_item_id || item.item_id,
           store_allocations: JSON.stringify([{
             storeId: storeId,
             quantity: item.allocatedQuantity || item.quantity

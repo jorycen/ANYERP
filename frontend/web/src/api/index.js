@@ -145,6 +145,8 @@ export default {
   getProductResourceCostConfigs: (params) => api.get('/inventory/resource-rights/cost-configs', { params }),
   getResourceCostAdjustments: (params) => api.get('/inventory/resource-rights/cost-adjustments', { params }),
   saveProductResourceCostConfig: (data) => api.post('/inventory/resource-rights/cost-configs', data),
+  batchAdjustResourceRights: (data) => api.post('/inventory/resource-rights/batch-adjust', data),
+  batchRefreshResourceRights: (data) => api.post('/inventory/resource-rights/batch-refresh', data),
   getResourceCategories: (params) => api.get('/inventory/resource-categories', { params }),
   saveResourceCategory: (data) => api.post('/inventory/resource-categories', data),
   getResourceSettlements: (params) => api.get('/inventory/resource-settlements', { params }),

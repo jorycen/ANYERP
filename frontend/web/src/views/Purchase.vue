@@ -191,6 +191,21 @@
                 />
                 <span>抵扣后：¥{{ Math.max(0, itemSubtotal(item) - toNumber(item.rebateDeduction)).toFixed(2) }}</span>
               </div>
+              <div class="item-resource-row">
+                <span>资源权益</span>
+                <el-select
+                  v-model="item.selectedResourceTypes"
+                  multiple
+                  collapse-tags
+                  collapse-tags-tooltip
+                  clearable
+                  size="small"
+                  placeholder="选择本批货权益"
+                  style="flex: 1; min-width: 0;"
+                >
+                  <el-option v-for="option in resourceOptions" :key="option.value" :label="option.label" :value="option.value" />
+                </el-select>
+              </div>
             </div>
             <el-button type="primary" size="small" @click="addRequestItem">添加商品</el-button>
           </div>
@@ -389,6 +404,7 @@ const allSuppliers = ref([])
 const allStores = ref([])
 const allStoresLoaded = ref(false)
 const products = ref([])
+const resourceOptions = ref([])
 const productSearchKeyword = ref('')
 const supplierSearchKeyword = ref('')
 const total = ref(0)
@@ -526,6 +542,7 @@ onMounted(() => {
   loadAllSuppliers()
   loadAllStores()
   loadProducts()
+  loadResourceOptions()
 })
 
 const loadAllStores = async () => {
@@ -628,9 +645,21 @@ const loadProducts = async () => {
   }
 }
 
+const loadResourceOptions = async () => {
+  try {
+    const res = await api.getResourceCategories({ activeOnly: 1 })
+    resourceOptions.value = (res.data || [])
+      .filter(item => item.supports_purchase_select !== 0)
+      .map(item => ({ label: item.name, value: item.category_code }))
+  } catch (err) {
+    console.error('Failed to load resource categories')
+  }
+}
+
 const handleCreate = () => {
   resetForm()
   restorePurchaseRequestDraft()
+  if (resourceOptions.value.length === 0) loadResourceOptions()
   requestDialogVisible.value = true
 }
 
@@ -976,7 +1005,7 @@ const onItemAmountChange = () => {
 }
 
 const addRequestItem = () => {
-  requestForm.items.push({ productId: '', productName: '', price: 0, quantity: 1, rebateDeduction: 0, storeAllocations: [] })
+  requestForm.items.push({ productId: '', productName: '', price: 0, quantity: 1, rebateDeduction: 0, storeAllocations: [], selectedResourceTypes: [] })
   if (toNumber(requestForm.rebateDeduction) > 0) {
     allocateTotalRebateToItems()
   }
@@ -1037,7 +1066,8 @@ const handleSubmit = async () => {
         quantity: item.quantity,
         productType: requestForm.productType || '正规货',
         rebateDeduction: Math.min(toNumber(item.rebateDeduction), itemSubtotal(item)),
-        storeAllocations: item.storeAllocations
+        storeAllocations: item.storeAllocations,
+        selectedResourceTypes: item.selectedResourceTypes || []
       }))
     }
     const res = await api.createPurchaseRequest(data)
@@ -1079,7 +1109,7 @@ const restorePurchaseRequestDraft = () => {
   if (!draft) return
   Object.assign(requestForm, draft)
   requestForm.items = Array.isArray(draft.items)
-    ? draft.items.map(item => ({ rebateDeduction: 0, ...item }))
+    ? draft.items.map(item => ({ rebateDeduction: 0, selectedResourceTypes: [], ...item }))
     : []
   ElMessage.success('已恢复上次草稿')
 }
@@ -1182,6 +1212,18 @@ const handleAllocateDialogClose = () => {
   margin-top: 8px;
   padding: 6px 10px;
   background: #fff7e8;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #606266;
+}
+
+.item-resource-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: #eef5ff;
   border-radius: 4px;
   font-size: 12px;
   color: #606266;

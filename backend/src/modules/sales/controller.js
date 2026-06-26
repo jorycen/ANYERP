@@ -26,7 +26,7 @@ const {
 } = require('../../models');
 const { Op } = require('sequelize');
 const { generateOrderNo, generateUUID, paginate, formatPaginatedResult } = require('../../utils');
-const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement } = require('../inventory/resourceRights');
+const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
 
 function chinaDateBoundary(dateText, endOfDay = false) {
@@ -441,6 +441,7 @@ async function create(ctx) {
     order_id: orderId,
     order_no: orderNo,
     store_id: actualStoreId,
+    create_staff_id: user.staffId,
     create_user: user.name,
     customer_name: customerName,
     customer_phone: customerPhone,
@@ -652,6 +653,8 @@ async function update(ctx) {
       const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
       await finishSaleRights(order, items, transaction);
       await calculateSalesSettlementCosts(order, transaction);
+      const refreshedItems = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+      await triggerSaleResourceBenefits(order, refreshedItems, transaction);
       data.order_status = '已归档';
       data.status = '已归档';
       syncToDailyStatement(orderId, order.store_id).catch(err => console.error('[DailySync] archive error:', err.message));

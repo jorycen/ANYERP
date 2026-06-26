@@ -2,7 +2,8 @@ const { Op } = require('sequelize');
 const {
   sequelize, Product, ProductSn, InventoryResourceRight, ResourceRightChangeOrder,
   ProductResourceCostConfig, InventoryResourceCostAdjustment, ResourceCategory,
-  ResourceSettlement, SettlementAccount, SettlementAccountTransaction, SupplierRebate, RebateEstimate, Supplier
+  ResourceSettlement, SettlementAccount, SettlementAccountTransaction, SupplierRebate, RebateEstimate, Supplier,
+  StaffCareCreditTransaction, PerformanceProfitAdjustment
 } = require('../../models');
 const { generateUUID, paginate, formatPaginatedResult } = require('../../utils');
 
@@ -14,6 +15,33 @@ const STATUS_LABELS = {
   AVAILABLE: '可用', LOCKED: '已锁定', USED: '已核销', CLAIMED_BACK: '已套回',
   NOT_APPLICABLE: '不适用', EXCEPTION: '异常'
 };
+
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value.filter(Boolean);
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function parseJsonObject(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function money(value) {
+  const number = Number(value || 0);
+  return Math.round(number * 100) / 100;
+}
 
 function roles(user) {
   if (Array.isArray(user?.roles) && user.roles.length > 0) return user.roles;
@@ -33,8 +61,16 @@ function businessNo(prefix = 'RRC') {
 
 async function getResourceCategories({ activeOnly = true, usableOnly = true, transaction = null } = {}) {
   const where = activeOnly ? { status: 1 } : {};
-  if (usableOnly) where[Op.or] = [{ supports_sale_use: 1 }, { supports_company_claim: 1 }];
+  if (usableOnly) where[Op.or] = [{ supports_sale_use: 1 }, { supports_company_claim: 1 }, { supports_purchase_select: 1 }, { trigger_on_sale: 1 }];
   return ResourceCategory.findAll({ where, order: [['sort_order', 'ASC'], ['name', 'ASC']], transaction });
+}
+
+async function getPurchaseSelectableResourceCategories({ transaction = null } = {}) {
+  return ResourceCategory.findAll({
+    where: { status: 1, supports_purchase_select: 1 },
+    order: [['sort_order', 'ASC'], ['name', 'ASC']],
+    transaction
+  });
 }
 
 function categoryMap(categories = []) {
@@ -169,6 +205,93 @@ async function saveSnRights(ctx) {
   ctx.body = { message: 'SN资源权益已保存' };
 }
 
+async function batchAdjustRights(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
+  const { snCodes = [], productId, resourceTypes = [], status = 'AVAILABLE', amount = 0, remark = '' } = ctx.request.body || {};
+  const normalizedTypes = [...new Set(resourceTypes.filter(Boolean))];
+  if (normalizedTypes.length === 0) ctx.throw(400, '请选择需要调整的资源权益');
+  if (!['AVAILABLE', 'NOT_APPLICABLE', 'EXCEPTION'].includes(status)) ctx.throw(400, '批量调整只允许设置为可用、不适用或异常');
+  const categories = await getPurchaseSelectableResourceCategories();
+  const validTypes = new Set(categories.map(row => row.category_code));
+  for (const type of normalizedTypes) if (!validTypes.has(type)) ctx.throw(400, `资源权益 ${type} 无效或已停用`);
+  const where = { is_deleted: 0, status: 'in_stock' };
+  if (Array.isArray(snCodes) && snCodes.length > 0) where.sn_code = { [Op.in]: snCodes };
+  if (productId) where.product_id = productId;
+  if (!where.sn_code && !where.product_id) ctx.throw(400, '请按SN或商品指定批量调整范围');
+
+  let affected = 0;
+  await sequelize.transaction(async transaction => {
+    const sns = await ProductSn.findAll({ where, transaction });
+    for (const sn of sns) {
+      for (const resourceType of normalizedTypes) {
+        let right = await InventoryResourceRight.findOne({ where: { sn_id: sn.sn_id, resource_type: resourceType }, transaction, lock: transaction.LOCK.UPDATE });
+        const before = right?.current_status || 'NOT_APPLICABLE';
+        if (['LOCKED', 'USED', 'CLAIMED_BACK'].includes(before)) continue;
+        if (!right) {
+          right = await InventoryResourceRight.create({
+            right_id: generateUUID(), sn_id: sn.sn_id, sn_code: sn.sn_code, product_id: sn.product_id,
+            resource_type: resourceType, initial_status: status, current_status: status,
+            amount: money(amount), source: 'BATCH_ADJUST', remark
+          }, { transaction });
+        } else {
+          await right.update({ current_status: status, amount: money(amount), source: 'BATCH_ADJUST', remark, version: Number(right.version || 0) + 1 }, { transaction });
+        }
+        await ResourceRightChangeOrder.create({
+          change_id: generateUUID(), change_order_no: businessNo(), sn_id: sn.sn_id, sn_code: sn.sn_code,
+          product_id: sn.product_id, resource_type: resourceType, before_status: before, after_status: status,
+          change_amount: money(amount), change_reason: 'BATCH_ADJUST', approval_status: 'approved',
+          applicant_staff_id: ctx.state.user.staffId, applicant_name: ctx.state.user.name,
+          reviewer_staff_id: ctx.state.user.staffId, reviewer_name: ctx.state.user.name,
+          review_time: new Date(), remark
+        }, { transaction });
+        affected += 1;
+      }
+    }
+  });
+  ctx.body = { message: '批量权益调整完成', affected };
+}
+
+async function batchRefreshRights(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
+  const { productId, resourceTypes = [], snCodes = [] } = ctx.request.body || {};
+  const normalizedTypes = [...new Set(resourceTypes.filter(Boolean))];
+  if (!productId && (!Array.isArray(snCodes) || snCodes.length === 0)) ctx.throw(400, '请按商品或SN指定刷新范围');
+  const where = { is_deleted: 0, status: 'in_stock' };
+  if (productId) where.product_id = productId;
+  if (Array.isArray(snCodes) && snCodes.length > 0) where.sn_code = { [Op.in]: snCodes };
+  let affected = 0;
+  await sequelize.transaction(async transaction => {
+    const sns = await ProductSn.findAll({ where, transaction });
+    const snIds = sns.map(sn => sn.sn_id);
+    if (snIds.length === 0) return;
+    const snById = new Map(sns.map(sn => [sn.sn_id, sn]));
+    const rightWhere = {
+      sn_id: { [Op.in]: snIds },
+      current_status: { [Op.in]: ['AVAILABLE', 'NOT_APPLICABLE', 'EXCEPTION'] }
+    };
+    if (normalizedTypes.length > 0) rightWhere.resource_type = { [Op.in]: normalizedTypes };
+    const rights = await InventoryResourceRight.findAll({ where: rightWhere, transaction, lock: transaction.LOCK.UPDATE });
+    for (const right of rights) {
+      const rule = await findResourceRule({
+        productId: right.product_id,
+        resourceType: right.resource_type,
+        supplierId: right.supplier_id || '',
+        saleDate: new Date(),
+        transaction
+      });
+      if (!rule) continue;
+      await right.update({
+        rule_config_id: rule.config_id,
+        amount: calculatePreSaleRuleAmount(rule, snById.get(right.sn_id)),
+        version: Number(right.version || 0) + 1,
+        remark: right.remark || '按当前权益规则批量刷新'
+      }, { transaction });
+      affected += 1;
+    }
+  });
+  ctx.body = { message: '资源权益规则刷新完成；已归档销售单未受影响', affected };
+}
+
 async function submitClaim(ctx) {
   requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
   const { snId, resourceType, amount, attachmentUrl, remark } = ctx.request.body || {};
@@ -278,7 +401,12 @@ async function listCostAdjustments(ctx) {
 
 async function saveCostConfig(ctx) {
   requireAnyRole(ctx, ['boss', 'admin', 'finance']);
-  const { productId, resourceType, costAmount, remark } = ctx.request.body || {};
+  const {
+    productId, resourceType, costAmount, remark, supplierId = '', supplierName = '',
+    calculationType = 'fixed_amount', calculationValue, effectiveStart, effectiveEnd,
+    triggerCondition = 'sale_archived', affectsPerformanceProfit = false, performanceProfitRatio = 100,
+    ruleConfigJson = null
+  } = ctx.request.body || {};
   const category = await ResourceCategory.findOne({ where: { category_code: resourceType, status: 1 } });
   if (!category) ctx.throw(400, '资源类型无效或已停用');
   const amount = Number(costAmount);
@@ -286,11 +414,27 @@ async function saveCostConfig(ctx) {
   const product = await Product.findByPk(productId);
   if (!product || product.is_deleted) ctx.throw(404, '商品不存在');
   const [config, created] = await ProductResourceCostConfig.findOrCreate({
-    where: { product_id: productId, resource_type: resourceType },
-    defaults: { config_id: generateUUID(), cost_amount: amount, status: 1, remark: remark || '', create_user: ctx.state.user.name, update_user: ctx.state.user.name }
+    where: { product_id: productId, resource_type: resourceType, supplier_id: supplierId || '' },
+    defaults: {
+      config_id: generateUUID(), supplier_id: supplierId || '', supplier_name: supplierName || '',
+      cost_amount: amount, calculation_type: calculationType, calculation_value: Number(calculationValue ?? amount),
+      effective_start: effectiveStart || null, effective_end: effectiveEnd || null,
+      trigger_condition: triggerCondition, affects_performance_profit: affectsPerformanceProfit ? 1 : 0,
+      performance_profit_ratio: Number(performanceProfitRatio || 100),
+      rule_config_json: ruleConfigJson ? JSON.stringify(ruleConfigJson) : null,
+      status: 1, remark: remark || '', create_user: ctx.state.user.name, update_user: ctx.state.user.name
+    }
   });
-  if (!created) await config.update({ cost_amount: amount, status: 1, remark: remark || '', update_user: ctx.state.user.name, update_time: new Date() });
-  ctx.body = { message: '商品资源成本定义已保存' };
+  if (!created) await config.update({
+    supplier_id: supplierId || '', supplier_name: supplierName || '',
+    cost_amount: amount, calculation_type: calculationType, calculation_value: Number(calculationValue ?? amount),
+    effective_start: effectiveStart || null, effective_end: effectiveEnd || null,
+    trigger_condition: triggerCondition, affects_performance_profit: affectsPerformanceProfit ? 1 : 0,
+    performance_profit_ratio: Number(performanceProfitRatio || 100),
+    rule_config_json: ruleConfigJson ? JSON.stringify(ruleConfigJson) : config.rule_config_json,
+    status: 1, remark: remark || '', update_user: ctx.state.user.name, update_time: new Date()
+  });
+  ctx.body = { message: '商品资源权益规则已保存' };
 }
 
 async function listResourceCategories(ctx) {
@@ -315,9 +459,17 @@ async function saveResourceCategory(ctx) {
   const values = {
     name,
     short_name: String(body.shortName || name).trim(),
+    resource_kind: String(body.resourceKind || body.resource_kind || 'SALE_USE').trim(),
     default_account_id: body.defaultAccountId || null,
+    supports_purchase_select: body.supportsPurchaseSelect === false ? 0 : 1,
     supports_sale_use: body.supportsSaleUse === false ? 0 : 1,
     supports_company_claim: body.supportsCompanyClaim === false ? 0 : 1,
+    trigger_on_sale: body.triggerOnSale === true ? 1 : 0,
+    generates_settlement: body.generatesSettlement === false ? 0 : 1,
+    generates_staff_care_credit: body.generatesStaffCareCredit === true ? 1 : 0,
+    affects_performance_profit: body.affectsPerformanceProfit === true ? 1 : 0,
+    performance_profit_ratio: Number(body.performanceProfitRatio ?? 100),
+    rule_config_json: body.ruleConfigJson ? JSON.stringify(body.ruleConfigJson) : (body.ruleConfigText || body.rule_config_json || null),
     sort_order: Number(body.sortOrder || 0),
     status: body.status === 0 ? 0 : 1,
     remark: String(body.remark || '').trim(),
@@ -344,6 +496,7 @@ async function createPendingSettlement({ sourceType, sourceId, sn, resourceType,
   if (!Number.isFinite(numericAmount) || numericAmount <= 0) return null;
   const category = await ResourceCategory.findOne({ where: { category_code: resourceType }, transaction });
   if (!category) throw Object.assign(new Error('资源类别配置不存在，无法生成待下账记录'), { status: 409 });
+  if (Number(category.generates_settlement) === 0) return null;
   const [record] = await ResourceSettlement.findOrCreate({
     where: { source_type: sourceType, source_id: sourceId, resource_type: resourceType },
     defaults: {
@@ -356,6 +509,183 @@ async function createPendingSettlement({ sourceType, sourceId, sn, resourceType,
     transaction
   });
   return record;
+}
+
+async function findResourceRule({ productId, resourceType, supplierId = '', saleDate = new Date(), transaction = null }) {
+  const rows = await ProductResourceCostConfig.findAll({
+    where: {
+      product_id: productId,
+      resource_type: resourceType,
+      status: 1,
+      [Op.or]: [{ supplier_id: supplierId || '' }, { supplier_id: null }, { supplier_id: '' }]
+    },
+    order: [['update_time', 'DESC']],
+    transaction
+  });
+  rows.sort((left, right) => {
+    const leftPriority = String(left.supplier_id || '') === String(supplierId || '') ? 0 : 1;
+    const rightPriority = String(right.supplier_id || '') === String(supplierId || '') ? 0 : 1;
+    return leftPriority - rightPriority;
+  });
+  const ts = new Date(saleDate || new Date()).getTime();
+  return rows.find(row => {
+    const start = row.effective_start ? new Date(row.effective_start).getTime() : null;
+    const end = row.effective_end ? new Date(row.effective_end).getTime() : null;
+    return (!start || ts >= start) && (!end || ts <= end);
+  }) || null;
+}
+
+function calculatePreSaleRuleAmount(rule, sn) {
+  if (!rule) return 0;
+  const calcType = rule.calculation_type || 'fixed_amount';
+  const calcValue = Number(rule.calculation_value || 0);
+  if (calcType === 'percentage_inventory_cost') return money(Number(sn?.inbound_price || 0) * calcValue / 100);
+  if (calcType === 'percentage_sale_amount') return 0;
+  return money(calcValue || rule.cost_amount || 0);
+}
+
+function calculateRuleAmount({ rule, right, item }) {
+  const calcType = rule?.calculation_type || 'fixed_amount';
+  const calcValue = Number(rule?.calculation_value || 0);
+  if (calcType === 'percentage_inventory_cost') return money(Number(item.original_inventory_cost || 0) * calcValue / 100);
+  if (calcType === 'percentage_sale_amount') return money(Number(item.subtotal || 0) * calcValue / 100);
+  return money(calcValue || rule?.cost_amount || right?.amount || 0);
+}
+
+function ruleTriggerMatches({ rule, right, saleDate }) {
+  if (!rule || rule.trigger_condition !== 'sold_within_days') return true;
+  const config = parseJsonObject(rule.rule_config_json);
+  const days = Number(config.saleWithinDays || config.withinDays || 0);
+  if (!Number.isFinite(days) || days <= 0 || !right?.create_time) return false;
+  const deadline = new Date(right.create_time).getTime() + days * 24 * 60 * 60 * 1000;
+  return new Date(saleDate).getTime() <= deadline;
+}
+
+async function createStaffCareCredit({ order, item, resourceType, amount, transaction }) {
+  if (amount <= 0) return null;
+  const staffName = order.create_user || 'UNKNOWN';
+  const staffWhere = order.create_staff_id ? { staff_id: order.create_staff_id } : { staff_name: staffName };
+  const income = Number(await StaffCareCreditTransaction.sum('amount', { where: { ...staffWhere, type: 'income', status: 'active' }, transaction }) || 0);
+  const expense = Number(await StaffCareCreditTransaction.sum('amount', { where: { ...staffWhere, type: 'expense', status: 'active' }, transaction }) || 0);
+  const sourceId = `${String(order.order_id).slice(0, 16)}:${String(item.item_id).slice(0, 12)}:${String(resourceType).slice(0, 24)}`;
+  const [record] = await StaffCareCreditTransaction.findOrCreate({
+    where: { source_type: 'SALE_RESOURCE', source_id: sourceId },
+    defaults: {
+      transaction_id: generateUUID(),
+      staff_id: order.create_staff_id || null,
+      staff_name: staffName,
+      type: 'income',
+      amount,
+      balance_after: money(income - expense + amount),
+      source_type: 'SALE_RESOURCE',
+      source_id: sourceId,
+      order_id: order.order_id,
+      order_no: order.order_no,
+      order_item_id: item.item_id,
+      sn_id: item.sn_id,
+      sn_code: item.sn_code,
+      product_id: item.product_id,
+      resource_type: resourceType,
+      remark: `销售订单 ${order.order_no} 产生销售个人Care可用金`
+    },
+    transaction
+  });
+  return record;
+}
+
+async function createPerformanceProfitAdjustment({ order, item, resourceType, amount, ratio, transaction }) {
+  const signedAmount = money(amount * Number(ratio || 100) / 100);
+  if (signedAmount <= 0) return null;
+  const adjustmentNo = `AUTO-${String(order.order_id).slice(0, 12)}-${item.item_id}-${String(resourceType).slice(0, 16)}`;
+  const existing = await PerformanceProfitAdjustment.findOne({ where: { adjustment_no: adjustmentNo }, transaction });
+  if (existing) return existing;
+  return PerformanceProfitAdjustment.create({
+    adjustment_id: generateUUID(),
+    adjustment_no: adjustmentNo,
+    order_id: order.order_id,
+    order_no: order.order_no,
+    store_id: order.store_id,
+    employee_name: order.create_user || '',
+    adjustment_type: 'increase',
+    amount: signedAmount,
+    signed_amount: signedAmount,
+    base_gross_profit: item.sales_gross_profit || 0,
+    reason: `${resourceType} 销售归档自动计入员工业绩毛利`,
+    status: 'approved',
+    applicant_staff_id: 0,
+    applicant_name: 'system',
+    finance_reviewer_id: 0,
+    finance_reviewer_name: 'system',
+    finance_review_time: new Date(),
+    admin_reviewer_id: 0,
+    admin_reviewer_name: 'system',
+    admin_review_time: new Date(),
+    create_time: new Date(),
+    update_time: new Date()
+  }, { transaction });
+}
+
+async function initializeSnResourceRightsFromInbound({ sn, inbound, inboundItem, supplier = null, transaction }) {
+  const resourceTypes = parseJsonArray(inboundItem.selected_resource_types);
+  if (!sn || resourceTypes.length === 0) return [];
+  const categories = await getPurchaseSelectableResourceCategories({ transaction });
+  const validTypes = new Set(categories.map(row => row.category_code));
+  const created = [];
+  for (const resourceType of [...new Set(resourceTypes)]) {
+    if (!validTypes.has(resourceType)) continue;
+    const rule = await findResourceRule({
+      productId: sn.product_id,
+      resourceType,
+      supplierId: supplier?.supplier_id || '',
+      saleDate: new Date(),
+      transaction
+    });
+    const amount = calculatePreSaleRuleAmount(rule, sn);
+    const [right, wasCreated] = await InventoryResourceRight.findOrCreate({
+      where: { sn_id: sn.sn_id, resource_type: resourceType },
+      defaults: {
+        right_id: generateUUID(),
+        sn_id: sn.sn_id,
+        sn_code: sn.sn_code,
+        product_id: sn.product_id,
+        resource_type: resourceType,
+        rule_config_id: rule?.config_id || null,
+        source_request_id: inbound?.purchase_request_id || null,
+        source_request_item_id: inboundItem.purchase_request_item_id || null,
+        source_inbound_id: inbound?.inbound_id || null,
+        supplier_id: supplier?.supplier_id || null,
+        supplier_name: supplier?.name || null,
+        initial_status: 'AVAILABLE',
+        current_status: 'AVAILABLE',
+        amount,
+        source: 'PURCHASE_INBOUND',
+        remark: `采购入库 ${inbound?.inbound_no || ''} 自动生成`
+      },
+      transaction
+    });
+    if (wasCreated) {
+      await ResourceRightChangeOrder.create({
+        change_id: generateUUID(),
+        change_order_no: businessNo(),
+        sn_id: sn.sn_id,
+        sn_code: sn.sn_code,
+        product_id: sn.product_id,
+        resource_type: resourceType,
+        before_status: 'NOT_APPLICABLE',
+        after_status: 'AVAILABLE',
+        change_amount: amount,
+        change_reason: 'PURCHASE_INBOUND',
+        approval_status: 'approved',
+        related_order_id: inbound?.inbound_id || null,
+        applicant_name: inbound?.create_user || '',
+        reviewer_name: inbound?.create_user || '',
+        review_time: new Date(),
+        remark: `采购申请 ${inbound?.source_no || ''} 勾选权益`
+      }, { transaction });
+      created.push(right);
+    }
+  }
+  return created;
 }
 
 async function listResourceSettlements(ctx) {
@@ -435,6 +765,153 @@ async function settleResource(ctx) {
   ctx.body = { message: '资源权益已下账' };
 }
 
+async function triggerSaleResourceBenefits(order, items, transaction) {
+  const snItems = items.filter(item => item.sn_id);
+  if (snItems.length === 0) return;
+  const categories = await ResourceCategory.findAll({
+    where: { status: 1, trigger_on_sale: 1 },
+    transaction
+  });
+  const categoriesByCode = categoryMap(categories);
+  if (categories.length === 0) return;
+
+  const rights = await InventoryResourceRight.findAll({
+    where: {
+      sn_id: { [Op.in]: snItems.map(item => item.sn_id) },
+      resource_type: { [Op.in]: categories.map(category => category.category_code) },
+      current_status: 'AVAILABLE'
+    },
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  const rightsBySnType = new Map(rights.map(row => [`${row.sn_id}:${row.resource_type}`, row]));
+
+  for (const item of snItems) {
+    for (const category of categories) {
+      if (Number(category.supports_sale_use) === 1 && selectedResources(item).includes(category.category_code)) continue;
+      const right = rightsBySnType.get(`${item.sn_id}:${category.category_code}`);
+      if (!right) continue;
+      const rule = await findResourceRule({
+        productId: item.product_id,
+        resourceType: category.category_code,
+        supplierId: right.supplier_id || '',
+        saleDate: new Date(),
+        transaction
+      });
+      const requiresRule = ['PO_REWARD', 'CARE_CREDIT', 'REBATE'].includes(category.resource_kind);
+      const eligible = (!requiresRule || Boolean(rule)) && ruleTriggerMatches({ rule, right, saleDate: new Date() });
+      if (!eligible) {
+        await ResourceRightChangeOrder.create({
+          change_id: generateUUID(),
+          change_order_no: businessNo(),
+          sn_id: item.sn_id,
+          sn_code: item.sn_code,
+          product_id: item.product_id,
+          resource_type: category.category_code,
+          before_status: 'AVAILABLE',
+          after_status: 'NOT_APPLICABLE',
+          change_amount: 0,
+          change_reason: 'SALE_TRIGGER_NOT_ELIGIBLE',
+          approval_status: 'approved',
+          related_sale_order_id: order.order_id,
+          applicant_name: order.create_user,
+          reviewer_name: 'system',
+          review_time: new Date(),
+          remark: `销售订单 ${order.order_no} 未满足${category.name}条件`
+        }, { transaction });
+        await right.update({
+          current_status: 'NOT_APPLICABLE',
+          locked_source_type: null,
+          locked_source_id: null,
+          version: Number(right.version || 0) + 1
+        }, { transaction });
+        continue;
+      }
+      const amount = calculateRuleAmount({ rule, right, item });
+      const change = await ResourceRightChangeOrder.create({
+        change_id: generateUUID(),
+        change_order_no: businessNo(),
+        sn_id: item.sn_id,
+        sn_code: item.sn_code,
+        product_id: item.product_id,
+        resource_type: category.category_code,
+        before_status: 'AVAILABLE',
+        after_status: 'USED',
+        change_amount: amount,
+        change_reason: 'SALE_TRIGGER',
+        approval_status: 'approved',
+        related_sale_order_id: order.order_id,
+        applicant_name: order.create_user,
+        reviewer_name: 'system',
+        review_time: new Date(),
+        remark: `销售订单 ${order.order_no} 归档触发${category.name}`
+      }, { transaction });
+      await right.update({
+        current_status: 'USED',
+        amount,
+        locked_source_type: null,
+        locked_source_id: null,
+        version: Number(right.version || 0) + 1
+      }, { transaction });
+
+      if (Number(category.generates_staff_care_credit) === 1) {
+        await createStaffCareCredit({ order, item, resourceType: category.category_code, amount, transaction });
+      }
+      let rebateEstimate = null;
+      if (category.resource_kind === 'PO_REWARD' && amount > 0) {
+        [rebateEstimate] = await RebateEstimate.findOrCreate({
+          where: { source_type: 'resource_right', source_id: change.change_id },
+          defaults: {
+            estimate_id: generateUUID(),
+            sales_order_id: order.order_id,
+            sales_order_no: order.order_no,
+            sales_order_item_id: item.item_id,
+            supplier_id: right.supplier_id || '',
+            supplier_name: right.supplier_name || '',
+            product_id: item.product_id,
+            product_name: item.product_name,
+            pn: item.pn_code,
+            sn: item.sn_code,
+            policy_id: rule?.config_id || null,
+            policy_name: category.name,
+            policy_type: 'PO_REWARD',
+            rebate_estimate_amount: amount,
+            status: 'estimated',
+            source_type: 'resource_right',
+            source_id: change.change_id,
+            remark: `销售订单 ${order.order_no} 达成PO奖励条件`
+          },
+          transaction
+        });
+      }
+      if (Number(category.generates_settlement) === 1 && amount > 0) {
+        await createPendingSettlement({
+          sourceType: rebateEstimate ? 'MANUFACTURER_REBATE' : 'SALE_TRIGGER',
+          sourceId: rebateEstimate?.estimate_id || change.change_id,
+          sn: { sn_id: item.sn_id, sn_code: item.sn_code, product_id: item.product_id },
+          resourceType: category.category_code,
+          amount,
+          counterpartyId: right.supplier_id || null,
+          counterpartyName: right.supplier_name || '',
+          remark: `销售订单 ${order.order_no} 触发${category.name}`,
+          transaction
+        });
+      }
+      const affectsProfit = Number(rule?.affects_performance_profit ?? category.affects_performance_profit) === 1;
+      if (affectsProfit) {
+        await createPerformanceProfitAdjustment({
+          order,
+          item,
+          resourceType: category.category_code,
+          amount,
+          ratio: rule?.performance_profit_ratio ?? category.performance_profit_ratio,
+          transaction
+        });
+      }
+    }
+  }
+}
+
 function selectedResources(item) {
   let dynamic = [];
   try {
@@ -506,7 +983,8 @@ async function releaseSaleRights(order, items, transaction) {
 
 module.exports = {
   LEGACY_RESOURCE_TYPES, buildSalesResourceSummary, summariesForSns,
-  listRights, snRights, saveSnRights, submitClaim, reviewClaim, listChanges, listCostConfigs, listCostAdjustments, saveCostConfig,
+  listRights, snRights, saveSnRights, batchAdjustRights, batchRefreshRights, submitClaim, reviewClaim, listChanges, listCostConfigs, listCostAdjustments, saveCostConfig,
   listResourceCategories, saveResourceCategory, listResourceSettlements, settleResource, createPendingSettlement,
+  initializeSnResourceRightsFromInbound, triggerSaleResourceBenefits,
   lockSaleRights, finishSaleRights, releaseSaleRights
 };

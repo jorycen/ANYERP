@@ -136,6 +136,36 @@ async function normalizeInventoryLocationIndex() {
   }
 }
 
+async function normalizeProductResourceCostConfigIndex() {
+  try {
+    const indexes = await sequelize.query(
+      `SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS columns
+       FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'T_PRODUCT_RESOURCE_COST_CONFIG'
+       AND NON_UNIQUE = 0
+       GROUP BY INDEX_NAME`,
+      { type: sequelize.QueryTypes.SELECT }
+    );
+
+    for (const idx of indexes) {
+      const columns = String(idx.columns || '').toUpperCase();
+      if (columns === 'PRODUCT_ID,RESOURCE_TYPE') {
+        await sequelize.query(`ALTER TABLE T_PRODUCT_RESOURCE_COST_CONFIG DROP INDEX \`${idx.INDEX_NAME}\``);
+        console.log(`[DB Migration] Dropped product/resource-only unique index: ${idx.INDEX_NAME}`);
+      }
+    }
+
+    await checkAndAddIndex(
+      'T_PRODUCT_RESOURCE_COST_CONFIG',
+      'uk_product_resource_supplier',
+      'ALTER TABLE T_PRODUCT_RESOURCE_COST_CONFIG ADD UNIQUE KEY uk_product_resource_supplier (PRODUCT_ID, RESOURCE_TYPE, SUPPLIER_ID)'
+    );
+  } catch (error) {
+    console.error(`[DB Migration] Normalize product resource config index failed - ${error.message}`);
+  }
+}
+
 async function initializeSupplierSortOrder() {
   try {
     const [stat] = await sequelize.query(
@@ -322,6 +352,56 @@ async function runMigrations() {
     await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'COUNTERPARTY_ID', 'VARCHAR(32) COMMENT "来源供应商或结算对象ID"', 'RESOURCE_TYPE');
     await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'COUNTERPARTY_NAME', 'VARCHAR(255) COMMENT "来源供应商或结算对象名称"', 'COUNTERPARTY_ID');
     await checkAndAddColumn('T_ORDER_ITEM', 'SELECTED_RESOURCE_TYPES', 'TEXT COMMENT "动态选择的资源类别JSON"', 'USE_SALES_REPORT');
+    await checkAndAddColumn('T_ORDER', 'CREATE_STAFF_ID', 'BIGINT COMMENT "销售人员ID"', 'STORE_ID');
+    await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'SELECTED_RESOURCE_TYPES', 'TEXT COMMENT "采购申请勾选的资源权益JSON"', 'STORE_ALLOCATIONS');
+    await checkAndAddColumn('T_INBOUND_ITEM', 'SELECTED_RESOURCE_TYPES', 'TEXT COMMENT "继承采购申请的资源权益JSON"', 'STORE_ALLOCATIONS');
+    await checkAndAddColumn('T_INBOUND_ITEM', 'PURCHASE_REQUEST_ITEM_ID', 'BIGINT COMMENT "来源采购申请明细ID"', 'SELECTED_RESOURCE_TYPES');
+    await checkAndAddColumn('T_INVENTORY_RESOURCE_RIGHT', 'RULE_CONFIG_ID', 'VARCHAR(32) COMMENT "权益规则配置ID"', 'RESOURCE_TYPE');
+    await checkAndAddColumn('T_INVENTORY_RESOURCE_RIGHT', 'SOURCE_REQUEST_ID', 'VARCHAR(32) COMMENT "来源采购申请ID"', 'RULE_CONFIG_ID');
+    await checkAndAddColumn('T_INVENTORY_RESOURCE_RIGHT', 'SOURCE_REQUEST_ITEM_ID', 'BIGINT COMMENT "来源采购申请明细ID"', 'SOURCE_REQUEST_ID');
+    await checkAndAddColumn('T_INVENTORY_RESOURCE_RIGHT', 'SOURCE_INBOUND_ID', 'VARCHAR(32) COMMENT "来源入库单ID"', 'SOURCE_REQUEST_ITEM_ID');
+    await checkAndAddColumn('T_INVENTORY_RESOURCE_RIGHT', 'SUPPLIER_ID', 'VARCHAR(32) COMMENT "来源供应商ID"', 'SOURCE_INBOUND_ID');
+    await checkAndAddColumn('T_INVENTORY_RESOURCE_RIGHT', 'SUPPLIER_NAME', 'VARCHAR(255) COMMENT "来源供应商名称"', 'SUPPLIER_ID');
+    await checkAndAddColumn('T_RESOURCE_CATEGORY', 'RESOURCE_KIND', 'VARCHAR(32) DEFAULT "SALE_USE" COMMENT "SALE_USE/INTERNAL_MARKER/PO_REWARD/CARE_CREDIT/REBATE/OTHER"', 'SHORT_NAME');
+    await checkAndAddColumn('T_RESOURCE_CATEGORY', 'SUPPORTS_PURCHASE_SELECT', 'TINYINT(1) DEFAULT 1 COMMENT "采购申请是否可勾选"', 'DEFAULT_ACCOUNT_ID');
+    await checkAndAddColumn('T_RESOURCE_CATEGORY', 'TRIGGER_ON_SALE', 'TINYINT(1) DEFAULT 0 COMMENT "销售归档是否触发"', 'SUPPORTS_COMPANY_CLAIM');
+    await checkAndAddColumn('T_RESOURCE_CATEGORY', 'GENERATES_SETTLEMENT', 'TINYINT(1) DEFAULT 1 COMMENT "是否生成待下账"', 'TRIGGER_ON_SALE');
+    await checkAndAddColumn('T_RESOURCE_CATEGORY', 'GENERATES_STAFF_CARE_CREDIT', 'TINYINT(1) DEFAULT 0 COMMENT "是否生成销售个人Care可用金"', 'GENERATES_SETTLEMENT');
+    await checkAndAddColumn('T_RESOURCE_CATEGORY', 'AFFECTS_PERFORMANCE_PROFIT', 'TINYINT(1) DEFAULT 0 COMMENT "是否影响员工业绩毛利"', 'GENERATES_STAFF_CARE_CREDIT');
+    await checkAndAddColumn('T_RESOURCE_CATEGORY', 'PERFORMANCE_PROFIT_RATIO', 'DECIMAL(8,4) DEFAULT 100 COMMENT "计入员工业绩毛利比例"', 'AFFECTS_PERFORMANCE_PROFIT');
+    await checkAndAddColumn('T_RESOURCE_CATEGORY', 'RULE_CONFIG_JSON', 'TEXT COMMENT "扩展规则JSON"', 'PERFORMANCE_PROFIT_RATIO');
+    await checkAndAddColumn('T_PRODUCT_RESOURCE_COST_CONFIG', 'SUPPLIER_ID', 'VARCHAR(32) COMMENT "适用供应商ID"', 'RESOURCE_TYPE');
+    await checkAndAddColumn('T_PRODUCT_RESOURCE_COST_CONFIG', 'SUPPLIER_NAME', 'VARCHAR(255) COMMENT "适用供应商名称"', 'SUPPLIER_ID');
+    await checkAndAddColumn('T_PRODUCT_RESOURCE_COST_CONFIG', 'CALCULATION_TYPE', 'VARCHAR(32) DEFAULT "fixed_amount" COMMENT "fixed_amount/percentage_inventory_cost/percentage_sale_amount"', 'COST_AMOUNT');
+    await checkAndAddColumn('T_PRODUCT_RESOURCE_COST_CONFIG', 'CALCULATION_VALUE', 'DECIMAL(12,4) DEFAULT 0 COMMENT "算法值"', 'CALCULATION_TYPE');
+    await checkAndAddColumn('T_PRODUCT_RESOURCE_COST_CONFIG', 'EFFECTIVE_START', 'DATETIME COMMENT "生效开始时间"', 'CALCULATION_VALUE');
+    await checkAndAddColumn('T_PRODUCT_RESOURCE_COST_CONFIG', 'EFFECTIVE_END', 'DATETIME COMMENT "生效结束时间"', 'EFFECTIVE_START');
+    await checkAndAddColumn('T_PRODUCT_RESOURCE_COST_CONFIG', 'TRIGGER_CONDITION', 'VARCHAR(64) DEFAULT "sale_archived" COMMENT "触发条件"', 'EFFECTIVE_END');
+    await checkAndAddColumn('T_PRODUCT_RESOURCE_COST_CONFIG', 'AFFECTS_PERFORMANCE_PROFIT', 'TINYINT(1) DEFAULT 0 COMMENT "是否影响员工业绩毛利"', 'TRIGGER_CONDITION');
+    await checkAndAddColumn('T_PRODUCT_RESOURCE_COST_CONFIG', 'PERFORMANCE_PROFIT_RATIO', 'DECIMAL(8,4) DEFAULT 100 COMMENT "计入比例"', 'AFFECTS_PERFORMANCE_PROFIT');
+    await checkAndAddColumn('T_PRODUCT_RESOURCE_COST_CONFIG', 'RULE_CONFIG_JSON', 'TEXT COMMENT "扩展规则JSON"', 'PERFORMANCE_PROFIT_RATIO');
+    await normalizeProductResourceCostConfigIndex();
+    await checkAndCreateTable('T_STAFF_CARE_CREDIT_TRANSACTION', `
+      CREATE TABLE T_STAFF_CARE_CREDIT_TRANSACTION (
+        TRANSACTION_ID VARCHAR(32) NOT NULL,
+        STAFF_ID BIGINT,
+        STAFF_NAME VARCHAR(64) NOT NULL,
+        TYPE VARCHAR(32) NOT NULL DEFAULT 'income',
+        AMOUNT DECIMAL(12,2) NOT NULL,
+        BALANCE_AFTER DECIMAL(12,2) DEFAULT 0,
+        SOURCE_TYPE VARCHAR(32) NOT NULL,
+        SOURCE_ID VARCHAR(64) NOT NULL,
+        ORDER_ID VARCHAR(32), ORDER_NO VARCHAR(64), ORDER_ITEM_ID BIGINT,
+        SN_ID VARCHAR(32), SN_CODE VARCHAR(128), PRODUCT_ID VARCHAR(32), RESOURCE_TYPE VARCHAR(32),
+        STATUS VARCHAR(32) DEFAULT 'active',
+        REMARK VARCHAR(512),
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (TRANSACTION_ID),
+        UNIQUE KEY uk_staff_care_source (SOURCE_TYPE, SOURCE_ID),
+        KEY idx_staff_care_staff (STAFF_NAME, CREATE_TIME),
+        KEY idx_staff_care_sn (SN_ID, RESOURCE_TYPE)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='销售个人Care可用金流水'
+    `);
     await sequelize.query(`
       INSERT IGNORE INTO T_RESOURCE_CATEGORY
         (CATEGORY_ID, CATEGORY_CODE, NAME, SHORT_NAME, SUPPORTS_SALE_USE, SUPPORTS_COMPANY_CLAIM, SORT_ORDER, STATUS)

@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 2026-06-27
+
+* 系统设置的资源类别扩展为商品资源权益配置，支持权益类型、采购可选、销售触发、下账、销售个人 Care 可用金和销售者业绩毛利影响配置。
+* 采购申请明细支持勾选多种资源权益，采购审批入库后按 SN 自动生成对应商品资源权益。
+* 商品资源权益规则支持按商品、供应商和权益类型配置固定金额、库存成本比例、销售金额比例等算法。
+* 库存资源权益页新增未销售在库 SN 的批量权益调整和按最新规则批量刷新能力；已归档销售单不被规则刷新改写。
+* 销售归档时可按 SN 权益触发 PO奖励、待下账记录、销售个人 Care 可用金流水和可选的销售者业绩毛利调整。
+* 套装资格作为内部标记保存，不参与销售校验，为后续组合销售提醒保留依据。
+
 ## 2026-06-26
 
 * Backend startup no longer exits when cloud MySQL is sleeping or temporarily unreachable; the HTTP service starts first, while database activation and migrations continue in a bounded background recovery loop.

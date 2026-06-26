@@ -5,6 +5,7 @@
 const { sequelize, ProductSn, Product, ProductPn, ProductPrice, ProductBarcode, Store, Location, InventoryWarning, Inbound, InboundItem, ReturnStock, ReturnStockItem, PurchaseRequest, Payable, Supplier, Inventory, SnLog, Order, OrderItem, Transfer, TransferItem, InventoryConversion, InventoryConversionItem } = require('../../models');
 const { Op, Sequelize } = require('sequelize');
 const { generateInboundNo, generateOutboundNo, generateTransferNo, generateUUID, generateBatchNo, paginate, formatPaginatedResult } = require('../../utils');
+const { initializeSnResourceRightsFromInbound } = require('./resourceRights');
 
 function splitCodes(value) {
   return String(value || '')
@@ -922,6 +923,12 @@ async function executeInbound(ctx) {
     }
 
     const inboundItems = await InboundItem.findAll({ where: { inbound_id: inboundId } });
+    const purchaseRequest = inbound.purchase_request_id
+      ? await PurchaseRequest.findByPk(inbound.purchase_request_id, { transaction: t })
+      : null;
+    const supplier = purchaseRequest?.supplier_id
+      ? await Supplier.findByPk(purchaseRequest.supplier_id, { transaction: t })
+      : null;
     const productIds = inboundItems.map(item => item.product_id);
     const products = await Product.findAll({ where: { product_id: { [Op.in]: productIds } } });
     const productMap = new Map();
@@ -968,7 +975,7 @@ async function executeInbound(ctx) {
           ctx.throw(400, `PN码 [${pnCode || '-'}] 下的SN码 [${snCode}] 已存在`);
         }
 
-        await ProductSn.create({
+        const snRecord = await ProductSn.create({
           sn_id: generateUUID(),
           product_id: dbItem.product_id,
           product_name: dbItem.product_name || '',
@@ -984,6 +991,14 @@ async function executeInbound(ctx) {
           remark: item.remark || '',
           is_deleted: 0
         }, { transaction: t });
+
+        await initializeSnResourceRightsFromInbound({
+          sn: snRecord,
+          inbound,
+          inboundItem: dbItem,
+          supplier,
+          transaction: t
+        });
 
         await dbItem.update({
           sn_code: snCode,

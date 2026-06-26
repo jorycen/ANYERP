@@ -12,6 +12,7 @@
           </el-select>
           <el-button type="primary" @click="loadRights">查询</el-button>
           <el-button @click="openBySn">初始化/维护SN权益</el-button>
+          <el-button @click="openBatchAdjust">批量调整权益</el-button>
         </div>
         <el-table :data="rights" border stripe v-loading="loading">
           <el-table-column prop="sn_code" label="SN" min-width="170" />
@@ -96,16 +97,38 @@
           <el-select v-model="costForm.resourceType" placeholder="权益类型" style="width:150px">
             <el-option v-for="item in resourceOptions" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
+          <el-select v-model="costForm.supplierId" filterable clearable placeholder="适用供应商" style="width:180px" @change="onCostSupplierChange">
+            <el-option v-for="item in suppliers" :key="item.supplier_id" :label="item.name" :value="item.supplier_id" />
+          </el-select>
+          <el-select v-model="costForm.calculationType" style="width:170px">
+            <el-option label="固定金额" value="fixed_amount" />
+            <el-option label="按库存成本比例" value="percentage_inventory_cost" />
+            <el-option label="按销售金额比例" value="percentage_sale_amount" />
+          </el-select>
           <el-input-number v-model="costForm.costAmount" :min="0" :precision="2" />
+          <el-date-picker v-model="costForm.effectiveRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="生效日期" end-placeholder="失效日期" style="width:250px" />
+          <el-select v-model="costForm.triggerCondition" style="width:180px">
+            <el-option label="销售归档即触发" value="sale_archived" />
+            <el-option label="入库后限时售出" value="sold_within_days" />
+          </el-select>
+          <el-input-number v-if="costForm.triggerCondition === 'sold_within_days'" v-model="costForm.saleWithinDays" :min="1" :precision="0" />
+          <el-checkbox v-model="costForm.affectsPerformanceProfit">计入销售者毛利</el-checkbox>
+          <el-input-number v-model="costForm.performanceProfitRatio" :min="0" :max="100" :precision="2" />
           <el-input v-model="costForm.remark" placeholder="备注" style="width:220px" />
           <el-button type="primary" @click="saveCost">保存定义</el-button>
           <el-button @click="loadCosts">刷新</el-button>
+          <el-button @click="batchRefresh">按规则刷新未售SN</el-button>
         </div>
-        <el-alert title="该金额用于产品资源成本计算，不自动扣减销售结算成本；销售成本仍按手工调整口径处理。" type="info" :closable="false" style="margin-bottom:12px" />
+        <el-alert title="该配置用于采购入库生成SN权益、PO奖励、销售个人Care可用金和可选销售者毛利调整；已归档销售单不会被批量刷新改写。" type="info" :closable="false" style="margin-bottom:12px" />
         <el-table :data="costs" border stripe>
           <el-table-column label="商品" min-width="220"><template #default="{row}">{{ row.Product?.name || row.product_id }}</template></el-table-column>
           <el-table-column label="权益类型" width="140"><template #default="{row}">{{ resourceText(row.resource_type) }}</template></el-table-column>
+          <el-table-column prop="supplier_name" label="供应商" min-width="140" />
+          <el-table-column label="算法" width="140"><template #default="{row}">{{ calcTypeText(row.calculation_type) }}</template></el-table-column>
           <el-table-column label="定义金额" width="130"><template #default="{row}">¥{{ money(row.cost_amount) }}</template></el-table-column>
+          <el-table-column label="有效期" min-width="180"><template #default="{row}">{{ rulePeriodText(row) }}</template></el-table-column>
+          <el-table-column label="触发条件" min-width="150"><template #default="{row}">{{ triggerText(row) }}</template></el-table-column>
+          <el-table-column label="计入毛利" width="120"><template #default="{row}">{{ row.affects_performance_profit ? `${row.performance_profit_ratio || 100}%` : '否' }}</template></el-table-column>
           <el-table-column prop="remark" label="备注" min-width="180" />
           <el-table-column prop="update_user" label="更新人" width="100" />
           <el-table-column prop="update_time" label="更新时间" width="170" />
@@ -167,6 +190,42 @@
       </el-form>
       <template #footer><el-button @click="claimDialog=false">取消</el-button><el-button type="primary" @click="submitClaim">提交财务审批</el-button></template>
     </el-dialog>
+
+    <el-dialog v-model="batchDialog" title="批量调整SN权益" width="640px">
+      <el-alert title="仅调整未销售在库SN的权益状态，已归档销售单不受影响。SN码可用换行、逗号或空格分隔。" type="warning" :closable="false" style="margin-bottom:12px" />
+      <el-form label-width="110px">
+        <el-form-item label="指定SN">
+          <el-input v-model="batchForm.snCodesText" type="textarea" :rows="4" placeholder="留空时按商品筛选全部在库SN" />
+        </el-form-item>
+        <el-form-item label="商品">
+          <el-select v-model="batchForm.productId" filterable remote clearable reserve-keyword placeholder="搜索商品，可选" :remote-method="searchProducts" :loading="productLoading" style="width:100%">
+            <el-option v-for="item in products" :key="item.product_id" :label="`${item.name} (${item.product_code || ''})`" :value="item.product_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="权益">
+          <el-select v-model="batchForm.resourceTypes" multiple placeholder="选择要调整的权益" style="width:100%">
+            <el-option v-for="item in resourceOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="调整为">
+          <el-select v-model="batchForm.status" style="width:180px">
+            <el-option label="可用" value="AVAILABLE" />
+            <el-option label="不适用" value="NOT_APPLICABLE" />
+            <el-option label="异常" value="EXCEPTION" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="金额">
+          <el-input-number v-model="batchForm.amount" :min="0" :precision="2" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="batchForm.remark" type="textarea" :rows="2" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="batchDialog=false">取消</el-button>
+        <el-button type="primary" @click="submitBatchAdjust">确认调整</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -185,12 +244,20 @@ const rightsQuery = reactive({ snCode:'', resourceType:'', status:'', page:1, pa
 const changes = ref([]); const changeTotal = ref(0)
 const changeQuery = reactive({ snCode:'', resourceType:'', approvalStatus: props.financeOnly ? 'pending_finance' : '', page:1, pageSize:20 })
 const costs = ref([]); const products = ref([]); const productLoading = ref(false)
+const suppliers = ref([])
 const ledger = ref([]); const ledgerTotal = ref(0); const ledgerQuery = reactive({ snCode:'', resourceType:'', page:1, pageSize:20 })
 const settlements = ref([]); const settlementTotal = ref(0); const settlementQuery = reactive({ snCode:'', resourceType:'', status:'PENDING', page:1, pageSize:20 })
-const costForm = reactive({ productId:'', resourceType:'GOV_SUBSIDY', costAmount:0, remark:'' })
+const costForm = reactive({
+  productId:'', resourceType:'GOV_SUBSIDY', supplierId:'', supplierName:'',
+  costAmount:0, calculationType:'fixed_amount', affectsPerformanceProfit:false,
+  performanceProfitRatio:100, effectiveRange:[], triggerCondition:'sale_archived',
+  saleWithinDays:30, remark:''
+})
 const snDialog = ref(false); const snDetail = ref(null); const currentSnId = ref('')
 const snForm = reactive({ taxType:'UNKNOWN', sourceType:'OTHER', rights:[] })
 const claimDialog = ref(false); const claimForm = reactive({ snId:'', snCode:'', resourceType:'', amount:0, attachmentUrl:'', remark:'' })
+const batchDialog = ref(false)
+const batchForm = reactive({ snCodesText:'', productId:'', resourceTypes:[], status:'AVAILABLE', amount:0, remark:'' })
 
 const payloadList = res => res.data?.list || res.data || []
 const payloadTotal = res => res.data?.pagination?.total || res.data?.total || 0
@@ -199,15 +266,23 @@ const resourceText = value => resourceOptions.value.find(item => item.value === 
 const statusText = value => statusOptions.find(item => item.value === value)?.label || value
 const statusType = value => ({AVAILABLE:'success',LOCKED:'warning',USED:'info',CLAIMED_BACK:'danger',EXCEPTION:'danger'}[value] || '')
 const approvalText = value => ({pending_finance:'待财务审批',approved:'已通过',rejected:'已拒绝'}[value] || value)
-const reasonText = value => ({SALE_USED:'销售使用',COMPANY_CLAIMED_BACK:'公司套回',ORDER_LOCKED:'订单锁定',ORDER_CANCEL_RELEASE:'订单取消释放',MANUAL_ADJUST:'人工调整'}[value] || value)
+const reasonText = value => ({SALE_USED:'销售使用',COMPANY_CLAIMED_BACK:'公司套回',ORDER_LOCKED:'订单锁定',ORDER_CANCEL_RELEASE:'订单取消释放',MANUAL_ADJUST:'人工调整',PURCHASE_INBOUND:'采购入库',BATCH_ADJUST:'批量调整',SALE_TRIGGER:'销售触发',SALE_TRIGGER_NOT_ELIGIBLE:'销售未达成条件'}[value] || value)
 const sourceText = value => ({SALE_USE:'销售使用',COMPANY_CLAIM:'公司套回',MANUFACTURER_REBATE:'厂商返利'}[value] || value)
+const calcTypeText = value => ({fixed_amount:'固定金额',percentage_inventory_cost:'库存成本比例',percentage_sale_amount:'销售金额比例'}[value] || value)
+const rulePeriodText = row => row.effective_start || row.effective_end ? `${String(row.effective_start || '不限').slice(0,10)} 至 ${String(row.effective_end || '不限').slice(0,10)}` : '长期有效'
+const triggerText = row => {
+  if(row.trigger_condition !== 'sold_within_days')return '销售归档'
+  try{return `入库后 ${JSON.parse(row.rule_config_json || '{}').saleWithinDays || '-'} 天内`}
+  catch(e){return '入库后限时售出'}
+}
 
 async function loadRights(){ loading.value=true; try{ const res=await api.getResourceRights(rightsQuery); rights.value=payloadList(res); rightsTotal.value=payloadTotal(res) }catch(e){ ElMessage.error(e.response?.data?.message||'加载权益失败') }finally{ loading.value=false } }
 async function loadChanges(){ loading.value=true; try{ const res=await api.getResourceRightChanges(changeQuery); changes.value=payloadList(res); changeTotal.value=payloadTotal(res) }catch(e){ ElMessage.error(e.response?.data?.message||'加载变更记录失败') }finally{ loading.value=false } }
 async function loadCosts(){ try{ const res=await api.getProductResourceCostConfigs({}); costs.value=res.data || [] }catch(e){ ElMessage.error('加载成本定义失败') } }
 async function loadLedger(){ try{const res=await api.getResourceCostAdjustments(ledgerQuery);ledger.value=payloadList(res);ledgerTotal.value=payloadTotal(res)}catch(e){ElMessage.error('加载成本流水失败')} }
 function loadActive(name){ if(name==='rights')loadRights(); else if(name==='changes')loadChanges(); else if(name==='settlements')loadSettlements(); else if(name==='cost-ledger')loadLedger(); else loadCosts() }
-async function loadCategories(){ const res=await api.getResourceCategories({activeOnly:1}); resourceOptions.value=(res.data||[]).filter(row=>row.supports_sale_use||row.supports_company_claim).map(row=>({label:row.name,value:row.category_code})); if(!costForm.resourceType && resourceOptions.value.length)costForm.resourceType=resourceOptions.value[0].value }
+async function loadCategories(){ const res=await api.getResourceCategories({activeOnly:1}); resourceOptions.value=(res.data||[]).filter(row=>row.supports_sale_use||row.supports_company_claim||row.supports_purchase_select||row.trigger_on_sale).map(row=>({label:row.name,value:row.category_code})); if(!costForm.resourceType && resourceOptions.value.length)costForm.resourceType=resourceOptions.value[0].value }
+async function loadSuppliers(){ try{const res=await api.getSupplierList({page:1,pageSize:500}); suppliers.value=res.data?.list || res.data || []}catch(e){} }
 async function loadSettlements(){ loading.value=true; try{const res=await api.getResourceSettlements(settlementQuery);settlements.value=payloadList(res);settlementTotal.value=payloadTotal(res)}catch(e){ElMessage.error(e.response?.data?.message||'加载待下账记录失败')}finally{loading.value=false} }
 async function settle(row){ try{await ElMessageBox.confirm(`确认将 ${resourceText(row.resource_type)} ¥${money(row.amount)} 下账到配置账户？`,'下账确认',{type:'warning'});await api.settleResource(row.settlement_id);ElMessage.success('下账成功');loadSettlements()}catch(e){if(e!=='cancel')ElMessage.error(e.response?.data?.message||'下账失败')} }
 
@@ -236,9 +311,51 @@ async function review(row, action){
   try{await api.reviewResourceClaim(row.change_id,{action,comment:value||''});ElMessage.success('审批完成');loadChanges()}catch(e){ElMessage.error(e.response?.data?.message||'审批失败')}
 }
 async function searchProducts(keyword){ if(!keyword)return; productLoading.value=true; try{const res=await api.searchProduct({keyword,page:1,pageSize:30});products.value=payloadList(res)}finally{productLoading.value=false} }
-async function saveCost(){ if(!costForm.productId)return ElMessage.warning('请选择商品'); try{await api.saveProductResourceCostConfig(costForm);ElMessage.success('已保存');loadCosts()}catch(e){ElMessage.error(e.response?.data?.message||'保存失败')} }
+function onCostSupplierChange(value){ const supplier=suppliers.value.find(item=>item.supplier_id===value); costForm.supplierName=supplier?.name||'' }
+async function saveCost(){
+  if(!costForm.productId)return ElMessage.warning('请选择商品')
+  try{
+    await api.saveProductResourceCostConfig({
+      productId:costForm.productId, resourceType:costForm.resourceType, supplierId:costForm.supplierId,
+      supplierName:costForm.supplierName, costAmount:costForm.costAmount,
+      calculationType:costForm.calculationType, calculationValue:costForm.costAmount,
+      effectiveStart:costForm.effectiveRange?.[0]||null, effectiveEnd:costForm.effectiveRange?.[1]||null,
+      triggerCondition:costForm.triggerCondition,
+      ruleConfigJson:costForm.triggerCondition==='sold_within_days'?{saleWithinDays:costForm.saleWithinDays}:null,
+      affectsPerformanceProfit:costForm.affectsPerformanceProfit,
+      performanceProfitRatio:costForm.performanceProfitRatio, remark:costForm.remark
+    })
+    ElMessage.success('已保存');loadCosts()
+  }catch(e){ElMessage.error(e.response?.data?.message||'保存失败')}
+}
+async function batchRefresh(){
+  if(!costForm.productId)return ElMessage.warning('请选择商品')
+  try{
+    const res=await api.batchRefreshResourceRights({productId:costForm.productId,resourceTypes:[costForm.resourceType]})
+    ElMessage.success(res.message || `已刷新 ${res.affected || 0} 条SN权益`)
+    loadRights()
+  }catch(e){ElMessage.error(e.response?.data?.message||'刷新失败')}
+}
+function openBatchAdjust(){
+  Object.assign(batchForm,{snCodesText:'',productId:costForm.productId||'',resourceTypes:costForm.resourceType?[costForm.resourceType]:[],status:'AVAILABLE',amount:0,remark:''})
+  batchDialog.value=true
+}
+async function submitBatchAdjust(){
+  const snCodes=batchForm.snCodesText.split(/[\s,，;；]+/).map(item=>item.trim()).filter(Boolean)
+  if(!snCodes.length && !batchForm.productId)return ElMessage.warning('请填写SN码或选择商品')
+  if(!batchForm.resourceTypes.length)return ElMessage.warning('请选择权益')
+  try{
+    const res=await api.batchAdjustResourceRights({
+      snCodes, productId:batchForm.productId, resourceTypes:batchForm.resourceTypes,
+      status:batchForm.status, amount:batchForm.amount, remark:batchForm.remark
+    })
+    ElMessage.success(res.message || `已调整 ${res.affected || 0} 条SN权益`)
+    batchDialog.value=false
+    loadRights()
+  }catch(e){ElMessage.error(e.response?.data?.message||'批量调整失败')}
+}
 
-onMounted(async () => { await loadCategories(); loadActive(tab.value) })
+onMounted(async () => { await loadCategories(); loadSuppliers(); loadActive(tab.value) })
 </script>
 
 <style scoped>

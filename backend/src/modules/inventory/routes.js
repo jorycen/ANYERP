@@ -17,6 +17,8 @@ router.get('/resource-rights/changes', resourceRights.listChanges);
 router.get('/resource-rights/cost-configs', resourceRights.listCostConfigs);
 router.get('/resource-rights/cost-adjustments', resourceRights.listCostAdjustments);
 router.post('/resource-rights/cost-configs', resourceRights.saveCostConfig);
+router.post('/resource-rights/batch-adjust', resourceRights.batchAdjustRights);
+router.post('/resource-rights/batch-refresh', resourceRights.batchRefreshRights);
 router.get('/resource-categories', resourceRights.listResourceCategories);
 router.post('/resource-categories', resourceRights.saveResourceCategory);
 router.get('/resource-settlements', resourceRights.listResourceSettlements);

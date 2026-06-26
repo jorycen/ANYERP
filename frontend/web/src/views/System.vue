@@ -80,7 +80,10 @@
             <el-table-column prop="sort_order" label="排序" width="70" />
             <el-table-column prop="name" label="类别名称" min-width="150" />
             <el-table-column prop="short_name" label="简称" width="120" />
+            <el-table-column label="权益类型" width="120"><template #default="{row}">{{ resourceKindText(row.resource_kind) }}</template></el-table-column>
+            <el-table-column label="采购可选" width="90"><template #default="{row}">{{ row.supports_purchase_select ? '是' : '否' }}</template></el-table-column>
             <el-table-column label="销售使用" width="90"><template #default="{row}">{{ row.supports_sale_use ? '是' : '否' }}</template></el-table-column>
+            <el-table-column label="销售触发" width="90"><template #default="{row}">{{ row.trigger_on_sale ? '是' : '否' }}</template></el-table-column>
             <el-table-column label="公司套回" width="90"><template #default="{row}">{{ row.supports_company_claim ? '是' : '否' }}</template></el-table-column>
             <el-table-column label="默认到账账户" min-width="170"><template #default="{row}">{{ row.DefaultAccount?.account_name || '未配置' }}</template></el-table-column>
             <el-table-column label="状态" width="90"><template #default="{row}"><el-tag :type="row.status ? 'success' : 'info'">{{ row.status ? '启用' : '停用' }}</el-tag></template></el-table-column>
@@ -272,8 +275,32 @@
       <el-form :model="resourceCategoryForm" label-width="120px">
         <el-form-item label="类别名称" required><el-input v-model="resourceCategoryForm.name" /></el-form-item>
         <el-form-item label="简称"><el-input v-model="resourceCategoryForm.shortName" /></el-form-item>
+        <el-form-item label="权益类型">
+          <el-select v-model="resourceCategoryForm.resourceKind" style="width:100%">
+            <el-option label="销售使用型" value="SALE_USE" />
+            <el-option label="内部标记型" value="INTERNAL_MARKER" />
+            <el-option label="PO奖励型" value="PO_REWARD" />
+            <el-option label="Care可用金型" value="CARE_CREDIT" />
+            <el-option label="返利/下账型" value="REBATE" />
+            <el-option label="其他" value="OTHER" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="默认到账账户" required><el-select v-model="resourceCategoryForm.defaultAccountId" filterable clearable style="width:100%"><el-option v-for="a in resourceAccountOptions" :key="a.account_id" :label="`${a.account_name}（${accountTypeText(a.account_type)}）`" :value="a.account_id" /></el-select></el-form-item>
-        <el-form-item label="适用场景"><el-checkbox v-model="resourceCategoryForm.supportsSaleUse">销售使用</el-checkbox><el-checkbox v-model="resourceCategoryForm.supportsCompanyClaim">公司套回</el-checkbox></el-form-item>
+        <el-form-item label="适用场景">
+          <el-checkbox v-model="resourceCategoryForm.supportsPurchaseSelect">采购可选</el-checkbox>
+          <el-checkbox v-model="resourceCategoryForm.supportsSaleUse">销售使用</el-checkbox>
+          <el-checkbox v-model="resourceCategoryForm.supportsCompanyClaim">公司套回</el-checkbox>
+          <el-checkbox v-model="resourceCategoryForm.triggerOnSale">销售归档触发</el-checkbox>
+        </el-form-item>
+        <el-form-item label="触发结果">
+          <el-checkbox v-model="resourceCategoryForm.generatesSettlement">生成待下账</el-checkbox>
+          <el-checkbox v-model="resourceCategoryForm.generatesStaffCareCredit">生成销售个人Care可用金</el-checkbox>
+          <el-checkbox v-model="resourceCategoryForm.affectsPerformanceProfit">计入销售者毛利</el-checkbox>
+        </el-form-item>
+        <el-form-item label="计入比例">
+          <el-input-number v-model="resourceCategoryForm.performanceProfitRatio" :min="0" :max="100" :precision="2" />
+          <span style="margin-left:8px;color:#909399">%</span>
+        </el-form-item>
         <el-form-item label="排序"><el-input-number v-model="resourceCategoryForm.sortOrder" :min="0" /></el-form-item>
         <el-form-item label="启用"><el-switch v-model="resourceCategoryForm.status" :active-value="1" :inactive-value="0" /></el-form-item>
         <el-form-item label="备注"><el-input v-model="resourceCategoryForm.remark" type="textarea" /></el-form-item>
@@ -545,7 +572,16 @@ const assignableStores = ref([])
 const resourceCategoryData = ref([])
 const resourceAccountOptions = ref([])
 const resourceCategoryDialog = ref(false)
-const resourceCategoryForm = reactive({ categoryId:'', name:'', shortName:'', defaultAccountId:'', supportsSaleUse:true, supportsCompanyClaim:true, sortOrder:0, status:1, remark:'' })
+const resourceCategoryForm = reactive({
+  categoryId:'', name:'', shortName:'', resourceKind:'SALE_USE', defaultAccountId:'',
+  supportsPurchaseSelect:true, supportsSaleUse:true, supportsCompanyClaim:true, triggerOnSale:false,
+  generatesSettlement:true, generatesStaffCareCredit:false, affectsPerformanceProfit:false,
+  performanceProfitRatio:100, sortOrder:0, status:1, remark:''
+})
+const resourceKindText = value => ({
+  SALE_USE:'销售使用型', INTERNAL_MARKER:'内部标记型', PO_REWARD:'PO奖励型',
+  CARE_CREDIT:'Care可用金型', REBATE:'返利/下账型', OTHER:'其他'
+}[value] || value || '销售使用型')
 
 const userDialogVisible = ref(false)
 const storeDialogVisible = ref(false)
@@ -616,13 +652,25 @@ const openResourceCategory = async (row = null) => {
   const accounts = await api.getAllSettlementAccounts(); resourceAccountOptions.value = accounts.data || []
   Object.assign(resourceCategoryForm, row ? {
     categoryId:row.category_id,name:row.name,shortName:row.short_name||'',defaultAccountId:row.default_account_id||'',
-    supportsSaleUse:!!row.supports_sale_use,supportsCompanyClaim:!!row.supports_company_claim,sortOrder:Number(row.sort_order||0),status:Number(row.status),remark:row.remark||''
-  } : {categoryId:'',name:'',shortName:'',defaultAccountId:'',supportsSaleUse:true,supportsCompanyClaim:true,sortOrder:0,status:1,remark:''})
+    resourceKind:row.resource_kind||'SALE_USE',
+    supportsPurchaseSelect:row.supports_purchase_select !== 0,
+    supportsSaleUse:!!row.supports_sale_use,supportsCompanyClaim:!!row.supports_company_claim,
+    triggerOnSale:!!row.trigger_on_sale,generatesSettlement:row.generates_settlement !== 0,
+    generatesStaffCareCredit:!!row.generates_staff_care_credit,
+    affectsPerformanceProfit:!!row.affects_performance_profit,
+    performanceProfitRatio:Number(row.performance_profit_ratio ?? 100),
+    sortOrder:Number(row.sort_order||0),status:Number(row.status),remark:row.remark||''
+  } : {
+    categoryId:'',name:'',shortName:'',resourceKind:'SALE_USE',defaultAccountId:'',
+    supportsPurchaseSelect:true,supportsSaleUse:true,supportsCompanyClaim:true,triggerOnSale:false,
+    generatesSettlement:true,generatesStaffCareCredit:false,affectsPerformanceProfit:false,
+    performanceProfitRatio:100,sortOrder:0,status:1,remark:''
+  })
   resourceCategoryDialog.value = true
 }
 const saveResourceCategory = async () => {
   if (!resourceCategoryForm.name.trim()) return ElMessage.warning('请输入类别名称')
-  if (!resourceCategoryForm.defaultAccountId) return ElMessage.warning('请选择默认到账账户')
+  if (resourceCategoryForm.generatesSettlement && !resourceCategoryForm.defaultAccountId) return ElMessage.warning('请选择默认到账账户')
   submitLoading.value=true
   try { await api.saveResourceCategory(resourceCategoryForm); ElMessage.success('资源类别已保存'); resourceCategoryDialog.value=false; await loadResourceCategories() }
   catch(err){ ElMessage.error(err.response?.data?.message||'保存失败') } finally { submitLoading.value=false }
