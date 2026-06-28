@@ -959,6 +959,8 @@ async function runMigrations() {
 
     await checkAndAddColumn('T_ORDER', 'CREATE_TIME', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT "创建时间"', 'REMARK');
     await checkAndAddColumn('T_ORDER', 'UPDATE_TIME', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT "更新时间"', 'CREATE_TIME');
+    await checkAndAddColumn('T_ORDER', 'DEPOSIT_DEDUCTION_TOTAL', 'DECIMAL(12,2) DEFAULT 0 COMMENT "定金抵扣总额"', 'EDUCATION_SUBSIDY');
+    await checkAndAddColumn('T_ORDER', 'DEPOSIT_ITEMS', 'JSON COMMENT "定金抵扣明细快照"', 'DEPOSIT_DEDUCTION_TOTAL');
     await checkAndAddColumn('T_ORDER_PAYMENT', 'DEPOSIT_ID', 'VARCHAR(32) COMMENT "定金单ID"', 'PAYMENT_METHOD');
 
     await checkAndCreateTable('T_DEPOSIT_ORDER', `
@@ -972,7 +974,7 @@ async function runMigrations() {
         AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '定金金额',
         REDEEMED_AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '已核销金额',
         REFUNDED_AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '已退款金额',
-        STATUS VARCHAR(32) DEFAULT 'submitted' COMMENT '状态:submitted/archived/redeemed/refunded',
+        STATUS VARCHAR(32) DEFAULT 'available' COMMENT '状态:available/redeemed/refunded',
         RELATED_ORDER_ID VARCHAR(32) COMMENT '关联订单ID',
         RELATED_ORDER_NO VARCHAR(64) COMMENT '关联订单号',
         REMARK TEXT COMMENT '备注',
@@ -991,6 +993,19 @@ async function runMigrations() {
         KEY idx_deposit_create_staff (CREATE_STAFF_ID)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='销售定金单'
     `);
+
+    await sequelize.query(
+      "ALTER TABLE T_DEPOSIT_ORDER MODIFY COLUMN STATUS VARCHAR(32) DEFAULT 'available' COMMENT '状态:available/redeemed/refunded'"
+    );
+    const [, depositStatusMigration] = await sequelize.query(`
+      UPDATE T_DEPOSIT_ORDER
+      SET STATUS = 'available'
+      WHERE STATUS = 'submitted'
+        AND (AMOUNT - REDEEMED_AMOUNT - REFUNDED_AMOUNT) > 0
+    `);
+    if (depositStatusMigration?.affectedRows > 0) {
+      console.log(`✓ 已将 ${depositStatusMigration.affectedRows} 笔历史待生效定金转入定金库`);
+    }
 
     await checkAndCreateTable('T_DEPOSIT_REFUND', `
       CREATE TABLE T_DEPOSIT_REFUND (

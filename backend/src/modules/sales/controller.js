@@ -356,18 +356,19 @@ async function syncOrderItemsFromPayload(order, data = {}, transaction = null) {
  */
 async function create(ctx) {
   const user = ctx.state.user;
+  const requestBody = ctx.request.body || {};
   const {
     customerName, customerPhone, customerSource,
     items, payments = [], discountAmount = 0,
     nationalSubsidy = 0, educationSubsidy = 0,
     invoiceStatus = '不开票', remark, storeId, status, orderStatus, untaxedInvoiceConfirmed = false
-  } = ctx.request.body;
+  } = requestBody;
 
   if (!Array.isArray(items) || items.length === 0) {
     ctx.throw(400, '订单中没有商品');
   }
-  if (!Array.isArray(payments) || payments.length === 0) {
-    ctx.throw(400, '请填写收款方式');
+  if (!Array.isArray(payments)) {
+    ctx.throw(400, '收款方式格式不正确');
   }
 
   const orderNo = generateOrderNo();
@@ -376,14 +377,28 @@ async function create(ctx) {
 
   const normalizedItems = items.map(item => applyOrderItemDefaults(normalizeOrderItemInput(item)));
   const totalAmount = normalizedItems.reduce((sum, item) => sum + Number(item.subtotal || 0), 0);
-  const actualPayment = Math.max(0, money(totalAmount - Number(discountAmount) - Number(nationalSubsidy) - Number(educationSubsidy)));
-  const paymentTotal = money(payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0));
+  const payableBeforeDeposit = Math.max(0, money(totalAmount - Number(discountAmount) - Number(nationalSubsidy) - Number(educationSubsidy)));
+  const depositDeductions = normalizeDepositDeductions(requestBody);
+  if (depositDeductions.length > 1) {
+    ctx.throw(400, '一张正式订单只能绑定一张定金单');
+  }
+  const depositDeductionTotal = money(depositDeductions.reduce((sum, item) => sum + Number(item.amount || 0), 0));
+  const declaredDepositTotal = firstNonEmpty(requestBody, ['depositDeductionTotal', 'deposit_deduction_total'], null);
+  if (declaredDepositTotal !== null && Math.abs(money(declaredDepositTotal) - depositDeductionTotal) > 0.01) {
+    ctx.throw(400, '定金抵扣汇总与明细金额不一致');
+  }
+  if (depositDeductionTotal - payableBeforeDeposit > 0.01) {
+    ctx.throw(400, '定金抵扣金额不能超过订单应付金额');
+  }
+
+  const actualPayment = Math.max(0, money(payableBeforeDeposit - depositDeductionTotal));
+  const regularPayments = payments.filter(payment => !isDepositPayment(payment));
+  if (actualPayment > 0 && regularPayments.length === 0) {
+    ctx.throw(400, '请填写收款方式');
+  }
+  const paymentTotal = money(regularPayments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0));
   if (Math.abs(paymentTotal - actualPayment) > 0.01) {
     ctx.throw(400, '收款金额与订单实付金额不一致');
-  }
-  const depositPayments = payments.filter(isDepositPayment);
-  if (depositPayments.length > 1) {
-    ctx.throw(400, '一张正式订单只能绑定一张定金单');
   }
 
   const belowPriceItems = await checkPriceApproval(items);
@@ -427,12 +442,12 @@ async function create(ctx) {
 
   await sequelize.transaction(async (transaction) => {
   let redeemedDeposit = null;
-  if (depositPayments.length === 1) {
+  if (depositDeductions.length === 1) {
     redeemedDeposit = await validateDepositRedemption({
-      payment: depositPayments[0],
+      payment: depositDeductions[0],
       user,
       customerPhone,
-      actualPayment,
+      payableBeforeDeposit,
       transaction
     });
   }
@@ -450,6 +465,8 @@ async function create(ctx) {
     discount_amount: discountAmount,
     national_subsidy: nationalSubsidy,
     education_subsidy: educationSubsidy,
+    deposit_deduction_total: depositDeductionTotal,
+    deposit_items: depositDeductions,
     actual_payment: actualPayment,
     invoice_status: invoiceStatus,
     order_status: finalOrderStatus,
@@ -476,11 +493,11 @@ async function create(ctx) {
     }, { transaction });
   }
 
-  for (const payment of payments) {
+  for (const payment of regularPayments) {
     await OrderPayment.create({
       order_id: orderId,
       payment_method: payment.method,
-      deposit_id: isDepositPayment(payment) ? redeemedDeposit.deposit.deposit_id : null,
+      deposit_id: null,
       amount: payment.amount
     }, { transaction });
   }
@@ -809,13 +826,13 @@ async function createDeposit(ctx) {
     amount: depositAmount,
     redeemed_amount: 0,
     refunded_amount: 0,
-    status: 'submitted',
+    status: 'available',
     remark: remark || '',
     create_staff_id: user.staffId,
     create_user: user.name
   });
 
-  ctx.body = { depositId, depositNo, message: '定金单已提交，待归档' };
+  ctx.body = { depositId, depositNo, status: 'available', message: '定金已存入客户定金库' };
 }
 
 async function archiveDeposit(ctx) {
@@ -855,7 +872,7 @@ async function refundDeposit(ctx) {
     if (!deposit) ctx.throw(404, '定金单不存在');
     assertDepositStoreVisible(deposit, user);
     assertDepositCreator(deposit, user, '只能退款自己收的定金单');
-    if (!['submitted', 'archived'].includes(deposit.status)) {
+    if (!['submitted', 'available', 'archived'].includes(deposit.status)) {
       ctx.throw(400, '只有未核销的定金单可以退款');
     }
 
@@ -893,7 +910,7 @@ async function availableDeposits(ctx) {
   const { customerPhone, storeId } = ctx.query;
   const where = {
     is_deleted: 0,
-    status: 'archived',
+    status: { [Op.in]: ['submitted', 'available', 'archived'] },
     create_staff_id: user.staffId
   };
   if (customerPhone) where.customer_phone = customerPhone;
@@ -902,7 +919,7 @@ async function availableDeposits(ctx) {
 
   const rows = await DepositOrder.findAll({
     where,
-    order: [['archive_time', 'DESC'], ['create_time', 'DESC']]
+    order: [['create_time', 'DESC']]
   });
 
   const availableRows = rows
@@ -1047,7 +1064,26 @@ function generateBusinessNo(prefix) {
 
 function isDepositPayment(payment) {
   const method = String(payment?.method || payment?.payment_method || '').trim().toLowerCase();
-  return method === '定金' || method === 'deposit';
+  return method === '定金' || method === '定金抵扣' || method === 'deposit';
+}
+
+function normalizeDepositDeductions(data = {}) {
+  const explicitItems = [
+    data.depositItems,
+    data.deposit_items,
+    data.deposits
+  ].find(Array.isArray);
+  const source = explicitItems && explicitItems.length
+    ? explicitItems
+    : (Array.isArray(data.payments) ? data.payments.filter(isDepositPayment) : []);
+
+  return source.map(item => ({
+    depositId: firstNonEmpty(item, ['depositId', 'deposit_id', '_id']),
+    depositNo: firstNonEmpty(item, ['depositNo', 'deposit_no']),
+    customerName: firstNonEmpty(item, ['customerName', 'customer_name']),
+    customerPhone: firstNonEmpty(item, ['customerPhone', 'customer_phone']),
+    amount: money(firstNonEmpty(item, ['amount', 'deductionAmount', 'deduction_amount'], 0))
+  }));
 }
 
 function getDepositAvailableAmount(deposit) {
@@ -1075,7 +1111,7 @@ function assertStoreVisible(storeId, user, message = '无权访问该门店数�
   }
 }
 
-async function validateDepositRedemption({ payment, user, customerPhone, actualPayment, transaction }) {
+async function validateDepositRedemption({ payment, user, customerPhone, payableBeforeDeposit, transaction }) {
   const depositId = payment.depositId || payment.deposit_id;
   if (!depositId) {
     throw archiveError('请选择需要核销的定金单');
@@ -1089,8 +1125,8 @@ async function validateDepositRedemption({ payment, user, customerPhone, actualP
     throw archiveError('定金单不存在');
   }
   assertDepositCreator(deposit, user);
-  if (deposit.status !== 'archived') {
-    throw archiveError('只有已归档且未核销的定金单可以抵扣订单');
+  if (!['submitted', 'available', 'archived'].includes(deposit.status)) {
+    throw archiveError('该定金单当前不可用于抵扣订单');
   }
   if (customerPhone && deposit.customer_phone && String(customerPhone).trim() !== String(deposit.customer_phone).trim()) {
     throw archiveError('定金单客户电话与当前订单客户电话不一致');
@@ -1100,14 +1136,18 @@ async function validateDepositRedemption({ payment, user, customerPhone, actualP
   if (availableAmount <= 0) {
     throw archiveError('定金单没有可核销余额');
   }
-  if (Math.abs(money(payment.amount) - availableAmount) > 0.01) {
-    throw archiveError('定金抵扣金额必须等于定金单可用金额，不能手工修改');
+  const requestedAmount = money(payment.amount);
+  if (requestedAmount <= 0) {
+    throw archiveError('定金抵扣金额必须大于0');
   }
-  if (availableAmount - actualPayment > 0.01) {
-    throw archiveError('定金金额大于订单实付金额，当前不支持部分核销');
+  if (requestedAmount - availableAmount > 0.01) {
+    throw archiveError('定金抵扣金额不能超过可用余额');
+  }
+  if (requestedAmount - payableBeforeDeposit > 0.01) {
+    throw archiveError('定金抵扣金额不能超过订单应付金额');
   }
 
-  return { deposit, amount: availableAmount };
+  return { deposit, amount: requestedAmount };
 }
 
 async function redeemDepositForOrder({ deposit, orderId, orderNo, amount, user, transaction }) {
@@ -1122,9 +1162,11 @@ async function redeemDepositForOrder({ deposit, orderId, orderNo, amount, user, 
     create_user: user.name
   }, { transaction });
 
+  const redeemedAmount = money(Number(deposit.redeemed_amount || 0) + Number(amount || 0));
+  const remainingAmount = money(Number(deposit.amount || 0) - redeemedAmount - Number(deposit.refunded_amount || 0));
   await deposit.update({
-    redeemed_amount: amount,
-    status: 'redeemed',
+    redeemed_amount: redeemedAmount,
+    status: remainingAmount > 0 ? 'available' : 'redeemed',
     related_order_id: orderId,
     related_order_no: orderNo,
     update_time: new Date()
@@ -1141,12 +1183,13 @@ async function releaseDepositRedemptionForOrder(order, transaction = null, reaso
       transaction,
       lock: transaction?.LOCK?.UPDATE
     });
-    if (deposit && deposit.status === 'redeemed') {
+    if (deposit) {
+      const restoredRedeemedAmount = Math.max(0, money(Number(deposit.redeemed_amount || 0) - Number(redemption.amount || 0)));
       await deposit.update({
-        redeemed_amount: 0,
-        status: 'archived',
-        related_order_id: null,
-        related_order_no: null,
+        redeemed_amount: restoredRedeemedAmount,
+        status: 'available',
+        related_order_id: deposit.related_order_id === order.order_id ? null : deposit.related_order_id,
+        related_order_no: deposit.related_order_no === order.order_no ? null : deposit.related_order_no,
         update_time: new Date()
       }, { transaction });
     }
