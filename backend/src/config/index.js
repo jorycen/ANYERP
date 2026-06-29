@@ -17,6 +17,7 @@ function loadEnvFile(filePath) {
 
     const key = trimmed.slice(0, eqIndex).trim();
     let value = trimmed.slice(eqIndex + 1).trim();
+
     if (
       (value.startsWith('"') && value.endsWith('"')) ||
       (value.startsWith("'") && value.endsWith("'"))
@@ -32,6 +33,7 @@ function loadEnvFile(filePath) {
 
 const rootDir = path.resolve(__dirname, '../../..');
 loadEnvFile(path.join(rootDir, '.env'));
+loadEnvFile(path.join(rootDir, 'cloud-db.env'));
 loadEnvFile(path.join(rootDir, 'backend', '.env'));
 loadEnvFile(path.join(rootDir, '.env.local'));
 loadEnvFile(path.join(rootDir, 'backend', '.env.local'));

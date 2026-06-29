@@ -36,7 +36,7 @@ echo [2/4] Stop old frontend on port %FRONTEND_PORT%...
 call :kill_port %FRONTEND_PORT%
 
 echo [3/4] Start backend...
-start "ANY-ERP Backend" cmd /k "cd /d ""%BACKEND_DIR%"" && npm start"
+start "ANY-ERP Backend" cmd /k "cd /d ""%BACKEND_DIR%"" && set ""PORT=%BACKEND_PORT%"" && set ""BACKEND_PORT=%BACKEND_PORT%"" && npm start"
 timeout /t 5 /nobreak >nul
 
 echo [4/4] Start frontend...
@@ -58,15 +58,15 @@ pause
 exit /b 0
 
 :check
-where npm >nul 2>nul
-if errorlevel 1 (
-    echo ERROR: npm was not found. Install Node.js first.
-    exit /b 1
-)
-
 where node >nul 2>nul
 if errorlevel 1 (
     echo ERROR: node was not found. Install Node.js first.
+    exit /b 1
+)
+
+where npm >nul 2>nul
+if errorlevel 1 (
+    echo ERROR: npm was not found. Install Node.js first.
     exit /b 1
 )
 
