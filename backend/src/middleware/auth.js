@@ -4,7 +4,8 @@
  */
 const jwt = require('jsonwebtoken');
 const config = require('../config');
-const { Staff, Role, RegionPermission, StaffStorePermission, Store } = require('../models');
+const { Staff, Role, RegionPermission } = require('../models');
+const { resolveAccessibleStoreIds, resolvePrimaryStoreId } = require('../utils/storePermissions');
 
 async function authMiddleware(ctx, next) {
   // 获取 token
@@ -42,17 +43,10 @@ async function authMiddleware(ctx, next) {
     const regionCodes = roles.includes('boss')
       ? ['*']
       : [...new Set([staff.region_id, ...permissions.map(item => item.region_code)].filter(Boolean))];
-    const storePermissions = roles.includes('boss') ? [] : await StaffStorePermission.findAll({
-      where: { staff_id: staff.staff_id },
-      attributes: ['store_id'],
-      include: [{ model: Store, attributes: [], required: true, where: { is_deleted: 0, status: 1 } }],
-      raw: true
-    });
-    const accessibleStoreIds = roles.includes('boss')
-      ? ['*']
-      : [...new Set(storePermissions.map(item => String(item.store_id)).filter(Boolean))];
-    const legacyStoreId = staff.store_id ? String(staff.store_id) : '';
-    const effectiveStoreId = roles.includes('boss') || accessibleStoreIds.includes(legacyStoreId) ? staff.store_id : null;
+    const accessibleStoreIds = await resolveAccessibleStoreIds(staff, roles);
+    const effectiveStoreId = roles.includes('boss')
+      ? staff.store_id
+      : resolvePrimaryStoreId(staff, accessibleStoreIds);
 
     ctx.state.user = {
       staffId: staff.staff_id,

@@ -375,6 +375,7 @@ export default {
   getUsers: (params) => api.get('/system/users', { params }),
   createUser: (data) => api.post('/system/user', data),
   updateUser: (staffId, data) => api.put(`/system/user/${staffId}`, data),
+  resetUserPassword: (staffId) => api.post(`/system/user/${staffId}/reset-password`),
   getUserRegions: (userId) => api.get(`/system/user-regions/${userId}`),
   assignUserRegions: (userId, data) => api.post(`/system/assign-user-regions/${userId}`, data),
 

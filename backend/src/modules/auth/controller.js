@@ -3,8 +3,9 @@
  */
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const { Staff, Role, Menu, RoleMenu, StaffRole, StaffStorePermission, Store, Region } = require('../../models');
+const { Staff, Role, Menu, RoleMenu, StaffRole, Store, Region } = require('../../models');
 const config = require('../../config');
+const { resolveAccessibleStoreIds, resolvePrimaryStoreId } = require('../../utils/storePermissions');
 
 /**
  * 登录
@@ -49,13 +50,13 @@ async function login(ctx) {
   }
   const roleCodes = roles.map(r => r.role_code);
   const roleNames = roles.map(r => r.name);
-  const assignedStoreIds = roleCodes.includes('boss') ? ['*'] : (await StaffStorePermission.findAll({
-    where: { staff_id: staff.staff_id },
-    attributes: ['store_id'],
-    include: [{ model: Store, attributes: [], required: true, where: { is_deleted: 0, status: 1 } }],
-    raw: true
-  })).map(item => String(item.store_id));
-  const effectiveStoreId = roleCodes.includes('boss') || assignedStoreIds.includes(String(staff.store_id || '')) ? staff.store_id : null;
+  const assignedStoreIds = await resolveAccessibleStoreIds(staff, roleCodes);
+  const effectiveStoreId = roleCodes.includes('boss')
+    ? staff.store_id
+    : resolvePrimaryStoreId(staff, assignedStoreIds);
+  const effectiveStore = effectiveStoreId
+    ? await Store.findByPk(effectiveStoreId, { attributes: ['store_id', 'name'] })
+    : null;
 
   // 查询菜单权限
   const roleIds = roles.map(r => r.role_id);
@@ -99,7 +100,7 @@ async function login(ctx) {
       roleNames,
       roles: roleCodes,
       storeId: effectiveStoreId,
-      storeName: effectiveStoreId ? staff.Store?.name : '',
+      storeName: effectiveStore?.name || '',
       regionId: staff.region_id,
       regionCodes,
       storeIds: assignedStoreIds,
@@ -145,6 +146,9 @@ async function getUserInfo(ctx) {
 
   const roleCodes = roles.map(r => r.role_code);
   const roleNames = roles.map(r => r.name);
+  const effectiveStore = user.storeId
+    ? await Store.findByPk(user.storeId, { attributes: ['store_id', 'name'] })
+    : null;
 
   ctx.body = {
     staffId: staff.staff_id,
@@ -155,7 +159,7 @@ async function getUserInfo(ctx) {
     roleNames,
     roles: roleCodes,
     storeId: user.storeId,
-    storeName: user.storeId ? staff.Store?.name : '',
+    storeName: effectiveStore?.name || '',
     regionId: staff.region_id,
     regionCodes: user.regionCodes,
     storeIds: user.accessibleStoreIds,

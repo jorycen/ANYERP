@@ -6,6 +6,13 @@ const { sequelize, Menu, Role, RoleMenu, Staff, StaffRole, StaffStorePermission,
 const { Op } = require('sequelize');
 const { generateUUID } = require('../../utils');
 
+function getResetPasswordFromPhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length < 6) return '';
+  return digits.slice(-6);
+}
+
+
 /**
  * 获取菜单列表
  */
@@ -299,6 +306,32 @@ async function updateUser(ctx) {
 }
 
 /**
+ * 重置用户密码为手机号后6位
+ */
+async function resetUserPassword(ctx) {
+  const { staffId } = ctx.params;
+  if (!staffId) ctx.throw(400, '用户ID不能为空');
+
+  const staff = await Staff.findByPk(staffId, {
+    include: [{ model: Role, as: 'Roles', attributes: ['role_code'], through: { attributes: [] } }]
+  });
+  if (!staff) ctx.throw(404, '用户不存在');
+  ensureManageableStaff(ctx, staff);
+
+  const defaultPassword = getResetPasswordFromPhone(staff.phone);
+  if (!defaultPassword) ctx.throw(400, '用户手机号不足6位，无法生成默认密码');
+
+  const passwordHash = bcrypt.hashSync(defaultPassword, 10);
+  await staff.update({ password_hash: passwordHash });
+
+  ctx.body = {
+    code: 0,
+    message: '密码重置成功',
+    data: { defaultPassword }
+  };
+}
+
+/**
  * 获取用户的区域权限（可访问门店列表）
  */
 async function getUserRegions(ctx) {
@@ -371,12 +404,16 @@ async function replaceRegionPermissions(ctx, staff, storeIds) {
 
   await sequelize.transaction(async transaction => {
     await StaffStorePermission.destroy({ where: { staff_id: staff.staff_id }, transaction });
+    // 新版门店权限精确到门店；清理旧区域权限，避免清空门店后又被兼容逻辑恢复。
+    await RegionPermission.destroy({ where: { staff_id: staff.staff_id }, transaction });
     if (uniqueStoreIds.length > 0) {
       await StaffStorePermission.bulkCreate(uniqueStoreIds.map(storeId => ({
         staff_id: staff.staff_id,
         store_id: storeId
       })), { transaction });
     }
+    // 同步一个主门店，兼容仍读取 T_STAFF.STORE_ID 的旧接口和客户端。
+    await staff.update({ store_id: uniqueStoreIds[0] || null }, { transaction });
   });
 }
 
@@ -421,6 +458,7 @@ module.exports = {
   getUsers,
   createUser,
   updateUser,
+  resetUserPassword,
   getUserRegions,
   assignUserRegions
 };

@@ -26,10 +26,11 @@
                 <el-tag :type="row.status === 1 ? 'success' : 'danger'">{{ row.status === 1 ? '正常' : '停用' }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="230">
+            <el-table-column label="操作" width="310">
               <template #default="{ row }">
                 <el-button link type="primary" @click="handleEditUser(row)">编辑</el-button>
                 <el-button v-if="!row.is_boss" link type="primary" @click="handleAssignStore(row)">分配门店</el-button>
+                <el-button link type="warning" @click="handleResetPassword(row)">重置密码</el-button>
                 <el-button
                   link
                   :type="row.status === 1 ? 'danger' : 'success'"
@@ -890,6 +891,27 @@ const handleToggleUserStatus = async (row) => {
   } catch (err) {
     if (err !== 'cancel') {
       ElMessage.error(err.response?.data?.message || err.message || `${actionText}失败`)
+    }
+  }
+}
+
+const handleResetPassword = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认将账号"${row.name}"的密码重置为手机号后6位？`,
+      '确认重置密码',
+      { type: 'warning' }
+    )
+    const res = await api.resetUserPassword(row.staff_id)
+    if (res.code === 0) {
+      const defaultPassword = res.data?.defaultPassword || ''
+      ElMessage.success(defaultPassword ? `密码已重置，默认密码：${defaultPassword}` : '密码已重置')
+    } else {
+      ElMessage.error(res.message || '重置密码失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') {
+      ElMessage.error(err.response?.data?.message || err.message || '重置密码失败')
     }
   }
 }
