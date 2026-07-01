@@ -935,6 +935,11 @@ async function lockSaleRights(order, items, transaction) {
       const category = await ResourceCategory.findOne({ where: { category_code: resourceType, status: 1 }, transaction });
       if (!category || !category.supports_sale_use) throw Object.assign(new Error('所选资源类别不存在、已停用或不允许销售使用'), { status: 409 });
       const right = await InventoryResourceRight.findOne({ where: { sn_id: item.sn_id, resource_type: resourceType }, transaction, lock: transaction.LOCK.UPDATE });
+      const alreadyLockedByOrder = right &&
+        right.current_status === 'LOCKED' &&
+        right.locked_source_type === 'SALE_ORDER' &&
+        right.locked_source_id === order.order_id;
+      if (alreadyLockedByOrder) continue;
       if (!right || right.current_status !== 'AVAILABLE') throw Object.assign(new Error(`SN ${item.sn_code} 的${category.name}不可用`), { status: 409 });
       await right.update({ current_status: 'LOCKED', locked_source_type: 'SALE_ORDER', locked_source_id: order.order_id, version: Number(right.version || 0) + 1 }, { transaction });
       await ResourceRightChangeOrder.create({

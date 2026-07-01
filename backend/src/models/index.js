@@ -717,6 +717,7 @@ const Order = sequelize.define('Order', {
   actual_payment: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   invoice_status: { type: DataTypes.STRING(32), defaultValue: '不开票' },
   order_status: { type: DataTypes.STRING(32), defaultValue: 'completed' },
+  inventory_reserved: { type: DataTypes.TINYINT(1), allowNull: false, defaultValue: 0 },
   subsidy_status: { type: DataTypes.STRING(32) },
   subsidy_person: { type: DataTypes.STRING(64) },
   subsidy_id: { type: DataTypes.STRING(32) },
@@ -730,7 +731,7 @@ const Order = sequelize.define('Order', {
 const OrderItem = sequelize.define('OrderItem', {
   item_id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true },
   order_id: { type: DataTypes.STRING(32), allowNull: false },
-  product_id: { type: DataTypes.STRING(32), allowNull: false },
+  product_id: { type: DataTypes.STRING(32), allowNull: true },
   product_name: { type: DataTypes.STRING(255) },
   pn_code: { type: DataTypes.STRING(64) },
   sn_id: { type: DataTypes.STRING(32) },

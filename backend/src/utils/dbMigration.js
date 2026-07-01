@@ -136,6 +136,26 @@ async function normalizeInventoryLocationIndex() {
   }
 }
 
+async function ensureNullableColumn(tableName, columnName, columnDefinition) {
+  try {
+    const [column] = await sequelize.query(
+      `SELECT IS_NULLABLE
+       FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = ?
+       AND COLUMN_NAME = ?`,
+      { replacements: [tableName, columnName], type: sequelize.QueryTypes.SELECT }
+    );
+    if (!column || column.IS_NULLABLE === 'YES') return false;
+    await sequelize.query(`ALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${columnDefinition} NULL`);
+    console.log(`[DB Migration] 已允许字段为空: ${tableName}.${columnName}`);
+    return true;
+  } catch (error) {
+    console.error(`[DB Migration] 调整字段为空失败: ${tableName}.${columnName} - ${error.message}`);
+    return false;
+  }
+}
+
 async function normalizeProductResourceCostConfigIndex() {
   try {
     const indexes = await sequelize.query(
@@ -961,6 +981,8 @@ async function runMigrations() {
     await checkAndAddColumn('T_ORDER', 'UPDATE_TIME', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT "更新时间"', 'CREATE_TIME');
     await checkAndAddColumn('T_ORDER', 'DEPOSIT_DEDUCTION_TOTAL', 'DECIMAL(12,2) DEFAULT 0 COMMENT "定金抵扣总额"', 'EDUCATION_SUBSIDY');
     await checkAndAddColumn('T_ORDER', 'DEPOSIT_ITEMS', 'JSON COMMENT "定金抵扣明细快照"', 'DEPOSIT_DEDUCTION_TOTAL');
+    await checkAndAddColumn('T_ORDER', 'INVENTORY_RESERVED', 'TINYINT(1) NOT NULL DEFAULT 1 COMMENT "订单创建阶段是否已占用库存"', 'ORDER_STATUS');
+    await ensureNullableColumn('T_ORDER_ITEM', 'PRODUCT_ID', 'VARCHAR(32)');
     await checkAndAddColumn('T_ORDER_PAYMENT', 'DEPOSIT_ID', 'VARCHAR(32) COMMENT "定金单ID"', 'PAYMENT_METHOD');
 
     await checkAndCreateTable('T_DEPOSIT_ORDER', `

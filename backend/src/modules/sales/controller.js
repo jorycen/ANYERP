@@ -445,12 +445,11 @@ async function create(ctx) {
   const productMap = new Map();
   products.forEach(p => productMap.set(p.product_id, p));
 
+  // 未归档订单允许先记录尚未进入商品主数据的 PN/SN。
+  // 无效的商品/库存关联不写入外键，归档时再按 PN/SN 解析并校验。
   for (const item of normalizedItems) {
-    const product = productMap.get(item.product_id);
-    if (!product) {
-      ctx.throw(400, `商品 ${item.product_id} 不存在`);
-    }
-
+    if (!productMap.has(item.product_id)) item.product_id = null;
+    item.sn_id = null;
   }
 
   const snItems = normalizedItems.filter(item => item.sn_id || item.sn_code);
@@ -504,16 +503,17 @@ async function create(ctx) {
     actual_payment: actualPayment,
     invoice_status: invoiceStatus,
     order_status: finalOrderStatus,
+    inventory_reserved: 0,
     remark: remark || (needsApproval ? '售价低于定价, 待审批' : '')
   }, { transaction });
 
   for (const item of normalizedItems) {
     await OrderItem.create({
       order_id: orderId,
-      product_id: item.product_id,
+      product_id: item.product_id || null,
       product_name: item.product_name,
       pn_code: item.pn_code,
-      sn_id: item.sn_id,
+      sn_id: null,
       sn_code: item.sn_code,
       imei1: item.imei1,
       imei2: item.imei2,
@@ -547,9 +547,6 @@ async function create(ctx) {
     });
   }
 
-  await reserveInventoryForOrder({ order_id: orderId, store_id: actualStoreId }, transaction);
-  const createdItems = await OrderItem.findAll({ where: { order_id: orderId }, transaction });
-  await lockSaleRights({ order_id: orderId, order_no: orderNo, create_user: user.name }, createdItems, transaction);
   });
 
   ctx.body = {
@@ -667,12 +664,15 @@ async function reject(ctx) {
   const { reason } = ctx.request.body;
 
   await sequelize.transaction(async (transaction) => {
-    await releaseReservedInventoryForOrder(order, transaction);
+    if (order.inventory_reserved) {
+      await releaseReservedInventoryForOrder(order, transaction);
+    }
     const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
     await releaseSaleRights(order, items, transaction);
     await releaseDepositRedemptionForOrder(order, transaction, '订单审批拒绝');
     await order.update({
       order_status: 'cancelled',
+      inventory_reserved: 0,
       remark: (order.remark || '') + '\n审批拒绝: ' + (reason || '无'),
       update_time: new Date()
     }, { transaction });
@@ -702,18 +702,23 @@ async function update(ctx) {
     if (isArchiveStatus(nextStatus) && !isArchiveStatus(order.order_status)) {
       await validateAndDeductInventoryForArchive(order, transaction);
       const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+      await lockSaleRights(order, items, transaction);
       await finishSaleRights(order, items, transaction);
       await calculateSalesSettlementCosts(order, transaction);
       const refreshedItems = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
       await triggerSaleResourceBenefits(order, refreshedItems, transaction);
       data.order_status = '已归档';
       data.status = '已归档';
+      data.inventory_reserved = 0;
       syncToDailyStatement(orderId, order.store_id).catch(err => console.error('[DailySync] archive error:', err.message));
     } else if (isCancelStatus(nextStatus) && !isCancelStatus(order.order_status) && !isArchiveStatus(order.order_status)) {
-      await releaseReservedInventoryForOrder(order, transaction);
+      if (order.inventory_reserved) {
+        await releaseReservedInventoryForOrder(order, transaction);
+      }
       const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
       await releaseSaleRights(order, items, transaction);
       await releaseDepositRedemptionForOrder(order, transaction, '订单取消');
+      data.inventory_reserved = 0;
     }
 
     await order.update(data, { transaction });
@@ -1630,6 +1635,36 @@ async function validateAndDeductInventoryForArchive(order, transaction = null) {
     throw archiveError('订单中没有商品，无法归档');
   }
 
+  const pnCodes = [...new Set(items.map(item => String(item.pn_code || '').trim()).filter(Boolean))];
+  const pnRows = pnCodes.length
+    ? await ProductPn.findAll({
+      where: {
+        pn_code: { [Op.in]: pnCodes },
+        status: 1,
+        is_deleted: 0
+      },
+      transaction
+    })
+    : [];
+  const pnMap = new Map(pnRows.map(row => [String(row.pn_code || '').trim().toLowerCase(), row]));
+
+  for (const item of items) {
+    const pnCode = String(item.pn_code || '').trim();
+    if (!pnCode) {
+      throw archiveError(`商品 ${item.product_name || item.item_id} 缺少PN码，不能归档`);
+    }
+    const pnRecord = pnMap.get(pnCode.toLowerCase());
+    if (pnRecord) {
+      if (item.product_id && String(item.product_id) !== String(pnRecord.product_id)) {
+        throw archiveError(`PN码 [${pnCode}] 与订单商品不匹配，不能归档`);
+      }
+      if (!item.product_id) {
+        await item.update({ product_id: pnRecord.product_id }, { transaction });
+        item.product_id = pnRecord.product_id;
+      }
+    }
+  }
+
   const productIds = [...new Set(items.map(i => i.product_id).filter(Boolean))];
   const products = await Product.findAll({ where: { product_id: { [Op.in]: productIds } }, transaction });
   const productMap = new Map(products.map(product => [product.product_id, product]));
@@ -1638,12 +1673,23 @@ async function validateAndDeductInventoryForArchive(order, transaction = null) {
   for (const item of items) {
     const product = productMap.get(item.product_id);
     if (!product) {
-      throw archiveError(`商品 ${item.product_id || item.product_name || ''} 不存在`);
+      throw archiveError(`PN码 [${item.pn_code || ''}] 对应的商品不存在，不能归档`);
+    }
+
+    const pnCode = String(item.pn_code || '').trim();
+    const pnRecord = pnMap.get(pnCode.toLowerCase());
+    const manufacturerPns = String(product.manufacturer_code || '')
+      .split(/[,\s，、]+/)
+      .map(value => value.trim().toLowerCase())
+      .filter(Boolean);
+    if ((!pnRecord || String(pnRecord.product_id) !== String(product.product_id)) &&
+        !manufacturerPns.includes(pnCode.toLowerCase())) {
+      throw archiveError(`PN码 [${pnCode}] 不存在，不能归档`);
     }
 
     const quantity = Number(item.quantity || 1);
+    const snCode = String(item.sn_code || '').trim();
     if (product.need_sn === 1) {
-      const snCode = String(item.sn_code || '').trim();
       if (!snCode) {
         throw archiveError(`商品 ${item.product_name || product.name} 需要SN管理，请先补充SN码后再归档`);
       }
@@ -1671,6 +1717,25 @@ async function validateAndDeductInventoryForArchive(order, transaction = null) {
         fromPending: snRecord.status === 'reserved'
       });
     } else {
+      if (snCode) {
+        const optionalSn = await ProductSn.findOne({
+          where: {
+            sn_code: snCode,
+            product_id: item.product_id,
+            pn_code: pnCode,
+            store_id: order.store_id,
+            status: { [Op.in]: ['reserved', 'in_stock'] },
+            is_deleted: 0
+          },
+          transaction
+        });
+        if (!optionalSn) {
+          throw archiveError(`SN码 [${snCode}] 不存在或与PN码不匹配，不能归档`);
+        }
+        if (!item.sn_id) {
+          await item.update({ sn_id: optionalSn.sn_id }, { transaction });
+        }
+      }
       const inv = await Inventory.findOne({
         where: { product_id: item.product_id, store_id: order.store_id },
         transaction
