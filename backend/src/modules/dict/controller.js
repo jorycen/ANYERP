@@ -131,6 +131,10 @@ async function getPaymentMethodList(ctx) {
     model: SettlementAccount,
     attributes: ['account_id', 'account_name', 'bank_name', 'account_number']
   }, {
+    model: SettlementAccount,
+    as: 'ReceivableSettlementAccount',
+    attributes: ['account_id', 'account_name', 'bank_name', 'account_number', 'account_type']
+  }, {
     model: PaymentMethodStore,
     include: [
       {
@@ -141,6 +145,11 @@ async function getPaymentMethodList(ctx) {
       {
         model: SettlementAccount,
         attributes: ['account_id', 'account_name', 'bank_name', 'account_number']
+      },
+      {
+        model: SettlementAccount,
+        as: 'ReceivableSettlementAccount',
+        attributes: ['account_id', 'account_name', 'bank_name', 'account_number', 'account_type']
       }
     ],
     ...(storeId ? { where: { store_id: storeId }, required: false } : {})
@@ -160,7 +169,9 @@ async function getPaymentMethodList(ctx) {
       ...pms.Store,
       PaymentMethodStore: {
         settlement_account_id: pms.settlement_account_id,
-        SettlementAccount: pms.SettlementAccount
+        receivable_settlement_account_id: pms.receivable_settlement_account_id,
+        SettlementAccount: pms.SettlementAccount,
+        ReceivableSettlementAccount: pms.ReceivableSettlementAccount
       }
     })).filter(s => s.store_id);
     delete plain.PaymentMethodStores;
@@ -178,6 +189,10 @@ async function getAllPaymentMethods(ctx) {
     model: SettlementAccount,
     attributes: ['account_id', 'account_name', 'bank_name', 'account_number']
   }, {
+    model: SettlementAccount,
+    as: 'ReceivableSettlementAccount',
+    attributes: ['account_id', 'account_name', 'bank_name', 'account_number', 'account_type']
+  }, {
     model: PaymentMethodStore,
     include: [
       {
@@ -188,6 +203,11 @@ async function getAllPaymentMethods(ctx) {
       {
         model: SettlementAccount,
         attributes: ['account_id', 'account_name', 'bank_name', 'account_number']
+      },
+      {
+        model: SettlementAccount,
+        as: 'ReceivableSettlementAccount',
+        attributes: ['account_id', 'account_name', 'bank_name', 'account_number', 'account_type']
       }
     ],
     ...(storeId ? { where: { store_id: storeId }, required: false } : {})
@@ -206,7 +226,9 @@ async function getAllPaymentMethods(ctx) {
       ...pms.Store,
       PaymentMethodStore: {
         settlement_account_id: pms.settlement_account_id,
-        SettlementAccount: pms.SettlementAccount
+        receivable_settlement_account_id: pms.receivable_settlement_account_id,
+        SettlementAccount: pms.SettlementAccount,
+        ReceivableSettlementAccount: pms.ReceivableSettlementAccount
       }
     })).filter(s => s.store_id);
     delete plain.PaymentMethodStores;
@@ -225,6 +247,10 @@ async function getPaymentMethodsByStore(ctx) {
     include: [{
       model: SettlementAccount,
       attributes: ['account_id', 'account_name', 'bank_name', 'account_number']
+    }, {
+      model: SettlementAccount,
+      as: 'ReceivableSettlementAccount',
+      attributes: ['account_id', 'account_name', 'bank_name', 'account_number', 'account_type']
     }],
     order: [['sort_order', 'ASC']]
   });
@@ -237,7 +263,12 @@ async function getPaymentMethodsByStore(ctx) {
         where: { status: 1 },
         attributes: ['method_id', 'name', 'code', 'icon', 'sort_order']
       },
-      { model: SettlementAccount, attributes: ['account_id', 'account_name', 'bank_name', 'account_number'] }
+      { model: SettlementAccount, attributes: ['account_id', 'account_name', 'bank_name', 'account_number'] },
+      {
+        model: SettlementAccount,
+        as: 'ReceivableSettlementAccount',
+        attributes: ['account_id', 'account_name', 'bank_name', 'account_number', 'account_type']
+      }
     ]
   });
 
@@ -246,7 +277,9 @@ async function getPaymentMethodsByStore(ctx) {
     if (cfg.PaymentMethod) {
       storeMethodMap.set(cfg.PaymentMethod.method_id, {
         settlement_account_id: cfg.settlement_account_id,
-        SettlementAccount: cfg.SettlementAccount
+        receivable_settlement_account_id: cfg.receivable_settlement_account_id,
+        SettlementAccount: cfg.SettlementAccount,
+        ReceivableSettlementAccount: cfg.ReceivableSettlementAccount
       });
     }
   }
@@ -256,7 +289,9 @@ async function getPaymentMethodsByStore(ctx) {
     return {
       ...m.toJSON(),
       store_settlement_account_id: storeCfg?.settlement_account_id || null,
-      storeSettlementAccount: storeCfg?.SettlementAccount || null
+      store_receivable_settlement_account_id: storeCfg?.receivable_settlement_account_id || null,
+      storeSettlementAccount: storeCfg?.SettlementAccount || null,
+      storeReceivableSettlementAccount: storeCfg?.ReceivableSettlementAccount || null
     };
   });
 
@@ -269,9 +304,12 @@ async function getPaymentMethodsByStore(ctx) {
         icon: cfg.PaymentMethod.icon,
         sort_order: cfg.PaymentMethod.sort_order,
         settlement_account_id: null,
+        receivable_settlement_account_id: null,
         is_global: 0,
         store_settlement_account_id: cfg.settlement_account_id,
-        storeSettlementAccount: cfg.SettlementAccount
+        store_receivable_settlement_account_id: cfg.receivable_settlement_account_id,
+        storeSettlementAccount: cfg.SettlementAccount,
+        storeReceivableSettlementAccount: cfg.ReceivableSettlementAccount
       });
     }
   }
@@ -280,7 +318,10 @@ async function getPaymentMethodsByStore(ctx) {
 }
 
 async function createPaymentMethod(ctx) {
-  const { name, code, icon, isGlobal, storeConfigs, sortOrder, settlementAccountId } = ctx.request.body;
+  const {
+    name, code, icon, isGlobal, storeConfigs, sortOrder,
+    settlementAccountId, receivableSettlementAccountId
+  } = ctx.request.body;
   if (!name) ctx.throw(400, '名称不能为空');
 
   const t = await (require('../../models').sequelize).transaction();
@@ -292,6 +333,7 @@ async function createPaymentMethod(ctx) {
       icon: icon || null,
       is_global: isGlobal ? 1 : 0,
       settlement_account_id: settlementAccountId || null,
+      receivable_settlement_account_id: receivableSettlementAccountId || null,
       sort_order: sortOrder || 0,
       status: 1
     }, { transaction: t });
@@ -302,7 +344,8 @@ async function createPaymentMethod(ctx) {
           await PaymentMethodStore.create({
             method_id: method.method_id,
             store_id: cfg.storeId,
-            settlement_account_id: cfg.settlementAccountId || null
+            settlement_account_id: cfg.settlementAccountId || null,
+            receivable_settlement_account_id: cfg.receivableSettlementAccountId || null
           }, { transaction: t });
         }
       }
@@ -319,7 +362,10 @@ async function createPaymentMethod(ctx) {
 
 async function updatePaymentMethod(ctx) {
   const { id } = ctx.params;
-  const { name, code, icon, isGlobal, storeConfigs, sortOrder, status, settlementAccountId } = ctx.request.body;
+  const {
+    name, code, icon, isGlobal, storeConfigs, sortOrder, status,
+    settlementAccountId, receivableSettlementAccountId
+  } = ctx.request.body;
 
   const record = await PaymentMethod.findByPk(id);
   if (!record) ctx.throw(404, '记录不存在');
@@ -334,6 +380,9 @@ async function updatePaymentMethod(ctx) {
     if (sortOrder !== undefined) updates.sort_order = sortOrder;
     if (status !== undefined) updates.status = status;
     if (settlementAccountId !== undefined) updates.settlement_account_id = settlementAccountId || null;
+    if (receivableSettlementAccountId !== undefined) {
+      updates.receivable_settlement_account_id = receivableSettlementAccountId || null;
+    }
 
     await record.update(updates, { transaction: t });
 
@@ -345,7 +394,8 @@ async function updatePaymentMethod(ctx) {
             await PaymentMethodStore.create({
               method_id: id,
               store_id: cfg.storeId,
-              settlement_account_id: cfg.settlementAccountId || null
+              settlement_account_id: cfg.settlementAccountId || null,
+              receivable_settlement_account_id: cfg.receivableSettlementAccountId || null
             }, { transaction: t });
           }
         }
@@ -427,7 +477,7 @@ async function getAllSettlementAccounts(ctx) {
 async function createSettlementAccount(ctx) {
   const { accountName, bankName, accountNumber, accountType = 'FUND', supplierId, usageNote, sortOrder } = ctx.request.body;
   if (!accountName) ctx.throw(400, '账号名称不能为空');
-  if (!['FUND', 'SUPPLIER_REBATE', 'CARE_CREDIT'].includes(accountType)) ctx.throw(400, '账户类型无效');
+  if (!['FUND', 'POLICY_RECEIVABLE', 'SUPPLIER_REBATE', 'CARE_CREDIT'].includes(accountType)) ctx.throw(400, '账户类型无效');
   if (accountType === 'SUPPLIER_REBATE' && !supplierId) ctx.throw(400, '供应商返利账户必须绑定供应商');
   if (supplierId && !await Supplier.findByPk(supplierId)) ctx.throw(400, '供应商不存在');
   if (accountType === 'SUPPLIER_REBATE' && await SettlementAccount.findOne({ where: { account_type: 'SUPPLIER_REBATE', supplier_id: supplierId, status: 1 } })) ctx.throw(400, '该供应商已存在启用的返利账户');
@@ -471,7 +521,7 @@ async function updateSettlementAccount(ctx) {
   if (bankName !== undefined) updates.bank_name = bankName;
   if (accountNumber !== undefined) updates.account_number = accountNumber;
   if (accountType !== undefined) {
-    if (!['FUND', 'SUPPLIER_REBATE', 'CARE_CREDIT'].includes(accountType)) ctx.throw(400, '账户类型无效');
+    if (!['FUND', 'POLICY_RECEIVABLE', 'SUPPLIER_REBATE', 'CARE_CREDIT'].includes(accountType)) ctx.throw(400, '账户类型无效');
     updates.account_type = accountType;
   }
   const effectiveType = accountType || record.account_type || 'FUND';

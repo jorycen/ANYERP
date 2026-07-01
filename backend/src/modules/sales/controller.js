@@ -426,11 +426,12 @@ async function create(ctx) {
   }
 
   const actualPayment = Math.max(0, money(payableBeforeDeposit - depositDeductionTotal));
-  const regularPayments = payments.filter(payment => !isDepositPayment(payment));
-  if (actualPayment > 0 && regularPayments.length === 0) {
+  const orderPayments = payments.filter(payment => !isDepositPayment(payment));
+  const collectedPayments = orderPayments.filter(payment => !isPolicySubsidyReceivable(payment));
+  if (actualPayment > 0 && collectedPayments.length === 0) {
     ctx.throw(400, '请填写收款方式');
   }
-  const paymentTotal = money(regularPayments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0));
+  const paymentTotal = money(collectedPayments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0));
   if (Math.abs(paymentTotal - actualPayment) > 0.01) {
     ctx.throw(400, '收款金额与订单实付金额不一致');
   }
@@ -454,14 +455,17 @@ async function create(ctx) {
 
   const snItems = normalizedItems.filter(item => item.sn_id || item.sn_code);
   if (Number(nationalSubsidy) > 0 && !normalizedItems.some(item => item.use_gov_subsidy)) {
-    if (snItems.length !== 1) ctx.throw(400, '订单包含多台SN商品，请明确选择使用国补权益的机器');
-    snItems[0].use_gov_subsidy = true;
-    snItems[0].selected_resource_types = [...new Set([...(snItems[0].selected_resource_types || []), 'GOV_SUBSIDY'])];
+    // 创建阶段不因 SN 缺失或尚不存在而阻断；仅在唯一明确的 SN 行上预标记权益。
+    if (snItems.length === 1) {
+      snItems[0].use_gov_subsidy = true;
+      snItems[0].selected_resource_types = [...new Set([...(snItems[0].selected_resource_types || []), 'GOV_SUBSIDY'])];
+    }
   }
   if (Number(educationSubsidy) > 0 && !normalizedItems.some(item => item.use_edu_subsidy)) {
-    if (snItems.length !== 1) ctx.throw(400, '订单包含多台SN商品，请明确选择使用教育补贴权益的机器');
-    snItems[0].use_edu_subsidy = true;
-    snItems[0].selected_resource_types = [...new Set([...(snItems[0].selected_resource_types || []), 'EDU_SUBSIDY'])];
+    if (snItems.length === 1) {
+      snItems[0].use_edu_subsidy = true;
+      snItems[0].selected_resource_types = [...new Set([...(snItems[0].selected_resource_types || []), 'EDU_SUBSIDY'])];
+    }
   }
   if (invoiceStatus && invoiceStatus !== '不开票' && snItems.length) {
     const snWhere = snItems.map(item => item.sn_id ? { sn_id: item.sn_id } : { sn_code: item.sn_code, product_id: item.product_id });
@@ -527,7 +531,7 @@ async function create(ctx) {
     }, { transaction });
   }
 
-  for (const payment of regularPayments) {
+  for (const payment of orderPayments) {
     await OrderPayment.create({
       order_id: orderId,
       payment_method: payment.method,
@@ -1104,6 +1108,11 @@ function generateBusinessNo(prefix) {
 function isDepositPayment(payment) {
   const method = String(payment?.method || payment?.payment_method || '').trim().toLowerCase();
   return method === '定金' || method === '定金抵扣' || method === 'deposit';
+}
+
+function isPolicySubsidyReceivable(payment) {
+  const method = String(payment?.method || payment?.payment_method || '').trim();
+  return method.includes('政策补贴应收');
 }
 
 function normalizeDepositDeductions(data = {}) {
@@ -1997,15 +2006,27 @@ async function syncToDailyStatement(orderId, storeId) {
 async function resolveSettlementAccount(storeId, paymentMethodName) {
   try {
     const { PaymentMethod, PaymentMethodStore } = require('../../models');
-    const pm = await PaymentMethod.findOne({ where: { name: paymentMethodName, status: 1 } });
+    const defaultPolicyReceivableAccountId = 'ACC_POLICY_SUBSIDY_RECEIVABLE';
+    const methodName = String(paymentMethodName || '');
+    const isPolicyReceivable = methodName.endsWith('-政策补贴应收');
+    const baseMethodName = methodName
+      .replace(/-客户实收$/, '')
+      .replace(/-政策补贴应收$/, '');
+    const pm = await PaymentMethod.findOne({ where: { name: baseMethodName, status: 1 } });
     if (!pm) return null;
 
-    if (pm.is_global === 1) return pm.settlement_account_id || null;
+    if (pm.is_global === 1) {
+      return isPolicyReceivable
+        ? pm.receivable_settlement_account_id || defaultPolicyReceivableAccountId
+        : pm.settlement_account_id || null;
+    }
 
     const storeCfg = await PaymentMethodStore.findOne({
       where: { method_id: pm.method_id, store_id: storeId }
     });
-    return storeCfg?.settlement_account_id || null;
+    return isPolicyReceivable
+      ? storeCfg?.receivable_settlement_account_id || pm.receivable_settlement_account_id || defaultPolicyReceivableAccountId
+      : storeCfg?.settlement_account_id || null;
   } catch (err) {
     console.error('[resolveSettlementAccount] Error:', err.message);
     return null;

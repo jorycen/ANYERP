@@ -264,6 +264,11 @@ async function batchSettle(ctx) {
   if (details.length === 0) {
     ctx.throw(400, '没有可下账的记录');
   }
+  const unassignedDetails = details.filter(detail => !detail.settlement_account_id);
+  if (unassignedDetails.length > 0) {
+    const methods = [...new Set(unassignedDetails.map(detail => detail.payment_method).filter(Boolean))];
+    ctx.throw(400, `存在未配置下账账户的收款记录：${methods.join('、') || '未知收款方式'}`);
+  }
 
   const now = new Date();
   let totalSettledAmount = 0;

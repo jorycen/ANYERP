@@ -1218,6 +1218,7 @@ const PaymentMethod = sequelize.define('PaymentMethod', {
   code: { type: DataTypes.STRING(64) },
   icon: { type: DataTypes.STRING(64) },
   settlement_account_id: { type: DataTypes.STRING(64) },
+  receivable_settlement_account_id: { type: DataTypes.STRING(64), comment: '政策补贴应收账户ID' },
   is_global: { type: DataTypes.TINYINT(1), defaultValue: 1 },
   sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
   status: { type: DataTypes.TINYINT, defaultValue: 1 }
@@ -1229,7 +1230,7 @@ const SettlementAccount = sequelize.define('SettlementAccount', {
   account_name: { type: DataTypes.STRING(128), allowNull: false, comment: '账号名称' },
   bank_name: { type: DataTypes.STRING(128), comment: '开户行' },
   account_number: { type: DataTypes.STRING(128), comment: '账号' },
-  account_type: { type: DataTypes.STRING(32), defaultValue: 'FUND', comment: 'FUND/SUPPLIER_REBATE/CARE_CREDIT' },
+  account_type: { type: DataTypes.STRING(32), defaultValue: 'FUND', comment: 'FUND/POLICY_RECEIVABLE/SUPPLIER_REBATE/CARE_CREDIT' },
   supplier_id: { type: DataTypes.STRING(32) },
   usage_note: { type: DataTypes.STRING(512) },
   sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
@@ -1263,7 +1264,8 @@ const PaymentMethodStore = sequelize.define('PaymentMethodStore', {
   id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
   method_id: { type: DataTypes.STRING(64), allowNull: false },
   store_id: { type: DataTypes.STRING(64), allowNull: false },
-  settlement_account_id: { type: DataTypes.STRING(64) }
+  settlement_account_id: { type: DataTypes.STRING(64) },
+  receivable_settlement_account_id: { type: DataTypes.STRING(64), comment: '政策补贴应收账户ID' }
 }, { tableName: 'T_DICT_PAYMENT_METHOD_STORE', timestamps: false });
 
 // ----------------------------------------
@@ -1479,6 +1481,8 @@ SettlementPaymentBatch.belongsTo(SettlementAccount, { foreignKey: 'account_id', 
 // 支付方式关联结算账号
 SettlementAccount.hasMany(PaymentMethod, { foreignKey: 'settlement_account_id', sourceKey: 'account_id' });
 PaymentMethod.belongsTo(SettlementAccount, { foreignKey: 'settlement_account_id', targetKey: 'account_id' });
+SettlementAccount.hasMany(PaymentMethod, { foreignKey: 'receivable_settlement_account_id', sourceKey: 'account_id', as: 'ReceivablePaymentMethods' });
+PaymentMethod.belongsTo(SettlementAccount, { foreignKey: 'receivable_settlement_account_id', targetKey: 'account_id', as: 'ReceivableSettlementAccount' });
 
 SettlementAccount.hasMany(SettlementAccountTransaction, { foreignKey: 'account_id', sourceKey: 'account_id' });
 SettlementAccountTransaction.belongsTo(SettlementAccount, { foreignKey: 'account_id', targetKey: 'account_id' });
@@ -1489,6 +1493,7 @@ Store.belongsToMany(PaymentMethod, { through: PaymentMethodStore, foreignKey: 's
 PaymentMethodStore.belongsTo(PaymentMethod, { foreignKey: 'method_id', targetKey: 'method_id' });
 PaymentMethodStore.belongsTo(Store, { foreignKey: 'store_id', targetKey: 'store_id' });
 PaymentMethodStore.belongsTo(SettlementAccount, { foreignKey: 'settlement_account_id', targetKey: 'account_id' });
+PaymentMethodStore.belongsTo(SettlementAccount, { foreignKey: 'receivable_settlement_account_id', targetKey: 'account_id', as: 'ReceivableSettlementAccount' });
 PaymentMethod.hasMany(PaymentMethodStore, { foreignKey: 'method_id', sourceKey: 'method_id' });
 Store.hasMany(PaymentMethodStore, { foreignKey: 'store_id', sourceKey: 'store_id' });
 

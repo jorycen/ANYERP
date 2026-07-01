@@ -148,15 +148,24 @@
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="结算账号" min-width="200">
+            <el-table-column label="下账账户" min-width="300">
               <template #default="{ row }">
                 <span v-if="row.is_global === 1 || row.is_global === true">
+                  <span>客户实收：</span>
                   <span v-if="row.SettlementAccount">{{ row.SettlementAccount.account_name }}</span>
                   <span v-else class="text-muted">未绑定</span>
+                  <template v-if="isGuobuPaymentMethod(row.name)">
+                    <span>；政策补贴应收：</span>
+                    <span v-if="row.ReceivableSettlementAccount">{{ row.ReceivableSettlementAccount.account_name }}</span>
+                    <span v-else class="text-muted">未绑定</span>
+                  </template>
                 </span>
                 <span v-else>
                   <el-tag v-for="s in (row.Stores || [])" :key="s.store_id" size="small" class="mr-1 mb-1">
-                    {{ s.name }}{{ s.PaymentMethodStore?.settlement_account_id ? '→' + (s.PaymentMethodStore?.SettlementAccount?.account_name || '?') : '' }}
+                    {{ s.name }}：实收→{{ s.PaymentMethodStore?.SettlementAccount?.account_name || '未绑定' }}
+                    <template v-if="isGuobuPaymentMethod(row.name)">
+                      ；补贴应收→{{ s.PaymentMethodStore?.ReceivableSettlementAccount?.account_name || '未绑定' }}
+                    </template>
                   </el-tag>
                   <span v-if="!row.Stores || row.Stores.length === 0" class="text-muted">未配置门店</span>
                 </span>
@@ -325,8 +334,8 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="paymentMethodDialogVisible" :title="pmDialogTitle" width="700px" @close="resetPmForm">
-      <el-form :model="pmForm" label-width="100px">
+    <el-dialog v-model="paymentMethodDialogVisible" :title="pmDialogTitle" width="900px" @close="resetPmForm">
+      <el-form :model="pmForm" label-width="130px">
         <el-form-item label="名称" required>
           <el-input v-model="pmForm.name" placeholder="请输入收款方式名称" />
         </el-form-item>
@@ -338,13 +347,18 @@
         </el-form-item>
 
         <template v-if="pmForm.isGlobal">
-          <el-form-item label="默认结算账号">
+          <el-form-item :label="isGuobuPaymentMethod(pmForm.name) ? '客户实收账户' : '默认结算账户'">
             <div style="display: flex; align-items: center; gap: 8px; width: 100%">
               <el-select v-model="pmForm.settlementAccountId" placeholder="选择结算账号" clearable style="flex: 1">
                 <el-option v-for="acc in settlementAccounts" :key="acc.account_id" :label="acc.account_name" :value="acc.account_id" />
               </el-select>
               <el-button link type="primary" @click="openSaMgmtDialog">管理结算账号</el-button>
             </div>
+          </el-form-item>
+          <el-form-item v-if="isGuobuPaymentMethod(pmForm.name)" label="政策补贴应收账户">
+            <el-select v-model="pmForm.receivableSettlementAccountId" placeholder="选择政策补贴应收账户" clearable style="width: 100%">
+              <el-option v-for="acc in policyReceivableAccounts" :key="acc.account_id" :label="acc.account_name" :value="acc.account_id" />
+            </el-select>
           </el-form-item>
         </template>
 
@@ -360,10 +374,17 @@
                 <el-table-column label="门店" width="160">
                   <template #default="{ row }">{{ row.name }}</template>
                 </el-table-column>
-                <el-table-column label="结算账号" min-width="200">
+                <el-table-column :label="isGuobuPaymentMethod(pmForm.name) ? '客户实收账户' : '结算账户'" min-width="200">
                   <template #default="{ row }">
                     <el-select v-model="row.accountId" placeholder="选择结算账号" clearable size="small" style="width: 100%" :disabled="!row.checked">
                       <el-option v-for="acc in settlementAccounts" :key="acc.account_id" :label="acc.account_name" :value="acc.account_id" />
+                    </el-select>
+                  </template>
+                </el-table-column>
+                <el-table-column v-if="isGuobuPaymentMethod(pmForm.name)" label="政策补贴应收账户" min-width="220">
+                  <template #default="{ row }">
+                    <el-select v-model="row.receivableAccountId" placeholder="选择应收账户" clearable size="small" style="width: 100%" :disabled="!row.checked">
+                      <el-option v-for="acc in policyReceivableAccounts" :key="acc.account_id" :label="acc.account_name" :value="acc.account_id" />
                     </el-select>
                   </template>
                 </el-table-column>
@@ -409,7 +430,7 @@
             <el-input v-model="saForm.accountName" placeholder="请输入账号名称" />
           </el-form-item>
           <el-form-item label="账户类型" required>
-            <el-select v-model="saForm.accountType" style="width:100%"><el-option label="资金账户" value="FUND" /><el-option label="供应商返利" value="SUPPLIER_REBATE" /><el-option label="Care可用金" value="CARE_CREDIT" /></el-select>
+            <el-select v-model="saForm.accountType" style="width:100%"><el-option label="资金账户" value="FUND" /><el-option label="政策补贴应收" value="POLICY_RECEIVABLE" /><el-option label="供应商返利" value="SUPPLIER_REBATE" /><el-option label="Care可用金" value="CARE_CREDIT" /></el-select>
           </el-form-item>
           <el-form-item v-if="saForm.accountType === 'SUPPLIER_REBATE'" label="供应商" required>
             <el-select v-model="saForm.supplierId" filterable style="width:100%"><el-option v-for="s in accountSuppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" /></el-select>
@@ -1103,9 +1124,11 @@ const paymentMethodData = ref([])
 const paymentMethodDialogVisible = ref(false)
 const pmDialogTitle = ref('新增收款方式')
 const editingPmId = ref(null)
-const pmForm = reactive({ name: '', settlementAccountId: '', isGlobal: true, sortOrder: 0 })
+const pmForm = reactive({ name: '', settlementAccountId: '', receivableSettlementAccountId: '', isGlobal: true, sortOrder: 0 })
 const pmStoreConfigRows = ref([])
 const settlementAccounts = ref([])
+const policyReceivableAccounts = computed(() => settlementAccounts.value.filter(a => a.account_type === 'POLICY_RECEIVABLE'))
+const isGuobuPaymentMethod = name => String(name || '').startsWith('国补POS')
 
 const loadPaymentMethods = async () => {
   try {
@@ -1123,25 +1146,36 @@ const loadSettlementAccounts = async () => {
 
 const openPaymentMethodDialog = (row) => {
   loadSettlementAccounts()
-  pmStoreConfigRows.value = (stores.value || []).map(s => ({ store_id: s.store_id, name: s.name, checked: false, accountId: '' }))
+  pmStoreConfigRows.value = (stores.value || []).map(s => ({
+    store_id: s.store_id,
+    name: s.name,
+    checked: false,
+    accountId: '',
+    receivableAccountId: ''
+  }))
 
   if (row) {
     pmDialogTitle.value = '编辑收款方式'
     editingPmId.value = row.method_id
     pmForm.name = row.name
     pmForm.settlementAccountId = row.settlement_account_id || ''
+    pmForm.receivableSettlementAccountId = row.receivable_settlement_account_id || ''
     pmForm.isGlobal = row.is_global === 1 || row.is_global === true
     pmForm.sortOrder = row.sort_order || 0
     if (row.Stores && row.Stores.length > 0) {
       pmForm.isGlobal = false
       const storeMap = new Map()
       row.Stores.forEach(s => {
-        storeMap.set(s.store_id, s.PaymentMethodStore?.settlement_account_id || '')
+        storeMap.set(s.store_id, {
+          accountId: s.PaymentMethodStore?.settlement_account_id || '',
+          receivableAccountId: s.PaymentMethodStore?.receivable_settlement_account_id || ''
+        })
       })
       pmStoreConfigRows.value.forEach(r => {
         if (storeMap.has(r.store_id)) {
           r.checked = true
-          r.accountId = storeMap.get(r.store_id)
+          r.accountId = storeMap.get(r.store_id).accountId
+          r.receivableAccountId = storeMap.get(r.store_id).receivableAccountId
         }
       })
     }
@@ -1150,6 +1184,7 @@ const openPaymentMethodDialog = (row) => {
     editingPmId.value = null
     pmForm.name = ''
     pmForm.settlementAccountId = ''
+    pmForm.receivableSettlementAccountId = ''
     pmForm.isGlobal = true
     pmForm.sortOrder = (paymentMethodData.value.length || 0) + 1
     restorePaymentMethodDraft()
@@ -1159,12 +1194,15 @@ const openPaymentMethodDialog = (row) => {
 
 const onPmIsGlobalChange = () => {
   if (pmForm.isGlobal) {
-    pmStoreConfigRows.value.forEach(r => { r.checked = false; r.accountId = '' })
+    pmStoreConfigRows.value.forEach(r => { r.checked = false; r.accountId = ''; r.receivableAccountId = '' })
   }
 }
 
 const onPmStoreChecked = (row) => {
-  if (!row.checked) row.accountId = ''
+  if (!row.checked) {
+    row.accountId = ''
+    row.receivableAccountId = ''
+  }
 }
 
 const savePaymentMethodDraft = () => {
@@ -1193,12 +1231,16 @@ const handlePmSubmit = async () => {
     const checkedRows = pmStoreConfigRows.value.filter(r => r.checked)
     const storeConfigs = checkedRows.map(r => ({
       storeId: r.store_id,
-      settlementAccountId: r.accountId || null
+      settlementAccountId: r.accountId || null,
+      receivableSettlementAccountId: isGuobuPaymentMethod(pmForm.name) ? r.receivableAccountId || null : null
     }))
     const data = {
       name: pmForm.name,
       isGlobal: pmForm.isGlobal,
       settlementAccountId: pmForm.isGlobal ? pmForm.settlementAccountId : null,
+      receivableSettlementAccountId: pmForm.isGlobal && isGuobuPaymentMethod(pmForm.name)
+        ? pmForm.receivableSettlementAccountId
+        : null,
       storeConfigs,
       sortOrder: pmForm.sortOrder
     }
@@ -1255,6 +1297,7 @@ const savePmSort = async () => {
 const resetPmForm = () => {
   pmForm.name = ''
   pmForm.settlementAccountId = ''
+  pmForm.receivableSettlementAccountId = ''
   pmForm.isGlobal = true
   pmForm.sortOrder = 0
   editingPmId.value = null
@@ -1272,7 +1315,7 @@ const saDialogTitle = ref('新增结算账号')
 const editingSaId = ref(null)
 const accountSuppliers = ref([])
 const saForm = reactive({ accountName: '', accountType: 'FUND', supplierId: '', bankName: '', accountNumber: '', usageNote: '', sortOrder: 0 })
-const accountTypeText = value => ({ FUND:'资金账户', SUPPLIER_REBATE:'供应商返利', CARE_CREDIT:'Care可用金' }[value] || '资金账户')
+const accountTypeText = value => ({ FUND:'资金账户', POLICY_RECEIVABLE:'政策补贴应收', SUPPLIER_REBATE:'供应商返利', CARE_CREDIT:'Care可用金' }[value] || '资金账户')
 
 const openSaMgmtDialog = async () => {
   saMgmtDialogVisible.value = true
