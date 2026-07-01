@@ -11,6 +11,7 @@ const {
   DepositRedemption,
   Store,
   Staff,
+  StaffStorePermission,
   Product,
   ProductPn,
   ProductSn,
@@ -59,19 +60,47 @@ async function auxiliaryStaff(ctx) {
   const distributorId = user.distributorId;
   if (!distributorId) ctx.throw(403, '当前账号未绑定经销商');
 
-  const rows = await Staff.findAll({
+  // 历史人员可能仍保留 DEFAULT 经销商，但其主门店/授权门店已经属于当前经销商。
+  // 辅助销售人应按实际门店归属纳入，不能只依赖 T_STAFF.distributor_id。
+  const distributorStores = await Store.findAll({
     where: {
       distributor_id: distributorId,
       is_deleted: 0,
       status: 1
     },
-    attributes: ['staff_id', 'name', 'phone', 'role_code', 'store_id', 'distributor_id'],
+    attributes: ['store_id'],
+    raw: true
+  });
+  const distributorStoreIds = distributorStores.map(store => String(store.store_id));
+  const assignedStaffRows = distributorStoreIds.length
+    ? await StaffStorePermission.findAll({
+      where: { store_id: { [Op.in]: distributorStoreIds } },
+      attributes: ['staff_id'],
+      raw: true
+    })
+    : [];
+  const assignedStaffIds = [...new Set(assignedStaffRows.map(row => row.staff_id).filter(Boolean))];
+  const ownershipConditions = [{ distributor_id: distributorId }];
+  if (distributorStoreIds.length) {
+    ownershipConditions.push({ store_id: { [Op.in]: distributorStoreIds } });
+  }
+  if (assignedStaffIds.length) {
+    ownershipConditions.push({ staff_id: { [Op.in]: assignedStaffIds } });
+  }
+
+  const rows = await Staff.findAll({
+    where: {
+      [Op.or]: ownershipConditions,
+      is_deleted: 0,
+      status: 1
+    },
+    attributes: ['staff_id', 'name', 'phone', 'role_code', 'store_id', 'region_id', 'distributor_id'],
     include: [
-      { model: Store, as: 'Store', attributes: ['store_id', 'name'], required: false },
+      { model: Store, as: 'Store', attributes: ['store_id', 'name', 'region_id', 'distributor_id'], required: false },
       {
         model: Store,
         as: 'AssignedStores',
-        attributes: ['store_id', 'name'],
+        attributes: ['store_id', 'name', 'region_id', 'distributor_id'],
         through: { attributes: [] },
         required: false,
         where: { is_deleted: 0, status: 1 }
@@ -83,7 +112,11 @@ async function auxiliaryStaff(ctx) {
   const list = rows.map(row => {
     const data = row.toJSON();
     const assignedStores = data.AssignedStores || [];
-    const primaryStore = data.Store || assignedStores[0] || null;
+    const allStores = [data.Store].concat(assignedStores).filter(Boolean);
+    const primaryStore = allStores.find(store => (
+      String(store.distributor_id || '') === String(distributorId) ||
+      distributorStoreIds.includes(String(store.store_id || ''))
+    )) || data.Store || assignedStores[0] || null;
     const storeNames = assignedStores.map(store => store.name).filter(Boolean);
     if (primaryStore && primaryStore.name && !storeNames.includes(primaryStore.name)) {
       storeNames.unshift(primaryStore.name);
@@ -96,7 +129,8 @@ async function auxiliaryStaff(ctx) {
       roleCode: data.role_code || 'staff',
       distributorId: data.distributor_id,
       storeId: primaryStore ? primaryStore.store_id : (data.store_id || ''),
-      storeName: storeNames.join('、') || ''
+      storeName: storeNames.join('、') || '',
+      regionId: data.region_id || (primaryStore ? primaryStore.region_id : '') || ''
     };
   });
 
