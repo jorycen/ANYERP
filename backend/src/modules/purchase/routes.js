@@ -6,21 +6,21 @@ const { getRequestList, getRequestDetail, createRequest, approveRequest, revokeR
 const { requireRole } = require('../../middleware/permission');
 
 const router = new Router();
+const requirePurchaser = requireRole('purchaser');
 
-// 供应商是全员可读的基础资料；新增、修改、删除仍受采购角色限制。
+// 采购申请和供应商基础资料允许全员读取；所有已登录且具备门店范围的用户均可提交申请。
 router.get('/supplier-list', getSupplierList);
 router.get('/supplier-all', getAllSuppliers);
-
-router.use(requireRole('purchaser'));
-
 router.get('/request-list', getRequestList);
 router.get('/request-detail/:requestId', getRequestDetail);
 router.post('/create-request', createRequest);
-router.post('/approve-request/:requestId', approveRequest);
-router.post('/revoke-request/:requestId', revokeRequest);
-router.post('/supplier/sort', sortSuppliers);
-router.post('/supplier', createSupplier);
-router.put('/supplier/:id', updateSupplier);
-router.delete('/supplier/:id', deleteSupplier);
+
+// 审批、撤销和供应商维护仍属于采购管理职责。
+router.post('/approve-request/:requestId', requirePurchaser, approveRequest);
+router.post('/revoke-request/:requestId', requirePurchaser, revokeRequest);
+router.post('/supplier/sort', requirePurchaser, sortSuppliers);
+router.post('/supplier', requirePurchaser, createSupplier);
+router.put('/supplier/:id', requirePurchaser, updateSupplier);
+router.delete('/supplier/:id', requirePurchaser, deleteSupplier);
 
 module.exports = router;
