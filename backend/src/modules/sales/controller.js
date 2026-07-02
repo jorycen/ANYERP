@@ -22,6 +22,7 @@ const {
   ManufacturerRebatePolicy,
   RebateEstimate,
   ResourceSettlement,
+  InventoryResourceRight,
   SalesSettlementCostAdjustment,
   sequelize
 } = require('../../models');
@@ -341,6 +342,7 @@ async function syncOrderItemsFromPayload(order, data = {}, transaction = null) {
   });
   const existingById = new Map(existingItems.map(item => [String(item.item_id), item]));
   const results = [];
+  let hasLockedResource = null;
 
   for (let index = 0; index < rawItems.length; index++) {
     const normalized = normalizeOrderItemInput(rawItems[index]);
@@ -348,9 +350,22 @@ async function syncOrderItemsFromPayload(order, data = {}, transaction = null) {
       ? existingById.get(String(normalized.item_id))
       : existingItems[index];
     if (!existing) continue;
-    const hasLockedResource = Number(existing.use_gov_subsidy) || Number(existing.use_edu_subsidy) || Number(existing.use_sales_report) || selectedResourcesFromJson(existing.selected_resource_types).length > 0;
-    if (hasLockedResource && ((normalized.sn_id && normalized.sn_id !== existing.sn_id) || (normalized.sn_code && normalized.sn_code !== existing.sn_code))) {
-      throw Object.assign(new Error('订单已锁定SN资源权益，不能直接更换SN；请取消订单后重新开单'), { status: 409 });
+    const snChanged = (normalized.sn_id && normalized.sn_id !== existing.sn_id) ||
+      (normalized.sn_code && normalized.sn_code !== existing.sn_code);
+    if (snChanged) {
+      if (hasLockedResource === null) {
+        hasLockedResource = await InventoryResourceRight.count({
+          where: {
+            current_status: 'LOCKED',
+            locked_source_type: 'SALE_ORDER',
+            locked_source_id: order.order_id
+          },
+          transaction
+        }) > 0;
+      }
+      if (hasLockedResource) {
+        throw Object.assign(new Error('该订单存在已锁定的SN资源权益，不能更换SN；请先取消订单后重新开单'), { status: 409 });
+      }
     }
 
     const updatePayload = compactUpdatePayload({
@@ -375,13 +390,6 @@ async function syncOrderItemsFromPayload(order, data = {}, transaction = null) {
     });
   }
 
-  if (results.length) {
-    console.log('[Sales] synced order items from payload:', JSON.stringify({
-      orderId: order.order_id,
-      orderNo: order.order_no,
-      results
-    }));
-  }
   return results;
 }
 
