@@ -2,6 +2,7 @@ const { Op } = require('sequelize');
 const {
   sequelize, Product, ProductSn, InventoryResourceRight, ResourceRightChangeOrder,
   ProductResourceCostConfig, InventoryResourceCostAdjustment, ResourceCategory,
+  GoodsType, GoodsTypeResource,
   ResourceSettlement, SettlementAccount, SettlementAccountTransaction, SupplierRebate, RebateEstimate, Supplier,
   StaffCareCreditTransaction, PerformanceProfitAdjustment
 } = require('../../models');
@@ -489,6 +490,97 @@ async function saveResourceCategory(ctx) {
     });
   }
   ctx.body = { message: '资源类别已保存', categoryId: record.category_id };
+}
+
+async function deleteResourceCategory(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin']);
+  const category = await ResourceCategory.findByPk(ctx.params.categoryId);
+  if (!category) ctx.throw(404, '资源类别不存在');
+  await sequelize.transaction(async transaction => {
+    await category.update({ status: 0, update_time: new Date() }, { transaction });
+    await GoodsTypeResource.destroy({ where: { category_id: category.category_id }, transaction });
+  });
+  ctx.body = { message: '资源类别已删除，历史业务记录继续保留' };
+}
+
+async function listGoodsTypes(ctx) {
+  const activeOnly = String(ctx.query.activeOnly || '') === '1';
+  const rows = await GoodsType.findAll({
+    where: activeOnly ? { status: 1 } : {},
+    include: [{
+      model: ResourceCategory,
+      as: 'ResourceCategories',
+      required: false,
+      where: activeOnly ? { status: 1 } : undefined,
+      through: { attributes: ['sort_order'] }
+    }],
+    order: [['sort_order', 'ASC'], ['name', 'ASC']]
+  });
+  ctx.body = rows.map(row => {
+    const result = row.toJSON();
+    result.ResourceCategories = (result.ResourceCategories || []).sort((a, b) =>
+      Number(a.GoodsTypeResource?.sort_order || 0) - Number(b.GoodsTypeResource?.sort_order || 0)
+    );
+    result.resource_category_ids = result.ResourceCategories.map(item => item.category_id);
+    return result;
+  });
+}
+
+async function saveGoodsType(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin']);
+  const body = ctx.request.body || {};
+  const name = String(body.name || '').trim();
+  if (!name) ctx.throw(400, '请输入货型名称');
+  const categoryIds = [...new Set(
+    (Array.isArray(body.resourceCategoryIds) ? body.resourceCategoryIds : [])
+      .map(value => String(value || '').trim())
+      .filter(Boolean)
+  )];
+  if (categoryIds.length) {
+    const count = await ResourceCategory.count({ where: { category_id: { [Op.in]: categoryIds } } });
+    if (count !== categoryIds.length) ctx.throw(400, '货型包含了不存在的资源子内容');
+  }
+  const duplicateWhere = { name };
+  if (body.goodsTypeId) duplicateWhere.goods_type_id = { [Op.ne]: body.goodsTypeId };
+  if (await GoodsType.count({ where: duplicateWhere })) ctx.throw(409, '货型名称已存在');
+
+  let record;
+  await sequelize.transaction(async transaction => {
+    const values = {
+      name,
+      sort_order: Number(body.sortOrder || 0),
+      status: body.status === 0 ? 0 : 1,
+      remark: String(body.remark || '').trim(),
+      update_time: new Date()
+    };
+    if (body.goodsTypeId) {
+      record = await GoodsType.findByPk(body.goodsTypeId, { transaction });
+      if (!record) ctx.throw(404, '货型不存在');
+      await record.update(values, { transaction });
+    } else {
+      record = await GoodsType.create({
+        goods_type_id: generateUUID(),
+        ...values
+      }, { transaction });
+    }
+    await GoodsTypeResource.destroy({ where: { goods_type_id: record.goods_type_id }, transaction });
+    if (categoryIds.length) {
+      await GoodsTypeResource.bulkCreate(categoryIds.map((categoryId, index) => ({
+        goods_type_id: record.goods_type_id,
+        category_id: categoryId,
+        sort_order: index
+      })), { transaction });
+    }
+  });
+  ctx.body = { message: '货型已保存', goodsTypeId: record.goods_type_id };
+}
+
+async function deleteGoodsType(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin']);
+  const record = await GoodsType.findByPk(ctx.params.goodsTypeId);
+  if (!record) ctx.throw(404, '货型不存在');
+  await record.update({ status: 0, update_time: new Date() });
+  ctx.body = { message: '货型已删除，历史采购记录继续保留' };
 }
 
 async function createPendingSettlement({ sourceType, sourceId, sn, resourceType, amount, counterpartyId = null, counterpartyName = '', remark = '', transaction }) {
@@ -989,7 +1081,9 @@ async function releaseSaleRights(order, items, transaction) {
 module.exports = {
   LEGACY_RESOURCE_TYPES, buildSalesResourceSummary, summariesForSns,
   listRights, snRights, saveSnRights, batchAdjustRights, batchRefreshRights, submitClaim, reviewClaim, listChanges, listCostConfigs, listCostAdjustments, saveCostConfig,
-  listResourceCategories, saveResourceCategory, listResourceSettlements, settleResource, createPendingSettlement,
+  listResourceCategories, saveResourceCategory, deleteResourceCategory,
+  listGoodsTypes, saveGoodsType, deleteGoodsType,
+  listResourceSettlements, settleResource, createPendingSettlement,
   initializeSnResourceRightsFromInbound, triggerSaleResourceBenefits,
   lockSaleRights, finishSaleRights, releaseSaleRights
 };

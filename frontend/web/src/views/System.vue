@@ -74,21 +74,44 @@
           </el-tree>
         </el-tab-pane>
 
-        <el-tab-pane label="资源类别管理" name="resourceCategories">
-          <div class="filter-bar"><el-button type="primary" @click="openResourceCategory()">新增资源类别</el-button><el-button @click="openSaMgmtDialog">账户管理</el-button></div>
-          <el-alert title="资源类别新增后会自动出现在SN权益维护和销售订单中；停用只影响新业务，历史记录继续保留。默认到账账户决定财务点击下账后金额进入哪里。" type="info" :closable="false" style="margin-bottom:12px" />
+        <el-tab-pane label="货型配置" name="resourceCategories">
+          <el-alert title="货型是采购时快速勾选资源子内容的模板；每项资源仍在SN维度独立记录、核销和下账。" type="info" :closable="false" style="margin-bottom:12px" />
+          <div class="config-section-title">
+            <strong>货型</strong>
+            <el-button type="primary" @click="openGoodsType()">新增货型</el-button>
+          </div>
+          <el-table :data="goodsTypeData" stripe border style="margin-bottom:24px">
+            <el-table-column prop="sort_order" label="排序" width="70" />
+            <el-table-column prop="name" label="货型名称" min-width="180" />
+            <el-table-column label="包含的资源子内容" min-width="360">
+              <template #default="{row}">
+                <el-tag v-for="item in row.ResourceCategories" :key="item.category_id" class="mr-1">{{ item.name }}</el-tag>
+                <span v-if="!row.ResourceCategories?.length" class="text-muted">未配置</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="remark" label="备注" min-width="180" />
+            <el-table-column label="状态" width="90"><template #default="{row}"><el-tag :type="row.status ? 'success' : 'info'">{{ row.status ? '启用' : '停用' }}</el-tag></template></el-table-column>
+            <el-table-column label="操作" width="140"><template #default="{row}"><el-button link type="primary" @click="openGoodsType(row)">编辑</el-button><el-button link type="danger" @click="removeGoodsType(row)">删除</el-button></template></el-table-column>
+          </el-table>
+
+          <div class="config-section-title">
+            <strong>资源子内容</strong>
+            <div><el-button type="primary" @click="openResourceCategory()">新增子内容</el-button><el-button @click="openSaMgmtDialog">账户管理</el-button></div>
+          </div>
+          <el-alert title="资源子内容会用于货型组合，并自动应用到商品资源成本定义等权益下拉框。删除只停止新业务使用，历史记录保留。" type="info" :closable="false" style="margin-bottom:12px" />
           <el-table :data="resourceCategoryData" stripe border>
             <el-table-column prop="sort_order" label="排序" width="70" />
-            <el-table-column prop="name" label="类别名称" min-width="150" />
-            <el-table-column prop="short_name" label="简称" width="120" />
+            <el-table-column prop="name" label="子内容名称" min-width="150" />
+            <el-table-column prop="short_name" label="简称" width="110" />
             <el-table-column label="权益类型" width="120"><template #default="{row}">{{ resourceKindText(row.resource_kind) }}</template></el-table-column>
             <el-table-column label="采购可选" width="90"><template #default="{row}">{{ row.supports_purchase_select ? '是' : '否' }}</template></el-table-column>
             <el-table-column label="销售使用" width="90"><template #default="{row}">{{ row.supports_sale_use ? '是' : '否' }}</template></el-table-column>
             <el-table-column label="销售触发" width="90"><template #default="{row}">{{ row.trigger_on_sale ? '是' : '否' }}</template></el-table-column>
             <el-table-column label="公司套回" width="90"><template #default="{row}">{{ row.supports_company_claim ? '是' : '否' }}</template></el-table-column>
-            <el-table-column label="默认到账账户" min-width="170"><template #default="{row}">{{ row.DefaultAccount?.account_name || '未配置' }}</template></el-table-column>
+            <el-table-column label="产生可用金" width="100"><template #default="{row}">{{ row.generates_staff_care_credit ? '是' : '否' }}</template></el-table-column>
+            <el-table-column label="默认到账账户" min-width="160"><template #default="{row}">{{ row.DefaultAccount?.account_name || '未配置' }}</template></el-table-column>
             <el-table-column label="状态" width="90"><template #default="{row}"><el-tag :type="row.status ? 'success' : 'info'">{{ row.status ? '启用' : '停用' }}</el-tag></template></el-table-column>
-            <el-table-column label="操作" width="90"><template #default="{row}"><el-button link type="primary" @click="openResourceCategory(row)">编辑</el-button></template></el-table-column>
+            <el-table-column label="操作" width="140"><template #default="{row}"><el-button link type="primary" @click="openResourceCategory(row)">编辑</el-button><el-button link type="danger" @click="removeResourceCategory(row)">删除</el-button></template></el-table-column>
           </el-table>
         </el-tab-pane>
 
@@ -281,7 +304,22 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="resourceCategoryDialog" :title="resourceCategoryForm.categoryId ? '编辑资源类别' : '新增资源类别'" width="560px">
+    <el-dialog v-model="goodsTypeDialog" :title="goodsTypeForm.goodsTypeId ? '编辑货型' : '新增货型'" width="560px">
+      <el-form :model="goodsTypeForm" label-width="110px">
+        <el-form-item label="货型名称" required><el-input v-model="goodsTypeForm.name" placeholder="如：服务商全资源货" /></el-form-item>
+        <el-form-item label="资源子内容">
+          <el-select v-model="goodsTypeForm.resourceCategoryIds" multiple filterable clearable style="width:100%" placeholder="选择该货型包含的资源">
+            <el-option v-for="item in resourceCategoryData" :key="item.category_id" :label="item.status ? item.name : `${item.name}（已停用）`" :value="item.category_id" :disabled="!item.status" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="排序"><el-input-number v-model="goodsTypeForm.sortOrder" :min="0" /></el-form-item>
+        <el-form-item label="启用"><el-switch v-model="goodsTypeForm.status" :active-value="1" :inactive-value="0" /></el-form-item>
+        <el-form-item label="备注"><el-input v-model="goodsTypeForm.remark" type="textarea" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="goodsTypeDialog=false">取消</el-button><el-button type="primary" :loading="submitLoading" @click="saveGoodsType">保存</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="resourceCategoryDialog" :title="resourceCategoryForm.categoryId ? '编辑资源子内容' : '新增资源子内容'" width="560px">
       <el-form :model="resourceCategoryForm" label-width="120px">
         <el-form-item label="类别名称" required><el-input v-model="resourceCategoryForm.name" /></el-form-item>
         <el-form-item label="简称"><el-input v-model="resourceCategoryForm.shortName" /></el-form-item>
@@ -591,6 +629,11 @@ const roleData = ref([])
 const menuData = ref([])
 const stores = ref([])
 const assignableStores = ref([])
+const goodsTypeData = ref([])
+const goodsTypeDialog = ref(false)
+const goodsTypeForm = reactive({
+  goodsTypeId:'', name:'', resourceCategoryIds:[], sortOrder:0, status:1, remark:''
+})
 const resourceCategoryData = ref([])
 const resourceAccountOptions = ref([])
 const resourceCategoryDialog = ref(false)
@@ -665,10 +708,51 @@ onMounted(() => {
   loadStores()
   loadCustomerSources()
   loadResourceCategories()
+  loadGoodsTypes()
 })
 
 const loadResourceCategories = async () => {
   try { const res = await api.getResourceCategories({}); resourceCategoryData.value = res.data || [] } catch (err) { ElMessage.error('加载资源类别失败') }
+}
+const loadGoodsTypes = async () => {
+  try { const res = await api.getGoodsTypes({}); goodsTypeData.value = res.data || [] } catch (err) { ElMessage.error('加载货型失败') }
+}
+const openGoodsType = (row = null) => {
+  Object.assign(goodsTypeForm, row ? {
+    goodsTypeId:row.goods_type_id,
+    name:row.name,
+    resourceCategoryIds:(row.ResourceCategories || []).map(item => item.category_id),
+    sortOrder:Number(row.sort_order || 0),
+    status:Number(row.status),
+    remark:row.remark || ''
+  } : {
+    goodsTypeId:'', name:'', resourceCategoryIds:[], sortOrder:0, status:1, remark:''
+  })
+  goodsTypeDialog.value = true
+}
+const saveGoodsType = async () => {
+  if (!goodsTypeForm.name.trim()) return ElMessage.warning('请输入货型名称')
+  submitLoading.value = true
+  try {
+    await api.saveGoodsType(goodsTypeForm)
+    ElMessage.success('货型已保存')
+    goodsTypeDialog.value = false
+    await loadGoodsTypes()
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '保存失败')
+  } finally {
+    submitLoading.value = false
+  }
+}
+const removeGoodsType = async row => {
+  try {
+    await ElMessageBox.confirm(`确认删除货型“${row.name}”？历史采购记录不会被删除。`, '删除确认', { type:'warning' })
+    await api.deleteGoodsType(row.goods_type_id)
+    ElMessage.success('货型已删除')
+    await loadGoodsTypes()
+  } catch (err) {
+    if (err !== 'cancel' && err !== 'close') ElMessage.error(err.response?.data?.message || '删除失败')
+  }
 }
 const openResourceCategory = async (row = null) => {
   const accounts = await api.getAllSettlementAccounts(); resourceAccountOptions.value = accounts.data || []
@@ -694,11 +778,25 @@ const saveResourceCategory = async () => {
   if (!resourceCategoryForm.name.trim()) return ElMessage.warning('请输入类别名称')
   if (resourceCategoryForm.generatesSettlement && !resourceCategoryForm.defaultAccountId) return ElMessage.warning('请选择默认到账账户')
   submitLoading.value=true
-  try { await api.saveResourceCategory(resourceCategoryForm); ElMessage.success('资源类别已保存'); resourceCategoryDialog.value=false; await loadResourceCategories() }
+  try { await api.saveResourceCategory(resourceCategoryForm); ElMessage.success('资源子内容已保存'); resourceCategoryDialog.value=false; await Promise.all([loadResourceCategories(), loadGoodsTypes()]) }
   catch(err){ ElMessage.error(err.response?.data?.message||'保存失败') } finally { submitLoading.value=false }
+}
+const removeResourceCategory = async row => {
+  try {
+    await ElMessageBox.confirm(`确认删除资源子内容“${row.name}”？它会从货型和新业务下拉框中移除，历史记录继续保留。`, '删除确认', { type:'warning' })
+    await api.deleteResourceCategory(row.category_id)
+    ElMessage.success('资源子内容已删除')
+    await Promise.all([loadResourceCategories(), loadGoodsTypes()])
+  } catch (err) {
+    if (err !== 'cancel' && err !== 'close') ElMessage.error(err.response?.data?.message || '删除失败')
+  }
 }
 
 const onSysTabChange = (tabName) => {
+  if (tabName === 'resourceCategories') {
+    loadResourceCategories()
+    loadGoodsTypes()
+  }
   if (tabName === 'customerSource' && customerSourceData.value.length === 0) loadCustomerSources()
   if (tabName === 'paymentMethod' && paymentMethodData.value.length === 0) loadPaymentMethods()
   if (tabName === 'supplementItem' && supplementItemData.value.length === 0) loadSupplementItems()
@@ -1702,6 +1800,13 @@ const cfResetFieldForm = () => {
 <style scoped>
 .filter-bar {
   margin-bottom: 16px;
+}
+
+.config-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 12px;
 }
 
 .store-permission-selector {

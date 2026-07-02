@@ -81,6 +81,10 @@ async function storeAccessMiddleware(ctx, next) {
   if (!user || user.roles?.includes('boss') || user.accessibleStoreIds?.includes('*')) return next();
   if (ctx.path.startsWith('/api/v1/system/')) return next();
   if (ctx.path === '/api/v1/store/create' && ctx.method === 'POST') return next();
+  if (ctx.method === 'GET' && (
+    ctx.path === '/api/v1/purchase/supplier-list' ||
+    ctx.path === '/api/v1/purchase/supplier-all'
+  )) return next();
 
   const allowed = new Set((user.accessibleStoreIds || []).map(String));
   const storeBusinessPrefixes = ['/api/v1/sales', '/api/v1/inventory', '/api/v1/purchase', '/api/v1/finance', '/api/v1/report', '/api/v1/store'];

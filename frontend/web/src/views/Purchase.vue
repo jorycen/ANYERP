@@ -119,10 +119,8 @@
           </el-select>
         </el-form-item>
         <el-form-item label="货型" required>
-          <el-select v-model="requestForm.productType" placeholder="请选择货型" style="width: 100%">
-            <el-option label="正规货" value="正规货" />
-            <el-option label="国补货" value="国补货" />
-            <el-option label="纯二批" value="纯二批" />
+          <el-select v-model="requestForm.productType" placeholder="请选择货型" style="width: 100%" @change="onGoodsTypeChange">
+            <el-option v-for="item in goodsTypeOptions" :key="item.goods_type_id" :label="item.name" :value="item.name" />
           </el-select>
         </el-form-item>
         <el-form-item label="备注">
@@ -405,6 +403,7 @@ const allStores = ref([])
 const allStoresLoaded = ref(false)
 const products = ref([])
 const resourceOptions = ref([])
+const goodsTypeOptions = ref([])
 const productSearchKeyword = ref('')
 const supplierSearchKeyword = ref('')
 const total = ref(0)
@@ -442,7 +441,7 @@ const supplierQuery = reactive({
 const requestForm = reactive({
   supplierId: '',
   invoiceType: '',
-  productType: '正规货',
+  productType: '',
   remark: '',
   rebateDeduction: 0,
   items: []
@@ -543,6 +542,7 @@ onMounted(() => {
   loadAllStores()
   loadProducts()
   loadResourceOptions()
+  loadGoodsTypeOptions()
 })
 
 const loadAllStores = async () => {
@@ -656,10 +656,38 @@ const loadResourceOptions = async () => {
   }
 }
 
+const loadGoodsTypeOptions = async () => {
+  try {
+    const res = await api.getGoodsTypes({ activeOnly: 1 })
+    goodsTypeOptions.value = res.data || []
+    if (!requestForm.productType && goodsTypeOptions.value.length) {
+      requestForm.productType = goodsTypeOptions.value[0].name
+    }
+  } catch (err) {
+    goodsTypeOptions.value = []
+    console.error('Failed to load goods types')
+  }
+}
+
+const goodsTypeResourceCodes = name => {
+  const goodsType = goodsTypeOptions.value.find(item => item.name === name)
+  return (goodsType?.ResourceCategories || [])
+    .filter(item => item.status !== 0 && item.supports_purchase_select !== 0)
+    .map(item => item.category_code)
+}
+
+const onGoodsTypeChange = name => {
+  const resourceTypes = goodsTypeResourceCodes(name)
+  requestForm.items.forEach(item => {
+    item.selectedResourceTypes = [...resourceTypes]
+  })
+}
+
 const handleCreate = () => {
   resetForm()
   restorePurchaseRequestDraft()
   if (resourceOptions.value.length === 0) loadResourceOptions()
+  if (goodsTypeOptions.value.length === 0) loadGoodsTypeOptions()
   requestDialogVisible.value = true
 }
 
@@ -1005,7 +1033,10 @@ const onItemAmountChange = () => {
 }
 
 const addRequestItem = () => {
-  requestForm.items.push({ productId: '', productName: '', price: 0, quantity: 1, rebateDeduction: 0, storeAllocations: [], selectedResourceTypes: [] })
+  requestForm.items.push({
+    productId: '', productName: '', price: 0, quantity: 1, rebateDeduction: 0, storeAllocations: [],
+    selectedResourceTypes: goodsTypeResourceCodes(requestForm.productType)
+  })
   if (toNumber(requestForm.rebateDeduction) > 0) {
     allocateTotalRebateToItems()
   }
@@ -1021,6 +1052,10 @@ const removeRequestItem = (index) => {
 const handleSubmit = async () => {
   if (!requestForm.supplierId) {
     ElMessage.warning('请选择供应商')
+    return
+  }
+  if (!requestForm.productType) {
+    ElMessage.warning('请选择货型')
     return
   }
   if (requestForm.items.length === 0) {
@@ -1064,7 +1099,7 @@ const handleSubmit = async () => {
         productName: item.productName,
         price: item.price,
         quantity: item.quantity,
-        productType: requestForm.productType || '正规货',
+        productType: requestForm.productType,
         rebateDeduction: Math.min(toNumber(item.rebateDeduction), itemSubtotal(item)),
         storeAllocations: item.storeAllocations,
         selectedResourceTypes: item.selectedResourceTypes || []
@@ -1093,7 +1128,7 @@ const handleDialogClose = () => {
 const resetForm = () => {
   requestForm.supplierId = ''
   requestForm.invoiceType = ''
-  requestForm.productType = '正规货'
+  requestForm.productType = goodsTypeOptions.value[0]?.name || ''
   requestForm.remark = ''
   requestForm.rebateDeduction = 0
   requestForm.items = []

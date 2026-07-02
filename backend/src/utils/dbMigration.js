@@ -320,6 +320,24 @@ async function runMigrations() {
         KEY idx_resource_category_status (STATUS, SORT_ORDER)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='资源权益类别配置'
     `);
+    await checkAndCreateTable('T_GOODS_TYPE', `
+      CREATE TABLE T_GOODS_TYPE (
+        GOODS_TYPE_ID VARCHAR(32) NOT NULL, NAME VARCHAR(128) NOT NULL,
+        SORT_ORDER INT DEFAULT 0, STATUS TINYINT(1) DEFAULT 1, REMARK VARCHAR(512),
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (GOODS_TYPE_ID), UNIQUE KEY uk_goods_type_name (NAME),
+        KEY idx_goods_type_status (STATUS, SORT_ORDER)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='采购货型模板'
+    `);
+    const goodsTypeResourceTableCreated = await checkAndCreateTable('T_GOODS_TYPE_RESOURCE', `
+      CREATE TABLE T_GOODS_TYPE_RESOURCE (
+        GOODS_TYPE_ID VARCHAR(32) NOT NULL, CATEGORY_ID VARCHAR(32) NOT NULL,
+        SORT_ORDER INT DEFAULT 0, CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (GOODS_TYPE_ID, CATEGORY_ID),
+        KEY idx_goods_type_resource_category (CATEGORY_ID)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='货型包含的资源类别'
+    `);
     await checkAndCreateTable('T_RESOURCE_RIGHT_CHANGE_ORDER', `
       CREATE TABLE T_RESOURCE_RIGHT_CHANGE_ORDER (
         CHANGE_ID VARCHAR(32) NOT NULL, CHANGE_ORDER_NO VARCHAR(64) NOT NULL,
@@ -431,6 +449,37 @@ async function runMigrations() {
         ('RC_SALES_REPORT', 'SALES_REPORT', '销量报号资格', '销量报号', 1, 1, 30, 1),
         ('RC_MANUFACTURER_REBATE', 'MANUFACTURER_REBATE', '厂商返利', '厂商返利', 0, 0, 40, 1)
     `);
+    await sequelize.query(`
+      INSERT IGNORE INTO T_RESOURCE_CATEGORY
+        (CATEGORY_ID, CATEGORY_CODE, NAME, SHORT_NAME, RESOURCE_KIND, SUPPORTS_PURCHASE_SELECT,
+         SUPPORTS_SALE_USE, SUPPORTS_COMPANY_CLAIM, TRIGGER_ON_SALE, GENERATES_SETTLEMENT,
+         GENERATES_STAFF_CARE_CREDIT, AFFECTS_PERFORMANCE_PROFIT, SORT_ORDER, STATUS)
+      VALUES
+        ('RC_SALES_BONUS', 'SALES_BONUS', '销售红包', '销售红包', 'PO_REWARD', 1, 0, 0, 1, 1, 0, 1, 50, 1),
+        ('RC_SELF_PURCHASE_REPORT', 'SELF_PURCHASE_REPORT', '报号自购', '报号自购', 'INTERNAL_MARKER', 1, 1, 0, 0, 0, 0, 0, 60, 1)
+    `);
+    await sequelize.query(`
+      INSERT IGNORE INTO T_GOODS_TYPE
+        (GOODS_TYPE_ID, NAME, SORT_ORDER, STATUS, REMARK)
+      VALUES
+        ('GT_SERVICE_FULL_RESOURCE', '服务商全资源货', 10, 1, '系统初始化的全资源货型模板')
+    `);
+    if (goodsTypeResourceTableCreated) {
+      await sequelize.query(`
+        INSERT IGNORE INTO T_GOODS_TYPE_RESOURCE (GOODS_TYPE_ID, CATEGORY_ID, SORT_ORDER)
+        SELECT 'GT_SERVICE_FULL_RESOURCE', CATEGORY_ID,
+          CASE CATEGORY_CODE
+            WHEN 'GOV_SUBSIDY' THEN 10
+            WHEN 'EDU_SUBSIDY' THEN 20
+            WHEN 'MANUFACTURER_REBATE' THEN 30
+            WHEN 'SALES_BONUS' THEN 40
+            WHEN 'SELF_PURCHASE_REPORT' THEN 50
+            ELSE 99
+          END
+        FROM T_RESOURCE_CATEGORY
+        WHERE CATEGORY_CODE IN ('GOV_SUBSIDY', 'EDU_SUBSIDY', 'MANUFACTURER_REBATE', 'SALES_BONUS', 'SELF_PURCHASE_REPORT')
+      `);
+    }
     await checkAndAddColumn('T_PRODUCT', 'MANUFACTURER_CODE', 'VARCHAR(512) COMMENT "manufacturer code"', 'CONFIG');
     await checkAndCreateTable('T_SN_LOG', `
       CREATE TABLE T_SN_LOG (

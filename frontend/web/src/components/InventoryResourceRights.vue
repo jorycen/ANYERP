@@ -281,7 +281,13 @@ async function loadChanges(){ loading.value=true; try{ const res=await api.getRe
 async function loadCosts(){ try{ const res=await api.getProductResourceCostConfigs({}); costs.value=res.data || [] }catch(e){ ElMessage.error('加载成本定义失败') } }
 async function loadLedger(){ try{const res=await api.getResourceCostAdjustments(ledgerQuery);ledger.value=payloadList(res);ledgerTotal.value=payloadTotal(res)}catch(e){ElMessage.error('加载成本流水失败')} }
 function loadActive(name){ if(name==='rights')loadRights(); else if(name==='changes')loadChanges(); else if(name==='settlements')loadSettlements(); else if(name==='cost-ledger')loadLedger(); else loadCosts() }
-async function loadCategories(){ const res=await api.getResourceCategories({activeOnly:1}); resourceOptions.value=(res.data||[]).filter(row=>row.supports_sale_use||row.supports_company_claim||row.supports_purchase_select||row.trigger_on_sale).map(row=>({label:row.name,value:row.category_code})); if(!costForm.resourceType && resourceOptions.value.length)costForm.resourceType=resourceOptions.value[0].value }
+async function loadCategories(){
+  const res=await api.getResourceCategories({activeOnly:1})
+  resourceOptions.value=(res.data||[]).map(row=>({label:row.name,value:row.category_code}))
+  if(!resourceOptions.value.some(item=>item.value===costForm.resourceType)){
+    costForm.resourceType=resourceOptions.value[0]?.value||''
+  }
+}
 async function loadSuppliers(){ try{const res=await api.getSupplierList({page:1,pageSize:500}); suppliers.value=res.data?.list || res.data || []}catch(e){} }
 async function loadSettlements(){ loading.value=true; try{const res=await api.getResourceSettlements(settlementQuery);settlements.value=payloadList(res);settlementTotal.value=payloadTotal(res)}catch(e){ElMessage.error(e.response?.data?.message||'加载待下账记录失败')}finally{loading.value=false} }
 async function settle(row){ try{await ElMessageBox.confirm(`确认将 ${resourceText(row.resource_type)} ¥${money(row.amount)} 下账到配置账户？`,'下账确认',{type:'warning'});await api.settleResource(row.settlement_id);ElMessage.success('下账成功');loadSettlements()}catch(e){if(e!=='cancel')ElMessage.error(e.response?.data?.message||'下账失败')} }

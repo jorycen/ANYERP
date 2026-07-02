@@ -234,6 +234,24 @@ const ResourceCategory = sequelize.define('ResourceCategory', {
   update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_RESOURCE_CATEGORY', timestamps: false });
 
+// 采购货型模板。货型只负责组合资源类别，不替代SN维度的独立权益状态。
+const GoodsType = sequelize.define('GoodsType', {
+  goods_type_id: { type: DataTypes.STRING(32), primaryKey: true },
+  name: { type: DataTypes.STRING(128), unique: true, allowNull: false },
+  sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
+  status: { type: DataTypes.TINYINT(1), defaultValue: 1 },
+  remark: { type: DataTypes.STRING(512) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_GOODS_TYPE', timestamps: false });
+
+const GoodsTypeResource = sequelize.define('GoodsTypeResource', {
+  goods_type_id: { type: DataTypes.STRING(32), primaryKey: true },
+  category_id: { type: DataTypes.STRING(32), primaryKey: true },
+  sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_GOODS_TYPE_RESOURCE', timestamps: false });
+
 // 权益变更单兼作不可删除的状态流水；套回申请由财务审批。
 const ResourceRightChangeOrder = sequelize.define('ResourceRightChangeOrder', {
   change_id: { type: DataTypes.STRING(32), primaryKey: true },
@@ -1320,6 +1338,10 @@ ProductResourceCostConfig.belongsTo(Product, { foreignKey: 'product_id', targetK
 ResourceRightChangeOrder.belongsTo(ProductSn, { foreignKey: 'sn_id', targetKey: 'sn_id' });
 InventoryResourceCostAdjustment.belongsTo(ProductSn, { foreignKey: 'sn_id', targetKey: 'sn_id' });
 ResourceCategory.belongsTo(SettlementAccount, { foreignKey: 'default_account_id', targetKey: 'account_id', as: 'DefaultAccount' });
+GoodsType.belongsToMany(ResourceCategory, { through: GoodsTypeResource, foreignKey: 'goods_type_id', otherKey: 'category_id', as: 'ResourceCategories' });
+ResourceCategory.belongsToMany(GoodsType, { through: GoodsTypeResource, foreignKey: 'category_id', otherKey: 'goods_type_id', as: 'GoodsTypes' });
+GoodsTypeResource.belongsTo(GoodsType, { foreignKey: 'goods_type_id', targetKey: 'goods_type_id' });
+GoodsTypeResource.belongsTo(ResourceCategory, { foreignKey: 'category_id', targetKey: 'category_id' });
 ResourceSettlement.belongsTo(ResourceCategory, { foreignKey: 'resource_type', targetKey: 'category_code', as: 'ResourceCategory' });
 ResourceSettlement.belongsTo(SettlementAccount, { foreignKey: 'target_account_id', targetKey: 'account_id', as: 'TargetAccount' });
 StaffCareCreditTransaction.belongsTo(Staff, { foreignKey: 'staff_id', targetKey: 'staff_id' });
@@ -1518,6 +1540,8 @@ module.exports = {
   ProductPn,
   ProductSn,
   ResourceCategory,
+  GoodsType,
+  GoodsTypeResource,
   InventoryResourceRight,
   ResourceRightChangeOrder,
   ProductResourceCostConfig,
