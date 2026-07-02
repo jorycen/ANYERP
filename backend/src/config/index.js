@@ -31,6 +31,16 @@ function loadEnvFile(filePath) {
   });
 }
 
+function parseBoolean(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
+function parsePositiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 const rootDir = path.resolve(__dirname, '../../..');
 loadEnvFile(path.join(rootDir, '.env'));
 loadEnvFile(path.join(rootDir, 'cloud-db.env'));
@@ -48,6 +58,17 @@ module.exports = {
     password: process.env.DB_PASSWORD || '',
     charset: 'utf8mb4',
     logging: process.env.NODE_ENV === 'development' ? console.log : false
+  },
+
+  // 数据库营业时段心跳配置
+  databaseHeartbeat: {
+    enabled: parseBoolean(process.env.DB_HEARTBEAT_ENABLED, true),
+    startTime: process.env.DB_HEARTBEAT_START_TIME || '09:30',
+    endTime: process.env.DB_HEARTBEAT_END_TIME || '23:00',
+    intervalMs: parsePositiveInteger(process.env.DB_HEARTBEAT_INTERVAL_MS, 7 * 60 * 1000),
+    timeZone: process.env.DB_HEARTBEAT_TIMEZONE || 'Asia/Shanghai',
+    retryMax: parsePositiveInteger(process.env.DB_HEARTBEAT_RETRY_MAX, 3),
+    retryDelayMs: parsePositiveInteger(process.env.DB_HEARTBEAT_RETRY_DELAY_MS, 2000)
   },
 
   // JWT配置

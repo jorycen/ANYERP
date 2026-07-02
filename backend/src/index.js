@@ -24,6 +24,7 @@ const { responseFormatter } = require('./middleware/responseFormatter');
 const { databaseRecoveryMiddleware, databaseHealth } = require('./middleware/databaseRecovery');
 const { authMiddleware, storeAccessMiddleware } = require('./middleware/auth');
 const { applyPendingProductPriceChanges } = require('./modules/product/controller');
+const { startDatabaseHeartbeat } = require('./utils/databaseHeartbeat');
 
 const app = new Koa();
 const PORT = process.env.PORT || 3000;
@@ -109,6 +110,7 @@ function startServer() {
 
     initializeDatabaseInBackground();
     startBackgroundJobs();
+    startDatabaseHeartbeat();
   } catch (error) {
     console.error('[Startup] failed to initialize server:', error);
     process.exit(1);
