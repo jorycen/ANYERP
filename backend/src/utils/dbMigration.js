@@ -932,6 +932,9 @@ async function runMigrations() {
         POLICY_TYPE VARCHAR(32) COMMENT '政策类型',
         REBATE_ESTIMATE_AMOUNT DECIMAL(12,2) DEFAULT 0 COMMENT '返利预估金额',
         STATUS VARCHAR(32) DEFAULT 'estimated' COMMENT '状态:estimated/confirmed/received/written_off',
+        SOURCE_TYPE VARCHAR(32) DEFAULT 'manual' COMMENT '来源类型',
+        SOURCE_ID VARCHAR(64) COMMENT '来源业务ID',
+        REVERSAL_OF VARCHAR(32) COMMENT '被冲销返利预估ID',
         REMARK VARCHAR(512) COMMENT '备注',
         CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
         UPDATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -941,6 +944,9 @@ async function runMigrations() {
         KEY idx_rebate_estimate_status (STATUS)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='厂家返利预估表'
     `);
+    await checkAndAddColumn('T_REBATE_ESTIMATE', 'SOURCE_TYPE', 'VARCHAR(32) DEFAULT "manual" COMMENT "来源类型"', 'STATUS');
+    await checkAndAddColumn('T_REBATE_ESTIMATE', 'SOURCE_ID', 'VARCHAR(64) COMMENT "来源业务ID"', 'SOURCE_TYPE');
+    await checkAndAddColumn('T_REBATE_ESTIMATE', 'REVERSAL_OF', 'VARCHAR(32) COMMENT "被冲销返利预估ID"', 'SOURCE_ID');
     await sequelize.query(`
       INSERT IGNORE INTO T_RESOURCE_SETTLEMENT
         (SETTLEMENT_ID, SETTLEMENT_NO, SOURCE_TYPE, SOURCE_ID, SN_ID, SN_CODE, PRODUCT_ID,
