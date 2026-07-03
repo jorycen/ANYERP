@@ -242,6 +242,29 @@ function firstNonEmpty(source, keys, defaultValue = '') {
   return defaultValue;
 }
 
+function normalizeOrderExtendedFields(source = {}) {
+  const fieldAliases = {
+    customer_source_detail: ['customer_source_detail', 'customerSourceDetail'],
+    auxiliary_sales_list: ['auxiliary_sales_list', 'auxiliarySalesList'],
+    invoice_info: ['invoice_info', 'invoiceInfo'],
+    invoice_amount: ['invoice_amount', 'invoiceAmount'],
+    subsidy_status: ['subsidy_status', 'subsidyStatus'],
+    subsidy_person: ['subsidy_person', 'subsidyPerson'],
+    subsidy_id: ['subsidy_id', 'subsidyId'],
+    subsidy_photos: ['subsidy_photos', 'subsidyPhotos'],
+    product_photo_urls: ['product_photo_urls', 'productPhotoUrls'],
+    education_subsidy_photo_url: ['education_subsidy_photo_url', 'educationSubsidyPhotoUrl'],
+    personal_info_photo: ['personal_info_photo', 'personalInfoPhoto']
+  };
+  const result = {};
+  Object.entries(fieldAliases).forEach(([field, aliases]) => {
+    const key = aliases.find(alias => Object.prototype.hasOwnProperty.call(source, alias));
+    if (!key) return;
+    result[field] = field === 'invoice_amount' ? money(source[key]) : source[key];
+  });
+  return result;
+}
+
 function toBoolean(value) {
   return value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
 }
@@ -405,6 +428,7 @@ async function create(ctx) {
     nationalSubsidy = 0, educationSubsidy = 0,
     invoiceStatus = '不开票', remark, storeId, status, orderStatus, untaxedInvoiceConfirmed = false
   } = requestBody;
+  const extendedOrderFields = normalizeOrderExtendedFields(requestBody);
 
   if (!Array.isArray(items) || items.length === 0) {
     ctx.throw(400, '订单中没有商品');
@@ -486,9 +510,9 @@ async function create(ctx) {
   const finalOrderStatus = status || orderStatus || (needsApproval ? 'pending_approval' : '未归档');
 
   await sequelize.transaction(async (transaction) => {
-  let redeemedDeposit = null;
+  let reservedDeposit = null;
   if (depositDeductions.length === 1) {
-    redeemedDeposit = await validateDepositRedemption({
+    reservedDeposit = await validateDepositReservation({
       payment: depositDeductions[0],
       user,
       customerPhone,
@@ -506,6 +530,7 @@ async function create(ctx) {
     customer_name: customerName,
     customer_phone: customerPhone,
     customer_source: customerSource,
+    ...extendedOrderFields,
     total_amount: totalAmount,
     discount_amount: discountAmount,
     national_subsidy: nationalSubsidy,
@@ -548,12 +573,12 @@ async function create(ctx) {
     }, { transaction });
   }
 
-  if (redeemedDeposit) {
-    await redeemDepositForOrder({
-      deposit: redeemedDeposit.deposit,
+  if (reservedDeposit) {
+    await reserveDepositForOrder({
+      deposit: reservedDeposit.deposit,
       orderId,
       orderNo,
-      amount: redeemedDeposit.amount,
+      amount: reservedDeposit.amount,
       user,
       transaction
     });
@@ -698,7 +723,7 @@ async function reject(ctx) {
  */
 async function update(ctx) {
   const { orderId } = ctx.params;
-  const data = ctx.request.body;
+  const data = Object.assign({}, ctx.request.body, normalizeOrderExtendedFields(ctx.request.body || {}));
 
   const order = await Order.findByPk(orderId);
   if (!order) {
@@ -713,6 +738,7 @@ async function update(ctx) {
 
     if (isArchiveStatus(nextStatus) && !isArchiveStatus(order.order_status)) {
       await validateAndDeductInventoryForArchive(order, transaction);
+      await redeemReservedDepositsForOrder(order, transaction);
       const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
       await lockSaleRights(order, items, transaction);
       await finishSaleRights(order, items, transaction);
@@ -723,7 +749,7 @@ async function update(ctx) {
       data.status = '已归档';
       data.inventory_reserved = 0;
       syncToDailyStatement(orderId, order.store_id).catch(err => console.error('[DailySync] archive error:', err.message));
-    } else if (isCancelStatus(nextStatus) && !isCancelStatus(order.order_status) && !isArchiveStatus(order.order_status)) {
+    } else if (isCancelStatus(nextStatus) && !isCancelStatus(order.order_status)) {
       if (order.inventory_reserved) {
         await releaseReservedInventoryForOrder(order, transaction);
       }
@@ -1198,10 +1224,10 @@ function assertStoreVisible(storeId, user, message = '无权访问该门店数�
   }
 }
 
-async function validateDepositRedemption({ payment, user, customerPhone, payableBeforeDeposit, transaction }) {
+async function validateDepositReservation({ payment, user, customerPhone, payableBeforeDeposit, transaction }) {
   const depositId = payment.depositId || payment.deposit_id;
   if (!depositId) {
-    throw archiveError('请选择需要核销的定金单');
+    throw archiveError('请选择需要占用的定金单');
   }
   const deposit = await DepositOrder.findOne({
     where: { deposit_id: depositId, is_deleted: 0 },
@@ -1211,7 +1237,7 @@ async function validateDepositRedemption({ payment, user, customerPhone, payable
   if (!deposit) {
     throw archiveError('定金单不存在');
   }
-  assertDepositCreator(deposit, user);
+  assertDepositCreator(deposit, user, '只能占用自己收的定金单');
   if (!['submitted', 'available', 'archived'].includes(deposit.status)) {
     throw archiveError('该定金单当前不可用于抵扣订单');
   }
@@ -1237,32 +1263,60 @@ async function validateDepositRedemption({ payment, user, customerPhone, payable
   return { deposit, amount: requestedAmount };
 }
 
-async function redeemDepositForOrder({ deposit, orderId, orderNo, amount, user, transaction }) {
+async function reserveDepositForOrder({ deposit, orderId, orderNo, amount, user, transaction }) {
   await DepositRedemption.create({
     redemption_id: generateUUID(),
     deposit_id: deposit.deposit_id,
     order_id: orderId,
     order_no: orderNo,
     amount,
-    status: 'active',
+    status: 'reserved',
     create_staff_id: user.staffId,
     create_user: user.name
   }, { transaction });
 
-  const redeemedAmount = money(Number(deposit.redeemed_amount || 0) + Number(amount || 0));
-  const remainingAmount = money(Number(deposit.amount || 0) - redeemedAmount - Number(deposit.refunded_amount || 0));
   await deposit.update({
-    redeemed_amount: redeemedAmount,
-    status: remainingAmount > 0 ? 'available' : 'redeemed',
+    status: 'occupied',
     related_order_id: orderId,
     related_order_no: orderNo,
     update_time: new Date()
   }, { transaction });
 }
 
+async function redeemReservedDepositsForOrder(order, transaction = null) {
+  const reservations = await DepositRedemption.findAll({
+    where: { order_id: order.order_id, status: 'reserved' },
+    transaction,
+    lock: transaction?.LOCK?.UPDATE
+  });
+
+  for (const reservation of reservations) {
+    const deposit = await DepositOrder.findByPk(reservation.deposit_id, {
+      transaction,
+      lock: transaction?.LOCK?.UPDATE
+    });
+    if (!deposit) {
+      throw archiveError('订单关联的定金单不存在');
+    }
+    if (deposit.status !== 'occupied') {
+      throw archiveError('订单关联的定金单不是已占用状态');
+    }
+
+    const redeemedAmount = money(
+      Number(deposit.redeemed_amount || 0) + Number(reservation.amount || 0)
+    );
+    await deposit.update({
+      redeemed_amount: redeemedAmount,
+      status: 'redeemed',
+      update_time: new Date()
+    }, { transaction });
+    await reservation.update({ status: 'redeemed' }, { transaction });
+  }
+}
+
 async function releaseDepositRedemptionForOrder(order, transaction = null, reason = '订单取消') {
   const redemptions = await DepositRedemption.findAll({
-    where: { order_id: order.order_id, status: 'active' },
+    where: { order_id: order.order_id, status: { [Op.in]: ['reserved', 'active', 'redeemed'] } },
     transaction
   });
   for (const redemption of redemptions) {
@@ -1271,7 +1325,10 @@ async function releaseDepositRedemptionForOrder(order, transaction = null, reaso
       lock: transaction?.LOCK?.UPDATE
     });
     if (deposit) {
-      const restoredRedeemedAmount = Math.max(0, money(Number(deposit.redeemed_amount || 0) - Number(redemption.amount || 0)));
+      const wasReserved = redemption.status === 'reserved';
+      const restoredRedeemedAmount = wasReserved
+        ? money(deposit.redeemed_amount || 0)
+        : Math.max(0, money(Number(deposit.redeemed_amount || 0) - Number(redemption.amount || 0)));
       await deposit.update({
         redeemed_amount: restoredRedeemedAmount,
         status: 'available',
@@ -1576,7 +1633,7 @@ async function calculateSalesSettlementCosts(order, transaction = null, options 
 }
 
 function isCancelStatus(status) {
-  return ['cancelled', 'canceled', '已取消', '作废'].includes(String(status || ''));
+  return ['cancelled', 'canceled', 'voided', '已取消', '作废', '已作废'].includes(String(status || ''));
 }
 
 async function reserveInventoryForOrder(order, transaction = null) {
@@ -1842,7 +1899,14 @@ module.exports = {
   availableDeposits,
   getProductPns,
   getProductSns,
-  recalculateSettlementCost
+  recalculateSettlementCost,
+  _test: {
+    normalizeOrderExtendedFields,
+    isCancelStatus,
+    reserveDepositForOrder,
+    redeemReservedDepositsForOrder,
+    releaseDepositRedemptionForOrder
+  }
 };
 
 const INVENTORY_COLUMN_MAP = {

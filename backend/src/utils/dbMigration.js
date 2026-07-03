@@ -1081,6 +1081,14 @@ async function runMigrations() {
     await checkAndAddColumn('T_ORDER', 'UPDATE_TIME', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT "更新时间"', 'CREATE_TIME');
     await checkAndAddColumn('T_ORDER', 'DEPOSIT_DEDUCTION_TOTAL', 'DECIMAL(12,2) DEFAULT 0 COMMENT "定金抵扣总额"', 'EDUCATION_SUBSIDY');
     await checkAndAddColumn('T_ORDER', 'DEPOSIT_ITEMS', 'JSON COMMENT "定金抵扣明细快照"', 'DEPOSIT_DEDUCTION_TOTAL');
+    await checkAndAddColumn('T_ORDER', 'CUSTOMER_SOURCE_DETAIL', 'VARCHAR(128) COMMENT "二级客户来源"', 'CUSTOMER_SOURCE');
+    await checkAndAddColumn('T_ORDER', 'AUXILIARY_SALES_LIST', 'JSON COMMENT "辅助销售人列表"', 'CUSTOMER_SOURCE_DETAIL');
+    await checkAndAddColumn('T_ORDER', 'INVOICE_INFO', 'TEXT COMMENT "开票信息或云闪付订单号"', 'INVOICE_STATUS');
+    await checkAndAddColumn('T_ORDER', 'INVOICE_AMOUNT', 'DECIMAL(12,2) DEFAULT 0 COMMENT "开票金额"', 'INVOICE_INFO');
+    await checkAndAddColumn('T_ORDER', 'SUBSIDY_PHOTOS', 'JSON COMMENT "国补照片"', 'SUBSIDY_ID');
+    await checkAndAddColumn('T_ORDER', 'PRODUCT_PHOTO_URLS', 'JSON COMMENT "商品照片"', 'SUBSIDY_PHOTOS');
+    await checkAndAddColumn('T_ORDER', 'EDUCATION_SUBSIDY_PHOTO_URL', 'TEXT COMMENT "教育补贴核销凭证"', 'PRODUCT_PHOTO_URLS');
+    await checkAndAddColumn('T_ORDER', 'PERSONAL_INFO_PHOTO', 'JSON COMMENT "个人资料照片"', 'EDUCATION_SUBSIDY_PHOTO_URL');
     await checkAndAddColumn('T_ORDER', 'INVENTORY_RESERVED', 'TINYINT(1) NOT NULL DEFAULT 1 COMMENT "订单创建阶段是否已占用库存"', 'ORDER_STATUS');
     await ensureNullableColumn('T_ORDER_ITEM', 'PRODUCT_ID', 'VARCHAR(32)');
     await checkAndAddColumn('T_ORDER_PAYMENT', 'DEPOSIT_ID', 'VARCHAR(32) COMMENT "定金单ID"', 'PAYMENT_METHOD');
