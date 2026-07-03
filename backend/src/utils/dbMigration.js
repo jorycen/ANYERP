@@ -136,6 +136,26 @@ async function normalizeInventoryLocationIndex() {
   }
 }
 
+async function ensureVarcharLength(tableName, columnName, length, columnDefinition) {
+  try {
+    const [result] = await sequelize.query(
+      `SELECT CHARACTER_MAXIMUM_LENGTH AS maxLength
+       FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = ?
+       AND COLUMN_NAME = ?`,
+      { replacements: [tableName, columnName], type: sequelize.QueryTypes.SELECT }
+    );
+    if (!result || Number(result.maxLength || 0) >= Number(length)) return false;
+    await sequelize.query(`ALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${columnDefinition}`);
+    console.log(`[DB Migration] 已扩展字段长度: ${tableName}.${columnName} -> ${length}`);
+    return true;
+  } catch (error) {
+    console.error(`[DB Migration] 扩展字段失败: ${tableName}.${columnName} - ${error.message}`);
+    return false;
+  }
+}
+
 async function ensureNullableColumn(tableName, columnName, columnDefinition) {
   try {
     const [column] = await sequelize.query(
@@ -1022,6 +1042,37 @@ async function runMigrations() {
 
     await checkAndAddColumn('T_PURCHASE_REQUEST', 'REBATE_DEDUCTION', 'DECIMAL(12,2) DEFAULT 0.00 COMMENT "返利抵扣"', 'TOTAL_AMOUNT');
     await checkAndAddColumn('T_PURCHASE_REQUEST', 'ACTUAL_TOTAL', 'DECIMAL(12,2) DEFAULT 0.00 COMMENT "抵扣后实际总价"', 'REBATE_DEDUCTION');
+    await checkAndAddColumn('T_PURCHASE_REQUEST', 'GOODS_TYPE_ID', 'VARCHAR(32) COMMENT "关联货型配置ID"', 'SUPPLIER_ID');
+    await checkAndAddColumn('T_PURCHASE_REQUEST', 'PRODUCT_TYPE', 'VARCHAR(128) COMMENT "货型名称快照"', 'GOODS_TYPE_ID');
+    await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'REBATE_DEDUCTION', 'DECIMAL(12,2) DEFAULT 0.00 COMMENT "item rebate deduction"', 'SUBTOTAL');
+    await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'GOODS_TYPE_ID', 'VARCHAR(32) COMMENT "关联货型配置ID"', 'REBATE_DEDUCTION');
+    await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'PRODUCT_TYPE', 'VARCHAR(128) COMMENT "货型名称快照"', 'GOODS_TYPE_ID');
+    await ensureVarcharLength(
+      'T_PURCHASE_REQUEST_ITEM',
+      'PRODUCT_TYPE',
+      128,
+      'VARCHAR(128) COMMENT "货型名称快照"'
+    );
+    await sequelize.query(`
+      UPDATE T_PURCHASE_REQUEST pr
+      INNER JOIN (
+        SELECT REQUEST_ID, MIN(PRODUCT_TYPE) AS PRODUCT_TYPE
+        FROM T_PURCHASE_REQUEST_ITEM
+        WHERE PRODUCT_TYPE IS NOT NULL AND PRODUCT_TYPE <> ''
+        GROUP BY REQUEST_ID
+      ) pri ON pri.REQUEST_ID = pr.REQUEST_ID
+      LEFT JOIN T_GOODS_TYPE gt ON gt.NAME = pri.PRODUCT_TYPE
+      SET pr.PRODUCT_TYPE = COALESCE(NULLIF(pr.PRODUCT_TYPE, ''), pri.PRODUCT_TYPE),
+          pr.GOODS_TYPE_ID = COALESCE(NULLIF(pr.GOODS_TYPE_ID, ''), gt.GOODS_TYPE_ID)
+      WHERE pr.PRODUCT_TYPE IS NULL OR pr.PRODUCT_TYPE = ''
+         OR pr.GOODS_TYPE_ID IS NULL OR pr.GOODS_TYPE_ID = ''
+    `);
+    await sequelize.query(`
+      UPDATE T_PURCHASE_REQUEST_ITEM pri
+      INNER JOIN T_GOODS_TYPE gt ON gt.NAME = pri.PRODUCT_TYPE
+      SET pri.GOODS_TYPE_ID = gt.GOODS_TYPE_ID
+      WHERE pri.GOODS_TYPE_ID IS NULL OR pri.GOODS_TYPE_ID = ''
+    `);
 
     await checkAndAddColumn('T_STAFF', 'CREATE_TIME', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT "创建时间"', 'STATUS');
     await checkAndAddColumn('T_STAFF', 'UPDATE_TIME', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT "更新时间"', 'CREATE_TIME');
@@ -1043,6 +1094,7 @@ async function runMigrations() {
         CUSTOMER_PHONE VARCHAR(32) COMMENT '客户电话',
         CUSTOMER_SOURCE VARCHAR(64) COMMENT '客户来源',
         AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '定金金额',
+        PAYMENT_METHOD VARCHAR(128) NOT NULL COMMENT '收款方式',
         REDEEMED_AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '已核销金额',
         REFUNDED_AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '已退款金额',
         STATUS VARCHAR(32) DEFAULT 'available' COMMENT '状态:available/redeemed/refunded',
@@ -1205,6 +1257,7 @@ async function runMigrations() {
     `);
 
     await checkAndAddColumn('T_DEPOSIT_ORDER', 'REDEEMED_AMOUNT', 'DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT "已核销金额"', 'AMOUNT');
+    await checkAndAddColumn('T_DEPOSIT_ORDER', 'PAYMENT_METHOD', 'VARCHAR(128) COMMENT "收取定金时的收款方式"', 'AMOUNT');
     await checkAndAddColumn('T_DEPOSIT_ORDER', 'REFUNDED_AMOUNT', 'DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT "已退款金额"', 'REDEEMED_AMOUNT');
     await checkAndAddColumn('T_DEPOSIT_ORDER', 'RELATED_ORDER_ID', 'VARCHAR(32) COMMENT "核销销售订单ID"', 'STATUS');
     await checkAndAddColumn('T_DEPOSIT_ORDER', 'RELATED_ORDER_NO', 'VARCHAR(64) COMMENT "核销销售订单号"', 'RELATED_ORDER_ID');
@@ -1248,6 +1301,7 @@ async function runMigrations() {
         CUSTOMER_NAME VARCHAR(64) COMMENT '客户名',
         PAYMENT_METHOD VARCHAR(128) COMMENT '收款方式名称',
         PAYMENT_CODE VARCHAR(64) COMMENT '收款方式编码',
+        BUSINESS_TYPE VARCHAR(32) DEFAULT 'sales_receipt' COMMENT 'sales_receipt/deposit_receipt/national_subsidy_receivable',
         AMOUNT DECIMAL(12,2) DEFAULT 0 COMMENT '收款金额',
         SETTLEMENT_ACCOUNT_ID VARCHAR(64) COMMENT '结算账号ID',
         SETTLED DECIMAL(12,2) DEFAULT 0 COMMENT '已下账金额',
@@ -1294,6 +1348,27 @@ async function runMigrations() {
       VALUES
         ('ACC_CARE_CREDIT_DEFAULT', 'Care卡可用金', '', '', 'CARE_CREDIT', '仅用于购买延保等指定商品或服务', 900, 1),
         ('ACC_POLICY_SUBSIDY_RECEIVABLE', '政策补贴应收', '', '', 'POLICY_RECEIVABLE', '国补订单政策补贴待回款，不属于客户当场实收', 910, 1)
+    `);
+    await checkAndAddColumn(
+      'T_DAILY_STATEMENT_DETAIL',
+      'BUSINESS_TYPE',
+      'VARCHAR(32) DEFAULT "sales_receipt" COMMENT "sales_receipt/deposit_receipt/national_subsidy_receivable"',
+      'PAYMENT_CODE'
+    );
+    await checkAndAddIndex(
+      'T_DAILY_STATEMENT_DETAIL',
+      'idx_daily_business_settled',
+      'ALTER TABLE T_DAILY_STATEMENT_DETAIL ADD INDEX idx_daily_business_settled (BUSINESS_TYPE, SETTLED)'
+    );
+    await sequelize.query(`
+      UPDATE T_DAILY_STATEMENT_DETAIL
+      SET BUSINESS_TYPE = CASE
+        WHEN PAYMENT_METHOD LIKE '国补POS%-政策补贴应收' THEN 'national_subsidy_receivable'
+        ELSE 'sales_receipt'
+      END
+      WHERE BUSINESS_TYPE IS NULL
+         OR BUSINESS_TYPE = ''
+         OR (BUSINESS_TYPE = 'sales_receipt' AND PAYMENT_METHOD LIKE '国补POS%-政策补贴应收')
     `);
 
     await checkAndCreateTable('T_DICT_PAYMENT_METHOD', `

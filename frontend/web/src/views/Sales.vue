@@ -394,6 +394,7 @@
       <div class="filter-bar">
         <el-select v-model="depositQuery.status" placeholder="状态" clearable style="width: 140px">
           <el-option label="全部" value="" />
+          <el-option label="可使用" value="available" />
           <el-option label="已提交" value="submitted" />
           <el-option label="已归档" value="archived" />
           <el-option label="已核销" value="redeemed" />
@@ -413,6 +414,7 @@
         <el-table-column prop="amount" label="金额" width="100">
           <template #default="{ row }">¥{{ row.amount }}</template>
         </el-table-column>
+        <el-table-column prop="payment_method" label="收款方式" width="130" />
         <el-table-column prop="create_user" label="收定金人" width="100" />
         <el-table-column prop="status" label="状态" width="100">
           <template #default="{ row }">
@@ -425,7 +427,7 @@
         <el-table-column label="操作" fixed="right" width="160">
           <template #default="{ row }">
             <el-button v-if="row.status === 'submitted'" link type="success" @click="archiveDeposit(row)">归档</el-button>
-            <el-button v-if="['submitted', 'archived'].includes(row.status)" link type="danger" @click="refundDeposit(row)">退款</el-button>
+            <el-button v-if="['available', 'submitted', 'archived'].includes(row.status)" link type="danger" @click="refundDeposit(row)">退款</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -455,6 +457,16 @@
         </el-form-item>
         <el-form-item label="定金金额">
           <el-input v-model="depositForm.amount" placeholder="请输入定金金额" />
+        </el-form-item>
+        <el-form-item label="收款方式">
+          <el-select v-model="depositForm.paymentMethod" placeholder="请选择收款方式" style="width: 100%">
+            <el-option
+              v-for="method in depositPaymentMethods"
+              :key="method.method_id || method.name"
+              :label="method.name"
+              :value="method.name"
+            />
+          </el-select>
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="depositForm.remark" type="textarea" :rows="2" />
@@ -531,6 +543,7 @@ const depositForm = reactive({
   customerName: '',
   customerPhone: '',
   amount: '',
+  paymentMethod: '',
   remark: ''
 })
 
@@ -721,6 +734,11 @@ const isDepositPaymentName = (name) => {
   return value === '定金' || value === 'deposit'
 }
 
+const depositPaymentMethods = computed(() => paymentMethods.value.filter(method => {
+  const name = String(method.name || '')
+  return !isDepositPaymentName(name) && !name.includes('政策补贴应收') && !name.includes('客户实收')
+}))
+
 const loadAvailableDeposits = async () => {
   if (!orderForm.customerPhone || !orderForm.storeId) {
     availableDepositList.value = []
@@ -797,6 +815,7 @@ const resetDepositForm = () => {
   depositForm.customerName = ''
   depositForm.customerPhone = ''
   depositForm.amount = ''
+  depositForm.paymentMethod = ''
   depositForm.remark = ''
 }
 
@@ -813,6 +832,10 @@ const submitDeposit = async () => {
     ElMessage.warning('定金金额必须大于0')
     return
   }
+  if (!depositForm.paymentMethod) {
+    ElMessage.warning('请选择收款方式')
+    return
+  }
   depositSubmitLoading.value = true
   try {
     const res = await api.createDeposit({
@@ -820,6 +843,7 @@ const submitDeposit = async () => {
       customerName: depositForm.customerName,
       customerPhone: depositForm.customerPhone,
       amount: depositForm.amount,
+      paymentMethod: depositForm.paymentMethod,
       remark: depositForm.remark
     })
     if (res.code === 0) {
@@ -1321,6 +1345,7 @@ const getStatusText = (status) => {
 
 const getDepositStatusType = (status) => {
   const types = {
+    available: 'success',
     submitted: 'warning',
     archived: 'success',
     redeemed: 'info',
@@ -1332,6 +1357,7 @@ const getDepositStatusType = (status) => {
 
 const getDepositStatusText = (status) => {
   const texts = {
+    available: '可使用',
     submitted: '已提交',
     archived: '已归档',
     redeemed: '已核销',

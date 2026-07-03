@@ -36,7 +36,10 @@
           <el-table :data="dailyDetails" stripe border @selection-change="onDetailSelectionChange" ref="detailTableRef">
             <el-table-column type="selection" width="40" :selectable="(r) => parseFloat(r.settled || 0) === 0" />
             <el-table-column prop="statement_date" label="日期" width="110" sortable />
-            <el-table-column prop="order_no" label="订单号" width="170" />
+            <el-table-column prop="order_no" label="业务单号" width="170" />
+            <el-table-column label="业务类型" width="100">
+              <template #default="{ row }">{{ dailyBusinessTypeText(row.business_type) }}</template>
+            </el-table-column>
             <el-table-column prop="customer_name" label="客户" width="100" />
             <el-table-column prop="payment_method" label="收款方式" width="110" />
             <el-table-column label="收款金额" width="110">
@@ -85,6 +88,93 @@
             layout="total, sizes, prev, pager, next"
             @size-change="loadDailyData"
             @current-change="loadDailyData"
+          />
+        </el-tab-pane>
+
+        <el-tab-pane label="国补应收单" name="nationalSubsidyReceivable">
+          <div class="filter-bar">
+            <el-date-picker
+              v-model="subsidyQuery.dateRange"
+              type="daterange"
+              range-separator="至"
+              start-placeholder="开始日期"
+              end-placeholder="结束日期"
+              value-format="YYYY-MM-DD"
+            />
+            <el-select v-model="subsidyQuery.storeId" placeholder="选择门店" clearable style="width: 150px" @change="loadSubsidyReceivables">
+              <el-option label="全部门店" value="" />
+              <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
+            </el-select>
+            <el-select v-model="subsidyQuery.settled" placeholder="下账状态" clearable style="width: 120px" @change="loadSubsidyReceivables">
+              <el-option label="全部" value="" />
+              <el-option label="未下账" value="0" />
+              <el-option label="已下账" value="1" />
+            </el-select>
+            <el-button type="primary" @click="loadSubsidyReceivables">搜索</el-button>
+            <el-button
+              type="success"
+              :disabled="selectedSubsidyIds.length === 0"
+              @click="settleSelectedSubsidyReceivables"
+            >
+              批量下账 ({{ selectedSubsidyIds.length }})
+            </el-button>
+          </div>
+
+          <el-table
+            :data="subsidyReceivables"
+            stripe
+            border
+            v-loading="subsidyLoading"
+            @selection-change="onSubsidySelectionChange"
+          >
+            <el-table-column type="selection" width="40" :selectable="(row) => Number(row.settled || 0) === 0" />
+            <el-table-column prop="statement_date" label="应收日期" width="110" sortable />
+            <el-table-column prop="order_no" label="订单号" width="180" />
+            <el-table-column prop="customer_name" label="国补客户" width="110" />
+            <el-table-column label="国补类型" min-width="180">
+              <template #default="{ row }">{{ subsidyPaymentType(row.payment_method) }}</template>
+            </el-table-column>
+            <el-table-column label="应收金额" width="120">
+              <template #default="{ row }">¥{{ Number(row.amount || 0).toFixed(2) }}</template>
+            </el-table-column>
+            <el-table-column label="应收账户" min-width="150">
+              <template #default="{ row }">{{ row.settlementAccount?.account_name || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="store_name" label="门店" width="130" />
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="Number(row.settled || 0) > 0 ? 'success' : 'warning'" size="small">
+                  {{ Number(row.settled || 0) > 0 ? '已下账' : '待回款' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="下账时间" width="160">
+              <template #default="{ row }">{{ row.settled_at ? formatDateTime(row.settled_at) : '-' }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="90" fixed="right">
+              <template #default="{ row }">
+                <el-button
+                  v-if="Number(row.settled || 0) === 0"
+                  size="small"
+                  type="warning"
+                  @click="settleOneSubsidyReceivable(row)"
+                >下账</el-button>
+                <span v-else style="color: #67c23a; font-size: 12px;">已下账</span>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <div class="daily-summary">
+            <span>共计 <strong>{{ subsidyTotal }}</strong> 条记录</span>
+            <span style="margin-left: 24px;">应收总额：<strong class="total-amount">¥{{ subsidyTotalAmount.toFixed(2) }}</strong></span>
+          </div>
+          <el-pagination
+            v-model:current-page="subsidyQuery.page"
+            v-model:page-size="subsidyQuery.pageSize"
+            :total="subsidyTotal"
+            layout="total, sizes, prev, pager, next"
+            @size-change="loadSubsidyReceivables"
+            @current-change="loadSubsidyReceivables"
           />
         </el-tab-pane>
 
@@ -1059,6 +1149,11 @@ const settlementAccountFilter = ref('')
 const settlementAccounts = ref([])
 const selectedDetailIds = ref([])
 const detailTableRef = ref(null)
+const subsidyReceivables = ref([])
+const subsidyTotal = ref(0)
+const subsidyTotalAmount = ref(0)
+const subsidyLoading = ref(false)
+const selectedSubsidyIds = ref([])
 const expenseData = ref([])
 const expenseTotal = ref(0)
 
@@ -1238,6 +1333,14 @@ const queryParams = reactive({
   storeId: ''
 })
 
+const subsidyQuery = reactive({
+  page: 1,
+  pageSize: 20,
+  dateRange: [],
+  storeId: '',
+  settled: ''
+})
+
 const expenseQuery = reactive({
   page: 1,
   pageSize: 20
@@ -1366,6 +1469,7 @@ onMounted(() => {
   loadPaymentMethods()
   loadSettlementAccounts()
   loadDailyData()
+  loadSubsidyReceivables()
   loadExpenseData()
   loadExpenseSettleData()
   loadPayableData()
@@ -1410,6 +1514,78 @@ const loadDailyData = async () => {
 
 const onDetailSelectionChange = (val) => {
   selectedDetailIds.value = val.map(d => d.detail_id)
+}
+
+const dailyBusinessTypeText = value => value === 'deposit_receipt' ? '定金收款' : '销售收款'
+
+const subsidyPaymentType = value => String(value || '').replace(/-政策补贴应收$/, '')
+
+const loadSubsidyReceivables = async () => {
+  subsidyLoading.value = true
+  try {
+    const params = {
+      page: subsidyQuery.page,
+      pageSize: subsidyQuery.pageSize
+    }
+    if (subsidyQuery.dateRange?.length === 2) {
+      params.startDate = subsidyQuery.dateRange[0]
+      params.endDate = subsidyQuery.dateRange[1]
+    }
+    if (subsidyQuery.storeId) params.storeId = subsidyQuery.storeId
+    if (subsidyQuery.settled !== '') params.settled = subsidyQuery.settled
+    const res = await api.getNationalSubsidyReceivables(params)
+    if (res.code === 0) {
+      subsidyReceivables.value = res.data?.list || []
+      subsidyTotal.value = res.data?.pagination?.total || res.data?.total || 0
+      subsidyTotalAmount.value = Number(res.data?.totalAmount || 0)
+    }
+    selectedSubsidyIds.value = []
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载国补应收单失败')
+  } finally {
+    subsidyLoading.value = false
+  }
+}
+
+const onSubsidySelectionChange = rows => {
+  selectedSubsidyIds.value = rows.map(row => row.detail_id)
+}
+
+const settleSubsidyReceivables = async detailIds => {
+  if (!detailIds.length) return
+  await api.settleNationalSubsidyReceivables({ detailIds })
+  ElMessage.success('国补应收下账成功')
+  await Promise.all([loadSubsidyReceivables(), loadDailyData(), loadAccountList()])
+}
+
+const settleOneSubsidyReceivable = async row => {
+  try {
+    await ElMessageBox.confirm(
+      `确认国补回款 ¥${Number(row.amount || 0).toFixed(2)} 已到账，并下账到 ${row.settlementAccount?.account_name || '未绑定账户'}？`,
+      '国补应收下账',
+      { type: 'warning', confirmButtonText: '确认下账' }
+    )
+    await settleSubsidyReceivables([row.detail_id])
+  } catch (err) {
+    if (err !== 'cancel' && err !== 'close') {
+      ElMessage.error(err.response?.data?.message || err.message || '国补应收下账失败')
+    }
+  }
+}
+
+const settleSelectedSubsidyReceivables = async () => {
+  try {
+    await ElMessageBox.confirm(
+      `确认所选 ${selectedSubsidyIds.value.length} 笔国补应收均已回款并下账？`,
+      '批量下账',
+      { type: 'warning', confirmButtonText: '确认下账' }
+    )
+    await settleSubsidyReceivables(selectedSubsidyIds.value)
+  } catch (err) {
+    if (err !== 'cancel' && err !== 'close') {
+      ElMessage.error(err.response?.data?.message || err.message || '批量下账失败')
+    }
+  }
 }
 
 const handleSettleDetail = async (row) => {

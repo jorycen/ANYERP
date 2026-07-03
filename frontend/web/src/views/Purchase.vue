@@ -28,6 +28,7 @@
             <el-table-column prop="store_name" label="申请门店" width="120" />
             <el-table-column prop="supplier_name" label="供应商" width="150" />
             <el-table-column prop="invoice_type" label="发票类型" width="100" />
+            <el-table-column prop="product_type" label="货型" width="130" />
             <el-table-column prop="items_summary" label="商品摘要" min-width="200" show-overflow-tooltip />
             <el-table-column prop="total_amount" label="申请金额" width="120">
               <template #default="{ row }">¥{{ row.total_amount }}</template>
@@ -236,6 +237,7 @@
           </el-descriptions-item>
           <el-descriptions-item label="供应商">{{ currentRequest.supplier_name }}</el-descriptions-item>
           <el-descriptions-item label="发票类型">{{ currentRequest.invoice_type || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="货型">{{ currentRequest.product_type || currentRequest.items?.[0]?.product_type || '-' }}</el-descriptions-item>
           <el-descriptions-item label="申请门店">{{ currentRequest.store_name }}</el-descriptions-item>
           <el-descriptions-item label="申请金额">¥{{ formatMoney(currentRequest.total_amount) }}</el-descriptions-item>
           <el-descriptions-item label="是否使用返利">
@@ -1089,9 +1091,12 @@ const handleSubmit = async () => {
 
   submitLoading.value = true
   try {
+    const selectedGoodsType = goodsTypeOptions.value.find(item => item.name === requestForm.productType)
     const data = {
       supplierId: requestForm.supplierId,
       invoiceType: requestForm.invoiceType,
+      goodsTypeId: selectedGoodsType?.goods_type_id || '',
+      productType: requestForm.productType,
       remark: requestForm.remark,
       rebateDeduction: rebateDeductionAmount.value,
       items: requestForm.items.map(item => ({
@@ -1099,6 +1104,7 @@ const handleSubmit = async () => {
         productName: item.productName,
         price: item.price,
         quantity: item.quantity,
+        goodsTypeId: selectedGoodsType?.goods_type_id || '',
         productType: requestForm.productType,
         rebateDeduction: Math.min(toNumber(item.rebateDeduction), itemSubtotal(item)),
         storeAllocations: item.storeAllocations,

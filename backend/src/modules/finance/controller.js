@@ -1,14 +1,14 @@
 /**
  * 财务管理控制器
  */
-const { DailyStatement, DailyStatementDetail, Expense, Store, Order, OrderPayment, SettlementAccount, SettlementAccountTransaction } = require('../../models');
+const { sequelize, DailyStatement, DailyStatementDetail, Expense, Store, Order, OrderPayment, SettlementAccount, SettlementAccountTransaction } = require('../../models');
 const { Op, Sequelize, fn, col } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult } = require('../../utils');
 
-async function getAccountBalance(accountId) {
+async function getAccountBalance(accountId, transaction = null) {
   const [incomeAmount, expenseAmount] = await Promise.all([
-    SettlementAccountTransaction.sum('amount', { where: { account_id: accountId, type: 'income' } }),
-    SettlementAccountTransaction.sum('amount', { where: { account_id: accountId, type: 'expense' } })
+    SettlementAccountTransaction.sum('amount', { where: { account_id: accountId, type: 'income' }, transaction }),
+    SettlementAccountTransaction.sum('amount', { where: { account_id: accountId, type: 'expense' }, transaction })
   ]);
   return Math.round((Number(incomeAmount || 0) - Number(expenseAmount || 0)) * 100) / 100;
 }
@@ -17,11 +17,12 @@ async function getAccountBalance(accountId) {
  * 日结清单（逐条显示 - 按收款方式）
  * 直接查询 DailyStatementDetail 平铺展示
  */
-async function getDailyDetails(ctx) {
+async function getStatementDetails(ctx, businessWhere) {
   const { storeId, startDate, endDate, settled, paymentMethod, settlementAccountId, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
 
   const where = {};
+  if (businessWhere) where[Op.or] = businessWhere;
   if (settled !== undefined && settled !== '') {
     where.settled = parseFloat(settled) > 0 ? { [Op.gt]: 0 } : 0;
   }
@@ -115,6 +116,26 @@ async function getDailyDetails(ctx) {
   ctx.body = formatPaginatedResult(list, { page, pageSize, count });
   ctx.body.totalAmount = totalAmount;
   ctx.body.totalCount = count;
+}
+
+async function getDailyDetails(ctx) {
+  return getStatementDetails(ctx, [
+    { business_type: { [Op.ne]: 'national_subsidy_receivable' } },
+    {
+      business_type: { [Op.is]: null },
+      payment_method: { [Op.notLike]: '国补POS%-政策补贴应收' }
+    }
+  ]);
+}
+
+async function getNationalSubsidyReceivables(ctx) {
+  return getStatementDetails(ctx, [
+    { business_type: 'national_subsidy_receivable' },
+    {
+      business_type: { [Op.is]: null },
+      payment_method: { [Op.like]: '国补POS%-政策补贴应收' }
+    }
+  ]);
 }
 
 /**
@@ -250,7 +271,7 @@ async function getDailyStatementDetail(ctx) {
  * 批量下账
  * 按收款账户汇总和批量标记下账
  */
-async function batchSettle(ctx) {
+async function settleStatementDetails(ctx, businessType) {
   const { detailIds } = ctx.request.body;
   const user = ctx.state.user;
 
@@ -258,76 +279,116 @@ async function batchSettle(ctx) {
     ctx.throw(400, '请选择要下账的记录');
   }
 
-  const details = await DailyStatementDetail.findAll({
-    where: { detail_id: detailIds, settled: 0 }
-  });
-  if (details.length === 0) {
-    ctx.throw(400, '没有可下账的记录');
-  }
-  const unassignedDetails = details.filter(detail => !detail.settlement_account_id);
-  if (unassignedDetails.length > 0) {
-    const methods = [...new Set(unassignedDetails.map(detail => detail.payment_method).filter(Boolean))];
-    ctx.throw(400, `存在未配置下账账户的收款记录：${methods.join('、') || '未知收款方式'}`);
-  }
-
-  const now = new Date();
+  const businessWhere = businessType === 'national_subsidy_receivable'
+    ? [
+      { business_type: 'national_subsidy_receivable' },
+      {
+        business_type: { [Op.is]: null },
+        payment_method: { [Op.like]: '国补POS%-政策补贴应收' }
+      }
+    ]
+    : [
+      { business_type: { [Op.ne]: 'national_subsidy_receivable' } },
+      {
+        business_type: { [Op.is]: null },
+        payment_method: { [Op.notLike]: '国补POS%-政策补贴应收' }
+      }
+    ];
   let totalSettledAmount = 0;
-  const statementSettledMap = {};
-  const accountSettledMap = {};
-
-  for (const detail of details) {
-    const amount = parseFloat(detail.amount) || 0;
-    totalSettledAmount += amount;
-    await detail.update({ settled: detail.amount, settled_at: now });
-
-    if (!statementSettledMap[detail.statement_id]) {
-      statementSettledMap[detail.statement_id] = 0;
+  let settledCount = 0;
+  await sequelize.transaction(async transaction => {
+    const details = await DailyStatementDetail.findAll({
+      where: {
+        detail_id: detailIds,
+        settled: 0,
+        [Op.or]: businessWhere
+      },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (details.length === 0) {
+      ctx.throw(400, '没有可下账的记录');
     }
-    statementSettledMap[detail.statement_id] += amount;
+    const unassignedDetails = details.filter(detail => !detail.settlement_account_id);
+    if (unassignedDetails.length > 0) {
+      const methods = [...new Set(unassignedDetails.map(detail => detail.payment_method).filter(Boolean))];
+      ctx.throw(400, `存在未配置下账账户的收款记录：${methods.join('、') || '未知收款方式'}`);
+    }
 
-    if (detail.settlement_account_id) {
+    const now = new Date();
+    const statementSettledMap = {};
+    const accountSettledMap = {};
+    settledCount = details.length;
+
+    for (const detail of details) {
+      const amount = parseFloat(detail.amount) || 0;
+      totalSettledAmount += amount;
+      await detail.update({ settled: detail.amount, settled_at: now }, { transaction });
+
+      if (!statementSettledMap[detail.statement_id]) {
+        statementSettledMap[detail.statement_id] = 0;
+      }
+      statementSettledMap[detail.statement_id] += amount;
+
       if (!accountSettledMap[detail.settlement_account_id]) {
         accountSettledMap[detail.settlement_account_id] = 0;
       }
       accountSettledMap[detail.settlement_account_id] += amount;
     }
-  }
 
-  for (const [statementId, settledAmount] of Object.entries(statementSettledMap)) {
-    const statement = await DailyStatement.findByPk(statementId);
-    if (!statement) continue;
-    const newSettled = parseFloat(statement.total_settled || 0) + settledAmount;
-    const totalRevenue = parseFloat(statement.total_revenue || 0);
-    let newStatus = 'pending';
-    if (newSettled >= totalRevenue) {
-      newStatus = 'settled';
-    } else if (newSettled > 0) {
-      newStatus = 'partial';
+    for (const [statementId, settledAmount] of Object.entries(statementSettledMap)) {
+      const statement = await DailyStatement.findByPk(statementId, {
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      if (!statement) continue;
+      const newSettled = parseFloat(statement.total_settled || 0) + settledAmount;
+      const totalRevenue = parseFloat(statement.total_revenue || 0);
+      let newStatus = 'pending';
+      if (newSettled >= totalRevenue) {
+        newStatus = 'settled';
+      } else if (newSettled > 0) {
+        newStatus = 'partial';
+      }
+      await statement.update({
+        total_settled: newSettled,
+        status: newStatus,
+        confirm_staff: user.name
+      }, { transaction });
     }
-    await statement.update({
-      total_settled: newSettled,
-      status: newStatus,
-      confirm_staff: user.name
-    });
-  }
 
-  for (const [accountId, settledAmount] of Object.entries(accountSettledMap)) {
-    const currentBalance = await getAccountBalance(accountId);
-    const balanceAfter = currentBalance + settledAmount;
+    for (const [accountId, settledAmount] of Object.entries(accountSettledMap)) {
+      await SettlementAccount.findByPk(accountId, {
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      const currentBalance = await getAccountBalance(accountId, transaction);
+      const balanceAfter = currentBalance + settledAmount;
 
-    await SettlementAccountTransaction.create({
-      transaction_id: generateUUID(),
-      account_id: accountId,
-      type: 'income',
-      amount: settledAmount,
-      balance_after: balanceAfter,
-      description: `日结单批量下账（${details.length}笔）`,
-      related_ref: `DAILY_SETTLE_${details.map(d => d.detail_id).join(',')}`,
-      create_user: user.name
-    });
-  }
+      await SettlementAccountTransaction.create({
+        transaction_id: generateUUID(),
+        account_id: accountId,
+        type: 'income',
+        amount: settledAmount,
+        balance_after: balanceAfter,
+        description: businessType === 'national_subsidy_receivable'
+          ? `国补应收单批量下账（${details.length}笔）`
+          : `日结单批量下账（${details.length}笔）`,
+        related_ref: `${businessType === 'national_subsidy_receivable' ? 'SUBSIDY' : 'DAILY'}_SETTLE_${details.map(d => d.detail_id).join(',')}`,
+        create_user: user.name
+      }, { transaction });
+    }
+  });
 
-  ctx.body = { code: 0, message: `下账成功，共 ${details.length} 笔，金额: ¥${totalSettledAmount.toFixed(2)}` };
+  ctx.body = { code: 0, message: `下账成功，共 ${settledCount} 笔，金额: ¥${totalSettledAmount.toFixed(2)}` };
+}
+
+async function batchSettle(ctx) {
+  return settleStatementDetails(ctx, 'daily');
+}
+
+async function settleNationalSubsidyReceivables(ctx) {
+  return settleStatementDetails(ctx, 'national_subsidy_receivable');
 }
 
 /**
@@ -557,9 +618,11 @@ async function getPayableList(ctx) {
 
 module.exports = {
   getDailyDetails,
+  getNationalSubsidyReceivables,
   getDailyStatement,
   getDailyStatementDetail,
   batchSettle,
+  settleNationalSubsidyReceivables,
   getSettlementSummary,
   createExpense,
   getExpenseList,

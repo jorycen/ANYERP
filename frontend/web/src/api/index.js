@@ -189,10 +189,12 @@ export default {
 
   // Finance
   getDailyDetails: (params) => api.get('/finance/daily-details', { params }),
+  getNationalSubsidyReceivables: (params) => api.get('/finance/national-subsidy-receivables', { params }),
   getDailyStatement: (params) => api.get('/finance/daily-statement', { params }),
   getDailyStatementDetail: (id) => api.get(`/finance/daily-statement/${id}`),
   getSettlementSummary: (params) => api.get('/finance/settlement-summary', { params }),
   batchSettle: (data) => api.post('/finance/batch-settle', data),
+  settleNationalSubsidyReceivables: (data) => api.post('/finance/national-subsidy-receivables/settle', data),
   createExpense: (data) => api.post('/finance/expense', data),
   getExpenseList: (params) => api.get('/finance/expense-list', { params }),
   submitExpense: (id) => api.put(`/finance/expense/submit/${id}`),

@@ -1,7 +1,7 @@
 /**
  * 采购管理控制器
  */
-const { sequelize, PurchaseRequest, PurchaseRequestItem, Supplier, SupplierPaymentAccount, Store, Product, Inbound, InboundItem, Payable, SupplierRebate, ResourceCategory } = require('../../models');
+const { sequelize, PurchaseRequest, PurchaseRequestItem, Supplier, SupplierPaymentAccount, Store, Product, Inbound, InboundItem, Payable, SupplierRebate, ResourceCategory, GoodsType } = require('../../models');
 const { Op } = require('sequelize');
 const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate, formatPaginatedResult } = require('../../utils');
 const { recordRebateDeduction, recordSupplierRebateAccountTransaction, _getRebateBalance } = require('../finance/rebateController');
@@ -182,7 +182,7 @@ async function getRequestDetail(ctx) {
  */
 async function createRequest(ctx) {
   const user = ctx.state.user;
-  const { supplierId, remark, items, storeId, invoiceType, productType, rebateDeduction } = ctx.request.body;
+  const { supplierId, remark, items, storeId, invoiceType, goodsTypeId, productType, rebateDeduction } = ctx.request.body;
 
   if (!items || items.length === 0) {
     ctx.throw(400, '请添加商品明细');
@@ -190,6 +190,26 @@ async function createRequest(ctx) {
 
   if (!supplierId) {
     ctx.throw(400, '请选择供应商');
+  }
+
+  const firstTypedItem = items.find(item => item.goodsTypeId || item.goods_type_id || item.productType || item.product_type) || {};
+  const requestedGoodsTypeId = goodsTypeId || firstTypedItem.goodsTypeId || firstTypedItem.goods_type_id || '';
+  const requestedProductType = productType || firstTypedItem.productType || firstTypedItem.product_type || '';
+  const goodsType = requestedGoodsTypeId
+    ? await GoodsType.findOne({ where: { goods_type_id: requestedGoodsTypeId, status: 1 } })
+    : await GoodsType.findOne({ where: { name: requestedProductType, status: 1 } });
+  if (!goodsType) {
+    ctx.throw(400, '请选择有效且已启用的货型');
+  }
+  const canonicalGoodsTypeId = goodsType.goods_type_id;
+  const canonicalProductType = goodsType.name;
+
+  for (const item of items) {
+    const itemType = item.productType || item.product_type || canonicalProductType;
+    const itemTypeId = item.goodsTypeId || item.goods_type_id || canonicalGoodsTypeId;
+    if (String(itemType) !== String(canonicalProductType) || String(itemTypeId) !== String(canonicalGoodsTypeId)) {
+      ctx.throw(400, '同一采购申请中的商品货型必须保持一致');
+    }
   }
 
   const selectedTypeSet = new Set();
@@ -272,6 +292,8 @@ async function createRequest(ctx) {
     request_no: requestNo,
     store_id: finalStoreId,
     supplier_id: supplierId,
+    goods_type_id: canonicalGoodsTypeId,
+    product_type: canonicalProductType,
     invoice_type: invoiceType || '',
     reason: remark || '',
     total_amount: totalAmount,
@@ -300,7 +322,8 @@ async function createRequest(ctx) {
       unit_price: unitPrice,
       subtotal: subtotal,
       rebate_deduction: itemRebateAllocations[itemIndex] || 0,
-      product_type: productType || item.productType || '',
+      goods_type_id: canonicalGoodsTypeId,
+      product_type: canonicalProductType,
       store_allocations: item.storeAllocations ? JSON.stringify(item.storeAllocations) : null,
       selected_resource_types: JSON.stringify(normalizeSelectedResourceTypes(item.selectedResourceTypes || item.selected_resource_types))
     });

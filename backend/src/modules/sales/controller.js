@@ -855,32 +855,63 @@ async function createDeposit(ctx) {
   const {
     storeId, store_id,
     customerName, customerPhone, customerSource,
-    amount, remark
+    amount, remark,
+    paymentMethod, payment_method
   } = ctx.request.body;
   const actualStoreId = storeId || store_id || user.storeId || '';
   const depositAmount = money(amount);
+  const actualPaymentMethod = String(paymentMethod || payment_method || '').trim();
 
   if (!actualStoreId) ctx.throw(400, '请选择门店');
   if (!customerName || !customerPhone) ctx.throw(400, '请填写客户信息');
   if (depositAmount <= 0) ctx.throw(400, '定金金额必须大于0');
+  if (!actualPaymentMethod) ctx.throw(400, '请选择收款方式');
+  if (isDepositPayment({ method: actualPaymentMethod }) || isPolicySubsidyReceivable({ method: actualPaymentMethod })) {
+    ctx.throw(400, '定金收款不能使用定金抵扣或政策补贴应收');
+  }
+
+  const paymentMethodRecord = await PaymentMethod.findOne({
+    where: { name: actualPaymentMethod, status: 1 }
+  });
+  if (!paymentMethodRecord) ctx.throw(400, '收款方式不存在或已停用');
+
+  if (Number(paymentMethodRecord.is_global) !== 1) {
+    const { PaymentMethodStore } = require('../../models');
+    const storeConfig = await PaymentMethodStore.findOne({
+      where: { method_id: paymentMethodRecord.method_id, store_id: actualStoreId }
+    });
+    if (!storeConfig) ctx.throw(400, '该门店未配置此收款方式');
+  }
 
   const depositId = generateUUID();
   const depositNo = generateBusinessNo('DEP');
 
-  await DepositOrder.create({
-    deposit_id: depositId,
-    deposit_no: depositNo,
-    store_id: actualStoreId,
-    customer_name: customerName,
-    customer_phone: customerPhone,
-    customer_source: customerSource || '',
-    amount: depositAmount,
-    redeemed_amount: 0,
-    refunded_amount: 0,
-    status: 'available',
-    remark: remark || '',
-    create_staff_id: user.staffId,
-    create_user: user.name
+  await sequelize.transaction(async transaction => {
+    await DepositOrder.create({
+      deposit_id: depositId,
+      deposit_no: depositNo,
+      store_id: actualStoreId,
+      customer_name: customerName,
+      customer_phone: customerPhone,
+      customer_source: customerSource || '',
+      amount: depositAmount,
+      payment_method: actualPaymentMethod,
+      redeemed_amount: 0,
+      refunded_amount: 0,
+      status: 'available',
+      remark: remark || '',
+      create_staff_id: user.staffId,
+      create_user: user.name
+    }, { transaction });
+
+    await syncDepositToDailyStatement({
+      depositId,
+      depositNo,
+      storeId: actualStoreId,
+      customerName,
+      paymentMethod: actualPaymentMethod,
+      amount: depositAmount
+    }, transaction);
   });
 
   ctx.body = { depositId, depositNo, status: 'available', message: '定金已存入客户定金库' };
@@ -1941,7 +1972,7 @@ async function syncToDailyStatement(orderId, storeId) {
     });
     if (!order) return;
 
-    const dateStr = new Date().toISOString().slice(0, 10);
+    const dateStr = getChinaDateString();
 
     // 加载所有支付方式字典
     const paymentMethods = await PaymentMethod.findAll({ where: { status: 1 } });
@@ -1966,16 +1997,20 @@ async function syncToDailyStatement(orderId, storeId) {
     for (const payment of order.OrderPayments || []) {
       const settleAccountId = await resolveSettlementAccount(storeId, payment.payment_method);
       const paymentMethodName = paymentMethodMap[payment.payment_method] || payment.payment_method;
+      const businessType = isPolicySubsidyReceivable({ method: paymentMethodName })
+        ? 'national_subsidy_receivable'
+        : 'sales_receipt';
 
       const existing = await DailyStatementDetail.findOne({
-      where: { statement_id: statement.statement_id, order_id: orderId, payment_code: paymentMethodName }
-    });
-    if (existing) {
-      await existing.update({
-        amount: payment.amount,
-        settlement_account_id: settleAccountId,
-        payment_method: paymentMethodName,
-        payment_code: paymentMethodName,
+        where: { statement_id: statement.statement_id, order_id: orderId, payment_code: paymentMethodName }
+      });
+      if (existing) {
+        await existing.update({
+          amount: payment.amount,
+          settlement_account_id: settleAccountId,
+          payment_method: paymentMethodName,
+          payment_code: paymentMethodName,
+          business_type: businessType,
           customer_name: order.customer_name,
           order_no: order.order_no
         });
@@ -1988,6 +2023,7 @@ async function syncToDailyStatement(orderId, storeId) {
           customer_name: order.customer_name || '',
           payment_method: paymentMethodName,
           payment_code: paymentMethodName,
+          business_type: businessType,
           amount: payment.amount,
           settlement_account_id: settleAccountId,
           settled: 0
@@ -1995,23 +2031,71 @@ async function syncToDailyStatement(orderId, storeId) {
       }
     }
 
-    const details = await DailyStatementDetail.findAll({
-      where: { statement_id: statement.statement_id },
-      attributes: ['order_id', 'amount']
-    });
-    const orderIds = [...new Set(details.map(d => d.order_id))];
-    const totalRevenue = details.reduce((s, d) => s + parseFloat(d.amount || 0), 0);
-
-    await statement.update({
-      total_revenue: totalRevenue,
-      total_order_count: orderIds.length
-    });
+    await refreshDailyStatementTotals(statement);
   } catch (err) {
     console.error('[DailySync] Error:', err.message);
   }
 }
 
-async function resolveSettlementAccount(storeId, paymentMethodName) {
+function getChinaDateString(date = new Date()) {
+  return new Date(date.getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+async function refreshDailyStatementTotals(statement, transaction = null) {
+  const { DailyStatementDetail } = require('../../models');
+  const details = await DailyStatementDetail.findAll({
+    where: { statement_id: statement.statement_id },
+    attributes: ['order_id', 'amount'],
+    transaction
+  });
+  const orderIds = [...new Set(details.map(detail => detail.order_id))];
+  const totalRevenue = details.reduce((sum, detail) => sum + Number(detail.amount || 0), 0);
+  await statement.update({
+    total_revenue: money(totalRevenue),
+    total_order_count: orderIds.length
+  }, { transaction });
+}
+
+async function syncDepositToDailyStatement(deposit, transaction) {
+  const { DailyStatement, DailyStatementDetail } = require('../../models');
+  const dateStr = getChinaDateString();
+  const [statement] = await DailyStatement.findOrCreate({
+    where: { store_id: deposit.storeId, statement_date: dateStr },
+    defaults: {
+      statement_id: generateUUID(),
+      store_id: deposit.storeId,
+      statement_date: dateStr,
+      total_revenue: 0,
+      total_order_count: 0,
+      total_settled: 0,
+      status: 'pending'
+    },
+    transaction
+  });
+  const settlementAccountId = await resolveSettlementAccount(
+    deposit.storeId,
+    deposit.paymentMethod,
+    transaction
+  );
+
+  await DailyStatementDetail.create({
+    detail_id: generateUUID(),
+    statement_id: statement.statement_id,
+    order_id: deposit.depositId,
+    order_no: deposit.depositNo,
+    customer_name: deposit.customerName || '',
+    payment_method: deposit.paymentMethod,
+    payment_code: deposit.paymentMethod,
+    business_type: 'deposit_receipt',
+    amount: deposit.amount,
+    settlement_account_id: settlementAccountId,
+    settled: 0
+  }, { transaction });
+
+  await refreshDailyStatementTotals(statement, transaction);
+}
+
+async function resolveSettlementAccount(storeId, paymentMethodName, transaction = null) {
   try {
     const { PaymentMethod, PaymentMethodStore } = require('../../models');
     const defaultPolicyReceivableAccountId = 'ACC_POLICY_SUBSIDY_RECEIVABLE';
@@ -2020,7 +2104,10 @@ async function resolveSettlementAccount(storeId, paymentMethodName) {
     const baseMethodName = methodName
       .replace(/-客户实收$/, '')
       .replace(/-政策补贴应收$/, '');
-    const pm = await PaymentMethod.findOne({ where: { name: baseMethodName, status: 1 } });
+    const pm = await PaymentMethod.findOne({
+      where: { name: baseMethodName, status: 1 },
+      transaction
+    });
     if (!pm) return null;
 
     if (pm.is_global === 1) {
@@ -2030,7 +2117,8 @@ async function resolveSettlementAccount(storeId, paymentMethodName) {
     }
 
     const storeCfg = await PaymentMethodStore.findOne({
-      where: { method_id: pm.method_id, store_id: storeId }
+      where: { method_id: pm.method_id, store_id: storeId },
+      transaction
     });
     return isPolicyReceivable
       ? storeCfg?.receivable_settlement_account_id || pm.receivable_settlement_account_id || defaultPolicyReceivableAccountId

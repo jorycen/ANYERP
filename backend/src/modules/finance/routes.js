@@ -2,7 +2,7 @@
  * 财务管理路由
  */
 const Router = require('koa-router');
-const { getDailyDetails, getDailyStatement, getDailyStatementDetail, batchSettle, getSettlementSummary, createExpense, getExpenseList, submitExpense, payExpense, getSettlementAccountsWithBalance, getAccountTransactions, addAccountTransaction } = require('./controller');
+const { getDailyDetails, getNationalSubsidyReceivables, getDailyStatement, getDailyStatementDetail, batchSettle, settleNationalSubsidyReceivables, getSettlementSummary, createExpense, getExpenseList, submitExpense, payExpense, getSettlementAccountsWithBalance, getAccountTransactions, addAccountTransaction } = require('./controller');
 const {
   getPayableList,
   getUnpaidBySupplier,
@@ -44,10 +44,12 @@ const router = new Router();
 router.use(requireRole('finance'));
 
 router.get('/daily-details', getDailyDetails);
+router.get('/national-subsidy-receivables', getNationalSubsidyReceivables);
 router.get('/daily-statement', getDailyStatement);
 router.get('/daily-statement/:id', getDailyStatementDetail);
 router.get('/settlement-summary', getSettlementSummary);
 router.post('/batch-settle', batchSettle);
+router.post('/national-subsidy-receivables/settle', settleNationalSubsidyReceivables);
 router.post('/expense', createExpense);
 router.get('/expense-list', getExpenseList);
 router.put('/expense/submit/:id', submitExpense);
