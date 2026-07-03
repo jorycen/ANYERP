@@ -9,7 +9,7 @@ const {
   sequelize
 } = require('../../models');
 const { Op } = require('sequelize');
-const { generateUUID, formatPaginatedResult } = require('../../utils');
+const { generateUUID, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { loadLegacyCostMaps, calculateItemBaseProfit } = require('./profitCalculation');
 
 const UPLOAD_DIR = path.resolve(__dirname, '../../../uploads/performance-profit-adjustments');
@@ -202,7 +202,12 @@ async function listProfitAdjustments(ctx) {
       as: 'attachments',
       attributes: ['attachment_id', 'original_name', 'mime_type', 'file_size', 'create_time']
     }],
-    order: [['create_time', 'DESC']],
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'PerformanceProfitAdjustment.status',
+      pendingStatuses: ['pending_finance', 'pending_admin'],
+      dateColumns: ['PerformanceProfitAdjustment.create_time'],
+      idColumn: 'PerformanceProfitAdjustment.adjustment_id'
+    }),
     offset: (currentPage - 1) * currentPageSize,
     limit: currentPageSize,
     distinct: true

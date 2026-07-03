@@ -14,7 +14,7 @@ const {
   sequelize
 } = require('../../models');
 const { Op, col, where } = require('sequelize');
-const { generateUUID, paginate, formatPaginatedResult } = require('../../utils');
+const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const moment = require('moment');
 const XLSX = require('xlsx');
 
@@ -35,7 +35,12 @@ async function getPayableList(ctx) {
 
   const { count, rows } = await Payable.findAndCountAll({
     where,
-    order: [['create_time', 'DESC']],
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'Payable.status',
+      pendingStatuses: ['unpaid'],
+      dateColumns: ['Payable.create_time'],
+      idColumn: 'Payable.payable_id'
+    }),
     ...paginate({}, { page, pageSize })
   });
 
@@ -305,9 +310,18 @@ async function getSettlementList(ctx) {
   if (status) where.status = status;
   if (paymentStatus) where.payment_status = paymentStatus;
 
-  const order = status
-    ? [['create_time', 'DESC']]
-    : [[sequelize.literal("CASE WHEN status = 'draft' THEN 0 WHEN status = 'confirmed' THEN 1 WHEN status = 'voided' THEN 2 ELSE 3 END"), 'ASC'], ['create_time', 'DESC']];
+  const order = [
+    [
+      sequelize.literal(
+        "CASE WHEN `Settlement`.`status` = 'draft' OR " +
+        "(`Settlement`.`status` = 'confirmed' AND `Settlement`.`payment_status` IN ('unpaid', 'partial')) " +
+        'THEN 0 ELSE 1 END'
+      ),
+      'ASC'
+    ],
+    [sequelize.literal('`Settlement`.`create_time`'), 'DESC'],
+    [sequelize.literal('`Settlement`.`settlement_id`'), 'DESC']
+  ];
 
   const { count, rows } = await Settlement.findAndCountAll({
     where,
@@ -468,7 +482,7 @@ async function getPaymentCandidates(ctx) {
   const where = buildPaymentCandidateWhere(ctx.query);
   const { count, rows } = await Settlement.findAndCountAll({
     where,
-    order: [['confirmed_time', 'DESC'], ['create_time', 'DESC']],
+    order: [['confirmed_time', 'DESC'], ['create_time', 'DESC'], ['settlement_id', 'DESC']],
     ...paginate({}, { page, pageSize })
   });
 
@@ -857,7 +871,7 @@ async function getPaymentBatches(ctx) {
     where,
     include: [{ model: SettlementPaymentRecord, as: 'records', required: false }],
     distinct: true,
-    order: [['create_time', 'DESC']],
+    order: [['create_time', 'DESC'], ['batch_id', 'DESC']],
     ...paginate({}, { page, pageSize })
   });
 

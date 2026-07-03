@@ -3,7 +3,7 @@
  */
 const { sequelize, PurchaseRequest, PurchaseRequestItem, Supplier, SupplierPaymentAccount, Store, Product, Inbound, InboundItem, Payable, SupplierRebate, ResourceCategory, GoodsType } = require('../../models');
 const { Op } = require('sequelize');
-const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate, formatPaginatedResult } = require('../../utils');
+const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { recordRebateDeduction, recordSupplierRebateAccountTransaction, _getRebateBalance } = require('../finance/rebateController');
 
 function toMoney(value) {
@@ -95,11 +95,12 @@ async function getRequestList(ctx) {
       { model: Supplier },
       { model: PurchaseRequestItem, as: 'items' }
     ],
-    order: [
-      [sequelize.literal("CASE WHEN `PurchaseRequest`.`status` = 'pending' THEN 0 ELSE 1 END"), 'ASC'],
-      ['create_time', 'DESC'],
-      ['request_id', 'DESC']
-    ],
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'PurchaseRequest.status',
+      pendingStatuses: ['pending'],
+      dateColumns: ['PurchaseRequest.create_time'],
+      idColumn: 'PurchaseRequest.request_id'
+    }),
     ...paginate({}, { page, pageSize })
   });
 

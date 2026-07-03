@@ -27,7 +27,7 @@ const {
   sequelize
 } = require('../../models');
 const { Op } = require('sequelize');
-const { generateOrderNo, generateUUID, paginate, formatPaginatedResult } = require('../../utils');
+const { generateOrderNo, generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
 
@@ -193,7 +193,12 @@ async function list(ctx) {
       { model: OrderPayment }
     ],
     distinct: true,
-    order: [['create_time', 'DESC']],
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'Order.order_status',
+      pendingStatuses: ['pending_approval', '未归档'],
+      dateColumns: ['Order.create_time'],
+      idColumn: 'Order.order_id'
+    }),
     ...paginate({}, { page, pageSize })
   });
 
@@ -869,7 +874,12 @@ async function listDeposits(ctx) {
     where,
     include: [{ model: Store }],
     distinct: true,
-    order: [['create_time', 'DESC']],
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'DepositOrder.status',
+      pendingStatuses: ['submitted'],
+      dateColumns: ['DepositOrder.create_time'],
+      idColumn: 'DepositOrder.deposit_id'
+    }),
     ...paginate({}, { page, pageSize })
   });
 

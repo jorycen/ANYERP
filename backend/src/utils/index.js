@@ -140,6 +140,46 @@ function formatPaginatedResult(data, { page, pageSize, count }) {
 }
 
 /**
+ * 业务清单统一排序：待处理状态优先，其次按业务时间倒序。
+ * 所有字段名必须由服务端常量传入，禁止传入用户输入。
+ */
+function buildPendingFirstOrder(sequelize, {
+  statusColumn,
+  pendingStatuses = [],
+  dateColumns = [],
+  idColumn
+}) {
+  if (!sequelize || typeof sequelize.literal !== 'function' || typeof sequelize.escape !== 'function') {
+    throw new TypeError('sequelize 实例无效');
+  }
+
+  const quoteColumn = (column) => {
+    const value = String(column || '');
+    if (!/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(value)) {
+      throw new TypeError(`排序字段无效: ${value}`);
+    }
+    return value.split('.').map(part => `\`${part}\``).join('.');
+  };
+
+  const order = [];
+  if (statusColumn && pendingStatuses.length > 0) {
+    const escapedStatuses = pendingStatuses.map(status => sequelize.escape(String(status))).join(', ');
+    order.push([
+      sequelize.literal(`CASE WHEN ${quoteColumn(statusColumn)} IN (${escapedStatuses}) THEN 0 ELSE 1 END`),
+      'ASC'
+    ]);
+  }
+
+  for (const dateColumn of dateColumns) {
+    order.push([sequelize.literal(quoteColumn(dateColumn)), 'DESC']);
+  }
+  if (idColumn) {
+    order.push([sequelize.literal(quoteColumn(idColumn)), 'DESC']);
+  }
+  return order;
+}
+
+/**
  * 过滤空值
  */
 function filterEmpty(data) {
@@ -174,5 +214,6 @@ module.exports = {
   generateBatchNo,
   paginate,
   formatPaginatedResult,
+  buildPendingFirstOrder,
   filterEmpty
 };

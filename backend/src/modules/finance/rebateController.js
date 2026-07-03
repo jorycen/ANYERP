@@ -14,7 +14,7 @@ const {
   sequelize
 } = require('../../models');
 const { Op } = require('sequelize');
-const { generateUUID, paginate, formatPaginatedResult } = require('../../utils');
+const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 
 function toNumber(value) {
   if (value === null || value === undefined || value === '') return 0;
@@ -403,7 +403,7 @@ async function getManufacturerPriceHistory(ctx) {
 
   const { count, rows } = await ManufacturerPriceHistory.findAndCountAll({
     where,
-    order: [['pn', 'ASC'], ['effective_date', 'DESC']],
+    order: [['effective_date', 'DESC'], ['created_at', 'DESC'], ['id', 'DESC']],
     ...paginate({}, { page, pageSize })
   });
 
@@ -418,7 +418,12 @@ async function getRebateEstimateList(ctx) {
   if (status) where.status = status;
   const { count, rows } = await RebateEstimate.findAndCountAll({
     where,
-    order: [['created_at', 'DESC']],
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'RebateEstimate.status',
+      pendingStatuses: ['estimated'],
+      dateColumns: ['RebateEstimate.created_at'],
+      idColumn: 'RebateEstimate.estimate_id'
+    }),
     ...paginate({}, { page, pageSize })
   });
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });

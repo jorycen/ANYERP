@@ -18,7 +18,7 @@ const {
 } = require('../../models');
 const { Op, Sequelize } = require('sequelize');
 const { sequelize } = require('../../config/database');
-const { generateProductCode, generateUUID, generateId, paginate, formatPaginatedResult } = require('../../utils');
+const { generateProductCode, generateUUID, generateId, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const XLSX = require('xlsx');
 const { getUserRoles } = require('../../middleware/permission');
 
@@ -390,7 +390,7 @@ async function getProductList(ctx) {
     include: [
       { model: ProductBarcode, attributes: ['barcode_id', 'barcode_type', 'barcode_code'], where: { status: 1 }, required: false }
     ],
-    order: [['create_time', 'DESC']],
+    order: [['create_time', 'DESC'], ['product_id', 'DESC']],
     ...paginate({}, { page: parseInt(page), pageSize: parseInt(pageSize) }),
     distinct: true
   });
@@ -612,7 +612,12 @@ async function getProductApplicationList(ctx) {
   const { limit, offset } = paginate({}, { page, pageSize });
   const { rows, count } = await ProductApplication.findAndCountAll({
     where,
-    order: [['create_time', 'DESC']],
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'ProductApplication.status',
+      pendingStatuses: ['pending'],
+      dateColumns: ['ProductApplication.create_time'],
+      idColumn: 'ProductApplication.application_id'
+    }),
     limit,
     offset
   });
@@ -1614,7 +1619,12 @@ async function getPriceChangeHistory(ctx) {
 
   const { count, rows } = await ProductPriceChangeLog.findAndCountAll({
     where,
-    order: [['effective_time', 'DESC'], ['create_time', 'DESC']],
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'ProductPriceChangeLog.status',
+      pendingStatuses: ['pending'],
+      dateColumns: ['ProductPriceChangeLog.effective_time', 'ProductPriceChangeLog.create_time'],
+      idColumn: 'ProductPriceChangeLog.change_id'
+    }),
     ...paginate({}, { page: parseInt(page), pageSize: parseInt(pageSize) })
   });
 

@@ -4,7 +4,7 @@
  */
 const { sequelize, ProductSn, Product, ProductPn, ProductPrice, ProductBarcode, Store, Location, InventoryWarning, Inbound, InboundItem, ReturnStock, ReturnStockItem, PurchaseRequest, Payable, Supplier, Inventory, SnLog, Order, OrderItem, Transfer, TransferItem, InventoryConversion, InventoryConversionItem } = require('../../models');
 const { Op, Sequelize } = require('sequelize');
-const { generateInboundNo, generateOutboundNo, generateTransferNo, generateUUID, generateBatchNo, paginate, formatPaginatedResult } = require('../../utils');
+const { generateInboundNo, generateOutboundNo, generateTransferNo, generateUUID, generateBatchNo, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { initializeSnResourceRightsFromInbound } = require('./resourceRights');
 
 function splitCodes(value) {
@@ -349,10 +349,12 @@ async function getSnList(ctx) {
 
     const { count, rows } = await ProductSn.findAndCountAll({
       where,
-      order: [
-        [sequelize.literal("FIELD(status, 'in_stock', 'transferring', 'sold')"), 'ASC'],
-        ['inbound_time', 'ASC']
-      ],
+      order: buildPendingFirstOrder(sequelize, {
+        statusColumn: 'ProductSn.status',
+        pendingStatuses: ['transferring', 'in_stock'],
+        dateColumns: ['ProductSn.inbound_time'],
+        idColumn: 'ProductSn.sn_id'
+      }),
       ...paginate({}, { page, pageSize })
     });
 
@@ -638,7 +640,12 @@ async function getInboundList(ctx) {
 
     const { count, rows } = await Inbound.findAndCountAll({
       where,
-      order: [['create_time', 'DESC']],
+      order: buildPendingFirstOrder(sequelize, {
+        statusColumn: 'Inbound.status',
+        pendingStatuses: ['pending'],
+        dateColumns: ['Inbound.create_time'],
+        idColumn: 'Inbound.inbound_id'
+      }),
       ...paginate({}, { page, pageSize })
     });
 
@@ -1274,7 +1281,12 @@ async function getTransferList(ctx) {
         { model: Store, as: 'ToStore', attributes: ['store_id', 'name'] },
         { model: TransferItem, attributes: ['item_id', 'product_id', 'sn_id', 'sn_code', 'quantity'] }
       ],
-      order: [['create_time', 'DESC']],
+      order: buildPendingFirstOrder(sequelize, {
+        statusColumn: 'Transfer.status',
+        pendingStatuses: ['pending', 'out_confirmed'],
+        dateColumns: ['Transfer.create_time'],
+        idColumn: 'Transfer.transfer_id'
+      }),
       ...paginate({}, { page, pageSize })
     });
 
@@ -2106,7 +2118,12 @@ async function getReturnList(ctx) {
   const { count, rows } = await ReturnStock.findAndCountAll({
     where,
     include: [{ model: ReturnStockItem, as: 'items' }],
-    order: [[sequelize.literal("CASE WHEN STATUS = 'pending' THEN 0 WHEN STATUS = 'approved' THEN 1 ELSE 2 END"), 'ASC'], ['create_time', 'DESC']],
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'ReturnStock.status',
+      pendingStatuses: ['pending', 'approved'],
+      dateColumns: ['ReturnStock.create_time'],
+      idColumn: 'ReturnStock.return_id'
+    }),
     ...paginate({}, { page, pageSize })
   });
 

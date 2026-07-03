@@ -6,7 +6,7 @@ const {
   ResourceSettlement, SettlementAccount, SettlementAccountTransaction, SupplierRebate, RebateEstimate, Supplier,
   StaffCareCreditTransaction, PerformanceProfitAdjustment
 } = require('../../models');
-const { generateUUID, paginate, formatPaginatedResult } = require('../../utils');
+const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 
 const LEGACY_RESOURCE_TYPES = ['GOV_SUBSIDY', 'EDU_SUBSIDY', 'SALES_REPORT'];
 const SOURCE_TYPES = ['REGULAR_TAX', 'UNTAXED', 'CHANNEL_RESOURCE', 'PROMOTION_RESOURCE', 'SPECIAL_PRICE', 'OTHER'];
@@ -375,7 +375,16 @@ async function listChanges(ctx) {
     if (startDate) where.create_time[Op.gte] = new Date(`${startDate}T00:00:00+08:00`);
     if (endDate) where.create_time[Op.lte] = new Date(`${endDate}T23:59:59+08:00`);
   }
-  const { count, rows } = await ResourceRightChangeOrder.findAndCountAll({ where, order: [['create_time', 'DESC']], ...paginate({}, { page, pageSize }) });
+  const { count, rows } = await ResourceRightChangeOrder.findAndCountAll({
+    where,
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'ResourceRightChangeOrder.approval_status',
+      pendingStatuses: ['pending'],
+      dateColumns: ['ResourceRightChangeOrder.create_time'],
+      idColumn: 'ResourceRightChangeOrder.change_id'
+    }),
+    ...paginate({}, { page, pageSize })
+  });
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
 }
 
@@ -793,7 +802,12 @@ async function listResourceSettlements(ctx) {
       { model: ResourceCategory, as: 'ResourceCategory', required: false, include: [{ model: SettlementAccount, as: 'DefaultAccount', required: false }] },
       { model: SettlementAccount, as: 'TargetAccount', required: false }
     ],
-    order: [['create_time', 'DESC']],
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'ResourceSettlement.status',
+      pendingStatuses: ['PENDING'],
+      dateColumns: ['ResourceSettlement.create_time'],
+      idColumn: 'ResourceSettlement.settlement_id'
+    }),
     distinct: true,
     ...paginate({}, { page, pageSize })
   });

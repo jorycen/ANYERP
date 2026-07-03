@@ -3,7 +3,7 @@
  */
 const { sequelize, DailyStatement, DailyStatementDetail, Expense, Store, Order, OrderPayment, SettlementAccount, SettlementAccountTransaction } = require('../../models');
 const { Op, Sequelize, fn, col } = require('sequelize');
-const { generateUUID, paginate, formatPaginatedResult } = require('../../utils');
+const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 
 async function getAccountBalance(accountId, transaction = null) {
   const [incomeAmount, expenseAmount] = await Promise.all([
@@ -68,7 +68,17 @@ async function getStatementDetails(ctx, businessWhere) {
   const { count, rows } = await DailyStatementDetail.findAndCountAll({
     where,
     order: [
-      [Sequelize.literal('CASE WHEN settled = 0 THEN 0 ELSE 1 END'), 'ASC'],
+      [Sequelize.literal('CASE WHEN `DailyStatementDetail`.`settled` = 0 THEN 0 ELSE 1 END'), 'ASC'],
+      [Sequelize.literal(`
+        COALESCE(
+          (SELECT o.create_time FROM T_ORDER o
+            WHERE o.order_id = \`DailyStatementDetail\`.\`order_id\` LIMIT 1),
+          (SELECT d.create_time FROM T_DEPOSIT_ORDER d
+            WHERE d.deposit_id = \`DailyStatementDetail\`.\`order_id\` LIMIT 1),
+          (SELECT s.statement_date FROM T_DAILY_STATEMENT s
+            WHERE s.statement_id = \`DailyStatementDetail\`.\`statement_id\` LIMIT 1)
+        )
+      `), 'DESC'],
       ['detail_id', 'DESC']
     ],
     ...paginate({}, { page, pageSize })
@@ -165,7 +175,12 @@ async function getDailyStatement(ctx) {
   const { count, rows } = await DailyStatement.findAndCountAll({
     where,
     include: [{ model: Store }, { model: DailyStatementDetail, as: 'Details' }],
-    order: [['statement_date', 'DESC']],
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'DailyStatement.status',
+      pendingStatuses: ['pending', 'partial'],
+      dateColumns: ['DailyStatement.statement_date'],
+      idColumn: 'DailyStatement.statement_id'
+    }),
     ...paginate({}, { page, pageSize })
   });
 
@@ -485,7 +500,12 @@ async function getExpenseList(ctx) {
       { model: Store },
       { model: SettlementAccount, as: 'SettlementAccount', attributes: ['account_id', 'account_name', 'bank_name', 'account_number'] }
     ],
-    order: [['create_time', 'DESC']],
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'Expense.status',
+      pendingStatuses: ['pending', 'processing'],
+      dateColumns: ['Expense.create_time'],
+      idColumn: 'Expense.expense_id'
+    }),
     ...paginate({}, { page, pageSize })
   });
 
