@@ -1290,13 +1290,16 @@ async function refreshCostPrice(ctx) {
 
   let price = await ProductPrice.findOne({ where: { product_id: productId } });
   if (price) {
-    await price.update({ cost_price: costPrice });
+    await price.update({
+      cost_price: costPrice,
+      ...(Number(price.standard_price || 0) <= 0 && costPrice > 0 ? { standard_price: costPrice } : {})
+    });
   } else {
     await ProductPrice.create({
       price_id: generateUUID(),
       product_id: productId,
       cost_price: costPrice,
-      standard_price: 0,
+      standard_price: costPrice,
       min_sale_price: 0
     });
   }
@@ -1317,13 +1320,16 @@ async function batchRefreshCost(ctx) {
 
     let price = await ProductPrice.findOne({ where: { product_id: productId } });
     if (price) {
-      await price.update({ cost_price: costPrice });
+      await price.update({
+        cost_price: costPrice,
+        ...(Number(price.standard_price || 0) <= 0 && costPrice > 0 ? { standard_price: costPrice } : {})
+      });
     } else {
       await ProductPrice.create({
         price_id: generateUUID(),
         product_id: productId,
         cost_price: costPrice,
-        standard_price: 0,
+        standard_price: costPrice,
         min_sale_price: 0
       });
     }
@@ -1705,13 +1711,16 @@ async function importCostRefresh(ctx) {
       const existingPrice = await ProductPrice.findOne({ where: { product_id: product.product_id } });
 
       if (existingPrice) {
-        await existingPrice.update({ cost_price: costPrice });
+        await existingPrice.update({
+          cost_price: costPrice,
+          ...(Number(existingPrice.standard_price || 0) <= 0 && costPrice > 0 ? { standard_price: costPrice } : {})
+        });
       } else {
         await ProductPrice.create({
           price_id: generateUUID(),
           product_id: product.product_id,
           cost_price: costPrice,
-          standard_price: 0,
+          standard_price: costPrice,
           min_sale_price: 0
         });
       }

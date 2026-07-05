@@ -27,6 +27,17 @@ function roundMoney(value) {
   return Number(toNumber(value).toFixed(2));
 }
 
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
 function calcRate(value, base) {
   const denominator = toNumber(base);
   if (denominator === 0) return 0;
@@ -272,6 +283,10 @@ async function getEmployeePerformanceReport(ctx) {
     const totalAmount = roundMoney(orderJson.total_amount);
     const actualPayment = roundMoney(orderJson.actual_payment);
     const grossProfitSnapshot = orderJson.grossProfitSnapshot;
+    const pricingDetails = parseJsonArray(grossProfitSnapshot?.product_pricing_details);
+    const pricingDetailByItem = new Map(
+      pricingDetails.map(detail => [String(detail.itemId || ''), detail])
+    );
     let totalCost = 0;
     let baseGrossProfit = 0;
     const itemCalculations = items.map(item => {
@@ -279,8 +294,13 @@ async function getEmployeePerformanceReport(ctx) {
       const saleSubtotal = roundMoney(item.subtotal || (toNumber(item.sale_price) * quantity));
       const allocatedRevenue = saleSubtotal;
       const baseCalculation = calculateItemBaseProfit(item, legacyCostMaps);
-      const unitCost = baseCalculation.unitCost;
-      const costAmount = baseCalculation.costAmount;
+      const pricingDetail = pricingDetailByItem.get(String(item.item_id || ''));
+      const unitCost = grossProfitSnapshot && pricingDetail
+        ? roundMoney(pricingDetail.unitPricing)
+        : baseCalculation.unitCost;
+      const costAmount = grossProfitSnapshot && pricingDetail
+        ? roundMoney(pricingDetail.pricingAmount)
+        : baseCalculation.costAmount;
       const grossProfit = grossProfitSnapshot
         ? roundMoney(toNumber(grossProfitSnapshot.gross_profit_amount) * (
             totalAmount ? saleSubtotal / totalAmount : 0
@@ -308,7 +328,7 @@ async function getEmployeePerformanceReport(ctx) {
     });
 
     totalCost = grossProfitSnapshot
-      ? roundMoney(grossProfitSnapshot.settlement_cost_amount)
+      ? roundMoney(grossProfitSnapshot.product_pricing_amount)
       : roundMoney(totalCost);
     baseGrossProfit = grossProfitSnapshot
       ? roundMoney(grossProfitSnapshot.gross_profit_amount)
@@ -340,7 +360,7 @@ async function getEmployeePerformanceReport(ctx) {
       calculation: {
         orderFormula: `${baseGrossProfit.toFixed(2)} + 已审批调整 ${approvedAdjustment.toFixed(2)} = ${grossProfit.toFixed(2)}`,
         revenueNote: usesNewSnapshot
-          ? '基础毛利使用订单毛利快照：用户应收－销售结算成本－应收税率费用－增值税＋补录净额'
+          ? '基础毛利使用订单毛利快照：用户应收－产品定价－应收税率费用－增值税＋补录净额'
           : (usesLegacyFallback
             ? '该历史订单未生成新毛利快照，当前按原成本口径兼容计算'
             : '该订单尚未生成新毛利快照，暂按原归档销售毛利兼容展示'),

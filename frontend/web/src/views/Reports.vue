@@ -214,10 +214,10 @@
                     <el-table-column label="销售小计" width="110">
                       <template #default="{ row: item }">¥{{ formatMoney(item.allocatedRevenue) }}</template>
                     </el-table-column>
-                    <el-table-column label="单位成本" width="100">
+                    <el-table-column label="产品定价" width="100">
                       <template #default="{ row: item }">¥{{ formatMoney(item.unitCost) }}</template>
                     </el-table-column>
-                    <el-table-column label="成本合计" width="100">
+                    <el-table-column label="定价合计" width="100">
                       <template #default="{ row: item }">¥{{ formatMoney(item.costAmount) }}</template>
                     </el-table-column>
                     <el-table-column prop="formula" label="毛利计算" min-width="180" />
@@ -235,7 +235,7 @@
             <el-table-column label="实收" width="100">
               <template #default="{ row }">¥{{ formatMoney(row.actualPayment) }}</template>
             </el-table-column>
-            <el-table-column label="成本" width="100">
+            <el-table-column label="产品定价" width="100">
               <template #default="{ row }">¥{{ formatMoney(row.totalCost) }}</template>
             </el-table-column>
             <el-table-column label="基础毛利" width="105">

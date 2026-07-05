@@ -2,7 +2,7 @@
  * 库房管理控制器
  * 优化版：非SN商品直接操作聚合库存，SN商品同时维护SN记录和聚合库存
  */
-const { sequelize, ProductSn, Product, ProductPn, ProductPrice, ProductBarcode, Store, Location, InventoryWarning, Inbound, InboundItem, ReturnStock, ReturnStockItem, PurchaseRequest, Payable, Supplier, Inventory, SnLog, Order, OrderItem, Transfer, TransferItem, InventoryConversion, InventoryConversionItem } = require('../../models');
+const { sequelize, ProductSn, Product, ProductPn, ProductPrice, ProductPriceChangeLog, ProductBarcode, Store, Location, InventoryWarning, Inbound, InboundItem, ReturnStock, ReturnStockItem, PurchaseRequest, Payable, Supplier, Inventory, SnLog, Order, OrderItem, Transfer, TransferItem, InventoryConversion, InventoryConversionItem } = require('../../models');
 const { Op, Sequelize } = require('sequelize');
 const { generateInboundNo, generateOutboundNo, generateTransferNo, generateUUID, generateBatchNo, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { initializeSnResourceRightsFromInbound } = require('./resourceRights');
@@ -24,6 +24,57 @@ function assertStoreVisible(ctx, storeId) {
 function normalizePnCode(value) {
   const code = String(value || '').trim();
   return code.length > 64 ? code.slice(0, 64) : code;
+}
+
+async function ensureDefaultProductPricing(product, purchasePrice, user, transaction) {
+  const pricing = money(purchasePrice);
+  if (!product?.product_id || pricing <= 0) return;
+
+  let price = await ProductPrice.findOne({
+    where: { product_id: product.product_id },
+    transaction,
+    lock: transaction?.LOCK?.UPDATE || true
+  });
+  if (price && Number(price.standard_price || 0) > 0) return;
+
+  const now = new Date();
+  const operator = user?.name || user?.staffId || 'system';
+  if (price) {
+    await price.update({
+      standard_price: pricing,
+      effective_time: now,
+      create_user: operator
+    }, { transaction });
+  } else {
+    price = await ProductPrice.create({
+      price_id: generateUUID(),
+      product_id: product.product_id,
+      cost_price: pricing,
+      standard_price: pricing,
+      min_sale_price: 0,
+      effective_time: now,
+      create_user: operator,
+      status: 1
+    }, { transaction });
+  }
+
+  await ProductPriceChangeLog.create({
+    change_id: generateUUID(),
+    product_id: product.product_id,
+    product_code: product.product_code || '',
+    product_name: product.name || '',
+    manufacturer_code: product.manufacturer_code || '',
+    price_field: 'standard_price',
+    old_price: 0,
+    new_price: pricing,
+    effective_time: now,
+    source: 'purchase_default',
+    change_reason: '产品定价首次默认采用采购价',
+    status: 'effective',
+    create_user: operator,
+    create_time: now,
+    applied_time: now
+  }, { transaction });
 }
 
 function getSalesInventoryQty(inv) {
@@ -1047,6 +1098,7 @@ async function executeInbound(ctx) {
       }
 
       await updateInventory(item.productId, inbound.store_id, inventoryType, quantity, t, locationId);
+      await ensureDefaultProductPricing(product, dbItem.unit_price, user, t);
 
       if (inventoryType === 'normal_qty' && dbItem.product_type) {
         const typeField = PRODUCT_TYPE_TO_FIELD[dbItem.product_type];
@@ -1580,12 +1632,15 @@ async function setProductCostPrice(productId, costPrice, user, transaction) {
     create_user: user.name || user.staffId || 'system'
   };
   if (price) {
+    if (Number(price.standard_price || 0) <= 0 && money(costPrice) > 0) {
+      payload.standard_price = money(costPrice);
+    }
     await price.update(payload, { transaction });
   } else {
     await ProductPrice.create({
       price_id: generateUUID(),
       product_id: productId,
-      standard_price: 0,
+      standard_price: money(costPrice),
       min_sale_price: 0,
       status: 1,
       ...payload

@@ -165,6 +165,13 @@
 
         <!-- ========== Tab 3: 价格管理 ========== -->
         <el-tab-pane v-if="!productApprovalOnly" label="价格管理" name="price">
+          <el-alert
+            title="产品定价用于订单毛利的商品成本；未设置时首次采购入库会默认采用采购价，之后可在此调整。"
+            type="info"
+            :closable="false"
+            show-icon
+            style="margin-bottom: 12px"
+          />
           <div class="filter-bar">
             <el-input v-model="priceParams.keyword" placeholder="商品名称/商品编码/厂商编码" clearable style="width: 240px" @keyup.enter="loadPriceData" />
             <el-button type="primary" @click="loadPriceData">搜索</el-button>
@@ -192,7 +199,7 @@
                 </el-tooltip>
               </template>
             </el-table-column>
-            <el-table-column label="标准售价" width="140">
+            <el-table-column label="产品定价" width="140">
               <template #default="{ row }">
                 <span v-if="!row._editing">¥{{ formatNum(row.standard_price) }}</span>
                 <el-input v-else v-model="row._stdPrice" size="small" style="width: 110px" />
