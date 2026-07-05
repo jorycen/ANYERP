@@ -24,6 +24,7 @@ const { responseFormatter } = require('./middleware/responseFormatter');
 const { databaseRecoveryMiddleware, databaseHealth } = require('./middleware/databaseRecovery');
 const { authMiddleware, storeAccessMiddleware } = require('./middleware/auth');
 const { applyPendingProductPriceChanges } = require('./modules/product/controller');
+const { refreshOutdatedGrossProfitSnapshots } = require('./modules/sales/grossProfit');
 const { startDatabaseHeartbeat } = require('./utils/databaseHeartbeat');
 
 const app = new Koa();
@@ -91,6 +92,12 @@ function initializeDatabaseInBackground(retryDelayMs = Number(process.env.DB_STA
     try {
       await ensureDatabaseReady('startup database activation', { force: true });
       await runMigrations();
+      const grossProfitMigration = await refreshOutdatedGrossProfitSnapshots();
+      if (grossProfitMigration.total > 0) {
+        console.log(
+          `[GrossProfit] formula migration completed: ${grossProfitMigration.refreshed}/${grossProfitMigration.total}, failed ${grossProfitMigration.failed}`
+        );
+      }
       await ensureDatabaseReady('post-migration database activation', { force: true });
       console.log('[Startup] database initialization completed');
     } catch (error) {

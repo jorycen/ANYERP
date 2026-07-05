@@ -9,9 +9,10 @@ const {
   PaymentMethod,
   ProductPrice
 } = require('../../models');
+const { Op } = require('sequelize');
 const { generateUUID } = require('../../utils');
 
-const FORMULA_VERSION = 'ORDER_GP_V4_20260706';
+const FORMULA_VERSION = 'ORDER_GP_V5_20260706';
 const VAT_RATE = 0.13;
 
 function toNumber(value) {
@@ -35,6 +36,13 @@ function isPolicySubsidyReceivable(value) {
 
 function normalizeAmountType(value) {
   return value === 'decrease' ? 'decrease' : 'increase';
+}
+
+function calculateOrderReceivable(order = {}) {
+  return roundMoney(Math.max(
+    0,
+    toNumber(order.total_amount) - toNumber(order.discount_amount)
+  ));
 }
 
 function resolveUnitProductPricing(productPrice = {}, orderItem = {}) {
@@ -143,8 +151,9 @@ function parseJsonArray(value) {
   }
 }
 
-function snapshotToResponse(snapshot) {
+function snapshotToResponse(snapshot, order = null) {
   const row = snapshot && typeof snapshot.toJSON === 'function' ? snapshot.toJSON() : (snapshot || {});
+  const orderRow = order && typeof order.toJSON === 'function' ? order.toJSON() : order;
   return {
     grossProfitId: row.gross_profit_id,
     orderId: row.order_id,
@@ -154,6 +163,12 @@ function snapshotToResponse(snapshot) {
     receivableAmount: roundMoney(
       row.receivable_amount !== undefined ? row.receivable_amount : row.received_amount
     ),
+    ...(orderRow ? {
+      orderTotalAmount: roundMoney(orderRow.total_amount),
+      discountAmount: roundMoney(orderRow.discount_amount),
+      nationalSubsidy: roundMoney(orderRow.national_subsidy),
+      educationSubsidy: roundMoney(orderRow.education_subsidy)
+    } : {}),
     productPricingAmount: roundMoney(
       row.product_pricing_amount !== undefined
         ? row.product_pricing_amount
@@ -174,7 +189,7 @@ function snapshotToResponse(snapshot) {
     snapshotStatus: row.snapshot_status,
     calculatedBy: row.calculated_by || '',
     calculatedAt: row.calculated_at,
-    formula: '用户应收 - 产品定价 - 应收税率费用 - 增值税 + 补录净额'
+    formula: '用户应收（商品总额－折扣，含国补和教育补贴） - 产品定价 - 应收税率费用 - 增值税 + 补录净额'
   };
 }
 
@@ -309,13 +324,7 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     buildSupplementDetails(orderId, transaction)
   ]);
   const values = calculateGrossProfitValues({
-    receivableAmount: Math.max(
-      0,
-      toNumber(order.total_amount)
-        - toNumber(order.discount_amount)
-        - toNumber(order.national_subsidy)
-        - toNumber(order.education_subsidy)
-    ),
+    receivableAmount: calculateOrderReceivable(order),
     paymentDetails,
     productPricingDetails,
     supplementDetails,
@@ -357,14 +366,43 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
   }, { transaction });
 }
 
+async function refreshOutdatedGrossProfitSnapshots() {
+  const snapshots = await OrderGrossProfit.findAll({
+    where: { formula_version: { [Op.ne]: FORMULA_VERSION } },
+    attributes: ['order_id', 'snapshot_status'],
+    raw: true
+  });
+  let refreshed = 0;
+  let failed = 0;
+  for (const snapshot of snapshots) {
+    try {
+      await calculateAndSaveOrderGrossProfit(snapshot.order_id, {
+        calculatedBy: 'formula_migration',
+        force: true,
+        final: snapshot.snapshot_status === 'final'
+      });
+      refreshed += 1;
+    } catch (error) {
+      failed += 1;
+      console.error(
+        `[GrossProfit] failed to migrate order ${snapshot.order_id}:`,
+        error.message
+      );
+    }
+  }
+  return { total: snapshots.length, refreshed, failed };
+}
+
 module.exports = {
   FORMULA_VERSION,
   VAT_RATE,
   roundMoney,
   normalizeMethodName,
   isPolicySubsidyReceivable,
+  calculateOrderReceivable,
   resolveUnitProductPricing,
   calculateGrossProfitValues,
   calculateAndSaveOrderGrossProfit,
+  refreshOutdatedGrossProfitSnapshots,
   snapshotToResponse
 };

@@ -2,7 +2,7 @@ const { QueryTypes } = require('sequelize');
 const { sequelize } = require('../../models');
 
 const ARCHIVED_STATUSES = ['已归档', 'completed', 'archived'];
-const GROSS_PROFIT_FORMULA_VERSION = 'ORDER_GP_V4_20260706';
+const GROSS_PROFIT_FORMULA_VERSION = 'ORDER_GP_V5_20260706';
 
 function toNumber(value) {
   const number = Number(value || 0);

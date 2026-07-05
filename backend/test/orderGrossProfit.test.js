@@ -5,6 +5,7 @@ const {
   calculateGrossProfitValues,
   normalizeMethodName,
   isPolicySubsidyReceivable,
+  calculateOrderReceivable,
   resolveUnitProductPricing
 } = require('../src/modules/sales/grossProfit');
 
@@ -84,4 +85,13 @@ test('毛利商品成本优先使用产品定价，未定价时才回退采购�
     ),
     { unitPricing: 800, source: 'purchase_price_fallback' }
   );
+});
+
+test('用户应收保留国补和教育补贴，只扣除普通折扣', () => {
+  assert.equal(calculateOrderReceivable({
+    total_amount: 1500,
+    discount_amount: 100,
+    national_subsidy: 300,
+    education_subsidy: 200
+  }), 1400);
 });

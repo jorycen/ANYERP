@@ -859,7 +859,7 @@ async function getGrossProfit(ctx) {
   const snapshot = await calculateAndSaveOrderGrossProfit(orderId, {
     calculatedBy: ctx.state.user?.name || 'system'
   });
-  ctx.body = { code: 0, data: snapshotToResponse(snapshot) };
+  ctx.body = { code: 0, data: snapshotToResponse(snapshot, order) };
 }
 
 async function updateSupplements(ctx) {
@@ -931,7 +931,7 @@ async function updateSupplements(ctx) {
         content: item.content,
         proofPhotoUrl: item.proof_photo_url
       })),
-      grossProfit: snapshotToResponse(snapshot)
+      grossProfit: snapshotToResponse(snapshot, order)
     }
   };
 }
