@@ -306,7 +306,10 @@ async function runMigrations() {
     await checkAndAddColumn('T_PRODUCT', 'T_MIN_SALE_PRICE', 'DECIMAL(12,2) COMMENT "老最低售价备份"', 'T_STANDARD_PRICE');
     await checkAndAddColumn('T_PRODUCT', 'CATEGORY_ID', 'VARCHAR(32) COMMENT "分类ID"', 'NAME');
     await checkAndAddColumn('T_PRODUCT', 'CONFIG', 'VARCHAR(512) COMMENT "产品配置"', 'CATEGORY');
+    await checkAndAddColumn('T_PRODUCT', 'IS_FOCUS_PRODUCT', 'TINYINT(1) NOT NULL DEFAULT 0 COMMENT "是否属于经营看板重点产品"', 'REMARK');
     await checkAndAddColumn('T_PRODUCT', 'CREATE_TIME', 'DATETIME COMMENT "创建时间"', 'CONFIG');
+    await checkAndAddIndex('T_PRODUCT', 'idx_product_focus', 'ALTER TABLE T_PRODUCT ADD INDEX idx_product_focus (IS_FOCUS_PRODUCT, IS_DELETED, STATUS)');
+    await checkAndAddIndex('T_ORDER', 'idx_order_bi_scope', 'ALTER TABLE T_ORDER ADD INDEX idx_order_bi_scope (IS_DELETED, ORDER_STATUS, STORE_ID, CREATE_TIME)');
     await checkAndAddColumn('T_PRODUCT_SN', 'PN_CODE', 'VARCHAR(64) COMMENT "PN料号"', 'PRODUCT_ID');
     await checkAndAddColumn('T_PRODUCT_SN', 'INVENTORY_TYPE', 'VARCHAR(32) DEFAULT "normal_qty" COMMENT "库存类型"', 'STATUS');
     await checkAndAddColumn('T_PRODUCT_SN', 'ORIGINAL_PICKUP_PRICE', 'DECIMAL(12,2) DEFAULT 0 COMMENT "原始提货价"', 'INBOUND_PRICE');

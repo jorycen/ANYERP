@@ -4,6 +4,9 @@
 const { Order, OrderItem, ProductSn, Product, Store, PerformanceProfitAdjustment, sequelize } = require('../../models');
 const { Op } = require('sequelize');
 const { loadLegacyCostMaps, calculateItemBaseProfit } = require('./profitCalculation');
+const { DashboardService } = require('./dashboardService');
+
+const dashboardService = new DashboardService();
 
 function toNumber(value) {
   const num = Number(value || 0);
@@ -387,4 +390,18 @@ async function getEmployeePerformanceReport(ctx) {
   };
 }
 
-module.exports = { getSalesReport, getInventoryReport, getEmployeePerformanceReport };
+async function getDashboardFilters(ctx) {
+  ctx.body = await dashboardService.buildFilters(ctx.state.user);
+}
+
+async function getDashboardOverview(ctx) {
+  ctx.body = await dashboardService.buildOverview(ctx.state.user, ctx.query);
+}
+
+module.exports = {
+  getSalesReport,
+  getInventoryReport,
+  getEmployeePerformanceReport,
+  getDashboardFilters,
+  getDashboardOverview
+};

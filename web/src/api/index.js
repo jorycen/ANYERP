@@ -108,6 +108,8 @@ export default {
   // Report
   getSalesReport: (params) => api.get('/report/sales', { params }),
   getInventoryReport: (params) => api.get('/report/inventory', { params }),
+  getDashboardFilters: () => api.get('/report/dashboard/filters'),
+  getDashboardOverview: (params) => api.get('/report/dashboard/overview', { params }),
 
   // System
   getMenus: () => api.get('/system/menus'),

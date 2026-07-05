@@ -5,11 +5,22 @@ const salesController = require('../src/modules/sales/controller');
 
 const {
   normalizeOrderExtendedFields,
+  normalizeAuxiliarySalesList,
   isCancelStatus,
   reserveDepositForOrder,
   redeemReservedDepositsForOrder,
   releaseDepositRedemptionForOrder
 } = salesController._test;
+
+test('auxiliary sales list removes duplicate participants', () => {
+  const rows = normalizeAuxiliarySalesList([
+    { staffId: 2, selected: '辅助甲' },
+    { staffId: 2, selected: '辅助甲' },
+    { staff_id: 3, name: '辅助乙' }
+  ]);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map(row => String(row.staffId)), ['2', '3']);
+});
 
 test('order extension fields preserve detail metadata from camelCase payloads', () => {
   const payload = normalizeOrderExtendedFields({

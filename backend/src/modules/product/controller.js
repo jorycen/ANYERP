@@ -419,6 +419,7 @@ async function getProductList(ctx) {
       manufacturer_codes: splitCodes(p.manufacturer_code).length > 0 ? splitCodes(p.manufacturer_code) : allBarcodes.filter(b => b.type === 'manufacturer').map(b => b.code),
       barcodes: allBarcodes,
       create_time: p.create_time || '',
+      is_focus_product: Number(p.is_focus_product || 0),
       status: p.status
     };
   });
@@ -463,12 +464,16 @@ function productApplicationPayload(body, finalName, parsedAttrs) {
     barcodes: Array.isArray(body.barcodes) ? body.barcodes.map(item => ({ type: item.type || 'manufacturer', code: item.code || '' })).filter(item => item.code) : [],
     attributes: parsedAttrs,
     status: 1,
-    manufacturerCode: body.manufacturerCode || body.manufacturer_code || ''
+    manufacturerCode: body.manufacturerCode || body.manufacturer_code || '',
+    isFocusProduct: body.isFocusProduct === true || body.is_focus_product === true || Number(body.isFocusProduct ?? body.is_focus_product) === 1
   };
 }
 
 async function createProductRecord(body, transaction = null) {
-  const { name, categoryId, config, needSn, needImei, unit, remark, barcodes, attributes, status = 1, manufacturerCode, manufacturer_code } = body;
+  const {
+    name, categoryId, config, needSn, needImei, unit, remark, barcodes, attributes,
+    status = 1, manufacturerCode, manufacturer_code, isFocusProduct, is_focus_product
+  } = body;
   const productId = generateUUID();
   const categoryPath = categoryId ? await resolveCategoryPath(categoryId) : '';
   const { finalName, parsedAttrs } = await resolveProductApplicationName(body);
@@ -503,6 +508,7 @@ async function createProductRecord(body, transaction = null) {
         need_imei: needImei ? 1 : 0,
         unit: unit || '台',
         remark: remark || '',
+        is_focus_product: isFocusProduct === true || is_focus_product === true || Number(isFocusProduct ?? is_focus_product) === 1 ? 1 : 0,
         create_time: new Date(),
         status
       }, { transaction });
@@ -684,7 +690,10 @@ async function reviewProductApplication(ctx) {
 async function updateProduct(ctx) {
   const { productId } = ctx.params;
   const body = ctx.request.body;
-  const { name, categoryId, config, needSn, needImei, unit, remark, barcodes, status, attributes, manufacturerCode, manufacturer_code } = body;
+  const {
+    name, categoryId, config, needSn, needImei, unit, remark, barcodes, status,
+    attributes, manufacturerCode, manufacturer_code, isFocusProduct, is_focus_product
+  } = body;
 
   const product = await Product.findByPk(productId);
   if (!product) {
@@ -708,6 +717,10 @@ async function updateProduct(ctx) {
   if (needImei !== undefined) updateData.need_imei = needImei ? 1 : 0;
   if (unit !== undefined) updateData.unit = unit;
   if (remark !== undefined) updateData.remark = remark;
+  if (isFocusProduct !== undefined || is_focus_product !== undefined) {
+    const focusValue = isFocusProduct ?? is_focus_product;
+    updateData.is_focus_product = focusValue === true || Number(focusValue) === 1 ? 1 : 0;
+  }
   if (manufacturerCode !== undefined || manufacturer_code !== undefined) {
     updateData.manufacturer_code = getManufacturerCodes([], manufacturerCode || manufacturer_code).join(', ');
   }

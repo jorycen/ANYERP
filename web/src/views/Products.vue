@@ -34,6 +34,15 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="重点产品" width="110" align="center">
+          <template #default="{ row }">
+            <el-switch
+              :model-value="Boolean(row.is_focus_product)"
+              :loading="focusLoadingId === row.product_id"
+              @change="value => updateFocusProduct(row, value)"
+            />
+          </template>
+        </el-table-column>
         <el-table-column prop="status" label="状态" width="80">
           <template #default="{ row }">
             <el-tag :type="row.status === 1 ? 'success' : 'danger'">{{ row.status === 1 ? '启用' : '停用' }}</el-tag>
@@ -68,6 +77,7 @@ import api from '../api'
 const categories = ref([])
 const tableData = ref([])
 const total = ref(0)
+const focusLoadingId = ref('')
 
 const queryParams = reactive({
   page: 1,
@@ -107,6 +117,21 @@ const loadCategories = async () => {
 const handleCreate = () => ElMessage.info('新增商品功能开发中')
 const handleEdit = (row) => ElMessage.info('编辑商品: ' + row.name)
 const handlePnManage = (row) => ElMessage.info('PN管理: ' + row.name)
+
+const updateFocusProduct = async (row, value) => {
+  focusLoadingId.value = row.product_id
+  try {
+    const res = await api.updateProduct(row.product_id, { isFocusProduct: Boolean(value) })
+    if (res.code === 0) {
+      row.is_focus_product = value ? 1 : 0
+      ElMessage.success(value ? '已设为重点产品' : '已取消重点产品')
+    }
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '更新重点产品失败')
+  } finally {
+    focusLoadingId.value = ''
+  }
+}
 </script>
 
 <style scoped>

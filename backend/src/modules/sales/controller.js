@@ -247,6 +247,29 @@ function firstNonEmpty(source, keys, defaultValue = '') {
   return defaultValue;
 }
 
+function normalizeAuxiliarySalesList(value) {
+  let list = value;
+  if (typeof list === 'string') {
+    try { list = JSON.parse(list); } catch (_) { list = []; }
+  }
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  return list.reduce((result, item) => {
+    if (!item || typeof item !== 'object') return result;
+    const staffId = item.staffId ?? item.staff_id ?? item.id ?? '';
+    const name = item.name ?? item.staffName ?? item.staff_name ?? item.selected ?? '';
+    const key = staffId ? `id:${staffId}` : `name:${String(name).trim()}`;
+    if (key === 'name:' || seen.has(key)) return result;
+    seen.add(key);
+    result.push({
+      staffId: staffId === '' ? null : staffId,
+      name: String(name || '').trim() || String(item.selected || '').trim(),
+      selected: String(item.selected || name || '').trim()
+    });
+    return result;
+  }, []);
+}
+
 function normalizeOrderExtendedFields(source = {}) {
   const fieldAliases = {
     customer_source_detail: ['customer_source_detail', 'customerSourceDetail'],
@@ -265,7 +288,13 @@ function normalizeOrderExtendedFields(source = {}) {
   Object.entries(fieldAliases).forEach(([field, aliases]) => {
     const key = aliases.find(alias => Object.prototype.hasOwnProperty.call(source, alias));
     if (!key) return;
-    result[field] = field === 'invoice_amount' ? money(source[key]) : source[key];
+    if (field === 'invoice_amount') {
+      result[field] = money(source[key]);
+    } else if (field === 'auxiliary_sales_list') {
+      result[field] = normalizeAuxiliarySalesList(source[key]);
+    } else {
+      result[field] = source[key];
+    }
   });
   return result;
 }
@@ -434,6 +463,11 @@ async function create(ctx) {
     invoiceStatus = '不开票', remark, storeId, status, orderStatus, untaxedInvoiceConfirmed = false
   } = requestBody;
   const extendedOrderFields = normalizeOrderExtendedFields(requestBody);
+  if (extendedOrderFields.auxiliary_sales_list) {
+    extendedOrderFields.auxiliary_sales_list = extendedOrderFields.auxiliary_sales_list.filter(item => (
+      String(item.staffId || '') !== String(user.staffId)
+    ));
+  }
 
   if (!Array.isArray(items) || items.length === 0) {
     ctx.throw(400, '订单中没有商品');
@@ -736,6 +770,11 @@ async function update(ctx) {
   }
 
   assertStoreVisible(order.store_id, ctx.state.user);
+  if (data.auxiliary_sales_list) {
+    data.auxiliary_sales_list = data.auxiliary_sales_list.filter(item => (
+      String(item.staffId || '') !== String(order.create_staff_id || '')
+    ));
+  }
 
   const nextStatus = data.order_status || data.status;
   await sequelize.transaction(async (transaction) => {
@@ -1912,6 +1951,7 @@ module.exports = {
   recalculateSettlementCost,
   _test: {
     normalizeOrderExtendedFields,
+    normalizeAuxiliarySalesList,
     isCancelStatus,
     reserveDepositForOrder,
     redeemReservedDepositsForOrder,

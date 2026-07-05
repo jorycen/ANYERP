@@ -142,6 +142,7 @@ const Product = sequelize.define('Product', {
   accessory_type: { type: DataTypes.STRING(64), allowNull: true, comment: '配件类别' },
   extras: { type: DataTypes.TEXT, allowNull: true, comment: '扩展属性JSON' },
   remark: { type: DataTypes.STRING(512), allowNull: true },
+  is_focus_product: { type: DataTypes.TINYINT(1), defaultValue: 0, comment: '是否属于经营看板重点产品' },
   create_time: { type: DataTypes.DATE, comment: '创建时间' },
   status: { type: DataTypes.TINYINT, defaultValue: 1, comment: '1启用 0暂停' },
   is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 }

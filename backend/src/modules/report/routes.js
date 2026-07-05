@@ -3,7 +3,13 @@
  */
 const Router = require('koa-router');
 const multer = require('@koa/multer');
-const { getSalesReport, getInventoryReport, getEmployeePerformanceReport } = require('./controller');
+const {
+  getSalesReport,
+  getInventoryReport,
+  getEmployeePerformanceReport,
+  getDashboardFilters,
+  getDashboardOverview
+} = require('./controller');
 const {
   createProfitAdjustment,
   listProfitAdjustments,
@@ -20,6 +26,8 @@ const upload = multer({
 router.get('/sales', getSalesReport);
 router.get('/inventory', getInventoryReport);
 router.get('/employee-performance', getEmployeePerformanceReport);
+router.get('/dashboard/filters', getDashboardFilters);
+router.get('/dashboard/overview', getDashboardOverview);
 router.get('/profit-adjustments', listProfitAdjustments);
 router.post('/profit-adjustments', upload.array('files', 5), createProfitAdjustment);
 router.post('/profit-adjustments/:adjustmentId/approve', approveProfitAdjustment);
