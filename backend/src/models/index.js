@@ -794,6 +794,48 @@ const OrderPayment = sequelize.define('OrderPayment', {
   payment_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_ORDER_PAYMENT', timestamps: false });
 
+// 订单补录金额。金额方向在录入时保存快照，避免字典修改后历史毛利漂移。
+const OrderSupplement = sequelize.define('OrderSupplement', {
+  supplement_id: { type: DataTypes.STRING(32), primaryKey: true },
+  order_id: { type: DataTypes.STRING(32), allowNull: false },
+  item_id: { type: DataTypes.STRING(64) },
+  item_name: { type: DataTypes.STRING(128), allowNull: false },
+  amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  amount_type: { type: DataTypes.STRING(16), allowNull: false, defaultValue: 'increase' },
+  content: { type: DataTypes.STRING(500) },
+  proof_photo_url: { type: DataTypes.STRING(1024) },
+  create_staff_id: { type: DataTypes.BIGINT(20) },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 }
+}, { tableName: 'T_ORDER_SUPPLEMENT', timestamps: false });
+
+// 订单经营毛利快照。所有后续经营看板和员工业绩基础毛利均读取此表。
+const OrderGrossProfit = sequelize.define('OrderGrossProfit', {
+  gross_profit_id: { type: DataTypes.STRING(32), primaryKey: true },
+  order_id: { type: DataTypes.STRING(32), allowNull: false, unique: true },
+  order_no: { type: DataTypes.STRING(64), allowNull: false },
+  store_id: { type: DataTypes.STRING(32), allowNull: false },
+  formula_version: { type: DataTypes.STRING(32), allowNull: false },
+  received_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  settlement_cost_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  payment_fee_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  invoice_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  vat_taxable_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  vat_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  supplement_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  gross_profit_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  payment_fee_details: { type: DataTypes.JSON },
+  settlement_cost_details: { type: DataTypes.JSON },
+  supplement_details: { type: DataTypes.JSON },
+  snapshot_status: { type: DataTypes.STRING(16), allowNull: false, defaultValue: 'draft' },
+  calculated_by: { type: DataTypes.STRING(64) },
+  calculated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_ORDER_GROSS_PROFIT', timestamps: false });
+
 // 定金单
 const DepositOrder = sequelize.define('DepositOrder', {
   deposit_id: { type: DataTypes.STRING(32), primaryKey: true },
@@ -1303,8 +1345,9 @@ const PaymentMethod = sequelize.define('PaymentMethod', {
   code: { type: DataTypes.STRING(64) },
   icon: { type: DataTypes.STRING(64) },
   settlement_account_id: { type: DataTypes.STRING(64) },
-  receivable_settlement_account_id: { type: DataTypes.STRING(64), comment: '政策补贴应收账户ID' },
-  is_global: { type: DataTypes.TINYINT(1), defaultValue: 1 },
+    receivable_settlement_account_id: { type: DataTypes.STRING(64), comment: '政策补贴应收账户ID' },
+    default_tax_rate: { type: DataTypes.DECIMAL(8, 4), allowNull: false, defaultValue: 0, comment: '默认收款手续费税率（百分数）' },
+    is_global: { type: DataTypes.TINYINT(1), defaultValue: 1 },
   sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
   status: { type: DataTypes.TINYINT, defaultValue: 1 }
 }, { tableName: 'T_DICT_PAYMENT_METHOD', timestamps: false });
@@ -1339,8 +1382,9 @@ const SettlementAccountTransaction = sequelize.define('SettlementAccountTransact
 const SupplementItem = sequelize.define('SupplementItem', {
   item_id: { type: DataTypes.STRING(64), primaryKey: true },
   name: { type: DataTypes.STRING(128), allowNull: false },
-  amount: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
-  is_active: { type: DataTypes.TINYINT(1), defaultValue: 1 },
+    amount: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
+    amount_type: { type: DataTypes.STRING(16), allowNull: false, defaultValue: 'increase' },
+    is_active: { type: DataTypes.TINYINT(1), defaultValue: 1 },
   sort_order: { type: DataTypes.INTEGER, defaultValue: 0 }
 }, { tableName: 'T_DICT_SUPPLEMENT_ITEM', timestamps: false });
 
@@ -1494,6 +1538,10 @@ OrderItem.belongsTo(Product, { foreignKey: 'product_id', targetKey: 'product_id'
 
 Order.hasMany(OrderPayment, { foreignKey: 'order_id', sourceKey: 'order_id' });
 OrderPayment.belongsTo(Order, { foreignKey: 'order_id', targetKey: 'order_id' });
+Order.hasMany(OrderSupplement, { foreignKey: 'order_id', sourceKey: 'order_id', as: 'supplements' });
+OrderSupplement.belongsTo(Order, { foreignKey: 'order_id', targetKey: 'order_id' });
+Order.hasOne(OrderGrossProfit, { foreignKey: 'order_id', sourceKey: 'order_id', as: 'grossProfitSnapshot' });
+OrderGrossProfit.belongsTo(Order, { foreignKey: 'order_id', targetKey: 'order_id' });
 OrderPayment.belongsTo(DepositOrder, { foreignKey: 'deposit_id', targetKey: 'deposit_id' });
 DepositOrder.hasMany(OrderPayment, { foreignKey: 'deposit_id', sourceKey: 'deposit_id' });
 DepositOrder.belongsTo(Store, { foreignKey: 'store_id', targetKey: 'store_id' });
@@ -1633,6 +1681,8 @@ module.exports = {
   Order,
   OrderItem,
   OrderPayment,
+  OrderSupplement,
+  OrderGrossProfit,
   DepositOrder,
   DepositRefund,
   DepositRedemption,

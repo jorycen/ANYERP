@@ -1,7 +1,16 @@
 /**
  * 报表管理控制器
  */
-const { Order, OrderItem, ProductSn, Product, Store, PerformanceProfitAdjustment, sequelize } = require('../../models');
+const {
+  Order,
+  OrderItem,
+  OrderGrossProfit,
+  ProductSn,
+  Product,
+  Store,
+  PerformanceProfitAdjustment,
+  sequelize
+} = require('../../models');
 const { Op } = require('sequelize');
 const { loadLegacyCostMaps, calculateItemBaseProfit } = require('./profitCalculation');
 const { DashboardService } = require('./dashboardService');
@@ -226,7 +235,8 @@ async function getEmployeePerformanceReport(ctx) {
     where,
     include: [
       { model: Store, attributes: ['store_id', 'name'] },
-      { model: OrderItem }
+      { model: OrderItem },
+      { model: OrderGrossProfit, as: 'grossProfitSnapshot', required: false }
     ],
     order: [['create_time', 'DESC']],
     offset: (Math.max(Number(page) || 1, 1) - 1) * Math.max(Number(pageSize) || 20, 1),
@@ -255,6 +265,7 @@ async function getEmployeePerformanceReport(ctx) {
     const items = orderJson.OrderItems || [];
     const totalAmount = roundMoney(orderJson.total_amount);
     const actualPayment = roundMoney(orderJson.actual_payment);
+    const grossProfitSnapshot = orderJson.grossProfitSnapshot;
     let totalCost = 0;
     let baseGrossProfit = 0;
     const itemCalculations = items.map(item => {
@@ -264,7 +275,11 @@ async function getEmployeePerformanceReport(ctx) {
       const baseCalculation = calculateItemBaseProfit(item, legacyCostMaps);
       const unitCost = baseCalculation.unitCost;
       const costAmount = baseCalculation.costAmount;
-      const grossProfit = baseCalculation.grossProfit;
+      const grossProfit = grossProfitSnapshot
+        ? roundMoney(toNumber(grossProfitSnapshot.gross_profit_amount) * (
+            totalAmount ? saleSubtotal / totalAmount : 0
+          ))
+        : baseCalculation.grossProfit;
       totalCost += costAmount;
       baseGrossProfit += grossProfit;
       return {
@@ -279,16 +294,23 @@ async function getEmployeePerformanceReport(ctx) {
         unitCost,
         costAmount,
         grossProfit,
-        source: baseCalculation.source,
-        formula: `${allocatedRevenue.toFixed(2)} - (${unitCost.toFixed(2)} × ${quantity}) = ${grossProfit.toFixed(2)}`
+        source: grossProfitSnapshot ? 'order_gross_profit_snapshot' : baseCalculation.source,
+        formula: grossProfitSnapshot
+          ? `订单毛利 ${roundMoney(grossProfitSnapshot.gross_profit_amount).toFixed(2)} × 商品销售占比 = ${grossProfit.toFixed(2)}`
+          : `${allocatedRevenue.toFixed(2)} - (${unitCost.toFixed(2)} × ${quantity}) = ${grossProfit.toFixed(2)}`
       };
     });
 
-    totalCost = roundMoney(totalCost);
-    baseGrossProfit = roundMoney(baseGrossProfit);
+    totalCost = grossProfitSnapshot
+      ? roundMoney(grossProfitSnapshot.settlement_cost_amount)
+      : roundMoney(totalCost);
+    baseGrossProfit = grossProfitSnapshot
+      ? roundMoney(grossProfitSnapshot.gross_profit_amount)
+      : roundMoney(baseGrossProfit);
     const approvedAdjustment = adjustmentMap.get(orderJson.order_id) || 0;
     const grossProfit = roundMoney(baseGrossProfit + approvedAdjustment);
-    const usesLegacyFallback = itemCalculations.some(item => item.source === 'legacy_fallback');
+    const usesNewSnapshot = !!grossProfitSnapshot;
+    const usesLegacyFallback = !usesNewSnapshot && itemCalculations.some(item => item.source === 'legacy_fallback');
     return {
       orderId: orderJson.order_id,
       orderNo: orderJson.order_no,
@@ -305,13 +327,17 @@ async function getEmployeePerformanceReport(ctx) {
       baseGrossProfit,
       approvedAdjustment,
       grossProfit,
-      grossProfitSource: usesLegacyFallback ? 'legacy_fallback' : 'archived',
+      grossProfitSource: usesNewSnapshot
+        ? 'order_gross_profit_snapshot'
+        : (usesLegacyFallback ? 'legacy_fallback' : 'archived'),
       grossRate: calcRate(grossProfit, totalAmount),
       calculation: {
         orderFormula: `${baseGrossProfit.toFixed(2)} + 已审批调整 ${approvedAdjustment.toFixed(2)} = ${grossProfit.toFixed(2)}`,
-        revenueNote: usesLegacyFallback
-          ? '该历史订单未保存归档毛利，当前按原成本口径兼容计算，建议由授权账号执行单笔重算'
-          : '基础毛利使用订单归档时保存的销售毛利，不按当前商品成本重算',
+        revenueNote: usesNewSnapshot
+          ? '基础毛利使用订单毛利快照：用户实收－销售结算成本－收款税率费用－增值税＋补录净额'
+          : (usesLegacyFallback
+            ? '该历史订单未生成新毛利快照，当前按原成本口径兼容计算'
+            : '该订单尚未生成新毛利快照，暂按原归档销售毛利兼容展示'),
         items: itemCalculations
       }
     };
@@ -329,21 +355,17 @@ async function getEmployeePerformanceReport(ctx) {
     raw: true
   });
 
-  const legacyWhere = {
-    [Op.and]: [
-      { [Op.or]: [{ original_inventory_cost: 0 }, { original_inventory_cost: null }] },
-      { [Op.or]: [{ sales_settlement_cost: 0 }, { sales_settlement_cost: null }] },
-      { [Op.or]: [{ sales_gross_profit: 0 }, { sales_gross_profit: null }] },
-      { [Op.or]: [{ cost_adjustment_amount: 0 }, { cost_adjustment_amount: null }] },
-      { [Op.or]: [{ original_pickup_price: 0 }, { original_pickup_price: null }] }
-    ]
+  const snapshotRows = await OrderGrossProfit.findAll({
+    attributes: ['order_id', 'gross_profit_amount'],
+    include: [{ model: Order, where, attributes: [], required: true }],
+    raw: true
+  });
+  const snapshotOrderIds = snapshotRows.map(row => row.order_id);
+  const fallbackOrderWhere = {
+    ...where,
+    ...(snapshotOrderIds.length ? { order_id: { [Op.notIn]: snapshotOrderIds } } : {})
   };
-  const [baseGrossProfitRows, approvedAdjustmentRows, legacyItems] = await Promise.all([
-    OrderItem.findAll({
-      attributes: [[sequelize.fn('SUM', sequelize.col('OrderItem.sales_gross_profit')), 'amount']],
-      include: [{ model: Order, where, attributes: [], required: true }],
-      raw: true
-    }),
+  const [approvedAdjustmentRows, fallbackItems] = await Promise.all([
     PerformanceProfitAdjustment.findAll({
       where: { status: 'approved' },
       attributes: [[sequelize.fn('SUM', sequelize.col('PerformanceProfitAdjustment.signed_amount')), 'amount']],
@@ -351,19 +373,21 @@ async function getEmployeePerformanceReport(ctx) {
       raw: true
     }),
     OrderItem.findAll({
-      where: legacyWhere,
-      include: [{ model: Order, where, attributes: [], required: true }],
+      include: [{ model: Order, where: fallbackOrderWhere, attributes: [], required: true }],
       raw: true
     })
   ]);
-  const baseGrossProfitRow = baseGrossProfitRows[0] || { amount: 0 };
   const approvedAdjustmentRow = approvedAdjustmentRows[0] || { amount: 0 };
-  const summaryLegacyMaps = await loadLegacyCostMaps(legacyItems);
-  const legacyFallbackGrossProfit = roundMoney(legacyItems.reduce(
+  const summaryLegacyMaps = await loadLegacyCostMaps(fallbackItems);
+  const fallbackGrossProfit = roundMoney(fallbackItems.reduce(
     (sum, item) => sum + calculateItemBaseProfit(item, summaryLegacyMaps).grossProfit,
     0
   ));
-  const totalBaseGrossProfit = roundMoney(toNumber(baseGrossProfitRow?.amount) + legacyFallbackGrossProfit);
+  const snapshotGrossProfit = roundMoney(snapshotRows.reduce(
+    (sum, row) => sum + toNumber(row.gross_profit_amount),
+    0
+  ));
+  const totalBaseGrossProfit = roundMoney(snapshotGrossProfit + fallbackGrossProfit);
   const totalApprovedAdjustment = roundMoney(approvedAdjustmentRow?.amount);
 
   const summary = {
@@ -374,7 +398,7 @@ async function getEmployeePerformanceReport(ctx) {
     approvedAdjustment: totalApprovedAdjustment,
     grossProfit: roundMoney(totalBaseGrossProfit + totalApprovedAdjustment),
     pageGrossProfit: roundMoney(list.reduce((sum, row) => sum + toNumber(row.grossProfit), 0)),
-    legacyOrderCount: new Set(legacyItems.map(item => item.order_id)).size
+    legacyOrderCount: new Set(fallbackItems.map(item => item.order_id)).size
   };
 
   ctx.body = {

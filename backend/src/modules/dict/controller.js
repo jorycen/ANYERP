@@ -261,7 +261,7 @@ async function getPaymentMethodsByStore(ctx) {
       {
         model: PaymentMethod,
         where: { status: 1 },
-        attributes: ['method_id', 'name', 'code', 'icon', 'sort_order']
+        attributes: ['method_id', 'name', 'code', 'icon', 'default_tax_rate', 'sort_order']
       },
       { model: SettlementAccount, attributes: ['account_id', 'account_name', 'bank_name', 'account_number'] },
       {
@@ -302,6 +302,7 @@ async function getPaymentMethodsByStore(ctx) {
         name: cfg.PaymentMethod.name,
         code: cfg.PaymentMethod.code,
         icon: cfg.PaymentMethod.icon,
+        default_tax_rate: cfg.PaymentMethod.default_tax_rate,
         sort_order: cfg.PaymentMethod.sort_order,
         settlement_account_id: null,
         receivable_settlement_account_id: null,
@@ -320,9 +321,13 @@ async function getPaymentMethodsByStore(ctx) {
 async function createPaymentMethod(ctx) {
   const {
     name, code, icon, isGlobal, storeConfigs, sortOrder,
-    settlementAccountId, receivableSettlementAccountId
+    settlementAccountId, receivableSettlementAccountId, defaultTaxRate = 0
   } = ctx.request.body;
   if (!name) ctx.throw(400, '名称不能为空');
+  const numericTaxRate = Number(defaultTaxRate);
+  if (!Number.isFinite(numericTaxRate) || numericTaxRate < 0 || numericTaxRate > 100) {
+    ctx.throw(400, '默认税率必须是0至100之间的百分数');
+  }
 
   const t = await (require('../../models').sequelize).transaction();
   try {
@@ -334,6 +339,7 @@ async function createPaymentMethod(ctx) {
       is_global: isGlobal ? 1 : 0,
       settlement_account_id: settlementAccountId || null,
       receivable_settlement_account_id: receivableSettlementAccountId || null,
+      default_tax_rate: numericTaxRate,
       sort_order: sortOrder || 0,
       status: 1
     }, { transaction: t });
@@ -364,11 +370,18 @@ async function updatePaymentMethod(ctx) {
   const { id } = ctx.params;
   const {
     name, code, icon, isGlobal, storeConfigs, sortOrder, status,
-    settlementAccountId, receivableSettlementAccountId
+    settlementAccountId, receivableSettlementAccountId, defaultTaxRate
   } = ctx.request.body;
 
   const record = await PaymentMethod.findByPk(id);
   if (!record) ctx.throw(404, '记录不存在');
+  let numericTaxRate;
+  if (defaultTaxRate !== undefined) {
+    numericTaxRate = Number(defaultTaxRate);
+    if (!Number.isFinite(numericTaxRate) || numericTaxRate < 0 || numericTaxRate > 100) {
+      ctx.throw(400, '默认税率必须是0至100之间的百分数');
+    }
+  }
 
   const t = await (require('../../models').sequelize).transaction();
   try {
@@ -382,6 +395,9 @@ async function updatePaymentMethod(ctx) {
     if (settlementAccountId !== undefined) updates.settlement_account_id = settlementAccountId || null;
     if (receivableSettlementAccountId !== undefined) {
       updates.receivable_settlement_account_id = receivableSettlementAccountId || null;
+    }
+    if (defaultTaxRate !== undefined) {
+      updates.default_tax_rate = numericTaxRate;
     }
 
     await record.update(updates, { transaction: t });
@@ -593,14 +609,16 @@ async function getAllSupplementItems(ctx) {
 }
 
 async function createSupplementItem(ctx) {
-  const { name, amount, sortOrder } = ctx.request.body;
+  const { name, amount, sortOrder, amountType = 'increase' } = ctx.request.body;
   if (!name) ctx.throw(400, '名称不能为空');
+  if (!['increase', 'decrease'].includes(amountType)) ctx.throw(400, '金额方向无效');
 
   try {
     await SupplementItem.create({
       item_id: generateUUID(),
       name,
       amount: amount || 0,
+      amount_type: amountType,
       is_active: 1,
       sort_order: sortOrder || 0
     });
@@ -613,7 +631,7 @@ async function createSupplementItem(ctx) {
 
 async function updateSupplementItem(ctx) {
   const { id } = ctx.params;
-  const { name, amount, sortOrder, isActive } = ctx.request.body;
+  const { name, amount, sortOrder, isActive, amountType } = ctx.request.body;
 
   const record = await SupplementItem.findByPk(id);
   if (!record) ctx.throw(404, '记录不存在');
@@ -621,6 +639,10 @@ async function updateSupplementItem(ctx) {
   const updates = {};
   if (name !== undefined) updates.name = name;
   if (amount !== undefined) updates.amount = amount;
+  if (amountType !== undefined) {
+    if (!['increase', 'decrease'].includes(amountType)) ctx.throw(400, '金额方向无效');
+    updates.amount_type = amountType;
+  }
   if (sortOrder !== undefined) updates.sort_order = sortOrder;
   if (isActive !== undefined) updates.is_active = isActive;
 

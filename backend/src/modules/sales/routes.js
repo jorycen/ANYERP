@@ -20,7 +20,9 @@ const {
   availableDeposits,
   getProductPns,
   getProductSns,
-  recalculateSettlementCost
+  recalculateSettlementCost,
+  getGrossProfit,
+  updateSupplements
 } = require('./controller');
 const { enforceStoreOwnership } = require('../../middleware/permission');
 
@@ -63,6 +65,8 @@ router.get('/product-sns/:storeId/:productId', getProductSns);
 router.post('/create', enforceStoreOwnership, create);
 router.put('/order-items', enforceStoreOwnership, updateOrderItems);
 router.post('/order-items', enforceStoreOwnership, updateOrderItems);
+router.get('/:orderId/gross-profit', getGrossProfit);
+router.put('/:orderId/supplements', enforceStoreOwnership, updateSupplements);
 router.get('/:orderId', detail);
 router.put('/:orderId', enforceStoreOwnership, update);
 router.post('/:orderId/approve', approve);

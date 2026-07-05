@@ -5,6 +5,8 @@ const {
   Order,
   OrderItem,
   OrderPayment,
+  OrderSupplement,
+  OrderGrossProfit,
   OrderAttachment,
   DepositOrder,
   DepositRefund,
@@ -18,6 +20,7 @@ const {
   ProductPrice,
   Inventory,
   PaymentMethod,
+  SupplementItem,
   ManufacturerPriceHistory,
   ManufacturerRebatePolicy,
   RebateEstimate,
@@ -30,6 +33,10 @@ const { Op } = require('sequelize');
 const { generateOrderNo, generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
+const {
+  calculateAndSaveOrderGrossProfit,
+  snapshotToResponse
+} = require('./grossProfit');
 
 function chinaDateBoundary(dateText, endOfDay = false) {
   if (!dateText) return null;
@@ -190,7 +197,8 @@ async function list(ctx) {
     include: [
       { model: Store },
       itemInclude,
-      { model: OrderPayment }
+      { model: OrderPayment },
+      { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false }
     ],
     distinct: true,
     order: buildPendingFirstOrder(sequelize, {
@@ -644,6 +652,7 @@ async function detail(ctx) {
       { model: Store },
       { model: OrderItem },
       { model: OrderPayment, include: [{ model: DepositOrder }] },
+      { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false },
       { model: DepositRedemption, as: 'depositRedemptions' },
       { model: OrderAttachment }
     ]
@@ -777,6 +786,7 @@ async function update(ctx) {
   }
 
   const nextStatus = data.order_status || data.status;
+  let archivedNow = false;
   await sequelize.transaction(async (transaction) => {
     await syncOrderItemsFromPayload(order, data, transaction);
 
@@ -792,7 +802,7 @@ async function update(ctx) {
       data.order_status = '已归档';
       data.status = '已归档';
       data.inventory_reserved = 0;
-      syncToDailyStatement(orderId, order.store_id).catch(err => console.error('[DailySync] archive error:', err.message));
+      archivedNow = true;
     } else if (isCancelStatus(nextStatus) && !isCancelStatus(order.order_status)) {
       if (order.inventory_reserved) {
         await releaseReservedInventoryForOrder(order, transaction);
@@ -804,8 +814,126 @@ async function update(ctx) {
     }
 
     await order.update(data, { transaction });
+    if (archivedNow) {
+      await calculateAndSaveOrderGrossProfit(order.order_id, {
+        transaction,
+        calculatedBy: ctx.state.user?.name || 'system',
+        force: true,
+        final: true
+      });
+    } else {
+      const affectsGrossProfit = [
+        'invoice_amount', 'invoiceAmount', 'order_status', 'status'
+      ].some(key => data[key] !== undefined);
+      const existingGrossProfit = affectsGrossProfit
+        ? await OrderGrossProfit.findOne({
+            where: { order_id: order.order_id },
+            transaction
+          })
+        : null;
+      if (existingGrossProfit) {
+        await calculateAndSaveOrderGrossProfit(order.order_id, {
+          transaction,
+          calculatedBy: ctx.state.user?.name || 'system',
+          force: true,
+          final: isArchiveStatus(data.order_status || order.order_status)
+        });
+      }
+    }
   });
+  if (archivedNow) {
+    syncToDailyStatement(orderId, order.store_id).catch(err => console.error('[DailySync] archive error:', err.message));
+  }
   ctx.body = { message: '订单更新成功' };
+}
+
+async function getGrossProfit(ctx) {
+  const { orderId } = ctx.params;
+  if (!canSeeCost(ctx.state.user)) {
+    ctx.throw(403, '无权查看订单毛利');
+  }
+  const order = await Order.findByPk(orderId);
+  if (!order) ctx.throw(404, '订单不存在');
+  assertStoreVisible(order.store_id, ctx.state.user);
+
+  const snapshot = await calculateAndSaveOrderGrossProfit(orderId, {
+    calculatedBy: ctx.state.user?.name || 'system'
+  });
+  ctx.body = { code: 0, data: snapshotToResponse(snapshot) };
+}
+
+async function updateSupplements(ctx) {
+  const { orderId } = ctx.params;
+  const supplements = ctx.request.body?.supplements;
+  if (!Array.isArray(supplements)) ctx.throw(400, '补录数据格式不正确');
+  if (supplements.length > 50) ctx.throw(400, '单笔订单最多保存50条补录记录');
+
+  const order = await Order.findByPk(orderId);
+  if (!order) ctx.throw(404, '订单不存在');
+  assertStoreVisible(order.store_id, ctx.state.user);
+
+  const normalized = [];
+  for (const item of supplements) {
+    const itemId = item.itemId || item.item_id || '';
+    const itemName = String(item.itemName || item.item_name || '').trim();
+    const amount = money(item.amount);
+    if (!itemName) ctx.throw(400, '补录项目名称不能为空');
+    if (amount <= 0) ctx.throw(400, `补录项目“${itemName}”金额必须大于0`);
+
+    const dictionaryItem = itemId
+      ? await SupplementItem.findByPk(itemId)
+      : await SupplementItem.findOne({ where: { name: itemName } });
+    if (!dictionaryItem) ctx.throw(400, `补录项目“${itemName}”不存在`);
+    normalized.push({
+      supplement_id: generateUUID(),
+      order_id: order.order_id,
+      item_id: dictionaryItem.item_id,
+      item_name: dictionaryItem.name,
+      amount,
+      amount_type: dictionaryItem.amount_type === 'decrease' ? 'decrease' : 'increase',
+      content: String(item.content || '').trim().slice(0, 500),
+      proof_photo_url: String(item.proofPhotoUrl || item.proof_photo_url || '').trim().slice(0, 1024),
+      create_staff_id: ctx.state.user?.staffId || null,
+      create_user: ctx.state.user?.name || '',
+      create_time: new Date(),
+      update_time: new Date(),
+      is_deleted: 0
+    });
+  }
+
+  let snapshot;
+  await sequelize.transaction(async transaction => {
+    await OrderSupplement.update(
+      { is_deleted: 1, update_time: new Date() },
+      { where: { order_id: order.order_id, is_deleted: 0 }, transaction }
+    );
+    if (normalized.length) {
+      await OrderSupplement.bulkCreate(normalized, { transaction });
+    }
+    snapshot = await calculateAndSaveOrderGrossProfit(order.order_id, {
+      transaction,
+      calculatedBy: ctx.state.user?.name || 'system',
+      force: true,
+      final: isArchiveStatus(order.order_status)
+    });
+  });
+
+  ctx.body = {
+    code: 0,
+    message: '金额补录已保存',
+    data: {
+      supplements: normalized.map(item => ({
+        supplementId: item.supplement_id,
+        itemId: item.item_id,
+        itemName: item.item_name,
+        amount: item.amount,
+        amountType: item.amount_type,
+        content: item.content,
+        proofPhotoUrl: item.proof_photo_url
+      })),
+      grossProfit: snapshotToResponse(snapshot)
+    }
+  };
 }
 
 async function updateOrderItems(ctx) {
@@ -1187,6 +1315,12 @@ async function recalculateSettlementCost(ctx) {
   await sequelize.transaction(async (transaction) => {
     await calculateSalesSettlementCosts(order, transaction, { force: true });
     await order.update({ update_time: new Date() }, { transaction });
+    await calculateAndSaveOrderGrossProfit(order.order_id, {
+      transaction,
+      calculatedBy: user?.name || 'system',
+      force: true,
+      final: true
+    });
   });
 
   ctx.body = { code: 0, message: '销售结算成本已重算' };
@@ -1949,6 +2083,8 @@ module.exports = {
   getProductPns,
   getProductSns,
   recalculateSettlementCost,
+  getGrossProfit,
+  updateSupplements,
   _test: {
     normalizeOrderExtendedFields,
     normalizeAuxiliarySalesList,

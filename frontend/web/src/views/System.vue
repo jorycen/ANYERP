@@ -181,6 +181,9 @@
           <el-table :data="paymentMethodData" stripe border>
             <el-table-column prop="sort_order" label="排序" width="70" />
             <el-table-column prop="name" label="名称" width="160" />
+            <el-table-column label="默认税率" width="110">
+              <template #default="{ row }">{{ Number(row.default_tax_rate || 0).toFixed(4).replace(/0+$/, '').replace(/\.$/, '') }}%</template>
+            </el-table-column>
             <el-table-column label="配置范围" width="120">
               <template #default="{ row }">
                 <el-tag :type="row.is_global === 1 || row.is_global === true ? 'success' : 'warning'" size="small">
@@ -231,6 +234,13 @@
             <el-table-column prop="name" label="名称" min-width="200" />
             <el-table-column prop="amount" label="默认金额" width="120">
               <template #default="{ row }">¥{{ row.amount }}</template>
+            </el-table-column>
+            <el-table-column label="毛利方向" width="100">
+              <template #default="{ row }">
+                <el-tag :type="row.amount_type === 'decrease' ? 'danger' : 'success'">
+                  {{ row.amount_type === 'decrease' ? '减少' : '增加' }}
+                </el-tag>
+              </template>
             </el-table-column>
             <el-table-column label="操作" width="200">
               <template #default="{ row, $index }">
@@ -394,6 +404,10 @@
         <el-form-item label="名称" required>
           <el-input v-model="pmForm.name" placeholder="请输入收款方式名称" />
         </el-form-item>
+        <el-form-item label="默认税率" required>
+          <el-input-number v-model="pmForm.defaultTaxRate" :min="0" :max="100" :precision="4" :step="0.1" />
+          <span style="margin-left:8px;color:#909399">%（例如 0.6 表示实收金额的 0.6%）</span>
+        </el-form-item>
         <el-form-item label="配置范围">
           <el-radio-group v-model="pmForm.isGlobal" @change="onPmIsGlobalChange">
             <el-radio :value="true">全局配置（所有门店共用默认结算账号）</el-radio>
@@ -516,6 +530,12 @@
         </el-form-item>
         <el-form-item label="默认金额">
           <el-input v-model="siForm.amount" />
+        </el-form-item>
+        <el-form-item label="毛利方向" required>
+          <el-radio-group v-model="siForm.amountType">
+            <el-radio value="increase">增加毛利</el-radio>
+            <el-radio value="decrease">减少毛利</el-radio>
+          </el-radio-group>
         </el-form-item>
         <el-form-item label="排序">
           <el-input v-model="siForm.sortOrder" />
@@ -1242,7 +1262,7 @@ const paymentMethodData = ref([])
 const paymentMethodDialogVisible = ref(false)
 const pmDialogTitle = ref('新增收款方式')
 const editingPmId = ref(null)
-const pmForm = reactive({ name: '', settlementAccountId: '', receivableSettlementAccountId: '', isGlobal: true, sortOrder: 0 })
+const pmForm = reactive({ name: '', defaultTaxRate: 0, settlementAccountId: '', receivableSettlementAccountId: '', isGlobal: true, sortOrder: 0 })
 const pmStoreConfigRows = ref([])
 const settlementAccounts = ref([])
 const policyReceivableAccounts = computed(() => settlementAccounts.value.filter(a => a.account_type === 'POLICY_RECEIVABLE'))
@@ -1297,6 +1317,7 @@ const openPaymentMethodDialog = (row) => {
     pmDialogTitle.value = '编辑收款方式'
     editingPmId.value = row.method_id
     pmForm.name = row.name
+    pmForm.defaultTaxRate = Number(row.default_tax_rate || 0)
     pmForm.settlementAccountId = row.settlement_account_id || ''
     pmForm.receivableSettlementAccountId = row.receivable_settlement_account_id || ''
     pmForm.isGlobal = row.is_global === 1 || row.is_global === true
@@ -1322,6 +1343,7 @@ const openPaymentMethodDialog = (row) => {
     pmDialogTitle.value = '新增收款方式'
     editingPmId.value = null
     pmForm.name = ''
+    pmForm.defaultTaxRate = 0
     pmForm.settlementAccountId = ''
     pmForm.receivableSettlementAccountId = ''
     pmForm.isGlobal = true
@@ -1375,6 +1397,7 @@ const handlePmSubmit = async () => {
     }))
     const data = {
       name: pmForm.name,
+      defaultTaxRate: Number(pmForm.defaultTaxRate || 0),
       isGlobal: pmForm.isGlobal,
       settlementAccountId: pmForm.isGlobal ? pmForm.settlementAccountId : null,
       receivableSettlementAccountId: pmForm.isGlobal && isGuobuPaymentMethod(pmForm.name)
@@ -1435,6 +1458,7 @@ const savePmSort = async () => {
 
 const resetPmForm = () => {
   pmForm.name = ''
+  pmForm.defaultTaxRate = 0
   pmForm.settlementAccountId = ''
   pmForm.receivableSettlementAccountId = ''
   pmForm.isGlobal = true
@@ -1575,7 +1599,7 @@ const supplementItemData = ref([])
 const supplementItemDialogVisible = ref(false)
 const siDialogTitle = ref('新增项目')
 const editingSiId = ref(null)
-const siForm = reactive({ name: '', amount: 0, sortOrder: 0 })
+const siForm = reactive({ name: '', amount: 0, amountType: 'increase', sortOrder: 0 })
 
 const loadSupplementItems = async () => {
   try {
@@ -1590,12 +1614,14 @@ const openSupplementItemDialog = (row) => {
     editingSiId.value = row.item_id
     siForm.name = row.name
     siForm.amount = row.amount || 0
+    siForm.amountType = row.amount_type === 'decrease' ? 'decrease' : 'increase'
     siForm.sortOrder = row.sort_order || 0
   } else {
     siDialogTitle.value = '新增项目'
     editingSiId.value = null
     siForm.name = ''
     siForm.amount = 0
+    siForm.amountType = 'increase'
     siForm.sortOrder = (supplementItemData.value.length || 0) + 1
     restoreSystemDraft('supplement-item-create', siForm)
   }
@@ -1607,7 +1633,7 @@ const handleSiSubmit = async () => {
   submitLoading.value = true
   try {
     let res
-    const data = { name: siForm.name, amount: siForm.amount, sortOrder: siForm.sortOrder }
+    const data = { name: siForm.name, amount: siForm.amount, amountType: siForm.amountType, sortOrder: siForm.sortOrder }
     if (editingSiId.value) {
       res = await api.updateSupplementItem(editingSiId.value, data)
     } else {
@@ -1658,6 +1684,7 @@ const saveSiSort = async () => {
 const resetSiForm = () => {
   siForm.name = ''
   siForm.amount = 0
+  siForm.amountType = 'increase'
   siForm.sortOrder = 0
   editingSiId.value = null
 }

@@ -10,7 +10,7 @@ const {
 } = require('../../models');
 const { Op } = require('sequelize');
 const { generateUUID, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
-const { loadLegacyCostMaps, calculateItemBaseProfit } = require('./profitCalculation');
+const { calculateAndSaveOrderGrossProfit } = require('../sales/grossProfit');
 
 const UPLOAD_DIR = path.resolve(__dirname, '../../../uploads/performance-profit-adjustments');
 const ALLOWED_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.pdf', '.xls', '.xlsx', '.doc', '.docx']);
@@ -96,12 +96,10 @@ async function createProfitAdjustment(ctx) {
     ctx.throw(400, '只有已归档订单可以申请毛利调整');
   }
 
-  const orderItems = order.OrderItems || [];
-  const legacyCostMaps = await loadLegacyCostMaps(orderItems);
-  const baseGrossProfit = roundMoney(orderItems.reduce(
-    (sum, item) => sum + calculateItemBaseProfit(item, legacyCostMaps).grossProfit,
-    0
-  ));
+  const grossProfitSnapshot = await calculateAndSaveOrderGrossProfit(order.order_id, {
+    calculatedBy: user.name || 'system'
+  });
+  const baseGrossProfit = roundMoney(grossProfitSnapshot.gross_profit_amount);
   const adjustmentId = generateUUID();
   const signedAmount = type === 'increase' ? numericAmount : -numericAmount;
   const storedFiles = [];
