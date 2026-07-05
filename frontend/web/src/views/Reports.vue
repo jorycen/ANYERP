@@ -41,6 +41,101 @@
           <div class="chart-container">
             <div ref="salesChartRef" class="chart"></div>
           </div>
+
+          <section class="employee-detail-report">
+            <div class="report-section-heading">
+              <div>
+                <h3>员工业绩订单明细</h3>
+                <p>销售额、基础毛利及已审批调整，均按主销售与辅助销售参与人数平均拆分。</p>
+              </div>
+              <el-tag type="info" effect="plain">最多展示 100 条</el-tag>
+            </div>
+
+            <div class="filter-bar employee-detail-filters">
+              <el-date-picker
+                v-model="salesPerformanceParams.dateRange"
+                type="daterange"
+                range-separator="至"
+                start-placeholder="开始日期"
+                end-placeholder="结束日期"
+                value-format="YYYY-MM-DD"
+              />
+              <el-select v-model="salesPerformanceParams.storeId" placeholder="全部门店" clearable style="width: 160px">
+                <el-option label="全部门店" value="" />
+                <el-option
+                  v-for="store in dashboardFilterOptions.stores"
+                  :key="store.storeId"
+                  :label="store.name"
+                  :value="store.storeId"
+                />
+              </el-select>
+              <el-select
+                v-model="salesPerformanceParams.employeeId"
+                placeholder="全部员工"
+                clearable
+                filterable
+                style="width: 160px"
+              >
+                <el-option label="全部员工" value="" />
+                <el-option
+                  v-for="employee in dashboardFilterOptions.employees"
+                  :key="employee.staffId"
+                  :label="employee.name"
+                  :value="String(employee.staffId)"
+                />
+              </el-select>
+              <el-button type="primary" :loading="salesPerformanceLoading" @click="loadSalesPerformanceDetails">查询明细</el-button>
+            </div>
+
+            <el-table
+              :data="salesPerformanceDetails"
+              stripe
+              border
+              v-loading="salesPerformanceLoading"
+              empty-text="当前筛选范围暂无员工业绩订单"
+            >
+              <el-table-column prop="orderTime" label="时间" width="160">
+                <template #default="{ row }">{{ formatDateTime(row.orderTime) }}</template>
+              </el-table-column>
+              <el-table-column prop="orderNo" label="订单号" min-width="165" />
+              <el-table-column prop="storeName" label="门店" min-width="120" />
+              <el-table-column prop="employeeName" label="员工" width="100" />
+              <el-table-column prop="role" label="参与身份" width="90">
+                <template #default="{ row }">
+                  <el-tag :type="row.role === 'primary' ? 'primary' : 'warning'" size="small" effect="light">
+                    {{ row.role === 'primary' ? '主销售' : '辅助销售' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="participantCount" label="参与人数" width="85" align="right" />
+              <el-table-column label="分摊销售额" width="120" align="right">
+                <template #default="{ row }">¥{{ formatMoney(row.allocatedSalesAmount) }}</template>
+              </el-table-column>
+              <el-table-column v-if="salesPerformanceCanViewProfit" label="基础毛利" width="110" align="right">
+                <template #default="{ row }">¥{{ formatMoney(row.allocatedBaseGrossProfit) }}</template>
+              </el-table-column>
+              <el-table-column v-if="salesPerformanceCanViewProfit" label="毛利调整" width="110" align="right">
+                <template #default="{ row }">
+                  <span :class="Number(row.allocatedAdjustment || 0) >= 0 ? 'profit-positive' : 'profit-negative'">
+                    {{ formatSignedMoney(row.allocatedAdjustment) }}
+                  </span>
+                </template>
+              </el-table-column>
+              <el-table-column v-if="salesPerformanceCanViewProfit" label="业绩毛利" width="110" align="right">
+                <template #default="{ row }">¥{{ formatMoney(row.allocatedGrossProfit) }}</template>
+              </el-table-column>
+              <el-table-column v-if="salesPerformanceCanViewProfit" label="产生原因" min-width="260">
+                <template #default="{ row }">
+                  <div class="performance-reason">
+                    <span>{{ row.allocationReason }}</span>
+                    <span v-for="reason in row.reasons || []" :key="reason.adjustmentNo">
+                      {{ reason.adjustmentNo }}：{{ reason.reason }}（{{ formatSignedMoney(reason.signedAmount) }}）
+                    </span>
+                  </div>
+                </template>
+              </el-table-column>
+            </el-table>
+          </section>
         </el-tab-pane>
 
         <el-tab-pane label="库存报表" name="inventory">
@@ -295,6 +390,10 @@ const employeeOptions = ref([])
 const employeeSummary = ref({})
 const employeeTotal = ref(0)
 const employeeLoading = ref(false)
+const salesPerformanceLoading = ref(false)
+const salesPerformanceDetails = ref([])
+const salesPerformanceCanViewProfit = ref(false)
+const dashboardFilterOptions = reactive({ stores: [], employees: [] })
 const adjustmentApplyVisible = ref(false)
 const adjustmentSubmitting = ref(false)
 const adjustmentOrder = ref(null)
@@ -310,6 +409,11 @@ const salesChartRef = ref(null)
 const inventoryChartRef = ref(null)
 
 const salesParams = reactive({ date: '', regionCode: '' })
+const salesPerformanceParams = reactive({
+  dateRange: currentWeekRange(),
+  storeId: '',
+  employeeId: ''
+})
 const inventoryParams = reactive({ storeId: '' })
 const employeeParams = reactive({ dateRange: [], storeId: '', staffName: '', page: 1, pageSize: 20 })
 const adjustmentForm = reactive({ adjustmentType: 'increase', amount: 0.01, reason: '' })
@@ -324,11 +428,13 @@ const adjustmentCenterTitle = computed(() => {
 
 onMounted(() => {
   loadStores()
+  loadDashboardFilterOptions()
 })
 
 const onTabChange = (tabName) => {
-  if (tabName === 'sales' && salesData.value.length === 0) {
-    loadSalesReport()
+  if (tabName === 'sales') {
+    if (salesData.value.length === 0) loadSalesReport()
+    if (salesPerformanceDetails.value.length === 0) loadSalesPerformanceDetails()
   }
   if (tabName === 'inventory' && inventoryData.value.length === 0) {
     loadInventoryReport()
@@ -353,6 +459,43 @@ const loadSalesReport = async () => {
       initSalesChart()
     }
   } catch (err) { ElMessage.error('加载失败') }
+}
+
+const loadDashboardFilterOptions = async () => {
+  try {
+    const res = await api.getDashboardFilters()
+    if (res.code === 0) {
+      dashboardFilterOptions.stores = res.data?.stores || []
+      dashboardFilterOptions.employees = res.data?.employees || []
+    }
+  } catch (err) {
+    console.error(err)
+  }
+}
+
+const loadSalesPerformanceDetails = async () => {
+  if (!salesPerformanceParams.dateRange || salesPerformanceParams.dateRange.length !== 2) {
+    ElMessage.warning('请选择员工业绩明细日期范围')
+    return
+  }
+  salesPerformanceLoading.value = true
+  try {
+    const res = await api.getDashboardOverview({
+      startDate: salesPerformanceParams.dateRange[0],
+      endDate: salesPerformanceParams.dateRange[1],
+      storeId: salesPerformanceParams.storeId || undefined,
+      employeeId: salesPerformanceParams.employeeId || undefined,
+      granularity: 'day'
+    })
+    if (res.code === 0) {
+      salesPerformanceDetails.value = res.data?.employeePerformanceDetails || []
+      salesPerformanceCanViewProfit.value = Boolean(res.data?.meta?.canViewProfit)
+    }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || '加载员工业绩订单明细失败')
+  } finally {
+    salesPerformanceLoading.value = false
+  }
 }
 
 const loadInventoryReport = async () => {
@@ -533,6 +676,24 @@ const handleExport = () => ElMessage.info('导出功能开发中')
 
 const formatMoney = (value) => Number(value || 0).toFixed(2)
 
+const formatSignedMoney = (value) => {
+  const amount = Number(value || 0)
+  return `${amount > 0 ? '+' : amount < 0 ? '-' : ''}¥${Math.abs(amount).toFixed(2)}`
+}
+
+function currentWeekRange() {
+  const today = new Date()
+  const weekday = today.getDay() || 7
+  const monday = new Date(today)
+  monday.setDate(today.getDate() - weekday + 1)
+  const format = date => [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0')
+  ].join('-')
+  return [format(monday), format(today)]
+}
+
 const formatDateTime = (value) => {
   if (!value) return '-'
   return new Date(value).toLocaleString('zh-CN', { hour12: false })
@@ -574,6 +735,41 @@ const initInventoryChart = () => {
 }
 .chart {
   height: 300px;
+}
+.employee-detail-report {
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid #e8edf4;
+}
+.report-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.report-section-heading h3 {
+  margin: 0 0 5px;
+  color: #1d2a3e;
+  font-size: 16px;
+}
+.report-section-heading p {
+  margin: 0;
+  color: #748196;
+  font-size: 12px;
+}
+.employee-detail-filters {
+  padding: 12px;
+  border: 1px solid #e7edf5;
+  border-radius: 8px;
+  background: #f8fafd;
+}
+.performance-reason {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: #59677a;
+  line-height: 1.5;
 }
 .summary-row {
   display: flex;

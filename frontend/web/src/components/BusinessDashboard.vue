@@ -148,7 +148,12 @@
 
     <section v-show="showSection('product')" class="product-grid">
       <DashboardPanel title="产品销售额 Top10">
-        <ProductTable :rows="dashboard.productAnalysis.salesTop10" value-key="salesAmount" value-label="销售额" />
+        <ProductTable
+          :rows="dashboard.productAnalysis.salesTop10"
+          value-key="salesAmount"
+          value-label="销售额"
+          variant="sales"
+        />
       </DashboardPanel>
       <DashboardPanel title="高毛利产品排行榜">
         <ProductTable
@@ -156,52 +161,16 @@
           value-key="grossMargin"
           value-label="毛利率"
           value-type="percent"
+          variant="profit"
         />
       </DashboardPanel>
       <DashboardPanel title="重点产品销售情况">
-        <ProductTable :rows="dashboard.productAnalysis.focusProducts" value-key="salesAmount" value-label="销售额" />
-      </DashboardPanel>
-    </section>
-
-    <section v-show="showSection('employee')" class="detail-section">
-      <DashboardPanel title="员工业绩订单明细">
-        <template #actions>
-          <span class="panel-note">销售额、基础毛利及已审批调整均按参与人数平均拆分</span>
-        </template>
-        <el-table :data="dashboard.employeePerformanceDetails" size="small" max-height="360">
-          <el-table-column prop="orderTime" label="时间" width="150">
-            <template #default="{ row }">{{ formatDateTime(row.orderTime) }}</template>
-          </el-table-column>
-          <el-table-column prop="orderNo" label="订单号" min-width="150" />
-          <el-table-column prop="employeeName" label="员工" width="90" />
-          <el-table-column prop="role" label="角色" width="75">
-            <template #default="{ row }">{{ row.role === 'primary' ? '主销售' : '辅助' }}</template>
-          </el-table-column>
-          <el-table-column prop="participantCount" label="参与人数" width="84" align="right" />
-          <el-table-column label="分摊销售额" width="115" align="right">
-            <template #default="{ row }">{{ formatCurrency(row.allocatedSalesAmount) }}</template>
-          </el-table-column>
-          <el-table-column v-if="dashboard.meta.canViewProfit" label="基础毛利" width="105" align="right">
-            <template #default="{ row }">{{ formatCurrency(row.allocatedBaseGrossProfit) }}</template>
-          </el-table-column>
-          <el-table-column v-if="dashboard.meta.canViewProfit" label="毛利调整" width="105" align="right">
-            <template #default="{ row }">{{ formatSignedCurrency(row.allocatedAdjustment) }}</template>
-          </el-table-column>
-          <el-table-column v-if="dashboard.meta.canViewProfit" label="业绩毛利" width="105" align="right">
-            <template #default="{ row }">{{ formatCurrency(row.allocatedGrossProfit) }}</template>
-          </el-table-column>
-          <el-table-column v-if="dashboard.meta.canViewProfit" label="产生原因" min-width="220">
-            <template #default="{ row }">
-              <div class="reason-cell">
-                <span>{{ row.allocationReason }}</span>
-                <span v-for="reason in row.reasons" :key="reason.adjustmentNo">
-                  {{ reason.adjustmentNo }}：{{ reason.reason }}
-                  （{{ formatSignedCurrency(reason.signedAmount) }}）
-                </span>
-              </div>
-            </template>
-          </el-table-column>
-        </el-table>
+        <ProductTable
+          :rows="dashboard.productAnalysis.focusProducts"
+          value-key="salesAmount"
+          value-label="销售额"
+          variant="focus"
+        />
       </DashboardPanel>
     </section>
 
@@ -302,24 +271,46 @@ const ProductTable = defineComponent({
     rows: { type: Array, default: () => [] },
     valueKey: { type: String, required: true },
     valueLabel: { type: String, required: true },
-    valueType: { type: String, default: 'currency' }
+    valueType: { type: String, default: 'currency' },
+    variant: { type: String, default: 'sales' }
   },
   setup(props) {
     const format = value => props.valueType === 'percent'
       ? `${Number(value || 0).toFixed(2)}%`
       : formatCurrency(value)
-    return () => h('div', { class: 'product-table' }, [
+    const descriptions = {
+      sales: '按销售额由高到低',
+      profit: '按毛利率由高到低',
+      focus: '已标记重点产品'
+    }
+    return () => {
+      const maxValue = Math.max(...props.rows.map(row => Number(row[props.valueKey] || 0)), 0)
+      return h('div', { class: ['product-table', `product-table--${props.variant}`] }, [
+      h('div', { class: 'product-table-summary' }, [
+        h('span', { class: 'product-table-kicker' }, props.variant === 'focus' ? 'FOCUS' : 'TOP 10'),
+        h('span', descriptions[props.variant] || descriptions.sales),
+        h('b', `${props.rows.length} 项`)
+      ]),
       h('div', { class: 'product-table-head' }, [
         h('span', '排名'),
         h('span', '产品名称'),
         h('span', props.valueLabel)
       ]),
-      ...(props.rows.length ? props.rows.slice(0, 10).map((row, index) => h('div', { class: 'product-table-row', key: row.productId || index }, [
-        h('b', { class: index < 3 ? `rank rank-${index + 1}` : 'rank' }, String(index + 1)),
-        h('span', { title: row.productName }, row.productName),
-        h('strong', format(row[props.valueKey]))
-      ])) : [h('div', { class: 'empty-row' }, '暂无数据')])
+      ...(props.rows.length ? props.rows.slice(0, 10).map((row, index) => {
+        const width = maxValue > 0 ? Math.max(4, Number(row[props.valueKey] || 0) / maxValue * 100) : 0
+        return h('div', { class: 'product-table-row', key: row.productId || index }, [
+          h('b', { class: index < 3 ? `rank rank-${index + 1}` : 'rank' }, String(index + 1)),
+          h('div', { class: 'product-name-cell', title: row.productName }, [
+            h('span', row.productName),
+            h('i', { class: 'product-value-track' }, [
+              h('i', { class: 'product-value-fill', style: { width: `${width}%` } })
+            ])
+          ]),
+          h('strong', format(row[props.valueKey]))
+        ])
+      }) : [h('div', { class: 'empty-row' }, '暂无数据')])
     ])
+    }
   }
 })
 
@@ -601,11 +592,6 @@ function formatCurrency(value) {
   return `¥ ${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(Number(value || 0))}`
 }
 
-function formatSignedCurrency(value) {
-  const number = Number(value || 0)
-  return `${number > 0 ? '+' : number < 0 ? '-' : ''}¥ ${formatNumber(Math.abs(number))}`
-}
-
 function formatMetric(card) {
   if (card.type === 'currency') return formatCurrency(card.value)
   if (card.type === 'percent') return card.value === null ? '--' : `${Number(card.value || 0).toFixed(2)}%`
@@ -617,14 +603,6 @@ function compactNumber(value) {
   if (Math.abs(number) >= 100000000) return `${(number / 100000000).toFixed(1)}亿`
   if (Math.abs(number) >= 10000) return `${(number / 10000).toFixed(1)}万`
   return formatNumber(number)
-}
-
-function formatDateTime(value) {
-  if (!value) return '--'
-  return new Intl.DateTimeFormat('zh-CN', {
-    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-    hour12: false
-  }).format(new Date(value))
 }
 
 function resizeCharts() {
@@ -911,28 +889,119 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: 48px minmax(0, 1fr) 110px;
   align-items: center;
-  min-height: 30px;
+  min-height: 36px;
   gap: 8px;
   font-size: 12px;
 }
 
+.product-table {
+  --list-accent: #1769e0;
+  --list-soft: #edf5ff;
+  margin: -2px -4px 0;
+}
+
+.product-table--profit {
+  --list-accent: #1f9d68;
+  --list-soft: #eaf8f1;
+}
+
+.product-table--focus {
+  --list-accent: #e58a17;
+  --list-soft: #fff5e6;
+}
+
+.product-table-summary {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  margin-bottom: 7px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--list-accent) 18%, white);
+  border-radius: 8px;
+  color: #68758a;
+  background: linear-gradient(105deg, var(--list-soft), #fff 78%);
+  font-size: 11px;
+}
+
+.product-table-kicker {
+  padding: 3px 7px;
+  border-radius: 10px;
+  color: #fff;
+  background: var(--list-accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .5px;
+}
+
+.product-table-summary b {
+  color: var(--list-accent);
+  font-weight: 650;
+}
+
 .product-table-head {
+  padding: 0 5px;
+  border-radius: 6px;
   color: #69768a;
-  background: #f5f7fa;
+  background: #f6f8fb;
+  font-weight: 600;
+}
+
+.product-table-head span:last-child {
+  text-align: right;
 }
 
 .product-table-row {
+  position: relative;
+  padding: 3px 5px;
   border-bottom: 1px solid #f0f2f6;
+  transition: background .18s ease, transform .18s ease;
 }
 
-.product-table-row > span {
+.product-table-row:hover {
+  z-index: 1;
+  border-radius: 6px;
+  background: var(--list-soft);
+  transform: translateX(2px);
+}
+
+.product-name-cell {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.product-name-cell > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: #354156;
+  font-weight: 550;
+}
+
+.product-value-track {
+  display: block;
+  width: 100%;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #edf0f5;
+}
+
+.product-value-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--list-accent), color-mix(in srgb, var(--list-accent) 48%, white));
 }
 
 .product-table-row strong {
+  color: var(--list-accent);
   text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .rank {
@@ -942,13 +1011,29 @@ onBeforeUnmount(() => {
   width: 20px;
   height: 20px;
   margin-left: 6px;
-  border-radius: 4px;
+  border-radius: 50%;
   color: #68758a;
+  background: #f1f3f7;
+  font-size: 11px;
 }
 
-.rank-1 { background: #f34e4e; color: #fff; }
-.rank-2 { background: #f39a28; color: #fff; }
-.rank-3 { background: #efbd2f; color: #fff; }
+.rank-1 {
+  color: #fff;
+  background: linear-gradient(135deg, #ff6b47, #ef3434);
+  box-shadow: 0 3px 7px rgba(239, 52, 52, .24);
+}
+
+.rank-2 {
+  color: #fff;
+  background: linear-gradient(135deg, #ffb447, #f18920);
+  box-shadow: 0 3px 7px rgba(241, 137, 32, .22);
+}
+
+.rank-3 {
+  color: #fff;
+  background: linear-gradient(135deg, #f3cf4b, #d9a71e);
+  box-shadow: 0 3px 7px rgba(217, 167, 30, .2);
+}
 
 .empty-row {
   display: flex;
@@ -956,18 +1041,6 @@ onBeforeUnmount(() => {
   justify-content: center;
   min-height: 120px;
   color: #a0a9b8;
-}
-
-.detail-section {
-  margin-bottom: 10px;
-}
-
-.reason-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  color: #5c6879;
-  line-height: 1.4;
 }
 
 .inventory-summary {
