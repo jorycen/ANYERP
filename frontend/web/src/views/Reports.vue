@@ -6,6 +6,10 @@
       </template>
 
       <el-tabs v-model="activeTab" @tab-change="onTabChange">
+        <el-tab-pane label="经营数据看板" name="dashboard">
+          <BusinessDashboard />
+        </el-tab-pane>
+
         <el-tab-pane label="销售报表" name="sales">
           <div class="filter-bar">
             <el-date-picker v-model="salesParams.date" type="date" placeholder="选择日期" />
@@ -280,8 +284,9 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
 import api from '../api'
 import { getRoleCode } from '../utils/user'
+import BusinessDashboard from '../components/BusinessDashboard.vue'
 
-const activeTab = ref('sales')
+const activeTab = ref('dashboard')
 const stores = ref([])
 const salesData = ref([])
 const inventoryData = ref([])
@@ -319,10 +324,12 @@ const adjustmentCenterTitle = computed(() => {
 
 onMounted(() => {
   loadStores()
-  loadSalesReport()
 })
 
 const onTabChange = (tabName) => {
+  if (tabName === 'sales' && salesData.value.length === 0) {
+    loadSalesReport()
+  }
   if (tabName === 'inventory' && inventoryData.value.length === 0) {
     loadInventoryReport()
   }

@@ -67,6 +67,15 @@
                 {{ formatTime(row.create_time) }}
               </template>
             </el-table-column>
+            <el-table-column label="重点产品" width="90" align="center">
+              <template #default="{ row }">
+                <el-switch
+                  :model-value="Boolean(row.is_focus_product)"
+                  :loading="focusLoadingId === row.product_id"
+                  @change="value => updateFocusProduct(row, value)"
+                />
+              </template>
+            </el-table-column>
             <el-table-column label="状态" width="75">
               <template #default="{ row }">
                 <el-tag :type="row.status === 1 ? 'success' : 'warning'" size="small">
@@ -334,6 +343,10 @@
             </el-form-item>
           </el-col>
         </el-row>
+        <el-form-item label="重点产品">
+          <el-switch v-model="productForm.isFocusProduct" />
+          <span class="text-muted" style="margin-left: 10px;">勾选后进入经营看板重点产品模块</span>
+        </el-form-item>
         <el-form-item label="详细配置">
           <el-input v-model="productForm.remark" type="textarea" rows="2" placeholder="详细配置信息" />
         </el-form-item>
@@ -586,6 +599,7 @@ const productDraftKey = () => productForm.productId ? `product-edit:${productFor
 
 // ========== 商品管理 ==========
 const loading = ref(false)
+const focusLoadingId = ref('')
 const tableData = ref([])
 const total = ref(0)
 const queryParams = reactive({ page: 1, pageSize: 20, keyword: '', categoryId: '' })
@@ -625,6 +639,7 @@ const productForm = reactive({
   needSn: false,
   needImei: false,
   remark: '',
+  isFocusProduct: false,
   status: 1,
   barcodes: [],
   attributes: {}
@@ -764,6 +779,7 @@ const handleEdit = async (row) => {
   productForm.needSn = !!row.need_sn
   productForm.needImei = !!row.need_imei
   productForm.remark = row.remark || ''
+  productForm.isFocusProduct = Boolean(row.is_focus_product)
   productForm.status = row.status || 1
   productForm.barcodes = (row.barcodes || []).map(b => ({ type: b.type, code: b.code }))
   categoryFields.value = []
@@ -807,6 +823,23 @@ const handleTogglePause = async (row) => {
   }
 }
 
+const updateFocusProduct = async (row, value) => {
+  focusLoadingId.value = row.product_id
+  try {
+    const res = await api.updateProduct(row.product_id, { isFocusProduct: Boolean(value) })
+    if (res.code === 0) {
+      row.is_focus_product = value ? 1 : 0
+      ElMessage.success(value ? '已设为重点产品' : '已取消重点产品')
+    } else {
+      ElMessage.error(res.message || '更新重点产品失败')
+    }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || '更新重点产品失败')
+  } finally {
+    focusLoadingId.value = ''
+  }
+}
+
 const resetForm = () => {
   productForm.productId = null
   productForm.name = ''
@@ -827,6 +860,7 @@ const resetForm = () => {
   productForm.needSn = false
   productForm.needImei = false
   productForm.remark = ''
+  productForm.isFocusProduct = false
   productForm.status = 1
   productForm.barcodes = []
   productForm.attributes = {}
@@ -877,6 +911,7 @@ const handleSubmit = async () => {
       needSn: productForm.needSn ? 1 : 0,
       needImei: productForm.needImei ? 1 : 0,
       remark: productForm.remark,
+      isFocusProduct: productForm.isFocusProduct,
       status: productForm.status,
       barcodes: productForm.barcodes,
       attributes: Object.keys(attributes).length > 0 ? attributes : null,

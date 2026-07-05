@@ -6,7 +6,24 @@
 - 开通腾讯云托管（Cloud Base 云托管）
 - 开通容器镜像仓库
 
-### 1.2 本地构建 Docker 镜像
+### 1.2 构建正式 WEB 静态资源
+
+生产容器读取 `backend/public`，正式 WEB 源码位于 `frontend/web`。每次部署前必须先执行：
+
+```powershell
+cd D:/艾诺云/小艾虾/ANY-ERP
+powershell -ExecutionPolicy Bypass -File scripts/build-web-production.ps1
+```
+
+脚本会：
+
+1. 安装 `frontend/web` 锁定依赖。
+2. 构建到 `frontend/dist-web`。
+3. 清理并更新 `backend/public`。
+
+不得只构建根目录的 `web`，也不得在未更新 `backend/public` 时直接重新构建后端镜像。
+
+### 1.3 本地构建 Docker 镜像
 
 ```bash
 cd D:/艾诺云/Soft/ANY-ERP/backend
@@ -42,6 +59,8 @@ docker push registry.tencent.tencent.com/your_namespace/any-erp-backend:v1.0.0
 ```
 
 ## 三、云托管控制台部署
+
+如果云托管通过 GitHub 仓库自动构建，必须确认部署分支包含目标提交；GitHub 默认分支为 `main` 时，功能分支提交不会自动进入生产版本。
 
 ### 3.1 创建服务
 1. 进入腾讯云托管控制台

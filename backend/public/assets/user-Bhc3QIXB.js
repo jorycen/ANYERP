@@ -1,1 +1,0 @@
-function t(){try{return JSON.parse(localStorage.getItem("userInfo")||"{}")}catch{return{}}}function n(){return t().roleCode||""}function o(){return t().storeId||""}function s(){const e=n();return e==="clerk"||e==="manager"}function c(e){const r=n();return r==="boss"||r==="admin"||e.includes(r)}export{o as g,c as h,s as i};
