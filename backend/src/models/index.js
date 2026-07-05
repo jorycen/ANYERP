@@ -1012,6 +1012,59 @@ const DailyStatementDetail = sequelize.define('DailyStatementDetail', {
   settled_at: { type: DataTypes.DATE, comment: '下账时间' }
 }, { tableName: 'T_DAILY_STATEMENT_DETAIL', timestamps: false });
 
+const SubsidyAccountRoute = sequelize.define('SubsidyAccountRoute', {
+  region_id: { type: DataTypes.STRING(32), primaryKey: true },
+  account_id: { type: DataTypes.STRING(64) },
+  update_user: { type: DataTypes.STRING(64) },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_SUBSIDY_ACCOUNT_ROUTE', timestamps: false });
+
+const SubsidyReceipt = sequelize.define('SubsidyReceipt', {
+  receipt_id: { type: DataTypes.STRING(32), primaryKey: true },
+  receipt_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
+  region_id: { type: DataTypes.STRING(32), allowNull: false },
+  account_id: { type: DataTypes.STRING(64), allowNull: false },
+  account_name_snapshot: { type: DataTypes.STRING(128), allowNull: false },
+  receipt_date: { type: DataTypes.DATEONLY, allowNull: false },
+  bank_reference: { type: DataTypes.STRING(128) },
+  amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  allocated_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  refunded_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  status: { type: DataTypes.STRING(32), defaultValue: 'UNALLOCATED' },
+  remark: { type: DataTypes.STRING(512) },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  reverse_reason: { type: DataTypes.STRING(512) },
+  reversed_by: { type: DataTypes.STRING(64) },
+  reversed_at: { type: DataTypes.DATE }
+}, { tableName: 'T_SUBSIDY_RECEIPT', timestamps: false });
+
+const SubsidyReceiptAllocation = sequelize.define('SubsidyReceiptAllocation', {
+  allocation_id: { type: DataTypes.STRING(32), primaryKey: true },
+  receipt_id: { type: DataTypes.STRING(32), allowNull: false },
+  detail_id: { type: DataTypes.STRING(64), allowNull: false },
+  amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_SUBSIDY_RECEIPT_ALLOCATION', timestamps: false });
+
+const SubsidyReceivableAdjustment = sequelize.define('SubsidyReceivableAdjustment', {
+  adjustment_id: { type: DataTypes.STRING(32), primaryKey: true },
+  detail_id: { type: DataTypes.STRING(64), allowNull: false },
+  adjustment_type: { type: DataTypes.STRING(32), allowNull: false },
+  amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  finance_category: { type: DataTypes.STRING(128), allowNull: false },
+  reason: { type: DataTypes.STRING(512), allowNull: false },
+  status: { type: DataTypes.STRING(32), defaultValue: 'PENDING' },
+  applicant_id: { type: DataTypes.STRING(32) },
+  applicant_name: { type: DataTypes.STRING(64) },
+  reviewer_id: { type: DataTypes.STRING(32) },
+  reviewer_name: { type: DataTypes.STRING(64) },
+  review_comment: { type: DataTypes.STRING(512) },
+  review_time: { type: DataTypes.DATE },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_SUBSIDY_RECEIVABLE_ADJUSTMENT', timestamps: false });
+
 // 支出记录
 const Expense = sequelize.define('Expense', {
   expense_id: { type: DataTypes.STRING(32), primaryKey: true },
@@ -1595,6 +1648,10 @@ module.exports = {
   ReturnStockItem,
   DailyStatement,
   DailyStatementDetail,
+  SubsidyAccountRoute,
+  SubsidyReceipt,
+  SubsidyReceiptAllocation,
+  SubsidyReceivableAdjustment,
   Expense,
   CustomerSource,
   PaymentMethod,

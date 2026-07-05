@@ -105,18 +105,18 @@
               <el-option label="全部门店" value="" />
               <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
             </el-select>
-            <el-select v-model="subsidyQuery.settled" placeholder="下账状态" clearable style="width: 120px" @change="loadSubsidyReceivables">
+            <el-select v-model="subsidyQuery.settled" placeholder="到账状态" clearable style="width: 120px" @change="loadSubsidyReceivables">
               <el-option label="全部" value="" />
-              <el-option label="未下账" value="0" />
-              <el-option label="已下账" value="1" />
+              <el-option label="待回款" value="0" />
+              <el-option label="已发生到账" value="1" />
             </el-select>
             <el-button type="primary" @click="loadSubsidyReceivables">搜索</el-button>
             <el-button
               type="success"
               :disabled="selectedSubsidyIds.length === 0"
-              @click="settleSelectedSubsidyReceivables"
+              @click="openSubsidyReceiptDialog(selectedSubsidyRows)"
             >
-              批量下账 ({{ selectedSubsidyIds.length }})
+              登记到账 ({{ selectedSubsidyIds.length }})
             </el-button>
           </div>
 
@@ -127,7 +127,7 @@
             v-loading="subsidyLoading"
             @selection-change="onSubsidySelectionChange"
           >
-            <el-table-column type="selection" width="40" :selectable="(row) => Number(row.settled || 0) === 0" />
+            <el-table-column type="selection" width="40" :selectable="(row) => Number(row.remaining_amount || 0) > 0" />
             <el-table-column prop="statement_date" label="应收日期" width="110" sortable />
             <el-table-column prop="order_no" label="订单号" width="180" />
             <el-table-column prop="customer_name" label="国补客户" width="110" />
@@ -137,29 +137,36 @@
             <el-table-column label="应收金额" width="120">
               <template #default="{ row }">¥{{ Number(row.amount || 0).toFixed(2) }}</template>
             </el-table-column>
+            <el-table-column label="累计核销" width="110">
+              <template #default="{ row }">¥{{ Number(row.settled || 0).toFixed(2) }}</template>
+            </el-table-column>
+            <el-table-column label="剩余应收" width="110">
+              <template #default="{ row }">¥{{ Number(row.remaining_amount || 0).toFixed(2) }}</template>
+            </el-table-column>
             <el-table-column label="应收账户" min-width="150">
               <template #default="{ row }">{{ row.settlementAccount?.account_name || '-' }}</template>
             </el-table-column>
             <el-table-column prop="store_name" label="门店" width="130" />
             <el-table-column label="状态" width="100">
               <template #default="{ row }">
-                <el-tag :type="Number(row.settled || 0) > 0 ? 'success' : 'warning'" size="small">
-                  {{ Number(row.settled || 0) > 0 ? '已下账' : '待回款' }}
+                <el-tag :type="Number(row.remaining_amount || 0) <= 0 ? 'success' : (Number(row.settled || 0) > 0 ? 'warning' : 'info')" size="small">
+                  {{ row.receipt_status === 'ADJUSTED' ? '差额结清' : (Number(row.remaining_amount || 0) <= 0 ? '已到账' : (Number(row.settled || 0) > 0 ? '部分到账' : '待回款')) }}
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="下账时间" width="160">
+            <el-table-column label="结清时间" width="160">
               <template #default="{ row }">{{ row.settled_at ? formatDateTime(row.settled_at) : '-' }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="90" fixed="right">
+            <el-table-column label="操作" width="190" fixed="right">
               <template #default="{ row }">
                 <el-button
-                  v-if="Number(row.settled || 0) === 0"
+                  v-if="Number(row.remaining_amount || 0) > 0"
                   size="small"
-                  type="warning"
-                  @click="settleOneSubsidyReceivable(row)"
-                >下账</el-button>
-                <span v-else style="color: #67c23a; font-size: 12px;">已下账</span>
+                  type="success"
+                  link
+                  @click="openSubsidyReceiptDialog([row])"
+                >登记到账</el-button>
+                <el-button v-if="Number(row.remaining_amount || 0) > 0" size="small" type="warning" link @click="openSubsidyAdjustmentDialog(row)">差额申请</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -176,6 +183,39 @@
             @size-change="loadSubsidyReceivables"
             @current-change="loadSubsidyReceivables"
           />
+
+          <el-divider content-position="left">银行到账单与未分配款</el-divider>
+          <el-table :data="subsidyReceipts" stripe border size="small">
+            <el-table-column prop="receipt_no" label="到账单号" width="190" />
+            <el-table-column prop="receipt_date" label="到账日期" width="110" />
+            <el-table-column prop="account_name_snapshot" label="实际到账账户" min-width="180" />
+            <el-table-column prop="bank_reference" label="银行流水号" min-width="150" />
+            <el-table-column label="到账金额" width="110"><template #default="{row}">¥{{ formatMoney(row.amount) }}</template></el-table-column>
+            <el-table-column label="未分配" width="110"><template #default="{row}">¥{{ formatMoney(row.unallocated_amount) }}</template></el-table-column>
+            <el-table-column label="操作" width="220"><template #default="{row}">
+              <el-button v-if="row.status!=='REVERSED' && Number(row.unallocated_amount)>0" link type="primary" @click="openExistingReceiptAllocation(row)">继续核销</el-button>
+              <el-button v-if="row.status!=='REVERSED' && Number(row.unallocated_amount)>0" link type="danger" @click="refundSubsidyReceipt(row)">退款</el-button>
+              <el-button v-if="row.status!=='REVERSED' && Number(row.refunded_amount||0)===0" link type="danger" @click="reverseSubsidyReceipt(row)">冲销</el-button>
+            </template></el-table-column>
+          </el-table>
+
+          <el-divider content-position="left">国补差额审批</el-divider>
+          <el-table :data="subsidyAdjustments" stripe border size="small">
+            <el-table-column prop="detail_id" label="应收明细ID" min-width="190" />
+            <el-table-column label="类型" width="100"><template #default="{row}">{{ row.adjustment_type === 'FEE' ? '手续费' : '差额核销' }}</template></el-table-column>
+            <el-table-column label="金额" width="110"><template #default="{row}">¥{{ formatMoney(row.amount) }}</template></el-table-column>
+            <el-table-column prop="finance_category" label="财务处理科目" width="140" />
+            <el-table-column prop="reason" label="原因" min-width="180" />
+            <el-table-column prop="applicant_name" label="申请人" width="100" />
+            <el-table-column label="状态" width="100"><template #default="{row}">{{ row.status === 'PENDING' ? '待审批' : row.status === 'APPROVED' ? '已通过' : '已拒绝' }}</template></el-table-column>
+            <el-table-column label="操作" width="130"><template #default="{row}">
+              <template v-if="row.status === 'PENDING'">
+                <el-button link type="success" @click="reviewSubsidyAdjustment(row,'approve')">通过</el-button>
+                <el-button link type="danger" @click="reviewSubsidyAdjustment(row,'reject')">拒绝</el-button>
+              </template>
+              <el-button v-else-if="row.status === 'APPROVED'" link type="danger" @click="reverseSubsidyAdjustment(row)">冲销</el-button>
+            </template></el-table-column>
+          </el-table>
         </el-tab-pane>
 
         <el-tab-pane label="费用管理" name="expense">
@@ -658,6 +698,50 @@
         </el-tab-pane>
       </el-tabs>
     </el-card>
+
+    <el-dialog v-model="subsidyReceiptDialogVisible" :title="subsidyReceiptMode === 'create' ? '登记国补银行到账' : '分配未核销到账款'" width="760px">
+      <el-form label-width="110px">
+        <el-form-item v-if="subsidyReceiptMode === 'create'" label="到账日期" required>
+          <el-date-picker v-model="subsidyReceiptForm.receiptDate" type="date" value-format="YYYY-MM-DD" />
+        </el-form-item>
+        <el-form-item label="实际到账账户">
+          <el-select v-model="subsidyReceiptForm.accountId" disabled style="width:100%">
+            <el-option v-for="account in settlementAccounts" :key="account.account_id" :label="account.account_name" :value="account.account_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="subsidyReceiptMode === 'create'" label="银行到账金额" required>
+          <el-input-number v-model="subsidyReceiptForm.amount" :min="0.01" :precision="2" style="width:220px" />
+        </el-form-item>
+        <el-form-item v-else label="可分配金额">¥{{ formatMoney(subsidyReceiptForm.amount) }}</el-form-item>
+        <el-form-item v-if="subsidyReceiptMode === 'create'" label="银行流水号">
+          <el-input v-model="subsidyReceiptForm.bankReference" />
+        </el-form-item>
+        <el-form-item label="核销明细">
+          <el-table :data="subsidyReceiptForm.allocations" border size="small" style="width:100%">
+            <el-table-column prop="orderNo" label="订单号" min-width="180" />
+            <el-table-column label="剩余应收" width="120"><template #default="{row}">¥{{ formatMoney(row.remaining) }}</template></el-table-column>
+            <el-table-column label="本次核销" width="180"><template #default="{row}"><el-input-number v-model="row.amount" :min="0" :max="row.remaining" :precision="2" /></template></el-table-column>
+          </el-table>
+        </el-form-item>
+        <el-form-item v-if="subsidyReceiptMode === 'create'" label="未分配金额">
+          ¥{{ formatMoney(Math.max(0, Number(subsidyReceiptForm.amount || 0) - subsidyAllocationTotal)) }}
+        </el-form-item>
+        <el-form-item label="备注"><el-input v-model="subsidyReceiptForm.remark" type="textarea" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="subsidyReceiptDialogVisible=false">取消</el-button><el-button type="primary" @click="submitSubsidyReceipt">确认</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="subsidyAdjustmentDialogVisible" title="国补差额申请" width="520px">
+      <el-form label-width="100px">
+        <el-form-item label="订单号">{{ subsidyAdjustmentForm.orderNo }}</el-form-item>
+        <el-form-item label="剩余应收">¥{{ formatMoney(subsidyAdjustmentForm.remaining) }}</el-form-item>
+        <el-form-item label="差额类型"><el-select v-model="subsidyAdjustmentForm.adjustmentType"><el-option label="手续费" value="FEE" /><el-option label="差额核销" value="WRITEOFF" /></el-select></el-form-item>
+        <el-form-item label="差额金额"><el-input-number v-model="subsidyAdjustmentForm.amount" :min="0.01" :max="subsidyAdjustmentForm.remaining" :precision="2" /></el-form-item>
+        <el-form-item label="财务科目" required><el-input v-model="subsidyAdjustmentForm.financeCategory" placeholder="按财务要求填写处理科目" /></el-form-item>
+        <el-form-item label="原因" required><el-input v-model="subsidyAdjustmentForm.reason" type="textarea" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="subsidyAdjustmentDialogVisible=false">取消</el-button><el-button type="primary" @click="submitSubsidyAdjustment">提交审批</el-button></template>
+    </el-dialog>
 
     <!-- 结算对话框 -->
     <el-dialog v-model="settlementDialogVisible" title="创建结算单" width="700px" @close="resetSettlementForm">
@@ -1154,6 +1238,19 @@ const subsidyTotal = ref(0)
 const subsidyTotalAmount = ref(0)
 const subsidyLoading = ref(false)
 const selectedSubsidyIds = ref([])
+const selectedSubsidyRows = ref([])
+const subsidyAccountRoutes = ref([])
+const subsidyReceipts = ref([])
+const subsidyAdjustments = ref([])
+const subsidyReceiptDialogVisible = ref(false)
+const subsidyReceiptMode = ref('create')
+const subsidyReceiptForm = reactive({
+  receiptId:'', receiptDate:new Date().toISOString().slice(0,10), accountId:'',
+  bankReference:'', amount:0, allocations:[], remark:''
+})
+const subsidyAllocationTotal = computed(() => subsidyReceiptForm.allocations.reduce((sum, row) => sum + Number(row.amount || 0), 0))
+const subsidyAdjustmentDialogVisible = ref(false)
+const subsidyAdjustmentForm = reactive({ detailId:'', orderNo:'', remaining:0, adjustmentType:'FEE', amount:0, financeCategory:'', reason:'' })
 const expenseData = ref([])
 const expenseTotal = ref(0)
 
@@ -1470,6 +1567,7 @@ onMounted(() => {
   loadSettlementAccounts()
   loadDailyData()
   loadSubsidyReceivables()
+  loadSubsidyAuxiliary()
   loadExpenseData()
   loadExpenseSettleData()
   loadPayableData()
@@ -1540,6 +1638,7 @@ const loadSubsidyReceivables = async () => {
       subsidyTotalAmount.value = Number(res.data?.totalAmount || 0)
     }
     selectedSubsidyIds.value = []
+    selectedSubsidyRows.value = []
   } catch (err) {
     ElMessage.error(err.response?.data?.message || '加载国补应收单失败')
   } finally {
@@ -1548,44 +1647,140 @@ const loadSubsidyReceivables = async () => {
 }
 
 const onSubsidySelectionChange = rows => {
+  selectedSubsidyRows.value = rows
   selectedSubsidyIds.value = rows.map(row => row.detail_id)
 }
 
-const settleSubsidyReceivables = async detailIds => {
-  if (!detailIds.length) return
-  await api.settleNationalSubsidyReceivables({ detailIds })
-  ElMessage.success('国补应收下账成功')
-  await Promise.all([loadSubsidyReceivables(), loadDailyData(), loadAccountList()])
-}
-
-const settleOneSubsidyReceivable = async row => {
+const loadSubsidyAuxiliary = async () => {
   try {
-    await ElMessageBox.confirm(
-      `确认国补回款 ¥${Number(row.amount || 0).toFixed(2)} 已到账，并下账到 ${row.settlementAccount?.account_name || '未绑定账户'}？`,
-      '国补应收下账',
-      { type: 'warning', confirmButtonText: '确认下账' }
-    )
-    await settleSubsidyReceivables([row.detail_id])
+    const [routeRes, receiptRes, adjustmentRes] = await Promise.all([
+      api.getSubsidyAccountRoutes(),
+      api.getSubsidyReceipts({ page:1, pageSize:50 }),
+      api.getSubsidyAdjustments({ status:'', page:1, pageSize:50 })
+    ])
+    subsidyAccountRoutes.value = routeRes.data || []
+    subsidyReceipts.value = receiptRes.data?.list || []
+    subsidyAdjustments.value = adjustmentRes.data?.list || []
   } catch (err) {
-    if (err !== 'cancel' && err !== 'close') {
-      ElMessage.error(err.response?.data?.message || err.message || '国补应收下账失败')
-    }
+    ElMessage.error(err.response?.data?.message || '加载国补到账数据失败')
   }
 }
 
-const settleSelectedSubsidyReceivables = async () => {
-  try {
-    await ElMessageBox.confirm(
-      `确认所选 ${selectedSubsidyIds.value.length} 笔国补应收均已回款并下账？`,
-      '批量下账',
-      { type: 'warning', confirmButtonText: '确认下账' }
-    )
-    await settleSubsidyReceivables(selectedSubsidyIds.value)
-  } catch (err) {
-    if (err !== 'cancel' && err !== 'close') {
-      ElMessage.error(err.response?.data?.message || err.message || '批量下账失败')
+const buildSubsidyAllocations = rows => rows.map(row => ({
+  detailId:row.detail_id,
+  orderNo:row.order_no,
+  remaining:Number(row.remaining_amount || 0),
+  amount:Number(row.remaining_amount || 0)
+}))
+
+const openSubsidyReceiptDialog = async rows => {
+  if (!rows?.length) return ElMessage.warning('请选择国补应收单')
+  const regionIds = [...new Set(rows.map(row => row.region_id).filter(Boolean))]
+  if (regionIds.length !== 1) return ElMessage.warning('一次到账只能核销同一区域的应收单')
+  await loadSubsidyAuxiliary()
+  const route = subsidyAccountRoutes.value.find(item => item.region_id === regionIds[0])
+  if (!route?.account_id) return ElMessage.warning('该区域尚未配置国补实际到账账户')
+  Object.assign(subsidyReceiptForm, {
+    receiptId:'',
+    receiptDate:new Date().toISOString().slice(0,10),
+    accountId:route.account_id,
+    bankReference:'',
+    amount:rows.reduce((sum,row)=>sum+Number(row.remaining_amount||0),0),
+    allocations:buildSubsidyAllocations(rows),
+    remark:''
+  })
+  subsidyReceiptMode.value='create'
+  subsidyReceiptDialogVisible.value=true
+}
+
+const openExistingReceiptAllocation = row => {
+  const selected = selectedSubsidyRows.value
+  if (!selected.length) return ElMessage.warning('请先在上方选择需要核销的应收单')
+  if (selected.some(item => item.region_id !== row.region_id)) return ElMessage.warning('到账单与应收单区域不一致')
+  Object.assign(subsidyReceiptForm, {
+    receiptId:row.receipt_id, accountId:row.account_id, amount:Number(row.unallocated_amount||0),
+    allocations:buildSubsidyAllocations(selected), remark:''
+  })
+  let available=Number(row.unallocated_amount||0)
+  subsidyReceiptForm.allocations.forEach(item=>{item.amount=Math.min(item.remaining,available);available-=item.amount})
+  subsidyReceiptMode.value='allocate'
+  subsidyReceiptDialogVisible.value=true
+}
+
+const submitSubsidyReceipt = async () => {
+  const allocations=subsidyReceiptForm.allocations
+    .filter(row=>Number(row.amount)>0)
+    .map(row=>({detailId:row.detailId,amount:Number(row.amount)}))
+  if(!allocations.length)return ElMessage.warning('请填写本次核销金额')
+  try{
+    if(subsidyReceiptMode.value==='create'){
+      await api.createSubsidyReceipt({
+        receiptDate:subsidyReceiptForm.receiptDate,accountId:subsidyReceiptForm.accountId,
+        bankReference:subsidyReceiptForm.bankReference,amount:subsidyReceiptForm.amount,
+        allocations,remark:subsidyReceiptForm.remark
+      })
+    }else{
+      await api.allocateSubsidyReceipt(subsidyReceiptForm.receiptId,{allocations})
     }
-  }
+    ElMessage.success(subsidyReceiptMode.value==='create'?'到账登记成功':'核销成功')
+    subsidyReceiptDialogVisible.value=false
+    await Promise.all([loadSubsidyReceivables(),loadSubsidyAuxiliary(),loadDailyData(),loadAccountList()])
+  }catch(err){ElMessage.error(err.response?.data?.message||'操作失败')}
+}
+
+const refundSubsidyReceipt = async row => {
+  try{
+    const {value}=await ElMessageBox.prompt(`可退款未分配金额 ¥${formatMoney(row.unallocated_amount)}`,'登记退款',{inputPattern:/^\d+(\.\d{1,2})?$/,inputErrorMessage:'请输入正确金额'})
+    await api.refundSubsidyReceipt(row.receipt_id,{amount:Number(value)})
+    ElMessage.success('退款登记成功')
+    await Promise.all([loadSubsidyAuxiliary(),loadAccountList()])
+  }catch(err){if(err!=='cancel'&&err!=='close')ElMessage.error(err.response?.data?.message||'退款失败')}
+}
+
+const reverseSubsidyReceipt = async row => {
+  try{
+    const {value}=await ElMessageBox.prompt('冲销将反向恢复应收并冲回银行账户流水，请填写原因','冲销国补到账',{inputPattern:/\S+/,inputErrorMessage:'请填写冲销原因'})
+    await api.reverseSubsidyReceipt(row.receipt_id,{reason:value})
+    ElMessage.success('到账单已冲销')
+    await Promise.all([loadSubsidyReceivables(),loadSubsidyAuxiliary(),loadDailyData(),loadAccountList()])
+  }catch(err){if(err!=='cancel'&&err!=='close')ElMessage.error(err.response?.data?.message||'冲销失败')}
+}
+
+const openSubsidyAdjustmentDialog = row => {
+  Object.assign(subsidyAdjustmentForm,{detailId:row.detail_id,orderNo:row.order_no,remaining:Number(row.remaining_amount||0),adjustmentType:'FEE',amount:Number(row.remaining_amount||0),financeCategory:'',reason:''})
+  subsidyAdjustmentDialogVisible.value=true
+}
+
+const submitSubsidyAdjustment = async () => {
+  if(!subsidyAdjustmentForm.financeCategory.trim())return ElMessage.warning('请填写财务处理科目')
+  if(!subsidyAdjustmentForm.reason.trim())return ElMessage.warning('请填写差额原因')
+  try{
+    await api.submitSubsidyAdjustment({
+      detailId:subsidyAdjustmentForm.detailId,adjustmentType:subsidyAdjustmentForm.adjustmentType,
+      amount:subsidyAdjustmentForm.amount,financeCategory:subsidyAdjustmentForm.financeCategory,reason:subsidyAdjustmentForm.reason
+    })
+    ElMessage.success('差额审批已提交')
+    subsidyAdjustmentDialogVisible.value=false
+    await loadSubsidyAuxiliary()
+  }catch(err){ElMessage.error(err.response?.data?.message||'提交失败')}
+}
+
+const reviewSubsidyAdjustment = async (row,action) => {
+  try{
+    const {value}=await ElMessageBox.prompt(action==='approve'?'确认通过该差额？':'请输入拒绝原因',action==='approve'?'差额审批通过':'差额审批拒绝')
+    await api.reviewSubsidyAdjustment(row.adjustment_id,{action,comment:value||''})
+    ElMessage.success('审批完成')
+    await Promise.all([loadSubsidyReceivables(),loadSubsidyAuxiliary(),loadDailyData()])
+  }catch(err){if(err!=='cancel'&&err!=='close')ElMessage.error(err.response?.data?.message||'审批失败')}
+}
+
+const reverseSubsidyAdjustment = async row => {
+  try{
+    const {value}=await ElMessageBox.prompt('冲销后将恢复对应剩余应收，请填写原因','冲销国补差额',{inputPattern:/\S+/,inputErrorMessage:'请填写冲销原因'})
+    await api.reverseSubsidyAdjustment(row.adjustment_id,{reason:value})
+    ElMessage.success('差额已冲销')
+    await Promise.all([loadSubsidyReceivables(),loadSubsidyAuxiliary(),loadDailyData()])
+  }catch(err){if(err!=='cancel'&&err!=='close')ElMessage.error(err.response?.data?.message||'冲销失败')}
 }
 
 const handleSettleDetail = async (row) => {

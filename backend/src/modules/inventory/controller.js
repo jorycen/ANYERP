@@ -407,7 +407,7 @@ async function getSnList(ctx) {
         stock_qty: currentStoreId || storeId ? stock.current : stock.total,
         stock_rank: stock.current > 0 ? 0 : (stock.total > 0 ? 1 : 2),
         store_name: data.Store?.name || '',
-        location_name: data.Location?.name || ''
+        location_name: data.Location?.name || '未指定库位'
       };
     });
 

@@ -536,7 +536,9 @@
         </el-table-column>
         <el-table-column prop="pn_code" label="PN码" width="130" />
         <el-table-column prop="store_name" label="门店" width="120" />
-        <el-table-column prop="location_name" label="库位" width="100" />
+        <el-table-column label="库位" width="120">
+          <template #default="{ row }">{{ row.location_name || '未指定库位' }}</template>
+        </el-table-column>
         <el-table-column prop="status" label="状态" width="100">
           <template #default="{ row }">
             <el-tag :type="getStatusType(row.status)">{{ getStatusText(row.status) }}</el-tag>

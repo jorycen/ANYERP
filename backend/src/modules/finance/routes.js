@@ -2,7 +2,14 @@
  * 财务管理路由
  */
 const Router = require('koa-router');
-const { getDailyDetails, getNationalSubsidyReceivables, getDailyStatement, getDailyStatementDetail, batchSettle, settleNationalSubsidyReceivables, getSettlementSummary, createExpense, getExpenseList, submitExpense, payExpense, getSettlementAccountsWithBalance, getAccountTransactions, addAccountTransaction } = require('./controller');
+const {
+  getDailyDetails, getNationalSubsidyReceivables, getDailyStatement, getDailyStatementDetail,
+  batchSettle, settleNationalSubsidyReceivables, getSettlementSummary, createExpense, getExpenseList,
+  submitExpense, payExpense, getSettlementAccountsWithBalance, getAccountTransactions, addAccountTransaction,
+  getSubsidyAccountRoutes, saveSubsidyAccountRoute, createSubsidyReceipt, getSubsidyReceipts,
+  allocateSubsidyReceipt, refundSubsidyReceipt, reverseSubsidyReceipt, submitSubsidyAdjustment,
+  getSubsidyAdjustments, reviewSubsidyAdjustment, reverseSubsidyAdjustment
+} = require('./controller');
 const {
   getPayableList,
   getUnpaidBySupplier,
@@ -45,6 +52,17 @@ router.use(requireRole('finance'));
 
 router.get('/daily-details', getDailyDetails);
 router.get('/national-subsidy-receivables', getNationalSubsidyReceivables);
+router.get('/national-subsidy-account-routes', getSubsidyAccountRoutes);
+router.put('/national-subsidy-account-routes', saveSubsidyAccountRoute);
+router.get('/national-subsidy-receipts', getSubsidyReceipts);
+router.post('/national-subsidy-receipts', createSubsidyReceipt);
+router.post('/national-subsidy-receipts/:id/allocate', allocateSubsidyReceipt);
+router.post('/national-subsidy-receipts/:id/refund', refundSubsidyReceipt);
+router.post('/national-subsidy-receipts/:id/reverse', reverseSubsidyReceipt);
+router.get('/national-subsidy-adjustments', getSubsidyAdjustments);
+router.post('/national-subsidy-adjustments', submitSubsidyAdjustment);
+router.post('/national-subsidy-adjustments/:id/review', reviewSubsidyAdjustment);
+router.post('/national-subsidy-adjustments/:id/reverse', reverseSubsidyAdjustment);
 router.get('/daily-statement', getDailyStatement);
 router.get('/daily-statement/:id', getDailyStatementDetail);
 router.get('/settlement-summary', getSettlementSummary);

@@ -158,6 +158,23 @@
         </el-tab-pane>
 
         <el-tab-pane label="收款方式管理" name="paymentMethod">
+          <div class="config-section-title">
+            <strong>国补实际到账账户（按区域）</strong>
+            <el-button @click="loadSubsidyAccountRoutes">刷新</el-button>
+          </div>
+          <el-alert title="区域账户用于银行实际到账登记；政策补贴应收账户仍用于记录待回款资产。未配置区域不得跨区域自动下账。" type="info" :closable="false" style="margin-bottom:12px" />
+          <el-table :data="subsidyAccountRoutes" stripe border style="margin-bottom:24px">
+            <el-table-column prop="region_name" label="区域" width="180" />
+            <el-table-column label="默认对公资金账户" min-width="280">
+              <template #default="{ row }">
+                <el-select v-model="row.account_id" clearable filterable placeholder="暂不配置" style="width:100%" @change="saveSubsidyAccountRoute(row)">
+                  <el-option v-for="account in fundAccounts" :key="account.account_id" :label="account.account_name" :value="account.account_id" />
+                </el-select>
+              </template>
+            </el-table-column>
+            <el-table-column prop="update_user" label="更新人" width="120" />
+            <el-table-column prop="update_time" label="更新时间" width="180" />
+          </el-table>
           <div class="filter-bar">
             <el-button type="primary" @click="openPaymentMethodDialog()">新增收款方式</el-button>
           </div>
@@ -798,7 +815,10 @@ const onSysTabChange = (tabName) => {
     loadGoodsTypes()
   }
   if (tabName === 'customerSource' && customerSourceData.value.length === 0) loadCustomerSources()
-  if (tabName === 'paymentMethod' && paymentMethodData.value.length === 0) loadPaymentMethods()
+  if (tabName === 'paymentMethod') {
+    if (paymentMethodData.value.length === 0) loadPaymentMethods()
+    loadSubsidyAccountRoutes()
+  }
   if (tabName === 'supplementItem' && supplementItemData.value.length === 0) loadSupplementItems()
   if (tabName === 'categoryField' && cfCategoryTree.value.length === 0) cfLoadCategoryTree()
 }
@@ -1226,7 +1246,28 @@ const pmForm = reactive({ name: '', settlementAccountId: '', receivableSettlemen
 const pmStoreConfigRows = ref([])
 const settlementAccounts = ref([])
 const policyReceivableAccounts = computed(() => settlementAccounts.value.filter(a => a.account_type === 'POLICY_RECEIVABLE'))
+const fundAccounts = computed(() => settlementAccounts.value.filter(a => a.account_type === 'FUND'))
+const subsidyAccountRoutes = ref([])
 const isGuobuPaymentMethod = name => String(name || '').startsWith('国补POS')
+
+const loadSubsidyAccountRoutes = async () => {
+  try {
+    const [routeRes] = await Promise.all([api.getSubsidyAccountRoutes(), loadSettlementAccounts()])
+    subsidyAccountRoutes.value = routeRes.data || []
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载国补到账账户配置失败')
+  }
+}
+
+const saveSubsidyAccountRoute = async row => {
+  try {
+    await api.saveSubsidyAccountRoute({ regionId: row.region_id, accountId: row.account_id || '' })
+    ElMessage.success('区域到账账户已保存')
+    await loadSubsidyAccountRoutes()
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '保存失败')
+  }
+}
 
 const loadPaymentMethods = async () => {
   try {

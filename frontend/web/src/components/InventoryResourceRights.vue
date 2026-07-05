@@ -92,7 +92,7 @@
       <el-tab-pane label="商品资源成本定义" name="costs">
         <div class="filter-bar">
           <el-select v-model="costForm.productId" filterable remote reserve-keyword placeholder="搜索商品" :remote-method="searchProducts" :loading="productLoading" style="width:300px">
-            <el-option v-for="item in products" :key="item.product_id" :label="`${item.name} (${item.product_code || ''})`" :value="item.product_id" />
+            <el-option v-for="item in products" :key="item.product_id" :label="`${item.name} (${item.pn || ''})`" :value="item.product_id" />
           </el-select>
           <el-select v-model="costForm.resourceType" placeholder="权益类型" style="width:150px">
             <el-option v-for="item in resourceOptions" :key="item.value" :label="item.label" :value="item.value" />
