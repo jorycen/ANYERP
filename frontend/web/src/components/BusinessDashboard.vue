@@ -153,6 +153,7 @@
           value-key="salesAmount"
           value-label="销售额"
           variant="sales"
+          :can-view-profit="dashboard.meta.canViewProfit"
         />
       </DashboardPanel>
       <DashboardPanel title="高毛利产品排行榜">
@@ -162,6 +163,7 @@
           value-label="毛利率"
           value-type="percent"
           variant="profit"
+          :can-view-profit="dashboard.meta.canViewProfit"
         />
       </DashboardPanel>
       <DashboardPanel title="重点产品销售情况">
@@ -170,6 +172,7 @@
           value-key="salesAmount"
           value-label="销售额"
           variant="focus"
+          :can-view-profit="dashboard.meta.canViewProfit"
         />
       </DashboardPanel>
     </section>
@@ -272,44 +275,45 @@ const ProductTable = defineComponent({
     valueKey: { type: String, required: true },
     valueLabel: { type: String, required: true },
     valueType: { type: String, default: 'currency' },
-    variant: { type: String, default: 'sales' }
+    variant: { type: String, default: 'sales' },
+    canViewProfit: { type: Boolean, default: false }
   },
   setup(props) {
     const format = value => props.valueType === 'percent'
       ? `${Number(value || 0).toFixed(2)}%`
       : formatCurrency(value)
-    const descriptions = {
-      sales: '按销售额由高到低',
-      profit: '按毛利率由高到低',
-      focus: '已标记重点产品'
-    }
     return () => {
-      const maxValue = Math.max(...props.rows.map(row => Number(row[props.valueKey] || 0)), 0)
-      return h('div', { class: ['product-table', `product-table--${props.variant}`] }, [
-      h('div', { class: 'product-table-summary' }, [
-        h('span', { class: 'product-table-kicker' }, props.variant === 'focus' ? 'FOCUS' : 'TOP 10'),
-        h('span', descriptions[props.variant] || descriptions.sales),
-        h('b', `${props.rows.length} 项`)
-      ]),
-      h('div', { class: 'product-table-head' }, [
-        h('span', '排名'),
-        h('span', '产品名称'),
-        h('span', props.valueLabel)
-      ]),
-      ...(props.rows.length ? props.rows.slice(0, 10).map((row, index) => {
-        const width = maxValue > 0 ? Math.max(4, Number(row[props.valueKey] || 0) / maxValue * 100) : 0
-        return h('div', { class: 'product-table-row', key: row.productId || index }, [
-          h('b', { class: index < 3 ? `rank rank-${index + 1}` : 'rank' }, String(index + 1)),
-          h('div', { class: 'product-name-cell', title: row.productName }, [
-            h('span', row.productName),
-            h('i', { class: 'product-value-track' }, [
-              h('i', { class: 'product-value-fill', style: { width: `${width}%` } })
-            ])
-          ]),
-          h('strong', format(row[props.valueKey]))
-        ])
-      }) : [h('div', { class: 'empty-row' }, '暂无数据')])
-    ])
+      const showQuantity = props.variant === 'sales' || props.variant === 'focus'
+      const showGrossProfit = props.variant === 'profit' || (props.variant === 'focus' && props.canViewProfit)
+      return h('div', {
+        class: [
+          'product-table',
+          `product-table--${props.variant}`,
+          { 'product-table--with-profit': showGrossProfit }
+        ]
+      }, [
+        h('div', { class: 'product-table-head' }, [
+          h('span', '排名'),
+          h('span', props.variant === 'focus' ? '重点产品' : '产品名称'),
+          ...(showQuantity ? [h('span', '销量')] : []),
+          h('span', props.valueLabel),
+          ...(showGrossProfit ? [h('span', '毛利额')] : [])
+        ]),
+        ...(props.rows.length ? props.rows.slice(0, 10).map((row, index) => h(
+          'div',
+          { class: 'product-table-row', key: row.productId || index },
+          [
+            h('b', { class: index < 3 ? `rank rank-${index + 1}` : 'rank' }, String(index + 1)),
+            h('div', { class: 'product-name-cell', title: row.productName }, [
+              h('span', row.productName),
+              row.productCode ? h('small', row.productCode) : null
+            ]),
+            ...(showQuantity ? [h('span', { class: 'product-quantity' }, formatNumber(row.quantity))] : []),
+            h('strong', format(row[props.valueKey])),
+            ...(showGrossProfit ? [h('strong', { class: 'gross-profit-value' }, formatCurrency(row.grossProfit))] : [])
+          ]
+        )) : [h('div', { class: 'empty-row' }, '暂无数据')])
+      ])
     }
   }
 })
@@ -847,28 +851,30 @@ onBeforeUnmount(() => {
   box-shadow: 0 3px 12px rgba(35, 59, 96, 0.04);
 }
 
-.panel-header {
+.dashboard-panel :deep(.panel-header) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 40px;
+  min-height: 42px;
   padding: 0 14px;
   border-bottom: 1px solid #eef1f5;
+  background: linear-gradient(180deg, #fff, #fbfcfe);
 }
 
-.panel-header h3 {
+.dashboard-panel :deep(.panel-header h3) {
   margin: 0;
+  color: #1f2b3d;
   font-size: 14px;
-  font-weight: 650;
+  font-weight: 700;
 }
 
-.panel-actions {
+.dashboard-panel :deep(.panel-actions) {
   color: var(--muted);
   font-size: 11px;
 }
 
-.panel-body {
-  padding: 8px 12px;
+.dashboard-panel :deep(.panel-body) {
+  padding: 10px 12px 12px;
 }
 
 .large-chart {
@@ -884,20 +890,20 @@ onBeforeUnmount(() => {
   color: #9a6d19;
 }
 
-.product-table-head,
-.product-table-row {
+.product-table :deep(.product-table-head),
+.product-table :deep(.product-table-row) {
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr) 110px;
+  grid-template-columns: 42px minmax(0, 1fr) 58px 102px;
   align-items: center;
-  min-height: 36px;
-  gap: 8px;
+  min-height: 34px;
+  column-gap: 8px;
   font-size: 12px;
 }
 
 .product-table {
   --list-accent: #1769e0;
   --list-soft: #edf5ff;
-  margin: -2px -4px 0;
+  min-height: 174px;
 }
 
 .product-table--profit {
@@ -905,142 +911,132 @@ onBeforeUnmount(() => {
   --list-soft: #eaf8f1;
 }
 
+.product-table--profit :deep(.product-table-head),
+.product-table--profit :deep(.product-table-row) {
+  grid-template-columns: 42px minmax(0, 1fr) 72px 102px;
+}
+
 .product-table--focus {
   --list-accent: #e58a17;
   --list-soft: #fff5e6;
 }
 
-.product-table-summary {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: center;
-  gap: 8px;
-  min-height: 42px;
-  margin-bottom: 7px;
-  padding: 0 10px;
-  border: 1px solid color-mix(in srgb, var(--list-accent) 18%, white);
-  border-radius: 8px;
-  color: #68758a;
-  background: linear-gradient(105deg, var(--list-soft), #fff 78%);
+.product-table--focus.product-table--with-profit :deep(.product-table-head),
+.product-table--focus.product-table--with-profit :deep(.product-table-row) {
+  grid-template-columns: 42px minmax(0, 1fr) 52px 92px 92px;
+}
+
+.product-table :deep(.product-table-head) {
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: 4px;
+  color: #637086;
+  background: #f3f6fa;
   font-size: 11px;
-}
-
-.product-table-kicker {
-  padding: 3px 7px;
-  border-radius: 10px;
-  color: #fff;
-  background: var(--list-accent);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .5px;
-}
-
-.product-table-summary b {
-  color: var(--list-accent);
-  font-weight: 650;
-}
-
-.product-table-head {
-  padding: 0 5px;
-  border-radius: 6px;
-  color: #69768a;
-  background: #f6f8fb;
   font-weight: 600;
 }
 
-.product-table-head span:last-child {
+.product-table :deep(.product-table-head span:nth-child(n + 3)) {
   text-align: right;
 }
 
-.product-table-row {
+.product-table :deep(.product-table-row) {
   position: relative;
-  padding: 3px 5px;
-  border-bottom: 1px solid #f0f2f6;
-  transition: background .18s ease, transform .18s ease;
+  padding: 3px 8px;
+  border-bottom: 1px solid #edf1f6;
+  transition: background .15s ease;
 }
 
-.product-table-row:hover {
-  z-index: 1;
-  border-radius: 6px;
+.product-table :deep(.product-table-row:last-child) {
+  border-bottom: 0;
+}
+
+.product-table :deep(.product-table-row:hover) {
   background: var(--list-soft);
-  transform: translateX(2px);
 }
 
-.product-name-cell {
+.product-table :deep(.product-name-cell) {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 5px;
+  gap: 1px;
 }
 
-.product-name-cell > span {
+.product-table :deep(.product-name-cell > span) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #354156;
-  font-weight: 550;
+  color: #2f3b4e;
+  font-weight: 600;
 }
 
-.product-value-track {
-  display: block;
-  width: 100%;
-  height: 3px;
+.product-table :deep(.product-name-cell small) {
   overflow: hidden;
-  border-radius: 4px;
-  background: #edf0f5;
+  color: #9aa4b3;
+  font-size: 10px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.product-value-fill {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--list-accent), color-mix(in srgb, var(--list-accent) 48%, white));
-}
-
-.product-table-row strong {
-  color: var(--list-accent);
+.product-table :deep(.product-quantity),
+.product-table :deep(.product-table-row strong) {
   text-align: right;
-  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
-.rank {
+.product-table :deep(.product-quantity) {
+  color: #5f6c80;
+}
+
+.product-table :deep(.product-table-row strong) {
+  color: var(--list-accent);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.product-table :deep(.gross-profit-value) {
+  color: #4f5e72;
+}
+
+.product-table :deep(.rank) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
-  margin-left: 6px;
-  border-radius: 50%;
-  color: #68758a;
-  background: #f1f3f7;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  color: #7b8798;
+  background: #eef1f5;
   font-size: 11px;
+  font-weight: 700;
 }
 
-.rank-1 {
+.product-table :deep(.rank-1) {
   color: #fff;
   background: linear-gradient(135deg, #ff6b47, #ef3434);
   box-shadow: 0 3px 7px rgba(239, 52, 52, .24);
 }
 
-.rank-2 {
+.product-table :deep(.rank-2) {
   color: #fff;
   background: linear-gradient(135deg, #ffb447, #f18920);
   box-shadow: 0 3px 7px rgba(241, 137, 32, .22);
 }
 
-.rank-3 {
+.product-table :deep(.rank-3) {
   color: #fff;
   background: linear-gradient(135deg, #f3cf4b, #d9a71e);
   box-shadow: 0 3px 7px rgba(217, 167, 30, .2);
 }
 
-.empty-row {
+.product-table :deep(.empty-row) {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 120px;
+  min-height: 142px;
   color: #a0a9b8;
+  font-size: 12px;
 }
 
 .inventory-summary {
