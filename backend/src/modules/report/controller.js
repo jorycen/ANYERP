@@ -14,6 +14,7 @@ const {
 const { Op } = require('sequelize');
 const { loadLegacyCostMaps, calculateItemBaseProfit } = require('./profitCalculation');
 const { DashboardService } = require('./dashboardService');
+const { FORMULA_VERSION: GROSS_PROFIT_FORMULA_VERSION } = require('../sales/grossProfit');
 
 const dashboardService = new DashboardService();
 
@@ -236,7 +237,12 @@ async function getEmployeePerformanceReport(ctx) {
     include: [
       { model: Store, attributes: ['store_id', 'name'] },
       { model: OrderItem },
-      { model: OrderGrossProfit, as: 'grossProfitSnapshot', required: false }
+      {
+        model: OrderGrossProfit,
+        as: 'grossProfitSnapshot',
+        where: { formula_version: GROSS_PROFIT_FORMULA_VERSION },
+        required: false
+      }
     ],
     order: [['create_time', 'DESC']],
     offset: (Math.max(Number(page) || 1, 1) - 1) * Math.max(Number(pageSize) || 20, 1),
@@ -334,7 +340,7 @@ async function getEmployeePerformanceReport(ctx) {
       calculation: {
         orderFormula: `${baseGrossProfit.toFixed(2)} + 已审批调整 ${approvedAdjustment.toFixed(2)} = ${grossProfit.toFixed(2)}`,
         revenueNote: usesNewSnapshot
-          ? '基础毛利使用订单毛利快照：用户实收－销售结算成本－收款税率费用－增值税＋补录净额'
+          ? '基础毛利使用订单毛利快照：用户应收－销售结算成本－应收税率费用－增值税＋补录净额'
           : (usesLegacyFallback
             ? '该历史订单未生成新毛利快照，当前按原成本口径兼容计算'
             : '该订单尚未生成新毛利快照，暂按原归档销售毛利兼容展示'),
@@ -356,6 +362,7 @@ async function getEmployeePerformanceReport(ctx) {
   });
 
   const snapshotRows = await OrderGrossProfit.findAll({
+    where: { formula_version: GROSS_PROFIT_FORMULA_VERSION },
     attributes: ['order_id', 'gross_profit_amount'],
     include: [{ model: Order, where, attributes: [], required: true }],
     raw: true

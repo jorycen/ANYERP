@@ -2,6 +2,7 @@ const { QueryTypes } = require('sequelize');
 const { sequelize } = require('../../models');
 
 const ARCHIVED_STATUSES = ['已归档', 'completed', 'archived'];
+const GROSS_PROFIT_FORMULA_VERSION = 'ORDER_GP_V3_20260705';
 
 function toNumber(value) {
   const number = Number(value || 0);
@@ -193,7 +194,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
               COUNT(DISTINCT o.ORDER_ID) AS orderCount
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
-         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
+         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
          LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
          LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
          LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
@@ -215,7 +216,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
               COUNT(DISTINCT o.ORDER_ID) AS orderCount
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
-         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
+         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
          LEFT JOIN T_STORE s ON s.STORE_ID = o.STORE_ID
          LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
          LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
@@ -241,7 +242,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
               ROUND(SUM(oi.QUANTITY * ${factor}), 2) AS quantity
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
-         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
+         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
          LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
          LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
          LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
@@ -261,7 +262,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
               ROUND(SUM((${grossProfitSql()}) * ${factor}), 2) AS grossProfit
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
-         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
+         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
          LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
          LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
          LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
@@ -287,7 +288,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
               ROUND(SUM(${grossProfitSql()}), 2) AS base_gross_profit
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
-         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
+         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
          LEFT JOIN T_STORE s ON s.STORE_ID = o.STORE_ID
          LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
          LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0

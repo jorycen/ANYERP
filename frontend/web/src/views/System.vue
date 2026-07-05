@@ -406,7 +406,7 @@
         </el-form-item>
         <el-form-item label="默认税率" required>
           <el-input-number v-model="pmForm.defaultTaxRate" :min="0" :max="100" :precision="4" :step="0.1" />
-          <span style="margin-left:8px;color:#909399">%（例如 0.6 表示实收金额的 0.6%）</span>
+          <span style="margin-left:8px;color:#909399">%（例如 0.6 表示应收分配额的 0.6%）</span>
         </el-form-item>
         <el-form-item label="配置范围">
           <el-radio-group v-model="pmForm.isGlobal" @change="onPmIsGlobalChange">

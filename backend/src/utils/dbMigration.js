@@ -1608,6 +1608,7 @@ async function runMigrations() {
         STORE_ID VARCHAR(32) NOT NULL,
         FORMULA_VERSION VARCHAR(32) NOT NULL,
         RECEIVED_AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0,
+        RECEIVABLE_AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0,
         SETTLEMENT_COST_AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0,
         PAYMENT_FEE_AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0,
         INVOICE_AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0,
@@ -1627,6 +1628,18 @@ async function runMigrations() {
         UNIQUE KEY uk_order_gross_profit (ORDER_ID),
         KEY idx_gross_profit_analysis (STORE_ID, SNAPSHOT_STATUS, CALCULATED_AT)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='订单经营毛利计算快照'
+    `);
+    await checkAndAddColumn(
+      'T_ORDER_GROSS_PROFIT',
+      'RECEIVABLE_AMOUNT',
+      'DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT "用户应收"',
+      'RECEIVED_AMOUNT'
+    );
+    await sequelize.query(`
+      UPDATE T_ORDER_GROSS_PROFIT
+      SET RECEIVABLE_AMOUNT = RECEIVED_AMOUNT
+      WHERE RECEIVABLE_AMOUNT = 0
+        AND RECEIVED_AMOUNT <> 0
     `);
 
     await checkAndCreateTable('T_INVENTORY', `

@@ -11,7 +11,7 @@ const {
 const { generateUUID } = require('../../utils');
 const { loadLegacyCostMaps, calculateItemBaseProfit } = require('../report/profitCalculation');
 
-const FORMULA_VERSION = 'ORDER_GP_V2_20260705';
+const FORMULA_VERSION = 'ORDER_GP_V3_20260705';
 const VAT_RATE = 0.13;
 
 function toNumber(value) {
@@ -38,12 +38,13 @@ function normalizeAmountType(value) {
 }
 
 function calculateGrossProfitValues({
+  receivableAmount = 0,
   paymentDetails = [],
   settlementCostDetails = [],
   supplementDetails = [],
   invoiceAmount = 0
 } = {}) {
-  const normalizedPayments = paymentDetails
+  const basePayments = paymentDetails
     .filter(item => !isPolicySubsidyReceivable(item.method))
     .map(item => {
       const amount = roundMoney(item.amount);
@@ -51,10 +52,26 @@ function calculateGrossProfitValues({
       return {
         ...item,
         amount,
-        taxRate,
-        fee: roundMoney(amount * taxRate / 100)
+        taxRate
       };
     });
+  const normalizedReceivableAmount = roundMoney(Math.max(0, receivableAmount));
+  const paymentAmountTotal = roundMoney(basePayments.reduce((sum, item) => sum + item.amount, 0));
+  let allocatedReceivable = 0;
+  const normalizedPayments = basePayments.map((item, index) => {
+    const isLast = index === basePayments.length - 1;
+    const allocation = paymentAmountTotal > 0
+      ? (isLast
+        ? roundMoney(normalizedReceivableAmount - allocatedReceivable)
+        : roundMoney(normalizedReceivableAmount * item.amount / paymentAmountTotal))
+      : 0;
+    allocatedReceivable = roundMoney(allocatedReceivable + allocation);
+    return {
+      ...item,
+      receivableAmount: allocation,
+      fee: roundMoney(allocation * item.taxRate / 100)
+    };
+  });
   const normalizedCosts = settlementCostDetails.map(item => ({
     ...item,
     quantity: toNumber(item.quantity || 1),
@@ -72,7 +89,6 @@ function calculateGrossProfitValues({
     };
   });
 
-  const receivedAmount = roundMoney(normalizedPayments.reduce((sum, item) => sum + item.amount, 0));
   const settlementCostAmount = roundMoney(normalizedCosts.reduce((sum, item) => sum + item.costAmount, 0));
   const paymentFeeAmount = roundMoney(normalizedPayments.reduce((sum, item) => sum + item.fee, 0));
   const normalizedInvoiceAmount = roundMoney(invoiceAmount);
@@ -80,11 +96,11 @@ function calculateGrossProfitValues({
   const vatAmount = roundMoney(vatTaxableAmount * VAT_RATE);
   const supplementAmount = roundMoney(normalizedSupplements.reduce((sum, item) => sum + item.signedAmount, 0));
   const grossProfitAmount = roundMoney(
-    receivedAmount - settlementCostAmount - paymentFeeAmount - vatAmount + supplementAmount
+    normalizedReceivableAmount - settlementCostAmount - paymentFeeAmount - vatAmount + supplementAmount
   );
 
   return {
-    receivedAmount,
+    receivableAmount: normalizedReceivableAmount,
     settlementCostAmount,
     paymentFeeAmount,
     invoiceAmount: normalizedInvoiceAmount,
@@ -117,7 +133,9 @@ function snapshotToResponse(snapshot) {
     orderNo: row.order_no,
     storeId: row.store_id,
     formulaVersion: row.formula_version,
-    receivedAmount: roundMoney(row.received_amount),
+    receivableAmount: roundMoney(
+      row.receivable_amount !== undefined ? row.receivable_amount : row.received_amount
+    ),
     settlementCostAmount: roundMoney(row.settlement_cost_amount),
     paymentFeeAmount: roundMoney(row.payment_fee_amount),
     invoiceAmount: roundMoney(row.invoice_amount),
@@ -132,7 +150,7 @@ function snapshotToResponse(snapshot) {
     snapshotStatus: row.snapshot_status,
     calculatedBy: row.calculated_by || '',
     calculatedAt: row.calculated_at,
-    formula: '用户实收 - 销售结算成本 - 收款税率费用 - 增值税 + 补录净额'
+    formula: '用户应收 - 销售结算成本 - 应收税率费用 - 增值税 + 补录净额'
   };
 }
 
@@ -242,7 +260,12 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
   }
 
   const existing = await OrderGrossProfit.findOne({ where: { order_id: orderId }, transaction });
-  if (existing && existing.snapshot_status === 'final' && !force) {
+  if (
+    existing &&
+    existing.snapshot_status === 'final' &&
+    existing.formula_version === FORMULA_VERSION &&
+    !force
+  ) {
     return existing;
   }
 
@@ -252,6 +275,13 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     buildSupplementDetails(orderId, transaction)
   ]);
   const values = calculateGrossProfitValues({
+    receivableAmount: Math.max(
+      0,
+      toNumber(order.total_amount)
+        - toNumber(order.discount_amount)
+        - toNumber(order.national_subsidy)
+        - toNumber(order.education_subsidy)
+    ),
     paymentDetails,
     settlementCostDetails,
     supplementDetails,
@@ -265,7 +295,7 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     order_no: order.order_no,
     store_id: order.store_id,
     formula_version: FORMULA_VERSION,
-    received_amount: values.receivedAmount,
+    receivable_amount: values.receivableAmount,
     settlement_cost_amount: values.settlementCostAmount,
     payment_fee_amount: values.paymentFeeAmount,
     invoice_amount: values.invoiceAmount,
