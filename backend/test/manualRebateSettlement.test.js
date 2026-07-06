@@ -221,6 +221,7 @@ test('返利上账生成上账单、可用余额和账户流水', async () => {
   const originals = {
     transaction: models.sequelize.transaction,
     supplierFindOne: models.Supplier.findOne,
+    supplierFindByPk: models.Supplier.findByPk,
     accountFindOne: models.SettlementAccount.findOne,
     postingCreate: models.RebatePostingOrder.create,
     rebateFindOne: models.SupplierRebate.findOne,
@@ -233,6 +234,7 @@ test('返利上账生成上账单、可用余额和账户流水', async () => {
   const accountRows = [];
   models.sequelize.transaction = async handler => handler({ LOCK: { UPDATE: 'UPDATE' } });
   models.Supplier.findOne = async () => ({ supplier_id: 'SUP_1', name: '测试厂商' });
+  models.Supplier.findByPk = async () => ({ supplier_id: 'SUP_1', name: '测试厂商' });
   models.SettlementAccount.findOne = async () => ({
     account_id: 'ACC_SUP_1',
     account_type: 'SUPPLIER_REBATE',
@@ -271,12 +273,71 @@ test('返利上账生成上账单、可用余额和账户流水', async () => {
   } finally {
     models.sequelize.transaction = originals.transaction;
     models.Supplier.findOne = originals.supplierFindOne;
+    models.Supplier.findByPk = originals.supplierFindByPk;
     models.SettlementAccount.findOne = originals.accountFindOne;
     models.RebatePostingOrder.create = originals.postingCreate;
     models.SupplierRebate.findOne = originals.rebateFindOne;
     models.SupplierRebate.create = originals.rebateCreate;
     models.SettlementAccountTransaction.sum = originals.accountSum;
     models.SettlementAccountTransaction.create = originals.accountCreate;
+  }
+});
+
+test('返利上账时后台自动创建供应商返利内部账户', async () => {
+  const originals = {
+    transaction: models.sequelize.transaction,
+    supplierFindOne: models.Supplier.findOne,
+    supplierFindByPk: models.Supplier.findByPk,
+    accountFindOne: models.SettlementAccount.findOne,
+    accountCreate: models.SettlementAccount.create,
+    postingCreate: models.RebatePostingOrder.create,
+    rebateFindOne: models.SupplierRebate.findOne,
+    rebateCreate: models.SupplierRebate.create,
+    accountSum: models.SettlementAccountTransaction.sum,
+    accountTransactionCreate: models.SettlementAccountTransaction.create
+  };
+  let internalAccount = null;
+  const accountTransactions = [];
+  models.sequelize.transaction = async handler => handler({ LOCK: { UPDATE: 'UPDATE' } });
+  models.Supplier.findOne = async () => ({ supplier_id: 'SUP_1', name: '测试厂商' });
+  models.Supplier.findByPk = async () => ({ supplier_id: 'SUP_1', name: '测试厂商' });
+  models.SettlementAccount.findOne = async () => internalAccount;
+  models.SettlementAccount.create = async values => {
+    internalAccount = values;
+    return values;
+  };
+  models.RebatePostingOrder.create = async values => values;
+  models.SupplierRebate.findOne = async () => null;
+  models.SupplierRebate.create = async () => {};
+  models.SettlementAccountTransaction.sum = async () => 0;
+  models.SettlementAccountTransaction.create = async values => accountTransactions.push(values);
+
+  try {
+    const ctx = context({
+      body: {
+        supplierId: 'SUP_1',
+        postingDate: '2026-07-06',
+        amount: 30000,
+        remark: '自动账户测试'
+      }
+    });
+    await rebateController.addRebate(ctx);
+    assert.equal(internalAccount.account_type, 'SUPPLIER_REBATE');
+    assert.equal(internalAccount.supplier_id, 'SUP_1');
+    assert.match(internalAccount.account_name, /测试厂商返利内部账户/);
+    assert.equal(accountTransactions.length, 1);
+    assert.equal(accountTransactions[0].amount, 30000);
+  } finally {
+    models.sequelize.transaction = originals.transaction;
+    models.Supplier.findOne = originals.supplierFindOne;
+    models.Supplier.findByPk = originals.supplierFindByPk;
+    models.SettlementAccount.findOne = originals.accountFindOne;
+    models.SettlementAccount.create = originals.accountCreate;
+    models.RebatePostingOrder.create = originals.postingCreate;
+    models.SupplierRebate.findOne = originals.rebateFindOne;
+    models.SupplierRebate.create = originals.rebateCreate;
+    models.SettlementAccountTransaction.sum = originals.accountSum;
+    models.SettlementAccountTransaction.create = originals.accountTransactionCreate;
   }
 });
 

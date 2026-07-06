@@ -419,7 +419,7 @@
           <el-form-item :label="isGuobuPaymentMethod(pmForm.name) ? '客户实收账户' : '默认结算账户'">
             <div style="display: flex; align-items: center; gap: 8px; width: 100%">
               <el-select v-model="pmForm.settlementAccountId" placeholder="选择结算账号" clearable style="flex: 1">
-                <el-option v-for="acc in settlementAccounts" :key="acc.account_id" :label="acc.account_name" :value="acc.account_id" />
+                <el-option v-for="acc in fundAccounts" :key="acc.account_id" :label="acc.account_name" :value="acc.account_id" />
               </el-select>
               <el-button link type="primary" @click="openSaMgmtDialog">管理结算账号</el-button>
             </div>
@@ -446,7 +446,7 @@
                 <el-table-column :label="isGuobuPaymentMethod(pmForm.name) ? '客户实收账户' : '结算账户'" min-width="200">
                   <template #default="{ row }">
                     <el-select v-model="row.accountId" placeholder="选择结算账号" clearable size="small" style="width: 100%" :disabled="!row.checked">
-                      <el-option v-for="acc in settlementAccounts" :key="acc.account_id" :label="acc.account_name" :value="acc.account_id" />
+                      <el-option v-for="acc in fundAccounts" :key="acc.account_id" :label="acc.account_name" :value="acc.account_id" />
                     </el-select>
                   </template>
                 </el-table-column>
@@ -499,10 +499,7 @@
             <el-input v-model="saForm.accountName" placeholder="请输入账号名称" />
           </el-form-item>
           <el-form-item label="账户类型" required>
-            <el-select v-model="saForm.accountType" style="width:100%"><el-option label="资金账户" value="FUND" /><el-option label="政策补贴应收" value="POLICY_RECEIVABLE" /><el-option label="供应商返利" value="SUPPLIER_REBATE" /><el-option label="Care可用金" value="CARE_CREDIT" /></el-select>
-          </el-form-item>
-          <el-form-item v-if="saForm.accountType === 'SUPPLIER_REBATE'" label="供应商" required>
-            <el-select v-model="saForm.supplierId" filterable style="width:100%"><el-option v-for="s in accountSuppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" /></el-select>
+            <el-select v-model="saForm.accountType" style="width:100%"><el-option label="资金账户" value="FUND" /><el-option label="政策补贴应收" value="POLICY_RECEIVABLE" /><el-option label="Care可用金" value="CARE_CREDIT" /></el-select>
           </el-form-item>
           <el-form-item label="开户行">
             <el-input v-model="saForm.bankName" placeholder="请输入开户行" />
@@ -1476,9 +1473,8 @@ const saFormDialogVisible = ref(false)
 const settlementAccountData = ref([])
 const saDialogTitle = ref('新增结算账号')
 const editingSaId = ref(null)
-const accountSuppliers = ref([])
-const saForm = reactive({ accountName: '', accountType: 'FUND', supplierId: '', bankName: '', accountNumber: '', usageNote: '', sortOrder: 0 })
-const accountTypeText = value => ({ FUND:'资金账户', POLICY_RECEIVABLE:'政策补贴应收', SUPPLIER_REBATE:'供应商返利', CARE_CREDIT:'Care可用金' }[value] || '资金账户')
+const saForm = reactive({ accountName: '', accountType: 'FUND', bankName: '', accountNumber: '', usageNote: '', sortOrder: 0 })
+const accountTypeText = value => ({ FUND:'资金账户', POLICY_RECEIVABLE:'政策补贴应收', CARE_CREDIT:'Care可用金' }[value] || '资金账户')
 
 const openSaMgmtDialog = async () => {
   saMgmtDialogVisible.value = true
@@ -1497,7 +1493,6 @@ const handleSaMgmtClose = () => {
 }
 
 const openSettlementAccountDialog = (row) => {
-  if (accountSuppliers.value.length === 0) api.getSupplierList({page:1,pageSize:500}).then(res => { accountSuppliers.value = res.data?.list || res.data || [] })
   if (row) {
     saDialogTitle.value = '编辑结算账号'
     editingSaId.value = row.account_id
@@ -1505,7 +1500,6 @@ const openSettlementAccountDialog = (row) => {
     saForm.bankName = row.bank_name
     saForm.accountNumber = row.account_number
     saForm.accountType = row.account_type || 'FUND'
-    saForm.supplierId = row.supplier_id || ''
     saForm.usageNote = row.usage_note || ''
     saForm.sortOrder = row.sort_order || 0
   } else {
@@ -1515,7 +1509,6 @@ const openSettlementAccountDialog = (row) => {
     saForm.bankName = ''
     saForm.accountNumber = ''
     saForm.accountType = 'FUND'
-    saForm.supplierId = ''
     saForm.usageNote = ''
     saForm.sortOrder = 0
     restoreSystemDraft('settlement-account-create', saForm)
@@ -1528,7 +1521,7 @@ const handleSaSubmit = async () => {
   submitLoading.value = true
   try {
     let res
-    const data = { accountName: saForm.accountName, accountType: saForm.accountType, supplierId: saForm.supplierId, bankName: saForm.bankName, accountNumber: saForm.accountNumber, usageNote: saForm.usageNote, sortOrder: saForm.sortOrder }
+    const data = { accountName: saForm.accountName, accountType: saForm.accountType, bankName: saForm.bankName, accountNumber: saForm.accountNumber, usageNote: saForm.usageNote, sortOrder: saForm.sortOrder }
     if (editingSaId.value) {
       res = await api.updateSettlementAccount(editingSaId.value, data)
     } else {
@@ -1584,7 +1577,6 @@ const saveSaSort = async () => {
 const resetSaForm = () => {
   saForm.accountName = ''
   saForm.accountType = 'FUND'
-  saForm.supplierId = ''
   saForm.bankName = ''
   saForm.accountNumber = ''
   saForm.usageNote = ''

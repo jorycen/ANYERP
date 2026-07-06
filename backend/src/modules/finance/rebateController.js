@@ -69,6 +69,57 @@ async function recordSupplierRebateAccountTransaction(supplierId, type, amount, 
   }, { transaction });
 }
 
+async function ensureSupplierRebateAccount(supplier, transaction = null) {
+  const supplierId = supplier?.supplier_id || supplier;
+  const supplierName = supplier?.name || supplier?.supplier_name || '';
+  let account = await SettlementAccount.findOne({
+    where: { account_type: 'SUPPLIER_REBATE', supplier_id: supplierId },
+    order: [['status', 'DESC'], ['sort_order', 'ASC']],
+    transaction,
+    lock: transaction?.LOCK?.UPDATE
+  });
+  if (account) {
+    if (account.status !== undefined && Number(account.status) !== 1) {
+      await account.update({ status: 1 }, { transaction });
+      account.status = 1;
+    }
+    return account;
+  }
+
+  account = await SettlementAccount.create({
+    account_id: generateUUID(),
+    account_name: `${supplierName || supplierId}返利内部账户`,
+    bank_name: '',
+    account_number: '',
+    account_type: 'SUPPLIER_REBATE',
+    supplier_id: supplierId,
+    usage_note: '系统自动维护，仅用于返利上账、采购抵扣、采购退单及冲销',
+    sort_order: 900,
+    status: 1
+  }, { transaction });
+
+  const latest = await SupplierRebate.findOne({
+    where: { supplier_id: supplierId },
+    order: [['create_time', 'DESC'], ['rebate_id', 'DESC']],
+    transaction,
+    lock: transaction?.LOCK?.UPDATE
+  });
+  const openingBalance = Number(latest?.balance || 0);
+  if (openingBalance !== 0) {
+    await SettlementAccountTransaction.create({
+      transaction_id: generateUUID(),
+      account_id: account.account_id,
+      type: openingBalance > 0 ? 'income' : 'expense',
+      amount: Math.abs(openingBalance),
+      balance_after: openingBalance,
+      description: '供应商返利内部账户期初余额同步',
+      related_ref: 'OPENING_BALANCE',
+      create_user: 'system'
+    }, { transaction });
+  }
+  return account;
+}
+
 /**
  * 返利上账
  */
@@ -87,14 +138,15 @@ async function addRebate(ctx) {
     where: { supplier_id: supplierId, status: 1, is_deleted: 0 }
   });
   if (!supplier) ctx.throw(404, '供应商不存在或已停用');
-  const account = await SettlementAccount.findOne({
-    where: { account_type: 'SUPPLIER_REBATE', supplier_id: supplierId, status: 1 }
-  });
-  if (!account) ctx.throw(409, `未配置${supplier.name || '该供应商'}的供应商返利账户`);
-
   const user = ctx.state.user || {};
   let postingOrder;
   await sequelize.transaction(async transaction => {
+    const lockedSupplier = await Supplier.findByPk(supplierId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!lockedSupplier) ctx.throw(404, '供应商不存在');
+    await ensureSupplierRebateAccount(lockedSupplier, transaction);
     const latest = await SupplierRebate.findOne({
       where: { supplier_id: supplierId },
       order: [['create_time', 'DESC'], ['rebate_id', 'DESC']],
@@ -636,5 +688,6 @@ module.exports = {
   getCostAdjustmentList,
   recordRebateDeduction,
   recordSupplierRebateAccountTransaction,
+  ensureSupplierRebateAccount,
   _getRebateBalance
 };

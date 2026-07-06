@@ -548,7 +548,7 @@ async function getSettlementAccountsWithBalance(ctx) {
     const { page = 1, pageSize = 20 } = ctx.query;
 
     const { count, rows } = await SettlementAccount.findAndCountAll({
-      where: { status: 1 },
+      where: { status: 1, account_type: { [Op.ne]: 'SUPPLIER_REBATE' } },
       order: [['sort_order', 'ASC']],
       ...paginate({}, { page, pageSize })
     });
@@ -611,6 +611,9 @@ async function getAccountTransactions(ctx) {
 
   const account = await SettlementAccount.findByPk(accountId);
   if (!account) ctx.throw(404, '结算账户不存在');
+  if (account.account_type === 'SUPPLIER_REBATE') {
+    ctx.throw(403, '供应商返利内部账户请在返利管理中查看');
+  }
 
   const { count, rows } = await SettlementAccountTransaction.findAndCountAll({
     where: { account_id: accountId },

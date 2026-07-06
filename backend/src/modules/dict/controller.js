@@ -2,7 +2,7 @@
  * 字典管理控制器
  * 客户来源 / 收款方式 / 结算账号 / 金额补录项目
  */
-const { sequelize, CustomerSource, PaymentMethod, PaymentMethodStore, SupplementItem, SettlementAccount, SettlementAccountTransaction, SupplierRebate, Store, Supplier } = require('../../models');
+const { sequelize, CustomerSource, PaymentMethod, PaymentMethodStore, SupplementItem, SettlementAccount, Store } = require('../../models');
 const { Op } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult } = require('../../utils');
 
@@ -318,6 +318,37 @@ async function getPaymentMethodsByStore(ctx) {
   ctx.body = { code: 0, data: result };
 }
 
+async function validatePaymentMethodAccounts(ctx, {
+  settlementAccountId,
+  receivableSettlementAccountId,
+  storeConfigs
+}) {
+  const fundIds = new Set();
+  const receivableIds = new Set();
+  if (settlementAccountId) fundIds.add(String(settlementAccountId));
+  if (receivableSettlementAccountId) receivableIds.add(String(receivableSettlementAccountId));
+  for (const config of Array.isArray(storeConfigs) ? storeConfigs : []) {
+    if (config.settlementAccountId) fundIds.add(String(config.settlementAccountId));
+    if (config.receivableSettlementAccountId) receivableIds.add(String(config.receivableSettlementAccountId));
+  }
+  const allIds = [...new Set([...fundIds, ...receivableIds])];
+  if (allIds.length === 0) return;
+  const accounts = await SettlementAccount.findAll({
+    where: { account_id: { [Op.in]: allIds }, status: 1 }
+  });
+  const accountMap = new Map(accounts.map(account => [String(account.account_id), account]));
+  for (const accountId of fundIds) {
+    if (accountMap.get(accountId)?.account_type !== 'FUND') {
+      ctx.throw(400, '收款方式只能绑定启用的资金账户');
+    }
+  }
+  for (const accountId of receivableIds) {
+    if (accountMap.get(accountId)?.account_type !== 'POLICY_RECEIVABLE') {
+      ctx.throw(400, '政策补贴应收只能绑定启用的政策补贴应收账户');
+    }
+  }
+}
+
 async function createPaymentMethod(ctx) {
   const {
     name, code, icon, isGlobal, storeConfigs, sortOrder,
@@ -328,6 +359,11 @@ async function createPaymentMethod(ctx) {
   if (!Number.isFinite(numericTaxRate) || numericTaxRate < 0 || numericTaxRate > 100) {
     ctx.throw(400, '默认税率必须是0至100之间的百分数');
   }
+  await validatePaymentMethodAccounts(ctx, {
+    settlementAccountId,
+    receivableSettlementAccountId,
+    storeConfigs
+  });
 
   const t = await (require('../../models').sequelize).transaction();
   try {
@@ -382,6 +418,11 @@ async function updatePaymentMethod(ctx) {
       ctx.throw(400, '默认税率必须是0至100之间的百分数');
     }
   }
+  await validatePaymentMethodAccounts(ctx, {
+    settlementAccountId,
+    receivableSettlementAccountId,
+    storeConfigs
+  });
 
   const t = await (require('../../models').sequelize).transaction();
   try {
@@ -464,7 +505,7 @@ async function sortPaymentMethods(ctx) {
 
 async function getSettlementAccountList(ctx) {
   const { keyword, page = 1, pageSize = 20 } = ctx.query;
-  const where = { status: 1 };
+  const where = { status: 1, account_type: { [Op.ne]: 'SUPPLIER_REBATE' } };
   if (keyword) {
     where[Op.or] = [
       { account_name: { [Op.like]: `%${keyword}%` } },
@@ -484,39 +525,30 @@ async function getSettlementAccountList(ctx) {
 
 async function getAllSettlementAccounts(ctx) {
   const rows = await SettlementAccount.findAll({
-    where: { status: 1 },
+    where: { status: 1, account_type: { [Op.ne]: 'SUPPLIER_REBATE' } },
     order: [['sort_order', 'ASC']]
   });
   ctx.body = { code: 0, data: rows };
 }
 
 async function createSettlementAccount(ctx) {
-  const { accountName, bankName, accountNumber, accountType = 'FUND', supplierId, usageNote, sortOrder } = ctx.request.body;
+  const { accountName, bankName, accountNumber, accountType = 'FUND', usageNote, sortOrder } = ctx.request.body;
   if (!accountName) ctx.throw(400, '账号名称不能为空');
-  if (!['FUND', 'POLICY_RECEIVABLE', 'SUPPLIER_REBATE', 'CARE_CREDIT'].includes(accountType)) ctx.throw(400, '账户类型无效');
-  if (accountType === 'SUPPLIER_REBATE' && !supplierId) ctx.throw(400, '供应商返利账户必须绑定供应商');
-  if (supplierId && !await Supplier.findByPk(supplierId)) ctx.throw(400, '供应商不存在');
-  if (accountType === 'SUPPLIER_REBATE' && await SettlementAccount.findOne({ where: { account_type: 'SUPPLIER_REBATE', supplier_id: supplierId, status: 1 } })) ctx.throw(400, '该供应商已存在启用的返利账户');
+  if (accountType === 'SUPPLIER_REBATE') {
+    ctx.throw(400, '供应商返利账户由系统自动维护，不允许手工创建');
+  }
+  if (!['FUND', 'POLICY_RECEIVABLE', 'CARE_CREDIT'].includes(accountType)) {
+    ctx.throw(400, '账户类型无效');
+  }
 
   try {
     await sequelize.transaction(async transaction => {
       const accountId = generateUUID();
       await SettlementAccount.create({
         account_id: accountId, account_name: accountName, bank_name: bankName || '', account_number: accountNumber || '',
-        account_type: accountType, supplier_id: accountType === 'SUPPLIER_REBATE' ? supplierId : null,
+        account_type: accountType, supplier_id: null,
         usage_note: usageNote || '', sort_order: sortOrder || 0, status: 1
       }, { transaction });
-      if (accountType === 'SUPPLIER_REBATE') {
-        const latest = await SupplierRebate.findOne({ where: { supplier_id: supplierId }, order: [['create_time', 'DESC'], ['rebate_id', 'DESC']], transaction });
-        const openingBalance = Number(latest?.balance || 0);
-        if (openingBalance !== 0) {
-          await SettlementAccountTransaction.create({
-            transaction_id: generateUUID(), account_id: accountId, type: openingBalance > 0 ? 'income' : 'expense',
-            amount: Math.abs(openingBalance), balance_after: openingBalance,
-            description: '供应商返利账户期初余额同步', related_ref: 'OPENING_BALANCE', create_user: ctx.state.user?.name || ''
-          }, { transaction });
-        }
-      }
     });
     ctx.body = { code: 0, message: '创建成功' };
   } catch (error) {
@@ -527,29 +559,28 @@ async function createSettlementAccount(ctx) {
 
 async function updateSettlementAccount(ctx) {
   const { id } = ctx.params;
-  const { accountName, bankName, accountNumber, accountType, supplierId, usageNote, sortOrder, status } = ctx.request.body;
+  const { accountName, bankName, accountNumber, accountType, usageNote, sortOrder, status } = ctx.request.body;
 
   const record = await SettlementAccount.findByPk(id);
   if (!record) ctx.throw(404, '记录不存在');
+  if (record.account_type === 'SUPPLIER_REBATE') {
+    ctx.throw(403, '供应商返利账户由系统自动维护，不允许手工修改');
+  }
 
   const updates = {};
   if (accountName !== undefined) updates.account_name = accountName;
   if (bankName !== undefined) updates.bank_name = bankName;
   if (accountNumber !== undefined) updates.account_number = accountNumber;
   if (accountType !== undefined) {
-    if (!['FUND', 'POLICY_RECEIVABLE', 'SUPPLIER_REBATE', 'CARE_CREDIT'].includes(accountType)) ctx.throw(400, '账户类型无效');
+    if (accountType === 'SUPPLIER_REBATE') {
+      ctx.throw(400, '供应商返利账户由系统自动维护，不允许手工设置');
+    }
+    if (!['FUND', 'POLICY_RECEIVABLE', 'CARE_CREDIT'].includes(accountType)) {
+      ctx.throw(400, '账户类型无效');
+    }
     updates.account_type = accountType;
   }
-  const effectiveType = accountType || record.account_type || 'FUND';
-  if (effectiveType === 'SUPPLIER_REBATE') {
-    const effectiveSupplierId = supplierId !== undefined ? supplierId : record.supplier_id;
-    if (!effectiveSupplierId || !await Supplier.findByPk(effectiveSupplierId)) ctx.throw(400, '供应商返利账户必须绑定有效供应商');
-    const duplicate = await SettlementAccount.findOne({ where: { account_type: 'SUPPLIER_REBATE', supplier_id: effectiveSupplierId, account_id: { [Op.ne]: id }, status: 1 } });
-    if (duplicate) ctx.throw(400, '该供应商已存在其他启用的返利账户');
-    updates.supplier_id = effectiveSupplierId;
-  } else if (accountType !== undefined) {
-    updates.supplier_id = null;
-  }
+  if (accountType !== undefined) updates.supplier_id = null;
   if (usageNote !== undefined) updates.usage_note = usageNote;
   if (sortOrder !== undefined) updates.sort_order = sortOrder;
   if (status !== undefined) updates.status = status;
@@ -562,6 +593,9 @@ async function deleteSettlementAccount(ctx) {
   const { id } = ctx.params;
   const record = await SettlementAccount.findByPk(id);
   if (!record) ctx.throw(404, '记录不存在');
+  if (record.account_type === 'SUPPLIER_REBATE') {
+    ctx.throw(403, '供应商返利账户由系统自动维护，不允许手工删除');
+  }
   await record.update({ status: 0 });
   ctx.body = { code: 0, message: '删除成功' };
 }
