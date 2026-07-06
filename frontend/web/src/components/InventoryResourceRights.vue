@@ -29,34 +29,6 @@
         <el-pagination v-model:current-page="rightsQuery.page" v-model:page-size="rightsQuery.pageSize" :total="rightsTotal" layout="total, prev, pager, next" @current-change="loadRights" />
       </el-tab-pane>
 
-      <el-tab-pane v-if="financeOnly" label="资源下账" name="settlements">
-        <div class="filter-bar">
-          <el-input v-model="settlementQuery.snCode" placeholder="SN码" clearable style="width:210px" />
-          <el-select v-model="settlementQuery.resourceType" placeholder="权益类型" clearable style="width:160px">
-            <el-option v-for="item in resourceOptions" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-          <el-select v-model="settlementQuery.status" placeholder="下账状态" clearable style="width:140px">
-            <el-option label="待下账" value="PENDING" /><el-option label="已下账" value="SETTLED" />
-          </el-select>
-          <el-button type="primary" @click="loadSettlements">查询</el-button>
-        </div>
-        <el-alert title="销售使用或公司套回只会生成待下账记录；财务点击下账后，金额才进入配置的资金、供应商返利或 Care 可用金账户。" type="info" :closable="false" style="margin-bottom:12px" />
-        <el-table :data="settlements" border stripe v-loading="loading">
-          <el-table-column prop="settlement_no" label="下账单号" min-width="190" />
-          <el-table-column prop="sn_code" label="SN" min-width="160" />
-          <el-table-column label="资源类别" width="140"><template #default="{row}">{{ row.ResourceCategory?.name || resourceText(row.resource_type) }}</template></el-table-column>
-          <el-table-column label="来源" width="100"><template #default="{row}">{{ sourceText(row.source_type) }}</template></el-table-column>
-          <el-table-column prop="counterparty_name" label="来源供应商" min-width="140" />
-          <el-table-column label="金额" width="110"><template #default="{row}">¥{{ money(row.amount) }}</template></el-table-column>
-          <el-table-column label="到账账户" min-width="160"><template #default="{row}">{{ row.TargetAccount?.account_name || row.ResourceCategory?.DefaultAccount?.account_name || '未配置' }}</template></el-table-column>
-          <el-table-column label="状态" width="100"><template #default="{row}"><el-tag :type="row.status === 'SETTLED' ? 'success' : 'warning'">{{ row.status === 'SETTLED' ? '已下账' : '待下账' }}</el-tag></template></el-table-column>
-          <el-table-column prop="settled_by_name" label="下账人" width="100" />
-          <el-table-column prop="settled_at" label="下账时间" width="170" />
-          <el-table-column label="操作" width="90" fixed="right"><template #default="{row}"><el-button v-if="row.status === 'PENDING'" link type="success" @click="settle(row)">下账</el-button></template></el-table-column>
-        </el-table>
-        <el-pagination v-model:current-page="settlementQuery.page" :total="settlementTotal" layout="total, prev, pager, next" @current-change="loadSettlements" />
-      </el-tab-pane>
-
       <el-tab-pane :label="financeOnly ? '资源套回审批' : '权益变更记录'" name="changes">
         <div class="filter-bar">
           <el-input v-model="changeQuery.snCode" placeholder="SN码" clearable style="width:210px" />
@@ -246,7 +218,6 @@ const changeQuery = reactive({ snCode:'', resourceType:'', approvalStatus: props
 const costs = ref([]); const products = ref([]); const productLoading = ref(false)
 const suppliers = ref([])
 const ledger = ref([]); const ledgerTotal = ref(0); const ledgerQuery = reactive({ snCode:'', resourceType:'', page:1, pageSize:20 })
-const settlements = ref([]); const settlementTotal = ref(0); const settlementQuery = reactive({ snCode:'', resourceType:'', status:'PENDING', page:1, pageSize:20 })
 const costForm = reactive({
   productId:'', resourceType:'GOV_SUBSIDY', supplierId:'', supplierName:'',
   costAmount:0, calculationType:'fixed_amount', affectsPerformanceProfit:false,
@@ -267,7 +238,6 @@ const statusText = value => statusOptions.find(item => item.value === value)?.la
 const statusType = value => ({AVAILABLE:'success',LOCKED:'warning',USED:'info',CLAIMED_BACK:'danger',EXCEPTION:'danger'}[value] || '')
 const approvalText = value => ({pending_finance:'待财务审批',approved:'已通过',rejected:'已拒绝'}[value] || value)
 const reasonText = value => ({SALE_USED:'销售使用',COMPANY_CLAIMED_BACK:'公司套回',ORDER_LOCKED:'订单锁定',ORDER_CANCEL_RELEASE:'订单取消释放',MANUAL_ADJUST:'人工调整',PURCHASE_INBOUND:'采购入库',BATCH_ADJUST:'批量调整',SALE_TRIGGER:'销售触发',SALE_TRIGGER_NOT_ELIGIBLE:'销售未达成条件'}[value] || value)
-const sourceText = value => ({SALE_USE:'销售使用',COMPANY_CLAIM:'公司套回',MANUFACTURER_REBATE:'厂商返利'}[value] || value)
 const calcTypeText = value => ({fixed_amount:'固定金额',percentage_inventory_cost:'库存成本比例',percentage_sale_amount:'销售金额比例'}[value] || value)
 const rulePeriodText = row => row.effective_start || row.effective_end ? `${String(row.effective_start || '不限').slice(0,10)} 至 ${String(row.effective_end || '不限').slice(0,10)}` : '长期有效'
 const triggerText = row => {
@@ -280,7 +250,7 @@ async function loadRights(){ loading.value=true; try{ const res=await api.getRes
 async function loadChanges(){ loading.value=true; try{ const res=await api.getResourceRightChanges(changeQuery); changes.value=payloadList(res); changeTotal.value=payloadTotal(res) }catch(e){ ElMessage.error(e.response?.data?.message||'加载变更记录失败') }finally{ loading.value=false } }
 async function loadCosts(){ try{ const res=await api.getProductResourceCostConfigs({}); costs.value=res.data || [] }catch(e){ ElMessage.error('加载成本定义失败') } }
 async function loadLedger(){ try{const res=await api.getResourceCostAdjustments(ledgerQuery);ledger.value=payloadList(res);ledgerTotal.value=payloadTotal(res)}catch(e){ElMessage.error('加载成本流水失败')} }
-function loadActive(name){ if(name==='rights')loadRights(); else if(name==='changes')loadChanges(); else if(name==='settlements')loadSettlements(); else if(name==='cost-ledger')loadLedger(); else loadCosts() }
+function loadActive(name){ if(name==='rights')loadRights(); else if(name==='changes')loadChanges(); else if(name==='cost-ledger')loadLedger(); else loadCosts() }
 async function loadCategories(){
   const res=await api.getResourceCategories({activeOnly:1})
   resourceOptions.value=(res.data||[]).map(row=>({label:row.name,value:row.category_code}))
@@ -289,9 +259,6 @@ async function loadCategories(){
   }
 }
 async function loadSuppliers(){ try{const res=await api.getSupplierList({page:1,pageSize:500}); suppliers.value=res.data?.list || res.data || []}catch(e){} }
-async function loadSettlements(){ loading.value=true; try{const res=await api.getResourceSettlements(settlementQuery);settlements.value=payloadList(res);settlementTotal.value=payloadTotal(res)}catch(e){ElMessage.error(e.response?.data?.message||'加载待下账记录失败')}finally{loading.value=false} }
-async function settle(row){ try{await ElMessageBox.confirm(`确认将 ${resourceText(row.resource_type)} ¥${money(row.amount)} 下账到配置账户？`,'下账确认',{type:'warning'});await api.settleResource(row.settlement_id);ElMessage.success('下账成功');loadSettlements()}catch(e){if(e!=='cancel')ElMessage.error(e.response?.data?.message||'下账失败')} }
-
 async function openBySn(){
   const { value } = await ElMessageBox.prompt('请输入完整SN码', '初始化/维护SN权益', { inputPattern:/\S+/, inputErrorMessage:'请输入SN码' }).catch(()=>({}))
   if(!value)return

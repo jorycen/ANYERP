@@ -2,10 +2,18 @@
  * 库房管理控制器
  * 优化版：非SN商品直接操作聚合库存，SN商品同时维护SN记录和聚合库存
  */
-const { sequelize, ProductSn, Product, ProductPn, ProductPrice, ProductPriceChangeLog, ProductBarcode, Store, Location, InventoryWarning, Inbound, InboundItem, ReturnStock, ReturnStockItem, PurchaseRequest, Payable, Supplier, Inventory, SnLog, Order, OrderItem, Transfer, TransferItem, InventoryConversion, InventoryConversionItem } = require('../../models');
+const {
+  sequelize, ProductSn, Product, ProductPn, ProductPrice, ProductPriceChangeLog,
+  SnDistributorPrice, SnDistributorPriceChangeLog, ResourceCategory,
+  ProductBarcode, Store, Location, InventoryWarning, Inbound, InboundItem,
+  ReturnStock, ReturnStockItem, PurchaseRequest, Payable, Supplier, Inventory,
+  SnLog, Order, OrderItem, Transfer, TransferItem, InventoryConversion,
+  InventoryConversionItem
+} = require('../../models');
 const { Op, Sequelize } = require('sequelize');
 const { generateInboundNo, generateOutboundNo, generateTransferNo, generateUUID, generateBatchNo, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
-const { initializeSnResourceRightsFromInbound } = require('./resourceRights');
+const { getUserRoles } = require('../../middleware/permission');
+const { initializeSnResourceRightsFromInbound, summariesForSns } = require('./resourceRights');
 
 function splitCodes(value) {
   return String(value || '')
@@ -19,6 +27,343 @@ function assertStoreVisible(ctx, storeId) {
   if (!allowed.includes('*') && !allowed.map(String).includes(String(storeId || ''))) {
     ctx.throw(403, '无权访问该门店库存数据');
   }
+}
+
+const RESOURCE_STATUS_LABELS = {
+  AVAILABLE: '可用',
+  LOCKED: '已锁定',
+  USED: '已核销',
+  CLAIMED_BACK: '已套回',
+  NOT_APPLICABLE: '不适用',
+  EXCEPTION: '异常'
+};
+
+function calculateStockAgeDays(inboundTime, now = new Date()) {
+  if (!inboundTime) return null;
+  const start = new Date(inboundTime);
+  if (Number.isNaN(start.getTime())) return null;
+  return Math.max(0, Math.floor((now.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)));
+}
+
+function resolveEffectiveSalePrice(unifiedSalePrice, specialPrice) {
+  const special = Number(specialPrice || 0);
+  return special > 0 ? special : Number(unifiedSalePrice || 0);
+}
+
+function canManageDistributorPrice(user, distributorId) {
+  const roles = getUserRoles(user);
+  if (roles.includes('boss')) return true;
+  return roles.includes('admin') && String(user?.distributorId || '') === String(distributorId || '');
+}
+
+async function resolveSnPriceScope(ctx, snId, { requireInStock = false } = {}) {
+  const sn = await ProductSn.findOne({
+    where: { sn_id: snId, is_deleted: 0 },
+    attributes: ['sn_id', 'sn_code', 'product_id', 'store_id', 'status', 'remark']
+  });
+  if (!sn) ctx.throw(404, 'SN不存在');
+  if (requireInStock && sn.status !== 'in_stock') ctx.throw(409, '只有当前在库SN可以设置特价');
+  if (!sn.store_id) ctx.throw(400, 'SN未绑定当前门店，无法确定经销商价格范围');
+
+  assertStoreVisible(ctx, sn.store_id);
+  const store = await Store.findOne({
+    where: { store_id: sn.store_id, is_deleted: 0 },
+    attributes: ['store_id', 'name', 'distributor_id']
+  });
+  if (!store) ctx.throw(404, 'SN所在门店不存在');
+  if (!store.distributor_id) ctx.throw(400, 'SN所在门店未绑定经销商');
+  if (!canManageDistributorPrice(ctx.state.user, store.distributor_id)) {
+    ctx.throw(403, '只能维护当前账号所属经销商的SN特价');
+  }
+  return { sn, store, distributorId: store.distributor_id };
+}
+
+/**
+ * SN库存清单 - 默认只显示当前在库SN，按授权门店在数据库层筛选与分页。
+ */
+async function getSnInventoryList(ctx) {
+  const {
+    keyword = '', storeId = '', locationId = '', resourceType = '', resourceStatus = '',
+    specialOnly = '', minAgeDays = '', maxAgeDays = '', page = 1, pageSize = 20
+  } = ctx.query;
+  const user = ctx.state.user || {};
+  const allowedStoreIds = Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds : [];
+
+  if (storeId) assertStoreVisible(ctx, storeId);
+  if (!storeId && !allowedStoreIds.includes('*') && allowedStoreIds.length === 0) {
+    ctx.body = formatPaginatedResult([], { page, pageSize, count: 0 });
+    return;
+  }
+
+  const where = [
+    "sn.STATUS = 'in_stock'",
+    'sn.IS_DELETED = 0',
+    'p.IS_DELETED = 0',
+    'p.STATUS = 1',
+    'st.IS_DELETED = 0'
+  ];
+  const replacements = {};
+
+  if (storeId) {
+    where.push('sn.STORE_ID = :storeId');
+    replacements.storeId = storeId;
+  } else if (!allowedStoreIds.includes('*')) {
+    where.push('sn.STORE_ID IN (:allowedStoreIds)');
+    replacements.allowedStoreIds = allowedStoreIds;
+  }
+  if (locationId) {
+    where.push('sn.LOCATION_ID = :locationId');
+    replacements.locationId = locationId;
+  }
+  if (keyword) {
+    where.push('(sn.SN_CODE LIKE :keyword OR sn.PN_CODE LIKE :keyword OR p.NAME LIKE :keyword OR p.PRODUCT_CODE LIKE :keyword)');
+    replacements.keyword = `%${String(keyword).trim()}%`;
+  }
+  if (resourceType) {
+    const statusSql = resourceStatus ? ' AND rr.CURRENT_STATUS = :resourceStatus' : '';
+    where.push(`EXISTS (
+      SELECT 1 FROM T_INVENTORY_RESOURCE_RIGHT rr
+      WHERE rr.SN_ID = sn.SN_ID AND rr.RESOURCE_TYPE = :resourceType${statusSql}
+    )`);
+    replacements.resourceType = resourceType;
+    if (resourceStatus) replacements.resourceStatus = resourceStatus;
+  } else if (resourceStatus) {
+    where.push(`EXISTS (
+      SELECT 1 FROM T_INVENTORY_RESOURCE_RIGHT rr
+      WHERE rr.SN_ID = sn.SN_ID AND rr.CURRENT_STATUS = :resourceStatus
+    )`);
+    replacements.resourceStatus = resourceStatus;
+  }
+  if (String(specialOnly) === '1') where.push('sp.PRICE_ID IS NOT NULL');
+
+  const minAge = Number(minAgeDays);
+  if (minAgeDays !== '' && Number.isFinite(minAge) && minAge >= 0) {
+    where.push('sn.INBOUND_TIME IS NOT NULL AND TIMESTAMPDIFF(DAY, sn.INBOUND_TIME, NOW()) >= :minAgeDays');
+    replacements.minAgeDays = Math.floor(minAge);
+  }
+  const maxAge = Number(maxAgeDays);
+  if (maxAgeDays !== '' && Number.isFinite(maxAge) && maxAge >= 0) {
+    where.push('sn.INBOUND_TIME IS NOT NULL AND TIMESTAMPDIFF(DAY, sn.INBOUND_TIME, NOW()) <= :maxAgeDays');
+    replacements.maxAgeDays = Math.floor(maxAge);
+  }
+
+  const joins = `
+    FROM T_PRODUCT_SN sn
+    INNER JOIN T_PRODUCT p ON p.PRODUCT_ID = sn.PRODUCT_ID
+    INNER JOIN T_STORE st ON st.STORE_ID = sn.STORE_ID
+    LEFT JOIN T_LOCATION loc ON loc.LOCATION_ID = sn.LOCATION_ID
+    LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = sn.PRODUCT_ID AND pp.STATUS = 1
+    LEFT JOIN T_SN_DISTRIBUTOR_PRICE sp
+      ON sp.SN_ID = sn.SN_ID
+     AND sp.DISTRIBUTOR_ID = st.DISTRIBUTOR_ID
+     AND sp.STATUS = 1`;
+  const whereSql = ` WHERE ${where.join(' AND ')}`;
+  const countRows = await sequelize.query(
+    `SELECT COUNT(*) AS total ${joins}${whereSql}`,
+    { replacements, type: Sequelize.QueryTypes.SELECT }
+  );
+  const count = Number(countRows[0]?.total || 0);
+  const currentPage = Math.max(Number(page) || 1, 1);
+  const currentPageSize = Math.min(Math.max(Number(pageSize) || 20, 1), 100);
+  const offset = (currentPage - 1) * currentPageSize;
+
+  const rows = await sequelize.query(
+    `SELECT
+       sn.SN_ID AS sn_id,
+       sn.SN_CODE AS sn_code,
+       sn.PN_CODE AS pn_code,
+       sn.PRODUCT_ID AS product_id,
+       sn.STORE_ID AS store_id,
+       sn.LOCATION_ID AS location_id,
+       sn.INBOUND_TIME AS inbound_time,
+       sn.TAX_TYPE AS tax_type,
+       sn.SOURCE_TYPE AS source_type,
+       sn.REMARK AS remark,
+       p.NAME AS product_name,
+       p.PRODUCT_CODE AS product_code,
+       st.NAME AS store_name,
+       st.DISTRIBUTOR_ID AS distributor_id,
+       COALESCE(loc.NAME, '未指定库位') AS location_name,
+       COALESCE(pp.STANDARD_PRICE, 0) AS unified_sale_price,
+       COALESCE(pp.MIN_SALE_PRICE, 0) AS min_sale_price,
+       sp.PRICE_ID AS special_price_id,
+       sp.SPECIAL_PRICE AS special_price,
+       sp.REMARK AS special_price_remark,
+       sp.UPDATE_USER AS special_price_update_user,
+       sp.UPDATE_TIME AS special_price_update_time
+     ${joins}${whereSql}
+     ORDER BY (sn.INBOUND_TIME IS NULL) ASC, sn.INBOUND_TIME ASC, sn.SN_ID DESC
+     LIMIT :limit OFFSET :offset`,
+    {
+      replacements: { ...replacements, limit: currentPageSize, offset },
+      type: Sequelize.QueryTypes.SELECT
+    }
+  );
+
+  const summaryMap = await summariesForSns(rows);
+  const categories = await ResourceCategory.findAll({
+    where: { status: 1 },
+    attributes: ['category_code', 'name', 'short_name'],
+    raw: true
+  });
+  const categoryNames = new Map(categories.map(row => [row.category_code, row.short_name || row.name]));
+  const list = rows.map(row => {
+    const summary = summaryMap.get(row.sn_id) || { rights: [] };
+    const resourceStatuses = (summary.rights || [])
+      .map(right => right.toJSON ? right.toJSON() : right)
+      .filter(right => right.current_status && right.current_status !== 'NOT_APPLICABLE')
+      .map(right => ({
+        resource_type: right.resource_type,
+        resource_name: categoryNames.get(right.resource_type) || right.resource_type,
+        current_status: right.current_status,
+        status_name: RESOURCE_STATUS_LABELS[right.current_status] || right.current_status,
+        amount: Number(right.amount || 0)
+      }));
+    const unifiedSalePrice = Number(row.unified_sale_price || 0);
+    const specialPrice = row.special_price_id ? Number(row.special_price || 0) : null;
+    return {
+      ...row,
+      unified_sale_price: unifiedSalePrice,
+      min_sale_price: Number(row.min_sale_price || 0),
+      special_price: specialPrice,
+      is_special_price: Boolean(row.special_price_id),
+      effective_sale_price: resolveEffectiveSalePrice(unifiedSalePrice, specialPrice),
+      stock_age_days: calculateStockAgeDays(row.inbound_time),
+      resource_statuses: resourceStatuses
+    };
+  });
+
+  ctx.body = formatPaginatedResult(list, {
+    page: currentPage,
+    pageSize: currentPageSize,
+    count
+  });
+}
+
+async function setSnSpecialPrice(ctx) {
+  const { snId } = ctx.params;
+  const specialPrice = Number(ctx.request.body?.specialPrice);
+  const remark = String(ctx.request.body?.remark || '').trim();
+  if (!Number.isFinite(specialPrice) || specialPrice <= 0 || specialPrice > 9999999999.99) {
+    ctx.throw(400, 'SN特价必须是大于0的有效金额');
+  }
+  const { sn, distributorId } = await resolveSnPriceScope(ctx, snId, { requireInStock: true });
+  const user = ctx.state.user || {};
+  let priceId = '';
+  let action = 'SET';
+
+  await sequelize.transaction(async transaction => {
+    let record = await SnDistributorPrice.findOne({
+      where: { sn_id: sn.sn_id, distributor_id: distributorId },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    const oldPrice = record?.status === 1 ? Number(record.special_price || 0) : null;
+    action = record ? (record.status === 1 ? 'UPDATE' : 'SET') : 'SET';
+    if (!record) {
+      record = await SnDistributorPrice.create({
+        price_id: generateUUID(),
+        sn_id: sn.sn_id,
+        sn_code: sn.sn_code,
+        distributor_id: distributorId,
+        special_price: specialPrice,
+        status: 1,
+        remark,
+        create_staff_id: user.staffId,
+        create_user: user.name,
+        update_staff_id: user.staffId,
+        update_user: user.name
+      }, { transaction });
+    } else {
+      await record.update({
+        sn_code: sn.sn_code,
+        special_price: specialPrice,
+        status: 1,
+        remark,
+        update_staff_id: user.staffId,
+        update_user: user.name,
+        update_time: new Date()
+      }, { transaction });
+    }
+    priceId = record.price_id;
+    await SnDistributorPriceChangeLog.create({
+      change_id: generateUUID(),
+      price_id: record.price_id,
+      sn_id: sn.sn_id,
+      sn_code: sn.sn_code,
+      distributor_id: distributorId,
+      action,
+      old_price: oldPrice,
+      new_price: specialPrice,
+      remark,
+      operator_staff_id: user.staffId,
+      operator_name: user.name
+    }, { transaction });
+  });
+
+  const productPrice = await ProductPrice.findOne({
+    where: { product_id: sn.product_id },
+    attributes: ['standard_price', 'min_sale_price'],
+    raw: true
+  });
+  ctx.body = {
+    priceId,
+    specialPrice,
+    action,
+    requiresPriceApproval: Number(productPrice?.min_sale_price || 0) > 0 &&
+      specialPrice < Number(productPrice.min_sale_price)
+  };
+}
+
+async function cancelSnSpecialPrice(ctx) {
+  const { snId } = ctx.params;
+  const remark = String(ctx.request.body?.remark || '').trim();
+  const { sn, distributorId } = await resolveSnPriceScope(ctx, snId);
+  const user = ctx.state.user || {};
+  let cancelled = false;
+
+  await sequelize.transaction(async transaction => {
+    const record = await SnDistributorPrice.findOne({
+      where: { sn_id: sn.sn_id, distributor_id: distributorId },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!record || record.status !== 1) return;
+    const oldPrice = Number(record.special_price || 0);
+    await record.update({
+      status: 0,
+      remark: remark || record.remark,
+      update_staff_id: user.staffId,
+      update_user: user.name,
+      update_time: new Date()
+    }, { transaction });
+    await SnDistributorPriceChangeLog.create({
+      change_id: generateUUID(),
+      price_id: record.price_id,
+      sn_id: sn.sn_id,
+      sn_code: sn.sn_code,
+      distributor_id: distributorId,
+      action: 'CANCEL',
+      old_price: oldPrice,
+      new_price: null,
+      remark,
+      operator_staff_id: user.staffId,
+      operator_name: user.name
+    }, { transaction });
+    cancelled = true;
+  });
+
+  ctx.body = { cancelled };
+}
+
+async function getSnSpecialPriceHistory(ctx) {
+  const { sn, distributorId } = await resolveSnPriceScope(ctx, ctx.params.snId);
+  const rows = await SnDistributorPriceChangeLog.findAll({
+    where: { sn_id: sn.sn_id, distributor_id: distributorId },
+    order: [['create_time', 'DESC'], ['change_id', 'DESC']],
+    raw: true
+  });
+  ctx.body = rows;
 }
 
 function normalizePnCode(value) {
@@ -2488,6 +2833,10 @@ async function getLocationsByStore(ctx) {
 
 module.exports = {
   getList,
+  getSnInventoryList,
+  setSnSpecialPrice,
+  cancelSnSpecialPrice,
+  getSnSpecialPriceHistory,
   getSnList,
   getInboundList,
   getInboundDetail,
@@ -2508,5 +2857,10 @@ module.exports = {
   voidConversion,
   getLocationsByStore,
   updateSn,
-  snTrace
+  snTrace,
+  _test: {
+    calculateStockAgeDays,
+    resolveEffectiveSalePrice,
+    canManageDistributorPrice
+  }
 };

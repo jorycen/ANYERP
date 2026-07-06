@@ -3,6 +3,9 @@
  */
 const {
   SupplierRebate,
+  RebatePostingOrder,
+  RebateSettlementAllocation,
+  ResourceSettlement,
   Supplier,
   Product,
   ManufacturerRebatePolicy,
@@ -30,6 +33,29 @@ function parseDate(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+function businessNo(prefix = 'RPO') {
+  const date = new Date();
+  const stamp = [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+    String(date.getHours()).padStart(2, '0'),
+    String(date.getMinutes()).padStart(2, '0'),
+    String(date.getSeconds()).padStart(2, '0')
+  ].join('');
+  return `${prefix}${stamp}${generateUUID().slice(-6).toUpperCase()}`;
+}
+
+function chinaDateBoundary(dateText, endOfDay = false) {
+  if (!dateText) return null;
+  const value = String(dateText).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return new Date(`${value}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`);
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 async function recordSupplierRebateAccountTransaction(supplierId, type, amount, description, relatedRef, user, transaction = null) {
   const account = await SettlementAccount.findOne({ where: { account_type: 'SUPPLIER_REBATE', supplier_id: supplierId, status: 1 }, transaction });
   if (!account) return;
@@ -47,62 +73,212 @@ async function recordSupplierRebateAccountTransaction(supplierId, type, amount, 
  * 返利上账
  */
 async function addRebate(ctx) {
-  const { supplierId, amount, remark } = ctx.request.body;
-  const user = ctx.state.user;
-
+  const body = ctx.request.body || {};
+  const supplierId = body.supplierId || body.supplier_id;
+  const amount = Math.round(toNumber(body.amount) * 100) / 100;
+  const remark = String(body.remark || '').trim();
+  const postingDate = body.postingDate || body.posting_date || new Date().toISOString().slice(0, 10);
   if (!supplierId) ctx.throw(400, '请选择供应商');
-  if (!amount || parseFloat(amount) <= 0) ctx.throw(400, '请输入正确的金额');
+  if (!Number.isFinite(amount) || amount <= 0) ctx.throw(400, '请输入正确的上账金额');
+  if (!remark) ctx.throw(400, '返利上账必须填写备注');
+  if (!parseDate(postingDate)) ctx.throw(400, '请选择正确的上账日期');
 
-  const supplier = await Supplier.findByPk(supplierId);
-  if (!supplier) ctx.throw(404, '供应商不存在');
-
-  const newBalance = await sequelize.transaction(async transaction => {
-    const currentBalance = await _getRebateBalance(supplierId, transaction);
-    const nextBalance = currentBalance + parseFloat(amount);
-    await SupplierRebate.create({
-      rebate_id: generateUUID(), supplier_id: supplierId, supplier_name: supplier.name,
-      type: 'credit', amount: parseFloat(amount), balance: nextBalance, remark: remark || '',
-      status: 'active', source_type: 'manual', create_user: user.name || user.phone
-    }, { transaction });
-    await recordSupplierRebateAccountTransaction(supplierId, 'income', amount, '手工返利上账', '', user.name || user.phone, transaction);
-    return nextBalance;
+  const supplier = await Supplier.findOne({
+    where: { supplier_id: supplierId, status: 1, is_deleted: 0 }
   });
+  if (!supplier) ctx.throw(404, '供应商不存在或已停用');
+  const account = await SettlementAccount.findOne({
+    where: { account_type: 'SUPPLIER_REBATE', supplier_id: supplierId, status: 1 }
+  });
+  if (!account) ctx.throw(409, `未配置${supplier.name || '该供应商'}的供应商返利账户`);
 
-  ctx.body = { code: 0, message: '返利上账成功', data: { balance: newBalance } };
+  const user = ctx.state.user || {};
+  let postingOrder;
+  await sequelize.transaction(async transaction => {
+    const latest = await SupplierRebate.findOne({
+      where: { supplier_id: supplierId },
+      order: [['create_time', 'DESC'], ['rebate_id', 'DESC']],
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    const postingId = generateUUID();
+    const postingNo = businessNo();
+    const rebateId = generateUUID();
+    const balance = Number(latest?.balance || 0) + amount;
+    postingOrder = await RebatePostingOrder.create({
+      posting_id: postingId,
+      posting_no: postingNo,
+      supplier_id: supplier.supplier_id,
+      supplier_name: supplier.name,
+      posting_date: postingDate,
+      amount,
+      matched_amount: 0,
+      status: 'UNMATCHED',
+      rebate_id: rebateId,
+      create_staff_id: user.staffId || null,
+      create_user: user.name || user.phone || '',
+      remark
+    }, { transaction });
+    await SupplierRebate.create({
+      rebate_id: rebateId,
+      supplier_id: supplier.supplier_id,
+      supplier_name: supplier.name,
+      type: 'credit',
+      amount,
+      balance,
+      related_no: postingNo,
+      remark,
+      status: 'active',
+      source_type: 'posting_order',
+      source_id: postingId,
+      create_user: user.name || user.phone || ''
+    }, { transaction });
+    await recordSupplierRebateAccountTransaction(
+      supplierId,
+      'income',
+      amount,
+      `返利上账：${remark}`,
+      postingNo,
+      user.name || user.phone || '',
+      transaction
+    );
+  });
+  ctx.body = { code: 0, message: '返利上账单已生效，可立即用于采购抵扣', data: postingOrder };
 }
 
 async function reverseRebate(ctx) {
-  const original = await SupplierRebate.findByPk(ctx.params.rebateId);
-  if (!original) ctx.throw(404, '返利记录不存在');
-  if (original.status === 'reversed') ctx.throw(409, '该返利记录已冲销');
-  if (!['manual', null, ''].includes(original.source_type)) ctx.throw(400, '业务自动生成的返利不能在此手工冲销');
+  ctx.throw(410, '返利流水不允许直接冲销，请从返利上账单发起冲销');
+}
+
+async function getRebatePostingOrders(ctx) {
+  const {
+    supplierId, status, remark, startDate, endDate, unmatchedOnly,
+    page = 1, pageSize = 20
+  } = ctx.query;
+  const where = {};
+  if (supplierId) where.supplier_id = supplierId;
+  if (status) where.status = status;
+  if (remark) where.remark = { [Op.like]: `%${remark}%` };
+  if (String(unmatchedOnly || '') === '1') {
+    where.status = { [Op.in]: ['UNMATCHED', 'PARTIALLY_MATCHED'] };
+  }
+  const start = chinaDateBoundary(startDate, false);
+  const end = chinaDateBoundary(endDate, true);
+  if (start || end) {
+    where.posting_date = {};
+    if (start) where.posting_date[Op.gte] = start;
+    if (end) where.posting_date[Op.lte] = end;
+  }
+  const { count, rows } = await RebatePostingOrder.findAndCountAll({
+    where,
+    include: [{
+      model: RebateSettlementAllocation,
+      as: 'Allocations',
+      required: false,
+      where: { status: 'ACTIVE' },
+      include: [{
+        model: ResourceSettlement,
+        as: 'Settlement',
+        required: false,
+        attributes: ['settlement_id', 'settlement_no', 'amount', 'status', 'remark']
+      }]
+    }],
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'RebatePostingOrder.status',
+      pendingStatuses: ['UNMATCHED', 'PARTIALLY_MATCHED'],
+      dateColumns: ['RebatePostingOrder.posting_date', 'RebatePostingOrder.create_time'],
+      idColumn: 'RebatePostingOrder.posting_id'
+    }),
+    distinct: true,
+    ...paginate({}, { page, pageSize })
+  });
+  const list = rows.map(row => {
+    const item = row.toJSON();
+    item.remaining_amount = Math.max(0, Number(item.amount || 0) - Number(item.matched_amount || 0));
+    return item;
+  });
+  ctx.body = formatPaginatedResult(list, { page, pageSize, count });
+}
+
+async function reverseRebatePostingOrder(ctx) {
   const reason = String(ctx.request.body?.reason || '').trim();
   if (!reason) ctx.throw(400, '请输入冲销原因');
-
   await sequelize.transaction(async transaction => {
-    const locked = await SupplierRebate.findByPk(original.rebate_id, { transaction, lock: transaction.LOCK.UPDATE });
-    if (locked.status === 'reversed') ctx.throw(409, '该返利记录已冲销');
-    const latest = await SupplierRebate.findOne({
-      where: { supplier_id: locked.supplier_id }, order: [['create_time', 'DESC'], ['rebate_id', 'DESC']],
-      transaction, lock: transaction.LOCK.UPDATE
+    const order = await RebatePostingOrder.findByPk(ctx.params.postingId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
     });
-    const reverseType = locked.type === 'credit' ? 'debit' : 'credit';
-    const amount = Number(locked.amount || 0);
-    const balance = Number(latest?.balance || 0) + (reverseType === 'credit' ? amount : -amount);
+    if (!order) ctx.throw(404, '返利上账单不存在');
+    if (order.status === 'REVERSED') ctx.throw(409, '该返利上账单已冲销');
+    if (Number(order.matched_amount || 0) > 0) {
+      ctx.throw(409, '该上账单已有下账核销记录，请先撤销对应核销');
+    }
+    const latest = await SupplierRebate.findOne({
+      where: { supplier_id: order.supplier_id },
+      order: [['create_time', 'DESC'], ['rebate_id', 'DESC']],
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    const amount = Number(order.amount || 0);
+    const balance = Number(latest?.balance || 0);
+    const activePostingAmount = Number(await RebatePostingOrder.sum('amount', {
+      where: {
+        supplier_id: order.supplier_id,
+        status: { [Op.ne]: 'REVERSED' }
+      },
+      transaction
+    }) || 0);
+    if (balance + 0.0001 < activePostingAmount) {
+      ctx.throw(
+        409,
+        `该供应商仍有 ¥${(activePostingAmount - balance).toFixed(2)} 返利被采购占用；请先完成采购退单`
+      );
+    }
+    const originalRebate = await SupplierRebate.findOne({
+      where: {
+        source_type: 'posting_order',
+        source_id: order.posting_id,
+        type: 'credit',
+        status: 'active'
+      },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!originalRebate) ctx.throw(409, '未找到上账单对应的返利余额流水');
     await SupplierRebate.create({
-      rebate_id: generateUUID(), supplier_id: locked.supplier_id, supplier_name: locked.supplier_name,
-      type: reverseType, amount, balance, related_no: locked.related_no,
-      remark: `冲销：${reason}`, status: 'active', source_type: 'manual_reversal',
-      source_id: locked.rebate_id, reversal_of: locked.rebate_id,
-      create_user: ctx.state.user.name || ctx.state.user.phone
+      rebate_id: generateUUID(),
+      supplier_id: order.supplier_id,
+      supplier_name: order.supplier_name,
+      type: 'debit',
+      amount,
+      balance: balance - amount,
+      related_no: order.posting_no,
+      remark: `返利上账单冲销：${reason}`,
+      status: 'active',
+      source_type: 'posting_order_reversal',
+      source_id: order.posting_id,
+      reversal_of: originalRebate.rebate_id,
+      create_user: ctx.state.user.name || ctx.state.user.phone || ''
     }, { transaction });
     await recordSupplierRebateAccountTransaction(
-      locked.supplier_id, reverseType === 'credit' ? 'income' : 'expense', amount,
-      `返利冲销：${reason}`, locked.related_no, ctx.state.user.name || ctx.state.user.phone, transaction
+      order.supplier_id,
+      'expense',
+      amount,
+      `返利上账单冲销：${reason}`,
+      `${order.posting_no}:REV`,
+      ctx.state.user.name || ctx.state.user.phone || '',
+      transaction
     );
-    await locked.update({ status: 'reversed' }, { transaction });
+    await originalRebate.update({ status: 'reversed' }, { transaction });
+    await order.update({
+      status: 'REVERSED',
+      reversed_at: new Date(),
+      reversed_by: ctx.state.user.staffId || null,
+      reversed_by_name: ctx.state.user.name || '',
+      reversal_reason: reason
+    }, { transaction });
   });
-  ctx.body = { code: 0, message: '返利记录已冲销' };
+  ctx.body = { code: 0, message: '返利上账单已冲销' };
 }
 
 /**
@@ -449,6 +625,8 @@ module.exports = {
   getRebateBalance,
   getRebateSummary,
   reverseRebate,
+  getRebatePostingOrders,
+  reverseRebatePostingOrder,
   createManufacturerPolicy,
   updateManufacturerPolicy,
   getManufacturerPolicyList,

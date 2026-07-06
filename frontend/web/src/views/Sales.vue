@@ -183,7 +183,7 @@
                       <el-option
                         v-for="sn in (row.snList || [])"
                         :key="sn.sn_id"
-                        :label="`${sn.sn_code} [${sn.sales_resource_label || '普通现货'}]`"
+                        :label="`${sn.sn_code} [${sn.sales_resource_label || '普通现货'}]${sn.is_special_price ? ` [特价 ¥${sn.special_price}]` : ''}`"
                         :value="sn.sn_code"
                       />
                     </el-select>
@@ -1156,10 +1156,14 @@ const onSnChange = (value, index) => {
   const sn = (item.snList || []).find(row => row.sn_code === value)
   item.snId = sn?.sn_id || ''
   item.selectedSn = sn || null
+  item.salePrice = sn
+    ? (parseFloat(sn.effective_sale_price) || item.standardPrice || 0)
+    : (item.standardPrice || 0)
   item.selectedResourceTypes = []
   item.useGovSubsidy = false
   item.useEduSubsidy = false
   item.useSalesReport = false
+  onPriceChange(index)
 }
 
 const resourceAvailable = (item, type) => {

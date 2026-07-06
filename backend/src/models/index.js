@@ -329,19 +329,30 @@ const ResourceSettlement = sequelize.define('ResourceSettlement', {
   source_type: { type: DataTypes.STRING(32), allowNull: false },
   source_id: { type: DataTypes.STRING(64), allowNull: false },
   batch_no: { type: DataTypes.STRING(64) },
-  sn_id: { type: DataTypes.STRING(32), allowNull: false },
-  sn_code: { type: DataTypes.STRING(128), allowNull: false },
-  product_id: { type: DataTypes.STRING(32), allowNull: false },
+  sn_id: { type: DataTypes.STRING(32) },
+  sn_code: { type: DataTypes.STRING(128) },
+  product_id: { type: DataTypes.STRING(32) },
   resource_type: { type: DataTypes.STRING(32), allowNull: false },
   counterparty_id: { type: DataTypes.STRING(32) },
   counterparty_name: { type: DataTypes.STRING(255) },
   amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  matched_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   status: { type: DataTypes.STRING(32), defaultValue: 'PENDING' },
   target_account_id: { type: DataTypes.STRING(64) },
   settled_at: { type: DataTypes.DATE },
   settled_by: { type: DataTypes.BIGINT(20) },
   settled_by_name: { type: DataTypes.STRING(64) },
+  create_staff_id: { type: DataTypes.BIGINT(20) },
+  create_user: { type: DataTypes.STRING(64) },
+  cancelled_at: { type: DataTypes.DATE },
+  cancelled_by: { type: DataTypes.BIGINT(20) },
+  cancelled_by_name: { type: DataTypes.STRING(64) },
+  reversed_at: { type: DataTypes.DATE },
+  reversed_by: { type: DataTypes.BIGINT(20) },
+  reversed_by_name: { type: DataTypes.STRING(64) },
+  correction_reason: { type: DataTypes.STRING(512) },
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
   remark: { type: DataTypes.STRING(512) }
 }, { tableName: 'T_RESOURCE_SETTLEMENT', timestamps: false });
 
@@ -484,6 +495,39 @@ const ProductPriceChangeLog = sequelize.define('ProductPriceChangeLog', {
   applied_time: { type: DataTypes.DATE },
   fail_reason: { type: DataTypes.STRING(512) }
 }, { tableName: 'T_PRODUCT_PRICE_CHANGE_LOG', timestamps: false });
+
+// 经销商按单台 SN 维护的销售特价。商品统一调价不得覆盖本表。
+const SnDistributorPrice = sequelize.define('SnDistributorPrice', {
+  price_id: { type: DataTypes.STRING(32), primaryKey: true },
+  sn_id: { type: DataTypes.STRING(32), allowNull: false },
+  sn_code: { type: DataTypes.STRING(128), allowNull: false },
+  distributor_id: { type: DataTypes.STRING(32), allowNull: false },
+  special_price: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  status: { type: DataTypes.TINYINT(1), defaultValue: 1 },
+  remark: { type: DataTypes.STRING(512) },
+  create_staff_id: { type: DataTypes.BIGINT(20) },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_staff_id: { type: DataTypes.BIGINT(20) },
+  update_user: { type: DataTypes.STRING(64) },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_SN_DISTRIBUTOR_PRICE', timestamps: false });
+
+// SN 经销商特价变更审计。设置、修改和取消均追加记录，不物理删除。
+const SnDistributorPriceChangeLog = sequelize.define('SnDistributorPriceChangeLog', {
+  change_id: { type: DataTypes.STRING(32), primaryKey: true },
+  price_id: { type: DataTypes.STRING(32), allowNull: false },
+  sn_id: { type: DataTypes.STRING(32), allowNull: false },
+  sn_code: { type: DataTypes.STRING(128), allowNull: false },
+  distributor_id: { type: DataTypes.STRING(32), allowNull: false },
+  action: { type: DataTypes.STRING(32), allowNull: false },
+  old_price: { type: DataTypes.DECIMAL(12, 2) },
+  new_price: { type: DataTypes.DECIMAL(12, 2) },
+  remark: { type: DataTypes.STRING(512) },
+  operator_staff_id: { type: DataTypes.BIGINT(20) },
+  operator_name: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_SN_DISTRIBUTOR_PRICE_CHANGE_LOG', timestamps: false });
 
 // ----------------------------------------
 // 库房模型
@@ -1227,9 +1271,50 @@ const SupplierRebate = sequelize.define('SupplierRebate', {
   balance: { type: DataTypes.DECIMAL(12, 2), allowNull: false, comment: '操作后余额' },
   related_no: { type: DataTypes.STRING(64), comment: '关联单号' },
   remark: { type: DataTypes.STRING(512) },
+  status: { type: DataTypes.STRING(32), defaultValue: 'active' },
+  source_type: { type: DataTypes.STRING(32), defaultValue: 'manual' },
+  source_id: { type: DataTypes.STRING(64) },
+  reversal_of: { type: DataTypes.STRING(32) },
   create_user: { type: DataTypes.STRING(64) },
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_SUPPLIER_REBATE', timestamps: false });
+
+// 返利预上账单。生效时增加供应商返利可用余额，后续与返利下账单进行核销。
+const RebatePostingOrder = sequelize.define('RebatePostingOrder', {
+  posting_id: { type: DataTypes.STRING(32), primaryKey: true },
+  posting_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
+  supplier_id: { type: DataTypes.STRING(32), allowNull: false },
+  supplier_name: { type: DataTypes.STRING(255) },
+  posting_date: { type: DataTypes.DATEONLY, allowNull: false },
+  amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  matched_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  status: { type: DataTypes.STRING(32), defaultValue: 'UNMATCHED' },
+  rebate_id: { type: DataTypes.STRING(32) },
+  create_staff_id: { type: DataTypes.BIGINT(20) },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  reversed_at: { type: DataTypes.DATE },
+  reversed_by: { type: DataTypes.BIGINT(20) },
+  reversed_by_name: { type: DataTypes.STRING(64) },
+  reversal_reason: { type: DataTypes.STRING(512) },
+  remark: { type: DataTypes.STRING(512), allowNull: false }
+}, { tableName: 'T_REBATE_POSTING_ORDER', timestamps: false });
+
+// 返利上账单与返利下账单之间的多对多核销金额。
+const RebateSettlementAllocation = sequelize.define('RebateSettlementAllocation', {
+  allocation_id: { type: DataTypes.STRING(32), primaryKey: true },
+  settlement_id: { type: DataTypes.STRING(32), allowNull: false },
+  posting_id: { type: DataTypes.STRING(32), allowNull: false },
+  amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  status: { type: DataTypes.STRING(32), defaultValue: 'ACTIVE' },
+  create_staff_id: { type: DataTypes.BIGINT(20) },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  reversed_at: { type: DataTypes.DATE },
+  reversed_by: { type: DataTypes.BIGINT(20) },
+  reversed_by_name: { type: DataTypes.STRING(64) },
+  reversal_reason: { type: DataTypes.STRING(512) }
+}, { tableName: 'T_REBATE_SETTLEMENT_ALLOCATION', timestamps: false });
 
 // 厂家返利预估记录，用于后台对账，不直接等同销售奖励。
 const RebateEstimate = sequelize.define('RebateEstimate', {
@@ -1458,6 +1543,11 @@ GoodsTypeResource.belongsTo(GoodsType, { foreignKey: 'goods_type_id', targetKey:
 GoodsTypeResource.belongsTo(ResourceCategory, { foreignKey: 'category_id', targetKey: 'category_id' });
 ResourceSettlement.belongsTo(ResourceCategory, { foreignKey: 'resource_type', targetKey: 'category_code', as: 'ResourceCategory' });
 ResourceSettlement.belongsTo(SettlementAccount, { foreignKey: 'target_account_id', targetKey: 'account_id', as: 'TargetAccount' });
+ResourceSettlement.hasMany(RebateSettlementAllocation, { foreignKey: 'settlement_id', sourceKey: 'settlement_id', as: 'Allocations' });
+RebateSettlementAllocation.belongsTo(ResourceSettlement, { foreignKey: 'settlement_id', targetKey: 'settlement_id', as: 'Settlement' });
+RebatePostingOrder.hasMany(RebateSettlementAllocation, { foreignKey: 'posting_id', sourceKey: 'posting_id', as: 'Allocations' });
+RebateSettlementAllocation.belongsTo(RebatePostingOrder, { foreignKey: 'posting_id', targetKey: 'posting_id', as: 'PostingOrder' });
+RebatePostingOrder.belongsTo(Supplier, { foreignKey: 'supplier_id', targetKey: 'supplier_id', as: 'Supplier' });
 StaffCareCreditTransaction.belongsTo(Staff, { foreignKey: 'staff_id', targetKey: 'staff_id' });
 
 Product.hasMany(ProductBarcode, { foreignKey: 'product_id', sourceKey: 'product_id' });
@@ -1470,6 +1560,12 @@ Product.hasMany(ProductPriceChangeLog, { foreignKey: 'product_id', sourceKey: 'p
 ProductPriceChangeLog.belongsTo(Product, { foreignKey: 'product_id', targetKey: 'product_id' });
 ProductPriceImportBatch.hasMany(ProductPriceChangeLog, { foreignKey: 'batch_id', sourceKey: 'batch_id', as: 'changes' });
 ProductPriceChangeLog.belongsTo(ProductPriceImportBatch, { foreignKey: 'batch_id', targetKey: 'batch_id' });
+ProductSn.hasMany(SnDistributorPrice, { foreignKey: 'sn_id', sourceKey: 'sn_id', as: 'DistributorPrices' });
+SnDistributorPrice.belongsTo(ProductSn, { foreignKey: 'sn_id', targetKey: 'sn_id' });
+Distributor.hasMany(SnDistributorPrice, { foreignKey: 'distributor_id', sourceKey: 'distributor_id' });
+SnDistributorPrice.belongsTo(Distributor, { foreignKey: 'distributor_id', targetKey: 'distributor_id' });
+SnDistributorPrice.hasMany(SnDistributorPriceChangeLog, { foreignKey: 'price_id', sourceKey: 'price_id', as: 'changes' });
+SnDistributorPriceChangeLog.belongsTo(SnDistributorPrice, { foreignKey: 'price_id', targetKey: 'price_id' });
 
 ProductCategory.belongsTo(ProductCategory, { foreignKey: 'parent_id', targetKey: 'category_id', as: 'Parent' });
 ProductCategory.hasMany(ProductCategory, { foreignKey: 'parent_id', sourceKey: 'category_id', as: 'Children' });
@@ -1674,6 +1770,8 @@ module.exports = {
   ProductPrice,
   ProductPriceImportBatch,
   ProductPriceChangeLog,
+  SnDistributorPrice,
+  SnDistributorPriceChangeLog,
   Location,
   InventoryWarning,
   Supplier,
@@ -1722,6 +1820,8 @@ module.exports = {
   SettlementPaymentBatch,
   SettlementPaymentRecord,
   SupplierRebate,
+  RebatePostingOrder,
+  RebateSettlementAllocation,
   RebateEstimate,
   SalesSettlementCostAdjustment,
   PerformanceProfitAdjustment,

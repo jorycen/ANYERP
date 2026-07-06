@@ -87,6 +87,102 @@
           />
         </el-tab-pane>
 
+        <!-- SN库存清单 -->
+        <el-tab-pane label="SN库存清单" name="sn-inventory">
+          <div class="filter-bar">
+            <el-input
+              v-model="snInventoryQuery.keyword"
+              placeholder="搜索SN/PN/商品名称/编码"
+              clearable
+              style="width: 230px"
+              @keyup.enter="querySnInventory"
+            />
+            <el-select v-model="snInventoryQuery.storeId" placeholder="门店" clearable style="width: 150px" @change="onSnInventoryStoreChange">
+              <el-option label="全部门店" :value="''" />
+              <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
+            </el-select>
+            <el-select
+              v-model="snInventoryQuery.locationId"
+              placeholder="库位"
+              clearable
+              :disabled="!snInventoryQuery.storeId"
+              style="width: 140px"
+              @change="querySnInventory"
+            >
+              <el-option v-for="location in snInventoryLocations" :key="location.location_id" :label="location.name" :value="location.location_id" />
+            </el-select>
+            <el-select v-model="snInventoryQuery.resourceType" placeholder="资源类型" clearable style="width: 140px" @change="querySnInventory">
+              <el-option v-for="resource in snInventoryResourceOptions" :key="resource.value" :label="resource.label" :value="resource.value" />
+            </el-select>
+            <el-select v-model="snInventoryQuery.resourceStatus" placeholder="资源状态" clearable style="width: 130px" @change="querySnInventory">
+              <el-option v-for="status in resourceStatusOptions" :key="status.value" :label="status.label" :value="status.value" />
+            </el-select>
+            <el-select v-model="snInventoryQuery.specialOnly" placeholder="价格类型" clearable style="width: 130px" @change="querySnInventory">
+              <el-option label="仅看特价SN" value="1" />
+              <el-option label="全部SN" value="" />
+            </el-select>
+            <el-input-number v-model="snInventoryQuery.minAgeDays" :min="0" :max="9999" controls-position="right" placeholder="最小库龄" style="width: 125px" />
+            <span class="age-separator">至</span>
+            <el-input-number v-model="snInventoryQuery.maxAgeDays" :min="0" :max="9999" controls-position="right" placeholder="最大库龄" style="width: 125px" />
+            <el-button type="primary" @click="querySnInventory">查询</el-button>
+            <el-button @click="resetSnInventoryQuery">重置</el-button>
+          </div>
+
+          <el-table :data="snInventoryData" stripe border v-loading="snInventoryLoading">
+            <el-table-column prop="sn_code" label="SN" min-width="170" fixed />
+            <el-table-column prop="pn_code" label="PN" width="130" />
+            <el-table-column prop="product_name" label="商品名称" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="store_name" label="所在门店" width="130" />
+            <el-table-column prop="location_name" label="库位" width="120" />
+            <el-table-column label="资源情况" min-width="220">
+              <template #default="{ row }">
+                <div v-if="row.resource_statuses?.length" class="resource-status-list">
+                  <el-tag
+                    v-for="resource in row.resource_statuses"
+                    :key="`${resource.resource_type}-${resource.current_status}`"
+                    :type="resourceStatusType(resource.current_status)"
+                    size="small"
+                  >{{ resource.resource_name }}：{{ resource.status_name }}</el-tag>
+                </div>
+                <span v-else class="muted">无可用资源</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="统一售价" width="110" align="right">
+              <template #default="{ row }">¥{{ formatMoney(row.unified_sale_price) }}</template>
+            </el-table-column>
+            <el-table-column label="SN特价" width="110" align="right">
+              <template #default="{ row }">
+                <el-tag v-if="row.is_special_price" type="danger">¥{{ formatMoney(row.special_price) }}</el-tag>
+                <span v-else>-</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="当前适用售价" width="125" align="right">
+              <template #default="{ row }">¥{{ formatMoney(row.effective_sale_price) }}</template>
+            </el-table-column>
+            <el-table-column label="库龄" width="90" align="right">
+              <template #default="{ row }">{{ row.stock_age_days == null ? '未知' : `${row.stock_age_days}天` }}</template>
+            </el-table-column>
+            <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
+            <el-table-column v-if="canManageSnPrice" label="操作" width="190" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="openSnSpecialPrice(row)">{{ row.is_special_price ? '修改特价' : '设为特价' }}</el-button>
+                <el-button v-if="row.is_special_price" link type="danger" @click="cancelSnSpecialPrice(row)">取消特价</el-button>
+                <el-button link type="info" @click="openSnPriceHistory(row)">记录</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <el-pagination
+            v-model:current-page="snInventoryQuery.page"
+            v-model:page-size="snInventoryQuery.pageSize"
+            :total="snInventoryTotal"
+            :page-sizes="[20, 50, 100]"
+            layout="total, sizes, prev, pager, next"
+            @size-change="loadSnInventory"
+            @current-change="loadSnInventory"
+          />
+        </el-tab-pane>
+
         <!-- 入库单管理 -->
         <el-tab-pane label="入库单管理" name="inbound">
           <div class="filter-bar">
@@ -509,6 +605,56 @@
         <el-button @click="executeReturnVisible = false">取消</el-button>
         <el-button type="danger" @click="submitReturn" :loading="returnLoading">提交申请</el-button>
       </template>
+    </el-dialog>
+
+    <!-- SN特价设置 -->
+    <el-dialog v-model="snSpecialPriceVisible" :title="snSpecialPriceForm.isSpecial ? '修改SN特价' : '设置SN特价'" width="520px">
+      <el-descriptions :column="1" border>
+        <el-descriptions-item label="SN">{{ snSpecialPriceForm.snCode }}</el-descriptions-item>
+        <el-descriptions-item label="商品">{{ snSpecialPriceForm.productName }}</el-descriptions-item>
+        <el-descriptions-item label="统一售价">¥{{ formatMoney(snSpecialPriceForm.unifiedSalePrice) }}</el-descriptions-item>
+        <el-descriptions-item label="最低售价">¥{{ formatMoney(snSpecialPriceForm.minSalePrice) }}</el-descriptions-item>
+      </el-descriptions>
+      <el-form label-width="90px" class="mt-20">
+        <el-form-item label="SN特价" required>
+          <el-input-number v-model="snSpecialPriceForm.specialPrice" :min="0.01" :precision="2" :step="100" style="width: 100%" />
+        </el-form-item>
+        <el-alert
+          v-if="snSpecialPriceBelowMinimum"
+          title="该特价低于最低售价，销售开单时仍会进入现有低价审批。"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="price-warning"
+        />
+        <el-form-item label="调价备注">
+          <el-input v-model="snSpecialPriceForm.remark" type="textarea" :rows="3" maxlength="512" show-word-limit />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="snSpecialPriceVisible = false">取消</el-button>
+        <el-button type="primary" :loading="snSpecialPriceSaving" @click="saveSnSpecialPrice">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- SN特价变更记录 -->
+    <el-dialog v-model="snPriceHistoryVisible" :title="`SN特价记录 - ${snPriceHistorySnCode}`" width="760px">
+      <el-table :data="snPriceHistoryData" border stripe v-loading="snPriceHistoryLoading">
+        <el-table-column label="操作" width="90">
+          <template #default="{ row }">{{ snPriceActionText(row.action) }}</template>
+        </el-table-column>
+        <el-table-column label="调整前" width="110" align="right">
+          <template #default="{ row }">{{ row.old_price == null ? '-' : `¥${formatMoney(row.old_price)}` }}</template>
+        </el-table-column>
+        <el-table-column label="调整后" width="110" align="right">
+          <template #default="{ row }">{{ row.new_price == null ? '-' : `¥${formatMoney(row.new_price)}` }}</template>
+        </el-table-column>
+        <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="operator_name" label="操作人" width="100" />
+        <el-table-column label="操作时间" width="165">
+          <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
+        </el-table-column>
+      </el-table>
     </el-dialog>
 
     <!-- 序列号查看对话框 -->
@@ -1056,7 +1202,7 @@ import { ref, reactive, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
-import { getStoreId, getRoleCode, isStoreUser } from '../utils/user'
+import { getStoreId, hasRole, isStoreUser } from '../utils/user'
 import SnTrace from './SnTrace.vue'
 import InventoryResourceRights from '../components/InventoryResourceRights.vue'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
@@ -1065,7 +1211,8 @@ const router = useRouter()
 const TRANSFER_DRAFT_KEY = 'inventory-transfer-create'
 const inboundDraftKey = () => currentInbound.value?.inbound_id ? `inventory-inbound-execute:${currentInbound.value.inbound_id}` : ''
 const mainTab = ref('summary')
-const canManageResourceRights = computed(() => ['boss', 'admin', 'finance', 'manager'].includes(getRoleCode()))
+const canManageResourceRights = computed(() => hasRole(['finance', 'manager']))
+const canManageSnPrice = computed(() => hasRole(['admin']))
 const stores = ref([])
 const storesLoaded = ref(false)
 const categories = ref([])
@@ -1081,6 +1228,52 @@ const summaryQuery = reactive({
   category: '',
   storeId: ''
 })
+
+// SN库存清单
+const snInventoryData = ref([])
+const snInventoryTotal = ref(0)
+const snInventoryLoading = ref(false)
+const snInventoryLocations = ref([])
+const snInventoryResourceOptions = ref([])
+const resourceStatusOptions = [
+  { label: '可用', value: 'AVAILABLE' },
+  { label: '已锁定', value: 'LOCKED' },
+  { label: '已核销', value: 'USED' },
+  { label: '已套回', value: 'CLAIMED_BACK' },
+  { label: '异常', value: 'EXCEPTION' }
+]
+const snInventoryQuery = reactive({
+  page: 1,
+  pageSize: 20,
+  keyword: '',
+  storeId: '',
+  locationId: '',
+  resourceType: '',
+  resourceStatus: '',
+  specialOnly: '',
+  minAgeDays: undefined,
+  maxAgeDays: undefined
+})
+const snSpecialPriceVisible = ref(false)
+const snSpecialPriceSaving = ref(false)
+const snSpecialPriceForm = reactive({
+  snId: '',
+  snCode: '',
+  productName: '',
+  unifiedSalePrice: 0,
+  minSalePrice: 0,
+  specialPrice: 0,
+  remark: '',
+  isSpecial: false
+})
+const snSpecialPriceBelowMinimum = computed(() => (
+  Number(snSpecialPriceForm.minSalePrice || 0) > 0 &&
+  Number(snSpecialPriceForm.specialPrice || 0) < Number(snSpecialPriceForm.minSalePrice || 0)
+))
+const snPriceHistoryVisible = ref(false)
+const snPriceHistoryLoading = ref(false)
+const snPriceHistorySnCode = ref('')
+const snPriceHistoryData = ref([])
 
 // 入库单
 const inboundList = ref([])
@@ -1295,6 +1488,7 @@ onMounted(() => {
   if (isStoreUser()) {
     inboundQuery.storeId = getStoreId()
     summaryQuery.storeId = getStoreId()
+    snInventoryQuery.storeId = getStoreId()
     conversionQuery.storeId = getStoreId()
     conversionForm.storeId = getStoreId()
   }
@@ -1319,6 +1513,16 @@ const onTabChange = (tabName) => {
     }
     if (returnList.value.length === 0) {
       loadReturnList()
+    }
+  } else if (tabName === 'sn-inventory') {
+    if (snInventoryResourceOptions.value.length === 0) {
+      loadSnInventoryResourceOptions()
+    }
+    if (snInventoryQuery.storeId && snInventoryLocations.value.length === 0) {
+      loadSnInventoryLocations()
+    }
+    if (snInventoryData.value.length === 0) {
+      loadSnInventory()
     }
   } else if (tabName === 'transfer') {
     if (transferOutList.value.length === 0 && transferInList.value.length === 0) {
@@ -1375,6 +1579,151 @@ const loadSummary = async () => {
     summaryLoading.value = false
   }
 }
+
+const loadSnInventoryResourceOptions = async () => {
+  try {
+    const res = await api.getResourceCategories({ activeOnly: 1 })
+    snInventoryResourceOptions.value = (res.data || []).map(row => ({
+      label: row.short_name || row.name,
+      value: row.category_code
+    }))
+  } catch (err) {
+    snInventoryResourceOptions.value = []
+  }
+}
+
+const loadSnInventoryLocations = async () => {
+  snInventoryLocations.value = []
+  if (!snInventoryQuery.storeId) return
+  try {
+    const res = await api.getLocationsByStore(snInventoryQuery.storeId)
+    snInventoryLocations.value = res.data || []
+  } catch (err) {
+    ElMessage.error('加载库位失败')
+  }
+}
+
+const loadSnInventory = async () => {
+  snInventoryLoading.value = true
+  try {
+    const params = {
+      ...snInventoryQuery,
+      minAgeDays: snInventoryQuery.minAgeDays ?? '',
+      maxAgeDays: snInventoryQuery.maxAgeDays ?? ''
+    }
+    const res = await api.getSnInventoryList(params)
+    if (res.code === 0) {
+      snInventoryData.value = res.data?.list || []
+      snInventoryTotal.value = res.data?.pagination?.total || res.data?.total || 0
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载SN库存清单失败')
+  } finally {
+    snInventoryLoading.value = false
+  }
+}
+
+const querySnInventory = () => {
+  snInventoryQuery.page = 1
+  loadSnInventory()
+}
+
+const onSnInventoryStoreChange = async () => {
+  snInventoryQuery.locationId = ''
+  await loadSnInventoryLocations()
+  querySnInventory()
+}
+
+const resetSnInventoryQuery = async () => {
+  Object.assign(snInventoryQuery, {
+    page: 1,
+    keyword: '',
+    storeId: isStoreUser() ? getStoreId() : '',
+    locationId: '',
+    resourceType: '',
+    resourceStatus: '',
+    specialOnly: '',
+    minAgeDays: undefined,
+    maxAgeDays: undefined
+  })
+  await loadSnInventoryLocations()
+  loadSnInventory()
+}
+
+const openSnSpecialPrice = (row) => {
+  Object.assign(snSpecialPriceForm, {
+    snId: row.sn_id,
+    snCode: row.sn_code,
+    productName: row.product_name,
+    unifiedSalePrice: Number(row.unified_sale_price || 0),
+    minSalePrice: Number(row.min_sale_price || 0),
+    specialPrice: Number(row.special_price || row.effective_sale_price || 0),
+    remark: row.special_price_remark || '',
+    isSpecial: Boolean(row.is_special_price)
+  })
+  snSpecialPriceVisible.value = true
+}
+
+const saveSnSpecialPrice = async () => {
+  if (!Number(snSpecialPriceForm.specialPrice) || Number(snSpecialPriceForm.specialPrice) <= 0) {
+    ElMessage.warning('请输入大于0的SN特价')
+    return
+  }
+  snSpecialPriceSaving.value = true
+  try {
+    const res = await api.setSnSpecialPrice(snSpecialPriceForm.snId, {
+      specialPrice: snSpecialPriceForm.specialPrice,
+      remark: snSpecialPriceForm.remark
+    })
+    ElMessage.success(res.data?.requiresPriceApproval ? '特价已保存；销售时将进入低价审批' : 'SN特价已保存')
+    snSpecialPriceVisible.value = false
+    loadSnInventory()
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '保存SN特价失败')
+  } finally {
+    snSpecialPriceSaving.value = false
+  }
+}
+
+const cancelSnSpecialPrice = async (row) => {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `取消 ${row.sn_code} 的SN特价后，将立即回退为最新统一售价。`,
+      '取消SN特价',
+      { inputPlaceholder: '可填写取消原因', confirmButtonText: '确认取消', cancelButtonText: '返回' }
+    )
+    await api.cancelSnSpecialPrice(row.sn_id, { remark: value || '' })
+    ElMessage.success('SN特价已取消')
+    loadSnInventory()
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err.response?.data?.message || '取消SN特价失败')
+  }
+}
+
+const openSnPriceHistory = async (row) => {
+  snPriceHistoryVisible.value = true
+  snPriceHistoryLoading.value = true
+  snPriceHistorySnCode.value = row.sn_code
+  snPriceHistoryData.value = []
+  try {
+    const res = await api.getSnSpecialPriceHistory(row.sn_id)
+    snPriceHistoryData.value = res.data || []
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载SN特价记录失败')
+  } finally {
+    snPriceHistoryLoading.value = false
+  }
+}
+
+const formatMoney = value => Number(value || 0).toFixed(2)
+const resourceStatusType = status => ({
+  AVAILABLE: 'success',
+  LOCKED: 'warning',
+  USED: 'info',
+  CLAIMED_BACK: 'danger',
+  EXCEPTION: 'danger'
+}[status] || 'info')
+const snPriceActionText = action => ({ SET: '设置', UPDATE: '修改', CANCEL: '取消' }[action] || action)
 
 // 入库单列表
 const loadInboundList = async () => {
@@ -2735,6 +3084,22 @@ const getReturnStatusText = (status) => {
   gap: 12px;
   margin-bottom: 16px;
   flex-wrap: wrap;
+}
+.age-separator {
+  align-self: center;
+  color: #909399;
+}
+.resource-status-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.muted {
+  color: #909399;
+}
+.price-warning {
+  margin: -4px 0 18px 90px;
+  width: calc(100% - 90px);
 }
 .execute-item-section {
   margin-bottom: 20px;

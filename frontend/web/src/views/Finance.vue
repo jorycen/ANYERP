@@ -218,6 +218,10 @@
           </el-table>
         </el-tab-pane>
 
+        <el-tab-pane label="返利下账" name="rebate-settlement" lazy>
+          <RebateSettlement @changed="handleRebateSettlementChanged" />
+        </el-tab-pane>
+
         <el-tab-pane label="费用管理" name="expense">
           <div class="filter-bar">
             <span style="font-weight: bold; line-height: 32px;">费用清单</span>
@@ -460,8 +464,10 @@
         </el-tab-pane>
 
         <el-tab-pane label="返利管理" name="rebate">
+          <RebatePostingOrders :key="rebatePostingKey" @changed="handleRebatePostingChanged" />
+
           <div class="filter-bar">
-            <el-button type="success" @click="openRebateDialog">返利上账</el-button>
+            <strong style="line-height: 32px;">返利余额流水</strong>
             <el-select v-model="rebateSupplierFilter" placeholder="供应商筛选" clearable style="width: 150px" @change="loadRebateList">
               <el-option v-for="s in suppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
             </el-select>
@@ -511,7 +517,6 @@
             <el-table-column prop="remark" label="备注" min-width="140" />
             <el-table-column prop="create_user" label="操作人" width="100" />
             <el-table-column prop="create_time" label="时间" width="160" />
-            <el-table-column label="操作" width="90"><template #default="{row}"><el-button v-if="row.status !== 'reversed' && (!row.source_type || row.source_type === 'manual')" link type="danger" @click="reverseRebate(row)">冲销</el-button><el-tag v-else-if="row.status === 'reversed'" type="info">已冲销</el-tag></template></el-table-column>
           </el-table>
 
           <el-pagination
@@ -970,28 +975,6 @@
       </div>
     </el-dialog>
 
-    <!-- 返利上账对话框 -->
-    <el-dialog v-model="rebateDialogVisible" title="返利上账" width="500px" @close="resetRebateForm">
-      <el-form label-width="100px">
-        <el-form-item label="供应商" required>
-          <el-select v-model="rebateForm.supplierId" placeholder="请选择供应商" style="width: 100%">
-            <el-option v-for="s in allRebateSuppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="返利金额" required>
-          <el-input v-model="rebateForm.amount" placeholder="金额" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input v-model="rebateForm.remark" type="textarea" rows="3" placeholder="返利说明" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="rebateDialogVisible = false">取消</el-button>
-        <el-button type="info" @click="saveRebateDraft">保存草稿</el-button>
-        <el-button type="success" @click="handleRebateSubmit" :loading="rebateLoading">确认上账</el-button>
-      </template>
-    </el-dialog>
-
     <!-- 厂家政策对话框 -->
     <el-dialog
       v-model="manufacturerPolicyDialogVisible"
@@ -1209,6 +1192,8 @@
 <script setup>
 import { ref, reactive, computed, onMounted, nextTick } from 'vue'
 import InventoryResourceRights from '../components/InventoryResourceRights.vue'
+import RebateSettlement from '../components/RebateSettlement.vue'
+import RebatePostingOrders from '../components/RebatePostingOrders.vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as XLSX from 'xlsx'
@@ -1219,7 +1204,6 @@ import PaymentManagement from './PaymentManagement.vue'
 const route = useRoute()
 const activeTab = ref(route.path === '/finance/payment' ? 'payment' : 'daily')
 const FINANCE_EXPENSE_DRAFT_KEY = 'finance-expense-create'
-const FINANCE_REBATE_DRAFT_KEY = 'finance-rebate-create'
 const FINANCE_SETTLEMENT_DRAFT_KEY = 'finance-settlement-create'
 const FINANCE_ACCOUNT_TXN_DRAFT_KEY = 'finance-account-transaction-create'
 const stores = ref([])
@@ -1321,15 +1305,13 @@ const settlementDetailVisible = ref(false)
 const settlementDetail = ref(null)
 
 // 返利管理
-const rebateDialogVisible = ref(false)
-const rebateLoading = ref(false)
 const rebateData = ref([])
+const rebatePostingKey = ref(0)
 const rebateTotal = ref(0)
 const rebateSummary = ref([])
 const rebateSummaryTotal = ref(0)
 const rebateSupplierFilter = ref('')
 const rebateTypeFilter = ref('')
-const allRebateSuppliers = ref([])
 const rebateEstimateData = ref([])
 const rebateEstimateOrderFilter = ref('')
 const rebateEstimateSupplierFilter = ref('')
@@ -1350,12 +1332,6 @@ const costAdjustmentPnFilter = ref('')
 const rebateQuery = reactive({
   page: 1,
   pageSize: 20
-})
-
-const rebateForm = reactive({
-  supplierId: '',
-  amount: 0,
-  remark: ''
 })
 
 const manufacturerPolicyForm = reactive({
@@ -2049,81 +2025,9 @@ const loadRebateList = async () => {
   }
 }
 
-const loadRebateSuppliers = async () => {
-  try {
-    const res = await api.getAllSuppliers()
-    if (res.code === 0) {
-      allRebateSuppliers.value = res.data || []
-    }
-  } catch (err) {
-    console.error('Failed to load suppliers')
-  }
-}
-
-const handleRebateSubmit = async () => {
-  if (!rebateForm.supplierId) {
-    ElMessage.warning('请选择供应商')
-    return
-  }
-  if (rebateForm.amount <= 0) {
-    ElMessage.warning('请输入正确的金额')
-    return
-  }
-
-  rebateLoading.value = true
-  try {
-    const res = await api.addRebate({
-      supplierId: rebateForm.supplierId,
-      amount: rebateForm.amount,
-      remark: rebateForm.remark
-    })
-    if (res.code === 0) {
-      ElMessage.success('返利上账成功')
-      clearDraft(FINANCE_REBATE_DRAFT_KEY)
-      rebateDialogVisible.value = false
-      loadRebateList()
-      loadRebateSummary()
-    } else {
-      ElMessage.error(res.message || '操作失败')
-    }
-  } catch (err) {
-    const msg = err.response?.data?.message || '操作失败'
-    ElMessage.error(msg)
-  } finally {
-    rebateLoading.value = false
-  }
-}
-
-const resetRebateForm = () => {
-  rebateForm.supplierId = ''
-  rebateForm.amount = 0
-  rebateForm.remark = ''
-}
-
-const openRebateDialog = () => {
-  const draft = loadDraft(FINANCE_REBATE_DRAFT_KEY)
-  if (draft) {
-    Object.assign(rebateForm, draft)
-    ElMessage.success('已恢复上次草稿')
-  }
-  rebateDialogVisible.value = true
-  loadRebateSuppliers()
-}
-
-const saveRebateDraft = () => {
-  saveDraft(FINANCE_REBATE_DRAFT_KEY, cloneDraft(rebateForm))
-  ElMessage.success('草稿已保存')
-}
-
-const reverseRebate = async row => {
-  try {
-    const { value } = await ElMessageBox.prompt('请输入冲销原因', '返利冲销', { inputPattern: /\S+/, inputErrorMessage: '必须填写冲销原因' })
-    await api.reverseRebate(row.rebate_id, { reason: value })
-    ElMessage.success('返利记录已冲销')
-    await Promise.all([loadRebateList(), loadRebateSummary()])
-  } catch (err) {
-    if (err !== 'cancel') ElMessage.error(err.response?.data?.message || '冲销失败')
-  }
+const handleRebatePostingChanged = () => Promise.all([loadRebateList(), loadRebateSummary()])
+const handleRebateSettlementChanged = () => {
+  rebatePostingKey.value += 1
 }
 
 const resetManufacturerPolicyForm = () => {

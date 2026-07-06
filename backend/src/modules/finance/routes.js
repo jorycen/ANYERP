@@ -36,6 +36,8 @@ const {
   getRebateBalance,
   getRebateSummary,
   reverseRebate,
+  getRebatePostingOrders,
+  reverseRebatePostingOrder,
   createManufacturerPolicy,
   updateManufacturerPolicy,
   getManufacturerPolicyList,
@@ -93,6 +95,8 @@ router.post('/confirm-payment', confirmPayment);
 router.post('/cancel-payment', cancelPayment);
 
 router.post('/add-rebate', addRebate);
+router.get('/rebate-posting-orders', getRebatePostingOrders);
+router.post('/rebate-posting-orders/:postingId/reverse', reverseRebatePostingOrder);
 router.get('/rebate-list', getRebateList);
 router.get('/rebate-balance', getRebateBalance);
 router.get('/rebate-summary', getRebateSummary);

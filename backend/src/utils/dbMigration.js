@@ -80,6 +80,26 @@ async function checkAndAddIndex(tableName, indexName, createIndexSql) {
   }
 }
 
+async function checkAndMakeColumnNullable(tableName, columnName, columnDefinition) {
+  try {
+    const [result] = await sequelize.query(
+      `SELECT IS_NULLABLE
+       FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = ?
+         AND COLUMN_NAME = ?`,
+      { replacements: [tableName, columnName], type: sequelize.QueryTypes.SELECT }
+    );
+    if (!result || result.IS_NULLABLE === 'YES') return false;
+    await sequelize.query(`ALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${columnDefinition} NULL`);
+    console.log(`[DB Migration] 已允许字段为空: ${tableName}.${columnName}`);
+    return true;
+  } catch (error) {
+    console.error(`[DB Migration] 调整字段为空失败: ${tableName}.${columnName} - ${error.message}`);
+    return false;
+  }
+}
+
 async function dropProductSnGlobalUniqueIndex() {
   try {
     const indexes = await sequelize.query(
@@ -401,10 +421,15 @@ async function runMigrations() {
       CREATE TABLE T_RESOURCE_SETTLEMENT (
         SETTLEMENT_ID VARCHAR(32) NOT NULL, SETTLEMENT_NO VARCHAR(64) NOT NULL,
         SOURCE_TYPE VARCHAR(32) NOT NULL, SOURCE_ID VARCHAR(64) NOT NULL, BATCH_NO VARCHAR(64),
-        SN_ID VARCHAR(32) NOT NULL, SN_CODE VARCHAR(128) NOT NULL, PRODUCT_ID VARCHAR(32) NOT NULL,
+        SN_ID VARCHAR(32), SN_CODE VARCHAR(128), PRODUCT_ID VARCHAR(32),
         RESOURCE_TYPE VARCHAR(32) NOT NULL, COUNTERPARTY_ID VARCHAR(32), COUNTERPARTY_NAME VARCHAR(255), AMOUNT DECIMAL(12,2) NOT NULL,
-        STATUS VARCHAR(32) DEFAULT 'PENDING', TARGET_ACCOUNT_ID VARCHAR(64), SETTLED_AT DATETIME,
-        SETTLED_BY BIGINT, SETTLED_BY_NAME VARCHAR(64), CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        MATCHED_AMOUNT DECIMAL(12,2) DEFAULT 0, STATUS VARCHAR(32) DEFAULT 'PENDING', TARGET_ACCOUNT_ID VARCHAR(64), SETTLED_AT DATETIME,
+        SETTLED_BY BIGINT, SETTLED_BY_NAME VARCHAR(64),
+        CREATE_STAFF_ID BIGINT, CREATE_USER VARCHAR(64),
+        CANCELLED_AT DATETIME, CANCELLED_BY BIGINT, CANCELLED_BY_NAME VARCHAR(64),
+        REVERSED_AT DATETIME, REVERSED_BY BIGINT, REVERSED_BY_NAME VARCHAR(64),
+        CORRECTION_REASON VARCHAR(512), CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         REMARK VARCHAR(512), PRIMARY KEY (SETTLEMENT_ID), UNIQUE KEY uk_resource_settlement_no (SETTLEMENT_NO),
         UNIQUE KEY uk_resource_settlement_source (SOURCE_TYPE, SOURCE_ID, RESOURCE_TYPE),
         KEY idx_resource_settlement_status (STATUS, CREATE_TIME), KEY idx_resource_settlement_sn (SN_ID, RESOURCE_TYPE)
@@ -412,6 +437,23 @@ async function runMigrations() {
     `);
     await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'COUNTERPARTY_ID', 'VARCHAR(32) COMMENT "来源供应商或结算对象ID"', 'RESOURCE_TYPE');
     await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'COUNTERPARTY_NAME', 'VARCHAR(255) COMMENT "来源供应商或结算对象名称"', 'COUNTERPARTY_ID');
+    await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'MATCHED_AMOUNT', 'DECIMAL(12,2) DEFAULT 0 COMMENT "已核销金额"', 'AMOUNT');
+    await checkAndMakeColumnNullable('T_RESOURCE_SETTLEMENT', 'SN_ID', 'VARCHAR(32)');
+    await checkAndMakeColumnNullable('T_RESOURCE_SETTLEMENT', 'SN_CODE', 'VARCHAR(128)');
+    await checkAndMakeColumnNullable('T_RESOURCE_SETTLEMENT', 'PRODUCT_ID', 'VARCHAR(32)');
+    await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'CREATE_STAFF_ID', 'BIGINT COMMENT "创建人员工ID"', 'SETTLED_BY_NAME');
+    await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'CREATE_USER', 'VARCHAR(64) COMMENT "创建人"', 'CREATE_STAFF_ID');
+    await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'CANCELLED_AT', 'DATETIME COMMENT "取消时间"', 'CREATE_USER');
+    await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'CANCELLED_BY', 'BIGINT COMMENT "取消人员工ID"', 'CANCELLED_AT');
+    await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'CANCELLED_BY_NAME', 'VARCHAR(64) COMMENT "取消人"', 'CANCELLED_BY');
+    await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'REVERSED_AT', 'DATETIME COMMENT "冲销时间"', 'CANCELLED_BY_NAME');
+    await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'REVERSED_BY', 'BIGINT COMMENT "冲销人员工ID"', 'REVERSED_AT');
+    await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'REVERSED_BY_NAME', 'VARCHAR(64) COMMENT "冲销人"', 'REVERSED_BY');
+    await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'CORRECTION_REASON', 'VARCHAR(512) COMMENT "取消或冲销原因"', 'REVERSED_BY_NAME');
+    await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'UPDATE_TIME', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP', 'CREATE_TIME');
+    await checkAndAddIndex('T_RESOURCE_SETTLEMENT', 'idx_resource_settlement_status', 'ALTER TABLE T_RESOURCE_SETTLEMENT ADD INDEX idx_resource_settlement_status (STATUS, CREATE_TIME)');
+    await checkAndAddIndex('T_RESOURCE_SETTLEMENT', 'idx_resource_settlement_sn', 'ALTER TABLE T_RESOURCE_SETTLEMENT ADD INDEX idx_resource_settlement_sn (SN_ID, RESOURCE_TYPE)');
+    await checkAndAddIndex('T_RESOURCE_SETTLEMENT', 'idx_resource_settlement_counterparty', 'ALTER TABLE T_RESOURCE_SETTLEMENT ADD INDEX idx_resource_settlement_counterparty (COUNTERPARTY_ID, CREATE_TIME)');
     await checkAndAddColumn('T_ORDER_ITEM', 'SELECTED_RESOURCE_TYPES', 'TEXT COMMENT "动态选择的资源类别JSON"', 'USE_SALES_REPORT');
     await checkAndAddColumn('T_ORDER', 'CREATE_STAFF_ID', 'BIGINT COMMENT "销售人员ID"', 'STORE_ID');
     await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'SELECTED_RESOURCE_TYPES', 'TEXT COMMENT "采购申请勾选的资源权益JSON"', 'STORE_ALLOCATIONS');
@@ -470,7 +512,18 @@ async function runMigrations() {
         ('RC_GOV_SUBSIDY', 'GOV_SUBSIDY', '国补资格', '国补', 1, 1, 10, 1),
         ('RC_EDU_SUBSIDY', 'EDU_SUBSIDY', '教育补贴资格', '教育补贴', 1, 1, 20, 1),
         ('RC_SALES_REPORT', 'SALES_REPORT', '销量报号资格', '销量报号', 1, 1, 30, 1),
-        ('RC_MANUFACTURER_REBATE', 'MANUFACTURER_REBATE', '厂商返利', '厂商返利', 0, 0, 40, 1)
+        ('RC_MANUFACTURER_REBATE', 'MANUFACTURER_REBATE', '厂商返利', '厂商返利', 0, 0, 40, 1),
+        ('RC_MANUAL_REBATE', 'MANUAL_REBATE', '手工返利', '手工返利', 0, 0, 45, 1)
+    `);
+    await sequelize.query(`
+      UPDATE T_RESOURCE_CATEGORY
+      SET RESOURCE_KIND = 'REBATE',
+          SUPPORTS_PURCHASE_SELECT = 0,
+          SUPPORTS_SALE_USE = 0,
+          SUPPORTS_COMPANY_CLAIM = 0,
+          TRIGGER_ON_SALE = 0,
+          GENERATES_SETTLEMENT = 1
+      WHERE CATEGORY_CODE IN ('MANUFACTURER_REBATE', 'MANUAL_REBATE')
     `);
     await sequelize.query(`
       INSERT IGNORE INTO T_RESOURCE_CATEGORY
@@ -855,6 +908,52 @@ async function runMigrations() {
     await checkAndAddColumn('T_SUPPLIER_REBATE', 'SOURCE_TYPE', 'VARCHAR(32) DEFAULT "manual" COMMENT "manual/resource_settlement/purchase"', 'STATUS');
     await checkAndAddColumn('T_SUPPLIER_REBATE', 'SOURCE_ID', 'VARCHAR(64) COMMENT "来源ID"', 'SOURCE_TYPE');
     await checkAndAddColumn('T_SUPPLIER_REBATE', 'REVERSAL_OF', 'VARCHAR(32) COMMENT "被冲销返利ID"', 'SOURCE_ID');
+
+    await checkAndCreateTable('T_REBATE_POSTING_ORDER', `
+      CREATE TABLE T_REBATE_POSTING_ORDER (
+        POSTING_ID VARCHAR(32) NOT NULL COMMENT '返利上账单ID',
+        POSTING_NO VARCHAR(64) NOT NULL COMMENT '返利上账单号',
+        SUPPLIER_ID VARCHAR(32) NOT NULL COMMENT '供应商ID',
+        SUPPLIER_NAME VARCHAR(255) COMMENT '供应商名称快照',
+        POSTING_DATE DATE NOT NULL COMMENT '上账日期',
+        AMOUNT DECIMAL(12,2) NOT NULL COMMENT '上账金额',
+        MATCHED_AMOUNT DECIMAL(12,2) DEFAULT 0 COMMENT '已核销金额',
+        STATUS VARCHAR(32) DEFAULT 'UNMATCHED' COMMENT 'UNMATCHED/PARTIALLY_MATCHED/MATCHED/REVERSED',
+        REBATE_ID VARCHAR(32) COMMENT '供应商返利上账流水ID',
+        CREATE_STAFF_ID BIGINT COMMENT '创建人员工ID',
+        CREATE_USER VARCHAR(64) COMMENT '创建人',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        REVERSED_AT DATETIME COMMENT '冲销时间',
+        REVERSED_BY BIGINT COMMENT '冲销人员工ID',
+        REVERSED_BY_NAME VARCHAR(64) COMMENT '冲销人',
+        REVERSAL_REASON VARCHAR(512) COMMENT '冲销原因',
+        REMARK VARCHAR(512) NOT NULL COMMENT '活动或返利事项',
+        PRIMARY KEY (POSTING_ID),
+        UNIQUE KEY uk_rebate_posting_no (POSTING_NO),
+        KEY idx_rebate_posting_supplier (SUPPLIER_ID, STATUS, POSTING_DATE),
+        KEY idx_rebate_posting_status (STATUS, CREATE_TIME)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='供应商返利预上账单'
+    `);
+
+    await checkAndCreateTable('T_REBATE_SETTLEMENT_ALLOCATION', `
+      CREATE TABLE T_REBATE_SETTLEMENT_ALLOCATION (
+        ALLOCATION_ID VARCHAR(32) NOT NULL COMMENT '核销分配ID',
+        SETTLEMENT_ID VARCHAR(32) NOT NULL COMMENT '返利下账单ID',
+        POSTING_ID VARCHAR(32) NOT NULL COMMENT '返利上账单ID',
+        AMOUNT DECIMAL(12,2) NOT NULL COMMENT '本次核销金额',
+        STATUS VARCHAR(32) DEFAULT 'ACTIVE' COMMENT 'ACTIVE/REVERSED',
+        CREATE_STAFF_ID BIGINT COMMENT '核销人员工ID',
+        CREATE_USER VARCHAR(64) COMMENT '核销人',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '核销时间',
+        REVERSED_AT DATETIME COMMENT '撤销时间',
+        REVERSED_BY BIGINT COMMENT '撤销人员工ID',
+        REVERSED_BY_NAME VARCHAR(64) COMMENT '撤销人',
+        REVERSAL_REASON VARCHAR(512) COMMENT '撤销原因',
+        PRIMARY KEY (ALLOCATION_ID),
+        KEY idx_rebate_allocation_settlement (SETTLEMENT_ID, STATUS),
+        KEY idx_rebate_allocation_posting (POSTING_ID, STATUS)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='返利上账与下账核销分配'
+    `);
 
     await checkAndCreateTable('T_MANUFACTURER_REBATE_POLICY', `
       CREATE TABLE T_MANUFACTURER_REBATE_POLICY (
@@ -1770,6 +1869,48 @@ async function runMigrations() {
         KEY idx_price_change_status_time (STATUS, EFFECTIVE_TIME),
         KEY idx_price_change_field (PRICE_FIELD)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商品价格变更记录表'
+    `);
+
+    await checkAndCreateTable('T_SN_DISTRIBUTOR_PRICE', `
+      CREATE TABLE T_SN_DISTRIBUTOR_PRICE (
+        PRICE_ID VARCHAR(32) NOT NULL COMMENT 'SN特价ID',
+        SN_ID VARCHAR(32) NOT NULL COMMENT 'SN记录ID',
+        SN_CODE VARCHAR(128) NOT NULL COMMENT 'SN快照',
+        DISTRIBUTOR_ID VARCHAR(32) NOT NULL COMMENT '经销商ID',
+        SPECIAL_PRICE DECIMAL(12,2) NOT NULL COMMENT 'SN销售特价',
+        STATUS TINYINT(1) DEFAULT 1 COMMENT '1生效 0已取消',
+        REMARK VARCHAR(512) COMMENT '备注',
+        CREATE_STAFF_ID BIGINT COMMENT '创建人员工ID',
+        CREATE_USER VARCHAR(64) COMMENT '创建人',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        UPDATE_STAFF_ID BIGINT COMMENT '更新人员工ID',
+        UPDATE_USER VARCHAR(64) COMMENT '更新人',
+        UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+        PRIMARY KEY (PRICE_ID),
+        UNIQUE KEY uk_sn_distributor_price (SN_ID, DISTRIBUTOR_ID),
+        KEY idx_sn_distributor_price_scope (DISTRIBUTOR_ID, STATUS, UPDATE_TIME),
+        KEY idx_sn_distributor_price_sn_code (SN_CODE)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='经销商SN销售特价'
+    `);
+
+    await checkAndCreateTable('T_SN_DISTRIBUTOR_PRICE_CHANGE_LOG', `
+      CREATE TABLE T_SN_DISTRIBUTOR_PRICE_CHANGE_LOG (
+        CHANGE_ID VARCHAR(32) NOT NULL COMMENT '变更ID',
+        PRICE_ID VARCHAR(32) NOT NULL COMMENT 'SN特价ID',
+        SN_ID VARCHAR(32) NOT NULL COMMENT 'SN记录ID',
+        SN_CODE VARCHAR(128) NOT NULL COMMENT 'SN快照',
+        DISTRIBUTOR_ID VARCHAR(32) NOT NULL COMMENT '经销商ID',
+        ACTION VARCHAR(32) NOT NULL COMMENT 'SET/UPDATE/CANCEL',
+        OLD_PRICE DECIMAL(12,2) COMMENT '变更前价格',
+        NEW_PRICE DECIMAL(12,2) COMMENT '变更后价格',
+        REMARK VARCHAR(512) COMMENT '调价原因或备注',
+        OPERATOR_STAFF_ID BIGINT COMMENT '操作人员工ID',
+        OPERATOR_NAME VARCHAR(64) COMMENT '操作人',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '操作时间',
+        PRIMARY KEY (CHANGE_ID),
+        KEY idx_sn_price_change_price (PRICE_ID, CREATE_TIME),
+        KEY idx_sn_price_change_scope (SN_ID, DISTRIBUTOR_ID, CREATE_TIME)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='经销商SN特价变更记录'
     `);
 
     await checkAndAddColumn('T_PRODUCT', 'ATTRIBUTES', 'TEXT COMMENT "动态属性JSON"', 'SPECS_JSON');

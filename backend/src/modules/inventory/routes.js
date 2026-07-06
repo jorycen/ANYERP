@@ -2,13 +2,24 @@
  * 库房管理路由
  */
 const Router = require('koa-router');
-const { getList, getSnList, getInboundList, getInboundDetail, executeInbound, getReturnList, requestReturn, approveReturn, executeReturn, inbound, outbound, transfer, getTransferList, confirmTransferOut, confirmTransferIn, getConversionList, getConversionDetail, createConversion, voidConversion, getLocationsByStore, updateSn, snTrace } = require('./controller');
-const { enforceStoreOwnership } = require('../../middleware/permission');
+const {
+  getList, getSnInventoryList, setSnSpecialPrice, cancelSnSpecialPrice,
+  getSnSpecialPriceHistory, getSnList, getInboundList, getInboundDetail,
+  executeInbound, getReturnList, requestReturn, approveReturn, executeReturn,
+  inbound, outbound, transfer, getTransferList, confirmTransferOut,
+  confirmTransferIn, getConversionList, getConversionDetail, createConversion,
+  voidConversion, getLocationsByStore, updateSn, snTrace
+} = require('./controller');
+const { enforceStoreOwnership, requireRole } = require('../../middleware/permission');
 const resourceRights = require('./resourceRights');
 
 const router = new Router();
 
 router.get('/list', getList);
+router.get('/sn-inventory-list', getSnInventoryList);
+router.put('/sn/:snId/special-price', requireRole('admin'), setSnSpecialPrice);
+router.delete('/sn/:snId/special-price', requireRole('admin'), cancelSnSpecialPrice);
+router.get('/sn/:snId/special-price-history', requireRole('admin'), getSnSpecialPriceHistory);
 router.get('/sn-list', getSnList);
 router.put('/sn/:snId', updateSn);
 router.get('/sn-trace/:snCode', snTrace);
@@ -26,7 +37,10 @@ router.get('/goods-types', resourceRights.listGoodsTypes);
 router.post('/goods-types', resourceRights.saveGoodsType);
 router.delete('/goods-types/:goodsTypeId', resourceRights.deleteGoodsType);
 router.get('/resource-settlements', resourceRights.listResourceSettlements);
+router.post('/resource-settlements/manual-rebate', resourceRights.createManualRebateSettlement);
 router.post('/resource-settlements/:settlementId/settle', resourceRights.settleResource);
+router.post('/resource-settlements/:settlementId/cancel', resourceRights.cancelResourceSettlement);
+router.post('/resource-settlements/:settlementId/reverse', resourceRights.reverseResourceSettlement);
 router.post('/resource-rights/claim', resourceRights.submitClaim);
 router.post('/resource-rights/claim/:changeId/review', resourceRights.reviewClaim);
 router.get('/sn/:snId/resource-rights', resourceRights.snRights);

@@ -18,6 +18,7 @@ const {
   ProductPn,
   ProductSn,
   ProductPrice,
+  SnDistributorPrice,
   Inventory,
   PaymentMethod,
   SupplementItem,
@@ -1268,6 +1269,7 @@ async function getProductPns(ctx) {
 async function getProductSns(ctx) {
   const { storeId, productId } = ctx.params;
   const { pnCode } = ctx.query;
+  assertStoreVisible(storeId, ctx.state.user);
 
   const where = {
     product_id: productId,
@@ -1285,16 +1287,52 @@ async function getProductSns(ctx) {
     order: [['sn_code', 'ASC']]
   });
 
+  const store = await Store.findOne({
+    where: { store_id: storeId, is_deleted: 0 },
+    attributes: ['store_id', 'distributor_id'],
+    raw: true
+  });
+  if (!store) ctx.throw(404, '门店不存在');
+  const productPrice = await ProductPrice.findOne({
+    where: { product_id: productId, status: 1 },
+    attributes: ['standard_price', 'min_sale_price'],
+    raw: true
+  });
+  const snIds = snRecords.map(row => row.sn_id);
+  const specialPrices = snIds.length > 0 && store.distributor_id
+    ? await SnDistributorPrice.findAll({
+      where: {
+        sn_id: { [Op.in]: snIds },
+        distributor_id: store.distributor_id,
+        status: 1
+      },
+      attributes: ['sn_id', 'special_price', 'remark'],
+      raw: true
+    })
+    : [];
+  const specialPriceMap = new Map(specialPrices.map(row => [row.sn_id, row]));
+  const unifiedSalePrice = Number(productPrice?.standard_price || 0);
+  const minSalePrice = Number(productPrice?.min_sale_price || 0);
   const summaryMap = await summariesForSns(snRecords);
   ctx.body = {
     code: 0,
-    data: snRecords.map(s => ({
-      sn_id: s.sn_id,
-      sn_code: s.sn_code,
-      pn_code: s.pn_code,
-      inventory_type: s.inventory_type,
-      ...summaryMap.get(s.sn_id)
-    }))
+    data: snRecords.map(s => {
+      const special = specialPriceMap.get(s.sn_id);
+      const specialPrice = special ? Number(special.special_price || 0) : null;
+      return {
+        sn_id: s.sn_id,
+        sn_code: s.sn_code,
+        pn_code: s.pn_code,
+        inventory_type: s.inventory_type,
+        unified_sale_price: unifiedSalePrice,
+        min_sale_price: minSalePrice,
+        special_price: specialPrice,
+        is_special_price: Boolean(special),
+        effective_sale_price: specialPrice > 0 ? specialPrice : unifiedSalePrice,
+        special_price_remark: special?.remark || '',
+        ...summaryMap.get(s.sn_id)
+      };
+    })
   };
 }
 
