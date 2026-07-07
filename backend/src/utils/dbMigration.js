@@ -457,6 +457,7 @@ async function runMigrations() {
     await checkAndAddColumn('T_ORDER_ITEM', 'SELECTED_RESOURCE_TYPES', 'TEXT COMMENT "动态选择的资源类别JSON"', 'USE_SALES_REPORT');
     await checkAndAddColumn('T_ORDER', 'CREATE_STAFF_ID', 'BIGINT COMMENT "销售人员ID"', 'STORE_ID');
     await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'SELECTED_RESOURCE_TYPES', 'TEXT COMMENT "采购申请勾选的资源权益JSON"', 'STORE_ALLOCATIONS');
+    await checkAndAddColumn('T_PURCHASE_REQUEST', 'PAYMENT_METHOD', 'VARCHAR(32) NOT NULL DEFAULT "COMPANY_CREDIT" COMMENT "COMPANY_CREDIT/PERSONAL_ADVANCE"', 'INVOICE_TYPE');
     await checkAndAddColumn('T_INBOUND_ITEM', 'SELECTED_RESOURCE_TYPES', 'TEXT COMMENT "继承采购申请的资源权益JSON"', 'STORE_ALLOCATIONS');
     await checkAndAddColumn('T_INBOUND_ITEM', 'PURCHASE_REQUEST_ITEM_ID', 'BIGINT COMMENT "来源采购申请明细ID"', 'SELECTED_RESOURCE_TYPES');
     await checkAndAddColumn('T_INVENTORY_RESOURCE_RIGHT', 'RULE_CONFIG_ID', 'VARCHAR(32) COMMENT "权益规则配置ID"', 'RESOURCE_TYPE');
@@ -751,6 +752,43 @@ async function runMigrations() {
     await checkAndAddColumn('T_EXPENSE', 'SETTLED_PAYMENT_METHOD', 'VARCHAR(64)', 'SETTLE_USER');
     await checkAndAddColumn('T_EXPENSE', 'SETTLED_AT', 'DATETIME', 'SETTLED_PAYMENT_METHOD');
     await checkAndAddColumn('T_EXPENSE', 'SETTLEMENT_ACCOUNT_ID', 'VARCHAR(64) COMMENT "结算账号ID"', 'SETTLED_AT');
+    await checkAndAddColumn('T_EXPENSE', 'REGION_ID', 'VARCHAR(32) COMMENT "区域ID"', 'STORE_ID');
+    await checkAndAddColumn('T_EXPENSE', 'REGION_NAME', 'VARCHAR(128) COMMENT "区域名称快照"', 'REGION_ID');
+    await checkAndAddColumn('T_EXPENSE', 'EXPENSE_TYPE_ID', 'VARCHAR(32) COMMENT "报销类型ID"', 'REGION_NAME');
+    await checkAndAddColumn('T_EXPENSE', 'EXPENSE_PARTY', 'VARCHAR(255) NOT NULL DEFAULT "" COMMENT "费用发生方"', 'EXPENSE_TYPE');
+    await checkAndAddColumn('T_EXPENSE', 'HAS_INVOICE', 'TINYINT(1) DEFAULT 0 COMMENT "是否有发票"', 'PAYMENT_METHOD');
+    await checkAndAddColumn('T_EXPENSE', 'INVOICE_TYPE', 'VARCHAR(64) COMMENT "发票类型"', 'HAS_INVOICE');
+    await checkAndAddColumn('T_EXPENSE', 'INVOICE_NO', 'VARCHAR(128) COMMENT "发票号码"', 'INVOICE_TYPE');
+    await checkAndAddColumn('T_EXPENSE', 'EXPENSE_DATE', 'DATE COMMENT "费用发生日期"', 'INVOICE_NO');
+    await checkAndAddColumn('T_EXPENSE', 'ATTACHMENT_URLS', 'LONGTEXT COMMENT "凭证附件JSON"', 'EXPENSE_DATE');
+    await checkAndAddColumn('T_EXPENSE', 'APPLICANT_STAFF_ID', 'BIGINT COMMENT "申请人员工ID"', 'STATUS');
+    await checkAndAddColumn('T_EXPENSE', 'APPLICANT_NAME', 'VARCHAR(64) COMMENT "申请人姓名"', 'APPLICANT_STAFF_ID');
+    await checkAndAddColumn('T_EXPENSE', 'REVIEW_STAFF_ID', 'BIGINT COMMENT "审批人员工ID"', 'APPLICANT_NAME');
+    await checkAndAddColumn('T_EXPENSE', 'REVIEW_USER_NAME', 'VARCHAR(64) COMMENT "审批人姓名"', 'REVIEW_STAFF_ID');
+    await checkAndAddColumn('T_EXPENSE', 'REVIEW_COMMENT', 'VARCHAR(512) COMMENT "审批意见"', 'REVIEW_USER_NAME');
+    await checkAndAddColumn('T_EXPENSE', 'REVIEW_TIME', 'DATETIME COMMENT "审批时间"', 'REVIEW_COMMENT');
+    await checkAndAddColumn('T_EXPENSE', 'SOURCE_TYPE', 'VARCHAR(32) DEFAULT "expense" COMMENT "expense/purchase"', 'REVIEW_TIME');
+    await checkAndAddColumn('T_EXPENSE', 'SOURCE_ID', 'VARCHAR(64) COMMENT "来源业务ID"', 'SOURCE_TYPE');
+    await checkAndAddColumn('T_EXPENSE', 'SOURCE_NO', 'VARCHAR(64) COMMENT "来源业务单号"', 'SOURCE_ID');
+    await checkAndAddColumn('T_EXPENSE', 'PAYABLE_ID', 'VARCHAR(32) COMMENT "关联应付款ID"', 'SOURCE_NO');
+    await checkAndAddColumn('T_EXPENSE', 'SETTLEMENT_ID', 'VARCHAR(32) COMMENT "关联报销结算单ID"', 'PAYABLE_ID');
+    await checkAndAddIndex('T_EXPENSE', 'uk_expense_source', 'ALTER TABLE T_EXPENSE ADD UNIQUE KEY uk_expense_source (SOURCE_TYPE, SOURCE_ID)');
+    await checkAndAddIndex('T_EXPENSE', 'idx_expense_approval', 'ALTER TABLE T_EXPENSE ADD INDEX idx_expense_approval (STATUS, CREATE_TIME)');
+
+    await checkAndCreateTable('T_EXPENSE_TYPE', `
+      CREATE TABLE T_EXPENSE_TYPE (
+        TYPE_ID VARCHAR(32) NOT NULL,
+        NAME VARCHAR(128) NOT NULL,
+        SORT_ORDER INT DEFAULT 0,
+        STATUS TINYINT(1) DEFAULT 1,
+        REMARK VARCHAR(512),
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (TYPE_ID),
+        UNIQUE KEY uk_expense_type_name (NAME),
+        KEY idx_expense_type_status (STATUS, SORT_ORDER)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='报销类型字典'
+    `);
 
     await checkAndCreateTable('T_SETTLEMENT_ACCOUNT_TRANSACTION', `
       CREATE TABLE T_SETTLEMENT_ACCOUNT_TRANSACTION (
@@ -784,6 +822,15 @@ async function runMigrations() {
         KEY idx_payable_status (STATUS)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='应付款表'
     `);
+    await checkAndMakeColumnNullable('T_PAYABLE', 'SUPPLIER_ID', 'VARCHAR(32)');
+    await checkAndMakeColumnNullable('T_PAYABLE', 'REQUEST_ID', 'VARCHAR(32)');
+    await checkAndAddColumn('T_PAYABLE', 'PAYEE_TYPE', 'VARCHAR(32) DEFAULT "supplier" COMMENT "supplier/counterparty/employee"', 'REQUEST_NO');
+    await checkAndAddColumn('T_PAYABLE', 'PAYEE_ID', 'VARCHAR(64) COMMENT "收款方ID"', 'PAYEE_TYPE');
+    await checkAndAddColumn('T_PAYABLE', 'PAYEE_NAME', 'VARCHAR(255) COMMENT "收款方名称"', 'PAYEE_ID');
+    await checkAndAddColumn('T_PAYABLE', 'SOURCE_TYPE', 'VARCHAR(32) DEFAULT "purchase" COMMENT "purchase/expense/reimbursement"', 'PAYEE_NAME');
+    await checkAndAddColumn('T_PAYABLE', 'SOURCE_ID', 'VARCHAR(64) COMMENT "来源ID"', 'SOURCE_TYPE');
+    await checkAndAddColumn('T_PAYABLE', 'SOURCE_NO', 'VARCHAR(64) COMMENT "来源单号"', 'SOURCE_ID');
+    await checkAndAddIndex('T_PAYABLE', 'uk_payable_source', 'ALTER TABLE T_PAYABLE ADD UNIQUE KEY uk_payable_source (SOURCE_TYPE, SOURCE_ID)');
 
     await checkAndCreateTable('T_SETTLEMENT', `
       CREATE TABLE T_SETTLEMENT (
@@ -806,6 +853,15 @@ async function runMigrations() {
         KEY idx_settlement_status (STATUS)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='结算单表'
     `);
+    await checkAndMakeColumnNullable('T_SETTLEMENT', 'SUPPLIER_ID', 'VARCHAR(32)');
+    await checkAndAddColumn('T_SETTLEMENT', 'SETTLEMENT_TYPE', 'VARCHAR(32) DEFAULT "supplier" COMMENT "supplier/expense/reimbursement"', 'SUPPLIER_NAME');
+    await checkAndAddColumn('T_SETTLEMENT', 'PAYEE_TYPE', 'VARCHAR(32) DEFAULT "supplier" COMMENT "supplier/counterparty/employee"', 'SETTLEMENT_TYPE');
+    await checkAndAddColumn('T_SETTLEMENT', 'PAYEE_ID', 'VARCHAR(64) COMMENT "收款方ID"', 'PAYEE_TYPE');
+    await checkAndAddColumn('T_SETTLEMENT', 'PAYEE_NAME', 'VARCHAR(255) COMMENT "收款方名称"', 'PAYEE_ID');
+    await checkAndAddColumn('T_SETTLEMENT', 'SOURCE_TYPE', 'VARCHAR(32) COMMENT "来源类型"', 'PAYEE_NAME');
+    await checkAndAddColumn('T_SETTLEMENT', 'SOURCE_ID', 'VARCHAR(64) COMMENT "来源ID"', 'SOURCE_TYPE');
+    await checkAndAddColumn('T_SETTLEMENT', 'SOURCE_NO', 'VARCHAR(64) COMMENT "来源单号"', 'SOURCE_ID');
+    await checkAndAddIndex('T_SETTLEMENT', 'idx_settlement_type', 'ALTER TABLE T_SETTLEMENT ADD INDEX idx_settlement_type (SETTLEMENT_TYPE, STATUS, CREATE_TIME)');
     await checkAndAddColumn('T_SETTLEMENT', 'SUPPLIER_ACCOUNT_ID', 'VARCHAR(32) COMMENT "供应商付款账户ID"', 'SUPPLIER_NAME');
     await checkAndAddColumn('T_SETTLEMENT', 'SUPPLIER_ACCOUNT_SNAPSHOT', 'TEXT COMMENT "供应商付款账户快照"', 'SUPPLIER_ACCOUNT_ID');
     await checkAndAddColumn('T_SETTLEMENT', 'OTHER_PAYMENT_REMARK', 'TEXT COMMENT "其他付款说明"', 'SUPPLIER_ACCOUNT_SNAPSHOT');
@@ -1859,6 +1915,7 @@ async function runMigrations() {
         UNIQUE KEY uk_product (PRODUCT_ID)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商品价格表'
     `);
+    await checkAndAddColumn('T_PRODUCT_PRICE', 'RETAIL_PRICE', 'DECIMAL(12,2) DEFAULT 0 COMMENT "零售价（销售默认带入价）"', 'STANDARD_PRICE');
 
     await checkAndCreateTable('T_PRODUCT_PRICE_IMPORT_BATCH', `
       CREATE TABLE T_PRODUCT_PRICE_IMPORT_BATCH (
@@ -1888,7 +1945,7 @@ async function runMigrations() {
         PRODUCT_CODE VARCHAR(32) COMMENT '商品编码',
         PRODUCT_NAME VARCHAR(255) COMMENT '商品名称快照',
         MANUFACTURER_CODE VARCHAR(128) COMMENT '厂商编码',
-        PRICE_FIELD VARCHAR(32) NOT NULL COMMENT '价格字段:standard_price/min_sale_price',
+        PRICE_FIELD VARCHAR(32) NOT NULL COMMENT '价格字段:standard_price/retail_price/min_sale_price',
         OLD_PRICE DECIMAL(12,2) DEFAULT 0 COMMENT '调整前价格',
         NEW_PRICE DECIMAL(12,2) NOT NULL COMMENT '调整后价格',
         EFFECTIVE_TIME DATETIME NOT NULL COMMENT '生效时间',

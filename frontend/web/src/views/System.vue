@@ -253,6 +253,30 @@
           </el-table>
         </el-tab-pane>
 
+        <el-tab-pane label="报销类型管理" name="expenseType">
+          <div class="filter-bar">
+            <el-button type="primary" @click="openExpenseTypeDialog()">新增类型</el-button>
+          </div>
+          <el-table :data="expenseTypeData" stripe border>
+            <el-table-column prop="sort_order" label="排序" width="80" />
+            <el-table-column prop="name" label="类型名称" min-width="200" />
+            <el-table-column prop="remark" label="备注" min-width="200" show-overflow-tooltip />
+            <el-table-column label="状态" width="90">
+              <template #default="{ row }">
+                <el-tag :type="Number(row.status) === 1 ? 'success' : 'info'">
+                  {{ Number(row.status) === 1 ? '启用' : '停用' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="160">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="openExpenseTypeDialog(row)">编辑</el-button>
+                <el-button link type="danger" @click="handleDeleteExpenseType(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-tab-pane>
+
         <!-- 商品字段管理 -->
         <el-tab-pane label="商品字段管理" name="categoryField">
           <div style="display: flex; gap: 20px;">
@@ -545,6 +569,28 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="expenseTypeDialogVisible" :title="etDialogTitle" width="520px" @close="resetEtForm">
+      <el-form :model="etForm" label-width="90px">
+        <el-form-item label="类型名称" required>
+          <el-input v-model="etForm.name" placeholder="如：差旅费、办公费、招待费" />
+        </el-form-item>
+        <el-form-item label="排序">
+          <el-input-number v-model="etForm.sortOrder" :min="0" />
+        </el-form-item>
+        <el-form-item label="启用">
+          <el-switch v-model="etForm.status" :active-value="1" :inactive-value="0" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="etForm.remark" type="textarea" rows="3" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="expenseTypeDialogVisible = false">取消</el-button>
+        <el-button v-if="!editingEtId" type="info" @click="saveSystemDraft('expense-type-create', etForm)">保存草稿</el-button>
+        <el-button type="primary" @click="handleEtSubmit" :loading="submitLoading">确定</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 分类字段编辑对话框 -->
     <el-dialog v-model="cfDialogVisible" :title="cfDialogTitle" width="500px" @close="cfResetFieldForm">
       <el-form :model="cfFieldForm" label-width="80px">
@@ -743,6 +789,7 @@ onMounted(() => {
   loadCustomerSources()
   loadResourceCategories()
   loadGoodsTypes()
+  loadExpenseTypes()
 })
 
 const loadResourceCategories = async () => {
@@ -837,6 +884,7 @@ const onSysTabChange = (tabName) => {
     loadSubsidyAccountRoutes()
   }
   if (tabName === 'supplementItem' && supplementItemData.value.length === 0) loadSupplementItems()
+  if (tabName === 'expenseType' && expenseTypeData.value.length === 0) loadExpenseTypes()
   if (tabName === 'categoryField' && cfCategoryTree.value.length === 0) cfLoadCategoryTree()
 }
 
@@ -1679,6 +1727,100 @@ const resetSiForm = () => {
   siForm.amountType = 'increase'
   siForm.sortOrder = 0
   editingSiId.value = null
+}
+
+// ==============================================
+// 字典管理 - 报销类型
+// ==============================================
+const expenseTypeData = ref([])
+const expenseTypeDialogVisible = ref(false)
+const etDialogTitle = ref('新增报销类型')
+const editingEtId = ref(null)
+const etForm = reactive({ name: '', sortOrder: 0, status: 1, remark: '' })
+
+const loadExpenseTypes = async () => {
+  try {
+    const res = await api.getExpenseTypes({ activeOnly: false })
+    if (res.code === 0) expenseTypeData.value = res.data || []
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || err?.message || '加载报销类型失败')
+  }
+}
+
+const openExpenseTypeDialog = (row = null) => {
+  if (row) {
+    etDialogTitle.value = '编辑报销类型'
+    editingEtId.value = row.type_id
+    etForm.name = row.name || ''
+    etForm.sortOrder = Number(row.sort_order || 0)
+    etForm.status = Number(row.status) === 0 ? 0 : 1
+    etForm.remark = row.remark || ''
+  } else {
+    etDialogTitle.value = '新增报销类型'
+    editingEtId.value = null
+    etForm.name = ''
+    etForm.sortOrder = (expenseTypeData.value.length || 0) + 1
+    etForm.status = 1
+    etForm.remark = ''
+    restoreSystemDraft('expense-type-create', etForm)
+  }
+  expenseTypeDialogVisible.value = true
+}
+
+const handleEtSubmit = async () => {
+  if (!etForm.name.trim()) {
+    ElMessage.warning('请输入报销类型名称')
+    return
+  }
+  submitLoading.value = true
+  try {
+    const data = {
+      name: etForm.name.trim(),
+      sortOrder: Number(etForm.sortOrder || 0),
+      status: Number(etForm.status) === 0 ? 0 : 1,
+      remark: etForm.remark || ''
+    }
+    const res = editingEtId.value
+      ? await api.updateExpenseType(editingEtId.value, data)
+      : await api.createExpenseType(data)
+    if (res.code === 0) {
+      ElMessage.success(editingEtId.value ? '更新成功' : '创建成功')
+      if (!editingEtId.value) clearSystemDraft('expense-type-create')
+      expenseTypeDialogVisible.value = false
+      await loadExpenseTypes()
+    } else {
+      ElMessage.error(res.message || '保存失败')
+    }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || err?.message || '保存失败')
+  } finally {
+    submitLoading.value = false
+  }
+}
+
+const handleDeleteExpenseType = async (row) => {
+  try {
+    await ElMessageBox.confirm(`确认删除报销类型"${row.name}"？`, '确认删除', { type: 'warning' })
+    const res = await api.deleteExpenseType(row.type_id)
+    if (res.code === 0) {
+      ElMessage.success('删除成功')
+      await loadExpenseTypes()
+    } else {
+      ElMessage.error(res.message || '删除失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel' && err !== 'close') {
+      ElMessage.error(err?.response?.data?.message || err?.message || '删除失败')
+    }
+  }
+}
+
+const resetEtForm = () => {
+  etForm.name = ''
+  etForm.sortOrder = 0
+  etForm.status = 1
+  etForm.remark = ''
+  editingEtId.value = null
 }
 
 // ==============================================

@@ -2,7 +2,7 @@
  * 字典管理控制器
  * 客户来源 / 收款方式 / 结算账号 / 金额补录项目
  */
-const { sequelize, CustomerSource, PaymentMethod, PaymentMethodStore, SupplementItem, SettlementAccount, Store } = require('../../models');
+const { sequelize, CustomerSource, PaymentMethod, PaymentMethodStore, SupplementItem, ExpenseType, SettlementAccount, Store } = require('../../models');
 const { Op } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult } = require('../../utils');
 
@@ -706,6 +706,53 @@ async function sortSupplementItems(ctx) {
   ctx.body = { code: 0, message: '排序更新成功' };
 }
 
+// ==============================================
+// 报销类型管理
+// ==============================================
+
+async function getExpenseTypes(ctx) {
+  const where = {};
+  if (ctx.query.activeOnly === '1') where.status = 1;
+  const rows = await ExpenseType.findAll({ where, order: [['sort_order', 'ASC'], ['name', 'ASC']] });
+  ctx.body = { code: 0, data: rows };
+}
+
+async function createExpenseType(ctx) {
+  const name = String(ctx.request.body.name || '').trim();
+  if (!name) ctx.throw(400, '报销类型名称不能为空');
+  await ExpenseType.create({
+    type_id: generateUUID(),
+    name,
+    sort_order: Number(ctx.request.body.sortOrder || 0),
+    status: ctx.request.body.status === 0 ? 0 : 1,
+    remark: String(ctx.request.body.remark || '').trim()
+  });
+  ctx.body = { code: 0, message: '报销类型创建成功' };
+}
+
+async function updateExpenseType(ctx) {
+  const record = await ExpenseType.findByPk(ctx.params.id);
+  if (!record) ctx.throw(404, '报销类型不存在');
+  const updates = {};
+  if (ctx.request.body.name !== undefined) {
+    updates.name = String(ctx.request.body.name || '').trim();
+    if (!updates.name) ctx.throw(400, '报销类型名称不能为空');
+  }
+  if (ctx.request.body.sortOrder !== undefined) updates.sort_order = Number(ctx.request.body.sortOrder || 0);
+  if (ctx.request.body.status !== undefined) updates.status = Number(ctx.request.body.status) ? 1 : 0;
+  if (ctx.request.body.remark !== undefined) updates.remark = String(ctx.request.body.remark || '').trim();
+  updates.update_time = new Date();
+  await record.update(updates);
+  ctx.body = { code: 0, message: '报销类型更新成功' };
+}
+
+async function deleteExpenseType(ctx) {
+  const record = await ExpenseType.findByPk(ctx.params.id);
+  if (!record) ctx.throw(404, '报销类型不存在');
+  await record.update({ status: 0, update_time: new Date() });
+  ctx.body = { code: 0, message: '报销类型已停用' };
+}
+
 module.exports = {
   getCustomerSourceList,
   getAllCustomerSources,
@@ -732,5 +779,9 @@ module.exports = {
   createSupplementItem,
   updateSupplementItem,
   deleteSupplementItem,
-  sortSupplementItems
+  sortSupplementItems,
+  getExpenseTypes,
+  createExpenseType,
+  updateExpenseType,
+  deleteExpenseType
 };

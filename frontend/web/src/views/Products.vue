@@ -166,7 +166,7 @@
         <!-- ========== Tab 3: 价格管理 ========== -->
         <el-tab-pane v-if="!productApprovalOnly" label="价格管理" name="price">
           <el-alert
-            title="产品定价用于订单毛利的商品成本；未设置时首次采购入库会默认采用采购价，之后可在此调整。"
+            title="产品定价用于订单毛利的商品成本；零售价作为销售开单默认价格；最低销售价继续用于低价审批。"
             type="info"
             :closable="false"
             show-icon
@@ -203,6 +203,12 @@
               <template #default="{ row }">
                 <span v-if="!row._editing">¥{{ formatNum(row.standard_price) }}</span>
                 <el-input v-else v-model="row._stdPrice" size="small" style="width: 110px" />
+              </template>
+            </el-table-column>
+            <el-table-column label="零售价" width="140">
+              <template #default="{ row }">
+                <span v-if="!row._editing">¥{{ formatNum(row.retail_price) }}</span>
+                <el-input v-else v-model="row._retailPrice" size="small" style="width: 110px" />
               </template>
             </el-table-column>
             <el-table-column label="最低销售价" width="140">
@@ -461,7 +467,7 @@
     <el-dialog v-model="priceImportDialogVisible" title="批量导入定价" width="700px">
       <div class="import-tips">
         <p>填写商品编码或厂商编码，二者任填一个即可。厂商编码对应多个商品时会同步更新全部商品。</p>
-        <p>只更新定价和最低售价；生效时间为空表示立即生效。点击立即导入时校验，异常记录跳过，正常记录直接导入。</p>
+        <p>可更新定价、零售价和最低售价；零售价会作为销售默认价。生效时间为空表示立即生效。点击立即导入时校验，异常记录跳过，正常记录直接导入。</p>
         <el-button type="primary" size="small" @click="downloadPriceTemplate">下载定价模板</el-button>
       </div>
       <div class="upload-area">
@@ -1046,22 +1052,22 @@ const loadPriceData = async () => {
   try {
     const res = await api.getPriceList(priceParams)
     if (res.code === 0) {
-      priceTableData.value = (res.data?.list || []).map(p => ({ ...p, _editing: false, _stdPrice: p.standard_price || 0, _minPrice: p.min_sale_price || 0 }))
+      priceTableData.value = (res.data?.list || []).map(p => ({ ...p, _editing: false, _stdPrice: p.standard_price || 0, _retailPrice: p.retail_price || p.standard_price || 0, _minPrice: p.min_sale_price || 0 }))
       priceTotal.value = res.data?.pagination?.total || res.data?.total || 0
     }
   } catch (err) { ElMessage.error(err?.response?.data?.message || '加载失败') }
   finally { priceLoading.value = false }
 }
-const startEditPrice = (row) => { row._editing = true; row._stdPrice = row.standard_price || 0; row._minPrice = row.min_sale_price || 0 }
+const startEditPrice = (row) => { row._editing = true; row._stdPrice = row.standard_price || 0; row._retailPrice = row.retail_price || row.standard_price || 0; row._minPrice = row.min_sale_price || 0 }
 const cancelEditPrice = (row) => { row._editing = false }
 const savePrice = async (row) => {
-  if (Number(row._minPrice) > Number(row._stdPrice)) {
-    ElMessage.warning('最低售价必须小于或等于定价')
+  if (Number(row._minPrice) > Number(row._retailPrice)) {
+    ElMessage.warning('最低售价必须小于或等于零售价')
     return
   }
   try {
-    const res = await api.setPrice({ productId: row.product_id, standardPrice: row._stdPrice, minSalePrice: row._minPrice })
-    if (res.code === 0) { row.standard_price = row._stdPrice; row.min_sale_price = row._minPrice; row._editing = false; ElMessage.success('更新成功') }
+    const res = await api.setPrice({ productId: row.product_id, standardPrice: row._stdPrice, retailPrice: row._retailPrice, minSalePrice: row._minPrice })
+    if (res.code === 0) { row.standard_price = row._stdPrice; row.retail_price = row._retailPrice; row.min_sale_price = row._minPrice; row._editing = false; ElMessage.success('更新成功') }
     else ElMessage.error(res.message || '更新失败')
   } catch (err) { ElMessage.error(err?.response?.data?.message || '更新失败') }
 }
@@ -1120,6 +1126,7 @@ const downloadPriceTemplate = () => {
     '商品编码': '',
     '厂商编码': '',
     '定价': '',
+    '零售价': '',
     '最低售价': '',
     '生效时间': '',
     '调价原因': '',
@@ -1128,7 +1135,7 @@ const downloadPriceTemplate = () => {
   const ws = XLSX.utils.json_to_sheet(data)
   const wb = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb, ws, '定价模板')
-  ws['!cols'] = [{ wch: 16 }, { wch: 18 }, { wch: 12 }, { wch: 12 }, { wch: 20 }, { wch: 18 }, { wch: 24 }]
+  ws['!cols'] = [{ wch: 16 }, { wch: 18 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 20 }, { wch: 18 }, { wch: 24 }]
   XLSX.writeFile(wb, '商品定价导入模板.xlsx')
 }
 

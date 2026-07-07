@@ -27,6 +27,9 @@
             </el-table-column>
             <el-table-column prop="store_name" label="申请门店" width="120" />
             <el-table-column prop="supplier_name" label="供应商" width="150" />
+            <el-table-column label="付款方式" width="110">
+              <template #default="{ row }">{{ getPaymentMethodText(row.payment_method) }}</template>
+            </el-table-column>
             <el-table-column prop="invoice_type" label="发票类型" width="100" />
             <el-table-column prop="product_type" label="货型" width="130" />
             <el-table-column prop="items_summary" label="商品摘要" min-width="200" show-overflow-tooltip />
@@ -117,6 +120,12 @@
             <el-option label="收据" value="收据" />
             <el-option label="专票6%" value="专票6%" />
             <el-option label="专票13%" value="专票13%" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="付款方式" required>
+          <el-select v-model="requestForm.paymentMethod" placeholder="请选择付款方式" style="width: 100%">
+            <el-option label="公司账期" value="COMPANY_CREDIT" />
+            <el-option label="个人垫付" value="PERSONAL_ADVANCE" />
           </el-select>
         </el-form-item>
         <el-form-item label="货型" required>
@@ -236,6 +245,7 @@
             <el-tag :type="getStatusType(currentRequest.status)">{{ getStatusText(currentRequest.status) }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="供应商">{{ currentRequest.supplier_name }}</el-descriptions-item>
+          <el-descriptions-item label="付款方式">{{ getPaymentMethodText(currentRequest.payment_method) }}</el-descriptions-item>
           <el-descriptions-item label="发票类型">{{ currentRequest.invoice_type || '-' }}</el-descriptions-item>
           <el-descriptions-item label="货型">{{ currentRequest.product_type || currentRequest.items?.[0]?.product_type || '-' }}</el-descriptions-item>
           <el-descriptions-item label="申请门店">{{ currentRequest.store_name }}</el-descriptions-item>
@@ -443,6 +453,7 @@ const supplierQuery = reactive({
 const requestForm = reactive({
   supplierId: '',
   invoiceType: '',
+  paymentMethod: 'COMPANY_CREDIT',
   productType: '',
   remark: '',
   rebateDeduction: 0,
@@ -1095,6 +1106,7 @@ const handleSubmit = async () => {
     const data = {
       supplierId: requestForm.supplierId,
       invoiceType: requestForm.invoiceType,
+      paymentMethod: requestForm.paymentMethod,
       goodsTypeId: selectedGoodsType?.goods_type_id || '',
       productType: requestForm.productType,
       remark: requestForm.remark,
@@ -1134,6 +1146,7 @@ const handleDialogClose = () => {
 const resetForm = () => {
   requestForm.supplierId = ''
   requestForm.invoiceType = ''
+  requestForm.paymentMethod = 'COMPANY_CREDIT'
   requestForm.productType = goodsTypeOptions.value[0]?.name || ''
   requestForm.remark = ''
   requestForm.rebateDeduction = 0
@@ -1149,6 +1162,7 @@ const restorePurchaseRequestDraft = () => {
   const draft = loadDraft(PURCHASE_REQUEST_DRAFT_KEY)
   if (!draft) return
   Object.assign(requestForm, draft)
+  requestForm.paymentMethod = draft.paymentMethod || 'COMPANY_CREDIT'
   requestForm.items = Array.isArray(draft.items)
     ? draft.items.map(item => ({ rebateDeduction: 0, selectedResourceTypes: [], ...item }))
     : []
@@ -1163,6 +1177,14 @@ const getStatusType = (status) => {
 const getStatusText = (status) => {
   const texts = { pending: '待审批', approved: '已通过', rejected: '已拒绝', purchased: '已采购', revoked: '已撤销' }
   return texts[status] || status
+}
+
+const getPaymentMethodText = (value) => {
+  const map = {
+    COMPANY_CREDIT: '公司账期',
+    PERSONAL_ADVANCE: '个人垫付'
+  }
+  return map[value] || '公司账期'
 }
 
 const handleAllocateStore = (row, index) => {

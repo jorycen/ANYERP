@@ -1,10 +1,11 @@
 /**
  * 采购管理控制器
  */
-const { sequelize, PurchaseRequest, PurchaseRequestItem, Supplier, SupplierPaymentAccount, Store, Product, Inbound, InboundItem, Payable, SupplierRebate, ResourceCategory, GoodsType } = require('../../models');
+const { sequelize, PurchaseRequest, PurchaseRequestItem, Supplier, SupplierPaymentAccount, Store, Product, Inbound, InboundItem, Payable, Expense, SupplierRebate, ResourceCategory, GoodsType } = require('../../models');
 const { Op } = require('sequelize');
 const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { recordRebateDeduction, recordSupplierRebateAccountTransaction, _getRebateBalance } = require('../finance/rebateController');
+const { createPurchaseReimbursement } = require('../finance/expenseService');
 
 function toMoney(value) {
   const amount = Number(value);
@@ -183,7 +184,7 @@ async function getRequestDetail(ctx) {
  */
 async function createRequest(ctx) {
   const user = ctx.state.user;
-  const { supplierId, remark, items, storeId, invoiceType, goodsTypeId, productType, rebateDeduction } = ctx.request.body;
+  const { supplierId, remark, items, storeId, invoiceType, paymentMethod, goodsTypeId, productType, rebateDeduction } = ctx.request.body;
 
   if (!items || items.length === 0) {
     ctx.throw(400, '请添加商品明细');
@@ -191,6 +192,10 @@ async function createRequest(ctx) {
 
   if (!supplierId) {
     ctx.throw(400, '请选择供应商');
+  }
+  const normalizedPaymentMethod = paymentMethod || 'COMPANY_CREDIT';
+  if (!['COMPANY_CREDIT', 'PERSONAL_ADVANCE'].includes(normalizedPaymentMethod)) {
+    ctx.throw(400, '付款方式无效');
   }
 
   const firstTypedItem = items.find(item => item.goodsTypeId || item.goods_type_id || item.productType || item.product_type) || {};
@@ -288,7 +293,7 @@ async function createRequest(ctx) {
   }
 
   const now = new Date();
-  await PurchaseRequest.create({
+  const createdRequest = await PurchaseRequest.create({
     request_id: requestId,
     request_no: requestNo,
     store_id: finalStoreId,
@@ -296,6 +301,7 @@ async function createRequest(ctx) {
     goods_type_id: canonicalGoodsTypeId,
     product_type: canonicalProductType,
     invoice_type: invoiceType || '',
+    payment_method: normalizedPaymentMethod,
     reason: remark || '',
     total_amount: totalAmount,
     rebate_deduction: deduction,
@@ -330,10 +336,16 @@ async function createRequest(ctx) {
     });
   }
 
+  if (normalizedPaymentMethod === 'PERSONAL_ADVANCE') {
+    createdRequest.Supplier = await Supplier.findByPk(supplierId);
+    await createPurchaseReimbursement(createdRequest, user);
+  }
+
   ctx.body = { code: 0, message: '采购申请提交成功', requestId, requestNo };
 }
 
 async function ensurePayableForApprovedRequest(request, user, transaction = null) {
+  if (request.payment_method === 'PERSONAL_ADVANCE') return;
   if (!request.supplier_id) return;
 
   const amount = parseFloat(
@@ -367,6 +379,12 @@ async function ensurePayableForApprovedRequest(request, user, transaction = null
     supplier_name: supplier ? supplier.name : '',
     request_id: request.request_id,
     request_no: request.request_no,
+    payee_type: 'supplier',
+    payee_id: request.supplier_id,
+    payee_name: supplier ? supplier.name : '',
+    source_type: 'purchase',
+    source_id: request.request_id,
+    source_no: request.request_no,
     total_amount: amount,
     paid_amount: 0,
     status: 'unpaid',
@@ -556,6 +574,14 @@ async function revokeRequest(ctx) {
 
     await Payable.destroy({
       where: { request_id: requestId },
+      transaction
+    });
+    await Expense.update({
+      status: 'cancelled',
+      review_comment: comment || '采购申请已撤销',
+      update_time: new Date()
+    }, {
+      where: { source_type: 'purchase', source_id: requestId },
       transaction
     });
 

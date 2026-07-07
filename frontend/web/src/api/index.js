@@ -215,11 +215,13 @@ export default {
   settleNationalSubsidyReceivables: (data) => api.post('/finance/national-subsidy-receivables/settle', data),
   createExpense: (data) => api.post('/finance/expense', data),
   getExpenseList: (params) => api.get('/finance/expense-list', { params }),
+  reviewExpense: (id, data) => api.post(`/finance/expense/${id}/review`, data),
   submitExpense: (id) => api.put(`/finance/expense/submit/${id}`),
   payExpense: (id, data) => api.put(`/finance/expense/pay/${id}`, data),
   getPayableList: (params) => api.get('/finance/payable-list', { params }),
   getUnpaidBySupplier: (params) => api.get('/finance/unpaid-by-supplier', { params }),
   createSettlement: (data) => api.post('/finance/create-settlement', data),
+  createExpenseSettlement: (data) => api.post('/finance/create-expense-settlement', data),
   getSettlementList: (params) => api.get('/finance/settlement-list', { params }),
   getSettlementDetail: (id) => api.get(`/finance/settlement/${id}`),
   submitSettlement: (data) => api.post('/finance/settlement/submit', data),
@@ -438,5 +440,11 @@ export default {
   createSupplementItem: (data) => api.post('/dict/supplement-item/create', data),
   updateSupplementItem: (id, data) => api.put(`/dict/supplement-item/update/${id}`, data),
   deleteSupplementItem: (id) => api.delete(`/dict/supplement-item/delete/${id}`),
-  sortSupplementItems: (data) => api.post('/dict/supplement-item/sort', data)
+  sortSupplementItems: (data) => api.post('/dict/supplement-item/sort', data),
+
+  // Dict - Expense Type
+  getExpenseTypes: (params = {}) => api.get('/dict/expense-type/all', { params }),
+  createExpenseType: (data) => api.post('/dict/expense-type/create', data),
+  updateExpenseType: (id, data) => api.put(`/dict/expense-type/update/${id}`, data),
+  deleteExpenseType: (id) => api.delete(`/dict/expense-type/delete/${id}`)
 }

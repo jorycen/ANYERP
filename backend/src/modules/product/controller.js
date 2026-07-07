@@ -199,6 +199,7 @@ async function findProductsByManufacturerCode(manufacturerCode) {
 
 function priceFieldLabel(field) {
   if (field === 'standard_price') return '定价';
+  if (field === 'retail_price') return '零售价';
   if (field === 'min_sale_price') return '最低售价';
   return field;
 }
@@ -972,13 +973,14 @@ async function applyPendingProductPriceChanges() {
     const productDiff = String(a.product_id).localeCompare(String(b.product_id));
     if (productDiff !== 0) return productDiff;
     if (a.price_field === b.price_field) return 0;
-    return a.price_field === 'standard_price' ? -1 : 1;
+    const order = ['standard_price', 'retail_price', 'min_sale_price'];
+    return order.indexOf(a.price_field) - order.indexOf(b.price_field);
   });
 
   let applied = 0;
   for (const log of pendingLogs) {
     const field = log.price_field;
-    if (!['standard_price', 'min_sale_price'].includes(field)) {
+    if (!['standard_price', 'retail_price', 'min_sale_price'].includes(field)) {
       await log.update({ status: 'failed', fail_reason: `不支持的价格字段: ${field}` });
       continue;
     }
@@ -988,9 +990,11 @@ async function applyPendingProductPriceChanges() {
       let price = await ProductPrice.findOne({ where: { product_id: log.product_id }, transaction });
       const oldPrice = moneyNumber(price ? price[field] : 0);
       const nextStandardPrice = field === 'standard_price' ? moneyNumber(log.new_price) : moneyNumber(price?.standard_price);
+      const nextRetailPrice = field === 'retail_price' ? moneyNumber(log.new_price) : moneyNumber(price?.retail_price);
       const nextMinSalePrice = field === 'min_sale_price' ? moneyNumber(log.new_price) : moneyNumber(price?.min_sale_price);
-      if (nextMinSalePrice > nextStandardPrice) {
-        throw new Error('最低售价必须小于或等于定价');
+      const saleReference = nextRetailPrice > 0 ? nextRetailPrice : nextStandardPrice;
+      if (nextMinSalePrice > saleReference) {
+        throw new Error('最低售价必须小于或等于零售价');
       }
       if (price) {
         await price.update({
@@ -1004,6 +1008,7 @@ async function applyPendingProductPriceChanges() {
           product_id: log.product_id,
           cost_price: 0,
           standard_price: field === 'standard_price' ? moneyNumber(log.new_price) : 0,
+          retail_price: field === 'retail_price' ? moneyNumber(log.new_price) : 0,
           min_sale_price: field === 'min_sale_price' ? moneyNumber(log.new_price) : 0,
           effective_time: log.effective_time,
           create_user: log.create_user || 'system'
@@ -1068,7 +1073,7 @@ async function getPriceList(ctx) {
     where: productWhere,
     attributes: ['product_id', 'product_code', 'manufacturer_code', 'name', 'unit', 'category'],
     include: [
-      { model: ProductPrice, attributes: ['price_id', 'standard_price', 'min_sale_price', 'cost_price'] }
+      { model: ProductPrice, attributes: ['price_id', 'standard_price', 'retail_price', 'min_sale_price', 'cost_price'] }
     ],
     order: [['product_code', 'DESC']],
     ...paginate({}, { page: parseInt(page), pageSize: parseInt(pageSize) }),
@@ -1106,6 +1111,7 @@ async function getPriceList(ctx) {
     category_name: p.category || '',
     price_id: p.ProductPrice ? p.ProductPrice.price_id : null,
     standard_price: p.ProductPrice ? p.ProductPrice.standard_price : 0,
+    retail_price: p.ProductPrice ? p.ProductPrice.retail_price : 0,
     min_sale_price: p.ProductPrice ? p.ProductPrice.min_sale_price : 0,
     cost_price: p.ProductPrice ? p.ProductPrice.cost_price : 0
   }));
@@ -1114,18 +1120,19 @@ async function getPriceList(ctx) {
 }
 
 async function setPrice(ctx) {
-  const { productId, standardPrice, minSalePrice } = ctx.request.body;
+  const { productId, standardPrice, retailPrice, minSalePrice } = ctx.request.body;
 
   if (!productId || standardPrice === undefined || minSalePrice === undefined) {
     ctx.throw(400, '商品ID、标准售价和最低销售价不能为空');
   }
 
-  if (standardPrice < 0 || minSalePrice < 0) {
+  if (standardPrice < 0 || Number(retailPrice || 0) < 0 || minSalePrice < 0) {
     ctx.throw(400, '价格不能为负数');
   }
 
-  if (Number(minSalePrice) > Number(standardPrice)) {
-    ctx.throw(400, '最低售价必须小于或等于定价');
+  const effectiveRetailPrice = retailPrice === undefined ? Number(standardPrice) : Number(retailPrice);
+  if (Number(minSalePrice) > effectiveRetailPrice) {
+    ctx.throw(400, '最低售价必须小于或等于零售价');
   }
 
   const product = await Product.findOne({ where: { product_id: productId, is_deleted: 0 } });
@@ -1140,13 +1147,16 @@ async function setPrice(ctx) {
   try {
     let price = await ProductPrice.findOne({ where: { product_id: productId }, transaction });
     const oldStandardPrice = moneyNumber(price?.standard_price);
+    const oldRetailPrice = moneyNumber(price?.retail_price);
     const oldMinSalePrice = moneyNumber(price?.min_sale_price);
     const nextStandardPrice = moneyNumber(standardPrice);
+    const nextRetailPrice = moneyNumber(effectiveRetailPrice);
     const nextMinSalePrice = moneyNumber(minSalePrice);
 
     if (price) {
       await price.update({
         standard_price: nextStandardPrice,
+        retail_price: nextRetailPrice,
         min_sale_price: nextMinSalePrice,
         effective_time: now,
         create_user: userName
@@ -1156,6 +1166,7 @@ async function setPrice(ctx) {
         price_id: generateUUID(),
         product_id: productId,
         standard_price: nextStandardPrice,
+        retail_price: nextRetailPrice,
         min_sale_price: nextMinSalePrice,
         cost_price: 0,
         effective_time: now,
@@ -1185,6 +1196,13 @@ async function setPrice(ctx) {
         price_field: 'standard_price',
         old_price: oldStandardPrice,
         new_price: nextStandardPrice
+      },
+      {
+        change_id: generateUUID(),
+        ...logBase,
+        price_field: 'retail_price',
+        old_price: oldRetailPrice,
+        new_price: nextRetailPrice
       },
       {
         change_id: generateUUID(),
@@ -1359,14 +1377,17 @@ async function validatePriceImportRows(rows) {
     const productCode = String(getRowValue(row, ['商品编码', '商品代码', 'product_code', 'productCode']) || '').trim();
     const manufacturerCode = String(getRowValue(row, ['厂商编码', 'manufacturer_code', 'manufacturerCode']) || '').trim();
     const standardRaw = getRowValue(row, ['定价', '标准售价', '销售定价', 'standard_price', 'standardPrice']);
+    const retailRaw = getRowValue(row, ['零售价', '销售价', 'retail_price', 'retailPrice']);
     const minRaw = getRowValue(row, ['最低售价', '最低销售价', 'min_sale_price', 'minSalePrice']);
     const effectiveRaw = getRowValue(row, ['生效时间', '生效日期', 'effective_time', 'effectiveTime']);
     const changeReason = String(getRowValue(row, ['调价原因', '原因', 'change_reason', 'reason']) || '').trim();
     const remark = String(getRowValue(row, ['备注', 'remark']) || '').trim();
 
     const hasStandardPrice = !isEmptyCell(standardRaw);
+    const hasRetailPrice = !isEmptyCell(retailRaw);
     const hasMinSalePrice = !isEmptyCell(minRaw);
     const standardPrice = hasStandardPrice ? parseMoney(standardRaw) : null;
+    const retailPrice = hasRetailPrice ? parseMoney(retailRaw) : null;
     const minSalePrice = hasMinSalePrice ? parseMoney(minRaw) : null;
     const effectiveTime = parseExcelDate(effectiveRaw);
 
@@ -1374,15 +1395,15 @@ async function validatePriceImportRows(rows) {
       errors.push({ row: rowNo, product: row, message: '请填写商品编码或厂商编码' });
       continue;
     }
-    if (!hasStandardPrice && !hasMinSalePrice) {
-      errors.push({ row: rowNo, product: row, message: '请至少填写定价或最低售价' });
+    if (!hasStandardPrice && !hasRetailPrice && !hasMinSalePrice) {
+      errors.push({ row: rowNo, product: row, message: '请至少填写定价、零售价或最低售价' });
       continue;
     }
-    if ((hasStandardPrice && standardPrice === null) || (hasMinSalePrice && minSalePrice === null)) {
+    if ((hasStandardPrice && standardPrice === null) || (hasRetailPrice && retailPrice === null) || (hasMinSalePrice && minSalePrice === null)) {
       errors.push({ row: rowNo, product: row, message: '价格格式错误' });
       continue;
     }
-    if ((standardPrice !== null && standardPrice < 0) || (minSalePrice !== null && minSalePrice < 0)) {
+    if ((standardPrice !== null && standardPrice < 0) || (retailPrice !== null && retailPrice < 0) || (minSalePrice !== null && minSalePrice < 0)) {
       errors.push({ row: rowNo, product: row, message: '价格不能为负数' });
       continue;
     }
@@ -1417,13 +1438,14 @@ async function validatePriceImportRows(rows) {
     for (const product of matchedProducts) {
       const existingPrice = await ProductPrice.findOne({ where: { product_id: product.product_id } });
       const nextStandardPrice = standardPrice !== null ? moneyNumber(standardPrice) : moneyNumber(existingPrice?.standard_price);
+      const nextRetailPrice = retailPrice !== null ? moneyNumber(retailPrice) : moneyNumber(existingPrice?.retail_price ?? existingPrice?.standard_price);
       const nextMinSalePrice = minSalePrice !== null ? moneyNumber(minSalePrice) : moneyNumber(existingPrice?.min_sale_price);
 
-      if (nextMinSalePrice > nextStandardPrice) {
+      if (nextMinSalePrice > nextRetailPrice) {
         errors.push({
           row: rowNo,
           product: row,
-          message: `${product.product_code} 最低售价必须小于或等于定价`
+          message: `${product.product_code} 最低售价必须小于或等于零售价`
         });
         continue;
       }
@@ -1434,8 +1456,10 @@ async function validatePriceImportRows(rows) {
         product,
         manufacturerCode,
         hasStandardPrice,
+        hasRetailPrice,
         hasMinSalePrice,
         standardPrice: nextStandardPrice,
+        retailPrice: nextRetailPrice,
         minSalePrice: nextMinSalePrice,
         effectiveTime,
         changeReason,
@@ -1468,7 +1492,7 @@ async function validatePriceImportRows(rows) {
   const validSourceRows = new Set(validRows.map(item => item.rowNo)).size;
   const errorSourceRows = new Set(errors.flatMap(item => String(item.row).split(',').map(v => v.trim()).filter(Boolean))).size;
   const priceChangeCount = validRows.reduce((sum, item) => {
-    return sum + (item.hasStandardPrice ? 1 : 0) + (item.hasMinSalePrice ? 1 : 0);
+    return sum + (item.hasStandardPrice ? 1 : 0) + (item.hasRetailPrice ? 1 : 0) + (item.hasMinSalePrice ? 1 : 0);
   }, 0);
 
   return {
@@ -1543,12 +1567,14 @@ async function importPrices(ctx) {
       const isImmediate = item.effectiveTime.getTime() <= now.getTime();
       const price = await ProductPrice.findOne({ where: { product_id: item.product.product_id }, transaction });
       const oldStandardPrice = moneyNumber(price?.standard_price);
+      const oldRetailPrice = moneyNumber(price?.retail_price);
       const oldMinSalePrice = moneyNumber(price?.min_sale_price);
 
       if (isImmediate) {
         if (price) {
           await price.update({
             standard_price: item.standardPrice,
+            retail_price: item.retailPrice,
             min_sale_price: item.minSalePrice,
             effective_time: item.effectiveTime,
             create_user: userName
@@ -1559,6 +1585,7 @@ async function importPrices(ctx) {
             product_id: item.product.product_id,
             cost_price: 0,
             standard_price: item.standardPrice,
+            retail_price: item.retailPrice,
             min_sale_price: item.minSalePrice,
             effective_time: item.effectiveTime,
             create_user: userName
@@ -1591,6 +1618,15 @@ async function importPrices(ctx) {
           price_field: 'standard_price',
           old_price: oldStandardPrice,
           new_price: item.standardPrice
+        });
+      }
+      if (item.hasRetailPrice) {
+        logs.push({
+          change_id: generateUUID(),
+          ...logBase,
+          price_field: 'retail_price',
+          old_price: oldRetailPrice,
+          new_price: item.retailPrice
         });
       }
       if (item.hasMinSalePrice) {
@@ -1752,7 +1788,7 @@ async function getPnList(ctx) {
     include: [{
       model: Product,
       attributes: ['product_id', 'name', 'product_code', 'category', 'config', 'brand', 'series', 'model', 'need_sn'],
-      include: [{ model: ProductPrice, attributes: ['standard_price', 'min_sale_price'] }]
+      include: [{ model: ProductPrice, attributes: ['standard_price', 'retail_price', 'min_sale_price'] }]
     }],
     order: [['pn_code', 'ASC']],
     ...paginate({}, { page: parseInt(page), pageSize: parseInt(pageSize) })
@@ -1780,8 +1816,9 @@ async function getPnList(ctx) {
       model: product.model || '',
       need_sn: product.need_sn || 0,
       standard_price: price.standard_price || 0,
+      retail_price: price.retail_price || 0,
       min_sale_price: price.min_sale_price || 0,
-      settlement_price: price.min_sale_price || price.standard_price || 0,
+      settlement_price: price.retail_price || price.standard_price || 0,
       current_store_stock_qty: stock.current,
       other_store_stock_qty: stock.other,
       total_stock_qty: stock.total,
@@ -1892,7 +1929,7 @@ async function searchProduct(ctx) {
     where,
     attributes: ['product_id', 'product_code', 'name', 'category', 'config', 'brand', 'series', 'model', 'manufacturer_code', 'need_sn', 'unit'],
     include: [
-      { model: ProductPrice, attributes: ['standard_price', 'min_sale_price'] }
+      { model: ProductPrice, attributes: ['standard_price', 'retail_price', 'min_sale_price'] }
     ],
     order: [['product_code', 'DESC']],
   });
@@ -1942,8 +1979,9 @@ async function searchProduct(ctx) {
         model: p.model || '',
         category: p.category || '',
         standard_price: p.ProductPrice ? p.ProductPrice.standard_price : 0,
+        retail_price: p.ProductPrice ? p.ProductPrice.retail_price : 0,
         min_sale_price: p.ProductPrice ? p.ProductPrice.min_sale_price : 0,
-        settlement_price: p.ProductPrice ? (p.ProductPrice.min_sale_price || p.ProductPrice.standard_price || 0) : 0,
+        settlement_price: p.ProductPrice ? (p.ProductPrice.retail_price || p.ProductPrice.standard_price || 0) : 0,
         need_sn: p.need_sn,
         unit: p.unit,
         stock_qty: storeId ? stock.current : stock.total,

@@ -5,7 +5,7 @@ const Router = require('koa-router');
 const {
   getDailyDetails, getNationalSubsidyReceivables, getDailyStatement, getDailyStatementDetail,
   batchSettle, settleNationalSubsidyReceivables, getSettlementSummary, createExpense, getExpenseList,
-  submitExpense, payExpense, getSettlementAccountsWithBalance, getAccountTransactions, addAccountTransaction,
+  submitExpense, payExpense, reviewExpense, getSettlementAccountsWithBalance, getAccountTransactions, addAccountTransaction,
   getSubsidyAccountRoutes, saveSubsidyAccountRoute, createSubsidyReceipt, getSubsidyReceipts,
   allocateSubsidyReceipt, refundSubsidyReceipt, reverseSubsidyReceipt, submitSubsidyAdjustment,
   getSubsidyAdjustments, reviewSubsidyAdjustment, reverseSubsidyAdjustment
@@ -14,6 +14,7 @@ const {
   getPayableList,
   getUnpaidBySupplier,
   createSettlement,
+  createExpenseSettlement,
   getSettlementList,
   getSettlementDetail,
   submitSettlement,
@@ -50,6 +51,11 @@ const { requireRole } = require('../../middleware/permission');
 
 const router = new Router();
 
+// 员工费用入口：创建及查看本人/授权门店费用不要求财务角色。
+router.post('/expense', createExpense);
+router.get('/expense-list', getExpenseList);
+router.post('/expense/:id/review', requireRole('admin'), reviewExpense);
+
 router.use(requireRole('finance'));
 
 router.get('/daily-details', getDailyDetails);
@@ -70,14 +76,13 @@ router.get('/daily-statement/:id', getDailyStatementDetail);
 router.get('/settlement-summary', getSettlementSummary);
 router.post('/batch-settle', batchSettle);
 router.post('/national-subsidy-receivables/settle', settleNationalSubsidyReceivables);
-router.post('/expense', createExpense);
-router.get('/expense-list', getExpenseList);
 router.put('/expense/submit/:id', submitExpense);
 router.put('/expense/pay/:id', payExpense);
 
 router.get('/payable-list', getPayableList);
 router.get('/unpaid-by-supplier', getUnpaidBySupplier);
 router.post('/create-settlement', createSettlement);
+router.post('/create-expense-settlement', createExpenseSettlement);
 router.get('/settlement-list', getSettlementList);
 router.get('/settlement/:id', getSettlementDetail);
 router.post('/settlement/submit', submitSettlement);

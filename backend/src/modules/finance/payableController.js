@@ -7,6 +7,7 @@ const {
   SettlementItem,
   SettlementPaymentBatch,
   SettlementPaymentRecord,
+  Expense,
   Supplier,
   SupplierPaymentAccount,
   SettlementAccount,
@@ -194,6 +195,59 @@ async function createSettlement(ctx) {
   ctx.body = { code: 0, message: '结算单创建成功', data: settlement };
 }
 
+async function createExpenseSettlement(ctx) {
+  const { payableId } = ctx.request.body;
+  const user = ctx.state.user;
+  if (!payableId) ctx.throw(400, '应付款ID不能为空');
+
+  let settlement;
+  await sequelize.transaction(async transaction => {
+    const payable = await Payable.findByPk(payableId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!payable || payable.source_type !== 'expense') ctx.throw(404, '费用应付款不存在');
+    if (payable.status !== 'unpaid') ctx.throw(400, '当前费用应付款已生成结算单');
+
+    settlement = await Settlement.create({
+      settlement_id: generateUUID(),
+      settlement_no: `EXS${moment().format('YYYYMMDDHHmmss')}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`,
+      supplier_id: null,
+      supplier_name: payable.payee_name || payable.supplier_name || '费用发生方',
+      settlement_type: 'expense',
+      payee_type: payable.payee_type || 'counterparty',
+      payee_id: payable.payee_id || '',
+      payee_name: payable.payee_name || payable.supplier_name || '',
+      source_type: 'expense',
+      source_id: payable.source_id,
+      source_no: payable.source_no || payable.request_no,
+      other_payment_remark: '财务对公费用',
+      total_amount: payable.total_amount,
+      paid_amount: 0,
+      status: 'draft',
+      payment_status: 'unpaid',
+      create_user: user.name || user.phone || ''
+    }, { transaction });
+    await SettlementItem.create({
+      settlement_id: settlement.settlement_id,
+      payable_id: payable.payable_id,
+      request_no: payable.source_no || payable.request_no,
+      amount: payable.total_amount
+    }, { transaction });
+    await payable.update({ status: 'settling', paid_amount: 0 }, { transaction });
+    if (payable.source_id) {
+      await Expense.update({
+        settlement_id: settlement.settlement_id,
+        update_time: new Date()
+      }, {
+        where: { expense_id: payable.source_id },
+        transaction
+      });
+    }
+  });
+  ctx.body = { code: 0, message: '费用结算单已生成', data: settlement };
+}
+
 function parseJsonText(value, fallback = null) {
   if (!value) return fallback;
   try {
@@ -296,6 +350,17 @@ async function refreshSettlementPaymentState(settlement, transaction = null) {
     }, { transaction });
   }
 
+  if (paymentStatus === 'paid' && settlement.source_id && ['expense', 'reimbursement'].includes(settlement.settlement_type)) {
+    await Expense.update({
+      status: 'paid',
+      settled_at: new Date(),
+      update_time: new Date()
+    }, {
+      where: { expense_id: settlement.source_id },
+      transaction
+    });
+  }
+
   return { paidAmount, paymentStatus };
 }
 
@@ -303,10 +368,14 @@ async function refreshSettlementPaymentState(settlement, transaction = null) {
  * 结算单列表
  */
 async function getSettlementList(ctx) {
-  const { supplierId, status, paymentStatus, page = 1, pageSize = 20 } = ctx.query;
+  const { supplierId, settlementType, status, paymentStatus, page = 1, pageSize = 20 } = ctx.query;
   const where = {};
 
   if (supplierId) where.supplier_id = supplierId;
+  if (settlementType) {
+    const settlementTypes = String(settlementType).split(',').map(item => item.trim()).filter(Boolean);
+    where.settlement_type = settlementTypes.length > 1 ? { [Op.in]: settlementTypes } : settlementTypes[0];
+  }
   if (status) where.status = status;
   if (paymentStatus) where.payment_status = paymentStatus;
 
@@ -951,6 +1020,7 @@ module.exports = {
   getPayableList,
   getUnpaidBySupplier,
   createSettlement,
+  createExpenseSettlement,
   getSettlementList,
   getSettlementDetail,
   submitSettlement,

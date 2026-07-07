@@ -344,14 +344,24 @@
           </div>
 
           <el-table :data="payableData" stripe border>
-            <el-table-column prop="request_no" label="采购单号" width="180">
+            <el-table-column label="来源单号" width="190">
               <template #default="{ row }">
-                <el-button link type="primary" @click="openPurchaseRequestDetail(row)">
-                  {{ row.request_no || '-' }}
+                <el-button v-if="row.source_type === 'purchase' || row.request_id" link type="primary" @click="openPurchaseRequestDetail(row)">
+                  {{ row.source_no || row.request_no || '-' }}
                 </el-button>
+                <span v-else>{{ row.source_no || row.request_no || '-' }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="supplier_name" label="供应商" width="120" />
+            <el-table-column label="来源类型" width="100">
+              <template #default="{ row }">
+                <el-tag :type="row.source_type === 'expense' ? 'warning' : 'info'" size="small">
+                  {{ getPayableSourceText(row) }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="收款方" width="150">
+              <template #default="{ row }">{{ getPayablePayeeName(row) }}</template>
+            </el-table-column>
             <el-table-column prop="total_amount" label="应付金额" width="120">
               <template #default="{ row }">¥{{ row.total_amount }}</template>
             </el-table-column>
@@ -364,9 +374,12 @@
               </template>
             </el-table-column>
             <el-table-column prop="create_time" label="创建时间" width="160" />
-            <el-table-column label="操作" width="100">
+            <el-table-column label="操作" width="140">
               <template #default="{ row }">
-                <el-button link type="primary" @click="openSingleSettlementDialog(row)">结算</el-button>
+                <el-button v-if="row.source_type === 'expense'" link type="primary" @click="handleCreateExpenseSettlement(row)">
+                  生成结算单
+                </el-button>
+                <el-button v-else link type="primary" @click="openSingleSettlementDialog(row)">结算</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -400,7 +413,9 @@
 
           <el-table :data="settlementData" stripe border>
             <el-table-column prop="settlement_no" label="结算单号" width="180" />
-            <el-table-column prop="supplier_name" label="供应商" width="120" />
+            <el-table-column label="收款方" width="140">
+              <template #default="{ row }">{{ row.payee_name || row.supplier_name || '-' }}</template>
+            </el-table-column>
             <el-table-column label="收款账户" min-width="220" show-overflow-tooltip>
               <template #default="{ row }">
                 <span>{{ getSettlementPaymentAccountText(row) }}</span>
@@ -457,6 +472,68 @@
             @current-change="loadSettlementData"
           />
 
+        </el-tab-pane>
+
+        <el-tab-pane label="报销结算" name="reimbursement">
+          <div class="filter-bar">
+            <span style="font-weight: bold; line-height: 32px;">个人垫付报销结算单</span>
+            <el-select v-model="reimbursementSettlementStatusFilter" placeholder="结算状态" clearable style="width: 130px" @change="loadReimbursementSettlementData">
+              <el-option label="全部" value="" />
+              <el-option label="草稿" value="draft" />
+              <el-option label="待付款" value="confirmed" />
+              <el-option label="已作废" value="voided" />
+            </el-select>
+            <el-select v-model="reimbursementPaymentStatusFilter" placeholder="付款状态" clearable style="width: 130px" @change="loadReimbursementSettlementData">
+              <el-option label="全部" value="" />
+              <el-option label="未付款" value="unpaid" />
+              <el-option label="部分付款" value="partial_paid" />
+              <el-option label="已付款" value="paid" />
+            </el-select>
+          </div>
+
+          <el-table :data="reimbursementSettlementData" stripe border>
+            <el-table-column prop="settlement_no" label="结算单号" width="190" />
+            <el-table-column label="报销人" width="130">
+              <template #default="{ row }">{{ row.payee_name || row.supplier_name || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="来源单号" width="180">
+              <template #default="{ row }">{{ row.source_no || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="total_amount" label="结算金额" width="120">
+              <template #default="{ row }">¥{{ row.total_amount }}</template>
+            </el-table-column>
+            <el-table-column prop="status" label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="getSettlementStatusTagType(row.status)">
+                  {{ getSettlementStatusText(row.status) }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="payment_status" label="付款状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="getPaymentStatusTagType(row.payment_status)">
+                  {{ getPaymentStatusText(row.payment_status) }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="create_time" label="创建时间" width="160" />
+            <el-table-column label="操作" width="220">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="openSettlementDetail(row)">详情</el-button>
+                <el-button v-if="row.status === 'draft'" link type="warning" @click="handleSubmitSettlement(row)">提交</el-button>
+                <el-button v-if="row.status !== 'voided'" link type="danger" @click="handleVoidSettlement(row)">作废</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <el-pagination
+            v-model:current-page="reimbursementSettlementQuery.page"
+            v-model:page-size="reimbursementSettlementQuery.pageSize"
+            :total="reimbursementSettlementTotal"
+            layout="total, sizes, prev, pager, next"
+            @size-change="loadReimbursementSettlementData"
+            @current-change="loadReimbursementSettlementData"
+          />
         </el-tab-pane>
 
         <el-tab-pane label="付款管理" name="payment" lazy>
@@ -825,14 +902,9 @@
     <!-- 添加支出对话框-->
     <el-dialog v-model="expenseDialogVisible" title="添加费用" width="500px" @close="handleDialogClose">
       <el-form :model="expenseForm" label-width="100px">
-        <el-form-item label="支出类型" required>
-          <el-select v-model="expenseForm.expenseType" placeholder="请选择类型" style="width: 100%">
-            <el-option label="办公用品" value="办公用品" />
-            <el-option label="水电费" value="水电费" />
-            <el-option label="运费" value="运费" />
-            <el-option label="维修费" value="维修费" />
-            <el-option label="工资" value="工资" />
-            <el-option label="其他" value="其他" />
+        <el-form-item label="报销类型" required>
+          <el-select v-model="expenseForm.expenseTypeId" placeholder="请选择类型" style="width: 100%">
+            <el-option v-for="item in expenseTypeOptions" :key="item.type_id" :label="item.name" :value="item.type_id" />
           </el-select>
         </el-form-item>
         <el-form-item label="门店" required>
@@ -843,14 +915,29 @@
         <el-form-item label="金额" required>
           <el-input v-model="expenseForm.amount" placeholder="金额" style="width: 100%" />
         </el-form-item>
+        <el-form-item label="费用发生方" required>
+          <el-input v-model="expenseForm.expenseParty" placeholder="供应商、员工或外部单位" />
+        </el-form-item>
+        <el-form-item label="费用日期">
+          <el-date-picker v-model="expenseForm.expenseDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
+        </el-form-item>
         <el-form-item label="支付方式">
           <el-select v-model="expenseForm.paymentMethod" placeholder="请选择" style="width: 100%">
-            <el-option label="现金" value="cash" />
-            <el-option label="微信支付" value="wechat" />
-            <el-option label="支付宝" value="alipay" />
-            <el-option label="银行转账" value="bank" />
+            <el-option label="财务对公" value="CORPORATE" />
+            <el-option label="私人垫付" value="PERSONAL_ADVANCE" />
           </el-select>
         </el-form-item>
+        <el-form-item label="是否有发票">
+          <el-switch v-model="expenseForm.hasInvoice" />
+        </el-form-item>
+        <template v-if="expenseForm.hasInvoice">
+          <el-form-item label="发票类型">
+            <el-input v-model="expenseForm.invoiceType" placeholder="如：普票、专票" />
+          </el-form-item>
+          <el-form-item label="发票号码">
+            <el-input v-model="expenseForm.invoiceNo" />
+          </el-form-item>
+        </template>
         <el-form-item label="备注">
           <el-input v-model="expenseForm.remark" type="textarea" rows="3" placeholder="支出备注" />
         </el-form-item>
@@ -1260,6 +1347,15 @@ const toNumber = (value) => {
 
 const formatMoney = (value) => toNumber(value).toFixed(2)
 
+const getPayableSourceText = (row) => {
+  const sourceType = row?.source_type || 'purchase'
+  if (sourceType === 'expense') return '费用'
+  if (sourceType === 'reimbursement') return '报销'
+  return '采购'
+}
+
+const getPayablePayeeName = (row) => row?.payee_name || row?.supplier_name || row?.expense_party || '-'
+
 const hasPurchaseRebateDeduction = (request) => toNumber(request?.rebate_deduction) > 0
 
 const purchaseActualAmount = (request) => {
@@ -1299,6 +1395,10 @@ const settlementData = ref([])
 const settlementTotal = ref(0)
 const settlementStatusFilter = ref('')
 const settlementPaymentStatusFilter = ref('')
+const reimbursementSettlementData = ref([])
+const reimbursementSettlementTotal = ref(0)
+const reimbursementSettlementStatusFilter = ref('')
+const reimbursementPaymentStatusFilter = ref('')
 const settlementImageVisible = ref(false)
 const settlementImageSrc = ref('')
 const settlementDetailVisible = ref(false)
@@ -1364,6 +1464,11 @@ const settlementQuery = reactive({
   pageSize: 20
 })
 
+const reimbursementSettlementQuery = reactive({
+  page: 1,
+  pageSize: 20
+})
+
 const settlementForm = reactive({
   supplierId: '',
   paymentAccountType: '',
@@ -1420,12 +1525,19 @@ const expenseQuery = reactive({
 })
 
 const expenseForm = reactive({
-  expenseType: '',
+  expenseTypeId: '',
   storeId: '',
   amount: 0,
-  paymentMethod: 'cash',
+  expenseParty: '',
+  expenseDate: new Date().toISOString().slice(0, 10),
+  paymentMethod: 'CORPORATE',
+  hasInvoice: false,
+  invoiceType: '',
+  invoiceNo: '',
   remark: ''
 })
+
+const expenseTypeOptions = ref([])
 
 const selectedPayableIds = computed(() => selectedPayables.value.map(p => p.payable_id))
 
@@ -1546,9 +1658,11 @@ onMounted(() => {
   loadSubsidyAuxiliary()
   loadExpenseData()
   loadExpenseSettleData()
+  loadExpenseTypes()
   loadPayableData()
   loadSuppliers()
   loadSettlementData()
+  loadReimbursementSettlementData()
   loadRebateList()
   loadRebateSummary()
   loadRebateEstimates()
@@ -1844,6 +1958,15 @@ const loadExpenseSettleData = async () => {
   }
 }
 
+const loadExpenseTypes = async () => {
+  try {
+    const res = await api.getExpenseTypes()
+    if (res.code === 0) expenseTypeOptions.value = res.data || []
+  } catch (err) {
+    console.error('Failed to load expense types')
+  }
+}
+
 const handleSubmitExpense = async (row) => {
   try {
     await ElMessageBox.confirm(
@@ -1981,7 +2104,7 @@ const openPurchaseRequestDetail = async (row) => {
 
 const loadSettlementData = async () => {
   try {
-    const params = { ...settlementQuery }
+    const params = { ...settlementQuery, settlementType: 'supplier,expense' }
     if (settlementStatusFilter.value) {
       params.status = settlementStatusFilter.value
     }
@@ -1995,6 +2118,25 @@ const loadSettlementData = async () => {
     }
   } catch (err) {
     console.error('Failed to load settlements')
+  }
+}
+
+const loadReimbursementSettlementData = async () => {
+  try {
+    const params = { ...reimbursementSettlementQuery, settlementType: 'reimbursement' }
+    if (reimbursementSettlementStatusFilter.value) {
+      params.status = reimbursementSettlementStatusFilter.value
+    }
+    if (reimbursementPaymentStatusFilter.value) {
+      params.paymentStatus = reimbursementPaymentStatusFilter.value
+    }
+    const res = await api.getSettlementList(params)
+    if (res.code === 0) {
+      reimbursementSettlementData.value = res.data?.list || []
+      reimbursementSettlementTotal.value = res.data?.pagination?.total || res.data?.total || 0
+    }
+  } catch (err) {
+    console.error('Failed to load reimbursement settlements')
   }
 }
 
@@ -2211,7 +2353,7 @@ const openSettlementDialog = async () => {
   settlementDialogVisible.value = true
   try {
     const res = await api.getPayableList({ status: 'unpaid', page: 1, pageSize: 100 })
-    if (res.code === 0) unpaidList.value = res.data?.list || []
+    if (res.code === 0) unpaidList.value = (res.data?.list || []).filter(item => item.source_type !== 'expense')
     restoreSettlementDraft()
   } catch (err) {
     ElMessage.error('获取应付款失败')
@@ -2219,6 +2361,10 @@ const openSettlementDialog = async () => {
 }
 
 const openSingleSettlementDialog = async (row) => {
+  if (row.source_type === 'expense') {
+    await handleCreateExpenseSettlement(row)
+    return
+  }
   settlementForm.supplierId = row.supplier_id || ''
   resetPaymentAccountFields()
   unpaidList.value = []
@@ -2231,7 +2377,7 @@ const openSingleSettlementDialog = async (row) => {
       : await api.getPayableList({ status: 'unpaid', page: 1, pageSize: 100 })
 
     if (res.code === 0) {
-      unpaidList.value = Array.isArray(res.data) ? res.data : (res.data?.list || [])
+      unpaidList.value = (Array.isArray(res.data) ? res.data : (res.data?.list || [])).filter(item => item.source_type !== 'expense')
       await nextTick()
       const target = unpaidList.value.find(item => item.payable_id === row.payable_id)
       if (target && settlementTableRef.value) {
@@ -2244,17 +2390,38 @@ const openSingleSettlementDialog = async (row) => {
   }
 }
 
+const handleCreateExpenseSettlement = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认将费用应付[${row.source_no || row.request_no || row.payable_id}]生成结算单？`,
+      '生成费用结算单',
+      { type: 'warning' }
+    )
+    const res = await api.createExpenseSettlement({ payableId: row.payable_id })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '费用结算单已生成')
+      await Promise.all([loadPayableData(), loadSettlementData()])
+    } else {
+      ElMessage.error(res.message || '生成失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel' && err !== 'close') {
+      ElMessage.error(err?.response?.data?.message || err?.message || '生成失败')
+    }
+  }
+}
+
 const onSupplierChange = async (supplierId) => {
   resetPaymentAccountFields()
   if (!supplierId) {
     const res = await api.getPayableList({ status: 'unpaid', page: 1, pageSize: 100 })
-    if (res.code === 0) unpaidList.value = res.data?.list || []
+    if (res.code === 0) unpaidList.value = (res.data?.list || []).filter(item => item.source_type !== 'expense')
     return
   }
   try {
     const res = await api.getUnpaidBySupplier({ supplierId })
     if (res.code === 0) {
-      unpaidList.value = res.data || []
+      unpaidList.value = (res.data || []).filter(item => item.source_type !== 'expense')
       selectedPayables.value = []
     }
   } catch (err) {
@@ -2300,6 +2467,10 @@ const handleOtherPaymentImageExceed = () => {
 const handleSettlementSubmit = async () => {
   if (selectedPayables.value.length === 0) {
     ElMessage.warning('请选择需要结算的应付款项')
+    return
+  }
+  if (selectedPayables.value.some(p => p.source_type === 'expense')) {
+    ElMessage.warning('公司对公费用请在应付清单中单独生成费用结算单')
     return
   }
 
@@ -2386,6 +2557,7 @@ const handleSubmitSettlement = async (row) => {
     if (res.code === 0) {
       ElMessage.success(res.message || '结算单已提交，已进入待付款')
       loadSettlementData()
+      loadReimbursementSettlementData()
     } else {
       ElMessage.error(res.message || '提交失败')
     }
@@ -2408,6 +2580,7 @@ const handleVoidSettlement = async (row) => {
       ElMessage.success(res.message || '结算单已作废')
       loadPayableData()
       loadSettlementData()
+      loadReimbursementSettlementData()
     } else {
       ElMessage.error(res.message || '作废失败')
     }
@@ -2454,8 +2627,8 @@ const handleAddExpense = () => {
 }
 
 const handleExpenseSubmit = async () => {
-  if (!expenseForm.expenseType) {
-    ElMessage.warning('请选择支出类型')
+  if (!expenseForm.expenseTypeId) {
+    ElMessage.warning('请选择报销类型')
     return
   }
   if (!expenseForm.storeId) {
@@ -2466,27 +2639,42 @@ const handleExpenseSubmit = async () => {
     ElMessage.warning('请输入正确的金额')
     return
   }
+  if (!String(expenseForm.expenseParty || '').trim()) {
+    ElMessage.warning('请填写费用发生方')
+    return
+  }
+  if (!expenseForm.paymentMethod) {
+    ElMessage.warning('请选择支付方式')
+    return
+  }
 
   submitLoading.value = true
   try {
     const data = {
-      expenseType: expenseForm.expenseType,
+      expenseTypeId: expenseForm.expenseTypeId,
       storeId: expenseForm.storeId,
       amount: expenseForm.amount,
+      expenseParty: expenseForm.expenseParty,
+      expenseDate: expenseForm.expenseDate,
       paymentMethod: expenseForm.paymentMethod,
+      hasInvoice: expenseForm.hasInvoice,
+      invoiceType: expenseForm.invoiceType,
+      invoiceNo: expenseForm.invoiceNo,
       remark: expenseForm.remark
     }
     const res = await api.createExpense(data)
     if (res.code === 0) {
-      ElMessage.success('添加成功')
+      ElMessage.success(res.message || '添加成功')
       clearDraft(FINANCE_EXPENSE_DRAFT_KEY)
       expenseDialogVisible.value = false
       loadExpenseData()
+      loadPayableData()
+      loadReimbursementSettlementData()
     } else {
       ElMessage.error(res.message || '添加失败')
     }
   } catch (err) {
-    ElMessage.error('添加失败')
+    ElMessage.error(err?.response?.data?.message || '添加失败')
   } finally {
     submitLoading.value = false
   }
@@ -2509,10 +2697,15 @@ const restoreExpenseDraft = () => {
 }
 
 const resetForm = () => {
-  expenseForm.expenseType = ''
+  expenseForm.expenseTypeId = ''
   expenseForm.storeId = ''
   expenseForm.amount = 0
-  expenseForm.paymentMethod = 'cash'
+  expenseForm.expenseParty = ''
+  expenseForm.expenseDate = new Date().toISOString().slice(0, 10)
+  expenseForm.paymentMethod = 'CORPORATE'
+  expenseForm.hasInvoice = false
+  expenseForm.invoiceType = ''
+  expenseForm.invoiceNo = ''
   expenseForm.remark = ''
 }
 

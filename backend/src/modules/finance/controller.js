@@ -2,13 +2,14 @@
  * 财务管理控制器
  */
 const {
-  sequelize, DailyStatement, DailyStatementDetail, Expense, Store, Region, Order, OrderPayment,
+  sequelize, DailyStatement, DailyStatementDetail, Expense, ExpenseType, PurchaseRequest, Store, Region, Order, OrderPayment,
   SettlementAccount, SettlementAccountTransaction, SubsidyAccountRoute, SubsidyReceipt,
   SubsidyReceiptAllocation, SubsidyReceivableAdjustment
 } = require('../../models');
 const { Op, Sequelize, fn, col } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { getUserRoles } = require('../../middleware/permission');
+const { ensureExpensePayable, createReimbursementSettlement } = require('./expenseService');
 
 async function getAccountBalance(accountId, transaction = null) {
   const [incomeAmount, expenseAmount] = await Promise.all([
@@ -467,31 +468,81 @@ async function getSettlementSummary(ctx) {
  */
 async function createExpense(ctx) {
   const user = ctx.state.user;
-  const { storeId, expenseType, amount, paymentMethod, relatedOrderNo, remark } = ctx.request.body;
+  const {
+    storeId, expenseTypeId, expenseParty, amount, paymentMethod,
+    hasInvoice, invoiceType, invoiceNo, expenseDate, attachmentUrls,
+    relatedOrderNo, remark
+  } = ctx.request.body;
+  const targetStoreId = storeId || user.storeId;
+  if (!targetStoreId) ctx.throw(400, '请选择门店');
+  const allowed = user.accessibleStoreIds || [];
+  if (!allowed.includes('*') && !allowed.map(String).includes(String(targetStoreId))) ctx.throw(403, '无权操作该门店');
+  if (!expenseTypeId) ctx.throw(400, '请选择报销类型');
+  if (!String(expenseParty || '').trim()) ctx.throw(400, '请填写费用发生方');
+  if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) ctx.throw(400, '费用金额必须大于0');
+  if (!['CORPORATE', 'PERSONAL_ADVANCE'].includes(paymentMethod)) ctx.throw(400, '支付方式无效');
 
-  const expenseNo = `EXP${Date.now()}`;
+  const [expenseType, store] = await Promise.all([
+    ExpenseType.findOne({ where: { type_id: expenseTypeId, status: 1 } }),
+    Store.findByPk(targetStoreId, { include: [{ model: Region }] })
+  ]);
+  if (!expenseType) ctx.throw(400, '报销类型不存在或已停用');
+  if (!store) ctx.throw(404, '门店不存在');
+
+  const expenseNo = `EXP${Date.now()}${String(Math.floor(Math.random() * 100)).padStart(2, '0')}`;
   const expenseId = generateUUID();
+  let record;
+  await sequelize.transaction(async transaction => {
+    record = await Expense.create({
+      expense_id: expenseId,
+      expense_no: expenseNo,
+      store_id: targetStoreId,
+      region_id: store.region_id || null,
+      region_name: store.Region?.name || '',
+      expense_type_id: expenseType.type_id,
+      expense_type: expenseType.name,
+      expense_party: String(expenseParty).trim(),
+      amount: Number(amount),
+      payment_method: paymentMethod,
+      has_invoice: hasInvoice ? 1 : 0,
+      invoice_type: hasInvoice ? String(invoiceType || '').trim() : '',
+      invoice_no: hasInvoice ? String(invoiceNo || '').trim() : '',
+      expense_date: expenseDate || new Date(),
+      attachment_urls: JSON.stringify(Array.isArray(attachmentUrls) ? attachmentUrls : []),
+      status: paymentMethod === 'CORPORATE' ? 'pending_payment' : 'pending_approval',
+      applicant_staff_id: user.staffId || user.id || null,
+      applicant_name: user.name || user.phone || '',
+      source_type: 'expense',
+      source_id: expenseId,
+      source_no: expenseNo,
+      related_order_no: relatedOrderNo || '',
+      remark: String(remark || '').trim(),
+      create_user: user.name || user.phone || '',
+      create_time: new Date(),
+      update_time: new Date()
+    }, { transaction });
 
-  await Expense.create({
-    expense_id: expenseId,
-    expense_no: expenseNo,
-    store_id: storeId || user.storeId,
-    expense_type: expenseType,
-    amount,
-    payment_method: paymentMethod,
-    related_order_no: relatedOrderNo,
-    remark,
-    create_user: user.name
+    if (paymentMethod === 'CORPORATE') {
+      const payable = await ensureExpensePayable(record, { sourceType: 'expense' }, transaction);
+      await record.update({ payable_id: payable.payable_id }, { transaction });
+    }
   });
 
-  ctx.body = { expenseId, expenseNo, message: '支出记录创建成功' };
+  ctx.body = {
+    code: 0,
+    expenseId,
+    expenseNo,
+    message: paymentMethod === 'CORPORATE'
+      ? '费用已提交，并生成应付待付款记录'
+      : '报销单已提交审批'
+  };
 }
 
 /**
  * 支出列表
  */
 async function getExpenseList(ctx) {
-  const { storeId, expenseType, status, startDate, endDate, page = 1, pageSize = 20 } = ctx.query;
+  const { storeId, expenseType, status, scope, startDate, endDate, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
 
   const where = { is_deleted: 0 };
@@ -507,6 +558,7 @@ async function getExpenseList(ctx) {
   where.store_id = storeIds;
 
   if (expenseType) where.expense_type = expenseType;
+  if (scope === 'my') where.applicant_staff_id = user.staffId || user.id || -1;
   if (status) {
     const statuses = status.split(',').map(s => s.trim());
     where.status = statuses.length > 1 ? { [Op.in]: statuses } : statuses[0];
@@ -534,6 +586,42 @@ async function getExpenseList(ctx) {
   });
 
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+async function reviewExpense(ctx) {
+  const user = ctx.state.user;
+  const { action, comment } = ctx.request.body;
+  if (!['approved', 'rejected'].includes(action)) ctx.throw(400, '审批动作无效');
+  const record = await Expense.findByPk(ctx.params.id);
+  if (!record || record.is_deleted) ctx.throw(404, '报销单不存在');
+  if (record.status !== 'pending_approval') ctx.throw(400, '当前报销单不可审批');
+  if (String(record.applicant_staff_id || '') === String(user.staffId || user.id || '')) {
+    ctx.throw(400, '申请人不能审批自己的报销单');
+  }
+  if (record.source_type === 'purchase') {
+    const purchase = await PurchaseRequest.findByPk(record.source_id);
+    if (!purchase || purchase.status !== 'approved') ctx.throw(400, '关联采购申请尚未审批通过');
+  }
+
+  let settlement = null;
+  await sequelize.transaction(async transaction => {
+    await record.update({
+      status: action,
+      review_staff_id: user.staffId || user.id || null,
+      review_user_name: user.name || user.phone || '',
+      review_comment: String(comment || '').trim(),
+      review_time: new Date(),
+      update_time: new Date()
+    }, { transaction });
+    if (action === 'approved') {
+      settlement = await createReimbursementSettlement(record, user, transaction);
+    }
+  });
+  ctx.body = {
+    code: 0,
+    message: action === 'approved' ? '审批通过，已生成报销结算单草稿' : '报销申请已拒绝',
+    data: settlement
+  };
 }
 
 /**
@@ -1084,6 +1172,7 @@ module.exports = {
   getSettlementSummary,
   createExpense,
   getExpenseList,
+  reviewExpense,
   submitExpense,
   payExpense,
   getPayableList,

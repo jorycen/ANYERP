@@ -185,6 +185,7 @@ async function getSnInventoryList(ctx) {
        st.DISTRIBUTOR_ID AS distributor_id,
        COALESCE(loc.NAME, '未指定库位') AS location_name,
        COALESCE(pp.STANDARD_PRICE, 0) AS unified_sale_price,
+       COALESCE(pp.RETAIL_PRICE, 0) AS retail_price,
        COALESCE(pp.MIN_SALE_PRICE, 0) AS min_sale_price,
        sp.PRICE_ID AS special_price_id,
        sp.SPECIAL_PRICE AS special_price,
@@ -225,6 +226,7 @@ async function getSnInventoryList(ctx) {
       ...row,
       unified_sale_price: unifiedSalePrice,
       min_sale_price: Number(row.min_sale_price || 0),
+      retail_price: Number(row.retail_price || 0),
       special_price: specialPrice,
       is_special_price: Boolean(row.special_price_id),
       effective_sale_price: resolveEffectiveSalePrice(unifiedSalePrice, specialPrice),
@@ -303,7 +305,7 @@ async function setSnSpecialPrice(ctx) {
 
   const productPrice = await ProductPrice.findOne({
     where: { product_id: sn.product_id },
-    attributes: ['standard_price', 'min_sale_price'],
+    attributes: ['standard_price', 'retail_price', 'min_sale_price'],
     raw: true
   });
   ctx.body = {
@@ -561,7 +563,7 @@ async function getList(ctx) {
 
     const products = await Product.findAll({
       where: productWhere,
-      include: [{ model: ProductPrice, attributes: ['standard_price', 'cost_price'] }],
+      include: [{ model: ProductPrice, attributes: ['standard_price', 'retail_price', 'min_sale_price', 'cost_price'] }],
       order: [['create_time', 'DESC']]
     });
     const count = products.length;
@@ -677,6 +679,8 @@ async function getList(ctx) {
         product_code: p.product_code || '',
         manufacturer_code: p.manufacturer_code || '',
         standard_price: p.ProductPrice ? p.ProductPrice.standard_price : 0,
+        retail_price: p.ProductPrice ? p.ProductPrice.retail_price : 0,
+        min_sale_price: p.ProductPrice ? p.ProductPrice.min_sale_price : 0,
         cost_price: p.ProductPrice ? p.ProductPrice.cost_price : 0,
         need_sn: p.need_sn || 0,
         normal_qty: inv.normal_qty,
@@ -758,7 +762,7 @@ async function getSnList(ctx) {
       if (sn.product_id) {
         sn.dataValues.Product = await Product.findByPk(sn.product_id, {
           attributes: ['product_id', 'name', 'category', 'config', 'brand', 'series', 'model', 'need_sn'],
-          include: [{ model: ProductPrice, attributes: ['standard_price', 'min_sale_price'] }]
+          include: [{ model: ProductPrice, attributes: ['standard_price', 'retail_price', 'min_sale_price'] }]
         });
       }
       if (sn.store_id) {
@@ -789,8 +793,9 @@ async function getSnList(ctx) {
         series: data.Product?.series || '',
         model: data.Product?.model || '',
         standard_price: price.standard_price || 0,
+        retail_price: price.retail_price || 0,
         min_sale_price: price.min_sale_price || 0,
-        settlement_price: price.min_sale_price || price.standard_price || 0,
+        settlement_price: price.retail_price || price.standard_price || 0,
         need_sn: data.Product?.need_sn || 0,
         current_store_stock_qty: stock.current,
         other_store_stock_qty: stock.other,

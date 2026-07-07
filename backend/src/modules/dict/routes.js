@@ -6,7 +6,8 @@ const {
   getCustomerSourceList, getAllCustomerSources, getCustomerSourceTree, createCustomerSource, updateCustomerSource, deleteCustomerSource, sortCustomerSources,
   getPaymentMethodList, getAllPaymentMethods, getPaymentMethodsByStore, createPaymentMethod, updatePaymentMethod, deletePaymentMethod, sortPaymentMethods,
   getSettlementAccountList, getAllSettlementAccounts, createSettlementAccount, updateSettlementAccount, deleteSettlementAccount, sortSettlementAccounts,
-  getSupplementItemList, getAllSupplementItems, createSupplementItem, updateSupplementItem, deleteSupplementItem, sortSupplementItems
+  getSupplementItemList, getAllSupplementItems, createSupplementItem, updateSupplementItem, deleteSupplementItem, sortSupplementItems,
+  getExpenseTypes, createExpenseType, updateExpenseType, deleteExpenseType
 } = require('./controller');
 
 const router = new Router();
@@ -44,5 +45,11 @@ router.post('/supplement-item/create', createSupplementItem);
 router.put('/supplement-item/update/:id', updateSupplementItem);
 router.delete('/supplement-item/delete/:id', deleteSupplementItem);
 router.post('/supplement-item/sort', sortSupplementItems);
+
+// 报销类型
+router.get('/expense-type/all', getExpenseTypes);
+router.post('/expense-type/create', createExpenseType);
+router.put('/expense-type/update/:id', updateExpenseType);
+router.delete('/expense-type/delete/:id', deleteExpenseType);
 
 module.exports = router;
