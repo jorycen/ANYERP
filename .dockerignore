@@ -9,8 +9,14 @@ pnpm-debug.log*
 .env.*
 data/
 backup/
-__pycache__/
-**/__pycache__/
-*.pyc
+backend-package/
+backend-clean/
+deploy-package/
+cloudfunctions/
+frontend/
+web/
+miniprogram/
+.git/
+.codex-logs/
 dist/
 coverage/
