@@ -969,8 +969,15 @@ async function runMigrations() {
       CREATE TABLE T_REBATE_POSTING_ORDER (
         POSTING_ID VARCHAR(32) NOT NULL COMMENT '返利上账单ID',
         POSTING_NO VARCHAR(64) NOT NULL COMMENT '返利上账单号',
-        SUPPLIER_ID VARCHAR(32) NOT NULL COMMENT '供应商ID',
+        SUPPLIER_ID VARCHAR(32) COMMENT '供应商ID',
         SUPPLIER_NAME VARCHAR(255) COMMENT '供应商名称快照',
+        SETTLEMENT_TYPE VARCHAR(32) DEFAULT 'supplier' COMMENT 'supplier/expense/reimbursement',
+        PAYEE_TYPE VARCHAR(32) DEFAULT 'supplier' COMMENT 'supplier/employee/counterparty',
+        PAYEE_ID VARCHAR(64) COMMENT '收款对象ID',
+        PAYEE_NAME VARCHAR(255) COMMENT '收款对象名称',
+        SOURCE_TYPE VARCHAR(32) COMMENT '来源类型',
+        SOURCE_ID VARCHAR(64) COMMENT '来源ID',
+        SOURCE_NO VARCHAR(64) COMMENT '来源单号',
         POSTING_DATE DATE NOT NULL COMMENT '上账日期',
         AMOUNT DECIMAL(12,2) NOT NULL COMMENT '上账金额',
         MATCHED_AMOUNT DECIMAL(12,2) DEFAULT 0 COMMENT '已核销金额',
@@ -990,6 +997,14 @@ async function runMigrations() {
         KEY idx_rebate_posting_status (STATUS, CREATE_TIME)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='供应商返利预上账单'
     `);
+    await checkAndMakeColumnNullable('T_REBATE_POSTING_ORDER', 'SUPPLIER_ID', 'VARCHAR(32)');
+    await checkAndAddColumn('T_REBATE_POSTING_ORDER', 'SETTLEMENT_TYPE', 'VARCHAR(32) DEFAULT "supplier" COMMENT "supplier/expense/reimbursement"', 'SUPPLIER_NAME');
+    await checkAndAddColumn('T_REBATE_POSTING_ORDER', 'PAYEE_TYPE', 'VARCHAR(32) DEFAULT "supplier" COMMENT "supplier/employee/counterparty"', 'SETTLEMENT_TYPE');
+    await checkAndAddColumn('T_REBATE_POSTING_ORDER', 'PAYEE_ID', 'VARCHAR(64) COMMENT "payee id"', 'PAYEE_TYPE');
+    await checkAndAddColumn('T_REBATE_POSTING_ORDER', 'PAYEE_NAME', 'VARCHAR(255) COMMENT "payee name"', 'PAYEE_ID');
+    await checkAndAddColumn('T_REBATE_POSTING_ORDER', 'SOURCE_TYPE', 'VARCHAR(32) COMMENT "source type"', 'PAYEE_NAME');
+    await checkAndAddColumn('T_REBATE_POSTING_ORDER', 'SOURCE_ID', 'VARCHAR(64) COMMENT "source id"', 'SOURCE_TYPE');
+    await checkAndAddColumn('T_REBATE_POSTING_ORDER', 'SOURCE_NO', 'VARCHAR(64) COMMENT "source no"', 'SOURCE_ID');
 
     await checkAndCreateTable('T_REBATE_SETTLEMENT_ALLOCATION', `
       CREATE TABLE T_REBATE_SETTLEMENT_ALLOCATION (

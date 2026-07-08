@@ -28,11 +28,28 @@
             <div>
               <el-button type="success" @click="handleImport">批量导入</el-button>
               <el-button type="warning" @click="handleExport">批量导出</el-button>
+              <el-button
+                v-if="canBatchDeleteProducts"
+                type="danger"
+                :disabled="selectedProductRows.length === 0"
+                :loading="batchDeleteLoading"
+                @click="handleBatchDelete"
+              >
+                批量删除 ({{ selectedProductRows.length }})
+              </el-button>
               <el-button type="primary" @click="handleCreate">新增商品</el-button>
             </div>
           </div>
 
-          <el-table :data="tableData" stripe border v-loading="loading">
+          <el-table
+            ref="productTableRef"
+            :data="tableData"
+            stripe
+            border
+            v-loading="loading"
+            @selection-change="onProductSelectionChange"
+          >
+            <el-table-column v-if="canBatchDeleteProducts" type="selection" width="50" />
             <el-table-column prop="product_code" label="编码" width="110" show-overflow-tooltip />
             <el-table-column label="厂商编码" width="140">
               <template #default="{ row }">
@@ -594,7 +611,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, computed, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Folder, Upload } from '@element-plus/icons-vue'
 import * as XLSX from 'xlsx'
@@ -614,9 +631,13 @@ const productDraftKey = () => productForm.productId ? `product-edit:${productFor
 const loading = ref(false)
 const focusLoadingId = ref('')
 const tableData = ref([])
+const productTableRef = ref(null)
+const selectedProductRows = ref([])
+const batchDeleteLoading = ref(false)
 const total = ref(0)
 const queryParams = reactive({ page: 1, pageSize: 20, keyword: '', categoryId: '' })
 const categoryTree = ref([])
+const canBatchDeleteProducts = currentRoleCodes.includes('admin') || currentRoleCodes.includes('boss')
 const canReviewProductApplications = ['finance', 'purchaser', 'admin', 'boss'].some(role => currentRoleCodes.includes(role))
 const productApplications = ref([])
 const applicationLoading = ref(false)
@@ -743,6 +764,8 @@ const loadData = async () => {
     if (res.code === 0) {
       tableData.value = res.data?.list || []
       total.value = res.data?.pagination?.total || 0
+      selectedProductRows.value = []
+      nextTick(() => productTableRef.value?.clearSelection?.())
     }
   } catch (err) {
     ElMessage.error(err?.response?.data?.message || '加载数据失败')
@@ -821,6 +844,55 @@ const handleDelete = async (row) => {
     else { ElMessage.error(res.message || '删除失败') }
   } catch (err) {
     if (err !== 'cancel') ElMessage.error(err?.response?.data?.message || '删除失败')
+  }
+}
+
+const onProductSelectionChange = (val) => {
+  selectedProductRows.value = val
+}
+
+const handleBatchDelete = async () => {
+  if (!canBatchDeleteProducts) {
+    ElMessage.error('仅admin/boss支持批量删除商品')
+    return
+  }
+  if (selectedProductRows.value.length === 0) {
+    ElMessage.warning('请先选择要删除的商品')
+    return
+  }
+
+  const count = selectedProductRows.value.length
+  try {
+    await ElMessageBox.confirm(`确定要批量删除当前已选的 ${count} 个商品吗？有库存的商品会删除失败。`, '批量删除', { type: 'warning' })
+    batchDeleteLoading.value = true
+    const res = await api.batchDeleteProducts({
+      productIds: selectedProductRows.value.map(row => row.product_id)
+    })
+    if (res.code !== 0) {
+      ElMessage.error(res.message || '批量删除失败')
+      return
+    }
+
+    const result = res.data || {}
+    if (Number(result.failed || 0) > 0) {
+      const failedItems = (result.results || []).filter(item => !item.success)
+      const detail = failedItems
+        .slice(0, 8)
+        .map(item => `${item.productName || item.productCode || item.productId}：${item.message || '删除失败'}`)
+        .join('\n')
+      await ElMessageBox.alert(
+        `${res.message || '批量删除完成'}${detail ? `\n\n失败明细：\n${detail}` : ''}${failedItems.length > 8 ? '\n...' : ''}`,
+        '批量删除结果',
+        { type: 'warning' }
+      )
+    } else {
+      ElMessage.success(res.message || '批量删除成功')
+    }
+    loadData()
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err?.response?.data?.message || '批量删除失败')
+  } finally {
+    batchDeleteLoading.value = false
   }
 }
 

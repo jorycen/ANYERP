@@ -821,6 +821,74 @@ async function deleteProduct(ctx) {
   ctx.body = { code: 0, message: '删除成功' };
 }
 
+async function batchDeleteProducts(ctx) {
+  const roles = getUserRoles(ctx.state.user);
+  if (!roles.includes('admin') && !roles.includes('boss')) {
+    ctx.throw(403, '仅admin/boss支持批量删除商品');
+  }
+
+  const productIds = Array.isArray(ctx.request.body?.productIds)
+    ? [...new Set(ctx.request.body.productIds.map(id => String(id || '').trim()).filter(Boolean))]
+    : [];
+  if (productIds.length === 0) ctx.throw(400, '请选择要删除的商品');
+  if (productIds.length > 100) ctx.throw(400, '单次最多批量删除100个商品');
+
+  const results = [];
+  for (const productId of productIds) {
+    const product = await Product.findOne({
+      where: { product_id: productId, is_deleted: 0 }
+    });
+
+    if (!product) {
+      results.push({ productId, success: false, message: '商品不存在' });
+      continue;
+    }
+
+    const totalStock = await Inventory.sum('NORMAL_QTY', {
+      where: { product_id: productId }
+    }) || 0;
+    const displayStock = await Inventory.sum('DISPLAY_QTY', {
+      where: { product_id: productId }
+    }) || 0;
+    const demoeStock = await Inventory.sum('DEMO_QTY', {
+      where: { product_id: productId }
+    }) || 0;
+
+    if (totalStock + displayStock + demoeStock > 0) {
+      results.push({
+        productId,
+        productCode: product.product_code,
+        productName: product.name,
+        success: false,
+        message: `商品还有库存（正常:${totalStock} 铺货:${displayStock} 样机:${demoeStock}），不允许删除`
+      });
+      continue;
+    }
+
+    await Promise.all([
+      product.update({ is_deleted: 1 }),
+      ProductPrice.update({ status: 0 }, { where: { product_id: productId } }),
+      ProductBarcode.update({ status: 0 }, { where: { product_id: productId } }),
+      ProductPn.update({ is_deleted: 1 }, { where: { product_id: productId } })
+    ]);
+
+    results.push({
+      productId,
+      productCode: product.product_code,
+      productName: product.name,
+      success: true
+    });
+  }
+
+  const success = results.filter(item => item.success).length;
+  const failed = results.length - success;
+  ctx.body = {
+    code: 0,
+    message: failed > 0 ? `批量删除完成，成功${success}个，失败${failed}个` : `批量删除成功，共${success}个`,
+    data: { success, failed, results }
+  };
+}
+
 async function togglePause(ctx) {
   const { productId } = ctx.params;
 
@@ -2443,7 +2511,7 @@ async function exportProducts(ctx) {
 
 module.exports = {
   getProductList, createProduct, submitProductApplication, getProductApplicationList, reviewProductApplication,
-  updateProduct, deleteProduct, togglePause, importProducts, exportProducts,
+  updateProduct, deleteProduct, batchDeleteProducts, togglePause, importProducts, exportProducts,
   getCategoryFields, saveCategoryFields, getCategoryFieldConfig,
   getBarcodes: async (ctx) => {
     const { productId } = ctx.query;

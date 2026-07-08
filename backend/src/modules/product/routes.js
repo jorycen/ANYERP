@@ -5,7 +5,7 @@ const Router = require('koa-router');
 const multer = require('@koa/multer');
 const {
   getProductList, submitProductApplication, getProductApplicationList, reviewProductApplication,
-  updateProduct, deleteProduct, togglePause, importProducts, exportProducts,
+  updateProduct, deleteProduct, batchDeleteProducts, togglePause, importProducts, exportProducts,
   getBarcodes, addBarcode, deleteBarcode,
   getCategoryTree, createCategory, updateCategory, deleteCategory, sortCategories,
   getCategoryFields, saveCategoryFields, getCategoryFieldConfig,
@@ -27,6 +27,7 @@ router.post('/application/:applicationId/review', requireRole('finance', 'purcha
 // 兼容现有客户端：手工新建商品统一转为审批申请。
 router.post('/create', submitProductApplication);
 router.put('/update/:productId', updateProduct);
+router.post('/batch-delete', batchDeleteProducts);
 router.delete('/delete/:productId', deleteProduct);
 router.post('/toggle-pause/:productId', togglePause);
 router.post('/import', upload.single('file'), importProducts);

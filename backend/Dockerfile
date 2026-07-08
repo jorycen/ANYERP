@@ -1,16 +1,19 @@
-FROM node:18-alpine
+FROM node:18-bookworm-slim
 
 WORKDIR /app
 
-# 安装依赖
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 python3-pip python3-venv libglib2.0-0 libgl1 \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY package*.json ./
 RUN npm install --production
 
-# 复制代码
+COPY requirements.txt ./
+RUN python3 -m pip install --no-cache-dir --break-system-packages -r requirements.txt
+
 COPY . .
 
-# 暴露端口
 EXPOSE 3000
 
-# 启动命令
 CMD ["node", "src/index.js"]

@@ -16,6 +16,7 @@ const storeRouter = require('./modules/store/routes');
 const reportRouter = require('./modules/report/routes');
 const systemRouter = require('./modules/system/routes');
 const dictRouter = require('./modules/dict/routes');
+const ocrRouter = require('./modules/ocr/routes');
 
 const { ensureDatabaseReady, markDatabaseUnhealthy } = require('./config/database');
 const { runMigrations } = require('./utils/dbMigration');
@@ -56,6 +57,7 @@ apiRouter.use('/store', storeRouter.routes());
 apiRouter.use('/report', reportRouter.routes());
 apiRouter.use('/system', systemRouter.routes());
 apiRouter.use('/dict', dictRouter.routes());
+apiRouter.use('/ocr', ocrRouter.routes());
 
 app.use(apiRouter.routes());
 app.use(apiRouter.allowedMethods());

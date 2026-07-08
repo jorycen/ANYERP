@@ -287,6 +287,7 @@ export default {
   reviewProductApplication: (id, data) => api.post(`/product/application/${id}/review`, data),
   updateProduct: (id, data) => api.put(`/product/update/${id}`, data),
   deleteProduct: (id) => api.delete(`/product/delete/${id}`),
+  batchDeleteProducts: (data) => api.post('/product/batch-delete', data),
   togglePause: (id) => api.post(`/product/toggle-pause/${id}`),
   importProducts: (file) => {
     const formData = new FormData();
