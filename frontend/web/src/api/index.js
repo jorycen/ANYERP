@@ -419,6 +419,10 @@ export default {
   resetUserPassword: (staffId) => api.post(`/system/user/${staffId}/reset-password`),
   getUserRegions: (userId) => api.get(`/system/user-regions/${userId}`),
   assignUserRegions: (userId, data) => api.post(`/system/assign-user-regions/${userId}`, data),
+  getSystemLocations: (params) => api.get('/system/locations', { params }),
+  createSystemLocation: (data) => api.post('/system/locations', data),
+  updateSystemLocation: (id, data) => api.put(`/system/locations/${id}`, data),
+  deleteSystemLocation: (id) => api.delete(`/system/locations/${id}`),
 
   // Dict - Customer Source
   getCustomerSourceList: (params) => api.get('/dict/customer-source/list', { params }),

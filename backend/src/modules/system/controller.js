@@ -2,7 +2,7 @@
  * 系统管理控制器
  */
 const bcrypt = require('bcryptjs');
-const { sequelize, Menu, Role, RoleMenu, Staff, StaffRole, StaffStorePermission, RegionPermission, Region, Store } = require('../../models');
+const { sequelize, Menu, Role, RoleMenu, Staff, StaffRole, StaffStorePermission, RegionPermission, Region, Store, Location } = require('../../models');
 const { Op } = require('sequelize');
 const { generateUUID } = require('../../utils');
 
@@ -10,6 +10,47 @@ function getResetPasswordFromPhone(phone) {
   const digits = String(phone || '').replace(/\D/g, '');
   if (digits.length < 6) return '';
   return digits.slice(-6);
+}
+
+function isBoss(user) {
+  return user.roles.includes('boss');
+}
+
+function manageableStoreWhere(user) {
+  if (isBoss(user)) return { is_deleted: 0 };
+  if (!user.distributorId) {
+    const error = new Error('当前账号未绑定经销商');
+    error.status = 403;
+    throw error;
+  }
+  return { distributor_id: user.distributorId, is_deleted: 0 };
+}
+
+async function assertManageableStore(ctx, storeId) {
+  const store = await Store.findOne({
+    where: { store_id: String(storeId || ''), ...manageableStoreWhere(ctx.state.user) }
+  });
+  if (!store) ctx.throw(403, '无权管理该门店库位');
+  return store;
+}
+
+function normalizeLocationInput(ctx, body, isUpdate = false) {
+  const name = String(body.name || '').trim();
+  const type = String(body.type || 'normal').trim() || 'normal';
+  const isSellable = body.isSellable ?? body.is_sellable ?? 1;
+  const status = body.status ?? 1;
+
+  if (!isUpdate || name) {
+    if (!name) ctx.throw(400, '请输入库位名称');
+    if (name.length > 64) ctx.throw(400, '库位名称不能超过64个字符');
+  }
+
+  return {
+    name,
+    type,
+    is_sellable: Number(isSellable) ? 1 : 0,
+    status: Number(status) ? 1 : 0
+  };
 }
 
 
@@ -417,6 +458,92 @@ async function replaceRegionPermissions(ctx, staff, storeIds) {
   });
 }
 
+async function getLocations(ctx) {
+  const { storeId = '', keyword = '', status = '' } = ctx.query;
+  const storeWhere = manageableStoreWhere(ctx.state.user);
+  if (storeId) storeWhere.store_id = String(storeId);
+
+  const where = {};
+  if (keyword) {
+    where[Op.or] = [
+      { location_id: { [Op.like]: `%${keyword}%` } },
+      { name: { [Op.like]: `%${keyword}%` } }
+    ];
+  }
+  if (status !== '') where.status = Number(status);
+
+  const rows = await Location.findAll({
+    where,
+    include: [{ model: Store, attributes: ['store_id', 'name', 'distributor_id'], where: storeWhere }],
+    order: [[Store, 'name', 'ASC'], ['name', 'ASC'], ['location_id', 'ASC']]
+  });
+
+  ctx.body = {
+    code: 0,
+    data: rows.map(row => {
+      const data = row.toJSON();
+      const storeName = data.Store?.name || '';
+      delete data.Store;
+      return { ...data, store_name: storeName };
+    })
+  };
+}
+
+async function createLocation(ctx) {
+  const { storeId, locationId } = ctx.request.body;
+  if (!storeId) ctx.throw(400, '请选择门店');
+  await assertManageableStore(ctx, storeId);
+
+  const input = normalizeLocationInput(ctx, ctx.request.body);
+  const normalizedLocationId = String(locationId || '').trim() || `LOC${generateUUID().slice(0, 12).toUpperCase()}`;
+  if (normalizedLocationId.length > 32) ctx.throw(400, '库位ID不能超过32个字符');
+
+  const existingId = await Location.findByPk(normalizedLocationId);
+  if (existingId) ctx.throw(400, '库位ID已存在');
+  const duplicateName = await Location.findOne({
+    where: { store_id: storeId, name: input.name, status: 1 }
+  });
+  if (duplicateName) ctx.throw(400, '该门店已存在同名启用库位');
+
+  await Location.create({
+    location_id: normalizedLocationId,
+    store_id: storeId,
+    ...input
+  });
+
+  ctx.body = { code: 0, message: '库位创建成功', data: { locationId: normalizedLocationId } };
+}
+
+async function updateLocation(ctx) {
+  const { locationId } = ctx.params;
+  const location = await Location.findByPk(locationId);
+  if (!location) ctx.throw(404, '库位不存在');
+  await assertManageableStore(ctx, location.store_id);
+
+  const input = normalizeLocationInput(ctx, ctx.request.body, true);
+  const duplicateName = input.name ? await Location.findOne({
+    where: {
+      location_id: { [Op.ne]: locationId },
+      store_id: location.store_id,
+      name: input.name,
+      status: 1
+    }
+  }) : null;
+  if (duplicateName) ctx.throw(400, '该门店已存在同名启用库位');
+
+  await location.update(input);
+  ctx.body = { code: 0, message: '库位更新成功' };
+}
+
+async function deleteLocation(ctx) {
+  const { locationId } = ctx.params;
+  const location = await Location.findByPk(locationId);
+  if (!location) ctx.throw(404, '库位不存在');
+  await assertManageableStore(ctx, location.store_id);
+  await location.update({ status: 0 });
+  ctx.body = { code: 0, message: '库位已停用' };
+}
+
 function buildMenuTree(menus) {
   const menuMap = {};
   const rootMenus = [];
@@ -460,5 +587,9 @@ module.exports = {
   updateUser,
   resetUserPassword,
   getUserRegions,
-  assignUserRegions
+  assignUserRegions,
+  getLocations,
+  createLocation,
+  updateLocation,
+  deleteLocation
 };

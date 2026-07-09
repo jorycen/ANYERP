@@ -2,7 +2,11 @@
  * 系统管理路由
  */
 const Router = require('koa-router');
-const { getMenus, getRoles, createRole, updateRole, deleteRole, getRoleMenus, assignMenus, getUsers, createUser, updateUser, resetUserPassword, getUserRegions, assignUserRegions } = require('./controller');
+const {
+  getMenus, getRoles, createRole, updateRole, deleteRole, getRoleMenus, assignMenus,
+  getUsers, createUser, updateUser, resetUserPassword, getUserRegions, assignUserRegions,
+  getLocations, createLocation, updateLocation, deleteLocation
+} = require('./controller');
 const { requireRole } = require('../../middleware/permission');
 
 const router = new Router();
@@ -20,5 +24,9 @@ router.put('/user/:staffId', requireRole('admin', 'boss'), updateUser);
 router.post('/user/:staffId/reset-password', requireRole('admin', 'boss'), resetUserPassword);
 router.get('/user-regions/:staffId', requireRole('admin', 'boss'), getUserRegions);
 router.post('/assign-user-regions/:staffId', requireRole('admin', 'boss'), assignUserRegions);
+router.get('/locations', requireRole('admin', 'boss'), getLocations);
+router.post('/locations', requireRole('admin', 'boss'), createLocation);
+router.put('/locations/:locationId', requireRole('admin', 'boss'), updateLocation);
+router.delete('/locations/:locationId', requireRole('admin', 'boss'), deleteLocation);
 
 module.exports = router;

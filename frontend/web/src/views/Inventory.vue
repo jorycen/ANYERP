@@ -1446,7 +1446,7 @@ const INVENTORY_TYPES = [
   { value: 'display_qty', label: '铺货仓' },
   { value: 'demo_qty', label: '样机仓' },
   { value: 'unsellable_qty', label: '不可售仓' },
-  { value: 'pending_qty', label: '待入库仓' }
+  { value: 'pending_qty', label: '占用' }
 ]
 
 // 执行退库

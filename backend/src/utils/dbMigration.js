@@ -1877,6 +1877,24 @@ async function runMigrations() {
         AND COALESCE(COST_PRICE, 0) > 0
     `);
 
+    await checkAndCreateTable('T_LOCATION', `
+      CREATE TABLE T_LOCATION (
+        LOCATION_ID VARCHAR(32) NOT NULL COMMENT '库位ID',
+        STORE_ID VARCHAR(32) NOT NULL COMMENT '门店ID',
+        NAME VARCHAR(64) NOT NULL COMMENT '库位名称',
+        TYPE VARCHAR(32) DEFAULT 'normal' COMMENT '库位类型',
+        IS_SELLABLE TINYINT(1) DEFAULT 1 COMMENT '是否可销售',
+        STATUS TINYINT DEFAULT 1 COMMENT '状态',
+        PRIMARY KEY (LOCATION_ID),
+        KEY idx_location_store_status (STORE_ID, STATUS),
+        KEY idx_location_name (NAME)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='门店库位'
+    `);
+    await checkAndAddColumn('T_LOCATION', 'TYPE', 'VARCHAR(32) DEFAULT "normal" COMMENT "库位类型"', 'NAME');
+    await checkAndAddColumn('T_LOCATION', 'IS_SELLABLE', 'TINYINT(1) DEFAULT 1 COMMENT "是否可销售"', 'TYPE');
+    await checkAndAddColumn('T_LOCATION', 'STATUS', 'TINYINT DEFAULT 1 COMMENT "状态"', 'IS_SELLABLE');
+    await checkAndAddIndex('T_LOCATION', 'idx_location_store_status', 'ALTER TABLE T_LOCATION ADD INDEX idx_location_store_status (STORE_ID, STATUS)');
+
     await checkAndCreateTable('T_INVENTORY', `
       CREATE TABLE T_INVENTORY (
         INVENTORY_ID VARCHAR(32) NOT NULL PRIMARY KEY COMMENT '库存ID',
@@ -1886,7 +1904,7 @@ async function runMigrations() {
         DISPLAY_QTY INT DEFAULT 0 COMMENT '铺货仓库存',
         DEMO_QTY INT DEFAULT 0 COMMENT '样机库存',
         UNSELLABLE_QTY INT DEFAULT 0 COMMENT '不可售库存',
-        PENDING_QTY INT DEFAULT 0 COMMENT '待入库库存',
+        PENDING_QTY INT DEFAULT 0 COMMENT '占用库存',
         UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
         UNIQUE KEY uk_product_store (PRODUCT_ID, STORE_ID),
         KEY idx_product (PRODUCT_ID),
