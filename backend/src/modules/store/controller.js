@@ -1,10 +1,11 @@
 /**
  * 门店管理控制器
  */
-const { Store, Region } = require('../../models');
+const { Store, Region, Location } = require('../../models');
 const { Op } = require('sequelize');
 const { paginate, formatPaginatedResult } = require('../../utils');
 const { generateId } = require('../../utils');
+const { ensureStandardLocationsForStores } = require('../../utils/standardLocations');
 
 /**
  * 获取区域列表
@@ -149,7 +150,7 @@ async function createStore(ctx) {
     }
   }
 
-  await Store.create({
+  const store = await Store.create({
     store_id: storeId,
     distributor_id: distributorId,
     region_id: regionId,
@@ -158,6 +159,7 @@ async function createStore(ctx) {
     address: address || '',
     status
   });
+  await ensureStandardLocationsForStores(Location, [store]);
 
   ctx.body = { code: 0, message: '创建成功' };
 }

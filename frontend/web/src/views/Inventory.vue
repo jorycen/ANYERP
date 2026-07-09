@@ -49,10 +49,16 @@
                         <span class="breakdown-value">{{ row.second_qty || 0 }}</span>
                       </div>
                       <div v-if="row.store_stock_info && row.store_stock_info.length" class="breakdown-locations">
-                        <div class="breakdown-title">门店 / 库位</div>
-                        <div v-for="loc in row.store_stock_info" :key="`${loc.store_id}-${loc.location_id || 'none'}`" class="breakdown-item">
-                          <span class="breakdown-label">{{ loc.store_name }} / {{ loc.location_name || '未指定库位' }}：</span>
-                          <span class="breakdown-value">{{ loc.normal_qty || 0 }}</span>
+                        <div class="breakdown-title">门店 / 仓位</div>
+                        <div v-for="loc in row.store_stock_info" :key="`${loc.store_id}-${loc.location_id || 'none'}`" class="breakdown-location">
+                          <div class="breakdown-label">{{ loc.store_name }} / {{ loc.location_name || '未指定仓位' }}</div>
+                          <div class="warehouse-values">
+                            <span>销售仓 {{ loc.normal_qty || 0 }}</span>
+                            <span>样品仓 {{ loc.demo_qty || 0 }}</span>
+                            <span>铺货仓 {{ loc.display_qty || 0 }}</span>
+                            <span>不可售仓 {{ loc.unsellable_qty || 0 }}</span>
+                            <span>占用仓 {{ loc.pending_qty || 0 }}</span>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -65,9 +71,9 @@
               </template>
             </el-table-column>
             <el-table-column prop="display_qty" label="铺货仓库存" width="110" />
-            <el-table-column prop="demo_qty" label="样机库存" width="100" />
+            <el-table-column prop="demo_qty" label="样品仓库存" width="110" />
             <el-table-column prop="unsellable_qty" label="不可售库存" width="110" />
-            <el-table-column prop="pending_qty" label="占用库存" width="110" />
+            <el-table-column prop="pending_qty" label="占用仓库存" width="110" />
             <el-table-column label="查看序列号" width="120">
               <template #default="{ row }">
                 <el-button v-if="row.need_sn === 1" link type="primary" @click="openSnDialog(row)">查看序列号</el-button>
@@ -1443,10 +1449,10 @@ const addPnPnCode = ref('')
 
 const INVENTORY_TYPES = [
   { value: 'normal_qty', label: '销售仓' },
+  { value: 'demo_qty', label: '样品仓' },
   { value: 'display_qty', label: '铺货仓' },
-  { value: 'demo_qty', label: '样机仓' },
   { value: 'unsellable_qty', label: '不可售仓' },
-  { value: 'pending_qty', label: '占用' }
+  { value: 'pending_qty', label: '占用仓' }
 ]
 
 // 执行退库
@@ -3467,10 +3473,20 @@ const getReturnStatusText = (status) => {
   justify-content: space-between;
   gap: 12px;
 }
+.breakdown-location {
+  margin-top: 6px;
+}
 .breakdown-label {
   color: #909399;
 }
 .breakdown-value {
+  color: #303133;
+  font-weight: 600;
+}
+.warehouse-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
   color: #303133;
   font-weight: 600;
 }

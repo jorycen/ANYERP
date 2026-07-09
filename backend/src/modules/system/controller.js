@@ -5,6 +5,7 @@ const bcrypt = require('bcryptjs');
 const { sequelize, Menu, Role, RoleMenu, Staff, StaffRole, StaffStorePermission, RegionPermission, Region, Store, Location } = require('../../models');
 const { Op } = require('sequelize');
 const { generateUUID } = require('../../utils');
+const { getStandardLocation, ensureStandardLocationsForStores } = require('../../utils/standardLocations');
 
 function getResetPasswordFromPhone(phone) {
   const digits = String(phone || '').replace(/\D/g, '');
@@ -26,19 +27,15 @@ function manageableStoreWhere(user) {
   return { distributor_id: user.distributorId, is_deleted: 0 };
 }
 
-async function assertManageableStore(ctx, storeId) {
-  const store = await Store.findOne({
-    where: { store_id: String(storeId || ''), ...manageableStoreWhere(ctx.state.user) }
-  });
-  if (!store) ctx.throw(403, '无权管理该门店库位');
-  return store;
-}
-
 function normalizeLocationInput(ctx, body, isUpdate = false) {
   const name = String(body.name || '').trim();
-  const type = String(body.type || 'normal').trim() || 'normal';
-  const isSellable = body.isSellable ?? body.is_sellable ?? 1;
+  const type = String(body.type || '').trim();
+  const standardLocation = getStandardLocation(type);
+  const isSellable = body.isSellable ?? body.is_sellable ?? standardLocation?.is_sellable ?? 1;
   const status = body.status ?? 1;
+
+  if (!type) ctx.throw(400, '请选择仓位编码');
+  if (!standardLocation) ctx.throw(400, '仓位编码不在标准仓位范围内');
 
   if (!isUpdate || name) {
     if (!name) ctx.throw(400, '请输入库位名称');
@@ -51,6 +48,23 @@ function normalizeLocationInput(ctx, body, isUpdate = false) {
     is_sellable: Number(isSellable) ? 1 : 0,
     status: Number(status) ? 1 : 0
   };
+}
+
+async function getManageableStores(ctx, extraWhere = {}) {
+  return Store.findAll({
+    where: { ...manageableStoreWhere(ctx.state.user), ...extraWhere },
+    attributes: ['store_id', 'name', 'distributor_id'],
+    order: [['name', 'ASC']]
+  });
+}
+
+function sortLocationGroups(a, b) {
+  const aStd = getStandardLocation(a.type);
+  const bStd = getStandardLocation(b.type);
+  const aOrder = aStd?.sort_order || 999;
+  const bOrder = bStd?.sort_order || 999;
+  if (aOrder !== bOrder) return aOrder - bOrder;
+  return String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN');
 }
 
 
@@ -460,13 +474,16 @@ async function replaceRegionPermissions(ctx, staff, storeIds) {
 
 async function getLocations(ctx) {
   const { storeId = '', keyword = '', status = '' } = ctx.query;
-  const storeWhere = manageableStoreWhere(ctx.state.user);
+  const storeWhere = { ...manageableStoreWhere(ctx.state.user) };
   if (storeId) storeWhere.store_id = String(storeId);
+
+  const manageableStores = await getManageableStores(ctx, { status: 1 });
+  await ensureStandardLocationsForStores(Location, manageableStores);
 
   const where = {};
   if (keyword) {
     where[Op.or] = [
-      { location_id: { [Op.like]: `%${keyword}%` } },
+      { type: { [Op.like]: `%${keyword}%` } },
       { name: { [Op.like]: `%${keyword}%` } }
     ];
   }
@@ -475,73 +492,122 @@ async function getLocations(ctx) {
   const rows = await Location.findAll({
     where,
     include: [{ model: Store, attributes: ['store_id', 'name', 'distributor_id'], where: storeWhere }],
-    order: [[Store, 'name', 'ASC'], ['name', 'ASC'], ['location_id', 'ASC']]
+    order: [['type', 'ASC'], [Store, 'name', 'ASC']]
   });
+
+  const grouped = new Map();
+  for (const row of rows) {
+    const data = row.toJSON();
+    const storeName = data.Store?.name || '';
+    const type = data.type || '';
+    if (!grouped.has(type)) {
+      grouped.set(type, {
+        location_id: type,
+        type,
+        name: data.name,
+        is_sellable: Number(data.is_sellable || 0),
+        status: Number(data.status || 0),
+        store_count: 0,
+        enabled_store_count: 0,
+        stores: []
+      });
+    }
+    const group = grouped.get(type);
+    group.store_count += 1;
+    if (Number(data.status) === 1) group.enabled_store_count += 1;
+    if (Number(data.status) === 1) group.status = 1;
+    group.stores.push({
+      store_id: data.store_id,
+      store_name: storeName,
+      location_id: data.location_id,
+      status: Number(data.status || 0)
+    });
+  }
 
   ctx.body = {
     code: 0,
-    data: rows.map(row => {
-      const data = row.toJSON();
-      const storeName = data.Store?.name || '';
-      delete data.Store;
-      return { ...data, store_name: storeName };
-    })
+    data: Array.from(grouped.values()).sort(sortLocationGroups)
   };
 }
 
 async function createLocation(ctx) {
-  const { storeId, locationId } = ctx.request.body;
-  if (!storeId) ctx.throw(400, '请选择门店');
-  await assertManageableStore(ctx, storeId);
-
   const input = normalizeLocationInput(ctx, ctx.request.body);
-  const normalizedLocationId = String(locationId || '').trim() || `LOC${generateUUID().slice(0, 12).toUpperCase()}`;
-  if (normalizedLocationId.length > 32) ctx.throw(400, '库位ID不能超过32个字符');
+  const stores = await getManageableStores(ctx, { status: 1 });
+  if (stores.length === 0) ctx.throw(400, '当前没有可配置的启用门店');
 
-  const existingId = await Location.findByPk(normalizedLocationId);
-  if (existingId) ctx.throw(400, '库位ID已存在');
-  const duplicateName = await Location.findOne({
-    where: { store_id: storeId, name: input.name, status: 1 }
+  let created = 0;
+  let updated = 0;
+  await sequelize.transaction(async transaction => {
+    for (const store of stores) {
+      const existing = await Location.findOne({
+        where: { store_id: store.store_id, type: input.type },
+        transaction
+      });
+      if (existing) {
+        await existing.update(input, { transaction });
+        updated += 1;
+      } else {
+        await Location.create({
+          location_id: `LOC${generateUUID().slice(0, 20).toUpperCase()}`,
+          store_id: store.store_id,
+          ...input
+        }, { transaction });
+        created += 1;
+      }
+    }
   });
-  if (duplicateName) ctx.throw(400, '该门店已存在同名启用库位');
 
-  await Location.create({
-    location_id: normalizedLocationId,
-    store_id: storeId,
-    ...input
-  });
-
-  ctx.body = { code: 0, message: '库位创建成功', data: { locationId: normalizedLocationId } };
+  ctx.body = { code: 0, message: '仓位已同步到全部门店', data: { type: input.type, created, updated } };
 }
 
 async function updateLocation(ctx) {
   const { locationId } = ctx.params;
-  const location = await Location.findByPk(locationId);
-  if (!location) ctx.throw(404, '库位不存在');
-  await assertManageableStore(ctx, location.store_id);
+  const type = String(locationId || '').trim();
+  if (!getStandardLocation(type)) ctx.throw(400, '仓位编码不在标准仓位范围内');
 
-  const input = normalizeLocationInput(ctx, ctx.request.body, true);
-  const duplicateName = input.name ? await Location.findOne({
-    where: {
-      location_id: { [Op.ne]: locationId },
-      store_id: location.store_id,
-      name: input.name,
-      status: 1
+  const input = normalizeLocationInput(ctx, { ...ctx.request.body, type }, true);
+  const stores = await getManageableStores(ctx, { status: 1 });
+  if (stores.length === 0) ctx.throw(400, '当前没有可配置的启用门店');
+
+  let created = 0;
+  let updated = 0;
+  await sequelize.transaction(async transaction => {
+    for (const store of stores) {
+      const existing = await Location.findOne({
+        where: { store_id: store.store_id, type },
+        transaction
+      });
+      if (existing) {
+        await existing.update(input, { transaction });
+        updated += 1;
+      } else {
+        await Location.create({
+          location_id: `LOC${generateUUID().slice(0, 20).toUpperCase()}`,
+          store_id: store.store_id,
+          ...input
+        }, { transaction });
+        created += 1;
+      }
     }
-  }) : null;
-  if (duplicateName) ctx.throw(400, '该门店已存在同名启用库位');
+  });
 
-  await location.update(input);
-  ctx.body = { code: 0, message: '库位更新成功' };
+  ctx.body = { code: 0, message: '仓位已更新并同步到全部门店', data: { type, created, updated } };
 }
 
 async function deleteLocation(ctx) {
   const { locationId } = ctx.params;
-  const location = await Location.findByPk(locationId);
-  if (!location) ctx.throw(404, '库位不存在');
-  await assertManageableStore(ctx, location.store_id);
-  await location.update({ status: 0 });
-  ctx.body = { code: 0, message: '库位已停用' };
+  const type = String(locationId || '').trim();
+  if (!getStandardLocation(type)) ctx.throw(400, '仓位编码不在标准仓位范围内');
+
+  const stores = await getManageableStores(ctx);
+  const storeIds = stores.map(store => store.store_id);
+  if (storeIds.length === 0) ctx.throw(400, '当前没有可配置门店');
+
+  const [affected] = await Location.update(
+    { status: 0 },
+    { where: { store_id: { [Op.in]: storeIds }, type } }
+  );
+  ctx.body = { code: 0, message: '仓位已停用', data: { type, affected } };
 }
 
 function buildMenuTree(menus) {

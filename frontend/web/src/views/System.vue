@@ -76,24 +76,26 @@
 
         <el-tab-pane label="库位管理" name="locations">
           <div class="filter-bar">
-            <el-select v-model="locationQuery.storeId" placeholder="门店" clearable filterable style="width: 220px" @change="loadLocations">
+            <el-select v-model="locationQuery.storeId" placeholder="查看门店覆盖" clearable filterable style="width: 220px" @change="loadLocations">
               <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
             </el-select>
-            <el-input v-model="locationQuery.keyword" placeholder="库位ID/名称" clearable style="width: 220px" @keyup.enter="loadLocations" />
+            <el-input v-model="locationQuery.keyword" placeholder="仓位编码/名称" clearable style="width: 220px" @keyup.enter="loadLocations" />
             <el-select v-model="locationQuery.status" placeholder="状态" style="width: 120px" @change="loadLocations">
               <el-option label="启用" :value="1" />
               <el-option label="停用" :value="0" />
               <el-option label="全部" value="" />
             </el-select>
             <el-button @click="loadLocations">查询</el-button>
-            <el-button type="primary" @click="openLocationDialog()">新增库位</el-button>
+            <el-button type="primary" @click="openLocationDialog()">配置仓位</el-button>
           </div>
           <el-table :data="locationData" stripe border v-loading="locationLoading">
-            <el-table-column prop="store_name" label="门店" min-width="160" />
-            <el-table-column prop="location_id" label="库位ID" width="150" />
-            <el-table-column prop="name" label="库位名称" min-width="180" />
-            <el-table-column label="库位类型" width="130">
-              <template #default="{ row }">{{ locationTypeText(row.type) }}</template>
+            <el-table-column prop="type" label="仓位编码" width="140" />
+            <el-table-column prop="name" label="仓位名称" min-width="160" />
+            <el-table-column label="覆盖门店" width="120">
+              <template #default="{ row }">{{ row.store_count || 0 }}</template>
+            </el-table-column>
+            <el-table-column label="启用门店" width="120">
+              <template #default="{ row }">{{ row.enabled_store_count || 0 }}</template>
             </el-table-column>
             <el-table-column label="可销售" width="90">
               <template #default="{ row }">{{ row.is_sellable ? '是' : '否' }}</template>
@@ -665,23 +667,15 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="locationDialogVisible" :title="locationDialogTitle" width="560px" @close="resetLocationForm">
+    <el-dialog v-model="locationDialogVisible" :title="locationDialogTitle" width="520px" @close="resetLocationForm">
       <el-form :model="locationForm" label-width="90px">
-        <el-form-item label="门店" required>
-          <el-select v-model="locationForm.storeId" :disabled="!!editingLocationId" filterable placeholder="请选择门店" style="width: 100%">
-            <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="库位ID">
-          <el-input v-model="locationForm.locationId" :disabled="!!editingLocationId" placeholder="留空自动生成；用于Excel批量维护" />
-        </el-form-item>
-        <el-form-item label="库位名称" required>
-          <el-input v-model="locationForm.name" placeholder="例如：仓库A区、前台柜台、展台" />
-        </el-form-item>
-        <el-form-item label="库位类型">
-          <el-select v-model="locationForm.type" style="width: 100%">
+        <el-form-item label="仓位编码" required>
+          <el-select v-model="locationForm.type" :disabled="!!editingLocationId" style="width: 100%" @change="handleLocationTypeChange">
             <el-option v-for="item in locationTypeOptions" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="仓位名称" required>
+          <el-input v-model="locationForm.name" disabled />
         </el-form-item>
         <el-form-item label="可销售">
           <el-switch v-model="locationForm.isSellable" :active-value="1" :inactive-value="0" />
@@ -816,23 +810,18 @@ const locationDialogTitle = ref('新增库位')
 const editingLocationId = ref(null)
 const locationQuery = reactive({ storeId: '', keyword: '', status: 1 })
 const locationForm = reactive({
-  storeId: '',
-  locationId: '',
   name: '',
-  type: 'normal',
+  type: 'normal_qty',
   isSellable: 1,
   status: 1
 })
 const locationTypeOptions = [
-  { value: 'normal', label: '普通库位' },
-  { value: 'warehouse', label: '仓库' },
-  { value: 'counter', label: '柜台' },
-  { value: 'display', label: '展台' },
-  { value: 'service', label: '售后区' },
-  { value: 'temporary', label: '临时区' }
+  { value: 'normal_qty', label: '销售仓', isSellable: 1 },
+  { value: 'demo_qty', label: '样品仓', isSellable: 1 },
+  { value: 'display_qty', label: '铺货仓', isSellable: 1 },
+  { value: 'unsellable_qty', label: '不可售仓', isSellable: 0 },
+  { value: 'pending_qty', label: '占用仓', isSellable: 0 }
 ]
-const locationTypeText = value => locationTypeOptions.find(item => item.value === value)?.label || value || '普通库位'
-
 const saveSystemDraft = (key, data) => {
   saveDraft(`system:${key}`, cloneDraft(data))
   ElMessage.success('草稿已保存')
@@ -1093,32 +1082,28 @@ const loadLocations = async () => {
 const openLocationDialog = async (row = null) => {
   if (stores.value.length === 0) await loadStores()
   if (row) {
-    locationDialogTitle.value = '编辑库位'
-    editingLocationId.value = row.location_id
-    locationForm.storeId = row.store_id
-    locationForm.locationId = row.location_id
+    locationDialogTitle.value = '编辑仓位'
+    editingLocationId.value = row.type
     locationForm.name = row.name || ''
-    locationForm.type = row.type || 'normal'
+    locationForm.type = row.type || 'normal_qty'
     locationForm.isSellable = Number(row.is_sellable ?? 1)
     locationForm.status = Number(row.status ?? 1)
   } else {
-    locationDialogTitle.value = '新增库位'
+    locationDialogTitle.value = '配置仓位'
     resetLocationForm()
-    locationForm.storeId = locationQuery.storeId || stores.value[0]?.store_id || ''
     restoreSystemDraft('location-create', locationForm)
+    handleLocationTypeChange(locationForm.type)
   }
   locationDialogVisible.value = true
 }
 
 const handleLocationSubmit = async () => {
-  if (!locationForm.storeId) return ElMessage.warning('请选择门店')
-  if (!locationForm.name.trim()) return ElMessage.warning('请输入库位名称')
+  if (!locationForm.type) return ElMessage.warning('请选择仓位编码')
+  if (!locationForm.name.trim()) return ElMessage.warning('请输入仓位名称')
 
   submitLoading.value = true
   try {
     const data = {
-      storeId: locationForm.storeId,
-      locationId: locationForm.locationId.trim(),
       name: locationForm.name.trim(),
       type: locationForm.type,
       isSellable: locationForm.isSellable,
@@ -1129,15 +1114,15 @@ const handleLocationSubmit = async () => {
       : await api.createSystemLocation(data)
 
     if (res.code === 0) {
-      ElMessage.success(editingLocationId.value ? '库位已更新' : '库位已创建')
+      ElMessage.success(editingLocationId.value ? '仓位已更新' : '仓位已同步到全部门店')
       if (!editingLocationId.value) clearSystemDraft('location-create')
       locationDialogVisible.value = false
       await loadLocations()
     } else {
-      ElMessage.error(res.message || '保存库位失败')
+      ElMessage.error(res.message || '保存仓位失败')
     }
   } catch (err) {
-    ElMessage.error(err.response?.data?.message || '保存库位失败')
+    ElMessage.error(err.response?.data?.message || '保存仓位失败')
   } finally {
     submitLoading.value = false
   }
@@ -1145,25 +1130,30 @@ const handleLocationSubmit = async () => {
 
 const disableLocation = async row => {
   try {
-    await ElMessageBox.confirm(`确认停用库位"${row.name}"？历史库存和SN记录仍会保留该库位。`, '停用库位', { type: 'warning' })
-    const res = await api.deleteSystemLocation(row.location_id)
+    await ElMessageBox.confirm(`确认停用仓位"${row.name}"？该仓位会在全部门店停用，历史库存和SN记录仍会保留。`, '停用仓位', { type: 'warning' })
+    const res = await api.deleteSystemLocation(row.type)
     if (res.code === 0) {
-      ElMessage.success('库位已停用')
+      ElMessage.success('仓位已停用')
       await loadLocations()
     } else {
-      ElMessage.error(res.message || '停用库位失败')
+      ElMessage.error(res.message || '停用仓位失败')
     }
   } catch (err) {
-    if (err !== 'cancel') ElMessage.error(err.response?.data?.message || '停用库位失败')
+    if (err !== 'cancel') ElMessage.error(err.response?.data?.message || '停用仓位失败')
   }
+}
+
+const handleLocationTypeChange = value => {
+  const option = locationTypeOptions.find(item => item.value === value)
+  if (!option) return
+  if (!locationForm.name || !editingLocationId.value) locationForm.name = option.label
+  locationForm.isSellable = option.isSellable
 }
 
 const resetLocationForm = () => {
   editingLocationId.value = null
-  locationForm.storeId = ''
-  locationForm.locationId = ''
-  locationForm.name = ''
-  locationForm.type = 'normal'
+  locationForm.type = 'normal_qty'
+  locationForm.name = '销售仓'
   locationForm.isSellable = 1
   locationForm.status = 1
 }

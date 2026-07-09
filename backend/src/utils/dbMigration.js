@@ -1879,21 +1879,41 @@ async function runMigrations() {
 
     await checkAndCreateTable('T_LOCATION', `
       CREATE TABLE T_LOCATION (
-        LOCATION_ID VARCHAR(32) NOT NULL COMMENT '库位ID',
+        LOCATION_ID VARCHAR(32) NOT NULL COMMENT '仓位实例ID',
         STORE_ID VARCHAR(32) NOT NULL COMMENT '门店ID',
-        NAME VARCHAR(64) NOT NULL COMMENT '库位名称',
-        TYPE VARCHAR(32) DEFAULT 'normal' COMMENT '库位类型',
+        NAME VARCHAR(64) NOT NULL COMMENT '仓位名称',
+        TYPE VARCHAR(32) DEFAULT 'normal_qty' COMMENT '仓位编码',
         IS_SELLABLE TINYINT(1) DEFAULT 1 COMMENT '是否可销售',
         STATUS TINYINT DEFAULT 1 COMMENT '状态',
         PRIMARY KEY (LOCATION_ID),
         KEY idx_location_store_status (STORE_ID, STATUS),
         KEY idx_location_name (NAME)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='门店库位'
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='门店标准仓位'
     `);
-    await checkAndAddColumn('T_LOCATION', 'TYPE', 'VARCHAR(32) DEFAULT "normal" COMMENT "库位类型"', 'NAME');
+    await checkAndAddColumn('T_LOCATION', 'TYPE', 'VARCHAR(32) DEFAULT "normal_qty" COMMENT "仓位编码"', 'NAME');
     await checkAndAddColumn('T_LOCATION', 'IS_SELLABLE', 'TINYINT(1) DEFAULT 1 COMMENT "是否可销售"', 'TYPE');
     await checkAndAddColumn('T_LOCATION', 'STATUS', 'TINYINT DEFAULT 1 COMMENT "状态"', 'IS_SELLABLE');
     await checkAndAddIndex('T_LOCATION', 'idx_location_store_status', 'ALTER TABLE T_LOCATION ADD INDEX idx_location_store_status (STORE_ID, STATUS)');
+    await checkAndAddIndex('T_LOCATION', 'idx_location_store_type', 'ALTER TABLE T_LOCATION ADD INDEX idx_location_store_type (STORE_ID, TYPE)');
+    const standardLocations = [
+      ['normal_qty', '销售仓', 1],
+      ['demo_qty', '样品仓', 1],
+      ['display_qty', '铺货仓', 1],
+      ['unsellable_qty', '不可售仓', 0],
+      ['pending_qty', '占用仓', 0]
+    ];
+    for (const [type, name, isSellable] of standardLocations) {
+      await sequelize.query(`
+        INSERT INTO T_LOCATION (LOCATION_ID, STORE_ID, NAME, TYPE, IS_SELLABLE, STATUS)
+        SELECT CONCAT('LOC', LEFT(MD5(CONCAT(s.STORE_ID, ':${type}')), 20)), s.STORE_ID, '${name}', '${type}', ${isSellable}, 1
+        FROM T_STORE s
+        WHERE COALESCE(s.IS_DELETED, 0) = 0
+          AND NOT EXISTS (
+            SELECT 1 FROM T_LOCATION l
+            WHERE l.STORE_ID = s.STORE_ID AND l.TYPE = '${type}'
+          )
+      `);
+    }
 
     await checkAndCreateTable('T_INVENTORY', `
       CREATE TABLE T_INVENTORY (
@@ -1902,9 +1922,9 @@ async function runMigrations() {
         STORE_ID VARCHAR(32) NOT NULL DEFAULT '' COMMENT '门店ID',
         NORMAL_QTY INT DEFAULT 0 COMMENT '现有库存',
         DISPLAY_QTY INT DEFAULT 0 COMMENT '铺货仓库存',
-        DEMO_QTY INT DEFAULT 0 COMMENT '样机库存',
+        DEMO_QTY INT DEFAULT 0 COMMENT '样品仓库存',
         UNSELLABLE_QTY INT DEFAULT 0 COMMENT '不可售库存',
-        PENDING_QTY INT DEFAULT 0 COMMENT '占用库存',
+        PENDING_QTY INT DEFAULT 0 COMMENT '占用仓库存',
         UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
         UNIQUE KEY uk_product_store (PRODUCT_ID, STORE_ID),
         KEY idx_product (PRODUCT_ID),

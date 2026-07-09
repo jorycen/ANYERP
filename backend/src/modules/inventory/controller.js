@@ -14,6 +14,7 @@ const { Op, Sequelize } = require('sequelize');
 const { generateInboundNo, generateOutboundNo, generateTransferNo, generateUUID, generateBatchNo, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { getUserRoles } = require('../../middleware/permission');
 const { initializeSnResourceRightsFromInbound, summariesForSns } = require('./resourceRights');
+const { ensureStandardLocationsForStores } = require('../../utils/standardLocations');
 
 function splitCodes(value) {
   return String(value || '')
@@ -617,7 +618,15 @@ async function getList(ctx) {
       invMap[inv.product_id].unsellable_qty += inv.unsellable_qty || 0;
       invMap[inv.product_id].pending_qty += inv.pending_qty || 0;
 
-      if ((effectiveNormal) > 0) {
+      const storeQtyRow = {
+        normal_qty: effectiveNormal,
+        display_qty: inv.display_qty || 0,
+        demo_qty: inv.demo_qty || 0,
+        unsellable_qty: inv.unsellable_qty || 0,
+        pending_qty: inv.pending_qty || 0
+      };
+      const hasStoreQty = Object.values(storeQtyRow).some(value => Number(value || 0) > 0);
+      if (hasStoreQty) {
         const storeName = inv.Store?.name || allStoreMap.get(inv.store_id) || inv.store_id;
         const locationId = inv.location_id || '';
         storeStockMap[inv.product_id].push({
@@ -625,7 +634,7 @@ async function getList(ctx) {
           store_name: storeName,
           location_id: locationId,
           location_name: locationId ? (locationMap.get(locationId) || locationId) : '未指定库位',
-          normal_qty: effectiveNormal
+          ...storeQtyRow
         });
       }
     }
@@ -651,7 +660,11 @@ async function getList(ctx) {
             store_name: allStoreMap.get(sn.store_id) || sn.store_id || '未知门店',
             location_id: sn.location_id || '',
             location_name: sn.location_id ? (locationMap.get(sn.location_id) || sn.location_id) : '未指定库位',
-            normal_qty: 0
+            normal_qty: 0,
+            display_qty: 0,
+            demo_qty: 0,
+            unsellable_qty: 0,
+            pending_qty: 0
           };
         }
         snLocationMap[sn.product_id][key].normal_qty += 1;
@@ -695,7 +708,7 @@ async function getList(ctx) {
         other_store_stock_qty: stock.other,
         total_stock_qty: stock.total,
         current_store_name: stock.currentStore?.store_name || '',
-        store_stock_info: stock.stores || storeStockMap[p.product_id] || [],
+        store_stock_info: storeStockMap[p.product_id]?.length ? storeStockMap[p.product_id] : (stock.stores || []),
         other_store_stock_info: stock.otherStores || [],
         sales_7_qty: sales.sales_7_qty,
         sales_30_qty: sales.sales_30_qty,
@@ -2825,9 +2838,21 @@ async function executeReturn(ctx) {
 async function getLocationsByStore(ctx) {
   try {
     const { storeId } = ctx.params;
+    assertStoreVisible(ctx, storeId);
+    const store = await Store.findOne({ where: { store_id: storeId, is_deleted: 0 } });
+    if (!store) ctx.throw(404, '门店不存在');
+    await ensureStandardLocationsForStores(Location, [store]);
+
     const locations = await Location.findAll({
       where: { store_id: storeId, status: 1 },
-      order: [['name', 'ASC']]
+      order: [[sequelize.literal(`CASE TYPE
+        WHEN 'normal_qty' THEN 10
+        WHEN 'demo_qty' THEN 20
+        WHEN 'display_qty' THEN 30
+        WHEN 'unsellable_qty' THEN 40
+        WHEN 'pending_qty' THEN 50
+        ELSE 999
+      END`), 'ASC'], ['name', 'ASC']]
     });
     ctx.body = { code: 0, data: locations };
   } catch (error) {
