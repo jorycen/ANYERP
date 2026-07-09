@@ -1267,7 +1267,9 @@ async function runMigrations() {
     await checkAndAddColumn('T_ORDER', 'SUBSIDY_PHOTOS', 'JSON COMMENT "国补照片"', 'SUBSIDY_ID');
     await checkAndAddColumn('T_ORDER', 'PRODUCT_PHOTO_URLS', 'JSON COMMENT "商品照片"', 'SUBSIDY_PHOTOS');
     await checkAndAddColumn('T_ORDER', 'EDUCATION_SUBSIDY_PHOTO_URL', 'TEXT COMMENT "教育补贴核销凭证"', 'PRODUCT_PHOTO_URLS');
-    await checkAndAddColumn('T_ORDER', 'PERSONAL_INFO_PHOTO', 'JSON COMMENT "个人资料照片"', 'EDUCATION_SUBSIDY_PHOTO_URL');
+    await checkAndAddColumn('T_ORDER', 'EDUCATION_SUBSIDY_COUPON_CODE', 'VARCHAR(128) COMMENT "教育补贴券码"', 'EDUCATION_SUBSIDY_PHOTO_URL');
+    await checkAndAddColumn('T_ORDER', 'EDUCATION_SUBSIDY_OCR_TEXT', 'TEXT COMMENT "教育补贴OCR原文"', 'EDUCATION_SUBSIDY_COUPON_CODE');
+    await checkAndAddColumn('T_ORDER', 'PERSONAL_INFO_PHOTO', 'JSON COMMENT "个人资料照片"', 'EDUCATION_SUBSIDY_OCR_TEXT');
     await checkAndAddColumn('T_ORDER', 'INVENTORY_RESERVED', 'TINYINT(1) NOT NULL DEFAULT 1 COMMENT "订单创建阶段是否已占用库存"', 'ORDER_STATUS');
     await ensureNullableColumn('T_ORDER_ITEM', 'PRODUCT_ID', 'VARCHAR(32)');
     await checkAndAddColumn('T_ORDER_PAYMENT', 'DEPOSIT_ID', 'VARCHAR(32) COMMENT "定金单ID"', 'PAYMENT_METHOD');
@@ -1797,6 +1799,8 @@ async function runMigrations() {
         AMOUNT_TYPE VARCHAR(16) NOT NULL DEFAULT 'increase',
         CONTENT VARCHAR(500),
         PROOF_PHOTO_URL VARCHAR(1024),
+        COUPON_CODE VARCHAR(128),
+        COUPON_OCR_TEXT TEXT,
         CREATE_STAFF_ID BIGINT(20),
         CREATE_USER VARCHAR(64),
         CREATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -1806,6 +1810,8 @@ async function runMigrations() {
         KEY idx_order_supplement (ORDER_ID, IS_DELETED)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='订单金额补录记录'
     `);
+    await checkAndAddColumn('T_ORDER_SUPPLEMENT', 'COUPON_CODE', 'VARCHAR(128) COMMENT "补录优惠券码"', 'PROOF_PHOTO_URL');
+    await checkAndAddColumn('T_ORDER_SUPPLEMENT', 'COUPON_OCR_TEXT', 'TEXT COMMENT "补录券码OCR原文"', 'COUPON_CODE');
 
     await checkAndCreateTable('T_ORDER_GROSS_PROFIT', `
       CREATE TABLE T_ORDER_GROSS_PROFIT (

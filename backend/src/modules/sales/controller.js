@@ -291,6 +291,8 @@ function normalizeOrderExtendedFields(source = {}) {
     subsidy_photos: ['subsidy_photos', 'subsidyPhotos'],
     product_photo_urls: ['product_photo_urls', 'productPhotoUrls'],
     education_subsidy_photo_url: ['education_subsidy_photo_url', 'educationSubsidyPhotoUrl'],
+    education_subsidy_coupon_code: ['education_subsidy_coupon_code', 'educationSubsidyCouponCode'],
+    education_subsidy_ocr_text: ['education_subsidy_ocr_text', 'educationSubsidyOcrText'],
     personal_info_photo: ['personal_info_photo', 'personalInfoPhoto']
   };
   const result = {};
@@ -894,6 +896,8 @@ async function updateSupplements(ctx) {
       amount_type: dictionaryItem.amount_type === 'decrease' ? 'decrease' : 'increase',
       content: String(item.content || '').trim().slice(0, 500),
       proof_photo_url: String(item.proofPhotoUrl || item.proof_photo_url || '').trim().slice(0, 1024),
+      coupon_code: String(item.couponCode || item.coupon_code || '').trim().slice(0, 128),
+      coupon_ocr_text: String(item.couponOcrText || item.coupon_ocr_text || '').trim(),
       create_staff_id: ctx.state.user?.staffId || null,
       create_user: ctx.state.user?.name || '',
       create_time: new Date(),
@@ -930,7 +934,9 @@ async function updateSupplements(ctx) {
         amount: item.amount,
         amountType: item.amount_type,
         content: item.content,
-        proofPhotoUrl: item.proof_photo_url
+        proofPhotoUrl: item.proof_photo_url,
+        couponCode: item.coupon_code,
+        couponOcrText: item.coupon_ocr_text
       })),
       grossProfit: snapshotToResponse(snapshot, order)
     }

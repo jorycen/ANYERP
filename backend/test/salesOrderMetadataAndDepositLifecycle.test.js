@@ -31,6 +31,8 @@ test('order extension fields preserve detail metadata from camelCase payloads', 
     subsidyPhotos: [{ name: '产品及包装盒', url: 'cloud://subsidy.jpg' }],
     productPhotoUrls: ['cloud://product.jpg'],
     educationSubsidyPhotoUrl: 'cloud://education.jpg',
+    educationSubsidyCouponCode: 'EDU-COUPON-001',
+    educationSubsidyOcrText: 'coupon raw text',
     personalInfoPhoto: { name: '个人资料', url: 'cloud://personal.jpg' }
   });
 
@@ -41,6 +43,8 @@ test('order extension fields preserve detail metadata from camelCase payloads', 
   assert.equal(payload.subsidy_photos[0].url, 'cloud://subsidy.jpg');
   assert.deepEqual(payload.product_photo_urls, ['cloud://product.jpg']);
   assert.equal(payload.education_subsidy_photo_url, 'cloud://education.jpg');
+  assert.equal(payload.education_subsidy_coupon_code, 'EDU-COUPON-001');
+  assert.equal(payload.education_subsidy_ocr_text, 'coupon raw text');
   assert.equal(payload.personal_info_photo.url, 'cloud://personal.jpg');
 });
 
