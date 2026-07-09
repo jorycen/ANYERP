@@ -22,11 +22,6 @@ RUN pip install --upgrade pip \
 
 COPY . .
 
-RUN python - <<'PY'
-from paddleocr import PaddleOCR
-PaddleOCR(use_angle_cls=True, lang="ch", show_log=False)
-PY
-
 EXPOSE 8080
 
 CMD ["sh", "-c", "gunicorn -b 0.0.0.0:${PORT:-8080} -w ${WEB_CONCURRENCY:-1} --timeout ${OCR_WORKER_TIMEOUT:-180} app:app"]

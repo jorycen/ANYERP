@@ -7,10 +7,13 @@ This service is deployed separately from `anyerp-api`. It receives an uploaded v
 Create a new CloudBase Run service from this repository:
 
 - Service name: `anyerp-ocr` or `paddleocr-coupon`
+- Branch: `main`
 - Build directory: `ocr-service`
 - Dockerfile: `ocr-service/Dockerfile`
 - Port: `8080`
 - Recommended resources: at least 2 CPU / 4 GB memory
+
+Do not deploy the repository root for this OCR service. The root Dockerfile is for `anyerp-api`; this service must use the `ocr-service` directory.
 
 Optional environment variables:
 
