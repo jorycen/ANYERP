@@ -183,6 +183,87 @@
           />
         </el-tab-pane>
 
+        <!-- 批量维护 -->
+        <el-tab-pane label="批量维护" name="batch-maintenance">
+          <div class="batch-maintenance-layout">
+            <div class="batch-toolbar">
+              <el-select v-model="batchForm.operationType" placeholder="操作类型" style="width: 140px">
+                <el-option label="批量入库" value="INBOUND" />
+                <el-option label="批量出库" value="OUTBOUND" />
+                <el-option label="数量调整" value="ADJUST" />
+              </el-select>
+              <el-switch
+                v-model="batchForm.triggerResourceRights"
+                :disabled="batchForm.operationType !== 'OUTBOUND'"
+                active-text="出库触发权益"
+                inactive-text="仅处理库存"
+              />
+              <el-input v-model="batchForm.remark" placeholder="备注" clearable style="width: 240px" />
+              <el-button @click="downloadBatchTemplate">下载模板</el-button>
+              <el-upload
+                :auto-upload="false"
+                :show-file-list="false"
+                accept=".xlsx,.xls"
+                :on-change="handleBatchFileChange"
+              >
+                <el-button type="primary" :loading="batchImportLoading">导入生成申请</el-button>
+              </el-upload>
+            </div>
+
+            <div class="filter-bar">
+              <el-select v-model="batchQuery.status" placeholder="状态" clearable style="width: 130px" @change="loadBatchApplications">
+                <el-option label="待审批" value="pending" />
+                <el-option label="已执行" value="executed" />
+                <el-option label="已拒绝" value="rejected" />
+              </el-select>
+              <el-select v-model="batchQuery.operationType" placeholder="操作类型" clearable style="width: 130px" @change="loadBatchApplications">
+                <el-option label="批量入库" value="INBOUND" />
+                <el-option label="批量出库" value="OUTBOUND" />
+                <el-option label="数量调整" value="ADJUST" />
+              </el-select>
+              <el-button type="primary" @click="loadBatchApplications">查询</el-button>
+            </div>
+
+            <el-table :data="batchApplications" stripe border v-loading="batchLoading">
+              <el-table-column prop="application_no" label="申请单号" width="190" />
+              <el-table-column label="类型" width="100">
+                <template #default="{ row }">{{ batchOperationText(row.operation_type) }}</template>
+              </el-table-column>
+              <el-table-column label="出库权益" width="90">
+                <template #default="{ row }">{{ row.trigger_resource_rights ? '触发' : '-' }}</template>
+              </el-table-column>
+              <el-table-column prop="total_rows" label="行数" width="80" />
+              <el-table-column prop="applicant_name" label="申请人" width="120" />
+              <el-table-column prop="source_file_name" label="来源文件" min-width="180" show-overflow-tooltip />
+              <el-table-column label="状态" width="100">
+                <template #default="{ row }">
+                  <el-tag :type="batchStatusType(row.status)">{{ batchStatusText(row.status) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="创建时间" width="170">
+                <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="180" fixed="right">
+                <template #default="{ row }">
+                  <el-button link type="primary" @click="openBatchDetail(row)">详情</el-button>
+                  <el-button v-if="canReviewBatch && row.status === 'pending'" link type="success" @click="reviewBatch(row, 'approve')">通过</el-button>
+                  <el-button v-if="canReviewBatch && row.status === 'pending'" link type="danger" @click="reviewBatch(row, 'reject')">拒绝</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+
+            <el-pagination
+              v-model:current-page="batchQuery.page"
+              v-model:page-size="batchQuery.pageSize"
+              :total="batchTotal"
+              :page-sizes="[20, 50, 100]"
+              layout="total, sizes, prev, pager, next"
+              @size-change="loadBatchApplications"
+              @current-change="loadBatchApplications"
+            />
+          </div>
+        </el-tab-pane>
+
         <!-- 入库单管理 -->
         <el-tab-pane label="入库单管理" name="inbound">
           <div class="filter-bar">
@@ -1194,6 +1275,40 @@
         </el-table>
       </div>
     </el-dialog>
+
+    <el-dialog v-model="batchDetailVisible" title="批量维护申请详情" width="980px">
+      <div v-if="currentBatchApplication">
+        <el-descriptions :column="3" border>
+          <el-descriptions-item label="申请单号">{{ currentBatchApplication.application_no }}</el-descriptions-item>
+          <el-descriptions-item label="操作类型">{{ batchOperationText(currentBatchApplication.operation_type) }}</el-descriptions-item>
+          <el-descriptions-item label="状态">{{ batchStatusText(currentBatchApplication.status) }}</el-descriptions-item>
+          <el-descriptions-item label="申请人">{{ currentBatchApplication.applicant_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="审批人">{{ currentBatchApplication.reviewer_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="创建时间">{{ formatDate(currentBatchApplication.create_time) }}</el-descriptions-item>
+          <el-descriptions-item label="审批意见" :span="3">{{ currentBatchApplication.review_comment || '-' }}</el-descriptions-item>
+        </el-descriptions>
+        <h4 class="mt-20">明细</h4>
+        <el-table :data="currentBatchApplication.items || []" stripe border size="small" max-height="420">
+          <el-table-column prop="row_no" label="行号" width="70" />
+          <el-table-column prop="product_code" label="商品编码" width="110" />
+          <el-table-column prop="product_name" label="商品" min-width="160" show-overflow-tooltip />
+          <el-table-column prop="pn_code" label="PN" width="120" />
+          <el-table-column prop="sn_code" label="SN" width="150" show-overflow-tooltip />
+          <el-table-column prop="store_id" label="门店ID" width="110" />
+          <el-table-column prop="location_id" label="库位ID" width="110" />
+          <el-table-column prop="quantity" label="数量" width="80" />
+          <el-table-column prop="before_qty" label="调整前" width="80" />
+          <el-table-column prop="after_qty" label="调整后" width="80" />
+          <el-table-column label="资源权益" min-width="150">
+            <template #default="{ row }">{{ parseResourceTypesText(row.resource_types) }}</template>
+          </el-table-column>
+          <el-table-column prop="remark" label="备注" min-width="150" show-overflow-tooltip />
+        </el-table>
+      </div>
+      <template #footer>
+        <el-button @click="batchDetailVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -1201,6 +1316,7 @@
 import { ref, reactive, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import * as XLSX from 'xlsx'
 import api from '../api'
 import { getStoreId, hasRole, isStoreUser } from '../utils/user'
 import SnTrace from './SnTrace.vue'
@@ -1274,6 +1390,26 @@ const snPriceHistoryVisible = ref(false)
 const snPriceHistoryLoading = ref(false)
 const snPriceHistorySnCode = ref('')
 const snPriceHistoryData = ref([])
+
+// 批量维护
+const canReviewBatch = computed(() => hasRole(['admin']))
+const batchApplications = ref([])
+const batchTotal = ref(0)
+const batchLoading = ref(false)
+const batchImportLoading = ref(false)
+const batchDetailVisible = ref(false)
+const currentBatchApplication = ref(null)
+const batchForm = reactive({
+  operationType: 'INBOUND',
+  triggerResourceRights: false,
+  remark: ''
+})
+const batchQuery = reactive({
+  page: 1,
+  pageSize: 20,
+  status: '',
+  operationType: ''
+})
 
 // 入库单
 const inboundList = ref([])
@@ -1524,6 +1660,10 @@ const onTabChange = (tabName) => {
     if (snInventoryData.value.length === 0) {
       loadSnInventory()
     }
+  } else if (tabName === 'batch-maintenance') {
+    if (batchApplications.value.length === 0) {
+      loadBatchApplications()
+    }
   } else if (tabName === 'transfer') {
     if (transferOutList.value.length === 0 && transferInList.value.length === 0) {
       loadTransferLists()
@@ -1620,6 +1760,136 @@ const loadSnInventory = async () => {
     ElMessage.error(err.response?.data?.message || '加载SN库存清单失败')
   } finally {
     snInventoryLoading.value = false
+  }
+}
+
+const batchOperationText = (type) => ({
+  INBOUND: '批量入库',
+  OUTBOUND: '批量出库',
+  ADJUST: '数量调整'
+})[type] || type || '-'
+
+const batchStatusText = (status) => ({
+  pending: '待审批',
+  executed: '已执行',
+  rejected: '已拒绝'
+})[status] || status || '-'
+
+const batchStatusType = (status) => ({
+  pending: 'warning',
+  executed: 'success',
+  rejected: 'info'
+})[status] || ''
+
+const parseResourceTypesText = (value) => {
+  if (!value) return '-'
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) && parsed.length ? parsed.join('、') : '-'
+  } catch (err) {
+    return String(value)
+  }
+}
+
+const loadBatchApplications = async () => {
+  batchLoading.value = true
+  try {
+    const res = await api.getInventoryBatchApplications(batchQuery)
+    if (res.code === 0) {
+      batchApplications.value = res.data?.list || []
+      batchTotal.value = res.data?.pagination?.total || res.data?.total || 0
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载批量维护申请失败')
+  } finally {
+    batchLoading.value = false
+  }
+}
+
+const downloadBatchTemplate = () => {
+  const baseHeaders = ['门店ID', '门店', '商品编码', '商品名称', 'PN', 'SN', '库位ID', '库位', '库存类型', '数量', '资源权益', '入库单价', '原始提货价', '备注']
+  const example = {
+    门店ID: stores.value[0]?.store_id || '',
+    门店: stores.value[0]?.name || '',
+    商品编码: '',
+    商品名称: '',
+    PN: '',
+    SN: batchForm.operationType === 'INBOUND' ? 'SN商品必填' : '',
+    库位ID: '',
+    库位: '',
+    库存类型: 'normal_qty',
+    数量: batchForm.operationType === 'ADJUST' ? '正数增加，负数减少' : 1,
+    资源权益: batchForm.operationType === 'ADJUST' ? '' : '例如 GOV_SUBSIDY,SALES_REPORT',
+    入库单价: batchForm.operationType === 'INBOUND' ? 0 : '',
+    原始提货价: batchForm.operationType === 'INBOUND' ? 0 : '',
+    备注: ''
+  }
+  const ws = XLSX.utils.json_to_sheet([example], { header: baseHeaders })
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, '批量维护')
+  XLSX.writeFile(wb, `${batchOperationText(batchForm.operationType)}模板.xlsx`)
+}
+
+const handleBatchFileChange = async (uploadFile) => {
+  const file = uploadFile.raw
+  if (!file) return
+  batchImportLoading.value = true
+  try {
+    const res = await api.importInventoryBatchApplication(file, {
+      operationType: batchForm.operationType,
+      triggerResourceRights: batchForm.operationType === 'OUTBOUND' && batchForm.triggerResourceRights ? 1 : 0,
+      remark: batchForm.remark || ''
+    })
+    if (res.code === 0) {
+      ElMessage.success(res.data?.message || res.message || '批量维护申请已生成')
+      loadBatchApplications()
+    }
+  } catch (err) {
+    const data = err.response?.data?.data
+    const errors = data?.errors || []
+    const first = errors.slice(0, 3).map(item => `第${item.rowNo}行：${item.message}`).join('；')
+    ElMessage.error(first || err.response?.data?.message || '导入校验失败')
+  } finally {
+    batchImportLoading.value = false
+  }
+}
+
+const openBatchDetail = async (row) => {
+  try {
+    const res = await api.getInventoryBatchApplicationDetail(row.application_id)
+    if (res.code === 0) {
+      currentBatchApplication.value = res.data
+      batchDetailVisible.value = true
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载批量维护详情失败')
+  }
+}
+
+const reviewBatch = async (row, action) => {
+  const title = action === 'approve' ? '通过批量维护申请' : '拒绝批量维护申请'
+  try {
+    const { value } = await ElMessageBox.prompt('审批意见', title, {
+      confirmButtonText: action === 'approve' ? '确认通过并执行' : '确认拒绝',
+      cancelButtonText: '取消',
+      inputType: 'textarea',
+      inputPlaceholder: action === 'approve' ? '可选' : '请输入拒绝原因'
+    })
+    if (action === 'reject' && !String(value || '').trim()) {
+      ElMessage.warning('拒绝时必须填写原因')
+      return
+    }
+    const res = await api.reviewInventoryBatchApplication(row.application_id, { action, comment: value || '' })
+    if (res.code === 0) {
+      ElMessage.success(res.data?.message || res.message || '审批完成')
+      loadBatchApplications()
+      if (batchDetailVisible.value && currentBatchApplication.value?.application_id === row.application_id) {
+        batchDetailVisible.value = false
+      }
+    }
+  } catch (err) {
+    if (err === 'cancel' || err === 'close') return
+    ElMessage.error(err.response?.data?.message || '审批失败')
   }
 }
 
@@ -3081,6 +3351,16 @@ const getReturnStatusText = (status) => {
 }
 .filter-bar {
   display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.batch-maintenance-layout {
+  min-width: 0;
+}
+.batch-toolbar {
+  display: flex;
+  align-items: center;
   gap: 12px;
   margin-bottom: 16px;
   flex-wrap: wrap;

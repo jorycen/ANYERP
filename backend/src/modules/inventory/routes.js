@@ -2,6 +2,7 @@
  * 库房管理路由
  */
 const Router = require('koa-router');
+const multer = require('@koa/multer');
 const {
   getList, getSnInventoryList, setSnSpecialPrice, cancelSnSpecialPrice,
   getSnSpecialPriceHistory, getSnList, getInboundList, getInboundDetail,
@@ -12,8 +13,10 @@ const {
 } = require('./controller');
 const { enforceStoreOwnership, requireRole } = require('../../middleware/permission');
 const resourceRights = require('./resourceRights');
+const batchMaintenance = require('./batchMaintenance');
 
 const router = new Router();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 router.get('/list', getList);
 router.get('/sn-inventory-list', getSnInventoryList);
@@ -45,6 +48,10 @@ router.post('/resource-rights/claim', resourceRights.submitClaim);
 router.post('/resource-rights/claim/:changeId/review', resourceRights.reviewClaim);
 router.get('/sn/:snId/resource-rights', resourceRights.snRights);
 router.put('/sn/:snId/resource-rights', resourceRights.saveSnRights);
+router.get('/batch-maintenance', batchMaintenance.listBatchApplications);
+router.post('/batch-maintenance/import', requireRole('manager', 'admin'), upload.single('file'), batchMaintenance.createBatchApplication);
+router.get('/batch-maintenance/:applicationId', batchMaintenance.getBatchApplicationDetail);
+router.post('/batch-maintenance/:applicationId/review', requireRole('admin'), batchMaintenance.reviewBatchApplication);
 router.get('/inbound-list', getInboundList);
 router.get('/inbound-detail/:inboundId', getInboundDetail);
 router.post('/execute-inbound', enforceStoreOwnership, executeInbound);

@@ -1428,6 +1428,7 @@ module.exports = {
   listGoodsTypes, saveGoodsType, deleteGoodsType,
   listResourceSettlements, createManualRebateSettlement, settleResource,
   cancelResourceSettlement, reverseResourceSettlement, createPendingSettlement,
+  findResourceRule, calculatePreSaleRuleAmount,
   initializeSnResourceRightsFromInbound, triggerSaleResourceBenefits,
   lockSaleRights, finishSaleRights, releaseSaleRights
 };

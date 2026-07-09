@@ -612,6 +612,82 @@ const Inventory = sequelize.define('Inventory', {
   pending_qty: { type: DataTypes.INTEGER, defaultValue: 0 }
 }, { tableName: 'T_INVENTORY', timestamps: false, createdAt: false, updatedAt: 'update_time' });
 
+// 库存批量维护申请单。Excel导入只生成申请，审批通过前不改变库存事实。
+const InventoryBatchApplication = sequelize.define('InventoryBatchApplication', {
+  application_id: { type: DataTypes.STRING(32), primaryKey: true },
+  application_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
+  operation_type: { type: DataTypes.STRING(32), allowNull: false },
+  trigger_resource_rights: { type: DataTypes.TINYINT(1), defaultValue: 0 },
+  source_file_name: { type: DataTypes.STRING(255) },
+  store_ids: { type: DataTypes.TEXT },
+  total_rows: { type: DataTypes.INTEGER, defaultValue: 0 },
+  valid_rows: { type: DataTypes.INTEGER, defaultValue: 0 },
+  error_rows: { type: DataTypes.INTEGER, defaultValue: 0 },
+  status: { type: DataTypes.STRING(32), defaultValue: 'pending' },
+  error_json: { type: DataTypes.TEXT },
+  applicant_staff_id: { type: DataTypes.BIGINT(20) },
+  applicant_name: { type: DataTypes.STRING(64) },
+  applicant_distributor_id: { type: DataTypes.STRING(32) },
+  reviewer_staff_id: { type: DataTypes.BIGINT(20) },
+  reviewer_name: { type: DataTypes.STRING(64) },
+  review_comment: { type: DataTypes.STRING(512) },
+  review_time: { type: DataTypes.DATE },
+  execute_time: { type: DataTypes.DATE },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  remark: { type: DataTypes.STRING(512) }
+}, { tableName: 'T_INVENTORY_BATCH_APPLICATION', timestamps: false });
+
+const InventoryBatchApplicationItem = sequelize.define('InventoryBatchApplicationItem', {
+  item_id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true },
+  application_id: { type: DataTypes.STRING(32), allowNull: false },
+  row_no: { type: DataTypes.INTEGER, allowNull: false },
+  operation_type: { type: DataTypes.STRING(32), allowNull: false },
+  product_id: { type: DataTypes.STRING(32) },
+  product_code: { type: DataTypes.STRING(32) },
+  product_name: { type: DataTypes.STRING(255) },
+  need_sn: { type: DataTypes.TINYINT(1), defaultValue: 0 },
+  pn_code: { type: DataTypes.STRING(64) },
+  sn_id: { type: DataTypes.STRING(32) },
+  sn_code: { type: DataTypes.STRING(128) },
+  store_id: { type: DataTypes.STRING(32) },
+  location_id: { type: DataTypes.STRING(32) },
+  inventory_type: { type: DataTypes.STRING(32), defaultValue: 'normal_qty' },
+  quantity: { type: DataTypes.INTEGER, defaultValue: 0 },
+  before_qty: { type: DataTypes.INTEGER, defaultValue: 0 },
+  after_qty: { type: DataTypes.INTEGER, defaultValue: 0 },
+  unit_price: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  original_pickup_price: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  resource_types: { type: DataTypes.TEXT },
+  trigger_resource_rights: { type: DataTypes.TINYINT(1), defaultValue: 0 },
+  validation_status: { type: DataTypes.STRING(32), defaultValue: 'valid' },
+  error_message: { type: DataTypes.STRING(1000) },
+  raw_json: { type: DataTypes.TEXT },
+  result_json: { type: DataTypes.TEXT },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  remark: { type: DataTypes.STRING(512) }
+}, { tableName: 'T_INVENTORY_BATCH_APPLICATION_ITEM', timestamps: false });
+
+// 非SN商品按批次管理资源权益。
+const NonSnInventoryBatchRight = sequelize.define('NonSnInventoryBatchRight', {
+  right_id: { type: DataTypes.STRING(32), primaryKey: true },
+  application_id: { type: DataTypes.STRING(32), allowNull: false },
+  item_id: { type: DataTypes.BIGINT(20) },
+  product_id: { type: DataTypes.STRING(32), allowNull: false },
+  store_id: { type: DataTypes.STRING(32), allowNull: false },
+  location_id: { type: DataTypes.STRING(32), defaultValue: '' },
+  resource_type: { type: DataTypes.STRING(32), allowNull: false },
+  rule_config_id: { type: DataTypes.STRING(32) },
+  total_quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+  remaining_quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+  amount_per_unit: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  source_type: { type: DataTypes.STRING(32), defaultValue: 'BATCH_INBOUND' },
+  status: { type: DataTypes.STRING(32), defaultValue: 'AVAILABLE' },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  remark: { type: DataTypes.STRING(512) }
+}, { tableName: 'T_NON_SN_INVENTORY_BATCH_RIGHT', timestamps: false });
+
 // ----------------------------------------
 // 采购模型
 // ----------------------------------------
@@ -1668,6 +1744,15 @@ InventoryConversionItem.belongsTo(InventoryConversion, { foreignKey: 'conversion
 Product.hasMany(InventoryConversionItem, { foreignKey: 'product_id', sourceKey: 'product_id' });
 InventoryConversionItem.belongsTo(Product, { foreignKey: 'product_id', targetKey: 'product_id' });
 
+InventoryBatchApplication.hasMany(InventoryBatchApplicationItem, { foreignKey: 'application_id', sourceKey: 'application_id', as: 'items' });
+InventoryBatchApplicationItem.belongsTo(InventoryBatchApplication, { foreignKey: 'application_id', targetKey: 'application_id' });
+Store.hasMany(InventoryBatchApplicationItem, { foreignKey: 'store_id', sourceKey: 'store_id' });
+InventoryBatchApplicationItem.belongsTo(Store, { foreignKey: 'store_id', targetKey: 'store_id' });
+Product.hasMany(InventoryBatchApplicationItem, { foreignKey: 'product_id', sourceKey: 'product_id' });
+InventoryBatchApplicationItem.belongsTo(Product, { foreignKey: 'product_id', targetKey: 'product_id' });
+InventoryBatchApplication.hasMany(NonSnInventoryBatchRight, { foreignKey: 'application_id', sourceKey: 'application_id', as: 'nonSnRights' });
+NonSnInventoryBatchRight.belongsTo(InventoryBatchApplication, { foreignKey: 'application_id', targetKey: 'application_id' });
+
 // 订单关联
 Store.hasMany(Order, { foreignKey: 'store_id', sourceKey: 'store_id' });
 Order.belongsTo(Store, { foreignKey: 'store_id', targetKey: 'store_id' });
@@ -1848,6 +1933,9 @@ module.exports = {
   TransferItem,
   InventoryConversion,
   InventoryConversionItem,
+  InventoryBatchApplication,
+  InventoryBatchApplicationItem,
+  NonSnInventoryBatchRight,
   ReturnStock,
   ReturnStockItem,
   DailyStatement,

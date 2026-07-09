@@ -180,6 +180,17 @@ export default {
   getConversionDetail: (id) => api.get(`/inventory/conversion/${id}`),
   createConversion: (data) => api.post('/inventory/conversion', data),
   voidConversion: (id, data) => api.post(`/inventory/conversion/${id}/void`, data),
+  getInventoryBatchApplications: (params) => api.get('/inventory/batch-maintenance', { params }),
+  getInventoryBatchApplicationDetail: (id) => api.get(`/inventory/batch-maintenance/${id}`),
+  importInventoryBatchApplication: (file, data) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    Object.entries(data || {}).forEach(([key, value]) => formData.append(key, value));
+    return api.post('/inventory/batch-maintenance/import', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+  },
+  reviewInventoryBatchApplication: (id, data) => api.post(`/inventory/batch-maintenance/${id}/review`, data),
 
   // Purchase
   getPurchaseRequestList: (params) => api.get('/purchase/request-list', { params }),
