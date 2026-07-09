@@ -3,7 +3,6 @@ import tempfile
 from pathlib import Path
 
 from flask import Flask, jsonify, request
-from paddleocr import PaddleOCR
 
 from coupon_parser import parse_coupon_code
 
@@ -17,6 +16,9 @@ _ocr = None
 def get_ocr():
     global _ocr
     if _ocr is None:
+        from paddleocr import PaddleOCR
+
+        app.logger.info("Initializing PaddleOCR")
         _ocr = PaddleOCR(
             use_angle_cls=True,
             lang=os.getenv("OCR_LANG", "ch"),
