@@ -484,7 +484,7 @@
     <el-dialog v-model="priceImportDialogVisible" title="批量导入定价" width="700px">
       <div class="import-tips">
         <p>填写商品编码或厂商编码，二者任填一个即可。厂商编码对应多个商品时会同步更新全部商品。</p>
-        <p>可更新定价、零售价和最低售价；零售价会作为销售默认价。生效时间为空表示立即生效。点击立即导入时校验，异常记录跳过，正常记录直接导入。</p>
+        <p>可更新定价、零售价和最低售价；空价格按0导入并立即生效。成本不在定价模板中维护，请使用刷新成本。</p>
         <el-button type="primary" size="small" @click="downloadPriceTemplate">下载定价模板</el-button>
       </div>
       <div class="upload-area">
@@ -1200,14 +1200,13 @@ const downloadPriceTemplate = () => {
     '定价': '',
     '零售价': '',
     '最低售价': '',
-    '生效时间': '',
     '调价原因': '',
     '备注': ''
   }]
   const ws = XLSX.utils.json_to_sheet(data)
   const wb = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb, ws, '定价模板')
-  ws['!cols'] = [{ wch: 16 }, { wch: 18 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 20 }, { wch: 18 }, { wch: 24 }]
+  ws['!cols'] = [{ wch: 16 }, { wch: 18 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 24 }]
   XLSX.writeFile(wb, '商品定价导入模板.xlsx')
 }
 

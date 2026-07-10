@@ -1297,71 +1297,92 @@ function getInventoryQty(inv) {
   ) + Number(inv.display_qty || 0) + Number(inv.demo_qty || 0) + Number(inv.unsellable_qty || 0);
 }
 
-// 计算当前库存成本价（按库存商品采购/入库价加权平均）
+function fifoRemainingAverageCost(layers, currentStockQty) {
+  let remaining = Number(currentStockQty || 0);
+  let totalCost = 0;
+  let totalQty = 0;
+
+  for (const layer of layers) {
+    if (remaining <= 0) break;
+    const price = Number(layer.unit_price || layer.UNIT_PRICE || 0);
+    const qty = Number(layer.quantity || layer.QUANTITY || 0);
+    if (price <= 0 || qty <= 0) continue;
+    const takeQty = Math.min(qty, remaining);
+    totalCost += takeQty * price;
+    totalQty += takeQty;
+    remaining -= takeQty;
+  }
+
+  if (totalQty <= 0) return 0;
+  return parseFloat((totalCost / totalQty).toFixed(2));
+}
+
+// 计算当前库存平均成本。SN商品按在库SN个别成本平均；非SN商品按FIFO剩余成本层平均。
 async function calculateFifoCost(productId) {
   const { sequelize } = require('../../models');
+  const product = await Product.findOne({ where: { product_id: productId, is_deleted: 0 }, raw: true });
+  if (!product) return 0;
+
+  if (Number(product.need_sn || 0) === 1) {
+    const snCost = await ProductSn.findOne({
+      where: {
+        product_id: productId,
+        status: 'in_stock',
+        is_deleted: 0,
+        inbound_price: { [Op.gt]: 0 }
+      },
+      attributes: [
+        [Sequelize.fn('SUM', Sequelize.col('inbound_price')), 'total_amount'],
+        [Sequelize.fn('COUNT', Sequelize.col('sn_id')), 'total_qty']
+      ],
+      raw: true
+    });
+    const snQty = Number(snCost?.total_qty || 0);
+    if (snQty <= 0) return 0;
+    return parseFloat((Number(snCost.total_amount || 0) / snQty).toFixed(2));
+  }
 
   const inventoryRows = await Inventory.findAll({
     where: { product_id: productId },
     raw: true
   });
   const currentStockQty = inventoryRows.reduce((sum, inv) => sum + getInventoryQty(inv), 0);
-  if (currentStockQty <= 0) {
-    return 0;
-  }
-
-  const snCost = await ProductSn.findOne({
-    where: {
-      product_id: productId,
-      status: 'in_stock',
-      is_deleted: 0,
-      inbound_price: { [Op.gt]: 0 }
-    },
-    attributes: [
-      [Sequelize.fn('SUM', Sequelize.col('inbound_price')), 'total_amount'],
-      [Sequelize.fn('COUNT', Sequelize.col('sn_id')), 'total_qty']
-    ],
-    raw: true
-  });
-  const snQty = Number(snCost?.total_qty || 0);
-  if (snQty > 0) {
-    return parseFloat((Number(snCost.total_amount || 0) / snQty).toFixed(2));
-  }
+  if (currentStockQty <= 0) return 0;
 
   const batches = await sequelize.query(`
-    SELECT 
-      ii.UNIT_PRICE,
-      ii.QUANTITY,
-      i.INBOUND_NO,
-      i.CREATE_TIME
-    FROM T_INBOUND_ITEM ii
-    JOIN T_INBOUND i ON ii.INBOUND_ID = i.INBOUND_ID
-    WHERE ii.PRODUCT_ID = ?
-      AND i.STATUS IN ('completed', 'executed')
-      AND ii.UNIT_PRICE > 0
-      AND ii.QUANTITY > 0
-    ORDER BY i.CREATE_TIME ASC
+    SELECT unit_price, quantity, create_time FROM (
+      SELECT 
+        ii.UNIT_PRICE AS unit_price,
+        ii.QUANTITY AS quantity,
+        i.CREATE_TIME AS create_time
+      FROM T_INBOUND_ITEM ii
+      JOIN T_INBOUND i ON ii.INBOUND_ID = i.INBOUND_ID
+      WHERE ii.PRODUCT_ID = ?
+        AND i.STATUS IN ('completed', 'executed')
+        AND COALESCE(ii.SN_CODE, '') = ''
+        AND ii.UNIT_PRICE > 0
+        AND ii.QUANTITY > 0
+      UNION ALL
+      SELECT
+        item.UNIT_PRICE AS unit_price,
+        item.QUANTITY AS quantity,
+        COALESCE(app.EXECUTE_TIME, item.CREATE_TIME, app.CREATE_TIME) AS create_time
+      FROM T_INVENTORY_BATCH_APPLICATION_ITEM item
+      JOIN T_INVENTORY_BATCH_APPLICATION app ON item.APPLICATION_ID = app.APPLICATION_ID
+      WHERE item.PRODUCT_ID = ?
+        AND app.STATUS = 'executed'
+        AND item.OPERATION_TYPE = 'INBOUND'
+        AND COALESCE(item.NEED_SN, 0) = 0
+        AND item.UNIT_PRICE > 0
+        AND item.QUANTITY > 0
+    ) layers
+    ORDER BY create_time DESC
   `, {
-    replacements: [productId],
+    replacements: [productId, productId],
     type: sequelize.QueryTypes.SELECT
   });
 
-  if (!batches || batches.length === 0) {
-    return 0;
-  }
-
-  let totalWeighted = 0;
-  let totalQty = 0;
-
-  for (const batch of batches) {
-    const price = parseFloat(batch.UNIT_PRICE);
-    const qty = parseInt(batch.QUANTITY);
-    totalWeighted += price * qty;
-    totalQty += qty;
-  }
-
-  if (totalQty === 0) return 0;
-  return parseFloat((totalWeighted / totalQty).toFixed(2));
+  return fifoRemainingAverageCost(batches || [], currentStockQty);
 }
 
 async function refreshCostPrice(ctx) {
@@ -1447,27 +1468,22 @@ async function validatePriceImportRows(rows) {
     const standardRaw = getRowValue(row, ['定价', '标准售价', '销售定价', 'standard_price', 'standardPrice']);
     const retailRaw = getRowValue(row, ['零售价', '销售价', 'retail_price', 'retailPrice']);
     const minRaw = getRowValue(row, ['最低售价', '最低销售价', 'min_sale_price', 'minSalePrice']);
-    const effectiveRaw = getRowValue(row, ['生效时间', '生效日期', 'effective_time', 'effectiveTime']);
     const changeReason = String(getRowValue(row, ['调价原因', '原因', 'change_reason', 'reason']) || '').trim();
     const remark = String(getRowValue(row, ['备注', 'remark']) || '').trim();
 
-    const hasStandardPrice = !isEmptyCell(standardRaw);
-    const hasRetailPrice = !isEmptyCell(retailRaw);
-    const hasMinSalePrice = !isEmptyCell(minRaw);
-    const standardPrice = hasStandardPrice ? parseMoney(standardRaw) : null;
-    const retailPrice = hasRetailPrice ? parseMoney(retailRaw) : null;
-    const minSalePrice = hasMinSalePrice ? parseMoney(minRaw) : null;
-    const effectiveTime = parseExcelDate(effectiveRaw);
+    const hasStandardPrice = true;
+    const hasRetailPrice = true;
+    const hasMinSalePrice = true;
+    const standardPrice = isEmptyCell(standardRaw) ? 0 : parseMoney(standardRaw);
+    const retailPrice = isEmptyCell(retailRaw) ? 0 : parseMoney(retailRaw);
+    const minSalePrice = isEmptyCell(minRaw) ? 0 : parseMoney(minRaw);
+    const effectiveTime = new Date();
 
     if (!productCode && !manufacturerCode) {
       errors.push({ row: rowNo, product: row, message: '请填写商品编码或厂商编码' });
       continue;
     }
-    if (!hasStandardPrice && !hasRetailPrice && !hasMinSalePrice) {
-      errors.push({ row: rowNo, product: row, message: '请至少填写定价、零售价或最低售价' });
-      continue;
-    }
-    if ((hasStandardPrice && standardPrice === null) || (hasRetailPrice && retailPrice === null) || (hasMinSalePrice && minSalePrice === null)) {
+    if (standardPrice === null || retailPrice === null || minSalePrice === null) {
       errors.push({ row: rowNo, product: row, message: '价格格式错误' });
       continue;
     }
@@ -1475,11 +1491,6 @@ async function validatePriceImportRows(rows) {
       errors.push({ row: rowNo, product: row, message: '价格不能为负数' });
       continue;
     }
-    if (!effectiveTime) {
-      errors.push({ row: rowNo, product: row, message: '生效时间格式错误' });
-      continue;
-    }
-
     let matchedProducts = [];
     if (productCode) {
       const product = await Product.findOne({

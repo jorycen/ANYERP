@@ -193,27 +193,7 @@
         <el-tab-pane label="批量维护" name="batch-maintenance">
           <div class="batch-maintenance-layout">
             <div class="batch-toolbar">
-              <el-select v-model="batchForm.operationType" placeholder="操作类型" style="width: 140px">
-                <el-option label="批量入库" value="INBOUND" />
-                <el-option label="批量出库" value="OUTBOUND" />
-                <el-option label="数量调整" value="ADJUST" />
-              </el-select>
-              <el-switch
-                v-model="batchForm.triggerResourceRights"
-                :disabled="batchForm.operationType !== 'OUTBOUND'"
-                active-text="出库触发权益"
-                inactive-text="仅处理库存"
-              />
-              <el-input v-model="batchForm.remark" placeholder="备注" clearable style="width: 240px" />
-              <el-button @click="downloadBatchTemplate">下载模板</el-button>
-              <el-upload
-                :auto-upload="false"
-                :show-file-list="false"
-                accept=".xlsx,.xls"
-                :on-change="handleBatchFileChange"
-              >
-                <el-button type="primary" :loading="batchImportLoading">导入生成申请</el-button>
-              </el-upload>
+              <el-button type="primary" @click="openBatchImportDialog">导入生成申请</el-button>
             </div>
 
             <div class="filter-bar">
@@ -1282,6 +1262,98 @@
       </div>
     </el-dialog>
 
+    <el-dialog v-model="batchImportDialogVisible" title="批量维护导入" width="760px">
+      <el-form :model="batchForm" label-width="96px">
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="操作类型" required>
+              <el-select v-model="batchForm.operationType" style="width: 100%">
+                <el-option label="批量入库" value="INBOUND" />
+                <el-option label="批量出库" value="OUTBOUND" />
+                <el-option label="数量调整" value="ADJUST" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="导入类型" required>
+              <el-radio-group v-model="batchForm.importMode">
+                <el-radio-button v-for="item in batchImportModeOptions" :key="item.value" :label="item.value">{{ item.label }}</el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="统一仓位" required>
+              <el-select v-model="batchForm.inventoryType" style="width: 100%">
+                <el-option v-for="item in INVENTORY_TYPES" :key="item.value" :label="item.label" :value="item.value" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="资源权益" :required="batchForm.operationType === 'INBOUND' || (batchForm.operationType === 'OUTBOUND' && batchForm.triggerResourceRights)">
+              <el-select v-model="batchForm.resourceTypes" multiple collapse-tags collapse-tags-tooltip clearable style="width: 100%">
+                <el-option v-for="resource in snInventoryResourceOptions" :key="resource.value" :label="resource.label" :value="resource.value" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="出库权益">
+              <el-switch
+                v-model="batchForm.triggerResourceRights"
+                :disabled="batchForm.operationType !== 'OUTBOUND'"
+                active-text="触发"
+                inactive-text="不触发"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="备注">
+              <el-input v-model="batchForm.remark" clearable />
+            </el-form-item>
+          </el-col>
+        </el-row>
+      </el-form>
+
+      <div class="import-tips">
+        <el-button type="primary" size="small" @click="downloadBatchTemplate">下载当前模板</el-button>
+      </div>
+      <div class="upload-area">
+        <el-upload :auto-upload="false" :show-file-list="false" accept=".xlsx,.xls" :on-change="handleBatchFileChange" drag>
+          <el-icon class="el-icon--upload"><Upload /></el-icon>
+          <div class="el-upload__text">将文件拖到此处，或 <em>点击上传</em></div>
+        </el-upload>
+        <div v-if="batchImportFile" class="selected-file">
+          <el-tag closable @close="clearBatchImportFile">{{ batchImportFile.name }}</el-tag>
+        </div>
+      </div>
+
+      <el-alert
+        v-if="batchImportResult.visible"
+        :type="batchImportResult.failed > 0 ? 'warning' : 'success'"
+        :closable="false"
+        style="margin-top: 16px;"
+      >
+        导入完成：成功 <strong>{{ batchImportResult.success }}</strong> 行，
+        异常 <strong>{{ batchImportResult.failed }}</strong> 行
+      </el-alert>
+      <el-table
+        v-if="batchImportErrors.length > 0"
+        :data="batchImportErrors"
+        stripe
+        size="small"
+        max-height="240"
+        style="margin-top: 12px;"
+      >
+        <el-table-column prop="rowNo" label="行号" width="90" />
+        <el-table-column prop="message" label="异常原因" min-width="220" />
+      </el-table>
+
+      <template #footer>
+        <el-button @click="batchImportDialogVisible = false">关闭</el-button>
+        <el-button v-if="batchImportErrors.length > 0" @click="downloadBatchImportErrors">下载异常记录</el-button>
+        <el-button type="primary" :loading="batchImportLoading" :disabled="!batchImportFile" @click="submitBatchImport">立即导入</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="batchDetailVisible" title="批量维护申请详情" width="980px">
       <div v-if="currentBatchApplication">
         <el-descriptions :column="3" border>
@@ -1403,13 +1475,24 @@ const batchApplications = ref([])
 const batchTotal = ref(0)
 const batchLoading = ref(false)
 const batchImportLoading = ref(false)
+const batchImportDialogVisible = ref(false)
+const batchImportFile = ref(null)
+const batchImportErrors = ref([])
+const batchImportResult = reactive({ visible: false, success: 0, failed: 0 })
 const batchDetailVisible = ref(false)
 const currentBatchApplication = ref(null)
 const batchForm = reactive({
   operationType: 'INBOUND',
+  importMode: 'SN',
+  inventoryType: 'normal_qty',
+  resourceTypes: [],
   triggerResourceRights: false,
   remark: ''
 })
+const batchImportModeOptions = [
+  { label: 'SN商品', value: 'SN' },
+  { label: '非SN商品', value: 'NON_SN' }
+]
 const batchQuery = reactive({
   page: 1,
   pageSize: 20,
@@ -1812,52 +1895,118 @@ const loadBatchApplications = async () => {
   }
 }
 
+const openBatchImportDialog = async () => {
+  batchImportDialogVisible.value = true
+  batchImportFile.value = null
+  batchImportErrors.value = []
+  batchImportResult.visible = false
+  batchImportResult.success = 0
+  batchImportResult.failed = 0
+  if (snInventoryResourceOptions.value.length === 0) {
+    await loadSnInventoryResourceOptions()
+  }
+}
+
 const downloadBatchTemplate = () => {
-  const baseHeaders = ['门店ID', '门店', '商品编码', '商品名称', 'PN', 'SN', '库位ID', '库位', '库存类型', '数量', '资源权益', '入库单价', '原始提货价', '备注']
-  const example = {
+  const isSn = batchForm.importMode === 'SN'
+  const baseHeaders = isSn
+    ? ['门店ID', '商品编码', 'PN', 'SN', '提货价', '备注']
+    : ['门店ID', '商品编码', 'PN', '数量', '提货价', '备注']
+  const example = isSn ? {
     门店ID: stores.value[0]?.store_id || '',
-    门店: stores.value[0]?.name || '',
     商品编码: '',
-    商品名称: '',
     PN: '',
-    SN: batchForm.operationType === 'INBOUND' ? 'SN商品必填' : '',
-    库位ID: '',
-    库位: '',
-    库存类型: 'normal_qty',
+    SN: 'SN商品必填',
+    提货价: batchForm.operationType === 'INBOUND' ? 0 : '',
+    备注: ''
+  } : {
+    门店ID: stores.value[0]?.store_id || '',
+    商品编码: '',
+    PN: '',
     数量: batchForm.operationType === 'ADJUST' ? '正数增加，负数减少' : 1,
-    资源权益: batchForm.operationType === 'ADJUST' ? '' : '例如 GOV_SUBSIDY,SALES_REPORT',
-    入库单价: batchForm.operationType === 'INBOUND' ? 0 : '',
-    原始提货价: batchForm.operationType === 'INBOUND' ? 0 : '',
+    提货价: batchForm.operationType === 'INBOUND' ? 0 : '',
     备注: ''
   }
   const ws = XLSX.utils.json_to_sheet([example], { header: baseHeaders })
   const wb = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb, ws, '批量维护')
-  XLSX.writeFile(wb, `${batchOperationText(batchForm.operationType)}模板.xlsx`)
+  XLSX.writeFile(wb, `${batchOperationText(batchForm.operationType)}_${isSn ? 'SN商品' : '非SN商品'}模板.xlsx`)
 }
 
 const handleBatchFileChange = async (uploadFile) => {
-  const file = uploadFile.raw
-  if (!file) return
+  batchImportFile.value = uploadFile.raw || null
+  batchImportErrors.value = []
+  batchImportResult.visible = false
+}
+
+const clearBatchImportFile = () => {
+  batchImportFile.value = null
+  batchImportErrors.value = []
+  batchImportResult.visible = false
+}
+
+const validateBatchImportForm = () => {
+  if (!batchForm.operationType) return '请选择操作类型'
+  if (!batchForm.importMode) return '请选择导入类型'
+  if (!batchForm.inventoryType) return '请选择统一仓位'
+  if ((batchForm.operationType === 'INBOUND' || (batchForm.operationType === 'OUTBOUND' && batchForm.triggerResourceRights)) && batchForm.resourceTypes.length === 0) {
+    return '请选择资源权益'
+  }
+  if (!batchImportFile.value) return '请选择导入文件'
+  return ''
+}
+
+const submitBatchImport = async () => {
+  const message = validateBatchImportForm()
+  if (message) {
+    ElMessage.warning(message)
+    return
+  }
   batchImportLoading.value = true
   try {
-    const res = await api.importInventoryBatchApplication(file, {
+    const res = await api.importInventoryBatchApplication(batchImportFile.value, {
       operationType: batchForm.operationType,
+      importMode: batchForm.importMode,
+      inventoryType: batchForm.inventoryType,
+      resourceTypes: (batchForm.operationType === 'INBOUND' || (batchForm.operationType === 'OUTBOUND' && batchForm.triggerResourceRights)) ? batchForm.resourceTypes.join(',') : '',
       triggerResourceRights: batchForm.operationType === 'OUTBOUND' && batchForm.triggerResourceRights ? 1 : 0,
       remark: batchForm.remark || ''
     })
     if (res.code === 0) {
-      ElMessage.success(res.data?.message || res.message || '批量维护申请已生成')
+      const data = res.data || {}
+      batchImportErrors.value = data.errors || []
+      batchImportResult.visible = true
+      batchImportResult.success = data.validRows || 0
+      batchImportResult.failed = data.errorRows || 0
+      ElMessage.success(data.message || res.message || '批量维护申请已生成')
+      if (batchImportResult.failed === 0) batchImportDialogVisible.value = false
+      batchImportFile.value = null
       loadBatchApplications()
     }
   } catch (err) {
     const data = err.response?.data?.data
-    const errors = data?.errors || []
-    const first = errors.slice(0, 3).map(item => `第${item.rowNo}行：${item.message}`).join('；')
-    ElMessage.error(first || err.response?.data?.message || '导入校验失败')
+    batchImportErrors.value = data?.errors || []
+    batchImportResult.visible = batchImportErrors.value.length > 0
+    batchImportResult.success = 0
+    batchImportResult.failed = batchImportErrors.value.length
+    const first = batchImportErrors.value.slice(0, 3).map(item => `第${item.rowNo}行：${item.message}`).join('；')
+    ElMessage.error(first || err.response?.data?.message || '导入失败')
   } finally {
     batchImportLoading.value = false
   }
+}
+
+const downloadBatchImportErrors = () => {
+  if (batchImportErrors.value.length === 0) return
+  const rows = batchImportErrors.value.map(item => ({
+    行号: item.rowNo,
+    异常原因: item.message,
+    ...(item.raw || {})
+  }))
+  const ws = XLSX.utils.json_to_sheet(rows)
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, '异常记录')
+  XLSX.writeFile(wb, '批量维护导入异常记录.xlsx')
 }
 
 const openBatchDetail = async (row) => {

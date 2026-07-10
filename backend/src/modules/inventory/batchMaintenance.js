@@ -142,7 +142,11 @@ async function resolveStore(row, transaction) {
   return null;
 }
 
-async function resolveLocation(row, storeId, transaction) {
+async function resolveLocation(row, storeId, transaction, preferredType = '') {
+  const locationType = normalizeText(preferredType);
+  if (locationType) {
+    return Location.findOne({ where: { store_id: storeId, type: locationType, status: 1 }, transaction });
+  }
   const locationId = normalizeText(getCell(row, ['库位ID', 'locationId', 'location_id']));
   const locationName = normalizeText(getCell(row, ['库位', '库位名称', 'locationName', 'location_name']));
   if (!locationId && !locationName) return null;
@@ -187,7 +191,18 @@ async function updateInventoryQty(productId, storeId, inventoryType, delta, tran
   return { before: current, after: next };
 }
 
-async function validateRows(ctx, rows, operationType, triggerResourceRights, transaction) {
+async function validateRows(ctx, rows, options, transaction) {
+  if (typeof options === 'string') {
+    options = { operationType: options, triggerResourceRights: arguments[3] };
+    transaction = arguments[4];
+  }
+  const {
+    operationType,
+    triggerResourceRights,
+    importMode = '',
+    inventoryType: batchInventoryType = '',
+    resourceTypes: batchResourceTypes = []
+  } = options;
   const validRows = [];
   const errors = [];
   const seenSn = new Set();
@@ -197,18 +212,22 @@ async function validateRows(ctx, rows, operationType, triggerResourceRights, tra
     const rowErrors = [];
     const product = await resolveProduct(row, transaction);
     const store = await resolveStore(row, transaction);
-    const location = store ? await resolveLocation(row, store.store_id, transaction) : null;
-    const inventoryType = normalizeText(getCell(row, ['库存类型', 'inventoryType', 'inventory_type'])) || 'normal_qty';
+    const inventoryType = batchInventoryType || normalizeText(getCell(row, ['库存类型', 'inventoryType', 'inventory_type'])) || 'normal_qty';
+    const location = store ? await resolveLocation(row, store.store_id, transaction, batchInventoryType) : null;
     const snCode = normalizeText(getCell(row, ['SN', 'sn', 'snCode', 'sn_code']));
     const pnCode = normalizeText(getCell(row, ['PN', 'pn', 'pnCode', 'pn_code']));
-    const resourceTypes = normalizeResourceTypes(getCell(row, ['资源权益', '资源类型', 'resourceTypes', 'resource_types']));
-    const unitPrice = numberValue(getCell(row, ['入库单价', '单价', 'unitPrice', 'unit_price']), 0);
-    const originalPickupPrice = numberValue(getCell(row, ['原始提货价', 'originalPickupPrice', 'original_pickup_price']), unitPrice);
+    const resourceTypes = batchResourceTypes.length > 0
+      ? batchResourceTypes
+      : normalizeResourceTypes(getCell(row, ['资源权益', '资源类型', 'resourceTypes', 'resource_types']));
+    const unitPrice = numberValue(getCell(row, ['提货价', '采购价', '入库单价', '单价', 'unitPrice', 'unit_price']), 0);
+    const originalPickupPrice = numberValue(getCell(row, ['原始提货价', '提货价', '采购价', 'originalPickupPrice', 'original_pickup_price']), unitPrice);
     const quantityRaw = getCell(row, ['数量', '调整数量', 'quantity', 'qty']);
-    const quantity = intValue(quantityRaw, operationType === 'ADJUST' ? 0 : 1);
+    const quantity = product && Number(product.need_sn || 0) === 1 ? 1 : intValue(quantityRaw, operationType === 'ADJUST' ? 0 : 1);
 
     if (!product) rowErrors.push('商品不存在，请填写有效商品ID、商品编码、PN或商品名称');
     if (product && Number(product.status || 1) !== 1) rowErrors.push('商品已停用');
+    if (product && importMode === 'SN' && Number(product.need_sn || 0) !== 1) rowErrors.push('当前导入模式为SN商品，但该商品不需要SN管理');
+    if (product && importMode === 'NON_SN' && Number(product.need_sn || 0) === 1) rowErrors.push('当前导入模式为非SN商品，但该商品需要SN管理');
     if (!store) rowErrors.push('门店不存在或已停用');
     if (store) {
       try {
@@ -223,7 +242,7 @@ async function validateRows(ctx, rows, operationType, triggerResourceRights, tra
     if ((operationType === 'INBOUND' || (operationType === 'OUTBOUND' && triggerResourceRights)) && resourceTypes.length === 0) {
       rowErrors.push(operationType === 'INBOUND' ? '入库必须填写资源权益' : '出库触发权益时必须填写资源权益');
     }
-    if ((getCell(row, ['库位ID', '库位', '库位名称']) || '') && !location) rowErrors.push('库位不存在或不属于该门店');
+    if (!location) rowErrors.push(batchInventoryType ? '所选仓位在该门店不存在或已停用' : '库位不存在或不属于该门店');
 
     let sn = null;
     if (product && Number(product.need_sn || 0) === 1) {
@@ -294,8 +313,13 @@ async function createBatchApplication(ctx) {
   const operationType = normalizeText(ctx.request.body.operationType || ctx.request.body.operation_type).toUpperCase();
   const triggerResourceRights = String(ctx.request.body.triggerResourceRights || ctx.request.body.trigger_resource_rights || '') === 'true'
     || Number(ctx.request.body.triggerResourceRights || ctx.request.body.trigger_resource_rights || 0) === 1;
+  const importMode = normalizeText(ctx.request.body.importMode || ctx.request.body.import_mode).toUpperCase();
+  const inventoryType = normalizeText(ctx.request.body.inventoryType || ctx.request.body.inventory_type || ctx.request.body.locationType || ctx.request.body.location_type);
+  const resourceTypes = normalizeResourceTypes(ctx.request.body.resourceTypes || ctx.request.body.resource_types || '');
 
   if (!VALID_OPERATION_TYPES.has(operationType)) ctx.throw(400, '批量操作类型无效');
+  if (importMode && !['SN', 'NON_SN'].includes(importMode)) ctx.throw(400, '导入模式无效');
+  if (inventoryType && !VALID_INVENTORY_TYPES.has(inventoryType)) ctx.throw(400, '仓位类型无效');
   if (!ctx.file?.buffer) ctx.throw(400, '请上传Excel文件');
 
   const rows = parseWorkbook(ctx.file.buffer);
@@ -303,11 +327,17 @@ async function createBatchApplication(ctx) {
 
   const transaction = await sequelize.transaction();
   try {
-    const { validRows, errors } = await validateRows(ctx, rows, operationType, triggerResourceRights, transaction);
-    if (errors.length > 0) {
+    const { validRows, errors } = await validateRows(ctx, rows, {
+      operationType,
+      triggerResourceRights,
+      importMode,
+      inventoryType,
+      resourceTypes
+    }, transaction);
+    if (validRows.length === 0) {
       await transaction.rollback();
       ctx.status = 400;
-      ctx.body = { code: 400, message: '导入校验失败，整批未生成申请', data: { errors, totalRows: rows.length } };
+      ctx.body = { code: 400, message: '没有可导入的有效数据', data: { errors, totalRows: rows.length } };
       return;
     }
 
@@ -321,7 +351,8 @@ async function createBatchApplication(ctx) {
       store_ids: JSON.stringify(unique(validRows.map(row => row.store.store_id))),
       total_rows: rows.length,
       valid_rows: validRows.length,
-      error_rows: 0,
+      error_rows: errors.length,
+      error_json: JSON.stringify(errors),
       status: 'pending',
       applicant_staff_id: user.staffId || null,
       applicant_name: user.name || '',
@@ -330,7 +361,7 @@ async function createBatchApplication(ctx) {
     }, { transaction });
 
     for (const row of validRows) {
-      const beforeQty = row.product.need_sn ? 1 : await inventoryQty(
+      const beforeQty = row.product.need_sn ? (row.operationType === 'INBOUND' ? 0 : 1) : await inventoryQty(
         row.product.product_id,
         row.store.store_id,
         row.inventoryType,
@@ -368,7 +399,16 @@ async function createBatchApplication(ctx) {
     }
 
     await transaction.commit();
-    ctx.body = { application: app, message: '批量维护申请已生成，待经销商审批' };
+    ctx.body = {
+      application: app,
+      errors,
+      totalRows: rows.length,
+      validRows: validRows.length,
+      errorRows: errors.length,
+      message: errors.length > 0
+        ? `批量维护申请已生成：成功${validRows.length}行，失败${errors.length}行`
+        : '批量维护申请已生成，待经销商审批'
+    };
   } catch (error) {
     await transaction.rollback();
     throw error;
