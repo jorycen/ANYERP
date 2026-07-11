@@ -1991,7 +1991,8 @@ const submitBatchImport = async () => {
     batchImportResult.success = 0
     batchImportResult.failed = batchImportErrors.value.length
     const first = batchImportErrors.value.slice(0, 3).map(item => `第${item.rowNo}行：${item.message}`).join('；')
-    ElMessage.error(first || err.response?.data?.message || '导入失败')
+    const isTimeout = err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT' || String(err.message || '').includes('timeout')
+    ElMessage.error(first || err.response?.data?.message || (isTimeout ? '导入处理时间较长，请先刷新申请列表确认结果，勿重复提交' : '导入失败'))
   } finally {
     batchImportLoading.value = false
   }

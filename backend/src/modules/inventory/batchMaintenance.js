@@ -220,14 +220,34 @@ async function validateRows(ctx, rows, options, transaction) {
   const validRows = [];
   const errors = [];
   const seenSn = new Set();
+  const productCache = new Map();
+  const storeCache = new Map();
+  const locationCache = new Map();
 
   for (const [index, row] of rows.entries()) {
     const rowNo = index + 2;
     const rowErrors = [];
-    const product = await resolveProduct(row, transaction);
-    const store = await resolveStore(row, transaction);
+    const productKey = ['商品ID', 'productId', 'product_id', '商品编码', 'productCode', 'product_code', '商品名称', 'productName', 'product_name', 'PN', 'pn', 'pnCode', 'pn_code']
+      .map(key => normalizeText(row[key])).join('\u001f');
+    const storeKey = ['门店ID', 'storeId', 'store_id', '门店', '门店名称', 'storeName', 'store_name']
+      .map(key => normalizeText(row[key])).join('\u001f');
+    const product = productCache.has(productKey)
+      ? productCache.get(productKey)
+      : await resolveProduct(row, transaction);
+    const store = storeCache.has(storeKey)
+      ? storeCache.get(storeKey)
+      : await resolveStore(row, transaction);
+    productCache.set(productKey, product);
+    storeCache.set(storeKey, store);
     const inventoryType = batchInventoryType || normalizeText(getCell(row, ['库存类型', 'inventoryType', 'inventory_type'])) || 'normal_qty';
-    const location = store ? await resolveLocation(row, store.store_id, transaction, batchInventoryType) : null;
+    const locationKey = `${store?.store_id || ''}\u001f${batchInventoryType}\u001f${['库位ID', 'locationId', 'location_id', '库位', '库位名称', 'locationName', 'location_name']
+      .map(key => normalizeText(row[key])).join('\u001f')}`;
+    const location = store
+      ? (locationCache.has(locationKey)
+        ? locationCache.get(locationKey)
+        : await resolveLocation(row, store.store_id, transaction, batchInventoryType))
+      : null;
+    locationCache.set(locationKey, location);
     const snCode = normalizeText(getCell(row, ['SN', 'sn', 'snCode', 'sn_code']));
     const pnCode = normalizeText(getCell(row, ['PN', 'pn', 'pnCode', 'pn_code']));
     const resourceTypes = batchResourceTypes.length > 0

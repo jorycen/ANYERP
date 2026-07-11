@@ -187,7 +187,8 @@ export default {
     formData.append('file', file);
     Object.entries(data || {}).forEach(([key, value]) => formData.append(key, value));
     return api.post('/inventory/batch-maintenance/import', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 180000
     });
   },
   reviewInventoryBatchApplication: (id, data) => api.post(`/inventory/batch-maintenance/${id}/review`, data),
