@@ -1638,6 +1638,7 @@ async function transfer(ctx) {
         productId: item.productId,
         snId: null,
         snCode: '',
+        pnCode: item.pnCode || item.pn_code || '',
         quantity,
         productName: product.name
       });
@@ -1663,6 +1664,7 @@ async function transfer(ctx) {
       await TransferItem.create({
         transfer_id: transferId,
         product_id: item.productId,
+        pn_code: item.pnCode || item.pn_code || '',
         sn_id: item.snId || null,
         sn_code: item.snCode || '',
         quantity: item.quantity || 1
@@ -1812,6 +1814,10 @@ async function confirmTransferOut(ctx) {
       const selected = selectedSnByItemId.get(String(item.item_id))
         ? requestedSelections.find(selection => String(selection.itemId) === String(item.item_id))
         : productSelections[0];
+      const selectedPnCode = String(selected?.pnCode || selected?.pn_code || selected?.pn || '').trim();
+      if (!selectedPnCode) {
+        ctx.throw(400, `商品 ${product?.name || item.product_id} 出库时必须选择 PN`);
+      }
       if (selected && String(selected.productId || selected.product_id) !== String(item.product_id)) {
         ctx.throw(400, '出库商品与申请商品不一致');
       }
@@ -1844,12 +1850,16 @@ async function confirmTransferOut(ctx) {
         }
         snId = sn.sn_id;
         snCode = sn.sn_code;
-        await item.update({ sn_id: snId, sn_code: snCode, quantity: 1 }, { transaction: t });
+        await item.update({ pn_code: selectedPnCode, sn_id: snId, sn_code: snCode, quantity: 1 }, { transaction: t });
       } else if (snId) {
         if (selectedSnIds.has(snId)) {
           ctx.throw(400, '同一个SN不能重复选择');
         }
         selectedSnIds.add(snId);
+      }
+
+      if (!item.pn_code || item.pn_code !== selectedPnCode) {
+        await item.update({ pn_code: selectedPnCode }, { transaction: t });
       }
 
       if (selected && selected.productId && String(selected.productId) !== String(item.product_id)) {

@@ -66,7 +66,27 @@ async function getTransferStores(ctx) {
   const user = ctx.state.user || {};
   const where = { is_deleted: 0, status: 1 };
   if (!user.roles?.includes('boss') && user.distributorId) where.distributor_id = user.distributorId;
-  if (!user.roles?.includes('boss') && user.regionId) where.region_id = user.regionId;
+
+  // 以当前登录门店实际所属区域为准，避免员工账号上的 region_id
+  // 与门店区域字段不一致时，只能看到一间门店。
+  if (!user.roles?.includes('boss')) {
+    let currentRegionKeys = [];
+    if (user.storeId) {
+      const currentStore = await Store.findOne({
+        where: { store_id: user.storeId, is_deleted: 0 },
+        attributes: ['region_id'],
+        include: [{ model: Region, attributes: ['region_id', 'region_code', 'name'] }]
+      });
+      currentRegionKeys = [
+        currentStore?.region_id,
+        currentStore?.Region?.region_id,
+        currentStore?.Region?.region_code,
+        currentStore?.Region?.name
+      ].filter(Boolean).map(String);
+    }
+    if (!currentRegionKeys.length && user.regionId) currentRegionKeys = [String(user.regionId)];
+    if (currentRegionKeys.length) where.region_id = { [Op.in]: currentRegionKeys };
+  }
 
   const rows = await Store.findAll({
     where,
