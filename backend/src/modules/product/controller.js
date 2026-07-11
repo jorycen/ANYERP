@@ -1995,6 +1995,16 @@ async function searchProduct(ctx) {
 
   const productIdsFromBarcode = [...new Set(barcodeRecords.map(b => b.product_id))];
 
+  const pnMatches = await ProductPn.findAll({
+    where: {
+      pn_code: { [Op.like]: `%${kw}%` },
+      is_deleted: 0
+    },
+    attributes: ['product_id'],
+    raw: true
+  });
+  const productIdsFromPn = [...new Set(pnMatches.map(row => row.product_id))];
+
   const snRecords = await ProductSn.findAll({
     where: {
       [Op.or]: [
@@ -2018,11 +2028,15 @@ async function searchProduct(ctx) {
   const where = { is_deleted: 0, status: 1 };
   const orConditions = [
     { name: { [Op.like]: `%${kw}%` } },
-    { product_code: { [Op.like]: `%${kw}%` } }
+    { product_code: { [Op.like]: `%${kw}%` } },
+    { manufacturer_code: { [Op.like]: `%${kw}%` } }
   ];
 
   if (productIdsFromBarcode.length > 0) {
     orConditions.push({ product_id: { [Op.in]: productIdsFromBarcode } });
+  }
+  if (productIdsFromPn.length > 0) {
+    orConditions.push({ product_id: { [Op.in]: productIdsFromPn } });
   }
   if (productIdsFromSn.length > 0) {
     orConditions.push({ product_id: { [Op.in]: productIdsFromSn } });
