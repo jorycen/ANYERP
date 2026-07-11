@@ -454,6 +454,15 @@ async function resolveProductApplicationName(body) {
 }
 
 function productApplicationPayload(body, finalName, parsedAttrs) {
+  const submittedBarcodes = Array.isArray(body.barcodes)
+    ? body.barcodes.map(item => ({ type: item.type || 'manufacturer', code: item.code || '' })).filter(item => item.code)
+    : [];
+  const pnCode = String(
+    body.pnCode || body.pn_code || body.pn || body.manufacturerCode || body.manufacturer_code || ''
+  ).trim();
+  if (pnCode && !submittedBarcodes.some(item => String(item.code) === pnCode)) {
+    submittedBarcodes.unshift({ type: 'manufacturer', code: pnCode });
+  }
   return {
     name: finalName,
     categoryId: body.categoryId || null,
@@ -462,7 +471,7 @@ function productApplicationPayload(body, finalName, parsedAttrs) {
     needImei: body.needImei ? 1 : 0,
     unit: body.unit || '台',
     remark: body.remark || '',
-    barcodes: Array.isArray(body.barcodes) ? body.barcodes.map(item => ({ type: item.type || 'manufacturer', code: item.code || '' })).filter(item => item.code) : [],
+    barcodes: submittedBarcodes,
     attributes: parsedAttrs,
     status: 1,
     manufacturerCode: body.manufacturerCode || body.manufacturer_code || '',
@@ -569,6 +578,12 @@ async function submitProductApplication(ctx) {
   const { finalName, parsedAttrs } = await resolveProductApplicationName(ctx.request.body);
   if (!finalName) ctx.throw(400, '商品名称不能为空');
   if (!ctx.request.body.categoryId) ctx.throw(400, '商品分类不能为空');
+  const pnCode = String(
+    ctx.request.body.pnCode || ctx.request.body.pn_code || ctx.request.body.pn ||
+    ctx.request.body.manufacturerCode || ctx.request.body.manufacturer_code ||
+    ((ctx.request.body.barcodes || []).find(item => item && item.code) || {}).code || ''
+  ).trim();
+  if (!pnCode) ctx.throw(400, 'PN码不能为空');
 
   const categoryPath = await resolveCategoryPath(ctx.request.body.categoryId);
   const payload = productApplicationPayload(ctx.request.body, finalName, parsedAttrs);
@@ -609,6 +624,17 @@ async function getProductApplicationList(ctx) {
   const pageSize = Number(ctx.query.pageSize || 20);
   const where = {};
   if (ctx.query.status) where.status = ctx.query.status;
+  const keyword = String(ctx.query.keyword || '').trim();
+  if (keyword) {
+    const keywordLike = `%${keyword}%`;
+    where[Op.or] = [
+      { application_no: { [Op.like]: keywordLike } },
+      { product_name: { [Op.like]: keywordLike } },
+      { category_name: { [Op.like]: keywordLike } },
+      { applicant_name: { [Op.like]: keywordLike } },
+      { payload_json: { [Op.like]: keywordLike } }
+    ];
+  }
 
   if (!canReviewProductApplication(ctx.state.user)) {
     where.applicant_staff_id = ctx.state.user.staffId;

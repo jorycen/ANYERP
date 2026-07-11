@@ -282,7 +282,8 @@ function getRoles(user) {
 }
 
 function canViewProfit(user) {
-  return getRoles(user).some(role => PROFIT_ROLES.has(role));
+  // 所有已登录账号均可查看自己数据权限范围内的毛利；门店范围仍由 accessibleStoreIds 控制。
+  return Boolean(user && user.staffId);
 }
 
 function normalizeStoreIds(userStoreIds, allStoreIds = []) {

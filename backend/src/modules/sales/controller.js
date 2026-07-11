@@ -156,6 +156,8 @@ async function list(ctx) {
 
   const where = { is_deleted: 0 };
   const accessibleStoreIds = Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds.filter(Boolean) : [];
+  const roles = getUserRoles(user);
+  const canQueryAllStoreOrders = roles.some(role => ['boss', 'admin', 'manager'].includes(role));
 
   const dateRange = buildChinaDateRange(startDate, endDate);
   if (dateRange) {
@@ -182,6 +184,12 @@ async function list(ctx) {
       return;
     }
     where.store_id = accessibleStoreIds;
+  }
+
+  // 店员只能查询自己创建的订单；店长及以上角色才可以查询门店内全部订单。
+  // 这里必须在服务端强制执行，不能依赖小程序传入的 userRole/searchAll 参数。
+  if (!canQueryAllStoreOrders) {
+    where.create_user = user.name || '__NO_MATCHING_STAFF__';
   }
 
   const itemWhere = {};
@@ -1573,7 +1581,8 @@ async function releaseDepositRedemptionForOrder(order, transaction = null, reaso
 }
 
 function canSeeCost(user) {
-  return getUserRoles(user).some(role => ['boss', 'admin', 'finance', 'manager'].includes(role));
+  // 毛利查询属于已授权账号的经营查询能力，门店数据范围仍由 assertStoreVisible 控制。
+  return Boolean(user && user.staffId);
 }
 
 async function findCurrentManufacturerPrice({ productId, pn, saleDate, transaction = null }) {
@@ -1971,8 +1980,10 @@ async function validateAndDeductInventoryForArchive(order, transaction = null) {
   const pnRows = pnCodes.length
     ? await ProductPn.findAll({
       where: {
-        pn_code: { [Op.in]: pnCodes },
-        status: 1,
+        [Op.and]: [sequelize.where(
+          sequelize.fn('LOWER', sequelize.fn('TRIM', sequelize.col('pn_code'))),
+          { [Op.in]: pnCodes.map(code => code.toLowerCase()) }
+        )],
         is_deleted: 0
       },
       transaction
