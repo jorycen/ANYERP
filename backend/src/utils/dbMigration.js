@@ -1963,8 +1963,11 @@ async function runMigrations() {
         TOTAL_ROWS INT DEFAULT 0 COMMENT '总行数',
         VALID_ROWS INT DEFAULT 0 COMMENT '有效行数',
         ERROR_ROWS INT DEFAULT 0 COMMENT '错误行数',
-        STATUS VARCHAR(32) DEFAULT 'pending' COMMENT 'pending/executed/rejected',
+        STATUS VARCHAR(32) DEFAULT 'pending' COMMENT 'pending/executing/executed/rejected/execute_failed',
         ERROR_JSON TEXT COMMENT '校验错误JSON',
+        EXECUTE_ERROR VARCHAR(1000) COMMENT '后台执行失败原因',
+        EXECUTE_ATTEMPTS INT DEFAULT 0 COMMENT '后台执行尝试次数',
+        EXECUTE_START_TIME DATETIME COMMENT '后台执行开始时间',
         APPLICANT_STAFF_ID BIGINT COMMENT '申请人员工ID',
         APPLICANT_NAME VARCHAR(64) COMMENT '申请人',
         APPLICANT_DISTRIBUTOR_ID VARCHAR(32) COMMENT '申请人经销商',
@@ -1988,6 +1991,9 @@ async function runMigrations() {
       ['mediumtext', 'longtext'],
       'MEDIUMTEXT COMMENT "校验错误JSON"'
     );
+    await checkAndAddColumn('T_INVENTORY_BATCH_APPLICATION', 'EXECUTE_ERROR', 'VARCHAR(1000) COMMENT "后台执行失败原因"', 'ERROR_JSON');
+    await checkAndAddColumn('T_INVENTORY_BATCH_APPLICATION', 'EXECUTE_ATTEMPTS', 'INT DEFAULT 0 COMMENT "后台执行尝试次数"', 'EXECUTE_ERROR');
+    await checkAndAddColumn('T_INVENTORY_BATCH_APPLICATION', 'EXECUTE_START_TIME', 'DATETIME COMMENT "后台执行开始时间"', 'EXECUTE_ATTEMPTS');
 
     await checkAndCreateTable('T_INVENTORY_BATCH_APPLICATION_ITEM', `
       CREATE TABLE T_INVENTORY_BATCH_APPLICATION_ITEM (

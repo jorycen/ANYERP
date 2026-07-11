@@ -14,6 +14,7 @@ const {
 const VALID_OPERATION_TYPES = new Set(['INBOUND', 'OUTBOUND', 'ADJUST']);
 const VALID_INVENTORY_TYPES = new Set(['normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty']);
 const OPERATION_LABELS = { INBOUND: '批量入库', OUTBOUND: '批量出库', ADJUST: '数量调整' };
+const scheduledExecutionIds = new Set();
 
 function roles(user) {
   return getUserRoles(user);
@@ -673,6 +674,69 @@ async function executeApplication(application, transaction) {
   }
 }
 
+async function executeBatchApplicationInBackground(applicationId) {
+  const transaction = await sequelize.transaction();
+  try {
+    const application = await InventoryBatchApplication.findByPk(applicationId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!application || application.status !== 'executing') {
+      await transaction.rollback();
+      return;
+    }
+
+    await application.update({
+      execute_attempts: Number(application.execute_attempts || 0) + 1,
+      execute_start_time: new Date(),
+      execute_error: null,
+      update_time: new Date()
+    }, { transaction });
+
+    await executeApplication(application, transaction);
+    await application.update({
+      status: 'executed',
+      execute_time: new Date(),
+      execute_error: null,
+      update_time: new Date()
+    }, { transaction });
+    await transaction.commit();
+  } catch (error) {
+    try { await transaction.rollback(); } catch (_) { /* 保留原始错误 */ }
+    try {
+      await InventoryBatchApplication.update({
+        status: 'execute_failed',
+        execute_error: String(error.message || error).slice(0, 1000),
+        update_time: new Date()
+      }, { where: { application_id: applicationId, status: 'executing' } });
+    } catch (markError) {
+      console.error(`[BatchMaintenance] 标记执行失败状态失败 ${applicationId}:`, markError.message);
+    }
+    console.error(`[BatchMaintenance] 后台执行失败 ${applicationId}:`, error.stack || error.message);
+  }
+}
+
+function scheduleBatchApplicationExecution(applicationId) {
+  if (!applicationId || scheduledExecutionIds.has(applicationId)) return;
+  scheduledExecutionIds.add(applicationId);
+  setImmediate(() => executeBatchApplicationInBackground(applicationId)
+    .catch(error => console.error(`[BatchMaintenance] 后台任务启动失败 ${applicationId}:`, error.stack || error.message))
+    .finally(() => scheduledExecutionIds.delete(applicationId)));
+}
+
+async function recoverExecutingBatchApplications() {
+  const applications = await InventoryBatchApplication.findAll({
+    where: { status: 'executing' },
+    attributes: ['application_id'],
+    order: [['update_time', 'ASC']]
+  });
+  applications.forEach(application => scheduleBatchApplicationExecution(application.application_id));
+  if (applications.length > 0) {
+    console.log(`[BatchMaintenance] 已恢复 ${applications.length} 个后台执行中的批量申请`);
+  }
+  return applications.length;
+}
+
 async function reviewBatchApplication(ctx) {
   const user = ctx.state.user;
   const { action, comment = '' } = ctx.request.body || {};
@@ -693,7 +757,11 @@ async function reviewBatchApplication(ctx) {
       reviewer_staff_id: user.staffId || null,
       reviewer_name: user.name || '',
       review_comment: comment,
-      review_time: new Date()
+      review_time: new Date(),
+      status: action === 'approve' ? 'executing' : 'pending',
+      execute_error: null,
+      execute_start_time: null,
+      update_time: new Date()
     }, { transaction });
 
     if (action === 'reject') {
@@ -703,10 +771,9 @@ async function reviewBatchApplication(ctx) {
       return;
     }
 
-    await executeApplication(app, transaction);
-    await app.update({ status: 'executed', execute_time: new Date(), update_time: new Date() }, { transaction });
     await transaction.commit();
-    ctx.body = { message: '批量维护申请已审批并执行' };
+    scheduleBatchApplicationExecution(app.application_id);
+    ctx.body = { message: '审批已通过，后台正在执行，请稍后刷新查看', status: 'executing' };
   } catch (error) {
     await transaction.rollback();
     throw error;
@@ -718,5 +785,6 @@ module.exports = {
   listBatchApplications,
   getBatchApplicationDetail,
   reviewBatchApplication,
+  recoverExecutingBatchApplications,
   _test: { parseWorkbook, normalizeResourceTypes, validateRows, normalizeUploadedFilename, compactBatchErrors }
 };

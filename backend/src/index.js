@@ -27,6 +27,7 @@ const { authMiddleware, storeAccessMiddleware } = require('./middleware/auth');
 const { applyPendingProductPriceChanges } = require('./modules/product/controller');
 const { refreshOutdatedGrossProfitSnapshots } = require('./modules/sales/grossProfit');
 const { startDatabaseHeartbeat } = require('./utils/databaseHeartbeat');
+const { recoverExecutingBatchApplications } = require('./modules/inventory/batchMaintenance');
 
 const app = new Koa();
 const PORT = process.env.PORT || 3000;
@@ -101,6 +102,7 @@ function initializeDatabaseInBackground(retryDelayMs = Number(process.env.DB_STA
         );
       }
       await ensureDatabaseReady('post-migration database activation', { force: true });
+      await recoverExecutingBatchApplications();
       console.log('[Startup] database initialization completed');
     } catch (error) {
       markDatabaseUnhealthy(error);

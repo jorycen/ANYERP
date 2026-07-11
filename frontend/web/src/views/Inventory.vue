@@ -200,8 +200,10 @@
             <div class="filter-bar">
               <el-select v-model="batchQuery.status" placeholder="状态" clearable style="width: 130px" @change="loadBatchApplications">
                 <el-option label="待审批" value="pending" />
+                <el-option label="执行中" value="executing" />
                 <el-option label="已执行" value="executed" />
                 <el-option label="已拒绝" value="rejected" />
+                <el-option label="执行失败" value="execute_failed" />
               </el-select>
               <el-select v-model="batchQuery.operationType" placeholder="操作类型" clearable style="width: 130px" @change="loadBatchApplications">
                 <el-option label="批量入库" value="INBOUND" />
@@ -1365,6 +1367,7 @@
           <el-descriptions-item label="审批人">{{ currentBatchApplication.reviewer_name || '-' }}</el-descriptions-item>
           <el-descriptions-item label="创建时间">{{ formatDate(currentBatchApplication.create_time) }}</el-descriptions-item>
           <el-descriptions-item label="审批意见" :span="3">{{ currentBatchApplication.review_comment || '-' }}</el-descriptions-item>
+          <el-descriptions-item v-if="currentBatchApplication.execute_error" label="执行失败原因" :span="3">{{ currentBatchApplication.execute_error }}</el-descriptions-item>
         </el-descriptions>
         <h4 class="mt-20">明细</h4>
         <el-table :data="currentBatchApplication.items || []" stripe border size="small" max-height="420">
@@ -1861,14 +1864,18 @@ const batchOperationText = (type) => ({
 
 const batchStatusText = (status) => ({
   pending: '待审批',
+  executing: '执行中',
   executed: '已执行',
-  rejected: '已拒绝'
+  rejected: '已拒绝',
+  execute_failed: '执行失败'
 })[status] || status || '-'
 
 const batchStatusType = (status) => ({
   pending: 'warning',
+  executing: 'primary',
   executed: 'success',
-  rejected: 'info'
+  rejected: 'info',
+  execute_failed: 'danger'
 })[status] || ''
 
 const parseResourceTypesText = (value) => {
