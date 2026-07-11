@@ -34,7 +34,7 @@ async function assertTransferScope(ctx, fromStoreId, toStoreId) {
   const stores = await Store.findAll({
     where: { store_id: { [Op.in]: [fromStoreId, toStoreId] }, is_deleted: 0, status: 1 },
     attributes: ['store_id', 'distributor_id', 'region_id'],
-    include: [{ model: Region, attributes: ['region_code'] }]
+    include: [{ model: Region, attributes: ['region_id', 'region_code', 'name'] }]
   });
   const fromStore = stores.find(store => String(store.store_id) === String(fromStoreId));
   const toStore = stores.find(store => String(store.store_id) === String(toStoreId));
@@ -42,7 +42,11 @@ async function assertTransferScope(ctx, fromStoreId, toStoreId) {
   if (!fromStore.distributor_id || String(fromStore.distributor_id) !== String(toStore.distributor_id)) {
     ctx.throw(400, '只能在同一经销商内发起调拨');
   }
-  if (!fromStore.region_id || String(fromStore.region_id) !== String(toStore.region_id)) {
+  const fromRegionKeys = [fromStore.region_id, fromStore.Region?.region_id, fromStore.Region?.region_code, fromStore.Region?.name]
+    .filter(Boolean).map(String);
+  const toRegionKeys = [toStore.region_id, toStore.Region?.region_id, toStore.Region?.region_code, toStore.Region?.name]
+    .filter(Boolean).map(String);
+  if (!fromRegionKeys.length || !toRegionKeys.some(key => fromRegionKeys.includes(key))) {
     ctx.throw(400, '只能在同一区域内发起调拨');
   }
 
@@ -51,8 +55,8 @@ async function assertTransferScope(ctx, fromStoreId, toStoreId) {
   if (!roles.includes('boss') && user.distributorId && String(user.distributorId) !== String(fromStore.distributor_id)) {
     ctx.throw(403, '无权操作该经销商的调拨');
   }
-  const regionCode = fromStore.Region?.region_code || '';
-  if (!roles.includes('boss') && Array.isArray(user.regionCodes) && !user.regionCodes.includes('*') && regionCode && !user.regionCodes.includes(regionCode)) {
+  const userRegionKeys = Array.isArray(user.regionCodes) ? user.regionCodes.map(String) : [];
+  if (!roles.includes('boss') && !userRegionKeys.includes('*') && userRegionKeys.length && !fromRegionKeys.some(key => userRegionKeys.includes(key))) {
     ctx.throw(403, '无权操作该区域的调拨');
   }
   return { distributorId: fromStore.distributor_id, regionId: fromStore.region_id };
@@ -1335,13 +1339,26 @@ async function getTransferableStock(product, productId, storeId, transaction) {
   return Math.max(inventoryQty, snQty);
 }
 
+async function productHasPn(product, pnCode, transaction) {
+  const code = String(pnCode || '').trim();
+  if (!code) return false;
+  const pn = await ProductPn.findOne({
+    where: { product_id: product.product_id, pn_code: code, is_deleted: 0 },
+    transaction
+  });
+  if (pn) return true;
+  return splitCodes(product.manufacturer_code).some(item => String(item).trim() === code);
+}
+
 function normalizeTransferItem(raw) {
   const productId = raw.productId || raw.product_id;
+  const productCode = String(raw.productCode || raw.product_code || '').trim();
+  const pnCode = String(raw.pnCode || raw.pn_code || '').trim();
   const snId = raw.snId || raw.sn_id || null;
   const snCode = raw.snCode || raw.sn_code || '';
   const quantity = Math.max(parseInt(raw.quantity || raw.qty || 1, 10), 1);
 
-  return { productId, snId, snCode, quantity };
+  return { productId, productCode, pnCode, snId, snCode, quantity };
 }
 
 /**
@@ -1607,6 +1624,14 @@ async function transfer(ctx) {
         ctx.throw(400, `????????${item.productId || '-'}`);
       }
 
+      if (item.productCode && String(product.product_code || '') !== item.productCode) {
+        ctx.throw(400, `商品编码 ${item.productCode} 与商品记录不一致`);
+      }
+
+      if (item.pnCode && !(await productHasPn(product, item.pnCode, t))) {
+        ctx.throw(400, `PN ${item.pnCode} 不属于商品编码 ${item.productId}`);
+      }
+
       if (item.snId || item.snCode) {
         if (!item.snId || !item.snCode) {
           ctx.throw(400, `?? ${product.name} ?SN?????`);
@@ -1714,7 +1739,7 @@ async function getTransferList(ctx) {
       include: [
         { model: Store, as: 'FromStore', attributes: ['store_id', 'name'] },
         { model: Store, as: 'ToStore', attributes: ['store_id', 'name'] },
-        { model: TransferItem, attributes: ['item_id', 'product_id', 'sn_id', 'sn_code', 'quantity'] }
+        { model: TransferItem, attributes: ['item_id', 'product_id', 'pn_code', 'sn_id', 'sn_code', 'quantity'] }
       ],
       order: buildPendingFirstOrder(sequelize, {
         statusColumn: 'Transfer.status',
@@ -1727,7 +1752,7 @@ async function getTransferList(ctx) {
 
     const productIds = [...new Set(rows.flatMap(row => (row.TransferItems || []).map(item => item.product_id)).filter(Boolean))];
     const products = productIds.length > 0
-      ? await Product.findAll({ where: { product_id: { [Op.in]: productIds } }, attributes: ['product_id', 'name', 'need_sn'] })
+      ? await Product.findAll({ where: { product_id: { [Op.in]: productIds } }, attributes: ['product_id', 'product_code', 'name', 'need_sn'] })
       : [];
     const productMap = new Map(products.map(product => [product.product_id, product]));
 
@@ -1738,6 +1763,7 @@ async function getTransferList(ctx) {
         return {
           ...item,
           product_name: product?.name || '',
+          product_code: product?.product_code || item.product_id || '',
           need_sn: product?.need_sn || 0
         };
       });
@@ -1820,6 +1846,37 @@ async function confirmTransferOut(ctx) {
       }
       if (selected && String(selected.productId || selected.product_id) !== String(item.product_id)) {
         ctx.throw(400, '出库商品与申请商品不一致');
+      }
+
+      if (!(await productHasPn(product, selectedPnCode, t))) {
+        ctx.throw(400, `PN ${selectedPnCode} 不属于商品编码 ${item.product_id}`);
+      }
+
+      if (product && Number(product.need_sn) === 1) {
+        const selectedSnId = selected?.snId || selected?.inventoryId || selected?.inventory_id || '';
+        const selectedSnCode = String(selected?.snCode || selected?.sn_code || '').trim();
+        if (!selectedSnId || !selectedSnCode) {
+          ctx.throw(400, `商品 ${product.name} 为 SN 商品，必须选择 SN`);
+        }
+        const selectedSn = await ProductSn.findOne({
+          where: {
+            sn_id: selectedSnId,
+            sn_code: selectedSnCode,
+            product_id: item.product_id,
+            store_id: transfer.from_store_id,
+            status: 'in_stock',
+            is_deleted: 0
+          },
+          transaction: t
+        });
+        if (!selectedSn) {
+          ctx.throw(400, `SN ${selectedSnCode} 不属于调出门店的商品编码 ${item.product_id}`);
+        }
+        if (selectedSn.pn_code && String(selectedSn.pn_code) !== selectedPnCode) {
+          ctx.throw(400, `SN ${selectedSnCode} 与选择的 PN 不匹配`);
+        }
+        snId = selectedSn.sn_id;
+        snCode = selectedSn.sn_code;
       }
 
       if (!snId && product && Number(product.need_sn) === 1) {

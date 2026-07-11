@@ -1119,6 +1119,7 @@ const TransferItem = sequelize.define('TransferItem', {
   item_id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true },
   transfer_id: { type: DataTypes.STRING(32), allowNull: false },
   product_id: { type: DataTypes.STRING(32), allowNull: false },
+  pn_code: { type: DataTypes.STRING(64) },
   sn_id: { type: DataTypes.STRING(32) },
   sn_code: { type: DataTypes.STRING(128) },
   quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 }

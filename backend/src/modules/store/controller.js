@@ -65,28 +65,17 @@ async function getAllStores(ctx) {
 async function getTransferStores(ctx) {
   const user = ctx.state.user || {};
   const where = { is_deleted: 0, status: 1 };
-  if (!user.roles?.includes('boss') && user.distributorId) where.distributor_id = user.distributorId;
-
-  // 以当前登录门店实际所属区域为准，避免员工账号上的 region_id
-  // 与门店区域字段不一致时，只能看到一间门店。
   if (!user.roles?.includes('boss')) {
-    let currentRegionKeys = [];
-    if (user.storeId) {
-      const currentStore = await Store.findOne({
-        where: { store_id: user.storeId, is_deleted: 0 },
-        attributes: ['region_id'],
-        include: [{ model: Region, attributes: ['region_id', 'region_code', 'name'] }]
-      });
-      currentRegionKeys = [
-        currentStore?.region_id,
-        currentStore?.Region?.region_id,
-        currentStore?.Region?.region_code,
-        currentStore?.Region?.name
-      ].filter(Boolean).map(String);
+    let distributorId = user.distributorId || '';
+    if (!distributorId && user.storeId) {
+      const currentStore = await Store.findOne({ where: { store_id: user.storeId, is_deleted: 0 }, attributes: ['distributor_id'] });
+      distributorId = currentStore?.distributor_id || '';
     }
-    if (!currentRegionKeys.length && user.regionId) currentRegionKeys = [String(user.regionId)];
-    if (currentRegionKeys.length) where.region_id = { [Op.in]: currentRegionKeys };
+    if (distributorId) where.distributor_id = distributorId;
   }
+
+  // 门店账号也要能看到本经销商的全部门店，区域限制在提交调拨时由
+  // assertTransferScope 统一校验，避免区域字段格式不一致导致下拉只剩当前门店。
 
   const rows = await Store.findAll({
     where,
