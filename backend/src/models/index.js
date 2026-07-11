@@ -1103,6 +1103,14 @@ const Transfer = sequelize.define('Transfer', {
   apply_user: { type: DataTypes.STRING(64) },
   confirm_user: { type: DataTypes.STRING(64) },
   inbound_confirm_user: { type: DataTypes.STRING(64) },
+  distributor_id: { type: DataTypes.STRING(32) },
+  region_id: { type: DataTypes.STRING(32) },
+  shipping_photos: { type: DataTypes.JSON },
+  receiving_photos: { type: DataTypes.JSON },
+  shipping_user: { type: DataTypes.STRING(64) },
+  receiving_user: { type: DataTypes.STRING(64) },
+  shipping_time: { type: DataTypes.DATE },
+  receiving_time: { type: DataTypes.DATE },
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_TRANSFER', timestamps: false, createdAt: 'create_time', updatedAt: false });
 

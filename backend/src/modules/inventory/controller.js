@@ -3,7 +3,7 @@
  * 优化版：非SN商品直接操作聚合库存，SN商品同时维护SN记录和聚合库存
  */
 const {
-  sequelize, ProductSn, Product, ProductPn, ProductPrice, ProductPriceChangeLog,
+  sequelize, Region, ProductSn, Product, ProductPn, ProductPrice, ProductPriceChangeLog,
   SnDistributorPrice, SnDistributorPriceChangeLog, ResourceCategory,
   ProductBarcode, Store, Location, InventoryWarning, Inbound, InboundItem,
   ReturnStock, ReturnStockItem, PurchaseRequest, Payable, Supplier, Inventory,
@@ -28,6 +28,34 @@ function assertStoreVisible(ctx, storeId) {
   if (!allowed.includes('*') && !allowed.map(String).includes(String(storeId || ''))) {
     ctx.throw(403, '无权访问该门店库存数据');
   }
+}
+
+async function assertTransferScope(ctx, fromStoreId, toStoreId) {
+  const stores = await Store.findAll({
+    where: { store_id: { [Op.in]: [fromStoreId, toStoreId] }, is_deleted: 0, status: 1 },
+    attributes: ['store_id', 'distributor_id', 'region_id'],
+    include: [{ model: Region, attributes: ['region_code'] }]
+  });
+  const fromStore = stores.find(store => String(store.store_id) === String(fromStoreId));
+  const toStore = stores.find(store => String(store.store_id) === String(toStoreId));
+  if (!fromStore || !toStore) ctx.throw(400, '调拨门店不存在或已停用');
+  if (!fromStore.distributor_id || String(fromStore.distributor_id) !== String(toStore.distributor_id)) {
+    ctx.throw(400, '只能在同一经销商内发起调拨');
+  }
+  if (!fromStore.region_id || String(fromStore.region_id) !== String(toStore.region_id)) {
+    ctx.throw(400, '只能在同一区域内发起调拨');
+  }
+
+  const user = ctx.state.user || {};
+  const roles = getUserRoles(user);
+  if (!roles.includes('boss') && user.distributorId && String(user.distributorId) !== String(fromStore.distributor_id)) {
+    ctx.throw(403, '无权操作该经销商的调拨');
+  }
+  const regionCode = fromStore.Region?.region_code || '';
+  if (!roles.includes('boss') && Array.isArray(user.regionCodes) && !user.regionCodes.includes('*') && regionCode && !user.regionCodes.includes(regionCode)) {
+    ctx.throw(403, '无权操作该区域的调拨');
+  }
+  return { distributorId: fromStore.distributor_id, regionId: fromStore.region_id };
 }
 
 const RESOURCE_STATUS_LABELS = {
@@ -1557,6 +1585,7 @@ async function transfer(ctx) {
     if (fromStoreId === toStoreId) {
       ctx.throw(400, '?????????????');
     }
+    const transferScope = await assertTransferScope(ctx, fromStoreId, toStoreId);
     if (items.length === 0) {
       ctx.throw(400, '????????');
     }
@@ -1601,30 +1630,17 @@ async function transfer(ctx) {
       }
 
       const quantity = Math.max(parseInt(item.quantity || 1, 10), 1);
-      const availableQty = await getTransferableStock(product, item.productId, fromStoreId, t);
-      if (availableQty < quantity) {
-        ctx.throw(400, `?? ${product.name} ????????${availableQty}???${quantity}`);
+      if (Number(product.need_sn) === 1 && quantity > 1) {
+        ctx.throw(400, `SN product ${product.name} quantity must be 1`);
       }
-
-      if (Number(product.need_sn) === 1) {
-        for (let i = 0; i < quantity; i++) {
-          normalizedItems.push({
-            productId: item.productId,
-            snId: null,
-            snCode: '',
-            quantity: 1,
-            productName: product.name
-          });
-        }
-      } else {
-        normalizedItems.push({
-          productId: item.productId,
-          snId: null,
-          snCode: '',
-          quantity,
-          productName: product.name
-        });
-      }
+      // The request records the product demand only. Stock is checked and deducted when the source store confirms shipment.
+      normalizedItems.push({
+        productId: item.productId,
+        snId: null,
+        snCode: '',
+        quantity,
+        productName: product.name
+      });
     }
 
     const transferNo = generateTransferNo();
@@ -1638,7 +1654,9 @@ async function transfer(ctx) {
       to_store_id: toStoreId,
       total_quantity: totalQuantity,
       status: 'pending',
-      apply_user: user.name || user.staffId
+      apply_user: user.name || user.staffId,
+      distributor_id: transferScope.distributorId,
+      region_id: transferScope.regionId
     }, { transaction: t });
 
     for (const item of normalizedItems) {
@@ -1743,12 +1761,21 @@ async function confirmTransferOut(ctx) {
   try {
     const user = ctx.state.user;
     const { transferId } = ctx.request.body;
+    const requestedSelections = Array.isArray(ctx.request.body.items) ? ctx.request.body.items.filter(Boolean) : [];
     const selectedSnByItemId = new Map(
-      (Array.isArray(ctx.request.body.items) ? ctx.request.body.items : [])
+      requestedSelections
         .filter(item => item && item.itemId && item.snId)
         .map(item => [String(item.itemId), item.snId])
     );
+    const selectedByProductId = new Map();
+    requestedSelections.forEach(item => {
+      const productId = item.productId || item.product_id;
+      if (!productId) return;
+      if (!selectedByProductId.has(String(productId))) selectedByProductId.set(String(productId), []);
+      selectedByProductId.get(String(productId)).push(item);
+    });
     const selectedSnIds = new Set();
+    const shippingPhotos = Array.isArray(ctx.request.body.shippingPhotos) ? ctx.request.body.shippingPhotos.filter(Boolean).slice(0, 9) : [];
 
     const transfer = await Transfer.findByPk(transferId, {
       include: [{ model: TransferItem }],
@@ -1764,6 +1791,12 @@ async function confirmTransferOut(ctx) {
     }
 
     const items = transfer.TransferItems || [];
+    if (!requestedSelections.length) {
+      ctx.throw(400, '请先选择实际出库商品');
+    }
+    if (!shippingPhotos.length) {
+      ctx.throw(400, '请上传至少一张出库凭证照片');
+    }
     const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean))];
     const products = productIds.length > 0
       ? await Product.findAll({ where: { product_id: { [Op.in]: productIds } }, transaction: t })
@@ -1775,9 +1808,16 @@ async function confirmTransferOut(ctx) {
       let snId = item.sn_id;
       let snCode = item.sn_code;
       const quantity = Number(item.quantity || 1);
+      const productSelections = selectedByProductId.get(String(item.product_id)) || [];
+      const selected = selectedSnByItemId.get(String(item.item_id))
+        ? requestedSelections.find(selection => String(selection.itemId) === String(item.item_id))
+        : productSelections[0];
+      if (selected && String(selected.productId || selected.product_id) !== String(item.product_id)) {
+        ctx.throw(400, '出库商品与申请商品不一致');
+      }
 
       if (!snId && product && Number(product.need_sn) === 1) {
-        snId = selectedSnByItemId.get(String(item.item_id)) || '';
+        snId = selectedSnByItemId.get(String(item.item_id)) || selected?.snId || selected?.inventoryId || selected?.inventory_id || '';
         if (!snId) {
           ctx.throw(400, `商品 ${product.name} 需要选择SN后才能确认出库`);
         }
@@ -1810,6 +1850,16 @@ async function confirmTransferOut(ctx) {
           ctx.throw(400, '同一个SN不能重复选择');
         }
         selectedSnIds.add(snId);
+      }
+
+      if (selected && selected.productId && String(selected.productId) !== String(item.product_id)) {
+        ctx.throw(400, '出库商品与申请商品不一致');
+      }
+      if (product && Number(product.need_sn) !== 1) {
+        const availableQty = await getTransferableStock(product, item.product_id, transfer.from_store_id, t);
+        if (availableQty < quantity) {
+          ctx.throw(400, `商品 ${product.name} 当前库存不足，现有${availableQty}，需要${quantity}`);
+        }
       }
 
       if (snId && snCode) {
@@ -1847,7 +1897,10 @@ async function confirmTransferOut(ctx) {
 
     await transfer.update({
       status: 'out_confirmed',
-      confirm_user: user.name || user.staffId
+      confirm_user: user.name || user.staffId,
+      shipping_user: user.name || user.staffId,
+      shipping_photos: shippingPhotos,
+      shipping_time: new Date()
     }, { transaction: t });
 
     await t.commit();
@@ -1865,9 +1918,11 @@ async function confirmTransferIn(ctx) {
   try {
     const user = ctx.state.user;
     const { transferId } = ctx.request.body;
+    const receivingPhotos = Array.isArray(ctx.request.body.receivingPhotos) ? ctx.request.body.receivingPhotos.filter(Boolean).slice(0, 9) : [];
 
     const transfer = await Transfer.findByPk(transferId, {
-      include: [{ model: TransferItem }]
+      include: [{ model: TransferItem }],
+      transaction: t
     });
 
     if (!transfer) {
@@ -1908,7 +1963,10 @@ async function confirmTransferIn(ctx) {
 
     await transfer.update({
       status: 'completed',
-      inbound_confirm_user: user.name || user.staffId
+      inbound_confirm_user: user.name || user.staffId,
+      receiving_user: user.name || user.staffId,
+      receiving_photos: receivingPhotos,
+      receiving_time: new Date()
     }, { transaction: t });
 
     await t.commit();

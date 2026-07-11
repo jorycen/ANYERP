@@ -59,6 +59,33 @@ async function getAllStores(ctx) {
 }
 
 /**
+ * 调拨门店选项：向登录用户开放同一经销商、同一区域内的有效门店。
+ * 普通库存下拉仍保持原有的门店权限范围。
+ */
+async function getTransferStores(ctx) {
+  const user = ctx.state.user || {};
+  const where = { is_deleted: 0, status: 1 };
+  if (!user.roles?.includes('boss') && user.distributorId) where.distributor_id = user.distributorId;
+  if (!user.roles?.includes('boss') && user.regionId) where.region_id = user.regionId;
+
+  const rows = await Store.findAll({
+    where,
+    attributes: ['store_id', 'distributor_id', 'region_id', 'name'],
+    include: [{ model: Region, attributes: ['region_code', 'name'] }],
+    order: [['name', 'ASC']]
+  });
+
+  ctx.body = {
+    code: 0,
+    data: rows.map(row => ({
+      ...row.toJSON(),
+      region_code: row.Region?.region_code || '',
+      region_name: row.Region?.name || ''
+    }))
+  };
+}
+
+/**
  * 门店列表
  */
 async function getStoreList(ctx) {
@@ -234,4 +261,4 @@ async function deleteStore(ctx) {
   ctx.body = { code: 0, message: '删除成功' };
 }
 
-module.exports = { getStoreList, getAllStores, createStore, updateStore, deleteStore, getRegionList };
+module.exports = { getStoreList, getAllStores, getTransferStores, createStore, updateStore, deleteStore, getRegionList };

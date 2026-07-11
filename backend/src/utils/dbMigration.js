@@ -356,6 +356,14 @@ async function runMigrations() {
     await checkAndAddColumn('T_PRODUCT_SN', 'TAX_TYPE', 'VARCHAR(32) DEFAULT "UNKNOWN" COMMENT "税务属性:TAX_INCLUDED/UNTAXED/UNKNOWN"', 'ORIGINAL_PICKUP_PRICE');
     await checkAndAddColumn('T_PRODUCT_SN', 'SOURCE_TYPE', 'VARCHAR(32) DEFAULT "OTHER" COMMENT "货源性质"', 'TAX_TYPE');
     await checkAndAddColumn('T_PRODUCT_SN', 'BATCH_NO', 'VARCHAR(64) COMMENT "库存批次号"', 'SOURCE_TYPE');
+    await checkAndAddColumn('T_TRANSFER', 'DISTRIBUTOR_ID', 'VARCHAR(32) COMMENT "调拨所属经销商"', 'TO_STORE_ID');
+    await checkAndAddColumn('T_TRANSFER', 'REGION_ID', 'VARCHAR(32) COMMENT "调拨所属区域"', 'DISTRIBUTOR_ID');
+    await checkAndAddColumn('T_TRANSFER', 'SHIPPING_PHOTOS', 'JSON COMMENT "调出凭证照片"', 'REGION_ID');
+    await checkAndAddColumn('T_TRANSFER', 'RECEIVING_PHOTOS', 'JSON COMMENT "收货凭证照片"', 'SHIPPING_PHOTOS');
+    await checkAndAddColumn('T_TRANSFER', 'SHIPPING_USER', 'VARCHAR(64) COMMENT "出库确认人"', 'CONFIRM_USER');
+    await checkAndAddColumn('T_TRANSFER', 'RECEIVING_USER', 'VARCHAR(64) COMMENT "收货确认人"', 'INBOUND_CONFIRM_USER');
+    await checkAndAddColumn('T_TRANSFER', 'SHIPPING_TIME', 'DATETIME COMMENT "出库确认时间"', 'SHIPPING_USER');
+    await checkAndAddColumn('T_TRANSFER', 'RECEIVING_TIME', 'DATETIME COMMENT "收货确认时间"', 'RECEIVING_USER');
     await dropProductSnGlobalUniqueIndex();
     await checkAndAddIndex('T_PRODUCT_SN', 'uk_product_sn_pn_sn', 'ALTER TABLE T_PRODUCT_SN ADD UNIQUE KEY uk_product_sn_pn_sn (PN_CODE, SN_CODE)');
     await checkAndAddIndex('T_PRODUCT_SN', 'idx_product_sn_code', 'ALTER TABLE T_PRODUCT_SN ADD INDEX idx_product_sn_code (SN_CODE)');

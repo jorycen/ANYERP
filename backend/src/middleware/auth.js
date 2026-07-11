@@ -81,6 +81,8 @@ async function storeAccessMiddleware(ctx, next) {
   if (!user || user.roles?.includes('boss') || user.accessibleStoreIds?.includes('*')) return next();
   if (ctx.path.startsWith('/api/v1/system/')) return next();
   if (ctx.path === '/api/v1/store/create' && ctx.method === 'POST') return next();
+  // 调拨申请由同一区域内任意登录用户发起，具体经销商/区域范围由调拨控制器二次校验。
+  if (ctx.path === '/api/v1/inventory/transfer' && ctx.method === 'POST') return next();
   if (ctx.method === 'GET' && (
     ctx.path === '/api/v1/purchase/supplier-list' ||
     ctx.path === '/api/v1/purchase/supplier-all'
