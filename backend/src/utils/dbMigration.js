@@ -176,6 +176,26 @@ async function ensureVarcharLength(tableName, columnName, length, columnDefiniti
   }
 }
 
+async function ensureColumnType(tableName, columnName, allowedTypes, columnDefinition) {
+  try {
+    const [column] = await sequelize.query(
+      `SELECT DATA_TYPE
+       FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = ?
+       AND COLUMN_NAME = ?`,
+      { replacements: [tableName, columnName], type: sequelize.QueryTypes.SELECT }
+    );
+    if (!column || allowedTypes.includes(String(column.DATA_TYPE || '').toLowerCase())) return false;
+    await sequelize.query(`ALTER TABLE ${tableName} MODIFY COLUMN ${columnName} ${columnDefinition}`);
+    console.log(`[DB Migration] 已调整字段类型: ${tableName}.${columnName} -> ${columnDefinition}`);
+    return true;
+  } catch (error) {
+    console.error(`[DB Migration] 调整字段类型失败: ${tableName}.${columnName} - ${error.message}`);
+    return false;
+  }
+}
+
 async function ensureNullableColumn(tableName, columnName, columnDefinition) {
   try {
     const [column] = await sequelize.query(
@@ -1962,6 +1982,12 @@ async function runMigrations() {
         KEY idx_inventory_batch_applicant (APPLICANT_STAFF_ID, CREATE_TIME)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='库存批量维护申请单'
     `);
+    await ensureColumnType(
+      'T_INVENTORY_BATCH_APPLICATION',
+      'ERROR_JSON',
+      ['mediumtext', 'longtext'],
+      'MEDIUMTEXT COMMENT "校验错误JSON"'
+    );
 
     await checkAndCreateTable('T_INVENTORY_BATCH_APPLICATION_ITEM', `
       CREATE TABLE T_INVENTORY_BATCH_APPLICATION_ITEM (

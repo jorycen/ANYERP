@@ -36,6 +36,7 @@
                 <el-popover placement="bottom" :width="260" trigger="hover" v-if="row.normal_qty > 0">
                   <template #default>
                     <div class="stock-breakdown">
+                      <div class="breakdown-title">库型</div>
                       <div class="breakdown-item">
                         <span class="breakdown-label">正规货：</span>
                         <span class="breakdown-value">{{ row.regular_qty || 0 }}</span>

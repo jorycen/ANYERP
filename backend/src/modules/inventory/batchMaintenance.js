@@ -32,6 +32,20 @@ function normalizeText(value) {
   return String(value ?? '').trim();
 }
 
+// @koa/multer/busboy 在部分请求头编码下会把 UTF-8 文件名按 latin1 交给业务层。
+// 仅对明显的 UTF-8 乱码尝试还原，避免破坏已经正确解码的文件名。
+function normalizeUploadedFilename(value) {
+  const filename = String(value ?? '').trim();
+  if (!filename || !/[ÃÂÐâæåçèéêëìíîïðñòóôõö÷øùúûüýþÿ]/.test(filename)) return filename;
+
+  const decoded = Buffer.from(filename, 'latin1').toString('utf8');
+  return decoded.includes('\uFFFD') ? filename : decoded;
+}
+
+function compactBatchErrors(errors) {
+  return (errors || []).map(({ rowNo, message }) => ({ rowNo, message }));
+}
+
 function numberValue(value, fallback = 0) {
   if (value === '' || value == null) return fallback;
   const num = Number(value);
@@ -347,12 +361,13 @@ async function createBatchApplication(ctx) {
       application_no: applicationNo(),
       operation_type: operationType,
       trigger_resource_rights: triggerResourceRights ? 1 : 0,
-      source_file_name: ctx.file.originalname || '',
+      source_file_name: normalizeUploadedFilename(ctx.file.originalname),
       store_ids: JSON.stringify(unique(validRows.map(row => row.store.store_id))),
       total_rows: rows.length,
       valid_rows: validRows.length,
       error_rows: errors.length,
-      error_json: JSON.stringify(errors),
+      // raw 行数据保留在接口响应中供本次下载；数据库仅保存定位和原因，避免大批量导入超过字段容量。
+      error_json: JSON.stringify(compactBatchErrors(errors)),
       status: 'pending',
       applicant_staff_id: user.staffId || null,
       applicant_name: user.name || '',
@@ -683,5 +698,5 @@ module.exports = {
   listBatchApplications,
   getBatchApplicationDetail,
   reviewBatchApplication,
-  _test: { parseWorkbook, normalizeResourceTypes, validateRows }
+  _test: { parseWorkbook, normalizeResourceTypes, validateRows, normalizeUploadedFilename, compactBatchErrors }
 };
