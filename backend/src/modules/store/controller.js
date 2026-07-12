@@ -65,11 +65,22 @@ async function getAllStores(ctx) {
 async function getTransferStores(ctx) {
   const user = ctx.state.user || {};
   const where = { is_deleted: 0, status: 1 };
+  let currentRegionKeys = [];
   if (!user.roles?.includes('boss')) {
     let distributorId = '';
     if (user.storeId) {
-      const currentStore = await Store.findOne({ where: { store_id: user.storeId, is_deleted: 0 }, attributes: ['distributor_id'] });
+      const currentStore = await Store.findOne({
+        where: { store_id: user.storeId, is_deleted: 0 },
+        attributes: ['distributor_id', 'region_id'],
+        include: [{ model: Region, attributes: ['region_id', 'region_code', 'name'] }]
+      });
       distributorId = currentStore?.distributor_id || '';
+      currentRegionKeys = [
+        currentStore?.region_id,
+        currentStore?.Region?.region_id,
+        currentStore?.Region?.region_code,
+        currentStore?.Region?.name
+      ].filter(Boolean).map(String);
     }
     distributorId = distributorId || user.distributorId || '';
     if (distributorId) where.distributor_id = distributorId;
@@ -90,7 +101,13 @@ async function getTransferStores(ctx) {
     data: rows.map(row => ({
       ...row.toJSON(),
       region_code: row.Region?.region_code || '',
-      region_name: row.Region?.name || ''
+      region_name: row.Region?.name || '',
+      same_region: !currentRegionKeys.length || [
+        row.region_id,
+        row.Region?.region_id,
+        row.Region?.region_code,
+        row.Region?.name
+      ].filter(Boolean).map(String).some(key => currentRegionKeys.includes(key))
     }))
   };
 }
