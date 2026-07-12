@@ -66,11 +66,12 @@ async function getTransferStores(ctx) {
   const user = ctx.state.user || {};
   const where = { is_deleted: 0, status: 1 };
   if (!user.roles?.includes('boss')) {
-    let distributorId = user.distributorId || '';
-    if (!distributorId && user.storeId) {
+    let distributorId = '';
+    if (user.storeId) {
       const currentStore = await Store.findOne({ where: { store_id: user.storeId, is_deleted: 0 }, attributes: ['distributor_id'] });
       distributorId = currentStore?.distributor_id || '';
     }
+    distributorId = distributorId || user.distributorId || '';
     if (distributorId) where.distributor_id = distributorId;
   }
 
