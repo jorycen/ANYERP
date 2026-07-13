@@ -1,7 +1,7 @@
 /**
  * 门店管理控制器
  */
-const { Store, Region, Location } = require('../../models');
+const { Store, Region, Location, Staff } = require('../../models');
 const { Op } = require('sequelize');
 const { paginate, formatPaginatedResult } = require('../../utils');
 const { generateId } = require('../../utils');
@@ -51,7 +51,7 @@ async function getAllStores(ctx) {
 
   const rows = await Store.findAll({
     where,
-    attributes: ['store_id', 'name'],
+    attributes: ['store_id', 'name', 'manager_staff_id'],
     order: [['name', 'ASC']]
   });
 
@@ -143,9 +143,10 @@ async function getStoreList(ctx) {
 
   const { count, rows } = await Store.findAndCountAll({
     where,
-    attributes: ['store_id', 'name', 'phone', 'address', 'status'],
+    attributes: ['store_id', 'name', 'phone', 'address', 'status', 'manager_staff_id'],
     include: [
-      { model: Region, attributes: ['region_code', 'name'] }
+      { model: Region, attributes: ['region_code', 'name'] },
+      { model: Staff, as: 'Manager', attributes: ['staff_id', 'name'], required: false }
     ],
     order: [['create_time', 'DESC']],
     ...paginate({}, { page, pageSize })
@@ -154,7 +155,8 @@ async function getStoreList(ctx) {
   // 格式化返回数据，添加 region_name
   const formattedRows = rows.map(row => ({
     ...row.toJSON(),
-    region_name: row.Region ? row.Region.name : null
+    region_name: row.Region ? row.Region.name : null,
+    manager_name: row.Manager?.name || ''
   }));
 
   ctx.body = formatPaginatedResult(formattedRows, { page, pageSize, count });
@@ -215,7 +217,7 @@ async function createStore(ctx) {
   });
   await ensureStandardLocationsForStores(Location, [store]);
 
-  ctx.body = { code: 0, message: '创建成功' };
+  ctx.body = { code: 0, message: '创建成功', data: { storeId: store.store_id } };
 }
 
 /**

@@ -72,6 +72,11 @@ const routes = [
         component: () => import('../views/Reports.vue')
       },
       {
+        path: 'approval',
+        name: 'Approval',
+        component: () => import('../views/Approval.vue')
+      },
+      {
         path: 'system',
         name: 'System',
         component: () => import('../views/System.vue'),

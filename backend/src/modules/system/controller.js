@@ -232,6 +232,7 @@ async function getUsers(ctx) {
     attributes: { exclude: ['password_hash', 'role_code'] },
     include: [
       { model: Role, as: 'Roles', attributes: ['role_id', 'role_code', 'name'], through: { attributes: [] } },
+      { model: Staff, as: 'Supervisor', attributes: ['staff_id', 'name'], required: false },
       { model: Region, as: 'Region' },
       { model: RegionPermission, as: 'RegionPermissions' },
       assignedStoresInclude
@@ -259,7 +260,7 @@ async function getUsers(ctx) {
       delete data.Roles;
       delete data.AssignedStores;
       delete data.RegionPermissions;
-      return { ...data, role_ids: roleIds, role_names: roleNames, store_names: storeNames, store_name: isBoss ? '全部门店' : (storeNames.join('、') || '暂无门店'), is_boss: isBoss };
+      return { ...data, role_ids: roleIds, role_names: roleNames, supervisor_name: data.Supervisor?.name || '', supervisor_staff_id: data.supervisor_staff_id || null, store_names: storeNames, store_name: isBoss ? '全部门店' : (storeNames.join('、') || '暂无门店'), is_boss: isBoss };
     }),
     pagination: {
       total: count,
@@ -274,7 +275,7 @@ async function getUsers(ctx) {
  * 创建用户
  */
 async function createUser(ctx) {
-  const { name, phone, password, roleIds, status } = ctx.request.body;
+  const { name, phone, password, roleIds, status, supervisorStaffId } = ctx.request.body;
 
   if (!name) ctx.throw(400, '请输入姓名');
   if (!phone) ctx.throw(400, '请输入手机号');
@@ -289,8 +290,17 @@ async function createUser(ctx) {
   if (roles.length !== uniqueRoleIds.length) ctx.throw(400, '选择的角色不存在或已停用');
   if (!ctx.state.user.roles.includes('boss') && roles.some(role => role.role_code === 'boss')) ctx.throw(403, '无权分配BOSS角色');
 
-  const hash = bcrypt.hashSync(password, 10);
   const distributorId = ctx.state.user.distributorId;
+  if (!distributorId) ctx.throw(400, '当前账号未绑定经销商，无法创建用户');
+
+  let supervisor = null;
+  if (supervisorStaffId) {
+    supervisor = await Staff.findByPk(supervisorStaffId);
+    if (!supervisor || supervisor.status !== 1 || supervisor.is_deleted) ctx.throw(400, '直属上级不存在或已停用');
+    if (!ctx.state.user.roles.includes('boss') && supervisor.distributor_id !== distributorId) ctx.throw(403, '直属上级不在当前经销商范围内');
+  }
+
+  const hash = bcrypt.hashSync(password, 10);
   if (!distributorId) ctx.throw(400, '当前账号未绑定经销商，无法创建用户');
   const transaction = await sequelize.transaction();
   let staff;
@@ -301,6 +311,7 @@ async function createUser(ctx) {
       phone,
       password_hash: hash,
       role_code: roles[0].role_code,
+      supervisor_staff_id: supervisor?.staff_id || null,
       status: normalizeStaffStatus(ctx, status, 1)
     }, { transaction });
     await StaffRole.bulkCreate(uniqueRoleIds.map(roleId => ({ staff_id: staff.staff_id, role_id: roleId })), { transaction });
@@ -318,7 +329,7 @@ async function createUser(ctx) {
  */
 async function updateUser(ctx) {
   const { staffId } = ctx.params;
-  const { name, phone, roleIds, storeIds, status } = ctx.request.body;
+  const { name, phone, roleIds, storeIds, status, supervisorStaffId } = ctx.request.body;
 
   if (!staffId) ctx.throw(400, '用户ID不能为空');
 
@@ -337,6 +348,17 @@ async function updateUser(ctx) {
   if (name) updateData.name = name;
   if (phone) updateData.phone = phone;
   if (status !== undefined) updateData.status = normalizeStaffStatus(ctx, status);
+  if (supervisorStaffId !== undefined) {
+    if (String(supervisorStaffId || '') === String(staffId)) ctx.throw(400, '直属上级不能是本人');
+    if (supervisorStaffId) {
+      const supervisor = await Staff.findByPk(supervisorStaffId);
+      if (!supervisor || supervisor.status !== 1 || supervisor.is_deleted) ctx.throw(400, '直属上级不存在或已停用');
+      if (!ctx.state.user.roles.includes('boss') && supervisor.distributor_id !== staff.distributor_id) ctx.throw(403, '直属上级不在当前经销商范围内');
+      updateData.supervisor_staff_id = supervisor.staff_id;
+    } else {
+      updateData.supervisor_staff_id = null;
+    }
+  }
   if (roleIds !== undefined) {
     if (!Array.isArray(roleIds) || roleIds.length === 0) ctx.throw(400, '请至少选择一个角色');
     const uniqueRoleIds = [...new Set(roleIds.map(String))];
@@ -530,6 +552,22 @@ async function getLocations(ctx) {
   };
 }
 
+async function setStoreManager(ctx) {
+  const { storeId } = ctx.params;
+  const staffId = ctx.request.body?.staffId || ctx.request.body?.staff_id || null;
+  const store = await Store.findOne({ where: { store_id: storeId, ...manageableStoreWhere(ctx.state.user) } });
+  if (!store) ctx.throw(404, '门店不存在或不在管理范围内');
+  if (staffId) {
+    const staff = await Staff.findOne({ where: { staff_id: staffId, status: 1, is_deleted: 0 } });
+    if (!staff) ctx.throw(400, '店长不存在或已停用');
+    if (staff.distributor_id !== store.distributor_id) ctx.throw(403, '店长必须属于该门店所属经销商');
+    await store.update({ manager_staff_id: staff.staff_id });
+  } else {
+    await store.update({ manager_staff_id: null });
+  }
+  ctx.body = { code: 0, message: '门店店长已更新', data: { storeId, managerStaffId: store.manager_staff_id } };
+}
+
 async function createLocation(ctx) {
   const input = normalizeLocationInput(ctx, ctx.request.body);
   const stores = await getManageableStores(ctx, { status: 1 });
@@ -655,6 +693,7 @@ module.exports = {
   getUserRegions,
   assignUserRegions,
   getLocations,
+  setStoreManager,
   createLocation,
   updateLocation,
   deleteLocation

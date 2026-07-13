@@ -20,6 +20,7 @@
                 <el-tag v-for="roleName in row.role_names" :key="roleName" class="mr-1">{{ roleName }}</el-tag>
               </template>
             </el-table-column>
+            <el-table-column prop="supervisor_name" label="直属上级" width="120" />
             <el-table-column prop="store_name" label="门店" min-width="180" show-overflow-tooltip />
             <el-table-column prop="status" label="状态" width="80">
               <template #default="{ row }">
@@ -381,6 +382,11 @@
         <el-form-item label="角色" required>
           <el-select v-model="userForm.roleIds" multiple collapse-tags collapse-tags-tooltip placeholder="请选择一个或多个角色" style="width: 100%">
             <el-option v-for="r in roleData" :key="r.role_id" :label="r.name" :value="r.role_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="直属上级">
+          <el-select v-model="userForm.supervisorStaffId" clearable filterable placeholder="可选，审批流程可引用" style="width: 100%">
+            <el-option v-for="u in userData.filter(item => String(item.staff_id) !== String(userForm.staffId))" :key="u.staff_id" :label="`${u.name}（${u.staff_id}）`" :value="u.staff_id" />
           </el-select>
         </el-form-item>
         <el-form-item label="门店">当前经销商下所有门店</el-form-item>
@@ -842,6 +848,7 @@ const userForm = reactive({
   phone: '',
   password: '',
   roleIds: [],
+  supervisorStaffId: null,
   status: 1
 })
 
@@ -1173,6 +1180,7 @@ const handleEditUser = async (row) => {
   userForm.phone = row.phone
   userForm.password = ''
   userForm.roleIds = [...(row.role_ids || [])]
+  userForm.supervisorStaffId = row.supervisor_staff_id || null
   userForm.status = row.status
 
   userDialogVisible.value = true
@@ -1224,6 +1232,7 @@ const handleUserSubmit = async () => {
       name: userForm.name,
       phone: userForm.phone,
       roleIds: userForm.roleIds,
+      supervisorStaffId: userForm.supervisorStaffId || null,
       status: userForm.status
     }
 
@@ -1343,6 +1352,7 @@ const resetUserForm = () => {
   userForm.phone = ''
   userForm.password = ''
   userForm.roleIds = []
+  userForm.supervisorStaffId = null
   userForm.status = 1
 }
 

@@ -34,6 +34,7 @@ const Store = sequelize.define('Store', {
   store_id: { type: DataTypes.STRING(32), primaryKey: true },
   distributor_id: { type: DataTypes.STRING(32) },
   region_id: { type: DataTypes.STRING(32) },
+  manager_staff_id: { type: DataTypes.BIGINT(20), comment: '门店店长员工ID' },
   name: { type: DataTypes.STRING(255), allowNull: false },
   address: { type: DataTypes.STRING(512) },
   phone: { type: DataTypes.STRING(32) },
@@ -46,6 +47,7 @@ const Staff = sequelize.define('Staff', {
   staff_id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true },
   distributor_id: { type: DataTypes.STRING(32), allowNull: false },
   store_id: { type: DataTypes.STRING(32) },
+  supervisor_staff_id: { type: DataTypes.BIGINT(20), comment: '直属上级员工ID' },
   region_id: { type: DataTypes.STRING(32) },
   name: { type: DataTypes.STRING(64), allowNull: false },
   phone: { type: DataTypes.STRING(32), allowNull: false, unique: true },
@@ -179,6 +181,8 @@ const ProductSn = sequelize.define('ProductSn', {
   inbound_time: { type: DataTypes.DATE },
   inbound_price: { type: DataTypes.DECIMAL(12, 2) },
   original_pickup_price: { type: DataTypes.DECIMAL(12, 2) },
+  supplier_id: { type: DataTypes.STRING(32), comment: '采购来源供应商ID' },
+  supplier_name: { type: DataTypes.STRING(255), comment: '采购来源供应商名称快照' },
   tax_type: { type: DataTypes.STRING(32), defaultValue: 'UNKNOWN', comment: 'TAX_INCLUDED/UNTAXED/UNKNOWN' },
   source_type: { type: DataTypes.STRING(32), defaultValue: 'OTHER', comment: '库存货源性质' },
   batch_no: { type: DataTypes.STRING(64) },
@@ -703,6 +707,8 @@ const Supplier = sequelize.define('Supplier', {
   phone: { type: DataTypes.STRING(32) },
   address: { type: DataTypes.STRING(512) },
   invoice_type: { type: DataTypes.STRING(32) },
+  is_service_provider: { type: DataTypes.TINYINT(1), defaultValue: 1, comment: '是否服务商；服务商毛利成本使用产品定价' },
+  gross_profit_uplift_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0, comment: '非服务商每件毛利上浮金额' },
   remark: { type: DataTypes.STRING(512) },
   sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
   status: { type: DataTypes.TINYINT, defaultValue: 1 },
@@ -900,6 +906,8 @@ const OrderItem = sequelize.define('OrderItem', {
   subtotal: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
   original_inventory_cost: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   original_pickup_price: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  supplier_id: { type: DataTypes.STRING(32), comment: '采购来源供应商ID快照' },
+  supplier_name: { type: DataTypes.STRING(255), comment: '采购来源供应商名称快照' },
   current_pickup_price_at_sale: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   p0_difference_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   cost_adjustment_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
@@ -1616,6 +1624,73 @@ const ExpenseType = sequelize.define('ExpenseType', {
   update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_EXPENSE_TYPE', timestamps: false });
 
+// 通用审批流程定义。业务单据只引用审批实例，审批通过后的业务副作用仍由业务模块负责。
+const ApprovalFlowDefinition = sequelize.define('ApprovalFlowDefinition', {
+  definition_id: { type: DataTypes.STRING(32), primaryKey: true },
+  flow_code: { type: DataTypes.STRING(64), allowNull: false },
+  name: { type: DataTypes.STRING(128), allowNull: false },
+  business_type: { type: DataTypes.STRING(64), allowNull: false },
+  subject_type: { type: DataTypes.STRING(32), defaultValue: 'staff' },
+  version: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+  status: { type: DataTypes.STRING(16), allowNull: false, defaultValue: 'draft' },
+  config_json: { type: DataTypes.TEXT('medium'), allowNull: false },
+  create_staff_id: { type: DataTypes.BIGINT(20) },
+  update_staff_id: { type: DataTypes.BIGINT(20) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_APPROVAL_FLOW_DEFINITION', timestamps: false });
+
+const ApprovalFlowInstance = sequelize.define('ApprovalFlowInstance', {
+  instance_id: { type: DataTypes.STRING(32), primaryKey: true },
+  instance_no: { type: DataTypes.STRING(64), allowNull: false, unique: true },
+  definition_id: { type: DataTypes.STRING(32), allowNull: false },
+  definition_version: { type: DataTypes.INTEGER, allowNull: false },
+  business_type: { type: DataTypes.STRING(64), allowNull: false },
+  business_id: { type: DataTypes.STRING(64), allowNull: false },
+  title: { type: DataTypes.STRING(255), allowNull: false },
+  summary: { type: DataTypes.STRING(1000) },
+  applicant_staff_id: { type: DataTypes.BIGINT(20), allowNull: false },
+  subject_staff_id: { type: DataTypes.BIGINT(20), allowNull: false },
+  distributor_id: { type: DataTypes.STRING(32) },
+  store_id: { type: DataTypes.STRING(32) },
+  current_node_index: { type: DataTypes.INTEGER, defaultValue: 0 },
+  status: { type: DataTypes.STRING(16), allowNull: false, defaultValue: 'pending' },
+  resubmit_count: { type: DataTypes.INTEGER, defaultValue: 0 },
+  payload_json: { type: DataTypes.TEXT('medium') },
+  definition_snapshot_json: { type: DataTypes.TEXT('medium'), allowNull: false },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  completed_time: { type: DataTypes.DATE }
+}, { tableName: 'T_APPROVAL_FLOW_INSTANCE', timestamps: false });
+
+const ApprovalTask = sequelize.define('ApprovalTask', {
+  task_id: { type: DataTypes.STRING(32), primaryKey: true },
+  instance_id: { type: DataTypes.STRING(32), allowNull: false },
+  node_index: { type: DataTypes.INTEGER, allowNull: false },
+  node_name: { type: DataTypes.STRING(128), allowNull: false },
+  sign_mode: { type: DataTypes.STRING(16), allowNull: false },
+  round_no: { type: DataTypes.INTEGER, defaultValue: 0 },
+  task_order: { type: DataTypes.INTEGER, defaultValue: 0 },
+  assignee_staff_id: { type: DataTypes.BIGINT(20), allowNull: false },
+  status: { type: DataTypes.STRING(16), allowNull: false, defaultValue: 'waiting' },
+  action: { type: DataTypes.STRING(16) },
+  comment: { type: DataTypes.STRING(1000) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  acted_time: { type: DataTypes.DATE }
+}, { tableName: 'T_APPROVAL_TASK', timestamps: false });
+
+const ApprovalActionLog = sequelize.define('ApprovalActionLog', {
+  log_id: { type: DataTypes.STRING(32), primaryKey: true },
+  instance_id: { type: DataTypes.STRING(32), allowNull: false },
+  task_id: { type: DataTypes.STRING(32) },
+  action: { type: DataTypes.STRING(32), allowNull: false },
+  actor_staff_id: { type: DataTypes.BIGINT(20), allowNull: false },
+  actor_name: { type: DataTypes.STRING(64) },
+  comment: { type: DataTypes.STRING(1000) },
+  detail_json: { type: DataTypes.TEXT },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_APPROVAL_ACTION_LOG', timestamps: false });
+
 // 收款方式-门店关联（一个门店可以有多个收款方式，一个收款方式可以属于多个门店）
 const PaymentMethodStore = sequelize.define('PaymentMethodStore', {
   id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
@@ -1642,6 +1717,10 @@ Store.belongsTo(Region, { foreignKey: 'region_id', targetKey: 'region_id' });
 Staff.belongsTo(Distributor, { foreignKey: 'distributor_id', targetKey: 'distributor_id' });
 Staff.belongsTo(Store, { foreignKey: 'store_id', targetKey: 'store_id', as: 'Store' });
 Staff.belongsTo(Region, { foreignKey: 'region_id', targetKey: 'region_id', as: 'Region' });
+Staff.belongsTo(Staff, { foreignKey: 'supervisor_staff_id', targetKey: 'staff_id', as: 'Supervisor' });
+Staff.hasMany(Staff, { foreignKey: 'supervisor_staff_id', sourceKey: 'staff_id', as: 'Subordinates' });
+Store.belongsTo(Staff, { foreignKey: 'manager_staff_id', targetKey: 'staff_id', as: 'Manager' });
+Staff.hasMany(Store, { foreignKey: 'manager_staff_id', sourceKey: 'staff_id', as: 'ManagedStores' });
 
 // 权限关联
 Role.belongsToMany(Menu, { through: RoleMenu, foreignKey: 'role_id', otherKey: 'menu_id' });
@@ -1887,6 +1966,15 @@ Store.hasMany(DailyStatement, { foreignKey: 'store_id', sourceKey: 'store_id' })
 DailyStatement.hasMany(DailyStatementDetail, { foreignKey: 'statement_id', sourceKey: 'statement_id', as: 'Details' });
 DailyStatementDetail.belongsTo(DailyStatement, { foreignKey: 'statement_id', targetKey: 'statement_id' });
 
+ApprovalFlowDefinition.hasMany(ApprovalFlowInstance, { foreignKey: 'definition_id', sourceKey: 'definition_id', as: 'Instances' });
+ApprovalFlowInstance.belongsTo(ApprovalFlowDefinition, { foreignKey: 'definition_id', targetKey: 'definition_id', as: 'Definition' });
+ApprovalFlowInstance.hasMany(ApprovalTask, { foreignKey: 'instance_id', sourceKey: 'instance_id', as: 'Tasks' });
+ApprovalTask.belongsTo(ApprovalFlowInstance, { foreignKey: 'instance_id', targetKey: 'instance_id', as: 'Instance' });
+ApprovalFlowInstance.hasMany(ApprovalActionLog, { foreignKey: 'instance_id', sourceKey: 'instance_id', as: 'Logs' });
+ApprovalActionLog.belongsTo(ApprovalFlowInstance, { foreignKey: 'instance_id', targetKey: 'instance_id', as: 'Instance' });
+ApprovalTask.belongsTo(Staff, { foreignKey: 'assignee_staff_id', targetKey: 'staff_id', as: 'Assignee' });
+ApprovalActionLog.belongsTo(Staff, { foreignKey: 'actor_staff_id', targetKey: 'staff_id', as: 'Actor' });
+
 module.exports = {
   sequelize,
   Region,
@@ -1899,6 +1987,10 @@ module.exports = {
   StaffRole,
   StaffStorePermission,
   RegionPermission,
+  ApprovalFlowDefinition,
+  ApprovalFlowInstance,
+  ApprovalTask,
+  ApprovalActionLog,
   Product,
   ProductPn,
   ProductSn,

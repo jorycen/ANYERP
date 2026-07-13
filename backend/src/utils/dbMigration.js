@@ -356,6 +356,12 @@ async function runMigrations() {
     await checkAndAddColumn('T_PRODUCT_SN', 'TAX_TYPE', 'VARCHAR(32) DEFAULT "UNKNOWN" COMMENT "税务属性:TAX_INCLUDED/UNTAXED/UNKNOWN"', 'ORIGINAL_PICKUP_PRICE');
     await checkAndAddColumn('T_PRODUCT_SN', 'SOURCE_TYPE', 'VARCHAR(32) DEFAULT "OTHER" COMMENT "货源性质"', 'TAX_TYPE');
     await checkAndAddColumn('T_PRODUCT_SN', 'BATCH_NO', 'VARCHAR(64) COMMENT "库存批次号"', 'SOURCE_TYPE');
+    await checkAndAddColumn('T_PRODUCT_SN', 'SUPPLIER_ID', 'VARCHAR(32) COMMENT "采购来源供应商ID"', 'ORIGINAL_PICKUP_PRICE');
+    await checkAndAddColumn('T_PRODUCT_SN', 'SUPPLIER_NAME', 'VARCHAR(255) COMMENT "采购来源供应商名称快照"', 'SUPPLIER_ID');
+    await checkAndAddColumn('T_SUPPLIER', 'IS_SERVICE_PROVIDER', 'TINYINT(1) NOT NULL DEFAULT 1 COMMENT "是否服务商"', 'ADDRESS');
+    await checkAndAddColumn('T_SUPPLIER', 'GROSS_PROFIT_UPLIFT_AMOUNT', 'DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT "非服务商每件毛利上浮金额"', 'IS_SERVICE_PROVIDER');
+    await checkAndAddColumn('T_ORDER_ITEM', 'SUPPLIER_ID', 'VARCHAR(32) COMMENT "采购来源供应商ID快照"', 'SUBTOTAL');
+    await checkAndAddColumn('T_ORDER_ITEM', 'SUPPLIER_NAME', 'VARCHAR(255) COMMENT "采购来源供应商名称快照"', 'SUPPLIER_ID');
     await checkAndAddColumn('T_TRANSFER', 'DISTRIBUTOR_ID', 'VARCHAR(32) COMMENT "调拨所属经销商"', 'TO_STORE_ID');
     await checkAndAddColumn('T_TRANSFER', 'REGION_ID', 'VARCHAR(32) COMMENT "调拨所属区域"', 'DISTRIBUTOR_ID');
     await checkAndAddColumn('T_TRANSFER', 'SHIPPING_PHOTOS', 'JSON COMMENT "调出凭证照片"', 'REGION_ID');
@@ -2257,6 +2263,96 @@ async function runMigrations() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='新建商品审批申请'
     `);
 
+    // 通用审批中心：流程版本、实例、任务和不可删除的操作日志。
+    await checkAndAddColumn('T_STAFF', 'SUPERVISOR_STAFF_ID', 'BIGINT COMMENT "直属上级员工ID"', 'STORE_ID');
+    await checkAndAddColumn('T_STORE', 'MANAGER_STAFF_ID', 'BIGINT COMMENT "门店店长员工ID"', 'REGION_ID');
+    await checkAndCreateTable('T_APPROVAL_FLOW_DEFINITION', `
+      CREATE TABLE T_APPROVAL_FLOW_DEFINITION (
+        DEFINITION_ID VARCHAR(32) NOT NULL,
+        FLOW_CODE VARCHAR(64) NOT NULL,
+        NAME VARCHAR(128) NOT NULL,
+        BUSINESS_TYPE VARCHAR(64) NOT NULL,
+        SUBJECT_TYPE VARCHAR(32) DEFAULT 'staff',
+        VERSION INT NOT NULL DEFAULT 1,
+        STATUS VARCHAR(16) NOT NULL DEFAULT 'draft',
+        CONFIG_JSON MEDIUMTEXT NOT NULL,
+        CREATE_STAFF_ID BIGINT,
+        UPDATE_STAFF_ID BIGINT,
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (DEFINITION_ID),
+        UNIQUE KEY uk_approval_flow_version (FLOW_CODE, VERSION),
+        KEY idx_approval_flow_type_status (BUSINESS_TYPE, STATUS)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='审批流程定义'
+    `);
+    await checkAndCreateTable('T_APPROVAL_FLOW_INSTANCE', `
+      CREATE TABLE T_APPROVAL_FLOW_INSTANCE (
+        INSTANCE_ID VARCHAR(32) NOT NULL,
+        INSTANCE_NO VARCHAR(64) NOT NULL,
+        DEFINITION_ID VARCHAR(32) NOT NULL,
+        DEFINITION_VERSION INT NOT NULL,
+        BUSINESS_TYPE VARCHAR(64) NOT NULL,
+        BUSINESS_ID VARCHAR(64) NOT NULL,
+        TITLE VARCHAR(255) NOT NULL,
+        SUMMARY VARCHAR(1000),
+        APPLICANT_STAFF_ID BIGINT NOT NULL,
+        SUBJECT_STAFF_ID BIGINT NOT NULL,
+        DISTRIBUTOR_ID VARCHAR(32),
+        STORE_ID VARCHAR(32),
+        CURRENT_NODE_INDEX INT DEFAULT 0,
+        STATUS VARCHAR(16) NOT NULL DEFAULT 'pending',
+        RESUBMIT_COUNT INT DEFAULT 0,
+        PAYLOAD_JSON MEDIUMTEXT,
+        DEFINITION_SNAPSHOT_JSON MEDIUMTEXT NOT NULL,
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        COMPLETED_TIME DATETIME,
+        PRIMARY KEY (INSTANCE_ID),
+        UNIQUE KEY uk_approval_instance_no (INSTANCE_NO),
+        KEY idx_approval_instance_applicant (APPLICANT_STAFF_ID, CREATE_TIME),
+        KEY idx_approval_instance_subject (SUBJECT_STAFF_ID, CREATE_TIME),
+        KEY idx_approval_instance_business (BUSINESS_TYPE, BUSINESS_ID),
+        KEY idx_approval_instance_status (STATUS, CREATE_TIME)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='审批实例'
+    `);
+    await checkAndCreateTable('T_APPROVAL_TASK', `
+      CREATE TABLE T_APPROVAL_TASK (
+        TASK_ID VARCHAR(32) NOT NULL,
+        INSTANCE_ID VARCHAR(32) NOT NULL,
+        NODE_INDEX INT NOT NULL,
+        NODE_NAME VARCHAR(128) NOT NULL,
+        SIGN_MODE VARCHAR(16) NOT NULL,
+        ROUND_NO INT DEFAULT 0,
+        TASK_ORDER INT DEFAULT 0,
+        ASSIGNEE_STAFF_ID BIGINT NOT NULL,
+        STATUS VARCHAR(16) NOT NULL DEFAULT 'waiting',
+        ACTION VARCHAR(16),
+        COMMENT VARCHAR(1000),
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        ACTED_TIME DATETIME,
+        PRIMARY KEY (TASK_ID),
+        KEY idx_approval_task_assignee (ASSIGNEE_STAFF_ID, STATUS, CREATE_TIME),
+        KEY idx_approval_task_instance (INSTANCE_ID, NODE_INDEX, STATUS)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='审批任务'
+    `);
+    await checkAndAddColumn('T_APPROVAL_TASK', 'ROUND_NO', 'INT DEFAULT 0', 'SIGN_MODE');
+    await checkAndCreateTable('T_APPROVAL_ACTION_LOG', `
+      CREATE TABLE T_APPROVAL_ACTION_LOG (
+        LOG_ID VARCHAR(32) NOT NULL,
+        INSTANCE_ID VARCHAR(32) NOT NULL,
+        TASK_ID VARCHAR(32),
+        ACTION VARCHAR(32) NOT NULL,
+        ACTOR_STAFF_ID BIGINT NOT NULL,
+        ACTOR_NAME VARCHAR(64),
+        COMMENT VARCHAR(1000),
+        DETAIL_JSON TEXT,
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (LOG_ID),
+        KEY idx_approval_log_instance (INSTANCE_ID, CREATE_TIME),
+        KEY idx_approval_log_actor (ACTOR_STAFF_ID, CREATE_TIME)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='审批操作日志'
+    `);
+
     await migrateProductData();
 
     await seedPermissionData();
@@ -2447,6 +2543,11 @@ async function seedPermissionData() {
     const uuid = require('crypto').randomUUID;
     await sequelize.query(
       `INSERT IGNORE INTO T_MENU (MENU_ID, MENU_CODE, NAME, PARENT_ID, MENU_TYPE, PATH, ICON, SORT_ORDER, STATUS)
+       VALUES (?, 'approval', '审批中心', NULL, 'menu', '/approval', 'Checked', 4, 1)`,
+      { replacements: [uuid().replace(/-/g, '').substring(0, 32)] }
+    );
+    await sequelize.query(
+      `INSERT IGNORE INTO T_MENU (MENU_ID, MENU_CODE, NAME, PARENT_ID, MENU_TYPE, PATH, ICON, SORT_ORDER, STATUS)
        VALUES (?, 'reports', '报表统计', NULL, 'menu', '/reports', 'DataAnalysis', 8, 1)`,
       { replacements: [uuid().replace(/-/g, '').substring(0, 32)] }
     );
@@ -2480,6 +2581,13 @@ async function seedPermissionData() {
         FROM T_ROLE r
         JOIN T_MENU m ON m.MENU_CODE = 'products'
         WHERE r.ROLE_CODE IN ('finance', 'purchaser') AND r.STATUS = 1 AND m.STATUS = 1
+      `);
+      await sequelize.query(`
+        INSERT IGNORE INTO T_ROLE_MENU (ROLE_ID, MENU_ID)
+        SELECT r.ROLE_ID, m.MENU_ID
+        FROM T_ROLE r
+        JOIN T_MENU m ON m.MENU_CODE = 'approval'
+        WHERE r.STATUS = 1 AND m.STATUS = 1
       `);
       console.log('[DB Migration] 权限数据已存在, 跳过种子');
       return;
@@ -2531,12 +2639,12 @@ async function seedPermissionData() {
     allRoles.forEach(r => { roleMap[r.ROLE_CODE] = r.ROLE_ID; });
 
     const roleMenus = {
-      boss:   ['home', 'sales', 'inventory', 'purchase', 'finance', 'products', 'stores', 'reports', 'system'],
-      admin:  ['home', 'sales', 'inventory', 'purchase', 'finance', 'products', 'stores', 'reports', 'system'],
-      finance: ['home', 'finance', 'products', 'reports'],
-      purchaser: ['home', 'purchase', 'products', 'reports'],
-      manager: ['home', 'sales', 'inventory', 'products', 'reports', 'stores', 'system'],
-      clerk:   ['home', 'sales', 'inventory', 'reports']
+      boss:   ['home', 'sales', 'inventory', 'purchase', 'finance', 'products', 'stores', 'reports', 'system', 'approval'],
+      admin:  ['home', 'sales', 'inventory', 'purchase', 'finance', 'products', 'stores', 'reports', 'system', 'approval'],
+      finance: ['home', 'finance', 'products', 'reports', 'approval'],
+      purchaser: ['home', 'purchase', 'products', 'reports', 'approval'],
+      manager: ['home', 'sales', 'inventory', 'products', 'reports', 'stores', 'system', 'approval'],
+      clerk:   ['home', 'sales', 'inventory', 'reports', 'approval']
     };
 
     for (const [roleCode, menuCodes] of Object.entries(roleMenus)) {

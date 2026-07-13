@@ -5,7 +5,7 @@ const Router = require('koa-router');
 const {
   getMenus, getRoles, createRole, updateRole, deleteRole, getRoleMenus, assignMenus,
   getUsers, createUser, updateUser, resetUserPassword, getUserRegions, assignUserRegions,
-  getLocations, createLocation, updateLocation, deleteLocation
+  getLocations, createLocation, updateLocation, deleteLocation, setStoreManager
 } = require('./controller');
 const { requireRole } = require('../../middleware/permission');
 
@@ -28,5 +28,6 @@ router.get('/locations', requireRole('admin', 'boss'), getLocations);
 router.post('/locations', requireRole('admin', 'boss'), createLocation);
 router.put('/locations/:locationId', requireRole('admin', 'boss'), updateLocation);
 router.delete('/locations/:locationId', requireRole('admin', 'boss'), deleteLocation);
+router.put('/stores/:storeId/manager', requireRole('admin', 'boss'), setStoreManager);
 
 module.exports = router;

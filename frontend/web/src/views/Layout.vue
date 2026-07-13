@@ -68,7 +68,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   House, Sell, Box, ShoppingCart, Money, Goods,
-  Shop, DataAnalysis, Setting, User
+  Shop, DataAnalysis, Setting, User, Checked
 } from '@element-plus/icons-vue'
 
 const router = useRouter()
@@ -79,7 +79,7 @@ const roleName = ref('')
 const menuTree = ref([])
 
 const iconMap = {
-  House, Sell, Box, ShoppingCart, Money, Goods, Shop, DataAnalysis, Setting, User
+  House, Sell, Box, ShoppingCart, Money, Goods, Shop, DataAnalysis, Setting, User, Checked
 }
 
 const activeMenu = computed(() => {
@@ -100,9 +100,9 @@ const pageTitles = {
   '/system': '系统设置'
 }
 
-const pageTitle = computed(() => pageTitles[route.path] || '')
+const pageTitle = computed(() => route.path === '/approval' ? '审批中心' : (pageTitles[route.path] || ''))
 
-const validPaths = ['/', '/sales', '/inventory', '/purchase', '/finance', '/finance/payment', '/payment-management', '/products', '/stores', '/reports', '/system']
+const validPaths = ['/', '/sales', '/inventory', '/purchase', '/finance', '/finance/payment', '/payment-management', '/products', '/stores', '/reports', '/system', '/approval']
 
 onMounted(() => {
   const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')

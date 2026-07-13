@@ -60,6 +60,9 @@ const config = {
 
 const tableGroups = {
   'inventory, SN, resource rights, account posting': [
+    'T_INVENTORY_BATCH_APPLICATION_ITEM',
+    'T_INVENTORY_BATCH_APPLICATION',
+    'T_NON_SN_INVENTORY_BATCH_RIGHT',
     'T_SN_DISTRIBUTOR_PRICE_CHANGE_LOG',
     'T_SN_DISTRIBUTOR_PRICE',
     'T_INVENTORY_RESOURCE_RIGHT',
@@ -100,11 +103,18 @@ const tableGroups = {
     'T_ORDER'
   ],
   'approval records': [
+    'T_APPROVAL_ACTION_LOG',
+    'T_APPROVAL_TASK',
+    'T_APPROVAL_FLOW_INSTANCE',
     'T_PERFORMANCE_PROFIT_ADJUSTMENT_ATTACHMENT',
     'T_PERFORMANCE_PROFIT_ADJUSTMENT',
     'T_PRODUCT_APPLICATION'
   ],
   'daily statements, expenses, payables, rebates, account balance sources': [
+    'T_STAFF_CARE_CREDIT_TRANSACTION',
+    'T_SUBSIDY_RECEIVABLE_ADJUSTMENT',
+    'T_SUBSIDY_RECEIPT_ALLOCATION',
+    'T_SUBSIDY_RECEIPT',
     'T_SETTLEMENT_PAYMENT_RECORD',
     'T_SETTLEMENT_PAYMENT_BATCH',
     'T_SETTLEMENT_ITEM',
@@ -120,8 +130,7 @@ const tableGroups = {
     'T_REBATE_ESTIMATE',
     'T_SALES_SETTLEMENT_COST_ADJUSTMENT'
   ],
-  'manufacturer policy and price history': [
-    'T_MANUFACTURER_REBATE_POLICY',
+  'manufacturer and product price history': [
     'T_MANUFACTURER_PRICE_HISTORY',
     'T_PRODUCT_PRICE_CHANGE_LOG',
     'T_PRODUCT_PRICE_IMPORT_BATCH'
@@ -160,7 +169,12 @@ const preservedGroups = {
     'T_DICT_PAYMENT_METHOD_STORE',
     'T_DICT_SUPPLEMENT_ITEM',
     'T_SETTLEMENT_ACCOUNT',
-    'T_INVENTORY_WARNING'
+    'T_INVENTORY_WARNING',
+    'T_MANUFACTURER_REBATE_POLICY',
+    'T_EXPENSE_TYPE',
+    'T_GOODS_TYPE',
+    'T_GOODS_TYPE_RESOURCE',
+    'T_SUBSIDY_ACCOUNT_ROUTE'
   ]
 };
 

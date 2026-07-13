@@ -424,6 +424,22 @@ export default {
   createSystemLocation: (data) => api.post('/system/locations', data),
   updateSystemLocation: (id, data) => api.put(`/system/locations/${id}`, data),
   deleteSystemLocation: (id) => api.delete(`/system/locations/${id}`),
+  setStoreManager: (storeId, data) => api.put(`/system/stores/${storeId}/manager`, data),
+
+  // Approval center
+  getApprovalFlows: (params) => api.get('/approval/flows', { params }),
+  getApprovalFlow: (id) => api.get(`/approval/flows/${id}`),
+  createApprovalFlow: (data) => api.post('/approval/flows', data),
+  updateApprovalFlow: (id, data) => api.put(`/approval/flows/${id}`, data),
+  publishApprovalFlow: (id) => api.post(`/approval/flows/${id}/publish`),
+  disableApprovalFlow: (id) => api.post(`/approval/flows/${id}/disable`),
+  getApprovalAssigneeOptions: () => api.get('/approval/assignee-options'),
+  getApprovalTasks: (params) => api.get('/approval/tasks', { params }),
+  getApprovalInstances: (params) => api.get('/approval/instances', { params }),
+  getApprovalInstance: (id) => api.get(`/approval/instances/${id}`),
+  submitApproval: (data) => api.post('/approval/instances', data),
+  actionApproval: (id, data) => api.post(`/approval/instances/${id}/action`, data),
+  resubmitApproval: (id, data) => api.post(`/approval/instances/${id}/resubmit`, data),
 
   // Dict - Customer Source
   getCustomerSourceList: (params) => api.get('/dict/customer-source/list', { params }),

@@ -20,6 +20,7 @@
         <el-table-column prop="store_id" label="门店ID" width="100" />
         <el-table-column prop="name" label="门店名称" min-width="150" />
         <el-table-column prop="region_name" label="区域" width="100" />
+        <el-table-column prop="manager_name" label="店长" width="120" />
         <el-table-column prop="phone" label="联系电话" width="130" />
         <el-table-column prop="address" label="地址" min-width="200" />
         <el-table-column prop="status" label="状态" width="80">
@@ -56,6 +57,11 @@
         <el-form-item label="地址">
           <el-input v-model="storeForm.address" placeholder="请输入地址" />
         </el-form-item>
+        <el-form-item label="店长">
+          <el-select v-model="storeForm.managerStaffId" clearable filterable placeholder="可选，审批流程可引用" style="width:100%">
+            <el-option v-for="user in managerOptions" :key="user.staff_id" :label="`${user.name}（${user.staff_id}）`" :value="user.staff_id" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="状态">
           <el-switch v-model="storeForm.status" :active-value="1" :inactive-value="0" />
         </el-form-item>
@@ -83,6 +89,7 @@ const dialogVisible = ref(false)
 const dialogTitle = ref('新增门店')
 const submitLoading = ref(false)
 const editStoreId = ref(null)
+const managerOptions = ref([])
 
 const queryParams = reactive({
   keyword: '',
@@ -95,13 +102,24 @@ const storeForm = reactive({
   regionCode: '',
   phone: '',
   address: '',
+  managerStaffId: null,
   status: 1
 })
 
 onMounted(async () => {
   await loadRegions()
+  await loadManagerOptions()
   await loadData()
 })
+
+const loadManagerOptions = async () => {
+  const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
+  if (!(userInfo.roles || []).some(role => ['admin', 'boss'].includes(role))) return
+  try {
+    const res = await api.getUsers({ page: 1, pageSize: 500 })
+    managerOptions.value = res.data?.list || res.list || []
+  } catch (err) { managerOptions.value = [] }
+}
 
 const loadRegions = async () => {
   try {
@@ -149,6 +167,7 @@ const handleEdit = (row) => {
   storeForm.regionCode = selectedRegion ? selectedRegion.region_code : ''
   storeForm.phone = row.phone || ''
   storeForm.address = row.address || ''
+  storeForm.managerStaffId = row.manager_staff_id || null
   storeForm.status = row.status
   dialogVisible.value = true
 }
@@ -212,6 +231,8 @@ const handleSubmit = async () => {
     }
 
     if (res.code === 0) {
+      const managerStoreId = editStoreId.value || res.data?.storeId
+      if (managerStoreId) await api.setStoreManager(managerStoreId, { staffId: storeForm.managerStaffId || null })
       ElMessage.success(editStoreId.value ? '更新成功' : '创建成功')
       if (!editStoreId.value) {
         clearDraft(STORE_DRAFT_KEY)
@@ -239,6 +260,7 @@ const resetForm = () => {
   storeForm.regionCode = ''
   storeForm.phone = ''
   storeForm.address = ''
+  storeForm.managerStaffId = null
   storeForm.status = 1
 }
 
