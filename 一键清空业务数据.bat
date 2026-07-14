@@ -17,14 +17,16 @@ echo   purchase requests and purchase orders
 echo   daily statements, expenses
 echo   pending payables, payables, settlements, payments
 echo   rebates and account center balance sources
+echo   inventory batch applications, batch rights, staff care credit
+echo   subsidy receipts and receivable adjustments
 echo   approvals and product application test records
-echo   manufacturer policy, price import batches, price change history
+echo   manufacturer price history, price import batches, price change history
 echo.
 echo Will keep:
 echo   system config, users, roles, stores
 echo   suppliers and supplier payment accounts
 echo   product master data and current product prices
-echo   settlement account definitions
+echo   settlement account definitions and configuration rules
 echo.
 echo DB config comes from:
 echo   cloud-db.env or DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME

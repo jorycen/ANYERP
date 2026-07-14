@@ -5,7 +5,8 @@ export default defineConfig(() => {
   const proxyTarget = process.env.VITE_API_PROXY_TARGET || 'https://cloud1-249791-6-1410946266.sh.run.tcloudbase.com'
   return {
     plugins: [vue()],
-    base: './',
+    // Keep the legacy frontend build aligned with the production frontend.
+    base: '/',
     build: {
       outDir: 'dist'
     },

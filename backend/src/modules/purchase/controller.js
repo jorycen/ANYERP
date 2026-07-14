@@ -13,6 +13,13 @@ function toMoney(value) {
   return Math.round(amount * 100) / 100;
 }
 
+function normalizeGrossProfitUpliftAmount(value, fallback = 0) {
+  const raw = value === undefined || value === null || value === '' ? fallback : value;
+  const amount = Number(raw);
+  if (!Number.isFinite(amount) || amount < 0) return null;
+  return Math.round(amount * 100) / 100;
+}
+
 function assertStoreVisible(ctx, storeId) {
   const allowed = ctx.state.user.accessibleStoreIds || [];
   if (!allowed.includes('*') && !allowed.map(String).includes(String(storeId || ''))) {
@@ -673,11 +680,16 @@ async function getAllSuppliers(ctx) {
  * 创建供应商
  */
 async function createSupplier(ctx) {
-  const { name, contact, phone, address, invoiceType, remark, status = 1, paymentAccounts = [] } = ctx.request.body;
+  const {
+    name, contact, phone, address, invoiceType, remark, status = 1, paymentAccounts = [],
+    isServiceProvider = true, grossProfitUpliftAmount = 0
+  } = ctx.request.body;
 
   if (!name) {
     ctx.throw(400, '供应商名称不能为空');
   }
+  const normalizedUplift = normalizeGrossProfitUpliftAmount(grossProfitUpliftAmount);
+  if (normalizedUplift === null) ctx.throw(400, '毛利上浮额度必须是大于或等于0的金额');
 
   const supplierId = generateId('SP');
 
@@ -689,6 +701,8 @@ async function createSupplier(ctx) {
       phone: phone || '',
       address: address || '',
       invoice_type: invoiceType || '',
+      is_service_provider: isServiceProvider ? 1 : 0,
+      gross_profit_uplift_amount: normalizedUplift,
       remark: remark || '',
       sort_order: await Supplier.count({ where: { is_deleted: 0 }, transaction }),
       status,
@@ -707,7 +721,10 @@ async function createSupplier(ctx) {
  */
 async function updateSupplier(ctx) {
   const { id } = ctx.params;
-  const { name, contact, phone, address, invoiceType, remark, sortOrder, status, paymentAccounts } = ctx.request.body;
+  const {
+    name, contact, phone, address, invoiceType, remark, sortOrder, status, paymentAccounts,
+    isServiceProvider, grossProfitUpliftAmount
+  } = ctx.request.body;
 
   const supplier = await Supplier.findOne({
     where: { supplier_id: id, is_deleted: 0 }
@@ -716,6 +733,11 @@ async function updateSupplier(ctx) {
   if (!supplier) {
     ctx.throw(404, '供应商不存在');
   }
+  const normalizedUplift = normalizeGrossProfitUpliftAmount(
+    grossProfitUpliftAmount,
+    supplier.gross_profit_uplift_amount
+  );
+  if (normalizedUplift === null) ctx.throw(400, '毛利上浮额度必须是大于或等于0的金额');
 
   await sequelize.transaction(async (transaction) => {
     await supplier.update({
@@ -724,6 +746,10 @@ async function updateSupplier(ctx) {
       phone: phone !== undefined ? phone : supplier.phone,
       address: address !== undefined ? address : supplier.address,
       invoice_type: invoiceType !== undefined ? invoiceType : supplier.invoice_type,
+      is_service_provider: isServiceProvider !== undefined
+        ? (isServiceProvider ? 1 : 0)
+        : supplier.is_service_provider,
+      gross_profit_uplift_amount: normalizedUplift,
       remark: remark !== undefined ? remark : supplier.remark,
       sort_order: sortOrder !== undefined ? sortOrder : supplier.sort_order,
       status: status !== undefined ? status : supplier.status,

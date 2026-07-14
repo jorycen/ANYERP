@@ -25,4 +25,14 @@ try {
 Get-ChildItem -LiteralPath $publicRoot -Force | Remove-Item -Recurse -Force
 Copy-Item -Path (Join-Path $distRoot '*') -Destination $publicRoot -Recurse -Force
 
+$indexFile = Join-Path $publicRoot 'index.html'
+if (-not (Test-Path -LiteralPath $indexFile -PathType Leaf)) {
+  throw "Production index.html was not generated: $indexFile"
+}
+
+$indexHtml = Get-Content -Raw -Encoding UTF8 -LiteralPath $indexFile
+if ($indexHtml -match '(?:src|href)="\./assets/') {
+  throw 'Production index.html contains route-relative assets; expected /assets/.'
+}
+
 Write-Host "Production web assets copied to $publicRoot"

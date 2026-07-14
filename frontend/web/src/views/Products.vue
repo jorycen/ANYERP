@@ -464,6 +464,7 @@
       <div class="import-tips">
         <p>下载模板，按模板格式填写后上传。分类字段列名需与"商品字段管理"中配置的<strong>字段名</strong>（如：品牌、系列）一致，系统会自动匹配并拼装商品名称。</p>
         <p style="color: #e6a23c;">也可以直接填写"商品名称"列，系统优先使用该值。</p>
+        <p style="color: #409eff;">提交后先校验文件格式和数据；大文件会进入后台处理，请根据任务状态查看结果。</p>
         <el-button type="primary" size="small" @click="downloadTemplate">下载导入模板</el-button>
       </div>
       <div class="upload-area">
@@ -485,6 +486,7 @@
       <div class="import-tips">
         <p>填写商品编码或厂商编码，二者任填一个即可。厂商编码对应多个商品时会同步更新全部商品。</p>
         <p>可更新定价、零售价和最低售价；空价格按0导入并立即生效。成本不在定价模板中维护，请使用刷新成本。</p>
+        <p style="color: #409eff;">提交后先校验文件格式，定价导入将在后台异步处理；完成后可下载失败清单。</p>
         <el-button type="primary" size="small" @click="downloadPriceTemplate">下载定价模板</el-button>
       </div>
       <div class="upload-area">
@@ -552,12 +554,19 @@
 
     <!-- 导入结果 -->
     <el-dialog v-model="importResultVisible" title="导入结果" width="800px">
-      <el-alert :type="importResult.failed > 0 ? 'warning' : 'success'" style="margin-bottom: 16px;">
-        导入完成！成功 <strong>{{ importResult.success }}</strong> 行，失败 <strong>{{ importResult.failed }}</strong> 行
-        <span v-if="importResult.affectedProducts">，影响 <strong>{{ importResult.affectedProducts }}</strong> 个商品</span>
-        <span v-if="importResult.effective">，已生效 <strong>{{ importResult.effective }}</strong> 条价格变更</span>
-        <span v-if="importResult.pending">，待生效 <strong>{{ importResult.pending }}</strong> 条价格变更</span>
-        <span v-if="importResult.batchNo">，批次号：{{ importResult.batchNo }}</span>
+      <el-alert :type="importResultAlertType" style="margin-bottom: 16px;">
+        <template v-if="!isImportTaskFinished">
+          文件格式校验通过，已提交后台处理。当前状态：<strong>{{ importTaskStatusText }}</strong>
+          <span v-if="importResult.taskNo">，任务号：{{ importResult.taskNo }}</span>
+        </template>
+        <template v-else>
+          {{ importResult.status === 'failed' ? '导入失败' : '导入处理完成' }}：成功 <strong>{{ importResult.success }}</strong> 行，失败 <strong>{{ importResult.failed }}</strong> 行
+          <span v-if="importResult.affectedProducts">，影响 <strong>{{ importResult.affectedProducts }}</strong> 个商品</span>
+          <span v-if="importResult.effective">，已生效 <strong>{{ importResult.effective }}</strong> 条价格变更</span>
+          <span v-if="importResult.pending">，待生效 <strong>{{ importResult.pending }}</strong> 条价格变更</span>
+          <span v-if="importResult.batchNo">，批次号：{{ importResult.batchNo }}</span>
+          <span v-if="importResult.errorMessage">。{{ importResult.errorMessage }}</span>
+        </template>
       </el-alert>
       <el-table v-if="importResult.errors.length > 0" :data="importResult.errors" stripe size="small" max-height="300">
         <el-table-column type="index" width="60" />
@@ -570,6 +579,7 @@
         <el-table-column prop="message" label="失败原因" />
       </el-table>
       <template #footer>
+        <el-button v-if="isImportTaskFinished && importResult.errors.length > 0" @click="downloadImportErrors">下载失败清单</el-button>
         <el-button @click="importResultVisible = false">关闭</el-button>
       </template>
     </el-dialog>
@@ -611,7 +621,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed, nextTick } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Folder, Upload } from '@element-plus/icons-vue'
 import * as XLSX from 'xlsx'
@@ -812,8 +822,8 @@ const handleEdit = async (row) => {
   productForm.extras = extras
   productForm.attributes = { ...extras }
   productForm.unit = row.unit || '台'
-  productForm.needSn = !!row.need_sn
-  productForm.needImei = !!row.need_imei
+  productForm.needSn = Number(row.need_sn) === 1
+  productForm.needImei = Number(row.need_imei) === 1
   productForm.remark = row.remark || ''
   productForm.isFocusProduct = Boolean(row.is_focus_product)
   productForm.status = row.status || 1
@@ -1218,31 +1228,12 @@ const handlePriceImportSubmit = async () => {
     const res = await api.importPrices(priceImportFile.value)
     if (res.code === 0) {
       const data = res.data || {}
-      priceImportValidation.success = data.success || 0
-      priceImportValidation.failed = data.failed || 0
-      priceImportValidation.errors = data.errors || []
-      priceImportValidation.affectedProducts = data.affectedProducts || 0
-      priceImportValidation.priceChanges = data.priceChanges || 0
-      priceImportValidation.canImport = false
-      priceImportValidated.value = true
-      loadPriceData()
-      if (priceImportValidation.failed > 0) {
-        priceImportFile.value = null
-        ElMessage.warning(`已导入 ${priceImportValidation.success} 行，${priceImportValidation.failed} 行异常，请下载异常记录修改后重新导入`)
-      } else {
-        importResult.success = data.success || 0
-        importResult.failed = data.failed || 0
-        importResult.errors = []
-        importResult.affectedProducts = data.affectedProducts || 0
-        importResult.pending = data.pending || 0
-        importResult.effective = data.effective || 0
-        importResult.batchNo = data.batchNo || ''
-        priceImportDialogVisible.value = false
-        importResultVisible.value = true
-      }
+      priceImportFile.value = null
+      priceImportDialogVisible.value = false
+      showImportTaskResult(data, 'price')
     } else ElMessage.error(res.message || '导入失败')
   } catch (err) {
-    ElMessage.error(err?.response?.data?.message || '导入失败')
+    ElMessage.error(err?.response?.data?.message || '文件格式校验失败，请修改后重新上传')
   } finally {
     priceImportLoading.value = false
   }
@@ -1364,7 +1355,102 @@ const handleAddPn = async () => {
 // ========== 批量导入 ==========
 const importDialogVisible = ref(false); const importFile = ref(null)
 const importLoading = ref(false); const importResultVisible = ref(false)
-const importResult = reactive({ success: 0, failed: 0, errors: [], affectedProducts: 0, pending: 0, effective: 0, batchNo: '' })
+const importResult = reactive({
+  taskId: '', taskNo: '', importType: '', status: '', totalRows: 0, processedRows: 0,
+  success: 0, failed: 0, errors: [], affectedProducts: 0, pending: 0, effective: 0,
+  priceChanges: 0, batchNo: '', errorMessage: ''
+})
+let importTaskPollTimer = null
+
+const isImportTaskFinished = computed(() => ['completed', 'partial_failed', 'failed'].includes(importResult.status))
+const importTaskStatusText = computed(() => ({
+  queued: '排队中',
+  processing: '处理中',
+  completed: '已完成',
+  partial_failed: '部分失败',
+  failed: '失败'
+}[importResult.status] || '准备中'))
+const importResultAlertType = computed(() => {
+  if (!isImportTaskFinished.value) return 'info'
+  if (importResult.status === 'completed') return 'success'
+  return 'warning'
+})
+
+const clearImportTaskPoll = () => {
+  if (importTaskPollTimer) {
+    clearTimeout(importTaskPollTimer)
+    importTaskPollTimer = null
+  }
+}
+
+const applyImportTaskData = (data) => {
+  importResult.taskId = data.taskId || importResult.taskId
+  importResult.taskNo = data.taskNo || ''
+  importResult.importType = data.importType || importResult.importType
+  importResult.status = data.status || ''
+  importResult.totalRows = data.totalRows || 0
+  importResult.processedRows = data.processedRows || 0
+  importResult.success = data.success || 0
+  importResult.failed = data.failed || 0
+  importResult.errors = data.errors || []
+  importResult.affectedProducts = data.affectedProducts || 0
+  importResult.pending = data.pending || 0
+  importResult.effective = data.effective || 0
+  importResult.priceChanges = data.priceChanges || 0
+  importResult.batchNo = data.batchNo || ''
+  importResult.errorMessage = data.errorMessage || ''
+}
+
+const pollImportTask = async () => {
+  if (!importResult.taskId) return
+  try {
+    const res = await api.getProductImportTask(importResult.taskId)
+    if (res.code === 0) {
+      applyImportTaskData(res.data || {})
+      if (isImportTaskFinished.value) {
+        clearImportTaskPoll()
+        if (importResult.importType === 'price') loadPriceData()
+        else loadData()
+        if (importResult.status === 'partial_failed') {
+          ElMessage.warning('导入完成，但有失败记录，请下载失败清单修改后重新导入')
+        } else if (importResult.status === 'completed') {
+          ElMessage.success('批量导入已完成')
+        }
+        return
+      }
+    }
+  } catch (err) {
+    // 网络短暂中断时继续查询，避免把后台仍在处理的任务误报为失败。
+  }
+  importTaskPollTimer = setTimeout(pollImportTask, 1500)
+}
+
+const showImportTaskResult = (data, importType) => {
+  clearImportTaskPoll()
+  importResult.taskId = data.taskId || ''
+  importResult.importType = importType
+  applyImportTaskData(data)
+  importResultVisible.value = true
+  if (importResult.taskId && !isImportTaskFinished.value) pollImportTask()
+}
+
+const downloadImportErrors = () => {
+  if (!importResult.errors.length) {
+    ElMessage.warning('暂无失败记录')
+    return
+  }
+  const rows = importResult.errors.map(item => ({
+    '行号': item.row,
+    ...(item.product || {}),
+    '异常原因': item.message
+  }))
+  const ws = XLSX.utils.json_to_sheet(rows)
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, '失败清单')
+  XLSX.writeFile(wb, importResult.importType === 'price' ? '商品定价导入失败清单.xlsx' : '商品导入失败清单.xlsx')
+}
+
+onUnmounted(clearImportTaskPoll)
 
 const handleImport = () => { importFile.value = null; importDialogVisible.value = true }
 const handleExport = async () => {
@@ -1425,11 +1511,11 @@ const handleImportSubmit = async () => {
   try {
     const res = await api.importProducts(importFile.value)
     if (res.code === 0) {
-      importResult.success = res.data.success; importResult.failed = res.data.failed; importResult.errors = res.data.errors || []
-      importResult.affectedProducts = 0; importResult.pending = 0; importResult.effective = 0; importResult.batchNo = ''
-      importDialogVisible.value = false; importResultVisible.value = true; loadData()
+      importFile.value = null
+      importDialogVisible.value = false
+      showImportTaskResult(res.data || {}, 'product')
     } else ElMessage.error(getProductImportErrorMessage(res))
-  } catch (err) { ElMessage.error(getProductImportErrorMessage(err)) }
+  } catch (err) { ElMessage.error(err?.response?.data?.message || '文件格式校验失败，请修改后重新上传') }
   finally { importLoading.value = false }
 }
 

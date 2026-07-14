@@ -501,6 +501,32 @@ const ProductPriceChangeLog = sequelize.define('ProductPriceChangeLog', {
   fail_reason: { type: DataTypes.STRING(512) }
 }, { tableName: 'T_PRODUCT_PRICE_CHANGE_LOG', timestamps: false });
 
+// 商品和定价 Excel 导入任务。文件先落库，后台异步处理，避免大文件占用上传请求。
+const ProductImportTask = sequelize.define('ProductImportTask', {
+  task_id: { type: DataTypes.STRING(32), primaryKey: true },
+  task_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
+  import_type: { type: DataTypes.STRING(32), allowNull: false, comment: 'product/price' },
+  source_file_name: { type: DataTypes.STRING(255) },
+  file_data: { type: DataTypes.BLOB('long'), allowNull: false },
+  total_rows: { type: DataTypes.INTEGER, defaultValue: 0 },
+  processed_rows: { type: DataTypes.INTEGER, defaultValue: 0 },
+  valid_rows: { type: DataTypes.INTEGER, defaultValue: 0 },
+  success_rows: { type: DataTypes.INTEGER, defaultValue: 0 },
+  failed_rows: { type: DataTypes.INTEGER, defaultValue: 0 },
+  affected_products: { type: DataTypes.INTEGER, defaultValue: 0 },
+  price_changes: { type: DataTypes.INTEGER, defaultValue: 0 },
+  pending_changes: { type: DataTypes.INTEGER, defaultValue: 0 },
+  effective_changes: { type: DataTypes.INTEGER, defaultValue: 0 },
+  batch_no: { type: DataTypes.STRING(64) },
+  status: { type: DataTypes.STRING(32), defaultValue: 'queued' },
+  error_json: { type: DataTypes.TEXT('long') },
+  error_message: { type: DataTypes.STRING(1000) },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  start_time: { type: DataTypes.DATE },
+  finish_time: { type: DataTypes.DATE }
+}, { tableName: 'T_PRODUCT_IMPORT_TASK', timestamps: false });
+
 // 经销商按单台 SN 维护的销售特价。商品统一调价不得覆盖本表。
 const SnDistributorPrice = sequelize.define('SnDistributorPrice', {
   price_id: { type: DataTypes.STRING(32), primaryKey: true },
@@ -2011,6 +2037,7 @@ module.exports = {
   ProductPrice,
   ProductPriceImportBatch,
   ProductPriceChangeLog,
+  ProductImportTask,
   SnDistributorPrice,
   SnDistributorPriceChangeLog,
   Location,

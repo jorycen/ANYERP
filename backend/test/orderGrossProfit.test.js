@@ -87,6 +87,23 @@ test('毛利商品成本优先使用产品定价，未定价时才回退采购�
   );
 });
 
+test('非服务商毛利成本按采购价加每件固定上浮金额', () => {
+  assert.deepEqual(
+    resolveUnitProductPricing(
+      { standard_price: 5000, cost_price: 4500 },
+      { original_inventory_cost: 4500 },
+      { supplier_id: 'SUP_1', is_service_provider: 0, gross_profit_uplift_amount: 200 }
+    ),
+    {
+      unitPricing: 4700,
+      source: 'purchase_price_plus_supplier_uplift',
+      purchasePrice: 4500,
+      grossProfitUpliftAmount: 200,
+      isServiceProvider: false
+    }
+  );
+});
+
 test('用户应收保留国补和教育补贴，只扣除普通折扣', () => {
   assert.equal(calculateOrderReceivable({
     total_amount: 1500,

@@ -13,6 +13,7 @@ const {
   ProductPrice,
   ProductPriceImportBatch,
   ProductPriceChangeLog,
+  ProductImportTask,
   Inventory,
   Store
 } = require('../../models');
@@ -419,6 +420,10 @@ async function getProductList(ctx) {
       extras,
       manufacturer_codes: splitCodes(p.manufacturer_code).length > 0 ? splitCodes(p.manufacturer_code) : allBarcodes.filter(b => b.type === 'manufacturer').map(b => b.code),
       barcodes: allBarcodes,
+      need_sn: Number(p.need_sn || 0),
+      need_imei: Number(p.need_imei || 0),
+      unit: p.unit || '台',
+      remark: p.remark || '',
       create_time: p.create_time || '',
       is_focus_product: Number(p.is_focus_product || 0),
       status: p.status
@@ -1474,104 +1479,294 @@ async function batchRefreshCost(ctx) {
 
 // ===== 其他 =====
 
-async function parsePriceImportRows(ctx) {
-  if (!ctx.file) ctx.throw(400, '请上传文件');
-  const workbook = XLSX.read(ctx.file.buffer, { type: 'buffer' });
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+const IMPORT_TASK_TERMINAL_STATUSES = new Set(['completed', 'partial_failed', 'failed']);
+const scheduledProductImportTasks = new Set();
+
+function normalizeImportHeader(value) {
+  return String(value ?? '').trim();
+}
+
+function parseImportWorkbook(file, importType) {
+  if (!file?.buffer) {
+    const error = new Error('请上传Excel文件');
+    error.status = 400;
+    throw error;
+  }
+
+  const fileName = String(file.originalname || '').toLowerCase();
+  if (fileName && !/\.(xlsx|xls)$/.test(fileName)) {
+    const error = new Error('只支持 .xlsx 或 .xls 格式的Excel文件');
+    error.status = 400;
+    throw error;
+  }
+
+  let workbook;
+  try {
+    workbook = XLSX.read(file.buffer, { type: 'buffer', cellDates: true });
+  } catch (_) {
+    const error = new Error('Excel文件解析失败，请检查文件格式');
+    error.status = 400;
+    throw error;
+  }
+
+  const sheetName = workbook.SheetNames?.[0];
+  if (!sheetName) {
+    const error = new Error('Excel文件没有可用工作表');
+    error.status = 400;
+    throw error;
+  }
+  const sheet = workbook.Sheets[sheetName];
+  const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+  const headers = (matrix[0] || []).map(normalizeImportHeader).filter(Boolean);
+  if (headers.length === 0) {
+    const error = new Error('Excel文件缺少表头');
+    error.status = 400;
+    throw error;
+  }
+  const duplicateHeaders = headers.filter((header, index) => headers.indexOf(header) !== index);
+  if (duplicateHeaders.length > 0) {
+    const error = new Error(`Excel表头重复：${[...new Set(duplicateHeaders)].join('、')}`);
+    error.status = 400;
+    throw error;
+  }
+
+  const accepted = importType === 'price'
+    ? {
+        identifiers: ['商品编码', '商品代码', 'product_code', 'productCode', '厂商编码', 'manufacturer_code', 'manufacturerCode'],
+        values: ['定价', '标准售价', '销售定价', 'standard_price', 'standardPrice', '零售价', '销售价', 'retail_price', 'retailPrice', '最低售价', '最低销售价', 'min_sale_price', 'minSalePrice']
+      }
+    : null;
+  if (accepted && !headers.some(header => accepted.identifiers.includes(header))) {
+    const error = new Error('定价模板缺少商品编码或厂商编码列');
+    error.status = 400;
+    throw error;
+  }
+  if (accepted && !headers.some(header => accepted.values.includes(header))) {
+    const error = new Error('定价模板缺少定价、零售价或最低售价列');
+    error.status = 400;
+    throw error;
+  }
+
   const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-  if (!rows || rows.length === 0) ctx.throw(400, '文件中没有数据');
-  return rows;
+  if (!rows || rows.length === 0) {
+    const error = new Error('文件中没有数据');
+    error.status = 400;
+    throw error;
+  }
+  return { workbook, sheetName, headers, rows };
+}
+
+function parseTaskErrors(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function importTaskData(task) {
+  return {
+    taskId: task.task_id,
+    taskNo: task.task_no,
+    importType: task.import_type,
+    sourceFileName: task.source_file_name || '',
+    status: task.status,
+    totalRows: Number(task.total_rows || 0),
+    processedRows: Number(task.processed_rows || 0),
+    validRows: Number(task.valid_rows || 0),
+    success: Number(task.success_rows || 0),
+    failed: Number(task.failed_rows || 0),
+    affectedProducts: Number(task.affected_products || 0),
+    priceChanges: Number(task.price_changes || 0),
+    pending: Number(task.pending_changes || 0),
+    effective: Number(task.effective_changes || 0),
+    batchNo: task.batch_no || '',
+    errors: parseTaskErrors(task.error_json),
+    errorMessage: task.error_message || '',
+    createTime: task.create_time,
+    startTime: task.start_time,
+    finishTime: task.finish_time
+  };
+}
+
+async function createProductImportTask(ctx, importType) {
+  const parsed = parseImportWorkbook(ctx.file, importType);
+  const task = await ProductImportTask.create({
+    task_id: generateUUID(),
+    task_no: generateId(importType === 'price' ? 'PIT' : 'PRT'),
+    import_type: importType,
+    source_file_name: ctx.file.originalname || '',
+    file_data: ctx.file.buffer,
+    total_rows: parsed.rows.length,
+    status: 'queued',
+    create_user: getUserName(ctx),
+    create_time: new Date()
+  });
+
+  scheduleProductImportTask(task.task_id);
+  ctx.status = 202;
+  ctx.body = {
+    code: 0,
+    data: importTaskData(task),
+    message: '文件格式校验通过，已提交后台导入，请查看任务状态'
+  };
+}
+
+async function getProductImportTask(ctx) {
+  const task = await ProductImportTask.findByPk(ctx.params.taskId);
+  if (!task) ctx.throw(404, '导入任务不存在');
+  ctx.body = { code: 0, data: importTaskData(task) };
+}
+
+async function parsePriceImportRows(ctx) {
+  return parseImportWorkbook(ctx.file, 'price').rows;
+}
+
+async function findProductsForPriceImport(productCodes, manufacturerCodes) {
+  const productsById = new Map();
+  const loadProducts = async (where) => {
+    const rows = await Product.findAll({
+      where: { ...where, is_deleted: 0 },
+      include: [{ model: ProductBarcode, attributes: ['barcode_type', 'barcode_code'], where: { status: 1 }, required: false }]
+    });
+    rows.forEach(product => productsById.set(product.product_id, product));
+  };
+
+  for (let i = 0; i < productCodes.length; i += 500) {
+    await loadProducts({ product_code: { [Op.in]: productCodes.slice(i, i + 500) } });
+  }
+
+  const manufacturerProductIds = new Set();
+  for (let i = 0; i < manufacturerCodes.length; i += 500) {
+    const barcodeRows = await ProductBarcode.findAll({
+      where: {
+        barcode_type: 'manufacturer',
+        barcode_code: { [Op.in]: manufacturerCodes.slice(i, i + 500) },
+        status: 1
+      },
+      attributes: ['product_id'],
+      raw: true
+    });
+    barcodeRows.forEach(row => manufacturerProductIds.add(row.product_id));
+  }
+
+  // 兼容历史数据中直接保存于商品 manufacturer_code 字段的厂商编码。
+  for (let i = 0; i < manufacturerCodes.length; i += 100) {
+    const codes = manufacturerCodes.slice(i, i + 100);
+    if (codes.length === 0) continue;
+    await loadProducts({
+      [Op.or]: codes.map(code => ({ manufacturer_code: { [Op.like]: `%${code}%` } }))
+    });
+  }
+  const manufacturerIds = [...manufacturerProductIds];
+  for (let i = 0; i < manufacturerIds.length; i += 500) {
+    await loadProducts({ product_id: { [Op.in]: manufacturerIds.slice(i, i + 500) } });
+  }
+
+  const allProducts = [...productsById.values()].filter(Boolean);
+  const productByCode = new Map(allProducts.map(product => [String(product.product_code || '').trim(), product]));
+  const productsByManufacturer = new Map();
+  for (const code of manufacturerCodes) {
+    productsByManufacturer.set(code, allProducts.filter(product => productHasManufacturerCode(product, code)));
+  }
+  return { productByCode, productsByManufacturer };
 }
 
 async function validatePriceImportRows(rows) {
   const errors = [];
   const targetRows = [];
-
-  for (const [index, row] of rows.entries()) {
-    const rowNo = index + 2;
+  const parsedRows = rows.map((row, index) => {
     const productCode = String(getRowValue(row, ['商品编码', '商品代码', 'product_code', 'productCode']) || '').trim();
     const manufacturerCode = String(getRowValue(row, ['厂商编码', 'manufacturer_code', 'manufacturerCode']) || '').trim();
     const standardRaw = getRowValue(row, ['定价', '标准售价', '销售定价', 'standard_price', 'standardPrice']);
     const retailRaw = getRowValue(row, ['零售价', '销售价', 'retail_price', 'retailPrice']);
     const minRaw = getRowValue(row, ['最低售价', '最低销售价', 'min_sale_price', 'minSalePrice']);
-    const changeReason = String(getRowValue(row, ['调价原因', '原因', 'change_reason', 'reason']) || '').trim();
-    const remark = String(getRowValue(row, ['备注', 'remark']) || '').trim();
+    return {
+      row,
+      rowNo: index + 2,
+      productCode,
+      manufacturerCode,
+      standardPrice: isEmptyCell(standardRaw) ? 0 : parseMoney(standardRaw),
+      retailPrice: isEmptyCell(retailRaw) ? 0 : parseMoney(retailRaw),
+      minSalePrice: isEmptyCell(minRaw) ? 0 : parseMoney(minRaw),
+      changeReason: String(getRowValue(row, ['调价原因', '原因', 'change_reason', 'reason']) || '').trim(),
+      remark: String(getRowValue(row, ['备注', 'remark']) || '').trim()
+    };
+  });
+  const productCodes = [...new Set(parsedRows.map(item => item.productCode).filter(Boolean))];
+  const manufacturerCodes = [...new Set(parsedRows.map(item => item.manufacturerCode).filter(Boolean))];
+  const lookup = await findProductsForPriceImport(productCodes, manufacturerCodes);
+  const candidates = [];
 
-    const hasStandardPrice = true;
-    const hasRetailPrice = true;
-    const hasMinSalePrice = true;
-    const standardPrice = isEmptyCell(standardRaw) ? 0 : parseMoney(standardRaw);
-    const retailPrice = isEmptyCell(retailRaw) ? 0 : parseMoney(retailRaw);
-    const minSalePrice = isEmptyCell(minRaw) ? 0 : parseMoney(minRaw);
-    const effectiveTime = new Date();
+  for (const item of parsedRows) {
+    if (!item.productCode && !item.manufacturerCode) {
+      errors.push({ row: item.rowNo, product: item.row, message: '请填写商品编码或厂商编码' });
+      continue;
+    }
+    if (item.standardPrice === null || item.retailPrice === null || item.minSalePrice === null) {
+      errors.push({ row: item.rowNo, product: item.row, message: '价格格式错误' });
+      continue;
+    }
+    if (item.standardPrice < 0 || item.retailPrice < 0 || item.minSalePrice < 0) {
+      errors.push({ row: item.rowNo, product: item.row, message: '价格不能为负数' });
+      continue;
+    }
 
-    if (!productCode && !manufacturerCode) {
-      errors.push({ row: rowNo, product: row, message: '请填写商品编码或厂商编码' });
-      continue;
-    }
-    if (standardPrice === null || retailPrice === null || minSalePrice === null) {
-      errors.push({ row: rowNo, product: row, message: '价格格式错误' });
-      continue;
-    }
-    if ((standardPrice !== null && standardPrice < 0) || (retailPrice !== null && retailPrice < 0) || (minSalePrice !== null && minSalePrice < 0)) {
-      errors.push({ row: rowNo, product: row, message: '价格不能为负数' });
-      continue;
-    }
     let matchedProducts = [];
-    if (productCode) {
-      const product = await Product.findOne({
-        where: { product_code: productCode, is_deleted: 0 },
-        include: [{ model: ProductBarcode, attributes: ['barcode_type', 'barcode_code'], where: { status: 1 }, required: false }]
-      });
+    if (item.productCode) {
+      const product = lookup.productByCode.get(item.productCode);
       if (!product) {
-        errors.push({ row: rowNo, product: row, message: `商品编码不存在: ${productCode}` });
+        errors.push({ row: item.rowNo, product: item.row, message: `商品编码不存在: ${item.productCode}` });
         continue;
       }
-      if (manufacturerCode && !productHasManufacturerCode(product, manufacturerCode)) {
-        errors.push({ row: rowNo, product: row, message: '商品编码与厂商编码不匹配' });
+      if (item.manufacturerCode && !productHasManufacturerCode(product, item.manufacturerCode)) {
+        errors.push({ row: item.rowNo, product: item.row, message: '商品编码与厂商编码不匹配' });
         continue;
       }
       matchedProducts = [product];
     } else {
-      matchedProducts = await findProductsByManufacturerCode(manufacturerCode);
+      matchedProducts = lookup.productsByManufacturer.get(item.manufacturerCode) || [];
       if (matchedProducts.length === 0) {
-        errors.push({ row: rowNo, product: row, message: `厂商编码不存在或未关联商品: ${manufacturerCode}` });
+        errors.push({ row: item.rowNo, product: item.row, message: `厂商编码不存在或未关联商品: ${item.manufacturerCode}` });
         continue;
       }
     }
+    matchedProducts.forEach(product => candidates.push({ ...item, product }));
+  }
 
-    for (const product of matchedProducts) {
-      const existingPrice = await ProductPrice.findOne({ where: { product_id: product.product_id } });
-      const nextStandardPrice = standardPrice !== null ? moneyNumber(standardPrice) : moneyNumber(existingPrice?.standard_price);
-      const nextRetailPrice = retailPrice !== null ? moneyNumber(retailPrice) : moneyNumber(existingPrice?.retail_price ?? existingPrice?.standard_price);
-      const nextMinSalePrice = minSalePrice !== null ? moneyNumber(minSalePrice) : moneyNumber(existingPrice?.min_sale_price);
-
-      if (nextMinSalePrice > nextRetailPrice) {
-        errors.push({
-          row: rowNo,
-          product: row,
-          message: `${product.product_code} 最低售价必须小于或等于零售价`
-        });
-        continue;
-      }
-
-      targetRows.push({
-        rowNo,
-        row,
-        product,
-        manufacturerCode,
-        hasStandardPrice,
-        hasRetailPrice,
-        hasMinSalePrice,
-        standardPrice: nextStandardPrice,
-        retailPrice: nextRetailPrice,
-        minSalePrice: nextMinSalePrice,
-        effectiveTime,
-        changeReason,
-        remark,
-        existingPrice
-      });
+  const productIds = [...new Set(candidates.map(item => item.product.product_id))];
+  const prices = productIds.length > 0
+    ? await ProductPrice.findAll({ where: { product_id: { [Op.in]: productIds } } })
+    : [];
+  const priceByProductId = new Map(prices.map(price => [price.product_id, price]));
+  for (const item of candidates) {
+    const existingPrice = priceByProductId.get(item.product.product_id);
+    const nextStandardPrice = moneyNumber(item.standardPrice);
+    const nextRetailPrice = moneyNumber(item.retailPrice);
+    const nextMinSalePrice = moneyNumber(item.minSalePrice);
+    if (nextMinSalePrice > nextRetailPrice) {
+      errors.push({ row: item.rowNo, product: item.row, message: `${item.product.product_code} 最低售价必须小于或等于零售价` });
+      continue;
     }
+    targetRows.push({
+      rowNo: item.rowNo,
+      row: item.row,
+      product: item.product,
+      manufacturerCode: item.manufacturerCode,
+      hasStandardPrice: true,
+      hasRetailPrice: true,
+      hasMinSalePrice: true,
+      standardPrice: nextStandardPrice,
+      retailPrice: nextRetailPrice,
+      minSalePrice: nextMinSalePrice,
+      effectiveTime: new Date(),
+      changeReason: item.changeReason,
+      remark: item.remark,
+      existingPrice
+    });
   }
 
   const productRowMap = new Map();
@@ -1630,8 +1825,7 @@ async function validateImportPrices(ctx) {
   };
 }
 
-async function importPrices(ctx) {
-  const rows = await parsePriceImportRows(ctx);
+async function executePriceImportRows(rows, sourceFileName, userName) {
   const results = { success: 0, failed: 0, errors: [], affectedProducts: 0, pending: 0, effective: 0, batchNo: '', priceChanges: 0 };
 
   await applyPendingProductPriceChanges();
@@ -1641,12 +1835,10 @@ async function importPrices(ctx) {
   results.errors = validation.errors;
 
   if (targetRows.length === 0) {
-    ctx.body = { code: 0, data: results, message: '没有可导入的有效价格记录' };
-    return;
+    return results;
   }
 
   const now = new Date();
-  const userName = getUserName(ctx);
   const batchNo = generateId('PPI');
   const batchId = generateUUID();
   const transaction = await sequelize.transaction();
@@ -1659,7 +1851,7 @@ async function importPrices(ctx) {
     await ProductPriceImportBatch.create({
       batch_id: batchId,
       batch_no: batchNo,
-      source_file_name: ctx.file.originalname || '',
+      source_file_name: sourceFileName || '',
       total_rows: rows.length,
       total_products: targetRows.length,
       total_changes: 0,
@@ -1668,36 +1860,27 @@ async function importPrices(ctx) {
       create_time: now
     }, { transaction });
 
+    const immediatePriceRows = [];
+    const changeLogs = [];
     for (const item of targetRows) {
       const isImmediate = item.effectiveTime.getTime() <= now.getTime();
-      const price = await ProductPrice.findOne({ where: { product_id: item.product.product_id }, transaction });
+      const price = item.existingPrice;
       const oldStandardPrice = moneyNumber(price?.standard_price);
       const oldRetailPrice = moneyNumber(price?.retail_price);
       const oldMinSalePrice = moneyNumber(price?.min_sale_price);
 
       if (isImmediate) {
-        if (price) {
-          await price.update({
-            standard_price: item.standardPrice,
-            retail_price: item.retailPrice,
-            min_sale_price: item.minSalePrice,
-            effective_time: item.effectiveTime,
-            create_user: userName
-          }, { transaction });
-        } else {
-          await ProductPrice.create({
-            price_id: generateUUID(),
-            product_id: item.product.product_id,
-            cost_price: 0,
-            standard_price: item.standardPrice,
-            retail_price: item.retailPrice,
-            min_sale_price: item.minSalePrice,
-            effective_time: item.effectiveTime,
-            create_user: userName
-          }, { transaction });
-        }
+        immediatePriceRows.push({
+          price_id: price?.price_id || generateUUID(),
+          product_id: item.product.product_id,
+          cost_price: moneyNumber(price?.cost_price),
+          standard_price: item.standardPrice,
+          retail_price: item.retailPrice,
+          min_sale_price: item.minSalePrice,
+          effective_time: item.effectiveTime,
+          create_user: userName
+        });
       }
-
       const logBase = {
         batch_id: batchId,
         batch_no: batchNo,
@@ -1715,9 +1898,8 @@ async function importPrices(ctx) {
         applied_time: isImmediate ? now : null
       };
 
-      const logs = [];
       if (item.hasStandardPrice) {
-        logs.push({
+        changeLogs.push({
           change_id: generateUUID(),
           ...logBase,
           price_field: 'standard_price',
@@ -1726,7 +1908,7 @@ async function importPrices(ctx) {
         });
       }
       if (item.hasRetailPrice) {
-        logs.push({
+        changeLogs.push({
           change_id: generateUUID(),
           ...logBase,
           price_field: 'retail_price',
@@ -1735,7 +1917,7 @@ async function importPrices(ctx) {
         });
       }
       if (item.hasMinSalePrice) {
-        logs.push({
+        changeLogs.push({
           change_id: generateUUID(),
           ...logBase,
           price_field: 'min_sale_price',
@@ -1743,12 +1925,20 @@ async function importPrices(ctx) {
           new_price: item.minSalePrice
         });
       }
-      if (logs.length > 0) {
-        await ProductPriceChangeLog.bulkCreate(logs, { transaction });
-        totalChanges += logs.length;
-        if (isImmediate) effectiveCount += logs.length;
-        else pendingCount += logs.length;
-      }
+      const itemChangeCount = (item.hasStandardPrice ? 1 : 0) + (item.hasRetailPrice ? 1 : 0) + (item.hasMinSalePrice ? 1 : 0);
+      totalChanges += itemChangeCount;
+      if (isImmediate) effectiveCount += itemChangeCount;
+      else pendingCount += itemChangeCount;
+    }
+
+    if (immediatePriceRows.length > 0) {
+      await ProductPrice.bulkCreate(immediatePriceRows, {
+        updateOnDuplicate: ['standard_price', 'retail_price', 'min_sale_price', 'effective_time', 'create_user'],
+        transaction
+      });
+    }
+    for (let i = 0; i < changeLogs.length; i += 1000) {
+      await ProductPriceChangeLog.bulkCreate(changeLogs.slice(i, i + 1000), { transaction });
     }
 
     await ProductPriceImportBatch.update({
@@ -1763,11 +1953,79 @@ async function importPrices(ctx) {
     results.effective = effectiveCount;
     results.batchNo = batchNo;
     results.priceChanges = totalChanges;
-    ctx.body = { code: 0, data: results, message: '价格导入完成' };
+    return results;
   } catch (error) {
     await transaction.rollback();
-    ctx.throw(500, error.message || '价格导入失败');
+    throw error;
   }
+}
+
+async function importPrices(ctx) {
+  return createProductImportTask(ctx, 'price');
+}
+
+async function processProductImportTask(taskId) {
+  const task = await ProductImportTask.findByPk(taskId);
+  if (!task || IMPORT_TASK_TERMINAL_STATUSES.has(task.status)) return;
+
+  await task.update({ status: 'processing', start_time: task.start_time || new Date(), error_message: null });
+  try {
+    const parsed = parseImportWorkbook({
+      buffer: task.file_data,
+      originalname: task.source_file_name
+    }, task.import_type);
+
+    const results = task.import_type === 'price'
+      ? await executePriceImportRows(parsed.rows, task.source_file_name, task.create_user || 'system')
+      : await executeProductImportRows(parsed.rows);
+    const failed = Number(results.failed || 0);
+    const success = Number(results.success || 0);
+    const status = failed > 0 ? (success > 0 ? 'partial_failed' : 'failed') : 'completed';
+
+    await task.update({
+      status,
+      processed_rows: parsed.rows.length,
+      valid_rows: success,
+      success_rows: success,
+      failed_rows: failed,
+      affected_products: Number(results.affectedProducts || success),
+      price_changes: Number(results.priceChanges || 0),
+      pending_changes: Number(results.pending || 0),
+      effective_changes: Number(results.effective || 0),
+      batch_no: results.batchNo || null,
+      error_json: JSON.stringify(results.errors || []),
+      error_message: failed > 0 ? (success > 0 ? '部分记录导入成功，失败记录请下载修改后重新导入' : '没有可导入的有效记录') : null,
+      finish_time: new Date()
+    });
+  } catch (error) {
+    await ProductImportTask.update({
+      status: 'failed',
+      error_message: String(error.message || error).slice(0, 1000),
+      finish_time: new Date()
+    }, { where: { task_id: taskId } });
+    console.error(`[ProductImport] 后台任务失败 ${taskId}:`, error.stack || error.message);
+  }
+}
+
+function scheduleProductImportTask(taskId) {
+  if (!taskId || scheduledProductImportTasks.has(taskId)) return;
+  scheduledProductImportTasks.add(taskId);
+  setImmediate(() => processProductImportTask(taskId)
+    .catch(error => console.error(`[ProductImport] 后台任务启动失败 ${taskId}:`, error.stack || error.message))
+    .finally(() => scheduledProductImportTasks.delete(taskId)));
+}
+
+async function recoverProductImportTasks() {
+  const tasks = await ProductImportTask.findAll({
+    where: { status: { [Op.in]: ['queued', 'processing'] } },
+    attributes: ['task_id'],
+    order: [['create_time', 'ASC']]
+  });
+  tasks.forEach(task => scheduleProductImportTask(task.task_id));
+  if (tasks.length > 0) {
+    console.log(`[ProductImport] 已恢复 ${tasks.length} 个商品/定价导入任务`);
+  }
+  return tasks.length;
 }
 
 async function getPriceChangeHistory(ctx) {
@@ -2202,25 +2460,7 @@ async function getCategoryFieldConfig(ctx) {
   ctx.body = { code: 0, data: { fields: result, categoryName: category ? category.name : '' } };
 }
 
-async function importProducts(ctx) {
-  if (!ctx.file) {
-    ctx.throw(400, '请上传Excel文件');
-  }
-
-  let rows = [];
-  try {
-    const workbook = XLSX.read(ctx.file.buffer);
-    const sheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[sheetName];
-    rows = XLSX.utils.sheet_to_json(worksheet);
-  } catch (error) {
-    ctx.throw(400, 'Excel文件解析失败，请检查文件格式');
-  }
-
-  if (!rows || rows.length === 0) {
-    ctx.throw(400, '文件中没有数据');
-  }
-
+async function executeProductImportRows(rows) {
   // 缓存分类→字段映射，避免每行重复查询
   const catFieldCache = {};
 
@@ -2429,7 +2669,11 @@ async function importProducts(ctx) {
     }
   }
 
-  ctx.body = { code: 0, data: results, message: '导入完成' };
+  return results;
+}
+
+async function importProducts(ctx) {
+  return createProductImportTask(ctx, 'product');
 }
 
 /**
@@ -2586,5 +2830,7 @@ module.exports = {
   },
   getCategoryTree, createCategory, updateCategory, deleteCategory, sortCategories,
   getPriceList, setPrice, refreshCostPrice, batchRefreshCost, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory, applyPendingProductPriceChanges,
-  getPnList, addPn, searchProduct
+  getProductImportTask, recoverProductImportTasks,
+  getPnList, addPn, searchProduct,
+  _test: { parseImportWorkbook, importTaskData }
 };

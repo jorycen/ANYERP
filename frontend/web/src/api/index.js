@@ -1,7 +1,16 @@
 import axios from 'axios'
 import router from '../router'
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1'
+function normalizeApiBaseUrl(value) {
+  const raw = String(value || '/api/v1').trim()
+  if (/^https?:\/\//i.test(raw)) {
+    return raw.replace(/\/+$/, '')
+  }
+  const pathValue = raw.replace(/^\/+/, '').replace(/\/+$/, '')
+  return `/${pathValue || 'api/v1'}`
+}
+
+const API_BASE_URL = normalizeApiBaseUrl(import.meta.env.VITE_API_BASE_URL)
 const RETRYABLE_STATUS_CODES = new Set([500, 502, 503, 504])
 const IDEMPOTENT_METHODS = new Set(['get', 'head', 'options'])
 const MAX_RETRY_COUNT = 2
@@ -305,9 +314,11 @@ export default {
     const formData = new FormData();
     formData.append('file', file);
     return api.post('/product/import', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000
     });
   },
+  getProductImportTask: (taskId) => api.get(`/product/import/task/${taskId}`),
   exportProducts: (params) => {
     return exportApi.get('/product/export', { 
       params, 
@@ -371,7 +382,8 @@ export default {
     const formData = new FormData();
     formData.append('file', file);
     return api.post('/product/price/import', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000
     });
   },
   importCostRefresh: (file) => {

@@ -133,7 +133,8 @@ const tableGroups = {
   'manufacturer and product price history': [
     'T_MANUFACTURER_PRICE_HISTORY',
     'T_PRODUCT_PRICE_CHANGE_LOG',
-    'T_PRODUCT_PRICE_IMPORT_BATCH'
+    'T_PRODUCT_PRICE_IMPORT_BATCH',
+    'T_PRODUCT_IMPORT_TASK'
   ]
 };
 

@@ -371,6 +371,8 @@ function normalizeOrderItemInput(item = {}) {
     mtm_code: firstNonEmpty(item, ['mtmCode', 'mtm_code', 'MTM_CODE']),
     sn_id: snId,
     sn_code: snCode,
+    supplier_id: firstNonEmpty(item, ['supplierId', 'supplier_id', 'SUPPLIER_ID']),
+    supplier_name: firstNonEmpty(item, ['supplierName', 'supplier_name', 'SUPPLIER_NAME']),
     imei1: firstNonEmpty(item, ['imei1', 'imei_1', 'IMEI1']),
     imei2: firstNonEmpty(item, ['imei2', 'imei_2', 'IMEI2']),
     use_gov_subsidy: selectedResourceTypes.includes('GOV_SUBSIDY') || toBoolean(firstNonEmpty(item, ['useGovSubsidy', 'use_gov_subsidy'], false)),
@@ -451,6 +453,8 @@ async function syncOrderItemsFromPayload(order, data = {}, transaction = null) {
       mtm_code: normalized.mtm_code,
       sn_id: normalized.sn_id,
       sn_code: normalized.sn_code,
+      supplier_id: normalized.supplier_id,
+      supplier_name: normalized.supplier_name,
       imei1: normalized.imei1,
       imei2: normalized.imei2,
       sale_price: normalized.sale_price,
@@ -610,6 +614,8 @@ async function create(ctx) {
       pn_code: item.pn_code,
       sn_id: null,
       sn_code: item.sn_code,
+      supplier_id: item.supplier_id || null,
+      supplier_name: item.supplier_name || null,
       imei1: item.imei1,
       imei2: item.imei2,
       sale_price: item.sale_price,
@@ -1297,7 +1303,7 @@ async function getProductSns(ctx) {
 
   const snRecords = await ProductSn.findAll({
     where,
-    attributes: ['sn_id', 'sn_code', 'pn_code', 'inventory_type', 'tax_type'],
+    attributes: ['sn_id', 'sn_code', 'pn_code', 'inventory_type', 'tax_type', 'supplier_id', 'supplier_name'],
     order: [['sn_code', 'ASC']]
   });
 
@@ -1338,6 +1344,8 @@ async function getProductSns(ctx) {
         sn_code: s.sn_code,
         pn_code: s.pn_code,
         inventory_type: s.inventory_type,
+        supplier_id: s.supplier_id || '',
+        supplier_name: s.supplier_name || '',
         unified_sale_price: unifiedSalePrice,
         min_sale_price: minSalePrice,
         special_price: specialPrice,

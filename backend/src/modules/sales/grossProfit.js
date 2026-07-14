@@ -7,9 +7,12 @@ const {
   DepositOrder,
   DepositRedemption,
   PaymentMethod,
-  ProductPrice
+  ProductPrice,
+  ProductSn,
+  Supplier,
+  sequelize
 } = require('../../models');
-const { Op } = require('sequelize');
+const { Op, QueryTypes } = require('sequelize');
 const { generateUUID } = require('../../utils');
 
 const FORMULA_VERSION = 'ORDER_GP_V5_20260706';
@@ -45,20 +48,33 @@ function calculateOrderReceivable(order = {}) {
   ));
 }
 
-function resolveUnitProductPricing(productPrice = {}, orderItem = {}) {
+function resolveUnitProductPricing(productPrice = {}, orderItem = {}, supplier = null) {
   const configuredPricing = toNumber(productPrice.standard_price);
-  if (configuredPricing > 0) {
-    return {
-      unitPricing: roundMoney(configuredPricing),
-      source: 'product_standard_price'
-    };
+  const isServiceProvider = !supplier || Number(supplier.is_service_provider) !== 0;
+  const sourcePurchasePrice = toNumber(orderItem.purchasePrice) || toNumber(orderItem.original_inventory_cost);
+  const purchasePrice = isServiceProvider
+    ? toNumber(productPrice.cost_price) || sourcePurchasePrice
+    : sourcePurchasePrice || toNumber(productPrice.cost_price);
+  const upliftAmount = isServiceProvider ? 0 : Math.max(0, toNumber(supplier.gross_profit_uplift_amount));
+  const result = (unitPricing, source) => supplier
+    ? {
+        unitPricing: roundMoney(unitPricing),
+        source,
+        purchasePrice: roundMoney(purchasePrice),
+        grossProfitUpliftAmount: roundMoney(upliftAmount),
+        isServiceProvider
+      }
+    : { unitPricing: roundMoney(unitPricing), source };
+
+  if (!isServiceProvider && purchasePrice > 0) {
+    return result(purchasePrice + upliftAmount, 'purchase_price_plus_supplier_uplift');
   }
-  return {
-    unitPricing: roundMoney(
-      toNumber(productPrice.cost_price) || toNumber(orderItem.original_inventory_cost)
-    ),
-    source: 'purchase_price_fallback'
-  };
+
+  if (configuredPricing > 0) {
+    return result(configuredPricing, 'product_standard_price');
+  }
+
+  return result(purchasePrice, 'purchase_price_fallback');
 }
 
 function calculateGrossProfitValues({
@@ -248,7 +264,63 @@ async function buildPaymentDetails(order, existingSnapshot, transaction) {
   return details;
 }
 
+async function resolveSupplierContext(items, order, transaction) {
+  const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean))];
+  const itemSupplierIds = new Set(items.map(item => item.supplier_id).filter(Boolean).map(String));
+  const snIds = [...new Set(items.map(item => item.sn_id).filter(Boolean))];
+  const snCodes = [...new Set(items.map(item => item.sn_code).filter(Boolean))];
+  const snRows = snIds.length || snCodes.length
+    ? await ProductSn.findAll({
+        where: {
+          [Op.or]: [
+            ...(snIds.length ? [{ sn_id: { [Op.in]: snIds } }] : []),
+            ...(snCodes.length ? [{ sn_code: { [Op.in]: snCodes } }] : [])
+          ]
+        },
+        raw: true,
+        transaction
+      })
+    : [];
+  const snMap = new Map();
+  snRows.forEach(row => {
+    if (row.sn_id) snMap.set(`id:${row.sn_id}`, row);
+    if (row.sn_code) snMap.set(`code:${row.sn_code}`, row);
+  });
+
+  const latestInboundRows = productIds.length
+    ? await sequelize.query(
+        `SELECT ii.PRODUCT_ID AS product_id, pr.SUPPLIER_ID AS supplier_id,
+                s.NAME AS supplier_name, s.IS_SERVICE_PROVIDER AS is_service_provider,
+                s.GROSS_PROFIT_UPLIFT_AMOUNT AS gross_profit_uplift_amount
+           FROM T_INBOUND_ITEM ii
+           INNER JOIN T_INBOUND i ON i.INBOUND_ID = ii.INBOUND_ID
+           LEFT JOIN T_PURCHASE_REQUEST pr ON pr.REQUEST_ID = i.PURCHASE_REQUEST_ID
+           LEFT JOIN T_SUPPLIER s ON s.SUPPLIER_ID = pr.SUPPLIER_ID AND s.IS_DELETED = 0
+          WHERE i.STORE_ID = :storeId
+            AND i.STATUS = 'completed'
+            AND ii.PRODUCT_ID IN (:productIds)
+          ORDER BY i.CREATE_TIME DESC, i.INBOUND_ID DESC`,
+        { replacements: { storeId: order.store_id, productIds }, type: QueryTypes.SELECT, transaction }
+      )
+    : [];
+  const latestInboundByProduct = new Map();
+  latestInboundRows.forEach(row => {
+    if (!latestInboundByProduct.has(String(row.product_id)) && row.supplier_id) {
+      latestInboundByProduct.set(String(row.product_id), row);
+    }
+  });
+
+  latestInboundByProduct.forEach(row => itemSupplierIds.add(String(row.supplier_id)));
+  const suppliers = itemSupplierIds.size
+    ? await Supplier.findAll({ where: { supplier_id: { [Op.in]: [...itemSupplierIds] }, is_deleted: 0 }, raw: true, transaction })
+    : [];
+  const supplierMap = new Map(suppliers.map(row => [String(row.supplier_id), row]));
+
+  return { snMap, latestInboundByProduct, supplierMap };
+}
+
 async function buildProductPricingDetails(orderId, transaction) {
+  const order = await Order.findByPk(orderId, { transaction, raw: true });
   const items = await OrderItem.findAll({ where: { order_id: orderId }, transaction });
   const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean))];
   const prices = productIds.length
@@ -259,10 +331,17 @@ async function buildProductPricingDetails(orderId, transaction) {
       })
     : [];
   const priceByProduct = new Map(prices.map(price => [String(price.product_id), price]));
+  const supplierContext = await resolveSupplierContext(items.map(item => item.toJSON()), order || {}, transaction);
   return items.map(item => {
     const row = item.toJSON();
     const productPrice = priceByProduct.get(String(row.product_id || ''));
-    const { unitPricing, source } = resolveUnitProductPricing(productPrice, row);
+    const snRow = supplierContext.snMap.get(`id:${row.sn_id}`) || supplierContext.snMap.get(`code:${row.sn_code}`);
+    const inboundSupplier = supplierContext.latestInboundByProduct.get(String(row.product_id || ''));
+    const supplierId = row.supplier_id || snRow?.supplier_id || inboundSupplier?.supplier_id || '';
+    const supplier = supplierId ? supplierContext.supplierMap.get(String(supplierId)) : null;
+    const purchasePrice = toNumber(row.original_inventory_cost)
+      || toNumber(snRow?.inbound_price);
+    const pricing = resolveUnitProductPricing(productPrice, { ...row, purchasePrice }, supplier);
     const quantity = Number(row.quantity || 1);
     return {
       itemId: row.item_id,
@@ -271,9 +350,14 @@ async function buildProductPricingDetails(orderId, transaction) {
       pnCode: row.pn_code || '',
       snCode: row.sn_code || '',
       quantity,
-      unitPricing,
-      pricingAmount: roundMoney(unitPricing * quantity),
-      source
+      unitPricing: pricing.unitPricing,
+      pricingAmount: roundMoney(pricing.unitPricing * quantity),
+      purchasePrice: pricing.purchasePrice ?? roundMoney(purchasePrice),
+      grossProfitUpliftAmount: pricing.grossProfitUpliftAmount ?? 0,
+      supplierId: supplier?.supplier_id || supplierId,
+      supplierName: supplier?.name || row.supplier_name || inboundSupplier?.supplier_name || '',
+      isServiceProvider: pricing.isServiceProvider ?? true,
+      source: pricing.source
     };
   });
 }

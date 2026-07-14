@@ -975,6 +975,8 @@ const addItem = () => {
     pnCode: '',
     snCode: '',
     snId: '',
+    supplierId: '',
+    supplierName: '',
     salePrice: 0,
     quantity: 1,
     subtotal: 0,
@@ -1071,6 +1073,8 @@ const onProductChange = async (productId, index) => {
     orderForm.items[index].pnList = matchedPns
     orderForm.items[index].snList = []
     orderForm.items[index].snId = ''
+    orderForm.items[index].supplierId = ''
+    orderForm.items[index].supplierName = ''
     orderForm.items[index].selectedSn = null
     orderForm.items[index].selectedResourceTypes = []
     orderForm.items[index].useGovSubsidy = false
@@ -1140,6 +1144,8 @@ const onPnChange = async (index) => {
   const item = orderForm.items[index]
   item.snCode = ''
   item.snId = ''
+  item.supplierId = ''
+  item.supplierName = ''
   item.selectedSn = null
   item.selectedResourceTypes = []
   item.useGovSubsidy = false
@@ -1155,6 +1161,8 @@ const onSnChange = (value, index) => {
   const item = orderForm.items[index]
   const sn = (item.snList || []).find(row => row.sn_code === value)
   item.snId = sn?.sn_id || ''
+  item.supplierId = sn?.supplier_id || ''
+  item.supplierName = sn?.supplier_name || ''
   item.selectedSn = sn || null
   item.salePrice = sn
     ? (parseFloat(sn.effective_sale_price) || item.standardPrice || 0)
@@ -1241,6 +1249,8 @@ const handleSubmit = async () => {
         pnCode: item.pnCode,
         snCode: item.snCode,
         snId: item.snId || '',
+        supplierId: item.supplierId || '',
+        supplierName: item.supplierName || '',
         salePrice: item.salePrice,
         quantity: item.quantity,
         subtotal: item.salePrice * item.quantity,

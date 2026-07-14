@@ -1454,6 +1454,8 @@ async function executeInbound(ctx) {
           inbound_time: new Date(),
           inbound_price: dbItem.unit_price,
           original_pickup_price: originalPickupPrice,
+          supplier_id: supplier?.supplier_id || null,
+          supplier_name: supplier?.name || null,
           remark: item.remark || '',
           is_deleted: 0
         }, { transaction: t });

@@ -10,12 +10,13 @@ const {
   getCategoryTree, createCategory, updateCategory, deleteCategory, sortCategories,
   getCategoryFields, saveCategoryFields, getCategoryFieldConfig,
   getPriceList, setPrice, refreshCostPrice, batchRefreshCost, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory,
+  getProductImportTask,
   getPnList, addPn, searchProduct
 } = require('./controller');
 const { requireRole } = require('../../middleware/permission');
 
 const router = new Router();
-const upload = multer();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 // 商品基础管理
 router.get('/list', getProductList);
@@ -31,6 +32,7 @@ router.post('/batch-delete', batchDeleteProducts);
 router.delete('/delete/:productId', deleteProduct);
 router.post('/toggle-pause/:productId', togglePause);
 router.post('/import', upload.single('file'), importProducts);
+router.get('/import/task/:taskId', getProductImportTask);
 
 // 商品条码
 router.get('/barcode', getBarcodes);

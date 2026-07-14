@@ -68,6 +68,18 @@
           <el-table :data="supplierData" stripe border>
             <el-table-column prop="supplier_id" label="供应商编号" width="150" />
             <el-table-column prop="name" label="供应商名称" min-width="150" />
+            <el-table-column label="服务商" width="90">
+              <template #default="{ row }">
+                <el-tag :type="row.is_service_provider ? 'success' : 'warning'">
+                  {{ row.is_service_provider ? '是' : '否' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="毛利上浮/件" width="120" align="right">
+              <template #default="{ row }">
+                {{ row.is_service_provider ? '-' : `¥${Number(row.gross_profit_uplift_amount || 0).toFixed(2)}` }}
+              </template>
+            </el-table-column>
             <el-table-column prop="contact" label="联系人" width="100" />
             <el-table-column prop="phone" label="联系电话" width="130" />
             <el-table-column prop="address" label="地址" min-width="200" />
@@ -365,6 +377,21 @@
         <el-form-item label="地址">
           <el-input v-model="supplierForm.address" placeholder="请输入地址" />
         </el-form-item>
+        <el-form-item label="是否服务商">
+          <el-switch v-model="supplierForm.isServiceProvider" />
+          <span class="ml-10">{{ supplierForm.isServiceProvider ? '是：毛利按产品定价' : '否：采购价加上浮额度' }}</span>
+        </el-form-item>
+        <el-form-item v-if="!supplierForm.isServiceProvider" label="毛利上浮额度">
+          <el-input-number
+            v-model="supplierForm.grossProfitUpliftAmount"
+            :min="0"
+            :precision="2"
+            :step="10"
+            controls-position="right"
+            style="width: 220px"
+          />
+          <span class="ml-10">元/件</span>
+        </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="supplierForm.remark" type="textarea" rows="2" placeholder="备注" />
         </el-form-item>
@@ -477,6 +504,8 @@ const supplierForm = reactive({
   contact: '',
   phone: '',
   address: '',
+  isServiceProvider: true,
+  grossProfitUpliftAmount: 0,
   remark: '',
   status: 1,
   paymentAccounts: []
@@ -803,6 +832,8 @@ const handleEditSupplier = (row) => {
   supplierForm.contact = row.contact || ''
   supplierForm.phone = row.phone || ''
   supplierForm.address = row.address || ''
+  supplierForm.isServiceProvider = row.is_service_provider !== 0
+  supplierForm.grossProfitUpliftAmount = Number(row.gross_profit_uplift_amount || 0)
   supplierForm.remark = row.remark || ''
   supplierForm.status = row.status
   supplierForm.paymentAccounts = normalizeSupplierAccounts(row.paymentAccounts || row.SupplierPaymentAccounts || [])
@@ -849,6 +880,8 @@ const handleSupplierSubmit = async () => {
       contact: supplierForm.contact,
       phone: supplierForm.phone,
       address: supplierForm.address,
+      isServiceProvider: supplierForm.isServiceProvider,
+      grossProfitUpliftAmount: Number(supplierForm.grossProfitUpliftAmount || 0),
       remark: supplierForm.remark,
       status: supplierForm.status,
       paymentAccounts: normalizeSupplierAccounts(supplierForm.paymentAccounts)
@@ -891,6 +924,8 @@ const resetSupplierForm = () => {
   supplierForm.contact = ''
   supplierForm.phone = ''
   supplierForm.address = ''
+  supplierForm.isServiceProvider = true
+  supplierForm.grossProfitUpliftAmount = 0
   supplierForm.remark = ''
   supplierForm.status = 1
   supplierForm.paymentAccounts = []

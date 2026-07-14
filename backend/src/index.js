@@ -25,7 +25,7 @@ const { errorHandler } = require('./middleware/errorHandler');
 const { responseFormatter } = require('./middleware/responseFormatter');
 const { databaseRecoveryMiddleware, databaseHealth } = require('./middleware/databaseRecovery');
 const { authMiddleware, storeAccessMiddleware } = require('./middleware/auth');
-const { applyPendingProductPriceChanges } = require('./modules/product/controller');
+const { applyPendingProductPriceChanges, recoverProductImportTasks } = require('./modules/product/controller');
 const { refreshOutdatedGrossProfitSnapshots } = require('./modules/sales/grossProfit');
 const { startDatabaseHeartbeat } = require('./utils/databaseHeartbeat');
 const { recoverExecutingBatchApplications } = require('./modules/inventory/batchMaintenance');
@@ -68,6 +68,18 @@ app.use(apiRouter.allowedMethods());
 app.use(static(path.join(__dirname, '../public')));
 
 app.use(async (ctx) => {
+  const requestPath = ctx.path;
+  const isApiRequest = requestPath === '/api' || requestPath.startsWith('/api/');
+  const lastPathSegment = requestPath.slice(requestPath.lastIndexOf('/') + 1);
+  const isStaticAssetRequest = Boolean(path.extname(lastPathSegment));
+
+  // Only browser navigation URLs may fall back to the SPA entry point. API
+  // errors and missing assets must remain 404s instead of receiving HTML.
+  if ((ctx.method !== 'GET' && ctx.method !== 'HEAD') || isApiRequest || isStaticAssetRequest) {
+    ctx.status = 404;
+    return;
+  }
+
   const indexPath = path.join(__dirname, '../public/index.html');
   if (fs.existsSync(indexPath)) {
     ctx.type = 'html';
@@ -105,6 +117,7 @@ function initializeDatabaseInBackground(retryDelayMs = Number(process.env.DB_STA
       }
       await ensureDatabaseReady('post-migration database activation', { force: true });
       await recoverExecutingBatchApplications();
+      await recoverProductImportTasks();
       console.log('[Startup] database initialization completed');
     } catch (error) {
       markDatabaseUnhealthy(error);

@@ -1,12 +1,22 @@
 import axios from 'axios'
 
+function normalizeApiBaseUrl(value) {
+  const raw = String(value || '/api/v1').trim()
+  if (/^https?:\/\//i.test(raw)) {
+    return raw.replace(/\/+$/, '')
+  }
+  const pathValue = raw.replace(/^\/+/, '').replace(/\/+$/, '')
+  return `/${pathValue || 'api/v1'}`
+}
+
+const API_BASE_URL = normalizeApiBaseUrl(import.meta.env.VITE_API_BASE_URL)
 const RETRYABLE_STATUS_CODES = new Set([500, 502, 503, 504])
 const IDEMPOTENT_METHODS = new Set(['get', 'head', 'options'])
 const MAX_RETRY_COUNT = 2
 const RETRY_BASE_DELAY = 1000
 
 const api = axios.create({
-  baseURL: '/api/v1',
+  baseURL: API_BASE_URL,
   timeout: 30000
 })
 

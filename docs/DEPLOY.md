@@ -23,7 +23,35 @@ powershell -ExecutionPolicy Bypass -File scripts/build-web-production.ps1
 
 不得只构建根目录的 `web`，也不得在未更新 `backend/public` 时直接重新构建后端镜像。
 
-### 1.3 本地构建 Docker 镜像
+### 1.3 SPA History 路由与同源 API 配置
+
+正式前端使用 Vue Router History 模式，部署到域名根路径时必须保持以下配置一致：
+
+- Vite `base`：`/`
+- Router `createWebHistory` base：`import.meta.env.BASE_URL`
+- CloudBase 静态网站首页文档：`index.html`
+- CloudBase 静态网站 4xx 错误文档：`index.html`
+- 前端 API base：通过构建时变量 `VITE_API_BASE_URL` 设置；同源部署使用 `/api/v1`，独立后端使用完整 HTTPS 地址，代码会去除末尾斜杠。
+- `VITE_API_BASE_URL`：若静态托管与后端不是同一回源入口，设置为后端服务的完整 `/api/v1` 地址；若使用 CDN/网关分流，则设置为 `/api/v1`
+
+4xx fallback 只负责前端页面路由。`/api/*` 必须在 CDN/网关层单独回源到云托管后端服务，不能回源到 COS，也不能由静态托管错误文档返回 `index.html`。
+
+`frontend/web/src/api/index.js` 会去除 API base URL 末尾重复斜杠，并将路径型配置规范为单斜杠；生产发布前仍必须确认该变量指向真实后端服务，不能把静态托管域名误当作 API 源站。
+
+如果域名响应头出现 `x-cloudbase-upstream-type: Tencent-COS`，说明请求当前进入静态托管；此时应检查自定义域名或 CDN 的路径路由，确保 `/api/*` 指向后端服务、其他页面路径指向静态托管。回源路径必须直接使用规范化的单斜杠路径，不能配置为“固定 `/` + 原始请求路径”的重复拼接形式。
+
+发布后必须刷新 HTML、路由和资源相关 CDN 缓存，并按以下顺序验证：
+
+```powershell
+curl.exe -i https://your-domain.example/login
+curl.exe -i https://your-domain.example/dashboard
+curl.exe -i https://your-domain.example/assets/<actual-asset>.js
+curl.exe -i https://your-domain.example/api/v1/health/db
+```
+
+预期：页面路由返回 `index.html` 且状态码为 200；静态资源按真实文件返回；API 返回后端响应而不是 HTML。
+
+### 1.4 本地构建 Docker 镜像
 
 ```bash
 cd D:/艾诺云/Soft/ANY-ERP/backend
