@@ -86,6 +86,8 @@ const tableGroups = {
     'T_INBOUND'
   ],
   'purchase records': [
+    'T_PURCHASE_ADJUSTMENT_ITEM',
+    'T_PURCHASE_ADJUSTMENT',
     'T_PURCHASE_REQUEST_ITEM',
     'T_PURCHASE_REQUEST',
     'T_PURCHASE_ORDER_ITEM',

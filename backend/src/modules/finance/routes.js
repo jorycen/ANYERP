@@ -13,6 +13,7 @@ const {
 const {
   getPayableList,
   getUnpaidBySupplier,
+  getPayableSettlementItems,
   createSettlement,
   createExpenseSettlement,
   getSettlementList,
@@ -80,6 +81,7 @@ router.put('/expense/submit/:id', submitExpense);
 router.put('/expense/pay/:id', payExpense);
 
 router.get('/payable-list', getPayableList);
+router.get('/payable-settlement-items', getPayableSettlementItems);
 router.get('/unpaid-by-supplier', getUnpaidBySupplier);
 router.post('/create-settlement', createSettlement);
 router.post('/create-expense-settlement', createExpenseSettlement);

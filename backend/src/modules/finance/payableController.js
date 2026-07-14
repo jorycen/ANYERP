@@ -12,12 +12,19 @@ const {
   SupplierPaymentAccount,
   SettlementAccount,
   SettlementAccountTransaction,
+  PurchaseRequestItem,
   sequelize
 } = require('../../models');
 const { Op, col, where } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const moment = require('moment');
 const XLSX = require('xlsx');
+const {
+  actualUnitPrice,
+  getAllocationSummary,
+  refreshPayableState,
+  refreshExpenseState
+} = require('./settlementAllocation');
 
 /**
  * 应付款列表
@@ -27,7 +34,11 @@ async function getPayableList(ctx) {
   const where = {};
 
   if (supplierId) where.supplier_id = supplierId;
-  if (status) where.status = status;
+  if (status) {
+    where.status = status === 'unpaid'
+      ? { [Op.in]: ['unpaid', 'partial_settled', 'settling'] }
+      : status;
+  }
   if (startDate || endDate) {
     where.create_time = {};
     if (startDate) where.create_time[Op.gte] = new Date(`${startDate}T00:00:00.000+08:00`);
@@ -38,11 +49,18 @@ async function getPayableList(ctx) {
     where,
     order: buildPendingFirstOrder(sequelize, {
       statusColumn: 'Payable.status',
-      pendingStatuses: ['unpaid'],
+      pendingStatuses: ['unpaid', 'partial_settled'],
       dateColumns: ['Payable.create_time'],
       idColumn: 'Payable.payable_id'
     }),
     ...paginate({}, { page, pageSize })
+  });
+
+  const allocationSummary = await getAllocationSummary(rows.map(row => row.payable_id));
+  rows.forEach(row => {
+    const allocated = allocationSummary.get(String(row.payable_id))?.amount || 0;
+    row.setDataValue('settled_amount', roundAmount(allocated));
+    row.setDataValue('remaining_amount', roundAmount(Number(row.total_amount || 0) - Number(allocated)));
   });
 
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
@@ -61,7 +79,7 @@ async function getUnpaidBySupplier(ctx) {
   const rows = await Payable.findAll({
     where: {
       supplier_id: supplierId,
-      status: 'unpaid'
+      status: { [Op.in]: ['unpaid', 'partial_settled', 'settling'] }
     },
     order: [['create_time', 'DESC']]
   });
@@ -72,7 +90,223 @@ async function getUnpaidBySupplier(ctx) {
 /**
  * 创建结算单
  */
+async function getPayableSettlementItems(ctx) {
+  const { supplierId, payableIds } = ctx.query;
+  const ids = payableIds
+    ? String(payableIds).split(',').map(item => item.trim()).filter(Boolean)
+    : null;
+  const where = {
+    status: { [Op.in]: ['unpaid', 'partial_settled', 'settling'] },
+    source_type: { [Op.notIn]: ['expense', 'reimbursement'] }
+  };
+  if (supplierId) where.supplier_id = supplierId;
+  if (ids?.length) where.payable_id = { [Op.in]: ids };
+  const payables = await Payable.findAll({ where, order: [['create_time', 'DESC']] });
+  const summary = await getAllocationSummary(payables.map(item => item.payable_id));
+  const requestIds = [...new Set(payables.map(item => item.request_id).filter(Boolean))];
+  const requestItems = requestIds.length
+    ? await PurchaseRequestItem.findAll({ where: { request_id: { [Op.in]: requestIds } } })
+    : [];
+  const itemMap = new Map();
+  requestItems.forEach(item => {
+    const key = String(item.request_id);
+    if (!itemMap.has(key)) itemMap.set(key, []);
+    itemMap.get(key).push(item);
+  });
+  const rows = [];
+  payables.forEach(payable => {
+    const allocated = summary.get(String(payable.payable_id)) || { amount: 0, quantityByItem: new Map() };
+    const items = payable.source_type === 'purchase' && (Number(allocated.amount || 0) <= 0 || allocated.quantityByItem.size > 0)
+      ? (itemMap.get(String(payable.request_id)) || [])
+      : [];
+    if (items.length) {
+      items.forEach(item => {
+        const usedQuantity = Number(allocated.quantityByItem.get(String(item.item_id)) || 0);
+        const availableQuantity = Math.max(0, Number(item.quantity || 0) - usedQuantity);
+        const unitPrice = actualUnitPrice(item);
+        if (availableQuantity <= 0) return;
+        rows.push({
+          payable_id: payable.payable_id,
+          request_id: payable.request_id,
+          request_no: payable.request_no,
+          supplier_id: payable.supplier_id,
+          supplier_name: payable.supplier_name,
+          source_type: payable.source_type,
+          total_amount: payable.total_amount,
+          settled_amount: allocated.amount,
+          remaining_amount: roundAmount(Number(payable.total_amount || 0) - Number(allocated.amount || 0)),
+          request_item_id: item.item_id,
+          product_id: item.product_id,
+          product_name: item.product_name,
+          available_quantity: availableQuantity,
+          available_amount: roundAmount(availableQuantity * unitPrice),
+          unit_price: unitPrice,
+          create_time: payable.create_time
+        });
+      });
+      return;
+    }
+    const remaining = roundAmount(Number(payable.total_amount || 0) - Number(allocated.amount || 0));
+    if (remaining > 0) rows.push({
+      payable_id: payable.payable_id,
+      request_id: payable.request_id,
+      request_no: payable.request_no,
+      supplier_id: payable.supplier_id,
+      supplier_name: payable.supplier_name,
+      source_type: payable.source_type,
+      total_amount: payable.total_amount,
+      settled_amount: allocated.amount,
+      remaining_amount: remaining,
+      product_name: payable.source_type === 'purchase_adjustment' ? '采购调整' : '整单金额',
+      available_quantity: null,
+      available_amount: remaining,
+      unit_price: null,
+      create_time: payable.create_time
+    });
+  });
+  ctx.body = { code: 0, data: rows };
+}
+
 async function createSettlement(ctx) {
+  const {
+    supplierId,
+    payableIds = [],
+    allocations = [],
+    supplierAccountId,
+    paymentAccountType = 'saved',
+    otherPaymentRemark,
+    otherPaymentImage
+  } = ctx.request.body;
+  const user = ctx.state.user;
+  if (!supplierId) ctx.throw(400, 'supplier is required');
+  const selectedIds = [...new Set([
+    ...payableIds,
+    ...allocations.map(item => item.payableId || item.payable_id)
+  ].filter(Boolean).map(String))];
+  if (!selectedIds.length) ctx.throw(400, 'select payable items first');
+  const supplier = await Supplier.findByPk(supplierId);
+  if (!supplier) ctx.throw(404, 'supplier not found');
+
+  let supplierAccountSnapshot = null;
+  let finalSupplierAccountId = null;
+  if (paymentAccountType === 'other') {
+    if (!String(otherPaymentRemark || '').trim()) ctx.throw(400, 'other payment remark is required');
+    if (!otherPaymentImage) ctx.throw(400, 'other payment evidence is required');
+  } else {
+    if (!supplierAccountId) ctx.throw(400, 'supplier payment account is required');
+    const supplierAccount = await SupplierPaymentAccount.findOne({
+      where: { account_id: supplierAccountId, supplier_id: supplierId, status: 1, is_deleted: 0 }
+    });
+    if (!supplierAccount) ctx.throw(404, 'supplier payment account is unavailable');
+    finalSupplierAccountId = supplierAccount.account_id;
+    supplierAccountSnapshot = JSON.stringify({
+      accountId: supplierAccount.account_id,
+      companyName: supplierAccount.company_name || '',
+      taxNo: supplierAccount.tax_no || '',
+      bankName: supplierAccount.bank_name || '',
+      accountNumber: supplierAccount.account_number || '',
+      remark: supplierAccount.remark || ''
+    });
+  }
+
+  let settlement;
+  await sequelize.transaction(async transaction => {
+    const payables = await Payable.findAll({
+      where: {
+        payable_id: { [Op.in]: selectedIds },
+        supplier_id: supplierId,
+        source_type: { [Op.notIn]: ['expense', 'reimbursement'] },
+        status: { [Op.in]: ['unpaid', 'partial_settled', 'settling'] }
+      },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (payables.length !== selectedIds.length) ctx.throw(400, 'some payable items are unavailable');
+    const payableMap = new Map(payables.map(item => [String(item.payable_id), item]));
+    const summary = await getAllocationSummary(selectedIds, transaction);
+    const requestItemIds = [...new Set(allocations.map(item => item.requestItemId || item.request_item_id).filter(Boolean).map(String))];
+    const requestItems = requestItemIds.length
+      ? await PurchaseRequestItem.findAll({ where: { item_id: { [Op.in]: requestItemIds } }, transaction, lock: transaction.LOCK.UPDATE })
+      : [];
+    const requestItemMap = new Map(requestItems.map(item => [String(item.item_id), item]));
+    const sourceAllocations = allocations.length ? allocations : [];
+    const rows = [];
+    if (sourceAllocations.length) {
+      for (const allocation of sourceAllocations) {
+        const payableId = String(allocation.payableId || allocation.payable_id || '');
+        const payable = payableMap.get(payableId);
+        if (!payable) ctx.throw(400, 'payable does not belong to supplier');
+        const requestItemId = allocation.requestItemId || allocation.request_item_id;
+        const item = requestItemId ? requestItemMap.get(String(requestItemId)) : null;
+        let used = summary.get(payableId);
+        if (!used) {
+          used = { amount: 0, quantityByItem: new Map() };
+          summary.set(payableId, used);
+        }
+        if (item) {
+          if (String(item.request_id) !== String(payable.request_id)) ctx.throw(400, 'purchase item does not belong to payable');
+          const quantity = Number(allocation.quantity || allocation.settleQuantity || allocation.settle_quantity || 0);
+          const usedQuantity = Number(used.quantityByItem.get(String(item.item_id)) || 0);
+          const availableQuantity = Number(item.quantity || 0) - usedQuantity;
+          if (quantity <= 0 || quantity > availableQuantity + 0.00005) ctx.throw(400, 'settlement quantity exceeds remaining quantity');
+          const unitPrice = actualUnitPrice(item);
+          const amount = roundAmount(quantity * unitPrice);
+          rows.push({ payable, requestItem: item, quantity, unitPrice, amount });
+          used.quantityByItem.set(String(item.item_id), usedQuantity + quantity);
+          used.amount = Number(used.amount || 0) + amount;
+        } else {
+          const remaining = roundAmount(Number(payable.total_amount || 0) - Number(used.amount || 0));
+          const amount = roundAmount(allocation.amount || allocation.settleAmount || allocation.settle_amount);
+          if (amount <= 0 || amount > remaining + 0.005) ctx.throw(400, 'settlement amount exceeds remaining amount');
+          rows.push({ payable, requestItem: null, quantity: null, unitPrice: null, amount });
+          used.amount = Number(used.amount || 0) + amount;
+        }
+      }
+    } else {
+      for (const payable of payables) {
+        const used = summary.get(String(payable.payable_id)) || { amount: 0 };
+        const remaining = roundAmount(Number(payable.total_amount || 0) - Number(used.amount || 0));
+        if (remaining > 0) rows.push({ payable, requestItem: null, quantity: null, unitPrice: null, amount: remaining });
+      }
+    }
+    const totalAmount = roundAmount(rows.reduce((sum, row) => sum + row.amount, 0));
+    if (totalAmount <= 0) ctx.throw(400, 'settlement amount must be greater than zero');
+    settlement = await Settlement.create({
+      settlement_id: generateUUID(),
+      settlement_no: `S${moment().format('YYYYMMDDHHmmss')}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`,
+      supplier_id: supplierId,
+      supplier_name: supplier.name,
+      supplier_account_id: finalSupplierAccountId,
+      supplier_account_snapshot: supplierAccountSnapshot,
+      other_payment_remark: paymentAccountType === 'other' ? String(otherPaymentRemark).trim() : null,
+      other_payment_image: paymentAccountType === 'other' ? otherPaymentImage : null,
+      settlement_type: 'supplier',
+      total_amount: totalAmount,
+      status: 'draft',
+      payment_status: 'unpaid',
+      create_user: user?.name || user?.phone || ''
+    }, { transaction });
+    for (const row of rows) {
+      await SettlementItem.create({
+        settlement_id: settlement.settlement_id,
+        payable_id: row.payable.payable_id,
+        request_item_id: row.requestItem?.item_id || null,
+        product_id: row.requestItem?.product_id || null,
+        product_name: row.requestItem?.product_name || null,
+        quantity: row.quantity,
+        unit_price: row.unitPrice,
+        request_no: row.payable.request_no,
+        amount: row.amount
+      }, { transaction });
+    }
+    for (const payableId of new Set(rows.map(row => row.payable.payable_id))) {
+      await refreshPayableState(payableId, transaction);
+    }
+  });
+  ctx.body = { code: 0, message: 'settlement created', data: settlement };
+}
+
+async function createSettlementLegacy(ctx) {
   const {
     supplierId,
     payableIds,
@@ -106,6 +340,11 @@ async function createSettlement(ctx) {
 
   if (payables.length === 0) {
     ctx.throw(400, '没有可结算的应付款项');
+  }
+
+  const settlementTotal = roundAmount(payables.reduce((sum, payable) => sum + Number(payable.total_amount || 0), 0));
+  if (settlementTotal <= 0) {
+    ctx.throw(400, '结算总金额必须大于0；负向采购调整需与正向应付款一并抵扣');
   }
 
   let supplierAccountSnapshot = null;
@@ -196,6 +435,61 @@ async function createSettlement(ctx) {
 }
 
 async function createExpenseSettlement(ctx) {
+  const { payableId, amount: requestedAmount } = ctx.request.body;
+  const user = ctx.state.user;
+  if (!payableId) ctx.throw(400, 'payableId is required');
+  let settlement;
+  await sequelize.transaction(async transaction => {
+    const payable = await Payable.findByPk(payableId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!payable || !['expense', 'reimbursement'].includes(payable.source_type)) ctx.throw(404, 'expense payable not found');
+    if (!['unpaid', 'partial_settled', 'settling'].includes(payable.status)) ctx.throw(400, 'expense payable is unavailable');
+    const allocation = (await getAllocationSummary([payableId], transaction)).get(String(payableId));
+    const remaining = roundAmount(Number(payable.total_amount || 0) - Number(allocation?.amount || 0));
+    const amount = requestedAmount === undefined || requestedAmount === null || requestedAmount === ''
+      ? remaining
+      : roundAmount(requestedAmount);
+    if (amount <= 0 || amount > remaining + 0.005) ctx.throw(400, 'reimbursement amount exceeds remaining amount');
+    settlement = await Settlement.create({
+      settlement_id: generateUUID(),
+      settlement_no: `EXS${moment().format('YYYYMMDDHHmmss')}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`,
+      supplier_id: null,
+      supplier_name: payable.payee_name || payable.supplier_name || 'employee',
+      settlement_type: payable.source_type === 'reimbursement' ? 'reimbursement' : 'expense',
+      payee_type: payable.payee_type || 'counterparty',
+      payee_id: payable.payee_id || '',
+      payee_name: payable.payee_name || payable.supplier_name || '',
+      source_type: payable.source_type,
+      source_id: payable.source_id,
+      source_no: payable.source_no || payable.request_no,
+      other_payment_remark: payable.source_type === 'reimbursement' ? 'personal advance reimbursement' : 'expense settlement',
+      total_amount: amount,
+      paid_amount: 0,
+      status: 'draft',
+      payment_status: 'unpaid',
+      create_user: user?.name || user?.phone || ''
+    }, { transaction });
+    await SettlementItem.create({
+      settlement_id: settlement.settlement_id,
+      payable_id: payable.payable_id,
+      request_no: payable.source_no || payable.request_no,
+      amount
+    }, { transaction });
+    if (payable.source_id) {
+      await Expense.update({ payable_id: payable.payable_id, settlement_id: settlement.settlement_id, update_time: new Date() }, {
+        where: { expense_id: payable.source_id },
+        transaction
+      });
+    }
+    await refreshPayableState(payableId, transaction);
+    if (payable.source_id) await refreshExpenseState(payable.source_id, transaction);
+  });
+  ctx.body = { code: 0, message: 'expense settlement created', data: settlement };
+}
+
+async function createExpenseSettlementLegacy(ctx) {
   const { payableId } = ctx.request.body;
   const user = ctx.state.user;
   if (!payableId) ctx.throw(400, '应付款ID不能为空');
@@ -341,24 +635,12 @@ async function refreshSettlementPaymentState(settlement, transaction = null) {
     transaction
   });
 
-  for (const item of items) {
-    const payable = await Payable.findByPk(item.payable_id, { transaction });
-    if (!payable) continue;
-    await payable.update({
-      status: paymentStatus === 'paid' ? 'paid' : 'settling',
-      paid_amount: paymentStatus === 'paid' ? payable.total_amount : 0
-    }, { transaction });
+  for (const payableId of new Set(items.map(item => item.payable_id).filter(Boolean))) {
+    await refreshPayableState(payableId, transaction);
   }
 
-  if (paymentStatus === 'paid' && settlement.source_id && ['expense', 'reimbursement'].includes(settlement.settlement_type)) {
-    await Expense.update({
-      status: 'paid',
-      settled_at: new Date(),
-      update_time: new Date()
-    }, {
-      where: { expense_id: settlement.source_id },
-      transaction
-    });
+  if (settlement.source_id && ['expense', 'reimbursement'].includes(settlement.settlement_type)) {
+    await refreshExpenseState(settlement.source_id, transaction);
   }
 
   return { paidAmount, paymentStatus };
@@ -498,6 +780,32 @@ async function confirmSettlement(ctx) {
  * 作废结算单。作废后不退回待付款清单。
  */
 async function voidSettlement(ctx) {
+  try {
+    const { settlementId } = ctx.request.body;
+    await sequelize.transaction(async transaction => {
+      const settlement = await Settlement.findByPk(settlementId, {
+        include: [{ model: SettlementItem, as: 'items' }],
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      if (!settlement) ctx.throw(404, 'settlement not found');
+      if (settlement.status === 'voided') ctx.throw(400, 'settlement already voided');
+      if (settlement.payment_status !== 'unpaid') ctx.throw(400, 'paid settlement cannot be voided');
+      await settlement.update({ status: 'voided', voided_time: new Date() }, { transaction });
+      for (const payableId of new Set((settlement.items || []).map(item => item.payable_id).filter(Boolean))) {
+        await refreshPayableState(payableId, transaction);
+      }
+      if (settlement.source_id && ['expense', 'reimbursement'].includes(settlement.settlement_type)) {
+        await refreshExpenseState(settlement.source_id, transaction);
+      }
+    });
+    ctx.body = { code: 0, message: 'settlement voided' };
+  } catch (error) {
+    throwStatusError(ctx, error);
+  }
+}
+
+async function voidSettlementLegacy(ctx) {
   try {
     const { settlementId } = ctx.request.body;
     const settlement = await getSettlementById(settlementId);
@@ -1019,6 +1327,7 @@ async function voidPaymentBatch(ctx) {
 module.exports = {
   getPayableList,
   getUnpaidBySupplier,
+  getPayableSettlementItems,
   createSettlement,
   createExpenseSettlement,
   getSettlementList,

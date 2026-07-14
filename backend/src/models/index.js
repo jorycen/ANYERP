@@ -873,6 +873,43 @@ const PurchaseOrderItem = sequelize.define('PurchaseOrderItem', {
   subtotal: { type: DataTypes.DECIMAL(12, 2) }
 }, { tableName: 'T_PURCHASE_ORDER_ITEM', timestamps: false });
 
+// 采购退单/采购数量调整单
+const PurchaseAdjustment = sequelize.define('PurchaseAdjustment', {
+  adjustment_id: { type: DataTypes.STRING(32), primaryKey: true },
+  adjustment_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
+  request_id: { type: DataTypes.STRING(32), allowNull: false },
+  request_no: { type: DataTypes.STRING(64) },
+  store_id: { type: DataTypes.STRING(32) },
+  supplier_id: { type: DataTypes.STRING(32) },
+  supplier_name: { type: DataTypes.STRING(255) },
+  total_quantity_delta: { type: DataTypes.INTEGER, defaultValue: 0 },
+  total_amount_delta: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  reason: { type: DataTypes.STRING(512) },
+  status: { type: DataTypes.STRING(32), defaultValue: 'completed' },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_PURCHASE_ADJUSTMENT', timestamps: false });
+
+// 采购退单/采购数量调整明细
+const PurchaseAdjustmentItem = sequelize.define('PurchaseAdjustmentItem', {
+  item_id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true },
+  adjustment_id: { type: DataTypes.STRING(32), allowNull: false },
+  request_item_id: { type: DataTypes.BIGINT(20), allowNull: false },
+  inbound_id: { type: DataTypes.STRING(32) },
+  inbound_item_id: { type: DataTypes.BIGINT(20) },
+  store_id: { type: DataTypes.STRING(32) },
+  product_id: { type: DataTypes.STRING(32), allowNull: false },
+  product_name: { type: DataTypes.STRING(255) },
+  unit_price: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  original_quantity: { type: DataTypes.INTEGER, defaultValue: 0 },
+  received_quantity: { type: DataTypes.INTEGER, defaultValue: 0 },
+  pending_quantity_before: { type: DataTypes.INTEGER, defaultValue: 0 },
+  target_quantity: { type: DataTypes.INTEGER, defaultValue: 0 },
+  quantity_delta: { type: DataTypes.INTEGER, defaultValue: 0 },
+  amount_delta: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  remark: { type: DataTypes.STRING(512) }
+}, { tableName: 'T_PURCHASE_ADJUSTMENT_ITEM', timestamps: false });
+
 // ----------------------------------------
 // 销售模型
 // ----------------------------------------
@@ -1294,6 +1331,7 @@ const Expense = sequelize.define('Expense', {
   expense_type: { type: DataTypes.STRING(128), allowNull: false },
   expense_party: { type: DataTypes.STRING(255), allowNull: false },
   amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  settled_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   payment_method: { type: DataTypes.STRING(64), comment: 'CORPORATE/PERSONAL_ADVANCE' },
   has_invoice: { type: DataTypes.TINYINT(1), defaultValue: 0 },
   invoice_type: { type: DataTypes.STRING(64) },
@@ -1343,6 +1381,7 @@ const Payable = sequelize.define('Payable', {
   source_id: { type: DataTypes.STRING(64) },
   source_no: { type: DataTypes.STRING(64) },
   total_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  settled_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   paid_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   status: { type: DataTypes.STRING(32), defaultValue: 'unpaid' },
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
@@ -1352,8 +1391,15 @@ const Payable = sequelize.define('Payable', {
 const Settlement = sequelize.define('Settlement', {
   settlement_id: { type: DataTypes.STRING(32), primaryKey: true },
   settlement_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
-  supplier_id: { type: DataTypes.STRING(32), allowNull: false },
+  supplier_id: { type: DataTypes.STRING(32), allowNull: true },
   supplier_name: { type: DataTypes.STRING(255) },
+  settlement_type: { type: DataTypes.STRING(32), defaultValue: 'supplier', comment: 'supplier/expense/reimbursement' },
+  payee_type: { type: DataTypes.STRING(32), defaultValue: 'supplier', comment: 'supplier/counterparty/employee' },
+  payee_id: { type: DataTypes.STRING(64) },
+  payee_name: { type: DataTypes.STRING(255) },
+  source_type: { type: DataTypes.STRING(32) },
+  source_id: { type: DataTypes.STRING(64) },
+  source_no: { type: DataTypes.STRING(64) },
   supplier_account_id: { type: DataTypes.STRING(32) },
   supplier_account_snapshot: { type: DataTypes.TEXT },
   other_payment_remark: { type: DataTypes.TEXT },
@@ -1374,6 +1420,11 @@ const SettlementItem = sequelize.define('SettlementItem', {
   item_id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true },
   settlement_id: { type: DataTypes.STRING(32), allowNull: false },
   payable_id: { type: DataTypes.STRING(32), allowNull: false },
+  request_item_id: { type: DataTypes.BIGINT(20) },
+  product_id: { type: DataTypes.STRING(32) },
+  product_name: { type: DataTypes.STRING(255) },
+  quantity: { type: DataTypes.DECIMAL(12, 4) },
+  unit_price: { type: DataTypes.DECIMAL(12, 4) },
   request_no: { type: DataTypes.STRING(64) },
   amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false }
 }, { tableName: 'T_SETTLEMENT_ITEM', timestamps: false });
@@ -1918,6 +1969,16 @@ PurchaseRequest.belongsTo(Store, { foreignKey: 'store_id', targetKey: 'store_id'
 
 PurchaseRequest.hasMany(PurchaseRequestItem, { foreignKey: 'request_id', sourceKey: 'request_id', as: 'items' });
 PurchaseRequestItem.belongsTo(PurchaseRequest, { foreignKey: 'request_id', targetKey: 'request_id' });
+PurchaseRequest.hasMany(PurchaseAdjustment, { foreignKey: 'request_id', sourceKey: 'request_id', as: 'adjustments' });
+PurchaseAdjustment.belongsTo(PurchaseRequest, { foreignKey: 'request_id', targetKey: 'request_id' });
+PurchaseAdjustment.hasMany(PurchaseAdjustmentItem, { foreignKey: 'adjustment_id', sourceKey: 'adjustment_id', as: 'items' });
+PurchaseAdjustmentItem.belongsTo(PurchaseAdjustment, { foreignKey: 'adjustment_id', targetKey: 'adjustment_id' });
+PurchaseRequestItem.hasMany(PurchaseAdjustmentItem, { foreignKey: 'request_item_id', sourceKey: 'item_id', as: 'adjustmentItems' });
+PurchaseAdjustmentItem.belongsTo(PurchaseRequestItem, { foreignKey: 'request_item_id', targetKey: 'item_id' });
+Inbound.hasMany(PurchaseAdjustmentItem, { foreignKey: 'inbound_id', sourceKey: 'inbound_id', as: 'purchaseAdjustmentItems' });
+PurchaseAdjustmentItem.belongsTo(Inbound, { foreignKey: 'inbound_id', targetKey: 'inbound_id' });
+InboundItem.hasMany(PurchaseAdjustmentItem, { foreignKey: 'inbound_item_id', sourceKey: 'item_id', as: 'purchaseAdjustmentItems' });
+PurchaseAdjustmentItem.belongsTo(InboundItem, { foreignKey: 'inbound_item_id', targetKey: 'item_id' });
 
 PurchaseRequest.hasMany(PurchaseRequestItem, { foreignKey: 'request_id', sourceKey: 'request_id' });
 PurchaseRequestItem.belongsTo(PurchaseRequest, { foreignKey: 'request_id', targetKey: 'request_id' });
@@ -2045,6 +2106,8 @@ module.exports = {
   Supplier,
   PurchaseRequest,
   PurchaseRequestItem,
+  PurchaseAdjustment,
+  PurchaseAdjustmentItem,
   PurchaseOrder,
   PurchaseOrderItem,
   Order,

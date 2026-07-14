@@ -260,6 +260,7 @@
               <el-option label="全部" value="" />
               <el-option label="待入库" value="pending" />
               <el-option label="已完成" value="completed" />
+              <el-option label="已取消" value="cancelled" />
               <el-option label="已退库" value="returned" />
             </el-select>
             <el-select v-model="inboundQuery.storeId" placeholder="门店" clearable style="width: 150px" @change="loadInboundList">
@@ -3487,12 +3488,12 @@ const getStatusText = (status) => {
 }
 
 const getInboundStatusType = (status) => {
-  const types = { pending: 'warning', completed: 'success', returned: 'danger' }
+  const types = { pending: 'warning', completed: 'success', cancelled: 'info', returned: 'danger' }
   return types[status] || 'info'
 }
 
 const getInboundStatusText = (status) => {
-  const texts = { pending: '待入库', completed: '已完成', returned: '已退库' }
+  const texts = { pending: '待入库', completed: '已完成', cancelled: '已取消', returned: '已退库' }
   return texts[status] || status
 }
 

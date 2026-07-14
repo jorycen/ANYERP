@@ -324,7 +324,7 @@
         <el-tab-pane label="应付管理" name="payable">
           <div class="filter-bar">
             <span style="font-weight: bold; line-height: 32px;">待付款清单</span>
-            <el-button type="primary" @click="openSettlementDialog">生成结算单</el-button>
+            <el-button type="primary" @click="openSettlementDialog" :disabled="selectedPayables.length > 0 && Number(settlementTotalAmount) <= 0">生成结算单</el-button>
           </div>
 
           <div class="filter-bar">
@@ -370,13 +370,15 @@
             </el-table-column>
             <el-table-column prop="status" label="状态" width="100">
               <template #default="{ row }">
-                <el-tag type="danger">待付款</el-tag>
+                <el-tag :type="row.status === 'partial_settled' ? 'warning' : 'danger'">
+                  {{ row.status === 'partial_settled' ? '部分结算' : '待付款' }}
+                </el-tag>
               </template>
             </el-table-column>
             <el-table-column prop="create_time" label="创建时间" width="160" />
             <el-table-column label="操作" width="140">
               <template #default="{ row }">
-                <el-button v-if="row.source_type === 'expense'" link type="primary" @click="handleCreateExpenseSettlement(row)">
+                <el-button v-if="row.source_type === 'expense' || row.source_type === 'reimbursement'" link type="primary" @click="handleCreateExpenseSettlement(row)">
                   生成结算单
                 </el-button>
                 <el-button v-else link type="primary" @click="openSingleSettlementDialog(row)">结算</el-button>
@@ -867,6 +869,33 @@
       <div v-if="unpaidList.length > 0">
         <el-table :data="unpaidList" stripe border @selection-change="onSelectionChange" ref="settlementTableRef">
           <el-table-column type="selection" width="50" />
+          <el-table-column prop="product_name" label="采购商品" min-width="150" />
+          <el-table-column prop="available_quantity" label="剩余数量" width="100" />
+          <el-table-column label="本次结算数量/金额" width="170">
+            <template #default="{ row }">
+              <el-input-number
+                v-if="row.request_item_id"
+                v-model="row.settle_quantity"
+                :min="0.0001"
+                :max="Number(row.available_quantity || 0)"
+                :precision="4"
+                size="small"
+                controls-position="right"
+              />
+              <el-input-number
+                v-else
+                v-model="row.settle_amount"
+                :min="0.01"
+                :max="Number(row.available_amount || 0)"
+                :precision="2"
+                size="small"
+                controls-position="right"
+              />
+            </template>
+          </el-table-column>
+          <el-table-column label="本次金额" width="110">
+            <template #default="{ row }">¥{{ settlementLineAmount(row).toFixed(2) }}</template>
+          </el-table-column>
           <el-table-column prop="supplier_name" label="供应商" width="130" />
           <el-table-column prop="request_no" label="采购单号" width="180" />
           <el-table-column prop="total_amount" label="应付金额" width="130">
@@ -886,7 +915,7 @@
       <template #footer>
         <el-button @click="settlementDialogVisible = false">取消</el-button>
         <el-button type="info" @click="saveSettlementDraft">保存草稿</el-button>
-        <el-button type="primary" @click="handleSettlementSubmit" :loading="settlementLoading" :disabled="selectedPayableIds.length === 0">
+        <el-button type="primary" @click="handleSettlementSubmit" :loading="settlementLoading" :disabled="selectedPayableIds.length === 0 || Number(settlementTotalAmount) <= 0">
           生成结算单
         </el-button>
       </template>
@@ -1351,6 +1380,7 @@ const getPayableSourceText = (row) => {
   const sourceType = row?.source_type || 'purchase'
   if (sourceType === 'expense') return '费用'
   if (sourceType === 'reimbursement') return '报销'
+  if (sourceType === 'purchase_adjustment') return '采购调整'
   return '采购'
 }
 
@@ -1539,10 +1569,15 @@ const expenseForm = reactive({
 
 const expenseTypeOptions = ref([])
 
-const selectedPayableIds = computed(() => selectedPayables.value.map(p => p.payable_id))
+const selectedPayableIds = computed(() => [...new Set(selectedPayables.value.map(p => p.payable_id))])
+
+const settlementLineAmount = (row) => {
+  if (row.request_item_id) return Number(row.settle_quantity || 0) * Number(row.unit_price || 0)
+  return Number(row.settle_amount || 0)
+}
 
 const settlementTotalAmount = computed(() => {
-  return selectedPayables.value.reduce((sum, p) => sum + parseFloat(p.total_amount || 0), 0).toFixed(2)
+  return selectedPayables.value.reduce((sum, row) => sum + settlementLineAmount(row), 0).toFixed(2)
 })
 
 const formatSettlementAccountOption = (account) => {
@@ -2104,7 +2139,7 @@ const openPurchaseRequestDetail = async (row) => {
 
 const loadSettlementData = async () => {
   try {
-    const params = { ...settlementQuery, settlementType: 'supplier,expense' }
+    const params = { ...settlementQuery, settlementType: 'supplier,expense,reimbursement' }
     if (settlementStatusFilter.value) {
       params.status = settlementStatusFilter.value
     }
@@ -2345,7 +2380,31 @@ const handleManufacturerPriceImport = async (uploadFile) => {
   }
 }
 
+const loadSettlementLines = async (params = {}) => {
+  const res = await api.getPayableSettlementItems(params)
+  if (res.code !== 0) return []
+  return (res.data || []).map(row => ({
+    ...row,
+    settle_quantity: row.request_item_id ? Number(row.available_quantity || 0) : null,
+    settle_amount: row.request_item_id ? null : Number(row.available_amount || 0)
+  }))
+}
+
 const openSettlementDialog = async () => {
+  settlementForm.supplierId = ''
+  resetPaymentAccountFields()
+  unpaidList.value = []
+  selectedPayables.value = []
+  settlementDialogVisible.value = true
+  try {
+    unpaidList.value = await loadSettlementLines()
+    restoreSettlementDraft()
+  } catch (err) {
+    ElMessage.error('获取待结算明细失败')
+  }
+}
+
+const openSettlementDialogLegacy = async () => {
   settlementForm.supplierId = ''
   resetPaymentAccountFields()
   unpaidList.value = []
@@ -2361,6 +2420,30 @@ const openSettlementDialog = async () => {
 }
 
 const openSingleSettlementDialog = async (row) => {
+  if (row.source_type === 'expense' || row.source_type === 'reimbursement') {
+    await handleCreateExpenseSettlement(row)
+    return
+  }
+  settlementForm.supplierId = row.supplier_id || ''
+  resetPaymentAccountFields()
+  unpaidList.value = []
+  selectedPayables.value = []
+  settlementDialogVisible.value = true
+  try {
+    unpaidList.value = await loadSettlementLines({
+      supplierId: settlementForm.supplierId,
+      payableIds: row.payable_id
+    })
+    await nextTick()
+    if (unpaidList.value.length && settlementTableRef.value) {
+      unpaidList.value.forEach(item => settlementTableRef.value.toggleRowSelection(item, true))
+    }
+  } catch (err) {
+    ElMessage.error('获取待结算明细失败')
+  }
+}
+
+const openSingleSettlementDialogLegacy = async (row) => {
   if (row.source_type === 'expense') {
     await handleCreateExpenseSettlement(row)
     return
@@ -2392,6 +2475,29 @@ const openSingleSettlementDialog = async (row) => {
 
 const handleCreateExpenseSettlement = async (row) => {
   try {
+    const { value } = await ElMessageBox.prompt(
+      `请输入本次报销金额（剩余 ¥${Number(row.remaining_amount ?? (Number(row.total_amount || 0) - Number(row.settled_amount || 0))).toFixed(2)}）`,
+      '生成报销结算单',
+      {
+        inputValue: Number(row.remaining_amount ?? (Number(row.total_amount || 0) - Number(row.settled_amount || 0))).toFixed(2),
+        inputPattern: /^(0*\.?[0-9]+)$/,
+        inputErrorMessage: '请输入有效金额'
+      }
+    )
+    const res = await api.createExpenseSettlement({ payableId: row.payable_id, amount: Number(value) })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '报销结算单已生成')
+      await Promise.all([loadPayableData(), loadSettlementData()])
+    } else {
+      ElMessage.error(res.message || '生成失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel' && err !== 'close') ElMessage.error(err?.response?.data?.message || err?.message || '生成失败')
+  }
+}
+
+const handleCreateExpenseSettlementLegacy = async (row) => {
+  try {
     await ElMessageBox.confirm(
       `确认将费用应付[${row.source_no || row.request_no || row.payable_id}]生成结算单？`,
       '生成费用结算单',
@@ -2412,6 +2518,16 @@ const handleCreateExpenseSettlement = async (row) => {
 }
 
 const onSupplierChange = async (supplierId) => {
+  resetPaymentAccountFields()
+  try {
+    unpaidList.value = await loadSettlementLines(supplierId ? { supplierId } : {})
+    selectedPayables.value = []
+  } catch (err) {
+    ElMessage.error('获取待结算明细失败')
+  }
+}
+
+const onSupplierChangeLegacy = async (supplierId) => {
   resetPaymentAccountFields()
   if (!supplierId) {
     const res = await api.getPayableList({ status: 'unpaid', page: 1, pageSize: 100 })
@@ -2465,6 +2581,60 @@ const handleOtherPaymentImageExceed = () => {
 }
 
 const handleSettlementSubmit = async () => {
+  if (!selectedPayables.value.length) {
+    ElMessage.warning('请选择需要结算的采购明细')
+    return
+  }
+  if (selectedPayables.value.some(row => row.source_type === 'expense' || row.source_type === 'reimbursement')) {
+    ElMessage.warning('报销请在应付清单中单独生成报销结算单')
+    return
+  }
+  settlementLoading.value = true
+  try {
+    const supplierIds = [...new Set(selectedPayables.value.map(row => row.supplier_id).filter(Boolean))]
+    const supplierId = settlementForm.supplierId || (supplierIds.length === 1 ? supplierIds[0] : '')
+    if (!supplierId || supplierIds.some(id => id !== supplierId)) {
+      ElMessage.warning('请选择同一供应商的采购明细')
+      return
+    }
+    const paymentAccountType = settlementForm.paymentAccountType
+    const isOtherPaymentAccount = paymentAccountType === 'other'
+    if (isOtherPaymentAccount && (!settlementForm.otherPaymentRemark.trim() || !settlementForm.otherPaymentImage)) {
+      ElMessage.warning('其他账户必须填写说明并上传凭证')
+      return
+    }
+    if (!isOtherPaymentAccount && !settlementForm.supplierAccountId) {
+      ElMessage.warning('请选择供应商付款账户')
+      return
+    }
+    const res = await api.createSettlement({
+      supplierId,
+      payableIds: selectedPayableIds.value,
+      allocations: selectedPayables.value.map(row => ({
+        payableId: row.payable_id,
+        requestItemId: row.request_item_id,
+        quantity: row.request_item_id ? Number(row.settle_quantity || 0) : undefined,
+        amount: row.request_item_id ? undefined : Number(row.settle_amount || 0)
+      })),
+      paymentAccountType: isOtherPaymentAccount ? 'other' : 'saved',
+      supplierAccountId: isOtherPaymentAccount ? '' : settlementForm.supplierAccountId,
+      otherPaymentRemark: isOtherPaymentAccount ? settlementForm.otherPaymentRemark.trim() : '',
+      otherPaymentImage: isOtherPaymentAccount ? settlementForm.otherPaymentImage : ''
+    })
+    if (res.code === 0) {
+      ElMessage.success('结算单创建成功')
+      clearDraft(FINANCE_SETTLEMENT_DRAFT_KEY)
+      settlementDialogVisible.value = false
+      await Promise.all([loadPayableData(), loadSettlementData()])
+    } else ElMessage.error(res.message || '创建失败')
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '创建结算单失败')
+  } finally {
+    settlementLoading.value = false
+  }
+}
+
+const handleSettlementSubmitLegacy = async () => {
   if (selectedPayables.value.length === 0) {
     ElMessage.warning('请选择需要结算的应付款项')
     return

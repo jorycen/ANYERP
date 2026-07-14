@@ -50,11 +50,11 @@ async function assertTransferScope(ctx, fromStoreId, toStoreId) {
     ctx.throw(400, '只能在同一区域内发起调拨');
   }
 
+  // 调拨门店已经由 /store/transfer-options 按登录账号的可见范围查询，
+  // 发起时不再依赖账号上的 distributorId 做重复校验，避免账号历史归属字段
+  // 与实际门店归属不一致时误拦截店员/店长。这里仍保留门店所属经销商一致性校验。
   const user = ctx.state.user || {};
   const roles = getUserRoles(user);
-  if (!roles.includes('boss') && user.distributorId && String(user.distributorId) !== String(fromStore.distributor_id)) {
-    ctx.throw(403, '无权操作该经销商的调拨');
-  }
   const userRegionKeys = Array.isArray(user.regionCodes) ? user.regionCodes.map(String) : [];
   if (!roles.includes('boss') && !userRegionKeys.includes('*') && userRegionKeys.length && !fromRegionKeys.some(key => userRegionKeys.includes(key))) {
     ctx.throw(403, '无权操作该区域的调拨');

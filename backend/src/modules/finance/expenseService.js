@@ -6,6 +6,7 @@ const {
 } = require('../../models');
 const { generateUUID } = require('../../utils');
 const moment = require('moment');
+const { roundAmount, getAllocationSummary, refreshExpenseState } = require('./settlementAllocation');
 
 function money(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
@@ -50,15 +51,20 @@ async function ensureExpensePayable(expense, options = {}, transaction = null) {
   return payable;
 }
 
-async function createReimbursementSettlement(expense, operator, transaction = null) {
-  if (expense.settlement_id) {
-    return Settlement.findByPk(expense.settlement_id, { transaction });
-  }
-
+async function createReimbursementSettlement(expense, operator, transaction = null, requestedAmount = null) {
   const payable = await ensureExpensePayable(expense, {
-    sourceType: 'reimbursement',
-    status: 'settling'
+    sourceType: 'reimbursement'
   }, transaction);
+  const allocation = (await getAllocationSummary([payable.payable_id], transaction)).get(String(payable.payable_id));
+  const remainingAmount = roundAmount(Number(payable.total_amount || 0) - Number(allocation?.amount || 0));
+  const amount = requestedAmount === null || requestedAmount === undefined
+    ? remainingAmount
+    : roundAmount(requestedAmount);
+  if (amount <= 0 || amount > remainingAmount + 0.005) {
+    const error = new Error('reimbursement amount exceeds remaining amount');
+    error.status = 400;
+    throw error;
+  }
   const settlementNo = `RB${moment().format('YYYYMMDDHHmmss')}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`;
   const payeeName = expense.applicant_name || expense.create_user || '垫付员工';
   const settlement = await Settlement.create({
@@ -73,7 +79,7 @@ async function createReimbursementSettlement(expense, operator, transaction = nu
     source_type: expense.source_type || 'expense',
     source_id: expense.expense_id,
     source_no: expense.source_no || expense.expense_no,
-    total_amount: money(expense.amount),
+    total_amount: amount,
     paid_amount: 0,
     status: 'draft',
     payment_status: 'unpaid',
@@ -84,14 +90,14 @@ async function createReimbursementSettlement(expense, operator, transaction = nu
     settlement_id: settlement.settlement_id,
     payable_id: payable.payable_id,
     request_no: expense.expense_no,
-    amount: money(expense.amount)
+    amount
   }, { transaction });
   await expense.update({
     payable_id: payable.payable_id,
     settlement_id: settlement.settlement_id,
-    status: 'approved',
     update_time: new Date()
   }, { transaction });
+  await refreshExpenseState(expense.expense_id, transaction);
   return settlement;
 }
 

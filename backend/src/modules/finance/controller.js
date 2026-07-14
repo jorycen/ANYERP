@@ -9,7 +9,7 @@ const {
 const { Op, Sequelize, fn, col } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { getUserRoles } = require('../../middleware/permission');
-const { ensureExpensePayable, createReimbursementSettlement } = require('./expenseService');
+const { ensureExpensePayable } = require('./expenseService');
 
 async function getAccountBalance(accountId, transaction = null) {
   const [incomeAmount, expenseAmount] = await Promise.all([
@@ -603,7 +603,6 @@ async function reviewExpense(ctx) {
     if (!purchase || purchase.status !== 'approved') ctx.throw(400, '关联采购申请尚未审批通过');
   }
 
-  let settlement = null;
   await sequelize.transaction(async transaction => {
     await record.update({
       status: action,
@@ -614,13 +613,16 @@ async function reviewExpense(ctx) {
       update_time: new Date()
     }, { transaction });
     if (action === 'approved') {
-      settlement = await createReimbursementSettlement(record, user, transaction);
+      await ensureExpensePayable(record, {
+        sourceType: record.payment_method === 'PERSONAL_ADVANCE' ? 'reimbursement' : 'expense',
+        status: 'unpaid'
+      }, transaction);
     }
   });
   ctx.body = {
     code: 0,
-    message: action === 'approved' ? '审批通过，已生成报销结算单草稿' : '报销申请已拒绝',
-    data: settlement
+    message: action === 'approved' ? '审批通过，已进入待结算列表' : '报销申请已拒绝',
+    data: null
   };
 }
 

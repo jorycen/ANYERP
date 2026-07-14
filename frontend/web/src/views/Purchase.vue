@@ -45,6 +45,7 @@
               <template #default="{ row }">
                 <el-button link type="primary" @click="handleApprove(row)" v-if="row.status === 'pending'">审批</el-button>
                 <el-button link type="warning" @click="handleRevoke(row)" v-if="row.status === 'approved'">撤销</el-button>
+                <el-button link type="danger" @click="handleAdjustment(row)" v-if="row.status === 'approved'">退单</el-button>
                 <el-button link type="primary" @click="handleView(row)">查看</el-button>
               </template>
             </el-table-column>
@@ -129,9 +130,8 @@
         </el-form-item>
         <el-form-item label="发票类型">
           <el-select v-model="requestForm.invoiceType" placeholder="请选择发票类型" style="width: 100%">
-            <el-option label="收据" value="收据" />
-            <el-option label="专票6%" value="专票6%" />
-            <el-option label="专票13%" value="专票13%" />
+            <el-option label="未税（收据或普票）" value="未税（收据或普票）" />
+            <el-option label="增专票（13%）" value="增专票（13%）" />
           </el-select>
         </el-form-item>
         <el-form-item label="付款方式" required>
@@ -300,6 +300,22 @@
             </template>
           </el-table-column>
         </el-table>
+
+        <template v-if="currentRequest.adjustments && currentRequest.adjustments.length > 0">
+          <h4 class="mt-20">采购退单 / 数量调整记录</h4>
+          <el-table :data="currentRequest.adjustments" border size="small">
+            <el-table-column prop="adjustment_no" label="调整单号" width="180" />
+            <el-table-column prop="total_quantity_delta" label="数量变化" width="100" align="right" />
+            <el-table-column prop="total_amount_delta" label="应付变化" width="120" align="right">
+              <template #default="{ row }">¥{{ formatMoney(row.total_amount_delta) }}</template>
+            </el-table-column>
+            <el-table-column prop="reason" label="原因" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="create_user" label="操作人" width="110" />
+            <el-table-column prop="create_time" label="操作时间" width="160">
+              <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
+            </el-table-column>
+          </el-table>
+        </template>
       </div>
     </el-dialog>
 
@@ -313,6 +329,73 @@
       <template #footer>
         <el-button @click="revokeDialogVisible = false">取消</el-button>
         <el-button type="warning" @click="handleRevokeSubmit" :loading="revokeLoading">确定撤销</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 采购退单/数量调整对话框 -->
+    <el-dialog v-model="adjustmentDialogVisible" title="采购退单 / 数量调整" width="1100px" @close="resetAdjustmentForm">
+      <div v-if="adjustmentRequest" class="adjustment-summary">
+        <el-alert
+          title="仅可调整尚未入库的数量；已入库数量如需退回，请到库存管理办理退库。提交后原采购单和原入库单保留历史，系统新增正负待付款调整记录。"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+        <el-descriptions :column="3" border size="small" style="margin-top: 12px;">
+          <el-descriptions-item label="采购单号">{{ adjustmentRequest.request_no }}</el-descriptions-item>
+          <el-descriptions-item label="供应商">{{ adjustmentRequest.supplier_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="付款方式">{{ getPaymentMethodText(adjustmentRequest.payment_method) }}</el-descriptions-item>
+        </el-descriptions>
+      </div>
+
+      <el-table :data="adjustmentRows" stripe border size="small" style="margin-top: 16px;">
+        <el-table-column prop="product_name" label="商品" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="store_name" label="门店" width="120" />
+        <el-table-column prop="inbound_no" label="待入库单" width="170" />
+        <el-table-column prop="unit_price" label="采购单价" width="105" align="right">
+          <template #default="{ row }">¥{{ formatMoney(row.unit_price) }}</template>
+        </el-table-column>
+        <el-table-column prop="original_quantity" label="原采购数量" width="105" align="right" />
+        <el-table-column prop="received_quantity" label="已入库数量" width="105" align="right" />
+        <el-table-column prop="pending_quantity" label="当前待入库" width="105" align="right" />
+        <el-table-column label="调整后待入库" width="155" align="right">
+          <template #default="{ row }">
+            <el-input-number
+              v-if="row.editable"
+              v-model="row.target_quantity"
+              :min="0"
+              :precision="0"
+              :step="1"
+              controls-position="right"
+              size="small"
+              style="width: 130px"
+            />
+            <span v-else style="color: #909399;">{{ row.received_quantity }}（已入库）</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="应付调整" width="120" align="right">
+          <template #default="{ row }">
+            <span :style="{ color: adjustmentRowAmount(row) < 0 ? '#F56C6C' : adjustmentRowAmount(row) > 0 ? '#67C23A' : '#909399' }">
+              {{ adjustmentRowAmount(row) > 0 ? '+' : '' }}¥{{ adjustmentRowAmount(row).toFixed(2) }}
+            </span>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <el-form label-width="90px" style="margin-top: 16px;">
+        <el-form-item label="调整原因">
+          <el-input v-model="adjustmentReason" type="textarea" rows="2" maxlength="512" show-word-limit placeholder="请输入退单或数量调整原因" />
+        </el-form-item>
+      </el-form>
+      <div style="text-align: right; color: #606266;">
+        数量变化：<strong>{{ adjustmentTotalQuantityDelta }}</strong>，应付变化：
+        <strong :style="{ color: adjustmentTotalAmountDelta < 0 ? '#F56C6C' : '#67C23A' }">
+          {{ adjustmentTotalAmountDelta > 0 ? '+' : '' }}¥{{ adjustmentTotalAmountDelta.toFixed(2) }}
+        </strong>
+      </div>
+      <template #footer>
+        <el-button @click="adjustmentDialogVisible = false">取消</el-button>
+        <el-button type="danger" @click="handleAdjustmentSubmit" :loading="adjustmentLoading" :disabled="!hasAdjustmentChanges">确认退单</el-button>
       </template>
     </el-dialog>
 
@@ -452,13 +535,18 @@ const requestDialogVisible = ref(false)
 const viewDialogVisible = ref(false)
 const approveDialogVisible = ref(false)
 const revokeDialogVisible = ref(false)
+const adjustmentDialogVisible = ref(false)
 const supplierDialogVisible = ref(false)
 const allocateDialogVisible = ref(false)
 const submitLoading = ref(false)
 const approveLoading = ref(false)
 const revokeLoading = ref(false)
+const adjustmentLoading = ref(false)
 const supplierLoading = ref(false)
 const currentRequest = ref(null)
+const adjustmentRequest = ref(null)
+const adjustmentRows = ref([])
+const adjustmentReason = ref('')
 const supplierDialogTitle = ref('新增供应商')
 const currentSupplier = ref(null)
 const currentAllocateProduct = ref(null)
@@ -537,6 +625,27 @@ const requestItemSubtotal = (item) => {
 const requestItemActualAmount = (item) => {
   return Math.max(0, requestItemSubtotal(item) - toNumber(item?.rebate_deduction))
 }
+
+const adjustmentRowAmount = (row) => {
+  if (!row?.editable) return 0
+  const delta = toQuantity(row.target_quantity) - toQuantity(row.pending_quantity)
+  return delta * toNumber(row.actual_unit_price ?? row.unit_price)
+}
+
+const adjustmentTotalQuantityDelta = computed(() => {
+  return adjustmentRows.value.reduce((sum, row) => {
+    if (!row?.editable) return sum
+    return sum + toQuantity(row.target_quantity) - toQuantity(row.pending_quantity)
+  }, 0)
+})
+
+const adjustmentTotalAmountDelta = computed(() => {
+  return adjustmentRows.value.reduce((sum, row) => sum + adjustmentRowAmount(row), 0)
+})
+
+const hasAdjustmentChanges = computed(() => adjustmentRows.value.some(row => (
+  row?.editable && toQuantity(row.target_quantity) !== toQuantity(row.pending_quantity)
+)))
 
 const toQuantity = (value) => {
   const number = Number(value)
@@ -815,6 +924,73 @@ const handleRevokeSubmit = async () => {
   } finally {
     revokeLoading.value = false
   }
+}
+
+const handleAdjustment = async (row) => {
+  try {
+    const res = await api.getPurchaseAdjustmentPreview(row.request_id)
+    if (res.code === 0) {
+      adjustmentRequest.value = res.data
+      adjustmentRows.value = (res.data?.rows || []).map(item => ({
+        ...item,
+        target_quantity: toQuantity(item.target_quantity)
+      }))
+      adjustmentReason.value = ''
+      adjustmentDialogVisible.value = true
+    } else {
+      ElMessage.warning(res.message || '该采购单没有可调整的未入库商品')
+    }
+  } catch (err) {
+    ElMessage.warning(err.response?.data?.message || '该采购单没有可调整的未入库商品')
+  }
+}
+
+const handleAdjustmentSubmit = async () => {
+  if (!hasAdjustmentChanges.value) {
+    ElMessage.warning('调整后数量未发生变化')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确认提交本次采购退单吗？数量变化 ${adjustmentTotalQuantityDelta.value}，应付变化 ¥${adjustmentTotalAmountDelta.value.toFixed(2)}`,
+      '确认采购退单',
+      { type: 'warning', confirmButtonText: '确认提交', cancelButtonText: '取消' }
+    )
+  } catch (_) {
+    return
+  }
+
+  adjustmentLoading.value = true
+  try {
+    const res = await api.createPurchaseAdjustment({
+      requestId: adjustmentRequest.value.request_id,
+      reason: adjustmentReason.value,
+      items: adjustmentRows.value
+        .filter(row => row.editable)
+        .map(row => ({
+          inboundItemId: row.inbound_item_id,
+          targetQuantity: toQuantity(row.target_quantity)
+        }))
+    })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '采购退单完成')
+      adjustmentDialogVisible.value = false
+      await loadData()
+    } else {
+      ElMessage.error(res.message || '采购退单失败')
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '采购退单失败')
+  } finally {
+    adjustmentLoading.value = false
+  }
+}
+
+const resetAdjustmentForm = () => {
+  adjustmentRequest.value = null
+  adjustmentRows.value = []
+  adjustmentReason.value = ''
 }
 
 const handleAddSupplier = () => {

@@ -1,0 +1,23 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const {
+  actualUnitPrice,
+  getOpenPayableStatus,
+  getExpenseStatus
+} = require('../src/modules/finance/settlementAllocation');
+
+test('purchase settlement unit price deducts per-unit rebate', () => {
+  assert.equal(actualUnitPrice({ quantity: 10, unit_price: 100, rebate_deduction: 50 }), 95);
+});
+
+test('payable status distinguishes partial allocation from fully allocated', () => {
+  assert.equal(getOpenPayableStatus(1000, 300, 0), 'partial_settled');
+  assert.equal(getOpenPayableStatus(1000, 1000, 0), 'settling');
+  assert.equal(getOpenPayableStatus(1000, 1000, 1000), 'paid');
+});
+
+test('reimbursement status distinguishes partial reimbursement from pending payment', () => {
+  assert.equal(getExpenseStatus(1000, 300, 0, 'approved'), 'partial_reimbursement');
+  assert.equal(getExpenseStatus(1000, 1000, 0, 'approved'), 'processing');
+  assert.equal(getExpenseStatus(1000, 1000, 1000, 'approved'), 'paid');
+});

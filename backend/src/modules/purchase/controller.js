@@ -1,7 +1,7 @@
 /**
  * 采购管理控制器
  */
-const { sequelize, PurchaseRequest, PurchaseRequestItem, Supplier, SupplierPaymentAccount, Store, Product, Inbound, InboundItem, Payable, Expense, SupplierRebate, ResourceCategory, GoodsType } = require('../../models');
+const { sequelize, PurchaseRequest, PurchaseRequestItem, PurchaseAdjustment, PurchaseAdjustmentItem, Supplier, SupplierPaymentAccount, Store, Product, Inbound, InboundItem, Payable, Expense, SupplierRebate, ResourceCategory, GoodsType } = require('../../models');
 const { Op } = require('sequelize');
 const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { recordRebateDeduction, recordSupplierRebateAccountTransaction, _getRebateBalance } = require('../finance/rebateController');
@@ -10,6 +10,12 @@ const { createPurchaseReimbursement } = require('../finance/expenseService');
 function toMoney(value) {
   const amount = Number(value);
   if (!Number.isFinite(amount) || amount <= 0) return 0;
+  return Math.round(amount * 100) / 100;
+}
+
+function toSignedMoney(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return 0;
   return Math.round(amount * 100) / 100;
 }
 
@@ -73,6 +79,100 @@ function normalizeSelectedResourceTypes(value) {
   } catch (_) {
     return [];
   }
+}
+
+async function refreshPendingInboundSummary(inbound, transaction) {
+  const items = await InboundItem.findAll({
+    where: { inbound_id: inbound.inbound_id },
+    transaction
+  });
+  const totalQuantity = items.reduce((sum, item) => sum + Math.max(0, Number(item.quantity || 0)), 0);
+  const totalAmount = items.reduce((sum, item) => (
+    sum + Math.max(0, Number(item.quantity || 0)) * Number(item.unit_price || 0)
+  ), 0);
+  await inbound.update({
+    total_quantity: totalQuantity,
+    total_amount: toSignedMoney(totalAmount),
+    status: totalQuantity > 0 ? 'pending' : 'cancelled',
+    update_time: new Date()
+  }, { transaction });
+}
+
+function buildAdjustmentRows(request, inbounds, stores) {
+  const storeMap = new Map(stores.map(store => [String(store.store_id), store.name]));
+  const rows = [];
+
+  for (const requestItem of request.items || []) {
+    const inboundItems = [];
+    for (const inbound of inbounds) {
+      for (const inboundItem of inbound.items || []) {
+        if (String(inboundItem.purchase_request_item_id || '') === String(requestItem.item_id)) {
+          inboundItems.push({ inbound, inboundItem });
+        }
+      }
+    }
+
+    const receivedQuantity = inboundItems
+      .filter(({ inbound }) => inbound.status === 'completed')
+      .reduce((sum, { inboundItem }) => sum + Math.max(0, Number(inboundItem.quantity || 0)), 0);
+    const pendingQuantityTotal = inboundItems
+      .filter(({ inbound }) => inbound.status === 'pending')
+      .reduce((sum, { inboundItem }) => sum + Math.max(0, Number(inboundItem.quantity || 0)), 0);
+    const unitPrice = Number(requestItem.unit_price || 0);
+    const rebatePerUnit = Number(requestItem.quantity || 0) > 0
+      ? Number(requestItem.rebate_deduction || 0) / Number(requestItem.quantity)
+      : 0;
+
+    const editableRows = inboundItems.filter(({ inbound }) => inbound.status === 'pending');
+    if (editableRows.length > 0) {
+      for (const { inbound, inboundItem } of editableRows) {
+        const effectiveUnitPrice = unitPrice || Number(inboundItem.unit_price || 0);
+        rows.push({
+          request_item_id: requestItem.item_id,
+          inbound_id: inbound.inbound_id,
+          inbound_no: inbound.inbound_no,
+          inbound_item_id: inboundItem.item_id,
+          store_id: inbound.store_id,
+          store_name: storeMap.get(String(inbound.store_id)) || inbound.store_id || '',
+          product_id: requestItem.product_id,
+          product_name: requestItem.product_name || inboundItem.product_name || requestItem.product_id,
+          unit_price: effectiveUnitPrice,
+          actual_unit_price: toSignedMoney(effectiveUnitPrice - rebatePerUnit),
+          original_quantity: Number(requestItem.quantity || 0),
+          received_quantity: receivedQuantity,
+          pending_quantity: Math.max(0, Number(inboundItem.quantity || 0)),
+          pending_quantity_total: pendingQuantityTotal,
+          effective_quantity: receivedQuantity + pendingQuantityTotal,
+          target_quantity: Math.max(0, Number(inboundItem.quantity || 0)),
+          editable: true
+        });
+      }
+      continue;
+    }
+
+    const completed = inboundItems.find(({ inbound }) => inbound.status === 'completed');
+    rows.push({
+      request_item_id: requestItem.item_id,
+      inbound_id: completed?.inbound?.inbound_id || '',
+      inbound_no: completed?.inbound?.inbound_no || '',
+      inbound_item_id: completed?.inboundItem?.item_id || '',
+      store_id: completed?.inbound?.store_id || request.store_id,
+      store_name: storeMap.get(String(completed?.inbound?.store_id || request.store_id)) || request.store_id || '',
+      product_id: requestItem.product_id,
+      product_name: requestItem.product_name || requestItem.product_id,
+      unit_price: unitPrice,
+      actual_unit_price: toSignedMoney(unitPrice - rebatePerUnit),
+      original_quantity: Number(requestItem.quantity || 0),
+      received_quantity: receivedQuantity,
+      pending_quantity: 0,
+      pending_quantity_total: pendingQuantityTotal,
+      effective_quantity: receivedQuantity + pendingQuantityTotal,
+      target_quantity: 0,
+      editable: false
+    });
+  }
+
+  return rows;
 }
 
 /**
@@ -144,7 +244,8 @@ async function getRequestDetail(ctx) {
       { model: Store },
       { model: Supplier },
       { model: PurchaseRequestItem, as: 'items' },
-      { model: Inbound, include: [{ model: InboundItem, as: 'items' }] }
+      { model: Inbound, include: [{ model: InboundItem, as: 'items' }] },
+      { model: PurchaseAdjustment, as: 'adjustments', include: [{ model: PurchaseAdjustmentItem, as: 'items' }] }
     ]
   });
 
@@ -536,6 +637,275 @@ async function approveRequest(ctx) {
 }
 
 /**
+ * 获取采购退单/采购数量调整预览
+ */
+async function getAdjustmentPreview(ctx) {
+  const { requestId } = ctx.params;
+  const request = await PurchaseRequest.findByPk(requestId, {
+    include: [
+      { model: Supplier },
+      { model: PurchaseRequestItem, as: 'items' },
+      { model: Inbound, include: [{ model: InboundItem, as: 'items' }] }
+    ]
+  });
+
+  if (!request) ctx.throw(404, '采购申请不存在');
+  assertStoreVisible(ctx, request.store_id);
+  if (request.status !== 'approved') ctx.throw(400, '只有已通过的采购订单才能办理退单/数量调整');
+
+  const inbounds = request.Inbounds || [];
+  const rows = buildAdjustmentRows(request, inbounds, await Store.findAll());
+  if (!rows.some(row => row.editable && row.pending_quantity > 0)) {
+    ctx.throw(400, '该采购订单没有未入库商品可调整');
+  }
+
+  ctx.body = {
+    code: 0,
+    data: {
+      request_id: request.request_id,
+      request_no: request.request_no,
+      store_id: request.store_id,
+      supplier_id: request.supplier_id,
+      supplier_name: request.Supplier?.name || '',
+      payment_method: request.payment_method,
+      rows
+    }
+  };
+}
+
+async function recordPurchaseAdjustmentRebate({ request, adjustmentNo, rebateDelta, user, transaction }) {
+  const amount = Math.abs(toSignedMoney(rebateDelta));
+  if (amount <= 0 || !request.supplier_id) return;
+
+  const currentBalance = await _getRebateBalance(request.supplier_id, transaction);
+  if (rebateDelta > 0 && amount > currentBalance) {
+    const error = new Error(`返利余额不足，当前余额 ¥${currentBalance.toFixed(2)}`);
+    error.status = 400;
+    throw error;
+  }
+
+  const supplier = await Supplier.findByPk(request.supplier_id, { transaction });
+  const newBalance = toSignedMoney(currentBalance + (rebateDelta > 0 ? -amount : amount));
+  await SupplierRebate.create({
+    rebate_id: generateUUID(),
+    supplier_id: request.supplier_id,
+    supplier_name: supplier?.name || '',
+    type: rebateDelta > 0 ? 'debit' : 'credit',
+    amount,
+    balance: newBalance,
+    related_no: adjustmentNo,
+    remark: rebateDelta > 0 ? `采购调整 ${adjustmentNo} 增加数量，追加返利抵扣` : `采购调整 ${adjustmentNo} 减少数量，退回返利抵扣`,
+    status: 'active',
+    source_type: 'purchase_adjustment',
+    create_user: user.name || user.phone
+  }, { transaction });
+  await recordSupplierRebateAccountTransaction(
+    request.supplier_id,
+    rebateDelta > 0 ? 'expense' : 'income',
+    amount,
+    rebateDelta > 0 ? '采购调整追加返利抵扣' : '采购调整退回返利抵扣',
+    adjustmentNo,
+    user.name || user.phone,
+    transaction
+  );
+}
+
+/**
+ * 创建采购退单/采购数量调整单。
+ * 只调整待入库明细；已完成入库的明细仅用于校验和追溯。
+ */
+async function createPurchaseAdjustment(ctx) {
+  const { requestId, reason = '', items = [] } = ctx.request.body || {};
+  const user = ctx.state.user;
+
+  if (!requestId) ctx.throw(400, '缺少采购订单ID');
+  if (!Array.isArray(items) || items.length === 0) ctx.throw(400, '请填写需要调整的商品数量');
+
+  const transaction = await sequelize.transaction();
+  try {
+    const request = await PurchaseRequest.findByPk(requestId, {
+      include: [
+        { model: Supplier },
+        { model: PurchaseRequestItem, as: 'items' },
+        { model: Inbound, include: [{ model: InboundItem, as: 'items' }] }
+      ],
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!request) ctx.throw(404, '采购申请不存在');
+    assertStoreVisible(ctx, request.store_id);
+    if (request.status !== 'approved') ctx.throw(400, '只有已通过的采购订单才能办理退单/数量调整');
+
+    const inbounds = await Inbound.findAll({
+      where: { purchase_request_id: requestId },
+      include: [{ model: InboundItem, as: 'items' }],
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    const requestItemMap = new Map((request.items || []).map(item => [String(item.item_id), item]));
+    const inboundItemMap = new Map();
+    for (const inbound of inbounds) {
+      for (const inboundItem of inbound.items || []) {
+        inboundItemMap.set(String(inboundItem.item_id), { inbound, inboundItem });
+      }
+    }
+
+    const submitted = new Map();
+    for (const row of items) {
+      const inboundItemId = String(row.inboundItemId || row.inbound_item_id || '');
+      if (!inboundItemId) continue;
+      if (submitted.has(inboundItemId)) ctx.throw(400, '退单明细重复');
+      const targetQuantity = Number(row.targetQuantity ?? row.target_quantity);
+      if (!Number.isInteger(targetQuantity) || targetQuantity < 0) {
+        ctx.throw(400, '调整后数量必须是大于等于0的整数');
+      }
+      submitted.set(inboundItemId, targetQuantity);
+    }
+    if (submitted.size === 0) ctx.throw(400, '没有有效的退单明细');
+
+    const receivedByRequestItem = new Map();
+    for (const inbound of inbounds) {
+      if (inbound.status !== 'completed') continue;
+      for (const inboundItem of inbound.items || []) {
+        const key = String(inboundItem.purchase_request_item_id || '');
+        receivedByRequestItem.set(key, (receivedByRequestItem.get(key) || 0) + Math.max(0, Number(inboundItem.quantity || 0)));
+      }
+    }
+
+    const adjustmentId = generateUUID();
+    const adjustmentNo = generateId('PRA');
+    let totalQuantityDelta = 0;
+    let totalAmountDelta = 0;
+    let totalRebateDelta = 0;
+    let changedItemCount = 0;
+
+    for (const [inboundItemId, targetQuantity] of submitted.entries()) {
+      const matched = inboundItemMap.get(inboundItemId);
+      if (!matched) ctx.throw(400, '待入库明细不存在或不属于该采购订单');
+      const { inbound, inboundItem } = matched;
+      if (inbound.status !== 'pending') ctx.throw(400, `商品 ${inboundItem.product_name || inboundItem.product_id} 已入库，不能通过退单调整`);
+
+      const requestItem = requestItemMap.get(String(inboundItem.purchase_request_item_id || ''));
+      if (!requestItem) ctx.throw(400, '采购明细不存在');
+      const currentQuantity = Math.max(0, Number(inboundItem.quantity || 0));
+      const quantityDelta = targetQuantity - currentQuantity;
+      if (quantityDelta === 0) continue;
+
+      const originalQuantity = Math.max(0, Number(requestItem.quantity || 0));
+      const unitPrice = Number(requestItem.unit_price || inboundItem.unit_price || 0);
+      const rebatePerUnit = originalQuantity > 0
+        ? Number(requestItem.rebate_deduction || 0) / originalQuantity
+        : 0;
+      const amountDelta = toSignedMoney(quantityDelta * (unitPrice - rebatePerUnit));
+      const rebateDelta = toSignedMoney(quantityDelta * rebatePerUnit);
+      const receivedQuantity = receivedByRequestItem.get(String(requestItem.item_id)) || 0;
+
+      await inboundItem.update({ quantity: targetQuantity }, { transaction });
+      await PurchaseAdjustmentItem.create({
+        adjustment_id: adjustmentId,
+        request_item_id: requestItem.item_id,
+        inbound_id: inbound.inbound_id,
+        inbound_item_id: inboundItem.item_id,
+        store_id: inbound.store_id,
+        product_id: requestItem.product_id,
+        product_name: requestItem.product_name || inboundItem.product_name || '',
+        unit_price,
+        original_quantity: originalQuantity,
+        received_quantity: receivedQuantity,
+        pending_quantity_before: currentQuantity,
+        target_quantity: targetQuantity,
+        quantity_delta: quantityDelta,
+        amount_delta: amountDelta,
+        remark: reason || ''
+      }, { transaction });
+
+      totalQuantityDelta += quantityDelta;
+      totalAmountDelta = toSignedMoney(totalAmountDelta + amountDelta);
+      totalRebateDelta = toSignedMoney(totalRebateDelta + rebateDelta);
+      changedItemCount += 1;
+    }
+
+    if (changedItemCount === 0) ctx.throw(400, '调整后数量未发生变化');
+
+    for (const inbound of inbounds.filter(item => item.status === 'pending')) {
+      await refreshPendingInboundSummary(inbound, transaction);
+    }
+
+    await PurchaseAdjustment.create({
+      adjustment_id: adjustmentId,
+      adjustment_no: adjustmentNo,
+      request_id: request.request_id,
+      request_no: request.request_no,
+      store_id: request.store_id,
+      supplier_id: request.supplier_id,
+      supplier_name: request.Supplier?.name || '',
+      total_quantity_delta: totalQuantityDelta,
+      total_amount_delta: totalAmountDelta,
+      reason: reason || '',
+      status: 'completed',
+      create_user: user.name || user.phone,
+      create_time: new Date()
+    }, { transaction });
+
+    await recordPurchaseAdjustmentRebate({
+      request,
+      adjustmentNo,
+      rebateDelta: totalRebateDelta,
+      user,
+      transaction
+    });
+
+    let payableId = '';
+    if (request.payment_method === 'PERSONAL_ADVANCE') {
+      const expense = await Expense.findOne({
+        where: { source_type: 'purchase', source_id: request.request_id },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      if (expense && expense.status === 'paid') ctx.throw(400, '个人垫付采购已完成付款，不能再调整');
+      if (expense) {
+        const nextAmount = toSignedMoney(Number(expense.amount || 0) + totalAmountDelta);
+        await expense.update({
+          amount: Math.max(0, nextAmount),
+          status: nextAmount <= 0 ? 'cancelled' : expense.status,
+          review_comment: `${expense.review_comment || ''}${expense.review_comment ? '；' : ''}采购调整 ${adjustmentNo}`,
+          update_time: new Date()
+        }, { transaction });
+      }
+    } else if (Math.abs(totalAmountDelta) > 0) {
+      payableId = generateUUID();
+      await Payable.create({
+        payable_id: payableId,
+        supplier_id: request.supplier_id,
+        supplier_name: request.Supplier?.name || '',
+        request_id: request.request_id,
+        request_no: adjustmentNo,
+        payee_type: 'supplier',
+        payee_id: request.supplier_id,
+        payee_name: request.Supplier?.name || '',
+        source_type: 'purchase_adjustment',
+        source_id: adjustmentId,
+        source_no: adjustmentNo,
+        total_amount: totalAmountDelta,
+        paid_amount: 0,
+        status: 'unpaid',
+        create_time: new Date()
+      }, { transaction });
+    }
+
+    await transaction.commit();
+    ctx.body = {
+      code: 0,
+      message: totalQuantityDelta < 0 ? '采购退单完成，已生成负向待付款调整' : '采购数量调整完成，已生成正向待付款调整',
+      data: { adjustmentId, adjustmentNo, payableId, totalQuantityDelta, totalAmountDelta }
+    };
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  }
+}
+
+/**
  * 撤销采购申请
  */
 async function revokeRequest(ctx) {
@@ -835,6 +1205,8 @@ module.exports = {
   createRequest,
   approveRequest,
   revokeRequest,
+  getAdjustmentPreview,
+  createPurchaseAdjustment,
   getSupplierList,
   getAllSuppliers,
   createSupplier,

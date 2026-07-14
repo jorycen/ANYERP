@@ -761,6 +761,55 @@ async function runMigrations() {
       console.warn('[DB Migration] normalize old return stock status skipped:', error.message);
     }
 
+    await checkAndCreateTable('T_PURCHASE_ADJUSTMENT', `
+      CREATE TABLE T_PURCHASE_ADJUSTMENT (
+        ADJUSTMENT_ID VARCHAR(32) NOT NULL COMMENT '采购调整单ID',
+        ADJUSTMENT_NO VARCHAR(64) NOT NULL COMMENT '采购调整单号',
+        REQUEST_ID VARCHAR(32) NOT NULL COMMENT '原采购申请ID',
+        REQUEST_NO VARCHAR(64) COMMENT '原采购申请单号',
+        STORE_ID VARCHAR(32) COMMENT '申请门店ID',
+        SUPPLIER_ID VARCHAR(32) COMMENT '供应商ID',
+        SUPPLIER_NAME VARCHAR(255) COMMENT '供应商名称快照',
+        TOTAL_QUANTITY_DELTA INT DEFAULT 0 COMMENT '数量变化合计',
+        TOTAL_AMOUNT_DELTA DECIMAL(12,2) DEFAULT 0 COMMENT '应付金额变化合计',
+        REASON VARCHAR(512) COMMENT '调整原因',
+        STATUS VARCHAR(32) DEFAULT 'completed' COMMENT '状态:completed/cancelled',
+        CREATE_USER VARCHAR(64) COMMENT '操作人',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '操作时间',
+        PRIMARY KEY (ADJUSTMENT_ID),
+        UNIQUE KEY uk_purchase_adjustment_no (ADJUSTMENT_NO),
+        KEY idx_purchase_adjustment_request (REQUEST_ID),
+        KEY idx_purchase_adjustment_supplier (SUPPLIER_ID),
+        KEY idx_purchase_adjustment_create_time (CREATE_TIME)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='采购退单/采购数量调整单'
+    `);
+
+    await checkAndCreateTable('T_PURCHASE_ADJUSTMENT_ITEM', `
+      CREATE TABLE T_PURCHASE_ADJUSTMENT_ITEM (
+        ITEM_ID BIGINT(20) NOT NULL AUTO_INCREMENT COMMENT '明细ID',
+        ADJUSTMENT_ID VARCHAR(32) NOT NULL COMMENT '采购调整单ID',
+        REQUEST_ITEM_ID BIGINT(20) NOT NULL COMMENT '原采购明细ID',
+        INBOUND_ID VARCHAR(32) COMMENT '关联待入库单ID',
+        INBOUND_ITEM_ID BIGINT(20) COMMENT '关联待入库明细ID',
+        STORE_ID VARCHAR(32) COMMENT '门店ID',
+        PRODUCT_ID VARCHAR(32) NOT NULL COMMENT '商品ID',
+        PRODUCT_NAME VARCHAR(255) COMMENT '商品名称快照',
+        UNIT_PRICE DECIMAL(12,2) DEFAULT 0 COMMENT '采购单价',
+        ORIGINAL_QUANTITY INT DEFAULT 0 COMMENT '原采购数量',
+        RECEIVED_QUANTITY INT DEFAULT 0 COMMENT '已入库数量',
+        PENDING_QUANTITY_BEFORE INT DEFAULT 0 COMMENT '调整前待入库数量',
+        TARGET_QUANTITY INT DEFAULT 0 COMMENT '调整后待入库数量',
+        QUANTITY_DELTA INT DEFAULT 0 COMMENT '本次数量变化',
+        AMOUNT_DELTA DECIMAL(12,2) DEFAULT 0 COMMENT '本次金额变化',
+        REMARK VARCHAR(512) COMMENT '明细备注',
+        PRIMARY KEY (ITEM_ID),
+        KEY idx_purchase_adjustment_item_adjustment (ADJUSTMENT_ID),
+        KEY idx_purchase_adjustment_item_request (REQUEST_ITEM_ID),
+        KEY idx_purchase_adjustment_item_inbound (INBOUND_ID),
+        KEY idx_purchase_adjustment_item_inbound_item (INBOUND_ITEM_ID)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='采购退单/采购数量调整明细'
+    `);
+
     await checkAndCreateTable('T_EXPENSE', `
       CREATE TABLE T_EXPENSE (
         EXPENSE_ID VARCHAR(32) NOT NULL COMMENT '支出ID',
@@ -930,6 +979,16 @@ async function runMigrations() {
         KEY idx_si_payable (PAYABLE_ID)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='结算明细表'
     `);
+
+    // Partial settlement allocation fields. They are added after the base tables so
+    // upgrades remain safe for installations created by older versions.
+    await checkAndAddColumn('T_EXPENSE', 'SETTLED_AMOUNT', 'DECIMAL(12,2) DEFAULT 0', 'AMOUNT');
+    await checkAndAddColumn('T_PAYABLE', 'SETTLED_AMOUNT', 'DECIMAL(12,2) DEFAULT 0', 'TOTAL_AMOUNT');
+    await checkAndAddColumn('T_SETTLEMENT_ITEM', 'REQUEST_ITEM_ID', 'BIGINT(20)', 'PAYABLE_ID');
+    await checkAndAddColumn('T_SETTLEMENT_ITEM', 'PRODUCT_ID', 'VARCHAR(32)', 'REQUEST_ITEM_ID');
+    await checkAndAddColumn('T_SETTLEMENT_ITEM', 'PRODUCT_NAME', 'VARCHAR(255)', 'PRODUCT_ID');
+    await checkAndAddColumn('T_SETTLEMENT_ITEM', 'QUANTITY', 'DECIMAL(12,4)', 'PRODUCT_NAME');
+    await checkAndAddColumn('T_SETTLEMENT_ITEM', 'UNIT_PRICE', 'DECIMAL(12,4)', 'QUANTITY');
 
     await checkAndCreateTable('T_SETTLEMENT_PAYMENT_BATCH', `
       CREATE TABLE T_SETTLEMENT_PAYMENT_BATCH (
