@@ -36,3 +36,9 @@ test('定价导入格式校验拒绝重复表头', () => {
     /表头重复/
   );
 });
+
+test('PN比较统一为字符串并移除空格，且过滤占位值', () => {
+  assert.equal(_test.normalizePnCode(' 87 001 7165 '), '870017165');
+  assert.deepEqual(_test.splitPnCodes('87 001 7165'), ['87 001 7165']);
+  assert.deepEqual(_test.splitPnCodes('PN001, PN002, 无'), ['PN001', 'PN002']);
+});

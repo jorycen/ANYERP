@@ -4,6 +4,9 @@
 const Router = require('koa-router');
 const {
   list,
+  listSalesReturnRequests,
+  requestSalesReturn,
+  reviewSalesReturn,
   create,
   detail,
   update,
@@ -38,6 +41,9 @@ function normalizeDepositId(ctx, next) {
 }
 
 router.get('/list', list);
+router.get('/return-requests', listSalesReturnRequests);
+router.post('/return-requests', enforceStoreOwnership, requestSalesReturn);
+router.post('/return-requests/:returnId/review', reviewSalesReturn);
 router.get('/stats', stats);
 router.get('/auxiliary-staff', auxiliaryStaff);
 router.get('/payment-methods', paymentMethods);
@@ -71,6 +77,7 @@ router.get('/:orderId', detail);
 router.put('/:orderId', enforceStoreOwnership, update);
 router.post('/:orderId/approve', approve);
 router.post('/:orderId/reject', reject);
+router.post('/:orderId/return-request', enforceStoreOwnership, requestSalesReturn);
 router.post('/:orderId/recalculate-settlement-cost', recalculateSettlementCost);
 
 module.exports = router;

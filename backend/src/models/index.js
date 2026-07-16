@@ -992,6 +992,45 @@ const OrderPayment = sequelize.define('OrderPayment', {
   payment_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_ORDER_PAYMENT', timestamps: false });
 
+// 销售退单申请
+const SalesReturnRequest = sequelize.define('SalesReturnRequest', {
+  return_id: { type: DataTypes.STRING(32), primaryKey: true },
+  return_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
+  order_id: { type: DataTypes.STRING(32), allowNull: false },
+  order_no: { type: DataTypes.STRING(64), allowNull: false },
+  store_id: { type: DataTypes.STRING(32), allowNull: false },
+  customer_name: { type: DataTypes.STRING(64) },
+  customer_phone: { type: DataTypes.STRING(32) },
+  return_type: { type: DataTypes.STRING(32), defaultValue: 'full' },
+  refund_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  reason: { type: DataTypes.STRING(512) },
+  status: { type: DataTypes.STRING(32), defaultValue: 'pending' },
+  approval_stage: { type: DataTypes.STRING(32), defaultValue: 'pending_store' },
+  store_review_user: { type: DataTypes.STRING(64) },
+  store_review_comment: { type: DataTypes.STRING(512) },
+  store_review_time: { type: DataTypes.DATE },
+  distributor_review_user: { type: DataTypes.STRING(64) },
+  distributor_review_comment: { type: DataTypes.STRING(512) },
+  distributor_review_time: { type: DataTypes.DATE },
+  create_staff_id: { type: DataTypes.BIGINT(20) },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_SALES_RETURN_REQUEST', timestamps: false });
+
+const SalesReturnRequestItem = sequelize.define('SalesReturnRequestItem', {
+  item_id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true },
+  return_id: { type: DataTypes.STRING(32), allowNull: false },
+  order_item_id: { type: DataTypes.BIGINT(20) },
+  product_id: { type: DataTypes.STRING(32) },
+  product_name: { type: DataTypes.STRING(255) },
+  pn_code: { type: DataTypes.STRING(64) },
+  sn_code: { type: DataTypes.STRING(128) },
+  quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+  unit_price: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  subtotal: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 }
+}, { tableName: 'T_SALES_RETURN_REQUEST_ITEM', timestamps: false });
+
 // 订单补录金额。金额方向在录入时保存快照，避免字典修改后历史毛利漂移。
 const OrderSupplement = sequelize.define('OrderSupplement', {
   supplement_id: { type: DataTypes.STRING(32), primaryKey: true },
@@ -1942,6 +1981,10 @@ OrderItem.belongsTo(Product, { foreignKey: 'product_id', targetKey: 'product_id'
 
 Order.hasMany(OrderPayment, { foreignKey: 'order_id', sourceKey: 'order_id' });
 OrderPayment.belongsTo(Order, { foreignKey: 'order_id', targetKey: 'order_id' });
+Order.hasMany(SalesReturnRequest, { foreignKey: 'order_id', sourceKey: 'order_id', as: 'salesReturns' });
+SalesReturnRequest.belongsTo(Order, { foreignKey: 'order_id', targetKey: 'order_id', as: 'order' });
+SalesReturnRequest.hasMany(SalesReturnRequestItem, { foreignKey: 'return_id', sourceKey: 'return_id', as: 'items' });
+SalesReturnRequestItem.belongsTo(SalesReturnRequest, { foreignKey: 'return_id', targetKey: 'return_id' });
 Order.hasMany(OrderSupplement, { foreignKey: 'order_id', sourceKey: 'order_id', as: 'supplements' });
 OrderSupplement.belongsTo(Order, { foreignKey: 'order_id', targetKey: 'order_id' });
 Order.hasOne(OrderGrossProfit, { foreignKey: 'order_id', sourceKey: 'order_id', as: 'grossProfitSnapshot' });
@@ -2113,6 +2156,8 @@ module.exports = {
   Order,
   OrderItem,
   OrderPayment,
+  SalesReturnRequest,
+  SalesReturnRequestItem,
   OrderSupplement,
   OrderGrossProfit,
   DepositOrder,

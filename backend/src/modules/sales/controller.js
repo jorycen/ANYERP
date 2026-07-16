@@ -5,6 +5,8 @@ const {
   Order,
   OrderItem,
   OrderPayment,
+  SalesReturnRequest,
+  SalesReturnRequestItem,
   OrderSupplement,
   OrderGrossProfit,
   OrderAttachment,
@@ -32,6 +34,7 @@ const {
 } = require('../../models');
 const { Op } = require('sequelize');
 const { generateOrderNo, generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
+const { normalizePnCode } = require('../../utils/productPn');
 const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
 const {
@@ -1413,6 +1416,185 @@ function generateBusinessNo(prefix) {
   return `${prefix}${yyyy}${mm}${dd}${hh}${mi}${ss}${random}`;
 }
 
+function pickReturnItemQuantity(item, sourceItem) {
+  const value = item?.quantity ?? item?.returnQuantity ?? item?.return_quantity;
+  if (value === undefined || value === null || value === '') return Number(sourceItem.quantity || 1);
+  const quantity = Math.floor(Number(value));
+  return Number.isFinite(quantity) ? Math.min(Math.max(quantity, 0), Number(sourceItem.quantity || 1)) : 0;
+}
+
+/**
+ * 销售退单申请列表
+ */
+async function listSalesReturnRequests(ctx) {
+  const { status, approvalStage, storeId, orderId, page = 1, pageSize = 100 } = ctx.query;
+  const where = {};
+  if (status) where.status = status;
+  if (approvalStage) where.approval_stage = approvalStage;
+  if (storeId) where.store_id = storeId;
+  if (orderId) where.order_id = orderId;
+  if (storeId) assertStoreVisible(storeId, ctx.state.user);
+  if (!ctx.state.user.accessibleStoreIds.includes('*') && !storeId) {
+    where.store_id = ctx.state.user.accessibleStoreIds;
+  }
+
+  const { count, rows } = await SalesReturnRequest.findAndCountAll({
+    where,
+    include: [{ model: SalesReturnRequestItem, as: 'items' }],
+    order: [['create_time', 'DESC'], ['return_id', 'DESC']],
+    ...paginate({}, { page, pageSize })
+  });
+  ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+/**
+ * 为已归档销售订单创建退单申请。
+ * 申请阶段只改变订单状态，不直接扣库存或执行退款；审批完成后的执行流程另行处理。
+ */
+async function requestSalesReturn(ctx) {
+  const { orderId: bodyOrderId, reason = '', items: requestedItems } = ctx.request.body || {};
+  const orderId = ctx.params.orderId || bodyOrderId;
+  const user = ctx.state.user;
+  if (!orderId) ctx.throw(400, '订单ID不能为空');
+
+  const result = await sequelize.transaction(async transaction => {
+    const order = await Order.findByPk(orderId, {
+      include: [{ model: OrderItem }],
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!order) ctx.throw(404, '订单不存在');
+    assertStoreVisible(order.store_id, user);
+    if (!isArchiveStatus(order.order_status)) {
+      ctx.throw(400, '只有已归档订单才能提交退单申请');
+    }
+
+    const activeRequest = await SalesReturnRequest.findOne({
+      where: { order_id: order.order_id, status: { [Op.in]: ['pending', 'approved'] } },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (activeRequest) ctx.throw(409, '该订单已有待处理的退单申请');
+
+    const orderItems = order.OrderItems || [];
+    if (orderItems.length === 0) ctx.throw(400, '订单没有商品明细，无法提交退单申请');
+    const requested = Array.isArray(requestedItems) ? requestedItems : [];
+    const requestedById = new Map(requested.map(item => [String(item.itemId || item.item_id || item.orderItemId || item.order_item_id || item.id || ''), item]));
+    const selectedItems = orderItems.map(sourceItem => {
+      const item = requestedById.get(String(sourceItem.item_id)) || requested.find(candidate => {
+        const candidateSn = String(candidate.snCode || candidate.sn_code || '');
+        const candidatePn = String(candidate.pnCode || candidate.pn_code || '');
+        return (candidateSn || candidatePn) &&
+          candidateSn === String(sourceItem.sn_code || '') &&
+          candidatePn === String(sourceItem.pn_code || '');
+      });
+      const quantity = pickReturnItemQuantity(item, sourceItem);
+      return { sourceItem, quantity };
+    }).filter(row => row.quantity > 0);
+    if (selectedItems.length === 0) ctx.throw(400, '退单商品明细不能为空');
+
+    const maxRefundAmount = money(order.actual_payment || order.total_amount || 0);
+    const requestedRefund = ctx.request.body?.refundAmount ?? ctx.request.body?.refund_amount;
+    const refundAmount = requestedRefund === undefined || requestedRefund === null || requestedRefund === ''
+      ? maxRefundAmount
+      : Math.min(Math.max(money(requestedRefund), 0), maxRefundAmount);
+    const returnId = generateUUID();
+    const returnNo = generateBusinessNo('RET');
+
+    await SalesReturnRequest.create({
+      return_id: returnId,
+      return_no: returnNo,
+      order_id: order.order_id,
+      order_no: order.order_no,
+      store_id: order.store_id,
+      customer_name: order.customer_name || '',
+      customer_phone: order.customer_phone || '',
+      return_type: 'full',
+      refund_amount: refundAmount,
+      reason: String(reason || '').trim() || '客户退单',
+      status: 'pending',
+      approval_stage: 'pending_store',
+      create_staff_id: user.staffId || null,
+      create_user: user.name || user.staffId || '',
+      create_time: new Date(),
+      update_time: new Date()
+    }, { transaction });
+
+    for (const { sourceItem, quantity } of selectedItems) {
+      const unitPrice = money(sourceItem.sale_price);
+      await SalesReturnRequestItem.create({
+        return_id: returnId,
+        order_item_id: sourceItem.item_id,
+        product_id: sourceItem.product_id || null,
+        product_name: sourceItem.product_name || '',
+        pn_code: sourceItem.pn_code || '',
+        sn_code: sourceItem.sn_code || '',
+        quantity,
+        unit_price: unitPrice,
+        subtotal: money(unitPrice * quantity)
+      }, { transaction });
+    }
+
+    await order.update({ order_status: 'return_pending', update_time: new Date() }, { transaction });
+    return { returnId, returnNo, orderId: order.order_id, status: 'pending', approvalStage: 'pending_store' };
+  });
+
+  ctx.body = { code: 0, data: result, message: '退单申请已提交，待店长审批' };
+}
+
+/**
+ * 销售退单两级审批：店长通过后进入经销商总权限审批。
+ */
+async function reviewSalesReturn(ctx) {
+  const { returnId } = ctx.params;
+  const { action = 'approved', comment = '' } = ctx.request.body || {};
+  const user = ctx.state.user;
+  const roles = getUserRoles(user);
+  const isAdmin = roles.some(role => ['boss', 'admin'].includes(role));
+  const isManager = roles.some(role => ['boss', 'admin', 'manager'].includes(role));
+  if (!isManager) ctx.throw(403, '仅店长或经销商总权限账号可以审批销售退单');
+
+  const result = await sequelize.transaction(async transaction => {
+    const request = await SalesReturnRequest.findByPk(returnId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!request) ctx.throw(404, '退单申请不存在');
+    assertStoreVisible(request.store_id, user);
+    if (request.status !== 'pending') ctx.throw(400, '该退单申请当前无需审批');
+
+    const now = new Date();
+    const rejected = action === 'rejected';
+    const stage = request.approval_stage || 'pending_store';
+    if (stage === 'pending_distributor' && !isAdmin) {
+      ctx.throw(403, '仅经销商总权限账号可以审批该退单申请');
+    }
+
+    const reviewData = stage === 'pending_distributor'
+      ? { distributor_review_user: user.name || user.staffId || '', distributor_review_comment: comment || '', distributor_review_time: now }
+      : { store_review_user: user.name || user.staffId || '', store_review_comment: comment || '', store_review_time: now };
+    let nextStatus = 'pending';
+    let nextStage = stage;
+    if (rejected) {
+      nextStatus = 'rejected';
+      nextStage = 'rejected';
+    } else if (stage === 'pending_store') {
+      nextStage = 'pending_distributor';
+    } else {
+      nextStatus = 'approved';
+      nextStage = 'approved';
+    }
+
+    await request.update({ status: nextStatus, approval_stage: nextStage, update_time: now, ...reviewData }, { transaction });
+    if (rejected) {
+      await Order.update(
+        { order_status: '已归档', update_time: now },
+        { where: { order_id: request.order_id }, transaction }
+      );
+    }
+    return { returnId, status: nextStatus, approvalStage: nextStage };
+  });
+
+  ctx.body = { code: 0, data: result, message: result.status === 'rejected' ? '退单申请已拒绝' : '退单审批已完成' };
+}
+
 function isDepositPayment(payment) {
   const method = String(payment?.method || payment?.payment_method || '').trim().toLowerCase();
   return method === '定金' || method === '定金抵扣' || method === 'deposit';
@@ -1984,57 +2166,57 @@ async function validateAndDeductInventoryForArchive(order, transaction = null) {
     throw archiveError('订单中没有商品，无法归档');
   }
 
-  const pnCodes = [...new Set(items.map(item => String(item.pn_code || '').trim()).filter(Boolean))];
+  const pnCodes = [...new Set(items.map(item => normalizePnCode(item.pn_code)).filter(Boolean))];
   const pnRows = pnCodes.length
     ? await ProductPn.findAll({
       where: {
         [Op.and]: [sequelize.where(
-          sequelize.fn('LOWER', sequelize.fn('TRIM', sequelize.col('pn_code'))),
+          sequelize.fn('LOWER', sequelize.fn('REPLACE', sequelize.fn('TRIM', sequelize.col('pn_code')), ' ', '')),
           { [Op.in]: pnCodes.map(code => code.toLowerCase()) }
         )],
-        is_deleted: 0
+        is_deleted: 0,
+        status: 1
       },
       transaction
     })
     : [];
-  const pnMap = new Map(pnRows.map(row => [String(row.pn_code || '').trim().toLowerCase(), row]));
+  const pnMap = new Map(pnRows.map(row => [normalizePnCode(row.pn_code), row]));
 
   for (const item of items) {
     const pnCode = String(item.pn_code || '').trim();
+    const pnKey = normalizePnCode(pnCode);
     if (!pnCode) {
       throw archiveError(`商品 ${item.product_name || item.item_id} 缺少PN码，不能归档`);
     }
-    const pnRecord = pnMap.get(pnCode.toLowerCase());
-    if (pnRecord) {
-      if (item.product_id && String(item.product_id) !== String(pnRecord.product_id)) {
-        throw archiveError(`PN码 [${pnCode}] 与订单商品不匹配，不能归档`);
-      }
-      if (!item.product_id) {
-        await item.update({ product_id: pnRecord.product_id }, { transaction });
-        item.product_id = pnRecord.product_id;
-      }
+    const pnRecord = pnMap.get(pnKey);
+    if (!pnRecord) {
+      throw archiveError(`PN码 [${pnCode}] 不存在，不能归档`);
+    }
+    if (item.product_id && String(item.product_id) !== String(pnRecord.product_id)) {
+      throw archiveError(`PN码 [${pnCode}] 与订单商品不匹配，不能归档`);
+    }
+    if (!item.product_id) {
+      await item.update({ product_id: pnRecord.product_id }, { transaction });
+      item.product_id = pnRecord.product_id;
     }
   }
 
-  const productIds = [...new Set(items.map(i => i.product_id).filter(Boolean))];
-  const products = await Product.findAll({ where: { product_id: { [Op.in]: productIds } }, transaction });
-  const productMap = new Map(products.map(product => [product.product_id, product]));
+  const productIds = [...new Set(items.map(i => String(i.product_id || '')).filter(Boolean))];
+  const products = productIds.length
+    ? await Product.findAll({ where: { product_id: { [Op.in]: productIds }, is_deleted: 0 }, transaction })
+    : [];
+  const productMap = new Map(products.map(product => [String(product.product_id), product]));
   const operations = [];
 
   for (const item of items) {
-    const product = productMap.get(item.product_id);
+    const product = productMap.get(String(item.product_id || ''));
     if (!product) {
       throw archiveError(`PN码 [${item.pn_code || ''}] 对应的商品不存在，不能归档`);
     }
 
     const pnCode = String(item.pn_code || '').trim();
-    const pnRecord = pnMap.get(pnCode.toLowerCase());
-    const manufacturerPns = String(product.manufacturer_code || '')
-      .split(/[,\s，、]+/)
-      .map(value => value.trim().toLowerCase())
-      .filter(Boolean);
-    if ((!pnRecord || String(pnRecord.product_id) !== String(product.product_id)) &&
-        !manufacturerPns.includes(pnCode.toLowerCase())) {
+    const pnRecord = pnMap.get(normalizePnCode(pnCode));
+    if (!pnRecord || String(pnRecord.product_id) !== String(product.product_id)) {
       throw archiveError(`PN码 [${pnCode}] 不存在，不能归档`);
     }
 
@@ -2052,10 +2234,9 @@ async function validateAndDeductInventoryForArchive(order, transaction = null) {
         status: { [Op.in]: ['reserved', 'in_stock'] },
         is_deleted: 0
       };
-      if (item.pn_code) snWhere.pn_code = item.pn_code;
 
       const snRecord = await ProductSn.findOne({ where: snWhere, transaction });
-      if (!snRecord) {
+      if (!snRecord || normalizePnCode(snRecord.pn_code) !== normalizePnCode(pnCode)) {
         throw archiveError(`SN码 [${snCode}] 在当前门店没有可用库存，不能归档`);
       }
 
@@ -2073,14 +2254,13 @@ async function validateAndDeductInventoryForArchive(order, transaction = null) {
           where: {
             sn_code: snCode,
             product_id: item.product_id,
-            pn_code: pnCode,
             store_id: order.store_id,
             status: { [Op.in]: ['reserved', 'in_stock'] },
             is_deleted: 0
           },
           transaction
         });
-        if (!optionalSn) {
+        if (!optionalSn || normalizePnCode(optionalSn.pn_code) !== normalizePnCode(pnCode)) {
           throw archiveError(`SN码 [${snCode}] 不存在或与PN码不匹配，不能归档`);
         }
         if (!item.sn_id) {
@@ -2133,6 +2313,9 @@ module.exports = {
   detail,
   update,
   updateOrderItems,
+  listSalesReturnRequests,
+  requestSalesReturn,
+  reviewSalesReturn,
   stats,
   approve,
   reject,
@@ -2154,7 +2337,9 @@ module.exports = {
     isCancelStatus,
     reserveDepositForOrder,
     redeemReservedDepositsForOrder,
-    releaseDepositRedemptionForOrder
+    releaseDepositRedemptionForOrder,
+    normalizePnCode,
+    validateAndDeductInventoryForArchive
   }
 };
 

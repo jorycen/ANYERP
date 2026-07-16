@@ -4,6 +4,7 @@
  */
 
 const { sequelize } = require('../models');
+const { normalizePnCode, splitPnCodes, isUsablePnCode } = require('./productPn');
 
 async function checkAndAddColumn(tableName, columnName, columnDefinition, afterColumn = null) {
   try {
@@ -1908,6 +1909,56 @@ async function runMigrations() {
     await checkAndAddColumn('T_ORDER_SUPPLEMENT', 'COUPON_CODE', 'VARCHAR(128) COMMENT "补录优惠券码"', 'PROOF_PHOTO_URL');
     await checkAndAddColumn('T_ORDER_SUPPLEMENT', 'COUPON_OCR_TEXT', 'TEXT COMMENT "补录券码OCR原文"', 'COUPON_CODE');
 
+    await checkAndCreateTable('T_SALES_RETURN_REQUEST', `
+      CREATE TABLE T_SALES_RETURN_REQUEST (
+        RETURN_ID VARCHAR(32) NOT NULL,
+        RETURN_NO VARCHAR(64) NOT NULL,
+        ORDER_ID VARCHAR(32) NOT NULL,
+        ORDER_NO VARCHAR(64) NOT NULL,
+        STORE_ID VARCHAR(32) NOT NULL,
+        CUSTOMER_NAME VARCHAR(64),
+        CUSTOMER_PHONE VARCHAR(32),
+        RETURN_TYPE VARCHAR(32) NOT NULL DEFAULT 'full',
+        REFUND_AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0,
+        REASON VARCHAR(512),
+        STATUS VARCHAR(32) NOT NULL DEFAULT 'pending',
+        APPROVAL_STAGE VARCHAR(32) NOT NULL DEFAULT 'pending_store',
+        STORE_REVIEW_USER VARCHAR(64),
+        STORE_REVIEW_COMMENT VARCHAR(512),
+        STORE_REVIEW_TIME DATETIME,
+        DISTRIBUTOR_REVIEW_USER VARCHAR(64),
+        DISTRIBUTOR_REVIEW_COMMENT VARCHAR(512),
+        DISTRIBUTOR_REVIEW_TIME DATETIME,
+        CREATE_STAFF_ID BIGINT(20),
+        CREATE_USER VARCHAR(64),
+        CREATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UPDATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (RETURN_ID),
+        UNIQUE KEY uk_sales_return_no (RETURN_NO),
+        KEY idx_sales_return_order (ORDER_ID, STATUS),
+        KEY idx_sales_return_store (STORE_ID, STATUS, CREATE_TIME),
+        KEY idx_sales_return_stage (STATUS, APPROVAL_STAGE, CREATE_TIME)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='销售退单申请'
+    `);
+
+    await checkAndCreateTable('T_SALES_RETURN_REQUEST_ITEM', `
+      CREATE TABLE T_SALES_RETURN_REQUEST_ITEM (
+        ITEM_ID BIGINT(20) NOT NULL AUTO_INCREMENT,
+        RETURN_ID VARCHAR(32) NOT NULL,
+        ORDER_ITEM_ID BIGINT(20),
+        PRODUCT_ID VARCHAR(32),
+        PRODUCT_NAME VARCHAR(255),
+        PN_CODE VARCHAR(64),
+        SN_CODE VARCHAR(128),
+        QUANTITY INT NOT NULL DEFAULT 1,
+        UNIT_PRICE DECIMAL(12,2) NOT NULL DEFAULT 0,
+        SUBTOTAL DECIMAL(12,2) NOT NULL DEFAULT 0,
+        PRIMARY KEY (ITEM_ID),
+        KEY idx_sales_return_item_return (RETURN_ID),
+        KEY idx_sales_return_item_order (ORDER_ITEM_ID)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='销售退单申请明细'
+    `);
+
     await checkAndCreateTable('T_ORDER_GROSS_PROFIT', `
       CREATE TABLE T_ORDER_GROSS_PROFIT (
         GROSS_PROFIT_ID VARCHAR(32) NOT NULL,
@@ -2529,6 +2580,8 @@ async function migrateProductData() {
       console.log(`[DB Migration] 已迁移 ${barcodeCount} 条商品条码数据`);
     }
 
+    await migrateMissingProductPns(uuid);
+
     // 迁移旧分类（从category字段提取去重的分类名创建分类）
     const categories = await sequelize.query(
       `SELECT DISTINCT CATEGORY FROM T_PRODUCT WHERE CATEGORY IS NOT NULL AND CATEGORY != '' AND IS_DELETED = 0`,
@@ -2624,6 +2677,150 @@ async function migrateProductData() {
     console.log('[DB Migration] 商品数据迁移完成');
   } catch (error) {
     console.error('[DB Migration] 商品数据迁移失败:', error.message);
+  }
+}
+
+async function migrateMissingProductPns(uuid) {
+  const [products, activeBarcodes, pnRows] = await Promise.all([
+    sequelize.query(
+      `SELECT PRODUCT_ID, MANUFACTURER_CODE
+       FROM T_PRODUCT
+       WHERE STATUS = 1 AND IS_DELETED = 0`,
+      { type: sequelize.QueryTypes.SELECT }
+    ),
+    sequelize.query(
+      `SELECT b.PRODUCT_ID, b.BARCODE_CODE
+       FROM T_PRODUCT_BARCODE b
+       INNER JOIN T_PRODUCT p ON p.PRODUCT_ID = b.PRODUCT_ID
+       WHERE b.BARCODE_TYPE = 'manufacturer' AND b.STATUS = 1
+         AND p.STATUS = 1 AND p.IS_DELETED = 0`,
+      { type: sequelize.QueryTypes.SELECT }
+    ),
+    sequelize.query(
+      `SELECT PN_ID, PRODUCT_ID, PN_CODE, STATUS, IS_DELETED
+       FROM T_PRODUCT_PN`,
+      { type: sequelize.QueryTypes.SELECT }
+    )
+  ]);
+
+  const candidates = new Map();
+  const addCandidate = (productId, rawCode, fromActiveBarcode = false) => {
+    const code = String(rawCode || '').trim();
+    const key = normalizePnCode(code);
+    if (!productId || !isUsablePnCode(code)) return;
+    const candidateKey = `${productId}|${key}`;
+    const current = candidates.get(candidateKey) || {
+      productId,
+      code,
+      fromActiveBarcode: false
+    };
+    current.fromActiveBarcode = current.fromActiveBarcode || fromActiveBarcode;
+    candidates.set(candidateKey, current);
+  };
+
+  for (const product of products) {
+    splitPnCodes(product.MANUFACTURER_CODE).forEach(code => addCandidate(product.PRODUCT_ID, code));
+  }
+  for (const barcode of activeBarcodes) {
+    addCandidate(barcode.PRODUCT_ID, barcode.BARCODE_CODE, true);
+  }
+
+  const rowsByCode = new Map();
+  const activeByProduct = new Map();
+  for (const row of pnRows) {
+    const key = normalizePnCode(row.PN_CODE);
+    if (!key) continue;
+    if (!rowsByCode.has(key)) rowsByCode.set(key, []);
+    rowsByCode.get(key).push(row);
+    if (Number(row.STATUS || 0) === 1 && Number(row.IS_DELETED || 0) === 0) {
+      activeByProduct.set(row.PRODUCT_ID, (activeByProduct.get(row.PRODUCT_ID) || 0) + 1);
+    }
+  }
+
+  const ownersByCode = new Map();
+  for (const candidate of candidates.values()) {
+    if (!ownersByCode.has(normalizePnCode(candidate.code))) ownersByCode.set(normalizePnCode(candidate.code), new Set());
+    ownersByCode.get(normalizePnCode(candidate.code)).add(String(candidate.productId));
+  }
+
+  const insertRows = [];
+  const restoreRows = [];
+  let skippedConflicts = 0;
+  let skippedManualReview = 0;
+  for (const candidate of candidates.values()) {
+    const key = normalizePnCode(candidate.code);
+    const owners = ownersByCode.get(key) || new Set();
+    if (owners.size > 1) {
+      skippedConflicts++;
+      continue;
+    }
+
+    const existingRows = rowsByCode.get(key) || [];
+    const sameProduct = existingRows.find(row => String(row.PRODUCT_ID) === String(candidate.productId));
+    const otherProduct = existingRows.find(row => String(row.PRODUCT_ID) !== String(candidate.productId));
+    if (otherProduct) {
+      skippedConflicts++;
+      continue;
+    }
+
+    // 只有启用厂商条码能够证明这是明确的 PN，纯历史文本字段留给人工复核。
+    if (!candidate.fromActiveBarcode) {
+      skippedManualReview++;
+      continue;
+    }
+
+    if (sameProduct) {
+      if (Number(sameProduct.STATUS || 0) !== 1 || Number(sameProduct.IS_DELETED || 0) !== 0) {
+        restoreRows.push({ pnCode: candidate.code, pnId: sameProduct.PN_ID });
+      }
+      continue;
+    }
+
+    const pnId = uuid().replace(/-/g, '').substring(0, 32);
+    insertRows.push([
+      pnId,
+      candidate.productId,
+      candidate.code,
+      candidate.code,
+      activeByProduct.get(candidate.productId) ? 0 : 1
+    ]);
+    activeByProduct.set(candidate.productId, (activeByProduct.get(candidate.productId) || 0) + 1);
+  }
+
+  const transaction = await sequelize.transaction();
+  let inserted = 0;
+  let restored = 0;
+  try {
+    for (let i = 0; i < insertRows.length; i += 500) {
+      const chunk = insertRows.slice(i, i + 500);
+      const placeholders = chunk.map(() => '(?, ?, ?, ?, ?, 1, 0)').join(', ');
+      await sequelize.query(
+        `INSERT INTO T_PRODUCT_PN
+         (PN_ID, PRODUCT_ID, PN_CODE, BARCODE, IS_PRIMARY, STATUS, IS_DELETED)
+         VALUES ${placeholders}`,
+        { replacements: chunk.flat(), transaction }
+      );
+      inserted += chunk.length;
+    }
+    for (const row of restoreRows) {
+      await sequelize.query(
+        `UPDATE T_PRODUCT_PN
+         SET PN_CODE = ?, STATUS = 1, IS_DELETED = 0
+         WHERE PN_ID = ?`,
+        { replacements: [row.pnCode, row.pnId], transaction }
+      );
+      restored++;
+    }
+    await transaction.commit();
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  }
+
+  if (inserted || restored || skippedConflicts || skippedManualReview) {
+    console.log(
+      `[DB Migration] PN主数据修复完成: 新增 ${inserted}，恢复 ${restored}，冲突跳过 ${skippedConflicts}，待人工确认 ${skippedManualReview}`
+    );
   }
 }
 
@@ -2764,4 +2961,4 @@ async function seedPermissionData() {
   }
 }
 
-module.exports = { runMigrations };
+module.exports = { runMigrations, migrateMissingProductPns };

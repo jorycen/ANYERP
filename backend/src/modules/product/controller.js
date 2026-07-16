@@ -20,6 +20,7 @@ const {
 const { Op, Sequelize } = require('sequelize');
 const { sequelize } = require('../../config/database');
 const { generateProductCode, generateUUID, generateId, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
+const { normalizePnCode, splitPnCodes, isUsablePnCode } = require('../../utils/productPn');
 const XLSX = require('xlsx');
 const { getUserRoles } = require('../../middleware/permission');
 
@@ -96,13 +97,6 @@ function buildAttributesFromCols(cols, extras) {
   return Object.keys(attrs).length > 0 ? attrs : null;
 }
 
-function splitCodes(value) {
-  return String(value || '')
-    .split(/[,;\uFF0C\uFF1B\s]+/)
-    .map(code => code.trim())
-    .filter(Boolean);
-}
-
 function getManufacturerCodes(barcodes, fallback) {
   const codes = [];
   if (Array.isArray(barcodes)) {
@@ -112,14 +106,79 @@ function getManufacturerCodes(barcodes, fallback) {
       }
     }
   }
-  splitCodes(fallback).forEach(code => codes.push(code));
-  return [...new Set(codes.filter(Boolean))];
+  splitPnCodes(fallback).forEach(code => codes.push(code));
+  const seen = new Set();
+  return codes
+    .map(code => String(code || '').trim())
+    .filter(code => {
+      const key = normalizePnCode(code);
+      if (!isUsablePnCode(code) || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+async function ensureProductPns(productId, codes, transaction = null) {
+  const productKey = String(productId || '');
+  if (!productKey) return [];
+
+  const normalizedCodes = splitPnCodes(codes);
+  if (normalizedCodes.length === 0) return [];
+
+  const existingForProduct = await ProductPn.findAll({
+    where: { product_id: productId },
+    transaction
+  });
+  const existingByKey = new Map(
+    existingForProduct.map(row => [normalizePnCode(row.pn_code), row])
+  );
+  const ensured = [];
+
+  for (const code of normalizedCodes) {
+    const codeKey = normalizePnCode(code);
+    const existing = existingByKey.get(codeKey);
+    if (existing) {
+      if (Number(existing.is_deleted || 0) === 1 || Number(existing.status || 0) !== 1) {
+        await existing.update({ pn_code: code, status: 1, is_deleted: 0 }, { transaction });
+      }
+      ensured.push(existing);
+      continue;
+    }
+
+    const sameCodeRows = await ProductPn.findAll({
+      where: {
+        [Op.and]: [sequelize.where(
+          sequelize.fn('LOWER', sequelize.fn('REPLACE', sequelize.fn('TRIM', sequelize.col('pn_code')), ' ', '')),
+          normalizePnCode(code)
+        )]
+      },
+      transaction
+    });
+    const conflict = sameCodeRows.find(row => String(row.product_id) !== productKey);
+    if (conflict) {
+      throw Object.assign(new Error(`PN码 [${code}] 已关联其他商品，不能重复绑定`), { status: 409 });
+    }
+
+    const created = await ProductPn.create({
+      pn_id: generateUUID(),
+      product_id: productId,
+      pn_code: code,
+      barcode: code,
+      is_primary: existingForProduct.length === 0 && ensured.length === 0 ? 1 : 0,
+      status: 1,
+      is_deleted: 0
+    }, { transaction });
+    existingByKey.set(codeKey, created);
+    ensured.push(created);
+  }
+
+  return ensured;
 }
 
 function appendCode(existing, code) {
-  const codes = splitCodes(existing);
+  const codes = splitPnCodes(existing);
   const value = String(code || '').trim();
-  if (value && !codes.includes(value)) codes.push(value);
+  if (value && !codes.some(item => normalizePnCode(item) === normalizePnCode(value))) codes.push(value);
   return codes.join(', ');
 }
 
@@ -161,11 +220,11 @@ function getUserName(ctx) {
 function productHasManufacturerCode(product, manufacturerCode) {
   const code = String(manufacturerCode || '').trim();
   if (!code || !product) return false;
-  const codes = splitCodes(product.manufacturer_code);
+  const codes = splitPnCodes(product.manufacturer_code);
   for (const bc of product.ProductBarcodes || []) {
     if (bc.barcode_type === 'manufacturer') codes.push(String(bc.barcode_code || '').trim());
   }
-  return [...new Set(codes.filter(Boolean))].includes(code);
+  return codes.some(value => normalizePnCode(value) === normalizePnCode(code));
 }
 
 async function findProductsByManufacturerCode(manufacturerCode) {
@@ -418,7 +477,7 @@ async function getProductList(ctx) {
       gpu: getProductAttributeValue(p, 'gpu', mappedExtras),
       accessory_type: getProductAttributeValue(p, 'accessory_type', mappedExtras),
       extras,
-      manufacturer_codes: splitCodes(p.manufacturer_code).length > 0 ? splitCodes(p.manufacturer_code) : allBarcodes.filter(b => b.type === 'manufacturer').map(b => b.code),
+      manufacturer_codes: splitPnCodes(p.manufacturer_code).length > 0 ? splitPnCodes(p.manufacturer_code) : allBarcodes.filter(b => b.type === 'manufacturer').map(b => b.code),
       barcodes: allBarcodes,
       need_sn: Number(p.need_sn || 0),
       need_imei: Number(p.need_imei || 0),
@@ -550,32 +609,24 @@ async function createProductRecord(body, transaction = null) {
         sort_order: 0,
         status: 1
       }, { transaction });
-
-      if ((bc.type || 'manufacturer') === 'manufacturer') {
-        const existingPn = await ProductPn.findOne({
-          where: { pn_code: bc.code, is_deleted: 0 },
-          transaction
-        });
-        if (!existingPn) {
-          await ProductPn.create({
-            pn_id: generateUUID(),
-            product_id: productId,
-            pn_code: bc.code,
-            barcode: bc.code,
-            is_primary: 0,
-            status: 1,
-            is_deleted: 0
-          }, { transaction });
-        }
-      }
     }
   }
+
+  await ensureProductPns(productId, manufacturerCodes, transaction);
 
   return { productId, productCode, productName: finalName };
 }
 
 async function createProduct(ctx) {
-  const created = await createProductRecord(ctx.request.body);
+  const transaction = await sequelize.transaction();
+  let created;
+  try {
+    created = await createProductRecord(ctx.request.body, transaction);
+    await transaction.commit();
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  }
   ctx.body = { code: 0, ...created, message: '商品创建成功' };
 }
 
@@ -726,6 +777,7 @@ async function updateProduct(ctx) {
     name, categoryId, config, needSn, needImei, unit, remark, barcodes, status,
     attributes, manufacturerCode, manufacturer_code, isFocusProduct, is_focus_product
   } = body;
+  const manufacturerInput = manufacturerCode !== undefined ? manufacturerCode : manufacturer_code;
 
   const product = await Product.findByPk(productId);
   if (!product) {
@@ -753,8 +805,8 @@ async function updateProduct(ctx) {
     const focusValue = isFocusProduct ?? is_focus_product;
     updateData.is_focus_product = focusValue === true || Number(focusValue) === 1 ? 1 : 0;
   }
-  if (manufacturerCode !== undefined || manufacturer_code !== undefined) {
-    updateData.manufacturer_code = getManufacturerCodes([], manufacturerCode || manufacturer_code).join(', ');
+  if (manufacturerInput !== undefined) {
+    updateData.manufacturer_code = getManufacturerCodes([], manufacturerInput).join(', ');
   }
   if (attributes !== undefined) {
     updateData.brand = cols.brand || null;
@@ -770,46 +822,42 @@ async function updateProduct(ctx) {
   }
 
   if (barcodes !== undefined) {
-    updateData.manufacturer_code = getManufacturerCodes(barcodes, manufacturerCode || manufacturer_code).join(', ');
+    updateData.manufacturer_code = getManufacturerCodes(barcodes, manufacturerInput).join(', ');
   }
 
-  await product.update(updateData);
+  const transaction = await sequelize.transaction();
+  try {
+    await product.update(updateData, { transaction });
 
-  // 条码：删除旧的全部，重新创建
-  if (barcodes !== undefined) {
-    await ProductBarcode.update({ status: 0 }, { where: { product_id: productId } });
-    if (Array.isArray(barcodes)) {
-      for (const bc of barcodes) {
-        if (bc.code) {
-          await ProductBarcode.create({
-            barcode_id: generateUUID(),
-            product_id: productId,
-            barcode_type: bc.type || 'manufacturer',
-            barcode_code: bc.code,
-            sort_order: 0,
-            status: 1
-          });
-
-          if ((bc.type || 'manufacturer') === 'manufacturer') {
-            const [pnRecord] = await ProductPn.findOrCreate({
-              where: { pn_code: bc.code, is_deleted: 0 },
-              defaults: {
-                pn_id: generateUUID(),
-                product_id: productId,
-                pn_code: bc.code,
-                barcode: bc.code,
-                is_primary: 0,
-                status: 1,
-                is_deleted: 0
-              }
-            });
-            if (pnRecord.product_id !== productId) {
-              await pnRecord.update({ product_id: productId });
-            }
+    // 条码：删除旧的全部，重新创建
+    if (barcodes !== undefined) {
+      await ProductBarcode.update({ status: 0 }, { where: { product_id: productId }, transaction });
+      if (Array.isArray(barcodes)) {
+        for (const bc of barcodes) {
+          if (bc.code) {
+            await ProductBarcode.create({
+              barcode_id: generateUUID(),
+              product_id: productId,
+              barcode_type: bc.type || 'manufacturer',
+              barcode_code: String(bc.code).trim(),
+              sort_order: 0,
+              status: 1
+            }, { transaction });
           }
         }
       }
     }
+
+    if (manufacturerInput !== undefined || barcodes !== undefined) {
+      const nextCodes = barcodes !== undefined
+        ? getManufacturerCodes(barcodes, manufacturerInput)
+        : getManufacturerCodes([], manufacturerInput);
+      await ensureProductPns(productId, nextCodes, transaction);
+    }
+    await transaction.commit();
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
   }
 
   ctx.body = { code: 0, message: '商品更新成功' };
@@ -1202,8 +1250,8 @@ async function getPriceList(ctx) {
   const list = rows.map(p => ({
     product_id: p.product_id,
     product_code: p.product_code,
-    manufacturer_code: splitCodes(p.manufacturer_code).length > 0
-      ? splitCodes(p.manufacturer_code).join(', ')
+    manufacturer_code: splitPnCodes(p.manufacturer_code).length > 0
+      ? splitPnCodes(p.manufacturer_code).join(', ')
       : (manufacturerCodeMap.get(p.product_id) || []).join(', '),
     name: p.name,
     unit: p.unit,
@@ -2205,26 +2253,26 @@ async function addPn(ctx) {
     ctx.throw(400, '商品ID和PN码不能为空');
   }
 
-  const existing = await ProductPn.findOne({
-    where: { pn_code: pnCode, is_deleted: 0 }
-  });
-  if (existing) {
-    ctx.throw(400, `PN码 [${pnCode}] 已存在`);
-  }
-
-  const pnId = generateUUID();
-
-  await ProductPn.create({
-    pn_id: pnId,
-    product_id: productId,
-    pn_code: pnCode,
-    barcode: barcode || '',
-    is_primary: isPrimary ? 1 : 0
-  });
-
+  const cleanedPnCode = String(pnCode).trim();
+  if (!isUsablePnCode(cleanedPnCode)) ctx.throw(400, 'PN码不能为空或不能使用占位值');
   const product = await Product.findByPk(productId);
-  if (product) {
-    await product.update({ manufacturer_code: appendCode(product.manufacturer_code, pnCode) });
+  if (!product) ctx.throw(404, '商品不存在');
+
+  const transaction = await sequelize.transaction();
+  let pnId = null;
+  try {
+    const rows = await ensureProductPns(productId, [cleanedPnCode], transaction);
+    const pnRecord = rows[0];
+    pnId = pnRecord?.pn_id || null;
+    if (barcode !== undefined && pnRecord) {
+      await pnRecord.update({ barcode: String(barcode || '').trim(), is_primary: isPrimary ? 1 : pnRecord.is_primary }, { transaction });
+    }
+    await product.update({ manufacturer_code: appendCode(product.manufacturer_code, cleanedPnCode) }, { transaction });
+    await transaction.commit();
+  } catch (error) {
+    await transaction.rollback();
+    if (error.status === 409) ctx.throw(400, error.message);
+    throw error;
   }
 
   ctx.body = { code: 0, pnId, message: 'PN添加成功' };
@@ -2562,15 +2610,33 @@ async function executeProductImportRows(rows) {
       let productId = null;
 
       if (manufacturerCodes) {
-        const primaryManufacturerCode = String(manufacturerCodes).split(/[,;，；\s]+/).filter(Boolean)[0];
+        const primaryManufacturerCode = splitPnCodes(manufacturerCodes)[0];
         if (primaryManufacturerCode) {
-          const existingBarcode = await ProductBarcode.findOne({
-            where: { barcode_type: 'manufacturer', barcode_code: primaryManufacturerCode, status: 1 },
+          const existingBarcodes = await ProductBarcode.findAll({
+            where: {
+              [Op.and]: [
+                { barcode_type: 'manufacturer', status: 1 },
+                sequelize.where(
+                  sequelize.fn('LOWER', sequelize.fn('REPLACE', sequelize.fn('TRIM', sequelize.col('barcode_code')), ' ', '')),
+                  normalizePnCode(primaryManufacturerCode)
+                )
+              ]
+            },
+            include: [{
+              model: Product,
+              attributes: [],
+              where: { status: 1, is_deleted: 0 },
+              required: true
+            }],
             raw: true
           });
-          if (existingBarcode) {
-            product = await Product.findByPk(existingBarcode.product_id);
-            productId = existingBarcode.product_id;
+          const existingProductIds = [...new Set(existingBarcodes.map(row => row.product_id).filter(Boolean))];
+          if (existingProductIds.length > 1) {
+            throw new Error(`厂商PN [${primaryManufacturerCode}] 已关联多个商品，无法自动匹配，请先清理重复主数据`);
+          }
+          if (existingProductIds.length === 1) {
+            product = await Product.findByPk(existingProductIds[0]);
+            productId = existingProductIds[0];
           }
         }
       }
@@ -2582,7 +2648,7 @@ async function executeProductImportRows(rows) {
         const productData = {
           name: finalName,
           category: categoryPath || '',
-          manufacturer_code: splitCodes(manufacturerCodes).join(', '),
+          manufacturer_code: splitPnCodes(manufacturerCodes).join(', '),
           config: attrMap['厂商商品名称'] || attrMap['产品配置'] || attrMap['config'] || '',
           brand: cols.brand || null,
           series: cols.series || null,
@@ -2620,7 +2686,7 @@ async function executeProductImportRows(rows) {
 
         // 导入厂商编码
         if (manufacturerCodes) {
-          const codes = String(manufacturerCodes).split(/[,;，；\s]+/).filter(Boolean);
+          const codes = splitPnCodes(manufacturerCodes);
           for (const code of codes) {
             await ProductBarcode.create({
               barcode_id: generateUUID(), product_id: productId,
@@ -2633,7 +2699,7 @@ async function executeProductImportRows(rows) {
         // 导入69码
         const barcode69List = attrMap['69码'] || '';
         if (barcode69List) {
-          const codes = String(barcode69List).split(/[,;，；\s]+/).filter(Boolean);
+          const codes = String(barcode69List).split(/[,;，；\s]+/).map(code => code.trim()).filter(Boolean);
           for (const code of codes) {
             await ProductBarcode.create({
               barcode_id: generateUUID(), product_id: productId,
@@ -2642,6 +2708,8 @@ async function executeProductImportRows(rows) {
             }, { transaction });
           }
         }
+
+        await ensureProductPns(productId, manufacturerCodes, transaction);
 
         // 提交事务
         await transaction.commit();
@@ -2818,8 +2886,18 @@ module.exports = {
   addBarcode: async (ctx) => {
     const { productId, barcodeType, barcodeCode } = ctx.request.body;
     if (!productId || !barcodeType || !barcodeCode) ctx.throw(400, '参数不全');
+    const transaction = await sequelize.transaction();
     const id = generateUUID();
-    await ProductBarcode.create({ barcode_id: id, product_id: productId, barcode_type: barcodeType, barcode_code: barcodeCode, sort_order: 0, status: 1 });
+    try {
+      await ProductBarcode.create({ barcode_id: id, product_id: productId, barcode_type: barcodeType, barcode_code: String(barcodeCode).trim(), sort_order: 0, status: 1 }, { transaction });
+      if (barcodeType === 'manufacturer') {
+        await ensureProductPns(productId, [barcodeCode], transaction);
+      }
+      await transaction.commit();
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
     ctx.body = { code: 0, barcodeId: id, message: '添加成功' };
   },
   deleteBarcode: async (ctx) => {
@@ -2832,5 +2910,5 @@ module.exports = {
   getPriceList, setPrice, refreshCostPrice, batchRefreshCost, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory, applyPendingProductPriceChanges,
   getProductImportTask, recoverProductImportTasks,
   getPnList, addPn, searchProduct,
-  _test: { parseImportWorkbook, importTaskData }
+  _test: { parseImportWorkbook, importTaskData, normalizePnCode, splitPnCodes, ensureProductPns }
 };
