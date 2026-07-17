@@ -12,6 +12,7 @@
           <div class="filter-bar">
             <el-select v-model="queryParams.status" placeholder="状态" clearable style="width: 150px">
               <el-option label="全部" value="" />
+              <el-option label="草稿" value="draft" />
               <el-option label="待审批" value="pending" />
               <el-option label="已通过" value="approved" />
               <el-option label="已拒绝" value="rejected" />
@@ -28,11 +29,22 @@
             </el-table-column>
             <el-table-column prop="store_name" label="申请门店" width="120" />
             <el-table-column prop="supplier_name" label="供应商" width="150" />
+            <el-table-column prop="operator_name" label="经手人" width="100" />
+            <el-table-column prop="create_user" label="制单人" width="100" />
             <el-table-column label="付款方式" width="110">
               <template #default="{ row }">{{ getPaymentMethodText(row.payment_method) }}</template>
             </el-table-column>
             <el-table-column prop="invoice_type" label="发票类型" width="100" />
             <el-table-column prop="product_type" label="货型" width="130" />
+            <el-table-column prop="product_names_summary" label="完整产品名称" min-width="220" show-overflow-tooltip>
+              <template #default="{ row }"><div class="multiline-summary">{{ row.product_names_summary || '-' }}</div></template>
+            </el-table-column>
+            <el-table-column prop="product_codes_summary" label="产品编码" min-width="140" show-overflow-tooltip>
+              <template #default="{ row }"><div class="multiline-summary">{{ row.product_codes_summary || '-' }}</div></template>
+            </el-table-column>
+            <el-table-column prop="manufacturer_codes_summary" label="厂商编码" min-width="140" show-overflow-tooltip>
+              <template #default="{ row }"><div class="multiline-summary">{{ row.manufacturer_codes_summary || '-' }}</div></template>
+            </el-table-column>
             <el-table-column prop="items_summary" label="商品摘要" min-width="200" show-overflow-tooltip />
             <el-table-column prop="total_amount" label="申请金额" width="120">
               <template #default="{ row }">¥{{ row.total_amount }}</template>
@@ -45,6 +57,7 @@
             <el-table-column label="操作" width="250">
               <template #default="{ row }">
                 <el-button link type="primary" @click="handleApprove(row)" v-if="row.status === 'pending'">审批</el-button>
+                <el-button link type="warning" @click="handleEditDraft(row)" v-if="row.status === 'draft'">编辑</el-button>
                 <el-button link type="warning" @click="handleRevoke(row)" v-if="row.status === 'approved'">撤销</el-button>
                 <el-button link type="danger" @click="handleAdjustment(row)" v-if="row.status === 'approved'">退单</el-button>
                 <el-button link type="primary" @click="handleView(row)">查看</el-button>
@@ -141,6 +154,11 @@
             <el-option label="个人垫付" value="PERSONAL_ADVANCE" />
           </el-select>
         </el-form-item>
+        <el-form-item label="采购经手人">
+          <el-select v-model="requestForm.operatorStaffId" placeholder="默认当前用户" clearable filterable style="width: 100%">
+            <el-option v-for="staff in operatorStaffList" :key="staff.staffId" :label="staff.name" :value="staff.staffId" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="货型" required>
           <el-select v-model="requestForm.productType" placeholder="请选择货型" style="width: 100%" @change="onGoodsTypeChange">
             <el-option v-for="item in goodsTypeOptions" :key="item.goods_type_id" :label="item.name" :value="item.name" />
@@ -173,6 +191,11 @@
                       </div>
                     </el-option>
                   </el-select>
+                  <div v-if="item.productId" class="product-code-meta">
+                    <span>商品编码：{{ item.productCode || '-' }}</span>
+                    <span>厂商编码：{{ item.manufacturerCode || '-' }}</span>
+                    <span class="product-full-name">商品名称：{{ item.productName || '-' }}</span>
+                  </div>
                 </div>
                 <div style="width: 110px;">
                   <el-input v-model="item.price" type="number" placeholder="采购单价" size="small" style="width: 100%;" class="no-spinner" />
@@ -262,6 +285,8 @@
           <el-descriptions-item label="发票类型">{{ currentRequest.invoice_type || '-' }}</el-descriptions-item>
           <el-descriptions-item label="货型">{{ currentRequest.product_type || currentRequest.items?.[0]?.product_type || '-' }}</el-descriptions-item>
           <el-descriptions-item label="申请门店">{{ currentRequest.store_name }}</el-descriptions-item>
+          <el-descriptions-item label="采购经手人">{{ currentRequest.operator_name || currentRequest.apply_user || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="制单人">{{ currentRequest.create_user || currentRequest.apply_user || '-' }}</el-descriptions-item>
           <el-descriptions-item label="申请金额">¥{{ formatMoney(currentRequest.total_amount) }}</el-descriptions-item>
           <el-descriptions-item label="是否使用返利">
             <el-tag :type="hasRebateDeduction(currentRequest) ? 'success' : 'info'">
@@ -277,6 +302,8 @@
         <h4 class="mt-20">商品明细</h4>
         <el-table :data="currentRequest.items || []" border size="small">
           <el-table-column prop="product_name" label="商品名称" min-width="150" />
+          <el-table-column prop="product_code" label="商品编码" width="130" show-overflow-tooltip />
+          <el-table-column prop="manufacturer_code" label="厂商编码" min-width="160" show-overflow-tooltip />
           <el-table-column prop="unit_price" label="单价" width="100">
             <template #default="{ row }">¥{{ row.unit_price }}</template>
           </el-table-column>
@@ -524,6 +551,7 @@ const supplierData = ref([])
 const allSuppliers = ref([])
 const allStores = ref([])
 const allStoresLoaded = ref(false)
+const operatorStaffList = ref([])
 const products = ref([])
 const resourceOptions = ref([])
 const goodsTypeOptions = ref([])
@@ -568,10 +596,12 @@ const supplierQuery = reactive({
 })
 
 const requestForm = reactive({
+  requestId: '',
   supplierId: '',
   invoiceType: '',
   paymentMethod: 'COMPANY_CREDIT',
   productType: '',
+  operatorStaffId: '',
   remark: '',
   rebateDeduction: 0,
   items: []
@@ -694,6 +724,7 @@ onMounted(() => {
   loadAllSuppliers()
   loadAllStores()
   loadProducts()
+  loadOperatorStaff()
   loadResourceOptions()
   loadGoodsTypeOptions()
 })
@@ -722,6 +753,15 @@ const loadData = async () => {
     }
   } catch (err) {
     ElMessage.error('加载数据失败')
+  }
+}
+
+const loadOperatorStaff = async () => {
+  try {
+    const res = await api.getAuxiliaryStaff()
+    operatorStaffList.value = res.code === 0 ? (res.data || []) : []
+  } catch (_) {
+    operatorStaffList.value = []
   }
 }
 
@@ -854,6 +894,48 @@ const handleCreate = () => {
   if (resourceOptions.value.length === 0) loadResourceOptions()
   if (goodsTypeOptions.value.length === 0) loadGoodsTypeOptions()
   requestDialogVisible.value = true
+}
+
+const parseSelectedResourceTypes = value => {
+  if (Array.isArray(value)) return value
+  if (!value) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+const handleEditDraft = async (row) => {
+  try {
+    const res = await api.getPurchaseRequestDetail(row.request_id)
+    if (res.code !== 0) throw new Error(res.message || '获取草稿失败')
+    const data = res.data || {}
+    requestForm.requestId = data.request_id || row.request_id
+    requestForm.supplierId = data.supplier_id || ''
+    requestForm.invoiceType = data.invoice_type || ''
+    requestForm.paymentMethod = data.payment_method || 'COMPANY_CREDIT'
+    requestForm.productType = data.product_type || ''
+    requestForm.operatorStaffId = data.operator_staff_id || ''
+    requestForm.remark = data.reason || data.remark || ''
+    requestForm.rebateDeduction = 0
+    requestForm.items = (data.items || []).map(item => ({
+      productId: item.product_id || '',
+      productName: item.product_name || '',
+      productCode: item.product_code || '',
+      manufacturerCode: item.manufacturer_code || '',
+      pnCode: item.pn_code || '',
+      price: Number(item.unit_price || 0),
+      quantity: Number(item.quantity || 0),
+      rebateDeduction: 0,
+      storeAllocations: item.store_allocations_parsed || [],
+      selectedResourceTypes: parseSelectedResourceTypes(item.selected_resource_types)
+    }))
+    requestDialogVisible.value = true
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || err.message || '获取草稿失败')
+  }
 }
 
 const handleView = async (row) => {
@@ -1262,6 +1344,8 @@ const onProductChange = (index) => {
   const product = products.value.find(p => p.product_id === requestForm.items[index].productId)
   if (product) {
     requestForm.items[index].productName = product.name
+    requestForm.items[index].productCode = product.product_code || ''
+    requestForm.items[index].manufacturerCode = product.manufacturer_code || ''
     requestForm.items[index].price = product.min_sale_price || 0
   }
 }
@@ -1272,7 +1356,7 @@ const onItemAmountChange = () => {
 
 const addRequestItem = () => {
   requestForm.items.push({
-    productId: '', productName: '', price: 0, quantity: 1, rebateDeduction: 0, storeAllocations: [],
+    productId: '', productName: '', productCode: '', manufacturerCode: '', price: 0, quantity: 1, rebateDeduction: 0, storeAllocations: [],
     selectedResourceTypes: goodsTypeResourceCodes(requestForm.productType)
   })
   if (toNumber(requestForm.rebateDeduction) > 0) {
@@ -1337,8 +1421,10 @@ const handleSubmit = async () => {
       remark: requestForm.remark,
       rebateDeduction: rebateDeductionAmount.value,
       items: requestForm.items.map(item => ({
-        productId: item.productId,
-        productName: item.productName,
+      productId: item.productId,
+      productName: item.productName,
+      productCode: item.productCode,
+      manufacturerCode: item.manufacturerCode,
         price: item.price,
         quantity: item.quantity,
         goodsTypeId: selectedGoodsType?.goods_type_id || '',
@@ -1348,6 +1434,7 @@ const handleSubmit = async () => {
         selectedResourceTypes: item.selectedResourceTypes || []
       }))
     }
+    data.requestId = requestForm.requestId || undefined
     const res = await api.createPurchaseRequest(data)
     if (res.code === 0) {
       ElMessage.success('提交成功')
@@ -1369,24 +1456,59 @@ const handleDialogClose = () => {
 }
 
 const resetForm = () => {
+  requestForm.requestId = ''
   requestForm.supplierId = ''
   requestForm.invoiceType = ''
   requestForm.paymentMethod = 'COMPANY_CREDIT'
   requestForm.productType = goodsTypeOptions.value[0]?.name || ''
+  requestForm.operatorStaffId = ''
   requestForm.remark = ''
   requestForm.rebateDeduction = 0
   requestForm.items = []
 }
 
-const savePurchaseRequestDraft = () => {
-  saveDraft(PURCHASE_REQUEST_DRAFT_KEY, cloneDraft(requestForm))
-  ElMessage.success('草稿已保存')
+const savePurchaseRequestDraft = async () => {
+  submitLoading.value = true
+  try {
+    const selectedGoodsType = goodsTypeOptions.value.find(item => item.name === requestForm.productType)
+    const res = await api.savePurchaseRequestDraft({
+      requestId: requestForm.requestId || undefined,
+      supplierId: requestForm.supplierId || '',
+      invoiceType: requestForm.invoiceType,
+      paymentMethod: requestForm.paymentMethod,
+      goodsTypeId: selectedGoodsType?.goods_type_id || '',
+      productType: requestForm.productType,
+      operatorStaffId: requestForm.operatorStaffId || '',
+      remark: requestForm.remark,
+      items: requestForm.items.map(item => ({
+        productId: item.productId,
+        productName: item.productName,
+        productCode: item.productCode,
+        manufacturerCode: item.manufacturerCode,
+        pnCode: item.pnCode,
+        price: item.price,
+        quantity: item.quantity,
+        storeAllocations: item.storeAllocations,
+        selectedResourceTypes: item.selectedResourceTypes || []
+      }))
+    })
+    if (res.code !== 0) throw new Error(res.message || '草稿保存失败')
+    requestForm.requestId = res.requestId || requestForm.requestId
+    clearDraft(PURCHASE_REQUEST_DRAFT_KEY)
+    ElMessage.success('采购申请草稿已保存')
+    await loadData()
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || err.message || '草稿保存失败')
+  } finally {
+    submitLoading.value = false
+  }
 }
 
 const restorePurchaseRequestDraft = () => {
   const draft = loadDraft(PURCHASE_REQUEST_DRAFT_KEY)
   if (!draft) return
   Object.assign(requestForm, draft)
+  requestForm.requestId = ''
   requestForm.paymentMethod = draft.paymentMethod || 'COMPANY_CREDIT'
   requestForm.items = Array.isArray(draft.items)
     ? draft.items.map(item => ({ rebateDeduction: 0, selectedResourceTypes: [], ...item }))
@@ -1395,12 +1517,12 @@ const restorePurchaseRequestDraft = () => {
 }
 
 const getStatusType = (status) => {
-  const types = { pending: 'warning', approved: 'success', rejected: 'danger', purchased: 'info', revoked: 'info' }
+  const types = { draft: 'info', pending: 'warning', approved: 'success', rejected: 'danger', purchased: 'info', revoked: 'info' }
   return types[status] || 'info'
 }
 
 const getStatusText = (status) => {
-  const texts = { pending: '待审批', approved: '已通过', rejected: '已拒绝', purchased: '已采购', revoked: '已撤销' }
+  const texts = { draft: '草稿', pending: '待审批', approved: '已通过', rejected: '已拒绝', purchased: '已采购', revoked: '已撤销' }
   return texts[status] || status
 }
 
@@ -1474,6 +1596,28 @@ const handleAllocateDialogClose = () => {
 </script>
 
 <style scoped>
+.product-code-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 4px;
+  color: #606266;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.multiline-summary {
+  white-space: pre-line;
+  line-height: 1.45;
+}
+
+.product-full-name {
+  flex-basis: 100%;
+  color: #303133;
+  white-space: normal;
+  word-break: break-all;
+}
+
 .card-header {
   display: flex;
   justify-content: space-between;

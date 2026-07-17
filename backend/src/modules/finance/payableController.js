@@ -155,16 +155,18 @@ async function getPayableSettlementItems(ctx) {
   });
   const rows = [];
   payables.forEach(payable => {
-    const allocated = summary.get(String(payable.payable_id)) || { amount: 0, quantityByItem: new Map() };
-    const items = payable.source_type === 'purchase' && (Number(allocated.amount || 0) <= 0 || allocated.quantityByItem.size > 0)
+    const allocated = summary.get(String(payable.payable_id)) || { amount: 0, quantityByItem: new Map(), amountByItem: new Map() };
+    const items = payable.source_type === 'purchase'
       ? (itemMap.get(String(payable.request_id)) || [])
       : [];
     if (items.length) {
       items.forEach(item => {
         const usedQuantity = Number(allocated.quantityByItem.get(String(item.item_id)) || 0);
+        const usedAmount = Number(allocated.amountByItem.get(String(item.item_id)) || 0);
         const availableQuantity = Math.max(0, Number(item.quantity || 0) - usedQuantity);
         const unitPrice = actualUnitPrice(item);
-        if (availableQuantity <= 0) return;
+        const availableAmount = roundAmount(Number(item.quantity || 0) * unitPrice - usedAmount);
+        if (availableAmount <= 0) return;
         rows.push({
           payable_id: payable.payable_id,
           request_id: payable.request_id,
@@ -179,7 +181,7 @@ async function getPayableSettlementItems(ctx) {
           product_id: item.product_id,
           product_name: item.product_name,
           available_quantity: availableQuantity,
-          available_amount: roundAmount(availableQuantity * unitPrice),
+          available_amount: availableAmount,
           unit_price: unitPrice,
           create_time: payable.create_time
         });
@@ -215,7 +217,9 @@ async function createSettlement(ctx) {
     supplierAccountId,
     paymentAccountType = 'saved',
     otherPaymentRemark,
-    otherPaymentImage
+    otherPaymentImage,
+    remark = '',
+    operatorStaffId
   } = ctx.request.body;
   const user = ctx.state.user;
   if (!supplierId) ctx.throw(400, 'supplier is required');
@@ -280,19 +284,26 @@ async function createSettlement(ctx) {
         const item = requestItemId ? requestItemMap.get(String(requestItemId)) : null;
         let used = summary.get(payableId);
         if (!used) {
-          used = { amount: 0, quantityByItem: new Map() };
+          used = { amount: 0, quantityByItem: new Map(), amountByItem: new Map() };
           summary.set(payableId, used);
         }
         if (item) {
           if (String(item.request_id) !== String(payable.request_id)) ctx.throw(400, 'purchase item does not belong to payable');
+          const requestedAmount = allocation.amount ?? allocation.settleAmount ?? allocation.settle_amount;
           const quantity = Number(allocation.quantity || allocation.settleQuantity || allocation.settle_quantity || 0);
           const usedQuantity = Number(used.quantityByItem.get(String(item.item_id)) || 0);
           const availableQuantity = Number(item.quantity || 0) - usedQuantity;
-          if (quantity <= 0 || quantity > availableQuantity + 0.00005) ctx.throw(400, 'settlement quantity exceeds remaining quantity');
           const unitPrice = actualUnitPrice(item);
-          const amount = roundAmount(quantity * unitPrice);
-          rows.push({ payable, requestItem: item, quantity, unitPrice, amount });
-          used.quantityByItem.set(String(item.item_id), usedQuantity + quantity);
+          const usedAmount = Number(used.amountByItem.get(String(item.item_id)) || 0);
+          const availableAmount = roundAmount(Number(item.quantity || 0) * unitPrice - usedAmount);
+          let amount = requestedAmount === undefined || requestedAmount === null || requestedAmount === ''
+            ? roundAmount(quantity * unitPrice)
+            : roundAmount(requestedAmount);
+          if (amount <= 0 || amount > availableAmount + 0.005) ctx.throw(400, 'settlement amount exceeds remaining amount');
+          if (requestedAmount === undefined && (quantity <= 0 || quantity > availableQuantity + 0.00005)) ctx.throw(400, 'settlement quantity exceeds remaining quantity');
+          rows.push({ payable, requestItem: item, quantity: requestedAmount === undefined ? quantity : null, unitPrice, amount });
+          used.quantityByItem.set(String(item.item_id), usedQuantity + (requestedAmount === undefined ? quantity : 0));
+          used.amountByItem.set(String(item.item_id), usedAmount + amount);
           used.amount = Number(used.amount || 0) + amount;
         } else {
           const remaining = roundAmount(Number(payable.total_amount || 0) - Number(used.amount || 0));
@@ -320,6 +331,10 @@ async function createSettlement(ctx) {
       supplier_account_snapshot: supplierAccountSnapshot,
       other_payment_remark: paymentAccountType === 'other' ? String(otherPaymentRemark).trim() : null,
       other_payment_image: paymentAccountType === 'other' ? otherPaymentImage : null,
+      remark: String(remark || '').trim(),
+      create_staff_id: user?.staffId || user?.id || null,
+      operator_staff_id: operatorStaffId || user?.staffId || user?.id || null,
+      operator_name: user?.name || user?.phone || '',
       settlement_type: 'supplier',
       total_amount: totalAmount,
       status: 'draft',
@@ -475,7 +490,7 @@ async function createSettlementLegacy(ctx) {
 }
 
 async function createExpenseSettlement(ctx) {
-  const { payableId, amount: requestedAmount } = ctx.request.body;
+  const { payableId, amount: requestedAmount, remark = '', operatorStaffId } = ctx.request.body;
   const user = ctx.state.user;
   if (!payableId) ctx.throw(400, 'payableId is required');
   let settlement;
@@ -509,7 +524,11 @@ async function createExpenseSettlement(ctx) {
       paid_amount: 0,
       status: 'draft',
       payment_status: 'unpaid',
-      create_user: user?.name || user?.phone || ''
+      create_user: user?.name || user?.phone || '',
+      create_staff_id: user?.staffId || user?.id || null,
+      operator_staff_id: operatorStaffId || user?.staffId || user?.id || null,
+      operator_name: user?.name || user?.phone || '',
+      remark: String(remark || '').trim()
     }, { transaction });
     await SettlementItem.create({
       settlement_id: settlement.settlement_id,
@@ -690,7 +709,7 @@ async function refreshSettlementPaymentState(settlement, transaction = null) {
  * 结算单列表
  */
 function buildSettlementListWhere(query) {
-  const { supplierId, settlementType, status, paymentStatus } = query;
+  const { supplierId, settlementType, status, paymentStatus, counterparty, operatorName, startDate, endDate } = query;
   const where = {};
   if (supplierId) where.supplier_id = supplierId;
   if (settlementType) {
@@ -699,6 +718,16 @@ function buildSettlementListWhere(query) {
   }
   if (status) where.status = status;
   if (paymentStatus) where.payment_status = paymentStatus;
+  if (counterparty) {
+    const keyword = { [Op.like]: `%${String(counterparty).trim()}%` };
+    where[Op.or] = [{ supplier_name: keyword }, { payee_name: keyword }];
+  }
+  if (operatorName) where.operator_name = { [Op.like]: `%${String(operatorName).trim()}%` };
+  if (startDate || endDate) {
+    where.create_time = {};
+    if (startDate) where.create_time[Op.gte] = new Date(`${startDate}T00:00:00.000+08:00`);
+    if (endDate) where.create_time[Op.lte] = new Date(`${endDate}T23:59:59.999+08:00`);
+  }
   return where;
 }
 
@@ -753,12 +782,15 @@ async function exportSettlementList(ctx) {
     已付金额: Number(row.paid_amount || 0),
     状态: row.status || '',
     付款状态: row.payment_status || '',
+    经手人: row.operator_name || '',
+    制单人: row.create_user || '',
+    备注: row.remark || '',
     创建时间: row.create_time || '',
     确认时间: row.confirmed_time || ''
   }));
   sendExcel(ctx, data, [
     '结算单号', '收款方', '来源单号', '结算类型', '结算金额', '已付金额',
-    '状态', '付款状态', '创建时间', '确认时间'
+    '状态', '付款状态', '经手人', '制单人', '备注', '创建时间', '确认时间'
   ], `应付结算单_${new Date().toISOString().slice(0, 10)}.xlsx`, '应付结算单');
 }
 

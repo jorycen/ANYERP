@@ -180,6 +180,7 @@ const handleCommand = async (command) => {
 
 .layout-container > .el-container {
   min-width: 0;
+  min-height: 0;
 }
 
 .sidebar {
@@ -218,6 +219,7 @@ const handleCommand = async (command) => {
 
 .main-content {
   min-width: 0;
+  min-height: 0;
   overflow: auto;
 }
 
@@ -241,6 +243,16 @@ const handleCommand = async (command) => {
   align-items: center;
   gap: 6px;
   cursor: pointer;
+}
+
+.main-content :deep(.el-table__body-wrapper) {
+  max-height: calc(100vh - 300px);
+  overflow-y: auto;
+}
+
+.main-content :deep(.el-table__header-wrapper) {
+  position: relative;
+  z-index: 1;
 }
 
 .main-content {

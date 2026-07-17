@@ -240,10 +240,11 @@
             </el-table-column>
             <el-table-column prop="store_name" label="门店" width="120" />
             <el-table-column prop="create_user" label="制单人" width="80" />
+            <el-table-column prop="operator_name" label="经手人" width="80" />
             <el-table-column label="状态" width="90">
               <template #default="{ row }">
-                <el-tag :type="row.status === 'paid' ? 'success' : row.status === 'processing' ? 'warning' : 'info'" size="small">
-                  {{ row.status === 'paid' ? '已付款' : row.status === 'processing' ? '报销中' : '待报销' }}
+                <el-tag :type="getExpenseStatusTagType(row.status)" size="small">
+                  {{ getExpenseStatusText(row.status) }}
                 </el-tag>
               </template>
             </el-table-column>
@@ -416,6 +417,10 @@
                 <el-option label="部分付款" value="partial_paid" />
                 <el-option label="已付款" value="paid" />
               </el-select>
+              <el-input v-model="settlementCounterpartyFilter" placeholder="往来单位" clearable style="width: 150px" @keyup.enter="loadSettlementData" />
+              <el-input v-model="settlementOperatorFilter" placeholder="经手人" clearable style="width: 120px" @keyup.enter="loadSettlementData" />
+              <el-date-picker v-model="settlementDateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" style="width: 250px" @change="loadSettlementData" />
+              <el-button @click="loadSettlementData">查询</el-button>
             </div>
           </div>
 
@@ -455,6 +460,9 @@
                 </el-tag>
               </template>
             </el-table-column>
+            <el-table-column prop="operator_name" label="经手人" width="100" />
+            <el-table-column prop="create_user" label="制单人" width="100" />
+            <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
             <el-table-column prop="create_time" label="创建时间" width="160" />
             <el-table-column label="操作" width="220">
               <template #default="{ row }">
@@ -525,6 +533,9 @@
                 </el-tag>
               </template>
             </el-table-column>
+            <el-table-column prop="operator_name" label="经手人" width="100" />
+            <el-table-column prop="create_user" label="制单人" width="100" />
+            <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
             <el-table-column prop="create_time" label="创建时间" width="160" />
             <el-table-column label="操作" width="220">
               <template #default="{ row }">
@@ -873,31 +884,20 @@
         </template>
       </el-form>
 
+      <el-form label-width="100px">
+        <el-form-item label="结算备注">
+          <el-input v-model="settlementForm.remark" type="textarea" rows="2" placeholder="请输入本次结算备注" />
+        </el-form-item>
+      </el-form>
+
       <div v-if="unpaidList.length > 0">
         <el-table :data="unpaidList" stripe border @selection-change="onSelectionChange" ref="settlementTableRef">
           <el-table-column type="selection" width="50" />
           <el-table-column prop="product_name" label="采购商品" min-width="150" />
           <el-table-column prop="available_quantity" label="剩余数量" width="100" />
-          <el-table-column label="本次结算数量/金额" width="170">
+          <el-table-column label="本次结算金额" width="170">
             <template #default="{ row }">
-              <el-input-number
-                v-if="row.request_item_id"
-                v-model="row.settle_quantity"
-                :min="0.0001"
-                :max="Number(row.available_quantity || 0)"
-                :precision="4"
-                size="small"
-                controls-position="right"
-              />
-              <el-input-number
-                v-else
-                v-model="row.settle_amount"
-                :min="0.01"
-                :max="Number(row.available_amount || 0)"
-                :precision="2"
-                size="small"
-                controls-position="right"
-              />
+              <el-input-number v-model="row.settle_amount" :min="0.01" :max="Number(row.available_amount || 0)" :precision="2" size="small" controls-position="right" />
             </template>
           </el-table-column>
           <el-table-column label="本次金额" width="110">
@@ -953,6 +953,11 @@
         </el-form-item>
         <el-form-item label="费用发生方" required>
           <el-input v-model="expenseForm.expenseParty" placeholder="供应商、员工或外部单位" />
+        </el-form-item>
+        <el-form-item label="费用经手人">
+          <el-select v-model="expenseForm.operatorStaffId" placeholder="默认当前用户" clearable filterable style="width: 100%">
+            <el-option v-for="staff in operatorStaffList" :key="staff.staffId" :label="staff.name" :value="staff.staffId" />
+          </el-select>
         </el-form-item>
         <el-form-item label="费用日期">
           <el-date-picker v-model="expenseForm.expenseDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
@@ -1330,6 +1335,7 @@ const FINANCE_EXPENSE_DRAFT_KEY = 'finance-expense-create'
 const FINANCE_SETTLEMENT_DRAFT_KEY = 'finance-settlement-create'
 const FINANCE_ACCOUNT_TXN_DRAFT_KEY = 'finance-account-transaction-create'
 const stores = ref([])
+const operatorStaffList = ref([])
 const dailyDetails = ref([])
 const dailyTotal = ref(0)
 const dailyTotalAmount = ref(0)
@@ -1433,6 +1439,9 @@ const settlementData = ref([])
 const settlementTotal = ref(0)
 const settlementStatusFilter = ref('')
 const settlementPaymentStatusFilter = ref('')
+const settlementCounterpartyFilter = ref('')
+const settlementOperatorFilter = ref('')
+const settlementDateRange = ref([])
 const reimbursementSettlementData = ref([])
 const reimbursementSettlementTotal = ref(0)
 const reimbursementSettlementStatusFilter = ref('')
@@ -1512,7 +1521,8 @@ const settlementForm = reactive({
   paymentAccountType: '',
   supplierAccountId: '',
   otherPaymentRemark: '',
-  otherPaymentImage: ''
+  otherPaymentImage: '',
+  remark: ''
 })
 
 const accountList = ref([])
@@ -1616,13 +1626,19 @@ const buildSettlementExportParams = (settlementType) => {
   } else {
     if (settlementStatusFilter.value) params.status = settlementStatusFilter.value
     if (settlementPaymentStatusFilter.value) params.paymentStatus = settlementPaymentStatusFilter.value
+    if (settlementCounterpartyFilter.value) params.counterparty = settlementCounterpartyFilter.value
+    if (settlementOperatorFilter.value) params.operatorName = settlementOperatorFilter.value
+    if (settlementDateRange.value?.length === 2) {
+      params.startDate = settlementDateRange.value[0]
+      params.endDate = settlementDateRange.value[1]
+    }
   }
   return params
 }
 
 const handleExportDaily = () => runListExport('daily', '日结单', api.exportDailyDetails, buildDailyExportParams())
 const handleExportSubsidy = () => runListExport('subsidy', '国补应收单', api.exportNationalSubsidyReceivables, buildSubsidyExportParams())
-const handleExportExpense = () => runListExport('expense', '费用清单', api.exportExpenseList, { status: 'pending' })
+const handleExportExpense = () => runListExport('expense', '费用清单', api.exportExpenseList, { status: 'pending,pending_payment,pending_approval,approved,processing,partial_reimbursement,paid,rejected' })
 const handleExportExpenseSettlement = () => runListExport(
   'expense-settlement',
   '报销结算单',
@@ -1648,6 +1664,7 @@ const expenseForm = reactive({
   storeId: '',
   amount: 0,
   expenseParty: '',
+  operatorStaffId: '',
   expenseDate: new Date().toISOString().slice(0, 10),
   paymentMethod: 'CORPORATE',
   hasInvoice: false,
@@ -1661,7 +1678,6 @@ const expenseTypeOptions = ref([])
 const selectedPayableIds = computed(() => [...new Set(selectedPayables.value.map(p => p.payable_id))])
 
 const settlementLineAmount = (row) => {
-  if (row.request_item_id) return Number(row.settle_quantity || 0) * Number(row.unit_price || 0)
   return Number(row.settle_amount || 0)
 }
 
@@ -1718,6 +1734,16 @@ const getSettlementPaymentAccountText = (row) => {
   return '-'
 }
 
+const getExpenseStatusText = (status) => ({
+  pending: '待提交', pending_payment: '待付款', pending_approval: '待审批', approved: '待报销',
+  processing: '付款中', partial_reimbursement: '部分报销', paid: '已付款', rejected: '已拒绝'
+}[status] || status || '-')
+
+const getExpenseStatusTagType = (status) => ({
+  pending: 'info', pending_payment: 'warning', pending_approval: 'warning', approved: 'info',
+  processing: 'warning', partial_reimbursement: 'warning', paid: 'success', rejected: 'danger'
+}[status] || 'info')
+
 const getSettlementStatusText = (status) => {
   const map = {
     draft: '草稿',
@@ -1770,11 +1796,13 @@ const resetPaymentAccountFields = () => {
   settlementForm.supplierAccountId = ''
   settlementForm.otherPaymentRemark = ''
   settlementForm.otherPaymentImage = ''
+  settlementForm.remark = ''
   otherPaymentFileList.value = []
 }
 
 onMounted(() => {
   loadStores()
+  loadOperatorStaff()
   loadPaymentMethods()
   loadSettlementAccounts()
   loadDailyData()
@@ -1795,6 +1823,15 @@ onMounted(() => {
   loadCostAdjustments()
   loadAccountList()
 })
+
+const loadOperatorStaff = async () => {
+  try {
+    const res = await api.getAuxiliaryStaff()
+    operatorStaffList.value = res.code === 0 ? (res.data || []) : []
+  } catch (_) {
+    operatorStaffList.value = []
+  }
+}
 
 // ==============================================
 // 日结单 - 逐条清单
@@ -2053,7 +2090,7 @@ const formatDateTime = (time) => {
 
 const loadExpenseData = async () => {
   try {
-    const params = { ...expenseQuery, status: 'pending' }
+    const params = { ...expenseQuery, status: 'pending,pending_payment,pending_approval,approved,processing,partial_reimbursement,paid,rejected' }
     const res = await api.getExpenseList(params)
     if (res.code === 0) {
       expenseData.value = res.data?.list || []
@@ -2234,6 +2271,12 @@ const loadSettlementData = async () => {
     }
     if (settlementPaymentStatusFilter.value) {
       params.paymentStatus = settlementPaymentStatusFilter.value
+    }
+    if (settlementCounterpartyFilter.value) params.counterparty = settlementCounterpartyFilter.value
+    if (settlementOperatorFilter.value) params.operatorName = settlementOperatorFilter.value
+    if (settlementDateRange.value?.length === 2) {
+      params.startDate = settlementDateRange.value[0]
+      params.endDate = settlementDateRange.value[1]
     }
     const res = await api.getSettlementList(params)
     if (res.code === 0) {
@@ -2474,8 +2517,8 @@ const loadSettlementLines = async (params = {}) => {
   if (res.code !== 0) return []
   return (res.data || []).map(row => ({
     ...row,
-    settle_quantity: row.request_item_id ? Number(row.available_quantity || 0) : null,
-    settle_amount: row.request_item_id ? null : Number(row.available_amount || 0)
+    settle_quantity: null,
+    settle_amount: Number(row.available_amount || 0)
   }))
 }
 
@@ -2702,13 +2745,13 @@ const handleSettlementSubmit = async () => {
       allocations: selectedPayables.value.map(row => ({
         payableId: row.payable_id,
         requestItemId: row.request_item_id,
-        quantity: row.request_item_id ? Number(row.settle_quantity || 0) : undefined,
-        amount: row.request_item_id ? undefined : Number(row.settle_amount || 0)
+        amount: Number(row.settle_amount || 0)
       })),
       paymentAccountType: isOtherPaymentAccount ? 'other' : 'saved',
       supplierAccountId: isOtherPaymentAccount ? '' : settlementForm.supplierAccountId,
       otherPaymentRemark: isOtherPaymentAccount ? settlementForm.otherPaymentRemark.trim() : '',
-      otherPaymentImage: isOtherPaymentAccount ? settlementForm.otherPaymentImage : ''
+      otherPaymentImage: isOtherPaymentAccount ? settlementForm.otherPaymentImage : '',
+      remark: settlementForm.remark
     })
     if (res.code === 0) {
       ElMessage.success('结算单创建成功')
@@ -2914,6 +2957,7 @@ const handleExpenseSubmit = async () => {
       storeId: expenseForm.storeId,
       amount: expenseForm.amount,
       expenseParty: expenseForm.expenseParty,
+      operatorStaffId: expenseForm.operatorStaffId || undefined,
       expenseDate: expenseForm.expenseDate,
       paymentMethod: expenseForm.paymentMethod,
       hasInvoice: expenseForm.hasInvoice,
@@ -2960,6 +3004,7 @@ const resetForm = () => {
   expenseForm.storeId = ''
   expenseForm.amount = 0
   expenseForm.expenseParty = ''
+  expenseForm.operatorStaffId = ''
   expenseForm.expenseDate = new Date().toISOString().slice(0, 10)
   expenseForm.paymentMethod = 'CORPORATE'
   expenseForm.hasInvoice = false

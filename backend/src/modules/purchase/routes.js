@@ -2,7 +2,7 @@
  * 采购管理路由
  */
 const Router = require('koa-router');
-const { getRequestList, exportRequestList, getRequestDetail, createRequest, approveRequest, revokeRequest, getAdjustmentPreview, createPurchaseAdjustment, getSupplierList, getAllSuppliers, createSupplier, updateSupplier, deleteSupplier, sortSuppliers } = require('./controller');
+const { getRequestList, exportRequestList, getRequestDetail, createRequest, saveRequestDraft, approveRequest, revokeRequest, getAdjustmentPreview, createPurchaseAdjustment, getSupplierList, getAllSuppliers, createSupplier, updateSupplier, deleteSupplier, sortSuppliers } = require('./controller');
 const { requireRole } = require('../../middleware/permission');
 
 const router = new Router();
@@ -15,6 +15,7 @@ router.get('/request-list', getRequestList);
 router.get('/request-list/export', exportRequestList);
 router.get('/request-detail/:requestId', getRequestDetail);
 router.post('/create-request', createRequest);
+router.post('/save-request-draft', saveRequestDraft);
 
 // 审批、撤销和供应商维护仍属于采购管理职责。
 router.post('/approve-request/:requestId', requirePurchaser, approveRequest);

@@ -418,8 +418,8 @@ async function _getRebateBalance(supplierId, transaction = null) {
 /**
  * 记录返利抵扣（采购申请用）
  */
-async function recordRebateDeduction(supplierId, supplierName, amount, relatedNo, remark, user) {
-  return sequelize.transaction(async transaction => {
+async function recordRebateDeduction(supplierId, supplierName, amount, relatedNo, remark, user, existingTransaction = null) {
+  const execute = async transaction => {
     const currentBalance = await _getRebateBalance(supplierId, transaction);
     const newBalance = currentBalance - parseFloat(amount);
     await SupplierRebate.create({
@@ -429,7 +429,8 @@ async function recordRebateDeduction(supplierId, supplierName, amount, relatedNo
     }, { transaction });
     await recordSupplierRebateAccountTransaction(supplierId, 'expense', amount, '采购返利抵扣', relatedNo, user, transaction);
     return newBalance;
-  });
+  };
+  return existingTransaction ? execute(existingTransaction) : sequelize.transaction(execute);
 }
 
 async function createManufacturerPolicy(ctx) {

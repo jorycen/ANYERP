@@ -3,7 +3,7 @@
  */
 const {
   sequelize, DailyStatement, DailyStatementDetail, Expense, ExpenseType, PurchaseRequest, Store, Region, Order, OrderPayment,
-  SettlementAccount, SettlementAccountTransaction, SubsidyAccountRoute, SubsidyReceipt,
+  SettlementAccount, SettlementAccountTransaction, SubsidyAccountRoute, SubsidyReceipt, Staff, StaffStorePermission,
   SubsidyReceiptAllocation, SubsidyReceivableAdjustment
 } = require('../../models');
 const { Op, Sequelize, fn, col } = require('sequelize');
@@ -11,6 +11,17 @@ const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } 
 const { sendExcel } = require('../../utils/excelExport');
 const { getUserRoles } = require('../../middleware/permission');
 const { ensureExpensePayable } = require('./expenseService');
+
+async function resolveExpenseOperator(user, storeId, staffId) {
+  const selectedStaffId = staffId || user.staffId || user.id || null;
+  if (!selectedStaffId) return { staffId: null, name: user.name || user.phone || '' };
+  const staff = await Staff.findByPk(selectedStaffId, { attributes: ['staff_id', 'name', 'store_id', 'status', 'is_deleted'] });
+  if (!staff || staff.status === 0 || staff.is_deleted) throw Object.assign(new Error('经手人不存在或已停用'), { status: 400 });
+  const allowedStores = user.accessibleStoreIds || [];
+  const assigned = String(staff.store_id || '') === String(storeId || '') || (await StaffStorePermission.count({ where: { staff_id: staff.staff_id, store_id: storeId } })) > 0;
+  if (!allowedStores.includes('*') && !assigned) throw Object.assign(new Error('经手人不属于该门店'), { status: 400 });
+  return { staffId: staff.staff_id, name: staff.name || user.name || '' };
+}
 
 async function getAccountBalance(accountId, transaction = null) {
   const [incomeAmount, expenseAmount] = await Promise.all([
@@ -476,7 +487,7 @@ async function createExpense(ctx) {
   const {
     storeId, expenseTypeId, expenseParty, amount, paymentMethod,
     hasInvoice, invoiceType, invoiceNo, expenseDate, attachmentUrls,
-    relatedOrderNo, remark
+    relatedOrderNo, remark, operatorStaffId
   } = ctx.request.body;
   const targetStoreId = storeId || user.storeId;
   if (!targetStoreId) ctx.throw(400, '请选择门店');
@@ -493,6 +504,7 @@ async function createExpense(ctx) {
   ]);
   if (!expenseType) ctx.throw(400, '报销类型不存在或已停用');
   if (!store) ctx.throw(404, '门店不存在');
+  const operator = await resolveExpenseOperator(user, targetStoreId, operatorStaffId);
 
   const expenseNo = `EXP${Date.now()}${String(Math.floor(Math.random() * 100)).padStart(2, '0')}`;
   const expenseId = generateUUID();
@@ -517,6 +529,8 @@ async function createExpense(ctx) {
       status: paymentMethod === 'CORPORATE' ? 'pending_payment' : 'pending_approval',
       applicant_staff_id: user.staffId || user.id || null,
       applicant_name: user.name || user.phone || '',
+      operator_staff_id: operator.staffId,
+      operator_name: operator.name,
       source_type: 'expense',
       source_id: expenseId,
       source_no: expenseNo,

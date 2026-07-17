@@ -1,4 +1,3 @@
-const { Op } = require('sequelize');
 const {
   Payable,
   Expense,
@@ -6,6 +5,7 @@ const {
   SettlementItem,
   SettlementPaymentRecord
 } = require('../../models');
+const { Op } = require('sequelize');
 
 function roundAmount(value) {
   return Math.round((Number(value) || 0) * 100) / 100;

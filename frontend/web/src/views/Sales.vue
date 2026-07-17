@@ -35,6 +35,8 @@
               <th>创建时间</th>
               <th>客户姓名</th>
               <th>联系电话</th>
+              <th>经手人</th>
+              <th>制单人</th>
               <th class="money-column">订单金额</th>
               <th class="money-column">实付金额</th>
               <th>状态</th>
@@ -48,6 +50,8 @@
               <td>{{ formatDate(row.create_time) }}</td>
               <td>{{ row.customer_name || '-' }}</td>
               <td>{{ row.customer_phone || '-' }}</td>
+              <td>{{ row.operator_name || row.create_user || '-' }}</td>
+              <td>{{ row.create_user || '-' }}</td>
               <td class="money-column">¥{{ row.total_amount || 0 }}</td>
               <td class="money-column">¥{{ row.actual_payment || 0 }}</td>
               <td><el-tag :type="getStatusType(row.order_status)">{{ getStatusText(row.order_status) }}</el-tag></td>
@@ -115,6 +119,13 @@
                 <el-option label="不开票" value="不开票" />
                 <el-option label="普通发票" value="普通发票" />
                 <el-option label="增值税发票" value="增值税发票" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="销售经手人">
+              <el-select v-model="orderForm.operatorStaffId" placeholder="默认当前用户" clearable filterable style="width: 100%">
+                <el-option v-for="staff in operatorStaffList" :key="staff.staffId" :label="staff.name" :value="staff.staffId" />
               </el-select>
             </el-form-item>
           </el-col>
@@ -329,6 +340,8 @@
           <el-descriptions-item label="联系电话">{{ currentOrder.customer_phone }}</el-descriptions-item>
           <el-descriptions-item label="客户来源">{{ currentOrder.customer_source || '-' }}</el-descriptions-item>
           <el-descriptions-item label="发票类型">{{ currentOrder.invoice_status }}</el-descriptions-item>
+          <el-descriptions-item label="销售经手人">{{ currentOrder.operator_name || currentOrder.create_user || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="制单人">{{ currentOrder.create_user || '-' }}</el-descriptions-item>
           <el-descriptions-item label="创建时间">{{ formatDate(currentOrder.create_time) }}</el-descriptions-item>
           <el-descriptions-item label="商品总额">¥{{ currentOrder.total_amount }}</el-descriptions-item>
           <el-descriptions-item label="实付金额">¥{{ currentOrder.actual_payment }}</el-descriptions-item>
@@ -493,6 +506,7 @@ const SALES_ORDER_DRAFT_KEY = 'sales-order-create'
 const stores = ref([])
 const storesLoaded = ref(false)
 const storesLoading = ref(false)
+const operatorStaffList = ref([])
 const paymentMethods = ref([])
 const tableData = ref([])
 const total = ref(0)
@@ -556,6 +570,7 @@ const orderForm = reactive({
   customerSourceL1: '',
   customerSourceL2: '',
   invoiceStatus: '不开票',
+  operatorStaffId: '',
   depositId: '',
   items: [],
   nationalSubsidy: 0,
@@ -593,7 +608,8 @@ onMounted(async () => {
     loadStores(),
     loadPaymentMethods(),
     loadCustomerSources(),
-    loadSaleResourceCategories()
+    loadSaleResourceCategories(),
+    loadOperatorStaff()
   ])
   await openRouteOrderDetail()
 })
@@ -606,6 +622,15 @@ const loadSaleResourceCategories = async () => {
   } catch (error) {
     console.error('[Sales] 加载资源类别失败:', error)
     saleResourceCategories.value = []
+  }
+}
+
+const loadOperatorStaff = async () => {
+  try {
+    const res = await api.getAuxiliaryStaff()
+    operatorStaffList.value = res.code === 0 ? (res.data || []) : []
+  } catch (_) {
+    operatorStaffList.value = []
   }
 }
 
@@ -936,6 +961,7 @@ const resetForm = () => {
   orderForm.customerSourceL1 = ''
   orderForm.customerSourceL2 = ''
   orderForm.invoiceStatus = '不开票'
+  orderForm.operatorStaffId = ''
   orderForm.depositId = ''
   orderForm.items = []
   orderForm.nationalSubsidy = 0
@@ -1242,6 +1268,7 @@ const handleSubmit = async () => {
       customerPhone: orderForm.customerPhone,
       customerSource: orderForm.customerSource,
       invoiceStatus: orderForm.invoiceStatus,
+      operatorStaffId: orderForm.operatorStaffId || undefined,
       untaxedInvoiceConfirmed,
       items: orderForm.items.map(item => ({
         productId: item.productId,
@@ -1421,7 +1448,8 @@ const getDepositStatusText = (status) => {
   width: 100%;
   max-width: 100%;
   overflow-x: auto;
-  overflow-y: hidden;
+  max-height: calc(100vh - 300px);
+  overflow-y: auto;
   border: 1px solid var(--el-border-color-lighter);
 }
 .sales-order-table {
@@ -1444,6 +1472,9 @@ const getDepositStatusText = (status) => {
   text-overflow: ellipsis;
 }
 .sales-order-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   background: var(--el-fill-color-light);
   color: var(--el-text-color-secondary);
   font-weight: 600;

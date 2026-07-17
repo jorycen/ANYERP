@@ -1,7 +1,7 @@
 /**
  * 采购管理控制器
  */
-const { sequelize, PurchaseRequest, PurchaseRequestItem, PurchaseAdjustment, PurchaseAdjustmentItem, Supplier, SupplierPaymentAccount, Store, Product, Inbound, InboundItem, Payable, Expense, SupplierRebate, ResourceCategory, GoodsType } = require('../../models');
+const { sequelize, PurchaseRequest, PurchaseRequestItem, PurchaseAdjustment, PurchaseAdjustmentItem, Supplier, SupplierPaymentAccount, Store, Product, Inbound, InboundItem, Payable, Expense, SupplierRebate, ResourceCategory, GoodsType, Staff, StaffStorePermission } = require('../../models');
 const { Op } = require('sequelize');
 const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { sendExcel } = require('../../utils/excelExport');
@@ -206,7 +206,7 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
     ],
     order: buildPendingFirstOrder(sequelize, {
       statusColumn: 'PurchaseRequest.status',
-      pendingStatuses: ['pending'],
+      pendingStatuses: ['draft', 'pending'],
       dateColumns: ['PurchaseRequest.create_time'],
       idColumn: 'PurchaseRequest.request_id'
     })
@@ -223,10 +223,16 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
     
     // 汇总商品名称和数量用于前端展示
     if (result.items && result.items.length > 0) {
-      result.items_summary = result.items.map(item => 
-        `${item.product_name || item.product_id} x ${item.quantity}`
+      result.product_names_summary = result.items.map(item => item.product_name || item.product_id || '-').join('\n');
+      result.product_codes_summary = result.items.map(item => item.product_code || '-').join('\n');
+      result.manufacturer_codes_summary = result.items.map(item => item.manufacturer_code || '-').join('\n');
+      result.items_summary = result.items.map(item =>
+        `${item.product_name || item.product_id} [${item.product_code || '-'}] 厂商:${item.manufacturer_code || '-'} x ${item.quantity}`
       ).join('; ');
     } else {
+      result.product_names_summary = '';
+      result.product_codes_summary = '';
+      result.manufacturer_codes_summary = '';
       result.items_summary = '';
     }
     
@@ -234,6 +240,20 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
   });
 
   return { rows: formattedRows, count };
+}
+
+async function resolveOperator(ctx, storeId, staffId = '') {
+  const user = ctx.state.user || {};
+  const selectedStaffId = staffId || user.staffId || user.id || null;
+  if (!selectedStaffId) return { staffId: null, name: user.name || user.phone || '' };
+  const staff = await Staff.findByPk(selectedStaffId, { attributes: ['staff_id', 'name', 'store_id', 'status', 'is_deleted'] });
+  if (!staff || staff.status === 0 || staff.is_deleted) ctx.throw(400, '经手人不存在或已停用');
+  const allowedStores = user.accessibleStoreIds || [];
+  const sameStore = String(staff.store_id || '') === String(storeId || '');
+  const assigned = sameStore || (await StaffStorePermission.count({ where: { staff_id: staff.staff_id, store_id: storeId } })) > 0;
+  if (!allowedStores.includes('*') && !allowedStores.map(String).includes(String(storeId || ''))) ctx.throw(403, '无权设置该门店经手人');
+  if (!assigned && !allowedStores.includes('*')) ctx.throw(400, '经手人不属于该门店');
+  return { staffId: staff.staff_id, name: staff.name || user.name || '' };
 }
 
 async function getRequestList(ctx) {
@@ -252,14 +272,19 @@ async function exportRequestList(ctx) {
     付款方式: row.payment_method || '',
     发票类型: row.invoice_type || '',
     货型: row.product_type || '',
+    商品名称: row.product_names_summary || '',
+    商品编码: row.product_codes_summary || '',
+    厂商编码: row.manufacturer_codes_summary || '',
     商品摘要: row.items_summary || '',
+    采购经手人: row.operator_name || row.apply_user || '',
+    制单人: row.create_user || row.apply_user || '',
     申请金额: Number(row.total_amount || 0),
     状态: row.status || '',
     备注: row.remark || ''
   }));
   sendExcel(ctx, data, [
     '申请单号', '申请时间', '申请门店', '供应商', '付款方式', '发票类型',
-    '货型', '商品摘要', '申请金额', '状态', '备注'
+    '货型', '商品摘要', '采购经手人', '制单人', '申请金额', '状态', '备注'
   ], `采购申请_${new Date().toISOString().slice(0, 10)}.xlsx`, '采购申请');
 }
 
@@ -323,7 +348,9 @@ async function getRequestDetail(ctx) {
  */
 async function createRequest(ctx) {
   const user = ctx.state.user;
-  const { supplierId, remark, items, storeId, invoiceType, paymentMethod, goodsTypeId, productType, rebateDeduction } = ctx.request.body;
+  const { supplierId, remark, items, storeId, invoiceType, paymentMethod, goodsTypeId, productType, rebateDeduction, operatorStaffId, requestId: requestedRequestId } = ctx.request.body;
+  const existingDraft = requestedRequestId ? await PurchaseRequest.findByPk(requestedRequestId) : null;
+  if (requestedRequestId && (!existingDraft || existingDraft.status !== 'draft')) ctx.throw(400, '采购申请草稿不存在或已提交');
 
   if (!items || items.length === 0) {
     ctx.throw(400, '请添加商品明细');
@@ -371,8 +398,8 @@ async function createRequest(ctx) {
     }
   }
 
-  const requestNo = generateRequestNo();
-  const requestId = generateUUID();
+  const requestNo = existingDraft?.request_no || generateRequestNo();
+  const requestId = existingDraft?.request_id || generateUUID();
 
   const totalAmount = toMoney(items.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0));
   const rawItemDeductions = items.map(item => toMoney(item.rebateDeduction || 0));
@@ -384,24 +411,6 @@ async function createRequest(ctx) {
     ? Math.min(toMoney(itemRebateAllocations.reduce((sum, amount) => sum + amount, 0)), totalAmount)
     : Math.min(toMoney(rebateDeduction || 0), totalAmount);
   const actualTotal = totalAmount - deduction;
-
-  // 如果有返利抵扣，验证并记录
-  if (deduction > 0) {
-    const currentBalance = await _getRebateBalance(supplierId);
-    
-    if (deduction > currentBalance) {
-      ctx.throw(400, `返利余额不足，当前余额 ¥${currentBalance.toFixed(2)}`);
-    }
-    
-    await recordRebateDeduction(
-      supplierId,
-      '',
-      deduction,
-      requestNo,
-      `采购申请 ${requestNo} 返利抵扣`,
-      user.name || user.phone
-    );
-  }
 
   // 如果用户没有 storeId，尝试从门店分配中获取第一个，或者使用默认值
   const targetStoreId = storeId || user.storeId;
@@ -431,49 +440,73 @@ async function createRequest(ctx) {
     }
   }
 
+  assertStoreVisible(ctx, finalStoreId);
+  const operator = await resolveOperator(ctx, finalStoreId, operatorStaffId);
+  const productIds = [...new Set(items.map(item => item.productId || item.product_id).filter(Boolean))];
+  const products = productIds.length ? await Product.findAll({ where: { product_id: { [Op.in]: productIds } } }) : [];
+  const productMap = new Map(products.map(product => [String(product.product_id), product]));
   const now = new Date();
-  const createdRequest = await PurchaseRequest.create({
-    request_id: requestId,
-    request_no: requestNo,
-    store_id: finalStoreId,
-    supplier_id: supplierId,
-    goods_type_id: canonicalGoodsTypeId,
-    product_type: canonicalProductType,
-    invoice_type: invoiceType || '',
-    payment_method: normalizedPaymentMethod,
-    reason: remark || '',
-    total_amount: totalAmount,
-    rebate_deduction: deduction,
-    actual_total: actualTotal,
-    status: 'pending',
-    apply_user: user.name,
-    create_time: now,
-    update_time: now
-  });
+  let createdRequest;
+  await sequelize.transaction(async transaction => {
+    if (deduction > 0) {
+      const currentBalance = await _getRebateBalance(supplierId, transaction);
+      if (deduction > currentBalance) ctx.throw(400, `返利余额不足，当前余额 ¥${currentBalance.toFixed(2)}`);
+      await recordRebateDeduction(supplierId, '', deduction, requestNo, `采购申请 ${requestNo} 返利抵扣`, user.name || user.phone, transaction);
+    }
 
-  // 创建明细
-  for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
-    const item = items[itemIndex];
-    const productId = item.productId || '';
-    const quantity = item.quantity || 0;
-    const unitPrice = item.price || 0;
-    const subtotal = unitPrice * quantity;
-
-    await PurchaseRequestItem.create({
+    const requestValues = {
       request_id: requestId,
-      product_id: productId,
-      product_name: item.productName || '',
-      pn_code: item.pnCode || '',
-      quantity: quantity,
-      unit_price: unitPrice,
-      subtotal: subtotal,
-      rebate_deduction: itemRebateAllocations[itemIndex] || 0,
+      request_no: requestNo,
+      store_id: finalStoreId,
+      supplier_id: supplierId,
       goods_type_id: canonicalGoodsTypeId,
       product_type: canonicalProductType,
-      store_allocations: item.storeAllocations ? JSON.stringify(item.storeAllocations) : null,
-      selected_resource_types: JSON.stringify(normalizeSelectedResourceTypes(item.selectedResourceTypes || item.selected_resource_types))
-    });
-  }
+      invoice_type: invoiceType || '',
+      payment_method: normalizedPaymentMethod,
+      reason: remark || '',
+      total_amount: totalAmount,
+      rebate_deduction: deduction,
+      actual_total: actualTotal,
+      status: 'pending',
+      apply_user: user.name,
+      operator_staff_id: operator.staffId,
+      operator_name: operator.name,
+      create_staff_id: user.staffId || user.id || null,
+      create_user: user.name || user.phone || '',
+      create_time: now,
+      update_time: now
+    };
+    if (existingDraft) {
+      createdRequest = await existingDraft.update(requestValues, { transaction });
+      await PurchaseRequestItem.destroy({ where: { request_id: requestId }, transaction });
+    } else {
+      createdRequest = await PurchaseRequest.create(requestValues, { transaction });
+    }
+
+    for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+      const item = items[itemIndex];
+      const productId = item.productId || item.product_id || '';
+      const product = productMap.get(String(productId));
+      const quantity = item.quantity || 0;
+      const unitPrice = item.price || 0;
+      await PurchaseRequestItem.create({
+        request_id: requestId,
+        product_id: productId,
+        product_name: item.productName || item.product_name || product?.name || '',
+        product_code: item.productCode || item.product_code || product?.product_code || '',
+        manufacturer_code: item.manufacturerCode || item.manufacturer_code || product?.manufacturer_code || '',
+        pn_code: item.pnCode || '',
+        quantity,
+        unit_price: unitPrice,
+        subtotal: unitPrice * quantity,
+        rebate_deduction: itemRebateAllocations[itemIndex] || 0,
+        goods_type_id: canonicalGoodsTypeId,
+        product_type: canonicalProductType,
+        store_allocations: item.storeAllocations ? JSON.stringify(item.storeAllocations) : null,
+        selected_resource_types: JSON.stringify(normalizeSelectedResourceTypes(item.selectedResourceTypes || item.selected_resource_types))
+      }, { transaction });
+    }
+  });
 
   if (normalizedPaymentMethod === 'PERSONAL_ADVANCE') {
     createdRequest.Supplier = await Supplier.findByPk(supplierId);
@@ -481,6 +514,87 @@ async function createRequest(ctx) {
   }
 
   ctx.body = { code: 0, message: '采购申请提交成功', requestId, requestNo };
+}
+
+async function saveRequestDraft(ctx) {
+  const user = ctx.state.user || {};
+  const body = ctx.request.body || {};
+  const requestId = body.requestId || body.request_id || generateUUID();
+  const existing = body.requestId
+    ? await PurchaseRequest.findByPk(requestId)
+    : null;
+  if (existing) {
+    assertStoreVisible(ctx, existing.store_id);
+    if (existing.status !== 'draft') ctx.throw(400, '只有草稿采购申请可以修改');
+  }
+  const finalStoreId = body.storeId || existing?.store_id || user.storeId || user.accessibleStoreIds?.find(id => id !== '*') || 'DEFAULT_STORE';
+  assertStoreVisible(ctx, finalStoreId);
+  const operator = await resolveOperator(ctx, finalStoreId, body.operatorStaffId);
+  const items = Array.isArray(body.items) ? body.items : [];
+  const productIds = [...new Set(items.map(item => item.productId || item.product_id).filter(Boolean))];
+  const products = productIds.length ? await Product.findAll({ where: { product_id: { [Op.in]: productIds } } }) : [];
+  const productMap = new Map(products.map(product => [String(product.product_id), product]));
+  const totalAmount = toMoney(items.reduce((sum, item) => sum + Number(item.price || item.unitPrice || 0) * Number(item.quantity || 0), 0));
+  const now = new Date();
+  let requestNo = existing?.request_no || '';
+  await sequelize.transaction(async transaction => {
+    if (existing) {
+      await existing.update({
+        supplier_id: body.supplierId || null,
+        invoice_type: body.invoiceType || '',
+        payment_method: body.paymentMethod || 'COMPANY_CREDIT',
+        product_type: body.productType || '',
+        reason: body.remark || '',
+        total_amount: totalAmount,
+        actual_total: totalAmount,
+        operator_staff_id: operator.staffId,
+        operator_name: operator.name,
+        update_time: now
+      }, { transaction });
+      await PurchaseRequestItem.destroy({ where: { request_id: requestId }, transaction });
+    } else {
+      requestNo = generateRequestNo();
+      await PurchaseRequest.create({
+        request_id: requestId,
+        request_no: requestNo,
+        store_id: finalStoreId,
+        supplier_id: body.supplierId || null,
+        invoice_type: body.invoiceType || '',
+        payment_method: body.paymentMethod || 'COMPANY_CREDIT',
+        product_type: body.productType || '',
+        reason: body.remark || '',
+        total_amount: totalAmount,
+        actual_total: totalAmount,
+        status: 'draft',
+        apply_user: user.name || user.phone || '',
+        operator_staff_id: operator.staffId,
+        operator_name: operator.name,
+        create_staff_id: user.staffId || user.id || null,
+        create_user: user.name || user.phone || '',
+        create_time: now,
+        update_time: now
+      }, { transaction });
+    }
+    for (const item of items) {
+      const productId = item.productId || item.product_id || '';
+      const product = productMap.get(String(productId));
+      if (!productId) continue;
+      await PurchaseRequestItem.create({
+        request_id: requestId,
+        product_id: productId,
+        product_name: item.productName || item.product_name || product?.name || '',
+        product_code: item.productCode || item.product_code || product?.product_code || '',
+        manufacturer_code: item.manufacturerCode || item.manufacturer_code || product?.manufacturer_code || '',
+        pn_code: item.pnCode || '',
+        quantity: Number(item.quantity || 0),
+        unit_price: Number(item.price || item.unitPrice || 0),
+        subtotal: toMoney(Number(item.price || item.unitPrice || 0) * Number(item.quantity || 0)),
+        store_allocations: item.storeAllocations ? JSON.stringify(item.storeAllocations) : null,
+        selected_resource_types: JSON.stringify(normalizeSelectedResourceTypes(item.selectedResourceTypes || item.selected_resource_types))
+      }, { transaction });
+    }
+  });
+  ctx.body = { code: 0, message: '采购申请草稿已保存', requestId, requestNo };
 }
 
 async function ensurePayableForApprovedRequest(request, user, transaction = null) {
@@ -1235,6 +1349,7 @@ module.exports = {
   exportRequestList,
   getRequestDetail,
   createRequest,
+  saveRequestDraft,
   approveRequest,
   revokeRequest,
   getAdjustmentPreview,

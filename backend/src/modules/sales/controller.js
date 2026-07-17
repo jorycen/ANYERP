@@ -159,8 +159,6 @@ async function list(ctx) {
 
   const where = { is_deleted: 0 };
   const accessibleStoreIds = Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds.filter(Boolean) : [];
-  const roles = getUserRoles(user);
-  const canQueryAllStoreOrders = roles.some(role => ['boss', 'admin', 'manager'].includes(role));
 
   const dateRange = buildChinaDateRange(startDate, endDate);
   if (dateRange) {
@@ -187,12 +185,6 @@ async function list(ctx) {
       return;
     }
     where.store_id = accessibleStoreIds;
-  }
-
-  // 店员只能查询自己创建的订单；店长及以上角色才可以查询门店内全部订单。
-  // 这里必须在服务端强制执行，不能依赖小程序传入的 userRole/searchAll 参数。
-  if (!canQueryAllStoreOrders) {
-    where.create_user = user.name || '__NO_MATCHING_STAFF__';
   }
 
   const itemWhere = {};
@@ -292,6 +284,8 @@ function normalizeAuxiliarySalesList(value) {
 
 function normalizeOrderExtendedFields(source = {}) {
   const fieldAliases = {
+    operator_staff_id: ['operator_staff_id', 'operatorStaffId'],
+    operator_name: ['operator_name', 'operatorName'],
     customer_source_detail: ['customer_source_detail', 'customerSourceDetail'],
     auxiliary_sales_list: ['auxiliary_sales_list', 'auxiliarySalesList'],
     invoice_info: ['invoice_info', 'invoiceInfo'],
@@ -319,6 +313,31 @@ function normalizeOrderExtendedFields(source = {}) {
     }
   });
   return result;
+}
+
+async function resolveOperatorSnapshot(user, storeId, staffId) {
+  const selectedStaffId = staffId || user.staffId || user.id || null;
+  if (!selectedStaffId) return { staffId: null, name: user.name || user.phone || '' };
+  const staff = await Staff.findByPk(selectedStaffId, { attributes: ['staff_id', 'name', 'store_id', 'status', 'is_deleted'] });
+  if (!staff || staff.status === 0 || staff.is_deleted) {
+    const error = new Error('经手人不存在或已停用');
+    error.status = 400;
+    throw error;
+  }
+  const allowedStores = user.accessibleStoreIds || [];
+  const sameStore = String(staff.store_id || '') === String(storeId || '');
+  const assigned = sameStore || (await StaffStorePermission.count({ where: { staff_id: staff.staff_id, store_id: storeId } })) > 0;
+  if (!allowedStores.includes('*') && !allowedStores.map(String).includes(String(storeId || ''))) {
+    const error = new Error('无权设置该门店经手人');
+    error.status = 403;
+    throw error;
+  }
+  if (!assigned && !allowedStores.includes('*')) {
+    const error = new Error('经手人不属于该门店');
+    error.status = 400;
+    throw error;
+  }
+  return { staffId: staff.staff_id, name: staff.name || user.name || '' };
 }
 
 function toBoolean(value) {
@@ -505,6 +524,7 @@ async function create(ctx) {
   const orderNo = generateOrderNo();
   const orderId = generateUUID();
   const actualStoreId = storeId || user.storeId || '';
+  const operator = await resolveOperatorSnapshot(user, actualStoreId, requestBody.operatorStaffId || requestBody.operator_staff_id);
 
   const normalizedItems = items.map(item => applyOrderItemDefaults(normalizeOrderItemInput(item)));
   const totalAmount = normalizedItems.reduce((sum, item) => sum + Number(item.subtotal || 0), 0);
@@ -596,6 +616,8 @@ async function create(ctx) {
     customer_phone: customerPhone,
     customer_source: customerSource,
     ...extendedOrderFields,
+    operator_staff_id: operator.staffId,
+    operator_name: operator.name,
     total_amount: totalAmount,
     discount_amount: discountAmount,
     national_subsidy: nationalSubsidy,
