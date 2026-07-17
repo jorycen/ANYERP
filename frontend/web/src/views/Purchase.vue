@@ -126,8 +126,8 @@
     </el-card>
 
     <!-- 新建采购申请对话框 -->
-    <el-dialog v-model="requestDialogVisible" :title="editingRequestId ? '编辑采购申请草稿' : '新建采购申请'" width="700px" @close="handleDialogClose">
-      <el-form :model="requestForm" label-width="100px">
+    <el-dialog v-model="requestDialogVisible" :title="editingRequestId ? '编辑采购申请草稿' : '新建采购申请'" width="min(1100px, 94vw)" class="purchase-request-dialog" @close="handleDialogClose">
+      <el-form :model="requestForm" label-width="100px" class="purchase-request-form">
         <el-form-item label="供应商" required>
           <el-select
             v-model="requestForm.supplierId"
@@ -174,83 +174,98 @@
           </div>
         </el-form-item>
 
-        <el-form-item label="商品明细">
-          <div class="items-table" style="width: 100%; max-width: 600px; overflow: hidden;">
-            <div class="item-field-hint">请在下方分别填写商品名称、采购单价和数量</div>
-            <div class="item-field-header">
-              <span>商品名称</span>
-              <span>采购单价</span>
-              <span>数量</span>
-              <span>小计</span>
-              <span>操作</span>
-            </div>
-            <div v-for="(item, idx) in requestForm.items" :key="idx" class="item-row" style="border: 1px solid #ebeef5; padding: 10px; margin-bottom: 10px; border-radius: 4px; width: 100%; box-sizing: border-box; max-width: 600px;">
-              <div class="item-top" style="display: flex; gap: 8px; align-items: center; margin-bottom: 10px; width: 100%; box-sizing: border-box;">
-                <div style="flex: 1; min-width: 140px; max-width: 300px;">
-                  <el-select v-model="item.productId" placeholder="搜索商品" filterable remote :remote-method="searchProducts" @change="onProductChange(idx)" style="width: 100%;" size="small">
+        <el-form-item label="商品明细" class="items-form-item">
+          <div class="purchase-items-panel">
+            <el-table :data="requestForm.items" border class="request-items-table">
+              <el-table-column label="商品名称" min-width="230">
+                <template #default="{ row, $index }">
+                  <el-select
+                    v-model="row.productId"
+                    placeholder="搜索商品"
+                    filterable
+                    remote
+                    :remote-method="searchProducts"
+                    @change="onProductChange($index)"
+                    style="width: 100%;"
+                    size="small"
+                  >
                     <el-option v-for="p in products" :key="p.product_id" :label="`${p.name} (${p.product_code})`" :value="p.product_id">
-                      <div style="display: flex; flex-direction: column; font-size: 12px;">
+                      <div class="product-option">
                         <span>{{ p.name }}</span>
-                        <span style="color: #909399; font-size: 11px;">编码: {{ p.product_code }} | 厂商: {{ p.manufacturer_code || '-' }}</span>
+                        <span class="product-option-meta">编码：{{ p.product_code }} | 厂商：{{ p.manufacturer_code || '-' }}</span>
                       </div>
                     </el-option>
                   </el-select>
-                </div>
-                <div style="width: 110px;">
-                  <el-input v-model="item.price" type="number" placeholder="采购单价" size="small" style="width: 100%;" class="no-spinner" />
-                </div>
-                <div style="width: 75px;">
-                  <el-input v-model="item.quantity" size="small" placeholder="数量" style="width: 100%;" class="no-spinner" />
-                </div>
-                <div style="width: 70px; font-size: 13px; flex-shrink: 0;">
-                  <span style="color: #f56c6c; font-weight: 500;">¥{{ (item.price * item.quantity || 0).toFixed(2) }}</span>
-                </div>
-                <div style="width: 60px; flex-shrink: 0;">
-                  <el-button link type="danger" size="small" @click="removeRequestItem(idx)">删除</el-button>
-                </div>
+                </template>
+              </el-table-column>
+              <el-table-column label="商品编码" width="140">
+                <template #default="{ row }">{{ row.productCode || getProductCode(row) || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="厂商编码" width="150">
+                <template #default="{ row }">{{ row.manufacturerCode || getManufacturerCode(row) || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="单价（¥）" width="135">
+                <template #default="{ row }">
+                  <el-input v-model="row.price" type="number" min="0" placeholder="0.00" size="small" class="no-spinner" />
+                </template>
+              </el-table-column>
+              <el-table-column label="数量" width="100">
+                <template #default="{ row }">
+                  <el-input v-model="row.quantity" type="number" min="1" placeholder="1" size="small" class="no-spinner" />
+                </template>
+              </el-table-column>
+              <el-table-column label="总价（¥）" width="125" align="right">
+                <template #default="{ row }"><span class="item-total">¥{{ itemSubtotal(row).toFixed(2) }}</span></template>
+              </el-table-column>
+              <el-table-column label="操作" width="80" align="center">
+                <template #default="{ $index }">
+                  <el-button link type="danger" size="small" @click="removeRequestItem($index)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+
+            <div class="purchase-items-footer">
+              <el-button link type="primary" class="add-product-button" @click="addRequestItem">＋ 添加商品</el-button>
+              <div class="purchase-items-total">商品合计：<span>¥{{ totalAmount.toFixed(2) }}</span></div>
+            </div>
+
+            <div v-for="(item, idx) in requestForm.items" :key="`allocation-${idx}`" class="purchase-allocation-row">
+              <span class="purchase-subsection-label">门店分配<span v-if="requestForm.items.length > 1">（{{ item.productName || `商品${idx + 1}` }}）</span>：</span>
+              <div class="purchase-allocation-content">
+                <template v-if="item.storeAllocations && item.storeAllocations.length > 0">
+                  <span v-for="(alloc, allocIdx) in item.storeAllocations" :key="allocIdx" class="allocation-tag">
+                    {{ alloc.storeName || alloc.storeId }} × {{ alloc.quantity }}
+                  </span>
+                </template>
+                <span v-else class="allocation-empty">未分配</span>
               </div>
-              <div class="item-bottom" style="display: flex; gap: 8px; align-items: center; padding: 6px 10px; background: #f5f7fa; border-radius: 4px; width: 100%; box-sizing: border-box; overflow: hidden;">
-                <span style="font-size: 12px; color: #606266; min-width: 60px; white-space: nowrap; flex-shrink: 0;">门店分配:</span>
-                <div style="flex: 1; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; overflow: hidden;">
-                  <div v-if="item.storeAllocations && item.storeAllocations.length > 0" style="display: flex; flex-wrap: wrap; gap: 6px;">
-                    <div v-for="(alloc, allocIdx) in item.storeAllocations" :key="allocIdx" style="background: #fff; padding: 3px 6px; border-radius: 4px; border: 1px solid #e4e7ed; font-size: 11px; white-space: nowrap; max-width: 180px; text-overflow: ellipsis; overflow: hidden;">
-                      <span>{{ alloc.storeName || alloc.storeId }}</span>
-                      <span style="color: #909399; margin-left: 3px;">× {{ alloc.quantity }}</span>
-                    </div>
-                  </div>
-                  <span v-else style="color: #f56c6c; font-size: 12px;">未分配</span>
-                </div>
-                <el-button type="primary" size="small" @click="handleAllocateStore(item, idx)" style="flex-shrink: 0;">分配</el-button>
-              </div>
-              <div v-if="requestForm.supplierId && rebateBalance > 0" class="item-rebate-row">
-                <span>逐单返利</span>
-                <el-input
-                  v-model="item.rebateDeduction"
-                  type="number"
-                  placeholder="0"
-                  size="small"
-                  class="no-spinner"
-                  @change="onItemRebateChange"
-                />
+              <el-button type="primary" size="small" @click="handleAllocateStore(item, idx)">分配</el-button>
+            </div>
+
+            <div v-for="(item, idx) in requestForm.items" :key="`resource-${idx}`" class="purchase-resource-row">
+              <span class="purchase-subsection-label">资源权益<span v-if="requestForm.items.length > 1">（{{ item.productName || `商品${idx + 1}` }}）</span></span>
+              <el-select
+                v-model="item.selectedResourceTypes"
+                multiple
+                collapse-tags
+                collapse-tags-tooltip
+                clearable
+                size="small"
+                placeholder="选择本批货权益"
+                class="resource-select"
+              >
+                <el-option v-for="option in resourceOptions" :key="option.value" :label="option.label" :value="option.value" />
+              </el-select>
+            </div>
+
+            <div v-if="requestForm.supplierId && rebateBalance > 0" class="purchase-rebate-section">
+              <div class="purchase-rebate-header">供应商返利余额：¥{{ rebateBalance.toFixed(2) }}</div>
+              <div v-for="(item, idx) in requestForm.items" :key="`rebate-${idx}`" class="item-rebate-row">
+                <span>{{ item.productName || `商品${idx + 1}` }}返利抵扣</span>
+                <el-input v-model="item.rebateDeduction" type="number" placeholder="0" size="small" class="no-spinner" @change="onItemRebateChange" />
                 <span>抵扣后：¥{{ Math.max(0, itemSubtotal(item) - toNumber(item.rebateDeduction)).toFixed(2) }}</span>
               </div>
-              <div class="item-resource-row">
-                <span>资源权益</span>
-                <el-select
-                  v-model="item.selectedResourceTypes"
-                  multiple
-                  collapse-tags
-                  collapse-tags-tooltip
-                  clearable
-                  size="small"
-                  placeholder="选择本批货权益"
-                  style="flex: 1; min-width: 0;"
-                >
-                  <el-option v-for="option in resourceOptions" :key="option.value" :label="option.label" :value="option.value" />
-                </el-select>
-              </div>
             </div>
-            <el-button type="primary" size="small" @click="addRequestItem">添加商品</el-button>
           </div>
         </el-form-item>
 
@@ -977,6 +992,8 @@ const handleEditDraft = async (row) => {
     requestForm.items = (request.items || []).map(item => ({
       productId: item.product_id || '',
       productName: item.product_name || '',
+      productCode: item.product_code || '',
+      manufacturerCode: item.manufacturer_code || '',
       pnCode: item.pn_code || '',
       price: item.unit_price || 0,
       quantity: item.quantity || 1,
@@ -1415,9 +1432,20 @@ const onProductChange = (index) => {
   const product = products.value.find(p => p.product_id === requestForm.items[index].productId)
   if (product) {
     requestForm.items[index].productName = product.name
+    requestForm.items[index].productCode = product.product_code || ''
+    requestForm.items[index].manufacturerCode = product.manufacturer_code || ''
     requestForm.items[index].price = product.min_sale_price || 0
   }
 }
+
+const getProductByItem = (item) => {
+  if (!item?.productId) return null
+  return products.value.find(product => product.product_id === item.productId) || null
+}
+
+const getProductCode = (item) => getProductByItem(item)?.product_code || ''
+
+const getManufacturerCode = (item) => getProductByItem(item)?.manufacturer_code || ''
 
 const onItemAmountChange = () => {
   onItemRebateChange()
@@ -1425,7 +1453,7 @@ const onItemAmountChange = () => {
 
 const addRequestItem = () => {
   requestForm.items.push({
-    productId: '', productName: '', price: 0, quantity: 1, rebateDeduction: 0, storeAllocations: [],
+    productId: '', productName: '', productCode: '', manufacturerCode: '', price: 0, quantity: 1, rebateDeduction: 0, storeAllocations: [],
     selectedResourceTypes: goodsTypeResourceCodes(requestForm.productType)
   })
   if (toNumber(requestForm.rebateDeduction) > 0) {
@@ -1832,6 +1860,163 @@ const handleLocationAllocateDialogClose = () => {
   gap: 12px;
   margin-bottom: 16px;
   flex-wrap: wrap;
+}
+
+.purchase-request-dialog :deep(.el-dialog__body) {
+  padding: 18px 24px 8px;
+}
+
+.purchase-request-form :deep(.el-form-item__label) {
+  color: #606266;
+  font-size: 16px;
+}
+
+.purchase-request-form :deep(.el-form-item) {
+  margin-bottom: 18px;
+}
+
+.purchase-request-form :deep(.el-input__wrapper),
+.purchase-request-form :deep(.el-select__wrapper),
+.purchase-request-form :deep(.el-textarea__inner) {
+  min-height: 42px;
+  border-radius: 6px;
+}
+
+.purchase-request-form :deep(.el-textarea__inner) {
+  min-height: 82px;
+}
+
+.items-form-item :deep(.el-form-item__content) {
+  display: block;
+}
+
+.purchase-items-panel {
+  width: 100%;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+.request-items-table {
+  width: 100%;
+}
+
+.request-items-table :deep(.el-table__cell) {
+  padding: 12px 8px;
+}
+
+.request-items-table :deep(.el-table__header-wrapper th) {
+  color: #606266;
+  background: #fafafa;
+  font-size: 15px;
+}
+
+.product-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+}
+
+.product-option-meta {
+  color: #909399;
+  font-size: 12px;
+}
+
+.item-total {
+  color: #f56c6c;
+  font-weight: 600;
+}
+
+.purchase-items-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 54px;
+  border: 1px solid #ebeef5;
+  border-top: 0;
+  padding: 0 16px;
+}
+
+.add-product-button {
+  font-size: 16px;
+}
+
+.purchase-items-total {
+  color: #606266;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.purchase-items-total span {
+  color: #f56c6c;
+  margin-left: 12px;
+}
+
+.purchase-allocation-row,
+.purchase-resource-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  margin-top: 14px;
+  padding: 0 16px;
+  border-radius: 6px;
+  background: #f5f7fa;
+  box-sizing: border-box;
+}
+
+.purchase-resource-row {
+  background: #eef5ff;
+}
+
+.purchase-subsection-label {
+  flex: 0 0 auto;
+  color: #606266;
+  font-size: 16px;
+  white-space: nowrap;
+}
+
+.purchase-allocation-content {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.allocation-tag {
+  padding: 4px 8px;
+  color: #606266;
+  background: #fff;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.allocation-empty {
+  color: #f56c6c;
+  font-size: 15px;
+}
+
+.resource-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.purchase-rebate-section {
+  margin-top: 14px;
+  padding: 10px 16px;
+  background: #fff7e8;
+  border-radius: 6px;
+}
+
+.purchase-rebate-header {
+  margin-bottom: 8px;
+  color: #909399;
+  font-size: 13px;
 }
 
 .item-field-hint {
