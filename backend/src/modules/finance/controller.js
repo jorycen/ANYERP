@@ -8,6 +8,7 @@ const {
 } = require('../../models');
 const { Op, Sequelize, fn, col } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
+const { sendExcel } = require('../../utils/excelExport');
 const { getUserRoles } = require('../../middleware/permission');
 const { ensureExpensePayable } = require('./expenseService');
 
@@ -26,6 +27,7 @@ async function getAccountBalance(accountId, transaction = null) {
 async function getStatementDetails(ctx, businessWhere) {
   const { storeId, startDate, endDate, settled, paymentMethod, settlementAccountId, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
+  const exportMode = Boolean(ctx.state.exportMode);
 
   const where = {};
   if (businessWhere) where[Op.or] = businessWhere;
@@ -71,7 +73,7 @@ async function getStatementDetails(ctx, businessWhere) {
   }
   where.statement_id = statementIds;
 
-  const { count, rows } = await DailyStatementDetail.findAndCountAll({
+  const detailQuery = {
     where,
     order: [
       [Sequelize.literal('CASE WHEN `DailyStatementDetail`.`settled` = 0 THEN 0 ELSE 1 END'), 'ASC'],
@@ -86,9 +88,12 @@ async function getStatementDetails(ctx, businessWhere) {
         )
       `), 'DESC'],
       ['detail_id', 'DESC']
-    ],
-    ...paginate({}, { page, pageSize })
-  });
+    ]
+  };
+  const result = exportMode
+    ? { count: 0, rows: await DailyStatementDetail.findAll(detailQuery) }
+    : await DailyStatementDetail.findAndCountAll({ ...detailQuery, ...paginate({}, { page, pageSize }) });
+  const { count, rows } = result;
 
   const amountResult = await DailyStatementDetail.findOne({
     where,
@@ -538,12 +543,63 @@ async function createExpense(ctx) {
   };
 }
 
+async function exportDailyDetails(ctx) {
+  ctx.state.exportMode = true;
+  await getDailyDetails(ctx);
+  const rows = ctx.body?.list || [];
+  const data = rows.map(row => ({
+    日期: row.statement_date || '',
+    业务单号: row.order_no || '',
+    业务类型: row.business_type || '',
+    客户: row.customer_name || '',
+    收款方式: row.payment_method || '',
+    收款金额: Number(row.amount || 0),
+    已下账金额: Number(row.settled || 0),
+    结算账号: row.settlementAccount?.account_name || '',
+    门店: row.store_name || '',
+    状态: Number(row.settled || 0) > 0 ? '已下账' : '未下账',
+    下账时间: row.settled_at || ''
+  }));
+  sendExcel(ctx, data, [
+    '日期', '业务单号', '业务类型', '客户', '收款方式', '收款金额',
+    '已下账金额', '结算账号', '门店', '状态', '下账时间'
+  ], `日结单_${new Date().toISOString().slice(0, 10)}.xlsx`, '日结单');
+}
+
+async function exportNationalSubsidyReceivables(ctx) {
+  ctx.state.exportMode = true;
+  await getNationalSubsidyReceivables(ctx);
+  const rows = ctx.body?.list || [];
+  const data = rows.map(row => ({
+    应收日期: row.statement_date || '',
+    订单号: row.order_no || '',
+    国补客户: row.customer_name || '',
+    国补类型: row.payment_method || '',
+    应收金额: Number(row.amount || 0),
+    累计核销: Number(row.settled || 0),
+    剩余应收: Number(row.remaining_amount || 0),
+    应收账户: row.settlementAccount?.account_name || '',
+    门店: row.store_name || '',
+    状态: row.receipt_status === 'ADJUSTED'
+      ? '差额结清'
+      : Number(row.remaining_amount || 0) <= 0
+        ? '已到账'
+        : Number(row.settled || 0) > 0 ? '部分到账' : '待回款',
+    结清时间: row.settled_at || ''
+  }));
+  sendExcel(ctx, data, [
+    '应收日期', '订单号', '国补客户', '国补类型', '应收金额', '累计核销',
+    '剩余应收', '应收账户', '门店', '状态', '结清时间'
+  ], `国补应收单_${new Date().toISOString().slice(0, 10)}.xlsx`, '国补应收单');
+}
+
 /**
  * 支出列表
  */
 async function getExpenseList(ctx) {
   const { storeId, expenseType, status, scope, startDate, endDate, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
+  const exportMode = Boolean(ctx.state.exportMode);
 
   const where = { is_deleted: 0 };
   const whereStore = {};
@@ -570,7 +626,7 @@ async function getExpenseList(ctx) {
     };
   }
 
-  const { count, rows } = await Expense.findAndCountAll({
+  const expenseQuery = {
     where,
     include: [
       { model: Store },
@@ -581,11 +637,42 @@ async function getExpenseList(ctx) {
       pendingStatuses: ['pending', 'processing'],
       dateColumns: ['Expense.create_time'],
       idColumn: 'Expense.expense_id'
-    }),
-    ...paginate({}, { page, pageSize })
-  });
+    })
+  };
+  const result = exportMode
+    ? { count: 0, rows: await Expense.findAll(expenseQuery) }
+    : await Expense.findAndCountAll({ ...expenseQuery, ...paginate({}, { page, pageSize }) });
+  const { count, rows } = result;
 
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+async function exportExpenseList(ctx) {
+  ctx.state.exportMode = true;
+  await getExpenseList(ctx);
+  const rows = ctx.body?.list || [];
+  const data = rows.map(row => {
+    const item = row.toJSON ? row.toJSON() : row;
+    return {
+      费用单号: item.expense_no || '',
+      时间: item.create_time || '',
+      费用日期: item.expense_date || '',
+      费用类型: item.expense_type || '',
+      费用发生方: item.expense_party || '',
+      金额: Number(item.amount || 0),
+      已结算金额: Number(item.settled_amount || 0),
+      门店: item.Store?.name || item.store_name || '',
+      制单人: item.create_user || item.applicant_name || '',
+      发起人: item.submit_user || '',
+      状态: item.status || '',
+      付款方式: item.payment_method || '',
+      备注: item.remark || ''
+    };
+  });
+  sendExcel(ctx, data, [
+    '费用单号', '时间', '费用日期', '费用类型', '费用发生方', '金额', '已结算金额',
+    '门店', '制单人', '发起人', '状态', '付款方式', '备注'
+  ], `费用管理_${new Date().toISOString().slice(0, 10)}.xlsx`, '费用管理');
 }
 
 async function reviewExpense(ctx) {
@@ -1167,6 +1254,8 @@ async function getPayableList(ctx) {
 module.exports = {
   getDailyDetails,
   getNationalSubsidyReceivables,
+  exportDailyDetails,
+  exportNationalSubsidyReceivables,
   getDailyStatement,
   getDailyStatementDetail,
   batchSettle,
@@ -1174,6 +1263,7 @@ module.exports = {
   getSettlementSummary,
   createExpense,
   getExpenseList,
+  exportExpenseList,
   reviewExpense,
   submitExpense,
   payExpense,

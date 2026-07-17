@@ -117,6 +117,35 @@ attachResponseInterceptor(
   }
 )
 
+function downloadExcelResponse(response, fallbackFileName) {
+  const url = window.URL.createObjectURL(new Blob([response.data], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  }))
+  const link = document.createElement('a')
+  link.href = url
+  let fileName = fallbackFileName
+  const contentDisposition = response.headers['content-disposition']
+  if (contentDisposition) {
+    const encodedMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)
+    const fileNameMatch = contentDisposition.match(/filename="?([^";]+)"?/i)
+    if (encodedMatch && encodedMatch[1]) {
+      fileName = decodeURIComponent(encodedMatch[1])
+    } else if (fileNameMatch && fileNameMatch[1]) {
+      fileName = fileNameMatch[1].replace(/["']/g, '')
+    }
+  }
+  link.setAttribute('download', fileName)
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  window.URL.revokeObjectURL(url)
+}
+
+function exportExcel(path, params, fallbackFileName) {
+  return exportApi.get(path, { params, responseType: 'blob' })
+    .then(response => downloadExcelResponse(response, fallbackFileName))
+}
+
 export default {
   // Auth
   login: (data) => api.post('/auth/login', data),
@@ -204,6 +233,7 @@ export default {
 
   // Purchase
   getPurchaseRequestList: (params) => api.get('/purchase/request-list', { params }),
+  exportPurchaseRequests: (params) => exportExcel('/purchase/request-list/export', params, `采购申请_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getPurchaseRequestDetail: (id) => api.get(`/purchase/request-detail/${id}`),
   createPurchaseRequest: (data) => api.post('/purchase/create-request', data),
   approvePurchaseRequest: (id, data) => api.post(`/purchase/approve-request/${id}`, data),
@@ -219,7 +249,9 @@ export default {
 
   // Finance
   getDailyDetails: (params) => api.get('/finance/daily-details', { params }),
+  exportDailyDetails: (params) => exportExcel('/finance/daily-details/export', params, `日结单_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getNationalSubsidyReceivables: (params) => api.get('/finance/national-subsidy-receivables', { params }),
+  exportNationalSubsidyReceivables: (params) => exportExcel('/finance/national-subsidy-receivables/export', params, `国补应收单_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getSubsidyAccountRoutes: () => api.get('/finance/national-subsidy-account-routes'),
   saveSubsidyAccountRoute: (data) => api.put('/finance/national-subsidy-account-routes', data),
   getSubsidyReceipts: (params) => api.get('/finance/national-subsidy-receipts', { params }),
@@ -238,15 +270,18 @@ export default {
   settleNationalSubsidyReceivables: (data) => api.post('/finance/national-subsidy-receivables/settle', data),
   createExpense: (data) => api.post('/finance/expense', data),
   getExpenseList: (params) => api.get('/finance/expense-list', { params }),
+  exportExpenseList: (params) => exportExcel('/finance/expense-list/export', params, `费用管理_${new Date().toISOString().slice(0, 10)}.xlsx`),
   reviewExpense: (id, data) => api.post(`/finance/expense/${id}/review`, data),
   submitExpense: (id) => api.put(`/finance/expense/submit/${id}`),
   payExpense: (id, data) => api.put(`/finance/expense/pay/${id}`, data),
   getPayableList: (params) => api.get('/finance/payable-list', { params }),
+  exportPayableList: (params) => exportExcel('/finance/payable-list/export', params, `应付管理_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getUnpaidBySupplier: (params) => api.get('/finance/unpaid-by-supplier', { params }),
   getPayableSettlementItems: (params) => api.get('/finance/payable-settlement-items', { params }),
   createSettlement: (data) => api.post('/finance/create-settlement', data),
   createExpenseSettlement: (data) => api.post('/finance/create-expense-settlement', data),
   getSettlementList: (params) => api.get('/finance/settlement-list', { params }),
+  exportSettlementList: (params) => exportExcel('/finance/settlement-list/export', params, `应付结算单_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getSettlementDetail: (id) => api.get(`/finance/settlement/${id}`),
   submitSettlement: (data) => api.post('/finance/settlement/submit', data),
   confirmSettlement: (data) => api.post('/finance/settlement/confirm', data),

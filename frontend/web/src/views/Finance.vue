@@ -28,6 +28,7 @@
               <el-option v-for="acc in settlementAccounts" :key="acc.account_id" :label="acc.account_name" :value="acc.account_id" />
             </el-select>
             <el-button type="primary" @click="loadDailyData">搜索</el-button>
+            <el-button type="success" :loading="exportingList === 'daily'" @click="handleExportDaily">导出</el-button>
             <el-button type="success" @click="openBatchSettleDialog" :disabled="selectedDetailIds.length === 0">
               批量下账 ({{ selectedDetailIds.length }})
             </el-button>
@@ -111,6 +112,7 @@
               <el-option label="已发生到账" value="1" />
             </el-select>
             <el-button type="primary" @click="loadSubsidyReceivables">搜索</el-button>
+            <el-button type="success" :loading="exportingList === 'subsidy'" @click="handleExportSubsidy">导出</el-button>
             <el-button
               type="success"
               :disabled="selectedSubsidyIds.length === 0"
@@ -226,6 +228,7 @@
           <div class="filter-bar">
             <span style="font-weight: bold; line-height: 32px;">费用清单</span>
             <el-button type="primary" @click="handleAddExpense">添加费用</el-button>
+            <el-button type="success" :loading="exportingList === 'expense'" @click="handleExportExpense">导出</el-button>
           </div>
 
           <el-table :data="expenseData" stripe border>
@@ -270,6 +273,7 @@
           <div class="settlement-section">
             <div class="filter-bar">
               <span style="font-weight: bold; line-height: 32px;">报销结算单</span>
+              <el-button type="success" :loading="exportingList === 'expense-settlement'" @click="handleExportExpenseSettlement">导出</el-button>
               <el-select v-model="expenseSettleFilter" placeholder="状态筛选" clearable style="width: 130px" @change="loadExpenseSettleData">
                 <el-option label="全部" value="" />
                 <el-option label="支付中" value="processing" />
@@ -325,6 +329,7 @@
           <div class="filter-bar">
             <span style="font-weight: bold; line-height: 32px;">待付款清单</span>
             <el-button type="primary" @click="openSettlementDialog" :disabled="selectedPayables.length > 0 && Number(settlementTotalAmount) <= 0">生成结算单</el-button>
+            <el-button type="success" :loading="exportingList === 'payable'" @click="handleExportPayable">导出</el-button>
           </div>
 
           <div class="filter-bar">
@@ -398,6 +403,7 @@
           <div class="settlement-section">
             <div class="filter-bar">
               <span style="font-weight: bold; line-height: 32px;">应付结算单管理</span>
+              <el-button type="success" :loading="exportingList === 'settlement'" @click="handleExportSettlement">导出</el-button>
               <el-select v-model="settlementStatusFilter" placeholder="结算状态" clearable style="width: 130px" @change="loadSettlementData">
                 <el-option label="全部" value="" />
                 <el-option label="草稿" value="draft" />
@@ -479,6 +485,7 @@
         <el-tab-pane label="报销结算" name="reimbursement">
           <div class="filter-bar">
             <span style="font-weight: bold; line-height: 32px;">个人垫付报销结算单</span>
+            <el-button type="success" :loading="exportingList === 'reimbursement-settlement'" @click="handleExportReimbursementSettlement">导出</el-button>
             <el-select v-model="reimbursementSettlementStatusFilter" placeholder="结算状态" clearable style="width: 130px" @change="loadReimbursementSettlementData">
               <el-option label="全部" value="" />
               <el-option label="草稿" value="draft" />
@@ -1342,6 +1349,7 @@ const selectedSubsidyRows = ref([])
 const subsidyAccountRoutes = ref([])
 const subsidyReceipts = ref([])
 const subsidyAdjustments = ref([])
+const exportingList = ref('')
 const subsidyReceiptDialogVisible = ref(false)
 const subsidyReceiptMode = ref('create')
 const subsidyReceiptForm = reactive({
@@ -1537,7 +1545,7 @@ const accountTxnForm = reactive({
 const queryParams = reactive({
   page: 1,
   pageSize: 20,
-  date: '',
+  dateRange: [],
   storeId: ''
 })
 
@@ -1553,6 +1561,87 @@ const expenseQuery = reactive({
   page: 1,
   pageSize: 20
 })
+
+const runListExport = async (key, label, exporter, params) => {
+  exportingList.value = key
+  try {
+    await exporter(params)
+    ElMessage.success(`${label}导出成功`)
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || `${label}导出失败`)
+  } finally {
+    exportingList.value = ''
+  }
+}
+
+const buildDailyExportParams = () => {
+  const params = {}
+  if (queryParams.dateRange?.length === 2) {
+    params.startDate = queryParams.dateRange[0]
+    params.endDate = queryParams.dateRange[1]
+  }
+  if (queryParams.storeId) params.storeId = queryParams.storeId
+  if (paymentMethodFilter.value) params.paymentMethod = paymentMethodFilter.value
+  if (settledFilter.value !== '') params.settled = settledFilter.value
+  if (settlementAccountFilter.value) params.settlementAccountId = settlementAccountFilter.value
+  return params
+}
+
+const buildSubsidyExportParams = () => {
+  const params = {}
+  if (subsidyQuery.dateRange?.length === 2) {
+    params.startDate = subsidyQuery.dateRange[0]
+    params.endDate = subsidyQuery.dateRange[1]
+  }
+  if (subsidyQuery.storeId) params.storeId = subsidyQuery.storeId
+  if (subsidyQuery.settled !== '') params.settled = subsidyQuery.settled
+  return params
+}
+
+const buildPayableExportParams = () => {
+  const params = { status: 'unpaid' }
+  if (payableSupplierFilter.value) params.supplierId = payableSupplierFilter.value
+  if (payableDateRange.value?.length === 2) {
+    params.startDate = payableDateRange.value[0]
+    params.endDate = payableDateRange.value[1]
+  }
+  return params
+}
+
+const buildSettlementExportParams = (settlementType) => {
+  const params = { settlementType }
+  if (settlementType === 'reimbursement') {
+    if (reimbursementSettlementStatusFilter.value) params.status = reimbursementSettlementStatusFilter.value
+    if (reimbursementPaymentStatusFilter.value) params.paymentStatus = reimbursementPaymentStatusFilter.value
+  } else {
+    if (settlementStatusFilter.value) params.status = settlementStatusFilter.value
+    if (settlementPaymentStatusFilter.value) params.paymentStatus = settlementPaymentStatusFilter.value
+  }
+  return params
+}
+
+const handleExportDaily = () => runListExport('daily', '日结单', api.exportDailyDetails, buildDailyExportParams())
+const handleExportSubsidy = () => runListExport('subsidy', '国补应收单', api.exportNationalSubsidyReceivables, buildSubsidyExportParams())
+const handleExportExpense = () => runListExport('expense', '费用清单', api.exportExpenseList, { status: 'pending' })
+const handleExportExpenseSettlement = () => runListExport(
+  'expense-settlement',
+  '报销结算单',
+  api.exportExpenseList,
+  { status: expenseSettleFilter.value || 'processing,paid' }
+)
+const handleExportPayable = () => runListExport('payable', '应付管理', api.exportPayableList, buildPayableExportParams())
+const handleExportSettlement = () => runListExport(
+  'settlement',
+  '应付结算单',
+  api.exportSettlementList,
+  buildSettlementExportParams('supplier,expense,reimbursement')
+)
+const handleExportReimbursementSettlement = () => runListExport(
+  'reimbursement-settlement',
+  '报销结算单',
+  api.exportSettlementList,
+  buildSettlementExportParams('reimbursement')
+)
 
 const expenseForm = reactive({
   expenseTypeId: '',

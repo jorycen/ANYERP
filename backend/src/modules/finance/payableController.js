@@ -17,6 +17,7 @@ const {
 } = require('../../models');
 const { Op, col, where } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
+const { sendExcel } = require('../../utils/excelExport');
 const moment = require('moment');
 const XLSX = require('xlsx');
 const {
@@ -29,8 +30,8 @@ const {
 /**
  * 应付款列表
  */
-async function getPayableList(ctx) {
-  const { supplierId, status, startDate, endDate, page = 1, pageSize = 20 } = ctx.query;
+function buildPayableListWhere(query) {
+  const { supplierId, status, startDate, endDate } = query;
   const where = {};
 
   if (supplierId) where.supplier_id = supplierId;
@@ -44,6 +45,12 @@ async function getPayableList(ctx) {
     if (startDate) where.create_time[Op.gte] = new Date(`${startDate}T00:00:00.000+08:00`);
     if (endDate) where.create_time[Op.lte] = new Date(`${endDate}T23:59:59.999+08:00`);
   }
+  return where;
+}
+
+async function getPayableList(ctx) {
+  const { supplierId, status, startDate, endDate, page = 1, pageSize = 20 } = ctx.query;
+  const where = buildPayableListWhere(ctx.query);
 
   const { count, rows } = await Payable.findAndCountAll({
     where,
@@ -64,6 +71,39 @@ async function getPayableList(ctx) {
   });
 
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+async function exportPayableList(ctx) {
+  const where = buildPayableListWhere(ctx.query);
+  const rows = await Payable.findAll({
+    where,
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'Payable.status',
+      pendingStatuses: ['unpaid', 'partial_settled'],
+      dateColumns: ['Payable.create_time'],
+      idColumn: 'Payable.payable_id'
+    })
+  });
+  const allocationSummary = await getAllocationSummary(rows.map(row => row.payable_id));
+  const data = rows.map(row => {
+    const item = row.toJSON();
+    const allocated = allocationSummary.get(String(item.payable_id))?.amount || 0;
+    return {
+      来源单号: item.source_no || item.request_no || '',
+      来源类型: item.source_type || '',
+      收款方: item.payee_name || item.supplier_name || '',
+      应付金额: Number(item.total_amount || 0),
+      已结算金额: Number(allocated || 0),
+      剩余应付金额: Number(item.total_amount || 0) - Number(allocated || 0),
+      已付金额: Number(item.paid_amount || 0),
+      状态: item.status || '',
+      创建时间: item.create_time || ''
+    };
+  });
+  sendExcel(ctx, data, [
+    '来源单号', '来源类型', '收款方', '应付金额', '已结算金额', '剩余应付金额',
+    '已付金额', '状态', '创建时间'
+  ], `应付管理_${new Date().toISOString().slice(0, 10)}.xlsx`, '应付管理');
 }
 
 /**
@@ -649,10 +689,9 @@ async function refreshSettlementPaymentState(settlement, transaction = null) {
 /**
  * 结算单列表
  */
-async function getSettlementList(ctx) {
-  const { supplierId, settlementType, status, paymentStatus, page = 1, pageSize = 20 } = ctx.query;
+function buildSettlementListWhere(query) {
+  const { supplierId, settlementType, status, paymentStatus } = query;
   const where = {};
-
   if (supplierId) where.supplier_id = supplierId;
   if (settlementType) {
     const settlementTypes = String(settlementType).split(',').map(item => item.trim()).filter(Boolean);
@@ -660,6 +699,12 @@ async function getSettlementList(ctx) {
   }
   if (status) where.status = status;
   if (paymentStatus) where.payment_status = paymentStatus;
+  return where;
+}
+
+async function getSettlementList(ctx) {
+  const { page = 1, pageSize = 20 } = ctx.query;
+  const where = buildSettlementListWhere(ctx.query);
 
   const order = [
     [
@@ -682,6 +727,39 @@ async function getSettlementList(ctx) {
   });
 
   ctx.body = formatPaginatedResult(normalizeSettlements(rows), { page, pageSize, count });
+}
+
+async function exportSettlementList(ctx) {
+  const where = buildSettlementListWhere(ctx.query);
+  const rows = await Settlement.findAll({
+    where,
+    include: [{ model: SettlementItem, as: 'items' }],
+    order: [
+      [sequelize.literal(
+        "CASE WHEN `Settlement`.`status` = 'draft' OR " +
+        "(`Settlement`.`status` = 'confirmed' AND `Settlement`.`payment_status` IN ('unpaid', 'partial')) " +
+        'THEN 0 ELSE 1 END'
+      ), 'ASC'],
+      [sequelize.literal('`Settlement`.`create_time`'), 'DESC'],
+      [sequelize.literal('`Settlement`.`settlement_id`'), 'DESC']
+    ]
+  });
+  const data = normalizeSettlements(rows).map(row => ({
+    结算单号: row.settlement_no || '',
+    收款方: row.payee_name || row.supplier_name || '',
+    来源单号: row.source_no || '',
+    结算类型: row.settlement_type || '',
+    结算金额: Number(row.total_amount || 0),
+    已付金额: Number(row.paid_amount || 0),
+    状态: row.status || '',
+    付款状态: row.payment_status || '',
+    创建时间: row.create_time || '',
+    确认时间: row.confirmed_time || ''
+  }));
+  sendExcel(ctx, data, [
+    '结算单号', '收款方', '来源单号', '结算类型', '结算金额', '已付金额',
+    '状态', '付款状态', '创建时间', '确认时间'
+  ], `应付结算单_${new Date().toISOString().slice(0, 10)}.xlsx`, '应付结算单');
 }
 
 /**
@@ -1326,11 +1404,13 @@ async function voidPaymentBatch(ctx) {
 
 module.exports = {
   getPayableList,
+  exportPayableList,
   getUnpaidBySupplier,
   getPayableSettlementItems,
   createSettlement,
   createExpenseSettlement,
   getSettlementList,
+  exportSettlementList,
   getSettlementDetail,
   submitSettlement,
   confirmSettlement,

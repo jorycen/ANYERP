@@ -3,20 +3,21 @@
  */
 const Router = require('koa-router');
 const {
-  getDailyDetails, getNationalSubsidyReceivables, getDailyStatement, getDailyStatementDetail,
-  batchSettle, settleNationalSubsidyReceivables, getSettlementSummary, createExpense, getExpenseList,
+  getDailyDetails, getNationalSubsidyReceivables, exportDailyDetails, exportNationalSubsidyReceivables,
+  getDailyStatement, getDailyStatementDetail,
+  batchSettle, settleNationalSubsidyReceivables, getSettlementSummary, createExpense, getExpenseList, exportExpenseList,
   submitExpense, payExpense, reviewExpense, getSettlementAccountsWithBalance, getAccountTransactions, addAccountTransaction,
   getSubsidyAccountRoutes, saveSubsidyAccountRoute, createSubsidyReceipt, getSubsidyReceipts,
   allocateSubsidyReceipt, refundSubsidyReceipt, reverseSubsidyReceipt, submitSubsidyAdjustment,
   getSubsidyAdjustments, reviewSubsidyAdjustment, reverseSubsidyAdjustment
 } = require('./controller');
 const {
-  getPayableList,
+  getPayableList, exportPayableList,
   getUnpaidBySupplier,
   getPayableSettlementItems,
   createSettlement,
   createExpenseSettlement,
-  getSettlementList,
+  getSettlementList, exportSettlementList,
   getSettlementDetail,
   submitSettlement,
   confirmSettlement,
@@ -55,12 +56,15 @@ const router = new Router();
 // 员工费用入口：创建及查看本人/授权门店费用不要求财务角色。
 router.post('/expense', createExpense);
 router.get('/expense-list', getExpenseList);
+router.get('/expense-list/export', exportExpenseList);
 router.post('/expense/:id/review', requireRole('admin'), reviewExpense);
 
 router.use(requireRole('finance'));
 
 router.get('/daily-details', getDailyDetails);
+router.get('/daily-details/export', exportDailyDetails);
 router.get('/national-subsidy-receivables', getNationalSubsidyReceivables);
+router.get('/national-subsidy-receivables/export', exportNationalSubsidyReceivables);
 router.get('/national-subsidy-account-routes', getSubsidyAccountRoutes);
 router.put('/national-subsidy-account-routes', saveSubsidyAccountRoute);
 router.get('/national-subsidy-receipts', getSubsidyReceipts);
@@ -81,11 +85,13 @@ router.put('/expense/submit/:id', submitExpense);
 router.put('/expense/pay/:id', payExpense);
 
 router.get('/payable-list', getPayableList);
+router.get('/payable-list/export', exportPayableList);
 router.get('/payable-settlement-items', getPayableSettlementItems);
 router.get('/unpaid-by-supplier', getUnpaidBySupplier);
 router.post('/create-settlement', createSettlement);
 router.post('/create-expense-settlement', createExpenseSettlement);
 router.get('/settlement-list', getSettlementList);
+router.get('/settlement-list/export', exportSettlementList);
 router.get('/settlement/:id', getSettlementDetail);
 router.post('/settlement/submit', submitSettlement);
 router.post('/settlement/confirm', confirmSettlement);
