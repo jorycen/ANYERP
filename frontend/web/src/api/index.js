@@ -127,6 +127,7 @@ export default {
   getSalesList: (params) => api.get('/sales/list', { params }),
   createSales: (data) => api.post('/sales/create', data),
   getSalesDetail: (id) => api.get(`/sales/${id}`),
+  getAuxiliaryStaff: () => api.get('/sales/auxiliary-staff'),
   updateSales: (id, data) => api.put(`/sales/${id}`, data),
   approveOrder: (id) => api.post(`/sales/${id}/approve`),
   rejectOrder: (id, data) => api.post(`/sales/${id}/reject`, data),
@@ -142,7 +143,9 @@ export default {
 
   // Inventory
   getInventoryList: (params) => api.get('/inventory/list', { params }),
+  exportInventoryList: (params) => exportExcel('/inventory/list/export', params, `库存汇总_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getSnInventoryList: (params) => api.get('/inventory/sn-inventory-list', { params }),
+  exportSnInventoryList: (params) => exportExcel('/inventory/sn-inventory-list/export', params, `SN库存清单_${new Date().toISOString().slice(0, 10)}.xlsx`),
   setSnSpecialPrice: (snId, data) => api.put(`/inventory/sn/${snId}/special-price`, data),
   cancelSnSpecialPrice: (snId, data = {}) => api.delete(`/inventory/sn/${snId}/special-price`, { data }),
   getSnSpecialPriceHistory: (snId) => api.get(`/inventory/sn/${snId}/special-price-history`),

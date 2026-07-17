@@ -26,6 +26,7 @@
           <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
             </el-select>
             <el-button type="primary" @click="loadSummary">查询</el-button>
+            <el-button type="success" :loading="summaryExporting" @click="handleExportSummary">导出</el-button>
           </div>
 
           <el-table :data="summaryData" stripe border v-loading="summaryLoading">
@@ -189,6 +190,7 @@
             <span class="age-separator">至</span>
             <el-input-number v-model="snInventoryQuery.maxAgeDays" :min="0" :max="9999" controls-position="right" placeholder="最大库龄" style="width: 125px" />
             <el-button type="primary" @click="querySnInventory">查询</el-button>
+            <el-button type="success" :loading="snInventoryExporting" @click="handleExportSnInventory">导出</el-button>
             <el-button @click="resetSnInventoryQuery">重置</el-button>
           </div>
 
@@ -1574,6 +1576,7 @@ const categories = ref([])
 const summaryData = ref([])
 const summaryTotal = ref(0)
 const summaryLoading = ref(false)
+const summaryExporting = ref(false)
 const summaryQuery = reactive({
   page: 1,
   pageSize: 20,
@@ -1586,6 +1589,7 @@ const summaryQuery = reactive({
 const snInventoryData = ref([])
 const snInventoryTotal = ref(0)
 const snInventoryLoading = ref(false)
+const snInventoryExporting = ref(false)
 const snInventoryLocations = ref([])
 const snInventoryResourceOptions = ref([])
 const resourceStatusOptions = [
@@ -2015,6 +2019,18 @@ const loadSummary = async () => {
   }
 }
 
+const handleExportSummary = async () => {
+  summaryExporting.value = true
+  try {
+    await api.exportInventoryList({ ...summaryQuery })
+    ElMessage.success('库存汇总导出成功')
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '库存汇总导出失败')
+  } finally {
+    summaryExporting.value = false
+  }
+}
+
 const loadSnInventoryResourceOptions = async () => {
   try {
     const res = await api.getResourceCategories({ activeOnly: 1 })
@@ -2055,6 +2071,22 @@ const loadSnInventory = async () => {
     ElMessage.error(err.response?.data?.message || '加载SN库存清单失败')
   } finally {
     snInventoryLoading.value = false
+  }
+}
+
+const handleExportSnInventory = async () => {
+  snInventoryExporting.value = true
+  try {
+    await api.exportSnInventoryList({
+      ...snInventoryQuery,
+      minAgeDays: snInventoryQuery.minAgeDays ?? '',
+      maxAgeDays: snInventoryQuery.maxAgeDays ?? ''
+    })
+    ElMessage.success('SN库存清单导出成功')
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || 'SN库存清单导出失败')
+  } finally {
+    snInventoryExporting.value = false
   }
 }
 

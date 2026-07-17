@@ -4,7 +4,7 @@
 const Router = require('koa-router');
 const multer = require('@koa/multer');
 const {
-  getList, getSnInventoryList, setSnSpecialPrice, cancelSnSpecialPrice,
+  getList, exportList, getSnInventoryList, exportSnInventoryList, setSnSpecialPrice, cancelSnSpecialPrice,
   getSnSpecialPriceHistory, getSnList, getInboundList, getInboundDetail,
   executeInbound, getReturnList, requestReturn, approveReturn, executeReturn,
   inbound, outbound, transfer, getTransferList, confirmTransferOut,
@@ -19,7 +19,9 @@ const router = new Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 router.get('/list', getList);
+router.get('/list/export', exportList);
 router.get('/sn-inventory-list', getSnInventoryList);
+router.get('/sn-inventory-list/export', exportSnInventoryList);
 router.put('/sn/:snId/special-price', requireRole('admin'), setSnSpecialPrice);
 router.delete('/sn/:snId/special-price', requireRole('admin'), cancelSnSpecialPrice);
 router.get('/sn/:snId/special-price-history', requireRole('admin'), getSnSpecialPriceHistory);

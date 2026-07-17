@@ -15,12 +15,16 @@
             <el-select v-model="queryParams.supplierId" placeholder="供应商" clearable filterable style="width: 180px">
               <el-option v-for="supplier in allSuppliers" :key="supplier.supplier_id" :label="supplier.name" :value="supplier.supplier_id" />
             </el-select>
-            <el-select v-model="queryParams.status" placeholder="状态" clearable style="width: 150px">
+            <el-select v-model="queryParams.status" placeholder="状态" clearable style="width: 150px" @change="handleRequestFilterChange">
               <el-option label="全部" value="" />
               <el-option label="草稿" value="draft" />
               <el-option label="待审批" value="pending" />
               <el-option label="已通过" value="approved" />
               <el-option label="已拒绝" value="rejected" />
+            </el-select>
+            <el-select v-model="queryParams.operatorStaffId" placeholder="经手人" clearable filterable style="width: 150px" @change="handleRequestFilterChange">
+              <el-option label="全部经手人" value="" />
+              <el-option v-for="staff in operatorStaffList" :key="staff.staffId" :label="staff.name" :value="staff.staffId" />
             </el-select>
             <el-button type="primary" @click="handleRequestSearch">查询</el-button>
             <el-button @click="resetRequestSearch">重置</el-button>
@@ -573,6 +577,7 @@ const SUPPLIER_DRAFT_KEY = 'supplier-create'
 const tableData = ref([])
 const supplierData = ref([])
 const allSuppliers = ref([])
+const operatorStaffList = ref([])
 const allStores = ref([])
 const allStoresLoaded = ref(false)
 const products = ref([])
@@ -617,7 +622,8 @@ const queryParams = reactive({
   status: '',
   submitter: '',
   keyword: '',
-  supplierId: ''
+  supplierId: '',
+  operatorStaffId: ''
 })
 
 const supplierQuery = reactive({
@@ -761,6 +767,7 @@ onMounted(() => {
   loadAllSuppliers()
   loadAllStores()
   loadProducts()
+  loadOperatorStaff()
   loadResourceOptions()
   loadGoodsTypeOptions()
 })
@@ -797,12 +804,27 @@ const handleRequestSearch = () => {
   loadData()
 }
 
+const handleRequestFilterChange = () => {
+  queryParams.page = 1
+  loadData()
+}
+
+const loadOperatorStaff = async () => {
+  try {
+    const res = await api.getAuxiliaryStaff()
+    operatorStaffList.value = res.code === 0 ? (res.data || []) : []
+  } catch (_) {
+    operatorStaffList.value = []
+  }
+}
+
 const resetRequestSearch = () => {
   queryParams.page = 1
   queryParams.status = ''
   queryParams.submitter = ''
   queryParams.keyword = ''
   queryParams.supplierId = ''
+  queryParams.operatorStaffId = ''
   loadData()
 }
 

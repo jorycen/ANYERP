@@ -267,7 +267,7 @@ function buildAdjustmentRows(request, inbounds, stores) {
  * 采购申请列表
  */
 async function getRequestList(ctx) {
-  const { status, submitter, keyword, supplierId, page = 1, pageSize = 20 } = ctx.query;
+  const { status, operatorStaffId, submitter, keyword, supplierId, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
 
   const where = {};
@@ -283,6 +283,7 @@ async function getRequestList(ctx) {
   where.store_id = storeIds;
 
   if (status) where.status = status;
+  if (operatorStaffId) where.operator_staff_id = operatorStaffId;
   if (submitter) where.apply_user = { [Op.like]: `%${String(submitter).trim()}%` };
   if (supplierId) where.supplier_id = supplierId;
 

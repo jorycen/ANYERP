@@ -16,6 +16,7 @@ const { generateInboundNo, generateOutboundNo, generateTransferNo, generateUUID,
 const { getUserRoles } = require('../../middleware/permission');
 const { initializeSnResourceRightsFromInbound, summariesForSns } = require('./resourceRights');
 const { ensureStandardLocationsForStores } = require('../../utils/standardLocations');
+const { sendExcel } = require('../../utils/excelExport');
 
 function splitCodes(value) {
   return String(value || '')
@@ -166,6 +167,7 @@ async function getSnInventoryList(ctx) {
     specialOnly = '', minAgeDays = '', maxAgeDays = '', page = 1, pageSize = 20
   } = ctx.query;
   const user = ctx.state.user || {};
+  const exportMode = Boolean(ctx.state.inventoryExportMode);
   const allowedStoreIds = Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds : [];
 
   if (storeId) assertStoreVisible(ctx, storeId);
@@ -246,6 +248,7 @@ async function getSnInventoryList(ctx) {
   const currentPageSize = Math.min(Math.max(Number(pageSize) || 20, 1), 100);
   const offset = (currentPage - 1) * currentPageSize;
 
+  const paginationSql = exportMode ? '' : ' LIMIT :limit OFFSET :offset';
   const rows = await sequelize.query(
     `SELECT
        sn.SN_ID AS sn_id,
@@ -272,10 +275,9 @@ async function getSnInventoryList(ctx) {
        sp.UPDATE_USER AS special_price_update_user,
        sp.UPDATE_TIME AS special_price_update_time
      ${joins}${whereSql}
-     ORDER BY (sn.INBOUND_TIME IS NULL) ASC, sn.INBOUND_TIME ASC, sn.SN_ID DESC
-     LIMIT :limit OFFSET :offset`,
+     ORDER BY (sn.INBOUND_TIME IS NULL) ASC, sn.INBOUND_TIME ASC, sn.SN_ID DESC${paginationSql}`,
     {
-      replacements: { ...replacements, limit: currentPageSize, offset },
+      replacements: exportMode ? replacements : { ...replacements, limit: currentPageSize, offset },
       type: Sequelize.QueryTypes.SELECT
     }
   );
@@ -313,6 +315,28 @@ async function getSnInventoryList(ctx) {
       resource_statuses: resourceStatuses
     };
   });
+
+  if (exportMode) {
+    const data = list.map(row => ({
+      SN: row.sn_code || '',
+      PN: row.pn_code || '',
+      商品名称: row.product_name || '',
+      所在门店: row.store_name || '',
+      库位: row.location_name || '',
+      资源情况: (row.resource_statuses || []).map(resource => `${resource.resource_name}: ${resource.status_name}`).join('\n'),
+      统一售价: Number(row.unified_sale_price || 0),
+      SN特价: row.is_special_price ? Number(row.special_price || 0) : '',
+      当前适用售价: Number(row.effective_sale_price || 0),
+      库龄: row.stock_age_days == null ? '' : row.stock_age_days,
+      入库时间: row.inbound_time || '',
+      备注: row.remark || ''
+    }));
+    sendExcel(ctx, data, [
+      'SN', 'PN', '商品名称', '所在门店', '库位', '资源情况',
+      '统一售价', 'SN特价', '当前适用售价', '库龄', '入库时间', '备注'
+    ], `SN库存清单_${new Date().toISOString().slice(0, 10)}.xlsx`, 'SN库存清单');
+    return;
+  }
 
   ctx.body = formatPaginatedResult(list, {
     page: currentPage,
@@ -620,6 +644,7 @@ async function getList(ctx) {
   try {
     const { storeId, category, keyword, page = 1, pageSize = 20 } = ctx.query;
     const user = ctx.state.user;
+    const exportMode = Boolean(ctx.state.inventoryExportMode);
 
     const whereStore = {};
     if (!user.accessibleStoreIds.includes('*')) whereStore.store_id = user.accessibleStoreIds;
@@ -801,17 +826,58 @@ async function getList(ctx) {
       return new Date(b._create_time || 0).getTime() - new Date(a._create_time || 0).getTime();
     });
 
+    const exportRows = sortedRows.map(({ _category_rank, _create_time, ...row }) => row);
+
+    if (exportMode) {
+      const data = exportRows.map(row => ({
+        类别: row.category || '',
+        商品名称: row.product_name || '',
+        产品配置: row.spec || '',
+        商品编码: row.product_code || '',
+        厂商编码: row.manufacturer_code || '',
+        销售定价: Number(row.standard_price || 0),
+        现有库存: Number(row.normal_qty || 0),
+        正规货: Number(row.regular_qty || 0),
+        国补货: Number(row.subsidy_qty || 0),
+        纯二手货: Number(row.second_qty || 0),
+        铺货仓库存: Number(row.display_qty || 0),
+        样品仓库存: Number(row.demo_qty || 0),
+        不可售库存: Number(row.unsellable_qty || 0),
+        占用仓库存: Number(row.pending_qty || 0),
+        当前门店库存: Number(row.current_store_stock_qty || 0),
+        其他门店库存: Number(row.other_store_stock_qty || 0),
+        总库存: Number(row.total_stock_qty || 0),
+        近7天销量: Number(row.sales_7_qty || 0),
+        近30天销量: Number(row.sales_30_qty || 0)
+      }));
+      sendExcel(ctx, data, [
+        '类别', '商品名称', '产品配置', '商品编码', '厂商编码', '销售定价',
+        '现有库存', '正规货', '国补货', '纯二手货', '铺货仓库存', '样品仓库存',
+        '不可售库存', '占用仓库存', '当前门店库存', '其他门店库存', '总库存',
+        '近7天销量', '近30天销量'
+      ], `库存汇总_${new Date().toISOString().slice(0, 10)}.xlsx`, '库存汇总');
+      return;
+    }
+
     const currentPage = Math.max(Number(page) || 1, 1);
     const currentPageSize = Math.max(Number(pageSize) || 20, 1);
-    const rows = sortedRows
-      .slice((currentPage - 1) * currentPageSize, currentPage * currentPageSize)
-      .map(({ _category_rank, _create_time, ...row }) => row);
+    const rows = exportRows.slice((currentPage - 1) * currentPageSize, currentPage * currentPageSize);
 
     ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
   } catch (error) {
     console.error('Error in getList:', error);
     throw error;
   }
+}
+
+async function exportList(ctx) {
+  ctx.state.inventoryExportMode = true;
+  return getList(ctx);
+}
+
+async function exportSnInventoryList(ctx) {
+  ctx.state.inventoryExportMode = true;
+  return getSnInventoryList(ctx);
 }
 
 /**
@@ -3384,7 +3450,9 @@ async function getLocationsByStore(ctx) {
 
 module.exports = {
   getList,
+  exportList,
   getSnInventoryList,
+  exportSnInventoryList,
   setSnSpecialPrice,
   cancelSnSpecialPrice,
   getSnSpecialPriceHistory,
