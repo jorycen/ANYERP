@@ -333,7 +333,7 @@ async function getRequestList(ctx) {
     const result = row.toJSON();
     result.store_name = result.Store?.name || '';
     result.supplier_name = result.Supplier?.name || '';
-    result.submitter_name = result.apply_user || '';
+    result.submitter_name = result.submitter_name || result.apply_user || result.create_user || result.operator_name || '';
     
     // 汇总商品名称和数量用于前端展示
     if (result.items && result.items.length > 0) {
@@ -526,6 +526,7 @@ async function createRequest(ctx) {
   }
 
   const now = new Date();
+  const submitterName = user.name || user.phone || String(user.staffId || '');
   const createdRequest = await PurchaseRequest.create({
     request_id: requestId,
     request_no: requestNo,
@@ -540,7 +541,7 @@ async function createRequest(ctx) {
     rebate_deduction: deduction,
     actual_total: actualTotal,
     status: isDraft ? 'draft' : 'pending',
-    apply_user: user.name,
+    apply_user: submitterName,
     create_time: now,
     update_time: now
   });

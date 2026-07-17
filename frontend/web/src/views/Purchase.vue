@@ -38,7 +38,11 @@
               </template>
             </el-table-column>
             <el-table-column prop="store_name" label="申请门店" width="120" />
-            <el-table-column prop="submitter_name" label="提交人" width="110" />
+            <el-table-column label="提交人" width="110">
+              <template #default="{ row }">
+                {{ row.submitter_name || row.apply_user || row.create_user || row.operator_name || '-' }}
+              </template>
+            </el-table-column>
             <el-table-column prop="supplier_name" label="供应商" width="150" />
             <el-table-column label="付款方式" width="110">
               <template #default="{ row }">{{ getPaymentMethodText(row.payment_method) }}</template>
