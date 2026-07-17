@@ -10,6 +10,12 @@
       <el-tabs v-model="mainTab" @tab-change="onTabChange">
         <!-- 库存汇总 -->
         <el-tab-pane label="库存汇总" name="summary">
+          <div class="inventory-resource-legend">
+            <span class="legend-title">资源类型提示：</span>
+            <span class="legend-item"><i class="legend-dot full-resource" />全资源货</span>
+            <span class="legend-item"><i class="legend-dot subsidy-resource" />仅国补</span>
+            <span class="legend-item"><i class="legend-dot no-subsidy-resource" />无法国补</span>
+          </div>
           <div class="filter-bar">
             <el-input v-model="summaryQuery.keyword" placeholder="搜索商品名称/编码/厂商编码" clearable style="width: 240px" @keyup.enter="loadSummary" />
             <el-select v-model="summaryQuery.category" placeholder="商品类别" clearable style="width: 150px" @change="loadSummary">
@@ -33,48 +39,99 @@
             </el-table-column>
             <el-table-column prop="normal_qty" label="现有库存" width="100">
               <template #default="{ row }">
-                <el-popover placement="bottom" :width="260" trigger="hover" v-if="row.normal_qty > 0">
+                <el-popover placement="bottom" :width="260" trigger="hover">
                   <template #default>
                     <div class="stock-breakdown">
-                      <div class="breakdown-title">库型</div>
-                      <div class="breakdown-item">
-                        <span class="breakdown-label">正规货：</span>
-                        <span class="breakdown-value">{{ row.regular_qty || 0 }}</span>
-                      </div>
-                      <div class="breakdown-item">
-                        <span class="breakdown-label">国补货：</span>
-                        <span class="breakdown-value">{{ row.subsidy_qty || 0 }}</span>
-                      </div>
-                      <div class="breakdown-item">
-                        <span class="breakdown-label">纯二批：</span>
-                        <span class="breakdown-value">{{ row.second_qty || 0 }}</span>
-                      </div>
-                      <div v-if="row.store_stock_info && row.store_stock_info.length" class="breakdown-locations">
-                        <div class="breakdown-title">门店 / 仓位</div>
-                        <div v-for="loc in row.store_stock_info" :key="`${loc.store_id}-${loc.location_id || 'none'}`" class="breakdown-location">
-                          <div class="breakdown-label">{{ loc.store_name }} / {{ loc.location_name || '未指定仓位' }}</div>
-                          <div class="warehouse-values">
-                            <span>销售仓 {{ loc.normal_qty || 0 }}</span>
-                            <span>样品仓 {{ loc.demo_qty || 0 }}</span>
-                            <span>铺货仓 {{ loc.display_qty || 0 }}</span>
-                            <span>不可售仓 {{ loc.unsellable_qty || 0 }}</span>
-                            <span>占用仓 {{ loc.pending_qty || 0 }}</span>
-                          </div>
+                      <div class="breakdown-title">各门店销售仓库存</div>
+                      <div v-if="getStockBreakdownRows(row, 'normal_qty').length" class="breakdown-locations">
+                        <div v-for="item in getStockBreakdownRows(row, 'normal_qty')" :key="item.key" class="breakdown-item">
+                          <span class="breakdown-label">{{ item.store_name }}</span>
+                          <span class="breakdown-value">{{ item.quantity }}</span>
                         </div>
                       </div>
+                      <div v-else class="breakdown-empty">暂无库存明细</div>
                     </div>
                   </template>
-                  <template #reference>
-                    <span style="cursor: pointer; color: #409eff; text-decoration: underline;">{{ row.normal_qty }}</span>
-                  </template>
+                  <template #reference><span class="stock-quantity-reference">{{ row.normal_qty || 0 }}</span></template>
                 </el-popover>
-                <span v-else>0</span>
               </template>
             </el-table-column>
-            <el-table-column prop="display_qty" label="铺货仓库存" width="110" />
-            <el-table-column prop="demo_qty" label="样品仓库存" width="110" />
-            <el-table-column prop="unsellable_qty" label="不可售库存" width="110" />
-            <el-table-column prop="pending_qty" label="占用仓库存" width="110" />
+            <el-table-column prop="display_qty" label="铺货仓库存" width="110">
+              <template #default="{ row }">
+                <el-popover placement="bottom" :width="260" trigger="hover">
+                  <template #default>
+                    <div class="stock-breakdown">
+                      <div class="breakdown-title">各门店铺货仓库存</div>
+                      <div v-if="getStockBreakdownRows(row, 'display_qty').length" class="breakdown-locations">
+                        <div v-for="item in getStockBreakdownRows(row, 'display_qty')" :key="item.key" class="breakdown-item">
+                          <span class="breakdown-label">{{ item.store_name }}</span>
+                          <span class="breakdown-value">{{ item.quantity }}</span>
+                        </div>
+                      </div>
+                      <div v-else class="breakdown-empty">暂无库存明细</div>
+                    </div>
+                  </template>
+                  <template #reference><span class="stock-quantity-reference">{{ row.display_qty || 0 }}</span></template>
+                </el-popover>
+              </template>
+            </el-table-column>
+            <el-table-column prop="demo_qty" label="样品仓库存" width="110">
+              <template #default="{ row }">
+                <el-popover placement="bottom" :width="260" trigger="hover">
+                  <template #default>
+                    <div class="stock-breakdown">
+                      <div class="breakdown-title">各门店样品仓库存</div>
+                      <div v-if="getStockBreakdownRows(row, 'demo_qty').length" class="breakdown-locations">
+                        <div v-for="item in getStockBreakdownRows(row, 'demo_qty')" :key="item.key" class="breakdown-item">
+                          <span class="breakdown-label">{{ item.store_name }}</span>
+                          <span class="breakdown-value">{{ item.quantity }}</span>
+                        </div>
+                      </div>
+                      <div v-else class="breakdown-empty">暂无库存明细</div>
+                    </div>
+                  </template>
+                  <template #reference><span class="stock-quantity-reference">{{ row.demo_qty || 0 }}</span></template>
+                </el-popover>
+              </template>
+            </el-table-column>
+            <el-table-column prop="unsellable_qty" label="不可售库存" width="110">
+              <template #default="{ row }">
+                <el-popover placement="bottom" :width="260" trigger="hover">
+                  <template #default>
+                    <div class="stock-breakdown">
+                      <div class="breakdown-title">各门店不可售仓库存</div>
+                      <div v-if="getStockBreakdownRows(row, 'unsellable_qty').length" class="breakdown-locations">
+                        <div v-for="item in getStockBreakdownRows(row, 'unsellable_qty')" :key="item.key" class="breakdown-item">
+                          <span class="breakdown-label">{{ item.store_name }}</span>
+                          <span class="breakdown-value">{{ item.quantity }}</span>
+                        </div>
+                      </div>
+                      <div v-else class="breakdown-empty">暂无库存明细</div>
+                    </div>
+                  </template>
+                  <template #reference><span class="stock-quantity-reference">{{ row.unsellable_qty || 0 }}</span></template>
+                </el-popover>
+              </template>
+            </el-table-column>
+            <el-table-column prop="pending_qty" label="占用仓库存" width="110">
+              <template #default="{ row }">
+                <el-popover placement="bottom" :width="260" trigger="hover">
+                  <template #default>
+                    <div class="stock-breakdown">
+                      <div class="breakdown-title">各门店占用仓库存</div>
+                      <div v-if="getStockBreakdownRows(row, 'pending_qty').length" class="breakdown-locations">
+                        <div v-for="item in getStockBreakdownRows(row, 'pending_qty')" :key="item.key" class="breakdown-item">
+                          <span class="breakdown-label">{{ item.store_name }}</span>
+                          <span class="breakdown-value">{{ item.quantity }}</span>
+                        </div>
+                      </div>
+                      <div v-else class="breakdown-empty">暂无库存明细</div>
+                    </div>
+                  </template>
+                  <template #reference><span class="stock-quantity-reference">{{ row.pending_qty || 0 }}</span></template>
+                </el-popover>
+              </template>
+            </el-table-column>
             <el-table-column label="查看序列号" width="120">
               <template #default="{ row }">
                 <el-button v-if="row.need_sn === 1" link type="primary" @click="openSnDialog(row)">查看序列号</el-button>
@@ -434,7 +491,63 @@
                   <el-button v-if="row.status === 'out_confirmed'" link type="success" @click="handleConfirmTransferIn(row)">确认入库</el-button>
                 </template>
               </el-table-column>
+              </el-table>
+          </div>
+
+          <div class="transfer-section mt-30">
+            <div class="section-title">历史调拨记录</div>
+            <div class="filter-bar">
+              <el-input v-model="transferHistoryQuery.transferNo" placeholder="调拨单号" clearable style="width: 180px" @keyup.enter="loadTransferHistory" />
+              <el-select v-model="transferHistoryQuery.status" placeholder="全部状态" clearable style="width: 130px" @change="loadTransferHistory">
+                <el-option label="全部状态" value="" />
+                <el-option label="待出库" value="pending" />
+                <el-option label="发货中" value="shipping" />
+                <el-option label="待入库" value="out_confirmed" />
+                <el-option label="已收货" value="received" />
+                <el-option label="已完成" value="completed" />
+                <el-option label="已取消" value="cancelled" />
+              </el-select>
+              <el-date-picker v-model="transferHistoryQuery.startDate" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" clearable style="width: 150px" />
+              <el-date-picker v-model="transferHistoryQuery.endDate" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" clearable style="width: 150px" />
+              <el-button type="primary" @click="loadTransferHistory">查询</el-button>
+              <el-button @click="resetTransferHistoryQuery">重置</el-button>
+            </div>
+            <el-table :data="transferHistoryList" stripe border v-loading="transferHistoryLoading">
+              <el-table-column prop="transfer_no" label="调拨单号" width="190" />
+              <el-table-column prop="from_store_name" label="调出门店" width="130" />
+              <el-table-column prop="to_store_name" label="调入门店" width="130" />
+              <el-table-column label="调拨商品" min-width="200">
+                <template #default="{ row }">
+                  <span v-for="(item, i) in (row.TransferItems || [])" :key="i">
+                    {{ formatTransferItemLabel(item) }}{{ i < (row.TransferItems || []).length - 1 ? '、' : '' }}
+                  </span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="total_quantity" label="数量" width="80" />
+              <el-table-column prop="apply_user" label="申请人" width="100" />
+              <el-table-column label="参与人" width="160">
+                <template #default="{ row }">
+                  {{ [row.shipping_user || row.confirm_user, row.receiving_user || row.inbound_confirm_user].filter(Boolean).join('、') || '-' }}
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="110">
+                <template #default="{ row }">
+                  <el-tag :type="getTransferStatusType(row.status)">{{ getTransferStatusText(row.status) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="create_time" label="创建时间" width="160">
+                <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
+              </el-table-column>
             </el-table>
+            <el-pagination
+              v-if="transferHistoryTotal > 0"
+              v-model:current-page="transferHistoryQuery.page"
+              v-model:page-size="transferHistoryQuery.pageSize"
+              :total="transferHistoryTotal"
+              layout="total, sizes, prev, pager, next"
+              @size-change="loadTransferHistory"
+              @current-change="loadTransferHistory"
+            />
           </div>
         </el-tab-pane>
 
@@ -558,6 +671,7 @@
             <span class="item-label">{{ item.productName }}</span>
             <el-tag :type="item.needSn ? 'warning' : 'info'" size="small">{{ item.needSn ? 'SN管理' : '无SN' }}</el-tag>
             <span class="item-qty">待入库: {{ item.quantity }}</span>
+            <span class="item-location">库位：{{ item.locationName || '未指定库位' }}</span>
           </div>
 
           <!-- PN厂商编码选择 -->
@@ -764,9 +878,16 @@
         <el-table-column prop="inbound_time" label="入库时间" width="160">
           <template #default="{ row }">{{ formatDate(row.inbound_time) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="220">
+        <el-table-column label="操作" width="300">
           <template #default="{ row }">
             <el-button size="small" type="primary" link @click="openSnTrace(row)">追踪</el-button>
+            <el-button
+              v-if="row.status === 'in_stock'"
+              size="small"
+              type="warning"
+              link
+              @click="openSnLocationDialog(row)"
+            >调整库位</el-button>
             <el-button
               v-if="row.status === 'in_stock'"
               size="small"
@@ -796,6 +917,39 @@
         small
         class="mt-20"
       />
+    </el-dialog>
+
+    <!-- 同门店库位调整对话框 -->
+    <el-dialog v-model="snLocationDialogVisible" title="调整SN库位" width="560px">
+      <el-descriptions :column="2" border>
+        <el-descriptions-item label="商品">{{ snLocationForm.productName || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="SN">{{ snLocationForm.snCode || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="PN">{{ snLocationForm.pnCode || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="门店">{{ snLocationForm.storeName || snLocationForm.storeId || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="当前库位" :span="2">{{ snLocationForm.currentLocationName || '未指定库位' }}</el-descriptions-item>
+      </el-descriptions>
+      <el-form label-width="90px" style="margin-top: 20px">
+        <el-form-item label="目标库位" required>
+          <el-select
+            v-model="snLocationForm.targetLocationId"
+            placeholder="请选择目标库位"
+            filterable
+            style="width: 100%"
+            :loading="snLocationLoading"
+          >
+            <el-option
+              v-for="location in snLocationOptions"
+              :key="location.location_id"
+              :label="location.name"
+              :value="location.location_id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="snLocationDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="snLocationSaving" @click="saveSnLocation">确定调整</el-button>
+      </template>
     </el-dialog>
 
     <!-- SN追踪对话框 -->
@@ -1564,6 +1718,21 @@ const snFilter = reactive({
 
 const snEditing = ref(false)
 const snOriginalCodes = ref({})
+const snLocationDialogVisible = ref(false)
+const snLocationLoading = ref(false)
+const snLocationSaving = ref(false)
+const snLocationOptions = ref([])
+const snLocationForm = reactive({
+  snId: '',
+  snCode: '',
+  pnCode: '',
+  productName: '',
+  storeId: '',
+  storeName: '',
+  currentLocationId: '',
+  currentLocationName: '',
+  targetLocationId: ''
+})
 // SN追踪对话框
 const traceDialogVisible = ref(false)
 const traceSnCode = ref('')
@@ -1577,6 +1746,17 @@ const transferDialogVisible = ref(false)
 const transferLoading = ref(false)
 const transferOutList = ref([])
 const transferInList = ref([])
+const transferHistoryList = ref([])
+const transferHistoryTotal = ref(0)
+const transferHistoryLoading = ref(false)
+const transferHistoryQuery = reactive({
+  page: 1,
+  pageSize: 20,
+  transferNo: '',
+  status: '',
+  startDate: '',
+  endDate: ''
+})
 const transferProductOptions = ref([])
 const transferSnOptions = ref([])
 const transferOutConfirmVisible = ref(false)
@@ -1759,7 +1939,7 @@ const onTabChange = (tabName) => {
       loadBatchApplications()
     }
   } else if (tabName === 'transfer') {
-    if (transferOutList.value.length === 0 && transferInList.value.length === 0) {
+    if (transferOutList.value.length === 0 && transferInList.value.length === 0 && transferHistoryList.value.length === 0) {
       loadTransferLists()
     }
   } else if (tabName === 'conversion') {
@@ -1799,6 +1979,27 @@ const loadCategories = async () => {
 }
 
 // 库存汇总
+const getStockBreakdownRows = (row, field) => {
+  const source = Array.isArray(row?.store_stock_info) ? row.store_stock_info : []
+  const grouped = new Map()
+
+  source.forEach(item => {
+    const quantity = Number(item?.[field] || 0)
+    if (quantity <= 0) return
+    const key = String(item.store_id || item.store_name || 'unknown')
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        key,
+        store_name: item.store_name || item.store_id || '未知门店',
+        quantity: 0
+      })
+    }
+    grouped.get(key).quantity += quantity
+  })
+
+  return [...grouped.values()].sort((a, b) => b.quantity - a.quantity)
+}
+
 const loadSummary = async () => {
   summaryLoading.value = true
   try {
@@ -2213,29 +2414,32 @@ const openExecuteDialog = async (row) => {
         const pns = pnMap[item.product_id] || []
 
         const group = {
+          inboundItemId: item.item_id,
           productId: item.product_id,
           productName: item.product_name,
           needSn,
           quantity: qty,
+          locationId: item.location_id || '',
+          locationName: item.location_name || '',
           pnCode: item.pn_code || (pns.length > 0 ? pns[0].pn_code : ''),
           pns: pns,
           snRows: [],
           qtyRows: []
         }
 
-        if (needSn) {
-          for (let i = 0; i < qty; i++) {
-            group.snRows.push({
-              snCode: '',
+          if (needSn) {
+            for (let i = 0; i < qty; i++) {
+              group.snRows.push({
+              snCode: item.sn_code || item.snCode || '',
               inventoryType: 'normal_qty',
-              locationId: '',
-              remark: ''
-            })
-          }
+                locationId: item.location_id || '',
+                remark: ''
+              })
+            }
         } else {
           group.qtyRows.push({
             inventoryType: 'normal_qty',
-            locationId: '',
+            locationId: item.location_id || '',
             quantity: qty,
             remark: ''
           })
@@ -2321,6 +2525,7 @@ const submitInbound = async () => {
           return
         }
         items.push({
+          inboundItemId: product.inboundItemId,
           productId: product.productId,
           pnCode: product.pnCode || '',
           snCode: snRow.snCode,
@@ -2335,6 +2540,7 @@ const submitInbound = async () => {
         const qty = parseInt(qtyRow.quantity) || 0
         if (qty <= 0) continue
         items.push({
+          inboundItemId: product.inboundItemId,
           productId: product.productId,
           pnCode: product.pnCode || '',
           snCode: '',
@@ -2499,6 +2705,73 @@ const openSnDialog = (row) => {
   snFilter.snCode = ''
   snDialogVisible.value = true
   loadSnData()
+}
+
+const openSnLocationDialog = async (row) => {
+  snLocationForm.snId = row.sn_id || ''
+  snLocationForm.snCode = row.sn_code || ''
+  snLocationForm.pnCode = row.pn_code || ''
+  snLocationForm.productName = row.product_name || snProductName.value || ''
+  snLocationForm.storeId = row.store_id || ''
+  snLocationForm.storeName = row.store_name || ''
+  snLocationForm.currentLocationId = row.location_id || ''
+  snLocationForm.currentLocationName = row.location_name || '未指定库位'
+  snLocationForm.targetLocationId = ''
+  snLocationOptions.value = []
+  snLocationDialogVisible.value = true
+  snLocationLoading.value = true
+  try {
+    const res = await api.getLocationsByStore(snLocationForm.storeId)
+    if (res.code === 0) {
+      snLocationOptions.value = res.data || []
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载库位失败')
+  } finally {
+    snLocationLoading.value = false
+  }
+}
+
+const saveSnLocation = async () => {
+  if (!snLocationForm.targetLocationId) {
+    ElMessage.warning('请选择目标库位')
+    return
+  }
+  if (snLocationForm.targetLocationId === snLocationForm.currentLocationId) {
+    ElMessage.warning('目标库位与当前库位相同')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确认将 SN ${snLocationForm.snCode} 调整到“${snLocationOptions.value.find(item => item.location_id === snLocationForm.targetLocationId)?.name || ''}”吗？`,
+      '确认调整库位',
+      { type: 'warning' }
+    )
+  } catch (err) {
+    return
+  }
+
+  snLocationSaving.value = true
+  try {
+    const res = await api.adjustSnLocation(snLocationForm.snId, {
+      storeId: snLocationForm.storeId,
+      locationId: snLocationForm.targetLocationId
+    })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '库位调整成功')
+      snLocationDialogVisible.value = false
+      loadSnData()
+      loadSnInventory()
+      loadSummary()
+    } else {
+      ElMessage.error(res.message || '库位调整失败')
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '库位调整失败')
+  } finally {
+    snLocationSaving.value = false
+  }
 }
 
 const loadSnData = async () => {
@@ -2776,8 +3049,9 @@ const openTransferDialog = (row) => {
 
 const formatTransferItemLabel = (item) => {
   const name = item.product_name || item.productName || item.product_id || '-'
-  if (item.sn_code) return `${name} / SN:${item.sn_code}`
-  return `${name} x${item.quantity || 0}`
+  const pn = item.pn_code || item.pnCode || '-'
+  const sn = item.sn_code || item.snCode || (Number(item.need_sn || item.needSn || 0) === 1 ? '待出库确认' : '不适用')
+  return `${name} / PN:${pn} / SN:${sn} x${item.quantity || 0}`
 }
 
 const resetTransferForm = () => {
@@ -2855,9 +3129,45 @@ const loadTransferLists = async () => {
     if (inRes.code === 0) {
       transferInList.value = inRes.data?.list || []
     }
+    await loadTransferHistory()
   } catch (err) {
     ElMessage.error('加载调拨列表失败')
   }
+}
+
+const loadTransferHistory = async () => {
+  transferHistoryLoading.value = true
+  try {
+    const res = await api.getTransferList({
+      history: 1,
+      page: transferHistoryQuery.page,
+      pageSize: transferHistoryQuery.pageSize,
+      transferNo: transferHistoryQuery.transferNo || undefined,
+      status: transferHistoryQuery.status || undefined,
+      startDate: transferHistoryQuery.startDate || undefined,
+      endDate: transferHistoryQuery.endDate || undefined
+    })
+    if (res.code === 0) {
+      transferHistoryList.value = res.data?.list || []
+      transferHistoryTotal.value = Number(res.data?.total || 0)
+    }
+  } catch (err) {
+    ElMessage.error('加载历史调拨记录失败')
+  } finally {
+    transferHistoryLoading.value = false
+  }
+}
+
+const resetTransferHistoryQuery = () => {
+  Object.assign(transferHistoryQuery, {
+    page: 1,
+    pageSize: 20,
+    transferNo: '',
+    status: '',
+    startDate: '',
+    endDate: ''
+  })
+  loadTransferHistory()
 }
 
 const handleConfirmTransferOut = async (row) => {
@@ -3456,12 +3766,12 @@ const getConversionLineRoleText = (role) => {
 }
 
 const getTransferStatusType = (status) => {
-  const types = { pending: 'warning', out_confirmed: 'info', completed: 'success', cancelled: 'danger' }
+  const types = { pending: 'warning', shipping: 'info', out_confirmed: 'info', received: 'success', completed: 'success', cancelled: 'danger' }
   return types[status] || 'info'
 }
 
 const getTransferStatusText = (status) => {
-  const texts = { pending: '待出库', out_confirmed: '待入库', completed: '已完成', cancelled: '已取消' }
+  const texts = { pending: '待出库', shipping: '发货中', out_confirmed: '待入库', received: '已收货', completed: '已完成', cancelled: '已取消' }
   return texts[status] || status
 }
 
@@ -3478,12 +3788,12 @@ const formatDate = (dateStr) => {
 }
 
 const getStatusType = (status) => {
-  const types = { in_stock: 'success', sold: 'warning', damaged: 'danger', available: 'success', used: 'warning', scrapped: 'danger', returned: 'info' }
+  const types = { in_stock: 'success', sold: 'warning', damaged: 'danger', available: 'success', used: 'warning', scrapped: 'danger', returned: 'info', return_pending: 'warning' }
   return types[status] || 'info'
 }
 
 const getStatusText = (status) => {
-  const texts = { in_stock: '在库', sold: '已售', damaged: '损坏', available: '可用', used: '已使用', scrapped: '已报废', returned: '已退库' }
+  const texts = { in_stock: '在库', sold: '已售', damaged: '损坏', available: '可用', used: '已使用', scrapped: '已报废', returned: '已退库', return_pending: '退库待入库' }
   return texts[status] || status
 }
 
@@ -3567,6 +3877,10 @@ const getReturnStatusText = (status) => {
   font-size: 13px;
   margin-left: auto;
 }
+.item-location {
+  color: #409eff;
+  font-size: 13px;
+}
 .sn-table {
   margin-top: 8px;
 }
@@ -3618,6 +3932,49 @@ const getReturnStatusText = (status) => {
   font-size: 13px;
   line-height: 2;
 }
+.inventory-resource-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  background: #fafafa;
+  color: #606266;
+  font-size: 13px;
+}
+.legend-title {
+  color: #303133;
+  font-weight: 600;
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.full-resource {
+  background: #67c23a;
+}
+.subsidy-resource {
+  background: #e6a23c;
+}
+.no-subsidy-resource {
+  background: #f56c6c;
+}
+.stock-quantity-reference {
+  cursor: help;
+  color: #409eff;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+}
 .breakdown-locations {
   border-top: 1px solid #ebeef5;
   margin-top: 6px;
@@ -3641,6 +3998,9 @@ const getReturnStatusText = (status) => {
 .breakdown-value {
   color: #303133;
   font-weight: 600;
+}
+.breakdown-empty {
+  color: #909399;
 }
 .warehouse-values {
   display: flex;

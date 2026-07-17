@@ -220,6 +220,7 @@ const handleSubmit = async () => {
       regionCode: storeForm.regionCode,
       phone: storeForm.phone,
       address: storeForm.address,
+      managerStaffId: storeForm.managerStaffId || null,
       status: storeForm.status
     }
 
@@ -231,8 +232,6 @@ const handleSubmit = async () => {
     }
 
     if (res.code === 0) {
-      const managerStoreId = editStoreId.value || res.data?.storeId
-      if (managerStoreId) await api.setStoreManager(managerStoreId, { staffId: storeForm.managerStaffId || null })
       ElMessage.success(editStoreId.value ? '更新成功' : '创建成功')
       if (!editStoreId.value) {
         clearDraft(STORE_DRAFT_KEY)

@@ -1348,12 +1348,12 @@ const formatDate = (dateStr) => {
 }
 
 const getStatusType = (status) => {
-  const types = { completed: 'success', pending_approval: 'warning', cancelled: 'danger' }
+  const types = { completed: 'success', pending_approval: 'warning', cancelled: 'danger', return_pending: 'warning', returned: 'info' }
   return types[status] || 'info'
 }
 
 const getStatusText = (status) => {
-  const texts = { completed: '已完成', pending_approval: '待审批', cancelled: '已取消' }
+  const texts = { completed: '已完成', pending_approval: '待审批', cancelled: '已取消', return_pending: '退库处理中', returned: '已退单' }
   return texts[status] || status
 }
 

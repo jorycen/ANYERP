@@ -30,10 +30,13 @@ const {
   ResourceSettlement,
   InventoryResourceRight,
   SalesSettlementCostAdjustment,
+  Inbound,
+  InboundItem,
+  SnLog,
   sequelize
 } = require('../../models');
 const { Op } = require('sequelize');
-const { generateOrderNo, generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
+const { generateOrderNo, generateInboundNo, generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { normalizePnCode } = require('../../utils/productPn');
 const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
@@ -1545,6 +1548,116 @@ async function requestSalesReturn(ctx) {
 /**
  * 销售退单两级审批：店长通过后进入经销商总权限审批。
  */
+async function createSalesReturnInbound({ request, user, transaction, ctx }) {
+  const existing = await Inbound.findOne({
+    where: { source_type: 'SALES_RETURN', source_no: request.return_no },
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  if (existing) return existing;
+
+  const requestItems = await SalesReturnRequestItem.findAll({
+    where: { return_id: request.return_id },
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  if (!requestItems.length) ctx.throw(400, 'Sales return request has no items');
+
+  const orderItems = await OrderItem.findAll({
+    where: { item_id: { [Op.in]: requestItems.map(item => item.order_item_id).filter(Boolean) } },
+    transaction
+  });
+  const orderItemMap = new Map(orderItems.map(item => [String(item.item_id), item]));
+  const productIds = [...new Set(requestItems.map(item => item.product_id).filter(Boolean))];
+  const products = await Product.findAll({
+    where: { product_id: { [Op.in]: productIds }, is_deleted: 0 },
+    transaction
+  });
+  const productMap = new Map(products.map(product => [String(product.product_id), product]));
+  const inboundItems = [];
+  let totalQuantity = 0;
+  let totalAmount = 0;
+
+  for (const item of requestItems) {
+    const product = productMap.get(String(item.product_id || ''));
+    if (!product) ctx.throw(400, `Sales return product does not exist: ${item.product_name || item.product_id}`);
+
+    const quantity = Math.max(1, Number(item.quantity || 1));
+    const orderItem = orderItemMap.get(String(item.order_item_id || ''));
+    const unitPrice = money(orderItem?.original_inventory_cost || item.unit_price || 0);
+    let snId = null;
+    const snCode = String(item.sn_code || '').trim();
+
+    if (Number(product.need_sn) === 1) {
+      if (!snCode || quantity !== 1) ctx.throw(400, `Invalid SN return item: ${item.product_name || product.name}`);
+      const sn = await ProductSn.findOne({
+        where: {
+          product_id: item.product_id,
+          store_id: request.store_id,
+          sn_code: snCode,
+          status: { [Op.in]: ['sold', 'return_pending'] },
+          is_deleted: 0
+        },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      if (!sn) ctx.throw(409, `SN[${snCode}] is not in a returnable state`);
+      snId = sn.sn_id;
+      if (sn.status === 'sold') {
+        await sn.update({
+          status: 'return_pending',
+          remark: `${sn.remark || ''} [sales return pending inbound:${request.return_no}]`.trim()
+        }, { transaction });
+        await SnLog.create({
+          log_id: generateUUID(),
+          sn_id: sn.sn_id,
+          sn_code: sn.sn_code,
+          product_id: sn.product_id,
+          product_name: sn.product_name || product.name,
+          store_id: request.store_id,
+          action: 'return',
+          remark: `Sales return approved, pending re-inbound: ${request.return_no}`,
+          create_user: user.name || user.staffId || '',
+          create_time: new Date()
+        }, { transaction });
+      }
+    }
+
+    inboundItems.push({
+      product_id: item.product_id,
+      product_name: item.product_name || product.name,
+      pn_code: item.pn_code || '',
+      sn_id: snId,
+      sn_code: snCode,
+      unit_price: unitPrice,
+      quantity,
+      remark: `Sales return: ${request.return_no}`,
+      inventory_type: 'normal_qty'
+    });
+    totalQuantity += quantity;
+    totalAmount += unitPrice * quantity;
+  }
+
+  const inbound = await Inbound.create({
+    inbound_id: generateUUID(),
+    inbound_no: generateInboundNo(),
+    store_id: request.store_id,
+    source_type: 'SALES_RETURN',
+    source_no: request.return_no,
+    total_amount: money(totalAmount),
+    total_quantity: totalQuantity,
+    status: 'pending',
+    create_user: user.name || user.staffId || '',
+    create_time: new Date(),
+    update_time: new Date()
+  }, { transaction });
+
+  for (const item of inboundItems) {
+    await InboundItem.create({ inbound_id: inbound.inbound_id, ...item }, { transaction });
+  }
+  return inbound;
+}
+
 async function reviewSalesReturn(ctx) {
   const { returnId } = ctx.params;
   const { action = 'approved', comment = '' } = ctx.request.body || {};
@@ -1583,16 +1696,34 @@ async function reviewSalesReturn(ctx) {
     }
 
     await request.update({ status: nextStatus, approval_stage: nextStage, update_time: now, ...reviewData }, { transaction });
+    let inbound = null;
+    if (nextStatus === 'approved') {
+      inbound = await createSalesReturnInbound({ request, user, transaction, ctx });
+    }
     if (rejected) {
       await Order.update(
         { order_status: '已归档', update_time: now },
         { where: { order_id: request.order_id }, transaction }
       );
     }
-    return { returnId, status: nextStatus, approvalStage: nextStage };
+    return {
+      returnId,
+      status: nextStatus,
+      approvalStage: nextStage,
+      inboundId: inbound?.inbound_id || '',
+      inboundNo: inbound?.inbound_no || ''
+    };
   });
 
-  ctx.body = { code: 0, data: result, message: result.status === 'rejected' ? '退单申请已拒绝' : '退单审批已完成' };
+  ctx.body = {
+    code: 0,
+    data: result,
+    message: result.status === 'rejected'
+      ? '退单申请已拒绝'
+      : result.inboundNo
+        ? `退单审批已完成，已生成待重新入库单 ${result.inboundNo}`
+        : '退单审批已完成'
+  };
 }
 
 function isDepositPayment(payment) {
@@ -2316,6 +2447,7 @@ module.exports = {
   listSalesReturnRequests,
   requestSalesReturn,
   reviewSalesReturn,
+  createSalesReturnInbound,
   stats,
   approve,
   reject,

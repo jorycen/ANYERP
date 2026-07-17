@@ -9,7 +9,7 @@ const {
   executeInbound, getReturnList, requestReturn, approveReturn, executeReturn,
   inbound, outbound, transfer, getTransferList, confirmTransferOut,
   confirmTransferIn, getConversionList, getConversionDetail, createConversion,
-  voidConversion, getLocationsByStore, updateSn, snTrace
+  voidConversion, getLocationsByStore, updateSn, adjustSnLocation, snTrace
 } = require('./controller');
 const { enforceStoreOwnership, requireRole } = require('../../middleware/permission');
 const resourceRights = require('./resourceRights');
@@ -25,6 +25,7 @@ router.delete('/sn/:snId/special-price', requireRole('admin'), cancelSnSpecialPr
 router.get('/sn/:snId/special-price-history', requireRole('admin'), getSnSpecialPriceHistory);
 router.get('/sn-list', getSnList);
 router.put('/sn/:snId', updateSn);
+router.post('/sn/:snId/location-adjust', adjustSnLocation);
 router.get('/sn-trace/:snCode', snTrace);
 router.get('/resource-rights', resourceRights.listRights);
 router.get('/resource-rights/changes', resourceRights.listChanges);

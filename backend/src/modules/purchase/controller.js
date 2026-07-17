@@ -1,7 +1,7 @@
 /**
  * 采购管理控制器
  */
-const { sequelize, PurchaseRequest, PurchaseRequestItem, PurchaseAdjustment, PurchaseAdjustmentItem, Supplier, SupplierPaymentAccount, Store, Product, Inbound, InboundItem, Payable, Expense, SupplierRebate, ResourceCategory, GoodsType } = require('../../models');
+const { sequelize, PurchaseRequest, PurchaseRequestItem, PurchaseAdjustment, PurchaseAdjustmentItem, Supplier, SupplierPaymentAccount, Store, Location, Product, Inbound, InboundItem, Payable, Expense, SupplierRebate, ResourceCategory, GoodsType } = require('../../models');
 const { Op } = require('sequelize');
 const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { recordRebateDeduction, recordSupplierRebateAccountTransaction, _getRebateBalance } = require('../finance/rebateController');
@@ -78,6 +78,94 @@ function normalizeSelectedResourceTypes(value) {
     return Array.isArray(parsed) ? [...new Set(parsed.filter(Boolean).map(String))] : [];
   } catch (_) {
     return [];
+  }
+}
+
+function parsePurchaseAllocationArray(value) {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function getLocationAllocations(allocation) {
+  const nested = allocation?.locationAllocations || allocation?.location_allocations;
+  if (Array.isArray(nested)) return nested;
+  if (allocation?.locationId || allocation?.location_id) {
+    return [{
+      locationId: allocation.locationId || allocation.location_id,
+      locationName: allocation.locationName || allocation.location_name || '',
+      quantity: allocation.quantity
+    }];
+  }
+  return [];
+}
+
+function flattenPurchaseAllocations(item, fallbackStoreId) {
+  const allocations = parsePurchaseAllocationArray(item.storeAllocations || item.store_allocations);
+  if (allocations.length === 0) {
+    return [{ storeId: fallbackStoreId, locationId: null, quantity: Number(item.quantity || 0) }];
+  }
+
+  const flattened = [];
+  for (const allocation of allocations) {
+    const storeId = allocation.storeId || allocation.store_id || fallbackStoreId;
+    const locationAllocations = getLocationAllocations(allocation);
+    if (locationAllocations.length === 0) {
+      flattened.push({
+        storeId,
+        locationId: allocation.locationId || allocation.location_id || null,
+        quantity: Number(allocation.quantity || 0)
+      });
+      continue;
+    }
+    for (const location of locationAllocations) {
+      flattened.push({
+        storeId,
+        locationId: location.locationId || location.location_id || null,
+        quantity: Number(location.quantity || 0)
+      });
+    }
+  }
+  return flattened.filter(item => item.quantity > 0);
+}
+
+async function validatePurchaseAllocations(items, fallbackStoreId, transaction = null) {
+  for (const item of items || []) {
+    const allocations = parsePurchaseAllocationArray(item.storeAllocations || item.store_allocations);
+    if (allocations.length === 0) {
+      throw new Error(`商品 ${item.productName || item.product_name || item.productId || item.product_id} 必须分配门店和库位`);
+    }
+
+    let totalQuantity = 0;
+    for (const allocation of allocations) {
+      const storeId = allocation.storeId || allocation.store_id || fallbackStoreId;
+      const storeQuantity = Number(allocation.quantity || 0);
+      const locationAllocations = getLocationAllocations(allocation);
+      if (!storeId || storeQuantity <= 0 || locationAllocations.length === 0) {
+        throw new Error(`商品 ${item.productName || item.product_name || item.productId || item.product_id} 必须分配到有效库位`);
+      }
+
+      let locationQuantity = 0;
+      for (const location of locationAllocations) {
+        const locationId = location.locationId || location.location_id;
+        const quantity = Number(location.quantity || 0);
+        if (!locationId || quantity <= 0) throw new Error('库位分配数量必须大于0');
+        const target = await Location.findOne({
+          where: { location_id: locationId, store_id: storeId, status: 1 },
+          transaction
+        });
+        if (!target) throw new Error(`库位 ${locationId} 不存在、已停用或不属于对应门店`);
+        locationQuantity += quantity;
+      }
+      if (locationQuantity !== storeQuantity) throw new Error('门店分配数量必须等于该门店的库位分配数量');
+      totalQuantity += storeQuantity;
+    }
+    if (totalQuantity !== Number(item.quantity || 0)) throw new Error('门店分配总数必须等于采购数量');
   }
 }
 
@@ -179,15 +267,15 @@ function buildAdjustmentRows(request, inbounds, stores) {
  * 采购申请列表
  */
 async function getRequestList(ctx) {
-  const { status, page = 1, pageSize = 20 } = ctx.query;
+  const { status, submitter, keyword, supplierId, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
 
   const where = {};
   const whereStore = {};
 
   // 区域权限过滤
-  if (!user.accessibleStoreIds.includes('*')) {
-    whereStore.store_id = user.accessibleStoreIds;
+  if (!(user.accessibleStoreIds || []).includes('*')) {
+    whereStore.store_id = user.accessibleStoreIds || [];
   }
 
   const stores = await Store.findAll({ where: whereStore });
@@ -195,6 +283,34 @@ async function getRequestList(ctx) {
   where.store_id = storeIds;
 
   if (status) where.status = status;
+  if (submitter) where.apply_user = { [Op.like]: `%${String(submitter).trim()}%` };
+  if (supplierId) where.supplier_id = supplierId;
+
+  if (keyword && String(keyword).trim()) {
+    const text = String(keyword).trim();
+    const productRows = await Product.findAll({
+      attributes: ['product_id'],
+      where: {
+        [Op.or]: [
+          { name: { [Op.like]: `%${text}%` } },
+          { product_code: { [Op.like]: `%${text}%` } },
+          { manufacturer_code: { [Op.like]: `%${text}%` } }
+        ]
+      }
+    });
+    const productIds = productRows.map(row => row.product_id);
+    const itemWhere = {
+      [Op.or]: [
+        { product_name: { [Op.like]: `%${text}%` } },
+        { pn_code: { [Op.like]: `%${text}%` } },
+        { product_id: { [Op.like]: `%${text}%` } },
+        ...(productIds.length ? [{ product_id: { [Op.in]: productIds } }] : [])
+      ]
+    };
+    const itemRows = await PurchaseRequestItem.findAll({ attributes: ['request_id'], where: itemWhere });
+    const requestIds = [...new Set(itemRows.map(row => row.request_id))];
+    where.request_id = requestIds.length ? { [Op.in]: requestIds } : '__NO_MATCH__';
+  }
 
   const { count, rows } = await PurchaseRequest.findAndCountAll({
     where,
@@ -205,7 +321,7 @@ async function getRequestList(ctx) {
     ],
     order: buildPendingFirstOrder(sequelize, {
       statusColumn: 'PurchaseRequest.status',
-      pendingStatuses: ['pending'],
+      pendingStatuses: ['draft', 'pending'],
       dateColumns: ['PurchaseRequest.create_time'],
       idColumn: 'PurchaseRequest.request_id'
     }),
@@ -216,6 +332,7 @@ async function getRequestList(ctx) {
     const result = row.toJSON();
     result.store_name = result.Store?.name || '';
     result.supplier_name = result.Supplier?.name || '';
+    result.submitter_name = result.apply_user || '';
     
     // 汇总商品名称和数量用于前端展示
     if (result.items && result.items.length > 0) {
@@ -292,13 +409,14 @@ async function getRequestDetail(ctx) {
  */
 async function createRequest(ctx) {
   const user = ctx.state.user;
-  const { supplierId, remark, items, storeId, invoiceType, paymentMethod, goodsTypeId, productType, rebateDeduction } = ctx.request.body;
+  const { supplierId, remark, items, storeId, invoiceType, paymentMethod, goodsTypeId, productType, rebateDeduction, saveDraft = false } = ctx.request.body;
+  const isDraft = Boolean(saveDraft);
 
   if (!items || items.length === 0) {
     ctx.throw(400, '请添加商品明细');
   }
 
-  if (!supplierId) {
+  if (!supplierId && !isDraft) {
     ctx.throw(400, '请选择供应商');
   }
   const normalizedPaymentMethod = paymentMethod || 'COMPANY_CREDIT';
@@ -312,16 +430,16 @@ async function createRequest(ctx) {
   const goodsType = requestedGoodsTypeId
     ? await GoodsType.findOne({ where: { goods_type_id: requestedGoodsTypeId, status: 1 } })
     : await GoodsType.findOne({ where: { name: requestedProductType, status: 1 } });
-  if (!goodsType) {
+  if (!goodsType && !isDraft) {
     ctx.throw(400, '请选择有效且已启用的货型');
   }
-  const canonicalGoodsTypeId = goodsType.goods_type_id;
-  const canonicalProductType = goodsType.name;
+  const canonicalGoodsTypeId = goodsType?.goods_type_id || requestedGoodsTypeId || null;
+  const canonicalProductType = goodsType?.name || requestedProductType || '';
 
   for (const item of items) {
     const itemType = item.productType || item.product_type || canonicalProductType;
     const itemTypeId = item.goodsTypeId || item.goods_type_id || canonicalGoodsTypeId;
-    if (String(itemType) !== String(canonicalProductType) || String(itemTypeId) !== String(canonicalGoodsTypeId)) {
+    if (!isDraft && (String(itemType) !== String(canonicalProductType) || String(itemTypeId) !== String(canonicalGoodsTypeId))) {
       ctx.throw(400, '同一采购申请中的商品货型必须保持一致');
     }
   }
@@ -355,7 +473,7 @@ async function createRequest(ctx) {
   const actualTotal = totalAmount - deduction;
 
   // 如果有返利抵扣，验证并记录
-  if (deduction > 0) {
+  if (deduction > 0 && !isDraft) {
     const currentBalance = await _getRebateBalance(supplierId);
     
     if (deduction > currentBalance) {
@@ -389,8 +507,8 @@ async function createRequest(ctx) {
   // 如果还是没有，尝试从用户的区域权限查找一个门店
   if (!finalStoreId) {
     const whereStore = {};
-    if (!user.accessibleStoreIds.includes('*')) {
-      whereStore.store_id = user.accessibleStoreIds;
+    if (!(user.accessibleStoreIds || []).includes('*')) {
+      whereStore.store_id = user.accessibleStoreIds || [];
     }
     const stores = await Store.findAll({ where: whereStore, limit: 1 });
     if (stores.length > 0) {
@@ -400,12 +518,18 @@ async function createRequest(ctx) {
     }
   }
 
+  try {
+    await validatePurchaseAllocations(items, finalStoreId);
+  } catch (error) {
+    ctx.throw(400, error.message);
+  }
+
   const now = new Date();
   const createdRequest = await PurchaseRequest.create({
     request_id: requestId,
     request_no: requestNo,
     store_id: finalStoreId,
-    supplier_id: supplierId,
+    supplier_id: supplierId || null,
     goods_type_id: canonicalGoodsTypeId,
     product_type: canonicalProductType,
     invoice_type: invoiceType || '',
@@ -414,7 +538,7 @@ async function createRequest(ctx) {
     total_amount: totalAmount,
     rebate_deduction: deduction,
     actual_total: actualTotal,
-    status: 'pending',
+    status: isDraft ? 'draft' : 'pending',
     apply_user: user.name,
     create_time: now,
     update_time: now
@@ -444,12 +568,179 @@ async function createRequest(ctx) {
     });
   }
 
-  if (normalizedPaymentMethod === 'PERSONAL_ADVANCE') {
+  if (normalizedPaymentMethod === 'PERSONAL_ADVANCE' && !isDraft) {
     createdRequest.Supplier = await Supplier.findByPk(supplierId);
     await createPurchaseReimbursement(createdRequest, user);
   }
 
-  ctx.body = { code: 0, message: '采购申请提交成功', requestId, requestNo };
+  ctx.body = {
+    code: 0,
+    message: isDraft ? '采购申请草稿已保存' : '采购申请提交成功',
+    requestId,
+    requestNo,
+    status: isDraft ? 'draft' : 'pending'
+  };
+}
+
+async function saveRequestDraft(ctx) {
+  ctx.request.body = { ...(ctx.request.body || {}), saveDraft: true };
+  return createRequest(ctx);
+}
+
+function canSubmitDraft(user, request) {
+  const roles = Array.isArray(user?.roles) ? user.roles : [user?.roleCode].filter(Boolean);
+  const privileged = roles.some(role => ['boss', 'admin', 'manager', 'store_manager'].includes(role));
+  const operatorNames = [user?.name, user?.phone].filter(Boolean).map(String);
+  return privileged || operatorNames.includes(String(request.apply_user || ''));
+}
+
+async function validateDraftSubmission(request, ctx) {
+  if (!request.supplier_id) ctx.throw(400, '提交采购申请前请选择供应商');
+  if (!request.items || request.items.length === 0) ctx.throw(400, '请添加商品明细');
+  try {
+    await validatePurchaseAllocations(request.items, request.store_id);
+  } catch (error) {
+    ctx.throw(400, error.message);
+  }
+
+  const goodsType = request.goods_type_id
+    ? await GoodsType.findOne({ where: { goods_type_id: request.goods_type_id, status: 1 } })
+    : await GoodsType.findOne({ where: { name: request.product_type, status: 1 } });
+  if (!goodsType) ctx.throw(400, '请选择有效且已启用的货型');
+
+  const selectedTypeSet = new Set();
+  for (const item of request.items) {
+    if (!item.product_id || Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
+    const itemType = item.product_type || request.product_type;
+    const itemTypeId = item.goods_type_id || request.goods_type_id;
+    if (String(itemType) !== String(goodsType.name) || String(itemTypeId) !== String(goodsType.goods_type_id)) {
+      ctx.throw(400, '同一采购申请中的商品货型必须保持一致');
+    }
+    normalizeSelectedResourceTypes(item.selected_resource_types).forEach(type => selectedTypeSet.add(type));
+  }
+  if (selectedTypeSet.size > 0) {
+    const validCategories = await ResourceCategory.findAll({
+      where: { category_code: { [Op.in]: [...selectedTypeSet] }, status: 1, supports_purchase_select: 1 }
+    });
+    const validSet = new Set(validCategories.map(row => row.category_code));
+    for (const type of selectedTypeSet) {
+      if (!validSet.has(type)) ctx.throw(400, `资源权益 ${type} 不存在、已停用或不允许采购勾选`);
+    }
+  }
+  return goodsType;
+}
+
+async function submitRequestDraft(ctx) {
+  const { requestId } = ctx.params;
+  const user = ctx.state.user;
+  const request = await PurchaseRequest.findByPk(requestId, {
+    include: [{ model: PurchaseRequestItem, as: 'items' }]
+  });
+  if (!request) ctx.throw(404, '采购申请不存在');
+  assertStoreVisible(ctx, request.store_id);
+  if (request.status !== 'draft') ctx.throw(400, '只有草稿状态的采购申请可以提交');
+  if (!canSubmitDraft(user, request)) ctx.throw(403, '只有草稿创建人、店长或管理员可以提交');
+
+  const goodsType = await validateDraftSubmission(request, ctx);
+  const deduction = Math.min(toMoney(request.rebate_deduction || 0), toMoney(request.total_amount || 0));
+  if (deduction > 0) {
+    const currentBalance = await _getRebateBalance(request.supplier_id);
+    if (deduction > currentBalance) ctx.throw(400, `返利余额不足，当前余额：￥${currentBalance.toFixed(2)}`);
+    await recordRebateDeduction(
+      request.supplier_id,
+      '',
+      deduction,
+      request.request_no,
+      `采购申请 ${request.request_no} 返利抵扣`,
+      user.name || user.phone
+    );
+  }
+
+  request.goods_type_id = goodsType.goods_type_id;
+  request.product_type = goodsType.name;
+  request.status = 'pending';
+  request.update_time = new Date();
+  await request.save();
+
+  if (request.payment_method === 'PERSONAL_ADVANCE') {
+    request.Supplier = await Supplier.findByPk(request.supplier_id);
+    await createPurchaseReimbursement(request, user);
+  }
+
+  ctx.body = { code: 0, message: '采购申请提交成功', requestId, requestNo: request.request_no, status: 'pending' };
+}
+
+async function updateRequestDraft(ctx) {
+  const { requestId } = ctx.params;
+  const user = ctx.state.user;
+  const { supplierId, remark, items, invoiceType, paymentMethod, goodsTypeId, productType, rebateDeduction } = ctx.request.body;
+  const request = await PurchaseRequest.findByPk(requestId);
+  if (!request) ctx.throw(404, '采购申请不存在');
+  assertStoreVisible(ctx, request.store_id);
+  if (request.status !== 'draft') ctx.throw(400, '只有草稿状态的采购申请可以编辑');
+  if (!canSubmitDraft(user, request)) ctx.throw(403, '只有草稿创建人、店长或管理员可以编辑');
+  if (!Array.isArray(items) || items.length === 0) ctx.throw(400, '请添加商品明细');
+  if (!['COMPANY_CREDIT', 'PERSONAL_ADVANCE'].includes(paymentMethod || 'COMPANY_CREDIT')) {
+    ctx.throw(400, '付款方式无效');
+  }
+  for (const item of items) {
+    if (!item.productId || Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
+  }
+  try {
+    await validatePurchaseAllocations(items, request.store_id);
+  } catch (error) {
+    ctx.throw(400, error.message);
+  }
+
+  const goodsType = goodsTypeId
+    ? await GoodsType.findOne({ where: { goods_type_id: goodsTypeId, status: 1 } })
+    : await GoodsType.findOne({ where: { name: productType, status: 1 } });
+  const canonicalGoodsTypeId = goodsType?.goods_type_id || goodsTypeId || null;
+  const canonicalProductType = goodsType?.name || productType || '';
+  const totalAmount = toMoney(items.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0));
+  const rawItemDeductions = items.map(item => toMoney(item.rebateDeduction || 0));
+  const itemDeductionTotal = toMoney(rawItemDeductions.reduce((sum, amount) => sum + amount, 0));
+  const itemRebateAllocations = itemDeductionTotal > 0
+    ? rawItemDeductions.map((amount, index) => Math.min(amount, toMoney(Number(items[index].price || 0) * Number(items[index].quantity || 0))))
+    : allocateRebateByItems(items, Math.min(toMoney(rebateDeduction || 0), totalAmount));
+  const deduction = itemDeductionTotal > 0
+    ? Math.min(toMoney(itemRebateAllocations.reduce((sum, amount) => sum + amount, 0)), totalAmount)
+    : Math.min(toMoney(rebateDeduction || 0), totalAmount);
+
+  await sequelize.transaction(async transaction => {
+    await request.update({
+      supplier_id: supplierId || null,
+      invoice_type: invoiceType || '',
+      payment_method: paymentMethod || 'COMPANY_CREDIT',
+      goods_type_id: canonicalGoodsTypeId,
+      product_type: canonicalProductType,
+      reason: remark || '',
+      total_amount: totalAmount,
+      rebate_deduction: deduction,
+      actual_total: totalAmount - deduction,
+      update_time: new Date()
+    }, { transaction });
+    await PurchaseRequestItem.destroy({ where: { request_id: requestId }, transaction });
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      await PurchaseRequestItem.create({
+        request_id: requestId,
+        product_id: item.productId,
+        product_name: item.productName || '',
+        pn_code: item.pnCode || '',
+        quantity: Number(item.quantity),
+        unit_price: Number(item.price || 0),
+        subtotal: Number(item.price || 0) * Number(item.quantity || 0),
+        rebate_deduction: itemRebateAllocations[index] || 0,
+        goods_type_id: canonicalGoodsTypeId,
+        product_type: canonicalProductType,
+        store_allocations: item.storeAllocations ? JSON.stringify(item.storeAllocations) : null,
+        selected_resource_types: JSON.stringify(normalizeSelectedResourceTypes(item.selectedResourceTypes || item.selected_resource_types))
+      }, { transaction });
+    }
+  });
+
+  ctx.body = { code: 0, message: '采购申请草稿已保存', requestId, requestNo: request.request_no, status: 'draft' };
 }
 
 async function ensurePayableForApprovedRequest(request, user, transaction = null) {
@@ -543,20 +834,7 @@ async function approveRequest(ctx) {
 
     // 解析门店分配并按门店分组
     for (const item of request.items) {
-      let allocations = [];
-      if (item.store_allocations) {
-        try {
-          allocations = JSON.parse(item.store_allocations);
-        } catch (e) {
-          // 解析失败，默认分配到申请门店
-          allocations = [{ storeId: request.store_id, quantity: item.quantity }];
-        }
-      }
-
-      // 如果没有分配，默认分配到申请门店
-      if (allocations.length === 0) {
-        allocations = [{ storeId: request.store_id, quantity: item.quantity }];
-      }
+      const allocations = flattenPurchaseAllocations(item, request.store_id);
 
       // 确保商品名称存在
       let productName = item.product_name;
@@ -576,6 +854,7 @@ async function approveRequest(ctx) {
           ...item.toJSON(),
           product_name: productName,
           allocatedQuantity: alloc.quantity || item.quantity,
+          locationId: alloc.locationId || null,
           selected_resource_types: item.selected_resource_types || '[]',
           purchase_request_item_id: item.item_id
         });
@@ -617,10 +896,12 @@ async function approveRequest(ctx) {
           unit_price: item.unit_price,
           quantity: item.allocatedQuantity || item.quantity,
           product_type: item.product_type || '',
+          location_id: item.locationId || null,
           selected_resource_types: item.selected_resource_types || '[]',
           purchase_request_item_id: item.purchase_request_item_id || item.item_id,
           store_allocations: JSON.stringify([{
             storeId: storeId,
+            locationId: item.locationId || null,
             quantity: item.allocatedQuantity || item.quantity
           }])
         }, { transaction });
@@ -1203,6 +1484,9 @@ module.exports = {
   getRequestList,
   getRequestDetail,
   createRequest,
+  saveRequestDraft,
+  updateRequestDraft,
+  submitRequestDraft,
   approveRequest,
   revokeRequest,
   getAdjustmentPreview,
@@ -1212,5 +1496,8 @@ module.exports = {
   createSupplier,
   updateSupplier,
   deleteSupplier,
-  sortSuppliers
+  sortSuppliers,
+  _test: {
+    flattenPurchaseAllocations
+  }
 };

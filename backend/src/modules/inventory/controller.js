@@ -7,6 +7,7 @@ const {
   SnDistributorPrice, SnDistributorPriceChangeLog, ResourceCategory,
   ProductBarcode, Store, Location, InventoryWarning, Inbound, InboundItem,
   ReturnStock, ReturnStockItem, PurchaseRequest, Payable, Supplier, Inventory,
+  SalesReturnRequest,
   SnLog, Order, OrderItem, Transfer, TransferItem, InventoryConversion,
   InventoryConversionItem
 } = require('../../models');
@@ -28,6 +29,51 @@ function assertStoreVisible(ctx, storeId) {
   if (!allowed.includes('*') && !allowed.map(String).includes(String(storeId || ''))) {
     ctx.throw(403, '无权访问该门店库存数据');
   }
+}
+
+const CLERK_TRANSFER_ROLE_CODES = new Set(['clerk', 'staff']);
+const MANAGER_TRANSFER_ROLE_CODES = new Set(['manager', 'store_manager']);
+
+const TRANSFER_PARTICIPANT_FIELDS = [
+  'apply_user',
+  'confirm_user',
+  'inbound_confirm_user',
+  'shipping_user',
+  'receiving_user'
+];
+
+function getTransferVisibilityLevel(user) {
+  const roles = getUserRoles(user);
+  if (roles.includes('boss')) return 'all';
+  if (roles.some(role => !CLERK_TRANSFER_ROLE_CODES.has(role) && !MANAGER_TRANSFER_ROLE_CODES.has(role))) return 'distributor';
+  if (roles.some(role => MANAGER_TRANSFER_ROLE_CODES.has(role))) return 'store';
+  return 'participant';
+}
+
+function buildTransferVisibilityWhere(user, distributorStoreIds = []) {
+  const level = getTransferVisibilityLevel(user);
+  if (level === 'all') return [];
+
+  const storeIds = (distributorStoreIds || []).map(String).filter(Boolean);
+  const conditions = [{
+    [Op.or]: storeIds.length > 0
+      ? [
+          { from_store_id: { [Op.in]: storeIds } },
+          { to_store_id: { [Op.in]: storeIds } }
+        ]
+      : [{ transfer_id: { [Op.in]: ['__NO_TRANSFER_SCOPE__'] } }]
+  }];
+
+  if (level === 'participant') {
+    const participantName = String(user?.name || '').trim();
+    conditions.push({
+      [Op.or]: participantName
+        ? TRANSFER_PARTICIPANT_FIELDS.map(field => ({ [field]: participantName }))
+        : [{ transfer_id: { [Op.in]: ['__NO_TRANSFER_PARTICIPANT__'] } }]
+    });
+  }
+
+  return conditions;
 }
 
 async function assertTransferScope(ctx, fromStoreId, toStoreId) {
@@ -915,6 +961,97 @@ async function updateSn(ctx) {
   }
 }
 
+function validateSnLocationAdjustment({ sn, storeId, locationId, targetLocation }) {
+  if (!storeId) return { status: 400, message: '门店不能为空' };
+  if (!locationId) return { status: 400, message: '目标库位不能为空' };
+  if (!sn) return { status: 404, message: 'SN记录不存在' };
+  if (String(sn.store_id || '') !== String(storeId)) {
+    return { status: 403, message: '只能调整SN所在门店的库位' };
+  }
+  if (sn.status !== 'in_stock') {
+    return { status: 409, message: '只有在库SN可以调整库位' };
+  }
+  if (!targetLocation) {
+    return { status: 400, message: '目标库位不存在、已停用或不属于当前门店' };
+  }
+  return null;
+}
+
+/**
+ * 同门店调整 SN 库位。
+ * 只变更库位，不改变门店、库存数量或 SN 状态。
+ */
+async function adjustSnLocation(ctx) {
+  const t = await sequelize.transaction();
+  try {
+    const { snId } = ctx.params;
+    const body = ctx.request.body || {};
+    const storeId = String(body.storeId || body.store_id || '').trim();
+    const locationId = String(body.locationId || body.location_id || '').trim();
+    const user = ctx.state.user || ctx.state.staff || {};
+
+    if (!storeId) ctx.throw(400, '门店不能为空');
+    if (!locationId) ctx.throw(400, '目标库位不能为空');
+    assertStoreVisible(ctx, storeId);
+
+    const sn = await ProductSn.findOne({
+      where: { sn_id: snId, is_deleted: 0 },
+      transaction: t,
+      lock: t.LOCK.UPDATE
+    });
+    const targetLocation = await Location.findOne({
+      where: { location_id: locationId, store_id: storeId, status: 1 },
+      transaction: t
+    });
+    const validationError = validateSnLocationAdjustment({ sn, storeId, locationId, targetLocation });
+    if (validationError) ctx.throw(validationError.status, validationError.message);
+
+    const oldLocationId = String(sn.location_id || '');
+    if (oldLocationId === locationId) {
+      await t.commit();
+      ctx.body = { code: 0, message: 'SN已在目标库位，无需调整' };
+      return;
+    }
+
+    const oldLocation = oldLocationId
+      ? await Location.findOne({
+          where: { location_id: oldLocationId, store_id: storeId },
+          transaction: t
+        })
+      : null;
+
+    await sn.update({ location_id: locationId }, { transaction: t });
+    await SnLog.create({
+      log_id: generateUUID(),
+      sn_id: sn.sn_id,
+      sn_code: sn.sn_code,
+      product_id: sn.product_id,
+      product_name: sn.product_name || '',
+      store_id: storeId,
+      action: 'location_adjust',
+      remark: `同门店库位调整：${oldLocation?.name || '未指定库位'} → ${targetLocation.name}`,
+      create_user: user.name || user.staffId || user.phone || '-'
+    }, { transaction: t });
+
+    await t.commit();
+    ctx.body = {
+      code: 0,
+      data: {
+        snId: sn.sn_id,
+        storeId,
+        locationId,
+        locationName: targetLocation.name
+      },
+      message: '库位调整成功'
+    };
+  } catch (err) {
+    await t.rollback();
+    if (err.status) ctx.throw(err.status, err.message);
+    console.error('adjustSnLocation error:', err);
+    ctx.throw(500, '调整库位失败');
+  }
+}
+
 async function snTrace(ctx) {
   try {
     const { snCode } = ctx.params;
@@ -1159,6 +1296,11 @@ async function getInboundDetail(ctx) {
 
     const items = await InboundItem.findAll({ where: { inbound_id: inboundId } });
     const store = await Store.findByPk(inbound.store_id);
+    const locationIds = items.map(item => item.location_id).filter(Boolean);
+    const locations = locationIds.length
+      ? await Location.findAll({ where: { location_id: { [Op.in]: locationIds } }, attributes: ['location_id', 'name'] })
+      : [];
+    const locationMap = new Map(locations.map(location => [location.location_id, location.name]));
     inbound.dataValues.items = items.map(i => i.toJSON());
     inbound.dataValues.Store = store ? store.toJSON() : null;
 
@@ -1180,6 +1322,7 @@ async function getInboundDetail(ctx) {
         }
         return {
           ...item,
+          location_name: item.location_id ? (locationMap.get(item.location_id) || item.location_id) : '',
           need_sn: productMap.get(item.product_id)?.need_sn || 0
         };
       });
@@ -1315,6 +1458,15 @@ async function updateInventory(productId, storeId, field, delta, transaction, lo
 }
 
 
+function validateSalesReturnInboundSn({ sn, requestedSnCode = '' }) {
+  if (!sn) return { status: 409, message: 'Sales return SN does not exist' };
+  if (sn.status !== 'return_pending') return { status: 409, message: 'Sales return SN is not pending re-inbound' };
+  if (requestedSnCode && String(requestedSnCode) !== String(sn.sn_code || '')) {
+    return { status: 400, message: `Sales return SN must be ${sn.sn_code}` };
+  }
+  return null;
+}
+
 async function getTransferableStock(product, productId, storeId, transaction) {
   const inventory = await Inventory.findOne({
     where: { product_id: productId, store_id: storeId },
@@ -1362,6 +1514,50 @@ function normalizeTransferItem(raw) {
 }
 
 /**
+ * 调出确认成功后，为调入门店创建一张真正的待入库单。
+ * 用 source_no 做幂等键，兼容历史数据和重复请求。
+ */
+async function ensureTransferInbound(transfer, items, transaction) {
+  const existing = await Inbound.findOne({
+    where: { source_type: 'TRANSFER', source_no: transfer.transfer_no },
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  if (existing) return existing;
+
+  const inboundId = generateUUID();
+  const inboundNo = generateInboundNo();
+  const normalizedItems = (items || []).map(item => ({
+    inbound_id: inboundId,
+    product_id: item.product_id || item.productId,
+    product_name: item.product_name || item.productName || '',
+    pn_code: item.pn_code || item.pnCode || '',
+    sn_id: item.sn_id || item.snId || null,
+    sn_code: item.sn_code || item.snCode || '',
+    quantity: Math.max(Number(item.quantity || 1), 1),
+    inventory_type: 'normal_qty'
+  }));
+
+  await Inbound.create({
+    inbound_id: inboundId,
+    inbound_no: inboundNo,
+    store_id: transfer.to_store_id,
+    source_type: 'TRANSFER',
+    source_no: transfer.transfer_no,
+    total_quantity: normalizedItems.reduce((sum, item) => sum + item.quantity, 0),
+    status: 'pending',
+    create_user: transfer.apply_user || 'system',
+    create_time: new Date(),
+    update_time: new Date()
+  }, { transaction });
+
+  if (normalizedItems.length) {
+    await InboundItem.bulkCreate(normalizedItems, { transaction });
+  }
+  return Inbound.findByPk(inboundId, { transaction });
+}
+
+/**
  * 执行入库
  */
 async function executeInbound(ctx) {
@@ -1378,17 +1574,19 @@ async function executeInbound(ctx) {
 
   const t = await sequelize.transaction();
   try {
-    const { inboundId, items } = ctx.request.body;
+    const { inboundId, items = [] } = ctx.request.body;
     const user = ctx.state.user;
 
-    const inbound = await Inbound.findByPk(inboundId);
+    const inbound = await Inbound.findByPk(inboundId, { transaction: t, lock: t.LOCK.UPDATE });
     if (!inbound) ctx.throw(404, '入库单不存在');
 
     if (inbound.status !== 'pending') {
       ctx.throw(400, '该入库单已处理');
     }
 
-    const inboundItems = await InboundItem.findAll({ where: { inbound_id: inboundId } });
+    const isTransferInbound = String(inbound.source_type || '').toUpperCase() === 'TRANSFER';
+    const isSalesReturnInbound = String(inbound.source_type || '').toUpperCase() === 'SALES_RETURN';
+    const inboundItems = await InboundItem.findAll({ where: { inbound_id: inboundId }, transaction: t });
     const purchaseRequest = inbound.purchase_request_id
       ? await PurchaseRequest.findByPk(inbound.purchase_request_id, { transaction: t })
       : null;
@@ -1396,7 +1594,7 @@ async function executeInbound(ctx) {
       ? await Supplier.findByPk(purchaseRequest.supplier_id, { transaction: t })
       : null;
     const productIds = inboundItems.map(item => item.product_id);
-    const products = await Product.findAll({ where: { product_id: { [Op.in]: productIds } } });
+    const products = await Product.findAll({ where: { product_id: { [Op.in]: productIds } }, transaction: t });
     const productMap = new Map();
     products.forEach(p => productMap.set(p.product_id, p));
 
@@ -1407,7 +1605,9 @@ async function executeInbound(ctx) {
       }
 
       const dbItems = inboundItems.filter(di => di.product_id === item.productId);
-      const dbItem = dbItems[0];
+      const dbItem = item.inboundItemId || item.inbound_item_id
+        ? dbItems.find(di => String(di.item_id) === String(item.inboundItemId || item.inbound_item_id))
+        : dbItems.find(di => item.locationId && String(di.location_id || '') === String(item.locationId)) || dbItems[0];
       if (!dbItem) {
         ctx.throw(400, `入库单中未找到商品 ${item.productId || product.name} 的明细`);
       }
@@ -1416,16 +1616,109 @@ async function executeInbound(ctx) {
       const inventoryType = VALID_INVENTORY_TYPES.includes(item.inventoryType)
         ? item.inventoryType
         : 'normal_qty';
-      const locationId = item.locationId || null;
+      if (dbItem.location_id && item.locationId && String(dbItem.location_id) !== String(item.locationId)) {
+        ctx.throw(400, `商品 ${dbItem.product_name || product.name} 的入库库位与入库明细不一致`);
+      }
+      const locationId = item.locationId || dbItem.location_id || null;
       const originalPickupPrice = Number(item.originalPickupPrice || item.original_pickup_price || dbItem.original_pickup_price || dbItem.unit_price || 0);
 
       if (product.need_sn === 1) {
-        if (!item.snCode || item.snCode.trim() === '') {
+        const requestedSnCode = String(item.snCode || item.sn_code || dbItem.sn_code || '').trim();
+        const salesReturnSn = isSalesReturnInbound
+          ? await ProductSn.findOne({
+              where: dbItem.sn_id
+                ? { sn_id: dbItem.sn_id, product_id: dbItem.product_id, store_id: inbound.store_id, is_deleted: 0 }
+                : { product_id: dbItem.product_id, store_id: inbound.store_id, sn_code: dbItem.sn_code, is_deleted: 0 },
+              transaction: t,
+              lock: t.LOCK.UPDATE
+            })
+          : null;
+        const transferSn = isTransferInbound && dbItem.sn_id
+          ? await ProductSn.findOne({
+              where: { sn_id: dbItem.sn_id, product_id: dbItem.product_id, is_deleted: 0 },
+              transaction: t,
+              lock: t.LOCK.UPDATE
+            })
+          : null;
+
+        if (salesReturnSn) {
+          const salesReturnValidation = validateSalesReturnInboundSn({ sn: salesReturnSn, requestedSnCode });
+          if (salesReturnValidation) ctx.throw(salesReturnValidation.status, salesReturnValidation.message);
+
+          const salesReturnPnCode = normalizePnCode(item.pnCode || item.pn_code || dbItem.pn_code || salesReturnSn.pn_code || splitCodes(product.manufacturer_code)[0] || '');
+          await salesReturnSn.update({
+            product_name: dbItem.product_name || salesReturnSn.product_name || product.name,
+            pn_code: salesReturnPnCode,
+            status: 'in_stock',
+            inventory_type: inventoryType,
+            store_id: inbound.store_id,
+            location_id: locationId,
+            inbound_time: new Date(),
+            remark: item.remark || salesReturnSn.remark || ''
+          }, { transaction: t });
+          await dbItem.update({
+            sn_id: salesReturnSn.sn_id,
+            sn_code: salesReturnSn.sn_code,
+            pn_code: salesReturnPnCode,
+            remark: item.remark,
+            location_id: locationId,
+            original_pickup_price: originalPickupPrice,
+            inventory_type: inventoryType
+          }, { transaction: t });
+          await SnLog.create({
+            log_id: generateUUID(),
+            sn_id: salesReturnSn.sn_id,
+            sn_code: salesReturnSn.sn_code,
+            product_id: salesReturnSn.product_id,
+            product_name: salesReturnSn.product_name || product.name,
+            store_id: inbound.store_id,
+            action: 'inbound',
+            remark: `销售退库重新入库：${inbound.source_no || inbound.inbound_no}`,
+            create_user: user.name || user.staffId || '',
+            create_time: new Date()
+          }, { transaction: t });
+        } else if (transferSn) {
+          if (!['transferring', 'in_stock'].includes(transferSn.status)) {
+            ctx.throw(400, `Transfer SN ${transferSn.sn_code} cannot be received in status ${transferSn.status}`);
+          }
+          if (transferSn.status === 'in_stock' && String(transferSn.store_id) !== String(inbound.store_id)) {
+            ctx.throw(400, `Transfer SN ${transferSn.sn_code} is already in another store`);
+          }
+
+          const transferPnCode = normalizePnCode(item.pnCode || item.pn_code || dbItem.pn_code || transferSn.pn_code || splitCodes(product.manufacturer_code)[0] || '');
+          if (transferSn.pn_code && transferPnCode && String(transferSn.pn_code) !== transferPnCode) {
+            ctx.throw(400, `Transfer SN ${transferSn.sn_code} does not match PN ${transferPnCode}`);
+          }
+
+          await transferSn.update({
+            product_name: dbItem.product_name || transferSn.product_name || product.name,
+            pn_code: transferPnCode,
+            sn_code: requestedSnCode || transferSn.sn_code,
+            status: 'in_stock',
+            inventory_type: inventoryType,
+            store_id: inbound.store_id,
+            location_id: locationId,
+            inbound_time: new Date()
+          }, { transaction: t });
+          await dbItem.update({
+            sn_id: transferSn.sn_id,
+            sn_code: requestedSnCode || transferSn.sn_code,
+            pn_code: transferPnCode,
+            remark: item.remark,
+            location_id: locationId,
+            original_pickup_price: originalPickupPrice,
+            inventory_type: inventoryType
+          }, { transaction: t });
+        } else {
+          if (isSalesReturnInbound) {
+            ctx.throw(409, `Sales return SN ${dbItem.sn_code || requestedSnCode} does not exist`);
+          }
+        if (!requestedSnCode) {
           ctx.throw(400, `商品 ${dbItem.product_name} 需要SN管理，SN码不能为空`);
         }
 
-        const pnCode = normalizePnCode(item.pnCode || dbItem.pn_code || splitCodes(product.manufacturer_code)[0] || '');
-        const snCode = item.snCode.trim();
+        const pnCode = normalizePnCode(item.pnCode || item.pn_code || dbItem.pn_code || splitCodes(product.manufacturer_code)[0] || '');
+        const snCode = requestedSnCode;
 
         const existingSn = await ProductSn.findOne({
           where: {
@@ -1476,6 +1769,7 @@ async function executeInbound(ctx) {
           original_pickup_price: originalPickupPrice,
           inventory_type: inventoryType
         }, { transaction: t });
+        }
       } else {
         const pnCode = normalizePnCode(item.pnCode || dbItem.pn_code || splitCodes(product.manufacturer_code)[0] || '');
 
@@ -1519,6 +1813,46 @@ async function executeInbound(ctx) {
     }
 
     await inbound.update({ status: 'completed', update_time: new Date() }, { transaction: t });
+
+    if (isSalesReturnInbound) {
+      const salesReturn = await SalesReturnRequest.findOne({
+        where: { return_no: inbound.source_no },
+        transaction: t,
+        lock: t.LOCK.UPDATE
+      });
+      if (!salesReturn) ctx.throw(404, 'Sales return request does not exist');
+      if (salesReturn.status !== 'approved') {
+        ctx.throw(409, 'Sales return request is not approved');
+      }
+      await salesReturn.update({
+        status: 'completed',
+        approval_stage: 'completed',
+        update_time: new Date()
+      }, { transaction: t });
+      await Order.update(
+        { order_status: 'returned', update_time: new Date() },
+        { where: { order_id: salesReturn.order_id }, transaction: t }
+      );
+    }
+
+    if (isTransferInbound) {
+      const transfer = await Transfer.findOne({
+        where: { transfer_no: inbound.source_no },
+        transaction: t,
+        lock: t.LOCK.UPDATE
+      });
+      if (!transfer) ctx.throw(404, '关联调拨单不存在');
+      if (transfer.status === 'out_confirmed') {
+        await transfer.update({
+          status: 'completed',
+          inbound_confirm_user: user.name || user.staffId,
+          receiving_user: user.name || user.staffId,
+          receiving_time: new Date()
+        }, { transaction: t });
+      } else if (transfer.status !== 'completed') {
+        ctx.throw(400, '关联调拨单当前状态不允许入库');
+      }
+    }
 
     await t.commit();
     ctx.body = { code: 0, message: '入库完成' };
@@ -1723,17 +2057,44 @@ async function transfer(ctx) {
 
 async function getTransferList(ctx) {
   try {
-    const { status, fromStoreId, toStoreId, page = 1, pageSize = 20 } = ctx.query;
+    const {
+      status,
+      fromStoreId,
+      toStoreId,
+      transferNo,
+      startDate,
+      endDate,
+      history,
+      page = 1,
+      pageSize = 20
+    } = ctx.query;
+    const user = ctx.state.user || {};
+    const visibilityLevel = getTransferVisibilityLevel(user);
+    let distributorStoreIds = user.accessibleStoreIds || [];
 
-    const where = {};
-    if (status) where.status = status;
-    if (fromStoreId) where.from_store_id = fromStoreId;
-    if (toStoreId) where.to_store_id = toStoreId;
-    if (!ctx.state.user.accessibleStoreIds.includes('*') && !fromStoreId && !toStoreId) {
-      where[Op.or] = [
-        { from_store_id: { [Op.in]: ctx.state.user.accessibleStoreIds } },
-        { to_store_id: { [Op.in]: ctx.state.user.accessibleStoreIds } }
-      ];
+    if (visibilityLevel === 'distributor') {
+      if (!user.distributorId) {
+        ctx.body = formatPaginatedResult([], { page, pageSize, count: 0 });
+        return;
+      }
+      const stores = await Store.findAll({
+        where: { distributor_id: user.distributorId, is_deleted: 0 },
+        attributes: ['store_id'],
+        raw: true
+      });
+      distributorStoreIds = stores.map(store => store.store_id);
+    }
+
+    const where = { [Op.and]: buildTransferVisibilityWhere(user, distributorStoreIds) };
+    if (status) where[Op.and].push({ status });
+    if (fromStoreId) where[Op.and].push({ from_store_id: fromStoreId });
+    if (toStoreId) where[Op.and].push({ to_store_id: toStoreId });
+    if (transferNo) where[Op.and].push({ transfer_no: { [Op.like]: `%${String(transferNo).trim()}%` } });
+    if (startDate || endDate) {
+      const createTime = {};
+      if (startDate) createTime[Op.gte] = `${String(startDate).slice(0, 10)} 00:00:00`;
+      if (endDate) createTime[Op.lte] = `${String(endDate).slice(0, 10)} 23:59:59`;
+      where[Op.and].push({ create_time: createTime });
     }
 
     const { count, rows } = await Transfer.findAndCountAll({
@@ -1743,12 +2104,14 @@ async function getTransferList(ctx) {
         { model: Store, as: 'ToStore', attributes: ['store_id', 'name'] },
         { model: TransferItem, attributes: ['item_id', 'product_id', 'pn_code', 'sn_id', 'sn_code', 'quantity'] }
       ],
-      order: buildPendingFirstOrder(sequelize, {
-        statusColumn: 'Transfer.status',
-        pendingStatuses: ['pending', 'out_confirmed'],
-        dateColumns: ['Transfer.create_time'],
-        idColumn: 'Transfer.transfer_id'
-      }),
+      order: String(history || '') === '1' || String(history || '').toLowerCase() === 'true'
+        ? [['create_time', 'DESC'], ['transfer_id', 'DESC']]
+        : buildPendingFirstOrder(sequelize, {
+            statusColumn: 'Transfer.status',
+            pendingStatuses: ['pending', 'out_confirmed'],
+            dateColumns: ['Transfer.create_time'],
+            idColumn: 'Transfer.transfer_id'
+          }),
       ...paginate({}, { page, pageSize })
     });
 
@@ -1757,6 +2120,15 @@ async function getTransferList(ctx) {
       ? await Product.findAll({ where: { product_id: { [Op.in]: productIds } }, attributes: ['product_id', 'product_code', 'name', 'need_sn'] })
       : [];
     const productMap = new Map(products.map(product => [product.product_id, product]));
+    const transferNos = rows.map(row => row.transfer_no).filter(Boolean);
+    const transferInbounds = transferNos.length
+      ? await Inbound.findAll({
+          where: { source_type: 'TRANSFER', source_no: { [Op.in]: transferNos } },
+          attributes: ['inbound_id', 'inbound_no', 'source_no', 'store_id', 'status'],
+          raw: true
+        })
+      : [];
+    const inboundMap = new Map(transferInbounds.map(row => [row.source_no, row]));
 
     const list = rows.map(row => {
       const data = row.toJSON();
@@ -1769,10 +2141,14 @@ async function getTransferList(ctx) {
           need_sn: product?.need_sn || 0
         };
       });
+      const inbound = inboundMap.get(data.transfer_no);
       return {
         ...data,
         from_store_name: data.FromStore?.name || '',
-        to_store_name: data.ToStore?.name || ''
+        to_store_name: data.ToStore?.name || '',
+        inbound_id: inbound?.inbound_id || '',
+        inbound_no: inbound?.inbound_no || '',
+        inbound_status: inbound?.status || ''
       };
     });
 
@@ -1972,6 +2348,15 @@ async function confirmTransferOut(ctx) {
       shipping_time: new Date()
     }, { transaction: t });
 
+    await ensureTransferInbound(transfer, items.map(item => ({
+      product_id: item.product_id,
+      product_name: productMap.get(item.product_id)?.name || '',
+      pn_code: item.pn_code,
+      sn_id: item.sn_id,
+      sn_code: item.sn_code,
+      quantity: item.quantity
+    })), t);
+
     await t.commit();
     ctx.body = { code: 0, message: '????????' };
   } catch (err) {
@@ -1998,6 +2383,11 @@ async function confirmTransferIn(ctx) {
       ctx.throw(404, '调拨单不存在');
     }
     assertStoreVisible(ctx, transfer.to_store_id);
+    const transferInbound = await Inbound.findOne({
+      where: { source_type: 'TRANSFER', source_no: transfer.transfer_no, status: 'pending' },
+      transaction: t,
+      lock: t.LOCK.UPDATE
+    });
     if (transfer.status !== 'out_confirmed') {
       ctx.throw(400, '当前状态不允许确认入库');
     }
@@ -2028,6 +2418,10 @@ async function confirmTransferIn(ctx) {
       }
 
       await updateInventory(item.product_id, transfer.to_store_id, 'normal_qty', item.quantity || 1, t);
+    }
+
+    if (transferInbound) {
+      await transferInbound.update({ status: 'completed', update_time: new Date() }, { transaction: t });
     }
 
     await transfer.update({
@@ -3014,10 +3408,15 @@ module.exports = {
   voidConversion,
   getLocationsByStore,
   updateSn,
+  adjustSnLocation,
   snTrace,
   _test: {
     calculateStockAgeDays,
     resolveEffectiveSalePrice,
-    canManageDistributorPrice
+    canManageDistributorPrice,
+    getTransferVisibilityLevel,
+    buildTransferVisibilityWhere,
+    validateSnLocationAdjustment,
+    validateSalesReturnInboundSn
   }
 };

@@ -10,12 +10,20 @@
       <el-tabs v-model="activeTab">
         <el-tab-pane label="采购申请" name="request">
           <div class="filter-bar">
+            <el-input v-model="queryParams.submitter" placeholder="提交人" clearable style="width: 140px" />
+            <el-input v-model="queryParams.keyword" placeholder="商品名称/PN/商品编码" clearable style="width: 230px" />
+            <el-select v-model="queryParams.supplierId" placeholder="供应商" clearable filterable style="width: 180px">
+              <el-option v-for="supplier in allSuppliers" :key="supplier.supplier_id" :label="supplier.name" :value="supplier.supplier_id" />
+            </el-select>
             <el-select v-model="queryParams.status" placeholder="状态" clearable style="width: 150px">
               <el-option label="全部" value="" />
+              <el-option label="草稿" value="draft" />
               <el-option label="待审批" value="pending" />
               <el-option label="已通过" value="approved" />
               <el-option label="已拒绝" value="rejected" />
             </el-select>
+            <el-button type="primary" @click="handleRequestSearch">查询</el-button>
+            <el-button @click="resetRequestSearch">重置</el-button>
             <el-button type="primary" @click="handleCreate">新建采购申请</el-button>
           </div>
           <el-table :data="tableData" stripe border>
@@ -26,6 +34,7 @@
               </template>
             </el-table-column>
             <el-table-column prop="store_name" label="申请门店" width="120" />
+            <el-table-column prop="submitter_name" label="提交人" width="110" />
             <el-table-column prop="supplier_name" label="供应商" width="150" />
             <el-table-column label="付款方式" width="110">
               <template #default="{ row }">{{ getPaymentMethodText(row.payment_method) }}</template>
@@ -43,6 +52,8 @@
             </el-table-column>
             <el-table-column label="操作" width="250">
               <template #default="{ row }">
+                <el-button link type="primary" @click="handleEditDraft(row)" v-if="row.status === 'draft'">编辑</el-button>
+                <el-button link type="success" @click="handleSubmitDraft(row)" v-if="row.status === 'draft'">提交</el-button>
                 <el-button link type="primary" @click="handleApprove(row)" v-if="row.status === 'pending'">审批</el-button>
                 <el-button link type="warning" @click="handleRevoke(row)" v-if="row.status === 'approved'">撤销</el-button>
                 <el-button link type="danger" @click="handleAdjustment(row)" v-if="row.status === 'approved'">退单</el-button>
@@ -111,7 +122,7 @@
     </el-card>
 
     <!-- 新建采购申请对话框 -->
-    <el-dialog v-model="requestDialogVisible" title="新建采购申请" width="700px" @close="handleDialogClose">
+    <el-dialog v-model="requestDialogVisible" :title="editingRequestId ? '编辑采购申请草稿' : '新建采购申请'" width="700px" @close="handleDialogClose">
       <el-form :model="requestForm" label-width="100px">
         <el-form-item label="供应商" required>
           <el-select
@@ -161,6 +172,14 @@
 
         <el-form-item label="商品明细">
           <div class="items-table" style="width: 100%; max-width: 600px; overflow: hidden;">
+            <div class="item-field-hint">请在下方分别填写商品名称、采购单价和数量</div>
+            <div class="item-field-header">
+              <span>商品名称</span>
+              <span>采购单价</span>
+              <span>数量</span>
+              <span>小计</span>
+              <span>操作</span>
+            </div>
             <div v-for="(item, idx) in requestForm.items" :key="idx" class="item-row" style="border: 1px solid #ebeef5; padding: 10px; margin-bottom: 10px; border-radius: 4px; width: 100%; box-sizing: border-box; max-width: 600px;">
               <div class="item-top" style="display: flex; gap: 8px; align-items: center; margin-bottom: 10px; width: 100%; box-sizing: border-box;">
                 <div style="flex: 1; min-width: 140px; max-width: 300px;">
@@ -438,10 +457,43 @@
             />
           </template>
         </el-table-column>
+        <el-table-column label="库位分配" min-width="300">
+          <template #default="{ row }">
+            <div v-if="row.quantity > 0 && row.locationAllocations?.length" class="location-summary">
+              <span v-for="location in row.locationAllocations" :key="location.locationId">
+                {{ location.locationName }} × {{ location.quantity }}
+              </span>
+            </div>
+            <span v-else class="location-missing">未分配库位</span>
+            <el-button link type="primary" size="small" @click="handleAllocateLocations(row)">分配库位</el-button>
+          </template>
+        </el-table-column>
       </el-table>
       <template #footer>
         <el-button @click="allocateDialogVisible = false">取消</el-button>
         <el-button type="primary" @click="handleSaveAllocation">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 门店库位分配对话框 -->
+    <el-dialog v-model="locationAllocateDialogVisible" title="分配库位" width="620px" @close="handleLocationAllocateDialogClose">
+      <div style="margin-bottom: 16px;">
+        <span style="font-weight: bold;">门店：{{ currentLocationAllocateStore?.storeName || '-' }}</span>
+        <span style="margin-left: 24px; font-weight: bold;">门店数量：{{ currentLocationAllocateStore?.quantity || 0 }}</span>
+        <span style="margin-left: 24px; color: #409EFF; font-weight: bold;">已分配：{{ allocatedLocationQuantity }}</span>
+        <span style="margin-left: 24px; color: #F56C6C; font-weight: bold;">待分配：{{ remainingLocationQuantity }}</span>
+      </div>
+      <el-table :data="locationAllocationList" stripe border max-height="360">
+        <el-table-column prop="locationName" label="库位名称" min-width="220" />
+        <el-table-column label="分配数量" width="180">
+          <template #default="{ row }">
+            <el-input v-model="row.quantity" size="small" class="no-spinner" @change="validateLocationAllocation" />
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="locationAllocateDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleSaveLocationAllocation">确定</el-button>
       </template>
     </el-dialog>
 
@@ -532,12 +584,14 @@ const total = ref(0)
 const supplierTotal = ref(0)
 
 const requestDialogVisible = ref(false)
+const editingRequestId = ref('')
 const viewDialogVisible = ref(false)
 const approveDialogVisible = ref(false)
 const revokeDialogVisible = ref(false)
 const adjustmentDialogVisible = ref(false)
 const supplierDialogVisible = ref(false)
 const allocateDialogVisible = ref(false)
+const locationAllocateDialogVisible = ref(false)
 const submitLoading = ref(false)
 const approveLoading = ref(false)
 const revokeLoading = ref(false)
@@ -552,11 +606,18 @@ const currentSupplier = ref(null)
 const currentAllocateProduct = ref(null)
 const currentAllocateIndex = ref(-1)
 const storeAllocationList = ref([])
+const locationAllocationList = ref([])
+const currentLocationAllocateStore = ref(null)
+const storeLocationOptions = reactive({})
+const storeLocationLoading = reactive({})
 
 const queryParams = reactive({
   page: 1,
   pageSize: 20,
-  status: ''
+  status: '',
+  submitter: '',
+  keyword: '',
+  supplierId: ''
 })
 
 const supplierQuery = reactive({
@@ -686,6 +747,14 @@ const remainingAllocateQuantity = computed(() => {
   return toQuantity(currentAllocateProduct.value?.quantity) - allocatedTotalQuantity.value
 })
 
+const allocatedLocationQuantity = computed(() => {
+  return locationAllocationList.value.reduce((sum, item) => sum + toQuantity(item.quantity), 0)
+})
+
+const remainingLocationQuantity = computed(() => {
+  return toQuantity(currentLocationAllocateStore.value?.quantity) - allocatedLocationQuantity.value
+})
+
 onMounted(() => {
   loadData()
   loadSuppliers()
@@ -721,6 +790,20 @@ const loadData = async () => {
   } catch (err) {
     ElMessage.error('加载数据失败')
   }
+}
+
+const handleRequestSearch = () => {
+  queryParams.page = 1
+  loadData()
+}
+
+const resetRequestSearch = () => {
+  queryParams.page = 1
+  queryParams.status = ''
+  queryParams.submitter = ''
+  queryParams.keyword = ''
+  queryParams.supplierId = ''
+  loadData()
 }
 
 const loadSuppliers = async () => {
@@ -836,10 +919,72 @@ const onGoodsTypeChange = name => {
 
 const handleCreate = () => {
   resetForm()
+  editingRequestId.value = ''
   restorePurchaseRequestDraft()
   if (resourceOptions.value.length === 0) loadResourceOptions()
   if (goodsTypeOptions.value.length === 0) loadGoodsTypeOptions()
   requestDialogVisible.value = true
+}
+
+const parseDraftJson = (value, fallback = []) => {
+  if (Array.isArray(value)) return value
+  if (!value) return fallback
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed : fallback
+  } catch (_) {
+    return fallback
+  }
+}
+
+const handleEditDraft = async (row) => {
+  try {
+    const res = await api.getPurchaseRequestDetail(row.request_id)
+    if (res.code !== 0) {
+      ElMessage.error(res.message || '获取采购申请详情失败')
+      return
+    }
+    const request = res.data
+    editingRequestId.value = request.request_id
+    requestForm.supplierId = request.supplier_id || ''
+    requestForm.invoiceType = request.invoice_type || ''
+    requestForm.paymentMethod = request.payment_method || 'COMPANY_CREDIT'
+    requestForm.productType = request.product_type || goodsTypeOptions.value[0]?.name || ''
+    requestForm.remark = request.reason || ''
+    requestForm.rebateDeduction = request.rebate_deduction || 0
+    requestForm.items = (request.items || []).map(item => ({
+      productId: item.product_id || '',
+      productName: item.product_name || '',
+      pnCode: item.pn_code || '',
+      price: item.unit_price || 0,
+      quantity: item.quantity || 1,
+      rebateDeduction: item.rebate_deduction || 0,
+      storeAllocations: parseDraftJson(item.store_allocations_parsed || item.store_allocations),
+      selectedResourceTypes: parseDraftJson(item.selected_resource_types)
+    }))
+    requestDialogVisible.value = true
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '获取采购申请详情失败')
+  }
+}
+
+const handleSubmitDraft = async (row) => {
+  try {
+    await ElMessageBox.confirm('提交后将进入采购审批流程，是否继续？', '提交采购申请', {
+      confirmButtonText: '确认提交',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    const res = await api.submitPurchaseRequestDraft(row.request_id)
+    if (res.code === 0) {
+      ElMessage.success('采购申请已提交')
+      await loadData()
+    } else {
+      ElMessage.error(res.message || '提交失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err.response?.data?.message || '提交失败')
+  }
 }
 
 const handleView = async (row) => {
@@ -1273,6 +1418,71 @@ const removeRequestItem = (index) => {
   }
 }
 
+const buildPurchaseRequestPayload = () => {
+  const selectedGoodsType = goodsTypeOptions.value.find(item => item.name === requestForm.productType)
+  return {
+    supplierId: requestForm.supplierId,
+    invoiceType: requestForm.invoiceType,
+    paymentMethod: requestForm.paymentMethod,
+    goodsTypeId: selectedGoodsType?.goods_type_id || '',
+    productType: requestForm.productType,
+    remark: requestForm.remark,
+    rebateDeduction: rebateDeductionAmount.value,
+    items: requestForm.items.map(item => ({
+      productId: item.productId,
+      productName: item.productName,
+      pnCode: item.pnCode || '',
+      price: item.price,
+      quantity: item.quantity,
+      goodsTypeId: selectedGoodsType?.goods_type_id || '',
+      productType: requestForm.productType,
+      rebateDeduction: Math.min(toNumber(item.rebateDeduction), itemSubtotal(item)),
+      storeAllocations: item.storeAllocations,
+      selectedResourceTypes: item.selectedResourceTypes || []
+    }))
+  }
+}
+
+const validateItemAllocation = (item, index) => {
+  const productName = item.productName || `第${index + 1}个商品`
+  if (!Array.isArray(item.storeAllocations) || item.storeAllocations.length === 0) {
+    ElMessage.warning(`请先为「${productName}」分配门店和库位`)
+    return false
+  }
+
+  const itemQuantity = toQuantity(item.quantity)
+  const allocatedQty = item.storeAllocations.reduce((sum, allocation) => sum + toQuantity(allocation.quantity), 0)
+  if (allocatedQty !== itemQuantity) {
+    ElMessage.warning(`「${productName}」门店分配数量(${allocatedQty})必须等于采购数量(${item.quantity})`)
+    return false
+  }
+
+  const invalidStore = item.storeAllocations.find(allocation => {
+    const locationTotal = (allocation.locationAllocations || []).reduce((sum, location) => sum + toQuantity(location.quantity), 0)
+    return allocation.quantity <= 0 || locationTotal !== toQuantity(allocation.quantity)
+  })
+  if (invalidStore) {
+    ElMessage.warning(`请完善「${productName}」的门店库位分配`)
+    return false
+  }
+  return true
+}
+
+const validateDraftForm = () => {
+  if (requestForm.items.length === 0) {
+    ElMessage.warning('请添加商品')
+    return false
+  }
+  for (const [index, item] of requestForm.items.entries()) {
+    if (!item.productId || toNumber(item.price) <= 0 || toQuantity(item.quantity) <= 0) {
+      ElMessage.warning(`请完善第${index + 1}个商品的名称、价格和数量`)
+      return false
+    }
+    if (!validateItemAllocation(item, index)) return false
+  }
+  return true
+}
+
 const handleSubmit = async () => {
   if (!requestForm.supplierId) {
     ElMessage.warning('请选择供应商')
@@ -1287,23 +1497,10 @@ const handleSubmit = async () => {
     return
   }
 
-  // 校验每个商品都已分配门店
+  // 校验每个商品都已分配门店和库位
   for (let i = 0; i < requestForm.items.length; i++) {
     const item = requestForm.items[i]
-    const productName = item.productName || '第' + (i + 1) + '个商品'
-    
-    if (!item.storeAllocations || item.storeAllocations.length === 0) {
-      ElMessage.warning(`请先为「${productName}」分配门店`)
-      return
-    }
-
-    // 校验分配数量总和等于商品数量
-    const itemQuantity = toQuantity(item.quantity)
-    const allocatedQty = item.storeAllocations.reduce((sum, alloc) => sum + normalizeAllocationQuantity(alloc.quantity, itemQuantity), 0)
-    if (allocatedQty !== itemQuantity) {
-      ElMessage.warning(`「${productName}」分配数量(${allocatedQty})必须等于采购数量(${item.quantity})`)
-      return
-    }
+    if (!validateItemAllocation(item, i)) return
   }
 
   if (rebateDeductionAmount.value > 0 && rebateDeductionAmount.value > rebateBalance.value) {
@@ -1313,28 +1510,14 @@ const handleSubmit = async () => {
 
   submitLoading.value = true
   try {
-    const selectedGoodsType = goodsTypeOptions.value.find(item => item.name === requestForm.productType)
-    const data = {
-      supplierId: requestForm.supplierId,
-      invoiceType: requestForm.invoiceType,
-      paymentMethod: requestForm.paymentMethod,
-      goodsTypeId: selectedGoodsType?.goods_type_id || '',
-      productType: requestForm.productType,
-      remark: requestForm.remark,
-      rebateDeduction: rebateDeductionAmount.value,
-      items: requestForm.items.map(item => ({
-        productId: item.productId,
-        productName: item.productName,
-        price: item.price,
-        quantity: item.quantity,
-        goodsTypeId: selectedGoodsType?.goods_type_id || '',
-        productType: requestForm.productType,
-        rebateDeduction: Math.min(toNumber(item.rebateDeduction), itemSubtotal(item)),
-        storeAllocations: item.storeAllocations,
-        selectedResourceTypes: item.selectedResourceTypes || []
-      }))
+    const data = buildPurchaseRequestPayload()
+    let res
+    if (editingRequestId.value) {
+      res = await api.updatePurchaseRequestDraft(editingRequestId.value, data)
+      if (res.code === 0) res = await api.submitPurchaseRequestDraft(editingRequestId.value)
+    } else {
+      res = await api.createPurchaseRequest(data)
     }
-    const res = await api.createPurchaseRequest(data)
     if (res.code === 0) {
       ElMessage.success('提交成功')
       clearDraft(PURCHASE_REQUEST_DRAFT_KEY)
@@ -1352,6 +1535,7 @@ const handleSubmit = async () => {
 
 const handleDialogClose = () => {
   resetForm()
+  editingRequestId.value = ''
 }
 
 const resetForm = () => {
@@ -1364,9 +1548,28 @@ const resetForm = () => {
   requestForm.items = []
 }
 
-const savePurchaseRequestDraft = () => {
-  saveDraft(PURCHASE_REQUEST_DRAFT_KEY, cloneDraft(requestForm))
-  ElMessage.success('草稿已保存')
+const savePurchaseRequestDraft = async () => {
+  if (!validateDraftForm()) return
+  submitLoading.value = true
+  try {
+    const data = buildPurchaseRequestPayload()
+    const res = editingRequestId.value
+      ? await api.updatePurchaseRequestDraft(editingRequestId.value, data)
+      : await api.savePurchaseRequestDraft(data)
+    if (res.code === 0) {
+      ElMessage.success('采购申请草稿已保存')
+      clearDraft(PURCHASE_REQUEST_DRAFT_KEY)
+      requestDialogVisible.value = false
+      editingRequestId.value = ''
+      await loadData()
+    } else {
+      ElMessage.error(res.message || '保存草稿失败')
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '保存草稿失败')
+  } finally {
+    submitLoading.value = false
+  }
 }
 
 const restorePurchaseRequestDraft = () => {
@@ -1381,12 +1584,12 @@ const restorePurchaseRequestDraft = () => {
 }
 
 const getStatusType = (status) => {
-  const types = { pending: 'warning', approved: 'success', rejected: 'danger', purchased: 'info', revoked: 'info' }
+  const types = { draft: 'info', pending: 'warning', approved: 'success', rejected: 'danger', purchased: 'info', revoked: 'info' }
   return types[status] || 'info'
 }
 
 const getStatusText = (status) => {
-  const texts = { pending: '待审批', approved: '已通过', rejected: '已拒绝', purchased: '已采购', revoked: '已撤销' }
+  const texts = { draft: '草稿', pending: '待审批', approved: '已通过', rejected: '已拒绝', purchased: '已采购', revoked: '已撤销' }
   return texts[status] || status
 }
 
@@ -1398,12 +1601,48 @@ const getPaymentMethodText = (value) => {
   return map[value] || '公司账期'
 }
 
-const handleAllocateStore = (row, index) => {
+const ensureStoreLocations = async (storeId) => {
+  if (!storeId || Object.prototype.hasOwnProperty.call(storeLocationOptions, storeId)) return storeLocationOptions[storeId] || []
+  storeLocationLoading[storeId] = true
+  try {
+    const res = await api.getLocationsByStore(storeId)
+    const locations = res.code === 0 ? (res.data || []).filter(location => Number(location.status) !== 0) : []
+    storeLocationOptions[storeId] = locations
+    return locations
+  } catch (err) {
+    storeLocationOptions[storeId] = []
+    ElMessage.error(err.response?.data?.message || '加载库位失败')
+    return []
+  } finally {
+    storeLocationLoading[storeId] = false
+  }
+}
+
+const getDefaultSalesLocation = (locations = []) => {
+  return locations.find(location => location.type === 'normal_qty' || location.name === '销售仓') || locations[0]
+}
+
+const getExistingLocationAllocations = (allocation) => {
+  if (Array.isArray(allocation?.locationAllocations)) return allocation.locationAllocations
+  if (Array.isArray(allocation?.location_allocations)) return allocation.location_allocations
+  if (allocation?.locationId || allocation?.location_id) {
+    return [{
+      locationId: allocation.locationId || allocation.location_id,
+      locationName: allocation.locationName || allocation.location_name || '',
+      quantity: allocation.quantity
+    }]
+  }
+  return []
+}
+
+const handleAllocateStore = async (row, index) => {
   const totalQuantity = toQuantity(row.quantity)
   if (totalQuantity <= 0) {
     ElMessage.warning('请先输入商品数量')
     return
   }
+
+  await Promise.all(allStores.value.map(store => ensureStoreLocations(store.store_id)))
   
   const product = products.value.find(p => p.product_id === row.productId)
   currentAllocateProduct.value = {
@@ -1414,11 +1653,30 @@ const handleAllocateStore = (row, index) => {
   currentAllocateIndex.value = index
   
   storeAllocationList.value = allStores.value.map(store => {
-    const existing = row.storeAllocations?.find(a => a.storeId === store.store_id)
+    const existing = row.storeAllocations?.find(a => (a.storeId || a.store_id) === store.store_id)
+    const quantity = normalizeAllocationQuantity(existing?.quantity, totalQuantity)
+    const locations = storeLocationOptions[store.store_id] || []
+    const existingLocations = getExistingLocationAllocations(existing)
+    const defaultLocation = getDefaultSalesLocation(locations)
+    const locationAllocations = existingLocations.length
+      ? existingLocations.map(location => {
+        const locationId = location.locationId || location.location_id
+        const locationOption = locations.find(option => option.location_id === locationId)
+        return {
+          ...location,
+          locationId,
+          locationName: location.locationName || location.location_name || locationOption?.name || '',
+          quantity: normalizeAllocationQuantity(location.quantity, quantity)
+        }
+      })
+      : (quantity > 0 && defaultLocation
+        ? [{ locationId: defaultLocation.location_id, locationName: defaultLocation.name, quantity }]
+        : [])
     return {
       storeId: store.store_id,
       storeName: store.name,
-      quantity: normalizeAllocationQuantity(existing?.quantity, totalQuantity)
+      quantity,
+      locationAllocations
     }
   })
   
@@ -1429,20 +1687,97 @@ const validateAllocation = () => {
   if (allocatedTotalQuantity.value > toQuantity(currentAllocateProduct.value?.quantity)) {
     ElMessage.warning('分配数量不能超过总数量')
   }
+  storeAllocationList.value.forEach(row => {
+    if (toQuantity(row.quantity) <= 0 || (row.locationAllocations || []).length > 0) return
+    const defaultLocation = getDefaultSalesLocation(storeLocationOptions[row.storeId] || [])
+    if (defaultLocation) {
+      row.locationAllocations = [{
+        locationId: defaultLocation.location_id,
+        locationName: defaultLocation.name,
+        quantity: toQuantity(row.quantity)
+      }]
+    }
+  })
+}
+
+const handleAllocateLocations = async (row) => {
+  const storeQuantity = toQuantity(row.quantity)
+  if (storeQuantity <= 0) {
+    ElMessage.warning('请先输入门店分配数量')
+    return
+  }
+  const locations = await ensureStoreLocations(row.storeId)
+  if (locations.length === 0) {
+    ElMessage.warning('该门店暂无启用库位')
+    return
+  }
+  const existingLocations = getExistingLocationAllocations(row)
+  const defaultLocation = getDefaultSalesLocation(locations)
+  const hasExisting = existingLocations.length > 0
+  currentLocationAllocateStore.value = row
+  locationAllocationList.value = locations.map(location => {
+    const existing = existingLocations.find(item => (
+      item.locationId === location.location_id || item.location_id === location.location_id
+    ))
+    return {
+      locationId: location.location_id,
+      locationName: location.name,
+      quantity: existing
+        ? normalizeAllocationQuantity(existing.quantity, storeQuantity)
+        : (!hasExisting && defaultLocation?.location_id === location.location_id ? storeQuantity : 0)
+    }
+  })
+  locationAllocateDialogVisible.value = true
+}
+
+const validateLocationAllocation = () => {
+  if (allocatedLocationQuantity.value > toQuantity(currentLocationAllocateStore.value?.quantity)) {
+    ElMessage.warning('库位分配数量不能超过门店分配数量')
+  }
+}
+
+const handleSaveLocationAllocation = () => {
+  const storeQuantity = toQuantity(currentLocationAllocateStore.value?.quantity)
+  if (allocatedLocationQuantity.value !== storeQuantity) {
+    ElMessage.warning(`库位分配数量(${allocatedLocationQuantity.value})必须等于门店数量(${storeQuantity})`)
+    return
+  }
+  if (currentLocationAllocateStore.value) {
+    currentLocationAllocateStore.value.locationAllocations = locationAllocationList.value
+      .map(location => ({ ...location, quantity: toQuantity(location.quantity) }))
+      .filter(location => location.quantity > 0)
+  }
+  ElMessage.success('库位分配成功')
+  locationAllocateDialogVisible.value = false
 }
 
 const handleSaveAllocation = () => {
   const totalAllocated = allocatedTotalQuantity.value
   const totalQuantity = toQuantity(currentAllocateProduct.value?.quantity)
   
-  if (totalAllocated > totalQuantity) {
-    ElMessage.warning('分配数量不能超过总数量')
+  if (totalAllocated !== totalQuantity) {
+    ElMessage.warning(`门店分配数量(${totalAllocated})必须等于商品总数量(${totalQuantity})`)
     return
   }
   
   const validAllocations = storeAllocationList.value
-    .map(a => ({ ...a, quantity: toQuantity(a.quantity) }))
+    .map(a => ({
+      ...a,
+      quantity: toQuantity(a.quantity),
+      locationAllocations: (a.locationAllocations || [])
+        .map(location => ({ ...location, quantity: toQuantity(location.quantity) }))
+        .filter(location => location.quantity > 0)
+    }))
     .filter(a => a.quantity > 0)
+
+  const invalidLocationAllocation = validAllocations.find(allocation => (
+    allocation.locationAllocations.length === 0 ||
+    allocation.locationAllocations.reduce((sum, location) => sum + location.quantity, 0) !== allocation.quantity
+  ))
+  if (invalidLocationAllocation) {
+    ElMessage.warning(`请完善${invalidLocationAllocation.storeName}的库位分配`)
+    return
+  }
   
   if (currentAllocateIndex.value >= 0) {
     requestForm.items[currentAllocateIndex.value].storeAllocations = validAllocations
@@ -1457,6 +1792,11 @@ const handleAllocateDialogClose = () => {
   currentAllocateIndex.value = -1
   storeAllocationList.value = []
 }
+
+const handleLocationAllocateDialogClose = () => {
+  currentLocationAllocateStore.value = null
+  locationAllocationList.value = []
+}
 </script>
 
 <style scoped>
@@ -1469,6 +1809,42 @@ const handleAllocateDialogClose = () => {
   display: flex;
   gap: 12px;
   margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.item-field-hint {
+  color: #909399;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.item-field-header {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) 110px 75px 70px 60px;
+  gap: 8px;
+  color: #606266;
+  font-size: 12px;
+  padding: 0 10px 6px;
+  align-items: center;
+}
+.location-summary {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-right: 8px;
+  color: #606266;
+  font-size: 12px;
+}
+.location-summary span {
+  padding: 2px 6px;
+  background: #f0f9eb;
+  border: 1px solid #e1f3d8;
+  border-radius: 4px;
+}
+.location-missing {
+  color: #f56c6c;
+  font-size: 12px;
+  margin-right: 8px;
 }
 .el-pagination {
   margin-top: 16px;

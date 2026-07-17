@@ -117,6 +117,7 @@ const statusType = computed(() => {
   if (s === 'in_stock') return 'success'
   if (s === 'sold') return 'danger'
   if (s === 'returned') return 'warning'
+  if (s === 'return_pending') return 'warning'
   if (s === 'transferring') return 'info'
   return 'info'
 })
@@ -126,6 +127,7 @@ const statusText = computed(() => {
   if (s === 'in_stock') return '在库'
   if (s === 'sold') return '已售'
   if (s === 'returned') return '已退库'
+  if (s === 'return_pending') return '退库待入库'
   if (s === 'transferring') return '调拨中'
   return s || '-'
 })

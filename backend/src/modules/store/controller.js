@@ -7,6 +7,28 @@ const { paginate, formatPaginatedResult } = require('../../utils');
 const { generateId } = require('../../utils');
 const { ensureStandardLocationsForStores } = require('../../utils/standardLocations');
 
+function canManageStoreManager(user) {
+  return (user?.roles || []).some(role => ['admin', 'boss'].includes(role));
+}
+
+async function resolveManagerStaff(ctx, managerStaffId, distributorId) {
+  if (!canManageStoreManager(ctx.state.user)) {
+    ctx.throw(403, '无权设置门店店长');
+  }
+
+  if (!managerStaffId) return null;
+
+  const staff = await Staff.findOne({
+    where: { staff_id: managerStaffId, status: 1, is_deleted: 0 }
+  });
+  if (!staff) ctx.throw(400, '店长不存在或已停用');
+  if (String(staff.distributor_id) !== String(distributorId)) {
+    ctx.throw(403, '店长必须属于该门店所属经销商');
+  }
+
+  return staff.staff_id;
+}
+
 /**
  * 获取区域列表
  */
@@ -166,7 +188,7 @@ async function getStoreList(ctx) {
  * 创建门店
  */
 async function createStore(ctx) {
-  const { storeId: userStoreId, name, regionName, regionCode, phone, address, status = 1 } = ctx.request.body;
+  const { storeId: userStoreId, name, regionName, regionCode, phone, address, status = 1, managerStaffId } = ctx.request.body;
   const user = ctx.state.user;
 
   if (!name) {
@@ -206,6 +228,13 @@ async function createStore(ctx) {
     }
   }
 
+  const hasManagerField = managerStaffId !== undefined || ctx.request.body.manager_staff_id !== undefined;
+  const rawManagerStaffId = managerStaffId ?? ctx.request.body.manager_staff_id;
+  const normalizedManagerStaffId = rawManagerStaffId ? String(rawManagerStaffId).trim() : '';
+  const resolvedManagerStaffId = hasManagerField
+    ? await resolveManagerStaff(ctx, normalizedManagerStaffId, distributorId)
+    : undefined;
+
   const store = await Store.create({
     store_id: storeId,
     distributor_id: distributorId,
@@ -213,7 +242,8 @@ async function createStore(ctx) {
     name,
     phone: phone || '',
     address: address || '',
-    status
+    status,
+    ...(hasManagerField ? { manager_staff_id: resolvedManagerStaffId } : {})
   });
   await ensureStandardLocationsForStores(Location, [store]);
 
@@ -225,7 +255,7 @@ async function createStore(ctx) {
  */
 async function updateStore(ctx) {
   const { id } = ctx.params;
-  const { name, regionName, regionCode, phone, address, status } = ctx.request.body;
+  const { name, regionName, regionCode, phone, address, status, managerStaffId } = ctx.request.body;
   const user = ctx.state.user;
 
   const store = await Store.findOne({
@@ -255,12 +285,20 @@ async function updateStore(ctx) {
     }
   }
 
+  const hasManagerField = managerStaffId !== undefined || ctx.request.body.manager_staff_id !== undefined;
+  const rawManagerStaffId = managerStaffId ?? ctx.request.body.manager_staff_id;
+  const normalizedManagerStaffId = rawManagerStaffId ? String(rawManagerStaffId).trim() : '';
+  const resolvedManagerStaffId = hasManagerField
+    ? await resolveManagerStaff(ctx, normalizedManagerStaffId, store.distributor_id)
+    : undefined;
+
   await store.update({
     name: name || store.name,
     region_id: regionId,
     phone: phone !== undefined ? phone : store.phone,
     address: address !== undefined ? address : store.address,
-    status: status !== undefined ? status : store.status
+    status: status !== undefined ? status : store.status,
+    ...(hasManagerField ? { manager_staff_id: resolvedManagerStaffId } : {})
   });
 
   ctx.body = { code: 0, message: '更新成功' };
