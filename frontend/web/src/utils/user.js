@@ -29,6 +29,11 @@ export function isStoreUser() {
   return roles.some(role => role === 'clerk' || role === 'manager')
 }
 
+export function isDistributorAccount() {
+  const storeOnlyRoles = new Set(['clerk', 'staff', 'manager', 'store_manager'])
+  return getRoleCodes().some(role => !storeOnlyRoles.has(role))
+}
+
 export function hasRole(roles) {
   const currentRoles = getRoleCodes()
   return currentRoles.includes('boss') || currentRoles.includes('admin') || currentRoles.some(role => roles.includes(role))

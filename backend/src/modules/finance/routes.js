@@ -4,7 +4,7 @@
 const Router = require('koa-router');
 const {
   getDailyDetails, getNationalSubsidyReceivables, getDailyStatement, getDailyStatementDetail,
-  batchSettle, settleNationalSubsidyReceivables, getSettlementSummary, createExpense, getExpenseList,
+  batchSettle, settleNationalSubsidyReceivables, getSettlementSummary, createExpense, saveExpenseDraft, updateExpenseDraft, deleteExpenseDraft, getExpenseList,
   submitExpense, payExpense, reviewExpense, getSettlementAccountsWithBalance, getAccountTransactions, addAccountTransaction,
   getSubsidyAccountRoutes, saveSubsidyAccountRoute, createSubsidyReceipt, getSubsidyReceipts,
   allocateSubsidyReceipt, refundSubsidyReceipt, reverseSubsidyReceipt, submitSubsidyAdjustment,
@@ -18,8 +18,10 @@ const {
   createExpenseSettlement,
   getSettlementList,
   getSettlementDetail,
+  deleteSettlementDraft,
   submitSettlement,
   confirmSettlement,
+  rejectSettlement,
   voidSettlement,
   getPaymentCandidates,
   exportPaymentCandidates,
@@ -54,6 +56,10 @@ const router = new Router();
 
 // 员工费用入口：创建及查看本人/授权门店费用不要求财务角色。
 router.post('/expense', createExpense);
+router.post('/expense-draft', saveExpenseDraft);
+router.put('/expense-draft/:id', updateExpenseDraft);
+router.delete('/expense-draft/:id', deleteExpenseDraft);
+router.put('/expense-draft/:id/submit', submitExpense);
 router.get('/expense-list', getExpenseList);
 router.post('/expense/:id/review', requireRole('admin'), reviewExpense);
 
@@ -87,8 +93,10 @@ router.post('/create-settlement', createSettlement);
 router.post('/create-expense-settlement', createExpenseSettlement);
 router.get('/settlement-list', getSettlementList);
 router.get('/settlement/:id', getSettlementDetail);
+router.delete('/settlement/:id', deleteSettlementDraft);
 router.post('/settlement/submit', submitSettlement);
 router.post('/settlement/confirm', confirmSettlement);
+router.post('/settlement/reject', rejectSettlement);
 router.post('/settlement/void', voidSettlement);
 router.get('/settlement-payment/candidates', getPaymentCandidates);
 router.get('/settlement-payment/export', exportPaymentCandidates);

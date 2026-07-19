@@ -57,6 +57,12 @@ const routes = [
         meta: { roles: ['finance', 'admin', 'boss'] }
       },
       {
+        path: 'finance/settlement',
+        name: 'FinanceSettlement',
+        component: () => import('../views/PayableSettlementManagement.vue'),
+        meta: { roles: ['finance', 'admin', 'boss'] }
+      },
+      {
         path: 'products',
         name: 'Products',
         component: () => import('../views/Products.vue')

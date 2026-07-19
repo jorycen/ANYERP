@@ -53,7 +53,8 @@ async function getActiveSettlementState(payableId, transaction = null) {
   const settlements = await Settlement.findAll({
     where: {
       settlement_id: { [Op.in]: settlementIds },
-      status: { [Op.ne]: 'voided' }
+      status: { [Op.ne]: 'voided' },
+      is_deleted: 0
     },
     transaction
   });
@@ -133,7 +134,7 @@ async function getAllocationSummary(payableIds, transaction = null) {
   const settlementIds = [...new Set(items.map(item => item.settlement_id))];
   if (!settlementIds.length) return result;
   const active = await Settlement.findAll({
-    where: { settlement_id: { [Op.in]: settlementIds }, status: { [Op.ne]: 'voided' } },
+    where: { settlement_id: { [Op.in]: settlementIds }, status: { [Op.ne]: 'voided' }, is_deleted: 0 },
     attributes: ['settlement_id'],
     transaction
   });

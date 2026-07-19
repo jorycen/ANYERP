@@ -26,7 +26,7 @@
             <el-tag :type="statusType">{{ statusText }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="商品">{{ traceData.productName || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="门店">{{ traceData.storeId || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="门店">{{ traceData.storeName || '-' }}</el-descriptions-item>
         </el-descriptions>
       </el-card>
 
@@ -64,7 +64,7 @@
                   style="margin-left: 12px;"
                 >查看订单</el-button>
                 <el-button
-                  v-if="event.type === 'inbound' && event.ref_id"
+                  v-if="event.type === 'inbound' && event.ref_id && canViewInboundDetails"
                   size="small"
                   type="success"
                   @click="goToInbound(event.ref_id)"
@@ -95,9 +95,14 @@
 
 <script setup>
 import { ref, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import api from '../api'
+import { isDistributorAccount } from '../utils/user'
+
+const router = useRouter()
+const canViewInboundDetails = computed(() => isDistributorAccount())
 
 const snCode = ref('')
 const loading = ref(false)
@@ -107,6 +112,7 @@ const traceData = ref({
   currentStatus: '',
   productName: '',
   storeId: '',
+  storeName: '',
   timeline: []
 })
 
@@ -144,13 +150,13 @@ const doSearch = async () => {
   try {
     const res = await api.snTrace(code)
     if (res.code === 0) {
-      traceData.value = res.data || { snCode: code, currentStatus: '', productName: '', storeId: '', timeline: [] }
+      traceData.value = res.data || { snCode: code, currentStatus: '', productName: '', storeId: '', storeName: '', timeline: [] }
     } else {
-      traceData.value = { snCode: code, currentStatus: '', productName: '', storeId: '', timeline: [] }
+      traceData.value = { snCode: code, currentStatus: '', productName: '', storeId: '', storeName: '', timeline: [] }
       ElMessage.info(res.message || '未找到记录')
     }
   } catch (err) {
-    traceData.value = { snCode: code, currentStatus: '', productName: '', storeId: '', timeline: [] }
+    traceData.value = { snCode: code, currentStatus: '', productName: '', storeId: '', storeName: '', timeline: [] }
     ElMessage.error('查询失败')
   } finally {
     loading.value = false
@@ -189,7 +195,9 @@ const goToOrder = (orderId) => {
 }
 
 const goToInbound = (inboundId) => {
-  window.open(`/#/inventory?inboundId=${inboundId}`, '_blank')
+  if (!canViewInboundDetails.value || !inboundId) return
+  const target = router.resolve({ name: 'Inventory', query: { inboundId: String(inboundId) } })
+  window.open(target.href, '_blank')
 }
 </script>
 

@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   calculateGrossProfitValues,
+  calculateNationalSubsidyCustomerReceiptAmount,
   normalizeMethodName,
   isPolicySubsidyReceivable,
   calculateOrderReceivable,
@@ -111,4 +112,20 @@ test('用户应收保留国补和教育补贴，只扣除普通折扣', () => {
     national_subsidy: 300,
     education_subsidy: 200
   }), 1400);
+});
+
+test('国补POS客户实收到账金额扣除0.6%税', () => {
+  assert.equal(calculateNationalSubsidyCustomerReceiptAmount({
+    nationalAmount: 10000,
+    subsidyAmount: 3000,
+    nationalSubsidyAmount: 3000
+  }), 6958);
+});
+
+test('国补POS客户实收到账金额按两位小数保留', () => {
+  assert.equal(calculateNationalSubsidyCustomerReceiptAmount({
+    nationalAmount: 5000,
+    subsidyAmount: 1200,
+    nationalSubsidyAmount: 1000
+  }), 3776);
 });

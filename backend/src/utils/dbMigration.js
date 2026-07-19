@@ -926,11 +926,16 @@ async function runMigrations() {
         SUPPLIER_NAME VARCHAR(255) COMMENT '供应商名称',
         TOTAL_AMOUNT DECIMAL(12,2) NOT NULL COMMENT '结算金额',
         PAID_AMOUNT DECIMAL(12,2) DEFAULT 0 COMMENT '已付金额',
-        STATUS VARCHAR(32) DEFAULT 'draft' COMMENT '结算单状态:draft/confirmed/voided',
+        STATUS VARCHAR(32) DEFAULT 'draft' COMMENT '结算单状态:draft/pending_approval/confirmed/voided',
         PAYMENT_STATUS VARCHAR(32) DEFAULT 'unpaid' COMMENT '付款状态:unpaid/partial_paid/paid',
+        REMARK VARCHAR(512) COMMENT '结算备注',
         CREATE_USER VARCHAR(64) COMMENT '制单人',
         CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        SUBMIT_TIME TIMESTAMP NULL COMMENT '提交时间',
         CONFIRMED_TIME TIMESTAMP NULL COMMENT '确认时间',
+        APPROVAL_USER VARCHAR(64) COMMENT '审批人',
+        APPROVAL_TIME TIMESTAMP NULL COMMENT '审批时间',
+        APPROVAL_COMMENT VARCHAR(512) COMMENT '审批意见',
         VOIDED_TIME TIMESTAMP NULL COMMENT '作废时间',
         PAID_TIME TIMESTAMP NULL COMMENT '付款时间',
         PRIMARY KEY (SETTLEMENT_ID),
@@ -940,6 +945,7 @@ async function runMigrations() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='结算单表'
     `);
     await checkAndMakeColumnNullable('T_SETTLEMENT', 'SUPPLIER_ID', 'VARCHAR(32)');
+    await checkAndAddColumn('T_SETTLEMENT', 'IS_DELETED', 'TINYINT(1) DEFAULT 0 COMMENT "软删除标记"', 'STATUS');
     await checkAndAddColumn('T_SETTLEMENT', 'SETTLEMENT_TYPE', 'VARCHAR(32) DEFAULT "supplier" COMMENT "supplier/expense/reimbursement"', 'SUPPLIER_NAME');
     await checkAndAddColumn('T_SETTLEMENT', 'PAYEE_TYPE', 'VARCHAR(32) DEFAULT "supplier" COMMENT "supplier/counterparty/employee"', 'SETTLEMENT_TYPE');
     await checkAndAddColumn('T_SETTLEMENT', 'PAYEE_ID', 'VARCHAR(64) COMMENT "收款方ID"', 'PAYEE_TYPE');
@@ -954,7 +960,12 @@ async function runMigrations() {
     await checkAndAddColumn('T_SETTLEMENT', 'OTHER_PAYMENT_IMAGE', 'LONGTEXT COMMENT "其他付款图片"', 'OTHER_PAYMENT_REMARK');
     await checkAndAddColumn('T_SETTLEMENT', 'PAID_AMOUNT', 'DECIMAL(12,2) DEFAULT 0 COMMENT "已付金额"', 'TOTAL_AMOUNT');
     await checkAndAddColumn('T_SETTLEMENT', 'PAYMENT_STATUS', 'VARCHAR(32) DEFAULT "unpaid" COMMENT "付款状态:unpaid/partial_paid/paid"', 'STATUS');
+    await checkAndAddColumn('T_SETTLEMENT', 'REMARK', 'VARCHAR(512) COMMENT "结算备注"', 'PAYMENT_STATUS');
+    await checkAndAddColumn('T_SETTLEMENT', 'SUBMIT_TIME', 'TIMESTAMP NULL COMMENT "提交时间"', 'CREATE_TIME');
     await checkAndAddColumn('T_SETTLEMENT', 'CONFIRMED_TIME', 'TIMESTAMP NULL COMMENT "确认时间"', 'CREATE_TIME');
+    await checkAndAddColumn('T_SETTLEMENT', 'APPROVAL_USER', 'VARCHAR(64) COMMENT "审批人"', 'CONFIRMED_TIME');
+    await checkAndAddColumn('T_SETTLEMENT', 'APPROVAL_TIME', 'TIMESTAMP NULL COMMENT "审批时间"', 'APPROVAL_USER');
+    await checkAndAddColumn('T_SETTLEMENT', 'APPROVAL_COMMENT', 'VARCHAR(512) COMMENT "审批意见"', 'APPROVAL_TIME');
     await checkAndAddColumn('T_SETTLEMENT', 'VOIDED_TIME', 'TIMESTAMP NULL COMMENT "作废时间"', 'CONFIRMED_TIME');
     try {
       await sequelize.query(`
@@ -1352,6 +1363,14 @@ async function runMigrations() {
     await checkAndAddColumn('T_STAFF', 'CREATE_TIME', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT "创建时间"', 'STATUS');
     await checkAndAddColumn('T_STAFF', 'UPDATE_TIME', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT "更新时间"', 'CREATE_TIME');
 
+    await checkAndAddColumn('T_ORDER', 'SUBMIT_USER', 'VARCHAR(64) COMMENT "订单提交人"', 'ORDER_STATUS');
+    await checkAndAddColumn('T_ORDER', 'SUBMIT_TIME', 'DATETIME COMMENT "订单提交时间"', 'SUBMIT_USER');
+    await checkAndAddColumn('T_ORDER', 'APPROVE_USER', 'VARCHAR(64) COMMENT "订单审批人"', 'SUBMIT_TIME');
+    await checkAndAddColumn('T_ORDER', 'APPROVE_TIME', 'DATETIME COMMENT "订单审批时间"', 'APPROVE_USER');
+    await checkAndAddColumn('T_ORDER', 'APPROVE_COMMENT', 'VARCHAR(1000) COMMENT "订单审批意见"', 'APPROVE_TIME');
+    await checkAndAddColumn('T_PURCHASE_REQUEST', 'SUBMIT_USER', 'VARCHAR(64) COMMENT "采购申请提交人"', 'APPLY_USER');
+    await checkAndAddColumn('T_PURCHASE_REQUEST', 'SUBMIT_TIME', 'DATETIME COMMENT "采购申请提交时间"', 'SUBMIT_USER');
+    await checkAndAddColumn('T_PURCHASE_REQUEST', 'APPROVE_TIME', 'DATETIME COMMENT "采购申请审批时间"', 'APPROVE_USER');
     await checkAndAddColumn('T_ORDER', 'CREATE_TIME', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT "创建时间"', 'REMARK');
     await checkAndAddColumn('T_ORDER', 'UPDATE_TIME', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT "更新时间"', 'CREATE_TIME');
     await checkAndAddColumn('T_ORDER', 'DEPOSIT_DEDUCTION_TOTAL', 'DECIMAL(12,2) DEFAULT 0 COMMENT "定金抵扣总额"', 'EDUCATION_SUBSIDY');
@@ -2491,6 +2510,26 @@ async function runMigrations() {
         KEY idx_approval_log_instance (INSTANCE_ID, CREATE_TIME),
         KEY idx_approval_log_actor (ACTOR_STAFF_ID, CREATE_TIME)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='审批操作日志'
+    `);
+
+    await checkAndCreateTable('T_BUSINESS_ACTION_LOG', `
+      CREATE TABLE T_BUSINESS_ACTION_LOG (
+        LOG_ID VARCHAR(32) NOT NULL,
+        BUSINESS_TYPE VARCHAR(32) NOT NULL,
+        BUSINESS_ID VARCHAR(64) NOT NULL,
+        BUSINESS_NO VARCHAR(64),
+        ACTION VARCHAR(64) NOT NULL,
+        FROM_STATUS VARCHAR(32),
+        TO_STATUS VARCHAR(32),
+        ACTOR_STAFF_ID BIGINT,
+        ACTOR_NAME VARCHAR(64),
+        COMMENT VARCHAR(1000),
+        DETAIL_JSON TEXT,
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (LOG_ID),
+        KEY idx_business_action_target (BUSINESS_TYPE, BUSINESS_ID, CREATE_TIME),
+        KEY idx_business_action_actor (ACTOR_STAFF_ID, CREATE_TIME)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='业务单据操作审计日志'
     `);
 
     await migrateProductData();

@@ -17,6 +17,7 @@ const { generateUUID } = require('../../utils');
 
 const FORMULA_VERSION = 'ORDER_GP_V5_20260706';
 const VAT_RATE = 0.13;
+const NATIONAL_SUBSIDY_RECEIPT_TAX_RATE = 0.006;
 
 function toNumber(value) {
   const number = Number(value || 0);
@@ -25,6 +26,22 @@ function toNumber(value) {
 
 function roundMoney(value) {
   return Math.round((toNumber(value) + Number.EPSILON) * 100) / 100;
+}
+
+function calculateNationalSubsidyCustomerReceiptAmount({
+  nationalAmount = 0,
+  subsidyAmount = 0,
+  nationalSubsidyAmount = 0
+} = {}) {
+  const totalNationalAmount = Math.max(0, toNumber(nationalAmount));
+  const receivableSubsidyAmount = Math.max(0, toNumber(subsidyAmount));
+  const configuredNationalSubsidy = Math.max(0, toNumber(nationalSubsidyAmount));
+  const taxBase = Math.max(0, totalNationalAmount - configuredNationalSubsidy);
+  return roundMoney(
+    totalNationalAmount
+      - receivableSubsidyAmount
+      - taxBase * NATIONAL_SUBSIDY_RECEIPT_TAX_RATE
+  );
 }
 
 function normalizeMethodName(value) {
@@ -481,6 +498,7 @@ module.exports = {
   FORMULA_VERSION,
   VAT_RATE,
   roundMoney,
+  calculateNationalSubsidyCustomerReceiptAmount,
   normalizeMethodName,
   isPolicySubsidyReceivable,
   calculateOrderReceivable,

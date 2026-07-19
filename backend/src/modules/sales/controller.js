@@ -40,9 +40,11 @@ const { generateOrderNo, generateInboundNo, generateUUID, paginate, formatPagina
 const { normalizePnCode } = require('../../utils/productPn');
 const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
+const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const {
   calculateAndSaveOrderGrossProfit,
-  snapshotToResponse
+  snapshotToResponse,
+  calculateNationalSubsidyCustomerReceiptAmount
 } = require('./grossProfit');
 
 function chinaDateBoundary(dateText, endOfDay = false) {
@@ -218,7 +220,7 @@ async function list(ctx) {
     distinct: true,
     order: buildPendingFirstOrder(sequelize, {
       statusColumn: 'Order.order_status',
-      pendingStatuses: ['pending_approval', '未归档'],
+      pendingStatuses: ['draft', 'pending_approval', '未归档'],
       dateColumns: ['Order.create_time'],
       idColumn: 'Order.order_id'
     }),
@@ -489,8 +491,10 @@ async function create(ctx) {
     customerName, customerPhone, customerSource,
     items, payments = [], discountAmount = 0,
     nationalSubsidy = 0, educationSubsidy = 0,
-    invoiceStatus = '不开票', remark, storeId, status, orderStatus, untaxedInvoiceConfirmed = false
+    invoiceStatus = '不开票', remark, storeId, status, orderStatus, untaxedInvoiceConfirmed = false,
+    saveDraft = false, orderId: requestedOrderId
   } = requestBody;
+  const isDraft = Boolean(saveDraft);
   const extendedOrderFields = normalizeOrderExtendedFields(requestBody);
   if (extendedOrderFields.auxiliary_sales_list) {
     extendedOrderFields.auxiliary_sales_list = extendedOrderFields.auxiliary_sales_list.filter(item => (
@@ -498,45 +502,54 @@ async function create(ctx) {
     ));
   }
 
-  if (!Array.isArray(items) || items.length === 0) {
+  if (!Array.isArray(items) || (!isDraft && items.length === 0)) {
     ctx.throw(400, '订单中没有商品');
   }
   if (!Array.isArray(payments)) {
     ctx.throw(400, '收款方式格式不正确');
   }
 
-  const orderNo = generateOrderNo();
-  const orderId = generateUUID();
-  const actualStoreId = storeId || user.storeId || '';
+  let existingOrder = null;
+  if (requestedOrderId) {
+    existingOrder = await Order.findOne({ where: { order_id: requestedOrderId, is_deleted: 0 } });
+    if (!existingOrder) ctx.throw(404, '销售订单不存在');
+    assertStoreVisible(existingOrder.store_id, user);
+    if (existingOrder.order_status !== 'draft') ctx.throw(400, '只有草稿状态的销售订单可以保存或提交');
+    if (!canEditSalesDraft(user, existingOrder)) ctx.throw(403, '只有草稿创建人、店长或管理员可以编辑');
+  }
+
+  const orderNo = existingOrder?.order_no || generateOrderNo();
+  const orderId = existingOrder?.order_id || generateUUID();
+  const actualStoreId = existingOrder?.store_id || storeId || user.storeId || '';
 
   const normalizedItems = items.map(item => applyOrderItemDefaults(normalizeOrderItemInput(item)));
   const totalAmount = normalizedItems.reduce((sum, item) => sum + Number(item.subtotal || 0), 0);
   const payableBeforeDeposit = Math.max(0, money(totalAmount - Number(discountAmount) - Number(nationalSubsidy) - Number(educationSubsidy)));
   const depositDeductions = normalizeDepositDeductions(requestBody);
-  if (depositDeductions.length > 1) {
+  if (!isDraft && depositDeductions.length > 1) {
     ctx.throw(400, '一张正式订单只能绑定一张定金单');
   }
   const depositDeductionTotal = money(depositDeductions.reduce((sum, item) => sum + Number(item.amount || 0), 0));
   const declaredDepositTotal = firstNonEmpty(requestBody, ['depositDeductionTotal', 'deposit_deduction_total'], null);
-  if (declaredDepositTotal !== null && Math.abs(money(declaredDepositTotal) - depositDeductionTotal) > 0.01) {
+  if (!isDraft && declaredDepositTotal !== null && Math.abs(money(declaredDepositTotal) - depositDeductionTotal) > 0.01) {
     ctx.throw(400, '定金抵扣汇总与明细金额不一致');
   }
-  if (depositDeductionTotal - payableBeforeDeposit > 0.01) {
+  if (!isDraft && depositDeductionTotal - payableBeforeDeposit > 0.01) {
     ctx.throw(400, '定金抵扣金额不能超过订单应付金额');
   }
 
   const actualPayment = Math.max(0, money(payableBeforeDeposit - depositDeductionTotal));
   const orderPayments = payments.filter(payment => !isDepositPayment(payment));
   const collectedPayments = orderPayments.filter(payment => !isPolicySubsidyReceivable(payment));
-  if (actualPayment > 0 && collectedPayments.length === 0) {
+  if (!isDraft && actualPayment > 0 && collectedPayments.length === 0) {
     ctx.throw(400, '请填写收款方式');
   }
   const paymentTotal = money(collectedPayments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0));
-  if (Math.abs(paymentTotal - actualPayment) > 0.01) {
+  if (!isDraft && Math.abs(paymentTotal - actualPayment) > 0.01) {
     ctx.throw(400, '收款金额与订单实付金额不一致');
   }
 
-  const belowPriceItems = await checkPriceApproval(items);
+  const belowPriceItems = isDraft ? [] : await checkPriceApproval(items);
   const needsApproval = belowPriceItems.length > 0;
 
   const productIds = [...new Set(normalizedItems.map(i => i.product_id).filter(Boolean))];
@@ -567,7 +580,7 @@ async function create(ctx) {
       snItems[0].selected_resource_types = [...new Set([...(snItems[0].selected_resource_types || []), 'EDU_SUBSIDY'])];
     }
   }
-  if (invoiceStatus && invoiceStatus !== '不开票' && snItems.length) {
+  if (!isDraft && invoiceStatus && invoiceStatus !== '不开票' && snItems.length) {
     const snWhere = snItems.map(item => item.sn_id ? { sn_id: item.sn_id } : { sn_code: item.sn_code, product_id: item.product_id });
     const selectedSns = await ProductSn.findAll({ where: { [Op.or]: snWhere, is_deleted: 0 } });
     if (selectedSns.some(sn => sn.tax_type === 'UNTAXED') && !untaxedInvoiceConfirmed) {
@@ -575,11 +588,14 @@ async function create(ctx) {
     }
   }
 
-  const finalOrderStatus = status || orderStatus || (needsApproval ? 'pending_approval' : '未归档');
+  const finalOrderStatus = isDraft ? 'draft' : (status || orderStatus || (needsApproval ? 'pending_approval' : '未归档'));
+  const previousOrderStatus = existingOrder?.order_status || null;
+  const auditAction = isDraft ? (existingOrder ? 'draft_saved' : 'draft_created') : (existingOrder ? 'submitted' : 'created');
+  const auditTime = new Date();
 
   await sequelize.transaction(async (transaction) => {
   let reservedDeposit = null;
-  if (depositDeductions.length === 1) {
+  if (!isDraft && depositDeductions.length === 1) {
     reservedDeposit = await validateDepositReservation({
       payment: depositDeductions[0],
       user,
@@ -589,12 +605,12 @@ async function create(ctx) {
     });
   }
 
-  await Order.create({
+  const orderPayload = {
     order_id: orderId,
     order_no: orderNo,
     store_id: actualStoreId,
-    create_staff_id: user.staffId,
-    create_user: user.name,
+    create_staff_id: existingOrder?.create_staff_id || user.staffId,
+    create_user: existingOrder?.create_user || user.name,
     customer_name: customerName,
     customer_phone: customerPhone,
     customer_source: customerSource,
@@ -610,7 +626,29 @@ async function create(ctx) {
     order_status: finalOrderStatus,
     inventory_reserved: 0,
     remark: remark || (needsApproval ? '售价低于定价, 待审批' : '')
-  }, { transaction });
+  };
+  if (!isDraft) {
+    orderPayload.submit_user = user.name || user.phone || String(user.staffId || '');
+    orderPayload.submit_time = auditTime;
+  }
+  if (existingOrder) {
+    await existingOrder.update(orderPayload, { transaction });
+    await OrderItem.destroy({ where: { order_id: orderId }, transaction });
+    await OrderPayment.destroy({ where: { order_id: orderId }, transaction });
+  } else {
+    await Order.create(orderPayload, { transaction });
+  }
+
+  await recordBusinessAction({
+    businessType: 'sales_order',
+    businessId: orderId,
+    businessNo: orderNo,
+    action: auditAction,
+    fromStatus: previousOrderStatus,
+    toStatus: finalOrderStatus,
+    user,
+    transaction
+  });
 
   for (const item of normalizedItems) {
     await OrderItem.create({
@@ -638,7 +676,7 @@ async function create(ctx) {
     await OrderPayment.create({
       order_id: orderId,
       payment_method: payment.method,
-      deposit_id: null,
+      deposit_id: payment.depositId || payment.deposit_id || null,
       amount: payment.amount
     }, { transaction });
   }
@@ -660,8 +698,109 @@ async function create(ctx) {
     orderId, orderNo,
     needsApproval,
     belowPriceItems,
-    message: needsApproval ? '订单已创建，售价低于定价需要审批' : '订单创建成功'
+    status: finalOrderStatus,
+    message: isDraft ? '销售订单草稿已保存' : (needsApproval ? '订单已创建，售价低于定价需要审批' : '订单创建成功')
   };
+}
+
+function canEditSalesDraft(user, order) {
+  const roles = getUserRoles(user);
+  const privileged = roles.some(role => ['boss', 'admin', 'manager', 'store_manager'].includes(role));
+  return privileged || String(user?.staffId || '') === String(order.create_staff_id || '') || String(user?.name || '') === String(order.create_user || '');
+}
+
+async function saveSalesDraft(ctx) {
+  ctx.request.body = { ...(ctx.request.body || {}), saveDraft: true };
+  return create(ctx);
+}
+
+async function updateSalesDraft(ctx) {
+  ctx.request.body = { ...(ctx.request.body || {}), saveDraft: true, orderId: ctx.params.orderId };
+  return create(ctx);
+}
+
+async function submitSalesDraft(ctx) {
+  const { orderId } = ctx.params;
+  const user = ctx.state.user;
+  const order = await Order.findOne({
+    where: { order_id: orderId, is_deleted: 0 },
+    include: [{ model: OrderItem }, { model: OrderPayment }]
+  });
+  if (!order) ctx.throw(404, '销售订单不存在');
+  assertStoreVisible(order.store_id, user);
+  if (order.order_status !== 'draft') ctx.throw(400, '只有草稿状态的销售订单可以提交');
+  if (!canEditSalesDraft(user, order)) ctx.throw(403, '只有草稿创建人、店长或管理员可以提交');
+
+  const orderJson = order.toJSON();
+  const parseJson = value => {
+    if (Array.isArray(value)) return value;
+    if (!value) return [];
+    try { return JSON.parse(value); } catch (_) { return []; }
+  };
+  const draftPayments = (orderJson.OrderPayments || []).map(payment => ({
+    method: payment.payment_method,
+    amount: payment.amount,
+    depositId: payment.deposit_id || undefined
+  }));
+  const depositItems = parseJson(order.deposit_items);
+  if (depositItems.length > 0) {
+    draftPayments.push({
+      method: '定金',
+      amount: depositItems[0].amount,
+      depositId: depositItems[0].depositId || depositItems[0].deposit_id || undefined
+    });
+  }
+  ctx.request.body = {
+    orderId: order.order_id,
+    storeId: order.store_id,
+    customerName: order.customer_name,
+    customerPhone: order.customer_phone,
+    customerSource: order.customer_source,
+    invoiceStatus: order.invoice_status || '不开票',
+    items: (orderJson.OrderItems || []).map(item => ({
+      productId: item.product_id,
+      productName: item.product_name,
+      pnCode: item.pn_code,
+      snCode: item.sn_code,
+      snId: item.sn_id,
+      supplierId: item.supplier_id,
+      supplierName: item.supplier_name,
+      salePrice: item.sale_price,
+      quantity: item.quantity,
+      subtotal: item.subtotal,
+      useGovSubsidy: item.use_gov_subsidy,
+      useEduSubsidy: item.use_edu_subsidy,
+      useSalesReport: item.use_sales_report,
+      selectedResourceTypes: parseJson(item.selected_resource_types)
+    })),
+    payments: draftPayments,
+    nationalSubsidy: order.national_subsidy,
+    educationSubsidy: order.education_subsidy,
+    discountAmount: order.discount_amount,
+    remark: order.remark
+  };
+  return create(ctx);
+}
+
+async function deleteSalesDraft(ctx) {
+  const { orderId } = ctx.params;
+  const user = ctx.state.user;
+  const order = await Order.findOne({ where: { order_id: orderId, is_deleted: 0 } });
+  if (!order) ctx.throw(404, '销售订单不存在');
+  assertStoreVisible(order.store_id, user);
+  if (order.order_status !== 'draft' || order.submit_time) ctx.throw(400, '只有从未提交过的销售订单草稿可以删除');
+  if (!canEditSalesDraft(user, order)) ctx.throw(403, '只有草稿创建人、店长或管理员可以删除');
+  await order.update({ is_deleted: 1, update_time: new Date() });
+  await recordBusinessAction({
+    businessType: 'sales_order',
+    businessId: order.order_id,
+    businessNo: order.order_no,
+    action: 'deleted',
+    fromStatus: 'draft',
+    toStatus: 'deleted',
+    user
+  });
+  ctx.body = { code: 0, message: '销售订单草稿已删除', orderId };
 }
 
 /**
@@ -719,6 +858,8 @@ async function detail(ctx) {
     });
   }
 
+  result.action_logs = await listBusinessActions('sales_order', order.order_id);
+
   ctx.body = result;
 }
 
@@ -741,10 +882,28 @@ async function approve(ctx) {
     ctx.throw(400, '该订单无需审批');
   }
 
-  await order.update({
-    order_status: '未归档',
-    remark: (order.remark || '') + '\n已审批通过',
-    update_time: new Date()
+  const previousStatus = order.order_status;
+  const approveTime = new Date();
+  await sequelize.transaction(async (transaction) => {
+    await order.update({
+      order_status: '未归档',
+      approve_user: user.name || user.phone || String(user.staffId || ''),
+      approve_time: approveTime,
+      approve_comment: '审批通过',
+      remark: (order.remark || '') + '\n已审批通过',
+      update_time: approveTime
+    }, { transaction });
+    await recordBusinessAction({
+      businessType: 'sales_order',
+      businessId: order.order_id,
+      businessNo: order.order_no,
+      action: 'approved',
+      fromStatus: previousStatus,
+      toStatus: '未归档',
+      user,
+      comment: '审批通过',
+      transaction
+    });
   });
 
   ctx.body = { code: 0, message: '审批通过，订单待归档' };
@@ -770,8 +929,10 @@ async function reject(ctx) {
   }
 
   const { reason } = ctx.request.body;
+  const previousStatus = order.order_status;
 
   await sequelize.transaction(async (transaction) => {
+    const approveTime = new Date();
     if (order.inventory_reserved) {
       await releaseReservedInventoryForOrder(order, transaction);
     }
@@ -781,9 +942,23 @@ async function reject(ctx) {
     await order.update({
       order_status: 'cancelled',
       inventory_reserved: 0,
+      approve_user: user.name || user.phone || String(user.staffId || ''),
+      approve_time: approveTime,
+      approve_comment: reason || '',
       remark: (order.remark || '') + '\n审批拒绝: ' + (reason || '无'),
-      update_time: new Date()
+      update_time: approveTime
     }, { transaction });
+    await recordBusinessAction({
+      businessType: 'sales_order',
+      businessId: order.order_id,
+      businessNo: order.order_no,
+      action: 'rejected',
+      fromStatus: previousStatus,
+      toStatus: 'cancelled',
+      user,
+      comment: reason || '',
+      transaction
+    });
   });
 
   ctx.body = { code: 0, message: '已拒绝' };
@@ -809,6 +984,7 @@ async function update(ctx) {
   }
 
   const nextStatus = data.order_status || data.status;
+  const previousStatus = order.order_status;
   let archivedNow = false;
   await sequelize.transaction(async (transaction) => {
     await syncOrderItemsFromPayload(order, data, transaction);
@@ -837,6 +1013,19 @@ async function update(ctx) {
     }
 
     await order.update(data, { transaction });
+    const statusAfterUpdate = order.order_status;
+    if (statusAfterUpdate !== previousStatus) {
+      await recordBusinessAction({
+        businessType: 'sales_order',
+        businessId: order.order_id,
+        businessNo: order.order_no,
+        action: archivedNow ? 'archived' : isCancelStatus(statusAfterUpdate) ? 'cancelled' : 'status_updated',
+        fromStatus: previousStatus,
+        toStatus: statusAfterUpdate,
+        user: ctx.state.user,
+        transaction
+      });
+    }
     if (archivedNow) {
       await calculateAndSaveOrderGrossProfit(order.order_id, {
         transaction,
@@ -1736,6 +1925,16 @@ function isPolicySubsidyReceivable(payment) {
   return method.includes('政策补贴应收');
 }
 
+function isNationalSubsidyPayment(payment) {
+  const method = String(payment?.method || payment?.payment_method || '').trim();
+  return method.startsWith('\u56fd\u8865POS');
+}
+
+function isNationalSubsidyCustomerReceipt(payment) {
+  const method = String(payment?.method || payment?.payment_method || '').trim();
+  return isNationalSubsidyPayment(payment) && method.endsWith('-\u5ba2\u6237\u5b9e\u6536');
+}
+
 function normalizeDepositDeductions(data = {}) {
   const explicitItems = [
     data.depositItems,
@@ -2441,6 +2640,10 @@ async function validateAndDeductInventoryForArchive(order, transaction = null) {
 module.exports = {
   list,
   create,
+  saveSalesDraft,
+  updateSalesDraft,
+  submitSalesDraft,
+  deleteSalesDraft,
   detail,
   update,
   updateOrderItems,
@@ -2624,19 +2827,35 @@ async function syncToDailyStatement(orderId, storeId) {
       }
     });
 
+    const nationalSubsidyPayments = (order.OrderPayments || []).filter(isNationalSubsidyPayment);
+    const nationalAmount = nationalSubsidyPayments.reduce(
+      (sum, payment) => sum + Number(payment.amount || 0),
+      0
+    );
+    const subsidyReceivableAmount = nationalSubsidyPayments
+      .filter(isPolicySubsidyReceivable)
+      .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+
     for (const payment of order.OrderPayments || []) {
       const settleAccountId = await resolveSettlementAccount(storeId, payment.payment_method);
       const paymentMethodName = paymentMethodMap[payment.payment_method] || payment.payment_method;
       const businessType = isPolicySubsidyReceivable({ method: paymentMethodName })
         ? 'national_subsidy_receivable'
         : 'sales_receipt';
+      const statementAmount = isNationalSubsidyCustomerReceipt({ method: paymentMethodName })
+        ? calculateNationalSubsidyCustomerReceiptAmount({
+          nationalAmount,
+          subsidyAmount: subsidyReceivableAmount,
+          nationalSubsidyAmount: order.national_subsidy
+        })
+        : payment.amount;
 
       const existing = await DailyStatementDetail.findOne({
         where: { statement_id: statement.statement_id, order_id: orderId, payment_code: paymentMethodName }
       });
       if (existing) {
         await existing.update({
-          amount: payment.amount,
+          amount: statementAmount,
           settlement_account_id: settleAccountId,
           payment_method: paymentMethodName,
           payment_code: paymentMethodName,
@@ -2654,7 +2873,7 @@ async function syncToDailyStatement(orderId, storeId) {
           payment_method: paymentMethodName,
           payment_code: paymentMethodName,
           business_type: businessType,
-          amount: payment.amount,
+          amount: statementAmount,
           settlement_account_id: settleAccountId,
           settled: 0
         });

@@ -445,6 +445,9 @@
               </el-table-column>
               <el-table-column prop="total_quantity" label="数量" width="80" />
               <el-table-column prop="apply_user" label="申请人" width="100" />
+              <el-table-column label="出库确认人" width="110">
+                <template #default="{ row }">{{ row.shipping_user || row.confirm_user || '-' }}</template>
+              </el-table-column>
               <el-table-column prop="status" label="状态" width="120">
                 <template #default="{ row }">
                   <el-tag :type="getTransferStatusType(row.status)">{{ getTransferStatusText(row.status) }}</el-tag>
@@ -453,9 +456,12 @@
               <el-table-column prop="create_time" label="创建时间" width="160">
                 <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
               </el-table-column>
-              <el-table-column label="操作" width="120">
+              <el-table-column label="操作" width="260">
                 <template #default="{ row }">
+                  <el-button link type="primary" @click="openTransferDetail(row)">查看</el-button>
                   <el-button v-if="row.status === 'pending'" link type="success" @click="handleConfirmTransferOut(row)">确认出库</el-button>
+                  <el-button v-if="canRevokeTransfer(row)" link type="warning" @click="handleRevokeTransfer(row)">撤销申请</el-button>
+                  <el-button v-if="canRejectTransfer(row)" link type="danger" @click="handleRejectTransfer(row)">拒绝申请</el-button>
                 </template>
               </el-table-column>
             </el-table>
@@ -480,6 +486,9 @@
               </el-table-column>
               <el-table-column prop="total_quantity" label="数量" width="80" />
               <el-table-column prop="apply_user" label="申请人" width="100" />
+              <el-table-column label="入库确认人" width="110">
+                <template #default="{ row }">{{ row.receiving_user || row.inbound_confirm_user || '-' }}</template>
+              </el-table-column>
               <el-table-column prop="status" label="状态" width="120">
                 <template #default="{ row }">
                   <el-tag :type="getTransferStatusType(row.status)">{{ getTransferStatusText(row.status) }}</el-tag>
@@ -490,6 +499,7 @@
               </el-table-column>
               <el-table-column label="操作" width="120">
                 <template #default="{ row }">
+                  <el-button link type="primary" @click="openTransferDetail(row)">查看</el-button>
                   <el-button v-if="row.status === 'out_confirmed'" link type="success" @click="handleConfirmTransferIn(row)">确认入库</el-button>
                 </template>
               </el-table-column>
@@ -539,6 +549,11 @@
               </el-table-column>
               <el-table-column prop="create_time" label="创建时间" width="160">
                 <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="80" fixed="right">
+                <template #default="{ row }">
+                  <el-button link type="primary" @click="openTransferDetail(row)">查看</el-button>
+                </template>
               </el-table-column>
             </el-table>
             <el-pagination
@@ -631,6 +646,8 @@
           </el-descriptions-item>
           <el-descriptions-item label="门店">{{ currentInbound.store_name }}</el-descriptions-item>
           <el-descriptions-item label="来源单号">{{ currentInbound.source_no || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="采购申请单号">{{ currentInbound.purchase_source?.request_no || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="供应商">{{ currentInbound.purchase_source?.supplier_name || '-' }}</el-descriptions-item>
           <el-descriptions-item label="总数量">{{ currentInbound.total_quantity }}</el-descriptions-item>
           <el-descriptions-item label="总金额">¥{{ currentInbound.total_amount }}</el-descriptions-item>
           <el-descriptions-item label="创建时间">{{ formatDate(currentInbound.create_time) }}</el-descriptions-item>
@@ -644,6 +661,11 @@
           </el-table-column>
           <el-table-column label="PN码" width="140">
             <template #default="{ row }">{{ row.pn_code || '-' }}</template>
+          </el-table-column>
+          <el-table-column label="SN码" min-width="180">
+            <template #default="{ row }">
+              {{ (row.sn_codes || (row.sn_code ? [row.sn_code] : [])).join('、') || '-' }}
+            </template>
           </el-table-column>
           <el-table-column prop="unit_price" label="单价" width="100">
             <template #default="{ row }">¥{{ row.unit_price }}</template>
@@ -1059,6 +1081,42 @@
         <el-button type="info" @click="saveTransferDraft">保存草稿</el-button>
         <el-button type="primary" @click="submitTransfer" :loading="transferLoading">确认调拨</el-button>
       </template>
+    </el-dialog>
+
+    <el-dialog v-model="transferDetailVisible" title="调拨流程详情" width="820px">
+      <div v-if="transferDetailRow">
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="调拨单号">{{ transferDetailRow.transfer_no }}</el-descriptions-item>
+          <el-descriptions-item label="状态">
+            <el-tag :type="getTransferStatusType(transferDetailRow.status)">{{ getTransferStatusText(transferDetailRow.status) }}</el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="调出门店">{{ transferDetailRow.from_store_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="调入门店">{{ transferDetailRow.to_store_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="申请人">{{ transferDetailRow.apply_user || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="申请时间">{{ formatDate(transferDetailRow.create_time) }}</el-descriptions-item>
+          <el-descriptions-item label="调出确认人">{{ transferDetailRow.shipping_user || transferDetailRow.confirm_user || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="调出确认时间">{{ formatDate(transferDetailRow.shipping_time) }}</el-descriptions-item>
+          <el-descriptions-item label="调入确认人">{{ transferDetailRow.receiving_user || transferDetailRow.inbound_confirm_user || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="调入确认时间">{{ formatDate(transferDetailRow.receiving_time) }}</el-descriptions-item>
+        </el-descriptions>
+        <h4 class="mt-20">调拨商品</h4>
+        <el-table :data="transferDetailRow.TransferItems || []" border size="small">
+          <el-table-column prop="product_name" label="商品名称" min-width="180" />
+          <el-table-column prop="product_code" label="商品编码" width="140" />
+          <el-table-column prop="pn_code" label="PN" width="120" />
+          <el-table-column prop="sn_code" label="SN" width="150" />
+          <el-table-column prop="quantity" label="数量" width="80" />
+        </el-table>
+        <h4 class="mt-20">流程记录</h4>
+        <el-timeline v-if="transferDetailRow.action_logs?.length">
+          <el-timeline-item v-for="log in transferDetailRow.action_logs" :key="log.log_id" :timestamp="formatDate(log.create_time)">
+            <strong>{{ transferActionLabel(log.action) }}</strong>
+            <span style="margin-left: 10px; color: #606266">{{ log.actor_name || '-' }}</span>
+            <span v-if="log.comment" style="margin-left: 10px; color: #909399">{{ log.comment }}</span>
+          </el-timeline-item>
+        </el-timeline>
+        <el-empty v-else description="暂无流程记录" :image-size="60" />
+      </div>
     </el-dialog>
 
     <el-dialog v-model="transferOutConfirmVisible" title="确认调拨出库" width="760px" @close="resetTransferOutConfirm">
@@ -1553,16 +1611,17 @@
 
 <script setup>
 import { ref, reactive, onMounted, computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as XLSX from 'xlsx'
 import api from '../api'
-import { getStoreId, hasRole, isStoreUser } from '../utils/user'
+import { getStoreId, getUserInfo, hasRole, isStoreUser } from '../utils/user'
 import SnTrace from './SnTrace.vue'
 import InventoryResourceRights from '../components/InventoryResourceRights.vue'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 
 const router = useRouter()
+const route = useRoute()
 const TRANSFER_DRAFT_KEY = 'inventory-transfer-create'
 const inboundDraftKey = () => currentInbound.value?.inbound_id ? `inventory-inbound-execute:${currentInbound.value.inbound_id}` : ''
 const mainTab = ref('summary')
@@ -1747,6 +1806,8 @@ const traceProductName = ref('')
 
 // 调拨
 const transferDialogVisible = ref(false)
+const transferDetailVisible = ref(false)
+const transferDetailRow = ref(null)
 const transferLoading = ref(false)
 const transferOutList = ref([])
 const transferInList = ref([])
@@ -1898,7 +1959,7 @@ const conversionCostMatched = computed(() => {
   return Math.abs(conversionTargetTotal.value - conversionExpectedTargetTotal.value) <= 0.01
 })
 
-onMounted(() => {
+onMounted(async () => {
   if (isStoreUser()) {
     inboundQuery.storeId = getStoreId()
     summaryQuery.storeId = getStoreId()
@@ -1908,7 +1969,13 @@ onMounted(() => {
   }
   loadStores()
   loadCategories()
-  if (mainTab.value === 'summary') {
+  const inboundIdFromQuery = String(route.query.inboundId || '').trim()
+  if (inboundIdFromQuery) {
+    mainTab.value = 'inbound'
+    await loadInboundList()
+    await viewInboundDetail({ inbound_id: inboundIdFromQuery }, { snTrace: true })
+    await router.replace({ name: 'Inventory', query: {} })
+  } else if (mainTab.value === 'summary') {
     loadSummary()
   } else if (mainTab.value === 'inbound') {
     loadInboundList()
@@ -2418,9 +2485,11 @@ const loadReturnList = async () => {
   }
 }
 
-const viewInboundDetail = async (row) => {
+const viewInboundDetail = async (row, { snTrace = false } = {}) => {
   try {
-    const res = await api.getInboundDetail(row.inbound_id)
+    const res = snTrace
+      ? await api.getSnTraceInboundDetail(row.inbound_id)
+      : await api.getInboundDetail(row.inbound_id)
     if (res.code === 0) {
       currentInbound.value = res.data
       inboundDetailVisible.value = true
@@ -3086,6 +3155,45 @@ const formatTransferItemLabel = (item) => {
   return `${name} / PN:${pn} / SN:${sn} x${item.quantity || 0}`
 }
 
+const transferActionLabel = (action) => ({
+  submitted: '提交调拨申请',
+  outbound_confirmed: '确认调拨出库',
+  inbound_confirmed: '确认调拨入库',
+  revoked: '撤销调拨申请',
+  rejected: '拒绝调拨申请'
+}[action] || action || '操作')
+
+const isTransferRequestOpen = (row) => ['pending', 'requested', 'applied', 'shipping'].includes(String(row?.status || '').toLowerCase())
+
+const canRevokeTransfer = (row) => {
+  if (!isTransferRequestOpen(row)) return false
+  const user = getUserInfo()
+  const applicant = String(row.apply_user || '').trim()
+  return Boolean(applicant) && [user.name, user.userName, user.staffId, user.staff_id, user.userId, user.user_id, user.phone]
+    .map(value => String(value || '').trim())
+    .filter(Boolean)
+    .includes(applicant)
+}
+
+const canRejectTransfer = (row) => {
+  if (!isTransferRequestOpen(row)) return false
+  return hasRole(['admin']) || String(getStoreId()) === String(row.from_store_id || '')
+}
+
+const openTransferDetail = async (row) => {
+  try {
+    const res = await api.getTransferDetail(row.transfer_id)
+    if (res.code === 0) {
+      transferDetailRow.value = res.data
+      transferDetailVisible.value = true
+    } else {
+      ElMessage.error(res.message || '加载调拨详情失败')
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || err.message || '加载调拨详情失败')
+  }
+}
+
 const resetTransferForm = () => {
   transferForm.fromStoreId = ''
   transferForm.fromStoreName = ''
@@ -3236,6 +3344,44 @@ const handleConfirmTransferOut = async (row) => {
       const msg = err.response?.data?.message || err.message || '确认出库失败'
       ElMessage.error(msg)
     }
+  }
+}
+
+const handleRevokeTransfer = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认撤销调拨申请 ${row.transfer_no} 吗？`,
+      '撤销调拨申请',
+      { confirmButtonText: '确认撤销', cancelButtonText: '取消', type: 'warning' }
+    )
+    const res = await api.revokeTransfer({ transferId: row.transfer_id })
+    if (res.code === 0) {
+      ElMessage.success('调拨申请已撤销')
+      loadTransferLists()
+    } else {
+      ElMessage.error(res.message || '撤销申请失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err.response?.data?.message || err.message || '撤销申请失败')
+  }
+}
+
+const handleRejectTransfer = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认拒绝调拨申请 ${row.transfer_no} 吗？`,
+      '拒绝调拨申请',
+      { confirmButtonText: '确认拒绝', cancelButtonText: '取消', type: 'warning' }
+    )
+    const res = await api.rejectTransfer({ transferId: row.transfer_id })
+    if (res.code === 0) {
+      ElMessage.success('调拨申请已拒绝')
+      loadTransferLists()
+    } else {
+      ElMessage.error(res.message || '拒绝申请失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err.response?.data?.message || err.message || '拒绝申请失败')
   }
 }
 
@@ -3798,12 +3944,12 @@ const getConversionLineRoleText = (role) => {
 }
 
 const getTransferStatusType = (status) => {
-  const types = { pending: 'warning', shipping: 'info', out_confirmed: 'info', received: 'success', completed: 'success', cancelled: 'danger' }
+  const types = { pending: 'warning', shipping: 'info', out_confirmed: 'info', received: 'success', completed: 'success', cancelled: 'danger', canceled: 'danger', revoked: 'info', rejected: 'danger' }
   return types[status] || 'info'
 }
 
 const getTransferStatusText = (status) => {
-  const texts = { pending: '待出库', shipping: '发货中', out_confirmed: '待入库', received: '已收货', completed: '已完成', cancelled: '已取消' }
+  const texts = { pending: '待出库门店确认', requested: '待出库门店确认', applied: '待出库门店确认', shipping: '待出库门店确认', out_confirmed: '待入库', received: '已收货', completed: '已完成', cancelled: '已取消', canceled: '已取消', revoked: '已撤销', rejected: '已拒绝' }
   return texts[status] || status
 }
 

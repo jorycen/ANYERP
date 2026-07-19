@@ -25,6 +25,7 @@ const {
   refreshPayableState,
   refreshExpenseState
 } = require('./settlementAllocation');
+const { recordBusinessAction } = require('../../utils/businessActionLog');
 
 /**
  * 应付款列表
@@ -175,7 +176,8 @@ async function createSettlement(ctx) {
     supplierAccountId,
     paymentAccountType = 'saved',
     otherPaymentRemark,
-    otherPaymentImage
+    otherPaymentImage,
+    remark
   } = ctx.request.body;
   const user = ctx.state.user;
   if (!supplierId) ctx.throw(400, 'supplier is required');
@@ -284,6 +286,7 @@ async function createSettlement(ctx) {
       total_amount: totalAmount,
       status: 'draft',
       payment_status: 'unpaid',
+      remark: String(remark || '').trim().slice(0, 512) || null,
       create_user: user?.name || user?.phone || ''
     }, { transaction });
     for (const row of rows) {
@@ -435,7 +438,7 @@ async function createSettlementLegacy(ctx) {
 }
 
 async function createExpenseSettlement(ctx) {
-  const { payableId, amount: requestedAmount } = ctx.request.body;
+  const { payableId, amount: requestedAmount, remark } = ctx.request.body;
   const user = ctx.state.user;
   if (!payableId) ctx.throw(400, 'payableId is required');
   let settlement;
@@ -469,6 +472,7 @@ async function createExpenseSettlement(ctx) {
       paid_amount: 0,
       status: 'draft',
       payment_status: 'unpaid',
+      remark: String(remark || '').trim().slice(0, 512) || null,
       create_user: user?.name || user?.phone || ''
     }, { transaction });
     await SettlementItem.create({
@@ -651,7 +655,7 @@ async function refreshSettlementPaymentState(settlement, transaction = null) {
  */
 async function getSettlementList(ctx) {
   const { supplierId, settlementType, status, paymentStatus, page = 1, pageSize = 20 } = ctx.query;
-  const where = {};
+  const where = { is_deleted: 0 };
 
   if (supplierId) where.supplier_id = supplierId;
   if (settlementType) {
@@ -664,8 +668,8 @@ async function getSettlementList(ctx) {
   const order = [
     [
       sequelize.literal(
-        "CASE WHEN `Settlement`.`status` = 'draft' OR " +
-        "(`Settlement`.`status` = 'confirmed' AND `Settlement`.`payment_status` IN ('unpaid', 'partial')) " +
+        "CASE WHEN `Settlement`.`status` IN ('draft', 'pending_approval') OR " +
+        "(`Settlement`.`status` = 'confirmed' AND `Settlement`.`payment_status` IN ('unpaid', 'partial_paid')) " +
         'THEN 0 ELSE 1 END'
       ),
       'ASC'
@@ -696,7 +700,7 @@ async function getSettlementDetail(ctx) {
     ]
   });
 
-  if (!settlement) {
+  if (!settlement || settlement.is_deleted) {
     ctx.throw(404, '结算单不存在');
   }
 
@@ -714,7 +718,7 @@ async function getSettlementById(settlementId) {
     include: [{ model: SettlementItem, as: 'items' }]
   });
 
-  if (!settlement) {
+  if (!settlement || settlement.is_deleted) {
     const error = new Error('结算单不存在');
     error.status = 404;
     throw error;
@@ -723,12 +727,63 @@ async function getSettlementById(settlementId) {
   return settlement;
 }
 
+/**
+ * 删除从未提交过的结算单草稿，保留单据和明细用于审计。
+ */
+async function deleteSettlementDraft(ctx) {
+  const { id } = ctx.params;
+  const user = ctx.state.user;
+
+  await sequelize.transaction(async transaction => {
+    const settlement = await Settlement.findOne({
+      where: { settlement_id: id, is_deleted: 0 },
+      include: [{ model: SettlementItem, as: 'items' }],
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!settlement) ctx.throw(404, '结算单不存在');
+    if (settlement.status !== 'draft' || settlement.submit_time) {
+      ctx.throw(400, '只有从未提交过的结算单草稿可以删除');
+    }
+    if (settlement.payment_status !== 'unpaid' || Number(settlement.paid_amount || 0) > 0) {
+      ctx.throw(400, '已有付款记录的结算单不能删除');
+    }
+
+    const payableIds = new Set((settlement.items || []).map(item => item.payable_id).filter(Boolean));
+    await settlement.update({ is_deleted: 1 }, { transaction });
+
+    for (const payableId of payableIds) {
+      await refreshPayableState(payableId, transaction);
+    }
+    if (settlement.source_id && ['expense', 'reimbursement'].includes(settlement.settlement_type)) {
+      await Expense.update({ settlement_id: null, update_time: new Date() }, {
+        where: { expense_id: settlement.source_id, settlement_id: settlement.settlement_id },
+        transaction
+      });
+      await refreshExpenseState(settlement.source_id, transaction);
+    }
+
+    await recordBusinessAction({
+      businessType: 'payable_settlement',
+      businessId: settlement.settlement_id,
+      businessNo: settlement.settlement_no,
+      action: 'deleted',
+      fromStatus: 'draft',
+      toStatus: 'deleted',
+      user,
+      transaction
+    });
+  });
+
+  ctx.body = { code: 0, message: '结算单草稿已删除', settlementId: id };
+}
+
 function throwStatusError(ctx, error) {
   ctx.throw(error.status || 500, error.message || '操作失败');
 }
 
 /**
- * 草稿提交后直接形成正式应付款，进入付款管理待处理。
+ * 草稿提交后进入审批，审批通过后进入付款管理待处理。
  */
 async function submitSettlement(ctx) {
   try {
@@ -740,37 +795,79 @@ async function submitSettlement(ctx) {
     }
 
     await settlement.update({
-      status: 'confirmed',
-      confirmed_time: new Date()
+      status: 'pending_approval',
+      submit_time: new Date(),
+      approval_user: null,
+      approval_time: null,
+      approval_comment: null
     });
-    ctx.body = { code: 0, message: '结算单已提交，已进入待付款' };
+    ctx.body = { code: 0, message: '结算单已提交，等待审批' };
   } catch (error) {
     throwStatusError(ctx, error);
   }
 }
 
 /**
- * 兼容旧确认接口。新流程已删除待确认状态，草稿提交即进入待付款。
+ * 审批通过结算单，进入付款管理待处理。
  */
 async function confirmSettlement(ctx) {
   try {
-    const { settlementId } = ctx.request.body;
+    const { settlementId, comment = '' } = ctx.request.body;
+    const user = ctx.state.user;
     const settlement = await getSettlementById(settlementId);
 
-    if (settlement.status === 'draft') {
+    if (settlement.status === 'pending_approval') {
+      const operator = user?.name || user?.phone || '';
+      if (settlement.create_user && operator && String(settlement.create_user) === String(operator)) {
+        ctx.throw(400, '制单人不能审批自己的结算单');
+      }
       await settlement.update({
         status: 'confirmed',
-        confirmed_time: new Date()
+        confirmed_time: new Date(),
+        approval_user: operator,
+        approval_time: new Date(),
+        approval_comment: String(comment || '').trim().slice(0, 512) || null
       });
-      ctx.body = { code: 0, message: '结算单已提交，已进入待付款' };
+      ctx.body = { code: 0, message: '结算单审批通过，已进入待付款' };
       return;
     }
 
-    if (settlement.status !== 'confirmed') {
-      ctx.throw(400, '当前结算单状态不可确认');
+    if (settlement.status === 'confirmed') {
+      ctx.body = { code: 0, message: '结算单已审批通过' };
+      return;
     }
 
-    ctx.body = { code: 0, message: '结算单已是待付款状态' };
+    if (settlement.status !== 'pending_approval') {
+      ctx.throw(400, '当前结算单状态不可确认');
+    }
+  } catch (error) {
+    throwStatusError(ctx, error);
+  }
+}
+
+/**
+ * 审批拒绝后退回草稿，保留审批意见，允许重新提交。
+ */
+async function rejectSettlement(ctx) {
+  try {
+    const { settlementId, comment = '' } = ctx.request.body;
+    const user = ctx.state.user;
+    const settlement = await getSettlementById(settlementId);
+    if (settlement.status !== 'pending_approval') {
+      ctx.throw(400, '只有待审批结算单可以拒绝');
+    }
+    const operator = user?.name || user?.phone || '';
+    if (settlement.create_user && operator && String(settlement.create_user) === String(operator)) {
+      ctx.throw(400, '制单人不能审批自己的结算单');
+    }
+
+    await settlement.update({
+      status: 'draft',
+      approval_user: operator,
+      approval_time: new Date(),
+      approval_comment: String(comment || '').trim().slice(0, 512) || null
+    });
+    ctx.body = { code: 0, message: '结算单已退回草稿' };
   } catch (error) {
     throwStatusError(ctx, error);
   }
@@ -788,7 +885,7 @@ async function voidSettlement(ctx) {
         transaction,
         lock: transaction.LOCK.UPDATE
       });
-      if (!settlement) ctx.throw(404, 'settlement not found');
+      if (!settlement || settlement.is_deleted) ctx.throw(404, 'settlement not found');
       if (settlement.status === 'voided') ctx.throw(400, 'settlement already voided');
       if (settlement.payment_status !== 'unpaid') ctx.throw(400, 'paid settlement cannot be voided');
       await settlement.update({ status: 'voided', voided_time: new Date() }, { transaction });
@@ -841,6 +938,7 @@ async function cancelPayment(ctx) {
 function buildPaymentCandidateWhere(query = {}) {
   const candidateWhere = {
     status: 'confirmed',
+    is_deleted: 0,
     payment_status: { [Op.ne]: 'paid' },
     [Op.and]: where(col('total_amount'), Op.gt, col('paid_amount'))
   };
@@ -974,7 +1072,7 @@ async function validatePaymentImportRows(rows, accountId) {
     }
 
     const settlement = await Settlement.findOne({
-      where: { settlement_no: settlementNo },
+      where: { settlement_no: settlementNo, is_deleted: 0 },
       include: [{ model: SettlementItem, as: 'items' }]
     });
     if (!settlement) {
@@ -1080,7 +1178,7 @@ async function commitPaymentImport(ctx) {
         transaction,
         lock: transaction.LOCK.UPDATE
       });
-      if (!settlement || settlement.status !== 'confirmed' || settlement.payment_status === 'paid') {
+      if (!settlement || settlement.is_deleted || settlement.status !== 'confirmed' || settlement.payment_status === 'paid') {
         ctx.throw(400, `结算单 ${row.settlementNo} 当前状态不可付款`);
       }
 
@@ -1163,7 +1261,7 @@ async function createDirectPayment(ctx) {
       lock: transaction.LOCK.UPDATE
     });
     if (!settlement) ctx.throw(404, '结算单不存在');
-    if (settlement.status !== 'confirmed' || settlement.payment_status === 'paid') {
+    if (settlement.is_deleted || settlement.status !== 'confirmed' || settlement.payment_status === 'paid') {
       ctx.throw(400, '当前结算单不可付款');
     }
 
@@ -1332,8 +1430,10 @@ module.exports = {
   createExpenseSettlement,
   getSettlementList,
   getSettlementDetail,
+  deleteSettlementDraft,
   submitSettlement,
   confirmSettlement,
+  rejectSettlement,
   voidSettlement,
   getPaymentCandidates,
   exportPaymentCandidates,

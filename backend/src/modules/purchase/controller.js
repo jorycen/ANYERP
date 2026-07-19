@@ -6,6 +6,7 @@ const { Op } = require('sequelize');
 const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { recordRebateDeduction, recordSupplierRebateAccountTransaction, _getRebateBalance } = require('../finance/rebateController');
 const { createPurchaseReimbursement } = require('../finance/expenseService');
+const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 
 function toMoney(value) {
   const amount = Number(value);
@@ -270,7 +271,7 @@ async function getRequestList(ctx) {
   const { status, operatorStaffId, submitter, keyword, supplierId, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
 
-  const where = {};
+  const where = { status: { [Op.ne]: 'deleted' } };
   const whereStore = {};
 
   // 区域权限过滤
@@ -357,7 +358,7 @@ async function getRequestDetail(ctx) {
   const { requestId } = ctx.params;
 
   const request = await PurchaseRequest.findOne({
-    where: { request_id: requestId },
+    where: { request_id: requestId, status: { [Op.ne]: 'deleted' } },
     include: [
       { model: Store },
       { model: Supplier },
@@ -401,6 +402,8 @@ async function getRequestDetail(ctx) {
       return itemJson;
     });
   }
+
+  result.action_logs = await listBusinessActions('purchase_request', request.request_id);
 
   ctx.body = { code: 0, data: result };
 }
@@ -542,6 +545,8 @@ async function createRequest(ctx) {
     actual_total: actualTotal,
     status: isDraft ? 'draft' : 'pending',
     apply_user: submitterName,
+    submit_user: isDraft ? null : submitterName,
+    submit_time: isDraft ? null : now,
     create_time: now,
     update_time: now
   });
@@ -569,6 +574,15 @@ async function createRequest(ctx) {
       selected_resource_types: JSON.stringify(normalizeSelectedResourceTypes(item.selectedResourceTypes || item.selected_resource_types))
     });
   }
+
+  await recordBusinessAction({
+    businessType: 'purchase_request',
+    businessId: requestId,
+    businessNo: requestNo,
+    action: isDraft ? 'draft_created' : 'submitted',
+    toStatus: isDraft ? 'draft' : 'pending',
+    user
+  });
 
   if (normalizedPaymentMethod === 'PERSONAL_ADVANCE' && !isDraft) {
     createdRequest.Supplier = await Supplier.findByPk(supplierId);
@@ -661,8 +675,19 @@ async function submitRequestDraft(ctx) {
   request.goods_type_id = goodsType.goods_type_id;
   request.product_type = goodsType.name;
   request.status = 'pending';
+  request.submit_user = user.name || user.phone || String(user.staffId || '');
+  request.submit_time = new Date();
   request.update_time = new Date();
   await request.save();
+  await recordBusinessAction({
+    businessType: 'purchase_request',
+    businessId: request.request_id,
+    businessNo: request.request_no,
+    action: 'submitted',
+    fromStatus: 'draft',
+    toStatus: 'pending',
+    user
+  });
 
   if (request.payment_method === 'PERSONAL_ADVANCE') {
     request.Supplier = await Supplier.findByPk(request.supplier_id);
@@ -670,6 +695,28 @@ async function submitRequestDraft(ctx) {
   }
 
   ctx.body = { code: 0, message: '采购申请提交成功', requestId, requestNo: request.request_no, status: 'pending' };
+}
+
+async function deleteRequestDraft(ctx) {
+  const { requestId } = ctx.params;
+  const user = ctx.state.user;
+  const request = await PurchaseRequest.findByPk(requestId);
+  if (!request) ctx.throw(404, '采购申请不存在');
+  assertStoreVisible(ctx, request.store_id);
+  if (request.status !== 'draft' || request.submit_time) ctx.throw(400, '只有从未提交过的采购申请草稿可以删除');
+  if (!canSubmitDraft(user, request)) ctx.throw(403, '只有草稿创建人、店长或管理员可以删除');
+
+  await request.update({ status: 'deleted', update_time: new Date() });
+  await recordBusinessAction({
+    businessType: 'purchase_request',
+    businessId: request.request_id,
+    businessNo: request.request_no,
+    action: 'deleted',
+    fromStatus: 'draft',
+    toStatus: 'deleted',
+    user
+  });
+  ctx.body = { code: 0, message: '采购申请草稿已删除', requestId };
 }
 
 async function updateRequestDraft(ctx) {
@@ -742,6 +789,15 @@ async function updateRequestDraft(ctx) {
     }
   });
 
+  await recordBusinessAction({
+    businessType: 'purchase_request',
+    businessId: request.request_id,
+    businessNo: request.request_no,
+    action: 'draft_saved',
+    fromStatus: 'draft',
+    toStatus: 'draft',
+    user
+  });
   ctx.body = { code: 0, message: '采购申请草稿已保存', requestId, requestNo: request.request_no, status: 'draft' };
 }
 
@@ -811,12 +867,26 @@ async function approveRequest(ctx) {
 
   const transaction = await sequelize.transaction();
   try {
+  const previousStatus = request.status;
+  const approveTime = new Date();
   await request.update({
     status,
     approve_user: user.name,
+    approve_time: approveTime,
     approve_comment: comment,
-    update_time: new Date()
+    update_time: approveTime
   }, { transaction });
+  await recordBusinessAction({
+    businessType: 'purchase_request',
+    businessId: request.request_id,
+    businessNo: request.request_no,
+    action: status === 'approved' ? 'approved' : 'rejected',
+    fromStatus: previousStatus,
+    toStatus: status,
+    user,
+    comment: comment || '',
+    transaction
+  });
 
   // 如果审批通过，自动生成入库单
   if (status === 'approved' && request.items && request.items.length > 0) {
@@ -1276,6 +1346,17 @@ async function revokeRequest(ctx) {
       revoke_comment: comment,
       update_time: new Date()
     }, { transaction });
+    await recordBusinessAction({
+      businessType: 'purchase_request',
+      businessId: request.request_id,
+      businessNo: request.request_no,
+      action: 'revoked',
+      fromStatus: 'approved',
+      toStatus: 'revoked',
+      user,
+      comment: comment || '',
+      transaction
+    });
 
     await transaction.commit();
 
@@ -1489,6 +1570,7 @@ module.exports = {
   saveRequestDraft,
   updateRequestDraft,
   submitRequestDraft,
+  deleteRequestDraft,
   approveRequest,
   revokeRequest,
   getAdjustmentPreview,

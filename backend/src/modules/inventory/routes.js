@@ -5,10 +5,10 @@ const Router = require('koa-router');
 const multer = require('@koa/multer');
 const {
   getList, exportList, getSnInventoryList, exportSnInventoryList, setSnSpecialPrice, cancelSnSpecialPrice,
-  getSnSpecialPriceHistory, getSnList, getInboundList, getInboundDetail,
+  getSnSpecialPriceHistory, getSnList, getInboundList, getInboundDetail, getSnTraceInboundDetail,
   executeInbound, getReturnList, requestReturn, approveReturn, executeReturn,
   inbound, outbound, transfer, getTransferList, confirmTransferOut,
-  confirmTransferIn, getConversionList, getConversionDetail, createConversion,
+  confirmTransferIn, revokeTransfer, rejectTransfer, getTransferDetail, getConversionList, getConversionDetail, createConversion,
   voidConversion, getLocationsByStore, updateSn, adjustSnLocation, snTrace
 } = require('./controller');
 const { enforceStoreOwnership, requireRole } = require('../../middleware/permission');
@@ -29,6 +29,7 @@ router.get('/sn-list', getSnList);
 router.put('/sn/:snId', updateSn);
 router.post('/sn/:snId/location-adjust', adjustSnLocation);
 router.get('/sn-trace/:snCode', snTrace);
+router.get('/sn-trace-inbound/:inboundId', getSnTraceInboundDetail);
 router.get('/resource-rights', resourceRights.listRights);
 router.get('/resource-rights/changes', resourceRights.listChanges);
 router.get('/resource-rights/cost-configs', resourceRights.listCostConfigs);
@@ -66,8 +67,11 @@ router.post('/inbound', enforceStoreOwnership, inbound);
 router.post('/outbound', enforceStoreOwnership, outbound);
 router.post('/transfer', enforceStoreOwnership, transfer);
 router.get('/transfer-list', getTransferList);
+router.get('/transfer/:transferId', getTransferDetail);
 router.post('/transfer/confirm-out', enforceStoreOwnership, confirmTransferOut);
 router.post('/transfer/confirm-in', enforceStoreOwnership, confirmTransferIn);
+router.post('/transfer/revoke', enforceStoreOwnership, revokeTransfer);
+router.post('/transfer/reject', enforceStoreOwnership, rejectTransfer);
 router.get('/conversion-list', getConversionList);
 router.get('/conversion/:conversionId', getConversionDetail);
 router.post('/conversion', enforceStoreOwnership, createConversion);

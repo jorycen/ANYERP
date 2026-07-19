@@ -94,6 +94,7 @@ const pageTitles = {
   '/purchase': '采购管理',
   '/finance': '财务管理',
   '/finance/payment': '付款管理',
+  '/finance/settlement': '应付结算单管理',
   '/products': '商品管理',
   '/stores': '门店管理',
   '/reports': '报表统计',
@@ -102,7 +103,7 @@ const pageTitles = {
 
 const pageTitle = computed(() => route.path === '/approval' ? '审批中心' : (pageTitles[route.path] || ''))
 
-const validPaths = ['/', '/sales', '/inventory', '/purchase', '/finance', '/finance/payment', '/payment-management', '/products', '/stores', '/reports', '/system', '/approval']
+const validPaths = ['/', '/sales', '/inventory', '/purchase', '/finance', '/finance/payment', '/finance/settlement', '/payment-management', '/products', '/stores', '/reports', '/system', '/approval']
 
 onMounted(() => {
   const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')

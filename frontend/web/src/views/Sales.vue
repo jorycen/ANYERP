@@ -18,6 +18,7 @@
         </el-select>
         <el-select v-model="queryParams.status" placeholder="状态" clearable style="width: 120px">
           <el-option label="全部" value="" />
+          <el-option label="草稿" value="draft" />
           <el-option label="已完成" value="completed" />
           <el-option label="待审批" value="pending_approval" />
           <el-option label="已取消" value="cancelled" />
@@ -33,6 +34,8 @@
               <th>订单号</th>
               <th>门店</th>
               <th>创建时间</th>
+              <th>提交人</th>
+              <th>审批人</th>
               <th>客户姓名</th>
               <th>联系电话</th>
               <th class="money-column">订单金额</th>
@@ -46,12 +49,17 @@
               <td>{{ row.order_no || '-' }}</td>
               <td>{{ row.Store?.name || '-' }}</td>
               <td>{{ formatDate(row.create_time) }}</td>
+              <td>{{ row.submit_user || row.create_user || '-' }}</td>
+              <td>{{ row.approve_user || '-' }}</td>
               <td>{{ row.customer_name || '-' }}</td>
               <td>{{ row.customer_phone || '-' }}</td>
               <td class="money-column">¥{{ row.total_amount || 0 }}</td>
               <td class="money-column">¥{{ row.actual_payment || 0 }}</td>
               <td><el-tag :type="getStatusType(row.order_status)">{{ getStatusText(row.order_status) }}</el-tag></td>
               <td class="operation-column">
+              <el-button link type="primary" @click="handleEditDraft(row)" v-if="row.order_status === 'draft'">编辑</el-button>
+              <el-button link type="success" @click="handleSubmitDraft(row)" v-if="row.order_status === 'draft'">提交</el-button>
+              <el-button link type="danger" @click="handleDeleteDraft(row)" v-if="row.order_status === 'draft' && !row.submit_time">删除</el-button>
               <el-button link type="primary" @click="handleView(row)">查看</el-button>
               <el-button link type="success" @click="handleApprove(row)" v-if="row.order_status === 'pending_approval' && canApprove">审批通过</el-button>
               <el-button link type="danger" @click="handleReject(row)" v-if="row.order_status === 'pending_approval' && canApprove">拒绝</el-button>
@@ -330,12 +338,27 @@
           <el-descriptions-item label="客户来源">{{ currentOrder.customer_source || '-' }}</el-descriptions-item>
           <el-descriptions-item label="发票类型">{{ currentOrder.invoice_status }}</el-descriptions-item>
           <el-descriptions-item label="创建时间">{{ formatDate(currentOrder.create_time) }}</el-descriptions-item>
+          <el-descriptions-item label="提交人">{{ currentOrder.submit_user || currentOrder.create_user || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="提交时间">{{ formatDate(currentOrder.submit_time) }}</el-descriptions-item>
+          <el-descriptions-item label="审批人">{{ currentOrder.approve_user || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="审批时间">{{ formatDate(currentOrder.approve_time) }}</el-descriptions-item>
+          <el-descriptions-item label="审批意见" :span="2">{{ currentOrder.approve_comment || '-' }}</el-descriptions-item>
           <el-descriptions-item label="商品总额">¥{{ currentOrder.total_amount }}</el-descriptions-item>
           <el-descriptions-item label="实付金额">¥{{ currentOrder.actual_payment }}</el-descriptions-item>
           <el-descriptions-item label="国补">¥{{ currentOrder.national_subsidy }}</el-descriptions-item>
           <el-descriptions-item label="教补">¥{{ currentOrder.education_subsidy }}</el-descriptions-item>
           <el-descriptions-item label="备注" :span="2">{{ currentOrder.remark || '-' }}</el-descriptions-item>
         </el-descriptions>
+
+        <h4 class="mt-20">流程记录</h4>
+        <el-timeline v-if="currentOrder.action_logs?.length">
+          <el-timeline-item v-for="log in currentOrder.action_logs" :key="log.log_id" :timestamp="formatDate(log.create_time)">
+            <strong>{{ actionLabel(log.action) }}</strong>
+            <span style="margin-left: 10px; color: #606266">{{ log.actor_name || '-' }}</span>
+            <span v-if="log.comment" style="margin-left: 10px; color: #909399">{{ log.comment }}</span>
+          </el-timeline-item>
+        </el-timeline>
+        <el-empty v-else description="暂无流程记录" :image-size="60" />
 
         <h4 class="mt-20">商品明细</h4>
         <el-table :data="currentOrder.OrderItems || []" border size="small">
@@ -486,10 +509,8 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import { getStoreId, isStoreUser, hasRole } from '../utils/user'
-import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 
 const route = useRoute()
-const SALES_ORDER_DRAFT_KEY = 'sales-order-create'
 const stores = ref([])
 const storesLoaded = ref(false)
 const storesLoading = ref(false)
@@ -505,6 +526,18 @@ const dialogTitle = ref('新建订单')
 const currentOrder = ref(null)
 
 const canApprove = computed(() => hasRole(['manager']))
+const actionLabel = (action) => ({
+  created: '创建订单',
+  draft_created: '创建销售草稿',
+  draft_saved: '保存销售草稿',
+  submitted: '提交订单',
+  approved: '审批通过',
+  rejected: '审批拒绝',
+  archived: '订单归档',
+  cancelled: '订单取消',
+  deleted: '删除草稿',
+  status_updated: '状态变更'
+}[action] || action || '操作')
 const orderHasSettlementCost = computed(() => {
   return (currentOrder.value?.OrderItems || []).some(item => item.sales_settlement_cost !== null && item.sales_settlement_cost !== undefined)
 })
@@ -773,7 +806,6 @@ const handleCreate = () => {
   if (isStoreUser()) {
     orderForm.storeId = getStoreId()
   }
-  restoreOrderDraft()
   dialogVisible.value = true
 }
 
@@ -947,25 +979,114 @@ const resetForm = () => {
   Object.keys(paymentAmounts).forEach(k => delete paymentAmounts[k])
 }
 
-const saveOrderDraft = () => {
-  saveDraft(SALES_ORDER_DRAFT_KEY, {
-    orderForm: cloneDraft(orderForm),
-    selectedPayments: cloneDraft(selectedPayments.value),
-    paymentAmounts: cloneDraft(paymentAmounts)
+const hydrateDraftForm = (order) => {
+  orderForm.orderId = order.order_id
+  orderForm.storeId = order.store_id || ''
+  orderForm.customerName = order.customer_name || ''
+  orderForm.customerPhone = order.customer_phone || ''
+  orderForm.customerSource = order.customer_source || ''
+  orderForm.invoiceStatus = order.invoice_status || '不开票'
+  orderForm.depositId = ''
+  orderForm.nationalSubsidy = Number(order.national_subsidy || 0)
+  orderForm.educationSubsidy = Number(order.education_subsidy || 0)
+  orderForm.discountAmount = Number(order.discount_amount || 0)
+  orderForm.remark = order.remark || ''
+  orderForm.items = (order.OrderItems || []).map(item => ({
+    productId: item.product_id || '',
+    productName: item.product_name || '',
+    pnCode: item.pn_code || '',
+    snCode: item.sn_code || '',
+    snId: item.sn_id || '',
+    supplierId: item.supplier_id || '',
+    supplierName: item.supplier_name || '',
+    salePrice: Number(item.sale_price || 0),
+    quantity: Number(item.quantity || 1),
+    subtotal: Number(item.subtotal || 0),
+    needSn: Boolean(item.sn_code || item.sn_id),
+    standardPrice: Number(item.sale_price || 0),
+    minSalePrice: 0,
+    belowMinPrice: false,
+    searchLoading: false,
+    searchOptions: item.product_id ? [{ product_id: item.product_id, name: item.product_name }] : [],
+    pnList: item.pn_code ? [item.pn_code] : [],
+    snList: item.sn_code ? [{ sn_code: item.sn_code, sn_id: item.sn_id || '' }] : [],
+    pnLoading: false,
+    snLoading: false,
+    selectedSn: item.sn_code ? { sn_code: item.sn_code, sn_id: item.sn_id || '' } : null,
+    selectedResourceTypes: typeof item.selected_resource_types === 'string' ? (() => { try { return JSON.parse(item.selected_resource_types) } catch (_) { return [] } })() : (item.selected_resource_types || []),
+    useGovSubsidy: Boolean(item.use_gov_subsidy),
+    useEduSubsidy: Boolean(item.use_edu_subsidy),
+    useSalesReport: Boolean(item.use_sales_report)
+  }))
+  selectedPayments.value = (order.OrderPayments || []).map(payment => payment.payment_method).filter(Boolean)
+  Object.keys(paymentAmounts).forEach(key => delete paymentAmounts[key])
+  ;(order.OrderPayments || []).forEach(payment => {
+    paymentAmounts[payment.payment_method] = Number(payment.amount || 0)
+    if (payment.deposit_id) orderForm.depositId = payment.deposit_id
   })
-  ElMessage.success('草稿已保存')
+  let depositItems = order.deposit_items
+  if (typeof depositItems === 'string') {
+    try { depositItems = JSON.parse(depositItems) } catch (_) { depositItems = [] }
+  }
+  if (Array.isArray(depositItems) && depositItems.length) {
+    const deposit = depositItems[0]
+    if (!selectedPayments.value.some(isDepositPaymentName)) selectedPayments.value.push('定金')
+    paymentAmounts['定金'] = Number(deposit.amount || 0)
+    orderForm.depositId = deposit.depositId || deposit.deposit_id || ''
+  }
 }
 
-const restoreOrderDraft = () => {
-  const draft = loadDraft(SALES_ORDER_DRAFT_KEY)
-  if (!draft) return
-  if (draft.orderForm) {
-    Object.assign(orderForm, draft.orderForm)
+const handleEditDraft = async (row) => {
+  try {
+    const res = await api.getSalesDetail(row.order_id)
+    if (res.code !== 0) {
+      ElMessage.error(res.message || '加载销售订单草稿失败')
+      return
+    }
+    hydrateDraftForm(res.data)
+    dialogTitle.value = '编辑销售订单草稿'
+    dialogVisible.value = true
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载销售订单草稿失败')
   }
-  selectedPayments.value = Array.isArray(draft.selectedPayments) ? draft.selectedPayments : []
-  Object.keys(paymentAmounts).forEach(k => delete paymentAmounts[k])
-  Object.assign(paymentAmounts, draft.paymentAmounts || {})
-  ElMessage.success('已恢复上次草稿')
+}
+
+const handleSubmitDraft = async (row) => {
+  try {
+    await ElMessageBox.confirm(`提交销售订单草稿 ${row.order_no}？`, '提交订单', {
+      confirmButtonText: '确认提交',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    const res = await api.submitSalesDraft(row.order_id)
+    if (res.code === 0) {
+      ElMessage.success(res.data?.message || '销售订单已提交')
+      await loadData()
+    } else {
+      ElMessage.error(res.message || '提交失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err.response?.data?.message || '提交失败')
+  }
+}
+
+const handleDeleteDraft = async (row) => {
+  try {
+    await ElMessageBox.confirm(`确认删除销售订单草稿 ${row.order_no}？`, '删除草稿', {
+      confirmButtonText: '确认删除',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    const res = await api.deleteSalesDraft(row.order_id)
+    if (res.code === 0) {
+      ElMessage.success('销售订单草稿已删除')
+      await loadData()
+    } else {
+      ElMessage.error(res.message || '删除失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err.response?.data?.message || '删除失败')
+  }
 }
 
 const addItem = () => {
@@ -1192,6 +1313,66 @@ const onPriceChange = (index) => {
   }
 }
 
+const buildSalesOrderPayload = (untaxedInvoiceConfirmed = false) => ({
+  storeId: orderForm.storeId,
+  customerName: orderForm.customerName,
+  customerPhone: orderForm.customerPhone,
+  customerSource: orderForm.customerSource,
+  invoiceStatus: orderForm.invoiceStatus,
+  untaxedInvoiceConfirmed,
+  items: orderForm.items.map(item => ({
+    productId: item.productId,
+    productName: item.productName,
+    pnCode: item.pnCode,
+    snCode: item.snCode,
+    snId: item.snId || '',
+    supplierId: item.supplierId || '',
+    supplierName: item.supplierName || '',
+    salePrice: item.salePrice,
+    quantity: item.quantity,
+    subtotal: item.salePrice * item.quantity,
+    useGovSubsidy: item.useGovSubsidy,
+    useEduSubsidy: item.useEduSubsidy,
+    useSalesReport: item.useSalesReport,
+    selectedResourceTypes: item.selectedResourceTypes || []
+  })),
+  payments: selectedPayments.value.map(pm => ({
+    method: pm,
+    amount: paymentAmounts[pm] || 0,
+    depositId: isDepositPaymentName(pm) ? orderForm.depositId : undefined
+  })),
+  nationalSubsidy: orderForm.nationalSubsidy,
+  educationSubsidy: orderForm.educationSubsidy,
+  discountAmount: orderForm.discountAmount,
+  remark: orderForm.remark
+})
+
+const saveOrderDraft = async () => {
+  if (!orderForm.storeId) {
+    ElMessage.warning('请选择门店后再保存草稿')
+    return
+  }
+  submitLoading.value = true
+  try {
+    const data = buildSalesOrderPayload()
+    const res = orderForm.orderId
+      ? await api.updateSalesDraft(orderForm.orderId, data)
+      : await api.saveSalesDraft(data)
+    if (res.code === 0) {
+      orderForm.orderId = res.data?.orderId || orderForm.orderId
+      ElMessage.success(res.data?.message || '销售订单草稿已保存')
+      dialogVisible.value = false
+      await loadData()
+    } else {
+      ElMessage.error(res.message || '保存草稿失败')
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '保存草稿失败')
+  } finally {
+    submitLoading.value = false
+  }
+}
+
 const handleSubmit = async () => {
   if (!orderForm.storeId) {
     ElMessage.warning('请选择门店')
@@ -1236,50 +1417,22 @@ const handleSubmit = async () => {
       await ElMessageBox.confirm('该机器为未税库存，请确认是否允许开票销售。', '未税库存提醒', { type: 'warning', confirmButtonText: '确认继续', cancelButtonText: '返回修改' })
       untaxedInvoiceConfirmed = true
     }
-    const data = {
-      storeId: orderForm.storeId,
-      customerName: orderForm.customerName,
-      customerPhone: orderForm.customerPhone,
-      customerSource: orderForm.customerSource,
-      invoiceStatus: orderForm.invoiceStatus,
-      untaxedInvoiceConfirmed,
-      items: orderForm.items.map(item => ({
-        productId: item.productId,
-        productName: item.productName,
-        pnCode: item.pnCode,
-        snCode: item.snCode,
-        snId: item.snId || '',
-        supplierId: item.supplierId || '',
-        supplierName: item.supplierName || '',
-        salePrice: item.salePrice,
-        quantity: item.quantity,
-        subtotal: item.salePrice * item.quantity,
-        useGovSubsidy: item.useGovSubsidy,
-        useEduSubsidy: item.useEduSubsidy,
-        useSalesReport: item.useSalesReport,
-        selectedResourceTypes: item.selectedResourceTypes || []
-      })),
-      payments: selectedPayments.value.map(pm => ({
-        method: pm,
-        amount: paymentAmounts[pm] || 0,
-        depositId: isDepositPaymentName(pm) ? orderForm.depositId : undefined
-      })),
-      nationalSubsidy: orderForm.nationalSubsidy,
-      educationSubsidy: orderForm.educationSubsidy,
-      discountAmount: orderForm.discountAmount,
-      remark: orderForm.remark
+    const data = buildSalesOrderPayload(untaxedInvoiceConfirmed)
+    let res
+    if (orderForm.orderId) {
+      res = await api.updateSalesDraft(orderForm.orderId, data)
+      if (res.code === 0) res = await api.submitSalesDraft(orderForm.orderId)
+    } else {
+      res = await api.createSales(data)
     }
-
-    const res = await api.createSales(data)
     if (res.code === 0) {
       if (res.data?.needsApproval) {
         ElMessage.warning(res.data.message || '订单已创建，售价低于定价需审批')
       } else {
         ElMessage.success(res.data?.message || '订单创建成功')
       }
-      clearDraft(SALES_ORDER_DRAFT_KEY)
       dialogVisible.value = false
-      loadData()
+      await loadData()
     } else {
       ElMessage.error(res.message || '创建失败')
     }
@@ -1348,12 +1501,12 @@ const formatDate = (dateStr) => {
 }
 
 const getStatusType = (status) => {
-  const types = { completed: 'success', pending_approval: 'warning', cancelled: 'danger', return_pending: 'warning', returned: 'info' }
+  const types = { draft: 'info', completed: 'success', pending_approval: 'warning', cancelled: 'danger', return_pending: 'warning', returned: 'info' }
   return types[status] || 'info'
 }
 
 const getStatusText = (status) => {
-  const texts = { completed: '已完成', pending_approval: '待审批', cancelled: '已取消', return_pending: '退库处理中', returned: '已退单' }
+  const texts = { draft: '草稿', completed: '已完成', pending_approval: '待审批', cancelled: '已取消', return_pending: '退库处理中', returned: '已退单' }
   return texts[status] || status
 }
 

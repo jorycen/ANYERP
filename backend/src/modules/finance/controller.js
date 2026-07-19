@@ -220,7 +220,20 @@ async function submitExpense(ctx) {
   const { id } = ctx.params;
 
   const record = await Expense.findByPk(id);
-  if (!record) ctx.throw(404, '支出记录不存在');
+  if (!record || record.is_deleted) ctx.throw(404, '支出记录不存在');
+  if (record.status === 'draft') {
+    if (!canManageExpenseDraft(user, record)) ctx.throw(403, '只有费用单创建人、店长或管理员可以提交');
+    await sequelize.transaction(async transaction => {
+      if (record.payment_method === 'CORPORATE') {
+        const payable = await ensureExpensePayable(record, { sourceType: 'expense', status: 'unpaid' }, transaction);
+        await record.update({ status: 'pending_payment', payable_id: payable.payable_id, submit_user: user.name, update_time: new Date() }, { transaction });
+      } else {
+        await record.update({ status: 'pending_approval', submit_user: user.name, update_time: new Date() }, { transaction });
+      }
+    });
+    ctx.body = { code: 0, message: '费用单已提交', status: record.status };
+    return;
+  }
   if (record.status !== 'pending') ctx.throw(400, '当前状态不可提交报销');
 
   await record.update({
@@ -471,8 +484,9 @@ async function createExpense(ctx) {
   const {
     storeId, expenseTypeId, expenseParty, amount, paymentMethod,
     hasInvoice, invoiceType, invoiceNo, expenseDate, attachmentUrls,
-    relatedOrderNo, remark
+    relatedOrderNo, remark, saveDraft = false, expenseId
   } = ctx.request.body;
+  const isDraft = Boolean(saveDraft);
   const targetStoreId = storeId || user.storeId;
   if (!targetStoreId) ctx.throw(400, '请选择门店');
   const allowed = user.accessibleStoreIds || [];
@@ -489,12 +503,21 @@ async function createExpense(ctx) {
   if (!expenseType) ctx.throw(400, '报销类型不存在或已停用');
   if (!store) ctx.throw(404, '门店不存在');
 
-  const expenseNo = `EXP${Date.now()}${String(Math.floor(Math.random() * 100)).padStart(2, '0')}`;
-  const expenseId = generateUUID();
+  let existingRecord = null;
+  if (expenseId) {
+    existingRecord = await Expense.findOne({ where: { expense_id: expenseId, is_deleted: 0 } });
+    if (!existingRecord) ctx.throw(404, '费用单不存在');
+    if (existingRecord.status !== 'draft') ctx.throw(400, '只有草稿状态的费用单可以编辑');
+    if (!canManageExpenseDraft(user, existingRecord)) ctx.throw(403, '只有费用单创建人、店长或管理员可以编辑');
+    if (String(existingRecord.store_id || '') !== String(targetStoreId || '')) ctx.throw(400, '费用单草稿不可更换门店');
+  }
+
+  const expenseNo = existingRecord?.expense_no || `EXP${Date.now()}${String(Math.floor(Math.random() * 100)).padStart(2, '0')}`;
+  const currentExpenseId = existingRecord?.expense_id || expenseId || generateUUID();
   let record;
   await sequelize.transaction(async transaction => {
-    record = await Expense.create({
-      expense_id: expenseId,
+    const expensePayload = {
+      expense_id: currentExpenseId,
       expense_no: expenseNo,
       store_id: targetStoreId,
       region_id: store.region_id || null,
@@ -509,20 +532,25 @@ async function createExpense(ctx) {
       invoice_no: hasInvoice ? String(invoiceNo || '').trim() : '',
       expense_date: expenseDate || new Date(),
       attachment_urls: JSON.stringify(Array.isArray(attachmentUrls) ? attachmentUrls : []),
-      status: paymentMethod === 'CORPORATE' ? 'pending_payment' : 'pending_approval',
-      applicant_staff_id: user.staffId || user.id || null,
-      applicant_name: user.name || user.phone || '',
+      status: isDraft ? 'draft' : (paymentMethod === 'CORPORATE' ? 'pending_payment' : 'pending_approval'),
+      applicant_staff_id: existingRecord?.applicant_staff_id || user.staffId || user.id || null,
+      applicant_name: existingRecord?.applicant_name || user.name || user.phone || '',
       source_type: 'expense',
-      source_id: expenseId,
+      source_id: currentExpenseId,
       source_no: expenseNo,
       related_order_no: relatedOrderNo || '',
       remark: String(remark || '').trim(),
-      create_user: user.name || user.phone || '',
-      create_time: new Date(),
+      create_user: existingRecord?.create_user || user.name || user.phone || '',
+      create_time: existingRecord?.create_time || new Date(),
       update_time: new Date()
-    }, { transaction });
+    };
+    if (existingRecord) {
+      record = await existingRecord.update(expensePayload, { transaction });
+    } else {
+      record = await Expense.create(expensePayload, { transaction });
+    }
 
-    if (paymentMethod === 'CORPORATE') {
+    if (!isDraft && paymentMethod === 'CORPORATE') {
       const payable = await ensureExpensePayable(record, { sourceType: 'expense' }, transaction);
       await record.update({ payable_id: payable.payable_id }, { transaction });
     }
@@ -530,12 +558,41 @@ async function createExpense(ctx) {
 
   ctx.body = {
     code: 0,
-    expenseId,
+    expenseId: currentExpenseId,
     expenseNo,
-    message: paymentMethod === 'CORPORATE'
+    status: isDraft ? 'draft' : (paymentMethod === 'CORPORATE' ? 'pending_payment' : 'pending_approval'),
+    message: isDraft ? '费用单草稿已保存' : (paymentMethod === 'CORPORATE'
       ? '费用已提交，并生成应付待付款记录'
-      : '报销单已提交审批'
+      : '报销单已提交审批')
   };
+}
+
+function canManageExpenseDraft(user, record) {
+  const roles = getUserRoles(user);
+  const privileged = roles.some(role => ['boss', 'admin', 'manager', 'store_manager'].includes(role));
+  return privileged
+    || String(user?.staffId || user?.id || '') === String(record.applicant_staff_id || '')
+    || String(user?.name || '') === String(record.applicant_name || record.create_user || '');
+}
+
+async function saveExpenseDraft(ctx) {
+  ctx.request.body = { ...(ctx.request.body || {}), saveDraft: true };
+  return createExpense(ctx);
+}
+
+async function updateExpenseDraft(ctx) {
+  ctx.request.body = { ...(ctx.request.body || {}), saveDraft: true, expenseId: ctx.params.id };
+  return createExpense(ctx);
+}
+
+async function deleteExpenseDraft(ctx) {
+  const user = ctx.state.user;
+  const record = await Expense.findOne({ where: { expense_id: ctx.params.id, is_deleted: 0 } });
+  if (!record) ctx.throw(404, '费用单不存在');
+  if (record.status !== 'draft') ctx.throw(400, '只有草稿状态的费用单可以删除');
+  if (!canManageExpenseDraft(user, record)) ctx.throw(403, '只有费用单创建人、店长或管理员可以删除');
+  await record.update({ is_deleted: 1, update_time: new Date() });
+  ctx.body = { code: 0, message: '费用单草稿已删除', expenseId: record.expense_id };
 }
 
 /**
@@ -578,7 +635,7 @@ async function getExpenseList(ctx) {
     ],
     order: buildPendingFirstOrder(sequelize, {
       statusColumn: 'Expense.status',
-      pendingStatuses: ['pending', 'processing'],
+      pendingStatuses: ['draft', 'pending_approval', 'pending_payment', 'pending', 'processing'],
       dateColumns: ['Expense.create_time'],
       idColumn: 'Expense.expense_id'
     }),
@@ -1173,6 +1230,9 @@ module.exports = {
   settleNationalSubsidyReceivables,
   getSettlementSummary,
   createExpense,
+  saveExpenseDraft,
+  updateExpenseDraft,
+  deleteExpenseDraft,
   getExpenseList,
   reviewExpense,
   submitExpense,

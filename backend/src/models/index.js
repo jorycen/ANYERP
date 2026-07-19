@@ -825,7 +825,10 @@ const PurchaseRequest = sequelize.define('PurchaseRequest', {
   reason: { type: DataTypes.TEXT },
   status: { type: DataTypes.STRING(32), defaultValue: 'pending' },
   apply_user: { type: DataTypes.STRING(64) },
+  submit_user: { type: DataTypes.STRING(64) },
+  submit_time: { type: DataTypes.DATE },
   approve_user: { type: DataTypes.STRING(64) },
+  approve_time: { type: DataTypes.DATE },
   approve_comment: { type: DataTypes.STRING(512) },
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
   update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
@@ -937,6 +940,11 @@ const Order = sequelize.define('Order', {
   invoice_info: { type: DataTypes.TEXT },
   invoice_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   order_status: { type: DataTypes.STRING(32), defaultValue: 'completed' },
+  submit_user: { type: DataTypes.STRING(64) },
+  submit_time: { type: DataTypes.DATE },
+  approve_user: { type: DataTypes.STRING(64) },
+  approve_time: { type: DataTypes.DATE },
+  approve_comment: { type: DataTypes.STRING(1000) },
   inventory_reserved: { type: DataTypes.TINYINT(1), allowNull: false, defaultValue: 0 },
   subsidy_status: { type: DataTypes.STRING(32) },
   subsidy_person: { type: DataTypes.STRING(64) },
@@ -1445,11 +1453,17 @@ const Settlement = sequelize.define('Settlement', {
   other_payment_image: { type: DataTypes.TEXT('long') },
   total_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
   paid_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
-  status: { type: DataTypes.STRING(32), defaultValue: 'draft' },
+  status: { type: DataTypes.STRING(32), defaultValue: 'draft', comment: 'draft/pending_approval/confirmed/voided' },
   payment_status: { type: DataTypes.STRING(32), defaultValue: 'unpaid' },
+  is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 },
+  remark: { type: DataTypes.STRING(512) },
   create_user: { type: DataTypes.STRING(64) },
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  submit_time: { type: DataTypes.DATE },
   confirmed_time: { type: DataTypes.DATE },
+  approval_user: { type: DataTypes.STRING(64) },
+  approval_time: { type: DataTypes.DATE },
+  approval_comment: { type: DataTypes.STRING(512) },
   voided_time: { type: DataTypes.DATE },
   paid_time: { type: DataTypes.DATE }
 }, { tableName: 'T_SETTLEMENT', timestamps: false });
@@ -1807,6 +1821,23 @@ const ApprovalActionLog = sequelize.define('ApprovalActionLog', {
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_APPROVAL_ACTION_LOG', timestamps: false });
 
+// 销售、采购、调拨等业务单据的统一操作审计日志。业务模块保留原有状态字段，
+// 该表只追加事实记录，不覆盖历史，便于详情页展示完整流程。
+const BusinessActionLog = sequelize.define('BusinessActionLog', {
+  log_id: { type: DataTypes.STRING(32), primaryKey: true },
+  business_type: { type: DataTypes.STRING(32), allowNull: false },
+  business_id: { type: DataTypes.STRING(64), allowNull: false },
+  business_no: { type: DataTypes.STRING(64) },
+  action: { type: DataTypes.STRING(64), allowNull: false },
+  from_status: { type: DataTypes.STRING(32) },
+  to_status: { type: DataTypes.STRING(32) },
+  actor_staff_id: { type: DataTypes.BIGINT(20) },
+  actor_name: { type: DataTypes.STRING(64) },
+  comment: { type: DataTypes.STRING(1000) },
+  detail_json: { type: DataTypes.TEXT },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_BUSINESS_ACTION_LOG', timestamps: false });
+
 // 收款方式-门店关联（一个门店可以有多个收款方式，一个收款方式可以属于多个门店）
 const PaymentMethodStore = sequelize.define('PaymentMethodStore', {
   id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
@@ -2102,8 +2133,8 @@ ApprovalFlowInstance.hasMany(ApprovalTask, { foreignKey: 'instance_id', sourceKe
 ApprovalTask.belongsTo(ApprovalFlowInstance, { foreignKey: 'instance_id', targetKey: 'instance_id', as: 'Instance' });
 ApprovalFlowInstance.hasMany(ApprovalActionLog, { foreignKey: 'instance_id', sourceKey: 'instance_id', as: 'Logs' });
 ApprovalActionLog.belongsTo(ApprovalFlowInstance, { foreignKey: 'instance_id', targetKey: 'instance_id', as: 'Instance' });
-ApprovalTask.belongsTo(Staff, { foreignKey: 'assignee_staff_id', targetKey: 'staff_id', as: 'Assignee' });
-ApprovalActionLog.belongsTo(Staff, { foreignKey: 'actor_staff_id', targetKey: 'staff_id', as: 'Actor' });
+  ApprovalTask.belongsTo(Staff, { foreignKey: 'assignee_staff_id', targetKey: 'staff_id', as: 'Assignee' });
+  ApprovalActionLog.belongsTo(Staff, { foreignKey: 'actor_staff_id', targetKey: 'staff_id', as: 'Actor' });
 
 module.exports = {
   sequelize,
@@ -2121,6 +2152,7 @@ module.exports = {
   ApprovalFlowInstance,
   ApprovalTask,
   ApprovalActionLog,
+  BusinessActionLog,
   Product,
   ProductPn,
   ProductSn,

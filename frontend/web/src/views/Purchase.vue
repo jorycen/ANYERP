@@ -43,6 +43,7 @@
                 {{ row.submitter_name || row.apply_user || row.create_user || row.operator_name || '-' }}
               </template>
             </el-table-column>
+            <el-table-column prop="approve_user" label="审批人" width="110" />
             <el-table-column prop="supplier_name" label="供应商" width="150" />
             <el-table-column label="付款方式" width="110">
               <template #default="{ row }">{{ getPaymentMethodText(row.payment_method) }}</template>
@@ -62,6 +63,7 @@
               <template #default="{ row }">
                 <el-button link type="primary" @click="handleEditDraft(row)" v-if="row.status === 'draft'">编辑</el-button>
                 <el-button link type="success" @click="handleSubmitDraft(row)" v-if="row.status === 'draft'">提交</el-button>
+                <el-button link type="danger" @click="handleDeleteDraft(row)" v-if="row.status === 'draft' && !row.submit_time">删除</el-button>
                 <el-button link type="primary" @click="handleApprove(row)" v-if="row.status === 'pending'">审批</el-button>
                 <el-button link type="warning" @click="handleRevoke(row)" v-if="row.status === 'approved'">撤销</el-button>
                 <el-button link type="danger" @click="handleAdjustment(row)" v-if="row.status === 'approved'">退单</el-button>
@@ -312,8 +314,23 @@
           <el-descriptions-item label="返利抵扣">-¥{{ formatMoney(currentRequest.rebate_deduction) }}</el-descriptions-item>
           <el-descriptions-item label="实际应付">¥{{ formatMoney(requestActualAmount(currentRequest)) }}</el-descriptions-item>
           <el-descriptions-item label="申请时间">{{ formatDate(currentRequest.create_time) }}</el-descriptions-item>
+          <el-descriptions-item label="提交人">{{ currentRequest.submit_user || currentRequest.apply_user || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="提交时间">{{ formatDate(currentRequest.submit_time) }}</el-descriptions-item>
+          <el-descriptions-item label="审批人">{{ currentRequest.approve_user || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="审批时间">{{ formatDate(currentRequest.approve_time) }}</el-descriptions-item>
+          <el-descriptions-item label="审批意见" :span="2">{{ currentRequest.approve_comment || '-' }}</el-descriptions-item>
           <el-descriptions-item label="备注" :span="2">{{ currentRequest.remark || '-' }}</el-descriptions-item>
         </el-descriptions>
+
+        <h4 class="mt-20">流程记录</h4>
+        <el-timeline v-if="currentRequest.action_logs?.length">
+          <el-timeline-item v-for="log in currentRequest.action_logs" :key="log.log_id" :timestamp="formatDate(log.create_time)">
+            <strong>{{ actionLabel(log.action) }}</strong>
+            <span style="margin-left: 10px; color: #606266">{{ log.actor_name || '-' }}</span>
+            <span v-if="log.comment" style="margin-left: 10px; color: #909399">{{ log.comment }}</span>
+          </el-timeline-item>
+        </el-timeline>
+        <el-empty v-else description="暂无流程记录" :image-size="60" />
 
         <h4 class="mt-20">商品明细</h4>
         <el-table :data="currentRequest.items || []" border size="small">
@@ -667,6 +684,16 @@ const approveForm = reactive({
   action: 'approved',
   comment: ''
 })
+
+const actionLabel = (action) => ({
+  draft_created: '创建采购草稿',
+  draft_saved: '保存采购草稿',
+  submitted: '提交采购申请',
+  approved: '审批通过',
+  rejected: '审批拒绝',
+  revoked: '撤销采购申请',
+  deleted: '删除草稿'
+}[action] || action || '操作')
 
 const revokeForm = reactive({
   comment: ''
@@ -1439,6 +1466,25 @@ const onProductChange = (index) => {
     requestForm.items[index].productCode = product.product_code || ''
     requestForm.items[index].manufacturerCode = product.manufacturer_code || ''
     requestForm.items[index].price = product.min_sale_price || 0
+  }
+}
+
+const handleDeleteDraft = async (row) => {
+  try {
+    await ElMessageBox.confirm(`确认删除采购申请草稿 ${row.request_no}？`, '删除草稿', {
+      confirmButtonText: '确认删除',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    const res = await api.deletePurchaseRequestDraft(row.request_id)
+    if (res.code === 0) {
+      ElMessage.success('采购申请草稿已删除')
+      await loadData()
+    } else {
+      ElMessage.error(res.message || '删除失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err.response?.data?.message || '删除失败')
   }
 }
 

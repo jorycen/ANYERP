@@ -8,6 +8,10 @@ const {
   requestSalesReturn,
   reviewSalesReturn,
   create,
+  saveSalesDraft,
+  updateSalesDraft,
+  submitSalesDraft,
+  deleteSalesDraft,
   detail,
   update,
   updateOrderItems,
@@ -69,6 +73,10 @@ router.post('/deposits/refund', normalizeDepositId, enforceStoreOwnership, refun
 router.get('/product-pns/:storeId/:productId', getProductPns);
 router.get('/product-sns/:storeId/:productId', getProductSns);
 router.post('/create', enforceStoreOwnership, create);
+router.post('/draft', enforceStoreOwnership, saveSalesDraft);
+router.put('/draft/:orderId', enforceStoreOwnership, updateSalesDraft);
+router.post('/draft/:orderId/submit', enforceStoreOwnership, submitSalesDraft);
+router.delete('/draft/:orderId', enforceStoreOwnership, deleteSalesDraft);
 router.put('/order-items', enforceStoreOwnership, updateOrderItems);
 router.post('/order-items', enforceStoreOwnership, updateOrderItems);
 router.get('/:orderId/gross-profit', getGrossProfit);

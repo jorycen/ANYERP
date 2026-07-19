@@ -7,10 +7,12 @@ test('采购申请草稿提供保存、编辑和提交接口', () => {
   const saveRoute = purchaseRouter.stack.find(layer => layer.path === '/request-draft' && layer.methods.includes('POST'));
   const updateRoute = purchaseRouter.stack.find(layer => layer.path === '/request-draft/:requestId' && layer.methods.includes('PUT'));
   const submitRoute = purchaseRouter.stack.find(layer => layer.path === '/request-draft/:requestId/submit' && layer.methods.includes('POST'));
+  const deleteRoute = purchaseRouter.stack.find(layer => layer.path === '/request-draft/:requestId' && layer.methods.includes('DELETE'));
 
   assert.deepEqual(saveRoute.stack.map(handler => handler.name), ['saveRequestDraft']);
   assert.deepEqual(updateRoute.stack.map(handler => handler.name), ['updateRequestDraft']);
   assert.deepEqual(submitRoute.stack.map(handler => handler.name), ['submitRequestDraft']);
+  assert.deepEqual(deleteRoute.stack.map(handler => handler.name), ['deleteRequestDraft']);
 });
 
 test('采购申请门店库位分配可以展开为入库明细', () => {
