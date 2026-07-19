@@ -18,6 +18,7 @@ const { initializeSnResourceRightsFromInbound, summariesForSns } = require('./re
 const { ensureStandardLocationsForStores } = require('../../utils/standardLocations');
 const { sendExcel } = require('../../utils/excelExport');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
+const { assertTransferStoreScope, isTransferScope } = require('../../utils/transferScope');
 
 function splitCodes(value) {
   return String(value || '')
@@ -114,11 +115,21 @@ async function assertTransferScope(ctx, fromStoreId, toStoreId) {
     ctx.throw(400, '只能在同一区域内发起调拨');
   }
 
-  // 调拨门店已经由 /store/transfer-options 按登录账号的可见范围查询，
-  // 发起时不再依赖账号上的 distributorId 做重复校验，避免账号历史归属字段
-  // 与实际门店归属不一致时误拦截店员/店长。这里仍保留门店所属经销商一致性校验。
+  // 调拨申请不要求申请人拥有调出门店的普通库存权限，但申请人仍必须属于
+  // 调拨门店所属经销商，避免仅凭区域权限跨经销商发起申请。
   const user = ctx.state.user || {};
   const roles = getUserRoles(user);
+  let userDistributorId = String(user.distributorId || '');
+  if (user.storeId) {
+    const userStore = await Store.findOne({
+      where: { store_id: user.storeId, is_deleted: 0, status: 1 },
+      attributes: ['distributor_id']
+    });
+    userDistributorId = userDistributorId || String(userStore?.distributor_id || '');
+  }
+  if (!roles.includes('boss') && userDistributorId && userDistributorId !== String(fromStore.distributor_id)) {
+    ctx.throw(403, '无权操作该经销商的调拨');
+  }
   const userRegionKeys = Array.isArray(user.regionCodes) ? user.regionCodes.map(String) : [];
   if (!roles.includes('boss') && !userRegionKeys.includes('*') && userRegionKeys.length && !fromRegionKeys.some(key => userRegionKeys.includes(key))) {
     ctx.throw(403, '无权操作该区域的调拨');
@@ -733,6 +744,8 @@ async function getList(ctx) {
     const user = ctx.state.user;
     const exportMode = Boolean(ctx.state.inventoryExportMode);
 
+    if (isTransferScope(ctx)) await assertTransferStoreScope(ctx, storeId);
+
     const whereStore = {};
     if (!user.accessibleStoreIds.includes('*')) whereStore.store_id = user.accessibleStoreIds;
     if (storeId) whereStore.store_id = storeId;
@@ -974,6 +987,8 @@ async function getSnList(ctx) {
   try {
     const { productId, storeId, currentStoreId, status, snCode, page = 1, pageSize = 20 } = ctx.query;
     const user = ctx.state.user;
+
+    if (isTransferScope(ctx)) await assertTransferStoreScope(ctx, storeId);
 
     const where = { is_deleted: 0 };
     if (productId) where.product_id = productId;
@@ -3778,7 +3793,11 @@ async function executeReturn(ctx) {
 async function getLocationsByStore(ctx) {
   try {
     const { storeId } = ctx.params;
-    assertStoreVisible(ctx, storeId);
+    if (isTransferScope(ctx)) {
+      await assertTransferStoreScope(ctx, storeId);
+    } else {
+      assertStoreVisible(ctx, storeId);
+    }
     const store = await Store.findOne({ where: { store_id: storeId, is_deleted: 0 } });
     if (!store) ctx.throw(404, '门店不存在');
     await ensureStandardLocationsForStores(Location, [store]);

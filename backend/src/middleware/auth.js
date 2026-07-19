@@ -83,6 +83,13 @@ async function storeAccessMiddleware(ctx, next) {
   if (ctx.path === '/api/v1/store/create' && ctx.method === 'POST') return next();
   // 调拨申请由同一区域内任意登录用户发起，具体经销商/区域范围由调拨控制器二次校验。
   if (ctx.path === '/api/v1/inventory/transfer' && ctx.method === 'POST') return next();
+  // 调拨商品查询由控制器按经销商/区域二次校验，不使用普通库存的门店授权列表。
+  if (ctx.method === 'GET' && ctx.query?.scope === 'transfer' && (
+    ctx.path === '/api/v1/inventory/list' ||
+    ctx.path === '/api/v1/inventory/sn-list' ||
+    ctx.path.startsWith('/api/v1/inventory/locations/') ||
+    ctx.path === '/api/v1/product/pn-list'
+  )) return next();
   if (ctx.method === 'GET' && (
     ctx.path === '/api/v1/purchase/supplier-list' ||
     ctx.path === '/api/v1/purchase/supplier-all'

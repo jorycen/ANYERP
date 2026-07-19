@@ -23,6 +23,7 @@ const { generateProductCode, generateUUID, generateId, paginate, formatPaginated
 const { normalizePnCode, splitPnCodes, isUsablePnCode } = require('../../utils/productPn');
 const XLSX = require('xlsx');
 const { getUserRoles } = require('../../middleware/permission');
+const { assertTransferStoreScope, isTransferScope } = require('../../utils/transferScope');
 
 // 字段标识到数据库列名的映射（field_key → DB column）
 const FIELD_TO_COLUMN = {
@@ -2184,6 +2185,8 @@ async function importCostRefresh(ctx) {
 
 async function getPnList(ctx) {
   const { productId, keyword, storeId, page = 1, pageSize = 20 } = ctx.query;
+
+  if (isTransferScope(ctx)) await assertTransferStoreScope(ctx, storeId);
 
   const where = { is_deleted: 0 };
   if (productId) where.product_id = productId;

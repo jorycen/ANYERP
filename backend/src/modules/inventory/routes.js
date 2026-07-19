@@ -65,7 +65,8 @@ router.post('/approve-return', approveReturn);
 router.post('/execute-return', enforceStoreOwnership, executeReturn);
 router.post('/inbound', enforceStoreOwnership, inbound);
 router.post('/outbound', enforceStoreOwnership, outbound);
-router.post('/transfer', enforceStoreOwnership, transfer);
+// 调拨申请由控制器校验同经销商/同区域范围，申请人不要求拥有调出门店的普通库存操作权限。
+router.post('/transfer', transfer);
 router.get('/transfer-list', getTransferList);
 router.get('/transfer/:transferId', getTransferDetail);
 router.post('/transfer/confirm-out', enforceStoreOwnership, confirmTransferOut);
