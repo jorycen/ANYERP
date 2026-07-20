@@ -31,10 +31,15 @@ const { recordBusinessAction } = require('../../utils/businessActionLog');
  * 应付款列表
  */
 async function getPayableList(ctx) {
-  const { supplierId, status, startDate, endDate, page = 1, pageSize = 20 } = ctx.query;
+  const { supplierId, sourceType, status, startDate, endDate, page = 1, pageSize = 20 } = ctx.query;
   const where = {};
 
   if (supplierId) where.supplier_id = supplierId;
+  if (sourceType) {
+    const sourceTypes = String(sourceType).split(',').map(item => item.trim()).filter(Boolean);
+    if (sourceTypes.length === 1) where.source_type = sourceTypes[0];
+    if (sourceTypes.length > 1) where.source_type = { [Op.in]: sourceTypes };
+  }
   if (status) {
     where.status = status === 'unpaid'
       ? { [Op.in]: ['unpaid', 'partial_settled', 'settling'] }
@@ -57,14 +62,28 @@ async function getPayableList(ctx) {
     ...paginate({}, { page, pageSize })
   });
 
-  const allocationSummary = await getAllocationSummary(rows.map(row => row.payable_id));
+  const summaryRows = await Payable.findAll({
+    where,
+    attributes: ['payable_id', 'total_amount']
+  });
+  const allocationSummary = await getAllocationSummary(summaryRows.map(row => row.payable_id));
+  const summary = summaryRows.reduce((result, row) => {
+    const allocated = allocationSummary.get(String(row.payable_id))?.amount || 0;
+    result.totalAmount += Math.max(0, Number(row.total_amount || 0) - Number(allocated));
+    return result;
+  }, { totalCount: summaryRows.length, totalAmount: 0 });
   rows.forEach(row => {
     const allocated = allocationSummary.get(String(row.payable_id))?.amount || 0;
     row.setDataValue('settled_amount', roundAmount(allocated));
     row.setDataValue('remaining_amount', roundAmount(Number(row.total_amount || 0) - Number(allocated)));
   });
 
-  ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+  const result = formatPaginatedResult(rows, { page, pageSize, count });
+  result.summary = {
+    totalCount: summary.totalCount,
+    totalAmount: roundAmount(summary.totalAmount)
+  };
+  ctx.body = result;
 }
 
 /**
