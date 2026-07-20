@@ -4,14 +4,14 @@
       <template #header>
         <div class="card-header">
           <span>销售订单</span>
-          <div class="sales-actions">
+          <div v-if="!traceReadonly" class="sales-actions">
             <el-button @click="openDepositManager">定金管理</el-button>
             <el-button type="primary" @click="handleCreate">新建订单</el-button>
           </div>
         </div>
       </template>
 
-      <div class="filter-bar">
+      <div v-if="!traceReadonly" class="filter-bar">
         <el-select v-model="queryParams.storeId" placeholder="门店" clearable style="width: 160px" v-loading="storesLoading">
           <el-option label="全部门店" :value="''" />
           <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
@@ -27,7 +27,7 @@
         <el-button type="primary" :loading="loading" @click="loadData">搜索</el-button>
       </div>
 
-      <div class="sales-table-scroll">
+      <div v-if="!traceReadonly" class="sales-table-scroll">
         <table class="sales-order-table">
           <thead>
             <tr>
@@ -72,6 +72,7 @@
       </div>
 
       <el-pagination
+        v-if="!traceReadonly"
         v-model:current-page="queryParams.page"
         v-model:page-size="queryParams.pageSize"
         :total="total"
@@ -511,6 +512,7 @@ import api from '../api'
 import { getStoreId, isStoreUser, hasRole } from '../utils/user'
 
 const route = useRoute()
+const traceReadonly = computed(() => Boolean(route.query.orderId) && String(route.query.trace || '') === '1')
 const stores = ref([])
 const storesLoaded = ref(false)
 const storesLoading = ref(false)
@@ -618,6 +620,10 @@ const selectedDeposit = computed(() => {
 })
 
 onMounted(async () => {
+  if (traceReadonly.value) {
+    await openRouteOrderDetail()
+    return
+  }
   if (isStoreUser()) {
     queryParams.storeId = getStoreId()
   }
@@ -943,7 +949,7 @@ const openRouteOrderDetail = async () => {
 const openOrderDetail = async (orderId) => {
   if (!orderId) return
   try {
-    const res = await api.getSalesDetail(orderId)
+    const res = await api.getSalesDetail(orderId, String(route.query.trace || '') === '1' ? { trace: '1' } : undefined)
     if (res.code === 0) {
       currentOrder.value = res.data
       detailVisible.value = true

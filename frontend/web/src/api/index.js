@@ -130,7 +130,7 @@ export default {
   updateSalesDraft: (id, data) => api.put(`/sales/draft/${id}`, data),
   submitSalesDraft: (id) => api.post(`/sales/draft/${id}/submit`),
   deleteSalesDraft: (id) => api.delete(`/sales/draft/${id}`),
-  getSalesDetail: (id) => api.get(`/sales/${id}`),
+  getSalesDetail: (id, params) => api.get(`/sales/${id}`, { params }),
   getAuxiliaryStaff: () => api.get('/sales/auxiliary-staff'),
   updateSales: (id, data) => api.put(`/sales/${id}`, data),
   approveOrder: (id) => api.post(`/sales/${id}/approve`),
@@ -192,7 +192,7 @@ export default {
   outbound: (data) => api.post('/inventory/outbound', data),
   transfer: (data) => api.post('/inventory/transfer', data),
   getTransferList: (params) => api.get('/inventory/transfer-list', { params }),
-  getTransferDetail: (id) => api.get(`/inventory/transfer/${id}`),
+  getTransferDetail: (id, params) => api.get(`/inventory/transfer/${id}`, { params }),
   confirmTransferOut: (data) => api.post('/inventory/transfer/confirm-out', data),
   confirmTransferIn: (data) => api.post('/inventory/transfer/confirm-in', data),
   revokeTransfer: (data) => api.post('/inventory/transfer/revoke', data),
@@ -216,7 +216,7 @@ export default {
 
   // Purchase
   getPurchaseRequestList: (params) => api.get('/purchase/request-list', { params }),
-  getPurchaseRequestDetail: (id) => api.get(`/purchase/request-detail/${id}`),
+  getPurchaseRequestDetail: (id, params) => api.get(`/purchase/request-detail/${id}`, { params }),
   createPurchaseRequest: (data) => api.post('/purchase/create-request', data),
   savePurchaseRequestDraft: (data) => api.post('/purchase/request-draft', data),
   updatePurchaseRequestDraft: (id, data) => api.put(`/purchase/request-draft/${id}`, data),

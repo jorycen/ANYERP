@@ -19,6 +19,7 @@ const { ensureStandardLocationsForStores } = require('../../utils/standardLocati
 const { sendExcel } = require('../../utils/excelExport');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { isTransferScope, transferRegionKeys } = require('../../utils/transferScope');
+const { canViewSnTraceReference, isDealerTraceAccount } = require('../../utils/snTracePermission');
 
 function splitCodes(value) {
   return String(value || '')
@@ -650,6 +651,42 @@ function getSalesInventoryQty(inv) {
   );
 }
 
+const INVENTORY_QUANTITY_FIELDS = ['normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty'];
+
+/**
+ * 仓位类型是库存数量的实际归属维度。
+ * 历史数据中存在库存记录已经绑定到不可售仓，但数量仍写在 normal_qty 的情况，
+ * 这里按仓位类型归类，并兼容将 normal_qty 写错到非销售仓的旧记录。
+ */
+function getInventoryQuantitySnapshot(inv, locationType = '') {
+  const normalQty = Number(inv.normal_qty || 0);
+  const regularQty = Number(inv.regular_qty || 0);
+  const subsidyQty = Number(inv.subsidy_qty || 0);
+  const secondQty = Number(inv.second_qty || 0);
+  const effectiveNormal = normalQty > 0 ? normalQty : regularQty + subsidyQty + secondQty;
+  const snapshot = {
+    normal_qty: effectiveNormal,
+    regular_qty: regularQty,
+    subsidy_qty: subsidyQty,
+    second_qty: secondQty,
+    display_qty: Number(inv.display_qty || 0),
+    demo_qty: Number(inv.demo_qty || 0),
+    unsellable_qty: Number(inv.unsellable_qty || 0),
+    pending_qty: Number(inv.pending_qty || 0)
+  };
+
+  const normalizedLocationType = String(locationType || '').trim();
+  if (INVENTORY_QUANTITY_FIELDS.includes(normalizedLocationType) && normalizedLocationType !== 'normal_qty') {
+    snapshot[normalizedLocationType] = Math.max(snapshot[normalizedLocationType], effectiveNormal);
+    snapshot.normal_qty = 0;
+    snapshot.regular_qty = 0;
+    snapshot.subsidy_qty = 0;
+    snapshot.second_qty = 0;
+  }
+
+  return snapshot;
+}
+
 async function buildSalesStockMap(productIds, storeId = '') {
   const uniqueProductIds = [...new Set((productIds || []).filter(Boolean))];
   const stockMap = {};
@@ -659,6 +696,15 @@ async function buildSalesStockMap(productIds, storeId = '') {
     where: { product_id: { [Op.in]: uniqueProductIds } },
     raw: true
   });
+  const locationIds = [...new Set(inventories.map(inv => inv.location_id).filter(Boolean))];
+  const locations = locationIds.length
+    ? await Location.findAll({
+        where: { location_id: { [Op.in]: locationIds } },
+        attributes: ['location_id', 'type'],
+        raw: true
+      })
+    : [];
+  const locationTypeMap = new Map(locations.map(location => [location.location_id, location.type]));
   const storeIds = [...new Set(inventories.map(inv => inv.store_id).filter(Boolean))];
   const stores = storeIds.length
     ? await Store.findAll({ where: { store_id: { [Op.in]: storeIds } }, attributes: ['store_id', 'name'], raw: true })
@@ -671,7 +717,7 @@ async function buildSalesStockMap(productIds, storeId = '') {
       stockMap[productId] = { current: 0, other: 0, total: 0, stores: [], currentStore: null, otherStores: [] };
     }
 
-    const qty = getSalesInventoryQty(inv);
+    const qty = getSalesInventoryQty(getInventoryQuantitySnapshot(inv, locationTypeMap.get(inv.location_id)));
     if (qty <= 0) continue;
 
     const storeRow = {
@@ -810,7 +856,7 @@ async function getList(ctx) {
       raw: true
     });
     const locationMap = new Map();
-    locations.forEach(loc => locationMap.set(loc.location_id, loc.name));
+    locations.forEach(loc => locationMap.set(loc.location_id, loc));
 
     const invMap = {};
     const storeStockMap = {};
@@ -828,33 +874,33 @@ async function getList(ctx) {
         };
         storeStockMap[inv.product_id] = [];
       }
-      invMap[inv.product_id].regular_qty += inv.regular_qty || 0;
-      invMap[inv.product_id].subsidy_qty += inv.subsidy_qty || 0;
-      invMap[inv.product_id].second_qty += inv.second_qty || 0;
-      const computedNormal = (inv.regular_qty || 0) + (inv.subsidy_qty || 0) + (inv.second_qty || 0);
-      const effectiveNormal = (inv.normal_qty || 0) > 0 ? (inv.normal_qty || 0) : computedNormal;
-      invMap[inv.product_id].normal_qty += effectiveNormal;
-      invMap[inv.product_id].display_qty += inv.display_qty || 0;
-      invMap[inv.product_id].demo_qty += inv.demo_qty || 0;
-      invMap[inv.product_id].unsellable_qty += inv.unsellable_qty || 0;
-      invMap[inv.product_id].pending_qty += inv.pending_qty || 0;
+      const locationId = inv.location_id || '';
+      const location = locationId ? locationMap.get(locationId) : null;
+      const stockSnapshot = getInventoryQuantitySnapshot(inv, location?.type);
+      invMap[inv.product_id].regular_qty += stockSnapshot.regular_qty;
+      invMap[inv.product_id].subsidy_qty += stockSnapshot.subsidy_qty;
+      invMap[inv.product_id].second_qty += stockSnapshot.second_qty;
+      invMap[inv.product_id].normal_qty += stockSnapshot.normal_qty;
+      invMap[inv.product_id].display_qty += stockSnapshot.display_qty;
+      invMap[inv.product_id].demo_qty += stockSnapshot.demo_qty;
+      invMap[inv.product_id].unsellable_qty += stockSnapshot.unsellable_qty;
+      invMap[inv.product_id].pending_qty += stockSnapshot.pending_qty;
 
       const storeQtyRow = {
-        normal_qty: effectiveNormal,
-        display_qty: inv.display_qty || 0,
-        demo_qty: inv.demo_qty || 0,
-        unsellable_qty: inv.unsellable_qty || 0,
-        pending_qty: inv.pending_qty || 0
+        normal_qty: stockSnapshot.normal_qty,
+        display_qty: stockSnapshot.display_qty,
+        demo_qty: stockSnapshot.demo_qty,
+        unsellable_qty: stockSnapshot.unsellable_qty,
+        pending_qty: stockSnapshot.pending_qty
       };
       const hasStoreQty = Object.values(storeQtyRow).some(value => Number(value || 0) > 0);
       if (hasStoreQty) {
         const storeName = inv.Store?.name || allStoreMap.get(inv.store_id) || inv.store_id;
-        const locationId = inv.location_id || '';
         storeStockMap[inv.product_id].push({
           store_id: inv.store_id,
           store_name: storeName,
           location_id: locationId,
-          location_name: locationId ? (locationMap.get(locationId) || locationId) : '未指定库位',
+          location_name: location?.name || (locationId || '未指定库位'),
           ...storeQtyRow
         });
       }
@@ -875,12 +921,16 @@ async function getList(ctx) {
       for (const sn of snRows) {
         const key = `${sn.store_id || ''}|${sn.location_id || ''}`;
         if (!snLocationMap[sn.product_id]) snLocationMap[sn.product_id] = {};
+        const location = sn.location_id ? locationMap.get(sn.location_id) : null;
+        const inventoryType = INVENTORY_QUANTITY_FIELDS.includes(location?.type)
+          ? location.type
+          : (INVENTORY_QUANTITY_FIELDS.includes(sn.inventory_type) ? sn.inventory_type : 'normal_qty');
         if (!snLocationMap[sn.product_id][key]) {
           snLocationMap[sn.product_id][key] = {
             store_id: sn.store_id || '',
             store_name: allStoreMap.get(sn.store_id) || sn.store_id || '未知门店',
             location_id: sn.location_id || '',
-            location_name: sn.location_id ? (locationMap.get(sn.location_id) || sn.location_id) : '未指定库位',
+            location_name: location?.name || (sn.location_id || '未指定库位'),
             normal_qty: 0,
             display_qty: 0,
             demo_qty: 0,
@@ -888,7 +938,7 @@ async function getList(ctx) {
             pending_qty: 0
           };
         }
-        snLocationMap[sn.product_id][key].normal_qty += 1;
+        snLocationMap[sn.product_id][key][inventoryType] += 1;
       }
 
       for (const [productId, rowsByLocation] of Object.entries(snLocationMap)) {
@@ -1247,6 +1297,26 @@ async function snTrace(ctx) {
     }
 
     const timeline = [];
+    const timelineKeys = new Set();
+    const traceUser = ctx.state.user || {};
+
+    const appendReferenceEvent = (event, reference, options = {}) => {
+      const canView = options.dealerOnly
+        ? isDealerTraceAccount(traceUser) && canViewSnTraceReference(traceUser, reference)
+        : canViewSnTraceReference(traceUser, reference);
+      if (!canView) return;
+
+      const key = `${event.type}:${reference.ref_id}`;
+      if (timelineKeys.has(key)) return;
+      timelineKeys.add(key);
+      timeline.push({
+        ...event,
+        ref_type: reference.ref_type,
+        ref_no: reference.ref_no,
+        ref_id: reference.ref_id,
+        can_view_order: true
+      });
+    };
 
     const traces = await sequelize.query(
       `SELECT log_id, sn_code, old_sn_code, action, remark, create_user, create_time
@@ -1275,71 +1345,137 @@ async function snTrace(ctx) {
     }
 
     const inboundItems = await sequelize.query(
-      `SELECT ii.sn_code, i.inbound_no, i.inbound_id, i.create_time, i.create_user
+      `SELECT ii.sn_code, i.inbound_no, i.inbound_id, i.store_id, i.purchase_request_id,
+              s.distributor_id, i.create_time, i.create_user
        FROM T_INBOUND_ITEM ii
        JOIN T_INBOUND i ON ii.inbound_id = i.inbound_id
+       LEFT JOIN T_STORE s ON i.store_id = s.store_id
        WHERE ii.sn_code = :snCode`,
       { replacements: { snCode }, type: sequelize.QueryTypes.SELECT }
     );
 
     for (const ib of inboundItems) {
-      timeline.push({
-        id: 'ib-' + ib.inbound_id,
-        type: 'inbound',
-        label: '入库',
-        description: `入库单号: ${ib.inbound_no}`,
-        ref_no: ib.inbound_no,
-        ref_id: ib.inbound_id,
-        user: ib.create_user || '-',
-        time: ib.create_time
-      });
+      appendReferenceEvent(
+        {
+          id: 'ib-' + ib.inbound_id,
+          type: 'inbound',
+          label: '入库',
+          description: `入库单号: ${ib.inbound_no}`,
+          user: ib.create_user || '-',
+          time: ib.create_time
+        },
+        {
+          ref_type: 'inbound',
+          ref_no: ib.inbound_no,
+          ref_id: ib.inbound_id,
+          store_id: ib.store_id,
+          distributor_id: ib.distributor_id,
+          creator_names: [ib.create_user]
+        },
+        { dealerOnly: true }
+      );
+
+      if (ib.purchase_request_id) {
+        const purchaseRequests = await sequelize.query(
+          `SELECT pr.request_id, pr.request_no, pr.store_id, pr.apply_user,
+                  s.distributor_id, pr.create_time
+           FROM T_PURCHASE_REQUEST pr
+           LEFT JOIN T_STORE s ON pr.store_id = s.store_id
+           WHERE pr.request_id = :requestId`,
+          {
+            replacements: { requestId: ib.purchase_request_id },
+            type: sequelize.QueryTypes.SELECT
+          }
+        );
+        for (const request of purchaseRequests) {
+          appendReferenceEvent(
+            {
+              id: 'pr-' + request.request_id,
+              type: 'purchase',
+              label: '采购订单',
+              description: `采购订单号: ${request.request_no}`,
+              user: request.apply_user || '-',
+              time: request.create_time || ib.create_time
+            },
+            {
+              ref_type: 'purchase_request',
+              ref_no: request.request_no,
+              ref_id: request.request_id,
+              store_id: request.store_id,
+              distributor_id: request.distributor_id,
+              creator_names: [request.apply_user]
+            }
+          );
+        }
+      }
     }
 
     const orderItems = await sequelize.query(
-      `SELECT oi.sn_code, o.order_no, o.order_id, o.create_time, o.create_user
+      `SELECT oi.sn_code, o.order_no, o.order_id, o.store_id,
+              s.distributor_id, o.create_time, o.create_user
        FROM T_ORDER_ITEM oi
        JOIN T_ORDER o ON oi.order_id = o.order_id
+       LEFT JOIN T_STORE s ON o.store_id = s.store_id
        WHERE oi.sn_code = :snCode`,
       { replacements: { snCode }, type: sequelize.QueryTypes.SELECT }
     );
 
     for (const ord of orderItems) {
-      timeline.push({
-        id: 'ord-' + ord.order_id,
-        type: 'sale',
-        label: '已销售',
-        description: `销售订单号: ${ord.order_no}`,
-        ref_no: ord.order_no,
-        ref_id: ord.order_id,
-        user: ord.create_user || '-',
-        time: ord.create_time
-      });
+      appendReferenceEvent(
+        {
+          id: 'ord-' + ord.order_id,
+          type: 'sale',
+          label: '已销售',
+          description: `销售订单号: ${ord.order_no}`,
+          user: ord.create_user || '-',
+          time: ord.create_time
+        },
+        {
+          ref_type: 'sales_order',
+          ref_no: ord.order_no,
+          ref_id: ord.order_id,
+          store_id: ord.store_id,
+          distributor_id: ord.distributor_id,
+          creator_names: [ord.create_user]
+        }
+      );
     }
 
     const returnItems = await sequelize.query(
-      `SELECT ri.sn_code, rs.return_no, rs.return_id, rs.create_time, rs.create_user
+      `SELECT ri.sn_code, rs.return_no, rs.return_id, rs.store_id,
+              s.distributor_id, rs.create_time, rs.create_user
        FROM T_RETURN_STOCK_ITEM ri
        JOIN T_RETURN_STOCK rs ON ri.return_id = rs.return_id
+       LEFT JOIN T_STORE s ON rs.store_id = s.store_id
        WHERE ri.sn_code = :snCode`,
       { replacements: { snCode }, type: sequelize.QueryTypes.SELECT }
     );
 
     for (const rt of returnItems) {
-      timeline.push({
-        id: 'rt-' + rt.return_id,
-        type: 'return',
-        label: '退库',
-        description: `退库单号: ${rt.return_no}`,
-        ref_no: rt.return_no,
-        ref_id: rt.return_id,
-        user: rt.create_user || '-',
-        time: rt.create_time
-      });
+      appendReferenceEvent(
+        {
+          id: 'rt-' + rt.return_id,
+          type: 'return',
+          label: '退库',
+          description: `退库单号: ${rt.return_no}`,
+          user: rt.create_user || '-',
+          time: rt.create_time
+        },
+        {
+          ref_type: 'return_stock',
+          ref_no: rt.return_no,
+          ref_id: rt.return_id,
+          store_id: rt.store_id,
+          distributor_id: rt.distributor_id,
+          creator_names: [rt.create_user]
+        }
+      );
     }
 
     const transferItems = await sequelize.query(
       `SELECT ti.sn_code, t.transfer_no, t.transfer_id, t.from_store_id, t.to_store_id,
               fs.name as from_store_name, ts.name as to_store_name,
+              COALESCE(t.distributor_id, fs.distributor_id, ts.distributor_id) as distributor_id,
               t.apply_user, t.create_time, t.status as transfer_status
        FROM T_TRANSFER_ITEM ti
        JOIN T_TRANSFER t ON ti.transfer_id = t.transfer_id
@@ -1350,17 +1486,25 @@ async function snTrace(ctx) {
     );
 
     for (const tr of transferItems) {
-      const isOut = tr.transfer_status === 'pending' || tr.transfer_status === 'out_confirmed';
-      timeline.push({
-        id: 'tr-' + tr.transfer_id,
-        type: 'transfer',
-        label: '调拨' + (tr.transfer_status === 'completed' ? '（已完成）' : '（进行中）'),
-        description: `${tr.from_store_name || tr.from_store_id} → ${tr.to_store_name || tr.to_store_id}，单号：${tr.transfer_no}`,
-        ref_no: tr.transfer_no,
-        ref_id: tr.transfer_id,
-        user: tr.apply_user || '-',
-        time: tr.create_time
-      });
+      appendReferenceEvent(
+        {
+          id: 'tr-' + tr.transfer_id,
+          type: 'transfer',
+          label: '调拨' + (tr.transfer_status === 'completed' ? '（已完成）' : '（进行中）'),
+          description: `${tr.from_store_name || tr.from_store_id} → ${tr.to_store_name || tr.to_store_id}，单号：${tr.transfer_no}`,
+          user: tr.apply_user || '-',
+          time: tr.create_time
+        },
+        {
+          ref_type: 'transfer_order',
+          ref_no: tr.transfer_no,
+          ref_id: tr.transfer_id,
+          from_store_id: tr.from_store_id,
+          to_store_id: tr.to_store_id,
+          distributor_id: tr.distributor_id,
+          creator_names: [tr.apply_user]
+        }
+      );
     }
 
     timeline.sort((a, b) => new Date(b.time) - new Date(a.time));
@@ -1877,13 +2021,23 @@ async function executeInbound(ctx) {
       }
 
       const quantity = parseInt(item.quantity) || 1;
-      const inventoryType = VALID_INVENTORY_TYPES.includes(item.inventoryType)
+      const requestedInventoryType = VALID_INVENTORY_TYPES.includes(item.inventoryType)
         ? item.inventoryType
         : 'normal_qty';
       if (dbItem.location_id && item.locationId && String(dbItem.location_id) !== String(item.locationId)) {
         ctx.throw(400, `商品 ${dbItem.product_name || product.name} 的入库库位与入库明细不一致`);
       }
       const locationId = item.locationId || dbItem.location_id || null;
+      const location = locationId
+        ? await Location.findOne({
+            where: { location_id: locationId, store_id: inbound.store_id, status: 1 },
+            attributes: ['location_id', 'type'],
+            transaction: t
+          })
+        : null;
+      const inventoryType = VALID_INVENTORY_TYPES.includes(location?.type)
+        ? location.type
+        : requestedInventoryType;
       const originalPickupPrice = Number(item.originalPickupPrice || item.original_pickup_price || dbItem.original_pickup_price || dbItem.unit_price || 0);
 
       if (product.need_sn === 1) {
@@ -2452,8 +2606,8 @@ async function getTransferDetail(ctx) {
   const { transferId } = ctx.params;
   const transfer = await Transfer.findByPk(transferId, {
     include: [
-      { model: Store, as: 'FromStore', attributes: ['store_id', 'name'] },
-      { model: Store, as: 'ToStore', attributes: ['store_id', 'name'] },
+      { model: Store, as: 'FromStore', attributes: ['store_id', 'name', 'distributor_id'] },
+      { model: Store, as: 'ToStore', attributes: ['store_id', 'name', 'distributor_id'] },
       { model: TransferItem, attributes: ['item_id', 'product_id', 'pn_code', 'sn_id', 'sn_code', 'quantity'] }
     ]
   });
@@ -2476,6 +2630,15 @@ async function getTransferDetail(ctx) {
     attributes: ['transfer_id']
   });
   if (!visible) ctx.throw(403, '无权查看该调拨记录');
+  if (String(ctx.query.trace || '') === '1' && !canViewSnTraceReference(user, {
+    store_id: transfer.store_id,
+    from_store_id: transfer.from_store_id,
+    to_store_id: transfer.to_store_id,
+    distributor_id: transfer.distributor_id || transfer.FromStore?.distributor_id || transfer.ToStore?.distributor_id,
+    creator_names: [transfer.apply_user]
+  })) {
+    ctx.throw(403, '无权查看该调拨原始订单');
+  }
 
   const data = transfer.toJSON();
   const summary = transferQuantitySummary(data, data.TransferItems || []);
@@ -3720,11 +3883,15 @@ async function getReturnStockWithItems(returnId, transaction) {
  * 查询退库申请列表
  */
 async function getReturnList(ctx) {
-  const { status, inboundId, page = 1, pageSize = 20 } = ctx.query;
+  const { status, inboundId, returnId, page = 1, pageSize = 20 } = ctx.query;
   const where = {};
   if (status) where.status = status;
   if (inboundId) where.inbound_id = inboundId;
-  if (!ctx.state.user.accessibleStoreIds.includes('*')) where.store_id = ctx.state.user.accessibleStoreIds;
+  if (returnId) where.return_id = returnId;
+  const traceReturnLookup = returnId && String(ctx.query.trace || '') === '1';
+  if (!ctx.state.user.accessibleStoreIds.includes('*') && !traceReturnLookup) {
+    where.store_id = ctx.state.user.accessibleStoreIds;
+  }
 
   const { count, rows } = await ReturnStock.findAndCountAll({
     where,
@@ -3740,15 +3907,27 @@ async function getReturnList(ctx) {
 
   const storeIds = [...new Set(rows.map(row => row.store_id).filter(Boolean))];
   const stores = storeIds.length > 0
-    ? await Store.findAll({ where: { store_id: { [Op.in]: storeIds } }, attributes: ['store_id', 'name'] })
+    ? await Store.findAll({ where: { store_id: { [Op.in]: storeIds } }, attributes: ['store_id', 'name', 'distributor_id'] })
     : [];
-  const storeMap = new Map(stores.map(store => [store.store_id, store.name]));
+  const storeMap = new Map(stores.map(store => [store.store_id, store]));
+
+  if (returnId && String(ctx.query.trace || '') === '1') {
+    const row = rows[0];
+    const store = row ? storeMap.get(row.store_id) : null;
+    if (!row || !canViewSnTraceReference(ctx.state.user, {
+      store_id: row.store_id,
+      distributor_id: store?.distributor_id,
+      creator_names: [row.create_user]
+    })) {
+      ctx.throw(403, '无权查看该退库原始单据');
+    }
+  }
 
   const list = rows.map(row => {
     const data = row.toJSON();
     return {
       ...data,
-      store_name: storeMap.get(data.store_id) || ''
+       store_name: storeMap.get(data.store_id)?.name || ''
     };
   });
 
@@ -4103,6 +4282,7 @@ module.exports = {
     visibleTransferItems,
     isTransferRequestOpen: transfer => TRANSFER_REQUEST_STATUSES.has(String(transfer?.status || '').toLowerCase()),
     validateSnLocationAdjustment,
-    validateSalesReturnInboundSn
+    validateSalesReturnInboundSn,
+    getInventoryQuantitySnapshot
   }
 };

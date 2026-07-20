@@ -603,9 +603,12 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
+
+const route = useRoute()
 
 const activeTab = ref('request')
 const PURCHASE_REQUEST_DRAFT_KEY = 'purchase-request-create'
@@ -808,6 +811,12 @@ const remainingLocationQuantity = computed(() => {
 })
 
 onMounted(() => {
+  const traceRequestId = String(route.query.requestId || '').trim()
+  if (traceRequestId && String(route.query.trace || '') === '1') {
+    activeTab.value = 'request'
+    handleTraceView(traceRequestId)
+    return
+  }
   loadData()
   loadSuppliers()
   loadAllSuppliers()
@@ -817,6 +826,20 @@ onMounted(() => {
   loadResourceOptions()
   loadGoodsTypeOptions()
 })
+
+const handleTraceView = async (requestId) => {
+  try {
+    const res = await api.getPurchaseRequestDetail(requestId, { trace: '1' })
+    if (res.code === 0) {
+      currentRequest.value = res.data
+      viewDialogVisible.value = true
+    } else {
+      ElMessage.error(res.message || '获取采购订单详情失败')
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '获取采购订单详情失败')
+  }
+}
 
 const loadAllStores = async () => {
   if (allStoresLoaded.value) return

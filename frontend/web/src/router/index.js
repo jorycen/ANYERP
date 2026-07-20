@@ -42,7 +42,10 @@ const routes = [
         path: 'purchase',
         name: 'Purchase',
         component: () => import('../views/Purchase.vue'),
-        meta: { roles: ['purchaser', 'admin', 'boss'] }
+        meta: {
+          roles: ['purchaser', 'admin', 'boss'],
+          traceRoles: '*'
+        }
       },
       {
         path: 'finance',
@@ -114,7 +117,9 @@ router.beforeEach((to, from, next) => {
     return
   }
 
-  if (to.meta.roles && !userRoles.some(role => to.meta.roles.includes(role))) {
+  const isTraceRoute = String(to.query.trace || '') === '1' && Boolean(to.query.requestId)
+  const routeRoles = isTraceRoute ? to.meta.traceRoles : to.meta.roles
+  if (routeRoles && routeRoles !== '*' && !userRoles.some(role => routeRoles.includes(role))) {
     next('/')
     return
   }

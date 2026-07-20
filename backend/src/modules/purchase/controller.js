@@ -7,6 +7,7 @@ const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate
 const { recordRebateDeduction, recordSupplierRebateAccountTransaction, _getRebateBalance } = require('../finance/rebateController');
 const { createPurchaseReimbursement } = require('../finance/expenseService');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
+const { canViewSnTraceReference } = require('../../utils/snTracePermission');
 
 function toMoney(value) {
   const amount = Number(value);
@@ -106,6 +107,25 @@ function getLocationAllocations(allocation) {
   return [];
 }
 
+async function findDefaultPurchaseLocation(storeId, transaction = null) {
+  const query = { where: { store_id: storeId, status: 1, type: 'normal_qty' } };
+  if (transaction) query.transaction = transaction;
+  const salesLocation = await Location.findOne(query);
+  if (salesLocation) return salesLocation;
+
+  const fallbackQuery = { where: { store_id: storeId, status: 1, is_sellable: 1 } };
+  if (transaction) fallbackQuery.transaction = transaction;
+  return Location.findOne(fallbackQuery);
+}
+
+function persistPurchaseAllocations(item, allocations) {
+  if (item.storeAllocations !== undefined) item.storeAllocations = allocations;
+  if (item.store_allocations !== undefined) {
+    item.store_allocations = JSON.stringify(allocations);
+    if (typeof item.changed === 'function') item.changed('store_allocations', true);
+  }
+}
+
 function flattenPurchaseAllocations(item, fallbackStoreId) {
   const allocations = parsePurchaseAllocationArray(item.storeAllocations || item.store_allocations);
   if (allocations.length === 0) {
@@ -136,6 +156,15 @@ function flattenPurchaseAllocations(item, fallbackStoreId) {
 }
 
 async function validatePurchaseAllocations(items, fallbackStoreId, transaction = null) {
+  const defaultLocationByStore = new Map();
+  const getDefaultLocation = async storeId => {
+    const key = String(storeId || '');
+    if (!defaultLocationByStore.has(key)) {
+      defaultLocationByStore.set(key, findDefaultPurchaseLocation(storeId, transaction));
+    }
+    return defaultLocationByStore.get(key);
+  };
+
   for (const item of items || []) {
     const allocations = parsePurchaseAllocationArray(item.storeAllocations || item.store_allocations);
     if (allocations.length === 0) {
@@ -146,7 +175,21 @@ async function validatePurchaseAllocations(items, fallbackStoreId, transaction =
     for (const allocation of allocations) {
       const storeId = allocation.storeId || allocation.store_id || fallbackStoreId;
       const storeQuantity = Number(allocation.quantity || 0);
-      const locationAllocations = getLocationAllocations(allocation);
+      let locationAllocations = getLocationAllocations(allocation);
+      if (locationAllocations.length === 0 && storeId && storeQuantity > 0) {
+        const defaultLocation = await getDefaultLocation(storeId);
+        if (defaultLocation) {
+          const defaultAllocation = {
+            locationId: defaultLocation.location_id,
+            locationName: defaultLocation.name || '',
+            quantity: storeQuantity
+          };
+          allocation.locationId = defaultAllocation.locationId;
+          allocation.locationName = defaultAllocation.locationName;
+          allocation.locationAllocations = [defaultAllocation];
+          locationAllocations = [defaultAllocation];
+        }
+      }
       if (!storeId || storeQuantity <= 0 || locationAllocations.length === 0) {
         throw new Error(`商品 ${item.productName || item.product_name || item.productId || item.product_id} 必须分配到有效库位`);
       }
@@ -165,6 +208,7 @@ async function validatePurchaseAllocations(items, fallbackStoreId, transaction =
       }
       if (locationQuantity !== storeQuantity) throw new Error('门店分配数量必须等于该门店的库位分配数量');
       totalQuantity += storeQuantity;
+      persistPurchaseAllocations(item, allocations);
     }
     if (totalQuantity !== Number(item.quantity || 0)) throw new Error('门店分配总数必须等于采购数量');
   }
@@ -372,6 +416,16 @@ async function getRequestDetail(ctx) {
     ctx.throw(404, '采购申请不存在');
   }
   assertStoreVisible(ctx, request.store_id);
+  if (String(ctx.query.trace || '') === '1') {
+    const requestData = request.toJSON();
+    if (!canViewSnTraceReference(ctx.state.user, {
+      store_id: request.store_id,
+      distributor_id: requestData.Store?.distributor_id,
+      creator_names: [request.apply_user]
+    })) {
+      ctx.throw(403, '无权查看该采购原始订单');
+    }
+  }
 
   const result = request.toJSON();
   result.store_name = result.Store?.name || '';
@@ -891,6 +945,12 @@ async function approveRequest(ctx) {
   // 如果审批通过，自动生成入库单
   if (status === 'approved' && request.items && request.items.length > 0) {
     await ensurePayableForApprovedRequest(request, user, transaction);
+    await validatePurchaseAllocations(request.items, request.store_id, transaction);
+    for (const item of request.items) {
+      if (typeof item.changed === 'function' && item.changed('store_allocations')) {
+        await item.save({ transaction, fields: ['store_allocations'] });
+      }
+    }
 
     // 获取所有商品信息备用
     const productIds = request.items.map(item => item.product_id);
@@ -1582,6 +1642,7 @@ module.exports = {
   deleteSupplier,
   sortSuppliers,
   _test: {
-    flattenPurchaseAllocations
+    flattenPurchaseAllocations,
+    validatePurchaseAllocations
   }
 };

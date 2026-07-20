@@ -41,6 +41,7 @@ const { normalizePnCode } = require('../../utils/productPn');
 const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
+const { canViewSnTraceReference } = require('../../utils/snTracePermission');
 const {
   calculateAndSaveOrderGrossProfit,
   snapshotToResponse,
@@ -825,6 +826,16 @@ async function detail(ctx) {
   }
 
   assertStoreVisible(order.store_id, ctx.state.user);
+  if (String(ctx.query.trace || '') === '1') {
+    const orderData = order.toJSON();
+    if (!canViewSnTraceReference(ctx.state.user, {
+      store_id: order.store_id,
+      distributor_id: orderData.Store?.distributor_id,
+      creator_names: [order.create_user]
+    })) {
+      ctx.throw(403, '无权查看该销售原始订单');
+    }
+  }
 
   const result = order.toJSON();
   const items = result.OrderItems || [];

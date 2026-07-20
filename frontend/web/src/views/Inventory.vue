@@ -1001,8 +1001,10 @@
             </div>
             <div style="font-size:12px;color:#c0c4cc">
               {{ event.user }}
-              <template v-if="event.type === 'sale' && event.ref_id">
-                <el-button size="small" type="primary" link @click="goToOrderFromTrace(event.ref_id)" style="margin-left:8px">查看订单</el-button>
+              <template v-if="event.can_view_order && event.ref_id && canOpenTraceReference(event)">
+                <el-button size="small" :type="traceReferenceButtonType(event)" link @click="goToTraceReference(event)" style="margin-left:8px">
+                  {{ traceReferenceButtonLabel(event) }}
+                </el-button>
               </template>
             </div>
           </el-timeline-item>
@@ -1737,7 +1739,8 @@ const returnTotal = ref(0)
 const returnQuery = reactive({
   page: 1,
   pageSize: 20,
-  status: ''
+  status: '',
+  returnId: ''
 })
 
 // 入库单详情
@@ -1970,10 +1973,20 @@ onMounted(async () => {
   loadStores()
   loadCategories()
   const inboundIdFromQuery = String(route.query.inboundId || '').trim()
+  const transferIdFromQuery = String(route.query.transferId || '').trim()
+  const returnIdFromQuery = String(route.query.returnId || '').trim()
   if (inboundIdFromQuery) {
     mainTab.value = 'inbound'
     await loadInboundList()
     await viewInboundDetail({ inbound_id: inboundIdFromQuery }, { snTrace: true })
+    await router.replace({ name: 'Inventory', query: {} })
+  } else if (transferIdFromQuery) {
+    await openTransferDetail({ transfer_id: transferIdFromQuery }, { trace: String(route.query.trace || '') === '1' })
+    await router.replace({ name: 'Inventory', query: {} })
+  } else if (returnIdFromQuery) {
+    mainTab.value = 'inbound'
+    returnQuery.returnId = returnIdFromQuery
+    await loadReturnList({ trace: String(route.query.trace || '') === '1' })
     await router.replace({ name: 'Inventory', query: {} })
   } else if (mainTab.value === 'summary') {
     loadSummary()
@@ -2057,11 +2070,11 @@ const getStockBreakdownRows = (row, field) => {
   source.forEach(item => {
     const quantity = Number(item?.[field] || 0)
     if (quantity <= 0) return
-    const key = String(item.store_id || item.store_name || 'unknown')
+    const key = `${item.store_id || item.store_name || 'unknown'}|${item.location_id || 'none'}`
     if (!grouped.has(key)) {
       grouped.set(key, {
         key,
-        store_name: item.store_name || item.store_id || '未知门店',
+        store_name: [item.store_name || item.store_id || '未知门店', item.location_name || '未指定仓位'].filter(Boolean).join(' / '),
         quantity: 0
       })
     }
@@ -2473,9 +2486,9 @@ const loadInboundList = async () => {
   }
 }
 
-const loadReturnList = async () => {
+const loadReturnList = async ({ trace = false } = {}) => {
   try {
-    const res = await api.getReturnList(returnQuery)
+    const res = await api.getReturnList({ ...returnQuery, ...(trace ? { trace: '1' } : {}) })
     if (res.code === 0) {
       returnList.value = res.data?.list || []
       returnTotal.value = res.data?.pagination?.total || res.data?.total || 0
@@ -2981,7 +2994,7 @@ const goToOrder = async (row) => {
     if (res.code === 0) {
       const saleEvents = (res.data?.timeline || []).filter(e => e.type === 'sale')
       if (saleEvents.length > 0 && saleEvents[0].ref_id) {
-        goToOrderFromTrace(saleEvents[0].ref_id)
+        goToOrderFromTrace(saleEvents[0].ref_id, { trace: true })
       } else {
         ElMessage.info('未找到关联的销售订单')
       }
@@ -2993,10 +3006,38 @@ const goToOrder = async (row) => {
   }
 }
 
-const goToOrderFromTrace = (orderId) => {
+const goToOrderFromTrace = (orderId, { trace = false } = {}) => {
   if (!orderId) return
   traceDialogVisible.value = false
-  router.push({ name: 'Sales', query: { orderId } })
+  router.push({ name: 'Sales', query: trace ? { orderId, trace: '1' } : { orderId } })
+}
+
+const canOpenTraceReference = (event) => ['purchase_request', 'sales_order', 'transfer_order', 'inbound', 'return_stock'].includes(event?.ref_type)
+
+const traceReferenceButtonLabel = (event) => ({
+  purchase_request: '查看采购单',
+  sales_order: '查看销售单',
+  transfer_order: '查看调拨单',
+  inbound: '查看入库单',
+  return_stock: '查看退库单'
+}[event?.ref_type] || '查看原始单据')
+
+const traceReferenceButtonType = (event) => event?.ref_type === 'inbound' ? 'success' : 'primary'
+
+const goToTraceReference = (event) => {
+  if (!event?.ref_id || !canOpenTraceReference(event)) return
+  if (event.ref_type === 'sales_order') {
+    router.push({ name: 'Sales', query: { orderId: String(event.ref_id), trace: '1' } })
+  } else if (event.ref_type === 'purchase_request') {
+    router.push({ name: 'Purchase', query: { requestId: String(event.ref_id), trace: '1' } })
+  } else if (event.ref_type === 'transfer_order') {
+    router.push({ name: 'Inventory', query: { transferId: String(event.ref_id), trace: '1' } })
+  } else if (event.ref_type === 'inbound') {
+    router.push({ name: 'Inventory', query: { inboundId: String(event.ref_id) } })
+  } else {
+    router.push({ name: 'Inventory', query: { returnId: String(event.ref_id), trace: '1' } })
+  }
+  traceDialogVisible.value = false
 }
 
 const getStoreName = (storeId) => {
@@ -3180,9 +3221,9 @@ const canRejectTransfer = (row) => {
   return hasRole(['admin']) || String(getStoreId()) === String(row.from_store_id || '')
 }
 
-const openTransferDetail = async (row) => {
+const openTransferDetail = async (row, { trace = false } = {}) => {
   try {
-    const res = await api.getTransferDetail(row.transfer_id)
+    const res = await api.getTransferDetail(row.transfer_id, trace ? { trace: '1' } : undefined)
     if (res.code === 0) {
       transferDetailRow.value = res.data
       transferDetailVisible.value = true

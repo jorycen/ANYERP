@@ -57,19 +57,12 @@
                 <span class="event-user">{{ event.user || '-' }}</span>
                 <span class="event-time">{{ formatDateTime(event.time) }}</span>
                 <el-button
-                  v-if="event.type === 'sale' && event.ref_id"
+                  v-if="event.can_view_order && event.ref_id && canOpenReference(event)"
                   size="small"
-                  type="primary"
-                  @click="goToOrder(event.ref_id)"
+                  :type="referenceButtonType(event)"
+                  @click="goToReference(event)"
                   style="margin-left: 12px;"
-                >查看订单</el-button>
-                <el-button
-                  v-if="event.type === 'inbound' && event.ref_id && canViewInboundDetails"
-                  size="small"
-                  type="success"
-                  @click="goToInbound(event.ref_id)"
-                  style="margin-left: 12px;"
-                >查看入库单</el-button>
+                >{{ referenceButtonLabel(event) }}</el-button>
               </div>
             </el-card>
           </el-timeline-item>
@@ -99,10 +92,8 @@ import { useRouter } from 'vue-router'
 import { Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import api from '../api'
-import { isDistributorAccount } from '../utils/user'
 
 const router = useRouter()
-const canViewInboundDetails = computed(() => isDistributorAccount())
 
 const snCode = ref('')
 const loading = ref(false)
@@ -190,13 +181,32 @@ const formatDateTime = (time) => {
   return `${y}-${m}-${day} ${h}:${min}:${s}`
 }
 
-const goToOrder = (orderId) => {
-  window.open(`/#/sales?orderId=${orderId}`, '_blank')
-}
+const canOpenReference = (event) => ['purchase_request', 'sales_order', 'transfer_order', 'inbound', 'return_stock'].includes(event?.ref_type)
 
-const goToInbound = (inboundId) => {
-  if (!canViewInboundDetails.value || !inboundId) return
-  const target = router.resolve({ name: 'Inventory', query: { inboundId: String(inboundId) } })
+const referenceButtonLabel = (event) => ({
+  purchase_request: '查看采购单',
+  sales_order: '查看销售单',
+  transfer_order: '查看调拨单',
+  inbound: '查看入库单',
+  return_stock: '查看退库单'
+}[event?.ref_type] || '查看原始单据')
+
+const referenceButtonType = (event) => event?.ref_type === 'inbound' ? 'success' : 'primary'
+
+const goToReference = (event) => {
+  if (!event?.ref_id || !canOpenReference(event)) return
+  let target
+  if (event.ref_type === 'sales_order') {
+    target = router.resolve({ name: 'Sales', query: { orderId: String(event.ref_id), trace: '1' } })
+  } else if (event.ref_type === 'purchase_request') {
+    target = router.resolve({ name: 'Purchase', query: { requestId: String(event.ref_id), trace: '1' } })
+  } else if (event.ref_type === 'transfer_order') {
+    target = router.resolve({ name: 'Inventory', query: { transferId: String(event.ref_id), trace: '1' } })
+  } else if (event.ref_type === 'inbound') {
+    target = router.resolve({ name: 'Inventory', query: { inboundId: String(event.ref_id) } })
+  } else {
+    target = router.resolve({ name: 'Inventory', query: { returnId: String(event.ref_id), trace: '1' } })
+  }
   window.open(target.href, '_blank')
 }
 </script>
