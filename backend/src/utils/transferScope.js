@@ -54,4 +54,4 @@ function isTransferScope(ctx) {
   return String(ctx.query?.scope || '').toLowerCase() === 'transfer';
 }
 
-module.exports = { assertTransferStoreScope, isTransferScope };
+module.exports = { assertTransferStoreScope, isTransferScope, transferRegionKeys };

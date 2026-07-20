@@ -18,7 +18,7 @@ const { initializeSnResourceRightsFromInbound, summariesForSns } = require('./re
 const { ensureStandardLocationsForStores } = require('../../utils/standardLocations');
 const { sendExcel } = require('../../utils/excelExport');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
-const { isTransferScope } = require('../../utils/transferScope');
+const { isTransferScope, transferRegionKeys } = require('../../utils/transferScope');
 
 function splitCodes(value) {
   return String(value || '')
@@ -2326,10 +2326,14 @@ async function transfer(ctx) {
     await t.commit();
     ctx.body = { code: 0, data: { transferId, transferNo }, message: '???????' };
   } catch (err) {
-    await t.rollback();
-    if (err.status) ctx.throw(err.status, err.message);
+    try {
+      await t.rollback();
+    } catch (rollbackError) {
+      console.error('transfer rollback error:', rollbackError);
+    }
+    if (err.status) throw err;
     console.error('transfer error:', err);
-    ctx.throw(500, '????????');
+    throw err;
   }
 }
 
