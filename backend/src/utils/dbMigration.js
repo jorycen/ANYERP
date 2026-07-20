@@ -372,6 +372,9 @@ async function runMigrations() {
     await checkAndAddColumn('T_TRANSFER', 'SHIPPING_TIME', 'DATETIME COMMENT "出库确认时间"', 'SHIPPING_USER');
     await checkAndAddColumn('T_TRANSFER', 'RECEIVING_TIME', 'DATETIME COMMENT "收货确认时间"', 'RECEIVING_USER');
     await checkAndAddColumn('T_TRANSFER_ITEM', 'PN_CODE', 'VARCHAR(64) COMMENT "调拨实际PN"', 'PRODUCT_ID');
+    await checkAndAddColumn('T_TRANSFER', 'OUTBOUND_QUANTITY', 'INT NOT NULL DEFAULT 0 COMMENT "actual outbound quantity"', 'TOTAL_QUANTITY');
+    await checkAndAddColumn('T_TRANSFER', 'REMAINING_QUANTITY', 'INT NOT NULL DEFAULT 0 COMMENT "remaining transfer quantity"', 'OUTBOUND_QUANTITY');
+    await checkAndAddColumn('T_TRANSFER', 'REMAINING_STATUS', 'VARCHAR(32) NOT NULL DEFAULT "pending" COMMENT "pending/rejected/fulfilled"', 'REMAINING_QUANTITY');
     await dropProductSnGlobalUniqueIndex();
     await checkAndAddIndex('T_PRODUCT_SN', 'uk_product_sn_pn_sn', 'ALTER TABLE T_PRODUCT_SN ADD UNIQUE KEY uk_product_sn_pn_sn (PN_CODE, SN_CODE)');
     await checkAndAddIndex('T_PRODUCT_SN', 'idx_product_sn_code', 'ALTER TABLE T_PRODUCT_SN ADD INDEX idx_product_sn_code (SN_CODE)');

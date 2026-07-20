@@ -1742,6 +1742,28 @@ function normalizeTransferItem(raw) {
  * 调出确认成功后，为调入门店创建一张真正的待入库单。
  * 用 source_no 做幂等键，兼容历史数据和重复请求。
  */
+function transferQuantitySummary(transfer, items = []) {
+  const totalQuantity = Math.max(Number(transfer?.total_quantity || 0), 0);
+  const status = String(transfer?.status || '').toLowerCase();
+  const storedOutbound = Number(transfer?.outbound_quantity);
+  const hasStoredOutbound = Number.isFinite(storedOutbound) && storedOutbound > 0;
+  const actualItemQuantity = (items || []).reduce((sum, item) => sum + Math.max(Number(item.quantity || 0), 0), 0);
+  const outboundQuantity = hasStoredOutbound || !['out_confirmed', 'completed'].includes(status)
+    ? Math.max(storedOutbound || 0, 0)
+    : actualItemQuantity;
+  const remainingQuantity = Math.max(totalQuantity - outboundQuantity, 0);
+  return {
+    totalQuantity,
+    outboundQuantity,
+    remainingQuantity,
+    remainingStatus: transfer?.remaining_status || (remainingQuantity > 0 ? 'pending' : 'fulfilled')
+  };
+}
+
+function visibleTransferItems(items = []) {
+  return (items || []).filter(item => Number(item.quantity || 0) > 0);
+}
+
 async function ensureTransferInbound(transfer, items, transaction) {
   const existing = await Inbound.findOne({
     where: { source_type: 'TRANSFER', source_no: transfer.transfer_no },
@@ -2220,9 +2242,6 @@ async function transfer(ctx) {
       }
 
       const quantity = Math.max(parseInt(item.quantity || 1, 10), 1);
-      if (Number(product.need_sn) === 1 && quantity > 1) {
-        ctx.throw(400, `SN product ${product.name} quantity must be 1`);
-      }
       // The request records the product demand only. Stock is checked and deducted when the source store confirms shipment.
       normalizedItems.push({
         productId: item.productId,
@@ -2244,6 +2263,9 @@ async function transfer(ctx) {
       from_store_id: fromStoreId,
       to_store_id: toStoreId,
       total_quantity: totalQuantity,
+      outbound_quantity: 0,
+      remaining_quantity: totalQuantity,
+      remaining_status: 'pending',
       status: 'pending',
       apply_user: user.name || user.staffId,
       distributor_id: transferScope.distributorId,
@@ -2373,7 +2395,12 @@ async function getTransferList(ctx) {
 
     const list = rows.map(row => {
       const data = row.toJSON();
-      data.TransferItems = (data.TransferItems || []).map(item => {
+      const summary = transferQuantitySummary(data, data.TransferItems || []);
+      data.total_quantity = summary.totalQuantity;
+      data.outbound_quantity = summary.outboundQuantity;
+      data.remaining_quantity = summary.remainingQuantity;
+      data.remaining_status = summary.remainingStatus;
+      data.TransferItems = visibleTransferItems(data.TransferItems || []).map(item => {
         const product = productMap.get(item.product_id);
         return {
           ...item,
@@ -2430,12 +2457,17 @@ async function getTransferDetail(ctx) {
   if (!visible) ctx.throw(403, '无权查看该调拨记录');
 
   const data = transfer.toJSON();
+  const summary = transferQuantitySummary(data, data.TransferItems || []);
+  data.total_quantity = summary.totalQuantity;
+  data.outbound_quantity = summary.outboundQuantity;
+  data.remaining_quantity = summary.remainingQuantity;
+  data.remaining_status = summary.remainingStatus;
   const productIds = [...new Set((data.TransferItems || []).map(item => item.product_id).filter(Boolean))];
   const products = productIds.length
     ? await Product.findAll({ where: { product_id: { [Op.in]: productIds } }, attributes: ['product_id', 'name', 'product_code', 'need_sn'], raw: true })
     : [];
   const productMap = new Map(products.map(product => [product.product_id, product]));
-  data.TransferItems = (data.TransferItems || []).map(item => ({
+  data.TransferItems = visibleTransferItems(data.TransferItems || []).map(item => ({
     ...item,
     product_name: productMap.get(item.product_id)?.name || '',
     product_code: productMap.get(item.product_id)?.product_code || item.product_id || '',
@@ -2450,6 +2482,191 @@ async function getTransferDetail(ctx) {
 /**
  * 确认调拨出库（原门店操作）
  */
+async function confirmTransferOutPartial(ctx) {
+  const t = await sequelize.transaction();
+  try {
+    const user = ctx.state.user || {};
+    const body = ctx.request.body || {};
+    const transferId = body.transferId || body.transfer_id;
+    const selections = Array.isArray(body.items) ? body.items.filter(Boolean) : [];
+    const shippingPhotos = Array.isArray(body.shippingPhotos) ? body.shippingPhotos.filter(Boolean).slice(0, 9) : [];
+    const remainingAction = String(body.remainingAction || 'reject').trim().toLowerCase();
+    const byItem = new Map();
+    const byProduct = new Map();
+    selections.forEach(selection => {
+      const itemId = selection.itemId || selection.item_id;
+      const productId = selection.productId || selection.product_id;
+      if (itemId) {
+        const key = String(itemId);
+        if (!byItem.has(key)) byItem.set(key, []);
+        byItem.get(key).push(selection);
+      }
+      if (productId) {
+        const key = String(productId);
+        if (!byProduct.has(key)) byProduct.set(key, []);
+        byProduct.get(key).push(selection);
+      }
+    });
+    if (!transferId) ctx.throw(400, 'Transfer ID is required');
+    if (!selections.length) ctx.throw(400, 'Please select at least one outbound item');
+    if (!shippingPhotos.length) ctx.throw(400, 'Please upload at least one shipping photo');
+
+    const transfer = await Transfer.findByPk(transferId, {
+      include: [{ model: TransferItem }],
+      transaction: t,
+      lock: t.LOCK.UPDATE
+    });
+    if (!transfer) ctx.throw(404, 'Transfer does not exist');
+    assertStoreVisible(ctx, transfer.from_store_id);
+    if (transfer.status !== 'pending') ctx.throw(400, 'Transfer is not pending outbound confirmation');
+
+    const requestItems = (transfer.TransferItems || [])
+      .filter(item => !item.sn_id && !item.sn_code && Number(item.quantity || 0) > 0);
+    if (!requestItems.length) ctx.throw(400, 'Transfer has no pending item lines');
+    const productIds = [...new Set(requestItems.map(item => item.product_id).filter(Boolean))];
+    const products = await Product.findAll({
+      where: { product_id: { [Op.in]: productIds }, is_deleted: 0 },
+      transaction: t
+    });
+    const productMap = new Map(products.map(product => [String(product.product_id), product]));
+    const selectedSnIds = new Set();
+    let outboundQuantity = 0;
+
+    for (const requestItem of requestItems) {
+      const product = productMap.get(String(requestItem.product_id));
+      if (!product) ctx.throw(400, `Product ${requestItem.product_id} does not exist`);
+      const selected = byItem.get(String(requestItem.item_id))
+        || byProduct.get(String(requestItem.product_id))
+        || [];
+      if (!selected.length) ctx.throw(400, `Please select outbound inventory for ${product.name || requestItem.product_id}`);
+
+      if (Number(product.need_sn) === 1) {
+        if (selected.length > Number(requestItem.quantity || 0)) {
+          ctx.throw(400, `Selected SN quantity for ${product.name} exceeds the request`);
+        }
+        const defaultPn = String(selected[0].pnCode || selected[0].pn_code || selected[0].pn || requestItem.pn_code || '').trim();
+        if (!defaultPn || !(await productHasPn(product, defaultPn, t))) {
+          ctx.throw(400, `Please select a valid PN for ${product.name}`);
+        }
+        await requestItem.update({ quantity: 0, pn_code: defaultPn }, { transaction: t });
+        for (const selection of selected) {
+          const snId = selection.snId || selection.sn_id || selection.inventoryId || selection.inventory_id || '';
+          const snCode = String(selection.snCode || selection.sn_code || '').trim();
+          const pnCode = String(selection.pnCode || selection.pn_code || selection.pn || defaultPn).trim();
+          if (!snId || !snCode) ctx.throw(400, `SN product ${product.name} requires a concrete SN`);
+          if (selectedSnIds.has(String(snId))) ctx.throw(400, `SN ${snCode} cannot be selected twice`);
+          selectedSnIds.add(String(snId));
+          if (!(await productHasPn(product, pnCode, t))) ctx.throw(400, `PN ${pnCode} does not belong to ${product.name}`);
+          const sn = await ProductSn.findOne({
+            where: {
+              sn_id: snId,
+              sn_code: snCode,
+              product_id: requestItem.product_id,
+              store_id: transfer.from_store_id,
+              status: 'in_stock',
+              is_deleted: 0
+            },
+            transaction: t,
+            lock: t.LOCK.UPDATE
+          });
+          if (!sn) ctx.throw(400, `SN ${snCode} is not available in the outbound store`);
+          if (sn.pn_code && String(sn.pn_code) !== pnCode) ctx.throw(400, `SN ${snCode} does not match PN ${pnCode}`);
+          await sn.update({ status: 'transferring' }, { transaction: t });
+          await TransferItem.create({
+            transfer_id: transfer.transfer_id,
+            product_id: requestItem.product_id,
+            pn_code: pnCode,
+            sn_id: sn.sn_id,
+            sn_code: sn.sn_code,
+            quantity: 1
+          }, { transaction: t });
+          await SnLog.create({
+            log_id: generateUUID(),
+            sn_id: sn.sn_id,
+            sn_code: sn.sn_code,
+            product_id: requestItem.product_id,
+            store_id: transfer.from_store_id,
+            action: 'transfer_out_confirm',
+            remark: `Transfer ${transfer.from_store_id} -> ${transfer.to_store_id}: ${transfer.transfer_no}`,
+            create_user: user.name || user.staffId
+          }, { transaction: t });
+          outboundQuantity += 1;
+        }
+        await updateInventory(requestItem.product_id, transfer.from_store_id, 'normal_qty', -selected.length, t);
+        continue;
+      }
+
+      const selectedQuantity = Math.max(selected.reduce((sum, row) => {
+        const value = Number(row.quantity);
+        return sum + (Number.isFinite(value) && value > 0 ? value : 1);
+      }, 0), 1);
+      if (selectedQuantity > Number(requestItem.quantity || 0)) {
+        ctx.throw(400, `Selected quantity for ${product.name} exceeds the request`);
+      }
+      const selectedPn = String(selected[0].pnCode || selected[0].pn_code || selected[0].pn || requestItem.pn_code || '').trim();
+      if (!selectedPn || !(await productHasPn(product, selectedPn, t))) {
+        ctx.throw(400, `Please select a valid PN for ${product.name}`);
+      }
+      const availableQty = await getTransferableStock(product, requestItem.product_id, transfer.from_store_id, t);
+      if (availableQty < selectedQuantity) ctx.throw(400, `Product ${product.name} stock is insufficient`);
+      await requestItem.update({ quantity: selectedQuantity, pn_code: selectedPn }, { transaction: t });
+      await updateInventory(requestItem.product_id, transfer.from_store_id, 'normal_qty', -selectedQuantity, t);
+      outboundQuantity += selectedQuantity;
+    }
+
+    const totalQuantity = Math.max(Number(transfer.total_quantity || 0), 0);
+    const remainingQuantity = Math.max(totalQuantity - outboundQuantity, 0);
+    if (remainingQuantity > 0 && remainingAction !== 'reject') {
+      ctx.throw(400, 'Partial outbound requires confirming rejection of the remaining quantity');
+    }
+    const actualItems = visibleTransferItems(await TransferItem.findAll({
+      where: { transfer_id: transfer.transfer_id },
+      transaction: t
+    }));
+    const productMapForInbound = new Map(products.map(product => [String(product.product_id), product]));
+    await transfer.update({
+      status: 'out_confirmed',
+      outbound_quantity: outboundQuantity,
+      remaining_quantity: remainingQuantity,
+      remaining_status: remainingQuantity > 0 ? 'rejected' : 'fulfilled',
+      confirm_user: user.name || user.staffId,
+      shipping_user: user.name || user.staffId,
+      shipping_photos: shippingPhotos,
+      shipping_time: new Date()
+    }, { transaction: t });
+    await recordBusinessAction({
+      businessType: 'inventory_transfer',
+      businessId: transfer.transfer_id,
+      businessNo: transfer.transfer_no,
+      action: remainingQuantity > 0 ? 'outbound_partially_confirmed' : 'outbound_confirmed',
+      fromStatus: 'pending',
+      toStatus: 'out_confirmed',
+      user,
+      detail: { shippingPhotos: shippingPhotos.length, outboundQuantity, remainingQuantity, remainingAction },
+      transaction: t
+    });
+    await ensureTransferInbound(transfer, actualItems.map(item => ({
+      product_id: item.product_id,
+      product_name: productMapForInbound.get(String(item.product_id))?.name || '',
+      pn_code: item.pn_code,
+      sn_id: item.sn_id,
+      sn_code: item.sn_code,
+      quantity: item.quantity
+    })), t);
+    await t.commit();
+    ctx.body = {
+      code: 0,
+      data: { transferId: transfer.transfer_id, outboundQuantity, remainingQuantity, remainingStatus: remainingQuantity > 0 ? 'rejected' : 'fulfilled' },
+      message: remainingQuantity > 0 ? 'Partial outbound confirmed; remaining quantity rejected' : 'Outbound confirmed'
+    };
+  } catch (err) {
+    await t.rollback();
+    if (err.status) ctx.throw(err.status, err.message);
+    console.error('confirmTransferOut partial error:', err);
+    ctx.throw(500, 'Outbound confirmation failed');
+  }
+}
+
 async function confirmTransferOut(ctx) {
   const t = await sequelize.transaction();
   try {
@@ -2717,7 +2934,7 @@ async function confirmTransferIn(ctx) {
       ctx.throw(400, '当前状态不允许确认入库');
     }
 
-    const items = transfer.TransferItems || [];
+    const items = visibleTransferItems(transfer.TransferItems || []);
     const requestedByItemId = new Map(
       requestedItems
         .filter(item => item.itemId || item.item_id)
@@ -3842,7 +4059,7 @@ module.exports = {
   transfer,
   getTransferList,
   getTransferDetail,
-  confirmTransferOut,
+  confirmTransferOut: confirmTransferOutPartial,
   confirmTransferIn,
   revokeTransfer,
   rejectTransfer,
@@ -3862,6 +4079,8 @@ module.exports = {
     buildTransferVisibilityWhere,
     isDistributorAccount,
     isTransferApplicant,
+    transferQuantitySummary,
+    visibleTransferItems,
     isTransferRequestOpen: transfer => TRANSFER_REQUEST_STATUSES.has(String(transfer?.status || '').toLowerCase()),
     validateSnLocationAdjustment,
     validateSalesReturnInboundSn
