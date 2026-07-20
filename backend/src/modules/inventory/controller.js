@@ -117,18 +117,38 @@ async function assertTransferScope(ctx, fromStoreId, toStoreId) {
   // 调拨门店所属经销商，避免仅凭区域权限跨经销商发起申请。
   const user = ctx.state.user || {};
   const roles = getUserRoles(user);
-  let userDistributorId = String(user.distributorId || '');
+  let userDistributorId = '';
+  let currentStore = null;
   if (user.storeId) {
-    const userStore = await Store.findOne({
+    currentStore = await Store.findOne({
       where: { store_id: user.storeId, is_deleted: 0, status: 1 },
-      attributes: ['distributor_id']
+      attributes: ['store_id', 'distributor_id', 'region_id'],
+      include: [{ model: Region, attributes: ['region_id', 'region_code', 'name'] }]
     });
-    userDistributorId = userDistributorId || String(userStore?.distributor_id || '');
+    // 店员历史账号可能仍保留旧的 T_STAFF.DISTRIBUTOR_ID；门店归属才是调拨范围的准确信息。
+    userDistributorId = String(currentStore?.distributor_id || '');
+  }
+  if (!userDistributorId && Array.isArray(user.accessibleStoreIds) && !user.accessibleStoreIds.includes('*')) {
+    const assignedStore = await Store.findOne({
+      where: { store_id: { [Op.in]: user.accessibleStoreIds }, is_deleted: 0, status: 1 },
+      attributes: ['distributor_id', 'region_id'],
+      include: [{ model: Region, attributes: ['region_id', 'region_code', 'name'] }]
+    });
+    currentStore = currentStore || assignedStore;
+    userDistributorId = String(assignedStore?.distributor_id || '');
+  }
+  if (!userDistributorId) {
+    userDistributorId = String(user.distributorId || '');
   }
   if (!roles.includes('boss') && userDistributorId && userDistributorId !== String(fromStore.distributor_id)) {
     ctx.throw(403, '无权操作该经销商的调拨');
   }
-  const userRegionKeys = Array.isArray(user.regionCodes) ? user.regionCodes.map(String) : [];
+  const userRegionKeys = [...new Set(
+    (Array.isArray(user.regionCodes) ? user.regionCodes : [])
+      .concat(transferRegionKeys(currentStore))
+      .map(String)
+      .filter(Boolean)
+  )];
   if (!roles.includes('boss') && !userRegionKeys.includes('*') && userRegionKeys.length && !fromRegionKeys.some(key => userRegionKeys.includes(key))) {
     ctx.throw(403, '无权操作该区域的调拨');
   }
