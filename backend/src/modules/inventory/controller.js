@@ -18,7 +18,7 @@ const { initializeSnResourceRightsFromInbound, summariesForSns } = require('./re
 const { ensureStandardLocationsForStores } = require('../../utils/standardLocations');
 const { sendExcel } = require('../../utils/excelExport');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
-const { assertTransferStoreScope, isTransferScope } = require('../../utils/transferScope');
+const { isTransferScope } = require('../../utils/transferScope');
 
 function splitCodes(value) {
   return String(value || '')
@@ -742,8 +742,8 @@ async function getList(ctx) {
     const user = ctx.state.user;
     const exportMode = Boolean(ctx.state.inventoryExportMode);
 
-    if (isTransferScope(ctx)) await assertTransferStoreScope(ctx, storeId);
-
+    // 调拨查询由请求链路的 scope=transfer 标记放行，允许读取被调拨门店的库存。
+    // 实际出库仍在 confirmTransferOutPartial 中校验调拨单和调出门店，不能据此绕过写入权限。
     const whereStore = {};
     if (!user.accessibleStoreIds.includes('*')) whereStore.store_id = user.accessibleStoreIds;
     if (storeId) whereStore.store_id = storeId;
@@ -986,8 +986,7 @@ async function getSnList(ctx) {
     const { productId, storeId, currentStoreId, status, snCode, page = 1, pageSize = 20 } = ctx.query;
     const user = ctx.state.user;
 
-    if (isTransferScope(ctx)) await assertTransferStoreScope(ctx, storeId);
-
+    // 调拨出库需要读取调出门店的 SN，不应再次套用账号的普通门店查询权限。
     const where = { is_deleted: 0 };
     if (productId) where.product_id = productId;
 
@@ -4008,9 +4007,8 @@ async function executeReturn(ctx) {
 async function getLocationsByStore(ctx) {
   try {
     const { storeId } = ctx.params;
-    if (isTransferScope(ctx)) {
-      await assertTransferStoreScope(ctx, storeId);
-    } else {
+    // 调拨入库需要展示对方门店库位；实际入库仍由 confirmTransferIn 校验调入门店。
+    if (!isTransferScope(ctx)) {
       assertStoreVisible(ctx, storeId);
     }
     const store = await Store.findOne({ where: { store_id: storeId, is_deleted: 0 } });
