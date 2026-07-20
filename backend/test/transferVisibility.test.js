@@ -20,10 +20,10 @@ test('店员调拨查询同时限制授权门店和本人参与人字段', () =>
     ['STORE_1']
   );
 
-  assert.equal(conditions.length, 2);
-  const participantCondition = conditions[1];
+  assert.equal(conditions.length, 1);
+  const participantCondition = conditions[0];
   const participantOr = participantCondition[Object.getOwnPropertySymbols(participantCondition)[0]];
-  assert.equal(participantOr.length, 5);
+  assert.equal(participantOr.length, 7);
   assert.deepEqual(participantOr[0], { apply_user: '张三' });
   assert.deepEqual(participantOr[4], { receiving_user: '张三' });
 });

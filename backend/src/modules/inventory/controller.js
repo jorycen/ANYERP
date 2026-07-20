@@ -77,20 +77,18 @@ function buildTransferVisibilityWhere(user, distributorStoreIds = [], distributo
   if (level === 'distributor' && distributorId) {
     storeScope.push({ distributor_id: String(distributorId) });
   }
+  const participantName = String(user?.name || '').trim();
+  const participantScope = participantName
+    ? TRANSFER_PARTICIPANT_FIELDS.map(field => ({ [field]: participantName }))
+    : [{ transfer_id: { [Op.in]: ['__NO_TRANSFER_PARTICIPANT__'] } }];
+  const visibleScope = level === 'participant'
+    ? (storeScope.length > 0 ? [...participantScope, ...storeScope] : participantScope)
+    : storeScope;
   const conditions = [{
-    [Op.or]: storeScope.length > 0
-      ? storeScope
+    [Op.or]: visibleScope.length > 0
+      ? visibleScope
       : [{ transfer_id: { [Op.in]: ['__NO_TRANSFER_SCOPE__'] } }]
   }];
-
-  if (level === 'participant') {
-    const participantName = String(user?.name || '').trim();
-    conditions.push({
-      [Op.or]: participantName
-        ? TRANSFER_PARTICIPANT_FIELDS.map(field => ({ [field]: participantName }))
-        : [{ transfer_id: { [Op.in]: ['__NO_TRANSFER_PARTICIPANT__'] } }]
-    });
-  }
 
   return conditions;
 }
