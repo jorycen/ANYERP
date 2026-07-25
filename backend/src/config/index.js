@@ -78,14 +78,31 @@ module.exports = {
   },
 
   cloudStorage: {
+    cloudbaseAccessKey: process.env.CLOUDBASE_APIKEY || process.env.CLOUDBASE_API_KEY || process.env.CLOUD_BASE_APIKEY || process.env.CLOUD_BASE_API_KEY || process.env.TCB_API_KEY || '',
+    cloudbaseSecretId: process.env.TENCENTCLOUD_SECRETID || process.env.TENCENTCLOUD_SECRET_ID || '',
+    cloudbaseSecretKey: process.env.TENCENTCLOUD_SECRETKEY || process.env.TENCENTCLOUD_SECRET_KEY || '',
+    cloudbaseSessionToken: process.env.TENCENTCLOUD_SESSIONTOKEN || process.env.TENCENTCLOUD_SESSION_TOKEN || '',
     cloudbaseAuthAvailable: Boolean(
       process.env.CLOUDBASE_APIKEY ||
+      process.env.CLOUDBASE_API_KEY ||
+      process.env.CLOUD_BASE_APIKEY ||
+      process.env.CLOUD_BASE_API_KEY ||
+      process.env.TCB_API_KEY ||
       (process.env.TENCENTCLOUD_SECRETID && process.env.TENCENTCLOUD_SECRETKEY) ||
-      process.env.TENCENTCLOUD_SESSIONTOKEN
+      (process.env.TENCENTCLOUD_SECRET_ID && process.env.TENCENTCLOUD_SECRET_KEY) ||
+      process.env.TENCENTCLOUD_SESSIONTOKEN ||
+      process.env.TENCENTCLOUD_SESSION_TOKEN
     ),
     enabled: Boolean(
       process.env.CLOUDBASE_APIKEY ||
+      process.env.CLOUDBASE_API_KEY ||
+      process.env.CLOUD_BASE_APIKEY ||
+      process.env.CLOUD_BASE_API_KEY ||
+      process.env.TCB_API_KEY ||
       (process.env.TENCENTCLOUD_SECRETID && process.env.TENCENTCLOUD_SECRETKEY) ||
+      (process.env.TENCENTCLOUD_SECRET_ID && process.env.TENCENTCLOUD_SECRET_KEY) ||
+      process.env.TENCENTCLOUD_SESSIONTOKEN ||
+      process.env.TENCENTCLOUD_SESSION_TOKEN ||
       (process.env.COS_SECRET_ID || process.env.TENCENT_COS_SECRET_ID || process.env.TCB_COS_SECRET_ID) &&
       (process.env.COS_SECRET_KEY || process.env.TENCENT_COS_SECRET_KEY || process.env.TCB_COS_SECRET_KEY)
     ),

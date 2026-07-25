@@ -42,7 +42,14 @@ function getCosClient() {
 function getCloudbaseApp() {
   if (cloudbaseApp) return cloudbaseApp;
   const storageConfig = getCloudStorageConfig();
-  cloudbaseApp = cloudbase.init({ env: storageConfig.envId });
+  cloudbaseApp = cloudbase.init({
+    env: storageConfig.envId,
+    ...(storageConfig.cloudbaseAccessKey ? { accessKey: storageConfig.cloudbaseAccessKey } : {}),
+    ...(storageConfig.cloudbaseSecretId && storageConfig.cloudbaseSecretKey
+      ? { secretId: storageConfig.cloudbaseSecretId, secretKey: storageConfig.cloudbaseSecretKey }
+      : {}),
+    ...(storageConfig.cloudbaseSessionToken ? { sessionToken: storageConfig.cloudbaseSessionToken } : {})
+  });
   return cloudbaseApp;
 }
 
