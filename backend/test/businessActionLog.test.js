@@ -48,9 +48,12 @@ test('调拨详情接口已注册，用于展示调拨全流程', () => {
 test('调拨申请撤销和拒绝接口已注册，且权限状态判断只允许申请未出库前处理', () => {
   assert.ok(inventoryRouter.stack.find(layer => layer.path === '/transfer/revoke' && layer.methods.includes('POST')));
   assert.ok(inventoryRouter.stack.find(layer => layer.path === '/transfer/reject' && layer.methods.includes('POST')));
+  assert.ok(inventoryRouter.stack.find(layer => layer.path === '/transfer/return' && layer.methods.includes('POST')));
   assert.equal(inventoryTest.isTransferRequestOpen({ status: 'pending' }), true);
   assert.equal(inventoryTest.isTransferRequestOpen({ status: 'out_confirmed' }), false);
   assert.equal(inventoryTest.isTransferRequestOpen({ status: 'completed' }), false);
+  assert.equal(inventoryTest.isTransferAwaitingReceipt('out_confirmed'), true);
+  assert.equal(inventoryTest.isTransferAwaitingReceipt('returned'), false);
   assert.equal(inventoryTest.isTransferApplicant({ name: '申请人' }, { apply_user: '申请人' }), true);
   assert.equal(inventoryTest.isTransferApplicant({ name: '其他人' }, { apply_user: '申请人' }), false);
 });

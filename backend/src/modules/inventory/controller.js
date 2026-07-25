@@ -226,6 +226,136 @@ async function rejectTransfer(ctx) {
   });
 }
 
+function isTransferAwaitingReceipt(status) {
+  return ['out_confirmed', 'shipping_out', 'in_transit'].includes(String(status || '').toLowerCase());
+}
+
+/**
+ * 退回运输中的调拨。
+ *
+ * 出库确认时，非 SN 商品已经从调出门店扣减 normal_qty，SN 商品已经标记为
+ * transferring；退回必须在同一事务中把这两类库存恢复，并取消关联的待入库单。
+ */
+async function returnTransfer(ctx) {
+  const t = await sequelize.transaction();
+  try {
+    const user = ctx.state.user || {};
+    const transferId = ctx.request.body?.transferId || ctx.request.body?.transfer_id;
+    const reason = String(ctx.request.body?.reason || ctx.request.body?.comment || '').trim().slice(0, 1000);
+
+    if (!transferId) ctx.throw(400, '调拨单ID不能为空');
+
+    const transfer = await Transfer.findByPk(transferId, {
+      include: [{ model: TransferItem }],
+      transaction: t,
+      lock: t.LOCK.UPDATE
+    });
+    if (!transfer) ctx.throw(404, '调拨单不存在');
+
+    // 退回权限与收货一致，由调入门店或经销商账号操作。
+    assertStoreVisible(ctx, transfer.to_store_id);
+    if (!isTransferAwaitingReceipt(transfer.status)) {
+      ctx.throw(400, '只有运输中、待收货的调拨单可以退回');
+    }
+
+    const transferInbound = await Inbound.findOne({
+      where: { source_type: 'TRANSFER', source_no: transfer.transfer_no },
+      transaction: t,
+      lock: t.LOCK.UPDATE
+    });
+    if (transferInbound && transferInbound.status !== 'pending') {
+      ctx.throw(409, '该调拨已完成入库，无法退回');
+    }
+
+    let restoredQuantity = 0;
+    let restoredSnQuantity = 0;
+    const restoredItems = [];
+    const items = visibleTransferItems(transfer.TransferItems || []);
+
+    for (const item of items) {
+      const quantity = Math.max(Number(item.quantity || 0), 0);
+      if (!quantity) continue;
+
+      if (item.sn_id || item.sn_code) {
+        const snWhere = item.sn_id
+          ? { sn_id: item.sn_id, product_id: item.product_id, is_deleted: 0 }
+          : { sn_code: item.sn_code, product_id: item.product_id, is_deleted: 0 };
+        const sn = await ProductSn.findOne({
+          where: snWhere,
+          transaction: t,
+          lock: t.LOCK.UPDATE
+        });
+        if (!sn) ctx.throw(409, `SN ${item.sn_code || item.sn_id} 不存在，无法恢复库存`);
+        if (String(sn.store_id || '') !== String(transfer.from_store_id)) {
+          ctx.throw(409, `SN ${sn.sn_code || item.sn_code || item.sn_id} 已不在原调出门店，无法退回`);
+        }
+        if (sn.status !== 'transferring') {
+          ctx.throw(409, `SN ${sn.sn_code || item.sn_code || item.sn_id} 当前不是运输中状态，无法退回`);
+        }
+
+        await sn.update({ status: 'in_stock' }, { transaction: t });
+        await SnLog.create({
+          log_id: generateUUID(),
+          sn_id: sn.sn_id,
+          sn_code: sn.sn_code,
+          product_id: item.product_id,
+          store_id: transfer.from_store_id,
+          action: 'transfer_return',
+          remark: reason || `调拨退回：${transfer.from_store_id} → ${transfer.to_store_id}，单号：${transfer.transfer_no}`,
+          create_user: user.name || user.staffId
+        }, { transaction: t });
+        restoredSnQuantity += 1;
+        restoredQuantity += 1;
+        restoredItems.push({ productId: item.product_id, snId: sn.sn_id, quantity: 1 });
+        continue;
+      }
+
+      await updateInventory(item.product_id, transfer.from_store_id, 'normal_qty', quantity, t);
+      restoredQuantity += quantity;
+      restoredItems.push({ productId: item.product_id, quantity });
+    }
+
+    if (transferInbound) {
+      await transferInbound.update({ status: 'cancelled', update_time: new Date() }, { transaction: t });
+    }
+
+    const fromStatus = transfer.status;
+    await transfer.update({
+      status: 'returned',
+      remaining_status: 'returned'
+    }, { transaction: t });
+    await recordBusinessAction({
+      businessType: 'inventory_transfer',
+      businessId: transfer.transfer_id,
+      businessNo: transfer.transfer_no,
+      action: 'returned',
+      fromStatus,
+      toStatus: 'returned',
+      user,
+      comment: reason,
+      detail: {
+        restoredQuantity,
+        restoredSnQuantity,
+        inboundId: transferInbound?.inbound_id || '',
+        items: restoredItems
+      },
+      transaction: t
+    });
+
+    await t.commit();
+    ctx.body = {
+      code: 0,
+      data: { transferId: transfer.transfer_id, status: 'returned', restoredQuantity },
+      message: '调拨已退回，库存已恢复'
+    };
+  } catch (err) {
+    await t.rollback();
+    if (err.status) ctx.throw(err.status, err.message);
+    console.error('return transfer error:', err);
+    ctx.throw(500, '调拨退回失败');
+  }
+}
+
 const RESOURCE_STATUS_LABELS = {
   AVAILABLE: '可用',
   LOCKED: '已锁定',
@@ -4270,6 +4400,7 @@ module.exports = {
   getTransferDetail,
   confirmTransferOut: confirmTransferOutPartial,
   confirmTransferIn,
+  returnTransfer,
   revokeTransfer,
   rejectTransfer,
   getConversionList,
@@ -4290,6 +4421,7 @@ module.exports = {
     isTransferApplicant,
     transferQuantitySummary,
     visibleTransferItems,
+    isTransferAwaitingReceipt,
     isTransferRequestOpen: transfer => TRANSFER_REQUEST_STATUSES.has(String(transfer?.status || '').toLowerCase()),
     validateSnLocationAdjustment,
     validateSalesReturnInboundSn,

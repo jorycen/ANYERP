@@ -51,3 +51,12 @@ test('店员和店长不能查询SN关联入库详情，经销商业务角色可
   assert.equal(_test.isDistributorAccount({ roles: ['manager'] }), false);
   assert.equal(_test.isDistributorAccount({ roles: ['clerk'] }), false);
 });
+
+test('运输中待收货调拨才允许退回', () => {
+  assert.equal(_test.isTransferAwaitingReceipt('out_confirmed'), true);
+  assert.equal(_test.isTransferAwaitingReceipt('shipping_out'), true);
+  assert.equal(_test.isTransferAwaitingReceipt('in_transit'), true);
+  assert.equal(_test.isTransferAwaitingReceipt('pending'), false);
+  assert.equal(_test.isTransferAwaitingReceipt('completed'), false);
+  assert.equal(_test.isTransferAwaitingReceipt('returned'), false);
+});

@@ -8,7 +8,7 @@ const {
   getSnSpecialPriceHistory, getSnList, getInboundList, getInboundDetail, getSnTraceInboundDetail,
   executeInbound, getReturnList, requestReturn, approveReturn, executeReturn,
   inbound, outbound, transfer, getTransferList, confirmTransferOut,
-  confirmTransferIn, revokeTransfer, rejectTransfer, getTransferDetail, getConversionList, getConversionDetail, createConversion,
+  confirmTransferIn, returnTransfer, revokeTransfer, rejectTransfer, getTransferDetail, getConversionList, getConversionDetail, createConversion,
   voidConversion, getLocationsByStore, updateSn, adjustSnLocation, snTrace
 } = require('./controller');
 const { enforceStoreOwnership, requireRole } = require('../../middleware/permission');
@@ -71,6 +71,7 @@ router.get('/transfer-list', getTransferList);
 router.get('/transfer/:transferId', getTransferDetail);
 router.post('/transfer/confirm-out', enforceStoreOwnership, confirmTransferOut);
 router.post('/transfer/confirm-in', enforceStoreOwnership, confirmTransferIn);
+router.post('/transfer/return', enforceStoreOwnership, returnTransfer);
 router.post('/transfer/revoke', enforceStoreOwnership, revokeTransfer);
 router.post('/transfer/reject', enforceStoreOwnership, rejectTransfer);
 router.get('/conversion-list', getConversionList);
