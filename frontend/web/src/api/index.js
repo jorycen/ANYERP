@@ -202,6 +202,7 @@ export default {
   getTransferDetail: (id, params) => api.get(`/inventory/transfer/${id}`, { params }),
   confirmTransferOut: (data) => api.post('/inventory/transfer/confirm-out', data),
   confirmTransferIn: (data) => api.post('/inventory/transfer/confirm-in', data),
+  returnTransfer: (data) => api.post('/inventory/transfer/return', data),
   revokeTransfer: (data) => api.post('/inventory/transfer/revoke', data),
   rejectTransfer: (data) => api.post('/inventory/transfer/reject', data),
   getConversionList: (params) => api.get('/inventory/conversion-list', { params }),

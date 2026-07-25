@@ -497,10 +497,11 @@
               <el-table-column prop="create_time" label="创建时间" width="160">
                 <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
               </el-table-column>
-              <el-table-column label="操作" width="120">
+              <el-table-column label="操作" width="220">
                 <template #default="{ row }">
                   <el-button link type="primary" @click="openTransferDetail(row)">查看</el-button>
                   <el-button v-if="row.status === 'out_confirmed'" link type="success" @click="handleConfirmTransferIn(row)">确认入库</el-button>
+                  <el-button v-if="canReturnTransfer(row)" link type="danger" @click="handleReturnTransfer(row)">退回</el-button>
                 </template>
               </el-table-column>
               </el-table>
@@ -518,6 +519,7 @@
                 <el-option label="已收货" value="received" />
                 <el-option label="已完成" value="completed" />
                 <el-option label="已取消" value="cancelled" />
+                <el-option label="已退回" value="returned" />
               </el-select>
               <el-date-picker v-model="transferHistoryQuery.startDate" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" clearable style="width: 150px" />
               <el-date-picker v-model="transferHistoryQuery.endDate" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" clearable style="width: 150px" />
@@ -3201,7 +3203,8 @@ const transferActionLabel = (action) => ({
   outbound_confirmed: '确认调拨出库',
   inbound_confirmed: '确认调拨入库',
   revoked: '撤销调拨申请',
-  rejected: '拒绝调拨申请'
+  rejected: '拒绝调拨申请',
+  returned: '退回调拨申请'
 }[action] || action || '操作')
 
 const isTransferRequestOpen = (row) => ['pending', 'requested', 'applied', 'shipping'].includes(String(row?.status || '').toLowerCase())
@@ -3220,6 +3223,8 @@ const canRejectTransfer = (row) => {
   if (!isTransferRequestOpen(row)) return false
   return hasRole(['admin']) || String(getStoreId()) === String(row.from_store_id || '')
 }
+
+const canReturnTransfer = (row) => ['out_confirmed', 'shipping_out', 'in_transit'].includes(String(row?.status || '').toLowerCase())
 
 const openTransferDetail = async (row, { trace = false } = {}) => {
   try {
@@ -3513,6 +3518,30 @@ const handleConfirmTransferIn = async (row) => {
       const msg = err.response?.data?.message || err.message || '确认入库失败'
       ElMessage.error(msg)
     }
+  }
+}
+
+const handleReturnTransfer = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认退回调拨单 ${row.transfer_no} 吗？退回后申请将失效，商品恢复到原调出门店。`,
+      '退回调拨申请',
+      { confirmButtonText: '确认退回', cancelButtonText: '取消', type: 'warning' }
+    )
+    const res = await api.returnTransfer({
+      transferId: row.transfer_id,
+      reason: '管理后台运输中待收货退回'
+    })
+    if (res.code === 0) {
+      ElMessage.success('调拨申请已退回，库存已恢复')
+      await loadTransferLists()
+      loadSummary()
+      loadSnData()
+    } else {
+      ElMessage.error(res.message || '退回调拨申请失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err.response?.data?.message || err.message || '退回调拨申请失败')
   }
 }
 
@@ -3985,12 +4014,12 @@ const getConversionLineRoleText = (role) => {
 }
 
 const getTransferStatusType = (status) => {
-  const types = { pending: 'warning', shipping: 'info', out_confirmed: 'info', received: 'success', completed: 'success', cancelled: 'danger', canceled: 'danger', revoked: 'info', rejected: 'danger' }
+  const types = { pending: 'warning', shipping: 'info', out_confirmed: 'info', received: 'success', completed: 'success', cancelled: 'danger', canceled: 'danger', revoked: 'info', rejected: 'danger', returned: 'danger' }
   return types[status] || 'info'
 }
 
 const getTransferStatusText = (status) => {
-  const texts = { pending: '待出库门店确认', requested: '待出库门店确认', applied: '待出库门店确认', shipping: '待出库门店确认', out_confirmed: '待入库', received: '已收货', completed: '已完成', cancelled: '已取消', canceled: '已取消', revoked: '已撤销', rejected: '已拒绝' }
+  const texts = { pending: '待出库门店确认', requested: '待出库门店确认', applied: '待出库门店确认', shipping: '待出库门店确认', out_confirmed: '待入库', received: '已收货', completed: '已完成', cancelled: '已取消', canceled: '已取消', revoked: '已撤销', rejected: '已拒绝', returned: '已退回' }
   return texts[status] || status
 }
 
