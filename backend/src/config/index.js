@@ -77,6 +77,30 @@ module.exports = {
     expiresIn: '7d' // 7天过期
   },
 
+  cloudStorage: {
+    cloudbaseAuthAvailable: Boolean(
+      process.env.CLOUDBASE_APIKEY ||
+      (process.env.TENCENTCLOUD_SECRETID && process.env.TENCENTCLOUD_SECRETKEY) ||
+      process.env.TENCENTCLOUD_SESSIONTOKEN
+    ),
+    enabled: Boolean(
+      process.env.CLOUDBASE_APIKEY ||
+      (process.env.TENCENTCLOUD_SECRETID && process.env.TENCENTCLOUD_SECRETKEY) ||
+      (process.env.COS_SECRET_ID || process.env.TENCENT_COS_SECRET_ID || process.env.TCB_COS_SECRET_ID) &&
+      (process.env.COS_SECRET_KEY || process.env.TENCENT_COS_SECRET_KEY || process.env.TCB_COS_SECRET_KEY)
+    ),
+    envId: process.env.CLOUD_STORAGE_ENV_ID || 'cloud1-8glwjlnq4c74f7f1',
+    bucket: process.env.COS_BUCKET || process.env.TCB_COS_BUCKET || '636c-cloud1-8glwjlnq4c74f7f1-1410946266',
+    region: process.env.COS_REGION || process.env.TCB_COS_REGION || 'ap-shanghai',
+    secretId: process.env.COS_SECRET_ID || process.env.TENCENT_COS_SECRET_ID || process.env.TCB_COS_SECRET_ID || '',
+    secretKey: process.env.COS_SECRET_KEY || process.env.TENCENT_COS_SECRET_KEY || process.env.TCB_COS_SECRET_KEY || '',
+    expiresSeconds: parsePositiveInteger(process.env.COS_URL_EXPIRES_SECONDS, 900),
+    allowedPrefixes: String(process.env.COS_ALLOWED_PREFIXES || '')
+      .split(',')
+      .map(value => value.trim().replace(/^\/+|\/+$/g, ''))
+      .filter(Boolean)
+  },
+
   // 分页配置
   page: {
     defaultSize: 20,

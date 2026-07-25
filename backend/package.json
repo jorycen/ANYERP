@@ -11,8 +11,10 @@
     "db:clear": "node clear_data.js"
   },
   "dependencies": {
+    "@cloudbase/node-sdk": "^3.18.3",
     "@koa/multer": "^4.0.0",
     "bcryptjs": "^2.4.3",
+    "cos-nodejs-sdk-v5": "^2.15.4",
     "joi": "^17.12.0",
     "jsonwebtoken": "^9.0.2",
     "koa": "^2.15.0",
@@ -25,6 +27,7 @@
     "mysql2": "^3.9.0",
     "sequelize": "^6.37.0",
     "uuid": "^9.0.1",
+    "ws": "^8.21.1",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

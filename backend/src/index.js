@@ -18,6 +18,7 @@ const systemRouter = require('./modules/system/routes');
 const dictRouter = require('./modules/dict/routes');
 const ocrRouter = require('./modules/ocr/routes');
 const approvalRouter = require('./modules/approval/routes');
+const storageRouter = require('./modules/storage/routes');
 
 const { ensureDatabaseReady, markDatabaseUnhealthy } = require('./config/database');
 const { runMigrations } = require('./utils/dbMigration');
@@ -61,6 +62,7 @@ apiRouter.use('/system', systemRouter.routes());
 apiRouter.use('/dict', dictRouter.routes());
 apiRouter.use('/ocr', ocrRouter.routes());
 apiRouter.use('/approval', approvalRouter.routes());
+apiRouter.use('/storage', storageRouter.routes());
 
 app.use(apiRouter.routes());
 app.use(apiRouter.allowedMethods());
