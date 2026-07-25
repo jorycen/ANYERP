@@ -2879,6 +2879,12 @@ async function seedPermissionData() {
        VALUES (?, 'reports', '报表统计', NULL, 'menu', '/reports', 'DataAnalysis', 8, 1)`,
       { replacements: [uuid().replace(/-/g, '').substring(0, 32)] }
     );
+    await sequelize.query(
+      `INSERT IGNORE INTO T_MENU (MENU_ID, MENU_CODE, NAME, PARENT_ID, MENU_TYPE, PATH, ICON, SORT_ORDER, STATUS)
+       SELECT ?, 'sales_subsidy_photos', '国补照片', MENU_ID, 'menu', '/sales/subsidy-photos', NULL, 4, 1
+       FROM T_MENU WHERE MENU_CODE = 'sales' AND STATUS = 1`,
+      { replacements: [uuid().replace(/-/g, '').substring(0, 32)] }
+    );
     const [roleCount] = await sequelize.query(
       "SELECT COUNT(*) as cnt FROM T_ROLE",
       { type: sequelize.QueryTypes.SELECT }
@@ -2916,6 +2922,14 @@ async function seedPermissionData() {
         FROM T_ROLE r
         JOIN T_MENU m ON m.MENU_CODE = 'approval'
         WHERE r.STATUS = 1 AND m.STATUS = 1
+      `);
+      await sequelize.query(`
+        INSERT IGNORE INTO T_ROLE_MENU (ROLE_ID, MENU_ID)
+        SELECT r.ROLE_ID, m.MENU_ID
+        FROM T_ROLE r
+        JOIN T_MENU m ON m.MENU_CODE IN ('sales', 'sales_subsidy_photos')
+        WHERE r.ROLE_CODE IN ('boss', 'admin', 'finance', 'manager', 'store_manager')
+          AND r.STATUS = 1 AND m.STATUS = 1
       `);
       console.log('[DB Migration] 权限数据已存在, 跳过种子');
       return;
@@ -2969,11 +2983,18 @@ async function seedPermissionData() {
     const roleMenus = {
       boss:   ['home', 'sales', 'inventory', 'purchase', 'finance', 'products', 'stores', 'reports', 'system', 'approval'],
       admin:  ['home', 'sales', 'inventory', 'purchase', 'finance', 'products', 'stores', 'reports', 'system', 'approval'],
-      finance: ['home', 'finance', 'products', 'reports', 'approval'],
+      finance: ['home', 'sales', 'finance', 'products', 'reports', 'approval'],
       purchaser: ['home', 'purchase', 'products', 'reports', 'approval'],
       manager: ['home', 'sales', 'inventory', 'products', 'reports', 'stores', 'system', 'approval'],
       clerk:   ['home', 'sales', 'inventory', 'reports', 'approval']
     };
+
+    const subsidyPhotoMenuId = menuMap.sales_subsidy_photos;
+    if (subsidyPhotoMenuId) {
+      ['boss', 'admin', 'finance', 'manager', 'store_manager'].forEach(roleCode => {
+        if (roleMap[roleCode]) roleMenus[roleCode] = [...(roleMenus[roleCode] || []), 'sales_subsidy_photos'];
+      });
+    }
 
     for (const [roleCode, menuCodes] of Object.entries(roleMenus)) {
       const roleId = roleMap[roleCode];

@@ -125,6 +125,13 @@ export default {
 
   // Sales
   getSalesList: (params) => api.get('/sales/list', { params }),
+  getSubsidyPhotos: (params) => api.get('/sales/subsidy-photos', { params }),
+  replaceSubsidyPhotos: (orderId, data) => api.post(`/sales/subsidy-photos/${orderId}`, data, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  }),
+  getSubsidyPhotoFile: (orderId, photoId) => exportApi.get(`/sales/subsidy-photos/${orderId}/files/${encodeURIComponent(photoId)}`, {
+    responseType: 'blob'
+  }),
   createSales: (data) => api.post('/sales/create', data),
   saveSalesDraft: (data) => api.post('/sales/draft', data),
   updateSalesDraft: (id, data) => api.put(`/sales/draft/${id}`, data),

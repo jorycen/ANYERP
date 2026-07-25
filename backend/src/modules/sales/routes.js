@@ -2,6 +2,7 @@
  * 销售管理路由
  */
 const Router = require('koa-router');
+const multer = require('@koa/multer');
 const {
   list,
   listSalesReturnRequests,
@@ -29,11 +30,18 @@ const {
   getProductSns,
   recalculateSettlementCost,
   getGrossProfit,
-  updateSupplements
+  updateSupplements,
+  listSubsidyPhotos,
+  replaceSubsidyPhotos,
+  downloadSubsidyPhoto
 } = require('./controller');
-const { enforceStoreOwnership } = require('../../middleware/permission');
+const { enforceStoreOwnership, requireRole } = require('../../middleware/permission');
 
 const router = new Router();
+const subsidyPhotoUpload = multer({
+  limits: { files: 20, fileSize: 10 * 1024 * 1024 }
+});
+const subsidyPhotoRoles = requireRole('finance', 'manager', 'store_manager');
 
 function normalizeDepositId(ctx, next) {
   ctx.params.depositId = ctx.params.depositId
@@ -45,6 +53,9 @@ function normalizeDepositId(ctx, next) {
 }
 
 router.get('/list', list);
+router.get('/subsidy-photos', subsidyPhotoRoles, listSubsidyPhotos);
+router.get('/subsidy-photos/:orderId/files/:photoId', subsidyPhotoRoles, downloadSubsidyPhoto);
+router.post('/subsidy-photos/:orderId', subsidyPhotoRoles, subsidyPhotoUpload.array('files', 20), replaceSubsidyPhotos);
 router.get('/return-requests', listSalesReturnRequests);
 router.post('/return-requests', enforceStoreOwnership, requestSalesReturn);
 router.post('/return-requests/:returnId/review', reviewSalesReturn);

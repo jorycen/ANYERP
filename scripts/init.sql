@@ -1194,6 +1194,7 @@ INSERT INTO T_MENU (MENU_ID, MENU_CODE, NAME, PARENT_ID, MENU_TYPE, PATH, SORT_O
 ('M201', 'sales_order', '销售订单', 'M002', 'menu', '/sales/order', 1),
 ('M202', 'sales_return', '退货管理', 'M002', 'menu', '/sales/return', 2),
 ('M203', 'sales_stats', '销售统计', 'M002', 'menu', '/sales/stats', 3),
+('M204', 'sales_subsidy_photos', '国补照片', 'M002', 'menu', '/sales/subsidy-photos', 4),
 -- 库房管理子菜单
 ('M301', 'inventory_sn', '序列号管理', 'M003', 'menu', '/inventory/sn', 1),
 ('M302', 'inventory_transfer', '调拨管理', 'M003', 'menu', '/inventory/transfer', 2),
@@ -1223,7 +1224,7 @@ SELECT 'RL001', MENU_ID FROM T_MENU WHERE STATUS = 1;
 
 -- 给财务角色分配财务和销售相关菜单
 INSERT INTO T_ROLE_MENU (ROLE_ID, MENU_ID)
-SELECT 'RL002', MENU_ID FROM T_MENU WHERE MENU_CODE IN ('dashboard', 'sales', 'finance', 'M201', 'M202', 'M203', 'M501', 'M502', 'M503');
+SELECT 'RL002', MENU_ID FROM T_MENU WHERE MENU_CODE IN ('dashboard', 'sales', 'M204', 'finance', 'M201', 'M202', 'M203', 'M501', 'M502', 'M503');
 
 -- 给采购角色分配采购和库存菜单
 INSERT INTO T_ROLE_MENU (ROLE_ID, MENU_ID)
@@ -1231,7 +1232,7 @@ SELECT 'RL003', MENU_ID FROM T_MENU WHERE MENU_CODE IN ('dashboard', 'inventory'
 
 -- 给店长角色分配门店相关菜单
 INSERT INTO T_ROLE_MENU (ROLE_ID, MENU_ID)
-SELECT 'RL004', MENU_ID FROM T_MENU WHERE MENU_CODE IN ('dashboard', 'sales', 'inventory', 'finance', 'M201', 'M202', 'M203', 'M301', 'M302', 'M303', 'M304', 'M501', 'M502', 'M503');
+SELECT 'RL004', MENU_ID FROM T_MENU WHERE MENU_CODE IN ('dashboard', 'sales', 'inventory', 'finance', 'M201', 'M202', 'M203', 'M204', 'M301', 'M302', 'M303', 'M304', 'M501', 'M502', 'M503');
 
 -- 给店员角色分配基础菜单
 INSERT INTO T_ROLE_MENU (ROLE_ID, MENU_ID)

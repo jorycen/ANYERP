@@ -35,7 +35,9 @@ const {
   SnLog,
   sequelize
 } = require('../../models');
-const { Op } = require('sequelize');
+const fs = require('fs');
+const path = require('path');
+const { Op, literal } = require('sequelize');
 const { generateOrderNo, generateInboundNo, generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { normalizePnCode } = require('../../utils/productPn');
 const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
@@ -47,6 +49,10 @@ const {
   snapshotToResponse,
   calculateNationalSubsidyCustomerReceiptAmount
 } = require('./grossProfit');
+
+const SUBSIDY_PHOTO_UPLOAD_DIR = path.resolve(__dirname, '../../../uploads/national-subsidy-photos');
+const SUBSIDY_PHOTO_ALLOWED_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
+const SUBSIDY_PHOTO_MAX_SIZE = 10 * 1024 * 1024;
 
 function chinaDateBoundary(dateText, endOfDay = false) {
   if (!dateText) return null;
@@ -229,6 +235,207 @@ async function list(ctx) {
   });
 
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+function parseJsonValue(value, fallback = null) {
+  if (value === null || value === undefined || value === '') return fallback;
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); } catch (_) { return fallback; }
+}
+
+function normalizeSubsidyPhotos(value) {
+  const source = parseJsonValue(value, []);
+  if (!Array.isArray(source)) return [];
+  return source.map((item, index) => {
+    if (typeof item === 'string') {
+      return { id: `legacy-${index}`, name: `国补照片${index + 1}`, url: item, storage: 'external' };
+    }
+    if (!item || typeof item !== 'object') return null;
+    const url = String(item.url || item.path || '').trim();
+    if (!url && !item.storage_name && !item.storageName) return null;
+    return {
+      id: String(item.id || item.photoId || `legacy-${index}`),
+      name: String(item.name || item.originalName || `国补照片${index + 1}`),
+      url,
+      storage: item.storage || (item.storage_name || item.storageName ? 'local' : 'external'),
+      storageName: item.storage_name || item.storageName || '',
+      mimeType: item.mime_type || item.mimeType || '',
+      size: Number(item.size || 0) || 0,
+      uploadTime: item.upload_time || item.uploadTime || null
+    };
+  }).filter(Boolean);
+}
+
+function userCanViewSubsidyPhotos(user) {
+  return getUserRoles(user).some(role => ['boss', 'admin', 'finance', 'manager', 'store_manager'].includes(role));
+}
+
+function subsidyPhotoStoreWhere(user) {
+  const storeIds = Array.isArray(user?.accessibleStoreIds)
+    ? user.accessibleStoreIds.filter(Boolean)
+    : [];
+  if (storeIds.includes('*')) return {};
+  return storeIds.length ? { store_id: { [Op.in]: storeIds } } : { store_id: '__NO_ACCESS__' };
+}
+
+function subsidyPhotoResponse(order) {
+  const data = order.toJSON ? order.toJSON() : order;
+  const photos = normalizeSubsidyPhotos(data.subsidy_photos).map(photo => ({
+    ...photo,
+    isLocal: photo.storage === 'local',
+    accessUrl: photo.storage === 'local' && photo.id
+      ? `/api/v1/sales/subsidy-photos/${data.order_id}/files/${encodeURIComponent(photo.id)}`
+      : photo.url
+  }));
+  return {
+    orderId: data.order_id,
+    orderNo: data.order_no,
+    storeId: data.store_id,
+    storeName: data.Store?.name || '',
+    createTime: data.create_time,
+    subsidyPerson: data.subsidy_person || '',
+    subsidyPhone: data.customer_phone || '',
+    unionpayOrderNo: data.invoice_info || '',
+    photos
+  };
+}
+
+async function listSubsidyPhotos(ctx) {
+  if (!userCanViewSubsidyPhotos(ctx.state.user)) ctx.throw(403, '无权访问国补照片');
+  const {
+    startDate, endDate, subsidyPerson, subsidyPhone, unionpayOrderNo,
+    page = 1, pageSize = 20
+  } = ctx.query;
+  const where = {
+    ...subsidyPhotoStoreWhere(ctx.state.user),
+    is_deleted: 0,
+    [Op.and]: [literal('JSON_LENGTH(COALESCE(SUBSIDY_PHOTOS, JSON_ARRAY())) > 0')]
+  };
+  const dateRange = buildChinaDateRange(startDate, endDate);
+  if (dateRange) where.create_time = dateRange;
+  if (subsidyPerson) where.subsidy_person = { [Op.like]: `%${String(subsidyPerson).trim()}%` };
+  if (subsidyPhone) where.customer_phone = { [Op.like]: `%${String(subsidyPhone).trim()}%` };
+  if (unionpayOrderNo) where.invoice_info = { [Op.like]: `%${String(unionpayOrderNo).trim()}%` };
+
+  const currentPage = Math.max(Number(page) || 1, 1);
+  const currentPageSize = Math.min(Math.max(Number(pageSize) || 20, 1), 100);
+  const result = await Order.findAndCountAll({
+    where,
+    include: [{ model: Store, attributes: ['store_id', 'name'] }],
+    order: [['create_time', 'DESC'], ['order_id', 'DESC']],
+    offset: (currentPage - 1) * currentPageSize,
+    limit: currentPageSize,
+    distinct: true
+  });
+  ctx.body = formatPaginatedResult(result.rows.map(subsidyPhotoResponse), {
+    page: currentPage,
+    pageSize: currentPageSize,
+    count: result.count
+  });
+}
+
+function validateSubsidyPhotoFiles(files = []) {
+  if (!files.length) throw Object.assign(new Error('请至少上传一张国补照片'), { status: 400 });
+  for (const file of files) {
+    const extension = path.extname(file.originalname || '').toLowerCase();
+    if (!SUBSIDY_PHOTO_ALLOWED_EXTENSIONS.has(extension) || !String(file.mimetype || '').startsWith('image/')) {
+      throw Object.assign(new Error(`仅支持 JPG、PNG、WEBP 图片：${file.originalname || '未命名文件'}`), { status: 400 });
+    }
+    if (file.size > SUBSIDY_PHOTO_MAX_SIZE) {
+      throw Object.assign(new Error(`单张照片不能超过10MB：${file.originalname || '未命名文件'}`), { status: 400 });
+    }
+  }
+}
+
+function safeSubsidyPhotoPath(storageName) {
+  const filePath = path.resolve(SUBSIDY_PHOTO_UPLOAD_DIR, String(storageName || ''));
+  return filePath.startsWith(`${SUBSIDY_PHOTO_UPLOAD_DIR}${path.sep}`) ? filePath : null;
+}
+
+async function getSubsidyPhotoOrder(orderId, user) {
+  return Order.findOne({
+    where: { order_id: orderId, ...subsidyPhotoStoreWhere(user), is_deleted: 0 },
+    include: [{ model: Store, attributes: ['store_id', 'name'] }]
+  });
+}
+
+async function replaceSubsidyPhotos(ctx) {
+  if (!userCanViewSubsidyPhotos(ctx.state.user)) ctx.throw(403, '无权修改国补照片');
+  const order = await getSubsidyPhotoOrder(ctx.params.orderId, ctx.state.user);
+  if (!order) ctx.throw(404, '订单不存在或无权操作');
+  const files = ctx.files || [];
+  validateSubsidyPhotoFiles(files);
+
+  await fs.promises.mkdir(SUBSIDY_PHOTO_UPLOAD_DIR, { recursive: true });
+  const stored = [];
+  try {
+    for (const file of files) {
+      const photoId = generateUUID();
+      const extension = path.extname(file.originalname || '').toLowerCase();
+      const storageName = `${photoId}${extension}`;
+      const filePath = safeSubsidyPhotoPath(storageName);
+      await fs.promises.writeFile(filePath, file.buffer);
+      stored.push({
+        id: photoId,
+        name: path.basename(file.originalname || '国补照片').slice(0, 255),
+        storage: 'local',
+        storage_name: storageName,
+        mime_type: file.mimetype || 'application/octet-stream',
+        size: file.size || 0,
+        upload_time: new Date().toISOString()
+      });
+    }
+
+    const previous = normalizeSubsidyPhotos(order.subsidy_photos);
+    await sequelize.transaction(async transaction => {
+      await order.update({ subsidy_photos: stored, update_time: new Date() }, { transaction });
+      await recordBusinessAction({
+        businessType: 'sales_order',
+        businessId: order.order_id,
+        businessNo: order.order_no,
+        action: 'subsidy_photos_updated',
+        user: ctx.state.user,
+        detail: { previousCount: previous.length, currentCount: stored.length, mode: 'replace' },
+        transaction
+      });
+    });
+
+    await Promise.all(previous
+      .filter(photo => photo.storage === 'local' && photo.storageName)
+      .map(photo => {
+        const filePath = safeSubsidyPhotoPath(photo.storageName);
+        return filePath ? fs.promises.unlink(filePath).catch(() => {}) : Promise.resolve();
+      }));
+  } catch (error) {
+    await Promise.all(stored.map(photo => {
+      const filePath = safeSubsidyPhotoPath(photo.storage_name);
+      return filePath ? fs.promises.unlink(filePath).catch(() => {}) : Promise.resolve();
+    }));
+    throw error;
+  }
+
+  ctx.body = { code: 0, message: '国补照片已更新', data: subsidyPhotoResponse(order) };
+}
+
+async function downloadSubsidyPhoto(ctx) {
+  if (!userCanViewSubsidyPhotos(ctx.state.user)) ctx.throw(403, '无权下载国补照片');
+  const order = await getSubsidyPhotoOrder(ctx.params.orderId, ctx.state.user);
+  if (!order) ctx.throw(404, '订单不存在或无权访问');
+  const photo = normalizeSubsidyPhotos(order.subsidy_photos).find(item => item.id === String(ctx.params.photoId));
+  if (!photo || photo.storage !== 'local' || !photo.storageName) ctx.throw(404, '照片不存在');
+  const filePath = safeSubsidyPhotoPath(photo.storageName);
+  if (!filePath || !fs.existsSync(filePath)) ctx.throw(404, '照片文件不存在');
+  await recordBusinessAction({
+    businessType: 'sales_order',
+    businessId: order.order_id,
+    businessNo: order.order_no,
+    action: 'subsidy_photo_downloaded',
+    user: ctx.state.user,
+    detail: { photoId: photo.id, photoName: photo.name }
+  });
+  ctx.type = photo.mimeType || 'application/octet-stream';
+  ctx.attachment(photo.name || '国补照片');
+  ctx.body = fs.createReadStream(filePath);
 }
 
 /**
@@ -2677,6 +2884,9 @@ module.exports = {
   recalculateSettlementCost,
   getGrossProfit,
   updateSupplements,
+  listSubsidyPhotos,
+  replaceSubsidyPhotos,
+  downloadSubsidyPhoto,
   _test: {
     normalizeOrderExtendedFields,
     normalizeAuxiliarySalesList,
@@ -2685,7 +2895,10 @@ module.exports = {
     redeemReservedDepositsForOrder,
     releaseDepositRedemptionForOrder,
     normalizePnCode,
-    validateAndDeductInventoryForArchive
+    validateAndDeductInventoryForArchive,
+    normalizeSubsidyPhotos,
+    userCanViewSubsidyPhotos,
+    subsidyPhotoStoreWhere
   }
 };
 

@@ -90,6 +90,7 @@ const activeMenu = computed(() => {
 const pageTitles = {
   '/': '首页',
   '/sales': '销售管理',
+  '/sales/subsidy-photos': '国补照片',
   '/inventory': '库存管理',
   '/purchase': '采购管理',
   '/finance': '财务管理',
@@ -103,7 +104,7 @@ const pageTitles = {
 
 const pageTitle = computed(() => route.path === '/approval' ? '审批中心' : (pageTitles[route.path] || ''))
 
-const validPaths = ['/', '/sales', '/inventory', '/purchase', '/finance', '/finance/payment', '/finance/settlement', '/payment-management', '/products', '/stores', '/reports', '/system', '/approval']
+const validPaths = ['/', '/sales', '/sales/subsidy-photos', '/inventory', '/purchase', '/finance', '/finance/payment', '/finance/settlement', '/payment-management', '/products', '/stores', '/reports', '/system', '/approval']
 
 onMounted(() => {
   const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')

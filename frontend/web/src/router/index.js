@@ -34,6 +34,12 @@ const routes = [
         component: () => import('../views/Sales.vue')
       },
       {
+        path: 'sales/subsidy-photos',
+        name: 'SubsidyPhotos',
+        component: () => import('../views/SubsidyPhotos.vue'),
+        meta: { roles: ['finance', 'manager', 'store_manager', 'admin', 'boss'] }
+      },
+      {
         path: 'inventory',
         name: 'Inventory',
         component: () => import('../views/Inventory.vue')
