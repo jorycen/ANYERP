@@ -527,6 +527,10 @@ function productApplicationPayload(body, finalName, parsedAttrs) {
   if (pnCode && !submittedBarcodes.some(item => String(item.code) === pnCode)) {
     submittedBarcodes.unshift({ type: 'manufacturer', code: pnCode });
   }
+  // 标签照片随商品申请保存在 payload_json 中，审批列表接口会原样返回该字段。
+  // 兼容小程序历史版本使用的 Id/Url 及蛇形命名，避免照片在提交申请时被丢弃。
+  const labelPhotoIds = body.labelPhotoIds || body.label_photo_ids || body.labelPhotoUrls || body.label_photo_urls || [];
+  const labelPhotoUrls = body.labelPhotoUrls || body.label_photo_urls || labelPhotoIds;
   return {
     name: finalName,
     categoryId: body.categoryId || null,
@@ -539,6 +543,9 @@ function productApplicationPayload(body, finalName, parsedAttrs) {
     attributes: parsedAttrs,
     status: 1,
     manufacturerCode: body.manufacturerCode || body.manufacturer_code || '',
+    labelPhotoIds,
+    labelPhotoUrls,
+    labelPhotoUrl: body.labelPhotoUrl || body.label_photo_url || (Array.isArray(labelPhotoIds) ? labelPhotoIds[0] || '' : ''),
     isFocusProduct: body.isFocusProduct === true || body.is_focus_product === true || Number(body.isFocusProduct ?? body.is_focus_product) === 1
   };
 }
