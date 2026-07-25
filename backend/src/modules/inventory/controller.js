@@ -2595,6 +2595,11 @@ async function getTransferList(ctx) {
       };
     });
 
+    console.info('[PhotoDebug][inventory.transfer-list]', {
+      count: list.length,
+      transfersWithShippingPhotos: list.filter(item => Array.isArray(item.shipping_photos) && item.shipping_photos.length > 0).length,
+      transfersWithReceivingPhotos: list.filter(item => Array.isArray(item.receiving_photos) && item.receiving_photos.length > 0).length
+    });
     ctx.body = formatPaginatedResult(list, { page, pageSize, count });
   } catch (err) {
     console.error('getTransferList error:', err);
@@ -2659,6 +2664,11 @@ async function getTransferDetail(ctx) {
   }));
   data.from_store_name = data.FromStore?.name || '';
   data.to_store_name = data.ToStore?.name || '';
+  console.info('[PhotoDebug][inventory.transfer-detail]', {
+    transferId: data.transfer_id,
+    shippingPhotos: Array.isArray(data.shipping_photos) ? data.shipping_photos.length : 0,
+    receivingPhotos: Array.isArray(data.receiving_photos) ? data.receiving_photos.length : 0
+  });
   data.action_logs = await listBusinessActions('inventory_transfer', transfer.transfer_id);
   ctx.body = { code: 0, data };
 }

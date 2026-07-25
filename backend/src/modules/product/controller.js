@@ -717,9 +717,34 @@ async function getProductApplicationList(ctx) {
     limit,
     offset
   });
+  const applications = rows.map(row => row.toJSON());
+  const photoCount = applications.reduce((count, application) => {
+    let payload = application.payload_json;
+    if (typeof payload === 'string') {
+      try { payload = JSON.parse(payload); } catch (_) { payload = {}; }
+    }
+    const photos = payload && (
+      payload.labelPhotoIds || payload.labelPhotoUrls || payload.label_photo_ids || payload.label_photo_urls
+    );
+    if (Array.isArray(photos)) return count + photos.filter(Boolean).length;
+    return count + (photos ? 1 : 0);
+  }, 0);
+  console.info('[PhotoDebug][product.application-list]', {
+    count: applications.length,
+    applicationsWithPhotos: applications.filter(application => {
+      let payload = application.payload_json;
+      if (typeof payload === 'string') {
+        try { payload = JSON.parse(payload); } catch (_) { payload = {}; }
+      }
+      return Boolean(payload && (
+        payload.labelPhotoIds || payload.labelPhotoUrls || payload.label_photo_ids || payload.label_photo_urls
+      ));
+    }).length,
+    photoCount
+  });
   ctx.body = {
     code: 0,
-    data: formatPaginatedResult(rows.map(row => row.toJSON()), { page, pageSize, count })
+    data: formatPaginatedResult(applications, { page, pageSize, count })
   };
 }
 
