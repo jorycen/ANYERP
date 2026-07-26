@@ -234,25 +234,7 @@ async function list(ctx) {
     ...paginate({}, { page, pageSize })
   });
 
-  const debugRows = rows.map(row => row.toJSON());
-  console.info('[PhotoDebug][sales.list]', {
-    count: debugRows.length,
-    orderIds: debugRows.slice(0, 5).map(row => row.order_id),
-    ordersWithSubsidyPhotos: debugRows.filter(row => normalizePhotoDebugValue(row.subsidy_photos).length > 0).length,
-    ordersWithProductPhotos: debugRows.filter(row => normalizePhotoDebugValue(row.product_photo_urls).length > 0).length,
-    ordersWithEducationPhoto: debugRows.filter(row => Boolean(row.education_subsidy_photo_url)).length,
-    ordersWithPersonalPhoto: debugRows.filter(row => normalizePhotoDebugValue(row.personal_info_photo).length > 0).length
-  });
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
-}
-
-function normalizePhotoDebugValue(value) {
-  if (value === null || value === undefined || value === '') return [];
-  if (typeof value === 'string') {
-    try { return normalizePhotoDebugValue(JSON.parse(value)); } catch (_) { return [value]; }
-  }
-  if (Array.isArray(value)) return value.filter(Boolean);
-  return [value];
 }
 
 function parseJsonValue(value, fallback = null) {
@@ -1063,14 +1045,6 @@ async function detail(ctx) {
   }
 
   const result = order.toJSON();
-  console.info('[PhotoDebug][sales.detail]', {
-    orderId: result.order_id,
-    orderNo: result.order_no,
-    subsidyPhotos: normalizePhotoDebugValue(result.subsidy_photos).length,
-    productPhotos: normalizePhotoDebugValue(result.product_photo_urls).length,
-    educationPhoto: Boolean(result.education_subsidy_photo_url),
-    personalPhoto: normalizePhotoDebugValue(result.personal_info_photo).length
-  });
   const items = result.OrderItems || [];
   const snCodes = items.map(item => item.sn_code).filter(Boolean);
   if (snCodes.length > 0) {
