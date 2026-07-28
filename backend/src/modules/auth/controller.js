@@ -174,8 +174,16 @@ async function changePassword(ctx) {
   const user = ctx.state.user;
   const { oldPassword, newPassword } = ctx.request.body;
 
-  if (!oldPassword || !newPassword) {
+  if (typeof oldPassword !== 'string' || typeof newPassword !== 'string' || !oldPassword || !newPassword) {
     ctx.throw(400, '请输入旧密码和新密码');
+  }
+
+  if (newPassword.length < 6) {
+    ctx.throw(400, '新密码至少 6 位');
+  }
+
+  if (oldPassword === newPassword) {
+    ctx.throw(400, '新密码不能与旧密码相同');
   }
 
   const staff = await Staff.findByPk(user.staffId);

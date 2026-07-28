@@ -59,13 +59,63 @@
         <router-view />
       </el-main>
     </el-container>
+
+    <el-dialog
+      v-model="passwordDialogVisible"
+      title="修改密码"
+      width="420px"
+      destroy-on-close
+      @closed="resetPasswordForm"
+    >
+      <el-form
+        ref="passwordFormRef"
+        :model="passwordForm"
+        :rules="passwordRules"
+        label-width="90px"
+        @submit.prevent="submitPasswordChange"
+      >
+        <el-form-item label="旧密码" prop="oldPassword">
+          <el-input
+            v-model="passwordForm.oldPassword"
+            type="text"
+            autocomplete="current-password"
+            placeholder="请输入旧密码"
+            @keyup.enter="submitPasswordChange"
+          />
+        </el-form-item>
+        <el-form-item label="新密码" prop="newPassword">
+          <el-input
+            v-model="passwordForm.newPassword"
+            type="text"
+            autocomplete="new-password"
+            placeholder="请输入至少 6 位的新密码"
+          />
+        </el-form-item>
+        <el-form-item label="确认密码" prop="confirmPassword">
+          <el-input
+            v-model="passwordForm.confirmPassword"
+            type="text"
+            autocomplete="new-password"
+            placeholder="请再次输入新密码"
+            @keyup.enter="submitPasswordChange"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="passwordDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="passwordSubmitting" @click="submitPasswordChange">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
   </el-container>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import api from '../api'
 import {
   House, Sell, Box, ShoppingCart, Money, Goods,
   Shop, DataAnalysis, Setting, User, Checked
@@ -77,6 +127,29 @@ const route = useRoute()
 const userName = ref('')
 const roleName = ref('')
 const menuTree = ref([])
+const passwordDialogVisible = ref(false)
+const passwordSubmitting = ref(false)
+const passwordFormRef = ref(null)
+const passwordForm = reactive({
+  oldPassword: '',
+  newPassword: '',
+  confirmPassword: ''
+})
+
+const validateConfirmPassword = (rule, value, callback) => {
+  if (!value) return callback(new Error('请再次输入新密码'))
+  if (value !== passwordForm.newPassword) return callback(new Error('两次输入的新密码不一致'))
+  callback()
+}
+
+const passwordRules = {
+  oldPassword: [{ required: true, message: '请输入旧密码', trigger: 'blur' }],
+  newPassword: [
+    { required: true, message: '请输入新密码', trigger: 'blur' },
+    { min: 6, message: '新密码至少 6 位', trigger: 'blur' }
+  ],
+  confirmPassword: [{ validator: validateConfirmPassword, trigger: 'blur' }]
+}
 
 const iconMap = {
   House, Sell, Box, ShoppingCart, Money, Goods, Shop, DataAnalysis, Setting, User, Checked
@@ -170,7 +243,43 @@ const handleCommand = async (command) => {
       router.push('/login')
     } catch {}
   } else if (command === 'changePassword') {
-    ElMessage.info('修改密码功能开发中')
+    passwordDialogVisible.value = true
+  }
+}
+
+function resetPasswordForm() {
+  passwordFormRef.value?.resetFields()
+  passwordForm.oldPassword = ''
+  passwordForm.newPassword = ''
+  passwordForm.confirmPassword = ''
+}
+
+async function submitPasswordChange() {
+  if (passwordSubmitting.value) return
+
+  try {
+    await passwordFormRef.value.validate()
+  } catch {
+    return
+  }
+
+  if (passwordForm.oldPassword === passwordForm.newPassword) {
+    ElMessage.warning('新密码不能与旧密码相同')
+    return
+  }
+
+  passwordSubmitting.value = true
+  try {
+    const res = await api.changePassword({
+      oldPassword: passwordForm.oldPassword,
+      newPassword: passwordForm.newPassword
+    })
+    ElMessage.success(res.message || '密码修改成功')
+    passwordDialogVisible.value = false
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || err.message || '密码修改失败')
+  } finally {
+    passwordSubmitting.value = false
   }
 }
 </script>
