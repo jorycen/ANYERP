@@ -774,6 +774,16 @@ async function create(ctx) {
     item.sn_id = null;
   }
 
+  if (!isDraft) {
+    const missingSnItem = normalizedItems.find(item => {
+      const product = productMap.get(item.product_id);
+      return Number(product?.need_sn || 0) === 1 && !String(item.sn_code || '').trim();
+    });
+    if (missingSnItem) {
+      ctx.throw(400, `商品 ${missingSnItem.product_name || missingSnItem.product_id || ''} 需要SN管理，请填写SN码`);
+    }
+  }
+
   const snItems = normalizedItems.filter(item => item.sn_id || item.sn_code);
   if (Number(nationalSubsidy) > 0 && !normalizedItems.some(item => item.use_gov_subsidy)) {
     // 创建阶段不因 SN 缺失或尚不存在而阻断；仅在唯一明确的 SN 行上预标记权益。
@@ -1020,7 +1030,7 @@ async function detail(ctx) {
   const order = await Order.findByPk(orderId, {
     include: [
       { model: Store },
-      { model: OrderItem },
+      { model: OrderItem, include: [{ model: Product, attributes: ['product_id', 'need_sn'] }] },
       { model: OrderPayment, include: [{ model: DepositOrder }] },
       { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false },
       { model: DepositRedemption, as: 'depositRedemptions' },

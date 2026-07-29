@@ -178,26 +178,17 @@
               </el-table-column>
               <el-table-column label="SN码" width="200">
                 <template #default="{ row, $index }">
-                  <template v-if="row.needSn">
-                    <el-select
-                      v-model="row.snCode"
-                      placeholder="选择SN"
-                      size="small"
-                      clearable
-                      filterable
-                      style="width: 100%"
-                      :loading="row.snLoading"
-                      @change="(val) => onSnChange(val, $index)"
-                    >
-                      <el-option
-                        v-for="sn in (row.snList || [])"
-                        :key="sn.sn_id"
-                        :label="`${sn.sn_code} [${sn.sales_resource_label || '普通现货'}]${sn.is_special_price ? ` [特价 ¥${sn.special_price}]` : ''}`"
-                        :value="sn.sn_code"
-                      />
-                    </el-select>
-                  </template>
-                  <el-input v-else v-model="row.snCode" placeholder="无SN" size="small" disabled />
+                  <el-input
+                    v-if="row.needSn"
+                    v-model="row.snCode"
+                    placeholder="请输入SN码"
+                    size="small"
+                    clearable
+                    :disabled="row.snLoading"
+                    @change="(val) => onSnChange(val, $index)"
+                    @blur="() => onSnChange(row.snCode, $index)"
+                  />
+                  <span v-else class="muted">无需SN</span>
                 </template>
               </el-table-column>
               <el-table-column label="货品销售标签 / 可用权益" min-width="250">
@@ -1008,12 +999,12 @@ const hydrateDraftForm = (order) => {
     salePrice: Number(item.sale_price || 0),
     quantity: Number(item.quantity || 1),
     subtotal: Number(item.subtotal || 0),
-    needSn: Boolean(item.sn_code || item.sn_id),
+    needSn: isSnManaged(item.need_sn ?? item.needSn ?? item.Product?.need_sn) || Boolean(item.sn_code || item.sn_id),
     standardPrice: Number(item.sale_price || 0),
     minSalePrice: 0,
     belowMinPrice: false,
     searchLoading: false,
-    searchOptions: item.product_id ? [{ product_id: item.product_id, name: item.product_name }] : [],
+    searchOptions: item.product_id ? [{ product_id: item.product_id, name: item.product_name, need_sn: item.need_sn ?? item.Product?.need_sn }] : [],
     pnList: item.pn_code ? [item.pn_code] : [],
     snList: item.sn_code ? [{ sn_code: item.sn_code, sn_id: item.sn_id || '' }] : [],
     pnLoading: false,
@@ -1172,6 +1163,8 @@ const normalizePnCodes = (value) => {
   return String(value).split(new RegExp('[,\\s\\uFF0C\\u3001]+')).map(v => v.trim()).filter(Boolean)
 }
 
+const isSnManaged = (value) => value === true || value === 1 || value === '1' || String(value).toLowerCase() === 'true'
+
 const getMatchedPnCodes = (product) => {
   const codes = [
     ...normalizePnCodes(product?.pn_list),
@@ -1191,7 +1184,7 @@ const onProductChange = async (productId, index) => {
     const matchedPns = getMatchedPnCodes(found)
     orderForm.items[index].productName = found.name
     orderForm.items[index].salePrice = parseFloat(found.standard_price) || 0
-    orderForm.items[index].needSn = found.need_sn === 1
+    orderForm.items[index].needSn = isSnManaged(found.need_sn)
     orderForm.items[index].standardPrice = parseFloat(found.standard_price) || 0
     orderForm.items[index].minSalePrice = parseFloat(found.min_sale_price) || 0
     orderForm.items[index].belowMinPrice = false
@@ -1222,11 +1215,11 @@ const onProductChange = async (productId, index) => {
             orderForm.items[index].pnCode = mergedPns[0]
           }
           console.log('[onProductChange] set pnList:', mergedPns, 'default pnCode:', orderForm.items[index].pnCode)
-          if (found.need_sn === 1) {
+          if (isSnManaged(found.need_sn)) {
             console.log('[onProductChange] product needs SN, loading SN list...')
             await loadSnList(index)
           }
-        } else if (found.need_sn === 1 && orderForm.items[index].pnCode) {
+        } else if (isSnManaged(found.need_sn) && orderForm.items[index].pnCode) {
           await loadSnList(index)
         }
       } catch (e) { console.error('[onProductChange] error loading PNs:', e) }
@@ -1286,7 +1279,9 @@ const onPnChange = async (index) => {
 
 const onSnChange = (value, index) => {
   const item = orderForm.items[index]
-  const sn = (item.snList || []).find(row => row.sn_code === value)
+  const snCode = String(value || '').trim()
+  item.snCode = snCode
+  const sn = (item.snList || []).find(row => row.sn_code === snCode)
   item.snId = sn?.sn_id || ''
   item.supplierId = sn?.supplier_id || ''
   item.supplierName = sn?.supplier_name || ''
