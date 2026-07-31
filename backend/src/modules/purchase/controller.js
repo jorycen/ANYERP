@@ -1,13 +1,43 @@
 /**
  * 采购管理控制器
  */
-const { sequelize, PurchaseRequest, PurchaseRequestItem, PurchaseAdjustment, PurchaseAdjustmentItem, Supplier, SupplierPaymentAccount, Store, Location, Product, Inbound, InboundItem, Payable, Expense, SupplierRebate, ResourceCategory, GoodsType } = require('../../models');
+const { sequelize, PurchaseRequest, PurchaseRequestItem, PurchaseAdjustment, PurchaseAdjustmentItem, Supplier, SupplierPaymentAccount, Store, Location, Product, Inbound, InboundItem, Payable, Expense, Settlement, SupplierRebate, ResourceCategory, GoodsType } = require('../../models');
 const { Op } = require('sequelize');
 const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { recordRebateDeduction, recordSupplierRebateAccountTransaction, _getRebateBalance } = require('../finance/rebateController');
-const { createPurchaseReimbursement } = require('../finance/expenseService');
+const { createPurchaseReimbursement, createSettlementReversal, cancelExpenseRecord } = require('../finance/expenseService');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { canViewSnTraceReference } = require('../../utils/snTracePermission');
+const { getUserRoles } = require('../../middleware/permission');
+
+function normalizeFileList(...values) {
+  const result = [];
+  const add = value => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      value.forEach(add);
+      return;
+    }
+    if (typeof value === 'object') {
+      add(value.fileID || value.fileId || value.file_id || value.url || value.fileUrl || value.file_url || value.cloudPath || value.cloud_path);
+      return;
+    }
+    const text = String(value).trim();
+    if (!text) return;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed !== value) {
+        add(parsed);
+        return;
+      }
+    } catch (_) {
+      // 普通字符串按文件 ID 或 URL 处理。
+    }
+    if (!result.includes(text)) result.push(text);
+  };
+  values.forEach(add);
+  return result;
+}
 
 function toMoney(value) {
   const amount = Number(value);
@@ -312,7 +342,7 @@ function buildAdjustmentRows(request, inbounds, stores) {
  * 采购申请列表
  */
 async function getRequestList(ctx) {
-  const { status, operatorStaffId, submitter, keyword, supplierId, page = 1, pageSize = 20 } = ctx.query;
+  const { status, scope, operatorStaffId, submitter, keyword, supplierId, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
 
   const where = { status: { [Op.ne]: 'deleted' } };
@@ -328,6 +358,20 @@ async function getRequestList(ctx) {
   where.store_id = storeIds;
 
   if (status) where.status = status;
+  if (scope === 'my') {
+    const staffId = user.staffId || user.id;
+    const identities = [user.name, user.phone, staffId && String(staffId)].filter(Boolean);
+    if (staffId) {
+      where[Op.and] = [{
+        [Op.or]: [
+          { applicant_staff_id: staffId },
+          ...(identities.length ? [{ applicant_staff_id: null, apply_user: { [Op.in]: identities } }] : [])
+        ]
+      }];
+    } else if (identities.length) {
+      where.apply_user = { [Op.in]: identities };
+    }
+  }
   if (operatorStaffId) where.operator_staff_id = operatorStaffId;
   if (submitter) where.apply_user = { [Op.like]: `%${String(submitter).trim()}%` };
   if (supplierId) where.supplier_id = supplierId;
@@ -363,7 +407,8 @@ async function getRequestList(ctx) {
     include: [
       { model: Store },
       { model: Supplier },
-      { model: PurchaseRequestItem, as: 'items' }
+      { model: PurchaseRequestItem, as: 'items' },
+      { model: Inbound, attributes: ['inbound_id', 'status'], separate: true }
     ],
     order: buildPendingFirstOrder(sequelize, {
       statusColumn: 'PurchaseRequest.status',
@@ -388,6 +433,12 @@ async function getRequestList(ctx) {
     } else {
       result.items_summary = '';
     }
+    const inboundRows = result.Inbounds || [];
+    result.inbound_status = inboundRows.some(item => item.status === 'completed')
+      ? 'completed'
+      : (inboundRows[0]?.status || '');
+    result.has_completed_inbound = inboundRows.some(item => item.status === 'completed');
+    result.can_revoke = ['pending', 'approved', 'purchased'].includes(result.status) && !result.has_completed_inbound;
     
     return result;
   });
@@ -467,8 +518,34 @@ async function getRequestDetail(ctx) {
  */
 async function createRequest(ctx) {
   const user = ctx.state.user;
-  const { supplierId, remark, items, storeId, invoiceType, paymentMethod, goodsTypeId, productType, rebateDeduction, saveDraft = false } = ctx.request.body;
+  const {
+    supplierId,
+    remark,
+    items,
+    storeId,
+    invoiceType,
+    paymentMethod,
+    goodsTypeId,
+    productType,
+    rebateDeduction,
+    supplierChatScreenshotIds,
+    supplierChatScreenshotUrls,
+    supplierChatScreenshotUrl,
+    supplier_chat_screenshot_ids,
+    supplier_chat_screenshot_urls,
+    supplier_chat_screenshot_url,
+    saveDraft = false
+  } = ctx.request.body;
   const isDraft = Boolean(saveDraft);
+
+  const screenshotIds = normalizeFileList(supplierChatScreenshotIds, supplier_chat_screenshot_ids);
+  const screenshotUrls = normalizeFileList(
+    supplierChatScreenshotUrls,
+    supplierChatScreenshotUrl,
+    supplier_chat_screenshot_urls,
+    supplier_chat_screenshot_url
+  );
+  const screenshotDisplayValues = screenshotUrls.length ? screenshotUrls : screenshotIds;
 
   if (!items || items.length === 0) {
     ctx.throw(400, '请添加商品明细');
@@ -593,12 +670,15 @@ async function createRequest(ctx) {
     product_type: canonicalProductType,
     invoice_type: invoiceType || '',
     payment_method: normalizedPaymentMethod,
+    supplier_chat_screenshot_ids: screenshotIds.length ? JSON.stringify(screenshotIds) : null,
+    supplier_chat_screenshot_urls: screenshotDisplayValues.length ? JSON.stringify(screenshotDisplayValues) : null,
     reason: remark || '',
     total_amount: totalAmount,
     rebate_deduction: deduction,
     actual_total: actualTotal,
     status: isDraft ? 'draft' : 'pending',
     apply_user: submitterName,
+    applicant_staff_id: user.staffId || user.id || null,
     submit_user: isDraft ? null : submitterName,
     submit_time: isDraft ? null : now,
     create_time: now,
@@ -1323,62 +1403,70 @@ async function createPurchaseAdjustment(ctx) {
  */
 async function revokeRequest(ctx) {
   const { requestId } = ctx.params;
-  const { comment } = ctx.request.body;
+  const { comment = '' } = ctx.request.body || {};
   const user = ctx.state.user;
+  const operatorName = user.name || user.phone || String(user.staffId || user.id || '');
 
   const request = await PurchaseRequest.findOne({
     where: { request_id: requestId },
     include: [{ model: Inbound, include: [{ model: InboundItem, as: 'items' }] }]
   });
-
-  if (!request) {
-    ctx.throw(404, '采购申请不存在');
-  }
+  if (!request) ctx.throw(404, '采购申请不存在');
   assertStoreVisible(ctx, request.store_id);
 
-  if (request.status !== 'approved') {
-    ctx.throw(400, '只有已通过的采购申请才能撤销');
-  }
+  const roles = getUserRoles(user);
+  const isPrivileged = roles.some(role => ['purchaser', 'finance', 'admin', 'boss'].includes(role));
+  const currentStaffId = user.staffId || user.id;
+  const isApplicant = request.applicant_staff_id && currentStaffId
+    ? Number(request.applicant_staff_id) === Number(currentStaffId)
+    : [user.name, user.phone, String(currentStaffId || '')].filter(Boolean).includes(request.apply_user);
+  if (!isApplicant && !isPrivileged) ctx.throw(403, '只有申请人可以撤销该采购申请');
 
-  if (request.Inbounds && request.Inbounds.length > 0) {
-    const completedInbounds = request.Inbounds.filter(i => i.status === 'completed');
-    if (completedInbounds.length > 0) {
-      ctx.throw(400, '该采购申请已有商品入库，无法撤销，请先办理退库');
-    }
+  if (!['pending', 'approved', 'purchased'].includes(request.status)) {
+    ctx.throw(400, '当前采购申请状态不允许撤销');
+  }
+  const inbounds = request.Inbounds || [];
+  if (inbounds.some(inbound => inbound.status === 'completed')) {
+    ctx.throw(400, '该采购申请已有商品入库，无法撤销，请先办理退库');
   }
 
   const transaction = await sequelize.transaction();
   try {
-    if (request.Inbounds && request.Inbounds.length > 0) {
-      for (const inbound of request.Inbounds) {
-        await InboundItem.destroy({
-          where: { inbound_id: inbound.inbound_id },
-          transaction
-        });
-        await Inbound.destroy({
-          where: { inbound_id: inbound.inbound_id },
-          transaction
-        });
-      }
+    for (const inbound of inbounds) {
+      await InboundItem.destroy({ where: { inbound_id: inbound.inbound_id }, transaction });
+      await Inbound.destroy({ where: { inbound_id: inbound.inbound_id }, transaction });
     }
 
-    await Payable.destroy({
-      where: { request_id: requestId },
+    const settlements = await Settlement.findAll({
+      where: {
+        source_type: 'purchase',
+        source_id: requestId,
+        is_deleted: 0,
+        status: { [Op.ne]: 'voided' }
+      },
       transaction
     });
-    await Expense.update({
-      status: 'cancelled',
-      review_comment: comment || '采购申请已撤销',
-      update_time: new Date()
-    }, {
-      where: { source_type: 'purchase', source_id: requestId },
+    for (const settlement of settlements) {
+      await createSettlementReversal(settlement, user, transaction, comment || '采购申请已撤销');
+    }
+
+    const purchaseExpenses = await Expense.findAll({
+      where: { source_type: 'purchase', source_id: requestId, is_deleted: 0 },
       transaction
     });
+    for (const expense of purchaseExpenses) {
+      await cancelExpenseRecord(expense, user, transaction, comment || '采购申请已撤销');
+    }
+
+    await Payable.update(
+      { status: 'cancelled' },
+      { where: { request_id: requestId }, transaction }
+    );
 
     if (request.rebate_deduction && parseFloat(request.rebate_deduction) > 0) {
       const currentBalance = await _getRebateBalance(request.supplier_id, transaction);
       const newBalance = currentBalance + parseFloat(request.rebate_deduction);
-      const supplier = await Supplier.findByPk(request.supplier_id);
+      const supplier = await Supplier.findByPk(request.supplier_id, { transaction });
       await SupplierRebate.create({
         rebate_id: generateUUID(),
         supplier_id: request.supplier_id,
@@ -1390,20 +1478,19 @@ async function revokeRequest(ctx) {
         remark: `采购申请 ${request.request_no} 撤销，退回返利抵扣`,
         status: 'active',
         source_type: 'purchase_reversal',
-        create_user: user.name || user.phone
+        create_user: operatorName
       }, { transaction });
       await recordSupplierRebateAccountTransaction(
         request.supplier_id, 'income', request.rebate_deduction,
-        '采购撤销退回返利抵扣', request.request_no, user.name || user.phone, transaction
+        '采购撤销退回返利抵扣', request.request_no, operatorName, transaction
       );
     }
 
     await request.update({
       status: 'revoked',
-      approve_user: request.approve_user,
-      approve_comment: request.approve_comment,
-      revoke_user: user.name,
-      revoke_comment: comment,
+      revoke_user: operatorName,
+      revoke_time: new Date(),
+      revoke_comment: String(comment || '').trim(),
       update_time: new Date()
     }, { transaction });
     await recordBusinessAction({
@@ -1411,7 +1498,7 @@ async function revokeRequest(ctx) {
       businessId: request.request_id,
       businessNo: request.request_no,
       action: 'revoked',
-      fromStatus: 'approved',
+      fromStatus: request.status,
       toStatus: 'revoked',
       user,
       comment: comment || '',
@@ -1419,7 +1506,6 @@ async function revokeRequest(ctx) {
     });
 
     await transaction.commit();
-
     ctx.body = { code: 0, message: '撤销成功' };
   } catch (error) {
     await transaction.rollback();

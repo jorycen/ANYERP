@@ -817,6 +817,39 @@ function getInventoryQuantitySnapshot(inv, locationType = '') {
   return snapshot;
 }
 
+/**
+ * 将销售仓库存拆分为页面需要的三类资源数量。
+ * 旧数据可能只有 normal_qty，没有资源明细，此时按全资源货兼容展示，确保分项之和不小于销售仓总量。
+ */
+function getSalesResourceQuantitySnapshot(inv, locationType = '') {
+  const snapshot = getInventoryQuantitySnapshot(inv, locationType);
+  const normalQty = Number(snapshot.normal_qty || 0);
+  const regularQty = Number(snapshot.regular_qty || 0);
+  const subsidyQty = Number(snapshot.subsidy_qty || 0);
+  const secondQty = Number(snapshot.second_qty || 0);
+  const detailTotal = regularQty + subsidyQty + secondQty;
+  const totalQty = Math.max(normalQty, detailTotal);
+
+  return {
+    full_resource_qty: Math.max(regularQty, totalQty - subsidyQty - secondQty),
+    subsidy_only_qty: subsidyQty,
+    no_subsidy_qty: secondQty
+  };
+}
+
+function getSnSalesResourceQuantitySnapshot(sn, summary) {
+  const label = String(summary?.sales_resource_label || '');
+  const available = String(summary?.available_resource_summary || '');
+  const taxType = String(sn?.tax_type || '').toUpperCase();
+
+  if (label === '全资源货') return { full_resource_qty: 1, subsidy_only_qty: 0, no_subsidy_qty: 0 };
+  if (available.includes('国补')) return { full_resource_qty: 0, subsidy_only_qty: 1, no_subsidy_qty: 0 };
+  if (taxType === 'UNTAXED' || label === '未税货') return { full_resource_qty: 0, subsidy_only_qty: 0, no_subsidy_qty: 1 };
+
+  // 没有资源权益明细的历史 SN 默认按全资源货展示，保持与旧 normal_qty 统计一致。
+  return { full_resource_qty: 1, subsidy_only_qty: 0, no_subsidy_qty: 0 };
+}
+
 async function buildSalesStockMap(productIds, storeId = '') {
   const uniqueProductIds = [...new Set((productIds || []).filter(Boolean))];
   const stockMap = {};
@@ -1018,6 +1051,7 @@ async function getList(ctx) {
 
       const storeQtyRow = {
         normal_qty: stockSnapshot.normal_qty,
+        ...getSalesResourceQuantitySnapshot(inv, location?.type),
         display_qty: stockSnapshot.display_qty,
         demo_qty: stockSnapshot.demo_qty,
         unsellable_qty: stockSnapshot.unsellable_qty,
@@ -1044,9 +1078,10 @@ async function getList(ctx) {
           is_deleted: 0,
           store_id: { [Op.in]: storeIds }
         },
-        attributes: ['product_id', 'store_id', 'location_id'],
+        attributes: ['sn_id', 'product_id', 'store_id', 'location_id', 'tax_type'],
         raw: true
       });
+      const snResourceSummaryMap = snRows.length ? await summariesForSns(snRows) : new Map();
       const snLocationMap = {};
       for (const sn of snRows) {
         const key = `${sn.store_id || ''}|${sn.location_id || ''}`;
@@ -1062,6 +1097,9 @@ async function getList(ctx) {
             location_id: sn.location_id || '',
             location_name: location?.name || (sn.location_id || '未指定库位'),
             normal_qty: 0,
+            full_resource_qty: 0,
+            subsidy_only_qty: 0,
+            no_subsidy_qty: 0,
             display_qty: 0,
             demo_qty: 0,
             unsellable_qty: 0,
@@ -1069,6 +1107,10 @@ async function getList(ctx) {
           };
         }
         snLocationMap[sn.product_id][key][inventoryType] += 1;
+        const resourceQuantity = getSnSalesResourceQuantitySnapshot(sn, snResourceSummaryMap.get(sn.sn_id));
+        snLocationMap[sn.product_id][key].full_resource_qty += resourceQuantity.full_resource_qty;
+        snLocationMap[sn.product_id][key].subsidy_only_qty += resourceQuantity.subsidy_only_qty;
+        snLocationMap[sn.product_id][key].no_subsidy_qty += resourceQuantity.no_subsidy_qty;
       }
 
       for (const [productId, rowsByLocation] of Object.entries(snLocationMap)) {
@@ -4420,6 +4462,8 @@ module.exports = {
     isTransferRequestOpen: transfer => TRANSFER_REQUEST_STATUSES.has(String(transfer?.status || '').toLowerCase()),
     validateSnLocationAdjustment,
     validateSalesReturnInboundSn,
-    getInventoryQuantitySnapshot
+    getInventoryQuantitySnapshot,
+    getSalesResourceQuantitySnapshot,
+    getSnSalesResourceQuantitySnapshot
   }
 };

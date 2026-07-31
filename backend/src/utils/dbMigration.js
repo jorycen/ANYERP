@@ -641,6 +641,8 @@ async function runMigrations() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='供应商付款账户表'
     `);
     await checkAndAddColumn('T_PURCHASE_REQUEST', 'INVOICE_TYPE', 'VARCHAR(32) COMMENT "发票类型"', 'SUPPLIER_ID');
+    await checkAndAddColumn('T_PURCHASE_REQUEST', 'SUPPLIER_CHAT_SCREENSHOT_IDS', 'TEXT COMMENT "供应商群喊货截图云文件ID"', 'INVOICE_TYPE');
+    await checkAndAddColumn('T_PURCHASE_REQUEST', 'SUPPLIER_CHAT_SCREENSHOT_URLS', 'TEXT COMMENT "供应商群喊货截图展示地址"', 'SUPPLIER_CHAT_SCREENSHOT_IDS');
     await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'STORE_ALLOCATIONS', 'TEXT COMMENT "门店分配"', 'QUANTITY');
     await checkAndAddColumn('T_INBOUND', 'PURCHASE_REQUEST_ID', 'VARCHAR(32) COMMENT "采购申请ID"', 'INBOUND_NO');
     await checkAndAddColumn('T_INBOUND_ITEM', 'REMARK', 'VARCHAR(512) COMMENT "备注"', 'UNIT_PRICE');
@@ -1372,8 +1374,12 @@ async function runMigrations() {
     await checkAndAddColumn('T_ORDER', 'APPROVE_TIME', 'DATETIME COMMENT "订单审批时间"', 'APPROVE_USER');
     await checkAndAddColumn('T_ORDER', 'APPROVE_COMMENT', 'VARCHAR(1000) COMMENT "订单审批意见"', 'APPROVE_TIME');
     await checkAndAddColumn('T_PURCHASE_REQUEST', 'SUBMIT_USER', 'VARCHAR(64) COMMENT "采购申请提交人"', 'APPLY_USER');
+    await checkAndAddColumn('T_PURCHASE_REQUEST', 'APPLICANT_STAFF_ID', 'BIGINT(20) COMMENT "采购申请人员工ID"', 'APPLY_USER');
     await checkAndAddColumn('T_PURCHASE_REQUEST', 'SUBMIT_TIME', 'DATETIME COMMENT "采购申请提交时间"', 'SUBMIT_USER');
     await checkAndAddColumn('T_PURCHASE_REQUEST', 'APPROVE_TIME', 'DATETIME COMMENT "采购申请审批时间"', 'APPROVE_USER');
+    await checkAndAddColumn('T_PURCHASE_REQUEST', 'REVOKE_USER', 'VARCHAR(64) COMMENT "采购申请撤销人"', 'APPROVE_COMMENT');
+    await checkAndAddColumn('T_PURCHASE_REQUEST', 'REVOKE_TIME', 'DATETIME COMMENT "采购申请撤销时间"', 'REVOKE_USER');
+    await checkAndAddColumn('T_PURCHASE_REQUEST', 'REVOKE_COMMENT', 'VARCHAR(512) COMMENT "采购申请撤销原因"', 'REVOKE_TIME');
     await checkAndAddColumn('T_ORDER', 'CREATE_TIME', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT "创建时间"', 'REMARK');
     await checkAndAddColumn('T_ORDER', 'UPDATE_TIME', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT "更新时间"', 'CREATE_TIME');
     await checkAndAddColumn('T_ORDER', 'DEPOSIT_DEDUCTION_TOTAL', 'DECIMAL(12,2) DEFAULT 0 COMMENT "定金抵扣总额"', 'EDUCATION_SUBSIDY');

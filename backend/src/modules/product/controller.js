@@ -685,6 +685,7 @@ function canReviewProductApplication(user) {
 async function getProductApplicationList(ctx) {
   const page = Number(ctx.query.page || 1);
   const pageSize = Number(ctx.query.pageSize || 20);
+  const scope = String(ctx.query.scope || '');
   const where = {};
   if (ctx.query.status) where.status = ctx.query.status;
   const keyword = String(ctx.query.keyword || '').trim();
@@ -699,7 +700,9 @@ async function getProductApplicationList(ctx) {
     ];
   }
 
-  if (!canReviewProductApplication(ctx.state.user)) {
+  if (scope === 'my') {
+    where.applicant_staff_id = ctx.state.user.staffId || ctx.state.user.id || -1;
+  } else if (!canReviewProductApplication(ctx.state.user)) {
     where.applicant_staff_id = ctx.state.user.staffId;
   } else if (!getUserRoles(ctx.state.user).includes('boss')) {
     where.distributor_id = ctx.state.user.distributorId || '';
@@ -722,6 +725,37 @@ async function getProductApplicationList(ctx) {
     code: 0,
     data: formatPaginatedResult(applications, { page, pageSize, count })
   };
+}
+
+async function revokeProductApplication(ctx) {
+  const { applicationId } = ctx.params;
+  const { reason = '新建商品申请已撤销' } = ctx.request.body || {};
+  const user = ctx.state.user;
+  const staffId = user.staffId || user.id;
+
+  await sequelize.transaction(async transaction => {
+    const application = await ProductApplication.findByPk(applicationId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!application) ctx.throw(404, '商品申请不存在');
+    if (Number(application.applicant_staff_id) !== Number(staffId)) {
+      ctx.throw(403, '只有申请人可以撤销该商品申请');
+    }
+    if (application.status !== 'pending') {
+      ctx.throw(400, '只有待审批的商品申请可以撤销');
+    }
+    await application.update({
+      status: 'revoked',
+      review_staff_id: staffId,
+      review_user_name: user.name || user.phone || '',
+      review_comment: String(reason || '').trim(),
+      review_time: new Date(),
+      update_time: new Date()
+    }, { transaction });
+  });
+
+  ctx.body = { code: 0, applicationId, status: 'revoked', message: '商品申请已撤销' };
 }
 
 async function reviewProductApplication(ctx) {
@@ -2882,7 +2916,7 @@ async function exportProducts(ctx) {
 }
 
 module.exports = {
-  getProductList, createProduct, submitProductApplication, getProductApplicationList, reviewProductApplication,
+  getProductList, createProduct, submitProductApplication, getProductApplicationList, revokeProductApplication, reviewProductApplication,
   updateProduct, deleteProduct, batchDeleteProducts, togglePause, importProducts, exportProducts,
   getCategoryFields, saveCategoryFields, getCategoryFieldConfig,
   getBarcodes: async (ctx) => {

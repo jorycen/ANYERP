@@ -9,7 +9,7 @@ const {
 const { Op, Sequelize, fn, col } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { getUserRoles } = require('../../middleware/permission');
-const { ensureExpensePayable } = require('./expenseService');
+const { ensureExpensePayable, cancelExpenseRecord } = require('./expenseService');
 
 async function getAccountBalance(accountId, transaction = null) {
   const [incomeAmount, expenseAmount] = await Promise.all([
@@ -683,6 +683,29 @@ async function reviewExpense(ctx) {
   };
 }
 
+async function cancelExpense(ctx) {
+  const user = ctx.state.user;
+  const { reason = '报销申请已撤销' } = ctx.request.body || {};
+  const staffId = user.staffId || user.id;
+
+  await sequelize.transaction(async transaction => {
+    const record = await Expense.findByPk(ctx.params.id, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!record || record.is_deleted) ctx.throw(404, '报销单不存在');
+    const isApplicant = Number(record.applicant_staff_id) === Number(staffId)
+      || (!record.applicant_staff_id && [record.applicant_name, record.create_user].includes(user.name || user.phone));
+    if (!isApplicant) ctx.throw(403, '只有申请人可以撤销该报销');
+    if (!['pending_approval', 'approved', 'pending_payment', 'pending', 'processing'].includes(record.status)) {
+      ctx.throw(400, '当前报销状态不允许撤销');
+    }
+    await cancelExpenseRecord(record, user, transaction, String(reason || '').trim() || '报销申请已撤销');
+  });
+
+  ctx.body = { code: 0, expenseId: ctx.params.id, status: 'cancelled', message: '报销申请已撤销' };
+}
+
 /**
  * 应付列表
  */
@@ -1235,6 +1258,7 @@ module.exports = {
   deleteExpenseDraft,
   getExpenseList,
   reviewExpense,
+  cancelExpense,
   submitExpense,
   payExpense,
   getPayableList,

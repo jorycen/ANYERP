@@ -4,6 +4,7 @@ const {
   Settlement,
   SettlementItem
 } = require('../../models');
+const { Op } = require('sequelize');
 const { generateUUID } = require('../../utils');
 const moment = require('moment');
 const { roundAmount, getAllocationSummary, refreshExpenseState } = require('./settlementAllocation');
@@ -136,8 +137,132 @@ async function createPurchaseReimbursement(request, user, transaction = null) {
   }, { transaction });
 }
 
+function reversalError(message, status = 400) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+function settlementIsPaid(settlement) {
+  return settlement && (
+    Number(settlement.paid_amount || 0) > 0 ||
+    settlement.payment_status === 'paid' ||
+    settlement.status === 'confirmed'
+  );
+}
+
+/**
+ * 为已经生成的结算单生成一张负结算单。
+ * 原结算单保留，负单通过明细金额抵销原结算金额，便于后台审计和后续对账。
+ */
+async function createSettlementReversal(settlement, operator, transaction = null, reason = '业务申请撤销') {
+  if (!settlement) return null;
+  if (settlementIsPaid(settlement)) {
+    throw reversalError('该结算单已付款或已确认，无法撤销');
+  }
+
+  const existing = await Settlement.findOne({
+    where: { source_type: 'settlement_reversal', source_id: settlement.settlement_id },
+    transaction
+  });
+  if (existing) return existing;
+
+  const items = await SettlementItem.findAll({
+    where: { settlement_id: settlement.settlement_id },
+    transaction
+  });
+  const reversal = await Settlement.create({
+    settlement_id: generateUUID(),
+    settlement_no: `RV${Date.now()}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`,
+    supplier_id: settlement.supplier_id,
+    supplier_name: settlement.supplier_name,
+    settlement_type: settlement.settlement_type,
+    payee_type: settlement.payee_type,
+    payee_id: settlement.payee_id,
+    payee_name: settlement.payee_name,
+    source_type: 'settlement_reversal',
+    source_id: settlement.settlement_id,
+    source_no: settlement.settlement_no,
+    total_amount: -Math.abs(Number(settlement.total_amount || 0)),
+    paid_amount: 0,
+    status: 'draft',
+    payment_status: 'unpaid',
+    is_deleted: 0,
+    remark: `${reason}，冲销结算单 ${settlement.settlement_no}`,
+    create_user: operator?.name || operator?.phone || operator || '',
+    create_time: new Date()
+  }, { transaction });
+
+  if (items.length > 0) {
+    for (const item of items) {
+      await SettlementItem.create({
+        settlement_id: reversal.settlement_id,
+        payable_id: item.payable_id,
+        request_item_id: item.request_item_id,
+        product_id: item.product_id,
+        product_name: item.product_name,
+        quantity: item.quantity === null || item.quantity === undefined ? item.quantity : -Math.abs(Number(item.quantity)),
+        unit_price: item.unit_price,
+        request_no: item.request_no,
+        amount: -Math.abs(Number(item.amount || 0))
+      }, { transaction });
+    }
+  }
+  return reversal;
+}
+
+async function cancelExpenseRecord(expense, operator, transaction = null, reason = '报销申请已撤销') {
+  if (!expense || expense.is_deleted) return null;
+  if (expense.status === 'paid') {
+    throw reversalError('该报销已进入付款或结算流程，无法撤销');
+  }
+
+  const settlements = [];
+  if (expense.settlement_id) {
+    const linked = await Settlement.findByPk(expense.settlement_id, { transaction });
+    if (linked && !linked.is_deleted && linked.status !== 'voided') settlements.push(linked);
+  }
+  if (settlements.length === 0) {
+    const sourceSettlements = await Settlement.findAll({
+      where: {
+        source_type: expense.source_type || 'expense',
+        source_id: expense.expense_id,
+        is_deleted: 0,
+        status: { [Op.ne]: 'voided' }
+      },
+      transaction
+    });
+    sourceSettlements.forEach(item => {
+      if (!settlements.some(existing => existing.settlement_id === item.settlement_id)) settlements.push(item);
+    });
+  }
+
+  if (settlements.length === 0 && Number(expense.settled_amount || 0) > 0) {
+    throw reversalError('该报销已进入结算流程，无法撤销');
+  }
+
+  for (const settlement of settlements) {
+    await createSettlementReversal(settlement, operator, transaction, reason);
+  }
+
+  if (expense.payable_id) {
+    await Payable.update(
+      { status: 'cancelled' },
+      { where: { payable_id: expense.payable_id }, transaction }
+    );
+  }
+  await expense.update({
+    status: 'cancelled',
+    review_comment: reason,
+    update_time: new Date()
+  }, { transaction });
+  return expense;
+}
+
 module.exports = {
   ensureExpensePayable,
   createReimbursementSettlement,
-  createPurchaseReimbursement
+  createPurchaseReimbursement,
+  createSettlementReversal,
+  cancelExpenseRecord
 };

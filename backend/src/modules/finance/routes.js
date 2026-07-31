@@ -5,7 +5,7 @@ const Router = require('koa-router');
 const {
   getDailyDetails, getNationalSubsidyReceivables, getDailyStatement, getDailyStatementDetail,
   batchSettle, settleNationalSubsidyReceivables, getSettlementSummary, createExpense, saveExpenseDraft, updateExpenseDraft, deleteExpenseDraft, getExpenseList,
-  submitExpense, payExpense, reviewExpense, getSettlementAccountsWithBalance, getAccountTransactions, addAccountTransaction,
+  submitExpense, payExpense, reviewExpense, cancelExpense, getSettlementAccountsWithBalance, getAccountTransactions, addAccountTransaction,
   getSubsidyAccountRoutes, saveSubsidyAccountRoute, createSubsidyReceipt, getSubsidyReceipts,
   allocateSubsidyReceipt, refundSubsidyReceipt, reverseSubsidyReceipt, submitSubsidyAdjustment,
   getSubsidyAdjustments, reviewSubsidyAdjustment, reverseSubsidyAdjustment
@@ -62,6 +62,7 @@ router.delete('/expense-draft/:id', deleteExpenseDraft);
 router.put('/expense-draft/:id/submit', submitExpense);
 router.get('/expense-list', getExpenseList);
 router.post('/expense/:id/review', requireRole('admin'), reviewExpense);
+router.post('/expense/:id/cancel', cancelExpense);
 
 router.use(requireRole('finance'));
 

@@ -40,14 +40,19 @@
             </el-table-column>
             <el-table-column prop="normal_qty" label="现有库存" width="100">
               <template #default="{ row }">
-                <el-popover placement="bottom" :width="260" trigger="hover">
+                <el-popover placement="bottom" :width="420" trigger="hover">
                   <template #default>
                     <div class="stock-breakdown">
-                      <div class="breakdown-title">各门店销售仓库存</div>
+                      <div class="breakdown-title">各门店销售仓库存（按资源类型）</div>
                       <div v-if="getStockBreakdownRows(row, 'normal_qty').length" class="breakdown-locations">
                         <div v-for="item in getStockBreakdownRows(row, 'normal_qty')" :key="item.key" class="breakdown-item">
                           <span class="breakdown-label">{{ item.store_name }}</span>
-                          <span class="breakdown-value">{{ item.quantity }}</span>
+                          <span v-if="item.resource_breakdown" class="breakdown-resource-values">
+                            <span class="breakdown-resource full-resource-text">全资源 {{ item.full_resource_qty }}</span>
+                            <span class="breakdown-resource subsidy-resource-text">仅国补 {{ item.subsidy_only_qty }}</span>
+                            <span class="breakdown-resource no-subsidy-resource-text">无法国补 {{ item.no_subsidy_qty }}</span>
+                          </span>
+                          <span v-else class="breakdown-value">{{ item.quantity }}</span>
                         </div>
                       </div>
                       <div v-else class="breakdown-empty">暂无库存明细</div>
@@ -2077,10 +2082,20 @@ const getStockBreakdownRows = (row, field) => {
       grouped.set(key, {
         key,
         store_name: [item.store_name || item.store_id || '未知门店', item.location_name || '未指定仓位'].filter(Boolean).join(' / '),
-        quantity: 0
+        quantity: 0,
+        resource_breakdown: field === 'normal_qty',
+        full_resource_qty: 0,
+        subsidy_only_qty: 0,
+        no_subsidy_qty: 0
       })
     }
-    grouped.get(key).quantity += quantity
+    const target = grouped.get(key)
+    target.quantity += quantity
+    if (field === 'normal_qty') {
+      target.full_resource_qty += Number(item?.full_resource_qty || 0)
+      target.subsidy_only_qty += Number(item?.subsidy_only_qty || 0)
+      target.no_subsidy_qty += Number(item?.no_subsidy_qty || 0)
+    }
   })
 
   return [...grouped.values()].sort((a, b) => b.quantity - a.quantity)
@@ -4245,6 +4260,28 @@ const getReturnStatusText = (status) => {
 .breakdown-value {
   color: #303133;
   font-weight: 600;
+}
+.breakdown-resource-values {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 8px;
+  max-width: 240px;
+}
+.breakdown-resource {
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+.full-resource-text {
+  color: #67c23a;
+}
+.subsidy-resource-text {
+  color: #e6a23c;
+}
+.no-subsidy-resource-text {
+  color: #f56c6c;
 }
 .breakdown-empty {
   color: #909399;
