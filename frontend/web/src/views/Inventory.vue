@@ -879,15 +879,15 @@
         </el-select>
         <el-input v-model="snFilter.snCode" placeholder="搜索SN码" clearable style="width: 180px" @keyup.enter="loadSnData" />
         <el-button type="primary" @click="loadSnData">查询</el-button>
-        <el-button v-if="!snEditing" type="warning" @click="startSnEdit">修改SN</el-button>
-        <el-button v-else type="success" @click="finishSnEdit">完成</el-button>
+        <el-button v-if="!snEditing" type="warning" @click="startSnEdit">发起SN修改申请</el-button>
+        <el-button v-else type="success" @click="finishSnEdit">提交修改申请</el-button>
         <el-button v-if="snEditing" @click="cancelSnEdit">取消</el-button>
       </div>
 
       <el-table :data="snTableData" stripe border v-loading="snLoading">
         <el-table-column label="SN码" width="180">
           <template #default="{ row }">
-            <el-input v-if="snEditing" v-model="row.sn_code" size="small" />
+            <el-input v-if="snEditing && row.status === 'in_stock'" v-model="row.sn_code" size="small" />
             <span v-else>{{ row.sn_code }}</span>
           </template>
         </el-table-column>
@@ -2947,23 +2947,22 @@ const finishSnEdit = async () => {
     return
   }
 
-  ElMessage.info(`正在更新 ${changed.length} 条SN记录...`)
-  let successCount = 0
-  for (const ch of changed) {
-    try {
-      const res = await api.updateSn(ch.snId, { newSnCode: ch.newCode })
-      if (res.code === 0) {
-        successCount++
-      } else {
-        ElMessage.error(`SN ${ch.oldCode} 修改失败: ${res.message || '未知错误'}`)
-      }
-    } catch (err) {
-      ElMessage.error(`SN ${ch.oldCode} 修改异常`)
-    }
-  }
+  const reasonResult = await ElMessageBox.prompt(
+    '请输入SN修改申请原因',
+    '提交SN修改申请',
+    { inputType: 'textarea', inputPlaceholder: '申请原因必填', inputValidator: value => value?.trim() ? true : '申请原因不能为空' }
+  ).catch(() => null)
+  if (!reasonResult) return
 
-  if (successCount > 0) {
-    ElMessage.success(`成功修改 ${successCount} 条SN记录`)
+  try {
+    await api.submitSnChangeApplication({
+      reason: reasonResult.value.trim(),
+      items: changed
+    })
+    ElMessage.success(`SN修改申请已提交，共 ${changed.length} 条，等待admin或boss审批`)
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '提交SN修改申请失败')
+    return
   }
   snEditing.value = false
   loadSnData()

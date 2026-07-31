@@ -79,7 +79,11 @@ async function resolveRule(rule, subject, transaction) {
 
   const roleCode = String(rule.roleCode || '').trim();
   const roleUsers = await Staff.findAll({
-    where: { status: 1, is_deleted: 0, ...(subject.distributor_id ? { distributor_id: subject.distributor_id } : {}) },
+    where: {
+      status: 1,
+      is_deleted: 0,
+      ...(subject.distributor_id && roleCode !== 'boss' ? { distributor_id: subject.distributor_id } : {})
+    },
     include: [{ model: Role, as: 'Roles', where: { role_code: roleCode, status: 1 }, attributes: [], through: { attributes: [] }, required: true }],
     attributes: ['staff_id'],
     transaction
@@ -128,10 +132,17 @@ async function writeLog(instanceId, taskId, action, actor, comment, detail, tran
   }, { transaction });
 }
 
-async function createNodeTasks(instance, config, nodeIndex, roundNo, transaction) {
+async function completeBusinessApproval(instance, transaction, actor) {
+  if (instance.business_type !== 'sn_change') return;
+  const { applySnChangeApplication } = require('../inventory/snChangeApplication');
+  await applySnChangeApplication(instance, transaction, actor);
+}
+
+async function createNodeTasks(instance, config, nodeIndex, roundNo, transaction, actor = null) {
   const node = config.nodes[nodeIndex];
   if (!node) {
     await instance.update({ status: 'approved', completed_time: new Date(), update_time: new Date() }, { transaction });
+    await completeBusinessApproval(instance, transaction, actor);
     return;
   }
   const assigneeIds = await resolveApprovers(node, instance, transaction);
@@ -234,7 +245,7 @@ async function actionInstance(instanceId, action, comment, actor) {
     }
 
     const config = parseJson(instance.definition_snapshot_json, {});
-    await createNodeTasks(instance, config, Number(instance.current_node_index) + 1, instance.resubmit_count, transaction);
+    await createNodeTasks(instance, config, Number(instance.current_node_index) + 1, instance.resubmit_count, transaction, actor);
     return instance;
   });
 }
@@ -256,7 +267,7 @@ async function resubmitInstance(instanceId, input, actor) {
       completed_time: null,
       update_time: new Date()
     }, { transaction });
-    await createNodeTasks(instance, parseJson(instance.definition_snapshot_json, {}), 0, roundNo, transaction);
+    await createNodeTasks(instance, parseJson(instance.definition_snapshot_json, {}), 0, roundNo, transaction, actor);
     await writeLog(instanceId, null, 'resubmit', actor, input.comment, { roundNo }, transaction);
     return instance;
   });
@@ -267,6 +278,7 @@ module.exports = {
   normalizeFlowConfig,
   parseJson,
   createInstance,
+  startInstance,
   actionInstance,
   resubmitInstance
 };

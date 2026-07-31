@@ -10,7 +10,7 @@
           <el-table :data="tasks" stripe border v-loading="loading">
             <el-table-column label="审批主题" min-width="220"><template #default="{ row }">{{ row.Instance?.title || '-' }}</template></el-table-column>
             <el-table-column prop="node_name" label="当前节点" width="160" />
-            <el-table-column label="业务类型" width="150"><template #default="{ row }">{{ row.Instance?.business_type || '-' }}</template></el-table-column>
+            <el-table-column label="业务类型" width="150"><template #default="{ row }">{{ businessTypeText(row.Instance?.business_type) }}</template></el-table-column>
             <el-table-column label="申请编号" width="190"><template #default="{ row }">{{ row.Instance?.instance_no || '-' }}</template></el-table-column>
             <el-table-column prop="create_time" label="提交时间" width="180" />
             <el-table-column label="操作" width="180" fixed="right">
@@ -26,7 +26,7 @@
         <el-tab-pane label="我的申请" name="instances">
           <el-table :data="instances" stripe border v-loading="loading">
             <el-table-column prop="title" label="审批主题" min-width="220" />
-            <el-table-column prop="business_type" label="业务类型" width="150" />
+            <el-table-column label="业务类型" width="150"><template #default="{ row }">{{ businessTypeText(row.business_type) }}</template></el-table-column>
             <el-table-column prop="instance_no" label="申请编号" width="190" />
             <el-table-column prop="status" label="状态" width="100">
               <template #default="{ row }"><el-tag :type="statusType(row.status)">{{ statusText(row.status) }}</el-tag></template>
@@ -46,7 +46,7 @@
           <el-table :data="flows" stripe border>
             <el-table-column prop="name" label="流程名称" min-width="180" />
             <el-table-column prop="flow_code" label="流程编码" width="180" />
-            <el-table-column prop="business_type" label="业务类型" width="160" />
+            <el-table-column label="业务类型" width="160"><template #default="{ row }">{{ businessTypeText(row.business_type) }}</template></el-table-column>
             <el-table-column prop="version" label="版本" width="80" />
             <el-table-column prop="status" label="状态" width="100" />
             <el-table-column label="操作" width="240">
@@ -137,6 +137,7 @@ async function loadOptions() { if (canConfigure.value) Object.assign(assigneeOpt
 async function reload() { loading.value = true; try { await Promise.all([loadTasks(), loadInstances(), loadFlows(), loadOptions()]) } finally { loading.value = false } }
 
 function statusText(value) { return ({ pending: '审批中', approved: '已通过', rejected: '已拒绝' }[value] || value || '-') }
+function businessTypeText(value) { return ({ sn_change: 'SN修改申请' }[value] || value || '-') }
 function statusType(value) { return ({ pending: 'warning', approved: 'success', rejected: 'danger' }[value] || 'info') }
 function taskStatusText(value) { return ({ pending: '待审批', waiting: '等待中', approved: '已通过', rejected: '已拒绝', cancelled: '已取消' }[value] || value) }
 async function openInstance(id) { currentInstance.value = (await api.getApprovalInstance(id)).data; detailVisible.value = true }

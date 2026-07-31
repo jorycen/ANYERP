@@ -2515,6 +2515,27 @@ async function runMigrations() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='审批操作日志'
     `);
 
+    await sequelize.query(
+      `INSERT IGNORE INTO T_APPROVAL_FLOW_DEFINITION
+       (DEFINITION_ID, FLOW_CODE, NAME, BUSINESS_TYPE, SUBJECT_TYPE, VERSION, STATUS, CONFIG_JSON)
+       VALUES (?, 'sn_change', 'SN修改审批', 'sn_change', 'staff', 1, 'published', ?)`,
+      {
+        replacements: [
+          require('crypto').randomUUID().replace(/-/g, '').substring(0, 32),
+          JSON.stringify({
+            nodes: [{
+              name: '经销商账号审批',
+              signMode: 'or',
+              approvers: [
+                { type: 'role', roleCode: 'admin', scope: 'subject_distributor' },
+                { type: 'role', roleCode: 'boss', scope: 'subject_distributor' }
+              ]
+            }]
+          })
+        ]
+      }
+    );
+
     await checkAndCreateTable('T_BUSINESS_ACTION_LOG', `
       CREATE TABLE T_BUSINESS_ACTION_LOG (
         LOG_ID VARCHAR(32) NOT NULL,

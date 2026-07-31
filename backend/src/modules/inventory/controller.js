@@ -1276,6 +1276,11 @@ async function getSnList(ctx) {
 }
 
 async function updateSn(ctx) {
+  ctx.throw(409, 'SN码不能直接修改，请先发起SN修改申请并等待admin或boss审批');
+  /*
+   * 保留旧实现仅用于兼容历史代码引用；正式入口已经迁移到
+   * POST /inventory/sn-change-applications，不能绕过审批直接写入SN。
+   */
   try {
     const { snId } = ctx.params;
     const { newSnCode } = ctx.request.body;

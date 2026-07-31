@@ -11,6 +11,7 @@ const {
   confirmTransferIn, returnTransfer, revokeTransfer, rejectTransfer, getTransferDetail, getConversionList, getConversionDetail, createConversion,
   voidConversion, getLocationsByStore, updateSn, adjustSnLocation, snTrace
 } = require('./controller');
+const { submitSnChangeApplication } = require('./snChangeApplication');
 const { enforceStoreOwnership, requireRole } = require('../../middleware/permission');
 const resourceRights = require('./resourceRights');
 const batchMaintenance = require('./batchMaintenance');
@@ -26,6 +27,7 @@ router.put('/sn/:snId/special-price', requireRole('admin'), setSnSpecialPrice);
 router.delete('/sn/:snId/special-price', requireRole('admin'), cancelSnSpecialPrice);
 router.get('/sn/:snId/special-price-history', requireRole('admin'), getSnSpecialPriceHistory);
 router.get('/sn-list', getSnList);
+router.post('/sn-change-applications', submitSnChangeApplication);
 router.put('/sn/:snId', updateSn);
 router.post('/sn/:snId/location-adjust', adjustSnLocation);
 router.get('/sn-trace/:snCode', snTrace);

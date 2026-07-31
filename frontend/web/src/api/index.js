@@ -161,7 +161,7 @@ export default {
   cancelSnSpecialPrice: (snId, data = {}) => api.delete(`/inventory/sn/${snId}/special-price`, { data }),
   getSnSpecialPriceHistory: (snId) => api.get(`/inventory/sn/${snId}/special-price-history`),
   getSnList: (params) => api.get('/inventory/sn-list', { params }),
-  updateSn: (snId, data) => api.put(`/inventory/sn/${snId}`, data),
+  submitSnChangeApplication: (data) => api.post('/inventory/sn-change-applications', data),
   adjustSnLocation: (snId, data) => api.post(`/inventory/sn/${snId}/location-adjust`, data),
   snTrace: (snCode, params) => api.get(`/inventory/sn-trace/${encodeURIComponent(snCode)}`, { params }),
   getSnTraceInboundDetail: (inboundId) => api.get(`/inventory/sn-trace-inbound/${encodeURIComponent(inboundId)}`),
