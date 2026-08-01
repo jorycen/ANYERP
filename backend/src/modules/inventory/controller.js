@@ -1464,7 +1464,270 @@ async function adjustSnLocation(ctx) {
   }
 }
 
+/**
+ * SN 生命周期追踪。
+ * 以 T_PRODUCT_SN 为当前事实记录，再用 SN_ID 和当前/历史 SN_CODE 关联业务明细。
+ * 这样可以兼容旧数据中入库明细未回写 SN_ID、以及 SN 修改后的历史单据。
+ */
 async function snTrace(ctx) {
+  try {
+    const requestedSnCode = String(ctx.params.snCode || '').trim();
+    const requestedPnCode = String(ctx.query.pnCode || '').trim();
+    if (!requestedSnCode) ctx.throw(400, 'SN code is required');
+
+    const timeline = [];
+    const timelineKeys = new Set();
+    const traceUser = ctx.state.user || {};
+    const emptyFilterValue = '__sn_trace_empty__';
+    const uniqueValues = values => [...new Set((values || [])
+      .filter(value => value !== null && value !== undefined && String(value).trim() !== '')
+      .map(value => String(value).trim()))];
+    const toHex = value => Buffer.from(String(value), 'utf8').toString('hex').toUpperCase();
+    const snMatch = (alias, snIdColumn, snCodeColumn) =>
+      `(BINARY HEX(CAST(${alias}.${snIdColumn} AS BINARY)) IN (:snIdsHex) OR BINARY HEX(CAST(TRIM(${alias}.${snCodeColumn}) AS BINARY)) IN (:snCodesHex))`;
+    const replacementsFor = (snIds, snCodes) => ({
+      snIdsHex: (snIds.length ? snIds : [emptyFilterValue]).map(toHex),
+      snCodesHex: (snCodes.length ? snCodes : [requestedSnCode]).map(toHex)
+    });
+
+    const appendReferenceEvent = (event, reference, options = {}) => {
+      const canView = options.dealerOnly
+        ? isDealerTraceAccount(traceUser) && canViewSnTraceReference(traceUser, reference)
+        : canViewSnTraceReference(traceUser, reference);
+      if (!canView) return;
+      const key = `${event.type}:${reference.ref_id}`;
+      if (timelineKeys.has(key)) return;
+      timelineKeys.add(key);
+      timeline.push({ ...event, ref_type: reference.ref_type, ref_no: reference.ref_no,
+        ref_id: reference.ref_id, can_view_order: true });
+    };
+
+    const initialLogs = await sequelize.query(
+      `SELECT sn_id, sn_code, old_sn_code
+       FROM T_SN_LOG
+       WHERE BINARY HEX(CAST(TRIM(sn_code) AS BINARY)) = BINARY :snCodeHex
+          OR BINARY HEX(CAST(TRIM(old_sn_code) AS BINARY)) = BINARY :snCodeHex`,
+      { replacements: { snCodeHex: toHex(requestedSnCode) }, type: sequelize.QueryTypes.SELECT }
+    );
+    const initialSnIds = uniqueValues(initialLogs.map(row => row.sn_id));
+    const initialSnCodes = uniqueValues([
+      requestedSnCode,
+      ...initialLogs.flatMap(row => [row.sn_code, row.old_sn_code])
+    ]);
+
+    const snRows = await sequelize.query(
+      `SELECT sn.SN_ID AS sn_id, sn.SN_CODE AS sn_code, sn.PN_CODE AS pn_code,
+              sn.PRODUCT_ID AS product_id, sn.STATUS AS status, sn.STORE_ID AS store_id,
+              sn.INBOUND_TIME AS inbound_time, p.NAME AS product_name, st.NAME AS store_name
+       FROM T_PRODUCT_SN sn
+       LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = sn.PRODUCT_ID
+       LEFT JOIN T_STORE st ON st.STORE_ID = sn.STORE_ID
+       WHERE sn.IS_DELETED = 0
+         AND ${snMatch('sn', 'SN_ID', 'SN_CODE')}
+         ${requestedPnCode ? 'AND TRIM(sn.PN_CODE) = :pnCode' : ''}
+       ORDER BY (sn.STATUS = 'in_stock') DESC, sn.INBOUND_TIME DESC, sn.SN_ID DESC`,
+      {
+        replacements: {
+          ...replacementsFor(initialSnIds, initialSnCodes),
+          ...(requestedPnCode ? { pnCode: requestedPnCode } : {})
+        },
+        type: sequelize.QueryTypes.SELECT
+      }
+    );
+
+    const snIds = uniqueValues([...initialSnIds, ...snRows.map(row => row.sn_id)]);
+    const snCodes = uniqueValues([...initialSnCodes, ...snRows.map(row => row.sn_code)]);
+    const replacements = replacementsFor(snIds, snCodes);
+
+    const traces = await sequelize.query(
+      `SELECT log_id, sn_id, sn_code, old_sn_code, action, remark, create_user, create_time
+       FROM T_SN_LOG
+       WHERE ${snMatch('T_SN_LOG', 'sn_id', 'sn_code')}
+          OR BINARY HEX(CAST(TRIM(old_sn_code) AS BINARY)) IN (:snCodesHex)
+       ORDER BY create_time ASC`,
+      { replacements, type: sequelize.QueryTypes.SELECT }
+    );
+    for (const row of traces) {
+      timeline.push({
+        id: row.log_id,
+        type: row.action,
+        label: row.action === 'modify_sn' ? '\u5e8f\u5217\u53f7\u4fee\u6539' : row.action,
+        description: row.remark || '',
+        user: row.create_user || '-',
+        time: row.create_time,
+        oldSnCode: row.old_sn_code || null
+      });
+    }
+
+    const inboundItems = await sequelize.query(
+      `SELECT ii.sn_id, ii.sn_code, ii.pn_code, i.inbound_no, i.inbound_id,
+              i.store_id, i.purchase_request_id, i.source_type, i.source_no,
+              s.distributor_id, i.create_time, i.create_user
+       FROM T_INBOUND_ITEM ii
+        JOIN T_INBOUND i ON BINARY ii.inbound_id = BINARY i.inbound_id
+        LEFT JOIN T_STORE s ON BINARY i.store_id = BINARY s.store_id
+       WHERE ${snMatch('ii', 'sn_id', 'sn_code')}`,
+      { replacements, type: sequelize.QueryTypes.SELECT }
+    );
+
+    const purchaseRequestIds = uniqueValues(inboundItems.map(row => row.purchase_request_id));
+    const purchaseRequestNos = uniqueValues(inboundItems
+      .filter(row => !row.purchase_request_id && row.source_type === 'purchase')
+      .map(row => row.source_no));
+    const purchaseRequests = purchaseRequestIds.length || purchaseRequestNos.length
+      ? await sequelize.query(
+          `SELECT pr.request_id, pr.request_no, pr.store_id, pr.apply_user,
+                  s.distributor_id, pr.create_time
+           FROM T_PURCHASE_REQUEST pr
+           LEFT JOIN T_STORE s ON BINARY pr.store_id = BINARY s.store_id
+           WHERE BINARY pr.request_id IN (:purchaseRequestIds)
+              OR BINARY pr.request_no IN (:purchaseRequestNos)`,
+          {
+            replacements: {
+              purchaseRequestIds: purchaseRequestIds.length ? purchaseRequestIds : [emptyFilterValue],
+              purchaseRequestNos: purchaseRequestNos.length ? purchaseRequestNos : [emptyFilterValue]
+            },
+            type: sequelize.QueryTypes.SELECT
+          }
+        )
+      : [];
+    const purchaseRequestMap = new Map();
+    purchaseRequests.forEach(row => {
+      purchaseRequestMap.set(`id:${row.request_id}`, row);
+      purchaseRequestMap.set(`no:${row.request_no}`, row);
+    });
+
+    for (const inbound of inboundItems) {
+      appendReferenceEvent({
+        id: `inbound-${inbound.inbound_id}`,
+        type: 'inbound',
+        label: '\u5165\u5e93',
+        description: `\u5165\u5e93\u5355\u53f7: ${inbound.inbound_no}${inbound.pn_code ? `; PN: ${inbound.pn_code}` : ''}`,
+        user: inbound.create_user || '-',
+        time: inbound.create_time
+      }, {
+        ref_type: 'inbound', ref_no: inbound.inbound_no, ref_id: inbound.inbound_id,
+        store_id: inbound.store_id, distributor_id: inbound.distributor_id,
+        creator_names: [inbound.create_user]
+      }, { dealerOnly: true });
+
+      const request = purchaseRequestMap.get(`id:${inbound.purchase_request_id}`)
+        || purchaseRequestMap.get(`no:${inbound.source_no}`);
+      if (request) {
+        appendReferenceEvent({
+          id: `purchase-${request.request_id}`,
+          type: 'purchase',
+          label: '\u91c7\u8d2d\u7533\u8bf7',
+          description: `\u91c7\u8d2d\u7533\u8bf7\u5355\u53f7: ${request.request_no}`,
+          user: request.apply_user || '-',
+          time: request.create_time || inbound.create_time
+        }, {
+          ref_type: 'purchase_request', ref_no: request.request_no, ref_id: request.request_id,
+          store_id: request.store_id, distributor_id: request.distributor_id,
+          creator_names: [request.apply_user]
+        });
+      }
+    }
+
+    const orderItems = await sequelize.query(
+      `SELECT oi.order_id AS item_order_id, oi.sn_id, oi.sn_code, o.order_no, o.order_id,
+              o.store_id, s.distributor_id, o.create_time, o.create_user
+       FROM T_ORDER_ITEM oi
+       JOIN T_ORDER o ON BINARY oi.order_id = BINARY o.order_id
+       LEFT JOIN T_STORE s ON BINARY o.store_id = BINARY s.store_id
+       WHERE ${snMatch('oi', 'sn_id', 'sn_code')}`,
+      { replacements, type: sequelize.QueryTypes.SELECT }
+    );
+    for (const order of orderItems) {
+      appendReferenceEvent({
+        id: `sale-${order.order_id}`, type: 'sale', label: '\u5df2\u9500\u552e',
+        description: `\u9500\u552e\u8ba2\u5355\u53f7: ${order.order_no}`,
+        user: order.create_user || '-', time: order.create_time
+      }, {
+        ref_type: 'sales_order', ref_no: order.order_no, ref_id: order.order_id,
+        store_id: order.store_id, distributor_id: order.distributor_id,
+        creator_names: [order.create_user]
+      });
+    }
+
+    const returnItems = await sequelize.query(
+      `SELECT ri.sn_id, ri.sn_code, rs.return_no, rs.return_id, rs.store_id,
+              s.distributor_id, rs.create_time, rs.create_user
+       FROM T_RETURN_STOCK_ITEM ri
+       JOIN T_RETURN_STOCK rs ON BINARY ri.return_id = BINARY rs.return_id
+       LEFT JOIN T_STORE s ON BINARY rs.store_id = BINARY s.store_id
+       WHERE ${snMatch('ri', 'sn_id', 'sn_code')}`,
+      { replacements, type: sequelize.QueryTypes.SELECT }
+    );
+    for (const row of returnItems) {
+      appendReferenceEvent({
+        id: `return-${row.return_id}`, type: 'return', label: '\u9000\u5e93',
+        description: `\u9000\u5e93\u5355\u53f7: ${row.return_no}`,
+        user: row.create_user || '-', time: row.create_time
+      }, {
+        ref_type: 'return_stock', ref_no: row.return_no, ref_id: row.return_id,
+        store_id: row.store_id, distributor_id: row.distributor_id,
+        creator_names: [row.create_user]
+      });
+    }
+
+    const transferItems = await sequelize.query(
+      `SELECT ti.sn_id, ti.sn_code, t.transfer_no, t.transfer_id, t.from_store_id,
+              t.to_store_id, fs.name AS from_store_name, ts.name AS to_store_name,
+              COALESCE(t.distributor_id, fs.distributor_id, ts.distributor_id) AS distributor_id,
+              t.apply_user, t.create_time, t.status AS transfer_status
+       FROM T_TRANSFER_ITEM ti
+       JOIN T_TRANSFER t ON BINARY ti.transfer_id = BINARY t.transfer_id
+       LEFT JOIN T_STORE fs ON BINARY t.from_store_id = BINARY fs.store_id
+       LEFT JOIN T_STORE ts ON BINARY t.to_store_id = BINARY ts.store_id
+       WHERE ${snMatch('ti', 'sn_id', 'sn_code')}`,
+      { replacements, type: sequelize.QueryTypes.SELECT }
+    );
+    for (const row of transferItems) {
+      appendReferenceEvent({
+        id: `transfer-${row.transfer_id}`, type: 'transfer', label: '\u8c03\u62e8',
+        description: `${row.from_store_name || row.from_store_id} -> ${row.to_store_name || row.to_store_id}; \u5355\u53f7: ${row.transfer_no}`,
+        user: row.apply_user || '-', time: row.create_time
+      }, {
+        ref_type: 'transfer_order', ref_no: row.transfer_no, ref_id: row.transfer_id,
+        from_store_id: row.from_store_id, to_store_id: row.to_store_id,
+        distributor_id: row.distributor_id, creator_names: [row.apply_user]
+      });
+    }
+
+    const snData = snRows[0] || null;
+    if (snData && !inboundItems.length && snData.inbound_time) {
+      timeline.push({
+        id: `sn-record-${snData.sn_id}`,
+        type: 'stock_record',
+        label: '\u5e93\u5b58SN\u8bb0\u5f55',
+        description: `PN: ${snData.pn_code || '-'}; \u8bb0\u5f55\u65f6\u95f4: ${snData.inbound_time}`,
+        user: '-', time: snData.inbound_time
+      });
+    }
+    timeline.sort((a, b) => new Date(b.time) - new Date(a.time));
+
+    ctx.body = {
+      code: 0,
+      data: {
+        snCode: requestedSnCode,
+        currentStatus: snData ? snData.status : 'unknown',
+        productId: snData?.product_id || '',
+        productName: snData?.product_name || '',
+        pnCode: snData?.pn_code || '',
+        storeId: snData?.store_id || '',
+        storeName: snData?.store_name || '',
+        timeline
+      }
+    };
+  } catch (err) {
+    if (err.status) ctx.throw(err.status, err.message);
+    console.error('snTrace error:', err);
+    ctx.throw(500, 'Failed to query SN trace');
+  }
+}
+
+async function snTraceLegacy(ctx) {
   try {
     const { snCode } = ctx.params;
     const { pnCode } = ctx.query;
@@ -2361,6 +2624,7 @@ async function executeInbound(ctx) {
         });
 
         await dbItem.update({
+          sn_id: snRecord.sn_id,
           sn_code: snCode,
           pn_code: pnCode,
           remark: item.remark,

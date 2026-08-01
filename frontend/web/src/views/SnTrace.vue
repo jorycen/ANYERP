@@ -26,6 +26,7 @@
             <el-tag :type="statusType">{{ statusText }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="商品">{{ traceData.productName || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="PN">{{ traceData.pnCode || '-' }}</el-descriptions-item>
           <el-descriptions-item label="门店">{{ traceData.storeName || '-' }}</el-descriptions-item>
         </el-descriptions>
       </el-card>
@@ -102,6 +103,7 @@ const traceData = ref({
   snCode: '',
   currentStatus: '',
   productName: '',
+  pnCode: '',
   storeId: '',
   storeName: '',
   timeline: []
@@ -141,13 +143,13 @@ const doSearch = async () => {
   try {
     const res = await api.snTrace(code)
     if (res.code === 0) {
-      traceData.value = res.data || { snCode: code, currentStatus: '', productName: '', storeId: '', storeName: '', timeline: [] }
+      traceData.value = res.data || { snCode: code, currentStatus: '', productName: '', pnCode: '', storeId: '', storeName: '', timeline: [] }
     } else {
-      traceData.value = { snCode: code, currentStatus: '', productName: '', storeId: '', storeName: '', timeline: [] }
+      traceData.value = { snCode: code, currentStatus: '', productName: '', pnCode: '', storeId: '', storeName: '', timeline: [] }
       ElMessage.info(res.message || '未找到记录')
     }
   } catch (err) {
-    traceData.value = { snCode: code, currentStatus: '', productName: '', storeId: '', storeName: '', timeline: [] }
+    traceData.value = { snCode: code, currentStatus: '', productName: '', pnCode: '', storeId: '', storeName: '', timeline: [] }
     ElMessage.error('查询失败')
   } finally {
     loading.value = false
