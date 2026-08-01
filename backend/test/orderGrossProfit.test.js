@@ -68,7 +68,7 @@ test('收款方式费用按用户应收分配额而不是实际收款额计算',
 
   assert.equal(result.paymentDetails[0].receivableAmount, 1200);
   assert.equal(result.paymentFeeAmount, 12);
-  assert.equal(result.grossProfitAmount, 1188);
+  assert.equal(result.grossProfitAmount, 988);
 });
 
 test('毛利商品成本优先使用产品定价，未定价时才回退采购成本', () => {
@@ -84,11 +84,11 @@ test('毛利商品成本优先使用产品定价，未定价时才回退采购�
       { standard_price: 0, cost_price: 800 },
       { original_inventory_cost: 700, sales_settlement_cost: 600 }
     ),
-    { unitPricing: 800, source: 'purchase_price_fallback' }
+    { unitPricing: 800, source: 'product_cost_fallback' }
   );
 });
 
-test('非服务商毛利成本按采购价加每件固定上浮金额', () => {
+test('非服务商毛利成本按本次采购价', () => {
   assert.deepEqual(
     resolveUnitProductPricing(
       { standard_price: 5000, cost_price: 4500 },
@@ -96,10 +96,9 @@ test('非服务商毛利成本按采购价加每件固定上浮金额', () => {
       { supplier_id: 'SUP_1', is_service_provider: 0, gross_profit_uplift_amount: 200 }
     ),
     {
-      unitPricing: 4700,
-      source: 'purchase_price_plus_supplier_uplift',
+      unitPricing: 4500,
+      source: 'purchase_price',
       purchasePrice: 4500,
-      grossProfitUpliftAmount: 200,
       isServiceProvider: false
     }
   );
@@ -112,6 +111,16 @@ test('用户应收保留国补和教育补贴，只扣除普通折扣', () => {
     national_subsidy: 300,
     education_subsidy: 200
   }), 1400);
+});
+
+test('基础毛利超过500元时扣除200元外调费', () => {
+  const result = calculateGrossProfitValues({
+    receivableAmount: 1000,
+    productPricingDetails: [{ quantity: 1, unitPricing: 400, pricingAmount: 400 }]
+  });
+  assert.equal(result.grossProfitBeforeExternalAdjustment, 600);
+  assert.equal(result.externalAdjustmentFee, 200);
+  assert.equal(result.grossProfitAmount, 400);
 });
 
 test('国补POS客户实收到账金额扣除0.6%税', () => {

@@ -2012,6 +2012,8 @@ async function getInboundList(ctx) {
       inbound.dataValues.Store = store;
     }
 
+    await attachPurchaseInitiatorNames(rows);
+
     const allProductIds = [];
     rows.forEach(row => {
       if (row.dataValues.items && row.dataValues.items.length > 0) {
@@ -2077,6 +2079,47 @@ async function assertDistributorInboundTraceAccess(ctx, inbound) {
   }
 }
 
+function purchaseInitiatorName(request) {
+  return String(request?.apply_user || request?.submit_user || '').trim();
+}
+
+async function attachPurchaseInitiatorNames(inbounds) {
+  const requestIds = [...new Set((inbounds || [])
+    .map(inbound => inbound.purchase_request_id)
+    .filter(Boolean)
+    .map(String))];
+  const requestNos = [...new Set((inbounds || [])
+    .filter(inbound => String(inbound.source_type || '').toLowerCase() === 'purchase')
+    .map(inbound => inbound.source_no)
+    .filter(Boolean)
+    .map(String))];
+  const conditions = [];
+  if (requestIds.length) conditions.push({ request_id: { [Op.in]: requestIds } });
+  if (requestNos.length) conditions.push({ request_no: { [Op.in]: requestNos } });
+  if (!conditions.length) return inbounds;
+
+  const requests = await PurchaseRequest.findAll({
+    where: { [Op.or]: conditions },
+    attributes: ['request_id', 'request_no', 'apply_user', 'submit_user']
+  });
+  const requestMap = new Map();
+  requests.forEach(request => {
+    const data = request.toJSON ? request.toJSON() : request;
+    if (data.request_id) requestMap.set(`id:${String(data.request_id)}`, data);
+    if (data.request_no) requestMap.set(`no:${String(data.request_no)}`, data);
+  });
+
+  (inbounds || []).forEach(inbound => {
+    const request = (inbound.purchase_request_id && requestMap.get(`id:${String(inbound.purchase_request_id)}`)) ||
+      (inbound.source_no && requestMap.get(`no:${String(inbound.source_no)}`));
+    if (!request) return;
+    const name = purchaseInitiatorName(request);
+    inbound.dataValues.purchase_initiator_name = name;
+    inbound.dataValues.purchase_applicant_name = name;
+  });
+  return inbounds;
+}
+
 async function getInboundDetailById(ctx, inboundId, { distributorTrace = false } = {}) {
   try {
     const inbound = await Inbound.findByPk(inboundId);
@@ -2097,9 +2140,16 @@ async function getInboundDetailById(ctx, inboundId, { distributorTrace = false }
     const result = inbound.toJSON();
     result.store_name = result.Store?.name || '';
 
-    const purchaseRequest = distributorTrace && inbound.purchase_request_id
-      ? await PurchaseRequest.findByPk(inbound.purchase_request_id, {
-          include: [{ model: Supplier, attributes: ['supplier_id', 'name'] }]
+    const purchaseWhere = inbound.purchase_request_id
+      ? { request_id: inbound.purchase_request_id }
+      : String(inbound.source_type || '').toLowerCase() === 'purchase' && inbound.source_no
+        ? { request_no: inbound.source_no }
+        : null;
+    const purchaseRequest = purchaseWhere
+      ? await PurchaseRequest.findOne({
+          where: purchaseWhere,
+          attributes: ['request_id', 'request_no', 'apply_user', 'submit_user', 'supplier_id'],
+          include: distributorTrace ? [{ model: Supplier, attributes: ['supplier_id', 'name'] }] : []
         })
       : null;
     const purchaseRequestItems = purchaseRequest
@@ -2110,6 +2160,11 @@ async function getInboundDetailById(ctx, inboundId, { distributorTrace = false }
         })
       : [];
     const purchaseItemMap = new Map(purchaseRequestItems.map(item => [String(item.item_id), item]));
+    if (purchaseRequest) {
+      const initiator = purchaseInitiatorName(purchaseRequest);
+      result.purchase_initiator_name = initiator;
+      result.purchase_applicant_name = initiator;
+    }
     if (distributorTrace) {
       result.purchase_source = {
         request_id: purchaseRequest?.request_id || inbound.purchase_request_id || '',
@@ -4728,6 +4783,7 @@ module.exports = {
     validateSalesReturnInboundSn,
     getInventoryQuantitySnapshot,
     getSalesResourceQuantitySnapshot,
-    getSnSalesResourceQuantitySnapshot
+    getSnSalesResourceQuantitySnapshot,
+    purchaseInitiatorName
   }
 };

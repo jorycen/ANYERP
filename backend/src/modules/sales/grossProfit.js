@@ -15,7 +15,7 @@ const {
 const { Op, QueryTypes } = require('sequelize');
 const { generateUUID } = require('../../utils');
 
-const FORMULA_VERSION = 'ORDER_GP_V5_20260706';
+const FORMULA_VERSION = 'ORDER_GP_V6_20260802';
 const VAT_RATE = 0.13;
 const NATIONAL_SUBSIDY_RECEIPT_TAX_RATE = 0.006;
 
@@ -68,30 +68,32 @@ function calculateOrderReceivable(order = {}) {
 function resolveUnitProductPricing(productPrice = {}, orderItem = {}, supplier = null) {
   const configuredPricing = toNumber(productPrice.standard_price);
   const isServiceProvider = !supplier || Number(supplier.is_service_provider) !== 0;
-  const sourcePurchasePrice = toNumber(orderItem.purchasePrice) || toNumber(orderItem.original_inventory_cost);
-  const purchasePrice = isServiceProvider
-    ? toNumber(productPrice.cost_price) || sourcePurchasePrice
-    : sourcePurchasePrice || toNumber(productPrice.cost_price);
-  const upliftAmount = isServiceProvider ? 0 : Math.max(0, toNumber(supplier.gross_profit_uplift_amount));
+  const sourcePurchasePrice = toNumber(orderItem.purchasePrice) ||
+    toNumber(orderItem.original_pickup_price) ||
+    toNumber(orderItem.original_inventory_cost);
+  const purchasePrice = sourcePurchasePrice || toNumber(productPrice.cost_price);
   const result = (unitPricing, source) => supplier
     ? {
         unitPricing: roundMoney(unitPricing),
         source,
         purchasePrice: roundMoney(purchasePrice),
-        grossProfitUpliftAmount: roundMoney(upliftAmount),
         isServiceProvider
       }
     : { unitPricing: roundMoney(unitPricing), source };
 
-  if (!isServiceProvider && purchasePrice > 0) {
-    return result(purchasePrice + upliftAmount, 'purchase_price_plus_supplier_uplift');
-  }
-
-  if (configuredPricing > 0) {
+  if (isServiceProvider && configuredPricing > 0) {
     return result(configuredPricing, 'product_standard_price');
   }
 
-  return result(purchasePrice, 'purchase_price_fallback');
+  if (!isServiceProvider && purchasePrice > 0) {
+    return result(purchasePrice, 'purchase_price');
+  }
+
+  if (isServiceProvider && toNumber(productPrice.cost_price) > 0) {
+    return result(toNumber(productPrice.cost_price), 'product_cost_fallback');
+  }
+
+  return result(configuredPricing || purchasePrice, isServiceProvider ? 'product_standard_price_fallback' : 'purchase_price_fallback');
 }
 
 function calculateGrossProfitValues({
@@ -154,9 +156,11 @@ function calculateGrossProfitValues({
   const vatTaxableAmount = roundMoney(Math.max(0, normalizedInvoiceAmount - productPricingAmount));
   const vatAmount = roundMoney(vatTaxableAmount * VAT_RATE);
   const supplementAmount = roundMoney(normalizedSupplements.reduce((sum, item) => sum + item.signedAmount, 0));
-  const grossProfitAmount = roundMoney(
+  const grossProfitBeforeExternalAdjustment = roundMoney(
     normalizedReceivableAmount - productPricingAmount - paymentFeeAmount - vatAmount + supplementAmount
   );
+  const externalAdjustmentFee = grossProfitBeforeExternalAdjustment > 500 ? 200 : 0;
+  const grossProfitAmount = roundMoney(grossProfitBeforeExternalAdjustment - externalAdjustmentFee);
 
   return {
     receivableAmount: normalizedReceivableAmount,
@@ -166,6 +170,8 @@ function calculateGrossProfitValues({
     vatTaxableAmount,
     vatAmount,
     supplementAmount,
+    grossProfitBeforeExternalAdjustment,
+    externalAdjustmentFee,
     grossProfitAmount,
     paymentDetails: normalizedPayments,
     productPricingDetails: normalizedProductPricing,
@@ -187,32 +193,43 @@ function parseJsonArray(value) {
 function snapshotToResponse(snapshot, order = null) {
   const row = snapshot && typeof snapshot.toJSON === 'function' ? snapshot.toJSON() : (snapshot || {});
   const orderRow = order && typeof order.toJSON === 'function' ? order.toJSON() : order;
+  const receivableAmount = roundMoney(
+    row.receivable_amount !== undefined ? row.receivable_amount : row.received_amount
+  );
+  const productPricingAmount = roundMoney(
+    row.product_pricing_amount !== undefined
+      ? row.product_pricing_amount
+      : row.settlement_cost_amount
+  );
+  const paymentFeeAmount = roundMoney(row.payment_fee_amount);
+  const vatAmount = roundMoney(row.vat_amount);
+  const supplementAmount = roundMoney(row.supplement_amount);
+  const grossProfitBeforeExternalAdjustment = roundMoney(
+    receivableAmount - productPricingAmount - paymentFeeAmount - vatAmount + supplementAmount
+  );
+  const externalAdjustmentFee = grossProfitBeforeExternalAdjustment > 500 ? 200 : 0;
   return {
     grossProfitId: row.gross_profit_id,
     orderId: row.order_id,
     orderNo: row.order_no,
     storeId: row.store_id,
     formulaVersion: row.formula_version,
-    receivableAmount: roundMoney(
-      row.receivable_amount !== undefined ? row.receivable_amount : row.received_amount
-    ),
+    receivableAmount,
     ...(orderRow ? {
       orderTotalAmount: roundMoney(orderRow.total_amount),
       discountAmount: roundMoney(orderRow.discount_amount),
       nationalSubsidy: roundMoney(orderRow.national_subsidy),
       educationSubsidy: roundMoney(orderRow.education_subsidy)
     } : {}),
-    productPricingAmount: roundMoney(
-      row.product_pricing_amount !== undefined
-        ? row.product_pricing_amount
-        : row.settlement_cost_amount
-    ),
-    paymentFeeAmount: roundMoney(row.payment_fee_amount),
+    productPricingAmount,
+    paymentFeeAmount,
     invoiceAmount: roundMoney(row.invoice_amount),
     vatTaxableAmount: roundMoney(row.vat_taxable_amount),
     vatRate: VAT_RATE,
-    vatAmount: roundMoney(row.vat_amount),
-    supplementAmount: roundMoney(row.supplement_amount),
+    vatAmount,
+    supplementAmount,
+    grossProfitBeforeExternalAdjustment,
+    externalAdjustmentFee,
     grossProfitAmount: roundMoney(row.gross_profit_amount),
     paymentDetails: parseJsonArray(row.payment_fee_details),
     productPricingDetails: parseJsonArray(
@@ -222,7 +239,7 @@ function snapshotToResponse(snapshot, order = null) {
     snapshotStatus: row.snapshot_status,
     calculatedBy: row.calculated_by || '',
     calculatedAt: row.calculated_at,
-    formula: '用户应收（商品总额－折扣，含国补和教育补贴） - 产品定价 - 应收税率费用 - 增值税 + 补录净额'
+    formula: '用户应收 - 服务商商品定价/非服务商本次采购价 - 支付手续费 - 增值税 + 补录净额；基础毛利超过500元时另扣200元外调费'
   };
 }
 
@@ -306,7 +323,8 @@ async function resolveSupplierContext(items, order, transaction) {
 
   const latestInboundRows = productIds.length
     ? await sequelize.query(
-        `SELECT ii.PRODUCT_ID AS product_id, pr.SUPPLIER_ID AS supplier_id,
+        `SELECT ii.PRODUCT_ID AS product_id, ii.UNIT_PRICE AS inbound_price,
+                pr.SUPPLIER_ID AS supplier_id,
                 s.NAME AS supplier_name, s.IS_SERVICE_PROVIDER AS is_service_provider,
                 s.GROSS_PROFIT_UPLIFT_AMOUNT AS gross_profit_uplift_amount
            FROM T_INBOUND_ITEM ii
@@ -322,7 +340,7 @@ async function resolveSupplierContext(items, order, transaction) {
     : [];
   const latestInboundByProduct = new Map();
   latestInboundRows.forEach(row => {
-    if (!latestInboundByProduct.has(String(row.product_id)) && row.supplier_id) {
+    if (!latestInboundByProduct.has(String(row.product_id)) && (row.supplier_id || toNumber(row.inbound_price) > 0)) {
       latestInboundByProduct.set(String(row.product_id), row);
     }
   });
@@ -357,7 +375,9 @@ async function buildProductPricingDetails(orderId, transaction) {
     const supplierId = row.supplier_id || snRow?.supplier_id || inboundSupplier?.supplier_id || '';
     const supplier = supplierId ? supplierContext.supplierMap.get(String(supplierId)) : null;
     const purchasePrice = toNumber(row.original_inventory_cost)
-      || toNumber(snRow?.inbound_price);
+      || toNumber(row.original_pickup_price)
+      || toNumber(snRow?.inbound_price)
+      || toNumber(inboundSupplier?.inbound_price);
     const pricing = resolveUnitProductPricing(productPrice, { ...row, purchasePrice }, supplier);
     const quantity = Number(row.quantity || 1);
     return {
