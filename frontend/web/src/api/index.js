@@ -117,6 +117,37 @@ attachResponseInterceptor(
   }
 )
 
+function exportExcel(url, params, fallbackFileName) {
+  return exportApi.get(url, {
+    params,
+    responseType: 'blob'
+  }).then(response => {
+    const blob = new Blob([response.data], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    })
+    const downloadUrl = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = downloadUrl
+
+    const contentDisposition = response.headers?.['content-disposition'] || ''
+    const encodedFileName = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)
+    const plainFileName = contentDisposition.match(/filename=([^;]+)/i)
+    let fileName = fallbackFileName
+    if (encodedFileName?.[1]) {
+      fileName = decodeURIComponent(encodedFileName[1])
+    } else if (plainFileName?.[1]) {
+      fileName = plainFileName[1].replace(/["']/g, '')
+    }
+
+    link.setAttribute('download', fileName)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(downloadUrl)
+    return response
+  })
+}
+
 export default {
   // Auth
   login: (data) => api.post('/auth/login', data),
