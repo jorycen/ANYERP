@@ -727,6 +727,25 @@ async function getProductApplicationList(ctx) {
   };
 }
 
+async function getProductApplicationDetail(ctx) {
+  const { applicationId } = ctx.params;
+  const application = await ProductApplication.findByPk(applicationId);
+  if (!application) ctx.throw(404, '商品申请不存在');
+
+  const user = ctx.state.user;
+  const staffId = user.staffId || user.id;
+  const roles = getUserRoles(user);
+  const canViewAll = roles.some(role => ['finance', 'purchaser', 'admin', 'boss'].includes(role));
+  if (!canViewAll && Number(application.applicant_staff_id) !== Number(staffId)) {
+    ctx.throw(403, '无权查看该商品申请');
+  }
+  if (canViewAll && !roles.includes('boss') && application.distributor_id !== (user.distributorId || '')) {
+    ctx.throw(403, '无权查看其他经销商的商品申请');
+  }
+
+  ctx.body = { code: 0, data: application.toJSON() };
+}
+
 async function revokeProductApplication(ctx) {
   const { applicationId } = ctx.params;
   const { reason = '新建商品申请已撤销' } = ctx.request.body || {};
@@ -2916,7 +2935,7 @@ async function exportProducts(ctx) {
 }
 
 module.exports = {
-  getProductList, createProduct, submitProductApplication, getProductApplicationList, revokeProductApplication, reviewProductApplication,
+  getProductList, createProduct, submitProductApplication, getProductApplicationList, getProductApplicationDetail, revokeProductApplication, reviewProductApplication,
   updateProduct, deleteProduct, batchDeleteProducts, togglePause, importProducts, exportProducts,
   getCategoryFields, saveCategoryFields, getCategoryFieldConfig,
   getBarcodes: async (ctx) => {

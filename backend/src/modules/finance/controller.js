@@ -645,6 +645,24 @@ async function getExpenseList(ctx) {
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
 }
 
+async function getExpenseDetail(ctx) {
+  const user = ctx.state.user;
+  const record = await Expense.findByPk(ctx.params.id, { include: [{ model: Store }] });
+  if (!record || record.is_deleted) ctx.throw(404, '报销单不存在');
+
+  const staffId = user.staffId || user.id;
+  const isApplicant = Number(record.applicant_staff_id) === Number(staffId)
+    || (!record.applicant_staff_id && [record.applicant_name, record.create_user].includes(user.name || user.phone));
+  const roles = getUserRoles(user);
+  const canViewAll = roles.some(role => ['finance', 'admin', 'boss'].includes(role));
+  if (!isApplicant && !canViewAll) ctx.throw(403, '无权查看该报销申请');
+  if (!user.accessibleStoreIds.includes('*') && !user.accessibleStoreIds.includes(record.store_id) && !canViewAll) {
+    ctx.throw(403, '无权查看该门店的报销申请');
+  }
+
+  ctx.body = { code: 0, data: record.toJSON() };
+}
+
 async function reviewExpense(ctx) {
   const user = ctx.state.user;
   const { action, comment } = ctx.request.body;
@@ -1257,6 +1275,7 @@ module.exports = {
   updateExpenseDraft,
   deleteExpenseDraft,
   getExpenseList,
+  getExpenseDetail,
   reviewExpense,
   cancelExpense,
   submitExpense,

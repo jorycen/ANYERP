@@ -4,7 +4,7 @@
 const Router = require('koa-router');
 const multer = require('@koa/multer');
 const {
-  getProductList, submitProductApplication, getProductApplicationList, revokeProductApplication, reviewProductApplication,
+  getProductList, submitProductApplication, getProductApplicationList, getProductApplicationDetail, revokeProductApplication, reviewProductApplication,
   updateProduct, deleteProduct, batchDeleteProducts, togglePause, importProducts, exportProducts,
   getBarcodes, addBarcode, deleteBarcode,
   getCategoryTree, createCategory, updateCategory, deleteCategory, sortCategories,
@@ -24,6 +24,7 @@ router.get('/search', searchProduct);
 router.get('/export', exportProducts);
 router.get('/application-list', getProductApplicationList);
 router.post('/application', submitProductApplication);
+router.get('/application/:applicationId', getProductApplicationDetail);
 router.post('/application/:applicationId/revoke', revokeProductApplication);
 router.post('/application/:applicationId/review', requireRole('finance', 'purchaser'), reviewProductApplication);
 // 兼容现有客户端：手工新建商品统一转为审批申请。

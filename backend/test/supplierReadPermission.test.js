@@ -23,6 +23,13 @@ function context(path, method = 'GET') {
   };
 }
 
+function storeContext(body) {
+  const value = context('/api/v1/sales/create', 'POST');
+  value.request.body = body;
+  value.state.user.accessibleStoreIds = ['STORE_A'];
+  return value;
+}
+
 test('supplier reads do not require a store assignment', async () => {
   let called = false;
   await storeAccessMiddleware(context('/api/v1/purchase/supplier-list'), async () => {
@@ -35,6 +42,27 @@ test('other purchase reads still require a store assignment', async () => {
   await assert.rejects(
     storeAccessMiddleware(context('/api/v1/purchase/request-list'), async () => {}),
     error => error.status === 403
+  );
+});
+
+test('辅助销售人的其他门店归属不应被当作订单操作门店拦截', async () => {
+  let called = false;
+  await storeAccessMiddleware(storeContext({
+    storeId: 'STORE_A',
+    auxiliarySalesList: [{ staffId: 'STAFF_B', storeId: 'STORE_B' }]
+  }), async () => {
+    called = true;
+  });
+  assert.equal(called, true);
+});
+
+test('订单主门店仍必须属于当前账号权限范围', async () => {
+  await assert.rejects(
+    storeAccessMiddleware(storeContext({
+      storeId: 'STORE_B',
+      auxiliarySalesList: [{ staffId: 'STAFF_A', storeId: 'STORE_A' }]
+    }), async () => {}),
+    error => error.status === 403 && error.message === '无权访问该门店'
   );
 });
 

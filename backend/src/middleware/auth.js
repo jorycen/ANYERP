@@ -102,14 +102,18 @@ async function storeAccessMiddleware(ctx, next) {
   }
   const isStoreKey = key => /store_?ids?$/.test(key.toLowerCase());
   const requested = [];
-  const collect = value => {
+  const collect = (value, skipNestedStoreIds = false) => {
     if (!value || typeof value !== 'object') return;
     for (const [key, item] of Object.entries(value)) {
       if (isStoreKey(key)) {
+        // 辅助销售人可以来自其他门店；这里的 storeId 只是人员归属信息，
+        // 不是本次订单实际操作的门店。订单主门店仍由顶层 storeId 校验。
+        if (skipNestedStoreIds) continue;
         const values = Array.isArray(item) ? item : [item];
         requested.push(...values.filter(Boolean).map(String));
       } else if (item && typeof item === 'object') {
-        collect(item);
+        const isAuxiliarySalesList = /^(auxiliary_?sales_?list)$/i.test(key);
+        collect(item, skipNestedStoreIds || isAuxiliarySalesList);
       }
     }
   };
