@@ -7,7 +7,8 @@ const {
   normalizeMethodName,
   isPolicySubsidyReceivable,
   calculateOrderReceivable,
-  resolveUnitProductPricing
+  resolveUnitProductPricing,
+  isExternalAdjustmentEligibleProduct
 } = require('../src/modules/sales/grossProfit');
 
 test('订单毛利按应收、产品定价、应收税率费用、增值税和补录净额计算', () => {
@@ -68,7 +69,7 @@ test('收款方式费用按用户应收分配额而不是实际收款额计算',
 
   assert.equal(result.paymentDetails[0].receivableAmount, 1200);
   assert.equal(result.paymentFeeAmount, 12);
-  assert.equal(result.grossProfitAmount, 988);
+  assert.equal(result.grossProfitAmount, 1188);
 });
 
 test('毛利商品成本优先使用产品定价，未定价时才回退采购成本', () => {
@@ -113,14 +114,48 @@ test('用户应收保留国补和教育补贴，只扣除普通折扣', () => {
   }), 1400);
 });
 
-test('基础毛利超过500元时扣除200元外调费', () => {
+test('非服务商电脑基础毛利超过500元时扣除200元外调费', () => {
   const result = calculateGrossProfitValues({
     receivableAmount: 1000,
-    productPricingDetails: [{ quantity: 1, unitPricing: 400, pricingAmount: 400 }]
+    productPricingDetails: [{
+      productName: '笔记本电脑',
+      quantity: 1,
+      unitPricing: 400,
+      pricingAmount: 400,
+      isServiceProvider: false,
+      externalAdjustmentEligible: true
+    }],
+    externalAdjustmentEligible: true
   });
   assert.equal(result.grossProfitBeforeExternalAdjustment, 600);
   assert.equal(result.externalAdjustmentFee, 200);
   assert.equal(result.grossProfitAmount, 400);
+});
+
+test('纯配件或维修商品即使基础毛利超过500元也不扣外调费', () => {
+  const accessory = calculateGrossProfitValues({
+    receivableAmount: 1000,
+    productPricingDetails: [{ productName: '电脑鼠标配件', quantity: 1, pricingAmount: 400 }],
+    externalAdjustmentEligible: false
+  });
+  const repair = calculateGrossProfitValues({
+    receivableAmount: 1000,
+    productPricingDetails: [{ productName: '手机维修服务', quantity: 1, pricingAmount: 400 }],
+    externalAdjustmentEligible: false
+  });
+  assert.equal(accessory.externalAdjustmentFee, 0);
+  assert.equal(accessory.grossProfitAmount, 600);
+  assert.equal(repair.externalAdjustmentFee, 0);
+  assert.equal(repair.grossProfitAmount, 600);
+});
+
+test('外调费资格只接受非服务商电脑、手机或平板', () => {
+  assert.equal(isExternalAdjustmentEligibleProduct({ productName: '笔记本电脑', isServiceProvider: false }), true);
+  assert.equal(isExternalAdjustmentEligibleProduct({ productName: '手机', isServiceProvider: false }), true);
+  assert.equal(isExternalAdjustmentEligibleProduct({ productName: '平板', isServiceProvider: false }), true);
+  assert.equal(isExternalAdjustmentEligibleProduct({ productName: '笔记本电脑', isServiceProvider: true }), false);
+  assert.equal(isExternalAdjustmentEligibleProduct({ productName: '电脑配件', isServiceProvider: false }), false);
+  assert.equal(isExternalAdjustmentEligibleProduct({ productName: '电脑维修', isServiceProvider: false }), false);
 });
 
 test('国补POS客户实收到账金额扣除0.6%税', () => {

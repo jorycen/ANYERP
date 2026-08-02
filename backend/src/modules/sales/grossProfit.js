@@ -8,6 +8,7 @@ const {
   DepositRedemption,
   PaymentMethod,
   ProductPrice,
+  Product,
   ProductSn,
   Supplier,
   sequelize
@@ -15,7 +16,7 @@ const {
 const { Op, QueryTypes } = require('sequelize');
 const { generateUUID } = require('../../utils');
 
-const FORMULA_VERSION = 'ORDER_GP_V6_20260802';
+const FORMULA_VERSION = 'ORDER_GP_V7_20260802';
 const VAT_RATE = 0.13;
 const NATIONAL_SUBSIDY_RECEIPT_TAX_RATE = 0.006;
 
@@ -26,6 +27,18 @@ function toNumber(value) {
 
 function roundMoney(value) {
   return Math.round((toNumber(value) + Number.EPSILON) * 100) / 100;
+}
+
+function isExternalAdjustmentEligibleProduct({
+  category = '',
+  productName = '',
+  accessoryType = '',
+  isServiceProvider = true
+} = {}) {
+  if (isServiceProvider) return false;
+  const text = `${category} ${productName} ${accessoryType}`.toLowerCase();
+  if (/配件|维修|服务|安装|保养|耗材/.test(text)) return false;
+  return /电脑|笔记本|台式机|一体机|主机|平板|ipad|手机|iphone/.test(text);
 }
 
 function calculateNationalSubsidyCustomerReceiptAmount({
@@ -101,7 +114,8 @@ function calculateGrossProfitValues({
   paymentDetails = [],
   productPricingDetails = [],
   supplementDetails = [],
-  invoiceAmount = 0
+  invoiceAmount = 0,
+  externalAdjustmentEligible = false
 } = {}) {
   const basePayments = paymentDetails
     .filter(item => !isPolicySubsidyReceivable(item.method))
@@ -159,7 +173,7 @@ function calculateGrossProfitValues({
   const grossProfitBeforeExternalAdjustment = roundMoney(
     normalizedReceivableAmount - productPricingAmount - paymentFeeAmount - vatAmount + supplementAmount
   );
-  const externalAdjustmentFee = grossProfitBeforeExternalAdjustment > 500 ? 200 : 0;
+  const externalAdjustmentFee = externalAdjustmentEligible && grossProfitBeforeExternalAdjustment > 500 ? 200 : 0;
   const grossProfitAmount = roundMoney(grossProfitBeforeExternalAdjustment - externalAdjustmentFee);
 
   return {
@@ -171,6 +185,7 @@ function calculateGrossProfitValues({
     vatAmount,
     supplementAmount,
     grossProfitBeforeExternalAdjustment,
+    externalAdjustmentEligible: !!externalAdjustmentEligible,
     externalAdjustmentFee,
     grossProfitAmount,
     paymentDetails: normalizedPayments,
@@ -207,7 +222,14 @@ function snapshotToResponse(snapshot, order = null) {
   const grossProfitBeforeExternalAdjustment = roundMoney(
     receivableAmount - productPricingAmount - paymentFeeAmount - vatAmount + supplementAmount
   );
-  const externalAdjustmentFee = grossProfitBeforeExternalAdjustment > 500 ? 200 : 0;
+  const productPricingDetails = parseJsonArray(
+    row.product_pricing_details || row.settlement_cost_details
+  );
+  const externalAdjustmentEligible = productPricingDetails.some(item =>
+    item.externalAdjustmentEligible === true || item.external_adjustment_eligible === true ||
+    isExternalAdjustmentEligibleProduct(item)
+  );
+  const externalAdjustmentFee = externalAdjustmentEligible && grossProfitBeforeExternalAdjustment > 500 ? 200 : 0;
   return {
     grossProfitId: row.gross_profit_id,
     orderId: row.order_id,
@@ -229,17 +251,16 @@ function snapshotToResponse(snapshot, order = null) {
     vatAmount,
     supplementAmount,
     grossProfitBeforeExternalAdjustment,
+    externalAdjustmentEligible,
     externalAdjustmentFee,
     grossProfitAmount: roundMoney(row.gross_profit_amount),
     paymentDetails: parseJsonArray(row.payment_fee_details),
-    productPricingDetails: parseJsonArray(
-      row.product_pricing_details || row.settlement_cost_details
-    ),
+    productPricingDetails,
     supplementDetails: parseJsonArray(row.supplement_details),
     snapshotStatus: row.snapshot_status,
     calculatedBy: row.calculated_by || '',
     calculatedAt: row.calculated_at,
-    formula: '用户应收 - 服务商商品定价/非服务商本次采购价 - 支付手续费 - 增值税 + 补录净额；基础毛利超过500元时另扣200元外调费'
+    formula: '用户应收 - 服务商商品定价/非服务商本次采购价 - 支付手续费 - 增值税 + 补录净额；非服务商的电脑、手机或平板且基础毛利超过500元时另扣200元外调费'
   };
 }
 
@@ -366,10 +387,20 @@ async function buildProductPricingDetails(orderId, transaction) {
       })
     : [];
   const priceByProduct = new Map(prices.map(price => [String(price.product_id), price]));
+  const products = productIds.length
+    ? await Product.findAll({
+        where: { product_id: productIds },
+        attributes: ['product_id', 'name', 'category', 'accessory_type'],
+        transaction,
+        raw: true
+      })
+    : [];
+  const productById = new Map(products.map(product => [String(product.product_id), product]));
   const supplierContext = await resolveSupplierContext(items.map(item => item.toJSON()), order || {}, transaction);
   return items.map(item => {
     const row = item.toJSON();
     const productPrice = priceByProduct.get(String(row.product_id || ''));
+    const product = productById.get(String(row.product_id || '')) || {};
     const snRow = supplierContext.snMap.get(`id:${row.sn_id}`) || supplierContext.snMap.get(`code:${row.sn_code}`);
     const inboundSupplier = supplierContext.latestInboundByProduct.get(String(row.product_id || ''));
     const supplierId = row.supplier_id || snRow?.supplier_id || inboundSupplier?.supplier_id || '';
@@ -380,10 +411,13 @@ async function buildProductPricingDetails(orderId, transaction) {
       || toNumber(inboundSupplier?.inbound_price);
     const pricing = resolveUnitProductPricing(productPrice, { ...row, purchasePrice }, supplier);
     const quantity = Number(row.quantity || 1);
+    const isServiceProvider = pricing.isServiceProvider ?? true;
     return {
       itemId: row.item_id,
       productId: row.product_id || '',
       productName: row.product_name || '',
+      category: product.category || '',
+      accessoryType: product.accessory_type || '',
       pnCode: row.pn_code || '',
       snCode: row.sn_code || '',
       quantity,
@@ -393,7 +427,13 @@ async function buildProductPricingDetails(orderId, transaction) {
       grossProfitUpliftAmount: pricing.grossProfitUpliftAmount ?? 0,
       supplierId: supplier?.supplier_id || supplierId,
       supplierName: supplier?.name || row.supplier_name || inboundSupplier?.supplier_name || '',
-      isServiceProvider: pricing.isServiceProvider ?? true,
+      isServiceProvider,
+      externalAdjustmentEligible: isExternalAdjustmentEligibleProduct({
+        category: product.category,
+        productName: row.product_name || product.name,
+        accessoryType: product.accessory_type,
+        isServiceProvider
+      }),
       source: pricing.source
     };
   });
@@ -449,7 +489,8 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     paymentDetails,
     productPricingDetails,
     supplementDetails,
-    invoiceAmount: order.invoice_amount
+    invoiceAmount: order.invoice_amount,
+    externalAdjustmentEligible: productPricingDetails.some(item => item.externalAdjustmentEligible)
   });
   const archived = final === null
     ? ['已归档', 'completed', 'archived'].includes(String(order.order_status || ''))
@@ -518,6 +559,7 @@ module.exports = {
   FORMULA_VERSION,
   VAT_RATE,
   roundMoney,
+  isExternalAdjustmentEligibleProduct,
   calculateNationalSubsidyCustomerReceiptAmount,
   normalizeMethodName,
   isPolicySubsidyReceivable,
