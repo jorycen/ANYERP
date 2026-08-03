@@ -8,17 +8,18 @@ const routes = [
   },
   { path: '/store', redirect: '/stores' },
   { path: '/store/:pathMatch(.*)*', redirect: '/stores' },
-  { path: '/product', redirect: '/products' },
-  { path: '/product/:pathMatch(.*)*', redirect: '/products' },
-  { path: '/purchase/:pathMatch(.*)*', redirect: '/purchase' },
-  { path: '/sales/:pathMatch(.*)*', redirect: '/sales' },
-  { path: '/finance/daily', redirect: '/finance' },
-  { path: '/finance/expense', redirect: '/finance' },
-  { path: '/finance/report', redirect: '/finance' },
+  { path: '/product', redirect: '/products/product' },
+  { path: '/product/:pathMatch(.*)*', redirect: '/products/product' },
+  { path: '/sales', redirect: '/sales/order' },
+  { path: '/purchase', redirect: '/purchase/request' },
+  { path: '/finance', redirect: '/finance/daily' },
+  { path: '/finance/report', redirect: '/reports' },
   { path: '/payment-management/:pathMatch(.*)*', redirect: '/finance/payment' },
-  { path: '/inventory/:pathMatch(.*)*', redirect: '/inventory' },
-  { path: '/system/:pathMatch(.*)*', redirect: '/system' },
-  { path: '/reports/:pathMatch(.*)*', redirect: '/reports' },
+  { path: '/inventory', redirect: '/inventory/summary' },
+  { path: '/system', redirect: '/system/users' },
+  { path: '/products', redirect: '/products/product' },
+  { path: '/reports', redirect: '/reports/dashboard' },
+  { path: '/approval', redirect: '/approval/tasks' },
   {
     path: '/',
     component: () => import('../views/Layout.vue'),
@@ -29,41 +30,143 @@ const routes = [
         component: () => import('../views/Dashboard.vue')
       },
       {
-        path: 'sales',
+        path: 'sales/order',
         name: 'Sales',
-        component: () => import('../views/Sales.vue')
+        component: () => import('../views/Sales.vue'),
+        meta: { tab: 'order' }
       },
       {
         path: 'sales/subsidy-photos',
         name: 'SubsidyPhotos',
         component: () => import('../views/SubsidyPhotos.vue'),
-        meta: { roles: ['finance', 'manager', 'store_manager', 'admin', 'boss'] }
+        meta: { roles: ['finance', 'manager', 'store_manager', 'admin', 'boss'], tab: 'subsidy-photos' }
       },
       {
-        path: 'inventory',
+        path: 'inventory/summary',
         name: 'Inventory',
-        component: () => import('../views/Inventory.vue')
+        component: () => import('../views/Inventory.vue'),
+        meta: { tab: 'summary' }
       },
       {
-        path: 'purchase',
+        path: 'inventory/sn-inventory',
+        name: 'InventorySnInventory',
+        component: () => import('../views/Inventory.vue'),
+        meta: { tab: 'sn-inventory' }
+      },
+      {
+        path: 'inventory/batch-maintenance',
+        name: 'InventoryBatchMaintenance',
+        component: () => import('../views/Inventory.vue'),
+        meta: { tab: 'batch-maintenance' }
+      },
+      {
+        path: 'inventory/inbound',
+        name: 'InventoryInbound',
+        component: () => import('../views/Inventory.vue'),
+        meta: { tab: 'inbound' }
+      },
+      {
+        path: 'inventory/sn-trace',
+        name: 'InventorySnTrace',
+        component: () => import('../views/Inventory.vue'),
+        meta: { tab: 'sn-trace' }
+      },
+      {
+        path: 'inventory/resource-rights',
+        name: 'InventoryResourceRights',
+        component: () => import('../views/Inventory.vue'),
+        meta: { roles: ['finance', 'manager', 'admin', 'boss'], tab: 'resource-rights' }
+      },
+      {
+        path: 'inventory/transfer',
+        name: 'InventoryTransfer',
+        component: () => import('../views/Inventory.vue'),
+        meta: { tab: 'transfer' }
+      },
+      {
+        path: 'inventory/conversion',
+        name: 'InventoryConversion',
+        component: () => import('../views/Inventory.vue'),
+        meta: { tab: 'conversion' }
+      },
+      {
+        path: 'purchase/request',
         name: 'Purchase',
         component: () => import('../views/Purchase.vue'),
         meta: {
           roles: ['purchaser', 'admin', 'boss'],
-          traceRoles: '*'
+          traceRoles: '*',
+          tab: 'request'
         }
       },
       {
-        path: 'finance',
+        path: 'purchase/supplier',
+        name: 'PurchaseSupplier',
+        component: () => import('../views/Purchase.vue'),
+        meta: {
+          roles: ['purchaser', 'admin', 'boss'],
+          tab: 'supplier'
+        }
+      },
+      {
+        path: 'finance/daily',
         name: 'Finance',
         component: () => import('../views/Finance.vue'),
-        meta: { roles: ['finance', 'admin', 'boss'] }
+        meta: { roles: ['finance', 'admin', 'boss'], tab: 'daily' }
+      },
+      {
+        path: 'finance/subsidy-receivable',
+        name: 'FinanceSubsidyReceivable',
+        component: () => import('../views/Finance.vue'),
+        meta: { roles: ['finance', 'admin', 'boss'], tab: 'nationalSubsidyReceivable' }
+      },
+      {
+        path: 'finance/rebate-settlement',
+        name: 'FinanceRebateSettlement',
+        component: () => import('../views/Finance.vue'),
+        meta: { roles: ['finance', 'admin', 'boss'], tab: 'rebate-settlement' }
+      },
+      {
+        path: 'finance/expense',
+        name: 'FinanceExpense',
+        component: () => import('../views/Finance.vue'),
+        meta: { roles: ['finance', 'admin', 'boss'], tab: 'expense' }
+      },
+      {
+        path: 'finance/payable',
+        name: 'FinancePayable',
+        component: () => import('../views/Finance.vue'),
+        meta: { roles: ['finance', 'admin', 'boss'], tab: 'payable' }
+      },
+      {
+        path: 'finance/reimbursement',
+        name: 'FinanceReimbursement',
+        component: () => import('../views/Finance.vue'),
+        meta: { roles: ['finance', 'admin', 'boss'], tab: 'reimbursement' }
       },
       {
         path: 'finance/payment',
         name: 'FinancePayment',
         component: () => import('../views/Finance.vue'),
-        meta: { roles: ['finance', 'admin', 'boss'] }
+        meta: { roles: ['finance', 'admin', 'boss'], tab: 'payment' }
+      },
+      {
+        path: 'finance/rebate',
+        name: 'FinanceRebate',
+        component: () => import('../views/Finance.vue'),
+        meta: { roles: ['finance', 'admin', 'boss'], tab: 'rebate' }
+      },
+      {
+        path: 'finance/resource-rights',
+        name: 'FinanceResourceRights',
+        component: () => import('../views/Finance.vue'),
+        meta: { roles: ['finance', 'admin', 'boss'], tab: 'resource-rights' }
+      },
+      {
+        path: 'finance/account',
+        name: 'FinanceAccount',
+        component: () => import('../views/Finance.vue'),
+        meta: { roles: ['finance', 'admin', 'boss'], tab: 'account' }
       },
       {
         path: 'finance/settlement',
@@ -72,9 +175,28 @@ const routes = [
         meta: { roles: ['finance', 'admin', 'boss'] }
       },
       {
-        path: 'products',
+        path: 'products/product',
         name: 'Products',
-        component: () => import('../views/Products.vue')
+        component: () => import('../views/Products.vue'),
+        meta: { tab: 'product' }
+      },
+      {
+        path: 'products/category',
+        name: 'ProductsCategory',
+        component: () => import('../views/Products.vue'),
+        meta: { tab: 'category' }
+      },
+      {
+        path: 'products/price',
+        name: 'ProductsPrice',
+        component: () => import('../views/Products.vue'),
+        meta: { tab: 'price' }
+      },
+      {
+        path: 'products/approval',
+        name: 'ProductsApproval',
+        component: () => import('../views/Products.vue'),
+        meta: { tab: 'approval' }
       },
       {
         path: 'stores',
@@ -82,20 +204,79 @@ const routes = [
         component: () => import('../views/Stores.vue')
       },
       {
-        path: 'reports',
+        path: 'reports/dashboard',
         name: 'Reports',
-        component: () => import('../views/Reports.vue')
+        component: () => import('../views/Reports.vue'),
+        meta: { tab: 'dashboard' }
       },
       {
-        path: 'approval',
+        path: 'reports/sales',
+        name: 'ReportsSales',
+        component: () => import('../views/Reports.vue'),
+        meta: { tab: 'sales' }
+      },
+      {
+        path: 'reports/inventory',
+        name: 'ReportsInventory',
+        component: () => import('../views/Reports.vue'),
+        meta: { tab: 'inventory' }
+      },
+      {
+        path: 'reports/employee',
+        name: 'ReportsEmployee',
+        component: () => import('../views/Reports.vue'),
+        meta: { tab: 'employee' }
+      },
+      {
+        path: 'approval/tasks',
         name: 'Approval',
-        component: () => import('../views/Approval.vue')
+        component: () => import('../views/Approval.vue'),
+        meta: { tab: 'tasks' }
       },
       {
-        path: 'system',
+        path: 'approval/instances',
+        name: 'ApprovalInstances',
+        component: () => import('../views/Approval.vue'),
+        meta: { tab: 'instances' }
+      },
+      {
+        path: 'approval/flows',
+        name: 'ApprovalFlows',
+        component: () => import('../views/Approval.vue'),
+        meta: { tab: 'flows' }
+      },
+      {
+        path: 'system/users',
         name: 'System',
         component: () => import('../views/System.vue'),
-        meta: { roles: ['admin', 'boss'] }
+        meta: { roles: ['admin', 'boss'], tab: 'users' }
+      },
+      {
+        path: 'system/roles', name: 'SystemRoles', component: () => import('../views/System.vue'), meta: { roles: ['admin', 'boss'], tab: 'roles' }
+      },
+      {
+        path: 'system/menus', name: 'SystemMenus', component: () => import('../views/System.vue'), meta: { roles: ['admin', 'boss'], tab: 'menus' }
+      },
+      {
+        path: 'system/locations', name: 'SystemLocations', component: () => import('../views/System.vue'), meta: { roles: ['admin', 'boss'], tab: 'locations' }
+      },
+      {
+        path: 'system/resource-categories', name: 'SystemResourceCategories', component: () => import('../views/System.vue'), meta: { roles: ['admin', 'boss'], tab: 'resourceCategories' }
+      },
+      {
+        path: 'system/customer-source', name: 'SystemCustomerSource', component: () => import('../views/System.vue'), meta: { roles: ['admin', 'boss'], tab: 'customerSource' }
+      },
+      {
+        path: 'system/payment-method', name: 'SystemPaymentMethod', component: () => import('../views/System.vue'), meta: { roles: ['admin', 'boss'], tab: 'paymentMethod' }
+      },
+      {
+        path: 'system/supplement-item', name: 'SystemSupplementItem', component: () => import('../views/System.vue'), meta: { roles: ['admin', 'boss'], tab: 'supplementItem' }
+      },
+      {
+        path: 'system/expense-type', name: 'SystemExpenseType', component: () => import('../views/System.vue'), meta: { roles: ['admin', 'boss'], tab: 'expenseType' }
+      },
+      {
+        path: 'system/category-field', name: 'SystemCategoryField', component: () => import('../views/System.vue'), meta: { roles: ['admin', 'boss'], tab: 'categoryField' }
       }
     ]
   }

@@ -2896,6 +2896,154 @@ async function migrateMissingProductPns(uuid) {
 async function seedPermissionData() {
   try {
     const uuid = require('crypto').randomUUID;
+    const childMenus = [
+      ['sales_order', '销售订单', 'sales', '/sales/order', 1],
+      ['sales_subsidy_photos', '国补照片', 'sales', '/sales/subsidy-photos', 2],
+      ['inventory_summary', '库存汇总', 'inventory', '/inventory/summary', 1],
+      ['inventory_sn_inventory', 'SN库存清单', 'inventory', '/inventory/sn-inventory', 2],
+      ['inventory_batch_maintenance', '批量维护', 'inventory', '/inventory/batch-maintenance', 3],
+      ['inventory_inbound', '入库单管理', 'inventory', '/inventory/inbound', 4],
+      ['inventory_sn_trace', 'SN追踪', 'inventory', '/inventory/sn-trace', 5],
+      ['inventory_resource_rights', '库存资源权益', 'inventory', '/inventory/resource-rights', 6],
+      ['inventory_transfer', '调拨管理', 'inventory', '/inventory/transfer', 7],
+      ['inventory_conversion', '拆装管理', 'inventory', '/inventory/conversion', 8],
+      ['purchase_request', '采购申请', 'purchase', '/purchase/request', 1],
+      ['purchase_supplier', '供应商管理', 'purchase', '/purchase/supplier', 2],
+      ['finance_daily', '日结单', 'finance', '/finance/daily', 1],
+      ['finance_subsidy_receivable', '国补应收单', 'finance', '/finance/subsidy-receivable', 2],
+      ['finance_rebate_settlement', '返利下账', 'finance', '/finance/rebate-settlement', 3],
+      ['finance_expense', '费用管理', 'finance', '/finance/expense', 4],
+      ['finance_payable', '应付管理', 'finance', '/finance/payable', 5],
+      ['finance_reimbursement', '报销结算', 'finance', '/finance/reimbursement', 6],
+      ['finance_payment', '付款管理', 'finance', '/finance/payment', 7],
+      ['finance_rebate', '返利管理', 'finance', '/finance/rebate', 8],
+      ['finance_resource_rights', '资源权益核销与成本调整', 'finance', '/finance/resource-rights', 9],
+      ['finance_account', '账户中心', 'finance', '/finance/account', 10],
+      ['finance_settlement', '应付结算单管理', 'finance', '/finance/settlement', 11],
+      ['product_product', '商品管理', 'products', '/products/product', 1],
+      ['product_category', '分类管理', 'products', '/products/category', 2],
+      ['product_price', '价格管理', 'products', '/products/price', 3],
+      ['product_approval', '新建商品审批', 'products', '/products/approval', 4],
+      ['reports_dashboard', '经营数据看板', 'reports', '/reports/dashboard', 1],
+      ['reports_sales', '销售报表', 'reports', '/reports/sales', 2],
+      ['reports_inventory', '库存报表', 'reports', '/reports/inventory', 3],
+      ['reports_employee', '员工业绩统计', 'reports', '/reports/employee', 4],
+      ['approval_tasks', '待我审批', 'approval', '/approval/tasks', 1],
+      ['approval_instances', '我的申请', 'approval', '/approval/instances', 2],
+      ['approval_flows', '流程配置', 'approval', '/approval/flows', 3],
+      ['system_users', '用户管理', 'system', '/system/users', 1],
+      ['system_roles', '角色管理', 'system', '/system/roles', 2],
+      ['system_menus', '菜单管理', 'system', '/system/menus', 3],
+      ['system_locations', '库位管理', 'system', '/system/locations', 4],
+      ['system_resource_categories', '货型配置', 'system', '/system/resource-categories', 5],
+      ['system_customer_source', '客户来源管理', 'system', '/system/customer-source', 6],
+      ['system_payment_method', '收款方式管理', 'system', '/system/payment-method', 7],
+      ['system_supplement_item', '金额补录项目管理', 'system', '/system/supplement-item', 8],
+      ['system_expense_type', '报销类型管理', 'system', '/system/expense-type', 9],
+      ['system_category_field', '商品字段管理', 'system', '/system/category-field', 10]
+    ];
+    const childCodes = Object.fromEntries(childMenus.map(([code]) => [code, true]));
+    const legacyMenuCodes = [
+      'sales_return', 'sales_stats',
+      'inventory_sn', 'inventory_warning', 'inventory_location',
+      'purchase_order', 'purchase_inbound', 'finance_report',
+      'product_list', 'product_list_legacy',
+      'system_user', 'system_role', 'system_menu', 'system_region',
+      'paymentManagement'
+    ];
+    const roleChildMenus = {
+      boss: childMenus.map(([code]) => code),
+      admin: childMenus.map(([code]) => code),
+      finance: [
+        'sales_order', 'sales_subsidy_photos',
+        'inventory_resource_rights',
+        'finance_daily', 'finance_subsidy_receivable', 'finance_rebate_settlement', 'finance_expense',
+        'finance_payable', 'finance_reimbursement', 'finance_payment', 'finance_rebate',
+        'finance_resource_rights', 'finance_account', 'finance_settlement',
+        'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee',
+        'approval_tasks', 'approval_instances', 'product_approval'
+      ],
+      purchaser: [
+        'purchase_request', 'purchase_supplier', 'reports_dashboard', 'reports_sales', 'reports_inventory',
+        'reports_employee', 'approval_tasks', 'approval_instances', 'product_approval'
+      ],
+      manager: [
+        'sales_order', 'sales_subsidy_photos',
+        'inventory_summary', 'inventory_sn_inventory', 'inventory_batch_maintenance', 'inventory_inbound',
+        'inventory_sn_trace', 'inventory_resource_rights', 'inventory_transfer', 'inventory_conversion',
+        'product_product', 'product_category', 'product_price', 'product_approval',
+        'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee',
+        'approval_tasks', 'approval_instances'
+      ],
+      store_manager: [
+        'sales_order', 'sales_subsidy_photos',
+        'inventory_summary', 'inventory_sn_inventory', 'inventory_batch_maintenance', 'inventory_inbound',
+        'inventory_sn_trace', 'inventory_transfer', 'inventory_conversion',
+        'product_product', 'product_category', 'product_price', 'product_approval',
+        'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee',
+        'approval_tasks', 'approval_instances'
+      ],
+      clerk: [
+        'sales_order', 'inventory_summary', 'inventory_sn_inventory', 'inventory_inbound',
+        'inventory_sn_trace', 'inventory_transfer', 'reports_dashboard', 'reports_sales',
+        'reports_inventory', 'reports_employee', 'approval_tasks', 'approval_instances'
+      ]
+    };
+    const ensureChildMenus = async () => {
+      for (const [code, name, parentCode, path, sortOrder] of childMenus) {
+        const [parents] = await sequelize.query(
+          'SELECT MENU_ID FROM T_MENU WHERE MENU_CODE = ? AND STATUS = 1 LIMIT 1',
+          { replacements: [parentCode] }
+        );
+        if (!parents.length) continue;
+        const [existing] = await sequelize.query(
+          'SELECT MENU_ID FROM T_MENU WHERE MENU_CODE = ? LIMIT 1',
+          { replacements: [code] }
+        );
+        if (existing.length) {
+          await sequelize.query(
+            `UPDATE T_MENU SET NAME = ?, PARENT_ID = ?, MENU_TYPE = 'menu', PATH = ?, SORT_ORDER = ?, STATUS = 1 WHERE MENU_ID = ?`,
+            { replacements: [name, parents[0].MENU_ID, path, sortOrder, existing[0].MENU_ID] }
+          );
+        } else {
+          await sequelize.query(
+            `INSERT INTO T_MENU (MENU_ID, MENU_CODE, NAME, PARENT_ID, MENU_TYPE, PATH, ICON, SORT_ORDER, STATUS)
+             VALUES (?, ?, ?, ?, 'menu', ?, NULL, ?, 1)`,
+            { replacements: [uuid().replace(/-/g, '').substring(0, 32), code, name, parents[0].MENU_ID, path, sortOrder] }
+          );
+        }
+      }
+    };
+    const ensureRoleChildMenus = async () => {
+      for (const [roleCode, menuCodes] of Object.entries(roleChildMenus)) {
+        const [roles] = await sequelize.query(
+          'SELECT ROLE_ID FROM T_ROLE WHERE ROLE_CODE = ? AND STATUS = 1',
+          { replacements: [roleCode] }
+        );
+        if (!roles.length) continue;
+        for (const menuCode of menuCodes) {
+          if (!childCodes[menuCode]) continue;
+          const [menus] = await sequelize.query(
+            'SELECT MENU_ID FROM T_MENU WHERE MENU_CODE = ? AND STATUS = 1',
+            { replacements: [menuCode] }
+          );
+          for (const role of roles) {
+            for (const menu of menus) {
+              await sequelize.query(
+                'INSERT IGNORE INTO T_ROLE_MENU (ROLE_ID, MENU_ID) VALUES (?, ?)',
+                { replacements: [role.ROLE_ID, menu.MENU_ID] }
+              );
+            }
+          }
+        }
+      }
+    };
+    const disableLegacyMenus = async () => {
+      await sequelize.query(
+        `UPDATE T_MENU SET STATUS = 0 WHERE MENU_CODE IN (${legacyMenuCodes.map(() => '?').join(', ')})`,
+        { replacements: legacyMenuCodes }
+      );
+    };
     await sequelize.query(
       `INSERT IGNORE INTO T_MENU (MENU_ID, MENU_CODE, NAME, PARENT_ID, MENU_TYPE, PATH, ICON, SORT_ORDER, STATUS)
        VALUES (?, 'approval', '审批中心', NULL, 'menu', '/approval', 'Checked', 4, 1)`,
@@ -2917,6 +3065,9 @@ async function seedPermissionData() {
       { type: sequelize.QueryTypes.SELECT }
     );
     if (roleCount.cnt > 0) {
+      await ensureChildMenus();
+      await disableLegacyMenus();
+      await ensureRoleChildMenus();
       await sequelize.query(`
         INSERT IGNORE INTO T_STAFF_ROLE (STAFF_ID, ROLE_ID)
         SELECT s.STAFF_ID, r.ROLE_ID
@@ -2954,7 +3105,7 @@ async function seedPermissionData() {
         INSERT IGNORE INTO T_ROLE_MENU (ROLE_ID, MENU_ID)
         SELECT r.ROLE_ID, m.MENU_ID
         FROM T_ROLE r
-        JOIN T_MENU m ON m.MENU_CODE IN ('sales', 'sales_subsidy_photos')
+        JOIN T_MENU m ON m.MENU_CODE IN ('sales', 'inventory', 'sales_subsidy_photos')
         WHERE r.ROLE_CODE IN ('boss', 'admin', 'finance', 'manager', 'store_manager')
           AND r.STATUS = 1 AND m.STATUS = 1
       `);
@@ -2981,6 +3132,7 @@ async function seedPermissionData() {
         { replacements: [uuid().replace(/-/g, '').substring(0, 32), m[0], m[1], m[2], m[3], m[4], m[5], m[6]] }
       );
     }
+    await ensureChildMenus();
 
     const roles = [
       ['boss', '系统管理员', '全部权限'],
@@ -3010,7 +3162,7 @@ async function seedPermissionData() {
     const roleMenus = {
       boss:   ['home', 'sales', 'inventory', 'purchase', 'finance', 'products', 'stores', 'reports', 'system', 'approval'],
       admin:  ['home', 'sales', 'inventory', 'purchase', 'finance', 'products', 'stores', 'reports', 'system', 'approval'],
-      finance: ['home', 'sales', 'finance', 'products', 'reports', 'approval'],
+      finance: ['home', 'sales', 'inventory', 'finance', 'products', 'reports', 'approval'],
       purchaser: ['home', 'purchase', 'products', 'reports', 'approval'],
       manager: ['home', 'sales', 'inventory', 'products', 'reports', 'stores', 'system', 'approval'],
       clerk:   ['home', 'sales', 'inventory', 'reports', 'approval']
@@ -3035,6 +3187,7 @@ async function seedPermissionData() {
         );
       }
     }
+    await ensureRoleChildMenus();
 
     console.log('[DB Migration] 权限种子数据已创建');
 

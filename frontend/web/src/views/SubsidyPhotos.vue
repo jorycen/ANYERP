@@ -50,13 +50,16 @@
             <div class="photo-list">
               <div v-for="photo in row.photos" :key="photo.id" class="photo-item">
                 <el-image
-                  v-if="photo.src"
+                  v-if="photo.loadState === 'ready' && photo.src"
                   :src="photo.src"
                   :preview-src-list="row.photos.map(item => item.src).filter(Boolean)"
                   fit="contain"
                   class="photo-thumb"
+                  @error="handlePhotoError(photo)"
                 />
-                <span v-else class="photo-loading">加载中</span>
+                <button v-else class="photo-state" type="button" @click="retryPhoto(row, photo)">
+                  {{ photo.loadState === 'error' ? '加载失败，点击重试' : '加载中' }}
+                </button>
                 <el-button link type="primary" size="small" @click="downloadPhoto(row, photo)">下载</el-button>
               </div>
             </div>
@@ -64,6 +67,7 @@
         </el-table-column>
         <el-table-column label="操作" width="120" fixed="right">
           <template #default="{ row }">
+            <el-button type="primary" link :loading="batchDownloadingOrderId === row.orderId" @click="downloadOrderPhotos(row)">批量下载</el-button>
             <el-button type="primary" link @click="openReplaceDialog(row)">重新上传</el-button>
           </template>
         </el-table-column>
@@ -130,6 +134,7 @@ const replaceDialogVisible = ref(false)
 const replaceLoading = ref(false)
 const replaceOrder = ref(null)
 const uploadFiles = ref([])
+const batchDownloadingOrderId = ref('')
 const objectUrls = new Set()
 
 function formatDate(value) {
@@ -143,9 +148,16 @@ function revokeObjectUrls() {
   objectUrls.clear()
 }
 
+function getPhotoUrl(photo) {
+  const rawUrl = String(photo.url || '').trim()
+  return photo.resolvedUrl || photo.accessUrl || (/^cloud:\/\//i.test(rawUrl) ? '' : rawUrl)
+}
+
 async function loadLocalPhoto(row, photo) {
+  photo.loadState = 'loading'
   if (!photo.isLocal) {
-    photo.src = photo.url || ''
+    photo.src = getPhotoUrl(photo)
+    photo.loadState = photo.src ? 'ready' : 'error'
     return
   }
   try {
@@ -153,8 +165,27 @@ async function loadLocalPhoto(row, photo) {
     const url = URL.createObjectURL(response.data)
     objectUrls.add(url)
     photo.src = url
+    photo.loadState = 'ready'
   } catch (_) {
     photo.src = ''
+    photo.loadState = 'error'
+  }
+}
+
+async function resolveCloudPhotoUrls(sourceRows) {
+  const photos = sourceRows.flatMap(row => row.photos || [])
+  const cloudPhotos = photos.filter(photo => /^cloud:\/\//i.test(String(photo.url || '').trim()))
+  if (!cloudPhotos.length) return
+  try {
+    const response = await api.resolveCloudFileUrls([...new Set(cloudPhotos.map(photo => photo.url))])
+    const resolved = new Map((response.data?.items || []).map(item => [item.fileId, item]))
+    cloudPhotos.forEach(photo => {
+      const item = resolved.get(photo.url)
+      photo.resolvedUrl = item?.url || ''
+      if (item?.error) photo.loadError = item.error
+    })
+  } catch (_) {
+    cloudPhotos.forEach(photo => { photo.resolvedUrl = '' })
   }
 }
 
@@ -169,8 +200,12 @@ async function loadData() {
       page: pagination.page,
       pageSize: pagination.pageSize
     })
-    rows.value = response.data?.list || []
+    rows.value = (response.data?.list || []).map(row => ({
+      ...row,
+      photos: (row.photos || []).map(photo => ({ ...photo, src: '', loadState: 'loading' }))
+    }))
     total.value = response.data?.pagination?.total || response.data?.total || 0
+    await resolveCloudPhotoUrls(rows.value)
     await Promise.all(rows.value.flatMap(row => (row.photos || []).map(photo => loadLocalPhoto(row, photo))))
   } catch (error) {
     ElMessage.error(`加载国补照片失败：${error.message || ''}`)
@@ -190,9 +225,9 @@ function resetFilters() {
 
 async function downloadPhoto(row, photo) {
   try {
-    if (!photo.isLocal && photo.url) {
+    if (!photo.isLocal && getPhotoUrl(photo)) {
       const link = document.createElement('a')
-      link.href = photo.url
+      link.href = getPhotoUrl(photo)
       link.download = photo.name || '国补照片'
       link.target = '_blank'
       link.rel = 'noopener'
@@ -208,6 +243,44 @@ async function downloadPhoto(row, photo) {
     URL.revokeObjectURL(url)
   } catch (error) {
     ElMessage.error(`下载失败：${error.message || ''}`)
+  }
+}
+
+function retryPhoto(row, photo) {
+  if (/^cloud:\/\//i.test(String(photo.url || '').trim())) {
+    api.resolveCloudFileUrls([photo.url])
+      .then(response => {
+        photo.resolvedUrl = response.data?.items?.[0]?.url || ''
+        return loadLocalPhoto(row, photo)
+      })
+      .catch(() => {
+        photo.src = ''
+        photo.loadState = 'error'
+      })
+    return
+  }
+  loadLocalPhoto(row, photo)
+}
+
+function handlePhotoError(photo) {
+  photo.src = ''
+  photo.loadState = 'error'
+}
+
+async function downloadOrderPhotos(row) {
+  batchDownloadingOrderId.value = row.orderId
+  try {
+    const response = await api.downloadSubsidyPhotosArchive(row.orderId)
+    const url = URL.createObjectURL(response.data)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${row.orderNo || row.orderId}-国补照片.zip`
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch (error) {
+    ElMessage.error(`批量下载失败：${error.response?.data?.message || error.message || ''}`)
+  } finally {
+    batchDownloadingOrderId.value = ''
   }
 }
 
@@ -255,7 +328,8 @@ onBeforeUnmount(revokeObjectUrls)
 .photo-list { display: flex; flex-wrap: wrap; gap: 10px; }
 .photo-item { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .photo-thumb { width: 76px; height: 76px; border: 1px solid #ebeef5; border-radius: 4px; background: #f8f9fb; }
-.photo-loading { display: inline-flex; width: 76px; height: 76px; align-items: center; justify-content: center; color: #909399; background: #f8f9fb; }
+.photo-state { display: inline-flex; width: 76px; height: 76px; align-items: center; justify-content: center; padding: 8px; border: 0; color: #909399; background: #f8f9fb; cursor: pointer; text-align: center; }
+.photo-state:hover { color: #409eff; }
 .pagination { margin-top: 16px; justify-content: flex-end; }
 .replace-alert { margin-bottom: 16px; }
 .replace-order-info { margin-bottom: 12px; color: #606266; }

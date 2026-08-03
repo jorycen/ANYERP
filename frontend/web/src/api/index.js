@@ -157,10 +157,14 @@ export default {
   // Sales
   getSalesList: (params) => api.get('/sales/list', { params }),
   getSubsidyPhotos: (params) => api.get('/sales/subsidy-photos', { params }),
+  resolveCloudFileUrls: (fileIds) => api.post('/storage/file-urls', { fileIds }),
   replaceSubsidyPhotos: (orderId, data) => api.post(`/sales/subsidy-photos/${orderId}`, data, {
     headers: { 'Content-Type': 'multipart/form-data' }
   }),
   getSubsidyPhotoFile: (orderId, photoId) => exportApi.get(`/sales/subsidy-photos/${orderId}/files/${encodeURIComponent(photoId)}`, {
+    responseType: 'blob'
+  }),
+  downloadSubsidyPhotosArchive: (orderId) => exportApi.get(`/sales/subsidy-photos/${orderId}/download`, {
     responseType: 'blob'
   }),
   createSales: (data) => api.post('/sales/create', data),

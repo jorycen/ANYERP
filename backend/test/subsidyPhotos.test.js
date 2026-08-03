@@ -6,11 +6,13 @@ const salesController = require('../src/modules/sales/controller');
 test('国补照片查询、替换和下载路由已注册并使用统一服务端权限角色', () => {
   const paths = salesRouter.stack.map(layer => `${layer.methods.join(',')}:${layer.path}`);
   assert.ok(paths.some(path => path.includes('GET:/subsidy-photos')));
+  assert.ok(paths.some(path => path.includes('GET:/subsidy-photos/:orderId/download')));
   assert.ok(paths.some(path => path.includes('POST:/subsidy-photos/:orderId')));
   assert.ok(paths.some(path => path.includes('GET:/subsidy-photos/:orderId/files/:photoId')));
   assert.equal(typeof salesController.listSubsidyPhotos, 'function');
   assert.equal(typeof salesController.replaceSubsidyPhotos, 'function');
   assert.equal(typeof salesController.downloadSubsidyPhoto, 'function');
+  assert.equal(typeof salesController.downloadSubsidyPhotosArchive, 'function');
 });
 
 test('国补照片兼容历史字符串、对象和本地文件元数据', () => {

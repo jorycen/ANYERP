@@ -7,7 +7,7 @@
         </div>
       </template>
 
-      <el-tabs v-model="activeTab" @tab-change="onTabChange">
+      <el-tabs v-model="activeTab" class="module-tabs" @tab-change="onTabChange">
         <!-- ========== Tab 1: 商品管理 ========== -->
         <el-tab-pane v-if="!productApprovalOnly" label="商品管理" name="product">
           <div class="filter-bar">
@@ -621,7 +621,8 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, computed, nextTick } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Folder, Upload } from '@element-plus/icons-vue'
 import * as XLSX from 'xlsx'
@@ -629,12 +630,18 @@ import api from '../api'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 
 const currentUserInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
+const route = useRoute()
 const currentRoleCode = currentUserInfo.roleCode || ''
 const currentRoleCodes = Array.isArray(currentUserInfo.roles) && currentUserInfo.roles.length
   ? currentUserInfo.roles
   : String(currentRoleCode).split(',').map(item => item.trim()).filter(Boolean)
 const productApprovalOnly = currentRoleCodes.length > 0 && currentRoleCodes.every(role => ['finance', 'purchaser'].includes(role))
 const activeTab = ref(productApprovalOnly ? 'approval' : 'product')
+const syncTabFromRoute = () => {
+  const routeTab = String(route.meta.tab || (productApprovalOnly ? 'approval' : 'product'))
+  activeTab.value = productApprovalOnly ? 'approval' : routeTab
+  onTabChange(activeTab.value)
+}
 const productDraftKey = () => productForm.productId ? `product-edit:${productForm.productId}` : 'product-create'
 
 // ========== 商品管理 ==========
@@ -1571,12 +1578,17 @@ const onTabChange = (tab) => {
   else if (tab === 'approval') loadProductApplications()
 }
 onMounted(() => {
-  if (productApprovalOnly) loadProductApplications()
-  else { loadData(); loadCategoryTree() }
+  syncTabFromRoute()
 })
+
+watch(() => route.path, syncTabFromRoute)
 </script>
 
 <style scoped>
+.module-tabs :deep(.el-tabs__header) {
+  display: none;
+}
+
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .filter-bar { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 16px; align-items: center; }
 .el-pagination { margin-top: 16px; justify-content: flex-end; }

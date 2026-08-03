@@ -5,7 +5,7 @@
         <span>财务管理</span>
       </template>
 
-      <el-tabs v-model="activeTab">
+      <el-tabs v-model="activeTab" class="module-tabs">
         <el-tab-pane label="日结单" name="daily">
           <div class="filter-bar">
             <el-date-picker v-model="queryParams.dateRange" type="daterange" range-separator="至"
@@ -1254,7 +1254,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, nextTick, watch } from 'vue'
 import InventoryResourceRights from '../components/InventoryResourceRights.vue'
 import RebateSettlement from '../components/RebateSettlement.vue'
 import RebatePostingOrders from '../components/RebatePostingOrders.vue'
@@ -1267,7 +1267,10 @@ import PaymentManagement from './PaymentManagement.vue'
 
 const route = useRoute()
 const router = useRouter()
-const activeTab = ref(route.path === '/finance/payment' ? 'payment' : 'daily')
+const activeTab = ref('daily')
+const syncTabFromRoute = () => {
+  activeTab.value = String(route.meta.tab || 'daily')
+}
 const FINANCE_EXPENSE_DRAFT_KEY = 'finance-expense-create'
 const FINANCE_SETTLEMENT_DRAFT_KEY = 'finance-settlement-create'
 const FINANCE_ACCOUNT_TXN_DRAFT_KEY = 'finance-account-transaction-create'
@@ -1646,6 +1649,7 @@ const resetPaymentAccountFields = () => {
 }
 
 onMounted(() => {
+  syncTabFromRoute()
   loadStores()
   loadPaymentMethods()
   loadSettlementAccounts()
@@ -1666,6 +1670,8 @@ onMounted(() => {
   loadCostAdjustments()
   loadAccountList()
 })
+
+watch(() => route.path, syncTabFromRoute)
 
 // ==============================================
 // 日结单 - 逐条清单
@@ -3151,6 +3157,10 @@ const restoreAccountTxnDraft = () => {
 </script>
 
 <style scoped>
+.module-tabs :deep(.el-tabs__header) {
+  display: none;
+}
+
 .filter-bar {
   display: flex;
   gap: 12px;

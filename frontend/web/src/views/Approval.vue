@@ -5,7 +5,7 @@
         <div class="page-header"><span>审批管理中心</span><el-button @click="reload">刷新</el-button></div>
       </template>
 
-      <el-tabs v-model="activeTab">
+      <el-tabs v-model="activeTab" class="module-tabs">
         <el-tab-pane label="待我审批" name="tasks">
           <el-table :data="tasks" stripe border v-loading="loading">
             <el-table-column label="审批主题" min-width="220"><template #default="{ row }">{{ row.Instance?.title || '-' }}</template></el-table-column>
@@ -111,10 +111,15 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 
 const activeTab = ref('tasks')
+const route = useRoute()
+const syncTabFromRoute = () => {
+  activeTab.value = String(route.meta.tab || 'tasks')
+}
 const loading = ref(false)
 const tasks = ref([])
 const instances = ref([])
@@ -157,9 +162,11 @@ async function saveFlow() { const data = { flowCode: flowForm.flowCode, name: fl
 async function publish(row) { const confirmed = await ElMessageBox.confirm('发布后将作为新申请的审批规则，是否继续？', '发布流程').then(() => true).catch(() => false); if (!confirmed) return; await api.publishApprovalFlow(row.definition_id); ElMessage.success('流程已发布'); await loadFlows() }
 async function disable(row) { await api.disableApprovalFlow(row.definition_id); ElMessage.success('流程已停用'); await loadFlows() }
 watch(activeTab, value => { if (value === 'flows') loadFlows() })
-onMounted(reload)
+watch(() => route.path, syncTabFromRoute)
+onMounted(() => { syncTabFromRoute(); reload() })
 </script>
 
 <style scoped>
+.module-tabs :deep(.el-tabs__header) { display: none; }
 .page-header,.toolbar,.node-head,.rule-row{display:flex;align-items:center;gap:10px}.page-header{justify-content:space-between}.toolbar{margin-bottom:12px}.node-card{border:1px solid var(--el-border-color);padding:12px;margin-bottom:12px;border-radius:4px}.node-head{margin-bottom:10px}.node-head .el-input{max-width:360px}.rule-row{margin:8px 0;flex-wrap:wrap}
 </style>

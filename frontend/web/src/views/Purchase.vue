@@ -7,7 +7,7 @@
         </div>
       </template>
 
-      <el-tabs v-model="activeTab">
+      <el-tabs v-model="activeTab" class="module-tabs">
         <el-tab-pane label="采购申请" name="request">
           <div class="filter-bar">
             <el-input v-model="queryParams.submitter" placeholder="提交人" clearable style="width: 140px" />
@@ -602,7 +602,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
@@ -611,6 +611,9 @@ import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 const route = useRoute()
 
 const activeTab = ref('request')
+const syncTabFromRoute = () => {
+  activeTab.value = String(route.meta.tab || 'request')
+}
 const PURCHASE_REQUEST_DRAFT_KEY = 'purchase-request-create'
 const SUPPLIER_DRAFT_KEY = 'supplier-create'
 const tableData = ref([])
@@ -811,6 +814,7 @@ const remainingLocationQuantity = computed(() => {
 })
 
 onMounted(() => {
+  syncTabFromRoute()
   const traceRequestId = String(route.query.requestId || '').trim()
   if (traceRequestId && String(route.query.trace || '') === '1') {
     activeTab.value = 'request'
@@ -826,6 +830,8 @@ onMounted(() => {
   loadResourceOptions()
   loadGoodsTypeOptions()
 })
+
+watch(() => route.path, syncTabFromRoute)
 
 const handleTraceView = async (requestId) => {
   try {
@@ -1923,6 +1929,10 @@ const handleLocationAllocateDialogClose = () => {
 </script>
 
 <style scoped>
+.module-tabs :deep(.el-tabs__header) {
+  display: none;
+}
+
 .card-header {
   display: flex;
   justify-content: space-between;

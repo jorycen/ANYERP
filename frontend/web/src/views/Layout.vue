@@ -6,6 +6,7 @@
       </div>
       <el-menu
         :default-active="activeMenu"
+        :default-openeds="openedMenus"
         class="sidebar-menu"
         :router="true"
       >
@@ -155,34 +156,94 @@ const iconMap = {
   House, Sell, Box, ShoppingCart, Money, Goods, Shop, DataAnalysis, Setting, User, Checked
 }
 
-const activeMenu = computed(() => {
-  if (route.path.startsWith('/finance')) return '/finance'
-  return route.path
+const activeMenu = computed(() => route.path)
+const openedMenus = computed(() => {
+  const opened = []
+  const visit = (menus) => {
+    menus.forEach(menu => {
+      const hasActiveChild = (menu.children || []).some(child => {
+        if (route.path === child.path || route.path.startsWith(`${child.path}/`)) return true
+        return (child.children || []).some(grandChild => route.path === grandChild.path || route.path.startsWith(`${grandChild.path}/`))
+      })
+      if (hasActiveChild) opened.push(menu.menuCode)
+      if (menu.children?.length) visit(menu.children)
+    })
+  }
+  visit(menuTree.value)
+  return opened
 })
 
 const pageTitles = {
   '/': '首页',
-  '/sales': '销售管理',
+  '/sales/order': '销售订单',
   '/sales/subsidy-photos': '国补照片',
-  '/inventory': '库存管理',
-  '/purchase': '采购管理',
-  '/finance': '财务管理',
+  '/inventory/summary': '库存汇总',
+  '/inventory/sn-inventory': 'SN库存清单',
+  '/inventory/batch-maintenance': '批量维护',
+  '/inventory/inbound': '入库单管理',
+  '/inventory/sn-trace': 'SN追踪',
+  '/inventory/resource-rights': '库存资源权益',
+  '/inventory/transfer': '调拨管理',
+  '/inventory/conversion': '拆装管理',
+  '/purchase/request': '采购申请',
+  '/purchase/supplier': '供应商管理',
+  '/finance/daily': '日结单',
+  '/finance/subsidy-receivable': '国补应收单',
+  '/finance/rebate-settlement': '返利下账',
+  '/finance/expense': '费用管理',
+  '/finance/payable': '应付管理',
+  '/finance/reimbursement': '报销结算',
   '/finance/payment': '付款管理',
   '/finance/settlement': '应付结算单管理',
-  '/products': '商品管理',
+  '/finance/rebate': '返利管理',
+  '/finance/resource-rights': '资源权益核销与成本调整',
+  '/finance/account': '账户中心',
+  '/products/product': '商品管理',
+  '/products/category': '分类管理',
+  '/products/price': '价格管理',
+  '/products/approval': '新建商品审批',
   '/stores': '门店管理',
-  '/reports': '报表统计',
-  '/system': '系统设置'
+  '/reports/dashboard': '经营数据看板',
+  '/reports/sales': '销售报表',
+  '/reports/inventory': '库存报表',
+  '/reports/employee': '员工业绩统计',
+  '/approval/tasks': '待我审批',
+  '/approval/instances': '我的申请',
+  '/approval/flows': '流程配置',
+  '/system/users': '用户管理',
+  '/system/roles': '角色管理',
+  '/system/menus': '菜单管理',
+  '/system/locations': '库位管理',
+  '/system/resource-categories': '货型配置',
+  '/system/customer-source': '客户来源管理',
+  '/system/payment-method': '收款方式管理',
+  '/system/supplement-item': '金额补录项目管理',
+  '/system/expense-type': '报销类型管理',
+  '/system/category-field': '商品字段管理'
 }
 
-const pageTitle = computed(() => route.path === '/approval' ? '审批中心' : (pageTitles[route.path] || ''))
+const pageTitle = computed(() => pageTitles[route.path] || '')
 
-const validPaths = ['/', '/sales', '/sales/subsidy-photos', '/inventory', '/purchase', '/finance', '/finance/payment', '/finance/settlement', '/payment-management', '/products', '/stores', '/reports', '/system', '/approval']
+onMounted(async () => {
+  let userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
 
-onMounted(() => {
-  const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
+  // 菜单权限在登录响应中会缓存；菜单结构发生迁移后，进入布局时主动刷新一次，
+  // 避免用户继续使用旧的一级菜单缓存。
+  if (localStorage.getItem('token')) {
+    try {
+      const response = await api.getUserInfo()
+      if (response?.code === 0 && response.data) {
+        userInfo = response.data
+        localStorage.setItem('userInfo', JSON.stringify(userInfo))
+      }
+    } catch (error) {
+      // 保留缓存作为离线/接口暂时不可用时的兜底；401 会由 API 拦截器跳转登录。
+      console.warn('刷新菜单权限失败，继续使用本地缓存', error)
+    }
+  }
+
   const menus = userInfo.menus || []
-  const hasValidMenu = menus.length > 0 && menus.every(m => validPaths.includes(m.path || ''))
+  const hasValidMenu = menus.length > 0
 
   if (!hasValidMenu) {
     localStorage.removeItem('token')
@@ -192,7 +253,7 @@ onMounted(() => {
   }
   userName.value = userInfo.name || '管理员'
   roleName.value = userInfo.roleName || ''
-  menuTree.value = stripPaymentManagementMenu(buildMenuTree(menus))
+  menuTree.value = buildMenuTree(menus)
 })
 
 function getDefaultMenus() {
@@ -219,15 +280,6 @@ function buildMenuTree(menus) {
     return item
   })
   return flat
-}
-
-function stripPaymentManagementMenu(menus) {
-  return menus
-    .filter(menu => menu.path !== '/payment-management' && menu.path !== '/finance/payment' && menu.menuCode !== 'paymentManagement')
-    .map(menu => ({
-      ...menu,
-      children: stripPaymentManagementMenu(menu.children || [])
-    }))
 }
 
 const handleCommand = async (command) => {

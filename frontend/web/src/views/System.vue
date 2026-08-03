@@ -5,7 +5,7 @@
         <span>系统设置</span>
       </template>
 
-      <el-tabs v-model="activeTab" @tab-change="onSysTabChange">
+      <el-tabs v-model="activeTab" class="module-tabs" @tab-change="onSysTabChange">
         <el-tab-pane label="用户管理" name="users">
           <div class="filter-bar">
             <el-button type="primary" @click="handleAddUser">新增用户</el-button>
@@ -768,12 +768,19 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, nextTick, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 
+const route = useRoute()
 const activeTab = ref('users')
+const syncTabFromRoute = () => {
+  const tab = String(route.meta.tab || 'users')
+  if (activeTab.value !== tab) activeTab.value = tab
+  onSysTabChange(tab)
+}
 const userData = ref([])
 const roleData = ref([])
 const menuData = ref([])
@@ -871,6 +878,7 @@ function handleStoreDialogCheckAll(checked) {
 }
 
 onMounted(() => {
+  syncTabFromRoute()
   loadUsers()
   loadRoles()
   loadMenus()
@@ -880,6 +888,8 @@ onMounted(() => {
   loadGoodsTypes()
   loadExpenseTypes()
 })
+
+watch(() => route.path, syncTabFromRoute)
 
 const loadResourceCategories = async () => {
   try { const res = await api.getResourceCategories({}); resourceCategoryData.value = res.data || [] } catch (err) { ElMessage.error('加载资源类别失败') }
@@ -2184,6 +2194,10 @@ const cfResetFieldForm = () => {
 </script>
 
 <style scoped>
+.module-tabs :deep(.el-tabs__header) {
+  display: none;
+}
+
 .filter-bar {
   margin-bottom: 16px;
 }

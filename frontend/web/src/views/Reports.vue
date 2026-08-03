@@ -5,7 +5,7 @@
         <span>报表统计</span>
       </template>
 
-      <el-tabs v-model="activeTab" @tab-change="onTabChange">
+      <el-tabs v-model="activeTab" class="module-tabs" @tab-change="onTabChange">
         <el-tab-pane label="经营数据看板" name="dashboard">
           <BusinessDashboard />
         </el-tab-pane>
@@ -374,14 +374,21 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
 import api from '../api'
 import { getRoleCode } from '../utils/user'
 import BusinessDashboard from '../components/BusinessDashboard.vue'
 
+const route = useRoute()
 const activeTab = ref('dashboard')
+const syncTabFromRoute = () => {
+  const tab = String(route.meta.tab || 'dashboard')
+  if (activeTab.value !== tab) activeTab.value = tab
+  onTabChange(tab)
+}
 const stores = ref([])
 const salesData = ref([])
 const inventoryData = ref([])
@@ -427,9 +434,12 @@ const adjustmentCenterTitle = computed(() => {
 })
 
 onMounted(() => {
+  activeTab.value = String(route.meta.tab || 'dashboard')
   loadStores()
   loadDashboardFilterOptions()
 })
+
+watch(() => route.path, syncTabFromRoute)
 
 const onTabChange = (tabName) => {
   if (tabName === 'sales') {
@@ -725,6 +735,10 @@ const initInventoryChart = () => {
 </script>
 
 <style scoped>
+.module-tabs :deep(.el-tabs__header) {
+  display: none;
+}
+
 .filter-bar {
   display: flex;
   gap: 12px;

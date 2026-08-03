@@ -4,7 +4,7 @@
       <template #header>
         <div class="page-header">
           <span>应付结算单管理</span>
-          <el-button link type="primary" @click="router.push('/finance')">返回财务管理</el-button>
+          <el-button link type="primary" @click="router.push('/finance/payable')">返回财务管理</el-button>
         </div>
       </template>
 

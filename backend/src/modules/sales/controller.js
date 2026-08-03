@@ -37,6 +37,7 @@ const {
 } = require('../../models');
 const fs = require('fs');
 const path = require('path');
+const { PassThrough } = require('stream');
 const { Op, literal } = require('sequelize');
 const { generateOrderNo, generateInboundNo, generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { normalizePnCode } = require('../../utils/productPn');
@@ -44,6 +45,7 @@ const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, cr
 const { getUserRoles } = require('../../middleware/permission');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { canViewSnTraceReference } = require('../../utils/snTracePermission');
+const { getSignedCloudFileUrl } = require('../../utils/cloudStorage');
 const {
   calculateAndSaveOrderGrossProfit,
   snapshotToResponse,
@@ -436,6 +438,149 @@ async function downloadSubsidyPhoto(ctx) {
   ctx.type = photo.mimeType || 'application/octet-stream';
   ctx.attachment(photo.name || '国补照片');
   ctx.body = fs.createReadStream(filePath);
+}
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function zipFileName(name, index) {
+  const baseName = path.basename(String(name || `国补照片${index + 1}.jpg`)).trim();
+  return baseName || `国补照片${index + 1}.jpg`;
+}
+
+function createSubsidyPhotoZip(entries) {
+  const output = new PassThrough();
+  (async () => {
+    const centralDirectory = [];
+    let offset = 0;
+    const usedNames = new Map();
+
+    try {
+      for (let index = 0; index < entries.length; index += 1) {
+        const entry = entries[index];
+        const originalName = zipFileName(entry.name, index);
+        const duplicateCount = usedNames.get(originalName) || 0;
+        usedNames.set(originalName, duplicateCount + 1);
+        const extension = path.extname(originalName);
+        const stem = extension ? originalName.slice(0, -extension.length) : originalName;
+        const fileName = duplicateCount ? `${stem}_${duplicateCount + 1}${extension}` : originalName;
+        const nameBuffer = Buffer.from(fileName, 'utf8');
+        const data = await entry.load();
+        const checksum = crc32(data);
+        const header = Buffer.alloc(30);
+        header.writeUInt32LE(0x04034b50, 0);
+        header.writeUInt16LE(20, 4);
+        header.writeUInt16LE(0x0800, 6);
+        header.writeUInt16LE(0, 8);
+        header.writeUInt16LE(0, 10);
+        header.writeUInt16LE(0, 12);
+        header.writeUInt32LE(checksum, 14);
+        header.writeUInt32LE(data.length, 18);
+        header.writeUInt32LE(data.length, 22);
+        header.writeUInt16LE(nameBuffer.length, 26);
+        header.writeUInt16LE(0, 28);
+        output.write(Buffer.concat([header, nameBuffer, data]));
+
+        centralDirectory.push({ nameBuffer, checksum, size: data.length, offset });
+        offset += header.length + nameBuffer.length + data.length;
+      }
+
+      const centralOffset = offset;
+      for (const entry of centralDirectory) {
+        const header = Buffer.alloc(46);
+        header.writeUInt32LE(0x02014b50, 0);
+        header.writeUInt16LE(20, 4);
+        header.writeUInt16LE(20, 6);
+        header.writeUInt16LE(0x0800, 8);
+        header.writeUInt16LE(0, 10);
+        header.writeUInt16LE(0, 12);
+        header.writeUInt16LE(0, 14);
+        header.writeUInt32LE(entry.checksum, 16);
+        header.writeUInt32LE(entry.size, 20);
+        header.writeUInt32LE(entry.size, 24);
+        header.writeUInt16LE(entry.nameBuffer.length, 28);
+        header.writeUInt16LE(0, 30);
+        header.writeUInt16LE(0, 32);
+        header.writeUInt16LE(0, 34);
+        header.writeUInt16LE(0, 36);
+        header.writeUInt32LE(0, 38);
+        header.writeUInt32LE(entry.offset, 42);
+        output.write(Buffer.concat([header, entry.nameBuffer]));
+        offset += header.length + entry.nameBuffer.length;
+      }
+
+      const end = Buffer.alloc(22);
+      end.writeUInt32LE(0x06054b50, 0);
+      end.writeUInt16LE(0, 4);
+      end.writeUInt16LE(0, 6);
+      end.writeUInt16LE(centralDirectory.length, 8);
+      end.writeUInt16LE(centralDirectory.length, 10);
+      end.writeUInt32LE(offset - centralOffset, 12);
+      end.writeUInt32LE(centralOffset, 16);
+      end.writeUInt16LE(0, 20);
+      output.end(end);
+    } catch (error) {
+      output.destroy(error);
+    }
+  })();
+  return output;
+}
+
+async function subsidyPhotoZipEntries(order) {
+  const photos = normalizeSubsidyPhotos(order.subsidy_photos);
+  const entries = [];
+  for (const photo of photos) {
+    if (photo.storage === 'local' && photo.storageName) {
+      const filePath = safeSubsidyPhotoPath(photo.storageName);
+      if (filePath && fs.existsSync(filePath)) {
+        entries.push({ id: photo.id, name: photo.name, load: () => fs.promises.readFile(filePath) });
+      }
+      continue;
+    }
+
+    if (/^cloud:\/\//i.test(photo.url)) {
+      entries.push({
+        id: photo.id,
+        name: photo.name,
+        load: async () => {
+          const signed = await getSignedCloudFileUrl(photo.url);
+          const response = await fetch(signed.url);
+          if (!response.ok) throw new Error(`云存储照片下载失败：HTTP ${response.status}`);
+          return Buffer.from(await response.arrayBuffer());
+        }
+      });
+    }
+  }
+  return entries;
+}
+
+async function downloadSubsidyPhotosArchive(ctx) {
+  if (!userCanViewSubsidyPhotos(ctx.state.user)) ctx.throw(403, '无权下载国补照片');
+  const order = await getSubsidyPhotoOrder(ctx.params.orderId, ctx.state.user);
+  if (!order) ctx.throw(404, '订单不存在或无权访问');
+  const entries = await subsidyPhotoZipEntries(order);
+  if (!entries.length) ctx.throw(404, '没有可下载的国补照片');
+
+  await recordBusinessAction({
+    businessType: 'sales_order',
+    businessId: order.order_id,
+    businessNo: order.order_no,
+    action: 'subsidy_photos_batch_downloaded',
+    user: ctx.state.user,
+    detail: { photoIds: entries.map(entry => entry.id), photoCount: entries.length }
+  });
+
+  ctx.type = 'application/zip';
+  ctx.attachment(`${order.order_no || order.order_id}-国补照片.zip`);
+  ctx.body = createSubsidyPhotoZip(entries);
 }
 
 /**
@@ -2897,6 +3042,7 @@ module.exports = {
   listSubsidyPhotos,
   replaceSubsidyPhotos,
   downloadSubsidyPhoto,
+  downloadSubsidyPhotosArchive,
   _test: {
     normalizeOrderExtendedFields,
     normalizeAuxiliarySalesList,

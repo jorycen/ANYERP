@@ -1180,43 +1180,68 @@ INSERT INTO T_DICT_PAYMENT_METHOD (METHOD_ID, NAME, CODE, ICON, SORT_ORDER) VALU
 -- 插入菜单（权限模块）
 INSERT INTO T_MENU (MENU_ID, MENU_CODE, NAME, PARENT_ID, MENU_TYPE, PATH, SORT_ORDER) VALUES
 -- 一级菜单
-('M001', 'dashboard', '工作台', NULL, 'menu', '/dashboard', 1),
+('M001', 'home', '首页', NULL, 'menu', '/', 1),
 ('M002', 'sales', '销售管理', NULL, 'module', '/sales', 2),
-('M003', 'inventory', '库房管理', NULL, 'module', '/inventory', 3),
+('M003', 'inventory', '库存管理', NULL, 'module', '/inventory', 3),
 ('M004', 'purchase', '采购管理', NULL, 'module', '/purchase', 4),
 ('M005', 'finance', '财务管理', NULL, 'module', '/finance', 5),
-('M006', 'product', '商品管理', NULL, 'module', '/product', 6),
-('M007', 'store', '门店管理', NULL, 'module', '/store', 7),
-('M008', 'system', '系统管理', NULL, 'module', '/system', 8),
+('M006', 'products', '商品管理', NULL, 'module', '/products', 6),
+('M007', 'stores', '门店管理', NULL, 'module', '/stores', 7),
+('M008', 'system', '系统设置', NULL, 'module', '/system', 8),
 ('M009', 'reports', '报表统计', NULL, 'menu', '/reports', 9),
 ('M010', 'approval', '审批中心', NULL, 'menu', '/approval', 10),
 -- 销售管理子菜单
 ('M201', 'sales_order', '销售订单', 'M002', 'menu', '/sales/order', 1),
-('M202', 'sales_return', '退货管理', 'M002', 'menu', '/sales/return', 2),
-('M203', 'sales_stats', '销售统计', 'M002', 'menu', '/sales/stats', 3),
-('M204', 'sales_subsidy_photos', '国补照片', 'M002', 'menu', '/sales/subsidy-photos', 4),
+('M204', 'sales_subsidy_photos', '国补照片', 'M002', 'menu', '/sales/subsidy-photos', 2),
 -- 库房管理子菜单
-('M301', 'inventory_sn', '序列号管理', 'M003', 'menu', '/inventory/sn', 1),
-('M302', 'inventory_transfer', '调拨管理', 'M003', 'menu', '/inventory/transfer', 2),
-('M303', 'inventory_warning', '库存预警', 'M003', 'menu', '/inventory/warning', 3),
-('M304', 'inventory_location', '库位管理', 'M003', 'menu', '/inventory/location', 4),
+('M301', 'inventory_summary', '库存汇总', 'M003', 'menu', '/inventory/summary', 1),
+('M302', 'inventory_sn_inventory', 'SN库存清单', 'M003', 'menu', '/inventory/sn-inventory', 2),
+('M303', 'inventory_batch_maintenance', '批量维护', 'M003', 'menu', '/inventory/batch-maintenance', 3),
+('M304', 'inventory_inbound', '入库单管理', 'M003', 'menu', '/inventory/inbound', 4),
+('M305', 'inventory_sn_trace', 'SN追踪', 'M003', 'menu', '/inventory/sn-trace', 5),
+('M306', 'inventory_resource_rights', '库存资源权益', 'M003', 'menu', '/inventory/resource-rights', 6),
+('M307', 'inventory_transfer', '调拨管理', 'M003', 'menu', '/inventory/transfer', 7),
+('M308', 'inventory_conversion', '拆装管理', 'M003', 'menu', '/inventory/conversion', 8),
 -- 采购管理子菜单
 ('M401', 'purchase_request', '采购申请', 'M004', 'menu', '/purchase/request', 1),
-('M402', 'purchase_order', '采购单', 'M004', 'menu', '/purchase/order', 2),
-('M403', 'purchase_inbound', '采购入库', 'M004', 'menu', '/purchase/inbound', 3),
-('M404', 'purchase_supplier', '供应商管理', 'M004', 'menu', '/purchase/supplier', 4),
+('M404', 'purchase_supplier', '供应商管理', 'M004', 'menu', '/purchase/supplier', 2),
 -- 财务管理子菜单
-('M501', 'finance_daily', '日结管理', 'M005', 'menu', '/finance/daily', 1),
-('M502', 'finance_expense', '支出管理', 'M005', 'menu', '/finance/expense', 2),
-('M503', 'finance_report', '财务报表', 'M005', 'menu', '/finance/report', 3),
+('M501', 'finance_daily', '日结单', 'M005', 'menu', '/finance/daily', 1),
+('M502', 'finance_subsidy_receivable', '国补应收单', 'M005', 'menu', '/finance/subsidy-receivable', 2),
+('M503', 'finance_rebate_settlement', '返利下账', 'M005', 'menu', '/finance/rebate-settlement', 3),
+('M504', 'finance_expense', '费用管理', 'M005', 'menu', '/finance/expense', 4),
+('M505', 'finance_payable', '应付管理', 'M005', 'menu', '/finance/payable', 5),
+('M506', 'finance_reimbursement', '报销结算', 'M005', 'menu', '/finance/reimbursement', 6),
+('M507', 'finance_payment', '付款管理', 'M005', 'menu', '/finance/payment', 7),
+('M508', 'finance_rebate', '返利管理', 'M005', 'menu', '/finance/rebate', 8),
+('M509', 'finance_resource_rights', '资源权益核销与成本调整', 'M005', 'menu', '/finance/resource-rights', 9),
+('M510', 'finance_account', '账户中心', 'M005', 'menu', '/finance/account', 10),
+('M511', 'finance_settlement', '应付结算单管理', 'M005', 'menu', '/finance/settlement', 11),
 -- 商品管理子菜单
-('M601', 'product_list', '商品列表', 'M006', 'menu', '/product/list', 1),
-('M602', 'product_category', '类别管理', 'M006', 'menu', '/product/category', 2),
+('M601', 'product_product', '商品管理', 'M006', 'menu', '/products/product', 1),
+('M602', 'product_category', '分类管理', 'M006', 'menu', '/products/category', 2),
+('M604', 'product_price', '价格管理', 'M006', 'menu', '/products/price', 3),
+('M605', 'product_approval', '新建商品审批', 'M006', 'menu', '/products/approval', 4),
+-- 报表统计子菜单
+('M901', 'reports_dashboard', '经营数据看板', 'M009', 'menu', '/reports/dashboard', 1),
+('M902', 'reports_sales', '销售报表', 'M009', 'menu', '/reports/sales', 2),
+('M903', 'reports_inventory', '库存报表', 'M009', 'menu', '/reports/inventory', 3),
+('M904', 'reports_employee', '员工业绩统计', 'M009', 'menu', '/reports/employee', 4),
+-- 审批中心子菜单
+('M1001', 'approval_tasks', '待我审批', 'M010', 'menu', '/approval/tasks', 1),
+('M1002', 'approval_instances', '我的申请', 'M010', 'menu', '/approval/instances', 2),
+('M1003', 'approval_flows', '流程配置', 'M010', 'menu', '/approval/flows', 3),
 -- 系统管理子菜单
-('M801', 'system_user', '用户管理', 'M008', 'menu', '/system/user', 1),
-('M802', 'system_role', '角色管理', 'M008', 'menu', '/system/role', 2),
-('M803', 'system_menu', '菜单管理', 'M008', 'menu', '/system/menu', 3),
-('M804', 'system_region', '区域管理', 'M008', 'menu', '/system/region', 4);
+('M801', 'system_users', '用户管理', 'M008', 'menu', '/system/users', 1),
+('M802', 'system_roles', '角色管理', 'M008', 'menu', '/system/roles', 2),
+('M803', 'system_menus', '菜单管理', 'M008', 'menu', '/system/menus', 3),
+('M804', 'system_locations', '库位管理', 'M008', 'menu', '/system/locations', 4),
+('M805', 'system_resource_categories', '货型配置', 'M008', 'menu', '/system/resource-categories', 5),
+('M806', 'system_customer_source', '客户来源管理', 'M008', 'menu', '/system/customer-source', 6),
+('M807', 'system_payment_method', '收款方式管理', 'M008', 'menu', '/system/payment-method', 7),
+('M808', 'system_supplement_item', '金额补录项目管理', 'M008', 'menu', '/system/supplement-item', 8),
+('M809', 'system_expense_type', '报销类型管理', 'M008', 'menu', '/system/expense-type', 9),
+('M810', 'system_category_field', '商品字段管理', 'M008', 'menu', '/system/category-field', 10);
 
 -- 给老板角色分配所有菜单
 INSERT INTO T_ROLE_MENU (ROLE_ID, MENU_ID)
@@ -1224,23 +1249,60 @@ SELECT 'RL001', MENU_ID FROM T_MENU WHERE STATUS = 1;
 
 -- 给财务角色分配财务和销售相关菜单
 INSERT INTO T_ROLE_MENU (ROLE_ID, MENU_ID)
-SELECT 'RL002', MENU_ID FROM T_MENU WHERE MENU_CODE IN ('dashboard', 'sales', 'M204', 'finance', 'M201', 'M202', 'M203', 'M501', 'M502', 'M503');
+SELECT 'RL002', MENU_ID FROM T_MENU WHERE MENU_CODE IN (
+  'home', 'sales', 'inventory', 'finance', 'reports', 'approval', 'products',
+  'sales_order', 'sales_subsidy_photos',
+  'inventory_resource_rights',
+  'finance_daily', 'finance_subsidy_receivable', 'finance_rebate_settlement', 'finance_expense',
+  'finance_payable', 'finance_reimbursement', 'finance_payment', 'finance_rebate',
+  'finance_resource_rights', 'finance_account', 'finance_settlement',
+  'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee',
+  'approval_tasks', 'approval_instances', 'product_approval'
+);
 
 -- 给采购角色分配采购和库存菜单
 INSERT INTO T_ROLE_MENU (ROLE_ID, MENU_ID)
-SELECT 'RL003', MENU_ID FROM T_MENU WHERE MENU_CODE IN ('dashboard', 'inventory', 'purchase', 'M301', 'M302', 'M303', 'M304', 'M401', 'M402', 'M403', 'M404');
+SELECT 'RL003', MENU_ID FROM T_MENU WHERE MENU_CODE IN (
+  'home', 'purchase', 'products', 'reports', 'approval',
+  'purchase_request', 'purchase_supplier', 'product_approval',
+  'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee',
+  'approval_tasks', 'approval_instances'
+);
 
 -- 给店长角色分配门店相关菜单
 INSERT INTO T_ROLE_MENU (ROLE_ID, MENU_ID)
-SELECT 'RL004', MENU_ID FROM T_MENU WHERE MENU_CODE IN ('dashboard', 'sales', 'inventory', 'finance', 'M201', 'M202', 'M203', 'M204', 'M301', 'M302', 'M303', 'M304', 'M501', 'M502', 'M503');
+SELECT 'RL004', MENU_ID FROM T_MENU WHERE MENU_CODE IN (
+  'home', 'sales', 'inventory', 'products', 'reports', 'approval',
+  'sales_order', 'sales_subsidy_photos',
+  'inventory_summary', 'inventory_sn_inventory', 'inventory_batch_maintenance', 'inventory_inbound',
+  'inventory_sn_trace', 'inventory_transfer', 'inventory_conversion',
+  'product_product', 'product_category', 'product_price', 'product_approval',
+  'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee',
+  'approval_tasks', 'approval_instances'
+);
 
 -- 给店员角色分配基础菜单
 INSERT INTO T_ROLE_MENU (ROLE_ID, MENU_ID)
-SELECT 'RL005', MENU_ID FROM T_MENU WHERE MENU_CODE IN ('dashboard', 'sales', 'M201', 'M202');
+SELECT 'RL005', MENU_ID FROM T_MENU WHERE MENU_CODE IN (
+  'home', 'sales', 'inventory', 'reports', 'approval',
+  'sales_order', 'inventory_summary', 'inventory_sn_inventory', 'inventory_inbound', 'inventory_sn_trace', 'inventory_transfer',
+  'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee',
+  'approval_tasks', 'approval_instances'
+);
 
 -- 所有账号均可进入员工业绩统计提交毛利调整申请
 INSERT IGNORE INTO T_ROLE_MENU (ROLE_ID, MENU_ID)
 SELECT ROLE_ID, 'M009' FROM T_ROLE WHERE STATUS = 1;
+
+-- 所有角色都可以查看审批待办和自己的申请；流程配置仅由老板和管理员使用
+INSERT IGNORE INTO T_ROLE_MENU (ROLE_ID, MENU_ID)
+SELECT r.ROLE_ID, m.MENU_ID
+FROM T_ROLE r JOIN T_MENU m ON m.MENU_CODE IN ('approval_tasks', 'approval_instances')
+WHERE r.STATUS = 1;
+INSERT IGNORE INTO T_ROLE_MENU (ROLE_ID, MENU_ID)
+SELECT r.ROLE_ID, m.MENU_ID
+FROM T_ROLE r JOIN T_MENU m ON m.MENU_CODE = 'approval_flows'
+WHERE r.ROLE_CODE IN ('admin', 'boss') AND r.STATUS = 1;
 
 -- 所有角色均可进入审批中心，配置权限仍由后端按 admin/BOSS 控制
 INSERT IGNORE INTO T_ROLE_MENU (ROLE_ID, MENU_ID)

@@ -7,7 +7,7 @@
         </div>
       </template>
 
-      <el-tabs v-model="mainTab" @tab-change="onTabChange">
+      <el-tabs v-model="mainTab" class="module-tabs" @tab-change="onTabChange">
         <!-- 库存汇总 -->
         <el-tab-pane label="库存汇总" name="summary">
           <div class="inventory-resource-legend">
@@ -1619,7 +1619,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, computed, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as XLSX from 'xlsx'
@@ -1634,6 +1634,11 @@ const route = useRoute()
 const TRANSFER_DRAFT_KEY = 'inventory-transfer-create'
 const inboundDraftKey = () => currentInbound.value?.inbound_id ? `inventory-inbound-execute:${currentInbound.value.inbound_id}` : ''
 const mainTab = ref('summary')
+const syncTabFromRoute = () => {
+  const tab = String(route.meta.tab || 'summary')
+  if (mainTab.value !== tab) mainTab.value = tab
+  onTabChange(tab)
+}
 const canManageResourceRights = computed(() => hasRole(['finance', 'manager']))
 const canManageSnPrice = computed(() => hasRole(['admin']))
 const stores = ref([])
@@ -1970,6 +1975,7 @@ const conversionCostMatched = computed(() => {
 })
 
 onMounted(async () => {
+  mainTab.value = String(route.meta.tab || 'summary')
   if (isStoreUser()) {
     inboundQuery.storeId = getStoreId()
     summaryQuery.storeId = getStoreId()
@@ -2000,7 +2006,14 @@ onMounted(async () => {
   } else if (mainTab.value === 'inbound') {
     loadInboundList()
     loadReturnList()
+  } else {
+    onTabChange(mainTab.value)
   }
+})
+
+watch(() => route.path, () => {
+  if (route.query.inboundId || route.query.transferId || route.query.returnId) return
+  syncTabFromRoute()
 })
 
 const onTabChange = (tabName) => {
@@ -4081,6 +4094,10 @@ const getReturnStatusText = (status) => {
 </script>
 
 <style scoped>
+.module-tabs :deep(.el-tabs__header) {
+  display: none;
+}
+
 .card-header {
   display: flex;
   justify-content: space-between;

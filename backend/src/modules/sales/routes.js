@@ -33,7 +33,8 @@ const {
   updateSupplements,
   listSubsidyPhotos,
   replaceSubsidyPhotos,
-  downloadSubsidyPhoto
+  downloadSubsidyPhoto,
+  downloadSubsidyPhotosArchive
 } = require('./controller');
 const { enforceStoreOwnership, requireRole } = require('../../middleware/permission');
 
@@ -54,6 +55,7 @@ function normalizeDepositId(ctx, next) {
 
 router.get('/list', list);
 router.get('/subsidy-photos', subsidyPhotoRoles, listSubsidyPhotos);
+router.get('/subsidy-photos/:orderId/download', subsidyPhotoRoles, downloadSubsidyPhotosArchive);
 router.get('/subsidy-photos/:orderId/files/:photoId', subsidyPhotoRoles, downloadSubsidyPhoto);
 router.post('/subsidy-photos/:orderId', subsidyPhotoRoles, subsidyPhotoUpload.array('files', 20), replaceSubsidyPhotos);
 router.get('/return-requests', listSalesReturnRequests);
