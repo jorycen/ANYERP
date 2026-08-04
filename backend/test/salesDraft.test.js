@@ -18,3 +18,12 @@ test('销售订单草稿提供保存、编辑、提交和删除接口', () => {
   assert.equal(typeof salesController.submitSalesDraft, 'function');
   assert.equal(typeof salesController.deleteSalesDraft, 'function');
 });
+
+test('product order lookup is a distributor-scoped read-only endpoint', () => {
+  const route = salesRouter.stack.find(
+    layer => layer.path === '/product-orders/:productId' && layer.methods.includes('GET')
+  );
+
+  assert.ok(route);
+  assert.equal(typeof salesController.listProductOrders, 'function');
+});

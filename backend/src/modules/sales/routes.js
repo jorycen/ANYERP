@@ -5,6 +5,7 @@ const Router = require('koa-router');
 const multer = require('@koa/multer');
 const {
   list,
+  listProductOrders,
   exportOrders,
   listSalesReturnRequests,
   requestSalesReturn,
@@ -56,6 +57,7 @@ function normalizeDepositId(ctx, next) {
 }
 
 router.get('/list', list);
+router.get('/product-orders/:productId', listProductOrders);
 router.get('/export', exportOrders);
 router.get('/subsidy-photos', subsidyPhotoRoles, listSubsidyPhotos);
 router.get('/subsidy-photos/batch-download', subsidyPhotoRoles, downloadAllSubsidyPhotosArchive);

@@ -38,7 +38,7 @@ const {
 const fs = require('fs');
 const path = require('path');
 const { PassThrough } = require('stream');
-const { Op, literal } = require('sequelize');
+const { Op, literal, QueryTypes } = require('sequelize');
 const { generateOrderNo, generateInboundNo, generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { normalizePnCode } = require('../../utils/productPn');
 const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
@@ -249,6 +249,75 @@ async function list(ctx) {
   });
 
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+/**
+ * 查询经销商范围内某商品的订单，只读且不受当前门店限制。
+ * 先取最近的有效订单，再按商品毛利降序展示前5单。
+ */
+async function listProductOrders(ctx) {
+  const productId = String(ctx.params.productId || '').trim();
+  const distributorId = String(ctx.state.user?.distributorId || '').trim();
+  if (!productId) ctx.throw(400, '商品ID不能为空');
+  if (!distributorId) ctx.throw(403, '当前账号未绑定经销商');
+
+  const product = await Product.findOne({
+    where: { product_id: productId, is_deleted: 0, status: 1 },
+    attributes: ['product_id', 'product_code', 'name']
+  });
+  if (!product) ctx.throw(404, '商品不存在');
+
+  const rows = await sequelize.query(
+    `SELECT o.ORDER_ID AS order_id,
+            o.ORDER_NO AS order_no,
+            o.ORDER_STATUS AS order_status,
+            o.CREATE_TIME AS create_time,
+            o.STORE_ID AS store_id,
+            s.NAME AS store_name,
+            SUM(oi.QUANTITY) AS quantity,
+            SUM(oi.SUBTOTAL) AS sales_amount,
+            SUM(COALESCE(oi.SALES_GROSS_PROFIT, oi.SUBTOTAL - oi.SALES_SETTLEMENT_COST * oi.QUANTITY)) AS gross_profit
+       FROM T_ORDER_ITEM oi
+       INNER JOIN T_ORDER o ON oi.ORDER_ID = o.ORDER_ID
+       INNER JOIN T_STORE s ON o.STORE_ID = s.STORE_ID
+                            AND s.DISTRIBUTOR_ID = :distributorId
+                            AND s.IS_DELETED = 0
+                            AND s.STATUS = 1
+      WHERE oi.PRODUCT_ID = :productId
+        AND o.IS_DELETED = 0
+        AND o.ORDER_STATUS NOT IN ('draft', 'pending_approval')
+      GROUP BY o.ORDER_ID, o.ORDER_NO, o.ORDER_STATUS, o.CREATE_TIME, o.STORE_ID, s.NAME
+      ORDER BY o.CREATE_TIME DESC, o.ORDER_ID DESC
+      LIMIT 50`,
+    { replacements: { productId, distributorId }, type: QueryTypes.SELECT }
+  );
+
+  const validRows = rows
+    .filter(row => !isCancelStatus(row.order_status))
+    .slice(0, 5)
+    .sort((a, b) => Number(b.gross_profit || 0) - Number(a.gross_profit || 0));
+
+  ctx.body = {
+    code: 0,
+    data: {
+      product: {
+        productId: product.product_id,
+        productCode: product.product_code || '',
+        productName: product.name || ''
+      },
+      orders: validRows.map(row => ({
+        orderId: row.order_id,
+        orderNo: row.order_no || '',
+        orderStatus: row.order_status || '',
+        createTime: row.create_time,
+        storeId: row.store_id || '',
+        storeName: row.store_name || '',
+        quantity: Number(row.quantity || 0),
+        salesAmount: Number(row.sales_amount || 0),
+        grossProfit: Number(row.gross_profit || 0)
+      }))
+    }
+  };
 }
 
 const ORDER_EXPORT_HEADERS = [
@@ -3313,6 +3382,7 @@ async function validateAndDeductInventoryForArchive(order, transaction = null) {
 
 module.exports = {
   list,
+  listProductOrders,
   exportOrders,
   create,
   saveSalesDraft,
