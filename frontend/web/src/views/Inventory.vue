@@ -28,6 +28,25 @@
             <el-button type="primary" @click="loadSummary">查询</el-button>
             <el-button type="success" :loading="summaryExporting" @click="handleExportSummary">导出</el-button>
           </div>
+          <div class="model-filter-panel">
+            <span class="model-filter-label">机型分类</span>
+            <el-button-group>
+              <el-button
+                v-for="item in inventoryProductTypeOptions"
+                :key="item.value"
+                :type="summaryQuery.productType === item.value ? 'primary' : 'default'"
+                @click="selectInventoryProductType(item.value)"
+              >{{ item.label }}</el-button>
+            </el-button-group>
+            <span class="model-filter-label model-filter-label-spaced">机型查询</span>
+            <el-button
+              v-for="item in inventoryModelFilterOptions"
+              :key="item.value"
+              :type="summaryQuery.modelFilter === item.value ? 'primary' : 'default'"
+              :disabled="!summaryQuery.productType"
+              @click="selectInventoryModelFilter(item.value)"
+            >{{ item.label }}</el-button>
+          </div>
 
           <el-table :data="summaryData" stripe border v-loading="summaryLoading">
             <el-table-column prop="category" label="类别" width="100" />
@@ -1650,12 +1669,25 @@ const summaryData = ref([])
 const summaryTotal = ref(0)
 const summaryLoading = ref(false)
 const summaryExporting = ref(false)
+const inventoryProductTypeOptions = [
+  { label: '电脑', value: 'computer' },
+  { label: '手机', value: 'phone' },
+  { label: '平板', value: 'tablet' }
+]
+const inventoryModelFilterOptions = [
+  { label: '重点机型', value: 'focus' },
+  { label: '特价机型', value: 'special' },
+  { label: '热卖机型（近7天）', value: 'hot7' },
+  { label: '高毛利机型（近7天）', value: 'highMargin7' }
+]
 const summaryQuery = reactive({
   page: 1,
   pageSize: 20,
   keyword: '',
   category: '',
-  storeId: ''
+  storeId: '',
+  productType: '',
+  modelFilter: ''
 })
 
 // SN库存清单
@@ -2127,6 +2159,21 @@ const loadSummary = async () => {
   } finally {
     summaryLoading.value = false
   }
+}
+
+const selectInventoryProductType = (productType) => {
+  summaryQuery.productType = summaryQuery.productType === productType ? '' : productType
+  summaryQuery.category = ''
+  summaryQuery.page = 1
+  if (!summaryQuery.productType) summaryQuery.modelFilter = ''
+  loadSummary()
+}
+
+const selectInventoryModelFilter = (modelFilter) => {
+  if (!summaryQuery.productType) return
+  summaryQuery.modelFilter = summaryQuery.modelFilter === modelFilter ? '' : modelFilter
+  summaryQuery.page = 1
+  loadSummary()
 }
 
 const handleExportSummary = async () => {
@@ -4223,6 +4270,25 @@ const getReturnStatusText = (status) => {
   background: #fafafa;
   color: #606266;
   font-size: 13px;
+}
+.model-filter-panel {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -2px 0 12px;
+  padding: 8px 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  background: #fafafa;
+}
+.model-filter-label {
+  color: #606266;
+  font-size: 13px;
+  font-weight: 600;
+}
+.model-filter-label-spaced {
+  margin-left: 10px;
 }
 .legend-title {
   color: #303133;

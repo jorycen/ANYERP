@@ -904,7 +904,7 @@ async function buildSalesStockMap(productIds, storeId = '') {
   return stockMap;
 }
 
-async function buildSalesCountMap(productIds) {
+async function buildSalesCountMap(productIds, storeId = '', scopedStoreIds = []) {
   const uniqueProductIds = [...new Set((productIds || []).filter(Boolean))];
   const salesMap = {};
   if (uniqueProductIds.length === 0) return salesMap;
@@ -912,22 +912,37 @@ async function buildSalesCountMap(productIds) {
   const now = new Date();
   const date7 = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
   const date30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const salesStoreIds = storeId ? [storeId] : [...new Set((scopedStoreIds || []).filter(Boolean))];
+  const storeCondition = salesStoreIds.length ? 'AND o.STORE_ID IN (:salesStoreIds)' : '';
   const rows = await sequelize.query(
     `SELECT oi.PRODUCT_ID AS product_id,
             SUM(CASE WHEN o.CREATE_TIME >= :date7 THEN oi.QUANTITY ELSE 0 END) AS sales_7_qty,
-            SUM(CASE WHEN o.CREATE_TIME >= :date30 THEN oi.QUANTITY ELSE 0 END) AS sales_30_qty
+            SUM(CASE WHEN o.CREATE_TIME >= :date30 THEN oi.QUANTITY ELSE 0 END) AS sales_30_qty,
+            SUM(CASE WHEN o.CREATE_TIME >= :date7 THEN oi.SUBTOTAL ELSE 0 END) AS sales_7_amount,
+            SUM(CASE WHEN o.CREATE_TIME >= :date7
+                     THEN COALESCE(oi.SALES_GROSS_PROFIT, oi.SUBTOTAL - oi.SALES_SETTLEMENT_COST * oi.QUANTITY)
+                     ELSE 0 END) AS gross_profit_7
        FROM T_ORDER_ITEM oi
        INNER JOIN T_ORDER o ON oi.ORDER_ID = o.ORDER_ID
       WHERE oi.PRODUCT_ID IN (:productIds)
         AND (o.ORDER_STATUS IS NULL OR o.ORDER_STATUS NOT IN ('cancelled', 'rejected'))
+        ${storeCondition}
       GROUP BY oi.PRODUCT_ID`,
-    { replacements: { productIds: uniqueProductIds, date7, date30 }, type: Sequelize.QueryTypes.SELECT }
+    {
+      replacements: { productIds: uniqueProductIds, date7, date30, ...(salesStoreIds.length ? { salesStoreIds } : {}) },
+      type: Sequelize.QueryTypes.SELECT
+    }
   );
 
   rows.forEach(row => {
     salesMap[row.product_id] = {
       sales_7_qty: Number(row.sales_7_qty || 0),
-      sales_30_qty: Number(row.sales_30_qty || 0)
+      sales_30_qty: Number(row.sales_30_qty || 0),
+      sales_7_amount: Number(row.sales_7_amount || 0),
+      gross_profit_7: Number(row.gross_profit_7 || 0),
+      gross_margin_7: Number(row.sales_7_amount || 0) > 0
+        ? Number(row.gross_profit_7 || 0) / Number(row.sales_7_amount || 0)
+        : 0
     };
   });
   return salesMap;
@@ -962,12 +977,59 @@ function getInventoryCategoryRank(category, accessoryType, name, config) {
   return 4;
 }
 
+function getInventoryProductType(category, accessoryType, name, config) {
+  const rank = getInventoryCategoryRank(category, accessoryType, name, config);
+  if (rank === 0) return 'computer';
+  if (rank === 1) return 'tablet';
+  if (rank === 2) return 'phone';
+  return '';
+}
+
+function isSpecialPriceProduct(product) {
+  const price = product?.ProductPrice || {};
+  const standardPrice = Number(price.standard_price || 0);
+  const retailPrice = Number(price.retail_price || 0);
+  return standardPrice > 0 && retailPrice > 0 && retailPrice < standardPrice;
+}
+
+function matchesInventoryModelFilter(product, sales, modelFilter) {
+  if (modelFilter === 'focus') return Number(product.is_focus_product || 0) === 1;
+  if (modelFilter === 'special') return isSpecialPriceProduct(product);
+  if (modelFilter === 'hot7') return Number(sales.sales_7_qty || 0) > 0;
+  if (modelFilter === 'highMargin7') return Number(sales.sales_7_amount || 0) > 0;
+  return true;
+}
+
+function compareInventoryModelRows(a, b, modelFilter) {
+  if (modelFilter === 'hot7') {
+    return Number(b.sales_7_qty || 0) - Number(a.sales_7_qty || 0);
+  }
+  if (modelFilter === 'highMargin7') {
+    return Number(b.gross_margin_7 || 0) - Number(a.gross_margin_7 || 0)
+      || Number(b.gross_profit_7 || 0) - Number(a.gross_profit_7 || 0);
+  }
+  if (modelFilter === 'special') {
+    const discount = row => {
+      const standardPrice = Number(row.standard_price || 0);
+      const retailPrice = Number(row.retail_price || 0);
+      return standardPrice > 0 ? (standardPrice - retailPrice) / standardPrice : 0;
+    };
+    return discount(b) - discount(a);
+  }
+  if (modelFilter === 'focus') {
+    return Number(b.sales_7_qty || 0) - Number(a.sales_7_qty || 0);
+  }
+  return 0;
+}
+
 /**
  * 库存聚合列表 - 按商品汇总，显示5种库存数量
  */
 async function getList(ctx) {
   try {
-    const { storeId, category, keyword, page = 1, pageSize = 20 } = ctx.query;
+    const {
+      storeId, category, keyword, productType = '', modelFilter = '', page = 1, pageSize = 20
+    } = ctx.query;
     const user = ctx.state.user;
     const exportMode = Boolean(ctx.state.inventoryExportMode);
 
@@ -992,16 +1054,23 @@ async function getList(ctx) {
       ];
     }
 
-    const products = await Product.findAll({
+    const allProducts = await Product.findAll({
       where: productWhere,
       include: [{ model: ProductPrice, attributes: ['standard_price', 'retail_price', 'min_sale_price', 'cost_price'] }],
       order: [['create_time', 'DESC']]
     });
-    const count = products.length;
 
+    const allProductIds = allProducts.map(p => p.product_id);
+    const salesMap = await buildSalesCountMap(allProductIds, storeId, storeIds);
+    const products = allProducts.filter(product => {
+      if (productType && getInventoryProductType(product.category, product.accessory_type, product.name, product.config) !== productType) {
+        return false;
+      }
+      return matchesInventoryModelFilter(product, salesMap[product.product_id] || {}, modelFilter);
+    });
+    const count = products.length;
     const productIds = products.map(p => p.product_id);
     const allStockMap = await buildSalesStockMap(productIds, storeId);
-    const salesMap = await buildSalesCountMap(productIds);
 
     const inventoryWhere = { product_id: { [Op.in]: productIds } };
     inventoryWhere.store_id = { [Op.in]: storeIds };
@@ -1126,7 +1195,9 @@ async function getList(ctx) {
         normal_qty: 0, regular_qty: 0, subsidy_qty: 0, second_qty: 0, display_qty: 0, demo_qty: 0, unsellable_qty: 0, pending_qty: 0
       };
       const stock = allStockMap[p.product_id] || { current: 0, other: 0, total: 0, stores: [], otherStores: [] };
-      const sales = salesMap[p.product_id] || { sales_7_qty: 0, sales_30_qty: 0 };
+      const sales = salesMap[p.product_id] || {
+        sales_7_qty: 0, sales_30_qty: 0, sales_7_amount: 0, gross_profit_7: 0, gross_margin_7: 0
+      };
       return {
         product_id: p.product_id,
         category: p.category || '',
@@ -1155,10 +1226,15 @@ async function getList(ctx) {
         other_store_stock_info: stock.otherStores || [],
         sales_7_qty: sales.sales_7_qty,
         sales_30_qty: sales.sales_30_qty,
+        sales_7_amount: sales.sales_7_amount,
+        gross_profit_7: sales.gross_profit_7,
+        gross_margin_7: sales.gross_margin_7,
         _category_rank: getInventoryCategoryRank(p.category, p.accessory_type, p.name, p.config),
         _create_time: p.create_time
       };
     }).sort((a, b) => {
+      const modelCompare = compareInventoryModelRows(a, b, modelFilter);
+      if (modelCompare !== 0) return modelCompare;
       const aHasStock = Number(a.normal_qty || 0) > 0 ? 0 : 1;
       const bHasStock = Number(b.normal_qty || 0) > 0 ? 0 : 1;
       if (aHasStock !== bHasStock) return aHasStock - bHasStock;
@@ -4784,6 +4860,10 @@ module.exports = {
     getInventoryQuantitySnapshot,
     getSalesResourceQuantitySnapshot,
     getSnSalesResourceQuantitySnapshot,
+    getInventoryProductType,
+    isSpecialPriceProduct,
+    matchesInventoryModelFilter,
+    compareInventoryModelRows,
     purchaseInitiatorName
   }
 };

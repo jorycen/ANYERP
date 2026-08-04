@@ -67,3 +67,26 @@ test('inventory summary treats legacy unsplit sales stock as full-resource stock
     no_subsidy_qty: 0
   });
 });
+
+test('inventory model quick filters classify the three product types and special prices', () => {
+  assert.equal(_test.getInventoryProductType('电脑/笔记本', '', '', ''), 'computer');
+  assert.equal(_test.getInventoryProductType('手机', '', '', ''), 'phone');
+  assert.equal(_test.getInventoryProductType('平板', '', '', ''), 'tablet');
+  assert.equal(_test.isSpecialPriceProduct({
+    ProductPrice: { standard_price: 5000, retail_price: 4500 }
+  }), true);
+  assert.equal(_test.isSpecialPriceProduct({
+    ProductPrice: { standard_price: 5000, retail_price: 5000 }
+  }), false);
+});
+
+test('inventory model quick filters sort hot and high-margin models by the latest seven days', () => {
+  const rows = [
+    { sales_7_qty: 2, gross_margin_7: 0.3, gross_profit_7: 300 },
+    { sales_7_qty: 5, gross_margin_7: 0.2, gross_profit_7: 400 }
+  ];
+  assert.equal(_test.compareInventoryModelRows(rows[1], rows[0], 'hot7') < 0, true);
+  assert.equal(_test.compareInventoryModelRows(rows[0], rows[1], 'highMargin7') < 0, true);
+  assert.equal(_test.matchesInventoryModelFilter({ is_focus_product: 1 }, {}, 'focus'), true);
+  assert.equal(_test.matchesInventoryModelFilter({}, { sales_7_qty: 0 }, 'hot7'), false);
+});
