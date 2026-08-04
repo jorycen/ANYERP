@@ -281,11 +281,9 @@ async function listProductOrders(ctx) {
        INNER JOIN T_ORDER o ON oi.ORDER_ID = o.ORDER_ID
        INNER JOIN T_STORE s ON o.STORE_ID = s.STORE_ID
                             AND s.DISTRIBUTOR_ID = :distributorId
-                            AND s.IS_DELETED = 0
-                            AND s.STATUS = 1
       WHERE oi.PRODUCT_ID = :productId
-        AND o.IS_DELETED = 0
-        AND o.ORDER_STATUS NOT IN ('draft', 'pending_approval')
+        AND (o.IS_DELETED IS NULL OR o.IS_DELETED = 0)
+        AND (o.ORDER_STATUS IS NULL OR o.ORDER_STATUS NOT IN ('draft', 'pending_approval'))
       GROUP BY o.ORDER_ID, o.ORDER_NO, o.ORDER_STATUS, o.CREATE_TIME, o.STORE_ID, s.NAME
       ORDER BY o.CREATE_TIME DESC, o.ORDER_ID DESC
       LIMIT 50`,
