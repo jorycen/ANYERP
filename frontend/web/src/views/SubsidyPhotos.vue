@@ -25,6 +25,7 @@
         <el-form-item>
           <el-button type="primary" :loading="loading" @click="loadData">查询</el-button>
           <el-button @click="resetFilters">重置</el-button>
+          <el-button type="primary" plain :loading="batchDownloading" :disabled="!total" @click="downloadAllPhotos">批量下载查询结果</el-button>
         </el-form-item>
       </el-form>
     </el-card>
@@ -135,6 +136,7 @@ const replaceLoading = ref(false)
 const replaceOrder = ref(null)
 const uploadFiles = ref([])
 const batchDownloadingOrderId = ref('')
+const batchDownloading = ref(false)
 const objectUrls = new Set()
 
 function formatDate(value) {
@@ -282,6 +284,28 @@ async function downloadOrderPhotos(row) {
     ElMessage.error(`批量下载失败：${error.response?.data?.message || error.message || ''}`)
   } finally {
     batchDownloadingOrderId.value = ''
+  }
+}
+
+async function downloadAllPhotos() {
+  if (batchDownloading.value || !total.value) return
+  batchDownloading.value = true
+  try {
+    const response = await api.downloadAllSubsidyPhotosArchive({
+      ...filters,
+      startDate: dateRange.value?.[0] || '',
+      endDate: dateRange.value?.[1] || ''
+    })
+    const url = URL.createObjectURL(response.data)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `查询结果-国补照片-${new Date().toISOString().slice(0, 10)}.zip`
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch (error) {
+    ElMessage.error(`批量下载失败：${error.response?.data?.message || error.message || ''}`)
+  } finally {
+    batchDownloading.value = false
   }
 }
 

@@ -97,8 +97,14 @@ async function storeAccessMiddleware(ctx, next) {
   )) return next();
 
   if (ctx.method === 'GET' &&
-      (ctx.path === '/api/v1/sales/list' || ctx.path === '/api/v1/sales/export') &&
+      (ctx.path === '/api/v1/sales/list' ||
+       ctx.path === '/api/v1/sales/export' ||
+       ctx.path === '/api/v1/store/all') &&
       isDealerTraceAccount(user)) {
+    return next();
+  }
+
+  if (ctx.path.startsWith('/api/v1/sales/subsidy-photos') && isDealerTraceAccount(user)) {
     return next();
   }
 

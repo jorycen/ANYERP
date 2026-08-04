@@ -255,6 +255,156 @@ async function list(ctx) {
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
 }
 
+const ORDER_EXPORT_HEADERS = [
+  '订单编号', '下单时间', '提交人', '门店名称', '门店ID', '一级来源', '二级来源',
+  '会员称呼', '会员联系方式', '订单总计', '优惠金额', '国补', '教育补贴', '应收金额',
+  '收款金额汇总', '门店二维码', '现金', '国补POS（电脑）', '国补POS（手机平板）',
+  '定金抵扣', '旧机回收抵扣', '商场优惠券', '智店通POS', '线上OMO平台', '对公转账',
+  '对私转账', '龙湖POS（北城专用）', '其他收款方式2', '归档状态', '开票状态', '开票信息',
+  '开票金额', '国补状态', '国补人', '国补人ID', '商品名称', '商品编码', 'SN码', 'IMEI1',
+  'IMEI2', '数量', '单价', '小计', '商品应收金额', '商品收款金额', '辅助销售人比例分配',
+  '辅助销售人金额分配', '补录教育优惠', '商品提货运费', '追加商品', '退货商品', '预留字段1',
+  '预留字段2', '备注', '创建日期', '订单状态', '归档/作废时间', '操作人'
+];
+
+const ORDER_EXPORT_PAYMENT_HEADERS = ORDER_EXPORT_HEADERS.slice(15, 28);
+
+function parseExportJson(value, fallback = []) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return fallback;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed === null || parsed === undefined ? fallback : parsed;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function exportPaymentAmount(payments, header) {
+  return (payments || []).reduce((total, payment) => {
+    const rawMethod = String(payment?.payment_method || '').trim();
+    const method = rawMethod.replace(/-(客户实收|政策补贴应收)$/, '');
+    const matches = method === header || rawMethod === header || rawMethod.startsWith(`${header}-`);
+    return matches ? total + Number(payment.amount || 0) : total;
+  }, 0);
+}
+
+function exportSupplementText(supplements, predicate = () => true) {
+  return (supplements || [])
+    .filter(item => predicate(item))
+    .map(item => {
+      const amount = Number(item.amount || 0);
+      const content = String(item.content || '').trim();
+      return `${item.item_name || ''}${amount ? `:${amount}` : ''}${content ? `(${content})` : ''}`;
+    })
+    .filter(Boolean)
+    .join('；');
+}
+
+function exportSupplementAmount(supplements, predicate) {
+  return (supplements || [])
+    .filter(item => predicate(item))
+    .reduce((total, item) => total + Number(item.amount || 0) * (item.amount_type === 'decrease' ? -1 : 1), 0);
+}
+
+function exportAuxiliaryValue(value, field) {
+  return parseExportJson(value, [])
+    .filter(item => item && typeof item === 'object')
+    .map(item => {
+      const name = item.name || item.staffName || item.staff_name || item.selected || '';
+      const raw = field === 'ratio'
+        ? (item.ratio ?? item.proportion ?? item.rate ?? item.percentage)
+        : (item.amount ?? item.assignedAmount ?? item.assigned_amount);
+      if (!name && (raw === undefined || raw === null || raw === '')) return '';
+      return `${name || ''}${raw !== undefined && raw !== null && raw !== '' ? `:${raw}` : ''}`;
+    })
+    .filter(Boolean)
+    .join('；');
+}
+
+function exportReturnText(returns) {
+  return (returns || [])
+    .flatMap(item => (item.items || []).map(detail => {
+      const quantity = Number(detail.quantity || 0);
+      return `${detail.product_name || ''}${quantity ? ` x${quantity}` : ''}${detail.sn_code ? `(${detail.sn_code})` : ''}`;
+    }))
+    .filter(Boolean)
+    .join('；');
+}
+
+function buildOrderExportRows(orders) {
+  return orders.flatMap(order => {
+    const data = order.toJSON();
+    const items = Array.isArray(data.OrderItems) && data.OrderItems.length ? data.OrderItems : [{}];
+    const payments = data.OrderPayments || [];
+    const supplements = data.supplements || [];
+    const auxiliary = data.auxiliary_sales_list;
+    const payableAmount = Math.max(0, Number(data.total_amount || 0)
+      - Number(data.discount_amount || 0)
+      - Number(data.national_subsidy || 0)
+      - Number(data.education_subsidy || 0)
+      - Number(data.deposit_deduction_total || 0));
+    const paymentAmounts = Object.fromEntries(
+      ORDER_EXPORT_PAYMENT_HEADERS.map(header => [header, exportPaymentAmount(payments, header)])
+    );
+    const supplementEducation = exportSupplementAmount(supplements, item => /教育/.test(String(item.item_name || '')));
+    const supplementFreight = exportSupplementAmount(supplements, item => /提货运费|运费/.test(String(item.item_name || '')));
+
+    return items.map(item => {
+      const subtotal = Number(item.subtotal || 0);
+      const productCode = item.pn_code || item.Product?.product_code || item.product_id || '';
+      return {
+        订单编号: data.order_no || '',
+        下单时间: data.create_time || '',
+        提交人: data.submit_user || data.create_user || '',
+        门店名称: data.Store?.name || '',
+        门店ID: data.store_id || '',
+        一级来源: data.customer_source || '',
+        二级来源: data.customer_source_detail || '',
+        会员称呼: data.customer_name || '',
+        会员联系方式: data.customer_phone || '',
+        订单总计: Number(data.total_amount || 0),
+        优惠金额: Number(data.discount_amount || 0),
+        国补: Number(data.national_subsidy || 0),
+        教育补贴: Number(data.education_subsidy || 0),
+        应收金额: payableAmount,
+        收款金额汇总: payments.reduce((total, payment) => total + Number(payment.amount || 0), 0),
+        ...paymentAmounts,
+        归档状态: isArchiveStatus(data.order_status) ? '已归档' : '',
+        开票状态: data.invoice_status || '',
+        开票信息: data.invoice_info || '',
+        开票金额: Number(data.invoice_amount || 0),
+        国补状态: data.subsidy_status || '',
+        国补人: data.subsidy_person || '',
+        国补人ID: data.subsidy_id || '',
+        商品名称: item.product_name || item.Product?.name || '',
+        商品编码: productCode,
+        SN码: item.sn_code || '',
+        IMEI1: item.imei1 || '',
+        IMEI2: item.imei2 || '',
+        数量: Number(item.quantity || 0),
+        单价: Number(item.sale_price || 0),
+        小计: subtotal,
+        商品应收金额: subtotal,
+        商品收款金额: subtotal,
+        辅助销售人比例分配: exportAuxiliaryValue(auxiliary, 'ratio'),
+        辅助销售人金额分配: exportAuxiliaryValue(auxiliary, 'amount'),
+        补录教育优惠: supplementEducation,
+        商品提货运费: supplementFreight,
+        追加商品: exportSupplementText(supplements, item => item.amount_type !== 'decrease'),
+        退货商品: exportReturnText(data.salesReturns),
+        预留字段1: '',
+        预留字段2: '',
+        备注: data.remark || '',
+        创建日期: data.create_time || '',
+        订单状态: data.order_status || '',
+        '归档/作废时间': isArchiveStatus(data.order_status) || isCancelStatus(data.order_status) ? (data.update_time || '') : '',
+        操作人: data.approve_user || data.submit_user || data.create_user || ''
+      };
+    });
+  });
+}
+
 async function exportOrders(ctx) {
   const user = ctx.state.user;
   if (!isDealerTraceAccount(user)) {
@@ -297,29 +447,20 @@ async function exportOrders(ctx) {
     where,
     include: [
       storeInclude,
-      itemInclude,
+      { ...itemInclude, include: [{ model: Product, attributes: ['product_id', 'product_code', 'name'] }] },
       { model: OrderPayment },
-      { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false }
+      { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false },
+      {
+        model: SalesReturnRequest,
+        as: 'salesReturns',
+        required: false,
+        include: [{ model: SalesReturnRequestItem, as: 'items', required: false }]
+      }
     ],
     order: [['create_time', 'DESC'], ['order_id', 'DESC']]
   });
-  const headers = ['订单号', '创建时间', '门店', '创建人', '客户姓名', '联系电话', '订单金额', '实付金额', '状态'];
-  const rows = orders.map(order => {
-    const data = order.toJSON();
-    return {
-      订单号: data.order_no || '',
-      创建时间: data.create_time || '',
-      门店: data.Store?.name || '',
-      创建人: data.create_user || '',
-      客户姓名: data.customer_name || '',
-      联系电话: data.customer_phone || '',
-      订单金额: data.total_amount ?? 0,
-      实付金额: data.actual_payment ?? 0,
-      状态: data.order_status || ''
-    };
-  });
 
-  sendExcel(ctx, rows, headers, `销售订单导出_${getChinaDateString()}.xlsx`, '销售订单');
+  sendExcel(ctx, buildOrderExportRows(orders), ORDER_EXPORT_HEADERS, `销售订单导出_${getChinaDateString()}.xlsx`, '订单明细');
 }
 
 function parseJsonValue(value, fallback = null) {
@@ -372,6 +513,37 @@ function subsidyPhotoStoreWhere(user) {
   return storeIds.length ? { store_id: { [Op.in]: storeIds } } : { store_id: '__NO_ACCESS__' };
 }
 
+function buildSubsidyPhotoQuery(user, params = {}) {
+  const where = {
+    is_deleted: 0,
+    [Op.and]: [literal('JSON_LENGTH(COALESCE(SUBSIDY_PHOTOS, JSON_ARRAY())) > 0')]
+  };
+  const roles = getUserRoles(user);
+  const storeInclude = { model: Store, attributes: ['store_id', 'name'] };
+
+  if (roles.includes('boss')) {
+    // BOSS can view all distributors.
+  } else if (isDealerTraceAccount(user)) {
+    if (!user?.distributorId) {
+      storeInclude.where = { store_id: '__NO_ACCESS__' };
+    } else {
+      storeInclude.where = { distributor_id: user.distributorId };
+    }
+    storeInclude.required = true;
+  } else {
+    Object.assign(where, subsidyPhotoStoreWhere(user));
+  }
+
+  const { startDate, endDate, subsidyPerson, subsidyPhone, unionpayOrderNo } = params;
+  const dateRange = buildChinaDateRange(startDate, endDate);
+  if (dateRange) where.create_time = dateRange;
+  if (subsidyPerson) where.subsidy_person = { [Op.like]: `%${String(subsidyPerson).trim()}%` };
+  if (subsidyPhone) where.customer_phone = { [Op.like]: `%${String(subsidyPhone).trim()}%` };
+  if (unionpayOrderNo) where.invoice_info = { [Op.like]: `%${String(unionpayOrderNo).trim()}%` };
+
+  return { where, include: [storeInclude] };
+}
+
 function subsidyPhotoResponse(order) {
   const data = order.toJSON ? order.toJSON() : order;
   const photos = normalizeSubsidyPhotos(data.subsidy_photos).map(photo => ({
@@ -396,26 +568,14 @@ function subsidyPhotoResponse(order) {
 
 async function listSubsidyPhotos(ctx) {
   if (!userCanViewSubsidyPhotos(ctx.state.user)) ctx.throw(403, '无权访问国补照片');
-  const {
-    startDate, endDate, subsidyPerson, subsidyPhone, unionpayOrderNo,
-    page = 1, pageSize = 20
-  } = ctx.query;
-  const where = {
-    ...subsidyPhotoStoreWhere(ctx.state.user),
-    is_deleted: 0,
-    [Op.and]: [literal('JSON_LENGTH(COALESCE(SUBSIDY_PHOTOS, JSON_ARRAY())) > 0')]
-  };
-  const dateRange = buildChinaDateRange(startDate, endDate);
-  if (dateRange) where.create_time = dateRange;
-  if (subsidyPerson) where.subsidy_person = { [Op.like]: `%${String(subsidyPerson).trim()}%` };
-  if (subsidyPhone) where.customer_phone = { [Op.like]: `%${String(subsidyPhone).trim()}%` };
-  if (unionpayOrderNo) where.invoice_info = { [Op.like]: `%${String(unionpayOrderNo).trim()}%` };
+  const { page = 1, pageSize = 20 } = ctx.query;
+  const { where, include } = buildSubsidyPhotoQuery(ctx.state.user, ctx.query);
 
   const currentPage = Math.max(Number(page) || 1, 1);
   const currentPageSize = Math.min(Math.max(Number(pageSize) || 20, 1), 100);
   const result = await Order.findAndCountAll({
     where,
-    include: [{ model: Store, attributes: ['store_id', 'name'] }],
+    include,
     order: [['create_time', 'DESC'], ['order_id', 'DESC']],
     offset: (currentPage - 1) * currentPageSize,
     limit: currentPageSize,
@@ -447,9 +607,11 @@ function safeSubsidyPhotoPath(storageName) {
 }
 
 async function getSubsidyPhotoOrder(orderId, user) {
+  const { where, include } = buildSubsidyPhotoQuery(user);
+  where.order_id = orderId;
   return Order.findOne({
-    where: { order_id: orderId, ...subsidyPhotoStoreWhere(user), is_deleted: 0 },
-    include: [{ model: Store, attributes: ['store_id', 'name'] }]
+    where,
+    include
   });
 }
 
@@ -544,8 +706,13 @@ function crc32(buffer) {
 }
 
 function zipFileName(name, index) {
-  const baseName = path.basename(String(name || `国补照片${index + 1}.jpg`)).trim();
-  return baseName || `国补照片${index + 1}.jpg`;
+  const fallback = `国补照片${index + 1}.jpg`;
+  const segments = String(name || fallback)
+    .split(/[\\/]+/)
+    .map(segment => segment.trim())
+    .filter(Boolean)
+    .map(segment => segment.replace(/[<>:"|?*\x00-\x1f]/g, '_'));
+  return segments.length ? segments.join('/') : fallback;
 }
 
 function createSubsidyPhotoZip(entries) {
@@ -626,14 +793,19 @@ function createSubsidyPhotoZip(entries) {
   return output;
 }
 
-async function subsidyPhotoZipEntries(order) {
+async function subsidyPhotoZipEntries(order, folder = '') {
   const photos = normalizeSubsidyPhotos(order.subsidy_photos);
   const entries = [];
+  const safeFolder = folder ? zipFileName(folder, 0) : '';
   for (const photo of photos) {
     if (photo.storage === 'local' && photo.storageName) {
       const filePath = safeSubsidyPhotoPath(photo.storageName);
       if (filePath && fs.existsSync(filePath)) {
-        entries.push({ id: photo.id, name: photo.name, load: () => fs.promises.readFile(filePath) });
+        entries.push({
+          id: photo.id,
+          name: safeFolder ? `${safeFolder}/${photo.name}` : photo.name,
+          load: () => fs.promises.readFile(filePath)
+        });
       }
       continue;
     }
@@ -641,7 +813,7 @@ async function subsidyPhotoZipEntries(order) {
     if (/^cloud:\/\//i.test(photo.url)) {
       entries.push({
         id: photo.id,
-        name: photo.name,
+        name: safeFolder ? `${safeFolder}/${photo.name}` : photo.name,
         load: async () => {
           let sourceUrl = photo.displayUrl;
           try {
@@ -678,6 +850,36 @@ async function downloadSubsidyPhotosArchive(ctx) {
 
   ctx.type = 'application/zip';
   ctx.attachment(`${order.order_no || order.order_id}-国补照片.zip`);
+  ctx.body = createSubsidyPhotoZip(entries);
+}
+
+async function downloadAllSubsidyPhotosArchive(ctx) {
+  if (!userCanViewSubsidyPhotos(ctx.state.user)) ctx.throw(403, '无权下载国补照片');
+  const { where, include } = buildSubsidyPhotoQuery(ctx.state.user, ctx.query);
+  const orders = await Order.findAll({
+    where,
+    include,
+    order: [['create_time', 'DESC'], ['order_id', 'DESC']]
+  });
+
+  const entries = [];
+  for (const order of orders) {
+    const orderEntries = await subsidyPhotoZipEntries(order, order.order_no || order.order_id);
+    entries.push(...orderEntries);
+  }
+  if (!entries.length) ctx.throw(404, '当前查询结果没有可下载的国补照片');
+
+  await Promise.all(orders.map(order => recordBusinessAction({
+    businessType: 'sales_order',
+    businessId: order.order_id,
+    businessNo: order.order_no,
+    action: 'subsidy_photos_batch_downloaded',
+    user: ctx.state.user,
+    detail: { photoCount: normalizeSubsidyPhotos(order.subsidy_photos).length, scope: 'query_result' }
+  })));
+
+  ctx.type = 'application/zip';
+  ctx.attachment(`查询结果-国补照片-${getChinaDateString()}.zip`);
   ctx.body = createSubsidyPhotoZip(entries);
 }
 
@@ -3151,6 +3353,7 @@ module.exports = {
   replaceSubsidyPhotos,
   downloadSubsidyPhoto,
   downloadSubsidyPhotosArchive,
+  downloadAllSubsidyPhotosArchive,
   _test: {
     canQueryAllSalesOrders,
     normalizeOrderExtendedFields,
@@ -3163,7 +3366,10 @@ module.exports = {
     validateAndDeductInventoryForArchive,
     normalizeSubsidyPhotos,
     userCanViewSubsidyPhotos,
-    subsidyPhotoStoreWhere
+    subsidyPhotoStoreWhere,
+    buildSubsidyPhotoQuery,
+    buildOrderExportRows,
+    ORDER_EXPORT_HEADERS
   }
 };
 

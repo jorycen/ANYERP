@@ -1,10 +1,12 @@
 const STORE_ONLY_ROLES = new Set(['clerk', 'staff', 'manager', 'store_manager']);
 
 function normalizeRoles(user = {}) {
-  const roles = Array.isArray(user.roles) ? user.roles : [];
+  const roles = Array.isArray(user.roles) && user.roles.length > 0
+    ? user.roles
+    : String(user.roleCode || '').split(',');
   return roles
     .map((role) => (typeof role === 'string' ? role : role?.code || role?.name || ''))
-    .map((role) => role.toLowerCase())
+    .map((role) => role.trim().toLowerCase())
     .filter(Boolean);
 }
 

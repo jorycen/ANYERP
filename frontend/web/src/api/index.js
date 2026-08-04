@@ -168,6 +168,10 @@ export default {
   downloadSubsidyPhotosArchive: (orderId) => exportApi.get(`/sales/subsidy-photos/${orderId}/download`, {
     responseType: 'blob'
   }),
+  downloadAllSubsidyPhotosArchive: (params) => exportApi.get('/sales/subsidy-photos/batch-download', {
+    params,
+    responseType: 'blob'
+  }),
   createSales: (data) => api.post('/sales/create', data),
   saveSalesDraft: (data) => api.post('/sales/draft', data),
   updateSalesDraft: (id, data) => api.put(`/sales/draft/${id}`, data),
