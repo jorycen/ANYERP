@@ -21,6 +21,7 @@
               </template>
             </el-table-column>
             <el-table-column prop="supervisor_name" label="直属上级" width="120" />
+            <el-table-column prop="distributor_id" label="所属经销商" width="130" />
             <el-table-column prop="store_name" label="门店" min-width="180" show-overflow-tooltip />
             <el-table-column prop="status" label="状态" width="80">
               <template #default="{ row }">
@@ -389,7 +390,12 @@
             <el-option v-for="u in userData.filter(item => String(item.staff_id) !== String(userForm.staffId))" :key="u.staff_id" :label="`${u.name}（${u.staff_id}）`" :value="u.staff_id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="门店">当前经销商下所有门店</el-form-item>
+        <el-form-item label="所属经销商" required>
+          <el-select v-model="userForm.distributorId" filterable style="width: 100%" :disabled="!isOperatorBoss" placeholder="请选择所属经销商">
+            <el-option v-for="item in distributorOptions" :key="item.distributor_id" :label="item.name" :value="item.distributor_id" />
+          </el-select>
+          <div class="form-tip">所属经销商用于组织归属；实际订单权限以“分配门店”为准。</div>
+        </el-form-item>
         <el-form-item label="状态">
           <el-switch v-model="userForm.status" :active-value="1" :inactive-value="0" />
         </el-form-item>
@@ -773,6 +779,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
+import { getUserInfo } from '../utils/user'
 
 const route = useRoute()
 const activeTab = ref('users')
@@ -785,6 +792,7 @@ const userData = ref([])
 const roleData = ref([])
 const menuData = ref([])
 const stores = ref([])
+const distributorOptions = ref([])
 const locationData = ref([])
 const locationLoading = ref(false)
 const assignableStores = ref([])
@@ -815,6 +823,11 @@ const submitLoading = ref(false)
 const dialogTitle = ref('新增用户')
 const roleDialogTitle = ref('新增角色')
 const currentUser = ref(null)
+const operatorUser = getUserInfo()
+const isOperatorBoss = computed(() => {
+  const roles = Array.isArray(operatorUser.roles) ? operatorUser.roles : [operatorUser.roleCode]
+  return roles.includes('boss')
+})
 const currentRole = ref(null)
 const dialogStoreIds = ref([])
 const menuTreeRef = ref(null)
@@ -855,6 +868,7 @@ const userForm = reactive({
   phone: '',
   password: '',
   roleIds: [],
+  distributorId: '',
   supervisorStaffId: null,
   status: 1
 })
@@ -880,6 +894,7 @@ function handleStoreDialogCheckAll(checked) {
 onMounted(() => {
   syncTabFromRoute()
   loadUsers()
+  loadUserDistributors()
   loadRoles()
   loadMenus()
   loadStores()
@@ -993,6 +1008,13 @@ const loadUsers = async () => {
     const res = await api.getUsers({ page: 1, pageSize: 100 })
     if (res.code === 0) userData.value = res.data?.list || []
   } catch (err) { ElMessage.error('加载用户失败') }
+}
+
+const loadUserDistributors = async () => {
+  try {
+    const res = await api.getUserDistributors()
+    if (res.code === 0) distributorOptions.value = res.data || []
+  } catch (err) { ElMessage.error('加载经销商列表失败') }
 }
 
 const loadRoles = async () => {
@@ -1190,6 +1212,7 @@ const handleEditUser = async (row) => {
   userForm.phone = row.phone
   userForm.password = ''
   userForm.roleIds = [...(row.role_ids || [])]
+  userForm.distributorId = row.distributor_id || ''
   userForm.supervisorStaffId = row.supervisor_staff_id || null
   userForm.status = row.status
 
@@ -1242,6 +1265,7 @@ const handleUserSubmit = async () => {
       name: userForm.name,
       phone: userForm.phone,
       roleIds: userForm.roleIds,
+      distributorId: userForm.distributorId,
       supervisorStaffId: userForm.supervisorStaffId || null,
       status: userForm.status
     }
@@ -1362,6 +1386,7 @@ const resetUserForm = () => {
   userForm.phone = ''
   userForm.password = ''
   userForm.roleIds = []
+  userForm.distributorId = operatorUser.distributorId || distributorOptions.value[0]?.distributor_id || ''
   userForm.supervisorStaffId = null
   userForm.status = 1
 }

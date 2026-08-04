@@ -183,11 +183,7 @@ async function list(ctx) {
   const dealerWide = isDealerTraceAccount(user);
   const canQueryAllStoreOrders = dealerWide || roles.some(role => ['manager', 'store_manager'].includes(role));
   const storeInclude = { model: Store };
-  if (dealerWide && !roles.includes('boss')) {
-    if (!user.distributorId) ctx.throw(403, '当前账号未绑定经销商');
-    storeInclude.where = { distributor_id: user.distributorId };
-    storeInclude.required = true;
-  }
+  const hasGlobalStoreScope = roles.includes('boss') || accessibleStoreIds.includes('*');
 
   const dateRange = buildChinaDateRange(startDate, endDate);
   if (dateRange) {
@@ -207,11 +203,11 @@ async function list(ctx) {
   }
 
   if (storeId) {
-    if (!dealerWide && !roles.includes('boss') && !accessibleStoreIds.map(String).includes(String(storeId))) {
+    if (!hasGlobalStoreScope && !accessibleStoreIds.map(String).includes(String(storeId))) {
       ctx.throw(403, '无权访问该门店订单');
     }
     where.store_id = storeId;
-  } else if (!dealerWide && !accessibleStoreIds.includes('*')) {
+  } else if (!hasGlobalStoreScope) {
     if (accessibleStoreIds.length === 0) {
       ctx.body = formatPaginatedResult([], { page, pageSize, count: 0 });
       return;
@@ -418,13 +414,16 @@ async function exportOrders(ctx) {
   const roles = getUserRoles(user);
   const where = { is_deleted: 0 };
   const storeInclude = { model: Store };
-
-  if (!roles.includes('boss')) {
-    if (!user.distributorId) ctx.throw(403, '当前账号未绑定经销商');
-    storeInclude.where = { distributor_id: user.distributorId };
-    storeInclude.required = true;
+  const accessibleStoreIds = Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds.filter(Boolean) : [];
+  const hasGlobalStoreScope = roles.includes('boss') || accessibleStoreIds.includes('*');
+  if (storeId) {
+    if (!hasGlobalStoreScope && !accessibleStoreIds.map(String).includes(String(storeId))) {
+      ctx.throw(403, '无权导出该门店订单');
+    }
+    where.store_id = storeId;
+  } else if (!hasGlobalStoreScope) {
+    where.store_id = accessibleStoreIds.length > 0 ? accessibleStoreIds : '__NO_ACCESS__';
   }
-  if (storeId) where.store_id = storeId;
   if (startDate || endDate) {
     const dateRange = buildChinaDateRange(startDate, endDate);
     if (dateRange) where.create_time = dateRange;
@@ -521,16 +520,7 @@ function buildSubsidyPhotoQuery(user, params = {}) {
   const roles = getUserRoles(user);
   const storeInclude = { model: Store, attributes: ['store_id', 'name'] };
 
-  if (roles.includes('boss')) {
-    // BOSS can view all distributors.
-  } else if (isDealerTraceAccount(user)) {
-    if (!user?.distributorId) {
-      storeInclude.where = { store_id: '__NO_ACCESS__' };
-    } else {
-      storeInclude.where = { distributor_id: user.distributorId };
-    }
-    storeInclude.required = true;
-  } else {
+  if (!roles.includes('boss')) {
     Object.assign(where, subsidyPhotoStoreWhere(user));
   }
 
@@ -2654,10 +2644,6 @@ function assertStoreVisible(storeId, user, message = '无权访问该门店数�
 }
 
 function assertSalesOrderVisible(storeId, user, distributorId = '') {
-  if (isDealerTraceAccount(user)) {
-    if (user.roles?.includes('boss')) return;
-    if (user.distributorId && String(user.distributorId) === String(distributorId || '')) return;
-  }
   assertStoreVisible(storeId, user, '无权访问该销售订单');
 }
 

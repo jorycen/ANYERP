@@ -110,7 +110,13 @@ async function storeAccessMiddleware(ctx, next) {
 
   const allowed = new Set((user.accessibleStoreIds || []).map(String));
   const storeBusinessPrefixes = ['/api/v1/sales', '/api/v1/inventory', '/api/v1/purchase', '/api/v1/finance', '/api/v1/report', '/api/v1/store'];
-  if (allowed.size === 0 && storeBusinessPrefixes.some(prefix => ctx.path.startsWith(prefix))) {
+  const isReadOnlySalesQuery = ctx.method === 'GET' && (
+    ctx.path === '/api/v1/sales/list' ||
+    ctx.path === '/api/v1/sales/export' ||
+    ctx.path.startsWith('/api/v1/sales/subsidy-photos') ||
+    /^\/api\/v1\/sales\/[^/]+$/.test(ctx.path)
+  );
+  if (allowed.size === 0 && storeBusinessPrefixes.some(prefix => ctx.path.startsWith(prefix)) && !isReadOnlySalesQuery) {
     ctx.throw(403, '当前账号尚未分配门店');
   }
   const isStoreKey = key => /store_?ids?$/.test(key.toLowerCase());

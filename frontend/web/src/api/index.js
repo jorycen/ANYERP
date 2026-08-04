@@ -494,6 +494,7 @@ export default {
   // System
   getMenus: () => api.get('/system/menus'),
   getRoles: () => api.get('/system/roles'),
+  getUserDistributors: () => api.get('/system/user-distributors'),
   createRole: (data) => api.post('/system/role', data),
   updateRole: (roleId, data) => api.put(`/system/role/${roleId}`, data),
   deleteRole: (roleId) => api.delete(`/system/role/${roleId}`),

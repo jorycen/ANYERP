@@ -3,7 +3,7 @@
  */
 const Router = require('koa-router');
 const {
-  getMenus, getRoles, createRole, updateRole, deleteRole, getRoleMenus, assignMenus,
+  getMenus, getRoles, getUserDistributors, createRole, updateRole, deleteRole, getRoleMenus, assignMenus,
   getUsers, createUser, updateUser, resetUserPassword, getUserRegions, assignUserRegions,
   getLocations, createLocation, updateLocation, deleteLocation, setStoreManager
 } = require('./controller');
@@ -13,6 +13,7 @@ const router = new Router();
 
 router.get('/menus', getMenus);
 router.get('/roles', getRoles);
+router.get('/user-distributors', requireRole('admin', 'boss'), getUserDistributors);
 router.post('/role', requireRole('admin', 'boss'), createRole);
 router.put('/role/:roleId', requireRole('admin', 'boss'), updateRole);
 router.delete('/role/:roleId', requireRole('admin', 'boss'), deleteRole);

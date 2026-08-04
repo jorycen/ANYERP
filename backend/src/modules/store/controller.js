@@ -6,7 +6,7 @@ const { Op } = require('sequelize');
 const { paginate, formatPaginatedResult } = require('../../utils');
 const { generateId } = require('../../utils');
 const { ensureStandardLocationsForStores } = require('../../utils/standardLocations');
-const { isDealerTraceAccount, isBoss } = require('../../utils/snTracePermission');
+const { isBoss } = require('../../utils/snTracePermission');
 
 function canManageStoreManager(user) {
   return (user?.roles || []).some(role => ['admin', 'boss'].includes(role));
@@ -68,10 +68,7 @@ async function getAllStores(ctx) {
 
   const where = { is_deleted: 0, status: 1 };
 
-  if (isDealerTraceAccount(user) && !isBoss(user)) {
-    if (!user.distributorId) ctx.throw(403, '当前账号未绑定经销商');
-    where.distributor_id = user.distributorId;
-  } else if (!user.accessibleStoreIds.includes('*')) {
+  if (!isBoss(user) && !user.accessibleStoreIds.includes('*')) {
     where.store_id = user.accessibleStoreIds;
   }
 

@@ -27,7 +27,7 @@ function includesValue(values, target) {
 /**
  * SN 追踪单据只允许查看，不改变原有订单操作权限。
  * - boss：全系统
- * - 经销商级账号：admin/boss/财务/商务/采购等：本经销商全部门店
+ * - 经销商级账号：admin/boss/财务/商务/采购等：账号已分配门店
  * - 店长：自己可管理门店
  * - 员工：只允许查看自己发起的原始单据
  */
@@ -35,7 +35,10 @@ function canViewSnTraceReference(user = {}, reference = {}) {
   if (isBoss(user)) return true;
 
   if (isDealerTraceAccount(user)) {
-    return Boolean(user.distributorId) && String(user.distributorId) === String(reference.distributor_id);
+    return includesValue(user.accessibleStoreIds, '*')
+      || includesValue(user.accessibleStoreIds, reference.store_id)
+      || includesValue(user.accessibleStoreIds, reference.from_store_id)
+      || includesValue(user.accessibleStoreIds, reference.to_store_id);
   }
 
   const roles = normalizeRoles(user);

@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { Op } = require('sequelize');
 const { _test } = require('../src/modules/sales/controller');
 
 test('经销商级角色可以查询全部人员订单，店员和店长保持受限范围', () => {
@@ -46,8 +47,8 @@ test('订单导出按商品明细展开并汇总收款方式', () => {
   assert.equal(rows[0].应收金额, 90);
 });
 
-test('经销商级国补照片查询按经销商过滤门店', () => {
-  const query = _test.buildSubsidyPhotoQuery({ roles: ['finance'], distributorId: 'DIST-1' });
-  assert.deepEqual(query.include[0].where, { distributor_id: 'DIST-1' });
-  assert.equal(query.include[0].required, true);
+test('经销商级国补照片查询按分配门店过滤', () => {
+  const query = _test.buildSubsidyPhotoQuery({ roles: ['finance'], distributorId: 'DIST-1', accessibleStoreIds: ['STORE-1', 'STORE-2'] });
+  assert.deepEqual(query.where.store_id[Op.in], ['STORE-1', 'STORE-2']);
+  assert.equal(query.include[0].where, undefined);
 });
