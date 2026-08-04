@@ -534,6 +534,11 @@ function buildSubsidyPhotoQuery(user, params = {}) {
   return { where, include: [storeInclude] };
 }
 
+function hasSubsidyPhotoFilter(params = {}) {
+  return [params.startDate, params.endDate, params.subsidyPerson, params.subsidyPhone, params.unionpayOrderNo]
+    .some(value => String(value || '').trim());
+}
+
 function subsidyPhotoResponse(order) {
   const data = order.toJSON ? order.toJSON() : order;
   const photos = normalizeSubsidyPhotos(data.subsidy_photos).map(photo => ({
@@ -845,6 +850,7 @@ async function downloadSubsidyPhotosArchive(ctx) {
 
 async function downloadAllSubsidyPhotosArchive(ctx) {
   if (!userCanViewSubsidyPhotos(ctx.state.user)) ctx.throw(403, '无权下载国补照片');
+  if (!hasSubsidyPhotoFilter(ctx.query)) ctx.throw(400, '不支持全量下载，请选择查询条件');
   const { where, include } = buildSubsidyPhotoQuery(ctx.state.user, ctx.query);
   const orders = await Order.findAll({
     where,
@@ -3351,6 +3357,7 @@ module.exports = {
     normalizePnCode,
     validateAndDeductInventoryForArchive,
     normalizeSubsidyPhotos,
+    hasSubsidyPhotoFilter,
     userCanViewSubsidyPhotos,
     subsidyPhotoStoreWhere,
     buildSubsidyPhotoQuery,

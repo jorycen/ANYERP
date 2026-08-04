@@ -17,6 +17,13 @@ test('国补照片查询、替换和下载路由已注册并使用统一服务�
   assert.equal(typeof salesController.downloadAllSubsidyPhotosArchive, 'function');
 });
 
+test('国补照片查询结果批量下载必须指定筛选条件', () => {
+  const { hasSubsidyPhotoFilter } = salesController._test;
+  assert.equal(hasSubsidyPhotoFilter({}), false);
+  assert.equal(hasSubsidyPhotoFilter({ subsidyPerson: '张三' }), true);
+  assert.equal(hasSubsidyPhotoFilter({ startDate: '2026-08-01', endDate: '2026-08-04' }), true);
+});
+
 test('国补照片兼容历史字符串、对象和本地文件元数据', () => {
   const { normalizeSubsidyPhotos } = salesController._test;
   const photos = normalizeSubsidyPhotos([

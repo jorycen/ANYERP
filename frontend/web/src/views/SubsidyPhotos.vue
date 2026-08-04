@@ -25,7 +25,7 @@
         <el-form-item>
           <el-button type="primary" :loading="loading" @click="loadData">查询</el-button>
           <el-button @click="resetFilters">重置</el-button>
-          <el-button type="primary" plain :loading="batchDownloading" :disabled="!total" @click="downloadAllPhotos">批量下载查询结果</el-button>
+          <el-button type="primary" plain :loading="batchDownloading" @click="downloadAllPhotos">批量下载查询结果</el-button>
         </el-form-item>
       </el-form>
     </el-card>
@@ -68,7 +68,6 @@
         </el-table-column>
         <el-table-column label="操作" width="120" fixed="right">
           <template #default="{ row }">
-            <el-button type="primary" link :loading="batchDownloadingOrderId === row.orderId" @click="downloadOrderPhotos(row)">批量下载</el-button>
             <el-button type="primary" link @click="openReplaceDialog(row)">重新上传</el-button>
           </template>
         </el-table-column>
@@ -135,7 +134,6 @@ const replaceDialogVisible = ref(false)
 const replaceLoading = ref(false)
 const replaceOrder = ref(null)
 const uploadFiles = ref([])
-const batchDownloadingOrderId = ref('')
 const batchDownloading = ref(false)
 const objectUrls = new Set()
 
@@ -270,25 +268,23 @@ function handlePhotoError(photo) {
   photo.loadState = 'error'
 }
 
-async function downloadOrderPhotos(row) {
-  batchDownloadingOrderId.value = row.orderId
-  try {
-    const response = await api.downloadSubsidyPhotosArchive(row.orderId)
-    const url = URL.createObjectURL(response.data)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `${row.orderNo || row.orderId}-国补照片.zip`
-    link.click()
-    setTimeout(() => URL.revokeObjectURL(url), 1000)
-  } catch (error) {
-    ElMessage.error(`批量下载失败：${error.response?.data?.message || error.message || ''}`)
-  } finally {
-    batchDownloadingOrderId.value = ''
-  }
+function hasActiveFilter() {
+  return Boolean(
+    dateRange.value?.length
+    || Object.values(filters).some(value => String(value || '').trim())
+  )
 }
 
 async function downloadAllPhotos() {
-  if (batchDownloading.value || !total.value) return
+  if (batchDownloading.value) return
+  if (!hasActiveFilter()) {
+    ElMessage.warning('不支持全量下载，请选择查询条件')
+    return
+  }
+  if (!total.value) {
+    ElMessage.info('当前查询没有可下载的国补照片')
+    return
+  }
   batchDownloading.value = true
   try {
     const response = await api.downloadAllSubsidyPhotosArchive({
