@@ -150,7 +150,7 @@ function revokeObjectUrls() {
 
 function getPhotoUrl(photo) {
   const rawUrl = String(photo.url || '').trim()
-  return photo.resolvedUrl || photo.accessUrl || (/^cloud:\/\//i.test(rawUrl) ? '' : rawUrl)
+  return photo.resolvedUrl || photo.accessUrl || (/^cloud:\/\//i.test(rawUrl) ? photo.displayUrl || '' : rawUrl || photo.displayUrl || '')
 }
 
 async function loadLocalPhoto(row, photo) {
@@ -181,11 +181,11 @@ async function resolveCloudPhotoUrls(sourceRows) {
     const resolved = new Map((response.data?.items || []).map(item => [item.fileId, item]))
     cloudPhotos.forEach(photo => {
       const item = resolved.get(photo.url)
-      photo.resolvedUrl = item?.url || ''
+      photo.resolvedUrl = item?.url || photo.displayUrl || ''
       if (item?.error) photo.loadError = item.error
     })
   } catch (_) {
-    cloudPhotos.forEach(photo => { photo.resolvedUrl = '' })
+    cloudPhotos.forEach(photo => { photo.resolvedUrl = photo.displayUrl || '' })
   }
 }
 
@@ -250,12 +250,13 @@ function retryPhoto(row, photo) {
   if (/^cloud:\/\//i.test(String(photo.url || '').trim())) {
     api.resolveCloudFileUrls([photo.url])
       .then(response => {
-        photo.resolvedUrl = response.data?.items?.[0]?.url || ''
+        photo.resolvedUrl = response.data?.items?.[0]?.url || photo.displayUrl || ''
         return loadLocalPhoto(row, photo)
       })
       .catch(() => {
         photo.src = ''
-        photo.loadState = 'error'
+        photo.resolvedUrl = photo.displayUrl || ''
+        photo.loadState = photo.resolvedUrl ? 'ready' : 'error'
       })
     return
   }

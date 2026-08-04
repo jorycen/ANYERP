@@ -156,6 +156,7 @@ export default {
 
   // Sales
   getSalesList: (params) => api.get('/sales/list', { params }),
+  exportSales: (params) => exportExcel('/sales/export', params, `销售订单导出_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getSubsidyPhotos: (params) => api.get('/sales/subsidy-photos', { params }),
   resolveCloudFileUrls: (fileIds) => api.post('/storage/file-urls', { fileIds }),
   replaceSubsidyPhotos: (orderId, data) => api.post(`/sales/subsidy-photos/${orderId}`, data, {

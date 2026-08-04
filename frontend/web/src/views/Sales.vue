@@ -7,6 +7,7 @@
           <div v-if="!traceReadonly" class="sales-actions">
             <el-button @click="openDepositManager">定金管理</el-button>
             <el-button type="primary" @click="handleCreate">新建订单</el-button>
+            <el-button v-if="canExportOrders" :loading="exporting" @click="handleExport">导出订单</el-button>
           </div>
         </div>
       </template>
@@ -500,7 +501,7 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
-import { getStoreId, isStoreUser, hasRole } from '../utils/user'
+import { getStoreId, isStoreUser, isDistributorAccount, hasRole } from '../utils/user'
 
 const route = useRoute()
 const traceReadonly = computed(() => Boolean(route.query.orderId) && String(route.query.trace || '') === '1')
@@ -511,6 +512,7 @@ const paymentMethods = ref([])
 const tableData = ref([])
 const total = ref(0)
 const loading = ref(false)
+const exporting = ref(false)
 
 const dialogVisible = ref(false)
 const detailVisible = ref(false)
@@ -519,6 +521,7 @@ const dialogTitle = ref('新建订单')
 const currentOrder = ref(null)
 
 const canApprove = computed(() => hasRole(['manager']))
+const canExportOrders = computed(() => isDistributorAccount())
 const actionLabel = (action) => ({
   created: '创建订单',
   draft_created: '创建销售草稿',
@@ -684,6 +687,25 @@ const loadData = async () => {
     ElMessage.error('加载销售数据失败: ' + (err.message || ''))
   } finally {
     loading.value = false
+  }
+}
+
+const handleExport = async () => {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    const params = { ...queryParams }
+    if (params.date) {
+      params.startDate = new Date(params.date).toISOString().split('T')[0]
+      params.endDate = new Date(params.date).toISOString().split('T')[0]
+      delete params.date
+    }
+    await api.exportSales(params)
+    ElMessage.success('订单导出成功')
+  } catch (err) {
+    ElMessage.error(err.message || '订单导出失败')
+  } finally {
+    exporting.value = false
   }
 }
 

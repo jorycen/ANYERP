@@ -20,12 +20,16 @@ test('国补照片兼容历史字符串、对象和本地文件元数据', () =>
   const photos = normalizeSubsidyPhotos([
     'https://example.com/legacy.jpg',
     { name: '云端照片', url: 'cloud://subsidy.jpg' },
+    { name: '可推导公共地址', url: 'cloud://cloud1-8glwjlnq4c74f7f1.636c-cloud1-8glwjlnq4c74f7f1-1410946266/subsidy_photos/demo.jpg' },
+    { name: '带公共地址的云端照片', url: 'cloud://subsidy-public.jpg', displayUrl: 'https://example.com/subsidy-public.jpg' },
     { id: 'LOCAL_1', name: '本地照片', storage: 'local', storage_name: 'LOCAL_1.png' }
   ]);
-  assert.equal(photos.length, 3);
+  assert.equal(photos.length, 5);
   assert.equal(photos[0].storage, 'external');
   assert.equal(photos[1].url, 'cloud://subsidy.jpg');
-  assert.equal(photos[2].storageName, 'LOCAL_1.png');
+  assert.equal(photos[2].displayUrl, 'https://636c-cloud1-8glwjlnq4c74f7f1-1410946266.tcb.qcloud.la/subsidy_photos/demo.jpg');
+  assert.equal(photos[3].displayUrl, 'https://example.com/subsidy-public.jpg');
+  assert.equal(photos[4].storageName, 'LOCAL_1.png');
 });
 
 test('国补照片权限包含总部、财务和店长但不包含普通店员', () => {

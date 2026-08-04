@@ -44,8 +44,9 @@ const { normalizePnCode } = require('../../utils/productPn');
 const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
-const { canViewSnTraceReference } = require('../../utils/snTracePermission');
-const { getSignedCloudFileUrl } = require('../../utils/cloudStorage');
+const { canViewSnTraceReference, isDealerTraceAccount } = require('../../utils/snTracePermission');
+const { sendExcel } = require('../../utils/excelExport');
+const { getCloudStorageConfig, getSignedCloudFileUrl, parseCloudFileId } = require('../../utils/cloudStorage');
 const {
   calculateAndSaveOrderGrossProfit,
   snapshotToResponse,
@@ -163,6 +164,11 @@ async function auxiliaryStaff(ctx) {
   ctx.body = { code: 0, data: list };
 }
 
+function canQueryAllSalesOrders(user) {
+  const roles = getUserRoles(user);
+  return isDealerTraceAccount(user) || roles.some(role => ['manager', 'store_manager'].includes(role));
+}
+
 async function list(ctx) {
   const {
     storeId, startDate, endDate, customerPhone, orderNo,
@@ -174,7 +180,14 @@ async function list(ctx) {
   const where = { is_deleted: 0 };
   const accessibleStoreIds = Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds.filter(Boolean) : [];
   const roles = getUserRoles(user);
-  const canQueryAllStoreOrders = roles.some(role => ['boss', 'admin', 'manager'].includes(role));
+  const dealerWide = isDealerTraceAccount(user);
+  const canQueryAllStoreOrders = dealerWide || roles.some(role => ['manager', 'store_manager'].includes(role));
+  const storeInclude = { model: Store };
+  if (dealerWide && !roles.includes('boss')) {
+    if (!user.distributorId) ctx.throw(403, '当前账号未绑定经销商');
+    storeInclude.where = { distributor_id: user.distributorId };
+    storeInclude.required = true;
+  }
 
   const dateRange = buildChinaDateRange(startDate, endDate);
   if (dateRange) {
@@ -194,8 +207,11 @@ async function list(ctx) {
   }
 
   if (storeId) {
+    if (!dealerWide && !roles.includes('boss') && !accessibleStoreIds.map(String).includes(String(storeId))) {
+      ctx.throw(403, '无权访问该门店订单');
+    }
     where.store_id = storeId;
-  } else if (!accessibleStoreIds.includes('*')) {
+  } else if (!dealerWide && !accessibleStoreIds.includes('*')) {
     if (accessibleStoreIds.length === 0) {
       ctx.body = formatPaginatedResult([], { page, pageSize, count: 0 });
       return;
@@ -221,7 +237,7 @@ async function list(ctx) {
   const { count, rows } = await Order.findAndCountAll({
     where,
     include: [
-      { model: Store },
+      storeInclude,
       itemInclude,
       { model: OrderPayment },
       { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false }
@@ -239,10 +255,84 @@ async function list(ctx) {
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
 }
 
+async function exportOrders(ctx) {
+  const user = ctx.state.user;
+  if (!isDealerTraceAccount(user)) {
+    ctx.throw(403, '仅经销商级账号支持导出订单');
+  }
+
+  const {
+    storeId, startDate, endDate, customerPhone, orderNo,
+    status, createUser, pnCode, snCode
+  } = ctx.query;
+  const roles = getUserRoles(user);
+  const where = { is_deleted: 0 };
+  const storeInclude = { model: Store };
+
+  if (!roles.includes('boss')) {
+    if (!user.distributorId) ctx.throw(403, '当前账号未绑定经销商');
+    storeInclude.where = { distributor_id: user.distributorId };
+    storeInclude.required = true;
+  }
+  if (storeId) where.store_id = storeId;
+  if (startDate || endDate) {
+    const dateRange = buildChinaDateRange(startDate, endDate);
+    if (dateRange) where.create_time = dateRange;
+  }
+  if (customerPhone) where.customer_phone = { [Op.like]: `%${customerPhone}%` };
+  if (orderNo) where.order_no = { [Op.like]: `%${orderNo}%` };
+  if (status) where.order_status = status;
+  if (createUser) where.create_user = { [Op.like]: `%${createUser}%` };
+
+  const itemWhere = {};
+  if (pnCode) itemWhere.pn_code = { [Op.like]: `%${pnCode}%` };
+  if (snCode) itemWhere.sn_code = { [Op.like]: `%${snCode}%` };
+  const itemInclude = { model: OrderItem };
+  if (Object.keys(itemWhere).length > 0) {
+    itemInclude.where = itemWhere;
+    itemInclude.required = true;
+  }
+
+  const orders = await Order.findAll({
+    where,
+    include: [
+      storeInclude,
+      itemInclude,
+      { model: OrderPayment },
+      { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false }
+    ],
+    order: [['create_time', 'DESC'], ['order_id', 'DESC']]
+  });
+  const headers = ['订单号', '创建时间', '门店', '创建人', '客户姓名', '联系电话', '订单金额', '实付金额', '状态'];
+  const rows = orders.map(order => {
+    const data = order.toJSON();
+    return {
+      订单号: data.order_no || '',
+      创建时间: data.create_time || '',
+      门店: data.Store?.name || '',
+      创建人: data.create_user || '',
+      客户姓名: data.customer_name || '',
+      联系电话: data.customer_phone || '',
+      订单金额: data.total_amount ?? 0,
+      实付金额: data.actual_payment ?? 0,
+      状态: data.order_status || ''
+    };
+  });
+
+  sendExcel(ctx, rows, headers, `销售订单导出_${getChinaDateString()}.xlsx`, '销售订单');
+}
+
 function parseJsonValue(value, fallback = null) {
   if (value === null || value === undefined || value === '') return fallback;
   if (typeof value !== 'string') return value;
   try { return JSON.parse(value); } catch (_) { return fallback; }
+}
+
+function publicCloudFileUrl(fileId) {
+  const parsed = parseCloudFileId(fileId);
+  const config = getCloudStorageConfig();
+  if (!parsed || parsed.cloudEnv !== config.envId || parsed.bucketName !== config.bucket) return '';
+  return `https://${parsed.bucketName}.tcb.qcloud.la/${encodeURI(parsed.key)}`;
 }
 
 function normalizeSubsidyPhotos(value) {
@@ -254,11 +344,13 @@ function normalizeSubsidyPhotos(value) {
     }
     if (!item || typeof item !== 'object') return null;
     const url = String(item.url || item.path || '').trim();
-    if (!url && !item.storage_name && !item.storageName) return null;
+    const displayUrl = String(item.display_url || item.displayUrl || '').trim() || publicCloudFileUrl(url);
+    if (!url && !displayUrl && !item.storage_name && !item.storageName) return null;
     return {
       id: String(item.id || item.photoId || `legacy-${index}`),
       name: String(item.name || item.originalName || `国补照片${index + 1}`),
       url,
+      displayUrl,
       storage: item.storage || (item.storage_name || item.storageName ? 'local' : 'external'),
       storageName: item.storage_name || item.storageName || '',
       mimeType: item.mime_type || item.mimeType || '',
@@ -283,11 +375,11 @@ function subsidyPhotoStoreWhere(user) {
 function subsidyPhotoResponse(order) {
   const data = order.toJSON ? order.toJSON() : order;
   const photos = normalizeSubsidyPhotos(data.subsidy_photos).map(photo => ({
-    ...photo,
-    isLocal: photo.storage === 'local',
-    accessUrl: photo.storage === 'local' && photo.id
-      ? `/api/v1/sales/subsidy-photos/${data.order_id}/files/${encodeURIComponent(photo.id)}`
-      : photo.url
+      ...photo,
+      isLocal: photo.storage === 'local',
+      accessUrl: photo.storage === 'local' && photo.id
+        ? `/api/v1/sales/subsidy-photos/${data.order_id}/files/${encodeURIComponent(photo.id)}`
+        : photo.url || photo.displayUrl
   }));
   return {
     orderId: data.order_id,
@@ -551,8 +643,14 @@ async function subsidyPhotoZipEntries(order) {
         id: photo.id,
         name: photo.name,
         load: async () => {
-          const signed = await getSignedCloudFileUrl(photo.url);
-          const response = await fetch(signed.url);
+          let sourceUrl = photo.displayUrl;
+          try {
+            const signed = await getSignedCloudFileUrl(photo.url);
+            sourceUrl = signed.url;
+          } catch (error) {
+            if (!/^https:\/\/[^/]+\.tcb\.qcloud\.la\//i.test(sourceUrl)) throw error;
+          }
+          const response = await fetch(sourceUrl);
           if (!response.ok) throw new Error(`云存储照片下载失败：HTTP ${response.status}`);
           return Buffer.from(await response.arrayBuffer());
         }
@@ -1187,7 +1285,7 @@ async function detail(ctx) {
     ctx.throw(404, '订单不存在');
   }
 
-  assertStoreVisible(order.store_id, ctx.state.user);
+  assertSalesOrderVisible(order.store_id, ctx.state.user, order.Store?.distributor_id);
   if (String(ctx.query.trace || '') === '1') {
     const orderData = order.toJSON();
     if (!canViewSnTraceReference(ctx.state.user, {
@@ -1439,7 +1537,8 @@ async function getGrossProfit(ctx) {
   }
   const order = await Order.findByPk(orderId);
   if (!order) ctx.throw(404, '订单不存在');
-  assertStoreVisible(order.store_id, ctx.state.user);
+  const store = await Store.findByPk(order.store_id, { attributes: ['store_id', 'distributor_id'] });
+  assertSalesOrderVisible(order.store_id, ctx.state.user, store?.distributor_id);
 
   const snapshot = await calculateAndSaveOrderGrossProfit(orderId, {
     calculatedBy: ctx.state.user?.name || 'system'
@@ -2352,6 +2451,14 @@ function assertStoreVisible(storeId, user, message = '无权访问该门店数�
   }
 }
 
+function assertSalesOrderVisible(storeId, user, distributorId = '') {
+  if (isDealerTraceAccount(user)) {
+    if (user.roles?.includes('boss')) return;
+    if (user.distributorId && String(user.distributorId) === String(distributorId || '')) return;
+  }
+  assertStoreVisible(storeId, user, '无权访问该销售订单');
+}
+
 async function validateDepositReservation({ payment, user, customerPhone, payableBeforeDeposit, transaction }) {
   const depositId = payment.depositId || payment.deposit_id;
   if (!depositId) {
@@ -3012,6 +3119,7 @@ async function validateAndDeductInventoryForArchive(order, transaction = null) {
 
 module.exports = {
   list,
+  exportOrders,
   create,
   saveSalesDraft,
   updateSalesDraft,
@@ -3044,6 +3152,7 @@ module.exports = {
   downloadSubsidyPhoto,
   downloadSubsidyPhotosArchive,
   _test: {
+    canQueryAllSalesOrders,
     normalizeOrderExtendedFields,
     normalizeAuxiliarySalesList,
     isCancelStatus,
