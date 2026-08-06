@@ -6,6 +6,7 @@ const {
   InventoryResourceRight, ResourceRightChangeOrder, SnLog
 } = require('../../models');
 const { generateUUID, generateBatchNo, paginate, formatPaginatedResult } = require('../../utils');
+const { assertSingleSnProductPn } = require('../../utils/productPn');
 const { getUserRoles } = require('../../middleware/permission');
 const {
   findResourceRule, calculatePreSaleRuleAmount, createPendingSettlement
@@ -250,7 +251,7 @@ async function validateRows(ctx, rows, options, transaction) {
       : null;
     locationCache.set(locationKey, location);
     const snCode = normalizeText(getCell(row, ['SN', 'sn', 'snCode', 'sn_code']));
-    const pnCode = normalizeText(getCell(row, ['PN', 'pn', 'pnCode', 'pn_code']));
+    let pnCode = normalizeText(getCell(row, ['PN', 'pn', 'pnCode', 'pn_code']));
     const resourceTypes = batchResourceTypes.length > 0
       ? batchResourceTypes
       : normalizeResourceTypes(getCell(row, ['资源权益', '资源类型', 'resourceTypes', 'resource_types']));
@@ -281,6 +282,24 @@ async function validateRows(ctx, rows, options, transaction) {
 
     let sn = null;
     if (product && Number(product.need_sn || 0) === 1) {
+      try {
+        const productPns = await ProductPn.findAll({
+          where: { product_id: product.product_id, status: 1, is_deleted: 0 },
+          attributes: ['pn_code'],
+          transaction
+        });
+        pnCode = assertSingleSnProductPn({
+          needSn: product.need_sn,
+          productCode: product.product_code,
+          configuredCodes: [
+            productPns.map(item => item.pn_code),
+            product.manufacturer_code
+          ],
+          requestedCode: pnCode
+        });
+      } catch (error) {
+        rowErrors.push(error.message);
+      }
       if (operationType === 'ADJUST') rowErrors.push('SN商品不得通过数量调整维护，请使用SN清单入库或出库');
       if (!snCode) rowErrors.push('SN商品必须填写SN');
       const snKey = `${pnCode || ''}:${snCode}`;

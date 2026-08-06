@@ -20,6 +20,7 @@ const { sendExcel } = require('../../utils/excelExport');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { isTransferScope, transferRegionKeys } = require('../../utils/transferScope');
 const { canViewSnTraceReference, isDealerTraceAccount } = require('../../utils/snTracePermission');
+const { assertSingleSnProductPn } = require('../../utils/productPn');
 
 function splitCodes(value) {
   return String(value || '')
@@ -2451,12 +2452,44 @@ async function getTransferableStock(product, productId, storeId, transaction) {
 async function productHasPn(product, pnCode, transaction) {
   const code = String(pnCode || '').trim();
   if (!code) return false;
+  if (Number(product.need_sn) === 1) {
+    try {
+      const productPns = await ProductPn.findAll({
+        where: { product_id: product.product_id, status: 1, is_deleted: 0 },
+        attributes: ['pn_code'],
+        transaction
+      });
+      assertSingleSnProductPn({
+        needSn: product.need_sn,
+        productCode: product.product_code,
+        configuredCodes: [productPns.map(item => item.pn_code), product.manufacturer_code],
+        requestedCode: code
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
   const pn = await ProductPn.findOne({
     where: { product_id: product.product_id, pn_code: code, is_deleted: 0 },
     transaction
   });
   if (pn) return true;
   return splitCodes(product.manufacturer_code).some(item => String(item).trim() === code);
+}
+
+async function resolveSnProductPn(product, requestedCode, transaction) {
+  const productPns = await ProductPn.findAll({
+    where: { product_id: product.product_id, status: 1, is_deleted: 0 },
+    attributes: ['pn_code'],
+    transaction
+  });
+  return assertSingleSnProductPn({
+    needSn: product.need_sn,
+    productCode: product.product_code,
+    configuredCodes: [productPns.map(item => item.pn_code), product.manufacturer_code],
+    requestedCode
+  });
 }
 
 function normalizeTransferItem(raw) {
@@ -2638,7 +2671,11 @@ async function executeInbound(ctx) {
           const salesReturnValidation = validateSalesReturnInboundSn({ sn: salesReturnSn, requestedSnCode });
           if (salesReturnValidation) ctx.throw(salesReturnValidation.status, salesReturnValidation.message);
 
-          const salesReturnPnCode = normalizePnCode(item.pnCode || item.pn_code || dbItem.pn_code || salesReturnSn.pn_code || splitCodes(product.manufacturer_code)[0] || '');
+          const salesReturnPnCode = await resolveSnProductPn(
+            product,
+            item.pnCode || item.pn_code || dbItem.pn_code || salesReturnSn.pn_code || '',
+            t
+          );
           await salesReturnSn.update({
             product_name: dbItem.product_name || salesReturnSn.product_name || product.name,
             pn_code: salesReturnPnCode,
@@ -2678,7 +2715,11 @@ async function executeInbound(ctx) {
             ctx.throw(400, `Transfer SN ${transferSn.sn_code} is already in another store`);
           }
 
-          const transferPnCode = normalizePnCode(item.pnCode || item.pn_code || dbItem.pn_code || transferSn.pn_code || splitCodes(product.manufacturer_code)[0] || '');
+          const transferPnCode = await resolveSnProductPn(
+            product,
+            item.pnCode || item.pn_code || dbItem.pn_code || transferSn.pn_code || '',
+            t
+          );
           if (transferSn.pn_code && transferPnCode && String(transferSn.pn_code) !== transferPnCode) {
             ctx.throw(400, `Transfer SN ${transferSn.sn_code} does not match PN ${transferPnCode}`);
           }
@@ -2710,7 +2751,11 @@ async function executeInbound(ctx) {
           ctx.throw(400, `商品 ${dbItem.product_name} 需要SN管理，SN码不能为空`);
         }
 
-        const pnCode = normalizePnCode(item.pnCode || item.pn_code || dbItem.pn_code || splitCodes(product.manufacturer_code)[0] || '');
+        const pnCode = await resolveSnProductPn(
+          product,
+          item.pnCode || item.pn_code || dbItem.pn_code || '',
+          t
+        );
         const snCode = requestedSnCode;
 
         const existingSn = await ProductSn.findOne({
@@ -3898,9 +3943,21 @@ function normalizeConversionType(value) {
 }
 
 async function ensurePn(productId, pnCode, transaction) {
-  const code = normalizePnCode(pnCode);
+  const product = await Product.findByPk(productId, {
+    attributes: ['product_id', 'product_code', 'need_sn', 'manufacturer_code'],
+    transaction
+  });
+  if (!product) return null;
+  const code = Number(product.need_sn) === 1
+    ? await resolveSnProductPn(product, pnCode, transaction)
+    : normalizePnCode(pnCode);
   if (!code) return null;
   let pn = await ProductPn.findOne({ where: { pn_code: code, is_deleted: 0 }, transaction });
+  if (pn && String(pn.product_id) !== String(productId)) {
+    const err = new Error(`PN ${code} 已绑定其他商品，不能重复关联`);
+    err.status = 400;
+    throw err;
+  }
   if (!pn) {
     pn = await ProductPn.create({
       pn_id: generateUUID(),
@@ -3975,10 +4032,11 @@ async function buildConversionSourceRows(sourceItems, conversionType, storeId, t
     let inventoryType = raw.inventoryType || raw.inventory_type || 'normal_qty';
     let locationId = raw.locationId || raw.location_id || '';
     let quantity = Math.max(1, parseInt(raw.quantity, 10) || 1);
-    let pnCode = normalizePnCode(raw.pnCode || raw.pn_code || splitCodes(product.manufacturer_code)[0] || '');
+    let pnCode = normalizePnCode(raw.pnCode || raw.pn_code || '');
     let snCode = String(raw.snCode || raw.sn_code || '').trim();
 
     if (Number(product.need_sn) === 1) {
+      pnCode = await resolveSnProductPn(product, pnCode, transaction);
       if (!raw.snId && !raw.sn_id && !snCode) {
         const err = new Error(`来源商品 ${product.name} 需要SN管理，请选择SN`);
         err.status = 400;
@@ -4072,7 +4130,9 @@ async function buildConversionTargetRows(targetItems, conversionType, storeId, s
     const unitCost = money(raw.unitCost ?? raw.unit_cost ?? 0);
     const totalCost = money(raw.totalCost ?? raw.total_cost ?? unitCost * quantity);
     const finalUnitCost = unitCost > 0 ? unitCost : money(totalCost / quantity);
-    const pnCode = normalizePnCode(raw.pnCode || raw.pn_code || splitCodes(product.manufacturer_code)[0] || '');
+    const pnCode = Number(product.need_sn) === 1
+      ? await resolveSnProductPn(product, raw.pnCode || raw.pn_code || '', transaction)
+      : normalizePnCode(raw.pnCode || raw.pn_code || splitCodes(product.manufacturer_code)[0] || '');
     const snCode = String(raw.snCode || raw.sn_code || '').trim();
 
     if (totalCost <= 0 || finalUnitCost <= 0) {

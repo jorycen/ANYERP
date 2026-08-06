@@ -20,7 +20,12 @@ const {
 const { Op, Sequelize } = require('sequelize');
 const { sequelize } = require('../../config/database');
 const { generateProductCode, generateUUID, generateId, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
-const { normalizePnCode, splitPnCodes, isUsablePnCode } = require('../../utils/productPn');
+const {
+  normalizePnCode,
+  splitPnCodes,
+  isUsablePnCode,
+  assertSingleSnProductPn
+} = require('../../utils/productPn');
 const XLSX = require('xlsx');
 const { getUserRoles } = require('../../middleware/permission');
 
@@ -123,12 +128,26 @@ async function ensureProductPns(productId, codes, transaction = null) {
   if (!productKey) return [];
 
   const normalizedCodes = splitPnCodes(codes);
-  if (normalizedCodes.length === 0) return [];
+  const product = await Product.findByPk(productId, {
+    attributes: ['product_id', 'product_code', 'need_sn'],
+    transaction
+  });
+  if (!product) return [];
 
   const existingForProduct = await ProductPn.findAll({
     where: { product_id: productId },
     transaction
   });
+  assertSingleSnProductPn({
+    needSn: product.need_sn,
+    productCode: product.product_code,
+    configuredCodes: [
+      ...existingForProduct.filter(row => Number(row.is_deleted || 0) === 0 && Number(row.status || 0) === 1).map(row => row.pn_code),
+      ...normalizedCodes
+    ]
+  });
+  if (normalizedCodes.length === 0) return [];
+
   const existingByKey = new Map(
     existingForProduct.map(row => [normalizePnCode(row.pn_code), row])
   );
@@ -909,12 +928,10 @@ async function updateProduct(ctx) {
       }
     }
 
-    if (manufacturerInput !== undefined || barcodes !== undefined) {
-      const nextCodes = barcodes !== undefined
-        ? getManufacturerCodes(barcodes, manufacturerInput)
-        : getManufacturerCodes([], manufacturerInput);
-      await ensureProductPns(productId, nextCodes, transaction);
-    }
+    const nextCodes = barcodes !== undefined
+      ? getManufacturerCodes(barcodes, manufacturerInput)
+      : (manufacturerInput !== undefined ? getManufacturerCodes([], manufacturerInput) : []);
+    await ensureProductPns(productId, nextCodes, transaction);
     await transaction.commit();
   } catch (error) {
     await transaction.rollback();
