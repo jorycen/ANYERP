@@ -22,3 +22,17 @@ test('批量维护错误快照只保存行号和原因，避免 raw 行数据撑
     { rowNo: 3, message: '数量必须大于0' }
   ]);
 });
+
+test('批量出库强制忽略资源权益和结算触发参数', () => {
+  assert.deepEqual(
+    _test.normalizeOperationResources('OUTBOUND', ['REBATE', 'POSTING'], true),
+    { resourceTypes: [], triggerResourceRights: false }
+  );
+});
+
+test('批量入库继续保留资源权益配置', () => {
+  assert.deepEqual(
+    _test.normalizeOperationResources('INBOUND', ['REBATE'], true),
+    { resourceTypes: ['REBATE'], triggerResourceRights: false }
+  );
+});

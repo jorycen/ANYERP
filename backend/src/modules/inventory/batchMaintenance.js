@@ -9,7 +9,7 @@ const { generateUUID, generateBatchNo, paginate, formatPaginatedResult } = requi
 const { assertSingleSnProductPn } = require('../../utils/productPn');
 const { getUserRoles } = require('../../middleware/permission');
 const {
-  findResourceRule, calculatePreSaleRuleAmount, createPendingSettlement
+  findResourceRule, calculatePreSaleRuleAmount
 } = require('./resourceRights');
 
 const VALID_OPERATION_TYPES = new Set(['INBOUND', 'OUTBOUND', 'ADJUST']);
@@ -85,6 +85,13 @@ function normalizeResourceTypes(value) {
   return unique(String(value || '')
     .split(/[,，;；\s]+/)
     .map(item => item.trim()));
+}
+
+function normalizeOperationResources(operationType, resourceTypes) {
+  if (operationType !== 'INBOUND') {
+    return { resourceTypes: [], triggerResourceRights: false };
+  }
+  return { resourceTypes, triggerResourceRights: false };
 }
 
 function parseWorkbook(buffer) {
@@ -275,8 +282,8 @@ async function validateRows(ctx, rows, options, transaction) {
     if (!VALID_INVENTORY_TYPES.has(inventoryType)) rowErrors.push('库存类型无效');
     if ((operationType === 'INBOUND' || operationType === 'OUTBOUND') && quantity <= 0) rowErrors.push('数量必须大于0');
     if (operationType === 'ADJUST' && quantity === 0) rowErrors.push('调整数量不能为0');
-    if ((operationType === 'INBOUND' || (operationType === 'OUTBOUND' && triggerResourceRights)) && resourceTypes.length === 0) {
-      rowErrors.push(operationType === 'INBOUND' ? '入库必须填写资源权益' : '出库触发权益时必须填写资源权益');
+    if (operationType === 'INBOUND' && resourceTypes.length === 0) {
+      rowErrors.push('入库必须填写资源权益');
     }
     if (!location) rowErrors.push(batchInventoryType ? '所选仓位在该门店不存在或已停用' : '库位不存在或不属于该门店');
 
@@ -326,6 +333,8 @@ async function validateRows(ctx, rows, options, transaction) {
         });
         if (!sn) rowErrors.push('SN不存在、未在库或不属于该商品');
         if (sn && store && String(sn.store_id || '') !== String(store.store_id)) rowErrors.push('SN不在当前门店');
+        if (sn && location && String(sn.location_id || '') !== String(location.location_id || '')) rowErrors.push('SN不在所选仓位');
+        if (sn && String(sn.inventory_type || 'normal_qty') !== inventoryType) rowErrors.push('SN库存类型与所选仓位不一致');
       }
     } else if (product && Number(product.need_sn || 0) === 0 && operationType !== 'INBOUND') {
       const before = store ? await inventoryQty(product.product_id, store.store_id, inventoryType, location?.location_id || '', transaction) : 0;
@@ -365,16 +374,19 @@ async function validateRows(ctx, rows, options, transaction) {
 async function createBatchApplication(ctx) {
   const user = ctx.state.user;
   const operationType = normalizeText(ctx.request.body.operationType || ctx.request.body.operation_type).toUpperCase();
-  const triggerResourceRights = String(ctx.request.body.triggerResourceRights || ctx.request.body.trigger_resource_rights || '') === 'true'
-    || Number(ctx.request.body.triggerResourceRights || ctx.request.body.trigger_resource_rights || 0) === 1;
   const importMode = normalizeText(ctx.request.body.importMode || ctx.request.body.import_mode).toUpperCase();
   const inventoryType = normalizeText(ctx.request.body.inventoryType || ctx.request.body.inventory_type || ctx.request.body.locationType || ctx.request.body.location_type);
-  const resourceTypes = normalizeResourceTypes(ctx.request.body.resourceTypes || ctx.request.body.resource_types || '');
+  const requestedResourceTypes = normalizeResourceTypes(ctx.request.body.resourceTypes || ctx.request.body.resource_types || '');
 
   if (!VALID_OPERATION_TYPES.has(operationType)) ctx.throw(400, '批量操作类型无效');
   if (importMode && !['SN', 'NON_SN'].includes(importMode)) ctx.throw(400, '导入模式无效');
   if (inventoryType && !VALID_INVENTORY_TYPES.has(inventoryType)) ctx.throw(400, '仓位类型无效');
   if (!ctx.file?.buffer) ctx.throw(400, '请上传Excel文件');
+
+  const { resourceTypes, triggerResourceRights } = normalizeOperationResources(
+    operationType,
+    requestedResourceTypes
+  );
 
   const rows = parseWorkbook(ctx.file.buffer);
   if (rows.length === 0) ctx.throw(400, 'Excel没有可导入数据');
@@ -392,6 +404,16 @@ async function createBatchApplication(ctx) {
       await transaction.rollback();
       ctx.status = 400;
       ctx.body = { code: 400, message: '没有可导入的有效数据', data: { errors, totalRows: rows.length } };
+      return;
+    }
+    if (errors.length > 0) {
+      await transaction.rollback();
+      ctx.status = 400;
+      ctx.body = {
+        code: 400,
+        message: `整批校验失败：共${errors.length}行异常，未生成批量维护申请`,
+        data: { errors, totalRows: rows.length, validRows: 0, errorRows: errors.length }
+      };
       return;
     }
 
@@ -605,44 +627,6 @@ async function createNonSnBatchRights(item, application, transaction) {
   }
 }
 
-async function consumeNonSnBatchRights(item, application, transaction) {
-  const resourceTypes = parseJsonArray(item.resource_types);
-  for (const resourceType of resourceTypes) {
-    let remaining = Number(item.quantity || 0);
-    const rights = await NonSnInventoryBatchRight.findAll({
-      where: {
-        product_id: item.product_id,
-        store_id: item.store_id,
-        location_id: item.location_id || '',
-        resource_type: resourceType,
-        status: 'AVAILABLE',
-        remaining_quantity: { [Op.gt]: 0 }
-      },
-      order: [['create_time', 'ASC']],
-      transaction
-    });
-    for (const right of rights) {
-      if (remaining <= 0) break;
-      const deduct = Math.min(Number(right.remaining_quantity || 0), remaining);
-      await right.update({
-        remaining_quantity: Number(right.remaining_quantity || 0) - deduct,
-        status: Number(right.remaining_quantity || 0) - deduct <= 0 ? 'USED' : 'AVAILABLE'
-      }, { transaction });
-      await createPendingSettlement({
-        sourceType: 'BATCH_OUTBOUND',
-        sourceId: `${application.application_id}:${item.item_id}:${right.right_id}`,
-        sn: { sn_id: null, sn_code: null, product_id: item.product_id },
-        resourceType,
-        amount: Number(right.amount_per_unit || 0) * deduct,
-        remark: `非SN批量出库 ${application.application_no} 触发权益，数量 ${deduct}`,
-        transaction
-      });
-      remaining -= deduct;
-    }
-    if (remaining > 0) throw Object.assign(new Error(`非SN资源权益 ${resourceType} 批次数量不足`), { status: 409 });
-  }
-}
-
 async function executeApplication(application, transaction) {
   const items = await InventoryBatchApplicationItem.findAll({
     where: { application_id: application.application_id },
@@ -660,25 +644,18 @@ async function executeApplication(application, transaction) {
         if (!sn || sn.status !== 'in_stock') throw Object.assign(new Error(`第 ${item.row_no} 行SN不在库，无法执行`), { status: 409 });
         await sn.update({ status: 'out_stock' }, { transaction });
         await updateInventoryQty(item.product_id, item.store_id, item.inventory_type, -1, transaction, item.location_id || '');
-        if (Number(item.trigger_resource_rights || 0) === 1) {
-          const resourceTypes = parseJsonArray(item.resource_types);
-          const rights = await InventoryResourceRight.findAll({
-            where: { sn_id: sn.sn_id, resource_type: { [Op.in]: resourceTypes }, current_status: 'AVAILABLE' },
-            transaction
-          });
-          for (const right of rights) {
-            await right.update({ current_status: 'USED', update_time: new Date() }, { transaction });
-            await createPendingSettlement({
-              sourceType: 'BATCH_OUTBOUND',
-              sourceId: `${application.application_id}:${item.item_id}:${right.right_id}`,
-              sn,
-              resourceType: right.resource_type,
-              amount: right.amount,
-              remark: `批量出库 ${application.application_no} 触发权益`,
-              transaction
-            });
-          }
-        }
+        await SnLog.create({
+          log_id: generateUUID(),
+          sn_id: sn.sn_id,
+          sn_code: sn.sn_code,
+          product_id: item.product_id,
+          product_name: item.product_name,
+          store_id: item.store_id,
+          action: 'batch_outbound',
+          remark: `库存批量维护出库 ${application.application_no}`,
+          create_user: application.reviewer_name || application.applicant_name,
+          create_time: new Date()
+        }, { transaction });
       }
     } else {
       const delta = item.operation_type === 'OUTBOUND' ? -Number(item.quantity || 0) : Number(item.quantity || 0);
@@ -686,8 +663,6 @@ async function executeApplication(application, transaction) {
       await item.update({ before_qty: result.before, after_qty: result.after }, { transaction });
       if (item.operation_type === 'INBOUND') {
         await createNonSnBatchRights(item, application, transaction);
-      } else if (item.operation_type === 'OUTBOUND' && Number(item.trigger_resource_rights || 0) === 1) {
-        await consumeNonSnBatchRights(item, application, transaction);
       }
     }
   }
@@ -805,5 +780,12 @@ module.exports = {
   getBatchApplicationDetail,
   reviewBatchApplication,
   recoverExecutingBatchApplications,
-  _test: { parseWorkbook, normalizeResourceTypes, validateRows, normalizeUploadedFilename, compactBatchErrors }
+  _test: {
+    parseWorkbook,
+    normalizeResourceTypes,
+    normalizeOperationResources,
+    validateRows,
+    normalizeUploadedFilename,
+    compactBatchErrors
+  }
 };

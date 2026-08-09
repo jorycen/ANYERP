@@ -301,9 +301,6 @@
               <el-table-column label="类型" width="100">
                 <template #default="{ row }">{{ batchOperationText(row.operation_type) }}</template>
               </el-table-column>
-              <el-table-column label="出库权益" width="90">
-                <template #default="{ row }">{{ row.trigger_resource_rights ? '触发' : '-' }}</template>
-              </el-table-column>
               <el-table-column prop="total_rows" label="行数" width="80" />
               <el-table-column prop="applicant_name" label="申请人" width="120" />
               <el-table-column prop="source_file_name" label="来源文件" min-width="180" show-overflow-tooltip />
@@ -1534,21 +1531,11 @@
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col :span="12">
-            <el-form-item label="资源权益" :required="batchForm.operationType === 'INBOUND' || (batchForm.operationType === 'OUTBOUND' && batchForm.triggerResourceRights)">
+          <el-col v-if="batchForm.operationType === 'INBOUND'" :span="12">
+            <el-form-item label="资源权益" required>
               <el-select v-model="batchForm.resourceTypes" multiple collapse-tags collapse-tags-tooltip clearable style="width: 100%">
                 <el-option v-for="resource in snInventoryResourceOptions" :key="resource.value" :label="resource.label" :value="resource.value" />
               </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="出库权益">
-              <el-switch
-                v-model="batchForm.triggerResourceRights"
-                :disabled="batchForm.operationType !== 'OUTBOUND'"
-                active-text="触发"
-                inactive-text="不触发"
-              />
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -1754,7 +1741,6 @@ const batchForm = reactive({
   importMode: 'SN',
   inventoryType: 'normal_qty',
   resourceTypes: [],
-  triggerResourceRights: false,
   remark: ''
 })
 const batchImportModeOptions = [
@@ -2348,7 +2334,7 @@ const validateBatchImportForm = () => {
   if (!batchForm.operationType) return '请选择操作类型'
   if (!batchForm.importMode) return '请选择导入类型'
   if (!batchForm.inventoryType) return '请选择统一仓位'
-  if ((batchForm.operationType === 'INBOUND' || (batchForm.operationType === 'OUTBOUND' && batchForm.triggerResourceRights)) && batchForm.resourceTypes.length === 0) {
+  if (batchForm.operationType === 'INBOUND' && batchForm.resourceTypes.length === 0) {
     return '请选择资源权益'
   }
   if (!batchImportFile.value) return '请选择导入文件'
@@ -2367,8 +2353,8 @@ const submitBatchImport = async () => {
       operationType: batchForm.operationType,
       importMode: batchForm.importMode,
       inventoryType: batchForm.inventoryType,
-      resourceTypes: (batchForm.operationType === 'INBOUND' || (batchForm.operationType === 'OUTBOUND' && batchForm.triggerResourceRights)) ? batchForm.resourceTypes.join(',') : '',
-      triggerResourceRights: batchForm.operationType === 'OUTBOUND' && batchForm.triggerResourceRights ? 1 : 0,
+      resourceTypes: batchForm.operationType === 'INBOUND' ? batchForm.resourceTypes.join(',') : '',
+      triggerResourceRights: 0,
       remark: batchForm.remark || ''
     })
     if (res.code === 0) {
