@@ -257,7 +257,7 @@ async function validateRows(ctx, rows, options, transaction) {
         : await resolveLocation(row, store.store_id, transaction, batchInventoryType))
       : null;
     locationCache.set(locationKey, location);
-    const snCode = normalizeText(getCell(row, ['SN', 'sn', 'snCode', 'sn_code']));
+    const snCode = normalizeText(getCell(row, ['SN', '机器号', '序列号', 'sn', 'snCode', 'sn_code']));
     let pnCode = normalizeText(getCell(row, ['PN', 'pn', 'pnCode', 'pn_code']));
     const resourceTypes = batchResourceTypes.length > 0
       ? batchResourceTypes
@@ -318,13 +318,11 @@ async function validateRows(ctx, rows, options, transaction) {
           const existing = await ProductSn.findOne({
             where: {
               sn_code: snCode,
-              ...(pnCode ? { pn_code: pnCode } : {}),
-              status: { [Op.in]: ['in_stock', 'transferring'] },
-              is_deleted: 0
+              ...(pnCode ? { pn_code: pnCode } : {})
             },
             transaction
           });
-          if (existing) rowErrors.push('SN当前已在库或调拨中');
+          if (existing) rowErrors.push(`SN历史记录已存在，当前状态：${existing.status || '未知'}`);
         }
       } else if (snCode) {
         sn = await ProductSn.findOne({
@@ -506,19 +504,32 @@ async function listBatchApplications(ctx) {
 }
 
 async function getBatchApplicationDetail(ctx) {
-  const app = await InventoryBatchApplication.findByPk(ctx.params.applicationId, {
-    include: [{ model: InventoryBatchApplicationItem, as: 'items', include: [{ model: Store, attributes: ['store_id', 'name'] }] }],
-    order: [[{ model: InventoryBatchApplicationItem, as: 'items' }, 'row_no', 'ASC']]
-  });
+  const app = await InventoryBatchApplication.findByPk(ctx.params.applicationId);
   if (!app) ctx.throw(404, '批量维护申请不存在');
   const user = ctx.state.user;
   if (!isBoss(user) && String(app.applicant_distributor_id || '') !== String(user.distributorId || '')) {
     if (String(app.applicant_staff_id || '') !== String(user.staffId || '')) ctx.throw(403, '无权查看该申请');
   }
-  ctx.body = app;
+  const items = await InventoryBatchApplicationItem.findAll({
+    where: { application_id: app.application_id },
+    attributes: { exclude: ['raw_json'] },
+    include: [{ model: Store, attributes: ['store_id', 'name'] }],
+    order: [['row_no', 'ASC']]
+  });
+  ctx.body = { ...app.toJSON(), items };
 }
 
 async function createSnInbound(item, application, transaction) {
+  const existing = await ProductSn.findOne({
+    where: { pn_code: item.pn_code, sn_code: item.sn_code },
+    transaction
+  });
+  if (existing) {
+    throw Object.assign(
+      new Error(`第 ${item.row_no} 行SN ${item.sn_code} 已存在，当前状态：${existing.status || '未知'}`),
+      { status: 409 }
+    );
+  }
   const sn = await ProductSn.create({
     sn_id: generateUUID(),
     product_id: item.product_id,
@@ -689,7 +700,7 @@ async function executeBatchApplicationInBackground(applicationId) {
     try {
       await InventoryBatchApplication.update({
         status: 'execute_failed',
-        execute_error: String(error.message || error).slice(0, 1000),
+        execute_error: formatExecutionError(error).slice(0, 1000),
         update_time: new Date()
       }, { where: { application_id: applicationId, status: 'executing' } });
     } catch (markError) {
@@ -697,6 +708,13 @@ async function executeBatchApplicationInBackground(applicationId) {
     }
     console.error(`[BatchMaintenance] 后台执行失败 ${applicationId}:`, error.stack || error.message);
   }
+}
+
+function formatExecutionError(error) {
+  if (error?.name === 'SequelizeUniqueConstraintError') {
+    return '数据唯一性校验失败，请检查SN、PN或其他唯一字段是否已存在';
+  }
+  return String(error?.message || error || '批量执行失败');
 }
 
 function scheduleBatchApplicationExecution(applicationId) {
@@ -773,6 +791,8 @@ module.exports = {
     parseWorkbook,
     normalizeResourceTypes,
     normalizeOperationResources,
+    getCell,
+    formatExecutionError,
     validateRows,
     normalizeUploadedFilename,
     compactBatchErrors

@@ -36,3 +36,17 @@ test('批量入库继续保留资源权益配置', () => {
     { resourceTypes: ['REBATE'], triggerResourceRights: false }
   );
 });
+
+test('SN批量导入兼容机器号和序列号表头', () => {
+  assert.equal(_test.getCell({ 机器号: 'MPVMGKR' }, ['SN', '机器号', '序列号']), 'MPVMGKR');
+  assert.equal(_test.getCell({ 序列号: 'PF2DNRA4' }, ['SN', '机器号', '序列号']), 'PF2DNRA4');
+  assert.equal(_test.getCell({ SN: 'YX030S5F' }, ['SN', '机器号', '序列号']), 'YX030S5F');
+});
+
+test('批量执行唯一约束错误转换为可操作提示', () => {
+  assert.equal(
+    _test.formatExecutionError({ name: 'SequelizeUniqueConstraintError', message: 'Validation error' }),
+    '数据唯一性校验失败，请检查SN、PN或其他唯一字段是否已存在'
+  );
+  assert.equal(_test.formatExecutionError(new Error('第 2 行SN已存在')), '第 2 行SN已存在');
+});
