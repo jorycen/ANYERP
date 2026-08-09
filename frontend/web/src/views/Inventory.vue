@@ -1583,7 +1583,18 @@
       <template #footer>
         <el-button @click="batchImportDialogVisible = false">关闭</el-button>
         <el-button v-if="batchImportErrors.length > 0" @click="downloadBatchImportErrors">下载异常记录</el-button>
-        <el-button type="primary" :loading="batchImportLoading" :disabled="!batchImportFile" @click="submitBatchImport">立即导入</el-button>
+        <el-button
+          v-if="batchImportResult.success > 0 && !batchImportFile"
+          type="primary"
+          @click="finishBatchImport"
+        >完成并查看申请</el-button>
+        <el-button
+          v-else
+          type="primary"
+          :loading="batchImportLoading"
+          :disabled="!batchImportFile"
+          @click="submitBatchImport"
+        >立即导入</el-button>
       </template>
     </el-dialog>
 
@@ -2328,6 +2339,11 @@ const clearBatchImportFile = () => {
   batchImportFile.value = null
   batchImportErrors.value = []
   batchImportResult.visible = false
+}
+
+const finishBatchImport = () => {
+  batchImportDialogVisible.value = false
+  loadBatchApplications()
 }
 
 const validateBatchImportForm = () => {

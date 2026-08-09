@@ -406,17 +406,6 @@ async function createBatchApplication(ctx) {
       ctx.body = { code: 400, message: '没有可导入的有效数据', data: { errors, totalRows: rows.length } };
       return;
     }
-    if (errors.length > 0) {
-      await transaction.rollback();
-      ctx.status = 400;
-      ctx.body = {
-        code: 400,
-        message: `整批校验失败：共${errors.length}行异常，未生成批量维护申请`,
-        data: { errors, totalRows: rows.length, validRows: 0, errorRows: errors.length }
-      };
-      return;
-    }
-
     const applicationId = generateUUID();
     const app = await InventoryBatchApplication.create({
       application_id: applicationId,
