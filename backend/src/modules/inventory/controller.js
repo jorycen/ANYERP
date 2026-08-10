@@ -21,6 +21,7 @@ const { recordBusinessAction, listBusinessActions } = require('../../utils/busin
 const { isTransferScope, transferRegionKeys } = require('../../utils/transferScope');
 const { canViewSnTraceReference, isDealerTraceAccount } = require('../../utils/snTracePermission');
 const { assertSingleSnProductPn } = require('../../utils/productPn');
+const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
 
 function splitCodes(value) {
   return String(value || '')
@@ -195,6 +196,7 @@ async function changeTransferRequestStatus(ctx, targetStatus, action, actorCheck
     const reason = String(ctx.request.body?.reason || ctx.request.body?.comment || '').trim().slice(0, 1000);
     const fromStatus = transfer.status;
     await transfer.update({ status: targetStatus }, { transaction: t });
+    await setFreightRecordStatus('transfer', transfer.transfer_id, 'cancelled', user, t);
     await recordBusinessAction({
       businessType: 'inventory_transfer',
       businessId: transfer.transfer_id,
@@ -3087,7 +3089,14 @@ async function transfer(ctx) {
   const t = await sequelize.transaction();
   try {
     const user = ctx.state.user;
-    const { fromStoreId, toStoreId } = ctx.request.body;
+    const { fromStoreId, toStoreId, deliveryPlatformId, deliveryPlatformName, freightAmount,
+      freight_platform_id, freight_platform_name, freight_amount } = ctx.request.body;
+    const normalizedFreightPlatformId = deliveryPlatformId || freight_platform_id || '';
+    const normalizedFreightPlatformName = deliveryPlatformName || freight_platform_name || '';
+    const rawFreightAmount = freightAmount === undefined ? freight_amount : freightAmount;
+    const normalizedFreightAmount = Number.isFinite(Number(rawFreightAmount))
+      ? Math.max(0, Number(Number(rawFreightAmount).toFixed(2)))
+      : 0;
     const rawItems = Array.isArray(ctx.request.body.items) ? ctx.request.body.items : [];
     const items = rawItems.map(normalizeTransferItem);
 
@@ -3170,6 +3179,9 @@ async function transfer(ctx) {
       transfer_no: transferNo,
       from_store_id: fromStoreId,
       to_store_id: toStoreId,
+      freight_platform_id: normalizedFreightPlatformId || null,
+      freight_platform_name: normalizedFreightPlatformName || null,
+      freight_amount: normalizedFreightAmount,
       total_quantity: totalQuantity,
       outbound_quantity: 0,
       remaining_quantity: totalQuantity,
@@ -3213,6 +3225,21 @@ async function transfer(ctx) {
         }, { transaction: t });
       }
     }
+
+    await syncFreightRecord({
+      sourceType: 'transfer',
+      sourceId: transferId,
+      sourceNo: transferNo,
+      platformId: normalizedFreightPlatformId,
+      platformName: normalizedFreightPlatformName,
+      amount: normalizedFreightAmount,
+      fromStoreId,
+      toStoreId,
+      items: normalizedItems,
+      status: 'active',
+      user,
+      transaction: t
+    });
 
     await t.commit();
     ctx.body = { code: 0, data: { transferId, transferNo }, message: '???????' };

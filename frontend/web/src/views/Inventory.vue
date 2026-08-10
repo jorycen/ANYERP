@@ -1065,6 +1065,14 @@
             <el-option v-for="store in availableStores" :key="store.store_id" :label="store.name" :value="store.store_id" />
           </el-select>
         </el-form-item>
+        <el-form-item label="配送平台">
+          <el-select v-model="transferForm.freightPlatformId" clearable placeholder="请选择配送平台" style="width: 100%">
+            <el-option v-for="platform in freightPlatforms" :key="platform.platform_id" :label="platform.platform_name" :value="platform.platform_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="运费金额">
+          <el-input-number v-model="transferForm.freightAmount" :min="0" :precision="2" :step="1" controls-position="right" style="width: 100%" />
+        </el-form-item>
         <el-form-item label="添加商品">
           <div class="transfer-add-row">
             <el-select
@@ -1887,8 +1895,11 @@ const transferForm = reactive({
   fromStoreId: '',
   fromStoreName: '',
   toStoreId: '',
+  freightPlatformId: '',
+  freightAmount: 0,
   items: []
 })
+const freightPlatforms = ref([])
 const transferAddForm = reactive({
   productId: '',
   snId: '',
@@ -2027,6 +2038,7 @@ onMounted(async () => {
     conversionForm.storeId = getStoreId()
   }
   loadStores()
+  loadFreightPlatforms()
   loadCategories()
   const inboundIdFromQuery = String(route.query.inboundId || '').trim()
   const transferIdFromQuery = String(route.query.transferId || '').trim()
@@ -2193,6 +2205,15 @@ const loadTransferStores = async () => {
     }
   } catch (err) {
     ElMessage.error('加载调拨门店失败')
+  }
+}
+
+const loadFreightPlatforms = async () => {
+  try {
+    const res = await api.getFreightPlatforms()
+    if (res.code === 0) freightPlatforms.value = res.data || []
+  } catch (err) {
+    freightPlatforms.value = []
   }
 }
 
@@ -3359,6 +3380,8 @@ const resetTransferForm = () => {
   transferForm.fromStoreId = ''
   transferForm.fromStoreName = ''
   transferForm.toStoreId = ''
+  transferForm.freightPlatformId = ''
+  transferForm.freightAmount = 0
   transferForm.items = []
   transferAddForm.productId = ''
   transferAddForm.snId = ''
@@ -3398,6 +3421,9 @@ const submitTransfer = async () => {
     const res = await api.transfer({
       fromStoreId: transferForm.fromStoreId,
       toStoreId: transferForm.toStoreId,
+      deliveryPlatformId: transferForm.freightPlatformId,
+      deliveryPlatformName: freightPlatforms.value.find(item => item.platform_id === transferForm.freightPlatformId)?.platform_name || '',
+      freightAmount: Number(transferForm.freightAmount || 0),
       items: transferForm.items
     })
     if (res.code === 0) {

@@ -283,6 +283,12 @@ export default {
   sortSuppliers: (data) => api.post('/purchase/supplier/sort', data),
 
   // Finance
+  getFreightPlatforms: (params) => api.get('/finance/freight/platforms', { params }),
+  createFreightPlatform: (data) => api.post('/finance/freight/platforms', data),
+  updateFreightPlatform: (id, data) => api.put(`/finance/freight/platforms/${id}`, data),
+  deleteFreightPlatform: (id) => api.delete(`/finance/freight/platforms/${id}`),
+  getFreightRecords: (params) => api.get('/finance/freight/records', { params }),
+  exportFreightRecords: (params) => exportExcel('/finance/freight/records/export', params, `运费记录_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getDailyDetails: (params) => api.get('/finance/daily-details', { params }),
   getNationalSubsidyReceivables: (params) => api.get('/finance/national-subsidy-receivables', { params }),
   getSubsidyAccountRoutes: () => api.get('/finance/national-subsidy-account-routes'),

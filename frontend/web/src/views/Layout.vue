@@ -195,6 +195,7 @@ const pageTitles = {
   '/finance/reimbursement': '报销结算',
   '/finance/payment': '付款管理',
   '/finance/settlement': '应付结算单管理',
+  '/finance/freight': '运费管理',
   '/finance/rebate': '返利管理',
   '/finance/resource-rights': '资源权益核销与成本调整',
   '/finance/account': '账户中心',

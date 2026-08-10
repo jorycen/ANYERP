@@ -274,6 +274,14 @@
             </div>
           </div>
         </el-form-item>
+        <el-form-item label="配送平台">
+          <el-select v-model="requestForm.freightPlatformId" clearable placeholder="请选择配送平台" style="width: 100%">
+            <el-option v-for="platform in freightPlatforms" :key="platform.platform_id" :label="platform.platform_name" :value="platform.platform_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="运费金额">
+          <el-input-number v-model="requestForm.freightAmount" :min="0" :precision="2" :step="1" controls-position="right" style="width: 100%" />
+        </el-form-item>
 
         <div class="order-summary">
           <div class="summary-item total">申请金额: <span>¥{{ totalAmount.toFixed(2) }}</span></div>
@@ -681,8 +689,12 @@ const requestForm = reactive({
   productType: '',
   remark: '',
   rebateDeduction: 0,
+  freightPlatformId: '',
+  freightAmount: 0,
   items: []
 })
+
+const freightPlatforms = ref([])
 
 const rebateBalance = ref(0)
 
@@ -826,6 +838,7 @@ onMounted(() => {
   loadAllSuppliers()
   loadAllStores()
   loadProducts()
+  loadFreightPlatforms()
   loadOperatorStaff()
   loadResourceOptions()
   loadGoodsTypeOptions()
@@ -859,6 +872,15 @@ const loadAllStores = async () => {
     }
   } catch (err) {
     allStores.value = []
+  }
+}
+
+const loadFreightPlatforms = async () => {
+  try {
+    const res = await api.getFreightPlatforms()
+    if (res.code === 0) freightPlatforms.value = res.data || []
+  } catch (err) {
+    freightPlatforms.value = []
   }
 }
 
@@ -1049,6 +1071,8 @@ const handleEditDraft = async (row) => {
     requestForm.productType = request.product_type || goodsTypeOptions.value[0]?.name || ''
     requestForm.remark = request.reason || ''
     requestForm.rebateDeduction = request.rebate_deduction || 0
+    requestForm.freightPlatformId = request.freight_platform_id || ''
+    requestForm.freightAmount = Number(request.freight_amount || 0)
     requestForm.items = (request.items || []).map(item => ({
       productId: item.product_id || '',
       productName: item.product_name || '',
@@ -1557,6 +1581,9 @@ const buildPurchaseRequestPayload = () => {
     productType: requestForm.productType,
     remark: requestForm.remark,
     rebateDeduction: rebateDeductionAmount.value,
+    freightPlatformId: requestForm.freightPlatformId,
+    freightPlatformName: freightPlatforms.value.find(item => item.platform_id === requestForm.freightPlatformId)?.platform_name || '',
+    freightAmount: Number(requestForm.freightAmount || 0),
     items: requestForm.items.map(item => ({
       productId: item.productId,
       productName: item.productName,
@@ -1674,6 +1701,8 @@ const resetForm = () => {
   requestForm.productType = goodsTypeOptions.value[0]?.name || ''
   requestForm.remark = ''
   requestForm.rebateDeduction = 0
+  requestForm.freightPlatformId = ''
+  requestForm.freightAmount = 0
   requestForm.items = []
 }
 

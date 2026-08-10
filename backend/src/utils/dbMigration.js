@@ -2078,6 +2078,118 @@ async function runMigrations() {
       'JSON COMMENT "订单产品定价明细"',
       'SETTLEMENT_COST_DETAILS'
     );
+    await checkAndAddColumn(
+      'T_ORDER_GROSS_PROFIT',
+      'FREIGHT_COST_AMOUNT',
+      'DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT "最近一次运费成本"',
+      'SUPPLEMENT_AMOUNT'
+    );
+    await checkAndAddColumn(
+      'T_ORDER_ITEM',
+      'FREIGHT_COST',
+      'DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT "销售时扣减的最近一次运费成本"',
+      'SALES_GROSS_PROFIT'
+    );
+    await checkAndAddColumn(
+      'T_PURCHASE_REQUEST',
+      'FREIGHT_PLATFORM_ID',
+      'VARCHAR(32) COMMENT "配送平台ID"',
+      'ACTUAL_TOTAL'
+    );
+    await checkAndAddColumn(
+      'T_PURCHASE_REQUEST',
+      'FREIGHT_PLATFORM_NAME',
+      'VARCHAR(64) COMMENT "配送平台名称快照"',
+      'FREIGHT_PLATFORM_ID'
+    );
+    await checkAndAddColumn(
+      'T_PURCHASE_REQUEST',
+      'FREIGHT_AMOUNT',
+      'DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT "运费金额"',
+      'FREIGHT_PLATFORM_NAME'
+    );
+    await checkAndAddColumn(
+      'T_TRANSFER',
+      'FREIGHT_PLATFORM_ID',
+      'VARCHAR(32) COMMENT "配送平台ID"',
+      'TO_STORE_ID'
+    );
+    await checkAndAddColumn(
+      'T_TRANSFER',
+      'FREIGHT_PLATFORM_NAME',
+      'VARCHAR(64) COMMENT "配送平台名称快照"',
+      'FREIGHT_PLATFORM_ID'
+    );
+    await checkAndAddColumn(
+      'T_TRANSFER',
+      'FREIGHT_AMOUNT',
+      'DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT "运费金额"',
+      'FREIGHT_PLATFORM_NAME'
+    );
+
+    await checkAndCreateTable('T_FREIGHT_PLATFORM', `
+      CREATE TABLE T_FREIGHT_PLATFORM (
+        PLATFORM_ID VARCHAR(32) NOT NULL,
+        PLATFORM_NAME VARCHAR(64) NOT NULL,
+        SORT_ORDER INT NOT NULL DEFAULT 0,
+        STATUS TINYINT(1) NOT NULL DEFAULT 1,
+        CREATE_USER VARCHAR(64),
+        CREATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UPDATE_USER VARCHAR(64),
+        UPDATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (PLATFORM_ID),
+        UNIQUE KEY uk_freight_platform_name (PLATFORM_NAME),
+        KEY idx_freight_platform_status (STATUS, SORT_ORDER)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='运费配送平台'
+    `);
+    await checkAndCreateTable('T_FREIGHT_RECORD', `
+      CREATE TABLE T_FREIGHT_RECORD (
+        FREIGHT_ID VARCHAR(32) NOT NULL,
+        SOURCE_TYPE VARCHAR(32) NOT NULL,
+        SOURCE_ID VARCHAR(32) NOT NULL,
+        SOURCE_NO VARCHAR(64),
+        PLATFORM_ID VARCHAR(32),
+        PLATFORM_NAME VARCHAR(64),
+        AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0,
+        STORE_ID VARCHAR(32),
+        STORE_NAME VARCHAR(255),
+        FROM_STORE_ID VARCHAR(32),
+        FROM_STORE_NAME VARCHAR(255),
+        TO_STORE_ID VARCHAR(32),
+        TO_STORE_NAME VARCHAR(255),
+        STATUS VARCHAR(32) NOT NULL DEFAULT 'active',
+        CREATE_USER VARCHAR(64),
+        CREATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UPDATE_USER VARCHAR(64),
+        UPDATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (FREIGHT_ID),
+        UNIQUE KEY uk_freight_source (SOURCE_TYPE, SOURCE_ID),
+        KEY idx_freight_filter (CREATE_TIME, STORE_ID, PLATFORM_ID),
+        KEY idx_freight_source (SOURCE_TYPE, SOURCE_ID)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='采购及调拨运费记录'
+    `);
+    await checkAndCreateTable('T_FREIGHT_RECORD_ITEM', `
+      CREATE TABLE T_FREIGHT_RECORD_ITEM (
+        ITEM_ID BIGINT(20) NOT NULL AUTO_INCREMENT,
+        FREIGHT_ID VARCHAR(32) NOT NULL,
+        PRODUCT_ID VARCHAR(32),
+        SN_ID VARCHAR(32),
+        SN_CODE VARCHAR(128),
+        QUANTITY INT NOT NULL DEFAULT 1,
+        ALLOCATED_AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0,
+        UNIT_AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0,
+        CREATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (ITEM_ID),
+        KEY idx_freight_item_freight (FREIGHT_ID),
+        KEY idx_freight_item_product (PRODUCT_ID, CREATE_TIME),
+        KEY idx_freight_item_sn (SN_ID, SN_CODE, CREATE_TIME)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='运费商品分摊明细'
+    `);
+    await sequelize.query(`
+      INSERT INTO T_FREIGHT_PLATFORM (PLATFORM_ID, PLATFORM_NAME, SORT_ORDER, STATUS)
+      VALUES ('platform_shansong', '闪送', 1, 1), ('platform_sf', '顺丰', 2, 1), ('platform_other', '其他', 3, 1)
+      ON DUPLICATE KEY UPDATE STATUS = VALUES(STATUS), SORT_ORDER = VALUES(SORT_ORDER)
+    `);
     await sequelize.query(`
       UPDATE T_ORDER_GROSS_PROFIT
       SET RECEIVABLE_AMOUNT = RECEIVED_AMOUNT
@@ -2962,6 +3074,7 @@ async function seedPermissionData() {
       ['finance_resource_rights', '资源权益核销与成本调整', 'finance', '/finance/resource-rights', 9],
       ['finance_account', '账户中心', 'finance', '/finance/account', 10],
       ['finance_settlement', '应付结算单管理', 'finance', '/finance/settlement', 11],
+      ['finance_freight', '运费管理', 'finance', '/finance/freight', 12],
       ['product_product', '商品管理', 'products', '/products/product', 1],
       ['product_category', '分类管理', 'products', '/products/category', 2],
       ['product_price', '价格管理', 'products', '/products/price', 3],
@@ -3001,7 +3114,7 @@ async function seedPermissionData() {
         'inventory_resource_rights',
         'finance_daily', 'finance_subsidy_receivable', 'finance_rebate_settlement', 'finance_expense',
         'finance_payable', 'finance_reimbursement', 'finance_payment', 'finance_rebate',
-        'finance_resource_rights', 'finance_account', 'finance_settlement',
+        'finance_resource_rights', 'finance_account', 'finance_settlement', 'finance_freight',
         'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee',
         'approval_tasks', 'approval_instances', 'product_approval'
       ],

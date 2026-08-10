@@ -175,6 +175,12 @@ const routes = [
         meta: { roles: ['finance', 'admin', 'boss'] }
       },
       {
+        path: 'finance/freight',
+        name: 'FinanceFreight',
+        component: () => import('../views/Freight.vue'),
+        meta: { roles: ['finance', 'admin', 'boss'] }
+      },
+      {
         path: 'products/product',
         name: 'Products',
         component: () => import('../views/Products.vue'),

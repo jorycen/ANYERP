@@ -3,6 +3,14 @@
  */
 const Router = require('koa-router');
 const {
+  getPlatforms,
+  createPlatform,
+  updatePlatform,
+  deletePlatform,
+  getRecords: getFreightRecords,
+  exportRecords: exportFreightRecords
+} = require('./freightController');
+const {
   getDailyDetails, getNationalSubsidyReceivables, getDailyStatement, getDailyStatementDetail,
   batchSettle, settleNationalSubsidyReceivables, getSettlementSummary, createExpense, saveExpenseDraft, updateExpenseDraft, deleteExpenseDraft, getExpenseList, getExpenseDetail,
   submitExpense, payExpense, reviewExpense, cancelExpense, getSettlementAccountsWithBalance, getAccountTransactions, addAccountTransaction,
@@ -65,7 +73,17 @@ router.get('/expense/:id', getExpenseDetail);
 router.post('/expense/:id/review', requireRole('admin'), reviewExpense);
 router.post('/expense/:id/cancel', cancelExpense);
 
+// 采购及调拨录单需要读取启用中的配送平台，配置和记录维护仍受财务角色保护。
+router.get('/freight/platforms', getPlatforms);
+
 router.use(requireRole('finance'));
+
+// 运费管理
+router.post('/freight/platforms', createPlatform);
+router.put('/freight/platforms/:id', updatePlatform);
+router.delete('/freight/platforms/:id', deletePlatform);
+router.get('/freight/records', getFreightRecords);
+router.get('/freight/records/export', exportFreightRecords);
 
 router.get('/daily-details', getDailyDetails);
 router.get('/national-subsidy-receivables', getNationalSubsidyReceivables);

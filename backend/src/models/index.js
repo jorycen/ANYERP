@@ -824,6 +824,9 @@ const PurchaseRequest = sequelize.define('PurchaseRequest', {
   total_amount: { type: DataTypes.DECIMAL(12, 2) },
   rebate_deduction: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   actual_total: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  freight_platform_id: { type: DataTypes.STRING(32), comment: '配送平台ID' },
+  freight_platform_name: { type: DataTypes.STRING(64), comment: '配送平台名称快照' },
+  freight_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0, comment: '运费金额' },
   reason: { type: DataTypes.TEXT },
   status: { type: DataTypes.STRING(32), defaultValue: 'pending' },
   apply_user: { type: DataTypes.STRING(64) },
@@ -839,6 +842,53 @@ const PurchaseRequest = sequelize.define('PurchaseRequest', {
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
   update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_PURCHASE_REQUEST', timestamps: false });
+
+// 运费配送平台
+const FreightPlatform = sequelize.define('FreightPlatform', {
+  platform_id: { type: DataTypes.STRING(32), primaryKey: true },
+  platform_name: { type: DataTypes.STRING(64), allowNull: false, unique: true },
+  sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
+  status: { type: DataTypes.TINYINT(1), defaultValue: 1 },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_user: { type: DataTypes.STRING(64) },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_FREIGHT_PLATFORM', timestamps: false });
+
+// 运费记录（采购/调拨单头）
+const FreightRecord = sequelize.define('FreightRecord', {
+  freight_id: { type: DataTypes.STRING(32), primaryKey: true },
+  source_type: { type: DataTypes.STRING(32), allowNull: false },
+  source_id: { type: DataTypes.STRING(32), allowNull: false },
+  source_no: { type: DataTypes.STRING(64) },
+  platform_id: { type: DataTypes.STRING(32) },
+  platform_name: { type: DataTypes.STRING(64) },
+  amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  store_id: { type: DataTypes.STRING(32) },
+  store_name: { type: DataTypes.STRING(255) },
+  from_store_id: { type: DataTypes.STRING(32) },
+  from_store_name: { type: DataTypes.STRING(255) },
+  to_store_id: { type: DataTypes.STRING(32) },
+  to_store_name: { type: DataTypes.STRING(255) },
+  status: { type: DataTypes.STRING(32), defaultValue: 'active' },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_user: { type: DataTypes.STRING(64) },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_FREIGHT_RECORD', timestamps: false });
+
+// 运费记录按商品分摊明细，用于销售时取商品最近一次运费
+const FreightRecordItem = sequelize.define('FreightRecordItem', {
+  item_id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true },
+  freight_id: { type: DataTypes.STRING(32), allowNull: false },
+  product_id: { type: DataTypes.STRING(32) },
+  sn_id: { type: DataTypes.STRING(32) },
+  sn_code: { type: DataTypes.STRING(128) },
+  quantity: { type: DataTypes.INTEGER, defaultValue: 1 },
+  allocated_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  unit_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_FREIGHT_RECORD_ITEM', timestamps: false });
 
 // 采购申请明细
 const PurchaseRequestItem = sequelize.define('PurchaseRequestItem', {
@@ -990,6 +1040,7 @@ const OrderItem = sequelize.define('OrderItem', {
   cost_adjustment_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   sales_settlement_cost: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   sales_gross_profit: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  freight_cost: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0, comment: '销售时扣减的最近一次运费成本' },
   use_gov_subsidy: { type: DataTypes.TINYINT(1), defaultValue: 0 },
   use_edu_subsidy: { type: DataTypes.TINYINT(1), defaultValue: 0 },
   use_sales_report: { type: DataTypes.TINYINT(1), defaultValue: 0 },
@@ -1080,6 +1131,7 @@ const OrderGrossProfit = sequelize.define('OrderGrossProfit', {
   vat_taxable_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
   vat_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
   supplement_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  freight_cost_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
   gross_profit_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
   payment_fee_details: { type: DataTypes.JSON },
   settlement_cost_details: { type: DataTypes.JSON, comment: '兼容旧版销售结算成本明细' },
@@ -1222,6 +1274,9 @@ const Transfer = sequelize.define('Transfer', {
   transfer_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
   from_store_id: { type: DataTypes.STRING(32), allowNull: false },
   to_store_id: { type: DataTypes.STRING(32), allowNull: false },
+  freight_platform_id: { type: DataTypes.STRING(32), comment: '配送平台ID' },
+  freight_platform_name: { type: DataTypes.STRING(64), comment: '配送平台名称快照' },
+  freight_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0, comment: '运费金额' },
   total_quantity: { type: DataTypes.INTEGER },
   outbound_quantity: { type: DataTypes.INTEGER, defaultValue: 0 },
   remaining_quantity: { type: DataTypes.INTEGER, defaultValue: 0 },
@@ -2050,6 +2105,13 @@ PurchaseRequest.belongsTo(Supplier, { foreignKey: 'supplier_id', targetKey: 'sup
 Store.hasMany(PurchaseRequest, { foreignKey: 'store_id', sourceKey: 'store_id' });
 PurchaseRequest.belongsTo(Store, { foreignKey: 'store_id', targetKey: 'store_id' });
 
+FreightPlatform.hasMany(FreightRecord, { foreignKey: 'platform_id', sourceKey: 'platform_id', as: 'records' });
+FreightRecord.belongsTo(FreightPlatform, { foreignKey: 'platform_id', targetKey: 'platform_id', as: 'platform' });
+FreightRecord.hasMany(FreightRecordItem, { foreignKey: 'freight_id', sourceKey: 'freight_id', as: 'items' });
+FreightRecordItem.belongsTo(FreightRecord, { foreignKey: 'freight_id', targetKey: 'freight_id', as: 'freightRecord' });
+Product.hasMany(FreightRecordItem, { foreignKey: 'product_id', sourceKey: 'product_id', as: 'freightItems' });
+FreightRecordItem.belongsTo(Product, { foreignKey: 'product_id', targetKey: 'product_id', as: 'product' });
+
 PurchaseRequest.hasMany(PurchaseRequestItem, { foreignKey: 'request_id', sourceKey: 'request_id', as: 'items' });
 PurchaseRequestItem.belongsTo(PurchaseRequest, { foreignKey: 'request_id', targetKey: 'request_id' });
 PurchaseRequest.hasMany(PurchaseAdjustment, { foreignKey: 'request_id', sourceKey: 'request_id', as: 'adjustments' });
@@ -2190,6 +2252,9 @@ module.exports = {
   Supplier,
   PurchaseRequest,
   PurchaseRequestItem,
+  FreightPlatform,
+  FreightRecord,
+  FreightRecordItem,
   PurchaseAdjustment,
   PurchaseAdjustmentItem,
   PurchaseOrder,

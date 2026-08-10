@@ -9,6 +9,7 @@ const { createPurchaseReimbursement, createSettlementReversal, cancelExpenseReco
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { canViewSnTraceReference } = require('../../utils/snTracePermission');
 const { getUserRoles } = require('../../middleware/permission');
+const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
 
 function normalizeFileList(...values) {
   const result = [];
@@ -534,6 +535,12 @@ async function createRequest(ctx) {
     supplier_chat_screenshot_ids,
     supplier_chat_screenshot_urls,
     supplier_chat_screenshot_url,
+    freightPlatformId,
+    freightPlatformName,
+    freightAmount,
+    freight_platform_id,
+    freight_platform_name,
+    freight_amount,
     saveDraft = false
   } = ctx.request.body;
   const isDraft = Boolean(saveDraft);
@@ -606,6 +613,9 @@ async function createRequest(ctx) {
     ? Math.min(toMoney(itemRebateAllocations.reduce((sum, amount) => sum + amount, 0)), totalAmount)
     : Math.min(toMoney(rebateDeduction || 0), totalAmount);
   const actualTotal = totalAmount - deduction;
+  const normalizedFreightPlatformId = freightPlatformId || freight_platform_id || '';
+  const normalizedFreightPlatformName = freightPlatformName || freight_platform_name || '';
+  const normalizedFreightAmount = toMoney(freightAmount === undefined ? freight_amount : freightAmount);
 
   // 如果有返利抵扣，验证并记录
   if (deduction > 0 && !isDraft) {
@@ -676,6 +686,9 @@ async function createRequest(ctx) {
     total_amount: totalAmount,
     rebate_deduction: deduction,
     actual_total: actualTotal,
+    freight_platform_id: normalizedFreightPlatformId || null,
+    freight_platform_name: normalizedFreightPlatformName || null,
+    freight_amount: normalizedFreightAmount,
     status: isDraft ? 'draft' : 'pending',
     apply_user: submitterName,
     applicant_staff_id: user.staffId || user.id || null,
@@ -708,6 +721,19 @@ async function createRequest(ctx) {
       selected_resource_types: JSON.stringify(normalizeSelectedResourceTypes(item.selectedResourceTypes || item.selected_resource_types))
     });
   }
+
+  await syncFreightRecord({
+    sourceType: 'purchase',
+    sourceId: requestId,
+    sourceNo: requestNo,
+    platformId: normalizedFreightPlatformId,
+    platformName: normalizedFreightPlatformName,
+    amount: normalizedFreightAmount,
+    storeId: finalStoreId,
+    items,
+    status: isDraft ? 'draft' : 'pending',
+    user
+  });
 
   await recordBusinessAction({
     businessType: 'purchase_request',
@@ -813,6 +839,18 @@ async function submitRequestDraft(ctx) {
   request.submit_time = new Date();
   request.update_time = new Date();
   await request.save();
+  await syncFreightRecord({
+    sourceType: 'purchase',
+    sourceId: request.request_id,
+    sourceNo: request.request_no,
+    platformId: request.freight_platform_id,
+    platformName: request.freight_platform_name,
+    amount: request.freight_amount,
+    storeId: request.store_id,
+    items: request.items,
+    status: 'pending',
+    user
+  });
   await recordBusinessAction({
     businessType: 'purchase_request',
     businessId: request.request_id,
@@ -856,7 +894,8 @@ async function deleteRequestDraft(ctx) {
 async function updateRequestDraft(ctx) {
   const { requestId } = ctx.params;
   const user = ctx.state.user;
-  const { supplierId, remark, items, invoiceType, paymentMethod, goodsTypeId, productType, rebateDeduction } = ctx.request.body;
+  const { supplierId, remark, items, invoiceType, paymentMethod, goodsTypeId, productType, rebateDeduction,
+    freightPlatformId, freightPlatformName, freightAmount, freight_platform_id, freight_platform_name, freight_amount } = ctx.request.body;
   const request = await PurchaseRequest.findByPk(requestId);
   if (!request) ctx.throw(404, '采购申请不存在');
   assertStoreVisible(ctx, request.store_id);
@@ -889,6 +928,9 @@ async function updateRequestDraft(ctx) {
   const deduction = itemDeductionTotal > 0
     ? Math.min(toMoney(itemRebateAllocations.reduce((sum, amount) => sum + amount, 0)), totalAmount)
     : Math.min(toMoney(rebateDeduction || 0), totalAmount);
+  const normalizedFreightPlatformId = freightPlatformId || freight_platform_id || '';
+  const normalizedFreightPlatformName = freightPlatformName || freight_platform_name || '';
+  const normalizedFreightAmount = toMoney(freightAmount === undefined ? freight_amount : freightAmount);
 
   await sequelize.transaction(async transaction => {
     await request.update({
@@ -901,6 +943,9 @@ async function updateRequestDraft(ctx) {
       total_amount: totalAmount,
       rebate_deduction: deduction,
       actual_total: totalAmount - deduction,
+      freight_platform_id: normalizedFreightPlatformId || null,
+      freight_platform_name: normalizedFreightPlatformName || null,
+      freight_amount: normalizedFreightAmount,
       update_time: new Date()
     }, { transaction });
     await PurchaseRequestItem.destroy({ where: { request_id: requestId }, transaction });
@@ -921,6 +966,19 @@ async function updateRequestDraft(ctx) {
         selected_resource_types: JSON.stringify(normalizeSelectedResourceTypes(item.selectedResourceTypes || item.selected_resource_types))
       }, { transaction });
     }
+    await syncFreightRecord({
+      sourceType: 'purchase',
+      sourceId: requestId,
+      sourceNo: request.request_no,
+      platformId: normalizedFreightPlatformId,
+      platformName: normalizedFreightPlatformName,
+      amount: normalizedFreightAmount,
+      storeId: request.store_id,
+      items,
+      status: 'draft',
+      user,
+      transaction
+    });
   });
 
   await recordBusinessAction({
@@ -1010,6 +1068,7 @@ async function approveRequest(ctx) {
     approve_comment: comment,
     update_time: approveTime
   }, { transaction });
+  await setFreightRecordStatus('purchase', requestId, status === 'approved' ? 'active' : 'cancelled', user, transaction);
   await recordBusinessAction({
     businessType: 'purchase_request',
     businessId: request.request_id,
@@ -1493,6 +1552,7 @@ async function revokeRequest(ctx) {
       revoke_comment: String(comment || '').trim(),
       update_time: new Date()
     }, { transaction });
+    await setFreightRecordStatus('purchase', requestId, 'cancelled', user, transaction);
     await recordBusinessAction({
       businessType: 'purchase_request',
       businessId: request.request_id,
