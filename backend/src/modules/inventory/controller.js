@@ -952,6 +952,47 @@ async function buildSalesCountMap(productIds, storeId = '', scopedStoreIds = [])
   return salesMap;
 }
 
+async function buildSpecialProductMap(productIds, distributorId, storeId = '', scopedStoreIds = []) {
+  const uniqueProductIds = [...new Set((productIds || []).filter(Boolean))];
+  const specialMap = {};
+  const normalizedDistributorId = String(distributorId || '').trim();
+  if (uniqueProductIds.length === 0 || !normalizedDistributorId) return specialMap;
+
+  const specialStoreIds = storeId
+    ? [storeId]
+    : [...new Set((scopedStoreIds || []).map(String).filter(Boolean))];
+  const storeCondition = specialStoreIds.length
+    ? 'AND sn.STORE_ID IN (:specialStoreIds)'
+    : '';
+  const rows = await sequelize.query(
+    `SELECT sn.PRODUCT_ID AS product_id,
+            COUNT(DISTINCT sn.SN_ID) AS special_sn_count
+       FROM T_PRODUCT_SN sn
+       INNER JOIN T_SN_DISTRIBUTOR_PRICE sp ON sp.SN_ID = sn.SN_ID
+                                            AND sp.DISTRIBUTOR_ID = :distributorId
+                                            AND sp.STATUS = 1
+                                            AND sp.SPECIAL_PRICE > 0
+      WHERE sn.PRODUCT_ID IN (:productIds)
+        AND sn.STATUS = 'in_stock'
+        AND sn.IS_DELETED = 0
+        ${storeCondition}
+      GROUP BY sn.PRODUCT_ID`,
+    {
+      replacements: {
+        productIds: uniqueProductIds,
+        distributorId: normalizedDistributorId,
+        ...(specialStoreIds.length ? { specialStoreIds } : {})
+      },
+      type: Sequelize.QueryTypes.SELECT
+    }
+  );
+
+  rows.forEach(row => {
+    specialMap[row.product_id] = Number(row.special_sn_count || 0);
+  });
+  return specialMap;
+}
+
 const INVENTORY_CATEGORY_KEYWORDS = {
   computer: ['电脑', '笔记本', '台式机', '一体机', '主机'],
   tablet: ['平板', 'pad', 'ipad'],
@@ -998,7 +1039,7 @@ function isSpecialPriceProduct(product) {
 
 function matchesInventoryModelFilter(product, sales, modelFilter) {
   if (modelFilter === 'focus') return Number(product.is_focus_product || 0) === 1;
-  if (modelFilter === 'special') return isSpecialPriceProduct(product);
+  if (modelFilter === 'special') return Number(sales.special_sn_count || 0) > 0;
   if (modelFilter === 'hot7') return Number(sales.sales_7_qty || 0) > 0;
   if (modelFilter === 'highMargin7') return Number(sales.sales_7_amount || 0) > 0;
   return true;
@@ -1013,12 +1054,7 @@ function compareInventoryModelRows(a, b, modelFilter) {
       || Number(b.gross_profit_7 || 0) - Number(a.gross_profit_7 || 0);
   }
   if (modelFilter === 'special') {
-    const discount = row => {
-      const standardPrice = Number(row.standard_price || 0);
-      const retailPrice = Number(row.retail_price || 0);
-      return standardPrice > 0 ? (standardPrice - retailPrice) / standardPrice : 0;
-    };
-    return discount(b) - discount(a);
+    return Number(b.special_sn_count || 0) - Number(a.special_sn_count || 0);
   }
   if (modelFilter === 'focus') {
     return Number(b.sales_7_qty || 0) - Number(a.sales_7_qty || 0);
@@ -1135,11 +1171,20 @@ async function getList(ctx) {
 
     const allProductIds = allProducts.map(p => p.product_id);
     const salesMap = await buildSalesCountMap(allProductIds, storeId, storeIds);
+    const specialProductMap = await buildSpecialProductMap(
+      allProductIds,
+      user.distributorId,
+      storeId,
+      storeIds
+    );
     const products = allProducts.filter(product => {
       if (productType && getInventoryProductType(product.category, product.accessory_type, product.name, product.config) !== productType) {
         return false;
       }
-      return matchesInventoryModelFilter(product, salesMap[product.product_id] || {}, modelFilter);
+      return matchesInventoryModelFilter(product, {
+        ...(salesMap[product.product_id] || {}),
+        special_sn_count: specialProductMap[product.product_id] || 0
+      }, modelFilter);
     });
     const count = products.length;
     const productIds = products.map(p => p.product_id);
@@ -1302,6 +1347,7 @@ async function getList(ctx) {
         sales_7_amount: sales.sales_7_amount,
         gross_profit_7: sales.gross_profit_7,
         gross_margin_7: sales.gross_margin_7,
+        special_sn_count: specialProductMap[p.product_id] || 0,
         _category_rank: getInventoryCategoryRank(p.category, p.accessory_type, p.name, p.config),
         _create_time: p.create_time
       };

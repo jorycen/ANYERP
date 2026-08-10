@@ -78,6 +78,10 @@ test('inventory model quick filters classify the three product types and special
   assert.equal(_test.isSpecialPriceProduct({
     ProductPrice: { standard_price: 5000, retail_price: 5000 }
   }), false);
+  assert.equal(_test.matchesInventoryModelFilter({}, { special_sn_count: 2 }, 'special'), true);
+  assert.equal(_test.matchesInventoryModelFilter({
+    ProductPrice: { standard_price: 5000, retail_price: 4500 }
+  }, { special_sn_count: 0 }, 'special'), false);
 });
 
 test('inventory model quick filters sort hot and high-margin models by the latest seven days', () => {
