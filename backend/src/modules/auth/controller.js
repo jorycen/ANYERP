@@ -5,7 +5,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { Staff, Role, Menu, RoleMenu, StaffRole, Store, Region } = require('../../models');
 const config = require('../../config');
-const { resolveAccessibleStoreIds, resolvePrimaryStoreId } = require('../../utils/storePermissions');
+const { resolveAccessibleStoreIds, resolvePrimaryStoreId, resolveConfiguredRegions } = require('../../utils/storePermissions');
 
 /**
  * 登录
@@ -70,13 +70,7 @@ async function login(ctx) {
     order: [['sort_order', 'ASC']]
   });
 
-  // 老板角色拥有所有区域权限
-  let regionCodes = [];
-  if (roleCodes.includes('boss')) {
-    regionCodes = ['*'];
-  } else if (staff.region_id) {
-    regionCodes = [staff.region_id];
-  }
+  const configuredRegions = await resolveConfiguredRegions(staff, roleCodes);
 
   // 生成 token
   const token = jwt.sign(
@@ -102,7 +96,8 @@ async function login(ctx) {
       storeId: effectiveStoreId,
       storeName: effectiveStore?.name || '',
       regionId: staff.region_id,
-      regionCodes,
+      regionCodes: configuredRegions.codes,
+      regionIds: configuredRegions.ids,
       storeIds: assignedStoreIds,
       menus: buildMenuTree(menus)
     }
@@ -162,6 +157,7 @@ async function getUserInfo(ctx) {
     storeName: effectiveStore?.name || '',
     regionId: staff.region_id,
     regionCodes: user.regionCodes,
+    regionIds: user.regionIds,
     storeIds: user.accessibleStoreIds,
     menus: buildMenuTree(menus)
   };

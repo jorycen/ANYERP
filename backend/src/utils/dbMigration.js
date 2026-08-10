@@ -341,6 +341,48 @@ async function runMigrations() {
         KEY idx_staff_store_store (STORE_ID)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='员工可访问门店'
     `);
+    await checkAndCreateTable('T_REGION_PERMISSION', `
+      CREATE TABLE T_REGION_PERMISSION (
+        ID BIGINT NOT NULL AUTO_INCREMENT,
+        STAFF_ID BIGINT NOT NULL,
+        REGION_CODE VARCHAR(32) NOT NULL,
+        CAN_VIEW TINYINT(1) DEFAULT 1,
+        CAN_MANAGE TINYINT(1) DEFAULT 0,
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (ID),
+        KEY idx_region_permission_staff (STAFF_ID),
+        KEY idx_region_permission_region (REGION_CODE)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='账号直接区域权限'
+    `);
+    // 经销商级账号从旧的门店授权迁移为直接区域授权，只执行一次性补齐，
+    // 后续区域范围以 T_REGION_PERMISSION 为准，不再运行时反推。
+    await sequelize.query(`
+      INSERT INTO T_REGION_PERMISSION (STAFF_ID, REGION_CODE, CAN_VIEW, CAN_MANAGE)
+      SELECT DISTINCT s.STAFF_ID, st.REGION_ID, 1, 1
+      FROM T_STAFF s
+      INNER JOIN T_STAFF_STORE_PERMISSION sp ON sp.STAFF_ID = s.STAFF_ID
+      INNER JOIN T_STORE st ON st.STORE_ID = sp.STORE_ID
+      WHERE s.IS_DELETED = 0
+        AND st.IS_DELETED = 0
+        AND st.STATUS = 1
+        AND st.REGION_ID IS NOT NULL
+        AND (
+          s.ROLE_CODE NOT IN ('clerk', 'staff', 'manager', 'store_manager')
+          OR EXISTS (
+            SELECT 1
+            FROM T_STAFF_ROLE sr
+            INNER JOIN T_ROLE r ON r.ROLE_ID = sr.ROLE_ID AND r.STATUS = 1
+            WHERE sr.STAFF_ID = s.STAFF_ID
+              AND r.ROLE_CODE NOT IN ('clerk', 'staff', 'manager', 'store_manager')
+          )
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM T_REGION_PERMISSION rp
+          WHERE rp.STAFF_ID = s.STAFF_ID
+            AND rp.REGION_CODE = st.REGION_ID
+        )
+    `);
     await checkAndAddColumn('T_PRODUCT', 'T_CODE', 'VARCHAR(64) COMMENT "老厂商编码备份"', 'STATUS');
     await checkAndAddColumn('T_PRODUCT', 'T_BARCODE', 'VARCHAR(64) COMMENT "老69码备份"', 'T_CODE');
     await checkAndAddColumn('T_PRODUCT', 'T_STANDARD_PRICE', 'DECIMAL(12,2) COMMENT "老标准售价备份"', 'T_BARCODE');

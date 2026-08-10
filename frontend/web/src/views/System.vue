@@ -21,7 +21,7 @@
               </template>
             </el-table-column>
             <el-table-column prop="supervisor_name" label="直属上级" width="120" />
-            <el-table-column prop="distributor_id" label="所属经销商" width="130" />
+            <el-table-column prop="region_name" label="所属区域" width="180" />
             <el-table-column prop="store_name" label="门店" min-width="180" show-overflow-tooltip />
             <el-table-column prop="status" label="状态" width="80">
               <template #default="{ row }">
@@ -31,7 +31,7 @@
             <el-table-column label="操作" width="310">
               <template #default="{ row }">
                 <el-button link type="primary" @click="handleEditUser(row)">编辑</el-button>
-                <el-button v-if="!row.is_boss" link type="primary" @click="handleAssignStore(row)">分配门店</el-button>
+                <el-button v-if="!row.is_boss" link type="primary" @click="handleAssignScope(row)">{{ row.region_scoped ? '分配区域' : '分配门店' }}</el-button>
                 <el-button link type="warning" @click="handleResetPassword(row)">重置密码</el-button>
                 <el-button
                   link
@@ -394,7 +394,7 @@
           <el-select v-model="userForm.distributorId" filterable style="width: 100%" :disabled="!isOperatorBoss" placeholder="请选择所属经销商">
             <el-option v-for="item in distributorOptions" :key="item.distributor_id" :label="item.name" :value="item.distributor_id" />
           </el-select>
-          <div class="form-tip">所属经销商用于组织归属；实际订单权限以“分配门店”为准。</div>
+          <div class="form-tip">所属经销商用于组织归属；订单权限按分配门店，库存汇总权限按经销商账号的管理区域。</div>
         </el-form-item>
         <el-form-item label="状态">
           <el-switch v-model="userForm.status" :active-value="1" :inactive-value="0" />
@@ -703,11 +703,31 @@
       </template>
     </el-dialog>
 
-    <!-- 分配门店对话框 -->
-    <el-dialog v-model="storeDialogVisible" title="分配门店" width="500px">
+    <!-- 分配门店/区域对话框 -->
+    <el-dialog v-model="storeDialogVisible" :title="dialogScopeType === 'region' ? '分配管理区域' : '分配门店'" width="500px">
       <el-form label-width="100px">
         <el-form-item label="用户">{{ currentUser?.name }}</el-form-item>
-        <el-form-item label="可访问门店">
+        <el-form-item v-if="dialogScopeType === 'region'" label="可管理区域">
+          <div class="store-permission-selector">
+            <div class="store-select-all">
+              <el-checkbox
+                :indeterminate="regionDialogIndeterminate"
+                :model-value="regionDialogCheckAll"
+                @change="handleRegionDialogCheckAll"
+              >
+                全选
+              </el-checkbox>
+              <span class="store-selected-count">已选 {{ dialogRegionIds.length }}/{{ assignableRegions.length }}</span>
+            </div>
+            <el-checkbox-group v-if="assignableRegions.length" v-model="dialogRegionIds" class="store-checkbox-list">
+              <el-checkbox v-for="region in assignableRegions" :key="region.region_id" :label="region.region_id">
+                {{ region.name }}
+              </el-checkbox>
+            </el-checkbox-group>
+            <el-empty v-else description="暂无可分配区域" :image-size="60" />
+          </div>
+        </el-form-item>
+        <el-form-item v-else label="可访问门店">
           <div class="store-permission-selector">
             <div class="store-select-all">
               <el-checkbox
@@ -730,7 +750,7 @@
       </el-form>
       <template #footer>
         <el-button @click="storeDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleStoreDialogSubmit" :loading="submitLoading">确定</el-button>
+        <el-button type="primary" @click="handleScopeDialogSubmit" :loading="submitLoading">确定</el-button>
       </template>
     </el-dialog>
 
@@ -779,7 +799,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
-import { getUserInfo } from '../utils/user'
+import { getUserInfo, isDistributorAccount } from '../utils/user'
 
 const route = useRoute()
 const activeTab = ref('users')
@@ -796,6 +816,7 @@ const distributorOptions = ref([])
 const locationData = ref([])
 const locationLoading = ref(false)
 const assignableStores = ref([])
+const assignableRegions = ref([])
 const goodsTypeData = ref([])
 const goodsTypeDialog = ref(false)
 const goodsTypeForm = reactive({
@@ -830,6 +851,8 @@ const isOperatorBoss = computed(() => {
 })
 const currentRole = ref(null)
 const dialogStoreIds = ref([])
+const dialogRegionIds = ref([])
+const dialogScopeType = ref('store')
 const menuTreeRef = ref(null)
 const locationDialogVisible = ref(false)
 const locationDialogTitle = ref('新增库位')
@@ -887,8 +910,20 @@ const storeDialogCheckAll = computed(() => {
   return assignableStores.value.length > 0 && dialogStoreIds.value.length === assignableStores.value.length
 })
 
+const regionDialogIndeterminate = computed(() => {
+  const len = dialogRegionIds.value.length
+  return len > 0 && len < assignableRegions.value.length
+})
+const regionDialogCheckAll = computed(() => {
+  return assignableRegions.value.length > 0 && dialogRegionIds.value.length === assignableRegions.value.length
+})
+
 function handleStoreDialogCheckAll(checked) {
   dialogStoreIds.value = checked ? assignableStores.value.map(s => s.store_id) : []
+}
+
+function handleRegionDialogCheckAll(checked) {
+  dialogRegionIds.value = checked ? assignableRegions.value.map(region => region.region_id) : []
 }
 
 onMounted(() => {
@@ -1219,14 +1254,20 @@ const handleEditUser = async (row) => {
   userDialogVisible.value = true
 }
 
-const handleAssignStore = async (row) => {
+const handleAssignScope = async (row) => {
   currentUser.value = row
   dialogStoreIds.value = []
+  dialogRegionIds.value = []
   assignableStores.value = []
+  assignableRegions.value = []
+  dialogScopeType.value = row.region_scoped || isDistributorAccount({ roles: row.role_codes || [] }) ? 'region' : 'store'
   try {
-    if (stores.value.length === 0) await loadStores()
+    if (dialogScopeType.value === 'store' && stores.value.length === 0) await loadStores()
     const res = await api.getUserRegions(row.staff_id)
-    if (res.code === 0 && res.data?.storeIds) {
+    if (res.code === 0 && dialogScopeType.value === 'region') {
+      dialogRegionIds.value = res.data?.regionIds || []
+      assignableRegions.value = res.data?.regions || (await api.getRegionList()).data || []
+    } else if (res.code === 0 && res.data?.storeIds) {
       dialogStoreIds.value = res.data.storeIds
       // 兼容尚未重启的旧后端：旧接口只有 storeIds/regionCodes，
       // 可选门店使用系统页已加载的门店列表。
@@ -1337,14 +1378,15 @@ const handleResetPassword = async (row) => {
   }
 }
 
-const handleStoreDialogSubmit = async () => {
+const handleScopeDialogSubmit = async () => {
   submitLoading.value = true
   try {
-    const res = await api.assignUserRegions(currentUser.value.staff_id, {
-      storeIds: dialogStoreIds.value
-    })
+    const payload = dialogScopeType.value === 'region'
+      ? { regionIds: dialogRegionIds.value }
+      : { storeIds: dialogStoreIds.value }
+    const res = await api.assignUserRegions(currentUser.value.staff_id, payload)
     if (res.code === 0) {
-      ElMessage.success('分配成功')
+      ElMessage.success(dialogScopeType.value === 'region' ? '区域分配成功' : '门店分配成功')
       storeDialogVisible.value = false
       await loadUsers()
     } else {

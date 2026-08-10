@@ -6,7 +6,7 @@ const { Op } = require('sequelize');
 const { paginate, formatPaginatedResult } = require('../../utils');
 const { generateId } = require('../../utils');
 const { ensureStandardLocationsForStores } = require('../../utils/standardLocations');
-const { isBoss } = require('../../utils/snTracePermission');
+const { isBoss, isDealerTraceAccount } = require('../../utils/snTracePermission');
 
 function canManageStoreManager(user) {
   return (user?.roles || []).some(role => ['admin', 'boss'].includes(role));
@@ -68,7 +68,11 @@ async function getAllStores(ctx) {
 
   const where = { is_deleted: 0, status: 1 };
 
-  if (!isBoss(user) && !user.accessibleStoreIds.includes('*')) {
+  if (!isBoss(user) && isDealerTraceAccount(user)) {
+    where.distributor_id = user.distributorId || '__NO_DISTRIBUTOR__';
+    const regionIds = Array.isArray(user.regionIds) ? user.regionIds.filter(id => id && id !== '*') : [];
+    where.region_id = regionIds.length > 0 ? regionIds : '__NO_REGION__';
+  } else if (!isBoss(user) && !user.accessibleStoreIds.includes('*')) {
     where.store_id = user.accessibleStoreIds;
   }
 
@@ -196,11 +200,12 @@ async function createStore(ctx) {
     ctx.throw(400, '门店名称不能为空');
   }
 
-  if (!userStoreId) {
+  const storeId = String(userStoreId || '').trim();
+  if (!storeId) {
     ctx.throw(400, '门店ID不能为空');
   }
 
-  const existingStore = await Store.findOne({ where: { store_id: userStoreId, is_deleted: 0 } });
+  const existingStore = await Store.findOne({ where: { store_id: storeId, is_deleted: 0 } });
   if (existingStore) {
     ctx.throw(400, '门店ID已存在');
   }
@@ -218,8 +223,6 @@ async function createStore(ctx) {
       regionId = region.region_id;
     }
   }
-
-  const storeId = userStoreId;
 
   // 如果用户有区域限制，只能创建该区域的门店
   let distributorId = user.distributorId;

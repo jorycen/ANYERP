@@ -153,11 +153,31 @@ async function resolveProduct(row, transaction) {
   return null;
 }
 
+async function resolveStoreById(storeId, transaction) {
+  const baseWhere = { is_deleted: 0, status: 1 };
+  const exact = await Store.findOne({
+    where: { ...baseWhere, store_id: storeId },
+    transaction
+  });
+  if (exact) return exact;
+
+  // 兼容历史数据中的门店 ID 尾随空格；新数据统一保存为 trim 后的 ID。
+  const legacyMatches = await Store.findAll({
+    where: {
+      ...baseWhere,
+      [Op.and]: sequelize.where(sequelize.fn('TRIM', sequelize.col('store_id')), storeId)
+    },
+    limit: 2,
+    transaction
+  });
+  return legacyMatches.length === 1 ? legacyMatches[0] : null;
+}
+
 async function resolveStore(row, transaction) {
   const storeId = normalizeText(getCell(row, ['门店ID', 'storeId', 'store_id']));
   const storeName = normalizeText(getCell(row, ['门店', '门店名称', 'storeName', 'store_name']));
   if (storeId) {
-    return Store.findOne({ where: { store_id: storeId, is_deleted: 0, status: 1 }, transaction });
+    return resolveStoreById(storeId, transaction);
   }
   if (storeName) {
     return Store.findOne({ where: { name: storeName, is_deleted: 0, status: 1 }, transaction });

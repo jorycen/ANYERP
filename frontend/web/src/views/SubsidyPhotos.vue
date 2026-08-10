@@ -13,6 +13,11 @@
             clearable
           />
         </el-form-item>
+        <el-form-item label="门店">
+          <el-select v-model="filters.storeId" clearable filterable placeholder="全部门店" :loading="storesLoading" style="width: 180px">
+            <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="补贴人姓名">
           <el-input v-model="filters.subsidyPerson" clearable placeholder="请输入补贴人姓名" @keyup.enter="loadData" />
         </el-form-item>
@@ -23,7 +28,7 @@
           <el-input v-model="filters.unionpayOrderNo" clearable placeholder="开票信息中的云闪付订单号" @keyup.enter="loadData" />
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" :loading="loading" @click="loadData">查询</el-button>
+          <el-button type="primary" :loading="loading" @click="handleSearch">查询</el-button>
           <el-button @click="resetFilters">重置</el-button>
           <el-button type="primary" plain :loading="batchDownloading" @click="downloadAllPhotos">批量下载查询结果</el-button>
         </el-form-item>
@@ -128,7 +133,9 @@ const rows = ref([])
 const total = ref(0)
 const loading = ref(false)
 const dateRange = ref([])
-const filters = reactive({ subsidyPerson: '', subsidyPhone: '', unionpayOrderNo: '' })
+const stores = ref([])
+const storesLoading = ref(false)
+const filters = reactive({ storeId: '', subsidyPerson: '', subsidyPhone: '', unionpayOrderNo: '' })
 const pagination = reactive({ page: 1, pageSize: 20 })
 const replaceDialogVisible = ref(false)
 const replaceLoading = ref(false)
@@ -141,6 +148,47 @@ function formatDate(value) {
   if (!value) return '-'
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', { hour12: false })
+}
+
+function normalizeDateValue(value) {
+  if (!value) return ''
+  if (typeof value === 'string') return value.slice(0, 10)
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${date.getFullYear()}-${month}-${day}`
+}
+
+function getQueryParams(withPagination = false) {
+  const params = {
+    storeId: filters.storeId || undefined,
+    subsidyPerson: filters.subsidyPerson.trim() || undefined,
+    subsidyPhone: filters.subsidyPhone.trim() || undefined,
+    unionpayOrderNo: filters.unionpayOrderNo.trim() || undefined,
+    startDate: normalizeDateValue(dateRange.value?.[0]) || undefined,
+    endDate: normalizeDateValue(dateRange.value?.[1]) || undefined
+  }
+  if (withPagination) {
+    params.page = pagination.page
+    params.pageSize = pagination.pageSize
+  }
+  return params
+}
+
+function handleSearch() {
+  pagination.page = 1
+  loadData()
+}
+
+function selectedDateRangeDays() {
+  const startDate = normalizeDateValue(dateRange.value?.[0])
+  const endDate = normalizeDateValue(dateRange.value?.[1])
+  if (!startDate || !endDate) return 0
+  const start = new Date(`${startDate}T00:00:00`)
+  const end = new Date(`${endDate}T00:00:00`)
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 0
+  return Math.floor((end.getTime() - start.getTime()) / 86400000) + 1
 }
 
 function revokeObjectUrls() {
@@ -193,13 +241,7 @@ async function loadData() {
   loading.value = true
   revokeObjectUrls()
   try {
-    const response = await api.getSubsidyPhotos({
-      ...filters,
-      startDate: dateRange.value?.[0] || '',
-      endDate: dateRange.value?.[1] || '',
-      page: pagination.page,
-      pageSize: pagination.pageSize
-    })
+    const response = await api.getSubsidyPhotos(getQueryParams(true))
     rows.value = (response.data?.list || []).map(row => ({
       ...row,
       photos: (row.photos || []).map(photo => ({ ...photo, src: '', loadState: 'loading' }))
@@ -214,8 +256,22 @@ async function loadData() {
   }
 }
 
+async function loadStores() {
+  storesLoading.value = true
+  try {
+    const response = await api.getAllStores()
+    stores.value = response.code === 0 && Array.isArray(response.data) ? response.data : []
+  } catch (error) {
+    stores.value = []
+    ElMessage.error(`加载门店列表失败：${error.message || ''}`)
+  } finally {
+    storesLoading.value = false
+  }
+}
+
 function resetFilters() {
   dateRange.value = []
+  filters.storeId = ''
   filters.subsidyPerson = ''
   filters.subsidyPhone = ''
   filters.unionpayOrderNo = ''
@@ -275,6 +331,24 @@ function hasActiveFilter() {
   )
 }
 
+async function getDownloadErrorMessage(error) {
+  const isTimeout = error?.code === 'ECONNABORTED'
+    || error?.code === 'ETIMEDOUT'
+    || /timeout/i.test(String(error?.message || ''))
+  if (isTimeout) return '下载超时，请缩小查询范围，建议将时间范围控制在一周以内后重试'
+
+  const responseData = error?.response?.data
+  if (responseData instanceof Blob) {
+    try {
+      const payload = JSON.parse(await responseData.text())
+      if (payload?.message) return payload.message
+    } catch (_) {
+      // 非 JSON 响应继续使用通用提示。
+    }
+  }
+  return error?.response?.data?.message || error?.message || '下载失败，请缩小查询范围后重试'
+}
+
 async function downloadAllPhotos() {
   if (batchDownloading.value) return
   if (!hasActiveFilter()) {
@@ -285,13 +359,12 @@ async function downloadAllPhotos() {
     ElMessage.info('当前查询没有可下载的国补照片')
     return
   }
+  if (selectedDateRangeDays() > 7) {
+    ElMessage.warning('当前时间范围超过一周，批量下载可能超时，建议缩小到一周以内')
+  }
   batchDownloading.value = true
   try {
-    const response = await api.downloadAllSubsidyPhotosArchive({
-      ...filters,
-      startDate: dateRange.value?.[0] || '',
-      endDate: dateRange.value?.[1] || ''
-    })
+    const response = await api.downloadAllSubsidyPhotosArchive(getQueryParams())
     const url = URL.createObjectURL(response.data)
     const link = document.createElement('a')
     link.href = url
@@ -299,7 +372,7 @@ async function downloadAllPhotos() {
     link.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   } catch (error) {
-    ElMessage.error(`批量下载失败：${error.response?.data?.message || error.message || ''}`)
+    ElMessage.error(`批量下载失败：${await getDownloadErrorMessage(error)}`)
   } finally {
     batchDownloading.value = false
   }
@@ -336,7 +409,10 @@ async function submitReplace() {
   }
 }
 
-onMounted(loadData)
+onMounted(() => {
+  loadData()
+  loadStores()
+})
 onBeforeUnmount(revokeObjectUrls)
 </script>
 

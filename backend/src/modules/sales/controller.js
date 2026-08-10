@@ -76,7 +76,8 @@ function buildChinaDateRange(startDate, endDate) {
     const end = chinaDateBoundary(endDate, true);
     if (!isNaN(end.getTime())) range[Op.lte] = end;
   }
-  return Object.keys(range).length ? range : null;
+  // Sequelize 的 Op.gte/Op.lte 是 Symbol key，不能用 Object.keys 判断是否有条件。
+  return Reflect.ownKeys(range).length ? range : null;
 }
 
 /**
@@ -591,7 +592,21 @@ function buildSubsidyPhotoQuery(user, params = {}) {
     Object.assign(where, subsidyPhotoStoreWhere(user));
   }
 
-  const { startDate, endDate, subsidyPerson, subsidyPhone, unionpayOrderNo } = params;
+  const { startDate, endDate, storeId, subsidyPerson, subsidyPhone, unionpayOrderNo } = params;
+  const accessibleStoreIds = Array.isArray(user?.accessibleStoreIds)
+    ? user.accessibleStoreIds.filter(Boolean).map(String)
+    : [];
+  const hasGlobalStoreScope = roles.includes('boss') || accessibleStoreIds.includes('*');
+
+  if (storeId) {
+    const requestedStoreId = String(storeId).trim();
+    if (hasGlobalStoreScope || accessibleStoreIds.includes(requestedStoreId)) {
+      where.store_id = requestedStoreId;
+    } else {
+      // 让显式传入未授权门店的请求返回空结果，避免通过查询参数扩大数据范围。
+      where.store_id = '__NO_ACCESS__';
+    }
+  }
   const dateRange = buildChinaDateRange(startDate, endDate);
   if (dateRange) where.create_time = dateRange;
   if (subsidyPerson) where.subsidy_person = { [Op.like]: `%${String(subsidyPerson).trim()}%` };
@@ -602,7 +617,7 @@ function buildSubsidyPhotoQuery(user, params = {}) {
 }
 
 function hasSubsidyPhotoFilter(params = {}) {
-  return [params.startDate, params.endDate, params.subsidyPerson, params.subsidyPhone, params.unionpayOrderNo]
+  return [params.startDate, params.endDate, params.storeId, params.subsidyPerson, params.subsidyPhone, params.unionpayOrderNo]
     .some(value => String(value || '').trim());
 }
 
@@ -918,10 +933,11 @@ async function downloadSubsidyPhotosArchive(ctx) {
 async function downloadAllSubsidyPhotosArchive(ctx) {
   if (!userCanViewSubsidyPhotos(ctx.state.user)) ctx.throw(403, '无权下载国补照片');
   if (!hasSubsidyPhotoFilter(ctx.query)) ctx.throw(400, '不支持全量下载，请选择查询条件');
-  const { where, include } = buildSubsidyPhotoQuery(ctx.state.user, ctx.query);
+  const { where } = buildSubsidyPhotoQuery(ctx.state.user, ctx.query);
   const orders = await Order.findAll({
     where,
-    include,
+    // 批量下载只需要订单编号和照片元数据，不加载门店及其他订单字段，减少查询时间和内存占用。
+    attributes: ['order_id', 'order_no', 'subsidy_photos'],
     order: [['create_time', 'DESC'], ['order_id', 'DESC']]
   });
 
@@ -949,10 +965,17 @@ async function downloadAllSubsidyPhotosArchive(ctx) {
 /**
  * 检查销售价格是否需要审批（价格从ProductPrice表读取）
  */
-async function checkPriceApproval(items) {
+async function checkPriceApproval(items, totalAmount = 0, discountAmount = 0) {
   const normalizedItems = (items || []).map(item => applyOrderItemDefaults(normalizeOrderItemInput(item)));
   const productIds = [...new Set(normalizedItems.map(i => i.product_id).filter(Boolean))];
-  if (productIds.length === 0) return [];
+  if (productIds.length === 0) {
+    return {
+      belowPriceItems: [],
+      minimumSalePriceTotal: 0,
+      receivableBeforeSubsidy: Math.max(0, Number(totalAmount || 0) - Number(discountAmount || 0)),
+      isBelowMinimum: false
+    };
+  }
 
   const productPrices = await ProductPrice.findAll({
     where: { product_id: { [Op.in]: productIds } }
@@ -961,10 +984,16 @@ async function checkPriceApproval(items) {
   productPrices.forEach(p => priceMap.set(p.product_id, p));
 
   const belowPriceItems = [];
+  let minimumSalePriceTotal = 0;
+  let hasMinimumSalePrice = normalizedItems.length > 0;
   for (const item of normalizedItems) {
     const price = priceMap.get(item.product_id);
-    if (!price || !price.min_sale_price || parseFloat(price.min_sale_price) <= 0) continue;
+    if (!price || !price.min_sale_price || parseFloat(price.min_sale_price) <= 0) {
+      hasMinimumSalePrice = false;
+      continue;
+    }
     const minPrice = parseFloat(price.min_sale_price);
+    minimumSalePriceTotal += minPrice * Math.max(1, Number(item.quantity || 1));
     if (parseFloat(item.sale_price) < minPrice) {
       belowPriceItems.push({
         productId: item.product_id,
@@ -975,7 +1004,13 @@ async function checkPriceApproval(items) {
       });
     }
   }
-  return belowPriceItems;
+  const receivableBeforeSubsidy = Math.max(0, Number(totalAmount || 0) - Number(discountAmount || 0));
+  return {
+    belowPriceItems,
+    minimumSalePriceTotal,
+    receivableBeforeSubsidy,
+    isBelowMinimum: hasMinimumSalePrice && receivableBeforeSubsidy < minimumSalePriceTotal - 0.005
+  };
 }
 
 function firstNonEmpty(source, keys, defaultValue = '') {
@@ -1265,8 +1300,11 @@ async function create(ctx) {
     ctx.throw(400, '收款金额与订单实付金额不一致');
   }
 
-  const belowPriceItems = isDraft ? [] : await checkPriceApproval(items);
-  const needsApproval = belowPriceItems.length > 0;
+  const priceApproval = isDraft
+    ? { belowPriceItems: [], minimumSalePriceTotal: 0, receivableBeforeSubsidy: 0, isBelowMinimum: false }
+    : await checkPriceApproval(items, totalAmount, discountAmount);
+  const belowPriceItems = priceApproval.belowPriceItems;
+  const needsApproval = priceApproval.isBelowMinimum;
 
   const productIds = [...new Set(normalizedItems.map(i => i.product_id).filter(Boolean))];
   const products = await Product.findAll({
@@ -1424,6 +1462,8 @@ async function create(ctx) {
     orderId, orderNo,
     needsApproval,
     belowPriceItems,
+    minimumSalePriceTotal: priceApproval.minimumSalePriceTotal,
+    receivableBeforeSubsidy: priceApproval.receivableBeforeSubsidy,
     status: finalOrderStatus,
     message: isDraft ? '销售订单草稿已保存' : (needsApproval ? '订单已创建，售价低于定价需要审批' : '订单创建成功')
   };
@@ -3429,6 +3469,7 @@ module.exports = {
     userCanViewSubsidyPhotos,
     subsidyPhotoStoreWhere,
     buildSubsidyPhotoQuery,
+    buildChinaDateRange,
     buildOrderExportRows,
     ORDER_EXPORT_HEADERS
   }

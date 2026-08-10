@@ -4,8 +4,8 @@
  */
 const jwt = require('jsonwebtoken');
 const config = require('../config');
-const { Staff, Role, RegionPermission } = require('../models');
-const { resolveAccessibleStoreIds, resolvePrimaryStoreId } = require('../utils/storePermissions');
+const { Staff, Role } = require('../models');
+const { resolveAccessibleStoreIds, resolvePrimaryStoreId, resolveConfiguredRegions } = require('../utils/storePermissions');
 const { isDealerTraceAccount } = require('../utils/snTracePermission');
 
 async function authMiddleware(ctx, next) {
@@ -37,13 +37,8 @@ async function authMiddleware(ctx, next) {
     if (roles.length === 0 && staff.role_code) roles = [staff.role_code];
     roles = [...new Set(roles)];
 
-    const permissions = await RegionPermission.findAll({
-      where: { staff_id: staff.staff_id, can_view: 1 },
-      attributes: ['region_code']
-    });
-    const regionCodes = roles.includes('boss')
-      ? ['*']
-      : [...new Set([staff.region_id, ...permissions.map(item => item.region_code)].filter(Boolean))];
+    const configuredRegions = await resolveConfiguredRegions(staff, roles);
+    const regionCodes = configuredRegions.codes;
     const accessibleStoreIds = await resolveAccessibleStoreIds(staff, roles);
     const effectiveStoreId = roles.includes('boss')
       ? staff.store_id
@@ -59,6 +54,7 @@ async function authMiddleware(ctx, next) {
       storeId: effectiveStoreId,
       regionId: staff.region_id,
       regionCodes,
+      regionIds: configuredRegions.ids,
       accessibleStoreIds
     };
 
@@ -100,6 +96,14 @@ async function storeAccessMiddleware(ctx, next) {
       (ctx.path === '/api/v1/sales/list' ||
        ctx.path === '/api/v1/sales/export' ||
        ctx.path === '/api/v1/store/all') &&
+      isDealerTraceAccount(user)) {
+    return next();
+  }
+
+  // 经销商级账号的库存汇总按直接配置的区域读取，不能再用旧的门店权限列表拦截。
+  if (ctx.method === 'GET' &&
+      (ctx.path === '/api/v1/inventory/list' ||
+       ctx.path === '/api/v1/inventory/list/export') &&
       isDealerTraceAccount(user)) {
     return next();
   }

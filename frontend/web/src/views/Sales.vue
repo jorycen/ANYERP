@@ -24,8 +24,17 @@
           <el-option label="待审批" value="pending_approval" />
           <el-option label="已取消" value="cancelled" />
         </el-select>
-        <el-date-picker v-model="queryParams.date" type="date" placeholder="选择日期" style="width: 160px" />
-        <el-button type="primary" :loading="loading" @click="loadData">搜索</el-button>
+        <el-date-picker
+          v-model="dateRange"
+          type="daterange"
+          value-format="YYYY-MM-DD"
+          range-separator="至"
+          start-placeholder="开始日期"
+          end-placeholder="结束日期"
+          clearable
+          style="width: 260px"
+        />
+        <el-button type="primary" :loading="loading" @click="handleSearch">搜索</el-button>
       </div>
 
       <div v-if="!traceReadonly" class="sales-table-scroll">
@@ -545,9 +554,9 @@ const queryParams = reactive({
   page: 1,
   pageSize: 20,
   storeId: '',
-  status: '',
-  date: ''
+  status: ''
 })
+const dateRange = ref([])
 
 const selectedPayments = ref([])
 const paymentAmounts = reactive({})
@@ -668,17 +677,31 @@ watch(() => [orderForm.customerPhone, orderForm.storeId], () => {
   }
 })
 
+const getSalesQueryParams = (includePagination = true) => {
+  const [startDate, endDate] = Array.isArray(dateRange.value) ? dateRange.value : []
+  const params = {
+    storeId: queryParams.storeId || undefined,
+    status: queryParams.status || undefined,
+    startDate: startDate || undefined,
+    endDate: endDate || undefined
+  }
+  if (includePagination) {
+    params.page = queryParams.page
+    params.pageSize = queryParams.pageSize
+  }
+  return params
+}
+
+const handleSearch = () => {
+  queryParams.page = 1
+  loadData()
+}
+
 const loadData = async () => {
   if (loading.value) return
   loading.value = true
   try {
-    const params = { ...queryParams }
-    if (params.date) {
-      params.startDate = new Date(params.date).toISOString().split('T')[0]
-      params.endDate = new Date(params.date).toISOString().split('T')[0]
-      delete params.date
-    }
-    const res = await api.getSalesList(params)
+    const res = await api.getSalesList(getSalesQueryParams())
     if (res.code === 0) {
       tableData.value = res.data?.list || []
       total.value = res.data?.pagination?.total || res.data?.total || 0
@@ -694,13 +717,7 @@ const handleExport = async () => {
   if (exporting.value) return
   exporting.value = true
   try {
-    const params = { ...queryParams }
-    if (params.date) {
-      params.startDate = new Date(params.date).toISOString().split('T')[0]
-      params.endDate = new Date(params.date).toISOString().split('T')[0]
-      delete params.date
-    }
-    await api.exportSales(params)
+    await api.exportSales(getSalesQueryParams(false))
     ElMessage.success('订单导出成功')
   } catch (err) {
     ElMessage.error(err.message || '订单导出失败')

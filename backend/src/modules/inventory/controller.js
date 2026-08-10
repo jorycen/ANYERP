@@ -851,13 +851,16 @@ function getSnSalesResourceQuantitySnapshot(sn, summary) {
   return { full_resource_qty: 1, subsidy_only_qty: 0, no_subsidy_qty: 0 };
 }
 
-async function buildSalesStockMap(productIds, storeId = '') {
+async function buildSalesStockMap(productIds, storeId = '', scopedStoreIds = []) {
   const uniqueProductIds = [...new Set((productIds || []).filter(Boolean))];
   const stockMap = {};
   if (uniqueProductIds.length === 0) return stockMap;
 
+  const inventoryWhere = { product_id: { [Op.in]: uniqueProductIds } };
+  const visibleStoreIds = [...new Set((scopedStoreIds || []).map(String).filter(Boolean))];
+  if (visibleStoreIds.length > 0) inventoryWhere.store_id = { [Op.in]: visibleStoreIds };
   const inventories = await Inventory.findAll({
-    where: { product_id: { [Op.in]: uniqueProductIds } },
+    where: inventoryWhere,
     raw: true
   });
   const locationIds = [...new Set(inventories.map(inv => inv.location_id).filter(Boolean))];
@@ -1023,6 +1026,68 @@ function compareInventoryModelRows(a, b, modelFilter) {
   return 0;
 }
 
+const STORE_EXPORT_QUANTITY_FIELDS = [
+  'normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty'
+];
+
+function buildStoreInventoryExportRows(productRows) {
+  const rows = [];
+  productRows.forEach((productRow, productIndex) => {
+    const storeMap = new Map();
+    (productRow.store_stock_info || []).forEach(item => {
+      const storeId = String(item.store_id || item.store_name || '');
+      if (!storeId) return;
+      if (!storeMap.has(storeId)) {
+        storeMap.set(storeId, {
+          store_id: item.store_id || '',
+          store_name: item.store_name || item.store_id || '',
+          normal_qty: 0,
+          regular_qty: 0,
+          subsidy_qty: 0,
+          second_qty: 0,
+          display_qty: 0,
+          demo_qty: 0,
+          unsellable_qty: 0,
+          pending_qty: 0
+        });
+      }
+      const target = storeMap.get(storeId);
+      target.normal_qty += Number(item.normal_qty || 0);
+      target.regular_qty += Number(item.regular_qty ?? item.full_resource_qty ?? 0);
+      target.subsidy_qty += Number(item.subsidy_qty ?? item.subsidy_only_qty ?? 0);
+      target.second_qty += Number(item.second_qty ?? item.no_subsidy_qty ?? 0);
+      STORE_EXPORT_QUANTITY_FIELDS.slice(1).forEach(field => {
+        target[field] += Number(item[field] || 0);
+      });
+    });
+
+    const storeRows = [...storeMap.values()];
+    if (storeRows.length === 0) return;
+    storeRows.forEach(store => {
+      const totalStock = Number(productRow.total_stock_qty || 0);
+      rows.push({
+        ...productRow,
+        store_id: store.store_id,
+        store_name: store.store_name,
+        normal_qty: store.normal_qty,
+        regular_qty: store.regular_qty,
+        subsidy_qty: store.subsidy_qty,
+        second_qty: store.second_qty,
+        display_qty: store.display_qty,
+        demo_qty: store.demo_qty,
+        unsellable_qty: store.unsellable_qty,
+        pending_qty: store.pending_qty,
+        current_store_stock_qty: store.normal_qty,
+        other_store_stock_qty: Math.max(totalStock - store.normal_qty, 0),
+        total_stock_qty: totalStock,
+        _store_product_index: productIndex
+      });
+    });
+  });
+  return rows.sort((a, b) => String(a.store_name || '').localeCompare(String(b.store_name || ''), 'zh-Hans-CN')
+    || Number(a._store_product_index || 0) - Number(b._store_product_index || 0));
+}
+
 /**
  * 库存聚合列表 - 按商品汇总，显示5种库存数量
  */
@@ -1037,7 +1102,14 @@ async function getList(ctx) {
     // 调拨查询由请求链路的 scope=transfer 标记放行，允许读取被调拨门店的库存。
     // 实际出库仍在 confirmTransferOutPartial 中校验调拨单和调出门店，不能据此绕过写入权限。
     const whereStore = {};
-    if (!user.accessibleStoreIds.includes('*')) whereStore.store_id = user.accessibleStoreIds;
+    const distributorScoped = isDistributorAccount(user) && !getUserRoles(user).includes('boss');
+    if (distributorScoped) {
+      whereStore.distributor_id = user.distributorId || '__NO_DISTRIBUTOR__';
+      const regionIds = Array.isArray(user.regionIds) ? user.regionIds.filter(id => id && id !== '*') : [];
+      whereStore.region_id = regionIds.length > 0 ? regionIds : '__NO_REGION__';
+    } else if (!user.accessibleStoreIds.includes('*')) {
+      whereStore.store_id = user.accessibleStoreIds;
+    }
     if (storeId) whereStore.store_id = storeId;
 
     const stores = await Store.findAll({ where: whereStore });
@@ -1071,7 +1143,7 @@ async function getList(ctx) {
     });
     const count = products.length;
     const productIds = products.map(p => p.product_id);
-    const allStockMap = await buildSalesStockMap(productIds, storeId);
+    const allStockMap = await buildSalesStockMap(productIds, storeId, storeIds);
 
     const inventoryWhere = { product_id: { [Op.in]: productIds } };
     inventoryWhere.store_id = { [Op.in]: storeIds };
@@ -1246,7 +1318,9 @@ async function getList(ctx) {
     const exportRows = sortedRows.map(({ _category_rank, _create_time, ...row }) => row);
 
     if (exportMode) {
-      const data = exportRows.map(row => ({
+      const storeExportRows = buildStoreInventoryExportRows(exportRows);
+      const data = storeExportRows.map(row => ({
+        门店: row.store_name || '',
         类别: row.category || '',
         商品名称: row.product_name || '',
         产品配置: row.spec || '',
@@ -1268,7 +1342,7 @@ async function getList(ctx) {
         近30天销量: Number(row.sales_30_qty || 0)
       }));
       sendExcel(ctx, data, [
-        '类别', '商品名称', '产品配置', '商品编码', '厂商编码', '销售定价',
+        '门店', '类别', '商品名称', '产品配置', '商品编码', '厂商编码', '销售定价',
         '现有库存', '正规货', '国补货', '纯二手货', '铺货仓库存', '样品仓库存',
         '不可售库存', '占用仓库存', '当前门店库存', '其他门店库存', '总库存',
         '近7天销量', '近30天销量'
@@ -4924,6 +4998,7 @@ module.exports = {
     isSpecialPriceProduct,
     matchesInventoryModelFilter,
     compareInventoryModelRows,
+    buildStoreInventoryExportRows,
     purchaseInitiatorName
   }
 };

@@ -49,6 +49,14 @@
           </div>
 
           <el-table :data="summaryData" stripe border v-loading="summaryLoading">
+            <el-table-column label="门店" min-width="180" show-overflow-tooltip>
+              <template #default="{ row }">
+                <el-tag v-for="store in getSummaryStoreNames(row)" :key="store.store_id || store.store_name" size="small" class="mr-1">
+                  {{ store.store_name || store.store_id }}
+                </el-tag>
+                <span v-if="!getSummaryStoreNames(row).length" class="muted">—</span>
+              </template>
+            </el-table-column>
             <el-table-column prop="category" label="类别" width="100" />
             <el-table-column prop="product_name" label="商品名称" min-width="140" />
             <el-table-column prop="spec" label="产品配置" width="130" />
@@ -1049,7 +1057,7 @@
             :disabled="transferFromStoreDisabled"
             @change="onTransferFromStoreChange"
           >
-            <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
+            <el-option v-for="store in transferStoreOptions" :key="store.store_id" :label="store.name" :value="store.store_id" />
           </el-select>
         </el-form-item>
         <el-form-item label="调入门店">
@@ -1660,6 +1668,8 @@ const canManageResourceRights = computed(() => hasRole(['finance', 'manager']))
 const canManageSnPrice = computed(() => hasRole(['admin']))
 const stores = ref([])
 const storesLoaded = ref(false)
+const transferStores = ref([])
+const transferStoresLoaded = ref(false)
 const categories = ref([])
 
 // 库存汇总
@@ -1886,11 +1896,15 @@ const transferAddForm = reactive({
 })
 
 const availableStores = computed(() => {
-  return stores.value.filter(s => s.store_id !== transferForm.fromStoreId)
+  return transferStoreOptions.value.filter(s => s.store_id !== transferForm.fromStoreId)
+})
+
+const transferStoreOptions = computed(() => {
+  return transferStoresLoaded.value ? transferStores.value : stores.value
 })
 
 const transferFromStoreDisabled = computed(() => {
-  return isStoreUser() || transferForm.items.length > 0
+  return transferForm.items.length > 0
 })
 
 const selectedTransferProduct = computed(() => {
@@ -2158,6 +2172,30 @@ const loadSummary = async () => {
   }
 }
 
+const getSummaryStoreNames = (row) => {
+  const source = Array.isArray(row?.store_stock_info) ? row.store_stock_info : []
+  const seen = new Set()
+  return source.filter(item => {
+    const key = String(item?.store_id || item?.store_name || '')
+    if (!key || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+const loadTransferStores = async () => {
+  if (transferStoresLoaded.value) return
+  try {
+    const res = await api.getTransferStores()
+    if (res && res.code === 0 && Array.isArray(res.data)) {
+      transferStores.value = res.data
+      transferStoresLoaded.value = true
+    }
+  } catch (err) {
+    ElMessage.error('加载调拨门店失败')
+  }
+}
+
 const selectInventoryProductType = (productType) => {
   summaryQuery.productType = summaryQuery.productType === productType ? '' : productType
   summaryQuery.category = ''
@@ -2339,11 +2377,6 @@ const clearBatchImportFile = () => {
   batchImportFile.value = null
   batchImportErrors.value = []
   batchImportResult.visible = false
-}
-
-const finishBatchImport = () => {
-  batchImportDialogVisible.value = false
-  loadBatchApplications()
 }
 
 const validateBatchImportForm = () => {
@@ -3045,6 +3078,11 @@ const finishSnEdit = async () => {
   loadSnData()
 }
 
+const finishBatchImport = () => {
+  batchImportDialogVisible.value = false
+  loadBatchApplications()
+}
+
 const openSnTrace = async (row) => {
   traceSnCode.value = row.sn_code
   traceDialogVisible.value = true
@@ -3124,9 +3162,10 @@ const getStoreName = (storeId) => {
 
 const openTransferApplyDialog = async () => {
   resetTransferForm()
+  await loadTransferStores()
   if (isStoreUser()) {
     transferForm.fromStoreId = getStoreId()
-    transferForm.fromStoreName = getStoreName(transferForm.fromStoreId)
+    transferForm.fromStoreName = transferStores.value.find(store => store.store_id === transferForm.fromStoreId)?.name || getStoreName(transferForm.fromStoreId)
   }
   restoreTransferDraft()
   transferDialogVisible.value = true

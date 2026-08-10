@@ -22,6 +22,7 @@ test('国补照片查询结果批量下载必须指定筛选条件', () => {
   assert.equal(hasSubsidyPhotoFilter({}), false);
   assert.equal(hasSubsidyPhotoFilter({ subsidyPerson: '张三' }), true);
   assert.equal(hasSubsidyPhotoFilter({ startDate: '2026-08-01', endDate: '2026-08-04' }), true);
+  assert.equal(hasSubsidyPhotoFilter({ storeId: 'STORE-1' }), true);
 });
 
 test('国补照片兼容历史字符串、对象和本地文件元数据', () => {

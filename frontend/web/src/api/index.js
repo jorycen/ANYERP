@@ -43,7 +43,8 @@ function attachResponseInterceptor(client, onSuccess, onUnauthorized) {
   client.interceptors.response.use(
     onSuccess,
     async error => {
-      if (error.response?.status === 401) {
+      const isLoginRequest = error.config?.url?.endsWith('/auth/login')
+      if (error.response?.status === 401 && !isLoginRequest) {
         onUnauthorized()
         return Promise.reject(error)
       }
@@ -470,6 +471,7 @@ export default {
   // Store
   getStoreList: (params) => api.get('/store/list', { params }),
   getAllStores: () => api.get('/store/all'),
+  getTransferStores: () => api.get('/store/transfer-options'),
   createStore: (data) => api.post('/store/create', data),
   updateStore: (id, data) => api.put(`/store/update/${id}`, data),
   deleteStore: (id) => api.delete(`/store/delete/${id}`),

@@ -77,7 +77,7 @@ const handleLogin = async () => {
       ElMessage.error(res.message || '登录失败')
     }
   } catch (err) {
-    ElMessage.error(err.message || '登录失败')
+    ElMessage.error(err.response?.data?.message || err.message || '登录失败')
   } finally {
     loading.value = false
   }

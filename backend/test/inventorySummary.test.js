@@ -90,3 +90,19 @@ test('inventory model quick filters sort hot and high-margin models by the lates
   assert.equal(_test.matchesInventoryModelFilter({ is_focus_product: 1 }, {}, 'focus'), true);
   assert.equal(_test.matchesInventoryModelFilter({}, { sales_7_qty: 0 }, 'hot7'), false);
 });
+
+test('inventory export expands one product into store rows and keeps store-specific quantities', () => {
+  const rows = _test.buildStoreInventoryExportRows([{
+    product_name: '测试商品',
+    total_stock_qty: 5,
+    store_stock_info: [
+      { store_id: 'S2', store_name: '重庆门店', normal_qty: 2, display_qty: 1 },
+      { store_id: 'S1', store_name: '成都门店', normal_qty: 3, display_qty: 0 }
+    ]
+  }]);
+
+  assert.deepEqual(rows.map(row => [row.store_name, row.normal_qty, row.total_stock_qty]), [
+    ['成都门店', 3, 5],
+    ['重庆门店', 2, 5]
+  ]);
+});
