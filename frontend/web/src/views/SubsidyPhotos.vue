@@ -364,13 +364,17 @@ async function downloadAllPhotos() {
   }
   batchDownloading.value = true
   try {
-    const response = await api.downloadAllSubsidyPhotosArchive(getQueryParams())
-    const url = URL.createObjectURL(response.data)
+    const ticketResponse = await api.createSubsidyPhotosDownloadTicket(getQueryParams())
+    const ticket = ticketResponse.data?.ticket
+    if (!ticket) throw new Error('下载凭证生成失败，请重试')
+    const url = api.getSubsidyPhotosDownloadUrl(ticket, getQueryParams())
     const link = document.createElement('a')
     link.href = url
-    link.download = `查询结果-国补照片-${new Date().toISOString().slice(0, 10)}.zip`
+    link.style.display = 'none'
+    document.body.appendChild(link)
     link.click()
-    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    document.body.removeChild(link)
+    ElMessage.success('下载已开始，请在浏览器下载栏查看进度')
   } catch (error) {
     ElMessage.error(`批量下载失败：${await getDownloadErrorMessage(error)}`)
   } finally {

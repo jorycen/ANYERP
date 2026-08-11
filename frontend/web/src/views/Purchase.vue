@@ -236,7 +236,7 @@
             </div>
 
             <div v-for="(item, idx) in requestForm.items" :key="`allocation-${idx}`" class="purchase-allocation-row">
-              <span class="purchase-subsection-label">门店分配<span v-if="requestForm.items.length > 1">（{{ item.productName || `商品${idx + 1}` }}）</span>：</span>
+              <span class="purchase-subsection-label">收货门店分配（可多选）<span v-if="requestForm.items.length > 1">（{{ item.productName || `商品${idx + 1}` }}）</span>：</span>
               <div class="purchase-allocation-content">
                 <template v-if="item.storeAllocations && item.storeAllocations.length > 0">
                   <span v-for="(alloc, allocIdx) in item.storeAllocations" :key="allocIdx" class="allocation-tag">

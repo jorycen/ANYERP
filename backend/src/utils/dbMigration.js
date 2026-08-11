@@ -1528,6 +1528,8 @@ async function runMigrations() {
     await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'PRODUCT_TYPE', 'VARCHAR(32) COMMENT "货型：正规货/国补货/纯二批"', 'SUBTOTAL');
     await checkAndAddColumn('T_INBOUND_ITEM', 'PRODUCT_TYPE', 'VARCHAR(32) COMMENT "货型：正规货/国补货/纯二批"', 'INVENTORY_TYPE');
     await checkAndAddColumn('T_INBOUND_ITEM', 'ORIGINAL_PICKUP_PRICE', 'DECIMAL(12,2) DEFAULT 0 COMMENT "原始提货价"', 'UNIT_PRICE');
+    await checkAndAddColumn('T_INBOUND_ITEM', 'RECEIVED_QUANTITY', 'INT NOT NULL DEFAULT 0 COMMENT "累计已入库数量"', 'QUANTITY');
+    await checkAndAddColumn('T_INBOUND_ITEM', 'RECEIVED_SN_CODES', 'TEXT COMMENT "累计已入库SN列表JSON"', 'RECEIVED_QUANTITY');
     await checkAndAddColumn('T_INVENTORY', 'REGULAR_QTY', 'INT DEFAULT 0 COMMENT "正规货数量"', 'NORMAL_QTY');
     await checkAndAddColumn('T_INVENTORY', 'SUBSIDY_QTY', 'INT DEFAULT 0 COMMENT "国补货数量"', 'REGULAR_QTY');
     await checkAndAddColumn('T_INVENTORY', 'SECOND_QTY', 'INT DEFAULT 0 COMMENT "纯二批数量"', 'SUBSIDY_QTY');

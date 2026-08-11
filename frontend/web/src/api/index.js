@@ -97,6 +97,19 @@ const exportApi = axios.create({
   timeout: 60000
 })
 
+function buildNativeDownloadUrl(pathname, params = {}) {
+  const baseUrl = /^https?:\/\//i.test(API_BASE_URL)
+    ? API_BASE_URL
+    : `${window.location.origin}${API_BASE_URL}`
+  const url = new URL(`${baseUrl}${pathname}`, window.location.origin)
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      url.searchParams.set(key, value)
+    }
+  })
+  return url.toString()
+}
+
 exportApi.interceptors.request.use(
   config => {
     const token = localStorage.getItem('token')
@@ -159,6 +172,11 @@ export default {
   getSalesList: (params) => api.get('/sales/list', { params }),
   exportSales: (params) => exportExcel('/sales/export', params, `销售订单导出_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getSubsidyPhotos: (params) => api.get('/sales/subsidy-photos', { params }),
+  createSubsidyPhotosDownloadTicket: (params) => api.get('/sales/subsidy-photos/batch-download-ticket', { params }),
+  getSubsidyPhotosDownloadUrl: (ticket, params) => buildNativeDownloadUrl('/sales/subsidy-photos/batch-download', {
+    ...params,
+    downloadToken: ticket
+  }),
   resolveCloudFileUrls: (fileIds) => api.post('/storage/file-urls', { fileIds }),
   replaceSubsidyPhotos: (orderId, data) => api.post(`/sales/subsidy-photos/${orderId}`, data, {
     headers: { 'Content-Type': 'multipart/form-data' }

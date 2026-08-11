@@ -7,10 +7,12 @@ const config = require('../config');
 const { Staff, Role } = require('../models');
 const { resolveAccessibleStoreIds, resolvePrimaryStoreId, resolveConfiguredRegions } = require('../utils/storePermissions');
 const { isDealerTraceAccount } = require('../utils/snTracePermission');
+const { consumeDownloadTicket } = require('../utils/downloadTicket');
 
 async function authMiddleware(ctx, next) {
   // 获取 token
-  const token = ctx.headers.authorization?.replace('Bearer ', '');
+  const headerToken = ctx.headers.authorization?.replace('Bearer ', '');
+  const token = headerToken || consumeDownloadTicket(ctx.query?.downloadToken);
 
   if (!token) {
     ctx.throw(401, '未登录，请先登录');

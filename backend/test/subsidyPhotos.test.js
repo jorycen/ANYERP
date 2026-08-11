@@ -6,6 +6,7 @@ const salesController = require('../src/modules/sales/controller');
 test('国补照片查询、替换和下载路由已注册并使用统一服务端权限角色', () => {
   const paths = salesRouter.stack.map(layer => `${layer.methods.join(',')}:${layer.path}`);
   assert.ok(paths.some(path => path.includes('GET:/subsidy-photos')));
+  assert.ok(paths.some(path => path.includes('GET:/subsidy-photos/batch-download-ticket')));
   assert.ok(paths.some(path => path.includes('GET:/subsidy-photos/batch-download')));
   assert.ok(paths.some(path => path.includes('GET:/subsidy-photos/:orderId/download')));
   assert.ok(paths.some(path => path.includes('POST:/subsidy-photos/:orderId')));
@@ -15,6 +16,7 @@ test('国补照片查询、替换和下载路由已注册并使用统一服务�
   assert.equal(typeof salesController.downloadSubsidyPhoto, 'function');
   assert.equal(typeof salesController.downloadSubsidyPhotosArchive, 'function');
   assert.equal(typeof salesController.downloadAllSubsidyPhotosArchive, 'function');
+  assert.equal(typeof salesController.createSubsidyPhotosDownloadTicket, 'function');
 });
 
 test('国补照片查询结果批量下载必须指定筛选条件', () => {
@@ -48,4 +50,12 @@ test('国补照片权限包含总部、财务和店长但不包含普通店员',
   assert.equal(userCanViewSubsidyPhotos({ roles: ['finance'] }), true);
   assert.equal(userCanViewSubsidyPhotos({ roles: ['manager'] }), true);
   assert.equal(userCanViewSubsidyPhotos({ roles: ['clerk'] }), false);
+});
+
+test('国补照片导出文件自动补齐扩展名并按 YYYYDDMM姓名手机号命名目录', () => {
+  const { subsidyPhotoFileName, subsidyPhotoFolderName } = salesController._test;
+  assert.equal(subsidyPhotoFileName({ name: '身份证', mimeType: 'image/png' }, 0), '身份证.png');
+  assert.equal(subsidyPhotoFileName({ name: '照片', storageName: 'file-1.webp' }, 1), '照片.webp');
+  assert.equal(subsidyPhotoFileName({ name: '照片.jpg', mimeType: 'image/png' }, 2), '照片.jpg');
+  assert.equal(subsidyPhotoFolderName({ create_time: '2026-08-11T03:04:05.000Z', subsidy_person: '张三', customer_phone: '13800138000' }), '20261108张三13800138000');
 });

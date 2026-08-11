@@ -1572,7 +1572,10 @@ const reviewProductApplication = async (row, action) => {
 }
 
 const onTabChange = (tab) => {
-  if (tab === 'product') loadData()
+  if (tab === 'product') {
+    loadData()
+    loadCategoryTree()
+  }
   else if (tab === 'category') loadCategoryTree()
   else if (tab === 'price') loadPriceData()
   else if (tab === 'approval') loadProductApplications()

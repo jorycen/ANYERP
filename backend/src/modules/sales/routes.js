@@ -37,7 +37,8 @@ const {
   replaceSubsidyPhotos,
   downloadSubsidyPhoto,
   downloadSubsidyPhotosArchive,
-  downloadAllSubsidyPhotosArchive
+  downloadAllSubsidyPhotosArchive,
+  createSubsidyPhotosDownloadTicket
 } = require('./controller');
 const { enforceStoreOwnership, requireRole } = require('../../middleware/permission');
 
@@ -60,6 +61,7 @@ router.get('/list', list);
 router.get('/product-orders/:productId', listProductOrders);
 router.get('/export', exportOrders);
 router.get('/subsidy-photos', subsidyPhotoRoles, listSubsidyPhotos);
+router.get('/subsidy-photos/batch-download-ticket', subsidyPhotoRoles, createSubsidyPhotosDownloadTicket);
 router.get('/subsidy-photos/batch-download', subsidyPhotoRoles, downloadAllSubsidyPhotosArchive);
 router.get('/subsidy-photos/:orderId/download', subsidyPhotoRoles, downloadSubsidyPhotosArchive);
 router.get('/subsidy-photos/:orderId/files/:photoId', subsidyPhotoRoles, downloadSubsidyPhoto);

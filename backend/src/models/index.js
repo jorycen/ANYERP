@@ -1236,6 +1236,8 @@ const InboundItem = sequelize.define('InboundItem', {
   unit_price: { type: DataTypes.DECIMAL(12, 2) },
   original_pickup_price: { type: DataTypes.DECIMAL(12, 2) },
   quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+  received_quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+  received_sn_codes: { type: DataTypes.TEXT },
   remark: { type: DataTypes.STRING(512) },
   location_id: { type: DataTypes.STRING(32) },
   inventory_type: { type: DataTypes.STRING(32), defaultValue: 'normal_qty' },

@@ -2184,6 +2184,42 @@ async function snTraceLegacy(ctx) {
 /**
  * 入库单列表
  */
+function parseInboundSnCodes(value) {
+  if (Array.isArray(value)) return value.map(code => String(code || '').trim()).filter(Boolean);
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.map(code => String(code || '').trim()).filter(Boolean)
+      : [];
+  } catch (_) {
+    return String(value).split(/[,\s]+/).map(code => code.trim()).filter(Boolean);
+  }
+}
+
+function enrichInboundItemProgress(item, inboundStatus) {
+  const data = item?.dataValues || item || {};
+  const totalQuantity = Math.max(Number(data.quantity || 0), 0);
+  const storedReceived = Math.max(Number(data.received_quantity || 0), 0);
+  const receivedQuantity = inboundStatus === 'completed'
+    ? Math.max(totalQuantity, storedReceived)
+    : Math.min(totalQuantity, storedReceived);
+  const snCodes = parseInboundSnCodes(data.received_sn_codes);
+  if (snCodes.length === 0 && data.sn_code) snCodes.push(String(data.sn_code).trim());
+  data.received_quantity = receivedQuantity;
+  data.remaining_quantity = inboundStatus === 'pending'
+    ? Math.max(totalQuantity - receivedQuantity, 0)
+    : 0;
+  data.sn_codes = snCodes;
+  return data;
+}
+
+function inboundItemDisplayQuantity(item, inboundStatus) {
+  return inboundStatus === 'pending'
+    ? Math.max(Number(item.remaining_quantity ?? item.quantity ?? 0), 0)
+    : Math.max(Number(item.quantity || 0), 0);
+}
+
 async function getInboundList(ctx) {
   try {
     const { storeId, status, page = 1, pageSize = 20 } = ctx.query;
@@ -2207,6 +2243,7 @@ async function getInboundList(ctx) {
     for (const inbound of rows) {
       const items = await InboundItem.findAll({ where: { inbound_id: inbound.inbound_id } });
       const store = await Store.findByPk(inbound.store_id);
+      items.forEach(item => enrichInboundItemProgress(item, inbound.status));
       inbound.dataValues.items = items;
       inbound.dataValues.Store = store;
     }
@@ -2231,7 +2268,14 @@ async function getInboundList(ctx) {
     const formattedRows = rows.map(row => {
       const result = row.toJSON();
       result.Store = row.dataValues.Store;
-      result.items = row.dataValues.items;
+      result.items = row.dataValues.items.map(item => {
+        const data = item.toJSON ? item.toJSON() : item;
+        return {
+          ...data,
+          original_quantity: Number(data.quantity || 0),
+          quantity: inboundItemDisplayQuantity(data, result.status)
+        };
+      });
       result.store_name = result.Store?.name || '';
 
       if (result.items && result.items.length > 0) {
@@ -2328,6 +2372,7 @@ async function getInboundDetailById(ctx, inboundId, { distributorTrace = false }
 
     const items = await InboundItem.findAll({ where: { inbound_id: inboundId } });
     const store = await Store.findByPk(inbound.store_id);
+    items.forEach(item => enrichInboundItemProgress(item, inbound.status));
     const locationIds = items.map(item => item.location_id).filter(Boolean);
     const locations = locationIds.length
       ? await Location.findAll({ where: { location_id: { [Op.in]: locationIds } }, attributes: ['location_id', 'name'] })
@@ -2389,7 +2434,9 @@ async function getInboundDetailById(ctx, inboundId, { distributorTrace = false }
           if (product) item.product_name = product.name;
         }
         const purchaseItem = purchaseItemMap.get(String(item.purchase_request_item_id || ''));
-        const snCodes = item.sn_code ? [item.sn_code] : [];
+        const snCodes = Array.isArray(item.sn_codes)
+          ? item.sn_codes
+          : (item.sn_code ? [item.sn_code] : []);
         return {
           ...item,
           location_name: item.location_id ? (locationMap.get(item.location_id) || item.location_id) : '',
@@ -2710,6 +2757,7 @@ async function executeInbound(ctx) {
   try {
     const { inboundId, items = [] } = ctx.request.body;
     const user = ctx.state.user;
+    if (!Array.isArray(items) || items.length === 0) ctx.throw(400, '请至少提交一条入库明细');
 
     const inbound = await Inbound.findByPk(inboundId, { transaction: t, lock: t.LOCK.UPDATE });
     if (!inbound) ctx.throw(404, '入库单不存在');
@@ -2720,6 +2768,7 @@ async function executeInbound(ctx) {
 
     const isTransferInbound = String(inbound.source_type || '').toUpperCase() === 'TRANSFER';
     const isSalesReturnInbound = String(inbound.source_type || '').toUpperCase() === 'SALES_RETURN';
+    const isPurchaseInbound = String(inbound.source_type || '').toLowerCase() === 'purchase' || Boolean(inbound.purchase_request_id);
     const inboundItems = await InboundItem.findAll({ where: { inbound_id: inboundId }, transaction: t });
     const purchaseRequest = inbound.purchase_request_id
       ? await PurchaseRequest.findByPk(inbound.purchase_request_id, { transaction: t })
@@ -2731,6 +2780,7 @@ async function executeInbound(ctx) {
     const products = await Product.findAll({ where: { product_id: { [Op.in]: productIds } }, transaction: t });
     const productMap = new Map();
     products.forEach(p => productMap.set(p.product_id, p));
+    const progressByItem = new Map();
 
     for (const item of items) {
       const product = productMap.get(item.productId);
@@ -2746,7 +2796,19 @@ async function executeInbound(ctx) {
         ctx.throw(400, `入库单中未找到商品 ${item.productId || product.name} 的明细`);
       }
 
-      const quantity = parseInt(item.quantity) || 1;
+      const quantity = Number(item.quantity);
+      if (!Number.isInteger(quantity) || quantity <= 0) {
+        ctx.throw(400, `商品 ${dbItem.product_name || product.name} 的入库数量必须为正整数`);
+      }
+      const itemKey = String(dbItem.item_id);
+      const storedReceivedQuantity = Math.max(Number(dbItem.received_quantity || 0), 0);
+      const currentProgress = progressByItem.get(itemKey) || { quantity: 0, snCodes: [] };
+      const remainingQuantity = Math.max(Number(dbItem.quantity || 0) - storedReceivedQuantity - currentProgress.quantity, 0);
+      if (quantity > remainingQuantity) {
+        ctx.throw(400, `商品 ${dbItem.product_name || product.name} 本次最多还能入库 ${remainingQuantity} 件`);
+      }
+      currentProgress.quantity += quantity;
+      progressByItem.set(itemKey, currentProgress);
       const requestedInventoryType = VALID_INVENTORY_TYPES.includes(item.inventoryType)
         ? item.inventoryType
         : 'normal_qty';
@@ -2766,8 +2828,24 @@ async function executeInbound(ctx) {
         : requestedInventoryType;
       const originalPickupPrice = Number(item.originalPickupPrice || item.original_pickup_price || dbItem.original_pickup_price || dbItem.unit_price || 0);
 
-      if (product.need_sn === 1) {
-        const requestedSnCode = String(item.snCode || item.sn_code || dbItem.sn_code || '').trim();
+      if (Number(product.need_sn) === 1) {
+        const submittedSnCode = String(item.snCode || item.sn_code || '').trim();
+        const requestedSnCode = submittedSnCode || (isPurchaseInbound ? '' : String(dbItem.sn_code || '').trim());
+        if (isPurchaseInbound && quantity !== 1) {
+          ctx.throw(400, `商品 ${dbItem.product_name || product.name} 为 SN 商品，每次只能入库 1 件`);
+        }
+        if (isPurchaseInbound && !submittedSnCode) {
+          ctx.throw(400, `商品 ${dbItem.product_name || product.name} 需要 SN 管理，本次入库必须填写 SN`);
+        }
+        if (isPurchaseInbound) {
+          const existingSnCodes = parseInboundSnCodes(dbItem.received_sn_codes);
+          const duplicateSn = existingSnCodes.concat(currentProgress.snCodes)
+            .some(code => code.toLowerCase() === requestedSnCode.toLowerCase());
+          if (duplicateSn) {
+            ctx.throw(400, `商品 ${dbItem.product_name || product.name} 的 SN ${requestedSnCode} 已入库或在本次提交中重复`);
+          }
+          currentProgress.snCodes.push(requestedSnCode);
+        }
         const requestedTransferSnId = item.snId || item.sn_id || item.inventoryId || item.inventory_id || dbItem.sn_id || '';
         const salesReturnSn = isSalesReturnInbound
           ? await ProductSn.findOne({
@@ -2973,7 +3051,28 @@ async function executeInbound(ctx) {
       }
     }
 
-    await inbound.update({ status: 'completed', update_time: new Date() }, { transaction: t });
+    for (const [itemKey, progress] of progressByItem.entries()) {
+      const dbItem = inboundItems.find(item => String(item.item_id) === itemKey);
+      if (!dbItem) continue;
+      const receivedQuantity = Math.min(
+        Math.max(Number(dbItem.quantity || 0), 0),
+        Math.max(Number(dbItem.received_quantity || 0), 0) + progress.quantity
+      );
+      const existingSnCodes = parseInboundSnCodes(dbItem.received_sn_codes);
+      const receivedSnCodes = existingSnCodes.concat(progress.snCodes || []);
+      await dbItem.update({
+        received_quantity: receivedQuantity,
+        received_sn_codes: receivedSnCodes.length ? JSON.stringify(receivedSnCodes) : dbItem.received_sn_codes
+      }, { transaction: t });
+    }
+
+    const allPurchaseItemsReceived = inboundItems.every(item => {
+      const progress = progressByItem.get(String(item.item_id));
+      const receivedQuantity = Math.max(Number(item.received_quantity || 0), 0) + Number(progress?.quantity || 0);
+      return receivedQuantity >= Math.max(Number(item.quantity || 0), 0);
+    });
+    const nextInboundStatus = isPurchaseInbound && !allPurchaseItemsReceived ? 'pending' : 'completed';
+    await inbound.update({ status: nextInboundStatus, update_time: new Date() }, { transaction: t });
 
     if (isSalesReturnInbound) {
       const salesReturn = await SalesReturnRequest.findOne({
@@ -4995,19 +5094,17 @@ async function getLocationsByStore(ctx) {
     }
     const store = await Store.findOne({ where: { store_id: storeId, is_deleted: 0 } });
     if (!store) ctx.throw(404, '门店不存在');
-    await ensureStandardLocationsForStores(Location, [store]);
-
-    const locations = await Location.findAll({
-      where: { store_id: storeId, status: 1 },
-      order: [[sequelize.literal(`CASE TYPE
-        WHEN 'normal_qty' THEN 10
-        WHEN 'demo_qty' THEN 20
-        WHEN 'display_qty' THEN 30
-        WHEN 'unsellable_qty' THEN 40
-        WHEN 'pending_qty' THEN 50
-        ELSE 999
-      END`), 'ASC'], ['name', 'ASC']]
-    });
+    let locations = await Location.findAll({ where: { store_id: storeId } });
+    if (locations.length === 0) {
+      await ensureStandardLocationsForStores(Location, [store]);
+      locations = await Location.findAll({ where: { store_id: storeId } });
+    }
+    locations = locations
+      .filter(location => Number(location.status) === 1)
+      .sort((left, right) => {
+        const order = { normal_qty: 10, demo_qty: 20, display_qty: 30, unsellable_qty: 40, pending_qty: 50 };
+        return (order[left.type] || 999) - (order[right.type] || 999) || String(left.name || '').localeCompare(String(right.name || ''));
+      });
     ctx.body = { code: 0, data: locations };
   } catch (error) {
     console.error('Error in getLocationsByStore:', error);

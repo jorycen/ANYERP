@@ -44,6 +44,7 @@ const { normalizePnCode } = require('../../utils/productPn');
 const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
+const { issueDownloadTicket } = require('../../utils/downloadTicket');
 const { canViewSnTraceReference, isDealerTraceAccount } = require('../../utils/snTracePermission');
 const { sendExcel } = require('../../utils/excelExport');
 const { getCloudStorageConfig, getSignedCloudFileUrl, parseCloudFileId } = require('../../utils/cloudStorage');
@@ -621,6 +622,12 @@ function hasSubsidyPhotoFilter(params = {}) {
     .some(value => String(value || '').trim());
 }
 
+async function createSubsidyPhotosDownloadTicket(ctx) {
+  if (!userCanViewSubsidyPhotos(ctx.state.user)) ctx.throw(403, '无权下载国补照片');
+  if (!hasSubsidyPhotoFilter(ctx.query)) ctx.throw(400, '不支持全量下载，请选择查询条件');
+  ctx.body = { code: 0, data: { ticket: issueDownloadTicket(ctx.headers.authorization?.replace('Bearer ', '')) } };
+}
+
 function subsidyPhotoResponse(order) {
   const data = order.toJSON ? order.toJSON() : order;
   const photos = normalizeSubsidyPhotos(data.subsidy_photos).map(photo => ({
@@ -792,6 +799,49 @@ function zipFileName(name, index) {
   return segments.length ? segments.join('/') : fallback;
 }
 
+function inferSubsidyPhotoExtension(photo) {
+  const mimeExtensions = {
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'image/webp': '.webp'
+  };
+  const candidates = [photo?.name, photo?.storageName, photo?.url, photo?.displayUrl];
+  for (const candidate of candidates) {
+    const cleanValue = String(candidate || '').split(/[?#]/, 1)[0];
+    const extension = path.extname(cleanValue).toLowerCase();
+    if (SUBSIDY_PHOTO_ALLOWED_EXTENSIONS.has(extension)) {
+      return extension === '.jpeg' ? '.jpg' : extension;
+    }
+  }
+  return mimeExtensions[String(photo?.mimeType || '').toLowerCase()] || '.jpg';
+}
+
+function subsidyPhotoFileName(photo, index) {
+  const extension = inferSubsidyPhotoExtension(photo);
+  const name = zipFileName(photo?.name, index);
+  const nameExtension = path.extname(name).toLowerCase();
+  return SUBSIDY_PHOTO_ALLOWED_EXTENSIONS.has(nameExtension) ? name : `${name}${extension}`;
+}
+
+function subsidyPhotoFolderName(order) {
+  const data = order?.toJSON ? order.toJSON() : order || {};
+  const createTime = data.create_time ? new Date(data.create_time) : new Date();
+  const date = Number.isNaN(createTime.getTime()) ? new Date() : createTime;
+  const dateParts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(date).reduce((result, item) => {
+    result[item.type] = item.value;
+    return result;
+  }, {});
+  const dateText = `${dateParts.year || '0000'}${dateParts.day || '00'}${dateParts.month || '00'}`;
+  const person = String(data.subsidy_person || '').trim() || '未命名';
+  const phone = String(data.customer_phone || '').trim() || '无手机号';
+  return `${dateText}${person}${phone}`;
+}
+
 function createSubsidyPhotoZip(entries) {
   const output = new PassThrough();
   (async () => {
@@ -880,7 +930,7 @@ async function subsidyPhotoZipEntries(order, folder = '') {
       if (filePath && fs.existsSync(filePath)) {
         entries.push({
           id: photo.id,
-          name: safeFolder ? `${safeFolder}/${photo.name}` : photo.name,
+          name: safeFolder ? `${safeFolder}/${subsidyPhotoFileName(photo, entries.length)}` : subsidyPhotoFileName(photo, entries.length),
           load: () => fs.promises.readFile(filePath)
         });
       }
@@ -890,7 +940,7 @@ async function subsidyPhotoZipEntries(order, folder = '') {
     if (/^cloud:\/\//i.test(photo.url)) {
       entries.push({
         id: photo.id,
-        name: safeFolder ? `${safeFolder}/${photo.name}` : photo.name,
+        name: safeFolder ? `${safeFolder}/${subsidyPhotoFileName(photo, entries.length)}` : subsidyPhotoFileName(photo, entries.length),
         load: async () => {
           let sourceUrl = photo.displayUrl;
           try {
@@ -943,7 +993,7 @@ async function downloadAllSubsidyPhotosArchive(ctx) {
 
   const entries = [];
   for (const order of orders) {
-    const orderEntries = await subsidyPhotoZipEntries(order, order.order_no || order.order_id);
+    const orderEntries = await subsidyPhotoZipEntries(order, subsidyPhotoFolderName(order));
     entries.push(...orderEntries);
   }
   if (!entries.length) ctx.throw(404, '当前查询结果没有可下载的国补照片');
@@ -3454,6 +3504,7 @@ module.exports = {
   downloadSubsidyPhoto,
   downloadSubsidyPhotosArchive,
   downloadAllSubsidyPhotosArchive,
+  createSubsidyPhotosDownloadTicket,
   _test: {
     canQueryAllSalesOrders,
     normalizeOrderExtendedFields,
@@ -3466,6 +3517,9 @@ module.exports = {
     validateAndDeductInventoryForArchive,
     normalizeSubsidyPhotos,
     hasSubsidyPhotoFilter,
+    inferSubsidyPhotoExtension,
+    subsidyPhotoFileName,
+    subsidyPhotoFolderName,
     userCanViewSubsidyPhotos,
     subsidyPhotoStoreWhere,
     buildSubsidyPhotoQuery,

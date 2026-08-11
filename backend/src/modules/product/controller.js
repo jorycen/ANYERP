@@ -798,7 +798,7 @@ async function revokeProductApplication(ctx) {
 
 async function reviewProductApplication(ctx) {
   const { applicationId } = ctx.params;
-  const { action, comment = '' } = ctx.request.body;
+  const { action, comment = '', payload: editedPayload } = ctx.request.body || {};
   if (!['approved', 'rejected'].includes(action)) ctx.throw(400, '审批结果不正确');
   if (action === 'rejected' && !String(comment).trim()) ctx.throw(400, '拒绝时必须填写审批意见');
 
@@ -818,14 +818,28 @@ async function reviewProductApplication(ctx) {
     }
 
     let created = null;
+    let nextPayload = null;
+    let finalName = application.product_name;
+    let categoryPath = application.category_name;
     if (action === 'approved') {
-      const payload = typeof application.payload_json === 'string'
+      const storedPayload = typeof application.payload_json === 'string'
         ? JSON.parse(application.payload_json)
         : application.payload_json;
-      created = await createProductRecord(payload, transaction);
+      const payload = Object.assign({}, storedPayload || {}, editedPayload && typeof editedPayload === 'object' ? editedPayload : {});
+      const resolved = await resolveProductApplicationName(payload);
+      finalName = resolved.finalName;
+      if (!finalName) ctx.throw(400, 'Product name is required');
+      if (!payload.categoryId) ctx.throw(400, 'Product category is required');
+      if (!String(payload.pnCode || payload.pn_code || payload.pn || payload.manufacturerCode || payload.manufacturer_code || '').trim() &&
+        !(Array.isArray(payload.barcodes) && payload.barcodes.some(item => item && String(item.code || '').trim()))) {
+        ctx.throw(400, 'PN code is required');
+      }
+      categoryPath = await resolveCategoryPath(payload.categoryId);
+      nextPayload = productApplicationPayload(payload, finalName, resolved.parsedAttrs);
+      created = await createProductRecord(nextPayload, transaction);
     }
 
-    await application.update({
+    const updateData = {
       status: action,
       review_staff_id: ctx.state.user.staffId,
       review_user_name: ctx.state.user.name,
@@ -833,7 +847,14 @@ async function reviewProductApplication(ctx) {
       review_time: new Date(),
       product_id: created ? created.productId : null,
       update_time: new Date()
-    }, { transaction });
+    };
+    if (nextPayload) {
+      updateData.payload_json = nextPayload;
+      updateData.product_name = finalName;
+      updateData.category_id = nextPayload.categoryId;
+      updateData.category_name = categoryPath;
+    }
+    await application.update(updateData, { transaction });
     await transaction.commit();
 
     ctx.body = {

@@ -2,7 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { Location } = require('../src/models');
+const { Location, InboundItem } = require('../src/models');
+const { _test: systemControllerTest } = require('../src/modules/system/controller');
 const { STANDARD_INVENTORY_LOCATIONS } = require('../src/utils/standardLocations');
 
 const migrationSource = fs.readFileSync(
@@ -24,4 +25,19 @@ test('inventory location model is covered by automatic migrations', () => {
     assert.match(migrationSource, new RegExp(location.type));
     assert.match(migrationSource, new RegExp(location.name));
   }
+});
+
+test('inbound item model tracks partial receipt progress and received SNs', () => {
+  assert.ok(InboundItem.rawAttributes.received_quantity);
+  assert.ok(InboundItem.rawAttributes.received_sn_codes);
+  assert.match(migrationSource, /checkAndAddColumn\('T_INBOUND_ITEM', 'RECEIVED_QUANTITY'/);
+  assert.match(migrationSource, /checkAndAddColumn\('T_INBOUND_ITEM', 'RECEIVED_SN_CODES'/);
+});
+
+test('location disable stock check counts standard inventory buckets without double-counting normal stock', () => {
+  const getQuantity = systemControllerTest.getInventoryQuantityForLocation;
+
+  assert.equal(getQuantity({ normal_qty: 5, regular_qty: 2, subsidy_qty: 1, second_qty: 1 }), 5);
+  assert.equal(getQuantity({ normal_qty: 0, regular_qty: 2, subsidy_qty: 1, second_qty: 1 }), 4);
+  assert.equal(getQuantity({ normal_qty: 0, display_qty: 2, demo_qty: 3, unsellable_qty: 1, pending_qty: 4 }), 10);
 });

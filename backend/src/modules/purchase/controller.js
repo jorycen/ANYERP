@@ -265,6 +265,15 @@ async function refreshPendingInboundSummary(inbound, transaction) {
 function buildAdjustmentRows(request, inbounds, stores) {
   const storeMap = new Map(stores.map(store => [String(store.store_id), store.name]));
   const rows = [];
+  const receivedQuantityOf = (inbound, inboundItem) => {
+    const total = Math.max(Number(inboundItem.quantity || 0), 0);
+    const received = Math.max(Number(inboundItem.received_quantity || 0), 0);
+    return inbound.status === 'completed' ? Math.max(total, received) : Math.min(total, received);
+  };
+  const pendingQuantityOf = (inbound, inboundItem) => Math.max(
+    Number(inboundItem.quantity || 0) - receivedQuantityOf(inbound, inboundItem),
+    0
+  );
 
   for (const requestItem of request.items || []) {
     const inboundItems = [];
@@ -277,17 +286,18 @@ function buildAdjustmentRows(request, inbounds, stores) {
     }
 
     const receivedQuantity = inboundItems
-      .filter(({ inbound }) => inbound.status === 'completed')
-      .reduce((sum, { inboundItem }) => sum + Math.max(0, Number(inboundItem.quantity || 0)), 0);
+      .reduce((sum, { inbound, inboundItem }) => sum + receivedQuantityOf(inbound, inboundItem), 0);
     const pendingQuantityTotal = inboundItems
       .filter(({ inbound }) => inbound.status === 'pending')
-      .reduce((sum, { inboundItem }) => sum + Math.max(0, Number(inboundItem.quantity || 0)), 0);
+      .reduce((sum, { inbound, inboundItem }) => sum + pendingQuantityOf(inbound, inboundItem), 0);
     const unitPrice = Number(requestItem.unit_price || 0);
     const rebatePerUnit = Number(requestItem.quantity || 0) > 0
       ? Number(requestItem.rebate_deduction || 0) / Number(requestItem.quantity)
       : 0;
 
-    const editableRows = inboundItems.filter(({ inbound }) => inbound.status === 'pending');
+    const editableRows = inboundItems.filter(({ inbound, inboundItem }) => (
+      inbound.status === 'pending' && pendingQuantityOf(inbound, inboundItem) > 0
+    ));
     if (editableRows.length > 0) {
       for (const { inbound, inboundItem } of editableRows) {
         const effectiveUnitPrice = unitPrice || Number(inboundItem.unit_price || 0);
@@ -304,10 +314,10 @@ function buildAdjustmentRows(request, inbounds, stores) {
           actual_unit_price: toSignedMoney(effectiveUnitPrice - rebatePerUnit),
           original_quantity: Number(requestItem.quantity || 0),
           received_quantity: receivedQuantity,
-          pending_quantity: Math.max(0, Number(inboundItem.quantity || 0)),
+          pending_quantity: pendingQuantityOf(inbound, inboundItem),
           pending_quantity_total: pendingQuantityTotal,
           effective_quantity: receivedQuantity + pendingQuantityTotal,
-          target_quantity: Math.max(0, Number(inboundItem.quantity || 0)),
+          target_quantity: pendingQuantityOf(inbound, inboundItem),
           editable: true
         });
       }

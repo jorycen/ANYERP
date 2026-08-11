@@ -740,6 +740,11 @@
 
           <!-- SN商品：每行一个SN -->
           <el-table v-if="item.needSn" :data="item.snRows" stripe border size="small" class="sn-table">
+            <el-table-column label="操作" width="70" align="center">
+              <template #default="{ $index: snIndex }">
+                <el-button v-if="item.snRows.length > 1" size="small" type="danger" link @click="removeSnRow(item, snIndex)">删除</el-button>
+              </template>
+            </el-table-column>
             <el-table-column type="index" label="#" width="50" />
             <el-table-column label="PN码" width="160">
               <template #default>
@@ -2657,7 +2662,7 @@ const openExecuteDialog = async (row) => {
       const productGroups = []
       for (const item of (res.data.items || [])) {
         const needSn = item.need_sn === 1
-        const qty = Number(item.quantity) || 1
+        const qty = Number(item.remaining_quantity ?? item.remainingQuantity ?? item.quantity) || 1
         const pns = pnMap[item.product_id] || []
 
         const group = {
@@ -2677,7 +2682,9 @@ const openExecuteDialog = async (row) => {
           if (needSn) {
             for (let i = 0; i < qty; i++) {
               group.snRows.push({
-              snCode: item.sn_code || item.snCode || '',
+              snCode: qty > 0 && Number(item.remaining_quantity ?? item.remainingQuantity ?? 0) > 0
+                ? ''
+                : (item.sn_code || item.snCode || ''),
               inventoryType: 'normal_qty',
                 locationId: item.location_id || '',
                 remark: ''
@@ -2702,6 +2709,11 @@ const openExecuteDialog = async (row) => {
   } catch (err) {
     ElMessage.error('获取详情失败')
   }
+}
+
+const removeSnRow = (item, index) => {
+  if (!item?.snRows?.length) return
+  item.snRows.splice(index, 1)
 }
 
 const addQtyRow = (item) => {
@@ -2799,7 +2811,7 @@ const submitInbound = async () => {
       }
 
       const totalAllocated = allocatedQty(product)
-      if (totalAllocated !== product.quantity) {
+      if (totalAllocated <= 0 || totalAllocated > product.quantity) {
         ElMessage.warning(`商品 ${product.productName} 分配数量(${totalAllocated})与待入库数量(${product.quantity})不一致`)
         return
       }
