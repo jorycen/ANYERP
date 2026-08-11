@@ -10,6 +10,8 @@ const { recordBusinessAction, listBusinessActions } = require('../../utils/busin
 const { canViewSnTraceReference } = require('../../utils/snTracePermission');
 const { getUserRoles } = require('../../middleware/permission');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
+const { createProductRecord } = require('../product/controller');
+const { executeInbound } = require('../inventory/controller');
 
 function normalizeFileList(...values) {
   const result = [];
@@ -589,6 +591,16 @@ async function createRequest(ctx) {
   const canonicalProductType = goodsType?.name || requestedProductType || '';
 
   for (const item of items) {
+    const isUsedProduct = Boolean(item.isUsedProduct || item.is_used_product);
+    const directInbound = Boolean(item.directInbound || item.direct_inbound);
+    const directInboundSnCode = String(item.directInboundSnCode || item.direct_inbound_sn_code || '').trim();
+    if (isUsedProduct && directInbound && (!directInboundSnCode || Number(item.quantity || 0) !== 1)) {
+      ctx.throw(400, '二手商品勾选审批完成及入库时，数量必须为1且必须填写SN号');
+    }
+    if (isUsedProduct && (!String(item.productName || item.product_name || '').trim() || Number(item.quantity || 0) <= 0 || Number(item.price || 0) < 0)) {
+      ctx.throw(400, '二手商品名称、价格和数量不能为空');
+    }
+    if (!isUsedProduct && !item.productId && !item.product_id) ctx.throw(400, '请选择采购商品');
     const itemType = item.productType || item.product_type || canonicalProductType;
     const itemTypeId = item.goodsTypeId || item.goods_type_id || canonicalGoodsTypeId;
     if (!isDraft && (String(itemType) !== String(canonicalProductType) || String(itemTypeId) !== String(canonicalGoodsTypeId))) {
@@ -718,9 +730,12 @@ async function createRequest(ctx) {
 
     await PurchaseRequestItem.create({
       request_id: requestId,
-      product_id: productId,
+      product_id: productId || null,
       product_name: item.productName || '',
       pn_code: item.pnCode || '',
+      is_used_product: Boolean(item.isUsedProduct || item.is_used_product) ? 1 : 0,
+      direct_inbound: Boolean(item.directInbound || item.direct_inbound) ? 1 : 0,
+      direct_inbound_sn_code: String(item.directInboundSnCode || item.direct_inbound_sn_code || '').trim() || null,
       quantity: quantity,
       unit_price: unitPrice,
       subtotal: subtotal,
@@ -796,7 +811,10 @@ async function validateDraftSubmission(request, ctx) {
 
   const selectedTypeSet = new Set();
   for (const item of request.items) {
-    if (!item.product_id || Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
+    if ((!item.product_id && !Number(item.is_used_product)) || (Number(item.is_used_product) && !String(item.product_name || '').trim()) || Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
+    if (Number(item.is_used_product) && Number(item.direct_inbound) && (Number(item.quantity) !== 1 || !String(item.direct_inbound_sn_code || '').trim())) ctx.throw(400, '二手商品勾选审批完成及入库时，数量必须为1且必须填写SN号');
+    if (!item.product_id && !Number(item.is_used_product)) ctx.throw(400, '商品名称、价格和数量不能为空');
+    if (Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
     const itemType = item.product_type || request.product_type;
     const itemTypeId = item.goods_type_id || request.goods_type_id;
     if (String(itemType) !== String(goodsType.name) || String(itemTypeId) !== String(goodsType.goods_type_id)) {
@@ -827,7 +845,10 @@ async function submitRequestDraft(ctx) {
   if (request.status !== 'draft') ctx.throw(400, '只有草稿状态的采购申请可以提交');
   if (!canSubmitDraft(user, request)) ctx.throw(403, '只有草稿创建人、店长或管理员可以提交');
 
+  const usedDraftItems = (request.items || []).filter(item => Number(item.is_used_product) === 1 && !item.product_id);
+  usedDraftItems.forEach(item => { item.product_id = '__USED_PRODUCT__'; });
   const goodsType = await validateDraftSubmission(request, ctx);
+  usedDraftItems.forEach(item => { item.product_id = null; });
   const deduction = Math.min(toMoney(request.rebate_deduction || 0), toMoney(request.total_amount || 0));
   if (deduction > 0) {
     const currentBalance = await _getRebateBalance(request.supplier_id);
@@ -907,6 +928,12 @@ async function updateRequestDraft(ctx) {
   const { supplierId, remark, items, invoiceType, paymentMethod, goodsTypeId, productType, rebateDeduction,
     freightPlatformId, freightPlatformName, freightAmount, freight_platform_id, freight_platform_name, freight_amount } = ctx.request.body;
   const request = await PurchaseRequest.findByPk(requestId);
+  const usedProductPlaceholder = '__USED_PRODUCT__';
+  if (Array.isArray(items)) {
+    items.forEach(item => {
+      if ((item.isUsedProduct || item.is_used_product) && !item.productId) item.productId = usedProductPlaceholder;
+    });
+  }
   if (!request) ctx.throw(404, '采购申请不存在');
   assertStoreVisible(ctx, request.store_id);
   if (request.status !== 'draft') ctx.throw(400, '只有草稿状态的采购申请可以编辑');
@@ -924,6 +951,12 @@ async function updateRequestDraft(ctx) {
     ctx.throw(400, error.message);
   }
 
+  for (const item of items) {
+    const isUsedProduct = Number(item.isUsedProduct || item.is_used_product) === 1;
+    const directInbound = Number(item.directInbound || item.direct_inbound) === 1;
+    if ((!item.productId && !isUsedProduct) || (isUsedProduct && !String(item.productName || item.product_name || '').trim()) || Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
+    if (isUsedProduct && directInbound && (Number(item.quantity) !== 1 || !String(item.directInboundSnCode || item.direct_inbound_sn_code || '').trim())) ctx.throw(400, '二手商品勾选审批完成及入库时，数量必须为1且必须填写SN号');
+  }
   const goodsType = goodsTypeId
     ? await GoodsType.findOne({ where: { goods_type_id: goodsTypeId, status: 1 } })
     : await GoodsType.findOne({ where: { name: productType, status: 1 } });
@@ -963,9 +996,12 @@ async function updateRequestDraft(ctx) {
       const item = items[index];
       await PurchaseRequestItem.create({
         request_id: requestId,
-        product_id: item.productId,
+        product_id: Number(item.isUsedProduct || item.is_used_product) ? null : (item.productId || null),
         product_name: item.productName || '',
         pn_code: item.pnCode || '',
+        is_used_product: Number(item.isUsedProduct || item.is_used_product) ? 1 : 0,
+        direct_inbound: Number(item.directInbound || item.direct_inbound) ? 1 : 0,
+        direct_inbound_sn_code: String(item.directInboundSnCode || item.direct_inbound_sn_code || '').trim() || null,
         quantity: Number(item.quantity),
         unit_price: Number(item.price || 0),
         subtotal: Number(item.price || 0) * Number(item.quantity || 0),
@@ -1068,6 +1104,22 @@ async function approveRequest(ctx) {
   assertStoreVisible(ctx, request.store_id);
 
   const transaction = await sequelize.transaction();
+  let transactionCommitted = false;
+  const directInboundExecutions = [];
+  const items = request.items.map(item => ({
+    productId: item.product_id,
+    productName: item.product_name,
+    quantity: item.quantity,
+    isUsedProduct: item.is_used_product,
+    directInbound: item.direct_inbound,
+    directInboundSnCode: item.direct_inbound_sn_code
+  }));
+  for (const item of items) {
+    const isUsedProduct = Number(item.isUsedProduct || item.is_used_product) === 1;
+    const directInbound = Number(item.directInbound || item.direct_inbound) === 1;
+    if ((!item.productId && !isUsedProduct) || (isUsedProduct && !String(item.productName || item.product_name || '').trim()) || Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
+    if (isUsedProduct && directInbound && (Number(item.quantity) !== 1 || !String(item.directInboundSnCode || item.direct_inbound_sn_code || '').trim())) ctx.throw(400, '二手商品勾选审批完成及入库时，数量必须为1且必须填写SN号');
+  }
   try {
   const previousStatus = request.status;
   const approveTime = new Date();
@@ -1093,6 +1145,25 @@ async function approveRequest(ctx) {
 
   // 如果审批通过，自动生成入库单
   if (status === 'approved' && request.items && request.items.length > 0) {
+    for (const item of request.items) {
+      if (!Number(item.is_used_product) || item.product_id) continue;
+      const directInbound = Number(item.direct_inbound) === 1;
+      const snCode = String(item.direct_inbound_sn_code || '').trim();
+      if (directInbound && (!snCode || Number(item.quantity || 0) !== 1)) {
+        ctx.throw(400, '二手商品勾选审批完成及入库时，数量必须为1且必须填写SN号');
+      }
+      const created = await createProductRecord({
+        name: item.product_name,
+        manualName: item.product_name,
+        pnCode: item.pn_code || '',
+        barcodes: item.pn_code ? [{ type: 'manufacturer', code: item.pn_code }] : [],
+        needSn: directInbound ? 1 : 0,
+        unit: '台',
+        remark: '采购申请审批生成的二手商品',
+        isUsedProduct: true
+      }, transaction);
+      await item.update({ product_id: created.productId, product_name: created.productName, pn_code: item.pn_code || null }, { transaction });
+    }
     await ensurePayableForApprovedRequest(request, user, transaction);
     await validatePurchaseAllocations(request.items, request.store_id, transaction);
     for (const item of request.items) {
@@ -1169,11 +1240,12 @@ async function approveRequest(ctx) {
 
       // 创建入库明细
       for (const item of items) {
-        await InboundItem.create({
+        const createdInboundItem = await InboundItem.create({
           inbound_id: inboundId,
           product_id: item.product_id,
           product_name: item.product_name,
           pn_code: item.pn_code,
+          sn_code: Number(item.direct_inbound) === 1 ? item.direct_inbound_sn_code : null,
           unit_price: item.unit_price,
           quantity: item.allocatedQuantity || item.quantity,
           product_type: item.product_type || '',
@@ -1186,14 +1258,41 @@ async function approveRequest(ctx) {
             quantity: item.allocatedQuantity || item.quantity
           }])
         }, { transaction });
+        if (Number(item.direct_inbound) === 1) item._inboundItemId = createdInboundItem.item_id;
+      }
+      const directItems = items.filter(item => Number(item.direct_inbound) === 1 && item.direct_inbound_sn_code);
+      if (directItems.length) {
+        directInboundExecutions.push({
+          inboundId,
+          items: directItems.map(item => ({
+            productId: item.product_id,
+            inboundItemId: item._inboundItemId,
+            quantity: item.allocatedQuantity || item.quantity,
+            locationId: item.locationId || null,
+            pnCode: item.pn_code || '',
+            snCode: item.direct_inbound_sn_code
+          }))
+        });
       }
     }
   }
 
   await transaction.commit();
+  transactionCommitted = true;
+  for (const execution of directInboundExecutions) {
+    await executeInbound({
+      request: { body: execution },
+      state: { user },
+      throw(statusCode, message) {
+        const error = new Error(message);
+        error.status = statusCode;
+        throw error;
+      }
+    });
+  }
   ctx.body = { code: 0, message: '审批完成' };
   } catch (error) {
-    await transaction.rollback();
+    if (!transactionCommitted) await transaction.rollback();
     throw error;
   }
 }
@@ -1500,6 +1599,7 @@ async function revokeRequest(ctx) {
   }
 
   const transaction = await sequelize.transaction();
+  let transactionCommitted = false;
   try {
     for (const inbound of inbounds) {
       await InboundItem.destroy({ where: { inbound_id: inbound.inbound_id }, transaction });
@@ -1578,7 +1678,7 @@ async function revokeRequest(ctx) {
     await transaction.commit();
     ctx.body = { code: 0, message: '撤销成功' };
   } catch (error) {
-    await transaction.rollback();
+    if (!transactionCommitted) await transaction.rollback();
     throw error;
   }
 }

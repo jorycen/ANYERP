@@ -3344,6 +3344,11 @@ async function seedPermissionData() {
         );
       }
     }
+    await checkAndAddColumn('T_PRODUCT', 'IS_USED_PRODUCT', 'TINYINT(1) DEFAULT 0 COMMENT "二手商品标记"', 'REMARK');
+    await checkAndMakeColumnNullable('T_PURCHASE_REQUEST_ITEM', 'PRODUCT_ID', 'VARCHAR(32)');
+    await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'IS_USED_PRODUCT', 'TINYINT(1) DEFAULT 0 COMMENT "二手商品标记"', 'PN_CODE');
+    await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'DIRECT_INBOUND', 'TINYINT(1) DEFAULT 0 COMMENT "审批通过后直接入库"', 'IS_USED_PRODUCT');
+    await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'DIRECT_INBOUND_SN_CODE', 'VARCHAR(128) COMMENT "直接入库SN"', 'DIRECT_INBOUND');
     await ensureRoleChildMenus();
 
     console.log('[DB Migration] 权限种子数据已创建');

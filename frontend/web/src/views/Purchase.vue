@@ -185,7 +185,9 @@
             <el-table :data="requestForm.items" border class="request-items-table">
               <el-table-column label="商品名称" min-width="230">
                 <template #default="{ row, $index }">
-                  <el-select
+                  <el-tag v-if="row.isUsedProduct" type="warning" size="small">二手商品</el-tag>
+                  <span v-if="row.isUsedProduct" class="used-product-name">{{ row.productName || '-' }}</span>
+                  <el-select v-else
                     v-model="row.productId"
                     placeholder="搜索商品"
                     filterable
@@ -231,6 +233,7 @@
             </el-table>
 
             <div class="purchase-items-footer">
+              <el-button link type="warning" class="add-product-button" @click="openUsedProductDialog">二手商品</el-button>
               <el-button link type="primary" class="add-product-button" @click="addRequestItem">＋ 添加商品</el-button>
               <div class="purchase-items-total">商品合计：<span>¥{{ totalAmount.toFixed(2) }}</span></div>
             </div>
@@ -387,6 +390,34 @@
     </el-dialog>
 
     <!-- 撤销对话框 -->
+    <el-dialog v-model="usedProductDialogVisible" title="新建二手商品" width="560px" @close="resetUsedProductForm">
+      <el-form :model="usedProductForm" label-width="150px">
+        <el-form-item label="商品名称" required>
+          <el-input v-model="usedProductForm.name" placeholder="请输入二手商品名称" />
+        </el-form-item>
+        <el-form-item label="PN码">
+          <el-input v-model="usedProductForm.pnCode" placeholder="可选，填写厂商编码" />
+        </el-form-item>
+        <el-form-item label="采购单价" required>
+          <el-input-number v-model="usedProductForm.price" :min="0" :precision="2" controls-position="right" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="数量" required>
+          <el-input-number v-model="usedProductForm.quantity" :min="1" :precision="0" controls-position="right" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="审批完成及入库">
+          <el-switch v-model="usedProductForm.directInbound" />
+          <span class="ml-10">勾选后审批通过将自动入库</span>
+        </el-form-item>
+        <el-form-item v-if="usedProductForm.directInbound" label="SN号" required>
+          <el-input v-model="usedProductForm.snCode" placeholder="请输入唯一SN号" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="usedProductDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveUsedProduct">加入采购明细</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="revokeDialogVisible" title="撤销采购申请" width="500px">
       <el-form :model="revokeForm" label-width="100px">
         <el-form-item label="撤销备注">
@@ -639,6 +670,7 @@ const total = ref(0)
 const supplierTotal = ref(0)
 
 const requestDialogVisible = ref(false)
+const usedProductDialogVisible = ref(false)
 const editingRequestId = ref('')
 const viewDialogVisible = ref(false)
 const approveDialogVisible = ref(false)
@@ -692,6 +724,15 @@ const requestForm = reactive({
   freightPlatformId: '',
   freightAmount: 0,
   items: []
+})
+
+const usedProductForm = reactive({
+  name: '',
+  pnCode: '',
+  price: 0,
+  quantity: 1,
+  directInbound: false,
+  snCode: ''
 })
 
 const freightPlatforms = ref([])
@@ -1084,6 +1125,9 @@ const handleEditDraft = async (row) => {
       rebateDeduction: item.rebate_deduction || 0,
       storeAllocations: parseDraftJson(item.store_allocations_parsed || item.store_allocations),
       selectedResourceTypes: parseDraftJson(item.selected_resource_types)
+      ,isUsedProduct: Number(item.is_used_product) === 1
+      ,directInbound: Number(item.direct_inbound) === 1
+      ,directInboundSnCode: item.direct_inbound_sn_code || ''
     }))
     requestDialogVisible.value = true
   } catch (err) {
@@ -1585,7 +1629,7 @@ const buildPurchaseRequestPayload = () => {
     freightPlatformName: freightPlatforms.value.find(item => item.platform_id === requestForm.freightPlatformId)?.platform_name || '',
     freightAmount: Number(requestForm.freightAmount || 0),
     items: requestForm.items.map(item => ({
-      productId: item.productId,
+      productId: item.productId || '',
       productName: item.productName,
       pnCode: item.pnCode || '',
       price: item.price,
@@ -1593,6 +1637,9 @@ const buildPurchaseRequestPayload = () => {
       goodsTypeId: selectedGoodsType?.goods_type_id || '',
       productType: requestForm.productType,
       rebateDeduction: Math.min(toNumber(item.rebateDeduction), itemSubtotal(item)),
+      isUsedProduct: Boolean(item.isUsedProduct),
+      directInbound: Boolean(item.directInbound),
+      directInboundSnCode: item.directInboundSnCode || '',
       storeAllocations: item.storeAllocations,
       selectedResourceTypes: item.selectedResourceTypes || []
     }))
@@ -1630,8 +1677,12 @@ const validateDraftForm = () => {
     return false
   }
   for (const [index, item] of requestForm.items.entries()) {
-    if (!item.productId || toNumber(item.price) <= 0 || toQuantity(item.quantity) <= 0) {
+    if ((!item.isUsedProduct && !item.productId) || (item.isUsedProduct && !String(item.productName || '').trim()) || toNumber(item.price) < 0 || toQuantity(item.quantity) <= 0) {
       ElMessage.warning(`请完善第${index + 1}个商品的名称、价格和数量`)
+      return false
+    }
+    if (item.isUsedProduct && item.directInbound && (toQuantity(item.quantity) !== 1 || !String(item.directInboundSnCode || '').trim())) {
+      ElMessage.warning(`二手商品“${item.productName || index + 1}”勾选审批完成及入库时，必须填写SN号且数量为1`)
       return false
     }
     if (!validateItemAllocation(item, index)) return false
@@ -1656,6 +1707,14 @@ const handleSubmit = async () => {
   // 校验每个商品都已分配门店和库位
   for (let i = 0; i < requestForm.items.length; i++) {
     const item = requestForm.items[i]
+    if ((!item.isUsedProduct && !item.productId) || (item.isUsedProduct && !String(item.productName || '').trim()) || toNumber(item.price) < 0 || toQuantity(item.quantity) <= 0) {
+      ElMessage.warning(`请完善第${i + 1}个商品的名称、价格和数量`)
+      return
+    }
+    if (item.isUsedProduct && item.directInbound && (toQuantity(item.quantity) !== 1 || !String(item.directInboundSnCode || '').trim())) {
+      ElMessage.warning('二手商品勾选审批完成及入库时，数量必须为1且必须填写SN号')
+      return
+    }
     if (!validateItemAllocation(item, i)) return
   }
 
@@ -1704,6 +1763,53 @@ const resetForm = () => {
   requestForm.freightPlatformId = ''
   requestForm.freightAmount = 0
   requestForm.items = []
+}
+
+const resetUsedProductForm = () => {
+  usedProductForm.name = ''
+  usedProductForm.pnCode = ''
+  usedProductForm.price = 0
+  usedProductForm.quantity = 1
+  usedProductForm.directInbound = false
+  usedProductForm.snCode = ''
+}
+
+const openUsedProductDialog = () => {
+  resetUsedProductForm()
+  usedProductDialogVisible.value = true
+}
+
+const saveUsedProduct = () => {
+  const name = String(usedProductForm.name || '').trim()
+  const quantity = toQuantity(usedProductForm.quantity)
+  const price = toNumber(usedProductForm.price)
+  const snCode = String(usedProductForm.snCode || '').trim()
+  if (!name || price < 0 || quantity <= 0) {
+    ElMessage.warning('请完善二手商品名称、采购单价和数量')
+    return
+  }
+  if (usedProductForm.directInbound && (quantity !== 1 || !snCode)) {
+    ElMessage.warning('勾选审批完成及入库时，数量必须为1且必须填写SN号')
+    return
+  }
+  requestForm.items.push({
+    isUsedProduct: true,
+    productId: '',
+    productName: name,
+    productCode: '二手商品待生成',
+    manufacturerCode: usedProductForm.pnCode || '',
+    pnCode: usedProductForm.pnCode || '',
+    price,
+    quantity,
+    rebateDeduction: 0,
+    directInbound: Boolean(usedProductForm.directInbound),
+    directInboundSnCode: usedProductForm.directInbound ? snCode : '',
+    storeAllocations: [],
+    selectedResourceTypes: goodsTypeResourceCodes(requestForm.productType)
+  })
+  usedProductDialogVisible.value = false
+  resetUsedProductForm()
+  ElMessage.success('二手商品已加入采购明细，请继续分配收货门店和库位')
 }
 
 const savePurchaseRequestDraft = async () => {

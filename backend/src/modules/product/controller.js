@@ -572,7 +572,8 @@ function productApplicationPayload(body, finalName, parsedAttrs) {
 async function createProductRecord(body, transaction = null) {
   const {
     name, categoryId, config, needSn, needImei, unit, remark, barcodes, attributes,
-    status = 1, manufacturerCode, manufacturer_code, isFocusProduct, is_focus_product
+    status = 1, manufacturerCode, manufacturer_code, isFocusProduct, is_focus_product,
+    isUsedProduct, is_used_product
   } = body;
   const productId = generateUUID();
   const categoryPath = categoryId ? await resolveCategoryPath(categoryId) : '';
@@ -608,6 +609,7 @@ async function createProductRecord(body, transaction = null) {
         need_imei: needImei ? 1 : 0,
         unit: unit || '台',
         remark: remark || '',
+        is_used_product: isUsedProduct === true || is_used_product === true || Number(isUsedProduct ?? is_used_product) === 1 ? 1 : 0,
         is_focus_product: isFocusProduct === true || is_focus_product === true || Number(isFocusProduct ?? is_focus_product) === 1 ? 1 : 0,
         create_time: new Date(),
         status
@@ -2973,6 +2975,7 @@ async function exportProducts(ctx) {
 }
 
 module.exports = {
+  createProductRecord,
   getProductList, createProduct, submitProductApplication, getProductApplicationList, getProductApplicationDetail, revokeProductApplication, reviewProductApplication,
   updateProduct, deleteProduct, batchDeleteProducts, togglePause, importProducts, exportProducts,
   getCategoryFields, saveCategoryFields, getCategoryFieldConfig,

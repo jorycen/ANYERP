@@ -49,14 +49,6 @@
           </div>
 
           <el-table :data="summaryData" stripe border v-loading="summaryLoading">
-            <el-table-column label="门店" min-width="180" show-overflow-tooltip>
-              <template #default="{ row }">
-                <el-tag v-for="store in getSummaryStoreNames(row)" :key="store.store_id || store.store_name" size="small" class="mr-1">
-                  {{ store.store_name || store.store_id }}
-                </el-tag>
-                <span v-if="!getSummaryStoreNames(row).length" class="muted">—</span>
-              </template>
-            </el-table-column>
             <el-table-column prop="category" label="类别" width="100" />
             <el-table-column prop="product_name" label="商品名称" min-width="140" />
             <el-table-column prop="spec" label="产品配置" width="130" />
@@ -2187,17 +2179,6 @@ const loadSummary = async () => {
   } finally {
     summaryLoading.value = false
   }
-}
-
-const getSummaryStoreNames = (row) => {
-  const source = Array.isArray(row?.store_stock_info) ? row.store_stock_info : []
-  const seen = new Set()
-  return source.filter(item => {
-    const key = String(item?.store_id || item?.store_name || '')
-    if (!key || seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
 }
 
 const loadTransferStores = async () => {
