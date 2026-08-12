@@ -264,6 +264,28 @@ async function refreshPendingInboundSummary(inbound, transaction) {
   }, { transaction });
 }
 
+function purchaseInboundProgress(requestItems = [], inbounds = []) {
+  const totals = new Map((requestItems || []).map(item => [String(item.item_id), Math.max(Number(item.quantity || 0), 0)]));
+  const received = new Map();
+  for (const inbound of inbounds || []) {
+    for (const item of inbound.items || []) {
+      const key = String(item.purchase_request_item_id || '');
+      if (!key) continue;
+      const total = Math.max(Number(item.quantity || 0), 0);
+      const stored = Math.max(Number(item.received_quantity || 0), 0);
+      const amount = inbound.status === 'completed' ? Math.max(total, stored) : Math.min(total, stored);
+      received.set(key, (received.get(key) || 0) + amount);
+    }
+  }
+  const totalQuantity = [...totals.values()].reduce((sum, value) => sum + value, 0);
+  const receivedQuantity = [...totals.keys()].reduce((sum, key) => sum + Math.min(totals.get(key), received.get(key) || 0), 0);
+  return {
+    totalQuantity,
+    receivedQuantity,
+    status: receivedQuantity <= 0 ? 'pending' : (receivedQuantity >= totalQuantity ? 'completed' : 'partial')
+  };
+}
+
 function buildAdjustmentRows(request, inbounds, stores) {
   const storeMap = new Map(stores.map(store => [String(store.store_id), store.name]));
   const rows = [];
@@ -290,7 +312,7 @@ function buildAdjustmentRows(request, inbounds, stores) {
     const receivedQuantity = inboundItems
       .reduce((sum, { inbound, inboundItem }) => sum + receivedQuantityOf(inbound, inboundItem), 0);
     const pendingQuantityTotal = inboundItems
-      .filter(({ inbound }) => inbound.status === 'pending')
+      .filter(({ inbound }) => ['pending', 'partial', 'partially_received'].includes(inbound.status))
       .reduce((sum, { inbound, inboundItem }) => sum + pendingQuantityOf(inbound, inboundItem), 0);
     const unitPrice = Number(requestItem.unit_price || 0);
     const rebatePerUnit = Number(requestItem.quantity || 0) > 0
@@ -298,7 +320,7 @@ function buildAdjustmentRows(request, inbounds, stores) {
       : 0;
 
     const editableRows = inboundItems.filter(({ inbound, inboundItem }) => (
-      inbound.status === 'pending' && pendingQuantityOf(inbound, inboundItem) > 0
+      ['pending', 'partial', 'partially_received'].includes(inbound.status) && pendingQuantityOf(inbound, inboundItem) > 0
     ));
     if (editableRows.length > 0) {
       for (const { inbound, inboundItem } of editableRows) {
@@ -447,10 +469,11 @@ async function getRequestList(ctx) {
       result.items_summary = '';
     }
     const inboundRows = result.Inbounds || [];
-    result.inbound_status = inboundRows.some(item => item.status === 'completed')
-      ? 'completed'
-      : (inboundRows[0]?.status || '');
-    result.has_completed_inbound = inboundRows.some(item => item.status === 'completed');
+    const inboundProgress = purchaseInboundProgress(result.items || [], inboundRows);
+    result.inbound_status = inboundProgress.status;
+    result.received_quantity = inboundProgress.receivedQuantity;
+    result.remaining_quantity = Math.max(inboundProgress.totalQuantity - inboundProgress.receivedQuantity, 0);
+    result.has_completed_inbound = inboundProgress.status === 'completed';
     result.can_revoke = ['pending', 'approved', 'purchased'].includes(result.status) && !result.has_completed_inbound;
     
     return result;
@@ -1444,7 +1467,7 @@ async function createPurchaseAdjustment(ctx) {
       const matched = inboundItemMap.get(inboundItemId);
       if (!matched) ctx.throw(400, '待入库明细不存在或不属于该采购订单');
       const { inbound, inboundItem } = matched;
-      if (inbound.status !== 'pending') ctx.throw(400, `商品 ${inboundItem.product_name || inboundItem.product_id} 已入库，不能通过退单调整`);
+      if (!['pending', 'partial', 'partially_received'].includes(inbound.status)) ctx.throw(400, `商品 ${inboundItem.product_name || inboundItem.product_id} 已入库，不能通过退单调整`);
 
       const requestItem = requestItemMap.get(String(inboundItem.purchase_request_item_id || ''));
       if (!requestItem) ctx.throw(400, '采购明细不存在');
@@ -1488,7 +1511,7 @@ async function createPurchaseAdjustment(ctx) {
 
     if (changedItemCount === 0) ctx.throw(400, '调整后数量未发生变化');
 
-    for (const inbound of inbounds.filter(item => item.status === 'pending')) {
+    for (const inbound of inbounds.filter(item => ['pending', 'partial', 'partially_received'].includes(item.status))) {
       await refreshPendingInboundSummary(inbound, transaction);
     }
 
@@ -1899,6 +1922,7 @@ module.exports = {
   sortSuppliers,
   _test: {
     flattenPurchaseAllocations,
-    validatePurchaseAllocations
+    validatePurchaseAllocations,
+    purchaseInboundProgress
   }
 };

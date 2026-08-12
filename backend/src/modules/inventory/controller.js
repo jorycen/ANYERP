@@ -2209,7 +2209,7 @@ function enrichInboundItemProgress(item, inboundStatus) {
   const snCodes = parseInboundSnCodes(data.received_sn_codes);
   if (snCodes.length === 0 && data.sn_code) snCodes.push(String(data.sn_code).trim());
   data.received_quantity = receivedQuantity;
-  data.remaining_quantity = inboundStatus === 'pending'
+  data.remaining_quantity = ['pending', 'partial', 'partially_received'].includes(inboundStatus)
     ? Math.max(totalQuantity - receivedQuantity, 0)
     : 0;
   data.sn_codes = snCodes;
@@ -2217,7 +2217,7 @@ function enrichInboundItemProgress(item, inboundStatus) {
 }
 
 function inboundItemDisplayQuantity(item, inboundStatus) {
-  return inboundStatus === 'pending'
+  return ['pending', 'partial', 'partially_received'].includes(inboundStatus)
     ? Math.max(Number(item.remaining_quantity ?? item.quantity ?? 0), 0)
     : Math.max(Number(item.quantity || 0), 0);
 }
@@ -2235,7 +2235,7 @@ async function getInboundList(ctx) {
       where,
       order: buildPendingFirstOrder(sequelize, {
         statusColumn: 'Inbound.status',
-        pendingStatuses: ['pending'],
+        pendingStatuses: ['pending', 'partial', 'partially_received'],
         dateColumns: ['Inbound.create_time'],
         idColumn: 'Inbound.inbound_id'
       }),
@@ -2507,7 +2507,13 @@ async function getInboundDetailById(ctx, inboundId, { distributorTrace = false }
         }
       }
 
+      // Keep product-level PN options for legacy clients, but expose the
+      // purchase-line PN on the item itself so each line remains independent.
       result.product_pns = pnMap;
+      result.items = result.items.map(item => ({
+        ...item,
+        pn_code: item.pn_code || purchaseItemMap.get(String(item.purchase_request_item_id || ''))?.pn_code || ''
+      }));
     }
 
     ctx.body = { code: 0, data: result };
@@ -2663,6 +2669,16 @@ async function resolveSnProductPn(product, requestedCode, transaction) {
   });
 }
 
+async function resolveInboundPn({ product, requestedCode, dbItem, isPurchaseInbound, transaction }) {
+  const itemCode = String(requestedCode || '').trim();
+  // A purchase item is an independent line-item snapshot. Its PN must not be
+  // rejected merely because the product master has another PN or multiple PNs.
+  if (isPurchaseInbound) {
+    return itemCode || String(dbItem?.pn_code || '').trim() || splitCodes(product?.manufacturer_code || '')[0] || '';
+  }
+  return resolveSnProductPn(product, itemCode || dbItem?.pn_code || '', transaction);
+}
+
 function normalizeTransferItem(raw) {
   const productId = raw.productId || raw.product_id;
   const productCode = String(raw.productCode || raw.product_code || '').trim();
@@ -2764,7 +2780,7 @@ async function executeInbound(ctx) {
     const inbound = await Inbound.findByPk(inboundId, { transaction: t, lock: t.LOCK.UPDATE });
     if (!inbound) ctx.throw(404, '入库单不存在');
 
-    if (inbound.status !== 'pending') {
+    if (!['pending', 'partial', 'partially_received'].includes(inbound.status)) {
       ctx.throw(400, '该入库单已处理');
     }
 
@@ -2873,11 +2889,13 @@ async function executeInbound(ctx) {
           const salesReturnValidation = validateSalesReturnInboundSn({ sn: salesReturnSn, requestedSnCode });
           if (salesReturnValidation) ctx.throw(salesReturnValidation.status, salesReturnValidation.message);
 
-          const salesReturnPnCode = await resolveSnProductPn(
+          const salesReturnPnCode = await resolveInboundPn({
             product,
-            item.pnCode || item.pn_code || dbItem.pn_code || salesReturnSn.pn_code || '',
-            t
-          );
+            requestedCode: item.pnCode || item.pn_code || dbItem.pn_code || salesReturnSn.pn_code || '',
+            dbItem,
+            isPurchaseInbound,
+            transaction: t
+          });
           await salesReturnSn.update({
             product_name: dbItem.product_name || salesReturnSn.product_name || product.name,
             pn_code: salesReturnPnCode,
@@ -2917,11 +2935,13 @@ async function executeInbound(ctx) {
             ctx.throw(400, `Transfer SN ${transferSn.sn_code} is already in another store`);
           }
 
-          const transferPnCode = await resolveSnProductPn(
+          const transferPnCode = await resolveInboundPn({
             product,
-            item.pnCode || item.pn_code || dbItem.pn_code || transferSn.pn_code || '',
-            t
-          );
+            requestedCode: item.pnCode || item.pn_code || dbItem.pn_code || transferSn.pn_code || '',
+            dbItem,
+            isPurchaseInbound,
+            transaction: t
+          });
           if (transferSn.pn_code && transferPnCode && String(transferSn.pn_code) !== transferPnCode) {
             ctx.throw(400, `Transfer SN ${transferSn.sn_code} does not match PN ${transferPnCode}`);
           }
@@ -2953,11 +2973,13 @@ async function executeInbound(ctx) {
           ctx.throw(400, `商品 ${dbItem.product_name} 需要SN管理，SN码不能为空`);
         }
 
-        const pnCode = await resolveSnProductPn(
+        const pnCode = await resolveInboundPn({
           product,
-          item.pnCode || item.pn_code || dbItem.pn_code || '',
-          t
-        );
+          requestedCode: item.pnCode || item.pn_code || dbItem.pn_code || '',
+          dbItem,
+          isPurchaseInbound,
+          transaction: t
+        });
         const snCode = requestedSnCode;
 
         const existingSn = await ProductSn.findOne({
@@ -3073,7 +3095,7 @@ async function executeInbound(ctx) {
       const receivedQuantity = Math.max(Number(item.received_quantity || 0), 0) + Number(progress?.quantity || 0);
       return receivedQuantity >= Math.max(Number(item.quantity || 0), 0);
     });
-    const nextInboundStatus = isPurchaseInbound && !allPurchaseItemsReceived ? 'pending' : 'completed';
+    const nextInboundStatus = isPurchaseInbound && !allPurchaseItemsReceived ? 'partial' : 'completed';
     await inbound.update({ status: nextInboundStatus, update_time: new Date() }, { transaction: t });
 
     if (isSalesReturnInbound) {
