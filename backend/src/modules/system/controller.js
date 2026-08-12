@@ -329,12 +329,12 @@ async function getUsers(ctx) {
     offset: (Number(page) - 1) * Number(pageSize)
   });
 
-  const allActiveStores = user.roles.includes('boss') ? await Store.findAll({
-    where: { is_deleted: 0, status: 1 },
+  const allActiveStores = await Store.findAll({
+    where: { ...(user.roles.includes('boss') ? {} : { distributor_id: user.distributorId }), is_deleted: 0, status: 1 },
     attributes: ['store_id', 'name', 'region_id'],
     include: [{ model: Region, attributes: ['region_id', 'name'], required: false }],
     order: [['name', 'ASC']]
-  }) : [];
+  });
   const allActiveRegions = await Region.findAll({
     where: { status: 1 },
     attributes: ['region_id', 'region_code', 'name'],
@@ -357,18 +357,19 @@ async function getUsers(ctx) {
         const region = allActiveRegions.find(item => String(item.region_id) === key || String(item.region_code) === key || String(item.name) === key);
         return region?.name || '';
       }).filter(Boolean))];
-      const regionNames = regionScoped ? directRegionNames : assignedRegionNames;
+      const regionNames = directRegionNames.length > 0 ? directRegionNames : assignedRegionNames;
       delete data.Roles;
       delete data.AssignedStores;
       delete data.RegionPermissions;
       data.region_names = regionNames;
       data.region_name = isBoss ? '全部区域' : (regionNames.join('、') || '暂无区域');
-      const storeName = isBoss
-        ? '全部门店'
-        : regionScoped
-          ? (regionNames.length ? `区域内全部门店（${regionNames.join('、')}）` : '暂无区域')
-          : (assignedStoreNames.join('、') || '暂无门店');
-      return { ...data, role_ids: roleIds, role_codes: roleCodes, role_names: roleNames, supervisor_name: data.Supervisor?.name || '', supervisor_staff_id: data.supervisor_staff_id || null, store_names: regionScoped ? [] : assignedStoreNames, store_name: storeName, is_boss: isBoss, region_scoped: regionScoped };
+      // 历史上只有区域权限的账号没有精确门店记录；列表展示和登录权限继续兼容为该区域全部有效门店。
+      const effectiveStores = !isBoss && regionScoped && assignedStores.length === 0
+        ? allActiveStores.filter(store => directRegionNames.includes(store.Region?.name))
+        : assignedStores;
+      const effectiveStoreNames = effectiveStores.map(store => store.name).filter(Boolean);
+      const storeName = isBoss ? '全部门店' : (effectiveStoreNames.join('、') || '暂无门店');
+      return { ...data, role_ids: roleIds, role_codes: roleCodes, role_names: roleNames, supervisor_name: data.Supervisor?.name || '', supervisor_staff_id: data.supervisor_staff_id || null, store_names: effectiveStoreNames, store_name: storeName, is_boss: isBoss, region_scoped: regionScoped };
     }),
     pagination: {
       total: count,
@@ -559,32 +560,41 @@ async function getUserRegions(ctx) {
   if (!staff) ctx.throw(404, '用户不存在');
   ensureManageableStaff(ctx, staff);
   const targetIsBoss = (staff.Roles || []).some(role => role.role_code === 'boss') || staff.role_code === 'boss';
-  const targetRoles = (staff.Roles || []).length > 0 ? staff.Roles.map(role => role.role_code) : [staff.role_code];
-  const targetRegionScoped = !targetIsBoss && isRegionScopedAccount(targetRoles);
-  if (targetRegionScoped) {
-    const [permissions, availableRegions] = await Promise.all([
-      RegionPermission.findAll({ where: { staff_id: staffId, can_view: 1 }, attributes: ['region_code'], raw: true }),
-      Region.findAll({ where: { status: 1 }, attributes: ['region_id', 'region_code', 'name'], order: [['sort_order', 'ASC']], raw: true })
-    ]);
-    const regionIds = permissions.map(permission => {
-      const key = String(permission.region_code || '');
-      return availableRegions.find(region => String(region.region_id) === key || String(region.region_code) === key || String(region.name) === key)?.region_id || '';
-    }).filter(Boolean);
-    ctx.body = { code: 0, data: { scopeType: 'region', regionIds: [...new Set(regionIds)], regions: availableRegions, isBoss: false } };
-    return;
-  }
-  const [permissions, availableStores] = await Promise.all([
-    targetIsBoss ? Promise.resolve([]) : StaffStorePermission.findAll({ where: { staff_id: staffId }, attributes: ['store_id'], raw: true }),
+  const [regionPermissions, availableStores] = await Promise.all([
+    RegionPermission.findAll({ where: { staff_id: staffId, can_view: 1 }, attributes: ['region_code'], raw: true }),
     Store.findAll({
       where: { distributor_id: staff.distributor_id, is_deleted: 0, status: 1 },
-      attributes: ['store_id', 'name'],
+      attributes: ['store_id', 'name', 'region_id'],
       order: [['name', 'ASC']],
       raw: true
     })
   ]);
-
+  const availableRegionIds = [...new Set(availableStores.map(store => String(store.region_id || '')).filter(Boolean))];
+  const availableRegions = await Region.findAll({
+    where: { region_id: availableRegionIds, status: 1 },
+    attributes: ['region_id', 'region_code', 'name'],
+    order: [['sort_order', 'ASC']],
+    raw: true
+  });
+  const configuredRegionIds = regionPermissions.map(permission => {
+    const key = String(permission.region_code || '');
+    return availableRegions.find(region => String(region.region_id) === key || String(region.region_code) === key || String(region.name) === key)?.region_id || '';
+  }).filter(Boolean);
+  const storePermissions = targetIsBoss
+    ? []
+    : await StaffStorePermission.findAll({ where: { staff_id: staffId }, attributes: ['store_id'], raw: true });
   const availableStoreIds = new Set(availableStores.map(store => String(store.store_id)));
-  ctx.body = { code: 0, data: { storeIds: targetIsBoss ? [...availableStoreIds] : permissions.map(p => String(p.store_id)).filter(storeId => availableStoreIds.has(storeId)), availableStores, isBoss: targetIsBoss } };
+  const explicitStoreIds = storePermissions.map(permission => String(permission.store_id)).filter(storeId => availableStoreIds.has(storeId));
+  const selectedRegionIds = new Set(configuredRegionIds);
+  const storeIds = targetIsBoss
+    ? [...availableStoreIds]
+    : explicitStoreIds.length > 0
+      ? explicitStoreIds
+      : availableStores.filter(store => selectedRegionIds.has(String(store.region_id || ''))).map(store => String(store.store_id));
+  const regionIds = configuredRegionIds.length > 0
+    ? [...new Set(configuredRegionIds)]
+    : [...new Set(availableStores.filter(store => storeIds.includes(String(store.store_id))).map(store => String(store.region_id || '')).filter(Boolean))];
+  ctx.body = { code: 0, data: { scopeType: 'combined', regionIds, regions: availableRegions, storeIds, availableStores, isBoss: targetIsBoss } };
 }
 
 /**
@@ -602,27 +612,28 @@ async function assignUserRegions(ctx) {
   ensureManageableStaff(ctx, staff);
 
   const targetIsBoss = (staff.Roles || []).some(role => role.role_code === 'boss') || staff.role_code === 'boss';
-  const targetRoles = (staff.Roles || []).length > 0 ? staff.Roles.map(role => role.role_code) : [staff.role_code];
-  const targetRegionScoped = !targetIsBoss && isRegionScopedAccount(targetRoles);
-  if (targetRegionScoped) {
-    if (!Array.isArray(regionIds)) ctx.throw(400, '区域权限格式不正确');
-    const uniqueRegionIds = [...new Set(regionIds.map(String).filter(Boolean))];
-    const regions = uniqueRegionIds.length > 0 ? await Region.findAll({
-      where: { region_id: uniqueRegionIds, status: 1 },
-      attributes: ['region_id']
-    }) : [];
-    if (regions.length !== uniqueRegionIds.length) ctx.throw(403, '区域不存在或已停用');
-    await replaceDirectRegionPermissions(staff, uniqueRegionIds);
-    ctx.body = { code: 0, message: '区域分配成功' };
-    return;
-  }
-
-  await replaceRegionPermissions(ctx, staff, storeIds || []);
-
-  ctx.body = { code: 0, message: '门店分配成功' };
+  if (targetIsBoss) ctx.throw(400, 'BOSS账号默认拥有全部区域和门店，无需分配');
+  if (!Array.isArray(regionIds) || !Array.isArray(storeIds)) ctx.throw(400, '区域和门店权限格式不正确');
+  const uniqueRegionIds = [...new Set(regionIds.map(String).filter(Boolean))];
+  const uniqueStoreIds = [...new Set(storeIds.map(String).filter(Boolean))];
+  const regions = uniqueRegionIds.length > 0 ? await Region.findAll({
+    where: { region_id: uniqueRegionIds, status: 1 },
+    attributes: ['region_id']
+  }) : [];
+  if (regions.length !== uniqueRegionIds.length) ctx.throw(403, '区域不存在或已停用');
+  const stores = uniqueStoreIds.length > 0 ? await Store.findAll({
+    where: { store_id: uniqueStoreIds, distributor_id: staff.distributor_id, is_deleted: 0, status: 1 },
+    attributes: ['store_id', 'region_id']
+  }) : [];
+  if (stores.length !== uniqueStoreIds.length) ctx.throw(403, '门店不属于该用户所属经销商，或门店不存在/已停用');
+  const regionSet = new Set(uniqueRegionIds);
+  if (stores.some(store => !regionSet.has(String(store.region_id || '')))) ctx.throw(400, '只能选择所选区域内的门店');
+  if (uniqueRegionIds.length > 0 && uniqueStoreIds.length === 0) ctx.throw(400, '选择区域后至少选择一家门店');
+  await replaceCombinedPermissions(staff, uniqueRegionIds, uniqueStoreIds);
+  ctx.body = { code: 0, message: '区域及门店分配成功' };
 }
 
-async function replaceDirectRegionPermissions(staff, regionIds) {
+async function replaceCombinedPermissions(staff, regionIds, storeIds) {
   await sequelize.transaction(async transaction => {
     await StaffStorePermission.destroy({ where: { staff_id: staff.staff_id }, transaction });
     await RegionPermission.destroy({ where: { staff_id: staff.staff_id }, transaction });
@@ -634,7 +645,10 @@ async function replaceDirectRegionPermissions(staff, regionIds) {
         can_manage: 1
       })), { transaction });
     }
-    await staff.update({ store_id: null }, { transaction });
+    if (storeIds.length > 0) {
+      await StaffStorePermission.bulkCreate(storeIds.map(storeId => ({ staff_id: staff.staff_id, store_id: storeId })), { transaction });
+    }
+    await staff.update({ store_id: storeIds[0] || null }, { transaction });
   });
 }
 

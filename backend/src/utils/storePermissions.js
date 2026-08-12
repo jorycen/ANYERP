@@ -13,8 +13,8 @@ function isRegionScopedAccount(roleCodes = []) {
 
 /**
  * 读取账号直接配置的区域权限。
- * 经销商级账号只使用 T_REGION_PERMISSION，不再从已分配门店反推区域。
- * 店员/店长保留 staff.region_id 的历史兼容逻辑。
+ * 区域权限用于区域范围；精确门店权限用于最终可操作门店范围。
+ * 历史只有区域权限的账号继续兼容为该区域下全部有效门店。
  */
 async function resolveConfiguredRegions(staff, roleCodes = []) {
   if (roleCodes.includes('boss')) {

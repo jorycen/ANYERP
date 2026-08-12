@@ -709,10 +709,10 @@
     </el-dialog>
 
     <!-- 分配门店/区域对话框 -->
-    <el-dialog v-model="storeDialogVisible" :title="dialogScopeType === 'region' ? '分配管理区域' : '分配门店'" width="500px">
+    <el-dialog v-model="storeDialogVisible" title="分配区域及门店" width="560px">
       <el-form label-width="100px">
         <el-form-item label="用户">{{ currentUser?.name }}</el-form-item>
-        <el-form-item v-if="dialogScopeType === 'region'" label="可管理区域">
+        <el-form-item label="可管理区域">
           <div class="store-permission-selector">
             <div class="store-select-all">
               <el-checkbox
@@ -732,7 +732,7 @@
             <el-empty v-else description="暂无可分配区域" :image-size="60" />
           </div>
         </el-form-item>
-        <el-form-item v-else label="可访问门店">
+        <el-form-item label="可访问门店">
           <div class="store-permission-selector">
             <div class="store-select-all">
               <el-checkbox
@@ -742,10 +742,10 @@
               >
                 全选
               </el-checkbox>
-              <span class="store-selected-count">已选 {{ dialogStoreIds.length }}/{{ assignableStores.length }}</span>
+              <span class="store-selected-count">已选 {{ dialogStoreIds.length }}/{{ filteredAssignableStores.length }}</span>
             </div>
-            <el-checkbox-group v-if="assignableStores.length" v-model="dialogStoreIds" class="store-checkbox-list">
-              <el-checkbox v-for="s in assignableStores" :key="s.store_id" :label="s.store_id">
+            <el-checkbox-group v-if="filteredAssignableStores.length" v-model="dialogStoreIds" class="store-checkbox-list">
+              <el-checkbox v-for="s in filteredAssignableStores" :key="s.store_id" :label="s.store_id">
                 {{ s.name }}
               </el-checkbox>
             </el-checkbox-group>
@@ -804,7 +804,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
-import { getUserInfo, isDistributorAccount } from '../utils/user'
+import { getUserInfo } from '../utils/user'
 
 const route = useRoute()
 const activeTab = ref('users')
@@ -857,7 +857,7 @@ const isOperatorBoss = computed(() => {
 const currentRole = ref(null)
 const dialogStoreIds = ref([])
 const dialogRegionIds = ref([])
-const dialogScopeType = ref('store')
+const dialogScopeType = ref('combined')
 const menuTreeRef = ref(null)
 const locationDialogVisible = ref(false)
 const locationDialogTitle = ref('新增库位')
@@ -910,10 +910,21 @@ const roleForm = reactive({
 
 const storeDialogIndeterminate = computed(() => {
   const len = dialogStoreIds.value.length
-  return len > 0 && len < assignableStores.value.length
+  return len > 0 && len < filteredAssignableStores.value.length
 })
 const storeDialogCheckAll = computed(() => {
-  return assignableStores.value.length > 0 && dialogStoreIds.value.length === assignableStores.value.length
+  return filteredAssignableStores.value.length > 0 && dialogStoreIds.value.length === filteredAssignableStores.value.length
+})
+
+const filteredAssignableStores = computed(() => {
+  const selectedRegionIds = new Set(dialogRegionIds.value.map(String))
+  if (selectedRegionIds.size === 0) return []
+  return assignableStores.value.filter(store => selectedRegionIds.has(String(store.region_id || '')))
+})
+
+watch([dialogRegionIds, assignableStores], () => {
+  const allowedStoreIds = new Set(filteredAssignableStores.value.map(store => String(store.store_id)))
+  dialogStoreIds.value = dialogStoreIds.value.filter(storeId => allowedStoreIds.has(String(storeId)))
 })
 
 const regionDialogIndeterminate = computed(() => {
@@ -925,7 +936,10 @@ const regionDialogCheckAll = computed(() => {
 })
 
 function handleStoreDialogCheckAll(checked) {
-  dialogStoreIds.value = checked ? assignableStores.value.map(s => s.store_id) : []
+  const visibleStoreIds = filteredAssignableStores.value.map(s => s.store_id)
+  const visibleStoreIdSet = new Set(visibleStoreIds.map(String))
+  const retainedStoreIds = dialogStoreIds.value.filter(storeId => !visibleStoreIdSet.has(String(storeId)))
+  dialogStoreIds.value = checked ? [...retainedStoreIds, ...visibleStoreIds] : retainedStoreIds
 }
 
 function handleRegionDialogCheckAll(checked) {
@@ -1279,18 +1293,16 @@ const handleAssignScope = async (row) => {
   dialogRegionIds.value = []
   assignableStores.value = []
   assignableRegions.value = []
-  dialogScopeType.value = row.region_scoped || isDistributorAccount({ roles: row.role_codes || [] }) ? 'region' : 'store'
+  dialogScopeType.value = 'combined'
   try {
-    if (dialogScopeType.value === 'store' && stores.value.length === 0) await loadStores()
     const res = await api.getUserRegions(row.staff_id)
-    if (res.code === 0 && dialogScopeType.value === 'region') {
+    if (res.code === 0) {
       dialogRegionIds.value = res.data?.regionIds || []
       assignableRegions.value = res.data?.regions || (await api.getRegionList()).data || []
-    } else if (res.code === 0 && res.data?.storeIds) {
-      dialogStoreIds.value = res.data.storeIds
-      // 兼容尚未重启的旧后端：旧接口只有 storeIds/regionCodes，
-      // 可选门店使用系统页已加载的门店列表。
-      assignableStores.value = (res.data.availableStores?.length ? res.data.availableStores : stores.value) || []
+      assignableStores.value = res.data?.availableStores || []
+      dialogStoreIds.value = (res.data?.storeIds || []).filter(storeId =>
+        assignableStores.value.some(store => String(store.store_id) === String(storeId))
+      )
     }
   } catch (err) {
     ElMessage.error(err.response?.data?.message || '加载门店范围失败')
@@ -1400,12 +1412,19 @@ const handleResetPassword = async (row) => {
 const handleScopeDialogSubmit = async () => {
   submitLoading.value = true
   try {
-    const payload = dialogScopeType.value === 'region'
-      ? { regionIds: dialogRegionIds.value }
-      : { storeIds: dialogStoreIds.value }
+    if (dialogRegionIds.value.length > 0 && dialogStoreIds.value.length === 0) {
+      ElMessage.warning('选择区域后至少选择一家门店')
+      return
+    }
+    const allowedStoreIds = new Set(filteredAssignableStores.value.map(store => String(store.store_id)))
+    if (dialogStoreIds.value.some(storeId => !allowedStoreIds.has(String(storeId)))) {
+      ElMessage.warning('只能选择所选区域内的门店')
+      return
+    }
+    const payload = { regionIds: dialogRegionIds.value, storeIds: dialogStoreIds.value }
     const res = await api.assignUserRegions(currentUser.value.staff_id, payload)
     if (res.code === 0) {
-      ElMessage.success(dialogScopeType.value === 'region' ? '区域分配成功' : '门店分配成功')
+      ElMessage.success('区域及门店分配成功')
       storeDialogVisible.value = false
       await loadUsers()
     } else {

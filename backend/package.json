@@ -8,6 +8,8 @@
     "dev": "nodemon src/index.js",
     "test": "node --test test/*.test.js",
     "db:init": "node scripts/initDb.js",
+    "db:migrate:used-product": "node scripts/migrate-used-product-columns.js",
+    "db:migrate:used-product": "node scripts/migrate-used-product-columns.js",
     "db:clear": "node clear_data.js"
   },
   "dependencies": {

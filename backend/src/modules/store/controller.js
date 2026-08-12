@@ -70,8 +70,10 @@ async function getAllStores(ctx) {
 
   if (!isBoss(user) && isDealerTraceAccount(user)) {
     where.distributor_id = user.distributorId || '__NO_DISTRIBUTOR__';
-    const regionIds = Array.isArray(user.regionIds) ? user.regionIds.filter(id => id && id !== '*') : [];
-    where.region_id = regionIds.length > 0 ? regionIds : '__NO_REGION__';
+    const storeIds = Array.isArray(user.accessibleStoreIds)
+      ? user.accessibleStoreIds.filter(id => id && id !== '*')
+      : [];
+    where.store_id = storeIds.length > 0 ? storeIds : '__NO_STORE__';
   } else if (!isBoss(user) && !user.accessibleStoreIds.includes('*')) {
     where.store_id = user.accessibleStoreIds;
   }

@@ -101,6 +101,29 @@ async function checkAndMakeColumnNullable(tableName, columnName, columnDefinitio
   }
 }
 
+// Ensure fields used by the product/order read path exist before the rest of
+// the startup migrations run.
+async function ensureCriticalSchemaCompatibility() {
+  await checkAndAddColumn(
+    'T_PRODUCT',
+    'IS_USED_PRODUCT',
+    'TINYINT(1) NOT NULL DEFAULT 0 COMMENT "used product flag"'
+  );
+
+  const [column] = await sequelize.query(
+    `SELECT COUNT(*) AS cnt
+     FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'T_PRODUCT'
+       AND COLUMN_NAME = 'IS_USED_PRODUCT'`,
+    { type: sequelize.QueryTypes.SELECT }
+  );
+
+  if (Number(column?.cnt || 0) !== 1) {
+    throw new Error('Required schema column T_PRODUCT.IS_USED_PRODUCT is unavailable');
+  }
+}
+
 async function dropProductSnGlobalUniqueIndex() {
   try {
     const indexes = await sequelize.query(
@@ -327,6 +350,7 @@ async function initializeCategorySortOrder() {
 }
 
 async function runMigrations() {
+  await ensureCriticalSchemaCompatibility();
   console.log('[DB Migration] 开始检查数据库结构...');
   
   try {
@@ -3344,7 +3368,6 @@ async function seedPermissionData() {
         );
       }
     }
-    await checkAndAddColumn('T_PRODUCT', 'IS_USED_PRODUCT', 'TINYINT(1) DEFAULT 0 COMMENT "二手商品标记"', 'REMARK');
     await checkAndMakeColumnNullable('T_PURCHASE_REQUEST_ITEM', 'PRODUCT_ID', 'VARCHAR(32)');
     await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'IS_USED_PRODUCT', 'TINYINT(1) DEFAULT 0 COMMENT "二手商品标记"', 'PN_CODE');
     await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'DIRECT_INBOUND', 'TINYINT(1) DEFAULT 0 COMMENT "审批通过后直接入库"', 'IS_USED_PRODUCT');
@@ -3366,4 +3389,4 @@ async function seedPermissionData() {
   }
 }
 
-module.exports = { runMigrations, migrateMissingProductPns };
+module.exports = { runMigrations, migrateMissingProductPns, ensureCriticalSchemaCompatibility };

@@ -113,7 +113,7 @@ async function assertTransferScope(ctx, fromStoreId, toStoreId) {
   const toRegionKeys = [toStore.region_id, toStore.Region?.region_id, toStore.Region?.region_code, toStore.Region?.name]
     .filter(Boolean).map(String);
   if (!fromRegionKeys.length || !toRegionKeys.some(key => fromRegionKeys.includes(key))) {
-    ctx.throw(400, '只能在同一区域内发起调拨');
+    ctx.throw(400, '商品不能跨区域调拨，请走出库及采购流程');
   }
 
   // 调拨申请不要求申请人拥有调出门店的普通库存权限，但申请人仍必须属于
@@ -1143,8 +1143,10 @@ async function getList(ctx) {
     const distributorScoped = isDistributorAccount(user) && !getUserRoles(user).includes('boss');
     if (distributorScoped) {
       whereStore.distributor_id = user.distributorId || '__NO_DISTRIBUTOR__';
-      const regionIds = Array.isArray(user.regionIds) ? user.regionIds.filter(id => id && id !== '*') : [];
-      whereStore.region_id = regionIds.length > 0 ? regionIds : '__NO_REGION__';
+      const storeIds = Array.isArray(user.accessibleStoreIds)
+        ? user.accessibleStoreIds.filter(id => id && id !== '*')
+        : [];
+      whereStore.store_id = storeIds.length > 0 ? storeIds : '__NO_STORE__';
     } else if (!user.accessibleStoreIds.includes('*')) {
       whereStore.store_id = user.accessibleStoreIds;
     }
