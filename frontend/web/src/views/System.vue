@@ -31,7 +31,7 @@
             <el-table-column label="操作" width="310">
               <template #default="{ row }">
                 <el-button link type="primary" @click="handleEditUser(row)">编辑</el-button>
-                <el-button v-if="!row.is_boss" link type="primary" @click="handleAssignScope(row)">{{ row.region_scoped ? '分配区域' : '分配门店' }}</el-button>
+                <el-button v-if="!row.is_boss" link type="primary" @click="handleAssignScope(row)">分配区域及门店</el-button>
                 <el-button link type="warning" @click="handleResetPassword(row)">重置密码</el-button>
                 <el-button
                   link
@@ -88,7 +88,7 @@
               <el-option label="全部" value="" />
             </el-select>
             <el-button @click="loadLocations">查询</el-button>
-            <el-button type="primary" @click="openLocationDialog()">配置库位</el-button>
+            <el-button type="primary" @click="openLocationDialog()">配置标准库位</el-button>
           </div>
           <el-table :data="locationData" stripe border v-loading="locationLoading">
             <el-table-column prop="type" label="库位类型" width="140" />
@@ -695,7 +695,8 @@
           </el-select>
         </el-form-item>
         <el-form-item label="可销售">
-          <el-switch v-model="locationForm.isSellable" :active-value="1" :inactive-value="0" />
+          <el-switch v-model="locationForm.isSellable" :active-value="1" :inactive-value="0" disabled />
+          <span style="margin-left: 8px; color: #909399">由标准库位类型固定</span>
         </el-form-item>
         <el-form-item label="启用">
           <el-switch v-model="locationForm.status" :active-value="1" :inactive-value="0" />
@@ -875,7 +876,8 @@ const locationTypeOptions = [
   { value: 'demo_qty', label: '样品仓', isSellable: 1 },
   { value: 'display_qty', label: '铺货仓', isSellable: 1 },
   { value: 'unsellable_qty', label: '不可售仓', isSellable: 0 },
-  { value: 'pending_qty', label: '占用仓', isSellable: 0 }
+  { value: 'pending_qty', label: '占用仓', isSellable: 0 },
+  { value: 'rental_demo_qty', label: '租赁样机仓', isSellable: 0 }
 ]
 const saveSystemDraft = (key, data) => {
   saveDraft(`system:${key}`, cloneDraft(data))

@@ -34,6 +34,24 @@ test('inventory summary keeps standard quantities in their matching location fie
   assert.equal(snapshot.demo_qty, 3);
 });
 
+test('inventory summary keeps rental demo stock separate and non-sale', () => {
+  const snapshot = _test.getInventoryQuantitySnapshot({
+    normal_qty: 0,
+    regular_qty: 0,
+    subsidy_qty: 0,
+    second_qty: 0,
+    display_qty: 0,
+    demo_qty: 2,
+    unsellable_qty: 0,
+    pending_qty: 0,
+    rental_demo_qty: 4
+  }, 'rental_demo_qty');
+
+  assert.equal(snapshot.demo_qty, 0);
+  assert.equal(snapshot.rental_demo_qty, 4);
+  assert.equal(snapshot.normal_qty, 0);
+});
+
 test('inventory summary splits sales stock by resource type', () => {
   const snapshot = _test.getSalesResourceQuantitySnapshot({
     normal_qty: 7,

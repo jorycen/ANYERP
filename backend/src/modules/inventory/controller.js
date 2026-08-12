@@ -784,7 +784,7 @@ function getSalesInventoryQty(inv) {
   );
 }
 
-const INVENTORY_QUANTITY_FIELDS = ['normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty'];
+const INVENTORY_QUANTITY_FIELDS = ['normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty', 'rental_demo_qty'];
 
 /**
  * 仓位类型是库存数量的实际归属维度。
@@ -805,13 +805,16 @@ function getInventoryQuantitySnapshot(inv, locationType = '') {
     display_qty: Number(inv.display_qty || 0),
     demo_qty: Number(inv.demo_qty || 0),
     unsellable_qty: Number(inv.unsellable_qty || 0),
-    pending_qty: Number(inv.pending_qty || 0)
+    pending_qty: Number(inv.pending_qty || 0),
+    rental_demo_qty: Number(inv.rental_demo_qty || 0)
   };
 
   const normalizedLocationType = String(locationType || '').trim();
   if (INVENTORY_QUANTITY_FIELDS.includes(normalizedLocationType) && normalizedLocationType !== 'normal_qty') {
     snapshot[normalizedLocationType] = Math.max(snapshot[normalizedLocationType], effectiveNormal);
-    snapshot.normal_qty = 0;
+    for (const field of INVENTORY_QUANTITY_FIELDS) {
+      if (field !== normalizedLocationType) snapshot[field] = 0;
+    }
     snapshot.regular_qty = 0;
     snapshot.subsidy_qty = 0;
     snapshot.second_qty = 0;
@@ -1065,7 +1068,7 @@ function compareInventoryModelRows(a, b, modelFilter) {
 }
 
 const STORE_EXPORT_QUANTITY_FIELDS = [
-  'normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty'
+  'normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty', 'rental_demo_qty'
 ];
 
 function buildStoreInventoryExportRows(productRows) {
@@ -1086,7 +1089,8 @@ function buildStoreInventoryExportRows(productRows) {
           display_qty: 0,
           demo_qty: 0,
           unsellable_qty: 0,
-          pending_qty: 0
+          pending_qty: 0,
+          rental_demo_qty: 0
         });
       }
       const target = storeMap.get(storeId);
@@ -1115,6 +1119,7 @@ function buildStoreInventoryExportRows(productRows) {
         demo_qty: store.demo_qty,
         unsellable_qty: store.unsellable_qty,
         pending_qty: store.pending_qty,
+        rental_demo_qty: store.rental_demo_qty,
         current_store_stock_qty: store.normal_qty,
         other_store_stock_qty: Math.max(totalStock - store.normal_qty, 0),
         total_stock_qty: totalStock,
@@ -1224,7 +1229,8 @@ async function getList(ctx) {
           display_qty: 0,
           demo_qty: 0,
           unsellable_qty: 0,
-          pending_qty: 0
+          pending_qty: 0,
+          rental_demo_qty: 0
         };
         storeStockMap[inv.product_id] = [];
       }
@@ -1239,6 +1245,7 @@ async function getList(ctx) {
       invMap[inv.product_id].demo_qty += stockSnapshot.demo_qty;
       invMap[inv.product_id].unsellable_qty += stockSnapshot.unsellable_qty;
       invMap[inv.product_id].pending_qty += stockSnapshot.pending_qty;
+      invMap[inv.product_id].rental_demo_qty += stockSnapshot.rental_demo_qty;
 
       const storeQtyRow = {
         normal_qty: stockSnapshot.normal_qty,
@@ -1246,7 +1253,8 @@ async function getList(ctx) {
         display_qty: stockSnapshot.display_qty,
         demo_qty: stockSnapshot.demo_qty,
         unsellable_qty: stockSnapshot.unsellable_qty,
-        pending_qty: stockSnapshot.pending_qty
+        pending_qty: stockSnapshot.pending_qty,
+        rental_demo_qty: stockSnapshot.rental_demo_qty
       };
       const hasStoreQty = Object.values(storeQtyRow).some(value => Number(value || 0) > 0);
       if (hasStoreQty) {
@@ -1294,7 +1302,8 @@ async function getList(ctx) {
             display_qty: 0,
             demo_qty: 0,
             unsellable_qty: 0,
-            pending_qty: 0
+            pending_qty: 0,
+            rental_demo_qty: 0
           };
         }
         snLocationMap[sn.product_id][key][inventoryType] += 1;
@@ -1314,7 +1323,7 @@ async function getList(ctx) {
 
     const sortedRows = products.map(p => {
       const inv = invMap[p.product_id] || {
-        normal_qty: 0, regular_qty: 0, subsidy_qty: 0, second_qty: 0, display_qty: 0, demo_qty: 0, unsellable_qty: 0, pending_qty: 0
+        normal_qty: 0, regular_qty: 0, subsidy_qty: 0, second_qty: 0, display_qty: 0, demo_qty: 0, unsellable_qty: 0, pending_qty: 0, rental_demo_qty: 0
       };
       const stock = allStockMap[p.product_id] || { current: 0, other: 0, total: 0, stores: [], otherStores: [] };
       const sales = salesMap[p.product_id] || {
@@ -1340,6 +1349,7 @@ async function getList(ctx) {
         demo_qty: inv.demo_qty,
         unsellable_qty: inv.unsellable_qty,
         pending_qty: inv.pending_qty,
+        rental_demo_qty: inv.rental_demo_qty,
         current_store_stock_qty: stock.current,
         other_store_stock_qty: stock.other,
         total_stock_qty: stock.total,
@@ -1385,6 +1395,7 @@ async function getList(ctx) {
         样品仓库存: Number(row.demo_qty || 0),
         不可售库存: Number(row.unsellable_qty || 0),
         占用仓库存: Number(row.pending_qty || 0),
+        租赁样机仓库存: Number(row.rental_demo_qty || 0),
         当前门店库存: Number(row.current_store_stock_qty || 0),
         其他门店库存: Number(row.other_store_stock_qty || 0),
         总库存: Number(row.total_stock_qty || 0),
@@ -1394,7 +1405,7 @@ async function getList(ctx) {
       sendExcel(ctx, data, [
         '门店', '类别', '商品名称', '产品配置', '商品编码', '厂商编码', '销售定价',
         '现有库存', '正规货', '国补货', '纯二手货', '铺货仓库存', '样品仓库存',
-        '不可售库存', '占用仓库存', '当前门店库存', '其他门店库存', '总库存',
+        '不可售库存', '占用仓库存', '租赁样机仓库存', '当前门店库存', '其他门店库存', '总库存',
         '近7天销量', '近30天销量'
       ], `库存汇总_${new Date().toISOString().slice(0, 10)}.xlsx`, '库存汇总');
       return;
@@ -2578,7 +2589,8 @@ async function updateInventory(productId, storeId, field, delta, transaction, lo
       display_qty: 0,
       demo_qty: 0,
       unsellable_qty: 0,
-      pending_qty: 0
+      pending_qty: 0,
+      rental_demo_qty: 0
     }, { transaction });
   }
 
@@ -2744,7 +2756,7 @@ async function ensureTransferInbound(transfer, items, transaction) {
  * 执行入库
  */
 async function executeInbound(ctx) {
-  const VALID_INVENTORY_TYPES = ['normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty'];
+  const VALID_INVENTORY_TYPES = ['normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty', 'rental_demo_qty'];
   const PRODUCT_TYPE_TO_FIELD = {
     '服务商全资源': 'regular_qty',
     '含税仅国补': 'subsidy_qty',
@@ -5104,7 +5116,7 @@ async function getLocationsByStore(ctx) {
     locations = locations
       .filter(location => Number(location.status) === 1)
       .sort((left, right) => {
-        const order = { normal_qty: 10, demo_qty: 20, display_qty: 30, unsellable_qty: 40, pending_qty: 50 };
+        const order = { normal_qty: 10, demo_qty: 20, display_qty: 30, unsellable_qty: 40, pending_qty: 50, rental_demo_qty: 60 };
         return (order[left.type] || 999) - (order[right.type] || 999) || String(left.name || '').localeCompare(String(right.name || ''));
       });
     ctx.body = { code: 0, data: locations };

@@ -38,6 +38,10 @@ function normalizeLocationInput(ctx, body, isUpdate = false) {
   if (!type) ctx.throw(400, '请选择仓位编码');
   if (!standardLocation) ctx.throw(400, '仓位编码不在标准仓位范围内');
 
+  if (Number(isSellable) !== Number(standardLocation.is_sellable)) {
+    ctx.throw(400, `${standardLocation.name}的可销售属性固定为${standardLocation.is_sellable ? '可销售' : '不可销售'}`);
+  }
+
   if (!isUpdate || name) {
     if (!name) ctx.throw(400, '请输入库位名称');
     if (name.length > 64) ctx.throw(400, '库位名称不能超过64个字符');
@@ -127,13 +131,14 @@ function getInventoryQuantityForLocation(row) {
     + Number(row.display_qty || 0)
     + Number(row.demo_qty || 0)
     + Number(row.unsellable_qty || 0)
-    + Number(row.pending_qty || 0);
+    + Number(row.pending_qty || 0)
+    + Number(row.rental_demo_qty || 0);
 }
 
 async function getLocationStockSummary(locationId, transaction) {
   const inventoryRows = await Inventory.findAll({
     where: { location_id: locationId },
-    attributes: ['normal_qty', 'regular_qty', 'subsidy_qty', 'second_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty'],
+    attributes: ['normal_qty', 'regular_qty', 'subsidy_qty', 'second_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty', 'rental_demo_qty'],
     transaction,
     raw: true
   });
@@ -602,7 +607,8 @@ async function getUserRegions(ctx) {
  */
 async function assignUserRegions(ctx) {
   const { staffId } = ctx.params;
-  const { storeIds, regionIds } = ctx.request.body;
+  const { regionIds } = ctx.request.body;
+  let { storeIds } = ctx.request.body;
 
   if (!staffId) ctx.throw(400, '用户ID不能为空');
   const staff = await Staff.findByPk(staffId, {
@@ -613,8 +619,20 @@ async function assignUserRegions(ctx) {
 
   const targetIsBoss = (staff.Roles || []).some(role => role.role_code === 'boss') || staff.role_code === 'boss';
   if (targetIsBoss) ctx.throw(400, 'BOSS账号默认拥有全部区域和门店，无需分配');
-  if (!Array.isArray(regionIds) || !Array.isArray(storeIds)) ctx.throw(400, '区域和门店权限格式不正确');
+  if (!Array.isArray(regionIds)) ctx.throw(400, '区域权限格式不正确');
   const uniqueRegionIds = [...new Set(regionIds.map(String).filter(Boolean))];
+  // 兼容尚未刷新页面的旧前端：只提交区域时，按该区域全部有效门店保存。
+  // 新前端始终同时提交 storeIds，并由下方校验精确门店范围。
+  if (storeIds === undefined) {
+    storeIds = uniqueRegionIds.length > 0
+      ? (await Store.findAll({
+          where: { region_id: uniqueRegionIds, distributor_id: staff.distributor_id, is_deleted: 0, status: 1 },
+          attributes: ['store_id'],
+          raw: true
+        })).map(store => store.store_id)
+      : [];
+  }
+  if (!Array.isArray(storeIds)) ctx.throw(400, '门店权限格式不正确');
   const uniqueStoreIds = [...new Set(storeIds.map(String).filter(Boolean))];
   const regions = uniqueRegionIds.length > 0 ? await Region.findAll({
     where: { region_id: uniqueRegionIds, status: 1 },

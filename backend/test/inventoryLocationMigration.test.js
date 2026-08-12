@@ -15,6 +15,7 @@ test('inventory location model is covered by automatic migrations', () => {
   for (const column of ['location_id', 'store_id', 'name', 'type', 'is_sellable', 'status']) {
     assert.ok(Location.rawAttributes[column], `model should define ${column}`);
   }
+  assert.ok(require('../src/models').Inventory.rawAttributes.rental_demo_qty);
 
   assert.match(migrationSource, /checkAndCreateTable\('T_LOCATION'/);
   assert.match(migrationSource, /checkAndAddColumn\('T_LOCATION', 'TYPE'/);
@@ -25,6 +26,10 @@ test('inventory location model is covered by automatic migrations', () => {
     assert.match(migrationSource, new RegExp(location.type));
     assert.match(migrationSource, new RegExp(location.name));
   }
+  assert.ok(STANDARD_INVENTORY_LOCATIONS.some(location => (
+    location.type === 'rental_demo_qty' && location.name === '租赁样机仓' && location.is_sellable === 0
+  )));
+  assert.match(migrationSource, /rental_demo_qty/);
 });
 
 test('inbound item model tracks partial receipt progress and received SNs', () => {

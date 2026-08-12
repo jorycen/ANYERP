@@ -737,6 +737,25 @@
                 <el-button v-if="item.snRows.length > 1" size="small" type="danger" link @click="removeSnRow(item, snIndex)">删除</el-button>
               </template>
             </el-table-column>
+            <el-table-column prop="rental_demo_qty" label="租赁样机仓库存" width="130">
+              <template #default="{ row }">
+                <el-popover placement="bottom" :width="280" trigger="hover">
+                  <template #default>
+                    <div class="stock-breakdown">
+                      <div class="breakdown-title">各门店租赁样机仓库存</div>
+                      <div v-if="getStockBreakdownRows(row, 'rental_demo_qty').length" class="breakdown-locations">
+                        <div v-for="item in getStockBreakdownRows(row, 'rental_demo_qty')" :key="item.key" class="breakdown-item">
+                          <span class="breakdown-label">{{ item.store_name }}</span>
+                          <span class="breakdown-value">{{ item.quantity }}</span>
+                        </div>
+                      </div>
+                      <div v-else class="breakdown-empty">暂无库存明细</div>
+                    </div>
+                  </template>
+                  <template #reference><span class="stock-quantity-reference">{{ row.rental_demo_qty || 0 }}</span></template>
+                </el-popover>
+              </template>
+            </el-table-column>
             <el-table-column type="index" label="#" width="50" />
             <el-table-column label="PN码" width="160">
               <template #default>
@@ -1816,7 +1835,8 @@ const INVENTORY_TYPES = [
   { value: 'demo_qty', label: '样品仓' },
   { value: 'display_qty', label: '铺货仓' },
   { value: 'unsellable_qty', label: '不可售仓' },
-  { value: 'pending_qty', label: '占用仓' }
+  { value: 'pending_qty', label: '占用仓' },
+  { value: 'rental_demo_qty', label: '租赁样机仓' }
 ]
 
 // 执行退库

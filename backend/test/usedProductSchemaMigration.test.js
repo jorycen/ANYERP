@@ -13,4 +13,5 @@ test('product model and startup migration agree on IS_USED_PRODUCT', () => {
   assert.ok(Product.rawAttributes.is_used_product);
   assert.match(migrationSource, /ensureCriticalSchemaCompatibility\(\)/);
   assert.match(migrationSource, /'T_PRODUCT'[\s\S]*'IS_USED_PRODUCT'/);
+  assert.match(migrationSource, /'T_PURCHASE_REQUEST_ITEM'[\s\S]*'IS_USED_PRODUCT'/);
 });

@@ -10,7 +10,8 @@ function normalizeApiBaseUrl(value) {
   return `/${pathValue || 'api/v1'}`
 }
 
-const API_BASE_URL = normalizeApiBaseUrl(import.meta.env.VITE_API_BASE_URL)
+const configuredApiBaseUrl = String(import.meta.env.VITE_API_BASE_URL || '').trim()
+const API_BASE_URL = normalizeApiBaseUrl(configuredApiBaseUrl || '/api/v1')
 const RETRYABLE_STATUS_CODES = new Set([500, 502, 503, 504])
 const IDEMPOTENT_METHODS = new Set(['get', 'head', 'options'])
 const MAX_RETRY_COUNT = 2
@@ -130,6 +131,8 @@ attachResponseInterceptor(
     router.push('/login')
   }
 )
+
+export const apiBaseUrl = API_BASE_URL
 
 function exportExcel(url, params, fallbackFileName) {
   return exportApi.get(url, {

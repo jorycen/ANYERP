@@ -1,7 +1,7 @@
 /**
  * 采购管理控制器
  */
-const { sequelize, PurchaseRequest, PurchaseRequestItem, PurchaseAdjustment, PurchaseAdjustmentItem, Supplier, SupplierPaymentAccount, Store, Location, Product, Inbound, InboundItem, Payable, Expense, Settlement, SupplierRebate, ResourceCategory, GoodsType } = require('../../models');
+const { sequelize, PurchaseRequest, PurchaseRequestItem, PurchaseAdjustment, PurchaseAdjustmentItem, Supplier, SupplierPaymentAccount, Store, Staff, Distributor, Location, Product, Inbound, InboundItem, Payable, Expense, Settlement, SupplierRebate, ResourceCategory, GoodsType } = require('../../models');
 const { Op } = require('sequelize');
 const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { recordRebateDeduction, recordSupplierRebateAccountTransaction, _getRebateBalance } = require('../finance/rebateController');
@@ -419,6 +419,16 @@ async function getRequestList(ctx) {
     where,
     include: [
       { model: Store },
+      {
+        model: Staff,
+        as: 'Applicant',
+        attributes: ['staff_id', 'name', 'role_code', 'store_id', 'distributor_id'],
+        required: false,
+        include: [
+          { model: Store, as: 'Store', attributes: ['store_id', 'name'], required: false },
+          { model: Distributor, attributes: ['distributor_id', 'name'], required: false }
+        ]
+      },
       { model: Supplier },
       { model: PurchaseRequestItem, as: 'items' },
       { model: Inbound, attributes: ['inbound_id', 'status'], separate: true }
@@ -435,6 +445,11 @@ async function getRequestList(ctx) {
   const formattedRows = rows.map(row => {
     const result = row.toJSON();
     result.store_name = result.Store?.name || '';
+    result.applicant_store_id = result.Applicant?.store_id || '';
+    result.applicant_store_name = result.Applicant?.Store?.name || '';
+    result.applicant_distributor_id = result.Applicant?.distributor_id || '';
+    result.applicant_distributor_name = result.Applicant?.Distributor?.name || '';
+    result.applicant_role_code = result.Applicant?.role_code || '';
     result.supplier_name = result.Supplier?.name || '';
     result.submitter_name = result.submitter_name || result.apply_user || result.create_user || result.operator_name || '';
     
@@ -469,6 +484,16 @@ async function getRequestDetail(ctx) {
     where: { request_id: requestId, status: { [Op.ne]: 'deleted' } },
     include: [
       { model: Store },
+      {
+        model: Staff,
+        as: 'Applicant',
+        attributes: ['staff_id', 'name', 'role_code', 'store_id', 'distributor_id'],
+        required: false,
+        include: [
+          { model: Store, as: 'Store', attributes: ['store_id', 'name'], required: false },
+          { model: Distributor, attributes: ['distributor_id', 'name'], required: false }
+        ]
+      },
       { model: Supplier },
       { model: PurchaseRequestItem, as: 'items' },
       { model: Inbound, include: [{ model: InboundItem, as: 'items' }] },
@@ -493,6 +518,11 @@ async function getRequestDetail(ctx) {
 
   const result = request.toJSON();
   result.store_name = result.Store?.name || '';
+  result.applicant_store_id = result.Applicant?.store_id || '';
+  result.applicant_store_name = result.Applicant?.Store?.name || '';
+  result.applicant_distributor_id = result.Applicant?.distributor_id || '';
+  result.applicant_distributor_name = result.Applicant?.Distributor?.name || '';
+  result.applicant_role_code = result.Applicant?.role_code || '';
   result.supplier_name = result.Supplier?.name || '';
 
   // 解析门店分配，并关联门店名称

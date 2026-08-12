@@ -776,6 +776,15 @@ const toNumber = (value) => {
   return Number.isFinite(number) ? number : 0
 }
 
+const getApiErrorMessage = (error, fallback) => {
+  const responseMessage = error?.response?.data?.message
+  if (responseMessage) return responseMessage
+  if (error?.code === 'ERR_NETWORK' || !error?.response) {
+    return '采购接口暂时无法连接，请检查系统 API 回源配置后重试'
+  }
+  return error?.message || fallback
+}
+
 const formatMoney = (value) => toNumber(value).toFixed(2)
 
 const hasRebateDeduction = (request) => toNumber(request?.rebate_deduction) > 0
@@ -931,9 +940,15 @@ const loadData = async () => {
     if (res.code === 0) {
       tableData.value = res.data?.list || []
       total.value = res.data?.pagination?.total || res.data?.total || 0
+      return
     }
+    tableData.value = []
+    total.value = 0
+    ElMessage.error(res.message || '加载采购申请失败')
   } catch (err) {
-    ElMessage.error('加载数据失败')
+    tableData.value = []
+    total.value = 0
+    ElMessage.error(getApiErrorMessage(err, '加载采购申请失败'))
   }
 }
 
@@ -1742,7 +1757,7 @@ const handleSubmit = async () => {
       ElMessage.error(res.message || '提交失败')
     }
   } catch (err) {
-    ElMessage.error('提交失败')
+    ElMessage.error(getApiErrorMessage(err, '提交采购申请失败'))
   } finally {
     submitLoading.value = false
   }
@@ -1830,7 +1845,7 @@ const savePurchaseRequestDraft = async () => {
       ElMessage.error(res.message || '保存草稿失败')
     }
   } catch (err) {
-    ElMessage.error(err.response?.data?.message || '保存草稿失败')
+    ElMessage.error(getApiErrorMessage(err, '保存草稿失败'))
   } finally {
     submitLoading.value = false
   }

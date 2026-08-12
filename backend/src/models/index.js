@@ -640,7 +640,8 @@ const Inventory = sequelize.define('Inventory', {
   display_qty: { type: DataTypes.INTEGER, defaultValue: 0 },
   demo_qty: { type: DataTypes.INTEGER, defaultValue: 0 },
   unsellable_qty: { type: DataTypes.INTEGER, defaultValue: 0 },
-  pending_qty: { type: DataTypes.INTEGER, defaultValue: 0 }
+  pending_qty: { type: DataTypes.INTEGER, defaultValue: 0 },
+  rental_demo_qty: { type: DataTypes.INTEGER, defaultValue: 0, comment: '租赁样机仓库存' }
 }, { tableName: 'T_INVENTORY', timestamps: false, createdAt: false, updatedAt: 'update_time' });
 
 // 库存批量维护申请单。Excel导入只生成申请，审批通过前不改变库存事实。
@@ -1955,6 +1956,7 @@ Staff.hasMany(RegionPermission, { foreignKey: 'staff_id', sourceKey: 'staff_id',
 RegionPermission.belongsTo(Staff, { foreignKey: 'staff_id', targetKey: 'staff_id', as: 'Staff' });
 
 // 商品关联
+ProductApplication.belongsTo(Staff, { foreignKey: 'applicant_staff_id', targetKey: 'staff_id', as: 'Applicant' });
 Product.hasMany(ProductPn, { foreignKey: 'product_id', sourceKey: 'product_id' });
 ProductPn.belongsTo(Product, { foreignKey: 'product_id', targetKey: 'product_id' });
 
@@ -2064,6 +2066,7 @@ NonSnInventoryBatchRight.belongsTo(InventoryBatchApplication, { foreignKey: 'app
 // 订单关联
 Store.hasMany(Order, { foreignKey: 'store_id', sourceKey: 'store_id' });
 Order.belongsTo(Store, { foreignKey: 'store_id', targetKey: 'store_id' });
+Order.belongsTo(Staff, { foreignKey: 'create_staff_id', targetKey: 'staff_id', as: 'Applicant' });
 
 Order.hasMany(OrderItem, { foreignKey: 'order_id', sourceKey: 'order_id' });
 OrderItem.belongsTo(Order, { foreignKey: 'order_id', targetKey: 'order_id' });
@@ -2110,6 +2113,7 @@ PurchaseRequest.belongsTo(Supplier, { foreignKey: 'supplier_id', targetKey: 'sup
 
 Store.hasMany(PurchaseRequest, { foreignKey: 'store_id', sourceKey: 'store_id' });
 PurchaseRequest.belongsTo(Store, { foreignKey: 'store_id', targetKey: 'store_id' });
+PurchaseRequest.belongsTo(Staff, { foreignKey: 'applicant_staff_id', targetKey: 'staff_id', as: 'Applicant' });
 
 FreightPlatform.hasMany(FreightRecord, { foreignKey: 'platform_id', sourceKey: 'platform_id', as: 'records' });
 FreightRecord.belongsTo(FreightPlatform, { foreignKey: 'platform_id', targetKey: 'platform_id', as: 'platform' });

@@ -15,7 +15,9 @@ const {
   ProductPriceChangeLog,
   ProductImportTask,
   Inventory,
-  Store
+  Store,
+  Staff,
+  Distributor
 } = require('../../models');
 const { Op, Sequelize } = require('sequelize');
 const { sequelize } = require('../../config/database');
@@ -738,10 +740,28 @@ async function getProductApplicationList(ctx) {
       dateColumns: ['ProductApplication.create_time'],
       idColumn: 'ProductApplication.application_id'
     }),
+    include: [{
+      model: Staff,
+      as: 'Applicant',
+      attributes: ['staff_id', 'name', 'role_code', 'store_id', 'distributor_id'],
+      required: false,
+      include: [
+        { model: Store, as: 'Store', attributes: ['store_id', 'name'], required: false },
+        { model: Distributor, attributes: ['distributor_id', 'name'], required: false }
+      ]
+    }],
     limit,
     offset
   });
-  const applications = rows.map(row => row.toJSON());
+  const applications = rows.map(row => {
+    const result = row.toJSON();
+    result.applicant_store_id = result.Applicant?.store_id || '';
+    result.applicant_store_name = result.Applicant?.Store?.name || '';
+    result.applicant_distributor_id = result.Applicant?.distributor_id || '';
+    result.applicant_distributor_name = result.Applicant?.Distributor?.name || '';
+    result.applicant_role_code = result.Applicant?.role_code || '';
+    return result;
+  });
   ctx.body = {
     code: 0,
     data: formatPaginatedResult(applications, { page, pageSize, count })
@@ -750,7 +770,18 @@ async function getProductApplicationList(ctx) {
 
 async function getProductApplicationDetail(ctx) {
   const { applicationId } = ctx.params;
-  const application = await ProductApplication.findByPk(applicationId);
+  const application = await ProductApplication.findByPk(applicationId, {
+    include: [{
+      model: Staff,
+      as: 'Applicant',
+      attributes: ['staff_id', 'name', 'role_code', 'store_id', 'distributor_id'],
+      required: false,
+      include: [
+        { model: Store, as: 'Store', attributes: ['store_id', 'name'], required: false },
+        { model: Distributor, attributes: ['distributor_id', 'name'], required: false }
+      ]
+    }]
+  });
   if (!application) ctx.throw(404, '商品申请不存在');
 
   const user = ctx.state.user;

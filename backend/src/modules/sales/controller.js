@@ -15,10 +15,12 @@ const {
   DepositRedemption,
   Store,
   Staff,
+  Distributor,
   StaffStorePermission,
   Product,
   ProductPn,
   ProductSn,
+  Location,
   ProductPrice,
   SnDistributorPrice,
   Inventory,
@@ -44,6 +46,16 @@ const { normalizePnCode } = require('../../utils/productPn');
 const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
+
+async function isRentalDemoSn(sn, transaction = null) {
+  if (sn?.inventory_type === 'rental_demo_qty') return true;
+  if (!sn?.location_id) return false;
+  const location = await Location.findByPk(sn.location_id, {
+    attributes: ['type'],
+    transaction
+  });
+  return location?.type === 'rental_demo_qty';
+}
 const { issueDownloadTicket } = require('../../utils/downloadTicket');
 const { canViewSnTraceReference, isDealerTraceAccount } = require('../../utils/snTracePermission');
 const { sendExcel } = require('../../utils/excelExport');
@@ -185,6 +197,16 @@ async function list(ctx) {
   const dealerWide = isDealerTraceAccount(user);
   const canQueryAllStoreOrders = dealerWide || roles.some(role => ['manager', 'store_manager'].includes(role));
   const storeInclude = { model: Store };
+  const applicantInclude = {
+    model: Staff,
+    as: 'Applicant',
+    attributes: ['staff_id', 'name', 'role_code', 'store_id', 'distributor_id'],
+    required: false,
+    include: [
+      { model: Store, as: 'Store', attributes: ['store_id', 'name'], required: false },
+      { model: Distributor, attributes: ['distributor_id', 'name'], required: false }
+    ]
+  };
   const hasGlobalStoreScope = roles.includes('boss') || accessibleStoreIds.includes('*');
 
   const dateRange = buildChinaDateRange(startDate, endDate);
@@ -236,6 +258,7 @@ async function list(ctx) {
     where,
     include: [
       storeInclude,
+      applicantInclude,
       itemInclude,
       { model: OrderPayment },
       { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false }
@@ -1628,6 +1651,16 @@ async function detail(ctx) {
   const order = await Order.findByPk(orderId, {
     include: [
       { model: Store },
+      {
+        model: Staff,
+        as: 'Applicant',
+        attributes: ['staff_id', 'name', 'role_code', 'store_id', 'distributor_id'],
+        required: false,
+        include: [
+          { model: Store, as: 'Store', attributes: ['store_id', 'name'], required: false },
+          { model: Distributor, attributes: ['distributor_id', 'name'], required: false }
+        ]
+      },
       { model: OrderItem, include: [{ model: Product, attributes: ['product_id', 'need_sn'] }] },
       { model: OrderPayment, include: [{ model: DepositOrder }] },
       { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false },
@@ -2317,7 +2350,8 @@ async function getProductSns(ctx) {
     product_id: productId,
     store_id: storeId,
     status: 'in_stock',
-    is_deleted: 0
+    is_deleted: 0,
+    inventory_type: { [Op.ne]: 'rental_demo_qty' }
   };
   if (pnCode) {
     where.pn_code = pnCode;
@@ -2325,9 +2359,13 @@ async function getProductSns(ctx) {
 
   const snRecords = await ProductSn.findAll({
     where,
-    attributes: ['sn_id', 'sn_code', 'pn_code', 'inventory_type', 'tax_type', 'supplier_id', 'supplier_name'],
+    attributes: ['sn_id', 'sn_code', 'pn_code', 'inventory_type', 'tax_type', 'supplier_id', 'supplier_name', 'location_id'],
     order: [['sn_code', 'ASC']]
   });
+  const saleableSnRecords = [];
+  for (const sn of snRecords) {
+    if (!(await isRentalDemoSn(sn))) saleableSnRecords.push(sn);
+  }
 
   const store = await Store.findOne({
     where: { store_id: storeId, is_deleted: 0 },
@@ -2340,7 +2378,7 @@ async function getProductSns(ctx) {
     attributes: ['standard_price', 'min_sale_price'],
     raw: true
   });
-  const snIds = snRecords.map(row => row.sn_id);
+  const snIds = saleableSnRecords.map(row => row.sn_id);
   const specialPrices = snIds.length > 0 && store.distributor_id
     ? await SnDistributorPrice.findAll({
       where: {
@@ -2355,10 +2393,10 @@ async function getProductSns(ctx) {
   const specialPriceMap = new Map(specialPrices.map(row => [row.sn_id, row]));
   const unifiedSalePrice = Number(productPrice?.standard_price || 0);
   const minSalePrice = Number(productPrice?.min_sale_price || 0);
-  const summaryMap = await summariesForSns(snRecords);
+  const summaryMap = await summariesForSns(saleableSnRecords);
   ctx.body = {
     code: 0,
-    data: snRecords.map(s => {
+    data: saleableSnRecords.map(s => {
       const special = specialPriceMap.get(s.sn_id);
       const specialPrice = special ? Number(special.special_price || 0) : null;
       return {
@@ -3260,6 +3298,9 @@ async function reserveInventoryForOrder(order, transaction = null) {
       if (!snRecord) {
         throw archiveError(`SN码 [${snCode}] 在当前门店没有可用库存，不能提交订单`);
       }
+      if (await isRentalDemoSn(snRecord, transaction)) {
+        throw archiveError(`SN码 [${snCode}] 属于租赁样机仓，不允许销售`);
+      }
 
       operations.push({ item, quantity, snRecord, inventoryType: snRecord.inventory_type || 'normal_qty' });
     } else {
@@ -3399,6 +3440,9 @@ async function validateAndDeductInventoryForArchive(order, transaction = null) {
       const snRecord = await ProductSn.findOne({ where: snWhere, transaction });
       if (!snRecord || normalizePnCode(snRecord.pn_code) !== normalizePnCode(pnCode)) {
         throw archiveError(`SN码 [${snCode}] 在当前门店没有可用库存，不能归档`);
+      }
+      if (await isRentalDemoSn(snRecord, transaction)) {
+        throw archiveError(`SN码 [${snCode}] 属于租赁样机仓，不允许销售`);
       }
 
       operations.push({

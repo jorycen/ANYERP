@@ -109,6 +109,12 @@ async function ensureCriticalSchemaCompatibility() {
     'IS_USED_PRODUCT',
     'TINYINT(1) NOT NULL DEFAULT 0 COMMENT "used product flag"'
   );
+  await checkAndAddColumn(
+    'T_PURCHASE_REQUEST_ITEM',
+    'IS_USED_PRODUCT',
+    'TINYINT(1) NOT NULL DEFAULT 0 COMMENT "二手商品标记"',
+    'PN_CODE'
+  );
 
   const [column] = await sequelize.query(
     `SELECT COUNT(*) AS cnt
@@ -121,6 +127,19 @@ async function ensureCriticalSchemaCompatibility() {
 
   if (Number(column?.cnt || 0) !== 1) {
     throw new Error('Required schema column T_PRODUCT.IS_USED_PRODUCT is unavailable');
+  }
+
+  const [purchaseItemColumn] = await sequelize.query(
+    `SELECT COUNT(*) AS cnt
+     FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'T_PURCHASE_REQUEST_ITEM'
+       AND COLUMN_NAME = 'IS_USED_PRODUCT'`,
+    { type: sequelize.QueryTypes.SELECT }
+  );
+
+  if (Number(purchaseItemColumn?.cnt || 0) !== 1) {
+    throw new Error('Required schema column T_PURCHASE_REQUEST_ITEM.IS_USED_PRODUCT is unavailable');
   }
 }
 
@@ -716,6 +735,7 @@ async function runMigrations() {
     await checkAndAddColumn('T_INBOUND_ITEM', 'LOCATION_ID', 'VARCHAR(32) COMMENT "库位ID"', 'STORE_ALLOCATIONS');
     await checkAndAddColumn('T_INBOUND_ITEM', 'INVENTORY_TYPE', 'VARCHAR(32) DEFAULT "normal_qty" COMMENT "入库库存类型"', 'LOCATION_ID');
     await checkAndAddColumn('T_INVENTORY', 'UPDATE_TIME', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT "更新时间"', 'PENDING_QTY');
+    await checkAndAddColumn('T_INVENTORY', 'RENTAL_DEMO_QTY', 'INT DEFAULT 0 COMMENT "租赁样机仓库存"', 'PENDING_QTY');
     await checkAndAddColumn('T_INVENTORY', 'LOCATION_ID', 'VARCHAR(32) NOT NULL DEFAULT "" COMMENT "库位ID"', 'STORE_ID');
     await normalizeInventoryLocationIndex();
 
@@ -2253,7 +2273,8 @@ async function runMigrations() {
       ['demo_qty', '样品仓', 1],
       ['display_qty', '铺货仓', 1],
       ['unsellable_qty', '不可售仓', 0],
-      ['pending_qty', '占用仓', 0]
+      ['pending_qty', '占用仓', 0],
+      ['rental_demo_qty', '租赁样机仓', 0]
     ];
     for (const [type, name, isSellable] of standardLocations) {
       await sequelize.query(`
@@ -2278,6 +2299,7 @@ async function runMigrations() {
         DEMO_QTY INT DEFAULT 0 COMMENT '样品仓库存',
         UNSELLABLE_QTY INT DEFAULT 0 COMMENT '不可售库存',
         PENDING_QTY INT DEFAULT 0 COMMENT '占用仓库存',
+        RENTAL_DEMO_QTY INT DEFAULT 0 COMMENT '租赁样机仓库存',
         UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
         UNIQUE KEY uk_product_store (PRODUCT_ID, STORE_ID),
         KEY idx_product (PRODUCT_ID),

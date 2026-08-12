@@ -1,5 +1,9 @@
 $ErrorActionPreference = 'Stop'
 
+if (-not $env:VITE_API_BASE_URL) {
+  Write-Warning 'VITE_API_BASE_URL is not set; production frontend will use same-origin /api/v1. Confirm the gateway routes /api/* to the ERP backend before publishing.'
+}
+
 $workspace = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $webRoot = [IO.Path]::GetFullPath((Join-Path $workspace 'frontend\web'))
 $distRoot = [IO.Path]::GetFullPath((Join-Path $workspace 'frontend\dist-web'))

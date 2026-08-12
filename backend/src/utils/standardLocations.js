@@ -5,7 +5,8 @@ const STANDARD_INVENTORY_LOCATIONS = [
   { type: 'demo_qty', name: '样品仓', is_sellable: 1, sort_order: 20 },
   { type: 'display_qty', name: '铺货仓', is_sellable: 1, sort_order: 30 },
   { type: 'unsellable_qty', name: '不可售仓', is_sellable: 0, sort_order: 40 },
-  { type: 'pending_qty', name: '占用仓', is_sellable: 0, sort_order: 50 }
+  { type: 'pending_qty', name: '占用仓', is_sellable: 0, sort_order: 50 },
+  { type: 'rental_demo_qty', name: '租赁样机仓', is_sellable: 0, sort_order: 60 }
 ];
 
 const STANDARD_LOCATION_TYPE_MAP = STANDARD_INVENTORY_LOCATIONS.reduce((map, item) => {

@@ -11,6 +11,16 @@ const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } 
 const { getUserRoles } = require('../../middleware/permission');
 const { ensureExpensePayable, cancelExpenseRecord } = require('./expenseService');
 
+function buildDailyPaymentMethodWhere(paymentMethod) {
+  const method = String(paymentMethod || '').trim();
+  if (!method) return null;
+
+  if (method.startsWith('国补POS') && !method.endsWith('-客户实收') && !method.endsWith('-政策补贴应收')) {
+    return { [Op.or]: [method, `${method}-客户实收`] };
+  }
+  return method;
+}
+
 async function getAccountBalance(accountId, transaction = null) {
   const [incomeAmount, expenseAmount] = await Promise.all([
     SettlementAccountTransaction.sum('amount', { where: { account_id: accountId, type: 'income' }, transaction }),
@@ -33,7 +43,7 @@ async function getStatementDetails(ctx, businessWhere) {
     where.settled = parseFloat(settled) > 0 ? { [Op.gt]: 0 } : 0;
   }
   if (paymentMethod) {
-    where.payment_method = paymentMethod;
+    where.payment_method = buildDailyPaymentMethodWhere(paymentMethod);
   }
   if (settlementAccountId) {
     where.settlement_account_id = settlementAccountId;
@@ -1263,6 +1273,7 @@ async function getPayableList(ctx) {
 }
 
 module.exports = {
+  buildDailyPaymentMethodWhere,
   getDailyDetails,
   getNationalSubsidyReceivables,
   getDailyStatement,
