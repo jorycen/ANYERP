@@ -7,7 +7,7 @@ const {
   SnDistributorPrice, SnDistributorPriceChangeLog, ResourceCategory,
   ProductBarcode, Store, Location, InventoryWarning, Inbound, InboundItem,
   ReturnStock, ReturnStockItem, PurchaseRequest, PurchaseRequestItem, Payable, Supplier, Inventory,
-  SalesReturnRequest,
+  SalesReturnRequest, SalesReturnRequestItem,
   SnLog, Order, OrderItem, Transfer, TransferItem, InventoryConversion,
   InventoryConversionItem
 } = require('../../models');
@@ -22,6 +22,7 @@ const { isTransferScope, transferRegionKeys } = require('../../utils/transferSco
 const { canViewSnTraceReference, isDealerTraceAccount } = require('../../utils/snTracePermission');
 const { assertSingleSnProductPn } = require('../../utils/productPn');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
+const { createSalesReturnGrossProfitLedger } = require('../sales/grossProfit');
 
 function splitCodes(value) {
   return String(value || '')
@@ -44,6 +45,20 @@ const STORE_ONLY_ROLE_CODES = new Set([
   ...MANAGER_TRANSFER_ROLE_CODES
 ]);
 const TRANSFER_REQUEST_STATUSES = new Set(['pending', 'requested', 'applied', 'shipping']);
+
+function getSnStatusLabel(status) {
+  const labels = {
+    in_stock: '在库',
+    reserved: '已占用',
+    occupied: '已占用',
+    sold: '已销售',
+    out_stock: '已出库',
+    transferring: '调拨中',
+    return_pending: '退货待入库',
+    voided: '已作废'
+  };
+  return labels[String(status || '').trim()] || String(status || '未知');
+}
 
 const TRANSFER_PARTICIPANT_FIELDS = [
   'apply_user',
@@ -427,7 +442,7 @@ async function getSnInventoryList(ctx) {
   }
 
   const where = [
-    "sn.STATUS = 'in_stock'",
+    "sn.STATUS IN ('in_stock', 'reserved', 'occupied', 'sold')",
     'sn.IS_DELETED = 0',
     'p.IS_DELETED = 0',
     'p.STATUS = 1',
@@ -507,6 +522,7 @@ async function getSnInventoryList(ctx) {
        sn.PRODUCT_ID AS product_id,
        sn.STORE_ID AS store_id,
        sn.LOCATION_ID AS location_id,
+       sn.STATUS AS status,
        sn.INBOUND_TIME AS inbound_time,
        sn.TAX_TYPE AS tax_type,
        sn.SOURCE_TYPE AS source_type,
@@ -555,6 +571,8 @@ async function getSnInventoryList(ctx) {
     const specialPrice = row.special_price_id ? Number(row.special_price || 0) : null;
     return {
       ...row,
+      status_label: getSnStatusLabel(row.status),
+      statusText: getSnStatusLabel(row.status),
       unified_sale_price: unifiedSalePrice,
       min_sale_price: Number(row.min_sale_price || 0),
       retail_price: Number(row.retail_price || 0),
@@ -1494,6 +1512,8 @@ async function getSnList(ctx) {
       const sales = salesMap[data.product_id] || { sales_7_qty: 0, sales_30_qty: 0 };
       return {
         ...data,
+        status_label: getSnStatusLabel(data.status),
+        statusText: getSnStatusLabel(data.status),
         product_name: data.Product?.name || '',
         name: data.Product?.name || '',
         category: data.Product?.category || '',
@@ -1912,7 +1932,7 @@ async function snTrace(ctx) {
       timeline.push({
         id: `sn-record-${snData.sn_id}`,
         type: 'stock_record',
-        label: '\u5e93\u5b58SN\u8bb0\u5f55',
+        label: '\u5df2\u5f52\u6863',
         description: `PN: ${snData.pn_code || '-'}; \u8bb0\u5f55\u65f6\u95f4: ${snData.inbound_time}`,
         user: '-', time: snData.inbound_time
       });
@@ -1924,6 +1944,7 @@ async function snTrace(ctx) {
       data: {
         snCode: requestedSnCode,
         currentStatus: snData ? snData.status : 'unknown',
+        currentStatusLabel: snData ? getSnStatusLabel(snData.status) : '未知',
         productId: snData?.product_id || '',
         productName: snData?.product_name || '',
         pnCode: snData?.pn_code || '',
@@ -2180,6 +2201,7 @@ async function snTraceLegacy(ctx) {
       data: {
         snCode,
         currentStatus: snData ? snData.status : 'unknown',
+        currentStatusLabel: snData ? getSnStatusLabel(snData.status) : '未知',
         productId: snData ? snData.product_id : '',
         productName: snData ? (snData.product_name || snData.Product?.name || '') : '',
         storeId: snData ? snData.store_id : '',
@@ -2339,6 +2361,10 @@ function purchaseInitiatorName(request) {
   return String(request?.apply_user || request?.submit_user || '').trim();
 }
 
+function salesReturnRequesterName(request) {
+  return String(request?.create_user || request?.createUser || '').trim();
+}
+
 async function attachPurchaseInitiatorNames(inbounds) {
   const requestIds = [...new Set((inbounds || [])
     .map(inbound => inbound.purchase_request_id)
@@ -2349,23 +2375,51 @@ async function attachPurchaseInitiatorNames(inbounds) {
     .map(inbound => inbound.source_no)
     .filter(Boolean)
     .map(String))];
+  const salesReturnNos = [...new Set((inbounds || [])
+    .filter(inbound => String(inbound.source_type || '').toLowerCase() === 'sales_return')
+    .map(inbound => inbound.source_no)
+    .filter(Boolean)
+    .map(String))];
   const conditions = [];
   if (requestIds.length) conditions.push({ request_id: { [Op.in]: requestIds } });
   if (requestNos.length) conditions.push({ request_no: { [Op.in]: requestNos } });
-  if (!conditions.length) return inbounds;
+  const [requests, salesReturnRequests] = await Promise.all([
+    conditions.length
+      ? PurchaseRequest.findAll({
+          where: { [Op.or]: conditions },
+          attributes: ['request_id', 'request_no', 'apply_user', 'submit_user']
+        })
+      : Promise.resolve([]),
+    salesReturnNos.length
+      ? SalesReturnRequest.findAll({
+          where: { return_no: { [Op.in]: salesReturnNos } },
+          attributes: ['return_no', 'create_user']
+        })
+      : Promise.resolve([])
+  ]);
 
-  const requests = await PurchaseRequest.findAll({
-    where: { [Op.or]: conditions },
-    attributes: ['request_id', 'request_no', 'apply_user', 'submit_user']
-  });
   const requestMap = new Map();
   requests.forEach(request => {
     const data = request.toJSON ? request.toJSON() : request;
     if (data.request_id) requestMap.set(`id:${String(data.request_id)}`, data);
     if (data.request_no) requestMap.set(`no:${String(data.request_no)}`, data);
   });
+  const salesReturnMap = new Map();
+  salesReturnRequests.forEach(request => {
+    const data = request.toJSON ? request.toJSON() : request;
+    if (data.return_no) salesReturnMap.set(String(data.return_no), data);
+  });
 
   (inbounds || []).forEach(inbound => {
+    const sourceType = String(inbound.source_type || '').toLowerCase();
+    if (sourceType === 'sales_return') {
+      const returnRequest = salesReturnMap.get(String(inbound.source_no || ''));
+      if (!returnRequest) return;
+      const name = salesReturnRequesterName(returnRequest);
+      inbound.dataValues.purchase_initiator_name = name;
+      inbound.dataValues.purchase_applicant_name = name;
+      return;
+    }
     const request = (inbound.purchase_request_id && requestMap.get(`id:${String(inbound.purchase_request_id)}`)) ||
       (inbound.source_no && requestMap.get(`no:${String(inbound.source_no)}`));
     if (!request) return;
@@ -2397,9 +2451,10 @@ async function getInboundDetailById(ctx, inboundId, { distributorTrace = false }
     const result = inbound.toJSON();
     result.store_name = result.Store?.name || '';
 
-    const purchaseWhere = inbound.purchase_request_id
+    const isSalesReturnInbound = String(inbound.source_type || '').toLowerCase() === 'sales_return';
+    const purchaseWhere = !isSalesReturnInbound && inbound.purchase_request_id
       ? { request_id: inbound.purchase_request_id }
-      : String(inbound.source_type || '').toLowerCase() === 'purchase' && inbound.source_no
+      : !isSalesReturnInbound && String(inbound.source_type || '').toLowerCase() === 'purchase' && inbound.source_no
         ? { request_no: inbound.source_no }
         : null;
     const purchaseRequest = purchaseWhere
@@ -2407,6 +2462,12 @@ async function getInboundDetailById(ctx, inboundId, { distributorTrace = false }
           where: purchaseWhere,
           attributes: ['request_id', 'request_no', 'apply_user', 'submit_user', 'supplier_id'],
           include: distributorTrace ? [{ model: Supplier, attributes: ['supplier_id', 'name'] }] : []
+        })
+      : null;
+    const salesReturnRequest = isSalesReturnInbound && inbound.source_no
+      ? await SalesReturnRequest.findOne({
+          where: { return_no: inbound.source_no },
+          attributes: ['return_no', 'create_user']
         })
       : null;
     const purchaseRequestItems = purchaseRequest
@@ -2417,8 +2478,10 @@ async function getInboundDetailById(ctx, inboundId, { distributorTrace = false }
         })
       : [];
     const purchaseItemMap = new Map(purchaseRequestItems.map(item => [String(item.item_id), item]));
-    if (purchaseRequest) {
-      const initiator = purchaseInitiatorName(purchaseRequest);
+    if (purchaseRequest || salesReturnRequest) {
+      const initiator = salesReturnRequest
+        ? salesReturnRequesterName(salesReturnRequest)
+        : purchaseInitiatorName(purchaseRequest);
       result.purchase_initiator_name = initiator;
       result.purchase_applicant_name = initiator;
     }
@@ -3103,10 +3166,35 @@ async function executeInbound(ctx) {
         approval_stage: 'completed',
         update_time: new Date()
       }, { transaction: t });
+      const orderItemsForReturn = await OrderItem.findAll({
+        where: { order_id: salesReturn.order_id },
+        attributes: ['item_id', 'quantity'],
+        transaction: t
+      });
+      const completedReturnItems = await SalesReturnRequest.findAll({
+        where: { order_id: salesReturn.order_id, status: 'completed' },
+        include: [{ model: SalesReturnRequestItem, as: 'items', attributes: ['order_item_id', 'quantity'] }],
+        transaction: t
+      });
+      const returnedByItemId = new Map();
+      completedReturnItems.forEach(completedReturn => {
+        (completedReturn.items || []).forEach(item => {
+          const key = String(item.order_item_id || '');
+          returnedByItemId.set(key, (returnedByItemId.get(key) || 0) + Number(item.quantity || 0));
+        });
+      });
+      const fullyReturned = orderItemsForReturn.length > 0 && orderItemsForReturn.every(item => (
+        (returnedByItemId.get(String(item.item_id)) || 0) >= Number(item.quantity || 0)
+      ));
       await Order.update(
-        { order_status: 'returned', update_time: new Date() },
+        { order_status: fullyReturned ? 'returned' : '已归档', update_time: new Date() },
         { where: { order_id: salesReturn.order_id }, transaction: t }
       );
+      await createSalesReturnGrossProfitLedger({
+        returnRequest: salesReturn,
+        transaction: t,
+        createdBy: user.name || user.staffId || 'system'
+      });
     }
 
     if (isTransferInbound) {
@@ -5139,6 +5227,8 @@ module.exports = {
   getInboundDetail,
   getSnTraceInboundDetail,
   executeInbound,
+  updateInventory,
+  getAvailableQty,
   getReturnList,
   requestReturn,
   approveReturn,
@@ -5179,10 +5269,14 @@ module.exports = {
     getSalesResourceQuantitySnapshot,
     getSnSalesResourceQuantitySnapshot,
     getInventoryProductType,
+    getSnStatusLabel,
     isSpecialPriceProduct,
     matchesInventoryModelFilter,
     compareInventoryModelRows,
     buildStoreInventoryExportRows,
-    purchaseInitiatorName
+    purchaseInitiatorName,
+    updateInventory,
+    getAvailableQty,
+    salesReturnRequesterName
   }
 };

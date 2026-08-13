@@ -614,6 +614,7 @@ const ReturnStock = sequelize.define('ReturnStock', {
 const ReturnStockItem = sequelize.define('ReturnStockItem', {
   item_id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true },
   return_id: { type: DataTypes.STRING(32), allowNull: false },
+  inbound_item_id: { type: DataTypes.BIGINT(20) },
   product_id: { type: DataTypes.STRING(32), allowNull: false },
   product_name: { type: DataTypes.STRING(255) },
   pn_code: { type: DataTypes.STRING(64) },
@@ -1149,6 +1150,27 @@ const OrderGrossProfit = sequelize.define('OrderGrossProfit', {
   update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_ORDER_GROSS_PROFIT', timestamps: false });
 
+// Negative gross-profit ledger created after a sales return is completed.
+// One row is stored for each original order participant so the return is
+// visible in personal performance without mutating the original snapshot.
+const SalesReturnGrossProfitLedger = sequelize.define('SalesReturnGrossProfitLedger', {
+  ledger_id: { type: DataTypes.STRING(32), primaryKey: true },
+  return_id: { type: DataTypes.STRING(32), allowNull: false },
+  return_no: { type: DataTypes.STRING(64), allowNull: false },
+  order_id: { type: DataTypes.STRING(32), allowNull: false },
+  order_no: { type: DataTypes.STRING(64), allowNull: false },
+  store_id: { type: DataTypes.STRING(32), allowNull: false },
+  participant_key: { type: DataTypes.STRING(128), allowNull: false },
+  staff_id: { type: DataTypes.BIGINT(20) },
+  employee_name: { type: DataTypes.STRING(64), allowNull: false },
+  participant_role: { type: DataTypes.STRING(32), allowNull: false, defaultValue: 'primary' },
+  returned_sales_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  gross_profit_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  reason: { type: DataTypes.STRING(512), allowNull: false },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_SALES_RETURN_GROSS_PROFIT', timestamps: false });
+
 // 定金单
 const DepositOrder = sequelize.define('DepositOrder', {
   deposit_id: { type: DataTypes.STRING(32), primaryKey: true },
@@ -1523,6 +1545,8 @@ const Settlement = sequelize.define('Settlement', {
   other_payment_remark: { type: DataTypes.TEXT },
   other_payment_image: { type: DataTypes.TEXT('long') },
   total_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  offset_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  offset_payable_id: { type: DataTypes.STRING(32) },
   paid_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   status: { type: DataTypes.STRING(32), defaultValue: 'draft', comment: 'draft/pending_approval/confirmed/voided' },
   payment_status: { type: DataTypes.STRING(32), defaultValue: 'unpaid' },
@@ -2093,6 +2117,10 @@ Order.hasMany(OrderSupplement, { foreignKey: 'order_id', sourceKey: 'order_id', 
 OrderSupplement.belongsTo(Order, { foreignKey: 'order_id', targetKey: 'order_id' });
 Order.hasOne(OrderGrossProfit, { foreignKey: 'order_id', sourceKey: 'order_id', as: 'grossProfitSnapshot' });
 OrderGrossProfit.belongsTo(Order, { foreignKey: 'order_id', targetKey: 'order_id' });
+Order.hasMany(SalesReturnGrossProfitLedger, { foreignKey: 'order_id', sourceKey: 'order_id', as: 'salesReturnGrossProfitLedgers' });
+SalesReturnGrossProfitLedger.belongsTo(Order, { foreignKey: 'order_id', targetKey: 'order_id', as: 'order' });
+SalesReturnRequest.hasMany(SalesReturnGrossProfitLedger, { foreignKey: 'return_id', sourceKey: 'return_id', as: 'grossProfitLedgers' });
+SalesReturnGrossProfitLedger.belongsTo(SalesReturnRequest, { foreignKey: 'return_id', targetKey: 'return_id', as: 'salesReturn' });
 OrderPayment.belongsTo(DepositOrder, { foreignKey: 'deposit_id', targetKey: 'deposit_id' });
 DepositOrder.hasMany(OrderPayment, { foreignKey: 'deposit_id', sourceKey: 'deposit_id' });
 DepositOrder.belongsTo(Store, { foreignKey: 'store_id', targetKey: 'store_id' });
@@ -2276,6 +2304,7 @@ module.exports = {
   SalesReturnRequestItem,
   OrderSupplement,
   OrderGrossProfit,
+  SalesReturnGrossProfitLedger,
   DepositOrder,
   DepositRefund,
   DepositRedemption,

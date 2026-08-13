@@ -839,6 +839,7 @@ async function runMigrations() {
     await checkAndAddColumn('T_RETURN_STOCK_ITEM', 'LOCATION_ID', 'VARCHAR(32) COMMENT "库位ID"', 'UNIT_PRICE');
     await checkAndAddColumn('T_RETURN_STOCK_ITEM', 'INVENTORY_TYPE', 'VARCHAR(32) DEFAULT "normal_qty" COMMENT "库存类型"', 'LOCATION_ID');
     await checkAndAddColumn('T_RETURN_STOCK_ITEM', 'PRODUCT_TYPE', 'VARCHAR(32) COMMENT "货型"', 'INVENTORY_TYPE');
+    await checkAndAddColumn('T_RETURN_STOCK_ITEM', 'INBOUND_ITEM_ID', 'BIGINT(20) COMMENT "来源入库明细ID"', 'RETURN_ID');
     try {
       await sequelize.query(`
         UPDATE T_RETURN_STOCK rs
@@ -1087,6 +1088,8 @@ async function runMigrations() {
     // upgrades remain safe for installations created by older versions.
     await checkAndAddColumn('T_EXPENSE', 'SETTLED_AMOUNT', 'DECIMAL(12,2) DEFAULT 0', 'AMOUNT');
     await checkAndAddColumn('T_PAYABLE', 'SETTLED_AMOUNT', 'DECIMAL(12,2) DEFAULT 0', 'TOTAL_AMOUNT');
+    await checkAndAddColumn('T_PAYABLE', 'OFFSET_AMOUNT', 'DECIMAL(12,2) DEFAULT 0 COMMENT "已抵扣金额"', 'SETTLED_AMOUNT');
+    await checkAndAddColumn('T_PAYABLE', 'OFFSET_PAYABLE_ID', 'VARCHAR(32) COMMENT "关联冲抵应付款ID"', 'OFFSET_AMOUNT');
     await checkAndAddColumn('T_SETTLEMENT_ITEM', 'REQUEST_ITEM_ID', 'BIGINT(20)', 'PAYABLE_ID');
     await checkAndAddColumn('T_SETTLEMENT_ITEM', 'PRODUCT_ID', 'VARCHAR(32)', 'REQUEST_ITEM_ID');
     await checkAndAddColumn('T_SETTLEMENT_ITEM', 'PRODUCT_NAME', 'VARCHAR(255)', 'PRODUCT_ID');
@@ -2118,6 +2121,31 @@ async function runMigrations() {
       'DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT "订单产品定价合计"',
       'SETTLEMENT_COST_AMOUNT'
     );
+    await checkAndCreateTable('T_SALES_RETURN_GROSS_PROFIT', `
+      CREATE TABLE T_SALES_RETURN_GROSS_PROFIT (
+        LEDGER_ID VARCHAR(32) NOT NULL,
+        RETURN_ID VARCHAR(32) NOT NULL,
+        RETURN_NO VARCHAR(64) NOT NULL,
+        ORDER_ID VARCHAR(32) NOT NULL,
+        ORDER_NO VARCHAR(64) NOT NULL,
+        STORE_ID VARCHAR(32) NOT NULL,
+        PARTICIPANT_KEY VARCHAR(128) NOT NULL,
+        STAFF_ID BIGINT(20),
+        EMPLOYEE_NAME VARCHAR(64) NOT NULL,
+        PARTICIPANT_ROLE VARCHAR(32) NOT NULL DEFAULT 'primary',
+        RETURNED_SALES_AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0,
+        GROSS_PROFIT_AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0,
+        REASON VARCHAR(512) NOT NULL,
+        CREATE_USER VARCHAR(64),
+        CREATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (LEDGER_ID),
+        UNIQUE KEY uk_return_gp_participant (RETURN_ID, PARTICIPANT_KEY),
+        KEY idx_return_gp_order (ORDER_ID, CREATE_TIME),
+        KEY idx_return_gp_staff (STAFF_ID, CREATE_TIME),
+        KEY idx_return_gp_store (STORE_ID, CREATE_TIME)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='销售退单负向个人毛利台账'
+    `);
+
     await checkAndAddColumn(
       'T_ORDER_GROSS_PROFIT',
       'PRODUCT_PRICING_DETAILS',

@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const {
   actualUnitPrice,
   getOpenPayableStatus,
+  getPayableRemaining,
   getExpenseStatus
 } = require('../src/modules/finance/settlementAllocation');
 
@@ -20,4 +21,10 @@ test('reimbursement status distinguishes partial reimbursement from pending paym
   assert.equal(getExpenseStatus(1000, 300, 0, 'approved'), 'partial_reimbursement');
   assert.equal(getExpenseStatus(1000, 1000, 0, 'approved'), 'processing');
   assert.equal(getExpenseStatus(1000, 1000, 1000, 'approved'), 'paid');
+});
+
+test('purchase return remaining amount offsets unpaid payable before supplier credit', () => {
+  assert.equal(getPayableRemaining(10000, 0, 2000), 8000);
+  assert.equal(getPayableRemaining(10000, 9000, 1000), 0);
+  assert.equal(getPayableRemaining(-2000, 0, 500), -1500);
 });

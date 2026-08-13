@@ -13,16 +13,25 @@
       </template>
 
       <div v-if="!traceReadonly" class="filter-bar">
-        <el-select v-model="queryParams.storeId" placeholder="门店" clearable style="width: 160px" v-loading="storesLoading">
+        <el-select v-model="queryParams.storeId" placeholder="门店" clearable class="sales-filter-control" v-loading="storesLoading">
           <el-option label="全部门店" :value="''" />
           <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
         </el-select>
-        <el-select v-model="queryParams.status" placeholder="状态" clearable style="width: 120px">
+        <el-input v-model="queryParams.submitUser" placeholder="提交人" clearable class="sales-filter-control" @keyup.enter="handleSearch" />
+        <el-input v-model="queryParams.customerName" placeholder="客户姓名" clearable class="sales-filter-control" @keyup.enter="handleSearch" />
+        <el-input v-model="queryParams.orderNo" placeholder="订单号" clearable class="sales-filter-control" @keyup.enter="handleSearch" />
+        <el-input v-model="queryParams.productName" placeholder="商品名称（模糊查找）" clearable class="sales-filter-product" @keyup.enter="handleSearch" />
+        <el-input v-model="queryParams.productCode" placeholder="商品编码" clearable class="sales-filter-control" @keyup.enter="handleSearch" />
+        <el-select v-model="queryParams.status" placeholder="状态" clearable class="sales-filter-status">
           <el-option label="全部" value="" />
           <el-option label="草稿" value="draft" />
-          <el-option label="已完成" value="completed" />
           <el-option label="待审批" value="pending_approval" />
+          <el-option label="未归档" value="未归档" />
+          <el-option label="已归档" value="已归档" />
           <el-option label="已取消" value="cancelled" />
+          <el-option label="退库处理中" value="return_pending" />
+          <el-option label="已退单" value="returned" />
+          <el-option label="已完成（历史）" value="completed" />
         </el-select>
         <el-date-picker
           v-model="dateRange"
@@ -32,7 +41,7 @@
           start-placeholder="开始日期"
           end-placeholder="结束日期"
           clearable
-          style="width: 260px"
+          class="sales-filter-date"
         />
         <el-button type="primary" :loading="loading" @click="handleSearch">搜索</el-button>
       </div>
@@ -554,7 +563,12 @@ const queryParams = reactive({
   page: 1,
   pageSize: 20,
   storeId: '',
-  status: ''
+  status: '',
+  submitUser: '',
+  customerName: '',
+  orderNo: '',
+  productName: '',
+  productCode: ''
 })
 const dateRange = ref([])
 
@@ -682,6 +696,11 @@ const getSalesQueryParams = (includePagination = true) => {
   const params = {
     storeId: queryParams.storeId || undefined,
     status: queryParams.status || undefined,
+    submitUser: queryParams.submitUser || undefined,
+    customerName: queryParams.customerName || undefined,
+    orderNo: queryParams.orderNo || undefined,
+    productName: queryParams.productName || undefined,
+    productCode: queryParams.productCode || undefined,
     startDate: startDate || undefined,
     endDate: endDate || undefined
   }
@@ -1604,6 +1623,24 @@ const getDepositStatusText = (status) => {
   flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 16px;
+}
+.sales-filter-control {
+  width: 150px;
+}
+.sales-filter-product {
+  width: 190px;
+}
+.sales-filter-status {
+  width: 150px;
+}
+.sales-filter-date {
+  width: 240px;
+}
+.sales-filter-date :deep(.el-range-input) {
+  width: 76px;
+}
+.sales-filter-date :deep(.el-range-separator) {
+  width: 24px;
 }
 .sales-page {
   width: 100%;

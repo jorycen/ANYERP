@@ -5,6 +5,7 @@ const {
   Order,
   OrderItem,
   OrderGrossProfit,
+  SalesReturnGrossProfitLedger,
   ProductSn,
   Product,
   Store,
@@ -223,7 +224,7 @@ async function getEmployeePerformanceReport(ctx) {
   const where = {
     is_deleted: 0,
     store_id: { [Op.in]: storeIds },
-    order_status: { [Op.in]: ['已归档', 'completed', 'archived'] }
+    order_status: { [Op.in]: ['已归档', 'completed', 'archived', 'returned'] }
   };
   if (staffName) where.create_user = staffName;
   if (startDate && endDate) {
@@ -262,18 +263,35 @@ async function getEmployeePerformanceReport(ctx) {
   });
 
   const pageOrderIds = orders.map(order => order.order_id);
-  const approvedPageAdjustments = pageOrderIds.length
-    ? await PerformanceProfitAdjustment.findAll({
-        where: { order_id: { [Op.in]: pageOrderIds }, status: 'approved' },
-        attributes: [
-          'order_id',
-          [sequelize.fn('SUM', sequelize.col('signed_amount')), 'approvedAdjustment']
-        ],
-        group: ['order_id'],
-        raw: true
-      })
-    : [];
-  const adjustmentMap = new Map(approvedPageAdjustments.map(row => [row.order_id, roundMoney(row.approvedAdjustment)]));
+  const [approvedPageAdjustments, returnGrossProfitAdjustments] = pageOrderIds.length
+    ? await Promise.all([
+        PerformanceProfitAdjustment.findAll({
+          where: { order_id: { [Op.in]: pageOrderIds }, status: 'approved' },
+          attributes: [
+            'order_id',
+            [sequelize.fn('SUM', sequelize.col('signed_amount')), 'amount']
+          ],
+          group: ['order_id'],
+          raw: true
+        }),
+        SalesReturnGrossProfitLedger.findAll({
+          where: { order_id: { [Op.in]: pageOrderIds } },
+          attributes: [
+            'order_id',
+            [sequelize.fn('SUM', sequelize.col('gross_profit_amount')), 'amount']
+          ],
+          group: ['order_id'],
+          raw: true
+        })
+      ])
+    : [[], []];
+  const adjustmentMap = new Map();
+  [...approvedPageAdjustments, ...returnGrossProfitAdjustments].forEach(row => {
+    adjustmentMap.set(
+      row.order_id,
+      roundMoney((adjustmentMap.get(row.order_id) || 0) + toNumber(row.amount))
+    );
+  });
   const pageItems = orders.flatMap(order => order.OrderItems || []);
   const legacyCostMaps = await loadLegacyCostMaps(pageItems);
 
@@ -392,11 +410,16 @@ async function getEmployeePerformanceReport(ctx) {
     ...where,
     ...(snapshotOrderIds.length ? { order_id: { [Op.notIn]: snapshotOrderIds } } : {})
   };
-  const [approvedAdjustmentRows, fallbackItems] = await Promise.all([
+  const [approvedAdjustmentRows, returnGrossProfitRows, fallbackItems] = await Promise.all([
     PerformanceProfitAdjustment.findAll({
       where: { status: 'approved' },
       attributes: [[sequelize.fn('SUM', sequelize.col('PerformanceProfitAdjustment.signed_amount')), 'amount']],
       include: [{ model: Order, where, attributes: [], required: true }],
+      raw: true
+    }),
+    SalesReturnGrossProfitLedger.findAll({
+      attributes: [[sequelize.fn('SUM', sequelize.col('gross_profit_amount')), 'amount']],
+      include: [{ model: Order, as: 'order', where, attributes: [], required: true }],
       raw: true
     }),
     OrderItem.findAll({
@@ -405,6 +428,7 @@ async function getEmployeePerformanceReport(ctx) {
     })
   ]);
   const approvedAdjustmentRow = approvedAdjustmentRows[0] || { amount: 0 };
+  const returnGrossProfitRow = returnGrossProfitRows[0] || { amount: 0 };
   const summaryLegacyMaps = await loadLegacyCostMaps(fallbackItems);
   const fallbackGrossProfit = roundMoney(fallbackItems.reduce(
     (sum, item) => sum + calculateItemBaseProfit(item, summaryLegacyMaps).grossProfit,
@@ -415,7 +439,9 @@ async function getEmployeePerformanceReport(ctx) {
     0
   ));
   const totalBaseGrossProfit = roundMoney(snapshotGrossProfit + fallbackGrossProfit);
-  const totalApprovedAdjustment = roundMoney(approvedAdjustmentRow?.amount);
+  const totalApprovedAdjustment = roundMoney(
+    toNumber(approvedAdjustmentRow?.amount) + toNumber(returnGrossProfitRow?.amount)
+  );
 
   const summary = {
     orderCount: summaryRows.reduce((sum, row) => sum + Number(row.orderCount || 0), 0),

@@ -22,6 +22,7 @@ const XLSX = require('xlsx');
 const {
   actualUnitPrice,
   getAllocationSummary,
+  getPayableRemaining,
   refreshPayableState,
   refreshExpenseState
 } = require('./settlementAllocation');
@@ -42,7 +43,7 @@ async function getPayableList(ctx) {
   }
   if (status) {
     where.status = status === 'unpaid'
-      ? { [Op.in]: ['unpaid', 'partial_settled', 'settling'] }
+      ? { [Op.in]: ['unpaid', 'partial_settled', 'settling', 'credit'] }
       : status;
   }
   if (startDate || endDate) {
@@ -69,13 +70,13 @@ async function getPayableList(ctx) {
   const allocationSummary = await getAllocationSummary(summaryRows.map(row => row.payable_id));
   const summary = summaryRows.reduce((result, row) => {
     const allocated = allocationSummary.get(String(row.payable_id))?.amount || 0;
-    result.totalAmount += Math.max(0, Number(row.total_amount || 0) - Number(allocated));
+    result.totalAmount += Math.max(0, getPayableRemaining(row.total_amount, allocated, row.offset_amount));
     return result;
   }, { totalCount: summaryRows.length, totalAmount: 0 });
   rows.forEach(row => {
     const allocated = allocationSummary.get(String(row.payable_id))?.amount || 0;
     row.setDataValue('settled_amount', roundAmount(allocated));
-    row.setDataValue('remaining_amount', roundAmount(Number(row.total_amount || 0) - Number(allocated)));
+    row.setDataValue('remaining_amount', getPayableRemaining(row.total_amount, allocated, row.offset_amount));
   });
 
   const result = formatPaginatedResult(rows, { page, pageSize, count });
@@ -116,7 +117,7 @@ async function getPayableSettlementItems(ctx) {
     ? String(payableIds).split(',').map(item => item.trim()).filter(Boolean)
     : null;
   const where = {
-    status: { [Op.in]: ['unpaid', 'partial_settled', 'settling'] },
+      status: { [Op.in]: ['unpaid', 'partial_settled', 'settling'] },
     source_type: { [Op.notIn]: ['expense', 'reimbursement'] }
   };
   if (supplierId) where.supplier_id = supplierId;
@@ -166,7 +167,7 @@ async function getPayableSettlementItems(ctx) {
       });
       return;
     }
-    const remaining = roundAmount(Number(payable.total_amount || 0) - Number(allocated.amount || 0));
+    const remaining = getPayableRemaining(payable.total_amount, allocated.amount, payable.offset_amount);
     if (remaining > 0) rows.push({
       payable_id: payable.payable_id,
       request_id: payable.request_id,
@@ -176,7 +177,7 @@ async function getPayableSettlementItems(ctx) {
       source_type: payable.source_type,
       total_amount: payable.total_amount,
       settled_amount: allocated.amount,
-      remaining_amount: remaining,
+        remaining_amount: remaining,
       product_name: payable.source_type === 'purchase_adjustment' ? '采购调整' : '整单金额',
       available_quantity: null,
       available_amount: remaining,
@@ -286,11 +287,49 @@ async function createSettlement(ctx) {
     } else {
       for (const payable of payables) {
         const used = summary.get(String(payable.payable_id)) || { amount: 0 };
-        const remaining = roundAmount(Number(payable.total_amount || 0) - Number(used.amount || 0));
+        const remaining = getPayableRemaining(payable.total_amount, used.amount, payable.offset_amount);
         if (remaining > 0) rows.push({ payable, requestItem: null, quantity: null, unitPrice: null, amount: remaining });
       }
     }
-    const totalAmount = roundAmount(rows.reduce((sum, row) => sum + row.amount, 0));
+    const creditRows = await Payable.findAll({
+      where: {
+        supplier_id: supplierId,
+        status: 'credit',
+        total_amount: { [Op.lt]: 0 }
+      },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+      order: [['create_time', 'ASC']]
+    });
+    let creditRemaining = creditRows.reduce((sum, payable) => sum + Math.max(0, Math.abs(Number(payable.total_amount || 0)) - Number(payable.offset_amount || 0)), 0);
+    for (const row of rows) {
+      if (creditRemaining <= 0 || row.amount <= 0) continue;
+      const offset = Math.min(row.amount, creditRemaining);
+      row.amount = roundAmount(row.amount - offset);
+      row.offsetAmount = roundAmount((row.offsetAmount || 0) + offset);
+      creditRemaining = roundAmount(creditRemaining - offset);
+      let creditToApply = offset;
+      for (const credit of creditRows) {
+        if (creditToApply <= 0) break;
+        const availableCredit = Math.max(0, Math.abs(Number(credit.total_amount || 0)) - Number(credit.offset_amount || 0));
+        if (availableCredit <= 0) continue;
+        const creditUsed = Math.min(creditToApply, availableCredit);
+        credit.offset_amount = roundAmount(Number(credit.offset_amount || 0) + creditUsed);
+        creditToApply = roundAmount(creditToApply - creditUsed);
+        if (Math.abs(Number(credit.total_amount || 0)) - Number(credit.offset_amount || 0) <= 0.005) {
+          credit.status = 'offset';
+        }
+        await credit.save({ transaction, fields: ['offset_amount', 'status'] });
+      }
+    }
+    for (const row of rows) {
+      if (row.offsetAmount > 0) {
+        row.payable.offset_amount = roundAmount(Number(row.payable.offset_amount || 0) + row.offsetAmount);
+        await row.payable.save({ transaction, fields: ['offset_amount'] });
+      }
+    }
+    const finalRows = rows.filter(row => row.amount > 0);
+    const totalAmount = roundAmount(finalRows.reduce((sum, row) => sum + row.amount, 0));
     if (totalAmount <= 0) ctx.throw(400, 'settlement amount must be greater than zero');
     settlement = await Settlement.create({
       settlement_id: generateUUID(),
@@ -308,7 +347,7 @@ async function createSettlement(ctx) {
       remark: String(remark || '').trim().slice(0, 512) || null,
       create_user: user?.name || user?.phone || ''
     }, { transaction });
-    for (const row of rows) {
+    for (const row of finalRows) {
       await SettlementItem.create({
         settlement_id: settlement.settlement_id,
         payable_id: row.payable.payable_id,
@@ -321,7 +360,7 @@ async function createSettlement(ctx) {
         amount: row.amount
       }, { transaction });
     }
-    for (const payableId of new Set(rows.map(row => row.payable.payable_id))) {
+    for (const payableId of new Set(finalRows.map(row => row.payable.payable_id))) {
       await refreshPayableState(payableId, transaction);
     }
   });

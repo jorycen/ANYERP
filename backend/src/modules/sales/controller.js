@@ -185,8 +185,8 @@ function canQueryAllSalesOrders(user) {
 
 async function list(ctx) {
   const {
-    storeId, startDate, endDate, customerPhone, orderNo,
-    status, createUser, pnCode, snCode,
+    storeId, startDate, endDate, customerPhone, customerName, orderNo,
+    status, createUser, submitUser, productName, productCode, pnCode, snCode,
     page = 1, pageSize = 20
   } = ctx.query;
   const user = ctx.state.user;
@@ -216,6 +216,9 @@ async function list(ctx) {
   if (customerPhone) {
     where.customer_phone = { [Op.like]: `%${customerPhone}%` };
   }
+  if (customerName) {
+    where.customer_name = { [Op.like]: `%${customerName}%` };
+  }
   if (orderNo) {
     where.order_no = { [Op.like]: `%${orderNo}%` };
   }
@@ -224,6 +227,17 @@ async function list(ctx) {
   }
   if (createUser) {
     where.create_user = { [Op.like]: `%${createUser}%` };
+  }
+  if (submitUser) {
+    where[Op.or] = [
+      { submit_user: { [Op.like]: `%${submitUser}%` } },
+      {
+        [Op.and]: [
+          { [Op.or]: [{ submit_user: { [Op.is]: null } }, { submit_user: '' }] },
+          { create_user: { [Op.like]: `%${submitUser}%` } }
+        ]
+      }
+    ];
   }
 
   if (storeId) {
@@ -249,6 +263,15 @@ async function list(ctx) {
   if (pnCode) itemWhere.pn_code = { [Op.like]: `%${pnCode}%` };
   if (snCode) itemWhere.sn_code = { [Op.like]: `%${snCode}%` };
   const itemInclude = { model: OrderItem };
+  if (productName) itemWhere.product_name = { [Op.like]: `%${productName}%` };
+  if (productCode) {
+    itemInclude.include = [{
+      model: Product,
+      where: { product_code: { [Op.like]: `%${productCode}%` } },
+      required: true
+    }];
+    itemInclude.required = true;
+  }
   if (Object.keys(itemWhere).length > 0) {
     itemInclude.where = itemWhere;
     itemInclude.required = true;
@@ -500,8 +523,8 @@ async function exportOrders(ctx) {
   }
 
   const {
-    storeId, startDate, endDate, customerPhone, orderNo,
-    status, createUser, pnCode, snCode
+    storeId, startDate, endDate, customerPhone, customerName, orderNo,
+    status, createUser, submitUser, productName, productCode, pnCode, snCode
   } = ctx.query;
   const roles = getUserRoles(user);
   const where = { is_deleted: 0 };
@@ -521,11 +544,24 @@ async function exportOrders(ctx) {
     if (dateRange) where.create_time = dateRange;
   }
   if (customerPhone) where.customer_phone = { [Op.like]: `%${customerPhone}%` };
+  if (customerName) where.customer_name = { [Op.like]: `%${customerName}%` };
   if (orderNo) where.order_no = { [Op.like]: `%${orderNo}%` };
   if (status) where.order_status = status;
   if (createUser) where.create_user = { [Op.like]: `%${createUser}%` };
+  if (submitUser) {
+    where[Op.or] = [
+      { submit_user: { [Op.like]: `%${submitUser}%` } },
+      {
+        [Op.and]: [
+          { [Op.or]: [{ submit_user: { [Op.is]: null } }, { submit_user: '' }] },
+          { create_user: { [Op.like]: `%${submitUser}%` } }
+        ]
+      }
+    ];
+  }
 
   const itemWhere = {};
+  if (productName) itemWhere.product_name = { [Op.like]: `%${productName}%` };
   if (pnCode) itemWhere.pn_code = { [Op.like]: `%${pnCode}%` };
   if (snCode) itemWhere.sn_code = { [Op.like]: `%${snCode}%` };
   const itemInclude = { model: OrderItem };
@@ -533,12 +569,17 @@ async function exportOrders(ctx) {
     itemInclude.where = itemWhere;
     itemInclude.required = true;
   }
+  const productInclude = {
+    model: Product,
+    attributes: ['product_id', 'product_code', 'name'],
+    ...(productCode ? { where: { product_code: { [Op.like]: `%${productCode}%` } }, required: true } : {})
+  };
 
   const orders = await Order.findAll({
     where,
     include: [
       storeInclude,
-      { ...itemInclude, include: [{ model: Product, attributes: ['product_id', 'product_code', 'name'] }] },
+      { ...itemInclude, include: [productInclude] },
       { model: OrderPayment },
       { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false },
       {
@@ -1461,7 +1502,7 @@ async function create(ctx) {
     actual_payment: actualPayment,
     invoice_status: invoiceStatus,
     order_status: finalOrderStatus,
-    inventory_reserved: 0,
+    inventory_reserved: isDraft ? 0 : 1,
     remark: remark || (needsApproval ? '售价低于定价, 待审批' : '')
   };
   if (!isDraft) {
@@ -1516,6 +1557,11 @@ async function create(ctx) {
       deposit_id: payment.depositId || payment.deposit_id || null,
       amount: payment.amount
     }, { transaction });
+  }
+
+  if (!isDraft) {
+    const savedOrder = existingOrder || await Order.findByPk(orderId, { transaction });
+    await reserveInventoryForOrder(savedOrder, transaction);
   }
 
   if (reservedDeposit) {
@@ -1691,7 +1737,7 @@ async function detail(ctx) {
   if (snCodes.length > 0) {
     const snRows = await ProductSn.findAll({
       where: { sn_code: { [Op.in]: snCodes } },
-      attributes: ['sn_id', 'sn_code', 'pn_code', 'inventory_type', 'tax_type'],
+      attributes: ['sn_id', 'sn_code', 'pn_code', 'inventory_type', 'tax_type', 'status'],
       raw: true
     });
     const snMap = new Map(snRows.map(sn => [`${sn.pn_code || ''}|${sn.sn_code}`, sn]));
@@ -1703,6 +1749,10 @@ async function detail(ctx) {
         pn_code: item.pn_code || sn?.pn_code || '',
         sn_code: item.sn_code || '',
         inventory_type: item.inventory_type || sn?.inventory_type || '',
+        inventory_status: item.inventory_status || sn?.status || '',
+        inventory_status_label: sn?.status === 'reserved' || sn?.status === 'occupied'
+          ? '已占用'
+          : (sn?.status === 'sold' ? '已销售' : (sn?.status || '')),
         resource_summary: sn ? summaryMap.get(sn.sn_id) : null
       };
     });
@@ -2473,9 +2523,9 @@ function generateBusinessNo(prefix) {
   return `${prefix}${yyyy}${mm}${dd}${hh}${mi}${ss}${random}`;
 }
 
-function pickReturnItemQuantity(item, sourceItem) {
+function pickReturnItemQuantity(item, sourceItem, defaultQuantity = Number(sourceItem.quantity || 1)) {
   const value = item?.quantity ?? item?.returnQuantity ?? item?.return_quantity;
-  if (value === undefined || value === null || value === '') return Number(sourceItem.quantity || 1);
+  if (value === undefined || value === null || value === '') return defaultQuantity;
   const quantity = Math.floor(Number(value));
   return Number.isFinite(quantity) ? Math.min(Math.max(quantity, 0), Number(sourceItem.quantity || 1)) : 0;
 }
@@ -2536,6 +2586,19 @@ async function requestSalesReturn(ctx) {
     const orderItems = order.OrderItems || [];
     if (orderItems.length === 0) ctx.throw(400, '订单没有商品明细，无法提交退单申请');
     const requested = Array.isArray(requestedItems) ? requestedItems : [];
+    const hasExplicitItems = requested.length > 0;
+    const completedReturns = await SalesReturnRequest.findAll({
+      where: { order_id: order.order_id, status: 'completed' },
+      include: [{ model: SalesReturnRequestItem, as: 'items' }],
+      transaction
+    });
+    const returnedQuantityByItemId = new Map();
+    completedReturns.forEach(completedReturn => {
+      (completedReturn.items || []).forEach(item => {
+        const key = String(item.order_item_id || '');
+        returnedQuantityByItemId.set(key, (returnedQuantityByItemId.get(key) || 0) + Number(item.quantity || 0));
+      });
+    });
     const requestedById = new Map(requested.map(item => [String(item.itemId || item.item_id || item.orderItemId || item.order_item_id || item.id || ''), item]));
     const selectedItems = orderItems.map(sourceItem => {
       const item = requestedById.get(String(sourceItem.item_id)) || requested.find(candidate => {
@@ -2545,7 +2608,15 @@ async function requestSalesReturn(ctx) {
           candidateSn === String(sourceItem.sn_code || '') &&
           candidatePn === String(sourceItem.pn_code || '');
       });
-      const quantity = pickReturnItemQuantity(item, sourceItem);
+      const requestedQuantity = hasExplicitItems
+        ? pickReturnItemQuantity(item, sourceItem, 0)
+        : pickReturnItemQuantity(item, sourceItem);
+      const returnedQuantity = returnedQuantityByItemId.get(String(sourceItem.item_id)) || 0;
+      const remainingQuantity = Math.max(Number(sourceItem.quantity || 0) - returnedQuantity, 0);
+      if (requestedQuantity > remainingQuantity) {
+        ctx.throw(400, `商品 ${sourceItem.product_name || sourceItem.product_id} 可退数量仅剩 ${remainingQuantity}`);
+      }
+      const quantity = requestedQuantity;
       return { sourceItem, quantity };
     }).filter(row => row.quantity > 0);
     if (selectedItems.length === 0) ctx.throw(400, '退单商品明细不能为空');
@@ -2558,6 +2629,9 @@ async function requestSalesReturn(ctx) {
     const returnId = generateUUID();
     const returnNo = generateBusinessNo('RET');
 
+    const selectedQuantity = selectedItems.reduce((sum, row) => sum + row.quantity, 0);
+    const orderQuantity = orderItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+    const returnType = selectedQuantity < orderQuantity ? 'partial' : 'full';
     await SalesReturnRequest.create({
       return_id: returnId,
       return_no: returnNo,
@@ -2566,7 +2640,7 @@ async function requestSalesReturn(ctx) {
       store_id: order.store_id,
       customer_name: order.customer_name || '',
       customer_phone: order.customer_phone || '',
-      return_type: 'full',
+      return_type: returnType,
       refund_amount: refundAmount,
       reason: String(reason || '').trim() || '客户退单',
       status: 'pending',
@@ -3279,7 +3353,7 @@ async function reserveInventoryForOrder(order, transaction = null) {
     }
 
     const quantity = Number(item.quantity || 1);
-    if (product.need_sn === 1) {
+    if (Number(product.need_sn || 0) === 1) {
       const snCode = String(item.sn_code || '').trim();
       if (!snCode) {
         throw archiveError(`商品 ${item.product_name || product.name} 需要SN管理，请先填写SN码`);
@@ -3559,6 +3633,7 @@ module.exports = {
     releaseDepositRedemptionForOrder,
     normalizePnCode,
     validateAndDeductInventoryForArchive,
+    reserveInventoryForOrder,
     normalizeSubsidyPhotos,
     hasSubsidyPhotoFilter,
     inferSubsidyPhotoExtension,

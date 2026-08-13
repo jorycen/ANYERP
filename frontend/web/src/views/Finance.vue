@@ -386,7 +386,7 @@
               <template #default="{ row }">{{ getPayablePayeeName(row) }}</template>
             </el-table-column>
             <el-table-column prop="total_amount" label="应付金额" width="120">
-              <template #default="{ row }">¥{{ row.total_amount }}</template>
+              <template #default="{ row }">¥{{ formatMoney(row.total_amount) }}</template>
             </el-table-column>
             <el-table-column prop="paid_amount" label="已付金额" width="120">
               <template #default="{ row }">¥{{ row.paid_amount }}</template>
@@ -396,8 +396,8 @@
             </el-table-column>
             <el-table-column prop="status" label="状态" width="100">
               <template #default="{ row }">
-                <el-tag :type="row.status === 'partial_settled' ? 'warning' : 'danger'">
-                  {{ row.status === 'partial_settled' ? '部分结算' : '待付款' }}
+                <el-tag :type="row.status === 'credit' ? 'warning' : row.status === 'offset' ? 'success' : row.status === 'partial_settled' ? 'warning' : 'danger'">
+                  {{ row.status === 'credit' ? '供应商待抵扣' : row.status === 'offset' ? '已抵扣' : row.status === 'partial_settled' ? '部分结算' : '待付款' }}
                 </el-tag>
               </template>
             </el-table-column>
@@ -407,7 +407,7 @@
                 <el-button v-if="row.source_type === 'expense' || row.source_type === 'reimbursement'" link type="primary" @click="handleCreateExpenseSettlement(row)">
                   生成结算单
                 </el-button>
-                <el-button v-else link type="primary" @click="openSingleSettlementDialog(row)">结算</el-button>
+                <el-button v-else-if="Number(row.remaining_amount || 0) > 0" link type="primary" @click="openSingleSettlementDialog(row)">结算</el-button>
               </template>
             </el-table-column>
           </el-table>

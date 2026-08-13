@@ -434,7 +434,7 @@
     <el-dialog v-model="adjustmentDialogVisible" title="采购退单 / 数量调整" width="1100px" @close="resetAdjustmentForm">
       <div v-if="adjustmentRequest" class="adjustment-summary">
         <el-alert
-          title="仅可调整尚未入库的数量；已入库数量如需退回，请到库存管理办理退库。提交后原采购单和原入库单保留历史，系统新增正负待付款调整记录。"
+          title="输入本次退库数量即可。未入库商品会取消待入库数量；已入库商品会同步扣减库存。SN商品必须选择对应的在库SN。原采购单、入库单和付款记录保留历史，系统新增负向应付款调整。"
           type="warning"
           :closable="false"
           show-icon
@@ -449,26 +449,48 @@
       <el-table :data="adjustmentRows" stripe border size="small" style="margin-top: 16px;">
         <el-table-column prop="product_name" label="商品" min-width="180" show-overflow-tooltip />
         <el-table-column prop="store_name" label="门店" width="120" />
-        <el-table-column prop="inbound_no" label="待入库单" width="170" />
+        <el-table-column prop="inbound_no" label="入库单" width="170" />
         <el-table-column prop="unit_price" label="采购单价" width="105" align="right">
           <template #default="{ row }">¥{{ formatMoney(row.unit_price) }}</template>
         </el-table-column>
         <el-table-column prop="original_quantity" label="原采购数量" width="105" align="right" />
         <el-table-column prop="received_quantity" label="已入库数量" width="105" align="right" />
-        <el-table-column prop="pending_quantity" label="当前待入库" width="105" align="right" />
-        <el-table-column label="调整后待入库" width="155" align="right">
+        <el-table-column label="处理类型" width="110">
+          <template #default="{ row }">{{ row.operation_type === 'stock_return' ? '已入库退库' : '取消待入库' }}</template>
+        </el-table-column>
+        <el-table-column label="可处理数量" width="105" align="right">
+          <template #default="{ row }">{{ row.max_return_quantity }}</template>
+        </el-table-column>
+        <el-table-column label="本次退库数量" width="155" align="right">
           <template #default="{ row }">
             <el-input-number
               v-if="row.editable"
-              v-model="row.target_quantity"
+              v-model="row.return_quantity"
               :min="0"
+              :max="row.max_return_quantity"
               :precision="0"
               :step="1"
               controls-position="right"
               size="small"
               style="width: 130px"
             />
-            <span v-else style="color: #909399;">{{ row.received_quantity }}（已入库）</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="选择SN" min-width="210" v-if="adjustmentRows.some(row => row.need_sn && row.operation_type === 'stock_return')">
+          <template #default="{ row }">
+            <el-select
+              v-if="row.need_sn && row.operation_type === 'stock_return'"
+              v-model="row.sn_ids"
+              multiple
+              collapse-tags
+              filterable
+              placeholder="请选择SN"
+              size="small"
+              style="width: 195px"
+            >
+              <el-option v-for="sn in row.sn_options" :key="sn.sn_id" :label="sn.sn_code" :value="sn.sn_id" />
+            </el-select>
+            <span v-else style="color: #909399;">无需选择</span>
           </template>
         </el-table-column>
         <el-table-column label="应付调整" width="120" align="right">
@@ -809,14 +831,13 @@ const requestItemActualAmount = (item) => {
 
 const adjustmentRowAmount = (row) => {
   if (!row?.editable) return 0
-  const delta = toQuantity(row.target_quantity) - toQuantity(row.pending_quantity)
-  return delta * toNumber(row.actual_unit_price ?? row.unit_price)
+  return -toQuantity(row.return_quantity) * toNumber(row.actual_unit_price ?? row.unit_price)
 }
 
 const adjustmentTotalQuantityDelta = computed(() => {
   return adjustmentRows.value.reduce((sum, row) => {
     if (!row?.editable) return sum
-    return sum + toQuantity(row.target_quantity) - toQuantity(row.pending_quantity)
+    return sum - toQuantity(row.return_quantity)
   }, 0)
 })
 
@@ -825,7 +846,7 @@ const adjustmentTotalAmountDelta = computed(() => {
 })
 
 const hasAdjustmentChanges = computed(() => adjustmentRows.value.some(row => (
-  row?.editable && toQuantity(row.target_quantity) !== toQuantity(row.pending_quantity)
+  row?.editable && toQuantity(row.return_quantity) > 0
 )))
 
 const toQuantity = (value) => {
@@ -1260,7 +1281,8 @@ const handleAdjustment = async (row) => {
       adjustmentRequest.value = res.data
       adjustmentRows.value = (res.data?.rows || []).map(item => ({
         ...item,
-        target_quantity: toQuantity(item.target_quantity)
+        return_quantity: 0,
+        sn_ids: []
       }))
       adjustmentReason.value = ''
       adjustmentDialogVisible.value = true
@@ -1280,7 +1302,7 @@ const handleAdjustmentSubmit = async () => {
 
   try {
     await ElMessageBox.confirm(
-      `确认提交本次采购退单吗？数量变化 ${adjustmentTotalQuantityDelta.value}，应付变化 ¥${adjustmentTotalAmountDelta.value.toFixed(2)}`,
+      `确认提交本次采购退单吗？退库数量 ${Math.abs(adjustmentTotalQuantityDelta.value)}，应付变化 ¥${adjustmentTotalAmountDelta.value.toFixed(2)}`,
       '确认采购退单',
       { type: 'warning', confirmButtonText: '确认提交', cancelButtonText: '取消' }
     )
@@ -1297,7 +1319,8 @@ const handleAdjustmentSubmit = async () => {
         .filter(row => row.editable)
         .map(row => ({
           inboundItemId: row.inbound_item_id,
-          targetQuantity: toQuantity(row.target_quantity)
+          returnQuantity: toQuantity(row.return_quantity),
+          snIds: row.sn_ids || []
         }))
     })
     if (res.code === 0) {

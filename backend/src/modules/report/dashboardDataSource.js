@@ -1,7 +1,7 @@
 const { QueryTypes } = require('sequelize');
 const { sequelize } = require('../../models');
 
-const ARCHIVED_STATUSES = ['已归档', 'completed', 'archived'];
+const ARCHIVED_STATUSES = ['已归档', 'completed', 'archived', 'returned'];
 const GROSS_PROFIT_FORMULA_VERSION = 'ORDER_GP_V5_20260706';
 
 function toNumber(value) {
@@ -305,6 +305,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
     const where = buildSalesWhere(filters, range, { includeProduct: false });
     return this.query(
       `SELECT pa.ORDER_ID AS orderId,
+              NULL AS participantKey,
               pa.SIGNED_AMOUNT AS signedAmount,
               pa.REASON AS reason,
               pa.ADJUSTMENT_TYPE AS adjustmentType,
@@ -313,7 +314,17 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
          INNER JOIN T_ORDER o ON o.ORDER_ID = pa.ORDER_ID
         WHERE pa.STATUS = 'approved'
           AND ${where.sql}
-        ORDER BY pa.CREATE_TIME ASC`,
+        UNION ALL
+       SELECT rgp.ORDER_ID AS orderId,
+              rgp.PARTICIPANT_KEY AS participantKey,
+              rgp.GROSS_PROFIT_AMOUNT AS signedAmount,
+              rgp.REASON AS reason,
+              'return' AS adjustmentType,
+              rgp.RETURN_NO AS adjustmentNo
+         FROM T_SALES_RETURN_GROSS_PROFIT rgp
+         INNER JOIN T_ORDER o ON o.ORDER_ID = rgp.ORDER_ID
+        WHERE ${where.sql}
+        ORDER BY orderId, adjustmentNo`,
       where.replacements
     );
   }

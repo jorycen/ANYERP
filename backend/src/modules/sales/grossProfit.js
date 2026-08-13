@@ -4,6 +4,8 @@ const {
   OrderPayment,
   OrderSupplement,
   OrderGrossProfit,
+  SalesReturnRequestItem,
+  SalesReturnGrossProfitLedger,
   DepositOrder,
   DepositRedemption,
   PaymentMethod,
@@ -459,6 +461,121 @@ async function buildSupplementDetails(orderId, transaction) {
   }));
 }
 
+function normalizeGrossProfitParticipants(order = {}) {
+  const participants = [];
+  const seen = new Set();
+  const add = (staffId, name, role) => {
+    const normalizedStaffId = staffId === null || staffId === undefined || staffId === '' ? null : String(staffId);
+    const normalizedName = String(name || '').trim() || '未命名员工';
+    const key = normalizedStaffId ? `id:${normalizedStaffId}` : `name:${normalizedName}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    participants.push({
+      key,
+      staffId: normalizedStaffId,
+      employeeName: normalizedName,
+      participantRole: role
+    });
+  };
+
+  add(order.create_staff_id, order.create_user, 'primary');
+  parseJsonArray(order.auxiliary_sales_list).forEach(item => {
+    if (!item || typeof item !== 'object') return;
+    add(
+      item.staffId ?? item.staff_id ?? item.id,
+      item.name ?? item.staffName ?? item.staff_name ?? item.selected,
+      'auxiliary'
+    );
+  });
+  return participants;
+}
+
+/**
+ * Create an immutable negative gross-profit row for every original order
+ * participant after the return inbound is completed. The unique key on
+ * (return_id, participant_key) makes retries and repeated callbacks safe.
+ */
+async function createSalesReturnGrossProfitLedger({ returnRequest, transaction = null, createdBy = 'system' } = {}) {
+  if (!returnRequest?.return_id || !returnRequest?.order_id) return [];
+
+  const existing = await SalesReturnGrossProfitLedger.findAll({
+    where: { return_id: returnRequest.return_id },
+    transaction,
+    lock: transaction?.LOCK?.UPDATE
+  });
+  if (existing.length > 0) return existing;
+
+  const order = await Order.findByPk(returnRequest.order_id, { transaction, lock: transaction?.LOCK?.UPDATE });
+  if (!order) throw new Error(`Return gross profit order does not exist: ${returnRequest.order_id}`);
+  const returnItems = await SalesReturnRequestItem.findAll({
+    where: { return_id: returnRequest.return_id },
+    transaction,
+    lock: transaction?.LOCK?.UPDATE
+  });
+  if (!returnItems.length) return [];
+
+  let snapshot = await OrderGrossProfit.findOne({ where: { order_id: order.order_id }, transaction });
+  if (!snapshot || snapshot.formula_version !== FORMULA_VERSION) {
+    snapshot = await calculateAndSaveOrderGrossProfit(order.order_id, {
+      transaction,
+      calculatedBy: createdBy,
+      force: !snapshot,
+      final: true
+    });
+  }
+
+  const returnedSalesAmount = roundMoney(returnItems.reduce(
+    (sum, item) => sum + toNumber(item.unit_price) * Math.max(0, toNumber(item.quantity)),
+    0
+  ));
+  if (returnedSalesAmount <= 0) return [];
+
+  const orderTotalAmount = toNumber(order.total_amount);
+  const snapshotGrossProfit = toNumber(snapshot?.gross_profit_amount);
+  const reversedGrossProfit = roundMoney(orderTotalAmount > 0
+    ? snapshotGrossProfit * returnedSalesAmount / orderTotalAmount
+    : returnItems.reduce((sum, item) => sum + toNumber(item.subtotal), 0));
+  const negativeSalesAmount = -returnedSalesAmount;
+  const negativeGrossProfit = -reversedGrossProfit;
+  const participants = normalizeGrossProfitParticipants(order);
+  if (!participants.length) return [];
+
+  const reason = `销售退单 ${returnRequest.return_no} 完成，冲减原订单毛利`;
+  const rows = [];
+  let allocatedSales = 0;
+  let allocatedGrossProfit = 0;
+  for (let index = 0; index < participants.length; index += 1) {
+    const participant = participants[index];
+    const isLast = index === participants.length - 1;
+    const salesAmount = isLast
+      ? roundMoney(negativeSalesAmount - allocatedSales)
+      : roundMoney(negativeSalesAmount / participants.length);
+    const grossProfitAmount = isLast
+      ? roundMoney(negativeGrossProfit - allocatedGrossProfit)
+      : roundMoney(negativeGrossProfit / participants.length);
+    allocatedSales = roundMoney(allocatedSales + salesAmount);
+    allocatedGrossProfit = roundMoney(allocatedGrossProfit + grossProfitAmount);
+    rows.push(await SalesReturnGrossProfitLedger.create({
+      ledger_id: generateUUID(),
+      return_id: returnRequest.return_id,
+      return_no: returnRequest.return_no,
+      order_id: order.order_id,
+      order_no: order.order_no,
+      store_id: order.store_id,
+      participant_key: participant.key,
+      staff_id: participant.staffId,
+      employee_name: participant.employeeName,
+      participant_role: participant.participantRole,
+      returned_sales_amount: salesAmount,
+      gross_profit_amount: grossProfitAmount,
+      reason,
+      create_user: createdBy,
+      create_time: new Date()
+    }, { transaction }));
+  }
+  return rows;
+}
+
 async function buildFreightCostDetails(orderId, transaction) {
   const orderItems = await OrderItem.findAll({ where: { order_id: orderId }, transaction, raw: true });
   const details = [];
@@ -633,6 +750,7 @@ module.exports = {
   resolveUnitProductPricing,
   calculateGrossProfitValues,
   calculateAndSaveOrderGrossProfit,
+  createSalesReturnGrossProfitLedger,
   refreshOutdatedGrossProfitSnapshots,
   snapshotToResponse
 };

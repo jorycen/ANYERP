@@ -33,6 +33,8 @@
           <el-button type="primary" plain :loading="batchDownloading" @click="downloadAllPhotos">批量下载查询结果</el-button>
         </el-form-item>
       </el-form>
+      <el-progress v-if="batchDownloading" :percentage="downloadProgress ?? 0" :indeterminate="downloadProgress === null" :status="downloadProgress === 100 ? 'success' : undefined" :format="formatDownloadProgress" class="download-progress" />
+      <div v-if="batchDownloading" class="download-status">{{ downloadStatus }}</div>
     </el-card>
 
     <el-card shadow="never" class="result-card">
@@ -142,7 +144,13 @@ const replaceLoading = ref(false)
 const replaceOrder = ref(null)
 const uploadFiles = ref([])
 const batchDownloading = ref(false)
+const downloadProgress = ref(0)
+const downloadStatus = ref('正在准备下载…')
 const objectUrls = new Set()
+
+function formatDownloadProgress(percentage) {
+  return downloadProgress.value === null ? '正在下载' : `${percentage}%`
+}
 
 function formatDate(value) {
   if (!value) return '-'
@@ -363,22 +371,37 @@ async function downloadAllPhotos() {
     ElMessage.warning('当前时间范围超过一周，批量下载可能超时，建议缩小到一周以内')
   }
   batchDownloading.value = true
+  downloadProgress.value = 0
+  downloadStatus.value = '正在准备下载…'
   try {
     const ticketResponse = await api.createSubsidyPhotosDownloadTicket(getQueryParams())
     const ticket = ticketResponse.data?.ticket
     if (!ticket) throw new Error('下载凭证生成失败，请重试')
-    const url = api.getSubsidyPhotosDownloadUrl(ticket, getQueryParams())
+    downloadStatus.value = '正在生成压缩文件…'
+    downloadProgress.value = null
+    const response = await api.downloadSubsidyPhotosArchiveWithProgress(ticket, getQueryParams(), progress => {
+      downloadProgress.value = progress
+      if (progress !== null) downloadStatus.value = `正在下载压缩文件… ${progress}%`
+    })
+    const url = URL.createObjectURL(response.data)
     const link = document.createElement('a')
     link.href = url
+    link.download = `查询结果-国补照片-${new Date().toISOString().slice(0, 10)}.zip`
     link.style.display = 'none'
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
-    ElMessage.success('下载已开始，请在浏览器下载栏查看进度')
+    downloadProgress.value = 100
+    downloadStatus.value = '下载完成，文件已保存'
+    ElMessage.success('下载完成，文件已保存')
   } catch (error) {
     ElMessage.error(`批量下载失败：${await getDownloadErrorMessage(error)}`)
   } finally {
     batchDownloading.value = false
+    setTimeout(() => {
+      downloadProgress.value = 0
+      downloadStatus.value = ''
+    }, 1500)
   }
 }
 
@@ -434,4 +457,6 @@ onBeforeUnmount(revokeObjectUrls)
 .pagination { margin-top: 16px; justify-content: flex-end; }
 .replace-alert { margin-bottom: 16px; }
 .replace-order-info { margin-bottom: 12px; color: #606266; }
+.download-progress { margin-top: 12px; max-width: 520px; }
+.download-status { margin-top: 6px; color: #606266; font-size: 13px; }
 </style>

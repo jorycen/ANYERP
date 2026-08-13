@@ -111,6 +111,35 @@ function buildNativeDownloadUrl(pathname, params = {}) {
   return url.toString()
 }
 
+function downloadBlobWithProgress(pathname, params = {}, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('GET', buildNativeDownloadUrl(pathname, params), true)
+    xhr.responseType = 'blob'
+    xhr.onprogress = event => {
+      onProgress?.(event.lengthComputable ? Math.round((event.loaded / event.total) * 100) : null)
+    }
+    xhr.onload = async () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress?.(100)
+        resolve({ data: xhr.response, headers: { 'content-disposition': xhr.getResponseHeader('Content-Disposition') || '' } })
+        return
+      }
+      let message = `下载失败（HTTP ${xhr.status}）`
+      try {
+        const payload = JSON.parse(await xhr.response.text())
+        message = payload?.message || message
+      } catch (_) {
+        // 保留通用错误提示
+      }
+      reject(Object.assign(new Error(message), { response: { data: xhr.response, status: xhr.status } }))
+    }
+    xhr.onerror = () => reject(new Error('下载请求失败，请检查网络连接'))
+    xhr.onabort = () => reject(new Error('下载已取消'))
+    xhr.send()
+  })
+}
+
 exportApi.interceptors.request.use(
   config => {
     const token = localStorage.getItem('token')
@@ -180,6 +209,11 @@ export default {
     ...params,
     downloadToken: ticket
   }),
+  downloadSubsidyPhotosArchiveWithProgress: (ticket, params, onProgress) => downloadBlobWithProgress(
+    '/sales/subsidy-photos/batch-download',
+    { ...params, downloadToken: ticket },
+    onProgress
+  ),
   resolveCloudFileUrls: (fileIds) => api.post('/storage/file-urls', { fileIds }),
   replaceSubsidyPhotos: (orderId, data) => api.post(`/sales/subsidy-photos/${orderId}`, data, {
     headers: { 'Content-Type': 'multipart/form-data' }

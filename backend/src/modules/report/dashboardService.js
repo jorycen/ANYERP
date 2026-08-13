@@ -172,7 +172,8 @@ function buildEmployeePerformance(orderRows, adjustmentRows, selectedEmployeeId,
       signedAmount: roundMoney(row.signedAmount),
       reason: row.reason || '',
       adjustmentType: row.adjustmentType,
-      adjustmentNo: row.adjustmentNo
+      adjustmentNo: row.adjustmentNo,
+      participantKey: row.participantKey ? String(row.participantKey) : ''
     });
   });
 
@@ -183,11 +184,10 @@ function buildEmployeePerformance(orderRows, adjustmentRows, selectedEmployeeId,
     if (!participants.length) return;
     const participantCount = participants.length;
     const adjustments = adjustmentMap.get(String(order.order_id)) || [];
-    const totalAdjustment = roundMoney(adjustments.reduce((sum, row) => sum + row.signedAmount, 0));
+    const sharedAdjustments = adjustments.filter(row => !row.participantKey);
+    const totalAdjustment = roundMoney(sharedAdjustments.reduce((sum, row) => sum + row.signedAmount, 0));
     const salesShare = roundMoney(toNumber(order.sales_amount) / participantCount);
     const baseProfitShare = roundMoney(toNumber(order.base_gross_profit) / participantCount);
-    const adjustmentShare = roundMoney(totalAdjustment / participantCount);
-    const grossProfitShare = roundMoney(baseProfitShare + adjustmentShare);
 
     participants.forEach(participant => {
       if (selectedEmployeeId && String(participant.staffId || '') !== String(selectedEmployeeId)) return;
@@ -202,11 +202,19 @@ function buildEmployeePerformance(orderRows, adjustmentRows, selectedEmployeeId,
           participatedOrderCount: 0
         });
       }
+      const participantAdjustments = adjustments.filter(row => (
+        !row.participantKey || row.participantKey === participant.key
+      ));
+      const directAdjustment = roundMoney(participantAdjustments
+        .filter(row => row.participantKey)
+        .reduce((sum, row) => sum + row.signedAmount, 0));
+      const participantAdjustment = roundMoney(directAdjustment + totalAdjustment / participantCount);
+      const participantGrossProfitShare = roundMoney(baseProfitShare + participantAdjustment);
       const rank = rankMap.get(participant.key);
       rank.salesAmount += salesShare;
       rank.baseGrossProfit += baseProfitShare;
-      rank.approvedAdjustment += adjustmentShare;
-      rank.grossProfit += grossProfitShare;
+      rank.approvedAdjustment += participantAdjustment;
+      rank.grossProfit += participantGrossProfitShare;
       rank.participatedOrderCount += 1;
 
       details.push({
@@ -222,9 +230,9 @@ function buildEmployeePerformance(orderRows, adjustmentRows, selectedEmployeeId,
         allocatedSalesAmount: salesShare,
         orderBaseGrossProfit: canViewProfit ? roundMoney(order.base_gross_profit) : null,
         allocatedBaseGrossProfit: canViewProfit ? baseProfitShare : null,
-        allocatedAdjustment: canViewProfit ? adjustmentShare : null,
-        allocatedGrossProfit: canViewProfit ? grossProfitShare : null,
-        reasons: canViewProfit ? adjustments : [],
+        allocatedAdjustment: canViewProfit ? participantAdjustment : null,
+        allocatedGrossProfit: canViewProfit ? participantGrossProfitShare : null,
+        reasons: canViewProfit ? participantAdjustments : [],
         allocationReason: `主销售与${Math.max(0, participantCount - 1)}名辅助销售平均分摊`
       });
     });

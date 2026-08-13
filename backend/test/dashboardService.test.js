@@ -18,6 +18,35 @@ test('经营看板默认日期使用中国时区本周并生成等长环比周�
   assert.equal(ranges.yoy.endDate, '2025-07-05');
 });
 
+test('退单负向毛利只记到对应个人，普通调整仍按参与人均分', () => {
+  const result = buildEmployeePerformance([{
+    order_id: 'ORDER_RETURN_1',
+    order_no: 'SO-RETURN-1',
+    create_time: '2026-08-13T02:00:00.000Z',
+    store_name: '测试门店',
+    create_staff_id: 1,
+    create_user: '主销售',
+    auxiliary_sales_list: [{ staffId: 2, selected: '辅助销售' }],
+    sales_amount: 1000,
+    base_gross_profit: 200
+  }], [{
+    orderId: 'ORDER_RETURN_1',
+    participantKey: 'id:1',
+    signedAmount: -50,
+    reason: '销售退单 RET001 完成，冲减原订单毛利',
+    adjustmentType: 'return',
+    adjustmentNo: 'RET001'
+  }], '', true);
+
+  const primary = result.ranking.find(row => row.staffId === '1');
+  const auxiliary = result.ranking.find(row => row.staffId === '2');
+  assert.equal(primary.grossProfit, 50);
+  assert.equal(primary.approvedAdjustment, -50);
+  assert.equal(auxiliary.grossProfit, 100);
+  assert.equal(auxiliary.approvedAdjustment, 0);
+  assert.equal(result.details.find(row => row.staffId === '1').reasons[0].adjustmentType, 'return');
+});
+
 test('同比和环比在基数为零时返回 null', () => {
   assert.equal(comparisonRate(100, 0), null);
   assert.equal(comparisonRate(120, 100), 20);

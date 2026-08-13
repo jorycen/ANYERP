@@ -32,6 +32,12 @@ function getOpenPayableStatus(total, settled, paid = 0) {
   return 'unpaid';
 }
 
+function getPayableRemaining(total, settled = 0, offset = 0) {
+  const totalAmount = Number(total || 0);
+  if (totalAmount < 0) return roundAmount(-Math.max(Math.abs(totalAmount) - Number(offset || 0), 0));
+  return roundAmount(totalAmount - Number(settled || 0) - Number(offset || 0));
+}
+
 function getExpenseStatus(total, settled, paid, currentStatus = 'approved') {
   const totalAmount = Number(total || 0);
   const settledAmount = Number(settled || 0);
@@ -100,11 +106,16 @@ async function refreshPayableState(payableId, transaction = null) {
   const payable = await Payable.findByPk(payableId, { transaction, lock: transaction ? transaction.LOCK.UPDATE : undefined });
   if (!payable) return null;
   const state = await getActiveSettlementState(payableId, transaction);
-  const status = getOpenPayableStatus(payable.total_amount, state.settledAmount, state.paidAmount);
+  const remaining = getPayableRemaining(payable.total_amount, state.settledAmount, payable.offset_amount);
+  const status = Number(payable.total_amount || 0) < 0
+    ? (remaining >= -0.005 ? 'offset' : 'credit')
+    : (remaining <= 0.005 ? 'paid' : getOpenPayableStatus(payable.total_amount, state.settledAmount, state.paidAmount));
   await payable.update({
     settled_amount: state.settledAmount,
     paid_amount: state.paidAmount,
-    status
+    status,
+    offset_amount: payable.offset_amount || 0,
+    offset_payable_id: payable.offset_payable_id || null
   }, { transaction });
   return { payable, ...state, status };
 }
@@ -159,6 +170,7 @@ module.exports = {
   roundQuantity,
   actualUnitPrice,
   getOpenPayableStatus,
+  getPayableRemaining,
   getExpenseStatus,
   getActiveSettlementState,
   getAllocationSummary,
