@@ -275,6 +275,44 @@ async function refreshPendingInboundSummary(inbound, transaction) {
   }, { transaction });
 }
 
+function getPurchaseAdjustmentTotals(adjustments = []) {
+  let grossDelta = 0;
+  let actualDelta = 0;
+  let rebateDelta = 0;
+  for (const adjustment of adjustments || []) {
+    actualDelta += Number(adjustment.total_amount_delta || 0);
+    for (const item of adjustment.items || []) {
+      const quantityDelta = Number(item.quantity_delta || 0);
+      const unitPrice = Number(item.unit_price || 0);
+      const grossItemDelta = quantityDelta * unitPrice;
+      grossDelta += grossItemDelta;
+      rebateDelta += grossItemDelta - Number(item.amount_delta || 0);
+    }
+  }
+  return {
+    grossDelta: toSignedMoney(grossDelta),
+    actualDelta: toSignedMoney(actualDelta),
+    rebateDelta: toSignedMoney(rebateDelta)
+  };
+}
+
+function attachCurrentPurchaseAmounts(target, adjustments = []) {
+  const totals = getPurchaseAdjustmentTotals(adjustments);
+  const originalTotal = Number(target.total_amount || 0);
+  const originalRebate = Number(target.rebate_deduction || 0);
+  const rawActual = Number(target.actual_total || 0);
+  const originalActual = target.actual_total === null || target.actual_total === undefined || (rawActual === 0 && originalTotal > 0)
+    ? originalTotal - originalRebate
+    : rawActual;
+  target.original_total_amount = toSignedMoney(originalTotal);
+  target.original_rebate_deduction = toSignedMoney(originalRebate);
+  target.original_actual_total = toSignedMoney(originalActual);
+  target.current_total_amount = toSignedMoney(Math.max(0, originalTotal + totals.grossDelta));
+  target.current_rebate_deduction = toSignedMoney(Math.max(0, originalRebate + totals.rebateDelta));
+  target.current_actual_total = toSignedMoney(Math.max(0, originalActual + totals.actualDelta));
+  return target;
+}
+
 function buildAdjustmentRows(request, inbounds, stores) {
   const storeMap = new Map(stores.map(store => [String(store.store_id), store.name]));
   const rows = [];
@@ -429,8 +467,28 @@ async function getRequestList(ctx) {
     ...paginate({}, { page, pageSize })
   });
 
+  const requestIds = rows.map(row => row.request_id).filter(Boolean);
+  const adjustmentRows = requestIds.length
+    ? await PurchaseAdjustment.findAll({
+      where: { request_id: { [Op.in]: requestIds }, status: 'completed' },
+      attributes: ['adjustment_id', 'request_id', 'total_amount_delta'],
+      include: [{
+        model: PurchaseAdjustmentItem,
+        as: 'items',
+        attributes: ['quantity_delta', 'unit_price', 'amount_delta']
+      }]
+    })
+    : [];
+  const adjustmentsByRequest = new Map();
+  adjustmentRows.forEach(adjustment => {
+    const key = String(adjustment.request_id);
+    if (!adjustmentsByRequest.has(key)) adjustmentsByRequest.set(key, []);
+    adjustmentsByRequest.get(key).push(adjustment);
+  });
+
   const formattedRows = rows.map(row => {
     const result = row.toJSON();
+    attachCurrentPurchaseAmounts(result, adjustmentsByRequest.get(String(result.request_id)) || []);
     result.store_name = result.Store?.name || '';
     result.applicant_store_id = result.Applicant?.store_id || '';
     result.applicant_store_name = result.Applicant?.Store?.name || '';
@@ -504,6 +562,7 @@ async function getRequestDetail(ctx) {
   }
 
   const result = request.toJSON();
+  attachCurrentPurchaseAmounts(result, result.adjustments || []);
   result.store_name = result.Store?.name || '';
   result.applicant_store_id = result.Applicant?.store_id || '';
   result.applicant_store_name = result.Applicant?.Store?.name || '';
@@ -1688,12 +1747,15 @@ async function createPurchaseAdjustment(ctx) {
         });
         if (originalPayable) {
           const allocation = (await getAllocationSummary([originalPayable.payable_id], transaction)).get(String(originalPayable.payable_id)) || { amount: 0 };
-          const remaining = Math.max(0, getPayableRemaining(originalPayable.total_amount, allocation.amount, originalPayable.offset_amount));
-          const offsetAmount = Math.min(Math.abs(totalAmountDelta), remaining);
-          if (offsetAmount > 0) {
-            await originalPayable.update({ offset_amount: toSignedMoney(Number(originalPayable.offset_amount || 0) + offsetAmount) }, { transaction });
-            await Payable.update({ offset_amount: offsetAmount, offset_payable_id: originalPayable.payable_id, status: Math.abs(totalAmountDelta) <= offsetAmount + 0.005 ? 'offset' : 'credit' }, { where: { payable_id: payableId }, transaction });
-            await refreshPayableState(originalPayable.payable_id, transaction);
+          // 只要已经生成过结算单，就必须保留原结算事实，负向调整留作供应商后续抵扣。
+          if (Number(allocation.amount || 0) <= 0) {
+            const remaining = Math.max(0, getPayableRemaining(originalPayable.total_amount, allocation.amount, originalPayable.offset_amount));
+            const offsetAmount = Math.min(Math.abs(totalAmountDelta), remaining);
+            if (offsetAmount > 0) {
+              await originalPayable.update({ offset_amount: toSignedMoney(Number(originalPayable.offset_amount || 0) + offsetAmount) }, { transaction });
+              await Payable.update({ offset_amount: offsetAmount, offset_payable_id: originalPayable.payable_id, status: Math.abs(totalAmountDelta) <= offsetAmount + 0.005 ? 'offset' : 'credit' }, { where: { payable_id: payableId }, transaction });
+              await refreshPayableState(originalPayable.payable_id, transaction);
+            }
           }
         }
       }
@@ -2044,6 +2106,8 @@ module.exports = {
   sortSuppliers,
   _test: {
     flattenPurchaseAllocations,
-    validatePurchaseAllocations
+    validatePurchaseAllocations,
+    getPurchaseAdjustmentTotals,
+    attachCurrentPurchaseAmounts
   }
 };

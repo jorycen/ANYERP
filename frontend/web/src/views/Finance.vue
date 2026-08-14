@@ -351,6 +351,21 @@
               <el-option label="费用" value="expense" />
               <el-option label="报销" value="reimbursement" />
             </el-select>
+            <el-select v-model="payableStatusFilter" placeholder="状态筛选" clearable style="width: 170px" @change="onPayableFilterChange">
+              <el-option label="待付款" value="unpaid" />
+              <el-option label="部分结算" value="partial_settled" />
+              <el-option label="结算中" value="settling" />
+              <el-option label="供应商待抵扣" value="credit" />
+              <el-option label="已抵扣" value="offset" />
+            </el-select>
+            <el-input
+              v-model="payableSourceNoFilter"
+              placeholder="单号筛选"
+              clearable
+              style="width: 190px"
+              @keyup.enter="onPayableFilterChange"
+            />
+            <el-button type="primary" @click="onPayableFilterChange">查询</el-button>
           </div>
 
           <div class="payable-summary">
@@ -382,11 +397,18 @@
                 </el-tag>
               </template>
             </el-table-column>
+            <el-table-column label="税务属性" width="100">
+              <template #default="{ row }">
+                <el-tag :type="getPayableTaxTagType(row.tax_status)" size="small">
+                  {{ getPayableTaxText(row.tax_status) }}
+                </el-tag>
+              </template>
+            </el-table-column>
             <el-table-column label="收款方" width="150">
               <template #default="{ row }">{{ getPayablePayeeName(row) }}</template>
             </el-table-column>
             <el-table-column prop="total_amount" label="应付金额" width="120">
-              <template #default="{ row }">¥{{ formatMoney(row.total_amount) }}</template>
+              <template #default="{ row }">¥{{ formatMoney(row.current_total_amount ?? row.total_amount) }}</template>
             </el-table-column>
             <el-table-column prop="paid_amount" label="已付金额" width="120">
               <template #default="{ row }">¥{{ row.paid_amount }}</template>
@@ -396,8 +418,8 @@
             </el-table-column>
             <el-table-column prop="status" label="状态" width="100">
               <template #default="{ row }">
-                <el-tag :type="row.status === 'credit' ? 'warning' : row.status === 'offset' ? 'success' : row.status === 'partial_settled' ? 'warning' : 'danger'">
-                  {{ row.status === 'credit' ? '供应商待抵扣' : row.status === 'offset' ? '已抵扣' : row.status === 'partial_settled' ? '部分结算' : '待付款' }}
+                <el-tag :type="getPayableStatusTagType(row.status)">
+                  {{ getPayableStatusText(row.status) }}
                 </el-tag>
               </template>
             </el-table-column>
@@ -1008,13 +1030,13 @@
           <el-descriptions-item label="供应商">{{ purchaseDetail.supplier_name || purchaseDetail.Supplier?.name || '-' }}</el-descriptions-item>
           <el-descriptions-item label="申请门店">{{ purchaseDetail.store_name || purchaseDetail.Store?.name || '-' }}</el-descriptions-item>
           <el-descriptions-item label="状态">{{ purchaseDetail.status || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="申请金额">¥{{ formatMoney(purchaseDetail.total_amount) }}</el-descriptions-item>
+          <el-descriptions-item label="申请金额">¥{{ formatMoney(purchaseDetail.current_total_amount ?? purchaseDetail.total_amount) }}</el-descriptions-item>
           <el-descriptions-item label="是否使用返利">
             <el-tag :type="hasPurchaseRebateDeduction(purchaseDetail) ? 'success' : 'info'">
               {{ hasPurchaseRebateDeduction(purchaseDetail) ? '是' : '否' }}
             </el-tag>
           </el-descriptions-item>
-          <el-descriptions-item label="返利抵扣">-¥{{ formatMoney(purchaseDetail.rebate_deduction) }}</el-descriptions-item>
+          <el-descriptions-item label="返利抵扣">-¥{{ formatMoney(purchaseDetail.current_rebate_deduction ?? purchaseDetail.rebate_deduction) }}</el-descriptions-item>
           <el-descriptions-item label="实际应付">¥{{ formatMoney(purchaseActualAmount(purchaseDetail)) }}</el-descriptions-item>
           <el-descriptions-item label="申请时间">{{ purchaseDetail.create_time ? formatDate(purchaseDetail.create_time) : '-' }}</el-descriptions-item>
           <el-descriptions-item label="备注">{{ purchaseDetail.reason || purchaseDetail.remark || '-' }}</el-descriptions-item>
@@ -1319,6 +1341,8 @@ const payExpenseLoading = ref(false)
 const payableDateRange = ref([])
 const payableSupplierFilter = ref('')
 const payableSourceFilter = ref('')
+const payableStatusFilter = ref('')
+const payableSourceNoFilter = ref('')
 const purchaseDetailVisible = ref(false)
 const purchaseDetail = ref(null)
 const payableTableRef = ref(null)
@@ -1347,16 +1371,49 @@ const getPayableSourceTagType = (row) => {
     purchase_adjustment: 'success',
     expense: 'warning',
     reimbursement: 'danger'
-  }[sourceType] || 'info'
+}[sourceType] || 'info'
 }
+
+const getPayableTaxText = (status) => ({
+  TAX_INCLUDED: '含税',
+  UNTAXED: '未税',
+  UNKNOWN: '未知'
+}[status] || '未知')
+
+const getPayableTaxTagType = (status) => ({
+  TAX_INCLUDED: 'success',
+  UNTAXED: 'warning',
+  UNKNOWN: 'info'
+}[status] || 'info')
+
+const getPayableStatusText = (status) => ({
+  unpaid: '待付款',
+  partial_settled: '部分结算',
+  settling: '结算中',
+  credit: '供应商待抵扣',
+  offset: '已抵扣',
+  paid: '已付款'
+}[status] || '待付款')
+
+const getPayableStatusTagType = (status) => ({
+  unpaid: 'danger',
+  partial_settled: 'warning',
+  settling: 'warning',
+  credit: 'warning',
+  offset: 'success',
+  paid: 'success'
+}[status] || 'danger')
 
 const getPayablePayeeName = (row) => row?.payee_name || row?.supplier_name || row?.expense_party || '-'
 
-const hasPurchaseRebateDeduction = (request) => toNumber(request?.rebate_deduction) > 0
+const hasPurchaseRebateDeduction = (request) => toNumber(request?.current_rebate_deduction ?? request?.rebate_deduction) > 0
 
 const purchaseActualAmount = (request) => {
-  const total = toNumber(request?.total_amount)
-  const rebate = toNumber(request?.rebate_deduction)
+  const total = toNumber(request?.current_total_amount ?? request?.total_amount)
+  const rebate = toNumber(request?.current_rebate_deduction ?? request?.rebate_deduction)
+  if (request?.current_actual_total !== undefined && request?.current_actual_total !== null) {
+    return toNumber(request.current_actual_total)
+  }
   const actual = toNumber(request?.actual_total)
   if (actual > 0 || total === 0) return actual
   return Math.max(0, total - rebate)
@@ -2129,9 +2186,10 @@ const loadSuppliers = async () => {
 
 const loadPayableData = async () => {
   try {
-    const params = { ...payableQuery, status: 'unpaid' }
+    const params = { ...payableQuery, status: payableStatusFilter.value || 'unpaid' }
     if (payableSupplierFilter.value) params.supplierId = payableSupplierFilter.value
     if (payableSourceFilter.value) params.sourceType = payableSourceFilter.value
+    if (payableSourceNoFilter.value.trim()) params.sourceNo = payableSourceNoFilter.value.trim()
     if (Array.isArray(payableDateRange.value) && payableDateRange.value.length === 2) {
       params.startDate = payableDateRange.value[0]
       params.endDate = payableDateRange.value[1]

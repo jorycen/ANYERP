@@ -52,7 +52,7 @@
             <el-table-column prop="product_type" label="货型" width="130" />
             <el-table-column prop="items_summary" label="商品摘要" min-width="200" show-overflow-tooltip />
             <el-table-column prop="total_amount" label="申请金额" width="120">
-              <template #default="{ row }">¥{{ row.total_amount }}</template>
+              <template #default="{ row }">¥{{ formatMoney(row.current_total_amount ?? row.total_amount) }}</template>
             </el-table-column>
             <el-table-column prop="status" label="状态" width="100">
               <template #default="{ row }">
@@ -316,13 +316,13 @@
           <el-descriptions-item label="发票类型">{{ currentRequest.invoice_type || '-' }}</el-descriptions-item>
           <el-descriptions-item label="货型">{{ currentRequest.product_type || currentRequest.items?.[0]?.product_type || '-' }}</el-descriptions-item>
           <el-descriptions-item label="申请门店">{{ currentRequest.store_name }}</el-descriptions-item>
-          <el-descriptions-item label="申请金额">¥{{ formatMoney(currentRequest.total_amount) }}</el-descriptions-item>
+          <el-descriptions-item label="申请金额">¥{{ formatMoney(currentRequest.current_total_amount ?? currentRequest.total_amount) }}</el-descriptions-item>
           <el-descriptions-item label="是否使用返利">
             <el-tag :type="hasRebateDeduction(currentRequest) ? 'success' : 'info'">
               {{ hasRebateDeduction(currentRequest) ? '是' : '否' }}
             </el-tag>
           </el-descriptions-item>
-          <el-descriptions-item label="返利抵扣">-¥{{ formatMoney(currentRequest.rebate_deduction) }}</el-descriptions-item>
+          <el-descriptions-item label="返利抵扣">-¥{{ formatMoney(currentRequest.current_rebate_deduction ?? currentRequest.rebate_deduction) }}</el-descriptions-item>
           <el-descriptions-item label="实际应付">¥{{ formatMoney(requestActualAmount(currentRequest)) }}</el-descriptions-item>
           <el-descriptions-item label="申请时间">{{ formatDate(currentRequest.create_time) }}</el-descriptions-item>
           <el-descriptions-item label="提交人">{{ currentRequest.submit_user || currentRequest.apply_user || '-' }}</el-descriptions-item>
@@ -809,11 +809,14 @@ const getApiErrorMessage = (error, fallback) => {
 
 const formatMoney = (value) => toNumber(value).toFixed(2)
 
-const hasRebateDeduction = (request) => toNumber(request?.rebate_deduction) > 0
+const hasRebateDeduction = (request) => toNumber(request?.current_rebate_deduction ?? request?.rebate_deduction) > 0
 
 const requestActualAmount = (request) => {
-  const total = toNumber(request?.total_amount)
-  const rebate = toNumber(request?.rebate_deduction)
+  const total = toNumber(request?.current_total_amount ?? request?.total_amount)
+  const rebate = toNumber(request?.current_rebate_deduction ?? request?.rebate_deduction)
+  if (request?.current_actual_total !== undefined && request?.current_actual_total !== null) {
+    return toNumber(request.current_actual_total)
+  }
   const actual = toNumber(request?.actual_total)
   if (actual > 0 || total === 0) return actual
   return Math.max(0, total - rebate)

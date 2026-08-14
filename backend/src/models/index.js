@@ -1526,6 +1526,8 @@ const Payable = sequelize.define('Payable', {
   source_no: { type: DataTypes.STRING(64) },
   total_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
   settled_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  offset_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  offset_payable_id: { type: DataTypes.STRING(32) },
   paid_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   status: { type: DataTypes.STRING(32), defaultValue: 'unpaid' },
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
@@ -1549,8 +1551,6 @@ const Settlement = sequelize.define('Settlement', {
   other_payment_remark: { type: DataTypes.TEXT },
   other_payment_image: { type: DataTypes.TEXT('long') },
   total_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
-  offset_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
-  offset_payable_id: { type: DataTypes.STRING(32) },
   paid_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   status: { type: DataTypes.STRING(32), defaultValue: 'draft', comment: 'draft/pending_approval/confirmed/voided' },
   payment_status: { type: DataTypes.STRING(32), defaultValue: 'unpaid' },

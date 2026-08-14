@@ -12,7 +12,9 @@ const {
   SupplierPaymentAccount,
   SettlementAccount,
   SettlementAccountTransaction,
+  PurchaseRequest,
   PurchaseRequestItem,
+  PurchaseAdjustment,
   sequelize
 } = require('../../models');
 const { Op, col, where } = require('sequelize');
@@ -28,11 +30,46 @@ const {
 } = require('./settlementAllocation');
 const { recordBusinessAction } = require('../../utils/businessActionLog');
 
+function getPayableTaxStatus(invoiceType) {
+  const value = String(invoiceType || '').trim().toLowerCase();
+  if (!value) return 'UNKNOWN';
+  if (value.includes('未税') || value.includes('untaxed')) return 'UNTAXED';
+  if (value.includes('含税') || value.includes('增专票') || value.includes('tax_included')) return 'TAX_INCLUDED';
+  return 'UNKNOWN';
+}
+
+function getCurrentPayableTotal(payable) {
+  if (payable?.source_type !== 'purchase') return roundAmount(payable?.total_amount || 0);
+  return roundAmount(Number(payable.total_amount || 0) - Number(payable.offset_amount || 0));
+}
+
+async function getPurchaseAdjustmentQuantityDeltas(requestIds, transaction = null) {
+  const ids = [...new Set((requestIds || []).filter(Boolean).map(String))];
+  const result = new Map();
+  if (!ids.length) return result;
+  const adjustments = await PurchaseAdjustment.findAll({
+    where: { request_id: { [Op.in]: ids }, status: 'completed' },
+    attributes: ['request_id'],
+    include: [{
+      association: 'items',
+      attributes: ['request_item_id', 'quantity_delta']
+    }],
+    transaction
+  });
+  adjustments.forEach(adjustment => {
+    (adjustment.items || []).forEach(item => {
+      const key = String(item.request_item_id);
+      result.set(key, Number(result.get(key) || 0) + Number(item.quantity_delta || 0));
+    });
+  });
+  return result;
+}
+
 /**
  * 应付款列表
  */
 async function getPayableList(ctx) {
-  const { supplierId, sourceType, status, startDate, endDate, page = 1, pageSize = 20 } = ctx.query;
+  const { supplierId, sourceType, sourceNo, status, startDate, endDate, page = 1, pageSize = 20 } = ctx.query;
   const where = {};
 
   if (supplierId) where.supplier_id = supplierId;
@@ -40,6 +77,15 @@ async function getPayableList(ctx) {
     const sourceTypes = String(sourceType).split(',').map(item => item.trim()).filter(Boolean);
     if (sourceTypes.length === 1) where.source_type = sourceTypes[0];
     if (sourceTypes.length > 1) where.source_type = { [Op.in]: sourceTypes };
+  }
+  if (sourceNo) {
+    const keyword = String(sourceNo).trim();
+    if (keyword) {
+      where[Op.or] = [
+        { source_no: { [Op.like]: `%${keyword}%` } },
+        { request_no: { [Op.like]: `%${keyword}%` } }
+      ];
+    }
   }
   if (status) {
     where.status = status === 'unpaid'
@@ -63,6 +109,34 @@ async function getPayableList(ctx) {
     ...paginate({}, { page, pageSize })
   });
 
+  const requestIds = [...new Set(rows.map(row => row.request_id).filter(Boolean))];
+  const expenseIds = [...new Set(rows
+    .filter(row => ['expense', 'reimbursement'].includes(row.source_type) && row.source_id)
+    .map(row => row.source_id))];
+  const [requests, expenses] = await Promise.all([
+    requestIds.length
+      ? PurchaseRequest.findAll({
+        where: { request_id: { [Op.in]: requestIds } },
+        attributes: ['request_id', 'invoice_type']
+      })
+      : [],
+    expenseIds.length
+      ? Expense.findAll({
+        where: { expense_id: { [Op.in]: expenseIds } },
+        attributes: ['expense_id', 'invoice_type']
+      })
+      : []
+  ]);
+  const requestInvoiceTypes = new Map(requests.map(item => [String(item.request_id), item.invoice_type]));
+  const expenseInvoiceTypes = new Map(expenses.map(item => [String(item.expense_id), item.invoice_type]));
+  rows.forEach(row => {
+    const invoiceType = requestInvoiceTypes.get(String(row.request_id))
+      || expenseInvoiceTypes.get(String(row.source_id))
+      || '';
+    row.setDataValue('invoice_type', invoiceType);
+    row.setDataValue('tax_status', getPayableTaxStatus(invoiceType));
+  });
+
   const summaryRows = await Payable.findAll({
     where,
     attributes: ['payable_id', 'total_amount']
@@ -77,6 +151,7 @@ async function getPayableList(ctx) {
     const allocated = allocationSummary.get(String(row.payable_id))?.amount || 0;
     row.setDataValue('settled_amount', roundAmount(allocated));
     row.setDataValue('remaining_amount', getPayableRemaining(row.total_amount, allocated, row.offset_amount));
+    row.setDataValue('current_total_amount', getCurrentPayableTotal(row));
   });
 
   const result = formatPaginatedResult(rows, { page, pageSize, count });
@@ -105,6 +180,8 @@ async function getUnpaidBySupplier(ctx) {
     order: [['create_time', 'DESC']]
   });
 
+  rows.forEach(row => row.setDataValue('current_total_amount', getCurrentPayableTotal(row)));
+
   ctx.body = { code: 0, data: rows };
 }
 
@@ -128,6 +205,7 @@ async function getPayableSettlementItems(ctx) {
   const requestItems = requestIds.length
     ? await PurchaseRequestItem.findAll({ where: { request_id: { [Op.in]: requestIds } } })
     : [];
+  const adjustmentQuantityDeltas = await getPurchaseAdjustmentQuantityDeltas(requestIds);
   const itemMap = new Map();
   requestItems.forEach(item => {
     const key = String(item.request_id);
@@ -141,11 +219,16 @@ async function getPayableSettlementItems(ctx) {
       ? (itemMap.get(String(payable.request_id)) || [])
       : [];
     if (items.length) {
+      const payableRemaining = getPayableRemaining(payable.total_amount, allocated.amount, payable.offset_amount);
+      let itemRemaining = Math.max(0, payableRemaining);
       items.forEach(item => {
         const usedQuantity = Number(allocated.quantityByItem.get(String(item.item_id)) || 0);
-        const availableQuantity = Math.max(0, Number(item.quantity || 0) - usedQuantity);
+        const adjustedQuantity = Math.max(0, Number(item.quantity || 0) + Number(adjustmentQuantityDeltas.get(String(item.item_id)) || 0));
+        const availableQuantity = Math.max(0, adjustedQuantity - usedQuantity);
         const unitPrice = actualUnitPrice(item);
         if (availableQuantity <= 0) return;
+        const availableAmount = Math.min(roundAmount(availableQuantity * unitPrice), itemRemaining);
+        if (availableAmount <= 0) return;
         rows.push({
           payable_id: payable.payable_id,
           request_id: payable.request_id,
@@ -153,17 +236,18 @@ async function getPayableSettlementItems(ctx) {
           supplier_id: payable.supplier_id,
           supplier_name: payable.supplier_name,
           source_type: payable.source_type,
-          total_amount: payable.total_amount,
+          total_amount: itemRemaining,
           settled_amount: allocated.amount,
-          remaining_amount: roundAmount(Number(payable.total_amount || 0) - Number(allocated.amount || 0)),
+          remaining_amount: itemRemaining,
           request_item_id: item.item_id,
           product_id: item.product_id,
           product_name: item.product_name,
           available_quantity: availableQuantity,
-          available_amount: roundAmount(availableQuantity * unitPrice),
+          available_amount: availableAmount,
           unit_price: unitPrice,
           create_time: payable.create_time
         });
+        itemRemaining = roundAmount(itemRemaining - availableAmount);
       });
       return;
     }
@@ -250,6 +334,10 @@ async function createSettlement(ctx) {
     const requestItems = requestItemIds.length
       ? await PurchaseRequestItem.findAll({ where: { item_id: { [Op.in]: requestItemIds } }, transaction, lock: transaction.LOCK.UPDATE })
       : [];
+    const adjustmentQuantityDeltas = await getPurchaseAdjustmentQuantityDeltas(
+      payables.map(item => item.request_id),
+      transaction
+    );
     const requestItemMap = new Map(requestItems.map(item => [String(item.item_id), item]));
     const sourceAllocations = allocations.length ? allocations : [];
     const rows = [];
@@ -269,7 +357,8 @@ async function createSettlement(ctx) {
           if (String(item.request_id) !== String(payable.request_id)) ctx.throw(400, 'purchase item does not belong to payable');
           const quantity = Number(allocation.quantity || allocation.settleQuantity || allocation.settle_quantity || 0);
           const usedQuantity = Number(used.quantityByItem.get(String(item.item_id)) || 0);
-          const availableQuantity = Number(item.quantity || 0) - usedQuantity;
+          const adjustedQuantity = Math.max(0, Number(item.quantity || 0) + Number(adjustmentQuantityDeltas.get(String(item.item_id)) || 0));
+          const availableQuantity = adjustedQuantity - usedQuantity;
           if (quantity <= 0 || quantity > availableQuantity + 0.00005) ctx.throw(400, 'settlement quantity exceeds remaining quantity');
           const unitPrice = actualUnitPrice(item);
           const amount = roundAmount(quantity * unitPrice);
@@ -1482,6 +1571,7 @@ async function voidPaymentBatch(ctx) {
 
 module.exports = {
   getPayableList,
+  getPayableTaxStatus,
   getUnpaidBySupplier,
   getPayableSettlementItems,
   createSettlement,

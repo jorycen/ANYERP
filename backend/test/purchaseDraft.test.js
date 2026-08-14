@@ -41,3 +41,20 @@ test('采购申请门店库位分配可以展开为入库明细', () => {
     { storeId: 'STORE_B', locationId: 'LOC_SALES_B', quantity: 2 }
   ]);
 });
+
+test('采购退单后采购订单展示当前有效金额但保留原始金额', () => {
+  const request = {
+    total_amount: 1000,
+    rebate_deduction: 100,
+    actual_total: 900
+  };
+  purchaseController._test.attachCurrentPurchaseAmounts(request, [{
+    total_amount_delta: -180,
+    items: [{ quantity_delta: -2, unit_price: 100, amount_delta: -180 }]
+  }]);
+
+  assert.equal(request.original_total_amount, 1000);
+  assert.equal(request.current_total_amount, 800);
+  assert.equal(request.current_rebate_deduction, 80);
+  assert.equal(request.current_actual_total, 720);
+});
