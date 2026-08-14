@@ -60,3 +60,18 @@ test('运输中待收货调拨才允许退回', () => {
   assert.equal(_test.isTransferAwaitingReceipt('completed'), false);
   assert.equal(_test.isTransferAwaitingReceipt('returned'), false);
 });
+
+test('调拨入库沿用出库明细SN并拒绝替换', () => {
+  const binding = _test.resolveTransferInboundSnBinding(
+    { sn_id: 'SN_ID_1', sn_code: 'SN_CODE_1' },
+    { sn_id: 'SN_ID_1', sn_code: 'SN_CODE_1' },
+    { snId: 'SN_ID_2', snCode: 'SN_CODE_2' }
+  );
+
+  assert.equal(binding.snId, 'SN_ID_1');
+  assert.equal(binding.snCode, 'SN_CODE_1');
+  assert.equal(binding.requestedSnIdMismatch, true);
+  assert.equal(binding.requestedSnCodeMismatch, true);
+  assert.equal(binding.sourceSnIdMismatch, false);
+  assert.equal(binding.sourceSnCodeMismatch, false);
+});

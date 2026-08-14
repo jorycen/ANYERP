@@ -2879,6 +2879,24 @@ async function ensureTransferInbound(transfer, items, transaction) {
   return Inbound.findByPk(inboundId, { transaction });
 }
 
+function resolveTransferInboundSnBinding(transferItem = {}, inboundItem = {}, requested = {}) {
+  const transferSnId = transferItem.sn_id || '';
+  const inboundSnId = inboundItem.sn_id || '';
+  const transferSnCode = String(transferItem.sn_code || '').trim();
+  const inboundSnCode = String(inboundItem.sn_code || '').trim();
+  const requestedSnId = requested.snId || requested.sn_id || requested.inventoryId || requested.inventory_id || '';
+  const requestedSnCode = String(requested.snCode || requested.sn_code || '').trim();
+
+  return {
+    snId: transferSnId || inboundSnId || requestedSnId,
+    snCode: transferSnCode || inboundSnCode || requestedSnCode,
+    sourceSnIdMismatch: Boolean(transferSnId && inboundSnId && String(transferSnId) !== String(inboundSnId)),
+    sourceSnCodeMismatch: Boolean(transferSnCode && inboundSnCode && transferSnCode !== inboundSnCode),
+    requestedSnIdMismatch: Boolean((transferSnId || inboundSnId) && requestedSnId && String(transferSnId || inboundSnId) !== String(requestedSnId)),
+    requestedSnCodeMismatch: Boolean((transferSnCode || inboundSnCode) && requestedSnCode && (transferSnCode || inboundSnCode) !== requestedSnCode)
+  };
+}
+
 /**
  * 执行入库
  */
@@ -2922,6 +2940,13 @@ async function executeInbound(ctx) {
         })
       : null;
     const inboundInitiator = resolveInboundInitiator(inbound, purchaseRequest, salesReturnRequest);
+    const defaultTransferLocation = isTransferInbound
+      ? await Location.findOne({
+          where: { store_id: inbound.store_id, status: 1, type: 'normal_qty' },
+          attributes: ['location_id'],
+          transaction: t
+        })
+      : null;
     const supplier = purchaseRequest?.supplier_id
       ? await Supplier.findByPk(purchaseRequest.supplier_id, { transaction: t })
       : null;
@@ -2961,7 +2986,7 @@ async function executeInbound(ctx) {
       if (dbItem.location_id && item.locationId && String(dbItem.location_id) !== String(item.locationId)) {
         ctx.throw(400, `商品 ${dbItem.product_name || product.name} 的入库库位与入库明细不一致`);
       }
-      const locationId = item.locationId || dbItem.location_id || null;
+      const locationId = item.locationId || dbItem.location_id || defaultTransferLocation?.location_id || null;
       if (!locationId) {
         ctx.throw(400, `商品 ${dbItem.product_name || product.name} 请选择入库库位`);
       }
@@ -4141,6 +4166,7 @@ async function confirmTransferIn(ctx) {
       transaction: t,
       lock: t.LOCK.UPDATE
     });
+    const isTransferInbound = Boolean(transferInbound);
     // 已完成的历史调拨如果仍有 transferring SN，允许带 inventoryId 重试一次做状态修复；
     // 普通重复确认仍直接返回，避免重复增加聚合库存。
     const hasRepairableSn = (transfer.TransferItems || []).some(item => item.sn_id) || requestedItems.some(item => (
@@ -4173,6 +4199,13 @@ async function confirmTransferIn(ctx) {
           transaction: t
         })
       : [];
+    const defaultTransferLocation = transferInbound
+      ? await Location.findOne({
+          where: { store_id: transfer.to_store_id, status: 1, type: 'normal_qty' },
+          attributes: ['location_id'],
+          transaction: t
+        })
+      : null;
 
     const requestedLocationIds = [...new Set(
       requestedItems
@@ -4201,10 +4234,19 @@ async function confirmTransferIn(ctx) {
       const item = items[index];
       const requested = requestedByItemId.get(String(item.item_id)) || requestedItems[index] || {};
       const product = productMap.get(String(item.product_id));
-      const requestedSnId = requested.snId || requested.sn_id || requested.inventoryId || requested.inventory_id || '';
-      const snId = item.sn_id || requestedSnId;
-      const expectedSnCode = String(item.sn_code || requested.snCode || requested.sn_code || '').trim();
-      const locationId = requested.locationId || requested.location_id || '';
+      const inboundItem = transferInboundItems[index];
+      const snBinding = resolveTransferInboundSnBinding(item, inboundItem, requested);
+      if (isTransferInbound && product && Number(product.need_sn) === 1) {
+        if (snBinding.sourceSnIdMismatch || snBinding.sourceSnCodeMismatch) {
+          ctx.throw(409, '调拨明细与待入库明细的 SN 不一致');
+        }
+        if (snBinding.requestedSnIdMismatch || snBinding.requestedSnCodeMismatch) {
+          ctx.throw(400, '调拨入库 SN 不允许替换');
+        }
+      }
+      const snId = snBinding.snId;
+      const expectedSnCode = snBinding.snCode;
+      const locationId = requested.locationId || requested.location_id || defaultTransferLocation?.location_id || '';
       const quantity = Math.max(Number(item.quantity || requested.quantity || 1), 1);
 
       if (product && Number(product.need_sn) === 1 && !snId) {
@@ -4264,7 +4306,6 @@ async function confirmTransferIn(ctx) {
           await item.update(transferItemUpdate, { transaction: t });
         }
 
-        const inboundItem = transferInboundItems[index];
         if (inboundItem) {
           await inboundItem.update({
             sn_id: sn.sn_id,
@@ -5355,6 +5396,7 @@ module.exports = {
     resolveSnTraceLogUser,
     updateInventory,
     getAvailableQty,
-    salesReturnRequesterName
+    salesReturnRequesterName,
+    resolveTransferInboundSnBinding
   }
 };

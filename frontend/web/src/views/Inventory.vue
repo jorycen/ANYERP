@@ -772,7 +772,7 @@
             </el-table-column>
             <el-table-column label="SN码" width="180">
               <template #default="{ row: r }">
-                <el-input v-model="r.snCode" placeholder="SN码" size="small" />
+                <el-input v-model="r.snCode" placeholder="SN码" size="small" :disabled="item.transferInbound && Boolean(r.snCode)" />
               </template>
             </el-table-column>
             <el-table-column label="入库库位" width="160">
@@ -2672,6 +2672,13 @@ const openExecuteDialog = async (row) => {
       inboundLocations.value = locationRes.data || []
 
       const pnMap = res.data.product_pns || {}
+      const isTransferInbound = String(res.data.source_type || '').toUpperCase() === 'TRANSFER'
+      const defaultTransferLocation = isTransferInbound
+        ? (inboundLocations.value.find(location => location.type === 'normal_qty')
+          || inboundLocations.value.find(location => Number(location.is_sellable) === 1)
+          || inboundLocations.value[0])
+        : null
+      const defaultTransferLocationId = defaultTransferLocation?.location_id || ''
 
       const productGroups = []
       for (const item of (res.data.items || [])) {
@@ -2684,28 +2691,32 @@ const openExecuteDialog = async (row) => {
           productId: item.product_id,
           productName: item.product_name,
           needSn,
+          transferInbound: isTransferInbound,
           quantity: qty,
-          locationId: item.location_id || '',
-          locationName: item.location_name || '',
+          locationId: item.location_id || defaultTransferLocationId,
+          locationName: item.location_name || defaultTransferLocation?.name || '',
           pnCode: item.pn_code || (pns.length > 0 ? pns[0].pn_code : ''),
           pns: pns,
           snRows: [],
           qtyRows: []
         }
 
-          if (needSn) {
-            for (let i = 0; i < qty; i++) {
-              group.snRows.push({
-              snCode: qty > 0 && Number(item.remaining_quantity ?? item.remainingQuantity ?? 0) > 0
-                ? ''
-                : (item.sn_code || item.snCode || ''),
-              locationId: item.location_id || '',
-                remark: ''
-              })
-            }
+        if (needSn) {
+          for (let i = 0; i < qty; i++) {
+            group.snRows.push({
+              snId: isTransferInbound ? (item.sn_id || item.snId || '') : '',
+              snCode: isTransferInbound
+                ? (item.sn_code || item.snCode || '')
+                : (qty > 0 && Number(item.remaining_quantity ?? item.remainingQuantity ?? 0) > 0
+                  ? ''
+                  : (item.sn_code || item.snCode || '')),
+              locationId: item.location_id || defaultTransferLocationId,
+              remark: ''
+            })
+          }
         } else {
           group.qtyRows.push({
-            locationId: item.location_id || '',
+            locationId: item.location_id || defaultTransferLocationId,
             quantity: qty,
             remark: ''
           })
@@ -2716,6 +2727,18 @@ const openExecuteDialog = async (row) => {
 
       executeProducts.value = productGroups
       restoreInboundDraft()
+      if (isTransferInbound && defaultTransferLocationId) {
+        for (const group of executeProducts.value) {
+          if (!group.locationId) group.locationId = defaultTransferLocationId
+          if (!group.locationName) group.locationName = defaultTransferLocation?.name || ''
+          for (const row of group.snRows || []) {
+            if (!row.locationId) row.locationId = defaultTransferLocationId
+          }
+          for (const row of group.qtyRows || []) {
+            if (!row.locationId) row.locationId = defaultTransferLocationId
+          }
+        }
+      }
       executeInboundVisible.value = true
     }
   } catch (err) {
@@ -2798,6 +2821,7 @@ const submitInbound = async () => {
           inboundItemId: product.inboundItemId,
           productId: product.productId,
           pnCode: product.pnCode || '',
+          snId: snRow.snId || '',
           snCode: snRow.snCode,
           quantity: 1,
           locationId: snRow.locationId || '',
