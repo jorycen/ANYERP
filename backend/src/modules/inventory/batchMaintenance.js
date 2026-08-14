@@ -16,7 +16,12 @@ const {
 const VALID_OPERATION_TYPES = new Set(['INBOUND', 'OUTBOUND', 'ADJUST']);
 const VALID_INVENTORY_TYPES = new Set(['normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty']);
 const OPERATION_LABELS = { INBOUND: '批量入库', OUTBOUND: '批量出库', ADJUST: '数量调整' };
+const REUSABLE_INBOUND_SN_STATUSES = new Set(['out_stock', 'sold']);
 const scheduledExecutionIds = new Set();
+
+function isReusableInboundSnStatus(status) {
+  return REUSABLE_INBOUND_SN_STATUSES.has(String(status || '').trim());
+}
 
 function roles(user) {
   return getUserRoles(user);
@@ -343,7 +348,9 @@ async function validateRows(ctx, rows, options, transaction) {
             },
             transaction
           });
-          if (existing) rowErrors.push(`SN历史记录已存在，当前状态：${existing.status || '未知'}`);
+          if (existing && !isReusableInboundSnStatus(existing.status)) {
+            rowErrors.push(`SN当前状态为${existing.status || '未知'}，不允许重复入库`);
+          }
         }
       } else if (snCode) {
         sn = await ProductSn.findOne({
@@ -545,9 +552,9 @@ async function createSnInbound(item, application, transaction) {
     where: { pn_code: item.pn_code, sn_code: item.sn_code },
     transaction
   });
-  if (existing) {
+  if (existing && !isReusableInboundSnStatus(existing.status)) {
     throw Object.assign(
-      new Error(`第 ${item.row_no} 行SN ${item.sn_code} 已存在，当前状态：${existing.status || '未知'}`),
+      new Error(`第 ${item.row_no} 行SN ${item.sn_code} 当前状态为${existing.status || '未知'}，不允许重复入库`),
       { status: 409 }
     );
   }
@@ -556,7 +563,7 @@ async function createSnInbound(item, application, transaction) {
     pnCode: item.pn_code,
     transaction
   });
-  const sn = await ProductSn.create({
+  const sn = existing || await ProductSn.create({
     sn_id: generateUUID(),
     product_id: item.product_id,
     pn_id: pnMaster.pn_id,
@@ -574,44 +581,68 @@ async function createSnInbound(item, application, transaction) {
     is_deleted: 0
   }, { transaction });
 
+  if (existing) {
+    await sn.update({
+      product_id: item.product_id,
+      pn_id: pnMaster.pn_id,
+      pn_code: item.pn_code,
+      status: 'in_stock',
+      inventory_type: item.inventory_type || 'normal_qty',
+      store_id: item.store_id,
+      location_id: item.location_id || '',
+      inbound_time: new Date(),
+      inbound_price: item.unit_price || 0,
+      original_pickup_price: item.original_pickup_price || item.unit_price || 0,
+      batch_no: application.application_no,
+      remark: `批量入库 ${application.application_no}`,
+      is_deleted: 0
+    }, { transaction });
+  }
+
   const resourceTypes = parseJsonArray(item.resource_types);
   for (const resourceType of resourceTypes) {
     const rule = await findResourceRule({ productId: item.product_id, resourceType, transaction });
     const amount = calculatePreSaleRuleAmount(rule, sn);
-    await InventoryResourceRight.create({
-      right_id: generateUUID(),
-      sn_id: sn.sn_id,
-      sn_code: sn.sn_code,
-      product_id: item.product_id,
-      resource_type: resourceType,
-      rule_config_id: rule?.config_id || null,
-      source_inbound_id: application.application_id,
-      initial_status: 'AVAILABLE',
-      current_status: 'AVAILABLE',
-      amount,
-      source: 'BATCH_INBOUND',
-      remark: `批量入库 ${application.application_no} 生成`
-    }, { transaction });
-    await ResourceRightChangeOrder.create({
-      change_id: generateUUID(),
-      change_order_no: businessNo('RRC'),
-      sn_id: sn.sn_id,
-      sn_code: sn.sn_code,
-      product_id: item.product_id,
-      resource_type: resourceType,
-      before_status: 'NOT_APPLICABLE',
-      after_status: 'AVAILABLE',
-      change_amount: amount,
-      change_reason: 'BATCH_INBOUND',
-      approval_status: 'approved',
-      related_order_id: application.application_id,
-      applicant_staff_id: application.applicant_staff_id,
-      applicant_name: application.applicant_name,
-      reviewer_staff_id: application.reviewer_staff_id,
-      reviewer_name: application.reviewer_name,
-      review_time: application.review_time,
-      remark: `库存批量维护 ${application.application_no}`
-    }, { transaction });
+    const [right, wasCreated] = await InventoryResourceRight.findOrCreate({
+      where: { sn_id: sn.sn_id, resource_type: resourceType },
+      defaults: {
+        right_id: generateUUID(),
+        sn_id: sn.sn_id,
+        sn_code: sn.sn_code,
+        product_id: item.product_id,
+        resource_type: resourceType,
+        rule_config_id: rule?.config_id || null,
+        source_inbound_id: application.application_id,
+        initial_status: 'AVAILABLE',
+        current_status: 'AVAILABLE',
+        amount,
+        source: 'BATCH_INBOUND',
+        remark: `批量入库 ${application.application_no} 生成`
+      },
+      transaction
+    });
+    if (wasCreated) {
+      await ResourceRightChangeOrder.create({
+        change_id: generateUUID(),
+        change_order_no: businessNo('RRC'),
+        sn_id: sn.sn_id,
+        sn_code: sn.sn_code,
+        product_id: item.product_id,
+        resource_type: resourceType,
+        before_status: 'NOT_APPLICABLE',
+        after_status: 'AVAILABLE',
+        change_amount: amount,
+        change_reason: 'BATCH_INBOUND',
+        approval_status: 'approved',
+        related_order_id: application.application_id,
+        applicant_staff_id: application.applicant_staff_id,
+        applicant_name: application.applicant_name,
+        reviewer_staff_id: application.reviewer_staff_id,
+        reviewer_name: application.reviewer_name,
+        review_time: application.review_time,
+        remark: `库存批量维护 ${application.application_no}`
+      }, { transaction });
+    }
   }
 
   await SnLog.create({
@@ -822,6 +853,7 @@ module.exports = {
     formatExecutionError,
     validateRows,
     normalizeUploadedFilename,
-    compactBatchErrors
+    compactBatchErrors,
+    isReusableInboundSnStatus
   }
 };

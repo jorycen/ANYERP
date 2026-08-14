@@ -25,6 +25,8 @@ const { ensureProductPnMaster } = require('../../utils/productPnMaster');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
 const { createSalesReturnGrossProfitLedger } = require('../sales/grossProfit');
 
+const REUSABLE_INBOUND_SN_STATUSES = new Set(['out_stock', 'sold']);
+
 function splitCodes(value) {
   return String(value || '')
     .split(/[,，\s]+/)
@@ -3136,14 +3138,12 @@ async function executeInbound(ctx) {
           where: {
             product_id: dbItem.product_id,
             pn_code: pnCode,
-            sn_code: snCode,
-            status: { [Op.in]: ['in_stock', 'transferring'] },
-            is_deleted: 0
+            sn_code: snCode
           },
           transaction: t
         });
-        if (existingSn) {
-          ctx.throw(400, `PN码 [${pnCode || '-'}] 下的SN码 [${snCode}] 已存在`);
+        if (existingSn && !REUSABLE_INBOUND_SN_STATUSES.has(String(existingSn.status || '').trim())) {
+          ctx.throw(400, `PN码 [${pnCode || '-'}] 下的SN码 [${snCode}] 当前状态为${existingSn.status || '未知'}，不允许重复入库`);
         }
 
         const pnMaster = await ensureProductPnMaster({
@@ -3151,10 +3151,8 @@ async function executeInbound(ctx) {
           pnCode: pnCode,
           transaction: t
         });
-        const snRecord = await ProductSn.create({
-          sn_id: generateUUID(),
+        const snData = {
           product_id: dbItem.product_id,
-          product_name: dbItem.product_name || '',
           pn_id: pnMaster.pn_id,
           pn_code: pnCode,
           sn_code: snCode,
@@ -3169,7 +3167,13 @@ async function executeInbound(ctx) {
           supplier_name: supplier?.name || null,
           remark: item.remark || '',
           is_deleted: 0
-        }, { transaction: t });
+        };
+        const snRecord = existingSn
+          ? (await existingSn.update(snData, { transaction: t }))
+          : await ProductSn.create({
+              sn_id: generateUUID(),
+              ...snData
+            }, { transaction: t });
 
         await initializeSnResourceRightsFromInbound({
           sn: snRecord,

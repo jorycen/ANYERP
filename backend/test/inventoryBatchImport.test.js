@@ -37,6 +37,13 @@ test('批量入库继续保留资源权益配置', () => {
   );
 });
 
+test('已出库或已销售的历史SN允许重新入库，当前在库状态仍需拦截', () => {
+  assert.equal(_test.isReusableInboundSnStatus('out_stock'), true);
+  assert.equal(_test.isReusableInboundSnStatus('sold'), true);
+  assert.equal(_test.isReusableInboundSnStatus('in_stock'), false);
+  assert.equal(_test.isReusableInboundSnStatus('transferring'), false);
+});
+
 test('SN批量导入兼容机器号和序列号表头', () => {
   assert.equal(_test.getCell({ 机器号: 'MPVMGKR' }, ['SN', '机器号', '序列号']), 'MPVMGKR');
   assert.equal(_test.getCell({ 序列号: 'PF2DNRA4' }, ['SN', '机器号', '序列号']), 'PF2DNRA4');
