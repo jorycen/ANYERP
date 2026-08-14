@@ -1250,7 +1250,7 @@ async function approveRequest(ctx) {
         total_amount: totalAmount,
         total_quantity: totalQuantity,
         status: 'pending',
-        create_user: user.name,
+        create_user: request.apply_user || request.submit_user || request.create_user || user.name,
         create_time: new Date(),
         update_time: new Date()
       }, { transaction });
@@ -1560,13 +1560,13 @@ async function createPurchaseAdjustment(ctx) {
         }
         returnId = generateUUID();
         returnNo = generateId('RET');
-        await ReturnStock.create({ return_id: returnId, return_no: returnNo, inbound_id: inbound.inbound_id, inbound_no: inbound.inbound_no, store_id: inbound.store_id, purchase_request_id: request.request_id, supplier_id: request.supplier_id, supplier_name: request.Supplier?.name || '', total_quantity: returnQuantity, total_amount: toSignedMoney(returnQuantity * unitPrice), reason: reason || '', status: 'completed', execute_user: user.name || user.phone, execute_time: new Date(), create_user: user.name || user.phone, create_time: new Date() }, { transaction });
+        await ReturnStock.create({ return_id: returnId, return_no: returnNo, inbound_id: inbound.inbound_id, inbound_no: inbound.inbound_no, store_id: inbound.store_id, purchase_request_id: request.request_id, supplier_id: request.supplier_id, supplier_name: request.Supplier?.name || '', total_quantity: returnQuantity, total_amount: toSignedMoney(returnQuantity * unitPrice), reason: reason || '', status: 'completed', execute_user: user.name || user.phone, execute_time: new Date(), create_user: request.apply_user || request.submit_user || request.create_user || user.name || user.phone, create_time: new Date() }, { transaction });
         for (const returnItem of returnItems) {
           const sn = returnItem.sn;
           await ReturnStockItem.create({ return_id: returnId, inbound_item_id: inboundItem.item_id, product_id: requestItem.product_id, product_name: requestItem.product_name || inboundItem.product_name || '', pn_code: sn?.pn_code || inboundItem.pn_code || '', sn_code: sn?.sn_code || '', sn_id: sn?.sn_id || null, quantity: returnItem.quantity, unit_price: unitPrice, location_id: returnItem.locationId, inventory_type: returnItem.inventoryType, product_type: inboundItem.product_type || '', remark: reason || '' }, { transaction });
           if (sn) {
             await sn.update({ status: 'returned', remark: `${sn.remark || ''} [采购退库:${returnNo}]` }, { transaction });
-            await SnLog.create({ log_id: generateUUID(), sn_id: sn.sn_id, sn_code: sn.sn_code, product_id: sn.product_id, product_name: requestItem.product_name || inboundItem.product_name || '', store_id: inbound.store_id, action: 'return', remark: `采购退库：${returnNo}`, create_user: user.name || user.phone, create_time: new Date() }, { transaction });
+            await SnLog.create({ log_id: generateUUID(), sn_id: sn.sn_id, sn_code: sn.sn_code, product_id: sn.product_id, product_name: requestItem.product_name || inboundItem.product_name || '', store_id: inbound.store_id, action: 'return', remark: `采购退库：${returnNo}`, create_user: request.apply_user || request.submit_user || request.create_user || user.name || user.phone, create_time: new Date() }, { transaction });
           }
           await updateInventory(requestItem.product_id, inbound.store_id, returnItem.inventoryType, -returnItem.quantity, transaction, returnItem.locationId);
           if (returnItem.inventoryType === 'normal_qty' && inboundItem.product_type) {

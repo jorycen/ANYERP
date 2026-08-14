@@ -183,6 +183,63 @@ function canQueryAllSalesOrders(user) {
   return isDealerTraceAccount(user) || roles.some(role => ['manager', 'store_manager'].includes(role));
 }
 
+function buildCombinedDepositWhere({
+  storeId,
+  startDate,
+  endDate,
+  customerPhone,
+  customerName,
+  orderNo,
+  createUser,
+  submitUser,
+  accessibleStoreIds,
+  hasGlobalStoreScope
+}) {
+  const where = { is_deleted: 0 };
+  if (storeId) {
+    where.store_id = storeId;
+  } else if (!hasGlobalStoreScope) {
+    where.store_id = accessibleStoreIds.length ? accessibleStoreIds : '__NO_ACCESS__';
+  }
+  const dateRange = buildChinaDateRange(startDate, endDate);
+  if (dateRange) where.create_time = dateRange;
+  if (customerPhone) where.customer_phone = { [Op.like]: `%${customerPhone}%` };
+  if (customerName) where.customer_name = { [Op.like]: `%${customerName}%` };
+  if (orderNo) where.deposit_no = { [Op.like]: `%${orderNo}%` };
+  if (createUser) where.create_user = { [Op.like]: `%${createUser}%` };
+  if (submitUser && !createUser) where.create_user = { [Op.like]: `%${submitUser}%` };
+  return where;
+}
+
+function normalizeDepositListRow(deposit) {
+  const data = deposit.toJSON ? deposit.toJSON() : deposit;
+  return {
+    ...data,
+    record_type: 'deposit',
+    deposit_id: data.deposit_id,
+    order_id: data.deposit_id,
+    order_no: data.deposit_no,
+    order_status: 'deposit_receipt',
+    submit_user: data.create_user || '',
+    total_amount: Number(data.amount || 0),
+    actual_payment: Number(data.amount || 0),
+    national_subsidy: 0,
+    education_subsidy: 0,
+    deposit_deduction_total: 0
+  };
+}
+
+function compareCombinedSalesRows(a, b) {
+  const pending = new Set(['draft', 'pending_approval', '未归档', 'deposit_receipt']);
+  const aPending = pending.has(String(a.order_status || '')) ? 0 : 1;
+  const bPending = pending.has(String(b.order_status || '')) ? 0 : 1;
+  if (aPending !== bPending) return aPending - bPending;
+  const aTime = new Date(a.create_time || 0).getTime();
+  const bTime = new Date(b.create_time || 0).getTime();
+  if (aTime !== bTime) return bTime - aTime;
+  return String(b.order_id || '').localeCompare(String(a.order_id || ''));
+}
+
 async function list(ctx) {
   const {
     storeId, startDate, endDate, customerPhone, customerName, orderNo,
@@ -277,7 +334,7 @@ async function list(ctx) {
     itemInclude.required = true;
   }
 
-  const { count, rows } = await Order.findAndCountAll({
+  const orderQuery = {
     where,
     include: [
       storeInclude,
@@ -292,11 +349,37 @@ async function list(ctx) {
       pendingStatuses: ['draft', 'pending_approval', '未归档'],
       dateColumns: ['Order.create_time'],
       idColumn: 'Order.order_id'
-    }),
-    ...paginate({}, { page, pageSize })
+    })
+  };
+  const includeDeposits = !productName && !productCode && !pnCode && !snCode;
+  const depositWhere = buildCombinedDepositWhere({
+    storeId,
+    startDate,
+    endDate,
+    customerPhone,
+    customerName,
+    orderNo,
+    createUser: canQueryAllStoreOrders ? createUser : (user.name || '__NO_MATCHING_STAFF__'),
+    submitUser,
+    accessibleStoreIds,
+    hasGlobalStoreScope
   });
 
-  ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+  const [orders, deposits] = await Promise.all([
+    Order.findAll(orderQuery),
+    !includeDeposits || (status && status !== 'deposit') ? Promise.resolve([]) : DepositOrder.findAll({
+      where: depositWhere,
+      include: [{ model: Store }]
+    })
+  ]);
+  const mergedRows = [
+    ...orders,
+    ...deposits.map(normalizeDepositListRow)
+  ].sort(compareCombinedSalesRows);
+  const offset = (Number(page) - 1) * Number(pageSize);
+  const rows = mergedRows.slice(offset, offset + Number(pageSize));
+
+  ctx.body = formatPaginatedResult(rows, { page, pageSize, count: mergedRows.length });
 }
 
 /**
@@ -379,6 +462,8 @@ const ORDER_EXPORT_HEADERS = [
 ];
 
 const ORDER_EXPORT_PAYMENT_HEADERS = ORDER_EXPORT_HEADERS.slice(15, 28);
+const EXPORT_MAIN_PRODUCT_KEYWORDS = ['电脑', '笔记本', '台式机', '一体机', '手机', '平板', 'ipad', 'tablet', 'computer', 'phone'];
+const EXPORT_ACCESSORY_KEYWORDS = ['配件', '鼠标', '键盘', '手柄', '支架', '摄像头', '保护夹', '保护壳', '贴膜', '充电器', '耳机', '数据线', 'u盘', '硬盘', '内存', '打印机'];
 
 function parseExportJson(value, fallback = []) {
   if (Array.isArray(value)) return value;
@@ -391,13 +476,55 @@ function parseExportJson(value, fallback = []) {
   }
 }
 
-function exportPaymentAmount(payments, header) {
+function normalizeExportPaymentMethod(payment, paymentMethodMap = {}) {
+  const rawMethod = String(payment?.payment_method || payment?.method || '').trim();
+  return String(paymentMethodMap[rawMethod] || rawMethod).trim();
+}
+
+function exportPaymentAmount(payments, header, paymentMethodMap = {}) {
   return (payments || []).reduce((total, payment) => {
-    const rawMethod = String(payment?.payment_method || '').trim();
+    const rawMethod = normalizeExportPaymentMethod(payment, paymentMethodMap);
     const method = rawMethod.replace(/-(客户实收|政策补贴应收)$/, '');
     const matches = method === header || rawMethod === header || rawMethod.startsWith(`${header}-`);
     return matches ? total + Number(payment.amount || 0) : total;
   }, 0);
+}
+
+function isExportMainProduct(item, allowUnknown = false) {
+  const product = item?.Product || {};
+  const category = String(product.category || item.category || '').toLowerCase();
+  const accessoryType = String(product.accessory_type || item.accessory_type || '').toLowerCase();
+  const nameAndConfig = [
+    product.name,
+    product.config,
+    item.product_name
+  ].map(value => String(value || '').toLowerCase()).join(' ');
+  if (accessoryType || EXPORT_ACCESSORY_KEYWORDS.some(keyword => category.includes(keyword))) return false;
+  if (EXPORT_MAIN_PRODUCT_KEYWORDS.some(keyword => category.includes(keyword))) return true;
+  if (EXPORT_ACCESSORY_KEYWORDS.some(keyword => nameAndConfig.includes(keyword))) return false;
+  if (EXPORT_MAIN_PRODUCT_KEYWORDS.some(keyword => nameAndConfig.includes(keyword))) return true;
+  return Number(item.use_gov_subsidy || 0) === 1 || allowUnknown;
+}
+
+function allocateExportAmount(total, entries) {
+  const amount = money(total || 0);
+  const result = new Map();
+  if (!entries.length) return result;
+  const baseTotal = entries.reduce((sum, entry) => sum + Math.max(0, Number(entry.subtotal || 0)), 0);
+  if (baseTotal <= 0) {
+    result.set(entries[0].index, amount);
+    entries.slice(1).forEach(entry => result.set(entry.index, 0));
+    return result;
+  }
+  let allocated = 0;
+  entries.forEach((entry, position) => {
+    const allocatedAmount = position === entries.length - 1
+      ? money(amount - allocated)
+      : money(amount * Math.max(0, Number(entry.subtotal || 0)) / baseTotal);
+    result.set(entry.index, allocatedAmount);
+    allocated += allocatedAmount;
+  });
+  return result;
 }
 
 function exportSupplementText(supplements, predicate = () => true) {
@@ -433,6 +560,16 @@ function exportAuxiliaryValue(value, field) {
     .join('；');
 }
 
+function exportAuxiliaryNames(value, primaryName) {
+  const names = parseExportJson(value, [])
+    .filter(item => item && typeof item === 'object')
+    .map(item => item.name || item.staffName || item.staff_name || item.selected || '')
+    .map(name => String(name || '').trim())
+    .filter(Boolean);
+  const primary = String(primaryName || '').trim();
+  return [primary, ...names].filter(Boolean).join('/');
+}
+
 function exportReturnText(returns) {
   return (returns || [])
     .flatMap(item => (item.items || []).map(detail => {
@@ -443,7 +580,7 @@ function exportReturnText(returns) {
     .join('；');
 }
 
-function buildOrderExportRows(orders) {
+function buildOrderExportRows(orders, paymentMethodMap = {}) {
   return orders.flatMap(order => {
     const data = order.toJSON();
     const items = Array.isArray(data.OrderItems) && data.OrderItems.length ? data.OrderItems : [{}];
@@ -455,15 +592,28 @@ function buildOrderExportRows(orders) {
       - Number(data.national_subsidy || 0)
       - Number(data.education_subsidy || 0)
       - Number(data.deposit_deduction_total || 0));
-    const paymentAmounts = Object.fromEntries(
-      ORDER_EXPORT_PAYMENT_HEADERS.map(header => [header, exportPaymentAmount(payments, header)])
+    const itemEntries = items.map((item, index) => ({ index, subtotal: Number(item.subtotal || 0) }));
+    const mainItemEntries = itemEntries.filter(entry => isExportMainProduct(items[entry.index], items.length === 1));
+    const nationalSubsidyAmounts = allocateExportAmount(data.national_subsidy, mainItemEntries);
+    const paymentTotals = Object.fromEntries(
+      ORDER_EXPORT_PAYMENT_HEADERS.map(header => [header, exportPaymentAmount(payments, header, paymentMethodMap)])
+    );
+    const depositDeductionTotal = Number(data.deposit_deduction_total || paymentTotals['定金抵扣'] || 0);
+    paymentTotals['定金抵扣'] = depositDeductionTotal;
+    const paymentAmountsByItem = Object.fromEntries(
+      ORDER_EXPORT_PAYMENT_HEADERS.map(header => [header, allocateExportAmount(paymentTotals[header], itemEntries)])
     );
     const supplementEducation = exportSupplementAmount(supplements, item => /教育/.test(String(item.item_name || '')));
     const supplementFreight = exportSupplementAmount(supplements, item => /提货运费|运费/.test(String(item.item_name || '')));
 
-    return items.map(item => {
+    return items.map((item, itemIndex) => {
       const subtotal = Number(item.subtotal || 0);
       const productCode = item.pn_code || item.Product?.product_code || item.product_id || '';
+      const isMainProduct = isExportMainProduct(item, items.length === 1);
+      const rowPaymentAmounts = Object.fromEntries(
+        ORDER_EXPORT_PAYMENT_HEADERS.map(header => [header, paymentAmountsByItem[header].get(itemIndex) || 0])
+      );
+      const rowPaymentTotal = ORDER_EXPORT_PAYMENT_HEADERS.reduce((sum, header) => sum + Number(rowPaymentAmounts[header] || 0), 0);
       return {
         订单编号: data.order_no || '',
         下单时间: data.create_time || '',
@@ -476,18 +626,18 @@ function buildOrderExportRows(orders) {
         会员联系方式: data.customer_phone || '',
         订单总计: Number(data.total_amount || 0),
         优惠金额: Number(data.discount_amount || 0),
-        国补: Number(data.national_subsidy || 0),
+        国补: isMainProduct ? (nationalSubsidyAmounts.get(itemIndex) || 0) : '',
         教育补贴: Number(data.education_subsidy || 0),
         应收金额: payableAmount,
-        收款金额汇总: payments.reduce((total, payment) => total + Number(payment.amount || 0), 0),
-        ...paymentAmounts,
+        收款金额汇总: rowPaymentTotal,
+        ...rowPaymentAmounts,
         归档状态: isArchiveStatus(data.order_status) ? '已归档' : '',
         开票状态: data.invoice_status || '',
         开票信息: data.invoice_info || '',
         开票金额: Number(data.invoice_amount || 0),
-        国补状态: data.subsidy_status || '',
-        国补人: data.subsidy_person || '',
-        国补人ID: data.subsidy_id || '',
+        国补状态: isMainProduct ? (data.subsidy_status || '') : '',
+        国补人: isMainProduct ? (data.subsidy_person || '') : '',
+        国补人ID: isMainProduct ? (data.subsidy_id || '') : '',
         商品名称: item.product_name || item.Product?.name || '',
         商品编码: productCode,
         SN码: item.sn_code || '',
@@ -498,7 +648,7 @@ function buildOrderExportRows(orders) {
         小计: subtotal,
         商品应收金额: subtotal,
         商品收款金额: subtotal,
-        辅助销售人比例分配: exportAuxiliaryValue(auxiliary, 'ratio'),
+        辅助销售人比例分配: exportAuxiliaryNames(auxiliary, data.create_user || data.submit_user),
         辅助销售人金额分配: exportAuxiliaryValue(auxiliary, 'amount'),
         补录教育优惠: supplementEducation,
         商品提货运费: supplementFreight,
@@ -513,6 +663,69 @@ function buildOrderExportRows(orders) {
         操作人: data.approve_user || data.submit_user || data.create_user || ''
       };
     });
+  });
+}
+
+function buildDepositExportRows(deposits, paymentMethodMap = {}) {
+  return deposits.map(deposit => {
+    const data = deposit.toJSON ? deposit.toJSON() : deposit;
+    const amount = Number(data.amount || 0);
+    const paymentAmounts = Object.fromEntries(
+      ORDER_EXPORT_PAYMENT_HEADERS.map(header => [
+        header,
+        exportPaymentAmount([
+          { payment_method: data.payment_method, amount }
+        ], header, paymentMethodMap)
+      ])
+    );
+    return {
+      订单编号: data.deposit_no || data.deposit_id || '',
+      下单时间: data.create_time || '',
+      提交人: data.create_user || '',
+      门店名称: data.Store?.name || '',
+      门店ID: data.store_id || '',
+      一级来源: data.customer_source || '',
+      二级来源: '',
+      会员称呼: data.customer_name || '',
+      会员联系方式: data.customer_phone || '',
+      订单总计: amount,
+      优惠金额: 0,
+      国补: '',
+      教育补贴: '',
+      应收金额: amount,
+      收款金额汇总: amount,
+      ...paymentAmounts,
+      归档状态: data.status || '',
+      开票状态: '',
+      开票信息: '',
+      开票金额: '',
+      国补状态: '',
+      国补人: '',
+      国补人ID: '',
+      商品名称: '',
+      商品编码: '',
+      SN码: '',
+      IMEI1: '',
+      IMEI2: '',
+      数量: '',
+      单价: '',
+      小计: '',
+      商品应收金额: '',
+      商品收款金额: '',
+      辅助销售人比例分配: '',
+      辅助销售人金额分配: '',
+      补录教育优惠: '',
+      商品提货运费: '',
+      追加商品: '',
+      退货商品: '',
+      预留字段1: '定金收款',
+      预留字段2: '',
+      备注: data.remark || '',
+      创建日期: data.create_time || '',
+      订单状态: '定金收款',
+      '归档/作废时间': data.status === 'refunded' ? (data.update_time || '') : '',
+      操作人: data.create_user || ''
+    };
   });
 }
 
@@ -571,28 +784,54 @@ async function exportOrders(ctx) {
   }
   const productInclude = {
     model: Product,
-    attributes: ['product_id', 'product_code', 'name'],
+    attributes: ['product_id', 'product_code', 'name', 'category', 'config', 'accessory_type'],
     ...(productCode ? { where: { product_code: { [Op.like]: `%${productCode}%` } }, required: true } : {})
   };
 
-  const orders = await Order.findAll({
-    where,
-    include: [
-      storeInclude,
-      { ...itemInclude, include: [productInclude] },
-      { model: OrderPayment },
-      { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false },
-      {
-        model: SalesReturnRequest,
-        as: 'salesReturns',
-        required: false,
-        include: [{ model: SalesReturnRequestItem, as: 'items', required: false }]
-      }
-    ],
-    order: [['create_time', 'DESC'], ['order_id', 'DESC']]
-  });
-
-  sendExcel(ctx, buildOrderExportRows(orders), ORDER_EXPORT_HEADERS, `销售订单导出_${getChinaDateString()}.xlsx`, '订单明细');
+  const [orders, deposits, paymentMethods] = await Promise.all([
+    Order.findAll({
+      where,
+      include: [
+        storeInclude,
+        { ...itemInclude, include: [productInclude] },
+        { model: OrderPayment },
+        { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false },
+        {
+          model: SalesReturnRequest,
+          as: 'salesReturns',
+          required: false,
+          include: [{ model: SalesReturnRequestItem, as: 'items', required: false }]
+        }
+      ],
+      order: [['create_time', 'DESC'], ['order_id', 'DESC']]
+    }),
+    (!productName && !productCode && !pnCode && !snCode && (!status || status === 'deposit'))
+      ? DepositOrder.findAll({
+        where: buildCombinedDepositWhere({
+          storeId,
+          startDate,
+          endDate,
+          customerPhone,
+          customerName,
+          orderNo,
+          status,
+          createUser,
+          submitUser,
+          accessibleStoreIds,
+          hasGlobalStoreScope
+        }),
+        include: [{ model: Store }],
+        order: [['create_time', 'DESC'], ['deposit_id', 'DESC']]
+      })
+      : Promise.resolve([]),
+    PaymentMethod.findAll({ where: { status: 1 }, attributes: ['code', 'name'] })
+  ]);
+  const paymentMethodMap = Object.fromEntries(paymentMethods.map(method => [method.code, method.name]));
+  const rows = [
+    ...buildOrderExportRows(orders, paymentMethodMap),
+    ...buildDepositExportRows(deposits, paymentMethodMap)
+  ].sort((a, b) => new Date(b.下单时间 || 0).getTime() - new Date(a.下单时间 || 0).getTime());
+  sendExcel(ctx, rows, ORDER_EXPORT_HEADERS, `销售订单导出_${getChinaDateString()}.xlsx`, '订单明细');
 }
 
 function parseJsonValue(value, fallback = null) {
@@ -2745,7 +2984,7 @@ async function createSalesReturnInbound({ request, user, transaction, ctx }) {
           store_id: request.store_id,
           action: 'return',
           remark: `Sales return approved, pending re-inbound: ${request.return_no}`,
-          create_user: user.name || user.staffId || '',
+          create_user: request.create_user || user.name || user.staffId || '',
           create_time: new Date()
         }, { transaction });
       }
@@ -2775,7 +3014,7 @@ async function createSalesReturnInbound({ request, user, transaction, ctx }) {
     total_amount: money(totalAmount),
     total_quantity: totalQuantity,
     status: 'pending',
-    create_user: user.name || user.staffId || '',
+    create_user: request.create_user || user.name || user.staffId || '',
     create_time: new Date(),
     update_time: new Date()
   }, { transaction });
@@ -3644,6 +3883,11 @@ module.exports = {
     buildSubsidyPhotoQuery,
     buildChinaDateRange,
     buildOrderExportRows,
+    buildDepositExportRows,
+    normalizeDepositListRow,
+    isExportMainProduct,
+    allocateExportAmount,
+    compareCombinedSalesRows,
     ORDER_EXPORT_HEADERS
   }
 };
@@ -3877,7 +4121,7 @@ async function refreshDailyStatementTotals(statement, transaction = null) {
 
 async function syncDepositToDailyStatement(deposit, transaction) {
   const { DailyStatement, DailyStatementDetail } = require('../../models');
-  const dateStr = getChinaDateString();
+  const dateStr = getChinaDateString(deposit.createTime || deposit.create_time || new Date());
   const [statement] = await DailyStatement.findOrCreate({
     where: { store_id: deposit.storeId, statement_date: dateStr },
     defaults: {
@@ -3897,19 +4141,35 @@ async function syncDepositToDailyStatement(deposit, transaction) {
     transaction
   );
 
-  await DailyStatementDetail.create({
-    detail_id: generateUUID(),
-    statement_id: statement.statement_id,
-    order_id: deposit.depositId,
+  const detailPayload = {
     order_no: deposit.depositNo,
     customer_name: deposit.customerName || '',
     payment_method: deposit.paymentMethod,
     payment_code: deposit.paymentMethod,
     business_type: 'deposit_receipt',
     amount: deposit.amount,
-    settlement_account_id: settlementAccountId,
-    settled: 0
-  }, { transaction });
+    settlement_account_id: settlementAccountId
+  };
+  const existing = await DailyStatementDetail.findOne({
+    where: {
+      statement_id: statement.statement_id,
+      order_id: deposit.depositId,
+      business_type: 'deposit_receipt'
+    },
+    transaction,
+    lock: transaction?.LOCK?.UPDATE
+  });
+  if (existing) {
+    await existing.update(detailPayload, { transaction });
+  } else {
+    await DailyStatementDetail.create({
+      detail_id: generateUUID(),
+      statement_id: statement.statement_id,
+      order_id: deposit.depositId,
+      ...detailPayload,
+      settled: 0
+    }, { transaction });
+  }
 
   await refreshDailyStatementTotals(statement, transaction);
 }

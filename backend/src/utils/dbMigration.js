@@ -730,6 +730,8 @@ async function runMigrations() {
     await checkAndAddColumn('T_PURCHASE_REQUEST', 'SUPPLIER_CHAT_SCREENSHOT_URLS', 'TEXT COMMENT "供应商群喊货截图展示地址"', 'SUPPLIER_CHAT_SCREENSHOT_IDS');
     await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'STORE_ALLOCATIONS', 'TEXT COMMENT "门店分配"', 'QUANTITY');
     await checkAndAddColumn('T_INBOUND', 'PURCHASE_REQUEST_ID', 'VARCHAR(32) COMMENT "采购申请ID"', 'INBOUND_NO');
+    await checkAndAddColumn('T_INBOUND', 'RECEIVE_USER', 'VARCHAR(64) COMMENT "最近一次入库人"', 'CREATE_USER');
+    await checkAndAddColumn('T_INBOUND', 'RECEIVE_TIME', 'DATETIME COMMENT "最近一次入库时间"', 'RECEIVE_USER');
     await checkAndAddColumn('T_INBOUND_ITEM', 'REMARK', 'VARCHAR(512) COMMENT "备注"', 'UNIT_PRICE');
     await checkAndAddColumn('T_INBOUND_ITEM', 'STORE_ALLOCATIONS', 'TEXT COMMENT "门店分配"', 'REMARK');
     await checkAndAddColumn('T_INBOUND_ITEM', 'LOCATION_ID', 'VARCHAR(32) COMMENT "库位ID"', 'STORE_ALLOCATIONS');
@@ -1577,6 +1579,8 @@ async function runMigrations() {
     await checkAndAddColumn('T_INBOUND_ITEM', 'ORIGINAL_PICKUP_PRICE', 'DECIMAL(12,2) DEFAULT 0 COMMENT "原始提货价"', 'UNIT_PRICE');
     await checkAndAddColumn('T_INBOUND_ITEM', 'RECEIVED_QUANTITY', 'INT NOT NULL DEFAULT 0 COMMENT "累计已入库数量"', 'QUANTITY');
     await checkAndAddColumn('T_INBOUND_ITEM', 'RECEIVED_SN_CODES', 'TEXT COMMENT "累计已入库SN列表JSON"', 'RECEIVED_QUANTITY');
+    await checkAndAddColumn('T_INBOUND_ITEM', 'RECEIVE_USER', 'VARCHAR(64) COMMENT "最近一次入库人"', 'RECEIVED_SN_CODES');
+    await checkAndAddColumn('T_INBOUND_ITEM', 'RECEIVE_TIME', 'DATETIME COMMENT "最近一次入库时间"', 'RECEIVE_USER');
     await checkAndAddColumn('T_INVENTORY', 'REGULAR_QTY', 'INT DEFAULT 0 COMMENT "正规货数量"', 'NORMAL_QTY');
     await checkAndAddColumn('T_INVENTORY', 'SUBSIDY_QTY', 'INT DEFAULT 0 COMMENT "国补货数量"', 'REGULAR_QTY');
     await checkAndAddColumn('T_INVENTORY', 'SECOND_QTY', 'INT DEFAULT 0 COMMENT "纯二批数量"', 'SUBSIDY_QTY');

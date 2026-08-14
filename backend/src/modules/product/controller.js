@@ -28,6 +28,7 @@ const {
   isUsablePnCode,
   assertSingleSnProductPn
 } = require('../../utils/productPn');
+const { ensureProductPnsMaster } = require('../../utils/productPnMaster');
 const XLSX = require('xlsx');
 const { getUserRoles } = require('../../middleware/permission');
 
@@ -126,6 +127,8 @@ function getManufacturerCodes(barcodes, fallback) {
 }
 
 async function ensureProductPns(productId, codes, transaction = null) {
+  return ensureProductPnsMaster({ productId, codes, transaction });
+  /*
   const productKey = String(productId || '');
   if (!productKey) return [];
 
@@ -194,6 +197,7 @@ async function ensureProductPns(productId, codes, transaction = null) {
   }
 
   return ensured;
+  */
 }
 
 function appendCode(existing, code) {
@@ -431,6 +435,17 @@ async function getProductList(ctx) {
     });
     barcodeMatches.forEach(b => matchedProductIdsByBarcode.add(b.product_id));
 
+    const pnMatches = await ProductPn.findAll({
+      where: {
+        status: 1,
+        is_deleted: 0,
+        [Op.or]: keywords.map(k => ({ pn_code: { [Op.like]: `%${k}%` } }))
+      },
+      attributes: ['product_id'],
+      raw: true
+    });
+    pnMatches.forEach(row => matchedProductIdsByBarcode.add(row.product_id));
+
     // 2. 构建商品字段查询条件（每个关键字都要匹配）
     const productFieldConditions = [];
     for (const k of keywords) {
@@ -470,7 +485,8 @@ async function getProductList(ctx) {
   const { count, rows } = await Product.findAndCountAll({
     where,
     include: [
-      { model: ProductBarcode, attributes: ['barcode_id', 'barcode_type', 'barcode_code'], where: { status: 1 }, required: false }
+      { model: ProductBarcode, attributes: ['barcode_id', 'barcode_type', 'barcode_code'], where: { status: 1 }, required: false },
+      { model: ProductPn, attributes: ['pn_id', 'pn_code', 'is_primary'], where: { status: 1, is_deleted: 0 }, required: false }
     ],
     order: [['create_time', 'DESC'], ['product_id', 'DESC']],
     ...paginate({}, { page: parseInt(page), pageSize: parseInt(pageSize) }),
@@ -479,6 +495,10 @@ async function getProductList(ctx) {
 
   const list = rows.map(p => {
     const allBarcodes = (p.ProductBarcodes || []).map(b => ({ barcode_id: b.barcode_id, type: b.barcode_type, code: b.barcode_code }));
+    const activePns = (p.ProductPns || [])
+      .filter(pn => pn.pn_code)
+      .sort((a, b) => Number(b.is_primary || 0) - Number(a.is_primary || 0))
+      .map(pn => pn.pn_code);
     const extras = parseProductExtras(p.extras);
     const { cols: mappedExtras } = splitAttributes(extras);
     return {
@@ -498,7 +518,7 @@ async function getProductList(ctx) {
       gpu: getProductAttributeValue(p, 'gpu', mappedExtras),
       accessory_type: getProductAttributeValue(p, 'accessory_type', mappedExtras),
       extras,
-      manufacturer_codes: splitPnCodes(p.manufacturer_code).length > 0 ? splitPnCodes(p.manufacturer_code) : allBarcodes.filter(b => b.type === 'manufacturer').map(b => b.code),
+      manufacturer_codes: activePns.length > 0 ? activePns : (splitPnCodes(p.manufacturer_code).length > 0 ? splitPnCodes(p.manufacturer_code) : allBarcodes.filter(b => b.type === 'manufacturer').map(b => b.code)),
       barcodes: allBarcodes,
       need_sn: Number(p.need_sn || 0),
       need_imei: Number(p.need_imei || 0),

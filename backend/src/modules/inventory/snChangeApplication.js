@@ -208,7 +208,7 @@ async function applySnChangeApplication(instance, transaction, approver) {
       store_id: item.storeId,
       action: 'modify_sn',
       remark: `SN码由 ${item.oldSnCode} 修改为 ${item.newSnCode}；申请人：${payload.applicantName || '-'}；申请原因：${reason}`,
-      create_user: operatorName
+      create_user: payload.applicantName || operatorName
     }, { transaction });
   }
 }

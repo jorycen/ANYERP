@@ -21,6 +21,7 @@ const { recordBusinessAction, listBusinessActions } = require('../../utils/busin
 const { isTransferScope, transferRegionKeys } = require('../../utils/transferScope');
 const { canViewSnTraceReference, isDealerTraceAccount } = require('../../utils/snTracePermission');
 const { assertSingleSnProductPn } = require('../../utils/productPn');
+const { ensureProductPnMaster } = require('../../utils/productPnMaster');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
 const { createSalesReturnGrossProfitLedger } = require('../sales/grossProfit');
 
@@ -320,7 +321,7 @@ async function returnTransfer(ctx) {
           store_id: transfer.from_store_id,
           action: 'transfer_return',
           remark: reason || `调拨退回：${transfer.from_store_id} → ${transfer.to_store_id}，单号：${transfer.transfer_no}`,
-          create_user: user.name || user.staffId
+          create_user: transfer.apply_user || user.name || user.staffId
         }, { transaction: t });
         restoredSnQuantity += 1;
         restoredQuantity += 1;
@@ -523,6 +524,7 @@ async function getSnInventoryList(ctx) {
        sn.STORE_ID AS store_id,
        sn.LOCATION_ID AS location_id,
        sn.STATUS AS status,
+       sn.UPDATE_TIME AS status_change_time,
        sn.INBOUND_TIME AS inbound_time,
        sn.TAX_TYPE AS tax_type,
        sn.SOURCE_TYPE AS source_type,
@@ -591,6 +593,8 @@ async function getSnInventoryList(ctx) {
       商品名称: row.product_name || '',
       所在门店: row.store_name || '',
       库位: row.location_name || '',
+      状态: row.status_label || '',
+      状态变更时间: row.status_change_time || '',
       资源情况: (row.resource_statuses || []).map(resource => `${resource.resource_name}: ${resource.status_name}`).join('\n'),
       统一售价: Number(row.unified_sale_price || 0),
       SN特价: row.is_special_price ? Number(row.special_price || 0) : '',
@@ -600,7 +604,7 @@ async function getSnInventoryList(ctx) {
       备注: row.remark || ''
     }));
     sendExcel(ctx, data, [
-      'SN', 'PN', '商品名称', '所在门店', '库位', '资源情况',
+      'SN', 'PN', '商品名称', '所在门店', '库位', '状态', '状态变更时间', '资源情况',
       '统一售价', 'SN特价', '当前适用售价', '库龄', '入库时间', '备注'
     ], `SN库存清单_${new Date().toISOString().slice(0, 10)}.xlsx`, 'SN库存清单');
     return;
@@ -1709,6 +1713,7 @@ async function snTrace(ctx) {
 
     const timeline = [];
     const timelineKeys = new Set();
+    const initiatorByReference = new Map();
     const traceUser = ctx.state.user || {};
     const emptyFilterValue = '__sn_trace_empty__';
     const uniqueValues = values => [...new Set((values || [])
@@ -1787,14 +1792,15 @@ async function snTrace(ctx) {
         description: row.remark || '',
         user: row.create_user || '-',
         time: row.create_time,
-        oldSnCode: row.old_sn_code || null
+        oldSnCode: row.old_sn_code || null,
+        _snLog: true
       });
     }
 
     const inboundItems = await sequelize.query(
       `SELECT ii.sn_id, ii.sn_code, ii.pn_code, i.inbound_no, i.inbound_id,
               i.store_id, i.purchase_request_id, i.source_type, i.source_no,
-              s.distributor_id, i.create_time, i.create_user
+              s.distributor_id, i.create_time, i.create_user, i.receive_time
        FROM T_INBOUND_ITEM ii
         JOIN T_INBOUND i ON BINARY ii.inbound_id = BINARY i.inbound_id
         LEFT JOIN T_STORE s ON BINARY i.store_id = BINARY s.store_id
@@ -1829,34 +1835,53 @@ async function snTrace(ctx) {
       purchaseRequestMap.set(`no:${row.request_no}`, row);
     });
 
+    const salesReturnNos = uniqueValues(inboundItems
+      .filter(row => String(row.source_type || '').toLowerCase() === 'sales_return')
+      .map(row => row.source_no));
+    const salesReturnRequests = salesReturnNos.length
+      ? await sequelize.query(
+          `SELECT return_id, return_no, create_user, create_time
+           FROM T_SALES_RETURN_REQUEST
+           WHERE BINARY return_no IN (:salesReturnNos)`,
+          { replacements: { salesReturnNos }, type: sequelize.QueryTypes.SELECT }
+        )
+      : [];
+    const salesReturnMap = new Map(salesReturnRequests.map(row => [String(row.return_no), row]));
+
     for (const inbound of inboundItems) {
+      const request = purchaseRequestMap.get(`id:${inbound.purchase_request_id}`)
+        || purchaseRequestMap.get(`no:${inbound.source_no}`);
+      const salesReturnRequest = salesReturnMap.get(String(inbound.source_no || ''));
+      const initiator = resolveInboundInitiator(inbound, request, salesReturnRequest);
+      if (inbound.inbound_no) initiatorByReference.set(String(inbound.inbound_no), initiator);
+      if (inbound.source_no) initiatorByReference.set(String(inbound.source_no), initiator);
       appendReferenceEvent({
         id: `inbound-${inbound.inbound_id}`,
         type: 'inbound',
         label: '\u5165\u5e93',
         description: `\u5165\u5e93\u5355\u53f7: ${inbound.inbound_no}${inbound.pn_code ? `; PN: ${inbound.pn_code}` : ''}`,
-        user: inbound.create_user || '-',
-        time: inbound.create_time
+        user: initiator,
+        time: inbound.receive_time || inbound.create_time
       }, {
         ref_type: 'inbound', ref_no: inbound.inbound_no, ref_id: inbound.inbound_id,
         store_id: inbound.store_id, distributor_id: inbound.distributor_id,
-        creator_names: [inbound.create_user]
+        creator_names: [initiator]
       }, { dealerOnly: true });
 
-      const request = purchaseRequestMap.get(`id:${inbound.purchase_request_id}`)
-        || purchaseRequestMap.get(`no:${inbound.source_no}`);
       if (request) {
+        const requestInitiator = purchaseInitiatorName(request) || initiator;
+        initiatorByReference.set(String(request.request_no), requestInitiator);
         appendReferenceEvent({
           id: `purchase-${request.request_id}`,
           type: 'purchase',
           label: '\u91c7\u8d2d\u7533\u8bf7',
           description: `\u91c7\u8d2d\u7533\u8bf7\u5355\u53f7: ${request.request_no}`,
-          user: request.apply_user || '-',
+          user: requestInitiator,
           time: request.create_time || inbound.create_time
         }, {
           ref_type: 'purchase_request', ref_no: request.request_no, ref_id: request.request_id,
           store_id: request.store_id, distributor_id: request.distributor_id,
-          creator_names: [request.apply_user]
+          creator_names: [requestInitiator]
         });
       }
     }
@@ -1871,14 +1896,16 @@ async function snTrace(ctx) {
       { replacements, type: sequelize.QueryTypes.SELECT }
     );
     for (const order of orderItems) {
+      const initiator = String(order.create_user || '').trim() || '-';
+      if (order.order_no) initiatorByReference.set(String(order.order_no), initiator);
       appendReferenceEvent({
         id: `sale-${order.order_id}`, type: 'sale', label: '\u5df2\u9500\u552e',
         description: `\u9500\u552e\u8ba2\u5355\u53f7: ${order.order_no}`,
-        user: order.create_user || '-', time: order.create_time
+        user: initiator, time: order.create_time
       }, {
         ref_type: 'sales_order', ref_no: order.order_no, ref_id: order.order_id,
         store_id: order.store_id, distributor_id: order.distributor_id,
-        creator_names: [order.create_user]
+        creator_names: [initiator]
       });
     }
 
@@ -1892,14 +1919,16 @@ async function snTrace(ctx) {
       { replacements, type: sequelize.QueryTypes.SELECT }
     );
     for (const row of returnItems) {
+      const initiator = String(row.create_user || '').trim() || '-';
+      if (row.return_no) initiatorByReference.set(String(row.return_no), initiator);
       appendReferenceEvent({
         id: `return-${row.return_id}`, type: 'return', label: '\u9000\u5e93',
         description: `\u9000\u5e93\u5355\u53f7: ${row.return_no}`,
-        user: row.create_user || '-', time: row.create_time
+        user: initiator, time: row.create_time
       }, {
         ref_type: 'return_stock', ref_no: row.return_no, ref_id: row.return_id,
         store_id: row.store_id, distributor_id: row.distributor_id,
-        creator_names: [row.create_user]
+        creator_names: [initiator]
       });
     }
 
@@ -1916,16 +1945,24 @@ async function snTrace(ctx) {
       { replacements, type: sequelize.QueryTypes.SELECT }
     );
     for (const row of transferItems) {
+      const initiator = String(row.apply_user || '').trim() || '-';
+      if (row.transfer_no) initiatorByReference.set(String(row.transfer_no), initiator);
       appendReferenceEvent({
         id: `transfer-${row.transfer_id}`, type: 'transfer', label: '\u8c03\u62e8',
         description: `${row.from_store_name || row.from_store_id} -> ${row.to_store_name || row.to_store_id}; \u5355\u53f7: ${row.transfer_no}`,
-        user: row.apply_user || '-', time: row.create_time
+        user: initiator, time: row.create_time
       }, {
         ref_type: 'transfer_order', ref_no: row.transfer_no, ref_id: row.transfer_id,
         from_store_id: row.from_store_id, to_store_id: row.to_store_id,
-        distributor_id: row.distributor_id, creator_names: [row.apply_user]
+        distributor_id: row.distributor_id, creator_names: [initiator]
       });
     }
+
+    timeline.forEach(event => {
+      if (!event._snLog) return;
+      event.user = resolveSnTraceLogUser(event, initiatorByReference);
+      delete event._snLog;
+    });
 
     const snData = snRows[0] || null;
     if (snData && !inboundItems.length && snData.inbound_time) {
@@ -2365,6 +2402,28 @@ function salesReturnRequesterName(request) {
   return String(request?.create_user || request?.createUser || '').trim();
 }
 
+function resolveInboundInitiator(inbound, purchaseRequest, salesReturnRequest, transfer) {
+  const sourceType = String(inbound?.source_type || '').toLowerCase();
+  if (sourceType === 'sales_return') {
+    return salesReturnRequesterName(salesReturnRequest || purchaseRequest) || String(inbound?.create_user || '').trim() || '-';
+  }
+  if (sourceType === 'purchase' || inbound?.purchase_request_id) {
+    return purchaseInitiatorName(purchaseRequest) || String(inbound?.create_user || '').trim() || '-';
+  }
+  if (sourceType === 'transfer') {
+    return String(transfer?.apply_user || inbound?.create_user || '').trim() || '-';
+  }
+  return String(inbound?.create_user || '').trim() || '-';
+}
+
+function resolveSnTraceLogUser(row, initiatorByReference) {
+  const remark = String(row?.remark || '');
+  for (const [referenceNo, initiator] of initiatorByReference.entries()) {
+    if (referenceNo && initiator && remark.includes(referenceNo)) return initiator;
+  }
+  return String(row?.create_user || '').trim() || '-';
+}
+
 async function attachPurchaseInitiatorNames(inbounds) {
   const requestIds = [...new Set((inbounds || [])
     .map(inbound => inbound.purchase_request_id)
@@ -2450,6 +2509,8 @@ async function getInboundDetailById(ctx, inboundId, { distributorTrace = false }
 
     const result = inbound.toJSON();
     result.store_name = result.Store?.name || '';
+    result.receive_user = result.receive_user || (result.status === 'completed' ? result.create_user : '');
+    result.receive_time = result.receive_time || (result.status === 'completed' ? result.update_time : null);
 
     const isSalesReturnInbound = String(inbound.source_type || '').toLowerCase() === 'sales_return';
     const purchaseWhere = !isSalesReturnInbound && inbound.purchase_request_id
@@ -2518,6 +2579,9 @@ async function getInboundDetailById(ctx, inboundId, { distributorTrace = false }
           location_name: item.location_id ? (locationMap.get(item.location_id) || item.location_id) : '',
           need_sn: productMap.get(item.product_id)?.need_sn || 0,
           sn_codes: snCodes,
+          received_quantity: Math.max(Number(item.received_quantity || 0), 0),
+          receive_user: item.receive_user || '',
+          receive_time: item.receive_time || null,
           purchase_unit_price: purchaseItem?.unit_price ?? item.unit_price
         };
       });
@@ -2850,6 +2914,14 @@ async function executeInbound(ctx) {
     const purchaseRequest = inbound.purchase_request_id
       ? await PurchaseRequest.findByPk(inbound.purchase_request_id, { transaction: t })
       : null;
+    const salesReturnRequest = isSalesReturnInbound && inbound.source_no
+      ? await SalesReturnRequest.findOne({
+          where: { return_no: inbound.source_no },
+          attributes: ['return_no', 'create_user'],
+          transaction: t
+        })
+      : null;
+    const inboundInitiator = resolveInboundInitiator(inbound, purchaseRequest, salesReturnRequest);
     const supplier = purchaseRequest?.supplier_id
       ? await Supplier.findByPk(purchaseRequest.supplier_id, { transaction: t })
       : null;
@@ -2886,13 +2958,13 @@ async function executeInbound(ctx) {
       }
       currentProgress.quantity += quantity;
       progressByItem.set(itemKey, currentProgress);
-      const requestedInventoryType = VALID_INVENTORY_TYPES.includes(item.inventoryType)
-        ? item.inventoryType
-        : 'normal_qty';
       if (dbItem.location_id && item.locationId && String(dbItem.location_id) !== String(item.locationId)) {
         ctx.throw(400, `商品 ${dbItem.product_name || product.name} 的入库库位与入库明细不一致`);
       }
       const locationId = item.locationId || dbItem.location_id || null;
+      if (!locationId) {
+        ctx.throw(400, `商品 ${dbItem.product_name || product.name} 请选择入库库位`);
+      }
       const location = locationId
         ? await Location.findOne({
             where: { location_id: locationId, store_id: inbound.store_id, status: 1 },
@@ -2902,7 +2974,7 @@ async function executeInbound(ctx) {
         : null;
       const inventoryType = VALID_INVENTORY_TYPES.includes(location?.type)
         ? location.type
-        : requestedInventoryType;
+        : 'normal_qty';
       const originalPickupPrice = Number(item.originalPickupPrice || item.original_pickup_price || dbItem.original_pickup_price || dbItem.unit_price || 0);
 
       if (Number(product.need_sn) === 1) {
@@ -2981,7 +3053,7 @@ async function executeInbound(ctx) {
             store_id: inbound.store_id,
             action: 'inbound',
             remark: `销售退库重新入库：${inbound.source_no || inbound.inbound_no}`,
-            create_user: user.name || user.staffId || '',
+            create_user: inboundInitiator,
             create_time: new Date()
           }, { transaction: t });
         } else if (transferSn) {
@@ -3049,10 +3121,16 @@ async function executeInbound(ctx) {
           ctx.throw(400, `PN码 [${pnCode || '-'}] 下的SN码 [${snCode}] 已存在`);
         }
 
+        const pnMaster = await ensureProductPnMaster({
+          productId: dbItem.product_id,
+          pnCode: pnCode,
+          transaction: t
+        });
         const snRecord = await ProductSn.create({
           sn_id: generateUUID(),
           product_id: dbItem.product_id,
           product_name: dbItem.product_name || '',
+          pn_id: pnMaster.pn_id,
           pn_code: pnCode,
           sn_code: snCode,
           status: 'in_stock',
@@ -3100,21 +3178,7 @@ async function executeInbound(ctx) {
 
       const savedPnCode = normalizePnCode(item.pnCode || dbItem.pn_code || splitCodes(product.manufacturer_code)[0] || '');
       if (savedPnCode) {
-        const existingPn = await ProductPn.findOne({
-          where: { pn_code: savedPnCode, is_deleted: 0 },
-          transaction: t
-        });
-        if (!existingPn) {
-          await ProductPn.create({
-            pn_id: generateUUID(),
-            product_id: item.productId,
-            pn_code: savedPnCode,
-            barcode: '',
-            is_primary: 0,
-            status: 1,
-            is_deleted: 0
-          }, { transaction: t });
-        }
+        await ensureProductPnMaster({ productId: item.productId, pnCode: savedPnCode, transaction: t });
       }
 
       await updateInventory(item.productId, inbound.store_id, inventoryType, quantity, t, locationId);
@@ -3139,7 +3203,9 @@ async function executeInbound(ctx) {
       const receivedSnCodes = existingSnCodes.concat(progress.snCodes || []);
       await dbItem.update({
         received_quantity: receivedQuantity,
-        received_sn_codes: receivedSnCodes.length ? JSON.stringify(receivedSnCodes) : dbItem.received_sn_codes
+        received_sn_codes: receivedSnCodes.length ? JSON.stringify(receivedSnCodes) : dbItem.received_sn_codes,
+        receive_user: user.name || user.staffId || user.phone || '',
+        receive_time: new Date()
       }, { transaction: t });
     }
 
@@ -3149,7 +3215,13 @@ async function executeInbound(ctx) {
       return receivedQuantity >= Math.max(Number(item.quantity || 0), 0);
     });
     const nextInboundStatus = isPurchaseInbound && !allPurchaseItemsReceived ? 'pending' : 'completed';
-    await inbound.update({ status: nextInboundStatus, update_time: new Date() }, { transaction: t });
+    const receiveTime = new Date();
+    await inbound.update({
+      status: nextInboundStatus,
+      receive_user: user.name || user.staffId || user.phone || '',
+      receive_time: receiveTime,
+      update_time: receiveTime
+    }, { transaction: t });
 
     if (isSalesReturnInbound) {
       const salesReturn = await SalesReturnRequest.findOne({
@@ -3422,7 +3494,7 @@ async function transfer(ctx) {
           store_id: fromStoreId,
           action: 'transfer_out',
           remark: `?????${fromStoreId} -> ${toStoreId}????${transferNo}`,
-          create_user: user.name || user.staffId
+          create_user: transfer.apply_user || user.name || user.staffId
         }, { transaction: t });
       }
     }
@@ -3737,7 +3809,7 @@ async function confirmTransferOutPartial(ctx) {
             store_id: transfer.from_store_id,
             action: 'transfer_out_confirm',
             remark: `Transfer ${transfer.from_store_id} -> ${transfer.to_store_id}: ${transfer.transfer_no}`,
-            create_user: user.name || user.staffId
+            create_user: transfer.apply_user || user.name || user.staffId
           }, { transaction: t });
           outboundQuantity += 1;
         }
@@ -4000,7 +4072,7 @@ async function confirmTransferOut(ctx) {
           store_id: transfer.from_store_id,
           action: 'transfer_out_confirm',
           remark: `???????${transfer.from_store_id} -> ${transfer.to_store_id}????${transfer.transfer_no}`,
-          create_user: user.name || user.staffId
+          create_user: transfer.apply_user || user.name || user.staffId
         }, { transaction: t });
       }
 
@@ -4181,7 +4253,7 @@ async function confirmTransferIn(ctx) {
             store_id: transfer.to_store_id,
             action: 'transfer_in_confirm',
             remark: `调拨入库确认：${transfer.from_store_id} → ${transfer.to_store_id}，单号：${transfer.transfer_no}`,
-            create_user: user.name || user.staffId
+            create_user: transfer.apply_user || user.name || user.staffId
           }, { transaction: t });
         }
 
@@ -4300,6 +4372,8 @@ async function ensurePn(productId, pnCode, transaction) {
     ? await resolveSnProductPn(product, pnCode, transaction)
     : normalizePnCode(pnCode);
   if (!code) return null;
+  return ensureProductPnMaster({ productId, pnCode: code, transaction });
+  /*
   let pn = await ProductPn.findOne({ where: { pn_code: code, is_deleted: 0 }, transaction });
   if (pn && String(pn.product_id) !== String(productId)) {
     const err = new Error(`PN ${code} 已绑定其他商品，不能重复关联`);
@@ -4318,6 +4392,7 @@ async function ensurePn(productId, pnCode, transaction) {
     }, { transaction });
   }
   return pn;
+  */
 }
 
 async function setProductCostPrice(productId, costPrice, user, transaction) {
@@ -4677,7 +4752,7 @@ async function createConversion(ctx) {
           remark: conversionType === 'split'
             ? `库存拆分来源成本调整，单号：${conversionNo}，拆分前成本：${totalSourceCost}，拆出金额：${totalTargetCost}，剩余成本：${splitRemainingCost}`
             : `库存组装来源，单号：${conversionNo}`,
-          create_user: user.name || user.staffId
+          create_user: conversion.create_user || user.name || user.staffId
         }, { transaction: t });
       } else if (conversionType === 'split') {
         await setProductCostPrice(row.product_id, splitRemainingCost, user, t);
@@ -4696,11 +4771,12 @@ async function createConversion(ctx) {
     for (const row of targetRows) {
       let snId = null;
       if (Number(row.product.need_sn) === 1) {
-        await ensurePn(row.product_id, row.pn_code, t);
+        const pnMaster = await ensurePn(row.product_id, row.pn_code, t);
         snId = generateUUID();
         await ProductSn.create({
           sn_id: snId,
           product_id: row.product_id,
+          pn_id: pnMaster.pn_id,
           pn_code: row.pn_code,
           sn_code: row.sn_code,
           status: 'in_stock',
@@ -4723,7 +4799,7 @@ async function createConversion(ctx) {
           store_id: storeId,
           action: targetAction,
           remark: `库存${conversionType === 'assemble' ? '组装' : '拆分'}生成，单号：${conversionNo}`,
-          create_user: user.name || user.staffId
+          create_user: conversion.create_user || user.name || user.staffId
         }, { transaction: t });
       }
 
@@ -4824,7 +4900,7 @@ async function voidConversion(ctx) {
             remark: conversion.conversion_type === 'split'
               ? `库存拆分冲销恢复来源SN成本，单号：${conversion.conversion_no}，恢复成本：${money(item.unit_cost || 0)}`
               : `库存转换冲销恢复来源SN，单号：${conversion.conversion_no}`,
-            create_user: user.name || user.staffId
+            create_user: conversion.create_user || user.name || user.staffId
           }, { transaction: t });
         }
       } else if (conversion.conversion_type === 'split' && item.product_id) {
@@ -5136,7 +5212,7 @@ async function executeReturn(ctx) {
           store_id: returnStock.store_id,
           action: 'return',
           remark: `采购退库：${returnStock.return_no}`,
-          create_user: user.name || user.staffId
+          create_user: returnStock.create_user || user.name || user.staffId
         }, { transaction: t });
       }
 
@@ -5275,6 +5351,8 @@ module.exports = {
     compareInventoryModelRows,
     buildStoreInventoryExportRows,
     purchaseInitiatorName,
+    resolveInboundInitiator,
+    resolveSnTraceLogUser,
     updateInventory,
     getAvailableQty,
     salesReturnRequesterName

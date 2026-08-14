@@ -224,6 +224,14 @@
             <el-table-column prop="product_name" label="商品名称" min-width="180" show-overflow-tooltip />
             <el-table-column prop="store_name" label="所在门店" width="130" />
             <el-table-column prop="location_name" label="库位" width="120" />
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="getStatusType(row.status)">{{ row.status_label || row.statusText || row.status || '未知' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态变更时间" width="170">
+              <template #default="{ row }">{{ formatDate(row.status_change_time) }}</template>
+            </el-table-column>
             <el-table-column label="资源情况" min-width="220">
               <template #default="{ row }">
                 <div v-if="row.resource_statuses?.length" class="resource-status-list">
@@ -767,10 +775,10 @@
                 <el-input v-model="r.snCode" placeholder="SN码" size="small" />
               </template>
             </el-table-column>
-            <el-table-column label="库存类型" width="140">
+            <el-table-column label="入库库位" width="160">
               <template #default="{ row: r }">
-                <el-select v-model="r.inventoryType" size="small" style="width: 120px">
-                  <el-option v-for="it in INVENTORY_TYPES" :key="it.value" :label="it.label" :value="it.value" />
+                <el-select v-model="r.locationId" size="small" style="width: 140px" placeholder="请选择库位">
+                  <el-option v-for="location in inboundLocations" :key="location.location_id" :label="location.name" :value="location.location_id" />
                 </el-select>
               </template>
             </el-table-column>
@@ -781,13 +789,13 @@
             </el-table-column>
           </el-table>
 
-          <!-- 非SN商品：按库存类型拆分数量 -->
+          <!-- 非SN商品：按入库库位拆分数量 -->
           <el-table v-else :data="item.qtyRows" stripe border size="small" class="sn-table">
             <el-table-column type="index" label="#" width="50" />
-            <el-table-column label="库存类型" width="160">
+            <el-table-column label="入库库位" width="180">
               <template #default="{ row: r }">
-                <el-select v-model="r.inventoryType" size="small" style="width: 140px">
-                  <el-option v-for="it in INVENTORY_TYPES" :key="it.value" :label="it.label" :value="it.value" />
+                <el-select v-model="r.locationId" size="small" style="width: 160px" placeholder="请选择库位">
+                  <el-option v-for="location in inboundLocations" :key="location.location_id" :label="location.name" :value="location.location_id" />
                 </el-select>
               </template>
             </el-table-column>
@@ -808,9 +816,9 @@
             </el-table-column>
           </el-table>
 
-          <!-- 非SN：添加库存类型行 -->
+          <!-- 非SN：添加库位分配行 -->
           <div v-if="!item.needSn" style="margin-top: 6px">
-            <el-button size="small" type="primary" link @click="addQtyRow(item)">+ 添加库存类型</el-button>
+            <el-button size="small" type="primary" link @click="addQtyRow(item)">+ 添加库位分配</el-button>
             <span style="margin-left: 12px; font-size: 12px; color: #909399">
               已分配 {{ allocatedQty(item) }} / {{ item.quantity }}
               <span v-if="allocatedQty(item) !== item.quantity" style="color: #f56c6c">（数量不匹配）</span>
@@ -1826,6 +1834,7 @@ const currentInbound = ref(null)
 const executeInboundVisible = ref(false)
 const inboundLoading = ref(false)
 const executeProducts = ref([])
+const inboundLocations = ref([])
 const addPnVisible = ref(false)
 const addPnTarget = ref(null)
 const addPnPnCode = ref('')
@@ -2644,6 +2653,8 @@ const viewInboundDetail = async (row, { snTrace = false } = {}) => {
       : await api.getInboundDetail(row.inbound_id)
     if (res.code === 0) {
       currentInbound.value = res.data
+      const locationRes = await api.getLocationsByStore(res.data.store_id)
+      inboundLocations.value = locationRes.data || []
       inboundDetailVisible.value = true
     }
   } catch (err) {
@@ -2657,6 +2668,8 @@ const openExecuteDialog = async (row) => {
     const res = await api.getInboundDetail(row.inbound_id)
     if (res.code === 0) {
       currentInbound.value = res.data
+      const locationRes = await api.getLocationsByStore(res.data.store_id || res.data.storeId)
+      inboundLocations.value = locationRes.data || []
 
       const pnMap = res.data.product_pns || {}
 
@@ -2686,14 +2699,12 @@ const openExecuteDialog = async (row) => {
               snCode: qty > 0 && Number(item.remaining_quantity ?? item.remainingQuantity ?? 0) > 0
                 ? ''
                 : (item.sn_code || item.snCode || ''),
-              inventoryType: 'normal_qty',
-                locationId: item.location_id || '',
+              locationId: item.location_id || '',
                 remark: ''
               })
             }
         } else {
           group.qtyRows.push({
-            inventoryType: 'normal_qty',
             locationId: item.location_id || '',
             quantity: qty,
             remark: ''
@@ -2720,7 +2731,6 @@ const removeSnRow = (item, index) => {
 const addQtyRow = (item) => {
   const remaining = item.quantity - allocatedQty(item)
   item.qtyRows.push({
-    inventoryType: 'normal_qty',
     locationId: '',
     quantity: Math.max(1, remaining),
     remark: ''
@@ -2790,7 +2800,6 @@ const submitInbound = async () => {
           pnCode: product.pnCode || '',
           snCode: snRow.snCode,
           quantity: 1,
-          inventoryType: snRow.inventoryType || 'normal_qty',
           locationId: snRow.locationId || '',
           remark: snRow.remark
         })
@@ -2805,7 +2814,6 @@ const submitInbound = async () => {
           pnCode: product.pnCode || '',
           snCode: '',
           quantity: qty,
-          inventoryType: qtyRow.inventoryType || 'normal_qty',
           locationId: qtyRow.locationId || '',
           remark: qtyRow.remark
         })
@@ -2849,6 +2857,7 @@ const submitInbound = async () => {
 
 const resetInboundForm = () => {
   executeProducts.value = []
+  inboundLocations.value = []
 }
 
 const saveInboundDraft = () => {

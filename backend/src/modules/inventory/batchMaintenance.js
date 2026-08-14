@@ -7,6 +7,7 @@ const {
 } = require('../../models');
 const { generateUUID, generateBatchNo, paginate, formatPaginatedResult } = require('../../utils');
 const { assertSingleSnProductPn } = require('../../utils/productPn');
+const { ensureProductPnMaster } = require('../../utils/productPnMaster');
 const { getUserRoles } = require('../../middleware/permission');
 const {
   findResourceRule, calculatePreSaleRuleAmount
@@ -550,9 +551,15 @@ async function createSnInbound(item, application, transaction) {
       { status: 409 }
     );
   }
+  const pnMaster = await ensureProductPnMaster({
+    productId: item.product_id,
+    pnCode: item.pn_code,
+    transaction
+  });
   const sn = await ProductSn.create({
     sn_id: generateUUID(),
     product_id: item.product_id,
+    pn_id: pnMaster.pn_id,
     pn_code: item.pn_code,
     sn_code: item.sn_code,
     status: 'in_stock',
@@ -616,7 +623,7 @@ async function createSnInbound(item, application, transaction) {
     store_id: item.store_id,
     action: 'batch_inbound',
     remark: `库存批量维护入库 ${application.application_no}`,
-    create_user: application.reviewer_name || application.applicant_name,
+    create_user: application.applicant_name || application.reviewer_name,
     create_time: new Date()
   }, { transaction });
 
@@ -673,7 +680,7 @@ async function executeApplication(application, transaction) {
           store_id: item.store_id,
           action: 'batch_outbound',
           remark: `库存批量维护出库 ${application.application_no}`,
-          create_user: application.reviewer_name || application.applicant_name,
+          create_user: application.applicant_name || application.reviewer_name,
           create_time: new Date()
         }, { transaction });
       }

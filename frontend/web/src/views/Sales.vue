@@ -32,6 +32,7 @@
           <el-option label="退库处理中" value="return_pending" />
           <el-option label="已退单" value="returned" />
           <el-option label="已完成（历史）" value="completed" />
+          <el-option label="定金收款" value="deposit" />
         </el-select>
         <el-date-picker
           v-model="dateRange"
@@ -51,6 +52,7 @@
           <thead>
             <tr>
               <th>订单号</th>
+              <th>业务类型</th>
               <th>门店</th>
               <th>创建时间</th>
               <th>提交人</th>
@@ -66,6 +68,7 @@
           <tbody v-if="!loading && tableData.length">
             <tr v-for="row in tableData" :key="row.order_id">
               <td>{{ row.order_no || '-' }}</td>
+              <td>{{ row.record_type === 'deposit' ? '定金收款' : '销售订单' }}</td>
               <td>{{ row.Store?.name || '-' }}</td>
               <td>{{ formatDate(row.create_time) }}</td>
               <td>{{ row.submit_user || row.create_user || '-' }}</td>
@@ -76,12 +79,12 @@
               <td class="money-column">¥{{ row.actual_payment || 0 }}</td>
               <td><el-tag :type="getStatusType(row.order_status)">{{ getStatusText(row.order_status) }}</el-tag></td>
               <td class="operation-column">
-              <el-button link type="primary" @click="handleEditDraft(row)" v-if="row.order_status === 'draft'">编辑</el-button>
-              <el-button link type="success" @click="handleSubmitDraft(row)" v-if="row.order_status === 'draft'">提交</el-button>
-              <el-button link type="danger" @click="handleDeleteDraft(row)" v-if="row.order_status === 'draft' && !row.submit_time">删除</el-button>
+              <el-button link type="primary" @click="handleEditDraft(row)" v-if="!row.record_type && row.order_status === 'draft'">编辑</el-button>
+              <el-button link type="success" @click="handleSubmitDraft(row)" v-if="!row.record_type && row.order_status === 'draft'">提交</el-button>
+              <el-button link type="danger" @click="handleDeleteDraft(row)" v-if="!row.record_type && row.order_status === 'draft' && !row.submit_time">删除</el-button>
               <el-button link type="primary" @click="handleView(row)">查看</el-button>
-              <el-button link type="success" @click="handleApprove(row)" v-if="row.order_status === 'pending_approval' && canApprove">审批通过</el-button>
-              <el-button link type="danger" @click="handleReject(row)" v-if="row.order_status === 'pending_approval' && canApprove">拒绝</el-button>
+              <el-button link type="success" @click="handleApprove(row)" v-if="!row.record_type && row.order_status === 'pending_approval' && canApprove">审批通过</el-button>
+              <el-button link type="danger" @click="handleReject(row)" v-if="!row.record_type && row.order_status === 'pending_approval' && canApprove">拒绝</el-button>
               </td>
             </tr>
           </tbody>
@@ -336,7 +339,7 @@
     </el-dialog>
 
     <!-- 订单详情对话框 -->
-    <el-dialog v-model="detailVisible" title="订单详情" width="1000px">
+    <el-dialog v-model="detailVisible" :title="currentOrder?.record_type === 'deposit' ? '定金收款详情' : '订单详情'" width="1000px">
       <div v-if="currentOrder" class="order-detail">
         <el-descriptions :column="2" border>
           <el-descriptions-item label="订单号">{{ currentOrder.order_no }}</el-descriptions-item>
@@ -865,6 +868,20 @@ const handleCreate = () => {
 }
 
 const handleView = async (row) => {
+  if (row.record_type === 'deposit') {
+    currentOrder.value = {
+      ...row,
+      OrderItems: [],
+      OrderPayments: [{
+        payment_method: row.payment_method,
+        amount: row.amount,
+        payment_time: row.create_time
+      }],
+      action_logs: []
+    }
+    detailVisible.value = true
+    return
+  }
   await openOrderDetail(row.order_id)
 }
 
@@ -1560,12 +1577,12 @@ const formatDate = (dateStr) => {
 }
 
 const getStatusType = (status) => {
-  const types = { draft: 'info', completed: 'success', pending_approval: 'warning', cancelled: 'danger', return_pending: 'warning', returned: 'info' }
+  const types = { draft: 'info', completed: 'success', pending_approval: 'warning', cancelled: 'danger', return_pending: 'warning', returned: 'info', deposit_receipt: 'success' }
   return types[status] || 'info'
 }
 
 const getStatusText = (status) => {
-  const texts = { draft: '草稿', completed: '已完成', pending_approval: '待审批', cancelled: '已取消', return_pending: '退库处理中', returned: '已退单' }
+  const texts = { draft: '草稿', completed: '已完成', pending_approval: '待审批', cancelled: '已取消', return_pending: '退库处理中', returned: '已退单', deposit_receipt: '定金收款' }
   return texts[status] || status
 }
 

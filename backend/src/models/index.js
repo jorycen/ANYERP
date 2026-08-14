@@ -1247,6 +1247,8 @@ const Inbound = sequelize.define('Inbound', {
   total_quantity: { type: DataTypes.INTEGER },
   status: { type: DataTypes.STRING(32), defaultValue: 'pending' },
   create_user: { type: DataTypes.STRING(64) },
+  receive_user: { type: DataTypes.STRING(64) },
+  receive_time: { type: DataTypes.DATE },
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
   update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_INBOUND', timestamps: false });
@@ -1265,6 +1267,8 @@ const InboundItem = sequelize.define('InboundItem', {
   quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
   received_quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
   received_sn_codes: { type: DataTypes.TEXT },
+  receive_user: { type: DataTypes.STRING(64) },
+  receive_time: { type: DataTypes.DATE },
   remark: { type: DataTypes.STRING(512) },
   location_id: { type: DataTypes.STRING(32) },
   inventory_type: { type: DataTypes.STRING(32), defaultValue: 'normal_qty' },

@@ -35,8 +35,12 @@ test('inventory location model is covered by automatic migrations', () => {
 test('inbound item model tracks partial receipt progress and received SNs', () => {
   assert.ok(InboundItem.rawAttributes.received_quantity);
   assert.ok(InboundItem.rawAttributes.received_sn_codes);
+  assert.ok(InboundItem.rawAttributes.receive_user);
+  assert.ok(InboundItem.rawAttributes.receive_time);
   assert.match(migrationSource, /checkAndAddColumn\('T_INBOUND_ITEM', 'RECEIVED_QUANTITY'/);
   assert.match(migrationSource, /checkAndAddColumn\('T_INBOUND_ITEM', 'RECEIVED_SN_CODES'/);
+  assert.match(migrationSource, /checkAndAddColumn\('T_INBOUND_ITEM', 'RECEIVE_USER'/);
+  assert.match(migrationSource, /checkAndAddColumn\('T_INBOUND_ITEM', 'RECEIVE_TIME'/);
 });
 
 test('location disable stock check counts standard inventory buckets without double-counting normal stock', () => {
