@@ -3591,8 +3591,11 @@ async function confirmTransferOutPartial(ctx) {
     assertStoreVisible(ctx, transfer.from_store_id);
     if (transfer.status !== 'pending') ctx.throw(400, 'Transfer is not pending outbound confirmation');
 
+    // A web-created transfer may already carry the requested SN on its item
+    // line. It is still pending outbound confirmation until the source store
+    // selects the actual inventory and submits the shipping proof.
     const requestItems = (transfer.TransferItems || [])
-      .filter(item => !item.sn_id && !item.sn_code && Number(item.quantity || 0) > 0);
+      .filter(item => Number(item.quantity || 0) > 0);
     if (!requestItems.length) ctx.throw(400, 'Transfer has no pending item lines');
     const productIds = [...new Set(requestItems.map(item => item.product_id).filter(Boolean))];
     const products = await Product.findAll({
