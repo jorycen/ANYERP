@@ -454,36 +454,8 @@ export default {
     });
   },
   getProductImportTask: (taskId) => api.get(`/product/import/task/${taskId}`),
-  exportProducts: (params) => {
-    return exportApi.get('/product/export', { 
-      params, 
-      responseType: 'blob' 
-    }).then(response => {
-      // 创建下载链接
-      const url = window.URL.createObjectURL(new Blob([response.data], {
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-      }));
-      const link = document.createElement('a');
-      link.href = url;
-      // 从响应头中获取文件名
-      let fileName = `商品导出_${new Date().toISOString().slice(0, 10)}.xlsx`;
-      const contentDisposition = response.headers['content-disposition'];
-      if (contentDisposition) {
-        const encodedMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
-        const fileNameMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
-        if (encodedMatch && encodedMatch[1]) {
-          fileName = decodeURIComponent(encodedMatch[1]);
-        } else if (fileNameMatch && fileNameMatch[1]) {
-          fileName = fileNameMatch[1].replace(/['"]/g, '');
-        }
-      }
-      link.setAttribute('download', fileName);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-    });
-  },
+  exportProducts: (params) => exportExcel('/product/export', params, `商品导出_${new Date().toISOString().slice(0, 10)}.xlsx`),
+  exportCostPrices: (params) => exportExcel('/product/export', { ...(params || {}), exportType: 'price' }, `商品成本导出_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getPnList: (params) => api.get('/product/pn-list', { params }),
   addPn: (data) => api.post('/product/pn', data),
   // 商品条码
@@ -502,7 +474,6 @@ export default {
   getCategoryFieldConfig: (categoryId) => api.get('/product/category/field-config', { params: { categoryId } }),
   // 商品价格
   getPriceList: (params) => api.get('/product/price/list', { params }),
-  exportCostPrices: (params) => exportExcel('/product/price/export', params, `商品成本导出_${new Date().toISOString().slice(0, 10)}.xlsx`),
   setPrice: (data) => api.post('/product/price/set', data),
   refreshCostPrice: (productId) => api.post(`/product/price/refresh-cost/${productId}`),
   batchRefreshCost: (data) => api.post('/product/price/batch-refresh-cost', data),

@@ -3010,7 +3010,12 @@ async function importProducts(ctx) {
  * @param {Object} ctx - Koa上下文
  */
 async function exportProducts(ctx) {
-  const { keyword, categoryId } = ctx.query;
+  const { keyword, categoryId, exportType } = ctx.query;
+  const isPriceExport = ['price', 'cost'].includes(String(exportType || '').trim().toLowerCase());
+
+  if (isPriceExport) {
+    await applyPendingProductPriceChanges();
+  }
 
   // 构建查询条件（复用getProductList的逻辑）
   const where = { is_deleted: 0 };
@@ -3076,10 +3081,45 @@ async function exportProducts(ctx) {
   const products = await Product.findAll({
     where,
     include: [
-      { model: ProductBarcode, attributes: ['barcode_id', 'barcode_type', 'barcode_code'], where: { status: 1 }, required: false }
+      { model: ProductBarcode, attributes: ['barcode_id', 'barcode_type', 'barcode_code'], where: { status: 1 }, required: false },
+      ...(isPriceExport ? [{ model: ProductPrice, attributes: ['standard_price', 'cost_price'] }] : [])
     ],
     order: [['create_time', 'DESC']]
   });
+
+  if (isPriceExport) {
+    const exportData = products.map(p => {
+      const manufacturerCodes = (p.ProductBarcodes || [])
+        .filter(b => b.barcode_type === 'manufacturer')
+        .map(b => b.barcode_code)
+        .filter(Boolean);
+      const legacyManufacturerCodes = splitPnCodes(p.manufacturer_code);
+
+      return {
+        '商品编码': p.product_code,
+        '厂商编码': (legacyManufacturerCodes.length > 0 ? legacyManufacturerCodes : manufacturerCodes).join(', '),
+        '商品名称': p.name,
+        '分类': p.category || '',
+        '单位': p.unit || '',
+        '库存成本': Number(p.ProductPrice?.cost_price || 0),
+        '产品定价': Number(p.ProductPrice?.standard_price || 0)
+      };
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(exportData);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, '商品成本');
+    worksheet['!cols'] = [
+      { wch: 15 }, { wch: 25 }, { wch: 25 }, { wch: 20 }, { wch: 10 }, { wch: 12 }, { wch: 12 }
+    ];
+
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    const filename = `商品成本导出_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    ctx.set('Content-Disposition', `attachment; filename="products.xlsx"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    ctx.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    ctx.body = buffer;
+    return;
+  }
 
   // 构建导出数据
   const exportData = products.map(p => {
