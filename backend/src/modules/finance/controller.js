@@ -2,7 +2,7 @@
  * 财务管理控制器
  */
 const {
-  sequelize, DailyStatement, DailyStatementDetail, Expense, ExpenseType, PurchaseRequest, Store, Region, Order, OrderPayment,
+  sequelize, DailyStatement, DailyStatementDetail, Expense, ExpenseType, PurchaseRequest, Store, Region, Order, OrderPayment, Supplier,
   SettlementAccount, SettlementAccountTransaction, SubsidyAccountRoute, SubsidyReceipt,
   SubsidyReceiptAllocation, SubsidyReceivableAdjustment
 } = require('../../models');
@@ -758,10 +758,16 @@ async function getSettlementAccountsWithBalance(ctx) {
     const { page = 1, pageSize = 20 } = ctx.query;
 
     const { count, rows } = await SettlementAccount.findAndCountAll({
-      where: { status: 1, account_type: { [Op.ne]: 'SUPPLIER_REBATE' } },
+      where: { status: 1 },
       order: [['sort_order', 'ASC']],
       ...paginate({}, { page, pageSize })
     });
+
+    const supplierIds = [...new Set(rows.map(row => row.supplier_id).filter(Boolean))];
+    const suppliers = supplierIds.length > 0
+      ? await Supplier.findAll({ where: { supplier_id: supplierIds }, attributes: ['supplier_id', 'name'], raw: true })
+      : [];
+    const supplierNameMap = new Map(suppliers.map(supplier => [supplier.supplier_id, supplier.name]));
 
     const accountIds = rows.map(a => a.account_id);
     const balanceMap = {};
@@ -805,6 +811,7 @@ async function getSettlementAccountsWithBalance(ctx) {
 
     const list = rows.map(row => ({
       ...row.toJSON(),
+      supplier_name: row.supplier_id ? (supplierNameMap.get(row.supplier_id) || '') : '',
       balance: Math.round((balanceMap[row.account_id] || 0) * 100) / 100
     }));
 
@@ -821,9 +828,6 @@ async function getAccountTransactions(ctx) {
 
   const account = await SettlementAccount.findByPk(accountId);
   if (!account) ctx.throw(404, '结算账户不存在');
-  if (account.account_type === 'SUPPLIER_REBATE') {
-    ctx.throw(403, '供应商返利内部账户请在返利管理中查看');
-  }
 
   const { count, rows } = await SettlementAccountTransaction.findAndCountAll({
     where: { account_id: accountId },

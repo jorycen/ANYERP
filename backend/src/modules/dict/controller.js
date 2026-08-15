@@ -2,7 +2,7 @@
  * 字典管理控制器
  * 客户来源 / 收款方式 / 结算账号 / 金额补录项目
  */
-const { sequelize, CustomerSource, PaymentMethod, PaymentMethodStore, SupplementItem, ExpenseType, SettlementAccount, Store } = require('../../models');
+const { sequelize, CustomerSource, PaymentMethod, PaymentMethodStore, SupplementItem, ExpenseType, SettlementAccount, Store, Supplier } = require('../../models');
 const { Op } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult } = require('../../utils');
 
@@ -559,28 +559,45 @@ async function createSettlementAccount(ctx) {
 
 async function updateSettlementAccount(ctx) {
   const { id } = ctx.params;
-  const { accountName, bankName, accountNumber, accountType, usageNote, sortOrder, status } = ctx.request.body;
+  const { accountName, bankName, accountNumber, accountType, supplierId, usageNote, sortOrder, status } = ctx.request.body;
 
   const record = await SettlementAccount.findByPk(id);
   if (!record) ctx.throw(404, '记录不存在');
-  if (record.account_type === 'SUPPLIER_REBATE') {
-    ctx.throw(403, '供应商返利账户由系统自动维护，不允许手工修改');
-  }
 
   const updates = {};
   if (accountName !== undefined) updates.account_name = accountName;
   if (bankName !== undefined) updates.bank_name = bankName;
   if (accountNumber !== undefined) updates.account_number = accountNumber;
   if (accountType !== undefined) {
-    if (accountType === 'SUPPLIER_REBATE') {
-      ctx.throw(400, '供应商返利账户由系统自动维护，不允许手工设置');
-    }
-    if (!['FUND', 'POLICY_RECEIVABLE', 'CARE_CREDIT'].includes(accountType)) {
+    if (!['FUND', 'POLICY_RECEIVABLE', 'CARE_CREDIT', 'SUPPLIER_REBATE'].includes(accountType)) {
       ctx.throw(400, '账户类型无效');
+    }
+
+    if (accountType === 'SUPPLIER_REBATE') {
+      const nextSupplierId = supplierId || record.supplier_id;
+      if (!nextSupplierId) ctx.throw(400, '厂商返利账户必须关联厂商');
+
+      const supplier = await Supplier.findOne({
+        where: { supplier_id: nextSupplierId, status: 1, is_deleted: 0 }
+      });
+      if (!supplier) ctx.throw(400, '厂商不存在或已停用');
+
+      const existingAccount = await SettlementAccount.findOne({
+        where: {
+          account_type: 'SUPPLIER_REBATE',
+          supplier_id: nextSupplierId,
+          status: 1,
+          account_id: { [Op.ne]: id }
+        }
+      });
+      if (existingAccount) ctx.throw(400, '该厂商已有启用的厂商返利账户');
+
+      updates.supplier_id = nextSupplierId;
+    } else {
+      updates.supplier_id = null;
     }
     updates.account_type = accountType;
   }
-  if (accountType !== undefined) updates.supplier_id = null;
   if (usageNote !== undefined) updates.usage_note = usageNote;
   if (sortOrder !== undefined) updates.sort_order = sortOrder;
   if (status !== undefined) updates.status = status;

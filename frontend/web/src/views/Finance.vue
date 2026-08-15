@@ -718,7 +718,10 @@
           </div>
           <el-table :data="accountList" stripe border>
             <el-table-column prop="account_name" label="账户名称" width="200" />
-            <el-table-column label="账户类型" width="120"><template #default="{row}">{{ accountTypeText(row.account_type) }}</template></el-table-column>
+            <el-table-column label="账户类型" width="140"><template #default="{row}">{{ accountTypeText(row.account_type) }}</template></el-table-column>
+            <el-table-column label="厂商" min-width="140">
+              <template #default="{ row }">{{ row.supplier_name || '-' }}</template>
+            </el-table-column>
             <el-table-column label="银行" min-width="140">
               <template #default="{ row }">{{ row.bank_name || '-' }}</template>
             </el-table-column>
@@ -1189,7 +1192,14 @@
     <el-dialog v-model="accountDetailVisible" :title="'账户流水 - ' + (accountDetailRow?.account_name || '')" width="800px">
       <div class="filter-bar" style="margin-bottom: 12px;">
         <span>余额：<b :style="{ color: accountDetailBalance >= 0 ? '#67c23a' : '#f56c6c' }">¥{{ Number(accountDetailBalance).toFixed(2) }}</b></span>
-        <el-button type="primary" size="small" @click="openAccountTransactionDialog(accountDetailRow)">记账</el-button>
+        <el-button
+          type="primary"
+          size="small"
+          :disabled="accountDetailRow?.account_type === 'SUPPLIER_REBATE'"
+          @click="openAccountTransactionDialog(accountDetailRow)"
+        >
+          {{ accountDetailRow?.account_type === 'SUPPLIER_REBATE' ? '返利管理记账' : '记账' }}
+        </el-button>
       </div>
       <el-table :data="accountTransactions" stripe border>
         <el-table-column prop="create_time" label="时间" width="160">
@@ -1228,6 +1238,16 @@
       <el-form :model="accountEditForm" label-width="100px">
         <el-form-item label="账户名称" required>
           <el-input v-model="accountEditForm.accountName" placeholder="输入账户名称" />
+        </el-form-item>
+        <el-form-item label="账户类型" required>
+          <el-select v-model="accountEditForm.accountType" style="width: 100%">
+            <el-option v-for="type in settlementAccountTypes" :key="type.value" :label="type.label" :value="type.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="accountEditForm.accountType === 'SUPPLIER_REBATE'" label="厂商" required>
+          <el-select v-model="accountEditForm.supplierId" placeholder="请选择厂商" filterable style="width: 100%">
+            <el-option v-for="supplier in suppliers" :key="supplier.supplier_id" :label="supplier.name" :value="supplier.supplier_id" />
+          </el-select>
         </el-form-item>
         <el-form-item label="开户行">
           <el-input v-model="accountEditForm.bankName" placeholder="输入开户行" />
@@ -1537,9 +1557,17 @@ const accountEditLoading = ref(false)
 const accountEditForm = reactive({
   accountId: '',
   accountName: '',
+  accountType: 'FUND',
+  supplierId: '',
   bankName: '',
   accountNumber: ''
 })
+const settlementAccountTypes = [
+  { value: 'FUND', label: '资金账户' },
+  { value: 'POLICY_RECEIVABLE', label: '政策补贴应收' },
+  { value: 'CARE_CREDIT', label: 'Care可用金' },
+  { value: 'SUPPLIER_REBATE', label: '厂商返利' }
+]
 const accountTxnForm = reactive({
   accountId: '',
   type: 'income',
@@ -3073,7 +3101,12 @@ const refreshAccountBalances = async () => {
   await loadSettlementAccounts()
   ElMessage.success('余额已刷新')
 }
-const accountTypeText = value => ({ FUND:'资金账户', SUPPLIER_REBATE:'供应商返利', CARE_CREDIT:'Care可用金' }[value] || '资金账户')
+const accountTypeText = value => ({
+  FUND: '资金账户',
+  POLICY_RECEIVABLE: '政策补贴应收',
+  CARE_CREDIT: 'Care可用金',
+  SUPPLIER_REBATE: '厂商返利'
+}[value] || '资金账户')
 
 const moveAccount = async (index, direction) => {
   const targetIndex = index + direction
@@ -3133,6 +3166,8 @@ const openAccountTransactionDialog = (row) => {
 const openAccountEdit = (row) => {
   accountEditForm.accountId = row.account_id
   accountEditForm.accountName = row.account_name
+  accountEditForm.accountType = row.account_type || 'FUND'
+  accountEditForm.supplierId = row.supplier_id || ''
   accountEditForm.bankName = row.bank_name || ''
   accountEditForm.accountNumber = row.account_number || ''
   accountEditVisible.value = true
@@ -3143,10 +3178,20 @@ const handleAccountEdit = async () => {
     ElMessage.warning('请输入账户名称')
     return
   }
+  if (!accountEditForm.accountType) {
+    ElMessage.warning('请选择账户类型')
+    return
+  }
+  if (accountEditForm.accountType === 'SUPPLIER_REBATE' && !accountEditForm.supplierId) {
+    ElMessage.warning('请选择厂商返利账户对应的厂商')
+    return
+  }
   accountEditLoading.value = true
   try {
     const res = await api.updateSettlementAccount(accountEditForm.accountId, {
       accountName: accountEditForm.accountName,
+      accountType: accountEditForm.accountType,
+      supplierId: accountEditForm.accountType === 'SUPPLIER_REBATE' ? accountEditForm.supplierId : null,
       bankName: accountEditForm.bankName,
       accountNumber: accountEditForm.accountNumber
     })

@@ -71,7 +71,7 @@ test('用户结算账号接口隐藏供应商返利内部账户', async () => {
   }
 });
 
-test('账户中心在数据库查询层排除供应商返利内部账户', async () => {
+test('账户中心在数据库查询层包含供应商返利账户', async () => {
   const original = models.SettlementAccount.findAndCountAll;
   let capturedWhere;
   models.SettlementAccount.findAndCountAll = async options => {
@@ -81,8 +81,36 @@ test('账户中心在数据库查询层排除供应商返利内部账户', async
   try {
     const ctx = context({ query: { page: 1, pageSize: 20 } });
     await financeController.getSettlementAccountsWithBalance(ctx);
-    assert.equal(capturedWhere.account_type[Op.ne], 'SUPPLIER_REBATE');
+    assert.equal(capturedWhere.status, 1);
+    assert.equal(capturedWhere.account_type, undefined);
   } finally {
     models.SettlementAccount.findAndCountAll = original;
+  }
+});
+
+test('账户中心允许将账户修改为厂商返利并关联厂商', async () => {
+  const originalFindByPk = models.SettlementAccount.findByPk;
+  const originalFindOne = models.SettlementAccount.findOne;
+  const originalSupplierFindOne = models.Supplier.findOne;
+  const updates = [];
+  models.SettlementAccount.findByPk = async () => ({
+    account_id: 'ACC_1',
+    account_type: 'FUND',
+    supplier_id: null,
+    update: async values => updates.push(values)
+  });
+  models.Supplier.findOne = async () => ({ supplier_id: 'SUP_1', status: 1, is_deleted: 0 });
+  models.SettlementAccount.findOne = async () => null;
+  try {
+    const ctx = context({
+      params: { id: 'ACC_1' },
+      body: { accountType: 'SUPPLIER_REBATE', supplierId: 'SUP_1' }
+    });
+    await dictController.updateSettlementAccount(ctx);
+    assert.deepEqual(updates, [{ account_type: 'SUPPLIER_REBATE', supplier_id: 'SUP_1' }]);
+  } finally {
+    models.SettlementAccount.findByPk = originalFindByPk;
+    models.SettlementAccount.findOne = originalFindOne;
+    models.Supplier.findOne = originalSupplierFindOne;
   }
 });
