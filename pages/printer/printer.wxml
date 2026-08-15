@@ -1,0 +1,101 @@
+<view class="container">
+  <!-- 页面标题 -->
+  <view class="header">
+    <text class="title">打印机设置</text>
+  </view>
+  
+  <!-- 蓝牙状态 -->
+  <view class="status-section">
+    <view class="status-item">
+      <text class="status-label">蓝牙状态</text>
+      <text class="status-value" style="color: {{isBluetoothEnabled ? '#4CAF50' : '#F44336'}}">
+        {{isBluetoothEnabled ? '已开启' : '已关闭'}}
+      </text>
+    </view>
+    <view class="status-item">
+      <text class="status-label">绑定状态</text>
+      <text class="status-value" style="color: {{connectedPrinter ? '#4CAF50' : '#FF9800'}}">
+        {{connectedPrinter ? '已绑定' : '未绑定'}}
+      </text>
+    </view>
+  </view>
+
+  <!-- 开启蓝牙按钮（正式版需要用户主动点击） -->
+  <view class="enable-bluetooth-section" wx:if="{{!isBluetoothEnabled}}">
+    <button class="btn btn-primary" type="primary" bindtap="initBluetooth">开启蓝牙</button>
+    <text class="hint-text">点击按钮开启蓝牙功能</text>
+  </view>
+
+  <!-- 状态说明 -->
+  <view class="status-note" wx:if="{{isBluetoothEnabled && !connectedPrinter}}">
+    <text class="note-text">蓝牙已开启，但未绑定打印机。请开启搜索开关查找设备。</text>
+  </view>
+  
+  <!-- 已绑定打印机 -->
+  <view class="bound-section" wx:if="{{connectedPrinter}}">
+    <view class="section-title">已绑定打印机（打印时自动连接）</view>
+    <view class="printer-info">
+      <view class="info-item">
+        <text class="info-label">设备名称</text>
+        <text class="info-value">{{connectedPrinter.name}}</text>
+      </view>
+      <view class="info-item">
+        <text class="info-label">设备ID</text>
+        <text class="info-value">{{connectedPrinter.deviceId}}</text>
+      </view>
+      <view class="info-item">
+        <text class="info-label">信号强度</text>
+        <text class="info-value">{{connectedPrinter.RSSI}} dBm</text>
+      </view>
+    </view>
+    <button class="btn btn-danger" type="warn" bindtap="unbindPrinter">解绑打印机</button>
+  </view>
+  
+  <!-- 蓝牙搜索（仅在未连接打印机时显示） -->
+  <view class="search-section" wx:if="{{!connectedPrinter}}">
+    <view class="search-header">
+      <text class="section-title">搜索蓝牙设备</text>
+      <switch class="search-switch" checked="{{isSearching}}" bindchange="onSearchToggle"></switch>
+    </view>
+
+    <!-- 搜索提示 -->
+    <view class="search-tips" wx:if="{{!isSearching}}">
+      <text class="tip-text">开启开关开始搜索附近的蓝牙打印机</text>
+    </view>
+
+    <!-- 搜索中状态 -->
+    <view class="searching-state" wx:if="{{isSearching && bluetoothDevices.length === 0}}">
+      <text class="searching-text">正在搜索设备...</text>
+      <text class="searching-desc">请确保蓝牙打印机已开启并处于可发现状态</text>
+    </view>
+
+    <!-- 设备列表 -->
+    <view class="device-list" wx:if="{{isSearching && bluetoothDevices.length > 0}}">
+      <text class="list-title">找到 {{bluetoothDevices.length}} 个设备</text>
+      <block wx:for="{{bluetoothDevices}}" wx:key="deviceId" wx:for-item="device">
+        <view class="device-item">
+          <view class="device-info">
+            <text class="device-name">{{device.name || '未知设备'}}</text>
+            <text class="device-id">{{device.deviceId}}</text>
+            <text class="device-rssi">{{device.RSSI}} dBm</text>
+          </view>
+          <button class="btn btn-primary bind-btn" type="primary" bindtap="bindPrinter" data-device="{{device}}">绑定</button>
+        </view>
+      </block>
+    </view>
+  </view>
+
+
+
+  <!-- 操作提示 -->
+  <view class="tips-section">
+    <view class="section-title">操作提示</view>
+    <view class="tips-content">
+      <text class="tip-item">• 确保手机蓝牙已开启</text>
+      <text class="tip-item">• 确保打印机处于可发现状态</text>
+      <text class="tip-item">• 搜索到设备后点击绑定按钮</text>
+      <text class="tip-item">• 绑定成功后即可进行蓝牙打印</text>
+      <text class="tip-item">• 支持大部分主流热敏小票打印机</text>
+    </view>
+  </view>
+</view>

@@ -1,0 +1,9 @@
+{
+  "name": "processExport",
+  "version": "1.0.0",
+  "description": "处理订单导出任务",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "latest"
+  }
+}

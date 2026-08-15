@@ -1,0 +1,65 @@
+-- Deposit module schema for ANY-ERP MySQL backend.
+-- Run this against the same database used by anyerp-api.
+
+CREATE TABLE IF NOT EXISTS `T_SALES_DEPOSIT` (
+  `DEPOSIT_ID` varchar(32) NOT NULL,
+  `DEPOSIT_NO` varchar(64) NOT NULL,
+  `STORE_ID` varchar(32) NOT NULL,
+  `STORE_NAME` varchar(255) DEFAULT NULL,
+  `CUSTOMER_NAME` varchar(64) NOT NULL,
+  `CUSTOMER_PHONE` varchar(32) NOT NULL,
+  `AMOUNT` decimal(10,2) NOT NULL DEFAULT 0.00,
+  `RESERVED_AMOUNT` decimal(10,2) NOT NULL DEFAULT 0.00,
+  `REDEEMED_AMOUNT` decimal(10,2) NOT NULL DEFAULT 0.00,
+  `REFUNDED_AMOUNT` decimal(10,2) NOT NULL DEFAULT 0.00,
+  `PAYMENT_METHOD` varchar(64) DEFAULT NULL,
+  `STATUS` varchar(32) NOT NULL DEFAULT 'available',
+  `CREATE_USER` varchar(64) DEFAULT NULL,
+  `CREATE_USER_PHONE` varchar(32) DEFAULT NULL,
+  `ARCHIVE_USER` varchar(64) DEFAULT NULL,
+  `ARCHIVE_TIME` timestamp NULL DEFAULT NULL,
+  `REFUND_TIME` timestamp NULL DEFAULT NULL,
+  `REMARK` varchar(512) DEFAULT NULL,
+  `CREATE_TIME` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `UPDATE_TIME` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `IS_DELETED` tinyint(1) NOT NULL DEFAULT 0,
+  PRIMARY KEY (`DEPOSIT_ID`),
+  UNIQUE KEY `uni_deposit_no` (`DEPOSIT_NO`),
+  KEY `idx_deposit_store_status` (`STORE_ID`, `STATUS`),
+  KEY `idx_deposit_customer_phone` (`CUSTOMER_PHONE`),
+  KEY `idx_deposit_create_time` (`CREATE_TIME`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Sales deposit records';
+
+-- 提交即生效：更新已有表的默认值，并把尚有余额的历史待生效定金转入定金库。
+ALTER TABLE `T_SALES_DEPOSIT`
+  ALTER COLUMN `STATUS` SET DEFAULT 'available',
+  ADD COLUMN IF NOT EXISTS `RESERVED_AMOUNT` decimal(10,2) NOT NULL DEFAULT 0.00 AFTER `AMOUNT`;
+
+UPDATE `T_SALES_DEPOSIT`
+SET `STATUS` = 'available'
+WHERE `STATUS` = 'submitted'
+  AND (`AMOUNT` - `REDEEMED_AMOUNT` - `REFUNDED_AMOUNT`) > 0;
+
+CREATE TABLE IF NOT EXISTS `T_SALES_DEPOSIT_REDEMPTION` (
+  `REDEMPTION_ID` bigint(20) NOT NULL AUTO_INCREMENT,
+  `DEPOSIT_ID` varchar(32) NOT NULL,
+  `ORDER_ID` varchar(32) NOT NULL,
+  `ORDER_NO` varchar(64) NOT NULL,
+  `AMOUNT` decimal(10,2) NOT NULL DEFAULT 0.00,
+  `STATUS` varchar(32) NOT NULL DEFAULT 'reserved',
+  `CREATE_TIME` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `UPDATE_TIME` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`REDEMPTION_ID`),
+  UNIQUE KEY `uni_deposit_order` (`DEPOSIT_ID`, `ORDER_ID`),
+  KEY `idx_redemption_order` (`ORDER_ID`),
+  KEY `idx_redemption_order_no` (`ORDER_NO`),
+  KEY `idx_redemption_deposit` (`DEPOSIT_ID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Sales deposit redemption records';
+
+ALTER TABLE `T_ORDER`
+  ADD COLUMN IF NOT EXISTS `DEPOSIT_DEDUCTION_TOTAL` decimal(10,2) NOT NULL DEFAULT 0.00 COMMENT 'Deposit deduction total',
+  ADD COLUMN IF NOT EXISTS `DEPOSIT_ITEMS` json DEFAULT NULL COMMENT 'Deposit deduction item snapshot';
+
+ALTER TABLE `T_ORDER_PAYMENT`
+  ADD COLUMN IF NOT EXISTS `DEPOSIT_ID` varchar(32) DEFAULT NULL COMMENT 'Linked deposit id',
+  ADD COLUMN IF NOT EXISTS `DEPOSIT_NO` varchar(64) DEFAULT NULL COMMENT 'Linked deposit no';

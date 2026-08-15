@@ -1,0 +1,53 @@
+<view class="page">
+  <view class="loading" wx:if="{{loading}}">正在加载申请详情...</view>
+  <view class="error" wx:elif="{{error}}">{{error}}</view>
+  <block wx:else>
+    <view class="card">
+      <view class="head-row">
+        <text class="type-tag">{{detail.typeLabel}}</text>
+        <text class="record-no">{{detail.recordNo}}</text>
+        <text class="status status-{{detail.status}}">{{detail.statusText}}</text>
+      </view>
+      <view class="info-row"><text class="label">当前环节</text><text class="value highlight">{{detail.currentStage}}</text></view>
+      <view class="info-row"><text class="label">申请时间</text><text class="value">{{detail.createTime}}</text></view>
+      <view class="review-box">
+        <text class="review-title">审批结果与批注</text>
+        <text class="review-content">{{detail.reviewComment || '暂无审批批注'}}</text>
+        <text class="review-meta" wx:if="{{detail.reviewUserName}}">审批人：{{detail.reviewUserName}}<text wx:if="{{detail.reviewTime}}">　时间：{{detail.reviewTime}}</text></text>
+      </view>
+    </view>
+
+    <view class="card" wx:if="{{detail.type === 'purchase'}}">
+      <text class="section-title">采购订单详情</text>
+      <view class="info-row"><text class="label">供应商</text><text class="value">{{detail.supplierName}}</text></view>
+      <view class="info-row"><text class="label">收货门店</text><text class="value">{{detail.storeName}}</text></view>
+      <view class="info-row"><text class="label">申请金额</text><text class="value amount">¥{{detail.amountText}}</text></view>
+      <view class="info-row"><text class="label">申请说明</text><text class="value">{{detail.reason}}</text></view>
+      <text class="sub-title">采购商品</text>
+      <view class="item-row" wx:for="{{detail.items}}" wx:key="name">
+        <text class="item-name">{{item.name}}</text><text>{{item.quantity}} × ¥{{item.unitPrice}}</text><text>¥{{item.subtotal}}</text>
+      </view>
+      <text class="sub-title" wx:if="{{detail.inbounds.length}}">入库单</text>
+      <view class="item-row" wx:for="{{detail.inbounds}}" wx:key="no"><text>{{item.no}}</text><text>{{item.status}}</text></view>
+    </view>
+
+    <view class="card" wx:elif="{{detail.type === 'product'}}">
+      <text class="section-title">新建商品详情</text>
+      <view class="info-row"><text class="label">商品名称</text><text class="value">{{detail.productName}}</text></view>
+      <view class="info-row"><text class="label">商品分类</text><text class="value">{{detail.categoryName}}</text></view>
+      <view class="info-row"><text class="label">申请人</text><text class="value">{{detail.applicantName}}</text></view>
+      <view class="info-row" wx:for="{{detail.productRows}}" wx:key="label"><text class="label">{{item.label}}</text><text class="value">{{item.value}}</text></view>
+    </view>
+
+    <view class="card" wx:elif="{{detail.type === 'expense'}}">
+      <text class="section-title">报销详情</text>
+      <view class="info-row"><text class="label">费用类型</text><text class="value">{{detail.expenseType}}</text></view>
+      <view class="info-row"><text class="label">费用发生方</text><text class="value">{{detail.expenseParty}}</text></view>
+      <view class="info-row"><text class="label">门店</text><text class="value">{{detail.storeName}}</text></view>
+      <view class="info-row"><text class="label">费用日期</text><text class="value">{{detail.expenseDate}}</text></view>
+      <view class="info-row"><text class="label">支付方式</text><text class="value">{{detail.paymentMethod}}</text></view>
+      <view class="info-row"><text class="label">金额</text><text class="value amount">¥{{detail.amountText}}</text></view>
+      <view class="info-row"><text class="label">费用说明</text><text class="value">{{detail.reason}}</text></view>
+    </view>
+  </block>
+</view>

@@ -1,0 +1,701 @@
+<view class="container">
+  <!-- 页面标题 -->
+  <view class="header">
+    <view class="header-left">
+      <text class="title">新建订单</text>
+      <text class="subtitle">填写销售订单信息</text>
+    </view>
+    <view class="header-right">
+      <button class="select-store-btn" type="default" bindtap="openStorePicker">{{storeName || '选择门店'}}</button>
+      <text class="clear-all-btn" bindtap="clearAllData">一键清空</text>
+    </view>
+  </view>
+
+  <view class="order-summary-card">
+    <view class="summary-block">
+      <text class="summary-caption">客户</text>
+      <text class="summary-main">{{contactName || '未填写'}}</text>
+    </view>
+    <view class="summary-divider"></view>
+    <view class="summary-block">
+      <text class="summary-caption">商品</text>
+      <text class="summary-main">{{goodsList.length || 0}}件</text>
+    </view>
+    <view class="summary-divider"></view>
+    <view class="summary-block">
+      <text class="summary-caption">应收金额</text>
+      <text class="summary-main amount">¥{{actualAmountFixed}}</text>
+    </view>
+  </view>
+
+  <!-- 客户信息 -->
+  <view class="section-card">
+    <view class="section-header">
+      <text class="section-index">1</text>
+      <text class="section-title">客户信息</text>
+    </view>
+    <view class="section-content">
+      <view class="form-grid">
+        <!-- 第一排：客户来源（一级+二级） -->
+        <view class="form-row">
+          <view class="form-field flex-1">
+            <text class="field-label">一级来源</text>
+            <picker bindchange="onCustomerSourceLevel1Change" value="{{level1Index || 0}}" range="{{customerSourcesLevel1}}">
+              <view class="picker-input">
+                {{selectedCustomerSourceLevel1 || '请选择'}}
+                <text class="picker-arrow">▼</text>
+              </view>
+            </picker>
+          </view>
+          <view class="form-field flex-1">
+            <text class="field-label">二级来源</text>
+            <picker bindchange="onCustomerSourceLevel2Change" range="{{customerSourcesLevel2Display}}">
+              <view class="picker-input">
+                {{selectedCustomerSourceLevel2 || '请选择'}}
+                <text class="picker-arrow">▼</text>
+              </view>
+            </picker>
+          </view>
+        </view>
+
+        <!-- 第二排：会员称呼 + 会员ID -->
+        <view class="form-row">
+          <view class="form-field flex-1">
+            <text class="field-label">会员称呼</text>
+            <input class="field-input" type="text" placeholder="请输入会员称呼" bindinput="onContactNameInput" value="{{contactName}}" />
+          </view>
+          <view class="form-field flex-1">
+            <text class="field-label">会员ID</text>
+            <input class="field-input" type="number" placeholder="请输入会员ID" bindinput="onCustomerIdInput" value="{{contactMethod}}" />
+          </view>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 商品信息 -->
+  <view class="section-card">
+    <view class="section-header">
+      <text class="section-index">2</text>
+      <text class="section-title">商品信息</text>
+      <button class="btn-add" type="default" bindtap="addGoodsItem">添加商品</button>
+    </view>
+    <view class="section-content">
+      <!-- 商品表头 -->
+      <view class="goods-header">
+        <text class="col col-code">商品编码</text>
+        <text class="col col-name">名称</text>
+        <text class="col col-price">单价</text>
+        <text class="col col-quantity">数量</text>
+        <text class="col col-action">操作</text>
+      </view>
+
+      <!-- 商品列表 -->
+      <view class="goods-list">
+        <block wx:for="{{goodsList}}" wx:key="index" wx:for-item="item" wx:for-index="index">
+          <view class="goods-item">
+            <!-- 第一行：PN/SN 同行展示 -->
+            <view class="goods-row row-1">
+              <!-- PN码 -->
+              <view class="goods-field pn-field with-scan">
+                <view class="field-label-row">
+                  <text class="field-label-small">PN码</text>
+                  <view class="field-actions">
+                    <button class="btn-query-code" type="default" bindtap="queryGoodsByPN" data-index="{{index}}">查询</button>
+                    <button class="btn-scan-code" type="default" bindtap="scanCode" data-index="{{index}}" data-code-type="pnCode">扫码</button>
+                  </view>
+                </view>
+                <view class="code-input-with-scan">
+                  <view class="inline-picker-input">
+                    <input class="code-input" type="text" placeholder="请输入或选择PN码" bindinput="onGoodsInput" bindfocus="onGoodsFocus" data-index="{{index}}" data-field="pnCode" value="{{item.pnCode}}" />
+                    <picker wx:if="{{item.pnOptionsDisplay && item.pnOptionsDisplay.length > 1}}" class="inline-picker-trigger" bindchange="onPnPickerChange" data-index="{{index}}" value="{{item.pnPickerIndex || 0}}" range="{{item.pnOptionsDisplay}}">
+                      <view class="inline-picker-arrow">
+                        <text class="picker-arrow">▼</text>
+                      </view>
+                    </picker>
+                  </view>
+                </view>
+              </view>
+
+              <!-- SN码 -->
+              <view class="goods-field sn-field with-scan">
+                <view class="field-label-row">
+                  <text class="field-label-small">SN码</text>
+                  <view class="field-actions">
+                    <button class="btn-query-code" type="default" bindtap="queryGoodsBySN" data-index="{{index}}">查询</button>
+                    <button class="btn-scan-code" type="default" bindtap="scanCode" data-index="{{index}}" data-code-type="snCode">扫码</button>
+                  </view>
+                </view>
+                <view class="code-input-with-scan">
+                  <view class="inline-picker-input">
+                    <input class="code-input" type="text" placeholder="请输入或选择SN码" bindinput="onGoodsInput" data-index="{{index}}" data-field="snCode" value="{{item.snCode}}" />
+                    <picker wx:if="{{item.snOptionsDisplay && item.snOptionsDisplay.length > 0}}" class="inline-picker-trigger" bindchange="onSnPickerChange" data-index="{{index}}" value="{{item.snPickerIndex || 0}}" range="{{item.snOptionsDisplay}}">
+                      <view class="inline-picker-arrow"><text class="picker-arrow">▼</text></view>
+                    </picker>
+                  </view>
+                </view>
+              </view>
+            </view>
+
+            <!-- 第二行：商品名称（单独一行） -->
+            <view class="goods-row row-2">
+              <view class="goods-field name-field full-width">
+                <view class="field-label-row">
+                  <text class="field-label-small">商品名称</text>
+                  <button class="btn-search-name" type="default" size="mini" bindtap="searchGoodsByName" data-index="{{index}}">查询</button>
+                </view>
+                <view class="name-input-row">
+                  <input class="input-name" type="text" placeholder="商品名称" bindinput="onGoodsInput" data-index="{{index}}" data-field="name" value="{{item.name}}" />
+                </view>
+              </view>
+            </view>
+
+            <!-- IMEI行：当商品名包含moto时显示 -->
+            <view class="goods-row row-imei" wx:if="{{item.showImei}}">
+              <!-- IMEI1 -->
+              <view class="goods-field imei-field with-scan">
+                <text class="field-label-small">IMEI1</text>
+                <view class="code-input-with-scan">
+                  <input class="code-input" type="text" placeholder="请输入IMEI1" bindinput="onGoodsInput" data-index="{{index}}" data-field="imei1" value="{{item.imei1}}" />
+                  <button class="btn-scan-code" type="default" bindtap="scanCode" data-index="{{index}}" data-code-type="imei1">扫码</button>
+                </view>
+              </view>
+
+              <!-- IMEI2 -->
+              <view class="goods-field imei-field with-scan">
+                <text class="field-label-small">IMEI2</text>
+                <view class="code-input-with-scan">
+                  <input class="code-input" type="text" placeholder="请输入IMEI2" bindinput="onGoodsInput" data-index="{{index}}" data-field="imei2" value="{{item.imei2}}" />
+                  <button class="btn-scan-code" type="default" bindtap="scanCode" data-index="{{index}}" data-code-type="imei2">扫码</button>
+                </view>
+              </view>
+            </view>
+
+            <!-- 第三行：单价和数量 -->
+            <view class="goods-row row-3">
+              <!-- 单价 -->
+              <view class="goods-field price-field">
+                <text class="field-label-small">单价</text>
+                <input class="input-number" type="digit" placeholder="0.00" bindinput="onGoodsInput" bindfocus="onGoodsFocus" data-index="{{index}}" data-field="price" value="{{item.price}}" />
+              </view>
+
+              <!-- 数量 -->
+              <view class="goods-field quantity-field">
+                <text class="field-label-small">数量</text>
+                <input class="input-number" type="digit" placeholder="1" bindinput="onGoodsInput" bindfocus="onGoodsFocus" data-index="{{index}}" data-field="quantity" value="{{item.quantity}}" />
+              </view>
+            </view>
+
+            <!-- 第四行：操作按钮 -->
+            <view class="goods-row row-4">
+              <view class="goods-field action-field">
+                <button class="btn-delete" type="warn" bindtap="deleteGoodsItem" data-index="{{index}}" wx:if="{{goodsList.length > 1}}">删除</button>
+              </view>
+            </view>
+          </view>
+        </block>
+      </view>
+    </view>
+  </view>
+
+  <!-- 金额汇总 -->
+  <view class="section-card">
+    <view class="section-header">
+      <text class="section-index">3</text>
+      <text class="section-title">金额汇总</text>
+    </view>
+    <view class="section-content">
+      <view class="amount-detail">
+        <!-- 订单总计 -->
+        <view class="amount-item">
+          <text class="amount-label">订单总计</text>
+          <view class="amount-value">¥{{totalAmountFixed}}</view>
+        </view>
+
+        <!-- 国补 -->
+        <view class="amount-item">
+          <text class="amount-label">国补</text>
+          <view class="subsidy-inputs">
+            <text class="amount-minus">-</text><input class="input-discount small" type="digit" placeholder="电脑" bindinput="onComputerSubsidyInput" bindfocus="onAmountFocus" data-field="computerAmount" value="{{computerAmount}}" />
+            <text class="amount-minus">-</text><input class="input-discount small" type="digit" placeholder="手机平板" bindinput="onMobileSubsidyInput" bindfocus="onAmountFocus" data-field="mobileAmount" value="{{mobileAmount}}" />
+            <text class="amount-minus">-</text><input class="input-discount" type="digit" placeholder="0.00" bindinput="onNationalSubsidyInput" bindfocus="onAmountFocus" data-field="nationalSubsidy" value="{{nationalSubsidy}}" />
+          </view>
+        </view>
+
+        <!-- 教育补贴 -->
+        <view class="amount-item">
+          <text class="amount-label">教育补贴</text>
+          <view class="subsidy-inputs"><text class="amount-minus">-</text><input class="input-discount" type="digit" placeholder="0.00" bindinput="onEducationSubsidyInput" bindfocus="onAmountFocus" data-field="educationSubsidy" value="{{educationSubsidy}}" /></view>
+        </view>
+
+        <!-- 应收金额 -->
+        <view class="amount-item amount-total">
+          <text class="amount-label">应收金额</text>
+          <view class="amount-value highlight">¥{{actualAmountFixed}}</view>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 收款信息 -->
+  <view class="section-card">
+    <view class="section-header">
+      <text class="section-index">4</text>
+      <text class="section-title">收款信息</text>
+      <button class="btn-add" type="default" bindtap="addPaymentMethod">+ 添加收款方式</button>
+    </view>
+    <view class="section-content">
+      <view class="payment-list">
+        <block wx:for="{{paymentMethods}}" wx:key="index" wx:for-item="method" wx:for-index="index">
+          <view class="payment-item">
+            <view class="payment-info">
+              <view class="payment-type">
+                <text class="field-label-small">收款方式</text>
+                <picker bindchange="onPaymentMethodChange" data-index="{{index}}" value="{{paymentMethodOptions.indexOf(method.type)}}" range="{{paymentMethodOptions}}">
+                  <view class="picker-input-small">
+                    {{method.type || '请选择收款方式'}}
+                    <text class="picker-arrow">▼</text>
+                  </view>
+                </picker>
+              </view>
+              <view class="payment-amount">
+                <text class="field-label-small">{{method.type === '定金抵扣' ? '抵扣金额' : '收款金额'}}</text>
+                <view wx:if="{{method.type === '定金抵扣'}}" class="inline-picker-input payment-amount-picker">
+                  <input class="input-number-small" type="digit" placeholder="输入或选择定金" value="{{method.amount}}" bindinput="onDepositAmountInput" bindblur="onDepositAmountBlur" data-payment-index="{{index}}" />
+                  <picker class="inline-picker-trigger" bindchange="onDepositPickerChange" data-payment-index="{{index}}" range="{{availableDepositDisplay}}" value="{{method.depositPickerIndex || 0}}" disabled="{{depositLoading}}">
+                    <view class="inline-picker-arrow">
+                      <text class="picker-arrow">▼</text>
+                    </view>
+                  </picker>
+                </view>
+                <input wx:else class="input-number-small" type="digit" placeholder="0.00" bindinput="onPaymentAmountInput" bindfocus="onPaymentAmountFocus" data-index="{{index}}" value="{{method.amount}}" />
+              </view>
+            </view>
+            <view class="payment-action">
+              <button class="btn-delete-small" type="warn" size="mini" bindtap="removePaymentMethod" data-index="{{index}}" wx:if="{{paymentMethods.length > 1}}">删除</button>
+            </view>
+          </view>
+        </block>
+      </view>
+
+      <!-- 收款汇总 -->
+      <view class="payment-summary">
+        <view class="summary-item-left">
+          <text class="summary-label">收款金额汇总</text>
+          <text class="summary-value">¥{{paymentTotal || '0.00'}}</text>
+        </view>
+        <view class="summary-item-right">
+          <text class="summary-label">差额</text>
+          <text class="summary-value {{differenceAmount > 0 ? 'positive' : (differenceAmount < 0 ? 'negative' : '')}}">¥{{differenceAmount || '0.00'}}</text>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 辅助销售人 -->
+  <view class="section-card">
+    <view class="section-header">
+      <text class="section-index">5</text>
+      <text class="section-title">辅助销售人</text>
+      <button class="btn-add" type="default" bindtap="addAuxiliarySales">添加辅助销售人</button>
+    </view>
+    <view class="section-content">
+      <view class="auxiliary-sales-list" wx:if="{{auxiliarySalesList.length > 0}}">
+        <block wx:for="{{auxiliarySalesList}}" wx:key="index" wx:for-item="item" wx:for-index="index">
+          <view class="auxiliary-sales-item">
+            <view class="auxiliary-sales-info">
+              <view class="auxiliary-sales-select">
+                <text class="field-label-small">销售人</text>
+                <picker bindchange="onAuxiliarySalesChange" data-index="{{index}}" value="{{item.optionIndex || 0}}" range="{{auxiliarySalesOptions}}">
+                  <view class="picker-input-small">
+                    {{item.selectedDisplay || item.selected}}
+                    <text class="picker-arrow">▼</text>
+                  </view>
+                </picker>
+              </view>
+              <view class="auxiliary-sales-amount">
+                <text class="field-label-small">金额分配</text>
+                <input class="input-discount-small" type="digit" placeholder="0.00" bindinput="onAuxiliarySalesProfitAmountInput" bindfocus="onAuxiliarySalesProfitAmountFocus" data-index="{{index}}" value="{{item.profitAmount}}" />
+              </view>
+              <view class="auxiliary-sales-ratio" wx:if="{{!item.profitAmount}}">
+                <text class="field-label-small">分配方式</text>
+                <text class="ratio-text">利润平分</text>
+              </view>
+            </view>
+            <view class="auxiliary-sales-action">
+              <button class="btn-delete-small" type="warn" size="mini" bindtap="removeAuxiliarySales" data-index="{{index}}" wx:if="{{!item.isMainSales}}">删除</button>
+              <text class="main-sales-tag" wx:if="{{item.isMainSales}}">主销售</text>
+            </view>
+          </view>
+        </block>
+      </view>
+      <view class="empty-hint" wx:else>
+        <text class="hint-text">暂无辅助销售人，点击添加按钮添加</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 开票信息 -->
+  <view class="section-card">
+    <view class="section-header">
+      <text class="section-index">6</text>
+      <text class="section-title">开票状态</text>
+      <text class="section-hint" wx:if="{{subsidyStatus === '国补'}}">（选择国补必须开普票）</text>
+    </view>
+    <view class="section-content">
+      <radio-group class="radio-group" bindchange="onInvoiceStatusChange">
+        <label class="radio-item {{subsidyStatus === '国补' && (item === '不开票' || item === '开专票') ? 'disabled' : ''}}" wx:for="{{invoiceOptions}}" wx:key="item">
+          <radio value="{{item}}" checked="{{item == invoiceStatus}}" disabled="{{subsidyStatus === '国补' && (item === '不开票' || item === '开专票')}}" />
+          <text>{{item}}</text>
+        </label>
+      </radio-group>
+
+      <!-- 开票信息输入 -->
+      <view class="form-field" wx:if="{{invoiceStatus == '开专票' || invoiceStatus == '开普票'}}">
+        <text class="field-label">{{subsidyStatus === '国补' ? '云闪付订单号' : '开票信息'}}</text>
+        <!-- 云闪付订单号是单行文本，避免 iOS 对 textarea auto-height 反复重排页面。 -->
+        <input wx:if="{{subsidyStatus === '国补'}}" class="field-input" type="text" confirm-type="done" cursor-spacing="120" placeholder="请输入云闪付订单的订单号" bindfocus="onInvoiceInfoFocus" bindblur="onInvoiceInfoBlur" bindinput="onInvoiceInfoInput" value="{{invoiceInfo}}" maxlength="500" />
+        <!-- 普通开票信息仍支持多行输入，但允许微信自动调整页面位置。 -->
+        <textarea wx:else class="field-textarea invoice-info-textarea" adjust-position="{{true}}" cursor-spacing="120" placeholder="请输入开票信息，包括单位名称、税号等" bindfocus="onInvoiceInfoFocus" bindblur="onInvoiceInfoBlur" bindinput="onInvoiceInfoInput" value="{{invoiceInfo}}" maxlength="500"></textarea>
+      </view>
+
+      <!-- 开票金额 -->
+      <view class="form-field" wx:if="{{invoiceStatus == '开专票' || invoiceStatus == '开普票'}}">
+        <text class="field-label">开票金额</text>
+        <input class="field-input" type="digit" placeholder="{{subsidyStatus === '国补' ? '默认等于国补收款金额' : '请输入开票金额'}}" bindinput="onInvoiceAmountInput" value="{{invoiceAmount}}" />
+      </view>
+    </view>
+  </view>
+
+  <!-- 国补状态 -->
+  <view class="section-card">
+    <view class="section-header">
+      <text class="section-index">7</text>
+      <text class="section-title">国补状态</text>
+      <text class="section-hint" wx:if="{{nationalSubsidy > 0}}">（国补金额不为0，已自动选择国补）</text>
+    </view>
+    <view class="section-content">
+      <radio-group class="radio-group" bindchange="onSubsidyStatusChange">
+        <label class="radio-item" wx:for="{{subsidyOptions}}" wx:key="item">
+          <radio value="{{item}}" checked="{{item == subsidyStatus}}" disabled="{{nationalSubsidy > 0}}" />
+          <text>{{item}}</text>
+        </label>
+      </radio-group>
+
+      <!-- 国补人信息（条件显示） -->
+      <view class="subsidy-person-section" wx:if="{{subsidyStatus == '国补'}}">
+        <view class="section-subheader">
+          <text class="section-subtitle">国补人信息</text>
+          <text class="subsidy-person-warning">请与客户二次确认，务必正确</text>
+        </view>
+        <view class="form-grid">
+          <view class="form-field">
+            <text class="field-label required">国补人</text>
+            <input class="field-input" type="text" placeholder="请输入国补人姓名" bindfocus="onSubsidyPersonFocus" bindinput="onSubsidyPersonInput" value="{{subsidyPerson}}" />
+          </view>
+          <view class="form-field">
+            <text class="field-label required">国补人ID</text>
+            <input class="field-input" type="number" placeholder="请输入11位国补人ID" bindfocus="onSubsidyIdFocus" bindinput="onSubsidyIdInput" value="{{subsidyId}}" maxlength="11" />
+          </view>
+        </view>
+      </view>
+
+      <!-- 国补照片上传（条件显示） -->
+      <view class="photo-section" wx:if="{{subsidyStatus == '国补'}}">
+        <view class="section-subheader">
+          <text class="section-subtitle">国补照片上传</text>
+        </view>
+        <view class="photo-upload-container multi-photo">
+          <!-- 6个固定位置的国补照片 -->
+          <block wx:for="{{subsidyPhotos}}" wx:key="index">
+            <view class="photo-item">
+              <!-- 已上传显示图片和删除按钮 -->
+              <block wx:if="{{item.url}}">
+                <image class="photo-preview" src="{{item.url}}" mode="aspectFill" bindtap="previewSubsidyPhoto" data-index="{{index}}" />
+                <view class="photo-delete" bindtap="deleteSubsidyPhoto" data-index="{{index}}">×</view>
+              </block>
+              <!-- 未上传时显示上传框 -->
+              <block wx:else>
+                <view class="photo-upload-wrapper" bindtap="chooseSubsidyPhoto" data-index="{{index}}">
+                  <view class="photo-upload-placeholder">
+                    <text class="photo-upload-icon">+</text>
+                    <text class="photo-upload-text">{{item.name}}</text>
+                  </view>
+                </view>
+              </block>
+            </view>
+          </block>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 商品图片 -->
+  <view class="section-card">
+    <view class="section-header">
+      <text class="section-index">8</text>
+      <text class="section-title">商品图片</text>
+      <text class="section-hint">（最多上传9张）</text>
+    </view>
+    <view class="section-content">
+      <view class="photo-upload-container multi-photo">
+        <!-- 已上传的图片列表 -->
+        <view class="photo-list" wx:if="{{productPhotoUrls.length > 0}}">
+          <block wx:for="{{productPhotoUrls}}" wx:key="index">
+            <view class="photo-item">
+              <image class="photo-preview" src="{{item}}" mode="aspectFill" bindtap="previewProductPhoto" data-index="{{index}}" />
+              <view class="photo-delete" bindtap="deleteProductPhoto" data-index="{{index}}">×</view>
+            </view>
+          </block>
+        </view>
+        <!-- 上传按钮 -->
+        <view class="photo-upload-wrapper {{productPhotoUrls.length > 0 ? 'small' : ''}}" bindtap="uploadProductPhoto" wx:if="{{productPhotoUrls.length < 9}}">
+          <view class="photo-upload-placeholder">
+            <text class="photo-upload-icon">+</text>
+            <text class="photo-upload-text">{{productPhotoUrls.length > 0 ? '继续添加' : '点击上传照片'}}</text>
+          </view>
+        </view>
+      </view>
+      <text class="photo-hint">请上传商品图片，如有SN码需将SN码拍清楚</text>
+    </view>
+  </view>
+
+  <!-- 教育补贴图片 -->
+  <view class="section-card" wx:if="{{educationSubsidy > 0}}">
+    <view class="section-header">
+      <text class="section-index">9</text>
+      <text class="section-title">教育补贴核销凭证</text>
+    </view>
+    <view class="section-content">
+      <view class="photo-upload-container education-photo-actions">
+        <view class="photo-upload-wrapper" bindtap="uploadEducationSubsidyPhoto">
+          <image wx:if="{{educationSubsidyPhotoUrl}}" class="photo-preview" src="{{educationSubsidyPhotoUrl}}" mode="aspectFill" />
+          <view wx:else class="photo-upload-placeholder">
+            <text class="photo-upload-icon">+</text>
+            <text class="photo-upload-text">上传并识别券码</text>
+          </view>
+        </view>
+        <button class="btn-scan-coupon" size="mini" bindtap="scanEducationSubsidyCoupon">扫码</button>
+        <button wx:if="{{educationSubsidyPhotoUrl}}" class="btn-delete-small" type="warn" size="mini" bindtap="deleteEducationSubsidyPhoto">删除</button>
+        <button wx:if="{{educationSubsidyPhotoUrl}}" class="btn-secondary-small" size="mini" bindtap="retryEducationSubsidyCouponOcr">重新识别券码</button>
+      </view>
+      <text class="photo-hint">请上传已核销成功的教育补贴图片，上传后会自动识别券码</text>
+      <view class="form-item">
+        <text class="form-label">券码</text>
+        <input class="form-input" value="{{educationSubsidyCouponCode}}" placeholder="上传图片后自动识别，可手动修改" bindinput="onEducationSubsidyCouponInput" />
+      </view>
+      <text wx:if="{{educationSubsidyOcrStatus}}" class="photo-hint">{{educationSubsidyOcrStatus}}</text>
+    </view>
+  </view>
+
+  <!-- 底部操作栏 -->
+  <view class="action-bar" wx:if="{{!isInvoiceInfoFocused}}">
+    <button class="btn btn-secondary" type="default" bindtap="saveOrderDataToCache">
+      <text>保存草稿</text>
+    </button>
+    <button class="btn btn-primary" type="primary" bindtap="previewOrder">
+      <text>预览并打印</text>
+    </button>
+  </view>
+
+  <!-- 预览模态框 -->
+  <view class="privacy-mask" wx:if="{{showPrivacyModal}}">
+    <view class="privacy-dialog">
+      <view class="privacy-title">隐私授权</view>
+      <view class="privacy-content">
+        上传照片需要使用相册或相机，请先阅读并同意
+        <text class="privacy-link" bindtap="openPrivacyContract">{{privacyContractName}}</text>
+      </view>
+      <view class="privacy-actions">
+        <button class="privacy-btn secondary" bindtap="closePrivacyAuthorization">取消</button>
+        <button id="agree-btn" class="privacy-btn primary" open-type="agreePrivacyAuthorization" bindagreeprivacyauthorization="onAgreePrivacyAuthorization">同意并继续</button>
+      </view>
+    </view>
+  </view>
+
+  <view class="modal" wx:if="{{showPreview}}">
+    <view class="modal-mask" bindtap="closePreview"></view>
+    <view class="modal-content">
+      <view class="modal-header">
+        <text class="modal-title">订单预览</text>
+        <text class="modal-close" bindtap="closePreview">×</text>
+      </view>
+      <view class="modal-body">
+        <!-- 订单预览内容 -->
+        <view class="preview-content">
+          <view class="preview-section">
+            <text class="preview-title">订单信息</text>
+            <view class="preview-item">
+              <text class="preview-label">公司名称:</text>
+              <text class="preview-value">成都艾诺云科技有限公司</text>
+            </view>
+            <view class="preview-item">
+              <text class="preview-label">订单编号:</text>
+              <text class="preview-value">{{previewData.orderNo}}</text>
+            </view>
+            <view class="preview-item">
+              <text class="preview-label">下单时间:</text>
+              <text class="preview-value">{{previewData.createTime}}</text>
+            </view>
+            <view class="preview-item">
+              <text class="preview-label">提交人:</text>
+              <text class="preview-value">{{previewData.createUser}} (实际销售人)</text>
+            </view>
+          </view>
+
+          <view class="preview-section">
+            <text class="preview-title">商品明细</text>
+            <block wx:for="{{previewData.goods}}" wx:key="index">
+              <view class="preview-goods-item">
+                <text class="preview-goods-code">商品名称: {{item.name}}</text>
+                <text class="preview-goods-code">PN: {{item.pnCode}} | SN: {{item.snCode}}</text>
+                <text class="preview-goods-price">数量: {{item.quantity}} | 单价: ¥{{item.price}} | 小计: ¥{{item.subtotal}}</text>
+              </view>
+            </block>
+          </view>
+
+          <view class="preview-section">
+            <text class="preview-title">金额汇总</text>
+            <view class="preview-amount">
+              <text class="preview-label">总计:</text>
+              <text class="preview-value">¥{{previewData.totalAmount}}</text>
+            </view>
+            <view class="preview-amount">
+              <text class="preview-label">国补:</text>
+              <text class="preview-value">-¥{{previewData.nationalSubsidy}}</text>
+            </view>
+            <view class="preview-amount">
+              <text class="preview-label">教育补贴:</text>
+              <text class="preview-value">-¥{{previewData.educationSubsidy}}</text>
+            </view>
+            <view class="preview-amount preview-actual">
+              <text class="preview-label">应收:</text>
+              <text class="preview-value">¥{{previewData.actualAmount}}</text>
+            </view>
+          </view>
+
+          <!-- 收款信息预览 -->
+          <view class="preview-section">
+            <text class="preview-title">收款信息</text>
+            <view class="preview-payment-list">
+              <block wx:for="{{previewData.paymentMethods}}" wx:key="index" wx:for-item="method">
+                <view class="preview-payment-item">
+                  <text class="preview-payment-type">{{method.previewTitle}}</text>
+                  <text class="preview-payment-amount">¥{{method.previewAmount}}</text>
+                </view>
+              </block>
+              <!-- 收款金额汇总 -->
+              <view class="preview-payment-summary">
+                <text class="preview-payment-summary-label">实付</text>
+                <text class="preview-payment-summary-value">¥{{previewData.paymentTotal || 0}}</text>
+              </view>
+            </view>
+          </view>
+
+          <!-- 售后须知 -->
+          <view class="preview-section after-sales-notice">
+            <text class="preview-title">售后须知</text>
+            <view class="notice-content">
+              <text class="notice-item">1. 请确定以上资料正确无误，收货时核对相应物品及配件外观完好无损、配置齐全。</text>
+              <text class="notice-item">2. 所购新机在15天内若有质量问题，经厂家售后鉴定后包换新机(请确保原包装箱/盒、保修卡等配件完好无损)，若机身或机壳刮花损坏，无法支持换机，只做维修处理。</text>
+              <text class="notice-item">3. 请您按照厂家说明书规范使用，机器在质保期内若有质量问题，经厂家售后鉴定后免费维修，人为损坏(如入液、受潮、私自拆装等)均不在免费维修范围内。</text>
+              <text class="notice-item">4. 本单据可作为保修凭证，请妥善保管，如有售后，请出示此单。</text>
+            </view>
+          </view>
+        </view>
+      </view>
+      <view class="modal-footer">
+        <button class="btn btn-secondary" type="default" bindtap="closePreview">取消</button>
+        <button class="btn btn-primary" type="primary" bindtap="printAndSubmitOrder">打印并提交</button>
+      </view>
+    </view>
+  </view>
+</view>
+
+<!-- 订单门店选择弹窗 -->
+<view class="modal" wx:if="{{showStorePicker}}">
+  <view class="modal-mask" bindtap="closeStorePicker"></view>
+  <view class="modal-content store-picker-modal">
+    <view class="modal-header">
+      <text class="modal-title">选择订单门店</text>
+      <text class="modal-close" bindtap="closeStorePicker">×</text>
+    </view>
+    <view class="modal-body store-picker-body">
+      <view wx:for="{{orderStoreOptions}}" wx:key="storeId" class="store-option {{item.storeId === storeId ? 'selected' : ''}}" bindtap="selectOrderStore" data-index="{{index}}">
+        <text>{{item.name}}</text>
+        <text wx:if="{{item.storeId === storeId}}" class="store-option-check">✓</text>
+      </view>
+      <view wx:if="{{!orderStoreOptions.length}}" class="store-picker-empty">暂无可选择的门店</view>
+    </view>
+  </view>
+</view>
+
+<!-- 商品选择弹窗 -->
+<view class="goods-select-modal" wx:if="{{showGoodsSelectModal}}">
+  <view class="goods-select-mask" bindtap="closeGoodsSelectModal"></view>
+  <view class="goods-select-content">
+    <view class="goods-select-header">
+      <text class="goods-select-title">选择商品</text>
+      <text class="goods-select-close" bindtap="closeGoodsSelectModal">×</text>
+    </view>
+    <scroll-view class="goods-select-list" scroll-y="true">
+      <block wx:for="{{goodsSelectList}}" wx:key="index">
+        <view class="goods-select-item" bindtap="selectGoods" data-index="{{index}}">
+          <text class="goods-select-name">{{item.name}}</text>
+          <text class="goods-select-pn">厂商PN: {{item.pnCode || '无'}}</text>
+          <view class="goods-select-meta">
+            <text class="goods-select-price">结算价: ¥{{item.settlementPriceText}}</text>
+            <text class="goods-select-stock {{item.currentStoreStockQty > 0 ? 'has-stock' : ''}}">当前门店: {{item.currentStoreStockText}}</text>
+            <text class="goods-select-stock {{item.totalStockQty > 0 ? 'has-stock' : ''}}">全部门店: {{item.totalStockText}}</text>
+          </view>
+        </view>
+      </block>
+      <view class="goods-select-more" wx:if="{{goodsSelectHasMore}}" bindtap="loadMoreGoods">
+        {{goodsSelectLoading ? '正在加载...' : '加载更多'}}
+      </view>
+    </scroll-view>
+  </view>
+</view>
+
+<!-- 打印机连接引导弹窗 -->
+<view class="printer-guide-modal" wx:if="{{showPrinterGuideModal}}">
+  <view class="printer-guide-mask" bindtap="closePrinterGuideModal"></view>
+  <view class="printer-guide-content">
+    <view class="printer-guide-header">
+      <text class="printer-guide-title">连接打印机</text>
+      <text class="printer-guide-close" bindtap="closePrinterGuideModal">×</text>
+    </view>
+    <view class="printer-guide-body">
+      <view class="printer-guide-icon">
+        <text class="printer-icon">🖨️</text>
+      </view>
+      <text class="printer-guide-text">您还未连接蓝牙打印机</text>
+      <text class="printer-guide-desc">请先连接打印机后再进行打印操作</text>
+    </view>
+    <view class="printer-guide-footer">
+      <button class="btn btn-secondary" type="default" bindtap="closePrinterGuideModal">取消</button>
+      <button class="btn btn-primary" type="primary" bindtap="navigateToPrinterPage">去连接</button>
+    </view>
+  </view>
+</view>
+
+<!-- 提交成功打印确认弹窗 -->
+<view class="print-confirm-modal" wx:if="{{showPrintConfirmModal}}">
+  <view class="print-confirm-mask"></view>
+  <view class="print-confirm-content">
+    <view class="print-confirm-header">
+      <text class="print-confirm-title">提交成功，请打印小票</text>
+    </view>
+    <view class="print-confirm-body">
+      <view class="print-confirm-icon">
+        <text class="success-icon">✓</text>
+      </view>
+      <text class="print-confirm-text">订单已成功提交</text>
+      <text class="print-confirm-desc">请打印小票后交给客户</text>
+    </view>
+    <view class="print-confirm-footer">
+      <button class="btn btn-print" type="primary" bindtap="doPrintOrder">立即打印</button>
+      <button class="btn btn-close" type="warn" bindtap="closePrintConfirmModal">关闭</button>
+    </view>
+  </view>
+</view>

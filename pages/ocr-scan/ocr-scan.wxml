@@ -1,0 +1,107 @@
+<view class="container">
+  <view class="header">
+    <text class="title">商品编码识别</text>
+    <button class="btn-back" type="default" bindtap="navigateBack">返回</button>
+  </view>
+  
+  <view class="ocr-section">
+    <!-- 相机预览区域 -->
+    <view class="camera-container" wx:if="{{!showImageSelect && !showManualInput}}">
+      <camera device-position="back" flash="off" binderror="cameraError" style="width: 100%; height: 60vh;">
+        <!-- 扫描框 -->
+        <view class="scan-frame">
+          <view class="scan-line"></view>
+        </view>
+      </camera>
+      
+      <!-- 拍照/选择图片按钮 -->
+      <view class="camera-controls">
+        <button class="btn-capture" type="default" bindtap="showImageOptions">拍照/从相册选择</button>
+        <button class="btn-manual" type="default" bindtap="showManualInput">手动输入</button>
+      </view>
+    </view>
+    
+    <!-- 图片选择和识别区域 -->
+    <view class="image-select-section" wx:if="{{showImageSelect}}">
+      <view class="image-container">
+        <!-- 显示识别的图片 -->
+        <image src="{{tempImagePath}}" mode="aspectFit" class="selected-image"></image>
+        
+        <!-- 绘制OCR识别区域 -->
+        <view class="ocr-regions">
+          <view 
+            wx:for="{{ocrRegions}}" 
+            wx:key="index" 
+            class="ocr-region" 
+            style="top: {{item.y}}px; left: {{item.x}}px; width: {{item.width}}px; height: {{item.height}}px; border-color: {{selectedRegion && selectedRegion.text === item.text ? '#1AAD19' : '#FF5722'}};"
+            bindtap="onRegionTap" 
+            data-index="{{index}}"
+          >
+            <text class="region-text">{{item.text}}</text>
+          </view>
+        </view>
+      </view>
+      
+      <!-- 识别结果 -->
+      <view class="result-section">
+        <text class="result-title">识别结果</text>
+        <view class="result-item">
+          <text class="result-label">PN码:</text>
+          <text class="result-value">{{scanResult.pnCode}}</text>
+        </view>
+        <view class="result-item">
+          <text class="result-label">MTM码:</text>
+          <text class="result-value">{{scanResult.mtmCode}}</text>
+        </view>
+        <view class="result-item">
+          <text class="result-label">SN码:</text>
+          <text class="result-value">{{scanResult.snCode}}</text>
+        </view>
+      </view>
+      
+      <!-- 操作按钮 -->
+      <view class="result-actions">
+        <button class="btn-confirm" type="primary" bindtap="confirmResult">确认使用</button>
+        <button class="btn-retake" type="default" bindtap="retakePhoto">重新识别</button>
+      </view>
+    </view>
+    
+    <!-- 识别提示 -->
+    <view class="tips-section" wx:if="{{!showImageSelect && !showManualInput}}">
+      <text class="tips-title">识别提示</text>
+      <text class="tips-content">1. 将商品编码对准扫描框</text>
+      <text class="tips-content">2. 确保光线充足</text>
+      <text class="tips-content">3. 保持手机稳定</text>
+      <text class="tips-content">4. 支持拍照或从相册选择图片</text>
+    </view>
+    
+    <!-- 手动输入区域 -->
+    <view class="manual-input-section" wx:if="{{showManualInput}}">
+      <view class="manual-input-header">
+        <text class="manual-input-title">手动输入商品编码</text>
+      </view>
+      
+      <view class="manual-input-form">
+        <view class="input-item">
+          <text class="input-label">PN码:</text>
+          <input type="text" class="input-field" placeholder="请输入PN码" value="{{scanResult.pnCode}}" bindinput="onManualInput" data-field="pnCode" />
+        </view>
+        
+        <view class="input-item">
+          <text class="input-label">MTM码:</text>
+          <input type="text" class="input-field" placeholder="请输入MTM码" value="{{scanResult.mtmCode}}" bindinput="onManualInput" data-field="mtmCode" />
+        </view>
+        
+        <view class="input-item">
+          <text class="input-label">SN码:</text>
+          <input type="text" class="input-field" placeholder="请输入SN码" value="{{scanResult.snCode}}" bindinput="onManualInput" data-field="snCode" />
+        </view>
+      </view>
+      
+      <view class="manual-input-actions">
+        <button class="btn-confirm" type="primary" bindtap="confirmManualInput">确认</button>
+        <button class="btn-cancel" type="default" bindtap="retakePhoto">取消</button>
+      </view>
+    </view>
+  </view>
+</view>

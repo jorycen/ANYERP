@@ -1,0 +1,285 @@
+香港置地
+OpenAPI平台使用接驳接口说明
+（正式参数需要找酷酷猫申请）
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+2025年11月
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+1、前言
+在承租方与租赁方双方签署的XXXXXX 号商铺（下称“该商铺”）的《XXXXXXXX商铺租赁合同》（下称“租赁合同”）规定的租赁期（下称“租赁期”）内，承租方有义务按照租赁合同内要求将每日每笔销售交易数据通过软件接口的方式，每日按时传送给租赁方（业主）的管理系统内。承租方同意使用租赁方（业主）提供的销售数据上传的形式，并协助租赁方（业主）在商铺开业前，完成数据接口调试与上传工作。
+为配合此次项目销售数据实时采集项目的要求；现将数据接口技术方案通过此文给予发布，以便承租方POS研读使用销售数据接口
+
+2、集成技术规范
+2.1集成方式概述
+置地提供统一、开放API，系统前端支持REST请求方式，REST请求与响应采用JSON报文格式。
+2.2服务接入技术规范
+2.2.1传输协议规范
+强制规范
+集成规范要求信息系统服务集成采用HTTP、HTTPS。
+建议规范
+HTTP建议采用1.1版本。
+2.2.2报文格式规范
+强制规范
+JSON报文格式作为接入数据格式规范，服务提供方和服务消费方均严格遵循JSON报文格式进行数据交互；
+2.2.3报文编码规范
+强制规范
+JSON报文均采用UTF-8编码。
+2.2.4请求参数规范
+强制规范
+服务请求公共参数详见下表：
+名称	类型	最大长度	是否必须	描述
+公共请求参数	App_Sub_ID	String	16	是	API调用方应用的编码
+	App_Token	String	32	是	API调用方授权令牌
+	Api_ID	String	64	是	API调用的API编码
+	Api_Version	String	8	是	调用的API版本号
+	Time_Stamp	String	19	是	时间戳，格式为yyyy-mm-ddHH:mm:ss:SSS，时区为GMT+8；10分钟以内的时间
+	Sign_Method	String	8	是	生成服务请求签名字符串所使用的算法类型，目前仅支持MD5
+	Sign	String	32	是	服务请求的签名字符串
+	Format	String	8	是	响应格式,默认为json格式，可选值：xml或json
+	Partner_ID	String	16	是	合作伙伴身份标识
+	Sys_ID	String	16	是	合作伙伴系统编码
+	App_Pub_ID	String	16	否	被调用API的应用编码
+	Is_Sand_Box	String	16	否	是否是沙箱调用，如果是,填写setIsSandBox("isSandBox");如果不是，则不要填写
+
+	以上参数建议调用方可灵活配置。
+2.2.5请求签名规范
+强制规范
+1.对所有公共请求参数（除去sign参数）和REQUEST_DATA，根据参数名称ASCII码表顺序排序；
+2.将排序好的参数名和参数值组合成“参数=参数值”的格式，并且把这些参数用&字符连接起来，此时生成的字符串为待签名字符串。
+待签名字符串示例：Api_ID=bl.openapi.check.heart&Api_Version=0.1.0&App_Pub_ID=1001&App_Sub_ID=2002&App_Token=1929a4b1-a8f9-4f9e-be06-e5dbfb1bdff9&Format=xml&Partner_ID=Z0001000&REQUEST_DATA=***&Sign_Method=md5 &Sys_ID=Z0001001&Time_Stamp=2016-08-08 12:11:23:234
+3.将待签名字符串和秘钥组合成“待签名字符串&秘钥”格式，再进行md5算法（采用32位大写格式），得出签名（sign）的值。
+
+
+2.2.6请求签名示例(签名样例内容与3.2请求报文内容一致)
+Api_ID=mixc.imPOSWBJB.GLWXCJB.orderCollect&Api_Version=1.0.0&App_Pub_ID=10000133301US&App_Sub_ID=10000133301US&App_Token=52b7818ae4384379b14b6f0f84842d5b&Format=json&Partner_ID=70000006&REQUEST_DATA={"cashierId":"0202a501bhglg62n0101","checkCode":"P88888888","comments":"huey-test","itemList":[{"itemCode":"BHGLG62N0100","price":668,"quantity":1},{"itemCode":"BHGLG62N0100","price":332,"quantity":1}],"mall":"0202A501","mobile":"15918744354","orderId":"000000000000001059","payList":[{"cardBank":"","cardNumber":"","discountAmt":0,"payAmt":1000,"paymentMethod":"CH","time":"20200119141933","value":1000}],"refOrderId":"","store":"BHGLG62N01","tillId":"01","time":"20200119141933","totalAmt":1000,"type":"SALE","source":"01"}&Sign_Method=md5&Sys_ID=100001333&Time_Stamp=2020-01-19 14:40:27:864&85c8b165df9046d8afb84e8998993ddd
+MD5加密结果：63B670C4FB65C635FB9DE44950F0A8BF
+
+2.3服务报文技术规范
+2.3.1请求方REST请求报文规范
+强制规范
+服务请求方系统的请求报文格式有明确的规定，遵循如下JSON报文格式。
+1.所有API都可以用POST发起请求；
+2.请求参数分为系统级公共请求参数+应用级业务请求参数；
+3.报文样例：JSON
+{
+"REQUEST": {
+  "HRT_ATTRS": {
+        "App_Sub_ID": "2002",
+        "App_Token": "1929a4b1-a8f9-4f9e-be06-e5dbfb1bdff9",
+        "Api_ID": "bl.openapi.check.heart",
+        "Api_Version": "0.1.0",
+        "Time_Stamp": "2016-08-08 12:11:23:234",
+        "Sign_Method": "md5",
+        "Sign": "66987CB115214E59E6EC978214934FB8",（参考签名规则计算方法）
+        "Format": " json",（选填）
+        "Partner_ID": "20000000",
+      “Sys_ID”: "20000001",
+        "App_Pub_ID": "1001 ", （选填）
+    }
+    REQUEST_DATA: {
+        业务参数
+    },
+}
+}
+
+以下接口列表将只列出【业务参数】示例报文Json Sample。
+2.3.2请求方REST响应报文规范
+强制规范
+服务请求方系统的响应报文格式有明确的规定，遵循如下JSON报文格式。
+JSON报文样例：
+{
+    "RESPONSE": {
+        "RETURN_CODE": "S000A000",
+        “RETURN_STAMP": "2016-09-28 12:11:23:235", 
+        "RETURN_DATA": { 
+           业务数据
+        },
+        "RETURN_DESC": "描述信息"
+    }
+}
+
+注：RETURN_CODE为100，即代表成功，否则即失败
+该文档返回码暂时不包括香港通返回的错误编码
+2.4接口地址
+UAT环境：https://posbox.kukumao.cn/posbox/crland
+内外网均可访问
+2.5申请流程
+3、接口说明
+3.1处理逻辑说明
+接口	订单上传接口	源->目标	外部渠道系统->IMPOS
+Api_ID	mixc.imPOSWBJB.GLWXCJB.orderCollect
+接口需求描述	上传订单信息
+接口逻辑描述	
+
+备注	
+
+
+3.2接口请求报文信息
+请求参数	参数名	类型	是否必填	说明
+收银员编号	cashierId	String	Y	必填项
+备注	comments	String	N	长度：最大200位
+商品编号	itemCode	String	N	非必填; 未填写时请求参数只需写"itemList": [ ]
+商品价格	price	number	N	非必填；如果填写了商品编号，则商品价格必填
+商品数量	quantity	number	N	非必填；如果填写了商品编号，则商品数量必填
+商场编号	mall	String	Y	必填项
+长度：最小6位，最大40位
+会员手机号	mobile	String	N	非必填
+订单号	orderId	String	Y	必填项
+长度：最小6位，最大40位
+支付银行bankcode	cardBank	String	N	非必填
+银行卡卡号	cardNumber	String	N	非必填
+支付方式	paymentMethod	String	Y	必填项
+根据ERP的支付方式。例如现金是CH；支付宝是AP；微信是WP；银行卡是CI；其它是OT等等
+支付时间	time	String	Y	必填项
+格式：
+yyyyMMddhhmmss
+支付金额（实收金额）	value	Number	Y	必填项
+正数：销售订单
+负数：退货订单
+应收金额	payAmt	Number	Y	必填项
+正数：销售订单
+负数：退货订单
+优惠金额	discountAmt	Number	Y	必填项
+正数：销售订单
+负数：退货订单
+店铺编号	store	String	Y	必填项
+长度：最小6位,最大40位
+收银机编号	tillId	String	Y	必填项
+长度为2位，例如：01
+订单时间	time	String	Y	必填项
+格式：yyyyMMddhhmmss；时区：GMT+8
+（此接口仅支持接收48天内的订单）
+订单总金额	totalAmt	String	Y	必填项
+正数：销售订单
+负数：退货订单
+订单类型	type	String	Y	必填项
+销售：SALE
+退货：ONLINEREFUND
+店铺验证密钥(登录密码)	checkCode	String	Y	必填项
+店铺验证密钥(密码) 由IMPOS提供
+关联原订单号	refOrderId	String	N	长度：最小6位，最大40位；
+若是退货订单可以填写原订单号
+
+来源	source	String	N	01:店铺
+02:数据采集盒子
+
+
+
+
+Json请求示例（如示例或截图）
+Headers需填写Content-Type：application/json;charset=UTF-8（设置后返回的错误信息不会乱码）
+Body请求参数示例：
+	{
+    "REQUEST":{
+        "REQUEST_DATA":{
+            "cashierId":"20121ki1l202n0101",
+            "checkCode":"P88888888",
+            "comments":"comments",
+            "itemList":[
+                {
+                    "itemCode":"BHGLG62N0100",
+                    "price":668,
+                    "quantity":1
+                }
+            ],   --注：当未传商品信息时，红色字体部分参数只需写"itemList":[  ]
+               "mall":"20121",
+            "mobile":"15918744354",
+            "orderId":"000030",
+            "payList":[
+                {
+                    "cardBank":"4321",
+                    "cardNumber":"zyx",
+                    "discountAmt":0,
+                    "payAmt":668,
+                    "paymentMethod":"CH",
+                    "time":"20190926111433",
+                    "value":668
+                }
+            ],
+            "refOrderId":"refOrderId",
+            "store":"KI1L202N01",
+            "tillId":"01",
+            "time":"20190926111433",
+            "totalAmt":668,
+            "type":"SALE",
+            "source":"01"
+        },
+        "HRT_ATTRS":{
+            "Partner_ID":"70000006",
+            "Api_Version":"1.0.1",
+            "App_Sub_ID":"10000133301US",
+            "Format":"json",
+            "Time_Stamp":"2019-09-26 11:53:27:864",
+            "Api_ID":"mixc.imPOSWBJB.GLWXCJB.orderCollect",
+            "App_Token":"52b7818ae4384379b14b6f0f84842d5b",
+            "App_Pub_ID":"10000133301US",
+            "Sign_Method":"md5",
+            "Sign":"F821DE118B2FD507E8FDA94ECD16D81A",
+            "Sys_ID":"100001333"
+        }
+    }
+}
+
+
+
+
+3.3接口响应报文信息
+请求参数	参数名	类型	是否必填	说明
+订单号	orderId	String	N	
+参考号(原订单)	refOrderId	String	N	
+
+响应报文示例
+{
+    "RETURN_DATA": {
+        "header": {
+            "errcode": "0000",
+            "errmsg": "成功"
+        },
+        "body": {
+            "orderId": "1103600303191010010005",
+            "refOrderId": "000000000000001507"
+        }
+    },
+    "RETURN_CODE": "INTERFACE HAS NO CODE",
+    "RETURN_DESC": "INTERFACE HAS NO DESC",
+    "RETURN_STAMP": ""
+}
+errcode说明:
+0000：成功
+1001：失败，不同错误“errmsg”中提示不同错误信息

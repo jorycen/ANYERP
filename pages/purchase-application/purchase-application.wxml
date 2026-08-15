@@ -1,0 +1,343 @@
+<view class="page">
+  <scroll-view class="tabs" scroll-x>
+    <view class="tab {{activeTab === 'create' ? 'active' : ''}}" data-tab="create" bindtap="switchTab" wx:if="{{!purchaseQueryOnly}}">采购申请</view>
+    <view class="tab {{activeTab === 'product' ? 'active' : ''}}" data-tab="product" bindtap="switchTab" wx:if="{{!purchaseQueryOnly}}">新建商品</view>
+    <view class="tab" data-tab="expense" bindtap="switchTab" wx:if="{{!purchaseQueryOnly}}">报销与费用</view>
+    <view class="tab {{activeTab === 'list' ? 'active' : ''}}" data-tab="list" bindtap="switchTab">我的申请</view>
+  </scroll-view>
+
+  <view wx:if="{{activeTab === 'create' && !purchaseQueryOnly}}">
+    <view class="card">
+      <view class="section-head">
+        <text class="section-title no-margin">采购信息</text>
+        <text class="link" data-tab="list" bindtap="switchTab">申请记录</text>
+      </view>
+
+      <text class="field-label required">供应商</text>
+      <view class="search-row">
+        <input class="input search-input" placeholder="输入供应商关键字" value="{{supplierKeyword}}" bindinput="onSupplierKeywordInput" bindconfirm="searchSuppliers" />
+        <button class="small-btn" bindtap="searchSuppliers">搜索</button>
+      </view>
+
+      <text class="field-label required">付款方式</text>
+      <picker mode="selector" range="{{paymentMethods}}" range-key="label" value="{{form.paymentMethodIndex}}" bindchange="onPaymentMethodChange">
+        <view class="picker-value">{{paymentMethods[form.paymentMethodIndex].label}}</view>
+      </picker>
+      <text class="field-tip">{{form.paymentMethod === 'PERSONAL_ADVANCE' ? '采购审批通过后，由领导审批报销单并生成报销结算单' : '采购审批通过后进入供应商应付管理'}}</text>
+      <view class="two-columns">
+        <view class="column">
+          <text class="field-label">配送平台</text>
+          <picker mode="selector" range="{{freightPlatforms}}" range-key="platform_name" bindchange="onFreightPlatformChange">
+            <view class="picker-value {{form.freightPlatformId ? '' : 'placeholder'}}">{{form.freightPlatformName || '请选择配送平台'}}</view>
+          </picker>
+        </view>
+        <view class="column">
+          <text class="field-label">运费金额</text>
+          <input class="input" type="digit" placeholder="0.00" value="{{form.freightAmount}}" bindinput="onFreightAmountInput" />
+        </view>
+      </view>
+      <view class="two-columns">
+        <view class="column">
+          <text class="field-label">发票类型</text>
+          <picker mode="selector" range="{{invoiceTypes}}" value="{{form.invoiceTypeIndex}}" bindchange="onInvoiceTypeChange">
+            <view class="picker-value {{form.invoiceType ? '' : 'placeholder'}}">{{form.invoiceType || '请选择'}}</view>
+          </picker>
+        </view>
+        <view class="column">
+          <text class="field-label required">货型</text>
+          <picker mode="selector" range="{{productTypes}}" value="{{form.productTypeIndex}}" bindchange="onProductTypeChange">
+            <view class="picker-value">{{form.productType}}</view>
+          </picker>
+        </view>
+      </view>
+
+      <text class="field-label">备注</text>
+      <textarea class="textarea" placeholder="采购备注" value="{{form.remark}}" bindinput="onRemarkInput"></textarea>
+    </view>
+
+    <view class="card">
+      <view class="section-head">
+        <text class="section-title no-margin">商品明细</text>
+        <view class="section-head-actions">
+          <text class="link used-product-link" bindtap="openUsedProductForm">二手商品</text>
+          <text class="link" data-tab="product" bindtap="switchTab">没有商品？新建</text>
+        </view>
+      </view>
+      <view class="search-row product-search">
+        <input class="input search-input" placeholder="搜索商品名称、编码或配置" value="{{productKeyword}}" bindinput="onProductKeywordInput" bindconfirm="searchProduct" />
+        <button class="small-btn" loading="{{isSearching}}" bindtap="searchProduct">搜索</button>
+      </view>
+      <view class="empty small-empty" wx:if="{{!form.items.length}}">请搜索并添加采购商品</view>
+      <view class="purchase-item" wx:for="{{form.items}}" wx:key="itemKey">
+        <view class="item-head">
+          <view class="result-info">
+            <text class="product-name">{{index + 1}}. <text wx:if="{{item.isUsedProduct}}" class="used-product-badge">二手商品：</text>{{item.productName}}</text>
+            <text class="muted">{{item.productCode || item.pnCode || '-'}}</text>
+          </view>
+          <text class="remove" data-index="{{index}}" bindtap="removeItem">删除</text>
+        </view>
+        <view class="two-columns compact">
+          <view class="column">
+            <text class="field-label required">采购单价</text>
+            <input class="input" type="digit" placeholder="0.00" value="{{item.price}}" data-index="{{index}}" data-field="price" bindinput="onItemInput" />
+          </view>
+          <view class="column">
+            <text class="field-label required">数量</text>
+            <input class="input" type="number" placeholder="1" value="{{item.quantity}}" data-index="{{index}}" data-field="quantity" bindinput="onItemInput" />
+          </view>
+        </view>
+        <text class="field-label required">收货门店（可多选，分配数量之和等于采购数量）</text>
+        <view class="allocation-list">
+          <view class="allocation-row" wx:for="{{item.storeAllocations}}" wx:for-item="allocation" wx:for-index="allocationIndex" wx:key="allocationIndex">
+            <view class="two-columns compact">
+              <view class="column">
+                <picker mode="selector" range="{{stores}}" range-key="name" value="{{allocation.storeIndex < 0 ? 0 : allocation.storeIndex}}" data-item-index="{{index}}" data-allocation-index="{{allocationIndex}}" bindchange="onAllocationStoreChange">
+                  <view class="picker-value {{allocation.storeId ? '' : 'placeholder'}}">{{allocation.storeName || '请选择收货门店'}}</view>
+                </picker>
+              </view>
+              <view class="column allocation-quantity-column">
+                <input class="input" type="number" placeholder="分配数量" value="{{allocation.quantity}}" data-item-index="{{index}}" data-allocation-index="{{allocationIndex}}" bindinput="onAllocationQuantityInput" />
+              </view>
+            </view>
+            <picker mode="selector" range="{{allocation.locationOptions}}" range-key="name" value="{{allocation.locationIndex < 0 ? 0 : allocation.locationIndex}}" data-item-index="{{index}}" data-allocation-index="{{allocationIndex}}" bindchange="onAllocationLocationChange">
+              <view class="picker-value {{allocation.locationId ? '' : 'placeholder'}}">{{allocation.locationName || '请选择该门店收货库位'}}</view>
+            </picker>
+            <view class="allocation-row-footer">
+              <text class="field-tip">门店数量：{{allocation.quantity || 0}}</text>
+              <text class="remove" wx:if="{{item.storeAllocations.length > 1}}" data-item-index="{{index}}" data-allocation-index="{{allocationIndex}}" bindtap="removeStoreAllocation">删除门店</text>
+            </view>
+          </view>
+        </view>
+        <text class="field-tip allocation-total-tip">已分配 {{allocationTotal(item)}} / {{item.quantity}} 件</text>
+        <button class="small-btn allocation-add-btn" size="mini" data-index="{{index}}" bindtap="addStoreAllocation">+ 添加收货门店</button>
+        <text class="field-label">资源子内容</text>
+        <checkbox-group class="resource-options" data-index="{{index}}" bindchange="onItemResourceChange">
+          <label class="resource-option" wx:for="{{resourceOptions}}" wx:key="value" wx:for-item="resource">
+            <checkbox value="{{resource.value}}" checked="{{item.selectedResourceMap[resource.value]}}" color="#1aad19" />
+            <text>{{resource.label}}</text>
+          </label>
+        </checkbox-group>
+        <view class="item-subtotal">小计：¥{{item.price * item.quantity}}</view>
+      </view>
+
+      <text class="field-label required">供应商群喊货截图</text>
+      <view class="photo-grid">
+        <view class="photo-item" wx:for="{{form.supplierChatScreenshotUrls}}" wx:key="*this">
+          <image class="photo-thumb" src="{{item}}" mode="aspectFill" data-photos="{{form.supplierChatScreenshotUrls}}" data-current="{{item}}" bindtap="previewSupplierChatScreenshots" />
+          <text class="photo-remove" data-index="{{index}}" catchtap="removeSupplierChatScreenshot">×</text>
+        </view>
+        <view class="photo-add" wx:if="{{form.supplierChatScreenshotUrls.length < 9}}" bindtap="chooseSupplierChatScreenshots">
+          <text class="photo-add-icon">+</text>
+          <text>上传截图</text>
+        </view>
+      </view>
+      <text class="field-tip">至少上传1张供应商群喊货截图，支持相册选择或现场拍摄。</text>
+
+      <view class="total-row"><text>申请金额</text><text class="total-amount">¥{{requestTotal}}</text></view>
+      <button class="submit-btn" loading="{{isSubmitting}}" disabled="{{isSubmitting}}" bindtap="submitApplication">提交采购申请</button>
+      <text class="workflow-tip">提交后进入审批流程，可在小程序“审批中心”处理</text>
+    </view>
+  </view>
+
+  <view wx:elif="{{activeTab === 'used-product' && !purchaseQueryOnly}}" class="card">
+    <view class="section-head">
+      <text class="section-title no-margin">新建二手商品</text>
+      <text class="link" bindtap="backToPurchaseForm">返回采购申请</text>
+    </view>
+    <text class="field-label required">商品名称</text>
+    <input class="input" placeholder="请输入二手商品名称" value="{{usedProduct.name}}" data-field="name" bindinput="onUsedProductInput" />
+    <text class="field-label">PN码</text>
+    <input class="input" placeholder="可选，填写厂商编码" value="{{usedProduct.pnCode}}" data-field="pnCode" bindinput="onUsedProductInput" />
+    <view class="two-columns compact">
+      <view class="column">
+        <text class="field-label required">采购单价</text>
+        <input class="input" type="digit" placeholder="0.00" value="{{usedProduct.price}}" data-field="price" bindinput="onUsedProductInput" />
+      </view>
+      <view class="column">
+        <text class="field-label required">数量</text>
+        <input class="input" type="number" placeholder="1" value="{{usedProduct.quantity}}" data-field="quantity" bindinput="onUsedProductInput" />
+      </view>
+    </view>
+    <view class="switch-row">
+      <text>审批完成及入库</text>
+      <switch checked="{{usedProduct.directInbound}}" bindchange="onUsedProductDirectInboundChange" color="#1aad19" />
+    </view>
+    <text class="field-tip">勾选后，采购申请审批通过将自动完成该二手商品入库。</text>
+    <view wx:if="{{usedProduct.directInbound}}">
+      <text class="field-label required">SN号</text>
+      <input class="input" placeholder="请输入唯一SN号" value="{{usedProduct.snCode}}" data-field="snCode" bindinput="onUsedProductInput" />
+    </view>
+    <button class="submit-btn" bindtap="addUsedProductToRequest">加入采购明细</button>
+  </view>
+
+  <view wx:elif="{{activeTab === 'list'}}">
+    <view class="card workflow-list-card">
+      <view class="section-head">
+        <view>
+          <text class="section-title no-margin">我的申请</text>
+          <text class="list-caption">采购、新建商品、报销统一查看</text>
+        </view>
+        <text class="link" bindtap="loadMyRecords">刷新</text>
+      </view>
+      <scroll-view class="record-filters" scroll-x>
+        <view class="record-filter {{recordFilter === item.value ? 'active' : ''}}" wx:for="{{recordFilters}}" wx:key="value" data-filter="{{item.value}}" bindtap="switchRecordFilter">{{item.label}}</view>
+      </scroll-view>
+      <view class="loading" wx:if="{{isMyRecordsLoading}}">正在加载我的申请...</view>
+      <view class="empty" wx:elif="{{!filteredMyRecords.length}}">暂无相关申请记录</view>
+      <view class="workflow-record" wx:for="{{pagedMyRecords}}" wx:key="recordKey">
+        <view class="record-topline">
+          <text class="record-type record-type-{{item.type}}">{{item.typeLabel}}</text>
+          <text class="request-no">{{item.recordNo}}</text>
+          <text class="status status-{{item.status}}">{{item.statusText}}</text>
+        </view>
+        <text class="product-name summary">{{item.title}}</text>
+        <text class="muted">{{item.summary}} · {{item.createTime}}</text>
+        <view class="stage-row"><text class="stage-label">当前环节</text><text class="stage-value">{{item.currentStage}}</text></view>
+        <view class="review-info" wx:if="{{item.reviewComment || item.reviewUserName}}">审批批注：{{item.reviewComment || '-'}}<text wx:if="{{item.reviewUserName}}">（{{item.reviewUserName}}）</text></view>
+        <button class="detail-btn" size="mini" data-key="{{item.recordKey}}" bindtap="openRecordDetail">查看申请详情</button>
+        <view class="record-action-row" wx:if="{{item.canRevoke || item.revokeDisabledReason}}">
+          <text class="revoke-disabled" wx:if="{{item.revokeDisabledReason}}">{{item.revokeDisabledReason}}</text>
+          <button class="revoke-btn" size="mini" wx:if="{{item.canRevoke}}" loading="{{revokingRecordKey === item.recordKey}}" disabled="{{revokingRecordKey}}" data-key="{{item.recordKey}}" bindtap="revokeRecord">撤销申请</button>
+        </view>
+        <view class="application-foot">
+          <text class="muted">{{item.recordNo}}</text>
+          <text class="amount" wx:if="{{item.amountText}}">¥{{item.amountText}}</text>
+        </view>
+      </view>
+      <view class="record-pagination" wx:if="{{recordPageCount > 1}}">
+        <button class="page-btn" size="mini" disabled="{{recordPage <= 1}}" data-delta="-1" bindtap="changeRecordPage">上一页</button>
+        <text class="page-number">第 {{recordPage}} / {{recordPageCount}} 页</text>
+        <button class="page-btn" size="mini" disabled="{{recordPage >= recordPageCount}}" data-delta="1" bindtap="changeRecordPage">下一页</button>
+      </view>
+    </view>
+  </view>
+
+  <view wx:elif="{{activeTab === 'product' && !purchaseQueryOnly}}" class="card">
+    <text class="section-title">新建 ANY-ERP 商品</text>
+    <text class="field-label required">商品分类</text>
+    <picker mode="selector" range="{{categoryOptions}}" range-key="displayName" value="{{newProduct.categoryIndex}}" bindchange="onCategoryChange">
+      <view class="picker-value {{newProduct.categoryId ? '' : 'placeholder'}}">{{newProduct.categoryName || '请选择商品分类'}}</view>
+    </picker>
+
+    <view class="dynamic-fields" wx:if="{{categoryFields.length}}">
+      <text class="group-title">{{newProduct.categoryName}} 名称组合字段</text>
+      <view wx:for="{{categoryFields}}" wx:key="fieldKey" wx:for-item="field" wx:for-index="fieldIndex">
+        <text class="field-label {{field.required ? 'required' : ''}}">{{field.fieldLabel}}</text>
+        <picker wx:if="{{field.fieldType === 'select'}}" mode="selector" range="{{field.options}}" data-index="{{fieldIndex}}" bindchange="onAttributeSelect">
+          <view class="picker-value {{newProduct.attributes[field.fieldKey] ? '' : 'placeholder'}}">{{newProduct.attributes[field.fieldKey] || field.placeholder || '请选择'}}</view>
+        </picker>
+        <input wx:else class="input" placeholder="{{field.placeholder || field.fieldLabel}}" value="{{newProduct.attributes[field.fieldKey]}}" data-key="{{field.fieldKey}}" bindinput="onAttributeInput" />
+      </view>
+    </view>
+
+    <view wx:if="{{newProduct.categoryId && !categoryFields.length}}">
+      <text class="field-label required">商品名称</text>
+      <input class="input" placeholder="请输入商品名称" value="{{newProduct.manualName}}" data-field="manualName" bindinput="onNewProductInput" />
+    </view>
+
+    <view class="name-preview">
+      <text class="preview-label">商品名称</text>
+      <text class="preview-name">{{computedProductName || '请填写名称组合字段'}}</text>
+    </view>
+
+    <text class="field-label">厂商商品名称</text>
+    <input class="input" placeholder="厂商商品名称" value="{{newProduct.config}}" data-field="config" bindinput="onNewProductInput" />
+    <text class="field-label required">PN码</text>
+    <input class="input" placeholder="请输入PN码" value="{{newProduct.pnCode}}" data-field="pnCode" bindinput="onNewProductInput" />
+    <text class="field-label">单位</text>
+    <input class="input" placeholder="台" value="{{newProduct.unit}}" data-field="unit" bindinput="onNewProductInput" />
+    <view class="switch-row">
+      <text>需要SN码</text><switch checked="{{newProduct.needSn}}" data-field="needSn" bindchange="onNewProductSwitch" color="#1aad19" />
+    </view>
+    <view class="switch-row">
+      <text>需要IMEI码</text><switch checked="{{newProduct.needImei}}" data-field="needImei" bindchange="onNewProductSwitch" color="#1aad19" />
+    </view>
+    <text class="field-label">备注</text>
+    <textarea class="textarea" placeholder="商品备注" value="{{newProduct.remark}}" data-field="remark" bindinput="onNewProductInput"></textarea>
+    <text class="field-label required">商品标签页面</text>
+    <view class="photo-grid">
+      <view class="photo-item" wx:for="{{newProduct.labelPhotoUrls}}" wx:key="*this">
+        <image class="photo-thumb" src="{{item}}" mode="aspectFill" data-photos="{{newProduct.labelPhotoUrls}}" data-current="{{item}}" bindtap="previewLabelPhotos" />
+        <text class="photo-remove" data-index="{{index}}" catchtap="removeLabelPhoto">×</text>
+      </view>
+      <view class="photo-add" wx:if="{{newProduct.labelPhotoUrls.length < 9}}" bindtap="chooseLabelPhotos">
+        <text class="photo-add-icon">+</text>
+        <text>拍照/上传</text>
+      </view>
+    </view>
+    <text class="field-tip">请拍摄能清晰看到商品标签、型号和条码的页面，至少上传1张。</text>
+    <button class="submit-btn" loading="{{isSavingProduct}}" disabled="{{isSavingProduct}}" bindtap="saveNewProduct">提交新建商品申请</button>
+    <text class="workflow-tip">经销商财务、采购或 admin 可在小程序“审批中心”审批；通过后商品才会进入正式商品库</text>
+
+    <view class="application-list" wx:if="{{productApplications.length}}">
+      <text class="section-title application-title">我的商品申请</text>
+      <view class="product-application" wx:for="{{productApplications}}" wx:key="applicationId">
+        <view class="application-head">
+          <text class="request-no">{{item.applicationNo}}</text>
+          <text class="status status-{{item.status}}">{{item.statusText}}</text>
+        </view>
+        <text class="product-name summary">{{item.productName}}</text>
+        <text class="muted">{{item.categoryName || '-'}} · {{item.createTime}}</text>
+        <view class="stage-row"><text class="stage-label">当前环节</text><text class="stage-value">{{item.currentStage}}</text></view>
+        <view class="review-info" wx:if="{{item.reviewUserName || item.reviewComment}}">审批批注：{{item.reviewComment || '-'}}<text wx:if="{{item.reviewUserName}}">（{{item.reviewUserName}}）</text></view>
+        <button class="detail-btn" size="mini" data-key="{{item.recordKey}}" bindtap="openRecordDetail">查看申请详情</button>
+        <view class="record-action-row" wx:if="{{item.canRevoke}}">
+          <button class="revoke-btn" size="mini" loading="{{revokingRecordKey === item.recordKey}}" disabled="{{revokingRecordKey}}" data-key="{{item.recordKey}}" bindtap="revokeRecord">撤销申请</button>
+        </view>
+        <text class="review-info" wx:if="{{item.reviewUserName || item.reviewComment}}">审批：{{item.reviewUserName || '-'}} {{item.reviewComment || ''}}</text>
+        <text class="approved-tip" wx:if="{{item.status === 'approved'}}">已生成正式商品，可返回采购申请搜索添加</text>
+      </view>
+    </view>
+  </view>
+
+  <view class="modal-mask" wx:if="{{showSupplierModal}}" bindtap="closeSupplierModal">
+    <view class="selection-modal" catchtap="noop">
+      <view class="modal-header">
+        <text class="modal-title">选择供应商</text>
+        <text class="modal-close" bindtap="closeSupplierModal">×</text>
+      </view>
+      <view class="search-row modal-search-row">
+        <input class="input search-input" value="{{supplierKeyword}}" bindinput="onSupplierKeywordInput" placeholder="输入供应商名称或关键字" confirm-type="search" bindconfirm="searchSuppliers" focus="{{showSupplierModal}}" />
+        <button class="small-btn" loading="{{supplierSearching}}" bindtap="searchSuppliers">搜索</button>
+      </view>
+      <view class="modal-results-title" wx:if="{{suppliers.length}}">模糊查找结果（{{suppliers.length}}）</view>
+      <scroll-view class="modal-selection-list" scroll-y="true" wx:if="{{suppliers.length}}">
+        <view class="selection-item" wx:for="{{suppliers}}" wx:key="supplierId" data-index="{{index}}" bindtap="selectSupplier">
+          <view class="select-dot">✓</view>
+          <view class="result-info">
+            <text class="product-name">{{item.name}}</text>
+            <text class="muted">{{item.invoiceType || '未设置发票类型'}}</text>
+          </view>
+        </view>
+      </scroll-view>
+      <view class="modal-empty" wx:if="{{!supplierSearching && !suppliers.length}}">请输入关键字搜索供应商</view>
+      <button class="modal-cancel" bindtap="closeSupplierModal">取消</button>
+    </view>
+  </view>
+
+  <view class="modal-mask" wx:if="{{showProductModal}}" bindtap="closeProductModal">
+    <view class="selection-modal" catchtap="noop">
+      <view class="modal-header">
+        <text class="modal-title">选择采购商品</text>
+        <text class="modal-close" bindtap="closeProductModal">×</text>
+      </view>
+      <view class="search-row modal-search-row">
+        <input class="input search-input" value="{{productKeyword}}" bindinput="onProductKeywordInput" placeholder="商品名称、编码或配置" confirm-type="search" bindconfirm="searchProduct" focus="{{showProductModal}}" />
+        <button class="small-btn" loading="{{isSearching}}" bindtap="searchProduct">搜索</button>
+      </view>
+      <view class="modal-results-title" wx:if="{{productList.length}}">搜索结果（{{productList.length}}）</view>
+      <scroll-view class="modal-selection-list" scroll-y="true" wx:if="{{productList.length}}">
+        <view class="selection-item" wx:for="{{productList}}" wx:key="productId" data-index="{{index}}" bindtap="addProduct">
+          <view class="select-dot">✓</view>
+          <view class="result-info">
+            <text class="product-name">{{item.name}}</text>
+            <text class="muted">商品编码：{{item.productCode || '-'}} · 厂商码：{{item.pnCode || '-'}}</text>
+          </view>
+          <text class="select-label">添加</text>
+        </view>
+      </scroll-view>
+      <view class="modal-empty" wx:if="{{!isSearching && !productList.length}}">请输入商品名称、编码或配置搜索</view>
+      <button class="modal-cancel" bindtap="closeProductModal">取消</button>
+    </view>
+  </view>
+</view>

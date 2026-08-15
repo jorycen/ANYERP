@@ -1,0 +1,10 @@
+{
+  "name": "orderItemRepair",
+  "version": "1.0.0",
+  "description": "Repair order item SN fields in MySQL",
+  "main": "index.js",
+  "dependencies": {
+    "mysql2": "^3.9.2",
+    "wx-server-sdk": "~3.0.0"
+  }
+}

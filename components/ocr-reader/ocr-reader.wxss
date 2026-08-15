@@ -1,0 +1,176 @@
+/* components/ocr-reader/ocr-reader.wxss */
+.container {
+  padding: 30rpx;
+  min-height: 100vh;
+  background-color: var(--background-color);
+}
+
+/* 头部样式 */
+.header {
+  text-align: center;
+  margin-bottom: 40rpx;
+}
+
+.title {
+  font-size: 44rpx;
+  font-weight: bold;
+  color: var(--primary-color);
+  margin-bottom: 10rpx;
+  display: block;
+}
+
+.subtitle {
+  font-size: 28rpx;
+  color: var(--light-text);
+}
+
+/* 拍照界面样式 */
+.camera-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* 摄像头样式 */
+.camera {
+  width: 600rpx;
+  height: 600rpx;
+  background-color: #000000;
+  border-radius: 16rpx;
+  margin-bottom: 40rpx;
+}
+
+/* 拍照按钮样式 */
+.camera-actions {
+  display: flex;
+  gap: 20rpx;
+  margin-bottom: 40rpx;
+}
+
+.btn {
+  padding: 20rpx 40rpx;
+  border-radius: 8rpx;
+  font-size: 32rpx;
+  border: none;
+}
+
+.btn-primary {
+  background-color: var(--primary-color);
+  color: #FFFFFF;
+}
+
+.btn-secondary {
+  background-color: #FFFFFF;
+  color: var(--primary-color);
+  border: 2rpx solid var(--primary-color);
+}
+
+.btn-capture {
+  padding: 25rpx 50rpx;
+  font-size: 36rpx;
+}
+
+/* 提示信息样式 */
+.tips {
+  background-color: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 30rpx;
+  box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.1);
+  width: 100%;
+}
+
+.tip-item {
+  display: block;
+  font-size: 26rpx;
+  color: var(--light-text);
+  margin-bottom: 15rpx;
+  line-height: 1.5;
+}
+
+.tip-item:last-child {
+  margin-bottom: 0;
+}
+
+/* 识别结果界面样式 */
+.result-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* 结果图片样式 */
+.result-image {
+  width: 600rpx;
+  height: 400rpx;
+  border-radius: 16rpx;
+  margin-bottom: 40rpx;
+  border: 2rpx solid var(--border-color);
+}
+
+/* 结果表单样式 */
+.result-form {
+  width: 100%;
+  background-color: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 30rpx;
+  box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.1);
+  margin-bottom: 40rpx;
+}
+
+.form-item {
+  margin-bottom: 30rpx;
+}
+
+.form-item:last-child {
+  margin-bottom: 0;
+}
+
+.form-label {
+  display: block;
+  font-size: 28rpx;
+  color: var(--light-text);
+  margin-bottom: 10rpx;
+}
+
+.form-input {
+  width: 100%;
+  padding: 20rpx;
+  border: 2rpx solid var(--border-color);
+  border-radius: 8rpx;
+  font-size: 32rpx;
+}
+
+.form-input:focus {
+  border-color: var(--primary-color);
+  outline: none;
+}
+
+/* 结果操作按钮样式 */
+.result-actions {
+  display: flex;
+  gap: 20rpx;
+  width: 100%;
+}
+
+.result-actions .btn {
+  flex: 1;
+}
+
+/* 响应式设计 */
+@media (max-width: 375px) {
+  .camera {
+    width: 100%;
+    height: 500rpx;
+  }
+  
+  .result-image {
+    width: 100%;
+    height: 300rpx;
+  }
+  
+  .camera-actions,
+  .result-actions {
+    flex-direction: column;
+    width: 100%;
+  }
+}

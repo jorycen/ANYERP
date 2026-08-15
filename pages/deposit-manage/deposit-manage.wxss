@@ -1,0 +1,196 @@
+.container {
+  min-height: 100vh;
+  padding: 24rpx;
+  box-sizing: border-box;
+  background-color: #f5f7fa;
+}
+
+.section-card {
+  margin-bottom: 24rpx;
+  padding: 24rpx;
+  background-color: #fff;
+  border-radius: 12rpx;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20rpx;
+}
+
+.section-title {
+  font-size: 34rpx;
+  font-weight: 600;
+  color: #222;
+}
+
+.form-field {
+  margin-bottom: 18rpx;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 8rpx;
+  font-size: 26rpx;
+  color: #666;
+}
+
+.field-label.required::after {
+  content: ' *';
+  color: #e64340;
+}
+
+.field-input,
+.field-textarea,
+.filter-input,
+.picker-input {
+  width: 100%;
+  min-height: 76rpx;
+  padding: 0 20rpx;
+  border: 1rpx solid #d8dee4;
+  border-radius: 8rpx;
+  box-sizing: border-box;
+  background-color: #fff;
+  font-size: 28rpx;
+}
+
+.field-textarea {
+  min-height: 140rpx;
+  padding-top: 18rpx;
+}
+
+.picker-field {
+  line-height: 76rpx;
+}
+
+.picker-field.placeholder {
+  color: #999;
+}
+
+.primary-btn {
+  margin-top: 10rpx;
+  background-color: #1aad19;
+  color: #fff;
+}
+
+.mini-btn {
+  min-height: 58rpx;
+  padding: 0 20rpx;
+  line-height: 58rpx;
+  font-size: 24rpx;
+  background-color: #1aad19;
+  color: #fff;
+}
+
+.filter-row {
+  display: grid;
+  grid-template-columns: 220rpx 1fr;
+  gap: 16rpx;
+  margin-bottom: 18rpx;
+}
+
+.picker-input {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.picker-arrow {
+  color: #999;
+  font-size: 20rpx;
+}
+
+.empty-text {
+  padding: 40rpx 0;
+  color: #888;
+  text-align: center;
+}
+
+.deposit-item {
+  padding: 20rpx 0;
+  border-top: 1rpx solid #edf0f2;
+}
+
+.deposit-main,
+.deposit-line,
+.action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  margin-bottom: 10rpx;
+}
+
+.deposit-no {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: #222;
+}
+
+.deposit-status {
+  padding: 4rpx 14rpx;
+  border-radius: 999rpx;
+  font-size: 22rpx;
+  background-color: #eef5ff;
+  color: #1677ff;
+}
+
+.deposit-status.submitted {
+  background-color: #fff7e6;
+  color: #fa8c16;
+}
+
+.deposit-status.archived {
+  background-color: #f6ffed;
+  color: #52c41a;
+}
+
+.deposit-status.available {
+  background-color: #f6ffed;
+  color: #389e0d;
+}
+
+.deposit-status.occupied,
+.deposit-status.reserved {
+  background-color: #fff7e6;
+  color: #d46b08;
+}
+
+.deposit-status.refunded,
+.deposit-status.voided {
+  background-color: #fff1f0;
+  color: #e64340;
+}
+
+.deposit-line {
+  font-size: 25rpx;
+  color: #444;
+}
+
+.deposit-line.muted {
+  color: #888;
+}
+
+.small-action,
+.small-success,
+.small-danger {
+  min-height: 58rpx;
+  line-height: 58rpx;
+  font-size: 24rpx;
+}
+
+.small-action {
+  color: #1aad19;
+  background-color: #f6ffed;
+}
+
+.small-success {
+  color: #07c160;
+  background-color: #f0fff5;
+}
+
+.small-danger {
+  color: #e64340;
+  background-color: #fff1f0;
+}

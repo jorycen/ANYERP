@@ -1,0 +1,59 @@
+<view class="container">
+  <!-- 拍照界面 -->
+  <view class="camera-section" wx:if="{{!showResult}}">
+    <view class="header">
+      <text class="title">拍照识别</text>
+      <text class="subtitle">请对准商品编码标签进行拍摄</text>
+    </view>
+    
+    <!-- 摄像头预览 -->
+    <camera class="camera" device-position="back" flash="off" binderror="onCameraError"></camera>
+    
+    <!-- 拍照按钮 -->
+    <view class="camera-actions">
+      <button class="btn btn-primary btn-capture" type="primary" bindtap="takePhoto">拍照识别</button>
+      <button class="btn btn-secondary" type="default" bindtap="close">取消</button>
+    </view>
+    
+    <!-- 提示信息 -->
+    <view class="tips">
+      <text class="tip-item">• 请确保商品编码清晰可见</text>
+      <text class="tip-item">• 避免光线过强或过暗</text>
+      <text class="tip-item">• 支持识别PN码、MTM码、SN码</text>
+    </view>
+  </view>
+  
+  <!-- 识别结果界面 -->
+  <view class="result-section" wx:if="{{showResult}}">
+    <view class="header">
+      <text class="title">识别结果</text>
+    </view>
+    
+    <!-- 拍摄的照片 -->
+    <image class="result-image" src="{{tempImagePath}}" mode="aspectFit"></image>
+    
+    <!-- 识别结果表单 -->
+    <form class="result-form">
+      <view class="form-item">
+        <text class="form-label">PN码</text>
+        <input class="form-input" type="text" placeholder="请输入PN码" bindinput="onResultInput" data-field="pnCode" value="{{ocrResult.pnCode}}" />
+      </view>
+      
+      <view class="form-item">
+        <text class="form-label">MTM码</text>
+        <input class="form-input" type="text" placeholder="请输入MTM码" bindinput="onResultInput" data-field="mtmCode" value="{{ocrResult.mtmCode}}" />
+      </view>
+      
+      <view class="form-item">
+        <text class="form-label">SN码</text>
+        <input class="form-input" type="text" placeholder="请输入SN码" bindinput="onResultInput" data-field="snCode" value="{{ocrResult.snCode}}" />
+      </view>
+    </form>
+    
+    <!-- 操作按钮 -->
+    <view class="result-actions">
+      <button class="btn btn-secondary" type="default" bindtap="retakePhoto">重新拍摄</button>
+      <button class="btn btn-primary" type="primary" bindtap="confirmResult">确认使用</button>
+    </view>
+  </view>
+</view>

@@ -1,0 +1,295 @@
+/* pages/payment-method-manage/payment-method-manage.wxss */
+.container {
+  padding: 20rpx 30rpx;
+  min-height: 100vh;
+  background-color: var(--background-color);
+}
+
+/* 头部样式 */
+.header {
+  margin-bottom: 40rpx;
+  padding: 0 20rpx;
+}
+
+.title {
+  font-size: 44rpx;
+  font-weight: bold;
+  color: var(--primary-color);
+  text-align: center;
+}
+
+/* 管理区域样式 */
+.manage-section {
+  background-color: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 30rpx;
+  box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.1);
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 30rpx;
+}
+
+.section-title {
+  font-size: 32rpx;
+  font-weight: bold;
+  color: var(--text-color);
+}
+
+.btn-add {
+  font-size: 28rpx;
+  padding: 16rpx 32rpx;
+  background-color: var(--primary-color);
+  color: #FFFFFF;
+  border: none;
+  border-radius: 8rpx;
+  margin: 0;
+}
+
+/* 表头样式 */
+.table-header {
+  display: flex;
+  align-items: center;
+  padding: 20rpx;
+  background-color: #f5f5f5;
+  border-radius: 8rpx;
+  margin-bottom: 20rpx;
+}
+
+.table-header text {
+  font-size: 28rpx;
+  font-weight: bold;
+  color: var(--text-color);
+}
+
+.col-sort {
+  width: 120rpx;
+  text-align: center;
+}
+
+.col-name {
+  flex: 1;
+  padding: 0 20rpx;
+}
+
+.col-action {
+  width: 200rpx;
+  text-align: center;
+}
+
+/* 分割线 */
+.divider {
+  height: 2rpx;
+  background-color: var(--border-color);
+  margin-bottom: 20rpx;
+}
+
+/* 列表容器 */
+.list-container {
+  display: flex;
+  flex-direction: column;
+  gap: 15rpx;
+}
+
+/* 列表项样式 */
+.list-item {
+  display: flex;
+  align-items: center;
+  padding: 20rpx;
+  background-color: #f8f9fa;
+  border-radius: 12rpx;
+  border: 1rpx solid var(--border-color);
+  transition: all 0.3s ease;
+}
+
+.list-item.editing {
+  background-color: #e6f7ff;
+  border-color: var(--primary-color);
+}
+
+/* 排序号列 */
+.list-item .col-sort {
+  width: 120rpx;
+  text-align: center;
+}
+
+.sort-number {
+  font-size: 32rpx;
+  font-weight: bold;
+  color: var(--primary-color);
+}
+
+/* 名称列 */
+.list-item .col-name {
+  flex: 1;
+  padding: 0 20rpx;
+}
+
+.item-name {
+  font-size: 30rpx;
+  color: var(--text-color);
+}
+
+/* 操作列 */
+.list-item .col-action {
+  width: 200rpx;
+  display: flex;
+  justify-content: center;
+  gap: 10rpx;
+}
+
+/* 按钮样式 */
+.btn-edit, .btn-delete, .btn-save, .btn-cancel {
+  font-size: 24rpx;
+  padding: 12rpx 20rpx;
+  margin: 0;
+  border-radius: 6rpx;
+}
+
+.btn-edit {
+  background-color: #1890ff;
+  color: #fff;
+}
+
+.btn-delete {
+  background-color: #ff4d4f;
+  color: #fff;
+}
+
+.btn-save {
+  background-color: #52c41a;
+  color: #fff;
+}
+
+.btn-cancel {
+  background-color: #f0f0f0;
+  color: #333;
+}
+
+/* 编辑输入框样式 */
+.edit-input {
+  height: 70rpx;
+  padding: 0 20rpx;
+  border: 2rpx solid var(--primary-color);
+  border-radius: 8rpx;
+  font-size: 28rpx;
+  background-color: #fff;
+}
+
+.sort-input {
+  width: 100%;
+  text-align: center;
+}
+
+.name-input {
+  width: 100%;
+}
+
+/* 空列表样式 */
+.empty-list {
+  text-align: center;
+  padding: 100rpx 40rpx;
+}
+
+.empty-text {
+  font-size: 32rpx;
+  color: var(--light-text);
+}
+
+/* 弹窗样式 */
+.modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.5);
+}
+
+.modal-content {
+  width: 90%;
+  max-width: 600rpx;
+  background-color: #FFFFFF;
+  border-radius: 16rpx;
+  overflow: hidden;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 30rpx;
+  border-bottom: 1rpx solid var(--border-color);
+}
+
+.modal-title {
+  font-size: 36rpx;
+  font-weight: bold;
+  color: var(--text-color);
+}
+
+.modal-close {
+  font-size: 48rpx;
+  color: var(--light-text);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.modal-body {
+  padding: 30rpx;
+}
+
+.form-item {
+  margin-bottom: 30rpx;
+}
+
+.form-label {
+  display: block;
+  font-size: 28rpx;
+  color: var(--text-color);
+  margin-bottom: 15rpx;
+  font-weight: 500;
+}
+
+.form-input {
+  width: 100%;
+  height: 80rpx;
+  min-height: 80rpx;
+  padding: 0 20rpx;
+  border: 2rpx solid var(--border-color);
+  border-radius: 8rpx;
+  font-size: 32rpx;
+  box-sizing: border-box;
+}
+
+.form-actions {
+  display: flex;
+  gap: 20rpx;
+  margin-top: 40rpx;
+}
+
+.form-actions .btn {
+  flex: 1;
+  height: 80rpx;
+  line-height: 80rpx;
+  font-size: 28rpx;
+  border-radius: 8rpx;
+  margin: 0;
+}
+
+.btn-secondary {
+  background-color: #f0f0f0;
+  color: #333;
+}
+
+.btn-primary {
+  background-color: var(--primary-color);
+  color: #fff;
+}

@@ -1,0 +1,70 @@
+<view class="container">
+  <!-- 页面标题 -->
+  <view class="header">
+    <text class="title">业绩上报统计</text>
+  </view>
+
+  <!-- 时间筛选 -->
+  <view class="filter-section">
+    <view class="filter-row">
+      <view class="filter-item">
+        <text class="filter-label">开始日期</text>
+        <picker mode="date" value="{{startDate}}" bindchange="onStartDateChange">
+          <view class="picker-value">{{startDate}}</view>
+        </picker>
+      </view>
+      <view class="filter-item">
+        <text class="filter-label">结束日期</text>
+        <picker mode="date" value="{{endDate}}" bindchange="onEndDateChange">
+          <view class="picker-value">{{endDate}}</view>
+        </picker>
+      </view>
+    </view>
+    <button class="btn-query" type="primary" bindtap="queryStats" loading="{{isLoading}}">查询</button>
+  </view>
+
+  <!-- 统计汇总 -->
+  <view class="stats-summary" wx:if="{{showStats}}">
+    <view class="summary-card">
+      <text class="summary-label">订单数量</text>
+      <text class="summary-value success">{{statsData.reportedCount}}</text>
+    </view>
+    <view class="summary-card">
+      <text class="summary-label">订单总金额</text>
+      <text class="summary-value amount">¥{{statsData.totalAmount}}</text>
+    </view>
+  </view>
+
+  <!-- 订单列表 -->
+  <view class="order-list-section" wx:if="{{showStats}}">
+    <view class="section-title">
+      <text>上报明细</text>
+      <text class="list-count">共 {{orderList.length}} 条</text>
+    </view>
+
+    <view class="order-list" wx:if="{{orderList.length > 0}}">
+      <view class="order-item" wx:for="{{orderList}}" wx:key="orderNo">
+        <view class="order-header">
+          <text class="order-no">{{item.orderNo}}</text>
+          <view class="order-status {{item.guanguanUploadStatus}}">
+            <text wx:if="{{item.guanguanUploadStatus === 'reported'}}">已上报</text>
+            <text wx:else>未上报</text>
+          </view>
+        </view>
+        <view class="order-info">
+          <text class="order-time">归档时间：{{item.archiveTime}}</text>
+          <text class="order-amount">金额：¥{{item.totalAmount}}</text>
+        </view>
+      </view>
+    </view>
+
+    <view class="empty-list" wx:else>
+      <text class="empty-text">该时间段内没有上传记录</text>
+    </view>
+  </view>
+
+  <!-- 权限提示 -->
+  <view class="permission-tip" wx:if="{{!hasPermission}}">
+    <text>仅经销商和店长工号可查看此统计</text>
+  </view>
+</view>

@@ -1791,10 +1791,17 @@ async function confirmTransferOut(ctx) {
   try {
     const user = ctx.state.user;
     const { transferId } = ctx.request.body;
-    const requestedSelections = Array.isArray(ctx.request.body.items) ? ctx.request.body.items.filter(Boolean) : [];
+    const rawRequestedSelections = Array.isArray(ctx.request.body.items)
+      ? ctx.request.body.items
+      : (Array.isArray(ctx.request.body.requestedItems) ? ctx.request.body.requestedItems : []);
+    const requestedSelections = rawRequestedSelections.filter(Boolean);
     const selectedSnByItemId = new Map(
       requestedSelections
-        .filter(item => item && item.itemId && item.snId)
+        .map(item => ({
+          itemId: item.itemId || item.item_id || item.transferItemId || item.transfer_item_id,
+          snId: item.snId || item.sn_id || item.inventoryId || item.inventory_id
+        }))
+        .filter(item => item.itemId && item.snId)
         .map(item => [String(item.itemId), item.snId])
     );
     const selectedByProductId = new Map();
@@ -1816,11 +1823,15 @@ async function confirmTransferOut(ctx) {
       ctx.throw(404, '??????');
     }
     assertStoreVisible(ctx, transfer.from_store_id);
-    if (transfer.status !== 'pending') {
+    const pendingTransferStatuses = new Set(['pending', 'requested', 'applied', 'shipping']);
+    if (!pendingTransferStatuses.has(String(transfer.status || '').toLowerCase())) {
       ctx.throw(400, '???????????');
     }
 
     const items = transfer.TransferItems || [];
+    if (!items.length) {
+      ctx.throw(400, '调拨单没有待处理的商品明细');
+    }
     if (!requestedSelections.length) {
       ctx.throw(400, '请先选择实际出库商品');
     }
@@ -1840,7 +1851,7 @@ async function confirmTransferOut(ctx) {
       const quantity = Number(item.quantity || 1);
       const productSelections = selectedByProductId.get(String(item.product_id)) || [];
       const selected = selectedSnByItemId.get(String(item.item_id))
-        ? requestedSelections.find(selection => String(selection.itemId) === String(item.item_id))
+        ? requestedSelections.find(selection => String(selection.itemId || selection.item_id || selection.transferItemId || selection.transfer_item_id) === String(item.item_id))
         : productSelections[0];
       const selectedPnCode = String(selected?.pnCode || selected?.pn_code || selected?.pn || '').trim();
       if (!selectedPnCode) {
@@ -1855,7 +1866,7 @@ async function confirmTransferOut(ctx) {
       }
 
       if (product && Number(product.need_sn) === 1) {
-        const selectedSnId = selected?.snId || selected?.inventoryId || selected?.inventory_id || '';
+        const selectedSnId = selected?.snId || selected?.sn_id || selected?.inventoryId || selected?.inventory_id || '';
         const selectedSnCode = String(selected?.snCode || selected?.sn_code || '').trim();
         if (!selectedSnId || !selectedSnCode) {
           ctx.throw(400, `商品 ${product.name} 为 SN 商品，必须选择 SN`);
@@ -1921,7 +1932,8 @@ async function confirmTransferOut(ctx) {
         await item.update({ pn_code: selectedPnCode }, { transaction: t });
       }
 
-      if (selected && selected.productId && String(selected.productId) !== String(item.product_id)) {
+      const selectedProductId = selected?.productId || selected?.product_id;
+      if (selectedProductId && String(selectedProductId) !== String(item.product_id)) {
         ctx.throw(400, '出库商品与申请商品不一致');
       }
       if (product && Number(product.need_sn) !== 1) {

@@ -1,0 +1,77 @@
+<view class="container">
+  <view class="header">
+    <text class="title">金额补录项目管理</text>
+  </view>
+
+  <!-- 补录项目列表 -->
+  <view class="item-list">
+    <view class="item" wx:for="{{supplementItems}}" wx:key="_id">
+      <view class="item-info">
+        <text class="item-name">{{item.name}}</text>
+        <text class="item-code" wx:if="{{item.code}}">编码: {{item.code}}</text>
+        <text class="item-sort">排序: {{item.sortOrder}}</text>
+        <text class="item-type {{item.amountType === 'increase' ? 'type-increase' : 'type-decrease'}}">{{item.amountType === 'increase' ? '增加' : '减少'}}</text>
+      </view>
+      <view class="item-status">
+        <switch checked="{{item.isActive !== false}}" bindchange="toggleItemStatus" data-id="{{item._id}}" data-index="{{index}}"/>
+      </view>
+      <view class="item-actions">
+        <button class="btn-edit" size="mini" bindtap="editItem" data-index="{{index}}">编辑</button>
+        <button class="btn-delete" type="warn" size="mini" bindtap="deleteItem" data-id="{{item._id}}">删除</button>
+      </view>
+    </view>
+  </view>
+
+  <!-- 空状态 -->
+  <view class="empty-state" wx:if="{{supplementItems.length === 0}}">
+    <text class="empty-text">暂无补录项目</text>
+  </view>
+
+  <!-- 添加按钮 -->
+  <view class="add-section">
+    <button class="btn btn-primary" type="primary" bindtap="showAddModal">添加补录项目</button>
+  </view>
+</view>
+
+<!-- 添加/编辑弹窗 -->
+<view class="modal-mask" wx:if="{{showModal}}" bindtap="hideModal"></view>
+<view class="modal-dialog" wx:if="{{showModal}}">
+  <view class="modal-header">
+    <text class="modal-title">{{isEdit ? '编辑补录项目' : '添加补录项目'}}</text>
+  </view>
+  <view class="modal-body">
+    <view class="form-item">
+      <text class="form-label">项目名称</text>
+      <input class="form-input" placeholder="请输入项目名称" bindinput="onNameInput" value="{{formData.name}}" />
+    </view>
+    <view class="form-item">
+      <text class="form-label">金额类型</text>
+      <radio-group class="type-radio-group" bindchange="onAmountTypeChange">
+        <label class="type-radio-item">
+          <radio value="increase" checked="{{formData.amountType === 'increase'}}" />
+          <text class="radio-text increase">增加（红色）</text>
+        </label>
+        <label class="type-radio-item">
+          <radio value="decrease" checked="{{formData.amountType === 'decrease'}}" />
+          <text class="radio-text decrease">减少（绿色）</text>
+        </label>
+      </radio-group>
+    </view>
+    <view class="form-item">
+      <text class="form-label">项目编码</text>
+      <input class="form-input" placeholder="请输入项目编码（可选）" bindinput="onCodeInput" value="{{formData.code}}" />
+    </view>
+    <view class="form-item">
+      <text class="form-label">排序顺序</text>
+      <input class="form-input" type="number" placeholder="请输入排序顺序（数字越小越靠前）" bindinput="onSortOrderInput" value="{{formData.sortOrder}}" />
+    </view>
+    <view class="form-item">
+      <text class="form-label">是否启用</text>
+      <switch checked="{{formData.isActive}}" bindchange="onIsActiveChange"/>
+    </view>
+  </view>
+  <view class="modal-footer">
+    <button class="modal-btn cancel" bindtap="hideModal">取消</button>
+    <button class="modal-btn submit" type="primary" bindtap="saveItem">提交</button>
+  </view>
+</view>

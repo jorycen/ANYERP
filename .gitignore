@@ -1,40 +1,28 @@
 # Dependencies
 node_modules/
-**/node_modules/
 
-# Builds
-dist/
-**/dist/
-frontend/dist-web/
-backend/public/
-backend/uploads/
-*.zip
-
-# Runtime data and logs
-data/
-backup/
-*.log
-tmp_*.json
-query
-*.tmp
-*.timestamp-*.mjs
-
-# Local environment
+# Local environment and private project settings
 .env
 .env.*
 !.env.example
-cloud-db.env
+project.private.config.json
+.claude/
 
-# Generated or packaged copies
-backend-package/
-backend-clean/
-deploy-package/
-backend/backups/
+# Logs, caches, and temporary files
+*.log
+*.tmp
+.cache/
+dist/
+coverage/
 
-# OS/editor files
+# Cloud-sync conflict copies
+*(DESKTOP-*
+
+# OS and editor metadata
 .DS_Store
 Thumbs.db
-*.swp
+.idea/
+.vscode/
 
-# Conflict copies
-*冲突副本*
+# Contains a local API endpoint/token.
+API/guanghuan/LENOVO参数和接口地址.txt

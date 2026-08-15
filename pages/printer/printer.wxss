@@ -1,0 +1,296 @@
+/* pages/printer/printer.wxss */
+.container {
+  padding: 20rpx 30rpx;
+  min-height: 100vh;
+  background-color: var(--background-color);
+}
+
+/* 页面标题 */
+.header {
+  margin-bottom: 40rpx;
+}
+
+.title {
+  font-size: 44rpx;
+  font-weight: bold;
+  color: var(--primary-color);
+  text-align: center;
+}
+
+/* 通用区块样式 */
+.status-section,
+.bound-section,
+.search-section,
+.tips-section {
+  background-color: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 30rpx;
+  margin-bottom: 30rpx;
+  box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.1);
+}
+
+.section-title {
+  font-size: 36rpx;
+  font-weight: bold;
+  color: var(--text-color);
+  margin-bottom: 30rpx;
+  display: block;
+}
+
+/* 状态区域样式 */
+.status-section {
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+}
+
+.status-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10rpx;
+}
+
+.status-label {
+  font-size: 28rpx;
+  color: var(--light-text);
+}
+
+.status-value {
+  font-size: 32rpx;
+  font-weight: bold;
+}
+
+.status-note {
+  background-color: #FFF3E0;
+  border-radius: 12rpx;
+  padding: 20rpx 30rpx;
+  margin: -20rpx 0 30rpx 0;
+  border-left: 6rpx solid #FF9800;
+}
+
+.note-text {
+  font-size: 26rpx;
+  color: #E65100;
+  line-height: 1.5;
+}
+
+/* 已绑定打印机样式 */
+.printer-info {
+  background-color: #F9F9F9;
+  border-radius: 12rpx;
+  padding: 30rpx;
+  margin-bottom: 30rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+.info-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.info-label {
+  font-size: 28rpx;
+  color: var(--light-text);
+}
+
+.info-value {
+  font-size: 32rpx;
+  color: var(--text-color);
+  font-weight: bold;
+}
+
+/* 按钮样式 */
+.btn {
+  padding: 20rpx 40rpx;
+  border-radius: 8rpx;
+  font-size: 32rpx;
+  border: none;
+  width: 100%;
+}
+
+.btn-primary {
+  background-color: var(--primary-color);
+  color: #FFFFFF;
+}
+
+.btn-danger {
+  background-color: var(--danger-color);
+  color: #FFFFFF;
+}
+
+/* 搜索区域样式 */
+.search-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 30rpx;
+}
+
+.search-switch {
+  transform: scale(1.2);
+}
+
+/* 快速连接区域 */
+.quick-connect-section {
+  margin-bottom: 40rpx;
+  padding-bottom: 30rpx;
+  border-bottom: 2rpx solid #f0f0f0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 15rpx;
+}
+
+.btn-quick-connect {
+  width: 100%;
+  padding: 25rpx 0;
+  font-size: 32rpx;
+  border-radius: 8rpx;
+}
+
+.quick-connect-hint {
+  font-size: 24rpx;
+  color: #999;
+}
+
+/* 搜索提示 */
+.search-tips {
+  background-color: #F3F5F7;
+  border-radius: 12rpx;
+  padding: 30rpx;
+  text-align: center;
+}
+
+.tip-text {
+  font-size: 28rpx;
+  color: var(--light-text);
+  line-height: 1.5;
+}
+
+/* 搜索中状态 */
+.searching-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 15rpx;
+  padding: 60rpx 0;
+}
+
+.searching-text {
+  font-size: 32rpx;
+  color: var(--text-color);
+  font-weight: bold;
+}
+
+.searching-desc {
+  font-size: 26rpx;
+  color: var(--light-text);
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* 设备列表样式 */
+.device-list {
+  margin-top: 30rpx;
+}
+
+.list-title {
+  font-size: 28rpx;
+  color: var(--light-text);
+  margin-bottom: 20rpx;
+  display: block;
+}
+
+.device-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 25rpx;
+  background-color: #F9F9F9;
+  border-radius: 12rpx;
+  margin-bottom: 20rpx;
+  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.08);
+}
+
+.device-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+  flex: 1;
+  margin-right: 20rpx;
+  min-width: 0;
+}
+
+.device-name {
+  font-size: 32rpx;
+  font-weight: bold;
+  color: var(--text-color);
+  white-space: normal;
+  word-wrap: break-word;
+  line-height: 1.3;
+  max-width: 100%;
+}
+
+.device-id {
+  font-size: 24rpx;
+  color: var(--light-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.device-rssi {
+  font-size: 24rpx;
+  color: var(--secondary-color);
+  font-weight: bold;
+}
+
+/* 绑定按钮样式 */
+.bind-btn {
+  width: 160rpx;
+  height: 60rpx;
+  line-height: 60rpx;
+  text-align: center;
+  padding: 0;
+  font-size: 28rpx;
+}
+
+/* 操作提示样式 */
+.tips-content {
+  display: flex;
+  flex-direction: column;
+  gap: 15rpx;
+}
+
+.tip-item {
+  font-size: 26rpx;
+  color: var(--light-text);
+  line-height: 1.5;
+  display: block;
+}
+
+/* 响应式设计 */
+@media (max-width: 375px) {
+  .container {
+    padding: 10rpx;
+  }
+  
+  .status-section {
+    flex-direction: column;
+    gap: 30rpx;
+  }
+  
+  .device-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 20rpx;
+  }
+  
+  .device-item button {
+    align-self: flex-end;
+  }
+}

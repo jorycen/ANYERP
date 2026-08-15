@@ -1,0 +1,84 @@
+<view class="container">
+  <!-- 页面标题 -->
+  <view class="header">
+    <text class="title">经销商信息管理</text>
+  </view>
+  
+  <!-- 经销商基本信息 -->
+  <view class="info-section">
+    <view class="section-title">经销商基本信息</view>
+    <view class="info-grid">
+      <view class="info-item">
+        <text class="info-label">经销商名称</text>
+        <text class="info-value">{{distributorInfo.name}}</text>
+      </view>
+      <view class="info-item">
+        <text class="info-label">经销商地址</text>
+        <text class="info-value">{{distributorInfo.address}}</text>
+      </view>
+      <view class="info-item">
+        <text class="info-label">联系电话</text>
+        <text class="info-value">{{distributorInfo.phone}}</text>
+      </view>
+    </view>
+  </view>
+  
+  <!-- 经销商员工管理 -->
+  <view class="staff-section">
+    <view class="section-header">
+      <text class="section-title">经销商员工信息</text>
+      <button class="btn-add" type="default" bindtap="addStaff" wx:if="{{canManage}}">添加员工</button>
+    </view>
+    
+    <!-- 员工列表 -->
+    <view class="staff-list">
+      <block wx:if="{{distributorInfo.staffList && distributorInfo.staffList.length > 0}}">
+        <view class="staff-item" wx:for="{{distributorInfo.staffList}}" wx:key="index" wx:for-item="item">
+          <view class="staff-info">
+            <text class="staff-name">{{item.name}}</text>
+            <text class="staff-position">{{item.position}}</text>
+            <text class="staff-phone">{{item.phone}}</text>
+          </view>
+          <view class="staff-actions" wx:if="{{canManage}}">
+            <button class="btn-edit" type="default" size="mini" bindtap="editStaff" data-index="{{index}}" data-staff="{{item}}">编辑</button>
+            <button class="btn-delete" type="warn" size="mini" bindtap="deleteStaff" data-index="{{index}}">删除</button>
+          </view>
+        </view>
+      </block>
+      <view class="empty-list" wx:else>
+        <text class="empty-text">暂无经销商员工信息</text>
+        <button class="btn-add-first" type="primary" bindtap="addStaff" wx:if="{{canManage}}">立即添加</button>
+      </view>
+    </view>
+  </view>
+  
+  <!-- 员工编辑弹窗 -->
+  <view class="modal" wx:if="{{showEditModal}}">
+    <view class="modal-content">
+      <view class="modal-header">
+        <text class="modal-title">{{editingStaff ? '编辑员工' : '添加员工'}}</text>
+        <text class="modal-close" bindtap="closeEditModal">×</text>
+      </view>
+      <view class="modal-body">
+        <form class="staff-form" bindsubmit="saveStaff">
+          <view class="form-item">
+            <text class="form-label">姓名</text>
+            <input class="form-input" type="text" placeholder="请输入姓名" value="{{editStaff.name}}" bindinput="onStaffNameInput" />
+          </view>
+          <view class="form-item">
+            <text class="form-label">职位</text>
+            <input class="form-input" type="text" placeholder="请输入职位" value="{{editStaff.position}}" bindinput="onStaffPositionInput" />
+          </view>
+          <view class="form-item">
+            <text class="form-label">手机号码</text>
+            <input class="form-input" type="number" placeholder="请输入手机号码" value="{{editStaff.phone}}" bindinput="onStaffPhoneInput" />
+          </view>
+          <view class="form-actions">
+            <button class="btn btn-secondary" type="default" form-type="reset" bindtap="closeEditModal">取消</button>
+            <button class="btn btn-primary" type="primary" form-type="submit">保存</button>
+          </view>
+        </form>
+      </view>
+    </view>
+  </view>
+</view>

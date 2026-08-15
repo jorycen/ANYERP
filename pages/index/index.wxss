@@ -1,0 +1,161 @@
+/* pages/index/index.wxss */
+.container {
+  padding: 40rpx 30rpx;
+  min-height: 100vh;
+  background-color: var(--background-color);
+}
+
+/* 头部样式 */
+.header {
+  text-align: center;
+  margin-bottom: 60rpx;
+}
+
+.title {
+  font-size: 48rpx;
+  font-weight: bold;
+  color: var(--primary-color);
+  margin-bottom: 10rpx;
+}
+
+.subtitle {
+  font-size: 28rpx;
+  color: var(--light-text);
+}
+
+/* 功能网格样式 */
+.function-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 30rpx;
+}
+
+.function-item {
+  background-color: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 40rpx 20rpx;
+  text-align: center;
+  box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.1);
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.function-item:active {
+  transform: scale(0.98);
+  box-shadow: 0 2rpx 6rpx rgba(0, 0, 0, 0.08);
+}
+
+.icon-wrapper {
+  width: 120rpx;
+  height: 120rpx;
+  margin: 0 auto 20rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(26, 173, 25, 0.1);
+  border-radius: 50%;
+}
+
+.icon {
+  width: 80rpx;
+  height: 80rpx;
+}
+
+.icon-text {
+  font-size: 64rpx;
+  line-height: 1;
+}
+
+.function-name {
+  font-size: 32rpx;
+  font-weight: bold;
+  color: var(--text-color);
+  margin-bottom: 10rpx;
+  display: block;
+}
+
+.function-desc {
+  font-size: 24rpx;
+  color: var(--light-text);
+  line-height: 1.4;
+}
+
+/* 信息卡片样式 */
+.info-card {
+  background-color: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 30rpx;
+  box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.1);
+}
+
+.info-title {
+  font-size: 32rpx;
+  font-weight: bold;
+  color: var(--text-color);
+  margin-bottom: 20rpx;
+  display: block;
+}
+
+.info-content {
+  display: flex;
+  flex-direction: column;
+  gap: 15rpx;
+}
+
+.info-item {
+  font-size: 26rpx;
+  color: var(--light-text);
+  line-height: 1.5;
+}
+
+/* 版本信息样式 */
+.version-section {
+  text-align: center;
+  padding: 30rpx 0;
+  margin-top: auto;
+}
+
+.version-text {
+  font-size: 24rpx;
+  color: var(--light-text);
+}
+
+/* 响应式设计 */
+@media (max-width: 375px) {
+  .function-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .title {
+    font-size: 40rpx;
+  }
+
+  .subtitle {
+    font-size: 24rpx;
+  }
+}
+
+.purchase-icon {
+  background-color: rgba(255, 152, 0, 0.12);
+  color: #f57c00;
+}
+
+.performance-icon {
+  background-color: rgba(33, 150, 243, 0.12);
+  color: #1976d2;
+}
+
+.report-entry .icon-wrapper {
+  background-color: rgba(23, 105, 224, 0.12);
+  color: #1769e0;
+}
+
+.inbound-icon {
+  background-color: rgba(0, 150, 136, 0.12);
+  color: #00897b;
+}
+
+.approval-icon {
+  background-color: rgba(103, 58, 183, 0.12);
+  color: #673ab7;
+}

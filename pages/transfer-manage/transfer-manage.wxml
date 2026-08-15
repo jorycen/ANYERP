@@ -1,0 +1,111 @@
+<view class="container">
+  <view class="page-header">
+    <view class="back-btn" bindtap="onBack">‹</view>
+    <text class="page-title">调拨管理</text>
+    <button class="refresh-btn" bindtap="loadTransfers">↻ 刷新</button>
+  </view>
+
+  <view class="region-warning" wx:if="{{regionWarning}}">⚠ {{regionWarning}}</view>
+
+  <view class="panel request-panel">
+    <view class="panel-title-row"><view class="panel-icon">↔</view><text class="panel-title">发起调拨申请</text></view>
+    <view class="panel-hint">任何登录用户均可申请；提交时由系统校验经销商和区域范围。</view>
+    <view class="store-picker-row">
+      <text class="label">调出门店</text>
+      <picker class="picker" range="{{sourceStores}}" range-key="name" value="{{fromStoreIndex < 0 ? 0 : fromStoreIndex}}" bindchange="onFromStoreChange"><view class="picker-value">{{fromStoreName || '请选择调出门店'}} <text class="arrow">›</text></view></picker>
+    </view>
+    <view class="store-picker-row">
+      <text class="label">接收门店</text>
+      <picker class="picker" range="{{stores}}" range-key="name" value="{{toStoreIndex < 0 ? 0 : toStoreIndex}}" bindchange="onToStoreChange"><view class="picker-value">{{toStoreName || '请选择接收门店'}} <text class="arrow">›</text></view></picker>
+    </view>
+    <view class="store-picker-row">
+      <text class="label">配送平台</text>
+      <picker class="picker" range="{{freightPlatforms}}" range-key="platform_name" bindchange="onFreightPlatformChange"><view class="picker-value">{{form.freightPlatformName || '请选择配送平台'}} <text class="arrow">›</text></view></picker>
+    </view>
+    <view class="store-picker-row">
+      <text class="label">运费金额</text>
+      <input class="quantity-input" type="digit" value="{{form.freightAmount}}" placeholder="0.00" bindinput="onFreightAmountInput" />
+    </view>
+    <view class="product-picker" bindtap="openProductModal">
+      <view class="product-picker-icon">⌕</view>
+      <view class="product-picker-content" wx:if="{{!form.items.length}}"><text class="product-picker-title">选择调拨商品</text><text class="product-picker-desc">商品名称、PN 都用于查询，最终以商品编码为准</text></view>
+      <view class="product-picker-content selected-picker" wx:else><text class="product-picker-title">{{selectedProduct.productName}}</text><text class="product-picker-desc">编码：{{selectedProduct.productCode || selectedProduct.productId}}　PN：{{selectedProduct.pnCode || '-'}}　库存：{{selectedProduct.stock}}</text></view>
+      <text class="arrow">›</text>
+    </view>
+    <view class="selected-product legacy-selected-product" wx:if="{{false}}">
+      <view><text class="selected-label">已选商品</text><text class="selected-name">{{selectedProduct.productName}}</text><text class="selected-meta">商品编码：{{selectedProduct.productCode || selectedProduct.productId}}　PN：{{selectedProduct.pnCode || '-'}}　库存：{{selectedProduct.stock}}</text></view>
+      <button class="link-btn" bindtap="openProductModal">更换</button>
+    </view>
+    <view class="transfer-items" wx:if="{{form.items.length}}">
+      <view class="transfer-item-form" wx:for="{{form.items}}" wx:for-item="transferItem" wx:key="index">
+        <view class="transfer-item-form-head">
+          <view class="product-picker-content">
+            <text class="selected-label">已选商品 {{index + 1}}</text>
+            <text class="selected-name">{{transferItem.productName}}</text>
+            <text class="selected-meta">商品编码：{{transferItem.productCode || transferItem.productId}}　PN：{{transferItem.pnCode || '-'}}<text wx:if="{{transferItem.snCode}}">　SN：{{transferItem.snCode}}</text></text>
+          </view>
+          <button class="link-btn" data-index="{{index}}" bindtap="removeTransferItem">删除</button>
+        </view>
+        <view class="quantity-row"><text class="label">申请数量</text><input class="quantity-input" type="number" min="1" value="{{transferItem.quantity}}" data-index="{{index}}" bindinput="onTransferItemQuantityInput" /></view>
+      </view>
+    </view>
+    <button class="submit-btn" bindtap="createTransfer" loading="{{submitting}}" disabled="{{submitting || stores.length < 2 || !form.items.length}}">提交调拨申请</button>
+  </view>
+
+  <view class="panel transfer-panel">
+    <view class="panel-title-row"><view class="panel-icon">☷</view><text class="panel-title">调拨单列表</text></view>
+    <view class="empty-state" wx:if="{{!isLoading && transfers.length === 0}}">暂无调拨单</view>
+    <view class="transfer-item" wx:for="{{transfers}}" wx:key="transferId">
+      <view class="transfer-head"><text class="transfer-no">{{item.transferNo || item.transferId}}</text><text class="status">{{item.statusText}}</text></view>
+      <view class="transfer-meta"><text>{{item.fromStoreName || item.fromStoreId}} → {{item.toStoreName || item.toStoreId}}</text><text>数量：{{item.totalQuantity || item.items.length}}</text></view>
+      <view class="transfer-time">申请人：{{item.applyUserName || item.applyUser || '-'}}　{{item.createTime || '-'}}</view>
+      <view class="requested-items" wx:if="{{item.items.length}}">
+        <view class="requested-item" wx:for="{{item.items}}" wx:for-item="transferItem" wx:key="itemId"><view class="requested-name">{{transferItem.productName || '商品'}}<text class="requested-detail">商品编码：{{transferItem.productCode || transferItem.productId}}　PN：{{transferItem.pnCode || '-'}}　SN：{{transferItem.snCode || (transferItem.needSn ? '待出库确认' : '不适用')}}</text></view><text>× {{transferItem.quantity}}</text></view>
+      </view>
+      <view class="photo-strip" wx:if="{{item.shippingPhotoUrls.length}}"><image wx:for="{{item.shippingPhotoUrls}}" wx:for-item="photo" wx:key="*this" class="photo-thumb" src="{{photo}}" mode="aspectFill" data-photos="{{item.shippingPhotoUrls}}" data-current="{{photo}}" bindtap="previewPhotos" /></view>
+      <view class="photo-strip" wx:if="{{item.receivingPhotoUrls.length}}"><image wx:for="{{item.receivingPhotoUrls}}" wx:for-item="photo" wx:key="*this" class="photo-thumb" src="{{photo}}" mode="aspectFill" data-photos="{{item.receivingPhotoUrls}}" data-current="{{photo}}" bindtap="previewPhotos" /></view>
+      <view class="transfer-actions decision-actions" wx:if="{{item.canConfirmOut || item.canConfirmIn || item.canReject || item.canReturn}}"><button wx:if="{{item.canConfirmOut}}" class="small-btn primary" data-id="{{item.transferId}}" bindtap="startShipping">选择商品并出库</button><button wx:if="{{item.canConfirmIn}}" class="small-btn primary" data-id="{{item.transferId}}" bindtap="startReceiving">确认收货入库</button><button wx:if="{{item.canReject}}" class="small-btn danger" data-id="{{item.transferId}}" bindtap="rejectTransfer">拒绝申请</button><button wx:if="{{item.canReturn}}" class="small-btn danger" data-id="{{item.transferId}}" bindtap="returnTransfer">退回</button></view>
+      <view class="transfer-actions request-actions" wx:if="{{item.canRevoke}}"><button class="small-btn danger" data-id="{{item.transferId}}" bindtap="revokeTransfer">撤销申请</button></view>
+
+       <view class="action-panel shipping-panel" wx:if="{{activeTransferId === item.transferId && shippingTransfer}}">
+        <view class="action-title">选择实际出库库存（共{{shipping.items.length}}项）</view>
+        <view class="shipping-product-item" wx:for="{{shipping.items}}" wx:for-item="shippingItem" wx:for-index="shippingIndex" wx:key="itemId">
+          <view class="action-hint">第{{shippingIndex + 1}}项：{{shippingItem.productName}} × {{shippingItem.requestedQuantity}}</view>
+          <view class="select-field"><text class="required-title">选择 PN <text class="required">必选</text></text><picker class="option-picker" range="{{shippingItem.pnOptions}}" range-key="pnCode" value="{{shippingItem.pnIndex < 0 ? 0 : shippingItem.pnIndex}}" data-item-index="{{shippingIndex}}" bindchange="onShippingItemPnChange"><view class="picker-value">{{shippingItem.pnCode || '请选择 PN'}} <text class="arrow">›</text></view></picker></view>
+          <view class="multi-sn-field" wx:if="{{shippingItem.needSn}}">
+            <view class="required-title">选择 SN（{{shippingItem.selectedSnOptions.length}}/{{shippingItem.requestedQuantity}}）</view>
+            <view class="sn-option" wx:for="{{shippingItem.snOptions}}" wx:for-item="sn" wx:for-index="snIndex" wx:key="inventoryId" data-item-index="{{shippingIndex}}" data-sn-index="{{snIndex}}" bindtap="toggleShippingItemSn">
+              <view class="sn-checkbox {{sn.selected ? 'checked' : ''}}"><text wx:if="{{sn.selected}}">✓</text></view>
+              <text>{{sn.snCode}} {{sn.pnCode ? '(' + sn.pnCode + ')' : ''}}</text>
+            </view>
+            <view class="empty-state" wx:if="{{!shippingItem.snOptions.length}}">该商品暂无可选 SN</view>
+          </view>
+          <view class="selected-product actual-selected"><view><text class="selected-label">实际出库商品</text><text class="selected-name">{{shippingItem.productName}}</text><text class="selected-meta">商品编码：{{shippingItem.productCode || shippingItem.productId}}　PN：{{shippingItem.pnCode || '-'}}<text wx:if="{{shippingItem.needSn}}">　SN：{{shippingItem.snCode || '-'}}</text></text></view></view>
+          <view class="quantity-row" wx:if="{{!shippingItem.needSn}}"><text class="label">出库数量</text><input class="quantity-input" type="number" value="{{shippingItem.quantity}}" data-item-index="{{shippingIndex}}" bindinput="onShippingItemQuantityInput" /></view>
+        </view>
+        <button class="photo-btn" bindtap="chooseShippingPhotos">拍照/上传出库凭证（{{shipping.photos.length}}）</button>
+        <view class="photo-strip" wx:if="{{shipping.photoUrls.length}}"><image wx:for="{{shipping.photoUrls}}" wx:for-item="photo" wx:key="*this" class="photo-thumb" src="{{photo}}" mode="aspectFill" data-photos="{{shipping.photoUrls}}" data-current="{{photo}}" bindtap="previewPhotos" /></view>
+        <view class="transfer-actions"><button class="small-btn" bindtap="closeActionPanel">取消</button><button class="small-btn primary" bindtap="confirmOut">确认出库</button></view>
+      </view>
+
+      <view class="action-panel receiving-panel" wx:if="{{activeTransferId === item.transferId && receivingTransfer}}">
+        <view class="action-title">确认收货并入库</view>
+        <view class="action-hint">商品编码、PN、SN 已由调出门店确认，请为每项商品选择入库库位。</view>
+        <view class="requested-items receiving-items" wx:if="{{receiving.items.length}}"><view class="requested-item receiving-item" wx:for="{{receiving.items}}" wx:for-item="receiveItem" wx:for-index="receiveIndex" wx:key="itemId"><view class="requested-name">{{receiveItem.productName}}<text class="requested-detail">商品编码：{{receiveItem.productCode || receiveItem.productId}}　PN：{{receiveItem.pnCode || '-'}}　SN：{{receiveItem.snCode || '不适用'}}　× {{receiveItem.quantity}}</text><picker class="receiving-location-picker" range="{{receiving.locations}}" range-key="name" value="{{receiveItem.locationIndex < 0 ? 0 : receiveItem.locationIndex}}" data-index="{{receiveIndex}}" bindchange="onReceivingLocationChange"><view class="receiving-location-value">{{receiveItem.locationId ? receiving.locations[receiveItem.locationIndex].name : '请选择入库库位'}} <text class="arrow">›</text></view></picker></view></view></view>
+        <button class="photo-btn" bindtap="chooseReceivingPhotos">拍照/上传收货凭证（{{receiving.photos.length}}）</button>
+        <view class="photo-strip" wx:if="{{receiving.photoUrls.length}}"><image wx:for="{{receiving.photoUrls}}" wx:for-item="photo" wx:key="*this" class="photo-thumb" src="{{photo}}" mode="aspectFill" data-photos="{{receiving.photoUrls}}" data-current="{{photo}}" bindtap="previewPhotos" /></view>
+        <view class="transfer-actions"><button class="small-btn" bindtap="closeActionPanel">取消</button><button class="small-btn primary" bindtap="confirmIn">确认收货并入库</button></view>
+      </view>
+    </view>
+  </view>
+
+  <view class="modal-mask" wx:if="{{showProductModal}}" bindtap="closeProductModal"><view class="product-modal" catchtap="noop">
+    <view class="modal-header"><text class="modal-title">查询调拨商品</text><text class="modal-close" bindtap="closeProductModal">×</text></view>
+    <view class="modal-store-hint">调出门店：{{fromStoreName}}</view>
+    <view class="search-row modal-search-row"><input class="search-input" value="{{form.keyword}}" bindinput="onKeywordInput" placeholder="商品名称、商品编码、PN 或 SN" confirm-type="search" bindconfirm="searchProduct" focus="{{showProductModal}}" /><button class="search-btn" bindtap="searchProduct" loading="{{isSearching}}">查询</button></view>
+    <view class="modal-results-title" wx:if="{{productList.length}}">查询结果（{{productList.length}}）</view>
+    <scroll-view class="modal-product-list" scroll-y="true" wx:if="{{productList.length}}"><view class="product-item" wx:for="{{productList}}" wx:for-item="product" wx:key="index" data-index="{{index}}" bindtap="selectProduct"><view class="select-dot">✓</view><view class="product-content"><view class="product-name">{{product.productName}}</view><view class="product-meta"><text>商品编码：{{product.productCode || product.productId}}</text><text>PN：{{product.pnCode || '-'}}</text><text wx:if="{{product.snCode}}">SN：{{product.snCode}}</text><text wx:else>库存：{{product.stock}}</text></view></view></view></scroll-view>
+    <view class="modal-empty" wx:if="{{!isSearching && !productList.length}}">请输入商品名称、商品编码、PN 或 SN 查询</view>
+    <button class="modal-cancel" bindtap="closeProductModal">取消</button>
+  </view></view>
+</view>

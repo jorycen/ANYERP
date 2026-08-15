@@ -1,0 +1,79 @@
+{
+  "pages": [
+    "pages/login/login",
+    "pages/index/index",
+    "pages/reports/reports",
+    "pages/order-create/order-create",
+    "pages/deposit-manage/deposit-manage",
+    "pages/order-list/order-list",
+    "pages/inventory-query/inventory-query",
+    "pages/inbound-manage/inbound-manage",
+    "pages/inbound-execute/inbound-execute",
+    "pages/approval-center/approval-center",
+    "pages/order-detail/order-detail",
+    "pages/printer/printer",
+    "pages/profile/profile",
+    "pages/ocr-scan/ocr-scan",
+    "pages/store-edit/store-edit",
+    "pages/store-list/store-list",
+    "pages/store-add/store-add",
+    "pages/distributor-info/distributor-info",
+    "pages/customer-source-manage/customer-source-manage",
+    "pages/payment-method-manage/payment-method-manage",
+    "pages/supplement-item-manage/supplement-item-manage",
+    "pages/base-table-upload/base-table-upload",
+    "pages/user-manage/user-manage",
+    "pages/photo-download/photo-download",
+    "pages/goods-manage/goods-manage",
+    "pages/transfer-manage/transfer-manage",
+    "pages/purchase-application/purchase-application",
+    "pages/application-detail/application-detail",
+    "pages/expense-manage/expense-manage",
+    "pages/mall-sales-query/mall-sales-query",
+    "pages/guanghuan-stats/guanghuan-stats"
+  ],
+  "window": {
+    "backgroundTextStyle": "light",
+    "navigationBarBackgroundColor": "#1AAD19",
+    "navigationBarTitleText": "成都艾诺云科技 - 艾诺云销售助手",
+    "navigationBarTextStyle": "white"
+  },
+  "tabBar": {
+    "color": "#999999",
+    "selectedColor": "#1AAD19",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "black",
+    "list": [
+      {
+        "pagePath": "pages/index/index",
+        "text": "首页"
+      },
+      {
+        "pagePath": "pages/order-list/order-list",
+        "text": "订单查询"
+      },
+      {
+        "pagePath": "pages/profile/profile",
+        "text": "个人中心"
+      }
+    ]
+  },
+  "sitemapLocation": "sitemap.json",
+  "permission": {
+    "scope.camera": {
+      "desc": "用于拍照识别商品编码"
+    },
+    "scope.writePhotosAlbum": {
+      "desc": "用于保存下载的图片到相册"
+    }
+  },
+  "requiredBackgroundModes": [],
+  "requiredPrivateInfos": [],
+  "__usePrivacyCheck__": true,
+  "usingComponents": {},
+  "lazyCodeLoading": "requiredComponents",
+  "qy": {
+    "enable": false
+  },
+  "version": "1.2.1"
+}

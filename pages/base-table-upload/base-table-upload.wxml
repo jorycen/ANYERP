@@ -1,0 +1,175 @@
+<view class="container">
+  <view class="header">
+    <text class="title">批量上传商品</text>
+  </view>
+
+  <view class="upload-section">
+    <view class="section-header">
+      <text class="section-title">商品数据上传</text>
+      <text class="section-hint">支持CSV格式，上传商品基础数据</text>
+    </view>
+
+    <!-- 文件上传区域 -->
+    <view class="file-upload-area">
+      <view class="upload-container" bindtap="chooseFile">
+        <view class="upload-icon">📁</view>
+        <text class="upload-text">点击选择CSV文件</text>
+        <text class="upload-hint">支持 .csv 和 .txt 格式</text>
+      </view>
+
+      <!-- 已选择文件显示 -->
+      <view class="selected-file" wx:if="{{selectedFile}}">
+        <text class="file-name">{{selectedFile.name}}</text>
+        <text class="file-size">{{formatFileSize(selectedFile.size)}}</text>
+        <text class="file-remove" bindtap="removeSelectedFile">×</text>
+      </view>
+    </view>
+
+    <!-- 上传按钮 -->
+    <view class="upload-actions">
+      <button class="btn btn-secondary" type="default" bindtap="viewTemplate">查看模板</button>
+      <button class="btn btn-primary" type="primary" bindtap="parseAndUpload" wx:if="{{selectedFile}}">解析并上传</button>
+    </view>
+  </view>
+
+  <!-- 解析结果显示 -->
+  <view class="result-section" wx:if="{{parseResult}}">
+    <view class="section-header">
+      <text class="section-title">解析结果</text>
+    </view>
+
+    <view class="result-info">
+      <view class="result-item">
+        <text class="result-label">总记录数：</text>
+        <text class="result-value">{{parseResult.totalCount}}</text>
+      </view>
+      <view class="result-item" wx:if="{{parseResult.errors && parseResult.errors.length > 0}}">
+        <text class="result-label">错误数：</text>
+        <text class="result-value error">{{parseResult.errors.length}}</text>
+      </view>
+    </view>
+
+    <!-- 错误列表 -->
+    <view class="error-list" wx:if="{{parseResult.errors && parseResult.errors.length > 0}}">
+      <text class="error-title">错误信息：</text>
+      <view class="error-item" wx:for="{{parseResult.errors}}" wx:key="index">
+        <text class="error-message">{{item}}</text>
+      </view>
+    </view>
+
+    <!-- 确认上传按钮 -->
+    <view class="confirm-actions" wx:if="{{parseResult.data && parseResult.data.length > 0 && !isUploading}}">
+      <button class="btn btn-primary" type="primary" bindtap="confirmUpload">确认上传到数据库</button>
+    </view>
+  </view>
+
+  <!-- 上传进度 -->
+  <view class="upload-progress" wx:if="{{isUploading}}">
+    <view class="progress-header">
+      <text class="progress-title">上传进度</text>
+      <text class="progress-cancel" bindtap="cancelUpload">✕</text>
+    </view>
+    <view class="progress-bar">
+      <view class="progress-fill" style="width: {{uploadProgress}}%"></view>
+    </view>
+    <view class="progress-info">
+      <text>{{uploadCurrent}}/{{uploadTotal}}</text>
+      <text>{{uploadProgress}}%</text>
+    </view>
+    <view class="progress-stats">
+      <text>新增: {{addCount}}</text>
+      <text>更新: {{updateCount}}</text>
+      <text class="fail-text" bindtap="showFailDetails" wx:if="{{failCount > 0}}">失败: {{failCount}} (点击查看)</text>
+      <text wx:else>失败: {{failCount}}</text>
+    </view>
+  </view>
+
+  <!-- 上传完成结果 -->
+  <view class="upload-result" wx:if="{{uploadFinished && !isUploading}}">
+    <view class="section-header">
+      <text class="section-title">上传结果</text>
+    </view>
+    <view class="result-summary">
+      <view class="summary-item success">
+        <text class="summary-label">新增</text>
+        <text class="summary-value">{{addCount}}</text>
+      </view>
+      <view class="summary-item success">
+        <text class="summary-label">更新</text>
+        <text class="summary-value">{{updateCount}}</text>
+      </view>
+      <view class="summary-item fail" bindtap="showFailDetails" wx:if="{{failCount > 0}}">
+        <text class="summary-label">失败</text>
+        <text class="summary-value">{{failCount}}</text>
+        <text class="view-detail">点击查看详情</text>
+      </view>
+      <view class="summary-item" wx:else>
+        <text class="summary-label">失败</text>
+        <text class="summary-value">{{failCount}}</text>
+      </view>
+    </view>
+    <button class="btn btn-secondary" type="default" bindtap="resetUpload" style="margin-top: 20rpx;">重新上传</button>
+  </view>
+
+  <!-- 历史上传记录 -->
+  <view class="history-section">
+    <view class="section-header">
+      <text class="section-title">历史上传记录</text>
+      <text class="clear-history" bindtap="clearUploadHistory" wx:if="{{uploadHistory.length > 0}}">清空</text>
+    </view>
+
+    <view class="history-list">
+      <view class="history-item" wx:for="{{uploadHistory}}" wx:key="index">
+        <view class="history-info">
+          <text class="history-file">{{item.fileName}}</text>
+        </view>
+        <view class="history-stats">
+          <text class="history-count">{{item.totalCount}}条</text>
+          <text class="history-time">{{item.uploadTimeFormat}}</text>
+        </view>
+      </view>
+      <view class="history-empty" wx:if="{{uploadHistory.length === 0}}">
+        <text>暂无上传记录</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 模板说明 -->
+  <view class="template-section">
+    <view class="section-header">
+      <text class="section-title">CSV文件格式说明</text>
+    </view>
+    <view class="template-content">
+      <view class="template-item">
+        <text class="template-name">商品数据</text>
+        <text class="template-fields">字段：名称,PN,SN,MTM,类别,TYPE,价格,Unitprice</text>
+        <text class="template-example">示例：ThinkPad X1,PN123456,,MTM789,笔记本,computer,5999,5500</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 失败详情弹窗 -->
+  <view class="modal-mask" wx:if="{{showFailModal}}" bindtap="closeFailModal"></view>
+  <view class="modal-content" wx:if="{{showFailModal}}">
+    <view class="modal-header">
+      <text class="modal-title">失败详情 ({{failList.length}}条)</text>
+      <text class="modal-close" bindtap="closeFailModal">✕</text>
+    </view>
+    <scroll-view class="modal-body" scroll-y="true">
+      <view class="fail-item" wx:for="{{failList}}" wx:key="index">
+        <view class="fail-index">{{index + 1}}</view>
+        <view class="fail-info">
+          <text class="fail-name">{{item.name || '未知商品'}}</text>
+          <text class="fail-reason">{{item.reason}}</text>
+          <text class="fail-pn" wx:if="{{item.pnCode}}">PN: {{item.pnCode}}</text>
+        </view>
+      </view>
+      <view class="fail-empty" wx:if="{{failList.length === 0}}">
+        <text>暂无失败记录</text>
+      </view>
+    </scroll-view>
+    <view class="modal-footer">
+      <button class="btn btn-secondary" bindtap="closeFailModal">关闭</button>
+    </view>
+  </view>
+</view>

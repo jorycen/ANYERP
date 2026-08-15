@@ -1,0 +1,220 @@
+<view class="container">
+  <view class="page-header">
+    <view class="back-btn" bindtap="onBack">
+      <text class="back-icon">←</text>
+    </view>
+    <text class="page-title">商品管理</text>
+    <view class="header-actions">
+      <button class="batch-btn" bindtap="goToBatchUpload">批量上传</button>
+      <button class="add-btn" bindtap="openAddModal">新增商品</button>
+    </view>
+  </view>
+
+  <view class="search-section">
+    <view class="search-type-tabs">
+      <view class="tab-item {{searchType === 'name' ? 'active' : ''}}" bindtap="onSearchTypeChange" data-type="name">
+        <text>按名称</text>
+      </view>
+      <view class="tab-item {{searchType === 'pn' ? 'active' : ''}}" bindtap="onSearchTypeChange" data-type="pn">
+        <text>按PN码</text>
+      </view>
+      <view class="tab-item {{searchType === 'sn' ? 'active' : ''}}" bindtap="onSearchTypeChange" data-type="sn">
+        <text>按SN码</text>
+      </view>
+    </view>
+
+    <view class="search-box">
+      <input 
+        class="search-input" 
+        type="text" 
+        placeholder="{{searchType === 'name' ? '请输入商品名称' : (searchType === 'pn' ? '请输入PN码' : '请输入SN码')}}"
+        value="{{searchKeyword}}"
+        bindinput="onSearchInput"
+        confirm-type="search"
+        bindconfirm="onSearch"
+      />
+      <button class="search-btn" bindtap="onSearch">搜索</button>
+    </view>
+  </view>
+
+  <view class="goods-list-section">
+    <view class="section-title">
+      <text>商品列表</text>
+      <text class="goods-count" wx:if="{{goodsList.length > 0}}">共 {{goodsList.length}} 条</text>
+    </view>
+
+    <view class="loading-state" wx:if="{{isLoading}}">
+      <text>加载中...</text>
+    </view>
+
+    <view class="empty-state" wx:if="{{!isLoading && goodsList.length === 0}}">
+      <text class="empty-text">暂无商品数据</text>
+      <text class="empty-tip">请输入关键词搜索商品</text>
+    </view>
+
+    <scroll-view class="goods-list" scroll-y wx:if="{{!isLoading && goodsList.length > 0}}">
+      <view class="goods-item" wx:for="{{goodsList}}" wx:key="productId">
+        <view class="goods-info">
+          <view class="goods-name">{{item.name || '未命名商品'}}</view>
+          <view class="goods-detail">
+            <text class="goods-pn">PN: {{item.pnCode || '-'}}</text>
+            <text class="goods-sn">SN: {{item.snCode || '-'}}</text>
+            <text class="goods-status" wx:if="{{item.statusLabel}}">状态: {{item.statusLabel}}</text>
+            <text class="goods-mtm" wx:if="{{item.mtmCode}}">MTM: {{item.mtmCode}}</text>
+            <text class="goods-price">¥{{item.price || '0.00'}}</text>
+          </view>
+          <view class="goods-category" wx:if="{{item.category}}">
+            <text class="category-label">分类: {{item.category}}</text>
+          </view>
+        </view>
+        <view class="goods-actions">
+          <button class="edit-btn" bindtap="onEditGoods" data-index="{{index}}">编辑</button>
+        </view>
+      </view>
+    </scroll-view>
+  </view>
+
+  <view class="modal-mask" wx:if="{{showEditModal}}" bindtap="closeEditModal"></view>
+  <view class="edit-modal" wx:if="{{showEditModal}}">
+    <view class="modal-header">
+      <text class="modal-title">编辑商品</text>
+      <view class="close-btn" bindtap="closeEditModal">×</view>
+    </view>
+    
+    <view class="modal-body">
+      <view class="form-item">
+        <text class="form-label">PN码 *</text>
+        <text class="form-value">{{editingGoods.pnCode || '-'}}</text>
+      </view>
+      
+      <view class="form-item">
+        <text class="form-label">SN码</text>
+        <text class="form-value">{{editingGoods.snCode || '-'}}</text>
+      </view>
+      
+      <view class="form-item">
+        <text class="form-label">MTM码</text>
+        <text class="form-value">{{editingGoods.mtmCode || '-'}}</text>
+      </view>
+      
+      <view class="form-item">
+        <text class="form-label">商品名称</text>
+        <input 
+          class="form-input" 
+          type="text" 
+          placeholder="请输入商品名称"
+          value="{{editForm.name}}"
+          bindinput="onNameInput"
+        />
+      </view>
+      
+      <view class="form-item">
+        <text class="form-label">商品价格</text>
+        <input 
+          class="form-input" 
+          type="digit" 
+          placeholder="请输入商品价格"
+          value="{{editForm.price}}"
+          bindinput="onPriceInput"
+        />
+      </view>
+      
+      <view class="form-item">
+        <text class="form-label">商品分类</text>
+        <input 
+          class="form-input" 
+          type="text" 
+          placeholder="请输入商品分类"
+          value="{{editForm.category}}"
+          bindinput="onCategoryInput"
+        />
+      </view>
+    </view>
+    
+    <view class="modal-footer">
+      <button class="cancel-btn" bindtap="closeEditModal">取消</button>
+      <button class="save-btn" bindtap="onSaveGoods">保存</button>
+    </view>
+  </view>
+
+  <view class="modal-mask" wx:if="{{showAddModal}}" bindtap="closeAddModal"></view>
+  <view class="edit-modal" wx:if="{{showAddModal}}">
+    <view class="modal-header">
+      <text class="modal-title">新增商品</text>
+      <view class="close-btn" bindtap="closeAddModal">×</view>
+    </view>
+    
+    <view class="modal-body">
+      <view class="form-item">
+        <text class="form-label">商品名称 *</text>
+        <input 
+          class="form-input" 
+          type="text" 
+          placeholder="请输入商品名称"
+          value="{{addForm.name}}"
+          bindinput="onAddNameInput"
+        />
+      </view>
+      
+      <view class="form-item">
+        <text class="form-label">商品价格 *</text>
+        <input 
+          class="form-input" 
+          type="digit" 
+          placeholder="请输入商品价格"
+          value="{{addForm.price}}"
+          bindinput="onAddPriceInput"
+        />
+      </view>
+      
+      <view class="form-item">
+        <text class="form-label">PN码 *</text>
+        <input 
+          class="form-input" 
+          type="text" 
+          placeholder="请输入PN码"
+          value="{{addForm.pnCode}}"
+          bindinput="onAddPnInput"
+        />
+      </view>
+      
+      <view class="form-item">
+        <text class="form-label">SN码</text>
+        <input 
+          class="form-input" 
+          type="text" 
+          placeholder="请输入SN码"
+          value="{{addForm.snCode}}"
+          bindinput="onAddSnInput"
+        />
+      </view>
+      
+      <view class="form-item">
+        <text class="form-label">MTM码</text>
+        <input 
+          class="form-input" 
+          type="text" 
+          placeholder="请输入MTM码"
+          value="{{addForm.mtmCode}}"
+          bindinput="onAddMtmInput"
+        />
+      </view>
+      
+      <view class="form-item">
+        <text class="form-label">商品分类</text>
+        <input 
+          class="form-input" 
+          type="text" 
+          placeholder="请输入商品分类"
+          value="{{addForm.category}}"
+          bindinput="onAddCategoryInput"
+        />
+      </view>
+    </view>
+    
+    <view class="modal-footer">
+      <button class="cancel-btn" bindtap="closeAddModal">取消</button>
+      <button class="save-btn" bindtap="onAddGoods">添加</button>
+    </view>
+  </view>
+</view>

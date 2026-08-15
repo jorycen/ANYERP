@@ -1,0 +1,55 @@
+<view class="page">
+  <view class="filter-card">
+    <view class="filter-row">
+      <text class="filter-label">入库门店</text>
+      <picker wx:if="{{canSelectStore}}" class="filter-picker" range="{{stores}}" range-key="name" value="{{storeIndex}}" bindchange="onStoreChange">
+        <view class="picker-value">{{storeName || '请选择门店'}} <text class="arrow">⌄</text></view>
+      </picker>
+      <text wx:else class="fixed-value">{{storeName || '账号所属门店'}}</text>
+    </view>
+    <view class="filter-row">
+      <text class="filter-label">单据状态</text>
+      <picker class="filter-picker" range="{{statusOptions}}" range-key="label" value="{{statusIndex}}" bindchange="onStatusChange">
+        <view class="picker-value">{{statusOptions[statusIndex].label}} <text class="arrow">⌄</text></view>
+      </picker>
+    </view>
+  </view>
+
+  <view class="hint">下拉刷新入库单；待入库单可录入 PN、SN 并选择门店库位。</view>
+
+  <view class="loading-state" wx:if="{{loading}}">正在加载入库单...</view>
+  <view class="empty-state" wx:elif="{{inbounds.length === 0}}">
+    <text class="empty-icon">入</text>
+    <text class="empty-title">暂无入库单</text>
+    <text class="empty-desc">当前门店和状态下没有可显示的单据</text>
+  </view>
+
+  <view wx:else class="inbound-list">
+    <view class="inbound-card" wx:for="{{inbounds}}" wx:key="inboundId" data-id="{{item.inboundId}}" bindtap="openInbound">
+      <view class="card-head">
+        <text class="inbound-no">{{item.inboundNo}}</text>
+        <text class="status-tag {{item.statusClass}}">{{item.statusText}}</text>
+      </view>
+      <view class="store-name">{{item.storeName || storeName}}</view>
+      <view class="source-row">
+        <text>采购发起人</text>
+        <text class="source-value">{{item.purchaseInitiatorName || '-'}}</text>
+      </view>
+      <view class="source-row">
+        <text>来源单号</text>
+        <text class="source-value">{{item.sourceNo || '-'}}</text>
+      </view>
+      <view class="items-summary">{{item.itemsSummary || '暂无商品摘要'}}</view>
+      <view class="card-foot">
+        <view><text class="number">{{item.totalQuantity}}</text><text class="unit"> 件</text></view>
+        <text class="amount">¥{{item.amountText}}</text>
+        <text class="time">{{item.createTimeText}}</text>
+      </view>
+      <view class="action-text">{{item.status === 'pending' || item.status === 'partial' || item.status === 'partially_received' ? '去入库 ›' : '查看详情 ›'}}</view>
+    </view>
+  </view>
+
+  <view class="load-more" wx:if="{{inbounds.length > 0}}">
+    {{loadingMore ? '正在加载...' : (hasMore ? '上拉加载更多' : '没有更多了')}}
+  </view>
+</view>

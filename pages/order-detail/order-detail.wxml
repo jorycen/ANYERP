@@ -1,0 +1,693 @@
+<view class="container">
+  <!-- 页面标题 -->
+  <view class="header">
+    <view class="header-left">
+      <text class="title">订单详情</text>
+      <textarea class="order-no-textarea" value="{{order.orderNo}}" disabled auto-height />
+    </view>
+    <view class="header-right">
+      <view class="status-badge {{order.status === '已归档' ? 'archived' : 'pending'}}">
+        {{order.status === 'pending_approval' ? '待审批' : order.status}}
+      </view>
+    </view>
+  </view>
+
+  <!-- 编辑模式提示 -->
+  <view class="edit-mode-banner" wx:if="{{canEdit}}">
+    <text class="edit-mode-text">✏️ 编辑模式 - 您可以修改订单信息</text>
+  </view>
+
+  <!-- 只读模式提示 -->
+  <view class="readonly-banner" wx:if="{{!canEdit}}">
+    <text class="readonly-text" wx:if="{{order.status === '已归档' && canEditSpecialFields}}">✏️ 订单已归档，您仍可修改国补、图片和开票信息</text>
+    <text class="readonly-text" wx:elif="{{order.status === '已归档'}}">🔒 订单已归档，无法修改</text>
+    <text class="readonly-text" wx:else>🔒 您无权修改此订单</text>
+  </view>
+
+  <!-- 客户信息 -->
+  <view class="section-card">
+    <view class="section-header">
+      <text class="section-title">客户信息</text>
+    </view>
+    <view class="section-content">
+      <view class="form-grid">
+        <!-- 第一排：客户来源（一级+二级） -->
+        <view class="form-row">
+          <view class="form-field flex-1">
+            <text class="field-label">一级来源</text>
+            <picker wx:if="{{canEdit}}" bindchange="onCustomerSourceLevel1Change" value="{{customerSourceLevel1Index}}" range="{{customerSourceLevel1List}}">
+              <view class="picker-input">
+                {{order.customerSource || '请选择'}}
+                <text class="picker-arrow">▼</text>
+              </view>
+            </picker>
+            <view wx:else class="picker-input disabled">
+              {{order.customerSource || '-'}}
+            </view>
+          </view>
+          <view class="form-field flex-1">
+            <text class="field-label">二级来源</text>
+            <picker wx:if="{{canEdit}}" bindchange="onCustomerSourceLevel2Change" value="{{customerSourceLevel2Index}}" range="{{customerSourceLevel2List}}">
+              <view class="picker-input">
+                {{order.customerSourceDetail || '请选择'}}
+                <text class="picker-arrow">▼</text>
+              </view>
+            </picker>
+            <view wx:else class="picker-input disabled">
+              {{order.customerSourceDetail || '-'}}
+            </view>
+          </view>
+        </view>
+
+        <!-- 第二排：会员称呼 + 会员ID -->
+        <view class="form-row">
+          <view class="form-field flex-1">
+            <text class="field-label">会员称呼</text>
+            <input wx:if="{{canEdit}}" class="field-input" type="text" placeholder="请输入会员称呼" value="{{order.contactName}}" bindinput="onContactNameInput" />
+            <textarea wx:else class="field-input-textarea" value="{{order.contactName}}" disabled auto-height />
+          </view>
+          <view class="form-field flex-1">
+            <text class="field-label">会员ID</text>
+            <input wx:if="{{canEdit}}" class="field-input" type="number" placeholder="请输入会员ID" value="{{order.contactMethod}}" bindinput="onContactMethodInput" />
+            <textarea wx:else class="field-input-textarea" value="{{order.contactMethod}}" disabled auto-height />
+          </view>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 已归档订单退单 -->
+  <view class="section-card return-card" wx:if="{{isArchived && canOperate}}">
+    <view class="section-header">
+      <text class="section-title">退单</text>
+      <text class="section-hint">可勾选商品发起部分退单，沿用审批及财务退款流程</text>
+    </view>
+    <view class="section-content">
+      <button class="btn-return" type="warn" bindtap="openReturnModal" disabled="{{returnPending}}">{{returnPending ? '退单审批中' : '勾选商品退单'}}</button>
+    </view>
+  </view>
+
+  <!-- 订单备注 -->
+  <view class="section-card" wx:if="{{order.remark}}">
+    <view class="section-header">
+      <text class="section-title">订单备注</text>
+    </view>
+    <view class="section-content">
+      <textarea class="remark-textarea" value="{{order.remark}}" disabled auto-height />
+    </view>
+  </view>
+
+  <!-- 商品信息 -->
+  <view class="section-card">
+    <view class="section-header">
+      <text class="section-title">商品信息</text>
+      <button class="btn-add" type="default" bindtap="addGoodsItem" wx:if="{{canEdit}}">添加商品</button>
+    </view>
+    <view class="section-content">
+      <!-- 商品列表 -->
+      <view class="goods-list">
+        <block wx:for="{{goodsList}}" wx:key="index" wx:for-item="item" wx:for-index="index">
+          <view class="goods-item">
+            <!-- 第一行：PN/SN 同行展示 -->
+            <view class="goods-row row-1">
+              <!-- PN码 -->
+              <view class="goods-field pn-field with-scan">
+                <view class="field-label-row">
+                  <text class="field-label-small">PN码</text>
+                  <view class="field-actions">
+                    <button class="btn-query-code" type="default" bindtap="queryGoodsByPN" data-index="{{index}}" wx:if="{{canEdit}}">查询</button>
+                    <button class="btn-scan-code" type="default" bindtap="scanCode" data-index="{{index}}" data-field="pnCode" wx:if="{{canEdit}}">扫码</button>
+                  </view>
+                </view>
+                <view class="code-input-with-scan">
+                  <input wx:if="{{canEdit}}" class="code-input" type="text" placeholder="请输入PN码" value="{{item.pnCode}}" bindinput="onGoodsInput" data-index="{{index}}" data-field="pnCode" />
+                  <textarea wx:else class="code-input-textarea" value="{{item.pnCode}}" disabled auto-height />
+                </view>
+              </view>
+
+              <!-- SN码 -->
+              <view class="goods-field sn-field with-scan">
+                <view class="field-label-row">
+                  <text class="field-label-small">SN码</text>
+                  <view class="field-actions">
+                    <button class="btn-query-code" type="default" bindtap="queryGoodsBySN" data-index="{{index}}" wx:if="{{canEdit}}">查询</button>
+                    <button class="btn-scan-code" type="default" bindtap="scanCode" data-index="{{index}}" data-field="snCode" wx:if="{{canEdit}}">扫码</button>
+                    <picker wx:if="{{canEdit && item.snOptionsDisplay && item.snOptionsDisplay.length > 0}}" class="header-sn-picker" bindchange="onSnPickerChange" data-index="{{index}}" value="{{item.snPickerIndex || 0}}" range="{{item.snOptionsDisplay}}">
+                      <view class="header-sn-picker-arrow"><text class="picker-arrow">▼</text></view>
+                    </picker>
+                  </view>
+                </view>
+                <view class="code-input-with-scan">
+                  <view class="inline-picker-input">
+                    <input wx:if="{{canEdit}}" class="code-input" type="text" placeholder="输入SN码" value="{{item.snCode}}" bindinput="onGoodsInput" data-index="{{index}}" data-field="snCode" />
+                    <view wx:else class="code-display sn-code-display">
+                      <text>{{item.snCode || '无'}}</text>
+                    </view>
+                  </view>
+                  <text class="inventory-status-label" wx:if="{{item.inventoryStatusLabel || item.inventoryStatus}}">状态：{{item.inventoryStatusLabel || item.inventoryStatus}}</text>
+                </view>
+              </view>
+            </view>
+
+            <!-- 第二行：商品名称（单独一行） -->
+            <view class="goods-row row-2">
+              <view class="goods-field name-field full-width">
+                <view class="field-label-row">
+                  <text class="field-label-small">商品名称</text>
+                  <button wx:if="{{canEdit}}" class="btn-search-name" type="default" size="mini" bindtap="searchGoodsByName" data-index="{{index}}">查询</button>
+                </view>
+                <view wx:if="{{canEdit}}" class="name-input-row">
+                  <input class="input-name" type="text" placeholder="商品名称" value="{{item.name}}" bindinput="onGoodsInput" data-index="{{index}}" data-field="name" />
+                </view>
+                <textarea wx:else class="name-textarea" value="{{item.name}}" disabled auto-height />
+              </view>
+            </view>
+
+            <!-- IMEI行：当商品名包含moto时显示 -->
+            <view class="goods-row row-imei" wx:if="{{item.showImei && canEdit}}">
+              <!-- IMEI1 -->
+              <view class="goods-field imei-field with-scan">
+                <text class="field-label-small">IMEI1</text>
+                <view class="code-input-with-scan">
+                  <input class="code-input" type="text" placeholder="请输入IMEI1" value="{{item.imei1}}" bindinput="onGoodsInput" data-index="{{index}}" data-field="imei1" />
+                  <button class="btn-scan-code" type="default" bindtap="scanCode" data-index="{{index}}" data-field="imei1">扫码</button>
+                </view>
+              </view>
+
+              <!-- IMEI2 -->
+              <view class="goods-field imei-field with-scan">
+                <text class="field-label-small">IMEI2</text>
+                <view class="code-input-with-scan">
+                  <input class="code-input" type="text" placeholder="请输入IMEI2" value="{{item.imei2}}" bindinput="onGoodsInput" data-index="{{index}}" data-field="imei2" />
+                  <button class="btn-scan-code" type="default" bindtap="scanCode" data-index="{{index}}" data-field="imei2">扫码</button>
+                </view>
+              </view>
+            </view>
+
+            <!-- 只读模式显示IMEI -->
+            <view class="imei-readonly" wx:if="{{item.showImei && !canEdit && (item.imei1 || item.imei2)}}">
+              <textarea wx:if="{{item.imei1}}" class="imei-textarea" value="IMEI1: {{item.imei1}}" disabled auto-height />
+              <textarea wx:if="{{item.imei2}}" class="imei-textarea" value="IMEI2: {{item.imei2}}" disabled auto-height />
+            </view>
+
+            <!-- 第三行：单价和数量 -->
+            <view class="goods-row row-3">
+              <!-- 单价 -->
+              <view class="goods-field price-field">
+                <text class="field-label-small">单价</text>
+                <input wx:if="{{canEdit}}" class="input-number" type="digit" placeholder="0.00" value="{{item.price}}" bindinput="onGoodsInput" data-index="{{index}}" data-field="price" />
+                <textarea wx:else class="input-number-textarea" value="{{item.price}}" disabled auto-height />
+              </view>
+
+              <!-- 数量 -->
+              <view class="goods-field quantity-field">
+                <text class="field-label-small">数量</text>
+                <input wx:if="{{canEdit}}" class="input-number" type="digit" placeholder="1" value="{{item.quantity}}" bindinput="onGoodsInput" data-index="{{index}}" data-field="quantity" />
+                <textarea wx:else class="input-number-textarea" value="{{item.quantity}}" disabled auto-height />
+              </view>
+            </view>
+
+            <!-- 第四行：操作按钮 -->
+            <view class="goods-row row-4" wx:if="{{canEdit}}">
+              <view class="goods-field action-field">
+                <button class="btn-delete" type="warn" bindtap="deleteGoodsItem" data-index="{{index}}" wx:if="{{goodsList.length > 1}}">删除</button>
+              </view>
+            </view>
+          </view>
+        </block>
+      </view>
+    </view>
+  </view>
+
+  <!-- 金额汇总 -->
+  <view class="section-card">
+    <view class="section-header">
+      <text class="section-title">金额汇总</text>
+    </view>
+    <view class="section-content">
+      <view class="amount-detail">
+        <!-- 订单总计 -->
+        <view class="amount-item">
+          <text class="amount-label">订单总计</text>
+          <view class="amount-value">¥{{totalAmount}}</view>
+        </view>
+
+        <!-- 国补 -->
+        <view class="amount-item">
+          <text class="amount-label">国补</text>
+          <view class="subsidy-inputs" wx:if="{{canEdit}}">
+            <text class="amount-minus">-</text><input class="input-discount small" type="digit" placeholder="电脑" value="{{computerAmount}}" bindinput="onComputerSubsidyInput" />
+            <text class="amount-minus">-</text><input class="input-discount small" type="digit" placeholder="手机平板" value="{{mobileAmount}}" bindinput="onMobileSubsidyInput" />
+            <text class="amount-minus">-</text><input class="input-discount" type="digit" placeholder="0.00" value="{{nationalSubsidy}}" bindinput="onNationalSubsidyInput" />
+          </view>
+          <input wx:else class="input-discount disabled" type="digit" value="{{nationalSubsidy}}" disabled />
+        </view>
+
+        <!-- 教育补贴 -->
+        <view class="amount-item">
+          <text class="amount-label">教育补贴</text>
+          <view wx:if="{{canEdit}}" class="subsidy-inputs"><text class="amount-minus">-</text><input class="input-discount" type="digit" placeholder="0.00" value="{{educationSubsidy}}" bindinput="onEducationSubsidyInput" /></view>
+          <textarea wx:else class="input-discount-textarea" value="{{educationSubsidy}}" disabled auto-height />
+        </view>
+
+        <!-- 应收金额 -->
+        <view class="amount-item amount-total">
+          <text class="amount-label">应收金额</text>
+          <view class="amount-value highlight">¥{{actualAmount}}</view>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 收款信息 -->
+  <view class="section-card">
+    <view class="section-header">
+      <text class="section-title">收款信息</text>
+    </view>
+    <view class="section-content">
+      <view class="payment-list">
+        <block wx:for="{{paymentMethods}}" wx:key="index">
+          <view class="payment-item">
+            <view class="payment-info">
+              <view class="payment-type">
+                <text class="field-label-small">收款方式</text>
+                <picker disabled="true">
+                  <view class="picker-input-small disabled">
+                    {{item.type || '请选择收款方式'}}
+                  </view>
+                </picker>
+              </view>
+              <view class="payment-amount">
+                <text class="field-label-small">{{item.type === '定金抵扣' ? '抵扣金额' : (item.isPolicySubsidyReceivable ? '应收金额' : '实收金额')}}</text>
+                <input class="input-number-small disabled" type="digit" placeholder="0.00" value="{{item.amount}}" disabled="true" />
+              </view>
+            </view>
+          </view>
+        </block>
+      </view>
+
+      <!-- 收款汇总 -->
+      <view class="payment-summary">
+        <view class="summary-item-left">
+          <text class="summary-label">客户实收及抵扣汇总</text>
+          <text class="summary-value">¥{{paymentTotal}}</text>
+        </view>
+        <view class="summary-item-right">
+          <text class="summary-label">差额</text>
+          <text class="summary-value {{differenceAmount > 0 ? 'positive' : (differenceAmount < 0 ? 'negative' : '')}}">¥{{differenceAmount}}</text>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 辅助销售人 -->
+  <view class="section-card">
+    <view class="section-header">
+      <text class="section-title">辅助销售人</text>
+      <button class="btn-add" type="default" bindtap="addAuxiliarySales" wx:if="{{canEdit}}">添加辅助销售人</button>
+    </view>
+    <view class="section-content">
+      <view class="auxiliary-sales-list" wx:if="{{auxiliarySalesList.length > 0}}">
+        <block wx:for="{{auxiliarySalesList}}" wx:key="index">
+          <view class="auxiliary-sales-item">
+            <view class="auxiliary-sales-info">
+              <view class="auxiliary-sales-select">
+                <text class="field-label-small">销售人</text>
+                <picker bindchange="onAuxiliarySalesChange" data-index="{{index}}" value="{{item.optionIndex || 0}}" range="{{auxiliarySalesOptions}}" disabled="{{!canEdit}}">
+                  <view class="picker-input-small {{!canEdit ? 'disabled' : ''}}">
+                    {{item.selectedDisplay || item.selected}}
+                    <text class="picker-arrow" wx:if="{{canEdit}}">▼</text>
+                  </view>
+                </picker>
+              </view>
+              <view class="auxiliary-sales-amount">
+                <text class="field-label-small">金额分配</text>
+                <input class="input-discount-small {{!canEdit ? 'disabled' : ''}}" type="digit" placeholder="0.00" value="{{item.profitAmount}}" bindinput="onAuxiliarySalesAmountInput" data-index="{{index}}" disabled="{{!canEdit}}" />
+              </view>
+              <view class="auxiliary-sales-ratio" wx:if="{{!item.profitAmount}}">
+                <text class="field-label-small">分配方式</text>
+                <text class="ratio-text">利润平分</text>
+              </view>
+            </view>
+            <view class="auxiliary-sales-action" wx:if="{{canEdit}}">
+              <button class="btn-delete-small" type="warn" size="mini" bindtap="removeAuxiliarySales" data-index="{{index}}" wx:if="{{!item.isMainSales}}">删除</button>
+              <text class="main-sales-tag" wx:if="{{item.isMainSales}}">主销售</text>
+            </view>
+          </view>
+        </block>
+      </view>
+      <view class="empty-hint" wx:else>
+        <text class="hint-text">暂无辅助销售人</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 开票信息 -->
+  <view class="section-card">
+    <view class="section-header">
+      <text class="section-title">开票信息</text>
+      <text class="section-hint" wx:if="{{subsidyStatus === '国补'}}">（选择国补必须开普票）</text>
+    </view>
+    <view class="section-content">
+      <!-- 开票状态 -->
+      <view class="form-field">
+        <text class="field-label">开票状态</text>
+        <radio-group class="radio-group" bindchange="onInvoiceStatusChange" wx:if="{{canEdit || canEditSpecialFields}}">
+          <label class="radio-item {{subsidyStatus === '国补' && (item === '不开票' || item === '开专票') ? 'disabled' : ''}}" wx:for="{{invoiceOptions}}" wx:key="item">
+            <radio value="{{item}}" checked="{{item === invoiceStatus}}" disabled="{{subsidyStatus === '国补' && (item === '不开票' || item === '开专票')}}" />
+            <text>{{item}}</text>
+          </label>
+        </radio-group>
+        <view wx:else class="readonly-value">
+          <text class="status-text {{invoiceStatus === '不开票' ? 'status-no' : 'status-yes'}}">{{invoiceStatus}}</text>
+        </view>
+      </view>
+
+      <!-- 开票信息输入 -->
+      <view class="form-field" wx:if="{{(invoiceStatus === '开专票' || invoiceStatus === '开普票') && (canEdit || canEditSpecialFields)}}">
+        <text class="field-label">{{subsidyStatus === '国补' ? '云闪付订单号' : '开票信息'}}</text>
+        <textarea class="field-textarea" placeholder="{{subsidyStatus === '国补' ? '请输入云闪付订单的订单号' : '请输入开票信息，包括单位名称、税号等'}}" value="{{invoiceInfo}}" bindinput="onInvoiceInfoInput" maxlength="500" auto-height />
+      </view>
+
+      <!-- 只读显示 -->
+      <view class="form-field" wx:if="{{(invoiceStatus === '开专票' || invoiceStatus === '开普票') && !canEdit && !canEditSpecialFields && invoiceInfo}}">
+        <text class="field-label">{{subsidyStatus === '国补' ? '云闪付订单号' : '开票内容'}}</text>
+        <textarea class="readonly-textarea" value="{{invoiceInfo}}" disabled auto-height />
+      </view>
+
+      <!-- 开票金额 -->
+      <view class="form-field" wx:if="{{(invoiceStatus === '开专票' || invoiceStatus === '开普票') && (canEdit || canEditSpecialFields)}}">
+        <text class="field-label">开票金额</text>
+        <input class="field-input" type="digit" placeholder="{{subsidyStatus === '国补' ? '默认等于国补收款金额' : '请输入开票金额'}}" value="{{invoiceAmount}}" bindinput="onInvoiceAmountInput" />
+      </view>
+
+      <!-- 只读显示 -->
+      <view class="form-field" wx:if="{{(invoiceStatus === '开专票' || invoiceStatus === '开普票') && !canEdit && !canEditSpecialFields && invoiceAmount}}">
+        <text class="field-label">开票金额</text>
+        <textarea class="readonly-textarea-small" value="{{invoiceAmount}}" disabled auto-height />
+      </view>
+    </view>
+  </view>
+
+  <!-- 国补状态 -->
+  <view class="section-card">
+    <view class="section-header">
+      <text class="section-title">国补状态</text>
+      <text class="section-hint" wx:if="{{nationalSubsidy > 0}}">（国补金额不为0，已自动选择国补）</text>
+    </view>
+    <view class="section-content">
+      <radio-group class="radio-group" bindchange="onSubsidyStatusChange" wx:if="{{canEdit}}">
+        <label class="radio-item" wx:for="{{subsidyOptions}}" wx:key="item">
+          <radio value="{{item}}" checked="{{item === subsidyStatus}}" disabled="{{nationalSubsidy > 0}}" />
+          <text>{{item}}</text>
+        </label>
+      </radio-group>
+      <view wx:else class="readonly-value">
+        <text class="status-text {{subsidyStatus === '国补' ? 'status-yes' : 'status-no'}}">{{subsidyStatus}}</text>
+      </view>
+
+      <!-- 国补人信息（条件显示） -->
+      <view class="subsidy-person-section" wx:if="{{subsidyStatus === '国补'}}">
+        <view class="section-subheader">
+          <text class="section-subtitle">国补人信息</text>
+        </view>
+        <view class="form-grid">
+          <view class="form-field">
+            <text class="field-label required">国补人</text>
+            <input wx:if="{{canEdit || canEditSpecialFields}}" class="field-input" type="text" placeholder="请输入国补人姓名" value="{{subsidyPerson}}" bindinput="onSubsidyPersonInput" />
+            <textarea wx:else class="field-input-textarea" value="{{subsidyPerson}}" disabled auto-height />
+          </view>
+          <view class="form-field">
+            <text class="field-label required">国补人ID</text>
+            <input wx:if="{{canEdit || canEditSpecialFields}}" class="field-input" type="number" placeholder="请输入11位国补人ID" value="{{subsidyId}}" bindinput="onSubsidyIdInput" maxlength="11" />
+            <textarea wx:else class="field-input-textarea" value="{{subsidyId}}" disabled auto-height />
+          </view>
+        </view>
+      </view>
+
+      <!-- 国补照片上传（条件显示） -->
+      <view class="photo-section" wx:if="{{subsidyStatus === '国补' || hasSubsidyPhotos}}">
+        <view class="section-subheader">
+          <text class="section-subtitle">国补照片上传</text>
+        </view>
+        <view class="photo-upload-container multi-photo">
+          <!-- 7个固定位置的国补照片 -->
+          <block wx:for="{{subsidyPhotos}}" wx:key="index">
+            <view class="photo-item">
+              <!-- 已上传显示图片和删除按钮 -->
+              <block wx:if="{{item.url}}">
+                <image class="photo-preview" src="{{item.displayUrl || item.url}}" mode="aspectFill" bindtap="previewPhoto" data-url="{{item.displayUrl || item.url}}" />
+                <view class="photo-delete" bindtap="deleteSubsidyPhoto" data-index="{{index}}" wx:if="{{canEdit || canEditSpecialFields}}">×</view>
+              </block>
+              <!-- 未上传时显示上传框（编辑模式） -->
+              <block wx:elif="{{canEdit || canEditSpecialFields}}">
+                <view class="photo-upload-wrapper" bindtap="reuploadSubsidyPhoto" data-index="{{index}}">
+                  <view class="photo-upload-placeholder">
+                    <text class="photo-upload-icon">+</text>
+                    <text class="photo-upload-text">{{item.name}}</text>
+                  </view>
+                </view>
+              </block>
+              <!-- 未上传时显示占位（只读模式） -->
+              <block wx:else>
+                <view class="photo-upload-wrapper readonly">
+                  <view class="photo-upload-placeholder">
+                    <text class="photo-upload-text">{{item.name}}</text>
+                  </view>
+                </view>
+              </block>
+            </view>
+          </block>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 商品图片 -->
+  <view class="section-card">
+    <view class="section-header">
+      <text class="section-title">商品图片</text>
+      <text class="section-hint" wx:if="{{canEdit || canEditSpecialFields}}">（最多上传9张）</text>
+    </view>
+    <view class="section-content">
+      <view class="photo-upload-container multi-photo">
+        <!-- 已上传的图片列表 -->
+        <view class="photo-list" wx:if="{{productPhotoUrls.length > 0}}">
+          <block wx:for="{{productPhotoUrls}}" wx:key="index">
+            <view class="photo-item">
+              <image class="photo-preview" src="{{productPhotoDisplayUrls[index] || item}}" mode="aspectFill" bindtap="previewPhoto" data-url="{{productPhotoDisplayUrls[index] || item}}" />
+              <view class="photo-delete" bindtap="deleteProductPhoto" data-index="{{index}}" wx:if="{{canEdit || canEditSpecialFields}}">×</view>
+            </view>
+          </block>
+        </view>
+        <!-- 上传按钮 -->
+        <view class="photo-upload-wrapper {{productPhotoUrls.length > 0 ? 'small' : ''}}" bindtap="uploadProductPhoto" wx:if="{{(canEdit || canEditSpecialFields) && productPhotoUrls.length < 9}}">
+          <view class="photo-upload-placeholder">
+            <text class="photo-upload-icon">+</text>
+            <text class="photo-upload-text">{{productPhotoUrls.length > 0 ? '继续添加' : '点击上传照片'}}</text>
+          </view>
+        </view>
+      </view>
+      <text class="photo-hint" wx:if="{{productPhotoUrls.length === 0 && !canEdit && !canEditSpecialFields}}">暂无商品图片</text>
+      <text class="photo-hint" wx:else>请上传商品图片，如有SN码需将SN码拍清楚</text>
+    </view>
+  </view>
+
+  <!-- 教育补贴图片 -->
+  <view class="section-card" wx:if="{{educationSubsidy > 0 || educationSubsidyPhotoUrl || educationSubsidyCouponCode}}">
+    <view class="section-header">
+      <text class="section-title">教育补贴核销凭证</text>
+    </view>
+    <view class="section-content">
+      <view class="photo-upload-container education-photo-actions">
+        <block wx:if="{{educationSubsidyPhotoUrl}}">
+          <view class="photo-item">
+            <image class="photo-preview" src="{{educationSubsidyPhotoDisplayUrl || educationSubsidyPhotoUrl}}" mode="aspectFill" bindtap="previewPhoto" data-url="{{educationSubsidyPhotoDisplayUrl || educationSubsidyPhotoUrl}}" />
+            <view class="photo-delete" bindtap="deleteEducationSubsidyPhoto" wx:if="{{canEdit || canEditSpecialFields}}">×</view>
+          </view>
+          <button wx:if="{{canEdit || canEditSpecialFields}}" class="btn-scan-coupon" size="mini" bindtap="scanEducationSubsidyCoupon">扫码</button>
+        </block>
+        <block wx:elif="{{canEdit || canEditSpecialFields}}">
+          <view class="photo-upload-wrapper" bindtap="uploadEducationSubsidyPhoto">
+            <view class="photo-upload-placeholder">
+              <text class="photo-upload-icon">+</text>
+              <text class="photo-upload-text">点击上传</text>
+            </view>
+          </view>
+          <button class="btn-scan-coupon" size="mini" bindtap="scanEducationSubsidyCoupon">扫码</button>
+        </block>
+        <view wx:else class="photo-upload-wrapper readonly">
+          <view class="photo-upload-placeholder">
+            <text class="photo-upload-text">暂无核销凭证</text>
+          </view>
+        </view>
+      </view>
+      <view class="form-field coupon-field" wx:if="{{canEdit || canEditSpecialFields || educationSubsidyCouponCode}}">
+        <text class="field-label">券码</text>
+        <input wx:if="{{canEdit || canEditSpecialFields}}" class="field-input" value="{{educationSubsidyCouponCode}}" placeholder="可扫码获取，也可手动修改" bindinput="onEducationSubsidyCouponInput" />
+        <textarea wx:else class="field-input-textarea" value="{{educationSubsidyCouponCode}}" disabled auto-height />
+      </view>
+      <text class="photo-hint">已核销成功的教育补贴图片</text>
+    </view>
+  </view>
+
+  <!-- 补录记录 -->
+  <view class="section-card" wx:if="{{supplements && supplements.length > 0}}">
+    <view class="section-header">
+      <text class="section-title">金额补录记录</text>
+    </view>
+    <view class="section-content">
+      <view class="supplement-list">
+        <block wx:for="{{supplements}}" wx:key="index">
+          <view class="supplement-item">
+            <view class="supplement-main">
+              <text class="supplement-name">{{item.itemName}}</text>
+              <text class="supplement-amount">¥{{item.amount}}</text>
+              <view class="supplement-delete" bindtap="deleteSupplement" data-index="{{index}}" wx:if="{{canEdit}}">
+                <text class="delete-icon">×</text>
+              </view>
+            </view>
+            <view class="supplement-content-text" wx:if="{{item.content}}">
+              <textarea class="supplement-content-textarea" value="{{item.content}}" disabled auto-height />
+            </view>
+            <view class="supplement-meta">
+              <textarea class="supplement-meta-textarea" value="补录人: {{item.createUser}}  {{item.createDate}}" disabled auto-height />
+            </view>
+            <view class="supplement-photo" wx:if="{{item.proofPhotoUrl}}" bindtap="previewPhoto" data-url="{{item.proofPhotoUrl}}">
+              <image class="supplement-photo-img" src="{{item.proofPhotoUrl}}" mode="aspectFill" />
+            </view>
+          </view>
+        </block>
+      </view>
+      <view class="supplement-total" wx:if="{{supplementTotal > 0}}">
+        <text>补录合计: ¥{{supplementTotal}}</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 订单归档 -->
+  <view class="section-card" wx:if="{{order.status === '未归档' && canOperate}}">
+    <view class="section-header">
+      <text class="section-title">订单归档</text>
+    </view>
+    <view class="section-content">
+      <view class="archive-section">
+        <view class="archive-info">
+          <text class="archive-title">归档此订单</text>
+          <text class="archive-desc">归档后订单将变为只读，不可修改</text>
+        </view>
+        <switch class="archive-switch" checked="{{isArchived}}" bindchange="onArchiveChange"></switch>
+      </view>
+    </view>
+  </view>
+
+  <!-- 底部操作栏 -->
+  <view class="action-bar">
+    <button class="btn btn-secondary" type="default" bindtap="printOrder">
+      <text class="btn-icon">🖨️</text>
+      <text>打印</text>
+    </button>
+    <button class="btn btn-secondary" type="default" bindtap="navigateBack">
+      <text>返回</text>
+    </button>
+    <button class="btn btn-primary {{isSaving ? 'loading' : ''}}" type="primary" bindtap="saveOrder" wx:if="{{canEdit || canEditSpecialFields}}" disabled="{{isSaving}}">
+      <text wx:if="{{!isSaving}}">保存修改</text>
+      <text wx:else>保存中...</text>
+    </button>
+  </view>
+
+  <!-- 归档确认弹窗 -->
+  <view class="modal" wx:if="{{showArchiveModal}}">
+    <view class="modal-mask" bindtap="closeArchiveModal"></view>
+    <view class="modal-content">
+      <view class="modal-header">
+        <text class="modal-title">确认归档</text>
+        <text class="modal-close" bindtap="closeArchiveModal">×</text>
+      </view>
+      <view class="modal-body">
+        <text class="modal-text" wx:if="{{archiveNeedsApproval}}">请注意，该单实际应收 ¥{{actualAmount}} 低于所有商品最低销售价合计 ¥{{minimumSalePriceTotal}}，归档时将触发审批流程，需店长或经销商老板账号审批。确定提交审批吗？</text>
+        <text class="modal-text" wx:else>确定要归档此订单吗？归档后不可撤销，订单将变为只读状态。</text>
+      </view>
+      <view class="modal-footer">
+        <button class="btn btn-secondary" type="default" bindtap="closeArchiveModal">取消</button>
+        <button class="btn btn-primary" type="primary" bindtap="confirmArchive">{{archiveNeedsApproval ? '提交审批' : '确认归档'}}</button>
+      </view>
+    </view>
+  </view>
+
+  <!-- 商品选择弹窗 -->
+  <view class="modal" wx:if="{{showGoodsSelectModal}}">
+    <view class="modal-mask" bindtap="closeGoodsSelectModal"></view>
+    <view class="modal-content goods-select-modal">
+      <view class="modal-header">
+        <text class="modal-title">选择商品</text>
+        <text class="modal-close" bindtap="closeGoodsSelectModal">×</text>
+      </view>
+      <view class="modal-body">
+        <scroll-view class="goods-select-list" scroll-y="true">
+          <block wx:for="{{goodsSelectList}}" wx:key="index">
+            <view class="goods-select-item" bindtap="selectGoods" data-index="{{index}}">
+              <text class="goods-select-name">{{item.name}}</text>
+              <text class="goods-select-pn">厂商PN: {{item.pnCode || '无'}}</text>
+              <view class="goods-select-meta">
+                <text class="goods-select-price">结算价: ¥{{item.settlementPriceText}}</text>
+                <text class="goods-select-stock {{item.currentStoreStockQty > 0 ? 'has-stock' : ''}}">当前门店: {{item.currentStoreStockText}}</text>
+                <text class="goods-select-stock {{item.totalStockQty > 0 ? 'has-stock' : ''}}">全部门店: {{item.totalStockText}}</text>
+              </view>
+            </view>
+          </block>
+          <view class="goods-select-more" wx:if="{{goodsSelectHasMore}}" bindtap="loadMoreGoods">
+            {{goodsSelectLoading ? '正在加载...' : '加载更多'}}
+          </view>
+        </scroll-view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 部分退单选择 -->
+  <view class="modal" wx:if="{{showReturnModal}}">
+    <view class="modal-mask" bindtap="closeReturnModal" catchtouchmove="stopModalTouchMove"></view>
+    <view class="modal-content return-modal" catchtap="stopModalTap">
+      <view class="modal-header">
+        <text class="modal-title">选择退单商品</text>
+        <text class="modal-close" bindtap="closeReturnModal">×</text>
+      </view>
+      <scroll-view class="return-modal-scroll" scroll-y="true" enhanced="true" enable-flex="true">
+        <view class="modal-body">
+          <view class="return-total">客户实收退款：¥{{returnCustomerAmount}}</view>
+          <view class="return-breakdown" wx:if="{{returnPolicyAmount > 0}}">国补代收冲减：¥{{returnPolicyAmount}}（国补资格同步退回）</view>
+          <view class="return-breakdown" wx:if="{{returnNationalSubsidyAmount > 0}}">退回国补资格金额：¥{{returnNationalSubsidyAmount}}</view>
+          <view class="return-subsidy-choice" wx:if="{{returnGovSubsidyAvailable}}">
+            <text class="return-subsidy-title">已核销国补资格</text>
+            <text class="return-subsidy-hint">选择“是”会冲减国补政策应收，并将退回商品恢复为可国补；选择“否”则保留已核销状态。</text>
+            <radio-group bindchange="onReturnGovSubsidyChange">
+              <label class="return-subsidy-option"><radio value="yes" checked="{{returnGovSubsidy}}" />是，退回国补资格</label>
+              <label class="return-subsidy-option"><radio value="no" checked="{{!returnGovSubsidy}}" />否，保留已核销状态</label>
+            </radio-group>
+          </view>
+          <checkbox-group bindchange="onReturnItemChange">
+            <block wx:for="{{returnItems}}" wx:key="returnIndex">
+              <label class="return-item {{item.maxReturnQuantity <= 0 ? 'disabled' : ''}}">
+                <checkbox value="{{index}}" checked="{{item.selected}}" disabled="{{item.maxReturnQuantity <= 0}}" />
+                <view class="return-item-main">
+                  <text class="return-item-name">{{item.productName || item.name}}</text>
+                  <text class="return-item-meta">PN {{item.pnCode || '-'}} · 单价 ¥{{item.returnUnitPrice}}</text>
+                  <view class="return-quantity-row">
+                    <text>退回数量（最多 {{item.maxReturnQuantity}}）</text>
+                    <input class="return-quantity-input" type="number" value="{{item.returnQuantity}}" bindinput="onReturnQuantityInput" data-index="{{index}}" disabled="{{item.maxReturnQuantity <= 0}}" />
+                  </view>
+                </view>
+              </label>
+            </block>
+          </checkbox-group>
+          <view class="return-total">预计退款：¥{{returnAmount}}</view>
+          <input class="field-input" value="{{returnReason}}" bindinput="onReturnReasonInput" placeholder="请输入退单原因" />
+        </view>
+      </scroll-view>
+      <view class="modal-footer">
+        <button class="btn btn-secondary" type="default" bindtap="closeReturnModal">取消</button>
+        <button class="btn btn-primary" type="primary" bindtap="submitPartialReturn" loading="{{returnSubmitting}}">提交申请</button>
+      </view>
+    </view>
+  </view>
+</view>

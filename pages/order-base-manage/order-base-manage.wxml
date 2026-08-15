@@ -1,0 +1,71 @@
+<view class="container">
+  <view class="header">
+    <text class="title">订单基础管理</text>
+  </view>
+  
+  <!-- 客户来源管理 -->
+  <view class="manage-section">
+    <view class="section-header">
+      <text class="section-title">客户来源管理</text>
+      <button class="btn-add" type="primary" bindtap="addCustomerSource">新增来源</button>
+    </view>
+    
+    <view class="list-container">
+      <block wx:if="customerSources && customerSources.length > 0">
+        <view class="list-item" wx:for="{{customerSources}}" wx:key="id" wx:for-item="item">
+          <text class="item-name">{{item.name}}</text>
+          <view class="item-actions">
+            <button class="btn-edit" type="default" size="mini" bindtap="editCustomerSource" data-item="{{item}}">编辑</button>
+            <button class="btn-delete" type="warn" size="mini" bindtap="deleteCustomerSource" data-id="{{item.id}}">删除</button>
+          </view>
+        </view>
+      </block>
+      <view class="empty-list" wx:else>
+        <text class="empty-text">暂无客户来源信息</text>
+      </view>
+    </view>
+  </view>
+  
+  <!-- 收款方式管理 -->
+  <view class="manage-section">
+    <view class="section-header">
+      <text class="section-title">收款方式管理</text>
+      <button class="btn-add" type="primary" bindtap="addPaymentMethod">新增方式</button>
+    </view>
+    
+    <view class="list-container">
+      <block wx:if="paymentMethods && paymentMethods.length > 0">
+        <view class="list-item" wx:for="{{paymentMethods}}" wx:key="id" wx:for-item="item">
+          <text class="item-name">{{item.name}}</text>
+          <view class="item-actions">
+            <button class="btn-edit" type="default" size="mini" bindtap="editPaymentMethod" data-item="{{item}}">编辑</button>
+            <button class="btn-delete" type="warn" size="mini" bindtap="deletePaymentMethod" data-id="{{item.id}}">删除</button>
+          </view>
+        </view>
+      </block>
+      <view class="empty-list" wx:else>
+        <text class="empty-text">暂无收款方式信息</text>
+      </view>
+    </view>
+  </view>
+  
+  <!-- 编辑弹窗 -->
+  <view class="modal" wx:if="showEditModal">
+    <view class="modal-content">
+      <view class="modal-header">
+        <text class="modal-title">{{editingType === 'customerSource' ? (editingItem ? '编辑客户来源' : '新增客户来源') : (editingItem ? '编辑收款方式' : '新增收款方式')}}</text>
+        <text class="modal-close" bindtap="closeEditModal">×</text>
+      </view>
+      <view class="modal-body">
+        <view class="form-item">
+          <text class="form-label">名称</text>
+          <input class="form-input" type="text" placeholder="请输入名称" value="{{editName}}" bindinput="onEditNameInput" />
+        </view>
+        <view class="form-actions">
+          <button class="btn btn-secondary" type="default" bindtap="closeEditModal">取消</button>
+          <button class="btn btn-primary" type="primary" bindtap="saveEdit">保存</button>
+        </view>
+      </view>
+    </view>
+  </view>
+</view>

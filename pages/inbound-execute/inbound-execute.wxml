@@ -1,0 +1,162 @@
+<view class="page">
+  <view class="loading-state" wx:if="{{loading}}">正在加载入库单详情...</view>
+
+  <block wx:elif="{{inbound}}">
+    <view class="summary-card">
+      <view class="summary-head">
+        <view>
+          <text class="summary-label">入库单号</text>
+          <text class="summary-no">{{inbound.inboundNo}}</text>
+        </view>
+        <text class="status-tag {{inbound.status}}">{{inbound.statusText}}</text>
+      </view>
+      <view class="summary-grid">
+        <view class="summary-item">
+          <text class="summary-label">入库门店</text>
+          <text class="summary-value">{{inbound.storeName || '-'}}</text>
+        </view>
+        <view class="summary-item">
+          <text class="summary-label">采购发起人</text>
+          <text class="summary-value">{{inbound.purchaseInitiatorName || '-'}}</text>
+        </view>
+        <view class="summary-item">
+          <text class="summary-label">来源单号</text>
+          <text class="summary-value">{{inbound.sourceNo || '-'}}</text>
+        </view>
+        <view class="summary-item">
+          <text class="summary-label">总数量</text>
+          <text class="summary-value">{{inbound.totalQuantity}} 件</text>
+        </view>
+        <view class="summary-item">
+          <text class="summary-label">总金额</text>
+          <text class="summary-value amount">¥{{inbound.amountText}}</text>
+        </view>
+        <view class="summary-item wide">
+          <text class="summary-label">创建时间</text>
+          <text class="summary-value">{{inbound.createTimeText}}</text>
+        </view>
+        <view class="summary-item" wx:if="{{!editable}}">
+          <text class="summary-label">入库人</text>
+          <text class="summary-value">{{inbound.receiveUser || inbound.createUser || '-'}}</text>
+        </view>
+        <view class="summary-item wide" wx:if="{{!editable}}">
+          <text class="summary-label">入库时间</text>
+          <text class="summary-value">{{inbound.receiveTimeText || inbound.updateTimeText || '-'}}</text>
+        </view>
+      </view>
+    </view>
+
+    <view wx:if="{{!editable}}" class="readonly-tip">该入库单已处理，以下为单据商品明细。</view>
+    <view wx:else class="edit-tip">货物类型已在采购申请中确定；入库时只需选择商品实际存放的门店库位。未到货商品可暂不选择。</view>
+
+    <view class="product-card" wx:for="{{products}}" wx:key="groupKey" wx:for-item="product" wx:for-index="productIndex">
+      <view class="product-head">
+        <view class="product-title-wrap">
+          <text class="product-index">{{productIndex + 1}}</text>
+          <text class="product-name">{{product.productName}}</text>
+        </view>
+        <view>
+          <text class="type-tag">{{product.needSn ? 'SN 管理' : '无 SN'}}</text>
+          <text class="quantity-tag">待入库 {{product.quantity}}</text>
+        </view>
+        <button wx:if="{{editable}}" class="receive-toggle {{product.receiveEnabled ? 'selected' : ''}}" data-product-index="{{productIndex}}" bindtap="toggleProduct">{{product.receiveEnabled ? '本次入库' : '暂不入库'}}</button>
+      </view>
+
+      <view class="field-block" wx:if="{{editable}}">
+        <text class="field-label">厂商编码 PN</text>
+        <view class="pn-row">
+          <input class="text-input" value="{{product.pnCode}}" data-product-index="{{productIndex}}" bindinput="onPnInput" placeholder="选择或输入厂商编码" />
+          <picker wx:if="{{product.pns.length > 0}}" class="pn-picker" range="{{product.pns}}" range-key="pnCode" data-product-index="{{productIndex}}" bindchange="onPnPickerChange">
+            <view class="choose-button">选择</view>
+          </picker>
+        </view>
+      </view>
+
+      <block wx:if="{{editable && product.needSn && product.receiveEnabled}}">
+        <view class="row-card" wx:for="{{product.snRows}}" wx:key="index" wx:for-item="row" wx:for-index="rowIndex">
+          <view class="row-title">
+            <text>第 {{rowIndex + 1}} 台</text>
+            <button class="defer-button" data-product-index="{{productIndex}}" data-row-index="{{rowIndex}}" bindtap="deferSnRow">暂缓入库</button>
+          </view>
+          <view class="field-block compact">
+            <text class="field-label">SN 码</text>
+            <view class="pn-row">
+              <input class="text-input" value="{{row.snCode}}" data-product-index="{{productIndex}}" data-row-index="{{rowIndex}}" bindinput="onSnInput" placeholder="请输入或扫描 SN" />
+              <button class="scan-button" data-product-index="{{productIndex}}" data-row-index="{{rowIndex}}" bindtap="scanSn">扫码</button>
+            </view>
+          </view>
+          <view class="field-block compact">
+            <text class="field-label">入库库位</text>
+            <picker class="inventory-picker" range="{{locations}}" range-key="name" value="{{row.locationIndex < 0 ? 0 : row.locationIndex}}" data-product-index="{{productIndex}}" data-row-type="snRows" data-row-index="{{rowIndex}}" bindchange="onLocationChange">
+              <view class="picker-display">{{row.locationId ? locations[row.locationIndex].name : '请选择库位'}} <text>⌄</text></view>
+            </picker>
+          </view>
+          <view class="field-block compact">
+            <text class="field-label">备注</text>
+            <input class="text-input single" value="{{row.remark}}" data-product-index="{{productIndex}}" data-row-type="snRows" data-row-index="{{rowIndex}}" bindinput="onRemarkInput" placeholder="选填" />
+          </view>
+        </view>
+      </block>
+
+      <block wx:elif="{{editable && product.receiveEnabled}}">
+        <view class="row-card" wx:for="{{product.qtyRows}}" wx:key="index" wx:for-item="row" wx:for-index="rowIndex">
+          <view class="row-title">
+            <text>库存分配 {{rowIndex + 1}}</text>
+            <text wx:if="{{product.qtyRows.length > 1}}" class="delete-link" data-product-index="{{productIndex}}" data-row-index="{{rowIndex}}" bindtap="removeQtyRow">删除</text>
+          </view>
+          <view class="field-block compact">
+            <text class="field-label">入库库位</text>
+            <picker class="inventory-picker" range="{{locations}}" range-key="name" value="{{row.locationIndex < 0 ? 0 : row.locationIndex}}" data-product-index="{{productIndex}}" data-row-type="qtyRows" data-row-index="{{rowIndex}}" bindchange="onLocationChange">
+              <view class="picker-display">{{row.locationId ? locations[row.locationIndex].name : '请选择库位'}} <text>⌄</text></view>
+            </picker>
+          </view>
+          <view class="field-block compact">
+            <text class="field-label">入库数量</text>
+            <input class="text-input single" type="number" value="{{row.quantity}}" data-product-index="{{productIndex}}" data-row-index="{{rowIndex}}" bindinput="onQuantityInput" placeholder="请输入数量" />
+          </view>
+          <view class="field-block compact">
+            <text class="field-label">备注</text>
+            <input class="text-input single" value="{{row.remark}}" data-product-index="{{productIndex}}" data-row-type="qtyRows" data-row-index="{{rowIndex}}" bindinput="onRemarkInput" placeholder="选填" />
+          </view>
+        </view>
+        <view class="allocation-foot">
+          <text class="add-row" data-product-index="{{productIndex}}" bindtap="addQtyRow">+ 添加库位分配</text>
+          <text class="{{product.allocationMatched === false ? 'mismatch' : ''}}">
+            已分配 {{product.allocatedQuantity === undefined ? product.quantity : product.allocatedQuantity}} / {{product.quantity}}
+          </text>
+        </view>
+      </block>
+
+      <view wx:if="{{editable && !product.receiveEnabled}}" class="skip-tip">本次暂不入库，商品仍保留在待入库数量中。</view>
+
+      <view wx:elif="{{!editable}}" class="readonly-items">
+        <view class="readonly-row">
+          <text>PN</text>
+          <text>{{product.pnCode || '-'}}</text>
+        </view>
+        <view class="readonly-row">
+          <text>数量</text>
+          <text>{{product.quantity}}</text>
+        </view>
+        <view class="readonly-row" wx:if="{{product.needSn}}">
+          <text>SN</text>
+          <text class="readonly-sn">{{product.receivedSnCodes.length ? product.receivedSnCodes.join('、') : '-'}}</text>
+        </view>
+        <view class="readonly-row">
+          <text>入库人</text>
+          <text>{{product.receiveUser || inbound.receiveUser || inbound.createUser || '-'}}</text>
+        </view>
+        <view class="readonly-row">
+          <text>入库时间</text>
+          <text>{{product.receiveTimeText || inbound.receiveTimeText || inbound.updateTimeText || '-'}}</text>
+        </view>
+      </view>
+    </view>
+
+    <view wx:if="{{editable}}" class="bottom-space"></view>
+    <view wx:if="{{editable}}" class="bottom-actions">
+      <button class="draft-button" bindtap="saveDraft">保存草稿</button>
+      <button class="submit-button" loading="{{submitting}}" disabled="{{submitting}}" bindtap="submitInbound">确认入库</button>
+    </view>
+  </block>
+</view>

@@ -1,0 +1,274 @@
+<view class="container">
+  <!-- 页面标题 -->
+  <view class="header">
+    <text class="title">商场销量查询</text>
+    <view class="header-actions">
+      <button class="btn-export" type="default" bindtap="exportOrders">导出数据</button>
+      <button class="btn-tasks" type="default" bindtap="showMyExportTasks">我的任务</button>
+    </view>
+  </view>
+
+  <!-- 查询表单 -->
+  <view class="search-section">
+    <form class="search-form">
+      <!-- 第一行：订单编号、提交人 -->
+      <view class="search-row">
+        <view class="search-item">
+          <text class="search-label">订单编号</text>
+          <input class="search-input" type="text" placeholder="请输入订单编号" bindinput="onOrderNoInput" value="{{searchOrderNo}}" />
+        </view>
+        <view class="search-item">
+          <text class="search-label">提交人</text>
+          <picker mode="selector" bindchange="onSubmitterChange" range="{{submitterOptions}}" value="{{submitterIndex}}">
+            <view class="picker-input">
+              {{submitterOptions[submitterIndex] || '全部'}}
+            </view>
+          </picker>
+        </view>
+      </view>
+
+      <!-- 第二行：PN、SN -->
+      <view class="search-row">
+        <view class="search-item">
+          <text class="search-label">PN</text>
+          <input class="search-input" type="text" placeholder="请输入PN码查询" bindinput="onPnInput" value="{{searchPn}}" />
+        </view>
+        <view class="search-item">
+          <text class="search-label">SN</text>
+          <input class="search-input" type="text" placeholder="请输入SN码查询" bindinput="onSnInput" value="{{searchSn}}" />
+        </view>
+      </view>
+
+      <!-- 第三行：开票信息、归档状态 -->
+      <view class="search-row">
+        <view class="search-item">
+          <text class="search-label">开票信息</text>
+          <input class="search-input" type="text" placeholder="请输入国补人或开票信息" bindinput="onInvoiceInfoInput" value="{{searchInvoiceInfo}}" />
+        </view>
+        <view class="search-item">
+          <text class="search-label">归档状态</text>
+          <picker mode="selector" range="{{statusOptions}}" bindchange="onStatusChange" value="{{statusIndex}}">
+            <view class="picker-input">
+              {{statusOptions[statusIndex]}}
+            </view>
+          </picker>
+        </view>
+      </view>
+
+      <view class="search-row">
+        <view class="search-item">
+          <text class="search-label">资源类型</text>
+          <picker mode="selector" range="{{resourceTypeOptions}}" range-key="label" bindchange="onResourceTypeChange" value="{{resourceTypeIndex}}">
+            <view class="picker-input">{{resourceTypeOptions[resourceTypeIndex].label || resourceTypeOptions[resourceTypeIndex] || '全部'}}</view>
+          </picker>
+        </view>
+      </view>
+
+      <!-- 第四行：开始时间、结束时间 -->
+      <view class="search-row">
+        <view class="search-item">
+          <text class="search-label">开始时间</text>
+          <picker mode="date" bindchange="onStartDateChange" value="{{startDate}}" start="2020-01-01" end="{{currentDate}}" disabled="{{isTimeDisabled}}">
+            <view class="picker-input {{isTimeDisabled ? 'disabled' : ''}}">
+              {{startDate || '请选择开始日期'}}
+            </view>
+          </picker>
+        </view>
+        <view class="search-item">
+          <text class="search-label">结束时间</text>
+          <picker mode="date" bindchange="onEndDateChange" value="{{endDate}}" start="2020-01-01" end="{{currentDate}}" disabled="{{isTimeDisabled}}">
+            <view class="picker-input {{isTimeDisabled ? 'disabled' : ''}}">
+              {{endDate || '请选择结束日期'}}
+            </view>
+          </picker>
+        </view>
+      </view>
+
+      <view class="search-actions">
+        <button class="btn btn-primary" type="primary" bindtap="searchOrders">查询</button>
+        <button class="btn btn-all" type="default" bindtap="searchAllOrders">查询全部</button>
+        <button class="btn btn-secondary" type="default" bindtap="resetSearch">重置</button>
+      </view>
+    </form>
+  </view>
+
+  <!-- 订单列表 -->
+  <view class="order-list-section">
+    <view class="section-header">
+      <text class="section-title">商场销量列表</text>
+      <text class="section-count">{{filteredOrders.length}} 条记录</text>
+    </view>
+
+    <!-- 加载中提示 -->
+    <view class="loading-tip" wx:if="{{loading}}">
+      <text class="loading-text">加载中...</text>
+    </view>
+
+    <!-- 订单列表内容 -->
+    <view class="order-list">
+      <block wx:if="{{filteredOrders.length > 0}}">
+        <view class="order-item" wx:for="{{filteredOrders}}" wx:key="orderNo">
+          <view class="order-header">
+            <text class="order-no">{{item.orderNo}}</text>
+            <view class="order-status-group">
+              <text class="order-status" wx:if="{{item.status === '已归档'}}" style="background-color: var(--success-color);">已归档</text>
+              <text class="order-status" wx:elif="{{item.status === '已作废'}}" style="background-color: #FF4D4F;">已作废</text>
+              <text class="order-status" wx:else style="background-color: var(--warning-color);">未归档</text>
+              <text class="order-status report-status" wx:if="{{item.reportToMall && item.reportToMall.status === 'reported'}}">已上报商场</text>
+            </view>
+          </view>
+
+          <view class="order-info" bindtap="viewOrderDetail" data-orderno="{{item.orderNo}}">
+            <view class="info-item">
+              <text class="info-label">下单时间:</text>
+              <text class="info-value">{{item.createTimeFormat}}</text>
+            </view>
+            <view class="info-item">
+              <text class="info-label">提交人:</text>
+              <text class="info-value">{{item.createUser}}</text>
+            </view>
+            <view class="info-item">
+              <text class="info-label">商品数量:</text>
+              <text class="info-value">{{item.goods.length}} 件</text>
+            </view>
+            <!-- 商品信息 -->
+            <view class="info-item goods-info">
+              <text class="info-label">商品信息:</text>
+              <view class="goods-list">
+                <block wx:for="{{item.goods}}" wx:key="index" wx:if="{{index < 2}}">
+                  <view class="goods-item">
+                    <text class="goods-name">{{item.name}}: ¥{{item.price}} × {{item.quantity}}</text>
+                    <text class="goods-details">PN: {{item.pnCode || '无'}} | SN: {{item.snCode || '无'}}</text>
+                  </view>
+                </block>
+                <text class="goods-more" wx:if="{{item.goods.length > 2}}">...等{{item.goods.length}}件商品</text>
+              </view>
+            </view>
+
+            <!-- 应收金额和实付金额 -->
+            <view class="info-item amount-row">
+              <view class="amount-item">
+                <text class="info-label">应收金额:</text>
+                <text class="info-value amount-receivable">¥{{item.actualAmount}}</text>
+              </view>
+              <view class="amount-item">
+                <text class="info-label">实付金额:</text>
+                <text class="info-value amount-paid">¥{{item.paymentTotal}}</text>
+              </view>
+            </view>
+
+            <view class="info-item" wx:if="{{item.auxiliarySalesList && item.auxiliarySalesList.length > 0}}">
+              <text class="info-label">辅助销售人:</text>
+              <text class="info-value">{{item.auxiliarySalesList.length}} 人</text>
+            </view>
+          </view>
+
+          <view class="order-actions resource-actions">
+            <button class="action-btn resource-btn" bindtap="showAvailableResources" data-order="{{item}}">可用资源</button>
+          </view>
+        </view>
+      </block>
+
+      <!-- 空状态 -->
+      <view class="empty-state" wx:else>
+        <view class="empty-icon-placeholder">📋</view>
+        <text class="empty-text">暂无商场销量数据</text>
+      </view>
+    </view>
+
+    <!-- 分页信息 -->
+    <view class="pagination-info" wx:if="{{orders.length > 0}}">
+      <text class="pagination-text">共 {{total}} 条，已显示 {{orders.length}} 条</text>
+    </view>
+
+    <!-- 加载更多按钮 -->
+    <view class="load-more-section" wx:if="{{hasMore}}">
+      <button class="btn-load-more" type="default" bindtap="loadMoreOrders" disabled="{{loading}}">
+        {{loading ? '加载中...' : '加载更多'}}
+      </button>
+    </view>
+
+    <!-- 没有更多数据 -->
+    <view class="no-more" wx:if="{{!hasMore && orders.length > 0}}">
+      <text class="no-more-text">没有更多数据了</text>
+    </view>
+  </view>
+
+  <!-- 可用资源弹窗 -->
+  <view class="resource-modal" wx:if="{{showResourceModal}}">
+    <view class="resource-mask" bindtap="closeResourceModal"></view>
+    <view class="resource-content">
+      <view class="resource-header"><text class="resource-title">可用资源 · {{resourceModalOrder.orderNo}}</text><text class="resource-close" bindtap="closeResourceModal">×</text></view>
+      <view class="resource-body">
+        <view class="loading-tip" wx:if="{{resourceModalLoading}}"><text class="loading-text">正在加载资源...</text></view>
+        <view class="resource-empty" wx:elif="{{resourceRows.length === 0}}">暂无商品资源信息</view>
+        <block wx:else>
+          <view class="resource-product" wx:for="{{resourceRows}}" wx:key="index">
+            <view class="resource-product-title">{{item.productName}} × {{item.quantity}}</view>
+            <view class="resource-product-code" wx:if="{{item.pnCode || item.snCode}}">PN {{item.pnCode || '-'}} · SN {{item.snCode || '-'}}</view>
+            <view class="resource-label">可用资源</view>
+            <view class="resource-tags" wx:if="{{item.hasAvailable}}"><text class="resource-tag available" wx:for="{{item.availableResources}}" wx:key="*this">{{item}}</text></view>
+            <text class="resource-none" wx:else>暂无可用资源</text>
+            <view class="resource-unavailable" wx:if="{{item.unavailableResources.length}}">{{item.unavailableResources.join(' · ')}}</view>
+          </view>
+        </block>
+      </view>
+      <view class="resource-footer"><button class="btn btn-secondary" type="default" bindtap="closeResourceModal">关闭</button></view>
+    </view>
+  </view>
+
+  <!-- 我的导出任务弹窗 -->
+  <view class="export-tasks-modal-wrapper {{showExportTasksModal ? 'show' : ''}}" wx:if="{{showExportTasksModal}}">
+    <view class="export-tasks-mask" bindtap="closeExportTasksModal"></view>
+    <view class="export-tasks-content-wrapper">
+      <view class="export-tasks-header">
+        <text class="export-tasks-title">我的导出任务</text>
+        <text class="export-tasks-close" bindtap="closeExportTasksModal">×</text>
+      </view>
+
+      <view class="export-tasks-body">
+        <!-- 加载中 -->
+        <view class="loading-tip" wx:if="{{loadingExportTasks}}">
+          <text class="loading-text">加载中...</text>
+        </view>
+
+        <!-- 空状态 -->
+        <view class="empty-tip" wx:elif="{{exportTasks.length === 0}}">
+          <text class="empty-text">暂无导出任务</text>
+        </view>
+
+        <!-- 任务列表 -->
+        <scroll-view class="export-tasks-list" scroll-y wx:else>
+          <view class="export-task-item" wx:for="{{exportTasks}}" wx:key="_id">
+            <view class="task-header">
+              <text class="task-name">{{item.fileName || '处理中...'}}</text>
+              <text class="task-status {{item.status}}">{{item.statusText}}</text>
+            </view>
+            <view class="task-info">
+              <text class="task-time">{{item.createTimeFormat}}</text>
+              <text class="task-count" wx:if="{{item.totalOrders}}">{{item.totalOrders}}条订单</text>
+            </view>
+            <view class="task-progress" wx:if="{{item.status === 'processing'}}">
+              <view class="progress-bar">
+                <view class="progress-fill" style="width: {{item.progress}}%"></view>
+              </view>
+              <text class="progress-text">{{item.progress}}%</text>
+            </view>
+            <view class="task-error" wx:if="{{item.status === 'failed' && item.errorMessage}}">
+              <text class="error-text">{{item.errorMessage}}</text>
+            </view>
+            <view class="task-actions" wx:if="{{item.status === 'completed'}}">
+              <button class="btn-download" type="primary" size="mini" bindtap="downloadExportFile" data-url="{{item.downloadUrl}}" data-filename="{{item.fileName}}">下载文件</button>
+            </view>
+          </view>
+        </scroll-view>
+      </view>
+
+      <view class="export-tasks-footer">
+        <button class="btn btn-secondary" type="default" bindtap="closeExportTasksModal">关闭</button>
+        <button class="btn btn-primary" type="primary" bindtap="refreshExportTasks">刷新</button>
+      </view>
+    </view>
+  </view>
+
+</view>

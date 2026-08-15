@@ -1,0 +1,59 @@
+<!-- 门店新增页面 -->
+<view class="container">
+  <view class="header">
+    <text class="title">新增门店信息</text>
+  </view>
+  
+  <form class="store-form" bindsubmit="onSubmit">
+    <!-- 门店基础信息 -->
+    <view class="form-section">
+      <text class="section-title">门店基础信息</text>
+      
+      <view class="form-item">
+        <text class="form-label">门店名称</text>
+        <input class="form-input" type="text" placeholder="请输入门店名称" bindinput="onStoreNameInput" value="{{storeInfo.name}}" />
+      </view>
+      
+      <view class="form-item">
+        <text class="form-label">门店地址</text>
+        <textarea class="form-textarea" placeholder="请输入门店地址" bindinput="onStoreAddressInput" value="{{storeInfo.address}}" />
+      </view>
+      
+      <view class="form-item">
+        <text class="form-label">登录ID</text>
+        <input class="form-input" type="number" placeholder="请输入登录ID" bindinput="onStorePhoneInput" value="{{storeInfo.phone}}" />
+      </view>
+    </view>
+    
+    <!-- 门店员工信息 -->
+    <view class="form-section">
+      <text class="section-title">门店员工信息</text>
+      
+      <!-- 店长信息 -->
+      <text class="sub-title">店长信息</text>
+      <view class="staff-item">
+        <input class="form-input" type="text" placeholder="店长姓名" bindinput="onManagerNameInput" value="{{storeInfo.managerName}}" />
+        <input class="form-input" type="number" placeholder="店长登录ID" bindinput="onManagerPhoneInput" value="{{storeInfo.managerPhone}}" />
+      </view>
+      
+      <!-- 店员信息列表 -->
+      <view class="staff-list">
+        <text class="sub-title">店员信息</text>
+        <block wx:for="{{storeInfo.staffList}}" wx:key="index" wx:for-index="index">
+          <view class="staff-item">
+            <input class="form-input" type="text" placeholder="店员姓名" bindinput="onStaffNameInput" data-index="{{index}}" value="{{item.name}}" />
+            <input class="form-input" type="number" placeholder="店员登录ID" bindinput="onStaffPhoneInput" data-index="{{index}}" value="{{item.phone}}" />
+            <button class="btn-delete" type="warn" size="mini" bindtap="deleteStaff" data-index="{{index}}" wx:if="{{storeInfo.staffList.length > 1}}">删除</button>
+          </view>
+        </block>
+        <button class="btn-add" type="default" bindtap="addStaff">添加店员</button>
+      </view>
+    </view>
+    
+    <!-- 表单操作 -->
+    <view class="form-actions">
+      <button class="btn btn-secondary" type="default" bindtap="cancelEdit">取消</button>
+      <button class="btn btn-primary" type="primary" formType="submit">保存</button>
+    </view>
+  </form>
+</view>

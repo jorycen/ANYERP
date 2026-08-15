@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "openapi": [
+      "cos:PostObject",
+      "cos:GetObject"
+    ]
+  },
+  "timeout": 60,
+  "memorySize": 512
+}

@@ -1,0 +1,242 @@
+.container {
+  padding: 20rpx;
+  background-color: var(--background-color);
+  min-height: 100vh;
+}
+
+.header {
+  margin-bottom: 30rpx;
+  text-align: center;
+}
+
+.title {
+  font-size: 40rpx;
+  font-weight: bold;
+  color: var(--primary-color);
+}
+
+/* 列表样式 */
+.item-list {
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+.item {
+  background-color: #fff;
+  border-radius: 12rpx;
+  padding: 30rpx;
+  box-shadow: 0 2rpx 12rpx rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+.item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 10rpx;
+}
+
+.item-name {
+  font-size: 32rpx;
+  font-weight: bold;
+  color: var(--text-color);
+}
+
+.item-code {
+  font-size: 26rpx;
+  color: var(--light-text);
+}
+
+.item-sort {
+  font-size: 24rpx;
+  color: #999;
+}
+
+.item-type {
+  font-size: 24rpx;
+  font-weight: bold;
+  padding: 4rpx 12rpx;
+  border-radius: 6rpx;
+  display: inline-block;
+  margin-top: 10rpx;
+}
+
+.type-increase {
+  color: #ff4d4f;
+  background-color: #fff1f0;
+  border: 1rpx solid #ffa39e;
+}
+
+.type-decrease {
+  color: #52c41a;
+  background-color: #f6ffed;
+  border: 1rpx solid #b7eb8f;
+}
+
+.item-status {
+  display: flex;
+  align-items: center;
+  gap: 15rpx;
+}
+
+.item-actions {
+  display: flex;
+  gap: 20rpx;
+  margin-top: 10rpx;
+}
+
+.btn-edit {
+  background-color: #1890ff;
+  color: #fff;
+}
+
+.btn-delete {
+  background-color: #ff4d4f;
+  color: #fff;
+}
+
+/* 空状态 */
+.empty-state {
+  text-align: center;
+  padding: 100rpx 0;
+}
+
+.empty-text {
+  font-size: 30rpx;
+  color: var(--light-text);
+}
+
+/* 添加按钮 */
+.add-section {
+  margin-top: 40rpx;
+  padding: 0 20rpx;
+}
+
+.btn {
+  width: 100%;
+  padding: 25rpx 0;
+  font-size: 32rpx;
+  border-radius: 8rpx;
+  border: none;
+}
+
+.btn-primary {
+  background-color: var(--primary-color);
+  color: #fff;
+}
+
+/* 弹窗样式 */
+.modal-mask {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+}
+
+.modal-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 80%;
+  background-color: #fff;
+  border-radius: 16rpx;
+  z-index: 1001;
+  overflow: hidden;
+}
+
+.modal-header {
+  padding: 30rpx;
+  border-bottom: 2rpx solid var(--border-color);
+  text-align: center;
+}
+
+.modal-title {
+  font-size: 36rpx;
+  font-weight: bold;
+  color: var(--text-color);
+}
+
+.modal-body {
+  padding: 30rpx;
+}
+
+.form-item {
+  margin-bottom: 30rpx;
+}
+
+.form-label {
+  display: block;
+  font-size: 28rpx;
+  color: var(--text-color);
+  margin-bottom: 15rpx;
+}
+
+.form-input {
+  width: 100%;
+  height: 80rpx;
+  padding: 0 20rpx;
+  border: 2rpx solid var(--border-color);
+  border-radius: 8rpx;
+  font-size: 28rpx;
+  box-sizing: border-box;
+}
+
+.modal-footer {
+  display: flex;
+  padding: 20rpx 30rpx 30rpx;
+  gap: 20rpx;
+}
+
+.modal-btn {
+  flex: 1;
+  padding: 20rpx 0;
+  font-size: 30rpx;
+  border-radius: 8rpx;
+  border: none;
+}
+
+.modal-btn.cancel {
+  background-color: #f5f5f5;
+  color: var(--text-color);
+}
+
+.modal-btn.submit {
+  background-color: #07c160;
+  color: #fff;
+}
+
+/* 金额类型单选样式 */
+.type-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+.type-radio-item {
+  display: flex;
+  align-items: center;
+  gap: 15rpx;
+  padding: 15rpx;
+  border-radius: 8rpx;
+  background-color: #f5f5f5;
+}
+
+.radio-text {
+  font-size: 28rpx;
+}
+
+.radio-text.increase {
+  color: #ff4d4f;
+  font-weight: bold;
+}
+
+.radio-text.decrease {
+  color: #52c41a;
+  font-weight: bold;
+}

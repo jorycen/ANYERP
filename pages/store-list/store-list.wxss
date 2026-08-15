@@ -1,0 +1,126 @@
+/* 门店列表页面样式 */
+.container {
+  padding: 20rpx;
+  background-color: #f5f5f5;
+  min-height: 100vh;
+}
+
+/* 页面头部 */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20rpx;
+  padding: 20rpx;
+  background-color: white;
+  border-radius: 8rpx;
+  box-shadow: 0 2rpx 10rpx rgba(0, 0, 0, 0.1);
+}
+
+.title {
+  font-size: 36rpx;
+  font-weight: bold;
+  color: #333;
+}
+
+.btn-add {
+  font-size: 28rpx;
+  padding: 10rpx 20rpx;
+  margin: 0;
+}
+
+/* 门店列表 */
+.store-list {
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+/* 门店项 */
+.store-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 20rpx;
+  background-color: white;
+  border-radius: 8rpx;
+  box-shadow: 0 2rpx 10rpx rgba(0, 0, 0, 0.1);
+}
+
+.store-info {
+  flex: 1;
+  margin-right: 20rpx;
+}
+
+.store-name {
+  display: block;
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #333;
+  margin-bottom: 8rpx;
+}
+
+.store-address {
+  display: block;
+  font-size: 28rpx;
+  color: #666;
+  margin-bottom: 8rpx;
+  line-height: 1.4;
+}
+
+.store-phone {
+  display: block;
+  font-size: 26rpx;
+  color: #666;
+  margin-bottom: 8rpx;
+}
+
+.store-manager {
+  display: block;
+  font-size: 26rpx;
+  color: #666;
+  margin-bottom: 8rpx;
+}
+
+.store-staff {
+  display: block;
+  font-size: 26rpx;
+  color: #666;
+}
+
+/* 门店操作按钮 */
+.store-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10rpx;
+}
+
+.btn-edit, .btn-delete {
+  font-size: 24rpx;
+  padding: 8rpx 16rpx;
+  margin: 0;
+}
+
+/* 空列表样式 */
+.empty-list {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 100rpx 20rpx;
+  background-color: white;
+  border-radius: 8rpx;
+  box-shadow: 0 2rpx 10rpx rgba(0, 0, 0, 0.1);
+}
+
+.empty-text {
+  font-size: 28rpx;
+  color: #999;
+  margin-bottom: 30rpx;
+}
+
+.btn-add-first {
+  font-size: 28rpx;
+  padding: 15rpx 40rpx;
+  margin: 0;
+}

@@ -1,0 +1,313 @@
+.container {
+  padding: 20rpx;
+  background-color: #f5f5f5;
+  min-height: 100vh;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20rpx;
+  padding: 20rpx;
+  background-color: white;
+  border-radius: 10rpx;
+  box-shadow: 0 2rpx 10rpx rgba(0, 0, 0, 0.1);
+}
+
+.title {
+  font-size: 36rpx;
+  font-weight: bold;
+  color: #333;
+}
+
+.btn-back {
+  padding: 10rpx 20rpx;
+  font-size: 28rpx;
+}
+
+.ocr-section {
+  background-color: white;
+  border-radius: 10rpx;
+  padding: 20rpx;
+  box-shadow: 0 2rpx 10rpx rgba(0, 0, 0, 0.1);
+}
+
+.camera-container {
+  margin-bottom: 30rpx;
+  position: relative;
+}
+
+.scan-frame {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 500rpx;
+  height: 300rpx;
+  border: 4rpx solid #1AAD19;
+  border-radius: 10rpx;
+  box-shadow: 0 0 0 1000rpx rgba(0, 0, 0, 0.5);
+}
+
+.scan-line {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 4rpx;
+  background-color: #1AAD19;
+  animation: scan 2s infinite;
+}
+
+@keyframes scan {
+  0% { top: 0; }
+  100% { top: 100%; }
+}
+
+.camera-controls {
+  display: flex;
+  justify-content: center;
+  margin-top: 20rpx;
+}
+
+.btn-capture {
+  width: 200rpx;
+  height: 80rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #1AAD19;
+  color: white;
+  border-radius: 40rpx;
+  font-size: 32rpx;
+  box-shadow: 0 4rpx 12rpx rgba(26, 173, 25, 0.3);
+  margin-right: 20rpx;
+}
+
+.btn-manual {
+  width: 200rpx;
+  height: 80rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #FF9800;
+  color: white;
+  border-radius: 40rpx;
+  font-size: 32rpx;
+  box-shadow: 0 4rpx 12rpx rgba(255, 152, 0, 0.3);
+}
+
+/* 手动输入区域样式 */
+.manual-input-section {
+  padding: 20rpx;
+}
+
+.manual-input-header {
+  text-align: center;
+  margin-bottom: 30rpx;
+}
+
+.manual-input-title {
+  font-size: 36rpx;
+  font-weight: bold;
+  color: #333;
+}
+
+.manual-input-form {
+  background-color: #f9f9f9;
+  padding: 30rpx;
+  border-radius: 10rpx;
+  margin-bottom: 30rpx;
+}
+
+.input-item {
+  display: flex;
+  align-items: center;
+  margin-bottom: 25rpx;
+  background-color: white;
+  border-radius: 8rpx;
+  padding: 0 20rpx;
+  height: 80rpx;
+  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.05);
+}
+
+.input-item:last-child {
+  margin-bottom: 0;
+}
+
+.input-label {
+  font-size: 30rpx;
+  color: #666;
+  width: 120rpx;
+  flex-shrink: 0;
+}
+
+.input-field {
+  flex: 1;
+  font-size: 30rpx;
+  color: #333;
+  height: 100%;
+  padding: 0 20rpx;
+  box-sizing: border-box;
+}
+
+.manual-input-actions {
+  display: flex;
+  justify-content: space-around;
+}
+
+.btn-cancel {
+  width: 250rpx;
+  height: 80rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32rpx;
+  border-radius: 40rpx;
+  background-color: #999;
+  color: white;
+  box-shadow: 0 4rpx 12rpx rgba(153, 153, 153, 0.3);
+}
+
+.result-section {
+  background-color: #f9f9f9;
+  padding: 20rpx;
+  border-radius: 10rpx;
+  margin-bottom: 30rpx;
+}
+
+.result-title {
+  display: block;
+  font-size: 32rpx;
+  font-weight: bold;
+  margin-bottom: 20rpx;
+  color: #333;
+  text-align: center;
+}
+
+.result-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15rpx 0;
+  border-bottom: 1rpx solid #eee;
+}
+
+.result-item:last-child {
+  border-bottom: none;
+}
+
+.result-label {
+  font-size: 28rpx;
+  color: #666;
+}
+
+.result-value {
+  font-size: 28rpx;
+  color: #333;
+  font-weight: bold;
+  word-break: break-all;
+  text-align: right;
+  max-width: 60%;
+}
+
+.result-actions {
+  display: flex;
+  justify-content: space-around;
+  margin-top: 30rpx;
+}
+
+.btn-confirm,
+.btn-retake {
+  width: 250rpx;
+  height: 80rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32rpx;
+  border-radius: 40rpx;
+}
+
+.tips-section {
+  background-color: #f9f9f9;
+  padding: 20rpx;
+  border-radius: 10rpx;
+}
+
+.tips-title {
+  display: block;
+  font-size: 32rpx;
+  font-weight: bold;
+  margin-bottom: 15rpx;
+  color: #333;
+  text-align: center;
+}
+
+.tips-content {
+  display: block;
+  font-size: 28rpx;
+  color: #666;
+  margin-bottom: 10rpx;
+  line-height: 1.5;
+}
+
+/* 图片选择区域样式 */
+.image-select-section {
+  margin-bottom: 30rpx;
+}
+
+.image-container {
+  position: relative;
+  width: 100%;
+  height: 60vh;
+  background-color: #f0f0f0;
+  border-radius: 10rpx;
+  overflow: hidden;
+  margin-bottom: 20rpx;
+}
+
+.selected-image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* OCR识别区域样式 */
+.ocr-regions {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.ocr-region {
+  position: absolute;
+  border: 3rpx solid #FF5722;
+  background-color: rgba(255, 87, 34, 0.1);
+  pointer-events: auto;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.ocr-region:active {
+  background-color: rgba(255, 87, 34, 0.2);
+}
+
+.region-text {
+  position: absolute;
+  top: 0;
+  left: 0;
+  font-size: 24rpx;
+  color: #333;
+  background-color: rgba(255, 255, 255, 0.8);
+  padding: 4rpx 8rpx;
+  border-radius: 4rpx;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  box-sizing: border-box;
+}

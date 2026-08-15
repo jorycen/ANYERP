@@ -1,0 +1,9 @@
+{
+  "name": "mysqlService",
+  "version": "1.1.1",
+  "description": "Shared MySQL Service for SDXCX ERP",
+  "main": "index.js",
+  "dependencies": {
+    "mysql2": "^3.9.2"
+  }
+}
