@@ -208,6 +208,8 @@ function normalizeProduct(item) {
     otherStoreStockInfo: item.other_store_stock_info || item.otherStoreStockInfo || [],
     sales7Qty: Number(item.sales_7_qty || item.sales7Qty || 0),
     sales30Qty: Number(item.sales_30_qty || item.sales30Qty || 0),
+    avgGrossProfit7: Number(item.avg_gross_profit_7 || item.avgGrossProfit7 || 0),
+    maxGrossProfit7: Number(item.max_gross_profit_7 || item.maxGrossProfit7 || 0),
     stockRank: item.stock_rank !== undefined ? Number(item.stock_rank) : 2
   };
 }
@@ -1563,7 +1565,18 @@ const api = {
   inventory: {
     list(params = {}) {
       return http.request('/inventory/list' + toQuery(Object.assign({ page: 1, pageSize: 100 }, params)))
-        .then(result => ({ code: 200, data: getListPayload(result).map(normalizeProduct), raw: result }));
+        .then(result => ({
+          code: 200,
+          data: getListPayload(result).map(normalizeProduct),
+          total: Number(result?.total || result?.pagination?.total || 0),
+          pagination: result?.pagination || {
+            total: Number(result?.total || 0),
+            page: Number(result?.page || params.page || 1),
+            pageSize: Number(result?.pageSize || params.pageSize || 100),
+            totalPages: Number(result?.totalPages || 0)
+          },
+          raw: result
+        }));
     },
     productOrders(productId) {
       if (!productId) return Promise.reject(new Error('商品ID不能为空'));

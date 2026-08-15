@@ -248,6 +248,20 @@
   padding: 60rpx 0 30rpx;
 }
 
+.model-continue-query {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18rpx;
+  padding: 24rpx 24rpx 40rpx;
+  color: #64748b;
+  font-size: 23rpx;
+}
+
+.model-query-complete {
+  color: #16a34a;
+}
+
 .category-section {
   padding: 20rpx 24rpx 0;
 }

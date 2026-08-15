@@ -47,13 +47,20 @@ Page({
     storeName: '',
     loading: false,
     refreshing: false,
+    hasQueried: false,
     isSearchMode: false,
-    resultTitle: '本店库存',
+    resultTitle: '请输入条件查询',
     groupedResults: [],
     productTypeOptions: PRODUCT_TYPE_OPTIONS,
     modelFilterOptions: MODEL_FILTER_OPTIONS,
     productType: '',
     modelFilter: '',
+    modelFilterPaged: false,
+    modelPage: 1,
+    modelTotal: 0,
+    modelHasMore: false,
+    modelLoadingMore: false,
+    modelRows: [],
     orderDialogVisible: false,
     orderDialogLoading: false,
     orderDialogProductName: '',
@@ -75,7 +82,6 @@ Page({
       : '全部已分配门店';
 
     this.setData({ storeId, storeName });
-    this.loadDefaultInventory();
   },
 
   onKeywordInput(e) {
@@ -91,16 +97,48 @@ Page({
     const nextProductType = this.data.productType === productType ? '' : productType;
     this.setData({
       productType: nextProductType,
-      modelFilter: nextProductType ? this.data.modelFilter : ''
-    }, () => this.queryInventoryList());
+      modelFilter: nextProductType ? this.data.modelFilter : '',
+      modelFilterPaged: nextProductType && this.isPagedModelFilter(this.data.modelFilter),
+      modelPage: 1,
+      modelTotal: 0,
+      modelHasMore: false,
+      modelRows: []
+    }, () => {
+      if (nextProductType) this.queryInventoryList();
+      else this.clearQueryResults();
+    });
   },
 
   onModelFilterTap(e) {
     if (!this.data.productType) return;
     const modelFilter = e.currentTarget.dataset.value || '';
+    const nextModelFilter = this.data.modelFilter === modelFilter ? '' : modelFilter;
     this.setData({
-      modelFilter: this.data.modelFilter === modelFilter ? '' : modelFilter
+      modelFilter: nextModelFilter,
+      modelFilterPaged: this.isPagedModelFilter(nextModelFilter),
+      modelPage: 1,
+      modelTotal: 0,
+      modelHasMore: false,
+      modelRows: []
     }, () => this.queryInventoryList());
+  },
+
+  isPagedModelFilter(modelFilter) {
+    return modelFilter === 'hot7' || modelFilter === 'highMargin7';
+  },
+
+  clearQueryResults() {
+    this.setData({
+      hasQueried: false,
+      loading: false,
+      groupedResults: [],
+      specialTableRows: [],
+      modelRows: [],
+      modelPage: 1,
+      modelTotal: 0,
+      modelHasMore: false,
+      resultTitle: '请输入条件查询'
+    });
   },
 
   viewProductOrders(e) {
@@ -231,11 +269,12 @@ Page({
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
   },
 
-  getInventoryListParams() {
+  getInventoryListParams(page) {
+    const pagedModelFilter = this.isPagedModelFilter(this.data.modelFilter);
     const params = {
       storeId: this.data.storeId,
-      page: 1,
-      pageSize: 500
+      page: pagedModelFilter ? (page || this.data.modelPage || 1) : 1,
+      pageSize: pagedModelFilter ? 10 : 500
     };
     const keyword = String(this.data.keyword || '').trim();
     if (keyword) params.keyword = keyword;
@@ -246,13 +285,16 @@ Page({
 
   queryInventoryList() {
     const keyword = String(this.data.keyword || '').trim();
+    const pagedModelFilter = this.isPagedModelFilter(this.data.modelFilter);
+    const page = pagedModelFilter ? (this.data.modelPage || 1) : 1;
     this.setData({
       loading: true,
+      modelLoadingMore: pagedModelFilter && page > 1,
       isSearchMode: Boolean(keyword),
       resultTitle: keyword ? '搜索结果' : '库存筛选'
     });
 
-    const params = this.getInventoryListParams();
+    const params = this.getInventoryListParams(page);
     const inventoryRequest = api.inventory.list(params);
     const specialRequest = this.data.modelFilter === 'special'
       ? api.inventory.getSnInventoryList({
@@ -274,8 +316,21 @@ Page({
         const specialTableRows = this.data.modelFilter === 'special'
           ? this.formatSpecialTableRows(specialRes.data || [])
           : [];
-        const rows = specialRows.length ? specialRows : inventoryRows;
-        this.setData({ specialTableRows });
+        const pageRows = specialRows.length ? specialRows : inventoryRows;
+        const rows = pagedModelFilter && page > 1
+          ? this.data.modelRows.concat(pageRows)
+          : pageRows;
+        const pagination = res.pagination || {};
+        const total = Number(pagination.total || res.total || rows.length);
+        const pageSize = Number(pagination.pageSize || params.pageSize || 10);
+        this.setData({
+          hasQueried: true,
+          specialTableRows,
+          modelRows: pagedModelFilter ? rows : [],
+          modelTotal: pagedModelFilter ? total : 0,
+          modelHasMore: pagedModelFilter ? page * pageSize < total : false,
+          modelPage: pagedModelFilter ? page : 1
+        });
         this.setGroupedResults(
           rows,
           `${keyword ? '搜索结果' : '库存筛选'} ${this.data.modelFilter === 'special' ? specialTableRows.length : rows.length} 项`,
@@ -287,8 +342,13 @@ Page({
         wx.showToast({ title: '加载库存筛选失败', icon: 'none' });
       })
       .finally(() => {
-        this.setData({ loading: false });
+        this.setData({ loading: false, modelLoadingMore: false });
       });
+  },
+
+  loadMoreModelResults() {
+    if (!this.isPagedModelFilter(this.data.modelFilter) || !this.data.modelHasMore || this.data.loading || this.data.modelLoadingMore) return;
+    this.setData({ modelPage: (this.data.modelPage || 1) + 1 }, () => this.queryInventoryList());
   },
 
   refreshDefaultList() {
@@ -302,26 +362,11 @@ Page({
   },
 
   loadDefaultInventory() {
-    const { storeId } = this.data;
     if (this.data.productType || this.data.modelFilter || String(this.data.keyword || '').trim()) {
       return this.queryInventoryList();
     }
-    this.setData({ loading: true, isSearchMode: false, resultTitle: '本店库存' });
-
-    return api.inventory.list({ storeId, page: 1, pageSize: 500 })
-      .then(res => {
-        const rows = (res.data || [])
-          .map(item => this.formatInventoryItem(item, false))
-          .filter(item => item.currentStoreStockQty > 0);
-        this.setGroupedResults(rows, `本店库存 ${rows.length} 项`);
-      })
-      .catch(err => {
-        console.error('加载库存失败:', err);
-        wx.showToast({ title: '加载库存失败', icon: 'none' });
-      })
-      .finally(() => {
-        this.setData({ loading: false });
-      });
+    this.clearQueryResults();
+    return Promise.resolve();
   },
 
   searchInventory() {
@@ -346,6 +391,7 @@ Page({
     return Promise.all(tasks)
       .then(results => {
         const rows = this.mergeInventoryResults([].concat(...results).map(item => this.formatInventoryItem(item, false)));
+        this.setData({ hasQueried: true });
         this.setGroupedResults(rows, `搜索结果 ${rows.length} 项`);
       })
       .catch(err => {
@@ -394,6 +440,8 @@ Page({
       salePriceText: salePrice.toFixed(2),
       sales7Qty: Number(item.sales7Qty || item.sales_7_qty || 0),
       sales30Qty: Number(item.sales30Qty || item.sales_30_qty || 0),
+      avgGrossProfit7Text: Number(item.avgGrossProfit7 || item.avg_gross_profit_7 || 0).toFixed(2),
+      maxGrossProfit7Text: Number(item.maxGrossProfit7 || item.max_gross_profit_7 || 0).toFixed(2),
       currentStoreName,
       currentStoreStockQty: currentQty,
       otherStoreStockQty: defaultCurrentOnly ? 0 : otherQty,

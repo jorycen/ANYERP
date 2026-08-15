@@ -97,7 +97,10 @@
       </view>
     </view>
 
-    <view class="empty" wx:if="{{!loading && modelFilter !== 'special' && groupedResults.length === 0}}">
+    <view class="empty" wx:if="{{!loading && !hasQueried}}">
+      <text>请输入信息后点击查询，或选择机型类型</text>
+    </view>
+    <view class="empty" wx:if="{{!loading && hasQueried && modelFilter !== 'special' && groupedResults.length === 0}}">
       <text>暂无库存数据</text>
     </view>
 
@@ -129,6 +132,8 @@
             <view class="sales-row">
               <text>近7天销售 {{goods.sales7Qty}}</text>
               <text>近30天销售 {{goods.sales30Qty}}</text>
+              <text wx:if="{{modelFilter === 'highMargin7'}}">近7天平均毛利 ¥{{goods.avgGrossProfit7Text}}</text>
+              <text wx:if="{{modelFilter === 'highMargin7'}}">近7天最高毛利 ¥{{goods.maxGrossProfit7Text}}</text>
             </view>
 
             <view class="stock-row">
@@ -173,6 +178,17 @@
         </view>
       </block>
     </block>
+
+    <view class="model-continue-query" wx:if="{{modelFilterPaged}}">
+      <text>已显示 {{modelRows.length}} / {{modelTotal}} 条</text>
+      <button
+        wx:if="{{modelHasMore}}"
+        size="mini"
+        loading="{{modelLoadingMore}}"
+        bindtap="loadMoreModelResults"
+      >继续查询</button>
+      <text wx:else class="model-query-complete">已全部显示</text>
+    </view>
 
     <view class="loading" wx:if="{{loading}}">
       <text>加载中...</text>
