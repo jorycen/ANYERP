@@ -48,7 +48,8 @@
             >{{ item.label }}</el-button>
           </div>
 
-          <el-table :data="summaryData" stripe border v-loading="summaryLoading">
+          <el-empty v-if="!summaryHasSearched" description="请输入商品信息后查询，或选择机型类型" />
+          <el-table v-else :data="summaryData" stripe border v-loading="summaryLoading">
             <el-table-column prop="category" label="类别" width="100" />
             <el-table-column prop="product_name" label="商品名称" min-width="140" />
             <el-table-column prop="spec" label="产品配置" width="130" />
@@ -62,7 +63,7 @@
                 </template>
                 <template v-else>
                   <div>平均毛利：¥{{ Number(row.avg_gross_profit_7 || 0).toFixed(2) }}</div>
-                  <div class="summary-metric-secondary">订单总毛利：¥{{ Number(row.gross_profit_7 || 0).toFixed(2) }}</div>
+                  <div class="summary-metric-secondary">最高毛利：¥{{ Number(row.max_gross_profit_7 || 0).toFixed(2) }}</div>
                 </template>
               </template>
             </el-table-column>
@@ -177,7 +178,7 @@
             </el-table-column>
           </el-table>
 
-          <div v-if="isSummaryQuickModelFilter" class="summary-continue-query">
+          <div v-if="summaryHasSearched && isSummaryQuickModelFilter" class="summary-continue-query">
             <span>已显示 {{ summaryData.length }} / {{ summaryTotal }} 条</span>
             <el-button
               v-if="summaryData.length < summaryTotal"
@@ -189,7 +190,7 @@
             <span v-else class="summary-complete-text">已全部显示</span>
           </div>
           <el-pagination
-            v-else
+            v-else-if="summaryHasSearched"
             v-model:current-page="summaryQuery.page"
             v-model:page-size="summaryQuery.pageSize"
             :total="summaryTotal"
@@ -1733,6 +1734,7 @@ const summaryData = ref([])
 const summaryTotal = ref(0)
 const summaryLoading = ref(false)
 const summaryExporting = ref(false)
+const summaryHasSearched = ref(false)
 const inventoryProductTypeOptions = [
   { label: '电脑', value: 'computer' },
   { label: '手机', value: 'phone' },
@@ -2108,7 +2110,7 @@ onMounted(async () => {
     await loadReturnList({ trace: String(route.query.trace || '') === '1' })
     await router.replace({ name: 'Inventory', query: {} })
   } else if (mainTab.value === 'summary') {
-    loadSummary()
+    // 库存汇总进入页面后等待用户输入条件或选择机型筛选。
   } else if (mainTab.value === 'inbound') {
     loadInboundList()
     loadReturnList()
@@ -2124,9 +2126,7 @@ watch(() => route.path, () => {
 
 const onTabChange = (tabName) => {
   if (tabName === 'summary') {
-    if (summaryData.value.length === 0) {
-      loadSummary()
-    }
+    // 库存汇总不自动查询，避免进入页面就加载全量库存。
   } else if (tabName === 'inbound') {
     if (inboundList.value.length === 0) {
       loadInboundList()
@@ -2221,6 +2221,7 @@ const getStockBreakdownRows = (row, field) => {
 }
 
 const loadSummary = async ({ append = false } = {}) => {
+  summaryHasSearched.value = true
   summaryLoading.value = true
   try {
     const res = await api.getInventoryList(summaryQuery)
