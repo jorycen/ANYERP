@@ -69,6 +69,16 @@ function assertStoreVisible(ctx, storeId) {
   }
 }
 
+function assertPurchaseAllocationStoresVisible(ctx, items, fallbackStoreId) {
+  assertStoreVisible(ctx, fallbackStoreId);
+  for (const item of items || []) {
+    const allocations = parsePurchaseAllocationArray(item.storeAllocations || item.store_allocations);
+    for (const allocation of allocations) {
+      assertStoreVisible(ctx, allocation.storeId || allocation.store_id || fallbackStoreId);
+    }
+  }
+}
+
 function allocateRebateByItems(items, amount) {
   const totalCents = Math.round(toMoney(amount) * 100);
   const allocations = new Array(items.length).fill(0);
@@ -733,7 +743,7 @@ async function createRequest(ctx) {
     );
   }
 
-  // 如果用户没有 storeId，尝试从门店分配中获取第一个，或者使用默认值
+  // 经销商账号不再有当前门店；门店必须由表单明确选择，或由门店分配明细提供。
   const targetStoreId = storeId || user.storeId;
   
   // 查找第一个有效的门店
@@ -747,19 +757,8 @@ async function createRequest(ctx) {
     }
   }
   
-  // 如果还是没有，尝试从用户的区域权限查找一个门店
-  if (!finalStoreId) {
-    const whereStore = {};
-    if (!(user.accessibleStoreIds || []).includes('*')) {
-      whereStore.store_id = user.accessibleStoreIds || [];
-    }
-    const stores = await Store.findAll({ where: whereStore, limit: 1 });
-    if (stores.length > 0) {
-      finalStoreId = stores[0].store_id;
-    } else {
-      finalStoreId = 'DEFAULT_STORE';
-    }
-  }
+  if (!finalStoreId) ctx.throw(400, '请选择门店或完善门店分配');
+  assertPurchaseAllocationStoresVisible(ctx, items, finalStoreId);
 
   try {
     await validatePurchaseAllocations(items, finalStoreId);
@@ -874,6 +873,7 @@ function canSubmitDraft(user, request) {
 async function validateDraftSubmission(request, ctx) {
   if (!request.supplier_id) ctx.throw(400, '提交采购申请前请选择供应商');
   if (!request.items || request.items.length === 0) ctx.throw(400, '请添加商品明细');
+  assertPurchaseAllocationStoresVisible(ctx, request.items, request.store_id);
   try {
     await validatePurchaseAllocations(request.items, request.store_id);
   } catch (error) {
@@ -1021,6 +1021,7 @@ async function updateRequestDraft(ctx) {
   for (const item of items) {
     if (!item.productId || Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
   }
+  assertPurchaseAllocationStoresVisible(ctx, items, request.store_id);
   try {
     await validatePurchaseAllocations(items, request.store_id);
   } catch (error) {

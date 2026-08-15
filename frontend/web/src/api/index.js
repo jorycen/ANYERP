@@ -502,6 +502,7 @@ export default {
   getCategoryFieldConfig: (categoryId) => api.get('/product/category/field-config', { params: { categoryId } }),
   // 商品价格
   getPriceList: (params) => api.get('/product/price/list', { params }),
+  exportCostPrices: (params) => exportExcel('/product/price/export', params, `商品成本导出_${new Date().toISOString().slice(0, 10)}.xlsx`),
   setPrice: (data) => api.post('/product/price/set', data),
   refreshCostPrice: (productId) => api.post(`/product/price/refresh-cost/${productId}`),
   batchRefreshCost: (data) => api.post('/product/price/batch-refresh-cost', data),

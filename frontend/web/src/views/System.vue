@@ -394,7 +394,7 @@
           <el-select v-model="userForm.distributorId" filterable style="width: 100%" :disabled="!isOperatorBoss" placeholder="请选择所属经销商">
             <el-option v-for="item in distributorOptions" :key="item.distributor_id" :label="item.name" :value="item.distributor_id" />
           </el-select>
-          <div class="form-tip">所属经销商用于组织归属；订单权限按分配门店，库存汇总权限按经销商账号的管理区域。</div>
+          <div class="form-tip">所属经销商用于组织归属；订单、库存和业务数据权限均按用户管理中分配的有效门店，区域仅用于辅助展示和校验。</div>
         </el-form-item>
         <el-form-item label="状态">
           <el-switch v-model="userForm.status" :active-value="1" :inactive-value="0" />

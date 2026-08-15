@@ -17,16 +17,20 @@ export function getRoleCodes() {
 }
 
 export function getStoreId() {
-  return getUserInfo().storeId || ''
+  const roles = getRoleCodes()
+  const storeOnlyRoles = new Set(['clerk', 'staff', 'manager', 'store_manager'])
+  return roles.length > 0 && roles.every(role => storeOnlyRoles.has(role))
+    ? (getUserInfo().storeId || '')
+    : ''
 }
 
 export function getStoreName() {
-  return getUserInfo().storeName || ''
+  return getStoreId() ? (getUserInfo().storeName || '') : ''
 }
 
 export function isStoreUser() {
   const roles = getRoleCodes()
-  return roles.some(role => role === 'clerk' || role === 'manager')
+  return roles.length > 0 && roles.every(role => ['clerk', 'staff', 'manager', 'store_manager'].includes(role))
 }
 
 export function isDistributorAccount() {

@@ -196,6 +196,7 @@
               批量刷新成本 ({{ selectedPriceRows.length }})
             </el-button>
             <el-button type="success" plain @click="handleCostImport">批量刷新成本导入</el-button>
+            <el-button type="success" plain @click="handleCostExport" :loading="costExportLoading">成本导出</el-button>
             <el-button type="warning" @click="handlePriceImport">批量导入定价</el-button>
           </div>
 
@@ -318,7 +319,7 @@
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="商品分类">
+            <el-form-item label="商品分类" required>
               <el-tree-select
                 v-model="productForm.categoryId"
                 :data="categoryTree"
@@ -338,7 +339,7 @@
           <el-divider content-position="left" style="margin: 0 0 10px 0;">{{ categoryFieldCatName }} 补充字段</el-divider>
           <el-row :gutter="16">
             <el-col :span="8" v-for="field in categoryExtraFields" :key="field.field_key">
-              <el-form-item :label="field.field_label" :required="field.required" label-width="75px">
+              <el-form-item :label="field.field_label" :required="Number(field.required) === 1" label-width="75px">
                 <el-select v-if="field.field_type === 'select'" v-model="productForm.attributes[field.field_key]"
                   :placeholder="field.placeholder || ('请选择' + field.field_label)" size="small" clearable style="width: 100%">
                   <el-option v-for="opt in field.options" :key="opt" :label="opt" :value="opt" />
@@ -352,6 +353,21 @@
 
         <el-form-item label="商品名称">
           <span style="font-weight: 600; font-size: 14px;">{{ computedProductName || '（请填写补充字段）' }}</span>
+        </el-form-item>
+        <el-form-item label="PN码" required>
+          <template v-if="productForm.productId">
+            <div style="width: 100%;">
+              <div v-for="(pn, index) in productForm.pns" :key="pn._key" style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+                <el-input v-model="pn.pnCode" placeholder="PN码" style="flex: 1" clearable />
+                <el-input v-model="pn.barcode" placeholder="PN条码（可选）" style="flex: 1" clearable />
+                <el-tag v-if="pn.isPrimary" type="success" size="small">主PN</el-tag>
+                <el-button v-else link type="primary" size="small" @click="setPrimaryPn(index)">设为主PN</el-button>
+                <el-button link type="danger" size="small" :disabled="productForm.pns.length <= 1" @click="removePnFromForm(index)">删除</el-button>
+              </div>
+              <el-button type="primary" link size="small" @click="addPnToForm">+ 添加PN</el-button>
+            </div>
+          </template>
+          <el-input v-else v-model="productForm.pnCode" placeholder="请输入厂商PN码" clearable />
         </el-form-item>
         <el-form-item label="厂商商品名称">
           <el-input v-model="productForm.config" placeholder="厂商商品名称" />
@@ -674,6 +690,8 @@ const productForm = reactive({
   productId: null,
   name: '',
   productCode: '',
+  pnCode: '',
+  pns: [],
   categoryId: '',
   config: '',
   brand: '',
@@ -696,9 +714,36 @@ const productForm = reactive({
   attributes: {}
 })
 
+let pnFormKeySeed = 0
+const createFormPn = (pn = {}) => ({
+  _key: pn._key || `pn-${Date.now()}-${pnFormKeySeed++}`,
+  pnId: pn.pnId || pn.pn_id || '',
+  pnCode: String(pn.pnCode ?? pn.pn_code ?? '').trim(),
+  barcode: String(pn.barcode || '').trim(),
+  isPrimary: pn.isPrimary === true || Number(pn.isPrimary ?? pn.is_primary) === 1
+})
+
+const addPnToForm = () => {
+  productForm.pns.push(createFormPn({ isPrimary: productForm.pns.length === 0 }))
+}
+
+const removePnFromForm = (index) => {
+  if (productForm.pns.length <= 1) return
+  const removed = productForm.pns.splice(index, 1)[0]
+  if (removed?.isPrimary && productForm.pns[0]) productForm.pns[0].isPrimary = true
+}
+
+const setPrimaryPn = (index) => {
+  productForm.pns.forEach((pn, pnIndex) => { pn.isPrimary = pnIndex === index })
+}
+
 const addFormBarcode = () => {
-  if (!formNewBarcode.value) { ElMessage.warning('请输入条码'); return }
-  productForm.barcodes.push({ type: formBarcodeType.value, code: formNewBarcode.value })
+  const code = String(formNewBarcode.value || '').trim()
+  if (!code) { ElMessage.warning('请输入条码'); return }
+  productForm.barcodes.push({ type: formBarcodeType.value, code })
+  if (formBarcodeType.value === 'manufacturer' && !productForm.pnCode) {
+    productForm.pnCode = code
+  }
   formNewBarcode.value = ''
 }
 const removeFormBarcode = (index) => { productForm.barcodes.splice(index, 1) }
@@ -812,6 +857,8 @@ const handleEdit = async (row) => {
   productForm.productId = row.product_id
   productForm.name = row.name
   productForm.productCode = row.product_code
+  productForm.pnCode = row.manufacturer_codes?.[0] || String(row.manufacturer_code || '').split(',')[0].trim()
+  productForm.pns = []
   productForm.categoryId = ''
   productForm.config = row.config || ''
   productForm.brand = row.brand || ''
@@ -835,6 +882,21 @@ const handleEdit = async (row) => {
   productForm.isFocusProduct = Boolean(row.is_focus_product)
   productForm.status = row.status || 1
   productForm.barcodes = (row.barcodes || []).map(b => ({ type: b.type, code: b.code }))
+
+  try {
+    const pnRes = await api.getPnList({ productId: row.product_id, page: 1, pageSize: 100 })
+    const pnRows = pnRes.code === 0 ? (pnRes.data?.list || []) : []
+    productForm.pns = pnRows
+      .sort((a, b) => Number(b.is_primary || 0) - Number(a.is_primary || 0))
+      .map(createFormPn)
+  } catch (err) {
+    // 编辑仍可打开；提交前使用列表页已有 PN 作为兼容兜底。
+  }
+  if (productForm.pns.length === 0) {
+    productForm.pns = (row.manufacturer_codes || [])
+      .map((code, index) => createFormPn({ pnCode: code, barcode: code, isPrimary: index === 0 }))
+  }
+
   categoryFields.value = []
   categoryFieldCatName.value = ''
 
@@ -946,6 +1008,8 @@ const resetForm = () => {
   productForm.productId = null
   productForm.name = ''
   productForm.productCode = ''
+  productForm.pnCode = ''
+  productForm.pns = []
   productForm.categoryId = ''
   productForm.config = ''
   productForm.brand = ''
@@ -989,6 +1053,12 @@ const restoreProductDraft = () => {
   if (!draft?.productForm) return
   Object.assign(productForm, draft.productForm)
   productForm.barcodes = Array.isArray(draft.productForm.barcodes) ? draft.productForm.barcodes : []
+  if (Array.isArray(draft.productForm.pns)) {
+    productForm.pns = draft.productForm.pns.map(createFormPn)
+  } else if (!Array.isArray(productForm.pns)) {
+    productForm.pns = []
+  }
+  productForm.pnCode = productForm.pnCode || productForm.barcodes.find(item => item.type === 'manufacturer')?.code || ''
   productForm.attributes = draft.productForm.attributes || {}
   productForm.extras = draft.productForm.extras || {}
   formNewBarcode.value = draft.formNewBarcode || ''
@@ -997,17 +1067,51 @@ const restoreProductDraft = () => {
 }
 
 const handleSubmit = async () => {
-  const finalName = computedProductName.value || productForm.name
+  const finalName = String(computedProductName.value || productForm.name || '').trim()
+  if (!productForm.categoryId) { ElMessage.warning('请选择商品分类'); return }
+  const missingField = categoryFields.value.find(field => Number(field.required) === 1 && !String(productForm.attributes[field.field_key] ?? '').trim())
+  if (missingField) { ElMessage.warning(`请填写${missingField.field_label}`); return }
   if (!finalName) { ElMessage.warning('请填写补充字段'); return }
+  const isEditing = Boolean(productForm.productId)
+  if (isEditing && (!Array.isArray(productForm.pns) || productForm.pns.length === 0)) {
+    ElMessage.warning('请至少保留一个PN码'); return
+  }
+  const pnEntries = isEditing
+    ? productForm.pns.map(pn => ({
+        pnId: pn.pnId,
+        pnCode: String(pn.pnCode || '').trim(),
+        barcode: String(pn.barcode || '').trim(),
+        isPrimary: Boolean(pn.isPrimary)
+      }))
+    : []
+  if (isEditing && pnEntries.some(pn => !pn.pnCode)) {
+    ElMessage.warning('PN码不能为空'); return
+  }
+  if (isEditing && new Set(pnEntries.map(pn => pn.pnCode.toLowerCase().replace(/\s+/g, ''))).size !== pnEntries.length) {
+    ElMessage.warning('PN码不能重复'); return
+  }
+  if (isEditing && !pnEntries.some(pn => pn.isPrimary)) {
+    pnEntries[0].isPrimary = true
+  }
+  const pnCode = String(
+    (isEditing ? pnEntries.find(pn => pn.isPrimary)?.pnCode : productForm.pnCode) || ''
+  ).trim()
+  if (!pnCode) { ElMessage.warning('请输入PN码'); return }
   submitLoading.value = true
   try {
     const attributes = {}
     for (const [k, v] of Object.entries(productForm.attributes)) {
       if (v !== undefined && v !== null && v !== '') attributes[k] = v
     }
+    const barcodes = [...productForm.barcodes]
+    if (!isEditing && !barcodes.some(item => item.type === 'manufacturer' && String(item.code || '').trim() === pnCode)) {
+      barcodes.unshift({ type: 'manufacturer', code: pnCode })
+    }
     const data = {
       name: finalName,
       categoryId: productForm.categoryId || null,
+      pnCode,
+      manufacturerCode: pnCode,
       config: productForm.config,
       unit: productForm.unit,
       needSn: productForm.needSn ? 1 : 0,
@@ -1015,7 +1119,8 @@ const handleSubmit = async () => {
       remark: productForm.remark,
       isFocusProduct: productForm.isFocusProduct,
       status: productForm.status,
-      barcodes: productForm.barcodes,
+      barcodes,
+      ...(isEditing ? { pns: pnEntries } : {}),
       attributes: Object.keys(attributes).length > 0 ? attributes : null,
     }
     let res
@@ -1129,6 +1234,7 @@ const priceImportValidation = reactive({ success: 0, failed: 0, errors: [], affe
 const costImportDialogVisible = ref(false)
 const costImportFile = ref(null)
 const costImportLoading = ref(false)
+const costExportLoading = ref(false)
 const priceHistoryVisible = ref(false)
 const priceHistoryLoading = ref(false)
 const priceHistoryData = ref([])
@@ -1290,6 +1396,18 @@ const loadPriceHistory = async () => {
 const handleCostImport = () => {
   costImportFile.value = null
   costImportDialogVisible.value = true
+}
+
+const handleCostExport = async () => {
+  costExportLoading.value = true
+  try {
+    await api.exportCostPrices({ keyword: priceParams.keyword })
+    ElMessage.success('成本导出成功')
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || err?.message || '成本导出失败')
+  } finally {
+    costExportLoading.value = false
+  }
 }
 
 const handleCostFileChange = (file) => {

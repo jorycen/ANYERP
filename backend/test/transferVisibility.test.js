@@ -37,11 +37,14 @@ test('经销商级账号按本经销商门店范围查询，不能因无门店�
   assert.deepEqual(scopeOr[0].transfer_id, { [Object.getOwnPropertySymbols(scopeOr[0].transfer_id)[0]]: ['__NO_TRANSFER_SCOPE__'] });
 });
 
-test('经销商级账号兼容按经销商字段查询Web和小程序历史调拨', () => {
-  const conditions = _test.buildTransferVisibilityWhere({ roles: ['finance'] }, [], 'D1');
+test('经销商级账号只按用户管理已分配门店查询历史调拨', () => {
+  const conditions = _test.buildTransferVisibilityWhere({ roles: ['finance'] }, ['STORE_1', 'STORE_2'], 'D1');
   const scopeCondition = conditions[0];
   const scopeOr = scopeCondition[Object.getOwnPropertySymbols(scopeCondition)[0]];
-  assert.deepEqual(scopeOr, [{ distributor_id: 'D1' }]);
+  assert.deepEqual(scopeOr, [
+    { from_store_id: { [Object.getOwnPropertySymbols(scopeOr[0].from_store_id)[0]]: ['STORE_1', 'STORE_2'] } },
+    { to_store_id: { [Object.getOwnPropertySymbols(scopeOr[1].to_store_id)[0]]: ['STORE_1', 'STORE_2'] } }
+  ]);
 });
 
 test('店员和店长不能查询SN关联入库详情，经销商业务角色可以', () => {

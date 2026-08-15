@@ -2063,6 +2063,9 @@ async function runMigrations() {
         KEY idx_sales_return_stage (STATUS, APPROVAL_STAGE, CREATE_TIME)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='销售退单申请'
     `);
+    await checkAndAddColumn('T_SALES_RETURN_REQUEST', 'RETURN_GOV_SUBSIDY', 'TINYINT(1) NOT NULL DEFAULT 0 COMMENT "是否退回已核销国补资格"', 'REFUND_AMOUNT');
+    await checkAndAddColumn('T_SALES_RETURN_REQUEST', 'POLICY_SUBSIDY_REFUND_AMOUNT', 'DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT "退回国补资格时冲减的政策补贴应收"', 'RETURN_GOV_SUBSIDY');
+    await checkAndAddColumn('T_SALES_RETURN_REQUEST', 'RESOURCE_RETURN_ACTIONS', 'TEXT COMMENT "退单时资源权益处理快照"', 'POLICY_SUBSIDY_REFUND_AMOUNT');
 
     await checkAndCreateTable('T_SALES_RETURN_REQUEST_ITEM', `
       CREATE TABLE T_SALES_RETURN_REQUEST_ITEM (

@@ -9,7 +9,7 @@ const {
   getBarcodes, addBarcode, deleteBarcode,
   getCategoryTree, createCategory, updateCategory, deleteCategory, sortCategories,
   getCategoryFields, saveCategoryFields, getCategoryFieldConfig,
-  getPriceList, setPrice, refreshCostPrice, batchRefreshCost, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory,
+  getPriceList, exportCostPrices, setPrice, refreshCostPrice, batchRefreshCost, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory,
   getProductImportTask,
   getPnList, addPn, searchProduct
 } = require('./controller');
@@ -55,6 +55,7 @@ router.get('/category/field-config', getCategoryFieldConfig);
 
 // 商品价格
 router.get('/price/list', getPriceList);
+router.get('/price/export', exportCostPrices);
 router.post('/price/set', setPrice);
 router.post('/price/refresh-cost/:productId', refreshCostPrice);
 router.post('/price/batch-refresh-cost', batchRefreshCost);

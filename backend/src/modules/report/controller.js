@@ -72,7 +72,12 @@ async function getSalesReport(ctx) {
   if (!user.accessibleStoreIds.includes('*')) {
     whereStore.store_id = user.accessibleStoreIds;
   }
-  if (storeId) whereStore.store_id = storeId;
+  if (storeId) {
+    if (!user.accessibleStoreIds.includes('*') && !(user.accessibleStoreIds || []).map(String).includes(String(storeId))) {
+      ctx.throw(403, '无权访问该门店销售报表');
+    }
+    whereStore.store_id = storeId;
+  }
 
   const stores = await Store.findAll({ where: whereStore });
   const storeIds = stores.map(s => s.store_id);
@@ -170,7 +175,12 @@ async function getInventoryReport(ctx) {
   if (!user.accessibleStoreIds.includes('*')) {
     whereStore.store_id = user.accessibleStoreIds;
   }
-  if (storeId) whereStore.store_id = storeId;
+  if (storeId) {
+    if (!user.accessibleStoreIds.includes('*') && !(user.accessibleStoreIds || []).map(String).includes(String(storeId))) {
+      ctx.throw(403, '无权访问该门店库存报表');
+    }
+    whereStore.store_id = storeId;
+  }
 
   const stores = await Store.findAll({ where: whereStore });
   const storeIds = stores.map(s => s.store_id);

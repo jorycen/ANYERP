@@ -54,6 +54,18 @@
             <el-table-column prop="spec" label="产品配置" width="130" />
             <el-table-column prop="product_code" label="商品编码" width="120" />
             <el-table-column prop="manufacturer_code" label="厂商编码" width="120" />
+            <el-table-column v-if="isSummaryQuickModelFilter" label="近7天机型指标" width="150">
+              <template #default="{ row }">
+                <template v-if="summaryQuery.modelFilter === 'hot7'">
+                  <div>销售数量：{{ row.sales_7_qty || 0 }}</div>
+                  <div class="summary-metric-secondary">近30天：{{ row.sales_30_qty || 0 }}</div>
+                </template>
+                <template v-else>
+                  <div>平均毛利：¥{{ Number(row.avg_gross_profit_7 || 0).toFixed(2) }}</div>
+                  <div class="summary-metric-secondary">订单总毛利：¥{{ Number(row.gross_profit_7 || 0).toFixed(2) }}</div>
+                </template>
+              </template>
+            </el-table-column>
             <el-table-column prop="standard_price" label="销售定价" width="100">
               <template #default="{ row }">¥{{ row.standard_price }}</template>
             </el-table-column>
@@ -165,7 +177,19 @@
             </el-table-column>
           </el-table>
 
+          <div v-if="isSummaryQuickModelFilter" class="summary-continue-query">
+            <span>已显示 {{ summaryData.length }} / {{ summaryTotal }} 条</span>
+            <el-button
+              v-if="summaryData.length < summaryTotal"
+              type="primary"
+              size="small"
+              :loading="summaryLoading"
+              @click="loadMoreSummary"
+            >继续查询</el-button>
+            <span v-else class="summary-complete-text">已全部显示</span>
+          </div>
           <el-pagination
+            v-else
             v-model:current-page="summaryQuery.page"
             v-model:page-size="summaryQuery.pageSize"
             :total="summaryTotal"
@@ -1729,6 +1753,7 @@ const summaryQuery = reactive({
   productType: '',
   modelFilter: ''
 })
+const isSummaryQuickModelFilter = computed(() => ['hot7', 'highMargin7'].includes(summaryQuery.modelFilter))
 
 // SN库存清单
 const snInventoryData = ref([])
@@ -2195,12 +2220,13 @@ const getStockBreakdownRows = (row, field) => {
   return [...grouped.values()].sort((a, b) => b.quantity - a.quantity)
 }
 
-const loadSummary = async () => {
+const loadSummary = async ({ append = false } = {}) => {
   summaryLoading.value = true
   try {
     const res = await api.getInventoryList(summaryQuery)
     if (res.code === 0) {
-      summaryData.value = res.data?.list || []
+      const rows = res.data?.list || []
+      summaryData.value = append ? [...summaryData.value, ...rows] : rows
       summaryTotal.value = res.data?.pagination?.total || res.data?.total || 0
     }
   } catch (err) {
@@ -2208,6 +2234,12 @@ const loadSummary = async () => {
   } finally {
     summaryLoading.value = false
   }
+}
+
+const loadMoreSummary = async () => {
+  if (!isSummaryQuickModelFilter.value || summaryLoading.value || summaryData.value.length >= summaryTotal.value) return
+  summaryQuery.page += 1
+  await loadSummary({ append: true })
 }
 
 const loadTransferStores = async () => {
@@ -2237,6 +2269,7 @@ const selectInventoryProductType = (productType) => {
   summaryQuery.category = ''
   summaryQuery.page = 1
   if (!summaryQuery.productType) summaryQuery.modelFilter = ''
+  summaryQuery.pageSize = ['hot7', 'highMargin7'].includes(summaryQuery.modelFilter) ? 10 : 20
   loadSummary()
 }
 
@@ -2244,6 +2277,7 @@ const selectInventoryModelFilter = (modelFilter) => {
   if (!summaryQuery.productType) return
   summaryQuery.modelFilter = summaryQuery.modelFilter === modelFilter ? '' : modelFilter
   summaryQuery.page = 1
+  summaryQuery.pageSize = ['hot7', 'highMargin7'].includes(summaryQuery.modelFilter) ? 10 : 20
   loadSummary()
 }
 
@@ -2276,9 +2310,30 @@ const loadSnInventoryLocations = async () => {
   if (!snInventoryQuery.storeId) return
   try {
     const res = await api.getLocationsByStore(snInventoryQuery.storeId)
-    snInventoryLocations.value = res.data || []
+    snInventoryLocations.value = Array.isArray(res.data) ? res.data : []
   } catch (err) {
     ElMessage.error('加载库位失败')
+  }
+}
+
+const loadInboundLocations = async (storeId, { required = false } = {}) => {
+  const normalizedStoreId = String(storeId || '').trim()
+  inboundLocations.value = []
+  if (!normalizedStoreId) {
+    if (required) ElMessage.warning('入库单未关联有效门店，无法加载库位')
+    return []
+  }
+  try {
+    const res = await api.getLocationsByStore(normalizedStoreId)
+    const locations = Array.isArray(res.data) ? res.data : []
+    inboundLocations.value = locations
+    if (required && locations.length === 0) {
+      ElMessage.warning('当前门店没有启用库位，请先在系统设置中启用库位')
+    }
+    return locations
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载库位失败')
+    return []
   }
 }
 
@@ -2653,8 +2708,7 @@ const viewInboundDetail = async (row, { snTrace = false } = {}) => {
       : await api.getInboundDetail(row.inbound_id)
     if (res.code === 0) {
       currentInbound.value = res.data
-      const locationRes = await api.getLocationsByStore(res.data.store_id)
-      inboundLocations.value = locationRes.data || []
+      await loadInboundLocations(res.data.store_id || res.data.storeId || res.data.Store?.store_id)
       inboundDetailVisible.value = true
     }
   } catch (err) {
@@ -2668,8 +2722,9 @@ const openExecuteDialog = async (row) => {
     const res = await api.getInboundDetail(row.inbound_id)
     if (res.code === 0) {
       currentInbound.value = res.data
-      const locationRes = await api.getLocationsByStore(res.data.store_id || res.data.storeId)
-      inboundLocations.value = locationRes.data || []
+      const inboundStoreId = res.data.store_id || res.data.storeId || res.data.Store?.store_id
+      const locations = await loadInboundLocations(inboundStoreId, { required: true })
+      if (locations.length === 0) return
 
       const pnMap = res.data.product_pns || {}
       const isTransferInbound = String(res.data.source_type || '').toUpperCase() === 'TRANSFER'
@@ -2682,7 +2737,7 @@ const openExecuteDialog = async (row) => {
 
       const productGroups = []
       for (const item of (res.data.items || [])) {
-        const needSn = item.need_sn === 1
+        const needSn = Number(item.need_sn) === 1
         const qty = Number(item.remaining_quantity ?? item.remainingQuantity ?? item.quantity) || 1
         const pns = pnMap[item.product_id] || []
 
@@ -2817,6 +2872,10 @@ const submitInbound = async () => {
           ElMessage.warning(`商品 ${product.productName} 需要SN管理，请填写SN码`)
           return
         }
+        if (!snRow.locationId) {
+          ElMessage.warning(`商品 ${product.productName} 请选择入库库位`)
+          return
+        }
         items.push({
           inboundItemId: product.inboundItemId,
           productId: product.productId,
@@ -2832,6 +2891,10 @@ const submitInbound = async () => {
       for (const qtyRow of product.qtyRows) {
         const qty = parseInt(qtyRow.quantity) || 0
         if (qty <= 0) continue
+        if (!qtyRow.locationId) {
+          ElMessage.warning(`商品 ${product.productName} 请选择入库库位`)
+          return
+        }
         items.push({
           inboundItemId: product.inboundItemId,
           productId: product.productId,
@@ -3016,7 +3079,7 @@ const openSnLocationDialog = async (row) => {
   try {
     const res = await api.getLocationsByStore(snLocationForm.storeId)
     if (res.code === 0) {
-      snLocationOptions.value = res.data || []
+      snLocationOptions.value = Array.isArray(res.data) ? res.data : []
     }
   } catch (err) {
     ElMessage.error(err.response?.data?.message || '加载库位失败')
@@ -4402,6 +4465,23 @@ const getReturnStatusText = (status) => {
 }
 .model-filter-label-spaced {
   margin-left: 10px;
+}
+.summary-metric-secondary {
+  margin-top: 4px;
+  color: #909399;
+  font-size: 12px;
+}
+.summary-continue-query {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 16px;
+  color: #606266;
+  font-size: 13px;
+}
+.summary-complete-text {
+  color: #67c23a;
 }
 .legend-title {
   color: #303133;

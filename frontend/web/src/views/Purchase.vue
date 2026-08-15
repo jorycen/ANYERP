@@ -935,17 +935,21 @@ const handleTraceView = async (requestId) => {
 }
 
 const loadAllStores = async () => {
-  if (allStoresLoaded.value) return
+  if (allStoresLoaded.value) return allStores.value
   try {
     const res = await api.getAllStores()
     if (res && res.code === 0 && Array.isArray(res.data)) {
       allStores.value = res.data
       allStoresLoaded.value = true
+      return allStores.value
     } else {
       allStores.value = []
+      return []
     }
   } catch (err) {
     allStores.value = []
+    ElMessage.error(err.response?.data?.message || '加载收货门店失败')
+    return []
   }
 }
 
@@ -1116,7 +1120,12 @@ const onGoodsTypeChange = name => {
   })
 }
 
-const handleCreate = () => {
+const handleCreate = async () => {
+  await loadAllStores()
+  if (!allStores.value.length) {
+    ElMessage.warning('当前账号没有可选收货门店，请先配置门店权限')
+    return
+  }
   resetForm()
   editingRequestId.value = ''
   restorePurchaseRequestDraft()
@@ -1138,6 +1147,7 @@ const parseDraftJson = (value, fallback = []) => {
 
 const handleEditDraft = async (row) => {
   try {
+    await loadAllStores()
     const res = await api.getPurchaseRequestDetail(row.request_id)
     if (res.code !== 0) {
       ElMessage.error(res.message || '获取采购申请详情失败')

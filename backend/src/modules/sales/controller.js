@@ -31,7 +31,10 @@ const {
   RebateEstimate,
   ResourceSettlement,
   InventoryResourceRight,
+  ResourceRightChangeOrder,
   SalesSettlementCostAdjustment,
+  DailyStatement,
+  DailyStatementDetail,
   Inbound,
   InboundItem,
   SnLog,
@@ -1497,6 +1500,20 @@ function normalizeOrderItemInput(item = {}) {
   };
 }
 
+function assertUniqueOrderSnItems(items = [], actionText = '订单') {
+  const seen = new Set();
+  for (const item of items || []) {
+    const snCode = String(item?.sn_code || '').trim().toUpperCase();
+    const snId = String(item?.sn_id || '').trim();
+    const key = snCode ? `code:${snCode}` : (snId ? `id:${snId}` : '');
+    if (!key) continue;
+    if (seen.has(key)) {
+      throw archiveError(`${actionText}包含重复SN码 [${snCode || snId}]，同一SN只能对应一个商品`);
+    }
+    seen.add(key);
+  }
+}
+
 function applyOrderItemDefaults(item) {
   const salePrice = Number(item.sale_price || 0);
   const quantity = Number(item.quantity || 1) || 1;
@@ -1625,8 +1642,11 @@ async function create(ctx) {
   const orderNo = existingOrder?.order_no || generateOrderNo();
   const orderId = existingOrder?.order_id || generateUUID();
   const actualStoreId = existingOrder?.store_id || storeId || user.storeId || '';
+  if (!actualStoreId) ctx.throw(400, '请选择门店');
+  assertStoreVisible(actualStoreId, user, '无权操作该门店订单');
 
   const normalizedItems = items.map(item => applyOrderItemDefaults(normalizeOrderItemInput(item)));
+  assertUniqueOrderSnItems(normalizedItems, isDraft ? '订单草稿' : '订单');
   const totalAmount = normalizedItems.reduce((sum, item) => sum + Number(item.subtotal || 0), 0);
   const payableBeforeDeposit = Math.max(0, money(totalAmount - Number(discountAmount) - Number(nationalSubsidy) - Number(educationSubsidy)));
   const depositDeductions = normalizeDepositDeductions(requestBody);
@@ -1989,9 +2009,13 @@ async function detail(ctx) {
         sn_code: item.sn_code || '',
         inventory_type: item.inventory_type || sn?.inventory_type || '',
         inventory_status: item.inventory_status || sn?.status || '',
-        inventory_status_label: sn?.status === 'reserved' || sn?.status === 'occupied'
-          ? '已占用'
-          : (sn?.status === 'sold' ? '已销售' : (sn?.status || '')),
+        inventory_status_label: ({
+          reserved: '已占用',
+          occupied: '已占用',
+          sold: '已销售',
+          return_pending: '退单待入库',
+          in_stock: '在库'
+        })[String(sn?.status || '').toLowerCase()] || (sn?.status || ''),
         resource_summary: sn ? summaryMap.get(sn.sn_id) : null
       };
     });
@@ -2345,7 +2369,10 @@ async function stats(ctx) {
   if (!user.accessibleStoreIds.includes('*')) {
     whereStore.store_id = user.accessibleStoreIds;
   }
-  if (storeId) whereStore.store_id = storeId;
+  if (storeId) {
+    assertStoreVisible(storeId, user, '无权访问该门店销售统计');
+    whereStore.store_id = storeId;
+  }
 
   const stores = await Store.findAll({ where: whereStore });
   const storeIds = stores.map(s => s.store_id);
@@ -2397,6 +2424,7 @@ async function listDeposits(ctx) {
   if (status) where.status = status;
   if (customerPhone) where.customer_phone = { [Op.like]: `%${customerPhone}%` };
   if (storeId) {
+    assertStoreVisible(storeId, user, '无权访问该门店定金单');
     where.store_id = storeId;
   } else if (!user.accessibleStoreIds.includes('*')) {
     where.store_id = user.accessibleStoreIds;
@@ -2431,6 +2459,7 @@ async function createDeposit(ctx) {
   const actualPaymentMethod = String(paymentMethod || payment_method || '').trim();
 
   if (!actualStoreId) ctx.throw(400, '请选择门店');
+  assertStoreVisible(actualStoreId, user, '无权操作该门店定金单');
   if (!customerName || !customerPhone) ctx.throw(400, '请填写客户信息');
   if (depositAmount <= 0) ctx.throw(400, '定金金额必须大于0');
   if (!actualPaymentMethod) ctx.throw(400, '请选择收款方式');
@@ -2564,7 +2593,10 @@ async function availableDeposits(ctx) {
     create_staff_id: user.staffId
   };
   if (customerPhone) where.customer_phone = customerPhone;
-  if (storeId) where.store_id = storeId;
+  if (storeId) {
+    assertStoreVisible(storeId, user, '无权访问该门店定金单');
+    where.store_id = storeId;
+  }
   else if (!user.accessibleStoreIds.includes('*')) where.store_id = user.accessibleStoreIds;
 
   const rows = await DepositOrder.findAll({
@@ -2798,10 +2830,21 @@ async function listSalesReturnRequests(ctx) {
  * 申请阶段只改变订单状态，不直接扣库存或执行退款；审批完成后的执行流程另行处理。
  */
 async function requestSalesReturn(ctx) {
-  const { orderId: bodyOrderId, reason = '', items: requestedItems } = ctx.request.body || {};
+  const {
+    orderId: bodyOrderId,
+    reason = '',
+    items: requestedItems,
+    returnGovSubsidy: returnGovSubsidyInput,
+    return_gov_subsidy: returnGovSubsidySnake,
+    policySubsidyRefundAmount: policySubsidyRefundAmountInput,
+    policy_subsidy_refund_amount: policySubsidyRefundAmountSnake
+  } = ctx.request.body || {};
   const orderId = ctx.params.orderId || bodyOrderId;
   const user = ctx.state.user;
   if (!orderId) ctx.throw(400, '订单ID不能为空');
+  const returnGovSubsidy = returnGovSubsidyInput !== undefined
+    ? toBoolean(returnGovSubsidyInput)
+    : toBoolean(returnGovSubsidySnake);
 
   const result = await sequelize.transaction(async transaction => {
     const order = await Order.findByPk(orderId, {
@@ -2858,7 +2901,17 @@ async function requestSalesReturn(ctx) {
       const quantity = requestedQuantity;
       return { sourceItem, quantity };
     }).filter(row => row.quantity > 0);
-    if (selectedItems.length === 0) ctx.throw(400, '退单商品明细不能为空');
+    const selectedSnKeys = new Set();
+    const uniqueSelectedItems = selectedItems.filter(row => {
+      const snCode = String(row.sourceItem.sn_code || '').trim().toUpperCase();
+      const snId = String(row.sourceItem.sn_id || '').trim();
+      const key = snCode ? `code:${snCode}` : (snId ? `id:${snId}` : '');
+      if (!key) return true;
+      if (selectedSnKeys.has(key)) return false;
+      selectedSnKeys.add(key);
+      return true;
+    });
+    if (uniqueSelectedItems.length === 0) ctx.throw(400, '退单商品明细不能为空');
 
     const maxRefundAmount = money(order.actual_payment || order.total_amount || 0);
     const requestedRefund = ctx.request.body?.refundAmount ?? ctx.request.body?.refund_amount;
@@ -2868,9 +2921,14 @@ async function requestSalesReturn(ctx) {
     const returnId = generateUUID();
     const returnNo = generateBusinessNo('RET');
 
-    const selectedQuantity = selectedItems.reduce((sum, row) => sum + row.quantity, 0);
+    const selectedQuantity = uniqueSelectedItems.reduce((sum, row) => sum + row.quantity, 0);
     const orderQuantity = orderItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
     const returnType = selectedQuantity < orderQuantity ? 'partial' : 'full';
+    const requestedPolicySubsidyRefund = Number(
+      policySubsidyRefundAmountInput !== undefined
+        ? policySubsidyRefundAmountInput
+        : (policySubsidyRefundAmountSnake || 0)
+    );
     await SalesReturnRequest.create({
       return_id: returnId,
       return_no: returnNo,
@@ -2881,6 +2939,17 @@ async function requestSalesReturn(ctx) {
       customer_phone: order.customer_phone || '',
       return_type: returnType,
       refund_amount: refundAmount,
+      return_gov_subsidy: returnGovSubsidy ? 1 : 0,
+      policy_subsidy_refund_amount: returnGovSubsidy && Number.isFinite(requestedPolicySubsidyRefund)
+        ? Math.max(0, money(requestedPolicySubsidyRefund))
+        : 0,
+      resource_return_actions: JSON.stringify({
+        returnGovSubsidy,
+        requestedPolicySubsidyRefund: returnGovSubsidy && Number.isFinite(requestedPolicySubsidyRefund)
+          ? Math.max(0, money(requestedPolicySubsidyRefund))
+          : 0,
+        selectedItemIds: uniqueSelectedItems.map(row => String(row.sourceItem.item_id || ''))
+      }),
       reason: String(reason || '').trim() || '客户退单',
       status: 'pending',
       approval_stage: 'pending_store',
@@ -2890,7 +2959,7 @@ async function requestSalesReturn(ctx) {
       update_time: new Date()
     }, { transaction });
 
-    for (const { sourceItem, quantity } of selectedItems) {
+    for (const { sourceItem, quantity } of uniqueSelectedItems) {
       const unitPrice = money(sourceItem.sale_price);
       await SalesReturnRequestItem.create({
         return_id: returnId,
@@ -2906,7 +2975,14 @@ async function requestSalesReturn(ctx) {
     }
 
     await order.update({ order_status: 'return_pending', update_time: new Date() }, { transaction });
-    return { returnId, returnNo, orderId: order.order_id, status: 'pending', approvalStage: 'pending_store' };
+    return {
+      returnId,
+      returnNo,
+      orderId: order.order_id,
+      status: 'pending',
+      approvalStage: 'pending_store',
+      returnGovSubsidy
+    };
   });
 
   ctx.body = { code: 0, data: result, message: '退单申请已提交，待店长审批' };
@@ -2942,6 +3018,7 @@ async function createSalesReturnInbound({ request, user, transaction, ctx }) {
   });
   const productMap = new Map(products.map(product => [String(product.product_id), product]));
   const inboundItems = [];
+  const seenPhysicalSns = new Set();
   let totalQuantity = 0;
   let totalAmount = 0;
 
@@ -2954,6 +3031,13 @@ async function createSalesReturnInbound({ request, user, transaction, ctx }) {
     const unitPrice = money(orderItem?.original_inventory_cost || item.unit_price || 0);
     let snId = null;
     const snCode = String(item.sn_code || '').trim();
+    const physicalSnKey = snCode
+      ? `code:${snCode.toUpperCase()}`
+      : (String(item.sn_id || '').trim() ? `id:${String(item.sn_id).trim()}` : '');
+    if (physicalSnKey && seenPhysicalSns.has(physicalSnKey)) {
+      continue;
+    }
+    if (physicalSnKey) seenPhysicalSns.add(physicalSnKey);
 
     if (Number(product.need_sn) === 1) {
       if (!snCode || quantity !== 1) ctx.throw(400, `Invalid SN return item: ${item.product_name || product.name}`);
@@ -3064,8 +3148,29 @@ async function reviewSalesReturn(ctx) {
 
     await request.update({ status: nextStatus, approval_stage: nextStage, update_time: now, ...reviewData }, { transaction });
     let inbound = null;
+    let subsidyRestore = { restored: 0, policySubsidyRefundAmount: 0 };
     if (nextStatus === 'approved') {
       inbound = await createSalesReturnInbound({ request, user, transaction, ctx });
+      const returnItems = await SalesReturnRequestItem.findAll({
+        where: { return_id: request.return_id },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      const order = await Order.findByPk(request.order_id, {
+        include: [{ model: OrderItem }],
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      const orderItemMap = new Map((order?.OrderItems || []).map(item => [String(item.item_id), item]));
+      subsidyRestore = await restoreReturnedNationalSubsidy({
+        request,
+        order,
+        requestItems: returnItems,
+        orderItemMap,
+        user,
+        transaction,
+        ctx
+      });
     }
     if (rejected) {
       await Order.update(
@@ -3078,7 +3183,9 @@ async function reviewSalesReturn(ctx) {
       status: nextStatus,
       approvalStage: nextStage,
       inboundId: inbound?.inbound_id || '',
-      inboundNo: inbound?.inbound_no || ''
+      inboundNo: inbound?.inbound_no || '',
+      restoredNationalSubsidy: subsidyRestore.restored,
+      policySubsidyRefundAmount: subsidyRestore.policySubsidyRefundAmount
     };
   });
 
@@ -3101,6 +3208,183 @@ function isDepositPayment(payment) {
 function isPolicySubsidyReceivable(payment) {
   const method = String(payment?.method || payment?.payment_method || '').trim();
   return method.includes('政策补贴应收');
+}
+
+function selectedResourcesForReturn(item = {}, order = {}) {
+  const resources = selectedResources(item);
+  if (resources.length > 0) return resources;
+  const subsidyStatus = item.subsidy_status || item.subsidyStatus || order.subsidy_status || order.subsidyStatus || '';
+  return String(subsidyStatus) === '国补' ? ['GOV_SUBSIDY'] : [];
+}
+
+async function restoreReturnedNationalSubsidy({ request, order, requestItems, orderItemMap, user, transaction, ctx }) {
+  if (!Number(request.return_gov_subsidy || 0)) return { restored: 0, policySubsidyRefundAmount: 0 };
+
+  const returnedEligibleItems = requestItems.filter(requestItem => {
+    const sourceItem = orderItemMap.get(String(requestItem.order_item_id || ''));
+    return sourceItem && selectedResourcesForReturn(sourceItem, order).includes('GOV_SUBSIDY');
+  });
+  if (returnedEligibleItems.length === 0) return { restored: 0, policySubsidyRefundAmount: 0 };
+
+  let restored = 0;
+  for (const requestItem of returnedEligibleItems) {
+    const sourceItem = orderItemMap.get(String(requestItem.order_item_id || ''));
+    const snCode = String(requestItem.sn_code || sourceItem?.sn_code || '').trim();
+    if (!snCode) continue;
+    const sn = await ProductSn.findOne({
+      where: {
+        product_id: requestItem.product_id || sourceItem.product_id,
+        store_id: request.store_id,
+        sn_code: snCode,
+        status: { [Op.in]: ['sold', 'return_pending'] },
+        is_deleted: 0
+      },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!sn) continue;
+    const right = await InventoryResourceRight.findOne({
+      where: { sn_id: sn.sn_id, resource_type: 'GOV_SUBSIDY' },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!right || right.current_status !== 'USED') continue;
+    await right.update({
+      current_status: 'AVAILABLE',
+      locked_source_type: null,
+      locked_source_id: null,
+      version: Number(right.version || 0) + 1
+    }, { transaction });
+    await ResourceRightChangeOrder.create({
+      change_id: generateUUID(),
+      change_order_no: generateBusinessNo('RRC'),
+      sn_id: sn.sn_id,
+      sn_code: sn.sn_code,
+      product_id: sn.product_id,
+      resource_type: 'GOV_SUBSIDY',
+      before_status: 'USED',
+      after_status: 'AVAILABLE',
+      change_amount: Number(right.amount || 0),
+      change_reason: 'SALES_RETURN_RESTORE',
+      approval_status: 'approved',
+      related_sale_order_id: order.order_id,
+      applicant_staff_id: user.staffId || null,
+      applicant_name: user.name || user.staffId || '',
+      reviewer_staff_id: user.staffId || null,
+      reviewer_name: user.name || user.staffId || '',
+      review_time: new Date(),
+      remark: `销售退单 ${request.return_no} 退回国补资格`
+    }, { transaction });
+    const saleUseChanges = await ResourceRightChangeOrder.findAll({
+      where: {
+        related_sale_order_id: order.order_id,
+        sn_id: sn.sn_id,
+        resource_type: 'GOV_SUBSIDY',
+        after_status: 'USED'
+      },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (saleUseChanges.length > 0) {
+      const pendingSettlements = await ResourceSettlement.findAll({
+        where: {
+          source_type: 'SALE_USE',
+          source_id: { [Op.in]: saleUseChanges.map(change => change.change_id) },
+          status: 'PENDING'
+        },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      for (const settlement of pendingSettlements) {
+        await settlement.update({
+          status: 'CANCELLED',
+          cancelled_at: new Date(),
+          cancelled_by: user.staffId || null,
+          cancelled_by_name: user.name || user.staffId || '',
+          correction_reason: `销售退单 ${request.return_no} 退回国补资格`,
+          update_time: new Date()
+        }, { transaction });
+      }
+    }
+    restored += 1;
+  }
+
+  const orderPayments = await OrderPayment.findAll({ where: { order_id: order.order_id }, transaction });
+  const paymentMethodRows = orderPayments.length > 0
+    ? await PaymentMethod.findAll({
+      where: { code: { [Op.in]: orderPayments.map(payment => payment.payment_method) } },
+      transaction
+    })
+    : [];
+  const paymentNameByCode = new Map(paymentMethodRows.map(method => [method.code, method.name]));
+  const policyPayments = orderPayments.filter(payment => {
+    const method = paymentNameByCode.get(payment.payment_method) || payment.payment_method;
+    return isPolicySubsidyReceivable({ method });
+  });
+  const policyPaymentTotal = policyPayments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0)
+    || Number(order.national_subsidy || 0);
+  const eligibleGross = (order.OrderItems || []).reduce((sum, item) => {
+    return selectedResourcesForReturn(item, order).includes('GOV_SUBSIDY')
+      ? sum + Number(item.sale_price || 0) * Number(item.quantity || 0)
+      : sum;
+  }, 0);
+  const returnedEligibleGross = returnedEligibleItems.reduce((sum, item) => {
+    return sum + Number(item.unit_price || 0) * Number(item.quantity || 0);
+  }, 0);
+  const calculatedRefund = eligibleGross > 0
+    ? money(policyPaymentTotal * Math.min(1, Math.max(0, returnedEligibleGross / eligibleGross)))
+    : 0;
+  const requestedRefund = Number(request.policy_subsidy_refund_amount || 0);
+  const policySubsidyRefundAmount = money(Math.min(policyPaymentTotal, calculatedRefund, requestedRefund > 0 ? requestedRefund : calculatedRefund));
+  if (policySubsidyRefundAmount <= 0) return { restored, policySubsidyRefundAmount: 0 };
+
+  const paymentRows = policyPayments.length > 0
+    ? policyPayments
+    : [{ payment_method: '国补POS-政策补贴应收', amount: policyPaymentTotal }];
+  const paymentMethods = paymentRows === orderPayments
+    ? paymentMethodRows
+    : await PaymentMethod.findAll({ where: { code: { [Op.in]: paymentRows.map(payment => payment.payment_method) } }, transaction });
+  const paymentNames = new Map(paymentMethods.map(method => [method.code, method.name]));
+  const statementDate = getChinaDateString();
+  const [statement] = await DailyStatement.findOrCreate({
+    where: { store_id: order.store_id, statement_date: statementDate },
+    defaults: {
+      statement_id: generateUUID(),
+      store_id: order.store_id,
+      statement_date: statementDate,
+      total_revenue: 0,
+      total_order_count: 0,
+      total_settled: 0,
+      status: 'pending'
+    },
+    transaction
+  });
+  let allocated = 0;
+  for (let index = 0; index < paymentRows.length; index += 1) {
+    const payment = paymentRows[index];
+    const isLast = index === paymentRows.length - 1;
+    const amount = isLast
+      ? money(policySubsidyRefundAmount - allocated)
+      : money(policySubsidyRefundAmount * Number(payment.amount || 0) / Math.max(policyPaymentTotal, 0.01));
+    allocated = money(allocated + amount);
+    if (amount <= 0) continue;
+    await DailyStatementDetail.create({
+      detail_id: generateUUID(),
+      statement_id: statement.statement_id,
+      order_id: request.return_id,
+      order_no: request.return_no,
+      customer_name: order.customer_name || '',
+      payment_method: paymentNames.get(payment.payment_method) || payment.payment_method,
+      payment_code: payment.payment_method,
+      business_type: 'national_subsidy_return',
+      amount: -amount,
+      settlement_account_id: await resolveSettlementAccount(order.store_id, paymentNames.get(payment.payment_method) || payment.payment_method, transaction),
+      settled: 0
+    }, { transaction });
+  }
+  await refreshDailyStatementTotals(statement, transaction);
+  await request.update({ policy_subsidy_refund_amount: policySubsidyRefundAmount }, { transaction });
+  return { restored, policySubsidyRefundAmount };
 }
 
 function isNationalSubsidyPayment(payment) {
@@ -3579,6 +3863,7 @@ async function reserveInventoryForOrder(order, transaction = null) {
   if (!items.length) {
     throw archiveError('订单中没有商品，无法占用库存');
   }
+  assertUniqueOrderSnItems(items, '订单');
 
   const productIds = [...new Set(items.map(i => i.product_id).filter(Boolean))];
   const products = await Product.findAll({ where: { product_id: { [Op.in]: productIds } }, transaction });
@@ -3680,6 +3965,7 @@ async function validateAndDeductInventoryForArchive(order, transaction = null) {
   if (!items.length) {
     throw archiveError('订单中没有商品，无法归档');
   }
+  assertUniqueOrderSnItems(items, '订单');
 
   const pnCodes = [...new Set(items.map(item => normalizePnCode(item.pn_code)).filter(Boolean))];
   const pnRows = pnCodes.length
@@ -3867,6 +4153,7 @@ module.exports = {
     normalizeOrderExtendedFields,
     normalizeAuxiliarySalesList,
     isCancelStatus,
+    assertUniqueOrderSnItems,
     reserveDepositForOrder,
     redeemReservedDepositsForOrder,
     releaseDepositRedemptionForOrder,

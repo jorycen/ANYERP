@@ -3,9 +3,9 @@
  */
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const { Staff, Role, Menu, RoleMenu, StaffRole, Store, Region } = require('../../models');
+const { Staff, Role, Menu, RoleMenu, StaffRole, Store, Region, Distributor } = require('../../models');
 const config = require('../../config');
-const { resolveAccessibleStoreIds, resolvePrimaryStoreId, resolveConfiguredRegions } = require('../../utils/storePermissions');
+const { resolveAccessibleStoreIds, resolvePrimaryStoreId, resolveConfiguredRegions, isStoreScopedAccount } = require('../../utils/storePermissions');
 
 /**
  * 登录
@@ -51,9 +51,9 @@ async function login(ctx) {
   const roleCodes = roles.map(r => r.role_code);
   const roleNames = roles.map(r => r.name);
   const assignedStoreIds = await resolveAccessibleStoreIds(staff, roleCodes);
-  const effectiveStoreId = roleCodes.includes('boss')
-    ? staff.store_id
-    : resolvePrimaryStoreId(staff, assignedStoreIds);
+  const effectiveStoreId = isStoreScopedAccount(roleCodes)
+    ? resolvePrimaryStoreId(staff, assignedStoreIds)
+    : null;
   const effectiveStore = effectiveStoreId
     ? await Store.findByPk(effectiveStoreId, { attributes: ['store_id', 'name'] })
     : null;
@@ -83,6 +83,10 @@ async function login(ctx) {
     { expiresIn: config.jwt.expiresIn }
   );
 
+  const distributor = staff.distributor_id
+    ? await Distributor.findByPk(staff.distributor_id, { attributes: ['distributor_id', 'name'] })
+    : null;
+
   ctx.body = {
     token,
     userInfo: {
@@ -93,6 +97,9 @@ async function login(ctx) {
       roleName: roleNames.join('、') || '员工',
       roleNames,
       roles: roleCodes,
+      distributorId: staff.distributor_id || '',
+      distributorName: distributor?.name || '',
+      scopeType: isStoreScopedAccount(roleCodes) ? 'store' : (roleCodes.includes('boss') ? 'global' : 'distributor'),
       storeId: effectiveStoreId,
       storeName: effectiveStore?.name || '',
       regionId: staff.region_id,
@@ -141,8 +148,16 @@ async function getUserInfo(ctx) {
 
   const roleCodes = roles.map(r => r.role_code);
   const roleNames = roles.map(r => r.name);
-  const effectiveStore = user.storeId
-    ? await Store.findByPk(user.storeId, { attributes: ['store_id', 'name'] })
+  const assignedStoreIds = await resolveAccessibleStoreIds(staff, roleCodes);
+  const configuredRegions = await resolveConfiguredRegions(staff, roleCodes);
+  const effectiveStoreId = isStoreScopedAccount(roleCodes)
+    ? resolvePrimaryStoreId(staff, assignedStoreIds)
+    : null;
+  const effectiveStore = effectiveStoreId
+    ? await Store.findByPk(effectiveStoreId, { attributes: ['store_id', 'name'] })
+    : null;
+  const distributor = staff.distributor_id
+    ? await Distributor.findByPk(staff.distributor_id, { attributes: ['distributor_id', 'name'] })
     : null;
 
   ctx.body = {
@@ -153,12 +168,15 @@ async function getUserInfo(ctx) {
     roleName: roleNames.join('、') || '员工',
     roleNames,
     roles: roleCodes,
-    storeId: user.storeId,
+    distributorId: staff.distributor_id || '',
+    distributorName: distributor?.name || '',
+    scopeType: isStoreScopedAccount(roleCodes) ? 'store' : (roleCodes.includes('boss') ? 'global' : 'distributor'),
+    storeId: effectiveStoreId,
     storeName: effectiveStore?.name || '',
     regionId: staff.region_id,
-    regionCodes: user.regionCodes,
-    regionIds: user.regionIds,
-    storeIds: user.accessibleStoreIds,
+    regionCodes: configuredRegions.codes,
+    regionIds: configuredRegions.ids,
+    storeIds: assignedStoreIds,
     menus: buildMenuTree(menus)
   };
 }

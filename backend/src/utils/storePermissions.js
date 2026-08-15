@@ -7,8 +7,23 @@ function uniqueIds(values) {
 
 const STORE_ONLY_ROLE_CODES = new Set(['clerk', 'staff', 'manager', 'store_manager']);
 
+function normalizeRoleCodes(roleCodes = []) {
+  return [...new Set((Array.isArray(roleCodes) ? roleCodes : [roleCodes])
+    .map(roleCode => String(roleCode || '').trim().toLowerCase())
+    .filter(Boolean))];
+}
+
+/**
+ * 只有店员/店长类账号才保留“主门店”语义。
+ * 经销商级账号和 BOSS 的组织归属分别是经销商/系统，不再绑定当前门店。
+ */
+function isStoreScopedAccount(roleCodes = []) {
+  const roles = normalizeRoleCodes(roleCodes);
+  return roles.length > 0 && roles.every(roleCode => STORE_ONLY_ROLE_CODES.has(roleCode));
+}
+
 function isRegionScopedAccount(roleCodes = []) {
-  return roleCodes.some(roleCode => !STORE_ONLY_ROLE_CODES.has(String(roleCode || '').trim()));
+  return !isStoreScopedAccount(roleCodes);
 }
 
 /**
@@ -21,26 +36,21 @@ async function resolveConfiguredRegions(staff, roleCodes = []) {
     return { ids: ['*'], codes: ['*'], regions: [] };
   }
 
-  const permissions = await RegionPermission.findAll({
-    where: { staff_id: staff.staff_id, can_view: 1 },
-    attributes: ['region_code'],
+  // 区域仅作为已分配门店的派生信息使用，不再独立扩大账号的数据范围。
+  // 店员/店长仍兼容历史区域权限生成门店后，再由门店反推区域。
+  const accessibleStoreIds = await resolveAccessibleStoreIds(staff, roleCodes);
+  if (accessibleStoreIds.includes('*')) return { ids: ['*'], codes: ['*'], regions: [] };
+  if (accessibleStoreIds.length === 0) return { ids: [], codes: [], regions: [] };
+
+  const stores = await Store.findAll({
+    where: { store_id: { [Op.in]: accessibleStoreIds }, is_deleted: 0, status: 1 },
+    attributes: ['region_id'],
     raw: true
   });
-  const keys = uniqueIds(permissions.map(item => item.region_code));
-  if (!isRegionScopedAccount(roleCodes) && staff.region_id) keys.push(String(staff.region_id));
-  const uniqueKeys = uniqueIds(keys);
-  if (uniqueKeys.includes('*')) return { ids: ['*'], codes: ['*'], regions: [] };
-  if (uniqueKeys.length === 0) return { ids: [], codes: [], regions: [] };
-
+  const regionIds = uniqueIds(stores.map(store => store.region_id));
+  if (regionIds.length === 0) return { ids: [], codes: [], regions: [] };
   const regions = await Region.findAll({
-    where: {
-      status: 1,
-      [Op.or]: [
-        { region_id: { [Op.in]: uniqueKeys } },
-        { region_code: { [Op.in]: uniqueKeys } },
-        { name: { [Op.in]: uniqueKeys } }
-      ]
-    },
+    where: { region_id: { [Op.in]: regionIds }, status: 1 },
     attributes: ['region_id', 'region_code', 'name'],
     raw: true
   });
@@ -54,8 +64,8 @@ async function resolveConfiguredRegions(staff, roleCodes = []) {
 /**
  * 读取员工可访问门店。
  *
- * 新数据以 T_STAFF_STORE_PERMISSION 为准；没有精确门店权限时，才兼容旧版
- * T_STAFF.STORE_ID / T_REGION_PERMISSION，避免升级前已分配门店的店员失去权限。
+ * 新数据以 T_STAFF_STORE_PERMISSION 为准；没有精确门店权限时，仅兼容旧版
+ * T_STAFF.STORE_ID / T_REGION_PERMISSION，避免升级前已分配门店的纯门店账号失去权限。
  */
 async function resolveAccessibleStoreIds(staff, roleCodes = []) {
   if (roleCodes.includes('boss')) return ['*'];
@@ -73,6 +83,10 @@ async function resolveAccessibleStoreIds(staff, roleCodes = []) {
   });
   const assignedStoreIds = uniqueIds(permissions.map(item => item.store_id));
   if (assignedStoreIds.length > 0) return assignedStoreIds;
+
+  // 经销商级账号的精确门店权限是唯一事实来源；没有分配门店时必须返回空范围。
+  // 仅店员/店长保留旧账号的主门店/区域兼容逻辑。
+  if (!isStoreScopedAccount(roleCodes)) return [];
 
   const legacyPermissions = await RegionPermission.findAll({
     where: { staff_id: staff.staff_id, can_view: 1 },
@@ -112,4 +126,10 @@ function resolvePrimaryStoreId(staff, accessibleStoreIds) {
   return storeIds[0] || null;
 }
 
-module.exports = { resolveAccessibleStoreIds, resolvePrimaryStoreId, resolveConfiguredRegions, isRegionScopedAccount };
+module.exports = {
+  resolveAccessibleStoreIds,
+  resolvePrimaryStoreId,
+  resolveConfiguredRegions,
+  isRegionScopedAccount,
+  isStoreScopedAccount
+};

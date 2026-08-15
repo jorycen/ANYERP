@@ -196,7 +196,13 @@ async function getDailyStatement(ctx) {
   if (!user.accessibleStoreIds.includes('*')) {
     whereStore.store_id = user.accessibleStoreIds;
   }
-  if (storeId) whereStore.store_id = storeId;
+  if (storeId) {
+    const allowedStoreIds = (user.accessibleStoreIds || []).map(String);
+    if (!allowedStoreIds.includes('*') && !allowedStoreIds.includes(String(storeId))) {
+      ctx.throw(403, '无权访问该门店日结记录');
+    }
+    whereStore.store_id = storeId;
+  }
 
   const stores = await Store.findAll({ where: whereStore });
   const storeIds = stores.map(s => s.store_id);
@@ -618,7 +624,13 @@ async function getExpenseList(ctx) {
   if (!user.accessibleStoreIds.includes('*')) {
     whereStore.store_id = user.accessibleStoreIds;
   }
-  if (storeId) whereStore.store_id = storeId;
+  if (storeId) {
+    const allowedStoreIds = (user.accessibleStoreIds || []).map(String);
+    if (!allowedStoreIds.includes('*') && !allowedStoreIds.includes(String(storeId))) {
+      ctx.throw(403, '无权访问该门店费用记录');
+    }
+    whereStore.store_id = storeId;
+  }
 
   const stores = await Store.findAll({ where: whereStore });
   const storeIds = stores.map(s => s.store_id);

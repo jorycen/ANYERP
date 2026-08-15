@@ -749,19 +749,22 @@ const handleExport = async () => {
 }
 
 const loadStores = async () => {
-  if (storesLoaded.value) return
+  if (storesLoaded.value) return stores.value
   storesLoading.value = true
   try {
     const res = await api.getAllStores()
     if (res && res.code === 0 && Array.isArray(res.data)) {
       stores.value = res.data
       storesLoaded.value = true
+      return stores.value
     } else {
       stores.value = []
+      return []
     }
   } catch (err) {
     ElMessage.error('加载门店列表失败: ' + (err.message || ''))
     stores.value = []
+    return []
   } finally {
     storesLoading.value = false
   }
@@ -858,7 +861,12 @@ const onDepositChange = (depositId) => {
   paymentAmounts[methodName] = deposit ? Number(deposit.available_amount || deposit.amount || 0).toFixed(2) : 0
 }
 
-const handleCreate = () => {
+const handleCreate = async () => {
+  await loadStores()
+  if (!stores.value.length) {
+    ElMessage.warning('当前账号没有可选门店，请先配置门店权限')
+    return
+  }
   dialogTitle.value = '新建订单'
   resetForm()
   if (isStoreUser()) {
@@ -906,7 +914,12 @@ const loadDeposits = async () => {
   }
 }
 
-const openDepositCreate = () => {
+const openDepositCreate = async () => {
+  await loadStores()
+  if (!stores.value.length) {
+    ElMessage.warning('当前账号没有可选门店，请先配置门店权限')
+    return
+  }
   resetDepositForm()
   if (isStoreUser()) {
     depositForm.storeId = getStoreId()

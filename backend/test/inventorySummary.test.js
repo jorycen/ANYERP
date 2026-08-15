@@ -104,13 +104,14 @@ test('inventory model quick filters classify the three product types and special
 
 test('inventory model quick filters sort hot and high-margin models by the latest seven days', () => {
   const rows = [
-    { sales_7_qty: 2, gross_margin_7: 0.3, gross_profit_7: 300 },
-    { sales_7_qty: 5, gross_margin_7: 0.2, gross_profit_7: 400 }
+    { sales_7_qty: 2, gross_margin_7: 0.3, gross_profit_7: 300, avg_gross_profit_7: 300 },
+    { sales_7_qty: 5, gross_margin_7: 0.2, gross_profit_7: 400, avg_gross_profit_7: 200 }
   ];
   assert.equal(_test.compareInventoryModelRows(rows[1], rows[0], 'hot7') < 0, true);
   assert.equal(_test.compareInventoryModelRows(rows[0], rows[1], 'highMargin7') < 0, true);
   assert.equal(_test.matchesInventoryModelFilter({ is_focus_product: 1 }, {}, 'focus'), true);
   assert.equal(_test.matchesInventoryModelFilter({}, { sales_7_qty: 0 }, 'hot7'), false);
+  assert.equal(_test.matchesInventoryModelFilter({}, { avg_gross_profit_7: 0 }, 'highMargin7'), false);
 });
 
 test('inventory export expands one product into store rows and keeps store-specific quantities', () => {

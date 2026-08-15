@@ -28,9 +28,10 @@ const {
   isUsablePnCode,
   assertSingleSnProductPn
 } = require('../../utils/productPn');
-const { ensureProductPnsMaster } = require('../../utils/productPnMaster');
+const { ensureProductPnsMaster, syncProductPnsMaster } = require('../../utils/productPnMaster');
 const XLSX = require('xlsx');
 const { getUserRoles } = require('../../middleware/permission');
+const { sendExcel } = require('../../utils/excelExport');
 
 // 字段标识到数据库列名的映射（field_key → DB column）
 const FIELD_TO_COLUMN = {
@@ -558,13 +559,64 @@ async function resolveProductApplicationName(body) {
   return { finalName: String(finalName || '').trim(), parsedAttrs: parsedAttrs || {} };
 }
 
+function resolveProductApplicationPnCode(body = {}) {
+  const directCandidates = [
+    body.pnCode,
+    body.pn_code,
+    body.pn,
+    body.manufacturerCode,
+    body.manufacturer_code
+  ];
+  for (const candidate of directCandidates) {
+    const code = splitPnCodes(candidate).find(item => isUsablePnCode(item));
+    if (code) return code;
+  }
+
+  const manufacturerBarcode = Array.isArray(body.barcodes)
+    ? body.barcodes.find(item => {
+        const type = String(item?.type || 'manufacturer').trim().toLowerCase();
+        return ['manufacturer', 'manufacturer_code', 'pn'].includes(type) && item?.code;
+      })
+    : null;
+  return splitPnCodes(manufacturerBarcode?.code).find(item => isUsablePnCode(item)) || '';
+}
+
+function hasProductApplicationValue(value) {
+  if (Array.isArray(value)) return value.some(item => hasProductApplicationValue(item));
+  return value !== undefined && value !== null && String(value).trim() !== '';
+}
+
+async function validateProductApplicationInput(body = {}, { finalName, parsedAttrs } = {}) {
+  if (!String(body.categoryId || '').trim()) {
+    throw Object.assign(new Error('商品分类不能为空'), { status: 400 });
+  }
+  if (!String(finalName || '').trim()) {
+    throw Object.assign(new Error('商品名称不能为空'), { status: 400 });
+  }
+
+  const fields = await ProductCategoryField.findAll({
+    where: { category_id: body.categoryId, status: 1 },
+    order: [['sort_order', 'ASC']],
+    raw: true
+  });
+  const attrs = parsedAttrs && typeof parsedAttrs === 'object' ? parsedAttrs : {};
+  const missingField = fields.find(field => Number(field.required) === 1 && !hasProductApplicationValue(attrs[field.field_key]));
+  if (missingField) {
+    throw Object.assign(new Error(`请填写${missingField.field_label}`), { status: 400 });
+  }
+
+  const pnCode = resolveProductApplicationPnCode(body);
+  if (!pnCode) {
+    throw Object.assign(new Error('PN码不能为空'), { status: 400 });
+  }
+  return { pnCode };
+}
+
 function productApplicationPayload(body, finalName, parsedAttrs) {
   const submittedBarcodes = Array.isArray(body.barcodes)
     ? body.barcodes.map(item => ({ type: item.type || 'manufacturer', code: item.code || '' })).filter(item => item.code)
     : [];
-  const pnCode = String(
-    body.pnCode || body.pn_code || body.pn || body.manufacturerCode || body.manufacturer_code || ''
-  ).trim();
+  const pnCode = resolveProductApplicationPnCode(body);
   if (pnCode && !submittedBarcodes.some(item => String(item.code) === pnCode)) {
     submittedBarcodes.unshift({ type: 'manufacturer', code: pnCode });
   }
@@ -575,6 +627,8 @@ function productApplicationPayload(body, finalName, parsedAttrs) {
   return {
     name: finalName,
     categoryId: body.categoryId || null,
+    pnCode,
+    manufacturerCode: pnCode || body.manufacturerCode || body.manufacturer_code || '',
     config: body.config || '',
     needSn: body.needSn ? 1 : 0,
     needImei: body.needImei ? 1 : 0,
@@ -583,7 +637,6 @@ function productApplicationPayload(body, finalName, parsedAttrs) {
     barcodes: submittedBarcodes,
     attributes: parsedAttrs,
     status: 1,
-    manufacturerCode: body.manufacturerCode || body.manufacturer_code || '',
     labelPhotoIds,
     labelPhotoUrls,
     labelPhotoUrl: body.labelPhotoUrl || body.label_photo_url || (Array.isArray(labelPhotoIds) ? labelPhotoIds[0] || '' : ''),
@@ -682,16 +735,10 @@ async function createProduct(ctx) {
 
 async function submitProductApplication(ctx) {
   const { finalName, parsedAttrs } = await resolveProductApplicationName(ctx.request.body);
-  if (!finalName) ctx.throw(400, '商品名称不能为空');
-  if (!ctx.request.body.categoryId) ctx.throw(400, '商品分类不能为空');
-  const pnCode = String(
-    ctx.request.body.pnCode || ctx.request.body.pn_code || ctx.request.body.pn ||
-    ctx.request.body.manufacturerCode || ctx.request.body.manufacturer_code ||
-    ((ctx.request.body.barcodes || []).find(item => item && item.code) || {}).code || ''
-  ).trim();
-  if (!pnCode) ctx.throw(400, 'PN码不能为空');
+  await validateProductApplicationInput(ctx.request.body, { finalName, parsedAttrs });
 
   const categoryPath = await resolveCategoryPath(ctx.request.body.categoryId);
+  if (!categoryPath) ctx.throw(400, '商品分类不存在或已停用');
   const payload = productApplicationPayload(ctx.request.body, finalName, parsedAttrs);
   const applicationId = generateUUID();
   const applicationNo = `PA${Date.now()}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`;
@@ -881,13 +928,9 @@ async function reviewProductApplication(ctx) {
       const payload = Object.assign({}, storedPayload || {}, editedPayload && typeof editedPayload === 'object' ? editedPayload : {});
       const resolved = await resolveProductApplicationName(payload);
       finalName = resolved.finalName;
-      if (!finalName) ctx.throw(400, 'Product name is required');
-      if (!payload.categoryId) ctx.throw(400, 'Product category is required');
-      if (!String(payload.pnCode || payload.pn_code || payload.pn || payload.manufacturerCode || payload.manufacturer_code || '').trim() &&
-        !(Array.isArray(payload.barcodes) && payload.barcodes.some(item => item && String(item.code || '').trim()))) {
-        ctx.throw(400, 'PN code is required');
-      }
+      await validateProductApplicationInput(payload, { finalName, parsedAttrs: resolved.parsedAttrs });
       categoryPath = await resolveCategoryPath(payload.categoryId);
+      if (!categoryPath) ctx.throw(400, '商品分类不存在或已停用');
       nextPayload = productApplicationPayload(payload, finalName, resolved.parsedAttrs);
       created = await createProductRecord(nextPayload, transaction);
     }
@@ -929,7 +972,7 @@ async function updateProduct(ctx) {
   const body = ctx.request.body;
   const {
     name, categoryId, config, needSn, needImei, unit, remark, barcodes, status,
-    attributes, manufacturerCode, manufacturer_code, isFocusProduct, is_focus_product
+    attributes, manufacturerCode, manufacturer_code, isFocusProduct, is_focus_product, pns
   } = body;
   const manufacturerInput = manufacturerCode !== undefined ? manufacturerCode : manufacturer_code;
 
@@ -959,7 +1002,10 @@ async function updateProduct(ctx) {
     const focusValue = isFocusProduct ?? is_focus_product;
     updateData.is_focus_product = focusValue === true || Number(focusValue) === 1 ? 1 : 0;
   }
-  if (manufacturerInput !== undefined) {
+  if (Array.isArray(pns)) {
+    const submittedPnCodes = pns.map(item => item?.pnCode ?? item?.pn_code ?? '');
+    updateData.manufacturer_code = splitPnCodes(submittedPnCodes).join(', ');
+  } else if (manufacturerInput !== undefined) {
     updateData.manufacturer_code = getManufacturerCodes([], manufacturerInput).join(', ');
   }
   if (attributes !== undefined) {
@@ -975,7 +1021,7 @@ async function updateProduct(ctx) {
     updateData.extras = Object.keys(extras).length > 0 ? JSON.stringify(extras) : null;
   }
 
-  if (barcodes !== undefined) {
+  if (barcodes !== undefined && !Array.isArray(pns)) {
     updateData.manufacturer_code = getManufacturerCodes(barcodes, manufacturerInput).join(', ');
   }
 
@@ -1002,10 +1048,14 @@ async function updateProduct(ctx) {
       }
     }
 
-    const nextCodes = barcodes !== undefined
-      ? getManufacturerCodes(barcodes, manufacturerInput)
-      : (manufacturerInput !== undefined ? getManufacturerCodes([], manufacturerInput) : []);
-    await ensureProductPns(productId, nextCodes, transaction);
+    if (Array.isArray(pns)) {
+      await syncProductPnsMaster({ productId, pns, transaction });
+    } else {
+      const nextCodes = barcodes !== undefined
+        ? getManufacturerCodes(barcodes, manufacturerInput)
+        : (manufacturerInput !== undefined ? getManufacturerCodes([], manufacturerInput) : []);
+      await ensureProductPns(productId, nextCodes, transaction);
+    }
     await transaction.commit();
   } catch (error) {
     await transaction.rollback();
@@ -1331,11 +1381,7 @@ async function applyPendingProductPriceChanges() {
   return applied;
 }
 
-async function getPriceList(ctx) {
-  await applyPendingProductPriceChanges();
-
-  const { keyword, page = 1, pageSize = 20 } = ctx.query;
-
+async function buildPriceProductWhere(keyword) {
   const productWhere = { is_deleted: 0 };
   if (keyword) {
     const keywordLike = `%${keyword}%`;
@@ -1367,6 +1413,14 @@ async function getPriceList(ctx) {
       ...(matchedProductIds.length > 0 ? [{ product_id: { [Op.in]: matchedProductIds } }] : [])
     ];
   }
+  return productWhere;
+}
+
+async function getPriceList(ctx) {
+  await applyPendingProductPriceChanges();
+
+  const { keyword, page = 1, pageSize = 20 } = ctx.query;
+  const productWhere = await buildPriceProductWhere(keyword);
 
   const { count, rows } = await Product.findAndCountAll({
     where: productWhere,
@@ -1416,6 +1470,60 @@ async function getPriceList(ctx) {
   }));
 
   ctx.body = formatPaginatedResult(list, { page, pageSize, count });
+}
+
+async function exportCostPrices(ctx) {
+  await applyPendingProductPriceChanges();
+
+  const productWhere = await buildPriceProductWhere(ctx.query.keyword);
+  const products = await Product.findAll({
+    where: productWhere,
+    attributes: ['product_id', 'product_code', 'manufacturer_code', 'name', 'unit', 'category'],
+    include: [
+      { model: ProductPrice, attributes: ['standard_price', 'cost_price'] }
+    ],
+    order: [['product_code', 'DESC']]
+  });
+
+  const productIds = products.map(product => product.product_id).filter(Boolean);
+  const barcodeRows = productIds.length > 0
+    ? await ProductBarcode.findAll({
+        where: {
+          product_id: { [Op.in]: productIds },
+          barcode_type: 'manufacturer',
+          status: 1
+        },
+        attributes: ['product_id', 'barcode_code'],
+        order: [['sort_order', 'ASC']],
+        raw: true
+      })
+    : [];
+  const manufacturerCodeMap = new Map();
+  for (const row of barcodeRows) {
+    const codes = manufacturerCodeMap.get(row.product_id) || [];
+    if (row.barcode_code) codes.push(row.barcode_code);
+    manufacturerCodeMap.set(row.product_id, codes);
+  }
+
+  const rows = products.map(product => ({
+    '商品编码': product.product_code,
+    '厂商编码': splitPnCodes(product.manufacturer_code).length > 0
+      ? splitPnCodes(product.manufacturer_code).join(', ')
+      : (manufacturerCodeMap.get(product.product_id) || []).join(', '),
+    '商品名称': product.name,
+    '分类': product.category || '',
+    '单位': product.unit || '',
+    '库存成本': Number(product.ProductPrice?.cost_price || 0),
+    '产品定价': Number(product.ProductPrice?.standard_price || 0)
+  }));
+
+  sendExcel(
+    ctx,
+    rows,
+    ['商品编码', '厂商编码', '商品名称', '分类', '单位', '库存成本', '产品定价'],
+    `商品成本导出_${new Date().toISOString().slice(0, 10)}.xlsx`,
+    '商品成本'
+  );
 }
 
 async function setPrice(ctx) {
@@ -3061,8 +3169,16 @@ module.exports = {
     ctx.body = { code: 0, message: '删除成功' };
   },
   getCategoryTree, createCategory, updateCategory, deleteCategory, sortCategories,
-  getPriceList, setPrice, refreshCostPrice, batchRefreshCost, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory, applyPendingProductPriceChanges,
+  getPriceList, exportCostPrices, setPrice, refreshCostPrice, batchRefreshCost, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory, applyPendingProductPriceChanges,
   getProductImportTask, recoverProductImportTasks,
   getPnList, addPn, searchProduct,
-  _test: { parseImportWorkbook, importTaskData, normalizePnCode, splitPnCodes, ensureProductPns }
+  _test: {
+    parseImportWorkbook,
+    importTaskData,
+    normalizePnCode,
+    splitPnCodes,
+    ensureProductPns,
+    resolveProductApplicationPnCode,
+    hasProductApplicationValue
+  }
 };
