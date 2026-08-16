@@ -1901,7 +1901,7 @@ async function snTrace(ctx) {
       timeline.push({
         id: `sn-record-${snData.sn_id}`,
         type: 'stock_record',
-        label: '\u5e93\u5b58SN\u8bb0\u5f55',
+        label: '\u5df2\u5f52\u6863',
         description: `PN: ${snData.pn_code || '-'}; \u8bb0\u5f55\u65f6\u95f4: ${snData.inbound_time}`,
         user: '-', time: snData.inbound_time
       });

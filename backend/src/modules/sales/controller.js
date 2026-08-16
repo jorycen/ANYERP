@@ -2260,6 +2260,36 @@ async function availableDeposits(ctx) {
   ctx.body = { code: 0, data: availableRows, message: 'success' };
 }
 
+function inventoryNumber(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function getInventoryNormalQuantity(inv) {
+  const detailTotal = ['regular_qty', 'subsidy_qty', 'second_qty']
+    .reduce((sum, field) => sum + inventoryNumber(inv[field]), 0);
+  return Math.max(inventoryNumber(inv.normal_qty), detailTotal);
+}
+
+function getInventorySaleableQuantity(inv) {
+  return getInventoryNormalQuantity(inv) + inventoryNumber(inv.display_qty);
+}
+
+async function findStoreInventoryRows(productId, storeId, transaction = null, locationId = '') {
+  const where = { product_id: productId, store_id: storeId };
+  if (locationId) where.location_id = locationId;
+
+  const options = {
+    where,
+    order: [['location_id', 'ASC'], ['inventory_id', 'ASC']]
+  };
+  if (transaction) {
+    options.transaction = transaction;
+    options.lock = transaction.LOCK.UPDATE;
+  }
+  return Inventory.findAll(options);
+}
+
 async function getProductPns(ctx) {
   const { storeId, productId } = ctx.params;
   const product = await Product.findByPk(productId);
@@ -2283,12 +2313,11 @@ async function getProductPns(ctx) {
     return;
   }
 
-  const inv = storeId ? await Inventory.findOne({ where: { product_id: productId, store_id: storeId } }) : null;
-  const normalStock = inv ? Math.max(
-    Number(inv.normal_qty || 0),
-    Number(inv.regular_qty || 0) + Number(inv.subsidy_qty || 0) + Number(inv.second_qty || 0)
-  ) : 0;
-  const totalStock = inv ? normalStock + Number(inv.display_qty || 0) : 0;
+  const inventoryRows = storeId ? await findStoreInventoryRows(productId, storeId) : [];
+  const totalStock = inventoryRows.reduce(
+    (sum, inv) => sum + getInventorySaleableQuantity(inv),
+    0
+  );
   if (totalStock <= 0) {
     ctx.body = { code: 0, data: [] };
     return;
@@ -3261,7 +3290,13 @@ async function reserveInventoryForOrder(order, transaction = null) {
         throw archiveError(`SN码 [${snCode}] 在当前门店没有可用库存，不能提交订单`);
       }
 
-      operations.push({ item, quantity, snRecord, inventoryType: snRecord.inventory_type || 'normal_qty' });
+      operations.push({
+        item,
+        quantity,
+        snRecord,
+        inventoryType: snRecord.inventory_type || 'normal_qty',
+        locationId: snRecord.location_id || ''
+      });
     } else {
       await assertAvailableInventory(item, product, order.store_id, quantity, '提交订单', transaction);
       operations.push({ item, quantity, inventoryType: 'normal_qty' });
@@ -3275,7 +3310,14 @@ async function reserveInventoryForOrder(order, transaction = null) {
         await op.item.update({ sn_id: op.snRecord.sn_id }, { transaction });
       }
     }
-    await _moveInventoryToPending(op.item.product_id, order.store_id, op.inventoryType, op.quantity, transaction);
+    await _moveInventoryToPending(
+      op.item.product_id,
+      order.store_id,
+      op.inventoryType,
+      op.quantity,
+      transaction,
+      op.locationId || ''
+    );
   }
 }
 
@@ -3284,6 +3326,7 @@ async function releaseReservedInventoryForOrder(order, transaction = null) {
   for (const item of items) {
     const quantity = Number(item.quantity || 1);
     let inventoryType = 'normal_qty';
+    let locationId = '';
 
     if (item.sn_code) {
       const snWhere = {
@@ -3297,28 +3340,25 @@ async function releaseReservedInventoryForOrder(order, transaction = null) {
       const snRecord = await ProductSn.findOne({ where: snWhere, transaction });
       if (snRecord) {
         inventoryType = snRecord.inventory_type || 'normal_qty';
+        locationId = snRecord.location_id || '';
         await snRecord.update({ status: 'in_stock' }, { transaction });
       }
     }
 
-    await _releasePendingInventory(item.product_id, order.store_id, inventoryType, quantity, transaction);
+    await _releasePendingInventory(item.product_id, order.store_id, inventoryType, quantity, transaction, locationId);
   }
 }
 
 async function assertAvailableInventory(item, product, storeId, quantity, actionText, transaction = null) {
-  const inv = await Inventory.findOne({
-    where: { product_id: item.product_id, store_id: storeId },
-    transaction
-  });
-  const normalStock = inv ? Math.max(
-    Number(inv.normal_qty || 0),
-    Number(inv.regular_qty || 0) + Number(inv.subsidy_qty || 0) + Number(inv.second_qty || 0)
-  ) : 0;
-  const totalStock = inv ? normalStock + Number(inv.display_qty || 0) : 0;
+  const inventoryRows = await findStoreInventoryRows(item.product_id, storeId, transaction);
+  const totalStock = inventoryRows.reduce(
+    (sum, inv) => sum + getInventorySaleableQuantity(inv),
+    0
+  );
   if (totalStock < quantity) {
     throw archiveError(`商品 ${item.product_name || product.name} 库存不足(可用:${totalStock}, 需要:${quantity})，不能${actionText}`);
   }
-  return inv;
+  return inventoryRows;
 }
 
 async function validateAndDeductInventoryForArchive(order, transaction = null) {
@@ -3368,6 +3408,7 @@ async function validateAndDeductInventoryForArchive(order, transaction = null) {
     : [];
   const productMap = new Map(products.map(product => [String(product.product_id), product]));
   const operations = [];
+  const inventoryAvailability = new Map();
 
   for (const item of items) {
     const product = productMap.get(String(item.product_id || ''));
@@ -3407,7 +3448,8 @@ async function validateAndDeductInventoryForArchive(order, transaction = null) {
         quantity,
         snRecord,
         inventoryType: snRecord.inventory_type || 'normal_qty',
-        fromPending: snRecord.status === 'reserved'
+        fromPendingQuantity: snRecord.status === 'reserved' ? quantity : 0,
+        locationId: snRecord.location_id || ''
       });
     } else {
       if (snCode) {
@@ -3428,26 +3470,32 @@ async function validateAndDeductInventoryForArchive(order, transaction = null) {
           await item.update({ sn_id: optionalSn.sn_id }, { transaction });
         }
       }
-      const inv = await Inventory.findOne({
-        where: { product_id: item.product_id, store_id: order.store_id },
-        transaction
-      });
-      const pendingStock = inv ? Number(inv.pending_qty || 0) : 0;
-      const normalStock = inv ? Math.max(
-        Number(inv.normal_qty || 0),
-        Number(inv.regular_qty || 0) + Number(inv.subsidy_qty || 0) + Number(inv.second_qty || 0)
-      ) : 0;
-      const totalStock = inv ? normalStock + Number(inv.display_qty || 0) + pendingStock : 0;
+      let availability = inventoryAvailability.get(String(item.product_id));
+      if (!availability) {
+        const inventoryRows = await findStoreInventoryRows(item.product_id, order.store_id, transaction);
+        availability = {
+          saleable: inventoryRows.reduce((sum, inv) => sum + getInventorySaleableQuantity(inv), 0),
+          pending: Number(order.inventory_reserved) === 1
+            ? inventoryRows.reduce((sum, inv) => sum + inventoryNumber(inv.pending_qty), 0)
+            : 0
+        };
+        inventoryAvailability.set(String(item.product_id), availability);
+      }
+      const totalStock = availability.saleable + availability.pending;
       if (totalStock < quantity) {
         throw archiveError(`商品 ${item.product_name || product.name} 库存不足(可用:${totalStock}, 需要:${quantity})，不能归档`);
       }
+
+      const fromPendingQuantity = Math.min(availability.pending, quantity);
+      availability.pending -= fromPendingQuantity;
+      availability.saleable -= quantity - fromPendingQuantity;
 
       operations.push({
         item,
         product,
         quantity,
         inventoryType: 'normal_qty',
-        fromPending: pendingStock >= quantity
+        fromPendingQuantity
       });
     }
   }
@@ -3460,10 +3508,25 @@ async function validateAndDeductInventoryForArchive(order, transaction = null) {
       }
     }
 
-    if (op.fromPending) {
-      await _finalizePendingInventory(op.item.product_id, order.store_id, op.quantity, transaction);
-    } else {
-      await _deductInventory(op.item.product_id, order.store_id, op.inventoryType, op.quantity, transaction);
+    if (op.fromPendingQuantity > 0) {
+      await _finalizePendingInventory(
+        op.item.product_id,
+        order.store_id,
+        op.fromPendingQuantity,
+        transaction,
+        op.locationId || ''
+      );
+    }
+    const remainingQuantity = op.quantity - (op.fromPendingQuantity || 0);
+    if (remainingQuantity > 0) {
+      await _deductInventory(
+        op.item.product_id,
+        order.store_id,
+        op.inventoryType,
+        remainingQuantity,
+        transaction,
+        op.locationId || ''
+      );
     }
   }
 }
@@ -3537,112 +3600,152 @@ const INVENTORY_COLUMN_MAP = {
   pending_qty: 'pending_qty'
 };
 
-async function _deductInventory(productId, storeId, inventoryType, quantity, transaction = null) {
+async function _deductInventory(productId, storeId, inventoryType, quantity, transaction = null, locationId = '') {
   const column = INVENTORY_COLUMN_MAP[inventoryType] || 'normal_qty';
-  const inv = await Inventory.findOne({
-    where: { product_id: productId, store_id: storeId },
-    transaction
-  });
-  if (inv) {
-    const qty = Number(quantity) || 0;
-    const detailColumns = ['regular_qty', 'subsidy_qty', 'second_qty'];
-    const detailTotal = detailColumns.reduce((sum, key) => sum + Number(inv[key] || 0), 0);
-    const currentVal = column === 'normal_qty'
-      ? Math.max(Number(inv.normal_qty || 0), detailTotal)
-      : Number(inv[column] || 0);
-    const deductFromColumn = Math.min(currentVal, qty);
-    let remaining = qty - deductFromColumn;
-    const payload = { [column]: currentVal - deductFromColumn };
+  let remaining = Math.max(0, inventoryNumber(quantity));
+  if (remaining <= 0) return;
 
-    if (column === 'normal_qty') {
-      let detailRemaining = deductFromColumn;
-      for (const detailColumn of detailColumns) {
-        if (detailRemaining <= 0) break;
-        const currentDetail = Number(inv[detailColumn] || 0);
-        const deduct = Math.min(currentDetail, detailRemaining);
-        payload[detailColumn] = currentDetail - deduct;
-        detailRemaining -= deduct;
-      }
-
-      if (remaining > 0) {
-        const displayQty = Number(inv.display_qty || 0);
-        const displayDeduct = Math.min(displayQty, remaining);
-        payload.display_qty = displayQty - displayDeduct;
-      }
+  const rows = await findStoreInventoryRows(productId, storeId, transaction, locationId);
+  if (column === 'normal_qty') {
+    for (const row of rows) {
+      if (remaining <= 0) break;
+      const current = getInventoryNormalQuantity(row);
+      const deduct = Math.min(current, remaining);
+      if (deduct <= 0) continue;
+      await deductNormalFromRow(row, deduct, transaction);
+      remaining -= deduct;
     }
 
-    await inv.update(payload, { transaction });
+    for (const row of rows) {
+      if (remaining <= 0) break;
+      const current = inventoryNumber(row.display_qty);
+      const deduct = Math.min(current, remaining);
+      if (deduct <= 0) continue;
+      await row.update({ display_qty: current - deduct }, { transaction });
+      remaining -= deduct;
+    }
+  } else {
+    for (const row of rows) {
+      if (remaining <= 0) break;
+      const current = inventoryNumber(row[column]);
+      const deduct = Math.min(current, remaining);
+      if (deduct <= 0) continue;
+      await row.update({ [column]: current - deduct }, { transaction });
+      remaining -= deduct;
+    }
+  }
+
+  if (remaining > 0) {
+    throw archiveError(`商品 ${productId} 库存不足，不能扣减库存`);
   }
 }
 
-async function _moveInventoryToPending(productId, storeId, inventoryType, quantity, transaction = null) {
+async function deductNormalFromRow(row, quantity, transaction = null, pendingQuantity = 0) {
+  const deduct = Math.min(getInventoryNormalQuantity(row), Math.max(0, inventoryNumber(quantity)));
+  if (deduct <= 0) return 0;
+
+  const detailColumns = ['regular_qty', 'subsidy_qty', 'second_qty'];
+  const payload = {
+    normal_qty: Math.max(0, getInventoryNormalQuantity(row) - deduct)
+  };
+  let detailRemaining = deduct;
+  for (const detailColumn of detailColumns) {
+    if (detailRemaining <= 0) break;
+    const currentDetail = inventoryNumber(row[detailColumn]);
+    const detailDeduct = Math.min(currentDetail, detailRemaining);
+    payload[detailColumn] = currentDetail - detailDeduct;
+    detailRemaining -= detailDeduct;
+  }
+  if (pendingQuantity > 0) {
+    payload.pending_qty = inventoryNumber(row.pending_qty) + pendingQuantity;
+  }
+
+  await row.update(payload, { transaction });
+  return deduct;
+}
+
+async function _moveInventoryToPending(productId, storeId, inventoryType, quantity, transaction = null, locationId = '') {
   const column = INVENTORY_COLUMN_MAP[inventoryType] || 'normal_qty';
-  const inv = await Inventory.findOne({
-    where: { product_id: productId, store_id: storeId },
-    transaction
-  });
-  if (!inv) {
+  let remaining = Math.max(0, inventoryNumber(quantity));
+  if (remaining <= 0) return;
+
+  const rows = await findStoreInventoryRows(productId, storeId, transaction, locationId);
+  if (rows.length === 0) {
     throw archiveError(`商品 ${productId} 库存不存在，不能占用`);
   }
 
-  const qty = Number(quantity) || 0;
-  const detailColumns = ['regular_qty', 'subsidy_qty', 'second_qty'];
-  const detailTotal = detailColumns.reduce((sum, key) => sum + Number(inv[key] || 0), 0);
-  const currentVal = column === 'normal_qty'
-    ? Math.max(Number(inv.normal_qty || 0), detailTotal)
-    : Number(inv[column] || 0);
-  const deductFromColumn = Math.min(currentVal, qty);
-  let remaining = qty - deductFromColumn;
-  const payload = {
-    [column]: currentVal - deductFromColumn,
-    pending_qty: Number(inv.pending_qty || 0) + qty
-  };
-
   if (column === 'normal_qty') {
-    let detailRemaining = deductFromColumn;
-    for (const detailColumn of detailColumns) {
-      if (detailRemaining <= 0) break;
-      const currentDetail = Number(inv[detailColumn] || 0);
-      const deduct = Math.min(currentDetail, detailRemaining);
-      payload[detailColumn] = currentDetail - deduct;
-      detailRemaining -= deduct;
+    for (const row of rows) {
+      if (remaining <= 0) break;
+      const deduct = Math.min(getInventoryNormalQuantity(row), remaining);
+      if (deduct <= 0) continue;
+      await deductNormalFromRow(row, deduct, transaction, deduct);
+      remaining -= deduct;
     }
 
-    if (remaining > 0) {
-      const displayQty = Number(inv.display_qty || 0);
-      const displayDeduct = Math.min(displayQty, remaining);
-      payload.display_qty = displayQty - displayDeduct;
+    for (const row of rows) {
+      if (remaining <= 0) break;
+      const current = inventoryNumber(row.display_qty);
+      const deduct = Math.min(current, remaining);
+      if (deduct <= 0) continue;
+      await row.update({
+        display_qty: current - deduct,
+        pending_qty: inventoryNumber(row.pending_qty) + deduct
+      }, { transaction });
+      remaining -= deduct;
+    }
+  } else {
+    for (const row of rows) {
+      if (remaining <= 0) break;
+      const current = inventoryNumber(row[column]);
+      const deduct = Math.min(current, remaining);
+      if (deduct <= 0) continue;
+      await row.update({
+        [column]: current - deduct,
+        pending_qty: inventoryNumber(row.pending_qty) + deduct
+      }, { transaction });
+      remaining -= deduct;
     }
   }
 
-  await inv.update(payload, { transaction });
+  if (remaining > 0) {
+    throw archiveError(`商品 ${productId} 库存不足，不能占用库存`);
+  }
 }
 
-async function _finalizePendingInventory(productId, storeId, quantity, transaction = null) {
-  const inv = await Inventory.findOne({
-    where: { product_id: productId, store_id: storeId },
-    transaction
-  });
-  if (!inv) return;
-  const qty = Number(quantity) || 0;
-  await inv.update({
-    pending_qty: Math.max(0, Number(inv.pending_qty || 0) - qty)
-  }, { transaction });
+async function _finalizePendingInventory(productId, storeId, quantity, transaction = null, locationId = '') {
+  let remaining = Math.max(0, inventoryNumber(quantity));
+  if (remaining <= 0) return;
+  const rows = await findStoreInventoryRows(productId, storeId, transaction, locationId);
+  for (const row of rows) {
+    if (remaining <= 0) break;
+    const current = inventoryNumber(row.pending_qty);
+    const finalize = Math.min(current, remaining);
+    if (finalize <= 0) continue;
+    await row.update({ pending_qty: current - finalize }, { transaction });
+    remaining -= finalize;
+  }
+  if (remaining > 0) {
+    throw archiveError(`商品 ${productId} 占用库存不足，不能归档`);
+  }
 }
 
-async function _releasePendingInventory(productId, storeId, inventoryType, quantity, transaction = null) {
+async function _releasePendingInventory(productId, storeId, inventoryType, quantity, transaction = null, locationId = '') {
   const column = INVENTORY_COLUMN_MAP[inventoryType] || 'normal_qty';
-  const inv = await Inventory.findOne({
-    where: { product_id: productId, store_id: storeId },
-    transaction
-  });
-  if (!inv) return;
-  const qty = Number(quantity) || 0;
-  const releaseQty = Math.min(Number(inv.pending_qty || 0), qty);
-  await inv.update({
-    pending_qty: Math.max(0, Number(inv.pending_qty || 0) - releaseQty),
-    [column]: Number(inv[column] || 0) + releaseQty
-  }, { transaction });
+  let remaining = Math.max(0, inventoryNumber(quantity));
+  if (remaining <= 0) return;
+  const rows = await findStoreInventoryRows(productId, storeId, transaction, locationId);
+  for (const row of rows) {
+    if (remaining <= 0) break;
+    const currentPending = inventoryNumber(row.pending_qty);
+    const releaseQty = Math.min(currentPending, remaining);
+    if (releaseQty <= 0) continue;
+    await row.update({
+      pending_qty: currentPending - releaseQty,
+      [column]: inventoryNumber(row[column]) + releaseQty
+    }, { transaction });
+    remaining -= releaseQty;
+  }
 }
 
 /**
