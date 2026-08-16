@@ -545,8 +545,9 @@ Page({
     if (order.subsidyStatus === '国补') {
       order.subsidyPerson = order.subsidyPerson || order.contactName || '';
       order.subsidyId = order.subsidyId || order.contactMethod || '';
-      if (!order.invoiceAmount && guobuPaymentAmount > 0) {
-        order.invoiceAmount = guobuPaymentAmount.toFixed(2);
+      if (!order.invoiceAmount && (guobuPaymentAmount > 0 || (parseFloat(order.nationalSubsidy) || 0) > 0)) {
+        const originalGuobuAmount = (parseFloat(order.computerAmount) || 0) + (parseFloat(order.mobileAmount) || 0);
+        order.invoiceAmount = (originalGuobuAmount > 0 ? originalGuobuAmount : (parseFloat(order.actualAmount) || 0)).toFixed(2);
       }
     }
 
@@ -1295,11 +1296,12 @@ Page({
     }, 0);
   },
 
-  getDefaultInvoiceAmount: function (paymentMethods) {
+  getDefaultInvoiceAmount: function (paymentMethods, subsidyStatusOverride) {
     const originalGuobuAmount = (parseFloat(this.data.computerAmount) || 0) + (parseFloat(this.data.mobileAmount) || 0);
-    if (originalGuobuAmount > 0) return originalGuobuAmount.toFixed(2);
-    const guobuAmount = this.getGuobuPaymentAmount(paymentMethods || this.data.paymentMethods);
-    if (guobuAmount > 0) return guobuAmount.toFixed(2);
+    const isGuobu = (subsidyStatusOverride || this.data.subsidyStatus) === '国补' ||
+      (parseFloat(this.data.nationalSubsidy) || 0) > 0 ||
+      this.getGuobuPaymentAmount(paymentMethods || this.data.paymentMethods) > 0;
+    if (isGuobu && originalGuobuAmount > 0) return originalGuobuAmount.toFixed(2);
     const actualAmount = parseFloat(this.data.actualAmount) || 0;
     return actualAmount > 0 ? actualAmount.toFixed(2) : '';
   },
@@ -2019,7 +2021,10 @@ Page({
       computerAmount: value,
       nationalSubsidy: totalNationalSubsidy.toFixed(2),
       subsidyStatus: totalNationalSubsidy > 0 ? '国补' : '非国补',
-      invoiceStatus: totalNationalSubsidy > 0 ? '开普票' : this.data.invoiceStatus
+      invoiceStatus: totalNationalSubsidy > 0 ? '开普票' : this.data.invoiceStatus,
+      invoiceAmount: totalNationalSubsidy > 0
+        ? this.getDefaultInvoiceAmount(this.data.paymentMethods, '国补')
+        : (this.data.invoiceStatus === '不开票' ? 0 : this.getDefaultInvoiceAmount(this.data.paymentMethods, '非国补'))
     });
     this.recalculateAmounts();
   },
@@ -2040,7 +2045,10 @@ Page({
       mobileAmount: value,
       nationalSubsidy: totalNationalSubsidy.toFixed(2),
       subsidyStatus: totalNationalSubsidy > 0 ? '国补' : '非国补',
-      invoiceStatus: totalNationalSubsidy > 0 ? '开普票' : this.data.invoiceStatus
+      invoiceStatus: totalNationalSubsidy > 0 ? '开普票' : this.data.invoiceStatus,
+      invoiceAmount: totalNationalSubsidy > 0
+        ? this.getDefaultInvoiceAmount(this.data.paymentMethods, '国补')
+        : (this.data.invoiceStatus === '不开票' ? 0 : this.getDefaultInvoiceAmount(this.data.paymentMethods, '非国补'))
     });
     this.recalculateAmounts();
   },
@@ -2247,7 +2255,10 @@ Page({
       return;
     }
 
-    this.setData({ invoiceStatus: value });
+    this.setData({
+      invoiceStatus: value,
+      invoiceAmount: value === '不开票' ? 0 : this.getDefaultInvoiceAmount(this.data.paymentMethods)
+    });
   },
 
   onInvoiceInfoInput: function (e) {
@@ -2284,7 +2295,7 @@ Page({
       const updateData = {
         subsidyStatus: value,
         invoiceStatus: '开普票',
-        invoiceAmount: this.getDefaultInvoiceAmount(this.data.paymentMethods)
+        invoiceAmount: this.getDefaultInvoiceAmount(this.data.paymentMethods, '国补')
       };
 
       // 如果国补人姓名为空，则同步会员称呼
@@ -2301,6 +2312,7 @@ Page({
     } else {
       this.setData({
         subsidyStatus: value,
+        invoiceAmount: this.data.invoiceStatus === '不开票' ? 0 : this.getDefaultInvoiceAmount(this.data.paymentMethods),
         // 取消国补时清空国补人信息
         subsidyPerson: '',
         subsidyId: ''
@@ -3181,7 +3193,9 @@ Page({
       items: processedGoodsList.map(item => {
         const snCode = String(item.snCode || item.sn_code || item.sn || item.SN || '').trim();
         const pnCode = String(item.pnCode || '').trim();
-        const inventoryId = String(item.inventoryId || item.inventory_id || item.snId || item.sn_id || item.inventorySnId || item.inventory_sn_id || snCode || '').trim();
+        // SN码是业务编码，不能在没有真实库存记录ID时冒充 inventoryId。
+        // 否则编辑商品后保存会把SN文本写入库存ID，导致明细匹配和库存同步沿用旧状态。
+        const inventoryId = String(item.inventoryId || item.inventory_id || item.snId || item.sn_id || item.inventorySnId || item.inventory_sn_id || '').trim();
         const previousSnStatus = item.previousSnStatus || item.previous_sn_status || item.inventoryStatus || item.inventory_status || item.status || '在库';
         const price = parseFloat(item.price || item.unitPrice || item.salePrice || 0) || 0;
         const quantity = parseFloat(item.quantity) || 1;
@@ -3218,7 +3232,7 @@ Page({
       }),
       goods: processedGoodsList.map(item => {
         const snCode = String(item.snCode || item.sn_code || item.sn || item.SN || '').trim();
-        const inventoryId = String(item.inventoryId || item.inventory_id || item.snId || item.sn_id || item.inventorySnId || item.inventory_sn_id || snCode || '').trim();
+        const inventoryId = String(item.inventoryId || item.inventory_id || item.snId || item.sn_id || item.inventorySnId || item.inventory_sn_id || '').trim();
         const previousSnStatus = item.previousSnStatus || item.previous_sn_status || item.inventoryStatus || item.inventory_status || item.status || '在库';
         return Object.assign({}, item, {
           itemId: item.itemId || item.item_id || item._id || item.id || '',

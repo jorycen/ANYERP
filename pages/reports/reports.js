@@ -110,7 +110,7 @@ function normalizeDashboard(result) {
 
 function formatMoneyText(value) {
   if (value === null || value === undefined || value === '') return '--';
-  return toNumber(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return toNumber(value).toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
 
 function formatCompactMoneyText(value) {
@@ -460,7 +460,7 @@ Page({
   formatMoney(value) {
     if (value === null || value === undefined || value === '') return '--';
     const amount = Number(value || 0);
-    return amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return amount.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
   },
 
   formatCompactMoney(value) {

@@ -89,6 +89,12 @@ Page({
     });
   },
 
+  navigateToFinanceManagement: function () {
+    wx.navigateTo({
+      url: '/pages/finance-management/finance-management'
+    });
+  },
+
   navigateToPurchaseApplication: function () {
     wx.navigateTo({
       url: '/pages/purchase-application/purchase-application'

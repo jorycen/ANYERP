@@ -2,6 +2,7 @@
   "pages": [
     "pages/login/login",
     "pages/index/index",
+    "pages/finance-management/finance-management",
     "pages/reports/reports",
     "pages/order-create/order-create",
     "pages/deposit-manage/deposit-manage",

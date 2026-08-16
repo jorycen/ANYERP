@@ -60,6 +60,14 @@
       <text class="function-desc">查看销售、门店、商品与员工经营分析</text>
     </view>
 
+    <view class="function-item finance-entry" bindtap="navigateToFinanceManagement" wx:if="{{!purchaseQueryOnly}}">
+      <view class="icon-wrapper finance-icon">
+        <text class="icon-text">财</text>
+      </view>
+      <text class="function-name">财务管理</text>
+      <text class="function-desc">查看营业额、毛利、库存、账户与付款情况</text>
+    </view>
+
     <view class="function-item" bindtap="navigateToPurchaseApplication">
       <view class="icon-wrapper purchase-icon">
         <text class="icon-text">采</text>

@@ -150,6 +150,11 @@
   color: #1769e0;
 }
 
+.finance-entry .icon-wrapper {
+  background-color: rgba(0, 150, 136, 0.12);
+  color: #00897b;
+}
+
 .inbound-icon {
   background-color: rgba(0, 150, 136, 0.12);
   color: #00897b;

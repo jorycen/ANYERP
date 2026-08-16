@@ -1,0 +1,143 @@
+<scroll-view class="finance-page" scroll-y="true">
+  <view class="hero">
+    <view class="hero-topline">
+      <view>
+        <text class="eyebrow">OWNER'S VIEW</text>
+        <text class="page-title">财务管理</text>
+      </view>
+      <view class="demo-badge">{{dataSourceText}}</view>
+    </view>
+    <text class="hero-subtitle">老板经营总览 · {{periodLabel}}</text>
+
+    <view class="period-tabs">
+      <view
+        wx:for="{{periods}}"
+        wx:key="key"
+        class="period-tab {{item.key === selectedPeriod ? 'active' : ''}}"
+        data-period="{{item.key}}"
+        bindtap="selectPeriod"
+      >{{item.label}}</view>
+    </view>
+
+    <picker mode="date" value="{{selectedDate}}" bindchange="selectDate">
+      <view class="date-picker">
+        <text>{{periodLabel}}</text>
+        <text class="date-picker-arrow">⌄</text>
+      </view>
+    </picker>
+  </view>
+
+  <view class="sync-card" wx:if="{{isLoading}}">
+    <view class="sync-dot"></view>
+    <text>正在同步真实业务数据…</text>
+  </view>
+  <view class="error-card" wx:if="{{errorMessage}}">
+    <text>{{errorMessage}}</text>
+    <text class="retry-text" bindtap="loadDashboard">重新加载</text>
+  </view>
+
+  <view class="section revenue-section">
+    <view class="section-heading">
+      <view>
+        <text class="section-kicker">销售表现</text>
+        <text class="section-title">营业额与毛利</text>
+      </view>
+      <text class="compare">{{compare}}</text>
+    </view>
+    <view class="revenue-main">
+      <view class="revenue-primary">
+        <text class="metric-label">营业额</text>
+        <text class="metric-value">¥{{revenue}}</text>
+      </view>
+      <view class="revenue-divider"></view>
+      <view class="revenue-secondary">
+        <text class="metric-label">毛利额</text>
+        <text class="metric-value profit">¥{{grossProfit}}</text>
+        <text class="metric-extra">毛利率 {{grossMargin}}</text>
+      </view>
+    </view>
+  </view>
+
+  <view class="quick-grid">
+    <view class="quick-card inventory-quick">
+      <view class="quick-icon">库</view>
+      <text class="quick-label">库存总额</text>
+      <text class="quick-value">¥{{inventoryTotal}}</text>
+      <text class="quick-hint">按采购成本</text>
+    </view>
+    <view class="quick-card account-quick">
+      <view class="quick-icon">账</view>
+      <text class="quick-label">账户类型金额</text>
+      <text class="quick-value">¥{{accountTotal}}</text>
+      <text class="quick-hint">按所选期间汇总</text>
+    </view>
+    <view class="quick-card payment-quick">
+      <view class="quick-icon">付</view>
+      <text class="quick-label">待付款</text>
+      <text class="quick-value">¥{{pendingPaymentTotal}}</text>
+      <text class="quick-hint">未生成 + 已生成</text>
+    </view>
+  </view>
+
+  <view class="section">
+    <view class="section-heading compact-heading">
+      <view>
+        <text class="section-kicker">库存结构</text>
+        <text class="section-title">商品分类</text>
+      </view>
+      <text class="unit-note">数量 / 成本金额</text>
+    </view>
+    <view class="data-list">
+      <view class="data-row" wx:for="{{inventory}}" wx:key="name">
+        <view class="row-name-wrap">
+          <view class="category-dot category-{{index}}"></view>
+          <text class="row-name">{{item.name}}</text>
+        </view>
+        <text class="row-quantity">{{item.quantity}} 件</text>
+        <text class="row-amount">¥{{item.amount}}</text>
+      </view>
+    </view>
+  </view>
+
+  <view class="section">
+    <view class="section-heading compact-heading">
+      <view>
+        <text class="section-kicker">收款分布</text>
+        <text class="section-title">账户类型金额</text>
+      </view>
+      <text class="unit-note">按所选期间</text>
+    </view>
+    <view class="account-grid">
+      <view class="account-item" wx:for="{{accounts}}" wx:key="name">
+        <text class="account-name">{{item.name}}</text>
+        <text class="account-amount">¥{{item.amount}}</text>
+      </view>
+    </view>
+  </view>
+
+  <view class="section payment-section">
+    <view class="section-heading compact-heading">
+      <view>
+        <text class="section-kicker">资金安排</text>
+        <text class="section-title">采购 / 报销付款</text>
+      </view>
+      <text class="unit-note">金额统计</text>
+    </view>
+    <scroll-view class="payment-tabs" scroll-x="true" enable-flex="true">
+      <view
+        wx:for="{{paymentStatuses}}"
+        wx:key="key"
+        class="payment-tab {{item.key === selectedPaymentStatus ? 'active' : ''}}"
+        data-status="{{item.key}}"
+        bindtap="selectPaymentStatus"
+      >{{item.label}}</view>
+    </scroll-view>
+    <view class="payment-amount">
+      <text class="payment-status-label">{{selectedPaymentLabel}}</text>
+      <text class="payment-status-value">¥{{selectedPaymentAmount}}</text>
+    </view>
+    <view class="payment-note">采购和报销统一统计，付款状态来自现有业务流程。</view>
+  </view>
+
+  <view class="footer-note">数据更新时间：{{lastUpdated}} · {{dataSourceText}}</view>
+</scroll-view>

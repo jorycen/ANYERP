@@ -362,7 +362,7 @@
       <!-- 开票金额 -->
       <view class="form-field" wx:if="{{invoiceStatus == '开专票' || invoiceStatus == '开普票'}}">
         <text class="field-label">开票金额</text>
-        <input class="field-input" type="digit" placeholder="{{subsidyStatus === '国补' ? '默认等于国补收款金额' : '请输入开票金额'}}" bindinput="onInvoiceAmountInput" value="{{invoiceAmount}}" />
+        <input class="field-input" type="digit" placeholder="{{subsidyStatus === '国补' ? '默认等于国补商品补贴前金额' : '默认等于实收金额'}}" bindinput="onInvoiceAmountInput" value="{{invoiceAmount}}" />
       </view>
     </view>
   </view>

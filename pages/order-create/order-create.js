@@ -295,13 +295,15 @@ Page({
   initOrderStore: function () {
     const userInfo = userUtils.getUserInfo() || wx.getStorageSync('userInfo') || {};
     const tempStoreInfo = wx.getStorageSync('tempStoreInfo') || {};
+    const distributorInfo = wx.getStorageSync('distributorInfo') || {};
     const currentStoreId = userUtils.isStoreScoped(userInfo)
       ? String(userInfo.storeId || userInfo.store_id || tempStoreInfo.storeId || tempStoreInfo.store_id || tempStoreInfo.id || tempStoreInfo._id || '')
       : '';
     const currentStoreName = userUtils.isStoreScoped(userInfo)
       ? (userInfo.storeName || userInfo.store_name || tempStoreInfo.storeName || tempStoreInfo.store_name || tempStoreInfo.name || '')
       : '';
-    const distributorId = userInfo.distributorId || userInfo.distributor_id || '';
+    const distributorId = userInfo.distributorId || userInfo.distributor_id ||
+      distributorInfo.distributorId || distributorInfo.distributor_id || distributorInfo.id || distributorInfo._id || '';
     this.setData({ storeId: currentStoreId, storeName: currentStoreName });
     api.store.getStores(distributorId).then(result => {
       const stores = (result && result.data) || result || [];
@@ -309,11 +311,12 @@ Page({
         storeId: String(store.storeId || store.store_id || store.id || store._id || ''),
         name: store.name || store.storeName || store.store_name || ''
       })).filter(store => store.storeId && store.name);
-      const selected = userUtils.isStoreScoped(userInfo)
-        ? (options.find(store => store.storeId === currentStoreId) || options[0])
-        : options.find(store => store.storeId === currentStoreId);
-      if (!selected) return;
-      this.setData({ orderStoreOptions: options, storeId: selected.storeId, storeName: selected.name });
+      // 当前门店优先；经销商账号没有当前门店时默认第一家，但仍展示全部可选门店。
+      const selected = options.find(store => store.storeId === currentStoreId) || options[0];
+      this.setData({
+        orderStoreOptions: options,
+        ...(selected ? { storeId: selected.storeId, storeName: selected.name } : {})
+      });
     }).catch(err => {
       console.error('加载订单门店失败:', err);
       if (currentStoreId || currentStoreName) {
@@ -967,11 +970,12 @@ Page({
     }, 0);
   },
 
-  getDefaultInvoiceAmount: function (paymentMethods) {
+  getDefaultInvoiceAmount: function (paymentMethods, subsidyStatusOverride) {
     const originalGuobuAmount = (parseFloat(this.data.computerAmount) || 0) + (parseFloat(this.data.mobileAmount) || 0);
-    if (originalGuobuAmount > 0) return originalGuobuAmount.toFixed(2);
-    const guobuAmount = this.getGuobuPaymentAmount(paymentMethods || this.data.paymentMethods);
-    if (guobuAmount > 0) return guobuAmount.toFixed(2);
+    const isGuobu = (subsidyStatusOverride || this.data.subsidyStatus) === '国补' ||
+      (parseFloat(this.data.nationalSubsidy) || 0) > 0 ||
+      this.getGuobuPaymentAmount(paymentMethods || this.data.paymentMethods) > 0;
+    if (isGuobu && originalGuobuAmount > 0) return originalGuobuAmount.toFixed(2);
     const actualAmount = parseFloat(this.data.actualAmount) || 0;
     return actualAmount > 0 ? actualAmount.toFixed(2) : '';
   },
@@ -1541,7 +1545,7 @@ Page({
         nationalSubsidy: value,
         subsidyStatus: '国补',
         invoiceStatus: '开普票', // 国补必须开普票
-        invoiceAmount: this.getDefaultInvoiceAmount(this.data.paymentMethods)
+        invoiceAmount: this.getDefaultInvoiceAmount(this.data.paymentMethods, '国补')
       });
     }
 
@@ -1596,7 +1600,7 @@ Page({
     if (totalNationalSubsidy > 0) {
       updateData.subsidyStatus = '国补';
       updateData.invoiceStatus = '开普票'; // 国补必须开普票
-      updateData.invoiceAmount = this.getDefaultInvoiceAmount(this.data.paymentMethods);
+      updateData.invoiceAmount = this.getDefaultInvoiceAmount(this.data.paymentMethods, '国补');
     } else {
       updateData.subsidyStatus = '非国补';
     }
@@ -1654,7 +1658,7 @@ Page({
     if (totalNationalSubsidy > 0) {
       updateData.subsidyStatus = '国补';
       updateData.invoiceStatus = '开普票'; // 国补必须开普票
-      updateData.invoiceAmount = this.getDefaultInvoiceAmount(this.data.paymentMethods);
+      updateData.invoiceAmount = this.getDefaultInvoiceAmount(this.data.paymentMethods, '国补');
     } else {
       updateData.subsidyStatus = '非国补';
     }
@@ -2375,7 +2379,7 @@ Page({
 
     this.setData({
       invoiceStatus: value,
-      invoiceAmount: value === '不开票' ? 0 : this.data.invoiceAmount
+      invoiceAmount: value === '不开票' ? 0 : this.getDefaultInvoiceAmount(this.data.paymentMethods)
     });
 
     // 自动保存到缓存
@@ -2394,7 +2398,7 @@ Page({
       const updateData = {
         subsidyStatus: value,
         invoiceStatus: '开普票',
-        invoiceAmount: this.getDefaultInvoiceAmount(this.data.paymentMethods)
+        invoiceAmount: this.getDefaultInvoiceAmount(this.data.paymentMethods, '国补')
       };
 
       // 如果国补人姓名为空，则同步会员称呼
@@ -2411,6 +2415,7 @@ Page({
     } else {
       this.setData({
         subsidyStatus: value,
+        invoiceAmount: this.data.invoiceStatus === '不开票' ? 0 : this.getDefaultInvoiceAmount(this.data.paymentMethods),
         // 取消国补时清空国补人信息
         subsidyPerson: '',
         subsidyId: ''
