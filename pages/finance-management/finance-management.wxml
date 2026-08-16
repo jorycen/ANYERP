@@ -69,7 +69,7 @@
       <view class="quick-icon">账</view>
       <text class="quick-label">账户类型金额</text>
       <text class="quick-value">¥{{accountTotal}}</text>
-      <text class="quick-hint">按所选期间汇总</text>
+      <text class="quick-hint">当前账户余额汇总</text>
     </view>
     <view class="quick-card payment-quick">
       <view class="quick-icon">付</view>
@@ -105,7 +105,7 @@
         <text class="section-kicker">收款分布</text>
         <text class="section-title">账户类型金额</text>
       </view>
-      <text class="unit-note">按所选期间</text>
+      <text class="unit-note">当前余额</text>
     </view>
     <view class="account-grid">
       <view class="account-item" wx:for="{{accounts}}" wx:key="name">

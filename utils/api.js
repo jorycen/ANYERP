@@ -2491,6 +2491,18 @@ const api = {
     }
   },
 
+  finance: {
+    settlementAccounts(params = {}) {
+      return http.request('/finance/settlement-accounts/balance' + toQuery(Object.assign({ page: 1, pageSize: 100 }, params)));
+    },
+    payables(params = {}) {
+      return http.request('/finance/payable-list' + toQuery(Object.assign({ page: 1, pageSize: 100 }, params)));
+    },
+    settlements(params = {}) {
+      return http.request('/finance/settlement-list' + toQuery(Object.assign({ page: 1, pageSize: 100 }, params)));
+    }
+  },
+
   store: {
     list(params = {}) {
       return http.request('/store/list' + toQuery(Object.assign({ page: 1, pageSize: 100 }, params)))

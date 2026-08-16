@@ -96,7 +96,14 @@ function normalizeStatus(row) {
 }
 
 function isExcludedPayment(row) {
-  const status = normalizeStatus(row);
+  const status = [
+    row && row.payment_status,
+    row && row.paymentStatus,
+    row && row.settlement_status,
+    row && row.settlementStatus,
+    row && row.status,
+    row && row.state
+  ].filter(value => value !== undefined && value !== null).join('|').toLowerCase();
   return ['rejected', '拒绝', 'revoked', '撤销', 'cancelled', 'canceled', '已取消', 'closed', '关闭'].some(item => status.indexOf(item) >= 0);
 }
 
@@ -239,45 +246,42 @@ Page({
     const results = await Promise.all([
       safe(this.loadReport(range)),
       safe(this.loadInventory()),
-      safe(this.loadOrders(range)),
-      safe(this.loadPaymentRecords())
+      safe(this.loadFinanceRecords())
     ]);
 
     const reportResult = results[0];
     const inventoryResult = results[1];
-    const ordersResult = results[2];
-    const paymentsResult = results[3];
+    const financeResult = results[2];
     const report = reportResult.data || {};
-    const orders = ordersResult.data || [];
     const inventory = inventoryResult.data || [];
-    const paymentRecords = paymentsResult.data || { purchase: [], expense: [] };
+    const financeRecords = financeResult.data || { accounts: [], payables: [], settlements: [] };
 
     console.info('[财务管理] 真实数据同步结果', {
       reportLoaded: !!reportResult.data,
       inventoryCount: inventory.length,
-      orderCount: orders.length,
-      purchaseCount: (paymentRecords.purchase || []).length,
-      expenseCount: (paymentRecords.expense || []).length,
+      accountCount: (financeRecords.accounts || []).length,
+      payableCount: (financeRecords.payables || []).length,
+      settlementCount: (financeRecords.settlements || []).length,
       errors: results.filter(item => item.error).map(item => item.error && item.error.message).filter(Boolean)
     });
 
-    const fallbackSummary = this.calculateOrderSummary(orders);
     const reportRevenue = report.revenue !== null && report.revenue !== undefined ? numberValue(report.revenue) : null;
     const reportGrossProfit = report.grossProfit !== null && report.grossProfit !== undefined ? numberValue(report.grossProfit) : null;
-    const revenue = reportRevenue > 0 || fallbackSummary.revenue === 0 ? reportRevenue || 0 : fallbackSummary.revenue;
-    const grossProfit = reportGrossProfit > 0 || fallbackSummary.grossProfit === 0 ? reportGrossProfit || 0 : fallbackSummary.grossProfit;
+    const revenue = reportRevenue === null ? 0 : reportRevenue;
+    const grossProfit = reportGrossProfit === null ? 0 : reportGrossProfit;
     const inventorySummary = this.buildInventorySummary(inventory);
-    const accountSummary = this.buildAccountSummary(orders);
-    const paymentSummary = this.buildPaymentSummary(paymentRecords);
+    const accountSummary = this.buildAccountSummary(financeRecords.accounts);
+    const paymentSummary = this.buildPaymentSummary(financeRecords);
     const grossMargin = revenue > 0 ? `${(grossProfit / revenue * 100).toFixed(2)}%` : '0.00%';
 
-    const errors = results.filter(item => item.error).map(item => item.error && item.error.message).filter(Boolean);
+    const errors = results.filter(item => item.error).map(item => item.error && item.error.message).filter(Boolean)
+      .concat(financeRecords.errors || []);
     this.setData({
       revenue: formatMoney(revenue),
       grossProfit: formatMoney(grossProfit),
       grossMargin,
       compare: report.compare || '实时数据',
-      inventoryTotal: numberValue(report.inventoryTotal) > 0 || inventorySummary.total === 0
+      inventoryTotal: report.inventoryTotal !== null && report.inventoryTotal !== undefined
         ? formatMoney(report.inventoryTotal)
         : formatMoney(inventorySummary.total),
       accountTotal: formatMoney(accountSummary.total),
@@ -329,18 +333,7 @@ Page({
 
   async loadInventory() {
     const storeId = this.getScopedStoreId();
-    return this.loadPages((page, pageSize) => api.inventory.list({ storeId, page, pageSize }), 500, 20);
-  },
-
-  async loadOrders(range) {
-    const storeId = this.getScopedStoreId();
-    return this.loadPages((page, pageSize) => api.order.queryList({
-      storeId,
-      startDate: range.startDate,
-      endDate: range.endDate,
-      page,
-      pageSize
-    }), 200, 25);
+    return this.loadPages((page, pageSize) => api.inventory.list({ storeId, page, pageSize }), 100, 20);
   },
 
   async loadPages(fetchPage, pageSize, maxPages) {
@@ -357,49 +350,19 @@ Page({
     return rows;
   },
 
-  async loadPaymentRecords() {
+  async loadFinanceRecords() {
     const storeId = this.getScopedStoreId();
-    const load = async (request, fallbackRequest) => {
-      try {
-        return await this.loadPages(request, 100, 20);
-      } catch (error) {
-        if (!fallbackRequest) throw error;
-        return this.loadPages(fallbackRequest, 100, 20);
-      }
-    };
-
-    const [purchase, expense] = await Promise.all([
-      load(
-        (page, pageSize) => api.purchase.list({ scope: 'review', storeId, page, pageSize }),
-        (page, pageSize) => api.purchase.list({ storeId, page, pageSize })
-      ),
-      load(
-        (page, pageSize) => api.expense.list({ scope: 'review', storeId, page, pageSize }),
-        (page, pageSize) => api.expense.list({ storeId, page, pageSize })
-      )
+    const errors = [];
+    const load = request => this.loadPages(request, 100, 20).catch(error => {
+      errors.push(error && error.message ? error.message : '财务数据加载失败');
+      return [];
+    });
+    const [accounts, payables, settlements] = await Promise.all([
+      load((page, pageSize) => api.finance.settlementAccounts({ page, pageSize })),
+      load((page, pageSize) => api.finance.payables({ storeId, page, pageSize })),
+      load((page, pageSize) => api.finance.settlements({ storeId, page, pageSize }))
     ]);
-    return { purchase, expense };
-  },
-
-  calculateOrderSummary(orders) {
-    return orders.reduce((summary, order) => {
-      const status = String(order.status || '').toLowerCase();
-      if (['已作废', 'voided', 'cancelled', 'canceled'].includes(status)) return summary;
-      const revenue = numberValue(order.actualAmount || order.totalAmount || order.total_amount);
-      let grossProfit = numberValue(firstValue(order, ['grossProfit', 'gross_profit']), NaN);
-      if (!Number.isFinite(grossProfit)) {
-        grossProfit = (order.items || order.goods || []).reduce((total, item) => {
-          const quantity = numberValue(item.quantity, 1);
-          const salePrice = numberValue(firstValue(item, ['unitPrice', 'unit_price', 'price', 'salePrice']));
-          const costPrice = numberValue(firstValue(item, ['costPrice', 'cost_price', 'purchasePrice', 'purchase_price']));
-          return total + (salePrice - costPrice) * quantity;
-        }, 0);
-      }
-      return {
-        revenue: summary.revenue + revenue,
-        grossProfit: summary.grossProfit + grossProfit
-      };
-    }, { revenue: 0, grossProfit: 0 });
+    return { accounts, payables, settlements, errors };
   },
 
   buildInventorySummary(rows) {
@@ -446,17 +409,18 @@ Page({
     return -1;
   },
 
-  buildAccountSummary(orders) {
+  buildAccountSummary(accounts) {
+    const typeNames = {
+      FUND: '资金账户',
+      POLICY_RECEIVABLE: '政策补贴应收',
+      CARE_CREDIT: 'Care可用金'
+    };
     const map = {};
-    orders.forEach(order => {
-      const payments = order.paymentMethods || order.payments || [];
-      payments.forEach(payment => {
-        const name = String(firstValue(payment, ['type', 'paymentType', 'method', 'payment_method']) || '其他收款方式').trim();
-        if (name.indexOf('政策补贴应收') >= 0) return;
-        const amount = numberValue(payment.amount);
-        if (amount <= 0) return;
-        map[name] = (map[name] || 0) + amount;
-      });
+    (accounts || []).forEach(account => {
+      const type = String(firstValue(account, ['account_type', 'accountType']) || 'FUND').trim();
+      const amount = numberValue(firstValue(account, ['balance', 'amount', 'current_balance', 'currentBalance']));
+      const name = typeNames[type] || firstValue(account, ['account_name', 'accountName', 'name']) || '其他账户';
+      map[name] = (map[name] || 0) + amount;
     });
     const rows = Object.keys(map)
       .map(name => ({ name, amount: map[name] }))
@@ -467,11 +431,26 @@ Page({
 
   buildPaymentSummary(records) {
     const summary = { uncreated: 0, created: 0, paid: 0 };
-    ['purchase', 'expense'].forEach(type => {
-      (records[type] || []).forEach(row => {
-        const item = classifyPayment(row, type);
-        if (item) summary[item.key] += item.amount;
-      });
+    const sourceTypes = ['purchase', 'purchase_adjustment', 'expense', 'reimbursement', 'supplier'];
+    const isIncluded = row => sourceTypes.includes(String(firstValue(row, [
+      'source_type', 'sourceType', 'settlement_type', 'settlementType'
+    ]) || 'purchase'));
+    (records.payables || []).forEach(row => {
+      if (!isIncluded(row) || isExcludedPayment(row)) return;
+      const status = normalizeStatus(row);
+      if (!['unpaid', 'partial_settled'].includes(status)) return;
+      const total = numberValue(firstValue(row, ['remaining_amount', 'remainingAmount', 'total_amount', 'totalAmount']));
+      if (total > 0) summary.uncreated += total;
+    });
+    (records.settlements || []).forEach(row => {
+      if (!isIncluded(row) || isExcludedPayment(row)) return;
+      const status = normalizeStatus(row);
+      if (['voided', '作废'].some(item => status.indexOf(item) >= 0)) return;
+      const total = numberValue(firstValue(row, ['total_amount', 'totalAmount', 'amount']));
+      const paid = numberValue(firstValue(row, ['paid_amount', 'paidAmount']));
+      const remaining = Math.max(0, total - paid);
+      if (remaining > 0) summary.created += remaining;
+      if (paid > 0) summary.paid += paid;
     });
     summary.all = summary.uncreated + summary.created + summary.paid;
     return summary;
