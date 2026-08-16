@@ -27,6 +27,19 @@ const { createSalesReturnGrossProfitLedger } = require('../sales/grossProfit');
 
 const REUSABLE_INBOUND_SN_STATUSES = new Set(['out_stock', 'sold']);
 
+function isTransferInboundRecord(inbound) {
+  return String(inbound?.source_type || '').trim().toUpperCase() === 'TRANSFER';
+}
+
+function buildNonTransferInboundCondition() {
+  return {
+    [Op.or]: [
+      { source_type: null },
+      Sequelize.where(Sequelize.fn('UPPER', Sequelize.col('source_type')), { [Op.ne]: 'TRANSFER' })
+    ]
+  };
+}
+
 function splitCodes(value) {
   return String(value || '')
     .split(/[,，\s]+/)
@@ -743,6 +756,28 @@ async function getSnSpecialPriceHistory(ctx) {
 function normalizePnCode(value) {
   const code = String(value || '').trim();
   return code.length > 64 ? code.slice(0, 64) : code;
+}
+
+function normalizeSnIdentityValue(value) {
+  return String(value || '').trim().replace(/\s+/g, '').toLowerCase();
+}
+
+async function findInboundSnByIdentity({ pnCode, snCode, transaction }) {
+  const exact = await ProductSn.findOne({
+    where: { pn_code: pnCode, sn_code: snCode },
+    transaction,
+    lock: transaction?.LOCK?.UPDATE
+  });
+  if (exact) return exact;
+
+  // 兼容历史 PN 中存在大小写或内部空格差异的记录，避免漏查后再次 INSERT。
+  const candidates = await ProductSn.findAll({
+    where: { sn_code: snCode },
+    transaction,
+    lock: transaction?.LOCK?.UPDATE
+  });
+  const pnKey = normalizeSnIdentityValue(pnCode);
+  return candidates.find(item => normalizeSnIdentityValue(item.pn_code) === pnKey) || null;
 }
 
 async function ensureDefaultProductPricing(product, purchasePrice, user, transaction) {
@@ -2370,7 +2405,7 @@ async function getInboundList(ctx) {
   try {
     const { storeId, status, page = 1, pageSize = 20 } = ctx.query;
 
-    const where = {};
+    const where = { [Op.and]: [buildNonTransferInboundCondition()] };
     if (storeId) {
       const allowedStoreIds = (ctx.state.user.accessibleStoreIds || []).map(String);
       if (!allowedStoreIds.includes('*') && !allowedStoreIds.includes(String(storeId))) {
@@ -3004,7 +3039,10 @@ async function executeInbound(ctx) {
       ctx.throw(400, '该入库单已处理');
     }
 
-    const isTransferInbound = String(inbound.source_type || '').toUpperCase() === 'TRANSFER';
+    const isTransferInbound = isTransferInboundRecord(inbound);
+    if (isTransferInbound) {
+      ctx.throw(400, '调拨入库请在调拨管理中操作');
+    }
     const isSalesReturnInbound = String(inbound.source_type || '').toUpperCase() === 'SALES_RETURN';
     const isPurchaseInbound = String(inbound.source_type || '').toLowerCase() === 'purchase' || Boolean(inbound.purchase_request_id);
     const inboundItems = await InboundItem.findAll({ where: { inbound_id: inboundId }, transaction: t });
@@ -3211,14 +3249,10 @@ async function executeInbound(ctx) {
         );
         const snCode = requestedSnCode;
 
-        const existingSn = await ProductSn.findOne({
-          where: {
-            product_id: dbItem.product_id,
-            pn_code: pnCode,
-            sn_code: snCode
-          },
-          transaction: t
-        });
+        const existingSn = await findInboundSnByIdentity({ pnCode, snCode, transaction: t });
+        if (existingSn && String(existingSn.product_id || '') !== String(dbItem.product_id || '')) {
+          ctx.throw(409, `PN码 [${pnCode || '-'}] 下的SN码 [${snCode}] 已关联其他商品，不能直接入库`);
+        }
         if (existingSn && !REUSABLE_INBOUND_SN_STATUSES.has(String(existingSn.status || '').trim())) {
           ctx.throw(400, `PN码 [${pnCode || '-'}] 下的SN码 [${snCode}] 当前状态为${existingSn.status || '未知'}，不允许重复入库`);
         }
@@ -5464,9 +5498,12 @@ module.exports = {
     purchaseInitiatorName,
     resolveInboundInitiator,
     resolveSnTraceLogUser,
+    isTransferInboundRecord,
+    buildNonTransferInboundCondition,
     updateInventory,
     getAvailableQty,
     salesReturnRequesterName,
-    resolveTransferInboundSnBinding
+    resolveTransferInboundSnBinding,
+    normalizeSnIdentityValue
   }
 };

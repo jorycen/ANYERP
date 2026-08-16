@@ -51,7 +51,7 @@
           >
             <el-table-column v-if="canBatchDeleteProducts" type="selection" width="50" />
             <el-table-column prop="product_code" label="编码" width="110" show-overflow-tooltip />
-            <el-table-column label="厂商编码" width="140">
+            <el-table-column label="当前PN" width="140">
               <template #default="{ row }">
                 <template v-if="row.manufacturer_codes && row.manufacturer_codes.length > 0">
                   <el-tag v-for="c in row.manufacturer_codes" :key="c" size="small" style="margin: 1px 2px;">{{ c }}</el-tag>
@@ -356,7 +356,15 @@
         </el-form-item>
         <el-form-item label="PN码" required>
           <template v-if="productForm.productId">
-            <div style="width: 100%;">
+            <div class="text-muted" style="margin-bottom: 6px;">PN是商品主数据；下方“厂商编码 / 69码”是独立条码，删除条码不会删除PN。</div>
+            <el-alert
+              v-if="pnLoadFailed"
+              type="error"
+              :closable="false"
+              title="PN主数据加载失败，已禁止使用厂商编码代替PN。请刷新后重试。"
+              style="margin-bottom: 8px;"
+            />
+            <div v-else style="width: 100%;">
               <div v-for="(pn, index) in productForm.pns" :key="pn._key" style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
                 <el-input v-model="pn.pnCode" placeholder="PN码" style="flex: 1" clearable />
                 <el-input v-model="pn.barcode" placeholder="PN条码（可选）" style="flex: 1" clearable />
@@ -364,6 +372,20 @@
                 <el-button v-else link type="primary" size="small" @click="setPrimaryPn(index)">设为主PN</el-button>
                 <el-button link type="danger" size="small" :disabled="productForm.pns.length <= 1" @click="removePnFromForm(index)">删除</el-button>
               </div>
+              <el-alert
+                v-if="productForm.pns.length === 0"
+                type="warning"
+                :closable="false"
+                title="当前商品没有有效PN，请先添加PN后再保存。"
+                style="margin-bottom: 8px;"
+              />
+              <el-alert
+                v-else-if="productForm.needSn && productForm.pns.length > 1"
+                type="warning"
+                :closable="false"
+                title="SN商品只能保留一个有效PN；请删除多余PN后再保存。"
+                style="margin-bottom: 8px;"
+              />
               <el-button type="primary" link size="small" @click="addPnToForm">+ 添加PN</el-button>
             </div>
           </template>
@@ -462,6 +484,13 @@
         <el-table-column prop="is_primary" label="主PN" width="80">
           <template #default="{ row }">
             <el-tag :type="row.is_primary ? 'success' : 'info'" size="small">{{ row.is_primary ? '是' : '否' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="90">
+          <template #default="{ row }">
+            <el-tag :type="Number(row.status) === 1 && Number(row.is_deleted) === 0 ? 'success' : 'info'" size="small">
+              {{ Number(row.status) === 1 && Number(row.is_deleted) === 0 ? '有效' : '已停用' }}
+            </el-tag>
           </template>
         </el-table-column>
       </el-table>
@@ -681,6 +710,7 @@ const dialogVisible = ref(false)
 const dialogTitle = ref('新建商品')
 const submitLoading = ref(false)
 const currentProduct = ref(null)
+const pnLoadFailed = ref(false)
 const formNewBarcode = ref('')
 const formBarcodeType = ref('manufacturer')
 const categoryFields = ref([])
@@ -855,6 +885,7 @@ const handleEdit = async (row) => {
   dialogTitle.value = '编辑商品'
   currentProduct.value = row
   productForm.productId = row.product_id
+  pnLoadFailed.value = false
   productForm.name = row.name
   productForm.productCode = row.product_code
   productForm.pnCode = row.manufacturer_codes?.[0] || String(row.manufacturer_code || '').split(',')[0].trim()
@@ -884,17 +915,16 @@ const handleEdit = async (row) => {
   productForm.barcodes = (row.barcodes || []).map(b => ({ type: b.type, code: b.code }))
 
   try {
-    const pnRes = await api.getPnList({ productId: row.product_id, page: 1, pageSize: 100 })
-    const pnRows = pnRes.code === 0 ? (pnRes.data?.list || []) : []
+    const pnRes = await api.getPnList({ productId: row.product_id, status: 1, page: 1, pageSize: 100 })
+    if (pnRes.code !== 0) throw new Error(pnRes.message || 'PN主数据加载失败')
+    const pnRows = pnRes.data?.list || []
     productForm.pns = pnRows
       .sort((a, b) => Number(b.is_primary || 0) - Number(a.is_primary || 0))
       .map(createFormPn)
   } catch (err) {
-    // 编辑仍可打开；提交前使用列表页已有 PN 作为兼容兜底。
-  }
-  if (productForm.pns.length === 0) {
-    productForm.pns = (row.manufacturer_codes || [])
-      .map((code, index) => createFormPn({ pnCode: code, barcode: code, isPrimary: index === 0 }))
+    pnLoadFailed.value = true
+    productForm.pns = []
+    ElMessage.error(err?.response?.data?.message || err?.message || 'PN主数据加载失败，请刷新后重试')
   }
 
   categoryFields.value = []
@@ -1005,6 +1035,7 @@ const updateFocusProduct = async (row, value) => {
 }
 
 const resetForm = () => {
+  pnLoadFailed.value = false
   productForm.productId = null
   productForm.name = ''
   productForm.productCode = ''
@@ -1073,6 +1104,10 @@ const handleSubmit = async () => {
   if (missingField) { ElMessage.warning(`请填写${missingField.field_label}`); return }
   if (!finalName) { ElMessage.warning('请填写补充字段'); return }
   const isEditing = Boolean(productForm.productId)
+  if (isEditing && pnLoadFailed.value) {
+    ElMessage.warning('PN主数据尚未加载成功，请刷新后重试')
+    return
+  }
   if (isEditing && (!Array.isArray(productForm.pns) || productForm.pns.length === 0)) {
     ElMessage.warning('请至少保留一个PN码'); return
   }
@@ -1457,7 +1492,7 @@ const handleCostImportSubmit = async () => {
 // ========== PN管理 ==========
 const pnDialogVisible = ref(false); const pnTableData = ref([])
 const showAddPnForm = ref(false); const newPnCode = ref(''); const newPnBarcode = ref('')
-const pnQueryParams = reactive({ keyword: '', productId: '' })
+const pnQueryParams = reactive({ keyword: '', productId: '', includeDeleted: 1 })
 
 const handlePnManage = async (row) => {
   currentProduct.value = row; pnQueryParams.productId = row.product_id

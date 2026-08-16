@@ -44,6 +44,11 @@ test('已出库或已销售的历史SN允许重新入库，当前在库状态仍
   assert.equal(_test.isReusableInboundSnStatus('transferring'), false);
 });
 
+test('历史SN唯一身份匹配兼容PN大小写和内部空格差异', () => {
+  assert.equal(_test.normalizeSnIdentityValue(' 83QF 0003CD '), '83qf0003cd');
+  assert.equal(_test.normalizeSnIdentityValue('BH02A3XS'), 'bh02a3xs');
+});
+
 test('SN批量导入兼容机器号和序列号表头', () => {
   assert.equal(_test.getCell({ 机器号: 'MPVMGKR' }, ['SN', '机器号', '序列号']), 'MPVMGKR');
   assert.equal(_test.getCell({ 序列号: 'PF2DNRA4' }, ['SN', '机器号', '序列号']), 'PF2DNRA4');

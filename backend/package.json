@@ -10,7 +10,8 @@
     "db:init": "node scripts/initDb.js",
     "db:migrate:used-product": "node scripts/migrate-used-product-columns.js",
     "db:migrate:used-product": "node scripts/migrate-used-product-columns.js",
-    "db:clear": "node clear_data.js"
+    "db:clear": "node clear_data.js",
+    "pn:audit": "node scripts/audit-product-pn-consistency.js"
   },
   "dependencies": {
     "@cloudbase/node-sdk": "^3.18.3",

@@ -19,3 +19,17 @@ test('采购入库单的采购发起人取采购申请人，不取审批人或�
   assert.equal(resolveInbound({ source_type: 'TRANSFER', create_user: '执行人' }, null, null, { apply_user: '调拨发起人' }), '调拨发起人');
   assert.equal(resolveLogUser({ remark: 'Sales return approved: RET-001', create_user: '审批人' }, new Map([['RET-001', '退单发起人']])), '退单发起人');
 });
+
+test('调拨入库单不属于通用入库列表和通用入库执行入口', () => {
+  const { isTransferInboundRecord, buildNonTransferInboundCondition } = inventoryController._test;
+
+  assert.equal(isTransferInboundRecord({ source_type: 'TRANSFER' }), true);
+  assert.equal(isTransferInboundRecord({ source_type: 'transfer' }), true);
+  assert.equal(isTransferInboundRecord({ source_type: 'purchase' }), false);
+  assert.equal(isTransferInboundRecord({ source_type: null }), false);
+
+  const condition = buildNonTransferInboundCondition();
+  const orKey = Object.getOwnPropertySymbols(condition)[0];
+  assert.equal(condition[orKey].length, 2);
+  assert.deepEqual(condition[orKey][0], { source_type: null });
+});

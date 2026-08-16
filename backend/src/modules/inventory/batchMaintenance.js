@@ -40,6 +40,27 @@ function normalizeText(value) {
   return String(value ?? '').trim();
 }
 
+function normalizeSnIdentityValue(value) {
+  return String(value || '').trim().replace(/\s+/g, '').toLowerCase();
+}
+
+async function findInboundSnByIdentity({ pnCode, snCode, transaction }) {
+  const exact = await ProductSn.findOne({
+    where: { pn_code: pnCode, sn_code: snCode },
+    transaction,
+    lock: transaction?.LOCK?.UPDATE
+  });
+  if (exact) return exact;
+
+  const candidates = await ProductSn.findAll({
+    where: { sn_code: snCode },
+    transaction,
+    lock: transaction?.LOCK?.UPDATE
+  });
+  const pnKey = normalizeSnIdentityValue(pnCode);
+  return candidates.find(item => normalizeSnIdentityValue(item.pn_code) === pnKey) || null;
+}
+
 // @koa/multer/busboy 在部分请求头编码下会把 UTF-8 文件名按 latin1 交给业务层。
 // 仅对明显的 UTF-8 乱码尝试还原，避免破坏已经正确解码的文件名。
 function normalizeUploadedFilename(value) {
@@ -341,13 +362,10 @@ async function validateRows(ctx, rows, options, transaction) {
 
       if (operationType === 'INBOUND') {
         if (snCode) {
-          const existing = await ProductSn.findOne({
-            where: {
-              sn_code: snCode,
-              ...(pnCode ? { pn_code: pnCode } : {})
-            },
-            transaction
-          });
+          const existing = await findInboundSnByIdentity({ pnCode, snCode, transaction });
+          if (existing && String(existing.product_id || '') !== String(product.product_id || '')) {
+            rowErrors.push(`SN已关联其他商品，不能按当前商品入库`);
+          }
           if (existing && !isReusableInboundSnStatus(existing.status)) {
             rowErrors.push(`SN当前状态为${existing.status || '未知'}，不允许重复入库`);
           }
@@ -548,10 +566,17 @@ async function getBatchApplicationDetail(ctx) {
 }
 
 async function createSnInbound(item, application, transaction) {
-  const existing = await ProductSn.findOne({
-    where: { pn_code: item.pn_code, sn_code: item.sn_code },
+  const existing = await findInboundSnByIdentity({
+    pnCode: item.pn_code,
+    snCode: item.sn_code,
     transaction
   });
+  if (existing && String(existing.product_id || '') !== String(item.product_id || '')) {
+    throw Object.assign(
+      new Error(`第 ${item.row_no} 行SN ${item.sn_code} 已关联其他商品，不能按当前商品入库`),
+      { status: 409 }
+    );
+  }
   if (existing && !isReusableInboundSnStatus(existing.status)) {
     throw Object.assign(
       new Error(`第 ${item.row_no} 行SN ${item.sn_code} 当前状态为${existing.status || '未知'}，不允许重复入库`),
@@ -854,6 +879,7 @@ module.exports = {
     validateRows,
     normalizeUploadedFilename,
     compactBatchErrors,
-    isReusableInboundSnStatus
+    isReusableInboundSnStatus,
+    normalizeSnIdentityValue
   }
 };

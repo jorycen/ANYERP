@@ -1050,11 +1050,20 @@ async function updateProduct(ctx) {
 
     if (Array.isArray(pns)) {
       await syncProductPnsMaster({ productId, pns, transaction });
-    } else {
-      const nextCodes = barcodes !== undefined
-        ? getManufacturerCodes(barcodes, manufacturerInput)
-        : (manufacturerInput !== undefined ? getManufacturerCodes([], manufacturerInput) : []);
-      await ensureProductPns(productId, nextCodes, transaction);
+    } else if (barcodes !== undefined || manufacturerInput !== undefined) {
+      // 兼容未提交 pns 数组的旧客户端：PN 字段是当前快照，应替换旧有效 PN，不能继续追加。
+      const nextCodes = getManufacturerCodes(barcodes || [], manufacturerInput);
+      if (nextCodes.length > 0) {
+        await syncProductPnsMaster({
+          productId,
+          pns: nextCodes.map((code, index) => ({
+            pnCode: code,
+            barcode: code,
+            isPrimary: index === 0
+          })),
+          transaction
+        });
+      }
     }
     await transaction.commit();
   } catch (error) {
@@ -2443,11 +2452,13 @@ async function importCostRefresh(ctx) {
 }
 
 async function getPnList(ctx) {
-  const { productId, keyword, storeId, page = 1, pageSize = 20 } = ctx.query;
+  const { productId, keyword, status, includeDeleted, storeId, page = 1, pageSize = 20 } = ctx.query;
 
   // 调拨出库需要读取调出门店的 PN，不应再次套用账号的普通门店查询权限。
-  const where = { is_deleted: 0 };
+  const where = {};
+  if (String(includeDeleted || '') !== '1') where.is_deleted = 0;
   if (productId) where.product_id = productId;
+  if (status !== undefined && status !== '') where.status = Number(status);
   if (keyword) {
     where[Op.or] = [
       { pn_code: { [Op.like]: `%${keyword}%` } },

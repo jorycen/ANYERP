@@ -403,7 +403,7 @@
             <el-table-column label="操作" width="240">
               <template #default="{ row }">
                 <el-button link type="primary" @click="viewInboundDetail(row)">查看</el-button>
-                <el-button link type="success" @click="openExecuteDialog(row)" v-if="row.status === 'pending'">入库</el-button>
+                <el-button link type="success" @click="openExecuteDialog(row)" v-if="row.status === 'pending' && !isTransferInboundRow(row)">入库</el-button>
                 <el-button link type="danger" @click="openReturnRequestDialog(row)" v-if="row.status === 'completed'">申请退库</el-button>
               </template>
             </el-table-column>
@@ -2689,6 +2689,8 @@ const loadInboundList = async () => {
     ElMessage.error('加载入库单列表失败')
   }
 }
+
+const isTransferInboundRow = row => String(row?.source_type || '').trim().toUpperCase() === 'TRANSFER'
 
 const loadReturnList = async ({ trace = false } = {}) => {
   try {

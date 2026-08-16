@@ -1454,6 +1454,13 @@ function pickOrderItemsPayload(data = {}) {
   return candidates.find(Array.isArray) || [];
 }
 
+function hasOrderItemsPayload(data = {}) {
+  return [
+    'items', 'goods', 'OrderItems', 'orderItems', 'order_items',
+    'productItems', 'saleItems', 'salesItems', 'itemList', 'goodsList', 'products'
+  ].some(key => Object.prototype.hasOwnProperty.call(data, key));
+}
+
 function selectedResourcesFromJson(value) {
   try {
     const parsed = Array.isArray(value) ? value : JSON.parse(value || '[]');
@@ -1527,20 +1534,10 @@ function applyOrderItemDefaults(item) {
   });
 }
 
-function compactUpdatePayload(payload) {
-  const result = {};
-  Object.keys(payload).forEach(key => {
-    const value = payload[key];
-    if (value !== undefined && value !== null && String(value).trim() !== '') {
-      result[key] = value;
-    }
-  });
-  return result;
-}
-
-async function syncOrderItemsFromPayload(order, data = {}, transaction = null) {
+async function syncOrderItemsFromPayload(order, data = {}, transaction = null, options = {}) {
+  const replaceAll = options.replaceAll !== false;
   const rawItems = pickOrderItemsPayload(data);
-  if (!Array.isArray(rawItems) || rawItems.length === 0) return [];
+  if (!hasOrderItemsPayload(data) || !Array.isArray(rawItems)) return [];
 
   const existingItems = await OrderItem.findAll({
     where: { order_id: order.order_id },
@@ -1548,17 +1545,46 @@ async function syncOrderItemsFromPayload(order, data = {}, transaction = null) {
     transaction
   });
   const existingById = new Map(existingItems.map(item => [String(item.item_id), item]));
+  const usedExistingIds = new Set();
   const results = [];
   let hasLockedResource = null;
 
-  for (let index = 0; index < rawItems.length; index++) {
-    const normalized = normalizeOrderItemInput(rawItems[index]);
-    const existing = normalized.item_id
-      ? existingById.get(String(normalized.item_id))
-      : existingItems[index];
-    if (!existing) continue;
-    const snChanged = (normalized.sn_id && normalized.sn_id !== existing.sn_id) ||
-      (normalized.sn_code && normalized.sn_code !== existing.sn_code);
+  const normalizedItems = rawItems.map(item => applyOrderItemDefaults(normalizeOrderItemInput(item)));
+  assertUniqueOrderSnItems(normalizedItems, '订单');
+
+  function comparable(value) {
+    return String(value === undefined || value === null ? '' : value).trim().toUpperCase();
+  }
+
+  function findExistingItem(normalized, index) {
+    const explicitId = normalized.item_id && existingById.get(String(normalized.item_id));
+    if (explicitId && !usedExistingIds.has(String(explicitId.item_id))) return explicitId;
+
+    // 未带明细 ID 时，先按当前商品身份匹配，避免商品换位后错误复用旧行。
+    const identity = [
+      comparable(normalized.product_id),
+      comparable(normalized.pn_code),
+      comparable(normalized.sn_code)
+    ].join('|');
+    if (identity !== '||') {
+      const matched = existingItems.find(item => {
+        if (usedExistingIds.has(String(item.item_id))) return false;
+        return [comparable(item.product_id), comparable(item.pn_code), comparable(item.sn_code)].join('|') === identity;
+      });
+      if (matched) return matched;
+    }
+
+    // 兼容旧页面未回传 itemId 的情况：同一行编辑应覆盖原行，而不是被静默丢弃。
+    const byPosition = existingItems[index];
+    if (byPosition && !usedExistingIds.has(String(byPosition.item_id))) return byPosition;
+    return null;
+  }
+
+  for (let index = 0; index < normalizedItems.length; index++) {
+    const normalized = normalizedItems[index];
+    const existing = findExistingItem(normalized, index);
+    const snChanged = comparable(normalized.sn_id) !== comparable(existing?.sn_id) ||
+      comparable(normalized.sn_code) !== comparable(existing?.sn_code);
     if (snChanged) {
       if (hasLockedResource === null) {
         hasLockedResource = await InventoryResourceRight.count({
@@ -1575,28 +1601,53 @@ async function syncOrderItemsFromPayload(order, data = {}, transaction = null) {
       }
     }
 
-    const updatePayload = compactUpdatePayload({
-      product_id: normalized.product_id,
-      product_name: normalized.product_name,
-      pn_code: normalized.pn_code,
-      mtm_code: normalized.mtm_code,
-      sn_id: normalized.sn_id,
-      sn_code: normalized.sn_code,
-      supplier_id: normalized.supplier_id,
-      supplier_name: normalized.supplier_name,
-      imei1: normalized.imei1,
-      imei2: normalized.imei2,
-      sale_price: normalized.sale_price,
-      quantity: normalized.quantity,
-      subtotal: normalized.subtotal
-    });
+    const updatePayload = {
+      product_id: normalized.product_id || null,
+      product_name: normalized.product_name || '',
+      pn_code: normalized.pn_code || '',
+      sn_id: normalized.sn_id || null,
+      sn_code: normalized.sn_code || '',
+      supplier_id: normalized.supplier_id || null,
+      supplier_name: normalized.supplier_name || '',
+      imei1: normalized.imei1 || '',
+      imei2: normalized.imei2 || '',
+      sale_price: normalized.sale_price === undefined ? 0 : normalized.sale_price,
+      quantity: normalized.quantity || 1,
+      subtotal: normalized.subtotal === undefined ? 0 : normalized.subtotal,
+      use_gov_subsidy: normalized.use_gov_subsidy ? 1 : 0,
+      use_edu_subsidy: normalized.use_edu_subsidy ? 1 : 0,
+      use_sales_report: normalized.use_sales_report ? 1 : 0,
+      selected_resource_types: JSON.stringify(normalized.selected_resource_types || [])
+    };
 
-    if (Object.keys(updatePayload).length === 0) continue;
-    await existing.update(updatePayload, { transaction });
+    if (existing) {
+      await existing.update(updatePayload, { transaction });
+      usedExistingIds.add(String(existing.item_id));
+    } else {
+      const created = await OrderItem.create({
+        order_id: order.order_id,
+        ...updatePayload
+      }, { transaction });
+      usedExistingIds.add(String(created.item_id));
+      results.push({ item_id: created.item_id, created: true, updated: updatePayload });
+      continue;
+    }
     results.push({
       item_id: existing.item_id,
       updated: updatePayload
     });
+  }
+
+  if (replaceAll) {
+    // 商品列表是保存时的当前状态：页面已删除的旧明细必须同步删除。
+    const removedItems = existingItems.filter(item => !usedExistingIds.has(String(item.item_id)));
+    if (removedItems.length) {
+      await OrderItem.destroy({
+        where: { item_id: removedItems.map(item => item.item_id), order_id: order.order_id },
+        transaction
+      });
+      removedItems.forEach(item => results.push({ item_id: item.item_id, deleted: true }));
+    }
   }
 
   return results;
@@ -2159,7 +2210,20 @@ async function update(ctx) {
   const previousStatus = order.order_status;
   let archivedNow = false;
   await sequelize.transaction(async (transaction) => {
+    const hasItemsPayload = hasOrderItemsPayload(data);
+    const releasedReservedOrderItems = hasItemsPayload && Number(order.inventory_reserved || 0) === 1;
+
+    // 商品列表是当前状态的权威来源。只要本次带了商品列表，先释放旧占用，
+    // 再同步明细；普通未归档订单随后重新占用，归档/作废则由各自流程继续处理。
+    if (releasedReservedOrderItems) {
+      await releaseReservedInventoryForOrder(order, transaction);
+      data.inventory_reserved = 0;
+    }
     await syncOrderItemsFromPayload(order, data, transaction);
+    if (releasedReservedOrderItems && !isArchiveStatus(nextStatus) && !isCancelStatus(nextStatus)) {
+      await reserveInventoryForOrder(order, transaction);
+      data.inventory_reserved = 1;
+    }
 
     if (isArchiveStatus(nextStatus) && !isArchiveStatus(order.order_status)) {
       await validateAndDeductInventoryForArchive(order, transaction);
@@ -2175,7 +2239,7 @@ async function update(ctx) {
       data.inventory_reserved = 0;
       archivedNow = true;
     } else if (isCancelStatus(nextStatus) && !isCancelStatus(order.order_status)) {
-      if (order.inventory_reserved) {
+      if (order.inventory_reserved && !releasedReservedOrderItems) {
         await releaseReservedInventoryForOrder(order, transaction);
       }
       const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
@@ -2207,8 +2271,10 @@ async function update(ctx) {
       });
     } else {
       const affectsGrossProfit = [
-        'invoice_amount', 'invoiceAmount', 'order_status', 'status'
-      ].some(key => data[key] !== undefined);
+        'invoice_amount', 'invoiceAmount', 'order_status', 'status',
+        'total_amount', 'totalAmount', 'discount_amount', 'discount',
+        'national_subsidy', 'nationalSubsidy', 'education_subsidy', 'educationSubsidy'
+      ].some(key => data[key] !== undefined) || hasItemsPayload;
       const existingGrossProfit = affectsGrossProfit
         ? await OrderGrossProfit.findOne({
             where: { order_id: order.order_id },
@@ -2344,7 +2410,9 @@ async function updateOrderItems(ctx) {
 
   let results = [];
   await sequelize.transaction(async (transaction) => {
-    results = await syncOrderItemsFromPayload(order, data, transaction);
+    // 该接口也被历史 orderItemRepair 兼容调用用于单行库存 ID 修复，
+    // 不能把单行请求误当成整个页面商品列表而删除其他明细。
+    results = await syncOrderItemsFromPayload(order, data, transaction, { replaceAll: false });
   });
 
   ctx.body = {
