@@ -1,0 +1,9 @@
+{
+  "name": "getDailySummary",
+  "version": "1.0.0",
+  "description": "获取当日订单汇总数据",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "latest"
+  }
+}

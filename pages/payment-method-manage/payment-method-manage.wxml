@@ -1,0 +1,88 @@
+<view class="container">
+  <view class="header">
+    <text class="title">收款方式管理</text>
+  </view>
+
+  <!-- 收款方式管理 -->
+  <view class="manage-section">
+    <view class="section-header">
+      <text class="section-title">收款方式列表</text>
+      <button class="btn-add" type="primary" bindtap="addPaymentMethod">新增方式</button>
+    </view>
+
+    <!-- 表头 -->
+    <view class="table-header">
+      <text class="col-sort">排序</text>
+      <text class="col-name">名称</text>
+      <text class="col-action">操作</text>
+    </view>
+
+    <!-- 分割线 -->
+    <view class="divider"></view>
+
+    <view class="list-container">
+      <block wx:if="{{paymentMethods && paymentMethods.length > 0}}">
+        <view class="list-item {{item.isEditing ? 'editing' : ''}}" wx:for="{{paymentMethods}}" wx:key="_id" wx:for-item="item" wx:for-index="index">
+          <!-- 排序号 -->
+          <view class="col-sort">
+            <block wx:if="{{!item.isEditing}}">
+              <text class="sort-number">{{item.sortOrder || 0}}</text>
+            </block>
+            <block wx:else>
+              <input class="edit-input sort-input" type="number" value="{{item.editSortOrder}}" bindinput="onSortInput" data-index="{{index}}" />
+            </block>
+          </view>
+
+          <!-- 名称 -->
+          <view class="col-name">
+            <block wx:if="{{!item.isEditing}}">
+              <text class="item-name">{{item.name}}</text>
+            </block>
+            <block wx:else>
+              <input class="edit-input name-input" type="text" value="{{item.editName}}" bindinput="onNameInput" data-index="{{index}}" placeholder="请输入名称" />
+            </block>
+          </view>
+
+          <!-- 操作按钮 -->
+          <view class="col-action">
+            <block wx:if="{{!item.isEditing}}">
+              <button class="btn-edit" type="default" size="mini" bindtap="startEdit" data-index="{{index}}">编辑</button>
+              <button class="btn-delete" type="warn" size="mini" bindtap="deletePaymentMethod" data-id="{{item._id}}">删除</button>
+            </block>
+            <block wx:else>
+              <button class="btn-save" type="primary" size="mini" bindtap="saveItem" data-index="{{index}}">保存</button>
+              <button class="btn-cancel" type="default" size="mini" bindtap="cancelEdit" data-index="{{index}}">取消</button>
+            </block>
+          </view>
+        </view>
+      </block>
+      <view class="empty-list" wx:else>
+        <text class="empty-text">暂无收款方式信息</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 新增弹窗 -->
+  <view class="modal" wx:if="{{showAddModal}}">
+    <view class="modal-content">
+      <view class="modal-header">
+        <text class="modal-title">新增收款方式</text>
+        <text class="modal-close" bindtap="closeAddModal">×</text>
+      </view>
+      <view class="modal-body">
+        <view class="form-item">
+          <text class="form-label">排序号</text>
+          <input class="form-input" type="number" placeholder="请输入排序号" value="{{newSortOrder}}" bindinput="onNewSortOrderInput" />
+        </view>
+        <view class="form-item">
+          <text class="form-label">名称</text>
+          <input class="form-input" type="text" placeholder="请输入收款方式名称" value="{{newName}}" bindinput="onNewNameInput" />
+        </view>
+        <view class="form-actions">
+          <button class="btn btn-secondary" type="default" bindtap="closeAddModal">取消</button>
+          <button class="btn btn-primary" type="primary" bindtap="saveNewItem">保存</button>
+        </view>
+      </view>
+    </view>
+  </view>
+</view>

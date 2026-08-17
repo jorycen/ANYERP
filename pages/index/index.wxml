@@ -1,0 +1,84 @@
+<view class="container">
+  <view class="header">
+    <text class="title">艾诺云门店销售助手</text>
+  </view>
+
+  <view class="function-grid">
+    <view class="function-item" bindtap="navigateToOrderCreate" wx:if="{{!purchaseQueryOnly && showCreateOrder}}">
+      <view class="icon-wrapper">
+        <text class="icon-text">📋</text>
+      </view>
+      <text class="function-name">新建订单</text>
+      <text class="function-desc">录入商品、收款与客户信息，快速开单</text>
+    </view>
+
+    <view class="function-item" bindtap="navigateToDepositManage" wx:if="{{!purchaseQueryOnly && showCreateOrder}}">
+      <view class="icon-wrapper">
+        <text class="icon-text">订</text>
+      </view>
+      <text class="function-name">定金管理</text>
+      <text class="function-desc">登记收款方式，提交后进入日结并可用于订单抵扣</text>
+    </view>
+
+    <view class="function-item" bindtap="navigateToInventoryQuery" wx:if="{{!purchaseQueryOnly}}">
+      <view class="icon-wrapper">
+        <text class="icon-text">库</text>
+      </view>
+      <text class="function-name">库存查询</text>
+      <text class="function-desc">按 PN、SN、商品名称快速查询门店库存</text>
+    </view>
+
+    <view class="function-item transfer-entry" bindtap="navigateToTransferManage" wx:if="{{!purchaseQueryOnly && showTransfer}}">
+      <view class="icon-wrapper transfer-icon">
+        <text class="icon-text">调</text>
+      </view>
+      <text class="function-name">库存调拨</text>
+      <text class="function-desc">同区域门店间申请调拨、出库拍照及收货入库</text>
+    </view>
+
+    <view class="function-item" bindtap="navigateToInboundManage" wx:if="{{!purchaseQueryOnly && showInbound}}">
+      <view class="icon-wrapper inbound-icon">
+        <text class="icon-text">入</text>
+      </view>
+      <text class="function-name">采购入库</text>
+      <text class="function-desc">查看待入库单，录入 PN、SN 及库存类型</text>
+    </view>
+
+    <view class="function-item" bindtap="navigateToApprovalCenter" wx:if="{{!purchaseQueryOnly}}">
+      <view class="icon-wrapper approval-icon">
+        <text class="icon-text">审</text>
+      </view>
+      <text class="function-name">审批中心</text>
+      <text class="function-desc">汇总当前账号的全部待审批业务单据</text>
+    </view>
+
+    <view class="function-item report-entry" bindtap="navigateToReports" wx:if="{{!purchaseQueryOnly}}">
+      <view class="icon-wrapper">
+        <text class="icon-text">📈</text>
+      </view>
+      <text class="function-name">经营报表</text>
+      <text class="function-desc">查看销售、门店、商品与员工经营分析</text>
+    </view>
+
+    <view class="function-item finance-entry" bindtap="navigateToFinanceManagement" wx:if="{{!purchaseQueryOnly}}">
+      <view class="icon-wrapper finance-icon">
+        <text class="icon-text">财</text>
+      </view>
+      <text class="function-name">财务管理</text>
+      <text class="function-desc">查看营业额、毛利、库存、账户与付款情况</text>
+    </view>
+
+    <view class="function-item" bindtap="navigateToPurchaseApplication">
+      <view class="icon-wrapper purchase-icon">
+        <text class="icon-text">采</text>
+      </view>
+      <text class="function-name">采购及报销</text>
+      <text class="function-desc">采购申请、个人垫付与报销记录</text>
+    </view>
+
+  </view>
+
+  <view class="version-section">
+    <text class="version-text">版本号：{{appVersion}}</text>
+  </view>
+</view>

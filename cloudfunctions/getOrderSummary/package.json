@@ -1,0 +1,9 @@
+{
+  "name": "getOrderSummary",
+  "version": "1.0.0",
+  "description": "获取订单汇总数据（支持日期范围，从goods表查询类别）",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "latest"
+  }
+}

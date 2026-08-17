@@ -1,0 +1,15 @@
+{
+  "name": "testGuanghuanApi",
+  "version": "1.0.0",
+  "description": "测试光环/香港置地接口连通性",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "wx-server-sdk": "~3.0.0",
+    "axios": "^1.6.0"
+  }
+}

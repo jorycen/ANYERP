@@ -1,0 +1,142 @@
+<!--pages/photo-download/photo-download.wxml-->
+<view class="container">
+  <!-- 查询条件区域 -->
+  <view class="query-section">
+    <view class="section-title">查询条件</view>
+    
+    <!-- 日期范围选择 -->
+    <view class="date-range">
+      <view class="date-item">
+        <text class="date-label">开始日期</text>
+        <picker mode="date" value="{{startDate}}" bindchange="onStartDateChange">
+          <view class="date-picker">{{startDate}}</view>
+        </picker>
+      </view>
+      <text class="date-separator">至</text>
+      <view class="date-item">
+        <text class="date-label">结束日期</text>
+        <picker mode="date" value="{{endDate}}" bindchange="onEndDateChange">
+          <view class="date-picker">{{endDate}}</view>
+        </picker>
+      </view>
+    </view>
+    
+    <!-- 图片类型筛选 -->
+    <view class="filter-row">
+      <text class="filter-label">图片类型</text>
+      <picker bindchange="onPhotoTypeChange" value="{{photoTypeIndex}}" range="{{photoTypeOptions}}" range-key="label">
+        <view class="filter-picker">
+          {{photoTypeLabel}}
+          <text class="picker-arrow">▼</text>
+        </view>
+      </picker>
+    </view>
+    
+    <!-- 查询按钮 -->
+    <button class="query-btn" bindtap="queryPhotos" loading="{{isLoading}}">查询图片</button>
+  </view>
+  
+  <!-- 下载进度区域 -->
+  <view class="progress-section" wx:if="{{isDownloading}}">
+    <view class="progress-header">
+      <text class="progress-title">下载进度</text>
+      <text class="progress-count">{{currentDownloadIndex}} / {{selectedPhotos.length}}</text>
+    </view>
+    <view class="progress-bar">
+      <view class="progress-fill" style="width: {{downloadProgress}}%"></view>
+    </view>
+    <view class="progress-stats">
+      <text class="stat success">成功: {{downloadSuccessCount}}</text>
+      <text class="stat fail">失败: {{downloadFailCount}}</text>
+    </view>
+  </view>
+  
+  <!-- 操作按钮区域 -->
+  <view class="action-section" wx:if="{{!isDownloading && photoList.length > 0}}">
+    <view class="action-row">
+      <view class="select-all" bindtap="onSelectAll">
+        <checkbox checked="{{isAllSelected}}"/>
+        <text>{{isAllSelected ? '取消全选' : '全选'}} ({{selectedPhotos.length}}/{{photoList.length}})</text>
+      </view>
+      <view class="action-btns">
+        <button class="action-btn {{selectedPhotos.length === 0 ? 'download-btn-disabled' : 'download-btn'}}" bindtap="onDownloadSelected" disabled="{{selectedPhotos.length === 0}}">
+          下载选中
+        </button>
+        <button class="action-btn copy-btn {{selectedPhotos.length === 0 ? 'download-btn-disabled' : ''}}" bindtap="onCopyLinks" disabled="{{selectedPhotos.length === 0}}">
+          复制链接
+        </button>
+      </view>
+    </view>
+  </view>
+  
+  <!-- 图片列表区域 -->
+  <view class="photo-section">
+    <view class="section-header">
+      <text class="section-title">图片列表</text>
+      <text class="photo-count" wx:if="{{photoList.length > 0}}">共 {{photoList.length}} 张</text>
+    </view>
+    
+    <!-- 空状态 -->
+    <view class="empty-state" wx:if="{{photoList.length === 0 && !isLoading}}">
+      <view class="empty-icon">📷</view>
+      <text class="empty-text">暂无图片</text>
+      <text class="empty-tip">请选择日期范围后点击查询</text>
+    </view>
+    
+    <!-- 图片网格 -->
+    <view class="photo-grid" wx:if="{{photoList.length > 0}}">
+      <view 
+        class="photo-item {{item.selected ? 'selected' : ''}}" 
+        wx:for="{{photoList}}" 
+        wx:key="fileID"
+        data-index="{{index}}"
+        bindtap="onPhotoSelect"
+      >
+        <!-- 选择框 -->
+        <view class="select-box">
+          <checkbox checked="{{item.selected}}"/>
+        </view>
+        
+        <!-- 图片 -->
+        <image 
+          class="photo-image" 
+          src="{{item.tempFileURL || item.fileID}}" 
+          mode="aspectFill"
+          data-index="{{index}}"
+          catchtap="onPreviewPhoto"
+        />
+        
+        <!-- 类型标签 -->
+        <view class="type-tag {{item.parsedInfo.type}}">{{item.parsedInfo.typeLabel}}</view>
+        
+        <!-- 图片信息 -->
+        <view class="photo-info">
+          <text class="photo-name">{{item.parsedInfo.photoType}}</text>
+          <text class="customer-name">{{item.parsedInfo.customerName}}</text>
+          <text class="photo-date">{{item.dateInfo.dateStr}} {{item.dateInfo.timeStr}}</text>
+          <text class="file-name">{{item.parsedInfo.fileName}}</text>
+        </view>
+      </view>
+    </view>
+  </view>
+  
+  <!-- 底部安全区域 -->
+  <view class="safe-area"></view>
+
+  <!-- 链接弹窗 -->
+  <view class="links-modal" wx:if="{{showLinksModal}}">
+    <view class="links-mask" bindtap="closeLinksModal"></view>
+    <view class="links-content">
+      <view class="links-header">
+        <text class="links-title">图片下载链接 ({{linksCount}}张)</text>
+        <text class="links-close" bindtap="closeLinksModal">×</text>
+      </view>
+      <view class="links-body">
+        <text class="links-tip">链接有效期约2小时，请尽快下载</text>
+        <scroll-view class="links-scroll" scroll-y="true">
+          <text class="links-text" selectable="true">{{linksText}}</text>
+        </scroll-view>
+      </view>
+    </view>
+  </view>
+</view>

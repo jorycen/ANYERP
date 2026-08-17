@@ -1,0 +1,178 @@
+<view class="page">
+  <view class="page-heading">
+    <view>
+      <text class="eyebrow">经营分析 · 实时数据</text>
+      <text class="page-title">经营报表</text>
+      <text class="page-subtitle">数据来源：ANY-ERP 统计表</text>
+    </view>
+    <view class="refresh-dot {{isLoading ? 'loading-dot' : ''}}"></view>
+  </view>
+
+  <view class="filter-card">
+    <view class="range-tabs">
+      <view class="range-tab {{rangeType === 'day' ? 'active' : ''}}" data-type="day" bindtap="setRange">今日</view>
+      <view class="range-tab {{rangeType === 'week' ? 'active' : ''}}" data-type="week" bindtap="setRange">本周</view>
+      <view class="range-tab {{rangeType === 'month' ? 'active' : ''}}" data-type="month" bindtap="setRange">本月</view>
+    </view>
+    <view class="date-row">
+      <picker mode="date" value="{{startDate}}" bindchange="onStartDateChange">
+        <view class="date-picker">{{startDate}}</view>
+      </picker>
+      <text class="date-separator">至</text>
+      <picker mode="date" value="{{endDate}}" bindchange="onEndDateChange">
+        <view class="date-picker">{{endDate}}</view>
+      </picker>
+    </view>
+    <view class="select-row">
+      <picker class="select-picker" range="{{filters.stores}}" range-key="name" value="{{storePickerIndex}}" bindchange="onStoreChange">
+        <view class="select-box">{{filters.stores[storePickerIndex].name}} <text class="chevron">⌄</text></view>
+      </picker>
+      <picker class="select-picker" range="{{filters.employees}}" range-key="name" value="{{employeePickerIndex}}" bindchange="onEmployeeChange">
+        <view class="select-box">{{filters.employees[employeePickerIndex].name}} <text class="chevron">⌄</text></view>
+      </picker>
+      <picker class="select-picker" range="{{filters.productLines}}" range-key="name" value="{{productLinePickerIndex}}" bindchange="onProductLineChange">
+        <view class="select-box">{{filters.productLines[productLinePickerIndex].name}} <text class="chevron">⌄</text></view>
+      </picker>
+      <view class="clear-filter" bindtap="clearFilters">重置</view>
+    </view>
+  </view>
+
+  <view class="section-tabs">
+    <view class="section-tab {{activeSection === 'overview' ? 'active' : ''}}" data-section="overview" bindtap="switchSection">经营总览</view>
+    <view class="section-tab {{activeSection === 'store' ? 'active' : ''}}" data-section="store" bindtap="switchSection">门店排行</view>
+    <view class="section-tab {{activeSection === 'product' ? 'active' : ''}}" data-section="product" bindtap="switchSection">商品分析</view>
+    <view class="section-tab {{activeSection === 'employee' ? 'active' : ''}}" data-section="employee" bindtap="switchSection">员工销售</view>
+  </view>
+
+  <view class="error-card" wx:if="{{errorMessage}}">
+    <text>{{errorMessage}}</text>
+    <text class="retry" bindtap="loadOverview">重新加载</text>
+  </view>
+
+  <view class="loading-card" wx:if="{{isLoading}}">
+    <view class="spinner"></view>
+    <text>正在同步 ERP 统计表…</text>
+  </view>
+
+  <block wx:else>
+    <view class="kpi-grid" wx:if="{{activeSection === 'overview'}}">
+      <view class="kpi-card kpi-blue">
+        <text class="kpi-label">销售金额</text>
+        <text class="kpi-value">¥{{dashboard.kpis.salesAmount.display}}</text>
+        <text class="kpi-compare">{{dashboard.kpis.salesAmount.compareDisplay}} 环比</text>
+      </view>
+      <view class="kpi-card kpi-purple">
+        <text class="kpi-label">成交订单</text>
+        <text class="kpi-value">{{dashboard.kpis.orderCount.display}}<text class="unit">单</text></text>
+        <text class="kpi-compare">{{dashboard.kpis.orderCount.compareDisplay}} 环比</text>
+      </view>
+      <view class="kpi-card kpi-green" wx:if="{{dashboard.meta.canViewProfit}}">
+        <text class="kpi-label">总毛利</text>
+        <text class="kpi-value">¥{{dashboard.kpis.grossProfit.display}}</text>
+        <text class="kpi-compare">{{dashboard.kpis.grossProfit.compareDisplay}} 环比</text>
+      </view>
+      <view class="kpi-card kpi-orange" wx:if="{{dashboard.meta.canViewProfit}}">
+        <text class="kpi-label">毛利率</text>
+        <text class="kpi-value">{{dashboard.kpis.grossMargin.display}}</text>
+        <text class="kpi-compare">{{dashboard.kpis.grossMargin.compareDisplay}} 环比</text>
+      </view>
+      <view class="kpi-card kpi-cyan">
+        <text class="kpi-label">客单价</text>
+        <text class="kpi-value">¥{{dashboard.kpis.averageOrderValue.display}}</text>
+        <text class="kpi-compare">{{dashboard.kpis.averageOrderValue.compareDisplay}} 环比</text>
+      </view>
+      <view class="kpi-card kpi-red" wx:if="{{dashboard.meta.canViewProfit}}">
+        <text class="kpi-label">库存金额</text>
+        <text class="kpi-value">¥{{dashboard.kpis.inventoryAmount.display}}</text>
+        <text class="kpi-compare">ERP 当前库存快照</text>
+      </view>
+    </view>
+
+    <view class="panel" wx:if="{{activeSection === 'overview'}}">
+      <view class="panel-title-row"><text class="panel-title">销售趋势</text><text class="panel-note">{{dashboard.meta.startDate}} - {{dashboard.meta.endDate}}</text></view>
+      <view class="trend-list" wx:if="{{dashboard.trend.length}}">
+        <view class="trend-item" wx:for="{{dashboard.trend}}" wx:key="bucket">
+          <text class="trend-date">{{item.bucket}}</text>
+          <view class="trend-track"><view class="trend-bar" style="width: {{item.barWidth}};"></view></view>
+          <text class="trend-value">¥{{item.amountDisplay}}</text>
+        </view>
+      </view>
+      <view class="empty-inline" wx:else>当前日期范围暂无销售数据</view>
+    </view>
+
+    <view class="panel" wx:if="{{activeSection === 'overview' || activeSection === 'store'}}">
+      <view class="panel-title-row"><text class="panel-title">门店经营排行</text><text class="panel-link" bindtap="switchSection" data-section="store">查看全部</text></view>
+      <view class="ranking-list" wx:if="{{dashboard.storeRanking.length}}">
+        <view class="ranking-row" wx:for="{{dashboard.storeRanking}}" wx:key="storeId">
+          <text class="rank rank-{{item.rank}}">{{item.rank}}</text>
+          <view class="ranking-main">
+            <view class="ranking-head"><text class="ranking-name">{{item.storeName}}</text><text class="ranking-amount">¥{{item.amountDisplay}}</text></view>
+            <view class="progress-track"><view class="progress-bar blue" style="width: {{item.barWidth}};"></view></view>
+            <view class="ranking-foot"><text>{{item.orderCount}} 单</text><text wx:if="{{dashboard.meta.canViewProfit}}">毛利 ¥{{item.grossProfitDisplay}}</text></view>
+          </view>
+        </view>
+      </view>
+      <view class="empty-inline" wx:else>暂无门店销售数据</view>
+    </view>
+
+    <view class="two-column" wx:if="{{activeSection === 'overview' || activeSection === 'product'}}">
+      <view class="panel half-panel">
+        <view class="panel-title-row"><text class="panel-title">品类销售</text></view>
+        <view class="mini-list" wx:if="{{dashboard.productLineAnalysis.length}}">
+          <view class="mini-row" wx:for="{{dashboard.productLineAnalysis}}" wx:key="productLine">
+            <view class="mini-head"><text>{{item.productLine}}</text><text>¥{{item.amountDisplay}}</text></view>
+            <view class="progress-track"><view class="progress-bar green" style="width: {{item.barWidth}};"></view></view>
+          </view>
+        </view>
+        <view class="empty-inline" wx:else>暂无品类数据</view>
+      </view>
+      <view class="panel half-panel">
+        <view class="panel-title-row"><text class="panel-title">重点产品</text></view>
+        <view class="mini-list" wx:if="{{dashboard.productAnalysis.focusProducts.length}}">
+          <view class="product-row" wx:for="{{dashboard.productAnalysis.focusProducts}}" wx:key="productId">
+            <view class="product-rank">{{index + 1}}</view>
+            <view class="product-info"><text class="product-name">{{item.productName}}</text><text class="product-sub">{{item.quantity}} 件</text></view>
+            <text class="product-amount">¥{{item.amountDisplay}}</text>
+          </view>
+        </view>
+        <view class="empty-inline" wx:else>暂无重点产品</view>
+      </view>
+    </view>
+
+    <view class="panel" wx:if="{{activeSection === 'product'}}">
+      <view class="panel-title-row"><text class="panel-title">销售额 TOP10</text></view>
+      <view class="product-row" wx:for="{{dashboard.productAnalysis.salesTop10}}" wx:key="productId">
+        <view class="product-rank">{{index + 1}}</view>
+        <view class="product-info"><text class="product-name">{{item.productName}}</text><text class="product-sub">{{item.quantity}} 件 · {{item.productCode}}</text></view>
+        <text class="product-amount">¥{{item.amountDisplay}}</text>
+      </view>
+      <view class="empty-inline" wx:if="{{!dashboard.productAnalysis.salesTop10.length}}">暂无商品销售数据</view>
+    </view>
+
+    <view class="panel" wx:if="{{activeSection === 'overview' || activeSection === 'employee'}}">
+      <view class="panel-title-row"><text class="panel-title">员工销售排名</text></view>
+      <view class="ranking-list" wx:if="{{dashboard.employeeRanking.length}}">
+        <view class="ranking-row" wx:for="{{dashboard.employeeRanking}}" wx:key="employeeName">
+          <text class="rank rank-{{item.rank}}">{{item.rank}}</text>
+          <view class="ranking-main">
+            <view class="ranking-head"><text class="ranking-name">{{item.employeeName}}</text><text class="ranking-amount">¥{{item.amountDisplay}}</text></view>
+            <view class="progress-track"><view class="progress-bar orange" style="width: {{item.barWidth}};"></view></view>
+            <view class="ranking-foot"><text>{{item.participatedOrderCount}} 单</text><text wx:if="{{dashboard.meta.canViewProfit}}">毛利 ¥{{item.grossProfitDisplay}}</text></view>
+          </view>
+        </view>
+      </view>
+      <view class="empty-inline" wx:else>暂无员工销售数据</view>
+    </view>
+
+    <view class="panel" wx:if="{{activeSection === 'overview'}}">
+      <view class="panel-title-row"><text class="panel-title">库存概览</text><text class="panel-link" bindtap="openInventoryReport">查看库存</text></view>
+      <view class="inventory-summary">
+        <view><text class="inventory-label">库存数量</text><text class="inventory-value">{{dashboard.inventory.inventoryQuantityDisplay}}<text class="unit">件</text></text></view>
+        <view><text class="inventory-label">SKU 数</text><text class="inventory-value">{{dashboard.inventory.skuCountDisplay}}</text></view>
+      </view>
+      <view class="age-list" wx:if="{{dashboard.inventory.ageStructure.length}}">
+        <view class="age-row" wx:for="{{dashboard.inventory.ageStructure}}" wx:key="ageBucket"><text>{{item.ageBucket}}</text><view class="progress-track"><view class="progress-bar purple" style="width: {{item.barWidth}};"></view></view><text>{{item.quantity}}</text></view>
+      </view>
+    </view>
+  </block>
+</view>

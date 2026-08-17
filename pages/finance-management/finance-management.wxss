@@ -1,0 +1,409 @@
+page {
+  background: #f4f7fb;
+}
+
+.finance-page {
+  min-height: 100vh;
+  color: #1b2638;
+  background: #f4f7fb;
+}
+
+.hero {
+  padding: 48rpx 34rpx 34rpx;
+  color: #ffffff;
+  background: linear-gradient(145deg, #142b55 0%, #1d4c85 58%, #297b9b 100%);
+  border-radius: 0 0 38rpx 38rpx;
+  box-shadow: 0 14rpx 38rpx rgba(22, 55, 97, 0.18);
+}
+
+.hero-topline,
+.section-heading,
+.revenue-main,
+.data-row,
+.account-item,
+.payment-amount {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.eyebrow,
+.section-kicker {
+  display: block;
+  font-size: 20rpx;
+  letter-spacing: 4rpx;
+  color: #91bce0;
+}
+
+.page-title {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 52rpx;
+  font-weight: 700;
+  letter-spacing: 2rpx;
+}
+
+.demo-badge {
+  padding: 8rpx 18rpx;
+  border: 1rpx solid rgba(255, 255, 255, 0.3);
+  border-radius: 28rpx;
+  color: #d7ecff;
+  font-size: 22rpx;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.hero-subtitle {
+  display: block;
+  margin-top: 18rpx;
+  color: #b5d3ec;
+  font-size: 25rpx;
+}
+
+.period-tabs {
+  display: flex;
+  margin-top: 34rpx;
+  padding: 6rpx;
+  border-radius: 16rpx;
+  background: rgba(5, 22, 54, 0.3);
+}
+
+.period-tab {
+  flex: 1;
+  padding: 14rpx 0;
+  border-radius: 12rpx;
+  color: #bad0e6;
+  font-size: 27rpx;
+  text-align: center;
+}
+
+.period-tab.active {
+  color: #163257;
+  background: #ffffff;
+  font-weight: 600;
+}
+
+.date-picker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 230rpx;
+  margin: 24rpx auto 0;
+  padding: 13rpx 20rpx;
+  border: 1rpx solid rgba(255, 255, 255, 0.24);
+  border-radius: 16rpx;
+  color: #e7f4ff;
+  font-size: 24rpx;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.date-picker-arrow {
+  margin-left: 14rpx;
+  color: #9fc5e5;
+  font-size: 28rpx;
+}
+
+.sync-card,
+.error-card {
+  display: flex;
+  align-items: center;
+  margin: 20rpx 24rpx 0;
+  padding: 18rpx 24rpx;
+  border-radius: 16rpx;
+  color: #54708e;
+  font-size: 23rpx;
+  background: #eaf4ff;
+}
+
+.sync-dot {
+  width: 16rpx;
+  height: 16rpx;
+  margin-right: 14rpx;
+  border-radius: 50%;
+  background: #2f83d4;
+}
+
+.error-card {
+  justify-content: space-between;
+  color: #a85454;
+  background: #fff1f1;
+}
+
+.retry-text {
+  margin-left: 18rpx;
+  color: #c04444;
+  font-weight: 600;
+}
+
+.section {
+  margin: 24rpx 24rpx 0;
+  padding: 30rpx 28rpx;
+  border: 1rpx solid #e8eef5;
+  border-radius: 24rpx;
+  background: #ffffff;
+  box-shadow: 0 8rpx 28rpx rgba(27, 52, 84, 0.04);
+}
+
+.revenue-section {
+  margin-top: 28rpx;
+}
+
+.section-title {
+  display: block;
+  margin-top: 5rpx;
+  color: #18273b;
+  font-size: 32rpx;
+  font-weight: 700;
+}
+
+.compare {
+  align-self: flex-end;
+  padding: 8rpx 14rpx;
+  border-radius: 10rpx;
+  color: #15805c;
+  font-size: 22rpx;
+  background: #e9f8f0;
+}
+
+.revenue-main {
+  margin-top: 32rpx;
+}
+
+.revenue-primary,
+.revenue-secondary {
+  flex: 1;
+}
+
+.metric-label,
+.quick-label,
+.quick-hint,
+.unit-note,
+.account-name,
+.payment-status-label {
+  display: block;
+  color: #8190a3;
+  font-size: 23rpx;
+}
+
+.metric-value {
+  display: block;
+  margin-top: 8rpx;
+  color: #163c73;
+  font-size: 41rpx;
+  font-weight: 700;
+}
+
+.metric-value.profit {
+  color: #0b8b68;
+  font-size: 34rpx;
+}
+
+.metric-extra {
+  display: block;
+  margin-top: 5rpx;
+  color: #0b8b68;
+  font-size: 21rpx;
+}
+
+.revenue-divider {
+  width: 1rpx;
+  height: 76rpx;
+  margin: 0 28rpx;
+  background: #e9eef4;
+}
+
+.quick-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18rpx;
+  margin: 20rpx 24rpx 0;
+}
+
+.quick-card {
+  min-height: 184rpx;
+  padding: 24rpx;
+  border-radius: 22rpx;
+  background: #ffffff;
+  box-shadow: 0 8rpx 28rpx rgba(27, 52, 84, 0.04);
+}
+
+.quick-card.payment-quick {
+  grid-column: span 2;
+  min-height: 144rpx;
+}
+
+.quick-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44rpx;
+  height: 44rpx;
+  margin-bottom: 14rpx;
+  border-radius: 14rpx;
+  color: #ffffff;
+  font-size: 24rpx;
+  font-weight: 600;
+  background: #3979c8;
+}
+
+.account-quick .quick-icon {
+  background: #8a65c9;
+}
+
+.payment-quick .quick-icon {
+  background: #dd8b36;
+}
+
+.quick-value {
+  display: block;
+  margin-top: 7rpx;
+  color: #213b5e;
+  font-size: 34rpx;
+  font-weight: 700;
+}
+
+.quick-hint {
+  margin-top: 5rpx;
+  font-size: 21rpx;
+}
+
+.compact-heading {
+  align-items: flex-end;
+}
+
+.unit-note {
+  font-size: 21rpx;
+}
+
+.data-list {
+  margin-top: 24rpx;
+}
+
+.data-row {
+  min-height: 70rpx;
+  border-bottom: 1rpx solid #edf1f5;
+}
+
+.data-row:last-child {
+  border-bottom: none;
+}
+
+.row-name-wrap {
+  display: flex;
+  align-items: center;
+  flex: 1;
+}
+
+.category-dot {
+  width: 14rpx;
+  height: 14rpx;
+  margin-right: 14rpx;
+  border-radius: 50%;
+  background: #3979c8;
+}
+
+.category-1 { background: #4ba983; }
+.category-2 { background: #d9983e; }
+.category-3 { background: #9d6fd2; }
+.category-4 { background: #e76672; }
+.category-5 { background: #58a4b0; }
+
+.row-name {
+  color: #2c3b4d;
+  font-size: 27rpx;
+}
+
+.row-quantity,
+.row-amount {
+  font-size: 25rpx;
+}
+
+.row-quantity {
+  width: 118rpx;
+  color: #8190a3;
+  text-align: right;
+}
+
+.row-amount {
+  width: 170rpx;
+  color: #213b5e;
+  font-weight: 600;
+  text-align: right;
+}
+
+.account-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18rpx;
+  margin-top: 24rpx;
+}
+
+.account-item {
+  display: block;
+  padding: 20rpx;
+  border-radius: 16rpx;
+  background: #f6f9fc;
+}
+
+.account-amount {
+  display: block;
+  margin-top: 8rpx;
+  color: #293f60;
+  font-size: 29rpx;
+  font-weight: 600;
+}
+
+.payment-section {
+  padding-bottom: 26rpx;
+}
+
+.payment-tabs {
+  display: flex;
+  margin: 26rpx -4rpx 0;
+  white-space: nowrap;
+}
+
+.payment-tab {
+  display: inline-block;
+  margin-right: 12rpx;
+  padding: 14rpx 18rpx;
+  border: 1rpx solid #e5ebf2;
+  border-radius: 14rpx;
+  color: #738197;
+  font-size: 22rpx;
+  background: #f8fafc;
+}
+
+.payment-tab.active {
+  border-color: #2a6bb4;
+  color: #245d99;
+  background: #edf5ff;
+  font-weight: 600;
+}
+
+.payment-amount {
+  margin-top: 24rpx;
+  padding: 22rpx 20rpx;
+  border-radius: 16rpx;
+  background: #fff8ef;
+}
+
+.payment-status-value {
+  color: #bb6b18;
+  font-size: 38rpx;
+  font-weight: 700;
+}
+
+.payment-note,
+.footer-note {
+  color: #9aa6b5;
+  font-size: 21rpx;
+}
+
+.payment-note {
+  margin-top: 18rpx;
+}
+
+.footer-note {
+  padding: 32rpx 24rpx 48rpx;
+  text-align: center;
+}

@@ -1,0 +1,58 @@
+<view class="container">
+  <view class="header">
+    <text class="title">用户管理</text>
+    <text class="subtitle">管理经销商下所有用户密码</text>
+  </view>
+  
+  <view class="loading" wx:if="{{loading}}">
+    <text>加载中...</text>
+  </view>
+  
+  <view class="user-list" wx:if="{{!loading && userList.length > 0}}">
+    <view class="user-item" wx:for="{{userList}}" wx:key="phone">
+      <view class="user-info">
+        <text class="user-name">{{item.name}}</text>
+        <text class="user-phone">{{item.phone}}</text>
+        <text class="user-role">{{item.role === 'distributor' ? '经销商' : item.role === 'store_admin' ? '店长' : '店员'}}</text>
+        <text class="user-store" wx:if="{{item.storeName}}">{{item.storeName}}</text>
+      </view>
+      <view class="user-actions">
+        <text class="password-status {{item.hasPassword ? 'set' : 'default'}}">
+          {{item.hasPassword ? '已设置密码' : '默认密码'}}
+        </text>
+        <button class="btn-reset" data-user="{{item}}" bindtap="showResetPassword">重置密码</button>
+      </view>
+    </view>
+  </view>
+  
+  <view class="empty" wx:if="{{!loading && userList.length === 0}}">
+    <text>暂无用户数据</text>
+  </view>
+</view>
+
+<!-- 重置密码弹窗 -->
+<view class="modal-mask" wx:if="{{showResetModal}}" bindtap="hideResetModal"></view>
+<view class="modal-dialog" wx:if="{{showResetModal}}">
+  <view class="modal-header">
+    <text class="modal-title">重置密码</text>
+    <text class="modal-subtitle">用户：{{selectedUser.name}} ({{selectedUser.phone}})</text>
+  </view>
+  <view class="modal-body">
+    <view class="form-item">
+      <text class="form-label">新密码</text>
+      <input class="form-input" password="{{true}}" placeholder="请输入新密码" bindinput="onNewPasswordInput" value="{{newPassword}}" />
+    </view>
+    <view class="form-item">
+      <text class="form-label">确认密码</text>
+      <input class="form-input" password="{{true}}" placeholder="请再次输入新密码" bindinput="onConfirmPasswordInput" value="{{confirmPassword}}" />
+    </view>
+    <view class="form-tip">
+      <text>提示：默认密码为手机号后6位</text>
+      <text class="link" bindtap="resetToDefault">使用默认密码</text>
+    </view>
+  </view>
+  <view class="modal-footer">
+    <button class="modal-btn cancel" bindtap="hideResetModal">取消</button>
+    <button class="modal-btn confirm" bindtap="confirmResetPassword">确定</button>
+  </view>
+</view>

@@ -1,0 +1,65 @@
+-- Sales return / refund workflow extensions.
+CREATE TABLE IF NOT EXISTS `T_SALES_RETURN` (
+  `RETURN_ID` varchar(32) PRIMARY KEY,
+  `RETURN_NO` varchar(64) NOT NULL,
+  `ORIGINAL_ORDER_ID` varchar(32) NOT NULL,
+  `STORE_ID` varchar(32) NOT NULL,
+  `RETURN_TYPE` varchar(32) NOT NULL DEFAULT 'full',
+  `REFUND_AMOUNT` decimal(10,2) NOT NULL DEFAULT 0.00,
+  `REASON` varchar(255),
+  `APPROVAL_STAGE` varchar(32) NOT NULL DEFAULT 'pending_store',
+  `STATUS` varchar(32) NOT NULL DEFAULT 'pending',
+  `INBOUND_ID` varchar(32),
+  `CREATE_USER_ID` bigint(20),
+  `CREATE_USER` varchar(64),
+  `STORE_REVIEW_USER_ID` bigint(20),
+  `DISTRIBUTOR_REVIEW_USER_ID` bigint(20),
+  `CREATE_TIME` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `UPDATE_TIME` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY `uni_sales_return_no` (`RETURN_NO`),
+  KEY `idx_sales_return_order` (`ORIGINAL_ORDER_ID`),
+  KEY `idx_sales_return_stage` (`STORE_ID`, `APPROVAL_STAGE`, `STATUS`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='销售退单及双级审批';
+
+CREATE TABLE IF NOT EXISTS `T_REFUND_ORDER` (
+  `REFUND_ID` varchar(32) PRIMARY KEY,
+  `REFUND_NO` varchar(64) NOT NULL,
+  `RETURN_ID` varchar(32) NOT NULL,
+  `ORIGINAL_ORDER_ID` varchar(32) NOT NULL,
+  `STORE_ID` varchar(32) NOT NULL,
+  `STATEMENT_ID` varchar(32),
+  `REFUND_AMOUNT` decimal(10,2) NOT NULL DEFAULT 0.00,
+  `ORIGINAL_PAYMENT_METHOD` varchar(64),
+  `REFUND_ACCOUNT_ID` varchar(64),
+  `STATUS` varchar(32) NOT NULL DEFAULT 'pending',
+  `REFUND_TIME` timestamp NULL,
+  `CREATE_TIME` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `UPDATE_TIME` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY `uni_refund_no` (`REFUND_NO`),
+  KEY `idx_refund_statement` (`STATEMENT_ID`),
+  KEY `idx_refund_store_status` (`STORE_ID`, `STATUS`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='销售退款单';
+
+CREATE TABLE IF NOT EXISTS `T_REFUND_PAYMENT_ACCOUNT` (
+  `ACCOUNT_ID` varchar(64) PRIMARY KEY,
+  `STORE_ID` varchar(32) NOT NULL,
+  `PAYMENT_METHOD_ID` varchar(64) NOT NULL,
+  `ACCOUNT_NAME` varchar(128) NOT NULL,
+  `ACCOUNT_NO` varchar(128),
+  `IS_ACTIVE` tinyint(1) NOT NULL DEFAULT 1,
+  `CREATE_TIME` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `UPDATE_TIME` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY `idx_refund_account_store` (`STORE_ID`, `IS_ACTIVE`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='退款支付账号';
+
+CREATE TABLE IF NOT EXISTS `T_DAILY_STATEMENT_ITEM` (
+  `ITEM_ID` bigint(20) AUTO_INCREMENT PRIMARY KEY,
+  `STATEMENT_ID` varchar(32) NOT NULL,
+  `ITEM_TYPE` varchar(32) NOT NULL,
+  `REF_NO` varchar(64) NOT NULL,
+  `AMOUNT` decimal(10,2) NOT NULL DEFAULT 0.00,
+  `PAYMENT_METHOD_ID` varchar(64),
+  `CREATE_TIME` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY `idx_statement_item_statement` (`STATEMENT_ID`),
+  KEY `idx_statement_item_ref` (`REF_NO`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='日结单明细，退款为负向金额';

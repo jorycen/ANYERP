@@ -1,0 +1,98 @@
+<view class="login-container">
+  <view class="login-content">
+    <view class="login-header">
+      <text class="title">艾诺集团小艾助手260</text>
+    </view>
+    
+    <!-- 授权状态提示 -->
+    <view class="status-section">
+      <view class="status-icon {{authStatus}}">
+        <text wx:if="{{authStatus === 'pending'}}">🔒</text>
+        <text wx:elif="{{authStatus === 'authorized'}}">✅</text>
+        <text wx:else>❌</text>
+      </view>
+      <text class="status-message">{{message}}</text>
+    </view>
+    
+    <!-- 用户信息显示 -->
+    <view class="user-info-section" wx:if="{{authStatus === 'authorized'}}">
+      <view class="info-item">
+        <text class="info-label">姓名：</text>
+        <text class="info-value">{{userInfo.userName}}</text>
+      </view>
+      <view class="info-item">
+        <text class="info-label">账号类型：</text>
+        <text class="info-value">{{userInfo.userRole === 'distributor' ? '经销商' : userInfo.userRole === 'store_admin' ? '店长' : '店员'}}</text>
+      </view>
+      <view class="info-item">
+        <text class="info-label">手机号：</text>
+        <text class="info-value">{{phoneNumber}}</text>
+      </view>
+      <view class="info-item" wx:if="{{isDistributor}}">
+        <text class="info-label">所属经销商：</text>
+        <text class="info-value">{{currentStoreName}}</text>
+      </view>
+      <view class="info-item" wx:if="{{!isDistributor}}">
+        <text class="info-label">门店：</text>
+        <text class="info-value">{{currentStoreName}}</text>
+      </view>
+    </view>
+    
+    <!-- 登录表单 -->
+    <view class="login-form" wx:if="{{authStatus !== 'authorized'}}">
+      <view class="input-row">
+        <text class="input-label">账号：</text>
+        <input 
+          class="form-input" 
+          type="number" 
+          placeholder="请输入账号" 
+          maxlength="11"
+          bindinput="onPhoneInput"
+          value="{{inputPhone}}"
+        />
+      </view>
+      <view class="input-row">
+        <text class="input-label">密码：</text>
+        <input
+          class="form-input"
+          type="text"
+          password="{{!showPassword}}"
+          placeholder="请输入密码"
+          bindinput="onPasswordInput"
+          value="{{inputPassword}}"
+        />
+        <view class="toggle-password" bindtap="togglePassword">{{showPassword ? '隐藏' : '显示'}}</view>
+      </view>
+
+      <button 
+        class="login-btn primary" 
+        bindtap="loginWithPassword"
+        loading="{{loading}}"
+        disabled="{{loading || !inputPhone || inputPhone.length !== 11 || !inputPassword}}"
+        type="primary">
+        登录
+      </button>
+    </view>
+    
+    <!-- 进入首页按钮 -->
+    <view class="action-section" wx:if="{{authStatus === 'authorized'}}">
+      <button 
+        class="login-btn success" 
+        bindtap="goToHome">
+        进入系统
+      </button>
+    </view>
+    
+    <!-- 说明文字 -->
+    <view class="notice-section">
+      <text class="notice-text">• 登录后可使用订单管理、打印等功能</text>
+      <text class="notice-text">• 如未授权，请联系管理员添加账号</text>
+      <text class="notice-text">• 默认密码为账号后6位</text>
+    </view>
+
+<!-- 版本号 -->
+    <view class="version-info">
+      <text class="version-text">版本号：V1.2.11</text>
+    </view>
+  </view>
+</view>

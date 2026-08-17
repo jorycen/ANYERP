@@ -1,0 +1,9 @@
+{
+    "name": "customer",
+    "version": "1.1.1",
+    "description": "CRM and Customer Service",
+    "main": "index.js",
+    "dependencies": {
+        "mysql2": "^3.9.2"
+    }
+}

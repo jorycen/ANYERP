@@ -1,0 +1,203 @@
+<view class="page">
+  <view class="summary-card">
+    <view>
+      <text class="summary-title">待我审批</text>
+      <text class="summary-subtitle">已按当前账号角色和门店权限汇总</text>
+    </view>
+    <view class="total-badge">{{tasks.length}}</view>
+  </view>
+
+  <view class="mode-tabs">
+    <view class="mode-tab {{viewMode === 'pending' ? 'active' : ''}}" data-mode="pending" bindtap="switchViewMode">待审批</view>
+    <view class="mode-tab {{viewMode === 'history' ? 'active' : ''}}" data-mode="history" bindtap="switchViewMode">我的审批记录</view>
+  </view>
+
+  <scroll-view wx:if="{{viewMode === 'pending'}}" class="filter-scroll" scroll-x enhanced show-scrollbar="{{false}}">
+    <view class="filter-list">
+      <view class="filter-item {{activeType === item.type ? 'active' : ''}}" wx:for="{{filters}}" wx:key="type" data-type="{{item.type}}" bindtap="switchFilter">
+        <text>{{item.label}}</text>
+        <text class="filter-count">{{item.count}}</text>
+      </view>
+    </view>
+  </scroll-view>
+
+  <view class="partial-error" wx:if="{{viewMode === 'pending' && partialError}}">{{partialError}}</view>
+  <view wx:if="{{viewMode === 'history'}}" class="history-search">
+    <view class="history-search-row">
+      <input class="history-input" value="{{historyKeyword}}" bindinput="onHistoryKeywordInput" bindconfirm="searchProductHistory" placeholder="按审批单号、商品名、PN、申请人筛选" />
+      <button class="history-search-button" bindtap="searchProductHistory">查询</button>
+    </view>
+    <picker mode="selector" range="{{historyStatusOptions}}" value="{{historyStatusIndex}}" bindchange="onHistoryStatusChange">
+      <view class="history-status">状态：{{historyStatusOptions[historyStatusIndex]}} ›</view>
+    </picker>
+  </view>
+  <view class="loading-state" wx:if="{{viewMode === 'pending' && loading && visibleTasks.length === 0}}">正在汇总审批单...</view>
+  <view class="empty-state" wx:elif="{{viewMode === 'pending' && !loading && visibleTasks.length === 0}}">
+    <text class="empty-icon">✓</text>
+    <text class="empty-title">暂无待审批单据</text>
+    <text class="empty-desc">下拉页面可重新检查待办</text>
+  </view>
+
+  <view wx:elif="{{viewMode === 'pending'}}" class="task-list">
+    <view class="task-card" wx:for="{{visibleTasks}}" wx:key="key" data-key="{{item.key}}" bindtap="openTask">
+      <view class="task-head">
+        <text class="type-tag {{item.typeClass}}">{{item.typeLabel}}</text>
+        <text class="stage">{{item.stageText}}</text>
+      </view>
+      <text class="task-no">{{item.no}}</text>
+      <text class="task-title">{{item.title}}</text>
+      <text class="task-summary">{{item.summary}}</text>
+      <view class="task-meta">
+         <text wx:if="{{item.organizationName}}">{{item.organizationName}}</text>
+        <text wx:if="{{item.applicant}}">申请人：{{item.applicant}}</text>
+        <text>{{item.createTimeText}}</text>
+      </view>
+      <view class="task-foot">
+        <view wx:if="{{item.amountText}}">
+          <text class="amount-label">{{item.amountLabel}}</text>
+          <text class="amount">¥{{item.amountText}}</text>
+        </view>
+        <text class="review-link">查看并审批 ›</text>
+      </view>
+    </view>
+  </view>
+  <view wx:if="{{viewMode === 'pending' && approvalHasMore}}" class="load-more-area">
+    <button class="load-more-button" loading="{{loadingMore}}" disabled="{{loadingMore}}" bindtap="loadMoreApprovals">{{loadingMore ? '加载中...' : '加载更多审批'}}</button>
+  </view>
+
+  <view wx:if="{{viewMode === 'history'}}">
+    <view class="loading-state" wx:if="{{historyLoading && productHistory.length === 0}}">正在查询我的审批记录...</view>
+    <view class="empty-state" wx:elif="{{!historyLoading && productHistory.length === 0}}">
+      <text class="empty-icon">⌕</text>
+      <text class="empty-title">没有找到我经手的审批记录</text>
+      <text class="empty-desc">可以修改关键字或状态后重新查询</text>
+    </view>
+    <view class="task-list" wx:else>
+      <view class="task-card" wx:for="{{productHistory}}" wx:key="key" data-key="{{item.key}}" bindtap="openTask">
+        <view class="task-head"><text class="type-tag {{item.typeClass}}">{{item.typeLabel}}</text><text class="stage">{{item.stageText}}</text></view>
+        <text class="task-no">{{item.no}}</text>
+        <text class="task-title">{{item.title}}</text>
+        <text class="task-summary">{{item.summary}}</text>
+        <view class="task-meta"><text>申请人：{{item.applicant || '-'}}</text><text>{{item.createTimeText}}</text></view>
+      </view>
+    </view>
+    <view wx:if="{{historyHasMore}}" class="load-more-area">
+      <button class="load-more-button" loading="{{historyLoadingMore}}" disabled="{{historyLoadingMore}}" bindtap="loadMoreApprovalHistory">{{historyLoadingMore ? '加载中...' : '加载更多记录'}}</button>
+    </view>
+  </view>
+
+  <view class="modal-mask" wx:if="{{selectedTask}}" bindtap="closeTask" catchtouchmove="noop">
+    <view class="detail-sheet" catchtap="noop">
+      <view class="sheet-handle"></view>
+      <view class="detail-head">
+        <view>
+          <text class="type-tag {{selectedTask.typeClass}}">{{selectedTask.typeLabel}}</text>
+          <text class="detail-no">{{selectedTask.no}}</text>
+        </view>
+        <text class="close" bindtap="closeTask">×</text>
+      </view>
+
+      <scroll-view class="detail-scroll" scroll-y>
+        <text class="detail-title">{{selectedTask.title}}</text>
+        <text class="detail-summary">{{selectedTask.summary}}</text>
+        <view wx:if="{{selectedTask.detailLoading}}" class="detail-loading">正在加载详情和附件...</view>
+
+        <view class="detail-grid">
+          <view class="detail-row">
+            <text>审批阶段</text>
+            <text>{{selectedTask.stageText}}</text>
+          </view>
+           <view class="detail-row" wx:if="{{selectedTask.organizationName}}">
+             <text>{{selectedTask.organizationLabel || '所属门店'}}</text>
+             <text>{{selectedTask.organizationName}}</text>
+           </view>
+          <view class="detail-row" wx:if="{{selectedTask.applicant}}">
+            <text>申请人</text>
+            <text>{{selectedTask.applicant}}</text>
+          </view>
+          <view class="detail-row">
+            <text>申请时间</text>
+            <text>{{selectedTask.createTimeText}}</text>
+          </view>
+          <view class="detail-row" wx:for="{{selectedTask.details}}" wx:key="label" wx:for-item="detail">
+            <text>{{detail.label}}</text>
+            <text>{{detail.value}}</text>
+          </view>
+        </view>
+
+         <view class="product-edit-section" wx:if="{{selectedTask.type === 'product' && !selectedTask.readOnly && selectedTask.detailLoaded}}">
+           <text class="section-title">修改商品信息</text>
+           <text class="field-label required">商品名称</text>
+           <input class="edit-input" value="{{selectedTask.productEdit.name}}" data-field="name" bindinput="onProductEditInput" placeholder="请输入商品名称" />
+           <text class="field-label">商品分类</text>
+           <picker mode="selector" range="{{productCategoryOptions}}" range-key="displayName" value="{{selectedTask.productEdit.categoryIndex}}" bindchange="onProductCategoryChange">
+             <view class="edit-readonly">{{selectedTask.productEdit.categoryName}}</view>
+           </picker>
+           <text class="field-label">名称组合字段</text>
+           <view wx:for="{{selectedTask.productEdit.attributeRows}}" wx:key="key" wx:for-item="attribute" wx:for-index="attributeIndex" class="attribute-edit-row">
+             <text class="attribute-edit-label">{{attribute.label}}</text>
+             <input class="edit-input" value="{{attribute.value}}" data-index="{{attributeIndex}}" bindinput="onProductAttributeInput" placeholder="请输入{{attribute.label}}" />
+           </view>
+           <text class="field-label">厂商商品名称</text>
+           <input class="edit-input" value="{{selectedTask.productEdit.config}}" data-field="config" bindinput="onProductEditInput" placeholder="请输入厂商商品名称" />
+           <text class="field-label required">PN码</text>
+           <input class="edit-input" value="{{selectedTask.productEdit.pnCode}}" data-field="pnCode" bindinput="onProductEditInput" placeholder="请输入PN码" />
+           <text class="field-label">单位</text>
+           <input class="edit-input" value="{{selectedTask.productEdit.unit}}" data-field="unit" bindinput="onProductEditInput" placeholder="请输入单位" />
+           <view class="edit-switch-row">
+             <text>需要SN码</text>
+             <switch checked="{{selectedTask.productEdit.needSn}}" data-field="needSn" bindchange="onProductEditSwitch" color="#1aad19" />
+           </view>
+           <view class="edit-switch-row">
+             <text>需要IMEI码</text>
+             <switch checked="{{selectedTask.productEdit.needImei}}" data-field="needImei" bindchange="onProductEditSwitch" color="#1aad19" />
+           </view>
+           <text class="field-label">备注</text>
+           <textarea class="edit-textarea" value="{{selectedTask.productEdit.remark}}" data-field="remark" bindinput="onProductEditInput" placeholder="请输入商品备注"></textarea>
+           <text class="edit-tip">审批通过后将按修改后的信息创建正式商品。</text>
+         </view>
+
+         <view class="attachment-section" wx:if="{{selectedTask.attachments.length}}">
+          <text class="section-title">{{selectedTask.photoLabel || '申请附件'}}</text>
+          <view class="photo-strip" wx:if="{{selectedTask.photoUrls.length}}">
+            <image wx:for="{{selectedTask.photoUrls}}" wx:key="*this" class="photo-thumb" src="{{item}}" mode="aspectFill" data-photo="{{item}}" data-photos="{{selectedTask.photoUrls}}" data-current="{{item}}" binderror="onTaskPhotoError" bindtap="previewTaskPhotos" />
+          </view>
+          <view class="attachment-file-list" wx:if="{{selectedTask.files.length}}">
+            <view class="attachment-file" wx:for="{{selectedTask.files}}" wx:key="url" data-url="{{item.url}}" data-name="{{item.name}}" bindtap="openTaskFile">
+              <text class="attachment-file-icon">📎</text>
+              <text class="attachment-file-name">{{item.name}}</text>
+              <text class="attachment-file-action">查看 ›</text>
+            </view>
+          </view>
+        </view>
+
+        <view class="item-section" wx:if="{{selectedTask.items.length}}">
+          <text class="section-title">业务明细</text>
+          <view class="business-item" wx:for="{{selectedTask.items}}" wx:key="index" wx:for-item="line">
+            <view class="line-main">
+              <text class="line-name">{{line.name}}</text>
+              <text class="line-meta" wx:if="{{line.meta}}">{{line.meta}}</text>
+            </view>
+            <view class="line-number">
+              <text>x{{line.quantity}}</text>
+              <text wx:if="{{line.amount}}">{{line.amount}}</text>
+            </view>
+          </view>
+        </view>
+
+        <view class="comment-section">
+          <text class="section-title">审批意见</text>
+          <textarea class="comment-input" value="{{reviewComment}}" maxlength="512" bindinput="onCommentInput" placeholder="通过时选填，拒绝时必填"></textarea>
+          <text class="comment-count">{{reviewComment.length}} / 512</text>
+        </view>
+        <view class="scroll-space"></view>
+      </scroll-view>
+
+      <view class="history-readonly-tip" wx:if="{{selectedTask.readOnly}}">历史审批单，仅供查询</view>
+      <view class="review-actions" wx:if="{{!selectedTask.readOnly}}">
+        <button class="reject-button" disabled="{{submitting || selectedTask.detailLoading}}" data-action="rejected" bindtap="submitReview">拒绝</button>
+        <button class="approve-button" loading="{{submitting}}" disabled="{{submitting || selectedTask.detailLoading}}" data-action="approved" bindtap="submitReview">审批通过</button>
+      </view>
+    </view>
+  </view>
+</view>

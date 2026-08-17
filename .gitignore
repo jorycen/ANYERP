@@ -19,7 +19,7 @@ query
 *.tmp
 *.timestamp-*.mjs
 
-# Local environment
+# Local environment and private project settings
 .env
 .env.*
 !.env.example

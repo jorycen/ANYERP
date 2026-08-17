@@ -4062,11 +4062,12 @@ async function confirmTransferOut(ctx) {
     const requestedSelections = Array.isArray(ctx.request.body.items) ? ctx.request.body.items.filter(Boolean) : [];
     const selectedSnByItemId = new Map(
       requestedSelections
-        .filter(item => item && item.itemId && (item.snId || item.sn_id || item.inventoryId || item.inventory_id))
-        .map(item => [
-          String(item.itemId),
-          item.snId || item.sn_id || item.inventoryId || item.inventory_id
-        ])
+        .map(item => ({
+          itemId: item && (item.itemId || item.item_id || item.transferItemId || item.transfer_item_id),
+          snId: item && (item.snId || item.sn_id || item.inventoryId || item.inventory_id)
+        }))
+        .filter(item => item.itemId && item.snId)
+        .map(item => [String(item.itemId), item.snId])
     );
     const selectedByProductId = new Map();
     requestedSelections.forEach(item => {
@@ -4086,8 +4087,9 @@ async function confirmTransferOut(ctx) {
     if (!transfer) {
       ctx.throw(404, '??????');
     }
-    await assertTransferOperationStore(ctx, transfer.from_store_id);
-    if (transfer.status !== 'pending') {
+    assertStoreVisible(ctx, transfer.from_store_id);
+    const pendingTransferStatuses = new Set(['pending', 'requested', 'applied', 'shipping']);
+    if (!pendingTransferStatuses.has(String(transfer.status || '').toLowerCase())) {
       ctx.throw(400, '???????????');
     }
 

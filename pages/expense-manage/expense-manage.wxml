@@ -1,0 +1,81 @@
+<view class="page">
+  <view class="card">
+    <text class="section-title">费用信息</text>
+
+    <view class="two-columns">
+      <view class="column">
+        <text class="field-label required">门店</text>
+        <picker mode="selector" range="{{stores}}" range-key="name" value="{{form.storeIndex}}" bindchange="onStoreChange">
+          <view class="picker-value {{form.storeId ? '' : 'placeholder'}}">{{form.storeName || '请选择门店'}}</view>
+        </picker>
+      </view>
+      <view class="column">
+        <text class="field-label">区域</text>
+        <view class="readonly-value">{{form.regionName || '随门店自动带入'}}</view>
+      </view>
+    </view>
+
+    <text class="field-label required">报销类型</text>
+    <picker mode="selector" range="{{expenseTypes}}" range-key="name" value="{{form.expenseTypeIndex}}" bindchange="onExpenseTypeChange">
+      <view class="picker-value {{form.expenseTypeId ? '' : 'placeholder'}}">{{form.expenseType || '请选择报销类型'}}</view>
+    </picker>
+
+    <text class="field-label required">费用发生方</text>
+    <input class="input" placeholder="公司、商户或个人名称" value="{{form.expenseParty}}" data-field="expenseParty" bindinput="onInput" />
+
+    <view class="two-columns">
+      <view class="column">
+        <text class="field-label required">费用金额</text>
+        <input class="input" type="digit" placeholder="0.00" value="{{form.amount}}" data-field="amount" bindinput="onInput" />
+      </view>
+      <view class="column">
+        <text class="field-label required">费用日期</text>
+        <picker mode="date" value="{{form.expenseDate}}" bindchange="onDateChange">
+          <view class="picker-value">{{form.expenseDate}}</view>
+        </picker>
+      </view>
+    </view>
+
+    <text class="field-label required">支付方式</text>
+    <picker mode="selector" range="{{paymentMethods}}" range-key="label" value="{{form.paymentMethodIndex}}" bindchange="onPaymentMethodChange">
+      <view class="picker-value">{{paymentMethods[form.paymentMethodIndex].label}}</view>
+    </picker>
+    <text class="field-tip">{{form.paymentMethod === 'CORPORATE' ? '提交后自动进入ANY-ERP应付管理待付款清单' : '提交后生成报销单，领导审批后生成报销结算单'}}</text>
+
+    <view class="switch-row">
+      <text>是否有发票</text>
+      <switch checked="{{form.hasInvoice}}" bindchange="onInvoiceChange" color="#1aad19" />
+    </view>
+    <view wx:if="{{form.hasInvoice}}">
+      <text class="field-label">发票类型</text>
+      <input class="input" placeholder="专票、普票等" value="{{form.invoiceType}}" data-field="invoiceType" bindinput="onInput" />
+      <text class="field-label">发票号码</text>
+      <input class="input" placeholder="选填" value="{{form.invoiceNo}}" data-field="invoiceNo" bindinput="onInput" />
+    </view>
+
+    <text class="field-label">费用说明</text>
+    <textarea class="textarea" placeholder="填写费用用途和补充说明" value="{{form.remark}}" data-field="remark" bindinput="onInput"></textarea>
+    <button class="submit-btn" loading="{{submitting}}" disabled="{{submitting}}" bindtap="submit">提交费用</button>
+  </view>
+
+  <view class="card">
+    <text class="section-title">我的费用记录</text>
+    <view class="empty" wx:if="{{loading}}">加载中...</view>
+    <view class="empty" wx:elif="{{!records.length}}">暂无费用记录</view>
+    <view class="record" wx:for="{{records}}" wx:key="expense_id">
+      <view class="record-head">
+        <text class="record-no">{{item.expense_no}}</text>
+        <text class="status status-{{item.status}}">{{item.statusText}}</text>
+      </view>
+      <text class="record-title">{{item.expense_type}} · {{item.expense_party}}</text>
+      <text class="muted">{{item.region_name || '-'}} · {{item.paymentMethodText}} · 发票：{{item.has_invoice ? '有' : '无'}}</text>
+      <view class="stage-row"><text class="stage-label">当前环节</text><text class="stage-value">{{item.currentStage}}</text></view>
+      <view class="review-info" wx:if="{{item.review_comment || item.reviewComment || item.review_user_name || item.reviewUserName}}">审批批注：{{item.review_comment || item.reviewComment || '-'}}<text wx:if="{{item.review_user_name || item.reviewUserName}}">（{{item.review_user_name || item.reviewUserName}}）</text></view>
+      <button class="detail-btn" size="mini" data-key="{{item.recordKey}}" bindtap="openRecordDetail">查看申请详情</button>
+      <view class="record-action-row" wx:if="{{item.canRevoke}}">
+        <button class="revoke-btn" size="mini" loading="{{revokingRecordKey === item.recordKey}}" disabled="{{revokingRecordKey}}" data-key="{{item.recordKey}}" bindtap="revokeRecord">撤销申请</button>
+      </view>
+      <view class="record-foot"><text class="muted">{{item.createTimeText}}</text><text class="amount">¥{{item.amountText}}</text></view>
+    </view>
+  </view>
+</view>

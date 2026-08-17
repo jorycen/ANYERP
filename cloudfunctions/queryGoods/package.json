@@ -1,0 +1,10 @@
+{
+  "name": "queryGoods",
+  "version": "1.1.1",
+  "description": "Inventory and Product Query Service",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~3.0.0",
+    "mysql2": "^3.9.2"
+  }
+}

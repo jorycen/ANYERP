@@ -1,0 +1,210 @@
+/* 光环上传统计页面样式 */
+.container {
+  padding: 20rpx 30rpx;
+  min-height: 100vh;
+  background-color: var(--background-color);
+}
+
+.header {
+  margin-bottom: 30rpx;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.title {
+  font-size: 44rpx;
+  font-weight: bold;
+  color: var(--primary-color);
+  text-align: center;
+}
+
+.filter-section {
+  background-color: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 30rpx;
+  margin-bottom: 30rpx;
+  box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.1);
+}
+
+.filter-row {
+  display: flex;
+  gap: 20rpx;
+  margin-bottom: 30rpx;
+}
+
+.filter-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10rpx;
+}
+
+.filter-label {
+  font-size: 28rpx;
+  color: var(--light-text);
+}
+
+.picker-value {
+  padding: 20rpx;
+  border: 2rpx solid var(--border-color);
+  border-radius: 8rpx;
+  font-size: 32rpx;
+  background-color: #FFFFFF;
+}
+
+.btn-query {
+  width: 100%;
+  background-color: var(--primary-color);
+  color: #FFFFFF;
+  border: none;
+  border-radius: 8rpx;
+  font-size: 32rpx;
+  padding: 20rpx;
+}
+
+.stats-summary {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20rpx;
+  margin-bottom: 30rpx;
+}
+
+.summary-card {
+  background-color: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 30rpx;
+  box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10rpx;
+}
+
+.summary-label {
+  font-size: 28rpx;
+  color: var(--light-text);
+}
+
+.summary-value {
+  font-size: 40rpx;
+  font-weight: bold;
+  color: var(--text-color);
+}
+
+.summary-value.amount {
+  color: var(--danger-color);
+}
+
+.summary-value.success {
+  color: var(--success-color);
+}
+
+.summary-value.error {
+  color: var(--danger-color);
+}
+
+.order-list-section {
+  background-color: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 30rpx;
+  box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.1);
+}
+
+.section-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20rpx;
+  font-size: 36rpx;
+  font-weight: bold;
+  color: var(--text-color);
+}
+
+.list-count {
+  font-size: 28rpx;
+  color: var(--light-text);
+  font-weight: normal;
+}
+
+.order-list {
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+.order-item {
+  background-color: #F9F9F9;
+  border-radius: 12rpx;
+  padding: 20rpx;
+  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.08);
+}
+
+.order-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10rpx;
+}
+
+.order-no {
+  font-size: 28rpx;
+  font-weight: bold;
+  color: var(--text-color);
+}
+
+.order-status {
+  font-size: 24rpx;
+  padding: 6rpx 16rpx;
+  border-radius: 6rpx;
+}
+
+.order-status.reported {
+  background-color: #E8F5E9;
+  color: var(--success-color);
+}
+
+.order-status.none {
+  background-color: #F5F5F5;
+  color: var(--light-text);
+}
+
+.order-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 26rpx;
+  color: var(--light-text);
+  margin-top: 8rpx;
+}
+
+.order-amount {
+  color: var(--primary-color);
+  font-weight: bold;
+}
+
+.order-error {
+  color: var(--danger-color);
+}
+
+.empty-list {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 80rpx 0;
+  color: var(--light-text);
+}
+
+.empty-text {
+  font-size: 28rpx;
+}
+
+.permission-tip {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 100rpx 0;
+  color: var(--light-text);
+  font-size: 28rpx;
+}

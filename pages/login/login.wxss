@@ -1,0 +1,350 @@
+.login-container {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40rpx;
+  justify-content: center;
+}
+
+.login-content {
+  width: 100%;
+  background: #ffffff;
+  border-radius: 24rpx;
+  padding: 40rpx;
+  box-shadow: 0 10rpx 40rpx rgba(0, 0, 0, 0.1);
+}
+
+.login-header {
+  text-align: center;
+  margin-bottom: 40rpx;
+}
+
+.title {
+  display: block;
+  font-size: 40rpx;
+  font-weight: bold;
+  color: #333;
+}
+
+.status-section {
+  text-align: center;
+  padding: 30rpx 0;
+}
+
+.status-icon {
+  font-size: 80rpx;
+  margin-bottom: 20rpx;
+}
+
+.status-icon.pending {
+  color: #999;
+}
+
+.status-icon.authorized {
+  color: #52c41a;
+}
+
+.status-icon.unauthorized {
+  color: #f5222d;
+}
+
+.status-message {
+  display: block;
+  font-size: 32rpx;
+  color: #333;
+  margin-top: 20rpx;
+}
+
+.user-info-section {
+  background: #f8f9fa;
+  border-radius: 16rpx;
+  padding: 30rpx;
+  margin: 20rpx 0;
+}
+
+.info-item {
+  display: flex;
+  align-items: center;
+  padding: 16rpx 0;
+  border-bottom: 1rpx solid #eee;
+}
+
+.info-item:last-child {
+  border-bottom: none;
+}
+
+.info-label {
+  font-size: 28rpx;
+  color: #666;
+  width: 160rpx;
+}
+
+.info-value {
+  font-size: 28rpx;
+  color: #333;
+  flex: 1;
+}
+
+.action-section {
+  margin-top: 40rpx;
+}
+
+.login-btn {
+  width: 100%;
+  height: 88rpx;
+  line-height: 88rpx;
+  border-radius: 44rpx;
+  font-size: 32rpx;
+  font-weight: bold;
+  border: none;
+}
+
+.login-btn.primary {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #ffffff;
+}
+
+.login-btn.success {
+  background: linear-gradient(135deg, #52c41a 0%, #73d13d 100%);
+  color: #ffffff;
+}
+
+.login-btn.retry {
+  background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+  color: #ffffff;
+}
+
+.notice-section {
+  margin-top: 40rpx;
+  padding: 20rpx;
+}
+
+.notice-text {
+  display: block;
+  font-size: 24rpx;
+  color: #999;
+  line-height: 40rpx;
+  margin-bottom: 10rpx;
+}
+
+.login-form {
+  margin-top: 20rpx;
+}
+
+.input-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 20rpx;
+  position: relative;
+}
+
+.input-label {
+  font-size: 28rpx;
+  color: #333;
+  width: 140rpx;
+}
+
+.form-input {
+  flex: 1;
+  height: 80rpx;
+  border: 1rpx solid #e8e8e8;
+  border-radius: 8rpx;
+  padding: 0 20rpx;
+  font-size: 28rpx;
+}
+
+.toggle-password {
+  position: absolute;
+  right: 20rpx;
+  font-size: 24rpx;
+  color: #666;
+  padding: 10rpx;
+  z-index: 10;
+  background-color: #fff;
+}
+
+/* 门店选择下拉框样式 */
+.store-select-row {
+  margin-bottom: 30rpx;
+}
+
+.store-picker {
+  flex: 1;
+  height: 80rpx;
+  border: 1rpx solid #e8e8e8;
+  border-radius: 8rpx;
+  padding: 0 20rpx;
+  display: flex;
+  align-items: center;
+  background-color: #fff;
+}
+
+.picker-value {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.picker-text {
+  font-size: 28rpx;
+  color: #333;
+  flex: 1;
+}
+
+.picker-arrow {
+  font-size: 24rpx;
+  color: #999;
+  margin-left: 10rpx;
+}
+
+/* 用户信息区域内的门店选择器 */
+.store-picker-inline {
+  flex: 1;
+  height: 60rpx;
+  display: flex;
+  align-items: center;
+  background-color: #f8f9fa;
+  border-radius: 8rpx;
+  padding: 0 16rpx;
+}
+
+.store-picker-inline .picker-value {
+  width: 100%;
+}
+
+.store-picker-inline .picker-text {
+  font-size: 28rpx;
+  color: #333;
+}
+
+.store-picker-inline .picker-arrow {
+  font-size: 24rpx;
+  color: #999;
+}
+
+/* 版本号样式 */
+.version-info {
+  text-align: center;
+  margin-top: 30rpx;
+  padding-top: 20rpx;
+  border-top: 1rpx solid #eee;
+}
+
+.version-text {
+  font-size: 24rpx;
+  color: #999;
+}
+
+/* 门店选择弹窗样式 */
+.modal-mask {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.store-picker-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 600rpx;
+  max-height: 70vh;
+  background-color: #fff;
+  border-radius: 24rpx;
+  overflow: hidden;
+  z-index: 1001;
+  box-shadow: 0 8rpx 32rpx rgba(0, 0, 0, 0.15);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 32rpx;
+  border-bottom: 2rpx solid #f5f5f5;
+}
+
+.modal-title {
+  font-size: 34rpx;
+  font-weight: bold;
+  color: #333;
+}
+
+.modal-close {
+  font-size: 40rpx;
+  color: #999;
+  padding: 10rpx;
+  line-height: 1;
+}
+
+.modal-body {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.store-list-container {
+  max-height: 60vh;
+}
+
+.store-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 28rpx 32rpx;
+  border-bottom: 1rpx solid #f5f5f5;
+  transition: background-color 0.2s;
+}
+
+.store-item:last-child {
+  border-bottom: none;
+}
+
+.store-item.selected {
+  background-color: #e8f4ff;
+}
+
+.store-item:active {
+  background-color: #f0f0f0;
+}
+
+.store-item-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.store-item-name {
+  font-size: 30rpx;
+  color: #333;
+  font-weight: 500;
+}
+
+.store-item-address {
+  font-size: 24rpx;
+  color: #999;
+  margin-top: 4rpx;
+}
+
+.store-item-check {
+  width: 44rpx;
+  height: 44rpx;
+  border-radius: 50%;
+  background-color: var(--primary-color);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28rpx;
+  font-weight: bold;
+}

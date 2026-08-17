@@ -1,0 +1,75 @@
+<view class="container">
+  <view class="section-card">
+    <view class="section-header">
+      <text class="section-title">新增客户定金</text>
+    </view>
+    <view class="form-field">
+      <text class="field-label required">会员称呼</text>
+      <input class="field-input" value="{{form.customerName}}" placeholder="请输入会员称呼" bindinput="onInput" data-field="customerName" />
+    </view>
+    <view class="form-field">
+      <text class="field-label required">会员ID</text>
+      <input class="field-input" value="{{form.customerPhone}}" placeholder="请输入会员ID" bindinput="onInput" data-field="customerPhone" />
+    </view>
+    <view class="form-field">
+      <text class="field-label required">定金金额</text>
+      <input class="field-input" type="digit" value="{{form.amount}}" placeholder="0.00" bindinput="onInput" data-field="amount" />
+    </view>
+    <view class="form-field">
+      <text class="field-label required">收款方式</text>
+      <picker mode="selector" range="{{paymentMethodOptions}}" value="{{paymentMethodIndex}}" bindchange="onPaymentMethodChange">
+        <view class="field-input picker-field {{form.paymentMethod ? '' : 'placeholder'}}">
+          {{form.paymentMethod || '请选择收款方式'}}
+        </view>
+      </picker>
+    </view>
+    <view class="form-field">
+      <text class="field-label">备注</text>
+      <textarea class="field-textarea" value="{{form.remark}}" placeholder="可填写商品意向、约定说明等" bindinput="onInput" data-field="remark"></textarea>
+    </view>
+    <button class="primary-btn" bindtap="submitDeposit" loading="{{submitting}}" disabled="{{submitting}}">提交并存入定金库</button>
+  </view>
+
+  <view class="section-card">
+    <view class="section-header">
+      <text class="section-title">定金单列表</text>
+      <button class="mini-btn" bindtap="loadDeposits">刷新</button>
+    </view>
+    <view class="filter-row">
+      <picker bindchange="onStatusChange" value="{{statusIndex}}" range="{{statusOptions}}">
+        <view class="picker-input">{{statusOptions[statusIndex]}} <text class="picker-arrow">▼</text></view>
+      </picker>
+      <input class="filter-input" value="{{query.customerPhone}}" placeholder="会员ID" bindinput="onQueryPhoneInput" />
+    </view>
+
+    <view wx:if="{{loading}}" class="empty-text">加载中...</view>
+    <view wx:elif="{{deposits.length === 0}}" class="empty-text">暂无定金单</view>
+    <block wx:else>
+      <block wx:for="{{deposits}}" wx:key="depositId">
+        <view class="deposit-item">
+        <view class="deposit-main">
+          <text class="deposit-no">{{item.depositNo}}</text>
+          <text class="deposit-status {{item.status}}">{{item.statusText}}</text>
+        </view>
+        <view class="deposit-line">
+          <text>{{item.customerName || '-'}}</text>
+          <text>{{item.customerPhone || '-'}}</text>
+        </view>
+        <view class="deposit-line">
+          <text>金额 ¥{{item.amountText}}</text>
+          <text>{{item.paymentMethod || '-'}}</text>
+        </view>
+        <view class="deposit-line">
+          <text>收定金人 {{item.createUser || '-'}}</text>
+        </view>
+        <view class="deposit-line muted">
+          <text>{{item.createTimeText}}</text>
+        </view>
+        <view class="action-row">
+          <button wx:if="{{item.status === 'submitted' || item.status === 'available' || item.status === 'archived'}}" class="small-danger" bindtap="refundDeposit" data-id="{{item.depositId}}" data-amount="{{item.availableAmount}}">退款登记</button>
+        </view>
+        </view>
+      </block>
+    </block>
+  </view>
+</view>

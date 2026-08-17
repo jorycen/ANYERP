@@ -1,0 +1,151 @@
+<view class="container">
+  <view class="header">
+    <text class="title">个人中心</text>
+  </view>
+  
+  <view class="profile-section">
+    <view class="section-title">用户信息</view>
+    <view class="info-item">
+      <text class="info-label">姓名</text>
+      <text class="info-value">{{userInfo.userName}}</text>
+    </view>
+    <view class="info-item">
+      <text class="info-label">账号类型</text>
+      <text class="info-value">{{userInfo.userRole}}</text>
+    </view>
+    <view class="info-item" wx:if="{{userInfo.phoneNumber}}">
+      <text class="info-label">手机号</text>
+      <text class="info-value">{{userInfo.phoneNumber}}</text>
+    </view>
+    <view class="info-item" wx:if="{{userInfo.storeName}}">
+      <text class="info-label">所属门店</text>
+      <text class="info-value">{{userInfo.storeName}}</text>
+    </view>
+    <view class="info-item" wx:if="{{userInfo.distributorName}}">
+      <text class="info-label">所属经销商</text>
+      <text class="info-value">{{userInfo.distributorName}}</text>
+    </view>
+
+    <view class="info-item" wx:if="{{isLoggedIn && !isDistributor}}">
+      <text class="info-label">当前门店</text>
+      <text class="info-value">{{tempStoreName || userInfo.storeName || '未选择'}}</text>
+      <text class="info-action" bindtap="switchStore">切换</text>
+    </view>
+    <button class="btn btn-primary" type="primary" bindtap="goToLogin" wx:if="{{!isLoggedIn}}">去登录</button>
+    <button class="btn btn-secondary" bindtap="changePassword" wx:if="{{isLoggedIn}}">修改密码</button>
+    <button class="btn btn-danger" type="warn" bindtap="logout" wx:if="{{isLoggedIn}}">退出登录</button>
+  </view>
+  
+  <!-- 仅经销商可见 -->
+  <view class="profile-section" wx:if="{{canUseTransfer}}">
+    <view class="section-title">常用工具</view>
+    <button class="btn btn-primary" type="primary" bindtap="goToPrinter">打印机设置</button>
+    <button class="btn btn-primary" type="primary" bindtap="goToGuanghuanStats" wx:if="{{showGuanghuanStats}}">业绩上报统计</button>
+  </view>
+
+  <view class="profile-section" wx:if="{{isDistributor}}">
+    <view class="section-title">用户管理</view>
+    <button class="btn btn-primary" type="primary" bindtap="manageUsers">管理用户密码</button>
+  </view>
+  
+  <!-- 仅经销商可见 -->
+  <view class="profile-section" wx:if="{{isDistributor}}">
+    <view class="section-title">经销商门店范围</view>
+    <view class="info-item">
+      <text class="info-label">可操作门店</text>
+      <text class="info-value">{{accessibleStoreCount}} 家（以用户管理分配为准）</text>
+    </view>
+    <button class="btn btn-primary" type="primary" bindtap="manageStoreInfo">管理门店信息</button>
+  </view>
+  
+  <!-- 仅经销商可见 -->
+  <view class="profile-section" wx:if="{{isDistributor}}">
+    <view class="section-title">经销商信息</view>
+    <button class="btn btn-primary" type="primary" bindtap="manageDistributorInfo">管理经销商信息</button>
+  </view>
+  
+  <!-- 仅经销商可见 -->
+  <view class="profile-section" wx:if="{{isDistributor}}">
+    <view class="section-title">订单管理</view>
+    <button class="btn btn-primary" type="primary" bindtap="manageCustomerSources">客户来源管理</button>
+    <button class="btn btn-primary" type="primary" bindtap="managePaymentMethods">收款方式管理</button>
+    <button class="btn btn-primary" type="primary" bindtap="manageSupplementItems">金额补录项目管理</button>
+    <button class="btn btn-primary" type="primary" bindtap="uploadBaseTable">上传基础表</button>
+  </view>
+
+  <!-- 登录用户均可发起和参与门店调拨 -->
+  <view class="profile-section" wx:if="{{isLoggedIn}}">
+    <view class="section-title">库存调拨</view>
+    <view class="section-desc">仅支持同一经销商、同一区域内门店</view>
+    <button class="btn btn-primary" type="primary" bindtap="manageTransfer">调拨管理</button>
+  </view>
+
+  <view class="profile-section" wx:if="{{isDistributor}}">
+    <view class="section-title">商品管理</view>
+    <button class="btn btn-primary" type="primary" bindtap="manageGoods">商品信息管理</button>
+  </view>
+
+  <!-- 商场销量查询 - 登录用户可见 -->
+  <view class="profile-section" wx:if="{{isLoggedIn}}">
+    <view class="section-title">商场销量</view>
+    <button class="btn btn-primary" type="primary" bindtap="goToMallSalesQuery">商场销量查询</button>
+  </view>
+
+  <!-- 图片下载管理 - 登录用户可见 -->
+  <view class="profile-section" wx:if="{{isLoggedIn}}">
+    <view class="section-title">图片管理</view>
+    <button class="btn btn-primary" type="primary" bindtap="goToPhotoDownload">图片下载管理</button>
+  </view>
+
+  <!-- 版本信息 - 所有人可见 -->
+  <view class="version-section">
+    <text class="version-text">版本号：{{appVersion}}</text>
+  </view>
+
+</view>
+
+<view class="modal-mask" wx:if="{{showStorePicker}}" bindtap="hideStorePicker"></view>
+<view class="store-picker-modal" wx:if="{{showStorePicker}}">
+  <view class="modal-header">
+    <text class="modal-title">选择门店</text>
+    <text class="modal-close" bindtap="hideStorePicker">✕</text>
+  </view>
+  <view class="modal-body">
+    <scroll-view scroll-y class="store-list-container">
+      <block wx:for="{{storeList}}" wx:key="storeId">
+        <view class="store-item {{item.storeId === selectedStoreId ? 'selected' : ''}}" bindtap="onStoreChange" data-index="{{index}}">
+          <view class="store-item-content">
+            <text class="store-item-name">{{item.name}}</text>
+          </view>
+          <view class="store-item-check" wx:if="{{item.storeId === selectedStoreId}}">✓</view>
+        </view>
+      </block>
+    </scroll-view>
+  </view>
+</view>
+
+<!-- 修改密码弹窗 -->
+<view class="modal-mask" wx:if="{{showPasswordModal}}" bindtap="hidePasswordModal"></view>
+<view class="modal-dialog" wx:if="{{showPasswordModal}}">
+  <view class="modal-header">
+    <text class="modal-title">修改密码</text>
+  </view>
+  <view class="modal-body">
+    <view class="form-item">
+      <text class="form-label">旧密码</text>
+      <input class="form-input" password="{{true}}" placeholder="请输入旧密码" bindinput="onOldPasswordInput" value="{{oldPassword}}" />
+    </view>
+    <view class="form-item">
+      <text class="form-label">新密码</text>
+      <input class="form-input" password="{{true}}" placeholder="请输入新密码" bindinput="onNewPasswordInput" value="{{newPassword}}" />
+    </view>
+    <view class="form-item">
+      <text class="form-label">确认密码</text>
+      <input class="form-input" password="{{true}}" placeholder="请再次输入新密码" bindinput="onConfirmPasswordInput" value="{{confirmPassword}}" />
+    </view>
+  </view>
+  <view class="modal-footer">
+    <button class="modal-btn cancel" bindtap="hidePasswordModal">取消</button>
+    <button class="modal-btn confirm" bindtap="confirmChangePassword">确定</button>
+  </view>
+</view>

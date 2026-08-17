@@ -1,0 +1,32 @@
+<!-- 门店列表页面 -->
+<view class="container">
+  <view class="header">
+    <text class="title">门店管理</text>
+    <button class="btn-add" type="primary" bindtap="addStore" wx:if="{{canManageStores}}">新增门店</button>
+  </view>
+  
+  <!-- 门店列表 -->
+  <view class="store-list">
+    <block wx:if="{{stores.length > 0}}">
+      <view class="store-item" wx:for="{{stores}}" wx:key="storeId" data-store="{{item}}" data-storeid="{{item.storeId}}" data-storename="{{item.name}}">
+        <view class="store-info">
+          <text class="store-name">{{item.name}}</text>
+          <text class="store-address">{{item.address}}</text>
+          <text class="store-phone">联系电话：{{item.phone}}</text>
+          <text class="store-manager" wx:if="{{item.managerName}}">店长：{{item.managerName}} {{item.managerPhone}}</text>
+          <text class="store-staff" wx:if="{{item.staffList && item.staffList.length > 0}}">店员人数：{{item.staffList.length}}人</text>
+        </view>
+        <view class="store-actions">
+          <button class="btn-edit" type="default" size="mini" bindtap="editStore" data-store="{{item}}">编辑</button>
+          <button class="btn-delete" type="warn" size="mini" bindtap="deleteStore" data-storeid="{{item.storeId}}" data-storename="{{item.name}}">删除</button>
+        </view>
+      </view>
+    </block>
+    <block wx:else>
+      <view class="empty-list">
+        <text class="empty-text">暂无门店信息</text>
+        <button class="btn-add-first" type="primary" bindtap="addStore" wx:if="{{canManageStores}}">立即新增</button>
+      </view>
+    </block>
+  </view>
+</view>

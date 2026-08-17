@@ -1,0 +1,263 @@
+<view class="page">
+  <view class="search-panel">
+    <view class="search-box">
+      <input
+        class="search-input"
+        value="{{keyword}}"
+        placeholder="输入PN、SN、商品名称"
+        confirm-type="search"
+        bindinput="onKeywordInput"
+        bindconfirm="onSearchConfirm"
+      />
+      <button class="search-button" bindtap="searchInventory">查询</button>
+    </view>
+    <view class="store-line">
+      <picker bindchange="onStoreChange" value="{{storeIndex}}" range="{{storeOptions}}">
+        <view class="store-picker">
+          {{storeName || '当前门店'}}
+          <text class="picker-arrow">▼</text>
+        </view>
+      </picker>
+      <text class="result-count">{{resultTitle}}</text>
+    </view>
+    <view class="quick-filter-panel">
+      <view class="quick-filter-row">
+        <text class="quick-filter-label">机型分类</text>
+        <view class="quick-filter-buttons">
+          <button
+            wx:for="{{productTypeOptions}}"
+            wx:key="value"
+            size="mini"
+            class="quick-filter-button {{productType === item.value ? 'active' : ''}}"
+            data-value="{{item.value}}"
+            bindtap="onProductTypeTap"
+          >{{item.label}}</button>
+        </view>
+      </view>
+      <view class="quick-filter-row">
+        <text class="quick-filter-label">机型查询</text>
+        <view class="quick-filter-buttons">
+          <button
+            wx:for="{{modelFilterOptions}}"
+            wx:key="value"
+            size="mini"
+            disabled="{{!productType}}"
+            class="quick-filter-button {{modelFilter === item.value ? 'active' : ''}}"
+            data-value="{{item.value}}"
+            bindtap="onModelFilterTap"
+          >{{item.label}}</button>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <scroll-view class="result-list" scroll-y="true" refresher-enabled="true" bindrefresherrefresh="refreshDefaultList" refresher-triggered="{{refreshing}}">
+    <view class="special-table-wrapper" wx:if="{{modelFilter === 'special'}}">
+      <view class="special-table-title">
+        <text>特价机型明细</text>
+        <text class="category-count">{{specialTableRows.length}} 条</text>
+      </view>
+      <view class="special-table">
+        <view class="special-table-row special-table-header">
+          <view class="special-table-info-line">
+            <text class="special-col pn-col">PN</text>
+            <text class="special-col sn-col">SN</text>
+            <text class="special-col name-col">商品信息</text>
+          </view>
+          <view class="special-table-detail-line">
+            <text class="special-col price-col">价格</text>
+            <view class="special-col info-detail-col">
+              <text>调价原因</text>
+              <text>所在门店</text>
+            </view>
+          </view>
+        </view>
+        <block wx:for="{{specialTableRows}}" wx:key="snCode">
+          <view class="special-table-row {{item.stripeClass}}">
+            <view class="special-table-info-line">
+              <text class="special-col pn-col">{{item.pnCode}}</text>
+              <text class="special-col sn-col">{{item.snCode}}</text>
+              <text class="special-col name-col">{{item.name}}</text>
+            </view>
+            <view class="special-table-detail-line">
+              <view class="special-col price-col special-price-cell">
+                <text class="special-price">特价 ¥{{item.specialPriceText}}</text>
+                <text class="unified-price">统一价 ¥{{item.unifiedPriceText}}</text>
+              </view>
+              <view class="special-col info-detail-col">
+                <text>原因：{{item.reason}}</text>
+                <text>门店：{{item.storeName}}</text>
+              </view>
+            </view>
+          </view>
+        </block>
+      </view>
+      <view class="empty special-empty" wx:if="{{!loading && specialTableRows.length === 0}}">
+        <text>暂无特价机型</text>
+      </view>
+    </view>
+
+    <view class="empty" wx:if="{{!loading && !hasQueried}}">
+      <text>请输入信息后点击查询，或选择机型类型</text>
+    </view>
+    <view class="empty" wx:if="{{!loading && hasQueried && modelFilter !== 'special' && groupedResults.length === 0}}">
+      <text>暂无库存数据</text>
+    </view>
+
+    <block wx:if="{{modelFilter !== 'special'}}">
+      <block wx:for="{{groupedResults}}" wx:key="key">
+        <view class="category-section">
+          <view class="category-title">
+            <text>{{item.name}}</text>
+            <text class="category-count">{{item.items.length}}项</text>
+          </view>
+
+          <block wx:for="{{item.items}}" wx:for-item="goods" wx:key="uniqueKey">
+            <view class="inventory-card">
+            <view class="inventory-main">
+              <text class="product-name">{{goods.name}}</text>
+              <text class="product-spec" wx:if="{{goods.spec}}">{{goods.spec}}</text>
+              <text class="product-sn" wx:if="{{goods.snCode}}">SN: {{goods.snCode}}</text>
+              <text class="product-status" wx:if="{{goods.statusLabel}}">状态：{{goods.statusLabel}}</text>
+            </view>
+
+            <view class="pn-price-row">
+              <text class="product-pn">PN: {{goods.pnCode || '无'}}</text>
+              <view class="price-group">
+                <text class="price standard-price">商品定价 ¥{{goods.standardPriceText}}</text>
+                <text class="price sale-price">销售价 ¥{{goods.salePriceText}}</text>
+              </view>
+            </view>
+
+            <view class="sales-row">
+              <text>近7天销售 {{goods.sales7Qty}}</text>
+              <text>近30天销售 {{goods.sales30Qty}}</text>
+              <text wx:if="{{modelFilter === 'highMargin7'}}">近7天平均毛利 ¥{{goods.avgGrossProfit7Text}}</text>
+              <text wx:if="{{modelFilter === 'highMargin7'}}">近7天最高毛利 ¥{{goods.maxGrossProfit7Text}}</text>
+            </view>
+
+            <view class="stock-row">
+              <text class="stock-summary">当前门店 {{goods.currentStoreStockQty}}</text>
+              <view class="other-stock-wrapper" wx:if="{{goods.otherStoreStockQty > 0}}" data-key="{{goods.uniqueKey}}" bindtap="toggleOtherStock" hover-class="other-stock-hover">
+                <text class="stock-summary other-stock">其他门店 {{goods.otherStoreStockQty}}</text>
+                <view class="other-store-popover {{goods.showOtherStockDetail ? 'visible' : ''}}" wx:if="{{goods.otherStoreChips.length > 0}}">
+                  <block wx:for="{{goods.otherStoreChips}}" wx:for-item="stock" wx:key="key">
+                    <text class="other-store-line">{{stock.storeName}} {{stock.qty}}</text>
+                  </block>
+                </view>
+              </view>
+              <text class="stock-summary" wx:else>其他门店 {{goods.otherStoreStockQty}}</text>
+              <text class="stock-summary">全部门店 {{goods.totalStockQty}}</text>
+            </view>
+
+            <view class="product-actions">
+              <button
+                class="product-orders-button"
+                size="mini"
+                data-product-id="{{goods.productId}}"
+                data-product-name="{{goods.name}}"
+                bindtap="viewProductOrders"
+              >订单查询</button>
+              <button
+                class="product-sns-button"
+                size="mini"
+                wx:if="{{goods.needSn}}"
+                data-product-id="{{goods.productId}}"
+                data-product-name="{{goods.name}}"
+                bindtap="viewProductSns"
+              >SN查询</button>
+            </view>
+
+            <view class="store-stock" wx:if="{{goods.storeChips.length > 0}}">
+              <block wx:for="{{goods.storeChips}}" wx:for-item="stock" wx:key="key">
+                <text class="store-chip {{stock.isCurrent ? 'current' : 'other'}}">{{stock.storeName}} {{stock.qty}}</text>
+              </block>
+            </view>
+            </view>
+          </block>
+        </view>
+      </block>
+    </block>
+
+    <view class="model-continue-query" wx:if="{{modelFilterPaged}}">
+      <text>已显示 {{modelRows.length}} / {{modelTotal}} 条</text>
+      <button
+        wx:if="{{modelHasMore}}"
+        size="mini"
+        loading="{{modelLoadingMore}}"
+        bindtap="loadMoreModelResults"
+      >继续查询</button>
+      <text wx:else class="model-query-complete">已全部显示</text>
+    </view>
+
+    <view class="loading" wx:if="{{loading}}">
+      <text>加载中...</text>
+    </view>
+  </scroll-view>
+
+  <view class="order-mask" wx:if="{{orderDialogVisible}}" bindtap="closeProductOrders">
+    <view class="order-dialog" catchtap="stopOrderDialogTap">
+      <view class="order-dialog-header">
+        <view>
+          <text class="order-dialog-title">商品订单</text>
+          <text class="order-dialog-product">{{orderDialogProductName}}</text>
+        </view>
+        <text class="order-dialog-close" bindtap="closeProductOrders">×</text>
+      </view>
+      <view class="order-dialog-tip">经销商全部门店 · 近5单 · 按商品毛利降序</view>
+      <view class="order-dialog-loading" wx:if="{{orderDialogLoading}}">加载中...</view>
+      <view class="order-dialog-empty" wx:elif="{{orderDialogOrders.length === 0}}">暂无订单记录</view>
+      <scroll-view class="order-dialog-list" scroll-y="true" wx:else>
+        <view class="order-row" wx:for="{{orderDialogOrders}}" wx:key="orderId">
+          <view class="order-row-head">
+            <text class="order-no">{{item.orderNo}}</text>
+            <text class="order-time">{{item.createTimeText}}</text>
+          </view>
+          <view class="order-row-line">
+            <text>{{item.storeName || '未知门店'}}</text>
+            <text>数量 {{item.quantity}}</text>
+          </view>
+          <view class="order-row-line">
+            <text>销售额 ¥{{item.salesAmountText}}</text>
+            <text class="order-profit">毛利 ¥{{item.grossProfitText}}</text>
+          </view>
+        </view>
+      </scroll-view>
+    </view>
+  </view>
+
+  <view class="order-mask" wx:if="{{snDialogVisible}}" bindtap="closeProductSns">
+    <view class="sn-dialog" catchtap="stopOrderDialogTap">
+      <view class="order-dialog-header">
+        <view>
+          <text class="order-dialog-title">商品 SN</text>
+          <text class="order-dialog-product">{{snDialogProductName}}</text>
+        </view>
+        <text class="order-dialog-close" bindtap="closeProductSns">×</text>
+      </view>
+      <view class="order-dialog-tip">当前账号可见门店 · 显示 SN、所在门店、当前状态、状态时间及持续时长</view>
+      <view class="order-dialog-loading" wx:if="{{snDialogLoading}}">加载中...</view>
+      <view class="order-dialog-empty" wx:elif="{{snDialogRows.length === 0}}">暂无 SN 记录</view>
+      <scroll-view class="sn-dialog-list" scroll-y="true" wx:else>
+        <view class="sn-row" wx:for="{{snDialogRows}}" wx:key="snCode">
+          <view class="sn-row-head">
+            <text class="sn-code">{{item.snCode}}</text>
+            <text class="sn-store">{{item.storeName}}</text>
+          </view>
+          <view class="sn-row-line">
+            <text>状态：{{item.statusLabel}}</text>
+            <text>状态时间：{{item.statusTimeText}}</text>
+          </view>
+          <view class="sn-row-line">
+            <text>入库：{{item.inboundTimeText}}</text>
+            <text class="sn-age">状态持续 {{item.statusAgeText}}</text>
+          </view>
+          <view class="sn-row-line sn-row-location">
+            <text>库位：{{item.locationName}}</text>
+            <text>库龄 {{item.stockAgeText}}</text>
+          </view>
+        </view>
+      </scroll-view>
+    </view>
+  </view>
+</view>
