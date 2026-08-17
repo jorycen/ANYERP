@@ -10,6 +10,7 @@ const {
   listSalesReturnRequests,
   requestSalesReturn,
   reviewSalesReturn,
+  confirmSalesReturnRefund,
   create,
   saveSalesDraft,
   updateSalesDraft,
@@ -69,6 +70,7 @@ router.post('/subsidy-photos/:orderId', subsidyPhotoRoles, subsidyPhotoUpload.ar
 router.get('/return-requests', listSalesReturnRequests);
 router.post('/return-requests', enforceStoreOwnership, requestSalesReturn);
 router.post('/return-requests/:returnId/review', reviewSalesReturn);
+router.post('/return-requests/:returnId/refund-confirm', requireRole('finance'), confirmSalesReturnRefund);
 router.get('/stats', stats);
 router.get('/auxiliary-staff', auxiliaryStaff);
 router.get('/payment-methods', paymentMethods);

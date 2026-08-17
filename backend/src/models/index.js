@@ -1105,6 +1105,63 @@ const SalesReturnRequestItem = sequelize.define('SalesReturnRequestItem', {
   subtotal: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 }
 }, { tableName: 'T_SALES_RETURN_REQUEST_ITEM', timestamps: false });
 
+// 销售退单负向结算。金额字段均按会计方向保存为负数，原销售订单和原收款流水不改写。
+const SalesReturnSettlement = sequelize.define('SalesReturnSettlement', {
+  settlement_id: { type: DataTypes.STRING(32), primaryKey: true },
+  settlement_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
+  return_id: { type: DataTypes.STRING(32), unique: true, allowNull: false },
+  return_no: { type: DataTypes.STRING(64), allowNull: false },
+  order_id: { type: DataTypes.STRING(32), allowNull: false },
+  order_no: { type: DataTypes.STRING(64), allowNull: false },
+  store_id: { type: DataTypes.STRING(32), allowNull: false },
+  user_receivable_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0, comment: '负向用户应收' },
+  customer_received_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0, comment: '负向客户实收' },
+  policy_subsidy_receivable_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0, comment: '负向政策补贴应收' },
+  education_subsidy_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0, comment: '负向教育补贴' },
+  customer_refund_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0, comment: '待退客户实付正数金额' },
+  settlement_status: { type: DataTypes.STRING(32), defaultValue: 'pending_refund', comment: 'pending_refund/refunded/offset/completed' },
+  refund_method: { type: DataTypes.STRING(128) },
+  refund_remark: { type: DataTypes.STRING(512) },
+  finance_confirm_user: { type: DataTypes.STRING(64) },
+  finance_confirm_time: { type: DataTypes.DATE },
+  red_invoice_status: { type: DataTypes.STRING(32), defaultValue: 'not_required', comment: 'not_required/pending/completed' },
+  red_invoice_id: { type: DataTypes.STRING(32) },
+  snapshot_json: { type: DataTypes.TEXT },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_SALES_RETURN_SETTLEMENT', timestamps: false });
+
+const SalesReturnSettlementItem = sequelize.define('SalesReturnSettlementItem', {
+  settlement_item_id: { type: DataTypes.STRING(32), primaryKey: true },
+  settlement_id: { type: DataTypes.STRING(32), allowNull: false },
+  return_id: { type: DataTypes.STRING(32), allowNull: false },
+  order_item_id: { type: DataTypes.BIGINT(20) },
+  product_id: { type: DataTypes.STRING(32) },
+  product_name: { type: DataTypes.STRING(255) },
+  quantity: { type: DataTypes.INTEGER, defaultValue: 0 },
+  user_receivable_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  customer_received_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  policy_subsidy_receivable_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  education_subsidy_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_SALES_RETURN_SETTLEMENT_ITEM', timestamps: false });
+
+const SalesReturnRedInvoice = sequelize.define('SalesReturnRedInvoice', {
+  red_invoice_id: { type: DataTypes.STRING(32), primaryKey: true },
+  return_id: { type: DataTypes.STRING(32), allowNull: false },
+  settlement_id: { type: DataTypes.STRING(32), allowNull: false },
+  order_id: { type: DataTypes.STRING(32), allowNull: false },
+  order_no: { type: DataTypes.STRING(64), allowNull: false },
+  amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  status: { type: DataTypes.STRING(32), defaultValue: 'pending', comment: 'pending/completed/cancelled' },
+  invoice_no: { type: DataTypes.STRING(128) },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  confirm_user: { type: DataTypes.STRING(64) },
+  confirm_time: { type: DataTypes.DATE }
+}, { tableName: 'T_SALES_RETURN_RED_INVOICE', timestamps: false });
+
 // 订单补录金额。金额方向在录入时保存快照，避免字典修改后历史毛利漂移。
 const OrderSupplement = sequelize.define('OrderSupplement', {
   supplement_id: { type: DataTypes.STRING(32), primaryKey: true },
@@ -2120,6 +2177,12 @@ Order.hasMany(SalesReturnRequest, { foreignKey: 'order_id', sourceKey: 'order_id
 SalesReturnRequest.belongsTo(Order, { foreignKey: 'order_id', targetKey: 'order_id', as: 'order' });
 SalesReturnRequest.hasMany(SalesReturnRequestItem, { foreignKey: 'return_id', sourceKey: 'return_id', as: 'items' });
 SalesReturnRequestItem.belongsTo(SalesReturnRequest, { foreignKey: 'return_id', targetKey: 'return_id' });
+SalesReturnRequest.hasOne(SalesReturnSettlement, { foreignKey: 'return_id', sourceKey: 'return_id', as: 'settlement' });
+SalesReturnSettlement.belongsTo(SalesReturnRequest, { foreignKey: 'return_id', targetKey: 'return_id', as: 'salesReturn' });
+SalesReturnSettlement.hasMany(SalesReturnSettlementItem, { foreignKey: 'settlement_id', sourceKey: 'settlement_id', as: 'items' });
+SalesReturnSettlementItem.belongsTo(SalesReturnSettlement, { foreignKey: 'settlement_id', targetKey: 'settlement_id', as: 'settlement' });
+SalesReturnSettlement.hasOne(SalesReturnRedInvoice, { foreignKey: 'settlement_id', sourceKey: 'settlement_id', as: 'redInvoice' });
+SalesReturnRedInvoice.belongsTo(SalesReturnSettlement, { foreignKey: 'settlement_id', targetKey: 'settlement_id', as: 'settlement' });
 Order.hasMany(OrderSupplement, { foreignKey: 'order_id', sourceKey: 'order_id', as: 'supplements' });
 OrderSupplement.belongsTo(Order, { foreignKey: 'order_id', targetKey: 'order_id' });
 Order.hasOne(OrderGrossProfit, { foreignKey: 'order_id', sourceKey: 'order_id', as: 'grossProfitSnapshot' });
@@ -2309,6 +2372,9 @@ module.exports = {
   OrderPayment,
   SalesReturnRequest,
   SalesReturnRequestItem,
+  SalesReturnSettlement,
+  SalesReturnSettlementItem,
+  SalesReturnRedInvoice,
   OrderSupplement,
   OrderGrossProfit,
   SalesReturnGrossProfitLedger,

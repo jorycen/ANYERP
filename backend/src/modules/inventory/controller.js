@@ -24,6 +24,7 @@ const { assertSingleSnProductPn } = require('../../utils/productPn');
 const { ensureProductPnMaster } = require('../../utils/productPnMaster');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
 const { createSalesReturnGrossProfitLedger } = require('../sales/grossProfit');
+const { createSalesReturnSettlement } = require('../sales/salesReturnSettlement');
 
 const REUSABLE_INBOUND_SN_STATUSES = new Set(['out_stock', 'sold']);
 
@@ -3406,6 +3407,23 @@ async function executeInbound(ctx) {
         returnRequest: salesReturn,
         transaction: t,
         createdBy: user.name || user.staffId || 'system'
+      });
+      const settlementOrder = await Order.findByPk(salesReturn.order_id, {
+        include: [{ model: OrderItem }],
+        transaction: t,
+        lock: t.LOCK.UPDATE
+      });
+      const settlementItems = await SalesReturnRequestItem.findAll({
+        where: { return_id: salesReturn.return_id },
+        transaction: t,
+        lock: t.LOCK.UPDATE
+      });
+      await createSalesReturnSettlement({
+        returnRequest: salesReturn,
+        order: settlementOrder,
+        requestItems: settlementItems,
+        user,
+        transaction: t
       });
     }
 

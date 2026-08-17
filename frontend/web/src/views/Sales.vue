@@ -542,7 +542,7 @@ const dialogTitle = ref('新建订单')
 const currentOrder = ref(null)
 
 const canApprove = computed(() => hasRole(['manager']))
-const canExportOrders = computed(() => isDistributorAccount())
+const canExportOrders = computed(() => isDistributorAccount() || hasRole(['manager', 'store_manager']))
 const actionLabel = (action) => ({
   created: '创建订单',
   draft_created: '创建销售草稿',

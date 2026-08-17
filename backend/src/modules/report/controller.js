@@ -6,6 +6,7 @@ const {
   OrderItem,
   OrderGrossProfit,
   SalesReturnGrossProfitLedger,
+  SalesReturnSettlement,
   ProductSn,
   Product,
   Store,
@@ -110,6 +111,41 @@ async function getSalesReport(ctx) {
     raw: true
   });
 
+  const returnSettlementWhere = { store_id: storeIds };
+  if (startDate && endDate) {
+    returnSettlementWhere.create_time = {
+      [Op.gte]: new Date(startDate),
+      [Op.lte]: new Date(endDate + ' 23:59:59')
+    };
+  }
+  const returnSettlementByStore = await SalesReturnSettlement.findAll({
+    where: returnSettlementWhere,
+    attributes: [
+      'store_id',
+      [sequelize.fn('SUM', sequelize.col('user_receivable_amount')), 'userReceivableAmount'],
+      [sequelize.fn('SUM', sequelize.col('customer_received_amount')), 'customerReceivedAmount'],
+      [sequelize.fn('SUM', sequelize.col('policy_subsidy_receivable_amount')), 'policySubsidyReceivableAmount'],
+      [sequelize.fn('SUM', sequelize.col('education_subsidy_amount')), 'educationSubsidyAmount']
+    ],
+    group: ['store_id'],
+    raw: true
+  });
+  const returnSettlementMap = new Map(returnSettlementByStore.map(row => [String(row.store_id), row]));
+  const adjustedStatsByStore = statsByStore.map(row => {
+    const adjustment = returnSettlementMap.get(String(row.store_id)) || {};
+    return {
+      ...row,
+      negativeSettlementUserReceivable: Number(adjustment.userReceivableAmount || 0),
+      negativeSettlementCustomerReceived: Number(adjustment.customerReceivedAmount || 0),
+      negativeSettlementPolicySubsidy: Number(adjustment.policySubsidyReceivableAmount || 0),
+      negativeSettlementEducationSubsidy: Number(adjustment.educationSubsidyAmount || 0),
+      totalAmount: Number(row.totalAmount || 0) + Number(adjustment.userReceivableAmount || 0),
+      actualPayment: Number(row.actualPayment || 0) + Number(adjustment.customerReceivedAmount || 0),
+      nationalSubsidy: Number(row.nationalSubsidy || 0) + Number(adjustment.policySubsidyReceivableAmount || 0),
+      educationSubsidy: Number(row.educationSubsidy || 0) + Number(adjustment.educationSubsidyAmount || 0)
+    };
+  });
+
   // 按商品类别统计
   const statsByCategory = await OrderItem.findAll({
     where: { '$Order.store_id$': storeIds },
@@ -144,6 +180,27 @@ async function getSalesReport(ctx) {
     order: [[sequelize.fn('DATE', sequelize.col('create_time')), 'DESC']],
     raw: true
   });
+  const returnSettlementByDate = await SalesReturnSettlement.findAll({
+    where: returnSettlementWhere,
+    attributes: [
+      [sequelize.fn('DATE', sequelize.col('create_time')), 'date'],
+      [sequelize.fn('SUM', sequelize.col('user_receivable_amount')), 'userReceivableAmount'],
+      [sequelize.fn('SUM', sequelize.col('customer_received_amount')), 'customerReceivedAmount']
+    ],
+    group: [sequelize.fn('DATE', sequelize.col('create_time'))],
+    raw: true
+  });
+  const returnSettlementDateMap = new Map(returnSettlementByDate.map(row => [String(row.date), row]));
+  const adjustedStatsByDate = statsByDate.map(row => {
+    const adjustment = returnSettlementDateMap.get(String(row.date)) || {};
+    return {
+      ...row,
+      negativeSettlementUserReceivable: Number(adjustment.userReceivableAmount || 0),
+      negativeSettlementCustomerReceived: Number(adjustment.customerReceivedAmount || 0),
+      totalAmount: Number(row.totalAmount || 0) + Number(adjustment.userReceivableAmount || 0),
+      actualPayment: Number(row.actualPayment || 0) + Number(adjustment.customerReceivedAmount || 0)
+    };
+  });
 
   // 汇总
   const summary = await Order.findAll({
@@ -156,11 +213,31 @@ async function getSalesReport(ctx) {
     raw: true
   });
 
+  const returnSettlementSummary = returnSettlementByStore.reduce((result, row) => {
+    result.userReceivableAmount += Number(row.userReceivableAmount || 0);
+    result.customerReceivedAmount += Number(row.customerReceivedAmount || 0);
+    result.policySubsidyReceivableAmount += Number(row.policySubsidyReceivableAmount || 0);
+    result.educationSubsidyAmount += Number(row.educationSubsidyAmount || 0);
+    return result;
+  }, {
+    userReceivableAmount: 0,
+    customerReceivedAmount: 0,
+    policySubsidyReceivableAmount: 0,
+    educationSubsidyAmount: 0
+  });
+  const baseSummary = summary[0] || {};
   ctx.body = {
-    summary: summary[0] || {},
-    statsByStore,
+    summary: {
+      ...baseSummary,
+      totalSales: Number(baseSummary.totalSales || 0) + returnSettlementSummary.userReceivableAmount,
+      totalPayment: Number(baseSummary.totalPayment || 0) + returnSettlementSummary.customerReceivedAmount,
+      totalNationalSubsidy: Number(baseSummary.totalNationalSubsidy || baseSummary.nationalSubsidy || 0) + returnSettlementSummary.policySubsidyReceivableAmount,
+      totalEducationSubsidy: Number(baseSummary.totalEducationSubsidy || baseSummary.educationSubsidy || 0) + returnSettlementSummary.educationSubsidyAmount
+    },
+    negativeSettlementSummary: returnSettlementSummary,
+    statsByStore: adjustedStatsByStore,
     statsByCategory,
-    statsByDate
+    statsByDate: adjustedStatsByDate
   };
 }
 

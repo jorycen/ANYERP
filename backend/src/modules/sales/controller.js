@@ -7,6 +7,9 @@ const {
   OrderPayment,
   SalesReturnRequest,
   SalesReturnRequestItem,
+  SalesReturnSettlement,
+  SalesReturnSettlementItem,
+  SalesReturnRedInvoice,
   OrderSupplement,
   OrderGrossProfit,
   OrderAttachment,
@@ -68,6 +71,7 @@ const {
   snapshotToResponse,
   calculateNationalSubsidyCustomerReceiptAmount
 } = require('./grossProfit');
+const { isSubsidyEligibleItem } = require('./salesReturnSettlement');
 
 const SUBSIDY_PHOTO_UPLOAD_DIR = path.resolve(__dirname, '../../../uploads/national-subsidy-photos');
 const SUBSIDY_PHOTO_ALLOWED_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
@@ -182,6 +186,11 @@ async function auxiliaryStaff(ctx) {
 }
 
 function canQueryAllSalesOrders(user) {
+  const roles = getUserRoles(user);
+  return isDealerTraceAccount(user) || roles.some(role => ['manager', 'store_manager'].includes(role));
+}
+
+function canExportSalesOrders(user) {
   const roles = getUserRoles(user);
   return isDealerTraceAccount(user) || roles.some(role => ['manager', 'store_manager'].includes(role));
 }
@@ -461,7 +470,7 @@ const ORDER_EXPORT_HEADERS = [
   '开票金额', '国补状态', '国补人', '国补人ID', '商品名称', '商品编码', 'SN码', 'IMEI1',
   'IMEI2', '数量', '单价', '小计', '商品应收金额', '商品收款金额', '辅助销售人比例分配',
   '辅助销售人金额分配', '补录教育优惠', '商品提货运费', '追加商品', '退货商品', '预留字段1',
-  '预留字段2', '备注', '创建日期', '订单状态', '归档/作废时间', '操作人'
+  '补录信息', '备注', '创建日期', '订单状态', '归档/作废时间', '操作人'
 ];
 
 const ORDER_EXPORT_PAYMENT_HEADERS = ORDER_EXPORT_HEADERS.slice(15, 28);
@@ -484,12 +493,32 @@ function normalizeExportPaymentMethod(payment, paymentMethodMap = {}) {
   return String(paymentMethodMap[rawMethod] || rawMethod).trim();
 }
 
+function resolveExportPaymentHeader(paymentMethod) {
+  const baseMethod = String(paymentMethod || '')
+    .trim()
+    .replace(/-(客户实收|政策补贴应收)$/, '');
+  const compactMethod = baseMethod.replace(/\s+/g, '');
+  const aliases = {
+    '二手回收抵扣': '旧机回收抵扣',
+    '智店通 POS': '智店通POS',
+    '线上OMO': '线上OMO平台',
+    '龙湖POS': '龙湖POS（北城专用）',
+    '佳华返利': '其他收款方式2',
+    deposit: '定金抵扣',
+    '定金': '定金抵扣'
+  };
+  const resolvedMethod = aliases[baseMethod] || aliases[compactMethod] || baseMethod;
+  return ORDER_EXPORT_PAYMENT_HEADERS.includes(resolvedMethod)
+    ? resolvedMethod
+    : '其他收款方式2';
+}
+
 function exportPaymentAmount(payments, header, paymentMethodMap = {}) {
   return (payments || []).reduce((total, payment) => {
     const rawMethod = normalizeExportPaymentMethod(payment, paymentMethodMap);
-    const method = rawMethod.replace(/-(客户实收|政策补贴应收)$/, '');
-    const matches = method === header || rawMethod === header || rawMethod.startsWith(`${header}-`);
-    return matches ? total + Number(payment.amount || 0) : total;
+    return resolveExportPaymentHeader(rawMethod) === header
+      ? total + Number(payment.amount || 0)
+      : total;
   }, 0);
 }
 
@@ -542,35 +571,93 @@ function exportSupplementText(supplements, predicate = () => true) {
     .join('；');
 }
 
+function exportSupplementDetails(supplements) {
+  return (supplements || [])
+    .map(item => {
+      const itemName = String(item.item_name || '').trim();
+      if (!itemName) return '';
+      const amount = Number(item.amount || 0);
+      const direction = item.amount_type === 'decrease' ? '减少' : '增加';
+      const content = String(item.content || '').trim();
+      const couponCode = String(item.coupon_code || '').trim();
+      const details = [direction, content, couponCode ? `券码:${couponCode}` : '']
+        .filter(Boolean)
+        .join('，');
+      return `${itemName}${amount ? `:${amount}` : ''}${details ? `(${details})` : ''}`;
+    })
+    .filter(Boolean)
+    .join('；');
+}
+
 function exportSupplementAmount(supplements, predicate) {
   return (supplements || [])
     .filter(item => predicate(item))
     .reduce((total, item) => total + Number(item.amount || 0) * (item.amount_type === 'decrease' ? -1 : 1), 0);
 }
 
-function exportAuxiliaryValue(value, field) {
-  return parseExportJson(value, [])
+function exportAuxiliaryParticipants(value, primaryName) {
+  const participants = [];
+  const seen = new Set();
+  const addParticipant = (item, fallbackName = '') => {
+    const source = item && typeof item === 'object' ? item : {};
+    const name = String(
+      source.name || source.staffName || source.staff_name || source.selected || fallbackName || ''
+    ).trim();
+    if (!name) return;
+    const staffId = source.staffId ?? source.staff_id ?? source.id ?? '';
+    const key = staffId === '' || staffId === null || staffId === undefined
+      ? `name:${name}`
+      : `id:${String(staffId)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    participants.push(name);
+  };
+
+  addParticipant(null, primaryName);
+  parseExportJson(value, [])
     .filter(item => item && typeof item === 'object')
-    .map(item => {
-      const name = item.name || item.staffName || item.staff_name || item.selected || '';
-      const raw = field === 'ratio'
-        ? (item.ratio ?? item.proportion ?? item.rate ?? item.percentage)
-        : (item.amount ?? item.assignedAmount ?? item.assigned_amount);
-      if (!name && (raw === undefined || raw === null || raw === '')) return '';
-      return `${name || ''}${raw !== undefined && raw !== null && raw !== '' ? `:${raw}` : ''}`;
-    })
-    .filter(Boolean)
-    .join('；');
+    .forEach(item => addParticipant(item));
+  return participants;
 }
 
 function exportAuxiliaryNames(value, primaryName) {
-  const names = parseExportJson(value, [])
-    .filter(item => item && typeof item === 'object')
-    .map(item => item.name || item.staffName || item.staff_name || item.selected || '')
-    .map(name => String(name || '').trim())
-    .filter(Boolean);
-  const primary = String(primaryName || '').trim();
-  return [primary, ...names].filter(Boolean).join('/');
+  return exportAuxiliaryParticipants(value, primaryName).join('/');
+}
+
+function exportAuxiliaryAmounts(value, primaryName, totalAmount) {
+  const auxiliaryItems = parseExportJson(value, [])
+    .filter(item => item && typeof item === 'object');
+  if (!auxiliaryItems.length) return '';
+
+  const participants = exportAuxiliaryParticipants(auxiliaryItems, primaryName);
+  if (!participants.length) return '';
+
+  const total = money(totalAmount || 0);
+  const baseShare = money(total / participants.length);
+  let allocated = 0;
+  return participants.map((name, index) => {
+    const amount = index === participants.length - 1
+      ? money(total - allocated)
+      : baseShare;
+    allocated += amount;
+    return `${name}:${amount}`;
+  }).join('；');
+}
+
+function getOrderExportArchiveStatus(status) {
+  const normalizedStatus = String(status || '').trim();
+  if (isArchiveStatus(normalizedStatus)) return '已归档';
+  if (['voided', '作废', '已作废'].includes(normalizedStatus)) return '已作废';
+  if (['cancelled', 'canceled', '已取消'].includes(normalizedStatus)) return '已取消';
+  if (['return_pending', '退库处理中'].includes(normalizedStatus)) return '退库处理中';
+  if (['returned', '退单', '已退单'].includes(normalizedStatus)) return '已退单';
+  return '';
+}
+
+function getOrderExportInvoiceAmount(invoiceStatus, invoiceAmount) {
+  return String(invoiceStatus || '').trim() === '不开票'
+    ? 0
+    : Number(invoiceAmount || 0);
 }
 
 function exportReturnText(returns) {
@@ -608,6 +695,7 @@ function buildOrderExportRows(orders, paymentMethodMap = {}) {
     );
     const supplementEducation = exportSupplementAmount(supplements, item => /教育/.test(String(item.item_name || '')));
     const supplementFreight = exportSupplementAmount(supplements, item => /提货运费|运费/.test(String(item.item_name || '')));
+    const supplementDetails = exportSupplementDetails(supplements);
 
     return items.map((item, itemIndex) => {
       const subtotal = Number(item.subtotal || 0);
@@ -634,10 +722,10 @@ function buildOrderExportRows(orders, paymentMethodMap = {}) {
         应收金额: payableAmount,
         收款金额汇总: rowPaymentTotal,
         ...rowPaymentAmounts,
-        归档状态: isArchiveStatus(data.order_status) ? '已归档' : '',
+        归档状态: getOrderExportArchiveStatus(data.order_status),
         开票状态: data.invoice_status || '',
         开票信息: data.invoice_info || '',
-        开票金额: Number(data.invoice_amount || 0),
+        开票金额: getOrderExportInvoiceAmount(data.invoice_status, data.invoice_amount),
         国补状态: isMainProduct ? (data.subsidy_status || '') : '',
         国补人: isMainProduct ? (data.subsidy_person || '') : '',
         国补人ID: isMainProduct ? (data.subsidy_id || '') : '',
@@ -652,13 +740,17 @@ function buildOrderExportRows(orders, paymentMethodMap = {}) {
         商品应收金额: subtotal,
         商品收款金额: subtotal,
         辅助销售人比例分配: exportAuxiliaryNames(auxiliary, data.create_user || data.submit_user),
-        辅助销售人金额分配: exportAuxiliaryValue(auxiliary, 'amount'),
+        辅助销售人金额分配: exportAuxiliaryAmounts(
+          auxiliary,
+          data.create_user || data.submit_user,
+          data.total_amount
+        ),
         补录教育优惠: supplementEducation,
         商品提货运费: supplementFreight,
         追加商品: exportSupplementText(supplements, item => item.amount_type !== 'decrease'),
         退货商品: exportReturnText(data.salesReturns),
         预留字段1: '',
-        预留字段2: '',
+        补录信息: supplementDetails,
         备注: data.remark || '',
         创建日期: data.create_time || '',
         订单状态: data.order_status || '',
@@ -722,7 +814,7 @@ function buildDepositExportRows(deposits, paymentMethodMap = {}) {
       追加商品: '',
       退货商品: '',
       预留字段1: '定金收款',
-      预留字段2: '',
+      补录信息: '',
       备注: data.remark || '',
       创建日期: data.create_time || '',
       订单状态: '定金收款',
@@ -732,10 +824,53 @@ function buildDepositExportRows(deposits, paymentMethodMap = {}) {
   });
 }
 
+function buildSalesReturnSettlementExportRows(settlements) {
+  return (settlements || []).flatMap(settlement => {
+    const data = settlement.toJSON ? settlement.toJSON() : settlement;
+    const items = Array.isArray(data.items) && data.items.length ? data.items : [{}];
+    return items.map(item => {
+      const userReceivable = Number(item.user_receivable_amount ?? data.user_receivable_amount ?? 0);
+      const customerReceived = Number(item.customer_received_amount ?? data.customer_received_amount ?? 0);
+      const policySubsidy = Number(item.policy_subsidy_receivable_amount ?? data.policy_subsidy_receivable_amount ?? 0);
+      const educationSubsidy = Number(item.education_subsidy_amount ?? data.education_subsidy_amount ?? 0);
+      const row = Object.fromEntries(ORDER_EXPORT_HEADERS.map(header => [header, '']));
+      Object.assign(row, {
+        订单编号: data.order_no || data.return_no || '',
+        下单时间: data.create_time || '',
+        提交人: data.create_user || '',
+        门店ID: data.store_id || '',
+        会员称呼: '',
+        订单总计: userReceivable,
+        优惠金额: 0,
+        国补: policySubsidy,
+        教育补贴: educationSubsidy,
+        应收金额: userReceivable,
+        收款金额汇总: customerReceived,
+        其他收款方式2: customerReceived,
+        归档状态: '已退单',
+        开票状态: data.red_invoice_status === 'not_required' ? '不开票' : '红字发票待处理',
+        开票金额: data.red_invoice_status === 'not_required' ? 0 : userReceivable,
+        商品名称: item.product_name || '销售退单负向结算',
+        商品编码: item.product_id || '',
+        数量: Number(item.quantity || 0),
+        小计: userReceivable,
+        商品应收金额: userReceivable,
+        商品收款金额: customerReceived,
+        退货商品: `${item.product_name || '销售退单'}${item.quantity ? ` x${item.quantity}` : ''}`,
+        备注: `负向销售结算 ${data.settlement_no || data.return_no || ''}`,
+        创建日期: data.create_time || '',
+        订单状态: '销售退单负向结算',
+        操作人: data.finance_confirm_user || data.create_user || ''
+      });
+      return row;
+    });
+  });
+}
+
 async function exportOrders(ctx) {
   const user = ctx.state.user;
-  if (!isDealerTraceAccount(user)) {
-    ctx.throw(403, '仅经销商级账号支持导出订单');
+  if (!canExportSalesOrders(user)) {
+    ctx.throw(403, '仅经销商级账号或店长支持导出订单');
   }
 
   const {
@@ -791,7 +926,7 @@ async function exportOrders(ctx) {
     ...(productCode ? { where: { product_code: { [Op.like]: `%${productCode}%` } }, required: true } : {})
   };
 
-  const [orders, deposits, paymentMethods] = await Promise.all([
+  const [orders, deposits, paymentMethods, returnSettlements] = await Promise.all([
     Order.findAll({
       where,
       include: [
@@ -827,12 +962,25 @@ async function exportOrders(ctx) {
         order: [['create_time', 'DESC'], ['deposit_id', 'DESC']]
       })
       : Promise.resolve([]),
-    PaymentMethod.findAll({ where: { status: 1 }, attributes: ['code', 'name'] })
+    PaymentMethod.findAll({ attributes: ['code', 'name'] }),
+    (!status || ['returned', '已退单', 'return_pending', '退库处理中'].includes(status))
+      ? SalesReturnSettlement.findAll({
+        where: {
+          ...(storeId
+            ? { store_id: storeId }
+            : (!hasGlobalStoreScope ? { store_id: accessibleStoreIds } : {})),
+          ...(startDate || endDate ? { create_time: buildChinaDateRange(startDate, endDate) } : {})
+        },
+        include: [{ model: SalesReturnSettlementItem, as: 'items', required: false }],
+        order: [['create_time', 'DESC'], ['settlement_id', 'DESC']]
+      })
+      : Promise.resolve([])
   ]);
   const paymentMethodMap = Object.fromEntries(paymentMethods.map(method => [method.code, method.name]));
   const rows = [
     ...buildOrderExportRows(orders, paymentMethodMap),
-    ...buildDepositExportRows(deposits, paymentMethodMap)
+    ...buildDepositExportRows(deposits, paymentMethodMap),
+    ...buildSalesReturnSettlementExportRows(returnSettlements)
   ].sort((a, b) => new Date(b.下单时间 || 0).getTime() - new Date(a.下单时间 || 0).getTime());
   sendExcel(ctx, rows, ORDER_EXPORT_HEADERS, `销售订单导出_${getChinaDateString()}.xlsx`, '订单明细');
 }
@@ -2886,7 +3034,10 @@ async function listSalesReturnRequests(ctx) {
 
   const { count, rows } = await SalesReturnRequest.findAndCountAll({
     where,
-    include: [{ model: SalesReturnRequestItem, as: 'items' }],
+    include: [
+      { model: SalesReturnRequestItem, as: 'items' },
+      { model: SalesReturnSettlement, as: 'settlement', include: [{ model: SalesReturnRedInvoice, as: 'redInvoice', required: false }], required: false }
+    ],
     order: [['create_time', 'DESC'], ['return_id', 'DESC']],
     ...paginate({}, { page, pageSize })
   });
@@ -2981,11 +3132,13 @@ async function requestSalesReturn(ctx) {
     });
     if (uniqueSelectedItems.length === 0) ctx.throw(400, '退单商品明细不能为空');
 
-    const maxRefundAmount = money(order.actual_payment || order.total_amount || 0);
-    const requestedRefund = ctx.request.body?.refundAmount ?? ctx.request.body?.refund_amount;
-    const refundAmount = requestedRefund === undefined || requestedRefund === null || requestedRefund === ''
-      ? maxRefundAmount
-      : Math.min(Math.max(money(requestedRefund), 0), maxRefundAmount);
+    const orderGross = orderItems.reduce((sum, item) => sum + money(Number(item.sale_price || 0) * Number(item.quantity || 0)), 0);
+    const selectedGross = uniqueSelectedItems.reduce((sum, row) => sum + money(Number(row.sourceItem.sale_price || 0) * Number(row.quantity || 0)), 0);
+    const maxRefundAmount = orderGross > 0
+      ? money(Math.max(0, Number(order.total_amount || 0) - Number(order.discount_amount || 0)) * Math.min(1, selectedGross / orderGross))
+      : 0;
+    const refundAmount = maxRefundAmount;
+    const effectiveReturnGovSubsidy = uniqueSelectedItems.some(({ sourceItem }) => isSubsidyEligibleItem(sourceItem));
     const returnId = generateUUID();
     const returnNo = generateBusinessNo('RET');
 
@@ -3007,13 +3160,13 @@ async function requestSalesReturn(ctx) {
       customer_phone: order.customer_phone || '',
       return_type: returnType,
       refund_amount: refundAmount,
-      return_gov_subsidy: returnGovSubsidy ? 1 : 0,
-      policy_subsidy_refund_amount: returnGovSubsidy && Number.isFinite(requestedPolicySubsidyRefund)
+      return_gov_subsidy: effectiveReturnGovSubsidy ? 1 : 0,
+      policy_subsidy_refund_amount: effectiveReturnGovSubsidy && Number.isFinite(requestedPolicySubsidyRefund)
         ? Math.max(0, money(requestedPolicySubsidyRefund))
         : 0,
       resource_return_actions: JSON.stringify({
-        returnGovSubsidy,
-        requestedPolicySubsidyRefund: returnGovSubsidy && Number.isFinite(requestedPolicySubsidyRefund)
+        returnGovSubsidy: effectiveReturnGovSubsidy,
+        requestedPolicySubsidyRefund: effectiveReturnGovSubsidy && Number.isFinite(requestedPolicySubsidyRefund)
           ? Math.max(0, money(requestedPolicySubsidyRefund))
           : 0,
         selectedItemIds: uniqueSelectedItems.map(row => String(row.sourceItem.item_id || ''))
@@ -3049,7 +3202,8 @@ async function requestSalesReturn(ctx) {
       orderId: order.order_id,
       status: 'pending',
       approvalStage: 'pending_store',
-      returnGovSubsidy
+      returnGovSubsidy: effectiveReturnGovSubsidy,
+      refundAmount
     };
   });
 
@@ -3278,6 +3432,57 @@ function isPolicySubsidyReceivable(payment) {
   return method.includes('政策补贴应收');
 }
 
+/**
+ * 财务确认销售退单退款。负向结算在退库完成时已经生成，确认接口只登记实际退款和红字发票处理结果。
+ */
+async function confirmSalesReturnRefund(ctx) {
+  const { returnId } = ctx.params;
+  const {
+    refundMethod,
+    refund_method: refundMethodSnake,
+    remark = '',
+    redInvoiceNo,
+    red_invoice_no: redInvoiceNoSnake
+  } = ctx.request.body || {};
+  const method = String(refundMethod || refundMethodSnake || '').trim();
+  const invoiceNo = String(redInvoiceNo || redInvoiceNoSnake || '').trim();
+  const user = ctx.state.user;
+  const result = await sequelize.transaction(async transaction => {
+    const settlement = await SalesReturnSettlement.findOne({
+      where: { return_id: returnId },
+      include: [{ model: SalesReturnRedInvoice, as: 'redInvoice' }],
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!settlement) ctx.throw(404, '销售退单负向结算不存在');
+    if (settlement.settlement_status !== 'pending_refund') ctx.throw(400, '该退单当前不在待退款状态');
+    if (Number(settlement.customer_refund_amount || 0) > 0 && !method) ctx.throw(400, '请选择退款方式');
+    if (settlement.red_invoice_status === 'pending' && !invoiceNo) {
+      ctx.throw(400, '已开票订单必须先登记红字发票号码');
+    }
+    const now = new Date();
+    if (settlement.redInvoice && settlement.red_invoice_status === 'pending') {
+      await settlement.redInvoice.update({
+        status: 'completed',
+        invoice_no: invoiceNo,
+        confirm_user: user.name || user.staffId || '',
+        confirm_time: now
+      }, { transaction });
+    }
+    await settlement.update({
+      settlement_status: Number(settlement.customer_refund_amount || 0) > 0 ? 'refunded' : 'offset',
+      refund_method: method || null,
+      refund_remark: String(remark || '').trim() || null,
+      finance_confirm_user: user.name || user.staffId || '',
+      finance_confirm_time: now,
+      red_invoice_status: settlement.red_invoice_status === 'pending' ? 'completed' : settlement.red_invoice_status,
+      update_time: now
+    }, { transaction });
+    return settlement;
+  });
+  ctx.body = { code: 0, data: result, message: '销售退单退款已由财务确认' };
+}
+
 function selectedResourcesForReturn(item = {}, order = {}) {
   const resources = selectedResources(item);
   if (resources.length > 0) return resources;
@@ -3402,8 +3607,8 @@ async function restoreReturnedNationalSubsidy({ request, order, requestItems, or
   const calculatedRefund = eligibleGross > 0
     ? money(policyPaymentTotal * Math.min(1, Math.max(0, returnedEligibleGross / eligibleGross)))
     : 0;
-  const requestedRefund = Number(request.policy_subsidy_refund_amount || 0);
-  const policySubsidyRefundAmount = money(Math.min(policyPaymentTotal, calculatedRefund, requestedRefund > 0 ? requestedRefund : calculatedRefund));
+  // 国补退回金额按退回国补适用商品自动分摊，不能由申请人手工改写。
+  const policySubsidyRefundAmount = money(Math.min(policyPaymentTotal, calculatedRefund));
   if (policySubsidyRefundAmount <= 0) return { restored, policySubsidyRefundAmount: 0 };
 
   const paymentRows = policyPayments.length > 0
@@ -4194,6 +4399,7 @@ module.exports = {
   listSalesReturnRequests,
   requestSalesReturn,
   reviewSalesReturn,
+  confirmSalesReturnRefund,
   createSalesReturnInbound,
   stats,
   approve,
@@ -4218,6 +4424,7 @@ module.exports = {
   createSubsidyPhotosDownloadTicket,
   _test: {
     canQueryAllSalesOrders,
+    canExportSalesOrders,
     normalizeOrderExtendedFields,
     normalizeAuxiliarySalesList,
     isCancelStatus,
@@ -4239,6 +4446,8 @@ module.exports = {
     buildChinaDateRange,
     buildOrderExportRows,
     buildDepositExportRows,
+    getOrderExportArchiveStatus,
+    getOrderExportInvoiceAmount,
     normalizeDepositListRow,
     isExportMainProduct,
     allocateExportAmount,

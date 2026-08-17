@@ -16,9 +16,18 @@ test('经销商级角色可以查询全部人员订单，店员和店长保持�
   assert.equal(_test.canQueryAllSalesOrders({ roleCode: 'clerk' }), false);
 });
 
+test('店长角色可以导出授权门店订单，普通店员不能导出', () => {
+  assert.equal(_test.canExportSalesOrders({ roles: ['manager'] }), true);
+  assert.equal(_test.canExportSalesOrders({ roles: ['store_manager'] }), true);
+  assert.equal(_test.canExportSalesOrders({ roles: ['finance'] }), true);
+  assert.equal(_test.canExportSalesOrders({ roles: ['clerk'] }), false);
+  assert.equal(_test.canExportSalesOrders({ roles: ['staff'] }), false);
+});
+
 test('订单导出字段与附件保持 58 列明细结构', () => {
   assert.equal(_test.ORDER_EXPORT_HEADERS.length, 58);
   assert.equal(_test.ORDER_EXPORT_HEADERS[0], '订单编号');
+  assert.equal(_test.ORDER_EXPORT_HEADERS[52], '补录信息');
   assert.equal(_test.ORDER_EXPORT_HEADERS.at(-1), '操作人');
 });
 
@@ -47,20 +56,76 @@ test('订单导出按商品明细展开并汇总收款方式', () => {
   assert.equal(rows[0].应收金额, 90);
 });
 
+test('订单导出的归档状态包含作废和退单状态', () => {
+  assert.equal(_test.getOrderExportArchiveStatus('已归档'), '已归档');
+  assert.equal(_test.getOrderExportArchiveStatus('completed'), '已归档');
+  assert.equal(_test.getOrderExportArchiveStatus('voided'), '已作废');
+  assert.equal(_test.getOrderExportArchiveStatus('cancelled'), '已取消');
+  assert.equal(_test.getOrderExportArchiveStatus('return_pending'), '退库处理中');
+  assert.equal(_test.getOrderExportArchiveStatus('returned'), '已退单');
+  assert.equal(_test.getOrderExportArchiveStatus('已退单'), '已退单');
+  assert.equal(_test.getOrderExportArchiveStatus('draft'), '');
+});
+
+test('订单导出按实际收款方式名称兼容历史列名', () => {
+  const rows = _test.buildOrderExportRows([{
+    toJSON: () => ({
+      OrderPayments: [
+        { payment_method: '线上OMO', amount: 10 },
+        { payment_method: '龙湖POS', amount: 20 },
+        { payment_method: '智店通 POS', amount: 30 },
+        { payment_method: '二手回收抵扣', amount: 40 },
+        { payment_method: 'deposit', amount: 5 },
+        { payment_method: '未知收款方式', amount: 50 }
+      ],
+      OrderItems: [{ product_name: '商品A', subtotal: 150, quantity: 1 }]
+    })
+  }]);
+
+  assert.equal(rows[0].线上OMO平台, 10);
+  assert.equal(rows[0]['龙湖POS（北城专用）'], 20);
+  assert.equal(rows[0].智店通POS, 30);
+  assert.equal(rows[0].旧机回收抵扣, 40);
+  assert.equal(rows[0].定金抵扣, 5);
+  assert.equal(rows[0].其他收款方式2, 50);
+  assert.equal(rows[0].收款金额汇总, 155);
+});
+
+test('订单导出中不开票时开票金额为0', () => {
+  const noInvoiceRows = _test.buildOrderExportRows([{
+    toJSON: () => ({
+      invoice_status: '不开票',
+      invoice_amount: 999,
+      OrderItems: [{ product_name: '商品A', subtotal: 100, quantity: 1 }]
+    })
+  }]);
+  const invoicedRows = _test.buildOrderExportRows([{
+    toJSON: () => ({
+      invoice_status: '普通发票',
+      invoice_amount: 999,
+      OrderItems: [{ product_name: '商品A', subtotal: 100, quantity: 1 }]
+    })
+  }]);
+
+  assert.equal(noInvoiceRows[0].开票金额, 0);
+  assert.equal(invoicedRows[0].开票金额, 999);
+});
+
 test('订单导出按销售人和辅助销售人顺序展示名称', () => {
   const rows = _test.buildOrderExportRows([{
     toJSON: () => ({
       create_user: '销售人',
+      total_amount: 100,
       auxiliary_sales_list: [
-        { name: '辅助销售人1', ratio: 60, amount: 60 },
-        { name: '辅助销售人2', ratio: 40, amount: 40 }
+        { name: '辅助销售人1' },
+        { name: '辅助销售人2' }
       ],
       OrderItems: [{ product_name: '商品A', subtotal: 100, quantity: 1 }]
     })
   }]);
 
   assert.equal(rows[0].辅助销售人比例分配, '销售人/辅助销售人1/辅助销售人2');
-  assert.equal(rows[0].辅助销售人金额分配, '辅助销售人1:60；辅助销售人2:40');
+  assert.equal(rows[0].辅助销售人金额分配, '销售人:33.33；辅助销售人1:33.33；辅助销售人2:33.34');
 });
 
 test('订单导出按主商品分摊国补，配件国补字段留空并按商品行分摊收款', () => {
@@ -95,6 +160,21 @@ test('订单导出按主商品分摊国补，配件国补字段留空并按商�
   assert.equal(rows[0].现金, 1000);
   assert.equal(rows[1].现金, 200);
   assert.equal(rows[0].现金 + rows[1].现金, 1200);
+});
+
+test('订单导出包含完整金额补录信息', () => {
+  const rows = _test.buildOrderExportRows([{
+    toJSON: () => ({
+      OrderItems: [{ product_name: '商品A', subtotal: 100, quantity: 1 }],
+      supplements: [
+        { item_name: '教育优惠', amount: 20, amount_type: 'decrease', content: '学生证已核验' },
+        { item_name: '优惠券', amount: 30, amount_type: 'increase', coupon_code: 'COUPON-1' }
+      ]
+    })
+  }]);
+
+  assert.equal(rows[0].补录教育优惠, -20);
+  assert.equal(rows[0].补录信息, '教育优惠:20(减少，学生证已核验)；优惠券:30(增加，券码:COUPON-1)');
 });
 
 test('定金订单进入销售导出并按实际收款方式归列', () => {
