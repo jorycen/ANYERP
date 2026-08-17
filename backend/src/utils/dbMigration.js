@@ -581,8 +581,17 @@ async function runMigrations() {
     await checkAndAddIndex('T_RESOURCE_SETTLEMENT', 'idx_resource_settlement_counterparty', 'ALTER TABLE T_RESOURCE_SETTLEMENT ADD INDEX idx_resource_settlement_counterparty (COUNTERPARTY_ID, CREATE_TIME)');
     await checkAndAddColumn('T_ORDER_ITEM', 'SELECTED_RESOURCE_TYPES', 'TEXT COMMENT "动态选择的资源类别JSON"', 'USE_SALES_REPORT');
     await checkAndAddColumn('T_ORDER', 'CREATE_STAFF_ID', 'BIGINT COMMENT "销售人员ID"', 'STORE_ID');
+    await checkAndAddColumn('T_ORDER', 'OPERATOR_STAFF_ID', 'BIGINT COMMENT "销售经手人员工ID"');
+    await checkAndAddColumn('T_ORDER', 'OPERATOR_NAME', 'VARCHAR(64) COMMENT "销售经手人姓名快照"');
+    await checkAndAddColumn('T_ORDER', 'CREATE_USER', 'VARCHAR(64) COMMENT "销售订单制单人姓名快照"');
     await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'SELECTED_RESOURCE_TYPES', 'TEXT COMMENT "采购申请勾选的资源权益JSON"', 'STORE_ALLOCATIONS');
     await checkAndAddColumn('T_PURCHASE_REQUEST', 'PAYMENT_METHOD', 'VARCHAR(32) NOT NULL DEFAULT "COMPANY_CREDIT" COMMENT "COMPANY_CREDIT/PERSONAL_ADVANCE"', 'INVOICE_TYPE');
+    await checkAndAddColumn('T_PURCHASE_REQUEST', 'OPERATOR_STAFF_ID', 'BIGINT COMMENT "采购经手人员工ID"');
+    await checkAndAddColumn('T_PURCHASE_REQUEST', 'OPERATOR_NAME', 'VARCHAR(64) COMMENT "采购经手人姓名快照"');
+    await checkAndAddColumn('T_PURCHASE_REQUEST', 'CREATE_STAFF_ID', 'BIGINT COMMENT "采购申请制单人员工ID"');
+    await checkAndAddColumn('T_PURCHASE_REQUEST', 'CREATE_USER', 'VARCHAR(64) COMMENT "采购申请制单人姓名快照"');
+    await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'PRODUCT_CODE', 'VARCHAR(64) COMMENT "商品编码快照"');
+    await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'MANUFACTURER_CODE', 'VARCHAR(512) COMMENT "厂商编码快照"');
     await checkAndAddColumn('T_INBOUND_ITEM', 'SELECTED_RESOURCE_TYPES', 'TEXT COMMENT "继承采购申请的资源权益JSON"', 'STORE_ALLOCATIONS');
     await checkAndAddColumn('T_INBOUND_ITEM', 'PURCHASE_REQUEST_ITEM_ID', 'BIGINT COMMENT "来源采购申请明细ID"', 'SELECTED_RESOURCE_TYPES');
     await checkAndAddColumn('T_INVENTORY_RESOURCE_RIGHT', 'RULE_CONFIG_ID', 'VARCHAR(32) COMMENT "权益规则配置ID"', 'RESOURCE_TYPE');
@@ -943,6 +952,8 @@ async function runMigrations() {
     await checkAndAddColumn('T_EXPENSE', 'ATTACHMENT_URLS', 'LONGTEXT COMMENT "凭证附件JSON"', 'EXPENSE_DATE');
     await checkAndAddColumn('T_EXPENSE', 'APPLICANT_STAFF_ID', 'BIGINT COMMENT "申请人员工ID"', 'STATUS');
     await checkAndAddColumn('T_EXPENSE', 'APPLICANT_NAME', 'VARCHAR(64) COMMENT "申请人姓名"', 'APPLICANT_STAFF_ID');
+    await checkAndAddColumn('T_EXPENSE', 'OPERATOR_STAFF_ID', 'BIGINT COMMENT "费用经手人员工ID"');
+    await checkAndAddColumn('T_EXPENSE', 'OPERATOR_NAME', 'VARCHAR(64) COMMENT "费用经手人姓名快照"');
     await checkAndAddColumn('T_EXPENSE', 'REVIEW_STAFF_ID', 'BIGINT COMMENT "审批人员工ID"', 'APPLICANT_NAME');
     await checkAndAddColumn('T_EXPENSE', 'REVIEW_USER_NAME', 'VARCHAR(64) COMMENT "审批人姓名"', 'REVIEW_STAFF_ID');
     await checkAndAddColumn('T_EXPENSE', 'REVIEW_COMMENT', 'VARCHAR(512) COMMENT "审批意见"', 'REVIEW_USER_NAME');
@@ -1052,9 +1063,12 @@ async function runMigrations() {
     await checkAndAddColumn('T_SETTLEMENT', 'SUPPLIER_ACCOUNT_SNAPSHOT', 'TEXT COMMENT "供应商付款账户快照"', 'SUPPLIER_ACCOUNT_ID');
     await checkAndAddColumn('T_SETTLEMENT', 'OTHER_PAYMENT_REMARK', 'TEXT COMMENT "其他付款说明"', 'SUPPLIER_ACCOUNT_SNAPSHOT');
     await checkAndAddColumn('T_SETTLEMENT', 'OTHER_PAYMENT_IMAGE', 'LONGTEXT COMMENT "其他付款图片"', 'OTHER_PAYMENT_REMARK');
+    await checkAndAddColumn('T_SETTLEMENT', 'REMARK', 'TEXT COMMENT "结算单备注"');
+    await checkAndAddColumn('T_SETTLEMENT', 'CREATE_STAFF_ID', 'BIGINT COMMENT "结算单制单人员工ID"');
+    await checkAndAddColumn('T_SETTLEMENT', 'OPERATOR_STAFF_ID', 'BIGINT COMMENT "结算单经手人员工ID"');
+    await checkAndAddColumn('T_SETTLEMENT', 'OPERATOR_NAME', 'VARCHAR(64) COMMENT "结算单经手人姓名快照"');
     await checkAndAddColumn('T_SETTLEMENT', 'PAID_AMOUNT', 'DECIMAL(12,2) DEFAULT 0 COMMENT "已付金额"', 'TOTAL_AMOUNT');
     await checkAndAddColumn('T_SETTLEMENT', 'PAYMENT_STATUS', 'VARCHAR(32) DEFAULT "unpaid" COMMENT "付款状态:unpaid/partial_paid/paid"', 'STATUS');
-    await checkAndAddColumn('T_SETTLEMENT', 'REMARK', 'VARCHAR(512) COMMENT "结算备注"', 'PAYMENT_STATUS');
     await checkAndAddColumn('T_SETTLEMENT', 'SUBMIT_TIME', 'TIMESTAMP NULL COMMENT "提交时间"', 'CREATE_TIME');
     await checkAndAddColumn('T_SETTLEMENT', 'CONFIRMED_TIME', 'TIMESTAMP NULL COMMENT "确认时间"', 'CREATE_TIME');
     await checkAndAddColumn('T_SETTLEMENT', 'APPROVAL_USER', 'VARCHAR(64) COMMENT "审批人"', 'CONFIRMED_TIME');
@@ -2870,6 +2884,17 @@ async function runMigrations() {
         KEY idx_business_action_actor (ACTOR_STAFF_ID, CREATE_TIME)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='业务单据操作审计日志'
     `);
+
+    // 历史单据没有独立经手人时，使用原制单人作为兼容快照。
+    // 该补齐是幂等的，避免旧订单、采购申请和费用单在筛选/导出时出现空经手人。
+    try {
+      await sequelize.query(`UPDATE T_ORDER SET OPERATOR_STAFF_ID = COALESCE(OPERATOR_STAFF_ID, CREATE_STAFF_ID), OPERATOR_NAME = COALESCE(NULLIF(OPERATOR_NAME, ''), CREATE_USER) WHERE OPERATOR_NAME IS NULL OR OPERATOR_NAME = ''`);
+      await sequelize.query(`UPDATE T_PURCHASE_REQUEST SET CREATE_USER = COALESCE(NULLIF(CREATE_USER, ''), APPLY_USER), OPERATOR_NAME = COALESCE(NULLIF(OPERATOR_NAME, ''), APPLY_USER) WHERE (CREATE_USER IS NULL OR CREATE_USER = '') OR (OPERATOR_NAME IS NULL OR OPERATOR_NAME = '')`);
+      await sequelize.query(`UPDATE T_EXPENSE SET OPERATOR_STAFF_ID = COALESCE(OPERATOR_STAFF_ID, APPLICANT_STAFF_ID), OPERATOR_NAME = COALESCE(NULLIF(OPERATOR_NAME, ''), APPLICANT_NAME) WHERE OPERATOR_NAME IS NULL OR OPERATOR_NAME = ''`);
+      await sequelize.query(`UPDATE T_SETTLEMENT SET OPERATOR_STAFF_ID = COALESCE(OPERATOR_STAFF_ID, CREATE_STAFF_ID), OPERATOR_NAME = COALESCE(NULLIF(OPERATOR_NAME, ''), CREATE_USER) WHERE OPERATOR_NAME IS NULL OR OPERATOR_NAME = ''`);
+    } catch (error) {
+      console.warn('[DB Migration] 历史单据经手人快照补齐跳过:', error.message);
+    }
 
     await migrateProductData();
 
