@@ -18,3 +18,16 @@ test('不同SN可以同时出现在同一销售订单', () => {
     { sn_code: 'BH01VR3B' }
   ]));
 });
+
+test('销售退单恢复资源权益时可以读取订单明细资源', () => {
+  assert.deepEqual(
+    _test.selectedResourcesForReturn({
+      selected_resource_types: '["GOV_SUBSIDY", "EDU_SUBSIDY"]'
+    }),
+    ['GOV_SUBSIDY', 'EDU_SUBSIDY']
+  );
+  assert.deepEqual(
+    _test.selectedResourcesForReturn({ use_gov_subsidy: 1 }),
+    ['GOV_SUBSIDY']
+  );
+});

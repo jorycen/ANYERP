@@ -3470,7 +3470,14 @@ async function confirmSalesReturnRefund(ctx) {
 }
 
 function selectedResourcesForReturn(item = {}, order = {}) {
-  const resources = selectedResources(item);
+  const rawResourceTypes = item.selected_resource_types ?? item.selectedResourceTypes ?? [];
+  const selectedResourceTypes = selectedResourcesFromJson(rawResourceTypes);
+  const resources = [...new Set([
+    ...selectedResourceTypes,
+    item.use_gov_subsidy || item.useGovSubsidy ? 'GOV_SUBSIDY' : null,
+    item.use_edu_subsidy || item.useEduSubsidy ? 'EDU_SUBSIDY' : null,
+    item.use_sales_report || item.useSalesReport ? 'SALES_REPORT' : null
+  ].filter(Boolean))];
   if (resources.length > 0) return resources;
   const subsidyStatus = item.subsidy_status || item.subsidyStatus || order.subsidy_status || order.subsidyStatus || '';
   return String(subsidyStatus) === '国补' ? ['GOV_SUBSIDY'] : [];
@@ -4438,6 +4445,7 @@ module.exports = {
     isExportMainProduct,
     allocateExportAmount,
     compareCombinedSalesRows,
+    selectedResourcesForReturn,
     ORDER_EXPORT_HEADERS
   }
 };
