@@ -31,6 +31,25 @@ function hasAnyRole(user, allowedRoles) {
   return roles.includes('boss') || roles.includes('admin') || roles.some(role => allowedRoles.includes(role));
 }
 
+const STORE_ONLY_ROLE_CODES = new Set(['clerk', 'staff', 'manager', 'store_manager']);
+const TRANSFER_OPERATION_PATHS = new Set([
+  '/api/v1/inventory/transfer/confirm-out',
+  '/api/v1/inventory/transfer/confirm-in',
+  '/api/v1/inventory/transfer/return',
+  '/api/v1/inventory/transfer/revoke',
+  '/api/v1/inventory/transfer/reject'
+]);
+
+function isDealerAccount(user) {
+  return getUserRoles(user).some(role => !STORE_ONLY_ROLE_CODES.has(role));
+}
+
+function isDealerTransferOperation(ctx) {
+  return ctx.method === 'POST'
+    && TRANSFER_OPERATION_PATHS.has(ctx.path)
+    && isDealerAccount(ctx.state.user);
+}
+
 function requireRole(...allowedRoles) {
   return async (ctx, next) => {
     if (!hasAnyRole(ctx.state.user, allowedRoles)) {
@@ -49,6 +68,8 @@ function requireRole(...allowedRoles) {
 function storeGuard(ctx) {
   const user = ctx.state.user;
   if (getUserRoles(user).includes('boss')) return null;
+  // 经销商级账号可以操作本经销商全部调拨门店，具体单据范围由调拨控制器校验。
+  if (isDealerTransferOperation(ctx)) return null;
   const storeIds = (user.accessibleStoreIds || []).map(String);
   if (storeIds.length === 0) ctx.throw(403, '当前账号尚未分配门店');
   const requestedStoreId = ctx.request.body?.storeId || ctx.request.body?.store_id || ctx.query?.storeId || ctx.query?.store_id || '';
@@ -79,4 +100,13 @@ function filterByStore(ctx, queryObj = ctx.query) {
   }
 }
 
-module.exports = { getUserRoles, hasAnyRole, requireRole, storeGuard, enforceStoreOwnership, filterByStore };
+module.exports = {
+  getUserRoles,
+  hasAnyRole,
+  requireRole,
+  storeGuard,
+  enforceStoreOwnership,
+  filterByStore,
+  isDealerAccount,
+  isDealerTransferOperation
+};

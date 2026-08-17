@@ -1,6 +1,27 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { _test } = require('../src/modules/inventory/controller');
+const { isDealerTransferOperation, storeGuard } = require('../src/middleware/permission');
+
+test('经销商级账号可以进入全部调拨操作接口，门店角色仍受门店分配限制', () => {
+  const dealerContext = {
+    method: 'POST',
+    path: '/api/v1/inventory/transfer/confirm-out',
+    state: { user: { roles: ['finance'], accessibleStoreIds: [] } },
+    request: { body: {} },
+    query: {},
+    throw(status, message) { throw new Error(message || status) }
+  };
+  assert.equal(isDealerTransferOperation(dealerContext), true);
+  assert.equal(storeGuard(dealerContext), null);
+
+  const storeContext = {
+    ...dealerContext,
+    state: { user: { roles: ['manager'], accessibleStoreIds: [] } }
+  };
+  assert.equal(isDealerTransferOperation(storeContext), false);
+  assert.throws(() => storeGuard(storeContext), /当前账号尚未分配门店/);
+});
 
 test('调拨查询按角色区分本人参与、经销商和系统全量范围', () => {
   assert.equal(_test.getTransferVisibilityLevel({ roles: ['boss'] }), 'all');

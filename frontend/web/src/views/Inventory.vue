@@ -1706,7 +1706,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as XLSX from 'xlsx'
 import api from '../api'
-import { getStoreId, getUserInfo, hasRole, isStoreUser } from '../utils/user'
+import { getStoreId, getUserInfo, hasRole, isDistributorAccount, isStoreUser } from '../utils/user'
 import SnTrace from './SnTrace.vue'
 import InventoryResourceRights from '../components/InventoryResourceRights.vue'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
@@ -3471,7 +3471,7 @@ const canRevokeTransfer = (row) => {
 
 const canRejectTransfer = (row) => {
   if (!isTransferRequestOpen(row)) return false
-  return hasRole(['admin']) || String(getStoreId()) === String(row.from_store_id || '')
+  return isDistributorAccount() || String(getStoreId()) === String(row.from_store_id || '')
 }
 
 const canReturnTransfer = (row) => ['out_confirmed', 'shipping_out', 'in_transit'].includes(String(row?.status || '').toLowerCase())

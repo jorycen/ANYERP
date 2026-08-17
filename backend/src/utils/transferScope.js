@@ -15,8 +15,8 @@ function userRegionKeys(user) {
     .map(String);
 }
 
-/** 调拨查询不依赖 accessibleStoreIds，但仍限制在当前经销商和区域内。 */
-async function assertTransferStoreScope(ctx, storeId) {
+/** 调拨查询/操作不依赖 accessibleStoreIds，但仍限制在当前经销商和区域内。 */
+async function assertTransferStoreScope(ctx, storeId, { ignoreRegion = false } = {}) {
   const targetStoreId = String(storeId || '').trim();
   if (!targetStoreId) ctx.throw(400, '调拨查询必须指定门店');
 
@@ -42,11 +42,15 @@ async function assertTransferStoreScope(ctx, storeId) {
     distributorId = distributorId || String(currentStore?.distributor_id || '');
   }
 
+  if (!distributorId) {
+    ctx.throw(403, '当前账号未绑定经销商，无法访问调拨门店');
+  }
+
   if (distributorId && String(targetStore.distributor_id || '') !== distributorId) {
     ctx.throw(403, '无权访问该门店');
   }
 
-  if ((user.regionCodes || []).includes('*')) return targetStore;
+  if (ignoreRegion || (user.regionCodes || []).includes('*')) return targetStore;
 
   const regionScope = [...new Set(userRegionKeys(user).concat(transferRegionKeys(currentStore)))];
   const targetRegions = transferRegionKeys(targetStore);

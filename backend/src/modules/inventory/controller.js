@@ -55,6 +55,16 @@ function assertStoreVisible(ctx, storeId) {
   }
 }
 
+async function assertTransferOperationStore(ctx, storeId) {
+  const user = ctx.state.user || {};
+  if (getUserRoles(user).includes('boss')) return;
+  if (isDistributorAccount(user)) {
+    return assertTransferStoreScope(ctx, storeId, { ignoreRegion: true });
+  }
+  assertStoreVisible(ctx, storeId);
+  return null;
+}
+
 const CLERK_TRANSFER_ROLE_CODES = new Set(['clerk', 'staff']);
 const MANAGER_TRANSFER_ROLE_CODES = new Set(['manager', 'store_manager']);
 const STORE_ONLY_ROLE_CODES = new Set([
@@ -210,7 +220,7 @@ async function changeTransferRequestStatus(ctx, targetStatus, action, actorCheck
     });
     if (!transfer) ctx.throw(404, '调拨单不存在');
 
-    actorCheck(ctx, transfer);
+    await actorCheck(ctx, transfer);
     assertTransferRequestOpen(ctx, transfer);
 
     const reason = String(ctx.request.body?.reason || ctx.request.body?.comment || '').trim().slice(0, 1000);
@@ -245,7 +255,7 @@ async function revokeTransfer(ctx) {
 
 async function rejectTransfer(ctx) {
   return changeTransferRequestStatus(ctx, 'rejected', 'rejected', (requestCtx, transfer) => {
-    assertStoreVisible(requestCtx, transfer.from_store_id);
+    return assertTransferOperationStore(requestCtx, transfer.from_store_id);
   });
 }
 
@@ -276,7 +286,7 @@ async function returnTransfer(ctx) {
     if (!transfer) ctx.throw(404, '调拨单不存在');
 
     // 退回权限与收货一致，由调入门店或经销商账号操作。
-    assertStoreVisible(ctx, transfer.to_store_id);
+    await assertTransferOperationStore(ctx, transfer.to_store_id);
     if (!isTransferAwaitingReceipt(transfer.status)) {
       ctx.throw(400, '只有运输中、待收货的调拨单可以退回');
     }
@@ -3894,7 +3904,7 @@ async function confirmTransferOutPartial(ctx) {
       lock: t.LOCK.UPDATE
     });
     if (!transfer) ctx.throw(404, 'Transfer does not exist');
-    assertStoreVisible(ctx, transfer.from_store_id);
+    await assertTransferOperationStore(ctx, transfer.from_store_id);
     if (transfer.status !== 'pending') ctx.throw(400, 'Transfer is not pending outbound confirmation');
 
     const requestItems = (transfer.TransferItems || [])
@@ -4076,7 +4086,7 @@ async function confirmTransferOut(ctx) {
     if (!transfer) {
       ctx.throw(404, '??????');
     }
-    assertStoreVisible(ctx, transfer.from_store_id);
+    await assertTransferOperationStore(ctx, transfer.from_store_id);
     if (transfer.status !== 'pending') {
       ctx.throw(400, '???????????');
     }
@@ -4290,7 +4300,7 @@ async function confirmTransferIn(ctx) {
     if (!transfer) {
       ctx.throw(404, '调拨单不存在');
     }
-    assertStoreVisible(ctx, transfer.to_store_id);
+    await assertTransferOperationStore(ctx, transfer.to_store_id);
 
     const transferInbound = await Inbound.findOne({
       where: { source_type: 'TRANSFER', source_no: transfer.transfer_no, status: 'pending' },
