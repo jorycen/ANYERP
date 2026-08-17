@@ -1892,16 +1892,6 @@ async function create(ctx) {
     item.sn_id = null;
   }
 
-  if (!isDraft) {
-    const missingSnItem = normalizedItems.find(item => {
-      const product = productMap.get(item.product_id);
-      return Number(product?.need_sn || 0) === 1 && !String(item.sn_code || '').trim();
-    });
-    if (missingSnItem) {
-      ctx.throw(400, `商品 ${missingSnItem.product_name || missingSnItem.product_id || ''} 需要SN管理，请填写SN码`);
-    }
-  }
-
   const snItems = normalizedItems.filter(item => item.sn_id || item.sn_code);
   if (Number(nationalSubsidy) > 0 && !normalizedItems.some(item => item.use_gov_subsidy)) {
     // 创建阶段不因 SN 缺失或尚不存在而阻断；仅在唯一明确的 SN 行上预标记权益。
@@ -1960,7 +1950,8 @@ async function create(ctx) {
     actual_payment: actualPayment,
     invoice_status: invoiceStatus,
     order_status: finalOrderStatus,
-    inventory_reserved: isDraft ? 0 : 1,
+    // 新建订单只记录销售意向；库存和 SN 在归档时统一校验、扣减。
+    inventory_reserved: 0,
     remark: remark || (needsApproval ? '售价低于定价, 待审批' : '')
   };
   if (!isDraft) {
@@ -2015,11 +2006,6 @@ async function create(ctx) {
       deposit_id: payment.depositId || payment.deposit_id || null,
       amount: payment.amount
     }, { transaction });
-  }
-
-  if (!isDraft) {
-    const savedOrder = existingOrder || await Order.findByPk(orderId, { transaction });
-    await reserveInventoryForOrder(savedOrder, transaction);
   }
 
   if (reservedDeposit) {

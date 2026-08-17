@@ -12,11 +12,11 @@ test('SN status labels expose reserved inventory as 已占用', () => {
   assert.equal(getLabel('sold'), '已销售');
 });
 
-test('formal sales order creation reserves inventory before returning success', () => {
+test('sales order creation does not reserve inventory before archiving', () => {
   const source = fs.readFileSync(
     path.join(__dirname, '../src/modules/sales/controller.js'),
     'utf8'
   );
-  assert.match(source, /inventory_reserved:\s*isDraft\s*\?\s*0\s*:\s*1/);
-  assert.match(source, /if\s*\(!isDraft\)\s*\{[\s\S]*?reserveInventoryForOrder\(savedOrder, transaction\)/);
+  assert.match(source, /inventory_reserved:\s*0/);
+  assert.doesNotMatch(source, /if\s*\(!isDraft\)\s*\{[\s\S]*?reserveInventoryForOrder\(savedOrder, transaction\)/);
 });

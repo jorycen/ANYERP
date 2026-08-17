@@ -2317,7 +2317,7 @@ const loadSnInventoryLocations = async () => {
   }
 }
 
-const loadInboundLocations = async (storeId, { required = false } = {}) => {
+const loadInboundLocations = async (storeId, { required = false, transfer = false } = {}) => {
   const normalizedStoreId = String(storeId || '').trim()
   inboundLocations.value = []
   if (!normalizedStoreId) {
@@ -2325,7 +2325,7 @@ const loadInboundLocations = async (storeId, { required = false } = {}) => {
     return []
   }
   try {
-    const res = await api.getLocationsByStore(normalizedStoreId)
+    const res = await api.getLocationsByStore(normalizedStoreId, transfer ? { scope: 'transfer' } : undefined)
     const locations = Array.isArray(res.data) ? res.data : []
     inboundLocations.value = locations
     if (required && locations.length === 0) {
@@ -2726,11 +2726,11 @@ const openExecuteDialog = async (row) => {
     if (res.code === 0) {
       currentInbound.value = res.data
       const inboundStoreId = res.data.store_id || res.data.storeId || res.data.Store?.store_id
-      const locations = await loadInboundLocations(inboundStoreId, { required: true })
+      const isTransferInbound = String(res.data.source_type || '').toUpperCase() === 'TRANSFER'
+      const locations = await loadInboundLocations(inboundStoreId, { required: true, transfer: isTransferInbound })
       if (locations.length === 0) return
 
       const pnMap = res.data.product_pns || {}
-      const isTransferInbound = String(res.data.source_type || '').toUpperCase() === 'TRANSFER'
       const defaultTransferLocation = isTransferInbound
         ? (inboundLocations.value.find(location => location.type === 'normal_qty')
           || inboundLocations.value.find(location => Number(location.is_sellable) === 1)
@@ -3329,6 +3329,7 @@ const searchTransferProducts = async (keyword = '') => {
   try {
     const res = await api.getInventoryList({
       storeId: transferForm.fromStoreId,
+      scope: 'transfer',
       keyword,
       page: 1,
       pageSize: 50
@@ -3353,6 +3354,7 @@ const loadTransferProductSns = async () => {
     const res = await api.getSnList({
       productId: transferAddForm.productId,
       storeId: transferForm.fromStoreId,
+      scope: 'transfer',
       status: 'in_stock',
       page: 1,
       pageSize: 100
@@ -3693,6 +3695,7 @@ const loadTransferOutSnOptions = async (row) => {
       const res = await api.getSnList({
         productId,
         storeId: row.from_store_id,
+        scope: 'transfer',
         status: 'in_stock',
         page: 1,
         pageSize: 500

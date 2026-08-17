@@ -88,7 +88,7 @@ async function getAllStores(ctx) {
 }
 
 /**
- * 调拨门店选项：向登录用户开放同一经销商、同一区域内的有效门店。
+ * 调拨门店选项：向登录用户开放同一经销商内的全部有效门店。
  * 普通库存下拉仍保持原有的门店权限范围。
  */
 async function getTransferStores(ctx) {
@@ -96,27 +96,28 @@ async function getTransferStores(ctx) {
   const where = { is_deleted: 0, status: 1 };
   let currentRegionKeys = [];
   if (!user.roles?.includes('boss')) {
+    let distributorId = String(user.distributorId || '');
     const accessibleStoreIds = Array.isArray(user.accessibleStoreIds)
       ? user.accessibleStoreIds.filter(id => id && id !== '*')
       : [];
-    where.store_id = accessibleStoreIds.length ? accessibleStoreIds : '__NO_STORE__';
-
-    const assignedStores = accessibleStoreIds.length
-      ? await Store.findAll({
-        where: { store_id: accessibleStoreIds, is_deleted: 0, status: 1 },
-        attributes: ['region_id'],
+    if (!distributorId && accessibleStoreIds.length) {
+      const assignedStore = await Store.findOne({
+        where: { store_id: { [Op.in]: accessibleStoreIds }, is_deleted: 0, status: 1 },
+        attributes: ['distributor_id', 'region_id'],
         include: [{ model: Region, attributes: ['region_id', 'region_code', 'name'] }]
-      })
-      : [];
-    currentRegionKeys = [...new Set(assignedStores.flatMap(store => [
-      store.region_id,
-      store.Region?.region_id,
-      store.Region?.region_code,
-      store.Region?.name
-    ]).filter(Boolean).map(String))];
+      });
+      distributorId = String(assignedStore?.distributor_id || '');
+      currentRegionKeys = [
+        assignedStore?.region_id,
+        assignedStore?.Region?.region_id,
+        assignedStore?.Region?.region_code,
+        assignedStore?.Region?.name
+      ].filter(Boolean).map(String);
+    }
+    if (distributorId) where.distributor_id = distributorId;
   }
 
-  // 调拨门店候选与普通业务一致，只能来自用户管理中已分配的门店。
+  // 调拨候选可以展示同经销商的全部有效门店；提交时仍由库存控制器校验经销商和区域。
 
   const rows = await Store.findAll({
     where,

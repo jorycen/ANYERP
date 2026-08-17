@@ -18,7 +18,7 @@ const { initializeSnResourceRightsFromInbound, summariesForSns } = require('./re
 const { ensureStandardLocationsForStores } = require('../../utils/standardLocations');
 const { sendExcel } = require('../../utils/excelExport');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
-const { isTransferScope, transferRegionKeys } = require('../../utils/transferScope');
+const { assertTransferStoreScope, isTransferScope, transferRegionKeys } = require('../../utils/transferScope');
 const { canViewSnTraceReference, isDealerTraceAccount } = require('../../utils/snTracePermission');
 const { assertSingleSnProductPn } = require('../../utils/productPn');
 const { ensureProductPnMaster } = require('../../utils/productPnMaster');
@@ -109,7 +109,6 @@ function buildTransferVisibilityWhere(user, distributorStoreIds = [], distributo
         { to_store_id: { [Op.in]: storeIds } }
       ]
     : [];
-  // 经销商级账号也只看用户管理中已分配门店的调拨，不再按 distributor_id 放大范围。
   const participantName = String(user?.name || '').trim();
   const participantScope = participantName
     ? TRANSFER_PARTICIPANT_FIELDS.map(field => ({ [field]: participantName }))
@@ -150,12 +149,6 @@ async function assertTransferScope(ctx, fromStoreId, toStoreId) {
   // 调拨门店所属经销商，避免仅凭区域权限跨经销商发起申请。
   const user = ctx.state.user || {};
   const roles = getUserRoles(user);
-  if (!roles.includes('boss') && !(user.accessibleStoreIds || []).includes('*')) {
-    const allowedStoreIds = new Set((user.accessibleStoreIds || []).map(String));
-    if (!allowedStoreIds.has(String(fromStoreId)) || !allowedStoreIds.has(String(toStoreId))) {
-      ctx.throw(403, '调拨门店必须属于当前账号已分配门店');
-    }
-  }
   let userDistributorId = '';
   let currentStore = null;
   if (Array.isArray(user.accessibleStoreIds) && !user.accessibleStoreIds.includes('*')) {
@@ -1258,6 +1251,8 @@ async function getList(ctx) {
     const user = ctx.state.user;
     const exportMode = Boolean(ctx.state.inventoryExportMode);
 
+    const transferScope = isTransferScope(ctx);
+
     // 调拨查询由请求链路的 scope=transfer 标记放行，允许读取被调拨门店的库存。
     // 实际出库仍在 confirmTransferOutPartial 中校验调拨单和调出门店，不能据此绕过写入权限。
     const whereStore = {};
@@ -1271,7 +1266,10 @@ async function getList(ctx) {
     } else if (!user.accessibleStoreIds.includes('*')) {
       whereStore.store_id = user.accessibleStoreIds;
     }
-    if (storeId) {
+    if (transferScope && storeId) {
+      await assertTransferStoreScope(ctx, storeId);
+      whereStore.store_id = storeId;
+    } else if (storeId) {
       const allowedStoreIds = Array.isArray(user.accessibleStoreIds)
         ? user.accessibleStoreIds.map(String)
         : [];
@@ -1571,7 +1569,10 @@ async function getSnList(ctx) {
     const where = { is_deleted: 0 };
     if (productId) where.product_id = productId;
 
-    if (storeId) {
+    if (isTransferScope(ctx) && storeId) {
+      await assertTransferStoreScope(ctx, storeId);
+      where.store_id = storeId;
+    } else if (storeId) {
       const allowedStoreIds = Array.isArray(user.accessibleStoreIds)
         ? user.accessibleStoreIds.map(String)
         : [];
@@ -3704,7 +3705,13 @@ async function getTransferList(ctx) {
     let distributorStoreIds = user.accessibleStoreIds || [];
 
     if (visibilityLevel === 'distributor') {
-      if ((!Array.isArray(user.accessibleStoreIds) || user.accessibleStoreIds.length === 0) && !getUserRoles(user).includes('boss')) {
+      if (user.distributorId) {
+        const stores = await Store.findAll({
+          where: { distributor_id: user.distributorId, is_deleted: 0, status: 1 },
+          attributes: ['store_id']
+        });
+        distributorStoreIds = stores.map(store => store.store_id);
+      } else if ((!Array.isArray(distributorStoreIds) || distributorStoreIds.length === 0) && !getUserRoles(user).includes('boss')) {
         ctx.body = formatPaginatedResult([], { page, pageSize, count: 0 });
         return;
       }
@@ -3801,6 +3808,13 @@ async function getTransferDetail(ctx) {
   if (!transfer) ctx.throw(404, '调拨单不存在');
   const user = ctx.state.user || {};
   let visibleStoreIds = user.accessibleStoreIds || [];
+  if (getTransferVisibilityLevel(user) === 'distributor' && user.distributorId) {
+    const stores = await Store.findAll({
+      where: { distributor_id: user.distributorId, is_deleted: 0, status: 1 },
+      attributes: ['store_id']
+    });
+    visibleStoreIds = stores.map(store => store.store_id);
+  }
   const visible = await Transfer.findOne({
     where: {
       transfer_id: transfer.transfer_id,
@@ -5430,7 +5444,9 @@ async function getLocationsByStore(ctx) {
   try {
     const { storeId } = ctx.params;
     // 调拨入库需要展示对方门店库位；实际入库仍由 confirmTransferIn 校验调入门店。
-    if (!isTransferScope(ctx)) {
+    if (isTransferScope(ctx)) {
+      await assertTransferStoreScope(ctx, storeId);
+    } else {
       assertStoreVisible(ctx, storeId);
     }
     const store = await Store.findOne({ where: { store_id: storeId, is_deleted: 0 } });

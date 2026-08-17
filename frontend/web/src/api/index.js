@@ -294,7 +294,7 @@ export default {
   requestReturn: (data) => api.post('/inventory/request-return', data),
   approveReturn: (data) => api.post('/inventory/approve-return', data),
   executeReturn: (data) => api.post('/inventory/execute-return', data),
-  getLocationsByStore: (storeId) => api.get(`/inventory/locations/${storeId}`),
+  getLocationsByStore: (storeId, params) => api.get(`/inventory/locations/${storeId}`, { params }),
   inbound: (data) => api.post('/inventory/inbound', data),
   outbound: (data) => api.post('/inventory/outbound', data),
   transfer: (data) => api.post('/inventory/transfer', data),

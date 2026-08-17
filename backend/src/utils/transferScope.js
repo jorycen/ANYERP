@@ -28,19 +28,15 @@ async function assertTransferStoreScope(ctx, storeId) {
   if (!targetStore) ctx.throw(404, '门店不存在或已停用');
   if ((user.roles || []).includes('boss')) return targetStore;
 
-  const accessibleStoreIds = Array.isArray(user.accessibleStoreIds)
-    ? user.accessibleStoreIds.map(String)
-    : [];
-  if (!accessibleStoreIds.includes(String(targetStore.store_id))) {
-    ctx.throw(403, '无权访问该门店');
-  }
-  if ((user.regionCodes || []).includes('*')) return targetStore;
-
   let distributorId = String(user.distributorId || '');
   let currentStore = null;
-  if (user.storeId) {
+  const accessibleStoreIds = Array.isArray(user.accessibleStoreIds)
+    ? user.accessibleStoreIds.map(String).filter(id => id && id !== '*')
+    : [];
+  const currentStoreId = user.storeId || accessibleStoreIds[0] || '';
+  if (currentStoreId) {
     currentStore = await Store.findOne({
-      where: { store_id: user.storeId, is_deleted: 0, status: 1 },
+      where: { store_id: currentStoreId, is_deleted: 0, status: 1 },
       include: [{ model: Region, attributes: ['region_id', 'region_code', 'name'] }]
     });
     distributorId = distributorId || String(currentStore?.distributor_id || '');
@@ -49,6 +45,8 @@ async function assertTransferStoreScope(ctx, storeId) {
   if (distributorId && String(targetStore.distributor_id || '') !== distributorId) {
     ctx.throw(403, '无权访问该门店');
   }
+
+  if ((user.regionCodes || []).includes('*')) return targetStore;
 
   const regionScope = [...new Set(userRegionKeys(user).concat(transferRegionKeys(currentStore)))];
   const targetRegions = transferRegionKeys(targetStore);
