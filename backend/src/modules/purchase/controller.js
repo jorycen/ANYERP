@@ -4,6 +4,7 @@
 const { sequelize, PurchaseRequest, PurchaseRequestItem, PurchaseAdjustment, PurchaseAdjustmentItem, Supplier, SupplierPaymentAccount, Store, Staff, Distributor, Location, Product, ProductSn, Inbound, InboundItem, ReturnStock, ReturnStockItem, Payable, Expense, Settlement, SupplierRebate, ResourceCategory, GoodsType, SnLog } = require('../../models');
 const { Op } = require('sequelize');
 const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
+const { sendExcel } = require('../../utils/excelExport');
 const { recordRebateDeduction, recordSupplierRebateAccountTransaction, _getRebateBalance } = require('../finance/rebateController');
 const { createPurchaseReimbursement, createSettlementReversal, cancelExpenseRecord } = require('../finance/expenseService');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
@@ -389,7 +390,7 @@ function buildAdjustmentRows(request, inbounds, stores) {
 /**
  * 采购申请列表
  */
-async function getRequestList(ctx) {
+async function queryRequestList(ctx, { exportMode = false } = {}) {
   const { status, scope, operatorStaffId, submitter, keyword, supplierId, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
 
@@ -450,7 +451,7 @@ async function getRequestList(ctx) {
     where.request_id = requestIds.length ? { [Op.in]: requestIds } : '__NO_MATCH__';
   }
 
-  const { count, rows } = await PurchaseRequest.findAndCountAll({
+  const requestQuery = {
     where,
     include: [
       { model: Store },
@@ -473,9 +474,12 @@ async function getRequestList(ctx) {
       pendingStatuses: ['draft', 'pending'],
       dateColumns: ['PurchaseRequest.create_time'],
       idColumn: 'PurchaseRequest.request_id'
-    }),
-    ...paginate({}, { page, pageSize })
-  });
+    })
+  };
+  const result = exportMode
+    ? { count: 0, rows: await PurchaseRequest.findAll(requestQuery) }
+    : await PurchaseRequest.findAndCountAll({ ...requestQuery, ...paginate({}, { page, pageSize }) });
+  const { count, rows } = result;
 
   const requestIds = rows.map(row => row.request_id).filter(Boolean);
   const adjustmentRows = requestIds.length
@@ -526,7 +530,34 @@ async function getRequestList(ctx) {
     return result;
   });
 
-  ctx.body = formatPaginatedResult(formattedRows, { page, pageSize, count });
+  return { rows: formattedRows, count };
+}
+
+async function getRequestList(ctx) {
+  const { page = 1, pageSize = 20 } = ctx.query;
+  const { rows, count } = await queryRequestList(ctx);
+  ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+async function exportRequestList(ctx) {
+  const { rows } = await queryRequestList(ctx, { exportMode: true });
+  const data = rows.map(row => ({
+    申请单号: row.request_no || '',
+    申请时间: row.create_time || '',
+    申请门店: row.store_name || '',
+    供应商: row.supplier_name || '',
+    付款方式: row.payment_method || '',
+    发票类型: row.invoice_type || '',
+    货型: row.product_type || '',
+    商品摘要: row.items_summary || '',
+    申请金额: Number(row.current_total_amount ?? row.total_amount ?? 0),
+    状态: row.status || '',
+    备注: row.remark || row.reason || ''
+  }));
+  sendExcel(ctx, data, [
+    '申请单号', '申请时间', '申请门店', '供应商', '付款方式', '发票类型',
+    '货型', '商品摘要', '申请金额', '状态', '备注'
+  ], `采购申请_${new Date().toISOString().slice(0, 10)}.xlsx`, '采购申请');
 }
 
 /**
@@ -2089,6 +2120,7 @@ async function sortSuppliers(ctx) {
 
 module.exports = {
   getRequestList,
+  exportRequestList,
   getRequestDetail,
   createRequest,
   saveRequestDraft,

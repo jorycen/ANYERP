@@ -5,8 +5,8 @@ node_modules/
 # Builds
 dist/
 **/dist/
-frontend/dist-web/
-backend/public/
+# Production web artifacts are tracked intentionally. The backend serves
+# backend/public and its index.html must always match the generated assets.
 backend/uploads/
 *.zip
 

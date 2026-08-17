@@ -21,6 +21,8 @@ powershell -ExecutionPolicy Bypass -File scripts/build-web-production.ps1
 2. 构建到 `frontend/dist-web`。
 3. 清理并更新 `backend/public`。
 
+`frontend/dist-web` 和 `backend/public` 是正式发布产物，已纳入版本管理。提交功能代码时，必须同时提交这两个目录，确保 `index.html` 引用的哈希资源与后端实际提供的资源一致。
+
 不得只构建根目录的 `web`，也不得在未更新 `backend/public` 时直接重新构建后端镜像。
 
 ### 1.3 SPA History 路由与同源 API 配置

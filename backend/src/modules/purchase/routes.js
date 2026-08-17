@@ -2,7 +2,7 @@
  * 采购管理路由
  */
 const Router = require('koa-router');
-const { getRequestList, getRequestDetail, createRequest, saveRequestDraft, updateRequestDraft, submitRequestDraft, deleteRequestDraft, approveRequest, revokeRequest, getAdjustmentPreview, createPurchaseAdjustment, getSupplierList, getAllSuppliers, createSupplier, updateSupplier, deleteSupplier, sortSuppliers } = require('./controller');
+const { getRequestList, exportRequestList, getRequestDetail, createRequest, saveRequestDraft, updateRequestDraft, submitRequestDraft, deleteRequestDraft, approveRequest, revokeRequest, getAdjustmentPreview, createPurchaseAdjustment, getSupplierList, getAllSuppliers, createSupplier, updateSupplier, deleteSupplier, sortSuppliers } = require('./controller');
 const { requireRole } = require('../../middleware/permission');
 
 const router = new Router();
@@ -12,6 +12,7 @@ const requirePurchaser = requireRole('purchaser');
 router.get('/supplier-list', getSupplierList);
 router.get('/supplier-all', getAllSuppliers);
 router.get('/request-list', getRequestList);
+router.get('/request-list/export', exportRequestList);
 router.get('/request-detail/:requestId', getRequestDetail);
 router.post('/create-request', createRequest);
 router.post('/request-draft', saveRequestDraft);

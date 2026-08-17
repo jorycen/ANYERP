@@ -11,20 +11,20 @@ const {
   exportRecords: exportFreightRecords
 } = require('./freightController');
 const {
-  getDailyDetails, getNationalSubsidyReceivables, getDailyStatement, getDailyStatementDetail,
-  batchSettle, settleNationalSubsidyReceivables, getSettlementSummary, createExpense, saveExpenseDraft, updateExpenseDraft, deleteExpenseDraft, getExpenseList, getExpenseDetail,
+  getDailyDetails, getNationalSubsidyReceivables, exportDailyDetails, exportNationalSubsidyReceivables, getDailyStatement, getDailyStatementDetail,
+  batchSettle, settleNationalSubsidyReceivables, getSettlementSummary, createExpense, saveExpenseDraft, updateExpenseDraft, deleteExpenseDraft, getExpenseList, exportExpenseList, getExpenseDetail,
   submitExpense, payExpense, reviewExpense, cancelExpense, getSettlementAccountsWithBalance, getAccountTransactions, addAccountTransaction,
   getSubsidyAccountRoutes, saveSubsidyAccountRoute, createSubsidyReceipt, getSubsidyReceipts,
   allocateSubsidyReceipt, refundSubsidyReceipt, reverseSubsidyReceipt, submitSubsidyAdjustment,
   getSubsidyAdjustments, reviewSubsidyAdjustment, reverseSubsidyAdjustment
 } = require('./controller');
 const {
-  getPayableList,
+  getPayableList, exportPayableList,
   getUnpaidBySupplier,
   getPayableSettlementItems,
   createSettlement,
   createExpenseSettlement,
-  getSettlementList,
+  getSettlementList, exportSettlementList,
   getSettlementDetail,
   deleteSettlementDraft,
   submitSettlement,
@@ -69,6 +69,7 @@ router.put('/expense-draft/:id', updateExpenseDraft);
 router.delete('/expense-draft/:id', deleteExpenseDraft);
 router.put('/expense-draft/:id/submit', submitExpense);
 router.get('/expense-list', getExpenseList);
+router.get('/expense-list/export', exportExpenseList);
 router.get('/expense/:id', getExpenseDetail);
 router.post('/expense/:id/review', requireRole('admin'), reviewExpense);
 router.post('/expense/:id/cancel', cancelExpense);
@@ -86,7 +87,9 @@ router.get('/freight/records', getFreightRecords);
 router.get('/freight/records/export', exportFreightRecords);
 
 router.get('/daily-details', getDailyDetails);
+router.get('/daily-details/export', exportDailyDetails);
 router.get('/national-subsidy-receivables', getNationalSubsidyReceivables);
+router.get('/national-subsidy-receivables/export', exportNationalSubsidyReceivables);
 router.get('/national-subsidy-account-routes', getSubsidyAccountRoutes);
 router.put('/national-subsidy-account-routes', saveSubsidyAccountRoute);
 router.get('/national-subsidy-receipts', getSubsidyReceipts);
@@ -107,11 +110,13 @@ router.put('/expense/submit/:id', submitExpense);
 router.put('/expense/pay/:id', payExpense);
 
 router.get('/payable-list', getPayableList);
+router.get('/payable-list/export', exportPayableList);
 router.get('/payable-settlement-items', getPayableSettlementItems);
 router.get('/unpaid-by-supplier', getUnpaidBySupplier);
 router.post('/create-settlement', createSettlement);
 router.post('/create-expense-settlement', createExpenseSettlement);
 router.get('/settlement-list', getSettlementList);
+router.get('/settlement-list/export', exportSettlementList);
 router.get('/settlement/:id', getSettlementDetail);
 router.delete('/settlement/:id', deleteSettlementDraft);
 router.post('/settlement/submit', submitSettlement);

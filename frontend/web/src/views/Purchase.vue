@@ -29,6 +29,7 @@
             <el-button type="primary" @click="handleRequestSearch">查询</el-button>
             <el-button @click="resetRequestSearch">重置</el-button>
             <el-button type="primary" @click="handleCreate">新建采购申请</el-button>
+            <el-button type="success" :loading="exportLoading" @click="handleExportRequests">导出</el-button>
           </div>
           <el-table :data="tableData" stripe border>
             <el-table-column prop="request_no" label="申请单号" width="180" />
@@ -702,6 +703,7 @@ const supplierDialogVisible = ref(false)
 const allocateDialogVisible = ref(false)
 const locationAllocateDialogVisible = ref(false)
 const submitLoading = ref(false)
+const exportLoading = ref(false)
 const approveLoading = ref(false)
 const revokeLoading = ref(false)
 const adjustmentLoading = ref(false)
@@ -977,6 +979,18 @@ const loadData = async () => {
     tableData.value = []
     total.value = 0
     ElMessage.error(getApiErrorMessage(err, '加载采购申请失败'))
+  }
+}
+
+const handleExportRequests = async () => {
+  exportLoading.value = true
+  try {
+    await api.exportPurchaseRequests({ ...queryParams })
+    ElMessage.success('采购申请导出成功')
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '采购申请导出失败')
+  } finally {
+    exportLoading.value = false
   }
 }
 
