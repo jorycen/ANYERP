@@ -1482,10 +1482,6 @@ const handleSubmit = async () => {
       ElMessage.warning(`第 ${i + 1} 行未选择商品`)
       return
     }
-    if (item.needSn && (!item.snCode || item.snCode.trim() === '')) {
-      ElMessage.warning(`商品 ${item.productName} 需要SN管理，请填写SN码`)
-      return
-    }
   }
 
   const paymentTotal = selectedPayments.value.reduce((sum, pm) => sum + (Number(paymentAmounts[pm]) || 0), 0)
