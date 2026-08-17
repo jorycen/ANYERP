@@ -104,8 +104,8 @@
 
 </view>
 
-<view class="modal-mask" wx:if="{{showStorePicker}}" bindtap="hideStorePicker"></view>
-<view class="store-picker-modal" wx:if="{{showStorePicker}}">
+<view class="modal-mask" wx:if="{{showStorePicker}}" bindtap="hideStorePicker" catchtouchmove="noop"></view>
+<view class="store-picker-modal" wx:if="{{showStorePicker}}" catchtouchmove="noop">
   <view class="modal-header">
     <text class="modal-title">选择门店</text>
     <text class="modal-close" bindtap="hideStorePicker">✕</text>
@@ -125,8 +125,8 @@
 </view>
 
 <!-- 修改密码弹窗 -->
-<view class="modal-mask" wx:if="{{showPasswordModal}}" bindtap="hidePasswordModal"></view>
-<view class="modal-dialog" wx:if="{{showPasswordModal}}">
+<view class="modal-mask" wx:if="{{showPasswordModal}}" bindtap="hidePasswordModal" catchtouchmove="noop"></view>
+<view class="modal-dialog" wx:if="{{showPasswordModal}}" catchtouchmove="noop">
   <view class="modal-header">
     <text class="modal-title">修改密码</text>
   </view>

@@ -5237,5 +5237,7 @@ Page({
         console.error('保存订单失败：', err);
       }
     );
-  }
+  },
+
+  noop: function () {}
 })

@@ -149,8 +149,8 @@
   </view>
 
   <!-- 失败详情弹窗 -->
-  <view class="modal-mask" wx:if="{{showFailModal}}" bindtap="closeFailModal"></view>
-  <view class="modal-content" wx:if="{{showFailModal}}">
+  <view class="modal-mask" wx:if="{{showFailModal}}" bindtap="closeFailModal" catchtouchmove="noop"></view>
+  <view class="modal-content" wx:if="{{showFailModal}}" catchtouchmove="noop">
     <view class="modal-header">
       <text class="modal-title">失败详情 ({{failList.length}}条)</text>
       <text class="modal-close" bindtap="closeFailModal">✕</text>

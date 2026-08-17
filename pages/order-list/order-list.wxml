@@ -250,8 +250,8 @@
 
   <!-- 金额补录弹窗 -->
   <view class="supplement-modal" wx:if="{{showSupplementModal}}">
-    <view class="supplement-mask" bindtap="closeSupplementModal"></view>
-    <view class="supplement-content">
+    <view class="supplement-mask" bindtap="closeSupplementModal" catchtouchmove="noop"></view>
+    <view class="supplement-content" catchtouchmove="noop">
       <view class="supplement-header">
         <text class="supplement-title">{{isEditMode ? '修改补录金额' : '金额补录'}}</text>
         <text class="supplement-close" bindtap="closeSupplementModal">×</text>
@@ -329,8 +329,8 @@
 
   <!-- 提货运费弹窗 -->
   <view class="freight-modal" wx:if="{{showFreightModal}}">
-    <view class="freight-mask" bindtap="closeFreightModal"></view>
-    <view class="freight-content">
+    <view class="freight-mask" bindtap="closeFreightModal" catchtouchmove="noop"></view>
+    <view class="freight-content" catchtouchmove="noop">
       <view class="freight-header">
         <text class="freight-title">{{currentOrder && currentOrder.freightAmount !== undefined && currentOrder.freightAmount !== null && currentOrder.freightAmount !== '' ? '修改提货运费' : '提货运费'}}</text>
         <text class="freight-close" bindtap="closeFreightModal">×</text>
@@ -352,8 +352,8 @@
 
   <!-- 订单备注弹窗 -->
   <view class="remark-modal" wx:if="{{showRemarkModal}}">
-    <view class="remark-mask" bindtap="closeRemarkModal"></view>
-    <view class="remark-content">
+    <view class="remark-mask" bindtap="closeRemarkModal" catchtouchmove="noop"></view>
+    <view class="remark-content" catchtouchmove="noop">
       <view class="remark-header">
         <text class="remark-title">{{currentOrder && currentOrder.remark ? '修改备注' : '添加备注'}}</text>
         <text class="remark-close" bindtap="closeRemarkModal">×</text>
@@ -388,8 +388,8 @@
 
   <!-- 可用资源弹窗 -->
   <view class="resource-modal" wx:if="{{showResourceModal}}">
-    <view class="resource-mask" bindtap="closeResourceModal"></view>
-    <view class="resource-content">
+    <view class="resource-mask" bindtap="closeResourceModal" catchtouchmove="noop"></view>
+    <view class="resource-content" catchtouchmove="noop">
       <view class="resource-header">
         <text class="resource-title">可用资源 · {{resourceModalOrder.orderNo}}</text>
         <text class="resource-close" bindtap="closeResourceModal">×</text>
@@ -416,8 +416,8 @@
 
   <!-- 毛利预估明细弹窗 -->
   <view class="gross-profit-modal" wx:if="{{showGrossProfitModal}}">
-    <view class="gross-profit-mask" bindtap="closeGrossProfitModal"></view>
-    <view class="gross-profit-content">
+    <view class="gross-profit-mask" bindtap="closeGrossProfitModal" catchtouchmove="noop"></view>
+    <view class="gross-profit-content" catchtouchmove="noop">
       <view class="gross-profit-header">
         <view>
           <text class="gross-profit-title">毛利预估</text>
@@ -477,8 +477,8 @@
 
   <!-- 我的导出任务弹窗 -->
   <view class="export-tasks-modal-wrapper {{showExportTasksModal ? 'show' : ''}}" wx:if="{{showExportTasksModal}}">
-    <view class="export-tasks-mask" bindtap="closeExportTasksModal"></view>
-    <view class="export-tasks-content-wrapper">
+    <view class="export-tasks-mask" bindtap="closeExportTasksModal" catchtouchmove="noop"></view>
+    <view class="export-tasks-content-wrapper" catchtouchmove="noop">
       <view class="export-tasks-header">
         <text class="export-tasks-title">我的导出任务</text>
         <text class="export-tasks-close" bindtap="closeExportTasksModal">×</text>

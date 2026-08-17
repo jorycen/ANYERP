@@ -196,8 +196,8 @@
 
   <!-- 可用资源弹窗 -->
   <view class="resource-modal" wx:if="{{showResourceModal}}">
-    <view class="resource-mask" bindtap="closeResourceModal"></view>
-    <view class="resource-content">
+    <view class="resource-mask" bindtap="closeResourceModal" catchtouchmove="noop"></view>
+    <view class="resource-content" catchtouchmove="noop">
       <view class="resource-header"><text class="resource-title">可用资源 · {{resourceModalOrder.orderNo}}</text><text class="resource-close" bindtap="closeResourceModal">×</text></view>
       <view class="resource-body">
         <view class="loading-tip" wx:if="{{resourceModalLoading}}"><text class="loading-text">正在加载资源...</text></view>
@@ -219,8 +219,8 @@
 
   <!-- 我的导出任务弹窗 -->
   <view class="export-tasks-modal-wrapper {{showExportTasksModal ? 'show' : ''}}" wx:if="{{showExportTasksModal}}">
-    <view class="export-tasks-mask" bindtap="closeExportTasksModal"></view>
-    <view class="export-tasks-content-wrapper">
+    <view class="export-tasks-mask" bindtap="closeExportTasksModal" catchtouchmove="noop"></view>
+    <view class="export-tasks-content-wrapper" catchtouchmove="noop">
       <view class="export-tasks-header">
         <text class="export-tasks-title">我的导出任务</text>
         <text class="export-tasks-close" bindtap="closeExportTasksModal">×</text>

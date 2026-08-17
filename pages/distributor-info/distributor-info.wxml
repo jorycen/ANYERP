@@ -53,8 +53,8 @@
   </view>
   
   <!-- 员工编辑弹窗 -->
-  <view class="modal" wx:if="{{showEditModal}}">
-    <view class="modal-content">
+  <view class="modal" wx:if="{{showEditModal}}" catchtouchmove="noop">
+    <view class="modal-content" catchtouchmove="noop">
       <view class="modal-header">
         <text class="modal-title">{{editingStaff ? '编辑员工' : '添加员工'}}</text>
         <text class="modal-close" bindtap="closeEditModal">×</text>

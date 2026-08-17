@@ -74,8 +74,8 @@
     </scroll-view>
   </view>
 
-  <view class="modal-mask" wx:if="{{showEditModal}}" bindtap="closeEditModal"></view>
-  <view class="edit-modal" wx:if="{{showEditModal}}">
+  <view class="modal-mask" wx:if="{{showEditModal}}" bindtap="closeEditModal" catchtouchmove="noop"></view>
+  <view class="edit-modal" wx:if="{{showEditModal}}" catchtouchmove="noop">
     <view class="modal-header">
       <text class="modal-title">编辑商品</text>
       <view class="close-btn" bindtap="closeEditModal">×</view>
@@ -137,8 +137,8 @@
     </view>
   </view>
 
-  <view class="modal-mask" wx:if="{{showAddModal}}" bindtap="closeAddModal"></view>
-  <view class="edit-modal" wx:if="{{showAddModal}}">
+  <view class="modal-mask" wx:if="{{showAddModal}}" bindtap="closeAddModal" catchtouchmove="noop"></view>
+  <view class="edit-modal" wx:if="{{showAddModal}}" catchtouchmove="noop">
     <view class="modal-header">
       <text class="modal-title">新增商品</text>
       <view class="close-btn" bindtap="closeAddModal">×</view>

@@ -34,8 +34,8 @@
 </view>
 
 <!-- 添加/编辑弹窗 -->
-<view class="modal-mask" wx:if="{{showModal}}" bindtap="hideModal"></view>
-<view class="modal-dialog" wx:if="{{showModal}}">
+<view class="modal-mask" wx:if="{{showModal}}" bindtap="hideModal" catchtouchmove="noop"></view>
+<view class="modal-dialog" wx:if="{{showModal}}" catchtouchmove="noop">
   <view class="modal-header">
     <text class="modal-title">{{isEdit ? '编辑补录项目' : '添加补录项目'}}</text>
   </view>

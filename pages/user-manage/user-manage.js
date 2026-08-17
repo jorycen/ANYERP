@@ -169,5 +169,7 @@ Page({
       newPassword: defaultPassword,
       confirmPassword: defaultPassword
     });
-  }
+  },
+
+  noop: function () {}
 });

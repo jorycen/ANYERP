@@ -326,5 +326,7 @@ Page({
         icon: 'none'
       });
     }
-  }
+  },
+
+  noop: function () {}
 });

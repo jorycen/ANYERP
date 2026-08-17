@@ -87,7 +87,7 @@
   </view>
 
   <view class="modal-mask" wx:if="{{selectedTask}}" bindtap="closeTask" catchtouchmove="noop">
-    <view class="detail-sheet" catchtap="noop">
+    <view class="detail-sheet" catchtap="noop" catchtouchmove="noop">
       <view class="sheet-handle"></view>
       <view class="detail-head">
         <view>

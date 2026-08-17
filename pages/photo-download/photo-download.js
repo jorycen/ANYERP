@@ -645,5 +645,7 @@ Page({
         res.context.selectAll();
       }
     }).exec();
-  }
+  },
+
+  noop: function () {}
 });

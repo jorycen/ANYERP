@@ -195,8 +195,8 @@
     </view>
   </scroll-view>
 
-  <view class="order-mask" wx:if="{{orderDialogVisible}}" bindtap="closeProductOrders">
-    <view class="order-dialog" catchtap="stopOrderDialogTap">
+  <view class="order-mask" wx:if="{{orderDialogVisible}}" bindtap="closeProductOrders" catchtouchmove="stopOrderDialogTap">
+    <view class="order-dialog" catchtap="stopOrderDialogTap" catchtouchmove="stopOrderDialogTap">
       <view class="order-dialog-header">
         <view>
           <text class="order-dialog-title">商品订单</text>
@@ -226,8 +226,8 @@
     </view>
   </view>
 
-  <view class="order-mask" wx:if="{{snDialogVisible}}" bindtap="closeProductSns">
-    <view class="sn-dialog" catchtap="stopOrderDialogTap">
+  <view class="order-mask" wx:if="{{snDialogVisible}}" bindtap="closeProductSns" catchtouchmove="stopOrderDialogTap">
+    <view class="sn-dialog" catchtap="stopOrderDialogTap" catchtouchmove="stopOrderDialogTap">
       <view class="order-dialog-header">
         <view>
           <text class="order-dialog-title">商品 SN</text>

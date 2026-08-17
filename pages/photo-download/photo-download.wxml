@@ -125,8 +125,8 @@
 
   <!-- 链接弹窗 -->
   <view class="links-modal" wx:if="{{showLinksModal}}">
-    <view class="links-mask" bindtap="closeLinksModal"></view>
-    <view class="links-content">
+  <view class="links-mask" bindtap="closeLinksModal" catchtouchmove="noop"></view>
+  <view class="links-content" catchtouchmove="noop">
       <view class="links-header">
         <text class="links-title">图片下载链接 ({{linksCount}}张)</text>
         <text class="links-close" bindtap="closeLinksModal">×</text>

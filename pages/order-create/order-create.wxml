@@ -499,8 +499,8 @@
   </view>
 
   <!-- 预览模态框 -->
-  <view class="privacy-mask" wx:if="{{showPrivacyModal}}">
-    <view class="privacy-dialog">
+  <view class="privacy-mask" wx:if="{{showPrivacyModal}}" catchtouchmove="noop">
+    <view class="privacy-dialog" catchtouchmove="noop">
       <view class="privacy-title">隐私授权</view>
       <view class="privacy-content">
         上传照片需要使用相册或相机，请先阅读并同意
@@ -513,9 +513,9 @@
     </view>
   </view>
 
-  <view class="modal" wx:if="{{showPreview}}">
-    <view class="modal-mask" bindtap="closePreview"></view>
-    <view class="modal-content">
+  <view class="modal" wx:if="{{showPreview}}" catchtouchmove="noop">
+    <view class="modal-mask" bindtap="closePreview" catchtouchmove="noop"></view>
+    <view class="modal-content" catchtouchmove="noop">
       <view class="modal-header">
         <text class="modal-title">订单预览</text>
         <text class="modal-close" bindtap="closePreview">×</text>
@@ -613,9 +613,9 @@
 </view>
 
 <!-- 订单门店选择弹窗 -->
-<view class="modal" wx:if="{{showStorePicker}}">
-  <view class="modal-mask" bindtap="closeStorePicker"></view>
-  <view class="modal-content store-picker-modal">
+<view class="modal" wx:if="{{showStorePicker}}" catchtouchmove="noop">
+  <view class="modal-mask" bindtap="closeStorePicker" catchtouchmove="noop"></view>
+  <view class="modal-content store-picker-modal" catchtouchmove="noop">
     <view class="modal-header">
       <text class="modal-title">选择订单门店</text>
       <text class="modal-close" bindtap="closeStorePicker">×</text>
@@ -631,9 +631,9 @@
 </view>
 
 <!-- 商品选择弹窗 -->
-<view class="goods-select-modal" wx:if="{{showGoodsSelectModal}}">
-  <view class="goods-select-mask" bindtap="closeGoodsSelectModal"></view>
-  <view class="goods-select-content">
+<view class="goods-select-modal" wx:if="{{showGoodsSelectModal}}" catchtouchmove="noop">
+  <view class="goods-select-mask" bindtap="closeGoodsSelectModal" catchtouchmove="noop"></view>
+  <view class="goods-select-content" catchtouchmove="noop">
     <view class="goods-select-header">
       <text class="goods-select-title">选择商品</text>
       <text class="goods-select-close" bindtap="closeGoodsSelectModal">×</text>
@@ -658,9 +658,9 @@
 </view>
 
 <!-- 打印机连接引导弹窗 -->
-<view class="printer-guide-modal" wx:if="{{showPrinterGuideModal}}">
-  <view class="printer-guide-mask" bindtap="closePrinterGuideModal"></view>
-  <view class="printer-guide-content">
+<view class="printer-guide-modal" wx:if="{{showPrinterGuideModal}}" catchtouchmove="noop">
+  <view class="printer-guide-mask" bindtap="closePrinterGuideModal" catchtouchmove="noop"></view>
+  <view class="printer-guide-content" catchtouchmove="noop">
     <view class="printer-guide-header">
       <text class="printer-guide-title">连接打印机</text>
       <text class="printer-guide-close" bindtap="closePrinterGuideModal">×</text>
@@ -680,9 +680,9 @@
 </view>
 
 <!-- 提交成功打印确认弹窗 -->
-<view class="print-confirm-modal" wx:if="{{showPrintConfirmModal}}">
-  <view class="print-confirm-mask"></view>
-  <view class="print-confirm-content">
+<view class="print-confirm-modal" wx:if="{{showPrintConfirmModal}}" catchtouchmove="noop">
+  <view class="print-confirm-mask" catchtouchmove="noop"></view>
+  <view class="print-confirm-content" catchtouchmove="noop">
     <view class="print-confirm-header">
       <text class="print-confirm-title">提交成功，请打印小票</text>
     </view>

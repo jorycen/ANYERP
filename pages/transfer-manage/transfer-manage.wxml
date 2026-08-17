@@ -99,7 +99,7 @@
     </view>
   </view>
 
-  <view class="modal-mask" wx:if="{{showProductModal}}" bindtap="closeProductModal"><view class="product-modal" catchtap="noop">
+  <view class="modal-mask" wx:if="{{showProductModal}}" bindtap="closeProductModal" catchtouchmove="noop"><view class="product-modal" catchtap="noop" catchtouchmove="noop">
     <view class="modal-header"><text class="modal-title">查询调拨商品</text><text class="modal-close" bindtap="closeProductModal">×</text></view>
     <view class="modal-store-hint">调出门店：{{fromStoreName}}</view>
     <view class="search-row modal-search-row"><input class="search-input" value="{{form.keyword}}" bindinput="onKeywordInput" placeholder="商品名称、商品编码、PN 或 SN" confirm-type="search" bindconfirm="searchProduct" focus="{{showProductModal}}" /><button class="search-btn" bindtap="searchProduct" loading="{{isSearching}}">查询</button></view>

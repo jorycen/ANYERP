@@ -1365,5 +1365,7 @@ Page({
    */
   refreshExportTasks: function () {
     this.loadExportTasks();
-  }
+  },
+
+  noop: function () {}
 })

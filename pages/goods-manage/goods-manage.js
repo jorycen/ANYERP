@@ -268,5 +268,7 @@ Page({
 
   onBack: function () {
     wx.navigateBack();
-  }
+  },
+
+  noop: function () {}
 });

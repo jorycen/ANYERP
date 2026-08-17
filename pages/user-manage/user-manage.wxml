@@ -31,8 +31,8 @@
 </view>
 
 <!-- 重置密码弹窗 -->
-<view class="modal-mask" wx:if="{{showResetModal}}" bindtap="hideResetModal"></view>
-<view class="modal-dialog" wx:if="{{showResetModal}}">
+<view class="modal-mask" wx:if="{{showResetModal}}" bindtap="hideResetModal" catchtouchmove="noop"></view>
+<view class="modal-dialog" wx:if="{{showResetModal}}" catchtouchmove="noop">
   <view class="modal-header">
     <text class="modal-title">重置密码</text>
     <text class="modal-subtitle">用户：{{selectedUser.name}} ({{selectedUser.phone}})</text>
