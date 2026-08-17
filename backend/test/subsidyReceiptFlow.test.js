@@ -28,10 +28,10 @@ test('国补到账、核销和差额审批表均由自动迁移创建', () => {
   assert.equal(SubsidyReceivableAdjustment.tableName, 'T_SUBSIDY_RECEIVABLE_ADJUSTMENT');
 });
 
-test('国补到账限制区域兜底、超额核销和差额自审', () => {
+test('国补到账限制区域兜底、超额核销和差额审批', () => {
   assert.match(controllerSource, /该区域尚未配置国补到账资金账户/);
   assert.match(controllerSource, /分配金额不得超过银行实际到账金额/);
   assert.match(controllerSource, /核销金额超过剩余应收/);
-  assert.match(controllerSource, /申请人不得审批自己的差额申请/);
+  assert.doesNotMatch(controllerSource, /申请人不得审批自己的差额申请/);
   assert.match(controllerSource, /只有 admin 或 BOSS 可以审批国补差额/);
 });

@@ -86,21 +86,21 @@ test('待审批结算单退回草稿并保留退回原因', async () => {
   }
 });
 
-test('制单人不能审批自己的结算单', async () => {
+test('制单人可以审批自己的结算单', async () => {
   const original = models.Settlement.findByPk;
+  const updates = {};
   models.Settlement.findByPk = async () => ({
     settlement_id: 'SETTLEMENT_5',
     status: 'pending_approval',
     create_user: '财务审批员',
-    update: async () => {}
+    update: async values => Object.assign(updates, values)
   });
 
   try {
     const ctx = context({ body: { settlementId: 'SETTLEMENT_5' } });
-    await assert.rejects(
-      payableController.confirmSettlement(ctx),
-      error => error.status === 400 && error.message.includes('不能审批自己的结算单')
-    );
+    await payableController.confirmSettlement(ctx);
+    assert.equal(updates.status, 'confirmed');
+    assert.equal(updates.approval_user, '财务审批员');
   } finally {
     models.Settlement.findByPk = original;
   }

@@ -17,6 +17,7 @@ async function withSalesStubs({ lockedCount }, callback) {
     orderFindByPk: models.Order.findByPk,
     itemFindAll: models.OrderItem.findAll,
     rightCount: models.InventoryResourceRight.count,
+    grossProfitFindOne: models.OrderGrossProfit.findOne,
     transaction: models.sequelize.transaction
   };
   const updatedItem = {};
@@ -39,6 +40,7 @@ async function withSalesStubs({ lockedCount }, callback) {
   models.Order.findByPk = async () => order;
   models.OrderItem.findAll = async () => [item];
   models.InventoryResourceRight.count = async () => lockedCount;
+  models.OrderGrossProfit.findOne = async () => null;
   models.sequelize.transaction = async handler => handler({});
 
   try {
@@ -47,6 +49,7 @@ async function withSalesStubs({ lockedCount }, callback) {
     models.Order.findByPk = originals.orderFindByPk;
     models.OrderItem.findAll = originals.itemFindAll;
     models.InventoryResourceRight.count = originals.rightCount;
+    models.OrderGrossProfit.findOne = originals.grossProfitFindOne;
     models.sequelize.transaction = originals.transaction;
   }
 }

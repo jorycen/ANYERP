@@ -965,9 +965,6 @@ async function confirmSettlement(ctx) {
 
     if (settlement.status === 'pending_approval') {
       const operator = user?.name || user?.phone || '';
-      if (settlement.create_user && operator && String(settlement.create_user) === String(operator)) {
-        ctx.throw(400, '制单人不能审批自己的结算单');
-      }
       await settlement.update({
         status: 'confirmed',
         confirmed_time: new Date(),
@@ -1004,9 +1001,6 @@ async function rejectSettlement(ctx) {
       ctx.throw(400, '只有待审批结算单可以拒绝');
     }
     const operator = user?.name || user?.phone || '';
-    if (settlement.create_user && operator && String(settlement.create_user) === String(operator)) {
-      ctx.throw(400, '制单人不能审批自己的结算单');
-    }
 
     await settlement.update({
       status: 'draft',

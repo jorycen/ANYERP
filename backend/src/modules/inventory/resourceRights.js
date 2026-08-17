@@ -342,7 +342,6 @@ async function reviewClaim(ctx) {
     const change = await ResourceRightChangeOrder.findByPk(ctx.params.changeId, { transaction, lock: transaction.LOCK.UPDATE });
     if (!change) ctx.throw(404, '套回申请不存在');
     if (change.approval_status !== 'pending_finance') ctx.throw(409, '该申请已处理');
-    if (String(change.applicant_staff_id || '') === String(ctx.state.user.staffId || '')) ctx.throw(403, '申请人不得审批自己的套回申请');
     const right = await InventoryResourceRight.findOne({ where: { sn_id: change.sn_id, resource_type: change.resource_type }, transaction, lock: transaction.LOCK.UPDATE });
     if (!right || right.current_status !== 'LOCKED' || right.locked_source_type !== 'CLAIM' || right.locked_source_id !== change.change_id) ctx.throw(409, '权益锁定状态已变化，请人工核查');
     if (action === 'reject') {

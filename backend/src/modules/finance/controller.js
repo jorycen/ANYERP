@@ -692,9 +692,6 @@ async function reviewExpense(ctx) {
   const record = await Expense.findByPk(ctx.params.id);
   if (!record || record.is_deleted) ctx.throw(404, '报销单不存在');
   if (record.status !== 'pending_approval') ctx.throw(400, '当前报销单不可审批');
-  if (String(record.applicant_staff_id || '') === String(user.staffId || user.id || '')) {
-    ctx.throw(400, '申请人不能审批自己的报销单');
-  }
   if (record.source_type === 'purchase') {
     const purchase = await PurchaseRequest.findByPk(record.source_id);
     if (!purchase || purchase.status !== 'approved') ctx.throw(400, '关联采购申请尚未审批通过');
@@ -1235,7 +1232,6 @@ async function reviewSubsidyAdjustment(ctx) {
     const adjustment = await SubsidyReceivableAdjustment.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
     if (!adjustment) ctx.throw(404, '差额审批不存在');
     if (adjustment.status !== 'PENDING') ctx.throw(400, '该差额已审批');
-    if (String(adjustment.applicant_id) === userIdOf(user)) ctx.throw(400, '申请人不得审批自己的差额申请');
     if (action === 'approve') {
       const detail = await DailyStatementDetail.findByPk(adjustment.detail_id, { transaction, lock: transaction.LOCK.UPDATE });
       const remaining = money(Number(detail.amount) - Number(detail.settled));

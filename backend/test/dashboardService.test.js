@@ -102,9 +102,11 @@ test('订单销售额、基础毛利和审批调整在参与人之间平均拆�
   assert.equal(result.details[0].reasons[0].reason, '重点产品奖励');
 });
 
-test('毛利权限只开放给已确认角色', () => {
-  assert.equal(canViewProfit({ roles: ['boss'] }), true);
-  assert.equal(canViewProfit({ roles: ['manager'] }), true);
-  assert.equal(canViewProfit({ roles: ['clerk'] }), false);
-  assert.equal(canViewProfit({ roles: ['purchaser'] }), false);
+test('毛利权限按已登录员工身份开放，并继续依赖数据范围控制', () => {
+  assert.equal(canViewProfit({ staffId: 1, roles: ['boss'] }), true);
+  assert.equal(canViewProfit({ staffId: 2, roles: ['manager'] }), true);
+  assert.equal(canViewProfit({ staffId: 3, roles: ['clerk'] }), true);
+  assert.equal(canViewProfit({ staffId: 4, roles: ['purchaser'] }), true);
+  assert.equal(canViewProfit({ roles: ['manager'] }), false);
+  assert.equal(canViewProfit(null), false);
 });

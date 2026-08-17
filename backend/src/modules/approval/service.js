@@ -114,7 +114,7 @@ async function resolveApprovers(node, instance, transaction) {
   const unique = candidates
     .filter(staff => !subject.distributor_id || staff.distributor_id === subject.distributor_id || (staff.Roles || []).some(role => role.role_code === 'boss'))
     .map(staff => Number(staff.staff_id))
-    .filter(id => id && id !== Number(instance.applicant_staff_id));
+    .filter(id => id);
   if (!unique.length) throw new Error(`审批节点“${node.name}”未解析到可用审批人，请检查门店店长、直属上级或角色范围配置`);
   return unique;
 }

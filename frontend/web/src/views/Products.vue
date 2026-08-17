@@ -289,8 +289,8 @@
             <el-table-column label="操作" width="150" fixed="right">
               <template #default="{ row }">
                 <template v-if="row.status === 'pending' && canReviewProductApplications">
-                  <el-button link type="success" :disabled="isOwnProductApplication(row)" @click="reviewProductApplication(row, 'approved')">通过</el-button>
-                  <el-button link type="danger" :disabled="isOwnProductApplication(row)" @click="reviewProductApplication(row, 'rejected')">拒绝</el-button>
+                  <el-button link type="success" @click="reviewProductApplication(row, 'approved')">通过</el-button>
+                  <el-button link type="danger" @click="reviewProductApplication(row, 'rejected')">拒绝</el-button>
                 </template>
                 <span v-else class="text-muted">-</span>
               </template>
@@ -1699,8 +1699,6 @@ const loadProductApplications = async () => {
 
 const productApplicationStatusText = (status) => ({ pending: '待审批', approved: '已通过', rejected: '已拒绝' }[status] || status)
 const productApplicationStatusType = (status) => ({ pending: 'warning', approved: 'success', rejected: 'danger' }[status] || 'info')
-const isOwnProductApplication = (row) => Number(row.applicant_staff_id) === Number(currentUserInfo.staffId || currentUserInfo.id)
-
 const reviewProductApplication = async (row, action) => {
   try {
     let comment = ''

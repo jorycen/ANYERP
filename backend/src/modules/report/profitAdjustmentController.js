@@ -179,7 +179,6 @@ async function listProfitAdjustments(ctx) {
       return;
     }
     where.status = { [Op.in]: reviewStatuses };
-    where.applicant_staff_id = { [Op.ne]: user.staffId };
   } else if (scope === 'order') {
     if (!hasRole(user, 'finance') && !hasRole(user, 'admin') && !hasRole(user, 'boss')) {
       where[Op.or] = [
@@ -235,10 +234,6 @@ async function reviewProfitAdjustment(ctx, action) {
 
     const storeIds = await getAccessibleStoreIds(user);
     if (!storeIds.includes(adjustment.store_id)) ctx.throw(403, '无权审核该申请');
-    if (String(adjustment.applicant_staff_id) === String(user.staffId)) {
-      ctx.throw(403, '申请人不能审核自己的申请');
-    }
-
     const now = new Date();
     if (adjustment.status === 'pending_finance') {
       if (!hasRole(user, 'finance')) ctx.throw(403, '当前阶段仅财务账号可审核');

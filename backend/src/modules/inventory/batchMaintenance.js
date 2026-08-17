@@ -832,7 +832,6 @@ async function reviewBatchApplication(ctx) {
     const app = await InventoryBatchApplication.findByPk(ctx.params.applicationId, { transaction, lock: transaction.LOCK.UPDATE });
     if (!app) ctx.throw(404, '批量维护申请不存在');
     if (app.status !== 'pending') ctx.throw(409, '该申请已处理');
-    if (String(app.applicant_staff_id || '') === String(user.staffId || '')) ctx.throw(403, '申请人不得审批自己的申请');
     if (!isBoss(user) && String(app.applicant_distributor_id || '') !== String(user.distributorId || '')) {
       ctx.throw(403, '只能审批本经销商范围内的批量库存申请');
     }

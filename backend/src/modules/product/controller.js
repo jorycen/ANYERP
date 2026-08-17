@@ -910,9 +910,6 @@ async function reviewProductApplication(ctx) {
     });
     if (!application) ctx.throw(404, '商品申请不存在');
     if (application.status !== 'pending') ctx.throw(400, '该申请已完成审批');
-    if (Number(application.applicant_staff_id) === Number(ctx.state.user.staffId)) {
-      ctx.throw(403, '申请人不能审批自己的商品申请');
-    }
     if (!getUserRoles(ctx.state.user).includes('boss') && application.distributor_id !== (ctx.state.user.distributorId || '')) {
       ctx.throw(403, '无权审批其他经销商的商品申请');
     }
