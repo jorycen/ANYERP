@@ -219,7 +219,7 @@ function normalizeSnInventoryRow(item = {}) {
     item.update_time || item.updateTime || '';
   return Object.assign({}, product, {
     snId: item.sn_id || item.snId || item.inventory_id || item.inventoryId || item.id || item._id || '',
-    snCode: normalizeSnCode(item.sn_code || item.snCode || item.sn || product.snCode || ''),
+    snCode: normalizeSnCode(item.sn_code || item.snCode || item.SN || item.sn || product.snCode || ''),
     pnCode: normalizePnCode(item.pn_code || item.pnCode || product.pnCode || ''),
     productName: item.product_name || item.productName || product.name || '',
     storeId: item.store_id || item.storeId || product.storeId || '',
@@ -1739,7 +1739,18 @@ const api = {
     },
     getSnList(params = {}) {
       return http.request('/inventory/sn-list' + toQuery(Object.assign({ page: 1, pageSize: 100 }, params)))
-        .then(result => ({ code: 200, data: getListPayload(result).map(normalizeSnInventoryRow), raw: result }));
+        .then(result => {
+          const payload = result || {};
+          const nestedPayload = payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data)
+            ? payload.data
+            : {};
+          return {
+            code: 200,
+            data: getListPayload(payload).map(normalizeSnInventoryRow),
+            pagination: payload.pagination || nestedPayload.pagination || payload.pageInfo || nestedPayload.pageInfo || {},
+            raw: result
+          };
+        });
     },
     getSnInventoryList(params = {}) {
       return http.request('/inventory/sn-inventory-list' + toQuery(Object.assign({ page: 1, pageSize: 100 }, params)))

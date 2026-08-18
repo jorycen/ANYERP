@@ -643,6 +643,42 @@ Page({
     if (!requestedItems.length) return;
     const productIds = [...new Set(requestedItems.map(item => String(item.productId)))];
     const snProductIds = [...new Set(requestedItems.filter(item => isSnProduct(item)).map(item => String(item.productId)))];
+    const requestedSnQuantityByProduct = new Map();
+    requestedItems.filter(item => isSnProduct(item)).forEach(item => {
+      const productId = String(item.productId);
+      const quantity = Math.max(1, Number(item.quantity || 1));
+      requestedSnQuantityByProduct.set(productId, (requestedSnQuantityByProduct.get(productId) || 0) + quantity);
+    });
+    const loadSnRows = productId => {
+      const requiredQuantity = Math.max(1, Number(requestedSnQuantityByProduct.get(String(productId)) || 1));
+      const collectedRows = [];
+      const seenRows = new Set();
+      const pageSize = 100;
+      const maxPages = Math.max(1, requiredQuantity + 5);
+      const fetchPage = page => api.inventory.getSnList({
+        productId,
+        storeId: transfer.fromStoreId,
+        status: 'in_stock',
+        scope: 'transfer',
+        page,
+        pageSize
+      }).then(res => {
+        const rows = Array.isArray(res?.data) ? res.data : [];
+        rows.forEach(row => {
+          const rowKey = String(row.inventoryId || row.inventory_id || row.snId || row.sn_id || row.id || row._id || row.snCode || row.sn_code || row.SN || '');
+          if (!rowKey || seenRows.has(rowKey)) return;
+          seenRows.add(rowKey);
+          collectedRows.push(row);
+        });
+        const pagination = res.pagination || res.raw?.pagination || res.raw?.pageInfo || {};
+        const totalPages = Number(pagination.totalPages || pagination.total_pages || 0);
+        if (collectedRows.length >= requiredQuantity || (totalPages && page >= totalPages) || !rows.length || page >= maxPages) {
+          return { productId, rows: collectedRows };
+        }
+        return fetchPage(page + 1);
+      }).catch(() => ({ productId, rows: collectedRows }));
+      return fetchPage(1);
+    };
     const requestProductMap = new Map();
     requestedItems.forEach(item => {
       const key = String(item.productId);
@@ -653,7 +689,7 @@ Page({
       Promise.all(productIds.map(productId => api.product.getPns(productId, transfer.fromStoreId, { scope: 'transfer' })
         .then(rows => ({ productId, rows: rows || [] }))
         .catch(() => ({ productId, rows: [] })))),
-      Promise.all(snProductIds.map(productId => api.inventory.getSnList({ productId, storeId: transfer.fromStoreId, status: 'in_stock', scope: 'transfer', page: 1, pageSize: 100 }).then(res => ({ productId, rows: res.data || [] })).catch(() => ({ productId, rows: [] }))))
+      Promise.all(snProductIds.map(loadSnRows))
     ]).then(([pnResult, snResult]) => {
       const pnRowsByProduct = new Map();
       pnResult.forEach(result => pnRowsByProduct.set(String(result.productId), result.rows || []));
