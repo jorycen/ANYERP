@@ -184,9 +184,9 @@ function calculateOrderProfit(order = {}, items) {
     hasPricing,
     hasCost: hasPricing,
     hasMinimumSalePrice,
-    isBelowMinimum,
-    // 兼容旧调用方；审批条件已改为最低销售价校验。
-    isNegative: isBelowMinimum
+    // 最低销售价只保留为展示参考，不再作为审批条件。
+    isBelowMinimum: false,
+    isNegative: grossProfit !== null && grossProfit < 0
   };
 }
 

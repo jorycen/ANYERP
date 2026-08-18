@@ -4,7 +4,6 @@ const DataStorage = require('../../utils/storage.js');
 const api = require('../../utils/api.js');
 const couponOcr = require('../../utils/coupon-ocr.js');
 const { normalizeOrderItem, normalizeSnCode, isEmptyOrderItem } = require('../../utils/model.js');
-const { calculateOrderProfit } = require('../../utils/order-profit.js');
 require('../../utils/cloud-adapter.js').install();
 Page({
   /**
@@ -4846,22 +4845,9 @@ Page({
   },
 
   confirmNegativeGrossProfit: function (orderData, onConfirm) {
-    const profit = calculateOrderProfit(orderData);
-    if (!profit.isBelowMinimum) {
-      onConfirm();
-      return true;
-    }
-
-    wx.showModal({
-      title: '低于最低销售价提醒',
-      content: `该单国补、教育优惠前应收 ¥${profit.receivable.toFixed(2)}，低于所有商品最低销售价合计 ¥${profit.minimumSalePriceTotal.toFixed(2)}，将触发审批流程。`,
-      confirmText: '继续保存',
-      cancelText: '返回修改',
-      success: result => {
-        if (result.confirm) onConfirm();
-      }
-    });
-    return false;
+    // 负毛利由 ANY-ERP 在提交/归档阶段统一计算；提交不阻断，接口返回提示后再展示给提交人。
+    onConfirm();
+    return true;
   },
 
   /**
@@ -5211,8 +5197,9 @@ Page({
         // 订单提交成功，清除缓存
         this.clearOrderCache();
 
+        const negativeGrossProfit = res && res.negativeGrossProfit === true;
         wx.showToast({
-          title: '订单提交成功',
+          title: negativeGrossProfit ? '已提交，负毛利订单归档时需审批' : '订单提交成功',
           icon: 'success',
           duration: 2000,
           success: () => {

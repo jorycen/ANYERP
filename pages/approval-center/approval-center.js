@@ -1,7 +1,6 @@
 const api = require('../../utils/api.js');
 const userUtils = require('../profile/user-utils.js');
 const imageUpload = require('../../utils/image-upload.js');
-const { calculateOrderProfit } = require('../../utils/order-profit.js');
 const { normalizePnCode } = require('../../utils/pn.js');
 
 const APPROVAL_PAGE_SIZE = 20;
@@ -205,13 +204,9 @@ function loadTaskDetails(task) {
       task.organizationLabel = applicantOrganizationLabel(task.raw, currentUser);
     }
     if (task.type === 'sales') {
-      const profit = calculateOrderProfit(task.raw, task.raw.goods || task.raw.items || []);
-      task.needsApproval = profit.isBelowMinimum;
+      task.needsApproval = String(task.raw.status || task.raw.order_status || '') === 'pending_approval';
       task.details = (task.details || []).map(row => {
-        if (row.label === '实际应收') row.value = `¥${money(profit.receivable)}`;
-        if (row.label === '商品定价合计') row.value = `¥${money(profit.pricingTotal)}`;
-        if (row.label === '最低销售价合计') row.value = `¥${money(profit.minimumSalePriceTotal)}`;
-        if (row.label === '毛利') row.value = `¥${money(profit.grossProfit)}`;
+        if (row.label === '审批要求') row.value = '归档前最终毛利为负';
         return row;
       });
     }
@@ -222,7 +217,17 @@ function loadTaskDetails(task) {
       }
     }
     task.photos = uniqueValues((task.photos || []).concat(photoList(source)));
-    return task;
+    if (task.type !== 'sales') return task;
+    return api.order.getGrossProfit(task.businessId).then(grossProfit => {
+      const profit = detailObject(grossProfit) || {};
+      const amount = profit.grossProfitAmount ?? profit.gross_profit_amount;
+      if (amount !== undefined && amount !== null && Number.isFinite(Number(amount))) {
+        task.details = (task.details || []).map(row => row.label === '毛利'
+          ? Object.assign({}, row, { value: `¥${money(amount)}` })
+          : row);
+      }
+      return task;
+    }).catch(() => task);
   }).then(updatedTask => resolveTaskPhotos([updatedTask]).then(tasks => tasks[0] || updatedTask));
 }
 
@@ -613,8 +618,7 @@ Page({
         const task = taskBase('sales', order);
         task.organizationName = applicantOrganization(order, user);
         task.organizationLabel = applicantOrganizationLabel(order, user);
-        const profit = calculateOrderProfit(order, order.goods || order.items || []);
-        task.needsApproval = profit.isBelowMinimum;
+        task.needsApproval = String(order.status || order.order_status || '') === 'pending_approval';
         task.businessId = order.orderId || order.order_id || order._id;
         task.key = `sales:${task.businessId}`;
         task.no = order.orderNo || order.order_no || task.businessId;
@@ -628,11 +632,9 @@ Page({
         task.details = [
           { label: '客户', value: order.contactName || order.customer_name || '-' },
           { label: '联系电话', value: order.contactMethod || order.customer_phone || '-' },
-          { label: '实际应收', value: `¥${money(profit.receivable)}` },
-          { label: '商品定价合计', value: `¥${money(profit.pricingTotal)}` },
-          { label: '最低销售价合计', value: `¥${money(profit.minimumSalePriceTotal)}` },
-          { label: '毛利', value: `¥${money(profit.grossProfit)}` },
-          { label: '审批要求', value: '订单总应收低于最低销售价合计' }
+          { label: '实际应收', value: `¥${money(order.actualAmount || order.actual_payment || order.totalAmount || order.total_amount)}` },
+          { label: '毛利', value: '正在读取后端毛利快照' },
+          { label: '审批要求', value: '归档前最终毛利为负' }
         ];
         task.photoLabel = '订单上传图片';
         task.photos = photoList(

@@ -2843,17 +2843,9 @@ Page({
         }
       }
 
-      const profit = calculateOrderProfit({
-        actualAmount: this.data.actualAmount,
-        totalAmount: this.data.totalAmount,
-        discount: this.data.discount,
-        receivableBeforeSubsidy: this.data.receivableBeforeSubsidy
-      }, goodsList);
       this.setData({
         showArchiveModal: true,
-        archiveNeedsApproval: profit.isBelowMinimum,
-        grossProfit: profit.grossProfit,
-        minimumSalePriceTotal: profit.minimumSalePriceTotal
+        archiveNeedsApproval: false
       });
     } else {
       this.setData({ isArchived: false });
@@ -2912,30 +2904,16 @@ Page({
       }
     }
 
-    const profit = calculateOrderProfit(
-      {
-        actualAmount: this.data.actualAmount,
-        totalAmount: this.data.totalAmount,
-        discount: this.data.discount,
-        receivableBeforeSubsidy: this.data.receivableBeforeSubsidy
-      },
-      goodsList
-    );
-    const needsApproval = profit.isBelowMinimum;
-
     wx.showLoading({ title: '校验PN/SN中...' });
 
     this.validateArchiveGoods()
       .then(() => {
-        wx.showLoading({ title: needsApproval ? '提交审批中...' : '归档中...' });
+        wx.showLoading({ title: '归档校验中...' });
         return api.call('queryOrders', 'updateOrderStatus', {
           orderId: this.data.order.orderId || this.data.order._id || this.data.order.order_id || '',
           orderNo: this.data.orderNo,
-          status: needsApproval ? 'pending_approval' : '已归档',
-          snStatusAction: needsApproval ? '' : 'sell',
-          targetSnStatus: needsApproval ? '' : '已销售',
-          inventoryStatusAction: needsApproval ? '' : 'sell',
-          targetInventoryStatus: needsApproval ? '' : '已销售',
+          // 归档与负毛利审批由 ANY-ERP 统一判断；小程序只提交当前订单状态。
+          status: '已归档',
           items: this.data.goodsList,
           goods: this.data.goodsList,
           depositItems: this.data.depositItems || [],
@@ -2947,25 +2925,14 @@ Page({
           actualAmount: this.data.actualAmount,
           totalAmount: this.data.totalAmount,
           discount: this.data.discount,
-          receivableBeforeSubsidy: profit.receivable,
-          grossProfit: profit.grossProfit,
-          gross_profit: profit.grossProfit,
-          pricingTotal: profit.pricingTotal,
-          pricing_total: profit.pricingTotal,
-          costTotal: profit.costTotal,
-          cost_total: profit.costTotal,
-          minimumSalePriceTotal: profit.minimumSalePriceTotal,
-          minimum_sale_price_total: profit.minimumSalePriceTotal,
-          requiresGrossProfitApproval: needsApproval,
-          requires_gross_profit_approval: needsApproval,
-          approvalType: needsApproval ? 'below_min_sale_price' : '',
-          approval_type: needsApproval ? 'below_min_sale_price' : ''
         });
       })
       .then((res) => {
         wx.hideLoading();
 
-        if (needsApproval) {
+        const resultData = res && res.result ? (res.result.data || {}) : (res?.data || res || {});
+        const pendingApproval = resultData.pendingApproval === true || resultData.status === 'pending_approval';
+        if (pendingApproval) {
           this.setData({
             'order.status': 'pending_approval',
             isArchived: false,
@@ -2974,7 +2941,7 @@ Page({
             archiveNeedsApproval: false
           });
           wx.showToast({
-            title: '低于最低销售价订单已提交审批',
+            title: resultData.message || '负毛利订单已提交审批',
             icon: 'none',
             duration: 2500
           });

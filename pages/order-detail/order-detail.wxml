@@ -605,12 +605,11 @@
         <text class="modal-close" bindtap="closeArchiveModal">×</text>
       </view>
       <view class="modal-body">
-        <text class="modal-text" wx:if="{{archiveNeedsApproval}}">请注意，该单实际应收 ¥{{actualAmount}} 低于所有商品最低销售价合计 ¥{{minimumSalePriceTotal}}，归档时将触发审批流程，需店长或经销商老板账号审批。确定提交审批吗？</text>
-        <text class="modal-text" wx:else>确定要归档此订单吗？归档后不可撤销，订单将变为只读状态。</text>
+        <text class="modal-text">确定提交归档吗？系统将先校验库存、PN/SN、定金和权益；如最终毛利为负，将转入审批，审批通过后自动归档。</text>
       </view>
       <view class="modal-footer">
         <button class="btn btn-secondary" type="default" bindtap="closeArchiveModal">取消</button>
-        <button class="btn btn-primary" type="primary" bindtap="confirmArchive">{{archiveNeedsApproval ? '提交审批' : '确认归档'}}</button>
+        <button class="btn btn-primary" type="primary" bindtap="confirmArchive">确认归档</button>
       </view>
     </view>
   </view>

@@ -1,7 +1,6 @@
 const http = require('./request.js');
 const { normalizePnCode, readExternalPnCode } = require('./pn.js');
 const { normalizeOrderItem, normalizeMoney, normalizeQuantity, normalizeSnCode, isEmptyOrderItem } = require('./model.js');
-const { calculateOrderProfit } = require('./order-profit.js');
 
 function toQuery(params) {
   const parts = [];
@@ -1354,19 +1353,10 @@ const api = {
       if (data.status === '已归档') {
         const rawArchiveItems = data.items || data.goods || [];
         const archiveItems = mapArchiveItems(rawArchiveItems);
-        const profit = calculateOrderProfit({
-          actualAmount: data.actualAmount || data.actualPayment || data.actual_payment || data.actual_amount,
-          totalAmount: data.totalAmount || data.total_amount,
-          discount: data.discount || data.discountAmount || data.discount_amount,
-          receivableBeforeSubsidy: data.receivableBeforeSubsidy || data.receivable_before_subsidy
-        }, rawArchiveItems);
-        // 审批条件只能以当前订单明细重新测算为准，不能被历史的
-        // requiresGrossProfitApproval=true 强制污染，否则已高于最低销售价的订单也会继续进入审批。
-        const needsApproval = profit.isBelowMinimum;
-        const targetStatus = needsApproval ? 'pending_approval' : '已归档';
         const archivePayload = {
-          order_status: targetStatus,
-          status: targetStatus,
+          // 审批判断由 ANY-ERP 根据归档前最终毛利统一执行。
+          order_status: '已归档',
+          status: '已归档',
           order_no: data.orderNo || data.order_no || '',
           deposit_action: 'redeem',
           deposit_items: data.depositItems || data.deposit_items || data.deposits || [],
@@ -1374,19 +1364,7 @@ const api = {
           goods: archiveItems,
           invoice_status: data.invoiceStatus || data.invoice_status || '',
           invoice_info: data.invoiceInfo || data.invoice_info || '',
-          invoice_amount: data.invoiceAmount || data.invoice_amount || '',
-          gross_profit: profit.grossProfit,
-          grossProfit: profit.grossProfit,
-          pricing_total: profit.pricingTotal,
-          pricingTotal: profit.pricingTotal,
-          cost_total: profit.costTotal,
-          costTotal: profit.costTotal,
-          minimum_sale_price_total: profit.minimumSalePriceTotal,
-          minimumSalePriceTotal: profit.minimumSalePriceTotal,
-          requires_gross_profit_approval: needsApproval,
-          requiresGrossProfitApproval: needsApproval,
-          approval_type: needsApproval ? 'below_min_sale_price' : '',
-          approvalType: needsApproval ? 'below_min_sale_price' : ''
+          invoice_amount: data.invoiceAmount || data.invoice_amount || ''
         };
         console.log('归档提交商品字段:', archivePayload.items.map(item => ({
           itemId: item.itemId,
@@ -1400,15 +1378,10 @@ const api = {
           ? api.order.archive(orderId, archivePayload)
           : api.order.archiveByOrderNo(data.orderNo, archivePayload);
         return archiveRequest
-          .then(() => ({ result: {
+          .then(response => ({ result: {
             code: 0,
-            data: {
-              status: targetStatus,
-              grossProfit: profit.grossProfit,
-              pricingTotal: profit.pricingTotal,
-              minimumSalePriceTotal: profit.minimumSalePriceTotal,
-              requiresGrossProfitApproval: needsApproval
-            }
+            data: response && response.data !== undefined ? response.data : response,
+            message: response?.message || ''
           } }))
           .catch(err => {
             console.error('归档接口返回错误:', {
@@ -2590,6 +2563,9 @@ const api = {
     },
     dashboardOverview(params = {}) {
       return http.request('/report/dashboard/overview' + toQuery(params));
+    },
+    financeOverview(params = {}) {
+      return http.request('/report/finance-overview' + toQuery(params));
     },
     dailySummary(params = {}) {
       const orderQuery = api.order.queryList(Object.assign({ page: 1, pageSize: 500 }, params));

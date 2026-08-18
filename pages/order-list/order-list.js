@@ -2394,14 +2394,10 @@ Page({
   },
 
   confirmArchiveOrder: function (orderNo, goods, order) {
-    const profit = calculateOrderProfit(order, goods);
-    const needsApproval = profit.isBelowMinimum;
     wx.showModal({
       title: '归档订单',
-      content: needsApproval
-        ? `请注意，该单国补、教育优惠前应收 ¥${profit.receivable.toFixed(2)} 低于所有商品最低销售价合计 ¥${profit.minimumSalePriceTotal.toFixed(2)}，归档时将触发审核流程，需店长或经销商老板账号审批。确定提交审批吗？`
-        : `确定要归档订单 ${orderNo} 吗？`,
-      confirmText: needsApproval ? '提交审批' : '确定归档',
+      content: `确定要归档订单 ${orderNo} 吗？系统将先校验库存、PN/SN、定金和权益；如最终毛利为负，将转入审批，审批通过后自动归档。`,
+      confirmText: '确定归档',
       cancelText: '取消',
       success: (modalRes) => {
         if (modalRes.confirm) {
@@ -2423,11 +2419,11 @@ Page({
               data: {
                 orderNo: orderNo,
                 orderId: order.orderId || order._id || order.order_id || '',
-                status: needsApproval ? 'pending_approval' : '已归档',
-                snStatusAction: needsApproval ? '' : 'sell',
-                targetSnStatus: needsApproval ? '' : '已销售',
-                inventoryStatusAction: needsApproval ? '' : 'sell',
-                targetInventoryStatus: needsApproval ? '' : '已销售',
+                status: '已归档',
+                snStatusAction: '',
+                targetSnStatus: '',
+                inventoryStatusAction: '',
+                targetInventoryStatus: '',
                 items: goods,
                 goods: goods,
                 depositItems: order.depositItems || order.deposit_items || order.deposits || [],
@@ -2441,18 +2437,6 @@ Page({
                 actualAmount: order.actualAmount || order.actualPayment || order.actual_payment || order.actual_amount,
                 totalAmount: order.totalAmount || order.total_amount,
                 discount: order.discount || order.discountAmount || order.discount_amount,
-                receivableBeforeSubsidy: profit.receivable,
-                grossProfit: profit.grossProfit,
-                pricingTotal: profit.pricingTotal,
-                pricing_total: profit.pricingTotal,
-                costTotal: profit.costTotal,
-                cost_total: profit.costTotal,
-                minimumSalePriceTotal: profit.minimumSalePriceTotal,
-                minimum_sale_price_total: profit.minimumSalePriceTotal,
-                requiresGrossProfitApproval: needsApproval,
-                requires_gross_profit_approval: needsApproval,
-                approvalType: needsApproval ? 'below_min_sale_price' : '',
-                approval_type: needsApproval ? 'below_min_sale_price' : '',
                 userRole: queryUser.userRole,
                 userName: queryUser.userName,
                 storeId: archiveStoreId
@@ -2461,12 +2445,14 @@ Page({
           }).then(res => {
             wx.hideLoading();
             if (res.result && res.result.code === 0) {
+              const responseData = res.result.data || {};
+              const pendingApproval = responseData.pendingApproval === true || responseData.status === 'pending_approval';
               wx.showToast({
-                title: needsApproval ? '已提交审批' : '订单归档成功',
-                icon: needsApproval ? 'none' : 'success'
+                title: pendingApproval ? '负毛利订单已提交审批' : '订单归档成功',
+                icon: pendingApproval ? 'none' : 'success'
               });
               // 只更新当前订单状态，不刷新整个列表
-              const nextStatus = res.result.data && res.result.data.status || '已归档';
+              const nextStatus = responseData.status || '已归档';
               this.updateOrderStatusInList(orderNo, nextStatus);
             } else {
               console.error('订单归档失败:', res.result);
