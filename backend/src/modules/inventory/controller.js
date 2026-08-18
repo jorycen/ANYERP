@@ -20,6 +20,7 @@ const { sendExcel } = require('../../utils/excelExport');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { assertTransferStoreScope, isTransferScope, transferRegionKeys } = require('../../utils/transferScope');
 const { canViewSnTraceReference, isDealerTraceAccount } = require('../../utils/snTracePermission');
+const { resolveAllReadableStoreIds } = require('../../utils/storePermissions');
 const { assertSingleSnProductPn } = require('../../utils/productPn');
 const { ensureProductPnMaster } = require('../../utils/productPnMaster');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
@@ -448,9 +449,11 @@ async function getSnInventoryList(ctx) {
   } = ctx.query;
   const user = ctx.state.user || {};
   const exportMode = Boolean(ctx.state.inventoryExportMode);
-  const allowedStoreIds = Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds : [];
+  const allowedStoreIds = await resolveAllReadableStoreIds(user);
 
-  if (storeId) assertStoreVisible(ctx, storeId);
+  if (storeId && !allowedStoreIds.includes('*') && !allowedStoreIds.map(String).includes(String(storeId))) {
+    ctx.throw(403, '无权访问该门店库存数据');
+  }
   if (!storeId && !allowedStoreIds.includes('*') && allowedStoreIds.length === 0) {
     ctx.body = formatPaginatedResult([], { page, pageSize, count: 0 });
     return;
@@ -1266,24 +1269,18 @@ async function getList(ctx) {
     // 调拨查询由请求链路的 scope=transfer 标记放行，允许读取被调拨门店的库存。
     // 实际出库仍在 confirmTransferOutPartial 中校验调拨单和调出门店，不能据此绕过写入权限。
     const whereStore = {};
-    const distributorScoped = isDistributorAccount(user) && !getUserRoles(user).includes('boss');
-    if (distributorScoped) {
-      whereStore.distributor_id = user.distributorId || '__NO_DISTRIBUTOR__';
-      const storeIds = Array.isArray(user.accessibleStoreIds)
-        ? user.accessibleStoreIds.filter(id => id && id !== '*')
-        : [];
-      whereStore.store_id = storeIds.length > 0 ? storeIds : '__NO_STORE__';
-    } else if (!user.accessibleStoreIds.includes('*')) {
-      whereStore.store_id = user.accessibleStoreIds;
+    const readableStoreIds = transferScope
+      ? (Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds : [])
+      : await resolveAllReadableStoreIds(user);
+    if (!readableStoreIds.includes('*')) {
+      whereStore.store_id = readableStoreIds.length ? readableStoreIds : '__NO_STORE__';
     }
     if (transferScope && storeId) {
       await assertTransferStoreScope(ctx, storeId);
       whereStore.store_id = storeId;
     } else if (storeId) {
-      const allowedStoreIds = Array.isArray(user.accessibleStoreIds)
-        ? user.accessibleStoreIds.map(String)
-        : [];
-      if (distributorScoped && !allowedStoreIds.includes(String(storeId))) {
+      const allowedStoreIds = readableStoreIds.map(String);
+      if (!readableStoreIds.includes('*') && !allowedStoreIds.includes(String(storeId))) {
         whereStore.store_id = '__NO_STORE__';
       } else {
         whereStore.store_id = storeId;
@@ -1584,15 +1581,15 @@ async function getSnList(ctx) {
       await assertTransferStoreScope(ctx, storeId);
       where.store_id = storeId;
     } else if (storeId) {
-      const allowedStoreIds = Array.isArray(user.accessibleStoreIds)
-        ? user.accessibleStoreIds.map(String)
-        : [];
-      where.store_id = isDistributorAccount(user) && !getUserRoles(user).includes('boss') && !allowedStoreIds.includes(String(storeId))
+      const readableStoreIds = await resolveAllReadableStoreIds(user);
+      const allowedStoreIds = readableStoreIds.map(String);
+      where.store_id = !readableStoreIds.includes('*') && !allowedStoreIds.includes(String(storeId))
         ? '__NO_STORE__'
         : storeId;
     } else {
+      const readableStoreIds = await resolveAllReadableStoreIds(user);
       const whereStore = {};
-      if (!user.accessibleStoreIds.includes('*')) whereStore.store_id = user.accessibleStoreIds;
+      if (!readableStoreIds.includes('*')) whereStore.store_id = readableStoreIds;
       const stores = await Store.findAll({ where: whereStore });
       const storeIds = stores.map(s => s.store_id);
       where.store_id = { [Op.in]: storeIds };

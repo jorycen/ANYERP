@@ -456,7 +456,7 @@ const onTabChange = (tabName) => {
 
 const loadStores = async () => {
   try {
-    const res = await api.getStoreList()
+    const res = await api.getReadableStoreList()
     if (res.code === 0) stores.value = (res.data || []).filter(s => s.store_id != null)
   } catch (err) { console.error(err) }
 }

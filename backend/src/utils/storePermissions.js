@@ -26,6 +26,53 @@ function isRegionScopedAccount(roleCodes = []) {
   return !isStoreScopedAccount(roleCodes);
 }
 
+function isStoreManagerAccount(roleCodes = []) {
+  const roles = normalizeRoleCodes(roleCodes);
+  return roles.includes('manager') || roles.includes('store_manager');
+}
+
+/**
+ * 读取本账号所属经销商下全部有效门店。
+ * 该范围只用于明确的只读查询，不改变账号原有门店写入权限。
+ */
+async function resolveAllReadableStoreIds(user = {}) {
+  const roles = normalizeRoleCodes(user.roles || user.roleCode || []);
+  if (roles.includes('boss') || (user.accessibleStoreIds || []).includes('*')) return ['*'];
+
+  let distributorId = String(user.distributorId || '').trim();
+  const assignedStoreIds = uniqueIds(user.accessibleStoreIds || []);
+
+  // 历史账号可能没有在 token 中带出经销商，先从已有门店权限推导，推导不唯一时保持原范围。
+  if (!distributorId && assignedStoreIds.length > 0) {
+    const assignedStores = await Store.findAll({
+      where: { store_id: { [Op.in]: assignedStoreIds }, is_deleted: 0, status: 1 },
+      attributes: ['distributor_id'],
+      raw: true
+    });
+    const distributorIds = uniqueIds(assignedStores.map(store => store.distributor_id));
+    if (distributorIds.length === 1) distributorId = distributorIds[0];
+  }
+
+  if (!distributorId) return assignedStoreIds;
+
+  const stores = await Store.findAll({
+    where: { distributor_id: distributorId, is_deleted: 0, status: 1 },
+    attributes: ['store_id'],
+    raw: true
+  });
+  return uniqueIds(stores.map(store => store.store_id));
+}
+
+/**
+ * 经营报表范围：店长可查看所属经销商全部有效门店，其他账号沿用原有门店范围。
+ */
+async function resolveReportStoreIds(user = {}) {
+  const roles = normalizeRoleCodes(user.roles || user.roleCode || []);
+  if (roles.includes('boss') || (user.accessibleStoreIds || []).includes('*')) return ['*'];
+  if (isStoreManagerAccount(roles)) return resolveAllReadableStoreIds(user);
+  return uniqueIds(user.accessibleStoreIds || []);
+}
+
 /**
  * 读取账号直接配置的区域权限。
  * 区域权限用于区域范围；精确门店权限用于最终可操作门店范围。
@@ -130,6 +177,9 @@ module.exports = {
   resolveAccessibleStoreIds,
   resolvePrimaryStoreId,
   resolveConfiguredRegions,
+  resolveAllReadableStoreIds,
+  resolveReportStoreIds,
+  isStoreManagerAccount,
   isRegionScopedAccount,
   isStoreScopedAccount
 };

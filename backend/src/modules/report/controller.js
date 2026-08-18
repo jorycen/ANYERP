@@ -16,6 +16,7 @@ const {
 const { Op } = require('sequelize');
 const { loadLegacyCostMaps, calculateItemBaseProfit } = require('./profitCalculation');
 const { DashboardService } = require('./dashboardService');
+const { resolveReportStoreIds } = require('../../utils/storePermissions');
 const { FORMULA_VERSION: GROSS_PROFIT_FORMULA_VERSION } = require('../sales/grossProfit');
 
 const dashboardService = new DashboardService();
@@ -52,12 +53,19 @@ function hasRole(user, role) {
 }
 
 async function getEmployeeReportStoreIds(user, requestedStoreId) {
-  const where = {};
-  if (!user.accessibleStoreIds?.includes('*')) {
-    where.store_id = { [Op.in]: user.accessibleStoreIds || [] };
+  return getReportStoreIds(user, requestedStoreId);
+}
+
+async function getReportStoreIds(user, requestedStoreId) {
+  const readableStoreIds = await resolveReportStoreIds(user);
+  const where = { is_deleted: 0, status: 1 };
+  if (!readableStoreIds.includes('*')) {
+    where.store_id = readableStoreIds.length ? { [Op.in]: readableStoreIds } : '__NO_STORE__';
   }
-  if (requestedStoreId && !user.accessibleStoreIds?.includes('*') && !(user.accessibleStoreIds || []).map(String).includes(String(requestedStoreId))) return [];
-  if (requestedStoreId) where.store_id = requestedStoreId;
+  if (requestedStoreId) {
+    if (!readableStoreIds.includes('*') && !readableStoreIds.map(String).includes(String(requestedStoreId))) return [];
+    where.store_id = requestedStoreId;
+  }
   const stores = await Store.findAll({ where, attributes: ['store_id'], raw: true });
   return stores.map(store => store.store_id);
 }
@@ -70,15 +78,12 @@ async function getSalesReport(ctx) {
   const user = ctx.state.user;
 
   const whereStore = {};
-  if (!user.accessibleStoreIds.includes('*')) {
-    whereStore.store_id = user.accessibleStoreIds;
+  const reportStoreIds = await resolveReportStoreIds(user);
+  if (!reportStoreIds.includes('*')) whereStore.store_id = reportStoreIds;
+  if (storeId && !reportStoreIds.includes('*') && !reportStoreIds.map(String).includes(String(storeId))) {
+    ctx.throw(403, '无权访问该门店销售报表');
   }
-  if (storeId) {
-    if (!user.accessibleStoreIds.includes('*') && !(user.accessibleStoreIds || []).map(String).includes(String(storeId))) {
-      ctx.throw(403, '无权访问该门店销售报表');
-    }
-    whereStore.store_id = storeId;
-  }
+  if (storeId) whereStore.store_id = storeId;
   if (regionId) whereStore.region_id = regionId;
 
   const stores = await Store.findAll({ where: whereStore });
@@ -250,15 +255,12 @@ async function getInventoryReport(ctx) {
   const user = ctx.state.user;
 
   const whereStore = {};
-  if (!user.accessibleStoreIds.includes('*')) {
-    whereStore.store_id = user.accessibleStoreIds;
+  const reportStoreIds = await resolveReportStoreIds(user);
+  if (!reportStoreIds.includes('*')) whereStore.store_id = reportStoreIds;
+  if (storeId && !reportStoreIds.includes('*') && !reportStoreIds.map(String).includes(String(storeId))) {
+    ctx.throw(403, '无权访问该门店库存报表');
   }
-  if (storeId) {
-    if (!user.accessibleStoreIds.includes('*') && !(user.accessibleStoreIds || []).map(String).includes(String(storeId))) {
-      ctx.throw(403, '无权访问该门店库存报表');
-    }
-    whereStore.store_id = storeId;
-  }
+  if (storeId) whereStore.store_id = storeId;
   if (regionId) whereStore.region_id = regionId;
 
   const stores = await Store.findAll({ where: whereStore });

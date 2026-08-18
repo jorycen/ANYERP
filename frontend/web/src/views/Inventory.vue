@@ -2172,7 +2172,7 @@ const onTabChange = (tabName) => {
 const loadStores = async () => {
   if (storesLoaded.value) return
   try {
-    const res = await api.getAllStores()
+    const res = await api.getReadableStoreList()
     if (res && res.code === 0 && Array.isArray(res.data)) {
       stores.value = res.data
       storesLoaded.value = true

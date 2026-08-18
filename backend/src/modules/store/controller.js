@@ -7,6 +7,7 @@ const { paginate, formatPaginatedResult } = require('../../utils');
 const { generateId } = require('../../utils');
 const { ensureStandardLocationsForStores } = require('../../utils/standardLocations');
 const { isBoss, isDealerTraceAccount } = require('../../utils/snTracePermission');
+const { resolveAllReadableStoreIds } = require('../../utils/storePermissions');
 
 function canManageStoreManager(user) {
   return (user?.roles || []).some(role => ['admin', 'boss'].includes(role));
@@ -84,6 +85,23 @@ async function getAllStores(ctx) {
     order: [['name', 'ASC']]
   });
 
+  ctx.body = { code: 0, data: rows };
+}
+
+/**
+ * 库存查询和经营报表使用的只读门店选项。
+ * 普通账号返回本经销商全部有效门店；BOSS返回系统全部有效门店。
+ */
+async function getReadableStoreList(ctx) {
+  const storeIds = await resolveAllReadableStoreIds(ctx.state.user || {});
+  const where = { is_deleted: 0, status: 1 };
+  if (!storeIds.includes('*')) where.store_id = storeIds.length ? storeIds : '__NO_STORE__';
+
+  const rows = await Store.findAll({
+    where,
+    attributes: ['store_id', 'name', 'distributor_id', 'region_id'],
+    order: [['name', 'ASC']]
+  });
   ctx.body = { code: 0, data: rows };
 }
 
@@ -335,4 +353,4 @@ async function deleteStore(ctx) {
   ctx.body = { code: 0, message: '删除成功' };
 }
 
-module.exports = { getStoreList, getAllStores, getTransferStores, createStore, updateStore, deleteStore, getRegionList };
+module.exports = { getStoreList, getAllStores, getReadableStoreList, getTransferStores, createStore, updateStore, deleteStore, getRegionList };

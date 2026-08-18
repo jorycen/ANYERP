@@ -73,7 +73,8 @@ async function authMiddleware(ctx, next) {
 }
 
 /**
- * 拦截显式传入的未授权门店。列表接口仍需在查询层按 accessibleStoreIds 过滤。
+ * 拦截显式传入的未授权门店。普通写入接口仍按 accessibleStoreIds 过滤；
+ * 库存和经营报表只读接口由对应控制器执行更细的数据范围规则。
  */
 async function storeAccessMiddleware(ctx, next) {
   const user = ctx.state.user;

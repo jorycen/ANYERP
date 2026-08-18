@@ -514,6 +514,7 @@ export default {
   // Store
   getStoreList: (params) => api.get('/store/list', { params }),
   getAllStores: () => api.get('/store/all'),
+  getReadableStoreList: () => api.get('/store/readable'),
   getTransferStores: () => api.get('/store/transfer-options'),
   createStore: (data) => api.post('/store/create', data),
   updateStore: (id, data) => api.put(`/store/update/${id}`, data),
