@@ -200,16 +200,30 @@
               </el-table-column>
               <el-table-column label="SN码" width="200">
                 <template #default="{ row, $index }">
-                  <el-input
+                  <el-select
                     v-if="row.needSn"
                     v-model="row.snCode"
-                    placeholder="请输入SN码"
+                    placeholder="选择SN"
                     size="small"
                     clearable
-                    :disabled="row.snLoading"
+                    filterable
+                    :loading="row.snLoading"
+                    style="width: 100%"
                     @change="(val) => onSnChange(val, $index)"
-                    @blur="() => onSnChange(row.snCode, $index)"
-                  />
+                  >
+                    <el-option
+                      v-for="sn in (row.snList || [])"
+                      :key="sn.sn_id || sn.sn_code"
+                      :label="sn.sn_code"
+                      :value="sn.sn_code"
+                    />
+                    <el-option
+                      v-if="row.snCode && !(row.snList || []).some(sn => sn.sn_code === row.snCode)"
+                      :key="`current-${row.snCode}`"
+                      :label="row.snCode"
+                      :value="row.snCode"
+                    />
+                  </el-select>
                   <span v-else class="muted">无需SN</span>
                 </template>
               </el-table-column>

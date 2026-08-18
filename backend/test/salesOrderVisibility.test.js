@@ -117,15 +117,51 @@ test('订单导出按销售人和辅助销售人顺序展示名称', () => {
       create_user: '销售人',
       total_amount: 100,
       auxiliary_sales_list: [
-        { name: '辅助销售人1' },
-        { name: '辅助销售人2' }
+        { name: '辅助销售人1', allocation_type: 'amount', amount: 30 },
+        { name: '辅助销售人2', allocation_type: 'amount', amount: 20 }
       ],
       OrderItems: [{ product_name: '商品A', subtotal: 100, quantity: 1 }]
     })
   }]);
 
   assert.equal(rows[0].辅助销售人比例分配, '销售人/辅助销售人1/辅助销售人2');
-  assert.equal(rows[0].辅助销售人金额分配, '销售人:33.33；辅助销售人1:33.33；辅助销售人2:33.34');
+  assert.equal(rows[0].辅助销售人金额分配, '辅助销售人1:30；辅助销售人2:20');
+});
+
+test('订单导出没有辅助销售金额明细时显示0，不按订单总额平均拆分', () => {
+  const rows = _test.buildOrderExportRows([{
+    toJSON: () => ({
+      create_user: '销售人',
+      total_amount: 100,
+      auxiliary_sales_list: [{ name: '辅助销售人1' }],
+      OrderItems: [{ product_name: '商品A', subtotal: 100, quantity: 1 }]
+    })
+  }]);
+
+  assert.equal(rows[0].辅助销售人金额分配, 0);
+});
+
+test('销售退货导出形成独立退货单并以负数展示数量和金额', () => {
+  const rows = _test.buildSalesReturnSettlementExportRows([{
+    toJSON: () => ({
+      return_no: 'RET-001',
+      order_no: 'ORD-001',
+      user_receivable_amount: -100,
+      customer_received_amount: -85,
+      items: [{
+        product_name: '商品A',
+        product_id: 'P-001',
+        quantity: -1,
+        user_receivable_amount: -100,
+        customer_received_amount: -85
+      }]
+    })
+  }]);
+
+  assert.equal(rows[0].订单编号, 'RET-001');
+  assert.equal(rows[0].数量, -1);
+  assert.equal(rows[0].商品应收金额, -100);
+  assert.match(rows[0].备注, /ORD-001/);
 });
 
 test('订单导出按主商品分摊国补，配件国补字段留空并按商品行分摊收款', () => {

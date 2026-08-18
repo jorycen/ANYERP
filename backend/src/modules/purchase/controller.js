@@ -391,7 +391,7 @@ function buildAdjustmentRows(request, inbounds, stores) {
  * 采购申请列表
  */
 async function queryRequestList(ctx, { exportMode = false } = {}) {
-  const { status, scope, operatorStaffId, submitter, keyword, supplierId, page = 1, pageSize = 20 } = ctx.query;
+  const { status, scope, operatorStaffId, submitter, requestNo, keyword, supplierId, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
 
   const where = { status: { [Op.ne]: 'deleted' } };
@@ -423,6 +423,7 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
   }
   if (operatorStaffId) where.operator_staff_id = operatorStaffId;
   if (submitter) where.apply_user = { [Op.like]: `%${String(submitter).trim()}%` };
+  if (requestNo && String(requestNo).trim()) where.request_no = { [Op.like]: `%${String(requestNo).trim()}%` };
   if (supplierId) where.supplier_id = supplierId;
 
   if (keyword && String(keyword).trim()) {
@@ -467,7 +468,12 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
       },
       { model: Supplier },
       { model: PurchaseRequestItem, as: 'items' },
-      { model: Inbound, attributes: ['inbound_id', 'status'], separate: true }
+      {
+        model: Inbound,
+        attributes: ['inbound_id', 'inbound_no', 'store_id', 'source_no', 'status'],
+        separate: true,
+        include: [{ model: Store, attributes: ['store_id', 'name'], required: false }]
+      }
     ],
     order: buildPendingFirstOrder(sequelize, {
       statusColumn: 'PurchaseRequest.status',
@@ -524,6 +530,14 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
     result.inbound_status = inboundRows.some(item => item.status === 'completed')
       ? 'completed'
       : (inboundRows[0]?.status || '');
+    result.pending_inbounds = inboundRows
+      .filter(item => item.status === 'pending')
+      .map(item => ({
+        inbound_id: item.inbound_id,
+        inbound_no: item.inbound_no || '',
+        store_id: item.store_id || '',
+        store_name: item.Store?.name || ''
+      }));
     result.has_completed_inbound = inboundRows.some(item => item.status === 'completed');
     result.can_revoke = ['pending', 'approved', 'purchased'].includes(result.status) && !result.has_completed_inbound;
     

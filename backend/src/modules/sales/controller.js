@@ -627,21 +627,49 @@ function exportAuxiliaryNames(value, primaryName) {
 function exportAuxiliaryAmounts(value, primaryName, totalAmount) {
   const auxiliaryItems = parseExportJson(value, [])
     .filter(item => item && typeof item === 'object');
-  if (!auxiliaryItems.length) return '';
+  if (!auxiliaryItems.length) return 0;
 
   const participants = exportAuxiliaryParticipants(auxiliaryItems, primaryName);
-  if (!participants.length) return '';
+  if (!participants.length) return 0;
 
-  const total = money(totalAmount || 0);
-  const baseShare = money(total / participants.length);
-  let allocated = 0;
-  return participants.map((name, index) => {
-    const amount = index === participants.length - 1
-      ? money(total - allocated)
-      : baseShare;
-    allocated += amount;
-    return `${name}:${amount}`;
-  }).join('；');
+  const getAmount = item => {
+    const source = item?.amount_distribution && typeof item.amount_distribution === 'object'
+      ? { ...item, ...item.amount_distribution }
+      : item || {};
+    const method = String(firstNonEmpty(source, [
+      'allocationType', 'allocation_type', 'distributionType', 'distribution_type',
+      'splitType', 'split_type', 'method', 'type', 'ratio'
+    ], '')).trim().toLowerCase();
+    if (['ratio', 'percentage', 'percent', 'proportion', '比例', '比例分配'].includes(method)) return null;
+
+    const amountKeys = [
+      'amount', 'allocatedAmount', 'allocated_amount', 'allocationAmount', 'allocation_amount',
+      'salesAmount', 'sales_amount', 'performanceAmount', 'performance_amount',
+      'splitAmount', 'split_amount', 'profitAmount', 'profit_amount'
+    ];
+    const key = amountKeys.find(candidate => Object.prototype.hasOwnProperty.call(source, candidate));
+    if (!key) return null;
+    const amount = Number(source[key]);
+    return Number.isFinite(amount) ? money(amount) : 0;
+  };
+
+  const amountByName = new Map();
+  let hasAmountDetail = false;
+  auxiliaryItems.forEach(item => {
+    const name = String(item.name || item.staffName || item.staff_name || item.selected || '').trim();
+    if (!name) return;
+    const amount = getAmount(item);
+    if (amount === null) return;
+    hasAmountDetail = true;
+    amountByName.set(name, amount);
+  });
+  if (!hasAmountDetail) return 0;
+
+  const detail = participants
+    .filter(name => amountByName.has(name) && amountByName.get(name) > 0)
+    .map(name => `${name}:${amountByName.get(name)}`)
+    .join('；');
+  return detail || 0;
 }
 
 function getOrderExportArchiveStatus(status) {
@@ -834,8 +862,9 @@ function buildSalesReturnSettlementExportRows(settlements) {
       const policySubsidy = Number(item.policy_subsidy_receivable_amount ?? data.policy_subsidy_receivable_amount ?? 0);
       const educationSubsidy = Number(item.education_subsidy_amount ?? data.education_subsidy_amount ?? 0);
       const row = Object.fromEntries(ORDER_EXPORT_HEADERS.map(header => [header, '']));
+      const quantity = Number(item.quantity || 0);
       Object.assign(row, {
-        订单编号: data.order_no || data.return_no || '',
+        订单编号: data.return_no || data.settlement_no || '',
         下单时间: data.create_time || '',
         提交人: data.create_user || '',
         门店ID: data.store_id || '',
@@ -852,12 +881,12 @@ function buildSalesReturnSettlementExportRows(settlements) {
         开票金额: data.red_invoice_status === 'not_required' ? 0 : userReceivable,
         商品名称: item.product_name || '销售退单负向结算',
         商品编码: item.product_id || '',
-        数量: Number(item.quantity || 0),
+        数量: -Math.abs(quantity),
         小计: userReceivable,
         商品应收金额: userReceivable,
         商品收款金额: customerReceived,
-        退货商品: `${item.product_name || '销售退单'}${item.quantity ? ` x${item.quantity}` : ''}`,
-        备注: `负向销售结算 ${data.settlement_no || data.return_no || ''}`,
+        退货商品: `${item.product_name || '销售退货'}${quantity ? ` x-${Math.abs(quantity)}` : ''}`,
+        备注: `销售退货单 ${data.return_no || ''}，原销售订单 ${data.order_no || ''}`,
         创建日期: data.create_time || '',
         订单状态: '销售退单负向结算',
         操作人: data.finance_confirm_user || data.create_user || ''
@@ -1491,6 +1520,7 @@ function normalizeAuxiliarySalesList(value) {
     if (key === 'name:' || seen.has(key)) return result;
     seen.add(key);
     result.push({
+      ...item,
       staffId: staffId === '' ? null : staffId,
       name: String(name || '').trim() || String(item.selected || '').trim(),
       selected: String(item.selected || name || '').trim()
@@ -4244,19 +4274,130 @@ async function releaseReservedInventoryForOrder(order, transaction = null) {
 }
 
 async function assertAvailableInventory(item, product, storeId, quantity, actionText, transaction = null) {
-  const inv = await Inventory.findOne({
-    where: { product_id: item.product_id, store_id: storeId },
-    transaction
+  const inventoryPlan = await buildSalesInventoryPlan(item.product_id, storeId, quantity, transaction, {
+    includePending: false
   });
-  const normalStock = inv ? Math.max(
-    Number(inv.normal_qty || 0),
-    Number(inv.regular_qty || 0) + Number(inv.subsidy_qty || 0) + Number(inv.second_qty || 0)
-  ) : 0;
-  const totalStock = inv ? normalStock + Number(inv.display_qty || 0) : 0;
+  const totalStock = inventoryPlan.totalStock;
   if (totalStock < quantity) {
     throw archiveError(`商品 ${item.product_name || product.name} 库存不足(可用:${totalStock}, 需要:${quantity})，不能${actionText}`);
   }
-  return inv;
+  return inventoryPlan.rows[0] || null;
+}
+
+function inventoryQueryOptions(transaction) {
+  const options = { transaction };
+  if (transaction?.LOCK?.UPDATE) options.lock = transaction.LOCK.UPDATE;
+  return options;
+}
+
+function getSalesInventoryQuantities(row) {
+  const detailTotal = Number(row.regular_qty || 0) +
+    Number(row.subsidy_qty || 0) +
+    Number(row.second_qty || 0);
+  return {
+    normal: Math.max(Number(row.normal_qty || 0), detailTotal),
+    display: Number(row.display_qty || 0),
+    pending: Number(row.pending_qty || 0)
+  };
+}
+
+function sortSalesInventoryRows(rows) {
+  return [...rows].sort((left, right) => {
+    const locationCompare = String(left.location_id || '').localeCompare(String(right.location_id || ''));
+    if (locationCompare !== 0) return locationCompare;
+    return String(left.inventory_id || '').localeCompare(String(right.inventory_id || ''));
+  });
+}
+
+async function findSalesInventoryRows(productId, storeId, transaction = null) {
+  return Inventory.findAll({
+    where: { product_id: productId, store_id: storeId },
+    ...inventoryQueryOptions(transaction)
+  });
+}
+
+function buildSalesInventoryPlanFromRows(rows, quantity, { includePending = true } = {}) {
+  const orderedRows = sortSalesInventoryRows(rows || []);
+  const quantities = new Map(orderedRows.map(row => [row, getSalesInventoryQuantities(row)]));
+  const kinds = includePending ? ['pending', 'normal', 'display'] : ['normal', 'display'];
+  const allocations = [];
+  let remaining = Math.max(0, Number(quantity) || 0);
+
+  for (const kind of kinds) {
+    for (const row of orderedRows) {
+      if (remaining <= 0) break;
+      const available = Math.max(0, Number(quantities.get(row)?.[kind] || 0));
+      if (available <= 0) continue;
+      const allocated = Math.min(available, remaining);
+      allocations.push({ row, kind, quantity: allocated });
+      remaining -= allocated;
+    }
+  }
+
+  const totalStock = orderedRows.reduce((sum, row) => {
+    const stock = quantities.get(row);
+    return sum + stock.normal + stock.display + (includePending ? stock.pending : 0);
+  }, 0);
+  return { rows: orderedRows, allocations, totalStock, remaining };
+}
+
+async function buildSalesInventoryPlan(productId, storeId, quantity, transaction = null, options = {}) {
+  const rows = await findSalesInventoryRows(productId, storeId, transaction);
+  return buildSalesInventoryPlanFromRows(rows, quantity, options);
+}
+
+async function applySalesInventoryAllocations(allocations, transaction = null) {
+  const states = new Map();
+  for (const allocation of allocations || []) {
+    const row = allocation.row;
+    if (!states.has(row)) {
+      states.set(row, {
+        row,
+        normal_qty: Number(row.normal_qty || 0),
+        regular_qty: Number(row.regular_qty || 0),
+        subsidy_qty: Number(row.subsidy_qty || 0),
+        second_qty: Number(row.second_qty || 0),
+        display_qty: Number(row.display_qty || 0),
+        pending_qty: Number(row.pending_qty || 0)
+      });
+    }
+
+    const state = states.get(row);
+    const quantity = Math.max(0, Number(allocation.quantity) || 0);
+    if (allocation.kind === 'pending') {
+      state.pending_qty = Math.max(0, state.pending_qty - quantity);
+      continue;
+    }
+
+    if (allocation.kind === 'display') {
+      state.display_qty = Math.max(0, state.display_qty - quantity);
+      continue;
+    }
+
+    const detailColumns = ['regular_qty', 'subsidy_qty', 'second_qty'];
+    const detailTotal = detailColumns.reduce((sum, column) => sum + state[column], 0);
+    const currentNormal = Math.max(state.normal_qty, detailTotal);
+    const deductFromNormal = Math.min(currentNormal, quantity);
+    state.normal_qty = currentNormal - deductFromNormal;
+    let detailRemaining = deductFromNormal;
+    for (const column of detailColumns) {
+      if (detailRemaining <= 0) break;
+      const deduct = Math.min(state[column], detailRemaining);
+      state[column] -= deduct;
+      detailRemaining -= deduct;
+    }
+  }
+
+  for (const state of states.values()) {
+    await state.row.update({
+      normal_qty: state.normal_qty,
+      regular_qty: state.regular_qty,
+      subsidy_qty: state.subsidy_qty,
+      second_qty: state.second_qty,
+      display_qty: state.display_qty,
+      pending_qty: state.pending_qty
+    }, { transaction });
+  }
 }
 
 async function validateAndDeductInventoryForArchive(order, transaction = null, { deduct = true } = {}) {
@@ -4370,18 +4511,9 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
           await item.update({ sn_id: optionalSn.sn_id }, { transaction });
         }
       }
-      const inv = await Inventory.findOne({
-        where: { product_id: item.product_id, store_id: order.store_id },
-        transaction
-      });
-      const pendingStock = inv ? Number(inv.pending_qty || 0) : 0;
-      const normalStock = inv ? Math.max(
-        Number(inv.normal_qty || 0),
-        Number(inv.regular_qty || 0) + Number(inv.subsidy_qty || 0) + Number(inv.second_qty || 0)
-      ) : 0;
-      const totalStock = inv ? normalStock + Number(inv.display_qty || 0) + pendingStock : 0;
-      if (totalStock < quantity) {
-        throw archiveError(`商品 ${item.product_name || product.name} 库存不足(可用:${totalStock}, 需要:${quantity})，不能归档`);
+      const inventoryPlan = await buildSalesInventoryPlan(item.product_id, order.store_id, quantity, transaction);
+      if (inventoryPlan.totalStock < quantity) {
+        throw archiveError(`商品 ${item.product_name || product.name} 库存不足(可用:${inventoryPlan.totalStock}, 需要:${quantity})，不能归档`);
       }
 
       operations.push({
@@ -4389,7 +4521,7 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
         product,
         quantity,
         inventoryType: 'normal_qty',
-        fromPending: pendingStock >= quantity
+        inventoryAllocations: inventoryPlan.allocations
       });
     }
   }
@@ -4404,11 +4536,7 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
       }
     }
 
-    if (op.fromPending) {
-      await _finalizePendingInventory(op.item.product_id, order.store_id, op.quantity, transaction);
-    } else {
-      await _deductInventory(op.item.product_id, order.store_id, op.inventoryType, op.quantity, transaction);
-    }
+    await applySalesInventoryAllocations(op.inventoryAllocations, transaction);
   }
   return operations;
 }
@@ -4474,6 +4602,7 @@ module.exports = {
     buildSubsidyPhotoQuery,
     buildChinaDateRange,
     buildOrderExportRows,
+    buildSalesReturnSettlementExportRows,
     buildDepositExportRows,
     getOrderExportArchiveStatus,
     getOrderExportInvoiceAmount,

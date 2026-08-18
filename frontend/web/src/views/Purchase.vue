@@ -10,6 +10,7 @@
       <el-tabs v-model="activeTab" class="module-tabs">
         <el-tab-pane label="采购申请" name="request">
           <div class="filter-bar">
+            <el-input v-model="queryParams.requestNo" placeholder="申请单号" clearable style="width: 180px" @keyup.enter="handleRequestSearch" />
             <el-input v-model="queryParams.submitter" placeholder="提交人" clearable style="width: 140px" />
             <el-input v-model="queryParams.keyword" placeholder="商品名称/PN/商品编码" clearable style="width: 230px" />
             <el-select v-model="queryParams.supplierId" placeholder="供应商" clearable filterable style="width: 180px">
@@ -60,12 +61,13 @@
                 <el-tag :type="getStatusType(row.status)">{{ getStatusText(row.status) }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="250">
+            <el-table-column label="操作" width="330">
               <template #default="{ row }">
                 <el-button link type="primary" @click="handleEditDraft(row)" v-if="row.status === 'draft'">编辑</el-button>
                 <el-button link type="success" @click="handleSubmitDraft(row)" v-if="row.status === 'draft'">提交</el-button>
                 <el-button link type="danger" @click="handleDeleteDraft(row)" v-if="row.status === 'draft' && !row.submit_time">删除</el-button>
                 <el-button link type="primary" @click="handleApprove(row)" v-if="row.status === 'pending'">审批</el-button>
+                <el-button link type="success" @click="goToInbound(row)" v-if="row.status === 'approved' && row.pending_inbounds?.length">去入库</el-button>
                 <el-button link type="warning" @click="handleRevoke(row)" v-if="row.status === 'approved'">撤销</el-button>
                 <el-button link type="danger" @click="handleAdjustment(row)" v-if="row.status === 'approved'">退单</el-button>
                 <el-button link type="primary" @click="handleView(row)">查看</el-button>
@@ -171,7 +173,7 @@
           <el-input v-model="requestForm.remark" type="textarea" rows="2" placeholder="采购备注" />
         </el-form-item>
 
-        <el-form-item label="返利抵扣" v-if="requestForm.supplierId && rebateBalance > 0">
+        <el-form-item label="返利抵扣" v-if="requestForm.supplierId && (rebateBalance > 0 || toNumber(requestForm.rebateDeduction) > 0)">
           <div style="width: 100%">
             <div style="margin-bottom: 6px; font-size: 13px; color: #909399;">
               供应商返利余额：¥{{ rebateBalance.toFixed(2) }}
@@ -268,7 +270,7 @@
               </el-select>
             </div>
 
-            <div v-if="requestForm.supplierId && rebateBalance > 0" class="purchase-rebate-section">
+            <div v-if="requestForm.supplierId && (rebateBalance > 0 || toNumber(requestForm.rebateDeduction) > 0)" class="purchase-rebate-section">
               <div class="purchase-rebate-header">供应商返利余额：¥{{ rebateBalance.toFixed(2) }}</div>
               <div v-for="(item, idx) in requestForm.items" :key="`rebate-${idx}`" class="item-rebate-row">
                 <span>{{ item.productName || `商品${idx + 1}` }}返利抵扣</span>
@@ -388,6 +390,27 @@
           </el-table>
         </template>
       </div>
+    </el-dialog>
+
+    <!-- 选择采购单对应的待入库单 -->
+    <el-dialog v-model="inboundSelectionVisible" title="选择待入库单" width="720px">
+      <div v-if="currentInboundRequest" class="mb-10">
+        采购单：{{ currentInboundRequest.request_no }}
+      </div>
+      <el-table :data="pendingInboundOptions" border size="small">
+        <el-table-column prop="inbound_no" label="入库单号" width="220" />
+        <el-table-column prop="store_name" label="收货门店" min-width="180">
+          <template #default="{ row }">{{ row.store_name || row.store_id || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="120" align="center">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="selectPendingInbound(row)">去入库</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="inboundSelectionVisible = false">取消</el-button>
+      </template>
     </el-dialog>
 
     <!-- 撤销对话框 -->
@@ -665,11 +688,12 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 
+const router = useRouter()
 const route = useRoute()
 
 const activeTab = ref('request')
@@ -696,6 +720,7 @@ const requestDialogVisible = ref(false)
 const usedProductDialogVisible = ref(false)
 const editingRequestId = ref('')
 const viewDialogVisible = ref(false)
+const inboundSelectionVisible = ref(false)
 const approveDialogVisible = ref(false)
 const revokeDialogVisible = ref(false)
 const adjustmentDialogVisible = ref(false)
@@ -709,6 +734,8 @@ const revokeLoading = ref(false)
 const adjustmentLoading = ref(false)
 const supplierLoading = ref(false)
 const currentRequest = ref(null)
+const currentInboundRequest = ref(null)
+const pendingInboundOptions = ref([])
 const adjustmentRequest = ref(null)
 const adjustmentRows = ref([])
 const adjustmentReason = ref('')
@@ -726,6 +753,7 @@ const queryParams = reactive({
   page: 1,
   pageSize: 20,
   status: '',
+  requestNo: '',
   submitter: '',
   keyword: '',
   supplierId: '',
@@ -876,7 +904,7 @@ const itemSubtotal = (item) => {
 }
 
 const rebateDeductionAmount = computed(() => {
-  return Math.min(toNumber(requestForm.rebateDeduction), totalAmount.value, rebateBalance.value || totalAmount.value)
+  return Math.min(toNumber(requestForm.rebateDeduction), totalAmount.value)
 })
 
 const actualTotal = computed(() => {
@@ -1016,6 +1044,7 @@ const loadOperatorStaff = async () => {
 const resetRequestSearch = () => {
   queryParams.page = 1
   queryParams.status = ''
+  queryParams.requestNo = ''
   queryParams.submitter = ''
   queryParams.keyword = ''
   queryParams.supplierId = ''
@@ -1192,6 +1221,7 @@ const handleEditDraft = async (row) => {
       ,directInbound: Number(item.direct_inbound) === 1
       ,directInboundSnCode: item.direct_inbound_sn_code || ''
     }))
+    await loadRebateBalance(request.supplier_id)
     requestDialogVisible.value = true
   } catch (err) {
     ElMessage.error(err.response?.data?.message || '获取采购申请详情失败')
@@ -1229,6 +1259,42 @@ const handleView = async (row) => {
   } catch (err) {
     ElMessage.error('获取详情失败')
   }
+}
+
+const pendingInboundsFor = (row) => {
+  if (Array.isArray(row?.pending_inbounds)) return row.pending_inbounds.filter(item => item?.inbound_id)
+  return (row?.Inbounds || [])
+    .filter(item => item?.status === 'pending' && item?.inbound_id)
+    .map(item => ({
+      inbound_id: item.inbound_id,
+      inbound_no: item.inbound_no || '',
+      store_id: item.store_id || '',
+      store_name: item.Store?.name || ''
+    }))
+}
+
+const selectPendingInbound = (inbound) => {
+  if (!inbound?.inbound_id) return
+  inboundSelectionVisible.value = false
+  router.push({
+    name: 'InventoryInbound',
+    query: { inboundId: String(inbound.inbound_id), action: 'execute' }
+  })
+}
+
+const goToInbound = (row) => {
+  const pendingInbounds = pendingInboundsFor(row)
+  if (pendingInbounds.length === 0) {
+    ElMessage.warning('该采购单当前没有待入库单')
+    return
+  }
+  if (pendingInbounds.length === 1) {
+    selectPendingInbound(pendingInbounds[0])
+    return
+  }
+  currentInboundRequest.value = row
+  pendingInboundOptions.value = pendingInbounds
+  inboundSelectionVisible.value = true
 }
 
 const formatDate = (dateStr) => {
@@ -1537,6 +1603,19 @@ const searchProducts = async (keyword) => {
   }
 }
 
+const loadRebateBalance = async (supplierId) => {
+  if (!supplierId) {
+    rebateBalance.value = 0
+    return
+  }
+  try {
+    const res = await api.getRebateBalance({ supplierId })
+    rebateBalance.value = res.code === 0 ? parseFloat(res.data?.balance || 0) : 0
+  } catch (err) {
+    rebateBalance.value = 0
+  }
+}
+
 const onSupplierChange = async (supplierId) => {
   const supplier = allSuppliers.value.find(s => s.supplier_id === supplierId)
   if (supplier && supplier.invoice_type) {
@@ -1546,18 +1625,7 @@ const onSupplierChange = async (supplierId) => {
   requestForm.items.forEach(item => {
     item.rebateDeduction = 0
   })
-  if (supplierId) {
-    try {
-      const res = await api.getRebateBalance({ supplierId })
-      if (res.code === 0) {
-        rebateBalance.value = parseFloat(res.data?.balance || 0)
-      }
-    } catch (err) {
-      rebateBalance.value = 0
-    }
-  } else {
-    rebateBalance.value = 0
-  }
+  await loadRebateBalance(supplierId)
 }
 
 const allocateTotalRebateToItems = () => {
@@ -1783,7 +1851,8 @@ const handleSubmit = async () => {
     if (!validateItemAllocation(item, i)) return
   }
 
-  if (rebateDeductionAmount.value > 0 && rebateDeductionAmount.value > rebateBalance.value) {
+  const requestedRebate = Math.min(toNumber(requestForm.rebateDeduction), totalAmount.value)
+  if (requestedRebate > 0 && requestedRebate > rebateBalance.value) {
     ElMessage.warning('返利抵扣不能超过供应商返利余额')
     return
   }

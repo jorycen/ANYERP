@@ -708,6 +708,7 @@
           <el-descriptions-item label="总金额">¥{{ currentInbound.total_amount }}</el-descriptions-item>
           <el-descriptions-item label="创建时间">{{ formatDate(currentInbound.create_time) }}</el-descriptions-item>
           <el-descriptions-item label="创建人">{{ currentInbound.create_user }}</el-descriptions-item>
+          <el-descriptions-item label="入库人员">{{ currentInbound.receive_user || '-' }}</el-descriptions-item>
         </el-descriptions>
 
         <h4 class="mt-20">商品明细</h4>
@@ -727,6 +728,9 @@
             <template #default="{ row }">¥{{ row.unit_price }}</template>
           </el-table-column>
           <el-table-column prop="quantity" label="数量" width="80" />
+          <el-table-column label="入库人员" width="120">
+            <template #default="{ row }">{{ row.receive_user || currentInbound.receive_user || '-' }}</template>
+          </el-table-column>
           <el-table-column label="是否SN管理" width="110">
             <template #default="{ row }">
               <el-tag :type="row.need_sn === 1 ? 'warning' : 'info'" size="small">
@@ -2094,12 +2098,17 @@ onMounted(async () => {
   loadFreightPlatforms()
   loadCategories()
   const inboundIdFromQuery = String(route.query.inboundId || '').trim()
+  const inboundActionFromQuery = String(route.query.action || '').trim().toLowerCase()
   const transferIdFromQuery = String(route.query.transferId || '').trim()
   const returnIdFromQuery = String(route.query.returnId || '').trim()
   if (inboundIdFromQuery) {
     mainTab.value = 'inbound'
     await loadInboundList()
-    await viewInboundDetail({ inbound_id: inboundIdFromQuery }, { snTrace: true })
+    if (inboundActionFromQuery === 'execute') {
+      await openExecuteDialog({ inbound_id: inboundIdFromQuery })
+    } else {
+      await viewInboundDetail({ inbound_id: inboundIdFromQuery }, { snTrace: true })
+    }
     await router.replace({ name: 'Inventory', query: {} })
   } else if (transferIdFromQuery) {
     await openTransferDetail({ transfer_id: transferIdFromQuery }, { trace: String(route.query.trace || '') === '1' })
