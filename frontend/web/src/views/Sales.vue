@@ -229,8 +229,7 @@
               </el-table-column>
               <el-table-column label="单价" width="120">
                 <template #default="{ row }">
-                  <el-input v-model="row.salePrice" size="small" style="width: 100%" @change="onPriceChange($index)" />
-                  <div v-if="row.belowMinPrice" class="below-price-tip">低于定价!</div>
+                  <el-input v-model="row.salePrice" size="small" style="width: 100%" />
                 </template>
               </el-table-column>
               <el-table-column label="数量" width="70">
@@ -549,7 +548,9 @@ const actionLabel = (action) => ({
   draft_saved: '保存销售草稿',
   submitted: '提交订单',
   approved: '审批通过',
+  approved_and_archived: '审批通过并自动归档',
   rejected: '审批拒绝',
+  archive_pending_approval: '归档待审批',
   archived: '订单归档',
   cancelled: '订单取消',
   deleted: '删除草稿',
@@ -1089,8 +1090,6 @@ const hydrateDraftForm = (order) => {
     subtotal: Number(item.subtotal || 0),
     needSn: isSnManaged(item.need_sn ?? item.needSn ?? item.Product?.need_sn) || Boolean(item.sn_code || item.sn_id),
     standardPrice: Number(item.sale_price || 0),
-    minSalePrice: 0,
-    belowMinPrice: false,
     searchLoading: false,
     searchOptions: item.product_id ? [{ product_id: item.product_id, name: item.product_name, need_sn: item.need_sn ?? item.Product?.need_sn }] : [],
     pnList: item.pn_code ? [item.pn_code] : [],
@@ -1188,8 +1187,6 @@ const addItem = () => {
     subtotal: 0,
     needSn: false,
     standardPrice: 0,
-    minSalePrice: 0,
-    belowMinPrice: false,
     searchLoading: false,
     searchOptions: [],
     pnList: [],
@@ -1274,8 +1271,6 @@ const onProductChange = async (productId, index) => {
     orderForm.items[index].salePrice = parseFloat(found.standard_price) || 0
     orderForm.items[index].needSn = isSnManaged(found.need_sn)
     orderForm.items[index].standardPrice = parseFloat(found.standard_price) || 0
-    orderForm.items[index].minSalePrice = parseFloat(found.min_sale_price) || 0
-    orderForm.items[index].belowMinPrice = false
     orderForm.items[index].pnCode = matchedPns[0] || ''
     orderForm.items[index].snCode = ''
     orderForm.items[index].pnList = matchedPns
@@ -1314,7 +1309,6 @@ const onProductChange = async (productId, index) => {
       finally { orderForm.items[index].pnLoading = false }
     }
 
-    onPriceChange(index)
   } else {
     orderForm.items[index].productName = ''
     orderForm.items[index].salePrice = 0
@@ -1381,7 +1375,6 @@ const onSnChange = (value, index) => {
   item.useGovSubsidy = false
   item.useEduSubsidy = false
   item.useSalesReport = false
-  onPriceChange(index)
 }
 
 const resourceAvailable = (item, type) => {
@@ -1390,16 +1383,6 @@ const resourceAvailable = (item, type) => {
 
 const onPnBlur = async (index) => {
   await onPnChange(index)
-}
-
-const onPriceChange = (index) => {
-  const item = orderForm.items[index]
-  const minPrice = item.minSalePrice || item.standardPrice
-  if (minPrice > 0 && item.salePrice < minPrice) {
-    item.belowMinPrice = true
-  } else {
-    item.belowMinPrice = false
-  }
 }
 
 const buildSalesOrderPayload = (untaxedInvoiceConfirmed = false) => ({
@@ -1511,8 +1494,8 @@ const handleSubmit = async () => {
       res = await api.createSales(data)
     }
     if (res.code === 0) {
-      if (res.data?.needsApproval) {
-        ElMessage.warning(res.data.message || '订单已创建，售价低于定价需审批')
+      if (res.data?.negativeGrossProfit) {
+        ElMessage.warning(res.data.message || '订单已提交，当前为负毛利，归档时将进入审批')
       } else {
         ElMessage.success(res.data?.message || '订单创建成功')
       }
@@ -1798,9 +1781,4 @@ const getDepositStatusText = (status) => {
   margin-top: 10px;
 }
 .summary-item span { color: #f56c6c; }
-.below-price-tip {
-  color: #e6a23c;
-  font-size: 11px;
-  margin-top: 2px;
-}
 </style>

@@ -183,7 +183,7 @@
         <!-- ========== Tab 3: 价格管理 ========== -->
         <el-tab-pane v-if="!productApprovalOnly" label="价格管理" name="price">
           <el-alert
-            title="产品定价用于订单毛利的商品成本；零售价作为销售开单默认价格；最低销售价继续用于低价审批。"
+            title="产品定价用于订单毛利的商品成本；零售价作为销售开单默认价格；最低销售价仅作为经营参考。"
             type="info"
             :closable="false"
             show-icon

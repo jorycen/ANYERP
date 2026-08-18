@@ -1466,57 +1466,6 @@ async function downloadAllSubsidyPhotosArchive(ctx) {
   ctx.body = createSubsidyPhotoZip(entries);
 }
 
-/**
- * 检查销售价格是否需要审批（价格从ProductPrice表读取）
- */
-async function checkPriceApproval(items, totalAmount = 0, discountAmount = 0) {
-  const normalizedItems = (items || []).map(item => applyOrderItemDefaults(normalizeOrderItemInput(item)));
-  const productIds = [...new Set(normalizedItems.map(i => i.product_id).filter(Boolean))];
-  if (productIds.length === 0) {
-    return {
-      belowPriceItems: [],
-      minimumSalePriceTotal: 0,
-      receivableBeforeSubsidy: Math.max(0, Number(totalAmount || 0) - Number(discountAmount || 0)),
-      isBelowMinimum: false
-    };
-  }
-
-  const productPrices = await ProductPrice.findAll({
-    where: { product_id: { [Op.in]: productIds } }
-  });
-  const priceMap = new Map();
-  productPrices.forEach(p => priceMap.set(p.product_id, p));
-
-  const belowPriceItems = [];
-  let minimumSalePriceTotal = 0;
-  let hasMinimumSalePrice = normalizedItems.length > 0;
-  for (const item of normalizedItems) {
-    const price = priceMap.get(item.product_id);
-    if (!price || !price.min_sale_price || parseFloat(price.min_sale_price) <= 0) {
-      hasMinimumSalePrice = false;
-      continue;
-    }
-    const minPrice = parseFloat(price.min_sale_price);
-    minimumSalePriceTotal += minPrice * Math.max(1, Number(item.quantity || 1));
-    if (parseFloat(item.sale_price) < minPrice) {
-      belowPriceItems.push({
-        productId: item.product_id,
-        productName: item.product_name,
-        salePrice: item.sale_price,
-        standardPrice: price.standard_price,
-        minSalePrice: price.min_sale_price
-      });
-    }
-  }
-  const receivableBeforeSubsidy = Math.max(0, Number(totalAmount || 0) - Number(discountAmount || 0));
-  return {
-    belowPriceItems,
-    minimumSalePriceTotal,
-    receivableBeforeSubsidy,
-    isBelowMinimum: hasMinimumSalePrice && receivableBeforeSubsidy < minimumSalePriceTotal - 0.005
-  };
-}
-
 function firstNonEmpty(source, keys, defaultValue = '') {
   for (const key of keys) {
     const value = source && source[key];
@@ -1872,12 +1821,6 @@ async function create(ctx) {
     ctx.throw(400, '收款金额与订单实付金额不一致');
   }
 
-  const priceApproval = isDraft
-    ? { belowPriceItems: [], minimumSalePriceTotal: 0, receivableBeforeSubsidy: 0, isBelowMinimum: false }
-    : await checkPriceApproval(items, totalAmount, discountAmount);
-  const belowPriceItems = priceApproval.belowPriceItems;
-  const needsApproval = priceApproval.isBelowMinimum;
-
   const productIds = [...new Set(normalizedItems.map(i => i.product_id).filter(Boolean))];
   const products = await Product.findAll({
     where: { product_id: { [Op.in]: productIds } }
@@ -1914,11 +1857,14 @@ async function create(ctx) {
     }
   }
 
-  const finalOrderStatus = isDraft ? 'draft' : (status || orderStatus || (needsApproval ? 'pending_approval' : '未归档'));
+  // 负毛利审批后移到归档节点；提交阶段只提示，不阻断订单。
+  // 低于最低售价不再单独触发审批。
+  const finalOrderStatus = isDraft ? 'draft' : '未归档';
   const previousOrderStatus = existingOrder?.order_status || null;
   const auditAction = isDraft ? (existingOrder ? 'draft_saved' : 'draft_created') : (existingOrder ? 'submitted' : 'created');
   const auditTime = new Date();
 
+  let grossProfitSnapshot = null;
   await sequelize.transaction(async (transaction) => {
   let reservedDeposit = null;
   if (!isDraft && depositDeductions.length === 1) {
@@ -1952,7 +1898,7 @@ async function create(ctx) {
     order_status: finalOrderStatus,
     // 新建订单只记录销售意向；库存和 SN 在归档时统一校验、扣减。
     inventory_reserved: 0,
-    remark: remark || (needsApproval ? '售价低于定价, 待审批' : '')
+    remark: remark || ''
   };
   if (!isDraft) {
     orderPayload.submit_user = user.name || user.phone || String(user.staffId || '');
@@ -2019,16 +1965,32 @@ async function create(ctx) {
     });
   }
 
+  if (!isDraft) {
+    grossProfitSnapshot = await calculateAndSaveOrderGrossProfit(orderId, {
+      transaction,
+      calculatedBy: user.name || 'system',
+      force: true,
+      final: false
+    });
+  }
+
   });
+
+  const grossProfitAmount = Number(grossProfitSnapshot?.gross_profit_amount || 0);
+  const negativeGrossProfit = !isDraft && grossProfitAmount < 0;
 
   ctx.body = {
     orderId, orderNo,
-    needsApproval,
-    belowPriceItems,
-    minimumSalePriceTotal: priceApproval.minimumSalePriceTotal,
-    receivableBeforeSubsidy: priceApproval.receivableBeforeSubsidy,
+    // 保留旧字段兼容已有客户端，但不再返回低价审批结果。
+    needsApproval: false,
+    negativeGrossProfit,
+    grossProfitAmount,
     status: finalOrderStatus,
-    message: isDraft ? '销售订单草稿已保存' : (needsApproval ? '订单已创建，售价低于定价需要审批' : '订单创建成功')
+    message: isDraft
+      ? '销售订单草稿已保存'
+      : (negativeGrossProfit
+        ? `订单已提交，当前为负毛利（¥${grossProfitAmount.toFixed(2)}），归档时将进入审批`
+        : '订单创建成功')
   };
 }
 
@@ -2220,8 +2182,19 @@ async function detail(ctx) {
   ctx.body = result;
 }
 
+async function archiveSalesOrderEffects(order, transaction) {
+  await validateAndDeductInventoryForArchive(order, transaction);
+  await redeemReservedDepositsForOrder(order, transaction);
+  const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+  await lockSaleRights(order, items, transaction);
+  await finishSaleRights(order, items, transaction);
+  await calculateSalesSettlementCosts(order, transaction);
+  const refreshedItems = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+  await triggerSaleResourceBenefits(order, refreshedItems, transaction);
+}
+
 /**
- * 审批通过
+ * 审批通过后自动归档。
  */
 async function approve(ctx) {
   const { orderId } = ctx.params;
@@ -2242,28 +2215,44 @@ async function approve(ctx) {
   const previousStatus = order.order_status;
   const approveTime = new Date();
   await sequelize.transaction(async (transaction) => {
-    await order.update({
-      order_status: '未归档',
+    const lockedOrder = await Order.findByPk(orderId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!lockedOrder || lockedOrder.order_status !== 'pending_approval') {
+      ctx.throw(409, '订单审批状态已发生变化，请刷新后重试');
+    }
+    await archiveSalesOrderEffects(lockedOrder, transaction);
+    await lockedOrder.update({
+      order_status: '已归档',
+      inventory_reserved: 0,
       approve_user: user.name || user.phone || String(user.staffId || ''),
       approve_time: approveTime,
       approve_comment: '审批通过',
-      remark: (order.remark || '') + '\n已审批通过',
+      remark: (lockedOrder.remark || '') + '\n已审批通过',
       update_time: approveTime
     }, { transaction });
     await recordBusinessAction({
       businessType: 'sales_order',
-      businessId: order.order_id,
-      businessNo: order.order_no,
-      action: 'approved',
+      businessId: lockedOrder.order_id,
+      businessNo: lockedOrder.order_no,
+      action: 'approved_and_archived',
       fromStatus: previousStatus,
-      toStatus: '未归档',
+      toStatus: '已归档',
       user,
       comment: '审批通过',
       transaction
     });
+    await calculateAndSaveOrderGrossProfit(lockedOrder.order_id, {
+      transaction,
+      calculatedBy: user.name || 'system',
+      force: true,
+      final: true
+    });
   });
 
-  ctx.body = { code: 0, message: '审批通过，订单待归档' };
+  syncToDailyStatement(orderId, order.store_id).catch(err => console.error('[DailySync] archive error:', err.message));
+  ctx.body = { code: 0, status: '已归档', message: '审批通过，订单已自动归档' };
 }
 
 /**
@@ -2297,7 +2286,7 @@ async function reject(ctx) {
     await releaseSaleRights(order, items, transaction);
     await releaseDepositRedemptionForOrder(order, transaction, '订单审批拒绝');
     await order.update({
-      order_status: 'cancelled',
+      order_status: '未归档',
       inventory_reserved: 0,
       approve_user: user.name || user.phone || String(user.staffId || ''),
       approve_time: approveTime,
@@ -2311,14 +2300,14 @@ async function reject(ctx) {
       businessNo: order.order_no,
       action: 'rejected',
       fromStatus: previousStatus,
-      toStatus: 'cancelled',
+      toStatus: '未归档',
       user,
       comment: reason || '',
       transaction
     });
   });
 
-  ctx.body = { code: 0, message: '已拒绝' };
+  ctx.body = { code: 0, status: '未归档', message: '审批已拒绝，订单退回未归档，可修改后重新归档' };
 }
 
 /**
@@ -2334,6 +2323,12 @@ async function update(ctx) {
   }
 
   assertStoreVisible(order.store_id, ctx.state.user);
+  if (order.order_status === 'pending_approval') {
+    ctx.throw(400, '待审批订单不能直接修改或归档，请先审批或拒绝');
+  }
+  if (String(data.order_status || data.status || '') === 'pending_approval') {
+    ctx.throw(400, '负毛利审批必须由归档流程触发');
+  }
   if (data.auxiliary_sales_list) {
     data.auxiliary_sales_list = data.auxiliary_sales_list.filter(item => (
       String(item.staffId || '') !== String(order.create_staff_id || '')
@@ -2343,6 +2338,8 @@ async function update(ctx) {
   const nextStatus = data.order_status || data.status;
   const previousStatus = order.order_status;
   let archivedNow = false;
+  let archivePendingApproval = false;
+  let archiveGrossProfitAmount = null;
   await sequelize.transaction(async (transaction) => {
     const hasItemsPayload = hasOrderItemsPayload(data);
     const releasedReservedOrderItems = hasItemsPayload && Number(order.inventory_reserved || 0) === 1;
@@ -2360,18 +2357,37 @@ async function update(ctx) {
     }
 
     if (isArchiveStatus(nextStatus) && !isArchiveStatus(order.order_status)) {
-      await validateAndDeductInventoryForArchive(order, transaction);
-      await redeemReservedDepositsForOrder(order, transaction);
-      const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
-      await lockSaleRights(order, items, transaction);
-      await finishSaleRights(order, items, transaction);
-      await calculateSalesSettlementCosts(order, transaction);
-      const refreshedItems = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
-      await triggerSaleResourceBenefits(order, refreshedItems, transaction);
-      data.order_status = '已归档';
-      data.status = '已归档';
-      data.inventory_reserved = 0;
-      archivedNow = true;
+      // 先把本次修改后的订单字段落入事务，毛利判断必须基于当前状态。
+      const archiveOrderFields = { ...data };
+      delete archiveOrderFields.status;
+      delete archiveOrderFields.order_status;
+      await order.update(archiveOrderFields, { transaction });
+
+      // 归档点击阶段只做完整校验，不扣库存、不核销权益；负毛利订单进入审批。
+      await validateAndDeductInventoryForArchive(order, transaction, { deduct: false });
+      const grossProfitSnapshot = await calculateAndSaveOrderGrossProfit(order.order_id, {
+        transaction,
+        calculatedBy: ctx.state.user?.name || 'system',
+        force: true,
+        final: false
+      });
+      archiveGrossProfitAmount = Number(grossProfitSnapshot?.gross_profit_amount || 0);
+
+      if (archiveGrossProfitAmount < 0) {
+        data.order_status = 'pending_approval';
+        data.status = 'pending_approval';
+        data.inventory_reserved = 0;
+        data.approve_user = null;
+        data.approve_time = null;
+        data.approve_comment = null;
+        archivePendingApproval = true;
+      } else {
+        await archiveSalesOrderEffects(order, transaction);
+        data.order_status = '已归档';
+        data.status = '已归档';
+        data.inventory_reserved = 0;
+        archivedNow = true;
+      }
     } else if (isCancelStatus(nextStatus) && !isCancelStatus(order.order_status)) {
       if (order.inventory_reserved && !releasedReservedOrderItems) {
         await releaseReservedInventoryForOrder(order, transaction);
@@ -2382,14 +2398,23 @@ async function update(ctx) {
       data.inventory_reserved = 0;
     }
 
-    await order.update(data, { transaction });
+    const finalOrderData = { ...data };
+    delete finalOrderData.status;
+    if (finalOrderData.order_status === undefined && data.status !== undefined) {
+      finalOrderData.order_status = data.status;
+    }
+    await order.update(finalOrderData, { transaction });
     const statusAfterUpdate = order.order_status;
     if (statusAfterUpdate !== previousStatus) {
       await recordBusinessAction({
         businessType: 'sales_order',
         businessId: order.order_id,
         businessNo: order.order_no,
-        action: archivedNow ? 'archived' : isCancelStatus(statusAfterUpdate) ? 'cancelled' : 'status_updated',
+        action: archivedNow
+          ? 'archived'
+          : archivePendingApproval
+            ? 'archive_pending_approval'
+            : isCancelStatus(statusAfterUpdate) ? 'cancelled' : 'status_updated',
         fromStatus: previousStatus,
         toStatus: statusAfterUpdate,
         user: ctx.state.user,
@@ -2428,7 +2453,15 @@ async function update(ctx) {
   if (archivedNow) {
     syncToDailyStatement(orderId, order.store_id).catch(err => console.error('[DailySync] archive error:', err.message));
   }
-  ctx.body = { message: '订单更新成功' };
+  ctx.body = {
+    status: order.order_status,
+    pendingApproval: archivePendingApproval,
+    negativeGrossProfit: archivePendingApproval,
+    grossProfitAmount: archiveGrossProfitAmount,
+    message: archivePendingApproval
+      ? `归档校验通过，当前为负毛利（¥${Number(archiveGrossProfitAmount || 0).toFixed(2)}），已进入审批`
+      : (archivedNow ? '订单已归档' : '订单更新成功')
+  };
 }
 
 async function getGrossProfit(ctx) {
@@ -4226,7 +4259,7 @@ async function assertAvailableInventory(item, product, storeId, quantity, action
   return inv;
 }
 
-async function validateAndDeductInventoryForArchive(order, transaction = null) {
+async function validateAndDeductInventoryForArchive(order, transaction = null, { deduct = true } = {}) {
   const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
   if (!items.length) {
     throw archiveError('订单中没有商品，无法归档');
@@ -4361,6 +4394,8 @@ async function validateAndDeductInventoryForArchive(order, transaction = null) {
     }
   }
 
+  if (!deduct) return operations;
+
   for (const op of operations) {
     if (op.snRecord) {
       await op.snRecord.update({ status: 'sold' }, { transaction });
@@ -4375,6 +4410,7 @@ async function validateAndDeductInventoryForArchive(order, transaction = null) {
       await _deductInventory(op.item.product_id, order.store_id, op.inventoryType, op.quantity, transaction);
     }
   }
+  return operations;
 }
 
 module.exports = {
