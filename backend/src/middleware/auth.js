@@ -110,6 +110,25 @@ async function storeAccessMiddleware(ctx, next) {
     return next();
   }
 
+  // 库存查询、报表查询和只读门店选项由各自控制器按业务范围校验，
+  // 不在通用门店中间件中拦截跨门店的查询参数；库存写入接口仍走原门店权限链路。
+  if (ctx.method === 'GET' && new Set([
+    '/api/v1/store/readable',
+    '/api/v1/inventory/list',
+    '/api/v1/inventory/list/export',
+    '/api/v1/inventory/sn-inventory-list',
+    '/api/v1/inventory/sn-inventory-list/export',
+    '/api/v1/inventory/sn-list',
+    '/api/v1/report/sales',
+    '/api/v1/report/inventory',
+    '/api/v1/report/employee-performance',
+    '/api/v1/report/dashboard/filters',
+    '/api/v1/report/dashboard/overview',
+    '/api/v1/report/finance-overview'
+  ]).has(ctx.path)) {
+    return next();
+  }
+
   // 经销商级账号的库存汇总按直接配置的区域读取，不能再用旧的门店权限列表拦截。
   if (ctx.method === 'GET' &&
       (ctx.path === '/api/v1/inventory/list' ||
