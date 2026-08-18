@@ -47,7 +47,8 @@ test('销售选择SN时返回当前门店经销商特价和有效售价', async 
     productPriceFindOne: models.ProductPrice.findOne,
     specialFindAll: models.SnDistributorPrice.findAll,
     rightFindAll: models.InventoryResourceRight.findAll,
-    categoryFindAll: models.ResourceCategory.findAll
+    categoryFindAll: models.ResourceCategory.findAll,
+    locationFindByPk: models.Location.findByPk
   };
 
   models.ProductSn.findAll = async () => [{
@@ -55,8 +56,10 @@ test('销售选择SN时返回当前门店经销商特价和有效售价', async 
     sn_code: 'SN001',
     pn_code: 'PN001',
     inventory_type: 'normal_qty',
+    location_id: 'LOCATION_SALES',
     tax_type: 'TAX_INCLUDED'
   }];
+  models.Location.findByPk = async () => ({ location_id: 'LOCATION_SALES', type: 'normal_qty', status: 1 });
   models.Store.findOne = async () => ({ store_id: 'STORE_1', distributor_id: 'D1' });
   models.ProductPrice.findOne = async () => ({ standard_price: 6999, min_sale_price: 6500 });
   models.SnDistributorPrice.findAll = async options => {
@@ -89,5 +92,6 @@ test('销售选择SN时返回当前门店经销商特价和有效售价', async 
     models.SnDistributorPrice.findAll = originals.specialFindAll;
     models.InventoryResourceRight.findAll = originals.rightFindAll;
     models.ResourceCategory.findAll = originals.categoryFindAll;
+    models.Location.findByPk = originals.locationFindByPk;
   }
 });

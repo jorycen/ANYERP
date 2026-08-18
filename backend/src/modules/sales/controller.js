@@ -62,6 +62,15 @@ async function isRentalDemoSn(sn, transaction = null) {
   });
   return location?.type === 'rental_demo_qty';
 }
+
+async function isSalesWarehouseSn(sn, transaction = null) {
+  if (!sn?.location_id || String(sn.inventory_type || 'normal_qty') !== 'normal_qty') return false;
+  const location = await Location.findByPk(sn.location_id, {
+    attributes: ['type', 'status'],
+    transaction
+  });
+  return location?.type === 'normal_qty' && Number(location.status ?? 1) === 1;
+}
 const { issueDownloadTicket } = require('../../utils/downloadTicket');
 const { canViewSnTraceReference, isDealerTraceAccount } = require('../../utils/snTracePermission');
 const { sendExcel } = require('../../utils/excelExport');
@@ -2937,7 +2946,7 @@ async function getProductSns(ctx) {
     store_id: storeId,
     status: 'in_stock',
     is_deleted: 0,
-    inventory_type: { [Op.ne]: 'rental_demo_qty' }
+    inventory_type: 'normal_qty'
   };
   if (pnCode) {
     where.pn_code = pnCode;
@@ -2950,7 +2959,7 @@ async function getProductSns(ctx) {
   });
   const saleableSnRecords = [];
   for (const sn of snRecords) {
-    if (!(await isRentalDemoSn(sn))) saleableSnRecords.push(sn);
+    if (await isSalesWarehouseSn(sn)) saleableSnRecords.push(sn);
   }
 
   const store = await Store.findOne({
@@ -4225,8 +4234,8 @@ async function reserveInventoryForOrder(order, transaction = null) {
       if (!snRecord) {
         throw archiveError(`SN码 [${snCode}] 在当前门店没有可用库存，不能提交订单`);
       }
-      if (await isRentalDemoSn(snRecord, transaction)) {
-        throw archiveError(`SN码 [${snCode}] 属于租赁样机仓，不允许销售`);
+      if (!(await isSalesWarehouseSn(snRecord, transaction))) {
+        throw archiveError(`SN码 [${snCode}] 不在销售仓，不允许直接销售`);
       }
 
       operations.push({ item, quantity, snRecord, inventoryType: snRecord.inventory_type || 'normal_qty' });
@@ -4274,9 +4283,7 @@ async function releaseReservedInventoryForOrder(order, transaction = null) {
 }
 
 async function assertAvailableInventory(item, product, storeId, quantity, actionText, transaction = null) {
-  const inventoryPlan = await buildSalesInventoryPlan(item.product_id, storeId, quantity, transaction, {
-    includePending: false
-  });
+  const inventoryPlan = await buildSalesInventoryPlan(item.product_id, storeId, quantity, transaction);
   const totalStock = inventoryPlan.totalStock;
   if (totalStock < quantity) {
     throw archiveError(`商品 ${item.product_name || product.name} 库存不足(可用:${totalStock}, 需要:${quantity})，不能${actionText}`);
@@ -4295,9 +4302,7 @@ function getSalesInventoryQuantities(row) {
     Number(row.subsidy_qty || 0) +
     Number(row.second_qty || 0);
   return {
-    normal: Math.max(Number(row.normal_qty || 0), detailTotal),
-    display: Number(row.display_qty || 0),
-    pending: Number(row.pending_qty || 0)
+    normal: Math.max(Number(row.normal_qty || 0), detailTotal)
   };
 }
 
@@ -4310,40 +4315,51 @@ function sortSalesInventoryRows(rows) {
 }
 
 async function findSalesInventoryRows(productId, storeId, transaction = null) {
-  return Inventory.findAll({
+  const rows = await Inventory.findAll({
     where: { product_id: productId, store_id: storeId },
     ...inventoryQueryOptions(transaction)
   });
+  const locationIds = [...new Set(rows.map(row => String(row.location_id || '')).filter(Boolean))];
+  if (!locationIds.length) return [];
+
+  const salesLocations = await Location.findAll({
+    where: {
+      location_id: { [Op.in]: locationIds },
+      type: 'normal_qty',
+      status: 1
+    },
+    attributes: ['location_id'],
+    ...inventoryQueryOptions(transaction)
+  });
+  const salesLocationIds = new Set(salesLocations.map(location => String(location.location_id)));
+  return rows.filter(row => salesLocationIds.has(String(row.location_id || '')));
 }
 
-function buildSalesInventoryPlanFromRows(rows, quantity, { includePending = true } = {}) {
+function buildSalesInventoryPlanFromRows(rows, quantity) {
   const orderedRows = sortSalesInventoryRows(rows || []);
   const quantities = new Map(orderedRows.map(row => [row, getSalesInventoryQuantities(row)]));
-  const kinds = includePending ? ['pending', 'normal', 'display'] : ['normal', 'display'];
   const allocations = [];
   let remaining = Math.max(0, Number(quantity) || 0);
 
-  for (const kind of kinds) {
-    for (const row of orderedRows) {
-      if (remaining <= 0) break;
-      const available = Math.max(0, Number(quantities.get(row)?.[kind] || 0));
-      if (available <= 0) continue;
-      const allocated = Math.min(available, remaining);
-      allocations.push({ row, kind, quantity: allocated });
-      remaining -= allocated;
-    }
+  for (const row of orderedRows) {
+    if (remaining <= 0) break;
+    const available = Math.max(0, Number(quantities.get(row)?.normal || 0));
+    if (available <= 0) continue;
+    const allocated = Math.min(available, remaining);
+    allocations.push({ row, kind: 'normal', quantity: allocated });
+    remaining -= allocated;
   }
 
   const totalStock = orderedRows.reduce((sum, row) => {
     const stock = quantities.get(row);
-    return sum + stock.normal + stock.display + (includePending ? stock.pending : 0);
+    return sum + stock.normal;
   }, 0);
   return { rows: orderedRows, allocations, totalStock, remaining };
 }
 
-async function buildSalesInventoryPlan(productId, storeId, quantity, transaction = null, options = {}) {
+async function buildSalesInventoryPlan(productId, storeId, quantity, transaction = null) {
   const rows = await findSalesInventoryRows(productId, storeId, transaction);
-  return buildSalesInventoryPlanFromRows(rows, quantity, options);
+  return buildSalesInventoryPlanFromRows(rows, quantity);
 }
 
 async function applySalesInventoryAllocations(allocations, transaction = null) {
@@ -4356,24 +4372,12 @@ async function applySalesInventoryAllocations(allocations, transaction = null) {
         normal_qty: Number(row.normal_qty || 0),
         regular_qty: Number(row.regular_qty || 0),
         subsidy_qty: Number(row.subsidy_qty || 0),
-        second_qty: Number(row.second_qty || 0),
-        display_qty: Number(row.display_qty || 0),
-        pending_qty: Number(row.pending_qty || 0)
+        second_qty: Number(row.second_qty || 0)
       });
     }
 
     const state = states.get(row);
     const quantity = Math.max(0, Number(allocation.quantity) || 0);
-    if (allocation.kind === 'pending') {
-      state.pending_qty = Math.max(0, state.pending_qty - quantity);
-      continue;
-    }
-
-    if (allocation.kind === 'display') {
-      state.display_qty = Math.max(0, state.display_qty - quantity);
-      continue;
-    }
-
     const detailColumns = ['regular_qty', 'subsidy_qty', 'second_qty'];
     const detailTotal = detailColumns.reduce((sum, column) => sum + state[column], 0);
     const currentNormal = Math.max(state.normal_qty, detailTotal);
@@ -4393,9 +4397,7 @@ async function applySalesInventoryAllocations(allocations, transaction = null) {
       normal_qty: state.normal_qty,
       regular_qty: state.regular_qty,
       subsidy_qty: state.subsidy_qty,
-      second_qty: state.second_qty,
-      display_qty: state.display_qty,
-      pending_qty: state.pending_qty
+      second_qty: state.second_qty
     }, { transaction });
   }
 }
@@ -4480,8 +4482,8 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
       if (!snRecord || normalizePnCode(snRecord.pn_code) !== normalizePnCode(pnCode)) {
         throw archiveError(`SN码 [${snCode}] 在当前门店没有可用库存，不能归档`);
       }
-      if (await isRentalDemoSn(snRecord, transaction)) {
-        throw archiveError(`SN码 [${snCode}] 属于租赁样机仓，不允许销售`);
+      if (!(await isSalesWarehouseSn(snRecord, transaction))) {
+        throw archiveError(`SN码 [${snCode}] 不在销售仓，不允许直接销售`);
       }
 
       operations.push({
@@ -4506,6 +4508,9 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
         });
         if (!optionalSn || normalizePnCode(optionalSn.pn_code) !== normalizePnCode(pnCode)) {
           throw archiveError(`SN码 [${snCode}] 不存在或与PN码不匹配，不能归档`);
+        }
+        if (!(await isSalesWarehouseSn(optionalSn, transaction))) {
+          throw archiveError(`SN码 [${snCode}] 不在销售仓，不允许直接销售`);
         }
         if (!item.sn_id) {
           await item.update({ sn_id: optionalSn.sn_id }, { transaction });
