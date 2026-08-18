@@ -19,19 +19,21 @@
       >{{item.label}}</view>
     </view>
 
-    <picker mode="selector" range="{{regions}}" range-key="label" value="{{selectedRegionIndex}}" bindchange="selectRegion">
-      <view class="date-picker region-picker">
-        <text>{{selectedRegionLabel}}</text>
-        <text class="date-picker-arrow">⌄</text>
-      </view>
-    </picker>
+    <view class="filter-row">
+      <picker class="filter-picker-wrap" mode="selector" range="{{regions}}" range-key="label" value="{{selectedRegionIndex}}" bindchange="selectRegion">
+        <view class="date-picker filter-picker region-picker">
+          <text>{{selectedRegionLabel}}</text>
+          <text class="date-picker-arrow">⌄</text>
+        </view>
+      </picker>
 
-    <picker mode="date" value="{{selectedDate}}" bindchange="selectDate">
-      <view class="date-picker">
-        <text>{{periodLabel}}</text>
-        <text class="date-picker-arrow">⌄</text>
-      </view>
-    </picker>
+      <picker class="filter-picker-wrap" mode="date" value="{{selectedDate}}" bindchange="selectDate">
+        <view class="date-picker filter-picker">
+          <text>{{periodLabel}}</text>
+          <text class="date-picker-arrow">⌄</text>
+        </view>
+      </picker>
+    </view>
   </view>
 
   <view class="sync-card" wx:if="{{isLoading}}">

@@ -82,6 +82,21 @@ page {
   font-weight: 600;
 }
 
+.filter-row {
+  display: flex;
+  align-items: center;
+  margin-top: 24rpx;
+}
+
+.filter-picker-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.filter-picker-wrap + .filter-picker-wrap {
+  margin-left: 16rpx;
+}
+
 .date-picker {
   display: flex;
   align-items: center;
@@ -94,6 +109,14 @@ page {
   color: #e7f4ff;
   font-size: 24rpx;
   background: rgba(255, 255, 255, 0.09);
+}
+
+.filter-picker {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 13rpx 12rpx;
+  white-space: nowrap;
 }
 
 .date-picker-arrow {
