@@ -19,6 +19,13 @@
       >{{item.label}}</view>
     </view>
 
+    <picker mode="selector" range="{{regions}}" range-key="label" value="{{selectedRegionIndex}}" bindchange="selectRegion">
+      <view class="date-picker region-picker">
+        <text>{{selectedRegionLabel}}</text>
+        <text class="date-picker-arrow">⌄</text>
+      </view>
+    </picker>
+
     <picker mode="date" value="{{selectedDate}}" bindchange="selectDate">
       <view class="date-picker">
         <text>{{periodLabel}}</text>
