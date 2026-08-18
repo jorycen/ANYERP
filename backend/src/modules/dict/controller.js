@@ -2,7 +2,7 @@
  * 字典管理控制器
  * 客户来源 / 收款方式 / 结算账号 / 金额补录项目
  */
-const { sequelize, CustomerSource, PaymentMethod, PaymentMethodStore, SupplementItem, ExpenseType, SettlementAccount, Store, Supplier } = require('../../models');
+const { sequelize, CustomerSource, PaymentMethod, PaymentMethodStore, SupplementItem, ExpenseType, SettlementAccount, Store, Supplier, Region } = require('../../models');
 const { Op } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult } = require('../../utils');
 
@@ -504,8 +504,9 @@ async function sortPaymentMethods(ctx) {
 // ==============================================
 
 async function getSettlementAccountList(ctx) {
-  const { keyword, page = 1, pageSize = 20 } = ctx.query;
+  const { keyword, regionId, page = 1, pageSize = 20 } = ctx.query;
   const where = { status: 1, account_type: { [Op.ne]: 'SUPPLIER_REBATE' } };
+  if (regionId) where.region_id = regionId;
   if (keyword) {
     where[Op.or] = [
       { account_name: { [Op.like]: `%${keyword}%` } },
@@ -516,6 +517,7 @@ async function getSettlementAccountList(ctx) {
 
   const { count, rows } = await SettlementAccount.findAndCountAll({
     where,
+    include: [{ model: Region, attributes: ['region_id', 'region_code', 'name'] }],
     order: [['sort_order', 'ASC']],
     ...paginate({}, { page, pageSize })
   });
@@ -524,15 +526,19 @@ async function getSettlementAccountList(ctx) {
 }
 
 async function getAllSettlementAccounts(ctx) {
+  const { regionId } = ctx.query;
+  const where = { status: 1, account_type: { [Op.ne]: 'SUPPLIER_REBATE' } };
+  if (regionId) where.region_id = regionId;
   const rows = await SettlementAccount.findAll({
-    where: { status: 1, account_type: { [Op.ne]: 'SUPPLIER_REBATE' } },
+    where,
+    include: [{ model: Region, attributes: ['region_id', 'region_code', 'name'] }],
     order: [['sort_order', 'ASC']]
   });
   ctx.body = { code: 0, data: rows };
 }
 
 async function createSettlementAccount(ctx) {
-  const { accountName, bankName, accountNumber, accountType = 'FUND', usageNote, sortOrder } = ctx.request.body;
+  const { accountName, bankName, accountNumber, accountType = 'FUND', regionId, usageNote, sortOrder } = ctx.request.body;
   if (!accountName) ctx.throw(400, '账号名称不能为空');
   if (accountType === 'SUPPLIER_REBATE') {
     ctx.throw(400, '供应商返利账户由系统自动维护，不允许手工创建');
@@ -540,13 +546,17 @@ async function createSettlementAccount(ctx) {
   if (!['FUND', 'POLICY_RECEIVABLE', 'CARE_CREDIT'].includes(accountType)) {
     ctx.throw(400, '账户类型无效');
   }
+  if (regionId) {
+    const region = await Region.findOne({ where: { region_id: regionId, status: 1 } });
+    if (!region) ctx.throw(400, '所属区域不存在或已停用');
+  }
 
   try {
     await sequelize.transaction(async transaction => {
       const accountId = generateUUID();
       await SettlementAccount.create({
         account_id: accountId, account_name: accountName, bank_name: bankName || '', account_number: accountNumber || '',
-        account_type: accountType, supplier_id: null,
+        account_type: accountType, region_id: regionId || null, supplier_id: null,
         usage_note: usageNote || '', sort_order: sortOrder || 0, status: 1
       }, { transaction });
     });
@@ -559,12 +569,19 @@ async function createSettlementAccount(ctx) {
 
 async function updateSettlementAccount(ctx) {
   const { id } = ctx.params;
-  const { accountName, bankName, accountNumber, accountType, supplierId, usageNote, sortOrder, status } = ctx.request.body;
+  const { accountName, bankName, accountNumber, accountType, supplierId, regionId, usageNote, sortOrder, status } = ctx.request.body;
 
   const record = await SettlementAccount.findByPk(id);
   if (!record) ctx.throw(404, '记录不存在');
 
   const updates = {};
+  if (regionId !== undefined) {
+    if (regionId) {
+      const region = await Region.findOne({ where: { region_id: regionId, status: 1 } });
+      if (!region) ctx.throw(400, '所属区域不存在或已停用');
+    }
+    updates.region_id = regionId || null;
+  }
   if (accountName !== undefined) updates.account_name = accountName;
   if (bankName !== undefined) updates.bank_name = bankName;
   if (accountNumber !== undefined) updates.account_number = accountNumber;

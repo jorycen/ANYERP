@@ -12,6 +12,16 @@
     </div>
 
     <section class="filter-panel">
+      <label>区域：</label>
+      <el-select v-model="filters.regionId" placeholder="全部区域" clearable>
+        <el-option label="全部区域" value="" />
+        <el-option
+          v-for="region in filterOptions.regions"
+          :key="region.regionId"
+          :label="String(region.name || '').replace('区域', '')"
+          :value="region.regionId"
+        />
+      </el-select>
       <el-date-picker
         ref="datePickerRef"
         v-model="dateRange"
@@ -338,8 +348,8 @@ const dimensionTabs = [
   { label: '产品', value: 'product' }
 ]
 
-const filterOptions = reactive({ stores: [], employees: [], productLines: [] })
-const filters = reactive({ storeId: '', employeeId: '', productLine: '', granularity: 'day' })
+const filterOptions = reactive({ stores: [], employees: [], productLines: [], regions: [] })
+const filters = reactive({ regionId: '', storeId: '', employeeId: '', productLine: '', granularity: 'day' })
 const dateRange = ref(currentWeekRange())
 const dashboard = reactive(emptyDashboard())
 
@@ -429,7 +439,7 @@ function showSection(section) {
 async function loadFilterOptions() {
   try {
     const res = await api.getDashboardFilters()
-    if (res.code === 0) Object.assign(filterOptions, res.data || {})
+    if (res.code === 0) Object.assign(filterOptions, res.data || {}, { regions: res.data?.regions || [] })
   } catch (error) {
     ElMessage.error(error.response?.data?.message || '筛选条件加载失败')
   }
@@ -446,6 +456,7 @@ async function loadOverview() {
     const res = await api.getDashboardOverview({
       startDate: dateRange.value[0],
       endDate: dateRange.value[1],
+      regionId: filters.regionId || undefined,
       storeId: filters.storeId || undefined,
       employeeId: filters.employeeId || undefined,
       productLine: filters.productLine || undefined,

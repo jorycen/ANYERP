@@ -525,6 +525,7 @@ export default {
   getInventoryReport: (params) => api.get('/report/inventory', { params }),
   getDashboardFilters: () => api.get('/report/dashboard/filters'),
   getDashboardOverview: (params) => api.get('/report/dashboard/overview', { params }),
+  getFinanceOverview: (params) => api.get('/report/finance-overview', { params }),
   getEmployeePerformanceReport: (params) => api.get('/report/employee-performance', { params }),
   getProfitAdjustments: (params) => api.get('/report/profit-adjustments', { params }),
   createProfitAdjustment: (data) => api.post('/report/profit-adjustments', data, {

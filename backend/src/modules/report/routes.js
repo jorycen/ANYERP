@@ -17,6 +17,7 @@ const {
   rejectProfitAdjustment,
   downloadProfitAdjustmentAttachment
 } = require('./profitAdjustmentController');
+const { getFinanceOverview } = require('./financeOverviewController');
 
 const router = new Router();
 const upload = multer({
@@ -28,6 +29,7 @@ router.get('/inventory', getInventoryReport);
 router.get('/employee-performance', getEmployeePerformanceReport);
 router.get('/dashboard/filters', getDashboardFilters);
 router.get('/dashboard/overview', getDashboardOverview);
+router.get('/finance-overview', getFinanceOverview);
 router.get('/profit-adjustments', listProfitAdjustments);
 router.post('/profit-adjustments', upload.array('files', 5), createProfitAdjustment);
 router.post('/profit-adjustments/:adjustmentId/approve', approveProfitAdjustment);

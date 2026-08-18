@@ -839,10 +839,13 @@ async function cancelExpense(ctx) {
 
 async function getSettlementAccountsWithBalance(ctx) {
   try {
-    const { page = 1, pageSize = 20 } = ctx.query;
+    const { page = 1, pageSize = 20, regionId } = ctx.query;
+    const accountWhere = { status: 1 };
+    if (regionId) accountWhere.region_id = regionId;
 
     const { count, rows } = await SettlementAccount.findAndCountAll({
-      where: { status: 1 },
+      where: accountWhere,
+      include: [{ model: Region, attributes: ['region_id', 'region_code', 'name'] }],
       order: [['sort_order', 'ASC']],
       ...paginate({}, { page, pageSize })
     });

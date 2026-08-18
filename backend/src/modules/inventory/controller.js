@@ -1256,7 +1256,7 @@ function buildStoreInventoryExportRows(productRows) {
 async function getList(ctx) {
   try {
     const {
-      storeId, category, keyword, productType = '', modelFilter = '', page = 1, pageSize = 20
+      storeId, regionId, category, keyword, productType = '', modelFilter = '', page = 1, pageSize = 20
     } = ctx.query;
     const user = ctx.state.user;
     const exportMode = Boolean(ctx.state.inventoryExportMode);
@@ -1289,6 +1289,7 @@ async function getList(ctx) {
         whereStore.store_id = storeId;
       }
     }
+    if (regionId) whereStore.region_id = regionId;
 
     const stores = await Store.findAll({ where: whereStore });
     const storeIds = stores.map(s => s.store_id);
@@ -5424,6 +5425,10 @@ async function executeReturn(ctx) {
         supplier_name: returnStock.supplier_name || '',
         request_id: returnStock.return_id,
         request_no: returnStock.return_no,
+        source_type: 'purchase_return',
+        source_id: returnStock.return_id,
+        source_no: returnStock.return_no,
+        region_id: (await Store.findByPk(returnStock.store_id, { attributes: ['region_id'], transaction: t }))?.region_id || null,
         total_amount: -Math.abs(Number(returnStock.total_amount || 0)),
         paid_amount: 0,
         status: 'unpaid',

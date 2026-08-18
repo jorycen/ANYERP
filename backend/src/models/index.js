@@ -1594,6 +1594,7 @@ const Payable = sequelize.define('Payable', {
   source_type: { type: DataTypes.STRING(32), defaultValue: 'purchase' },
   source_id: { type: DataTypes.STRING(64) },
   source_no: { type: DataTypes.STRING(64) },
+  region_id: { type: DataTypes.STRING(32), allowNull: true, comment: '业务区域快照' },
   total_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
   settled_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   offset_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
@@ -1616,6 +1617,7 @@ const Settlement = sequelize.define('Settlement', {
   source_type: { type: DataTypes.STRING(32) },
   source_id: { type: DataTypes.STRING(64) },
   source_no: { type: DataTypes.STRING(64) },
+  region_id: { type: DataTypes.STRING(32), allowNull: true, comment: '业务区域快照；跨区域为空' },
   supplier_account_id: { type: DataTypes.STRING(32) },
   supplier_account_snapshot: { type: DataTypes.TEXT },
   other_payment_remark: { type: DataTypes.TEXT },
@@ -1886,6 +1888,7 @@ const SettlementAccount = sequelize.define('SettlementAccount', {
   bank_name: { type: DataTypes.STRING(128), comment: '开户行' },
   account_number: { type: DataTypes.STRING(128), comment: '账号' },
   account_type: { type: DataTypes.STRING(32), defaultValue: 'FUND', comment: 'FUND/POLICY_RECEIVABLE/SUPPLIER_REBATE/CARE_CREDIT' },
+  region_id: { type: DataTypes.STRING(32), allowNull: true, comment: '账户所属区域；为空表示公司级' },
   supplier_id: { type: DataTypes.STRING(32) },
   usage_note: { type: DataTypes.STRING(512) },
   sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
@@ -2032,6 +2035,8 @@ Store.belongsTo(Distributor, { foreignKey: 'distributor_id', targetKey: 'distrib
 
 Region.hasMany(Store, { foreignKey: 'region_id', sourceKey: 'region_id' });
 Store.belongsTo(Region, { foreignKey: 'region_id', targetKey: 'region_id' });
+Region.hasMany(SettlementAccount, { foreignKey: 'region_id', sourceKey: 'region_id' });
+SettlementAccount.belongsTo(Region, { foreignKey: 'region_id', targetKey: 'region_id' });
 
 Staff.belongsTo(Distributor, { foreignKey: 'distributor_id', targetKey: 'distributor_id' });
 Staff.belongsTo(Store, { foreignKey: 'store_id', targetKey: 'store_id', as: 'Store' });

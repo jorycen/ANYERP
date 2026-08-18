@@ -35,6 +35,7 @@ async function ensureExpensePayable(expense, options = {}, transaction = null) {
     source_type: sourceType,
     source_id: expense.expense_id,
     source_no: expense.expense_no,
+    region_id: expense.region_id || null,
     total_amount: money(expense.amount),
     paid_amount: 0,
     status: options.status || 'unpaid'
@@ -80,6 +81,7 @@ async function createReimbursementSettlement(expense, operator, transaction = nu
     source_type: expense.source_type || 'expense',
     source_id: expense.expense_id,
     source_no: expense.source_no || expense.expense_no,
+    region_id: payable.region_id || expense.region_id || null,
     total_amount: amount,
     paid_amount: 0,
     status: 'draft',

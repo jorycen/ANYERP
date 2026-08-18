@@ -1762,6 +1762,7 @@ async function runMigrations() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='结算账号表'
     `);
     await checkAndAddColumn('T_SETTLEMENT_ACCOUNT', 'ACCOUNT_TYPE', 'VARCHAR(32) DEFAULT "FUND" COMMENT "FUND/POLICY_RECEIVABLE/SUPPLIER_REBATE/CARE_CREDIT"', 'ACCOUNT_NUMBER');
+    await checkAndAddColumn('T_SETTLEMENT_ACCOUNT', 'REGION_ID', 'VARCHAR(32) COMMENT "账户所属区域；为空表示公司级账户"', 'ACCOUNT_TYPE');
     await checkAndAddColumn('T_SETTLEMENT_ACCOUNT', 'SUPPLIER_ID', 'VARCHAR(32) COMMENT "供应商返利账户对应供应商"', 'ACCOUNT_TYPE');
     await checkAndAddColumn('T_SETTLEMENT_ACCOUNT', 'USAGE_NOTE', 'VARCHAR(512) COMMENT "账户用途及限制"', 'SUPPLIER_ID');
     await checkAndAddIndex(
@@ -1769,6 +1770,49 @@ async function runMigrations() {
       'idx_settlement_account_supplier_type',
       'ALTER TABLE T_SETTLEMENT_ACCOUNT ADD INDEX idx_settlement_account_supplier_type (ACCOUNT_TYPE, SUPPLIER_ID, STATUS)'
     );
+    await checkAndAddIndex(
+      'T_SETTLEMENT_ACCOUNT',
+      'idx_settlement_account_region_status',
+      'ALTER TABLE T_SETTLEMENT_ACCOUNT ADD INDEX idx_settlement_account_region_status (REGION_ID, STATUS)'
+    );
+    await checkAndAddColumn('T_PAYABLE', 'REGION_ID', 'VARCHAR(32) COMMENT "采购/报销业务区域快照"', 'SOURCE_NO');
+    await checkAndAddColumn('T_SETTLEMENT', 'REGION_ID', 'VARCHAR(32) COMMENT "结算单业务区域快照；跨区域为空"', 'SOURCE_NO');
+    await checkAndAddIndex(
+      'T_PAYABLE',
+      'idx_payable_region_status',
+      'ALTER TABLE T_PAYABLE ADD INDEX idx_payable_region_status (REGION_ID, STATUS)'
+    );
+    await checkAndAddIndex(
+      'T_SETTLEMENT',
+      'idx_settlement_region_payment',
+      'ALTER TABLE T_SETTLEMENT ADD INDEX idx_settlement_region_payment (REGION_ID, PAYMENT_STATUS, IS_DELETED)'
+    );
+    try {
+      await sequelize.query(`
+        UPDATE T_PAYABLE p
+        LEFT JOIN T_PURCHASE_REQUEST pr ON pr.REQUEST_ID = p.REQUEST_ID
+        LEFT JOIN T_EXPENSE e ON e.EXPENSE_ID = p.SOURCE_ID
+        LEFT JOIN T_STORE st ON st.STORE_ID = COALESCE(pr.STORE_ID, e.STORE_ID)
+        SET p.REGION_ID = COALESCE(p.REGION_ID, e.REGION_ID, st.REGION_ID)
+        WHERE p.REGION_ID IS NULL
+      `);
+      await sequelize.query(`
+        UPDATE T_SETTLEMENT s
+        JOIN (
+          SELECT si.SETTLEMENT_ID, MIN(p.REGION_ID) AS REGION_ID
+          FROM T_SETTLEMENT_ITEM si
+          INNER JOIN T_PAYABLE p ON p.PAYABLE_ID = si.PAYABLE_ID
+          WHERE p.REGION_ID IS NOT NULL
+          GROUP BY si.SETTLEMENT_ID
+          HAVING COUNT(DISTINCT p.REGION_ID) = 1
+        ) x ON x.SETTLEMENT_ID = s.SETTLEMENT_ID
+        SET s.REGION_ID = COALESCE(s.REGION_ID, x.REGION_ID)
+        WHERE s.REGION_ID IS NULL
+      `);
+      console.log('[DB Migration] 已回填财务单据区域快照');
+    } catch (error) {
+      console.warn('[DB Migration] 财务单据区域快照回填跳过:', error.message);
+    }
     await sequelize.query(`
       INSERT IGNORE INTO T_SETTLEMENT_ACCOUNT
         (ACCOUNT_ID, ACCOUNT_NAME, BANK_NAME, ACCOUNT_NUMBER, ACCOUNT_TYPE, USAGE_NOTE, SORT_ORDER, STATUS)

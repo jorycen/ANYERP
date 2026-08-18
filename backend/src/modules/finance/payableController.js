@@ -70,10 +70,11 @@ async function getPurchaseAdjustmentQuantityDeltas(requestIds, transaction = nul
  * 应付款列表
  */
 function buildPayableListWhere(query) {
-  const { supplierId, sourceType, sourceNo, status, startDate, endDate } = query;
+  const { supplierId, regionId, sourceType, sourceNo, status, startDate, endDate } = query;
   const where = {};
 
   if (supplierId) where.supplier_id = supplierId;
+  if (regionId) where.region_id = regionId;
   if (sourceType) {
     const sourceTypes = String(sourceType).split(',').map(item => item.trim()).filter(Boolean);
     if (sourceTypes.length === 1) where.source_type = sourceTypes[0];
@@ -460,6 +461,7 @@ async function createSettlement(ctx) {
     const finalRows = rows.filter(row => row.amount > 0);
     const totalAmount = roundAmount(finalRows.reduce((sum, row) => sum + row.amount, 0));
     if (totalAmount <= 0) ctx.throw(400, 'settlement amount must be greater than zero');
+    const regionIds = [...new Set(finalRows.map(row => row.payable.region_id).filter(Boolean).map(String))];
     settlement = await Settlement.create({
       settlement_id: generateUUID(),
       settlement_no: `S${moment().format('YYYYMMDDHHmmss')}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`,
@@ -470,6 +472,7 @@ async function createSettlement(ctx) {
       other_payment_remark: paymentAccountType === 'other' ? String(otherPaymentRemark).trim() : null,
       other_payment_image: paymentAccountType === 'other' ? otherPaymentImage : null,
       settlement_type: 'supplier',
+      region_id: regionIds.length === 1 ? regionIds[0] : null,
       total_amount: totalAmount,
       status: 'draft',
       payment_status: 'unpaid',
@@ -586,6 +589,7 @@ async function createSettlementLegacy(ctx) {
   let totalAmount = 0;
 
   const settlement = await sequelize.transaction(async (transaction) => {
+    const regionIds = [...new Set(payables.map(payable => payable.region_id).filter(Boolean).map(String))];
     const created = await Settlement.create({
       settlement_id: settlementId,
       settlement_no: seq,
@@ -595,6 +599,7 @@ async function createSettlementLegacy(ctx) {
       supplier_account_snapshot: supplierAccountSnapshot,
       other_payment_remark: finalOtherPaymentRemark,
       other_payment_image: finalOtherPaymentImage,
+      region_id: regionIds.length === 1 ? regionIds[0] : null,
       total_amount: 0,
       status: 'draft',
       payment_status: 'unpaid',
@@ -654,6 +659,7 @@ async function createExpenseSettlement(ctx) {
       source_type: payable.source_type,
       source_id: payable.source_id,
       source_no: payable.source_no || payable.request_no,
+      region_id: payable.region_id || null,
       other_payment_remark: payable.source_type === 'reimbursement' ? 'personal advance reimbursement' : 'expense settlement',
       total_amount: amount,
       paid_amount: 0,
@@ -706,6 +712,7 @@ async function createExpenseSettlementLegacy(ctx) {
       source_type: 'expense',
       source_id: payable.source_id,
       source_no: payable.source_no || payable.request_no,
+      region_id: payable.region_id || null,
       other_payment_remark: '财务对公费用',
       total_amount: payable.total_amount,
       paid_amount: 0,
@@ -841,10 +848,11 @@ async function refreshSettlementPaymentState(settlement, transaction = null) {
  * 结算单列表
  */
 function buildSettlementListWhere(query) {
-  const { supplierId, settlementType, status, paymentStatus } = query;
+  const { supplierId, regionId, settlementType, status, paymentStatus } = query;
   const where = { is_deleted: 0 };
 
   if (supplierId) where.supplier_id = supplierId;
+  if (regionId) where.region_id = regionId;
   if (settlementType) {
     const settlementTypes = String(settlementType).split(',').map(item => item.trim()).filter(Boolean);
     where.settlement_type = settlementTypes.length > 1 ? { [Op.in]: settlementTypes } : settlementTypes[0];

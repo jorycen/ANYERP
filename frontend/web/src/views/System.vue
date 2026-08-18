@@ -557,6 +557,7 @@
         <el-table-column prop="sort_order" label="排序" width="60" />
         <el-table-column prop="account_name" label="账号名称" min-width="160" />
         <el-table-column label="账户类型" width="120"><template #default="{row}">{{ accountTypeText(row.account_type) }}</template></el-table-column>
+        <el-table-column label="所属区域" width="110"><template #default="{row}">{{ row.Region?.name || '公司级' }}</template></el-table-column>
         <el-table-column prop="bank_name" label="开户行" width="140" />
         <el-table-column prop="account_number" label="账号" min-width="180" />
         <el-table-column label="操作" width="180">
@@ -576,6 +577,11 @@
           </el-form-item>
           <el-form-item label="账户类型" required>
             <el-select v-model="saForm.accountType" style="width:100%"><el-option label="资金账户" value="FUND" /><el-option label="政策补贴应收" value="POLICY_RECEIVABLE" /><el-option label="Care可用金" value="CARE_CREDIT" /></el-select>
+          </el-form-item>
+          <el-form-item label="所属区域">
+            <el-select v-model="saForm.regionId" clearable style="width:100%" placeholder="不选表示公司级账户">
+              <el-option v-for="region in regions" :key="region.region_id" :label="String(region.name || '').replace('区域', '')" :value="region.region_id" />
+            </el-select>
           </el-form-item>
           <el-form-item label="开户行">
             <el-input v-model="saForm.bankName" placeholder="请输入开户行" />
@@ -818,6 +824,7 @@ const userData = ref([])
 const roleData = ref([])
 const menuData = ref([])
 const stores = ref([])
+const regions = ref([])
 const distributorOptions = ref([])
 const locationData = ref([])
 const locationLoading = ref(false)
@@ -955,6 +962,7 @@ onMounted(() => {
   loadRoles()
   loadMenus()
   loadStores()
+  loadRegions()
   loadCustomerSources()
   loadResourceCategories()
   loadGoodsTypes()
@@ -1161,6 +1169,13 @@ const loadStores = async () => {
     const res = await api.getStoreList({ page: 1, pageSize: 100 })
     if (res.code === 0) stores.value = res.data?.list || res.data || []
   } catch (err) { console.error('Failed to load stores') }
+}
+
+const loadRegions = async () => {
+  try {
+    const res = await api.getRegionList()
+    if (res.code === 0) regions.value = res.data || []
+  } catch (err) { console.error('Failed to load regions') }
 }
 
 const loadLocations = async () => {
@@ -1822,7 +1837,7 @@ const saFormDialogVisible = ref(false)
 const settlementAccountData = ref([])
 const saDialogTitle = ref('新增结算账号')
 const editingSaId = ref(null)
-const saForm = reactive({ accountName: '', accountType: 'FUND', bankName: '', accountNumber: '', usageNote: '', sortOrder: 0 })
+const saForm = reactive({ accountName: '', accountType: 'FUND', regionId: '', bankName: '', accountNumber: '', usageNote: '', sortOrder: 0 })
 const accountTypeText = value => ({ FUND:'资金账户', POLICY_RECEIVABLE:'政策补贴应收', CARE_CREDIT:'Care可用金' }[value] || '资金账户')
 
 const openSaMgmtDialog = async () => {
@@ -1849,6 +1864,7 @@ const openSettlementAccountDialog = (row) => {
     saForm.bankName = row.bank_name
     saForm.accountNumber = row.account_number
     saForm.accountType = row.account_type || 'FUND'
+    saForm.regionId = row.region_id || row.Region?.region_id || ''
     saForm.usageNote = row.usage_note || ''
     saForm.sortOrder = row.sort_order || 0
   } else {
@@ -1858,6 +1874,7 @@ const openSettlementAccountDialog = (row) => {
     saForm.bankName = ''
     saForm.accountNumber = ''
     saForm.accountType = 'FUND'
+    saForm.regionId = ''
     saForm.usageNote = ''
     saForm.sortOrder = 0
     restoreSystemDraft('settlement-account-create', saForm)
@@ -1870,7 +1887,7 @@ const handleSaSubmit = async () => {
   submitLoading.value = true
   try {
     let res
-    const data = { accountName: saForm.accountName, accountType: saForm.accountType, bankName: saForm.bankName, accountNumber: saForm.accountNumber, usageNote: saForm.usageNote, sortOrder: saForm.sortOrder }
+    const data = { accountName: saForm.accountName, accountType: saForm.accountType, regionId: saForm.regionId || null, bankName: saForm.bankName, accountNumber: saForm.accountNumber, usageNote: saForm.usageNote, sortOrder: saForm.sortOrder }
     if (editingSaId.value) {
       res = await api.updateSettlementAccount(editingSaId.value, data)
     } else {
@@ -1926,6 +1943,7 @@ const saveSaSort = async () => {
 const resetSaForm = () => {
   saForm.accountName = ''
   saForm.accountType = 'FUND'
+  saForm.regionId = ''
   saForm.bankName = ''
   saForm.accountNumber = ''
   saForm.usageNote = ''

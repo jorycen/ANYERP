@@ -1176,6 +1176,9 @@ async function ensurePayableForApprovedRequest(request, user, transaction = null
   }
 
   const supplier = await Supplier.findByPk(request.supplier_id, { transaction });
+  const store = request.store_id
+    ? await Store.findByPk(request.store_id, { attributes: ['region_id'], transaction })
+    : null;
   await Payable.create({
     payable_id: generateUUID(),
     supplier_id: request.supplier_id,
@@ -1188,6 +1191,7 @@ async function ensurePayableForApprovedRequest(request, user, transaction = null
     source_type: 'purchase',
     source_id: request.request_id,
     source_no: request.request_no,
+    region_id: store?.region_id || null,
     total_amount: amount,
     paid_amount: 0,
     status: 'unpaid',
@@ -1765,6 +1769,7 @@ async function createPurchaseAdjustment(ctx) {
         source_type: 'purchase_adjustment',
         source_id: adjustmentId,
         source_no: adjustmentNo,
+        region_id: request.store_id ? (await Store.findByPk(request.store_id, { attributes: ['region_id'], transaction }))?.region_id || null : null,
         total_amount: totalAmountDelta,
         offset_amount: 0,
         paid_amount: 0,

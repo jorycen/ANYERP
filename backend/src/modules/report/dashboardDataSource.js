@@ -3,6 +3,18 @@ const { sequelize } = require('../../models');
 
 const ARCHIVED_STATUSES = ['已归档', 'completed', 'archived', 'returned'];
 const GROSS_PROFIT_FORMULA_VERSION = 'ORDER_GP_V5_20260706';
+const INVENTORY_CATEGORY_ORDER = ['拯救者', '小新', 'Yoga', '其他电脑', '手机', '平板'];
+
+function classifyInventoryCategory(row) {
+  const text = [row.brand, row.series, row.model, row.productName, row.categoryPath]
+    .filter(Boolean).join(' ').toLowerCase();
+  if (/(手机|iphone|华为|荣耀|oppo|vivo|小米手机|三星手机)/i.test(text)) return '手机';
+  if (/(平板|pad|ipad|matepad|小米平板)/i.test(text)) return '平板';
+  if (text.includes('拯救者')) return '拯救者';
+  if (text.includes('小新')) return '小新';
+  if (text.includes('yoga')) return 'Yoga';
+  return '其他电脑';
+}
 
 function toNumber(value) {
   const number = Number(value || 0);
@@ -346,6 +358,10 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       this.query(
         `SELECT ps.PRODUCT_ID AS productId,
                 MAX(p.NAME) AS productName,
+                MAX(p.BRAND) AS brand,
+                MAX(p.SERIES) AS series,
+                MAX(p.MODEL) AS model,
+                MAX(p.CATEGORY) AS categoryPath,
                 COUNT(*) AS quantity,
                 ROUND(SUM(COALESCE(NULLIF(ps.INBOUND_PRICE, 0), pp.COST_PRICE, 0)), 2) AS inventoryAmount,
                 MIN(ps.INBOUND_TIME) AS oldestInboundTime
@@ -363,6 +379,10 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       this.query(
         `SELECT i.PRODUCT_ID AS productId,
                 MAX(p.NAME) AS productName,
+                MAX(p.BRAND) AS brand,
+                MAX(p.SERIES) AS series,
+                MAX(p.MODEL) AS model,
+                MAX(p.CATEGORY) AS categoryPath,
                 SUM(
                   GREATEST(COALESCE(i.NORMAL_QTY, 0),
                     COALESCE(i.REGULAR_QTY, 0) + COALESCE(i.SUBSIDY_QTY, 0) + COALESCE(i.SECOND_QTY, 0))
@@ -418,6 +438,14 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       .filter(row => row.quantity > 0);
     const inventoryQuantity = rows.reduce((sum, row) => sum + row.quantity, 0);
     const inventoryAmount = roundMoney(rows.reduce((sum, row) => sum + row.inventoryAmount, 0));
+    const categoryMap = new Map(INVENTORY_CATEGORY_ORDER.map(name => [name, { name, quantity: 0, amount: 0 }]));
+    rows.forEach(row => {
+      const category = classifyInventoryCategory(row);
+      const target = categoryMap.get(category);
+      if (!target) return;
+      target.quantity += row.quantity;
+      target.amount += row.inventoryAmount;
+    });
     const staleProducts = rows
       .map(row => {
         const oldest = row.oldestInboundTime ? new Date(row.oldestInboundTime) : null;
@@ -434,6 +462,11 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       inventoryQuantity,
       skuCount: new Set(rows.map(row => row.productId).filter(Boolean)).size,
       inventoryAmount,
+      categories: INVENTORY_CATEGORY_ORDER.map(name => ({
+        ...categoryMap.get(name),
+        quantity: Number(categoryMap.get(name).quantity || 0),
+        amount: roundMoney(categoryMap.get(name).amount)
+      })),
       ageStructure: ageRows.map(row => ({
         ageBucket: row.ageBucket,
         quantity: toNumber(row.quantity),

@@ -66,7 +66,7 @@ async function getEmployeeReportStoreIds(user, requestedStoreId) {
  * 销售报表
  */
 async function getSalesReport(ctx) {
-  const { storeId, startDate, endDate } = ctx.query;
+  const { storeId, regionId, startDate, endDate } = ctx.query;
   const user = ctx.state.user;
 
   const whereStore = {};
@@ -79,6 +79,7 @@ async function getSalesReport(ctx) {
     }
     whereStore.store_id = storeId;
   }
+  if (regionId) whereStore.region_id = regionId;
 
   const stores = await Store.findAll({ where: whereStore });
   const storeIds = stores.map(s => s.store_id);
@@ -245,7 +246,7 @@ async function getSalesReport(ctx) {
  * 库存报表
  */
 async function getInventoryReport(ctx) {
-  const { storeId, category } = ctx.query;
+  const { storeId, regionId, category } = ctx.query;
   const user = ctx.state.user;
 
   const whereStore = {};
@@ -258,11 +259,12 @@ async function getInventoryReport(ctx) {
     }
     whereStore.store_id = storeId;
   }
+  if (regionId) whereStore.region_id = regionId;
 
   const stores = await Store.findAll({ where: whereStore });
   const storeIds = stores.map(s => s.store_id);
 
-  const whereSn = { is_deleted: 0, status: 'in_stock' };
+  const whereSn = { is_deleted: 0, status: 'in_stock', store_id: { [Op.in]: storeIds } };
   if (storeId) whereSn.store_id = storeId;
 
   // 在库统计

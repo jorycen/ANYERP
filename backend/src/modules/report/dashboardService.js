@@ -312,8 +312,17 @@ class DashboardService {
       );
       storeIds = rows.map(row => String(row.storeId));
     }
-    if (!storeIds.length) return { stores: [], employees: [], productLines: [] };
-    return this.dataSource.getFilters({ storeIds });
+    if (!storeIds.length) return { stores: [], employees: [], productLines: [], regions: [] };
+    const filters = await this.dataSource.getFilters({ storeIds });
+    filters.regions = await this.dataSource.query(
+      `SELECT DISTINCT r.REGION_ID AS regionId, r.REGION_CODE AS regionCode, r.NAME AS name
+         FROM T_STORE s
+         INNER JOIN T_REGION r ON r.REGION_ID = s.REGION_ID
+        WHERE s.IS_DELETED = 0 AND s.STATUS = 1 AND s.STORE_ID IN (:storeIds)
+        ORDER BY r.SORT_ORDER ASC, r.REGION_ID ASC`,
+      { storeIds }
+    );
+    return filters;
   }
 
   async buildOverview(user, query = {}) {
@@ -338,10 +347,21 @@ class DashboardService {
       error.status = 403;
       throw error;
     }
+    if (query.regionId) {
+      const regionStores = await this.dataSource.query(
+        `SELECT STORE_ID AS storeId
+           FROM T_STORE
+          WHERE IS_DELETED = 0 AND STATUS = 1 AND REGION_ID = :regionId
+            AND STORE_ID IN (:storeIds)`,
+        { regionId: String(query.regionId), storeIds }
+      );
+      storeIds = regionStores.map(row => String(row.storeId));
+    }
 
     const filters = {
       storeIds,
       storeId: query.storeId || '',
+      regionId: query.regionId || '',
       employeeId: query.employeeId || '',
       productLine: query.productLine || ''
     };

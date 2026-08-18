@@ -14,7 +14,14 @@ const {
 } = require('./resourceRights');
 
 const VALID_OPERATION_TYPES = new Set(['INBOUND', 'OUTBOUND', 'ADJUST']);
-const VALID_INVENTORY_TYPES = new Set(['normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty']);
+const VALID_INVENTORY_TYPES = new Set([
+  'normal_qty',
+  'display_qty',
+  'demo_qty',
+  'unsellable_qty',
+  'pending_qty',
+  'rental_demo_qty'
+]);
 const OPERATION_LABELS = { INBOUND: '批量入库', OUTBOUND: '批量出库', ADJUST: '数量调整' };
 const REUSABLE_INBOUND_SN_STATUSES = new Set(['out_stock', 'sold']);
 const scheduledExecutionIds = new Set();
@@ -251,7 +258,8 @@ async function updateInventoryQty(productId, storeId, inventoryType, delta, tran
       display_qty: 0,
       demo_qty: 0,
       unsellable_qty: 0,
-      pending_qty: 0
+      pending_qty: 0,
+      rental_demo_qty: 0
     }, { transaction });
   }
   const current = Number(row[inventoryType] || 0);
@@ -878,6 +886,7 @@ module.exports = {
     validateRows,
     normalizeUploadedFilename,
     compactBatchErrors,
+    isValidInventoryType: value => VALID_INVENTORY_TYPES.has(value),
     isReusableInboundSnStatus,
     normalizeSnIdentityValue
   }

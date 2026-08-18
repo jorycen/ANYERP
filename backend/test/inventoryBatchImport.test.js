@@ -37,6 +37,11 @@ test('批量入库继续保留资源权益配置', () => {
   );
 });
 
+test('批量维护支持租赁样机仓', () => {
+  assert.equal(_test.isValidInventoryType('rental_demo_qty'), true);
+  assert.equal(_test.isValidInventoryType('unknown_qty'), false);
+});
+
 test('已出库或已销售的历史SN允许重新入库，当前在库状态仍需拦截', () => {
   assert.equal(_test.isReusableInboundSnStatus('out_stock'), true);
   assert.equal(_test.isReusableInboundSnStatus('sold'), true);
