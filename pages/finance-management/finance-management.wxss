@@ -301,6 +301,101 @@ page {
   margin-top: 24rpx;
 }
 
+.inventory-category-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 4rpx;
+}
+
+.inventory-category-tab {
+  box-sizing: border-box;
+  width: calc(50% - 8rpx);
+  min-height: 154rpx;
+  margin-bottom: 16rpx;
+  padding: 20rpx;
+  border: 1rpx solid #e8eef5;
+  border-radius: 18rpx;
+  background: #f8fafc;
+}
+
+.inventory-category-tab:nth-child(even) {
+  margin-left: 16rpx;
+}
+
+.inventory-category-tab.active {
+  border-color: #3c7bc4;
+  background: #edf5ff;
+  box-shadow: 0 6rpx 18rpx rgba(45, 105, 172, 0.12);
+}
+
+.inventory-category-topline {
+  display: flex;
+  align-items: center;
+}
+
+.inventory-category-name {
+  color: #2c3b4d;
+  font-size: 27rpx;
+  font-weight: 600;
+}
+
+.inventory-category-quantity,
+.inventory-category-amount {
+  display: block;
+  margin-top: 12rpx;
+}
+
+.inventory-category-quantity {
+  color: #8190a3;
+  font-size: 23rpx;
+}
+
+.inventory-category-amount {
+  color: #213b5e;
+  font-size: 27rpx;
+  font-weight: 600;
+}
+
+.inventory-detail-card {
+  margin-top: 2rpx;
+  padding: 8rpx 18rpx 4rpx;
+  border-radius: 16rpx;
+  background: #f8fafc;
+}
+
+.inventory-detail-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14rpx 0 6rpx;
+}
+
+.inventory-detail-title {
+  color: #43546b;
+  font-size: 24rpx;
+  font-weight: 600;
+}
+
+.inventory-child-row {
+  min-height: 64rpx;
+  border-bottom-color: #e8edf3;
+}
+
+.child-dot {
+  width: 10rpx;
+  height: 10rpx;
+  margin: 0 16rpx 0 2rpx;
+  border-radius: 50%;
+  background: #8ba8c7;
+}
+
+.inventory-empty {
+  padding: 24rpx 0;
+  color: #9aa6b5;
+  font-size: 23rpx;
+  text-align: center;
+}
+
 .data-row {
   min-height: 70rpx;
   border-bottom: 1rpx solid #edf1f5;

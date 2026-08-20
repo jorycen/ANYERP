@@ -97,14 +97,41 @@
       <text class="unit-note">数量 / 成本金额</text>
     </view>
     <view class="data-list">
-      <view class="data-row" wx:for="{{inventory}}" wx:key="name">
-        <view class="row-name-wrap">
-          <view class="category-dot category-{{index}}"></view>
-          <text class="row-name">{{item.name}}</text>
+      <view class="inventory-category-tabs">
+        <view
+          wx:for="{{inventory}}"
+          wx:key="key"
+          class="inventory-category-tab {{item.key === selectedInventoryCategory ? 'active' : ''}}"
+          data-key="{{item.key}}"
+          bindtap="selectInventoryCategory"
+        >
+          <view class="inventory-category-topline">
+            <view class="category-dot category-{{index}}"></view>
+            <text class="inventory-category-name">{{item.name}}</text>
+          </view>
+          <text class="inventory-category-quantity">{{item.quantity}} 件</text>
+          <text class="inventory-category-amount">¥{{item.amount}}</text>
         </view>
-        <text class="row-quantity">{{item.quantity}} 件</text>
-        <text class="row-amount">¥{{item.amount}}</text>
       </view>
+      <block wx:for="{{inventory}}" wx:key="key">
+        <view wx:if="{{item.key === selectedInventoryCategory}}" class="inventory-detail-card">
+          <view class="inventory-detail-heading">
+            <text class="inventory-detail-title">{{item.name}}明细</text>
+            <text class="unit-note">品牌 / 系列</text>
+          </view>
+          <view wx:if="{{item.children.length}}">
+            <view class="data-row inventory-child-row" wx:for="{{item.children}}" wx:key="key">
+              <view class="row-name-wrap">
+                <view class="child-dot"></view>
+                <text class="row-name">{{item.name}}</text>
+              </view>
+              <text class="row-quantity">{{item.quantity}} 件</text>
+              <text class="row-amount">¥{{item.amount}}</text>
+            </view>
+          </view>
+          <view wx:else class="inventory-empty">暂无明细</view>
+        </view>
+      </block>
     </view>
   </view>
 

@@ -69,6 +69,7 @@ Page({
     accountTotal: '--',
     pendingPaymentTotal: '--',
     inventory: [],
+    selectedInventoryCategory: '',
     accounts: [],
     paymentAmounts: [],
     isLoading: false,
@@ -105,6 +106,11 @@ Page({
       selectedRegionId: region.regionId || '',
       selectedRegionLabel: region.label || '全部'
     }, () => this.loadDashboard());
+  },
+
+  selectInventoryCategory(event) {
+    const selectedInventoryCategory = event.currentTarget.dataset.key || '';
+    this.setData({ selectedInventoryCategory });
   },
 
   async loadRegions() {
@@ -161,6 +167,7 @@ Page({
         accountTotal: '--',
         pendingPaymentTotal: '--',
         inventory: [],
+        selectedInventoryCategory: '',
         accounts: [],
         paymentAmounts: this.formatPaymentAmounts(null),
         errorMessage: '真实数据加载失败，请检查登录状态和接口权限',
@@ -176,6 +183,21 @@ Page({
     const accounts = data.accounts || {};
     const payments = data.payments || {};
     const grossProfit = data.grossProfit;
+    const inventoryCategories = (inventory.categories || []).map(item => ({
+      key: item.key || item.name,
+      name: item.name,
+      quantity: numberValue(item.quantity),
+      amount: formatMoney(item.amount),
+      children: (item.children || []).map(child => ({
+        key: child.key || child.name,
+        name: child.name,
+        quantity: numberValue(child.quantity),
+        amount: formatMoney(child.amount)
+      }))
+    }));
+    const selectedInventoryCategory = inventoryCategories.some(item => item.key === this.data.selectedInventoryCategory)
+      ? this.data.selectedInventoryCategory
+      : (inventoryCategories[0] ? inventoryCategories[0].key : '');
     this.setData({
       revenue: data.revenue === null || data.revenue === undefined ? '--' : formatMoney(data.revenue),
       grossProfit: grossProfit === null || grossProfit === undefined ? '--' : formatMoney(grossProfit),
@@ -184,7 +206,8 @@ Page({
       inventoryTotal: inventory.totalAmount === null || inventory.totalAmount === undefined ? '--' : formatMoney(inventory.totalAmount),
       accountTotal: accounts.totalAmount === null || accounts.totalAmount === undefined ? '--' : formatMoney(accounts.totalAmount),
       pendingPaymentTotal: formatMoney(Number(payments.uncreated || 0) + Number(payments.created || 0)),
-      inventory: (inventory.categories || []).map(item => ({ name: item.name, quantity: item.quantity || 0, amount: formatMoney(item.amount) })),
+      inventory: inventoryCategories,
+      selectedInventoryCategory,
       accounts: (accounts.byType || []).map(item => ({ name: item.name, amount: formatMoney(item.amount) })),
       paymentAmounts: this.formatPaymentAmounts(payments),
       errorMessage: '',
