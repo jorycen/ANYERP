@@ -64,12 +64,11 @@ async function resolveAllReadableStoreIds(user = {}) {
 }
 
 /**
- * 经营报表范围：店长可查看所属经销商全部有效门店，其他账号沿用原有门店范围。
+ * 经营报表范围沿用账号已配置的门店权限；BOSS 的全局范围保持不变。
  */
 async function resolveReportStoreIds(user = {}) {
   const roles = normalizeRoleCodes(user.roles || user.roleCode || []);
   if (roles.includes('boss') || (user.accessibleStoreIds || []).includes('*')) return ['*'];
-  if (isStoreManagerAccount(roles)) return resolveAllReadableStoreIds(user);
   return uniqueIds(user.accessibleStoreIds || []);
 }
 

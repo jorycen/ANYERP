@@ -1,7 +1,31 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { _test } = require('../src/modules/inventory/controller');
-const { isDealerTransferOperation, storeGuard } = require('../src/middleware/permission');
+const {
+  isDealerTransferOperation,
+  requireDistributorAccount,
+  storeGuard
+} = require('../src/middleware/permission');
+
+test('财务总览仅允许经销商级账号访问', async () => {
+  const middleware = requireDistributorAccount();
+  let nextCalled = false;
+  await middleware(
+    { state: { user: { roles: ['finance'] } } },
+    async () => { nextCalled = true; }
+  );
+  assert.equal(nextCalled, true);
+
+  for (const role of ['clerk', 'staff', 'manager', 'store_manager', 'store_admin']) {
+    await assert.rejects(
+      () => middleware({
+        state: { user: { roles: [role] } },
+        throw(status, message) { throw new Error(`${status}:${message}`); }
+      }, async () => {}),
+      new RegExp('店长及店员不可访问财务管理')
+    );
+  }
+});
 
 test('经销商级账号可以进入全部调拨操作接口，门店角色仍受门店分配限制', () => {
   const dealerContext = {

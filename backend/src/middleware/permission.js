@@ -11,9 +11,9 @@
  * 
  * 规则:
  *   - 库存查询: 所有角色可查看本经销商全部有效门店，写入仍受门店权限限制
- *   - 经营报表: 店长可查看本经销商全部有效门店，其他角色沿用原范围
+ *   - 经营报表: 店长/店员沿用账号已配置的门店范围，BOSS 保持全局范围
  *   - 入库/退库: 店员/店长只能操作自己门店
- *   - 财务管理: finance/admin/boss
+ *   - 财务管理: 经销商级账号；店长/店员不可访问
  *   - 采购管理: purchaser/admin/boss
  */
 
@@ -32,7 +32,7 @@ function hasAnyRole(user, allowedRoles) {
   return roles.includes('boss') || roles.includes('admin') || roles.some(role => allowedRoles.includes(role));
 }
 
-const STORE_ONLY_ROLE_CODES = new Set(['clerk', 'staff', 'manager', 'store_manager']);
+const STORE_ONLY_ROLE_CODES = new Set(['clerk', 'staff', 'manager', 'store_manager', 'store_admin']);
 const TRANSFER_OPERATION_PATHS = new Set([
   '/api/v1/inventory/transfer/confirm-out',
   '/api/v1/inventory/transfer/confirm-in',
@@ -43,6 +43,16 @@ const TRANSFER_OPERATION_PATHS = new Set([
 
 function isDealerAccount(user) {
   return getUserRoles(user).some(role => !STORE_ONLY_ROLE_CODES.has(role));
+}
+
+function requireDistributorAccount() {
+  return async (ctx, next) => {
+    if (!isDealerAccount(ctx.state.user)) {
+      ctx.throw(403, '店长及店员不可访问财务管理');
+    }
+
+    await next();
+  };
 }
 
 function isDealerTransferOperation(ctx) {
@@ -109,5 +119,6 @@ module.exports = {
   enforceStoreOwnership,
   filterByStore,
   isDealerAccount,
+  requireDistributorAccount,
   isDealerTransferOperation
 };

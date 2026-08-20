@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   isStoreScopedAccount,
   isStoreManagerAccount,
+  resolveReportStoreIds,
   resolvePrimaryStoreId
 } = require('../src/utils/storePermissions');
 
@@ -26,4 +27,19 @@ test('店长报表跨门店范围识别兼容历史和当前角色编码', () =>
   assert.equal(isStoreManagerAccount(['store_manager']), true);
   assert.equal(isStoreManagerAccount(['manager', 'finance']), true);
   assert.equal(isStoreManagerAccount(['clerk']), false);
+});
+
+test('经营报表恢复为账号已配置的门店范围', async () => {
+  assert.deepEqual(
+    await resolveReportStoreIds({ roles: ['manager'], accessibleStoreIds: ['STORE_1'] }),
+    ['STORE_1']
+  );
+  assert.deepEqual(
+    await resolveReportStoreIds({ roles: ['staff'], accessibleStoreIds: ['STORE_2'] }),
+    ['STORE_2']
+  );
+  assert.deepEqual(
+    await resolveReportStoreIds({ roles: ['boss'], accessibleStoreIds: [] }),
+    ['*']
+  );
 });

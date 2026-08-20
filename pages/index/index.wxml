@@ -60,7 +60,7 @@
       <text class="function-desc">查看销售、门店、商品与员工经营分析</text>
     </view>
 
-    <view class="function-item finance-entry" bindtap="navigateToFinanceManagement" wx:if="{{!purchaseQueryOnly}}">
+    <view class="function-item finance-entry" bindtap="navigateToFinanceManagement" wx:if="{{!purchaseQueryOnly && showFinance}}">
       <view class="icon-wrapper finance-icon">
         <text class="icon-text">财</text>
       </view>
