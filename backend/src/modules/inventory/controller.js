@@ -2859,12 +2859,28 @@ function validateSalesReturnInboundSn({ sn, requestedSnCode = '' }) {
   return null;
 }
 
+function getTransferableInventoryQuantity(inventories = [], locationTypes = new Map()) {
+  return (inventories || []).reduce((total, inventory) => {
+    const locationId = String(inventory?.location_id || '');
+    const locationType = locationTypes instanceof Map ? locationTypes.get(locationId) : '';
+    // 与库存汇总保持同一口径：只把销售仓 normal_qty 计入调拨可用量，
+    // 同时兼容历史数据将资源明细拆存在 regular/subsidy/second 字段的情况。
+    return total + Number(getInventoryQuantitySnapshot(inventory, locationType).normal_qty || 0);
+  }, 0);
+}
+
 async function getTransferableStock(product, productId, storeId, transaction) {
-  const inventory = await Inventory.findOne({
+  const inventories = await Inventory.findAll({
     where: { product_id: productId, store_id: storeId },
     transaction
   });
-  const inventoryQty = inventory ? Number(inventory.normal_qty || 0) : 0;
+  const locations = await Location.findAll({
+    where: { store_id: storeId, status: 1 },
+    attributes: ['location_id', 'type'],
+    transaction
+  });
+  const locationTypes = new Map(locations.map(location => [String(location.location_id), location.type]));
+  const inventoryQty = getTransferableInventoryQuantity(inventories, locationTypes);
 
   if (Number(product.need_sn) !== 1) {
     return inventoryQty;
@@ -5535,6 +5551,7 @@ module.exports = {
     validateSnLocationAdjustment,
     validateSalesReturnInboundSn,
     getInventoryQuantitySnapshot,
+    getTransferableInventoryQuantity,
     getSalesResourceQuantitySnapshot,
     getSnSalesResourceQuantitySnapshot,
     getInventoryProductType,

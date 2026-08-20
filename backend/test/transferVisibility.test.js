@@ -99,3 +99,18 @@ test('调拨入库沿用出库明细SN并拒绝替换', () => {
   assert.equal(binding.sourceSnIdMismatch, false);
   assert.equal(binding.sourceSnCodeMismatch, false);
 });
+
+test('调拨出库汇总同门店多个库存行并排除不可售库位', () => {
+  const quantity = _test.getTransferableInventoryQuantity([
+    { location_id: 'SALES_A', normal_qty: 2 },
+    { location_id: 'SALES_B', normal_qty: 1, regular_qty: 2 },
+    { location_id: 'DISPLAY_A', normal_qty: 10 },
+    { location_id: '', normal_qty: 2, regular_qty: 1 }
+  ], new Map([
+    ['SALES_A', 'normal_qty'],
+    ['SALES_B', 'normal_qty'],
+    ['DISPLAY_A', 'display_qty']
+  ]));
+
+  assert.equal(quantity, 5);
+});

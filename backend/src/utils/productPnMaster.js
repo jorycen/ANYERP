@@ -115,7 +115,7 @@ async function ensureProductPnsMaster({ productId, codes, transaction = null }) 
     });
     const conflict = sameCodeRows.find(row => String(row.product_id) !== productKey);
     if (conflict) {
-      throw Object.assign(new Error(`PN鐮?[${code}] 宸插叧鑱斿叾浠栧晢鍝侊紝涓嶈兘閲嶅缁戝畾`), { status: 409 });
+      throw Object.assign(new Error(`PN码 [${code}] 已关联其他商品，不能重复绑定`), { status: 409 });
     }
 
     const created = await ProductPn.create({
