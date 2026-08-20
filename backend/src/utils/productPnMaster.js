@@ -16,6 +16,14 @@ function pnCodeWhere(code) {
   );
 }
 
+function createPnConflictError(code) {
+  const error = new Error(`PN码 [${code}] 已关联其他商品，不能重复绑定`);
+  error.status = 409;
+  error.code = 'PN_ALREADY_BOUND';
+  error.pnCode = code;
+  return error;
+}
+
 async function listActiveProductPns(productId, transaction = null) {
   return ProductPn.findAll({
     where: { product_id: productId, status: 1, is_deleted: 0 },
@@ -60,7 +68,7 @@ async function ensureProductPnMaster({ productId, pnCode, transaction = null, is
   if (!isUsablePnCode(code)) throw Object.assign(new Error('PN码不能为空'), { status: 400 });
   const existing = await ProductPn.findAll({ where: { [Op.and]: [pnCodeWhere(code)] }, transaction });
   const conflict = existing.find(row => String(row.product_id) !== String(productId));
-  if (conflict) throw Object.assign(new Error(`PN码 [${code}] 已关联其他商品，不能重复绑定`), { status: 409 });
+  if (conflict) throw createPnConflictError(code);
   let record = existing.find(row => String(row.product_id) === String(productId));
   if (record) {
     await record.update({ pn_code: code, status: 1, is_deleted: 0, ...(isPrimary ? { is_primary: 1 } : {}) }, { transaction });
@@ -115,7 +123,7 @@ async function ensureProductPnsMaster({ productId, codes, transaction = null }) 
     });
     const conflict = sameCodeRows.find(row => String(row.product_id) !== productKey);
     if (conflict) {
-      throw Object.assign(new Error(`PN码 [${code}] 已关联其他商品，不能重复绑定`), { status: 409 });
+      throw createPnConflictError(code);
     }
 
     const created = await ProductPn.create({
@@ -209,7 +217,7 @@ async function syncProductPnsMaster({ productId, pns, transaction = null }) {
     });
     const conflict = sameCodeRows.find(row => String(row.product_id) !== productKey);
     if (conflict) {
-      throw Object.assign(new Error(`PN码 [${entry.code}] 已关联其他商品，不能重复绑定`), { status: 409 });
+      throw createPnConflictError(entry.code);
     }
 
     const existing = existingByKey.get(entry.key);
