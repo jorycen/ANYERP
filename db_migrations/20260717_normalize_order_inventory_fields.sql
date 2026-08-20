@@ -1,2 +1,0 @@
--- 已废弃：旧版本假设 T_INVENTORY_SN 存在，实际生产库并非该结构。
--- 请执行 20260717_normalize_actual_mysql_order_archive.sql。
