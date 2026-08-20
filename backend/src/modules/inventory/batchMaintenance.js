@@ -239,11 +239,12 @@ async function inventoryQty(productId, storeId, inventoryType, locationId, trans
   return row ? Number(row[inventoryType] || 0) : 0;
 }
 
-async function updateInventoryQty(productId, storeId, inventoryType, delta, transaction, locationId = '') {
+async function updateInventoryQty(productId, storeId, inventoryType, delta, transaction, locationId = '', context = {}) {
   const normalizedLocationId = locationId || '';
   let row = await Inventory.findOne({
     where: { product_id: productId, store_id: storeId, location_id: normalizedLocationId },
-    transaction
+    transaction,
+    lock: transaction?.LOCK?.UPDATE
   });
   if (!row) {
     row = await Inventory.create({
@@ -264,7 +265,13 @@ async function updateInventoryQty(productId, storeId, inventoryType, delta, tran
   }
   const current = Number(row[inventoryType] || 0);
   const next = current + Number(delta || 0);
-  if (next < 0) throw Object.assign(new Error('库存不足，不能执行负库存调整'), { status: 409 });
+  if (next < 0) {
+    const rowLabel = context.rowNo ? `第 ${context.rowNo} 行` : '当前明细';
+    throw Object.assign(
+      new Error(`${rowLabel}库存不足，不能执行负库存调整（当前可用:${current}，调整数量:${delta}）`),
+      { status: 409 }
+    );
+  }
   await row.update({ [inventoryType]: next }, { transaction });
   return { before: current, after: next };
 }
@@ -692,6 +699,7 @@ async function createSnInbound(item, application, transaction) {
   }, { transaction });
 
   await item.update({ sn_id: sn.sn_id, result_json: JSON.stringify({ snId: sn.sn_id }) }, { transaction });
+  return sn;
 }
 
 async function createNonSnBatchRights(item, application, transaction) {
@@ -718,48 +726,154 @@ async function createNonSnBatchRights(item, application, transaction) {
   }
 }
 
-async function executeApplication(application, transaction) {
-  const items = await InventoryBatchApplicationItem.findAll({
-    where: { application_id: application.application_id },
-    order: [['row_no', 'ASC']],
-    transaction
-  });
+async function executeApplicationItem(item, application, transaction) {
+  let inventoryResult;
+  let snId = item.sn_id || null;
 
-  for (const item of items) {
-    if (Number(item.need_sn || 0) === 1) {
-      if (item.operation_type === 'INBOUND') {
-        await createSnInbound(item, application, transaction);
-        await updateInventoryQty(item.product_id, item.store_id, item.inventory_type, 1, transaction, item.location_id || '');
-      } else {
-        const sn = await ProductSn.findOne({ where: { sn_id: item.sn_id || '', is_deleted: 0 }, transaction });
-        if (!sn || sn.status !== 'in_stock') throw Object.assign(new Error(`第 ${item.row_no} 行SN不在库，无法执行`), { status: 409 });
-        await sn.update({ status: 'out_stock' }, { transaction });
-        await updateInventoryQty(item.product_id, item.store_id, item.inventory_type, -1, transaction, item.location_id || '');
-        await SnLog.create({
-          log_id: generateUUID(),
-          sn_id: sn.sn_id,
-          sn_code: sn.sn_code,
-          product_id: item.product_id,
-          product_name: item.product_name,
-          store_id: item.store_id,
-          action: 'batch_outbound',
-          remark: `库存批量维护出库 ${application.application_no}`,
-          create_user: application.applicant_name || application.reviewer_name,
-          create_time: new Date()
-        }, { transaction });
-      }
+  if (Number(item.need_sn || 0) === 1) {
+    if (item.operation_type === 'INBOUND') {
+      const sn = await createSnInbound(item, application, transaction);
+      snId = sn?.sn_id || item.sn_id || null;
+      inventoryResult = await updateInventoryQty(
+        item.product_id,
+        item.store_id,
+        item.inventory_type,
+        1,
+        transaction,
+        item.location_id || '',
+        { rowNo: item.row_no }
+      );
     } else {
-      const delta = item.operation_type === 'OUTBOUND' ? -Number(item.quantity || 0) : Number(item.quantity || 0);
-      const result = await updateInventoryQty(item.product_id, item.store_id, item.inventory_type, delta, transaction, item.location_id || '');
-      await item.update({ before_qty: result.before, after_qty: result.after }, { transaction });
-      if (item.operation_type === 'INBOUND') {
-        await createNonSnBatchRights(item, application, transaction);
-      }
+      const sn = await ProductSn.findOne({
+        where: { sn_id: item.sn_id || '', is_deleted: 0 },
+        transaction,
+        lock: transaction?.LOCK?.UPDATE
+      });
+      if (!sn || sn.status !== 'in_stock') throw Object.assign(new Error(`第 ${item.row_no} 行SN不在库，无法执行`), { status: 409 });
+      await sn.update({ status: 'out_stock' }, { transaction });
+      inventoryResult = await updateInventoryQty(
+        item.product_id,
+        item.store_id,
+        item.inventory_type,
+        -1,
+        transaction,
+        item.location_id || '',
+        { rowNo: item.row_no }
+      );
+      await SnLog.create({
+        log_id: generateUUID(),
+        sn_id: sn.sn_id,
+        sn_code: sn.sn_code,
+        product_id: item.product_id,
+        product_name: item.product_name,
+        store_id: item.store_id,
+        action: 'batch_outbound',
+        remark: `库存批量维护出库 ${application.application_no}`,
+        create_user: application.applicant_name || application.reviewer_name,
+        create_time: new Date()
+      }, { transaction });
     }
+  } else {
+    const delta = item.operation_type === 'OUTBOUND' ? -Number(item.quantity || 0) : Number(item.quantity || 0);
+    inventoryResult = await updateInventoryQty(
+      item.product_id,
+      item.store_id,
+      item.inventory_type,
+      delta,
+      transaction,
+      item.location_id || '',
+      { rowNo: item.row_no }
+    );
+    if (item.operation_type === 'INBOUND') {
+      await createNonSnBatchRights(item, application, transaction);
+    }
+  }
+
+  await item.update({
+    before_qty: inventoryResult.before,
+    after_qty: inventoryResult.after,
+    execute_status: 'success',
+    execute_error: null,
+    execute_time: new Date(),
+    result_json: JSON.stringify({ status: 'success', snId })
+  }, { transaction });
+}
+
+function summarizeBatchExecution(items) {
+  const success = items.filter(item => item.execute_status === 'success').length;
+  const failed = items.filter(item => item.execute_status === 'failed').length;
+  const pending = items.length - success - failed;
+  const status = pending > 0
+    ? 'executing'
+    : success === 0
+      ? 'execute_failed'
+      : failed > 0
+        ? 'partially_executed'
+        : 'executed';
+  return { status, success, failed, pending };
+}
+
+async function markBatchItemFailed(applicationId, itemId, error) {
+  const transaction = await sequelize.transaction();
+  try {
+    const item = await InventoryBatchApplicationItem.findOne({
+      where: { item_id: itemId, application_id: applicationId },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!item || item.execute_status === 'success') {
+      await transaction.rollback();
+      return;
+    }
+    const message = formatExecutionError(error).slice(0, 1000);
+    await item.update({
+      execute_status: 'failed',
+      execute_error: message,
+      execute_time: new Date(),
+      result_json: JSON.stringify({ status: 'failed', error: message })
+    }, { transaction });
+    await transaction.commit();
+  } catch (markError) {
+    try { await transaction.rollback(); } catch (_) { /* 保留原始错误 */ }
+    throw markError;
   }
 }
 
-async function executeBatchApplicationInBackground(applicationId) {
+async function executeBatchItem(applicationId, itemId) {
+  const transaction = await sequelize.transaction();
+  let item;
+  try {
+    const application = await InventoryBatchApplication.findByPk(applicationId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    item = await InventoryBatchApplicationItem.findOne({
+      where: { item_id: itemId, application_id: applicationId },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!application || application.status !== 'executing' || !item) {
+      await transaction.rollback();
+      return 'skipped';
+    }
+    if (item.execute_status === 'success' || item.execute_status === 'failed') {
+      await transaction.rollback();
+      return item.execute_status;
+    }
+
+    await executeApplicationItem(item, application, transaction);
+    await transaction.commit();
+    return 'success';
+  } catch (error) {
+    try { await transaction.rollback(); } catch (_) { /* 保留原始错误 */ }
+    if (!item) throw error;
+    await markBatchItemFailed(applicationId, itemId, error);
+    console.error(`[BatchMaintenance] 明细执行失败 ${applicationId}/${itemId}:`, error.stack || error.message);
+    return 'failed';
+  }
+}
+
+async function finalizeBatchApplication(applicationId) {
   const transaction = await sequelize.transaction();
   try {
     const application = await InventoryBatchApplication.findByPk(applicationId, {
@@ -768,6 +882,41 @@ async function executeBatchApplicationInBackground(applicationId) {
     });
     if (!application || application.status !== 'executing') {
       await transaction.rollback();
+      return null;
+    }
+    const items = await InventoryBatchApplicationItem.findAll({
+      where: { application_id: applicationId },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+      order: [['row_no', 'ASC']]
+    });
+    const summary = summarizeBatchExecution(items);
+    const errorSummary = summary.failed > 0
+      ? `${summary.failed}条明细执行失败，请查看申请详情`
+      : null;
+    await application.update({
+      status: summary.status,
+      execute_time: summary.pending > 0 ? null : new Date(),
+      execute_error: errorSummary,
+      update_time: new Date()
+    }, { transaction });
+    await transaction.commit();
+    return summary;
+  } catch (error) {
+    try { await transaction.rollback(); } catch (_) { /* 保留原始错误 */ }
+    throw error;
+  }
+}
+
+async function executeBatchApplicationInBackground(applicationId) {
+  const startTransaction = await sequelize.transaction();
+  try {
+    const application = await InventoryBatchApplication.findByPk(applicationId, {
+      transaction: startTransaction,
+      lock: startTransaction.LOCK.UPDATE
+    });
+    if (!application || application.status !== 'executing') {
+      await startTransaction.rollback();
       return;
     }
 
@@ -776,18 +925,20 @@ async function executeBatchApplicationInBackground(applicationId) {
       execute_start_time: new Date(),
       execute_error: null,
       update_time: new Date()
-    }, { transaction });
+    }, { transaction: startTransaction });
+    await startTransaction.commit();
 
-    await executeApplication(application, transaction);
-    await application.update({
-      status: 'executed',
-      execute_time: new Date(),
-      execute_error: null,
-      update_time: new Date()
-    }, { transaction });
-    await transaction.commit();
+    const items = await InventoryBatchApplicationItem.findAll({
+      where: { application_id: applicationId },
+      order: [['row_no', 'ASC']]
+    });
+    for (const item of items) {
+      if (item.execute_status === 'success' || item.execute_status === 'failed') continue;
+      await executeBatchItem(applicationId, item.item_id);
+    }
+    await finalizeBatchApplication(applicationId);
   } catch (error) {
-    try { await transaction.rollback(); } catch (_) { /* 保留原始错误 */ }
+    try { await startTransaction.rollback(); } catch (_) { /* 保留原始错误 */ }
     try {
       await InventoryBatchApplication.update({
         status: 'execute_failed',
@@ -886,6 +1037,7 @@ module.exports = {
     validateRows,
     normalizeUploadedFilename,
     compactBatchErrors,
+    summarizeBatchExecution,
     isValidInventoryType: value => VALID_INVENTORY_TYPES.has(value),
     isReusableInboundSnStatus,
     normalizeSnIdentityValue

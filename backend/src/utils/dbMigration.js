@@ -2483,7 +2483,7 @@ async function runMigrations() {
         TOTAL_ROWS INT DEFAULT 0 COMMENT '总行数',
         VALID_ROWS INT DEFAULT 0 COMMENT '有效行数',
         ERROR_ROWS INT DEFAULT 0 COMMENT '错误行数',
-        STATUS VARCHAR(32) DEFAULT 'pending' COMMENT 'pending/executing/executed/rejected/execute_failed',
+        STATUS VARCHAR(32) DEFAULT 'pending' COMMENT 'pending/executing/executed/partially_executed/rejected/execute_failed',
         ERROR_JSON TEXT COMMENT '校验错误JSON',
         EXECUTE_ERROR VARCHAR(1000) COMMENT '后台执行失败原因',
         EXECUTE_ATTEMPTS INT DEFAULT 0 COMMENT '后台执行尝试次数',
@@ -2550,6 +2550,9 @@ async function runMigrations() {
         KEY idx_inventory_batch_item_sn (SN_CODE)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='库存批量维护申请明细'
     `);
+    await checkAndAddColumn('T_INVENTORY_BATCH_APPLICATION_ITEM', 'EXECUTE_STATUS', 'VARCHAR(32) DEFAULT "pending" COMMENT "pending/success/failed"', 'ERROR_MESSAGE');
+    await checkAndAddColumn('T_INVENTORY_BATCH_APPLICATION_ITEM', 'EXECUTE_ERROR', 'VARCHAR(1000) COMMENT "明细执行失败原因"', 'EXECUTE_STATUS');
+    await checkAndAddColumn('T_INVENTORY_BATCH_APPLICATION_ITEM', 'EXECUTE_TIME', 'DATETIME COMMENT "明细执行时间"', 'EXECUTE_ERROR');
 
     await checkAndCreateTable('T_NON_SN_INVENTORY_BATCH_RIGHT', `
       CREATE TABLE T_NON_SN_INVENTORY_BATCH_RIGHT (

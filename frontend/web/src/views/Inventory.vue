@@ -318,6 +318,7 @@
                 <el-option label="待审批" value="pending" />
                 <el-option label="执行中" value="executing" />
                 <el-option label="已执行" value="executed" />
+                <el-option label="部分执行" value="partially_executed" />
                 <el-option label="已拒绝" value="rejected" />
                 <el-option label="执行失败" value="execute_failed" />
               </el-select>
@@ -1691,6 +1692,12 @@
           <el-table-column prop="quantity" label="数量" width="80" />
           <el-table-column prop="before_qty" label="调整前" width="80" />
           <el-table-column prop="after_qty" label="调整后" width="80" />
+          <el-table-column label="执行结果" width="100">
+            <template #default="{ row }">
+              <el-tag :type="batchItemStatusType(row.execute_status)">{{ batchItemStatusText(row.execute_status) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="execute_error" label="执行失败原因" min-width="240" show-overflow-tooltip />
           <el-table-column label="资源权益" min-width="150">
             <template #default="{ row }">{{ parseResourceTypesText(row.resource_types) }}</template>
           </el-table-column>
@@ -2393,6 +2400,7 @@ const batchStatusText = (status) => ({
   pending: '待审批',
   executing: '执行中',
   executed: '已执行',
+  partially_executed: '部分执行',
   rejected: '已拒绝',
   execute_failed: '执行失败'
 })[status] || status || '-'
@@ -2401,9 +2409,22 @@ const batchStatusType = (status) => ({
   pending: 'warning',
   executing: 'primary',
   executed: 'success',
+  partially_executed: 'warning',
   rejected: 'info',
   execute_failed: 'danger'
 })[status] || ''
+
+const batchItemStatusText = (status) => ({
+  pending: '待执行',
+  success: '已执行',
+  failed: '执行失败'
+})[status] || '待执行'
+
+const batchItemStatusType = (status) => ({
+  pending: 'info',
+  success: 'success',
+  failed: 'danger'
+})[status] || 'info'
 
 const parseResourceTypesText = (value) => {
   if (!value) return '-'
