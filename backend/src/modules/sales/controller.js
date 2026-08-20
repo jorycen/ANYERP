@@ -62,6 +62,15 @@ async function isRentalDemoSn(sn, transaction = null) {
   });
   return location?.type === 'rental_demo_qty';
 }
+
+async function isSalesWarehouseSn(sn, transaction = null) {
+  if (!sn?.location_id || String(sn.inventory_type || 'normal_qty') !== 'normal_qty') return false;
+  const location = await Location.findByPk(sn.location_id, {
+    attributes: ['type', 'status'],
+    transaction
+  });
+  return location?.type === 'normal_qty' && Number(location.status ?? 1) === 1;
+}
 const { issueDownloadTicket } = require('../../utils/downloadTicket');
 const { canViewSnTraceReference, isDealerTraceAccount } = require('../../utils/snTracePermission');
 const { sendExcel } = require('../../utils/excelExport');
@@ -353,7 +362,15 @@ async function list(ctx) {
       applicantInclude,
       itemInclude,
       { model: OrderPayment },
-      { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false }
+      { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false },
+      ...(status === 'pending_approval'
+        ? [{
+          model: OrderGrossProfit,
+          as: 'grossProfitSnapshot',
+          attributes: ['gross_profit_amount', 'snapshot_status', 'calculated_at'],
+          required: false
+        }]
+        : [])
     ],
     distinct: true,
     order: buildPendingFirstOrder(sequelize, {
@@ -595,6 +612,28 @@ function exportSupplementAmount(supplements, predicate) {
     .reduce((total, item) => total + Number(item.amount || 0) * (item.amount_type === 'decrease' ? -1 : 1), 0);
 }
 
+function isEducationSupplement(item) {
+  return /教育|教补/.test(String(item?.item_name || '').trim());
+}
+
+function isFreightSupplement(item) {
+  return /运费|提货费用/.test(String(item?.item_name || '').trim());
+}
+
+function resolveExportProductCode(item, productCodeById = new Map()) {
+  const productId = String(item?.product_id || '').trim();
+  const candidates = [
+    item?.product_code,
+    item?.Product?.product_code,
+    item?.OrderItem?.product_code,
+    item?.OrderItem?.Product?.product_code,
+    productId ? productCodeById.get(productId) : '',
+    // 兼容历史订单中商品关联已被清理、但仍保留 PN 快照的情况；绝不输出内部 product_id。
+    item?.pn_code
+  ];
+  return candidates.map(value => String(value || '').trim()).find(Boolean) || '';
+}
+
 function exportAuxiliaryParticipants(value, primaryName) {
   const participants = [];
   const seen = new Set();
@@ -627,21 +666,49 @@ function exportAuxiliaryNames(value, primaryName) {
 function exportAuxiliaryAmounts(value, primaryName, totalAmount) {
   const auxiliaryItems = parseExportJson(value, [])
     .filter(item => item && typeof item === 'object');
-  if (!auxiliaryItems.length) return '';
+  if (!auxiliaryItems.length) return 0;
 
   const participants = exportAuxiliaryParticipants(auxiliaryItems, primaryName);
-  if (!participants.length) return '';
+  if (!participants.length) return 0;
 
-  const total = money(totalAmount || 0);
-  const baseShare = money(total / participants.length);
-  let allocated = 0;
-  return participants.map((name, index) => {
-    const amount = index === participants.length - 1
-      ? money(total - allocated)
-      : baseShare;
-    allocated += amount;
-    return `${name}:${amount}`;
-  }).join('；');
+  const getAmount = item => {
+    const source = item?.amount_distribution && typeof item.amount_distribution === 'object'
+      ? { ...item, ...item.amount_distribution }
+      : item || {};
+    const method = String(firstNonEmpty(source, [
+      'allocationType', 'allocation_type', 'distributionType', 'distribution_type',
+      'splitType', 'split_type', 'method', 'type', 'ratio'
+    ], '')).trim().toLowerCase();
+    if (['ratio', 'percentage', 'percent', 'proportion', '比例', '比例分配'].includes(method)) return null;
+
+    const amountKeys = [
+      'amount', 'allocatedAmount', 'allocated_amount', 'allocationAmount', 'allocation_amount',
+      'salesAmount', 'sales_amount', 'performanceAmount', 'performance_amount',
+      'splitAmount', 'split_amount', 'profitAmount', 'profit_amount'
+    ];
+    const key = amountKeys.find(candidate => Object.prototype.hasOwnProperty.call(source, candidate));
+    if (!key) return null;
+    const amount = Number(source[key]);
+    return Number.isFinite(amount) ? money(amount) : 0;
+  };
+
+  const amountByName = new Map();
+  let hasAmountDetail = false;
+  auxiliaryItems.forEach(item => {
+    const name = String(item.name || item.staffName || item.staff_name || item.selected || '').trim();
+    if (!name) return;
+    const amount = getAmount(item);
+    if (amount === null) return;
+    hasAmountDetail = true;
+    amountByName.set(name, amount);
+  });
+  if (!hasAmountDetail) return 0;
+
+  const detail = participants
+    .filter(name => amountByName.has(name) && amountByName.get(name) > 0)
+    .map(name => `${name}:${amountByName.get(name)}`)
+    .join('；');
+  return detail || 0;
 }
 
 function getOrderExportArchiveStatus(status) {
@@ -693,13 +760,13 @@ function buildOrderExportRows(orders, paymentMethodMap = {}) {
     const paymentAmountsByItem = Object.fromEntries(
       ORDER_EXPORT_PAYMENT_HEADERS.map(header => [header, allocateExportAmount(paymentTotals[header], itemEntries)])
     );
-    const supplementEducation = exportSupplementAmount(supplements, item => /教育/.test(String(item.item_name || '')));
-    const supplementFreight = exportSupplementAmount(supplements, item => /提货运费|运费/.test(String(item.item_name || '')));
+    const supplementEducation = exportSupplementAmount(supplements, isEducationSupplement);
+    const supplementFreight = exportSupplementAmount(supplements, isFreightSupplement);
     const supplementDetails = exportSupplementDetails(supplements);
 
     return items.map((item, itemIndex) => {
       const subtotal = Number(item.subtotal || 0);
-      const productCode = item.pn_code || item.Product?.product_code || item.product_id || '';
+      const productCode = resolveExportProductCode(item);
       const isMainProduct = isExportMainProduct(item, items.length === 1);
       const rowPaymentAmounts = Object.fromEntries(
         ORDER_EXPORT_PAYMENT_HEADERS.map(header => [header, paymentAmountsByItem[header].get(itemIndex) || 0])
@@ -824,7 +891,8 @@ function buildDepositExportRows(deposits, paymentMethodMap = {}) {
   });
 }
 
-function buildSalesReturnSettlementExportRows(settlements) {
+function buildSalesReturnSettlementExportRows(settlements, options = {}) {
+  const productCodeById = options.productCodeById instanceof Map ? options.productCodeById : new Map();
   return (settlements || []).flatMap(settlement => {
     const data = settlement.toJSON ? settlement.toJSON() : settlement;
     const items = Array.isArray(data.items) && data.items.length ? data.items : [{}];
@@ -834,8 +902,9 @@ function buildSalesReturnSettlementExportRows(settlements) {
       const policySubsidy = Number(item.policy_subsidy_receivable_amount ?? data.policy_subsidy_receivable_amount ?? 0);
       const educationSubsidy = Number(item.education_subsidy_amount ?? data.education_subsidy_amount ?? 0);
       const row = Object.fromEntries(ORDER_EXPORT_HEADERS.map(header => [header, '']));
+      const quantity = Number(item.quantity || 0);
       Object.assign(row, {
-        订单编号: data.order_no || data.return_no || '',
+        订单编号: data.return_no || data.settlement_no || '',
         下单时间: data.create_time || '',
         提交人: data.create_user || '',
         门店ID: data.store_id || '',
@@ -851,13 +920,13 @@ function buildSalesReturnSettlementExportRows(settlements) {
         开票状态: data.red_invoice_status === 'not_required' ? '不开票' : '红字发票待处理',
         开票金额: data.red_invoice_status === 'not_required' ? 0 : userReceivable,
         商品名称: item.product_name || '销售退单负向结算',
-        商品编码: item.product_id || '',
-        数量: Number(item.quantity || 0),
+        商品编码: resolveExportProductCode(item, productCodeById),
+        数量: -Math.abs(quantity),
         小计: userReceivable,
         商品应收金额: userReceivable,
         商品收款金额: customerReceived,
-        退货商品: `${item.product_name || '销售退单'}${item.quantity ? ` x${item.quantity}` : ''}`,
-        备注: `负向销售结算 ${data.settlement_no || data.return_no || ''}`,
+        退货商品: `${item.product_name || '销售退货'}${quantity ? ` x-${Math.abs(quantity)}` : ''}`,
+        备注: `销售退货单 ${data.return_no || ''}，原销售订单 ${data.order_no || ''}`,
         创建日期: data.create_time || '',
         订单状态: '销售退单负向结算',
         操作人: data.finance_confirm_user || data.create_user || ''
@@ -976,11 +1045,26 @@ async function exportOrders(ctx) {
       })
       : Promise.resolve([])
   ]);
+  const returnProductIds = [...new Set(returnSettlements
+    .flatMap(settlement => {
+      const data = settlement.toJSON ? settlement.toJSON() : settlement;
+      return Array.isArray(data.items) ? data.items.map(item => item.product_id) : [];
+    })
+    .map(value => String(value || '').trim())
+    .filter(Boolean))];
+  const returnProducts = returnProductIds.length
+    ? await Product.findAll({
+      where: { product_id: { [Op.in]: returnProductIds } },
+      attributes: ['product_id', 'product_code'],
+      raw: true
+    })
+    : [];
+  const returnProductCodeById = new Map(returnProducts.map(product => [String(product.product_id), product.product_code || '']));
   const paymentMethodMap = Object.fromEntries(paymentMethods.map(method => [method.code, method.name]));
   const rows = [
     ...buildOrderExportRows(orders, paymentMethodMap),
     ...buildDepositExportRows(deposits, paymentMethodMap),
-    ...buildSalesReturnSettlementExportRows(returnSettlements)
+    ...buildSalesReturnSettlementExportRows(returnSettlements, { productCodeById: returnProductCodeById })
   ].sort((a, b) => new Date(b.下单时间 || 0).getTime() - new Date(a.下单时间 || 0).getTime());
   sendExcel(ctx, rows, ORDER_EXPORT_HEADERS, `销售订单导出_${getChinaDateString()}.xlsx`, '订单明细');
 }
@@ -1084,8 +1168,9 @@ async function createSubsidyPhotosDownloadTicket(ctx) {
 
 function subsidyPhotoResponse(order) {
   const data = order.toJSON ? order.toJSON() : order;
-  const photos = normalizeSubsidyPhotos(data.subsidy_photos).map(photo => ({
+  const photos = normalizeSubsidyPhotos(data.subsidy_photos).map((photo, index) => ({
       ...photo,
+      downloadName: subsidyPhotoDownloadName(data, photo, index),
       isLocal: photo.storage === 'local',
       accessUrl: photo.storage === 'local' && photo.id
         ? `/api/v1/sales/subsidy-photos/${data.order_id}/files/${encodeURIComponent(photo.id)}`
@@ -1163,7 +1248,8 @@ async function replaceSubsidyPhotos(ctx) {
   await fs.promises.mkdir(SUBSIDY_PHOTO_UPLOAD_DIR, { recursive: true });
   const stored = [];
   try {
-    for (const file of files) {
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
       const photoId = generateUUID();
       const extension = path.extname(file.originalname || '').toLowerCase();
       const storageName = `${photoId}${extension}`;
@@ -1171,7 +1257,10 @@ async function replaceSubsidyPhotos(ctx) {
       await fs.promises.writeFile(filePath, file.buffer);
       stored.push({
         id: photoId,
-        name: path.basename(file.originalname || '国补照片').slice(0, 255),
+        name: subsidyPhotoDownloadName(order, {
+          name: path.basename(file.originalname || '国补照片'),
+          mimeType: file.mimetype || ''
+        }, index),
         storage: 'local',
         storage_name: storageName,
         mime_type: file.mimetype || 'application/octet-stream',
@@ -1228,7 +1317,7 @@ async function downloadSubsidyPhoto(ctx) {
     detail: { photoId: photo.id, photoName: photo.name }
   });
   ctx.type = photo.mimeType || 'application/octet-stream';
-  ctx.attachment(photo.name || '国补照片');
+  ctx.attachment(subsidyPhotoDownloadName(order, photo, 0));
   ctx.body = fs.createReadStream(filePath);
 }
 
@@ -1275,6 +1364,22 @@ function subsidyPhotoFileName(photo, index) {
   const name = zipFileName(photo?.name, index);
   const nameExtension = path.extname(name).toLowerCase();
   return SUBSIDY_PHOTO_ALLOWED_EXTENSIONS.has(nameExtension) ? name : `${name}${extension}`;
+}
+
+function safeSubsidyPhotoNamePart(value, fallback) {
+  const sanitized = String(value || '')
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
+  return sanitized || fallback;
+}
+
+function subsidyPhotoDownloadName(order, photo, index) {
+  const data = order?.toJSON ? order.toJSON() : order || {};
+  const originalName = subsidyPhotoFileName(photo, index).split('/').pop();
+  const orderNo = safeSubsidyPhotoNamePart(data.order_no || data.order_id, '无订单号');
+  const person = safeSubsidyPhotoNamePart(data.subsidy_person, '未命名');
+  const prefix = `${orderNo}_${person}_`;
+  return originalName.startsWith(prefix) ? originalName : `${prefix}${originalName}`;
 }
 
 function subsidyPhotoFolderName(order) {
@@ -1384,7 +1489,9 @@ async function subsidyPhotoZipEntries(order, folder = '') {
       if (filePath && fs.existsSync(filePath)) {
         entries.push({
           id: photo.id,
-          name: safeFolder ? `${safeFolder}/${subsidyPhotoFileName(photo, entries.length)}` : subsidyPhotoFileName(photo, entries.length),
+          name: safeFolder
+            ? `${safeFolder}/${subsidyPhotoDownloadName(order, photo, entries.length)}`
+            : subsidyPhotoDownloadName(order, photo, entries.length),
           load: () => fs.promises.readFile(filePath)
         });
       }
@@ -1394,7 +1501,9 @@ async function subsidyPhotoZipEntries(order, folder = '') {
     if (/^cloud:\/\//i.test(photo.url)) {
       entries.push({
         id: photo.id,
-        name: safeFolder ? `${safeFolder}/${subsidyPhotoFileName(photo, entries.length)}` : subsidyPhotoFileName(photo, entries.length),
+        name: safeFolder
+          ? `${safeFolder}/${subsidyPhotoDownloadName(order, photo, entries.length)}`
+          : subsidyPhotoDownloadName(order, photo, entries.length),
         load: async () => {
           let sourceUrl = photo.displayUrl;
           try {
@@ -1441,7 +1550,7 @@ async function downloadAllSubsidyPhotosArchive(ctx) {
   const orders = await Order.findAll({
     where,
     // 批量下载只需要订单编号和照片元数据，不加载门店及其他订单字段，减少查询时间和内存占用。
-    attributes: ['order_id', 'order_no', 'subsidy_photos'],
+    attributes: ['order_id', 'order_no', 'subsidy_person', 'subsidy_photos'],
     order: [['create_time', 'DESC'], ['order_id', 'DESC']]
   });
 
@@ -1491,6 +1600,7 @@ function normalizeAuxiliarySalesList(value) {
     if (key === 'name:' || seen.has(key)) return result;
     seen.add(key);
     result.push({
+      ...item,
       staffId: staffId === '' ? null : staffId,
       name: String(name || '').trim() || String(item.selected || '').trim(),
       selected: String(item.selected || name || '').trim()
@@ -2907,7 +3017,7 @@ async function getProductSns(ctx) {
     store_id: storeId,
     status: 'in_stock',
     is_deleted: 0,
-    inventory_type: { [Op.ne]: 'rental_demo_qty' }
+    inventory_type: 'normal_qty'
   };
   if (pnCode) {
     where.pn_code = pnCode;
@@ -2920,7 +3030,7 @@ async function getProductSns(ctx) {
   });
   const saleableSnRecords = [];
   for (const sn of snRecords) {
-    if (!(await isRentalDemoSn(sn))) saleableSnRecords.push(sn);
+    if (await isSalesWarehouseSn(sn)) saleableSnRecords.push(sn);
   }
 
   const store = await Store.findOne({
@@ -4195,8 +4305,8 @@ async function reserveInventoryForOrder(order, transaction = null) {
       if (!snRecord) {
         throw archiveError(`SN码 [${snCode}] 在当前门店没有可用库存，不能提交订单`);
       }
-      if (await isRentalDemoSn(snRecord, transaction)) {
-        throw archiveError(`SN码 [${snCode}] 属于租赁样机仓，不允许销售`);
+      if (!(await isSalesWarehouseSn(snRecord, transaction))) {
+        throw archiveError(`SN码 [${snCode}] 不在销售仓，不允许直接销售`);
       }
 
       operations.push({ item, quantity, snRecord, inventoryType: snRecord.inventory_type || 'normal_qty' });
@@ -4244,19 +4354,123 @@ async function releaseReservedInventoryForOrder(order, transaction = null) {
 }
 
 async function assertAvailableInventory(item, product, storeId, quantity, actionText, transaction = null) {
-  const inv = await Inventory.findOne({
-    where: { product_id: item.product_id, store_id: storeId },
-    transaction
-  });
-  const normalStock = inv ? Math.max(
-    Number(inv.normal_qty || 0),
-    Number(inv.regular_qty || 0) + Number(inv.subsidy_qty || 0) + Number(inv.second_qty || 0)
-  ) : 0;
-  const totalStock = inv ? normalStock + Number(inv.display_qty || 0) : 0;
+  const inventoryPlan = await buildSalesInventoryPlan(item.product_id, storeId, quantity, transaction);
+  const totalStock = inventoryPlan.totalStock;
   if (totalStock < quantity) {
     throw archiveError(`商品 ${item.product_name || product.name} 库存不足(可用:${totalStock}, 需要:${quantity})，不能${actionText}`);
   }
-  return inv;
+  return inventoryPlan.rows[0] || null;
+}
+
+function inventoryQueryOptions(transaction) {
+  const options = { transaction };
+  if (transaction?.LOCK?.UPDATE) options.lock = transaction.LOCK.UPDATE;
+  return options;
+}
+
+function getSalesInventoryQuantities(row) {
+  const detailTotal = Number(row.regular_qty || 0) +
+    Number(row.subsidy_qty || 0) +
+    Number(row.second_qty || 0);
+  return {
+    normal: Math.max(Number(row.normal_qty || 0), detailTotal)
+  };
+}
+
+function sortSalesInventoryRows(rows) {
+  return [...rows].sort((left, right) => {
+    const locationCompare = String(left.location_id || '').localeCompare(String(right.location_id || ''));
+    if (locationCompare !== 0) return locationCompare;
+    return String(left.inventory_id || '').localeCompare(String(right.inventory_id || ''));
+  });
+}
+
+async function findSalesInventoryRows(productId, storeId, transaction = null) {
+  const rows = await Inventory.findAll({
+    where: { product_id: productId, store_id: storeId },
+    ...inventoryQueryOptions(transaction)
+  });
+  const locationIds = [...new Set(rows.map(row => String(row.location_id || '')).filter(Boolean))];
+  if (!locationIds.length) return [];
+
+  const salesLocations = await Location.findAll({
+    where: {
+      location_id: { [Op.in]: locationIds },
+      type: 'normal_qty',
+      status: 1
+    },
+    attributes: ['location_id'],
+    ...inventoryQueryOptions(transaction)
+  });
+  const salesLocationIds = new Set(salesLocations.map(location => String(location.location_id)));
+  return rows.filter(row => salesLocationIds.has(String(row.location_id || '')));
+}
+
+function buildSalesInventoryPlanFromRows(rows, quantity) {
+  const orderedRows = sortSalesInventoryRows(rows || []);
+  const quantities = new Map(orderedRows.map(row => [row, getSalesInventoryQuantities(row)]));
+  const allocations = [];
+  let remaining = Math.max(0, Number(quantity) || 0);
+
+  for (const row of orderedRows) {
+    if (remaining <= 0) break;
+    const available = Math.max(0, Number(quantities.get(row)?.normal || 0));
+    if (available <= 0) continue;
+    const allocated = Math.min(available, remaining);
+    allocations.push({ row, kind: 'normal', quantity: allocated });
+    remaining -= allocated;
+  }
+
+  const totalStock = orderedRows.reduce((sum, row) => {
+    const stock = quantities.get(row);
+    return sum + stock.normal;
+  }, 0);
+  return { rows: orderedRows, allocations, totalStock, remaining };
+}
+
+async function buildSalesInventoryPlan(productId, storeId, quantity, transaction = null) {
+  const rows = await findSalesInventoryRows(productId, storeId, transaction);
+  return buildSalesInventoryPlanFromRows(rows, quantity);
+}
+
+async function applySalesInventoryAllocations(allocations, transaction = null) {
+  const states = new Map();
+  for (const allocation of allocations || []) {
+    const row = allocation.row;
+    if (!states.has(row)) {
+      states.set(row, {
+        row,
+        normal_qty: Number(row.normal_qty || 0),
+        regular_qty: Number(row.regular_qty || 0),
+        subsidy_qty: Number(row.subsidy_qty || 0),
+        second_qty: Number(row.second_qty || 0)
+      });
+    }
+
+    const state = states.get(row);
+    const quantity = Math.max(0, Number(allocation.quantity) || 0);
+    const detailColumns = ['regular_qty', 'subsidy_qty', 'second_qty'];
+    const detailTotal = detailColumns.reduce((sum, column) => sum + state[column], 0);
+    const currentNormal = Math.max(state.normal_qty, detailTotal);
+    const deductFromNormal = Math.min(currentNormal, quantity);
+    state.normal_qty = currentNormal - deductFromNormal;
+    let detailRemaining = deductFromNormal;
+    for (const column of detailColumns) {
+      if (detailRemaining <= 0) break;
+      const deduct = Math.min(state[column], detailRemaining);
+      state[column] -= deduct;
+      detailRemaining -= deduct;
+    }
+  }
+
+  for (const state of states.values()) {
+    await state.row.update({
+      normal_qty: state.normal_qty,
+      regular_qty: state.regular_qty,
+      subsidy_qty: state.subsidy_qty,
+      second_qty: state.second_qty
+    }, { transaction });
+  }
 }
 
 async function validateAndDeductInventoryForArchive(order, transaction = null, { deduct = true } = {}) {
@@ -4339,8 +4553,8 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
       if (!snRecord || normalizePnCode(snRecord.pn_code) !== normalizePnCode(pnCode)) {
         throw archiveError(`SN码 [${snCode}] 在当前门店没有可用库存，不能归档`);
       }
-      if (await isRentalDemoSn(snRecord, transaction)) {
-        throw archiveError(`SN码 [${snCode}] 属于租赁样机仓，不允许销售`);
+      if (!(await isSalesWarehouseSn(snRecord, transaction))) {
+        throw archiveError(`SN码 [${snCode}] 不在销售仓，不允许直接销售`);
       }
 
       operations.push({
@@ -4366,22 +4580,16 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
         if (!optionalSn || normalizePnCode(optionalSn.pn_code) !== normalizePnCode(pnCode)) {
           throw archiveError(`SN码 [${snCode}] 不存在或与PN码不匹配，不能归档`);
         }
+        if (!(await isSalesWarehouseSn(optionalSn, transaction))) {
+          throw archiveError(`SN码 [${snCode}] 不在销售仓，不允许直接销售`);
+        }
         if (!item.sn_id) {
           await item.update({ sn_id: optionalSn.sn_id }, { transaction });
         }
       }
-      const inv = await Inventory.findOne({
-        where: { product_id: item.product_id, store_id: order.store_id },
-        transaction
-      });
-      const pendingStock = inv ? Number(inv.pending_qty || 0) : 0;
-      const normalStock = inv ? Math.max(
-        Number(inv.normal_qty || 0),
-        Number(inv.regular_qty || 0) + Number(inv.subsidy_qty || 0) + Number(inv.second_qty || 0)
-      ) : 0;
-      const totalStock = inv ? normalStock + Number(inv.display_qty || 0) + pendingStock : 0;
-      if (totalStock < quantity) {
-        throw archiveError(`商品 ${item.product_name || product.name} 库存不足(可用:${totalStock}, 需要:${quantity})，不能归档`);
+      const inventoryPlan = await buildSalesInventoryPlan(item.product_id, order.store_id, quantity, transaction);
+      if (inventoryPlan.totalStock < quantity) {
+        throw archiveError(`商品 ${item.product_name || product.name} 库存不足(可用:${inventoryPlan.totalStock}, 需要:${quantity})，不能归档`);
       }
 
       operations.push({
@@ -4389,7 +4597,7 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
         product,
         quantity,
         inventoryType: 'normal_qty',
-        fromPending: pendingStock >= quantity
+        inventoryAllocations: inventoryPlan.allocations
       });
     }
   }
@@ -4404,11 +4612,7 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
       }
     }
 
-    if (op.fromPending) {
-      await _finalizePendingInventory(op.item.product_id, order.store_id, op.quantity, transaction);
-    } else {
-      await _deductInventory(op.item.product_id, order.store_id, op.inventoryType, op.quantity, transaction);
-    }
+    await applySalesInventoryAllocations(op.inventoryAllocations, transaction);
   }
   return operations;
 }
@@ -4468,12 +4672,14 @@ module.exports = {
     hasSubsidyPhotoFilter,
     inferSubsidyPhotoExtension,
     subsidyPhotoFileName,
+    subsidyPhotoDownloadName,
     subsidyPhotoFolderName,
     userCanViewSubsidyPhotos,
     subsidyPhotoStoreWhere,
     buildSubsidyPhotoQuery,
     buildChinaDateRange,
     buildOrderExportRows,
+    buildSalesReturnSettlementExportRows,
     buildDepositExportRows,
     getOrderExportArchiveStatus,
     getOrderExportInvoiceAmount,

@@ -6,6 +6,7 @@ Page({
     showCreateOrder: true,
     showInbound: true,
     showTransfer: true,
+    showFinance: false,
     purchaseQueryOnly: false,
     appVersion: 'v2.0.1'
   },
@@ -43,7 +44,8 @@ Page({
       purchaseQueryOnly: userUtils.isPurchaseQueryOnly(userInfo),
       showCreateOrder: !blockedAccounts.includes(phoneNumber),
       showInbound: ['distributor', 'store_admin', 'staff'].includes(userInfo.userRole),
-      showTransfer: ['distributor', 'store_admin', 'staff'].includes(userInfo.userRole)
+      showTransfer: ['distributor', 'store_admin', 'staff'].includes(userInfo.userRole),
+      showFinance: userUtils.isDistributorAccount(userInfo)
     });
   },
 
@@ -90,6 +92,11 @@ Page({
   },
 
   navigateToFinanceManagement: function () {
+    const userUtils = require('../profile/user-utils.js');
+    if (!userUtils.isDistributorAccount(userUtils.getUserInfo())) {
+      wx.showToast({ title: '店长及店员不可访问财务管理', icon: 'none' });
+      return;
+    }
     wx.navigateTo({
       url: '/pages/finance-management/finance-management'
     });

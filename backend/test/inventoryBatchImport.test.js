@@ -67,3 +67,10 @@ test('批量执行唯一约束错误转换为可操作提示', () => {
   );
   assert.equal(_test.formatExecutionError(new Error('第 2 行SN已存在')), '第 2 行SN已存在');
 });
+
+test('批量执行按明细汇总为全部成功、部分执行或全部失败', () => {
+  assert.equal(_test.summarizeBatchExecution([{ execute_status: 'success' }, { execute_status: 'success' }]).status, 'executed');
+  assert.equal(_test.summarizeBatchExecution([{ execute_status: 'success' }, { execute_status: 'failed' }]).status, 'partially_executed');
+  assert.equal(_test.summarizeBatchExecution([{ execute_status: 'failed' }, { execute_status: 'failed' }]).status, 'execute_failed');
+  assert.equal(_test.summarizeBatchExecution([{ execute_status: 'success' }, { execute_status: 'pending' }]).status, 'executing');
+});

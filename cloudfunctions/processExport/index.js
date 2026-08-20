@@ -681,38 +681,31 @@ function getAuxiliarySalesInfo(order) {
   const salesList = order.auxiliarySalesList || order.auxiliarySales || []
   const mainSalesName = order.createUser || ''
 
-  let salesRatioDistribution = mainSalesName
-  if (salesList.length > 0) {
-    const nonMainSalesList = salesList.filter(sales => !sales.isMainSales)
-    
-    // 获取利润为0的辅助销售人
-    const zeroProfitSalesList = nonMainSalesList.filter(sales => {
-      const profitAmount = parseFloat(sales.profitAmount || sales.amount || sales.salesAmount || 0)
-      return profitAmount === 0
-    })
-    
-    // 如果有利润为0的辅助销售人，显示提交人/利润为0的辅助销售人
-    if (zeroProfitSalesList.length > 0) {
-      const zeroProfitNames = zeroProfitSalesList.map(sales => {
-        return sales.selected || sales.name || sales.salesName || ''
-      }).filter(n => n)
-      if (zeroProfitNames.length > 0) {
-        salesRatioDistribution = mainSalesName + '/' + zeroProfitNames.join('/')
-      }
-    }
-    // 如果所有辅助销售人都有利润分配，则只显示提交人姓名
+  const names = []
+  const seenNames = new Set()
+  const addName = name => {
+    const normalized = String(name || '').trim()
+    if (!normalized || seenNames.has(normalized)) return
+    seenNames.add(normalized)
+    names.push(normalized)
   }
+  addName(mainSalesName)
+  salesList.forEach(sales => addName(sales.selected || sales.name || sales.salesName || ''))
+  const salesRatioDistribution = names.join('/')
 
-  const auxiliarySalesAmount = salesList.length > 0
-    ? salesList.map(sales => {
-        const name = sales.selected || sales.name || sales.salesName || ''
-        const amount = parseFloat(sales.profitAmount || sales.amount || sales.salesAmount || 0)
-        return { name, amount }
-      })
-      .filter(s => s.name && s.amount > 0)
-      .map(s => `${s.name}:${s.amount.toFixed(2)}`)
-      .join('/')
-    : ''
+  const amountDetails = salesList.map(sales => ({
+    name: sales.selected || sales.name || sales.salesName || '',
+    amount: parseFloat(sales.profitAmount ?? sales.amount ?? sales.salesAmount ?? 0) || 0,
+    hasAmount: Object.prototype.hasOwnProperty.call(sales, 'profitAmount') ||
+      Object.prototype.hasOwnProperty.call(sales, 'amount') ||
+      Object.prototype.hasOwnProperty.call(sales, 'salesAmount')
+  }))
+  const auxiliarySalesAmount = amountDetails.some(sales => sales.hasAmount && sales.amount > 0)
+    ? amountDetails
+      .filter(sales => sales.name && sales.hasAmount && sales.amount > 0)
+      .map(sales => `${sales.name}:${sales.amount.toFixed(2)}`)
+      .join('；')
+    : 0
 
   return [`"${salesRatioDistribution}"`, `"${auxiliarySalesAmount}"`]
 }

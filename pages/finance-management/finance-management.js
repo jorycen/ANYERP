@@ -79,6 +79,11 @@ Page({
   },
 
   onLoad() {
+    if (!userUtils.isDistributorAccount(userUtils.getUserInfo())) {
+      wx.showToast({ title: '店长及店员不可访问财务管理', icon: 'none' });
+      setTimeout(() => wx.reLaunch({ url: '/pages/index/index' }), 350);
+      return;
+    }
     const today = formatDate(new Date());
     this.setData({ selectedDate: today });
     this.loadRegions();

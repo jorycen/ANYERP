@@ -24,6 +24,20 @@ function normalizeMoney(value) {
   return Number.isFinite(number) ? Math.round(number * 100) / 100 : 0;
 }
 
+function getEffectiveSnSalePrice(record = {}) {
+  const effectivePrice = Number(first(record, ['effectiveSalePrice', 'effective_sale_price'], 0));
+  if (Number.isFinite(effectivePrice) && effectivePrice > 0) return effectivePrice;
+
+  const specialPrice = Number(first(record, ['specialPrice', 'special_price'], 0));
+  if (Number.isFinite(specialPrice) && specialPrice > 0) return specialPrice;
+
+  const unifiedPrice = Number(first(record, [
+    'unifiedSalePrice', 'unified_sale_price', 'standardPrice', 'standard_price',
+    'retailPrice', 'retail_price'
+  ], 0));
+  return Number.isFinite(unifiedPrice) && unifiedPrice > 0 ? unifiedPrice : 0;
+}
+
 function normalizeQuantity(value) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : 1;
@@ -155,6 +169,7 @@ module.exports = {
   first,
   normalizeId,
   normalizeMoney,
+  getEffectiveSnSalePrice,
   normalizeQuantity,
   normalizeStatus,
   normalizeTimestamp,

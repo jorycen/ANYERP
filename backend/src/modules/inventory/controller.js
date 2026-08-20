@@ -20,6 +20,7 @@ const { sendExcel } = require('../../utils/excelExport');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { assertTransferStoreScope, isTransferScope, transferRegionKeys } = require('../../utils/transferScope');
 const { canViewSnTraceReference, isDealerTraceAccount } = require('../../utils/snTracePermission');
+const { resolveAllReadableStoreIds } = require('../../utils/storePermissions');
 const { assertSingleSnProductPn } = require('../../utils/productPn');
 const { ensureProductPnMaster } = require('../../utils/productPnMaster');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
@@ -448,9 +449,11 @@ async function getSnInventoryList(ctx) {
   } = ctx.query;
   const user = ctx.state.user || {};
   const exportMode = Boolean(ctx.state.inventoryExportMode);
-  const allowedStoreIds = Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds : [];
+  const allowedStoreIds = await resolveAllReadableStoreIds(user);
 
-  if (storeId) assertStoreVisible(ctx, storeId);
+  if (storeId && !allowedStoreIds.includes('*') && !allowedStoreIds.map(String).includes(String(storeId))) {
+    ctx.throw(403, '无权访问该门店库存数据');
+  }
   if (!storeId && !allowedStoreIds.includes('*') && allowedStoreIds.length === 0) {
     ctx.body = formatPaginatedResult([], { page, pageSize, count: 0 });
     return;
@@ -843,6 +846,66 @@ function getSalesInventoryQty(inv) {
 }
 
 const INVENTORY_QUANTITY_FIELDS = ['normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty', 'rental_demo_qty'];
+
+function normalizeInventoryQuantityField(value) {
+  return INVENTORY_QUANTITY_FIELDS.includes(String(value || '').trim())
+    ? String(value).trim()
+    : 'normal_qty';
+}
+
+function buildInventoryProductKeywordConditions(keyword, historicalSnProductIds = []) {
+  const pattern = `%${String(keyword || '').trim()}%`;
+  const conditions = [
+    { name: { [Op.like]: pattern } },
+    { product_code: { [Op.like]: pattern } },
+    { config: { [Op.like]: pattern } },
+    { manufacturer_code: { [Op.like]: pattern } },
+    { remark: { [Op.like]: pattern } }
+  ];
+  if (historicalSnProductIds.length > 0) {
+    conditions.push({ product_id: { [Op.in]: historicalSnProductIds } });
+  }
+  return conditions;
+}
+
+function getSnInventoryMoveFields(locationType, snInventoryType) {
+  const primaryField = normalizeInventoryQuantityField(locationType || snInventoryType);
+  const fields = [primaryField];
+  if (primaryField !== 'normal_qty') {
+    fields.push('normal_qty', 'regular_qty', 'subsidy_qty', 'second_qty');
+  } else {
+    fields.push('regular_qty', 'subsidy_qty', 'second_qty');
+  }
+  return [...new Set(fields)];
+}
+
+async function moveSnInventoryAggregate({ sn, storeId, oldLocationId, oldLocation, targetLocation, transaction }) {
+  const targetLocationId = String(targetLocation?.location_id || '');
+  const targetField = normalizeInventoryQuantityField(targetLocation?.type);
+  const oldFieldCandidates = getSnInventoryMoveFields(oldLocation?.type, sn?.inventory_type);
+
+  if (oldLocationId && oldLocationId !== targetLocationId) {
+    const oldInventory = await Inventory.findOne({
+      where: { product_id: sn.product_id, store_id: storeId, location_id: oldLocationId },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (oldInventory) {
+      let remaining = 1;
+      for (const field of oldFieldCandidates) {
+        if (remaining <= 0) break;
+        const current = Number(oldInventory[field] || 0);
+        if (current <= 0) continue;
+        const moved = Math.min(current, remaining);
+        await oldInventory.update({ [field]: current - moved }, { transaction });
+        remaining -= moved;
+      }
+    }
+  }
+
+  await updateInventory(sn.product_id, storeId, targetField, 1, transaction, targetLocationId);
+  return targetField;
+}
 
 /**
  * 仓位类型是库存数量的实际归属维度。
@@ -1266,24 +1329,18 @@ async function getList(ctx) {
     // 调拨查询由请求链路的 scope=transfer 标记放行，允许读取被调拨门店的库存。
     // 实际出库仍在 confirmTransferOutPartial 中校验调拨单和调出门店，不能据此绕过写入权限。
     const whereStore = {};
-    const distributorScoped = isDistributorAccount(user) && !getUserRoles(user).includes('boss');
-    if (distributorScoped) {
-      whereStore.distributor_id = user.distributorId || '__NO_DISTRIBUTOR__';
-      const storeIds = Array.isArray(user.accessibleStoreIds)
-        ? user.accessibleStoreIds.filter(id => id && id !== '*')
-        : [];
-      whereStore.store_id = storeIds.length > 0 ? storeIds : '__NO_STORE__';
-    } else if (!user.accessibleStoreIds.includes('*')) {
-      whereStore.store_id = user.accessibleStoreIds;
+    const readableStoreIds = transferScope
+      ? (Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds : [])
+      : await resolveAllReadableStoreIds(user);
+    if (!readableStoreIds.includes('*')) {
+      whereStore.store_id = readableStoreIds.length ? readableStoreIds : '__NO_STORE__';
     }
     if (transferScope && storeId) {
       await assertTransferStoreScope(ctx, storeId);
       whereStore.store_id = storeId;
     } else if (storeId) {
-      const allowedStoreIds = Array.isArray(user.accessibleStoreIds)
-        ? user.accessibleStoreIds.map(String)
-        : [];
-      if (distributorScoped && !allowedStoreIds.includes(String(storeId))) {
+      const allowedStoreIds = readableStoreIds.map(String);
+      if (!readableStoreIds.includes('*') && !allowedStoreIds.includes(String(storeId))) {
         whereStore.store_id = '__NO_STORE__';
       } else {
         whereStore.store_id = storeId;
@@ -1297,13 +1354,21 @@ async function getList(ctx) {
     const productWhere = { is_deleted: 0, status: 1 };
     if (category) productWhere.category = category;
     if (keyword) {
-      productWhere[Op.or] = [
-        { name: { [Op.like]: `%${keyword}%` } },
-        { product_code: { [Op.like]: `%${keyword}%` } },
-        { config: { [Op.like]: `%${keyword}%` } },
-        { manufacturer_code: { [Op.like]: `%${keyword}%` } },
-        { remark: { [Op.like]: `%${keyword}%` } }
-      ];
+      const historicalSnRows = storeIds.length > 0
+        ? await ProductSn.findAll({
+          where: {
+            pn_code: { [Op.like]: `%${String(keyword).trim()}%` },
+            status: 'in_stock',
+            is_deleted: 0,
+            store_id: { [Op.in]: storeIds }
+          },
+          attributes: ['product_id'],
+          group: ['product_id'],
+          raw: true
+        })
+        : [];
+      const historicalSnProductIds = historicalSnRows.map(row => row.product_id).filter(Boolean);
+      productWhere[Op.or] = buildInventoryProductKeywordConditions(keyword, historicalSnProductIds);
     }
 
     const allProducts = await Product.findAll({
@@ -1584,15 +1649,15 @@ async function getSnList(ctx) {
       await assertTransferStoreScope(ctx, storeId);
       where.store_id = storeId;
     } else if (storeId) {
-      const allowedStoreIds = Array.isArray(user.accessibleStoreIds)
-        ? user.accessibleStoreIds.map(String)
-        : [];
-      where.store_id = isDistributorAccount(user) && !getUserRoles(user).includes('boss') && !allowedStoreIds.includes(String(storeId))
+      const readableStoreIds = await resolveAllReadableStoreIds(user);
+      const allowedStoreIds = readableStoreIds.map(String);
+      where.store_id = !readableStoreIds.includes('*') && !allowedStoreIds.includes(String(storeId))
         ? '__NO_STORE__'
         : storeId;
     } else {
+      const readableStoreIds = await resolveAllReadableStoreIds(user);
       const whereStore = {};
-      if (!user.accessibleStoreIds.includes('*')) whereStore.store_id = user.accessibleStoreIds;
+      if (!readableStoreIds.includes('*')) whereStore.store_id = readableStoreIds;
       const stores = await Store.findAll({ where: whereStore });
       const storeIds = stores.map(s => s.store_id);
       where.store_id = { [Op.in]: storeIds };
@@ -1790,7 +1855,15 @@ async function adjustSnLocation(ctx) {
         })
       : null;
 
-    await sn.update({ location_id: locationId }, { transaction: t });
+    const targetInventoryType = await moveSnInventoryAggregate({
+      sn,
+      storeId,
+      oldLocationId,
+      oldLocation,
+      targetLocation,
+      transaction: t
+    });
+    await sn.update({ location_id: locationId, inventory_type: targetInventoryType }, { transaction: t });
     await SnLog.create({
       log_id: generateUUID(),
       sn_id: sn.sn_id,
@@ -2862,12 +2935,28 @@ function validateSalesReturnInboundSn({ sn, requestedSnCode = '' }) {
   return null;
 }
 
+function getTransferableInventoryQuantity(inventories = [], locationTypes = new Map()) {
+  return (inventories || []).reduce((total, inventory) => {
+    const locationId = String(inventory?.location_id || '');
+    const locationType = locationTypes instanceof Map ? locationTypes.get(locationId) : '';
+    // 与库存汇总保持同一口径：只把销售仓 normal_qty 计入调拨可用量，
+    // 同时兼容历史数据将资源明细拆存在 regular/subsidy/second 字段的情况。
+    return total + Number(getInventoryQuantitySnapshot(inventory, locationType).normal_qty || 0);
+  }, 0);
+}
+
 async function getTransferableStock(product, productId, storeId, transaction) {
-  const inventory = await Inventory.findOne({
+  const inventories = await Inventory.findAll({
     where: { product_id: productId, store_id: storeId },
     transaction
   });
-  const inventoryQty = inventory ? Number(inventory.normal_qty || 0) : 0;
+  const locations = await Location.findAll({
+    where: { store_id: storeId, status: 1 },
+    attributes: ['location_id', 'type'],
+    transaction
+  });
+  const locationTypes = new Map(locations.map(location => [String(location.location_id), location.type]));
+  const inventoryQty = getTransferableInventoryQuantity(inventories, locationTypes);
 
   if (Number(product.need_sn) !== 1) {
     return inventoryQty;
@@ -5538,6 +5627,9 @@ module.exports = {
     validateSnLocationAdjustment,
     validateSalesReturnInboundSn,
     getInventoryQuantitySnapshot,
+    normalizeInventoryQuantityField,
+    getSnInventoryMoveFields,
+    getTransferableInventoryQuantity,
     getSalesResourceQuantitySnapshot,
     getSnSalesResourceQuantitySnapshot,
     getInventoryProductType,
@@ -5546,6 +5638,7 @@ module.exports = {
     matchesInventoryModelFilter,
     compareInventoryModelRows,
     buildStoreInventoryExportRows,
+    buildInventoryProductKeywordConditions,
     purchaseInitiatorName,
     resolveInboundInitiator,
     resolveSnTraceLogUser,

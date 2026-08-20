@@ -4,6 +4,7 @@ const {
   roundMoney,
   toNumber
 } = require('./dashboardDataSource');
+const { resolveReportStoreIds } = require('../../utils/storePermissions');
 
 const PROFIT_ROLES = new Set(['boss', 'admin', 'finance', 'manager']);
 const AGE_BUCKET_ORDER = ['0-7天', '8-15天', '16-30天', '31-60天', '60天以上'];
@@ -305,7 +306,7 @@ class DashboardService {
   }
 
   async buildFilters(user) {
-    let storeIds = user.accessibleStoreIds || [];
+    let storeIds = await resolveReportStoreIds(user);
     if (storeIds.includes('*')) {
       const rows = await this.dataSource.query(
         'SELECT STORE_ID AS storeId FROM T_STORE WHERE IS_DELETED = 0 AND STATUS = 1'
@@ -330,7 +331,7 @@ class DashboardService {
     const granularity = ['day', 'week', 'month'].includes(query.granularity)
       ? query.granularity
       : 'day';
-    let storeIds = user.accessibleStoreIds || [];
+    let storeIds = await resolveReportStoreIds(user);
     if (storeIds.includes('*')) {
       const rows = await this.dataSource.query(
         'SELECT STORE_ID AS storeId FROM T_STORE WHERE IS_DELETED = 0 AND STATUS = 1'

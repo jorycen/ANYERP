@@ -83,8 +83,6 @@
               <el-button link type="success" @click="handleSubmitDraft(row)" v-if="!row.record_type && row.order_status === 'draft'">提交</el-button>
               <el-button link type="danger" @click="handleDeleteDraft(row)" v-if="!row.record_type && row.order_status === 'draft' && !row.submit_time">删除</el-button>
               <el-button link type="primary" @click="handleView(row)">查看</el-button>
-              <el-button link type="success" @click="handleApprove(row)" v-if="!row.record_type && row.order_status === 'pending_approval' && canApprove">审批通过</el-button>
-              <el-button link type="danger" @click="handleReject(row)" v-if="!row.record_type && row.order_status === 'pending_approval' && canApprove">拒绝</el-button>
               </td>
             </tr>
           </tbody>
@@ -200,16 +198,30 @@
               </el-table-column>
               <el-table-column label="SN码" width="200">
                 <template #default="{ row, $index }">
-                  <el-input
+                  <el-select
                     v-if="row.needSn"
                     v-model="row.snCode"
-                    placeholder="请输入SN码"
+                    placeholder="选择SN"
                     size="small"
                     clearable
-                    :disabled="row.snLoading"
+                    filterable
+                    :loading="row.snLoading"
+                    style="width: 100%"
                     @change="(val) => onSnChange(val, $index)"
-                    @blur="() => onSnChange(row.snCode, $index)"
-                  />
+                  >
+                    <el-option
+                      v-for="sn in (row.snList || [])"
+                      :key="sn.sn_id || sn.sn_code"
+                      :label="sn.sn_code"
+                      :value="sn.sn_code"
+                    />
+                    <el-option
+                      v-if="row.snCode && !(row.snList || []).some(sn => sn.sn_code === row.snCode)"
+                      :key="`current-${row.snCode}`"
+                      :label="row.snCode"
+                      :value="row.snCode"
+                    />
+                  </el-select>
                   <span v-else class="muted">无需SN</span>
                 </template>
               </el-table-column>
@@ -540,7 +552,6 @@ const submitLoading = ref(false)
 const dialogTitle = ref('新建订单')
 const currentOrder = ref(null)
 
-const canApprove = computed(() => hasRole(['manager']))
 const canExportOrders = computed(() => isDistributorAccount() || hasRole(['manager', 'store_manager']))
 const actionLabel = (action) => ({
   created: '创建订单',
