@@ -66,9 +66,23 @@ async function resolveProductPn({ productId, requestedCode = '', requireSingleFo
 async function ensureProductPnMaster({ productId, pnCode, transaction = null, isPrimary = false }) {
   const code = String(pnCode || '').trim();
   if (!isUsablePnCode(code)) throw Object.assign(new Error('PN码不能为空'), { status: 400 });
+  const product = await Product.findByPk(productId, {
+    attributes: ['product_id', 'product_code', 'need_sn'],
+    transaction
+  });
+  if (!product) throw Object.assign(new Error('商品不存在'), { status: 404 });
   const existing = await ProductPn.findAll({ where: { [Op.and]: [pnCodeWhere(code)] }, transaction });
   const conflict = existing.find(row => String(row.product_id) !== String(productId));
   if (conflict) throw createPnConflictError(code);
+  const existingForProduct = await ProductPn.findAll({ where: { product_id: productId }, transaction });
+  assertSingleSnProductPn({
+    needSn: product.need_sn,
+    productCode: product.product_code,
+    configuredCodes: existingForProduct
+      .filter(row => Number(row.is_deleted || 0) === 0 && Number(row.status || 0) === 1)
+      .map(row => row.pn_code),
+    requestedCode: code
+  });
   let record = existing.find(row => String(row.product_id) === String(productId));
   if (record) {
     await record.update({ pn_code: code, status: 1, is_deleted: 0, ...(isPrimary ? { is_primary: 1 } : {}) }, { transaction });

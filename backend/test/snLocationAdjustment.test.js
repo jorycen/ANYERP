@@ -54,3 +54,15 @@ test('SN库位调整禁止跨门店、非在库和无效库位', () => {
     { status: 400, message: '目标库位不存在、已停用或不属于当前门店' }
   );
 });
+
+test('SN库位调整同步使用目标库位的库存类型', () => {
+  assert.deepEqual(
+    _test.getSnInventoryMoveFields('demo_qty', 'demo_qty'),
+    ['demo_qty', 'normal_qty', 'regular_qty', 'subsidy_qty', 'second_qty']
+  );
+  assert.deepEqual(
+    _test.getSnInventoryMoveFields('normal_qty', 'demo_qty'),
+    ['normal_qty', 'regular_qty', 'subsidy_qty', 'second_qty']
+  );
+  assert.equal(_test.normalizeInventoryQuantityField('unknown'), 'normal_qty');
+});

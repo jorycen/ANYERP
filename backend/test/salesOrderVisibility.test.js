@@ -151,16 +151,23 @@ test('销售退货导出形成独立退货单并以负数展示数量和金额',
       items: [{
         product_name: '商品A',
         product_id: 'P-001',
+        Product: { product_code: 'PRD-001' },
         quantity: -1,
         user_receivable_amount: -100,
-        customer_received_amount: -85
+        customer_received_amount: -85,
+        policy_subsidy_receivable_amount: -10,
+        education_subsidy_amount: -5
       }]
     })
   }]);
 
   assert.equal(rows[0].订单编号, 'RET-001');
   assert.equal(rows[0].数量, -1);
+  assert.equal(rows[0].商品编码, 'PRD-001');
+  assert.equal(rows[0].订单总计, -100);
   assert.equal(rows[0].商品应收金额, -100);
+  assert.equal(rows[0].国补, -10);
+  assert.equal(rows[0].教育补贴, -5);
   assert.match(rows[0].备注, /ORD-001/);
 });
 
@@ -204,13 +211,26 @@ test('订单导出包含完整金额补录信息', () => {
       OrderItems: [{ product_name: '商品A', subtotal: 100, quantity: 1 }],
       supplements: [
         { item_name: '教育优惠', amount: 20, amount_type: 'decrease', content: '学生证已核验' },
+        { item_name: '提货费用', amount: 15, amount_type: 'increase' },
         { item_name: '优惠券', amount: 30, amount_type: 'increase', coupon_code: 'COUPON-1' }
       ]
     })
   }]);
 
   assert.equal(rows[0].补录教育优惠, -20);
-  assert.equal(rows[0].补录信息, '教育优惠:20(减少，学生证已核验)；优惠券:30(增加，券码:COUPON-1)');
+  assert.equal(rows[0].商品提货运费, 15);
+  assert.equal(rows[0].补录信息, '教育优惠:20(减少，学生证已核验)；提货费用:15(增加)；优惠券:30(增加，券码:COUPON-1)');
+});
+
+test('退单导出不把内部商品ID作为商品编码', () => {
+  const rows = _test.buildSalesReturnSettlementExportRows([{
+    toJSON: () => ({
+      return_no: 'RET-002',
+      items: [{ product_id: 'internal-product-id', product_name: '历史商品', quantity: -1 }]
+    })
+  }]);
+
+  assert.equal(rows[0].商品编码, '');
 });
 
 test('定金订单进入销售导出并按实际收款方式归列', () => {

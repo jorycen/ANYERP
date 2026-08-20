@@ -53,9 +53,12 @@ test('国补照片权限包含总部、财务和店长但不包含普通店员',
 });
 
 test('国补照片导出文件自动补齐扩展名并按 YYYYDDMM姓名手机号命名目录', () => {
-  const { subsidyPhotoFileName, subsidyPhotoFolderName } = salesController._test;
+  const { subsidyPhotoFileName, subsidyPhotoDownloadName, subsidyPhotoFolderName } = salesController._test;
   assert.equal(subsidyPhotoFileName({ name: '身份证', mimeType: 'image/png' }, 0), '身份证.png');
   assert.equal(subsidyPhotoFileName({ name: '照片', storageName: 'file-1.webp' }, 1), '照片.webp');
   assert.equal(subsidyPhotoFileName({ name: '照片.jpg', mimeType: 'image/png' }, 2), '照片.jpg');
   assert.equal(subsidyPhotoFolderName({ create_time: '2026-08-11T03:04:05.000Z', subsidy_person: '张三', customer_phone: '13800138000' }), '20261108张三13800138000');
+  assert.equal(subsidyPhotoDownloadName({ order_no: 'SO-001', subsidy_person: '张三' }, { name: 'SN.jpg' }, 0), 'SO-001_张三_SN.jpg');
+  assert.equal(subsidyPhotoDownloadName({ order_no: 'SO-001', subsidy_person: '张三' }, { name: 'SO-001_张三_SN.jpg' }, 0), 'SO-001_张三_SN.jpg');
+  assert.equal(subsidyPhotoDownloadName({ order_no: 'SO/001', subsidy_person: '张/三' }, { name: '身份证', mimeType: 'image/png' }, 1), 'SO_001_张_三_身份证.png');
 });

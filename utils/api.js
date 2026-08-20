@@ -1660,10 +1660,20 @@ const api = {
         // 后续归档校验使用精确命中的 PN，避免 manufacturer_code 中包含多个编码时误比对整串文本。
         return Object.assign({}, matched, { pnCode: normalizePnCode(keyword) });
       };
-      return http.request('/product/pn-list' + toQuery({ keyword, storeId, page: 1, pageSize: 20 }))
-        .then(findExactPn)
-        .catch(() => http.request('/product/search' + toQuery({ keyword, storeId, page: 1, pageSize: 20 }))
-          .then(findExactPn));
+      const requests = [
+        '/product/pn-list' + toQuery({ keyword, storeId, page: 1, pageSize: 20 }),
+        // PN主表没有记录时，搜索接口仍会从在库SN的PN快照中返回商品，兼容历史PN数据。
+        '/product/search' + toQuery({ keyword, storeId, page: 1, pageSize: 20 }),
+        '/product/list' + toQuery({ keyword, storeId, page: 1, pageSize: 20 })
+      ];
+      const tryNext = index => {
+        if (index >= requests.length) return Promise.resolve(null);
+        return http.request(requests[index])
+          .then(findExactPn)
+          .then(product => product || tryNext(index + 1))
+          .catch(() => tryNext(index + 1));
+      };
+      return tryNext(0);
     },
     getGoodsBySNDetailed(sn, storeId = '', productId = '') {
       const keyword = String(sn || '').trim();

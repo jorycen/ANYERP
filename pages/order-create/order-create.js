@@ -3,7 +3,7 @@ const userUtils = require('../profile/user-utils.js');
 const DataStorage = require('../../utils/storage.js');
 const api = require('../../utils/api.js');
 const couponOcr = require('../../utils/coupon-ocr.js');
-const { normalizeOrderItem, normalizeSnCode, isEmptyOrderItem } = require('../../utils/model.js');
+const { normalizeOrderItem, normalizeSnCode, getEffectiveSnSalePrice, isEmptyOrderItem } = require('../../utils/model.js');
 require('../../utils/cloud-adapter.js').install();
 Page({
   /**
@@ -1417,8 +1417,14 @@ Page({
     current.inventoryType = snRecord.inventory_type || snRecord.inventoryType || '';
     current.inventoryStatus = snRecord.inventory_status || snRecord.inventoryStatus || snRecord.status || '';
     current.previousSnStatus = current.inventoryStatus || current.previousSnStatus || '在库';
+    if (selectedIndex > 0) {
+      const effectivePrice = getEffectiveSnSalePrice(snRecord);
+      if (effectivePrice > 0) current.price = effectivePrice;
+    }
+    current.subtotal = (parseFloat(current.price) || 0) * (parseFloat(current.quantity) || 0);
 
     this.setData({ goodsList });
+    this.calculateTotal();
     this.saveOrderDataToCache();
   },
 
@@ -3563,6 +3569,8 @@ Page({
           latest.snCode = snOptions[0] || '';
           latest.inventoryId = selectedSn.inventoryId || selectedSn.sn_id || selectedSn.snId || '';
           latest.inventoryType = selectedSn.inventory_type || selectedSn.inventoryType || '';
+          const effectivePrice = getEffectiveSnSalePrice(selectedSn);
+          if (effectivePrice > 0) latest.price = effectivePrice;
         } else if (snOptions.length > 1) {
           latest.snPickerIndex = 0;
           latest.snCode = '';
@@ -3574,6 +3582,8 @@ Page({
         }
 
         this.setData({ goodsList: latestGoodsList });
+        this.calculateTotal();
+        this.saveOrderDataToCache();
         return snRecords;
       })
       .catch(err => {

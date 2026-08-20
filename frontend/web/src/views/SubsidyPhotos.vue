@@ -287,12 +287,20 @@ function resetFilters() {
   loadData()
 }
 
+function subsidyPhotoDownloadName(row, photo) {
+  if (photo.downloadName) return photo.downloadName
+  const safePart = (value, fallback) => String(value || '').trim().replace(/[<>:"/\\|?*\x00-\x1f]/g, '_') || fallback
+  const originalName = String(photo.name || '国补照片').split(/[\\/]/).pop()
+  return `${safePart(row.orderNo || row.orderId, '无订单号')}_${safePart(row.subsidyPerson, '未命名')}_${originalName}`
+}
+
 async function downloadPhoto(row, photo) {
+  const fileName = subsidyPhotoDownloadName(row, photo)
   try {
     if (!photo.isLocal && getPhotoUrl(photo)) {
       const link = document.createElement('a')
       link.href = getPhotoUrl(photo)
-      link.download = photo.name || '国补照片'
+      link.download = fileName
       link.target = '_blank'
       link.rel = 'noopener'
       link.click()
@@ -302,7 +310,7 @@ async function downloadPhoto(row, photo) {
     const url = URL.createObjectURL(response.data)
     const link = document.createElement('a')
     link.href = url
-    link.download = photo.name || '国补照片'
+    link.download = fileName
     link.click()
     URL.revokeObjectURL(url)
   } catch (error) {

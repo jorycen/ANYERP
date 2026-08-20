@@ -5,6 +5,7 @@ const path = require('node:path');
 const models = require('../src/models');
 const inventoryController = require('../src/modules/inventory/controller');
 const salesController = require('../src/modules/sales/controller');
+const { getEffectiveSnSalePrice } = require('../../utils/model');
 
 const {
   calculateStockAgeDays,
@@ -16,6 +17,12 @@ test('SN特价优先于统一售价且不随统一调价变化', () => {
   assert.equal(resolveEffectiveSalePrice(6999, 6299), 6299);
   assert.equal(resolveEffectiveSalePrice(7299, 6299), 6299);
   assert.equal(resolveEffectiveSalePrice(7299, null), 7299);
+});
+
+test('前端选中SN时使用接口返回的当前适用售价', () => {
+  assert.equal(getEffectiveSnSalePrice({ effective_sale_price: 7000, unified_sale_price: 8499 }), 7000);
+  assert.equal(getEffectiveSnSalePrice({ special_price: 7000, unified_sale_price: 8499 }), 7000);
+  assert.equal(getEffectiveSnSalePrice({ unified_sale_price: 8499 }), 8499);
 });
 
 test('SN库龄按完整自然日向下取整，缺少入库时间返回未知', () => {

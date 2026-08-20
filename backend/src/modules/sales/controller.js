@@ -612,6 +612,28 @@ function exportSupplementAmount(supplements, predicate) {
     .reduce((total, item) => total + Number(item.amount || 0) * (item.amount_type === 'decrease' ? -1 : 1), 0);
 }
 
+function isEducationSupplement(item) {
+  return /教育|教补/.test(String(item?.item_name || '').trim());
+}
+
+function isFreightSupplement(item) {
+  return /运费|提货费用/.test(String(item?.item_name || '').trim());
+}
+
+function resolveExportProductCode(item, productCodeById = new Map()) {
+  const productId = String(item?.product_id || '').trim();
+  const candidates = [
+    item?.product_code,
+    item?.Product?.product_code,
+    item?.OrderItem?.product_code,
+    item?.OrderItem?.Product?.product_code,
+    productId ? productCodeById.get(productId) : '',
+    // 兼容历史订单中商品关联已被清理、但仍保留 PN 快照的情况；绝不输出内部 product_id。
+    item?.pn_code
+  ];
+  return candidates.map(value => String(value || '').trim()).find(Boolean) || '';
+}
+
 function exportAuxiliaryParticipants(value, primaryName) {
   const participants = [];
   const seen = new Set();
@@ -738,13 +760,13 @@ function buildOrderExportRows(orders, paymentMethodMap = {}) {
     const paymentAmountsByItem = Object.fromEntries(
       ORDER_EXPORT_PAYMENT_HEADERS.map(header => [header, allocateExportAmount(paymentTotals[header], itemEntries)])
     );
-    const supplementEducation = exportSupplementAmount(supplements, item => /教育/.test(String(item.item_name || '')));
-    const supplementFreight = exportSupplementAmount(supplements, item => /提货运费|运费/.test(String(item.item_name || '')));
+    const supplementEducation = exportSupplementAmount(supplements, isEducationSupplement);
+    const supplementFreight = exportSupplementAmount(supplements, isFreightSupplement);
     const supplementDetails = exportSupplementDetails(supplements);
 
     return items.map((item, itemIndex) => {
       const subtotal = Number(item.subtotal || 0);
-      const productCode = item.pn_code || item.Product?.product_code || item.product_id || '';
+      const productCode = resolveExportProductCode(item);
       const isMainProduct = isExportMainProduct(item, items.length === 1);
       const rowPaymentAmounts = Object.fromEntries(
         ORDER_EXPORT_PAYMENT_HEADERS.map(header => [header, paymentAmountsByItem[header].get(itemIndex) || 0])
@@ -869,7 +891,8 @@ function buildDepositExportRows(deposits, paymentMethodMap = {}) {
   });
 }
 
-function buildSalesReturnSettlementExportRows(settlements) {
+function buildSalesReturnSettlementExportRows(settlements, options = {}) {
+  const productCodeById = options.productCodeById instanceof Map ? options.productCodeById : new Map();
   return (settlements || []).flatMap(settlement => {
     const data = settlement.toJSON ? settlement.toJSON() : settlement;
     const items = Array.isArray(data.items) && data.items.length ? data.items : [{}];
@@ -897,7 +920,7 @@ function buildSalesReturnSettlementExportRows(settlements) {
         开票状态: data.red_invoice_status === 'not_required' ? '不开票' : '红字发票待处理',
         开票金额: data.red_invoice_status === 'not_required' ? 0 : userReceivable,
         商品名称: item.product_name || '销售退单负向结算',
-        商品编码: item.product_id || '',
+        商品编码: resolveExportProductCode(item, productCodeById),
         数量: -Math.abs(quantity),
         小计: userReceivable,
         商品应收金额: userReceivable,
@@ -1022,11 +1045,26 @@ async function exportOrders(ctx) {
       })
       : Promise.resolve([])
   ]);
+  const returnProductIds = [...new Set(returnSettlements
+    .flatMap(settlement => {
+      const data = settlement.toJSON ? settlement.toJSON() : settlement;
+      return Array.isArray(data.items) ? data.items.map(item => item.product_id) : [];
+    })
+    .map(value => String(value || '').trim())
+    .filter(Boolean))];
+  const returnProducts = returnProductIds.length
+    ? await Product.findAll({
+      where: { product_id: { [Op.in]: returnProductIds } },
+      attributes: ['product_id', 'product_code'],
+      raw: true
+    })
+    : [];
+  const returnProductCodeById = new Map(returnProducts.map(product => [String(product.product_id), product.product_code || '']));
   const paymentMethodMap = Object.fromEntries(paymentMethods.map(method => [method.code, method.name]));
   const rows = [
     ...buildOrderExportRows(orders, paymentMethodMap),
     ...buildDepositExportRows(deposits, paymentMethodMap),
-    ...buildSalesReturnSettlementExportRows(returnSettlements)
+    ...buildSalesReturnSettlementExportRows(returnSettlements, { productCodeById: returnProductCodeById })
   ].sort((a, b) => new Date(b.下单时间 || 0).getTime() - new Date(a.下单时间 || 0).getTime());
   sendExcel(ctx, rows, ORDER_EXPORT_HEADERS, `销售订单导出_${getChinaDateString()}.xlsx`, '订单明细');
 }
@@ -1130,8 +1168,9 @@ async function createSubsidyPhotosDownloadTicket(ctx) {
 
 function subsidyPhotoResponse(order) {
   const data = order.toJSON ? order.toJSON() : order;
-  const photos = normalizeSubsidyPhotos(data.subsidy_photos).map(photo => ({
+  const photos = normalizeSubsidyPhotos(data.subsidy_photos).map((photo, index) => ({
       ...photo,
+      downloadName: subsidyPhotoDownloadName(data, photo, index),
       isLocal: photo.storage === 'local',
       accessUrl: photo.storage === 'local' && photo.id
         ? `/api/v1/sales/subsidy-photos/${data.order_id}/files/${encodeURIComponent(photo.id)}`
@@ -1209,7 +1248,8 @@ async function replaceSubsidyPhotos(ctx) {
   await fs.promises.mkdir(SUBSIDY_PHOTO_UPLOAD_DIR, { recursive: true });
   const stored = [];
   try {
-    for (const file of files) {
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
       const photoId = generateUUID();
       const extension = path.extname(file.originalname || '').toLowerCase();
       const storageName = `${photoId}${extension}`;
@@ -1217,7 +1257,10 @@ async function replaceSubsidyPhotos(ctx) {
       await fs.promises.writeFile(filePath, file.buffer);
       stored.push({
         id: photoId,
-        name: path.basename(file.originalname || '国补照片').slice(0, 255),
+        name: subsidyPhotoDownloadName(order, {
+          name: path.basename(file.originalname || '国补照片'),
+          mimeType: file.mimetype || ''
+        }, index),
         storage: 'local',
         storage_name: storageName,
         mime_type: file.mimetype || 'application/octet-stream',
@@ -1274,7 +1317,7 @@ async function downloadSubsidyPhoto(ctx) {
     detail: { photoId: photo.id, photoName: photo.name }
   });
   ctx.type = photo.mimeType || 'application/octet-stream';
-  ctx.attachment(photo.name || '国补照片');
+  ctx.attachment(subsidyPhotoDownloadName(order, photo, 0));
   ctx.body = fs.createReadStream(filePath);
 }
 
@@ -1321,6 +1364,22 @@ function subsidyPhotoFileName(photo, index) {
   const name = zipFileName(photo?.name, index);
   const nameExtension = path.extname(name).toLowerCase();
   return SUBSIDY_PHOTO_ALLOWED_EXTENSIONS.has(nameExtension) ? name : `${name}${extension}`;
+}
+
+function safeSubsidyPhotoNamePart(value, fallback) {
+  const sanitized = String(value || '')
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
+  return sanitized || fallback;
+}
+
+function subsidyPhotoDownloadName(order, photo, index) {
+  const data = order?.toJSON ? order.toJSON() : order || {};
+  const originalName = subsidyPhotoFileName(photo, index).split('/').pop();
+  const orderNo = safeSubsidyPhotoNamePart(data.order_no || data.order_id, '无订单号');
+  const person = safeSubsidyPhotoNamePart(data.subsidy_person, '未命名');
+  const prefix = `${orderNo}_${person}_`;
+  return originalName.startsWith(prefix) ? originalName : `${prefix}${originalName}`;
 }
 
 function subsidyPhotoFolderName(order) {
@@ -1430,7 +1489,9 @@ async function subsidyPhotoZipEntries(order, folder = '') {
       if (filePath && fs.existsSync(filePath)) {
         entries.push({
           id: photo.id,
-          name: safeFolder ? `${safeFolder}/${subsidyPhotoFileName(photo, entries.length)}` : subsidyPhotoFileName(photo, entries.length),
+          name: safeFolder
+            ? `${safeFolder}/${subsidyPhotoDownloadName(order, photo, entries.length)}`
+            : subsidyPhotoDownloadName(order, photo, entries.length),
           load: () => fs.promises.readFile(filePath)
         });
       }
@@ -1440,7 +1501,9 @@ async function subsidyPhotoZipEntries(order, folder = '') {
     if (/^cloud:\/\//i.test(photo.url)) {
       entries.push({
         id: photo.id,
-        name: safeFolder ? `${safeFolder}/${subsidyPhotoFileName(photo, entries.length)}` : subsidyPhotoFileName(photo, entries.length),
+        name: safeFolder
+          ? `${safeFolder}/${subsidyPhotoDownloadName(order, photo, entries.length)}`
+          : subsidyPhotoDownloadName(order, photo, entries.length),
         load: async () => {
           let sourceUrl = photo.displayUrl;
           try {
@@ -1487,7 +1550,7 @@ async function downloadAllSubsidyPhotosArchive(ctx) {
   const orders = await Order.findAll({
     where,
     // 批量下载只需要订单编号和照片元数据，不加载门店及其他订单字段，减少查询时间和内存占用。
-    attributes: ['order_id', 'order_no', 'subsidy_photos'],
+    attributes: ['order_id', 'order_no', 'subsidy_person', 'subsidy_photos'],
     order: [['create_time', 'DESC'], ['order_id', 'DESC']]
   });
 
@@ -4609,6 +4672,7 @@ module.exports = {
     hasSubsidyPhotoFilter,
     inferSubsidyPhotoExtension,
     subsidyPhotoFileName,
+    subsidyPhotoDownloadName,
     subsidyPhotoFolderName,
     userCanViewSubsidyPhotos,
     subsidyPhotoStoreWhere,

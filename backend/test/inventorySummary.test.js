@@ -86,6 +86,11 @@ test('inventory summary treats legacy unsplit sales stock as full-resource stock
   });
 });
 
+test('inventory summary search includes the real product of an in-stock SN historical PN', () => {
+  const conditions = _test.buildInventoryProductKeywordConditions('83NN006LCD', ['PRODUCT_WITH_HISTORICAL_PN']);
+  assert.equal(conditions.some(condition => condition.product_id?.[require('sequelize').Op.in]?.includes('PRODUCT_WITH_HISTORICAL_PN')), true);
+});
+
 test('inventory model quick filters classify the three product types and special prices', () => {
   assert.equal(_test.getInventoryProductType('电脑/笔记本', '', '', ''), 'computer');
   assert.equal(_test.getInventoryProductType('手机', '', '', ''), 'phone');

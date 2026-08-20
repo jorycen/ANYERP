@@ -3,7 +3,7 @@ const userUtils = require('../profile/user-utils.js');
 const DataStorage = require('../../utils/storage.js');
 const api = require('../../utils/api.js');
 const imageUpload = require('../../utils/image-upload.js');
-const { normalizeOrderItem, normalizeSnCode, normalizeId, isEmptyOrderItem } = require('../../utils/model.js');
+const { normalizeOrderItem, normalizeSnCode, normalizeId, getEffectiveSnSalePrice, isEmptyOrderItem } = require('../../utils/model.js');
 const { calculateOrderProfit } = require('../../utils/order-profit.js');
 require('../../utils/cloud-adapter.js').install();
 
@@ -1478,6 +1478,11 @@ Page({
     current.inventoryId = record.inventoryId || record.inventory_id || record.snId || record.sn_id || '';
     current.inventoryStatus = record.inventoryStatus || record.inventory_status || record.status || '';
     current.previousSnStatus = current.inventoryStatus || current.previousSnStatus || '在库';
+    if (selectedIndex > 0) {
+      const effectivePrice = getEffectiveSnSalePrice(record);
+      if (effectivePrice > 0) current.price = effectivePrice;
+    }
+    current.subtotal = (parseFloat(current.price) || 0) * (parseFloat(current.quantity) || 0);
     this.setData({ goodsList });
     this.recalculateAmounts();
   },
@@ -1513,6 +1518,9 @@ Page({
     goods.inventoryId = record.inventoryId || record.inventory_id || record.snId || record.sn_id || '';
     goods.inventoryStatus = record.inventoryStatus || record.inventory_status || record.status || '';
     goods.previousSnStatus = goods.inventoryStatus || '在库';
+    const effectivePrice = getEffectiveSnSalePrice(record);
+    if (effectivePrice > 0) goods.price = effectivePrice;
+    goods.subtotal = (parseFloat(goods.price) || 0) * (parseFloat(goods.quantity) || 0);
     this.setData({ goodsList, showSnListModal: false, snListModalItems: [] });
     this.recalculateAmounts();
   },
@@ -1623,11 +1631,14 @@ Page({
           latest.snCode = options[0];
           const selected = records[0] || {};
           latest.inventoryId = selected.inventoryId || selected.inventory_id || selected.snId || selected.sn_id || '';
+          const effectivePrice = getEffectiveSnSalePrice(selected);
+          if (effectivePrice > 0) latest.price = effectivePrice;
         } else if (oldIndex < 0 && options.length !== 1) {
           latest.snCode = '';
           latest.inventoryId = '';
         }
         this.setData({ goodsList: latestList });
+        this.recalculateAmounts();
         return records;
       })
       .catch(err => {
