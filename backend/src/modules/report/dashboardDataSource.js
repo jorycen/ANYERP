@@ -3,17 +3,37 @@ const { sequelize } = require('../../models');
 
 const ARCHIVED_STATUSES = ['已归档', 'completed', 'archived', 'returned'];
 const GROSS_PROFIT_FORMULA_VERSION = 'ORDER_GP_V5_20260706';
-const INVENTORY_CATEGORY_ORDER = ['拯救者', '小新', 'Yoga', '其他电脑', '手机', '平板'];
+const INVENTORY_CATEGORY_ORDER = ['电脑', '手机', '平板', '配件'];
+const INVENTORY_COMPUTER_SUBCATEGORY_ORDER = ['拯救者', '小新', 'Yoga', '其他电脑'];
+
+const INVENTORY_ACCESSORY_PATTERN = /(配件|鼠标|键盘|手柄|支架|摄像头|保护夹|保护壳|贴膜|充电器|耳机|数据线|u盘|硬盘|打印机|内存|电源适配器|扩展坞|散热器|包|杯)/i;
+
+function inventoryText(row) {
+  return [row.brand, row.series, row.model, row.productName, row.categoryPath]
+    .filter(Boolean).join(' ').toLowerCase();
+}
 
 function classifyInventoryCategory(row) {
-  const text = [row.brand, row.series, row.model, row.productName, row.categoryPath]
-    .filter(Boolean).join(' ').toLowerCase();
+  const text = inventoryText(row);
+  const categoryPath = String(row.categoryPath || '').toLowerCase();
+  if (INVENTORY_ACCESSORY_PATTERN.test(text) || /(^|\/)(配件|周边)(\/|$)/i.test(categoryPath)) return '配件';
   if (/(手机|iphone|华为|荣耀|oppo|vivo|小米手机|三星手机)/i.test(text)) return '手机';
   if (/(平板|pad|ipad|matepad|小米平板)/i.test(text)) return '平板';
-  if (text.includes('拯救者')) return '拯救者';
-  if (text.includes('小新')) return '小新';
-  if (text.includes('yoga')) return 'Yoga';
-  return '其他电脑';
+  return '电脑';
+}
+
+function classifyInventorySubcategory(row, category) {
+  const text = inventoryText(row);
+  if (category === '电脑') {
+    if (text.includes('拯救者')) return '拯救者';
+    if (text.includes('小新')) return '小新';
+    if (text.includes('yoga')) return 'Yoga';
+    return '其他电脑';
+  }
+
+  const candidate = String(row.series || row.brand || '').trim();
+  if (candidate) return candidate;
+  return `其他${category}`;
 }
 
 function toNumber(value) {
@@ -438,13 +458,31 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       .filter(row => row.quantity > 0);
     const inventoryQuantity = rows.reduce((sum, row) => sum + row.quantity, 0);
     const inventoryAmount = roundMoney(rows.reduce((sum, row) => sum + row.inventoryAmount, 0));
-    const categoryMap = new Map(INVENTORY_CATEGORY_ORDER.map(name => [name, { name, quantity: 0, amount: 0 }]));
+    const categoryMap = new Map(INVENTORY_CATEGORY_ORDER.map(name => [name, {
+      key: name,
+      name,
+      quantity: 0,
+      amount: 0,
+      children: new Map()
+    }]));
     rows.forEach(row => {
       const category = classifyInventoryCategory(row);
       const target = categoryMap.get(category);
       if (!target) return;
+      const subcategory = classifyInventorySubcategory(row, category);
+      if (!target.children.has(subcategory)) {
+        target.children.set(subcategory, {
+          key: subcategory,
+          name: subcategory,
+          quantity: 0,
+          amount: 0
+        });
+      }
+      const child = target.children.get(subcategory);
       target.quantity += row.quantity;
       target.amount += row.inventoryAmount;
+      child.quantity += row.quantity;
+      child.amount += row.inventoryAmount;
     });
     const staleProducts = rows
       .map(row => {
@@ -462,11 +500,32 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       inventoryQuantity,
       skuCount: new Set(rows.map(row => row.productId).filter(Boolean)).size,
       inventoryAmount,
-      categories: INVENTORY_CATEGORY_ORDER.map(name => ({
-        ...categoryMap.get(name),
-        quantity: Number(categoryMap.get(name).quantity || 0),
-        amount: roundMoney(categoryMap.get(name).amount)
-      })),
+      categories: INVENTORY_CATEGORY_ORDER.map(name => {
+        const category = categoryMap.get(name);
+        const childOrder = name === '电脑' ? INVENTORY_COMPUTER_SUBCATEGORY_ORDER : [];
+        const children = [...category.children.values()]
+          .sort((left, right) => {
+            const leftIndex = childOrder.indexOf(left.name);
+            const rightIndex = childOrder.indexOf(right.name);
+            if (leftIndex !== -1 || rightIndex !== -1) {
+              return (leftIndex === -1 ? childOrder.length : leftIndex)
+                - (rightIndex === -1 ? childOrder.length : rightIndex);
+            }
+            return left.name.localeCompare(right.name, 'zh-CN');
+          })
+          .map(child => ({
+            ...child,
+            quantity: Number(child.quantity || 0),
+            amount: roundMoney(child.amount)
+          }));
+        return {
+          key: category.key,
+          name: category.name,
+          quantity: Number(category.quantity || 0),
+          amount: roundMoney(category.amount),
+          children
+        };
+      }),
       ageStructure: ageRows.map(row => ({
         ageBucket: row.ageBucket,
         quantity: toNumber(row.quantity),
