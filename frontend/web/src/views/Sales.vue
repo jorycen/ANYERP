@@ -83,8 +83,6 @@
               <el-button link type="success" @click="handleSubmitDraft(row)" v-if="!row.record_type && row.order_status === 'draft'">提交</el-button>
               <el-button link type="danger" @click="handleDeleteDraft(row)" v-if="!row.record_type && row.order_status === 'draft' && !row.submit_time">删除</el-button>
               <el-button link type="primary" @click="handleView(row)">查看</el-button>
-              <el-button link type="success" @click="handleApprove(row)" v-if="!row.record_type && row.order_status === 'pending_approval' && canApprove">审批通过</el-button>
-              <el-button link type="danger" @click="handleReject(row)" v-if="!row.record_type && row.order_status === 'pending_approval' && canApprove">拒绝</el-button>
               </td>
             </tr>
           </tbody>
@@ -554,7 +552,6 @@ const submitLoading = ref(false)
 const dialogTitle = ref('新建订单')
 const currentOrder = ref(null)
 
-const canApprove = computed(() => hasRole(['manager']))
 const canExportOrders = computed(() => isDistributorAccount() || hasRole(['manager', 'store_manager']))
 const actionLabel = (action) => ({
   created: '创建订单',

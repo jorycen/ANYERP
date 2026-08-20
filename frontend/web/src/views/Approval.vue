@@ -21,6 +21,31 @@
               </template>
             </el-table-column>
           </el-table>
+
+          <div v-if="canReviewSales" class="sales-approval-section">
+            <div class="sales-approval-header">
+              <span>销售负毛利审批</span>
+              <el-tag type="warning">{{ salesTasks.length }} 条</el-tag>
+            </div>
+            <el-table :data="salesTasks" stripe border v-loading="loading">
+              <el-table-column prop="order_no" label="订单号" min-width="190" />
+              <el-table-column label="所属门店" min-width="140"><template #default="{ row }">{{ row.Store?.name || '-' }}</template></el-table-column>
+              <el-table-column prop="submit_user" label="申请人" width="120" />
+              <el-table-column label="最终毛利" width="120">
+                <template #default="{ row }"><span class="negative-profit">{{ formatProfit(row.grossProfitSnapshot?.gross_profit_amount) }}</span></template>
+              </el-table-column>
+              <el-table-column prop="create_time" label="申请时间" width="180" />
+              <el-table-column label="审批要求" min-width="170"><template #default>归档前最终毛利为负</template></el-table-column>
+              <el-table-column label="操作" width="220" fixed="right">
+                <template #default="{ row }">
+                  <el-button link type="primary" @click="openSales(row)">查看</el-button>
+                  <el-button link type="success" @click="reviewSales(row, 'approve')">通过</el-button>
+                  <el-button link type="danger" @click="reviewSales(row, 'reject')">拒绝</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <el-empty v-if="!loading && salesTasks.length === 0" description="暂无负毛利销售审批" :image-size="60" />
+          </div>
         </el-tab-pane>
 
         <el-tab-pane label="我的申请" name="instances">
@@ -111,17 +136,19 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 
 const activeTab = ref('tasks')
 const route = useRoute()
+const router = useRouter()
 const syncTabFromRoute = () => {
   activeTab.value = String(route.meta.tab || 'tasks')
 }
 const loading = ref(false)
 const tasks = ref([])
+const salesTasks = ref([])
 const instances = ref([])
 const flows = ref([])
 const detailVisible = ref(false)
@@ -129,6 +156,10 @@ const currentInstance = ref(null)
 const flowDialogVisible = ref(false)
 const assigneeOptions = reactive({ staff: [], roles: [], stores: [] })
 const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
+const roleCodes = computed(() => Array.isArray(userInfo.roles) && userInfo.roles.length
+  ? userInfo.roles
+  : String(userInfo.roleCode || '').split(',').map(role => role.trim()).filter(Boolean))
+const canReviewSales = computed(() => roleCodes.value.some(role => ['boss', 'admin', 'manager'].includes(role)))
 const canConfigure = computed(() => (userInfo.roles || []).some(role => ['admin', 'boss'].includes(role)))
 const flowForm = reactive({ definitionId: '', flowCode: '', name: '', businessType: '', nodes: [] })
 
@@ -136,16 +167,43 @@ const newRule = () => ({ type: 'store_manager', staffId: '', roleCode: '', scope
 const newNode = () => ({ name: '', signMode: 'serial', approvers: [newRule()] })
 
 async function loadTasks() { tasks.value = (await api.getApprovalTasks({ status: 'pending' })).data || [] }
+async function loadSalesTasks() {
+  if (!canReviewSales.value) {
+    salesTasks.value = []
+    return
+  }
+  const response = await api.getSalesApprovalList({ page: 1, pageSize: 100 })
+  salesTasks.value = response.data?.list || []
+}
 async function loadInstances() { instances.value = (await api.getApprovalInstances({ scope: 'mine' })).data || [] }
 async function loadFlows() { if (canConfigure.value) flows.value = (await api.getApprovalFlows()).data || [] }
 async function loadOptions() { if (canConfigure.value) Object.assign(assigneeOptions, (await api.getApprovalAssigneeOptions()).data || {}) }
-async function reload() { loading.value = true; try { await Promise.all([loadTasks(), loadInstances(), loadFlows(), loadOptions()]) } finally { loading.value = false } }
+async function reload() { loading.value = true; try { await Promise.all([loadTasks(), loadSalesTasks(), loadInstances(), loadFlows(), loadOptions()]) } finally { loading.value = false } }
 
 function statusText(value) { return ({ pending: '审批中', approved: '已通过', rejected: '已拒绝' }[value] || value || '-') }
 function businessTypeText(value) { return ({ sn_change: 'SN修改申请' }[value] || value || '-') }
 function statusType(value) { return ({ pending: 'warning', approved: 'success', rejected: 'danger' }[value] || 'info') }
 function taskStatusText(value) { return ({ pending: '待审批', waiting: '等待中', approved: '已通过', rejected: '已拒绝', cancelled: '已取消' }[value] || value) }
+function formatMoney(value) { return Number(value || 0).toFixed(2) }
+function formatProfit(value) { return value === undefined || value === null ? '-' : `¥${formatMoney(value)}` }
 async function openInstance(id) { currentInstance.value = (await api.getApprovalInstance(id)).data; detailVisible.value = true }
+function openSales(row) { router.push({ name: 'Sales', query: { orderId: row.order_id } }) }
+async function reviewSales(row, action) {
+  let comment = ''
+  if (action === 'reject') {
+    const result = await ElMessageBox.prompt('请输入拒绝原因', '拒绝负毛利审批', { inputType: 'textarea' }).catch(() => null)
+    if (!result) return
+    comment = result.value
+  } else if (!(await ElMessageBox.confirm('确认通过该负毛利销售审批？通过后订单将自动归档。', '审批确认', { type: 'warning' }).catch(() => false))) return
+  try {
+    if (action === 'approve') await api.approveOrder(row.order_id)
+    else await api.rejectOrder(row.order_id, { reason: comment })
+    ElMessage.success(action === 'approve' ? '审批通过，订单已自动归档' : '审批已拒绝，订单已退回未归档')
+    await reload()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || error.message || '销售审批处理失败')
+  }
+}
 async function review(row, action) {
   let comment = ''
   if (action === 'reject') { const result = await ElMessageBox.prompt('请输入拒绝原因', '拒绝审批', { inputType: 'textarea' }).catch(() => null); if (!result) return; comment = result.value }
@@ -168,5 +226,8 @@ onMounted(() => { syncTabFromRoute(); reload() })
 
 <style scoped>
 .module-tabs :deep(.el-tabs__header) { display: none; }
+.sales-approval-section { margin-top: 24px; }
+.sales-approval-header { display: flex; align-items: center; gap: 10px; margin: 12px 0; font-weight: 600; }
+.negative-profit { color: var(--el-color-danger); font-weight: 600; }
 .page-header,.toolbar,.node-head,.rule-row{display:flex;align-items:center;gap:10px}.page-header{justify-content:space-between}.toolbar{margin-bottom:12px}.node-card{border:1px solid var(--el-border-color);padding:12px;margin-bottom:12px;border-radius:4px}.node-head{margin-bottom:10px}.node-head .el-input{max-width:360px}.rule-row{margin:8px 0;flex-wrap:wrap}
 </style>

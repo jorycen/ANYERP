@@ -362,7 +362,15 @@ async function list(ctx) {
       applicantInclude,
       itemInclude,
       { model: OrderPayment },
-      { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false }
+      { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false },
+      ...(status === 'pending_approval'
+        ? [{
+          model: OrderGrossProfit,
+          as: 'grossProfitSnapshot',
+          attributes: ['gross_profit_amount', 'snapshot_status', 'calculated_at'],
+          required: false
+        }]
+        : [])
     ],
     distinct: true,
     order: buildPendingFirstOrder(sequelize, {
