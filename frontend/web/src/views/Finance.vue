@@ -851,24 +851,9 @@
         <el-table :data="unpaidList" stripe border @selection-change="onSelectionChange" ref="settlementTableRef">
           <el-table-column type="selection" width="50" />
           <el-table-column prop="product_name" label="采购商品" min-width="150" />
-          <el-table-column label="剩余数量" width="100">
-            <template #default="{ row }">{{ row.available_quantity === null ? '-' : formatQuantity(row.available_quantity) }}</template>
-          </el-table-column>
-          <el-table-column label="结算数量" width="170">
+          <el-table-column label="本次金额" width="170">
             <template #default="{ row }">
               <el-input-number
-                v-if="row.request_item_id"
-                v-model="row.settle_quantity"
-                :min="0.0001"
-                :max="Number(row.available_quantity || 0)"
-                :precision="4"
-                :formatter="formatQuantityInput"
-                :parser="parseQuantityInput"
-                size="small"
-                controls-position="right"
-              />
-              <el-input-number
-                v-else
                 v-model="row.settle_amount"
                 :min="0.01"
                 :max="Number(row.available_amount || 0)"
@@ -877,9 +862,6 @@
                 controls-position="right"
               />
             </template>
-          </el-table-column>
-          <el-table-column label="本次金额" width="110">
-            <template #default="{ row }">¥{{ settlementLineAmount(row).toFixed(2) }}</template>
           </el-table-column>
           <el-table-column prop="supplier_name" label="供应商" width="130" />
           <el-table-column prop="request_no" label="采购单号" width="180" />
@@ -1672,7 +1654,6 @@ const selectedPayableTotalAmount = computed(() => {
 })
 
 const settlementLineAmount = (row) => {
-  if (row.request_item_id) return Number(row.settle_quantity || 0) * Number(row.unit_price || 0)
   return Number(row.settle_amount || 0)
 }
 
@@ -2543,8 +2524,7 @@ const loadSettlementLines = async (params = {}) => {
   if (res.code !== 0) return []
   return (res.data || []).map(row => ({
     ...row,
-    settle_quantity: row.request_item_id ? Number(row.available_quantity || 0) : null,
-    settle_amount: row.request_item_id ? null : Number(row.available_amount || 0)
+    settle_amount: Number(row.available_amount || 0)
   }))
 }
 
@@ -2801,8 +2781,7 @@ const handleSettlementSubmit = async () => {
       allocations: selectedPayables.value.map(row => ({
         payableId: row.payable_id,
         requestItemId: row.request_item_id,
-        quantity: row.request_item_id ? Number(row.settle_quantity || 0) : undefined,
-        amount: row.request_item_id ? undefined : Number(row.settle_amount || 0)
+        amount: Number(row.settle_amount || 0)
       })),
       paymentAccountType: isOtherPaymentAccount ? 'other' : 'saved',
       supplierAccountId: isOtherPaymentAccount ? '' : settlementForm.supplierAccountId,
@@ -2960,7 +2939,12 @@ const resetSettlementForm = () => {
 const saveSettlementDraft = () => {
   saveDraft(FINANCE_SETTLEMENT_DRAFT_KEY, {
     settlementForm: cloneDraft(settlementForm),
-    selectedPayableIds: cloneDraft(selectedPayableIds.value)
+    selectedPayableIds: cloneDraft(selectedPayableIds.value),
+    selectedPayableAmounts: cloneDraft(selectedPayables.value.map(row => ({
+      payableId: row.payable_id,
+      requestItemId: row.request_item_id || null,
+      amount: Number(row.settle_amount || 0)
+    })))
   })
   ElMessage.success('草稿已保存')
 }
@@ -2970,7 +2954,16 @@ const restoreSettlementDraft = () => {
   if (!draft) return
   Object.assign(settlementForm, draft.settlementForm || {})
   const ids = new Set(draft.selectedPayableIds || [])
-  selectedPayables.value = unpaidList.value.filter(item => ids.has(item.payable_id))
+  const amountMap = new Map((draft.selectedPayableAmounts || []).map(item => [
+    `${item.payableId}:${item.requestItemId || ''}`,
+    Number(item.amount || 0)
+  ]))
+  unpaidList.value.forEach(item => {
+    if (ids.has(item.payable_id)) {
+      item.settle_amount = amountMap.get(`${item.payable_id}:${item.request_item_id || ''}`) ?? Number(item.available_amount || 0)
+    }
+  })
+  selectedPayables.value = []
   nextTick(() => {
     unpaidList.value.forEach(row => {
       settlementTableRef.value?.toggleRowSelection(row, ids.has(row.payable_id))
