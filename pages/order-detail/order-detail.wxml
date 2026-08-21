@@ -87,16 +87,6 @@
     </view>
   </view>
 
-  <!-- 订单备注 -->
-  <view class="section-card" wx:if="{{order.remark}}">
-    <view class="section-header">
-      <text class="section-title">订单备注</text>
-    </view>
-    <view class="section-content">
-      <textarea class="remark-textarea" value="{{order.remark}}" disabled auto-height />
-    </view>
-  </view>
-
   <!-- 商品信息 -->
   <view class="section-card">
     <view class="section-header">
@@ -562,6 +552,16 @@
       <view class="supplement-total" wx:if="{{supplementTotal > 0}}">
         <text>补录合计: ¥{{supplementTotal}}</text>
       </view>
+    </view>
+  </view>
+
+  <!-- 订单备注：放在详情主体最下方，和补录信息相邻展示 -->
+  <view class="section-card" wx:if="{{order.remark}}">
+    <view class="section-header">
+      <text class="section-title">订单备注</text>
+    </view>
+    <view class="section-content">
+      <textarea class="remark-textarea" value="{{order.remark}}" disabled auto-height />
     </view>
   </view>
 
