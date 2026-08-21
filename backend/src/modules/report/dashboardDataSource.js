@@ -12,6 +12,13 @@ function normalizeCategoryPath(value) {
     .join('/');
 }
 
+function normalizeCategoryName(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\s+/g, '')
+    .toLocaleLowerCase();
+}
+
 function buildFinanceCategoryIndex(rows) {
   const byId = new Map(rows.map(row => [String(row.categoryId), {
     key: String(row.categoryId),
@@ -39,7 +46,14 @@ function buildFinanceCategoryIndex(rows) {
     const path = resolvePath(node);
     if (path) byPath.set(path, node);
   });
-  return { byId, byPath, nodes: [...byId.values()] };
+  const childrenByParent = new Map();
+  byId.forEach(node => {
+    if (!node.parentId) return;
+    const children = childrenByParent.get(node.parentId) || [];
+    children.push(node);
+    childrenByParent.set(node.parentId, children);
+  });
+  return { byId, byPath, childrenByParent, nodes: [...byId.values()] };
 }
 
 function findFinanceCategory(categoryPath, categoryIndex) {
@@ -55,6 +69,21 @@ function findFinanceCategory(categoryPath, categoryIndex) {
     current = current.parentId ? categoryIndex.byId.get(current.parentId) : null;
   }
   return null;
+}
+
+function findFinanceChild(row, parentCategory, categoryIndex) {
+  const children = categoryIndex.childrenByParent.get(parentCategory.categoryId) || [];
+  if (children.length === 0) return null;
+
+  const rowPath = normalizeCategoryPath(row.categoryPath);
+  const exactPathCategory = categoryIndex.byPath.get(rowPath);
+  if (exactPathCategory && exactPathCategory.parentId === parentCategory.categoryId) {
+    return exactPathCategory;
+  }
+
+  const series = normalizeCategoryName(row.series);
+  if (!series) return null;
+  return children.find(child => normalizeCategoryName(child.name) === series) || null;
 }
 
 function toNumber(value) {
@@ -501,7 +530,16 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
         level: category.level,
         quantity: 0,
         amount: 0,
-        children: []
+        children: (categoryIndex.childrenByParent.get(category.categoryId) || [])
+          .map(child => ({
+            key: child.categoryId,
+            categoryId: child.categoryId,
+            name: child.name,
+            path: child.path,
+            level: child.level,
+            quantity: 0,
+            amount: 0
+          }))
       }]));
     rows.forEach(row => {
       const category = findFinanceCategory(row.categoryPath, categoryIndex);
@@ -509,6 +547,15 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       if (!target) return;
       target.quantity += row.quantity;
       target.amount += row.inventoryAmount;
+
+      const child = findFinanceChild(row, category, categoryIndex);
+      const childTarget = child
+        ? target.children.find(item => item.categoryId === child.categoryId)
+        : null;
+      if (childTarget) {
+        childTarget.quantity += row.quantity;
+        childTarget.amount += row.inventoryAmount;
+      }
     });
     const staleProducts = rows
       .map(row => {
@@ -539,6 +586,17 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
           quantity: Number(category.quantity || 0),
           amount: roundMoney(category.amount),
           children: category.children
+            .sort((left, right) => {
+              const leftCategory = categoryIndex.byId.get(left.categoryId);
+              const rightCategory = categoryIndex.byId.get(right.categoryId);
+              return (leftCategory?.sortOrder || 0) - (rightCategory?.sortOrder || 0)
+                || left.name.localeCompare(right.name, 'zh-CN');
+            })
+            .map(child => ({
+              ...child,
+              quantity: Number(child.quantity || 0),
+              amount: roundMoney(child.amount)
+            }))
         })),
       ageStructure: ageRows.map(row => ({
         ageBucket: row.ageBucket,
