@@ -1248,17 +1248,21 @@ async function createCategory(ctx) {
 
 async function updateCategory(ctx) {
   const { categoryId } = ctx.params;
-  const { name, sortOrder, status } = ctx.request.body;
+  const { name, sortOrder, status, showInFinance, show_in_finance } = ctx.request.body;
 
   const category = await ProductCategory.findByPk(categoryId);
   if (!category) {
     ctx.throw(404, '分类不存在');
   }
 
+  const financeValue = showInFinance !== undefined ? showInFinance : show_in_finance;
   await category.update({
     name: name !== undefined ? name : category.name,
     sort_order: sortOrder !== undefined ? sortOrder : category.sort_order,
-    status: status !== undefined ? status : category.status
+    status: status !== undefined ? status : category.status,
+    show_in_finance: financeValue === undefined
+      ? category.show_in_finance
+      : (financeValue === true || Number(financeValue) === 1 ? 1 : 0)
   });
 
   ctx.body = { code: 0, message: '分类更新成功' };

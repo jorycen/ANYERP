@@ -97,6 +97,9 @@
       <text class="unit-note">数量 / 成本金额</text>
     </view>
     <view class="data-list">
+      <view wx:if="{{!inventory.length}}" class="inventory-empty-state">
+        <text>暂无已启用的财务分类，请在网页端“商品管理 → 分类管理”中打开“展示在财务页面”。</text>
+      </view>
       <view class="inventory-category-tabs">
         <view
           wx:for="{{inventory}}"
@@ -114,22 +117,19 @@
         </view>
       </view>
       <block wx:for="{{inventory}}" wx:key="key">
-        <view wx:if="{{item.key === selectedInventoryCategory}}" class="inventory-detail-card">
+        <view wx:if="{{item.key === selectedInventoryCategory && item.children.length}}" class="inventory-detail-card">
           <view class="inventory-detail-heading">
             <text class="inventory-detail-title">{{item.name}}明细</text>
-            <text class="unit-note">品牌 / 系列</text>
+            <text class="unit-note">分类明细</text>
           </view>
-          <view wx:if="{{item.children.length}}">
-            <view class="data-row inventory-child-row" wx:for="{{item.children}}" wx:key="key">
-              <view class="row-name-wrap">
-                <view class="child-dot"></view>
-                <text class="row-name">{{item.name}}</text>
-              </view>
-              <text class="row-quantity">{{item.quantity}} 件</text>
-              <text class="row-amount">¥{{item.amount}}</text>
+          <view class="data-row inventory-child-row" wx:for="{{item.children}}" wx:key="key">
+            <view class="row-name-wrap">
+              <view class="child-dot"></view>
+              <text class="row-name">{{item.name}}</text>
             </view>
+            <text class="row-quantity">{{item.quantity}} 件</text>
+            <text class="row-amount">¥{{item.amount}}</text>
           </view>
-          <view wx:else class="inventory-empty">暂无明细</view>
         </view>
       </block>
     </view>

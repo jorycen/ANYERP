@@ -2599,12 +2599,14 @@ async function runMigrations() {
         NAME VARCHAR(128) NOT NULL COMMENT '分类名称',
         LEVEL INT DEFAULT 1 COMMENT '层级(1-3)',
         SORT_ORDER INT DEFAULT 0 COMMENT '排序',
+        SHOW_IN_FINANCE TINYINT DEFAULT 0 COMMENT '是否展示在财务页面',
         STATUS TINYINT DEFAULT 1 COMMENT '状态',
         PRIMARY KEY (CATEGORY_ID),
         KEY idx_parent (PARENT_ID),
         KEY idx_level (LEVEL)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商品分类表'
     `);
+    await checkAndAddColumn('T_PRODUCT_CATEGORY', 'SHOW_IN_FINANCE', 'TINYINT DEFAULT 0 COMMENT \'是否展示在财务页面\'', 'SORT_ORDER');
     await initializeCategorySortOrder();
 
     await checkAndCreateTable('T_PRODUCT_PRICE', `

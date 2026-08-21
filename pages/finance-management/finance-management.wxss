@@ -301,6 +301,15 @@ page {
   margin-top: 24rpx;
 }
 
+.inventory-empty-state {
+  padding: 26rpx 18rpx;
+  border-radius: 16rpx;
+  color: #8190a3;
+  font-size: 23rpx;
+  line-height: 1.6;
+  background: #f8fafc;
+}
+
 .inventory-category-tabs {
   display: flex;
   flex-wrap: wrap;

@@ -415,6 +415,7 @@ const ProductCategory = sequelize.define('ProductCategory', {
   name: { type: DataTypes.STRING(128), allowNull: false },
   level: { type: DataTypes.INTEGER, defaultValue: 1 },
   sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
+  show_in_finance: { type: DataTypes.TINYINT(1), defaultValue: 0, comment: '是否展示在财务页面' },
   status: { type: DataTypes.TINYINT, defaultValue: 1 }
 }, { tableName: 'T_PRODUCT_CATEGORY', timestamps: false });
 

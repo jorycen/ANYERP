@@ -3,37 +3,58 @@ const { sequelize } = require('../../models');
 
 const ARCHIVED_STATUSES = ['已归档', 'completed', 'archived', 'returned'];
 const GROSS_PROFIT_FORMULA_VERSION = 'ORDER_GP_V5_20260706';
-const INVENTORY_CATEGORY_ORDER = ['电脑', '手机', '平板', '配件'];
-const INVENTORY_COMPUTER_SUBCATEGORY_ORDER = ['拯救者', '小新', 'Yoga', '其他电脑'];
 
-const INVENTORY_ACCESSORY_PATTERN = /(配件|鼠标|键盘|手柄|支架|摄像头|保护夹|保护壳|贴膜|充电器|耳机|数据线|u盘|硬盘|打印机|内存|电源适配器|扩展坞|散热器|包|杯)/i;
-
-function inventoryText(row) {
-  return [row.brand, row.series, row.model, row.productName, row.categoryPath]
-    .filter(Boolean).join(' ').toLowerCase();
+function normalizeCategoryPath(value) {
+  return String(value || '')
+    .split('/')
+    .map(part => part.trim())
+    .filter(Boolean)
+    .join('/');
 }
 
-function classifyInventoryCategory(row) {
-  const text = inventoryText(row);
-  const categoryPath = String(row.categoryPath || '').toLowerCase();
-  if (INVENTORY_ACCESSORY_PATTERN.test(text) || /(^|\/)(配件|周边)(\/|$)/i.test(categoryPath)) return '配件';
-  if (/(手机|iphone|华为|荣耀|oppo|vivo|小米手机|三星手机)/i.test(text)) return '手机';
-  if (/(平板|pad|ipad|matepad|小米平板)/i.test(text)) return '平板';
-  return '电脑';
+function buildFinanceCategoryIndex(rows) {
+  const byId = new Map(rows.map(row => [String(row.categoryId), {
+    key: String(row.categoryId),
+    categoryId: String(row.categoryId),
+    parentId: row.parentId ? String(row.parentId) : '',
+    name: String(row.name || '').trim(),
+    path: '',
+    level: toNumber(row.level),
+    sortOrder: toNumber(row.sortOrder),
+    showInFinance: Number(row.showInFinance || 0) === 1
+  }]));
+  const resolving = new Set();
+  const resolvePath = node => {
+    if (node.path) return node.path;
+    if (resolving.has(node.categoryId)) return node.name;
+    resolving.add(node.categoryId);
+    const parent = node.parentId ? byId.get(node.parentId) : null;
+    node.path = normalizeCategoryPath(parent ? `${resolvePath(parent)}/${node.name}` : node.name);
+    resolving.delete(node.categoryId);
+    return node.path;
+  };
+
+  const byPath = new Map();
+  byId.forEach(node => {
+    const path = resolvePath(node);
+    if (path) byPath.set(path, node);
+  });
+  return { byId, byPath, nodes: [...byId.values()] };
 }
 
-function classifyInventorySubcategory(row, category) {
-  const text = inventoryText(row);
-  if (category === '电脑') {
-    if (text.includes('拯救者')) return '拯救者';
-    if (text.includes('小新')) return '小新';
-    if (text.includes('yoga')) return 'Yoga';
-    return '其他电脑';
+function findFinanceCategory(categoryPath, categoryIndex) {
+  const normalizedPath = normalizeCategoryPath(categoryPath);
+  const parts = normalizedPath ? normalizedPath.split('/') : [];
+  let current = categoryIndex.byPath.get(normalizedPath);
+  while (!current && parts.length > 0) {
+    parts.pop();
+    current = categoryIndex.byPath.get(parts.join('/'));
   }
-
-  const candidate = String(row.series || row.brand || '').trim();
-  if (candidate) return candidate;
-  return `其他${category}`;
+  while (current) {
+    if (current.showInFinance) return current;
+    current = current.parentId ? categoryIndex.byId.get(current.parentId) : null;
+  }
+  return null;
 }
 
 function toNumber(value) {
@@ -374,7 +395,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       productLinePrefix: filters.productLine ? `${filters.productLine}/%` : undefined
     };
 
-    const [snRows, nonSnRows, ageRows] = await Promise.all([
+    const [snRows, nonSnRows, ageRows, categoryRows] = await Promise.all([
       this.query(
         `SELECT ps.PRODUCT_ID AS productId,
                 MAX(p.NAME) AS productName,
@@ -446,6 +467,17 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
             ${productLineClause}
           GROUP BY ageBucket`,
         replacements
+      ),
+      this.query(
+        `SELECT CATEGORY_ID AS categoryId,
+                PARENT_ID AS parentId,
+                NAME AS name,
+                LEVEL AS level,
+                SORT_ORDER AS sortOrder,
+                SHOW_IN_FINANCE AS showInFinance
+           FROM T_PRODUCT_CATEGORY
+          WHERE STATUS = 1
+          ORDER BY LEVEL ASC, SORT_ORDER ASC, NAME ASC`
       )
     ]);
 
@@ -458,31 +490,25 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       .filter(row => row.quantity > 0);
     const inventoryQuantity = rows.reduce((sum, row) => sum + row.quantity, 0);
     const inventoryAmount = roundMoney(rows.reduce((sum, row) => sum + row.inventoryAmount, 0));
-    const categoryMap = new Map(INVENTORY_CATEGORY_ORDER.map(name => [name, {
-      key: name,
-      name,
-      quantity: 0,
-      amount: 0,
-      children: new Map()
-    }]));
+    const categoryIndex = buildFinanceCategoryIndex(categoryRows);
+    const categoryMap = new Map(categoryIndex.nodes
+      .filter(category => category.showInFinance)
+      .map(category => [category.categoryId, {
+        key: category.categoryId,
+        categoryId: category.categoryId,
+        name: category.name,
+        path: category.path,
+        level: category.level,
+        quantity: 0,
+        amount: 0,
+        children: []
+      }]));
     rows.forEach(row => {
-      const category = classifyInventoryCategory(row);
-      const target = categoryMap.get(category);
+      const category = findFinanceCategory(row.categoryPath, categoryIndex);
+      const target = category ? categoryMap.get(category.categoryId) : null;
       if (!target) return;
-      const subcategory = classifyInventorySubcategory(row, category);
-      if (!target.children.has(subcategory)) {
-        target.children.set(subcategory, {
-          key: subcategory,
-          name: subcategory,
-          quantity: 0,
-          amount: 0
-        });
-      }
-      const child = target.children.get(subcategory);
       target.quantity += row.quantity;
       target.amount += row.inventoryAmount;
-      child.quantity += row.quantity;
-      child.amount += row.inventoryAmount;
     });
     const staleProducts = rows
       .map(row => {
@@ -500,32 +526,20 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       inventoryQuantity,
       skuCount: new Set(rows.map(row => row.productId).filter(Boolean)).size,
       inventoryAmount,
-      categories: INVENTORY_CATEGORY_ORDER.map(name => {
-        const category = categoryMap.get(name);
-        const childOrder = name === '电脑' ? INVENTORY_COMPUTER_SUBCATEGORY_ORDER : [];
-        const children = [...category.children.values()]
-          .sort((left, right) => {
-            const leftIndex = childOrder.indexOf(left.name);
-            const rightIndex = childOrder.indexOf(right.name);
-            if (leftIndex !== -1 || rightIndex !== -1) {
-              return (leftIndex === -1 ? childOrder.length : leftIndex)
-                - (rightIndex === -1 ? childOrder.length : rightIndex);
-            }
-            return left.name.localeCompare(right.name, 'zh-CN');
-          })
-          .map(child => ({
-            ...child,
-            quantity: Number(child.quantity || 0),
-            amount: roundMoney(child.amount)
-          }));
-        return {
-          key: category.key,
-          name: category.name,
+      categories: [...categoryMap.values()]
+        .sort((left, right) => {
+          const leftCategory = categoryIndex.byId.get(left.categoryId);
+          const rightCategory = categoryIndex.byId.get(right.categoryId);
+          return (leftCategory?.level || 0) - (rightCategory?.level || 0)
+            || (leftCategory?.sortOrder || 0) - (rightCategory?.sortOrder || 0)
+            || left.name.localeCompare(right.name, 'zh-CN');
+        })
+        .map(category => ({
+          ...category,
           quantity: Number(category.quantity || 0),
           amount: roundMoney(category.amount),
-          children
-        };
-      }),
+          children: category.children
+        })),
       ageStructure: ageRows.map(row => ({
         ageBucket: row.ageBucket,
         quantity: toNumber(row.quantity),

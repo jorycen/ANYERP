@@ -141,6 +141,14 @@
                     <el-button link type="primary" size="small" :disabled="level1Index === categoryTree.length - 1" @click="handleMoveCategory(level1, categoryTree, level1Index, 1)">下移</el-button>
                     <el-button link type="primary" size="small" @click="handleAddCategory(level1)">添加子分类</el-button>
                     <el-button link type="primary" size="small" @click="handleEditCategory(level1)">编辑</el-button>
+                    <span class="finance-category-toggle">
+                      <span>展示在财务页面</span>
+                      <el-switch
+                        :model-value="Number(level1.show_in_finance) === 1"
+                        :loading="categoryFinanceLoadingId === level1.category_id"
+                        @change="value => toggleCategoryFinance(level1, value)"
+                      />
+                    </span>
                     <el-button link type="danger" size="small" @click="handleDeleteCategory(level1)">删除</el-button>
                   </div>
                 </div>
@@ -156,6 +164,14 @@
                         <el-button link type="primary" size="small" :disabled="level2Index === level1.children.length - 1" @click="handleMoveCategory(level2, level1.children, level2Index, 1)">下移</el-button>
                         <el-button v-if="level2.level < 3" link type="primary" size="small" @click="handleAddCategory(level2)">添加子分类</el-button>
                         <el-button link type="primary" size="small" @click="handleEditCategory(level2)">编辑</el-button>
+                        <span class="finance-category-toggle">
+                          <span>展示在财务页面</span>
+                          <el-switch
+                            :model-value="Number(level2.show_in_finance) === 1"
+                            :loading="categoryFinanceLoadingId === level2.category_id"
+                            @change="value => toggleCategoryFinance(level2, value)"
+                          />
+                        </span>
                         <el-button link type="danger" size="small" @click="handleDeleteCategory(level2)">删除</el-button>
                       </div>
                     </div>
@@ -169,6 +185,14 @@
                           <el-button link type="primary" size="small" :disabled="level3Index === 0" @click="handleMoveCategory(level3, level2.children, level3Index, -1)">上移</el-button>
                           <el-button link type="primary" size="small" :disabled="level3Index === level2.children.length - 1" @click="handleMoveCategory(level3, level2.children, level3Index, 1)">下移</el-button>
                           <el-button link type="primary" size="small" @click="handleEditCategory(level3)">编辑</el-button>
+                          <span class="finance-category-toggle">
+                            <span>展示在财务页面</span>
+                            <el-switch
+                              :model-value="Number(level3.show_in_finance) === 1"
+                              :loading="categoryFinanceLoadingId === level3.category_id"
+                              @change="value => toggleCategoryFinance(level3, value)"
+                            />
+                          </span>
                           <el-button link type="danger" size="small" @click="handleDeleteCategory(level3)">删除</el-button>
                         </div>
                       </div>
@@ -1186,6 +1210,7 @@ const categoryLoading = ref(false)
 const categoryDialogVisible = ref(false)
 const categoryDialogTitle = ref('')
 const categorySaveLoading = ref(false)
+const categoryFinanceLoadingId = ref('')
 const categoryParentName = ref('无（一级分类）')
 const editingCategory = ref(null)
 const parentCategory = ref(null)
@@ -1205,6 +1230,22 @@ const handleEditCategory = (row) => {
   categoryParentName.value = row.parent_id ? '（已有父级）' : '无（一级分类）'
   categoryDialogTitle.value = `编辑分类 - ${row.name}`
   categoryDialogVisible.value = true
+}
+const toggleCategoryFinance = async (row, value) => {
+  const previousValue = Number(row.show_in_finance || 0)
+  const nextValue = value ? 1 : 0
+  row.show_in_finance = nextValue
+  categoryFinanceLoadingId.value = row.category_id
+  try {
+    const res = await api.updateCategory(row.category_id, { showInFinance: nextValue })
+    if (res.code !== 0) throw new Error(res.message || '保存失败')
+    ElMessage.success(nextValue ? '已展示在财务页面' : '已从财务页面隐藏')
+  } catch (err) {
+    row.show_in_finance = previousValue
+    ElMessage.error(err?.response?.data?.message || err?.message || '财务展示设置保存失败')
+  } finally {
+    categoryFinanceLoadingId.value = ''
+  }
 }
 const handleDeleteCategory = async (row) => {
   try {
@@ -1762,6 +1803,7 @@ watch(() => route.path, syncTabFromRoute)
 .cat-name { font-weight: 500; flex: 1; }
 .cat-level { font-size: 12px; color: #909399; background: #e4e7ed; padding: 2px 8px; border-radius: 4px; }
 .cat-actions { display: flex; gap: 4px; }
+.finance-category-toggle { display: inline-flex; align-items: center; gap: 4px; margin: 0 4px; color: #606266; font-size: 12px; white-space: nowrap; }
 .sub-categories { margin-left: 28px; border-left: 2px solid #e4e7ed; padding-left: 12px; }
 
 .import-tips { margin-bottom: 16px; padding: 16px; background: #f5f7fa; border-radius: 8px; }
