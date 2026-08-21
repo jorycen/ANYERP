@@ -899,34 +899,38 @@ function buildSalesReturnSettlementExportRows(settlements, options = {}) {
     const data = settlement.toJSON ? settlement.toJSON() : settlement;
     const items = Array.isArray(data.items) && data.items.length ? data.items : [{}];
     return items.map(item => {
+      const userReceivable = Number(item.user_receivable_amount ?? data.user_receivable_amount ?? 0);
+      const customerReceived = Number(item.customer_received_amount ?? data.customer_received_amount ?? 0);
+      const policySubsidy = Number(item.policy_subsidy_receivable_amount ?? data.policy_subsidy_receivable_amount ?? 0);
+      const educationSubsidy = Number(item.education_subsidy_amount ?? data.education_subsidy_amount ?? 0);
       const row = Object.fromEntries(ORDER_EXPORT_HEADERS.map(header => [header, '']));
       const quantity = Number(item.quantity || 0);
-      const zeroPayments = Object.fromEntries(ORDER_EXPORT_PAYMENT_HEADERS.map(header => [header, 0]));
+      const negativeQuantity = -Math.abs(quantity);
+      const unitPrice = negativeQuantity ? userReceivable / Math.abs(negativeQuantity) : 0;
       Object.assign(row, {
         订单编号: data.return_no || data.settlement_no || '',
         下单时间: data.create_time || '',
         提交人: data.create_user || '',
         门店ID: data.store_id || '',
         会员称呼: '',
-        订单总计: 0,
+        订单总计: userReceivable,
         优惠金额: 0,
-        国补: 0,
-        教育补贴: 0,
-        应收金额: 0,
-        收款金额汇总: 0,
-        ...zeroPayments,
+        国补: policySubsidy,
+        教育补贴: educationSubsidy,
+        应收金额: userReceivable,
+        收款金额汇总: customerReceived,
+        其他收款方式2: customerReceived,
         归档状态: '已退单',
         开票状态: data.red_invoice_status === 'not_required' ? '不开票' : '红字发票待处理',
-        开票金额: 0,
+        开票金额: data.red_invoice_status === 'not_required' ? 0 : userReceivable,
         商品名称: item.product_name || '销售退单负向结算',
         商品编码: resolveExportManufacturerCode(item, manufacturerCodeById),
-        数量: -Math.abs(quantity),
-        单价: 0,
-        小计: 0,
-        商品应收金额: 0,
-        商品收款金额: 0,
-        补录教育优惠: 0,
-        商品提货运费: 0,
+        数量: negativeQuantity,
+        单价: unitPrice,
+        小计: userReceivable,
+        商品应收金额: userReceivable,
+        商品收款金额: customerReceived,
+        补录教育优惠: educationSubsidy,
         退货商品: `${item.product_name || '销售退货'}${quantity ? ` x-${Math.abs(quantity)}` : ''}`,
         备注: `销售退货单 ${data.return_no || ''}，原销售订单 ${data.order_no || ''}`,
         创建日期: data.create_time || '',

@@ -141,7 +141,7 @@ test('订单导出没有辅助销售金额明细时显示0，不按订单总额�
   assert.equal(rows[0].辅助销售人金额分配, 0);
 });
 
-test('销售退货导出只保留负数量，商品金额统一为0', () => {
+test('销售退货导出以负数展示数量和商品金额', () => {
   const rows = _test.buildSalesReturnSettlementExportRows([{
     toJSON: () => ({
       return_no: 'RET-001',
@@ -164,13 +164,14 @@ test('销售退货导出只保留负数量，商品金额统一为0', () => {
   assert.equal(rows[0].订单编号, 'RET-001');
   assert.equal(rows[0].数量, -1);
   assert.equal(rows[0].商品编码, 'MFR-001');
-  assert.equal(rows[0].订单总计, 0);
-  assert.equal(rows[0].小计, 0);
-  assert.equal(rows[0].商品应收金额, 0);
-  assert.equal(rows[0].商品收款金额, 0);
-  assert.equal(rows[0].国补, 0);
-  assert.equal(rows[0].教育补贴, 0);
-  assert.equal(rows[0].现金, 0);
+  assert.equal(rows[0].订单总计, -100);
+  assert.equal(rows[0].单价, -100);
+  assert.equal(rows[0].小计, -100);
+  assert.equal(rows[0].商品应收金额, -100);
+  assert.equal(rows[0].商品收款金额, -85);
+  assert.equal(rows[0].国补, -10);
+  assert.equal(rows[0].教育补贴, -5);
+  assert.equal(rows[0].其他收款方式2, -85);
   assert.match(rows[0].备注, /ORD-001/);
 });
 
