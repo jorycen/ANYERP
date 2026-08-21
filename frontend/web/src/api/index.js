@@ -541,6 +541,7 @@ export default {
 
   // System
   getMenus: () => api.get('/system/menus'),
+  reorderMenus: (data) => api.post('/system/menus/reorder', data),
   getRoles: () => api.get('/system/roles'),
   getUserDistributors: () => api.get('/system/user-distributors'),
   createRole: (data) => api.post('/system/role', data),

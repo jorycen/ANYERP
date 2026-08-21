@@ -67,7 +67,7 @@ async function login(ctx) {
   const menuIds = [...new Set(roleMenus.map(rm => rm.menu_id))];
   const menus = await Menu.findAll({
     where: { menu_id: menuIds, status: 1 },
-    order: [['sort_order', 'ASC']]
+    order: [['sort_order', 'ASC'], ['menu_id', 'ASC']]
   });
 
   const configuredRegions = await resolveConfiguredRegions(staff, roleCodes);
@@ -143,7 +143,7 @@ async function getUserInfo(ctx) {
   const menuIds = [...new Set(roleMenus.map(rm => rm.menu_id))];
   const menus = await Menu.findAll({
     where: { menu_id: menuIds, status: 1 },
-    order: [['sort_order', 'ASC']]
+    order: [['sort_order', 'ASC'], ['menu_id', 'ASC']]
   });
 
   const roleCodes = roles.map(r => r.role_code);
@@ -236,7 +236,7 @@ function buildMenuTree(menus) {
   menus.forEach(menu => {
     if (menu.parent_id && menuMap[menu.parent_id]) {
       menuMap[menu.parent_id].children.push(menuMap[menu.menu_id]);
-    } else if (!menu.parent_id) {
+    } else {
       rootMenus.push(menuMap[menu.menu_id]);
     }
   });

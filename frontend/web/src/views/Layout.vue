@@ -10,25 +10,12 @@
         class="sidebar-menu"
         :router="true"
       >
-        <template v-for="menu in menuTree" :key="menu.menuCode">
-          <el-sub-menu v-if="menu.children && menu.children.length" :index="menu.menuCode">
-            <template #title>
-              <el-icon><component :is="iconMap[menu.icon] || House" /></el-icon>
-              <span>{{ menu.name }}</span>
-            </template>
-            <el-menu-item
-              v-for="child in menu.children"
-              :key="child.menuCode"
-              :index="child.path"
-            >
-              <span>{{ child.name }}</span>
-            </el-menu-item>
-          </el-sub-menu>
-          <el-menu-item v-else :index="menu.path">
-            <el-icon><component :is="iconMap[menu.icon] || House" /></el-icon>
-            <span>{{ menu.name }}</span>
-          </el-menu-item>
-        </template>
+        <SidebarMenuItem
+          v-for="menu in menuTree"
+          :key="menu.menuCode"
+          :menu="menu"
+          :icon-map="iconMap"
+        />
       </el-menu>
     </el-aside>
 
@@ -117,6 +104,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
+import SidebarMenuItem from '../components/SidebarMenuItem.vue'
 import {
   House, Sell, Box, ShoppingCart, Money, Goods,
   Shop, DataAnalysis, Setting, User, Checked
@@ -157,15 +145,16 @@ const iconMap = {
 }
 
 const activeMenu = computed(() => route.path)
+const routeMatchesMenu = (menu) => {
+  if (menu.path && (route.path === menu.path || route.path.startsWith(`${menu.path}/`))) return true
+  return (menu.children || []).some(routeMatchesMenu)
+}
+
 const openedMenus = computed(() => {
   const opened = []
   const visit = (menus) => {
     menus.forEach(menu => {
-      const hasActiveChild = (menu.children || []).some(child => {
-        if (route.path === child.path || route.path.startsWith(`${child.path}/`)) return true
-        return (child.children || []).some(grandChild => route.path === grandChild.path || route.path.startsWith(`${grandChild.path}/`))
-      })
-      if (hasActiveChild) opened.push(menu.menuCode)
+      if (menu.children?.length && menu.children.some(routeMatchesMenu)) opened.push(menu.menuCode)
       if (menu.children?.length) visit(menu.children)
     })
   }
@@ -272,6 +261,7 @@ function buildMenuTree(menus) {
   const flat = menus.map(m => {
     const item = {}
     // Handle both camelCase (from DB) and original format
+    item.menuId = m.menu_id || m.menuId || ''
     item.menuCode = m.menu_code || m.menuCode || ''
     item.name = m.name || ''
     item.path = m.path || ''

@@ -84,10 +84,71 @@ async function getMenus(ctx) {
 
   const menus = await Menu.findAll({
     where,
-    order: [['sort_order', 'ASC']]
+    order: [['sort_order', 'ASC'], ['menu_id', 'ASC']]
   });
 
   ctx.body = buildMenuTree(menus);
+}
+
+/**
+ * 保存菜单树的顺序和层级
+ *
+ * 菜单权限仍然只关联 menu_id；这里仅更新 parent_id 和 sort_order。
+ */
+async function reorderMenus(ctx) {
+  const rawItems = ctx.request.body?.items;
+  if (!Array.isArray(rawItems) || rawItems.length === 0) {
+    ctx.throw(400, '菜单排序数据不能为空');
+  }
+
+  const menus = await Menu.findAll({ attributes: ['menu_id', 'parent_id'] });
+  const menuMap = new Map(menus.map(menu => [String(menu.menu_id), menu]));
+  const seenIds = new Set();
+  const items = rawItems.map((item, index) => {
+    const menuId = String(item?.menuId ?? item?.menu_id ?? '').trim();
+    if (!menuId || !menuMap.has(menuId)) ctx.throw(400, `菜单不存在: ${menuId || index + 1}`);
+    if (seenIds.has(menuId)) ctx.throw(400, `菜单重复提交: ${menuId}`);
+    seenIds.add(menuId);
+
+    const rawParentId = item?.parentId ?? item?.parent_id ?? null;
+    const parentId = rawParentId === null || rawParentId === undefined || String(rawParentId).trim() === ''
+      ? null
+      : String(rawParentId).trim();
+    if (parentId && !menuMap.has(parentId)) ctx.throw(400, `父菜单不存在: ${parentId}`);
+
+    const sortOrder = Number(item?.sortOrder ?? item?.sort_order ?? index);
+    if (!Number.isInteger(sortOrder) || sortOrder < 0) {
+      ctx.throw(400, '菜单排序值必须是非负整数');
+    }
+
+    return { menuId, parentId, sortOrder };
+  });
+
+  // 用提交后的父级关系检查环，避免菜单成为自己的祖先。
+  const proposedParents = new Map(
+    menus.map(menu => [String(menu.menu_id), menu.parent_id ? String(menu.parent_id) : null])
+  );
+  items.forEach(item => proposedParents.set(item.menuId, item.parentId));
+  for (const item of items) {
+    const visited = new Set();
+    let currentId = item.menuId;
+    while (currentId) {
+      if (visited.has(currentId)) ctx.throw(400, '菜单层级不能形成循环');
+      visited.add(currentId);
+      currentId = proposedParents.get(currentId) || null;
+    }
+  }
+
+  await sequelize.transaction(async transaction => {
+    for (const item of items) {
+      await Menu.update(
+        { parent_id: item.parentId, sort_order: item.sortOrder },
+        { where: { menu_id: item.menuId }, transaction }
+      );
+    }
+  });
+
+  ctx.body = { message: '菜单排序已保存' };
 }
 
 /**
@@ -906,7 +967,7 @@ function buildMenuTree(menus) {
   menus.forEach(menu => {
     if (menu.parent_id && menuMap[menu.parent_id]) {
       menuMap[menu.parent_id].children.push(menuMap[menu.menu_id]);
-    } else if (!menu.parent_id) {
+    } else {
       rootMenus.push(menuMap[menu.menu_id]);
     }
   });
@@ -916,6 +977,7 @@ function buildMenuTree(menus) {
 
 module.exports = {
   getMenus,
+  reorderMenus,
   getRoles,
   getUserDistributors,
   createRole,

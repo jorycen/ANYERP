@@ -69,9 +69,37 @@
         </el-tab-pane>
 
         <el-tab-pane label="菜单管理" name="menus">
-          <el-tree :data="menuData" :props="{ label: 'name', children: 'children' }" default-expand-all>
+          <div class="filter-bar menu-toolbar">
+            <span class="menu-help">拖动菜单可调整顺序和层级，保存后对所有用户生效。</span>
+            <div>
+              <el-button @click="reloadMenus" :disabled="menuReorderSaving">重新加载</el-button>
+              <el-button type="primary" :disabled="!menuReorderDirty" :loading="menuReorderSaving" @click="saveMenuOrder">
+                保存排序
+              </el-button>
+            </div>
+          </div>
+          <el-alert
+            title="允许将菜单拖到其他菜单下，也可以拖回一级菜单；菜单权限和访问路径不会被修改。"
+            type="info"
+            :closable="false"
+            class="menu-order-alert"
+          />
+          <el-tree
+            :data="menuData"
+            :props="{ label: 'name', children: 'children' }"
+            node-key="menuId"
+            default-expand-all
+            draggable
+            :allow-drop="allowMenuDrop"
+            :expand-on-click-node="false"
+            @node-drop="handleMenuDrop"
+          >
             <template #default="{ data }">
-              <span>{{ data.name }} ({{ data.menuCode }})</span>
+              <span class="menu-tree-label">
+                <span>{{ data.name }} ({{ data.menuCode }})</span>
+                <el-tag v-if="data.status === 0" size="small" type="info">停用</el-tag>
+                <span v-if="data.path" class="menu-tree-path">{{ data.path }}</span>
+              </span>
             </template>
           </el-tree>
         </el-tab-pane>
@@ -823,6 +851,8 @@ const syncTabFromRoute = () => {
 const userData = ref([])
 const roleData = ref([])
 const menuData = ref([])
+const menuReorderDirty = ref(false)
+const menuReorderSaving = ref(false)
 const stores = ref([])
 const regions = ref([])
 const distributorOptions = ref([])
@@ -1160,8 +1190,67 @@ const resetRoleForm = () => {
 const loadMenus = async () => {
   try {
     const res = await api.getMenus()
-    if (res.code === 0) menuData.value = res.data || []
+    if (res.code === 0) {
+      menuData.value = res.data || []
+      menuReorderDirty.value = false
+    }
   } catch (err) { ElMessage.error('加载菜单失败') }
+}
+
+const reloadMenus = async () => {
+  if (menuReorderDirty.value) {
+    try {
+      await ElMessageBox.confirm('当前有未保存的菜单调整，重新加载会放弃这些调整。确定继续吗？', '提示', {
+        confirmButtonText: '放弃调整',
+        cancelButtonText: '继续编辑',
+        type: 'warning'
+      })
+    } catch {
+      return
+    }
+  }
+  await loadMenus()
+}
+
+const isMenuDescendant = (menu, targetMenuId) => {
+  return (menu.children || []).some(child => {
+    return String(child.menuId) === String(targetMenuId) || isMenuDescendant(child, targetMenuId)
+  })
+}
+
+const allowMenuDrop = (draggingNode, dropNode) => {
+  if (!draggingNode || !dropNode || draggingNode === dropNode) return false
+  return !isMenuDescendant(draggingNode.data, dropNode.data.menuId)
+}
+
+const handleMenuDrop = () => {
+  menuReorderDirty.value = true
+}
+
+const flattenMenuTree = (menus, parentId = null, result = []) => {
+  menus.forEach((menu, index) => {
+    result.push({
+      menuId: menu.menuId,
+      parentId,
+      sortOrder: index
+    })
+    flattenMenuTree(menu.children || [], menu.menuId, result)
+  })
+  return result
+}
+
+const saveMenuOrder = async () => {
+  if (!menuReorderDirty.value) return
+  menuReorderSaving.value = true
+  try {
+    await api.reorderMenus({ items: flattenMenuTree(menuData.value) })
+    ElMessage.success('菜单排序已保存')
+    await loadMenus()
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '菜单排序保存失败')
+  } finally {
+    menuReorderSaving.value = false
+  }
 }
 
 const loadStores = async () => {
@@ -2325,6 +2414,29 @@ const cfResetFieldForm = () => {
 
 .filter-bar {
   margin-bottom: 16px;
+}
+
+.menu-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.menu-help,
+.menu-tree-path {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
+.menu-order-alert {
+  margin-bottom: 16px;
+}
+
+.menu-tree-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .config-section-title {
