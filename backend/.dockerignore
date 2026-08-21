@@ -1,0 +1,16 @@
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+.env
+.env.*
+data/
+backup/
+__pycache__/
+**/__pycache__/
+*.pyc
+dist/
+coverage/

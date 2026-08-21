@@ -1,0 +1,39 @@
+{
+  "name": "any-erp-backend",
+  "version": "1.0.0",
+  "description": "ANY-ERP 后端服务",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "node --test test/*.test.js",
+    "db:init": "node scripts/initDb.js",
+    "db:migrate:used-product": "node scripts/migrate-used-product-columns.js",
+    "db:migrate:used-product": "node scripts/migrate-used-product-columns.js",
+    "db:clear": "node clear_data.js",
+    "pn:audit": "node scripts/audit-product-pn-consistency.js"
+  },
+  "dependencies": {
+    "@cloudbase/node-sdk": "^3.18.3",
+    "@koa/multer": "^4.0.0",
+    "bcryptjs": "^2.4.3",
+    "cos-nodejs-sdk-v5": "^2.15.4",
+    "joi": "^17.12.0",
+    "jsonwebtoken": "^9.0.2",
+    "koa": "^2.15.0",
+    "koa-bodyparser": "^4.4.1",
+    "koa-cors": "^0.0.16",
+    "koa-router": "^12.0.1",
+    "koa-static": "^5.0.0",
+    "moment": "^2.30.1",
+    "multer": "^2.1.1",
+    "mysql2": "^3.9.0",
+    "sequelize": "^6.37.0",
+    "uuid": "^9.0.1",
+    "ws": "^8.21.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.3"
+  }
+}
