@@ -23,6 +23,7 @@ const moment = require('moment');
 const XLSX = require('xlsx');
 const {
   actualUnitPrice,
+  getSettlementItemAvailableAmount,
   getAllocationSummary,
   getPayableRemaining,
   refreshPayableState,
@@ -255,20 +256,36 @@ async function getPayableSettlementItems(ctx) {
   });
   const rows = [];
   payables.forEach(payable => {
-    const allocated = summary.get(String(payable.payable_id)) || { amount: 0, quantityByItem: new Map() };
-    const items = payable.source_type === 'purchase' && (Number(allocated.amount || 0) <= 0 || allocated.quantityByItem.size > 0)
+    const allocated = summary.get(String(payable.payable_id)) || {
+      amount: 0,
+      quantityByItem: new Map(),
+      amountByItem: new Map()
+    };
+    const items = payable.source_type === 'purchase' && (
+      Number(allocated.amount || 0) <= 0 ||
+      allocated.quantityByItem.size > 0 ||
+      allocated.amountByItem.size > 0
+    )
       ? (itemMap.get(String(payable.request_id)) || [])
       : [];
     if (items.length) {
       const payableRemaining = getPayableRemaining(payable.total_amount, allocated.amount, payable.offset_amount);
       let itemRemaining = Math.max(0, payableRemaining);
       items.forEach(item => {
-        const usedQuantity = Number(allocated.quantityByItem.get(String(item.item_id)) || 0);
         const adjustedQuantity = Math.max(0, Number(item.quantity || 0) + Number(adjustmentQuantityDeltas.get(String(item.item_id)) || 0));
-        const availableQuantity = Math.max(0, adjustedQuantity - usedQuantity);
         const unitPrice = actualUnitPrice(item);
-        if (availableQuantity <= 0) return;
-        const availableAmount = Math.min(roundAmount(availableQuantity * unitPrice), itemRemaining);
+        const usedAmount = Number(allocated.amountByItem.get(String(item.item_id)) || 0);
+        const availableQuantity = Math.max(
+          0,
+          adjustedQuantity - Number(allocated.quantityByItem.get(String(item.item_id)) || 0)
+        );
+        const availableItemAmount = getSettlementItemAvailableAmount(
+          item,
+          usedAmount,
+          adjustmentQuantityDeltas.get(String(item.item_id))
+        );
+        if (availableItemAmount <= 0) return;
+        const availableAmount = Math.min(availableItemAmount, itemRemaining);
         if (availableAmount <= 0) return;
         rows.push({
           payable_id: payable.payable_id,
@@ -391,24 +408,48 @@ async function createSettlement(ctx) {
         const item = requestItemId ? requestItemMap.get(String(requestItemId)) : null;
         let used = summary.get(payableId);
         if (!used) {
-          used = { amount: 0, quantityByItem: new Map() };
+          used = { amount: 0, quantityByItem: new Map(), amountByItem: new Map() };
           summary.set(payableId, used);
         }
         if (item) {
           if (String(item.request_id) !== String(payable.request_id)) ctx.throw(400, 'purchase item does not belong to payable');
-          const quantity = Number(allocation.quantity || allocation.settleQuantity || allocation.settle_quantity || 0);
-          const usedQuantity = Number(used.quantityByItem.get(String(item.item_id)) || 0);
-          const adjustedQuantity = Math.max(0, Number(item.quantity || 0) + Number(adjustmentQuantityDeltas.get(String(item.item_id)) || 0));
-          const availableQuantity = adjustedQuantity - usedQuantity;
-          if (quantity <= 0 || quantity > availableQuantity + 0.00005) ctx.throw(400, 'settlement quantity exceeds remaining quantity');
           const unitPrice = actualUnitPrice(item);
-          const amount = roundAmount(quantity * unitPrice);
-          rows.push({ payable, requestItem: item, quantity, unitPrice, amount });
-          used.quantityByItem.set(String(item.item_id), usedQuantity + quantity);
-          used.amount = Number(used.amount || 0) + amount;
+          const amountValue = allocation.amount ?? allocation.settleAmount ?? allocation.settle_amount;
+          if (amountValue !== undefined && amountValue !== null && amountValue !== '') {
+            const amount = roundAmount(amountValue);
+            const usedAmount = Number(used.amountByItem.get(String(item.item_id)) || 0);
+            const itemRemaining = getSettlementItemAvailableAmount(
+              item,
+              usedAmount,
+              adjustmentQuantityDeltas.get(String(item.item_id))
+            );
+            const payableRemaining = getPayableRemaining(
+              payable.total_amount,
+              used.amount,
+              payable.offset_amount
+            );
+            if (amount <= 0 || amount > itemRemaining + 0.005 || amount > payableRemaining + 0.005) {
+              ctx.throw(400, 'settlement amount exceeds remaining amount');
+            }
+            rows.push({ payable, requestItem: item, quantity: null, unitPrice, amount });
+            used.amountByItem.set(String(item.item_id), usedAmount + amount);
+            used.amount = Number(used.amount || 0) + amount;
+          } else {
+            const quantity = Number(allocation.quantity || allocation.settleQuantity || allocation.settle_quantity || 0);
+            const usedQuantity = Number(used.quantityByItem.get(String(item.item_id)) || 0);
+            const adjustedQuantity = Math.max(0, Number(item.quantity || 0) + Number(adjustmentQuantityDeltas.get(String(item.item_id)) || 0));
+            const availableQuantity = adjustedQuantity - usedQuantity;
+            if (quantity <= 0 || quantity > availableQuantity + 0.00005) ctx.throw(400, 'settlement quantity exceeds remaining quantity');
+            const amount = roundAmount(quantity * unitPrice);
+            rows.push({ payable, requestItem: item, quantity, unitPrice, amount });
+            used.quantityByItem.set(String(item.item_id), usedQuantity + quantity);
+            used.amountByItem.set(String(item.item_id), Number(used.amountByItem.get(String(item.item_id)) || 0) + amount);
+            used.amount = Number(used.amount || 0) + amount;
+          }
         } else {
-          const remaining = roundAmount(Number(payable.total_amount || 0) - Number(used.amount || 0));
-          const amount = roundAmount(allocation.amount || allocation.settleAmount || allocation.settle_amount);
+          const remaining = getPayableRemaining(payable.total_amount, used.amount, payable.offset_amount);
+          const amountValue = allocation.amount ?? allocation.settleAmount ?? allocation.settle_amount;
+          const amount = roundAmount(amountValue);
           if (amount <= 0 || amount > remaining + 0.005) ctx.throw(400, 'settlement amount exceeds remaining amount');
           rows.push({ payable, requestItem: null, quantity: null, unitPrice: null, amount });
           used.amount = Number(used.amount || 0) + amount;
@@ -1209,6 +1250,10 @@ async function exportPaymentCandidates(ctx) {
   });
 
   const data = normalizeSettlements(rows).map(row => ({
+    对方公司: row.supplier_account_snapshot_parsed?.companyName || '',
+    对方开户行: row.supplier_account_snapshot_parsed?.bankName || '',
+    对方账号: row.supplier_account_snapshot_parsed?.accountNumber || '',
+    对方账户备注: row.supplier_account_snapshot_parsed?.remark || row.other_payment_remark || '',
     结算单号: row.settlement_no,
     供应商: row.supplier_name || '',
     结算金额: Number(row.total_amount || 0),
@@ -1221,13 +1266,12 @@ async function exportPaymentCandidates(ctx) {
   }));
 
   const workbook = XLSX.utils.book_new();
-  const paymentHeaders = ['结算单号', '供应商', '结算金额', '已付金额', '剩余应付金额', '本次付款金额', '付款时间', '备注', '导入标识'];
+  const paymentHeaders = [
+    '对方公司', '对方开户行', '对方账号', '对方账户备注',
+    '结算单号', '供应商', '结算金额', '已付金额', '剩余应付金额', '本次付款金额', '付款时间', '备注', '导入标识'
+  ];
   const worksheet = XLSX.utils.json_to_sheet(data, { header: paymentHeaders });
-  if (worksheet['!cols']) {
-    worksheet['!cols'][8] = { hidden: true };
-  } else {
-    worksheet['!cols'] = [{}, {}, {}, {}, {}, {}, {}, {}, { hidden: true }];
-  }
+  worksheet['!cols'] = paymentHeaders.map((header, index) => index === paymentHeaders.length - 1 ? { hidden: true } : {});
   XLSX.utils.book_append_sheet(workbook, worksheet, '实际付款');
   const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
   const fileName = encodeURIComponent(`应付实际付款_${moment().format('YYYYMMDD_HHmmss')}.xlsx`);
@@ -1330,6 +1374,8 @@ async function validatePaymentImportRows(rows, accountId) {
       settlementId: settlement.settlement_id,
       settlementNo,
       supplierName: settlement.supplier_name || '',
+      supplierAccountId: settlement.supplier_account_id || '',
+      supplierAccount: parseJsonText(settlement.supplier_account_snapshot),
       totalAmount: Number(settlement.total_amount || 0),
       paidAmount: Number(settlement.paid_amount || 0),
       remainingAmount,

@@ -1377,7 +1377,7 @@ function subsidyPhotoDownloadName(order, photo, index) {
   const data = order?.toJSON ? order.toJSON() : order || {};
   const originalName = subsidyPhotoFileName(photo, index).split('/').pop();
   const orderNo = safeSubsidyPhotoNamePart(data.order_no || data.order_id, '无订单号');
-  const person = safeSubsidyPhotoNamePart(data.subsidy_person, '未命名');
+  const person = safeSubsidyPhotoNamePart(data.subsidy_person || data.customer_name, '未命名');
   const prefix = `${orderNo}_${person}_`;
   return originalName.startsWith(prefix) ? originalName : `${prefix}${originalName}`;
 }
@@ -1550,7 +1550,7 @@ async function downloadAllSubsidyPhotosArchive(ctx) {
   const orders = await Order.findAll({
     where,
     // 批量下载只需要订单编号和照片元数据，不加载门店及其他订单字段，减少查询时间和内存占用。
-    attributes: ['order_id', 'order_no', 'subsidy_person', 'subsidy_photos'],
+    attributes: ['order_id', 'order_no', 'customer_name', 'subsidy_person', 'subsidy_photos'],
     order: [['create_time', 'DESC'], ['order_id', 'DESC']]
   });
 
