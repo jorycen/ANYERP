@@ -972,7 +972,8 @@ function buildSalesReturnSettlementExportRows(settlements, options = {}) {
       const row = Object.fromEntries(ORDER_EXPORT_HEADERS.map(header => [header, '']));
       const quantity = Number(item.quantity || 0);
       const negativeQuantity = -Math.abs(quantity);
-      const unitPrice = negativeQuantity ? userReceivable / Math.abs(negativeQuantity) : 0;
+      // 退单导出按会计方向展示：数量和总价为负，单价保留正数。
+      const unitPrice = negativeQuantity ? Math.abs(userReceivable) / Math.abs(negativeQuantity) : 0;
       Object.assign(row, {
         订单编号: data.return_no || data.settlement_no || '',
         下单时间: data.create_time || '',

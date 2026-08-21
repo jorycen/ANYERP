@@ -165,7 +165,7 @@ test('销售退货导出以负数展示数量和商品金额', () => {
   assert.equal(rows[0].数量, -1);
   assert.equal(rows[0].商品编码, 'MFR-001');
   assert.equal(rows[0].订单总计, -100);
-  assert.equal(rows[0].单价, -100);
+  assert.equal(rows[0].单价, 100);
   assert.equal(rows[0].小计, -100);
   assert.equal(rows[0].商品应收金额, -100);
   assert.equal(rows[0].商品收款金额, -85);
@@ -209,7 +209,7 @@ test('历史退单明细金额为0时按原销售订单补算负向金额', () =
   });
 
   assert.equal(rows[0].数量, -1);
-  assert.equal(rows[0].单价, -100);
+  assert.equal(rows[0].单价, 100);
   assert.equal(rows[0].小计, -100);
   assert.equal(rows[0].商品应收金额, -100);
   assert.equal(rows[0].商品收款金额, -100);
