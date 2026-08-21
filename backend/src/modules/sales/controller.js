@@ -891,18 +891,84 @@ function buildDepositExportRows(deposits, paymentMethodMap = {}) {
   });
 }
 
+function firstNonZeroExportNumber(...values) {
+  const numbers = values.map(value => Number(value));
+  const nonZero = numbers.find(value => Number.isFinite(value) && Math.abs(value) > 0);
+  if (nonZero !== undefined) return nonZero;
+  return numbers.find(value => Number.isFinite(value)) || 0;
+}
+
+function deriveReturnSettlementAmounts(data, item, returnOrderById = new Map()) {
+  const orderId = String(data.order_id || '').trim();
+  const order = returnOrderById.get(orderId);
+  if (!order) return {};
+  const orderItems = Array.isArray(order.OrderItems) ? order.OrderItems : [];
+  const itemId = String(item.order_item_id || '').trim();
+  const sourceItem = orderItems.find(row => String(row.item_id || '').trim() === itemId)
+    || orderItems.find(row => String(row.product_id || '').trim() === String(item.product_id || '').trim());
+  if (!sourceItem) return {};
+
+  const quantity = Math.abs(Number(item.quantity || 0));
+  const sourceGross = money(Math.abs(Number(sourceItem.sale_price || 0)) * quantity);
+  const orderGross = money(orderItems.reduce(
+    (sum, row) => sum + Math.abs(Number(row.sale_price || 0)) * Math.abs(Number(row.quantity || 0)),
+    0
+  ));
+  if (sourceGross <= 0 || orderGross <= 0) return {};
+
+  const orderReceivable = Math.max(0, money(Number(order.total_amount || 0) - Number(order.discount_amount || 0)));
+  const userReceivable = -money(orderReceivable * sourceGross / orderGross);
+  const isGovSubsidyItem = Number(sourceItem.use_gov_subsidy || 0) === 1;
+  const isEducationSubsidyItem = Number(sourceItem.use_edu_subsidy || 0) === 1;
+  const eligibleGross = money(orderItems
+    .filter(row => Number(row.use_gov_subsidy || 0) === 1)
+    .reduce((sum, row) => sum + Math.abs(Number(row.sale_price || 0)) * Math.abs(Number(row.quantity || 0)), 0));
+  const educationEligibleGross = money(orderItems
+    .filter(row => Number(row.use_edu_subsidy || 0) === 1)
+    .reduce((sum, row) => sum + Math.abs(Number(row.sale_price || 0)) * Math.abs(Number(row.quantity || 0)), 0));
+  const policySubsidy = isGovSubsidyItem && eligibleGross > 0
+    ? -money(Number(order.national_subsidy || 0) * sourceGross / eligibleGross)
+    : 0;
+  const educationSubsidy = isEducationSubsidyItem && educationEligibleGross > 0
+    ? -money(Number(order.education_subsidy || 0) * sourceGross / educationEligibleGross)
+    : 0;
+  const customerReceived = -Math.min(
+    Math.max(0, Number(order.actual_payment || 0)),
+    Math.max(0, Math.abs(userReceivable) - Math.abs(policySubsidy) - Math.abs(educationSubsidy))
+  );
+  return { userReceivable, customerReceived, policySubsidy, educationSubsidy };
+}
+
 function buildSalesReturnSettlementExportRows(settlements, options = {}) {
   const manufacturerCodeById = options.manufacturerCodeById instanceof Map
     ? options.manufacturerCodeById
     : new Map();
+  const returnOrderById = options.returnOrderById instanceof Map ? options.returnOrderById : new Map();
   return (settlements || []).flatMap(settlement => {
     const data = settlement.toJSON ? settlement.toJSON() : settlement;
     const items = Array.isArray(data.items) && data.items.length ? data.items : [{}];
     return items.map(item => {
-      const userReceivable = Number(item.user_receivable_amount ?? data.user_receivable_amount ?? 0);
-      const customerReceived = Number(item.customer_received_amount ?? data.customer_received_amount ?? 0);
-      const policySubsidy = Number(item.policy_subsidy_receivable_amount ?? data.policy_subsidy_receivable_amount ?? 0);
-      const educationSubsidy = Number(item.education_subsidy_amount ?? data.education_subsidy_amount ?? 0);
+      const derivedAmounts = deriveReturnSettlementAmounts(data, item, returnOrderById);
+      const userReceivable = firstNonZeroExportNumber(
+        item.user_receivable_amount,
+        data.user_receivable_amount,
+        derivedAmounts.userReceivable
+      );
+      const customerReceived = firstNonZeroExportNumber(
+        item.customer_received_amount,
+        data.customer_received_amount,
+        derivedAmounts.customerReceived
+      );
+      const policySubsidy = firstNonZeroExportNumber(
+        item.policy_subsidy_receivable_amount,
+        data.policy_subsidy_receivable_amount,
+        derivedAmounts.policySubsidy
+      );
+      const educationSubsidy = firstNonZeroExportNumber(
+        item.education_subsidy_amount,
+        data.education_subsidy_amount,
+        derivedAmounts.educationSubsidy
+      );
       const row = Object.fromEntries(ORDER_EXPORT_HEADERS.map(header => [header, '']));
       const quantity = Number(item.quantity || 0);
       const negativeQuantity = -Math.abs(quantity);
@@ -1058,6 +1124,27 @@ async function exportOrders(ctx) {
     })
     .map(value => String(value || '').trim())
     .filter(Boolean))];
+  const returnOrderIds = [...new Set(returnSettlements
+    .map(settlement => {
+      const data = settlement.toJSON ? settlement.toJSON() : settlement;
+      return String(data.order_id || '').trim();
+    })
+    .filter(Boolean))];
+  const returnOrders = returnOrderIds.length
+    ? await Order.findAll({
+      where: { order_id: { [Op.in]: returnOrderIds } },
+      attributes: ['order_id', 'total_amount', 'discount_amount', 'national_subsidy', 'education_subsidy', 'actual_payment'],
+      include: [{
+        model: OrderItem,
+        attributes: ['item_id', 'product_id', 'sale_price', 'quantity', 'use_gov_subsidy', 'use_edu_subsidy'],
+        required: false
+      }]
+    })
+    : [];
+  const returnOrderById = new Map(returnOrders.map(order => {
+    const data = order.toJSON ? order.toJSON() : order;
+    return [String(data.order_id), data];
+  }));
   const returnProducts = returnProductIds.length
     ? await Product.findAll({
       where: { product_id: { [Op.in]: returnProductIds } },
@@ -1070,7 +1157,10 @@ async function exportOrders(ctx) {
   const rows = [
     ...buildOrderExportRows(orders, paymentMethodMap),
     ...buildDepositExportRows(deposits, paymentMethodMap),
-    ...buildSalesReturnSettlementExportRows(returnSettlements, { manufacturerCodeById: returnManufacturerCodeById })
+    ...buildSalesReturnSettlementExportRows(returnSettlements, {
+      manufacturerCodeById: returnManufacturerCodeById,
+      returnOrderById
+    })
   ].sort((a, b) => new Date(b.下单时间 || 0).getTime() - new Date(a.下单时间 || 0).getTime());
   sendExcel(ctx, rows, ORDER_EXPORT_HEADERS, `销售订单导出_${getChinaDateString()}.xlsx`, '订单明细');
 }

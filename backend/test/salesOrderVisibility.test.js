@@ -175,6 +175,46 @@ test('销售退货导出以负数展示数量和商品金额', () => {
   assert.match(rows[0].备注, /ORD-001/);
 });
 
+test('历史退单明细金额为0时按原销售订单补算负向金额', () => {
+  const rows = _test.buildSalesReturnSettlementExportRows([{
+    toJSON: () => ({
+      return_no: 'RET-003',
+      order_id: 'ORD-003',
+      items: [{
+        order_item_id: 3,
+        product_id: 'P-003',
+        product_name: '历史商品',
+        quantity: -1,
+        user_receivable_amount: 0,
+        customer_received_amount: 0
+      }]
+    })
+  }], {
+    returnOrderById: new Map([
+      ['ORD-003', {
+        order_id: 'ORD-003',
+        total_amount: 100,
+        discount_amount: 0,
+        actual_payment: 100,
+        OrderItems: [{
+          item_id: 3,
+          product_id: 'P-003',
+          sale_price: 100,
+          quantity: 1,
+          use_gov_subsidy: 0,
+          use_edu_subsidy: 0
+        }]
+      }]
+    ])
+  });
+
+  assert.equal(rows[0].数量, -1);
+  assert.equal(rows[0].单价, -100);
+  assert.equal(rows[0].小计, -100);
+  assert.equal(rows[0].商品应收金额, -100);
+  assert.equal(rows[0].商品收款金额, -100);
+});
+
 test('订单导出商品编码列使用厂商编码，不使用内部商品编码', () => {
   const rows = _test.buildOrderExportRows([{
     toJSON: () => ({
