@@ -3,6 +3,12 @@ const assert = require('node:assert/strict');
 const salesRouter = require('../src/modules/sales/routes');
 const salesController = require('../src/modules/sales/controller');
 
+async function readStream(stream) {
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
 test('国补照片查询、替换和下载路由已注册并使用统一服务端权限角色', () => {
   const paths = salesRouter.stack.map(layer => `${layer.methods.join(',')}:${layer.path}`);
   assert.ok(paths.some(path => path.includes('GET:/subsidy-photos')));
@@ -62,4 +68,27 @@ test('国补照片导出文件自动补齐扩展名并按 YYYYDDMM姓名手机�
   assert.equal(subsidyPhotoDownloadName({ order_no: 'SO-001', subsidy_person: '张三' }, { name: 'SO-001_张三_SN.jpg' }, 0), 'SO-001_张三_SN.jpg');
   assert.equal(subsidyPhotoDownloadName({ order_no: 'SO-002', customer_name: '李四' }, { name: 'SN.jpg' }, 0), 'SO-002_李四_SN.jpg');
   assert.equal(subsidyPhotoDownloadName({ order_no: 'SO/001', subsidy_person: '张/三' }, { name: '身份证', mimeType: 'image/png' }, 1), 'SO_001_张_三_身份证.png');
+});
+
+test('国补照片批量下载文件名使用查询日期范围', () => {
+  const { subsidyPhotoDateRangeName, subsidyPhotoArchiveFileName } = salesController._test;
+  assert.equal(subsidyPhotoDateRangeName({ startDate: '2026-08-21', endDate: '2026-08-21' }), '2026-08-21');
+  assert.equal(subsidyPhotoDateRangeName({ startDate: '2026-08-01', endDate: '2026-08-21' }), '2026-08-01至2026-08-21');
+  assert.equal(subsidyPhotoDateRangeName({}), '不限时间');
+  assert.equal(subsidyPhotoArchiveFileName({ startDate: '2026-08-01', endDate: '2026-08-21' }), '查询结果-国补照片-2026-08-01至2026-08-21.zip');
+});
+
+test('国补照片批量压缩时跳过读取失败或空内容的照片', async () => {
+  const { createSubsidyPhotoZip } = salesController._test;
+  const archive = await readStream(createSubsidyPhotoZip([
+    { id: 'BAD', name: '读取失败.jpg', load: async () => { throw new Error('云文件不存在'); } },
+    { id: 'EMPTY', name: '空文件.jpg', load: async () => Buffer.alloc(0) },
+    { id: 'OK', name: '正常照片.jpg', load: async () => Buffer.from('valid-photo') }
+  ]));
+
+  assert.equal(archive.readUInt32LE(archive.length - 22), 0x06054b50);
+  assert.equal(archive.readUInt16LE(archive.length - 12), 1);
+  assert.ok(archive.includes(Buffer.from('正常照片.jpg')));
+  assert.equal(archive.includes(Buffer.from('读取失败.jpg')), false);
+  assert.equal(archive.includes(Buffer.from('空文件.jpg')), false);
 });

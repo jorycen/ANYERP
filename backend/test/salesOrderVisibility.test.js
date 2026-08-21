@@ -141,7 +141,7 @@ test('订单导出没有辅助销售金额明细时显示0，不按订单总额�
   assert.equal(rows[0].辅助销售人金额分配, 0);
 });
 
-test('销售退货导出形成独立退货单并以负数展示数量和金额', () => {
+test('销售退货导出只保留负数量，商品金额统一为0', () => {
   const rows = _test.buildSalesReturnSettlementExportRows([{
     toJSON: () => ({
       return_no: 'RET-001',
@@ -151,7 +151,7 @@ test('销售退货导出形成独立退货单并以负数展示数量和金额',
       items: [{
         product_name: '商品A',
         product_id: 'P-001',
-        Product: { product_code: 'PRD-001' },
+        Product: { product_code: 'PRD-001', manufacturer_code: 'MFR-001' },
         quantity: -1,
         user_receivable_amount: -100,
         customer_received_amount: -85,
@@ -163,12 +163,32 @@ test('销售退货导出形成独立退货单并以负数展示数量和金额',
 
   assert.equal(rows[0].订单编号, 'RET-001');
   assert.equal(rows[0].数量, -1);
-  assert.equal(rows[0].商品编码, 'PRD-001');
-  assert.equal(rows[0].订单总计, -100);
-  assert.equal(rows[0].商品应收金额, -100);
-  assert.equal(rows[0].国补, -10);
-  assert.equal(rows[0].教育补贴, -5);
+  assert.equal(rows[0].商品编码, 'MFR-001');
+  assert.equal(rows[0].订单总计, 0);
+  assert.equal(rows[0].小计, 0);
+  assert.equal(rows[0].商品应收金额, 0);
+  assert.equal(rows[0].商品收款金额, 0);
+  assert.equal(rows[0].国补, 0);
+  assert.equal(rows[0].教育补贴, 0);
+  assert.equal(rows[0].现金, 0);
   assert.match(rows[0].备注, /ORD-001/);
+});
+
+test('订单导出商品编码列使用厂商编码，不使用内部商品编码', () => {
+  const rows = _test.buildOrderExportRows([{
+    toJSON: () => ({
+      OrderItems: [{
+        product_name: '商品A',
+        product_code: 'PRD-001',
+        pn_code: 'MFR-001',
+        quantity: 1,
+        subtotal: 100,
+        Product: { product_code: 'PRD-001', manufacturer_code: 'MFR-MASTER-001' }
+      }]
+    })
+  }]);
+
+  assert.equal(rows[0].商品编码, 'MFR-001');
 });
 
 test('订单导出按主商品分摊国补，配件国补字段留空并按商品行分摊收款', () => {

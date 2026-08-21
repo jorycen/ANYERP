@@ -347,6 +347,15 @@ function hasActiveFilter() {
   )
 }
 
+function subsidyPhotoArchiveFileName() {
+  const startDate = normalizeDateValue(dateRange.value?.[0])
+  const endDate = normalizeDateValue(dateRange.value?.[1])
+  let dateRangeName = '不限时间'
+  if (startDate && endDate) dateRangeName = startDate === endDate ? startDate : `${startDate}至${endDate}`
+  else if (startDate || endDate) dateRangeName = `${startDate || '不限开始日期'}至${endDate || '不限结束日期'}`
+  return `查询结果-国补照片-${dateRangeName}.zip`
+}
+
 async function getDownloadErrorMessage(error) {
   const isTimeout = error?.code === 'ECONNABORTED'
     || error?.code === 'ETIMEDOUT'
@@ -394,7 +403,7 @@ async function downloadAllPhotos() {
     const url = URL.createObjectURL(response.data)
     const link = document.createElement('a')
     link.href = url
-    link.download = `查询结果-国补照片-${new Date().toISOString().slice(0, 10)}.zip`
+    link.download = subsidyPhotoArchiveFileName()
     link.style.display = 'none'
     document.body.appendChild(link)
     link.click()

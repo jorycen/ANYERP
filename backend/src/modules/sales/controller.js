@@ -620,16 +620,16 @@ function isFreightSupplement(item) {
   return /运费|提货费用/.test(String(item?.item_name || '').trim());
 }
 
-function resolveExportProductCode(item, productCodeById = new Map()) {
+function resolveExportManufacturerCode(item, manufacturerCodeById = new Map()) {
   const productId = String(item?.product_id || '').trim();
   const candidates = [
-    item?.product_code,
-    item?.Product?.product_code,
-    item?.OrderItem?.product_code,
-    item?.OrderItem?.Product?.product_code,
-    productId ? productCodeById.get(productId) : '',
-    // 兼容历史订单中商品关联已被清理、但仍保留 PN 快照的情况；绝不输出内部 product_id。
-    item?.pn_code
+    item?.manufacturer_code,
+    item?.pn_code,
+    item?.Product?.manufacturer_code,
+    item?.OrderItem?.manufacturer_code,
+    item?.OrderItem?.pn_code,
+    item?.OrderItem?.Product?.manufacturer_code,
+    productId ? manufacturerCodeById.get(productId) : ''
   ];
   return candidates.map(value => String(value || '').trim()).find(Boolean) || '';
 }
@@ -766,7 +766,7 @@ function buildOrderExportRows(orders, paymentMethodMap = {}) {
 
     return items.map((item, itemIndex) => {
       const subtotal = Number(item.subtotal || 0);
-      const productCode = resolveExportProductCode(item);
+      const manufacturerCode = resolveExportManufacturerCode(item);
       const isMainProduct = isExportMainProduct(item, items.length === 1);
       const rowPaymentAmounts = Object.fromEntries(
         ORDER_EXPORT_PAYMENT_HEADERS.map(header => [header, paymentAmountsByItem[header].get(itemIndex) || 0])
@@ -797,7 +797,7 @@ function buildOrderExportRows(orders, paymentMethodMap = {}) {
         国补人: isMainProduct ? (data.subsidy_person || '') : '',
         国补人ID: isMainProduct ? (data.subsidy_id || '') : '',
         商品名称: item.product_name || item.Product?.name || '',
-        商品编码: productCode,
+        商品编码: manufacturerCode,
         SN码: item.sn_code || '',
         IMEI1: item.imei1 || '',
         IMEI2: item.imei2 || '',
@@ -892,39 +892,41 @@ function buildDepositExportRows(deposits, paymentMethodMap = {}) {
 }
 
 function buildSalesReturnSettlementExportRows(settlements, options = {}) {
-  const productCodeById = options.productCodeById instanceof Map ? options.productCodeById : new Map();
+  const manufacturerCodeById = options.manufacturerCodeById instanceof Map
+    ? options.manufacturerCodeById
+    : new Map();
   return (settlements || []).flatMap(settlement => {
     const data = settlement.toJSON ? settlement.toJSON() : settlement;
     const items = Array.isArray(data.items) && data.items.length ? data.items : [{}];
     return items.map(item => {
-      const userReceivable = Number(item.user_receivable_amount ?? data.user_receivable_amount ?? 0);
-      const customerReceived = Number(item.customer_received_amount ?? data.customer_received_amount ?? 0);
-      const policySubsidy = Number(item.policy_subsidy_receivable_amount ?? data.policy_subsidy_receivable_amount ?? 0);
-      const educationSubsidy = Number(item.education_subsidy_amount ?? data.education_subsidy_amount ?? 0);
       const row = Object.fromEntries(ORDER_EXPORT_HEADERS.map(header => [header, '']));
       const quantity = Number(item.quantity || 0);
+      const zeroPayments = Object.fromEntries(ORDER_EXPORT_PAYMENT_HEADERS.map(header => [header, 0]));
       Object.assign(row, {
         订单编号: data.return_no || data.settlement_no || '',
         下单时间: data.create_time || '',
         提交人: data.create_user || '',
         门店ID: data.store_id || '',
         会员称呼: '',
-        订单总计: userReceivable,
+        订单总计: 0,
         优惠金额: 0,
-        国补: policySubsidy,
-        教育补贴: educationSubsidy,
-        应收金额: userReceivable,
-        收款金额汇总: customerReceived,
-        其他收款方式2: customerReceived,
+        国补: 0,
+        教育补贴: 0,
+        应收金额: 0,
+        收款金额汇总: 0,
+        ...zeroPayments,
         归档状态: '已退单',
         开票状态: data.red_invoice_status === 'not_required' ? '不开票' : '红字发票待处理',
-        开票金额: data.red_invoice_status === 'not_required' ? 0 : userReceivable,
+        开票金额: 0,
         商品名称: item.product_name || '销售退单负向结算',
-        商品编码: resolveExportProductCode(item, productCodeById),
+        商品编码: resolveExportManufacturerCode(item, manufacturerCodeById),
         数量: -Math.abs(quantity),
-        小计: userReceivable,
-        商品应收金额: userReceivable,
-        商品收款金额: customerReceived,
+        单价: 0,
+        小计: 0,
+        商品应收金额: 0,
+        商品收款金额: 0,
+        补录教育优惠: 0,
+        商品提货运费: 0,
         退货商品: `${item.product_name || '销售退货'}${quantity ? ` x-${Math.abs(quantity)}` : ''}`,
         备注: `销售退货单 ${data.return_no || ''}，原销售订单 ${data.order_no || ''}`,
         创建日期: data.create_time || '',
@@ -991,7 +993,7 @@ async function exportOrders(ctx) {
   }
   const productInclude = {
     model: Product,
-    attributes: ['product_id', 'product_code', 'name', 'category', 'config', 'accessory_type'],
+    attributes: ['product_id', 'product_code', 'manufacturer_code', 'name', 'category', 'config', 'accessory_type'],
     ...(productCode ? { where: { product_code: { [Op.like]: `%${productCode}%` } }, required: true } : {})
   };
 
@@ -1055,16 +1057,16 @@ async function exportOrders(ctx) {
   const returnProducts = returnProductIds.length
     ? await Product.findAll({
       where: { product_id: { [Op.in]: returnProductIds } },
-      attributes: ['product_id', 'product_code'],
+      attributes: ['product_id', 'manufacturer_code'],
       raw: true
     })
     : [];
-  const returnProductCodeById = new Map(returnProducts.map(product => [String(product.product_id), product.product_code || '']));
+  const returnManufacturerCodeById = new Map(returnProducts.map(product => [String(product.product_id), product.manufacturer_code || '']));
   const paymentMethodMap = Object.fromEntries(paymentMethods.map(method => [method.code, method.name]));
   const rows = [
     ...buildOrderExportRows(orders, paymentMethodMap),
     ...buildDepositExportRows(deposits, paymentMethodMap),
-    ...buildSalesReturnSettlementExportRows(returnSettlements, { productCodeById: returnProductCodeById })
+    ...buildSalesReturnSettlementExportRows(returnSettlements, { manufacturerCodeById: returnManufacturerCodeById })
   ].sort((a, b) => new Date(b.下单时间 || 0).getTime() - new Date(a.下单时间 || 0).getTime());
   sendExcel(ctx, rows, ORDER_EXPORT_HEADERS, `销售订单导出_${getChinaDateString()}.xlsx`, '订单明细');
 }
@@ -1413,12 +1415,24 @@ function createSubsidyPhotoZip(entries) {
         const entry = entries[index];
         const originalName = zipFileName(entry.name, index);
         const duplicateCount = usedNames.get(originalName) || 0;
-        usedNames.set(originalName, duplicateCount + 1);
         const extension = path.extname(originalName);
         const stem = extension ? originalName.slice(0, -extension.length) : originalName;
         const fileName = duplicateCount ? `${stem}_${duplicateCount + 1}${extension}` : originalName;
         const nameBuffer = Buffer.from(fileName, 'utf8');
-        const data = await entry.load();
+        let data;
+        try {
+          data = await entry.load();
+          if (!data || !data.length) throw new Error('照片内容为空');
+          if (!Buffer.isBuffer(data)) data = Buffer.from(data);
+        } catch (error) {
+          console.warn('[SubsidyPhotoZip] 跳过无法读取的照片', {
+            id: entry.id || '',
+            name: entry.name || fileName,
+            message: error?.message || String(error)
+          });
+          continue;
+        }
+        usedNames.set(originalName, duplicateCount + 1);
         const checksum = crc32(data);
         const header = Buffer.alloc(30);
         header.writeUInt32LE(0x04034b50, 0);
@@ -1571,8 +1585,20 @@ async function downloadAllSubsidyPhotosArchive(ctx) {
   })));
 
   ctx.type = 'application/zip';
-  ctx.attachment(`查询结果-国补照片-${getChinaDateString()}.zip`);
+  ctx.attachment(subsidyPhotoArchiveFileName(ctx.query));
   ctx.body = createSubsidyPhotoZip(entries);
+}
+
+function subsidyPhotoDateRangeName(params = {}) {
+  const startDate = String(params.startDate || '').trim();
+  const endDate = String(params.endDate || '').trim();
+  if (!startDate && !endDate) return '不限时间';
+  if (startDate && endDate) return startDate === endDate ? startDate : `${startDate}至${endDate}`;
+  return `${startDate || '不限开始日期'}至${endDate || '不限结束日期'}`;
+}
+
+function subsidyPhotoArchiveFileName(params = {}) {
+  return `查询结果-国补照片-${subsidyPhotoDateRangeName(params)}.zip`;
 }
 
 function firstNonEmpty(source, keys, defaultValue = '') {
@@ -4674,6 +4700,9 @@ module.exports = {
     subsidyPhotoFileName,
     subsidyPhotoDownloadName,
     subsidyPhotoFolderName,
+    subsidyPhotoDateRangeName,
+    subsidyPhotoArchiveFileName,
+    createSubsidyPhotoZip,
     userCanViewSubsidyPhotos,
     subsidyPhotoStoreWhere,
     buildSubsidyPhotoQuery,
