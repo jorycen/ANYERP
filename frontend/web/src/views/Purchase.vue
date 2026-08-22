@@ -307,7 +307,7 @@
     </el-dialog>
 
     <!-- 查看采购申请对话框 -->
-    <el-dialog v-model="viewDialogVisible" title="采购申请详情" width="860px">
+    <el-dialog v-model="viewDialogVisible" title="采购申请详情" width="1100px">
       <div v-if="currentRequest">
         <el-descriptions :column="2" border>
           <el-descriptions-item label="申请单号">{{ currentRequest.request_no }}</el-descriptions-item>
@@ -349,6 +349,12 @@
         <h4 class="mt-20">商品明细</h4>
         <el-table :data="currentRequest.items || []" border size="small">
           <el-table-column prop="product_name" label="商品名称" min-width="150" />
+          <el-table-column label="商品编码" width="120" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.product_code || '-' }}</template>
+          </el-table-column>
+          <el-table-column label="厂商编码" width="150" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.manufacturer_code || '-' }}</template>
+          </el-table-column>
           <el-table-column prop="unit_price" label="单价" width="100">
             <template #default="{ row }">¥{{ row.unit_price }}</template>
           </el-table-column>

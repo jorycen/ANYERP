@@ -1013,7 +1013,7 @@
       </div>
     </el-dialog>
 
-    <el-dialog v-model="purchaseDetailVisible" title="采购申请详情" width="900px">
+    <el-dialog v-model="purchaseDetailVisible" title="采购申请详情" width="1100px">
       <div v-if="purchaseDetail">
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="采购单号">{{ purchaseDetail.request_no || '-' }}</el-descriptions-item>
@@ -1033,6 +1033,12 @@
         </el-descriptions>
         <el-table :data="purchaseDetail.items || purchaseDetail.PurchaseRequestItems || []" stripe border size="small" style="margin-top: 14px;">
           <el-table-column prop="product_name" label="商品名称" min-width="180" />
+          <el-table-column label="商品编码" width="120" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.product_code || '-' }}</template>
+          </el-table-column>
+          <el-table-column label="厂商编码" width="150" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.manufacturer_code || '-' }}</template>
+          </el-table-column>
           <el-table-column prop="pn_code" label="PN码" width="140" />
           <el-table-column prop="quantity" label="数量" width="80" />
           <el-table-column prop="unit_price" label="单价" width="110">
