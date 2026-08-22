@@ -7,45 +7,29 @@
 
       <el-tabs v-model="activeTab" class="module-tabs">
         <el-tab-pane label="待我审批" name="tasks">
-          <el-table :data="tasks" stripe border v-loading="loading">
-            <el-table-column label="审批主题" min-width="220"><template #default="{ row }">{{ row.Instance?.title || '-' }}</template></el-table-column>
-            <el-table-column prop="node_name" label="当前节点" width="160" />
-            <el-table-column label="业务类型" width="150"><template #default="{ row }">{{ businessTypeText(row.Instance?.business_type) }}</template></el-table-column>
-            <el-table-column label="申请编号" width="190"><template #default="{ row }">{{ row.Instance?.instance_no || '-' }}</template></el-table-column>
-            <el-table-column prop="create_time" label="提交时间" width="180" />
-            <el-table-column label="操作" width="180" fixed="right">
+          <el-table :data="mergedTasks" stripe border v-loading="loading">
+            <el-table-column label="审批主题" min-width="220"><template #default="{ row }">{{ taskTitle(row) }}</template></el-table-column>
+            <el-table-column label="当前节点" width="160"><template #default="{ row }">{{ taskNode(row) }}</template></el-table-column>
+            <el-table-column label="业务类型" width="150"><template #default="{ row }">{{ taskBusinessType(row) }}</template></el-table-column>
+            <el-table-column label="申请编号" width="190"><template #default="{ row }">{{ taskNo(row) }}</template></el-table-column>
+            <el-table-column label="最终毛利" width="120"><template #default="{ row }"><span v-if="row.isSalesApproval" class="negative-profit">{{ formatProfit(row.salesRow.grossProfitSnapshot?.gross_profit_amount) }}</span><span v-else>-</span></template></el-table-column>
+            <el-table-column label="提交时间" width="180"><template #default="{ row }">{{ taskCreateTime(row) }}</template></el-table-column>
+            <el-table-column label="操作" width="220" fixed="right">
               <template #default="{ row }">
-                <el-button link type="primary" @click="openInstance(row.instance_id)">查看</el-button>
-                <el-button link type="success" @click="review(row, 'approve')">通过</el-button>
-                <el-button link type="danger" @click="review(row, 'reject')">拒绝</el-button>
+                <template v-if="row.isSalesApproval">
+                  <el-button link type="primary" @click="openSales(row.salesRow)">查看</el-button>
+                  <el-button link type="success" @click="reviewSales(row.salesRow, 'approve')">通过</el-button>
+                  <el-button link type="danger" @click="reviewSales(row.salesRow, 'reject')">拒绝</el-button>
+                </template>
+                <template v-else>
+                  <el-button link type="primary" @click="openInstance(row.instance_id)">查看</el-button>
+                  <el-button link type="success" @click="review(row, 'approve')">通过</el-button>
+                  <el-button link type="danger" @click="review(row, 'reject')">拒绝</el-button>
+                </template>
               </template>
             </el-table-column>
           </el-table>
-
-          <div v-if="canReviewSales" class="sales-approval-section">
-            <div class="sales-approval-header">
-              <span>销售负毛利审批</span>
-              <el-tag type="warning">{{ salesTasks.length }} 条</el-tag>
-            </div>
-            <el-table :data="salesTasks" stripe border v-loading="loading">
-              <el-table-column prop="order_no" label="订单号" min-width="190" />
-              <el-table-column label="所属门店" min-width="140"><template #default="{ row }">{{ row.Store?.name || '-' }}</template></el-table-column>
-              <el-table-column prop="submit_user" label="申请人" width="120" />
-              <el-table-column label="最终毛利" width="120">
-                <template #default="{ row }"><span class="negative-profit">{{ formatProfit(row.grossProfitSnapshot?.gross_profit_amount) }}</span></template>
-              </el-table-column>
-              <el-table-column prop="create_time" label="申请时间" width="180" />
-              <el-table-column label="审批要求" min-width="170"><template #default>归档前最终毛利为负</template></el-table-column>
-              <el-table-column label="操作" width="220" fixed="right">
-                <template #default="{ row }">
-                  <el-button link type="primary" @click="openSales(row)">查看</el-button>
-                  <el-button link type="success" @click="reviewSales(row, 'approve')">通过</el-button>
-                  <el-button link type="danger" @click="reviewSales(row, 'reject')">拒绝</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-            <el-empty v-if="!loading && salesTasks.length === 0" description="暂无负毛利销售审批" :image-size="60" />
-          </div>
+          <el-empty v-if="!loading && mergedTasks.length === 0" description="暂无待审批单据" :image-size="60" />
         </el-tab-pane>
 
         <el-tab-pane label="我的申请" name="instances">
@@ -162,6 +146,25 @@ const roleCodes = computed(() => Array.isArray(userInfo.roles) && userInfo.roles
 const canReviewSales = computed(() => roleCodes.value.some(role => ['boss', 'admin', 'manager'].includes(role)))
 const canConfigure = computed(() => (userInfo.roles || []).some(role => ['admin', 'boss'].includes(role)))
 const flowForm = reactive({ definitionId: '', flowCode: '', name: '', businessType: '', nodes: [] })
+const mergedTasks = computed(() => {
+  const genericTasks = tasks.value.map(row => ({ ...row, isSalesApproval: false }))
+  const salesApprovalTasks = salesTasks.value.map(row => ({
+    isSalesApproval: true,
+    salesRow: row,
+    node_name: '负毛利归档审批',
+    create_time: row.create_time,
+    Instance: {
+      title: `销售订单 ${row.order_no || '-'}`,
+      business_type: 'sales_negative_gross_profit',
+      instance_no: row.order_no,
+      create_time: row.create_time,
+      summary: '归档前最终毛利为负'
+    }
+  }))
+  return genericTasks.concat(salesApprovalTasks).sort((left, right) => (
+    new Date(taskCreateTime(right)).getTime() - new Date(taskCreateTime(left)).getTime()
+  ))
+})
 
 const newRule = () => ({ type: 'store_manager', staffId: '', roleCode: '', scope: 'subject_store' })
 const newNode = () => ({ name: '', signMode: 'serial', approvers: [newRule()] })
@@ -181,11 +184,16 @@ async function loadOptions() { if (canConfigure.value) Object.assign(assigneeOpt
 async function reload() { loading.value = true; try { await Promise.all([loadTasks(), loadSalesTasks(), loadInstances(), loadFlows(), loadOptions()]) } finally { loading.value = false } }
 
 function statusText(value) { return ({ pending: '审批中', approved: '已通过', rejected: '已拒绝' }[value] || value || '-') }
-function businessTypeText(value) { return ({ sn_change: 'SN修改申请' }[value] || value || '-') }
+function businessTypeText(value) { return ({ sn_change: 'SN修改申请', sales_negative_gross_profit: '销售负毛利' }[value] || value || '-') }
 function statusType(value) { return ({ pending: 'warning', approved: 'success', rejected: 'danger' }[value] || 'info') }
 function taskStatusText(value) { return ({ pending: '待审批', waiting: '等待中', approved: '已通过', rejected: '已拒绝', cancelled: '已取消' }[value] || value) }
 function formatMoney(value) { return Number(value || 0).toFixed(2) }
 function formatProfit(value) { return value === undefined || value === null ? '-' : `¥${formatMoney(value)}` }
+function taskTitle(row) { return row.isSalesApproval ? `销售订单 ${row.salesRow?.order_no || '-'}` : row.Instance?.title || '-' }
+function taskNode(row) { return row.isSalesApproval ? '负毛利归档审批' : row.node_name || '-' }
+function taskBusinessType(row) { return businessTypeText(row.isSalesApproval ? 'sales_negative_gross_profit' : row.Instance?.business_type) }
+function taskNo(row) { return row.isSalesApproval ? row.salesRow?.order_no || '-' : row.Instance?.instance_no || '-' }
+function taskCreateTime(row) { return row.isSalesApproval ? row.salesRow?.create_time || '-' : row.create_time || row.Instance?.create_time || '-' }
 async function openInstance(id) { currentInstance.value = (await api.getApprovalInstance(id)).data; detailVisible.value = true }
 function openSales(row) { router.push({ name: 'Sales', query: { orderId: row.order_id } }) }
 async function reviewSales(row, action) {
@@ -226,8 +234,6 @@ onMounted(() => { syncTabFromRoute(); reload() })
 
 <style scoped>
 .module-tabs :deep(.el-tabs__header) { display: none; }
-.sales-approval-section { margin-top: 24px; }
-.sales-approval-header { display: flex; align-items: center; gap: 10px; margin: 12px 0; font-weight: 600; }
 .negative-profit { color: var(--el-color-danger); font-weight: 600; }
 .page-header,.toolbar,.node-head,.rule-row{display:flex;align-items:center;gap:10px}.page-header{justify-content:space-between}.toolbar{margin-bottom:12px}.node-card{border:1px solid var(--el-border-color);padding:12px;margin-bottom:12px;border-radius:4px}.node-head{margin-bottom:10px}.node-head .el-input{max-width:360px}.rule-row{margin:8px 0;flex-wrap:wrap}
 </style>
