@@ -425,8 +425,8 @@
         <el-form-item label="商品名称" required>
           <el-input v-model="usedProductForm.name" placeholder="请输入二手商品名称" />
         </el-form-item>
-        <el-form-item label="PN码">
-          <el-input v-model="usedProductForm.pnCode" placeholder="可选，填写厂商编码" />
+        <el-form-item label="PN码" :required="usedProductForm.directInbound">
+          <el-input v-model="usedProductForm.pnCode" :placeholder="usedProductForm.directInbound ? '勾选审批完成及入库时必填' : '可选，填写厂商编码'" />
         </el-form-item>
         <el-form-item label="采购单价" required>
           <el-input-number v-model="usedProductForm.price" :min="0" :precision="2" controls-position="right" style="width: 100%" />
@@ -1826,6 +1826,10 @@ const validateDraftForm = () => {
       ElMessage.warning(`二手商品“${item.productName || index + 1}”勾选审批完成及入库时，必须填写SN号且数量为1`)
       return false
     }
+    if (item.isUsedProduct && item.directInbound && !String(item.pnCode || '').trim()) {
+      ElMessage.warning(`二手商品“${item.productName || index + 1}”勾选审批完成及入库时必须填写PN码`)
+      return false
+    }
     if (!validateItemAllocation(item, index)) return false
   }
   return true
@@ -1854,6 +1858,10 @@ const handleSubmit = async () => {
     }
     if (item.isUsedProduct && item.directInbound && (toQuantity(item.quantity) !== 1 || !String(item.directInboundSnCode || '').trim())) {
       ElMessage.warning('二手商品勾选审批完成及入库时，数量必须为1且必须填写SN号')
+      return
+    }
+    if (item.isUsedProduct && item.directInbound && !String(item.pnCode || '').trim()) {
+      ElMessage.warning('二手商品勾选审批完成及入库时必须填写PN码')
       return
     }
     if (!validateItemAllocation(item, i)) return
@@ -1932,6 +1940,10 @@ const saveUsedProduct = () => {
   }
   if (usedProductForm.directInbound && (quantity !== 1 || !snCode)) {
     ElMessage.warning('勾选审批完成及入库时，数量必须为1且必须填写SN号')
+    return
+  }
+  if (usedProductForm.directInbound && !String(usedProductForm.pnCode || '').trim()) {
+    ElMessage.warning('勾选审批完成及入库时必须填写PN码')
     return
   }
   requestForm.items.push({

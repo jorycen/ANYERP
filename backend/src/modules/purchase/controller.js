@@ -9,6 +9,7 @@ const { recordRebateDeduction, recordSupplierRebateAccountTransaction, _getRebat
 const { createPurchaseReimbursement, createSettlementReversal, cancelExpenseRecord } = require('../finance/expenseService');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { canViewSnTraceReference } = require('../../utils/snTracePermission');
+const { isUsablePnCode } = require('../../utils/productPn');
 const { getUserRoles } = require('../../middleware/permission');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
 const { createProductRecord } = require('../product/controller');
@@ -140,6 +141,22 @@ function normalizeSelectedResourceTypes(value) {
     return Array.isArray(parsed) ? [...new Set(parsed.filter(Boolean).map(String))] : [];
   } catch (_) {
     return [];
+  }
+}
+
+function assertUsedProductDirectInbound(ctx, item) {
+  const isUsedProduct = Boolean(item?.isUsedProduct || item?.is_used_product);
+  const directInbound = Boolean(item?.directInbound || item?.direct_inbound);
+  if (!isUsedProduct || !directInbound) return;
+
+  const quantity = Number(item?.quantity || 0);
+  const snCode = String(item?.directInboundSnCode || item?.direct_inbound_sn_code || '').trim();
+  const pnCode = String(item?.pnCode || item?.pn_code || '').trim();
+  if (quantity !== 1 || !snCode) {
+    ctx.throw(400, '二手商品勾选审批完成及入库时，数量必须为1且必须填写SN号');
+  }
+  if (!isUsablePnCode(pnCode)) {
+    ctx.throw(400, '二手商品勾选审批完成及入库时必须填写PN码');
   }
 }
 
@@ -742,11 +759,7 @@ async function createRequest(ctx) {
 
   for (const item of items) {
     const isUsedProduct = Boolean(item.isUsedProduct || item.is_used_product);
-    const directInbound = Boolean(item.directInbound || item.direct_inbound);
-    const directInboundSnCode = String(item.directInboundSnCode || item.direct_inbound_sn_code || '').trim();
-    if (isUsedProduct && directInbound && (!directInboundSnCode || Number(item.quantity || 0) !== 1)) {
-      ctx.throw(400, '二手商品勾选审批完成及入库时，数量必须为1且必须填写SN号');
-    }
+    assertUsedProductDirectInbound(ctx, item);
     if (isUsedProduct && (!String(item.productName || item.product_name || '').trim() || Number(item.quantity || 0) <= 0 || Number(item.price || 0) < 0)) {
       ctx.throw(400, '二手商品名称、价格和数量不能为空');
     }
@@ -961,7 +974,7 @@ async function validateDraftSubmission(request, ctx) {
   const selectedTypeSet = new Set();
   for (const item of request.items) {
     if ((!item.product_id && !Number(item.is_used_product)) || (Number(item.is_used_product) && !String(item.product_name || '').trim()) || Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
-    if (Number(item.is_used_product) && Number(item.direct_inbound) && (Number(item.quantity) !== 1 || !String(item.direct_inbound_sn_code || '').trim())) ctx.throw(400, '二手商品勾选审批完成及入库时，数量必须为1且必须填写SN号');
+    assertUsedProductDirectInbound(ctx, item);
     if (!item.product_id && !Number(item.is_used_product)) ctx.throw(400, '商品名称、价格和数量不能为空');
     if (Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
     const itemType = item.product_type || request.product_type;
@@ -1103,9 +1116,8 @@ async function updateRequestDraft(ctx) {
 
   for (const item of items) {
     const isUsedProduct = Number(item.isUsedProduct || item.is_used_product) === 1;
-    const directInbound = Number(item.directInbound || item.direct_inbound) === 1;
+    assertUsedProductDirectInbound(ctx, item);
     if ((!item.productId && !isUsedProduct) || (isUsedProduct && !String(item.productName || item.product_name || '').trim()) || Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
-    if (isUsedProduct && directInbound && (Number(item.quantity) !== 1 || !String(item.directInboundSnCode || item.direct_inbound_sn_code || '').trim())) ctx.throw(400, '二手商品勾选审批完成及入库时，数量必须为1且必须填写SN号');
   }
   const goodsType = goodsTypeId
     ? await GoodsType.findOne({ where: { goods_type_id: goodsTypeId, status: 1 } })
@@ -1279,9 +1291,8 @@ async function approveRequest(ctx) {
   }));
   for (const item of items) {
     const isUsedProduct = Number(item.isUsedProduct || item.is_used_product) === 1;
-    const directInbound = Number(item.directInbound || item.direct_inbound) === 1;
+    assertUsedProductDirectInbound(ctx, item);
     if ((!item.productId && !isUsedProduct) || (isUsedProduct && !String(item.productName || item.product_name || '').trim()) || Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
-    if (isUsedProduct && directInbound && (Number(item.quantity) !== 1 || !String(item.directInboundSnCode || item.direct_inbound_sn_code || '').trim())) ctx.throw(400, '二手商品勾选审批完成及入库时，数量必须为1且必须填写SN号');
   }
   try {
   const previousStatus = request.status;

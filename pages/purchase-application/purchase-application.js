@@ -335,6 +335,11 @@ Page({
       wx.showToast({ title: '请完善二手商品名称、单价和数量', icon: 'none' });
       return;
     }
+    const pnCode = String(usedProduct.pnCode || '').trim();
+    if (usedProduct.directInbound && !pnCode) {
+      wx.showToast({ title: '勾选审批完成及入库时必须填写PN码', icon: 'none' });
+      return;
+    }
     if (usedProduct.directInbound && (quantity !== 1 || !snCode)) {
       wx.showToast({ title: '勾选审批完成及入库时，数量必须为1且必须填写SN号', icon: 'none' });
       return;
@@ -358,7 +363,7 @@ Page({
       productId: '',
       productName: name,
       productCode: '二手商品待生成',
-      pnCode: String(usedProduct.pnCode || '').trim(),
+      pnCode,
       price,
       quantity,
       directInbound: Boolean(usedProduct.directInbound),
@@ -917,8 +922,11 @@ Page({
         wx.showToast({ title: '请选择普通商品后再提交', icon: 'none' });
         return;
       }
-      if (item.isUsedProduct && (!String(item.productName || '').trim() || (item.directInbound && (quantity !== 1 || !String(item.directInboundSnCode || '').trim())))) {
-        wx.showToast({ title: '二手商品资料不完整，或SN号/数量不符合要求', icon: 'none' });
+      if (item.isUsedProduct && (!String(item.productName || '').trim() || (item.directInbound && (!String(item.pnCode || '').trim() || quantity !== 1 || !String(item.directInboundSnCode || '').trim())))) {
+        const message = item.directInbound && !String(item.pnCode || '').trim()
+          ? '二手商品勾选审批完成及入库时必须填写PN码'
+          : '二手商品资料不完整，或SN号/数量不符合要求';
+        wx.showToast({ title: message, icon: 'none' });
         return;
       }
       const allocations = Array.isArray(item.storeAllocations) ? item.storeAllocations : [];
@@ -970,6 +978,7 @@ Page({
       items: form.items.map(item => ({
         productId: item.productId,
         productName: item.productName,
+        pnCode: item.pnCode || '',
         isUsedProduct: Boolean(item.isUsedProduct),
         directInbound: Boolean(item.directInbound),
         directInboundSnCode: item.directInboundSnCode || '',

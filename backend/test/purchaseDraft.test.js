@@ -28,6 +28,8 @@ test('采购审批禁止没有明细的空采购申请', () => {
     /status === 'approved' && \(!request\.items \|\| request\.items\.length === 0\)/
   );
   assert.match(purchaseControllerSource, /缺少商品明细，无法审批通过/);
+  assert.match(purchaseControllerSource, /isUsablePnCode/);
+  assert.match(purchaseControllerSource, /勾选审批完成及入库时必须填写PN码/);
   assert.match(purchaseControllerSource, /await sequelize\.transaction\(async transaction =>/);
   assert.match(purchaseControllerSource, /PurchaseRequestItem\.create\([\s\S]*?\{ transaction \}\)/);
 });

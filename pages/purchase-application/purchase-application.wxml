@@ -146,8 +146,8 @@
     </view>
     <text class="field-label required">商品名称</text>
     <input class="input" placeholder="请输入二手商品名称" value="{{usedProduct.name}}" data-field="name" bindinput="onUsedProductInput" />
-    <text class="field-label">PN码</text>
-    <input class="input" placeholder="可选，填写厂商编码" value="{{usedProduct.pnCode}}" data-field="pnCode" bindinput="onUsedProductInput" />
+    <text class="field-label {{usedProduct.directInbound ? 'required' : ''}}">PN码</text>
+    <input class="input" placeholder="{{usedProduct.directInbound ? '勾选审批完成及入库时必填' : '可选，填写厂商编码'}}" value="{{usedProduct.pnCode}}" data-field="pnCode" bindinput="onUsedProductInput" />
     <view class="two-columns compact">
       <view class="column">
         <text class="field-label required">采购单价</text>
