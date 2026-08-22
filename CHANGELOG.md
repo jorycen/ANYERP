@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## 2026-08-23 - 兼容 CloudBase GitHub 根目录构建
+
+* 新增仓库根目录 `Dockerfile`，兼容 CloudBase GitHub 部署将仓库根目录作为构建目录的场景；后端仍推荐使用 `backend` 作为目标目录。
+
 ## 2026-08-23 - 修复月度任务页面空白
 
 * 生产静态资源同步到最新 `frontend/web` 构建结果，补齐月度任务路由和页面代码。

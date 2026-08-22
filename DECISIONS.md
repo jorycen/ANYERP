@@ -1,5 +1,28 @@
 # 决策记录
 
+## 2026-08-23 兼容 CloudBase GitHub 根目录构建
+
+决策时间：2026-08-23
+
+决策内容：
+
+* 保留 `backend/Dockerfile` 作为后端目标目录部署的标准入口，并在仓库根目录增加等价 Dockerfile，兼容 CloudBase GitHub 部署未填写目标目录时的根目录构建。
+* CloudBase 仍优先配置 `backend` 为目标目录、`Dockerfile` 为 Dockerfile 名称。
+
+决策原因：
+
+* 本仓库同时包含小程序、网页端和后端，后端代码位于 `backend/`。CloudBase 代码库部署要求 Dockerfile 位于目标目录根部；若 GitHub 部署按仓库根目录构建，原有 `backend/Dockerfile` 不会被使用，线上服务可能继续运行旧版本并对新增月度任务接口返回 404。
+
+备选方案：
+
+* 仅在 CloudBase 控制台把目标目录改为 `backend`。该方案最简，但不同控制台入口可能不显示目标目录配置。
+
+最终选择：
+
+* 两种入口并存，优先配置 `backend` 目标目录，根目录 Dockerfile 作为部署兼容兜底。
+
+状态：已实施，待 CloudBase GitHub 重新构建并发布新版本。
+
 ## 2026-08-22 订单毛利计算优先使用SN特价
 
 决策时间：2026-08-22
