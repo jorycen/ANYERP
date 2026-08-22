@@ -313,7 +313,8 @@ Page({
 
   onUsedProductInput(e) {
     const field = e.currentTarget.dataset.field;
-    this.setData({ [`usedProduct.${field}`]: e.detail.value });
+    const value = field === 'pnCode' ? normalizePnCode(e.detail.value) : e.detail.value;
+    this.setData({ [`usedProduct.${field}`]: value });
   },
 
   onUsedProductDirectInboundChange(e) {
@@ -335,7 +336,7 @@ Page({
       wx.showToast({ title: '请完善二手商品名称、单价和数量', icon: 'none' });
       return;
     }
-    const pnCode = String(usedProduct.pnCode || '').trim();
+    const pnCode = normalizePnCode(usedProduct.pnCode);
     if (usedProduct.directInbound && !pnCode) {
       wx.showToast({ title: '勾选审批完成及入库时必须填写PN码', icon: 'none' });
       return;
@@ -978,7 +979,8 @@ Page({
       items: form.items.map(item => ({
         productId: item.productId,
         productName: item.productName,
-        pnCode: item.pnCode || '',
+        pnCode: normalizePnCode(item.pnCode || item.pn_code || item.manufacturerCode || item.manufacturer_code),
+        pn_code: normalizePnCode(item.pnCode || item.pn_code || item.manufacturerCode || item.manufacturer_code),
         isUsedProduct: Boolean(item.isUsedProduct),
         directInbound: Boolean(item.directInbound),
         directInboundSnCode: item.directInboundSnCode || '',

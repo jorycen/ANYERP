@@ -29,10 +29,11 @@ test('采购审批禁止没有明细的空采购申请', () => {
   );
   assert.match(purchaseControllerSource, /缺少商品明细，无法审批通过/);
   assert.match(purchaseControllerSource, /isUsablePnCode/);
+  assert.match(purchaseControllerSource, /function readPurchasePnCode\(item\)/);
   assert.match(purchaseControllerSource, /勾选审批完成及入库时必须填写PN码/);
   assert.match(
     purchaseControllerSource,
-    /const items = request\.items\.map\(item => \(\{[\s\S]*?pnCode: item\.pn_code,[\s\S]*?assertUsedProductDirectInbound\(ctx, item\)/
+    /const items = request\.items\.map\(item => \(\{[\s\S]*?pnCode: readPurchasePnCode\(item\),[\s\S]*?assertUsedProductDirectInbound\(ctx, item\)/
   );
   assert.match(purchaseControllerSource, /await sequelize\.transaction\(async transaction =>/);
   assert.match(purchaseControllerSource, /PurchaseRequestItem\.create\([\s\S]*?\{ transaction \}\)/);

@@ -144,6 +144,14 @@ function normalizeSelectedResourceTypes(value) {
   }
 }
 
+function readPurchasePnCode(item) {
+  for (const value of [item?.pnCode, item?.pn_code, item?.manufacturerCode, item?.manufacturer_code]) {
+    const code = String(value ?? '').trim();
+    if (code) return code;
+  }
+  return '';
+}
+
 function assertUsedProductDirectInbound(ctx, item) {
   const isUsedProduct = Boolean(item?.isUsedProduct || item?.is_used_product);
   const directInbound = Boolean(item?.directInbound || item?.direct_inbound);
@@ -151,7 +159,7 @@ function assertUsedProductDirectInbound(ctx, item) {
 
   const quantity = Number(item?.quantity || 0);
   const snCode = String(item?.directInboundSnCode || item?.direct_inbound_sn_code || '').trim();
-  const pnCode = String(item?.pnCode || item?.pn_code || '').trim();
+  const pnCode = readPurchasePnCode(item);
   if (quantity !== 1 || !snCode) {
     ctx.throw(400, '二手商品勾选审批完成及入库时，数量必须为1且必须填写SN号');
   }
@@ -890,7 +898,7 @@ async function createRequest(ctx) {
         product_name: item.productName || '',
         product_code: isUsedProduct ? (item.productCode || '') : (productSnapshot?.product_code || item.productCode || ''),
         manufacturer_code: isUsedProduct ? (item.manufacturerCode || '') : (productSnapshot?.manufacturer_code || item.manufacturerCode || ''),
-        pn_code: item.pnCode || '',
+        pn_code: readPurchasePnCode(item),
         is_used_product: Boolean(item.isUsedProduct || item.is_used_product) ? 1 : 0,
         direct_inbound: Boolean(item.directInbound || item.direct_inbound) ? 1 : 0,
         direct_inbound_sn_code: String(item.directInboundSnCode || item.direct_inbound_sn_code || '').trim() || null,
@@ -1166,7 +1174,7 @@ async function updateRequestDraft(ctx) {
         product_name: item.productName || '',
         product_code: isUsedProduct ? (item.productCode || item.product_code || '') : (productSnapshot?.product_code || item.productCode || item.product_code || ''),
         manufacturer_code: isUsedProduct ? (item.manufacturerCode || item.manufacturer_code || '') : (productSnapshot?.manufacturer_code || item.manufacturerCode || item.manufacturer_code || ''),
-        pn_code: item.pnCode || '',
+        pn_code: readPurchasePnCode(item),
         is_used_product: isUsedProduct,
         direct_inbound: Number(item.directInbound || item.direct_inbound) ? 1 : 0,
         direct_inbound_sn_code: String(item.directInboundSnCode || item.direct_inbound_sn_code || '').trim() || null,
@@ -1284,7 +1292,7 @@ async function approveRequest(ctx) {
   const items = request.items.map(item => ({
     productId: item.product_id,
     productName: item.product_name,
-    pnCode: item.pn_code,
+    pnCode: readPurchasePnCode(item),
     quantity: item.quantity,
     isUsedProduct: item.is_used_product,
     directInbound: item.direct_inbound,
@@ -1330,7 +1338,7 @@ async function approveRequest(ctx) {
       const created = await createProductRecord({
         name: item.product_name,
         manualName: item.product_name,
-        pnCode: item.pn_code || '',
+        pnCode: readPurchasePnCode(item),
         barcodes: item.pn_code ? [{ type: 'manufacturer', code: item.pn_code }] : [],
         needSn: directInbound ? 1 : 0,
         unit: '台',
