@@ -2585,6 +2585,9 @@ const api = {
     dashboardOverview(params = {}) {
       return http.request('/report/dashboard/overview' + toQuery(params));
     },
+    monthlyTaskAchievement(params = {}) {
+      return http.request('/report/monthly-task-achievement' + toQuery(params));
+    },
     financeOverview(params = {}) {
       return http.request('/report/finance-overview' + toQuery(params));
     },

@@ -138,6 +138,39 @@
           </section>
         </el-tab-pane>
 
+        <el-tab-pane label="业务达成" name="achievement">
+          <div class="filter-bar">
+            <el-date-picker v-model="achievementParams.monthKey" type="month" value-format="YYYY-MM" placeholder="选择月份" />
+            <el-select v-model="achievementParams.storeId" placeholder="全部门店" clearable style="width: 160px">
+              <el-option label="全部门店" value="" />
+              <el-option v-for="store in dashboardFilterOptions.stores" :key="store.storeId" :label="store.name" :value="store.storeId" />
+            </el-select>
+            <el-select v-model="achievementParams.staffId" placeholder="全部员工" clearable filterable style="width: 160px">
+              <el-option label="全部员工" value="" />
+              <el-option v-for="employee in dashboardFilterOptions.employees" :key="employee.staffId" :label="employee.name" :value="String(employee.staffId)" />
+            </el-select>
+            <el-button type="primary" :loading="achievementLoading" @click="loadMonthlyTaskAchievement">查询</el-button>
+          </div>
+          <el-alert title="完成率按已配置指标综合计算，门店毛利未分摊金额会单独提示。" type="info" :closable="false" style="margin-bottom: 14px" />
+          <el-table :data="achievementData.stores" stripe border v-loading="achievementLoading" empty-text="暂无门店任务">
+            <el-table-column prop="targetName" label="门店" min-width="140" />
+            <el-table-column label="综合完成率" width="120" sortable prop="overallRate"><template #default="{ row }">{{ formatAchievementRate(row.overallRate) }}</template></el-table-column>
+            <el-table-column label="销售额" width="180"><template #default="{ row }">¥{{ formatMoney(row.sales.actual) }} / ¥{{ formatMoney(row.sales.target) }}（{{ formatAchievementRate(row.sales.rate) }}）</template></el-table-column>
+            <el-table-column label="毛利" width="180"><template #default="{ row }">¥{{ formatMoney(row.grossProfit.actual) }} / ¥{{ formatMoney(row.grossProfit.target) }}（{{ formatAchievementRate(row.grossProfit.rate) }}）</template></el-table-column>
+            <el-table-column label="未分摊毛利" width="120"><template #default="{ row }">¥{{ formatMoney(row.unallocatedGrossProfit) }}</template></el-table-column>
+            <el-table-column label="商品批次" min-width="260"><template #default="{ row }"><span v-for="batch in row.productBatches" :key="batch.batchId" class="achievement-batch">{{ batch.batchName }} {{ formatAchievementRate(batch.rate) }}</span><span v-if="!row.productBatches?.length">-</span></template></el-table-column>
+          </el-table>
+          <el-divider content-position="left">员工达成</el-divider>
+          <el-table :data="achievementData.employees" stripe border v-loading="achievementLoading" empty-text="暂无员工任务">
+            <el-table-column prop="targetName" label="员工" width="110" />
+            <el-table-column prop="storeName" label="门店" width="130" />
+            <el-table-column label="综合完成率" width="120"><template #default="{ row }">{{ formatAchievementRate(row.overallRate) }}</template></el-table-column>
+            <el-table-column label="销售额" width="180"><template #default="{ row }">¥{{ formatMoney(row.sales.actual) }} / ¥{{ formatMoney(row.sales.target) }}（{{ formatAchievementRate(row.sales.rate) }}）</template></el-table-column>
+            <el-table-column label="毛利" width="180"><template #default="{ row }">¥{{ formatMoney(row.grossProfit.actual) }} / ¥{{ formatMoney(row.grossProfit.target) }}（{{ formatAchievementRate(row.grossProfit.rate) }}）</template></el-table-column>
+            <el-table-column label="商品批次" min-width="260"><template #default="{ row }"><span v-for="batch in row.productBatches" :key="batch.batchId" class="achievement-batch">{{ batch.batchName }} {{ formatAchievementRate(batch.rate) }}</span><span v-if="!row.productBatches?.length">-</span></template></el-table-column>
+          </el-table>
+        </el-tab-pane>
+
         <el-tab-pane label="库存报表" name="inventory">
           <div class="filter-bar">
             <el-select v-model="inventoryParams.storeId" placeholder="选择门店" clearable>
@@ -397,6 +430,8 @@ const employeeOptions = ref([])
 const employeeSummary = ref({})
 const employeeTotal = ref(0)
 const employeeLoading = ref(false)
+const achievementLoading = ref(false)
+const achievementData = ref({ stores: [], employees: [] })
 const salesPerformanceLoading = ref(false)
 const salesPerformanceDetails = ref([])
 const salesPerformanceCanViewProfit = ref(false)
@@ -423,6 +458,7 @@ const salesPerformanceParams = reactive({
 })
 const inventoryParams = reactive({ storeId: '' })
 const employeeParams = reactive({ dateRange: [], storeId: '', staffName: '', page: 1, pageSize: 20 })
+const achievementParams = reactive({ monthKey: new Date().toISOString().slice(0, 7), storeId: '', staffId: '' })
 const adjustmentForm = reactive({ adjustmentType: 'increase', amount: 0.01, reason: '' })
 const adjustmentParams = reactive({ page: 1, pageSize: 20 })
 const currentRoles = String(getRoleCode() || '').split(',').map(role => role.trim())
@@ -437,6 +473,7 @@ onMounted(() => {
   activeTab.value = String(route.meta.tab || 'dashboard')
   loadStores()
   loadDashboardFilterOptions()
+  onTabChange(activeTab.value)
 })
 
 watch(() => route.path, syncTabFromRoute)
@@ -449,9 +486,22 @@ const onTabChange = (tabName) => {
   if (tabName === 'inventory' && inventoryData.value.length === 0) {
     loadInventoryReport()
   }
+  if (tabName === 'achievement') loadMonthlyTaskAchievement()
   if (tabName === 'employee' && employeeData.value.length === 0) {
     loadEmployeePerformance()
   }
+}
+
+const formatAchievementRate = (value) => value === null || value === undefined ? '--' : `${Number(value).toFixed(2)}%`
+
+const loadMonthlyTaskAchievement = async () => {
+  achievementLoading.value = true
+  try {
+    const res = await api.getMonthlyTaskAchievement(achievementParams)
+    if (res.code === 0) achievementData.value = res.data || { stores: [], employees: [] }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || '加载业务达成失败')
+  } finally { achievementLoading.value = false }
 }
 
 const loadStores = async () => {
@@ -777,6 +827,15 @@ const initInventoryChart = () => {
   border: 1px solid #e7edf5;
   border-radius: 8px;
   background: #f8fafd;
+}
+.achievement-batch {
+  display: inline-block;
+  margin: 2px 8px 2px 0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #f0f5ff;
+  color: #3f6fb5;
+  font-size: 12px;
 }
 .performance-reason {
   display: flex;

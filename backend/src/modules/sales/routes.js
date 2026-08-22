@@ -42,6 +42,12 @@ const {
   createSubsidyPhotosDownloadTicket
 } = require('./controller');
 const { enforceStoreOwnership, requireRole } = require('../../middleware/permission');
+const {
+  getMonthlyTaskOptions,
+  listMonthlyTasks,
+  saveMonthlyTask,
+  disableMonthlyTask
+} = require('./monthlyTaskController');
 
 const router = new Router();
 const subsidyPhotoUpload = multer({
@@ -73,6 +79,11 @@ router.post('/return-requests/:returnId/review', reviewSalesReturn);
 router.post('/return-requests/:returnId/refund-confirm', requireRole('finance'), confirmSalesReturnRefund);
 router.get('/stats', stats);
 router.get('/auxiliary-staff', auxiliaryStaff);
+router.get('/monthly-tasks/options', getMonthlyTaskOptions);
+router.get('/monthly-tasks', listMonthlyTasks);
+router.post('/monthly-tasks', requireRole('admin', 'boss', 'manager', 'store_manager'), saveMonthlyTask);
+router.put('/monthly-tasks/:taskId', requireRole('admin', 'boss', 'manager', 'store_manager'), saveMonthlyTask);
+router.post('/monthly-tasks/:taskId/disable', requireRole('admin', 'boss', 'manager', 'store_manager'), disableMonthlyTask);
 router.get('/payment-methods', paymentMethods);
 router.get('/deposits', listDeposits);
 router.post('/deposits', enforceStoreOwnership, createDeposit);

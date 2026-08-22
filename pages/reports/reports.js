@@ -136,6 +136,14 @@ function normalizeRowNumber(row, keys) {
   return toNumber(firstDefined(row, keys), 0);
 }
 
+function normalizeAchievementMetric(metric) {
+  const rate = metric && metric.rate !== null && metric.rate !== undefined ? Number(metric.rate) : null;
+  return Object.assign({}, metric || {}, {
+    rate,
+    rateDisplay: rate === null || !Number.isFinite(rate) ? '--' : `${rate.toFixed(2)}%`
+  });
+}
+
 Page({
   data: {
     startDate: '',
@@ -160,7 +168,8 @@ Page({
     maxStoreSales: 1,
     maxEmployeeSales: 1,
     maxProductLineSales: 1,
-    maxInventoryQuantity: 1
+    maxInventoryQuantity: 1,
+    businessAchievement: { monthKey: '', stores: [], employees: [] }
   },
 
   onLoad() {
@@ -261,6 +270,33 @@ Page({
       }
     } finally {
       this.setData({ isLoading: false });
+      this.loadBusinessAchievement();
+    }
+  },
+
+  async loadBusinessAchievement() {
+    const monthKey = String(this.data.startDate || '').slice(0, 7);
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(monthKey)) return;
+    try {
+      const result = unwrapReportData(await api.report.monthlyTaskAchievement({
+        monthKey,
+        storeId: this.data.selectedStoreId,
+        staffId: this.data.selectedEmployeeId
+      }));
+      const normalizeRows = rows => (rows || []).map(row => {
+        const overallRate = row.overallRate === null || row.overallRate === undefined ? null : Number(row.overallRate);
+        return Object.assign({}, row, {
+          overallRate,
+          overallRateDisplay: overallRate === null || !Number.isFinite(overallRate) ? '--' : `${overallRate.toFixed(2)}%`,
+          progressWidth: `${Math.min(100, Math.max(0, Number(overallRate || 0)))}%`,
+          sales: normalizeAchievementMetric(row.sales),
+          grossProfit: normalizeAchievementMetric(row.grossProfit)
+        });
+      });
+      this.setData({ 'businessAchievement.monthKey': result.monthKey || monthKey, 'businessAchievement.stores': normalizeRows(result.stores), 'businessAchievement.employees': normalizeRows(result.employees) });
+    } catch (error) {
+      console.warn('业务达成加载失败', error);
+      this.setData({ 'businessAchievement.stores': [], 'businessAchievement.employees': [] });
     }
   },
 

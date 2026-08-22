@@ -1857,6 +1857,55 @@ const PerformanceProfitAdjustmentAttachment = sequelize.define('PerformanceProfi
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_PERFORMANCE_PROFIT_ADJUSTMENT_ATTACHMENT', timestamps: false });
 
+// 月度任务主表。门店与员工目标独立保存，商品批次和门店毛利分摊使用从表。
+const MonthlyTask = sequelize.define('MonthlyTask', {
+  task_id: { type: DataTypes.STRING(32), primaryKey: true },
+  distributor_id: { type: DataTypes.STRING(32), allowNull: false },
+  month_key: { type: DataTypes.STRING(7), allowNull: false },
+  target_type: { type: DataTypes.STRING(16), allowNull: false, comment: 'store/staff' },
+  target_id: { type: DataTypes.STRING(32), allowNull: false },
+  sales_target: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  gross_profit_target: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  status: { type: DataTypes.TINYINT(1), defaultValue: 1 },
+  create_staff_id: { type: DataTypes.BIGINT(20) },
+  create_user: { type: DataTypes.STRING(64) },
+  update_staff_id: { type: DataTypes.BIGINT(20) },
+  update_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_MONTHLY_TASK', timestamps: false });
+
+const MonthlyTaskProductBatch = sequelize.define('MonthlyTaskProductBatch', {
+  batch_id: { type: DataTypes.STRING(32), primaryKey: true },
+  task_id: { type: DataTypes.STRING(32), allowNull: false },
+  batch_name: { type: DataTypes.STRING(128), allowNull: false },
+  sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_MONTHLY_TASK_PRODUCT_BATCH', timestamps: false });
+
+const MonthlyTaskProduct = sequelize.define('MonthlyTaskProduct', {
+  id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true },
+  batch_id: { type: DataTypes.STRING(32), allowNull: false },
+  product_id: { type: DataTypes.STRING(32), allowNull: false },
+  product_name: { type: DataTypes.STRING(255), allowNull: false },
+  target_quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_MONTHLY_TASK_PRODUCT', timestamps: false });
+
+const MonthlyTaskGrossProfitAllocation = sequelize.define('MonthlyTaskGrossProfitAllocation', {
+  allocation_id: { type: DataTypes.STRING(32), primaryKey: true },
+  task_id: { type: DataTypes.STRING(32), allowNull: false },
+  staff_id: { type: DataTypes.BIGINT(20), allowNull: false },
+  allocated_target: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  create_staff_id: { type: DataTypes.BIGINT(20) },
+  create_user: { type: DataTypes.STRING(64) },
+  update_staff_id: { type: DataTypes.BIGINT(20) },
+  update_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_MONTHLY_TASK_GROSS_PROFIT_ALLOCATION', timestamps: false });
+
 // -------------------------------------------
 // 字典模型
 // -------------------------------------------
@@ -2190,6 +2239,15 @@ Order.hasMany(PerformanceProfitAdjustment, { foreignKey: 'order_id', sourceKey: 
 PerformanceProfitAdjustment.belongsTo(Order, { foreignKey: 'order_id', targetKey: 'order_id' });
 PerformanceProfitAdjustment.hasMany(PerformanceProfitAdjustmentAttachment, { foreignKey: 'adjustment_id', sourceKey: 'adjustment_id', as: 'attachments' });
 PerformanceProfitAdjustmentAttachment.belongsTo(PerformanceProfitAdjustment, { foreignKey: 'adjustment_id', targetKey: 'adjustment_id' });
+MonthlyTask.belongsTo(Store, { foreignKey: 'target_id', targetKey: 'store_id', as: 'TargetStore', constraints: false });
+MonthlyTask.belongsTo(Staff, { foreignKey: 'target_id', targetKey: 'staff_id', as: 'TargetStaff', constraints: false });
+MonthlyTask.hasMany(MonthlyTaskProductBatch, { foreignKey: 'task_id', sourceKey: 'task_id', as: 'productBatches' });
+MonthlyTaskProductBatch.belongsTo(MonthlyTask, { foreignKey: 'task_id', targetKey: 'task_id' });
+MonthlyTaskProductBatch.hasMany(MonthlyTaskProduct, { foreignKey: 'batch_id', sourceKey: 'batch_id', as: 'products' });
+MonthlyTaskProduct.belongsTo(MonthlyTaskProductBatch, { foreignKey: 'batch_id', targetKey: 'batch_id' });
+MonthlyTask.hasMany(MonthlyTaskGrossProfitAllocation, { foreignKey: 'task_id', sourceKey: 'task_id', as: 'grossProfitAllocations' });
+MonthlyTaskGrossProfitAllocation.belongsTo(MonthlyTask, { foreignKey: 'task_id', targetKey: 'task_id' });
+MonthlyTaskGrossProfitAllocation.belongsTo(Staff, { foreignKey: 'staff_id', targetKey: 'staff_id', as: 'Staff' });
 Product.hasMany(OrderItem, { foreignKey: 'product_id', sourceKey: 'product_id' });
 OrderItem.belongsTo(Product, { foreignKey: 'product_id', targetKey: 'product_id' });
 
@@ -2446,5 +2504,9 @@ module.exports = {
   SalesSettlementCostAdjustment,
   PerformanceProfitAdjustment,
   PerformanceProfitAdjustmentAttachment,
+  MonthlyTask,
+  MonthlyTaskProductBatch,
+  MonthlyTaskProduct,
+  MonthlyTaskGrossProfitAllocation,
   Inventory
 };

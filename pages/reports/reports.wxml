@@ -164,6 +164,34 @@
       <view class="empty-inline" wx:else>暂无员工销售数据</view>
     </view>
 
+    <view class="panel" wx:if="{{activeSection === 'overview' || activeSection === 'employee'}}">
+      <view class="panel-title-row"><text class="panel-title">业务达成</text><text class="panel-note">{{businessAchievement.monthKey}}</text></view>
+      <view class="achievement-subtitle">门店达成</view>
+      <view class="ranking-list" wx:if="{{businessAchievement.stores.length}}">
+        <view class="ranking-row" wx:for="{{businessAchievement.stores}}" wx:key="targetId">
+          <text class="rank rank-{{index + 1}}">{{index + 1}}</text>
+          <view class="ranking-main">
+            <view class="ranking-head"><text class="ranking-name">{{item.targetName}}</text><text class="ranking-amount">{{item.overallRateDisplay}}</text></view>
+            <view class="progress-track"><view class="progress-bar green" style="width: {{item.progressWidth}};"></view></view>
+            <view class="ranking-foot"><text>销售 {{item.sales.rateDisplay}}</text><text>毛利 {{item.grossProfit.rateDisplay}}</text></view>
+          </view>
+        </view>
+      </view>
+      <view class="empty-inline" wx:else>暂无门店任务</view>
+      <view class="achievement-subtitle">员工达成</view>
+      <view class="ranking-list" wx:if="{{businessAchievement.employees.length}}">
+        <view class="ranking-row" wx:for="{{businessAchievement.employees}}" wx:key="targetId">
+          <text class="rank rank-{{index + 1}}">{{index + 1}}</text>
+          <view class="ranking-main">
+            <view class="ranking-head"><text class="ranking-name">{{item.targetName}}</text><text class="ranking-amount">{{item.overallRateDisplay}}</text></view>
+            <view class="progress-track"><view class="progress-bar orange" style="width: {{item.progressWidth}};"></view></view>
+            <view class="ranking-foot"><text>{{item.storeName || '全部门店'}}</text><text>销售 {{item.sales.rateDisplay}}</text></view>
+          </view>
+        </view>
+      </view>
+      <view class="empty-inline" wx:else>暂无员工任务</view>
+    </view>
+
     <view class="panel" wx:if="{{activeSection === 'overview'}}">
       <view class="panel-title-row"><text class="panel-title">库存概览</text><text class="panel-link" bindtap="openInventoryReport">查看库存</text></view>
       <view class="inventory-summary">

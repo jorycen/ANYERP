@@ -18,6 +18,7 @@ const {
   downloadProfitAdjustmentAttachment
 } = require('./profitAdjustmentController');
 const { getFinanceOverview } = require('./financeOverviewController');
+const { getMonthlyTaskAchievement } = require('./monthlyTaskAchievement');
 const { requireDistributorAccount } = require('../../middleware/permission');
 
 const router = new Router();
@@ -31,6 +32,7 @@ router.get('/employee-performance', getEmployeePerformanceReport);
 router.get('/dashboard/filters', getDashboardFilters);
 router.get('/dashboard/overview', getDashboardOverview);
 router.get('/finance-overview', requireDistributorAccount(), getFinanceOverview);
+router.get('/monthly-task-achievement', getMonthlyTaskAchievement);
 router.get('/profit-adjustments', listProfitAdjustments);
 router.post('/profit-adjustments', upload.array('files', 5), createProfitAdjustment);
 router.post('/profit-adjustments/:adjustmentId/approve', approveProfitAdjustment);

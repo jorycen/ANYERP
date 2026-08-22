@@ -39,6 +39,7 @@ page { background: #f4f7fb; color: #172033; }
 .panel { margin-bottom: 20rpx; padding: 20rpx; }
 .panel-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18rpx; }
 .panel-title { color: #1f2b3d; font-size: 30rpx; font-weight: 700; }
+.achievement-subtitle { margin: 16rpx 0 8rpx; color: #61708a; font-size: 22rpx; font-weight: 700; }
 .panel-note, .panel-link { color: #8996a8; font-size: 21rpx; }.panel-link { color: #1769e0; }
 .trend-item { display: flex; align-items: center; margin: 16rpx 0; }
 .trend-date { flex: 0 0 132rpx; color: #7f8b9d; font-size: 21rpx; }.trend-track, .progress-track { flex: 1; height: 14rpx; overflow: hidden; background: #edf2f7; border-radius: 8rpx; }

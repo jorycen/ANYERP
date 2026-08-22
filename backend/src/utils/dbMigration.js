@@ -400,6 +400,69 @@ async function runMigrations() {
         KEY idx_region_permission_region (REGION_CODE)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='账号直接区域权限'
     `);
+    await checkAndCreateTable('T_MONTHLY_TASK', `
+      CREATE TABLE T_MONTHLY_TASK (
+        TASK_ID VARCHAR(32) NOT NULL,
+        DISTRIBUTOR_ID VARCHAR(32) NOT NULL,
+        MONTH_KEY VARCHAR(7) NOT NULL,
+        TARGET_TYPE VARCHAR(16) NOT NULL,
+        TARGET_ID VARCHAR(32) NOT NULL,
+        SALES_TARGET DECIMAL(12,2) NOT NULL DEFAULT 0,
+        GROSS_PROFIT_TARGET DECIMAL(12,2) NOT NULL DEFAULT 0,
+        STATUS TINYINT(1) NOT NULL DEFAULT 1,
+        CREATE_STAFF_ID BIGINT,
+        CREATE_USER VARCHAR(64),
+        UPDATE_STAFF_ID BIGINT,
+        UPDATE_USER VARCHAR(64),
+        CREATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UPDATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (TASK_ID),
+        UNIQUE KEY uk_monthly_task_scope (DISTRIBUTOR_ID, MONTH_KEY, TARGET_TYPE, TARGET_ID),
+        KEY idx_monthly_task_month (DISTRIBUTOR_ID, MONTH_KEY, TARGET_TYPE, STATUS)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='月度任务目标'
+    `);
+    await checkAndCreateTable('T_MONTHLY_TASK_PRODUCT_BATCH', `
+      CREATE TABLE T_MONTHLY_TASK_PRODUCT_BATCH (
+        BATCH_ID VARCHAR(32) NOT NULL,
+        TASK_ID VARCHAR(32) NOT NULL,
+        BATCH_NAME VARCHAR(128) NOT NULL,
+        SORT_ORDER INT NOT NULL DEFAULT 0,
+        CREATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UPDATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (BATCH_ID),
+        KEY idx_monthly_task_batch_task (TASK_ID, SORT_ORDER)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='月度任务商品批次'
+    `);
+    await checkAndCreateTable('T_MONTHLY_TASK_PRODUCT', `
+      CREATE TABLE T_MONTHLY_TASK_PRODUCT (
+        ID BIGINT NOT NULL AUTO_INCREMENT,
+        BATCH_ID VARCHAR(32) NOT NULL,
+        PRODUCT_ID VARCHAR(32) NOT NULL,
+        PRODUCT_NAME VARCHAR(255) NOT NULL,
+        TARGET_QUANTITY INT NOT NULL DEFAULT 0,
+        CREATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (ID),
+        UNIQUE KEY uk_monthly_task_batch_product (BATCH_ID, PRODUCT_ID),
+        KEY idx_monthly_task_product_product (PRODUCT_ID)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='月度任务批次商品目标'
+    `);
+    await checkAndCreateTable('T_MONTHLY_TASK_GROSS_PROFIT_ALLOCATION', `
+      CREATE TABLE T_MONTHLY_TASK_GROSS_PROFIT_ALLOCATION (
+        ALLOCATION_ID VARCHAR(32) NOT NULL,
+        TASK_ID VARCHAR(32) NOT NULL,
+        STAFF_ID BIGINT NOT NULL,
+        ALLOCATED_TARGET DECIMAL(12,2) NOT NULL DEFAULT 0,
+        CREATE_STAFF_ID BIGINT,
+        CREATE_USER VARCHAR(64),
+        UPDATE_STAFF_ID BIGINT,
+        UPDATE_USER VARCHAR(64),
+        CREATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UPDATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (ALLOCATION_ID),
+        UNIQUE KEY uk_monthly_task_gp_staff (TASK_ID, STAFF_ID),
+        KEY idx_monthly_task_gp_staff (STAFF_ID)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='门店月度任务毛利员工分摊'
+    `);
     // 经销商级账号从旧的门店授权迁移为直接区域授权，只执行一次性补齐，
     // 后续区域范围以 T_REGION_PERMISSION 为准，不再运行时反推。
     await sequelize.query(`
@@ -3285,6 +3348,7 @@ async function seedPermissionData() {
     const childMenus = [
       ['sales_order', '销售订单', 'sales', '/sales/order', 1],
       ['sales_subsidy_photos', '国补照片', 'sales', '/sales/subsidy-photos', 2],
+      ['sales_monthly_tasks', '月度任务', 'sales', '/sales/monthly-tasks', 3],
       ['inventory_summary', '库存汇总', 'inventory', '/inventory/summary', 1],
       ['inventory_sn_inventory', 'SN库存清单', 'inventory', '/inventory/sn-inventory', 2],
       ['inventory_batch_maintenance', '批量维护', 'inventory', '/inventory/batch-maintenance', 3],
@@ -3315,6 +3379,7 @@ async function seedPermissionData() {
       ['reports_sales', '销售报表', 'reports', '/reports/sales', 2],
       ['reports_inventory', '库存报表', 'reports', '/reports/inventory', 3],
       ['reports_employee', '员工业绩统计', 'reports', '/reports/employee', 4],
+      ['reports_achievement', '业务达成', 'reports', '/reports/achievement', 5],
       ['approval_tasks', '待我审批', 'approval', '/approval/tasks', 1],
       ['approval_instances', '我的申请', 'approval', '/approval/instances', 2],
       ['approval_flows', '流程配置', 'approval', '/approval/flows', 3],
@@ -3347,33 +3412,33 @@ async function seedPermissionData() {
         'finance_daily', 'finance_subsidy_receivable', 'finance_rebate_settlement', 'finance_expense',
         'finance_payable', 'finance_reimbursement', 'finance_payment', 'finance_rebate',
         'finance_resource_rights', 'finance_account', 'finance_settlement', 'finance_freight',
-        'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee',
+        'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_achievement',
         'approval_tasks', 'approval_instances', 'product_approval'
       ],
       purchaser: [
         'purchase_request', 'purchase_supplier', 'reports_dashboard', 'reports_sales', 'reports_inventory',
-        'reports_employee', 'approval_tasks', 'approval_instances', 'product_approval'
+        'reports_employee', 'reports_achievement', 'approval_tasks', 'approval_instances', 'product_approval'
       ],
       manager: [
-        'sales_order', 'sales_subsidy_photos',
+        'sales_order', 'sales_subsidy_photos', 'sales_monthly_tasks',
         'inventory_summary', 'inventory_sn_inventory', 'inventory_batch_maintenance', 'inventory_inbound',
         'inventory_sn_trace', 'inventory_resource_rights', 'inventory_transfer', 'inventory_conversion',
         'product_product', 'product_category', 'product_price', 'product_approval',
-        'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee',
+        'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_achievement',
         'approval_tasks', 'approval_instances'
       ],
       store_manager: [
-        'sales_order', 'sales_subsidy_photos',
+        'sales_order', 'sales_subsidy_photos', 'sales_monthly_tasks',
         'inventory_summary', 'inventory_sn_inventory', 'inventory_batch_maintenance', 'inventory_inbound',
         'inventory_sn_trace', 'inventory_transfer', 'inventory_conversion',
         'product_product', 'product_category', 'product_price', 'product_approval',
-        'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee',
+        'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_achievement',
         'approval_tasks', 'approval_instances'
       ],
       clerk: [
         'sales_order', 'inventory_summary', 'inventory_sn_inventory', 'inventory_inbound',
         'inventory_sn_trace', 'inventory_transfer', 'reports_dashboard', 'reports_sales',
-        'reports_inventory', 'reports_employee', 'approval_tasks', 'approval_instances'
+        'reports_inventory', 'reports_employee', 'reports_achievement', 'approval_tasks', 'approval_instances'
       ]
     };
     const ensureChildMenus = async () => {

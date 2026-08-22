@@ -529,6 +529,12 @@ export default {
   getDashboardOverview: (params) => api.get('/report/dashboard/overview', { params }),
   getFinanceOverview: (params) => api.get('/report/finance-overview', { params }),
   getEmployeePerformanceReport: (params) => api.get('/report/employee-performance', { params }),
+  getMonthlyTaskAchievement: (params) => api.get('/report/monthly-task-achievement', { params }),
+  getMonthlyTaskOptions: () => api.get('/sales/monthly-tasks/options'),
+  getMonthlyTasks: (params) => api.get('/sales/monthly-tasks', { params }),
+  saveMonthlyTask: (data) => api.post('/sales/monthly-tasks', data),
+  updateMonthlyTask: (taskId, data) => api.put(`/sales/monthly-tasks/${taskId}`, data),
+  disableMonthlyTask: (taskId) => api.post(`/sales/monthly-tasks/${taskId}/disable`),
   getProfitAdjustments: (params) => api.get('/report/profit-adjustments', { params }),
   createProfitAdjustment: (data) => api.post('/report/profit-adjustments', data, {
     headers: { 'Content-Type': 'multipart/form-data' }

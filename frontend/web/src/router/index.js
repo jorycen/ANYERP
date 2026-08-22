@@ -42,6 +42,12 @@ const routes = [
         meta: { roles: ['finance', 'manager', 'store_manager', 'admin', 'boss'], tab: 'subsidy-photos' }
       },
       {
+        path: 'sales/monthly-tasks',
+        name: 'MonthlyTasks',
+        component: () => import('../views/MonthlyTasks.vue'),
+        meta: { roles: ['manager', 'store_manager', 'admin', 'boss'], tab: 'monthly-tasks' }
+      },
+      {
         path: 'inventory/summary',
         name: 'Inventory',
         component: () => import('../views/Inventory.vue'),
@@ -232,6 +238,12 @@ const routes = [
         name: 'ReportsEmployee',
         component: () => import('../views/Reports.vue'),
         meta: { tab: 'employee' }
+      },
+      {
+        path: 'reports/achievement',
+        name: 'ReportsAchievement',
+        component: () => import('../views/Reports.vue'),
+        meta: { tab: 'achievement' }
       },
       {
         path: 'approval/tasks',

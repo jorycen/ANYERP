@@ -197,6 +197,8 @@ const pageTitles = {
   '/reports/sales': '销售报表',
   '/reports/inventory': '库存报表',
   '/reports/employee': '员工业绩统计',
+  '/reports/achievement': '业务达成',
+  '/sales/monthly-tasks': '月度任务',
   '/approval/tasks': '待我审批',
   '/approval/instances': '我的申请',
   '/approval/flows': '流程配置',
