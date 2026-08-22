@@ -1,7 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const purchaseRouter = require('../src/modules/purchase/routes');
 const purchaseController = require('../src/modules/purchase/controller');
+
+const purchaseControllerSource = fs.readFileSync(
+  path.join(__dirname, '../src/modules/purchase/controller.js'),
+  'utf8'
+);
 
 test('采购申请草稿提供保存、编辑和提交接口', () => {
   const saveRoute = purchaseRouter.stack.find(layer => layer.path === '/request-draft' && layer.methods.includes('POST'));
@@ -13,6 +20,16 @@ test('采购申请草稿提供保存、编辑和提交接口', () => {
   assert.deepEqual(updateRoute.stack.map(handler => handler.name), ['updateRequestDraft']);
   assert.deepEqual(submitRoute.stack.map(handler => handler.name), ['submitRequestDraft']);
   assert.deepEqual(deleteRoute.stack.map(handler => handler.name), ['deleteRequestDraft']);
+});
+
+test('采购审批禁止没有明细的空采购申请', () => {
+  assert.match(
+    purchaseControllerSource,
+    /status === 'approved' && \(!request\.items \|\| request\.items\.length === 0\)/
+  );
+  assert.match(purchaseControllerSource, /缺少商品明细，无法审批通过/);
+  assert.match(purchaseControllerSource, /await sequelize\.transaction\(async transaction =>/);
+  assert.match(purchaseControllerSource, /PurchaseRequestItem\.create\([\s\S]*?\{ transaction \}\)/);
 });
 
 test('采购申请门店库位分配可以展开为入库明细', () => {

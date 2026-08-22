@@ -1,0 +1,24 @@
+-- 二手采购申请允许没有商品主数据 ID。
+-- 安全执行：仅在字段仍为 NOT NULL 时修改，重复执行不会改变结果。
+SET @is_nullable := (
+  SELECT IS_NULLABLE
+  FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'T_PURCHASE_REQUEST_ITEM'
+    AND COLUMN_NAME = 'PRODUCT_ID'
+  LIMIT 1
+);
+SET @sql := IF(
+  @is_nullable = 'NO',
+  'ALTER TABLE T_PURCHASE_REQUEST_ITEM MODIFY COLUMN PRODUCT_ID VARCHAR(32) NULL',
+  'SELECT 1'
+);
+PREPARE make_product_id_nullable FROM @sql;
+EXECUTE make_product_id_nullable;
+DEALLOCATE PREPARE make_product_id_nullable;
+
+SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'T_PURCHASE_REQUEST_ITEM'
+  AND COLUMN_NAME = 'PRODUCT_ID';

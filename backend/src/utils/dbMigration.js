@@ -141,6 +141,9 @@ async function ensureCriticalSchemaCompatibility() {
   if (Number(purchaseItemColumn?.cnt || 0) !== 1) {
     throw new Error('Required schema column T_PURCHASE_REQUEST_ITEM.IS_USED_PRODUCT is unavailable');
   }
+
+  // 二手采购明细没有商品主数据 ID，必须允许 PRODUCT_ID 为空。
+  await checkAndMakeColumnNullable('T_PURCHASE_REQUEST_ITEM', 'PRODUCT_ID', 'VARCHAR(32)');
 }
 
 async function dropProductSnGlobalUniqueIndex() {
@@ -3571,7 +3574,6 @@ async function seedPermissionData() {
         );
       }
     }
-    await checkAndMakeColumnNullable('T_PURCHASE_REQUEST_ITEM', 'PRODUCT_ID', 'VARCHAR(32)');
     await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'IS_USED_PRODUCT', 'TINYINT(1) DEFAULT 0 COMMENT "二手商品标记"', 'PN_CODE');
     await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'DIRECT_INBOUND', 'TINYINT(1) DEFAULT 0 COMMENT "审批通过后直接入库"', 'IS_USED_PRODUCT');
     await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'DIRECT_INBOUND_SN_CODE', 'VARCHAR(128) COMMENT "直接入库SN"', 'DIRECT_INBOUND');

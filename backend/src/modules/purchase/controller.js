@@ -770,24 +770,6 @@ async function createRequest(ctx) {
   const normalizedFreightPlatformName = freightPlatformName || freight_platform_name || '';
   const normalizedFreightAmount = toMoney(freightAmount === undefined ? freight_amount : freightAmount);
 
-  // 如果有返利抵扣，验证并记录
-  if (deduction > 0 && !isDraft) {
-    const currentBalance = await _getRebateBalance(supplierId);
-    
-    if (deduction > currentBalance) {
-      ctx.throw(400, `返利余额不足，当前余额 ¥${currentBalance.toFixed(2)}`);
-    }
-    
-    await recordRebateDeduction(
-      supplierId,
-      '',
-      deduction,
-      requestNo,
-      `采购申请 ${requestNo} 返利抵扣`,
-      user.name || user.phone
-    );
-  }
-
   // 经销商账号不再有当前门店；门店必须由表单明确选择，或由门店分配明细提供。
   const targetStoreId = storeId || user.storeId;
   
@@ -813,86 +795,108 @@ async function createRequest(ctx) {
 
   const now = new Date();
   const submitterName = user.name || user.phone || String(user.staffId || '');
-  const createdRequest = await PurchaseRequest.create({
-    request_id: requestId,
-    request_no: requestNo,
-    store_id: finalStoreId,
-    supplier_id: supplierId || null,
-    goods_type_id: canonicalGoodsTypeId,
-    product_type: canonicalProductType,
-    invoice_type: invoiceType || '',
-    payment_method: normalizedPaymentMethod,
-    supplier_chat_screenshot_ids: screenshotIds.length ? JSON.stringify(screenshotIds) : null,
-    supplier_chat_screenshot_urls: screenshotDisplayValues.length ? JSON.stringify(screenshotDisplayValues) : null,
-    reason: remark || '',
-    total_amount: totalAmount,
-    rebate_deduction: deduction,
-    actual_total: actualTotal,
-    freight_platform_id: normalizedFreightPlatformId || null,
-    freight_platform_name: normalizedFreightPlatformName || null,
-    freight_amount: normalizedFreightAmount,
-    status: isDraft ? 'draft' : 'pending',
-    apply_user: submitterName,
-    applicant_staff_id: user.staffId || user.id || null,
-    submit_user: isDraft ? null : submitterName,
-    submit_time: isDraft ? null : now,
-    create_time: now,
-    update_time: now
-  });
+  let createdRequest;
 
-  // 创建明细
-  for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
-    const item = items[itemIndex];
-    const productId = item.productId || '';
-    const quantity = item.quantity || 0;
-    const unitPrice = item.price || 0;
-    const subtotal = unitPrice * quantity;
+  await sequelize.transaction(async transaction => {
+    // 表头、明细、返利、运费和审计记录必须原子提交，避免明细写入失败后留下可审批的空采购单。
+    if (deduction > 0 && !isDraft) {
+      const currentBalance = await _getRebateBalance(supplierId, transaction);
+      if (deduction > currentBalance) {
+        ctx.throw(400, `返利余额不足，当前余额 ¥${currentBalance.toFixed(2)}`);
+      }
+      await recordRebateDeduction(
+        supplierId,
+        '',
+        deduction,
+        requestNo,
+        `采购申请 ${requestNo} 返利抵扣`,
+        user.name || user.phone,
+        transaction
+      );
+    }
 
-    await PurchaseRequestItem.create({
+    createdRequest = await PurchaseRequest.create({
       request_id: requestId,
-      product_id: productId || null,
-      product_name: item.productName || '',
-      pn_code: item.pnCode || '',
-      is_used_product: Boolean(item.isUsedProduct || item.is_used_product) ? 1 : 0,
-      direct_inbound: Boolean(item.directInbound || item.direct_inbound) ? 1 : 0,
-      direct_inbound_sn_code: String(item.directInboundSnCode || item.direct_inbound_sn_code || '').trim() || null,
-      quantity: quantity,
-      unit_price: unitPrice,
-      subtotal: subtotal,
-      rebate_deduction: itemRebateAllocations[itemIndex] || 0,
+      request_no: requestNo,
+      store_id: finalStoreId,
+      supplier_id: supplierId || null,
       goods_type_id: canonicalGoodsTypeId,
       product_type: canonicalProductType,
-      store_allocations: item.storeAllocations ? JSON.stringify(item.storeAllocations) : null,
-      selected_resource_types: JSON.stringify(normalizeSelectedResourceTypes(item.selectedResourceTypes || item.selected_resource_types))
+      invoice_type: invoiceType || '',
+      payment_method: normalizedPaymentMethod,
+      supplier_chat_screenshot_ids: screenshotIds.length ? JSON.stringify(screenshotIds) : null,
+      supplier_chat_screenshot_urls: screenshotDisplayValues.length ? JSON.stringify(screenshotDisplayValues) : null,
+      reason: remark || '',
+      total_amount: totalAmount,
+      rebate_deduction: deduction,
+      actual_total: actualTotal,
+      freight_platform_id: normalizedFreightPlatformId || null,
+      freight_platform_name: normalizedFreightPlatformName || null,
+      freight_amount: normalizedFreightAmount,
+      status: isDraft ? 'draft' : 'pending',
+      apply_user: submitterName,
+      applicant_staff_id: user.staffId || user.id || null,
+      submit_user: isDraft ? null : submitterName,
+      submit_time: isDraft ? null : now,
+      create_time: now,
+      update_time: now
+    }, { transaction });
+
+    for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+      const item = items[itemIndex];
+      const productId = item.productId || '';
+      const quantity = item.quantity || 0;
+      const unitPrice = item.price || 0;
+      const subtotal = unitPrice * quantity;
+
+      await PurchaseRequestItem.create({
+        request_id: requestId,
+        product_id: productId || null,
+        product_name: item.productName || '',
+        pn_code: item.pnCode || '',
+        is_used_product: Boolean(item.isUsedProduct || item.is_used_product) ? 1 : 0,
+        direct_inbound: Boolean(item.directInbound || item.direct_inbound) ? 1 : 0,
+        direct_inbound_sn_code: String(item.directInboundSnCode || item.direct_inbound_sn_code || '').trim() || null,
+        quantity: quantity,
+        unit_price: unitPrice,
+        subtotal: subtotal,
+        rebate_deduction: itemRebateAllocations[itemIndex] || 0,
+        goods_type_id: canonicalGoodsTypeId,
+        product_type: canonicalProductType,
+        store_allocations: item.storeAllocations ? JSON.stringify(item.storeAllocations) : null,
+        selected_resource_types: JSON.stringify(normalizeSelectedResourceTypes(item.selectedResourceTypes || item.selected_resource_types))
+      }, { transaction });
+    }
+
+    await syncFreightRecord({
+      sourceType: 'purchase',
+      sourceId: requestId,
+      sourceNo: requestNo,
+      platformId: normalizedFreightPlatformId,
+      platformName: normalizedFreightPlatformName,
+      amount: normalizedFreightAmount,
+      storeId: finalStoreId,
+      items,
+      status: isDraft ? 'draft' : 'pending',
+      user,
+      transaction
     });
-  }
 
-  await syncFreightRecord({
-    sourceType: 'purchase',
-    sourceId: requestId,
-    sourceNo: requestNo,
-    platformId: normalizedFreightPlatformId,
-    platformName: normalizedFreightPlatformName,
-    amount: normalizedFreightAmount,
-    storeId: finalStoreId,
-    items,
-    status: isDraft ? 'draft' : 'pending',
-    user
+    await recordBusinessAction({
+      businessType: 'purchase_request',
+      businessId: requestId,
+      businessNo: requestNo,
+      action: isDraft ? 'draft_created' : 'submitted',
+      toStatus: isDraft ? 'draft' : 'pending',
+      user,
+      transaction
+    });
+
+    if (normalizedPaymentMethod === 'PERSONAL_ADVANCE' && !isDraft) {
+      createdRequest.Supplier = await Supplier.findByPk(supplierId, { transaction });
+      await createPurchaseReimbursement(createdRequest, user, transaction);
+    }
   });
-
-  await recordBusinessAction({
-    businessType: 'purchase_request',
-    businessId: requestId,
-    businessNo: requestNo,
-    action: isDraft ? 'draft_created' : 'submitted',
-    toStatus: isDraft ? 'draft' : 'pending',
-    user
-  });
-
-  if (normalizedPaymentMethod === 'PERSONAL_ADVANCE' && !isDraft) {
-    createdRequest.Supplier = await Supplier.findByPk(supplierId);
-    await createPurchaseReimbursement(createdRequest, user);
-  }
 
   ctx.body = {
     code: 0,
@@ -1228,6 +1232,9 @@ async function approveRequest(ctx) {
     ctx.throw(404, '采购申请不存在');
   }
   assertStoreVisible(ctx, request.store_id);
+  if (status === 'approved' && (!request.items || request.items.length === 0)) {
+    ctx.throw(400, '采购申请缺少商品明细，无法审批通过，请重新创建采购申请');
+  }
 
   const transaction = await sequelize.transaction();
   let transactionCommitted = false;

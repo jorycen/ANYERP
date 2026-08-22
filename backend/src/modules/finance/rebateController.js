@@ -418,18 +418,19 @@ async function _getRebateBalance(supplierId, transaction = null) {
 /**
  * 记录返利抵扣（采购申请用）
  */
-async function recordRebateDeduction(supplierId, supplierName, amount, relatedNo, remark, user) {
-  return sequelize.transaction(async transaction => {
-    const currentBalance = await _getRebateBalance(supplierId, transaction);
+async function recordRebateDeduction(supplierId, supplierName, amount, relatedNo, remark, user, transaction = null) {
+  const execute = async currentTransaction => {
+    const currentBalance = await _getRebateBalance(supplierId, currentTransaction);
     const newBalance = currentBalance - parseFloat(amount);
     await SupplierRebate.create({
       rebate_id: generateUUID(), supplier_id: supplierId, supplier_name: supplierName,
       type: 'debit', amount: parseFloat(amount), balance: newBalance, related_no: relatedNo,
       remark: remark || '', status: 'active', source_type: 'purchase', create_user: user
-    }, { transaction });
-    await recordSupplierRebateAccountTransaction(supplierId, 'expense', amount, '采购返利抵扣', relatedNo, user, transaction);
+    }, { transaction: currentTransaction });
+    await recordSupplierRebateAccountTransaction(supplierId, 'expense', amount, '采购返利抵扣', relatedNo, user, currentTransaction);
     return newBalance;
-  });
+  };
+  return transaction ? execute(transaction) : sequelize.transaction(execute);
 }
 
 async function createManufacturerPolicy(ctx) {
