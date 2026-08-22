@@ -14,6 +14,11 @@ const PAYMENT_STATUSES = [
   { key: 'paid', label: '已支付' }
 ];
 
+const INVENTORY_DEMO_MODES = [
+  { key: 'include', label: '含样机' },
+  { key: 'exclude', label: '不含样机' }
+];
+
 function numberValue(value, fallback = 0) {
   if (value === null || value === undefined || value === '') return fallback;
   const normalized = String(value).replace(/[^\d.-]/g, '');
@@ -100,6 +105,8 @@ Page({
     inventory: [],
     selectedInventoryCategory: '',
     expandedInventoryCategories: [],
+    inventoryDemoModes: INVENTORY_DEMO_MODES,
+    selectedInventoryDemoMode: 'include',
     accounts: [],
     paymentAmounts: [],
     isLoading: false,
@@ -148,6 +155,12 @@ Page({
     this.setData({ selectedInventoryCategory });
   },
 
+  selectInventoryDemoMode(event) {
+    const selectedInventoryDemoMode = event.currentTarget.dataset.mode === 'exclude' ? 'exclude' : 'include';
+    if (selectedInventoryDemoMode === this.data.selectedInventoryDemoMode) return;
+    this.setData({ selectedInventoryDemoMode }, () => this.loadDashboard());
+  },
+
   async loadRegions() {
     try {
       const result = await api.store.getRegions();
@@ -190,7 +203,8 @@ Page({
       periodType: this.data.selectedPeriod,
       date: this.data.selectedDate,
       regionId: this.data.selectedRegionId || '',
-      storeId
+      storeId,
+      includeDemo: this.data.selectedInventoryDemoMode === 'include'
     }).catch(error => ({ error }));
 
     if (result.error) {

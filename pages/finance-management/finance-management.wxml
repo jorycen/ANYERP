@@ -94,7 +94,17 @@
         <text class="section-kicker">库存结构</text>
         <text class="section-title">商品分类</text>
       </view>
-      <text class="unit-note">数量 / 成本金额</text>
+      <view class="inventory-demo-switch">
+        <view
+          wx:for="{{inventoryDemoModes}}"
+          wx:key="key"
+          class="inventory-demo-option {{item.key === selectedInventoryDemoMode ? 'active' : ''}}"
+          data-mode="{{item.key}}"
+          bindtap="selectInventoryDemoMode"
+        >
+          <text>{{item.label}}</text>
+        </view>
+      </view>
     </view>
     <view class="data-list">
       <view wx:if="{{!inventory.length}}" class="inventory-empty-state">

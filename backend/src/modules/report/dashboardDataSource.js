@@ -101,7 +101,13 @@ function findFinanceClassification(row, parentCategory, categoryIndex) {
     });
   };
   collectDescendants(seriesCategory);
-  return descendants.find(child => normalizeCategoryName(child.name) === model) || seriesCategory;
+  const modelMatches = descendants
+    .filter(child => {
+      const childName = normalizeCategoryName(child.name);
+      return childName && (model === childName || model.startsWith(childName));
+    })
+    .sort((left, right) => normalizeCategoryName(right.name).length - normalizeCategoryName(left.name).length);
+  return modelMatches[0] || seriesCategory;
 }
 
 function createFinanceCategoryNode(category) {
@@ -483,8 +489,15 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
   }
 
   async getInventory(filters) {
+    const includeDemo = filters.includeDemo !== false;
     const storeClause = filters.storeId ? 'AND i.STORE_ID = :storeId' : '';
     const snStoreClause = filters.storeId ? 'AND ps.STORE_ID = :storeId' : '';
+    const snDemoClause = includeDemo
+      ? ''
+      : "AND COALESCE(ps.INVENTORY_TYPE, 'normal_qty') NOT IN ('demo_qty', 'rental_demo_qty')";
+    const nonSnDemoQuantitySql = includeDemo
+      ? ' + COALESCE(i.DEMO_QTY, 0) + COALESCE(i.RENTAL_DEMO_QTY, 0)'
+      : '';
     const productLineClause = filters.productLine
       ? "AND (p.CATEGORY = :productLine OR p.CATEGORY LIKE :productLinePrefix)"
       : '';
@@ -511,6 +524,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
            LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = ps.PRODUCT_ID AND pp.STATUS = 1
           WHERE ps.IS_DELETED = 0
             AND ps.STATUS = 'in_stock'
+            ${snDemoClause}
             AND ps.STORE_ID IN (:storeIds)
             ${snStoreClause}
             ${productLineClause}
@@ -527,13 +541,13 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
                 SUM(
                   GREATEST(COALESCE(i.NORMAL_QTY, 0),
                     COALESCE(i.REGULAR_QTY, 0) + COALESCE(i.SUBSIDY_QTY, 0) + COALESCE(i.SECOND_QTY, 0))
-                  + COALESCE(i.DISPLAY_QTY, 0) + COALESCE(i.DEMO_QTY, 0)
+                  + COALESCE(i.DISPLAY_QTY, 0)${nonSnDemoQuantitySql}
                   + COALESCE(i.UNSELLABLE_QTY, 0) + COALESCE(i.PENDING_QTY, 0)
                 ) AS quantity,
                 ROUND(SUM((
                   GREATEST(COALESCE(i.NORMAL_QTY, 0),
                     COALESCE(i.REGULAR_QTY, 0) + COALESCE(i.SUBSIDY_QTY, 0) + COALESCE(i.SECOND_QTY, 0))
-                  + COALESCE(i.DISPLAY_QTY, 0) + COALESCE(i.DEMO_QTY, 0)
+                  + COALESCE(i.DISPLAY_QTY, 0)${nonSnDemoQuantitySql}
                   + COALESCE(i.UNSELLABLE_QTY, 0) + COALESCE(i.PENDING_QTY, 0)
                 ) * COALESCE(pp.COST_PRICE, 0)), 2) AS inventoryAmount,
                 NULL AS oldestInboundTime
@@ -562,6 +576,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
           WHERE ps.IS_DELETED = 0
             AND ps.STATUS = 'in_stock'
             AND ps.INBOUND_TIME IS NOT NULL
+            ${snDemoClause}
             AND ps.STORE_ID IN (:storeIds)
             ${snStoreClause}
             ${productLineClause}

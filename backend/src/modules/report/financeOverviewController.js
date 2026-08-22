@@ -217,6 +217,7 @@ async function getFinanceOverview(ctx) {
   const period = resolvePeriod(ctx.query);
   const regionId = String(ctx.query.regionId || '').trim();
   const storeId = String(ctx.query.storeId || '').trim();
+  const includeDemo = !['0', 'false', 'no', 'off'].includes(String(ctx.query.includeDemo || '1').trim().toLowerCase());
   const storeIds = await resolveStoreIds(user, regionId, storeId);
   if (!storeIds.length) {
     ctx.body = {
@@ -226,7 +227,7 @@ async function getFinanceOverview(ctx) {
         revenue: 0,
         grossProfit: null,
         grossMargin: null,
-        inventory: { totalAmount: 0, categories: [] },
+        inventory: { totalAmount: 0, includeDemo, categories: [] },
         accounts: { totalAmount: 0, byType: [], accounts: [] },
         payments: { all: 0, uncreated: 0, created: 0, paid: 0 }
       }
@@ -236,7 +237,7 @@ async function getFinanceOverview(ctx) {
   const accessibleRegionIds = await resolveAccessibleRegionIds(user, storeIds);
 
   const ranges = buildRanges({ startDate: period.startDate, endDate: period.endDate });
-  const filters = { storeIds, storeId: storeId || '', employeeId: '', productLine: '' };
+  const filters = { storeIds, storeId: storeId || '', employeeId: '', productLine: '', includeDemo };
   const [trendRows, inventory, accounts, payments] = await Promise.all([
     dataSource.getTrend(filters, ranges.current, 'day'),
     dataSource.getInventory(filters),
@@ -256,6 +257,7 @@ async function getFinanceOverview(ctx) {
       grossMargin: profitVisible && summary.salesAmount ? Number(((summary.grossProfit / summary.salesAmount) * 100).toFixed(2)) : null,
       inventory: {
         totalAmount: profitVisible ? roundMoney(inventory.inventoryAmount) : null,
+        includeDemo,
         categories: profitVisible ? inventory.categories : []
       },
       accounts,

@@ -297,6 +297,30 @@ page {
   font-size: 21rpx;
 }
 
+.inventory-demo-switch {
+  display: flex;
+  align-items: center;
+  padding: 4rpx;
+  border: 1rpx solid #d9e5f1;
+  border-radius: 10rpx;
+  background: #f3f7fb;
+}
+
+.inventory-demo-option {
+  padding: 8rpx 12rpx;
+  border-radius: 7rpx;
+  color: #8190a3;
+  font-size: 20rpx;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.inventory-demo-option.active {
+  color: #2d6eae;
+  background: #ffffff;
+  box-shadow: 0 2rpx 8rpx rgba(45, 105, 172, 0.12);
+}
+
 .data-list {
   margin-top: 24rpx;
 }
