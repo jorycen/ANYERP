@@ -1284,6 +1284,7 @@ async function approveRequest(ctx) {
   const items = request.items.map(item => ({
     productId: item.product_id,
     productName: item.product_name,
+    pnCode: item.pn_code,
     quantity: item.quantity,
     isUsedProduct: item.is_used_product,
     directInbound: item.direct_inbound,
