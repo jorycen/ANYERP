@@ -89,6 +89,16 @@ test('毛利商品成本优先使用产品定价，未定价时才回退采购�
   );
 });
 
+test('特价SN商品毛利使用SN特价替代产品定价', () => {
+  assert.deepEqual(
+    resolveUnitProductPricing(
+      { standard_price: 950, cost_price: 800 },
+      { specialPrice: 799 }
+    ),
+    { unitPricing: 799, source: 'sn_special_price' }
+  );
+});
+
 test('非服务商毛利成本按本次采购价', () => {
   assert.deepEqual(
     resolveUnitProductPricing(

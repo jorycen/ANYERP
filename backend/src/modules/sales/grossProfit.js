@@ -12,6 +12,8 @@ const {
   ProductPrice,
   Product,
   ProductSn,
+  SnDistributorPrice,
+  Store,
   Supplier,
   FreightRecordItem,
   sequelize
@@ -83,6 +85,8 @@ function calculateOrderReceivable(order = {}) {
 
 function resolveUnitProductPricing(productPrice = {}, orderItem = {}, supplier = null) {
   const configuredPricing = toNumber(productPrice.standard_price);
+  const specialPrice = toNumber(orderItem.specialPrice ?? orderItem.special_price);
+  const effectiveConfiguredPricing = specialPrice > 0 ? specialPrice : configuredPricing;
   const isServiceProvider = !supplier || Number(supplier.is_service_provider) !== 0;
   const sourcePurchasePrice = toNumber(orderItem.purchasePrice) ||
     toNumber(orderItem.original_pickup_price) ||
@@ -97,8 +101,11 @@ function resolveUnitProductPricing(productPrice = {}, orderItem = {}, supplier =
       }
     : { unitPricing: roundMoney(unitPricing), source };
 
-  if (isServiceProvider && configuredPricing > 0) {
-    return result(configuredPricing, 'product_standard_price');
+  if (isServiceProvider && effectiveConfiguredPricing > 0) {
+    return result(
+      effectiveConfiguredPricing,
+      specialPrice > 0 ? 'sn_special_price' : 'product_standard_price'
+    );
   }
 
   if (!isServiceProvider && purchasePrice > 0) {
@@ -109,7 +116,12 @@ function resolveUnitProductPricing(productPrice = {}, orderItem = {}, supplier =
     return result(toNumber(productPrice.cost_price), 'product_cost_fallback');
   }
 
-  return result(configuredPricing || purchasePrice, isServiceProvider ? 'product_standard_price_fallback' : 'purchase_price_fallback');
+  return result(
+    effectiveConfiguredPricing || purchasePrice,
+    isServiceProvider
+      ? (specialPrice > 0 ? 'sn_special_price_fallback' : 'product_standard_price_fallback')
+      : 'purchase_price_fallback'
+  );
 }
 
 function calculateGrossProfitValues({
@@ -265,7 +277,7 @@ function snapshotToResponse(snapshot, order = null) {
     snapshotStatus: row.snapshot_status,
     calculatedBy: row.calculated_by || '',
     calculatedAt: row.calculated_at,
-    formula: '用户应收 - 服务商商品定价/非服务商本次采购价 - 支付手续费 - 增值税 + 补录净额；非服务商的电脑、手机或平板且基础毛利超过500元时另扣200元外调费'
+    formula: '用户应收 - 服务商商品定价（特价SN优先）/非服务商本次采购价 - 支付手续费 - 增值税 + 补录净额；非服务商的电脑、手机或平板且基础毛利超过500元时另扣200元外调费'
   };
 }
 
@@ -402,6 +414,39 @@ async function buildProductPricingDetails(orderId, transaction) {
     : [];
   const productById = new Map(products.map(product => [String(product.product_id), product]));
   const supplierContext = await resolveSupplierContext(items.map(item => item.toJSON()), order || {}, transaction);
+  const snIds = [...new Set(items.map(item => item.sn_id).filter(Boolean))];
+  const snCodes = [...new Set(items.map(item => item.sn_code).filter(Boolean))];
+  const store = snIds.length || snCodes.length
+    ? await Store.findOne({
+        where: { store_id: order?.store_id, is_deleted: 0 },
+        attributes: ['store_id', 'distributor_id'],
+        raw: true,
+        transaction
+      })
+    : null;
+  const specialPrices = store?.distributor_id && (snIds.length || snCodes.length)
+    ? await SnDistributorPrice.findAll({
+        where: {
+          distributor_id: store.distributor_id,
+          status: 1,
+          [Op.or]: [
+            ...(snIds.length ? [{ sn_id: { [Op.in]: snIds } }] : []),
+            ...(snCodes.length ? [{ sn_code: { [Op.in]: snCodes } }] : [])
+          ]
+        },
+        attributes: ['sn_id', 'sn_code', 'special_price'],
+        raw: true,
+        transaction
+      })
+    : [];
+  const specialPriceBySnId = new Map();
+  const specialPriceBySnCode = new Map();
+  specialPrices.forEach(row => {
+    const price = toNumber(row.special_price);
+    if (price <= 0) return;
+    if (row.sn_id) specialPriceBySnId.set(String(row.sn_id), price);
+    if (row.sn_code) specialPriceBySnCode.set(String(row.sn_code).trim().toUpperCase(), price);
+  });
   return items.map(item => {
     const row = item.toJSON();
     const productPrice = priceByProduct.get(String(row.product_id || ''));
@@ -414,7 +459,14 @@ async function buildProductPricingDetails(orderId, transaction) {
       || toNumber(row.original_pickup_price)
       || toNumber(snRow?.inbound_price)
       || toNumber(inboundSupplier?.inbound_price);
-    const pricing = resolveUnitProductPricing(productPrice, { ...row, purchasePrice }, supplier);
+    const specialPrice = specialPriceBySnId.get(String(snRow?.sn_id || row.sn_id || ''))
+      || specialPriceBySnCode.get(String(snRow?.sn_code || row.sn_code || '').trim().toUpperCase())
+      || 0;
+    const pricing = resolveUnitProductPricing(
+      productPrice,
+      { ...row, purchasePrice, specialPrice },
+      supplier
+    );
     const quantity = Number(row.quantity || 1);
     const isServiceProvider = pricing.isServiceProvider ?? true;
     return {
@@ -428,6 +480,8 @@ async function buildProductPricingDetails(orderId, transaction) {
       quantity,
       unitPricing: pricing.unitPricing,
       pricingAmount: roundMoney(pricing.unitPricing * quantity),
+      specialPrice: specialPrice > 0 ? roundMoney(specialPrice) : null,
+      isSpecialPrice: specialPrice > 0,
       purchasePrice: pricing.purchasePrice ?? roundMoney(purchasePrice),
       grossProfitUpliftAmount: pricing.grossProfitUpliftAmount ?? 0,
       supplierId: supplier?.supplier_id || supplierId,
