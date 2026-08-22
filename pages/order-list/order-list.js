@@ -3397,13 +3397,10 @@ Page({
 
     wx.showLoading({ title: '保存中...' });
 
-    // 调用云函数更新订单备注
-    wx.cloud.callFunction({
-      name: 'updateOrderRemark',
-      data: {
-        orderNo: currentOrder.orderNo,
-        remark: remarkText.trim()
-      }
+    // 订单数据统一通过 ANY-ERP API 更新，避免继续写入已停用的云数据库 orders 集合。
+    api.call('updateOrderRemark', '', {
+      orderNo: currentOrder.orderNo,
+      remark: remarkText.trim()
     })
       .then(res => {
         wx.hideLoading();
