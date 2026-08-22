@@ -120,16 +120,33 @@
         <view wx:if="{{category.key === selectedInventoryCategory && category.children.length}}" class="inventory-detail-card">
           <view class="inventory-detail-heading">
             <text class="inventory-detail-title">{{category.name}}明细</text>
-            <text class="unit-note">分类明细</text>
+            <text class="unit-note">点击二级分类展开三级明细</text>
           </view>
-          <view class="data-row inventory-child-row" wx:for="{{category.children}}" wx:for-item="child" wx:key="key">
-            <view class="row-name-wrap">
-              <view class="child-dot"></view>
-              <text class="row-name">{{child.name}}</text>
+          <block wx:for="{{category.children}}" wx:for-item="child" wx:key="key">
+            <view
+              class="data-row inventory-child-row {{child.children.length ? 'inventory-expandable' : ''}} {{child.expanded ? 'expanded' : ''}}"
+              data-key="{{child.key}}"
+              bindtap="toggleInventoryCategory"
+            >
+              <view class="row-name-wrap">
+                <view class="child-dot"></view>
+                <text class="row-name">{{child.name}}</text>
+              </view>
+              <text class="row-quantity">{{child.quantity}} 件</text>
+              <text class="row-amount">¥{{child.amount}}</text>
+              <text wx:if="{{child.children.length}}" class="inventory-expand-mark">{{child.expanded ? '−' : '+'}}</text>
             </view>
-            <text class="row-quantity">{{child.quantity}} 件</text>
-            <text class="row-amount">¥{{child.amount}}</text>
-          </view>
+            <view wx:if="{{child.expanded && child.children.length}}" class="inventory-grandchild-list">
+              <view class="data-row inventory-grandchild-row" wx:for="{{child.children}}" wx:for-item="grandchild" wx:key="key">
+                <view class="row-name-wrap">
+                  <view class="grandchild-dot"></view>
+                  <text class="row-name">{{grandchild.name}}</text>
+                </view>
+                <text class="row-quantity">{{grandchild.quantity}} 件</text>
+                <text class="row-amount">¥{{grandchild.amount}}</text>
+              </view>
+            </view>
+          </block>
         </view>
       </block>
     </view>

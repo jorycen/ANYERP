@@ -390,6 +390,42 @@ page {
   border-bottom-color: #e8edf3;
 }
 
+.inventory-expandable {
+  cursor: pointer;
+}
+
+.inventory-child-row.expanded {
+  background: #f1f6fc;
+}
+
+.inventory-expand-mark {
+  width: 28rpx;
+  margin-left: 8rpx;
+  color: #3979c8;
+  font-size: 30rpx;
+  line-height: 1;
+  text-align: center;
+}
+
+.inventory-grandchild-list {
+  margin-left: 22rpx;
+  padding-left: 18rpx;
+  border-left: 1rpx solid #dce7f2;
+}
+
+.inventory-grandchild-row {
+  min-height: 58rpx;
+  border-bottom-color: #edf1f5;
+}
+
+.grandchild-dot {
+  width: 8rpx;
+  height: 8rpx;
+  margin: 0 16rpx 0 2rpx;
+  border-radius: 50%;
+  background: #b2c2d4;
+}
+
 .child-dot {
   width: 10rpx;
   height: 10rpx;

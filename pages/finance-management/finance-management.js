@@ -47,6 +47,35 @@ function unwrapValue(result) {
   return value || {};
 }
 
+function mapInventoryCategory(item, expandedKeys) {
+  const key = item.key || item.name;
+  return {
+    key,
+    name: item.name,
+    quantity: numberValue(item.quantity),
+    amount: formatMoney(item.amount),
+    expanded: expandedKeys.includes(key),
+    children: (item.children || []).map(child => mapInventoryCategory(child, expandedKeys))
+  };
+}
+
+function toggleInventoryCategory(categories, targetKey) {
+  return categories.map(category => ({
+    ...category,
+    expanded: category.key === targetKey ? !category.expanded : category.expanded,
+    children: toggleInventoryCategory(category.children || [], targetKey)
+  }));
+}
+
+function findInventoryCategory(categories, targetKey) {
+  for (const category of categories) {
+    if (category.key === targetKey) return category;
+    const nested = findInventoryCategory(category.children || [], targetKey);
+    if (nested) return nested;
+  }
+  return null;
+}
+
 Page({
   data: {
     periods: PERIODS,
@@ -70,6 +99,7 @@ Page({
     pendingPaymentTotal: '--',
     inventory: [],
     selectedInventoryCategory: '',
+    expandedInventoryCategories: [],
     accounts: [],
     paymentAmounts: [],
     isLoading: false,
@@ -173,6 +203,7 @@ Page({
         pendingPaymentTotal: '--',
         inventory: [],
         selectedInventoryCategory: '',
+        expandedInventoryCategories: [],
         accounts: [],
         paymentAmounts: this.formatPaymentAmounts(null),
         errorMessage: '真实数据加载失败，请检查登录状态和接口权限',
@@ -188,18 +219,9 @@ Page({
     const accounts = data.accounts || {};
     const payments = data.payments || {};
     const grossProfit = data.grossProfit;
-    const inventoryCategories = (inventory.categories || []).map(item => ({
-      key: item.key || item.name,
-      name: item.name,
-      quantity: numberValue(item.quantity),
-      amount: formatMoney(item.amount),
-      children: (item.children || []).map(child => ({
-        key: child.key || child.name,
-        name: child.name,
-        quantity: numberValue(child.quantity),
-        amount: formatMoney(child.amount)
-      }))
-    }));
+    const expandedInventoryCategories = this.data.expandedInventoryCategories || [];
+    const inventoryCategories = (inventory.categories || [])
+      .map(item => mapInventoryCategory(item, expandedInventoryCategories));
     const selectedInventoryCategory = inventoryCategories.some(item => item.key === this.data.selectedInventoryCategory)
       ? this.data.selectedInventoryCategory
       : (inventoryCategories[0] ? inventoryCategories[0].key : '');
@@ -213,6 +235,7 @@ Page({
       pendingPaymentTotal: formatMoney(Number(payments.uncreated || 0) + Number(payments.created || 0)),
       inventory: inventoryCategories,
       selectedInventoryCategory,
+      expandedInventoryCategories,
       accounts: (accounts.byType || []).map(item => ({ name: item.name, amount: formatMoney(item.amount) })),
       paymentAmounts: this.formatPaymentAmounts(payments),
       errorMessage: '',
@@ -220,6 +243,20 @@ Page({
       isLoading: false,
       dataSourceText: '实时数据 · ANY-ERP'
     }, () => this.refreshPaymentDisplay());
+  },
+
+  toggleInventoryCategory(event) {
+    const key = event.currentTarget.dataset.key || '';
+    if (!key) return;
+    const category = findInventoryCategory(this.data.inventory, key);
+    if (!category || !category.children || category.children.length === 0) return;
+    const expandedInventoryCategories = category.expanded
+      ? this.data.expandedInventoryCategories.filter(item => item !== key)
+      : this.data.expandedInventoryCategories.concat(key);
+    this.setData({
+      inventory: toggleInventoryCategory(this.data.inventory, key),
+      expandedInventoryCategories
+    });
   },
 
   formatPaymentAmounts(summary) {

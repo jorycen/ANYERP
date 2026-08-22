@@ -59,31 +59,102 @@ function buildFinanceCategoryIndex(rows) {
 function findFinanceCategory(categoryPath, categoryIndex) {
   const normalizedPath = normalizeCategoryPath(categoryPath);
   const parts = normalizedPath ? normalizedPath.split('/') : [];
-  let current = categoryIndex.byPath.get(normalizedPath);
-  while (!current && parts.length > 0) {
-    parts.pop();
-    current = categoryIndex.byPath.get(parts.join('/'));
-  }
-  while (current) {
-    if (current.showInFinance) return current;
-    current = current.parentId ? categoryIndex.byId.get(current.parentId) : null;
+  for (let index = parts.length; index > 0; index -= 1) {
+    let current = categoryIndex.byPath.get(parts.slice(0, index).join('/'));
+    while (current) {
+      if (current.showInFinance) return current;
+      current = current.parentId ? categoryIndex.byId.get(current.parentId) : null;
+    }
   }
   return null;
 }
 
-function findFinanceChild(row, parentCategory, categoryIndex) {
-  const children = categoryIndex.childrenByParent.get(parentCategory.categoryId) || [];
-  if (children.length === 0) return null;
+function isCategoryDescendant(category, ancestorCategory, categoryIndex) {
+  let current = category;
+  while (current) {
+    if (current.categoryId === ancestorCategory.categoryId) return true;
+    current = current.parentId ? categoryIndex.byId.get(current.parentId) : null;
+  }
+  return false;
+}
 
+function findFinanceClassification(row, parentCategory, categoryIndex) {
   const rowPath = normalizeCategoryPath(row.categoryPath);
   const exactPathCategory = categoryIndex.byPath.get(rowPath);
-  if (exactPathCategory && exactPathCategory.parentId === parentCategory.categoryId) {
+  if (exactPathCategory && isCategoryDescendant(exactPathCategory, parentCategory, categoryIndex)) {
     return exactPathCategory;
   }
 
+  const children = categoryIndex.childrenByParent.get(parentCategory.categoryId) || [];
   const series = normalizeCategoryName(row.series);
   if (!series) return null;
-  return children.find(child => normalizeCategoryName(child.name) === series) || null;
+  const seriesCategory = children.find(child => normalizeCategoryName(child.name) === series);
+  if (!seriesCategory) return null;
+
+  const model = normalizeCategoryName(row.model);
+  if (!model) return seriesCategory;
+  const descendants = [];
+  const collectDescendants = category => {
+    (categoryIndex.childrenByParent.get(category.categoryId) || []).forEach(child => {
+      descendants.push(child);
+      collectDescendants(child);
+    });
+  };
+  collectDescendants(seriesCategory);
+  return descendants.find(child => normalizeCategoryName(child.name) === model) || seriesCategory;
+}
+
+function createFinanceCategoryNode(category) {
+  return {
+    key: category.categoryId,
+    categoryId: category.categoryId,
+    name: category.name,
+    path: category.path,
+    level: category.level,
+    quantity: 0,
+    amount: 0,
+    children: []
+  };
+}
+
+function addFinanceClassificationAmount(target, parentCategory, leafCategory, categoryIndex, row) {
+  if (!leafCategory || leafCategory.categoryId === parentCategory.categoryId) return;
+
+  const lineage = [];
+  let current = leafCategory;
+  while (current && current.categoryId !== parentCategory.categoryId) {
+    lineage.unshift(current);
+    current = current.parentId ? categoryIndex.byId.get(current.parentId) : null;
+  }
+  if (!current) return;
+
+  let currentTarget = target;
+  lineage.forEach(category => {
+    let childTarget = currentTarget.children.find(child => child.categoryId === category.categoryId);
+    if (!childTarget) {
+      childTarget = createFinanceCategoryNode(category);
+      currentTarget.children.push(childTarget);
+    }
+    childTarget.quantity += row.quantity;
+    childTarget.amount += row.inventoryAmount;
+    currentTarget = childTarget;
+  });
+}
+
+function sortFinanceCategoryChildren(children, categoryIndex) {
+  return children
+    .sort((left, right) => {
+      const leftCategory = categoryIndex.byId.get(left.categoryId);
+      const rightCategory = categoryIndex.byId.get(right.categoryId);
+      return (leftCategory?.sortOrder || 0) - (rightCategory?.sortOrder || 0)
+        || left.name.localeCompare(right.name, 'zh-CN');
+    })
+    .map(child => ({
+      ...child,
+      quantity: Number(child.quantity || 0),
+      amount: roundMoney(child.amount),
+      children: sortFinanceCategoryChildren(child.children || [], categoryIndex)
+    }));
 }
 
 function toNumber(value) {
@@ -530,16 +601,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
         level: category.level,
         quantity: 0,
         amount: 0,
-        children: (categoryIndex.childrenByParent.get(category.categoryId) || [])
-          .map(child => ({
-            key: child.categoryId,
-            categoryId: child.categoryId,
-            name: child.name,
-            path: child.path,
-            level: child.level,
-            quantity: 0,
-            amount: 0
-          }))
+        children: []
       }]));
     rows.forEach(row => {
       const category = findFinanceCategory(row.categoryPath, categoryIndex);
@@ -548,14 +610,8 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       target.quantity += row.quantity;
       target.amount += row.inventoryAmount;
 
-      const child = findFinanceChild(row, category, categoryIndex);
-      const childTarget = child
-        ? target.children.find(item => item.categoryId === child.categoryId)
-        : null;
-      if (childTarget) {
-        childTarget.quantity += row.quantity;
-        childTarget.amount += row.inventoryAmount;
-      }
+      const classification = findFinanceClassification(row, category, categoryIndex);
+      addFinanceClassificationAmount(target, category, classification, categoryIndex, row);
     });
     const staleProducts = rows
       .map(row => {
@@ -585,18 +641,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
           ...category,
           quantity: Number(category.quantity || 0),
           amount: roundMoney(category.amount),
-          children: category.children
-            .sort((left, right) => {
-              const leftCategory = categoryIndex.byId.get(left.categoryId);
-              const rightCategory = categoryIndex.byId.get(right.categoryId);
-              return (leftCategory?.sortOrder || 0) - (rightCategory?.sortOrder || 0)
-                || left.name.localeCompare(right.name, 'zh-CN');
-            })
-            .map(child => ({
-              ...child,
-              quantity: Number(child.quantity || 0),
-              amount: roundMoney(child.amount)
-            }))
+          children: sortFinanceCategoryChildren(category.children, categoryIndex)
         })),
       ageStructure: ageRows.map(row => ({
         ageBucket: row.ageBucket,
