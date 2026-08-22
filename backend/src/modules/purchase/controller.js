@@ -80,6 +80,21 @@ function assertPurchaseAllocationStoresVisible(ctx, items, fallbackStoreId) {
   }
 }
 
+async function loadPurchaseProductSnapshots(items, transaction = null) {
+  const productIds = [...new Set((items || [])
+    .map(item => item.productId || item.product_id)
+    .filter(Boolean)
+    .map(String))];
+  if (productIds.length === 0) return new Map();
+
+  const products = await Product.findAll({
+    where: { product_id: { [Op.in]: productIds } },
+    attributes: ['product_id', 'product_code', 'manufacturer_code'],
+    ...(transaction ? { transaction } : {})
+  });
+  return new Map(products.map(product => [String(product.product_id), product]));
+}
+
 function allocateRebateByItems(items, amount) {
   const totalCents = Math.round(toMoney(amount) * 100);
   const allocations = new Array(items.length).fill(0);
@@ -628,6 +643,7 @@ async function getRequestDetail(ctx) {
 
   // 解析门店分配，并关联门店名称
   if (result.items && result.items.length > 0) {
+    const productSnapshots = await loadPurchaseProductSnapshots(result.items);
     // 获取所有门店
     const stores = await Store.findAll();
     const storeMap = new Map();
@@ -635,6 +651,9 @@ async function getRequestDetail(ctx) {
 
     result.items = result.items.map(item => {
       const itemJson = item;
+      const productSnapshot = productSnapshots.get(String(itemJson.product_id || ''));
+      if (!itemJson.product_code && productSnapshot) itemJson.product_code = productSnapshot.product_code || '';
+      if (!itemJson.manufacturer_code && productSnapshot) itemJson.manufacturer_code = productSnapshot.manufacturer_code || '';
       let storeAllocations = [];
       if (itemJson.store_allocations) {
         try {
@@ -798,6 +817,7 @@ async function createRequest(ctx) {
   let createdRequest;
 
   await sequelize.transaction(async transaction => {
+    const productSnapshots = await loadPurchaseProductSnapshots(items, transaction);
     // 表头、明细、返利、运费和审计记录必须原子提交，避免明细写入失败后留下可审批的空采购单。
     if (deduction > 0 && !isDraft) {
       const currentBalance = await _getRebateBalance(supplierId, transaction);
@@ -845,6 +865,8 @@ async function createRequest(ctx) {
     for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
       const item = items[itemIndex];
       const productId = item.productId || '';
+      const productSnapshot = productSnapshots.get(String(productId));
+      const isUsedProduct = Boolean(item.isUsedProduct || item.is_used_product);
       const quantity = item.quantity || 0;
       const unitPrice = item.price || 0;
       const subtotal = unitPrice * quantity;
@@ -853,6 +875,8 @@ async function createRequest(ctx) {
         request_id: requestId,
         product_id: productId || null,
         product_name: item.productName || '',
+        product_code: isUsedProduct ? (item.productCode || '') : (productSnapshot?.product_code || item.productCode || ''),
+        manufacturer_code: isUsedProduct ? (item.manufacturerCode || '') : (productSnapshot?.manufacturer_code || item.manufacturerCode || ''),
         pn_code: item.pnCode || '',
         is_used_product: Boolean(item.isUsedProduct || item.is_used_product) ? 1 : 0,
         direct_inbound: Boolean(item.directInbound || item.direct_inbound) ? 1 : 0,
@@ -1102,6 +1126,7 @@ async function updateRequestDraft(ctx) {
   const normalizedFreightAmount = toMoney(freightAmount === undefined ? freight_amount : freightAmount);
 
   await sequelize.transaction(async transaction => {
+    const productSnapshots = await loadPurchaseProductSnapshots(items, transaction);
     await request.update({
       supplier_id: supplierId || null,
       invoice_type: invoiceType || '',
@@ -1120,12 +1145,17 @@ async function updateRequestDraft(ctx) {
     await PurchaseRequestItem.destroy({ where: { request_id: requestId }, transaction });
     for (let index = 0; index < items.length; index += 1) {
       const item = items[index];
+      const productId = item.productId || item.product_id || '';
+      const isUsedProduct = Number(item.isUsedProduct || item.is_used_product) ? 1 : 0;
+      const productSnapshot = productSnapshots.get(String(productId));
       await PurchaseRequestItem.create({
         request_id: requestId,
-        product_id: Number(item.isUsedProduct || item.is_used_product) ? null : (item.productId || null),
+        product_id: isUsedProduct ? null : (productId || null),
         product_name: item.productName || '',
+        product_code: isUsedProduct ? (item.productCode || item.product_code || '') : (productSnapshot?.product_code || item.productCode || item.product_code || ''),
+        manufacturer_code: isUsedProduct ? (item.manufacturerCode || item.manufacturer_code || '') : (productSnapshot?.manufacturer_code || item.manufacturerCode || item.manufacturer_code || ''),
         pn_code: item.pnCode || '',
-        is_used_product: Number(item.isUsedProduct || item.is_used_product) ? 1 : 0,
+        is_used_product: isUsedProduct,
         direct_inbound: Number(item.directInbound || item.direct_inbound) ? 1 : 0,
         direct_inbound_sn_code: String(item.directInboundSnCode || item.direct_inbound_sn_code || '').trim() || null,
         quantity: Number(item.quantity),

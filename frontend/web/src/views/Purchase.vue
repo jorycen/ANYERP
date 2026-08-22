@@ -1770,6 +1770,8 @@ const buildPurchaseRequestPayload = () => {
     items: requestForm.items.map(item => ({
       productId: item.productId || '',
       productName: item.productName,
+      productCode: item.productCode || getProductCode(item) || '',
+      manufacturerCode: item.manufacturerCode || getManufacturerCode(item) || '',
       pnCode: item.pnCode || '',
       price: item.price,
       quantity: item.quantity,
