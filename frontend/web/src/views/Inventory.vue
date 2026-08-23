@@ -2897,11 +2897,19 @@ const confirmAddPn = async () => {
 
 const submitInbound = async () => {
   const items = []
+  const seenSn = new Set()
 
   for (const product of executeProducts.value) {
     if (product.needSn) {
-      for (const snRow of product.snRows) {
-        if (!snRow.snCode || snRow.snCode.trim() === '') {
+      const snRows = product.snRows || []
+      const maxQuantity = Number(product.quantity || 0)
+      if (snRows.length > maxQuantity) {
+        ElMessage.warning(`商品 ${product.productName} 的SN行数超过待入库数量，请刷新后重试`)
+        return
+      }
+      for (const snRow of snRows) {
+        const snCode = String(snRow.snCode || '').trim()
+        if (!snCode) {
           ElMessage.warning(`商品 ${product.productName} 需要SN管理，请填写SN码`)
           return
         }
@@ -2909,12 +2917,18 @@ const submitInbound = async () => {
           ElMessage.warning(`商品 ${product.productName} 请选择入库库位`)
           return
         }
+        const snKey = `${product.productId}|${product.pnCode || ''}|${snCode}`.toLowerCase()
+        if (seenSn.has(snKey)) {
+          ElMessage.warning(`SN码 ${snCode} 重复，请检查`)
+          return
+        }
+        seenSn.add(snKey)
         items.push({
           inboundItemId: product.inboundItemId,
           productId: product.productId,
           pnCode: product.pnCode || '',
           snId: snRow.snId || '',
-          snCode: snRow.snCode,
+          snCode,
           quantity: 1,
           locationId: snRow.locationId || '',
           remark: snRow.remark
@@ -2992,8 +3006,51 @@ const restoreInboundDraft = () => {
   if (!key) return
   const draft = loadDraft(key)
   if (!draft) return
-  executeProducts.value = Array.isArray(draft) ? draft : executeProducts.value
-  ElMessage.success('已恢复上次草稿')
+
+  if (!Array.isArray(draft)) return
+  const draftByItemId = new Map(draft
+    .filter(item => item?.inboundItemId)
+    .map(item => [String(item.inboundItemId), item]))
+  let changed = false
+
+  executeProducts.value = executeProducts.value.map(product => {
+    const saved = draftByItemId.get(String(product.inboundItemId))
+    if (!saved || String(saved.productId || '') !== String(product.productId || '')) return product
+
+    if (product.needSn) {
+      const expectedRows = Math.max(Number(product.quantity || 0), 0)
+      const savedRows = Array.isArray(saved.snRows) ? saved.snRows.slice(0, expectedRows) : []
+      if (savedRows.length !== expectedRows) changed = true
+      while (savedRows.length < expectedRows) {
+        savedRows.push({
+          snId: '',
+          snCode: '',
+          locationId: product.locationId || '',
+          remark: ''
+        })
+      }
+      return {
+        ...product,
+        pnCode: saved.pnCode || product.pnCode,
+        snRows: savedRows
+      }
+    }
+
+    const savedRows = Array.isArray(saved.qtyRows) && saved.qtyRows.length > 0
+      ? saved.qtyRows
+      : product.qtyRows
+    return {
+      ...product,
+      pnCode: saved.pnCode || product.pnCode,
+      qtyRows: savedRows
+    }
+  })
+
+  if (changed) {
+    ElMessage.warning('历史入库草稿行数与当前待入库数量不一致，已自动补齐输入行')
+  } else {
+    ElMessage.success('已恢复上次草稿')
+  }
 }
 
 const openReturnRequestDialog = (row) => {
