@@ -2572,6 +2572,22 @@ const api = {
     }
   },
 
+  approval: {
+    tasks(params = {}) {
+      return http.request('/approval/tasks' + toQuery(params));
+    },
+    instance(instanceId) {
+      return http.request('/approval/instances/' + encodeURIComponent(instanceId));
+    },
+    action(instanceId, data = {}) {
+      return http.request({
+        url: '/approval/instances/' + encodeURIComponent(instanceId) + '/action',
+        method: 'POST',
+        data
+      });
+    }
+  },
+
   report: {
     sales(params = {}) {
       return http.request('/report/sales' + toQuery(params));

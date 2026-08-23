@@ -13,8 +13,24 @@ const TYPE_CONFIG = {
   return: { label: '退库审批', className: 'return' },
   salesReturn: { label: '销售退单', className: 'return' },
   resource: { label: '资源套回', className: 'resource' },
-  profit: { label: '毛利调整', className: 'profit' }
+  profit: { label: '毛利调整', className: 'profit' },
+  generic: { label: '通用审批', className: 'generic' }
 };
+
+const APPROVAL_BUSINESS_TYPE_LABELS = {
+  sn_change: 'SN修改申请',
+  purchase: '采购审批',
+  expense: '报销审批',
+  product: '商品审批',
+  return: '退库审批',
+  sales_return: '销售退单',
+  resource: '资源套回',
+  profit: '毛利调整'
+};
+
+function approvalBusinessTypeLabel(type) {
+  return APPROVAL_BUSINESS_TYPE_LABELS[String(type || '').toLowerCase()] || String(type || '通用审批');
+}
 
 function listOf(result) {
   if (!result) return [];
@@ -192,12 +208,35 @@ function loadTaskDetails(task) {
   let detailPromise = Promise.resolve(null);
   if (task.type === 'sales') detailPromise = api.order.getDetails(task.businessId).catch(() => null);
   if (task.type === 'purchase') detailPromise = api.purchase.detail(task.businessId).catch(() => null);
+  if (task.type === 'generic' && task.instanceId) detailPromise = api.approval.instance(task.instanceId).catch(() => null);
 
   return detailPromise.then(detail => {
     const source = detailObject(detail);
     if (!source) return task;
 
     task.raw = Object.assign({}, task.raw, source);
+    if (task.type === 'generic') {
+      const instance = source.Instance || source.instance || source;
+      const businessType = instance.business_type || instance.businessType || task.raw.business_type || '';
+      const payload = parseObject(instance.payload);
+      task.typeLabel = approvalBusinessTypeLabel(businessType);
+      task.title = instance.title || task.title;
+      task.summary = instance.summary || payload.reason || task.summary;
+      task.applicant = payload.applicantName || task.applicant;
+      task.details = [
+        { label: '业务类型', value: approvalBusinessTypeLabel(businessType) },
+        { label: '审批节点', value: task.raw.node_name || task.raw.nodeName || task.stageText || '-' },
+        { label: '申请说明', value: payload.reason || instance.summary || '-' }
+      ];
+      if (businessType === 'sn_change') {
+        task.items = (Array.isArray(payload.items) ? payload.items : []).map(item => ({
+          name: item.productName || '库存商品',
+          meta: [item.pnCode, item.oldSnCode && `原SN ${item.oldSnCode}`, item.newSnCode && `新SN ${item.newSnCode}`].filter(Boolean).join(' / '),
+          quantity: 1,
+          amount: ''
+        }));
+      }
+    }
     const currentUser = userUtils.getUserInfo();
     if (['sales', 'purchase', 'product'].includes(task.type)) {
       task.organizationName = applicantOrganization(task.raw, currentUser);
@@ -506,6 +545,7 @@ Page({
     const append = page > 1;
     const roles = this.data.roles;
     const loaders = [
+      { type: 'generic', run: () => this.loadGenericTasks({ page, pageSize }) },
       { type: 'return', run: () => this.loadReturnTasks({ page, pageSize }) },
       { type: 'salesReturn', run: () => this.loadSalesReturnTasks({ page, pageSize }) }
     ];
@@ -567,11 +607,58 @@ Page({
     return this.loadApprovals({ page: this.data.approvalPage + 1, pageSize: APPROVAL_PAGE_SIZE });
   },
 
+  loadGenericTasks(options = {}) {
+    const history = Boolean(options.history);
+    const user = userUtils.getUserInfo();
+    const statuses = history
+      ? (this.data.historyStatus ? [this.data.historyStatus] : ['approved', 'rejected'])
+      : ['pending'];
+    return Promise.all(statuses.map(status => api.approval.tasks({ status }).catch(() => [])))
+      .then(results => {
+        const seen = new Set();
+        const rows = results.flatMap(result => listOf(result)).filter(row => {
+          const key = row.task_id || row.taskId || `${row.instance_id || row.instanceId}:${row.node_index || row.nodeIndex || 0}`;
+          if (!key || seen.has(String(key))) return false;
+          seen.add(String(key));
+          return true;
+        });
+        return rows.map(row => {
+          const instance = row.Instance || row.instance || {};
+          const businessType = instance.business_type || instance.businessType || row.business_type || '';
+          const createTime = row.create_time || row.createTime || instance.create_time || instance.createTime || '';
+          const task = taskBase('generic', Object.assign({}, row, { create_time: createTime }));
+          task.instanceId = row.instance_id || row.instanceId || instance.instance_id || instance.instanceId || '';
+          task.businessId = instance.business_id || instance.businessId || task.instanceId;
+          task.key = `generic:${task.instanceId || task.businessId}`;
+          task.no = instance.instance_no || instance.instanceNo || instance.business_id || task.businessId;
+          task.title = instance.title || approvalBusinessTypeLabel(businessType);
+          task.summary = instance.summary || '-';
+          task.typeLabel = approvalBusinessTypeLabel(businessType);
+          task.applicant = instance.applicant_name || instance.applicantName || '';
+          task.createTime = createTime;
+          task.createTimeText = formatTime(createTime);
+          task.sortTime = new Date(createTime || 0).getTime() || 0;
+          task.stageText = history ? historyStageText(row) : (row.node_name || row.nodeName || '待审批');
+          task.readOnly = history;
+          task.details = [
+            { label: '业务类型', value: approvalBusinessTypeLabel(businessType) },
+            { label: '审批节点', value: row.node_name || row.nodeName || '待审批' },
+            { label: '业务单号', value: instance.business_id || instance.businessId || '-' }
+          ];
+          task.raw = Object.assign({}, row, { Instance: instance, business_type: businessType });
+          return task;
+        }).map(task => history ? markHistoryTask(task, user) : task).filter(Boolean);
+      });
+  },
+
   updateTasks(tasks, failed) {
     const filters = [{ type: 'all', label: '全部', count: tasks.length }];
     Object.keys(TYPE_CONFIG).forEach(type => {
       const count = tasks.filter(task => task.type === type).length;
-      if (count) filters.push({ type, label: TYPE_CONFIG[type].label, count });
+      if (count) {
+        const firstTask = tasks.find(task => task.type === type);
+        filters.push({ type, label: firstTask && firstTask.typeLabel || TYPE_CONFIG[type].label, count });
+      }
     });
     const activeExists = filters.some(filter => filter.type === this.data.activeType);
     const activeType = activeExists ? this.data.activeType : 'all';
@@ -865,6 +952,7 @@ Page({
     const roles = this.data.roles || [];
     this.setData({ historyLoading: !append, historyLoadingMore: append });
     const loaders = [
+      { type: 'generic', run: () => this.loadGenericTasks({ history: true, page, pageSize }) },
       { type: 'return', run: () => this.loadReturnTasks({ history: true, page, pageSize }) },
       { type: 'salesReturn', run: () => this.loadSalesReturnTasks({ history: true, page, pageSize }) }
     ];
@@ -1338,6 +1426,12 @@ Page({
     }
     if (task.type === 'profit') {
       return api.report.reviewProfitAdjustment(task.businessId, action, comment);
+    }
+    if (task.type === 'generic') {
+      return api.approval.action(task.instanceId, {
+        action: action === 'approved' ? 'approve' : 'reject',
+        comment
+      });
     }
     return Promise.reject(new Error('不支持的审批类型'));
   }
