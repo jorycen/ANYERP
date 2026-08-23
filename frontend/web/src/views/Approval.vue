@@ -225,6 +225,21 @@ function moneyText(value, signed = false) {
   const prefix = signed && amount >= 0 ? '+' : ''
   return `${prefix}¥${amount.toFixed(2)}`
 }
+async function loadPurchaseApprovalRows() {
+  const params = { scope: 'review', page: 1, pageSize: 100 }
+  const responses = await Promise.all([
+    api.getPurchaseRequestList({ ...params, status: 'pending' }).catch(() => null),
+    api.getPurchaseRequestList({ ...params, status: 'pending_approval' }).catch(() => null)
+  ])
+  const rows = responses.flatMap(response => response ? responseList(response) : [])
+  const seen = new Set()
+  return rows.filter(row => {
+    const key = row.request_id || row.requestId || row.request_no || row.requestNo
+    if (!key || seen.has(String(key))) return false
+    seen.add(String(key))
+    return true
+  })
+}
 async function loadOtherApprovalTasks() {
   const loaders = [
     {
@@ -260,7 +275,7 @@ async function loadOtherApprovalTasks() {
   if (canReviewRole(['admin', 'purchaser'])) {
     loaders.push({
       type: 'purchase',
-      request: () => api.getPurchaseRequestList({ status: 'pending', scope: 'review', page: 1, pageSize: 100 }),
+      request: loadPurchaseApprovalRows,
       map: row => moduleTask('purchase', row, {
         id: row.request_id || row.requestId,
         no: row.request_no || row.requestNo,

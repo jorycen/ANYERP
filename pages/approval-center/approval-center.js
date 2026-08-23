@@ -675,8 +675,20 @@ Page({
     const history = Boolean(options.history);
     const { page, pageSize } = taskPageParams(options);
     const user = userUtils.getUserInfo();
-    return api.purchase.list({ status: historyStatusFor('purchase', history ? this.data.historyStatus : 'pending'), scope: history ? 'review' : '', page, pageSize })
-      .then(result => listOf(result).map(request => {
+    const requestedStatus = historyStatusFor('purchase', history ? this.data.historyStatus : 'pending');
+    const statuses = history ? [requestedStatus] : ['pending', 'pending_approval'];
+    return Promise.all(statuses.map(status => api.purchase.list({ status, scope: history ? 'review' : '', page, pageSize }).catch(() => null)))
+      .then(results => {
+        const seen = new Set();
+        return results.flatMap(result => result ? listOf(result) : [])
+          .filter(request => {
+            const key = request.request_id || request.requestId || request.request_no || request.requestNo;
+            if (!key || seen.has(String(key))) return false;
+            seen.add(String(key));
+            return true;
+          });
+      })
+      .then(requests => requests.map(request => {
         const task = taskBase('purchase', request);
         task.organizationName = applicantOrganization(request, user);
         task.organizationLabel = applicantOrganizationLabel(request, user);
