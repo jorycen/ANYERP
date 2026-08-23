@@ -146,11 +146,15 @@ const currentInstance = ref(null)
 const flowDialogVisible = ref(false)
 const assigneeOptions = reactive({ staff: [], roles: [], stores: [] })
 const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
-const roleCodes = computed(() => Array.isArray(userInfo.roles) && userInfo.roles.length
-  ? userInfo.roles
-  : String(userInfo.roleCode || '').split(',').map(role => role.trim()).filter(Boolean))
+const roleCodes = computed(() => {
+  const rawRoles = Array.isArray(userInfo.roles) && userInfo.roles.length
+    ? userInfo.roles
+    : String(userInfo.roleCode || userInfo.userRole || userInfo.role || '').split(',')
+  const roleAliases = { distributor: 'admin', system_admin: 'admin', store_admin: 'manager' }
+  return [...new Set(rawRoles.map(role => String(role || '').trim().toLowerCase()).filter(Boolean).map(role => roleAliases[role] || role))]
+})
 const canReviewSales = computed(() => roleCodes.value.some(role => ['boss', 'admin', 'manager'].includes(role)))
-const canConfigure = computed(() => (userInfo.roles || []).some(role => ['admin', 'boss'].includes(role)))
+const canConfigure = computed(() => roleCodes.value.some(role => ['admin', 'boss'].includes(role)))
 const flowForm = reactive({ definitionId: '', flowCode: '', name: '', businessType: '', nodes: [] })
 const mergedTasks = computed(() => {
   const genericTasks = tasks.value.map(row => ({ ...row, isSalesApproval: false }))
@@ -175,14 +179,14 @@ const mergedTasks = computed(() => {
 const newRule = () => ({ type: 'store_manager', staffId: '', roleCode: '', scope: 'subject_store' })
 const newNode = () => ({ name: '', signMode: 'serial', approvers: [newRule()] })
 
-async function loadTasks() { tasks.value = (await api.getApprovalTasks({ status: 'pending' })).data || [] }
+async function loadTasks() { tasks.value = responseList(await api.getApprovalTasks({ status: 'pending' })) }
 async function loadSalesTasks() {
   if (!canReviewSales.value) {
     salesTasks.value = []
     return
   }
   const response = await api.getSalesApprovalList({ page: 1, pageSize: 100 })
-  salesTasks.value = response.data?.list || []
+  salesTasks.value = responseList(response)
 }
 function responseList(response) {
   const payload = response?.data ?? response
@@ -256,7 +260,7 @@ async function loadOtherApprovalTasks() {
   if (canReviewRole(['admin', 'purchaser'])) {
     loaders.push({
       type: 'purchase',
-      request: () => api.getPurchaseRequestList({ status: 'pending_approval', scope: 'review', page: 1, pageSize: 100 }),
+      request: () => api.getPurchaseRequestList({ status: 'pending', scope: 'review', page: 1, pageSize: 100 }),
       map: row => moduleTask('purchase', row, {
         id: row.request_id || row.requestId,
         no: row.request_no || row.requestNo,
