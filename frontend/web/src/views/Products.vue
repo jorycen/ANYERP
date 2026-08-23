@@ -378,42 +378,39 @@
         <el-form-item label="商品名称">
           <span style="font-weight: 600; font-size: 14px;">{{ computedProductName || '（请填写补充字段）' }}</span>
         </el-form-item>
-        <el-form-item label="PN码" required>
-          <template v-if="productForm.productId">
-            <div class="text-muted" style="margin-bottom: 6px;">PN是商品主数据；下方“厂商编码 / 69码”是独立条码，删除条码不会删除PN。</div>
+        <el-form-item label="厂商编码 / PN" required>
+          <div class="text-muted" style="margin-bottom: 6px;">厂商编码就是PN，商品只在这里维护。69码属于独立条码；历史厂商编码仅用于清理，不再新增。</div>
+          <el-alert
+            v-if="pnLoadFailed"
+            type="error"
+            :closable="false"
+            title="PN主数据加载失败，已禁止保存，避免用旧厂商编码覆盖PN。请刷新后重试。"
+            style="margin-bottom: 8px;"
+          />
+          <div v-else style="width: 100%;">
+            <div v-for="(pn, index) in productForm.pns" :key="pn._key" style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+              <el-input v-model="pn.pnCode" placeholder="请输入厂商编码 / PN" style="flex: 1" clearable />
+              <el-tag v-if="productForm.needSn" type="success" size="small">SN唯一PN</el-tag>
+              <el-tag v-else-if="pn.isPrimary" type="success" size="small">主PN</el-tag>
+              <el-button v-else link type="primary" size="small" @click="setPrimaryPn(index)">设为主PN</el-button>
+              <el-button link type="danger" size="small" :disabled="productForm.pns.length <= 1" @click="removePnFromForm(index)">删除</el-button>
+            </div>
             <el-alert
-              v-if="pnLoadFailed"
-              type="error"
+              v-if="productForm.pns.length === 0"
+              type="warning"
               :closable="false"
-              title="PN主数据加载失败，已禁止使用厂商编码代替PN。请刷新后重试。"
+              title="当前商品没有有效厂商编码 / PN，请先添加。"
               style="margin-bottom: 8px;"
             />
-            <div v-else style="width: 100%;">
-              <div v-for="(pn, index) in productForm.pns" :key="pn._key" style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
-                <el-input v-model="pn.pnCode" placeholder="PN码" style="flex: 1" clearable />
-                <el-input v-model="pn.barcode" placeholder="PN条码（可选）" style="flex: 1" clearable />
-                <el-tag v-if="pn.isPrimary" type="success" size="small">主PN</el-tag>
-                <el-button v-else link type="primary" size="small" @click="setPrimaryPn(index)">设为主PN</el-button>
-                <el-button link type="danger" size="small" :disabled="productForm.pns.length <= 1" @click="removePnFromForm(index)">删除</el-button>
-              </div>
-              <el-alert
-                v-if="productForm.pns.length === 0"
-                type="warning"
-                :closable="false"
-                title="当前商品没有有效PN，请先添加PN后再保存。"
-                style="margin-bottom: 8px;"
-              />
-              <el-alert
-                v-else-if="productForm.needSn && productForm.pns.length > 1"
-                type="warning"
-                :closable="false"
-                title="SN商品只能保留一个有效PN；请删除多余PN后再保存。"
-                style="margin-bottom: 8px;"
-              />
-              <el-button type="primary" link size="small" @click="addPnToForm">+ 添加PN</el-button>
-            </div>
-          </template>
-          <el-input v-else v-model="productForm.pnCode" placeholder="请输入厂商PN码" clearable />
+            <el-alert
+              v-else-if="productForm.needSn && productForm.pns.length > 1"
+              type="warning"
+              :closable="false"
+              title="SN商品只能保留一个有效厂商编码 / PN；请删除多余编码后再保存。"
+              style="margin-bottom: 8px;"
+            />
+            <el-button v-if="!productForm.needSn" type="primary" link size="small" @click="addPnToForm">+ 添加厂商编码 / PN</el-button>
+          </div>
         </el-form-item>
         <el-form-item label="厂商商品名称">
           <el-input v-model="productForm.config" placeholder="厂商商品名称" />
@@ -443,21 +440,18 @@
           <el-input v-model="productForm.remark" type="textarea" rows="2" placeholder="详细配置信息" />
         </el-form-item>
 
-        <!-- 条码管理内嵌 -->
-        <el-divider content-position="left">厂商编码 / 69码</el-divider>
+        <!-- 69码及历史厂商编码清理 -->
+        <el-divider content-position="left">69码 / 历史厂商编码</el-divider>
         <div style="display: flex; gap: 10px; margin-bottom: 10px;">
-          <el-input v-model="formNewBarcode" placeholder="条码内容" style="width: 180px" @keyup.enter="addFormBarcode" />
-          <el-select v-model="formBarcodeType" style="width: 120px">
-            <el-option label="厂商编码" value="manufacturer" />
-            <el-option label="69码" value="barcode69" />
-          </el-select>
-          <el-button type="primary" @click="addFormBarcode">添加</el-button>
+          <el-input v-model="formNewBarcode" placeholder="请输入69码" style="width: 310px" @keyup.enter="addFormBarcode" />
+          <el-button type="primary" @click="addFormBarcode">添加69码</el-button>
         </div>
+        <div class="text-muted" style="margin-bottom: 8px;">厂商编码已经在上方PN区域维护。这里保留历史厂商编码，仅供删除旧数据使用。</div>
         <el-table :data="productForm.barcodes" stripe border size="small" max-height="200" v-if="productForm.barcodes.length > 0">
           <el-table-column label="类型" width="100">
             <template #default="{ row }">
-              <el-tag :type="row.type === 'manufacturer' ? '' : 'success'" size="small">
-                {{ row.type === 'manufacturer' ? '厂商编码' : '69码' }}
+              <el-tag :type="row.type === 'manufacturer' ? 'warning' : 'success'" size="small">
+                {{ row.type === 'manufacturer' ? '历史厂商编码' : '69码' }}
               </el-tag>
             </template>
           </el-table-column>
@@ -494,38 +488,6 @@
         <el-button @click="categoryDialogVisible = false">取消</el-button>
         <el-button type="primary" @click="handleSaveCategory" :loading="categorySaveLoading">保存</el-button>
       </template>
-    </el-dialog>
-
-    <!-- PN管理对话框 -->
-    <el-dialog v-model="pnDialogVisible" :title="`PN管理 - ${currentProduct?.name}`" width="700px">
-      <div class="filter-bar">
-        <el-input v-model="pnQueryParams.keyword" placeholder="PN码" clearable style="width: 200px" />
-        <el-button type="primary" @click="loadPnData">搜索</el-button>
-      </div>
-      <el-table :data="pnTableData" stripe border size="small" style="margin-top: 12px">
-        <el-table-column prop="pn_code" label="PN码" width="150" />
-        <el-table-column prop="barcode" label="条码" width="150" />
-        <el-table-column prop="is_primary" label="主PN" width="80">
-          <template #default="{ row }">
-            <el-tag :type="row.is_primary ? 'success' : 'info'" size="small">{{ row.is_primary ? '是' : '否' }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="90">
-          <template #default="{ row }">
-            <el-tag :type="Number(row.status) === 1 && Number(row.is_deleted) === 0 ? 'success' : 'info'" size="small">
-              {{ Number(row.status) === 1 && Number(row.is_deleted) === 0 ? '有效' : '已停用' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-      </el-table>
-      <div class="add-pn-bar" style="margin-top: 16px;">
-        <el-button type="primary" size="small" @click="showAddPnForm = !showAddPnForm">添加PN</el-button>
-        <div v-if="showAddPnForm" style="display: flex; gap: 10px; margin-top: 8px;">
-          <el-input v-model="newPnCode" placeholder="PN码" style="width: 150px" />
-          <el-input v-model="newPnBarcode" placeholder="条码" style="width: 150px" />
-          <el-button type="primary" size="small" @click="handleAddPn">确认</el-button>
-        </div>
-      </div>
     </el-dialog>
 
     <!-- 批量导入对话框 -->
@@ -736,7 +698,6 @@ const submitLoading = ref(false)
 const currentProduct = ref(null)
 const pnLoadFailed = ref(false)
 const formNewBarcode = ref('')
-const formBarcodeType = ref('manufacturer')
 const categoryFields = ref([])
 const categoryFieldCatName = ref('')
 
@@ -773,12 +734,21 @@ const createFormPn = (pn = {}) => ({
   _key: pn._key || `pn-${Date.now()}-${pnFormKeySeed++}`,
   pnId: pn.pnId || pn.pn_id || '',
   pnCode: String(pn.pnCode ?? pn.pn_code ?? '').trim(),
-  barcode: String(pn.barcode || '').trim(),
   isPrimary: pn.isPrimary === true || Number(pn.isPrimary ?? pn.is_primary) === 1
 })
 
 const addPnToForm = () => {
   productForm.pns.push(createFormPn({ isPrimary: productForm.pns.length === 0 }))
+}
+
+const ensureCreatePnRow = () => {
+  if (!Array.isArray(productForm.pns)) productForm.pns = []
+  if (productForm.pns.length === 0) {
+    productForm.pns.push(createFormPn({
+      pnCode: productForm.pnCode || '',
+      isPrimary: true
+    }))
+  }
 }
 
 const removePnFromForm = (index) => {
@@ -794,10 +764,11 @@ const setPrimaryPn = (index) => {
 const addFormBarcode = () => {
   const code = String(formNewBarcode.value || '').trim()
   if (!code) { ElMessage.warning('请输入条码'); return }
-  productForm.barcodes.push({ type: formBarcodeType.value, code })
-  if (formBarcodeType.value === 'manufacturer' && !productForm.pnCode) {
-    productForm.pnCode = code
+  if (productForm.barcodes.some(item => item.type === 'barcode69' && String(item.code || '').trim().toLowerCase() === code.toLowerCase())) {
+    ElMessage.warning('该69码已存在')
+    return
   }
+  productForm.barcodes.push({ type: 'barcode69', code })
   formNewBarcode.value = ''
 }
 const removeFormBarcode = (index) => { productForm.barcodes.splice(index, 1) }
@@ -899,6 +870,7 @@ const handleCreate = async () => {
   dialogTitle.value = '新建商品'
   resetForm()
   restoreProductDraft()
+  ensureCreatePnRow()
   if (productForm.categoryId) {
     await onCategoryChange(productForm.categoryId)
   }
@@ -1088,7 +1060,6 @@ const resetForm = () => {
   categoryFields.value = []
   categoryFieldCatName.value = ''
   formNewBarcode.value = ''
-  formBarcodeType.value = 'manufacturer'
   currentProduct.value = null
 }
 
@@ -1097,8 +1068,7 @@ const handleDialogClose = () => { resetForm() }
 const saveProductDraft = () => {
   saveDraft(productDraftKey(), {
     productForm: cloneDraft(productForm),
-    formNewBarcode: formNewBarcode.value,
-    formBarcodeType: formBarcodeType.value
+    formNewBarcode: formNewBarcode.value
   })
   ElMessage.success('草稿已保存')
 }
@@ -1113,11 +1083,10 @@ const restoreProductDraft = () => {
   } else if (!Array.isArray(productForm.pns)) {
     productForm.pns = []
   }
-  productForm.pnCode = productForm.pnCode || productForm.barcodes.find(item => item.type === 'manufacturer')?.code || ''
+  productForm.pnCode = productForm.pnCode || productForm.pns.find(item => item.isPrimary)?.pnCode || ''
   productForm.attributes = draft.productForm.attributes || {}
   productForm.extras = draft.productForm.extras || {}
   formNewBarcode.value = draft.formNewBarcode || ''
-  formBarcodeType.value = draft.formBarcodeType || 'manufacturer'
   ElMessage.success('已恢复上次草稿')
 }
 
@@ -1132,29 +1101,27 @@ const handleSubmit = async () => {
     ElMessage.warning('PN主数据尚未加载成功，请刷新后重试')
     return
   }
-  if (isEditing && (!Array.isArray(productForm.pns) || productForm.pns.length === 0)) {
-    ElMessage.warning('请至少保留一个PN码'); return
+  if (!Array.isArray(productForm.pns) || productForm.pns.length === 0) {
+    ElMessage.warning('请至少填写一个厂商编码 / PN'); return
   }
-  const pnEntries = isEditing
-    ? productForm.pns.map(pn => ({
-        pnId: pn.pnId,
-        pnCode: String(pn.pnCode || '').trim(),
-        barcode: String(pn.barcode || '').trim(),
-        isPrimary: Boolean(pn.isPrimary)
-      }))
-    : []
-  if (isEditing && pnEntries.some(pn => !pn.pnCode)) {
-    ElMessage.warning('PN码不能为空'); return
+  const pnEntries = productForm.pns.map(pn => ({
+    pnId: pn.pnId,
+    pnCode: String(pn.pnCode || '').trim(),
+    isPrimary: Boolean(pn.isPrimary)
+  }))
+  if (pnEntries.some(pn => !pn.pnCode)) {
+    ElMessage.warning('厂商编码 / PN不能为空'); return
   }
-  if (isEditing && new Set(pnEntries.map(pn => pn.pnCode.toLowerCase().replace(/\s+/g, ''))).size !== pnEntries.length) {
-    ElMessage.warning('PN码不能重复'); return
+  if (new Set(pnEntries.map(pn => pn.pnCode.toLowerCase().replace(/\s+/g, ''))).size !== pnEntries.length) {
+    ElMessage.warning('厂商编码 / PN不能重复'); return
   }
-  if (isEditing && !pnEntries.some(pn => pn.isPrimary)) {
+  if (productForm.needSn && pnEntries.length > 1) {
+    ElMessage.warning('SN商品只能维护一个厂商编码 / PN'); return
+  }
+  if (!pnEntries.some(pn => pn.isPrimary)) {
     pnEntries[0].isPrimary = true
   }
-  const pnCode = String(
-    (isEditing ? pnEntries.find(pn => pn.isPrimary)?.pnCode : productForm.pnCode) || ''
-  ).trim()
+  const pnCode = String(pnEntries.find(pn => pn.isPrimary)?.pnCode || '').trim()
   if (!pnCode) { ElMessage.warning('请输入PN码'); return }
   submitLoading.value = true
   try {
@@ -1163,9 +1130,6 @@ const handleSubmit = async () => {
       if (v !== undefined && v !== null && v !== '') attributes[k] = v
     }
     const barcodes = [...productForm.barcodes]
-    if (!isEditing && !barcodes.some(item => item.type === 'manufacturer' && String(item.code || '').trim() === pnCode)) {
-      barcodes.unshift({ type: 'manufacturer', code: pnCode })
-    }
     const data = {
       name: finalName,
       categoryId: productForm.categoryId || null,
@@ -1179,7 +1143,7 @@ const handleSubmit = async () => {
       isFocusProduct: productForm.isFocusProduct,
       status: productForm.status,
       barcodes,
-      ...(isEditing ? { pns: pnEntries } : {}),
+      pns: pnEntries,
       attributes: Object.keys(attributes).length > 0 ? attributes : null,
     }
     let res
@@ -1528,29 +1492,6 @@ const handleCostImportSubmit = async () => {
   } finally {
     costImportLoading.value = false
   }
-}
-
-// ========== PN管理 ==========
-const pnDialogVisible = ref(false); const pnTableData = ref([])
-const showAddPnForm = ref(false); const newPnCode = ref(''); const newPnBarcode = ref('')
-const pnQueryParams = reactive({ keyword: '', productId: '', includeDeleted: 1 })
-
-const handlePnManage = async (row) => {
-  currentProduct.value = row; pnQueryParams.productId = row.product_id
-  pnQueryParams.keyword = ''; showAddPnForm.value = false; newPnCode.value = ''; newPnBarcode.value = ''
-  await loadPnData(); pnDialogVisible.value = true
-}
-const loadPnData = async () => {
-  try { const res = await api.getPnList(pnQueryParams); if (res.code === 0) pnTableData.value = res.data?.list || [] }
-  catch (err) { ElMessage.error('加载PN失败') }
-}
-const handleAddPn = async () => {
-  if (!newPnCode.value) { ElMessage.warning('请输入PN码'); return }
-  try {
-    const res = await api.addPn({ productId: currentProduct.value.product_id, pnCode: newPnCode.value, barcode: newPnBarcode.value })
-    if (res.code === 0) { ElMessage.success('添加成功'); newPnCode.value = ''; newPnBarcode.value = ''; showAddPnForm.value = false; loadPnData() }
-    else ElMessage.error(res.message || '添加失败')
-  } catch (err) { ElMessage.error(err?.response?.data?.message || '添加失败') }
 }
 
 // ========== 批量导入 ==========

@@ -186,7 +186,6 @@
                     size="small"
                     clearable
                     filterable
-                    allow-create
                     style="width: 100%"
                     :loading="row.pnLoading"
                     @change="onPnChange($index)"

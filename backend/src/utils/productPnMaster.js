@@ -89,7 +89,7 @@ async function ensureProductPnMaster({ productId, pnCode, transaction = null, is
     return record;
   }
   return ProductPn.create({
-    pn_id: generateUUID(), product_id: productId, pn_code: code, barcode: code,
+    pn_id: generateUUID(), product_id: productId, pn_code: code, barcode: null,
     is_primary: isPrimary ? 1 : 0, status: 1, is_deleted: 0
   }, { transaction });
 }
@@ -144,7 +144,7 @@ async function ensureProductPnsMaster({ productId, codes, transaction = null }) 
       pn_id: generateUUID(),
       product_id: productId,
       pn_code: code,
-      barcode: code,
+      barcode: null,
       is_primary: existingForProduct.length === 0 && ensured.length === 0 ? 1 : 0,
       status: 1,
       is_deleted: 0
@@ -185,9 +185,9 @@ async function syncProductPnsMaster({ productId, pns, transaction = null }) {
     }
     seen.add(key);
     entries.push({
+      pnId: String(item?.pnId ?? item?.pn_id ?? '').trim(),
       code,
       key,
-      barcode: item?.barcode === undefined ? undefined : String(item.barcode || '').trim(),
       isPrimary: item?.isPrimary === true || Number(item?.isPrimary) === 1
     });
   }
@@ -208,9 +208,11 @@ async function syncProductPnsMaster({ productId, pns, transaction = null }) {
     transaction
   });
   const existingByKey = new Map();
+  const existingById = new Map();
   for (const row of existingRows) {
     const key = normalizePnCode(row.pn_code);
     if (key && !existingByKey.has(key)) existingByKey.set(key, row);
+    existingById.set(String(row.pn_id), row);
   }
 
   const primaryIndex = entries.findIndex(entry => entry.isPrimary);
@@ -225,23 +227,28 @@ async function syncProductPnsMaster({ productId, pns, transaction = null }) {
 
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
+    const existingBySubmittedId = entry.pnId ? existingById.get(entry.pnId) : null;
+    if (entry.pnId && (!existingBySubmittedId || String(existingBySubmittedId.product_id) !== productKey)) {
+      throw Object.assign(new Error(`PN记录 [${entry.pnId}] 不属于当前商品`), { status: 400 });
+    }
+    const existing = existingBySubmittedId || existingByKey.get(entry.key);
     const sameCodeRows = await ProductPn.findAll({
       where: { [Op.and]: [pnCodeWhere(entry.code)] },
       transaction
     });
-    const conflict = sameCodeRows.find(row => String(row.product_id) !== productKey);
+    const conflict = sameCodeRows.find(row => String(row.pn_id) !== String(existing?.pn_id || ''));
     if (conflict) {
-      throw createPnConflictError(entry.code);
+      if (String(conflict.product_id) !== productKey) throw createPnConflictError(entry.code);
+      throw Object.assign(new Error(`PN码 [${entry.code}] 在当前商品中重复`), { status: 400, code: 'PN_DUPLICATE' });
     }
 
-    const existing = existingByKey.get(entry.key);
     const updateData = {
       pn_code: entry.code,
+      barcode: null,
       status: 1,
       is_deleted: 0,
       is_primary: index === selectedPrimaryIndex ? 1 : 0
     };
-    if (entry.barcode !== undefined) updateData.barcode = entry.barcode || entry.code;
 
     const record = existing
       ? await existing.update(updateData, { transaction })
@@ -249,7 +256,7 @@ async function syncProductPnsMaster({ productId, pns, transaction = null }) {
           pn_id: generateUUID(),
           product_id: productId,
           pn_code: entry.code,
-          barcode: entry.barcode || entry.code,
+          barcode: null,
           is_primary: index === selectedPrimaryIndex ? 1 : 0,
           status: 1,
           is_deleted: 0

@@ -117,6 +117,7 @@ async function storeAccessMiddleware(ctx, next) {
     '/api/v1/store/readable',
     '/api/v1/inventory/list',
     '/api/v1/inventory/list/export',
+    '/api/v1/inventory/summary-export',
     '/api/v1/inventory/sn-inventory-list',
     '/api/v1/inventory/sn-inventory-list/export',
     '/api/v1/inventory/sn-list',
@@ -133,7 +134,8 @@ async function storeAccessMiddleware(ctx, next) {
   // 经销商级账号的库存汇总按直接配置的区域读取，不能再用旧的门店权限列表拦截。
   if (ctx.method === 'GET' &&
       (ctx.path === '/api/v1/inventory/list' ||
-       ctx.path === '/api/v1/inventory/list/export') &&
+       ctx.path === '/api/v1/inventory/list/export' ||
+       ctx.path === '/api/v1/inventory/summary-export') &&
       isDealerTraceAccount(user)) {
     return next();
   }

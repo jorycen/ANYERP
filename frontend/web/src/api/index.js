@@ -259,6 +259,7 @@ export default {
   // Inventory
   getInventoryList: (params) => api.get('/inventory/list', { params }),
   exportInventoryList: (params) => exportExcel('/inventory/list/export', params, `库存汇总_${new Date().toISOString().slice(0, 10)}.xlsx`),
+  exportInventorySummary: (params) => exportExcel('/inventory/summary-export', params, `库存简表_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getSnInventoryList: (params) => api.get('/inventory/sn-inventory-list', { params }),
   exportSnInventoryList: (params) => exportExcel('/inventory/sn-inventory-list/export', params, `SN库存清单_${new Date().toISOString().slice(0, 10)}.xlsx`),
   setSnSpecialPrice: (snId, data) => api.put(`/inventory/sn/${snId}/special-price`, data),

@@ -1327,6 +1327,23 @@ function buildStoreInventoryExportRows(productRows) {
     || Number(a._store_product_index || 0) - Number(b._store_product_index || 0));
 }
 
+function buildInventorySummaryExportRows(productRows, primaryPnMap = new Map(), categoryRankMap = new Map()) {
+  return [...productRows]
+    .sort((a, b) => {
+      const categoryCompare = Number(categoryRankMap.get(a.product_id) ?? 4)
+        - Number(categoryRankMap.get(b.product_id) ?? 4);
+      if (categoryCompare !== 0) return categoryCompare;
+      return String(a.product_name || '').localeCompare(String(b.product_name || ''), 'zh-Hans-CN')
+        || String(a.product_id || '').localeCompare(String(b.product_id || ''));
+    })
+    .map(row => ({
+      产品名称: row.product_name || '',
+      PN: primaryPnMap.get(row.product_id) || '',
+      定价: Number(row.standard_price || 0),
+      库存: Number(row.normal_qty || 0)
+    }));
+}
+
 /**
  * 库存聚合列表 - 按商品汇总，显示5种库存数量
  */
@@ -1337,6 +1354,7 @@ async function getList(ctx) {
     } = ctx.query;
     const user = ctx.state.user;
     const exportMode = Boolean(ctx.state.inventoryExportMode);
+    const summaryExportMode = Boolean(ctx.state.inventorySummaryExportMode);
 
     const transferScope = isTransferScope(ctx);
 
@@ -1408,6 +1426,10 @@ async function getList(ctx) {
         special_sn_count: specialProductMap[product.product_id] || 0
       }, modelFilter);
     });
+    const categoryRankMap = new Map(products.map(product => [
+      product.product_id,
+      getInventoryCategoryRank(product.category, product.accessory_type, product.name, product.config)
+    ]));
     const count = products.length;
     const productIds = products.map(p => p.product_id);
     const allStockMap = await buildSalesStockMap(productIds, storeId, storeIds);
@@ -1626,6 +1648,30 @@ async function getList(ctx) {
 
     const exportRows = sortedRows.map(({ _category_rank, _create_time, ...row }) => row);
 
+    if (summaryExportMode) {
+      const primaryPnRows = exportRows.length > 0
+        ? await ProductPn.findAll({
+          where: {
+            product_id: { [Op.in]: exportRows.map(row => row.product_id) },
+            is_primary: 1,
+            status: 1,
+            is_deleted: 0
+          },
+          attributes: ['product_id', 'pn_code', 'pn_id'],
+          order: [['pn_id', 'ASC']],
+          raw: true
+        })
+        : [];
+      const primaryPnMap = new Map();
+      primaryPnRows.forEach(row => {
+        if (!primaryPnMap.has(row.product_id)) primaryPnMap.set(row.product_id, row.pn_code || '');
+      });
+      const data = buildInventorySummaryExportRows(exportRows, primaryPnMap, categoryRankMap);
+      sendExcel(ctx, data, ['产品名称', 'PN', '定价', '库存'],
+        `库存简表_${new Date().toISOString().slice(0, 10)}.xlsx`, '库存简表');
+      return;
+    }
+
     if (exportMode) {
       const storeExportRows = buildStoreInventoryExportRows(exportRows);
       const data = storeExportRows.map(row => ({
@@ -1673,6 +1719,11 @@ async function getList(ctx) {
 
 async function exportList(ctx) {
   ctx.state.inventoryExportMode = true;
+  return getList(ctx);
+}
+
+async function exportSummaryList(ctx) {
+  ctx.state.inventorySummaryExportMode = true;
   return getList(ctx);
 }
 
@@ -5646,6 +5697,7 @@ async function getLocationsByStore(ctx) {
 module.exports = {
   getList,
   exportList,
+  exportSummaryList,
   getSnInventoryList,
   exportSnInventoryList,
   setSnSpecialPrice,
@@ -5709,6 +5761,7 @@ module.exports = {
     matchesInventoryModelFilter,
     compareInventoryModelRows,
     buildStoreInventoryExportRows,
+    buildInventorySummaryExportRows,
     buildInventoryProductKeywordConditions,
     purchaseInitiatorName,
     resolveInboundInitiator,

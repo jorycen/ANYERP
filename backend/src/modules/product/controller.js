@@ -560,12 +560,15 @@ async function resolveProductApplicationName(body) {
 }
 
 function resolveProductApplicationPnCode(body = {}) {
+  const submittedPns = Array.isArray(body.pns) ? body.pns : [];
   const directCandidates = [
     body.pnCode,
     body.pn_code,
     body.pn,
     body.manufacturerCode,
-    body.manufacturer_code
+    body.manufacturer_code,
+    submittedPns.find(item => item?.isPrimary === true || Number(item?.isPrimary) === 1)?.pnCode,
+    submittedPns[0]?.pnCode ?? submittedPns[0]?.pn_code
   ];
   for (const candidate of directCandidates) {
     const code = splitPnCodes(candidate).find(item => isUsablePnCode(item));
@@ -616,9 +619,15 @@ function productApplicationPayload(body, finalName, parsedAttrs) {
   const submittedBarcodes = Array.isArray(body.barcodes)
     ? body.barcodes.map(item => ({ type: item.type || 'manufacturer', code: item.code || '' })).filter(item => item.code)
     : [];
+  const submittedPns = Array.isArray(body.pns)
+    ? body.pns.map(item => ({
+        pnCode: item?.pnCode ?? item?.pn_code ?? '',
+        isPrimary: item?.isPrimary === true || Number(item?.isPrimary) === 1
+      })).filter(item => String(item.pnCode || '').trim())
+    : [];
   const pnCode = resolveProductApplicationPnCode(body);
-  if (pnCode && !submittedBarcodes.some(item => String(item.code) === pnCode)) {
-    submittedBarcodes.unshift({ type: 'manufacturer', code: pnCode });
+  if (submittedPns.length === 0 && pnCode) {
+    submittedPns.push({ pnCode, isPrimary: true });
   }
   // 标签照片随商品申请保存在 payload_json 中，审批列表接口会原样返回该字段。
   // 兼容小程序历史版本使用的 Id/Url 及蛇形命名，避免照片在提交申请时被丢弃。
@@ -629,6 +638,7 @@ function productApplicationPayload(body, finalName, parsedAttrs) {
     categoryId: body.categoryId || null,
     pnCode,
     manufacturerCode: pnCode || body.manufacturerCode || body.manufacturer_code || '',
+    pns: submittedPns,
     config: body.config || '',
     needSn: body.needSn ? 1 : 0,
     needImei: body.needImei ? 1 : 0,
@@ -647,7 +657,8 @@ function productApplicationPayload(body, finalName, parsedAttrs) {
 async function createProductRecord(body, transaction = null) {
   const {
     name, categoryId, config, needSn, needImei, unit, remark, barcodes, attributes,
-    status = 1, manufacturerCode, manufacturer_code, isFocusProduct, is_focus_product,
+    status = 1, manufacturerCode, manufacturer_code, pns,
+    isFocusProduct, is_focus_product,
     isUsedProduct, is_used_product
   } = body;
   const productId = generateUUID();
@@ -657,7 +668,16 @@ async function createProductRecord(body, transaction = null) {
 
   const { cols, extras } = splitAttributes(parsedAttrs);
 
-  const manufacturerCodes = getManufacturerCodes(barcodes, manufacturerCode || manufacturer_code);
+  const submittedPns = Array.isArray(pns)
+    ? pns.map(item => ({
+        pnId: item?.pnId ?? item?.pn_id ?? '',
+        pnCode: item?.pnCode ?? item?.pn_code ?? '',
+        isPrimary: item?.isPrimary === true || Number(item?.isPrimary) === 1
+      })).filter(item => isUsablePnCode(item.pnCode))
+    : [];
+  const manufacturerCodes = submittedPns.length > 0
+    ? splitPnCodes(submittedPns.map(item => item.pnCode))
+    : getManufacturerCodes(barcodes, manufacturerCode || manufacturer_code);
   let lastError;
   let productCode = '';
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -715,7 +735,11 @@ async function createProductRecord(body, transaction = null) {
     }
   }
 
-  await ensureProductPns(productId, manufacturerCodes, transaction);
+  if (submittedPns.length > 0) {
+    await syncProductPnsMaster({ productId, pns: submittedPns, transaction });
+  } else {
+    await ensureProductPns(productId, manufacturerCodes, transaction);
+  }
 
   return { productId, productCode, productName: finalName };
 }
@@ -1055,7 +1079,6 @@ async function updateProduct(ctx) {
           productId,
           pns: nextCodes.map((code, index) => ({
             pnCode: code,
-            barcode: code,
             isPrimary: index === 0
           })),
           transaction
@@ -2537,8 +2560,8 @@ async function addPn(ctx) {
     const rows = await ensureProductPns(productId, [cleanedPnCode], transaction);
     const pnRecord = rows[0];
     pnId = pnRecord?.pn_id || null;
-    if (barcode !== undefined && pnRecord) {
-      await pnRecord.update({ barcode: String(barcode || '').trim(), is_primary: isPrimary ? 1 : pnRecord.is_primary }, { transaction });
+    if (pnRecord) {
+      await pnRecord.update({ barcode: null, is_primary: isPrimary ? 1 : pnRecord.is_primary }, { transaction });
     }
     await product.update({ manufacturer_code: appendCode(product.manufacturer_code, cleanedPnCode) }, { transaction });
     await transaction.commit();

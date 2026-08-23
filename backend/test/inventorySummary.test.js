@@ -163,3 +163,25 @@ test('inventory export expands one product into store rows and keeps store-speci
     ['重庆门店', 2, 5]
   ]);
 });
+
+test('inventory summary export keeps only primary PN and sorts by inventory category', () => {
+  const rows = _test.buildInventorySummaryExportRows([
+    { product_id: 'other', product_name: '其他', standard_price: 10, normal_qty: 1 },
+    { product_id: 'computer', product_name: '电脑', standard_price: 20, normal_qty: 2 },
+    { product_id: 'accessory', product_name: '配件', standard_price: 30, normal_qty: 3 }
+  ], new Map([
+    ['computer', 'PN-C'],
+    ['accessory', 'PN-A'],
+    ['other', 'PN-O']
+  ]), new Map([
+    ['computer', 0],
+    ['accessory', 3],
+    ['other', 4]
+  ]));
+
+  assert.deepEqual(rows, [
+    { 产品名称: '电脑', PN: 'PN-C', 定价: 20, 库存: 2 },
+    { 产品名称: '配件', PN: 'PN-A', 定价: 30, 库存: 3 },
+    { 产品名称: '其他', PN: 'PN-O', 定价: 10, 库存: 1 }
+  ]);
+});

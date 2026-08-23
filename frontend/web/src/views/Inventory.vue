@@ -27,6 +27,7 @@
             </el-select>
             <el-button type="primary" @click="loadSummary">查询</el-button>
             <el-button type="success" :loading="summaryExporting" @click="handleExportSummary">导出</el-button>
+            <el-button type="warning" :loading="summarySimpleExporting" @click="handleExportSummarySimple">导出库存简表</el-button>
           </div>
           <div class="model-filter-panel">
             <span class="model-filter-label">机型分类</span>
@@ -759,13 +760,12 @@
             <span class="item-location">库位：{{ item.locationName || '未指定库位' }}</span>
           </div>
 
-          <!-- PN厂商编码选择 -->
+          <!-- PN厂商编码选择：只允许选择商品主数据中的PN -->
           <div class="pn-select-row">
             <span class="pn-label">厂商编码：</span>
-            <el-select v-model="item.pnCode" placeholder="选择或输入厂商编码" size="small" clearable filterable allow-create style="width: 220px">
+            <el-select v-model="item.pnCode" placeholder="选择商品已有厂商编码 / PN" size="small" clearable filterable style="width: 260px">
               <el-option v-for="pn in (item.pns || [])" :key="pn.pn_id || pn.pn_code" :label="pn.pn_code" :value="pn.pn_code" />
             </el-select>
-            <el-button size="small" type="primary" link @click="openAddPnDialog(item)">新增</el-button>
           </div>
 
           <!-- SN商品：每行一个SN -->
@@ -860,22 +860,6 @@
         <el-button @click="executeInboundVisible = false">取消</el-button>
         <el-button type="info" @click="saveInboundDraft">保存草稿</el-button>
         <el-button type="primary" @click="submitInbound" :loading="inboundLoading">确认入库</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 新增PN对话框 -->
-    <el-dialog v-model="addPnVisible" title="新增厂商编码" width="420px">
-      <el-form label-width="80px">
-        <el-form-item label="商品">
-          <el-input :model-value="addPnTarget?.productName || ''" disabled />
-        </el-form-item>
-        <el-form-item label="厂商编码">
-          <el-input v-model="addPnPnCode" placeholder="请输入新的厂商编码" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="addPnVisible = false">取消</el-button>
-        <el-button type="primary" @click="confirmAddPn">确认新增</el-button>
       </template>
     </el-dialog>
 
@@ -1331,7 +1315,9 @@
               <el-option v-for="item in conversionTargetOptions" :key="item.product_id" :label="item.name || item.product_name || item.product_id" :value="item.product_id" />
             </el-select>
             <el-input v-if="selectedConversionTargetProduct?.need_sn === 1" v-model="conversionTargetAdd.snCode" placeholder="目标SN" style="width: 180px" />
-            <el-input v-model="conversionTargetAdd.pnCode" placeholder="PN" style="width: 150px" />
+            <el-select v-model="conversionTargetAdd.pnCode" placeholder="选择目标PN" clearable filterable style="width: 170px">
+              <el-option v-for="pn in (selectedConversionTargetProduct?.manufacturer_codes || [])" :key="pn" :label="pn" :value="pn" />
+            </el-select>
             <el-input-number v-if="selectedConversionTargetProduct?.need_sn !== 1" v-model="conversionTargetAdd.quantity" :min="1" :precision="0" style="width: 110px" />
             <el-input-number v-model="conversionTargetAdd.unitCost" :min="0" :precision="2" :controls="false" placeholder="请输入商品价格" style="width: 130px" />
             <el-button @click="openConversionProductDialog">新建商品</el-button>
@@ -1487,6 +1473,9 @@
         <el-form-item label="商品简称">
           <el-input v-model="conversionProductForm.customName" placeholder="如需覆盖自动拼装名称，请在此输入" size="small" style="width: 300px;" />
         </el-form-item>
+        <el-form-item label="厂商编码 / PN" required>
+          <el-input v-model="conversionProductForm.pnCode" placeholder="请输入新商品的厂商编码 / PN" clearable />
+        </el-form-item>
         <el-form-item label="厂商商品名称">
           <el-input v-model="conversionProductForm.config" placeholder="厂商商品名称" />
         </el-form-item>
@@ -1511,20 +1500,16 @@
           <el-input v-model="conversionProductForm.remark" type="textarea" rows="2" placeholder="详细配置信息" />
         </el-form-item>
 
-        <el-divider content-position="left">厂商编码 / 69码</el-divider>
+        <el-divider content-position="left">69码</el-divider>
         <div style="display: flex; gap: 10px; margin-bottom: 10px;">
-          <el-input v-model="conversionProductNewBarcode" placeholder="条码内容" style="width: 180px" @keyup.enter="addConversionProductBarcode" />
-          <el-select v-model="conversionProductBarcodeType" style="width: 120px">
-            <el-option label="厂商编码" value="manufacturer" />
-            <el-option label="69码" value="barcode69" />
-          </el-select>
-          <el-button type="primary" @click="addConversionProductBarcode">添加</el-button>
+          <el-input v-model="conversionProductNewBarcode" placeholder="请输入69码" style="width: 310px" @keyup.enter="addConversionProductBarcode" />
+          <el-button type="primary" @click="addConversionProductBarcode">添加69码</el-button>
         </div>
         <el-table :data="conversionProductForm.barcodes" stripe border size="small" max-height="200" v-if="conversionProductForm.barcodes.length > 0">
           <el-table-column label="类型" width="100">
             <template #default="{ row }">
-              <el-tag :type="row.type === 'manufacturer' ? '' : 'success'" size="small">
-                {{ row.type === 'manufacturer' ? '厂商编码' : '69码' }}
+              <el-tag type="success" size="small">
+                69码
               </el-tag>
             </template>
           </el-table-column>
@@ -1745,6 +1730,7 @@ const summaryData = ref([])
 const summaryTotal = ref(0)
 const summaryLoading = ref(false)
 const summaryExporting = ref(false)
+const summarySimpleExporting = ref(false)
 const summaryHasSearched = ref(false)
 const inventoryProductTypeOptions = [
   { label: '电脑', value: 'computer' },
@@ -1873,9 +1859,6 @@ const executeInboundVisible = ref(false)
 const inboundLoading = ref(false)
 const executeProducts = ref([])
 const inboundLocations = ref([])
-const addPnVisible = ref(false)
-const addPnTarget = ref(null)
-const addPnPnCode = ref('')
 
 const INVENTORY_TYPES = [
   { value: 'normal_qty', label: '销售仓' },
@@ -2003,7 +1986,6 @@ const conversionProductCategoryTree = ref([])
 const conversionProductCategoryFields = ref([])
 const conversionProductCategoryFieldName = ref('')
 const conversionProductNewBarcode = ref('')
-const conversionProductBarcodeType = ref('manufacturer')
 const conversionQuery = reactive({
   page: 1,
   pageSize: 20,
@@ -2049,6 +2031,7 @@ const conversionProductForm = reactive({
   needImei: false,
   remark: '',
   status: 1,
+  pnCode: '',
   barcodes: [],
   attributes: {},
   customName: ''
@@ -2856,45 +2839,6 @@ const allocatedQty = (item) => {
   return (item.qtyRows || []).reduce((sum, r) => sum + (parseInt(r.quantity) || 0), 0)
 }
 
-const openAddPnDialog = (item) => {
-  addPnTarget.value = item
-  addPnPnCode.value = ''
-  addPnVisible.value = true
-}
-
-const confirmAddPn = async () => {
-  const target = addPnTarget.value
-  if (!addPnPnCode.value.trim()) {
-    ElMessage.warning('请输入厂商编码')
-    return
-  }
-  if (!target || !target.productId) {
-    ElMessage.warning('商品信息异常，请关闭后重试')
-    return
-  }
-  try {
-    const res = await api.addPn({
-      productId: target.productId,
-      pnCode: addPnPnCode.value.trim()
-    })
-    if (res.code === 0) {
-      ElMessage.success('厂商编码添加成功')
-      const newPn = { pn_id: res.pnId || '', pn_code: addPnPnCode.value.trim() }
-      if (!target.pns) target.pns = []
-      target.pns.push(newPn)
-      if (!target.pnCode) {
-        target.pnCode = newPn.pn_code
-      }
-      addPnVisible.value = false
-    } else {
-      ElMessage.error(res.message || '添加失败')
-    }
-  } catch (err) {
-    const msg = err.response?.data?.message || err.message || '添加失败'
-    ElMessage.error(msg)
-  }
-}
-
 const submitInbound = async () => {
   const items = []
   const seenSn = new Set()
@@ -3050,6 +2994,18 @@ const restoreInboundDraft = () => {
     ElMessage.warning('历史入库草稿行数与当前待入库数量不一致，已自动补齐输入行')
   } else {
     ElMessage.success('已恢复上次草稿')
+  }
+}
+
+const handleExportSummarySimple = async () => {
+  summarySimpleExporting.value = true
+  try {
+    await api.exportInventorySummary({ ...summaryQuery })
+    ElMessage.success('库存简表导出成功')
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '库存简表导出失败')
+  } finally {
+    summarySimpleExporting.value = false
   }
 }
 
@@ -4031,13 +3987,13 @@ const resetConversionProductForm = () => {
   conversionProductForm.needImei = false
   conversionProductForm.remark = ''
   conversionProductForm.status = 1
+  conversionProductForm.pnCode = ''
   conversionProductForm.barcodes = []
   conversionProductForm.attributes = {}
   conversionProductForm.customName = ''
   conversionProductCategoryFields.value = []
   conversionProductCategoryFieldName.value = ''
   conversionProductNewBarcode.value = ''
-  conversionProductBarcodeType.value = 'manufacturer'
 }
 
 const openConversionProductDialog = async () => {
@@ -4049,10 +4005,14 @@ const openConversionProductDialog = async () => {
 const addConversionProductBarcode = () => {
   const code = conversionProductNewBarcode.value.trim()
   if (!code) {
-    ElMessage.warning('请输入条码')
+    ElMessage.warning('请输入69码')
     return
   }
-  conversionProductForm.barcodes.push({ type: conversionProductBarcodeType.value, code })
+  if (conversionProductForm.barcodes.some(item => String(item.code || '').trim().toLowerCase() === code.toLowerCase())) {
+    ElMessage.warning('该69码已存在')
+    return
+  }
+  conversionProductForm.barcodes.push({ type: 'barcode69', code })
   conversionProductNewBarcode.value = ''
 }
 
@@ -4060,6 +4020,10 @@ const buildConversionProductPayload = () => {
   const finalName = conversionProductName.value
   if (!finalName) {
     ElMessage.warning('请填写商品属性或商品简称')
+    return null
+  }
+  if (!conversionProductForm.pnCode.trim()) {
+    ElMessage.warning('请输入厂商编码 / PN')
     return null
   }
 
@@ -4078,6 +4042,9 @@ const buildConversionProductPayload = () => {
     unit: conversionProductForm.unit,
     needSn: conversionProductForm.needSn ? 1 : 0,
     needImei: conversionProductForm.needImei ? 1 : 0,
+    pnCode: conversionProductForm.pnCode.trim(),
+    manufacturerCode: conversionProductForm.pnCode.trim(),
+    pns: [{ pnCode: conversionProductForm.pnCode.trim(), isPrimary: true }],
     remark: conversionProductForm.remark,
     status: conversionProductForm.status,
     barcodes: conversionProductForm.barcodes,
@@ -4110,15 +4077,12 @@ const submitConversionProduct = async () => {
         return
       }
       const productId = res.productId || res.data?.productId
-      const manufacturerCode = data.barcodes
-        .filter(item => item.type === 'manufacturer' && item.code)
-        .map(item => item.code)
-        .join(', ')
       await selectNewConversionTargetProduct(productId, {
         product_id: productId,
         name: data.name,
         product_name: data.name,
-        manufacturer_code: manufacturerCode,
+        manufacturer_code: data.pnCode,
+        manufacturer_codes: [data.pnCode],
         need_sn: data.needSn ? 1 : 0,
         cost_price: 0
       })
@@ -4167,7 +4131,7 @@ const onConversionSourceSnChange = () => {
 
 const onConversionTargetProductChange = () => {
   const product = selectedConversionTargetProduct.value
-  conversionTargetAdd.pnCode = product?.manufacturer_code ? String(product.manufacturer_code).split(/[,，\s]+/)[0] : ''
+  conversionTargetAdd.pnCode = product?.manufacturer_codes?.[0] || ''
   conversionTargetAdd.snCode = ''
   conversionTargetAdd.quantity = 1
   conversionTargetAdd.unitCost = roundMoney(product?.cost_price || 0)
@@ -4249,6 +4213,10 @@ const addConversionTargetItem = () => {
   }
   if (product.need_sn === 1 && !conversionTargetAdd.snCode.trim()) {
     ElMessage.warning('目标商品需要录入SN')
+    return
+  }
+  if (!conversionTargetAdd.pnCode) {
+    ElMessage.warning('请选择目标商品已有的厂商编码 / PN')
     return
   }
 
