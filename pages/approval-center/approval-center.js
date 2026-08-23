@@ -297,11 +297,15 @@ function flattenProductCategories(result) {
 }
 
 function fallbackRoles(user) {
-  if (Array.isArray(user.roles) && user.roles.length) return user.roles;
-  if (user.roleCode) return String(user.roleCode).split(',').filter(Boolean);
-  if (user.userRole === 'distributor') return ['admin'];
-  if (user.userRole === 'store_admin') return ['manager'];
-  return ['clerk'];
+  const rawRoles = Array.isArray(user.roles) && user.roles.length
+    ? user.roles
+    : String(user.roleCode || user.userRole || user.role || '').split(',');
+  const roleAliases = { distributor: 'admin', system_admin: 'admin', store_admin: 'manager' };
+  const roles = rawRoles
+    .map(role => String(role || '').trim().toLowerCase())
+    .filter(Boolean)
+    .map(role => roleAliases[role] || role);
+  return Array.from(new Set(roles.length ? roles : ['clerk']));
 }
 
 function hasAnyRole(roles, allowed) {
