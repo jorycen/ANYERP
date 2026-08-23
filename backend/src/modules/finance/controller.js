@@ -772,6 +772,13 @@ async function getExpenseDetail(ctx) {
   ctx.body = { code: 0, data: record.toJSON() };
 }
 
+function assertPurchaseExpenseReviewAllowed(action, sourceType, purchase) {
+  // 采购被拒后，关联的采购垫付报销仍必须能够走“拒绝”结案；
+  // 只有报销通过时才要求采购申请已经通过。
+  if (action !== 'approved' || sourceType !== 'purchase') return;
+  if (!purchase || purchase.status !== 'approved') throw new Error('关联采购申请尚未审批通过');
+}
+
 async function reviewExpense(ctx) {
   const user = ctx.state.user;
   const { action, comment } = ctx.request.body;
@@ -781,7 +788,11 @@ async function reviewExpense(ctx) {
   if (record.status !== 'pending_approval') ctx.throw(400, '当前报销单不可审批');
   if (record.source_type === 'purchase') {
     const purchase = await PurchaseRequest.findByPk(record.source_id);
-    if (!purchase || purchase.status !== 'approved') ctx.throw(400, '关联采购申请尚未审批通过');
+    try {
+      assertPurchaseExpenseReviewAllowed(action, record.source_type, purchase);
+    } catch (error) {
+      ctx.throw(400, error.message);
+    }
   }
 
   await sequelize.transaction(async transaction => {
@@ -1392,6 +1403,7 @@ module.exports = {
   getExpenseList,
   exportExpenseList,
   getExpenseDetail,
+  assertPurchaseExpenseReviewAllowed,
   reviewExpense,
   cancelExpense,
   submitExpense,
