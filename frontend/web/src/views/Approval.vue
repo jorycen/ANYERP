@@ -12,7 +12,7 @@
             <el-table-column label="当前节点" width="160"><template #default="{ row }">{{ taskNode(row) }}</template></el-table-column>
             <el-table-column label="业务类型" width="150"><template #default="{ row }">{{ taskBusinessType(row) }}</template></el-table-column>
             <el-table-column label="申请编号" width="190"><template #default="{ row }">{{ taskNo(row) }}</template></el-table-column>
-            <el-table-column label="最终毛利" width="120"><template #default="{ row }"><span v-if="row.isSalesApproval" class="negative-profit">{{ formatProfit(row.salesRow.grossProfitSnapshot?.gross_profit_amount) }}</span><span v-else>-</span></template></el-table-column>
+            <el-table-column label="金额/毛利" width="120"><template #default="{ row }"><span :class="{ 'negative-profit': row.isSalesApproval }">{{ taskAmount(row) }}</span></template></el-table-column>
             <el-table-column label="提交时间" width="180"><template #default="{ row }">{{ taskCreateTime(row) }}</template></el-table-column>
             <el-table-column label="操作" width="220" fixed="right">
               <template #default="{ row }">
@@ -20,6 +20,11 @@
                   <el-button link type="primary" @click="openSales(row.salesRow)">查看</el-button>
                   <el-button link type="success" @click="reviewSales(row.salesRow, 'approve')">通过</el-button>
                   <el-button link type="danger" @click="reviewSales(row.salesRow, 'reject')">拒绝</el-button>
+                </template>
+                <template v-else-if="row.isModuleApproval">
+                  <el-button link type="primary" @click="openModule(row)">查看</el-button>
+                  <el-button link type="success" @click="reviewModule(row, 'approve')">通过</el-button>
+                  <el-button link type="danger" @click="reviewModule(row, 'reject')">拒绝</el-button>
                 </template>
                 <template v-else>
                   <el-button link type="primary" @click="openInstance(row.instance_id)">查看</el-button>
@@ -133,6 +138,7 @@ const syncTabFromRoute = () => {
 const loading = ref(false)
 const tasks = ref([])
 const salesTasks = ref([])
+const moduleTasks = ref([])
 const instances = ref([])
 const flows = ref([])
 const detailVisible = ref(false)
@@ -161,7 +167,7 @@ const mergedTasks = computed(() => {
       summary: '归档前最终毛利为负'
     }
   }))
-  return genericTasks.concat(salesApprovalTasks).sort((left, right) => (
+  return genericTasks.concat(salesApprovalTasks, moduleTasks.value).sort((left, right) => (
     new Date(taskCreateTime(right)).getTime() - new Date(taskCreateTime(left)).getTime()
   ))
 })
@@ -178,13 +184,173 @@ async function loadSalesTasks() {
   const response = await api.getSalesApprovalList({ page: 1, pageSize: 100 })
   salesTasks.value = response.data?.list || []
 }
+function responseList(response) {
+  const payload = response?.data ?? response
+  if (Array.isArray(payload)) return payload
+  return payload?.list || payload?.rows || payload?.items || payload?.records || []
+}
+function canReviewRole(allowedRoles) {
+  return roleCodes.value.includes('boss') || roleCodes.value.some(role => allowedRoles.includes(role))
+}
+function moduleTask(type, row, fields) {
+  const id = fields.id
+  if (!id) return null
+  const no = fields.no || id
+  const createTime = fields.createTime || row.create_time || row.createTime || ''
+  return {
+    isModuleApproval: true,
+    moduleType: type,
+    moduleRow: row,
+    instance_id: `${type}:${id}`,
+    node_name: fields.node || '待审批',
+    create_time: createTime,
+    amountText: fields.amountText || '-',
+    Instance: {
+      title: fields.title || no,
+      business_type: type,
+      instance_no: no,
+      business_id: id,
+      create_time: createTime,
+      summary: fields.summary || '-'
+    }
+  }
+}
+function moneyText(value, signed = false) {
+  const amount = Number(value || 0)
+  if (!Number.isFinite(amount)) return '-'
+  const prefix = signed && amount >= 0 ? '+' : ''
+  return `${prefix}¥${amount.toFixed(2)}`
+}
+async function loadOtherApprovalTasks() {
+  const loaders = [
+    {
+      type: 'return',
+      request: () => api.getReturnList({ status: 'pending', scope: 'review', page: 1, pageSize: 100 }),
+      map: row => moduleTask('return', row, {
+        id: row.return_id || row.returnId,
+        no: row.return_no || row.returnNo,
+        title: row.supplier_name || row.supplierName || '退库申请',
+        summary: `原入库单 ${row.inbound_no || row.inboundNo || '-'}，共 ${row.total_quantity || row.totalQuantity || 0} 件`,
+        amountText: moneyText(row.total_amount || row.totalAmount),
+        node: '退库审批'
+      })
+    },
+    {
+      type: 'sales_return',
+      request: () => api.getSalesReturnRequests({ status: 'pending', scope: 'review', page: 1, pageSize: 100 }),
+      map: row => {
+        const stage = row.approval_stage || row.approvalStage || 'pending_store'
+        if (stage === 'pending_distributor' && !canReviewRole(['admin'])) return null
+        if (stage !== 'pending_distributor' && !canReviewRole(['admin', 'manager'])) return null
+        return moduleTask('sales_return', row, {
+          id: row.return_id || row.returnId || row.id,
+          no: row.return_no || row.returnNo,
+          title: row.customer_name || row.customerName || '销售退单申请',
+          summary: `原订单 ${row.order_no || row.orderNo || '-'}，退款 ${moneyText(row.refund_amount || row.refundAmount || row.total_amount || row.totalAmount)}`,
+          amountText: moneyText(row.refund_amount || row.refundAmount || row.total_amount || row.totalAmount),
+          node: stage === 'pending_distributor' ? '经销商审批' : '店长审批'
+        })
+      }
+    }
+  ]
+  if (canReviewRole(['admin', 'purchaser'])) {
+    loaders.push({
+      type: 'purchase',
+      request: () => api.getPurchaseRequestList({ status: 'pending_approval', scope: 'review', page: 1, pageSize: 100 }),
+      map: row => moduleTask('purchase', row, {
+        id: row.request_id || row.requestId,
+        no: row.request_no || row.requestNo,
+        title: row.supplier_name || row.supplierName || '采购申请',
+        summary: row.items_summary || '采购商品明细',
+        amountText: moneyText(row.total_amount || row.totalAmount),
+        node: '采购审批'
+      })
+    })
+  }
+  if (canReviewRole(['admin'])) {
+    loaders.push({
+      type: 'expense',
+      request: () => api.getExpenseList({ status: 'pending_approval', scope: 'review', page: 1, pageSize: 100 }),
+      map: row => moduleTask('expense', row, {
+        id: row.expense_id || row.expenseId,
+        no: row.expense_no || row.expenseNo,
+        title: `${row.expense_type || '费用'} · ${row.expense_party || '-'}`,
+        summary: row.source_type === 'purchase' ? `采购个人垫付 ${row.source_no || ''}` : `${row.region_name || row.store_name || ''} 费用报销`,
+        amountText: moneyText(row.amount),
+        node: '报销审批'
+      })
+    })
+  }
+  if (canReviewRole(['admin', 'finance', 'purchaser'])) {
+    loaders.push({
+      type: 'product',
+      request: () => api.getProductApplicationList({ status: 'pending', scope: 'review', page: 1, pageSize: 100 }),
+      map: row => moduleTask('product', row, {
+        id: row.application_id || row.applicationId,
+        no: row.application_no || row.applicationNo,
+        title: row.product_name || row.productName || '新建商品审批',
+        summary: `${row.category_name || '未分类'} · 商品信息审批`,
+        node: '商品审批'
+      })
+    })
+  }
+  if (canReviewRole(['finance'])) {
+    loaders.push({
+      type: 'resource',
+      request: () => api.getResourceClaimList({ approvalStatus: 'pending_finance', scope: 'review', page: 1, pageSize: 100 }),
+      map: row => moduleTask('resource', row, {
+        id: row.change_id || row.changeId,
+        no: row.change_order_no || row.changeOrderNo,
+        title: `${row.resource_type || '资源'}套回`,
+        summary: `SN ${row.sn_code || '-'}，套回金额 ${moneyText(row.change_amount)}`,
+        amountText: moneyText(row.change_amount),
+        node: '财务审批'
+      })
+    })
+  }
+  if (canReviewRole(['admin', 'finance'])) {
+    loaders.push({
+      type: 'profit',
+      request: () => api.getProfitAdjustments({ scope: 'review', page: 1, pageSize: 100 }),
+      map: row => moduleTask('profit', row, {
+        id: row.adjustment_id || row.adjustmentId,
+        no: row.adjustment_no || row.adjustmentNo,
+        title: `${row.employee_name || '员工'}业绩毛利调整`,
+        summary: `订单 ${row.order_no || '-'}，调整 ${moneyText(row.signed_amount, true)}`,
+        amountText: moneyText(row.signed_amount, true),
+        node: row.status === 'pending_admin' ? '管理员复审' : '财务初审'
+      })
+    })
+  }
+  const groups = await Promise.all(loaders.map(async loader => {
+    try {
+      return responseList(await loader.request()).map(loader.map).filter(Boolean)
+    } catch (error) {
+      console.warn(`加载${loader.type}审批失败:`, error)
+      return []
+    }
+  }))
+  moduleTasks.value = groups.flat()
+}
 async function loadInstances() { instances.value = (await api.getApprovalInstances({ scope: 'mine' })).data || [] }
 async function loadFlows() { if (canConfigure.value) flows.value = (await api.getApprovalFlows()).data || [] }
 async function loadOptions() { if (canConfigure.value) Object.assign(assigneeOptions, (await api.getApprovalAssigneeOptions()).data || {}) }
-async function reload() { loading.value = true; try { await Promise.all([loadTasks(), loadSalesTasks(), loadInstances(), loadFlows(), loadOptions()]) } finally { loading.value = false } }
+async function reload() { loading.value = true; try { await Promise.all([loadTasks(), loadSalesTasks(), loadOtherApprovalTasks(), loadInstances(), loadFlows(), loadOptions()]) } finally { loading.value = false } }
 
 function statusText(value) { return ({ pending: '审批中', approved: '已通过', rejected: '已拒绝' }[value] || value || '-') }
-function businessTypeText(value) { return ({ sn_change: 'SN修改申请', sales_negative_gross_profit: '销售负毛利' }[value] || value || '-') }
+function businessTypeText(value) {
+  return ({
+    sn_change: 'SN修改申请',
+    sales_negative_gross_profit: '销售负毛利',
+    purchase: '采购审批',
+    expense: '报销审批',
+    product: '商品审批',
+    return: '退库审批',
+    sales_return: '销售退单',
+    resource: '资源套回',
+    profit: '毛利调整'
+  }[value] || value || '-')
+}
 function statusType(value) { return ({ pending: 'warning', approved: 'success', rejected: 'danger' }[value] || 'info') }
 function taskStatusText(value) { return ({ pending: '待审批', waiting: '等待中', approved: '已通过', rejected: '已拒绝', cancelled: '已取消' }[value] || value) }
 function formatMoney(value) { return Number(value || 0).toFixed(2) }
@@ -194,8 +360,24 @@ function taskNode(row) { return row.isSalesApproval ? '负毛利归档审批' : 
 function taskBusinessType(row) { return businessTypeText(row.isSalesApproval ? 'sales_negative_gross_profit' : row.Instance?.business_type) }
 function taskNo(row) { return row.isSalesApproval ? row.salesRow?.order_no || '-' : row.Instance?.instance_no || '-' }
 function taskCreateTime(row) { return row.isSalesApproval ? row.salesRow?.create_time || '-' : row.create_time || row.Instance?.create_time || '-' }
+function taskAmount(row) {
+  if (row.isSalesApproval) return formatProfit(row.salesRow?.grossProfitSnapshot?.gross_profit_amount)
+  return row.amountText || '-'
+}
 async function openInstance(id) { currentInstance.value = (await api.getApprovalInstance(id)).data; detailVisible.value = true }
 function openSales(row) { router.push({ name: 'Sales', query: { orderId: row.order_id } }) }
+function openModule(row) {
+  currentInstance.value = {
+    title: taskTitle(row),
+    status: 'pending',
+    instance_no: taskNo(row),
+    business_type: taskBusinessType(row),
+    business_id: row.Instance?.business_id || '-',
+    summary: row.Instance?.summary || '-',
+    Tasks: []
+  }
+  detailVisible.value = true
+}
 async function reviewSales(row, action) {
   let comment = ''
   if (action === 'reject') {
@@ -210,6 +392,43 @@ async function reviewSales(row, action) {
     await reload()
   } catch (error) {
     ElMessage.error(error.response?.data?.message || error.message || '销售审批处理失败')
+  }
+}
+async function reviewModule(row, action) {
+  let comment = ''
+  if (action === 'reject') {
+    const result = await ElMessageBox.prompt('请输入拒绝原因', '拒绝审批', { inputType: 'textarea' }).catch(() => null)
+    if (!result) return
+    comment = result.value
+  } else if (!(await ElMessageBox.confirm('确认通过该审批？', '审批确认', { type: 'warning' }).catch(() => false))) return
+
+  const moduleRow = row.moduleRow || {}
+  const approved = action === 'approve' ? 'approved' : 'rejected'
+  const id = row.Instance?.business_id
+  try {
+    if (row.moduleType === 'purchase') await api.approvePurchaseRequest(id, { status: approved, comment })
+    else if (row.moduleType === 'expense') await api.reviewExpense(id, { action: approved, comment })
+    else if (row.moduleType === 'product') await api.reviewProductApplication(id, { action: approved, comment })
+    else if (row.moduleType === 'return') await api.approveReturn({ returnId: id, storeId: moduleRow.store_id || moduleRow.storeId || '', action: approved, comment })
+    else if (row.moduleType === 'sales_return') await api.reviewSalesReturn(id, {
+      action: approved,
+      comment,
+      postToDailyStatement: action === 'approve',
+      post_to_daily_statement: action === 'approve',
+      createNegativeDailyStatement: action === 'approve',
+      create_negative_daily_statement: action === 'approve',
+      reviewerRole: userInfo.roleCode || '',
+      reviewerId: userInfo.staffId || userInfo.userId || ''
+    })
+    else if (row.moduleType === 'resource') await api.reviewResourceClaim(id, { action: action === 'approve' ? 'approve' : 'reject', comment })
+    else if (row.moduleType === 'profit') {
+      if (action === 'approve') await api.approveProfitAdjustment(id, { comment })
+      else await api.rejectProfitAdjustment(id, { comment })
+    } else throw new Error('不支持的审批类型')
+    ElMessage.success(action === 'approve' ? '审批通过' : '审批已拒绝')
+    await reload()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || error.message || '审批处理失败')
   }
 }
 async function review(row, action) {

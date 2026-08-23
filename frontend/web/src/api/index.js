@@ -270,6 +270,7 @@ export default {
   snTrace: (snCode, params) => api.get(`/inventory/sn-trace/${encodeURIComponent(snCode)}`, { params }),
   getSnTraceInboundDetail: (inboundId) => api.get(`/inventory/sn-trace-inbound/${encodeURIComponent(inboundId)}`),
   getResourceRights: (params) => api.get('/inventory/resource-rights', { params }),
+  getResourceClaimList: (params) => api.get('/inventory/resource-rights/changes', { params }),
   getSnResourceRights: (snId) => api.get(`/inventory/sn/${snId}/resource-rights`),
   saveSnResourceRights: (snId, data) => api.put(`/inventory/sn/${snId}/resource-rights`, data),
   getResourceRightChanges: (params) => api.get('/inventory/resource-rights/changes', { params }),
