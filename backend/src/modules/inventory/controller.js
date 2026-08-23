@@ -847,6 +847,20 @@ function getSalesInventoryQty(inv) {
 
 const INVENTORY_QUANTITY_FIELDS = ['normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty', 'rental_demo_qty'];
 
+function isSalesWarehouseLocation(locationType) {
+  return String(locationType || '').trim() === 'normal_qty';
+}
+
+function isInStockSalesWarehouseSn(sn, location) {
+  return String(sn?.status || '').trim() === 'in_stock'
+    && isSalesWarehouseLocation(location?.type);
+}
+
+function getSalesWarehouseInventoryQty(inv, locationType) {
+  if (!isSalesWarehouseLocation(locationType)) return 0;
+  return getSalesInventoryQty(getInventoryQuantitySnapshot(inv, locationType));
+}
+
 function normalizeInventoryQuantityField(value) {
   return INVENTORY_QUANTITY_FIELDS.includes(String(value || '').trim())
     ? String(value).trim()
@@ -1010,7 +1024,7 @@ async function buildSalesStockMap(productIds, storeId = '', scopedStoreIds = [])
       stockMap[productId] = { current: 0, other: 0, total: 0, stores: [], currentStore: null, otherStores: [] };
     }
 
-    const qty = getSalesInventoryQty(getInventoryQuantitySnapshot(inv, locationTypeMap.get(inv.location_id)));
+    const qty = getSalesWarehouseInventoryQty(inv, locationTypeMap.get(inv.location_id));
     if (qty <= 0) continue;
 
     const storeRow = {
@@ -1468,6 +1482,7 @@ async function getList(ctx) {
       }
     }
 
+    const snSalesStockMap = {};
     if (productIds.length > 0) {
       const snRows = await ProductSn.findAll({
         where: {
@@ -1476,18 +1491,49 @@ async function getList(ctx) {
           is_deleted: 0,
           store_id: { [Op.in]: storeIds }
         },
-        attributes: ['sn_id', 'product_id', 'store_id', 'location_id', 'tax_type'],
+        attributes: ['sn_id', 'product_id', 'store_id', 'location_id', 'status', 'tax_type'],
         raw: true
       });
       const snResourceSummaryMap = snRows.length ? await summariesForSns(snRows) : new Map();
       const snLocationMap = {};
       for (const sn of snRows) {
+        const location = sn.location_id ? locationMap.get(sn.location_id) : null;
+        if (!isInStockSalesWarehouseSn(sn, location)) continue;
+
+        if (!snSalesStockMap[sn.product_id]) {
+          snSalesStockMap[sn.product_id] = {
+            current: 0,
+            other: 0,
+            total: 0,
+            stores: [],
+            currentStore: null,
+            otherStores: []
+          };
+        }
+        const snStock = snSalesStockMap[sn.product_id];
+        const storeRowKey = `${sn.store_id || ''}`;
+        let stockStore = snStock.stores.find(row => String(row.store_id || '') === storeRowKey);
+        if (!stockStore) {
+          stockStore = {
+            store_id: sn.store_id || '',
+            store_name: allStoreMap.get(sn.store_id) || sn.store_id || '未知门店',
+            normal_qty: 0,
+            is_current: Boolean(storeId && sn.store_id === storeId)
+          };
+          snStock.stores.push(stockStore);
+        }
+        stockStore.normal_qty += 1;
+        snStock.total += 1;
+        if (storeId && sn.store_id === storeId) {
+          snStock.current += 1;
+          snStock.currentStore = stockStore;
+        } else {
+          snStock.other += 1;
+          if (!snStock.otherStores.includes(stockStore)) snStock.otherStores.push(stockStore);
+        }
+
         const key = `${sn.store_id || ''}|${sn.location_id || ''}`;
         if (!snLocationMap[sn.product_id]) snLocationMap[sn.product_id] = {};
-        const location = sn.location_id ? locationMap.get(sn.location_id) : null;
-        const inventoryType = INVENTORY_QUANTITY_FIELDS.includes(location?.type)
-          ? location.type
-          : (INVENTORY_QUANTITY_FIELDS.includes(sn.inventory_type) ? sn.inventory_type : 'normal_qty');
         if (!snLocationMap[sn.product_id][key]) {
           snLocationMap[sn.product_id][key] = {
             store_id: sn.store_id || '',
@@ -1505,7 +1551,7 @@ async function getList(ctx) {
             rental_demo_qty: 0
           };
         }
-        snLocationMap[sn.product_id][key][inventoryType] += 1;
+        snLocationMap[sn.product_id][key].normal_qty += 1;
         const resourceQuantity = getSnSalesResourceQuantitySnapshot(sn, snResourceSummaryMap.get(sn.sn_id));
         snLocationMap[sn.product_id][key].full_resource_qty += resourceQuantity.full_resource_qty;
         snLocationMap[sn.product_id][key].subsidy_only_qty += resourceQuantity.subsidy_only_qty;
@@ -1524,7 +1570,9 @@ async function getList(ctx) {
       const inv = invMap[p.product_id] || {
         normal_qty: 0, regular_qty: 0, subsidy_qty: 0, second_qty: 0, display_qty: 0, demo_qty: 0, unsellable_qty: 0, pending_qty: 0, rental_demo_qty: 0
       };
-      const stock = allStockMap[p.product_id] || { current: 0, other: 0, total: 0, stores: [], otherStores: [] };
+      const stock = Number(p.need_sn) === 1
+        ? (snSalesStockMap[p.product_id] || { current: 0, other: 0, total: 0, stores: [], otherStores: [] })
+        : (allStockMap[p.product_id] || { current: 0, other: 0, total: 0, stores: [], otherStores: [] });
       const sales = salesMap[p.product_id] || {
         sales_7_qty: 0, sales_30_qty: 0, sales_7_amount: 0, gross_profit_7: 0, avg_gross_profit_7: 0, max_gross_profit_7: 0, gross_margin_7: 0
       };
@@ -5647,6 +5695,9 @@ module.exports = {
     validateSnLocationAdjustment,
     validateSalesReturnInboundSn,
     getInventoryQuantitySnapshot,
+    isSalesWarehouseLocation,
+    isInStockSalesWarehouseSn,
+    getSalesWarehouseInventoryQty,
     normalizeInventoryQuantityField,
     getSnInventoryMoveFields,
     getTransferableInventoryQuantity,

@@ -52,6 +52,35 @@ test('inventory summary keeps rental demo stock separate and non-sale', () => {
   assert.equal(snapshot.normal_qty, 0);
 });
 
+test('inventory summary only treats the sales warehouse as store stock', () => {
+  assert.equal(_test.isSalesWarehouseLocation('normal_qty'), true);
+  assert.equal(_test.isSalesWarehouseLocation('display_qty'), false);
+  assert.equal(_test.isSalesWarehouseLocation(''), false);
+
+  assert.equal(_test.getSalesWarehouseInventoryQty({ normal_qty: 3 }, 'normal_qty'), 3);
+  assert.equal(_test.getSalesWarehouseInventoryQty({ normal_qty: 3 }, 'display_qty'), 0);
+  assert.equal(_test.getSalesWarehouseInventoryQty({ normal_qty: 3 }, ''), 0);
+});
+
+test('inventory summary only counts in-stock SN in the sales warehouse', () => {
+  assert.equal(_test.isInStockSalesWarehouseSn(
+    { status: 'in_stock' },
+    { type: 'normal_qty' }
+  ), true);
+  assert.equal(_test.isInStockSalesWarehouseSn(
+    { status: 'reserved' },
+    { type: 'normal_qty' }
+  ), false);
+  assert.equal(_test.isInStockSalesWarehouseSn(
+    { status: 'in_stock' },
+    { type: 'display_qty' }
+  ), false);
+  assert.equal(_test.isInStockSalesWarehouseSn(
+    { status: 'in_stock' },
+    null
+  ), false);
+});
+
 test('inventory summary splits sales stock by resource type', () => {
   const snapshot = _test.getSalesResourceQuantitySnapshot({
     normal_qty: 7,
