@@ -1421,13 +1421,16 @@ const handleRoleMenus = async (row) => {
   currentRole.value = row
   menuDialogVisible.value = true
   await nextTick()
+  // 对话框复用同一个树实例，切换角色前先清空上一个角色的选中状态。
+  menuTreeRef.value?.setCheckedKeys([])
   try {
     const res = await api.getRoleMenus(row.role_id)
-    if (res.code === 0) {
-      menuTreeRef.value?.setCheckedKeys(res.data || [])
-    }
+    const menuIds = Array.isArray(res)
+      ? res
+      : (Array.isArray(res?.data) ? res.data : [])
+    menuTreeRef.value?.setCheckedKeys(menuIds.map(menuId => String(menuId)))
   } catch (err) {
-    console.error('Failed to load role menus')
+    ElMessage.error(err.response?.data?.message || '加载角色权限失败')
   }
 }
 
@@ -1544,10 +1547,10 @@ const handleScopeDialogSubmit = async () => {
 }
 
 const handleMenuSubmit = async () => {
-  const checkedKeys = [
+  const checkedKeys = [...new Set([
     ...(menuTreeRef.value?.getCheckedKeys(false) || []),
     ...(menuTreeRef.value?.getHalfCheckedKeys() || [])
-  ]
+  ].map(menuId => String(menuId)))]
   submitLoading.value = true
   try {
     const res = await api.assignMenus(currentRole.value.role_id, {

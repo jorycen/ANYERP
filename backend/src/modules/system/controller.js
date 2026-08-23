@@ -315,9 +315,14 @@ async function getRoleMenus(ctx) {
   const { roleId } = ctx.params;
   const roleMenus = await RoleMenu.findAll({
     where: { role_id: roleId },
-    attributes: ['menu_id']
+    attributes: ['menu_id'],
+    raw: true
   });
-  ctx.body = roleMenus.map(rm => rm.menu_id);
+  ctx.body = {
+    code: 0,
+    message: 'success',
+    data: roleMenus.map(rm => String(rm.menu_id))
+  };
 }
 
 /**
@@ -347,7 +352,7 @@ async function assignMenus(ctx) {
     }
   });
 
-  ctx.body = { message: '权限分配成功' };
+  ctx.body = { code: 0, message: '权限分配成功' };
 }
 
 /**
