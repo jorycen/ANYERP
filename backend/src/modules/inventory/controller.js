@@ -1231,6 +1231,22 @@ function getInventoryProductType(category, accessoryType, name, config) {
   return '';
 }
 
+const INVENTORY_SUMMARY_CATEGORY_KEYWORDS = [
+  ['笔记本', ['笔记本', 'laptop']],
+  ['平板', ['平板', 'pad', 'ipad', 'tablet']],
+  ['手机', ['手机', 'iphone', 'phone']],
+  ['台机', ['台机', '台式机', '台式电脑', '一体机', '主机', 'desktop']],
+  ['配件', ['配件']]
+];
+
+function getInventorySummaryCategoryRank(category) {
+  const categoryText = String(category || '').toLowerCase();
+  const matched = INVENTORY_SUMMARY_CATEGORY_KEYWORDS.find(([, keywords]) =>
+    includesAny(categoryText, keywords)
+  );
+  return matched ? INVENTORY_SUMMARY_CATEGORY_KEYWORDS.indexOf(matched) : null;
+}
+
 function isSpecialPriceProduct(product) {
   const price = product?.ProductPrice || {};
   const standardPrice = Number(price.standard_price || 0);
@@ -1327,15 +1343,16 @@ function buildStoreInventoryExportRows(productRows) {
     || Number(a._store_product_index || 0) - Number(b._store_product_index || 0));
 }
 
-function buildInventorySummaryExportRows(productRows, primaryPnMap = new Map(), categoryRankMap = new Map()) {
+function buildInventorySummaryExportRows(productRows, primaryPnMap = new Map()) {
   return [...productRows]
+    .map(row => ({ row, categoryRank: getInventorySummaryCategoryRank(row.category) }))
+    .filter(({ row, categoryRank }) => categoryRank !== null && Number(row.normal_qty || 0) > 0)
     .sort((a, b) => {
-      const categoryCompare = Number(categoryRankMap.get(a.product_id) ?? 4)
-        - Number(categoryRankMap.get(b.product_id) ?? 4);
-      if (categoryCompare !== 0) return categoryCompare;
-      return String(a.product_name || '').localeCompare(String(b.product_name || ''), 'zh-Hans-CN')
-        || String(a.product_id || '').localeCompare(String(b.product_id || ''));
+      if (a.categoryRank !== b.categoryRank) return a.categoryRank - b.categoryRank;
+      return String(a.row.product_name || '').localeCompare(String(b.row.product_name || ''), 'zh-Hans-CN')
+        || String(a.row.product_id || '').localeCompare(String(b.row.product_id || ''));
     })
+    .map(({ row }) => row)
     .map(row => ({
       产品名称: row.product_name || '',
       PN: primaryPnMap.get(row.product_id) || '',
@@ -1426,10 +1443,6 @@ async function getList(ctx) {
         special_sn_count: specialProductMap[product.product_id] || 0
       }, modelFilter);
     });
-    const categoryRankMap = new Map(products.map(product => [
-      product.product_id,
-      getInventoryCategoryRank(product.category, product.accessory_type, product.name, product.config)
-    ]));
     const count = products.length;
     const productIds = products.map(p => p.product_id);
     const allStockMap = await buildSalesStockMap(productIds, storeId, storeIds);
@@ -1666,7 +1679,7 @@ async function getList(ctx) {
       primaryPnRows.forEach(row => {
         if (!primaryPnMap.has(row.product_id)) primaryPnMap.set(row.product_id, row.pn_code || '');
       });
-      const data = buildInventorySummaryExportRows(exportRows, primaryPnMap, categoryRankMap);
+      const data = buildInventorySummaryExportRows(exportRows, primaryPnMap);
       sendExcel(ctx, data, ['产品名称', 'PN', '定价', '库存'],
         `库存简表_${new Date().toISOString().slice(0, 10)}.xlsx`, '库存简表');
       return;
@@ -5762,6 +5775,7 @@ module.exports = {
     compareInventoryModelRows,
     buildStoreInventoryExportRows,
     buildInventorySummaryExportRows,
+    getInventorySummaryCategoryRank,
     buildInventoryProductKeywordConditions,
     purchaseInitiatorName,
     resolveInboundInitiator,

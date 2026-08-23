@@ -164,24 +164,30 @@ test('inventory export expands one product into store rows and keeps store-speci
   ]);
 });
 
-test('inventory summary export keeps only primary PN and sorts by inventory category', () => {
+test('inventory summary export keeps only in-stock target categories and sorts them', () => {
   const rows = _test.buildInventorySummaryExportRows([
-    { product_id: 'other', product_name: '其他', standard_price: 10, normal_qty: 1 },
-    { product_id: 'computer', product_name: '电脑', standard_price: 20, normal_qty: 2 },
-    { product_id: 'accessory', product_name: '配件', standard_price: 30, normal_qty: 3 }
+    { product_id: 'accessory', category: '配件', product_name: '配件', standard_price: 50, normal_qty: 4 },
+    { product_id: 'desktop', category: '台式机', product_name: '台机', standard_price: 40, normal_qty: 3 },
+    { product_id: 'phone', category: '手机', product_name: '手机', standard_price: 30, normal_qty: 2 },
+    { product_id: 'tablet', category: '平板', product_name: '平板', standard_price: 20, normal_qty: 1 },
+    { product_id: 'notebook', category: '电子产品/笔记本', product_name: '笔记本', standard_price: 10, normal_qty: 5 },
+    { product_id: 'empty', category: '手机', product_name: '无库存手机', standard_price: 60, normal_qty: 0 },
+    { product_id: 'other', category: '其他', product_name: '其他商品', standard_price: 70, normal_qty: 6 }
   ], new Map([
-    ['computer', 'PN-C'],
     ['accessory', 'PN-A'],
+    ['desktop', 'PN-D'],
+    ['phone', 'PN-P'],
+    ['tablet', 'PN-T'],
+    ['notebook', 'PN-N'],
+    ['empty', 'PN-E'],
     ['other', 'PN-O']
-  ]), new Map([
-    ['computer', 0],
-    ['accessory', 3],
-    ['other', 4]
   ]));
 
   assert.deepEqual(rows, [
-    { 产品名称: '电脑', PN: 'PN-C', 定价: 20, 库存: 2 },
-    { 产品名称: '配件', PN: 'PN-A', 定价: 30, 库存: 3 },
-    { 产品名称: '其他', PN: 'PN-O', 定价: 10, 库存: 1 }
+    { 产品名称: '笔记本', PN: 'PN-N', 定价: 10, 库存: 5 },
+    { 产品名称: '平板', PN: 'PN-T', 定价: 20, 库存: 1 },
+    { 产品名称: '手机', PN: 'PN-P', 定价: 30, 库存: 2 },
+    { 产品名称: '台机', PN: 'PN-D', 定价: 40, 库存: 3 },
+    { 产品名称: '配件', PN: 'PN-A', 定价: 50, 库存: 4 }
   ]);
 });
