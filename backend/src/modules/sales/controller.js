@@ -3139,7 +3139,6 @@ async function getProductSns(ctx) {
   const { storeId, productId } = ctx.params;
   const { pnCode } = ctx.query;
   assertStoreVisible(storeId, ctx.state.user);
-  await assertActiveProducts(Product, [productId]);
 
   const where = {
     product_id: productId,
