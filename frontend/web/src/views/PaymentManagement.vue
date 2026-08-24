@@ -42,6 +42,9 @@
           </template>
         </el-table-column>
         <el-table-column prop="supplier_name" label="供应商" width="150" />
+        <el-table-column label="对方收款信息" min-width="230">
+          <template #default="{ row }">{{ counterpartySummary(row) }}</template>
+        </el-table-column>
         <el-table-column prop="total_amount" label="结算金额" width="120">
           <template #default="{ row }">¥{{ formatAmount(row.total_amount) }}</template>
         </el-table-column>
@@ -127,6 +130,11 @@
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="结算单号">{{ settlementDetail.settlement_no || '-' }}</el-descriptions-item>
           <el-descriptions-item label="供应商">{{ settlementDetail.supplier_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="收款单位">{{ counterpartyCompany(settlementDetail) }}</el-descriptions-item>
+          <el-descriptions-item label="开户行">{{ counterpartyBank(settlementDetail) }}</el-descriptions-item>
+          <el-descriptions-item label="收款账号">{{ counterpartyAccount(settlementDetail) }}</el-descriptions-item>
+          <el-descriptions-item label="收款方税号">{{ counterpartyTaxNo(settlementDetail) }}</el-descriptions-item>
+          <el-descriptions-item label="收款备注" :span="2">{{ counterpartyRemark(settlementDetail) }}</el-descriptions-item>
           <el-descriptions-item label="结算金额">¥{{ settlementDetail.total_amount || 0 }}</el-descriptions-item>
           <el-descriptions-item label="已付金额">¥{{ settlementDetail.paid_amount || 0 }}</el-descriptions-item>
           <el-descriptions-item label="付款状态">
@@ -163,6 +171,10 @@
       <el-descriptions v-if="immediatePaymentSettlement" :column="1" border size="small">
         <el-descriptions-item label="结算单号">{{ immediatePaymentSettlement.settlement_no || '-' }}</el-descriptions-item>
         <el-descriptions-item label="供应商">{{ immediatePaymentSettlement.supplier_name || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="对方收款单位">{{ counterpartyCompany(immediatePaymentSettlement) }}</el-descriptions-item>
+        <el-descriptions-item label="对方开户行">{{ counterpartyBank(immediatePaymentSettlement) }}</el-descriptions-item>
+        <el-descriptions-item label="对方收款账号">{{ counterpartyAccount(immediatePaymentSettlement) }}</el-descriptions-item>
+        <el-descriptions-item label="收款备注">{{ counterpartyRemark(immediatePaymentSettlement) }}</el-descriptions-item>
         <el-descriptions-item label="剩余应付">¥{{ formatAmount(immediatePaymentRemaining) }}</el-descriptions-item>
       </el-descriptions>
 
@@ -225,6 +237,15 @@
         <el-table :data="paymentImportRows" stripe border class="mt-20">
           <el-table-column prop="settlementNo" label="结算单号" width="180" />
           <el-table-column prop="supplierName" label="供应商" width="130" />
+          <el-table-column label="对方收款信息" min-width="230">
+            <template #default="{ row }">{{ counterpartySummary(row) }}</template>
+          </el-table-column>
+          <el-table-column label="对方开户行" min-width="180" show-overflow-tooltip>
+            <template #default="{ row }">{{ counterpartyBank(row) }}</template>
+          </el-table-column>
+          <el-table-column label="对方收款账号" min-width="180" show-overflow-tooltip>
+            <template #default="{ row }">{{ counterpartyAccount(row) }}</template>
+          </el-table-column>
           <el-table-column prop="remainingAmount" label="剩余应付" width="120">
             <template #default="{ row }">¥{{ row.remainingAmount }}</template>
           </el-table-column>
@@ -265,6 +286,15 @@
         <el-table :data="paymentBatchDetail.records || []" stripe border class="mt-20">
           <el-table-column prop="settlement_no" label="结算单号" width="180" />
           <el-table-column prop="supplier_name" label="供应商" width="130" />
+          <el-table-column label="对方收款信息" min-width="230">
+            <template #default="{ row }">{{ counterpartySummary(row) }}</template>
+          </el-table-column>
+          <el-table-column label="对方开户行" min-width="180" show-overflow-tooltip>
+            <template #default="{ row }">{{ counterpartyBank(row) }}</template>
+          </el-table-column>
+          <el-table-column label="对方收款账号" min-width="180" show-overflow-tooltip>
+            <template #default="{ row }">{{ counterpartyAccount(row) }}</template>
+          </el-table-column>
           <el-table-column prop="amount" label="付款金额" width="120">
             <template #default="{ row }">¥{{ row.amount }}</template>
           </el-table-column>
@@ -346,6 +376,27 @@ const formatSettlementAccountOption = (account) => {
 }
 
 const formatAmount = (amount) => Number(amount || 0).toFixed(2)
+
+const counterpartyInfo = row => row?.counterparty_payment_info || row?.supplier_account_snapshot_parsed || row?.counterpartyPaymentInfo || row?.supplierAccount || {}
+const counterpartyCompany = row => counterpartyInfo(row).companyName || row?.payee_name || row?.supplier_name || row?.supplierName || '-'
+const counterpartyBank = row => counterpartyInfo(row).bankName || '-'
+const counterpartyAccount = row => counterpartyInfo(row).accountNumber || '-'
+const counterpartyTaxNo = row => counterpartyInfo(row).taxNo || '-'
+const counterpartyRemark = row => counterpartyInfo(row).remark || row?.other_payment_remark || '-'
+const maskAccount = value => {
+  const account = String(value || '').trim()
+  if (!account) return ''
+  if (account.length <= 8) return account
+  return `${account.slice(0, 4)} **** ${account.slice(-4)}`
+}
+const counterpartySummary = row => {
+  const info = counterpartyInfo(row)
+  const values = [counterpartyCompany(row)]
+  if (info.bankName) values.push(info.bankName)
+  if (info.accountNumber) values.push(maskAccount(info.accountNumber))
+  if (values.length === 1 && !info.remark && !row?.other_payment_remark) return '未配置'
+  return values.join(' / ')
+}
 
 const formatDateTime = (time) => {
   if (!time) return '-'

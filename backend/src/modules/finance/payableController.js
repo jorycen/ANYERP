@@ -868,16 +868,60 @@ function parseJsonText(value, fallback = null) {
   }
 }
 
+function buildCounterpartyPaymentInfo(row) {
+  const data = row?.toJSON ? row.toJSON() : (row || {});
+  const snapshot = parseJsonText(data.supplier_account_snapshot, {}) || {};
+  const payeeName = data.payee_name || data.supplier_name || '';
+  const info = {
+    payeeName,
+    companyName: snapshot.companyName || '',
+    taxNo: snapshot.taxNo || '',
+    bankName: snapshot.bankName || '',
+    accountNumber: snapshot.accountNumber || '',
+    remark: snapshot.remark || data.other_payment_remark || '',
+    image: data.other_payment_image || ''
+  };
+  info.available = Boolean(
+    info.companyName || info.taxNo || info.bankName || info.accountNumber || info.remark || info.image
+  );
+  return info;
+}
+
 function normalizeSettlement(row) {
   const data = row.toJSON ? row.toJSON() : row;
+  const supplierAccountSnapshot = parseJsonText(data.supplier_account_snapshot);
   return {
     ...data,
-    supplier_account_snapshot_parsed: parseJsonText(data.supplier_account_snapshot)
+    supplier_account_snapshot_parsed: supplierAccountSnapshot,
+    counterparty_payment_info: buildCounterpartyPaymentInfo(data)
   };
 }
 
 function normalizeSettlements(rows) {
   return rows.map(normalizeSettlement);
+}
+
+function normalizePaymentBatch(row) {
+  const data = row.toJSON ? row.toJSON() : row;
+  return {
+    ...data,
+    records: (data.records || []).map(record => {
+      const settlement = record.Settlement || record.settlement || null;
+      const counterpartyPaymentInfo = settlement
+        ? buildCounterpartyPaymentInfo(settlement)
+        : (record.counterparty_payment_info || null);
+      return {
+        ...record,
+        payee_name: settlement?.payee_name || record.payee_name || record.supplier_name || '',
+        supplier_name: settlement?.supplier_name || record.supplier_name || '',
+        counterparty_payment_info: counterpartyPaymentInfo
+      };
+    })
+  };
+}
+
+function normalizePaymentBatches(rows) {
+  return rows.map(normalizePaymentBatch);
 }
 
 function toNumber(value) {
@@ -1027,6 +1071,11 @@ async function exportSettlementList(ctx) {
   const data = normalizeSettlements(rows).map(row => ({
     结算单号: row.settlement_no || '',
     收款方: row.payee_name || row.supplier_name || '',
+    收款单位: row.counterparty_payment_info.companyName || '',
+    收款开户行: row.counterparty_payment_info.bankName || '',
+    收款账号: row.counterparty_payment_info.accountNumber || '',
+    收款方税号: row.counterparty_payment_info.taxNo || '',
+    收款备注: row.counterparty_payment_info.remark || '',
     来源单号: row.source_no || '',
     结算类型: row.settlement_type || '',
     结算金额: Number(row.total_amount || 0),
@@ -1040,7 +1089,8 @@ async function exportSettlementList(ctx) {
     确认时间: row.confirmed_time || ''
   }));
   sendExcel(ctx, data, [
-    '结算单号', '收款方', '来源单号', '结算类型', '结算金额', '已付金额',
+    '结算单号', '收款方', '收款单位', '收款开户行', '收款账号', '收款方税号', '收款备注',
+    '来源单号', '结算类型', '结算金额', '已付金额',
     '状态', '付款状态', '经手人', '制单人', '备注', '创建时间', '确认时间'
   ], `应付结算单_${new Date().toISOString().slice(0, 10)}.xlsx`, '应付结算单');
 }
@@ -1339,6 +1389,7 @@ async function exportPaymentCandidates(ctx) {
     对方公司: row.supplier_account_snapshot_parsed?.companyName || '',
     对方开户行: row.supplier_account_snapshot_parsed?.bankName || '',
     对方账号: row.supplier_account_snapshot_parsed?.accountNumber || '',
+    对方税号: row.supplier_account_snapshot_parsed?.taxNo || '',
     对方账户备注: row.supplier_account_snapshot_parsed?.remark || row.other_payment_remark || '',
     结算单号: row.settlement_no,
     供应商: row.supplier_name || '',
@@ -1353,7 +1404,7 @@ async function exportPaymentCandidates(ctx) {
 
   const workbook = XLSX.utils.book_new();
   const paymentHeaders = [
-    '对方公司', '对方开户行', '对方账号', '对方账户备注',
+    '对方公司', '对方开户行', '对方账号', '对方税号', '对方账户备注',
     '结算单号', '供应商', '结算金额', '已付金额', '剩余应付金额', '本次付款金额', '付款时间', '备注', '导入标识'
   ];
   const worksheet = XLSX.utils.json_to_sheet(data, { header: paymentHeaders });
@@ -1474,6 +1525,7 @@ async function validatePaymentImportRows(rows, accountId, user = null) {
       supplierName: settlement.supplier_name || '',
       supplierAccountId: settlement.supplier_account_id || '',
       supplierAccount: parseJsonText(settlement.supplier_account_snapshot),
+      counterpartyPaymentInfo: buildCounterpartyPaymentInfo(settlement),
       totalAmount: Number(settlement.total_amount || 0),
       paidAmount: Number(settlement.paid_amount || 0),
       remainingAmount,
@@ -1729,23 +1781,46 @@ async function getPaymentBatches(ctx) {
 
   const { count, rows } = await SettlementPaymentBatch.findAndCountAll({
     where,
-    include: [{ model: SettlementPaymentRecord, as: 'records', required: false }],
+    include: [{
+      model: SettlementPaymentRecord,
+      as: 'records',
+      required: false,
+      include: [{
+        model: Settlement,
+        attributes: [
+          'settlement_id', 'supplier_name', 'payee_name',
+          'supplier_account_snapshot', 'other_payment_remark', 'other_payment_image'
+        ],
+        required: false
+      }]
+    }],
     distinct: true,
     order: [['create_time', 'DESC'], ['batch_id', 'DESC']],
     ...paginate({}, { page, pageSize })
   });
 
-  ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+  ctx.body = formatPaginatedResult(normalizePaymentBatches(rows), { page, pageSize, count });
 }
 
 async function getPaymentBatchDetail(ctx) {
   const { id } = ctx.params;
   const batch = await SettlementPaymentBatch.findByPk(id, {
-    include: [{ model: SettlementPaymentRecord, as: 'records' }]
+    include: [{
+      model: SettlementPaymentRecord,
+      as: 'records',
+      include: [{
+        model: Settlement,
+        attributes: [
+          'settlement_id', 'supplier_name', 'payee_name',
+          'supplier_account_snapshot', 'other_payment_remark', 'other_payment_image'
+        ],
+        required: false
+      }]
+    }]
   });
   if (!batch) ctx.throw(404, '付款批次不存在');
   assertDistributorOperation(ctx, batch.distributor_id);
-  ctx.body = { code: 0, data: batch };
+  ctx.body = { code: 0, data: normalizePaymentBatch(batch) };
 }
 
 async function voidPaymentBatch(ctx) {

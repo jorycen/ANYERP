@@ -30,6 +30,9 @@
         <el-table-column label="收款方" width="150">
           <template #default="{ row }">{{ row.payee_name || row.supplier_name || '-' }}</template>
         </el-table-column>
+        <el-table-column label="对方收款信息" min-width="230">
+          <template #default="{ row }">{{ counterpartySummary(row) }}</template>
+        </el-table-column>
         <el-table-column prop="total_amount" label="结算金额" width="120">
           <template #default="{ row }">¥{{ money(row.total_amount) }}</template>
         </el-table-column>
@@ -81,6 +84,11 @@
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="结算单号">{{ detail.settlement_no || '-' }}</el-descriptions-item>
           <el-descriptions-item label="收款方">{{ detail.payee_name || detail.supplier_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="收款单位">{{ counterpartyCompany(detail) }}</el-descriptions-item>
+          <el-descriptions-item label="开户行">{{ counterpartyBank(detail) }}</el-descriptions-item>
+          <el-descriptions-item label="收款账号">{{ counterpartyAccount(detail) }}</el-descriptions-item>
+          <el-descriptions-item label="收款方税号">{{ counterpartyTaxNo(detail) }}</el-descriptions-item>
+          <el-descriptions-item label="收款备注" :span="2">{{ counterpartyRemark(detail) }}</el-descriptions-item>
           <el-descriptions-item label="结算金额">¥{{ money(detail.total_amount) }}</el-descriptions-item>
           <el-descriptions-item label="已付金额">¥{{ money(detail.paid_amount) }}</el-descriptions-item>
           <el-descriptions-item label="结算状态">
@@ -127,6 +135,10 @@
     <el-dialog v-model="paymentVisible" title="部分付款" width="560px">
       <el-descriptions v-if="paymentSettlement" :column="1" border size="small">
         <el-descriptions-item label="结算单号">{{ paymentSettlement.settlement_no }}</el-descriptions-item>
+        <el-descriptions-item label="对方收款单位">{{ counterpartyCompany(paymentSettlement) }}</el-descriptions-item>
+        <el-descriptions-item label="对方开户行">{{ counterpartyBank(paymentSettlement) }}</el-descriptions-item>
+        <el-descriptions-item label="对方收款账号">{{ counterpartyAccount(paymentSettlement) }}</el-descriptions-item>
+        <el-descriptions-item label="收款备注">{{ counterpartyRemark(paymentSettlement) }}</el-descriptions-item>
         <el-descriptions-item label="剩余应付">¥{{ money(remaining(paymentSettlement)) }}</el-descriptions-item>
       </el-descriptions>
       <el-form label-width="100px" class="payment-form">
@@ -182,6 +194,26 @@ const dateTime = value => {
 }
 const remaining = row => Math.max(0, Number(row?.total_amount || 0) - Number(row?.paid_amount || 0))
 const accountLabel = account => `${account.account_name || '-'}（余额：¥${money(account.balance)}）`
+const counterpartyInfo = row => row?.counterparty_payment_info || row?.supplier_account_snapshot_parsed || row?.counterpartyPaymentInfo || row?.supplierAccount || {}
+const counterpartyCompany = row => counterpartyInfo(row).companyName || row?.payee_name || row?.supplier_name || '-'
+const counterpartyBank = row => counterpartyInfo(row).bankName || '-'
+const counterpartyAccount = row => counterpartyInfo(row).accountNumber || '-'
+const counterpartyTaxNo = row => counterpartyInfo(row).taxNo || '-'
+const counterpartyRemark = row => counterpartyInfo(row).remark || row?.other_payment_remark || '-'
+const maskAccount = value => {
+  const account = String(value || '').trim()
+  if (!account) return ''
+  if (account.length <= 8) return account
+  return `${account.slice(0, 4)} **** ${account.slice(-4)}`
+}
+const counterpartySummary = row => {
+  const info = counterpartyInfo(row)
+  const values = [counterpartyCompany(row)]
+  if (info.bankName) values.push(info.bankName)
+  if (info.accountNumber) values.push(maskAccount(info.accountNumber))
+  if (values.length === 1 && !info.remark && !row?.other_payment_remark) return '未配置'
+  return values.join(' / ')
+}
 const statusText = status => ({ draft: '草稿', pending_approval: '待审批', confirmed: '待付款', voided: '已作废' }[status] || status || '-')
 const statusType = status => ({ draft: 'info', pending_approval: 'warning', confirmed: 'success', voided: 'danger' }[status] || 'info')
 const paymentStatusText = status => ({ unpaid: '未付款', partial_paid: '部分付款', paid: '已付款' }[status] || status || '-')

@@ -1001,7 +1001,11 @@
               {{ getPaymentStatusText(settlementDetail.payment_status) }}
             </el-tag>
           </el-descriptions-item>
-          <el-descriptions-item label="收款账户">{{ getSettlementPaymentAccountText(settlementDetail) }}</el-descriptions-item>
+          <el-descriptions-item label="收款单位">{{ getCounterpartyCompany(settlementDetail) }}</el-descriptions-item>
+          <el-descriptions-item label="开户行">{{ getCounterpartyBank(settlementDetail) }}</el-descriptions-item>
+          <el-descriptions-item label="收款账号">{{ getCounterpartyAccount(settlementDetail) }}</el-descriptions-item>
+          <el-descriptions-item label="收款方税号">{{ getCounterpartyTaxNo(settlementDetail) }}</el-descriptions-item>
+          <el-descriptions-item label="收款备注" :span="2">{{ getCounterpartyRemark(settlementDetail) }}</el-descriptions-item>
           <el-descriptions-item label="创建人">{{ settlementDetail.create_user || '-' }}</el-descriptions-item>
           <el-descriptions-item label="创建时间">{{ formatDateTime(settlementDetail.create_time) }}</el-descriptions-item>
           <el-descriptions-item label="提交时间">{{ formatDateTime(settlementDetail.confirmed_time) }}</el-descriptions-item>
@@ -1716,21 +1720,17 @@ const formatSupplierAccountLabel = (account) => {
   return `${company} / ${bank} / ${accountNo}`
 }
 
-const getSettlementPaymentAccountText = (row) => {
-  if (row.supplier_account_snapshot_parsed) {
-    return formatSupplierAccountLabel(row.supplier_account_snapshot_parsed)
-  }
-  if (row.supplier_account_snapshot) {
-    try {
-      return formatSupplierAccountLabel(JSON.parse(row.supplier_account_snapshot))
-    } catch (err) {
-      return row.supplier_account_snapshot
-    }
-  }
-  if (row.other_payment_remark) {
-    return `其他：${row.other_payment_remark}`
-  }
-  return '-'
+const getCounterpartyInfo = (row) => row?.counterparty_payment_info || row?.supplier_account_snapshot_parsed || {}
+const getCounterpartyCompany = (row) => {
+  const info = getCounterpartyInfo(row)
+  return info.companyName || row?.payee_name || row?.supplier_name || '-'
+}
+const getCounterpartyBank = (row) => getCounterpartyInfo(row).bankName || '-'
+const getCounterpartyAccount = (row) => getCounterpartyInfo(row).accountNumber || '-'
+const getCounterpartyTaxNo = (row) => getCounterpartyInfo(row).taxNo || '-'
+const getCounterpartyRemark = (row) => {
+  const info = getCounterpartyInfo(row)
+  return info.remark || row?.other_payment_remark || '-'
 }
 
 const getSettlementStatusText = (status) => {
