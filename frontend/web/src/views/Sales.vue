@@ -51,12 +51,11 @@
         <table class="sales-order-table">
           <thead>
             <tr>
-              <th>订单号</th>
+              <th class="order-no-column">订单号</th>
               <th>业务类型</th>
               <th>门店</th>
               <th>创建时间</th>
               <th>提交人</th>
-              <th>审批人</th>
               <th>客户姓名</th>
               <th>联系电话</th>
               <th class="money-column">订单金额</th>
@@ -67,12 +66,11 @@
           </thead>
           <tbody v-if="!loading && tableData.length">
             <tr v-for="row in tableData" :key="row.order_id">
-              <td>{{ row.order_no || '-' }}</td>
+              <td class="order-no-cell"><span class="order-no-text">{{ row.order_no || '-' }}</span></td>
               <td>{{ row.record_type === 'deposit' ? '定金收款' : '销售订单' }}</td>
               <td>{{ row.Store?.name || '-' }}</td>
               <td>{{ formatDate(row.create_time) }}</td>
               <td>{{ row.submit_user || row.create_user || '-' }}</td>
-              <td>{{ row.approve_user || '-' }}</td>
               <td>{{ row.customer_name || '-' }}</td>
               <td>{{ row.customer_phone || '-' }}</td>
               <td class="money-column">¥{{ row.total_amount || 0 }}</td>
@@ -82,6 +80,7 @@
               <el-button link type="primary" @click="handleEditDraft(row)" v-if="!row.record_type && row.order_status === 'draft'">编辑</el-button>
               <el-button link type="success" @click="handleSubmitDraft(row)" v-if="!row.record_type && row.order_status === 'draft'">提交</el-button>
               <el-button link type="danger" @click="handleDeleteDraft(row)" v-if="!row.record_type && row.order_status === 'draft' && !row.submit_time">删除</el-button>
+              <el-button link type="success" @click="handleArchive(row)" v-if="!row.record_type && row.order_status === '未归档'">归档</el-button>
               <el-button link type="primary" @click="handleView(row)">查看</el-button>
               </td>
             </tr>
@@ -904,6 +903,28 @@ const handleView = async (row) => {
   await openOrderDetail(row.order_id)
 }
 
+const handleArchive = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认归档销售订单 ${row.order_no || ''}？归档后将执行库存、SN、毛利、返利和结算校验。`,
+      '归档确认',
+      { type: 'warning', confirmButtonText: '确认归档', cancelButtonText: '取消' }
+    )
+    const res = await api.updateSales(row.order_id, { order_status: '已归档' })
+    if (res.status === 'pending_approval' || res.pendingApproval) {
+      ElMessage.warning(res.message || '订单已进入负毛利审批')
+    } else if (res.status === '已归档' || res.code === 0) {
+      ElMessage.success(res.message || '订单已归档')
+    } else {
+      ElMessage.error(res.message || '归档失败')
+    }
+    await loadData()
+  } catch (err) {
+    if (err === 'cancel' || err === 'close') return
+    ElMessage.error(err.response?.data?.message || '归档失败')
+  }
+}
+
 const openDepositManager = () => {
   depositDialogVisible.value = true
   loadDeposits()
@@ -1678,6 +1699,23 @@ const getDepositStatusText = (status) => {
   min-width: 1120px;
   border-collapse: collapse;
   table-layout: fixed;
+}
+.sales-order-table .order-no-column {
+  width: 150px;
+}
+.sales-order-table .order-no-cell {
+  white-space: normal;
+  vertical-align: middle;
+}
+.sales-order-table .order-no-text {
+  display: -webkit-box;
+  max-height: 40px;
+  overflow: hidden;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 .sales-order-table th,
 .sales-order-table td {

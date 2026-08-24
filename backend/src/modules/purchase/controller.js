@@ -11,6 +11,7 @@ const { recordBusinessAction, listBusinessActions } = require('../../utils/busin
 const { canViewSnTraceReference } = require('../../utils/snTracePermission');
 const { isUsablePnCode } = require('../../utils/productPn');
 const { getUserRoles } = require('../../middleware/permission');
+const { isStoreScopedAccount } = require('../../utils/storePermissions');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
 const { createProductRecord } = require('../product/controller');
 const { executeInbound, updateInventory, getAvailableQty } = require('../inventory/controller');
@@ -72,7 +73,7 @@ function assertStoreVisible(ctx, storeId) {
 }
 
 function assertPurchaseAllocationStoresVisible(ctx, items, fallbackStoreId) {
-  assertStoreVisible(ctx, fallbackStoreId);
+  if (fallbackStoreId) assertStoreVisible(ctx, fallbackStoreId);
   for (const item of items || []) {
     const allocations = parsePurchaseAllocationArray(item.storeAllocations || item.store_allocations);
     for (const allocation of allocations) {
@@ -596,13 +597,15 @@ async function exportRequestList(ctx) {
     发票类型: row.invoice_type || '',
     货型: row.product_type || '',
     商品摘要: row.items_summary || '',
+    采购原价: Number(row.total_amount || 0),
+    抵扣金额: Number(row.rebate_deduction || 0),
     申请金额: Number(row.current_total_amount ?? row.total_amount ?? 0),
     状态: row.status || '',
     备注: row.remark || row.reason || ''
   }));
   sendExcel(ctx, data, [
     '申请单号', '申请时间', '申请门店', '供应商', '付款方式', '发票类型',
-    '货型', '商品摘要', '申请金额', '状态', '备注'
+    '货型', '商品摘要', '采购原价', '抵扣金额', '申请金额', '状态', '备注'
   ], `采购申请_${new Date().toISOString().slice(0, 10)}.xlsx`, '采购申请');
 }
 
@@ -802,8 +805,8 @@ async function createRequest(ctx) {
   const normalizedFreightPlatformName = freightPlatformName || freight_platform_name || '';
   const normalizedFreightAmount = toMoney(freightAmount === undefined ? freight_amount : freightAmount);
 
-  // 经销商账号不再有当前门店；门店必须由表单明确选择，或由门店分配明细提供。
-  const targetStoreId = storeId || user.storeId;
+  // 经销商级账号不再有当前门店；门店必须由表单明确选择，或由门店分配明细提供。
+  const targetStoreId = storeId || (isStoreScopedAccount(getUserRoles(user)) ? user.storeId : '');
   
   // 查找第一个有效的门店
   let finalStoreId = targetStoreId;

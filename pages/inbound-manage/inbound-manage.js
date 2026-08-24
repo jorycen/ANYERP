@@ -29,13 +29,7 @@ function statusInfo(status) {
 }
 
 function isDistributorOrAbove(userInfo) {
-  const values = [
-    userInfo && userInfo.userRole,
-    userInfo && userInfo.role,
-    userInfo && userInfo.roleCode,
-    ...(userInfo && Array.isArray(userInfo.roles) ? userInfo.roles : [])
-  ].map(value => String(value || '').toLowerCase());
-  return values.some(value => ['admin', 'boss', 'system_admin', 'super_admin', 'superadmin', 'root', 'distributor'].includes(value));
+  return userUtils.isDistributorAccount(userInfo);
 }
 
 function enrichPurchaseInitiators(rows) {
@@ -82,7 +76,7 @@ Page({
 
   onLoad() {
     const userInfo = userUtils.getUserInfo();
-    if (!['distributor', 'store_admin', 'staff'].includes(userInfo.userRole)) {
+    if (!userUtils.isDistributorAccount(userInfo) && !userUtils.isStoreScoped(userInfo)) {
       wx.showModal({
         title: '无操作权限',
         content: '仅门店账号和经销商账号可以进行入库操作。',
@@ -92,7 +86,7 @@ Page({
       return;
     }
 
-    this.setData({ canSelectStore: userInfo.userRole === 'distributor' });
+    this.setData({ canSelectStore: userUtils.isDistributorAccount(userInfo) });
     this.loadStores();
   },
 

@@ -417,8 +417,9 @@ async function getUsers(ctx) {
       const data = row.toJSON();
       const roleNames = (data.Roles || []).map(role => role.name);
       const roleIds = (data.Roles || []).map(role => role.role_id);
-      const isBoss = (data.Roles || []).some(role => role.role_code === 'boss') || data.role_code === 'boss';
-      const roleCodes = (data.Roles || []).map(role => role.role_code);
+      const isBoss = (data.Roles || []).some(role => String(role.role_code || '').trim().toLowerCase() === 'boss')
+        || String(data.role_code || '').trim().toLowerCase() === 'boss';
+      const roleCodes = (data.Roles || []).map(role => String(role.role_code || '').trim().toLowerCase()).filter(Boolean);
       const regionScoped = !isBoss && isRegionScopedAccount(roleCodes);
       const assignedStores = isBoss ? allActiveStores : (data.AssignedStores || []);
       const assignedStoreNames = assignedStores.map(store => store.name);
@@ -459,7 +460,7 @@ async function createUser(ctx) {
 
   if (!name) ctx.throw(400, '请输入姓名');
   if (!phone) ctx.throw(400, '请输入手机号');
-  if (!Array.isArray(roleIds) || roleIds.length === 0) ctx.throw(400, '请至少选择一个角色');
+  if (!Array.isArray(roleIds) || roleIds.length !== 1) ctx.throw(400, '每个账号只能选择一个岗位角色');
   if (!password) ctx.throw(400, '请输入初始密码');
 
   const exist = await Staff.findOne({ where: { phone, is_deleted: 0 } });
@@ -570,7 +571,7 @@ async function updateUser(ctx) {
     }
   }
   if (roleIds !== undefined) {
-    if (!Array.isArray(roleIds) || roleIds.length === 0) ctx.throw(400, '请至少选择一个角色');
+    if (!Array.isArray(roleIds) || roleIds.length !== 1) ctx.throw(400, '每个账号只能选择一个岗位角色');
     const uniqueRoleIds = [...new Set(roleIds.map(String))];
     const roles = await Role.findAll({ where: { role_id: uniqueRoleIds, status: 1 } });
     if (roles.length !== uniqueRoleIds.length) ctx.throw(400, '选择的角色不存在或已停用');

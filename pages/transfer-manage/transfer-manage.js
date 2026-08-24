@@ -37,9 +37,7 @@ function regionKeysOf(source) {
 }
 
 function isDistributorRole(userInfo) {
-  return ['distributor', 'boss', 'admin', 'system_admin'].includes(String(
-    userInfo && (userInfo.userRole || userInfo.roleCode || userInfo.role || '')
-  ).toLowerCase());
+  return userUtils.isDistributorAccount(userInfo);
 }
 
 function currentStoreIdOf(userInfo) {

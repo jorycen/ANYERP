@@ -43,8 +43,8 @@ Page({
     this.setData({
       purchaseQueryOnly: userUtils.isPurchaseQueryOnly(userInfo),
       showCreateOrder: !blockedAccounts.includes(phoneNumber),
-      showInbound: ['distributor', 'store_admin', 'staff'].includes(userInfo.userRole),
-      showTransfer: ['distributor', 'store_admin', 'staff'].includes(userInfo.userRole),
+      showInbound: userUtils.isDistributorAccount(userInfo) || userUtils.isStoreScoped(userInfo),
+      showTransfer: userUtils.isDistributorAccount(userInfo) || userUtils.isStoreScoped(userInfo),
       showFinance: userUtils.isDistributorAccount(userInfo)
     });
   },

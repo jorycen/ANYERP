@@ -19,11 +19,11 @@
 
 function getUserRoles(user) {
   if (Array.isArray(user?.roles) && user.roles.length > 0) {
-    return [...new Set(user.roles.map(role => String(role).trim()).filter(Boolean))];
+    return [...new Set(user.roles.map(role => String(role).trim().toLowerCase()).filter(Boolean))];
   }
   return String(user?.roleCode || '')
     .split(',')
-    .map(role => role.trim())
+    .map(role => role.trim().toLowerCase())
     .filter(Boolean);
 }
 

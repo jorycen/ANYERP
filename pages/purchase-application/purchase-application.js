@@ -29,6 +29,15 @@ function defaultLocation(locations) {
   return (locations || []).find(location => String(location.type || '') === 'normal_qty') || null;
 }
 
+function getDefaultPurchaseStore(userInfo, stores) {
+  if (userUtils.isDistributorAccount(userInfo)) {
+    return { storeIndex: -1, store: {} };
+  }
+  const preferredId = String(userInfo?.storeId || '');
+  const storeIndex = (stores || []).findIndex(store => String(store.storeId || '') === preferredId);
+  return { storeIndex, store: (stores || [])[storeIndex] || {} };
+}
+
 function normalizeProduct(item) {
   return {
     productId: item.productId || item.product_id || item._id || '',
@@ -345,12 +354,13 @@ Page({
       return;
     }
     const user = userUtils.getUserInfo();
-    const storeIndex = this.data.stores.findIndex(store => store.storeId === user.storeId);
-    const store = this.data.stores[storeIndex] || {};
+    const { storeIndex, store } = getDefaultPurchaseStore(user, this.data.stores);
+    const defaultStoreId = userUtils.isDistributorAccount(user) ? '' : (store.storeId || user.storeId || '');
+    const defaultStoreName = userUtils.isDistributorAccount(user) ? '' : (store.name || user.storeName || '');
     const allocation = {
       storeIndex,
-      storeId: store.storeId || user.storeId || '',
-      storeName: store.name || user.storeName || '',
+      storeId: defaultStoreId,
+      storeName: defaultStoreName,
       quantity,
       locationOptions: [],
       locationIndex: -1,
@@ -623,12 +633,13 @@ Page({
       return;
     }
     const user = userUtils.getUserInfo();
-    const storeIndex = this.data.stores.findIndex(store => store.storeId === user.storeId);
-    const store = this.data.stores[storeIndex] || {};
+    const { storeIndex, store } = getDefaultPurchaseStore(user, this.data.stores);
+    const defaultStoreId = userUtils.isDistributorAccount(user) ? '' : (store.storeId || user.storeId || '');
+    const defaultStoreName = userUtils.isDistributorAccount(user) ? '' : (store.name || user.storeName || '');
     const initialAllocation = {
       storeIndex,
-      storeId: store.storeId || user.storeId || '',
-      storeName: store.name || user.storeName || '',
+      storeId: defaultStoreId,
+      storeName: defaultStoreName,
       quantity: 1,
       locationOptions: [],
       locationIndex: -1,
@@ -644,8 +655,8 @@ Page({
       price: product.price || '',
       quantity: 1,
       storeIndex,
-      storeId: store.storeId || user.storeId || '',
-      storeName: store.name || user.storeName || '',
+      storeId: defaultStoreId,
+      storeName: defaultStoreName,
       storeAllocations: [initialAllocation],
       locationOptions: [],
       locationIndex: -1,

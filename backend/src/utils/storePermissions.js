@@ -5,7 +5,7 @@ function uniqueIds(values) {
   return [...new Set((values || []).map(value => String(value || '')).filter(Boolean))];
 }
 
-const STORE_ONLY_ROLE_CODES = new Set(['clerk', 'staff', 'manager', 'store_manager']);
+const STORE_ONLY_ROLE_CODES = new Set(['clerk', 'staff', 'manager', 'store_manager', 'store_admin']);
 
 function normalizeRoleCodes(roleCodes = []) {
   return [...new Set((Array.isArray(roleCodes) ? roleCodes : [roleCodes])

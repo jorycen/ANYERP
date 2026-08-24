@@ -35,8 +35,10 @@ async function authMiddleware(ctx, next) {
       ctx.throw(401, '账号已停用');
     }
 
-    let roles = (staff.Roles || []).map(role => role.role_code);
-    if (roles.length === 0 && staff.role_code) roles = [staff.role_code];
+    let roles = (staff.Roles || [])
+      .map(role => String(role.role_code || '').trim().toLowerCase())
+      .filter(Boolean);
+    if (roles.length === 0 && staff.role_code) roles = [String(staff.role_code).trim().toLowerCase()];
     roles = [...new Set(roles)];
 
     const configuredRegions = await resolveConfiguredRegions(staff, roles);

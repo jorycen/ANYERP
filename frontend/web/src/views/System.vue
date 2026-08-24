@@ -409,7 +409,7 @@
           <el-input v-model="userForm.password" type="password" placeholder="请输入初始密码" />
         </el-form-item>
         <el-form-item label="角色" required>
-          <el-select v-model="userForm.roleIds" multiple collapse-tags collapse-tags-tooltip placeholder="请选择一个或多个角色" style="width: 100%">
+          <el-select v-model="userForm.roleIds" placeholder="请选择岗位角色" style="width: 100%">
             <el-option v-for="r in roleData" :key="r.role_id" :label="r.name" :value="r.role_id" />
           </el-select>
         </el-form-item>
@@ -935,7 +935,7 @@ const userForm = reactive({
   name: '',
   phone: '',
   password: '',
-  roleIds: [],
+  roleIds: '',
   distributorId: '',
   supervisorStaffId: null,
   status: 1
@@ -1385,7 +1385,7 @@ const handleEditUser = async (row) => {
   userForm.name = row.name
   userForm.phone = row.phone
   userForm.password = ''
-  userForm.roleIds = [...(row.role_ids || [])]
+  userForm.roleIds = (row.role_ids || [])[0] || ''
   userForm.distributorId = row.distributor_id || ''
   userForm.supervisorStaffId = row.supervisor_staff_id || null
   userForm.status = row.status
@@ -1438,14 +1438,14 @@ const handleUserSubmit = async () => {
   if (!userForm.name) { ElMessage.warning('请输入姓名'); return }
   if (!userForm.phone) { ElMessage.warning('请输入手机号'); return }
   if (!userForm.staffId && !userForm.password) { ElMessage.warning('请输入初始密码'); return }
-  if (userForm.roleIds.length === 0) { ElMessage.warning('请至少选择一个角色'); return }
+  if (!userForm.roleIds) { ElMessage.warning('请选择岗位角色'); return }
 
   submitLoading.value = true
   try {
     const data = {
       name: userForm.name,
       phone: userForm.phone,
-      roleIds: userForm.roleIds,
+      roleIds: [userForm.roleIds],
       distributorId: userForm.distributorId,
       supervisorStaffId: userForm.supervisorStaffId || null,
       status: userForm.status
@@ -1574,7 +1574,7 @@ const resetUserForm = () => {
   userForm.name = ''
   userForm.phone = ''
   userForm.password = ''
-  userForm.roleIds = []
+  userForm.roleIds = ''
   userForm.distributorId = operatorUser.distributorId || distributorOptions.value[0]?.distributor_id || ''
   userForm.supervisorStaffId = null
   userForm.status = 1

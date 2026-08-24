@@ -1,4 +1,4 @@
-const STORE_ONLY_ROLES = new Set(['clerk', 'staff', 'manager', 'store_manager']);
+const STORE_ONLY_ROLES = new Set(['clerk', 'staff', 'manager', 'store_manager', 'store_admin']);
 
 function normalizeRoles(user = {}) {
   const roles = Array.isArray(user.roles) && user.roles.length > 0

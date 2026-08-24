@@ -70,7 +70,8 @@ const CLERK_TRANSFER_ROLE_CODES = new Set(['clerk', 'staff']);
 const MANAGER_TRANSFER_ROLE_CODES = new Set(['manager', 'store_manager']);
 const STORE_ONLY_ROLE_CODES = new Set([
   ...CLERK_TRANSFER_ROLE_CODES,
-  ...MANAGER_TRANSFER_ROLE_CODES
+  ...MANAGER_TRANSFER_ROLE_CODES,
+  'store_admin'
 ]);
 const TRANSFER_REQUEST_STATUSES = new Set(['pending', 'requested', 'applied', 'shipping']);
 

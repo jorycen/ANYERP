@@ -7,18 +7,22 @@ export function getUserInfo() {
 }
 
 export function getRoleCode() {
-  return getUserInfo().roleCode || ''
+  return String(getUserInfo().roleCode || '').trim().toLowerCase()
 }
 
 export function getRoleCodes() {
   const user = getUserInfo()
-  if (Array.isArray(user.roles) && user.roles.length > 0) return user.roles
-  return String(user.roleCode || '').split(',').map(role => role.trim()).filter(Boolean)
+  const rawRoles = Array.isArray(user.roles) && user.roles.length > 0
+    ? user.roles
+    : String(user.roleCode || '').split(',')
+  return rawRoles
+    .map(role => String(role || '').trim().toLowerCase())
+    .filter(Boolean)
 }
 
 export function getStoreId() {
   const roles = getRoleCodes()
-  const storeOnlyRoles = new Set(['clerk', 'staff', 'manager', 'store_manager'])
+  const storeOnlyRoles = new Set(['clerk', 'staff', 'manager', 'store_manager', 'store_admin'])
   return roles.length > 0 && roles.every(role => storeOnlyRoles.has(role))
     ? (getUserInfo().storeId || '')
     : ''
@@ -30,11 +34,11 @@ export function getStoreName() {
 
 export function isStoreUser() {
   const roles = getRoleCodes()
-  return roles.length > 0 && roles.every(role => ['clerk', 'staff', 'manager', 'store_manager'].includes(role))
+  return roles.length > 0 && roles.every(role => ['clerk', 'staff', 'manager', 'store_manager', 'store_admin'].includes(role))
 }
 
 export function isDistributorAccount() {
-  const storeOnlyRoles = new Set(['clerk', 'staff', 'manager', 'store_manager'])
+  const storeOnlyRoles = new Set(['clerk', 'staff', 'manager', 'store_manager', 'store_admin'])
   return getRoleCodes().some(role => !storeOnlyRoles.has(role))
 }
 

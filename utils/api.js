@@ -32,7 +32,7 @@ function getListPayload(result) {
 
 function mapRole(roleCode) {
   const role = String(roleCode || '').toLowerCase();
-  if (role === 'boss' || role === 'admin' || role === 'distributor' || role === 'system_admin') return 'distributor';
+  if (['boss', 'admin', 'distributor', 'system_admin', 'business', 'finance', 'purchaser', 'cashier'].includes(role)) return 'distributor';
   if (role === 'manager' || role === 'store_admin') return 'store_admin';
   return 'staff';
 }

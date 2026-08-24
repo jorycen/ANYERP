@@ -48,7 +48,7 @@ async function login(ctx) {
       where: { role_code: staff.role_code, status: 1 }
     });
   }
-  const roleCodes = roles.map(r => r.role_code);
+  const roleCodes = roles.map(r => String(r.role_code || '').trim().toLowerCase()).filter(Boolean);
   const roleNames = roles.map(r => r.name);
   const assignedStoreIds = await resolveAccessibleStoreIds(staff, roleCodes);
   const effectiveStoreId = isStoreScopedAccount(roleCodes)
@@ -146,7 +146,7 @@ async function getUserInfo(ctx) {
     order: [['sort_order', 'ASC'], ['menu_id', 'ASC']]
   });
 
-  const roleCodes = roles.map(r => r.role_code);
+  const roleCodes = roles.map(r => String(r.role_code || '').trim().toLowerCase()).filter(Boolean);
   const roleNames = roles.map(r => r.name);
   const assignedStoreIds = await resolveAccessibleStoreIds(staff, roleCodes);
   const configuredRegions = await resolveConfiguredRegions(staff, roleCodes);
