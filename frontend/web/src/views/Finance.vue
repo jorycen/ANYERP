@@ -411,6 +411,20 @@
             <el-table-column label="收款方" width="150">
               <template #default="{ row }">{{ getPayablePayeeName(row) }}</template>
             </el-table-column>
+            <el-table-column label="采购原价" width="120">
+              <template #default="{ row }">
+                <span v-if="row.source_type === 'purchase'">¥{{ formatMoney(row.purchase_original_amount) }}</span>
+                <span v-else>-</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="返利抵扣" width="120">
+              <template #default="{ row }">
+                <span v-if="row.source_type === 'purchase' && Number(row.purchase_rebate_deduction || 0) > 0">
+                  ¥{{ formatMoney(row.purchase_rebate_deduction) }}
+                </span>
+                <span v-else>-</span>
+              </template>
+            </el-table-column>
             <el-table-column prop="total_amount" label="应付金额" width="120">
               <template #default="{ row }">¥{{ formatMoney(row.current_total_amount ?? row.total_amount) }}</template>
             </el-table-column>
@@ -426,6 +440,9 @@
                   {{ getPayableStatusText(row.status) }}
                 </el-tag>
               </template>
+            </el-table-column>
+            <el-table-column prop="purchase_initiator" label="采购发起人" width="130">
+              <template #default="{ row }">{{ ['purchase', 'purchase_adjustment'].includes(row.source_type) ? (row.purchase_initiator || '-') : '-' }}</template>
             </el-table-column>
             <el-table-column prop="create_time" label="创建时间" width="160" />
             <el-table-column label="操作" width="140">

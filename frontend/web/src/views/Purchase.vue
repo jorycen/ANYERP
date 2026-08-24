@@ -45,7 +45,6 @@
                 {{ row.submitter_name || row.apply_user || row.create_user || row.operator_name || '-' }}
               </template>
             </el-table-column>
-            <el-table-column prop="approve_user" label="审批人" width="110" />
             <el-table-column prop="supplier_name" label="供应商" width="150" />
             <el-table-column label="付款方式" width="110">
               <template #default="{ row }">{{ getPaymentMethodText(row.payment_method) }}</template>
@@ -53,6 +52,12 @@
             <el-table-column prop="invoice_type" label="发票类型" width="100" />
             <el-table-column prop="product_type" label="货型" width="130" />
             <el-table-column prop="items_summary" label="商品摘要" min-width="200" show-overflow-tooltip />
+            <el-table-column prop="total_amount" label="采购原价" width="120">
+              <template #default="{ row }">¥{{ formatMoney(row.total_amount) }}</template>
+            </el-table-column>
+            <el-table-column prop="rebate_deduction" label="抵扣金额" width="120">
+              <template #default="{ row }">-¥{{ formatMoney(row.rebate_deduction) }}</template>
+            </el-table-column>
             <el-table-column prop="total_amount" label="申请金额" width="120">
               <template #default="{ row }">¥{{ formatMoney(row.current_total_amount ?? row.total_amount) }}</template>
             </el-table-column>
