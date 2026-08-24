@@ -1122,7 +1122,7 @@ const onRequestSupplierVisibleChange = async (visible) => {
 
 const loadProducts = async () => {
   try {
-    const res = await api.getProductList({ page: 1, pageSize: 1000 })
+    const res = await api.getProductList({ activeOnly: 1, page: 1, pageSize: 1000 })
     if (res.code === 0) {
       products.value = res.data?.list || []
     }
@@ -1600,7 +1600,7 @@ const removeSupplierAccount = (index) => {
 const searchProducts = async (keyword) => {
   productSearchKeyword.value = keyword
   try {
-    const res = await api.getProductList({ keyword, page: 1, pageSize: 50 })
+    const res = await api.getProductList({ activeOnly: 1, keyword, page: 1, pageSize: 50 })
     if (res.code === 0) {
       products.value = res.data?.list || []
     }

@@ -16,6 +16,7 @@ const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freigh
 const { createProductRecord } = require('../product/controller');
 const { executeInbound, updateInventory, getAvailableQty } = require('../inventory/controller');
 const { getAllocationSummary, getPayableRemaining, refreshPayableState } = require('../finance/settlementAllocation');
+const { assertActiveProducts } = require('../../utils/activeProduct');
 
 function normalizeFileList(...values) {
   const result = [];
@@ -95,6 +96,15 @@ async function loadPurchaseProductSnapshots(items, transaction = null) {
     ...(transaction ? { transaction } : {})
   });
   return new Map(products.map(product => [String(product.product_id), product]));
+}
+
+async function assertActivePurchaseProducts(items, transaction = null) {
+  const productIds = [...new Set((items || [])
+    .filter(item => Number(item?.isUsedProduct ?? item?.is_used_product ?? 0) !== 1)
+    .map(item => item.productId || item.product_id)
+    .filter(productId => productId && String(productId) !== '__USED_PRODUCT__')
+    .map(String))];
+  return assertActiveProducts(Product, productIds, transaction ? { transaction } : {});
 }
 
 function allocateRebateByItems(items, amount) {
@@ -833,6 +843,7 @@ async function createRequest(ctx) {
   let createdRequest;
 
   await sequelize.transaction(async transaction => {
+    await assertActivePurchaseProducts(items, transaction);
     const productSnapshots = await loadPurchaseProductSnapshots(items, transaction);
     // 表头、明细、返利、运费和审计记录必须原子提交，避免明细写入失败后留下可审批的空采购单。
     if (deduction > 0 && !isDraft) {
@@ -1013,6 +1024,7 @@ async function submitRequestDraft(ctx) {
   const usedDraftItems = (request.items || []).filter(item => Number(item.is_used_product) === 1 && !item.product_id);
   usedDraftItems.forEach(item => { item.product_id = '__USED_PRODUCT__'; });
   const goodsType = await validateDraftSubmission(request, ctx);
+  await assertActivePurchaseProducts(request.items);
   usedDraftItems.forEach(item => { item.product_id = null; });
   const deduction = Math.min(toMoney(request.rebate_deduction || 0), toMoney(request.total_amount || 0));
   if (deduction > 0) {
@@ -1141,6 +1153,7 @@ async function updateRequestDraft(ctx) {
   const normalizedFreightAmount = toMoney(freightAmount === undefined ? freight_amount : freightAmount);
 
   await sequelize.transaction(async transaction => {
+    await assertActivePurchaseProducts(items, transaction);
     const productSnapshots = await loadPurchaseProductSnapshots(items, transaction);
     await request.update({
       supplier_id: supplierId || null,
@@ -1342,6 +1355,7 @@ async function approveRequest(ctx) {
       }, transaction);
       await item.update({ product_id: created.productId, product_name: created.productName, pn_code: item.pn_code || null }, { transaction });
     }
+    await assertActiveProducts(Product, request.items.map(item => item.product_id).filter(Boolean), { transaction });
     await ensurePayableForApprovedRequest(request, user, transaction);
     await validatePurchaseAllocations(request.items, request.store_id, transaction);
     for (const item of request.items) {

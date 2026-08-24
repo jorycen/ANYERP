@@ -52,6 +52,7 @@ const { normalizePnCode } = require('../../utils/productPn');
 const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
+const { assertActiveProducts } = require('../../utils/activeProduct');
 
 async function isRentalDemoSn(sn, transaction = null) {
   if (sn?.inventory_type === 'rental_demo_qty') return true;
@@ -1879,6 +1880,11 @@ async function syncOrderItemsFromPayload(order, data = {}, transaction = null, o
 
   const normalizedItems = rawItems.map(item => applyOrderItemDefaults(normalizeOrderItemInput(item)));
   assertUniqueOrderSnItems(normalizedItems, '订单');
+  await assertActiveProducts(
+    Product,
+    normalizedItems.map(item => item.product_id).filter(Boolean),
+    transaction ? { transaction } : {}
+  );
 
   function comparable(value) {
     return String(value === undefined || value === null ? '' : value).trim().toUpperCase();
@@ -2053,8 +2059,9 @@ async function create(ctx) {
   }
 
   const productIds = [...new Set(normalizedItems.map(i => i.product_id).filter(Boolean))];
+  await assertActiveProducts(Product, productIds);
   const products = await Product.findAll({
-    where: { product_id: { [Op.in]: productIds } }
+    where: { product_id: { [Op.in]: productIds }, is_deleted: 0, status: 1 }
   });
   const productMap = new Map();
   products.forEach(p => productMap.set(p.product_id, p));
@@ -3082,7 +3089,7 @@ async function availableDeposits(ctx) {
 
 async function getProductPns(ctx) {
   const { storeId, productId } = ctx.params;
-  const product = await Product.findByPk(productId);
+  const product = await Product.findOne({ where: { product_id: productId, is_deleted: 0, status: 1 } });
   if (!product) {
     ctx.throw(404, '商品不存在');
   }
@@ -3132,6 +3139,7 @@ async function getProductSns(ctx) {
   const { storeId, productId } = ctx.params;
   const { pnCode } = ctx.query;
   assertStoreVisible(storeId, ctx.state.user);
+  await assertActiveProducts(Product, [productId]);
 
   const where = {
     product_id: productId,
@@ -4396,7 +4404,7 @@ async function reserveInventoryForOrder(order, transaction = null) {
   assertUniqueOrderSnItems(items, '订单');
 
   const productIds = [...new Set(items.map(i => i.product_id).filter(Boolean))];
-  const products = await Product.findAll({ where: { product_id: { [Op.in]: productIds } }, transaction });
+  const products = await Product.findAll({ where: { product_id: { [Op.in]: productIds }, is_deleted: 0, status: 1 }, transaction });
   const productMap = new Map(products.map(product => [product.product_id, product]));
   const operations = [];
 
@@ -4638,7 +4646,7 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
 
   const productIds = [...new Set(items.map(i => String(i.product_id || '')).filter(Boolean))];
   const products = productIds.length
-    ? await Product.findAll({ where: { product_id: { [Op.in]: productIds }, is_deleted: 0 }, transaction })
+    ? await Product.findAll({ where: { product_id: { [Op.in]: productIds }, is_deleted: 0, status: 1 }, transaction })
     : [];
   const productMap = new Map(products.map(product => [String(product.product_id), product]));
   const operations = [];

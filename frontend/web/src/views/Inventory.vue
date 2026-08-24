@@ -2176,7 +2176,7 @@ const loadStores = async () => {
 
 const loadCategories = async () => {
   try {
-    const res = await api.getProductList({ page: 1, pageSize: 500 })
+    const res = await api.getProductList({ activeOnly: 1, page: 1, pageSize: 500 })
     if (res.code === 0) {
       const cats = new Set()
       ;(res.data?.list || []).forEach(p => { if (p.category) cats.add(p.category) })
@@ -3931,6 +3931,7 @@ const searchConversionSourceProducts = async (keyword = '') => {
 const searchConversionTargetProducts = async (keyword = '') => {
   try {
     const res = await api.getProductList({
+      activeOnly: 1,
       keyword,
       page: 1,
       pageSize: 50

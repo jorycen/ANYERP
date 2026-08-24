@@ -26,6 +26,7 @@ const { ensureProductPnMaster } = require('../../utils/productPnMaster');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
 const { createSalesReturnGrossProfitLedger } = require('../sales/grossProfit');
 const { createSalesReturnSettlement } = require('../sales/salesReturnSettlement');
+const { assertActiveProducts } = require('../../utils/activeProduct');
 
 const REUSABLE_INBOUND_SN_STATUSES = new Set(['out_stock', 'sold']);
 
@@ -3294,7 +3295,8 @@ async function executeInbound(ctx) {
       ? await Supplier.findByPk(purchaseRequest.supplier_id, { transaction: t })
       : null;
     const productIds = inboundItems.map(item => item.product_id);
-    const products = await Product.findAll({ where: { product_id: { [Op.in]: productIds } }, transaction: t });
+    await assertActiveProducts(Product, productIds, { transaction: t });
+    const products = await Product.findAll({ where: { product_id: { [Op.in]: productIds }, is_deleted: 0, status: 1 }, transaction: t });
     const productMap = new Map();
     products.forEach(p => productMap.set(p.product_id, p));
     const progressByItem = new Map();
@@ -3696,6 +3698,8 @@ async function inbound(ctx) {
   try {
     const user = ctx.state.user;
     const { storeId, sourceType, sourceNo, items } = ctx.request.body;
+    if (!Array.isArray(items) || items.length === 0) ctx.throw(400, '请至少提交一条入库明细');
+    await assertActiveProducts(Product, items.map(item => item.productId || item.product_id));
 
     const inboundNo = generateInboundNo();
     const inboundId = generateUUID();
@@ -3780,6 +3784,7 @@ async function transfer(ctx) {
     }
 
     const productIds = [...new Set(items.map(item => item.productId))];
+    await assertActiveProducts(Product, productIds, { transaction: t });
     const products = await Product.findAll({
       where: { product_id: { [Op.in]: productIds }, is_deleted: 0 },
       transaction: t
@@ -4134,6 +4139,7 @@ async function confirmTransferOutPartial(ctx) {
       .filter(item => !item.sn_id && !item.sn_code && Number(item.quantity || 0) > 0);
     if (!requestItems.length) ctx.throw(400, 'Transfer has no pending item lines');
     const productIds = [...new Set(requestItems.map(item => item.product_id).filter(Boolean))];
+    await assertActiveProducts(Product, productIds, { transaction: t });
     const products = await Product.findAll({
       where: { product_id: { [Op.in]: productIds }, is_deleted: 0 },
       transaction: t
@@ -4324,6 +4330,7 @@ async function confirmTransferOut(ctx) {
       ctx.throw(400, '请上传至少一张出库凭证照片');
     }
     const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean))];
+    await assertActiveProducts(Product, productIds, { transaction: t });
     const products = productIds.length > 0
       ? await Product.findAll({ where: { product_id: { [Op.in]: productIds } }, transaction: t })
       : [];
@@ -4554,6 +4561,7 @@ async function confirmTransferIn(ctx) {
         .map(item => [String(item.itemId || item.item_id), item])
     );
     const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean))];
+    await assertActiveProducts(Product, productIds, { transaction: t });
     const products = productIds.length
       ? await Product.findAll({ where: { product_id: { [Op.in]: productIds } }, transaction: t })
       : [];
@@ -4770,7 +4778,8 @@ function normalizeConversionType(value) {
 }
 
 async function ensurePn(productId, pnCode, transaction) {
-  const product = await Product.findByPk(productId, {
+  const product = await Product.findOne({
+    where: { product_id: productId, is_deleted: 0, status: 1 },
     attributes: ['product_id', 'product_code', 'need_sn', 'manufacturer_code'],
     transaction
   });
@@ -4851,8 +4860,11 @@ async function buildConversionSourceRows(sourceItems, conversionType, storeId, t
   const rows = [];
   for (const raw of sourceItems) {
     const productId = raw.productId || raw.product_id;
-    const product = await Product.findByPk(productId, { transaction });
-    if (!product || product.is_deleted === 1) {
+    const product = await Product.findOne({
+      where: { product_id: productId, is_deleted: 0, status: 1 },
+      transaction
+    });
+    if (!product) {
       const err = new Error(`来源商品不存在：${productId || ''}`);
       err.status = 400;
       throw err;
@@ -4947,8 +4959,11 @@ async function buildConversionTargetRows(targetItems, conversionType, storeId, s
   const rows = [];
   for (const raw of targetItems) {
     const productId = raw.productId || raw.product_id;
-    const product = await Product.findByPk(productId, { transaction });
-    if (!product || product.is_deleted === 1) {
+    const product = await Product.findOne({
+      where: { product_id: productId, is_deleted: 0, status: 1 },
+      transaction
+    });
+    if (!product) {
       const err = new Error(`目标商品不存在：${productId || ''}`);
       err.status = 400;
       throw err;
@@ -5108,6 +5123,10 @@ async function createConversion(ctx) {
 
     const sourceRows = await buildConversionSourceRows(body.sourceItems || body.source_items, conversionType, storeId, t);
     const targetRows = await buildConversionTargetRows(body.targetItems || body.target_items, conversionType, storeId, sourceRows, t);
+    await assertActiveProducts(Product, [
+      ...sourceRows.map(item => item.product_id),
+      ...targetRows.map(item => item.product_id)
+    ], { transaction: t });
 
     const totalSourceCost = money(sourceRows.reduce((sum, item) => sum + Number(item.total_cost || 0), 0));
     const totalTargetCost = money(targetRows.reduce((sum, item) => sum + Number(item.total_cost || 0), 0));
@@ -5433,8 +5452,10 @@ async function requestReturn(ctx) {
     if (items.length === 0) ctx.throw(400, '该入库单没有商品明细');
 
     const productIds = items.map(item => item.product_id);
+    await assertActiveProducts(Product, productIds, { transaction: t });
     const products = await Product.findAll({
-      where: { product_id: { [Op.in]: productIds } }
+      where: { product_id: { [Op.in]: productIds }, is_deleted: 0, status: 1 },
+      transaction: t
     });
     const productMap = new Map();
     products.forEach(p => productMap.set(p.product_id, p));
@@ -5590,6 +5611,7 @@ async function executeReturn(ctx) {
 
     const items = returnStock.items || [];
     if (items.length === 0) ctx.throw(400, '退库申请没有商品明细');
+    await assertActiveProducts(Product, items.map(item => item.product_id), { transaction: t });
 
     for (const item of items) {
       const quantity = Number(item.quantity || 1);

@@ -410,9 +410,10 @@ async function findCategoryByName(categoryPath) {
 }
 
 async function getProductList(ctx) {
-  const { keyword, categoryId, page = 1, pageSize = 20 } = ctx.query;
+  const { keyword, categoryId, activeOnly, page = 1, pageSize = 20 } = ctx.query;
 
   const where = { is_deleted: 0 };
+  if (String(activeOnly || '') === '1') where.status = 1;
   if (categoryId) {
     const path = await resolveCategoryPath(categoryId);
     if (path) where.category = { [Op.like]: `${path}%` };
