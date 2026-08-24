@@ -6,7 +6,7 @@ const { sequelize, Menu, Role, RoleMenu, Staff, StaffRole, StaffStorePermission,
 const { Op } = require('sequelize');
 const { generateUUID } = require('../../utils');
 const { getStandardLocation } = require('../../utils/standardLocations');
-const { isRegionScopedAccount } = require('../../utils/storePermissions');
+const { isRegionScopedAccount, isStoreScopedAccount } = require('../../utils/storePermissions');
 const { accessibleDistributorIds, canAccessDistributor, uniqueIds, validateDistributorIds } = require('../../utils/distributorScope');
 
 function getResetPasswordFromPhone(phone) {
@@ -492,7 +492,7 @@ async function createUser(ctx) {
   const requestedDistributorIds = normalizeRequestedDistributorIds(ctx.request.body, ctx.state.user.distributorId);
   if (!requestedDistributorIds.length) ctx.throw(400, '请选择所属经销商');
   const targetRoles = roles.map(role => String(role.role_code || '').toLowerCase());
-  if (isRegionScopedAccount(targetRoles) && requestedDistributorIds.length > 1) {
+  if (isStoreScopedAccount(targetRoles) && requestedDistributorIds.length > 1) {
     ctx.throw(400, '店员/店长账号只能归属一个经销商');
   }
   const operatorDistributorIds = accessibleDistributorIds(ctx.state.user);
@@ -600,7 +600,7 @@ async function updateUser(ctx) {
     updateData.role_code = roles[0].role_code;
   }
   await validateDistributorIds(requestedDistributorIds);
-  if (isRegionScopedAccount(nextRoleCodes) && requestedDistributorIds.length > 1) {
+  if (isStoreScopedAccount(nextRoleCodes) && requestedDistributorIds.length > 1) {
     ctx.throw(400, '店员/店长账号只能归属一个经销商');
   }
   if (!isBoss(ctx.state.user) && requestedDistributorIds.some(id => !accessibleDistributorIds(ctx.state.user).includes(id))) {
