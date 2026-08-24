@@ -6,6 +6,7 @@ const jwt = require('jsonwebtoken');
 const config = require('../config');
 const { Staff, Role } = require('../models');
 const { resolveAccessibleStoreIds, resolvePrimaryStoreId, resolveConfiguredRegions, isStoreScopedAccount } = require('../utils/storePermissions');
+const { resolveStaffDistributorIds } = require('../utils/distributorScope');
 const { isDealerTraceAccount } = require('../utils/snTracePermission');
 const { consumeDownloadTicket } = require('../utils/downloadTicket');
 
@@ -43,6 +44,7 @@ async function authMiddleware(ctx, next) {
 
     const configuredRegions = await resolveConfiguredRegions(staff, roles);
     const regionCodes = configuredRegions.codes;
+    const accessibleDistributorIds = roles.includes('boss') ? ['*'] : await resolveStaffDistributorIds(staff);
     const accessibleStoreIds = await resolveAccessibleStoreIds(staff, roles);
     const effectiveStoreId = isStoreScopedAccount(roles)
       ? resolvePrimaryStoreId(staff, accessibleStoreIds)
@@ -55,6 +57,8 @@ async function authMiddleware(ctx, next) {
       roleCode: staff.role_code,
       roles,
       distributorId: staff.distributor_id,
+      distributorIds: accessibleDistributorIds,
+      accessibleDistributorIds,
       storeId: effectiveStoreId,
       regionId: staff.region_id,
       regionCodes,

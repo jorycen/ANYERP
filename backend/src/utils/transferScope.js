@@ -1,4 +1,5 @@
 const { Store, Region } = require('../models');
+const { accessibleDistributorIds, canAccessDistributor } = require('./distributorScope');
 
 function transferRegionKeys(store) {
   return [
@@ -28,6 +29,7 @@ async function assertTransferStoreScope(ctx, storeId, { ignoreRegion = false } =
   if (!targetStore) ctx.throw(404, '门店不存在或已停用');
   if ((user.roles || []).includes('boss')) return targetStore;
 
+  const userDistributorIds = accessibleDistributorIds(user);
   let distributorId = String(user.distributorId || '');
   let currentStore = null;
   const accessibleStoreIds = Array.isArray(user.accessibleStoreIds)
@@ -42,11 +44,15 @@ async function assertTransferStoreScope(ctx, storeId, { ignoreRegion = false } =
     distributorId = distributorId || String(currentStore?.distributor_id || '');
   }
 
-  if (!distributorId) {
+  if (!distributorId && userDistributorIds.length === 1 && userDistributorIds[0] !== '*') {
+    distributorId = String(userDistributorIds[0]);
+  }
+
+  if (!distributorId && !userDistributorIds.includes('*')) {
     ctx.throw(403, '当前账号未绑定经销商，无法访问调拨门店');
   }
 
-  if (distributorId && String(targetStore.distributor_id || '') !== distributorId) {
+  if (!canAccessDistributor(user, targetStore.distributor_id)) {
     ctx.throw(403, '无权访问该门店');
   }
 

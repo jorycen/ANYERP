@@ -6,6 +6,7 @@ const bcrypt = require('bcryptjs');
 const { Staff, Role, Menu, RoleMenu, StaffRole, Store, Region, Distributor } = require('../../models');
 const config = require('../../config');
 const { resolveAccessibleStoreIds, resolvePrimaryStoreId, resolveConfiguredRegions, isStoreScopedAccount } = require('../../utils/storePermissions');
+const { resolveStaffDistributorIds } = require('../../utils/distributorScope');
 
 /**
  * 登录
@@ -71,6 +72,7 @@ async function login(ctx) {
   });
 
   const configuredRegions = await resolveConfiguredRegions(staff, roleCodes);
+  const accessibleDistributorIds = roleCodes.includes('boss') ? ['*'] : await resolveStaffDistributorIds(staff);
 
   // 生成 token
   const token = jwt.sign(
@@ -98,6 +100,8 @@ async function login(ctx) {
       roleNames,
       roles: roleCodes,
       distributorId: staff.distributor_id || '',
+      distributorIds: accessibleDistributorIds,
+      accessibleDistributorIds,
       distributorName: distributor?.name || '',
       scopeType: isStoreScopedAccount(roleCodes) ? 'store' : (roleCodes.includes('boss') ? 'global' : 'distributor'),
       storeId: effectiveStoreId,
@@ -150,6 +154,7 @@ async function getUserInfo(ctx) {
   const roleNames = roles.map(r => r.name);
   const assignedStoreIds = await resolveAccessibleStoreIds(staff, roleCodes);
   const configuredRegions = await resolveConfiguredRegions(staff, roleCodes);
+  const accessibleDistributorIds = roleCodes.includes('boss') ? ['*'] : await resolveStaffDistributorIds(staff);
   const effectiveStoreId = isStoreScopedAccount(roleCodes)
     ? resolvePrimaryStoreId(staff, assignedStoreIds)
     : null;
@@ -169,6 +174,8 @@ async function getUserInfo(ctx) {
     roleNames,
     roles: roleCodes,
     distributorId: staff.distributor_id || '',
+    distributorIds: accessibleDistributorIds,
+    accessibleDistributorIds,
     distributorName: distributor?.name || '',
     scopeType: isStoreScopedAccount(roleCodes) ? 'store' : (roleCodes.includes('boss') ? 'global' : 'distributor'),
     storeId: effectiveStoreId,

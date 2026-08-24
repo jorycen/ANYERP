@@ -1,5 +1,6 @@
 const { Op } = require('sequelize');
 const { StaffStorePermission, RegionPermission, Region, Store } = require('../models');
+const { resolveStaffDistributorIds } = require('./distributorScope');
 
 function uniqueIds(values) {
   return [...new Set((values || []).map(value => String(value || '')).filter(Boolean))];
@@ -32,31 +33,14 @@ function isStoreManagerAccount(roleCodes = []) {
 }
 
 /**
- * 读取本账号所属经销商下全部有效门店。
- * 该范围只用于明确的只读查询，不改变账号原有门店写入权限。
+ * 库存只读范围。所有已登录账号都可以查看全部有效门店的库存，
+ * 但库存写入仍由 accessibleStoreIds 和业务控制器单独校验。
  */
 async function resolveAllReadableStoreIds(user = {}) {
   const roles = normalizeRoleCodes(user.roles || user.roleCode || []);
   if (roles.includes('boss') || (user.accessibleStoreIds || []).includes('*')) return ['*'];
-
-  let distributorId = String(user.distributorId || '').trim();
-  const assignedStoreIds = uniqueIds(user.accessibleStoreIds || []);
-
-  // 历史账号可能没有在 token 中带出经销商，先从已有门店权限推导，推导不唯一时保持原范围。
-  if (!distributorId && assignedStoreIds.length > 0) {
-    const assignedStores = await Store.findAll({
-      where: { store_id: { [Op.in]: assignedStoreIds }, is_deleted: 0, status: 1 },
-      attributes: ['distributor_id'],
-      raw: true
-    });
-    const distributorIds = uniqueIds(assignedStores.map(store => store.distributor_id));
-    if (distributorIds.length === 1) distributorId = distributorIds[0];
-  }
-
-  if (!distributorId) return assignedStoreIds;
-
   const stores = await Store.findAll({
-    where: { distributor_id: distributorId, is_deleted: 0, status: 1 },
+    where: { is_deleted: 0, status: 1 },
     attributes: ['store_id'],
     raw: true
   });
@@ -116,6 +100,18 @@ async function resolveConfiguredRegions(staff, roleCodes = []) {
 async function resolveAccessibleStoreIds(staff, roleCodes = []) {
   if (roleCodes.includes('boss')) return ['*'];
 
+  // 中台账号的门店操作范围由经销商多选权限决定，不受历史精确门店授权残留影响。
+  if (!isStoreScopedAccount(roleCodes)) {
+    const distributorIds = await resolveStaffDistributorIds(staff);
+    if (!distributorIds.length) return [];
+    const stores = await Store.findAll({
+      where: { distributor_id: { [Op.in]: distributorIds }, is_deleted: 0, status: 1 },
+      attributes: ['store_id'],
+      raw: true
+    });
+    return uniqueIds(stores.map(store => store.store_id));
+  }
+
   const permissions = await StaffStorePermission.findAll({
     where: { staff_id: staff.staff_id },
     attributes: ['store_id'],
@@ -129,10 +125,6 @@ async function resolveAccessibleStoreIds(staff, roleCodes = []) {
   });
   const assignedStoreIds = uniqueIds(permissions.map(item => item.store_id));
   if (assignedStoreIds.length > 0) return assignedStoreIds;
-
-  // 经销商级账号的精确门店权限是唯一事实来源；没有分配门店时必须返回空范围。
-  // 仅店员/店长保留旧账号的主门店/区域兼容逻辑。
-  if (!isStoreScopedAccount(roleCodes)) return [];
 
   const legacyPermissions = await RegionPermission.findAll({
     where: { staff_id: staff.staff_id, can_view: 1 },

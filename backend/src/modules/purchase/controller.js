@@ -255,6 +255,7 @@ function flattenPurchaseAllocations(item, fallbackStoreId) {
 
 async function validatePurchaseAllocations(items, fallbackStoreId, transaction = null) {
   const defaultLocationByStore = new Map();
+  const allocationDistributorIds = new Set();
   const getDefaultLocation = async storeId => {
     const key = String(storeId || '');
     if (!defaultLocationByStore.has(key)) {
@@ -291,6 +292,15 @@ async function validatePurchaseAllocations(items, fallbackStoreId, transaction =
       if (!storeId || storeQuantity <= 0 || locationAllocations.length === 0) {
         throw new Error(`商品 ${item.productName || item.product_name || item.productId || item.product_id} 必须分配到有效库位`);
       }
+
+      const allocationStore = await Store.findOne({
+        where: { store_id: storeId, is_deleted: 0, status: 1 },
+        attributes: ['store_id', 'distributor_id'],
+        transaction
+      });
+      if (!allocationStore) throw new Error(`门店 ${storeId} 不存在、已停用或未绑定经销商`);
+      if (allocationStore.distributor_id) allocationDistributorIds.add(String(allocationStore.distributor_id));
+      if (allocationDistributorIds.size > 1) throw new Error('同一采购申请不能跨经销商分配门店，请拆分采购申请');
 
       let locationQuantity = 0;
       for (const location of locationAllocations) {
@@ -832,6 +842,12 @@ async function createRequest(ctx) {
   if (!finalStoreId) ctx.throw(400, '请选择门店或完善门店分配');
   assertPurchaseAllocationStoresVisible(ctx, items, finalStoreId);
 
+  const purchaseStore = await Store.findOne({
+    where: { store_id: finalStoreId, is_deleted: 0, status: 1 },
+    attributes: ['store_id', 'distributor_id', 'region_id']
+  });
+  if (!purchaseStore?.distributor_id) ctx.throw(400, '采购门店未绑定经销商');
+
   try {
     await validatePurchaseAllocations(items, finalStoreId);
   } catch (error) {
@@ -866,6 +882,7 @@ async function createRequest(ctx) {
       request_id: requestId,
       request_no: requestNo,
       store_id: finalStoreId,
+      distributor_id: purchaseStore.distributor_id,
       supplier_id: supplierId || null,
       goods_type_id: canonicalGoodsTypeId,
       product_type: canonicalProductType,
@@ -1253,7 +1270,7 @@ async function ensurePayableForApprovedRequest(request, user, transaction = null
 
   const supplier = await Supplier.findByPk(request.supplier_id, { transaction });
   const store = request.store_id
-    ? await Store.findByPk(request.store_id, { attributes: ['region_id'], transaction })
+    ? await Store.findByPk(request.store_id, { attributes: ['region_id', 'distributor_id'], transaction })
     : null;
   await Payable.create({
     payable_id: generateUUID(),
@@ -1268,6 +1285,7 @@ async function ensurePayableForApprovedRequest(request, user, transaction = null
     source_id: request.request_id,
     source_no: request.request_no,
     region_id: store?.region_id || null,
+    distributor_id: request.distributor_id || store?.distributor_id || null,
     total_amount: amount,
     paid_amount: 0,
     status: 'unpaid',
@@ -1553,6 +1571,7 @@ async function getAdjustmentPreview(ctx) {
       request_id: request.request_id,
       request_no: request.request_no,
       store_id: request.store_id,
+      distributor_id: request.distributor_id || request.Store?.distributor_id || null,
       supplier_id: request.supplier_id,
       supplier_name: request.Supplier?.name || '',
       payment_method: request.payment_method,
@@ -1850,6 +1869,7 @@ async function createPurchaseAdjustment(ctx) {
         source_id: adjustmentId,
         source_no: adjustmentNo,
         region_id: request.store_id ? (await Store.findByPk(request.store_id, { attributes: ['region_id'], transaction }))?.region_id || null : null,
+        distributor_id: request.distributor_id || request.Store?.distributor_id || null,
         total_amount: totalAmountDelta,
         offset_amount: 0,
         paid_amount: 0,

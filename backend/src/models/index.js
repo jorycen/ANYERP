@@ -108,6 +108,14 @@ const StaffStorePermission = sequelize.define('StaffStorePermission', {
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_STAFF_STORE_PERMISSION', timestamps: false });
 
+// 员工可操作的经销商范围。店员/店长通常只有一条，中台账号可以有多条。
+const StaffDistributorPermission = sequelize.define('StaffDistributorPermission', {
+  id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true },
+  staff_id: { type: DataTypes.BIGINT(20), allowNull: false },
+  distributor_id: { type: DataTypes.STRING(32), allowNull: false },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_STAFF_DISTRIBUTOR_PERMISSION', timestamps: false });
+
 // 区域权限
 const RegionPermission = sequelize.define('RegionPermission', {
   id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true },
@@ -821,6 +829,7 @@ const PurchaseRequest = sequelize.define('PurchaseRequest', {
   request_id: { type: DataTypes.STRING(32), primaryKey: true },
   request_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
   store_id: { type: DataTypes.STRING(32), allowNull: false },
+  distributor_id: { type: DataTypes.STRING(32), comment: '采购业务所属经销商快照' },
   supplier_id: { type: DataTypes.STRING(32) },
   goods_type_id: { type: DataTypes.STRING(32), comment: '关联货型配置ID' },
   product_type: { type: DataTypes.STRING(128), comment: '货型名称快照' },
@@ -955,6 +964,7 @@ const PurchaseAdjustment = sequelize.define('PurchaseAdjustment', {
   request_id: { type: DataTypes.STRING(32), allowNull: false },
   request_no: { type: DataTypes.STRING(64) },
   store_id: { type: DataTypes.STRING(32) },
+  distributor_id: { type: DataTypes.STRING(32), comment: '采购调整所属经销商快照' },
   supplier_id: { type: DataTypes.STRING(32) },
   supplier_name: { type: DataTypes.STRING(255) },
   total_quantity_delta: { type: DataTypes.INTEGER, defaultValue: 0 },
@@ -1541,6 +1551,7 @@ const Expense = sequelize.define('Expense', {
   expense_id: { type: DataTypes.STRING(32), primaryKey: true },
   expense_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
   store_id: { type: DataTypes.STRING(32), allowNull: false },
+  distributor_id: { type: DataTypes.STRING(32), comment: '费用所属经销商快照' },
   region_id: { type: DataTypes.STRING(32) },
   region_name: { type: DataTypes.STRING(128) },
   expense_type_id: { type: DataTypes.STRING(32) },
@@ -1598,6 +1609,7 @@ const Payable = sequelize.define('Payable', {
   source_type: { type: DataTypes.STRING(32), defaultValue: 'purchase' },
   source_id: { type: DataTypes.STRING(64) },
   source_no: { type: DataTypes.STRING(64) },
+  distributor_id: { type: DataTypes.STRING(32), comment: '应付款所属经销商快照' },
   region_id: { type: DataTypes.STRING(32), allowNull: true, comment: '业务区域快照' },
   total_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
   settled_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
@@ -1621,6 +1633,7 @@ const Settlement = sequelize.define('Settlement', {
   source_type: { type: DataTypes.STRING(32) },
   source_id: { type: DataTypes.STRING(64) },
   source_no: { type: DataTypes.STRING(64) },
+  distributor_id: { type: DataTypes.STRING(32), comment: '结算单所属经销商快照；跨组织结算禁止' },
   region_id: { type: DataTypes.STRING(32), allowNull: true, comment: '业务区域快照；跨区域为空' },
   supplier_account_id: { type: DataTypes.STRING(32) },
   supplier_account_snapshot: { type: DataTypes.TEXT },
@@ -1665,6 +1678,7 @@ const SettlementPaymentBatch = sequelize.define('SettlementPaymentBatch', {
   batch_id: { type: DataTypes.STRING(32), primaryKey: true },
   batch_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
   account_id: { type: DataTypes.STRING(64), allowNull: false },
+  distributor_id: { type: DataTypes.STRING(32), comment: '付款批次所属经销商快照' },
   account_name: { type: DataTypes.STRING(128) },
   total_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
   total_count: { type: DataTypes.INTEGER, defaultValue: 0 },
@@ -1683,6 +1697,7 @@ const SettlementPaymentRecord = sequelize.define('SettlementPaymentRecord', {
   batch_id: { type: DataTypes.STRING(32), allowNull: false },
   settlement_id: { type: DataTypes.STRING(32), allowNull: false },
   settlement_no: { type: DataTypes.STRING(64), allowNull: false },
+  distributor_id: { type: DataTypes.STRING(32), comment: '付款记录所属经销商快照' },
   supplier_name: { type: DataTypes.STRING(255) },
   account_id: { type: DataTypes.STRING(64), allowNull: false },
   amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
@@ -1941,6 +1956,7 @@ const SettlementAccount = sequelize.define('SettlementAccount', {
   bank_name: { type: DataTypes.STRING(128), comment: '开户行' },
   account_number: { type: DataTypes.STRING(128), comment: '账号' },
   account_type: { type: DataTypes.STRING(32), defaultValue: 'FUND', comment: 'FUND/POLICY_RECEIVABLE/SUPPLIER_REBATE/CARE_CREDIT' },
+  distributor_id: { type: DataTypes.STRING(32), allowNull: true, comment: '账户所属经销商；为空表示共享/系统级账户' },
   region_id: { type: DataTypes.STRING(32), allowNull: true, comment: '账户所属区域；为空表示公司级' },
   supplier_id: { type: DataTypes.STRING(32) },
   usage_note: { type: DataTypes.STRING(512) },
@@ -2110,6 +2126,10 @@ Staff.belongsToMany(Store, { through: StaffStorePermission, foreignKey: 'staff_i
 Store.belongsToMany(Staff, { through: StaffStorePermission, foreignKey: 'store_id', otherKey: 'staff_id', as: 'AssignedStaff' });
 StaffStorePermission.belongsTo(Staff, { foreignKey: 'staff_id', targetKey: 'staff_id' });
 StaffStorePermission.belongsTo(Store, { foreignKey: 'store_id', targetKey: 'store_id' });
+Staff.belongsToMany(Distributor, { through: StaffDistributorPermission, foreignKey: 'staff_id', otherKey: 'distributor_id', as: 'AssignedDistributors' });
+Distributor.belongsToMany(Staff, { through: StaffDistributorPermission, foreignKey: 'distributor_id', otherKey: 'staff_id', as: 'AssignedStaff' });
+StaffDistributorPermission.belongsTo(Staff, { foreignKey: 'staff_id', targetKey: 'staff_id' });
+StaffDistributorPermission.belongsTo(Distributor, { foreignKey: 'distributor_id', targetKey: 'distributor_id' });
 
 Staff.hasMany(RegionPermission, { foreignKey: 'staff_id', sourceKey: 'staff_id', as: 'RegionPermissions' });
 RegionPermission.belongsTo(Staff, { foreignKey: 'staff_id', targetKey: 'staff_id', as: 'Staff' });
@@ -2406,6 +2426,7 @@ module.exports = {
   RoleMenu,
   StaffRole,
   StaffStorePermission,
+  StaffDistributorPermission,
   RegionPermission,
   ApprovalFlowDefinition,
   ApprovalFlowInstance,

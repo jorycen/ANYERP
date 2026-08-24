@@ -11,6 +11,7 @@ const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } 
 const { sendExcel } = require('../../utils/excelExport');
 const { getUserRoles } = require('../../middleware/permission');
 const { ensureExpensePayable, cancelExpenseRecord } = require('./expenseService');
+const { accessibleDistributorIds, canAccessDistributor, distributorWhere } = require('../../utils/distributorScope');
 
 function buildDailyPaymentMethodWhere(paymentMethod) {
   const method = String(paymentMethod || '').trim();
@@ -591,6 +592,7 @@ async function createExpense(ctx) {
       expense_id: currentExpenseId,
       expense_no: expenseNo,
       store_id: targetStoreId,
+      distributor_id: store.distributor_id || null,
       region_id: store.region_id || null,
       region_name: store.Region?.name || '',
       expense_type_id: expenseType.type_id,
@@ -853,6 +855,8 @@ async function getSettlementAccountsWithBalance(ctx) {
     const { page = 1, pageSize = 20, regionId } = ctx.query;
     const accountWhere = { status: 1 };
     if (regionId) accountWhere.region_id = regionId;
+    const accountScope = distributorWhere(ctx.state.user);
+    if (Object.keys(accountScope).length) Object.assign(accountWhere, accountScope);
 
     const { count, rows } = await SettlementAccount.findAndCountAll({
       where: accountWhere,
@@ -926,6 +930,7 @@ async function getAccountTransactions(ctx) {
 
   const account = await SettlementAccount.findByPk(accountId);
   if (!account) ctx.throw(404, '结算账户不存在');
+  if (!canAccessDistributor(ctx.state.user, account.distributor_id)) ctx.throw(403, '无权访问该经销商账户');
 
   const { count, rows } = await SettlementAccountTransaction.findAndCountAll({
     where: { account_id: accountId },
@@ -961,6 +966,7 @@ async function addAccountTransaction(ctx) {
 
   const account = await SettlementAccount.findByPk(accountId);
   if (!account) ctx.throw(404, '结算账户不存在');
+  if (!canAccessDistributor(user, account.distributor_id)) ctx.throw(403, '无权操作该经销商账户');
   if (account.account_type === 'SUPPLIER_REBATE') ctx.throw(400, '供应商返利请在返利管理中上账、抵扣或冲销');
 
   const currentBalance = await getAccountBalance(accountId);

@@ -21,6 +21,12 @@
               </template>
             </el-table-column>
             <el-table-column prop="supervisor_name" label="直属上级" width="120" />
+            <el-table-column label="所属经销商" min-width="180">
+              <template #default="{ row }">
+                <el-tag v-for="item in (row.distributor_names || [])" :key="item" class="mr-1">{{ item }}</el-tag>
+                <span v-if="!(row.distributor_names || []).length">未配置</span>
+              </template>
+            </el-table-column>
             <el-table-column prop="region_name" label="所属区域" width="180" />
             <el-table-column prop="store_name" label="门店" min-width="180" show-overflow-tooltip />
             <el-table-column prop="status" label="状态" width="80">
@@ -31,7 +37,7 @@
             <el-table-column label="操作" width="310">
               <template #default="{ row }">
                 <el-button link type="primary" @click="handleEditUser(row)">编辑</el-button>
-                <el-button v-if="!row.is_boss" link type="primary" @click="handleAssignScope(row)">分配区域及门店</el-button>
+                <el-button v-if="!row.is_boss && !row.region_scoped" link type="primary" @click="handleAssignScope(row)">分配区域及门店</el-button>
                 <el-button link type="warning" @click="handleResetPassword(row)">重置密码</el-button>
                 <el-button
                   link
@@ -419,10 +425,10 @@
           </el-select>
         </el-form-item>
         <el-form-item label="所属经销商" required>
-          <el-select v-model="userForm.distributorId" filterable style="width: 100%" :disabled="!isOperatorBoss" placeholder="请选择所属经销商">
+          <el-select v-model="userForm.distributorIds" multiple filterable style="width: 100%" :disabled="!isOperatorBoss" placeholder="请选择所属经销商">
             <el-option v-for="item in distributorOptions" :key="item.distributor_id" :label="item.name" :value="item.distributor_id" />
           </el-select>
-          <div class="form-tip">所属经销商用于组织归属；订单、库存和业务数据权限均按用户管理中分配的有效门店，区域仅用于辅助展示和校验。</div>
+          <div class="form-tip">店长/店员只能选择一个经销商；采购、会计、出纳、BOSS等中台账号可选择多个。库存可跨区域查看，但采购、应付、结算和付款账户仍按经销商隔离。</div>
         </el-form-item>
         <el-form-item label="状态">
           <el-switch v-model="userForm.status" :active-value="1" :inactive-value="0" />
@@ -585,6 +591,7 @@
         <el-table-column prop="sort_order" label="排序" width="60" />
         <el-table-column prop="account_name" label="账号名称" min-width="160" />
         <el-table-column label="账户类型" width="120"><template #default="{row}">{{ accountTypeText(row.account_type) }}</template></el-table-column>
+        <el-table-column label="所属经销商" width="130"><template #default="{row}">{{ distributorOptions.find(item => String(item.distributor_id) === String(row.distributor_id))?.name || '共享/系统级' }}</template></el-table-column>
         <el-table-column label="所属区域" width="110"><template #default="{row}">{{ row.Region?.name || '公司级' }}</template></el-table-column>
         <el-table-column prop="bank_name" label="开户行" width="140" />
         <el-table-column prop="account_number" label="账号" min-width="180" />
@@ -605,6 +612,11 @@
           </el-form-item>
           <el-form-item label="账户类型" required>
             <el-select v-model="saForm.accountType" style="width:100%"><el-option label="资金账户" value="FUND" /><el-option label="政策补贴应收" value="POLICY_RECEIVABLE" /><el-option label="Care可用金" value="CARE_CREDIT" /></el-select>
+          </el-form-item>
+          <el-form-item label="所属经销商" :required="saForm.accountType === 'FUND'">
+            <el-select v-model="saForm.distributorId" clearable filterable style="width:100%" placeholder="资金账户必须选择经销商；其他账户可共享">
+              <el-option v-for="item in distributorOptions" :key="item.distributor_id" :label="item.name" :value="item.distributor_id" />
+            </el-select>
           </el-form-item>
           <el-form-item label="所属区域">
             <el-select v-model="saForm.regionId" clearable style="width:100%" placeholder="不选表示公司级账户">
@@ -936,7 +948,7 @@ const userForm = reactive({
   phone: '',
   password: '',
   roleIds: '',
-  distributorId: '',
+  distributorIds: [],
   supervisorStaffId: null,
   status: 1
 })
@@ -1386,7 +1398,7 @@ const handleEditUser = async (row) => {
   userForm.phone = row.phone
   userForm.password = ''
   userForm.roleIds = (row.role_ids || [])[0] || ''
-  userForm.distributorId = row.distributor_id || ''
+  userForm.distributorIds = (row.distributor_ids || (row.distributor_id ? [row.distributor_id] : [])).map(String)
   userForm.supervisorStaffId = row.supervisor_staff_id || null
   userForm.status = row.status
 
@@ -1446,7 +1458,7 @@ const handleUserSubmit = async () => {
       name: userForm.name,
       phone: userForm.phone,
       roleIds: [userForm.roleIds],
-      distributorId: userForm.distributorId,
+      distributorIds: userForm.distributorIds,
       supervisorStaffId: userForm.supervisorStaffId || null,
       status: userForm.status
     }
@@ -1575,7 +1587,7 @@ const resetUserForm = () => {
   userForm.phone = ''
   userForm.password = ''
   userForm.roleIds = ''
-  userForm.distributorId = operatorUser.distributorId || distributorOptions.value[0]?.distributor_id || ''
+  userForm.distributorIds = operatorUser.distributorIds || operatorUser.accessibleDistributorIds || (operatorUser.distributorId ? [operatorUser.distributorId] : [distributorOptions.value[0]?.distributor_id].filter(Boolean))
   userForm.supervisorStaffId = null
   userForm.status = 1
 }
@@ -1929,7 +1941,7 @@ const saFormDialogVisible = ref(false)
 const settlementAccountData = ref([])
 const saDialogTitle = ref('新增结算账号')
 const editingSaId = ref(null)
-const saForm = reactive({ accountName: '', accountType: 'FUND', regionId: '', bankName: '', accountNumber: '', usageNote: '', sortOrder: 0 })
+const saForm = reactive({ accountName: '', accountType: 'FUND', distributorId: '', regionId: '', bankName: '', accountNumber: '', usageNote: '', sortOrder: 0 })
 const accountTypeText = value => ({ FUND:'资金账户', POLICY_RECEIVABLE:'政策补贴应收', CARE_CREDIT:'Care可用金' }[value] || '资金账户')
 
 const openSaMgmtDialog = async () => {
@@ -1956,6 +1968,7 @@ const openSettlementAccountDialog = (row) => {
     saForm.bankName = row.bank_name
     saForm.accountNumber = row.account_number
     saForm.accountType = row.account_type || 'FUND'
+    saForm.distributorId = row.distributor_id || ''
     saForm.regionId = row.region_id || row.Region?.region_id || ''
     saForm.usageNote = row.usage_note || ''
     saForm.sortOrder = row.sort_order || 0
@@ -1966,6 +1979,7 @@ const openSettlementAccountDialog = (row) => {
     saForm.bankName = ''
     saForm.accountNumber = ''
     saForm.accountType = 'FUND'
+    saForm.distributorId = ''
     saForm.regionId = ''
     saForm.usageNote = ''
     saForm.sortOrder = 0
@@ -1979,7 +1993,7 @@ const handleSaSubmit = async () => {
   submitLoading.value = true
   try {
     let res
-    const data = { accountName: saForm.accountName, accountType: saForm.accountType, regionId: saForm.regionId || null, bankName: saForm.bankName, accountNumber: saForm.accountNumber, usageNote: saForm.usageNote, sortOrder: saForm.sortOrder }
+    const data = { accountName: saForm.accountName, accountType: saForm.accountType, distributorId: saForm.distributorId || null, regionId: saForm.regionId || null, bankName: saForm.bankName, accountNumber: saForm.accountNumber, usageNote: saForm.usageNote, sortOrder: saForm.sortOrder }
     if (editingSaId.value) {
       res = await api.updateSettlementAccount(editingSaId.value, data)
     } else {
@@ -2035,6 +2049,7 @@ const saveSaSort = async () => {
 const resetSaForm = () => {
   saForm.accountName = ''
   saForm.accountType = 'FUND'
+  saForm.distributorId = ''
   saForm.regionId = ''
   saForm.bankName = ''
   saForm.accountNumber = ''

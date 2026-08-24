@@ -5,6 +5,33 @@
 const { sequelize, CustomerSource, PaymentMethod, PaymentMethodStore, SupplementItem, ExpenseType, SettlementAccount, Store, Supplier, Region } = require('../../models');
 const { Op } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult } = require('../../utils');
+const { accessibleDistributorIds, canAccessDistributor, validateDistributorIds } = require('../../utils/distributorScope');
+
+function applySettlementAccountScope(ctx, where) {
+  const ids = accessibleDistributorIds(ctx.state.user);
+  if (!ids.includes('*')) {
+    where[Op.or] = [
+      { distributor_id: { [Op.in]: ids } },
+      { distributor_id: null }
+    ];
+  }
+  return where;
+}
+
+async function validateSettlementAccountDistributor(ctx, distributorId, { required = false } = {}) {
+  const value = distributorId ? String(distributorId) : '';
+  if (!value) {
+    if (required) ctx.throw(400, '资金账户必须指定所属经销商');
+    return null;
+  }
+  try {
+    await validateDistributorIds([value]);
+  } catch (error) {
+    ctx.throw(error.status || 400, error.message);
+  }
+  if (!canAccessDistributor(ctx.state.user, value)) ctx.throw(403, '无权配置该经销商账户');
+  return value;
+}
 
 // ==============================================
 // 客户来源管理（一级/二级联动）
@@ -506,6 +533,7 @@ async function sortPaymentMethods(ctx) {
 async function getSettlementAccountList(ctx) {
   const { keyword, regionId, page = 1, pageSize = 20 } = ctx.query;
   const where = { status: 1, account_type: { [Op.ne]: 'SUPPLIER_REBATE' } };
+  applySettlementAccountScope(ctx, where);
   if (regionId) where.region_id = regionId;
   if (keyword) {
     where[Op.or] = [
@@ -528,6 +556,7 @@ async function getSettlementAccountList(ctx) {
 async function getAllSettlementAccounts(ctx) {
   const { regionId } = ctx.query;
   const where = { status: 1, account_type: { [Op.ne]: 'SUPPLIER_REBATE' } };
+  applySettlementAccountScope(ctx, where);
   if (regionId) where.region_id = regionId;
   const rows = await SettlementAccount.findAll({
     where,
@@ -538,7 +567,7 @@ async function getAllSettlementAccounts(ctx) {
 }
 
 async function createSettlementAccount(ctx) {
-  const { accountName, bankName, accountNumber, accountType = 'FUND', regionId, usageNote, sortOrder } = ctx.request.body;
+  const { accountName, bankName, accountNumber, accountType = 'FUND', regionId, distributorId, usageNote, sortOrder } = ctx.request.body;
   if (!accountName) ctx.throw(400, '账号名称不能为空');
   if (accountType === 'SUPPLIER_REBATE') {
     ctx.throw(400, '供应商返利账户由系统自动维护，不允许手工创建');
@@ -546,6 +575,7 @@ async function createSettlementAccount(ctx) {
   if (!['FUND', 'POLICY_RECEIVABLE', 'CARE_CREDIT'].includes(accountType)) {
     ctx.throw(400, '账户类型无效');
   }
+  const accountDistributorId = await validateSettlementAccountDistributor(ctx, distributorId, { required: accountType === 'FUND' });
   if (regionId) {
     const region = await Region.findOne({ where: { region_id: regionId, status: 1 } });
     if (!region) ctx.throw(400, '所属区域不存在或已停用');
@@ -556,7 +586,7 @@ async function createSettlementAccount(ctx) {
       const accountId = generateUUID();
       await SettlementAccount.create({
         account_id: accountId, account_name: accountName, bank_name: bankName || '', account_number: accountNumber || '',
-        account_type: accountType, region_id: regionId || null, supplier_id: null,
+        account_type: accountType, region_id: regionId || null, distributor_id: accountDistributorId, supplier_id: null,
         usage_note: usageNote || '', sort_order: sortOrder || 0, status: 1
       }, { transaction });
     });
@@ -569,10 +599,11 @@ async function createSettlementAccount(ctx) {
 
 async function updateSettlementAccount(ctx) {
   const { id } = ctx.params;
-  const { accountName, bankName, accountNumber, accountType, supplierId, regionId, usageNote, sortOrder, status } = ctx.request.body;
+  const { accountName, bankName, accountNumber, accountType, supplierId, regionId, distributorId, usageNote, sortOrder, status } = ctx.request.body;
 
   const record = await SettlementAccount.findByPk(id);
   if (!record) ctx.throw(404, '记录不存在');
+  if (!canAccessDistributor(ctx.state.user, record.distributor_id)) ctx.throw(403, '无权修改该经销商账户');
 
   const updates = {};
   if (regionId !== undefined) {
@@ -614,6 +645,9 @@ async function updateSettlementAccount(ctx) {
       updates.supplier_id = null;
     }
     updates.account_type = accountType;
+  }
+  if (distributorId !== undefined) {
+    updates.distributor_id = await validateSettlementAccountDistributor(ctx, distributorId, { required: accountType === 'FUND' || (accountType === undefined && record.account_type === 'FUND') });
   }
   if (usageNote !== undefined) updates.usage_note = usageNote;
   if (sortOrder !== undefined) updates.sort_order = sortOrder;

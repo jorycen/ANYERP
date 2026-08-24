@@ -21,6 +21,7 @@ const { recordBusinessAction, listBusinessActions } = require('../../utils/busin
 const { assertTransferStoreScope, isTransferScope, transferRegionKeys } = require('../../utils/transferScope');
 const { canViewSnTraceReference, isDealerTraceAccount } = require('../../utils/snTracePermission');
 const { resolveAllReadableStoreIds } = require('../../utils/storePermissions');
+const { accessibleDistributorIds, canAccessDistributor } = require('../../utils/distributorScope');
 const { assertSingleSnProductPn } = require('../../utils/productPn');
 const { ensureProductPnMaster } = require('../../utils/productPnMaster');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
@@ -176,7 +177,7 @@ async function assertTransferScope(ctx, fromStoreId, toStoreId) {
   if (!userDistributorId) {
     userDistributorId = String(user.distributorId || '');
   }
-  if (!roles.includes('boss') && userDistributorId && userDistributorId !== String(fromStore.distributor_id)) {
+  if (!roles.includes('boss') && !canAccessDistributor(user, fromStore.distributor_id)) {
     ctx.throw(403, '无权操作该经销商的调拨');
   }
   const userRegionKeys = [...new Set(
@@ -416,7 +417,7 @@ function resolveEffectiveSalePrice(unifiedSalePrice, specialPrice) {
 function canManageDistributorPrice(user, distributorId) {
   const roles = getUserRoles(user);
   if (roles.includes('boss')) return true;
-  return roles.includes('admin') && String(user?.distributorId || '') === String(distributorId || '');
+  return roles.includes('admin') && canAccessDistributor(user, distributorId);
 }
 
 async function resolveSnPriceScope(ctx, snId, { requireInStock = false } = {}) {
@@ -2696,14 +2697,14 @@ async function assertDistributorInboundTraceAccess(ctx, inbound) {
     ctx.throw(403, '仅经销商账号可以查看SN关联入库单');
   }
   if (getUserRoles(user).includes('boss')) return;
-  if (!user.distributorId) {
+  if (!accessibleDistributorIds(user).length) {
     ctx.throw(403, '当前账号未绑定经销商');
   }
   const store = await Store.findOne({
     where: { store_id: inbound.store_id, is_deleted: 0 },
     attributes: ['store_id', 'distributor_id']
   });
-  if (!store || String(store.distributor_id || '') !== String(user.distributorId)) {
+  if (!store || !canAccessDistributor(user, store.distributor_id)) {
     ctx.throw(403, '无权查看该入库单');
   }
 }
@@ -3943,9 +3944,10 @@ async function getTransferList(ctx) {
     let distributorStoreIds = user.accessibleStoreIds || [];
 
     if (visibilityLevel === 'distributor') {
-      if (user.distributorId) {
+      const visibleDistributorIds = accessibleDistributorIds(user);
+      if (visibleDistributorIds.includes('*') || visibleDistributorIds.length) {
         const stores = await Store.findAll({
-          where: { distributor_id: user.distributorId, is_deleted: 0, status: 1 },
+          where: { distributor_id: visibleDistributorIds.includes('*') ? { [Op.ne]: null } : { [Op.in]: visibleDistributorIds }, is_deleted: 0, status: 1 },
           attributes: ['store_id']
         });
         distributorStoreIds = stores.map(store => store.store_id);
@@ -4046,9 +4048,10 @@ async function getTransferDetail(ctx) {
   if (!transfer) ctx.throw(404, '调拨单不存在');
   const user = ctx.state.user || {};
   let visibleStoreIds = user.accessibleStoreIds || [];
-  if (getTransferVisibilityLevel(user) === 'distributor' && user.distributorId) {
+  if (getTransferVisibilityLevel(user) === 'distributor' && accessibleDistributorIds(user).length) {
+    const visibleDistributorIds = accessibleDistributorIds(user);
     const stores = await Store.findAll({
-      where: { distributor_id: user.distributorId, is_deleted: 0, status: 1 },
+      where: { distributor_id: visibleDistributorIds.includes('*') ? { [Op.ne]: null } : { [Op.in]: visibleDistributorIds }, is_deleted: 0, status: 1 },
       attributes: ['store_id']
     });
     visibleStoreIds = stores.map(store => store.store_id);

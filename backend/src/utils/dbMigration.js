@@ -400,6 +400,36 @@ async function runMigrations() {
         KEY idx_region_permission_region (REGION_CODE)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='账号直接区域权限'
     `);
+    await checkAndCreateTable('T_STAFF_DISTRIBUTOR_PERMISSION', `
+      CREATE TABLE T_STAFF_DISTRIBUTOR_PERMISSION (
+        ID BIGINT NOT NULL AUTO_INCREMENT,
+        STAFF_ID BIGINT NOT NULL,
+        DISTRIBUTOR_ID VARCHAR(32) NOT NULL,
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (ID),
+        UNIQUE KEY uk_staff_distributor (STAFF_ID, DISTRIBUTOR_ID),
+        KEY idx_staff_distributor_distributor (DISTRIBUTOR_ID)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='员工可操作经销商范围'
+    `);
+    await sequelize.query(`
+      INSERT INTO T_DISTRIBUTOR (DISTRIBUTOR_ID, REGION_ID, NAME, STATUS, IS_DELETED)
+      VALUES
+        ('DIST001', 'R001', '艾诺云', 1, 0),
+        ('DIST002', 'R002', '艾诺志兴', 1, 0)
+      ON DUPLICATE KEY UPDATE
+        REGION_ID = VALUES(REGION_ID), NAME = VALUES(NAME), STATUS = 1, IS_DELETED = 0
+    `);
+    await sequelize.query(`
+      UPDATE T_STORE
+      SET DISTRIBUTOR_ID = 'DIST002'
+      WHERE REGION_ID = 'R002'
+    `);
+    await sequelize.query(`
+      INSERT IGNORE INTO T_STAFF_DISTRIBUTOR_PERMISSION (STAFF_ID, DISTRIBUTOR_ID)
+      SELECT STAFF_ID, DISTRIBUTOR_ID
+      FROM T_STAFF
+      WHERE DISTRIBUTOR_ID IS NOT NULL AND DISTRIBUTOR_ID <> ''
+    `);
     await checkAndCreateTable('T_MONTHLY_TASK', `
       CREATE TABLE T_MONTHLY_TASK (
         TASK_ID VARCHAR(32) NOT NULL,
@@ -1831,6 +1861,7 @@ async function runMigrations() {
     await checkAndAddColumn('T_SETTLEMENT_ACCOUNT', 'REGION_ID', 'VARCHAR(32) COMMENT "账户所属区域；为空表示公司级账户"', 'ACCOUNT_TYPE');
     await checkAndAddColumn('T_SETTLEMENT_ACCOUNT', 'SUPPLIER_ID', 'VARCHAR(32) COMMENT "供应商返利账户对应供应商"', 'ACCOUNT_TYPE');
     await checkAndAddColumn('T_SETTLEMENT_ACCOUNT', 'USAGE_NOTE', 'VARCHAR(512) COMMENT "账户用途及限制"', 'SUPPLIER_ID');
+    await checkAndAddColumn('T_SETTLEMENT_ACCOUNT', 'DISTRIBUTOR_ID', 'VARCHAR(32) COMMENT "账户所属经销商；为空表示共享/系统级账户"', 'ACCOUNT_TYPE');
     await checkAndAddIndex(
       'T_SETTLEMENT_ACCOUNT',
       'idx_settlement_account_supplier_type',
@@ -1841,8 +1872,20 @@ async function runMigrations() {
       'idx_settlement_account_region_status',
       'ALTER TABLE T_SETTLEMENT_ACCOUNT ADD INDEX idx_settlement_account_region_status (REGION_ID, STATUS)'
     );
+    await checkAndAddIndex(
+      'T_SETTLEMENT_ACCOUNT',
+      'idx_settlement_account_distributor_status',
+      'ALTER TABLE T_SETTLEMENT_ACCOUNT ADD INDEX idx_settlement_account_distributor_status (DISTRIBUTOR_ID, STATUS)'
+    );
     await checkAndAddColumn('T_PAYABLE', 'REGION_ID', 'VARCHAR(32) COMMENT "采购/报销业务区域快照"', 'SOURCE_NO');
+    await checkAndAddColumn('T_PAYABLE', 'DISTRIBUTOR_ID', 'VARCHAR(32) COMMENT "应付款所属经销商快照"', 'SOURCE_NO');
     await checkAndAddColumn('T_SETTLEMENT', 'REGION_ID', 'VARCHAR(32) COMMENT "结算单业务区域快照；跨区域为空"', 'SOURCE_NO');
+    await checkAndAddColumn('T_SETTLEMENT', 'DISTRIBUTOR_ID', 'VARCHAR(32) COMMENT "结算单所属经销商快照"', 'SOURCE_NO');
+    await checkAndAddColumn('T_PURCHASE_REQUEST', 'DISTRIBUTOR_ID', 'VARCHAR(32) COMMENT "采购业务所属经销商快照"', 'STORE_ID');
+    await checkAndAddColumn('T_PURCHASE_ADJUSTMENT', 'DISTRIBUTOR_ID', 'VARCHAR(32) COMMENT "采购调整所属经销商快照"', 'STORE_ID');
+    await checkAndAddColumn('T_EXPENSE', 'DISTRIBUTOR_ID', 'VARCHAR(32) COMMENT "费用所属经销商快照"', 'STORE_ID');
+    await checkAndAddColumn('T_SETTLEMENT_PAYMENT_BATCH', 'DISTRIBUTOR_ID', 'VARCHAR(32) COMMENT "付款批次所属经销商快照"', 'ACCOUNT_ID');
+    await checkAndAddColumn('T_SETTLEMENT_PAYMENT_RECORD', 'DISTRIBUTOR_ID', 'VARCHAR(32) COMMENT "付款记录所属经销商快照"', 'SETTLEMENT_NO');
     await checkAndAddIndex(
       'T_PAYABLE',
       'idx_payable_region_status',
@@ -1859,21 +1902,81 @@ async function runMigrations() {
         LEFT JOIN T_PURCHASE_REQUEST pr ON pr.REQUEST_ID = p.REQUEST_ID
         LEFT JOIN T_EXPENSE e ON e.EXPENSE_ID = p.SOURCE_ID
         LEFT JOIN T_STORE st ON st.STORE_ID = COALESCE(pr.STORE_ID, e.STORE_ID)
-        SET p.REGION_ID = COALESCE(p.REGION_ID, e.REGION_ID, st.REGION_ID)
-        WHERE p.REGION_ID IS NULL
+        SET p.REGION_ID = COALESCE(p.REGION_ID, e.REGION_ID, st.REGION_ID),
+            p.DISTRIBUTOR_ID = COALESCE(p.DISTRIBUTOR_ID, pr.DISTRIBUTOR_ID, e.DISTRIBUTOR_ID, st.DISTRIBUTOR_ID)
+        WHERE p.REGION_ID IS NULL OR p.DISTRIBUTOR_ID IS NULL
+      `);
+      await sequelize.query(`
+        UPDATE T_PURCHASE_REQUEST pr
+        INNER JOIN T_STORE st ON st.STORE_ID = pr.STORE_ID
+        SET pr.DISTRIBUTOR_ID = COALESCE(pr.DISTRIBUTOR_ID, st.DISTRIBUTOR_ID)
+        WHERE pr.DISTRIBUTOR_ID IS NULL
+      `);
+      await sequelize.query(`
+        UPDATE T_PURCHASE_ADJUSTMENT pa
+        INNER JOIN T_STORE st ON st.STORE_ID = pa.STORE_ID
+        SET pa.DISTRIBUTOR_ID = COALESCE(pa.DISTRIBUTOR_ID, st.DISTRIBUTOR_ID)
+        WHERE pa.DISTRIBUTOR_ID IS NULL
+      `);
+      await sequelize.query(`
+        UPDATE T_EXPENSE e
+        INNER JOIN T_STORE st ON st.STORE_ID = e.STORE_ID
+        SET e.DISTRIBUTOR_ID = COALESCE(e.DISTRIBUTOR_ID, st.DISTRIBUTOR_ID)
+        WHERE e.DISTRIBUTOR_ID IS NULL
+      `);
+      await sequelize.query(`
+        UPDATE T_PAYABLE p
+        LEFT JOIN T_PURCHASE_REQUEST pr ON pr.REQUEST_ID = p.REQUEST_ID
+        LEFT JOIN T_EXPENSE e ON e.EXPENSE_ID = p.SOURCE_ID
+        LEFT JOIN T_STORE st ON st.STORE_ID = COALESCE(pr.STORE_ID, e.STORE_ID)
+        SET p.DISTRIBUTOR_ID = COALESCE(p.DISTRIBUTOR_ID, pr.DISTRIBUTOR_ID, e.DISTRIBUTOR_ID, st.DISTRIBUTOR_ID)
+        WHERE p.DISTRIBUTOR_ID IS NULL
       `);
       await sequelize.query(`
         UPDATE T_SETTLEMENT s
         JOIN (
-          SELECT si.SETTLEMENT_ID, MIN(p.REGION_ID) AS REGION_ID
+          SELECT si.SETTLEMENT_ID, MIN(p.REGION_ID) AS REGION_ID, MIN(p.DISTRIBUTOR_ID) AS DISTRIBUTOR_ID
           FROM T_SETTLEMENT_ITEM si
           INNER JOIN T_PAYABLE p ON p.PAYABLE_ID = si.PAYABLE_ID
-          WHERE p.REGION_ID IS NOT NULL
+          WHERE p.REGION_ID IS NOT NULL OR p.DISTRIBUTOR_ID IS NOT NULL
           GROUP BY si.SETTLEMENT_ID
-          HAVING COUNT(DISTINCT p.REGION_ID) = 1
+          HAVING COUNT(DISTINCT p.REGION_ID) <= 1 AND COUNT(DISTINCT p.DISTRIBUTOR_ID) <= 1
         ) x ON x.SETTLEMENT_ID = s.SETTLEMENT_ID
-        SET s.REGION_ID = COALESCE(s.REGION_ID, x.REGION_ID)
-        WHERE s.REGION_ID IS NULL
+        SET s.REGION_ID = COALESCE(s.REGION_ID, x.REGION_ID),
+            s.DISTRIBUTOR_ID = COALESCE(s.DISTRIBUTOR_ID, x.DISTRIBUTOR_ID)
+        WHERE s.REGION_ID IS NULL OR s.DISTRIBUTOR_ID IS NULL
+      `);
+      await sequelize.query(`
+        UPDATE T_SETTLEMENT_PAYMENT_BATCH b
+        INNER JOIN T_SETTLEMENT_PAYMENT_RECORD r ON r.BATCH_ID = b.BATCH_ID
+        SET b.DISTRIBUTOR_ID = COALESCE(b.DISTRIBUTOR_ID, r.DISTRIBUTOR_ID)
+        WHERE b.DISTRIBUTOR_ID IS NULL
+      `);
+      await sequelize.query(`
+        UPDATE T_SETTLEMENT_PAYMENT_RECORD r
+        INNER JOIN T_SETTLEMENT s ON s.SETTLEMENT_ID = r.SETTLEMENT_ID
+        SET r.DISTRIBUTOR_ID = COALESCE(r.DISTRIBUTOR_ID, s.DISTRIBUTOR_ID)
+        WHERE r.DISTRIBUTOR_ID IS NULL
+      `);
+      await sequelize.query(`
+        UPDATE T_SETTLEMENT_PAYMENT_BATCH b
+        INNER JOIN T_SETTLEMENT_PAYMENT_RECORD r ON r.BATCH_ID = b.BATCH_ID
+        SET b.DISTRIBUTOR_ID = COALESCE(b.DISTRIBUTOR_ID, r.DISTRIBUTOR_ID)
+        WHERE b.DISTRIBUTOR_ID IS NULL
+      `);
+      await sequelize.query(`
+        UPDATE T_SETTLEMENT_ACCOUNT
+        SET DISTRIBUTOR_ID = 'DIST001'
+        WHERE (DISTRIBUTOR_ID IS NULL OR DISTRIBUTOR_ID = '')
+          AND ACCOUNT_NAME LIKE '%艾诺云%'
+          AND ACCOUNT_TYPE = 'FUND'
+      `);
+      await sequelize.query(`
+        UPDATE T_SETTLEMENT_ACCOUNT
+        SET DISTRIBUTOR_ID = 'DIST002'
+        WHERE (DISTRIBUTOR_ID IS NULL OR DISTRIBUTOR_ID = '')
+          AND ACCOUNT_NAME LIKE '%艾诺志兴%'
+          AND ACCOUNT_TYPE = 'FUND'
       `);
       console.log('[DB Migration] 已回填财务单据区域快照');
     } catch (error) {

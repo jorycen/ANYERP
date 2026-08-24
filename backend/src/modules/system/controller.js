@@ -2,11 +2,12 @@
  * 系统管理控制器
  */
 const bcrypt = require('bcryptjs');
-const { sequelize, Menu, Role, RoleMenu, Staff, StaffRole, StaffStorePermission, RegionPermission, Region, Store, Location, Inventory, ProductSn } = require('../../models');
+const { sequelize, Menu, Role, RoleMenu, Staff, StaffRole, StaffStorePermission, StaffDistributorPermission, RegionPermission, Region, Store, Location, Inventory, ProductSn, Distributor } = require('../../models');
 const { Op } = require('sequelize');
 const { generateUUID } = require('../../utils');
 const { getStandardLocation } = require('../../utils/standardLocations');
 const { isRegionScopedAccount } = require('../../utils/storePermissions');
+const { accessibleDistributorIds, canAccessDistributor, uniqueIds, validateDistributorIds } = require('../../utils/distributorScope');
 
 function getResetPasswordFromPhone(phone) {
   const digits = String(phone || '').replace(/\D/g, '');
@@ -20,12 +21,35 @@ function isBoss(user) {
 
 function manageableStoreWhere(user) {
   if (isBoss(user)) return { is_deleted: 0 };
-  if (!user.distributorId) {
+  const distributorIds = accessibleDistributorIds(user);
+  if (distributorIds.length === 0) {
     const error = new Error('当前账号未绑定经销商');
     error.status = 403;
     throw error;
   }
-  return { distributor_id: user.distributorId, is_deleted: 0 };
+  return { distributor_id: distributorIds.length === 1 ? distributorIds[0] : { [Op.in]: distributorIds }, is_deleted: 0 };
+}
+
+async function getStaffDistributorIds(staffId) {
+  const rows = await StaffDistributorPermission.findAll({ where: { staff_id: staffId }, attributes: ['distributor_id'], raw: true });
+  return uniqueIds(rows.map(row => row.distributor_id));
+}
+
+function normalizeRequestedDistributorIds(body = {}, fallback = '') {
+  const values = body.distributorIds ?? body.distributor_ids;
+  if (Array.isArray(values)) return uniqueIds(values);
+  if (body.distributorId !== undefined) return uniqueIds([body.distributorId]);
+  return uniqueIds([fallback]);
+}
+
+async function replaceStaffDistributorPermissions(staff, distributorIds, transaction) {
+  await StaffDistributorPermission.destroy({ where: { staff_id: staff.staff_id }, transaction });
+  if (distributorIds.length) {
+    await StaffDistributorPermission.bulkCreate(
+      distributorIds.map(distributorId => ({ staff_id: staff.staff_id, distributor_id: distributorId })),
+      { transaction }
+    );
+  }
 }
 
 function normalizeLocationInput(ctx, body, isUpdate = false) {
@@ -226,28 +250,16 @@ async function assertLocationsCanBeDisabled(ctx, locations, transaction) {
   }
 }
 
-/**
- * 获取可用于账号归属的经销商列表。
- * 当前经销商主数据表可能为空，因此从有效门店的 distributor_id 推导选项，
- * 保证历史组织数据也能被正常维护。
- */
+/** 获取可用于账号归属和多经销商权限配置的经销商列表。 */
 async function getUserDistributors(ctx) {
+  const scope = accessibleDistributorIds(ctx.state.user);
   const where = { is_deleted: 0, status: 1 };
-  if (!isBoss(ctx.state.user)) {
-    if (!ctx.state.user.distributorId) ctx.throw(403, '当前账号未绑定经销商');
-    where.distributor_id = ctx.state.user.distributorId;
+  if (!scope.includes('*')) {
+    if (!scope.length) ctx.throw(403, '当前账号未配置经销商范围');
+    where.distributor_id = { [Op.in]: scope };
   }
-
-  const rows = await Store.findAll({
-    where,
-    attributes: [[sequelize.fn('DISTINCT', sequelize.col('distributor_id')), 'distributor_id']],
-    raw: true
-  });
-  const data = rows
-    .map(row => String(row.distributor_id || '').trim())
-    .filter(Boolean)
-    .sort()
-    .map(distributorId => ({ distributor_id: distributorId, name: distributorId }));
+  const rows = await Distributor.findAll({ where, attributes: ['distributor_id', 'name', 'region_id'], order: [['distributor_id', 'ASC']], raw: true });
+  const data = rows.map(row => ({ distributor_id: row.distributor_id, name: row.name || row.distributor_id, region_id: row.region_id || '' }));
   ctx.body = { code: 0, data };
 }
 
@@ -363,9 +375,10 @@ async function getUsers(ctx) {
   const user = ctx.state.user;
   const where = { is_deleted: 0 };
 
-  if (!user.roles.includes('boss')) {
-    if (!user.distributorId) ctx.throw(403, '当前账号未绑定经销商');
-    where.distributor_id = user.distributorId;
+  const visibleDistributorIds = accessibleDistributorIds(user);
+  if (!visibleDistributorIds.includes('*')) {
+    if (!visibleDistributorIds.length) ctx.throw(403, '当前账号未配置经销商范围');
+    where.distributor_id = { [Op.in]: visibleDistributorIds };
   }
 
   if (keyword) {
@@ -392,6 +405,7 @@ async function getUsers(ctx) {
       { model: Staff, as: 'Supervisor', attributes: ['staff_id', 'name'], required: false },
       { model: Region, as: 'Region' },
       { model: RegionPermission, as: 'RegionPermissions' },
+      { model: Distributor, as: 'AssignedDistributors', attributes: ['distributor_id', 'name'], through: { attributes: [] }, required: false },
       assignedStoresInclude
     ],
     distinct: true,
@@ -401,7 +415,7 @@ async function getUsers(ctx) {
   });
 
   const allActiveStores = await Store.findAll({
-    where: { ...(user.roles.includes('boss') ? {} : { distributor_id: user.distributorId }), is_deleted: 0, status: 1 },
+    where: { ...(visibleDistributorIds.includes('*') ? {} : { distributor_id: { [Op.in]: visibleDistributorIds } }), is_deleted: 0, status: 1 },
     attributes: ['store_id', 'name', 'region_id'],
     include: [{ model: Region, attributes: ['region_id', 'name'], required: false }],
     order: [['name', 'ASC']]
@@ -429,9 +443,13 @@ async function getUsers(ctx) {
         const region = allActiveRegions.find(item => String(item.region_id) === key || String(item.region_code) === key || String(item.name) === key);
         return region?.name || '';
       }).filter(Boolean))];
+      data.distributor_ids = (data.AssignedDistributors || []).map(item => item.distributor_id || '').filter(Boolean);
+      if (!data.distributor_ids.length && data.distributor_id) data.distributor_ids = [data.distributor_id];
+      data.distributor_names = (data.AssignedDistributors || []).map(item => item.name || item.distributor_id || '').filter(Boolean);
       const regionNames = directRegionNames.length > 0 ? directRegionNames : assignedRegionNames;
       delete data.Roles;
       delete data.AssignedStores;
+      delete data.AssignedDistributors;
       delete data.RegionPermissions;
       data.region_names = regionNames;
       data.region_name = isBoss ? '全部区域' : (regionNames.join('、') || '暂无区域');
@@ -471,20 +489,24 @@ async function createUser(ctx) {
   if (roles.length !== uniqueRoleIds.length) ctx.throw(400, '选择的角色不存在或已停用');
   if (!ctx.state.user.roles.includes('boss') && roles.some(role => role.role_code === 'boss')) ctx.throw(403, '无权分配BOSS角色');
 
-  const requestedDistributorId = String(ctx.request.body.distributorId || '').trim();
-  const distributorId = requestedDistributorId || ctx.state.user.distributorId;
-  if (!distributorId) ctx.throw(400, '当前账号未绑定经销商，无法创建用户');
-  if (!isBoss(ctx.state.user) && distributorId !== ctx.state.user.distributorId) {
-    ctx.throw(403, '无权将用户归属到其他经销商');
+  const requestedDistributorIds = normalizeRequestedDistributorIds(ctx.request.body, ctx.state.user.distributorId);
+  if (!requestedDistributorIds.length) ctx.throw(400, '请选择所属经销商');
+  const targetRoles = roles.map(role => String(role.role_code || '').toLowerCase());
+  if (isRegionScopedAccount(targetRoles) && requestedDistributorIds.length > 1) {
+    ctx.throw(400, '店员/店长账号只能归属一个经销商');
   }
-  const distributorStoreCount = await Store.count({ where: { distributor_id: distributorId, is_deleted: 0, status: 1 } });
-  if (distributorStoreCount === 0) ctx.throw(400, '所属经销商下暂无有效门店');
+  const operatorDistributorIds = accessibleDistributorIds(ctx.state.user);
+  if (!operatorDistributorIds.includes('*') && requestedDistributorIds.some(id => !operatorDistributorIds.includes(id))) {
+    ctx.throw(403, '无权分配其他经销商范围');
+  }
+  await validateDistributorIds(requestedDistributorIds);
+  const distributorId = requestedDistributorIds[0];
 
   let supervisor = null;
   if (supervisorStaffId) {
     supervisor = await Staff.findByPk(supervisorStaffId);
     if (!supervisor || supervisor.status !== 1 || supervisor.is_deleted) ctx.throw(400, '直属上级不存在或已停用');
-    if (!ctx.state.user.roles.includes('boss') && supervisor.distributor_id !== distributorId) ctx.throw(403, '直属上级不在当前经销商范围内');
+    if (!ctx.state.user.roles.includes('boss') && !operatorDistributorIds.includes(String(supervisor.distributor_id))) ctx.throw(403, '直属上级不在当前经销商范围内');
   }
 
   const hash = bcrypt.hashSync(password, 10);
@@ -502,6 +524,7 @@ async function createUser(ctx) {
       status: normalizeStaffStatus(ctx, status, 1)
     }, { transaction });
     await StaffRole.bulkCreate(uniqueRoleIds.map(roleId => ({ staff_id: staff.staff_id, role_id: roleId })), { transaction });
+    await replaceStaffDistributorPermissions(staff, requestedDistributorIds, transaction);
     await transaction.commit();
   } catch (error) {
     await transaction.rollback();
@@ -524,24 +547,19 @@ async function updateUser(ctx) {
     include: [{ model: Role, as: 'Roles', attributes: ['role_code'], through: { attributes: [] } }]
   });
   if (!staff) ctx.throw(404, '用户不存在');
-  ensureManageableStaff(ctx, staff);
+  await ensureManageableStaff(ctx, staff);
 
-  const requestedDistributorId = ctx.request.body.distributorId === undefined
-    ? String(staff.distributor_id || '').trim()
-    : String(ctx.request.body.distributorId || '').trim();
-  if (!requestedDistributorId) ctx.throw(400, '请选择所属经销商');
-  if (!isBoss(ctx.state.user) && requestedDistributorId !== String(ctx.state.user.distributorId || '')) {
-    ctx.throw(403, '无权将用户归属到其他经销商');
-  }
-  if (requestedDistributorId !== String(staff.distributor_id || '')) {
-    const distributorStoreCount = await Store.count({ where: { distributor_id: requestedDistributorId, is_deleted: 0, status: 1 } });
-    if (distributorStoreCount === 0) ctx.throw(400, '所属经销商下暂无有效门店');
-  }
+  const existingDistributorIds = await getStaffDistributorIds(staff.staff_id);
+  const requestedDistributorIds = normalizeRequestedDistributorIds(
+    ctx.request.body,
+    existingDistributorIds[0] || staff.distributor_id || ctx.state.user.distributorId
+  );
+  if (!requestedDistributorIds.length) ctx.throw(400, '请选择所属经销商');
   if (storeIds !== undefined) {
     if (!Array.isArray(storeIds)) ctx.throw(400, '门店权限格式不正确');
     const uniqueStoreIds = [...new Set(storeIds.map(String))];
     const validStores = uniqueStoreIds.length > 0 ? await Store.findAll({
-      where: { store_id: uniqueStoreIds, distributor_id: requestedDistributorId, is_deleted: 0, status: 1 },
+      where: { store_id: uniqueStoreIds, distributor_id: { [Op.in]: requestedDistributorIds }, is_deleted: 0, status: 1 },
       attributes: ['store_id']
     }) : [];
     if (validStores.length !== uniqueStoreIds.length) {
@@ -557,37 +575,48 @@ async function updateUser(ctx) {
   const updateData = {};
   if (name) updateData.name = name;
   if (phone) updateData.phone = phone;
-  if (requestedDistributorId !== String(staff.distributor_id || '')) updateData.distributor_id = requestedDistributorId;
+  if (requestedDistributorIds[0] !== String(staff.distributor_id || '')) updateData.distributor_id = requestedDistributorIds[0];
   if (status !== undefined) updateData.status = normalizeStaffStatus(ctx, status);
   if (supervisorStaffId !== undefined) {
     if (String(supervisorStaffId || '') === String(staffId)) ctx.throw(400, '直属上级不能是本人');
     if (supervisorStaffId) {
       const supervisor = await Staff.findByPk(supervisorStaffId);
       if (!supervisor || supervisor.status !== 1 || supervisor.is_deleted) ctx.throw(400, '直属上级不存在或已停用');
-      if (!ctx.state.user.roles.includes('boss') && supervisor.distributor_id !== staff.distributor_id) ctx.throw(403, '直属上级不在当前经销商范围内');
+       if (!ctx.state.user.roles.includes('boss') && !accessibleDistributorIds(ctx.state.user).includes(String(supervisor.distributor_id))) ctx.throw(403, '直属上级不在当前经销商范围内');
       updateData.supervisor_staff_id = supervisor.staff_id;
     } else {
       updateData.supervisor_staff_id = null;
     }
   }
+  let nextRoleCodes = (staff.Roles || []).map(role => String(role.role_code || '').toLowerCase());
+  let nextRoleIds = null;
   if (roleIds !== undefined) {
     if (!Array.isArray(roleIds) || roleIds.length !== 1) ctx.throw(400, '每个账号只能选择一个岗位角色');
-    const uniqueRoleIds = [...new Set(roleIds.map(String))];
-    const roles = await Role.findAll({ where: { role_id: uniqueRoleIds, status: 1 } });
-    if (roles.length !== uniqueRoleIds.length) ctx.throw(400, '选择的角色不存在或已停用');
+    nextRoleIds = [...new Set(roleIds.map(String))];
+    const roles = await Role.findAll({ where: { role_id: nextRoleIds, status: 1 } });
+    if (roles.length !== nextRoleIds.length) ctx.throw(400, '选择的角色不存在或已停用');
     if (!ctx.state.user.roles.includes('boss') && roles.some(role => role.role_code === 'boss')) ctx.throw(403, '无权分配BOSS角色');
+    nextRoleCodes = roles.map(role => String(role.role_code || '').toLowerCase());
     updateData.role_code = roles[0].role_code;
-    await sequelize.transaction(async transaction => {
-      await StaffRole.destroy({ where: { staff_id: staffId }, transaction });
-      await StaffRole.bulkCreate(uniqueRoleIds.map(roleId => ({ staff_id: staffId, role_id: roleId })), { transaction });
-      await Staff.update(updateData, { where: { staff_id: staffId }, transaction });
-    });
-  } else {
-    await Staff.update(updateData, { where: { staff_id: staffId } });
   }
-  // 更新门店区域权限
-  if (storeIds !== undefined || requestedDistributorId !== String(staff.distributor_id || '')) {
-    staff.distributor_id = requestedDistributorId;
+  await validateDistributorIds(requestedDistributorIds);
+  if (isRegionScopedAccount(nextRoleCodes) && requestedDistributorIds.length > 1) {
+    ctx.throw(400, '店员/店长账号只能归属一个经销商');
+  }
+  if (!isBoss(ctx.state.user) && requestedDistributorIds.some(id => !accessibleDistributorIds(ctx.state.user).includes(id))) {
+    ctx.throw(403, '无权分配其他经销商范围');
+  }
+  const distributorChanged = requestedDistributorIds[0] !== String(staff.distributor_id || '');
+  await sequelize.transaction(async transaction => {
+    if (nextRoleIds) {
+      await StaffRole.destroy({ where: { staff_id: staffId }, transaction });
+      await StaffRole.bulkCreate(nextRoleIds.map(roleId => ({ staff_id: staffId, role_id: roleId })), { transaction });
+    }
+    await replaceStaffDistributorPermissions(staff, requestedDistributorIds, transaction);
+    await staff.update({ ...updateData, distributor_id: requestedDistributorIds[0] }, { transaction });
+  });
+  if (storeIds !== undefined || distributorChanged) {
+    staff.setDataValue('distributor_id', requestedDistributorIds[0]);
     await replaceRegionPermissions(ctx, staff, storeIds || []);
   }
 
@@ -605,7 +634,7 @@ async function resetUserPassword(ctx) {
     include: [{ model: Role, as: 'Roles', attributes: ['role_code'], through: { attributes: [] } }]
   });
   if (!staff) ctx.throw(404, '用户不存在');
-  ensureManageableStaff(ctx, staff);
+  await ensureManageableStaff(ctx, staff);
 
   const defaultPassword = getResetPasswordFromPhone(staff.phone);
   if (!defaultPassword) ctx.throw(400, '用户手机号不足6位，无法生成默认密码');
@@ -630,12 +659,13 @@ async function getUserRegions(ctx) {
     include: [{ model: Role, as: 'Roles', attributes: ['role_code'], through: { attributes: [] } }]
   });
   if (!staff) ctx.throw(404, '用户不存在');
-  ensureManageableStaff(ctx, staff);
+  await ensureManageableStaff(ctx, staff);
   const targetIsBoss = (staff.Roles || []).some(role => role.role_code === 'boss') || staff.role_code === 'boss';
+  const targetDistributorIds = await getStaffDistributorIds(staffId);
   const [regionPermissions, availableStores] = await Promise.all([
     RegionPermission.findAll({ where: { staff_id: staffId, can_view: 1 }, attributes: ['region_code'], raw: true }),
     Store.findAll({
-      where: { distributor_id: staff.distributor_id, is_deleted: 0, status: 1 },
+      where: { distributor_id: { [Op.in]: targetDistributorIds.length ? targetDistributorIds : [staff.distributor_id] }, is_deleted: 0, status: 1 },
       attributes: ['store_id', 'name', 'region_id'],
       order: [['name', 'ASC']],
       raw: true
@@ -682,9 +712,10 @@ async function assignUserRegions(ctx) {
     include: [{ model: Role, as: 'Roles', attributes: ['role_code'], through: { attributes: [] } }]
   });
   if (!staff) ctx.throw(404, '用户不存在');
-  ensureManageableStaff(ctx, staff);
+  await ensureManageableStaff(ctx, staff);
 
   const targetIsBoss = (staff.Roles || []).some(role => role.role_code === 'boss') || staff.role_code === 'boss';
+  const targetDistributorIds = await getStaffDistributorIds(staffId);
   if (targetIsBoss) ctx.throw(400, 'BOSS账号默认拥有全部区域和门店，无需分配');
   if (!Array.isArray(regionIds)) ctx.throw(400, '区域权限格式不正确');
   const uniqueRegionIds = [...new Set(regionIds.map(String).filter(Boolean))];
@@ -693,7 +724,7 @@ async function assignUserRegions(ctx) {
   if (storeIds === undefined) {
     storeIds = uniqueRegionIds.length > 0
       ? (await Store.findAll({
-          where: { region_id: uniqueRegionIds, distributor_id: staff.distributor_id, is_deleted: 0, status: 1 },
+          where: { region_id: uniqueRegionIds, distributor_id: { [Op.in]: targetDistributorIds.length ? targetDistributorIds : [staff.distributor_id] }, is_deleted: 0, status: 1 },
           attributes: ['store_id'],
           raw: true
         })).map(store => store.store_id)
@@ -707,7 +738,7 @@ async function assignUserRegions(ctx) {
   }) : [];
   if (regions.length !== uniqueRegionIds.length) ctx.throw(403, '区域不存在或已停用');
   const stores = uniqueStoreIds.length > 0 ? await Store.findAll({
-    where: { store_id: uniqueStoreIds, distributor_id: staff.distributor_id, is_deleted: 0, status: 1 },
+    where: { store_id: uniqueStoreIds, distributor_id: { [Op.in]: targetDistributorIds.length ? targetDistributorIds : [staff.distributor_id] }, is_deleted: 0, status: 1 },
     attributes: ['store_id', 'region_id']
   }) : [];
   if (stores.length !== uniqueStoreIds.length) ctx.throw(403, '门店不属于该用户所属经销商，或门店不存在/已停用');
@@ -737,10 +768,14 @@ async function replaceCombinedPermissions(staff, regionIds, storeIds) {
   });
 }
 
-function ensureManageableStaff(ctx, staff) {
+async function ensureManageableStaff(ctx, staff) {
   if (ctx.state.user.roles.includes('boss')) return;
   if ((staff.Roles || []).some(role => role.role_code === 'boss') || staff.role_code === 'boss') ctx.throw(403, '无权管理BOSS账号');
-  if (staff.distributor_id !== ctx.state.user.distributorId) ctx.throw(403, '无权管理其他经销商的用户');
+  const targetDistributorIds = await getStaffDistributorIds(staff.staff_id);
+  const operatorIds = accessibleDistributorIds(ctx.state.user);
+  if (!operatorIds.includes('*') && !operatorIds.includes(String(staff.distributor_id || '')) && !targetDistributorIds.some(id => operatorIds.includes(String(id)))) {
+    ctx.throw(403, '无权管理其他经销商的用户');
+  }
 }
 
 function normalizeStaffStatus(ctx, status, defaultValue = undefined) {
