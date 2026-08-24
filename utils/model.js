@@ -165,6 +165,36 @@ function isEmptyOrderItem(item = {}) {
     normalized.subtotal === 0;
 }
 
+/**
+ * 标准化订单详情中的可编辑商品行。
+ * 页面同时保留了历史接口字段和输入框字段，保存时必须以后者为准，
+ * 否则修改 name/price 后会被旧的 productName/unitPrice/subtotal 覆盖。
+ */
+function normalizeEditableOrderItem(item = {}) {
+  const currentName = item.name !== undefined
+    ? item.name
+    : first(item, ['productName', 'product_name'], '');
+  const currentPrice = item.price !== undefined
+    ? item.price
+    : first(item, ['unitPrice', 'unit_price', 'salePrice', 'sale_price'], 0);
+  const currentQuantity = item.quantity !== undefined ? item.quantity : 1;
+  const normalizedPrice = normalizeMoney(currentPrice);
+  const normalizedQuantity = normalizeQuantity(currentQuantity);
+
+  return normalizeOrderItem(Object.assign({}, item, {
+    name: currentName,
+    productName: currentName,
+    product_name: currentName,
+    price: currentPrice,
+    unitPrice: currentPrice,
+    unit_price: currentPrice,
+    salePrice: currentPrice,
+    sale_price: currentPrice,
+    quantity: currentQuantity,
+    subtotal: normalizeMoney(normalizedPrice * normalizedQuantity)
+  }));
+}
+
 module.exports = {
   first,
   normalizeId,
@@ -175,5 +205,6 @@ module.exports = {
   normalizeTimestamp,
   normalizeSnCode,
   normalizeOrderItem,
+  normalizeEditableOrderItem,
   isEmptyOrderItem
 };

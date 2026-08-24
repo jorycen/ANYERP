@@ -3,7 +3,7 @@ const userUtils = require('../profile/user-utils.js');
 const DataStorage = require('../../utils/storage.js');
 const api = require('../../utils/api.js');
 const imageUpload = require('../../utils/image-upload.js');
-const { normalizeOrderItem, normalizeSnCode, normalizeId, getEffectiveSnSalePrice, isEmptyOrderItem } = require('../../utils/model.js');
+const { normalizeEditableOrderItem, normalizeSnCode, normalizeId, getEffectiveSnSalePrice, isEmptyOrderItem } = require('../../utils/model.js');
 const { calculateOrderProfit } = require('../../utils/order-profit.js');
 require('../../utils/cloud-adapter.js').install();
 
@@ -2647,7 +2647,7 @@ Page({
   // ==================== 归档相关 ====================
 
   normalizeEditableGoodsItem: function (item) {
-    const normalized = normalizeOrderItem(item || {});
+    const normalized = normalizeEditableOrderItem(item || {});
     return Object.assign({}, normalized, {
       name: normalized.productName,
       price: String(normalized.unitPrice),
@@ -3158,7 +3158,7 @@ Page({
       order.customerSource,
       order.customerSourceDetail
     );
-    const canonicalProcessedGoodsList = processedGoodsList.map(item => normalizeOrderItem(item));
+    const canonicalProcessedGoodsList = processedGoodsList.map(item => normalizeEditableOrderItem(item));
 
     return {
       orderNo: this.data.orderNo,
