@@ -551,7 +551,8 @@ Page({
     ];
 
     if (hasAnyRole(roles, ['admin', 'manager'])) {
-      loaders.push({ type: 'sales', run: () => this.loadSalesTasks({ page, pageSize }) });
+      // 与 Web 审批中心保持相同的销售待审批首批加载口径，避免目标订单被首屏分页挡住。
+      loaders.push({ type: 'sales', run: () => this.loadSalesTasks({ page, pageSize: Math.max(pageSize, 100) }) });
     }
     if (hasAnyRole(roles, ['admin', 'purchaser'])) {
       loaders.push({ type: 'purchase', run: () => this.loadPurchaseTasks({ page, pageSize }) });
@@ -705,11 +706,11 @@ Page({
     const { page, pageSize } = taskPageParams(options);
     const user = userUtils.getUserInfo();
     return api.order.queryList({ status: historyStatusFor('sales', history ? this.data.historyStatus : 'pending_approval'), scope: history ? 'review' : '', page, pageSize })
-      .then(result => (result.data || []).map(order => {
+      .then(result => listOf(result).map(order => {
         const task = taskBase('sales', order);
         task.organizationName = applicantOrganization(order, user);
         task.organizationLabel = applicantOrganizationLabel(order, user);
-        task.needsApproval = String(order.status || order.order_status || '') === 'pending_approval';
+        task.needsApproval = String(order.status || order.order_status || '').trim().toLowerCase() === 'pending_approval';
         task.businessId = order.orderId || order.order_id || order._id;
         task.key = `sales:${task.businessId}`;
         task.no = order.orderNo || order.order_no || task.businessId;
