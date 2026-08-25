@@ -1126,7 +1126,7 @@ async function deleteProduct(ctx) {
     product.update({ is_deleted: 1 }),
     ProductPrice.update({ status: 0 }, { where: { product_id: productId } }),
     ProductBarcode.update({ status: 0 }, { where: { product_id: productId } }),
-    ProductPn.update({ is_deleted: 1 }, { where: { product_id: productId } })
+    ProductPn.update({ status: 0, is_deleted: 1 }, { where: { product_id: productId } })
   ]);
 
   ctx.body = { code: 0, message: '删除成功' };
@@ -1180,7 +1180,7 @@ async function batchDeleteProducts(ctx) {
       product.update({ is_deleted: 1 }),
       ProductPrice.update({ status: 0 }, { where: { product_id: productId } }),
       ProductBarcode.update({ status: 0 }, { where: { product_id: productId } }),
-      ProductPn.update({ is_deleted: 1 }, { where: { product_id: productId } })
+      ProductPn.update({ status: 0, is_deleted: 1 }, { where: { product_id: productId } })
     ]);
 
     results.push({

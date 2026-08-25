@@ -28,6 +28,7 @@ const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freigh
 const { createSalesReturnGrossProfitLedger } = require('../sales/grossProfit');
 const { createSalesReturnSettlement } = require('../sales/salesReturnSettlement');
 const { assertActiveProducts } = require('../../utils/activeProduct');
+const { syncSerializedInventoryBalance } = require('./serializedInventoryBalance');
 
 const REUSABLE_INBOUND_SN_STATUSES = new Set(['out_stock', 'sold']);
 
@@ -772,6 +773,10 @@ function normalizeSnIdentityValue(value) {
   return String(value || '').trim().replace(/\s+/g, '').toLowerCase();
 }
 
+function samePnCode(left, right) {
+  return normalizeSnIdentityValue(left) === normalizeSnIdentityValue(right);
+}
+
 async function findInboundSnByIdentity({ pnCode, snCode, transaction }) {
   const exact = await ProductSn.findOne({
     where: { pn_code: pnCode, sn_code: snCode },
@@ -1282,6 +1287,12 @@ function compareInventoryModelRows(a, b, modelFilter) {
   return 0;
 }
 
+function getSummaryNormalQty(product, inventory, stock) {
+  return Number(product?.need_sn) === 1
+    ? Number(stock?.total || 0)
+    : Number(inventory?.normal_qty || 0);
+}
+
 const STORE_EXPORT_QUANTITY_FIELDS = [
   'normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty', 'rental_demo_qty'
 ];
@@ -1626,7 +1637,7 @@ async function getList(ctx) {
         min_sale_price: p.ProductPrice ? p.ProductPrice.min_sale_price : 0,
         cost_price: p.ProductPrice ? p.ProductPrice.cost_price : 0,
         need_sn: p.need_sn || 0,
-        normal_qty: inv.normal_qty,
+        normal_qty: getSummaryNormalQty(p, inv, stock),
         regular_qty: inv.regular_qty,
         subsidy_qty: inv.subsidy_qty,
         second_qty: inv.second_qty,
@@ -1792,22 +1803,33 @@ async function getSnList(ctx) {
       ...paginate({}, { page, pageSize })
     });
 
-    for (const sn of rows) {
-      if (sn.product_id) {
-        sn.dataValues.Product = await Product.findByPk(sn.product_id, {
+    const productIds = [...new Set(rows.map(row => row.product_id).filter(Boolean))];
+    const storeIds = [...new Set(rows.map(row => row.store_id).filter(Boolean))];
+    const locationIds = [...new Set(rows.map(row => row.location_id).filter(Boolean))];
+    const [products, stores, locations] = await Promise.all([
+      productIds.length
+        ? Product.findAll({
+          where: { product_id: { [Op.in]: productIds } },
           attributes: ['product_id', 'name', 'category', 'config', 'brand', 'series', 'model', 'need_sn'],
           include: [{ model: ProductPrice, attributes: ['standard_price', 'retail_price', 'min_sale_price'] }]
-        });
-      }
-      if (sn.store_id) {
-        sn.dataValues.Store = await Store.findByPk(sn.store_id, { attributes: ['name', 'region_id'] });
-      }
-      if (sn.location_id) {
-        sn.dataValues.Location = await Location.findByPk(sn.location_id, { attributes: ['name'] });
-      }
-    }
+        })
+        : [],
+      storeIds.length
+        ? Store.findAll({ where: { store_id: { [Op.in]: storeIds } }, attributes: ['store_id', 'name', 'region_id'] })
+        : [],
+      locationIds.length
+        ? Location.findAll({ where: { location_id: { [Op.in]: locationIds } }, attributes: ['location_id', 'name'] })
+        : []
+    ]);
+    const productMap = new Map(products.map(product => [String(product.product_id), product]));
+    const storeMap = new Map(stores.map(store => [String(store.store_id), store]));
+    const locationMap = new Map(locations.map(location => [String(location.location_id), location]));
+    rows.forEach(sn => {
+      sn.dataValues.Product = productMap.get(String(sn.product_id)) || null;
+      sn.dataValues.Store = storeMap.get(String(sn.store_id)) || null;
+      sn.dataValues.Location = locationMap.get(String(sn.location_id)) || null;
+    });
 
-    const productIds = rows.map(row => row.product_id).filter(Boolean);
     const stockMap = await buildSalesStockMap(productIds, currentStoreId || storeId || '');
     const salesMap = await buildSalesCountMap(productIds);
 
@@ -3038,6 +3060,7 @@ async function updateInventory(productId, storeId, field, delta, transaction, lo
 
   const newVal = Math.max(0, (inv[field] || 0) + delta);
   await inv.update({ [field]: newVal }, { transaction });
+  await syncSerializedInventoryBalance({ productId, storeId, transaction });
 }
 
 
@@ -3095,10 +3118,16 @@ async function getTransferableStock(product, productId, storeId, transaction) {
       status: 'in_stock',
       is_deleted: 0
     },
-    transaction
+    transaction,
+    include: [{
+      model: Location,
+      required: true,
+      attributes: [],
+      where: { type: 'normal_qty', status: 1 }
+    }]
   });
 
-  return Math.max(inventoryQty, snQty);
+  return snQty;
 }
 
 async function productHasPn(product, pnCode, transaction) {
@@ -3440,7 +3469,7 @@ async function executeInbound(ctx) {
             item.pnCode || item.pn_code || dbItem.pn_code || transferSn.pn_code || '',
             t
           );
-          if (transferSn.pn_code && transferPnCode && String(transferSn.pn_code) !== transferPnCode) {
+          if (transferSn.pn_code && transferPnCode && !samePnCode(transferSn.pn_code, transferPnCode)) {
             ctx.throw(400, `Transfer SN ${transferSn.sn_code} does not match PN ${transferPnCode}`);
           }
 
@@ -4189,7 +4218,7 @@ async function confirmTransferOutPartial(ctx) {
             lock: t.LOCK.UPDATE
           });
           if (!sn) ctx.throw(400, `SN ${snCode} is not available in the outbound store`);
-          if (sn.pn_code && String(sn.pn_code) !== pnCode) ctx.throw(400, `SN ${snCode} does not match PN ${pnCode}`);
+          if (sn.pn_code && !samePnCode(sn.pn_code, pnCode)) ctx.throw(400, `SN ${snCode} does not match PN ${pnCode}`);
           await sn.update({ status: 'transferring' }, { transaction: t });
           await TransferItem.create({
             transfer_id: transfer.transfer_id,
@@ -4380,7 +4409,7 @@ async function confirmTransferOut(ctx) {
         if (!selectedSn) {
           ctx.throw(400, `SN ${selectedSnCode} 不属于调出门店的商品编码 ${item.product_id}`);
         }
-        if (selectedSn.pn_code && String(selectedSn.pn_code) !== selectedPnCode) {
+        if (selectedSn.pn_code && !samePnCode(selectedSn.pn_code, selectedPnCode)) {
           ctx.throw(400, `SN ${selectedSnCode} 与选择的 PN 不匹配`);
         }
         snId = selectedSn.sn_id;
@@ -5803,6 +5832,7 @@ module.exports = {
     buildInventorySummaryExportRows,
     getInventorySummaryCategoryRank,
     buildInventoryProductKeywordConditions,
+    getSummaryNormalQty,
     purchaseInitiatorName,
     resolveInboundInitiator,
     resolveSnTraceLogUser,
@@ -5813,6 +5843,7 @@ module.exports = {
     salesReturnRequesterName,
     resolveTransferInboundSnBinding,
     normalizeSnIdentityValue,
+    samePnCode,
     isPurchaseInboundItemProgressComplete
   }
 };

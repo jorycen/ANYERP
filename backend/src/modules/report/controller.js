@@ -16,6 +16,7 @@ const {
 const { Op } = require('sequelize');
 const { loadLegacyCostMaps, calculateItemBaseProfit } = require('./profitCalculation');
 const { DashboardService } = require('./dashboardService');
+const { buildDecisionInsights, buildAiAdvisor } = require('./decisionEngine');
 const { resolveReportStoreIds } = require('../../utils/storePermissions');
 const { FORMULA_VERSION: GROSS_PROFIT_FORMULA_VERSION } = require('../sales/grossProfit');
 
@@ -563,7 +564,10 @@ async function getDashboardFilters(ctx) {
 }
 
 async function getDashboardOverview(ctx) {
-  ctx.body = await dashboardService.buildOverview(ctx.state.user, ctx.query);
+  const overview = await dashboardService.buildOverview(ctx.state.user, ctx.query);
+  overview.decisionInsights = buildDecisionInsights(overview);
+  overview.aiAdvisor = buildAiAdvisor(overview);
+  ctx.body = overview;
 }
 
 module.exports = {

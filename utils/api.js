@@ -294,6 +294,11 @@ function normalizeOrder(order) {
   const normalizedStatus = rawStatus === 'archived'
     ? '已归档'
     : (rawStatus === 'voided' || rawStatus === 'cancelled' ? '已作废' : rawStatus);
+  const supplementTotalValue = order.supplement_total !== undefined && order.supplement_total !== null
+    ? Number(order.supplement_total || 0)
+    : (order.supplementTotal !== undefined && order.supplementTotal !== null
+      ? Number(order.supplementTotal || 0)
+      : 0);
   const totalAmount = Number(order.total_amount || order.totalAmount || 0);
   const discount = Number(order.discount_amount || order.discountAmount || order.discount || 0);
   const nationalSubsidy = Number(order.national_subsidy || order.nationalSubsidy || 0);
@@ -348,6 +353,7 @@ function normalizeOrder(order) {
     personalInfoPhoto: parseJsonField(order.personal_info_photo || order.personalInfoPhoto || '', ''),
     depositItems: normalizeArrayField(order.deposit_items || order.depositItems || order.deposits || []),
     depositDeductionTotal,
+    supplementTotal: supplementTotalValue,
     auxiliarySalesList: normalizeArrayField(order.auxiliary_sales_list || order.auxiliarySalesList || []),
     status: normalizedStatus,
     createTime: order.create_time || order.createTime,

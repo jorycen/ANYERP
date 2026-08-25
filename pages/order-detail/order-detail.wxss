@@ -1653,6 +1653,19 @@
   color: var(--danger-color);
 }
 
+.supplement-direction {
+  margin-right: 12rpx;
+  font-size: 24rpx;
+}
+
+.supplement-direction.increase {
+  color: var(--success-color);
+}
+
+.supplement-direction.decrease {
+  color: var(--danger-color);
+}
+
 .supplement-delete {
   width: 48rpx;
   height: 48rpx;

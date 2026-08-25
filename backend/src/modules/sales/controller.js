@@ -53,6 +53,7 @@ const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, cr
 const { getUserRoles } = require('../../middleware/permission');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { assertActiveProducts } = require('../../utils/activeProduct');
+const { syncSerializedInventoryBalance } = require('../inventory/serializedInventoryBalance');
 
 async function isRentalDemoSn(sn, transaction = null) {
   if (sn?.inventory_type === 'rental_demo_qty') return true;
@@ -611,6 +612,13 @@ function exportSupplementAmount(supplements, predicate) {
   return (supplements || [])
     .filter(item => predicate(item))
     .reduce((total, item) => total + Number(item.amount || 0) * (item.amount_type === 'decrease' ? -1 : 1), 0);
+}
+
+function getSupplementNetAmount(supplements = []) {
+  return money((supplements || []).reduce((total, item) => {
+    const amount = Number(item?.amount || 0);
+    return total + amount * (item?.amount_type === 'decrease' ? -1 : 1);
+  }, 0));
 }
 
 function isEducationSupplement(item) {
@@ -2377,6 +2385,9 @@ async function detail(ctx) {
   }
 
   const result = order.toJSON();
+  const supplements = Array.isArray(result.supplements) ? result.supplements : [];
+  result.supplement_count = supplements.length;
+  result.supplement_total = getSupplementNetAmount(supplements);
   const items = result.OrderItems || [];
   const snCodes = items.map(item => item.sn_code).filter(Boolean);
   if (snCodes.length > 0) {
@@ -4480,6 +4491,13 @@ async function reserveInventoryForOrder(order, transaction = null) {
       }
     }
     await _moveInventoryToPending(op.item.product_id, order.store_id, op.inventoryType, op.quantity, transaction);
+    if (op.snRecord) {
+      await syncSerializedInventoryBalance({
+        productId: op.item.product_id,
+        storeId: order.store_id,
+        transaction
+      });
+    }
   }
 }
 
@@ -4488,6 +4506,7 @@ async function releaseReservedInventoryForOrder(order, transaction = null) {
   for (const item of items) {
     const quantity = Number(item.quantity || 1);
     let inventoryType = 'normal_qty';
+    let restoredSn = false;
 
     if (item.sn_code) {
       const snWhere = {
@@ -4502,10 +4521,18 @@ async function releaseReservedInventoryForOrder(order, transaction = null) {
       if (snRecord) {
         inventoryType = snRecord.inventory_type || 'normal_qty';
         await snRecord.update({ status: 'in_stock' }, { transaction });
+        restoredSn = true;
       }
     }
 
     await _releasePendingInventory(item.product_id, order.store_id, inventoryType, quantity, transaction);
+    if (restoredSn) {
+      await syncSerializedInventoryBalance({
+        productId: item.product_id,
+        storeId: order.store_id,
+        transaction
+      });
+    }
   }
 }
 
@@ -4763,6 +4790,12 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
   for (const op of operations) {
     if (op.snRecord) {
       await op.snRecord.update({ status: 'sold' }, { transaction });
+      await _finalizePendingInventory(op.item.product_id, order.store_id, op.quantity, transaction);
+      await syncSerializedInventoryBalance({
+        productId: op.item.product_id,
+        storeId: order.store_id,
+        transaction
+      });
       if (!op.item.sn_id) {
         await op.item.update({ sn_id: op.snRecord.sn_id }, { transaction });
       }
@@ -4840,6 +4873,7 @@ module.exports = {
     buildOrderExportRows,
     buildSalesReturnSettlementExportRows,
     buildDepositExportRows,
+    getSupplementNetAmount,
     isSalesReturnInProgressStatus,
     getSalesReturnStatusLabel,
     getOrderExportArchiveStatus,

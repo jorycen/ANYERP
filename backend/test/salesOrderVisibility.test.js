@@ -283,6 +283,17 @@ test('订单导出包含完整金额补录信息', () => {
   assert.equal(rows[0].补录信息, '教育优惠:20(减少，学生证已核验)；提货费用:15(增加)；优惠券:30(增加，券码:COUPON-1)');
 });
 
+test('订单详情补录净额按增加和减少方向计算', () => {
+  assert.equal(_test.getSupplementNetAmount([
+    { amount: 15, amount_type: 'increase' },
+    { amount: 20, amount_type: 'decrease' },
+    { amount: 5, amount_type: 'increase' }
+  ]), 0);
+  assert.equal(_test.getSupplementNetAmount([
+    { amount: 30, amount_type: 'decrease' }
+  ]), -30);
+});
+
 test('退单导出不把内部商品ID作为商品编码', () => {
   const rows = _test.buildSalesReturnSettlementExportRows([{
     toJSON: () => ({

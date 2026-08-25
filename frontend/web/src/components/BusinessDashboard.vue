@@ -92,6 +92,26 @@
       class="error-alert"
     />
 
+    <section v-if="dashboard.decisionInsights?.length" class="decision-panel">
+      <div class="decision-panel-heading">
+        <div>
+          <h2>经营预警与建议</h2>
+          <p>{{ dashboard.aiAdvisor?.notice || '由经营规则自动生成，可追溯到当前看板指标。' }}</p>
+        </div>
+        <el-tag type="info" effect="plain">规则引擎</el-tag>
+      </div>
+      <div class="decision-grid">
+        <article v-for="insight in dashboard.decisionInsights" :key="insight.code" class="decision-card">
+          <div class="decision-card-head">
+            <strong>{{ insight.title }}</strong>
+            <el-tag :type="insightTagType(insight.level)" size="small">{{ insightLevelText(insight.level) }}</el-tag>
+          </div>
+          <p>{{ insight.message }}</p>
+          <span class="decision-action">建议：{{ insight.action }}</span>
+        </article>
+      </div>
+    </section>
+
     <section v-if="dashboard.kpis" class="kpi-grid">
       <article v-for="card in kpiCards" :key="card.key" class="kpi-card">
         <div class="kpi-icon" :class="card.color">
@@ -369,8 +389,18 @@ function emptyDashboard() {
       highMarginTop10: [],
       focusProducts: []
     },
-    inventory: { inventoryQuantity: 0, skuCount: 0, inventoryAmount: null, ageStructure: [], staleProducts: [] }
+    inventory: { inventoryQuantity: 0, skuCount: 0, inventoryAmount: null, ageStructure: [], staleProducts: [] },
+    decisionInsights: [],
+    aiAdvisor: null
   }
+}
+
+function insightTagType(level) {
+  return level === 'critical' ? 'danger' : level === 'warning' ? 'warning' : 'info'
+}
+
+function insightLevelText(level) {
+  return level === 'critical' ? '高风险' : level === 'warning' ? '需关注' : '正常'
 }
 
 const kpiCards = computed(() => {
@@ -1055,6 +1085,61 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(2, 1fr);
   gap: 10px;
   min-height: 170px;
+}
+
+.decision-panel {
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid #e4eaf2;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.decision-panel-heading,
+.decision-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.decision-panel-heading h2 {
+  margin: 0;
+  color: #26364d;
+  font-size: 16px;
+}
+
+.decision-panel-heading p,
+.decision-card p {
+  margin: 6px 0 0;
+  color: #718096;
+  font-size: 12px;
+}
+
+.decision-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.decision-card {
+  padding: 12px;
+  border: 1px solid #edf0f5;
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.decision-card-head strong {
+  color: #34445c;
+  font-size: 13px;
+}
+
+.decision-action {
+  display: block;
+  margin-top: 10px;
+  color: #1769e0;
+  font-size: 12px;
 }
 
 .inventory-summary > div {

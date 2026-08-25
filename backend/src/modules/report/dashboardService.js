@@ -372,6 +372,7 @@ class DashboardService {
       yoyTrend,
       previousTrend,
       storeRanking,
+      previousStoreRanking,
       productRows,
       productLineRows,
       employeeOrderRows,
@@ -382,6 +383,7 @@ class DashboardService {
       this.dataSource.getTrend(filters, ranges.yoy, granularity),
       this.dataSource.getTrend(filters, ranges.previous, granularity),
       this.dataSource.getStoreRanking(filters, ranges.current),
+      this.dataSource.getStoreRanking(filters, ranges.previous),
       this.dataSource.getProductRows(filters, ranges.current),
       this.dataSource.getProductLineRows(filters, ranges.current),
       this.dataSource.getEmployeeOrderRows(filters, ranges.current),
@@ -399,6 +401,7 @@ class DashboardService {
       profitVisible
     );
     const productAnalysis = mapProductRows(productRows, profitVisible);
+    const previousStoreMap = new Map((previousStoreRanking || []).map(row => [String(row.storeId), row]));
     const inventoryView = {
       ...inventory,
       inventoryAmount: profitVisible ? inventory.inventoryAmount : null,
@@ -431,7 +434,8 @@ class DashboardService {
         ...row,
         salesAmount: roundMoney(row.salesAmount),
         grossProfit: profitVisible ? roundMoney(row.grossProfit) : null,
-        orderCount: Number(row.orderCount || 0)
+        orderCount: Number(row.orderCount || 0),
+        periodCompare: comparisonRate(row.salesAmount, previousStoreMap.get(String(row.storeId))?.salesAmount)
       })),
       employeeRanking: employeePerformance.ranking,
       employeePerformanceDetails: employeePerformance.details,

@@ -413,6 +413,44 @@
           </el-table-column>
         </el-table>
 
+        <template v-if="currentOrder.supplements?.length">
+          <h4 class="mt-20">金额补录明细</h4>
+          <el-table :data="currentOrder.supplements" border size="small">
+            <el-table-column prop="item_name" label="补录项目" min-width="140" />
+            <el-table-column label="金额" width="110">
+              <template #default="{ row }">¥{{ row.amount || 0 }}</template>
+            </el-table-column>
+            <el-table-column label="毛利方向" width="110">
+              <template #default="{ row }">
+                <el-tag :type="row.amount_type === 'decrease' ? 'danger' : 'success'">
+                  {{ row.amount_type === 'decrease' ? '减少' : '增加' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="content" label="补录内容" min-width="220" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.content || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="coupon_code" label="券码" min-width="150" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.coupon_code || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="create_user" label="补录人" width="110">
+              <template #default="{ row }">{{ row.create_user || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="create_time" label="补录时间" width="165">
+              <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
+            </el-table-column>
+            <el-table-column label="凭证" width="90">
+              <template #default="{ row }">
+                <el-link v-if="row.proof_photo_url" :href="row.proof_photo_url" target="_blank" type="primary">查看</el-link>
+                <span v-else>-</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div class="supplement-net-total">
+            补录净额：¥{{ currentOrder.supplement_total || 0 }}
+          </div>
+        </template>
+
         <h4 class="mt-20" v-if="currentOrder.OrderPayments?.length">支付记录</h4>
         <el-table :data="currentOrder.OrderPayments || []" border size="small">
           <el-table-column prop="payment_method" label="支付方式" />
@@ -1795,6 +1833,12 @@ const getDepositStatusText = (status) => {
 .mt-10 { margin-top: 10px; }
 .mt-20 { margin-top: 20px; }
 .ml-5 { margin-left: 5px; }
+.supplement-net-total {
+  margin-top: 8px;
+  color: var(--el-text-color-secondary);
+  text-align: right;
+  font-size: 13px;
+}
 .payment-methods {
   border: 1px solid #ebeef5;
   padding: 10px;

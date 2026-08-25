@@ -1208,6 +1208,9 @@
         </el-descriptions>
 
         <el-table :data="transferOutSnRows" stripe border size="small" v-loading="transferOutSnLoading">
+          <el-table-column label="序号" width="60">
+            <template #default="{ row }">{{ row.unitIndex }}</template>
+          </el-table-column>
           <el-table-column prop="productName" label="商品名称" min-width="180" />
           <el-table-column label="选择SN" min-width="240">
             <template #default="{ row }">
@@ -3658,13 +3661,17 @@ const handleConfirmTransferOut = async (row) => {
   const snItems = (row.TransferItems || []).filter(item => Number(item.need_sn || 0) === 1 && !item.sn_id)
   if (snItems.length > 0) {
     transferOutConfirmRow.value = row
-    transferOutSnRows.value = snItems.map(item => ({
-      itemId: item.item_id,
-      productId: item.product_id,
-      productName: item.product_name || item.product_id || '-',
-      snId: '',
-      snOptions: []
-    }))
+    transferOutSnRows.value = snItems.flatMap(item => {
+      const quantity = Math.max(Number(item.quantity || 0), 1)
+      return Array.from({ length: quantity }, (_, index) => ({
+        itemId: item.item_id,
+        productId: item.product_id,
+        productName: item.product_name || item.product_id || '-',
+        unitIndex: index + 1,
+        snId: '',
+        snOptions: []
+      }))
+    })
     transferOutConfirmVisible.value = true
     await loadTransferOutSnOptions(row)
     return
@@ -3756,7 +3763,7 @@ const loadTransferOutSnOptions = async (row) => {
 }
 
 const isConfirmSnDisabled = (snId, currentRow) => {
-  return transferOutSnRows.value.some(row => row !== currentRow && row.snId === snId)
+  return transferOutSnRows.value.some(row => row !== currentRow && String(row.snId || '') === String(snId || ''))
 }
 
 const submitConfirmTransferOut = async () => {
@@ -3771,7 +3778,16 @@ const submitConfirmTransferOut = async () => {
   try {
     const res = await api.confirmTransferOut({
       transferId: transferOutConfirmRow.value.transfer_id,
-      items: transferOutSnRows.value.map(row => ({ itemId: row.itemId, snId: row.snId }))
+      items: transferOutSnRows.value.map(row => {
+        const selected = row.snOptions.find(sn => String(sn.sn_id) === String(row.snId))
+        return {
+          itemId: row.itemId,
+          productId: row.productId,
+          snId: row.snId,
+          snCode: selected?.sn_code || selected?.snCode || '',
+          pnCode: selected?.pn_code || selected?.pnCode || ''
+        }
+      })
     })
     if (res.code === 0) {
       ElMessage.success('调拨出库确认成功')

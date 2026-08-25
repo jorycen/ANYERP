@@ -599,7 +599,9 @@ Page({
 
     // 补录记录
     order.supplements = order.supplements || [];
-    order.supplementTotal = order.supplementTotal || 0;
+    order.supplementTotal = order.supplementTotal === undefined || order.supplementTotal === null
+      ? 0
+      : Number(order.supplementTotal || 0);
 
     return order;
   },

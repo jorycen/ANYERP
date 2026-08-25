@@ -191,3 +191,8 @@ test('inventory summary export keeps only in-stock target categories and sorts t
     { 产品名称: '配件', PN: 'PN-A', 定价: 50, 库存: 4 }
   ]);
 });
+
+test('inventory summary uses serialized stock projection for SN products', () => {
+  assert.equal(_test.getSummaryNormalQty({ need_sn: 1 }, { normal_qty: 10 }, { total: 7 }), 7);
+  assert.equal(_test.getSummaryNormalQty({ need_sn: 0 }, { normal_qty: 10 }, { total: 7 }), 10);
+});

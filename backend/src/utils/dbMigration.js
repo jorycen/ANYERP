@@ -202,6 +202,115 @@ async function normalizeInventoryLocationIndex() {
   }
 }
 
+async function ensureProductPnEffectiveUniqueIndex() {
+  const conflicts = await sequelize.query(
+    `SELECT LOWER(REPLACE(TRIM(PN_CODE), ' ', '')) AS normalized_pn_code, COUNT(*) AS row_count
+     FROM T_PRODUCT_PN
+     WHERE STATUS = 1 AND IS_DELETED = 0
+     GROUP BY LOWER(REPLACE(TRIM(PN_CODE), ' ', ''))
+     HAVING COUNT(*) > 1`,
+    { type: sequelize.QueryTypes.SELECT }
+  );
+  if (conflicts.length > 0) {
+    throw new Error(
+      `T_PRODUCT_PN 存在有效PN重复，暂停唯一约束迁移：${conflicts[0].normalized_pn_code}`
+    );
+  }
+
+  const [activeColumn] = await sequelize.query(
+    `SELECT COUNT(*) AS cnt
+     FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'T_PRODUCT_PN'
+       AND COLUMN_NAME = 'ACTIVE_PN_CODE'`,
+    { type: sequelize.QueryTypes.SELECT }
+  );
+  if (Number(activeColumn.cnt || 0) === 0) {
+    await sequelize.query(
+      `ALTER TABLE T_PRODUCT_PN
+       ADD COLUMN ACTIVE_PN_CODE VARCHAR(64)
+       GENERATED ALWAYS AS (
+         IF(STATUS = 1 AND IS_DELETED = 0,
+           LOWER(REPLACE(TRIM(PN_CODE), ' ', '')),
+           NULL
+         )
+       ) STORED AFTER IS_DELETED`
+    );
+    console.log('[DB Migration] 已添加 T_PRODUCT_PN.ACTIVE_PN_CODE');
+  }
+
+  const [legacyIndex] = await sequelize.query(
+    `SELECT COUNT(*) AS cnt
+     FROM information_schema.STATISTICS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'T_PRODUCT_PN'
+       AND INDEX_NAME = 'uni_pn_code'`,
+    { type: sequelize.QueryTypes.SELECT }
+  );
+  if (Number(legacyIndex.cnt || 0) > 0) {
+    await sequelize.query('ALTER TABLE T_PRODUCT_PN DROP INDEX uni_pn_code');
+    console.log('[DB Migration] 已移除 T_PRODUCT_PN.uni_pn_code');
+  }
+
+  const [effectiveIndex] = await sequelize.query(
+    `SELECT COUNT(*) AS cnt
+     FROM information_schema.STATISTICS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'T_PRODUCT_PN'
+       AND INDEX_NAME = 'uni_active_pn_code'`,
+    { type: sequelize.QueryTypes.SELECT }
+  );
+  if (Number(effectiveIndex.cnt || 0) === 0) {
+    await sequelize.query(
+      'ALTER TABLE T_PRODUCT_PN ADD UNIQUE KEY uni_active_pn_code (ACTIVE_PN_CODE)'
+    );
+    console.log('[DB Migration] 已建立有效 PN 唯一约束');
+  }
+}
+
+async function ensureSerializedInventorySchema() {
+  await checkAndCreateTable('T_INVENTORY_RECONCILIATION_LOG', `
+    CREATE TABLE T_INVENTORY_RECONCILIATION_LOG (
+      RECONCILIATION_ID VARCHAR(32) NOT NULL,
+      RUN_ID VARCHAR(32) NOT NULL,
+      PRODUCT_ID VARCHAR(32) NOT NULL,
+      STORE_ID VARCHAR(32) NOT NULL,
+      LOCATION_ID VARCHAR(32) NOT NULL,
+      ACTION VARCHAR(16) NOT NULL,
+      BEFORE_NORMAL_QTY INT NOT NULL DEFAULT 0,
+      AFTER_NORMAL_QTY INT NOT NULL DEFAULT 0,
+      SN_QTY INT NOT NULL DEFAULT 0,
+      DIFF INT NOT NULL DEFAULT 0,
+      REASON VARCHAR(255),
+      OPERATOR VARCHAR(64),
+      CREATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (RECONCILIATION_ID),
+      KEY idx_inventory_reconcile_run (RUN_ID, CREATE_TIME),
+      KEY idx_inventory_reconcile_scope (PRODUCT_ID, STORE_ID, LOCATION_ID, CREATE_TIME)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='序列号库存余额对账日志'
+  `);
+  await checkAndAddIndex(
+    'T_PRODUCT_SN',
+    'idx_product_store_status_deleted_location',
+    'ALTER TABLE T_PRODUCT_SN ADD INDEX idx_product_store_status_deleted_location (PRODUCT_ID, STORE_ID, STATUS, IS_DELETED, LOCATION_ID)'
+  );
+  await checkAndAddIndex(
+    'T_PRODUCT_SN',
+    'idx_pn_status_deleted_store',
+    'ALTER TABLE T_PRODUCT_SN ADD INDEX idx_pn_status_deleted_store (PN_CODE, STATUS, IS_DELETED, STORE_ID)'
+  );
+  await checkAndAddIndex(
+    'T_ORDER_ITEM',
+    'idx_order_item_sn',
+    'ALTER TABLE T_ORDER_ITEM ADD INDEX idx_order_item_sn (SN_ID, SN_CODE, PRODUCT_ID)'
+  );
+  await checkAndAddIndex(
+    'T_TRANSFER_ITEM',
+    'idx_transfer_item_sn',
+    'ALTER TABLE T_TRANSFER_ITEM ADD INDEX idx_transfer_item_sn (SN_ID, SN_CODE, PRODUCT_ID)'
+  );
+}
+
 async function ensureVarcharLength(tableName, columnName, length, columnDefinition) {
   try {
     const [result] = await sequelize.query(
@@ -373,6 +482,8 @@ async function initializeCategorySortOrder() {
 
 async function runMigrations() {
   await ensureCriticalSchemaCompatibility();
+  await ensureSerializedInventorySchema();
+  await ensureProductPnEffectiveUniqueIndex();
   console.log('[DB Migration] 开始检查数据库结构...');
   
   try {
@@ -3790,4 +3901,10 @@ async function seedPermissionData() {
   }
 }
 
-module.exports = { runMigrations, migrateMissingProductPns, ensureCriticalSchemaCompatibility };
+module.exports = {
+  runMigrations,
+  migrateMissingProductPns,
+  ensureCriticalSchemaCompatibility,
+  ensureSerializedInventorySchema,
+  ensureProductPnEffectiveUniqueIndex
+};

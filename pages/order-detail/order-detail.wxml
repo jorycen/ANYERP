@@ -532,6 +532,9 @@
           <view class="supplement-item">
             <view class="supplement-main">
               <text class="supplement-name">{{item.itemName}}</text>
+              <text class="supplement-direction {{item.amountType === 'decrease' ? 'decrease' : 'increase'}}">
+                {{item.amountType === 'decrease' ? '减少' : '增加'}}
+              </text>
               <text class="supplement-amount">¥{{item.amount}}</text>
               <view class="supplement-delete" bindtap="deleteSupplement" data-index="{{index}}" wx:if="{{canEdit}}">
                 <text class="delete-icon">×</text>
@@ -540,8 +543,11 @@
             <view class="supplement-content-text" wx:if="{{item.content}}">
               <textarea class="supplement-content-textarea" value="{{item.content}}" disabled auto-height />
             </view>
+            <view class="supplement-content-text" wx:if="{{item.couponCode}}">
+              <textarea class="supplement-content-textarea" value="券码: {{item.couponCode}}" disabled auto-height />
+            </view>
             <view class="supplement-meta">
-              <textarea class="supplement-meta-textarea" value="补录人: {{item.createUser}}  {{item.createDate}}" disabled auto-height />
+              <textarea class="supplement-meta-textarea" value="补录人: {{item.createUser || '-'}}  {{item.createTime || '-'}}" disabled auto-height />
             </view>
             <view class="supplement-photo" wx:if="{{item.proofPhotoUrl}}" bindtap="previewPhoto" data-url="{{item.proofPhotoUrl}}">
               <image class="supplement-photo-img" src="{{item.proofPhotoUrl}}" mode="aspectFill" />
@@ -549,8 +555,8 @@
           </view>
         </block>
       </view>
-      <view class="supplement-total" wx:if="{{supplementTotal > 0}}">
-        <text>补录合计: ¥{{supplementTotal}}</text>
+      <view class="supplement-total" wx:if="{{supplements && supplements.length > 0}}">
+        <text>补录净额: ¥{{supplementTotal}}</text>
       </view>
     </view>
   </view>

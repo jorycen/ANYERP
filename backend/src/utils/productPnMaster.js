@@ -24,6 +24,10 @@ function createPnConflictError(code) {
   return error;
 }
 
+function isEffectivePn(row) {
+  return Number(row?.status || 0) === 1 && Number(row?.is_deleted || 0) === 0;
+}
+
 async function listActiveProductPns(productId, transaction = null) {
   return ProductPn.findAll({
     where: { product_id: productId, status: 1, is_deleted: 0 },
@@ -72,7 +76,7 @@ async function ensureProductPnMaster({ productId, pnCode, transaction = null, is
   });
   if (!product) throw Object.assign(new Error('商品不存在'), { status: 404 });
   const existing = await ProductPn.findAll({ where: { [Op.and]: [pnCodeWhere(code)] }, transaction });
-  const conflict = existing.find(row => String(row.product_id) !== String(productId));
+  const conflict = existing.find(row => isEffectivePn(row) && String(row.product_id) !== String(productId));
   if (conflict) throw createPnConflictError(code);
   const existingForProduct = await ProductPn.findAll({ where: { product_id: productId }, transaction });
   assertSingleSnProductPn({
@@ -135,7 +139,7 @@ async function ensureProductPnsMaster({ productId, codes, transaction = null }) 
       where: { [Op.and]: [pnCodeWhere(code)] },
       transaction
     });
-    const conflict = sameCodeRows.find(row => String(row.product_id) !== productKey);
+    const conflict = sameCodeRows.find(row => isEffectivePn(row) && String(row.product_id) !== productKey);
     if (conflict) {
       throw createPnConflictError(code);
     }
@@ -236,7 +240,9 @@ async function syncProductPnsMaster({ productId, pns, transaction = null }) {
       where: { [Op.and]: [pnCodeWhere(entry.code)] },
       transaction
     });
-    const conflict = sameCodeRows.find(row => String(row.pn_id) !== String(existing?.pn_id || ''));
+    const conflict = sameCodeRows.find(row =>
+      isEffectivePn(row) && String(row.pn_id) !== String(existing?.pn_id || '')
+    );
     if (conflict) {
       if (String(conflict.product_id) !== productKey) throw createPnConflictError(entry.code);
       throw Object.assign(new Error(`PN码 [${entry.code}] 在当前商品中重复`), { status: 400, code: 'PN_DUPLICATE' });
