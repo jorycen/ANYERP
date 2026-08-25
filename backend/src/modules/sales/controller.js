@@ -717,7 +717,8 @@ function getOrderExportArchiveStatus(status) {
   if (isArchiveStatus(normalizedStatus)) return '已归档';
   if (['voided', '作废', '已作废'].includes(normalizedStatus)) return '已作废';
   if (['cancelled', 'canceled', '已取消'].includes(normalizedStatus)) return '已取消';
-  if (['return_pending', '退库处理中'].includes(normalizedStatus)) return '退库处理中';
+  if (['return_pending', '已发起退单申请', '退单审批中'].includes(normalizedStatus)) return '退单审批中';
+  if (['return_inbound', '退库处理中', '退货入库中'].includes(normalizedStatus)) return '退货入库中';
   if (['returned', '退单', '已退单'].includes(normalizedStatus)) return '已退单';
   return '';
 }
@@ -2575,6 +2576,9 @@ async function update(ctx) {
 
   const nextStatus = data.order_status || data.status;
   const previousStatus = order.order_status;
+  if (isArchiveStatus(nextStatus) && isSalesReturnInProgressStatus(previousStatus)) {
+    ctx.throw(400, `订单当前处于${getSalesReturnStatusLabel(previousStatus)}，不能再次归档`);
+  }
   let archivedNow = false;
   let archivePendingApproval = false;
   let archiveGrossProfitAmount = null;
@@ -3650,6 +3654,10 @@ async function reviewSalesReturn(ctx) {
         transaction,
         ctx
       });
+      await Order.update(
+        { order_status: 'return_inbound', update_time: now },
+        { where: { order_id: request.order_id }, transaction }
+      );
     }
     if (rejected) {
       await Order.update(
@@ -4395,6 +4403,26 @@ function isCancelStatus(status) {
   return ['cancelled', 'canceled', 'voided', '已取消', '作废', '已作废'].includes(String(status || ''));
 }
 
+function isSalesReturnInProgressStatus(status) {
+  return [
+    'return_pending',
+    'return_inbound',
+    'returning',
+    '已发起退单申请',
+    '退单审批中',
+    '退库处理中',
+    '退货入库中'
+  ].includes(String(status || '').trim());
+}
+
+function getSalesReturnStatusLabel(status) {
+  const normalized = String(status || '').trim();
+  if (['return_pending', 'returning', '已发起退单申请', '退单审批中'].includes(normalized)) return '退单审批中';
+  if (['return_inbound', '退库处理中', '退货入库中'].includes(normalized)) return '退货入库中';
+  if (['returned', '退单', '已退单'].includes(normalized)) return '已退单';
+  return normalized || '退单处理中';
+}
+
 async function reserveInventoryForOrder(order, transaction = null) {
   const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
   if (!items.length) {
@@ -4812,6 +4840,8 @@ module.exports = {
     buildOrderExportRows,
     buildSalesReturnSettlementExportRows,
     buildDepositExportRows,
+    isSalesReturnInProgressStatus,
+    getSalesReturnStatusLabel,
     getOrderExportArchiveStatus,
     getOrderExportInvoiceAmount,
     normalizeDepositListRow,
