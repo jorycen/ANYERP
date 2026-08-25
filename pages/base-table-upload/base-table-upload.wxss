@@ -497,7 +497,10 @@
 .modal-body {
   flex: 1;
   padding: 20rpx;
+  height: 50vh;
   max-height: 50vh;
+  min-height: 0;
+  box-sizing: border-box;
   overflow-y: auto;
 }
 

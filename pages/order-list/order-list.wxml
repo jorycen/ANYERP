@@ -260,14 +260,14 @@
 
   <!-- 金额补录弹窗 -->
   <view class="supplement-modal" wx:if="{{showSupplementModal}}">
-    <view class="supplement-mask" bindtap="closeSupplementModal" catchtouchmove="noop"></view>
-    <view class="supplement-content" catchtouchmove="noop">
+    <view class="supplement-mask" bindtap="closeSupplementModal"></view>
+    <view class="supplement-content">
       <view class="supplement-header">
         <text class="supplement-title">{{isEditMode ? '修改补录金额' : '金额补录'}}</text>
         <text class="supplement-close" bindtap="closeSupplementModal">×</text>
       </view>
 
-      <view class="supplement-body">
+      <scroll-view class="supplement-body" scroll-y="true">
         <!-- 订单信息 -->
         <view class="supplement-order-info">
           <text class="supplement-order-no">订单: {{currentOrder.orderNo}}</text>
@@ -328,7 +328,7 @@
           <text class="add-icon">+</text>
           <text class="add-text">添加补录项目</text>
         </view>
-      </view>
+      </scroll-view>
 
       <view class="supplement-footer">
         <button class="btn btn-secondary" type="default" bindtap="closeSupplementModal">取消</button>
@@ -398,13 +398,13 @@
 
   <!-- 可用资源弹窗 -->
   <view class="resource-modal" wx:if="{{showResourceModal}}">
-    <view class="resource-mask" bindtap="closeResourceModal" catchtouchmove="noop"></view>
-    <view class="resource-content" catchtouchmove="noop">
+    <view class="resource-mask" bindtap="closeResourceModal"></view>
+    <view class="resource-content">
       <view class="resource-header">
         <text class="resource-title">可用资源 · {{resourceModalOrder.orderNo}}</text>
         <text class="resource-close" bindtap="closeResourceModal">×</text>
       </view>
-      <view class="resource-body">
+      <scroll-view class="resource-body" scroll-y="true">
         <view class="loading-tip" wx:if="{{resourceModalLoading}}"><text class="loading-text">正在加载资源...</text></view>
         <view class="resource-empty" wx:elif="{{resourceRows.length === 0}}">暂无商品资源信息</view>
         <block wx:else>
@@ -419,15 +419,15 @@
           <view class="resource-unavailable" wx:if="{{item.unavailableResources.length}}">{{item.unavailableResources.join(' · ')}}</view>
           </view>
         </block>
-      </view>
+      </scroll-view>
       <view class="resource-footer"><button class="btn btn-secondary" type="default" bindtap="closeResourceModal">关闭</button></view>
     </view>
   </view>
 
   <!-- 毛利预估明细弹窗 -->
   <view class="gross-profit-modal" wx:if="{{showGrossProfitModal}}">
-    <view class="gross-profit-mask" bindtap="closeGrossProfitModal" catchtouchmove="noop"></view>
-    <view class="gross-profit-content" catchtouchmove="noop">
+    <view class="gross-profit-mask" bindtap="closeGrossProfitModal"></view>
+    <view class="gross-profit-content">
       <view class="gross-profit-header">
         <view>
           <text class="gross-profit-title">毛利预估</text>
@@ -487,8 +487,8 @@
 
   <!-- 我的导出任务弹窗 -->
   <view class="export-tasks-modal-wrapper {{showExportTasksModal ? 'show' : ''}}" wx:if="{{showExportTasksModal}}">
-    <view class="export-tasks-mask" bindtap="closeExportTasksModal" catchtouchmove="noop"></view>
-    <view class="export-tasks-content-wrapper" catchtouchmove="noop">
+    <view class="export-tasks-mask" bindtap="closeExportTasksModal"></view>
+    <view class="export-tasks-content-wrapper">
       <view class="export-tasks-header">
         <text class="export-tasks-title">我的导出任务</text>
         <text class="export-tasks-close" bindtap="closeExportTasksModal">×</text>

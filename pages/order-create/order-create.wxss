@@ -76,7 +76,9 @@
 }
 
 .store-picker-body {
+  height: 58vh;
   max-height: 58vh;
+  box-sizing: border-box;
   overflow-y: auto;
 }
 
@@ -1431,7 +1433,9 @@
 
 .modal-body {
   padding: 40rpx 30rpx;
+  height: 60vh;
   max-height: 60vh;
+  box-sizing: border-box;
   overflow-y: auto;
 }
 
@@ -1670,7 +1674,9 @@
 }
 
 .goods-select-list {
+  height: 60vh;
   max-height: 60vh;
+  box-sizing: border-box;
   padding: 20rpx;
 }
 

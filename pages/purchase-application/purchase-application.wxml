@@ -290,8 +290,8 @@
     </view>
   </view>
 
-  <view class="modal-mask" wx:if="{{showSupplierModal}}" bindtap="closeSupplierModal" catchtouchmove="noop">
-    <view class="selection-modal" catchtap="noop" catchtouchmove="noop">
+  <view class="modal-mask" wx:if="{{showSupplierModal}}" bindtap="closeSupplierModal">
+    <view class="selection-modal" catchtap="noop">
       <view class="modal-header">
         <text class="modal-title">选择供应商</text>
         <text class="modal-close" bindtap="closeSupplierModal">×</text>
@@ -315,8 +315,8 @@
     </view>
   </view>
 
-  <view class="modal-mask" wx:if="{{showProductModal}}" bindtap="closeProductModal" catchtouchmove="noop">
-    <view class="selection-modal" catchtap="noop" catchtouchmove="noop">
+  <view class="modal-mask" wx:if="{{showProductModal}}" bindtap="closeProductModal">
+    <view class="selection-modal" catchtap="noop">
       <view class="modal-header">
         <text class="modal-title">选择采购商品</text>
         <text class="modal-close" bindtap="closeProductModal">×</text>

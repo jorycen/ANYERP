@@ -543,12 +543,16 @@
 }
 
 .order-dialog-list {
+  height: 52vh;
   max-height: 52vh;
+  box-sizing: border-box;
   margin-top: 16rpx;
 }
 
 .sn-dialog-list {
+  height: 58vh;
   max-height: 58vh;
+  box-sizing: border-box;
   margin-top: 16rpx;
 }
 

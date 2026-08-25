@@ -513,14 +513,14 @@
     </view>
   </view>
 
-  <view class="modal" wx:if="{{showPreview}}" catchtouchmove="noop">
-    <view class="modal-mask" bindtap="closePreview" catchtouchmove="noop"></view>
-    <view class="modal-content" catchtouchmove="noop">
+  <view class="modal" wx:if="{{showPreview}}">
+    <view class="modal-mask" bindtap="closePreview"></view>
+    <view class="modal-content">
       <view class="modal-header">
         <text class="modal-title">订单预览</text>
         <text class="modal-close" bindtap="closePreview">×</text>
       </view>
-      <view class="modal-body">
+      <scroll-view class="modal-body" scroll-y="true">
         <!-- 订单预览内容 -->
         <view class="preview-content">
           <view class="preview-section">
@@ -603,7 +603,7 @@
             </view>
           </view>
         </view>
-      </view>
+      </scroll-view>
       <view class="modal-footer">
         <button class="btn btn-secondary" type="default" bindtap="closePreview">取消</button>
         <button class="btn btn-primary" type="primary" bindtap="printAndSubmitOrder">打印并提交</button>
@@ -613,27 +613,27 @@
 </view>
 
 <!-- 订单门店选择弹窗 -->
-<view class="modal" wx:if="{{showStorePicker}}" catchtouchmove="noop">
-  <view class="modal-mask" bindtap="closeStorePicker" catchtouchmove="noop"></view>
-  <view class="modal-content store-picker-modal" catchtouchmove="noop">
+<view class="modal" wx:if="{{showStorePicker}}">
+  <view class="modal-mask" bindtap="closeStorePicker"></view>
+  <view class="modal-content store-picker-modal">
     <view class="modal-header">
       <text class="modal-title">选择订单门店</text>
       <text class="modal-close" bindtap="closeStorePicker">×</text>
     </view>
-    <view class="modal-body store-picker-body">
+    <scroll-view class="modal-body store-picker-body" scroll-y="true">
       <view wx:for="{{orderStoreOptions}}" wx:key="storeId" class="store-option {{item.storeId === storeId ? 'selected' : ''}}" bindtap="selectOrderStore" data-index="{{index}}">
         <text>{{item.name}}</text>
         <text wx:if="{{item.storeId === storeId}}" class="store-option-check">✓</text>
       </view>
       <view wx:if="{{!orderStoreOptions.length}}" class="store-picker-empty">暂无可选择的门店</view>
-    </view>
+    </scroll-view>
   </view>
 </view>
 
 <!-- 商品选择弹窗 -->
-<view class="goods-select-modal" wx:if="{{showGoodsSelectModal}}" catchtouchmove="noop">
-  <view class="goods-select-mask" bindtap="closeGoodsSelectModal" catchtouchmove="noop"></view>
-  <view class="goods-select-content" catchtouchmove="noop">
+<view class="goods-select-modal" wx:if="{{showGoodsSelectModal}}">
+  <view class="goods-select-mask" bindtap="closeGoodsSelectModal"></view>
+  <view class="goods-select-content">
     <view class="goods-select-header">
       <text class="goods-select-title">选择商品</text>
       <text class="goods-select-close" bindtap="closeGoodsSelectModal">×</text>

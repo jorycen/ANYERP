@@ -675,7 +675,9 @@
 }
 
 .modal-product-list {
+  height: 48vh;
   max-height: 48vh;
+  box-sizing: border-box;
   border: 1rpx solid #edf0f2;
   border-radius: 14rpx;
 }

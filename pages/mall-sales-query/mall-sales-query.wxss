@@ -202,7 +202,7 @@ picker .picker-input::after {
 .resource-footer { border-top: 1rpx solid #eee; border-bottom: 0; justify-content: flex-end; }
 .resource-title { font-size: 32rpx; font-weight: 600; }
 .resource-close { font-size: 44rpx; color: #999; }
-.resource-body { max-height: 60vh; padding: 20rpx 30rpx; overflow-y: auto; }
+.resource-body { height: 60vh; max-height: 60vh; padding: 20rpx 30rpx; box-sizing: border-box; }
 .resource-product { padding: 22rpx 0; border-bottom: 1rpx solid #f0f0f0; }
 .resource-product-title { font-size: 30rpx; font-weight: 600; color: #222; }
 .resource-product-code { margin-top: 8rpx; color: #888; font-size: 24rpx; }
@@ -518,7 +518,10 @@ picker .picker-input::after {
 }
 
 .export-tasks-list {
+  height: 500rpx;
   max-height: 500rpx;
+  flex: 1;
+  min-height: 0;
 }
 
 .export-task-item {

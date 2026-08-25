@@ -282,7 +282,7 @@ picker .picker-input::after {
 .gross-profit-title { display: block; color: #222; font-size: 34rpx; font-weight: 600; }
 .gross-profit-order-no { display: block; margin-top: 6rpx; color: #999; font-size: 22rpx; }
 .gross-profit-close { color: #999; font-size: 44rpx; }
-.gross-profit-body { max-height: 64vh; padding: 24rpx 30rpx; box-sizing: border-box; }
+.gross-profit-body { height: 64vh; max-height: 64vh; padding: 24rpx 30rpx; box-sizing: border-box; }
 .gross-profit-total { padding: 24rpx; border-radius: 12rpx; background: #f5f5f5; text-align: center; }
 .gross-profit-total.positive { background: #effaf3; color: #cf1322; }
 .gross-profit-total.negative { background: #fff1f0; color: #087443; }
@@ -337,7 +337,7 @@ picker .picker-input::after {
 .resource-footer { border-top: 1rpx solid #eee; border-bottom: 0; justify-content: flex-end; }
 .resource-title { font-size: 32rpx; font-weight: 600; }
 .resource-close { font-size: 44rpx; color: #999; }
-.resource-body { max-height: 60vh; padding: 20rpx 30rpx; overflow-y: auto; }
+.resource-body { height: 60vh; max-height: 60vh; padding: 20rpx 30rpx; box-sizing: border-box; }
 .resource-product { padding: 22rpx 0; border-bottom: 1rpx solid #f0f0f0; }
 .resource-product-title { font-size: 30rpx; font-weight: 600; color: #222; }
 .resource-product-code { margin-top: 8rpx; color: #888; font-size: 24rpx; }
@@ -723,8 +723,9 @@ picker .picker-input::after {
 
 .supplement-body {
   padding: 30rpx;
+  height: 600rpx;
   max-height: 600rpx;
-  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .supplement-order-info {
@@ -1215,7 +1216,10 @@ picker .picker-input::after {
 }
 
 .export-tasks-list {
+  height: 500rpx;
   max-height: 500rpx;
+  flex: 1;
+  min-height: 0;
 }
 
 .export-task-item {

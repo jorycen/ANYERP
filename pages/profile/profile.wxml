@@ -105,7 +105,7 @@
 </view>
 
 <view class="modal-mask" wx:if="{{showStorePicker}}" bindtap="hideStorePicker" catchtouchmove="noop"></view>
-<view class="store-picker-modal" wx:if="{{showStorePicker}}" catchtouchmove="noop">
+<view class="store-picker-modal" wx:if="{{showStorePicker}}">
   <view class="modal-header">
     <text class="modal-title">选择门店</text>
     <text class="modal-close" bindtap="hideStorePicker">✕</text>

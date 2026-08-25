@@ -1853,7 +1853,9 @@
 }
 
 .goods-select-list {
+  height: 60vh;
   max-height: 60vh;
+  box-sizing: border-box;
 }
 
 .goods-select-item {
@@ -1961,9 +1963,10 @@
 }
 
 .return-modal-scroll {
-  height: 60vh;
+  height: calc(88vh - 190rpx);
   min-height: 0;
-  flex: 1;
+  flex: 0 0 auto;
+  box-sizing: border-box;
 }
 
 .return-modal .modal-body {
