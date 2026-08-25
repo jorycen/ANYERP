@@ -129,11 +129,22 @@ function emptyForm() {
 function money(value) { return Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }
 
 async function loadOptions() {
-  const res = await api.getMonthlyTaskOptions()
-  const data = res.data?.data || res.data || {}
-  options.stores = data.stores || []
-  options.staff = data.staff || []
-  options.products = data.products || []
+  try {
+    const res = await api.getMonthlyTaskOptions()
+    const data = res.data?.data || res.data || {}
+    options.stores = data.stores || []
+    options.staff = data.staff || []
+    options.products = data.products || []
+  } catch (error) {
+    options.stores = []
+    options.staff = []
+    options.products = []
+    if (error.response?.status === 404) {
+      ElMessage.error('月度任务接口未部署，请重新部署 ANY-ERP 后端服务')
+    } else {
+      ElMessage.error(error.message || '月度任务选项加载失败')
+    }
+  }
 }
 
 async function loadTasks() {
