@@ -2656,7 +2656,11 @@ Page({
       // 添加新的补录记录
       order.supplements.push(supplementRecord);
       // 计算补录总金额
-      order.supplementTotal = order.supplements.reduce((sum, item) => sum + (item.amount || 0), 0);
+      order.supplementTotal = order.supplements.reduce((sum, item) => {
+        const amount = Number(item.amount || 0);
+        const amountType = item.amountType || item.amount_type;
+        return sum + (amountType === 'decrease' ? -amount : amount);
+      }, 0);
     }
 
     // 更新筛选后的订单列表
@@ -2670,7 +2674,11 @@ Page({
       // 添加新的补录记录
       order.supplements.push(supplementRecord);
       // 计算补录总金额
-      order.supplementTotal = order.supplements.reduce((sum, item) => sum + (item.amount || 0), 0);
+      order.supplementTotal = order.supplements.reduce((sum, item) => {
+        const amount = Number(item.amount || 0);
+        const amountType = item.amountType || item.amount_type;
+        return sum + (amountType === 'decrease' ? -amount : amount);
+      }, 0);
     }
 
     // 更新数据
@@ -2749,7 +2757,8 @@ Page({
           // 查找对应项目的amountType
           const supplementItems = this.data.supplementItems;
           const matchedItem = supplementItems.find(item => item.name === sup.itemName);
-          const amountType = matchedItem ? (matchedItem.amountType || 'increase') : 'increase';
+          const amountType = sup.amountType || sup.amount_type ||
+            (matchedItem ? (matchedItem.amountType || 'increase') : 'increase');
 
           return {
             selectedSupplementIndex: 0,
@@ -2811,6 +2820,7 @@ Page({
       selectedSupplementIndex: 0,
       selectedSupplementItem: '',
       supplementAmount: '',
+      supplementContent: '',
       supplementPhotoUrl: '',
       amountType: defaultType
     });
@@ -3075,10 +3085,10 @@ Page({
   },
 
   /**
-   * 提交金额补录（直接操作数据库）
+   * 提交金额补录（统一走 ANY-ERP 补录接口）
    */
   submitSupplement: function () {
-    const { currentOrder, supplementRecords, userInfo, isEditMode } = this.data;
+    const { currentOrder, supplementRecords, isEditMode } = this.data;
 
     // 验证所有补录记录
     for (let i = 0; i < supplementRecords.length; i++) {
@@ -3104,77 +3114,43 @@ Page({
       title: isEditMode ? '修改中...' : '提交中...',
     });
 
-    const db = wx.cloud.database();
-    const now = new Date();
+    const orderId = currentOrder.orderId || currentOrder.order_id || currentOrder._id;
+    if (!orderId) {
+      wx.hideLoading();
+      wx.showToast({ title: '订单信息不完整，请刷新后重试', icon: 'none' });
+      return;
+    }
 
-    // 构建补录记录数组
-    const newSupplementRecords = supplementRecords.map(record => ({
-      itemName: record.selectedSupplementItem,
-      amount: parseFloat(record.supplementAmount),
-      content: record.supplementContent || '',
-      proofPhotoUrl: record.supplementPhotoUrl || '',
-      createUser: userInfo.userName || '未知用户',
-      createTime: now.getTime(),
-      createDate: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
-    }));
+    const supplementPayload = supplementRecords.map(record => {
+      const item = (this.data.supplementItems || []).find(supplementItem =>
+        supplementItem.name === record.selectedSupplementItem
+      );
+      return {
+        itemId: item && (item.itemId || item.id || item._id) || '',
+        itemName: record.selectedSupplementItem,
+        amount: parseFloat(record.supplementAmount),
+        amountType: record.amountType || (item && item.amountType) || 'increase',
+        content: record.supplementContent || '',
+        proofPhotoUrl: record.supplementPhotoUrl || ''
+      };
+    });
 
-    // 先查询订单获取现有的补录记录
-    db.collection('orders')
-      .where({ orderNo: currentOrder.orderNo })
-      .limit(1)
-      .get()
+    api.order.updateSupplements(orderId, supplementPayload)
       .then(res => {
-        if (!res.data || res.data.length === 0) {
-          wx.hideLoading();
-          wx.showToast({
-            title: '订单不存在',
-            icon: 'none'
-          });
-          return;
-        }
-
-        const order = res.data[0];
-        const orderDocId = order._id;
-
-        let allSupplements;
-        if (isEditMode) {
-          // 编辑模式：直接替换所有补录记录
-          allSupplements = newSupplementRecords;
-        } else {
-          // 新增模式：追加到现有记录
-          const existingSupplements = order.supplements || [];
-          allSupplements = [...existingSupplements, ...newSupplementRecords];
-        }
-
-        // 计算补录总金额
-        const supplementTotal = allSupplements.reduce((sum, item) => sum + (item.amount || 0), 0);
-
-        // 更新订单
-        return db.collection('orders').doc(orderDocId).update({
-          data: {
-            supplements: allSupplements,
-            supplementTotal: supplementTotal,
-            updateTime: now.getTime()
-          }
-        });
-      })
-      .then(() => {
         wx.hideLoading();
+        const savedSupplements = res && Array.isArray(res.supplements)
+          ? res.supplements
+          : supplementPayload;
         wx.showToast({
-          title: isEditMode ? '修改成功' : `成功补录${newSupplementRecords.length}个项目`,
+          title: isEditMode ? '修改成功' : `成功补录${savedSupplements.length}个项目`,
           icon: 'success'
         });
 
-        // 关闭弹窗
         this.closeSupplementModal();
-
-        // 更新列表中的订单数据
         if (isEditMode) {
-          // 编辑模式：替换所有补录记录
-          this.replaceOrderSupplementsInList(currentOrder.orderNo, newSupplementRecords);
+          this.replaceOrderSupplementsInList(currentOrder.orderNo, savedSupplements);
         } else {
-          // 新增模式：追加到现有记录
-          this.updateOrderSupplementsInList(currentOrder.orderNo, newSupplementRecords);
+          this.updateOrderSupplementsInList(currentOrder.orderNo, savedSupplements);
         }
       })
       .catch(err => {
@@ -3202,7 +3178,11 @@ Page({
       order.supplements = [...existingSupplements, ...newSupplements];
 
       // 重新计算补录总金额
-      order.supplementTotal = order.supplements.reduce((sum, item) => sum + (item.amount || 0), 0);
+      order.supplementTotal = order.supplements.reduce((sum, item) => {
+        const amount = Number(item.amount || 0);
+        const amountType = item.amountType || item.amount_type;
+        return sum + (amountType === 'decrease' ? -amount : amount);
+      }, 0);
 
       // 更新订单列表
       this.setData({
@@ -3225,7 +3205,11 @@ Page({
       order.supplements = newSupplements;
 
       // 重新计算补录总金额
-      order.supplementTotal = order.supplements.reduce((sum, item) => sum + (item.amount || 0), 0);
+      order.supplementTotal = order.supplements.reduce((sum, item) => {
+        const amount = Number(item.amount || 0);
+        const amountType = item.amountType || item.amount_type;
+        return sum + (amountType === 'decrease' ? -amount : amount);
+      }, 0);
 
       // 更新订单列表
       this.setData({

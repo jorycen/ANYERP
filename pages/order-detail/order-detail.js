@@ -2618,33 +2618,24 @@ Page({
     const supplements = [...this.data.supplements];
     supplements.splice(index, 1);
 
-    const newSupplementTotal = supplements.reduce((sum, item) => sum + (item.amount || 0), 0);
-
-    wx.cloud.callFunction({
-      name: 'queryOrders',
-      data: {
-        action: 'deleteSupplement',
-        data: {
-          orderNo: this.data.orderNo,
-          supplements,
-          supplementTotal: newSupplementTotal
-        }
-      }
-    }).then(res => {
+    const order = this.data.order || {};
+    const orderId = order.orderId || order.order_id || order._id;
+    if (!orderId) {
       wx.hideLoading();
+      wx.showToast({ title: '订单信息不完整，请刷新后重试', icon: 'none' });
+      return;
+    }
 
-      if (res.result && res.result.code === 0) {
-        this.setData({
-          supplements,
-          supplementTotal: newSupplementTotal
-        });
-        wx.showToast({ title: '删除成功', icon: 'success' });
-      } else {
-        wx.showToast({
-          title: res.result?.message || '删除失败',
-          icon: 'none'
-        });
-      }
+    const newSupplementTotal = supplements.reduce((sum, item) => {
+      const amount = Number(item.amount || 0);
+      const amountType = item.amountType || item.amount_type;
+      return sum + (amountType === 'decrease' ? -amount : amount);
+    }, 0);
+
+    api.order.updateSupplements(orderId, supplements).then(() => {
+      wx.hideLoading();
+      this.setData({ supplements, supplementTotal: newSupplementTotal });
+      wx.showToast({ title: '删除成功', icon: 'success' });
     }).catch(err => {
       wx.hideLoading();
       console.error('删除补录记录失败:', err);

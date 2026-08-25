@@ -1470,11 +1470,20 @@ const api = {
       return api.order.updateByOrderNo(data.orderNo, pickInvoicePayload(data))
         .then(() => ({ result: { code: 0, data: true } }));
     }
-    if (name === 'queryOrders' && (action === 'deleteSupplement' || action === 'updateOrderSupplement' || action === 'updateOrderRemark')) {
-      const payload = Object.assign({}, data);
-      delete payload.orderNo;
-      return api.order.updateByOrderNo(data.orderNo, payload)
-        .then(() => ({ result: { code: 0, data: true } }));
+    if (name === 'queryOrders' && (action === 'deleteSupplement' || action === 'updateOrderSupplement')) {
+      const supplements = Array.isArray(data.supplements) ? data.supplements : [];
+      return api.order.queryList({ orderNo: data.orderNo, page: 1, pageSize: 1 })
+        .then(res => {
+          const order = res && res.data && res.data[0];
+          const orderId = order && (order.orderId || order.order_id || order._id);
+          if (!orderId) throw new Error('订单不存在');
+          return api.order.updateSupplements(orderId, supplements);
+        })
+        .then(result => ({ result: { code: 0, data: result && result.data ? result.data : true } }));
+    }
+    if (name === 'queryOrders' && action === 'updateOrderRemark') {
+      return api.order.updateByOrderNo(data.orderNo, { remark: data.remark || '' })
+        .then(() => ({ result: { code: 0, success: true, data: true } }));
     }
     if (name === 'updateOrder') {
       const payload = data.updateData || data.orderData || data;
