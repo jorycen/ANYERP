@@ -928,8 +928,10 @@ Page({
             grossProfitTone,
             pricingTotal: orderProfit.pricingTotal,
             minimumSalePriceTotal: orderProfit.minimumSalePriceTotal,
+            orderStatusLabel: this.getOrderStatusLabel(order),
+            isReturnFlowStatus: this.isReturnFlowStatus(order),
             canOperate: canOperate,
-            canVoid: canOperate && order.status !== 'pending_approval' && !this.isArchivedOrder(order) && !this.isReturnPending(order),
+            canVoid: canOperate && order.status !== 'pending_approval' && !this.isArchivedOrder(order) && !this.isReturnFlowStatus(order),
             canRequestReturn: canOperate && this.isArchivedOrder(order) && !this.isReturnPending(order)
           };
         });
@@ -1673,6 +1675,31 @@ Page({
     return status === '已发起退单申请' || status === '退单审批中' || status === 'return_pending' || status === 'returning' || status.indexOf('退单审批') >= 0;
   },
 
+  isReturnFlowStatus: function (order) {
+    const status = String(order && (order.status || order.orderStatus || order.order_status) || '').trim();
+    return [
+      'return_pending',
+      'return_inbound',
+      'returning',
+      'returned',
+      '已发起退单申请',
+      '退单审批中',
+      '退库处理中',
+      '退货入库中',
+      '已退单',
+      '退单'
+    ].indexOf(status) >= 0;
+  },
+
+  getOrderStatusLabel: function (order) {
+    const status = String(order && (order.status || order.orderStatus || order.order_status) || '').trim();
+    if (status === 'pending_approval') return '待审批';
+    if (['return_pending', 'returning', '已发起退单申请', '退单审批中'].indexOf(status) >= 0) return '退单审批中';
+    if (['return_inbound', '退库处理中', '退货入库中'].indexOf(status) >= 0) return '退货入库中';
+    if (['returned', '退单', '已退单'].indexOf(status) >= 0) return '已退单';
+    return status || '未归档';
+  },
+
   chooseReturnGovSubsidy: function (callback) {
     wx.showModal({
       title: '退回国补资格',
@@ -1715,25 +1742,14 @@ Page({
             originalPayments: order.paymentMethods || order.payments || [],
             userRole: queryUser.userRole,
             userName: queryUser.userName
-          }).then(() => {
-            const returnRequestStatus = '已发起退单申请';
-            return api.order.update(orderId, {
-              orderNo: order.orderNo,
-              status: returnRequestStatus,
-              orderStatus: returnRequestStatus,
-              userRole: queryUser.userRole,
-              userName: queryUser.userName,
-              storeId: order.storeId || order.store_id || queryUser.storeId || ''
-            }).then(() => ({ statusSyncFailed: false }))
-              .catch(error => {
-                console.error('退单申请已提交，但订单状态同步失败:', error);
-                return { statusSyncFailed: true };
-              });
           }).then(result => {
-            this.updateOrderStatusInList(order.orderNo, '已发起退单申请');
+            const returnRequestStatus = result && result.data && result.data.status
+              ? result.data.status
+              : 'return_pending';
+            this.updateOrderStatusInList(order.orderNo, returnRequestStatus);
             wx.showToast({
-              title: result.statusSyncFailed ? '申请已提交，状态同步失败' : '退单申请已提交',
-              icon: result.statusSyncFailed ? 'none' : 'success'
+              title: '退单申请已提交',
+              icon: 'success'
             });
           }).catch(err => {
             console.error('提交退单申请失败:', err);
@@ -2578,11 +2594,19 @@ Page({
       order.actualPayment = actualAmount.toFixed(2);
       order.paymentTotal = paymentTotal.toFixed(2);
     };
+    const refreshStatusDisplay = (order) => {
+      if (!order) return;
+      order.orderStatusLabel = this.getOrderStatusLabel(order);
+      order.isReturnFlowStatus = this.isReturnFlowStatus(order);
+      order.canVoid = Boolean(order.canOperate) && order.status !== 'pending_approval' && !this.isArchivedOrder(order) && !order.isReturnFlowStatus;
+      order.canRequestReturn = Boolean(order.canOperate) && this.isArchivedOrder(order) && !this.isReturnPending(order);
+    };
 
     // 更新主订单列表
     const orderIndex = orders.findIndex(item => item.orderNo === orderNo);
     if (orderIndex !== -1) {
       orders[orderIndex].status = newStatus;
+      refreshStatusDisplay(orders[orderIndex]);
       refreshDisplayAmounts(orders[orderIndex]);
       // 如果订单已作废或已归档，根据当前筛选条件可能需要隐藏
       const currentStatus = this.data.searchParams.status;
@@ -2596,6 +2620,7 @@ Page({
     const filteredIndex = filteredOrders.findIndex(item => item.orderNo === orderNo);
     if (filteredIndex !== -1) {
       filteredOrders[filteredIndex].status = newStatus;
+      refreshStatusDisplay(filteredOrders[filteredIndex]);
       refreshDisplayAmounts(filteredOrders[filteredIndex]);
       const currentStatus = this.data.searchParams.status;
       if (currentStatus && currentStatus !== '全部' && currentStatus !== newStatus) {

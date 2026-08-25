@@ -113,6 +113,9 @@
             <view class="order-status-group">
               <text class="order-status" wx:if="{{item.status === '已归档'}}" style="background-color: var(--success-color);">已归档</text>
               <text class="order-status" wx:elif="{{item.status === '已作废'}}" style="background-color: #FF4D4F;">已作废</text>
+              <text class="order-status" wx:elif="{{item.status === 'returned' || item.status === '退单' || item.status === '已退单'}}" style="background-color: #722ED1;">已退单</text>
+              <text class="order-status" wx:elif="{{item.status === 'return_inbound' || item.status === '退库处理中' || item.status === '退货入库中'}}" style="background-color: #1677FF;">退货入库中</text>
+              <text class="order-status" wx:elif="{{item.status === 'return_pending' || item.status === 'returning' || item.status === '已发起退单申请' || item.status === '退单审批中'}}" style="background-color: #FA8C16;">退单审批中</text>
               <text class="order-status" wx:elif="{{item.status === 'pending_approval'}}" style="background-color: var(--warning-color);">待审批</text>
               <text class="order-status" wx:else style="background-color: var(--warning-color);">未归档</text>
               <text class="order-status report-status" wx:if="{{item.reportToMall && item.reportToMall.status === 'reported'}}">已上报商场</text>
@@ -196,9 +199,16 @@
               bindtap="archiveOrder"
               data-orderno="{{item.orderNo}}"
               data-order="{{item}}"
-              wx:if="{{item.record_type !== 'deposit' && item.recordType !== 'deposit' && item.status !== 'deposit_receipt' && item.status !== '已归档' && item.status !== 'pending_approval'}}"
+              wx:if="{{item.record_type !== 'deposit' && item.recordType !== 'deposit' && item.status !== 'deposit_receipt' && item.status !== '已归档' && item.status !== 'pending_approval' && !item.isReturnFlowStatus}}"
             >
               归档
+            </button>
+            <button
+              class="action-btn return-status-btn"
+              disabled="true"
+              wx:if="{{item.isReturnFlowStatus}}"
+            >
+              {{item.orderStatusLabel}}
             </button>
             <button
               class="action-btn void-btn"

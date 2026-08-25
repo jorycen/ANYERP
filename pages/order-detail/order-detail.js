@@ -94,6 +94,7 @@ Page({
 
     // 归档相关
     isArchived: false,
+    orderStatusLabel: '',
     showArchiveModal: false,
     archiveNeedsApproval: false,
     grossProfit: null,
@@ -812,6 +813,7 @@ Page({
     const returnBreakdown = this.calculateReturnBreakdown(returnItems, order);
     this.setData({
       order,
+      orderStatusLabel: this.getOrderStatusLabel(order.status),
       canEdit,
       canEditSpecialFields,
       canOperate,
@@ -891,6 +893,15 @@ Page({
   isReturnPendingStatus: function (status) {
     const value = String(status || '').trim().toLowerCase();
     return value === 'return_pending' || value === 'returning' || value.indexOf('退单审批') >= 0 || value.indexOf('已发起退单') >= 0;
+  },
+
+  getOrderStatusLabel: function (status) {
+    const value = String(status || '').trim();
+    if (value === 'pending_approval') return '待审批';
+    if (['return_pending', 'returning', '已发起退单申请', '退单审批中'].indexOf(value) >= 0) return '退单审批中';
+    if (['return_inbound', '退库处理中', '退货入库中'].indexOf(value) >= 0) return '退货入库中';
+    if (['returned', '退单', '已退单'].indexOf(value) >= 0) return '已退单';
+    return value || '未归档';
   },
 
   buildReturnItems: function (items, sourceOrder) {
@@ -1092,19 +1103,16 @@ Page({
       }, []),
       userRole: userInfo.userRole || userInfo.role || '',
       userName: userInfo.userName || userInfo.name || ''
-    }).then(() => api.order.update(order.orderId || order._id || order.order_id, {
-      orderNo: order.orderNo,
-      status: '已发起退单申请',
-      orderStatus: '已发起退单申请',
-      userRole: userInfo.userRole || userInfo.role || '',
-      userName: userInfo.userName || userInfo.name || '',
-      storeId: order.storeId || order.store_id || context.storeId || ''
-    }).catch(error => {
-      console.warn('退单申请已提交，但订单状态同步失败', error);
-      return { statusSyncFailed: true };
-    })).then(result => {
-      this.setData({ showReturnModal: false, returnPending: true, returnSubmitting: false, 'order.status': '已发起退单申请' });
-      wx.showToast({ title: result && result.statusSyncFailed ? '申请已提交，状态同步失败' : '退单申请已提交', icon: result && result.statusSyncFailed ? 'none' : 'success' });
+    }).then(result => {
+      const returnStatus = result && result.data && result.data.status ? result.data.status : 'return_pending';
+      this.setData({
+        showReturnModal: false,
+        returnPending: true,
+        returnSubmitting: false,
+        'order.status': returnStatus,
+        orderStatusLabel: this.getOrderStatusLabel(returnStatus)
+      });
+      wx.showToast({ title: '退单申请已提交', icon: 'success' });
     }).catch(error => {
       this.setData({ returnSubmitting: false });
       wx.showToast({ title: (error && error.message) || '提交退单申请失败', icon: 'none' });

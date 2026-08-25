@@ -7,7 +7,7 @@
     </view>
     <view class="header-right">
       <view class="status-badge {{order.status === '已归档' ? 'archived' : 'pending'}}">
-        {{order.status === 'pending_approval' ? '待审批' : order.status}}
+        {{orderStatusLabel || order.status}}
       </view>
     </view>
   </view>
