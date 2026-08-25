@@ -2302,7 +2302,7 @@ Page({
           const lookupProduct = lookup && lookup.product;
           const lookupProductId = lookupProduct && lookupProduct.productId;
           const searchProductPromise = (!lookupProduct || !lookupProductId)
-            ? api.product.search(pnCode, { storeId, page: 1, pageSize: 20 })
+            ? api.product.search(pnCode, { storeId, activeOnly: 1, page: 1, pageSize: 20 })
               .then(rows => (rows || []).find(row => {
                 const rowPn = this.getArchivePnCode(row);
                 return rowPn && rowPn.toLowerCase() === pnCode.toLowerCase();

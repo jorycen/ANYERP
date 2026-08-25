@@ -1019,7 +1019,10 @@ function searchProductsWithFallback(keyword, params = {}) {
 
   return Promise.all([productSearch, productList, pnList]).then(results => {
     const merged = mergeProducts(results[0], results[1], results[2]);
-    return enrichProductsWithPn(merged, params.storeId || '');
+    const filtered = params.activeOnly === 1 || params.activeOnly === '1'
+      ? merged.filter(item => Number(item.status) === 1)
+      : merged;
+    return enrichProductsWithPn(filtered, params.storeId || '');
   });
 }
 

@@ -383,7 +383,7 @@ Page({
     this.setData({ loading: true, isSearchMode: true, resultTitle: '搜索中' });
 
     const tasks = [
-      api.product.search(keyword, { storeId, page: 1, pageSize: 100 }).catch(() => []),
+      api.product.search(keyword, { storeId, activeOnly: 1, page: 1, pageSize: 100 }).catch(() => []),
       api.inventory.getGoodsByPN(keyword, storeId).then(item => item ? [item] : []).catch(() => []),
       api.inventory.getGoodsBySN(keyword, storeId).then(item => item ? [item] : []).catch(() => [])
     ];

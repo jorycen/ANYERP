@@ -418,7 +418,7 @@ Page({
       return;
     }
     this.setData({ isSearching: true, productList: [] });
-    const catalogSearch = api.product.search(keyword, { page: 1, pageSize: 30 }).catch(() => []);
+    const catalogSearch = api.product.search(keyword, { activeOnly: 1, page: 1, pageSize: 30 }).catch(() => []);
     const inventorySearch = api.inventory.list({ storeId: this.data.form.fromStoreId, keyword, scope: 'transfer', page: 1, pageSize: 30 });
     const snSearch = api.inventory.getGoodsBySN(keyword, this.data.form.fromStoreId, '', { scope: 'transfer' }).catch(() => null);
     Promise.all([catalogSearch, inventorySearch, snSearch])

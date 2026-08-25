@@ -612,7 +612,7 @@ Page({
       return;
     }
     this.setData({ showProductModal: true, isSearching: true, productList: [] });
-    api.product.search(keyword, { page: 1, pageSize: 50 })
+    api.product.search(keyword, { activeOnly: 1, page: 1, pageSize: 50 })
       .then(rows => {
         const productList = (rows || []).map(normalizeProduct);
         this.setData({ productList, isSearching: false });

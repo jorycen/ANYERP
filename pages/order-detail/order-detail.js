@@ -1756,6 +1756,7 @@ Page({
     // 使用云函数查询
     api.product.search(keywords.join(' '), {
       storeId: this.getCurrentStoreContext().storeId,
+      activeOnly: 1,
       page,
       pageSize
     }).then(rows => {

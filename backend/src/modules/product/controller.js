@@ -2477,13 +2477,15 @@ async function importCostRefresh(ctx) {
 }
 
 async function getPnList(ctx) {
-  const { productId, keyword, status, includeDeleted, storeId, page = 1, pageSize = 20 } = ctx.query;
+  const { productId, keyword, status, includeDeleted, activeOnly, storeId, page = 1, pageSize = 20 } = ctx.query;
+  const onlyActiveProducts = String(activeOnly || '') === '1';
 
   // 调拨出库需要读取调出门店的 PN，不应再次套用账号的普通门店查询权限。
   const where = {};
   if (String(includeDeleted || '') !== '1') where.is_deleted = 0;
   if (productId) where.product_id = productId;
   if (status !== undefined && status !== '') where.status = Number(status);
+  if (onlyActiveProducts) where.status = 1;
   if (keyword) {
     where[Op.or] = [
       { pn_code: { [Op.like]: `%${keyword}%` } },
@@ -2495,7 +2497,8 @@ async function getPnList(ctx) {
     where,
     include: [{
       model: Product,
-      attributes: ['product_id', 'name', 'product_code', 'category', 'config', 'brand', 'series', 'model', 'need_sn'],
+      attributes: ['product_id', 'name', 'product_code', 'category', 'config', 'brand', 'series', 'model', 'need_sn', 'status', 'is_deleted'],
+      ...(onlyActiveProducts ? { where: { status: 1, is_deleted: 0 }, required: true } : {}),
       include: [{ model: ProductPrice, attributes: ['standard_price', 'retail_price', 'min_sale_price'] }]
     }],
     order: [['pn_code', 'ASC']],
@@ -2649,7 +2652,7 @@ async function searchProduct(ctx) {
 
   const rows = await Product.findAll({
     where,
-    attributes: ['product_id', 'product_code', 'name', 'category', 'config', 'brand', 'series', 'model', 'manufacturer_code', 'need_sn', 'unit'],
+    attributes: ['product_id', 'product_code', 'name', 'category', 'config', 'brand', 'series', 'model', 'manufacturer_code', 'need_sn', 'unit', 'status', 'is_deleted'],
     include: [
       { model: ProductPrice, attributes: ['standard_price', 'retail_price', 'min_sale_price'] }
     ],
@@ -2706,6 +2709,8 @@ async function searchProduct(ctx) {
         settlement_price: p.ProductPrice ? (p.ProductPrice.retail_price || p.ProductPrice.standard_price || 0) : 0,
         need_sn: p.need_sn,
         unit: p.unit,
+        status: p.status,
+        is_deleted: p.is_deleted,
         stock_qty: storeId ? stock.current : stock.total,
         current_store_stock_qty: stock.current,
         other_store_stock_qty: stock.other,
