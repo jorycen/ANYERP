@@ -1634,6 +1634,7 @@ const Settlement = sequelize.define('Settlement', {
   source_id: { type: DataTypes.STRING(64) },
   source_no: { type: DataTypes.STRING(64) },
   distributor_id: { type: DataTypes.STRING(32), comment: '结算单所属经销商快照；跨组织结算禁止' },
+  tax_status: { type: DataTypes.STRING(32), defaultValue: 'UNKNOWN', comment: '税务属性快照:TAX_INCLUDED/UNTAXED/UNKNOWN' },
   region_id: { type: DataTypes.STRING(32), allowNull: true, comment: '业务区域快照；跨区域为空' },
   supplier_account_id: { type: DataTypes.STRING(32) },
   supplier_account_snapshot: { type: DataTypes.TEXT },

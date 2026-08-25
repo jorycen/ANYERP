@@ -1154,6 +1154,34 @@ async function runMigrations() {
     await checkAndAddColumn('T_SETTLEMENT', 'SOURCE_TYPE', 'VARCHAR(32) COMMENT "来源类型"', 'PAYEE_NAME');
     await checkAndAddColumn('T_SETTLEMENT', 'SOURCE_ID', 'VARCHAR(64) COMMENT "来源ID"', 'SOURCE_TYPE');
     await checkAndAddColumn('T_SETTLEMENT', 'SOURCE_NO', 'VARCHAR(64) COMMENT "来源单号"', 'SOURCE_ID');
+    await checkAndAddColumn('T_SETTLEMENT', 'TAX_STATUS', 'VARCHAR(32) DEFAULT "UNKNOWN" COMMENT "税务属性快照:TAX_INCLUDED/UNTAXED/UNKNOWN"', 'SOURCE_NO');
+    try {
+      await sequelize.query(`
+        UPDATE T_SETTLEMENT s
+        LEFT JOIN (
+          SELECT si.SETTLEMENT_ID,
+            CASE
+              WHEN SUM(CASE WHEN COALESCE(pr.INVOICE_TYPE, e.INVOICE_TYPE, '') LIKE '%未税%' OR LOWER(COALESCE(pr.INVOICE_TYPE, e.INVOICE_TYPE, '')) LIKE '%untaxed%' THEN 1 ELSE 0 END) > 0
+               AND SUM(CASE WHEN COALESCE(pr.INVOICE_TYPE, e.INVOICE_TYPE, '') LIKE '%含税%' OR COALESCE(pr.INVOICE_TYPE, e.INVOICE_TYPE, '') LIKE '%增专票%' OR LOWER(COALESCE(pr.INVOICE_TYPE, e.INVOICE_TYPE, '')) LIKE '%tax_included%' THEN 1 ELSE 0 END) > 0
+                THEN 'MIXED'
+              WHEN SUM(CASE WHEN COALESCE(pr.INVOICE_TYPE, e.INVOICE_TYPE, '') LIKE '%未税%' OR LOWER(COALESCE(pr.INVOICE_TYPE, e.INVOICE_TYPE, '')) LIKE '%untaxed%' THEN 1 ELSE 0 END) > 0
+                THEN 'UNTAXED'
+              WHEN SUM(CASE WHEN COALESCE(pr.INVOICE_TYPE, e.INVOICE_TYPE, '') LIKE '%含税%' OR COALESCE(pr.INVOICE_TYPE, e.INVOICE_TYPE, '') LIKE '%增专票%' OR LOWER(COALESCE(pr.INVOICE_TYPE, e.INVOICE_TYPE, '')) LIKE '%tax_included%' THEN 1 ELSE 0 END) > 0
+                THEN 'TAX_INCLUDED'
+              ELSE 'UNKNOWN'
+            END AS TAX_STATUS
+          FROM T_SETTLEMENT_ITEM si
+          INNER JOIN T_PAYABLE p ON p.PAYABLE_ID = si.PAYABLE_ID
+          LEFT JOIN T_PURCHASE_REQUEST pr ON pr.REQUEST_ID = p.REQUEST_ID
+          LEFT JOIN T_EXPENSE e ON e.EXPENSE_ID = p.SOURCE_ID AND p.SOURCE_TYPE IN ('expense', 'reimbursement')
+          GROUP BY si.SETTLEMENT_ID
+        ) tax ON tax.SETTLEMENT_ID = s.SETTLEMENT_ID
+        SET s.TAX_STATUS = COALESCE(tax.TAX_STATUS, 'UNKNOWN')
+        WHERE s.TAX_STATUS IS NULL OR s.TAX_STATUS = 'UNKNOWN'
+      `);
+    } catch (error) {
+      console.warn('[DB Migration] 应付结算单税务属性回填跳过:', error.message);
+    }
     await checkAndAddIndex('T_SETTLEMENT', 'idx_settlement_type', 'ALTER TABLE T_SETTLEMENT ADD INDEX idx_settlement_type (SETTLEMENT_TYPE, STATUS, CREATE_TIME)');
     await checkAndAddColumn('T_SETTLEMENT', 'SUPPLIER_ACCOUNT_ID', 'VARCHAR(32) COMMENT "供应商付款账户ID"', 'SUPPLIER_NAME');
     await checkAndAddColumn('T_SETTLEMENT', 'SUPPLIER_ACCOUNT_SNAPSHOT', 'TEXT COMMENT "供应商付款账户快照"', 'SUPPLIER_ACCOUNT_ID');

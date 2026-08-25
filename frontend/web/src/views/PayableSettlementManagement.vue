@@ -9,6 +9,13 @@
       </template>
 
       <div class="filter-bar">
+        <el-select v-model="query.distributorId" placeholder="经销商" clearable style="width: 150px" @change="reload">
+          <el-option v-for="item in distributorOptions" :key="item.distributor_id" :label="item.name" :value="item.distributor_id" />
+        </el-select>
+        <el-select v-model="query.taxStatus" placeholder="税务属性" clearable style="width: 140px" @change="reload">
+          <el-option label="含税" value="TAX_INCLUDED" />
+          <el-option label="未税" value="UNTAXED" />
+        </el-select>
         <el-select v-model="query.status" placeholder="结算状态" clearable style="width: 150px" @change="reload">
           <el-option label="全部" value="" />
           <el-option label="草稿" value="draft" />
@@ -27,6 +34,12 @@
 
       <el-table v-loading="loading" :data="data" stripe border>
         <el-table-column prop="settlement_no" label="结算单号" width="190" />
+        <el-table-column prop="distributor_name" label="经销商" width="130">
+          <template #default="{ row }">{{ distributorText(row) }}</template>
+        </el-table-column>
+        <el-table-column prop="tax_status" label="税务属性" width="100">
+          <template #default="{ row }"><el-tag :type="taxStatusTagType(row.tax_status)" size="small">{{ taxStatusText(row.tax_status) }}</el-tag></template>
+        </el-table-column>
         <el-table-column label="收款方" width="150">
           <template #default="{ row }">{{ row.payee_name || row.supplier_name || '-' }}</template>
         </el-table-column>
@@ -84,6 +97,8 @@
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="结算单号">{{ detail.settlement_no || '-' }}</el-descriptions-item>
           <el-descriptions-item label="收款方">{{ detail.payee_name || detail.supplier_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="经销商">{{ distributorText(detail) }}</el-descriptions-item>
+          <el-descriptions-item label="税务属性"><el-tag :type="taxStatusTagType(detail.tax_status)" size="small">{{ taxStatusText(detail.tax_status) }}</el-tag></el-descriptions-item>
           <el-descriptions-item label="收款单位">{{ counterpartyCompany(detail) }}</el-descriptions-item>
           <el-descriptions-item label="开户行">{{ counterpartyBank(detail) }}</el-descriptions-item>
           <el-descriptions-item label="收款账号">{{ counterpartyAccount(detail) }}</el-descriptions-item>
@@ -176,7 +191,11 @@ const paymentVisible = ref(false)
 const paymentSettlement = ref(null)
 const paymentSubmitting = ref(false)
 const paymentForm = reactive({ accountId: '', amount: 0 })
-const query = reactive({ page: 1, pageSize: 20, settlementType: 'supplier,expense,reimbursement', status: '', paymentStatus: '' })
+const distributorOptions = ref([
+  { distributor_id: 'DIST001', name: '艾诺云' },
+  { distributor_id: 'DIST002', name: '艾诺志兴' }
+])
+const query = reactive({ page: 1, pageSize: 20, settlementType: 'supplier,expense,reimbursement', distributorId: '', taxStatus: '', status: '', paymentStatus: '' })
 
 const paymentRemaining = computed(() => Math.max(0, remaining(paymentSettlement.value)))
 
@@ -194,6 +213,9 @@ const dateTime = value => {
 }
 const remaining = row => Math.max(0, Number(row?.total_amount || 0) - Number(row?.paid_amount || 0))
 const accountLabel = account => `${account.account_name || '-'}（余额：¥${money(account.balance)}）`
+const distributorText = row => row?.distributor_name || distributorOptions.value.find(item => String(item.distributor_id) === String(row?.distributor_id))?.name || row?.distributor_id || '未知经销商'
+const taxStatusText = status => ({ TAX_INCLUDED: '含税', UNTAXED: '未税', MIXED: '含税+未税', UNKNOWN: '未知' }[String(status || '').toUpperCase()] || '未知')
+const taxStatusTagType = status => ({ TAX_INCLUDED: 'success', UNTAXED: 'warning', MIXED: 'danger', UNKNOWN: 'info' }[String(status || '').toUpperCase()] || 'info')
 const counterpartyInfo = row => row?.counterparty_payment_info || row?.supplier_account_snapshot_parsed || row?.counterpartyPaymentInfo || row?.supplierAccount || {}
 const counterpartyCompany = row => counterpartyInfo(row).companyName || row?.payee_name || row?.supplier_name || '-'
 const counterpartyBank = row => counterpartyInfo(row).bankName || '-'
@@ -354,9 +376,19 @@ const voidSettlement = async row => {
 }
 
 onMounted(() => {
+  loadDistributorOptions()
   loadData()
   loadAccounts()
 })
+
+const loadDistributorOptions = async () => {
+  try {
+    const res = await api.getUserDistributors()
+    if (res.code === 0 && Array.isArray(res.data) && res.data.length) distributorOptions.value = res.data
+  } catch (error) {
+    // 保留双经销商只读选项，筛选项加载失败不影响结算单查看。
+  }
+}
 </script>
 
 <style scoped>

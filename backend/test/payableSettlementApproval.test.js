@@ -9,6 +9,12 @@ test('应付单税务属性按已有发票类型映射，缺失时保持未知',
   assert.equal(payableController.getPayableTaxStatus(''), 'UNKNOWN');
 });
 
+test('同一付款申请不能混合含税与未税，经销商可保持单一口径', () => {
+  assert.equal(payableController.combineTaxStatuses(['TAX_INCLUDED', 'TAX_INCLUDED']), 'TAX_INCLUDED');
+  assert.equal(payableController.combineTaxStatuses(['UNTAXED', 'UNKNOWN']), 'UNTAXED');
+  assert.equal(payableController.combineTaxStatuses(['TAX_INCLUDED', 'UNTAXED']), 'MIXED');
+});
+
 function context({ body = {}, user = {} } = {}) {
   return {
     request: { body },

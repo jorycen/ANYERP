@@ -21,6 +21,13 @@
             <el-option label="未付款" value="unpaid" />
             <el-option label="部分付款" value="partial_paid" />
           </el-select>
+          <el-select v-model="paymentCandidateDistributorFilter" placeholder="经销商" clearable style="width: 150px" @change="loadPaymentCandidates">
+            <el-option v-for="item in distributorOptions" :key="item.distributor_id" :label="item.name" :value="item.distributor_id" />
+          </el-select>
+          <el-select v-model="paymentCandidateTaxFilter" placeholder="税务属性" clearable style="width: 140px" @change="loadPaymentCandidates">
+            <el-option label="含税" value="TAX_INCLUDED" />
+            <el-option label="未税" value="UNTAXED" />
+          </el-select>
           <el-button type="primary" @click="handleExportPayments">导出付款清单</el-button>
           <el-upload
             :auto-upload="false"
@@ -42,6 +49,14 @@
           </template>
         </el-table-column>
         <el-table-column prop="supplier_name" label="供应商" width="150" />
+        <el-table-column prop="distributor_name" label="经销商" width="130">
+          <template #default="{ row }">{{ distributorText(row) }}</template>
+        </el-table-column>
+        <el-table-column prop="tax_status" label="税务属性" width="100">
+          <template #default="{ row }">
+            <el-tag :type="taxStatusTagType(row.tax_status)" size="small">{{ taxStatusText(row.tax_status) }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="对方收款信息" min-width="230">
           <template #default="{ row }">{{ counterpartySummary(row) }}</template>
         </el-table-column>
@@ -92,6 +107,14 @@
       <el-table v-loading="paymentBatchesLoading" :data="paymentBatchData" stripe border>
         <el-table-column prop="batch_no" label="付款批次号" width="190" />
         <el-table-column prop="account_name" label="付款账户" width="180" />
+        <el-table-column prop="distributor_name" label="经销商" width="130">
+          <template #default="{ row }">{{ distributorText(row) }}</template>
+        </el-table-column>
+        <el-table-column prop="tax_status" label="税务属性" width="100">
+          <template #default="{ row }">
+            <el-tag :type="taxStatusTagType(row.tax_status)" size="small">{{ taxStatusText(row.tax_status) }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="total_amount" label="付款总额" width="120">
           <template #default="{ row }">¥{{ formatAmount(row.total_amount) }}</template>
         </el-table-column>
@@ -130,6 +153,8 @@
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="结算单号">{{ settlementDetail.settlement_no || '-' }}</el-descriptions-item>
           <el-descriptions-item label="供应商">{{ settlementDetail.supplier_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="经销商">{{ distributorText(settlementDetail) }}</el-descriptions-item>
+          <el-descriptions-item label="税务属性"><el-tag :type="taxStatusTagType(settlementDetail.tax_status)" size="small">{{ taxStatusText(settlementDetail.tax_status) }}</el-tag></el-descriptions-item>
           <el-descriptions-item label="收款单位">{{ counterpartyCompany(settlementDetail) }}</el-descriptions-item>
           <el-descriptions-item label="开户行">{{ counterpartyBank(settlementDetail) }}</el-descriptions-item>
           <el-descriptions-item label="收款账号">{{ counterpartyAccount(settlementDetail) }}</el-descriptions-item>
@@ -171,6 +196,8 @@
       <el-descriptions v-if="immediatePaymentSettlement" :column="1" border size="small">
         <el-descriptions-item label="结算单号">{{ immediatePaymentSettlement.settlement_no || '-' }}</el-descriptions-item>
         <el-descriptions-item label="供应商">{{ immediatePaymentSettlement.supplier_name || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="经销商">{{ distributorText(immediatePaymentSettlement) }}</el-descriptions-item>
+        <el-descriptions-item label="税务属性"><el-tag :type="taxStatusTagType(immediatePaymentSettlement.tax_status)" size="small">{{ taxStatusText(immediatePaymentSettlement.tax_status) }}</el-tag></el-descriptions-item>
         <el-descriptions-item label="对方收款单位">{{ counterpartyCompany(immediatePaymentSettlement) }}</el-descriptions-item>
         <el-descriptions-item label="对方开户行">{{ counterpartyBank(immediatePaymentSettlement) }}</el-descriptions-item>
         <el-descriptions-item label="对方收款账号">{{ counterpartyAccount(immediatePaymentSettlement) }}</el-descriptions-item>
@@ -237,6 +264,12 @@
         <el-table :data="paymentImportRows" stripe border class="mt-20">
           <el-table-column prop="settlementNo" label="结算单号" width="180" />
           <el-table-column prop="supplierName" label="供应商" width="130" />
+          <el-table-column prop="distributorName" label="经销商" width="130">
+            <template #default="{ row }">{{ distributorText({ distributor_name: row.distributorName, distributor_id: row.distributorId }) }}</template>
+          </el-table-column>
+          <el-table-column prop="taxStatus" label="税务属性" width="100">
+            <template #default="{ row }"><el-tag :type="taxStatusTagType(row.taxStatus)" size="small">{{ taxStatusText(row.taxStatus) }}</el-tag></template>
+          </el-table-column>
           <el-table-column label="对方收款信息" min-width="230">
             <template #default="{ row }">{{ counterpartySummary(row) }}</template>
           </el-table-column>
@@ -276,6 +309,8 @@
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="批次号">{{ paymentBatchDetail.batch_no || '-' }}</el-descriptions-item>
           <el-descriptions-item label="付款账户">{{ paymentBatchDetail.account_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="经销商">{{ distributorText(paymentBatchDetail) }}</el-descriptions-item>
+          <el-descriptions-item label="税务属性"><el-tag :type="taxStatusTagType(paymentBatchDetail.tax_status)" size="small">{{ taxStatusText(paymentBatchDetail.tax_status) }}</el-tag></el-descriptions-item>
           <el-descriptions-item label="付款总额">¥{{ paymentBatchDetail.total_amount || 0 }}</el-descriptions-item>
           <el-descriptions-item label="付款笔数">{{ paymentBatchDetail.total_count || 0 }}</el-descriptions-item>
           <el-descriptions-item label="状态">{{ paymentBatchDetail.status === 'active' ? '正常' : '已撤销' }}</el-descriptions-item>
@@ -286,6 +321,12 @@
         <el-table :data="paymentBatchDetail.records || []" stripe border class="mt-20">
           <el-table-column prop="settlement_no" label="结算单号" width="180" />
           <el-table-column prop="supplier_name" label="供应商" width="130" />
+          <el-table-column prop="distributor_name" label="经销商" width="130">
+            <template #default="{ row }">{{ distributorText(row) }}</template>
+          </el-table-column>
+          <el-table-column prop="tax_status" label="税务属性" width="100">
+            <template #default="{ row }"><el-tag :type="taxStatusTagType(row.tax_status)" size="small">{{ taxStatusText(row.tax_status) }}</el-tag></template>
+          </el-table-column>
           <el-table-column label="对方收款信息" min-width="230">
             <template #default="{ row }">{{ counterpartySummary(row) }}</template>
           </el-table-column>
@@ -330,6 +371,12 @@ const paymentCandidateData = ref([])
 const paymentCandidateTotal = ref(0)
 const paymentCandidatesLoading = ref(false)
 const paymentCandidateStatusFilter = ref('')
+const paymentCandidateDistributorFilter = ref('')
+const paymentCandidateTaxFilter = ref('')
+const distributorOptions = ref([
+  { distributor_id: 'DIST001', name: '艾诺云' },
+  { distributor_id: 'DIST002', name: '艾诺志兴' }
+])
 const paymentBatchData = ref([])
 const paymentBatchTotal = ref(0)
 const paymentBatchesLoading = ref(false)
@@ -366,6 +413,7 @@ const immediatePaymentProjectedBalance = computed(() => {
 })
 
 onMounted(() => {
+  loadDistributorOptions()
   loadSettlementAccounts()
   loadPaymentCandidates()
   loadPaymentBatches()
@@ -376,6 +424,10 @@ const formatSettlementAccountOption = (account) => {
 }
 
 const formatAmount = (amount) => Number(amount || 0).toFixed(2)
+
+const distributorText = row => row?.distributor_name || distributorOptions.value.find(item => String(item.distributor_id) === String(row?.distributor_id))?.name || row?.distributor_id || '未知经销商'
+const taxStatusText = status => ({ TAX_INCLUDED: '含税', UNTAXED: '未税', MIXED: '含税+未税', UNKNOWN: '未知' }[String(status || '').toUpperCase()] || '未知')
+const taxStatusTagType = status => ({ TAX_INCLUDED: 'success', UNTAXED: 'warning', MIXED: 'danger', UNKNOWN: 'info' }[String(status || '').toUpperCase()] || 'info')
 
 const counterpartyInfo = row => row?.counterparty_payment_info || row?.supplier_account_snapshot_parsed || row?.counterpartyPaymentInfo || row?.supplierAccount || {}
 const counterpartyCompany = row => counterpartyInfo(row).companyName || row?.payee_name || row?.supplier_name || row?.supplierName || '-'
@@ -438,11 +490,22 @@ const loadSettlementAccounts = async () => {
   }
 }
 
+const loadDistributorOptions = async () => {
+  try {
+    const res = await api.getUserDistributors()
+    if (res.code === 0 && Array.isArray(res.data) && res.data.length) distributorOptions.value = res.data
+  } catch (err) {
+    // 固定的双经销商只读展示项保留，筛选接口失败不影响付款数据加载。
+  }
+}
+
 const loadPaymentCandidates = async () => {
   paymentCandidatesLoading.value = true
   try {
     const params = { ...paymentCandidateQuery }
     if (paymentCandidateStatusFilter.value) params.paymentStatus = paymentCandidateStatusFilter.value
+    if (paymentCandidateDistributorFilter.value) params.distributorId = paymentCandidateDistributorFilter.value
+    if (paymentCandidateTaxFilter.value) params.taxStatus = paymentCandidateTaxFilter.value
     const res = await api.getSettlementPaymentCandidates(params)
     if (res.code === 0) {
       paymentCandidateData.value = res.data?.list || []
@@ -552,6 +615,8 @@ const handleExportPayments = async () => {
   try {
     const params = {}
     if (paymentCandidateStatusFilter.value) params.paymentStatus = paymentCandidateStatusFilter.value
+    if (paymentCandidateDistributorFilter.value) params.distributorId = paymentCandidateDistributorFilter.value
+    if (paymentCandidateTaxFilter.value) params.taxStatus = paymentCandidateTaxFilter.value
     await api.exportSettlementPayments(params)
   } catch (err) {
     ElMessage.error('导出付款清单失败')
