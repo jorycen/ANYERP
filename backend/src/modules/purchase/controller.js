@@ -377,6 +377,43 @@ function attachCurrentPurchaseAmounts(target, adjustments = []) {
   return target;
 }
 
+async function getPaidPurchaseRequestIds() {
+  const [paidPayables, paidReimbursements] = await Promise.all([
+    Payable.findAll({
+      where: { source_type: 'purchase', status: 'paid', request_id: { [Op.ne]: null } },
+      attributes: ['request_id']
+    }),
+    Expense.findAll({
+      where: { source_type: 'purchase', status: 'paid', is_deleted: 0 },
+      attributes: ['source_id']
+    })
+  ]);
+  return new Set([
+    ...paidPayables.map(row => row.request_id),
+    ...paidReimbursements.map(row => row.source_id)
+  ].filter(Boolean).map(String));
+}
+
+function appendRequestIdCondition(where, condition) {
+  const existingConditions = Array.isArray(where[Op.and])
+    ? [...where[Op.and]]
+    : (where[Op.and] ? [where[Op.and]] : []);
+  if (Object.prototype.hasOwnProperty.call(where, 'request_id')) {
+    existingConditions.push({ request_id: where.request_id });
+    delete where.request_id;
+  }
+  existingConditions.push({ request_id: condition });
+  where[Op.and] = existingConditions;
+}
+
+function attachPurchasePaymentStatus(target, paidRequestIds = new Set()) {
+  const isApproved = target.status === 'approved';
+  const isPaid = isApproved && paidRequestIds.has(String(target.request_id));
+  target.payment_status = isApproved ? (isPaid ? 'paid' : 'pending_payment') : '';
+  target.display_status = isApproved ? target.payment_status : target.status;
+  return target;
+}
+
 function buildAdjustmentRows(request, inbounds, stores) {
   const storeMap = new Map(stores.map(store => [String(store.store_id), store.name]));
   const rows = [];
@@ -446,6 +483,7 @@ function buildAdjustmentRows(request, inbounds, stores) {
 async function queryRequestList(ctx, { exportMode = false } = {}) {
   const { status, scope, operatorStaffId, submitter, requestNo, keyword, supplierId, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
+  const paidRequestIds = await getPaidPurchaseRequestIds();
 
   const where = { status: { [Op.ne]: 'deleted' } };
   const whereStore = {};
@@ -459,7 +497,16 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
   const storeIds = stores.map(s => s.store_id);
   where.store_id = storeIds;
 
-  if (status) where.status = status;
+  if (status === 'pending_payment' || status === 'paid') {
+    where.status = 'approved';
+    if (status === 'paid') {
+      appendRequestIdCondition(where, paidRequestIds.size ? { [Op.in]: [...paidRequestIds] } : '__NO_MATCH__');
+    } else if (paidRequestIds.size) {
+      appendRequestIdCondition(where, { [Op.notIn]: [...paidRequestIds] });
+    }
+  } else if (status) {
+    where.status = status;
+  }
   if (scope === 'my') {
     const staffId = user.staffId || user.id;
     const identities = [user.name, user.phone, staffId && String(staffId)].filter(Boolean);
@@ -502,7 +549,7 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
     };
     const itemRows = await PurchaseRequestItem.findAll({ attributes: ['request_id'], where: itemWhere });
     const requestIds = [...new Set(itemRows.map(row => row.request_id))];
-    where.request_id = requestIds.length ? { [Op.in]: requestIds } : '__NO_MATCH__';
+    appendRequestIdCondition(where, requestIds.length ? { [Op.in]: requestIds } : '__NO_MATCH__');
   }
 
   const requestQuery = {
@@ -562,6 +609,7 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
   const formattedRows = rows.map(row => {
     const result = row.toJSON();
     attachCurrentPurchaseAmounts(result, adjustmentsByRequest.get(String(result.request_id)) || []);
+    attachPurchasePaymentStatus(result, paidRequestIds);
     result.store_name = result.Store?.name || '';
     result.applicant_store_id = result.Applicant?.store_id || '';
     result.applicant_store_name = result.Applicant?.Store?.name || '';
@@ -619,8 +667,8 @@ async function exportRequestList(ctx) {
     商品摘要: row.items_summary || '',
     采购原价: Number(row.total_amount || 0),
     抵扣金额: Number(row.rebate_deduction || 0),
-    申请金额: Number(row.current_total_amount ?? row.total_amount ?? 0),
-    状态: row.status || '',
+    申请金额: Number(row.current_actual_total ?? row.actual_total ?? row.total_amount ?? 0),
+    状态: row.display_status || row.status || '',
     备注: row.remark || row.reason || ''
   }));
   sendExcel(ctx, data, [
@@ -673,6 +721,7 @@ async function getRequestDetail(ctx) {
 
   const result = request.toJSON();
   attachCurrentPurchaseAmounts(result, result.adjustments || []);
+  attachPurchasePaymentStatus(result, await getPaidPurchaseRequestIds());
   result.store_name = result.Store?.name || '';
   result.applicant_store_id = result.Applicant?.store_id || '';
   result.applicant_store_name = result.Applicant?.Store?.name || '';
@@ -2246,6 +2295,7 @@ module.exports = {
     flattenPurchaseAllocations,
     validatePurchaseAllocations,
     getPurchaseAdjustmentTotals,
-    attachCurrentPurchaseAmounts
+    attachCurrentPurchaseAmounts,
+    attachPurchasePaymentStatus
   }
 };

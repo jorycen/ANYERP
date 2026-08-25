@@ -20,7 +20,8 @@
               <el-option label="全部" value="" />
               <el-option label="草稿" value="draft" />
               <el-option label="待审批" value="pending" />
-              <el-option label="已通过" value="approved" />
+              <el-option label="待支付" value="pending_payment" />
+              <el-option label="已支付" value="paid" />
               <el-option label="已拒绝" value="rejected" />
             </el-select>
             <el-select v-model="queryParams.operatorStaffId" placeholder="经手人" clearable filterable style="width: 150px" @change="handleRequestFilterChange">
@@ -59,11 +60,11 @@
               <template #default="{ row }">-¥{{ formatMoney(row.rebate_deduction) }}</template>
             </el-table-column>
             <el-table-column prop="total_amount" label="申请金额" width="120">
-              <template #default="{ row }">¥{{ formatMoney(row.current_total_amount ?? row.total_amount) }}</template>
+              <template #default="{ row }">¥{{ formatMoney(row.current_actual_total ?? row.actual_total ?? row.total_amount) }}</template>
             </el-table-column>
             <el-table-column prop="status" label="状态" width="100">
               <template #default="{ row }">
-                <el-tag :type="getStatusType(row.status)">{{ getStatusText(row.status) }}</el-tag>
+                <el-tag :type="getStatusType(row.display_status || row.status)">{{ getStatusText(row.display_status || row.status) }}</el-tag>
               </template>
             </el-table-column>
             <el-table-column label="操作" width="330">
@@ -317,14 +318,14 @@
         <el-descriptions :column="2" border>
           <el-descriptions-item label="申请单号">{{ currentRequest.request_no }}</el-descriptions-item>
           <el-descriptions-item label="状态">
-            <el-tag :type="getStatusType(currentRequest.status)">{{ getStatusText(currentRequest.status) }}</el-tag>
+            <el-tag :type="getStatusType(currentRequest.display_status || currentRequest.status)">{{ getStatusText(currentRequest.display_status || currentRequest.status) }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="供应商">{{ currentRequest.supplier_name }}</el-descriptions-item>
           <el-descriptions-item label="付款方式">{{ getPaymentMethodText(currentRequest.payment_method) }}</el-descriptions-item>
           <el-descriptions-item label="发票类型">{{ currentRequest.invoice_type || '-' }}</el-descriptions-item>
           <el-descriptions-item label="货型">{{ currentRequest.product_type || currentRequest.items?.[0]?.product_type || '-' }}</el-descriptions-item>
           <el-descriptions-item label="申请门店">{{ currentRequest.store_name }}</el-descriptions-item>
-          <el-descriptions-item label="申请金额">¥{{ formatMoney(currentRequest.current_total_amount ?? currentRequest.total_amount) }}</el-descriptions-item>
+          <el-descriptions-item label="申请金额">¥{{ formatMoney(requestActualAmount(currentRequest)) }}</el-descriptions-item>
           <el-descriptions-item label="是否使用返利">
             <el-tag :type="hasRebateDeduction(currentRequest) ? 'success' : 'info'">
               {{ hasRebateDeduction(currentRequest) ? '是' : '否' }}
@@ -2007,12 +2008,12 @@ const restorePurchaseRequestDraft = () => {
 }
 
 const getStatusType = (status) => {
-  const types = { draft: 'info', pending: 'warning', approved: 'success', rejected: 'danger', purchased: 'info', revoked: 'info' }
+  const types = { draft: 'info', pending: 'warning', approved: 'success', pending_payment: 'warning', paid: 'success', rejected: 'danger', purchased: 'info', revoked: 'info' }
   return types[status] || 'info'
 }
 
 const getStatusText = (status) => {
-  const texts = { draft: '草稿', pending: '待审批', approved: '已通过', rejected: '已拒绝', purchased: '已采购', revoked: '已撤销' }
+  const texts = { draft: '草稿', pending: '待审批', approved: '已通过', pending_payment: '待支付', paid: '已支付', rejected: '已拒绝', purchased: '已采购', revoked: '已撤销' }
   return texts[status] || status
 }
 

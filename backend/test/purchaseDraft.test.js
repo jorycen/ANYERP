@@ -81,3 +81,19 @@ test('采购退单后采购订单展示当前有效金额但保留原始金额',
   assert.equal(request.current_rebate_deduction, 80);
   assert.equal(request.current_actual_total, 720);
 });
+
+test('采购申请审批通过后按支付结果展示待支付或已支付', () => {
+  const pendingRequest = { request_id: 'REQ_PENDING', status: 'approved' };
+  purchaseController._test.attachPurchasePaymentStatus(pendingRequest, new Set());
+  assert.equal(pendingRequest.display_status, 'pending_payment');
+  assert.equal(pendingRequest.payment_status, 'pending_payment');
+
+  const paidRequest = { request_id: 'REQ_PAID', status: 'approved' };
+  purchaseController._test.attachPurchasePaymentStatus(paidRequest, new Set(['REQ_PAID']));
+  assert.equal(paidRequest.display_status, 'paid');
+  assert.equal(paidRequest.payment_status, 'paid');
+
+  const pendingApproval = { request_id: 'REQ_REVIEW', status: 'pending' };
+  purchaseController._test.attachPurchasePaymentStatus(pendingApproval, new Set(['REQ_REVIEW']));
+  assert.equal(pendingApproval.display_status, 'pending');
+});
