@@ -421,6 +421,9 @@ async function settleStatementDetails(ctx, businessType) {
     ];
   let totalSettledAmount = 0;
   let settledCount = 0;
+  // 明细ID按逗号拼接会随着批量数量增长超过账户流水 RELATED_REF 的 128 字符限制。
+  // 使用固定长度的批次关联号，明细本身仍通过 settled/settled_at 和本次业务操作关联。
+  const settlementBatchRef = `${businessType === 'national_subsidy_receivable' ? 'SUBSIDY' : 'DAILY'}_SETTLE_${generateUUID()}`;
   await sequelize.transaction(async transaction => {
     const details = await DailyStatementDetail.findAll({
       where: {
@@ -499,7 +502,7 @@ async function settleStatementDetails(ctx, businessType) {
         description: businessType === 'national_subsidy_receivable'
           ? `国补应收单批量下账（${details.length}笔）`
           : `日结单批量下账（${details.length}笔）`,
-        related_ref: `${businessType === 'national_subsidy_receivable' ? 'SUBSIDY' : 'DAILY'}_SETTLE_${details.map(d => d.detail_id).join(',')}`,
+        related_ref: settlementBatchRef,
         create_user: user.name
       }, { transaction });
     }

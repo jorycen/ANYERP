@@ -1391,6 +1391,10 @@ const toNumber = (value) => {
 
 const formatMoney = (value) => toNumber(value).toFixed(2)
 
+const selectedDetailTotalAmount = computed(() => dailyDetails.value
+  .filter(row => selectedDetailIds.value.includes(row.detail_id))
+  .reduce((sum, row) => sum + toNumber(row.amount), 0))
+
 const getPayableSourceText = (row) => {
   const sourceType = row?.source_type || 'purchase'
   if (sourceType === 'expense') return '费用'
@@ -2035,15 +2039,17 @@ const openBatchSettleDialog = async () => {
     ElMessage.warning('请选择要下账的记录')
     return
   }
+  const selectedCount = selectedDetailIds.value.length
+  const selectedTotalAmount = selectedDetailTotalAmount.value
   try {
     await ElMessageBox.confirm(
-      `确认将选中的 ${selectedDetailIds.value.length} 笔记录批量下账？`,
+      `确认将选中的 ${selectedCount} 笔记录批量下账，总金额：¥${formatMoney(selectedTotalAmount)}？`,
       '批量下账确认',
       { type: 'warning', confirmButtonText: '确认下账' }
     )
     const res = await api.batchSettle({ detailIds: selectedDetailIds.value })
     if (res.code === 0) {
-      ElMessage.success(res.message || '批量下账成功')
+      ElMessage.success(res.message || `下账成功，共 ${selectedCount} 笔，金额：¥${formatMoney(selectedTotalAmount)}`)
       loadDailyData()
     } else {
       ElMessage.error(res.message || '批量下账失败')
