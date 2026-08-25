@@ -8,6 +8,7 @@ const { generateId } = require('../../utils');
 const { ensureStandardLocationsForStores } = require('../../utils/standardLocations');
 const { isBoss, isDealerTraceAccount } = require('../../utils/snTracePermission');
 const { resolveAllReadableStoreIds } = require('../../utils/storePermissions');
+const { accessibleDistributorIds: getAccessibleDistributorIds } = require('../../utils/distributorScope');
 
 function canManageStoreManager(user) {
   return (user?.roles || []).some(role => ['admin', 'boss'].includes(role));
@@ -70,7 +71,14 @@ async function getAllStores(ctx) {
   const where = { is_deleted: 0, status: 1 };
 
   if (!isBoss(user) && isDealerTraceAccount(user)) {
-    where.distributor_id = user.distributorId || '__NO_DISTRIBUTOR__';
+    const distributorIds = getAccessibleDistributorIds(user);
+    if (distributorIds.includes('*')) {
+      delete where.distributor_id;
+    } else {
+      where.distributor_id = distributorIds.length === 1
+        ? distributorIds[0]
+        : (distributorIds.length > 1 ? { [Op.in]: distributorIds } : '__NO_DISTRIBUTOR__');
+    }
     const storeIds = Array.isArray(user.accessibleStoreIds)
       ? user.accessibleStoreIds.filter(id => id && id !== '*')
       : [];
