@@ -578,25 +578,62 @@ function allocateExportAmount(total, entries) {
   return result;
 }
 
+function exportSupplementItemName(item) {
+  return String(item?.item_name ?? item?.itemName ?? item?.name ?? '').trim();
+}
+
+function exportSupplementAmountValue(item) {
+  return Number(item?.amount ?? item?.supplement_amount ?? item?.supplementAmount ?? 0);
+}
+
+function exportSupplementAmountType(item) {
+  return item?.amount_type ?? item?.amountType ?? item?.direction ?? 'increase';
+}
+
+function normalizeExportSupplements(value) {
+  const source = parseJsonValue(value, []);
+  if (!Array.isArray(source)) return [];
+  return source
+    .filter(item => item && typeof item === 'object')
+    .map(item => ({
+      ...item,
+      item_name: exportSupplementItemName(item),
+      amount: exportSupplementAmountValue(item),
+      amount_type: exportSupplementAmountType(item),
+      content: item.content ?? item.remark ?? '',
+      coupon_code: item.coupon_code ?? item.couponCode ?? ''
+    }));
+}
+
+function getExportSupplements(data = {}) {
+  const supplements = normalizeExportSupplements(
+    data.supplements ?? data.Supplements ?? data.OrderSupplements ?? data.supplementDetails ?? data.supplement_details
+  );
+  if (supplements.length) return supplements;
+
+  const snapshot = data.grossProfitSnapshot || data.gross_profit_snapshot || {};
+  return normalizeExportSupplements(snapshot.supplement_details ?? snapshot.supplementDetails);
+}
+
 function exportSupplementText(supplements, predicate = () => true) {
-  return (supplements || [])
+  return normalizeExportSupplements(supplements)
     .filter(item => predicate(item))
     .map(item => {
-      const amount = Number(item.amount || 0);
+      const amount = exportSupplementAmountValue(item);
       const content = String(item.content || '').trim();
-      return `${item.item_name || ''}${amount ? `:${amount}` : ''}${content ? `(${content})` : ''}`;
+      return `${exportSupplementItemName(item)}${amount ? `:${amount}` : ''}${content ? `(${content})` : ''}`;
     })
     .filter(Boolean)
     .join('；');
 }
 
 function exportSupplementDetails(supplements) {
-  return (supplements || [])
+  return normalizeExportSupplements(supplements)
     .map(item => {
-      const itemName = String(item.item_name || '').trim();
+      const itemName = exportSupplementItemName(item);
       if (!itemName) return '';
-      const amount = Number(item.amount || 0);
-      const direction = item.amount_type === 'decrease' ? '减少' : '增加';
+      const amount = exportSupplementAmountValue(item);
+      const direction = exportSupplementAmountType(item) === 'decrease' ? '减少' : '增加';
       const content = String(item.content || '').trim();
       const couponCode = String(item.coupon_code || '').trim();
       const details = [direction, content, couponCode ? `券码:${couponCode}` : '']
@@ -609,24 +646,24 @@ function exportSupplementDetails(supplements) {
 }
 
 function exportSupplementAmount(supplements, predicate) {
-  return (supplements || [])
+  return normalizeExportSupplements(supplements)
     .filter(item => predicate(item))
-    .reduce((total, item) => total + Number(item.amount || 0) * (item.amount_type === 'decrease' ? -1 : 1), 0);
+    .reduce((total, item) => total + exportSupplementAmountValue(item) * (exportSupplementAmountType(item) === 'decrease' ? -1 : 1), 0);
 }
 
 function getSupplementNetAmount(supplements = []) {
-  return money((supplements || []).reduce((total, item) => {
-    const amount = Number(item?.amount || 0);
-    return total + amount * (item?.amount_type === 'decrease' ? -1 : 1);
+  return money(normalizeExportSupplements(supplements).reduce((total, item) => {
+    const amount = exportSupplementAmountValue(item);
+    return total + amount * (exportSupplementAmountType(item) === 'decrease' ? -1 : 1);
   }, 0));
 }
 
 function isEducationSupplement(item) {
-  return /教育|教补/.test(String(item?.item_name || '').trim());
+  return /教育|教补/.test(exportSupplementItemName(item));
 }
 
 function isFreightSupplement(item) {
-  return /运费|提货费用/.test(String(item?.item_name || '').trim());
+  return /运费|提货费用/.test(exportSupplementItemName(item));
 }
 
 function resolveExportManufacturerCode(item, manufacturerCodeById = new Map()) {
@@ -752,7 +789,7 @@ function buildOrderExportRows(orders, paymentMethodMap = {}) {
     const data = order.toJSON();
     const items = Array.isArray(data.OrderItems) && data.OrderItems.length ? data.OrderItems : [{}];
     const payments = data.OrderPayments || [];
-    const supplements = data.supplements || [];
+    const supplements = getExportSupplements(data);
     const auxiliary = data.auxiliary_sales_list;
     const payableAmount = Math.max(0, Number(data.total_amount || 0)
       - Number(data.discount_amount || 0)
@@ -1086,6 +1123,12 @@ async function exportOrders(ctx) {
         { ...itemInclude, include: [productInclude] },
         { model: OrderPayment },
         { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false },
+        {
+          model: OrderGrossProfit,
+          as: 'grossProfitSnapshot',
+          attributes: ['supplement_details'],
+          required: false
+        },
         {
           model: SalesReturnRequest,
           as: 'salesReturns',

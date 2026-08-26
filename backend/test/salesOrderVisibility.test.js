@@ -283,6 +283,24 @@ test('订单导出包含完整金额补录信息', () => {
   assert.equal(rows[0].补录信息, '教育优惠:20(减少，学生证已核验)；提货费用:15(增加)；优惠券:30(增加，券码:COUPON-1)');
 });
 
+test('订单导出兼容驼峰补录字段和毛利快照补录明细', () => {
+  const rows = _test.buildOrderExportRows([{
+    toJSON: () => ({
+      OrderItems: [{ product_name: '商品A', subtotal: 100, quantity: 1 }],
+      grossProfitSnapshot: {
+        supplementDetails: [
+          { itemName: '教育优惠', amount: '20.00', amountType: 'decrease' },
+          { itemName: '提货费用', amount: '15.00', amountType: 'increase' }
+        ]
+      }
+    })
+  }]);
+
+  assert.equal(rows[0].补录教育优惠, -20);
+  assert.equal(rows[0].商品提货运费, 15);
+  assert.equal(rows[0].补录信息, '教育优惠:20(减少)；提货费用:15(增加)');
+});
+
 test('订单详情补录净额按增加和减少方向计算', () => {
   assert.equal(_test.getSupplementNetAmount([
     { amount: 15, amount_type: 'increase' },
