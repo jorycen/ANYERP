@@ -19,7 +19,7 @@ async function test() {
     });
     console.log('Found', inbounds.length, 'inbounds');
     
-    for (let i = 0; i &lt; inbounds.length; i++) {
+    for (let i = 0; i < inbounds.length; i++) {
       const inbound = inbounds[i];
       console.log('\nInbound', i + 1, ':');
       console.log('  ID:', inbound.inbound_id);

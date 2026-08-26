@@ -26,7 +26,8 @@ async function checkInbound() {
         const productMap = new Map();
         products.forEach(p => productMap.set(p.product_id, p));
 
-        inbound.items.forEach((item, index) => {
+        for (let index = 0; index < inbound.items.length; index++) {
+          const item = inbound.items[index];
           console.log(`\n[${index + 1}] item_id: ${item.item_id}`);
           console.log(`    product_id: ${item.product_id}`);
           console.log(`    product_name: ${item.product_name || '(空)'}`);
@@ -45,7 +46,7 @@ async function checkInbound() {
           }
           
           console.log(`    quantity: ${item.quantity}`);
-        });
+        }
       } else {
         console.log(`没有商品明细！`);
       }
