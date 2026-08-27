@@ -60,6 +60,7 @@
               <th>联系电话</th>
               <th class="money-column">订单金额</th>
               <th class="money-column">实付金额</th>
+              <th class="remark-column">备注</th>
               <th>状态</th>
               <th class="operation-column">操作</th>
             </tr>
@@ -75,12 +76,15 @@
               <td>{{ row.customer_phone || '-' }}</td>
               <td class="money-column">¥{{ row.total_amount || 0 }}</td>
               <td class="money-column">¥{{ row.actual_payment || 0 }}</td>
+              <td class="remark-column" :title="row.remark || ''">{{ row.remark || '-' }}</td>
               <td><el-tag :type="getStatusType(row.order_status)">{{ getStatusText(row.order_status) }}</el-tag></td>
               <td class="operation-column">
               <el-button link type="primary" @click="handleEditDraft(row)" v-if="!row.record_type && row.order_status === 'draft'">编辑</el-button>
               <el-button link type="success" @click="handleSubmitDraft(row)" v-if="!row.record_type && row.order_status === 'draft'">提交</el-button>
               <el-button link type="danger" @click="handleDeleteDraft(row)" v-if="!row.record_type && row.order_status === 'draft' && !row.submit_time">删除</el-button>
               <el-button link type="success" @click="handleArchive(row)" v-if="!row.record_type && row.order_status === '未归档'">归档</el-button>
+              <el-button link type="danger" @click="handleVoid(row)" v-if="!row.record_type && isUnarchivedOrder(row.order_status)">作废</el-button>
+              <el-button link type="warning" @click="handleReturn(row)" v-if="!row.record_type && isArchivedOrder(row.order_status)">退单</el-button>
               <el-button link type="primary" @click="handleView(row)">查看</el-button>
               </td>
             </tr>
@@ -370,7 +374,13 @@
           <el-descriptions-item label="实付金额">¥{{ currentOrder.actual_payment }}</el-descriptions-item>
           <el-descriptions-item label="国补">¥{{ currentOrder.national_subsidy }}</el-descriptions-item>
           <el-descriptions-item label="教补">¥{{ currentOrder.education_subsidy }}</el-descriptions-item>
-          <el-descriptions-item label="备注" :span="2">{{ currentOrder.remark || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="备注" :span="2">
+            <div v-if="currentOrder.record_type === 'deposit'">{{ currentOrder.remark || '-' }}</div>
+            <div v-else class="remark-editor">
+              <el-input v-model="remarkDraft" type="textarea" :rows="2" maxlength="2000" show-word-limit />
+              <el-button type="primary" :loading="remarkSaving" @click="saveRemark">保存备注</el-button>
+            </div>
+          </el-descriptions-item>
         </el-descriptions>
 
         <h4 class="mt-20">流程记录</h4>
@@ -463,6 +473,23 @@
           <el-table-column prop="payment_time" label="支付时间" width="160" />
         </el-table>
       </div>
+    </el-dialog>
+
+    <!-- 销售退单申请对话框 -->
+    <el-dialog v-model="returnDialogVisible" title="销售退单" width="560px">
+      <el-alert title="已归档订单将进入退单审批流程，审批通过后再执行退货入库。" type="warning" :closable="false" show-icon />
+      <el-form :model="returnForm" label-width="90px" class="return-form">
+        <el-form-item label="订单号">
+          <span>{{ returnOrder?.order_no || '-' }}</span>
+        </el-form-item>
+        <el-form-item label="退单原因" required>
+          <el-input v-model="returnForm.reason" type="textarea" :rows="4" maxlength="500" show-word-limit placeholder="请输入退单原因" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="returnDialogVisible = false">取消</el-button>
+        <el-button type="warning" :loading="returnSubmitting" @click="submitReturn">提交退单申请</el-button>
+      </template>
     </el-dialog>
 
     <!-- 拒绝原因对话框 -->
@@ -587,6 +614,12 @@ const detailVisible = ref(false)
 const submitLoading = ref(false)
 const dialogTitle = ref('新建订单')
 const currentOrder = ref(null)
+const remarkDraft = ref('')
+const remarkSaving = ref(false)
+const returnDialogVisible = ref(false)
+const returnSubmitting = ref(false)
+const returnOrder = ref(null)
+const returnForm = reactive({ reason: '' })
 
 const canExportOrders = computed(() => isDistributorAccount() || hasRole(['manager', 'store_manager']))
 const actionLabel = (action) => ({
@@ -609,6 +642,9 @@ const orderHasSettlementCost = computed(() => {
 const orderCanSeeOriginalCost = computed(() => {
   return (currentOrder.value?.OrderItems || []).some(item => item.original_inventory_cost !== undefined)
 })
+
+const isArchivedOrder = (status) => ['已归档', 'completed', 'archived'].includes(String(status || ''))
+const isUnarchivedOrder = (status) => String(status || '') === '未归档'
 
 const queryParams = reactive({
   page: 1,
@@ -935,6 +971,7 @@ const handleView = async (row) => {
       }],
       action_logs: []
     }
+    remarkDraft.value = currentOrder.value.remark || ''
     detailVisible.value = true
     return
   }
@@ -960,6 +997,58 @@ const handleArchive = async (row) => {
   } catch (err) {
     if (err === 'cancel' || err === 'close') return
     ElMessage.error(err.response?.data?.message || '归档失败')
+  }
+}
+
+const handleVoid = async (row) => {
+  try {
+    const { value } = await ElMessageBox.prompt('请输入作废原因（将记录到订单备注）', `作废订单 ${row.order_no || ''}`, {
+      inputType: 'textarea',
+      confirmButtonText: '确认作废',
+      cancelButtonText: '取消',
+      inputPlaceholder: '请输入作废原因',
+      type: 'warning'
+    })
+    const reason = String(value || '').trim()
+    const remark = [row.remark, reason ? `作废原因：${reason}` : ''].filter(Boolean).join('\n')
+    const res = await api.updateSales(row.order_id, { order_status: 'voided', remark })
+    if (res.status === 'voided' || res.code === 0) {
+      ElMessage.success(res.message || '订单已作废')
+      await loadData()
+    } else {
+      ElMessage.error(res.message || '作废失败')
+    }
+  } catch (err) {
+    if (err === 'cancel' || err === 'close') return
+    ElMessage.error(err.response?.data?.message || '作废失败')
+  }
+}
+
+const handleReturn = (row) => {
+  returnOrder.value = row
+  returnForm.reason = ''
+  returnDialogVisible.value = true
+}
+
+const submitReturn = async () => {
+  const orderId = returnOrder.value?.order_id
+  const reason = String(returnForm.reason || '').trim()
+  if (!orderId) return ElMessage.warning('订单信息不存在')
+  if (!reason) return ElMessage.warning('请输入退单原因')
+  returnSubmitting.value = true
+  try {
+    const res = await api.submitSalesReturnRequest({ orderId, reason })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '退单申请已提交')
+      returnDialogVisible.value = false
+      await loadData()
+    } else {
+      ElMessage.error(res.message || '退单申请提交失败')
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '退单申请提交失败')
+  } finally {
+    returnSubmitting.value = false
   }
 }
 
@@ -1101,12 +1190,33 @@ const openOrderDetail = async (orderId) => {
     const res = await api.getSalesDetail(orderId, String(route.query.trace || '') === '1' ? { trace: '1' } : undefined)
     if (res.code === 0) {
       currentOrder.value = res.data
+      remarkDraft.value = currentOrder.value.remark || ''
       detailVisible.value = true
     } else {
       ElMessage.error(res.message || '加载订单详情失败')
     }
   } catch (err) {
     ElMessage.error('加载订单详情失败')
+  }
+}
+
+const saveRemark = async () => {
+  if (!currentOrder.value?.order_id || currentOrder.value.record_type === 'deposit') return
+  remarkSaving.value = true
+  try {
+    const res = await api.updateSales(currentOrder.value.order_id, { remark: remarkDraft.value })
+    if (res.code === 0 || res.status) {
+      currentOrder.value.remark = remarkDraft.value
+      const row = tableData.value.find(item => item.order_id === currentOrder.value.order_id)
+      if (row) row.remark = remarkDraft.value
+      ElMessage.success(res.message || '备注已保存')
+    } else {
+      ElMessage.error(res.message || '备注保存失败')
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '备注保存失败')
+  } finally {
+    remarkSaving.value = false
   }
 }
 
@@ -1638,12 +1748,12 @@ const formatDate = (dateStr) => {
 }
 
 const getStatusType = (status) => {
-  const types = { draft: 'info', completed: 'success', pending_approval: 'warning', cancelled: 'danger', return_pending: 'warning', returned: 'info', deposit_receipt: 'success' }
+  const types = { draft: 'info', completed: 'success', archived: 'success', '已归档': 'success', '未归档': 'warning', pending_approval: 'warning', cancelled: 'danger', voided: 'danger', '已作废': 'danger', return_pending: 'warning', returned: 'info', deposit_receipt: 'success' }
   return types[status] || 'info'
 }
 
 const getStatusText = (status) => {
-  const texts = { draft: '草稿', completed: '已完成', pending_approval: '待审批', cancelled: '已取消', return_pending: '退库处理中', returned: '已退单', deposit_receipt: '定金收款' }
+  const texts = { draft: '草稿', completed: '已归档', archived: '已归档', '已归档': '已归档', '未归档': '未归档', pending_approval: '待审批', cancelled: '已取消', voided: '已作废', '已作废': '已作废', return_pending: '退单审批中', returned: '已退单', deposit_receipt: '定金收款' }
   return texts[status] || status
 }
 
@@ -1734,7 +1844,7 @@ const getDepositStatusText = (status) => {
 }
 .sales-order-table {
   width: 100%;
-  min-width: 1120px;
+  min-width: 1300px;
   border-collapse: collapse;
   table-layout: fixed;
 }
@@ -1783,13 +1893,19 @@ const getDepositStatusText = (status) => {
   width: 110px;
   text-align: right;
 }
+.sales-order-table .remark-column {
+  width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .sales-order-table .operation-column {
-  width: 230px;
+  width: 300px;
 }
 .sales-table-state {
   box-sizing: border-box;
   width: 100%;
-  min-width: 1120px;
+  min-width: 1300px;
   padding: 42px 16px;
   color: var(--el-text-color-secondary);
   text-align: center;
@@ -1860,6 +1976,17 @@ const getDepositStatusText = (status) => {
 .resource-checks { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
 .resource-warning { color: #e6a23c; font-size: 12px; line-height: 1.4; }
 .muted { color: #909399; font-size: 12px; }
+.remark-editor {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.remark-editor .el-input {
+  flex: 1;
+}
+.return-form {
+  margin-top: 20px;
+}
 .summary-item {
   display: flex;
   justify-content: space-between;

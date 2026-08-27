@@ -7,6 +7,7 @@ const {
   normalizeOrderExtendedFields,
   normalizeAuxiliarySalesList,
   isCancelStatus,
+  isVoidableSalesOrder,
   reserveDepositForOrder,
   redeemReservedDepositsForOrder,
   releaseDepositRedemptionForOrder
@@ -51,6 +52,13 @@ test('order extension fields preserve detail metadata from camelCase payloads', 
 test('frontend void status is recognized', () => {
   assert.equal(isCancelStatus('已作废'), true);
   assert.equal(isCancelStatus('voided'), true);
+});
+
+test('only unarchived sales orders can be voided', () => {
+  assert.equal(isVoidableSalesOrder('未归档'), true);
+  assert.equal(isVoidableSalesOrder('已归档'), false);
+  assert.equal(isVoidableSalesOrder('completed'), false);
+  assert.equal(isVoidableSalesOrder('draft'), false);
 });
 
 test('deposit changes from available to occupied, redeemed, then available after void', async () => {

@@ -2630,6 +2630,9 @@ async function update(ctx) {
 
   const nextStatus = data.order_status || data.status;
   const previousStatus = order.order_status;
+  if (isCancelStatus(nextStatus) && !isCancelStatus(previousStatus) && !isVoidableSalesOrder(previousStatus)) {
+    ctx.throw(400, '只有未归档订单可以作废，已归档订单请使用退单流程');
+  }
   if (isArchiveStatus(nextStatus) && isSalesReturnInProgressStatus(previousStatus)) {
     ctx.throw(400, `订单当前处于${getSalesReturnStatusLabel(previousStatus)}，不能再次归档`);
   }
@@ -3300,6 +3303,10 @@ async function recalculateSettlementCost(ctx) {
 
 function isArchiveStatus(status) {
   return ['已归档', 'completed', 'archived'].includes(String(status || ''));
+}
+
+function isVoidableSalesOrder(status) {
+  return String(status || '').trim() === '未归档';
 }
 
 function archiveError(message) {
@@ -4893,6 +4900,7 @@ module.exports = {
     normalizeOrderExtendedFields,
     normalizeAuxiliarySalesList,
     isCancelStatus,
+    isVoidableSalesOrder,
     assertUniqueOrderSnItems,
     reserveDepositForOrder,
     redeemReservedDepositsForOrder,
