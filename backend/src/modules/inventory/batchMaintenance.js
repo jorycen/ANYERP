@@ -12,6 +12,7 @@ const { getUserRoles } = require('../../middleware/permission');
 const {
   findResourceRule, calculatePreSaleRuleAmount
 } = require('./resourceRights');
+const { syncSerializedInventoryBalance } = require('./serializedInventoryBalance');
 
 const VALID_OPERATION_TYPES = new Set(['INBOUND', 'OUTBOUND', 'ADJUST']);
 const VALID_INVENTORY_TYPES = new Set([
@@ -731,18 +732,40 @@ async function executeApplicationItem(item, application, transaction) {
   let snId = item.sn_id || null;
 
   if (Number(item.need_sn || 0) === 1) {
+    // SN 是库存的最小事实单位，T_INVENTORY 只是按仓位生成的物化投影。
+    // 批量维护有独立执行器，执行前后必须重建投影，不能直接用可能过期的
+    // 聚合数量做扣减，否则会把“SN 在库、投影为 0”误报成负库存。
+    await syncSerializedInventoryBalance({
+      productId: item.product_id,
+      storeId: item.store_id,
+      transaction
+    });
+    const beforeQty = await inventoryQty(
+      item.product_id,
+      item.store_id,
+      item.inventory_type,
+      item.location_id || '',
+      transaction
+    );
+
     if (item.operation_type === 'INBOUND') {
       const sn = await createSnInbound(item, application, transaction);
       snId = sn?.sn_id || item.sn_id || null;
-      inventoryResult = await updateInventoryQty(
-        item.product_id,
-        item.store_id,
-        item.inventory_type,
-        1,
-        transaction,
-        item.location_id || '',
-        { rowNo: item.row_no }
-      );
+      await syncSerializedInventoryBalance({
+        productId: item.product_id,
+        storeId: item.store_id,
+        transaction
+      });
+      inventoryResult = {
+        before: beforeQty,
+        after: await inventoryQty(
+          item.product_id,
+          item.store_id,
+          item.inventory_type,
+          item.location_id || '',
+          transaction
+        )
+      };
     } else {
       const sn = await ProductSn.findOne({
         where: { sn_id: item.sn_id || '', is_deleted: 0 },
@@ -751,15 +774,21 @@ async function executeApplicationItem(item, application, transaction) {
       });
       if (!sn || sn.status !== 'in_stock') throw Object.assign(new Error(`第 ${item.row_no} 行SN不在库，无法执行`), { status: 409 });
       await sn.update({ status: 'out_stock' }, { transaction });
-      inventoryResult = await updateInventoryQty(
-        item.product_id,
-        item.store_id,
-        item.inventory_type,
-        -1,
-        transaction,
-        item.location_id || '',
-        { rowNo: item.row_no }
-      );
+      await syncSerializedInventoryBalance({
+        productId: item.product_id,
+        storeId: item.store_id,
+        transaction
+      });
+      inventoryResult = {
+        before: beforeQty,
+        after: await inventoryQty(
+          item.product_id,
+          item.store_id,
+          item.inventory_type,
+          item.location_id || '',
+          transaction
+        )
+      };
       await SnLog.create({
         log_id: generateUUID(),
         sn_id: sn.sn_id,
