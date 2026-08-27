@@ -242,12 +242,12 @@ async function getPayableList(ctx) {
   rows.forEach(row => {
     const allocated = allocationSummary.get(String(row.payable_id))?.amount || 0;
     const request = requestSnapshots.get(String(row.request_id));
-    const isPurchaseRelated = ['purchase', 'purchase_adjustment'].includes(row.source_type);
+    const isPurchaseRelated = ['purchase', 'purchase_adjustment', 'purchase_return'].includes(row.source_type);
     row.setDataValue('settled_amount', roundAmount(allocated));
     row.setDataValue('remaining_amount', getPayableRemaining(row.total_amount, allocated, row.offset_amount));
     row.setDataValue('current_total_amount', getCurrentPayableTotal(row));
-    row.setDataValue('purchase_original_amount', row.source_type === 'purchase' ? request?.total_amount ?? null : null);
-    row.setDataValue('purchase_rebate_deduction', row.source_type === 'purchase' ? request?.rebate_deduction ?? null : null);
+    row.setDataValue('purchase_original_amount', isPurchaseRelated ? request?.total_amount ?? null : null);
+    row.setDataValue('purchase_rebate_deduction', isPurchaseRelated ? request?.rebate_deduction ?? null : null);
     row.setDataValue(
       'purchase_initiator',
       isPurchaseRelated
@@ -276,7 +276,7 @@ async function exportPayableList(ctx) {
     })
   });
   const requestIds = [...new Set(rows
-    .filter(row => ['purchase', 'purchase_adjustment'].includes(row.source_type) && row.request_id)
+    .filter(row => ['purchase', 'purchase_adjustment', 'purchase_return'].includes(row.source_type) && row.request_id)
     .map(row => row.request_id))];
   const requests = requestIds.length
     ? await PurchaseRequest.findAll({
@@ -301,7 +301,7 @@ async function exportPayableList(ctx) {
       剩余应付金额: getPayableRemaining(item.total_amount, allocated, item.offset_amount),
       已付金额: Number(item.paid_amount || 0),
       状态: item.status || '',
-      采购发起人: ['purchase', 'purchase_adjustment'].includes(item.source_type)
+      采购发起人: ['purchase', 'purchase_adjustment', 'purchase_return'].includes(item.source_type)
         ? request?.apply_user || request?.submit_user || request?.create_user || ''
         : '',
       创建时间: item.create_time || ''

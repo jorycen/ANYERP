@@ -364,15 +364,17 @@
           <el-table-column prop="unit_price" label="单价" width="100">
             <template #default="{ row }">¥{{ row.unit_price }}</template>
           </el-table-column>
-          <el-table-column prop="quantity" label="数量" width="80" />
-          <el-table-column label="小计" width="100">
-            <template #default="{ row }">¥{{ formatMoney(requestItemSubtotal(row)) }}</template>
+          <el-table-column label="当前数量" width="90">
+            <template #default="{ row }">{{ row.current_quantity ?? row.quantity }}</template>
           </el-table-column>
-          <el-table-column label="返利抵扣" width="110">
-            <template #default="{ row }">-¥{{ formatMoney(row.rebate_deduction) }}</template>
+          <el-table-column label="当前小计" width="110">
+            <template #default="{ row }">¥{{ formatMoney(row.current_subtotal ?? requestItemSubtotal(row)) }}</template>
+          </el-table-column>
+          <el-table-column label="当前返利抵扣" width="120">
+            <template #default="{ row }">-¥{{ formatMoney(row.current_rebate_deduction ?? row.rebate_deduction) }}</template>
           </el-table-column>
           <el-table-column label="抵扣后金额" width="120">
-            <template #default="{ row }">¥{{ formatMoney(requestItemActualAmount(row)) }}</template>
+            <template #default="{ row }">¥{{ formatMoney(row.current_actual_amount ?? requestItemActualAmount(row)) }}</template>
           </el-table-column>
           <el-table-column label="门店分配" min-width="200">
             <template #default="{ row }">

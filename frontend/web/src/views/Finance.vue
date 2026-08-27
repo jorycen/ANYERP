@@ -352,6 +352,7 @@
             <el-select v-model="payableSourceFilter" placeholder="来源类型筛选" clearable style="width: 160px" @change="onPayableFilterChange">
               <el-option label="采购" value="purchase" />
               <el-option label="采购调整" value="purchase_adjustment" />
+              <el-option label="采购退库" value="purchase_return" />
               <el-option label="费用" value="expense" />
               <el-option label="报销" value="reimbursement" />
             </el-select>
@@ -413,13 +414,13 @@
             </el-table-column>
             <el-table-column label="采购原价" width="120">
               <template #default="{ row }">
-                <span v-if="row.source_type === 'purchase'">¥{{ formatMoney(row.purchase_original_amount) }}</span>
+                <span v-if="['purchase', 'purchase_adjustment', 'purchase_return'].includes(row.source_type)">¥{{ formatMoney(row.purchase_original_amount) }}</span>
                 <span v-else>-</span>
               </template>
             </el-table-column>
             <el-table-column label="返利抵扣" width="120">
               <template #default="{ row }">
-                <span v-if="row.source_type === 'purchase' && Number(row.purchase_rebate_deduction || 0) > 0">
+                <span v-if="['purchase', 'purchase_adjustment', 'purchase_return'].includes(row.source_type) && Number(row.purchase_rebate_deduction || 0) > 0">
                   ¥{{ formatMoney(row.purchase_rebate_deduction) }}
                 </span>
                 <span v-else>-</span>
@@ -442,7 +443,7 @@
               </template>
             </el-table-column>
             <el-table-column prop="purchase_initiator" label="采购发起人" width="130">
-              <template #default="{ row }">{{ ['purchase', 'purchase_adjustment'].includes(row.source_type) ? (row.purchase_initiator || '-') : '-' }}</template>
+              <template #default="{ row }">{{ ['purchase', 'purchase_adjustment', 'purchase_return'].includes(row.source_type) ? (row.purchase_initiator || '-') : '-' }}</template>
             </el-table-column>
             <el-table-column prop="create_time" label="创建时间" width="160" />
             <el-table-column label="操作" width="140">
@@ -1061,18 +1062,20 @@
             <template #default="{ row }">{{ row.manufacturer_code || '-' }}</template>
           </el-table-column>
           <el-table-column prop="pn_code" label="PN码" width="140" />
-          <el-table-column prop="quantity" label="数量" width="80" />
+          <el-table-column label="当前数量" width="90">
+            <template #default="{ row }">{{ row.current_quantity ?? row.quantity }}</template>
+          </el-table-column>
           <el-table-column prop="unit_price" label="单价" width="110">
             <template #default="{ row }">¥{{ row.unit_price || 0 }}</template>
           </el-table-column>
-          <el-table-column prop="subtotal" label="小计" width="110">
-            <template #default="{ row }">¥{{ formatMoney(purchaseItemSubtotal(row)) }}</template>
+          <el-table-column label="当前小计" width="110">
+            <template #default="{ row }">¥{{ formatMoney(row.current_subtotal ?? purchaseItemSubtotal(row)) }}</template>
           </el-table-column>
-          <el-table-column prop="rebate_deduction" label="返利抵扣" width="110">
-            <template #default="{ row }">-¥{{ formatMoney(row.rebate_deduction) }}</template>
+          <el-table-column label="当前返利抵扣" width="120">
+            <template #default="{ row }">-¥{{ formatMoney(row.current_rebate_deduction ?? row.rebate_deduction) }}</template>
           </el-table-column>
           <el-table-column label="抵扣后金额" width="120">
-            <template #default="{ row }">¥{{ formatMoney(purchaseItemActualAmount(row)) }}</template>
+            <template #default="{ row }">¥{{ formatMoney(row.current_actual_amount ?? purchaseItemActualAmount(row)) }}</template>
           </el-table-column>
         </el-table>
       </div>
@@ -1400,6 +1403,7 @@ const getPayableSourceText = (row) => {
   if (sourceType === 'expense') return '费用'
   if (sourceType === 'reimbursement') return '报销'
   if (sourceType === 'purchase_adjustment') return '采购调整'
+  if (sourceType === 'purchase_return') return '采购退库'
   return '采购'
 }
 
@@ -1408,6 +1412,7 @@ const getPayableSourceTagType = (row) => {
   return {
     purchase: 'info',
     purchase_adjustment: 'success',
+    purchase_return: 'warning',
     expense: 'warning',
     reimbursement: 'danger'
 }[sourceType] || 'info'

@@ -360,6 +360,47 @@ function getPurchaseAdjustmentTotals(adjustments = []) {
   };
 }
 
+function getPurchaseAdjustmentItemDeltas(adjustments = []) {
+  const result = new Map();
+  for (const adjustment of adjustments || []) {
+    for (const item of adjustment.items || []) {
+      const key = String(item.request_item_id || '');
+      if (!key) continue;
+      const current = result.get(key) || { quantityDelta: 0, grossDelta: 0, actualDelta: 0, rebateDelta: 0 };
+      const quantityDelta = Number(item.quantity_delta || 0);
+      const unitPrice = Number(item.unit_price || 0);
+      const grossDelta = quantityDelta * unitPrice;
+      const actualDelta = Number(item.amount_delta || 0);
+      current.quantityDelta += quantityDelta;
+      current.grossDelta += grossDelta;
+      current.actualDelta += actualDelta;
+      current.rebateDelta += grossDelta - actualDelta;
+      result.set(key, current);
+    }
+  }
+  return result;
+}
+
+function attachCurrentPurchaseItemAmounts(items = [], adjustments = []) {
+  const deltas = getPurchaseAdjustmentItemDeltas(adjustments);
+  return (items || []).map(item => {
+    const key = String(item.item_id || '');
+    const delta = deltas.get(key) || { quantityDelta: 0, grossDelta: 0, actualDelta: 0, rebateDelta: 0 };
+    const quantity = Number(item.quantity || 0);
+    const unitPrice = Number(item.unit_price || 0);
+    const originalSubtotal = Number(item.subtotal || quantity * unitPrice);
+    const originalRebate = Number(item.rebate_deduction || 0);
+    const originalActual = item.actual_amount === null || item.actual_amount === undefined
+      ? originalSubtotal - originalRebate
+      : Number(item.actual_amount || 0);
+    item.current_quantity = Math.max(0, quantity + delta.quantityDelta);
+    item.current_subtotal = toSignedMoney(Math.max(0, originalSubtotal + delta.grossDelta));
+    item.current_rebate_deduction = toSignedMoney(Math.max(0, originalRebate + delta.rebateDelta));
+    item.current_actual_amount = toSignedMoney(Math.max(0, originalActual + delta.actualDelta));
+    return item;
+  });
+}
+
 function attachCurrentPurchaseAmounts(target, adjustments = []) {
   const totals = getPurchaseAdjustmentTotals(adjustments);
   const originalTotal = Number(target.total_amount || 0);
@@ -621,8 +662,9 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
     
     // 汇总商品名称和数量用于前端展示
     if (result.items && result.items.length > 0) {
+      result.items = attachCurrentPurchaseItemAmounts(result.items, adjustmentsByRequest.get(String(result.request_id)) || []);
       result.items_summary = result.items.map(item => 
-        `${item.product_name || item.product_id} x ${item.quantity}`
+        `${item.product_name || item.product_id} x ${item.current_quantity ?? item.quantity}`
       ).join('; ');
     } else {
       result.items_summary = '';
@@ -738,7 +780,7 @@ async function getRequestDetail(ctx) {
     const storeMap = new Map();
     stores.forEach(s => storeMap.set(s.store_id, s.name));
 
-    result.items = result.items.map(item => {
+    result.items = attachCurrentPurchaseItemAmounts(result.items, result.adjustments || []).map(item => {
       const itemJson = item;
       const productSnapshot = productSnapshots.get(String(itemJson.product_id || ''));
       if (!itemJson.product_code && productSnapshot) itemJson.product_code = productSnapshot.product_code || '';
@@ -1803,7 +1845,7 @@ async function createPurchaseAdjustment(ctx) {
         }
         returnId = generateUUID();
         returnNo = generateId('RET');
-        await ReturnStock.create({ return_id: returnId, return_no: returnNo, inbound_id: inbound.inbound_id, inbound_no: inbound.inbound_no, store_id: inbound.store_id, purchase_request_id: request.request_id, supplier_id: request.supplier_id, supplier_name: request.Supplier?.name || '', total_quantity: returnQuantity, total_amount: toSignedMoney(returnQuantity * unitPrice), reason: reason || '', status: 'completed', execute_user: user.name || user.phone, execute_time: new Date(), create_user: request.apply_user || request.submit_user || request.create_user || user.name || user.phone, create_time: new Date() }, { transaction });
+        await ReturnStock.create({ return_id: returnId, return_no: returnNo, inbound_id: inbound.inbound_id, inbound_no: inbound.inbound_no, store_id: inbound.store_id, purchase_request_id: request.request_id, distributor_id: request.distributor_id || inbound.Store?.distributor_id || null, supplier_id: request.supplier_id, supplier_name: request.Supplier?.name || '', total_quantity: returnQuantity, total_amount: toSignedMoney(returnQuantity * unitPrice), reason: reason || '', status: 'completed', execute_user: user.name || user.phone, execute_time: new Date(), create_user: request.apply_user || request.submit_user || request.create_user || user.name || user.phone, create_time: new Date() }, { transaction });
         for (const returnItem of returnItems) {
           const sn = returnItem.sn;
           await ReturnStockItem.create({ return_id: returnId, inbound_item_id: inboundItem.item_id, product_id: requestItem.product_id, product_name: requestItem.product_name || inboundItem.product_name || '', pn_code: sn?.pn_code || inboundItem.pn_code || '', sn_code: sn?.sn_code || '', sn_id: sn?.sn_id || null, quantity: returnItem.quantity, unit_price: unitPrice, location_id: returnItem.locationId, inventory_type: returnItem.inventoryType, product_type: inboundItem.product_type || '', remark: reason || '' }, { transaction });
@@ -1910,7 +1952,7 @@ async function createPurchaseAdjustment(ctx) {
         supplier_id: request.supplier_id,
         supplier_name: request.Supplier?.name || '',
         request_id: request.request_id,
-        request_no: adjustmentNo,
+        request_no: request.request_no,
         payee_type: 'supplier',
         payee_id: request.supplier_id,
         payee_name: request.Supplier?.name || '',
@@ -2295,6 +2337,8 @@ module.exports = {
     flattenPurchaseAllocations,
     validatePurchaseAllocations,
     getPurchaseAdjustmentTotals,
+    getPurchaseAdjustmentItemDeltas,
+    attachCurrentPurchaseItemAmounts,
     attachCurrentPurchaseAmounts,
     attachPurchasePaymentStatus
   }

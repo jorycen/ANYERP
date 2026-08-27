@@ -6,7 +6,7 @@ const {
   sequelize, Region, ProductSn, Product, ProductPn, ProductPrice, ProductPriceChangeLog,
   SnDistributorPrice, SnDistributorPriceChangeLog, ResourceCategory,
   ProductBarcode, Store, Location, InventoryWarning, Inbound, InboundItem,
-  ReturnStock, ReturnStockItem, PurchaseRequest, PurchaseRequestItem, Payable, Supplier, Inventory,
+  ReturnStock, ReturnStockItem, PurchaseRequest, PurchaseRequestItem, PurchaseAdjustment, Payable, Supplier, Inventory,
   SalesReturnRequest, SalesReturnRequestItem,
   SnLog, Order, OrderItem, Transfer, TransferItem, InventoryConversion,
   InventoryConversionItem
@@ -29,6 +29,7 @@ const { createSalesReturnGrossProfitLedger } = require('../sales/grossProfit');
 const { createSalesReturnSettlement } = require('../sales/salesReturnSettlement');
 const { assertActiveProducts } = require('../../utils/activeProduct');
 const { syncSerializedInventoryBalance } = require('./serializedInventoryBalance');
+const { ensurePurchaseReturnAccounting } = require('../purchase/purchaseReturnAccounting');
 
 const REUSABLE_INBOUND_SN_STATUSES = new Set(['out_stock', 'sold']);
 
@@ -5495,6 +5496,10 @@ async function requestReturn(ctx) {
     const request = inbound.purchase_request_id
       ? await PurchaseRequest.findByPk(inbound.purchase_request_id, { transaction: t })
       : null;
+    const store = await Store.findByPk(inbound.store_id, {
+      attributes: ['store_id', 'distributor_id'],
+      transaction: t
+    });
     const supplier = request?.supplier_id
       ? await Supplier.findByPk(request.supplier_id, { transaction: t })
       : null;
@@ -5512,6 +5517,7 @@ async function requestReturn(ctx) {
       inbound_no: inbound.inbound_no,
       store_id: inbound.store_id,
       purchase_request_id: inbound.purchase_request_id || '',
+      distributor_id: request?.distributor_id || store?.distributor_id || null,
       supplier_id: request?.supplier_id || '',
       supplier_name: supplier?.name || '',
       total_quantity: 0,
@@ -5549,6 +5555,7 @@ async function requestReturn(ctx) {
         for (const snRecord of snRecords) {
           await ReturnStockItem.create({
             return_id: returnId,
+            inbound_item_id: item.item_id,
             product_id: item.product_id,
             product_name: item.product_name || '',
             pn_code: snRecord.pn_code || item.pn_code || '',
@@ -5565,6 +5572,7 @@ async function requestReturn(ctx) {
       } else {
         await ReturnStockItem.create({
           return_id: returnId,
+          inbound_item_id: item.item_id,
           product_id: item.product_id,
           product_name: item.product_name || '',
           pn_code: item.pn_code || '',
@@ -5692,37 +5700,33 @@ async function executeReturn(ctx) {
       }
     }
 
-    let payableId = '';
-    if (returnStock.supplier_id) {
-      payableId = generateUUID();
-      await Payable.create({
-        payable_id: payableId,
-        supplier_id: returnStock.supplier_id,
-        supplier_name: returnStock.supplier_name || '',
-        request_id: returnStock.return_id,
-        request_no: returnStock.return_no,
-        source_type: 'purchase_return',
-        source_id: returnStock.return_id,
-        source_no: returnStock.return_no,
-        region_id: (await Store.findByPk(returnStock.store_id, { attributes: ['region_id'], transaction: t }))?.region_id || null,
-        total_amount: -Math.abs(Number(returnStock.total_amount || 0)),
-        paid_amount: 0,
-        status: 'unpaid',
-        create_time: new Date()
-      }, { transaction: t });
-    }
+    const accounting = await ensurePurchaseReturnAccounting({
+      returnStock,
+      transaction: t,
+      userName: user.name || user.staffId || ''
+    });
 
     await returnStock.update({
       status: 'completed',
       execute_user: user.name || user.staffId,
       execute_time: new Date(),
-      payable_id: payableId
+      payable_id: accounting.payableId
     }, { transaction: t });
 
     await inbound.update({ status: 'returned', update_time: new Date() }, { transaction: t });
 
     await t.commit();
-    ctx.body = { code: 0, returnId, payableId, message: '退库已执行，已生成负向应付' };
+    ctx.body = {
+      code: 0,
+      returnId,
+      payableId: accounting.payableId,
+      adjustmentId: accounting.adjustmentId,
+      adjustmentNo: accounting.adjustmentNo,
+      totalQuantityDelta: accounting.totalQuantityDelta,
+      totalAmountDelta: accounting.totalAmountDelta,
+      offsetAmount: accounting.offsetAmount,
+      message: '退库已执行，已生成负向采购调整和供应商待抵扣'
+    };
   } catch (error) {
     await t.rollback();
     console.error('Error in executeReturn:', error);

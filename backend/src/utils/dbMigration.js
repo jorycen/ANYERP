@@ -1045,6 +1045,7 @@ async function runMigrations() {
     `);
 
     await checkAndAddColumn('T_RETURN_STOCK', 'PURCHASE_REQUEST_ID', 'VARCHAR(32) COMMENT "采购申请ID"', 'STORE_ID');
+    await checkAndAddColumn('T_RETURN_STOCK', 'DISTRIBUTOR_ID', 'VARCHAR(32) COMMENT "退库所属经销商快照"', 'PURCHASE_REQUEST_ID');
     await checkAndAddColumn('T_RETURN_STOCK', 'SUPPLIER_ID', 'VARCHAR(32) COMMENT "供应商ID"', 'PURCHASE_REQUEST_ID');
     await checkAndAddColumn('T_RETURN_STOCK', 'SUPPLIER_NAME', 'VARCHAR(255) COMMENT "供应商名称"', 'SUPPLIER_ID');
     await checkAndAddColumn('T_RETURN_STOCK', 'STATUS', "VARCHAR(32) DEFAULT 'pending' COMMENT '状态:pending/approved/rejected/completed'", 'REASON');

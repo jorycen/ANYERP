@@ -603,6 +603,7 @@ const ReturnStock = sequelize.define('ReturnStock', {
   inbound_no: { type: DataTypes.STRING(64) },
   store_id: { type: DataTypes.STRING(32), allowNull: false },
   purchase_request_id: { type: DataTypes.STRING(32) },
+  distributor_id: { type: DataTypes.STRING(32), comment: '退库所属经销商快照' },
   supplier_id: { type: DataTypes.STRING(32) },
   supplier_name: { type: DataTypes.STRING(255) },
   total_quantity: { type: DataTypes.INTEGER, defaultValue: 0 },
