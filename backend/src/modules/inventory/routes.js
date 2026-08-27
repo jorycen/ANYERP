@@ -48,6 +48,7 @@ router.post('/goods-types', resourceRights.saveGoodsType);
 router.delete('/goods-types/:goodsTypeId', resourceRights.deleteGoodsType);
 router.get('/resource-settlements', resourceRights.listResourceSettlements);
 router.post('/resource-settlements/manual-rebate', resourceRights.createManualRebateSettlement);
+router.post('/resource-settlements/batch-settle', resourceRights.batchSettleRebateResources);
 router.post('/resource-settlements/:settlementId/settle', resourceRights.settleResource);
 router.post('/resource-settlements/:settlementId/cancel', resourceRights.cancelResourceSettlement);
 router.post('/resource-settlements/:settlementId/reverse', resourceRights.reverseResourceSettlement);

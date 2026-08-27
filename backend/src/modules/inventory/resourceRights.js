@@ -894,12 +894,12 @@ function reconciliationStatus(total, matched) {
   return 'PARTIALLY_MATCHED';
 }
 
-async function reconcileRebateSettlement(ctx, record, transaction) {
+async function reconcileRebateSettlement(ctx, record, transaction, allocationsInput = ctx.request.body?.allocations) {
   if (!['PENDING', 'PARTIALLY_SETTLED'].includes(record.status)) {
     ctx.throw(409, '该返利下账单已完成核销');
   }
   if (!record.counterparty_id) ctx.throw(400, '返利下账单缺少供应商，无法核销');
-  const input = Array.isArray(ctx.request.body?.allocations) ? ctx.request.body.allocations : [];
+  const input = Array.isArray(allocationsInput) ? allocationsInput : [];
   const grouped = new Map();
   for (const item of input) {
     const postingId = item.postingId || item.posting_id;
@@ -966,6 +966,40 @@ async function reconcileRebateSettlement(ctx, record, transaction) {
   return { fullyMatched, allocationTotal, matchedAmount: newMatched };
 }
 
+async function batchSettleRebateResources(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin', 'finance'], '无权执行返利下账');
+  const items = Array.isArray(ctx.request.body?.items) ? ctx.request.body.items : [];
+  if (items.length === 0) ctx.throw(400, '请选择待核销返利下账单');
+  const normalizedItems = items.map(item => ({
+    settlementId: item.settlementId || item.settlement_id,
+    allocations: Array.isArray(item.allocations) ? item.allocations : []
+  })).filter(item => item.settlementId);
+  if (normalizedItems.length !== items.length) ctx.throw(400, '批量核销下账单格式无效');
+  const settlementIds = [...new Set(normalizedItems.map(item => item.settlementId))];
+  if (settlementIds.length !== normalizedItems.length) ctx.throw(400, '批量核销下账单不能重复选择');
+
+  const results = [];
+  await sequelize.transaction(async transaction => {
+    const records = await ResourceSettlement.findAll({
+      where: { settlement_id: settlementIds },
+      order: [['create_time', 'ASC'], ['settlement_id', 'ASC']],
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (records.length !== settlementIds.length) ctx.throw(404, '部分返利下账单不存在');
+    const recordMap = new Map(records.map(record => [record.settlement_id, record]));
+    for (const item of normalizedItems) {
+      const record = recordMap.get(item.settlementId);
+      if (!['MANUAL_REBATE', 'MANUFACTURER_REBATE', 'REBATE_RECEIPT'].includes(record.source_type)) {
+        ctx.throw(400, '批量核销仅支持返利类下账单');
+      }
+      const result = await reconcileRebateSettlement(ctx, record, transaction, item.allocations);
+      results.push({ settlementId: record.settlement_id, ...result });
+    }
+  });
+  ctx.body = { message: '批量返利下账核销成功', data: { items: results } };
+}
+
 async function settleResource(ctx) {
   requireAnyRole(ctx, ['boss', 'admin', 'finance'], '无权执行返利下账');
   const accountOverride = ctx.request.body?.accountId || null;
@@ -975,7 +1009,7 @@ async function settleResource(ctx) {
     if (!record) ctx.throw(404, '资源待下账记录不存在');
     if (!['PENDING', 'PARTIALLY_SETTLED'].includes(record.status)) ctx.throw(409, '该资源记录已完成下账');
     const category = await ResourceCategory.findOne({ where: { category_code: record.resource_type }, transaction });
-    if (['MANUAL_REBATE', 'MANUFACTURER_REBATE'].includes(record.source_type)) {
+    if (['MANUAL_REBATE', 'MANUFACTURER_REBATE', 'REBATE_RECEIPT'].includes(record.source_type)) {
       result = await reconcileRebateSettlement(ctx, record, transaction);
       return;
     }
@@ -1065,7 +1099,7 @@ async function reverseResourceSettlement(ctx) {
       transaction,
       lock: transaction.LOCK.UPDATE
     });
-    if (activeAllocations.length > 0 || ['MANUAL_REBATE', 'MANUFACTURER_REBATE'].includes(record.source_type)) {
+    if (activeAllocations.length > 0 || ['MANUAL_REBATE', 'MANUFACTURER_REBATE', 'REBATE_RECEIPT'].includes(record.source_type)) {
       if (activeAllocations.length === 0) ctx.throw(409, '未找到返利下账单对应的核销记录');
       for (const allocation of activeAllocations) {
         const posting = await RebatePostingOrder.findByPk(allocation.posting_id, {
@@ -1425,7 +1459,7 @@ module.exports = {
   listRights, snRights, saveSnRights, batchAdjustRights, batchRefreshRights, submitClaim, reviewClaim, listChanges, listCostConfigs, listCostAdjustments, saveCostConfig,
   listResourceCategories, saveResourceCategory, deleteResourceCategory,
   listGoodsTypes, saveGoodsType, deleteGoodsType,
-  listResourceSettlements, createManualRebateSettlement, settleResource,
+  listResourceSettlements, createManualRebateSettlement, settleResource, batchSettleRebateResources,
   cancelResourceSettlement, reverseResourceSettlement, createPendingSettlement,
   findResourceRule, calculatePreSaleRuleAmount,
   initializeSnResourceRightsFromInbound, triggerSaleResourceBenefits,

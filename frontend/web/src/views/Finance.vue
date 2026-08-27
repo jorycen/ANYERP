@@ -1590,7 +1590,7 @@ const settlementAccountTypes = [
   { value: 'FUND', label: '资金账户' },
   { value: 'POLICY_RECEIVABLE', label: '政策补贴应收' },
   { value: 'CARE_CREDIT', label: 'Care可用金' },
-  { value: 'SUPPLIER_REBATE', label: '厂商返利' }
+  { value: 'SUPPLIER_REBATE', label: '返利账户' }
 ]
 const accountTxnForm = reactive({
   accountId: '',
@@ -3180,7 +3180,7 @@ const accountTypeText = value => ({
   FUND: '资金账户',
   POLICY_RECEIVABLE: '政策补贴应收',
   CARE_CREDIT: 'Care可用金',
-  SUPPLIER_REBATE: '厂商返利'
+  SUPPLIER_REBATE: '返利账户'
 }[value] || '资金账户')
 
 const moveAccount = async (index, direction) => {

@@ -187,6 +187,63 @@ test('返利下账单部分核销上账单且不重复增加返利余额', async
   }
 });
 
+test('返利下账支持批量选择并按下账单顺序勾稽同一上账单', async () => {
+  const originals = {
+    transaction: models.sequelize.transaction,
+    settlementFindAll: models.ResourceSettlement.findAll,
+    postingFindByPk: models.RebatePostingOrder.findByPk,
+    allocationCreate: models.RebateSettlementAllocation.create
+  };
+  const settlementUpdates = {};
+  const postingUpdates = {};
+  const allocations = [];
+  const records = [
+    {
+      settlement_id: 'RST_1', settlement_no: 'RST20260706001', source_type: 'MANUAL_REBATE',
+      counterparty_id: 'SUP_1', counterparty_name: '测试厂商', amount: 10000, matched_amount: 0, status: 'PENDING',
+      update: async values => Object.assign(settlementUpdates.RST_1 || (settlementUpdates.RST_1 = {}), values)
+    },
+    {
+      settlement_id: 'RST_2', settlement_no: 'RST20260706002', source_type: 'REBATE_RECEIPT',
+      counterparty_id: 'SUP_1', counterparty_name: '测试厂商', amount: 10000, matched_amount: 0, status: 'PENDING',
+      update: async values => Object.assign(settlementUpdates.RST_2 || (settlementUpdates.RST_2 = {}), values)
+    }
+  ];
+  const posting = {
+    posting_id: 'RPO_1', posting_no: 'RPO20260706001', supplier_id: 'SUP_1', amount: 30000,
+    matched_amount: 0, status: 'UNMATCHED', update: async values => {
+      Object.assign(posting, values);
+      Object.assign(postingUpdates, values);
+    }
+  };
+  models.sequelize.transaction = async handler => handler({ LOCK: { UPDATE: 'UPDATE' } });
+  models.ResourceSettlement.findAll = async () => records;
+  models.RebatePostingOrder.findByPk = async () => posting;
+  models.RebateSettlementAllocation.create = async values => allocations.push(values);
+  try {
+    const ctx = context({
+      body: {
+        items: [
+          { settlementId: 'RST_1', allocations: [{ postingId: 'RPO_1', amount: 10000 }] },
+          { settlementId: 'RST_2', allocations: [{ postingId: 'RPO_1', amount: 5000 }] }
+        ]
+      }
+    });
+    await resourceRights.batchSettleRebateResources(ctx);
+    assert.equal(allocations.length, 2);
+    assert.equal(settlementUpdates.RST_1.status, 'SETTLED');
+    assert.equal(settlementUpdates.RST_2.status, 'PARTIALLY_SETTLED');
+    assert.equal(postingUpdates.matched_amount, 15000);
+    assert.equal(postingUpdates.status, 'PARTIALLY_MATCHED');
+    assert.equal(ctx.body.data.items.length, 2);
+  } finally {
+    models.sequelize.transaction = originals.transaction;
+    models.ResourceSettlement.findAll = originals.settlementFindAll;
+    models.RebatePostingOrder.findByPk = originals.postingFindByPk;
+    models.RebateSettlementAllocation.create = originals.allocationCreate;
+  }
+});
+
 test('返利下账单没有关联上账单时不允许直接增加余额', async () => {
   const originals = {
     transaction: models.sequelize.transaction,

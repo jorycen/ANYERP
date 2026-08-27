@@ -2,7 +2,11 @@
  * 字典管理控制器
  * 客户来源 / 收款方式 / 结算账号 / 金额补录项目
  */
-const { sequelize, CustomerSource, PaymentMethod, PaymentMethodStore, SupplementItem, ExpenseType, SettlementAccount, Store, Supplier, Region } = require('../../models');
+const {
+  sequelize, CustomerSource, PaymentMethod, PaymentMethodStore, SupplementItem, ExpenseType,
+  SettlementAccount, SettlementAccountTransaction, RebatePostingOrder, ResourceSettlement,
+  SupplierRebate, Store, Supplier, Region
+} = require('../../models');
 const { Op } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult } = require('../../utils');
 const { accessibleDistributorIds, canAccessDistributor, validateDistributorIds } = require('../../utils/distributorScope');
@@ -31,6 +35,24 @@ async function validateSettlementAccountDistributor(ctx, distributorId, { requir
   }
   if (!canAccessDistributor(ctx.state.user, value)) ctx.throw(403, '无权配置该经销商账户');
   return value;
+}
+
+function businessNo(prefix = 'RPO') {
+  const date = new Date();
+  const stamp = [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+    String(date.getHours()).padStart(2, '0'),
+    String(date.getMinutes()).padStart(2, '0'),
+    String(date.getSeconds()).padStart(2, '0')
+  ].join('');
+  return `${prefix}${stamp}${generateUUID().slice(-6).toUpperCase()}`;
+}
+
+function money(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? Math.round(number * 100) / 100 : 0;
 }
 
 // ==============================================
@@ -532,7 +554,7 @@ async function sortPaymentMethods(ctx) {
 
 async function getSettlementAccountList(ctx) {
   const { keyword, regionId, page = 1, pageSize = 20 } = ctx.query;
-  const where = { status: 1, account_type: { [Op.ne]: 'SUPPLIER_REBATE' } };
+  const where = { status: 1 };
   applySettlementAccountScope(ctx, where);
   if (regionId) where.region_id = regionId;
   if (keyword) {
@@ -555,7 +577,7 @@ async function getSettlementAccountList(ctx) {
 
 async function getAllSettlementAccounts(ctx) {
   const { regionId } = ctx.query;
-  const where = { status: 1, account_type: { [Op.ne]: 'SUPPLIER_REBATE' } };
+  const where = { status: 1 };
   applySettlementAccountScope(ctx, where);
   if (regionId) where.region_id = regionId;
   const rows = await SettlementAccount.findAll({
@@ -567,13 +589,27 @@ async function getAllSettlementAccounts(ctx) {
 }
 
 async function createSettlementAccount(ctx) {
-  const { accountName, bankName, accountNumber, accountType = 'FUND', regionId, distributorId, usageNote, sortOrder } = ctx.request.body;
+  const {
+    accountName, bankName, accountNumber, accountType = 'FUND', regionId, distributorId,
+    supplierId, openingAmount = 0, usageNote, sortOrder
+  } = ctx.request.body;
   if (!accountName) ctx.throw(400, '账号名称不能为空');
-  if (accountType === 'SUPPLIER_REBATE') {
-    ctx.throw(400, '供应商返利账户由系统自动维护，不允许手工创建');
-  }
-  if (!['FUND', 'POLICY_RECEIVABLE', 'CARE_CREDIT'].includes(accountType)) {
+  if (!['FUND', 'POLICY_RECEIVABLE', 'CARE_CREDIT', 'SUPPLIER_REBATE'].includes(accountType)) {
     ctx.throw(400, '账户类型无效');
+  }
+  const initialAmount = money(openingAmount);
+  if (initialAmount < 0) ctx.throw(400, '新增返利金额不能为负数');
+  let supplier = null;
+  if (accountType === 'SUPPLIER_REBATE') {
+    if (!supplierId) ctx.throw(400, '返利账户必须关联供应商');
+    supplier = await Supplier.findOne({ where: { supplier_id: supplierId, status: 1, is_deleted: 0 } });
+    if (!supplier) ctx.throw(400, '供应商不存在或已停用');
+    const existingAccount = await SettlementAccount.findOne({
+      where: { account_type: 'SUPPLIER_REBATE', supplier_id: supplierId, status: 1 }
+    });
+    if (existingAccount) ctx.throw(400, '该供应商已有启用的返利账户');
+  } else if (openingAmount !== undefined && initialAmount > 0) {
+    ctx.throw(400, '只有返利账户可以填写新增返利金额');
   }
   const accountDistributorId = await validateSettlementAccountDistributor(ctx, distributorId, { required: accountType === 'FUND' });
   if (regionId) {
@@ -584,11 +620,50 @@ async function createSettlementAccount(ctx) {
   try {
     await sequelize.transaction(async transaction => {
       const accountId = generateUUID();
+      const user = ctx.state.user || {};
       await SettlementAccount.create({
         account_id: accountId, account_name: accountName, bank_name: bankName || '', account_number: accountNumber || '',
-        account_type: accountType, region_id: regionId || null, distributor_id: accountDistributorId, supplier_id: null,
+        account_type: accountType, region_id: regionId || null, distributor_id: accountDistributorId,
+        supplier_id: accountType === 'SUPPLIER_REBATE' ? supplierId : null,
         usage_note: usageNote || '', sort_order: sortOrder || 0, status: 1
       }, { transaction });
+      if (accountType === 'SUPPLIER_REBATE' && initialAmount > 0) {
+        const postingId = generateUUID();
+        const postingNo = businessNo('RPO');
+        const receiptId = generateUUID();
+        const today = new Date().toISOString().slice(0, 10);
+        const userName = user.name || user.phone || '';
+        const remark = `新增返利账户${accountName}期初返利`;
+        const latest = await SupplierRebate.findOne({
+          where: { supplier_id: supplierId },
+          order: [['create_time', 'DESC'], ['rebate_id', 'DESC']],
+          transaction,
+          lock: transaction.LOCK.UPDATE
+        });
+        const balance = money(latest?.balance) + initialAmount;
+        await RebatePostingOrder.create({
+          posting_id: postingId, posting_no: postingNo, supplier_id: supplierId, supplier_name: supplier.name,
+          source_type: 'ACCOUNT_OPENING', source_id: accountId, source_no: accountName, posting_date: today,
+          amount: initialAmount, matched_amount: 0, status: 'UNMATCHED', rebate_id: receiptId,
+          create_staff_id: user.staffId || null, create_user: userName, remark
+        }, { transaction });
+        await SupplierRebate.create({
+          rebate_id: receiptId, supplier_id: supplierId, supplier_name: supplier.name, type: 'credit',
+          amount: initialAmount, balance, related_no: postingNo, remark, status: 'active',
+          source_type: 'account_opening', source_id: accountId, create_user: userName
+        }, { transaction });
+        await SettlementAccountTransaction.create({
+          transaction_id: generateUUID(), account_id: accountId, type: 'income', amount: initialAmount,
+          balance_after: initialAmount, description: '新增返利账户计入返利池', related_ref: postingNo, create_user: userName
+        }, { transaction });
+        await ResourceSettlement.create({
+          settlement_id: generateUUID(), settlement_no: businessNo('RST'), source_type: 'REBATE_RECEIPT',
+          source_id: postingId, sn_id: null, sn_code: null, product_id: null, resource_type: 'MANUAL_REBATE',
+          counterparty_id: supplierId, counterparty_name: supplier.name, amount: initialAmount, matched_amount: 0,
+          status: 'PENDING', target_account_id: accountId, create_staff_id: user.staffId || null,
+          create_user: userName, remark: '返利账户新增收款，待在返利下账页面勾稽'
+        }, { transaction });
+      }
     });
     ctx.body = { code: 0, message: '创建成功' };
   } catch (error) {

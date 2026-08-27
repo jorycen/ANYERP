@@ -591,6 +591,7 @@
         <el-table-column prop="sort_order" label="排序" width="60" />
         <el-table-column prop="account_name" label="账号名称" min-width="160" />
         <el-table-column label="账户类型" width="120"><template #default="{row}">{{ accountTypeText(row.account_type) }}</template></el-table-column>
+        <el-table-column label="供应商" width="140"><template #default="{row}">{{ supplierOptions.find(item => String(item.supplier_id) === String(row.supplier_id))?.name || '-' }}</template></el-table-column>
         <el-table-column label="所属经销商" width="130"><template #default="{row}">{{ distributorOptions.find(item => String(item.distributor_id) === String(row.distributor_id))?.name || '共享/系统级' }}</template></el-table-column>
         <el-table-column label="所属区域" width="110"><template #default="{row}">{{ row.Region?.name || '公司级' }}</template></el-table-column>
         <el-table-column prop="bank_name" label="开户行" width="140" />
@@ -611,7 +612,16 @@
             <el-input v-model="saForm.accountName" placeholder="请输入账号名称" />
           </el-form-item>
           <el-form-item label="账户类型" required>
-            <el-select v-model="saForm.accountType" style="width:100%"><el-option label="资金账户" value="FUND" /><el-option label="政策补贴应收" value="POLICY_RECEIVABLE" /><el-option label="Care可用金" value="CARE_CREDIT" /></el-select>
+            <el-select v-model="saForm.accountType" style="width:100%"><el-option label="资金账户" value="FUND" /><el-option label="政策补贴应收" value="POLICY_RECEIVABLE" /><el-option label="Care可用金" value="CARE_CREDIT" /><el-option label="返利账户" value="SUPPLIER_REBATE" /></el-select>
+          </el-form-item>
+          <el-form-item v-if="saForm.accountType === 'SUPPLIER_REBATE'" label="供应商" required>
+            <el-select v-model="saForm.supplierId" clearable filterable style="width:100%" placeholder="请选择返利账户对应供应商">
+              <el-option v-for="item in supplierOptions" :key="item.supplier_id" :label="item.name" :value="item.supplier_id" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="saForm.accountType === 'SUPPLIER_REBATE' && !editingSaId" label="新增返利金额">
+            <el-input-number v-model="saForm.openingAmount" :min="0" :precision="2" :step="1000" style="width:100%" />
+            <div class="form-tip">金额将计入返利池，并生成返利收款待下账单。</div>
           </el-form-item>
           <el-form-item label="所属经销商" :required="saForm.accountType === 'FUND'">
             <el-select v-model="saForm.distributorId" clearable filterable style="width:100%" placeholder="资金账户必须选择经销商；其他账户可共享">
@@ -868,6 +878,7 @@ const menuReorderSaving = ref(false)
 const stores = ref([])
 const regions = ref([])
 const distributorOptions = ref([])
+const supplierOptions = ref([])
 const locationData = ref([])
 const locationLoading = ref(false)
 const assignableStores = ref([])
@@ -1005,6 +1016,7 @@ onMounted(() => {
   loadMenus()
   loadStores()
   loadRegions()
+  loadSuppliers()
   loadCustomerSources()
   loadResourceCategories()
   loadGoodsTypes()
@@ -1444,6 +1456,13 @@ const handleRoleMenus = async (row) => {
   } catch (err) {
     ElMessage.error(err.response?.data?.message || '加载角色权限失败')
   }
+}
+
+const loadSuppliers = async () => {
+  try {
+    const res = await api.getSupplierList({ page: 1, pageSize: 500 })
+    if (res.code === 0) supplierOptions.value = res.data?.list || res.data || []
+  } catch (err) { console.error('Failed to load suppliers') }
 }
 
 const handleUserSubmit = async () => {
@@ -1941,8 +1960,8 @@ const saFormDialogVisible = ref(false)
 const settlementAccountData = ref([])
 const saDialogTitle = ref('新增结算账号')
 const editingSaId = ref(null)
-const saForm = reactive({ accountName: '', accountType: 'FUND', distributorId: '', regionId: '', bankName: '', accountNumber: '', usageNote: '', sortOrder: 0 })
-const accountTypeText = value => ({ FUND:'资金账户', POLICY_RECEIVABLE:'政策补贴应收', CARE_CREDIT:'Care可用金' }[value] || '资金账户')
+const saForm = reactive({ accountName: '', accountType: 'FUND', supplierId: '', openingAmount: 0, distributorId: '', regionId: '', bankName: '', accountNumber: '', usageNote: '', sortOrder: 0 })
+const accountTypeText = value => ({ FUND:'资金账户', POLICY_RECEIVABLE:'政策补贴应收', CARE_CREDIT:'Care可用金', SUPPLIER_REBATE:'返利账户' }[value] || '资金账户')
 
 const openSaMgmtDialog = async () => {
   saMgmtDialogVisible.value = true
@@ -1968,6 +1987,8 @@ const openSettlementAccountDialog = (row) => {
     saForm.bankName = row.bank_name
     saForm.accountNumber = row.account_number
     saForm.accountType = row.account_type || 'FUND'
+    saForm.supplierId = row.supplier_id || ''
+    saForm.openingAmount = 0
     saForm.distributorId = row.distributor_id || ''
     saForm.regionId = row.region_id || row.Region?.region_id || ''
     saForm.usageNote = row.usage_note || ''
@@ -1979,6 +2000,8 @@ const openSettlementAccountDialog = (row) => {
     saForm.bankName = ''
     saForm.accountNumber = ''
     saForm.accountType = 'FUND'
+    saForm.supplierId = ''
+    saForm.openingAmount = 0
     saForm.distributorId = ''
     saForm.regionId = ''
     saForm.usageNote = ''
@@ -1993,7 +2016,18 @@ const handleSaSubmit = async () => {
   submitLoading.value = true
   try {
     let res
-    const data = { accountName: saForm.accountName, accountType: saForm.accountType, distributorId: saForm.distributorId || null, regionId: saForm.regionId || null, bankName: saForm.bankName, accountNumber: saForm.accountNumber, usageNote: saForm.usageNote, sortOrder: saForm.sortOrder }
+    const data = {
+      accountName: saForm.accountName,
+      accountType: saForm.accountType,
+      supplierId: saForm.accountType === 'SUPPLIER_REBATE' ? saForm.supplierId || null : null,
+      openingAmount: !editingSaId.value && saForm.accountType === 'SUPPLIER_REBATE' ? Number(saForm.openingAmount || 0) : 0,
+      distributorId: saForm.distributorId || null,
+      regionId: saForm.regionId || null,
+      bankName: saForm.bankName,
+      accountNumber: saForm.accountNumber,
+      usageNote: saForm.usageNote,
+      sortOrder: saForm.sortOrder
+    }
     if (editingSaId.value) {
       res = await api.updateSettlementAccount(editingSaId.value, data)
     } else {
@@ -2049,6 +2083,8 @@ const saveSaSort = async () => {
 const resetSaForm = () => {
   saForm.accountName = ''
   saForm.accountType = 'FUND'
+  saForm.supplierId = ''
+  saForm.openingAmount = 0
   saForm.distributorId = ''
   saForm.regionId = ''
   saForm.bankName = ''

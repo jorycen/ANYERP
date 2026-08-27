@@ -2,6 +2,7 @@
   <div class="rebate-settlement">
     <div class="filter-bar">
       <el-button type="primary" @click="openCreateDialog">新增待下账返利</el-button>
+      <el-button type="success" :disabled="selectedRows.length === 0" @click="openBatchReconcile">批量核销</el-button>
       <el-date-picker
         v-model="query.dateRange"
         type="daterange"
@@ -37,7 +38,12 @@
       class="page-alert"
     />
 
-    <el-table :data="rows" border stripe v-loading="loading">
+    <el-table :data="rows" border stripe v-loading="loading" @selection-change="handleSelectionChange">
+      <el-table-column
+        type="selection"
+        width="50"
+        :selectable="isBatchSelectable"
+      />
       <el-table-column prop="settlement_no" label="下账单号" min-width="185" fixed />
       <el-table-column label="创建时间" width="165">
         <template #default="{ row }">{{ formatDateTime(row.create_time) }}</template>
@@ -149,14 +155,23 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="reconcileVisible" title="关联返利上账单核销" width="880px">
+    <el-dialog v-model="reconcileVisible" :title="reconcileMode === 'batch' ? '批量关联返利上账单核销' : '关联返利上账单核销'" width="880px">
       <el-alert
-        :title="`下账单 ${currentSettlement?.settlement_no || ''} 剩余待核销 ¥${money(currentRemaining)}`"
+        :title="reconcileMode === 'batch'
+          ? `已选 ${selectedSettlements.length} 笔下账单，合计剩余待核销 ¥${money(selectedRemainingTotal)}`
+          : `下账单 ${currentSettlement?.settlement_no || ''} 剩余待核销 ¥${money(currentRemaining)}`"
         type="warning"
         :closable="false"
         show-icon
         class="page-alert"
       />
+      <el-table v-if="reconcileMode === 'batch'" :data="selectedSettlements" border stripe max-height="180" class="selected-settlements">
+        <el-table-column prop="settlement_no" label="下账单号" min-width="190" />
+        <el-table-column prop="counterparty_name" label="供应商" min-width="140" />
+        <el-table-column label="剩余待核销" width="140" align="right">
+          <template #default="{ row }">¥{{ money(remainingAmount(row)) }}</template>
+        </el-table-column>
+      </el-table>
       <el-table :data="postingOrders" border stripe max-height="430" empty-text="该供应商暂无可核销的返利上账单">
         <el-table-column prop="posting_no" label="上账单号" min-width="190" />
         <el-table-column prop="posting_date" label="上账日期" width="115" />
@@ -183,7 +198,7 @@
       </el-table>
       <div class="allocation-summary">
         本次核销合计：<strong>¥{{ money(allocationTotal) }}</strong>
-        <span>核销后下账单剩余：¥{{ money(Math.max(0, currentRemaining - allocationTotal)) }}</span>
+        <span>{{ reconcileMode === 'batch' ? '核销后所选下账单合计剩余' : '核销后下账单剩余' }}：¥{{ money(Math.max(0, (reconcileMode === 'batch' ? selectedRemainingTotal : currentRemaining) - allocationTotal)) }}</span>
       </div>
       <template #footer>
         <el-button @click="reconcileVisible = false">取消</el-button>
@@ -208,12 +223,16 @@ const suppliers = ref([])
 const resourceOptions = ref([])
 const createVisible = ref(false)
 const reconcileVisible = ref(false)
+const reconcileMode = ref('single')
 const currentSettlement = ref(null)
+const selectedSettlements = ref([])
+const selectedRows = ref([])
 const postingOrders = ref([])
 
 const sourceOptions = [
-  { label: '手工返利', value: 'MANUAL_REBATE' },
-  { label: '厂家返利', value: 'MANUFACTURER_REBATE' },
+  { label: '手工新增', value: 'MANUAL_REBATE' },
+  { label: '返利收款', value: 'REBATE_RECEIPT' },
+  { label: '自动生成', value: 'MANUFACTURER_REBATE' },
   { label: '销售使用', value: 'SALE_USE' },
   { label: '公司套回', value: 'COMPANY_CLAIM' }
 ]
@@ -240,6 +259,7 @@ const form = reactive({ supplierId: '', amount: 0, remark: '' })
 const money = value => Number(value || 0).toFixed(2)
 const remainingAmount = row => Math.max(0, Number(row?.amount || 0) - Number(row?.matched_amount || 0))
 const currentRemaining = computed(() => remainingAmount(currentSettlement.value))
+const selectedRemainingTotal = computed(() => selectedSettlements.value.reduce((sum, row) => sum + remainingAmount(row), 0))
 const allocationTotal = computed(() => postingOrders.value.reduce(
   (sum, row) => sum + Number(row.allocationAmount || 0),
   0
@@ -259,6 +279,9 @@ const statusType = value => ({
   REVERSED: 'danger'
 }[value] || 'info')
 const formatDateTime = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
+const isBatchSelectable = row => ['PENDING', 'PARTIALLY_SETTLED'].includes(row.status)
+  && Boolean(row.counterparty_id)
+  && ['MANUAL_REBATE', 'MANUFACTURER_REBATE', 'REBATE_RECEIPT'].includes(row.source_type)
 
 async function loadAuxiliary() {
   try {
@@ -326,6 +349,10 @@ function resetForm() {
   Object.assign(form, { supplierId: '', amount: 0, remark: '' })
 }
 
+function handleSelectionChange(selection) {
+  selectedRows.value = selection
+}
+
 function openCreateDialog() {
   resetForm()
   createVisible.value = true
@@ -349,7 +376,9 @@ async function createManualRebate() {
 }
 
 async function openReconcile(row) {
+  reconcileMode.value = 'single'
   currentSettlement.value = row
+  selectedSettlements.value = [row]
   postingOrders.value = []
   try {
     const res = await api.getRebatePostingOrders({
@@ -365,7 +394,26 @@ async function openReconcile(row) {
   }
 }
 
+async function openBatchReconcile() {
+  if (selectedRows.value.length === 0) return ElMessage.warning('请先选择待核销返利下账单')
+  const supplierIds = [...new Set(selectedRows.value.map(row => String(row.counterparty_id || '')))]
+  if (supplierIds.length !== 1 || !supplierIds[0]) return ElMessage.warning('批量核销必须选择同一供应商的返利下账单')
+  if (selectedRows.value.some(row => !isBatchSelectable(row))) return ElMessage.warning('所选记录包含不可批量核销的下账单')
+  reconcileMode.value = 'batch'
+  currentSettlement.value = null
+  selectedSettlements.value = [...selectedRows.value].sort((left, right) => new Date(left.create_time || 0) - new Date(right.create_time || 0))
+  postingOrders.value = []
+  try {
+    const res = await api.getRebatePostingOrders({ supplierId: supplierIds[0], unmatchedOnly: 1, page: 1, pageSize: 500 })
+    postingOrders.value = (res.data?.list || []).map(item => ({ ...item, allocationAmount: 0 }))
+    reconcileVisible.value = true
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '加载可核销返利上账单失败')
+  }
+}
+
 async function submitReconciliation() {
+  if (reconcileMode.value === 'batch') return submitBatchReconciliation()
   const allocations = postingOrders.value
     .filter(item => Number(item.allocationAmount || 0) > 0)
     .map(item => ({ postingId: item.posting_id, amount: Number(item.allocationAmount) }))
@@ -382,6 +430,56 @@ async function submitReconciliation() {
     emit('changed')
   } catch (error) {
     ElMessage.error(error.response?.data?.message || '返利核销失败')
+  } finally {
+    reconciling.value = false
+  }
+}
+
+function buildBatchItems() {
+  const remainingBySettlement = selectedSettlements.value.map(row => ({
+    settlementId: row.settlement_id,
+    remainingCents: Math.round(remainingAmount(row) * 100),
+    allocations: []
+  }))
+  const postingAllocations = postingOrders.value
+    .map(row => ({ postingId: row.posting_id, remainingCents: Math.round(Number(row.allocationAmount || 0) * 100) }))
+    .filter(row => row.remainingCents > 0)
+  let settlementIndex = 0
+  for (const posting of postingAllocations) {
+    let postingRemaining = posting.remainingCents
+    while (postingRemaining > 0 && settlementIndex < remainingBySettlement.length) {
+      const settlement = remainingBySettlement[settlementIndex]
+      if (settlement.remainingCents <= 0) {
+        settlementIndex += 1
+        continue
+      }
+      const amountCents = Math.min(postingRemaining, settlement.remainingCents)
+      settlement.allocations.push({ postingId: posting.postingId, amount: amountCents / 100 })
+      settlement.remainingCents -= amountCents
+      postingRemaining -= amountCents
+    }
+  }
+  return remainingBySettlement.filter(item => item.allocations.length > 0).map(item => ({
+    settlementId: item.settlementId,
+    allocations: item.allocations
+  }))
+}
+
+async function submitBatchReconciliation() {
+  if (allocationTotal.value <= 0) return ElMessage.warning('请至少填写一笔核销金额')
+  if (allocationTotal.value > selectedRemainingTotal.value + 0.0001) return ElMessage.warning('本次核销金额不能超过所选下账单剩余金额')
+  const items = buildBatchItems()
+  if (items.length === 0) return ElMessage.warning('请至少填写一笔核销金额')
+  reconciling.value = true
+  try {
+    const res = await api.batchSettleRebateResources({ items })
+    ElMessage.success(res.data?.message || res.message || '批量返利核销成功')
+    reconcileVisible.value = false
+    selectedRows.value = []
+    await load()
+    emit('changed')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '批量返利核销失败')
   } finally {
     reconciling.value = false
   }
@@ -440,6 +538,9 @@ onMounted(async () => {
   justify-content: flex-end;
   gap: 24px;
   margin-top: 14px;
+}
+.selected-settlements {
+  margin-bottom: 14px;
 }
 .el-pagination {
   margin-top: 14px;
