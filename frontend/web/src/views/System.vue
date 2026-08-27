@@ -433,7 +433,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="所属经销商" required>
-          <el-select v-model="userForm.distributorIds" multiple filterable style="width: 100%" :disabled="!isOperatorBoss" placeholder="请选择所属经销商">
+          <el-select v-model="userForm.distributorIds" multiple filterable style="width: 100%" :disabled="!canManageUserDistributors" placeholder="请选择所属经销商">
             <el-option v-for="item in distributorOptions" :key="item.distributor_id" :label="item.name" :value="item.distributor_id" />
           </el-select>
           <div class="form-tip">店长/店员只能选择一个经销商；采购、会计、出纳、BOSS等中台账号可选择多个。库存可跨区域查看，但采购、应付、结算和付款账户仍按经销商隔离。</div>
@@ -919,9 +919,13 @@ const dialogTitle = ref('新增用户')
 const roleDialogTitle = ref('新增角色')
 const currentUser = ref(null)
 const operatorUser = getUserInfo()
-const isOperatorBoss = computed(() => {
-  const roles = Array.isArray(operatorUser.roles) ? operatorUser.roles : [operatorUser.roleCode]
-  return roles.includes('boss')
+const canManageUserDistributors = computed(() => {
+  const roles = Array.isArray(operatorUser.roles) && operatorUser.roles.length > 0
+    ? operatorUser.roles
+    : [operatorUser.roleCode]
+  return roles
+    .map(role => String(role || '').trim().toLowerCase())
+    .some(role => ['admin', 'boss'].includes(role))
 })
 const currentRole = ref(null)
 const dialogStoreIds = ref([])
