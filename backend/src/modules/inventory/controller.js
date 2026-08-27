@@ -2627,7 +2627,7 @@ function inboundItemDisplayQuantity(item, inboundStatus) {
 
 async function getInboundList(ctx) {
   try {
-    const { storeId, status, page = 1, pageSize = 20 } = ctx.query;
+    const { storeId, status, inboundNo, page = 1, pageSize = 20 } = ctx.query;
 
     const where = { [Op.and]: [buildNonTransferInboundCondition()] };
     if (storeId) {
@@ -2638,6 +2638,7 @@ async function getInboundList(ctx) {
       where.store_id = storeId;
     } else if (!ctx.state.user.accessibleStoreIds.includes('*')) where.store_id = ctx.state.user.accessibleStoreIds;
     if (status) where.status = status;
+    if (inboundNo) where.inbound_no = { [Op.like]: `%${String(inboundNo).trim()}%` };
 
     const { count, rows } = await Inbound.findAndCountAll({
       where,
@@ -5403,11 +5404,12 @@ async function getReturnStockWithItems(returnId, transaction) {
  * 查询退库申请列表
  */
 async function getReturnList(ctx) {
-  const { status, inboundId, returnId, page = 1, pageSize = 20 } = ctx.query;
+  const { status, inboundId, returnId, returnNo, page = 1, pageSize = 20 } = ctx.query;
   const where = {};
   if (status) where.status = status;
   if (inboundId) where.inbound_id = inboundId;
   if (returnId) where.return_id = returnId;
+  if (returnNo) where.return_no = { [Op.like]: `%${String(returnNo).trim()}%` };
   const traceReturnLookup = returnId && String(ctx.query.trace || '') === '1';
   if (!ctx.state.user.accessibleStoreIds.includes('*') && !traceReturnLookup) {
     where.store_id = ctx.state.user.accessibleStoreIds;

@@ -371,6 +371,13 @@
         <!-- 入库单管理 -->
         <el-tab-pane label="入库单管理" name="inbound">
           <div class="filter-bar">
+            <el-input
+              v-model="inboundQuery.inboundNo"
+              placeholder="入库单号"
+              clearable
+              style="width: 180px"
+              @keyup.enter="searchInboundByNo"
+            />
             <el-select v-model="inboundQuery.status" placeholder="状态" clearable style="width: 120px" @change="loadInboundList">
               <el-option label="全部" value="" />
               <el-option label="待入库" value="pending" />
@@ -383,6 +390,7 @@
               <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
             </el-select>
             <el-button type="primary" @click="loadInboundList">查询</el-button>
+            <el-button type="primary" plain @click="searchInboundByNo">按单号查找</el-button>
           </div>
 
           <el-table :data="inboundList" stripe border>
@@ -423,6 +431,13 @@
           <div class="transfer-section mt-30">
             <div class="section-title">退库申请</div>
             <div class="filter-bar">
+              <el-input
+                v-model="returnQuery.returnNo"
+                placeholder="退库单号"
+                clearable
+                style="width: 180px"
+                @keyup.enter="searchReturnByNo"
+              />
               <el-select v-model="returnQuery.status" placeholder="状态" clearable style="width: 140px" @change="loadReturnList">
                 <el-option label="全部" value="" />
                 <el-option label="待审批" value="pending" />
@@ -431,6 +446,7 @@
                 <el-option label="已退库" value="completed" />
               </el-select>
               <el-button @click="loadReturnList">刷新</el-button>
+              <el-button type="primary" plain @click="searchReturnByNo">按单号查找</el-button>
             </div>
             <el-table :data="returnList" stripe border>
               <el-table-column prop="return_no" label="退库单号" width="190" />
@@ -1840,6 +1856,7 @@ const inboundTotal = ref(0)
 const inboundQuery = reactive({
   page: 1,
   pageSize: 20,
+  inboundNo: '',
   status: '',
   storeId: ''
 })
@@ -1850,6 +1867,7 @@ const returnQuery = reactive({
   page: 1,
   pageSize: 20,
   status: '',
+  returnNo: '',
   returnId: ''
 })
 
@@ -2706,6 +2724,11 @@ const loadInboundList = async () => {
   }
 }
 
+const searchInboundByNo = () => {
+  inboundQuery.page = 1
+  loadInboundList()
+}
+
 const isTransferInboundRow = row => String(row?.source_type || '').trim().toUpperCase() === 'TRANSFER'
 
 const loadReturnList = async ({ trace = false } = {}) => {
@@ -2718,6 +2741,11 @@ const loadReturnList = async ({ trace = false } = {}) => {
   } catch (err) {
     ElMessage.error('加载退库申请失败')
   }
+}
+
+const searchReturnByNo = () => {
+  returnQuery.page = 1
+  loadReturnList()
 }
 
 const viewInboundDetail = async (row, { snTrace = false } = {}) => {
