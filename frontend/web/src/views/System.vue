@@ -365,10 +365,18 @@
             <div style="flex: 1;">
               <div v-if="cfSelectedCatId" style="margin-bottom: 8px;">
                 <strong>当前分类：{{ cfSelectedCatName }}</strong>
-                <el-button type="primary" size="small" style="float: right;" @click="cfAddField">新增字段</el-button>
+                <el-button v-if="cfIsLeaf" type="primary" size="small" style="float: right;" @click="cfAddField">新增字段</el-button>
               </div>
+              <el-alert
+                v-if="cfSelectedCatId && !cfIsLeaf"
+                title="商品字段只能配置在第四级最后一级分类，请在左侧选择四级分类。"
+                type="info"
+                :closable="false"
+                show-icon
+                style="margin-bottom: 12px;"
+              />
               <el-empty v-if="!cfSelectedCatId" description="请先在左侧选择一个分类" />
-              <el-table v-else :data="cfFields" stripe border size="small">
+              <el-table v-else-if="cfIsLeaf" :data="cfFields" stripe border size="small">
                 <el-table-column prop="field_label" label="字段名" width="100" />
                 <el-table-column prop="field_key" label="标识" width="100" />
                 <el-table-column prop="field_type" label="类型" width="80">
@@ -393,7 +401,7 @@
                   </template>
                 </el-table-column>
               </el-table>
-              <div v-if="cfSelectedCatId && cfFields.length > 0" style="margin-top: 12px;">
+              <div v-if="cfSelectedCatId && cfIsLeaf && cfFields.length > 0" style="margin-top: 12px;">
                 <el-button type="success" :loading="cfSaving" @click="cfSave">保存配置</el-button>
               </div>
             </div>
@@ -2291,6 +2299,8 @@ const resetEtForm = () => {
 const cfTreeRef = ref(null)
 const cfSelectedCatId = ref('')
 const cfSelectedCatName = ref('')
+const cfSelectedCatLevel = ref(0)
+const cfIsLeaf = computed(() => Number(cfSelectedCatLevel.value) === 4)
 const cfSearch = ref('')
 const cfCategoryTree = ref([])
 const cfFields = ref([])
@@ -2318,11 +2328,16 @@ const cfFilterNode = (value, data) => {
 const cfNodeClick = (data) => {
   cfSelectedCatId.value = data.category_id
   cfSelectedCatName.value = data.name
-  cfLoadCategoryFields()
+  cfSelectedCatLevel.value = Number(data.level || 0)
+  if (cfIsLeaf.value) {
+    cfLoadCategoryFields()
+  } else {
+    cfFields.value = []
+  }
 }
 
 const cfLoadCategoryFields = async () => {
-  if (!cfSelectedCatId.value) return
+  if (!cfSelectedCatId.value || !cfIsLeaf.value) return
   try {
     const res = await api.getCategoryFields(cfSelectedCatId.value)
     if (res.code === 0) cfFields.value = res.data || []
@@ -2330,6 +2345,10 @@ const cfLoadCategoryFields = async () => {
 }
 
 const cfAddField = () => {
+  if (!cfIsLeaf.value) {
+    ElMessage.warning('商品字段只能配置在第四级最后一级分类')
+    return
+  }
   cfDialogTitle.value = '新增字段'
   cfEditingIndex.value = -1
   cfFieldForm.field_label = ''
@@ -2409,7 +2428,10 @@ const cfMoveField = (index, dir) => {
 }
 
 const cfSave = async () => {
-  if (!cfSelectedCatId.value) return
+  if (!cfSelectedCatId.value || !cfIsLeaf.value) {
+    ElMessage.warning('请先选择第四级最后一级分类')
+    return
+  }
   cfSaving.value = true
   try {
     const data = {

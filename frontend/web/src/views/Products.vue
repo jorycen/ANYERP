@@ -184,7 +184,8 @@
                         <div class="cat-actions">
                           <el-button link type="primary" size="small" :disabled="level3Index === 0" @click="handleMoveCategory(level3, level2.children, level3Index, -1)">上移</el-button>
                           <el-button link type="primary" size="small" :disabled="level3Index === level2.children.length - 1" @click="handleMoveCategory(level3, level2.children, level3Index, 1)">下移</el-button>
-                          <el-button link type="primary" size="small" @click="handleEditCategory(level3)">编辑</el-button>
+                        <el-button link type="primary" size="small" @click="handleAddCategory(level3)">添加子分类</el-button>
+                        <el-button link type="primary" size="small" @click="handleEditCategory(level3)">编辑</el-button>
                           <span class="finance-category-toggle">
                             <span>展示在财务页面</span>
                             <el-switch
@@ -194,6 +195,27 @@
                             />
                           </span>
                           <el-button link type="danger" size="small" @click="handleDeleteCategory(level3)">删除</el-button>
+                        </div>
+                      </div>
+                      <div v-if="level3.children && level3.children.length" class="sub-categories">
+                        <div v-for="(level4, level4Index) in level3.children" :key="level4.category_id" class="category-row level-4">
+                          <el-icon><Folder /></el-icon>
+                          <span class="cat-name">{{ level4.name }}</span>
+                          <span class="cat-level">四级</span>
+                          <div class="cat-actions">
+                            <el-button link type="primary" size="small" :disabled="level4Index === 0" @click="handleMoveCategory(level4, level3.children, level4Index, -1)">上移</el-button>
+                            <el-button link type="primary" size="small" :disabled="level4Index === level3.children.length - 1" @click="handleMoveCategory(level4, level3.children, level4Index, 1)">下移</el-button>
+                            <el-button link type="primary" size="small" @click="handleEditCategory(level4)">编辑</el-button>
+                            <span class="finance-category-toggle">
+                              <span>展示在财务页面</span>
+                              <el-switch
+                                :model-value="Number(level4.show_in_finance) === 1"
+                                :loading="categoryFinanceLoadingId === level4.category_id"
+                                @change="value => toggleCategoryFinance(level4, value)"
+                              />
+                            </span>
+                            <el-button link type="danger" size="small" @click="handleDeleteCategory(level4)">删除</el-button>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -346,9 +368,9 @@
             <el-form-item label="商品分类" required>
               <el-tree-select
                 v-model="productForm.categoryId"
-                :data="categoryTree"
-                :props="{ label: 'name', value: 'category_id', children: 'children' }"
-                placeholder="请选择分类"
+                :data="productCategoryTree"
+                :props="{ label: 'name', value: 'category_id', children: 'children', disabled: 'disabled' }"
+                placeholder="请选择第四级分类"
                 clearable
                 check-strictly
                 style="width: 100%"
@@ -358,7 +380,7 @@
           </el-col>
         </el-row>
 
-        <!-- 分类动态字段 - 仅在分类配置了额外字段时显示 -->
+        <!-- 第四级分类动态字段 - 仅在分类配置了额外字段时显示 -->
         <div v-if="categoryFields.length > 0" style="margin-bottom: 12px; padding: 10px; background: #f5f7fa; border-radius: 4px;">
           <el-divider content-position="left" style="margin: 0 0 10px 0;">{{ categoryFieldCatName }} 补充字段</el-divider>
           <el-row :gutter="16">
@@ -493,7 +515,7 @@
     <!-- 批量导入对话框 -->
     <el-dialog v-model="importDialogVisible" title="批量导入商品" width="700px">
       <div class="import-tips">
-        <p>下载模板，按模板格式填写后上传。分类字段列名需与"商品字段管理"中配置的<strong>字段名</strong>（如：品牌、系列）一致，系统会自动匹配并拼装商品名称。</p>
+        <p>下载模板，按模板格式填写后上传。新建商品的“商品分类”必须填写完整的四级路径（一级/二级/三级/四级）；分类字段列名需与“商品字段管理”中配置的<strong>字段名</strong>一致，系统会自动匹配并拼装商品名称。</p>
         <p style="color: #e6a23c;">也可以直接填写"商品名称"列，系统优先使用该值。</p>
         <p style="color: #409eff;">提交后先校验文件格式和数据；大文件会进入后台处理，请根据任务状态查看结果。</p>
         <el-button type="primary" size="small" @click="downloadTemplate">下载导入模板</el-button>
@@ -685,6 +707,7 @@ const batchDeleteLoading = ref(false)
 const total = ref(0)
 const queryParams = reactive({ page: 1, pageSize: 20, keyword: '', categoryId: '' })
 const categoryTree = ref([])
+const originalCategoryId = ref('')
 const canBatchDeleteProducts = currentRoleCodes.includes('admin') || currentRoleCodes.includes('boss')
 const canReviewProductApplications = ['finance', 'purchaser', 'admin', 'boss'].some(role => currentRoleCodes.includes(role))
 const productApplications = ref([])
@@ -727,6 +750,30 @@ const productForm = reactive({
   status: 1,
   barcodes: [],
   attributes: {}
+})
+
+function findCategoryNode(tree, categoryId) {
+  for (const node of tree || []) {
+    if (String(node.category_id) === String(categoryId)) return node
+    const found = findCategoryNode(node.children, categoryId)
+    if (found) return found
+  }
+  return null
+}
+
+function isLeafCategory(node) {
+  return Number(node?.level) === 4 && !(node.children || []).some(child => Number(child.status ?? 1) === 1)
+}
+
+const productCategoryTree = computed(() => {
+  const currentId = String(productForm.categoryId || '')
+  const editingLegacyId = String(originalCategoryId.value || '')
+  const decorate = (nodes) => (nodes || []).map(node => ({
+    ...node,
+    disabled: !isLeafCategory(node) && String(node.category_id) !== currentId && String(node.category_id) !== editingLegacyId,
+    children: decorate(node.children)
+  }))
+  return decorate(categoryTree.value)
 })
 
 let pnFormKeySeed = 0
@@ -806,6 +853,20 @@ function findCategoryByPath(tree, path) {
 }
 
 const onCategoryChange = async (value) => {
+  if (!value) {
+    productForm.attributes = {}
+    categoryFields.value = []
+    categoryFieldCatName.value = ''
+    return
+  }
+  const selectedCategory = findCategoryNode(categoryTree.value, value)
+  const isEditing = Boolean(productForm.productId)
+  const isLegacySelection = isEditing && String(value) === String(originalCategoryId.value)
+  if (!isLeafCategory(selectedCategory) && (!isEditing || !isLegacySelection)) {
+    ElMessage.warning('新建商品必须选择第四级最后一级分类')
+    productForm.categoryId = originalCategoryId.value || ''
+    return
+  }
   productForm.attributes = {}
   categoryFields.value = []
   categoryFieldCatName.value = ''
@@ -887,6 +948,7 @@ const handleEdit = async (row) => {
   productForm.pnCode = row.manufacturer_codes?.[0] || String(row.manufacturer_code || '').split(',')[0].trim()
   productForm.pns = []
   productForm.categoryId = ''
+  originalCategoryId.value = ''
   productForm.config = row.config || ''
   productForm.brand = row.brand || ''
   productForm.series = row.series || ''
@@ -932,6 +994,7 @@ const handleEdit = async (row) => {
       productForm.categoryId = catId
     }
   }
+  originalCategoryId.value = productForm.categoryId
 
   dialogVisible.value = true
 
@@ -1038,6 +1101,7 @@ const resetForm = () => {
   productForm.pnCode = ''
   productForm.pns = []
   productForm.categoryId = ''
+  originalCategoryId.value = ''
   productForm.config = ''
   productForm.brand = ''
   productForm.series = ''
@@ -1092,11 +1156,16 @@ const restoreProductDraft = () => {
 
 const handleSubmit = async () => {
   const finalName = String(computedProductName.value || productForm.name || '').trim()
-  if (!productForm.categoryId) { ElMessage.warning('请选择商品分类'); return }
+  if (!productForm.categoryId) { ElMessage.warning('请选择第四级商品分类'); return }
+  const selectedCategory = findCategoryNode(categoryTree.value, productForm.categoryId)
+  const isEditing = Boolean(productForm.productId)
+  const isLegacySelection = isEditing && String(productForm.categoryId) === String(originalCategoryId.value)
+  if (!isLeafCategory(selectedCategory) && (!isEditing || !isLegacySelection)) {
+    ElMessage.warning('新建商品必须选择第四级最后一级分类'); return
+  }
   const missingField = categoryFields.value.find(field => Number(field.required) === 1 && !String(productForm.attributes[field.field_key] ?? '').trim())
   if (missingField) { ElMessage.warning(`请填写${missingField.field_label}`); return }
   if (!finalName) { ElMessage.warning('请填写补充字段'); return }
-  const isEditing = Boolean(productForm.productId)
   if (isEditing && pnLoadFailed.value) {
     ElMessage.warning('PN主数据尚未加载成功，请刷新后重试')
     return
@@ -1181,6 +1250,10 @@ const parentCategory = ref(null)
 const categoryForm = reactive({ name: '', sortOrder: 0 })
 
 const handleAddCategory = (parent) => {
+  if (parent && Number(parent.level) >= 4) {
+    ElMessage.warning('分类最多支持四级')
+    return
+  }
   editingCategory.value = null; parentCategory.value = parent
   const siblingCount = parent ? (parent.children?.length || 0) : categoryTree.value.length
   categoryForm.name = ''; categoryForm.sortOrder = siblingCount
@@ -1611,7 +1684,7 @@ const clearFile = () => { importFile.value = null }
 const downloadTemplate = () => {
   const d = [{
     '商品名称': '',
-    '商品分类': '电子产品/笔记本',
+    '商品分类': '电子产品/电脑/笔记本/游戏本',
     '品牌': '',
     '系列': '',
     '型号': '',

@@ -391,6 +391,69 @@ async function resolveCategoryPath(categoryId) {
   return parts.join('/');
 }
 
+const MAX_PRODUCT_CATEGORY_LEVEL = 4;
+
+function isFourLevelCategory(category) {
+  return Number(category?.level) === MAX_PRODUCT_CATEGORY_LEVEL;
+}
+
+async function resolveFourLevelCategory(categoryId) {
+  if (!categoryId) {
+    throw Object.assign(new Error('新建商品必须选择第四级商品分类'), { status: 400 });
+  }
+
+  const category = await ProductCategory.findOne({
+    where: { category_id: categoryId, status: 1 },
+    raw: true
+  });
+  if (!category) {
+    throw Object.assign(new Error('商品分类不存在或已停用'), { status: 400 });
+  }
+  if (!isFourLevelCategory(category)) {
+    throw Object.assign(new Error('新建商品必须选择第四级商品分类'), { status: 400 });
+  }
+
+  const parts = [];
+  let currentId = categoryId;
+  while (currentId) {
+    const current = await ProductCategory.findOne({
+      where: { category_id: currentId, status: 1 },
+      raw: true
+    });
+    if (!current) {
+      throw Object.assign(new Error('商品分类不存在或已停用'), { status: 400 });
+    }
+    parts.unshift(current.name);
+    currentId = current.parent_id;
+  }
+
+  if (parts.length !== MAX_PRODUCT_CATEGORY_LEVEL) {
+    throw Object.assign(new Error('商品分类层级配置不完整，请重新选择第四级分类'), { status: 400 });
+  }
+
+  const childCount = await ProductCategory.count({
+    where: { parent_id: categoryId, status: 1 }
+  });
+  if (childCount > 0) {
+    throw Object.assign(new Error('商品只能选择最后一级分类'), { status: 400 });
+  }
+
+  return { category, path: parts.join('/') };
+}
+
+async function assertUniqueCategoryName(parentId, name, excludeCategoryId = null) {
+  const where = {
+    parent_id: parentId || null,
+    name: String(name || '').trim(),
+    status: 1
+  };
+  if (excludeCategoryId) where.category_id = { [Op.ne]: excludeCategoryId };
+  const duplicate = await ProductCategory.findOne({ where, raw: true });
+  if (duplicate) {
+    throw Object.assign(new Error('同一父级下不能创建同名分类'), { status: 400 });
+  }
+}
+
 async function findCategoryByName(categoryPath) {
   if (!categoryPath) return null;
   const cats = await ProductCategory.findAll({ where: {}, raw: true });
@@ -591,9 +654,7 @@ function hasProductApplicationValue(value) {
 }
 
 async function validateProductApplicationInput(body = {}, { finalName, parsedAttrs } = {}) {
-  if (!String(body.categoryId || '').trim()) {
-    throw Object.assign(new Error('商品分类不能为空'), { status: 400 });
-  }
+  await resolveFourLevelCategory(body.categoryId);
   if (!String(finalName || '').trim()) {
     throw Object.assign(new Error('商品名称不能为空'), { status: 400 });
   }
@@ -663,7 +724,7 @@ async function createProductRecord(body, transaction = null) {
     isUsedProduct, is_used_product
   } = body;
   const productId = generateUUID();
-  const categoryPath = categoryId ? await resolveCategoryPath(categoryId) : '';
+  const categoryPath = categoryId ? (await resolveFourLevelCategory(categoryId)).path : '';
   const { finalName, parsedAttrs } = await resolveProductApplicationName(body);
   if (!finalName) throw new Error('商品名称不能为空');
 
@@ -1217,7 +1278,7 @@ async function togglePause(ctx) {
   ctx.body = { code: 0, status: newStatus, message: newStatus === 0 ? '已暂停' : '已启用' };
 }
 
-// ===== 商品分类管理（三级树形） =====
+// ===== 商品分类管理（四级树形） =====
 
 async function getCategoryTree(ctx) {
   const categories = await ProductCategory.findAll({
@@ -1252,17 +1313,23 @@ async function createCategory(ctx) {
     if (!parent) {
       ctx.throw(400, '父级分类不存在');
     }
-    if (parent.level >= 3) {
-      ctx.throw(400, '分类最多支持三级');
+    if (parent.status !== 1) {
+      ctx.throw(400, '父级分类不存在或已停用');
+    }
+    if (parent.level >= MAX_PRODUCT_CATEGORY_LEVEL) {
+      ctx.throw(400, '分类最多支持四级');
     }
     level = parent.level + 1;
   }
+
+  const normalizedName = String(name).trim();
+  await assertUniqueCategoryName(parentId, normalizedName);
 
   const categoryId = generateUUID();
   await ProductCategory.create({
     category_id: categoryId,
     parent_id: parentId || null,
-    name,
+    name: normalizedName,
     level,
     sort_order: sortOrder
   });
@@ -1279,9 +1346,15 @@ async function updateCategory(ctx) {
     ctx.throw(404, '分类不存在');
   }
 
+  const nextName = name !== undefined ? String(name).trim() : category.name;
+  if (!nextName) ctx.throw(400, '分类名称不能为空');
+  if (nextName !== category.name) {
+    await assertUniqueCategoryName(category.parent_id, nextName, categoryId);
+  }
+
   const financeValue = showInFinance !== undefined ? showInFinance : show_in_finance;
   await category.update({
-    name: name !== undefined ? name : category.name,
+    name: nextName,
     sort_order: sortOrder !== undefined ? sortOrder : category.sort_order,
     status: status !== undefined ? status : category.status,
     show_in_finance: financeValue === undefined
@@ -2747,6 +2820,7 @@ async function searchProduct(ctx) {
 async function getCategoryFields(ctx) {
   const { categoryId } = ctx.query;
   if (!categoryId) ctx.throw(400, '请指定分类');
+  await resolveFourLevelCategory(categoryId);
 
   const fields = await ProductCategoryField.findAll({
     where: { category_id: categoryId, status: 1 },
@@ -2762,6 +2836,7 @@ async function saveCategoryFields(ctx) {
   const { categoryId, fields } = ctx.request.body;
   if (!categoryId) ctx.throw(400, '请指定分类');
   if (!Array.isArray(fields)) ctx.throw(400, '字段配置格式错误');
+  await resolveFourLevelCategory(categoryId);
 
   await ProductCategoryField.destroy({ where: { category_id: categoryId } });
 
@@ -2789,6 +2864,7 @@ async function saveCategoryFields(ctx) {
 async function getCategoryFieldConfig(ctx) {
   const { categoryId } = ctx.query;
   if (!categoryId) ctx.throw(400, '请指定分类');
+  const { category } = await resolveFourLevelCategory(categoryId);
 
   const fields = await ProductCategoryField.findAll({
     where: { category_id: categoryId, status: 1 },
@@ -2804,8 +2880,6 @@ async function getCategoryFieldConfig(ctx) {
     placeholder: f.field_placeholder || '',
     required: f.required === 1
   }));
-
-  const category = await ProductCategory.findByPk(categoryId, { raw: true });
 
   ctx.body = { code: 0, data: { fields: result, categoryName: category ? category.name : '' } };
 }
@@ -2824,7 +2898,7 @@ async function executeProductImportRows(rows) {
         console.log(`[导入调试] 第 ${rowIndex+1} 行原始数据:`, JSON.stringify(row));
       }
 
-      const categoryPath = row['商品分类'] || row['分类'] || row['category'] || '';
+      let categoryPath = row['商品分类'] || row['分类'] || row['category'] || '';
 
       // 查找分类
       let categoryId = null;
@@ -2943,13 +3017,18 @@ async function executeProductImportRows(rows) {
         }
       }
 
+      if (!product) {
+        const resolvedCategory = await resolveFourLevelCategory(categoryId);
+        categoryPath = resolvedCategory.path;
+      }
+
       // 使用事务确保数据一致性
       const transaction = await sequelize.transaction();
       try {
         // 准备更新/新增数据
         const productData = {
           name: finalName,
-          category: categoryPath || '',
+          category: categoryPath || product?.category || '',
           manufacturer_code: splitPnCodes(manufacturerCodes).join(', '),
           config: attrMap['厂商商品名称'] || attrMap['产品配置'] || attrMap['config'] || '',
           brand: cols.brand || null,
@@ -3260,6 +3339,7 @@ module.exports = {
     splitPnCodes,
     ensureProductPns,
     resolveProductApplicationPnCode,
-    hasProductApplicationValue
+    hasProductApplicationValue,
+    isFourLevelCategory
   }
 };

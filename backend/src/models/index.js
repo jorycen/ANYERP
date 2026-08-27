@@ -134,7 +134,7 @@ const Product = sequelize.define('Product', {
   product_id: { type: DataTypes.STRING(32), primaryKey: true },
   product_code: { type: DataTypes.STRING(32), unique: true, allowNull: false },
   name: { type: DataTypes.STRING(255), allowNull: false },
-  category: { type: DataTypes.STRING(512), allowNull: true, comment: '分类路径: 一级/二级/三级' },
+  category: { type: DataTypes.STRING(512), allowNull: true, comment: '分类路径: 一级/二级/三级/四级' },
   config: { type: DataTypes.STRING(512), allowNull: true, comment: '厂商商品名称' },
   manufacturer_code: { type: DataTypes.STRING(512), allowNull: true, comment: 'manufacturer code' },
   need_sn: { type: DataTypes.TINYINT(1), defaultValue: 0 },
@@ -416,7 +416,7 @@ const SnLog = sequelize.define('SnLog', {
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_SN_LOG', timestamps: false });
 
-// 商品分类（三级树形结构）
+// 商品分类（四级树形结构；商品表仍以完整路径字符串保存）
 const ProductCategory = sequelize.define('ProductCategory', {
   category_id: { type: DataTypes.STRING(32), primaryKey: true },
   parent_id: { type: DataTypes.STRING(32), allowNull: true },

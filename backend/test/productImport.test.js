@@ -42,3 +42,9 @@ test('PN比较统一为字符串并移除空格，且过滤占位值', () => {
   assert.deepEqual(_test.splitPnCodes('87 001 7165'), ['87 001 7165']);
   assert.deepEqual(_test.splitPnCodes('PN001, PN002, 无'), ['PN001', 'PN002']);
 });
+
+test('新建商品只允许选择第四级分类', () => {
+  assert.equal(_test.isFourLevelCategory({ level: 4 }), true);
+  assert.equal(_test.isFourLevelCategory({ level: 3 }), false);
+  assert.equal(_test.isFourLevelCategory(null), false);
+});
