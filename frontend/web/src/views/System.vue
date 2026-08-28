@@ -356,11 +356,28 @@
         <!-- 商品字段管理 -->
         <el-tab-pane label="商品字段管理" name="categoryField">
           <div style="display: flex; gap: 20px;">
-            <div style="width: 220px; flex-shrink: 0;">
+            <div style="width: 380px; flex-shrink: 0;">
+              <div class="cf-category-toolbar">
+                <span class="cf-category-title">商品分类</span>
+                <el-button type="primary" size="small" @click="cfAddCategory(null)">新增一级分类</el-button>
+              </div>
               <el-input v-model="cfSearch" placeholder="搜索分类" size="small" clearable style="margin-bottom: 8px;" />
               <el-tree :data="cfCategoryTree" :props="{ label: 'name', children: 'children' }"
                 node-key="category_id" highlight-current :filter-node-method="cfFilterNode"
-                ref="cfTreeRef" @node-click="cfNodeClick" style="max-height: 500px; overflow: auto;" />
+                ref="cfTreeRef" @node-click="cfNodeClick" style="max-height: 500px; overflow: auto;">
+                <template #default="{ data }">
+                  <div class="cf-category-node">
+                    <span class="cf-category-name">{{ data.name }}</span>
+                    <el-tag size="small" type="info">{{ data.level }}级</el-tag>
+                    <span class="cf-category-actions">
+                      <el-button v-if="Number(data.level) < 4" link type="primary" size="small" @click.stop="cfAddCategory(data)">加子级</el-button>
+                      <el-button link type="primary" size="small" @click.stop="cfEditCategory(data)">编辑</el-button>
+                      <el-button link type="danger" size="small" @click.stop="cfDeleteCategory(data)">删</el-button>
+                    </span>
+                  </div>
+                </template>
+              </el-tree>
+              <div class="cf-category-help">先在这里维护四级分类，再选择第四级分类配置商品字段。</div>
             </div>
             <div style="flex: 1;">
               <div v-if="cfSelectedCatId" style="margin-bottom: 8px;">
@@ -740,6 +757,24 @@
         <el-button @click="cfDialogVisible = false">取消</el-button>
         <el-button type="info" @click="saveCategoryFieldDraft">保存草稿</el-button>
         <el-button type="primary" @click="cfConfirmField">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="cfCategoryDialogVisible" :title="cfCategoryDialogTitle" width="460px" @close="cfResetCategoryForm">
+      <el-form :model="cfCategoryForm" label-width="90px">
+        <el-form-item label="上级分类">
+          <el-input :model-value="cfCategoryParentName" disabled />
+        </el-form-item>
+        <el-form-item label="分类名称" required>
+          <el-input v-model="cfCategoryForm.name" placeholder="请输入分类名称" maxlength="50" show-word-limit />
+        </el-form-item>
+        <el-form-item label="排序">
+          <el-input-number v-model="cfCategoryForm.sortOrder" :min="0" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="cfCategoryDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="cfCategorySaving" @click="cfSaveCategory">保存</el-button>
       </template>
     </el-dialog>
 
@@ -2308,6 +2343,13 @@ const cfIsLeaf = computed(() => Number(cfSelectedCatLevel.value) === 4)
 const cfSearch = ref('')
 const cfCategoryTree = ref([])
 const cfFields = ref([])
+const cfCategoryDialogVisible = ref(false)
+const cfCategoryDialogTitle = ref('新增一级分类')
+const cfCategorySaving = ref(false)
+const cfCategoryParentName = ref('无（一级分类）')
+const cfEditingCategory = ref(null)
+const cfParentCategory = ref(null)
+const cfCategoryForm = reactive({ name: '', sortOrder: 0 })
 const cfSaving = ref(false)
 const cfDialogVisible = ref(false)
 const cfDialogTitle = ref('新增字段')
@@ -2320,8 +2362,12 @@ const cfFieldForm = reactive({
 const cfLoadCategoryTree = async () => {
   try {
     const res = await api.getCategoryTree()
-    if (res.code === 0) cfCategoryTree.value = res.data || []
+    if (res.code === 0) {
+      cfCategoryTree.value = res.data || []
+      return cfCategoryTree.value
+    }
   } catch (err) { ElMessage.error('加载分类失败') }
+  return []
 }
 
 const cfFilterNode = (value, data) => {
@@ -2337,6 +2383,139 @@ const cfNodeClick = (data) => {
     cfLoadCategoryFields()
   } else {
     cfFields.value = []
+  }
+}
+
+const cfResetCategoryForm = () => {
+  cfCategoryForm.name = ''
+  cfCategoryForm.sortOrder = 0
+  cfCategoryParentName.value = '无（一级分类）'
+  cfEditingCategory.value = null
+  cfParentCategory.value = null
+}
+
+const cfAddCategory = (parent) => {
+  if (parent && Number(parent.level) >= 4) {
+    ElMessage.warning('分类最多支持四级')
+    return
+  }
+  cfEditingCategory.value = null
+  cfParentCategory.value = parent || null
+  cfCategoryForm.name = ''
+  cfCategoryForm.sortOrder = parent ? (parent.children?.length || 0) : cfCategoryTree.value.length
+  cfCategoryParentName.value = parent ? `${parent.name}（${parent.level}级）` : '无（一级分类）'
+  cfCategoryDialogTitle.value = parent ? `添加子分类 - ${parent.name}` : '新增一级分类'
+  cfCategoryDialogVisible.value = true
+}
+
+const cfEditCategory = (category) => {
+  cfEditingCategory.value = category
+  cfParentCategory.value = null
+  cfCategoryForm.name = category.name || ''
+  cfCategoryForm.sortOrder = Number(category.sort_order || 0)
+  cfCategoryParentName.value = category.parent_id ? '已有父级分类' : '无（一级分类）'
+  cfCategoryDialogTitle.value = `编辑分类 - ${category.name}`
+  cfCategoryDialogVisible.value = true
+}
+
+const cfSaveCategory = async () => {
+  const name = String(cfCategoryForm.name || '').trim()
+  if (!name) {
+    ElMessage.warning('请输入分类名称')
+    return
+  }
+  cfCategorySaving.value = true
+  try {
+    const isEditing = Boolean(cfEditingCategory.value)
+    let res
+    if (cfEditingCategory.value) {
+      res = await api.updateCategory(cfEditingCategory.value.category_id, {
+        name,
+        sortOrder: cfCategoryForm.sortOrder
+      })
+    } else {
+      res = await api.createCategory({
+        parentId: cfParentCategory.value?.category_id || null,
+        name,
+        sortOrder: cfCategoryForm.sortOrder
+      })
+    }
+    if (res.code !== 0) throw new Error(res.message || '保存分类失败')
+    const savedCategoryId = res.categoryId || cfEditingCategory.value?.category_id || ''
+    await cfLoadCategoryTree()
+    cfCategoryDialogVisible.value = false
+    cfResetCategoryForm()
+    if (savedCategoryId) {
+      const saved = cfFindCategoryNode(cfCategoryTree.value, savedCategoryId)
+      if (saved) cfNodeClick(saved)
+    }
+    ElMessage.success(isEditing ? '分类更新成功' : '分类创建成功')
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || err?.message || '保存分类失败')
+  } finally {
+    cfCategorySaving.value = false
+  }
+}
+
+const cfFindCategoryNode = (nodes, categoryId) => {
+  for (const node of nodes || []) {
+    if (String(node.category_id) === String(categoryId)) return node
+    const found = cfFindCategoryNode(node.children, categoryId)
+    if (found) return found
+  }
+  return null
+}
+
+const cfDeleteCategory = async (category) => {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除分类“${category.name}”吗？有子分类或已关联商品时不能删除。`,
+      '删除分类',
+      { type: 'warning' }
+    )
+    const res = await api.deleteCategory(category.category_id)
+    if (res.code !== 0) throw new Error(res.message || '删除分类失败')
+    const selectedId = String(cfSelectedCatId.value)
+    await cfLoadCategoryTree()
+    if (selectedId === String(category.category_id)) {
+      cfSelectedCatId.value = ''
+      cfSelectedCatName.value = ''
+      cfSelectedCatLevel.value = 0
+      cfFields.value = []
+    }
+    ElMessage.success('分类已删除')
+  } catch (err) {
+    if (err !== 'cancel' && err !== 'close') {
+      ElMessage.error(err?.response?.data?.message || err?.message || '删除分类失败')
+    }
+  }
+}
+
+const cfFindCategorySiblings = (nodes, categoryId) => {
+  for (const node of nodes || []) {
+    if ((node.children || []).some(item => String(item.category_id) === String(categoryId))) return node.children
+    const found = cfFindCategorySiblings(node.children, categoryId)
+    if (found) return found
+  }
+  return null
+}
+
+const cfMoveCategory = async (category, direction) => {
+  const siblings = cfFindCategorySiblings(cfCategoryTree.value, category.category_id) || cfCategoryTree.value
+  const index = siblings.findIndex(item => String(item.category_id) === String(category.category_id))
+  const targetIndex = index + direction
+  if (index < 0 || targetIndex < 0 || targetIndex >= siblings.length) return
+  const sorted = [...siblings]
+  ;[sorted[index], sorted[targetIndex]] = [sorted[targetIndex], sorted[index]]
+  try {
+    const res = await api.sortCategories({
+      items: sorted.map((item, itemIndex) => ({ id: item.category_id, sortOrder: itemIndex }))
+    })
+    if (res.code !== 0) throw new Error(res.message || '分类排序失败')
+    await cfLoadCategoryTree()
+    ElMessage.success('分类排序已更新')
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || err?.message || '分类排序失败')
   }
 }
 
@@ -2537,6 +2716,45 @@ const cfResetFieldForm = () => {
   justify-content: space-between;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.cf-category-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.cf-category-title {
+  font-weight: 600;
+}
+
+.cf-category-node {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  gap: 6px;
+}
+
+.cf-category-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cf-category-actions {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.cf-category-help {
+  margin-top: 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .store-selected-count {
