@@ -13,6 +13,14 @@ test('日结筛选国补 POS 主名称时兼容客户实收明细', () => {
   assert.equal(financeController.buildDailyPaymentMethodWhere('国补POS（电脑）-客户实收'), '国补POS（电脑）-客户实收');
 });
 
+test('日结筛选国补 OMO 主名称时兼容客户实收明细', () => {
+  const condition = financeController.buildDailyPaymentMethodWhere('国补OMO（手机平板）');
+
+  assert.deepEqual(condition, {
+    [require('sequelize').Op.or]: ['国补OMO（手机平板）', '国补OMO（手机平板）-客户实收']
+  });
+});
+
 test('费用单草稿提供保存、编辑、提交和删除接口', () => {
   const saveRoute = financeRouter.stack.find(layer => layer.path === '/expense-draft' && layer.methods.includes('POST'));
   const updateRoute = financeRouter.stack.find(layer => layer.path === '/expense-draft/:id' && layer.methods.includes('PUT'));

@@ -377,23 +377,27 @@
                   </div>
                 </template>
               </el-tree>
-              <div class="cf-category-help">先在这里维护四级分类，再选择第四级分类配置商品字段。</div>
+              <div class="cf-category-help">一级分类配置默认字段，下级分类自动继承；需要差异时，选择下级分类保存本级覆盖。</div>
             </div>
             <div style="flex: 1;">
               <div v-if="cfSelectedCatId" style="margin-bottom: 8px;">
                 <strong>当前分类：{{ cfSelectedCatName }}</strong>
-                <el-button v-if="cfIsLeaf" type="primary" size="small" style="float: right;" @click="cfAddField">新增字段</el-button>
+                <el-tag v-if="cfIsRoot" size="small" type="success" style="margin-left: 8px;">一级默认</el-tag>
+                <el-tag v-else-if="cfIsInherited" size="small" type="info" style="margin-left: 8px;">继承自{{ cfFieldSourceName }}</el-tag>
+                <el-tag v-else-if="cfHasOwnConfig" size="small" type="warning" style="margin-left: 8px;">本级覆盖</el-tag>
+                <el-tag v-else size="small" type="info" style="margin-left: 8px;">未配置字段</el-tag>
+                <el-button type="primary" size="small" style="float: right;" @click="cfAddField">新增字段</el-button>
               </div>
               <el-alert
-                v-if="cfSelectedCatId && !cfIsLeaf"
-                title="商品字段只能配置在第四级最后一级分类，请在左侧选择四级分类。"
+                v-if="cfSelectedCatId && !cfIsRoot"
+                :title="cfIsInherited ? `当前分类默认继承${cfFieldSourceName}字段，保存后将创建本级覆盖。` : cfHasOwnConfig ? '当前分类使用本级覆盖字段，修改不会影响上级分类。' : '当前分类暂无字段，保存后将创建本级配置。'"
                 type="info"
                 :closable="false"
                 show-icon
                 style="margin-bottom: 12px;"
               />
               <el-empty v-if="!cfSelectedCatId" description="请先在左侧选择一个分类" />
-              <el-table v-else-if="cfIsLeaf" :data="cfFields" stripe border size="small">
+              <el-table v-else :data="cfFields" stripe border size="small">
                 <el-table-column prop="field_label" label="字段名" width="100" />
                 <el-table-column prop="field_key" label="标识" width="100" />
                 <el-table-column prop="field_type" label="类型" width="80">
@@ -418,8 +422,9 @@
                   </template>
                 </el-table-column>
               </el-table>
-              <div v-if="cfSelectedCatId && cfIsLeaf && cfFields.length > 0" style="margin-top: 12px;">
+              <div v-if="cfSelectedCatId" style="margin-top: 12px;">
                 <el-button type="success" :loading="cfSaving" @click="cfSave">保存配置</el-button>
+                <el-button v-if="!cfIsRoot && cfHasOwnConfig" :loading="cfSaving" @click="cfResetToInherited">恢复上级默认</el-button>
               </div>
             </div>
           </div>
@@ -1799,7 +1804,7 @@ const settlementAccounts = ref([])
 const policyReceivableAccounts = computed(() => settlementAccounts.value.filter(a => a.account_type === 'POLICY_RECEIVABLE'))
 const fundAccounts = computed(() => settlementAccounts.value.filter(a => a.account_type === 'FUND'))
 const subsidyAccountRoutes = ref([])
-const isGuobuPaymentMethod = name => String(name || '').startsWith('国补POS')
+const isGuobuPaymentMethod = name => String(name || '').startsWith('国补')
 
 const loadSubsidyAccountRoutes = async () => {
   try {
@@ -2339,10 +2344,13 @@ const cfTreeRef = ref(null)
 const cfSelectedCatId = ref('')
 const cfSelectedCatName = ref('')
 const cfSelectedCatLevel = ref(0)
-const cfIsLeaf = computed(() => Number(cfSelectedCatLevel.value) === 4)
+const cfIsRoot = computed(() => Number(cfSelectedCatLevel.value) === 1)
 const cfSearch = ref('')
 const cfCategoryTree = ref([])
 const cfFields = ref([])
+const cfIsInherited = ref(false)
+const cfHasOwnConfig = ref(false)
+const cfFieldSourceName = ref('')
 const cfCategoryDialogVisible = ref(false)
 const cfCategoryDialogTitle = ref('新增一级分类')
 const cfCategorySaving = ref(false)
@@ -2379,11 +2387,7 @@ const cfNodeClick = (data) => {
   cfSelectedCatId.value = data.category_id
   cfSelectedCatName.value = data.name
   cfSelectedCatLevel.value = Number(data.level || 0)
-  if (cfIsLeaf.value) {
-    cfLoadCategoryFields()
-  } else {
-    cfFields.value = []
-  }
+  cfLoadCategoryFields()
 }
 
 const cfResetCategoryForm = () => {
@@ -2459,6 +2463,7 @@ const cfSaveCategory = async () => {
 
 const cfFindCategoryNode = (nodes, categoryId) => {
   for (const node of nodes || []) {
+    if (!node) continue
     if (String(node.category_id) === String(categoryId)) return node
     const found = cfFindCategoryNode(node.children, categoryId)
     if (found) return found
@@ -2493,6 +2498,7 @@ const cfDeleteCategory = async (category) => {
 
 const cfFindCategorySiblings = (nodes, categoryId) => {
   for (const node of nodes || []) {
+    if (!node) continue
     if ((node.children || []).some(item => String(item.category_id) === String(categoryId))) return node.children
     const found = cfFindCategorySiblings(node.children, categoryId)
     if (found) return found
@@ -2520,16 +2526,26 @@ const cfMoveCategory = async (category, direction) => {
 }
 
 const cfLoadCategoryFields = async () => {
-  if (!cfSelectedCatId.value || !cfIsLeaf.value) return
+  if (!cfSelectedCatId.value) return
   try {
     const res = await api.getCategoryFields(cfSelectedCatId.value)
-    if (res.code === 0) cfFields.value = res.data || []
-  } catch (err) { cfFields.value = [] }
+    if (res.code === 0) {
+      cfFields.value = Array.isArray(res.data) ? res.data : []
+      cfIsInherited.value = Boolean(res.meta?.inherited)
+      cfHasOwnConfig.value = Boolean(res.meta?.hasOwnConfig)
+      cfFieldSourceName.value = res.meta?.sourceCategoryName || ''
+    }
+  } catch (err) {
+    cfFields.value = []
+    cfIsInherited.value = false
+    cfHasOwnConfig.value = false
+    cfFieldSourceName.value = ''
+  }
 }
 
 const cfAddField = () => {
-  if (!cfIsLeaf.value) {
-    ElMessage.warning('商品字段只能配置在第四级最后一级分类')
+  if (!cfSelectedCatId.value) {
+    ElMessage.warning('请先选择分类')
     return
   }
   cfDialogTitle.value = '新增字段'
@@ -2611,8 +2627,8 @@ const cfMoveField = (index, dir) => {
 }
 
 const cfSave = async () => {
-  if (!cfSelectedCatId.value || !cfIsLeaf.value) {
-    ElMessage.warning('请先选择第四级最后一级分类')
+  if (!cfSelectedCatId.value) {
+    ElMessage.warning('请先选择分类')
     return
   }
   cfSaving.value = true
@@ -2632,7 +2648,7 @@ const cfSave = async () => {
     const res = await api.saveCategoryFields(data)
     if (res.code === 0) {
       ElMessage.success('保存成功')
-      cfLoadCategoryFields()
+      await cfLoadCategoryFields()
     } else {
       ElMessage.error(res.message || '保存失败')
     }
@@ -2640,6 +2656,21 @@ const cfSave = async () => {
     ElMessage.error('保存失败: ' + (err?.response?.data?.message || err?.message || '未知错误'))
   }
   finally { cfSaving.value = false }
+}
+
+const cfResetToInherited = async () => {
+  if (!cfSelectedCatId.value || cfIsRoot.value || !cfHasOwnConfig.value) return
+  cfSaving.value = true
+  try {
+    const res = await api.saveCategoryFields({ categoryId: cfSelectedCatId.value, fields: [] })
+    if (res.code !== 0) throw new Error(res.message || '恢复默认失败')
+    ElMessage.success('已恢复上级默认字段')
+    await cfLoadCategoryFields()
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || err?.message || '恢复默认失败')
+  } finally {
+    cfSaving.value = false
+  }
 }
 
 const cfAddOption = () => {

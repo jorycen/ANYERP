@@ -754,6 +754,7 @@ const productForm = reactive({
 
 function findCategoryNode(tree, categoryId) {
   for (const node of tree || []) {
+    if (!node) continue
     if (String(node.category_id) === String(categoryId)) return node
     const found = findCategoryNode(node.children, categoryId)
     if (found) return found
@@ -762,17 +763,17 @@ function findCategoryNode(tree, categoryId) {
 }
 
 function isLeafCategory(node) {
-  return Number(node?.level) === 4 && !(node.children || []).some(child => Number(child.status ?? 1) === 1)
+  return Number(node?.level) === 4 && !(node?.children || []).filter(Boolean).some(child => Number(child.status ?? 1) === 1)
 }
 
 const productCategoryTree = computed(() => {
   const currentId = String(productForm.categoryId || '')
   const editingLegacyId = String(originalCategoryId.value || '')
-  const decorate = (nodes) => (nodes || []).map(node => ({
-    ...node,
-    disabled: !isLeafCategory(node) && String(node.category_id) !== currentId && String(node.category_id) !== editingLegacyId,
-    children: decorate(node.children)
-  }))
+  const decorate = (nodes) => (nodes || []).filter(Boolean).map(node => ({
+      ...node,
+      disabled: !isLeafCategory(node) && String(node.category_id) !== currentId && String(node.category_id) !== editingLegacyId,
+      children: decorate(node.children)
+    }))
   return decorate(categoryTree.value)
 })
 

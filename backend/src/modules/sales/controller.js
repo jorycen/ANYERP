@@ -472,7 +472,7 @@ async function listProductOrders(ctx) {
 const ORDER_EXPORT_HEADERS = [
   '订单编号', '下单时间', '提交人', '门店名称', '门店ID', '一级来源', '二级来源',
   '会员称呼', '会员联系方式', '订单总计', '优惠金额', '国补', '教育补贴', '应收金额',
-  '收款金额汇总', '门店二维码', '现金', '国补POS（电脑）', '国补POS（手机平板）',
+  '收款金额汇总', '门店二维码', '现金', '国补POS（电脑）', '国补POS（手机平板）', '国补OMO（电脑）', '国补OMO（手机平板）',
   '定金抵扣', '旧机回收抵扣', '商场优惠券', '智店通POS', '线上OMO平台', '对公转账',
   '对私转账', '龙湖POS（北城专用）', '其他收款方式2', '归档状态', '开票状态', '开票信息',
   '开票金额', '国补状态', '国补人', '国补人ID', '商品名称', '商品编码', 'SN码', 'IMEI1',
@@ -481,7 +481,7 @@ const ORDER_EXPORT_HEADERS = [
   '补录信息', '备注', '创建日期', '订单状态', '归档/作废时间', '操作人'
 ];
 
-const ORDER_EXPORT_PAYMENT_HEADERS = ORDER_EXPORT_HEADERS.slice(15, 28);
+const ORDER_EXPORT_PAYMENT_HEADERS = ORDER_EXPORT_HEADERS.slice(15, 30);
 const EXPORT_MAIN_PRODUCT_KEYWORDS = ['电脑', '笔记本', '台式机', '一体机', '手机', '平板', 'ipad', 'tablet', 'computer', 'phone'];
 const EXPORT_ACCESSORY_KEYWORDS = ['配件', '鼠标', '键盘', '手柄', '支架', '摄像头', '保护夹', '保护壳', '贴膜', '充电器', '耳机', '数据线', 'u盘', '硬盘', '内存', '打印机'];
 
@@ -3990,7 +3990,7 @@ async function restoreReturnedNationalSubsidy({ request, order, requestItems, or
 
 function isNationalSubsidyPayment(payment) {
   const method = String(payment?.method || payment?.payment_method || '').trim();
-  return method.startsWith('\u56fd\u8865POS');
+  return method.startsWith('\u56fd\u8865');
 }
 
 function isNationalSubsidyCustomerReceipt(payment) {

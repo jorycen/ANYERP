@@ -411,6 +411,10 @@ function calculateStockAgeDays(inboundTime, now = new Date()) {
   return Math.max(0, Math.floor((now.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)));
 }
 
+function resolveOriginalInboundTime(originalInboundTime, inboundTime) {
+  return originalInboundTime || inboundTime || null;
+}
+
 function resolveEffectiveSalePrice(unifiedSalePrice, specialPrice) {
   const special = Number(specialPrice || 0);
   return special > 0 ? special : Number(unifiedSalePrice || 0);
@@ -507,12 +511,12 @@ async function getSnInventoryList(ctx) {
 
   const minAge = Number(minAgeDays);
   if (minAgeDays !== '' && Number.isFinite(minAge) && minAge >= 0) {
-    where.push('sn.INBOUND_TIME IS NOT NULL AND TIMESTAMPDIFF(DAY, sn.INBOUND_TIME, NOW()) >= :minAgeDays');
+    where.push('COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME) IS NOT NULL AND TIMESTAMPDIFF(DAY, COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME), NOW()) >= :minAgeDays');
     replacements.minAgeDays = Math.floor(minAge);
   }
   const maxAge = Number(maxAgeDays);
   if (maxAgeDays !== '' && Number.isFinite(maxAge) && maxAge >= 0) {
-    where.push('sn.INBOUND_TIME IS NOT NULL AND TIMESTAMPDIFF(DAY, sn.INBOUND_TIME, NOW()) <= :maxAgeDays');
+    where.push('COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME) IS NOT NULL AND TIMESTAMPDIFF(DAY, COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME), NOW()) <= :maxAgeDays');
     replacements.maxAgeDays = Math.floor(maxAge);
   }
 
@@ -547,6 +551,7 @@ async function getSnInventoryList(ctx) {
        sn.LOCATION_ID AS location_id,
        sn.STATUS AS status,
        sn.UPDATE_TIME AS status_change_time,
+       COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME) AS original_inbound_time,
        sn.INBOUND_TIME AS inbound_time,
        sn.TAX_TYPE AS tax_type,
        sn.SOURCE_TYPE AS source_type,
@@ -565,7 +570,9 @@ async function getSnInventoryList(ctx) {
        sp.UPDATE_USER AS special_price_update_user,
        sp.UPDATE_TIME AS special_price_update_time
      ${joins}${whereSql}
-     ORDER BY (sn.INBOUND_TIME IS NULL) ASC, sn.INBOUND_TIME ASC, sn.SN_ID DESC${paginationSql}`,
+      ORDER BY (COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME) IS NULL) ASC,
+               COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME) ASC,
+               sn.SN_ID DESC${paginationSql}`,
     {
       replacements: exportMode ? replacements : { ...replacements, limit: currentPageSize, offset },
       type: Sequelize.QueryTypes.SELECT
@@ -603,7 +610,8 @@ async function getSnInventoryList(ctx) {
       special_price: specialPrice,
       is_special_price: Boolean(row.special_price_id),
       effective_sale_price: resolveEffectiveSalePrice(unifiedSalePrice, specialPrice),
-      stock_age_days: calculateStockAgeDays(row.inbound_time),
+       stock_age_days: calculateStockAgeDays(row.original_inbound_time),
+       status_duration_days: calculateStockAgeDays(row.status_change_time),
       resource_statuses: resourceStatuses
     };
   });
@@ -622,7 +630,7 @@ async function getSnInventoryList(ctx) {
       SN特价: row.is_special_price ? Number(row.special_price || 0) : '',
       当前适用售价: Number(row.effective_sale_price || 0),
       库龄: row.stock_age_days == null ? '' : row.stock_age_days,
-      入库时间: row.inbound_time || '',
+       入库时间: row.original_inbound_time || row.inbound_time || '',
       备注: row.remark || ''
     }));
     sendExcel(ctx, data, [
@@ -1795,12 +1803,12 @@ async function getSnList(ctx) {
 
     const { count, rows } = await ProductSn.findAndCountAll({
       where,
-      order: buildPendingFirstOrder(sequelize, {
-        statusColumn: 'ProductSn.status',
-        pendingStatuses: ['transferring', 'in_stock'],
-        dateColumns: ['ProductSn.inbound_time'],
-        idColumn: 'ProductSn.sn_id'
-      }),
+      order: [
+        [sequelize.literal('CASE WHEN `ProductSn`.`original_inbound_time` IS NULL THEN 1 ELSE 0 END'), 'ASC'],
+        [sequelize.literal('`ProductSn`.`original_inbound_time`'), 'ASC'],
+        [sequelize.literal('`ProductSn`.`inbound_time`'), 'ASC'],
+        [sequelize.literal('`ProductSn`.`sn_id`'), 'DESC']
+      ],
       ...paginate({}, { page, pageSize })
     });
 
@@ -1839,8 +1847,15 @@ async function getSnList(ctx) {
       const price = data.Product?.ProductPrice || {};
       const stock = stockMap[data.product_id] || { current: 0, other: 0, total: 0 };
       const sales = salesMap[data.product_id] || { sales_7_qty: 0, sales_30_qty: 0 };
+      const originalInboundTime = resolveOriginalInboundTime(data.original_inbound_time, data.inbound_time);
+      const statusChangeTime = data.update_time || data.inbound_time || null;
       return {
         ...data,
+        original_inbound_time: originalInboundTime,
+        inbound_time: originalInboundTime,
+        status_change_time: statusChangeTime,
+        status_duration_days: calculateStockAgeDays(statusChangeTime),
+        stock_age_days: calculateStockAgeDays(originalInboundTime),
         status_label: getSnStatusLabel(data.status),
         statusText: getSnStatusLabel(data.status),
         product_name: data.Product?.name || '',
@@ -3482,8 +3497,8 @@ async function executeInbound(ctx) {
             status: 'in_stock',
             inventory_type: inventoryType,
             store_id: inbound.store_id,
-            location_id: locationId,
-            inbound_time: new Date()
+           location_id: locationId,
+           // 调拨到店不改变公司首次采购入库时间，库龄继续从原始入库计算。
           }, { transaction: t });
           await dbItem.update({
             sn_id: transferSn.sn_id,
@@ -3530,9 +3545,10 @@ async function executeInbound(ctx) {
           status: 'in_stock',
           inventory_type: inventoryType,
           store_id: inbound.store_id,
-          location_id: locationId,
-          inbound_time: new Date(),
-          inbound_price: dbItem.unit_price,
+           location_id: locationId,
+           inbound_time: new Date(),
+           original_inbound_time: new Date(),
+           inbound_price: dbItem.unit_price,
           original_pickup_price: originalPickupPrice,
           supplier_id: supplier?.supplier_id || null,
           supplier_name: supplier?.name || null,
@@ -4690,8 +4706,8 @@ async function confirmTransferIn(ctx) {
         await sn.update({
           store_id: transfer.to_store_id,
           status: 'in_stock',
-          location_id: targetLocationId || null,
-          inbound_time: new Date()
+          location_id: targetLocationId || null
+          // 调拨到店不改变公司首次采购入库时间，库龄继续从原始入库计算。
         }, { transaction: t });
 
         if (!alreadyInDestination) {
@@ -5247,9 +5263,10 @@ async function createConversion(ctx) {
           status: 'in_stock',
           inventory_type: row.inventory_type,
           store_id: storeId,
-          location_id: row.location_id || null,
-          inbound_time: new Date(),
-          inbound_price: row.unit_cost,
+           location_id: row.location_id || null,
+           inbound_time: new Date(),
+           original_inbound_time: new Date(),
+           inbound_price: row.unit_cost,
           original_pickup_price: row.unit_cost,
           batch_no: conversionNo,
           remark: `库存${conversionType === 'assemble' ? '组装' : '拆分'}生成，单号：${conversionNo}`,

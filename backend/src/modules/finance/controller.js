@@ -17,7 +17,7 @@ function buildDailyPaymentMethodWhere(paymentMethod) {
   const method = String(paymentMethod || '').trim();
   if (!method) return null;
 
-  if (method.startsWith('国补POS') && !method.endsWith('-客户实收') && !method.endsWith('-政策补贴应收')) {
+  if (method.startsWith('国补') && !method.endsWith('-客户实收') && !method.endsWith('-政策补贴应收')) {
     return { [Op.or]: [method, `${method}-客户实收`] };
   }
   return method;
@@ -174,7 +174,7 @@ async function getDailyDetails(ctx) {
     { business_type: { [Op.ne]: 'national_subsidy_receivable' } },
     {
       business_type: { [Op.is]: null },
-      payment_method: { [Op.notLike]: '国补POS%-政策补贴应收' }
+      payment_method: { [Op.notLike]: '国补%-政策补贴应收' }
     }
   ]);
 }
@@ -184,7 +184,7 @@ async function getNationalSubsidyReceivables(ctx) {
     { business_type: 'national_subsidy_receivable' },
     {
       business_type: { [Op.is]: null },
-      payment_method: { [Op.like]: '国补POS%-政策补贴应收' }
+      payment_method: { [Op.like]: '国补%-政策补贴应收' }
     }
   ]);
 }
@@ -411,14 +411,14 @@ async function settleStatementDetails(ctx, businessType) {
       { business_type: 'national_subsidy_receivable' },
       {
         business_type: { [Op.is]: null },
-        payment_method: { [Op.like]: '国补POS%-政策补贴应收' }
+        payment_method: { [Op.like]: '国补%-政策补贴应收' }
       }
     ]
     : [
       { business_type: { [Op.ne]: 'national_subsidy_receivable' } },
       {
         business_type: { [Op.is]: null },
-        payment_method: { [Op.notLike]: '国补POS%-政策补贴应收' }
+        payment_method: { [Op.notLike]: '国补%-政策补贴应收' }
       }
     ];
   let totalSettledAmount = 0;
@@ -907,7 +907,7 @@ async function getSettlementAccountsWithBalance(ctx) {
           settlement_account_id: policyAccountIds,
           [Op.or]: [
             { business_type: 'national_subsidy_receivable' },
-            { payment_method: { [Op.like]: '国补POS%-政策补贴应收' } }
+            { payment_method: { [Op.like]: '国补%-政策补贴应收' } }
           ]
         },
         group: ['settlement_account_id'],
@@ -1056,7 +1056,7 @@ async function validateSubsidyDetails(detailIds, transaction, user = null) {
       detail_id: detailIds,
       [Op.or]: [
         { business_type: 'national_subsidy_receivable' },
-        { payment_method: { [Op.like]: '国补POS%-政策补贴应收' } }
+        { payment_method: { [Op.like]: '国补%-政策补贴应收' } }
       ]
     },
     transaction,

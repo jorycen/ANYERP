@@ -188,6 +188,8 @@ const ProductSn = sequelize.define('ProductSn', {
   store_id: { type: DataTypes.STRING(32) },
   location_id: { type: DataTypes.STRING(32) },
   inbound_time: { type: DataTypes.DATE },
+  original_inbound_time: { type: DataTypes.DATE, comment: '公司首次采购入库时间，调拨不重置' },
+  update_time: { type: DataTypes.DATE },
   inbound_price: { type: DataTypes.DECIMAL(12, 2) },
   original_pickup_price: { type: DataTypes.DECIMAL(12, 2) },
   supplier_id: { type: DataTypes.STRING(32), comment: '采购来源供应商ID' },
@@ -427,7 +429,7 @@ const ProductCategory = sequelize.define('ProductCategory', {
   status: { type: DataTypes.TINYINT, defaultValue: 1 }
 }, { tableName: 'T_PRODUCT_CATEGORY', timestamps: false });
 
-// 商品分类字段配置（每个分类可配置不同的输入字段）
+// 商品分类字段配置（一级分类默认，下级分类按需保存覆盖配置）
 const ProductCategoryField = sequelize.define('ProductCategoryField', {
   field_id: { type: DataTypes.STRING(32), primaryKey: true },
   category_id: { type: DataTypes.STRING(32), allowNull: false },

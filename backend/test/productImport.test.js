@@ -48,3 +48,22 @@ test('新建商品只允许选择第四级分类', () => {
   assert.equal(_test.isFourLevelCategory({ level: 3 }), false);
   assert.equal(_test.isFourLevelCategory(null), false);
 });
+
+test('分类字段优先使用当前分类及最近上级配置', () => {
+  const lineage = [
+    { category_id: 'L4', level: 4 },
+    { category_id: 'L3', level: 3 },
+    { category_id: 'L2', level: 2 },
+    { category_id: 'L1', level: 1 }
+  ];
+  const fields = [
+    { category_id: 'L1', field_key: 'brand' },
+    { category_id: 'L1', field_key: 'series' },
+    { category_id: 'L3', field_key: 'model' }
+  ];
+
+  const resolved = _test.selectNearestCategoryFields(lineage, fields);
+  assert.equal(resolved.sourceCategory.category_id, 'L3');
+  assert.deepEqual(resolved.sourceFields.map(field => field.field_key), ['model']);
+  assert.equal(resolved.ownFields.length, 0);
+});

@@ -651,6 +651,14 @@ async function runMigrations() {
     await checkAndAddColumn('T_PRODUCT_SN', 'BATCH_NO', 'VARCHAR(64) COMMENT "库存批次号"', 'SOURCE_TYPE');
     await checkAndAddColumn('T_PRODUCT_SN', 'SUPPLIER_ID', 'VARCHAR(32) COMMENT "采购来源供应商ID"', 'ORIGINAL_PICKUP_PRICE');
     await checkAndAddColumn('T_PRODUCT_SN', 'SUPPLIER_NAME', 'VARCHAR(255) COMMENT "采购来源供应商名称快照"', 'SUPPLIER_ID');
+    await checkAndAddColumn('T_PRODUCT_SN', 'ORIGINAL_INBOUND_TIME', 'DATETIME COMMENT "公司首次采购入库时间，调拨不重置"', 'INBOUND_TIME');
+    await checkAndAddColumn('T_PRODUCT_SN', 'UPDATE_TIME', 'DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT "SN最近状态更新时间"', 'ORIGINAL_INBOUND_TIME');
+    await sequelize.query(`
+      UPDATE T_PRODUCT_SN
+      SET ORIGINAL_INBOUND_TIME = INBOUND_TIME
+      WHERE ORIGINAL_INBOUND_TIME IS NULL
+        AND INBOUND_TIME IS NOT NULL
+    `);
     await checkAndAddColumn('T_SUPPLIER', 'IS_SERVICE_PROVIDER', 'TINYINT(1) NOT NULL DEFAULT 1 COMMENT "是否服务商"', 'ADDRESS');
     await checkAndAddColumn('T_SUPPLIER', 'GROSS_PROFIT_UPLIFT_AMOUNT', 'DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT "非服务商每件毛利上浮金额"', 'IS_SERVICE_PROVIDER');
     await checkAndAddColumn('T_ORDER_ITEM', 'SUPPLIER_ID', 'VARCHAR(32) COMMENT "采购来源供应商ID快照"', 'SUBTOTAL');
@@ -2143,12 +2151,12 @@ async function runMigrations() {
     await sequelize.query(`
       UPDATE T_DAILY_STATEMENT_DETAIL
       SET BUSINESS_TYPE = CASE
-        WHEN PAYMENT_METHOD LIKE '国补POS%-政策补贴应收' THEN 'national_subsidy_receivable'
+        WHEN PAYMENT_METHOD LIKE '国补%-政策补贴应收' THEN 'national_subsidy_receivable'
         ELSE 'sales_receipt'
       END
       WHERE BUSINESS_TYPE IS NULL
          OR BUSINESS_TYPE = ''
-         OR (BUSINESS_TYPE = 'sales_receipt' AND PAYMENT_METHOD LIKE '国补POS%-政策补贴应收')
+         OR (BUSINESS_TYPE = 'sales_receipt' AND PAYMENT_METHOD LIKE '国补%-政策补贴应收')
     `);
 
     await checkAndCreateTable('T_DICT_PAYMENT_METHOD', `
@@ -2228,22 +2236,29 @@ async function runMigrations() {
     await sequelize.query(`
       UPDATE T_DICT_PAYMENT_METHOD
       SET RECEIVABLE_SETTLEMENT_ACCOUNT_ID = 'ACC_POLICY_SUBSIDY_RECEIVABLE'
-      WHERE NAME LIKE '国补POS%'
+      WHERE NAME LIKE '国补%'
         AND (RECEIVABLE_SETTLEMENT_ACCOUNT_ID IS NULL OR RECEIVABLE_SETTLEMENT_ACCOUNT_ID = '')
     `);
     await sequelize.query(`
       UPDATE T_DICT_PAYMENT_METHOD_STORE pms
       INNER JOIN T_DICT_PAYMENT_METHOD pm ON pm.METHOD_ID = pms.METHOD_ID
       SET pms.RECEIVABLE_SETTLEMENT_ACCOUNT_ID = 'ACC_POLICY_SUBSIDY_RECEIVABLE'
-      WHERE pm.NAME LIKE '国补POS%'
+      WHERE pm.NAME LIKE '国补%'
         AND (pms.RECEIVABLE_SETTLEMENT_ACCOUNT_ID IS NULL OR pms.RECEIVABLE_SETTLEMENT_ACCOUNT_ID = '')
     `);
     await sequelize.query(`
       UPDATE T_DAILY_STATEMENT_DETAIL
       SET SETTLEMENT_ACCOUNT_ID = 'ACC_POLICY_SUBSIDY_RECEIVABLE'
       WHERE SETTLED = 0
-        AND PAYMENT_METHOD LIKE '国补POS%-政策补贴应收'
+        AND PAYMENT_METHOD LIKE '国补%-政策补贴应收'
         AND (SETTLEMENT_ACCOUNT_ID IS NULL OR SETTLEMENT_ACCOUNT_ID = '')
+    `);
+    await sequelize.query(`
+      INSERT IGNORE INTO T_DICT_PAYMENT_METHOD
+        (METHOD_ID, NAME, CODE, ICON, RECEIVABLE_SETTLEMENT_ACCOUNT_ID, IS_GLOBAL, SORT_ORDER, STATUS)
+      VALUES
+        ('PM_GUOBU_OMO_COMPUTER', '国补OMO（电脑）', 'guobu_omo_computer', 'omo-icon', 'ACC_POLICY_SUBSIDY_RECEIVABLE', 1, 6, 1),
+        ('PM_GUOBU_OMO_MOBILE', '国补OMO（手机平板）', 'guobu_omo_mobile', 'omo-icon', 'ACC_POLICY_SUBSIDY_RECEIVABLE', 1, 7, 1)
     `);
     await sequelize.query(`
       UPDATE T_DAILY_STATEMENT_DETAIL d

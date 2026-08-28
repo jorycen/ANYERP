@@ -514,6 +514,77 @@ async function resolveFourLevelCategory(categoryId) {
   return { category, path: parts.join('/') };
 }
 
+// 字段配置按分类链路继承：当前分类有配置时优先使用，否则向上查找最近的已配置分类。
+// 这样一级分类可以提供默认字段，下级分类只在需要差异时保存自己的覆盖配置。
+function selectNearestCategoryFields(lineage, fieldRows) {
+  const fieldsByCategory = new Map();
+  for (const field of fieldRows || []) {
+    const categoryId = String(field.category_id || '');
+    if (!categoryId) continue;
+    if (!fieldsByCategory.has(categoryId)) fieldsByCategory.set(categoryId, []);
+    fieldsByCategory.get(categoryId).push(field);
+  }
+
+  const sourceCategory = (lineage || []).find(category => {
+    const fields = fieldsByCategory.get(String(category.category_id)) || [];
+    return fields.length > 0;
+  }) || null;
+  const sourceFields = sourceCategory
+    ? (fieldsByCategory.get(String(sourceCategory.category_id)) || [])
+    : [];
+  const ownFields = lineage?.[0]
+    ? (fieldsByCategory.get(String(lineage[0].category_id)) || [])
+    : [];
+
+  return { sourceCategory, sourceFields, ownFields };
+}
+
+async function resolveCategoryFieldConfig(categoryId) {
+  if (!categoryId) {
+    throw Object.assign(new Error('请指定分类'), { status: 400 });
+  }
+
+  const lineage = [];
+  const visited = new Set();
+  let currentId = categoryId;
+  while (currentId) {
+    const normalizedId = String(currentId);
+    if (visited.has(normalizedId)) {
+      throw Object.assign(new Error('商品分类层级存在循环引用'), { status: 400 });
+    }
+    visited.add(normalizedId);
+
+    const category = await ProductCategory.findOne({
+      where: { category_id: currentId, status: 1 },
+      raw: true
+    });
+    if (!category) {
+      throw Object.assign(new Error('商品分类不存在或已停用'), { status: 400 });
+    }
+    lineage.push(category);
+    currentId = category.parent_id;
+  }
+
+  const fieldRows = await ProductCategoryField.findAll({
+    where: {
+      category_id: { [Op.in]: lineage.map(category => category.category_id) },
+      status: 1
+    },
+    order: [['sort_order', 'ASC'], ['field_id', 'ASC']],
+    raw: true
+  });
+  const { sourceCategory, sourceFields, ownFields } = selectNearestCategoryFields(lineage, fieldRows);
+
+  return {
+    category: lineage[0],
+    lineage,
+    fields: sourceFields,
+    ownFields,
+    sourceCategory,
+    inherited: Boolean(sourceCategory && String(sourceCategory.category_id) !== String(lineage[0].category_id))
+  };
+}
+
 async function assertUniqueCategoryName(parentId, name, excludeCategoryId = null) {
   const where = {
     parent_id: parentId || null,
@@ -678,12 +749,8 @@ async function resolveProductApplicationName(body) {
     try { parsedAttrs = JSON.parse(attributes); } catch { parsedAttrs = {}; }
   }
   let finalName = name || '';
-  if (!finalName && parsedAttrs && typeof parsedAttrs === 'object') {
-    const fields = await ProductCategoryField.findAll({
-      where: { category_id: categoryId, status: 1 },
-      order: [['sort_order', 'ASC']],
-      raw: true
-    });
+  if (!finalName && categoryId && parsedAttrs && typeof parsedAttrs === 'object') {
+    const { fields } = await resolveCategoryFieldConfig(categoryId);
     if (fields.length > 0) {
       const parts = [];
       for (const f of fields) {
@@ -732,11 +799,7 @@ async function validateProductApplicationInput(body = {}, { finalName, parsedAtt
     throw Object.assign(new Error('商品名称不能为空'), { status: 400 });
   }
 
-  const fields = await ProductCategoryField.findAll({
-    where: { category_id: body.categoryId, status: 1 },
-    order: [['sort_order', 'ASC']],
-    raw: true
-  });
+  const { fields } = await resolveCategoryFieldConfig(body.categoryId);
   const attrs = parsedAttrs && typeof parsedAttrs === 'object' ? parsedAttrs : {};
   const missingField = fields.find(field => Number(field.required) === 1 && !hasProductApplicationValue(attrs[field.field_key]));
   if (missingField) {
@@ -2893,15 +2956,18 @@ async function searchProduct(ctx) {
 async function getCategoryFields(ctx) {
   const { categoryId } = ctx.query;
   if (!categoryId) ctx.throw(400, '请指定分类');
-  await resolveFourLevelCategory(categoryId);
+  const resolved = await resolveCategoryFieldConfig(categoryId);
 
-  const fields = await ProductCategoryField.findAll({
-    where: { category_id: categoryId, status: 1 },
-    order: [['sort_order', 'ASC']],
-    raw: true
-  });
-
-  ctx.body = { code: 0, data: fields };
+  ctx.body = {
+    code: 0,
+    data: resolved.fields,
+    meta: {
+      sourceCategoryId: resolved.sourceCategory?.category_id || null,
+      sourceCategoryName: resolved.sourceCategory?.name || null,
+      inherited: resolved.inherited,
+      hasOwnConfig: resolved.ownFields.length > 0
+    }
+  };
 }
 
 // 批量保存分类字段配置
@@ -2909,7 +2975,7 @@ async function saveCategoryFields(ctx) {
   const { categoryId, fields } = ctx.request.body;
   if (!categoryId) ctx.throw(400, '请指定分类');
   if (!Array.isArray(fields)) ctx.throw(400, '字段配置格式错误');
-  await resolveFourLevelCategory(categoryId);
+  await resolveCategoryFieldConfig(categoryId);
 
   await ProductCategoryField.destroy({ where: { category_id: categoryId } });
 
@@ -2937,15 +3003,9 @@ async function saveCategoryFields(ctx) {
 async function getCategoryFieldConfig(ctx) {
   const { categoryId } = ctx.query;
   if (!categoryId) ctx.throw(400, '请指定分类');
-  const { category } = await resolveFourLevelCategory(categoryId);
+  const resolved = await resolveCategoryFieldConfig(categoryId);
 
-  const fields = await ProductCategoryField.findAll({
-    where: { category_id: categoryId, status: 1 },
-    order: [['sort_order', 'ASC']],
-    raw: true
-  });
-
-  const result = fields.map(f => ({
+  const result = resolved.fields.map(f => ({
     field_label: f.field_label,
     field_key: f.field_key,
     field_type: f.field_type,
@@ -2954,7 +3014,16 @@ async function getCategoryFieldConfig(ctx) {
     required: f.required === 1
   }));
 
-  ctx.body = { code: 0, data: { fields: result, categoryName: category ? category.name : '' } };
+  ctx.body = {
+    code: 0,
+    data: {
+      fields: result,
+      categoryName: resolved.category?.name || '',
+      sourceCategoryId: resolved.sourceCategory?.category_id || null,
+      sourceCategoryName: resolved.sourceCategory?.name || null,
+      inherited: resolved.inherited
+    }
+  };
 }
 
 async function executeProductImportRows(rows) {
@@ -3012,12 +3081,8 @@ async function executeProductImportRows(rows) {
       if (categoryId) {
         // 缓存分类字段
         if (!catFieldCache[categoryId]) {
-          const catFields = await ProductCategoryField.findAll({
-            where: { category_id: categoryId, status: 1 },
-            order: [['sort_order', 'ASC'], ['field_id', 'ASC']],
-            raw: true
-          });
-          catFieldCache[categoryId] = catFields;
+          const resolvedFields = await resolveCategoryFieldConfig(categoryId);
+          catFieldCache[categoryId] = resolvedFields.fields;
         }
         const fields = catFieldCache[categoryId];
         for (const f of fields) {
@@ -3414,6 +3479,7 @@ module.exports = {
     resolveProductApplicationPnCode,
     hasProductApplicationValue,
     isFourLevelCategory,
+    selectNearestCategoryFields,
     applySerializedSalesStock
   }
 };

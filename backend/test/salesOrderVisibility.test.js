@@ -24,10 +24,10 @@ test('店长角色可以导出授权门店订单，普通店员不能导出', ()
   assert.equal(_test.canExportSalesOrders({ roles: ['staff'] }), false);
 });
 
-test('订单导出字段与附件保持 58 列明细结构', () => {
-  assert.equal(_test.ORDER_EXPORT_HEADERS.length, 58);
+test('订单导出字段包含国补 POS/OMO 明细列', () => {
+  assert.equal(_test.ORDER_EXPORT_HEADERS.length, 60);
   assert.equal(_test.ORDER_EXPORT_HEADERS[0], '订单编号');
-  assert.equal(_test.ORDER_EXPORT_HEADERS[52], '补录信息');
+  assert.equal(_test.ORDER_EXPORT_HEADERS[54], '补录信息');
   assert.equal(_test.ORDER_EXPORT_HEADERS.at(-1), '操作人');
 });
 
@@ -281,6 +281,21 @@ test('订单导出包含完整金额补录信息', () => {
   assert.equal(rows[0].补录教育优惠, -20);
   assert.equal(rows[0].商品提货运费, 15);
   assert.equal(rows[0].补录信息, '教育优惠:20(减少，学生证已核验)；提货费用:15(增加)；优惠券:30(增加，券码:COUPON-1)');
+});
+
+test('订单导出按国补 OMO 客户实收归入对应收款方式列', () => {
+  const rows = _test.buildOrderExportRows([{
+    toJSON: () => ({
+      OrderPayments: [
+        { payment_method: '国补OMO（电脑）-客户实收', amount: 8500 },
+        { payment_method: '国补OMO（手机平板）-政策补贴应收', amount: 500 }
+      ],
+      OrderItems: [{ product_name: '电脑A', subtotal: 9000, quantity: 1 }]
+    })
+  }]);
+
+  assert.equal(rows[0]['国补OMO（电脑）'], 8500);
+  assert.equal(rows[0]['国补OMO（手机平板）'], 500);
 });
 
 test('订单导出兼容驼峰补录字段和毛利快照补录明细', () => {

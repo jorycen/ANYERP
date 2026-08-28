@@ -127,7 +127,7 @@ async function queryAccountSummary(regionId, accessibleRegionIds) {
          FROM T_DAILY_STATEMENT_DETAIL
         WHERE SETTLEMENT_ACCOUNT_ID IN (:accountIds)
           AND (BUSINESS_TYPE = 'national_subsidy_receivable'
-               OR PAYMENT_METHOD LIKE '国补POS%-政策补贴应收')
+               OR PAYMENT_METHOD LIKE '国补%-政策补贴应收')
         GROUP BY SETTLEMENT_ACCOUNT_ID`,
       { replacements: { accountIds: policyIds }, type: QueryTypes.SELECT }
     );
