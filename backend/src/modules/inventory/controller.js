@@ -5825,6 +5825,7 @@ module.exports = {
   snTrace,
   _test: {
     calculateStockAgeDays,
+    resolveOriginalInboundTime,
     resolveEffectiveSalePrice,
     canManageDistributorPrice,
     getTransferVisibilityLevel,

@@ -9,6 +9,7 @@ const { getEffectiveSnSalePrice } = require('../../utils/model');
 
 const {
   calculateStockAgeDays,
+  resolveOriginalInboundTime,
   resolveEffectiveSalePrice,
   canManageDistributorPrice
 } = inventoryController._test;
@@ -29,6 +30,15 @@ test('SN库龄按完整自然日向下取整，缺少入库时间返回未知', 
   const now = new Date('2026-07-06T12:00:00.000Z');
   assert.equal(calculateStockAgeDays('2026-07-01T11:59:59.000Z', now), 5);
   assert.equal(calculateStockAgeDays(null, now), null);
+});
+
+test('SN库龄优先使用公司首次采购入库时间，兼容历史记录回退入库时间', () => {
+  assert.equal(
+    resolveOriginalInboundTime('2026-07-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'),
+    '2026-07-01T00:00:00.000Z'
+  );
+  assert.equal(resolveOriginalInboundTime('', '2026-08-01T00:00:00.000Z'), '2026-08-01T00:00:00.000Z');
+  assert.equal(resolveOriginalInboundTime(null, null), null);
 });
 
 test('只有BOSS或所属经销商admin可以维护SN特价', () => {
