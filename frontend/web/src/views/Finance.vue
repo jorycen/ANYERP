@@ -349,6 +349,9 @@
             <el-select v-model="payableSupplierFilter" placeholder="供应商筛选" clearable filterable style="width: 180px" @change="onPayableFilterChange">
               <el-option v-for="s in suppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
             </el-select>
+            <el-select v-model="payableDistributorFilter" placeholder="经销商筛选" clearable filterable style="width: 160px" @change="onPayableFilterChange">
+              <el-option v-for="item in distributorOptions" :key="item.distributor_id" :label="item.name" :value="item.distributor_id" />
+            </el-select>
             <el-select v-model="payableSourceFilter" placeholder="来源类型筛选" clearable style="width: 160px" @change="onPayableFilterChange">
               <el-option label="采购" value="purchase" />
               <el-option label="采购调整" value="purchase_adjustment" />
@@ -401,6 +404,9 @@
                   {{ getPayableSourceText(row) }}
                 </el-tag>
               </template>
+            </el-table-column>
+            <el-table-column prop="distributor_name" label="经销商" width="130">
+              <template #default="{ row }">{{ row.distributor_name || row.distributor_id || '-' }}</template>
             </el-table-column>
             <el-table-column label="税务属性" width="100">
               <template #default="{ row }">
@@ -882,6 +888,9 @@
             </template>
           </el-table-column>
           <el-table-column prop="supplier_name" label="供应商" width="130" />
+          <el-table-column prop="distributor_name" label="经销商" width="130">
+            <template #default="{ row }">{{ row.distributor_name || row.distributor_id || '-' }}</template>
+          </el-table-column>
           <el-table-column prop="request_no" label="采购单号" width="180" />
           <el-table-column prop="total_amount" label="应付金额" width="130">
             <template #default="{ row }">¥{{ row.total_amount }}</template>
@@ -1378,6 +1387,7 @@ const payExpenseAccountId = ref('')
 const payExpenseLoading = ref(false)
 const payableDateRange = ref([])
 const payableSupplierFilter = ref('')
+const payableDistributorFilter = ref('')
 const payableSourceFilter = ref('')
 const payableStatusFilter = ref('')
 const payableSourceNoFilter = ref('')
@@ -1386,6 +1396,10 @@ const purchaseDetail = ref(null)
 const payableTableRef = ref(null)
 const selectedPayableRows = ref([])
 const payableFilterSummary = ref({ totalCount: 0, totalAmount: 0 })
+const distributorOptions = ref([
+  { distributor_id: 'DIST001', name: '艾诺云' },
+  { distributor_id: 'DIST002', name: '艾诺志兴' }
+])
 
 const toNumber = (value) => {
   const number = Number(value)
@@ -1652,6 +1666,7 @@ const handleExportExpense = () => runListExport('expense', '费用清单', api.e
 const handleExportPayable = () => runListExport('payable', '应付管理', api.exportPayableList, {
   ...(payableDateRange.value?.length === 2 ? { startDate: payableDateRange.value[0], endDate: payableDateRange.value[1] } : {}),
   ...(payableSupplierFilter.value ? { supplierId: payableSupplierFilter.value } : {}),
+  ...(payableDistributorFilter.value ? { distributorId: payableDistributorFilter.value } : {}),
   ...(payableSourceFilter.value ? { sourceType: payableSourceFilter.value } : {}),
   ...(payableStatusFilter.value ? { status: payableStatusFilter.value } : {}),
   ...(payableSourceNoFilter.value ? { sourceNo: payableSourceNoFilter.value } : {})
@@ -1806,6 +1821,7 @@ onMounted(() => {
   loadExpenseSettleData()
   loadExpenseTypes()
   loadPayableData()
+  loadPayableDistributors()
   loadSuppliers()
   loadReimbursementSettlementData()
   loadRebateList()
@@ -2279,6 +2295,7 @@ const loadPayableData = async () => {
   try {
     const params = { ...payableQuery, status: payableStatusFilter.value || 'unpaid' }
     if (payableSupplierFilter.value) params.supplierId = payableSupplierFilter.value
+    if (payableDistributorFilter.value) params.distributorId = payableDistributorFilter.value
     if (payableSourceFilter.value) params.sourceType = payableSourceFilter.value
     if (payableSourceNoFilter.value.trim()) params.sourceNo = payableSourceNoFilter.value.trim()
     if (Array.isArray(payableDateRange.value) && payableDateRange.value.length === 2) {
@@ -2296,6 +2313,15 @@ const loadPayableData = async () => {
     }
   } catch (err) {
     console.error('Failed to load payables')
+  }
+}
+
+const loadPayableDistributors = async () => {
+  try {
+    const res = await api.getUserDistributors()
+    if (res.code === 0 && Array.isArray(res.data) && res.data.length) distributorOptions.value = res.data
+  } catch (err) {
+    // 保留默认经销商选项，接口加载失败不影响应付清单查看。
   }
 }
 
@@ -2574,6 +2600,11 @@ const openSettlementDialog = async () => {
   const supplierIds = [...new Set(selectedPayableRows.value.map(row => row.supplier_id).filter(Boolean))]
   if (supplierIds.length !== 1) {
     ElMessage.warning('请选择同一供应商的应付款再进行结算')
+    return
+  }
+  const distributorIds = [...new Set(selectedPayableRows.value.map(row => row.distributor_id).filter(Boolean).map(String))]
+  if (distributorIds.length > 1) {
+    ElMessage.warning('请选择同一经销商的应付款再进行结算')
     return
   }
   const supplierId = supplierIds[0]

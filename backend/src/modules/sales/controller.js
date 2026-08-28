@@ -252,6 +252,20 @@ function normalizeDepositListRow(deposit) {
   };
 }
 
+function normalizeSalesOrderListRow(order) {
+  const data = order && typeof order.toJSON === 'function' ? order.toJSON() : (order || {});
+  const snapshot = data.grossProfitSnapshot || data.gross_profit_snapshot || null;
+  const snapshotRow = snapshot && typeof snapshot.toJSON === 'function' ? snapshot.toJSON() : (snapshot || {});
+  const hasGrossProfit = snapshotRow.gross_profit_amount !== undefined && snapshotRow.gross_profit_amount !== null;
+  return {
+    ...data,
+    gross_profit_amount: hasGrossProfit ? Number(snapshotRow.gross_profit_amount || 0) : null,
+    gross_profit_source: hasGrossProfit ? 'order_gross_profit_snapshot' : '',
+    gross_profit_snapshot_status: snapshotRow.snapshot_status || '',
+    gross_profit_calculated_at: snapshotRow.calculated_at || null
+  };
+}
+
 function compareCombinedSalesRows(a, b) {
   const pending = new Set(['draft', 'pending_approval', '未归档', 'deposit_receipt']);
   const aPending = pending.has(String(a.order_status || '')) ? 0 : 1;
@@ -365,14 +379,12 @@ async function list(ctx) {
       itemInclude,
       { model: OrderPayment },
       { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false },
-      ...(status === 'pending_approval'
-        ? [{
-          model: OrderGrossProfit,
-          as: 'grossProfitSnapshot',
-          attributes: ['gross_profit_amount', 'snapshot_status', 'calculated_at'],
-          required: false
-        }]
-        : [])
+      {
+        model: OrderGrossProfit,
+        as: 'grossProfitSnapshot',
+        attributes: ['gross_profit_amount', 'snapshot_status', 'calculated_at'],
+        required: false
+      }
     ],
     distinct: true,
     order: buildPendingFirstOrder(sequelize, {
@@ -382,35 +394,12 @@ async function list(ctx) {
       idColumn: 'Order.order_id'
     })
   };
-  const includeDeposits = !productName && !productCode && !pnCode && !snCode;
-  const depositWhere = buildCombinedDepositWhere({
-    storeId,
-    startDate,
-    endDate,
-    customerPhone,
-    customerName,
-    orderNo,
-    createUser: canQueryAllStoreOrders ? createUser : (user.name || '__NO_MATCHING_STAFF__'),
-    submitUser,
-    accessibleStoreIds,
-    hasGlobalStoreScope
-  });
-
-  const [orders, deposits] = await Promise.all([
-    Order.findAll(orderQuery),
-    !includeDeposits || (status && status !== 'deposit') ? Promise.resolve([]) : DepositOrder.findAll({
-      where: depositWhere,
-      include: [{ model: Store }]
-    })
-  ]);
-  const mergedRows = [
-    ...orders,
-    ...deposits.map(normalizeDepositListRow)
-  ].sort(compareCombinedSalesRows);
+  const orders = await Order.findAll(orderQuery);
+  const normalizedRows = orders.map(normalizeSalesOrderListRow);
   const offset = (Number(page) - 1) * Number(pageSize);
-  const rows = mergedRows.slice(offset, offset + Number(pageSize));
+  const rows = normalizedRows.slice(offset, offset + Number(pageSize));
 
-  ctx.body = formatPaginatedResult(rows, { page, pageSize, count: mergedRows.length });
+  ctx.body = formatPaginatedResult(rows, { page, pageSize, count: normalizedRows.length });
 }
 
 /**
@@ -2950,6 +2939,15 @@ async function paymentMethods(ctx) {
   ctx.body = { code: 0, data: methods, message: 'success' };
 }
 
+function buildDepositListOrder() {
+  return [
+    [literal('CASE WHEN DATE(`DepositOrder`.`create_time`) = CURRENT_DATE() THEN 0 ELSE 1 END'), 'ASC'],
+    [literal("CASE WHEN `DepositOrder`.`status` = 'archived' THEN 1 ELSE 0 END"), 'ASC'],
+    ['create_time', 'DESC'],
+    ['deposit_id', 'DESC']
+  ];
+}
+
 async function listDeposits(ctx) {
   const { storeId, status, customerPhone, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
@@ -2968,12 +2966,9 @@ async function listDeposits(ctx) {
     where,
     include: [{ model: Store }],
     distinct: true,
-    order: buildPendingFirstOrder(sequelize, {
-      statusColumn: 'DepositOrder.status',
-      pendingStatuses: ['submitted'],
-      dateColumns: ['DepositOrder.create_time'],
-      idColumn: 'DepositOrder.deposit_id'
-    }),
+    // 定金管理按中国自然日优先：当天记录优先，再按未归档/已归档，
+    // 同一分组内按收款时间倒序，避免历史未归档记录长期压在当天记录前面。
+    order: buildDepositListOrder(),
     ...paginate({}, { page, pageSize })
   });
 
@@ -4924,6 +4919,7 @@ module.exports = {
     buildOrderExportRows,
     buildSalesReturnSettlementExportRows,
     buildDepositExportRows,
+    buildDepositListOrder,
     getSupplementNetAmount,
     isSalesReturnInProgressStatus,
     getSalesReturnStatusLabel,

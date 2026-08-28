@@ -344,6 +344,16 @@ test('定金订单进入销售导出并按实际收款方式归列', () => {
   assert.equal(rows[0].收款金额汇总, 500);
 });
 
+test('定金管理排序优先当天，再按未归档和已归档，最后按时间倒序', () => {
+  const order = _test.buildDepositListOrder();
+  assert.match(order[0][0].val, /CURRENT_DATE\(\)/);
+  assert.match(order[1][0].val, /status.*archived/);
+  assert.deepEqual(order.slice(2), [
+    ['create_time', 'DESC'],
+    ['deposit_id', 'DESC']
+  ]);
+});
+
 test('合并销售列表中的定金记录使用定金业务类型和订单兼容字段', () => {
   const row = _test.normalizeDepositListRow({
     toJSON: () => ({ deposit_id: 'DEP-2', deposit_no: 'DEP-002', amount: 300 })

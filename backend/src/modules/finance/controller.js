@@ -196,7 +196,9 @@ async function exportDailyDetails(ctx) {
   const data = rows.map(row => ({
     日期: row.statement_date || '',
     业务单号: row.order_no || row.order_id || '',
-    业务类型: row.business_type || '',
+    业务类型: row.business_type === 'deposit_receipt'
+      ? '定金收款'
+      : (row.business_type || '销售收款'),
     客户: row.customer_name || '',
     收款方式: row.payment_method || '',
     收款金额: Number(row.amount || 0),

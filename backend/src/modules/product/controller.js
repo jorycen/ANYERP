@@ -15,6 +15,7 @@ const {
   ProductPriceChangeLog,
   ProductImportTask,
   Inventory,
+  Location,
   Store,
   Staff,
   Distributor
@@ -304,6 +305,47 @@ function getSalesInventoryQty(inv) {
   );
 }
 
+function createEmptySalesStock() {
+  return { current: 0, other: 0, total: 0, stores: [], currentStore: null, otherStores: [] };
+}
+
+function applySerializedSalesStock(stockMap, serializedProductIds, snRows, storeNameMap, storeId = '') {
+  const serializedIds = new Set((serializedProductIds || []).map(id => String(id)));
+  serializedIds.forEach(productId => {
+    stockMap[productId] = createEmptySalesStock();
+  });
+
+  (snRows || []).forEach(sn => {
+    const productId = String(sn.product_id || '');
+    if (!serializedIds.has(productId)) return;
+
+    const stock = stockMap[productId];
+    const storeKey = String(sn.store_id || '');
+    let storeRow = stock.stores.find(row => String(row.store_id || '') === storeKey);
+    if (!storeRow) {
+      storeRow = {
+        store_id: sn.store_id || '',
+        store_name: storeNameMap.get(storeKey) || sn.store_id || '未知门店',
+        normal_qty: 0,
+        is_current: Boolean(storeId && storeKey === String(storeId))
+      };
+      stock.stores.push(storeRow);
+    }
+
+    storeRow.normal_qty += 1;
+    stock.total += 1;
+    if (storeId && storeKey === String(storeId)) {
+      stock.current += 1;
+      stock.currentStore = storeRow;
+    } else {
+      stock.other += 1;
+      if (!stock.otherStores.includes(storeRow)) stock.otherStores.push(storeRow);
+    }
+  });
+
+  return stockMap;
+}
+
 async function buildSalesStockMap(productIds, storeId = '') {
   const uniqueProductIds = [...new Set((productIds || []).filter(Boolean))];
   const stockMap = {};
@@ -321,9 +363,7 @@ async function buildSalesStockMap(productIds, storeId = '') {
 
   for (const inv of inventories) {
     const productId = inv.product_id;
-    if (!stockMap[productId]) {
-      stockMap[productId] = { current: 0, other: 0, total: 0, stores: [], currentStore: null, otherStores: [] };
-    }
+    if (!stockMap[productId]) stockMap[productId] = createEmptySalesStock();
 
     const qty = getSalesInventoryQty(inv);
     if (qty <= 0) continue;
@@ -344,6 +384,39 @@ async function buildSalesStockMap(productIds, storeId = '') {
       stockMap[productId].other += qty;
       stockMap[productId].otherStores.push(storeRow);
     }
+  }
+
+  const serializedProducts = await Product.findAll({
+    where: { product_id: { [Op.in]: uniqueProductIds }, need_sn: 1 },
+    attributes: ['product_id'],
+    raw: true
+  });
+  const serializedProductIds = serializedProducts.map(product => product.product_id);
+  if (serializedProductIds.length > 0) {
+    const salesLocations = await Location.findAll({
+      where: { type: 'normal_qty', status: 1 },
+      attributes: ['location_id'],
+      raw: true
+    });
+    const salesLocationIds = salesLocations.map(location => location.location_id).filter(Boolean);
+    const snRows = salesLocationIds.length > 0
+      ? await ProductSn.findAll({
+        where: {
+          product_id: { [Op.in]: serializedProductIds },
+          status: 'in_stock',
+          is_deleted: 0,
+          location_id: { [Op.in]: salesLocationIds }
+        },
+        attributes: ['product_id', 'store_id'],
+        raw: true
+      })
+      : [];
+    const snStoreIds = [...new Set(snRows.map(row => row.store_id).filter(Boolean))];
+    const snStores = snStoreIds.length
+      ? await Store.findAll({ where: { store_id: { [Op.in]: snStoreIds } }, attributes: ['store_id', 'name'], raw: true })
+      : [];
+    const snStoreNameMap = new Map(snStores.map(store => [String(store.store_id), store.name]));
+    applySerializedSalesStock(stockMap, serializedProductIds, snRows, snStoreNameMap, storeId);
   }
 
   return stockMap;
@@ -3340,6 +3413,7 @@ module.exports = {
     ensureProductPns,
     resolveProductApplicationPnCode,
     hasProductApplicationValue,
-    isFourLevelCategory
+    isFourLevelCategory,
+    applySerializedSalesStock
   }
 };

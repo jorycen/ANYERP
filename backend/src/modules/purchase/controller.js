@@ -10,6 +10,7 @@ const { createPurchaseReimbursement, createSettlementReversal, cancelExpenseReco
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { canViewSnTraceReference } = require('../../utils/snTracePermission');
 const { isUsablePnCode } = require('../../utils/productPn');
+const { assertPnAvailableForNewProduct } = require('../../utils/productPnMaster');
 const { getUserRoles } = require('../../middleware/permission');
 const { isStoreScopedAccount } = require('../../utils/storePermissions');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
@@ -105,6 +106,18 @@ async function assertActivePurchaseProducts(items, transaction = null) {
     .filter(productId => productId && String(productId) !== '__USED_PRODUCT__')
     .map(String))];
   return assertActiveProducts(Product, productIds, transaction ? { transaction } : {});
+}
+
+async function assertNewPurchasePnsAvailable(items, transaction = null) {
+  for (const item of items || []) {
+    const isUsedProduct = Number(item?.isUsedProduct ?? item?.is_used_product ?? 0) === 1;
+    const productId = item?.productId || item?.product_id || '';
+    if (!isUsedProduct || productId) continue;
+    await assertPnAvailableForNewProduct({
+      pnCode: item?.pnCode || item?.pn_code || '',
+      transaction
+    });
+  }
 }
 
 function allocateRebateByItems(items, amount) {
@@ -950,6 +963,7 @@ async function createRequest(ctx) {
   let createdRequest;
 
   await sequelize.transaction(async transaction => {
+    if (!isDraft) await assertNewPurchasePnsAvailable(items, transaction);
     await assertActivePurchaseProducts(items, transaction);
     const productSnapshots = await loadPurchaseProductSnapshots(items, transaction);
     // 表头、明细、返利、运费和审计记录必须原子提交，避免明细写入失败后留下可审批的空采购单。
@@ -1132,8 +1146,9 @@ async function submitRequestDraft(ctx) {
   const usedDraftItems = (request.items || []).filter(item => Number(item.is_used_product) === 1 && !item.product_id);
   usedDraftItems.forEach(item => { item.product_id = '__USED_PRODUCT__'; });
   const goodsType = await validateDraftSubmission(request, ctx);
-  await assertActivePurchaseProducts(request.items);
   usedDraftItems.forEach(item => { item.product_id = null; });
+  await assertNewPurchasePnsAvailable(request.items);
+  await assertActivePurchaseProducts(request.items);
   const deduction = Math.min(toMoney(request.rebate_deduction || 0), toMoney(request.total_amount || 0));
   if (deduction > 0) {
     const currentBalance = await _getRebateBalance(request.supplier_id);

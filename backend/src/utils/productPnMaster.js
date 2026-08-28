@@ -17,7 +17,7 @@ function pnCodeWhere(code) {
 }
 
 function createPnConflictError(code) {
-  const error = new Error(`PN码 [${code}] 已关联其他商品，不能重复绑定`);
+  const error = new Error(`PN码 [${code}] 已存在，无需新建商品，请直接入库`);
   error.status = 409;
   error.code = 'PN_ALREADY_BOUND';
   error.pnCode = code;
@@ -26,6 +26,18 @@ function createPnConflictError(code) {
 
 function isEffectivePn(row) {
   return Number(row?.status || 0) === 1 && Number(row?.is_deleted || 0) === 0;
+}
+
+async function assertPnAvailableForNewProduct({ pnCode, transaction = null }) {
+  const code = String(pnCode || '').trim();
+  if (!isUsablePnCode(code)) return;
+
+  const existingRows = await ProductPn.findAll({
+    where: { [Op.and]: [pnCodeWhere(code)] },
+    attributes: ['product_id', 'status', 'is_deleted'],
+    transaction
+  });
+  if (existingRows.some(isEffectivePn)) throw createPnConflictError(code);
 }
 
 async function listActiveProductPns(productId, transaction = null) {
@@ -296,6 +308,7 @@ async function ensureSnPnId(sn, transaction = null) {
 module.exports = {
   listActiveProductPns,
   resolveProductPn,
+  assertPnAvailableForNewProduct,
   ensureProductPnMaster,
   ensureProductPnsMaster,
   syncProductPnsMaster,

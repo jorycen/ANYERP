@@ -69,6 +69,20 @@ function setDataValue(row, key, value) {
   else if (row) row[key] = value;
 }
 
+async function enrichPayableDistributorNames(rows) {
+  const list = (rows || []).filter(Boolean);
+  const distributorIds = [...new Set(list.map(row => row.distributor_id).filter(Boolean).map(String))];
+  if (!distributorIds.length) return;
+  const distributors = await Distributor.findAll({
+    where: { distributor_id: { [Op.in]: distributorIds } },
+    attributes: ['distributor_id', 'name']
+  });
+  const distributorMap = new Map(distributors.map(row => [String(row.distributor_id), row.name || row.distributor_id]));
+  list.forEach(row => {
+    setDataValue(row, 'distributor_name', distributorMap.get(String(row.distributor_id)) || row.distributor_id || '未知经销商');
+  });
+}
+
 async function enrichSettlementMetadata(rows, transaction = null) {
   const list = (rows || []).filter(Boolean);
   if (!list.length) return;
@@ -144,11 +158,12 @@ async function getPurchaseAdjustmentQuantityDeltas(requestIds, transaction = nul
  * 应付款列表
  */
 function buildPayableListWhere(query, user) {
-  const { supplierId, regionId, sourceType, sourceNo, status, startDate, endDate } = query;
+  const { supplierId, regionId, distributorId, sourceType, sourceNo, status, startDate, endDate } = query;
   const where = {};
 
   if (supplierId) where.supplier_id = supplierId;
   if (regionId) where.region_id = regionId;
+  if (distributorId) where.distributor_id = distributorId;
   if (sourceType) {
     const sourceTypes = String(sourceType).split(',').map(item => item.trim()).filter(Boolean);
     if (sourceTypes.length === 1) where.source_type = sourceTypes[0];
@@ -179,6 +194,7 @@ function buildPayableListWhere(query, user) {
 
 async function getPayableList(ctx) {
   const { page = 1, pageSize = 20 } = ctx.query;
+  if (ctx.query.distributorId) assertDistributorOperation(ctx, ctx.query.distributorId);
   const where = buildPayableListWhere(ctx.query, ctx.state.user);
 
   const { count, rows } = await Payable.findAndCountAll({
@@ -255,6 +271,7 @@ async function getPayableList(ctx) {
         : ''
     );
   });
+  await enrichPayableDistributorNames(rows);
 
   const result = formatPaginatedResult(rows, { page, pageSize, count });
   result.summary = {
@@ -265,6 +282,7 @@ async function getPayableList(ctx) {
 }
 
 async function exportPayableList(ctx) {
+  if (ctx.query.distributorId) assertDistributorOperation(ctx, ctx.query.distributorId);
   const where = buildPayableListWhere(ctx.query, ctx.state.user);
   const rows = await Payable.findAll({
     where,
@@ -275,6 +293,7 @@ async function exportPayableList(ctx) {
       idColumn: 'Payable.payable_id'
     })
   });
+  await enrichPayableDistributorNames(rows);
   const requestIds = [...new Set(rows
     .filter(row => ['purchase', 'purchase_adjustment', 'purchase_return'].includes(row.source_type) && row.request_id)
     .map(row => row.request_id))];
@@ -294,6 +313,7 @@ async function exportPayableList(ctx) {
       来源单号: item.source_no || item.request_no || '',
       来源类型: item.source_type || '',
       收款方: item.payee_name || item.supplier_name || '',
+      经销商: item.distributor_name || item.distributor_id || '',
       采购原价: request ? Number(request.total_amount || 0) : '',
       返利抵扣: request ? Number(request.rebate_deduction || 0) : '',
       应付金额: Number(item.total_amount || 0),
@@ -308,7 +328,7 @@ async function exportPayableList(ctx) {
     };
   });
   sendExcel(ctx, data, [
-    '来源单号', '来源类型', '收款方', '采购原价', '返利抵扣', '应付金额', '已结算金额', '剩余应付金额',
+    '来源单号', '来源类型', '收款方', '经销商', '采购原价', '返利抵扣', '应付金额', '已结算金额', '剩余应付金额',
     '已付金额', '状态', '采购发起人', '创建时间'
   ], `应付管理_${new Date().toISOString().slice(0, 10)}.xlsx`, '应付管理');
 }
@@ -360,6 +380,7 @@ async function getPayableSettlementItems(ctx) {
   }
   applyDistributorFilter(where, ctx.state.user);
   const payables = await Payable.findAll({ where, order: [['create_time', 'DESC']] });
+  await enrichPayableDistributorNames(payables);
   const summary = await getAllocationSummary(payables.map(item => item.payable_id));
   const requestIds = [...new Set(payables.map(item => item.request_id).filter(Boolean))];
   const requestItems = requestIds.length
@@ -411,6 +432,8 @@ async function getPayableSettlementItems(ctx) {
           request_no: payable.request_no,
           supplier_id: payable.supplier_id,
           supplier_name: payable.supplier_name,
+          distributor_id: payable.distributor_id,
+          distributor_name: payable.distributor_name,
           source_type: payable.source_type,
           total_amount: itemRemaining,
           settled_amount: allocated.amount,
@@ -434,6 +457,8 @@ async function getPayableSettlementItems(ctx) {
       request_no: payable.request_no,
       supplier_id: payable.supplier_id,
       supplier_name: payable.supplier_name,
+      distributor_id: payable.distributor_id,
+      distributor_name: payable.distributor_name,
       source_type: payable.source_type,
       total_amount: payable.total_amount,
       settled_amount: allocated.amount,
