@@ -793,6 +793,10 @@ function getOrderExportArchiveStatus(status) {
   return '';
 }
 
+function normalizeSalesReturnReason(value) {
+  return String(value === undefined || value === null ? '' : value).trim();
+}
+
 function getOrderExportInvoiceAmount(invoiceStatus, invoiceAmount) {
   return String(invoiceStatus || '').trim() === '不开票'
     ? 0
@@ -3464,6 +3468,9 @@ async function requestSalesReturn(ctx) {
     policySubsidyRefundAmount: policySubsidyRefundAmountInput,
     policy_subsidy_refund_amount: policySubsidyRefundAmountSnake
   } = ctx.request.body || {};
+  const normalizedReason = normalizeSalesReturnReason(reason);
+  if (!normalizedReason) ctx.throw(400, '退单缘由不能为空');
+  if (normalizedReason.length > 512) ctx.throw(400, '退单缘由不能超过512个字符');
   const orderId = ctx.params.orderId || bodyOrderId;
   const user = ctx.state.user;
   if (!orderId) ctx.throw(400, '订单ID不能为空');
@@ -3577,7 +3584,7 @@ async function requestSalesReturn(ctx) {
           : 0,
         selectedItemIds: uniqueSelectedItems.map(row => String(row.sourceItem.item_id || ''))
       }),
-      reason: String(reason || '').trim() || '客户退单',
+      reason: normalizedReason,
       status: 'pending',
       approval_stage: 'pending_store',
       create_staff_id: user.staffId || null,
@@ -5017,6 +5024,7 @@ module.exports = {
     isSalesReturnInProgressStatus,
     getSalesReturnStatusLabel,
     getOrderExportArchiveStatus,
+    normalizeSalesReturnReason,
     getOrderExportInvoiceAmount,
     normalizeDepositListRow,
     isExportMainProduct,

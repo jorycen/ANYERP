@@ -83,6 +83,7 @@
           <el-descriptions-item label="申请编号">{{ currentInstance.instance_no }}</el-descriptions-item>
           <el-descriptions-item label="业务单据">{{ currentInstance.business_type }} / {{ currentInstance.business_id }}</el-descriptions-item>
           <el-descriptions-item label="说明" :span="2">{{ currentInstance.summary || '-' }}</el-descriptions-item>
+          <el-descriptions-item v-if="currentInstance.returnReason !== undefined" label="退单缘由" :span="2">{{ currentInstance.returnReason || '-' }}</el-descriptions-item>
         </el-descriptions>
         <el-divider>审批任务</el-divider>
         <el-timeline>
@@ -396,6 +397,8 @@ function taskAmount(row) {
 async function openInstance(id) { currentInstance.value = (await api.getApprovalInstance(id)).data; detailVisible.value = true }
 function openSales(row) { router.push({ name: 'Sales', query: { orderId: row.order_id } }) }
 function openModule(row) {
+  const moduleRow = row.moduleRow || {}
+  const isSalesReturn = row.moduleType === 'sales_return'
   currentInstance.value = {
     title: taskTitle(row),
     status: 'pending',
@@ -403,6 +406,7 @@ function openModule(row) {
     business_type: taskBusinessType(row),
     business_id: row.Instance?.business_id || '-',
     summary: row.Instance?.summary || '-',
+    returnReason: isSalesReturn ? moduleRow.reason || moduleRow.return_reason || '' : undefined,
     Tasks: []
   }
   detailVisible.value = true
