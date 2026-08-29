@@ -571,6 +571,7 @@ async function getSnInventoryList(ctx) {
        sp.UPDATE_TIME AS special_price_update_time
      ${joins}${whereSql}
       ORDER BY (COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME) IS NULL) ASC,
+               TIMESTAMPDIFF(SECOND, COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME), NOW()) DESC,
                COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME) ASC,
                sn.SN_ID DESC${paginationSql}`,
     {
