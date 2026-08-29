@@ -2876,9 +2876,14 @@ async function getGrossProfit(ctx) {
 
 async function updateSupplements(ctx) {
   const { orderId } = ctx.params;
-  const supplements = ctx.request.body?.supplements;
+  const requestBody = ctx.request.body || {};
+  const supplements = requestBody.supplements;
+  const expectedSupplementIds = requestBody.expectedSupplementIds ?? requestBody.expected_supplement_ids;
   if (!Array.isArray(supplements)) ctx.throw(400, '补录数据格式不正确');
   if (supplements.length > 50) ctx.throw(400, '单笔订单最多保存50条补录记录');
+  if (expectedSupplementIds !== undefined && !Array.isArray(expectedSupplementIds)) {
+    ctx.throw(400, '补录版本标识格式不正确');
+  }
 
   const order = await Order.findByPk(orderId);
   if (!order) ctx.throw(404, '订单不存在');
@@ -2917,6 +2922,26 @@ async function updateSupplements(ctx) {
 
   let snapshot;
   await sequelize.transaction(async transaction => {
+    // 锁住订单并校验客户端读取的补录版本，避免两个保存请求互相覆盖。
+    const lockedOrder = await Order.findByPk(order.order_id, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    const currentSupplements = await OrderSupplement.findAll({
+      where: { order_id: order.order_id, is_deleted: 0 },
+      attributes: ['supplement_id'],
+      order: [['supplement_id', 'ASC']],
+      transaction,
+      raw: true
+    });
+    if (expectedSupplementIds !== undefined) {
+      const expectedIds = expectedSupplementIds.map(id => String(id || '').trim()).filter(Boolean).sort();
+      const currentIds = currentSupplements.map(item => String(item.supplement_id || '').trim()).filter(Boolean).sort();
+      if (expectedIds.length !== currentIds.length || expectedIds.some((id, index) => id !== currentIds[index])) {
+        ctx.throw(409, '补录已被其他操作更新，请刷新订单后重试');
+      }
+    }
+
     await OrderSupplement.update(
       { is_deleted: 1, update_time: new Date() },
       { where: { order_id: order.order_id, is_deleted: 0 }, transaction }
@@ -2928,15 +2953,15 @@ async function updateSupplements(ctx) {
       transaction,
       calculatedBy: ctx.state.user?.name || 'system',
       force: true,
-      final: isArchiveStatus(order.order_status)
+      final: isArchiveStatus(lockedOrder?.order_status || order.order_status)
     });
     await recordBusinessAction({
       businessType: 'sales_order',
       businessId: order.order_id,
       businessNo: order.order_no,
       action: 'supplements_updated',
-      fromStatus: order.order_status,
-      toStatus: order.order_status,
+      fromStatus: lockedOrder?.order_status || order.order_status,
+      toStatus: lockedOrder?.order_status || order.order_status,
       user: ctx.state.user,
       comment: `金额补录已更新，共${normalized.length}条`,
       transaction
