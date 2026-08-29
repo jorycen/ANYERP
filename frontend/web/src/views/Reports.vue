@@ -38,6 +38,20 @@
             </el-table-column>
           </el-table>
 
+          <div style="margin-top: 18px;">
+            <div class="report-section-heading"><div><h3>商品维度销售统计</h3><p>按商品分类、品牌、系列、型号分别汇总，历史路径不会作为展示维度。</p></div></div>
+            <el-table :data="salesCategoryData" stripe border>
+              <el-table-column prop="category" label="商品分类" width="110" />
+              <el-table-column prop="brand" label="品牌" width="100" />
+              <el-table-column prop="series" label="系列" width="120" />
+              <el-table-column prop="model" label="型号" min-width="140" />
+              <el-table-column prop="totalQuantity" label="数量" width="90" />
+              <el-table-column prop="totalAmount" label="销售额" width="120">
+                <template #default="{ row }">¥{{ row.totalAmount }}</template>
+              </el-table-column>
+            </el-table>
+          </div>
+
           <div class="chart-container">
             <div ref="salesChartRef" class="chart"></div>
           </div>
@@ -148,11 +162,11 @@
           </div>
 
           <el-table :data="inventoryData" stripe border>
-            <el-table-column prop="productName" label="商品" min-width="150" />
-            <el-table-column prop="category" label="分类" width="100" />
-            <el-table-column prop="totalStock" label="总库存" width="100" />
-            <el-table-column prop="inStockCount" label="在库" width="80" />
-            <el-table-column prop="soldCount" label="已售" width="80" />
+            <el-table-column prop="category" label="商品分类" width="110" />
+            <el-table-column prop="brand" label="品牌" width="100" />
+            <el-table-column prop="series" label="系列" width="120" />
+            <el-table-column prop="model" label="型号" min-width="140" />
+            <el-table-column prop="totalCount" label="在库数量" width="100" />
           </el-table>
 
           <div class="chart-container">
@@ -391,6 +405,7 @@ const syncTabFromRoute = () => {
 }
 const stores = ref([])
 const salesData = ref([])
+const salesCategoryData = ref([])
 const inventoryData = ref([])
 const employeeData = ref([])
 const employeeOptions = ref([])
@@ -466,6 +481,7 @@ const loadSalesReport = async () => {
     const res = await api.getSalesReport(salesParams)
     if (res.code === 0) {
       salesData.value = res.data?.list || []
+      salesCategoryData.value = res.data?.statsByCategory || []
       initSalesChart()
     }
   } catch (err) { ElMessage.error('加载失败') }
@@ -512,7 +528,7 @@ const loadInventoryReport = async () => {
   try {
     const res = await api.getInventoryReport(inventoryParams)
     if (res.code === 0) {
-      inventoryData.value = res.data || []
+      inventoryData.value = res.data?.categoryStats || []
       initInventoryChart()
     }
   } catch (err) { ElMessage.error('加载失败') }

@@ -134,7 +134,9 @@ const Product = sequelize.define('Product', {
   product_id: { type: DataTypes.STRING(32), primaryKey: true },
   product_code: { type: DataTypes.STRING(32), unique: true, allowNull: false },
   name: { type: DataTypes.STRING(255), allowNull: false },
-  category: { type: DataTypes.STRING(512), allowNull: true, comment: '分类路径: 一级/二级/三级/四级' },
+  category: { type: DataTypes.STRING(128), allowNull: true, comment: '商品分类（一级分类维度）' },
+  category_id: { type: DataTypes.STRING(32), allowNull: true, comment: '选中的商品分类节点，可为空' },
+  category_path_legacy: { type: DataTypes.STRING(512), allowNull: true, comment: '历史分类路径，仅用于兼容追溯' },
   config: { type: DataTypes.STRING(512), allowNull: true, comment: '厂商商品名称' },
   manufacturer_code: { type: DataTypes.STRING(512), allowNull: true, comment: 'manufacturer code' },
   need_sn: { type: DataTypes.TINYINT(1), defaultValue: 0 },
@@ -418,7 +420,7 @@ const SnLog = sequelize.define('SnLog', {
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_SN_LOG', timestamps: false });
 
-// 商品分类（四级树形结构；商品表仍以完整路径字符串保存）
+// 商品分类（最多四级树形结构；商品主数据按分类/品牌/系列/型号分字段保存）
 const ProductCategory = sequelize.define('ProductCategory', {
   category_id: { type: DataTypes.STRING(32), primaryKey: true },
   parent_id: { type: DataTypes.STRING(32), allowNull: true },
@@ -449,7 +451,8 @@ const ProductApplication = sequelize.define('ProductApplication', {
   application_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
   product_name: { type: DataTypes.STRING(255), allowNull: false },
   category_id: { type: DataTypes.STRING(32) },
-  category_name: { type: DataTypes.STRING(512) },
+  category_name: { type: DataTypes.STRING(128) },
+  category_path_legacy: { type: DataTypes.STRING(512), comment: '历史分类路径，仅用于兼容追溯' },
   payload_json: { type: DataTypes.JSON, allowNull: false },
   applicant_staff_id: { type: DataTypes.BIGINT(20), allowNull: false },
   applicant_name: { type: DataTypes.STRING(64), allowNull: false },

@@ -160,6 +160,9 @@ async function getSalesReport(ctx) {
     where: { '$Order.store_id$': storeIds },
     attributes: [
       [sequelize.col('Product.category'), 'category'],
+      [sequelize.col('Product.brand'), 'brand'],
+      [sequelize.col('Product.series'), 'series'],
+      [sequelize.col('Product.model'), 'model'],
       [sequelize.fn('COUNT', sequelize.col('OrderItem.item_id')), 'itemCount'],
       [sequelize.fn('SUM', sequelize.col('OrderItem.quantity')), 'totalQuantity'],
       [sequelize.fn('SUM', sequelize.col('OrderItem.subtotal')), 'totalAmount']
@@ -173,7 +176,12 @@ async function getSalesReport(ctx) {
       as: 'Product',
       attributes: []
     }],
-    group: [sequelize.col('Product.category')],
+    group: [
+      sequelize.col('Product.category'),
+      sequelize.col('Product.brand'),
+      sequelize.col('Product.series'),
+      sequelize.col('Product.model')
+    ],
     raw: true
   });
 
@@ -281,7 +289,7 @@ async function getInventoryReport(ctx) {
     ],
     include: [{
       model: Product,
-      attributes: ['name', 'category']
+      attributes: ['name', 'category', 'brand', 'series', 'model']
     }],
     group: ['product_id'],
     raw: true
@@ -292,13 +300,21 @@ async function getInventoryReport(ctx) {
     where: whereSn,
     attributes: [
       [sequelize.col('Product.category'), 'category'],
+      [sequelize.col('Product.brand'), 'brand'],
+      [sequelize.col('Product.series'), 'series'],
+      [sequelize.col('Product.model'), 'model'],
       [sequelize.fn('COUNT', sequelize.col('sn_id')), 'totalCount']
     ],
     include: [{
       model: Product,
       attributes: []
     }],
-    group: [sequelize.col('Product.category')],
+    group: [
+      sequelize.col('Product.category'),
+      sequelize.col('Product.brand'),
+      sequelize.col('Product.series'),
+      sequelize.col('Product.model')
+    ],
     raw: true
   });
 

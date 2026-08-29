@@ -1413,6 +1413,11 @@
 
         <el-divider content-position="left">商品属性</el-divider>
         <el-row :gutter="16">
+          <el-col :span="6">
+            <el-form-item label="商品分类" label-width="75px">
+              <el-input v-model="conversionProductForm.category" placeholder="如：笔记本" size="small" />
+            </el-form-item>
+          </el-col>
           <el-col :span="8">
             <el-form-item label="品牌" label-width="75px">
               <el-input v-model="conversionProductForm.brand" placeholder="如：联想" size="small" />
@@ -2038,6 +2043,7 @@ const conversionTargetAdd = reactive({
 })
 const conversionProductForm = reactive({
   categoryId: '',
+  category: '',
   config: '',
   brand: '',
   series: '',
@@ -2075,7 +2081,7 @@ const conversionProductExtraFields = computed(() => {
 })
 const conversionProductName = computed(() => {
   if (conversionProductForm.customName) return conversionProductForm.customName
-  const parts = [...conversionProductCategoryNameParts.value]
+  const parts = [conversionProductForm.brand, conversionProductForm.series, conversionProductForm.model].filter(Boolean)
   for (const field of conversionProductStandardFields) {
     if (conversionProductForm[field]) parts.push(conversionProductForm[field])
   }
@@ -4012,6 +4018,10 @@ const onConversionProductCategoryChange = async (value) => {
       conversionProductCategoryFields.value = res.data.fields
       conversionProductCategoryFieldName.value = res.data.categoryName || ''
       conversionProductCategoryNameParts.value = Array.isArray(res.data.categoryNameParts) ? res.data.categoryNameParts : []
+      const dimensions = res.data.categoryDimensions || {}
+      for (const key of ['category', 'brand', 'series', 'model']) {
+        if (dimensions[key]) conversionProductForm[key] = dimensions[key]
+      }
     }
   } catch (err) {
     ElMessage.error('加载分类字段失败')
@@ -4020,6 +4030,7 @@ const onConversionProductCategoryChange = async (value) => {
 
 const resetConversionProductForm = () => {
   conversionProductForm.categoryId = ''
+  conversionProductForm.category = ''
   conversionProductForm.config = ''
   conversionProductForm.brand = ''
   conversionProductForm.series = ''
@@ -4087,6 +4098,10 @@ const buildConversionProductPayload = () => {
   return {
     name: finalName,
     categoryId: conversionProductForm.categoryId || null,
+    category: conversionProductForm.category,
+    brand: conversionProductForm.brand,
+    series: conversionProductForm.series,
+    model: conversionProductForm.model,
     config: conversionProductForm.config,
     unit: conversionProductForm.unit,
     needSn: conversionProductForm.needSn ? 1 : 0,

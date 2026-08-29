@@ -365,17 +365,42 @@
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="商品分类" required>
+            <el-form-item label="商品分类">
               <el-tree-select
                 v-model="productForm.categoryId"
                 :data="productCategoryTree"
                 :props="{ label: 'name', value: 'category_id', children: 'children', disabled: 'disabled' }"
-                placeholder="请选择第四级分类"
+                placeholder="可选择任意级分类"
                 clearable
                 check-strictly
                 style="width: 100%"
                 @change="onCategoryChange"
               />
+              <div class="text-muted" style="margin-top: 4px;">可选择1～4级；不选择时可直接手工填写下面字段。</div>
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-divider content-position="left">商品分类维度</el-divider>
+        <el-row :gutter="16">
+          <el-col :span="6">
+            <el-form-item label="商品分类" label-width="75px">
+              <el-input v-model="productForm.category" placeholder="如：笔记本" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
+            <el-form-item label="品牌" label-width="55px">
+              <el-input v-model="productForm.brand" placeholder="如：联想" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
+            <el-form-item label="系列" label-width="55px">
+              <el-input v-model="productForm.series" placeholder="如：拯救者" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
+            <el-form-item label="型号" label-width="55px">
+              <el-input v-model="productForm.model" placeholder="如：R9000P" size="small" />
             </el-form-item>
           </el-col>
         </el-row>
@@ -398,7 +423,8 @@
         </div>
 
         <el-form-item label="商品名称">
-          <span style="font-weight: 600; font-size: 14px;">{{ computedProductName || '（请填写补充字段）' }}</span>
+          <el-input v-model="productForm.name" placeholder="可手工填写；留空时按品牌/系列/型号和补充字段组合" />
+          <div class="text-muted" style="margin-top: 4px;">当前名称：{{ computedProductName || '（尚未填写）' }}</div>
         </el-form-item>
         <el-form-item label="厂商编码 / PN" required>
           <div class="text-muted" style="margin-bottom: 6px;">厂商编码就是PN，商品只在这里维护。69码属于独立条码；历史厂商编码仅用于清理，不再新增。</div>
@@ -515,7 +541,7 @@
     <!-- 批量导入对话框 -->
     <el-dialog v-model="importDialogVisible" title="批量导入商品" width="700px">
       <div class="import-tips">
-        <p>下载模板，按模板格式填写后上传。新建商品的“商品分类”必须填写完整的四级路径（一级/二级/三级/四级）；分类字段列名需与“商品字段管理”中配置的<strong>字段名</strong>一致，系统会自动匹配并拼装商品名称。</p>
+        <p>下载模板，按模板格式填写后上传。“商品分类”可填写单个分类名称，也兼容旧的一级/二级/三级/四级路径；品牌、系列、型号分别填写独立字段。分类字段列名需与“商品字段管理”中配置的<strong>字段名</strong>一致，系统会自动匹配并拼装商品名称。</p>
         <p style="color: #e6a23c;">也可以直接填写"商品名称"列，系统优先使用该值。</p>
         <p style="color: #409eff;">提交后先校验文件格式和数据；大文件会进入后台处理，请根据任务状态查看结果。</p>
         <el-button type="primary" size="small" @click="downloadTemplate">下载导入模板</el-button>
@@ -732,6 +758,7 @@ const productForm = reactive({
   pnCode: '',
   pns: [],
   categoryId: '',
+  category: '',
   config: '',
   brand: '',
   series: '',
@@ -768,11 +795,9 @@ function isLeafCategory(node) {
 }
 
 const productCategoryTree = computed(() => {
-  const currentId = String(productForm.categoryId || '')
-  const editingLegacyId = String(originalCategoryId.value || '')
   const decorate = (nodes) => (nodes || []).filter(Boolean).map(node => ({
       ...node,
-      disabled: !isLeafCategory(node) && String(node.category_id) !== currentId && String(node.category_id) !== editingLegacyId,
+      disabled: Number(node.status ?? 1) !== 1,
       children: decorate(node.children)
     }))
   return decorate(categoryTree.value)
@@ -823,8 +848,9 @@ const addFormBarcode = () => {
 const removeFormBarcode = (index) => { productForm.barcodes.splice(index, 1) }
 
 const computedProductName = computed(() => {
-  const parts = [...categoryNameParts.value]
-  for (const field of categoryFields.value) {
+  if (String(productForm.name || '').trim()) return String(productForm.name).trim()
+  const parts = [productForm.brand, productForm.series, productForm.model].filter(Boolean)
+  for (const field of categoryExtraFields.value) {
     if (productForm.attributes[field.field_key]) {
       parts.push(productForm.attributes[field.field_key])
     }
@@ -832,13 +858,19 @@ const computedProductName = computed(() => {
   return parts.join(' ') || productForm.name || ''
 })
 
-const standardFields = ['brand', 'series', 'model', 'processor', 'memory', 'storage', 'color', 'gpu', 'accessory_type']
+const standardFieldAliases = {
+  category: ['category', 'categoryname', '商品分类', '分类'],
+  brand: ['brand', '品牌'], series: ['series', '系列'], model: ['model', '型号'],
+  processor: ['processor', 'cpu', '处理器'], memory: ['memory', 'mem', '内存'],
+  storage: ['storage', 'harddisk', '硬盘', '存储'], color: ['color', '颜色'],
+  gpu: ['gpu', '显卡'], accessory_type: ['accessory_type', '类别', '配件类别']
+}
 const getStandardFieldKey = (fieldKey) => {
   const normalizedKey = String(fieldKey || '').trim().toLowerCase()
-  return standardFields.includes(normalizedKey) ? normalizedKey : ''
+  return Object.entries(standardFieldAliases).find(([, aliases]) => aliases.includes(normalizedKey))?.[0] || ''
 }
 const categoryExtraFields = computed(() => {
-  return categoryFields.value
+  return categoryFields.value.filter(field => !getStandardFieldKey(field.field_key))
 })
 
 function findCategoryByPath(tree, path) {
@@ -863,13 +895,6 @@ const onCategoryChange = async (value) => {
     return
   }
   const selectedCategory = findCategoryNode(categoryTree.value, value)
-  const isEditing = Boolean(productForm.productId)
-  const isLegacySelection = isEditing && String(value) === String(originalCategoryId.value)
-  if (!isLeafCategory(selectedCategory) && (!isEditing || !isLegacySelection)) {
-    ElMessage.warning('新建商品必须选择第四级最后一级分类')
-    productForm.categoryId = originalCategoryId.value || ''
-    return
-  }
   productForm.attributes = {}
   categoryFields.value = []
   categoryFieldCatName.value = ''
@@ -882,7 +907,11 @@ const onCategoryChange = async (value) => {
       categoryFields.value = res.data.fields
       categoryFieldCatName.value = res.data.categoryName || ''
       categoryNameParts.value = Array.isArray(res.data.categoryNameParts) ? res.data.categoryNameParts : []
-      if (currentProduct.value) {
+      const dimensions = res.data.categoryDimensions || {}
+      for (const key of ['category', 'brand', 'series', 'model']) {
+        if (dimensions[key]) productForm[key] = dimensions[key]
+      }
+      if (currentProduct.value && String(value) === String(originalCategoryId.value)) {
         productForm.brand = currentProduct.value.brand || ''
         productForm.series = currentProduct.value.series || ''
         productForm.model = currentProduct.value.model || ''
@@ -952,8 +981,9 @@ const handleEdit = async (row) => {
   productForm.productCode = row.product_code
   productForm.pnCode = row.manufacturer_codes?.[0] || String(row.manufacturer_code || '').split(',')[0].trim()
   productForm.pns = []
-  productForm.categoryId = ''
-  originalCategoryId.value = ''
+  productForm.categoryId = row.category_id || ''
+  originalCategoryId.value = row.category_id || ''
+  productForm.category = row.category || ''
   productForm.config = row.config || ''
   productForm.brand = row.brand || ''
   productForm.series = row.series || ''
@@ -993,7 +1023,7 @@ const handleEdit = async (row) => {
   categoryFields.value = []
   categoryFieldCatName.value = ''
 
-  if (row.category) {
+  if (!productForm.categoryId && row.category) {
     const catId = findCategoryByPath(categoryTree.value, row.category)
     if (catId) {
       productForm.categoryId = catId
@@ -1006,7 +1036,6 @@ const handleEdit = async (row) => {
   if (productForm.categoryId) {
     await onCategoryChange(productForm.categoryId)
   }
-  restoreProductDraft()
 }
 
 const handleDelete = async (row) => {
@@ -1106,6 +1135,7 @@ const resetForm = () => {
   productForm.pnCode = ''
   productForm.pns = []
   productForm.categoryId = ''
+  productForm.category = ''
   originalCategoryId.value = ''
   productForm.config = ''
   productForm.brand = ''
@@ -1162,14 +1192,11 @@ const restoreProductDraft = () => {
 
 const handleSubmit = async () => {
   const finalName = String(computedProductName.value || productForm.name || '').trim()
-  if (!productForm.categoryId) { ElMessage.warning('请选择第四级商品分类'); return }
-  const selectedCategory = findCategoryNode(categoryTree.value, productForm.categoryId)
-  const isEditing = Boolean(productForm.productId)
-  const isLegacySelection = isEditing && String(productForm.categoryId) === String(originalCategoryId.value)
-  if (!isLeafCategory(selectedCategory) && (!isEditing || !isLegacySelection)) {
-    ElMessage.warning('新建商品必须选择第四级最后一级分类'); return
-  }
-  const missingField = categoryFields.value.find(field => Number(field.required) === 1 && !String(productForm.attributes[field.field_key] ?? '').trim())
+  const missingField = categoryFields.value.find(field => {
+    if (Number(field.required) !== 1) return false
+    const key = getStandardFieldKey(field.field_key)
+    return !String(key ? productForm[key] : productForm.attributes[field.field_key] ?? '').trim()
+  })
   if (missingField) { ElMessage.warning(`请填写${missingField.field_label}`); return }
   if (!finalName) { ElMessage.warning('请填写补充字段'); return }
   if (isEditing && pnLoadFailed.value) {
@@ -1208,6 +1235,10 @@ const handleSubmit = async () => {
     const data = {
       name: finalName,
       categoryId: productForm.categoryId || null,
+      category: productForm.category,
+      brand: productForm.brand,
+      series: productForm.series,
+      model: productForm.model,
       pnCode,
       manufacturerCode: pnCode,
       config: productForm.config,
@@ -1690,7 +1721,7 @@ const clearFile = () => { importFile.value = null }
 const downloadTemplate = () => {
   const d = [{
     '商品名称': '',
-    '商品分类': '电子产品/电脑/笔记本/游戏本',
+    '商品分类': '笔记本',
     '品牌': '',
     '系列': '',
     '型号': '',

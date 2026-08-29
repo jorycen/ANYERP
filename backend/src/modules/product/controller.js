@@ -36,6 +36,10 @@ const { sendExcel } = require('../../utils/excelExport');
 
 // 字段标识到数据库列名的映射（field_key → DB column）
 const FIELD_TO_COLUMN = {
+  'category': 'category',
+  'categoryname': 'category',
+  '商品分类': 'category',
+  '分类': 'category',
   'brand': 'brand',
   '品牌': 'brand',
   'series': 'series',
@@ -514,6 +518,116 @@ async function resolveFourLevelCategory(categoryId) {
   return { category, path: parts.join('/') };
 }
 
+const PRODUCT_DIMENSION_KEYS = ['category', 'brand', 'series', 'model'];
+const PRODUCT_DIMENSION_FIELD_ALIASES = {
+  category: new Set(['category', 'categoryname', '商品分类', '分类']),
+  brand: new Set(['brand', '品牌']),
+  series: new Set(['series', '系列']),
+  model: new Set(['model', '型号'])
+};
+
+function getProductDimensionKey(fieldKey) {
+  const value = String(fieldKey || '').trim().toLowerCase();
+  return PRODUCT_DIMENSION_KEYS.find(key => PRODUCT_DIMENSION_FIELD_ALIASES[key].has(value)) || '';
+}
+
+function categoryDimensionsFromLineage(lineage) {
+  const dimensions = { category: '', brand: '', series: '', model: '' };
+  for (const category of [...(lineage || [])].reverse()) {
+    const level = Number(category?.level);
+    const key = PRODUCT_DIMENSION_KEYS[level - 1];
+    if (key && !dimensions[key]) dimensions[key] = String(category.name || '').trim();
+  }
+  return dimensions;
+}
+
+async function resolveProductCategory(categoryId) {
+  if (!categoryId) {
+    return {
+      category: null,
+      lineage: [],
+      path: '',
+      dimensions: { category: '', brand: '', series: '', model: '' }
+    };
+  }
+
+  const lineage = [];
+  const visited = new Set();
+  let currentId = categoryId;
+  while (currentId) {
+    const normalizedId = String(currentId);
+    if (visited.has(normalizedId)) {
+      throw Object.assign(new Error('商品分类层级存在循环引用'), { status: 400 });
+    }
+    visited.add(normalizedId);
+    const category = await ProductCategory.findOne({
+      where: { category_id: currentId, status: 1 },
+      raw: true
+    });
+    if (!category) {
+      throw Object.assign(new Error('商品分类不存在或已停用'), { status: 400 });
+    }
+    if (Number(category.level) < 1 || Number(category.level) > MAX_PRODUCT_CATEGORY_LEVEL) {
+      throw Object.assign(new Error('商品分类层级必须在1到4级之间'), { status: 400 });
+    }
+    lineage.push(category);
+    currentId = category.parent_id;
+  }
+
+  return {
+    category: lineage[0] || null,
+    lineage,
+    path: lineage.slice().reverse().map(item => item.name).join('/'),
+    dimensions: categoryDimensionsFromLineage(lineage)
+  };
+}
+
+function getProvidedValue(body, attributes, keys) {
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(body || {}, key)) return body[key];
+    if (Object.prototype.hasOwnProperty.call(attributes || {}, key)) return attributes[key];
+  }
+  return undefined;
+}
+
+async function resolveProductDimensions(body = {}, parsedAttrs = {}) {
+  const attributes = parsedAttrs && typeof parsedAttrs === 'object' ? parsedAttrs : {};
+  const selected = await resolveProductCategory(body.categoryId);
+  const aliases = {
+    category: ['category', 'categoryName', '商品分类', '分类'],
+    brand: ['brand', '品牌'],
+    series: ['series', '系列'],
+    model: ['model', '型号']
+  };
+  const dimensions = {};
+  for (const key of PRODUCT_DIMENSION_KEYS) {
+    const value = getProvidedValue(body, attributes, aliases[key]);
+    dimensions[key] = String(value ?? selected.dimensions[key] ?? '').trim();
+  }
+  return { ...selected, dimensions };
+}
+
+async function resolveCategorySubtreeIds(categoryId) {
+  if (!categoryId) return [];
+  const categories = await ProductCategory.findAll({
+    where: { status: 1 },
+    attributes: ['category_id', 'parent_id'],
+    raw: true
+  });
+  const ids = new Set([String(categoryId)]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const category of categories) {
+      if (category.parent_id && ids.has(String(category.parent_id)) && !ids.has(String(category.category_id))) {
+        ids.add(String(category.category_id));
+        changed = true;
+      }
+    }
+  }
+  return [...ids];
+}
+
 // 字段配置按分类链路继承：当前分类有配置时优先使用，否则向上查找最近的已配置分类。
 // 这样一级分类可以提供默认字段，下级分类只在需要差异时保存自己的覆盖配置。
 function selectNearestCategoryFields(lineage, fieldRows) {
@@ -623,7 +737,12 @@ async function findCategoryByName(categoryPath) {
     }
     catMap[parts.join('/')] = id;
   }
-  return catMap[categoryPath] || null;
+  if (catMap[categoryPath]) return catMap[categoryPath];
+
+  const sameName = cats
+    .filter(category => Number(category.status ?? 1) === 1 && String(category.name || '').trim() === String(categoryPath).trim())
+    .sort((left, right) => Number(left.level || 0) - Number(right.level || 0));
+  return sameName[0]?.category_id || null;
 }
 
 async function getProductList(ctx) {
@@ -632,8 +751,19 @@ async function getProductList(ctx) {
   const where = { is_deleted: 0 };
   if (String(activeOnly || '') === '1') where.status = 1;
   if (categoryId) {
-    const path = await resolveCategoryPath(categoryId);
-    if (path) where.category = { [Op.like]: `${path}%` };
+    const categoryIds = await resolveCategorySubtreeIds(categoryId);
+    const categoryPath = await resolveCategoryPath(categoryId);
+    if (categoryIds.length > 0) {
+      where[Op.and] = [{
+        [Op.or]: [
+          { category_id: { [Op.in]: categoryIds } },
+          ...(categoryPath ? [
+            { category_path_legacy: { [Op.like]: `${categoryPath}%` } },
+            { category: { [Op.like]: `${categoryPath}%` } }
+          ] : [])
+        ]
+      }];
+    }
   }
 
   // 处理关键字查询：支持空格分隔多关键字 AND 查询，同时支持条码查询
@@ -697,7 +827,7 @@ async function getProductList(ctx) {
         where.product_id = { [Op.in]: Array.from(matchedProductIdsByBarcode) };
       }
     } else if (productFieldConditions.length > 0) {
-      where[Op.and] = productFieldConditions;
+      where[Op.and] = [...(where[Op.and] || []), ...productFieldConditions];
     }
   }
 
@@ -726,6 +856,8 @@ async function getProductList(ctx) {
       name: p.name,
       config: p.config || '',
       category: p.category || '',
+      category_id: p.category_id || '',
+      category_path_legacy: p.category_path_legacy || '',
       manufacturer_code: p.manufacturer_code || '',
       brand: getProductAttributeValue(p, 'brand', mappedExtras),
       series: getProductAttributeValue(p, 'series', mappedExtras),
@@ -758,23 +890,28 @@ async function resolveProductApplicationName(body) {
   if (typeof attributes === 'string') {
     try { parsedAttrs = JSON.parse(attributes); } catch { parsedAttrs = {}; }
   }
+  const attrs = parsedAttrs && typeof parsedAttrs === 'object' ? parsedAttrs : {};
+  const dimensions = await resolveProductDimensions(body, attrs);
   let finalName = name || '';
-  if (!finalName && categoryId) {
-    const resolved = await resolveCategoryFieldConfig(categoryId);
-    const fields = resolved.fields;
-    const attrs = parsedAttrs && typeof parsedAttrs === 'object' ? parsedAttrs : {};
-    if (fields.length > 0) {
-      const parts = [...resolved.categoryNameParts];
-      for (const f of fields) {
-        const val = attrs[f.field_key];
-        if (val) parts.push(val);
+  if (!finalName) {
+    const parts = [dimensions.dimensions.brand, dimensions.dimensions.series, dimensions.dimensions.model]
+      .map(value => String(value || '').trim())
+      .filter(Boolean);
+    if (categoryId) {
+      const resolvedFields = await resolveCategoryFieldConfig(categoryId);
+      for (const field of resolvedFields.fields || []) {
+        if (getProductDimensionKey(field.field_key)) continue;
+        const value = attrs[field.field_key];
+        if (value) parts.push(value);
       }
-      finalName = parts.join(' ') || name || '';
-    } else {
-      finalName = resolved.categoryNameParts.join(' ') || name || '';
     }
+    finalName = parts.join(' ') || name || '';
   }
-  return { finalName: String(finalName || '').trim(), parsedAttrs: parsedAttrs || {} };
+  return {
+    finalName: String(finalName || '').trim(),
+    parsedAttrs: parsedAttrs || {},
+    dimensions
+  };
 }
 
 function resolveProductApplicationPnCode(body = {}) {
@@ -808,14 +945,23 @@ function hasProductApplicationValue(value) {
 }
 
 async function validateProductApplicationInput(body = {}, { finalName, parsedAttrs } = {}) {
-  await resolveFourLevelCategory(body.categoryId);
   if (!String(finalName || '').trim()) {
     throw Object.assign(new Error('商品名称不能为空'), { status: 400 });
   }
 
-  const { fields } = await resolveCategoryFieldConfig(body.categoryId);
+  const { fields } = body.categoryId
+    ? await resolveCategoryFieldConfig(body.categoryId)
+    : { fields: [] };
   const attrs = parsedAttrs && typeof parsedAttrs === 'object' ? parsedAttrs : {};
-  const missingField = fields.find(field => Number(field.required) === 1 && !hasProductApplicationValue(attrs[field.field_key]));
+  const dimensions = await resolveProductDimensions(body, attrs);
+  const missingField = fields.find(field => {
+    if (Number(field.required) !== 1) return false;
+    const key = getProductDimensionKey(field.field_key);
+    const value = key
+      ? dimensions.dimensions[key]
+      : attrs[field.field_key];
+    return !hasProductApplicationValue(value);
+  });
   if (missingField) {
     throw Object.assign(new Error(`请填写${missingField.field_label}`), { status: 400 });
   }
@@ -859,7 +1005,7 @@ async function getPnAvailability(ctx) {
   };
 }
 
-function productApplicationPayload(body, finalName, parsedAttrs) {
+function productApplicationPayload(body, finalName, parsedAttrs, dimensions = null) {
   const submittedBarcodes = Array.isArray(body.barcodes)
     ? body.barcodes.map(item => ({ type: item.type || 'manufacturer', code: item.code || '' })).filter(item => item.code)
     : [];
@@ -880,6 +1026,10 @@ function productApplicationPayload(body, finalName, parsedAttrs) {
   return {
     name: finalName,
     categoryId: body.categoryId || null,
+    category: body.category ?? dimensions?.category ?? '',
+    brand: body.brand ?? dimensions?.brand ?? '',
+    series: body.series ?? dimensions?.series ?? '',
+    model: body.model ?? dimensions?.model ?? '',
     pnCode,
     manufacturerCode: pnCode || body.manufacturerCode || body.manufacturer_code || '',
     pns: submittedPns,
@@ -906,11 +1056,12 @@ async function createProductRecord(body, transaction = null) {
     isUsedProduct, is_used_product
   } = body;
   const productId = generateUUID();
-  const categoryPath = categoryId ? (await resolveFourLevelCategory(categoryId)).path : '';
   const { finalName, parsedAttrs } = await resolveProductApplicationName(body);
   if (!finalName) throw new Error('商品名称不能为空');
 
   const { cols, extras } = splitAttributes(parsedAttrs);
+  const resolvedDimensions = await resolveProductDimensions(body, parsedAttrs);
+  const dimensions = resolvedDimensions.dimensions;
 
   const submittedPns = Array.isArray(pns)
     ? pns.map(item => ({
@@ -931,12 +1082,14 @@ async function createProductRecord(body, transaction = null) {
         product_id: productId,
         product_code: productCode,
         name: finalName,
-        category: categoryPath,
+        category: dimensions.category || null,
+        category_id: categoryId || null,
+        category_path_legacy: body.categoryPathLegacy || body.category_path_legacy || resolvedDimensions.path || null,
         config: config || '',
         manufacturer_code: manufacturerCodes.join(', '),
-        brand: cols.brand || null,
-        series: cols.series || null,
-        model: cols.model || null,
+        brand: dimensions.brand || cols.brand || null,
+        series: dimensions.series || cols.series || null,
+        model: dimensions.model || cols.model || null,
         processor: cols.processor || null,
         memory: cols.memory || null,
         storage: cols.storage || null,
@@ -1002,12 +1155,11 @@ async function createProduct(ctx) {
 }
 
 async function submitProductApplication(ctx) {
-  const { finalName, parsedAttrs } = await resolveProductApplicationName(ctx.request.body);
+  const resolved = await resolveProductApplicationName(ctx.request.body);
+  const { finalName, parsedAttrs, dimensions } = resolved;
   await validateProductApplicationInput(ctx.request.body, { finalName, parsedAttrs });
 
-  const categoryPath = await resolveCategoryPath(ctx.request.body.categoryId);
-  if (!categoryPath) ctx.throw(400, '商品分类不存在或已停用');
-  const payload = productApplicationPayload(ctx.request.body, finalName, parsedAttrs);
+  const payload = productApplicationPayload(ctx.request.body, finalName, parsedAttrs, dimensions.dimensions);
   const applicationId = generateUUID();
   const applicationNo = `PA${Date.now()}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`;
   await ProductApplication.create({
@@ -1015,7 +1167,8 @@ async function submitProductApplication(ctx) {
     application_no: applicationNo,
     product_name: finalName,
     category_id: ctx.request.body.categoryId,
-    category_name: categoryPath,
+    category_name: dimensions.dimensions.category || '',
+    category_path_legacy: dimensions.path || null,
     payload_json: payload,
     applicant_staff_id: ctx.state.user.staffId,
     applicant_name: ctx.state.user.name,
@@ -1185,7 +1338,8 @@ async function reviewProductApplication(ctx) {
     let created = null;
     let nextPayload = null;
     let finalName = application.product_name;
-    let categoryPath = application.category_name;
+    let categoryName = application.category_name;
+    let categoryPathLegacy = application.category_path_legacy;
     if (action === 'approved') {
       const storedPayload = typeof application.payload_json === 'string'
         ? JSON.parse(application.payload_json)
@@ -1194,9 +1348,9 @@ async function reviewProductApplication(ctx) {
       const resolved = await resolveProductApplicationName(payload);
       finalName = resolved.finalName;
       await validateProductApplicationInput(payload, { finalName, parsedAttrs: resolved.parsedAttrs });
-      categoryPath = await resolveCategoryPath(payload.categoryId);
-      if (!categoryPath) ctx.throw(400, '商品分类不存在或已停用');
-      nextPayload = productApplicationPayload(payload, finalName, resolved.parsedAttrs);
+      categoryName = resolved.dimensions.dimensions.category || '';
+      categoryPathLegacy = resolved.dimensions.path || null;
+      nextPayload = productApplicationPayload(payload, finalName, resolved.parsedAttrs, resolved.dimensions.dimensions);
       created = await createProductRecord(nextPayload, transaction);
     }
 
@@ -1213,7 +1367,8 @@ async function reviewProductApplication(ctx) {
       updateData.payload_json = nextPayload;
       updateData.product_name = finalName;
       updateData.category_id = nextPayload.categoryId;
-      updateData.category_name = categoryPath;
+      updateData.category_name = categoryName;
+      updateData.category_path_legacy = categoryPathLegacy;
     }
     await application.update(updateData, { transaction });
     await transaction.commit();
@@ -1246,17 +1401,25 @@ async function updateProduct(ctx) {
     ctx.throw(404, '商品不存在');
   }
 
-  const categoryPath = categoryId !== undefined ? await resolveCategoryPath(categoryId) : undefined;
-
   let parsedAttrs = attributes;
   if (typeof attributes === 'string') {
     try { parsedAttrs = JSON.parse(attributes); } catch { parsedAttrs = {}; }
   }
   const { cols, extras } = splitAttributes(parsedAttrs);
+  const resolvedDimensions = categoryId !== undefined
+    ? await resolveProductDimensions(body, parsedAttrs)
+    : null;
 
   const updateData = {};
   if (name !== undefined) updateData.name = name;
-  if (categoryPath !== undefined) updateData.category = categoryPath;
+  if (resolvedDimensions) {
+    updateData.category_id = categoryId || null;
+    updateData.category = resolvedDimensions.dimensions.category || null;
+    updateData.category_path_legacy = body.categoryPathLegacy || body.category_path_legacy || resolvedDimensions.path || null;
+    updateData.brand = resolvedDimensions.dimensions.brand || null;
+    updateData.series = resolvedDimensions.dimensions.series || null;
+    updateData.model = resolvedDimensions.dimensions.model || null;
+  }
   if (config !== undefined) updateData.config = config;
   if (status !== undefined) updateData.status = status;
   if (needSn !== undefined) updateData.need_sn = needSn ? 1 : 0;
@@ -1274,9 +1437,10 @@ async function updateProduct(ctx) {
     updateData.manufacturer_code = getManufacturerCodes([], manufacturerInput).join(', ');
   }
   if (attributes !== undefined) {
-    updateData.brand = cols.brand || null;
-    updateData.series = cols.series || null;
-    updateData.model = cols.model || null;
+    updateData.category = resolvedDimensions?.dimensions.category || getProvidedValue(body, parsedAttrs, ['category', 'categoryName', '商品分类', '分类']) || null;
+    updateData.brand = resolvedDimensions?.dimensions.brand || cols.brand || null;
+    updateData.series = resolvedDimensions?.dimensions.series || cols.series || null;
+    updateData.model = resolvedDimensions?.dimensions.model || cols.model || null;
     updateData.processor = cols.processor || null;
     updateData.memory = cols.memory || null;
     updateData.storage = cols.storage || null;
@@ -1561,8 +1725,20 @@ async function deleteCategory(ctx) {
   }
 
   // 检查是否有商品用了此路径
-  const path = await resolveCategoryPath(categoryId);
-  const productCount = await Product.count({ where: { category: path, is_deleted: 0 } });
+  const categoryIds = await resolveCategorySubtreeIds(categoryId);
+  const categoryPath = await resolveCategoryPath(categoryId);
+  const productCount = await Product.count({
+    where: {
+      is_deleted: 0,
+      [Op.or]: [
+        { category_id: { [Op.in]: categoryIds } },
+        ...(categoryPath ? [
+          { category_path_legacy: { [Op.like]: `${categoryPath}%` } },
+          { category: { [Op.like]: `${categoryPath}%` } }
+        ] : [])
+      ]
+    }
+  });
   if (productCount > 0) {
     ctx.throw(400, `该分类下还有 ${productCount} 个商品，请先将商品移至其他分类`);
   }
@@ -3068,7 +3244,10 @@ async function getCategoryFieldConfig(ctx) {
       sourceCategoryId: resolved.sourceCategory?.category_id || null,
       sourceCategoryName: resolved.sourceCategory?.name || null,
       inherited: resolved.inherited,
-      categoryNameParts: resolved.categoryNameParts
+      categoryNameParts: resolved.categoryNameParts,
+      categoryDimensions: categoryDimensionsFromLineage(resolved.lineage),
+      categoryLevel: Number(resolved.category?.level || 0),
+      categoryPath: resolved.lineage.slice().reverse().map(item => item.name).join('/')
     }
   };
 }
@@ -3087,13 +3266,7 @@ async function executeProductImportRows(rows) {
         console.log(`[导入调试] 第 ${rowIndex+1} 行原始数据:`, JSON.stringify(row));
       }
 
-      let categoryPath = row['商品分类'] || row['分类'] || row['category'] || '';
-
-      // 查找分类
-      let categoryId = null;
-      if (categoryPath) {
-        categoryId = await findCategoryByName(categoryPath);
-      }
+      const categoryPath = String(row['商品分类'] || row['分类'] || row['category'] || '').trim();
 
       // 直接映射 Excel 列到独立字段
       const attrMap = {};
@@ -3109,14 +3282,25 @@ async function executeProductImportRows(rows) {
       }
 
       const { cols, extras } = splitAttributes(attrMap);
+      const pathParts = categoryPath.split('/').map(part => part.trim()).filter(Boolean);
+      const categoryId = categoryPath ? await findCategoryByName(categoryPath) : null;
+      const dimensionAttrs = { ...attrMap };
+      if (pathParts.length > 1) {
+        dimensionAttrs.category = pathParts[0];
+        dimensionAttrs.brand = dimensionAttrs['品牌'] || dimensionAttrs.brand || pathParts[1] || '';
+        dimensionAttrs.series = dimensionAttrs['系列'] || dimensionAttrs.series || pathParts[2] || '';
+        dimensionAttrs.model = dimensionAttrs['型号'] || dimensionAttrs.model || pathParts[3] || '';
+      } else if (categoryPath) {
+        dimensionAttrs.category = categoryPath;
+      }
+      const resolvedDimensions = await resolveProductDimensions({ categoryId, attributes: dimensionAttrs }, dimensionAttrs);
+      const dimensions = resolvedDimensions.dimensions;
 
-      // 自动拼装名称：先使用第2/3/4级分类，再使用标准字段和分类补充字段
+      // 自动拼装名称：使用独立的品牌/系列/型号字段，再使用其他标准字段和分类补充字段
       const categoryFieldConfig = categoryId
         ? (catFieldCache[categoryId] || (catFieldCache[categoryId] = await resolveCategoryFieldConfig(categoryId)))
         : null;
-      const autoNameParts = categoryFieldConfig?.categoryNameParts
-        ? [...categoryFieldConfig.categoryNameParts]
-        : [];
+      const autoNameParts = [dimensions.brand, dimensions.series, dimensions.model].filter(Boolean);
       
       // 1. 优先使用标准字段
       const standardFieldLabels = {
@@ -3125,6 +3309,7 @@ async function executeProductImportRows(rows) {
         color: '颜色', gpu: '显卡', accessory_type: '配件类别'
       };
       for (const [col, label] of Object.entries(standardFieldLabels)) {
+        if (['brand', 'series', 'model'].includes(col)) continue;
         const val = attrMap[label] || attrMap[col];
         if (val) autoNameParts.push(val);
       }
@@ -3202,23 +3387,20 @@ async function executeProductImportRows(rows) {
         }
       }
 
-      if (!product) {
-        const resolvedCategory = await resolveFourLevelCategory(categoryId);
-        categoryPath = resolvedCategory.path;
-      }
-
       // 使用事务确保数据一致性
       const transaction = await sequelize.transaction();
       try {
         // 准备更新/新增数据
         const productData = {
           name: finalName,
-          category: categoryPath || product?.category || '',
+          category: dimensions.category || product?.category || '',
+          category_id: categoryId || product?.category_id || null,
+          category_path_legacy: pathParts.length > 1 ? categoryPath : (product?.category_path_legacy || null),
           manufacturer_code: splitPnCodes(manufacturerCodes).join(', '),
           config: attrMap['厂商商品名称'] || attrMap['产品配置'] || attrMap['config'] || '',
-          brand: cols.brand || null,
-          series: cols.series || null,
-          model: cols.model || null,
+          brand: dimensions.brand || cols.brand || null,
+          series: dimensions.series || cols.series || null,
+          model: dimensions.model || cols.model || null,
           processor: cols.processor || null,
           memory: cols.memory || null,
           storage: cols.storage || null,
@@ -3325,8 +3507,16 @@ async function exportProducts(ctx) {
   // 构建查询条件（复用getProductList的逻辑）
   const where = { is_deleted: 0 };
   if (categoryId) {
-    const path = await resolveCategoryPath(categoryId);
-    if (path) where.category = { [Op.like]: `${path}%` };
+    const categoryIds = await resolveCategorySubtreeIds(categoryId);
+    const categoryPath = await resolveCategoryPath(categoryId);
+    if (categoryIds.length > 0) {
+      where[Op.and] = [{
+        [Op.or]: [
+          { category_id: { [Op.in]: categoryIds } },
+          ...(categoryPath ? [{ category: { [Op.like]: `${categoryPath}%` } }] : [])
+        ]
+      }];
+    }
   }
 
   if (keyword) {
@@ -3526,6 +3716,7 @@ module.exports = {
     resolveProductApplicationPnCode,
     hasProductApplicationValue,
     isFourLevelCategory,
+    categoryDimensionsFromLineage,
     getCategoryNamePrefix,
     selectNearestCategoryFields,
     applySerializedSalesStock

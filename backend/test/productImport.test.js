@@ -77,3 +77,18 @@ test('商品名称分类前缀使用第2到第4级，不包含第1级', () => {
   ]);
   assert.deepEqual(prefix, ['联想', 'ThinkPad', '游戏本']);
 });
+
+test('商品分类树层级映射为分类、品牌、系列、型号', () => {
+  const dimensions = _test.categoryDimensionsFromLineage([
+    { category_id: 'L4', level: 4, name: 'R9000P' },
+    { category_id: 'L3', level: 3, name: '拯救者' },
+    { category_id: 'L2', level: 2, name: '联想' },
+    { category_id: 'L1', level: 1, name: '笔记本' }
+  ]);
+  assert.deepEqual(dimensions, {
+    category: '笔记本',
+    brand: '联想',
+    series: '拯救者',
+    model: 'R9000P'
+  });
+});

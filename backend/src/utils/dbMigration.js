@@ -101,6 +101,92 @@ async function checkAndMakeColumnNullable(tableName, columnName, columnDefinitio
   }
 }
 
+async function ensureProductDimensionSchema() {
+  await checkAndAddColumn(
+    'T_PRODUCT',
+    'CATEGORY_ID',
+    'VARCHAR(32) NULL COMMENT "selected product category node"',
+    'CATEGORY'
+  );
+  await checkAndAddColumn(
+    'T_PRODUCT',
+    'CATEGORY_PATH_LEGACY',
+    'VARCHAR(512) NULL COMMENT "legacy category path for compatibility"',
+    'CATEGORY_ID'
+  );
+  await checkAndAddColumn(
+    'T_PRODUCT_APPLICATION',
+    'CATEGORY_PATH_LEGACY',
+    'VARCHAR(512) NULL COMMENT "legacy category path for compatibility"',
+    'CATEGORY_NAME'
+  );
+  await checkAndAddIndex(
+    'T_PRODUCT',
+    'idx_product_category_id',
+    'ALTER TABLE T_PRODUCT ADD INDEX idx_product_category_id (CATEGORY_ID)'
+  );
+
+  try {
+    const categories = await sequelize.query(
+      'SELECT CATEGORY_ID, PARENT_ID, NAME, LEVEL FROM T_PRODUCT_CATEGORY',
+      { type: sequelize.QueryTypes.SELECT }
+    );
+    const byId = new Map(categories.map(row => [String(row.CATEGORY_ID), row]));
+    const pathById = new Map();
+    const getPath = id => {
+      const key = String(id || '');
+      if (!key) return [];
+      if (pathById.has(key)) return pathById.get(key);
+      const row = byId.get(key);
+      if (!row) return [];
+      const path = [...getPath(row.PARENT_ID), String(row.NAME || '').trim()].filter(Boolean);
+      pathById.set(key, path);
+      return path;
+    };
+    const idByPath = new Map(categories.map(row => [getPath(row.CATEGORY_ID).join('/'), row.CATEGORY_ID]));
+
+    const products = await sequelize.query(
+      "SELECT PRODUCT_ID, CATEGORY, CATEGORY_ID, CATEGORY_PATH_LEGACY, BRAND, SERIES, MODEL FROM T_PRODUCT WHERE CATEGORY LIKE '%/%'",
+      { type: sequelize.QueryTypes.SELECT }
+    );
+    for (const product of products) {
+      const rawPath = String(product.CATEGORY || '').trim();
+      const parts = rawPath.split('/').map(item => item.trim()).filter(Boolean);
+      if (parts.length === 0) continue;
+      const updates = {
+        CATEGORY: parts[0],
+        CATEGORY_PATH_LEGACY: product.CATEGORY_PATH_LEGACY || rawPath
+      };
+      if (!product.BRAND && parts[1]) updates.BRAND = parts[1];
+      if (!product.SERIES && parts[2]) updates.SERIES = parts[2];
+      if (!product.MODEL && parts[3]) updates.MODEL = parts[3];
+      if (!product.CATEGORY_ID && idByPath.has(rawPath)) updates.CATEGORY_ID = idByPath.get(rawPath);
+      const assignments = Object.keys(updates).map(key => `${key} = ?`).join(', ');
+      await sequelize.query(
+        `UPDATE T_PRODUCT SET ${assignments} WHERE PRODUCT_ID = ?`,
+        { replacements: [...Object.values(updates), product.PRODUCT_ID] }
+      );
+    }
+
+    const applications = await sequelize.query(
+      "SELECT APPLICATION_ID, CATEGORY_NAME, CATEGORY_PATH_LEGACY FROM T_PRODUCT_APPLICATION WHERE CATEGORY_NAME LIKE '%/%'",
+      { type: sequelize.QueryTypes.SELECT }
+    );
+    for (const application of applications) {
+      const rawPath = String(application.CATEGORY_NAME || '').trim();
+      const categoryName = rawPath.split('/').map(item => item.trim()).filter(Boolean)[0] || '';
+      if (!categoryName) continue;
+      await sequelize.query(
+        'UPDATE T_PRODUCT_APPLICATION SET CATEGORY_NAME = ?, CATEGORY_PATH_LEGACY = ? WHERE APPLICATION_ID = ?',
+        { replacements: [categoryName, application.CATEGORY_PATH_LEGACY || rawPath, application.APPLICATION_ID] }
+      );
+    }
+    console.log(`[DB Migration] 商品分类维度迁移完成: ${products.length} 个商品, ${applications.length} 个申请`);
+  } catch (error) {
+    console.error(`[DB Migration] 商品分类维度迁移失败 - ${error.message}`);
+  }
+}
+
 // Ensure fields used by the product/order read path exist before the rest of
 // the startup migrations run.
 async function ensureCriticalSchemaCompatibility() {
@@ -482,6 +568,7 @@ async function initializeCategorySortOrder() {
 
 async function runMigrations() {
   await ensureCriticalSchemaCompatibility();
+  await ensureProductDimensionSchema();
   await ensureSerializedInventorySchema();
   await ensureProductPnEffectiveUniqueIndex();
   console.log('[DB Migration] 开始检查数据库结构...');
@@ -3921,6 +4008,7 @@ module.exports = {
   runMigrations,
   migrateMissingProductPns,
   ensureCriticalSchemaCompatibility,
+  ensureProductDimensionSchema,
   ensureSerializedInventorySchema,
   ensureProductPnEffectiveUniqueIndex
 };
