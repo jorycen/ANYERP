@@ -47,7 +47,7 @@ const fs = require('fs');
 const path = require('path');
 const { PassThrough } = require('stream');
 const { Op, literal, QueryTypes } = require('sequelize');
-const { generateOrderNo, generateInboundNo, generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
+const { generateOrderNo, generateInboundNo, generateUUID, paginate, formatPaginatedResult } = require('../../utils');
 const { normalizePnCode } = require('../../utils/productPn');
 const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
@@ -311,6 +311,10 @@ function compareCombinedSalesRows(a, b) {
   return String(b.order_id || '').localeCompare(String(a.order_id || ''));
 }
 
+function buildSalesOrderListOrder() {
+  return [['create_time', 'DESC']];
+}
+
 async function list(ctx) {
   const {
     storeId, startDate, endDate, customerPhone, customerName, orderNo,
@@ -423,12 +427,7 @@ async function list(ctx) {
       }
     ],
     distinct: true,
-    order: buildPendingFirstOrder(sequelize, {
-      statusColumn: 'Order.order_status',
-      pendingStatuses: ['draft', 'pending_approval', 'pending_store_approval', 'pending_distributor_approval', '未归档'],
-      dateColumns: ['Order.create_time'],
-      idColumn: 'Order.order_id'
-    })
+    order: buildSalesOrderListOrder()
   };
   const orders = await Order.findAll(orderQuery);
   const normalizedRows = orders.map(normalizeSalesOrderListRow);
@@ -4988,6 +4987,7 @@ module.exports = {
   _test: {
     canQueryAllSalesOrders,
     canExportSalesOrders,
+    buildSalesOrderListOrder,
     salesApprovalStageFromStatus,
     salesApprovalStageLabel,
     isSalesApprovalPendingStatus,

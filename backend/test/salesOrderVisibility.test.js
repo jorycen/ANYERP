@@ -17,6 +17,10 @@ test('经销商级角色可以查询全部人员订单，店员和店长保持�
   assert.equal(_test.canQueryAllSalesOrders({ roleCode: 'clerk' }), false);
 });
 
+test('订单查询列表仅按创建时间倒序排列', () => {
+  assert.deepEqual(_test.buildSalesOrderListOrder(), [['create_time', 'DESC']]);
+});
+
 test('店长角色可以导出授权门店订单，普通店员不能导出', () => {
   assert.equal(_test.canExportSalesOrders({ roles: ['manager'] }), true);
   assert.equal(_test.canExportSalesOrders({ roles: ['store_manager'] }), true);
