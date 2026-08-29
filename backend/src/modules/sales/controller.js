@@ -198,12 +198,44 @@ async function auxiliaryStaff(ctx) {
 
 function canQueryAllSalesOrders(user) {
   const roles = getUserRoles(user);
-  return isDealerTraceAccount(user) || roles.some(role => ['manager', 'store_manager'].includes(role));
+  return isDealerTraceAccount(user) || roles.some(role => ['manager', 'store_manager', 'store_admin'].includes(role));
 }
 
 function canExportSalesOrders(user) {
   const roles = getUserRoles(user);
-  return isDealerTraceAccount(user) || roles.some(role => ['manager', 'store_manager'].includes(role));
+  return isDealerTraceAccount(user) || roles.some(role => ['manager', 'store_manager', 'store_admin'].includes(role));
+}
+
+const SALES_APPROVAL_STATUSES = Object.freeze({
+  legacy: 'pending_approval',
+  store: 'pending_store_approval',
+  distributor: 'pending_distributor_approval'
+});
+const STORE_APPROVAL_ROLES = ['manager', 'store_manager', 'store_admin'];
+const DISTRIBUTOR_APPROVAL_ROLES = ['admin', 'boss'];
+
+function salesApprovalStageFromStatus(status) {
+  const normalized = String(status || '').trim();
+  if ([SALES_APPROVAL_STATUSES.legacy, SALES_APPROVAL_STATUSES.store].includes(normalized)) return 'store';
+  if (normalized === SALES_APPROVAL_STATUSES.distributor) return 'distributor';
+  return '';
+}
+
+function salesApprovalStageLabel(stageOrStatus) {
+  const stage = ['store', 'distributor'].includes(String(stageOrStatus || '').trim())
+    ? String(stageOrStatus).trim()
+    : salesApprovalStageFromStatus(stageOrStatus);
+  return stage === 'distributor' ? '待经销商总权限审批' : stage === 'store' ? '待店长审批' : '';
+}
+
+function isSalesApprovalPendingStatus(status) {
+  return Boolean(salesApprovalStageFromStatus(status));
+}
+
+function canApproveSalesStage(user, stage) {
+  const roles = getUserRoles(user);
+  const allowedRoles = stage === 'distributor' ? DISTRIBUTOR_APPROVAL_ROLES : STORE_APPROVAL_ROLES;
+  return roles.some(role => allowedRoles.includes(role));
 }
 
 function buildCombinedDepositWhere({
@@ -259,6 +291,8 @@ function normalizeSalesOrderListRow(order) {
   const hasGrossProfit = snapshotRow.gross_profit_amount !== undefined && snapshotRow.gross_profit_amount !== null;
   return {
     ...data,
+    approval_stage: salesApprovalStageFromStatus(data.order_status),
+    approval_stage_label: salesApprovalStageLabel(data.order_status),
     gross_profit_amount: hasGrossProfit ? Number(snapshotRow.gross_profit_amount || 0) : null,
     gross_profit_source: hasGrossProfit ? 'order_gross_profit_snapshot' : '',
     gross_profit_snapshot_status: snapshotRow.snapshot_status || '',
@@ -267,7 +301,7 @@ function normalizeSalesOrderListRow(order) {
 }
 
 function compareCombinedSalesRows(a, b) {
-  const pending = new Set(['draft', 'pending_approval', '未归档', 'deposit_receipt']);
+  const pending = new Set(['draft', 'pending_approval', 'pending_store_approval', 'pending_distributor_approval', '未归档', 'deposit_receipt']);
   const aPending = pending.has(String(a.order_status || '')) ? 0 : 1;
   const bPending = pending.has(String(b.order_status || '')) ? 0 : 1;
   if (aPending !== bPending) return aPending - bPending;
@@ -289,7 +323,7 @@ async function list(ctx) {
   const accessibleStoreIds = Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds.filter(Boolean) : [];
   const roles = getUserRoles(user);
   const dealerWide = isDealerTraceAccount(user);
-  const canQueryAllStoreOrders = dealerWide || roles.some(role => ['manager', 'store_manager'].includes(role));
+  const canQueryAllStoreOrders = dealerWide || roles.some(role => ['manager', 'store_manager', 'store_admin'].includes(role));
   const storeInclude = { model: Store };
   const applicantInclude = {
     model: Staff,
@@ -317,7 +351,9 @@ async function list(ctx) {
     where.order_no = { [Op.like]: `%${orderNo}%` };
   }
   if (status) {
-    where.order_status = status;
+    where.order_status = status === SALES_APPROVAL_STATUSES.legacy
+      ? { [Op.in]: [SALES_APPROVAL_STATUSES.legacy, SALES_APPROVAL_STATUSES.store, SALES_APPROVAL_STATUSES.distributor] }
+      : status;
   }
   if (createUser) {
     where.create_user = { [Op.like]: `%${createUser}%` };
@@ -389,7 +425,7 @@ async function list(ctx) {
     distinct: true,
     order: buildPendingFirstOrder(sequelize, {
       statusColumn: 'Order.order_status',
-      pendingStatuses: ['draft', 'pending_approval', '未归档'],
+      pendingStatuses: ['draft', 'pending_approval', 'pending_store_approval', 'pending_distributor_approval', '未归档'],
       dateColumns: ['Order.create_time'],
       idColumn: 'Order.order_id'
     })
@@ -434,7 +470,7 @@ async function listProductOrders(ctx) {
                             AND s.DISTRIBUTOR_ID = :distributorId
       WHERE oi.PRODUCT_ID = :productId
         AND (o.IS_DELETED IS NULL OR o.IS_DELETED = 0)
-        AND (o.ORDER_STATUS IS NULL OR o.ORDER_STATUS NOT IN ('draft', 'pending_approval'))
+        AND (o.ORDER_STATUS IS NULL OR o.ORDER_STATUS NOT IN ('draft', 'pending_approval', 'pending_store_approval', 'pending_distributor_approval'))
       GROUP BY o.ORDER_ID, o.ORDER_NO, o.ORDER_STATUS, o.CREATE_TIME, o.STORE_ID, s.NAME
       ORDER BY o.CREATE_TIME DESC, o.ORDER_ID DESC
       LIMIT 50`,
@@ -2417,6 +2453,8 @@ async function detail(ctx) {
   }
 
   const result = order.toJSON();
+  result.approval_stage = salesApprovalStageFromStatus(result.order_status);
+  result.approval_stage_label = salesApprovalStageLabel(result.order_status);
   const supplements = Array.isArray(result.supplements) ? result.supplements : [];
   result.supplement_count = supplements.length;
   result.supplement_total = getSupplementNetAmount(supplements);
@@ -2482,16 +2520,15 @@ async function approve(ctx) {
   const { orderId } = ctx.params;
   const user = ctx.state.user;
 
-  const allowedRoles = ['boss', 'admin', 'manager'];
-  if (!getUserRoles(user).some(role => allowedRoles.includes(role))) {
-    ctx.throw(403, '仅店长或经销商总账号可以审批');
-  }
-
   const order = await Order.findByPk(orderId);
   if (!order) ctx.throw(404, '订单不存在');
   assertStoreVisible(order.store_id, user);
-  if (order.order_status !== 'pending_approval') {
+  const approvalStage = salesApprovalStageFromStatus(order.order_status);
+  if (!approvalStage) {
     ctx.throw(400, '该订单无需审批');
+  }
+  if (!canApproveSalesStage(user, approvalStage)) {
+    ctx.throw(403, approvalStage === 'store' ? '负毛利订单第一审批必须由店长完成' : '负毛利订单第二审批必须由经销商总权限完成');
   }
 
   const previousStatus = order.order_status;
@@ -2501,17 +2538,44 @@ async function approve(ctx) {
       transaction,
       lock: transaction.LOCK.UPDATE
     });
-    if (!lockedOrder || lockedOrder.order_status !== 'pending_approval') {
+    const lockedStage = salesApprovalStageFromStatus(lockedOrder?.order_status);
+    if (!lockedOrder || !lockedStage || lockedStage !== approvalStage) {
       ctx.throw(409, '订单审批状态已发生变化，请刷新后重试');
     }
+    if (!canApproveSalesStage(user, lockedStage)) {
+      ctx.throw(403, lockedStage === 'store' ? '负毛利订单第一审批必须由店长完成' : '负毛利订单第二审批必须由经销商总权限完成');
+    }
+    if (lockedStage === 'store') {
+      await lockedOrder.update({
+        order_status: SALES_APPROVAL_STATUSES.distributor,
+        approve_user: user.name || user.phone || String(user.staffId || ''),
+        approve_time: approveTime,
+        approve_comment: '店长初审通过',
+        remark: (lockedOrder.remark || '') + '\n店长初审通过，待经销商总权限复审',
+        update_time: approveTime
+      }, { transaction });
+      await recordBusinessAction({
+        businessType: 'sales_order',
+        businessId: lockedOrder.order_id,
+        businessNo: lockedOrder.order_no,
+        action: 'store_approval_passed',
+        fromStatus: previousStatus,
+        toStatus: SALES_APPROVAL_STATUSES.distributor,
+        user,
+        comment: '店长初审通过',
+        transaction
+      });
+      return;
+    }
+
     await archiveSalesOrderEffects(lockedOrder, transaction);
     await lockedOrder.update({
       order_status: '已归档',
       inventory_reserved: 0,
       approve_user: user.name || user.phone || String(user.staffId || ''),
       approve_time: approveTime,
-      approve_comment: '审批通过',
-      remark: (lockedOrder.remark || '') + '\n已审批通过',
+      approve_comment: '经销商总权限审批通过',
+      remark: (lockedOrder.remark || '') + '\n经销商总权限审批通过，已归档',
       update_time: approveTime
     }, { transaction });
     await recordBusinessAction({
@@ -2522,7 +2586,7 @@ async function approve(ctx) {
       fromStatus: previousStatus,
       toStatus: '已归档',
       user,
-      comment: '审批通过',
+      comment: '经销商总权限审批通过',
       transaction
     });
     await calculateAndSaveOrderGrossProfit(lockedOrder.order_id, {
@@ -2533,8 +2597,17 @@ async function approve(ctx) {
     });
   });
 
-  syncToDailyStatement(orderId, order.store_id).catch(err => console.error('[DailySync] archive error:', err.message));
-  ctx.body = { code: 0, status: '已归档', message: '审批通过，订单已自动归档' };
+  if (approvalStage === 'distributor') {
+    syncToDailyStatement(orderId, order.store_id).catch(err => console.error('[DailySync] archive error:', err.message));
+    ctx.body = { code: 0, status: '已归档', approvalStage: '', message: '经销商总权限审批通过，订单已自动归档' };
+    return;
+  }
+  ctx.body = {
+    code: 0,
+    status: SALES_APPROVAL_STATUSES.distributor,
+    approvalStage: 'distributor',
+    message: '店长初审通过，已进入经销商总权限复审'
+  };
 }
 
 /**
@@ -2544,16 +2617,15 @@ async function reject(ctx) {
   const { orderId } = ctx.params;
   const user = ctx.state.user;
 
-  const allowedRoles = ['boss', 'admin', 'manager'];
-  if (!getUserRoles(user).some(role => allowedRoles.includes(role))) {
-    ctx.throw(403, '仅店长或经销商总账号可以审批');
-  }
-
   const order = await Order.findByPk(orderId);
   if (!order) ctx.throw(404, '订单不存在');
   assertStoreVisible(order.store_id, user);
-  if (order.order_status !== 'pending_approval') {
+  const approvalStage = salesApprovalStageFromStatus(order.order_status);
+  if (!approvalStage) {
     ctx.throw(400, '该订单无需审批');
+  }
+  if (!canApproveSalesStage(user, approvalStage)) {
+    ctx.throw(403, approvalStage === 'store' ? '负毛利订单第一审批必须由店长完成' : '负毛利订单第二审批必须由经销商总权限完成');
   }
 
   const { reason } = ctx.request.body;
@@ -2561,26 +2633,37 @@ async function reject(ctx) {
 
   await sequelize.transaction(async (transaction) => {
     const approveTime = new Date();
-    if (order.inventory_reserved) {
-      await releaseReservedInventoryForOrder(order, transaction);
+    const lockedOrder = await Order.findByPk(orderId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    const lockedStage = salesApprovalStageFromStatus(lockedOrder?.order_status);
+    if (!lockedOrder || !lockedStage || lockedStage !== approvalStage) {
+      ctx.throw(409, '订单审批状态已发生变化，请刷新后重试');
     }
-    const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
-    await releaseSaleRights(order, items, transaction);
-    await releaseDepositRedemptionForOrder(order, transaction, '订单审批拒绝');
-    await order.update({
+    if (!canApproveSalesStage(user, lockedStage)) {
+      ctx.throw(403, lockedStage === 'store' ? '负毛利订单第一审批必须由店长完成' : '负毛利订单第二审批必须由经销商总权限完成');
+    }
+    if (lockedOrder.inventory_reserved) {
+      await releaseReservedInventoryForOrder(lockedOrder, transaction);
+    }
+    const items = await OrderItem.findAll({ where: { order_id: lockedOrder.order_id }, transaction });
+    await releaseSaleRights(lockedOrder, items, transaction);
+    await releaseDepositRedemptionForOrder(lockedOrder, transaction, '订单审批拒绝');
+    await lockedOrder.update({
       order_status: '未归档',
       inventory_reserved: 0,
       approve_user: user.name || user.phone || String(user.staffId || ''),
       approve_time: approveTime,
       approve_comment: reason || '',
-      remark: (order.remark || '') + '\n审批拒绝: ' + (reason || '无'),
+      remark: (lockedOrder.remark || '') + `\n${approvalStage === 'store' ? '店长初审拒绝' : '经销商总权限复审拒绝'}: ` + (reason || '无'),
       update_time: approveTime
     }, { transaction });
     await recordBusinessAction({
       businessType: 'sales_order',
-      businessId: order.order_id,
-      businessNo: order.order_no,
-      action: 'rejected',
+      businessId: lockedOrder.order_id,
+      businessNo: lockedOrder.order_no,
+      action: approvalStage === 'store' ? 'store_approval_rejected' : 'distributor_approval_rejected',
       fromStatus: previousStatus,
       toStatus: '未归档',
       user,
@@ -2589,7 +2672,12 @@ async function reject(ctx) {
     });
   });
 
-  ctx.body = { code: 0, status: '未归档', message: '审批已拒绝，订单退回未归档，可修改后重新归档' };
+  ctx.body = {
+    code: 0,
+    status: '未归档',
+    approvalStage: '',
+    message: `${approvalStage === 'store' ? '店长初审' : '经销商总权限复审'}已拒绝，订单退回未归档，可修改后重新归档`
+  };
 }
 
 /**
@@ -2605,10 +2693,10 @@ async function update(ctx) {
   }
 
   assertStoreVisible(order.store_id, ctx.state.user);
-  if (order.order_status === 'pending_approval') {
+  if (isSalesApprovalPendingStatus(order.order_status)) {
     ctx.throw(400, '待审批订单不能直接修改或归档，请先审批或拒绝');
   }
-  if (String(data.order_status || data.status || '') === 'pending_approval') {
+  if (isSalesApprovalPendingStatus(data.order_status || data.status)) {
     ctx.throw(400, '负毛利审批必须由归档流程触发');
   }
   if (data.auxiliary_sales_list) {
@@ -2662,8 +2750,8 @@ async function update(ctx) {
       archiveGrossProfitAmount = Number(grossProfitSnapshot?.gross_profit_amount || 0);
 
       if (archiveGrossProfitAmount < 0) {
-        data.order_status = 'pending_approval';
-        data.status = 'pending_approval';
+        data.order_status = SALES_APPROVAL_STATUSES.store;
+        data.status = SALES_APPROVAL_STATUSES.store;
         data.inventory_reserved = 0;
         data.approve_user = null;
         data.approve_time = null;
@@ -2743,6 +2831,7 @@ async function update(ctx) {
   }
   ctx.body = {
     status: order.order_status,
+    approvalStage: salesApprovalStageFromStatus(order.order_status),
     pendingApproval: archivePendingApproval,
     negativeGrossProfit: archivePendingApproval,
     grossProfitAmount: archiveGrossProfitAmount,
@@ -4892,6 +4981,10 @@ module.exports = {
   _test: {
     canQueryAllSalesOrders,
     canExportSalesOrders,
+    salesApprovalStageFromStatus,
+    salesApprovalStageLabel,
+    isSalesApprovalPendingStatus,
+    canApproveSalesStage,
     normalizeOrderExtendedFields,
     normalizeAuxiliarySalesList,
     isCancelStatus,

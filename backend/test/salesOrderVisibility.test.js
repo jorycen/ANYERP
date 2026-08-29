@@ -9,6 +9,7 @@ test('经销商级角色可以查询全部人员订单，店员和店长保持�
   assert.equal(_test.canQueryAllSalesOrders({ roles: ['business'] }), true);
   assert.equal(_test.canQueryAllSalesOrders({ roles: ['manager'] }), true);
   assert.equal(_test.canQueryAllSalesOrders({ roles: ['store_manager'] }), true);
+  assert.equal(_test.canQueryAllSalesOrders({ roles: ['store_admin'] }), true);
   assert.equal(_test.canQueryAllSalesOrders({ roles: ['clerk'] }), false);
   assert.equal(_test.canQueryAllSalesOrders({ roles: ['staff'] }), false);
   assert.equal(_test.canQueryAllSalesOrders({ roles: ['manager', 'finance'] }), true);
@@ -19,6 +20,7 @@ test('经销商级角色可以查询全部人员订单，店员和店长保持�
 test('店长角色可以导出授权门店订单，普通店员不能导出', () => {
   assert.equal(_test.canExportSalesOrders({ roles: ['manager'] }), true);
   assert.equal(_test.canExportSalesOrders({ roles: ['store_manager'] }), true);
+  assert.equal(_test.canExportSalesOrders({ roles: ['store_admin'] }), true);
   assert.equal(_test.canExportSalesOrders({ roles: ['finance'] }), true);
   assert.equal(_test.canExportSalesOrders({ roles: ['clerk'] }), false);
   assert.equal(_test.canExportSalesOrders({ roles: ['staff'] }), false);
@@ -281,6 +283,20 @@ test('订单导出包含完整金额补录信息', () => {
   assert.equal(rows[0].补录教育优惠, -20);
   assert.equal(rows[0].商品提货运费, 15);
   assert.equal(rows[0].补录信息, '教育优惠:20(减少，学生证已核验)；提货费用:15(增加)；优惠券:30(增加，券码:COUPON-1)');
+});
+
+test('负毛利订单按店长初审和经销商总权限复审严格串行', () => {
+  assert.equal(_test.salesApprovalStageFromStatus('pending_approval'), 'store');
+  assert.equal(_test.salesApprovalStageFromStatus('pending_store_approval'), 'store');
+  assert.equal(_test.salesApprovalStageFromStatus('pending_distributor_approval'), 'distributor');
+  assert.equal(_test.canApproveSalesStage({ roles: ['store_manager'] }, 'store'), true);
+  assert.equal(_test.canApproveSalesStage({ roles: ['store_admin'] }, 'store'), true);
+  assert.equal(_test.canApproveSalesStage({ roles: ['admin'] }, 'store'), false);
+  assert.equal(_test.canApproveSalesStage({ roles: ['admin'] }, 'distributor'), true);
+  assert.equal(_test.canApproveSalesStage({ roles: ['boss'] }, 'distributor'), true);
+  assert.equal(_test.canApproveSalesStage({ roles: ['manager'] }, 'distributor'), false);
+  assert.equal(_test.canApproveSalesStage({ roles: ['store_manager', 'admin'] }, 'store'), true);
+  assert.equal(_test.canApproveSalesStage({ roles: ['store_manager', 'admin'] }, 'distributor'), true);
 });
 
 test('订单导出按国补 OMO 客户实收归入对应收款方式列', () => {

@@ -153,7 +153,7 @@ const roleCodes = computed(() => {
   const roleAliases = { distributor: 'admin', system_admin: 'admin', store_admin: 'manager' }
   return [...new Set(rawRoles.map(role => String(role || '').trim().toLowerCase()).filter(Boolean).map(role => roleAliases[role] || role))]
 })
-const canReviewSales = computed(() => roleCodes.value.some(role => ['boss', 'admin', 'manager'].includes(role)))
+const canReviewSales = computed(() => roleCodes.value.some(role => ['boss', 'admin', 'manager', 'store_manager', 'store_admin'].includes(role)))
 const canConfigure = computed(() => roleCodes.value.some(role => ['admin', 'boss'].includes(role)))
 const flowForm = reactive({ definitionId: '', flowCode: '', name: '', businessType: '', nodes: [] })
 const mergedTasks = computed(() => {
@@ -375,7 +375,17 @@ function taskStatusText(value) { return ({ pending: '待审批', waiting: '等�
 function formatMoney(value) { return Number(value || 0).toFixed(2) }
 function formatProfit(value) { return value === undefined || value === null ? '-' : `¥${formatMoney(value)}` }
 function taskTitle(row) { return row.isSalesApproval ? `销售订单 ${row.salesRow?.order_no || '-'}` : row.Instance?.title || '-' }
-function taskNode(row) { return row.isSalesApproval ? '负毛利归档审批' : row.node_name || '-' }
+function salesApprovalStage(row = {}) {
+  const stage = row.approval_stage || row.approvalStage
+  if (stage === 'store' || stage === 'distributor') return stage
+  if (['pending_store_approval', 'pending_approval'].includes(row.order_status)) return 'store'
+  if (row.order_status === 'pending_distributor_approval') return 'distributor'
+  return ''
+}
+function salesApprovalStageText(row = {}) {
+  return salesApprovalStage(row) === 'distributor' ? '待经销商总权限审批' : '待店长审批'
+}
+function taskNode(row) { return row.isSalesApproval ? salesApprovalStageText(row.salesRow || {}) : row.node_name || '-' }
 function taskBusinessType(row) { return businessTypeText(row.isSalesApproval ? 'sales_negative_gross_profit' : row.Instance?.business_type) }
 function taskNo(row) { return row.isSalesApproval ? row.salesRow?.order_no || '-' : row.Instance?.instance_no || '-' }
 function taskCreateTime(row) { return row.isSalesApproval ? row.salesRow?.create_time || '-' : row.create_time || row.Instance?.create_time || '-' }
@@ -398,16 +408,23 @@ function openModule(row) {
   detailVisible.value = true
 }
 async function reviewSales(row, action) {
+  const stage = salesApprovalStage(row)
   let comment = ''
   if (action === 'reject') {
     const result = await ElMessageBox.prompt('请输入拒绝原因', '拒绝负毛利审批', { inputType: 'textarea' }).catch(() => null)
     if (!result) return
     comment = result.value
-  } else if (!(await ElMessageBox.confirm('确认通过该负毛利销售审批？通过后订单将自动归档。', '审批确认', { type: 'warning' }).catch(() => false))) return
+  } else if (!(await ElMessageBox.confirm(
+    stage === 'store' ? '确认通过店长初审？通过后将进入经销商总权限复审。' : '确认通过经销商总权限复审？通过后订单将自动归档。',
+    '审批确认',
+    { type: 'warning' }
+  ).catch(() => false))) return
   try {
     if (action === 'approve') await api.approveOrder(row.order_id)
     else await api.rejectOrder(row.order_id, { reason: comment })
-    ElMessage.success(action === 'approve' ? '审批通过，订单已自动归档' : '审批已拒绝，订单已退回未归档')
+    ElMessage.success(action === 'approve'
+      ? (stage === 'store' ? '店长初审通过，已进入经销商总权限复审' : '经销商总权限复审通过，订单已自动归档')
+      : `${stage === 'store' ? '店长初审' : '经销商总权限复审'}已拒绝，订单已退回未归档`)
     await reload()
   } catch (error) {
     ElMessage.error(error.response?.data?.message || error.message || '销售审批处理失败')
