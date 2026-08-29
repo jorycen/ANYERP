@@ -621,7 +621,7 @@ const returnSubmitting = ref(false)
 const returnOrder = ref(null)
 const returnForm = reactive({ reason: '' })
 
-const canExportOrders = computed(() => isDistributorAccount() || hasRole(['manager', 'store_manager']))
+const canExportOrders = computed(() => isDistributorAccount() || hasRole(['manager', 'store_manager', 'store_admin']))
 const actionLabel = (action) => ({
   created: '创建订单',
   draft_created: '创建销售草稿',
@@ -1748,12 +1748,12 @@ const formatDate = (dateStr) => {
 }
 
 const getStatusType = (status) => {
-  const types = { draft: 'info', completed: 'success', archived: 'success', '已归档': 'success', '未归档': 'warning', pending_approval: 'warning', cancelled: 'danger', voided: 'danger', '已作废': 'danger', return_pending: 'warning', returned: 'info', deposit_receipt: 'success' }
+  const types = { draft: 'info', completed: 'success', archived: 'success', '已归档': 'success', '未归档': 'warning', pending_approval: 'warning', pending_store_approval: 'warning', pending_distributor_approval: 'warning', cancelled: 'danger', voided: 'danger', '已作废': 'danger', return_pending: 'warning', returned: 'info', deposit_receipt: 'success' }
   return types[status] || 'info'
 }
 
 const getStatusText = (status) => {
-  const texts = { draft: '草稿', completed: '已归档', archived: '已归档', '已归档': '已归档', '未归档': '未归档', pending_approval: '待审批', cancelled: '已取消', voided: '已作废', '已作废': '已作废', return_pending: '退单审批中', returned: '已退单', deposit_receipt: '定金收款' }
+  const texts = { draft: '草稿', completed: '已归档', archived: '已归档', '已归档': '已归档', '未归档': '未归档', pending_approval: '待店长审批', pending_store_approval: '待店长审批', pending_distributor_approval: '待经销商总权限审批', cancelled: '已取消', voided: '已作废', '已作废': '已作废', return_pending: '退单审批中', returned: '已退单', deposit_receipt: '定金收款' }
   return texts[status] || status
 }
 

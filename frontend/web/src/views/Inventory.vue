@@ -2006,6 +2006,7 @@ const conversionProductSubmitLoading = ref(false)
 const conversionProductCategoryTree = ref([])
 const conversionProductCategoryFields = ref([])
 const conversionProductCategoryFieldName = ref('')
+const conversionProductCategoryNameParts = ref([])
 const conversionProductNewBarcode = ref('')
 const conversionQuery = reactive({
   page: 1,
@@ -2074,7 +2075,7 @@ const conversionProductExtraFields = computed(() => {
 })
 const conversionProductName = computed(() => {
   if (conversionProductForm.customName) return conversionProductForm.customName
-  const parts = []
+  const parts = [...conversionProductCategoryNameParts.value]
   for (const field of conversionProductStandardFields) {
     if (conversionProductForm[field]) parts.push(conversionProductForm[field])
   }
@@ -4002,6 +4003,7 @@ const onConversionProductCategoryChange = async (value) => {
   conversionProductForm.attributes = {}
   conversionProductCategoryFields.value = []
   conversionProductCategoryFieldName.value = ''
+  conversionProductCategoryNameParts.value = []
   if (!value) return
 
   try {
@@ -4009,6 +4011,7 @@ const onConversionProductCategoryChange = async (value) => {
     if (res.code === 0 && res.data?.fields) {
       conversionProductCategoryFields.value = res.data.fields
       conversionProductCategoryFieldName.value = res.data.categoryName || ''
+      conversionProductCategoryNameParts.value = Array.isArray(res.data.categoryNameParts) ? res.data.categoryNameParts : []
     }
   } catch (err) {
     ElMessage.error('加载分类字段失败')
@@ -4035,6 +4038,7 @@ const resetConversionProductForm = () => {
   conversionProductForm.pnCode = ''
   conversionProductForm.barcodes = []
   conversionProductForm.attributes = {}
+  conversionProductCategoryNameParts.value = []
   conversionProductForm.customName = ''
   conversionProductCategoryFields.value = []
   conversionProductCategoryFieldName.value = ''

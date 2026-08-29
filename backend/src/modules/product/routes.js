@@ -11,7 +11,7 @@ const {
   getCategoryFields, saveCategoryFields, getCategoryFieldConfig,
   getPriceList, exportCostPrices, setPrice, refreshCostPrice, batchRefreshCost, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory,
   getProductImportTask,
-  getPnList, addPn, searchProduct
+  getPnList, addPn, searchProduct, getPnAvailability
 } = require('./controller');
 const { requireRole } = require('../../middleware/permission');
 
@@ -65,6 +65,7 @@ router.post('/price/import-cost-refresh', upload.single('file'), importCostRefre
 router.get('/price/history', getPriceChangeHistory);
 
 // PN管理
+router.get('/pn-availability', getPnAvailability);
 router.get('/pn-list', getPnList);
 router.post('/pn', addPn);
 

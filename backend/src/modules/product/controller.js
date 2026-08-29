@@ -29,7 +29,7 @@ const {
   isUsablePnCode,
   assertSingleSnProductPn
 } = require('../../utils/productPn');
-const { ensureProductPnsMaster, syncProductPnsMaster } = require('../../utils/productPnMaster');
+const { ensureProductPnsMaster, syncProductPnsMaster, assertPnAvailableForNewProduct } = require('../../utils/productPnMaster');
 const XLSX = require('xlsx');
 const { getUserRoles } = require('../../middleware/permission');
 const { sendExcel } = require('../../utils/excelExport');
@@ -539,6 +539,15 @@ function selectNearestCategoryFields(lineage, fieldRows) {
   return { sourceCategory, sourceFields, ownFields };
 }
 
+function getCategoryNamePrefix(lineage) {
+  return (lineage || [])
+    .slice()
+    .reverse()
+    .slice(1, 4)
+    .map(category => String(category?.name || '').trim())
+    .filter(Boolean);
+}
+
 async function resolveCategoryFieldConfig(categoryId) {
   if (!categoryId) {
     throw Object.assign(new Error('请指定分类'), { status: 400 });
@@ -578,6 +587,7 @@ async function resolveCategoryFieldConfig(categoryId) {
   return {
     category: lineage[0],
     lineage,
+    categoryNameParts: getCategoryNamePrefix(lineage),
     fields: sourceFields,
     ownFields,
     sourceCategory,
@@ -749,15 +759,19 @@ async function resolveProductApplicationName(body) {
     try { parsedAttrs = JSON.parse(attributes); } catch { parsedAttrs = {}; }
   }
   let finalName = name || '';
-  if (!finalName && categoryId && parsedAttrs && typeof parsedAttrs === 'object') {
-    const { fields } = await resolveCategoryFieldConfig(categoryId);
+  if (!finalName && categoryId) {
+    const resolved = await resolveCategoryFieldConfig(categoryId);
+    const fields = resolved.fields;
+    const attrs = parsedAttrs && typeof parsedAttrs === 'object' ? parsedAttrs : {};
     if (fields.length > 0) {
-      const parts = [];
+      const parts = [...resolved.categoryNameParts];
       for (const f of fields) {
-        const val = parsedAttrs[f.field_key];
+        const val = attrs[f.field_key];
         if (val) parts.push(val);
       }
       finalName = parts.join(' ') || name || '';
+    } else {
+      finalName = resolved.categoryNameParts.join(' ') || name || '';
     }
   }
   return { finalName: String(finalName || '').trim(), parsedAttrs: parsedAttrs || {} };
@@ -810,7 +824,39 @@ async function validateProductApplicationInput(body = {}, { finalName, parsedAtt
   if (!pnCode) {
     throw Object.assign(new Error('PN码不能为空'), { status: 400 });
   }
+  await assertPnAvailableForNewProduct({ pnCode });
   return { pnCode };
+}
+
+async function getPnAvailability(ctx) {
+  const pnCode = String(ctx.query.pnCode || ctx.query.pn_code || '').trim();
+  if (!isUsablePnCode(pnCode)) ctx.throw(400, 'PN码不能为空或不能使用占位值');
+
+  const record = await ProductPn.findOne({
+    where: {
+      [Op.and]: [
+        sequelize.where(
+          sequelize.fn('LOWER', sequelize.fn('REPLACE', sequelize.fn('TRIM', sequelize.col('pn_code')), ' ', '')),
+          normalizePnCode(pnCode)
+        ),
+        { status: 1, is_deleted: 0 }
+      ]
+    },
+    attributes: ['pn_id', 'pn_code', 'product_id'],
+    include: [{ model: Product, attributes: ['product_id', 'product_code', 'name'], required: false }]
+  });
+
+  const product = record?.Product || null;
+  ctx.body = {
+    code: 0,
+    data: {
+      exists: Boolean(record),
+      pnCode: record?.pn_code || pnCode,
+      product: product
+        ? { productId: product.product_id, productCode: product.product_code, name: product.name }
+        : null
+    }
+  };
 }
 
 function productApplicationPayload(body, finalName, parsedAttrs) {
@@ -3021,7 +3067,8 @@ async function getCategoryFieldConfig(ctx) {
       categoryName: resolved.category?.name || '',
       sourceCategoryId: resolved.sourceCategory?.category_id || null,
       sourceCategoryName: resolved.sourceCategory?.name || null,
-      inherited: resolved.inherited
+      inherited: resolved.inherited,
+      categoryNameParts: resolved.categoryNameParts
     }
   };
 }
@@ -3063,8 +3110,13 @@ async function executeProductImportRows(rows) {
 
       const { cols, extras } = splitAttributes(attrMap);
 
-      // 自动拼装名称 - 先使用标准字段，再使用分类补充字段
-      const autoNameParts = [];
+      // 自动拼装名称：先使用第2/3/4级分类，再使用标准字段和分类补充字段
+      const categoryFieldConfig = categoryId
+        ? (catFieldCache[categoryId] || (catFieldCache[categoryId] = await resolveCategoryFieldConfig(categoryId)))
+        : null;
+      const autoNameParts = categoryFieldConfig?.categoryNameParts
+        ? [...categoryFieldConfig.categoryNameParts]
+        : [];
       
       // 1. 优先使用标准字段
       const standardFieldLabels = {
@@ -3079,12 +3131,7 @@ async function executeProductImportRows(rows) {
       
       // 2. 如果有分类，再使用分类补充字段（避免与标准字段重复）
       if (categoryId) {
-        // 缓存分类字段
-        if (!catFieldCache[categoryId]) {
-          const resolvedFields = await resolveCategoryFieldConfig(categoryId);
-          catFieldCache[categoryId] = resolvedFields.fields;
-        }
-        const fields = catFieldCache[categoryId];
+        const fields = categoryFieldConfig?.fields || [];
         for (const f of fields) {
           // 避免重复添加标准字段
           if (['brand','series','model','processor','memory','storage','color','gpu','accessory_type'].includes(f.field_key)) {
@@ -3469,7 +3516,7 @@ module.exports = {
   getCategoryTree, createCategory, updateCategory, deleteCategory, sortCategories,
   getPriceList, exportCostPrices, setPrice, refreshCostPrice, batchRefreshCost, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory, applyPendingProductPriceChanges,
   getProductImportTask, recoverProductImportTasks,
-  getPnList, addPn, searchProduct,
+  getPnList, addPn, searchProduct, getPnAvailability,
   _test: {
     parseImportWorkbook,
     importTaskData,
@@ -3479,6 +3526,7 @@ module.exports = {
     resolveProductApplicationPnCode,
     hasProductApplicationValue,
     isFourLevelCategory,
+    getCategoryNamePrefix,
     selectNearestCategoryFields,
     applySerializedSalesStock
   }

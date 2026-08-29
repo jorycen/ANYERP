@@ -723,6 +723,7 @@ const pnLoadFailed = ref(false)
 const formNewBarcode = ref('')
 const categoryFields = ref([])
 const categoryFieldCatName = ref('')
+const categoryNameParts = ref([])
 
 const productForm = reactive({
   productId: null,
@@ -822,7 +823,7 @@ const addFormBarcode = () => {
 const removeFormBarcode = (index) => { productForm.barcodes.splice(index, 1) }
 
 const computedProductName = computed(() => {
-  const parts = []
+  const parts = [...categoryNameParts.value]
   for (const field of categoryFields.value) {
     if (productForm.attributes[field.field_key]) {
       parts.push(productForm.attributes[field.field_key])
@@ -858,6 +859,7 @@ const onCategoryChange = async (value) => {
     productForm.attributes = {}
     categoryFields.value = []
     categoryFieldCatName.value = ''
+    categoryNameParts.value = []
     return
   }
   const selectedCategory = findCategoryNode(categoryTree.value, value)
@@ -871,6 +873,7 @@ const onCategoryChange = async (value) => {
   productForm.attributes = {}
   categoryFields.value = []
   categoryFieldCatName.value = ''
+  categoryNameParts.value = []
   if (!value) return
 
   try {
@@ -878,6 +881,7 @@ const onCategoryChange = async (value) => {
     if (res.code === 0 && res.data && res.data.fields) {
       categoryFields.value = res.data.fields
       categoryFieldCatName.value = res.data.categoryName || ''
+      categoryNameParts.value = Array.isArray(res.data.categoryNameParts) ? res.data.categoryNameParts : []
       if (currentProduct.value) {
         productForm.brand = currentProduct.value.brand || ''
         productForm.series = currentProduct.value.series || ''
@@ -1124,6 +1128,7 @@ const resetForm = () => {
   productForm.attributes = {}
   categoryFields.value = []
   categoryFieldCatName.value = ''
+  categoryNameParts.value = []
   formNewBarcode.value = ''
   currentProduct.value = null
 }

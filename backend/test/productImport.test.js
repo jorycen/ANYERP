@@ -67,3 +67,13 @@ test('分类字段优先使用当前分类及最近上级配置', () => {
   assert.deepEqual(resolved.sourceFields.map(field => field.field_key), ['model']);
   assert.equal(resolved.ownFields.length, 0);
 });
+
+test('商品名称分类前缀使用第2到第4级，不包含第1级', () => {
+  const prefix = _test.getCategoryNamePrefix([
+    { category_id: 'L4', name: '游戏本' },
+    { category_id: 'L3', name: 'ThinkPad' },
+    { category_id: 'L2', name: '联想' },
+    { category_id: 'L1', name: '笔记本' }
+  ]);
+  assert.deepEqual(prefix, ['联想', 'ThinkPad', '游戏本']);
+});
