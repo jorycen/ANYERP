@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeParticipants } = require('../src/modules/report/dashboardDataSource');
+const { normalizeParticipants, ARCHIVED_STATUSES, GROSS_PROFIT_FORMULA_VERSION } = require('../src/modules/report/dashboardDataSource');
 const {
   buildRanges,
   comparisonRate,
@@ -16,6 +16,12 @@ test('经营看板默认日期使用中国时区本周并生成等长环比周�
   assert.equal(ranges.previous.endDate, '2026-06-28');
   assert.equal(ranges.yoy.startDate, '2025-06-29');
   assert.equal(ranges.yoy.endDate, '2025-07-05');
+});
+
+test('经营看板正向统计排除整单退货原订单并使用当前毛利公式', () => {
+  assert.deepEqual(ARCHIVED_STATUSES, ['已归档', 'completed', 'archived']);
+  assert.equal(ARCHIVED_STATUSES.includes('returned'), false);
+  assert.equal(GROSS_PROFIT_FORMULA_VERSION, 'ORDER_GP_V8_20260810_FREIGHT');
 });
 
 test('退单负向毛利只记到对应个人，普通调整仍按参与人均分', () => {

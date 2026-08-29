@@ -1,8 +1,10 @@
 const { QueryTypes } = require('sequelize');
 const { sequelize } = require('../../models');
+const { FORMULA_VERSION: CURRENT_GROSS_PROFIT_FORMULA_VERSION } = require('../sales/grossProfit');
 
-const ARCHIVED_STATUSES = ['已归档', 'completed', 'archived', 'returned'];
-const GROSS_PROFIT_FORMULA_VERSION = 'ORDER_GP_V5_20260706';
+// 正向经营统计只纳入已归档销售；整单退货的原订单保留追溯，但不再重复计入正向销售。
+const ARCHIVED_STATUSES = ['已归档', 'completed', 'archived'];
+const GROSS_PROFIT_FORMULA_VERSION = CURRENT_GROSS_PROFIT_FORMULA_VERSION;
 
 function normalizeCategoryPath(value) {
   return String(value || '')
@@ -443,7 +445,11 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
               o.CREATE_STAFF_ID AS create_staff_id,
               o.CREATE_USER AS create_user,
               o.AUXILIARY_SALES_LIST AS auxiliary_sales_list,
-              ROUND(SUM(oi.SUBTOTAL), 2) AS sales_amount,
+              ROUND(SUM(oi.SUBTOTAL) + COALESCE((
+                SELECT SUM(r.RETURNED_SALES_AMOUNT)
+                  FROM T_SALES_RETURN_GROSS_PROFIT r
+                 WHERE r.ORDER_ID = o.ORDER_ID
+              ), 0), 2) AS sales_amount,
               ROUND(SUM(${grossProfitSql()}), 2) AS base_gross_profit
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
@@ -680,6 +686,7 @@ class DailyKpiDashboardDataSource extends DashboardDataSource {
 
 module.exports = {
   ARCHIVED_STATUSES,
+  GROSS_PROFIT_FORMULA_VERSION,
   DashboardDataSource,
   RealtimeSqlDashboardDataSource,
   DailyKpiDashboardDataSource,

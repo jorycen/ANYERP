@@ -16,6 +16,7 @@ const {
 const { Op } = require('sequelize');
 const { loadLegacyCostMaps, calculateItemBaseProfit } = require('./profitCalculation');
 const { DashboardService } = require('./dashboardService');
+const { ARCHIVED_STATUSES: POSITIVE_SALES_ORDER_STATUSES } = require('./dashboardDataSource');
 const { buildDecisionInsights, buildAiAdvisor } = require('./decisionEngine');
 const { resolveReportStoreIds } = require('../../utils/storePermissions');
 const { FORMULA_VERSION: GROSS_PROFIT_FORMULA_VERSION } = require('../sales/grossProfit');
@@ -92,7 +93,8 @@ async function getSalesReport(ctx) {
 
   const where = {
     is_deleted: 0,
-    store_id: storeIds
+    store_id: storeIds,
+    order_status: { [Op.in]: POSITIVE_SALES_ORDER_STATUSES }
   };
 
   if (startDate && endDate) {
@@ -316,7 +318,7 @@ async function getEmployeePerformanceReport(ctx) {
   const where = {
     is_deleted: 0,
     store_id: { [Op.in]: storeIds },
-    order_status: { [Op.in]: ['已归档', 'completed', 'archived', 'returned'] }
+    order_status: { [Op.in]: POSITIVE_SALES_ORDER_STATUSES }
   };
   if (staffName) where.create_user = staffName;
   if (startDate && endDate) {
