@@ -2696,6 +2696,7 @@ async function update(ctx) {
   }
 
   assertStoreVisible(order.store_id, ctx.state.user);
+  const previousRemark = order.remark || '';
   if (isSalesApprovalPendingStatus(order.order_status)) {
     ctx.throw(400, '待审批订单不能直接修改或归档，请先审批或拒绝');
   }
@@ -2797,6 +2798,19 @@ async function update(ctx) {
         fromStatus: previousStatus,
         toStatus: statusAfterUpdate,
         user: ctx.state.user,
+        transaction
+      });
+    }
+    if (data.remark !== undefined && String(data.remark || '') !== String(previousRemark)) {
+      await recordBusinessAction({
+        businessType: 'sales_order',
+        businessId: order.order_id,
+        businessNo: order.order_no,
+        action: 'remark_updated',
+        fromStatus: previousStatus,
+        toStatus: statusAfterUpdate,
+        user: ctx.state.user,
+        comment: '订单备注已更新',
         transaction
       });
     }
@@ -2915,6 +2929,17 @@ async function updateSupplements(ctx) {
       calculatedBy: ctx.state.user?.name || 'system',
       force: true,
       final: isArchiveStatus(order.order_status)
+    });
+    await recordBusinessAction({
+      businessType: 'sales_order',
+      businessId: order.order_id,
+      businessNo: order.order_no,
+      action: 'supplements_updated',
+      fromStatus: order.order_status,
+      toStatus: order.order_status,
+      user: ctx.state.user,
+      comment: `金额补录已更新，共${normalized.length}条`,
+      transaction
     });
   });
 
