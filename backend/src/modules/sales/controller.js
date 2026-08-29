@@ -211,8 +211,8 @@ const SALES_APPROVAL_STATUSES = Object.freeze({
   store: 'pending_store_approval',
   distributor: 'pending_distributor_approval'
 });
-const STORE_APPROVAL_ROLES = ['manager', 'store_manager', 'store_admin'];
-const DISTRIBUTOR_APPROVAL_ROLES = ['admin', 'boss'];
+const STORE_APPROVAL_ROLES = ['manager', 'store_manager', 'store_admin', 'admin', 'boss', 'distributor'];
+const DISTRIBUTOR_APPROVAL_ROLES = ['admin', 'boss', 'distributor'];
 
 function salesApprovalStageFromStatus(status) {
   const normalized = String(status || '').trim();

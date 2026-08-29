@@ -291,7 +291,8 @@ test('负毛利订单按店长初审和经销商总权限复审严格串行', ()
   assert.equal(_test.salesApprovalStageFromStatus('pending_distributor_approval'), 'distributor');
   assert.equal(_test.canApproveSalesStage({ roles: ['store_manager'] }, 'store'), true);
   assert.equal(_test.canApproveSalesStage({ roles: ['store_admin'] }, 'store'), true);
-  assert.equal(_test.canApproveSalesStage({ roles: ['admin'] }, 'store'), false);
+  assert.equal(_test.canApproveSalesStage({ roles: ['admin'] }, 'store'), true);
+  assert.equal(_test.canApproveSalesStage({ roles: ['distributor'] }, 'store'), true);
   assert.equal(_test.canApproveSalesStage({ roles: ['admin'] }, 'distributor'), true);
   assert.equal(_test.canApproveSalesStage({ roles: ['boss'] }, 'distributor'), true);
   assert.equal(_test.canApproveSalesStage({ roles: ['manager'] }, 'distributor'), false);
