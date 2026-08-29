@@ -3101,14 +3101,16 @@ function getTransferableInventoryQuantity(inventories = [], locationTypes = new 
   }, 0);
 }
 
-function isPurchaseInboundItemProgressComplete(item, product) {
+function isPurchaseInboundItemProgressComplete(item, product, progress = {}) {
   const totalQuantity = Math.max(Number(item?.quantity || 0), 0);
-  const receivedQuantity = Math.max(Number(item?.received_quantity || 0), 0);
+  const receivedQuantity = Math.max(Number(item?.received_quantity || 0), 0) +
+    Math.max(Number(progress?.quantity || 0), 0);
   if (receivedQuantity < totalQuantity) return false;
   if (Number(product?.need_sn) !== 1) return true;
 
   const snCodes = parseInboundSnCodes(item?.received_sn_codes);
   if (snCodes.length === 0 && item?.sn_code) snCodes.push(String(item.sn_code).trim());
+  snCodes.push(...(progress?.snCodes || []));
   return snCodes.length >= totalQuantity;
 }
 
@@ -3634,7 +3636,11 @@ async function executeInbound(ctx) {
     if (isPurchaseInbound && allPurchaseItemsReceived) {
       const incompleteSnItem = inboundItems.find(item => (
         Number(productMap.get(item.product_id)?.need_sn) === 1 &&
-        !isPurchaseInboundItemProgressComplete(item, productMap.get(item.product_id))
+        !isPurchaseInboundItemProgressComplete(
+          item,
+          productMap.get(item.product_id),
+          progressByItem.get(String(item.item_id))
+        )
       ));
       if (incompleteSnItem) {
         ctx.throw(409, `商品 ${incompleteSnItem.product_name || incompleteSnItem.product_id} 的入库数量已完成，但SN数量不足，不能完成入库`);

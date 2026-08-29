@@ -41,4 +41,20 @@ test('采购SN入库只有收齐数量和SN数量才能完成', () => {
   assert.equal(isComplete({ quantity: 8, received_quantity: 7, received_sn_codes: JSON.stringify(['SN1', 'SN2', 'SN3', 'SN4', 'SN5', 'SN6', 'SN7']) }, product), false);
   assert.equal(isComplete({ quantity: 8, received_quantity: 8, received_sn_codes: JSON.stringify(['SN1', 'SN2', 'SN3', 'SN4', 'SN5', 'SN6', 'SN7', 'SN8']) }, product), true);
   assert.equal(isComplete({ quantity: 8, received_quantity: 8, received_sn_codes: JSON.stringify(['SN1', 'SN2', 'SN3', 'SN4', 'SN5', 'SN6', 'SN7']) }, product), false);
+
+  assert.equal(isComplete(
+    { quantity: 8, received_quantity: 0, received_sn_codes: '[]' },
+    product,
+    { quantity: 8, snCodes: ['SN1', 'SN2', 'SN3', 'SN4', 'SN5', 'SN6', 'SN7', 'SN8'] }
+  ), true);
+  assert.equal(isComplete(
+    { quantity: 8, received_quantity: 7, received_sn_codes: JSON.stringify(['SN1', 'SN2', 'SN3', 'SN4', 'SN5', 'SN6', 'SN7']) },
+    product,
+    { quantity: 1, snCodes: ['SN8'] }
+  ), true);
+  assert.equal(isComplete(
+    { quantity: 8, received_quantity: 7, received_sn_codes: JSON.stringify(['SN1', 'SN2', 'SN3', 'SN4', 'SN5', 'SN6', 'SN7']) },
+    product,
+    { quantity: 1, snCodes: [] }
+  ), false);
 });
