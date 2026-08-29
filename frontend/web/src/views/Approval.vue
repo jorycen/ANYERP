@@ -82,9 +82,43 @@
           <el-descriptions-item label="状态">{{ statusText(currentInstance.status) }}</el-descriptions-item>
           <el-descriptions-item label="申请编号">{{ currentInstance.instance_no }}</el-descriptions-item>
           <el-descriptions-item label="业务单据">{{ currentInstance.business_type }} / {{ currentInstance.business_id }}</el-descriptions-item>
+          <el-descriptions-item v-if="currentInstance.applicant_name || currentInstance.applicant_staff_id" label="发起人">{{ currentInstance.applicant_name || currentInstance.applicant_staff_id }}</el-descriptions-item>
+          <el-descriptions-item v-if="currentInstance.store_name || currentInstance.store_id" label="申请门店">{{ currentInstance.store_name || currentInstance.store_id }}</el-descriptions-item>
+          <el-descriptions-item label="提交时间">{{ currentInstance.create_time || '-' }}</el-descriptions-item>
           <el-descriptions-item label="说明" :span="2">{{ currentInstance.summary || '-' }}</el-descriptions-item>
           <el-descriptions-item v-if="currentInstance.returnReason !== undefined" label="退单缘由" :span="2">{{ currentInstance.returnReason || '-' }}</el-descriptions-item>
         </el-descriptions>
+        <template v-if="currentInstance.moduleData">
+          <el-divider>发起信息</el-divider>
+          <el-skeleton v-if="currentInstance.detailLoading" :rows="3" animated />
+          <template v-else>
+            <el-descriptions v-if="detailScalarFields(currentInstance.moduleData).length" :column="2" border>
+              <el-descriptions-item
+                v-for="field in detailScalarFields(currentInstance.moduleData)"
+                :key="field.key"
+                :label="field.label"
+                :span="field.span"
+              >{{ field.value }}</el-descriptions-item>
+            </el-descriptions>
+            <div v-for="section in detailArraySections(currentInstance.moduleData)" :key="section.key" class="detail-section">
+              <div class="detail-section-title">{{ section.label }}</div>
+              <el-table :data="section.rows" stripe border size="small">
+                <el-table-column v-for="column in section.columns" :key="column.key" :label="column.label" min-width="120">
+                  <template #default="{ row }">{{ formatDetailValue(row[column.key]) }}</template>
+                </el-table-column>
+              </el-table>
+            </div>
+            <el-collapse v-if="detailHasContent(currentInstance.moduleData)" class="raw-detail">
+              <el-collapse-item title="查看完整发起数据" name="raw">
+                <pre>{{ formatJson(currentInstance.moduleData) }}</pre>
+              </el-collapse-item>
+            </el-collapse>
+          </template>
+        </template>
+        <template v-else-if="currentInstance.payload !== undefined && currentInstance.payload !== null">
+          <el-divider>发起信息</el-divider>
+          <pre class="raw-detail-content">{{ formatJson(currentInstance.payload) }}</pre>
+        </template>
         <el-divider>审批任务</el-divider>
         <el-timeline>
           <el-timeline-item v-for="task in currentInstance.Tasks || []" :key="task.task_id" :timestamp="task.acted_time || task.create_time">
@@ -144,6 +178,7 @@ const instances = ref([])
 const flows = ref([])
 const detailVisible = ref(false)
 const currentInstance = ref(null)
+let detailRequestSerial = 0
 const flowDialogVisible = ref(false)
 const assigneeOptions = reactive({ staff: [], roles: [], stores: [] })
 const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
@@ -394,22 +429,150 @@ function taskAmount(row) {
   if (row.isSalesApproval) return formatProfit(row.salesRow?.grossProfitSnapshot?.gross_profit_amount)
   return row.amountText || '-'
 }
-async function openInstance(id) { currentInstance.value = (await api.getApprovalInstance(id)).data; detailVisible.value = true }
-function openSales(row) { router.push({ name: 'Sales', query: { orderId: row.order_id } }) }
-function openModule(row) {
-  const moduleRow = row.moduleRow || {}
-  const isSalesReturn = row.moduleType === 'sales_return'
-  currentInstance.value = {
+const detailFieldLabels = {
+  application_no: '申请单号', application_id: '申请ID', request_no: '采购申请单号', request_id: '采购申请ID',
+  expense_no: '费用单号', expense_id: '费用ID', return_no: '退库单号', return_id: '退库申请ID',
+  change_order_no: '变更单号', change_id: '变更ID', adjustment_no: '调整单号', adjustment_id: '调整ID',
+  order_no: '订单号', order_id: '订单ID', create_time: '发起时间', update_time: '更新时间',
+  applicant_name: '申请人', applicant_staff_id: '申请人ID', submitter_name: '提交人', submit_user: '提交人',
+  apply_user: '发起账号', applicant_store_name: '申请门店', store_name: '门店', store_id: '门店ID',
+  applicant_distributor_name: '经销商', distributor_id: '经销商ID', supplier_name: '供应商', supplier_id: '供应商ID',
+  name: '商品名称', product_name: '商品名称', productName: '商品名称', product_code: '商品编码', productCode: '商品编码', pn_code: 'PN', pnCode: 'PN', sn_code: 'SN', snCode: 'SN',
+  categoryId: '分类ID', manufacturerCode: '厂商编码', needSn: '需要SN', needImei: '需要IMEI', unit: '单位', config: '配置',
+  barcodes: '条码', pns: 'PN明细', attributes: '商品属性', labelPhotoIds: '标签照片', labelPhotoUrls: '标签照片地址', isFocusProduct: '重点商品',
+  category_name: '商品分类', expense_type: '费用类型', expense_party: '费用发生方', payment_method: '付款方式',
+  invoice_type: '发票类型', product_type: '货型', reason: '申请原因', return_reason: '退单缘由', remark: '备注',
+  amount: '金额', total_amount: '申请金额', actual_total: '实际金额', current_actual_total: '当前实际金额',
+  refund_amount: '退款金额', change_amount: '套回金额', signed_amount: '调整金额', base_gross_profit: '调整前毛利',
+  gross_profit_amount: '毛利金额', adjustment_type: '调整方向', status: '业务状态', approval_status: '审批状态',
+  approval_stage: '审批阶段', review_comment: '审批意见', reviewer_name: '审批人', review_time: '审批时间',
+  attachment_url: '附件地址', source_type: '来源类型', source_no: '来源单号'
+}
+const detailArrayLabels = { items: '商品明细', OrderItems: '订单商品明细', InboundItems: '入库商品明细', originalOrderItems: '原订单商品明细', attachments: '附件' }
+const detailArrayColumnLabels = {
+  product_name: '商品名称', product_code: '商品编码', pn_code: 'PN', sn_code: 'SN', quantity: '数量',
+  current_quantity: '当前数量', unit_price: '单价', amount: '金额', amount_delta: '金额变化',
+  store_name: '门店', storeName: '门店', reason: '原因', original_name: '附件名称', mime_type: '文件类型', file_size: '文件大小'
+}
+const hiddenDetailKeys = new Set(['Applicant', 'applicant', 'Store', 'Supplier', 'settlement', 'originalOrder', 'adjustments', 'action_logs', 'payload_json', 'definition_snapshot_json'])
+function detailLabel(key) {
+  if (detailFieldLabels[key]) return detailFieldLabels[key]
+  return String(key).replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ')
+}
+function formatDetailValue(value) {
+  if (value === undefined || value === null || value === '') return '-'
+  if (typeof value === 'boolean') return value ? '是' : '否'
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+function formatJson(value) {
+  try { return JSON.stringify(value, null, 2) } catch (error) { return String(value || '') }
+}
+function detailScalarFields(data = {}) {
+  return Object.entries(data)
+    .filter(([key, value]) => !hiddenDetailKeys.has(key) && !Array.isArray(value) && (value === null || ['string', 'number', 'boolean'].includes(typeof value)))
+    .filter(([, value]) => value !== null && value !== '')
+    .map(([key, value]) => ({ key, label: detailLabel(key), value: formatDetailValue(value), span: key === 'remark' || key === 'reason' || key === 'return_reason' || key === 'review_comment' ? 2 : 1 }))
+}
+function detailArraySections(data = {}) {
+  return Object.entries(data)
+    .filter(([key, value]) => Array.isArray(value) && value.length && !hiddenDetailKeys.has(key))
+    .map(([key, rows]) => {
+      const objectRows = rows.filter(row => row && typeof row === 'object' && !Array.isArray(row))
+      if (!objectRows.length) return null
+      const keys = [...new Set(objectRows.flatMap(row => Object.keys(row)))]
+        .filter(columnKey => objectRows.some(row => row[columnKey] !== undefined && row[columnKey] !== null && row[columnKey] !== '' && typeof row[columnKey] !== 'object'))
+      const preferred = ['product_name', 'product_code', 'pn_code', 'sn_code', 'quantity', 'current_quantity', 'unit_price', 'amount', 'amount_delta', 'original_name', 'mime_type', 'file_size']
+      const orderedKeys = [...preferred.filter(columnKey => keys.includes(columnKey)), ...keys.filter(columnKey => !preferred.includes(columnKey))].slice(0, 8)
+      return {
+        key,
+        label: detailArrayLabels[key] || detailLabel(key),
+        rows: objectRows,
+        columns: orderedKeys.map(columnKey => ({ key: columnKey, label: detailArrayColumnLabels[columnKey] || detailLabel(columnKey) }))
+      }
+    })
+    .filter(section => section && section.columns.length)
+}
+function detailHasContent(data = {}) {
+  return detailScalarFields(data).length > 0 || detailArraySections(data).length > 0
+}
+function responseData(response) {
+  const payload = response?.data ?? response
+  return payload?.data ?? payload
+}
+function moduleApplicant(data = {}) {
+  return data.applicant_name || data.applicantName || data.submitter_name || data.submit_user || data.apply_user || data.Applicant?.name || data.applicant?.name || ''
+}
+function moduleStore(data = {}) {
+  return data.store_name || data.applicant_store_name || data.Store?.name || data.Applicant?.Store?.name || data.storeName || ''
+}
+function buildModuleInstance(row, moduleData = row.moduleRow || {}) {
+  return {
     title: taskTitle(row),
     status: 'pending',
     instance_no: taskNo(row),
     business_type: taskBusinessType(row),
     business_id: row.Instance?.business_id || '-',
     summary: row.Instance?.summary || '-',
-    returnReason: isSalesReturn ? moduleRow.reason || moduleRow.return_reason || '' : undefined,
+    create_time: row.create_time || row.Instance?.create_time || moduleData.create_time || '-',
+    applicant_name: moduleApplicant(moduleData),
+    applicant_staff_id: moduleData.applicant_staff_id || moduleData.applicantStaffId || '',
+    store_name: moduleStore(moduleData),
+    store_id: moduleData.store_id || moduleData.storeId || '',
+    moduleType: row.moduleType,
+    moduleData,
+    returnReason: row.moduleType === 'sales_return' ? moduleData.reason || moduleData.return_reason || '' : undefined,
     Tasks: []
   }
+}
+async function loadModuleDetail(row) {
+  const id = row.Instance?.business_id
+  const source = row.moduleRow || {}
+  if (!id) return source
+  if (row.moduleType === 'purchase') return responseData(await api.getPurchaseRequestDetail(id))
+  if (row.moduleType === 'expense') return responseData(await api.getExpenseDetail(id))
+  if (row.moduleType === 'product') {
+    const data = responseData(await api.getProductApplicationDetail(id)) || source
+    const payload = typeof data.payload_json === 'string' ? (() => { try { return JSON.parse(data.payload_json) } catch (error) { return null } })() : data.payload_json
+    return payload && typeof payload === 'object' ? { ...data, ...payload } : data
+  }
+  if (row.moduleType === 'sales_return' && source.order_id) {
+    const order = responseData(await api.getSalesDetail(source.order_id))
+    return { ...source, original_order_no: order?.order_no || source.order_no, original_order_customer_name: order?.customer_name || '', originalOrder: order, originalOrderItems: order?.OrderItems || order?.items || [] }
+  }
+  if (row.moduleType === 'profit' && source.order_id) {
+    const order = responseData(await api.getSalesDetail(source.order_id))
+    return { ...source, original_order_no: order?.order_no || source.order_no, original_order_customer_name: order?.customer_name || '', originalOrder: order, originalOrderItems: order?.OrderItems || order?.items || [] }
+  }
+  return source
+}
+async function openInstance(id) {
+  const serial = ++detailRequestSerial
+  currentInstance.value = null
   detailVisible.value = true
+  try {
+    const instance = responseData(await api.getApprovalInstance(id))
+    if (serial === detailRequestSerial) currentInstance.value = instance
+  } catch (error) {
+    detailVisible.value = false
+    ElMessage.error(error.response?.data?.message || error.message || '审批详情加载失败')
+  }
+}
+function openSales(row) { router.push({ name: 'Sales', query: { orderId: row.order_id } }) }
+async function openModule(row) {
+  const serial = ++detailRequestSerial
+  currentInstance.value = buildModuleInstance(row)
+  currentInstance.value.detailLoading = true
+  detailVisible.value = true
+  try {
+    const moduleData = await loadModuleDetail(row)
+    if (serial !== detailRequestSerial) return
+    currentInstance.value = { ...buildModuleInstance(row, moduleData), detailLoading: false }
+  } catch (error) {
+    if (serial !== detailRequestSerial) return
+    currentInstance.value = { ...currentInstance.value, detailLoading: false }
+    console.warn('加载审批发起详情失败:', error)
+  }
 }
 async function reviewSales(row, action) {
   const stage = salesApprovalStage(row)
@@ -494,5 +657,9 @@ onMounted(() => { syncTabFromRoute(); reload() })
 <style scoped>
 .module-tabs :deep(.el-tabs__header) { display: none; }
 .negative-profit { color: var(--el-color-danger); font-weight: 600; }
+.detail-section { margin-top: 16px; }
+.detail-section-title { margin-bottom: 8px; color: var(--el-text-color-primary); font-weight: 600; }
+.raw-detail { margin-top: 16px; }
+.raw-detail-content,.raw-detail pre { margin: 0; padding: 12px; max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-all; background: var(--el-fill-color-light); border-radius: 4px; font: 12px/1.6 Consolas, monospace; }
 .page-header,.toolbar,.node-head,.rule-row{display:flex;align-items:center;gap:10px}.page-header{justify-content:space-between}.toolbar{margin-bottom:12px}.node-card{border:1px solid var(--el-border-color);padding:12px;margin-bottom:12px;border-radius:4px}.node-head{margin-bottom:10px}.node-head .el-input{max-width:360px}.rule-row{margin:8px 0;flex-wrap:wrap}
 </style>
