@@ -40,6 +40,7 @@ router.get('/resource-rights/cost-adjustments', resourceRights.listCostAdjustmen
 router.post('/resource-rights/cost-configs', resourceRights.saveCostConfig);
 router.post('/resource-rights/batch-adjust', resourceRights.batchAdjustRights);
 router.post('/resource-rights/batch-refresh', resourceRights.batchRefreshRights);
+router.post('/resource-rights/reverse-sale-use', resourceRights.reverseSaleUseResource);
 router.get('/resource-categories', resourceRights.listResourceCategories);
 router.post('/resource-categories', resourceRights.saveResourceCategory);
 router.delete('/resource-categories/:categoryId', resourceRights.deleteResourceCategory);

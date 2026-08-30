@@ -5,7 +5,7 @@ const {
   GoodsType, GoodsTypeResource,
   ResourceSettlement, RebatePostingOrder, RebateSettlementAllocation,
   SettlementAccount, SettlementAccountTransaction, SupplierRebate, RebateEstimate, Supplier,
-  StaffCareCreditTransaction, PerformanceProfitAdjustment
+  StaffCareCreditTransaction, PerformanceProfitAdjustment, Order
 } = require('../../models');
 const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 
@@ -302,6 +302,133 @@ async function batchRefreshRights(ctx) {
     }
   });
   ctx.body = { message: '资源权益规则刷新完成；已归档销售单未受影响', affected };
+}
+
+/**
+ * 冲销已归档销售单核销的国补资格。
+ *
+ * 该操作只处理“原销售单已退单、SN已回库”的纠错场景，不改写原销售单、
+ * 原收款或原核销流水，而是追加一条 USED -> AVAILABLE 的不可删除变更记录。
+ */
+async function reverseSaleUseResource(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin', 'finance'], '仅财务、admin 或 BOSS 可以冲销国补资格');
+  const { snId, resourceType = 'GOV_SUBSIDY', reason = '' } = ctx.request.body || {};
+  const normalizedReason = String(reason || '').trim();
+  if (!snId) ctx.throw(400, 'SN不能为空');
+  if (resourceType !== 'GOV_SUBSIDY') ctx.throw(400, '该流程仅支持国补资格冲销');
+  if (!normalizedReason) ctx.throw(400, '请输入冲销原因');
+  if (normalizedReason.length > 512) ctx.throw(400, '冲销原因不能超过512个字符');
+
+  const result = await sequelize.transaction(async transaction => {
+    const sn = await ProductSn.findByPk(snId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!sn || sn.is_deleted) ctx.throw(404, 'SN不存在');
+    if (sn.status !== 'in_stock') ctx.throw(409, '只有已回库的SN才可以冲销国补资格');
+
+    const right = await InventoryResourceRight.findOne({
+      where: { sn_id: sn.sn_id, resource_type: resourceType },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!right) ctx.throw(404, '该SN没有国补资格记录');
+    if (right.current_status !== 'USED') ctx.throw(409, `当前国补资格状态为${STATUS_LABELS[right.current_status] || right.current_status}，不能执行核销冲销`);
+
+    const sourceChange = await ResourceRightChangeOrder.findOne({
+      where: {
+        sn_id: sn.sn_id,
+        resource_type: resourceType,
+        after_status: 'USED',
+        change_reason: 'SALE_USED',
+        approval_status: 'approved'
+      },
+      order: [['create_time', 'DESC'], ['change_id', 'DESC']],
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!sourceChange?.related_sale_order_id) ctx.throw(409, '未找到原销售核销流水，无法冲销');
+
+    const sourceOrder = await Order.findByPk(sourceChange.related_sale_order_id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!sourceOrder || !['returned', '已退单'].includes(String(sourceOrder.order_status || ''))) {
+      ctx.throw(409, '原销售单尚未完成退单，不能冲销国补资格');
+    }
+
+    const existingReversal = await ResourceRightChangeOrder.findOne({
+      where: {
+        sn_id: sn.sn_id,
+        resource_type: resourceType,
+        change_reason: 'SALE_USE_REVERSAL',
+        related_sale_order_id: sourceChange.related_sale_order_id,
+        approval_status: 'approved'
+      },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (existingReversal) ctx.throw(409, `原销售核销已冲销（${existingReversal.change_order_no}）`);
+
+    const settlements = await ResourceSettlement.findAll({
+      where: { source_type: 'SALE_USE', source_id: sourceChange.change_id, resource_type: resourceType },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    const activeSettlements = settlements.filter(record => !['CANCELLED', 'REVERSED'].includes(String(record.status || '').toUpperCase()));
+    const settledSettlement = activeSettlements.find(record => String(record.status || '').toUpperCase() !== 'PENDING');
+    if (settledSettlement) {
+      ctx.throw(409, `原销售权益已有${settledSettlement.status === 'PARTIALLY_SETTLED' ? '部分' : ''}下账记录，请先冲销该下账记录`);
+    }
+    for (const settlement of activeSettlements) {
+      await settlement.update({
+        status: 'CANCELLED',
+        cancelled_at: new Date(),
+        cancelled_by: ctx.state.user.staffId || null,
+        cancelled_by_name: ctx.state.user.name || ctx.state.user.staffId || '',
+        correction_reason: `国补资格核销冲销：${normalizedReason}`,
+        update_time: new Date()
+      }, { transaction });
+    }
+
+    const now = new Date();
+    await right.update({
+      current_status: 'AVAILABLE',
+      locked_source_type: null,
+      locked_source_id: null,
+      version: Number(right.version || 0) + 1,
+      update_time: now
+    }, { transaction });
+    const change = await ResourceRightChangeOrder.create({
+      change_id: generateUUID(),
+      change_order_no: businessNo(),
+      sn_id: sn.sn_id,
+      sn_code: sn.sn_code,
+      product_id: sn.product_id,
+      resource_type: resourceType,
+      before_status: 'USED',
+      after_status: 'AVAILABLE',
+      change_amount: Number(right.amount || 0),
+      change_reason: 'SALE_USE_REVERSAL',
+      approval_status: 'approved',
+      related_sale_order_id: sourceChange.related_sale_order_id,
+      applicant_staff_id: ctx.state.user.staffId || null,
+      applicant_name: ctx.state.user.name || ctx.state.user.staffId || '',
+      reviewer_staff_id: ctx.state.user.staffId || null,
+      reviewer_name: ctx.state.user.name || ctx.state.user.staffId || '',
+      review_time: now,
+      remark: `冲销原核销单 ${sourceChange.change_order_no}；原销售单 ${sourceOrder.order_no} 已退单；${normalizedReason}`
+    }, { transaction });
+
+    return {
+      changeId: change.change_id,
+      changeOrderNo: change.change_order_no,
+      snId: sn.sn_id,
+      snCode: sn.sn_code,
+      sourceChangeOrderNo: sourceChange.change_order_no,
+      cancelledSettlementCount: activeSettlements.length
+    };
+  });
+
+  ctx.body = {
+    code: 0,
+    data: result,
+    message: `国补资格冲销成功，SN ${result.snCode} 已恢复为可用`
+  };
 }
 
 async function submitClaim(ctx) {
@@ -1456,7 +1583,7 @@ async function releaseSaleRights(order, items, transaction) {
 
 module.exports = {
   LEGACY_RESOURCE_TYPES, buildSalesResourceSummary, summariesForSns,
-  listRights, snRights, saveSnRights, batchAdjustRights, batchRefreshRights, submitClaim, reviewClaim, listChanges, listCostConfigs, listCostAdjustments, saveCostConfig,
+  listRights, snRights, saveSnRights, batchAdjustRights, batchRefreshRights, reverseSaleUseResource, submitClaim, reviewClaim, listChanges, listCostConfigs, listCostAdjustments, saveCostConfig,
   listResourceCategories, saveResourceCategory, deleteResourceCategory,
   listGoodsTypes, saveGoodsType, deleteGoodsType,
   listResourceSettlements, createManualRebateSettlement, settleResource, batchSettleRebateResources,

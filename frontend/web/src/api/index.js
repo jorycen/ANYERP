@@ -282,6 +282,7 @@ export default {
   saveProductResourceCostConfig: (data) => api.post('/inventory/resource-rights/cost-configs', data),
   batchAdjustResourceRights: (data) => api.post('/inventory/resource-rights/batch-adjust', data),
   batchRefreshResourceRights: (data) => api.post('/inventory/resource-rights/batch-refresh', data),
+  reverseSaleUseResource: (data) => api.post('/inventory/resource-rights/reverse-sale-use', data),
   getResourceCategories: (params) => api.get('/inventory/resource-categories', { params }),
   saveResourceCategory: (data) => api.post('/inventory/resource-categories', data),
   deleteResourceCategory: (categoryId) => api.delete(`/inventory/resource-categories/${categoryId}`),

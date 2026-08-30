@@ -21,9 +21,10 @@
           <el-table-column label="状态" width="110"><template #default="{row}"><el-tag :type="statusType(row.current_status)">{{ statusText(row.current_status) }}</el-tag></template></el-table-column>
           <el-table-column prop="amount" label="确认金额" width="110"><template #default="{row}">¥{{ money(row.amount) }}</template></el-table-column>
           <el-table-column prop="update_time" label="更新时间" width="170" />
-          <el-table-column label="操作" width="160" fixed="right"><template #default="{row}">
+          <el-table-column label="操作" width="230" fixed="right"><template #default="{row}">
             <el-button link type="primary" @click="editSn(row.sn_id)">详情/维护</el-button>
             <el-button v-if="row.current_status === 'AVAILABLE'" link type="warning" @click="openClaim(row)">申请套回</el-button>
+            <el-button v-if="canReverse(row)" link type="danger" @click="reverseSaleUse(row)">冲销核销</el-button>
           </template></el-table-column>
         </el-table>
         <el-pagination v-model:current-page="rightsQuery.page" v-model:page-size="rightsQuery.pageSize" :total="rightsTotal" layout="total, prev, pager, next" @current-change="loadRights" />
@@ -205,6 +206,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
+import { hasRole } from '../utils/user'
 
 const props = defineProps({ financeOnly: { type: Boolean, default: false } })
 const tab = ref(props.financeOnly ? 'changes' : 'rights')
@@ -237,7 +239,7 @@ const resourceText = value => resourceOptions.value.find(item => item.value === 
 const statusText = value => statusOptions.find(item => item.value === value)?.label || value
 const statusType = value => ({AVAILABLE:'success',LOCKED:'warning',USED:'info',CLAIMED_BACK:'danger',EXCEPTION:'danger'}[value] || '')
 const approvalText = value => ({pending_finance:'待财务审批',approved:'已通过',rejected:'已拒绝'}[value] || value)
-const reasonText = value => ({SALE_USED:'销售使用',COMPANY_CLAIMED_BACK:'公司套回',ORDER_LOCKED:'订单锁定',ORDER_CANCEL_RELEASE:'订单取消释放',MANUAL_ADJUST:'人工调整',PURCHASE_INBOUND:'采购入库',BATCH_ADJUST:'批量调整',SALE_TRIGGER:'销售触发',SALE_TRIGGER_NOT_ELIGIBLE:'销售未达成条件'}[value] || value)
+const reasonText = value => ({SALE_USED:'销售使用',SALE_USE_REVERSAL:'销售核销冲销',COMPANY_CLAIMED_BACK:'公司套回',ORDER_LOCKED:'订单锁定',ORDER_CANCEL_RELEASE:'订单取消释放',MANUAL_ADJUST:'人工调整',PURCHASE_INBOUND:'采购入库',BATCH_ADJUST:'批量调整',SALE_TRIGGER:'销售触发',SALE_TRIGGER_NOT_ELIGIBLE:'销售未达成条件'}[value] || value)
 const calcTypeText = value => ({fixed_amount:'固定金额',percentage_inventory_cost:'库存成本比例',percentage_sale_amount:'销售金额比例'}[value] || value)
 const rulePeriodText = row => row.effective_start || row.effective_end ? `${String(row.effective_start || '不限').slice(0,10)} 至 ${String(row.effective_end || '不限').slice(0,10)}` : '长期有效'
 const triggerText = row => {
@@ -278,6 +280,19 @@ async function editSn(snId){
 async function saveSn(){ try{ await api.saveSnResourceRights(currentSnId.value, snForm); ElMessage.success('已保存'); snDialog.value=false; loadRights() }catch(e){ElMessage.error(e.response?.data?.message||'保存失败')} }
 function openClaim(row){ Object.assign(claimForm,{snId:row.sn_id,snCode:row.sn_code,resourceType:row.resource_type,amount:Number(row.amount||0),attachmentUrl:'',remark:''}); claimDialog.value=true }
 async function submitClaim(){ try{ await api.submitResourceClaim(claimForm); ElMessage.success('已提交财务审批'); claimDialog.value=false; loadRights() }catch(e){ElMessage.error(e.response?.data?.message||'提交失败')} }
+function canReverse(row){ return !props.financeOnly && row.resource_type === 'GOV_SUBSIDY' && row.current_status === 'USED' && hasRole(['finance']) }
+async function reverseSaleUse(row){
+  try{
+    const { value } = await ElMessageBox.prompt(
+      `将恢复 SN ${row.sn_code} 的国补资格，并追加一条 USED → 可用的冲销记录。仅适用于原销售单已退单、SN已回库的纠错场景。请输入冲销原因。`,
+      '冲销国补资格',
+      { inputPattern:/\S+/, inputErrorMessage:'必须填写冲销原因', inputPlaceholder:'例如：测试订单退单时未勾选退回国补资格', type:'warning' }
+    )
+    const res = await api.reverseSaleUseResource({ snId: row.sn_id, resourceType: row.resource_type, reason: value })
+    ElMessage.success(res.message || '国补资格冲销成功')
+    await Promise.all([loadRights(), loadChanges()])
+  }catch(e){ if(e !== 'cancel' && e !== 'close') ElMessage.error(e.response?.data?.message || '国补资格冲销失败') }
+}
 async function review(row, action){
   const { value }=await ElMessageBox.prompt(action==='approve'?'确认通过该套回申请？':'请输入拒绝原因', action==='approve'?'审批通过':'审批拒绝', {inputPlaceholder:'审批意见'}).catch(()=>({}))
   if(action==='reject' && !value)return
