@@ -11,6 +11,7 @@ const {
 } = require('../../models');
 const { resolveReportStoreIds } = require('../../utils/storePermissions');
 const { normalizeParticipants } = require('./dashboardDataSource');
+const { canViewProfit } = require('./dashboardService');
 
 const ARCHIVED_STATUSES = ['已归档', 'completed', 'archived', 'returned'];
 
@@ -217,12 +218,14 @@ function rate(actual, target) {
   return goal > 0 ? Number(((number(actual) / goal) * 100).toFixed(2)) : null;
 }
 
-function buildAchievement({ task, actual, grossProfitTarget, name, storeId, storeName, allocationTotal = null }) {
+function buildAchievement({ task, actual, grossProfitTarget, name, storeId, storeName, allocationTotal = null, profitVisible = true }) {
   const metrics = [];
   const sales = { actual: money(actual.salesAmount), target: money(task.salesTarget), rate: rate(actual.salesAmount, task.salesTarget) };
-  const grossProfit = { actual: money(actual.grossProfit), target: money(grossProfitTarget), rate: rate(actual.grossProfit, grossProfitTarget) };
+  const grossProfit = profitVisible
+    ? { actual: money(actual.grossProfit), target: money(grossProfitTarget), rate: rate(actual.grossProfit, grossProfitTarget) }
+    : { actual: null, target: null, rate: null };
   if (sales.target > 0) metrics.push(sales.rate);
-  if (grossProfit.target > 0) metrics.push(grossProfit.rate);
+  if (profitVisible && grossProfit.target > 0) metrics.push(grossProfit.rate);
   const productBatches = (task.productBatches || []).map(batch => {
     const products = (batch.products || []).map(product => ({
       productId: product.productId,
@@ -252,8 +255,31 @@ function buildAchievement({ task, actual, grossProfitTarget, name, storeId, stor
   };
 }
 
+function summarizeAchievements(rows, profitVisible) {
+  const salesActual = rows.reduce((sum, row) => sum + number(row.sales?.actual), 0);
+  const salesTarget = rows.reduce((sum, row) => sum + number(row.sales?.target), 0);
+  const grossActual = rows.reduce((sum, row) => sum + number(row.grossProfit?.actual), 0);
+  const grossTarget = rows.reduce((sum, row) => sum + number(row.grossProfit?.target), 0);
+  return {
+    taskCount: rows.length,
+    sales: {
+      actual: money(salesActual),
+      target: money(salesTarget),
+      rate: rate(salesActual, salesTarget)
+    },
+    grossProfit: profitVisible
+      ? {
+          actual: money(grossActual),
+          target: money(grossTarget),
+          rate: rate(grossActual, grossTarget)
+        }
+      : { actual: null, target: null, rate: null }
+  };
+}
+
 async function getMonthlyTaskAchievement(ctx) {
   const user = ctx.state.user;
+  const profitVisible = canViewProfit(user);
   const monthKey = String(ctx.query.monthKey || ctx.query.month_key || '').trim() || new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 7);
   const storeIds = await resolveStores(user, ctx.query.storeId || ctx.query.store_id);
   const { startAt, endAt } = monthRange(monthKey);
@@ -311,7 +337,8 @@ async function getMonthlyTaskAchievement(ctx) {
     name: storeMap.get(String(task.target_id))?.name || task.target_id,
     storeId: task.target_id,
     storeName: storeMap.get(String(task.target_id))?.name || '',
-    allocationTotal: allocationTotalByTask.get(String(task.task_id)) || 0
+    allocationTotal: allocationTotalByTask.get(String(task.task_id)) || 0,
+    profitVisible
   }));
   const selectedStaffId = ctx.query.staffId || ctx.query.staff_id;
   const employeesResult = visibleTasks.filter(task => task.target_type === 'staff' && (!selectedStaffId || String(task.target_id) === String(selectedStaffId))).map(task => {
@@ -322,12 +349,29 @@ async function getMonthlyTaskAchievement(ctx) {
     const actual = actuals.employeeActuals.get(employeeKey(task.target_id, staff?.name))
       || actuals.employeeActuals.get(employeeKey('', staff?.name))
       || createActual();
-    return buildAchievement({ task, actual, grossProfitTarget: grossTarget, name: staff?.name || task.target_id, storeId: staff?.store_id || '', storeName: storeMap.get(String(staff?.store_id || ''))?.name || '', });
+    return buildAchievement({ task, actual, grossProfitTarget: grossTarget, name: staff?.name || task.target_id, storeId: staff?.store_id || '', storeName: storeMap.get(String(staff?.store_id || ''))?.name || '', profitVisible });
   });
   const sort = (left, right) => (number(right.overallRate) - number(left.overallRate)) || (number(right.sales.actual) - number(left.sales.actual)) || String(left.targetName).localeCompare(String(right.targetName), 'zh-CN');
   storesResult.sort(sort);
   employeesResult.sort(sort);
-  ctx.body = { code: 0, data: { monthKey, stores: storesResult, employees: employeesResult, updatedAt: new Date().toISOString() } };
+  ctx.body = {
+    code: 0,
+    data: {
+      monthKey,
+      meta: {
+        source: 'monthly_tasks',
+        canViewProfit: profitVisible,
+        calculation: 'ANY-ERP 按自然月实时汇总已归档销售与已完成退货，前端只负责展示'
+      },
+      summary: {
+        stores: summarizeAchievements(storesResult, profitVisible),
+        employees: summarizeAchievements(employeesResult, profitVisible)
+      },
+      stores: storesResult,
+      employees: employeesResult,
+      updatedAt: new Date().toISOString()
+    }
+  };
 }
 
 module.exports = { getMonthlyTaskAchievement };

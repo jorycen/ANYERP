@@ -132,7 +132,10 @@ async function storeAccessMiddleware(ctx, next) {
     '/api/v1/report/employee-performance',
     '/api/v1/report/dashboard/filters',
     '/api/v1/report/dashboard/overview',
-    '/api/v1/report/finance-overview'
+    '/api/v1/report/finance-overview',
+    '/api/v1/report/monthly-task-achievement',
+    '/api/v1/sales/monthly-tasks/options',
+    '/api/v1/sales/monthly-tasks'
   ]).has(ctx.path)) {
     return next();
   }

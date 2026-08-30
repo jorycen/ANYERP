@@ -127,6 +127,13 @@ function emptyForm() {
 }
 
 function money(value) { return Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }
+function isMissingMonthlyTaskApi(error) {
+  return Number(error?.response?.status || error?.statusCode || 0) === 404
+}
+
+function showMonthlyTaskDeploymentHint() {
+  ElMessage.warning('月度任务服务尚未部署（/api/v1/sales/monthly-tasks/options），请重新部署最新 ANY-ERP 后端，并确认部署目录为 backend')
+}
 
 async function loadOptions() {
   try {
@@ -139,8 +146,8 @@ async function loadOptions() {
     options.stores = []
     options.staff = []
     options.products = []
-    if (error.response?.status === 404) {
-      ElMessage.error('月度任务接口未部署，请重新部署 ANY-ERP 后端服务')
+    if (isMissingMonthlyTaskApi(error)) {
+      showMonthlyTaskDeploymentHint()
     } else {
       ElMessage.error(error.message || '月度任务选项加载失败')
     }
@@ -153,7 +160,8 @@ async function loadTasks() {
     const res = await api.getMonthlyTasks({ monthKey: monthKey.value })
     tasks.value = res.data?.data?.list || res.data?.list || []
   } catch (error) {
-    ElMessage.error(error.message || '月度任务加载失败')
+    if (isMissingMonthlyTaskApi(error)) showMonthlyTaskDeploymentHint()
+    else ElMessage.error(error.message || '月度任务加载失败')
   } finally { loading.value = false }
 }
 
