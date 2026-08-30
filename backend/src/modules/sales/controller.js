@@ -52,6 +52,7 @@ const { normalizePnCode } = require('../../utils/productPn');
 const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
 const { canAccessDistributor, resolveOrderStoreIds } = require('../../utils/distributorScope');
+const { isStoreManagerAccount } = require('../../utils/storePermissions');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { assertActiveProducts } = require('../../utils/activeProduct');
 const { syncSerializedInventoryBalance } = require('../inventory/serializedInventoryBalance');
@@ -198,8 +199,8 @@ async function auxiliaryStaff(ctx) {
 }
 
 function canQueryAllSalesOrders(user) {
-  // 门店角色是否能看全店订单取决于门店资料的正式店长字段，不能仅凭角色名称判断。
-  return isDealerTraceAccount(user);
+  // 店长可以查看其已授权门店的全部订单；经销商级账号沿用经销商范围。
+  return isDealerTraceAccount(user) || isStoreManagerAccount(getUserRoles(user));
 }
 
 function canExportSalesOrders(user) {
@@ -216,7 +217,9 @@ function isSalesOrderCreator(order, user) {
 }
 
 function buildSalesOrderVisibilityCondition(user, managerStoreIds = []) {
-  if (isDealerTraceAccount(user)) return null;
+  // 店长的订单范围由 accessibleStoreIds 在列表查询前统一限制，不再依赖
+  // T_STORE.MANAGER_STAFF_ID，因此同一门店可以由多个店长共享订单权限。
+  if (isDealerTraceAccount(user) || isStoreManagerAccount(getUserRoles(user))) return null;
 
   const conditions = [];
   if (user?.staffId) conditions.push({ create_staff_id: user.staffId });
@@ -232,21 +235,6 @@ function buildSalesOrderVisibilityCondition(user, managerStoreIds = []) {
     conditions.push({ store_id: { [Op.in]: managerStoreIds } });
   }
   return conditions.length ? { [Op.or]: conditions } : { order_id: '__NO_MATCHING_ORDER__' };
-}
-
-async function resolveFormalManagerStoreIds(user, orderStoreIds) {
-  if (!user?.staffId || orderStoreIds.includes('*')) return [];
-  const rows = await Store.findAll({
-    where: {
-      manager_staff_id: user.staffId,
-      store_id: orderStoreIds.length ? { [Op.in]: orderStoreIds } : '__NO_STORE__',
-      is_deleted: 0,
-      status: 1
-    },
-    attributes: ['store_id'],
-    raw: true
-  });
-  return rows.map(row => String(row.store_id)).filter(Boolean);
 }
 
 const SALES_APPROVAL_STATUSES = Object.freeze({
@@ -428,11 +416,10 @@ async function list(ctx) {
     where.store_id = orderStoreIds;
   }
 
-  // 订单列表按订单专用经销商范围过滤；门店角色只看本人订单，
-  // 以及门店资料中正式店长为当前人的门店全部订单。
-  if (!dealerWide) {
-    const managerStoreIds = await resolveFormalManagerStoreIds(user, orderStoreIds);
-    const visibility = buildSalesOrderVisibilityCondition(user, managerStoreIds);
+  // 订单列表先按账号已授权门店过滤；店长可查看授权门店全部订单，
+  // 其他门店角色仅查看本人创建的订单。
+  if (!dealerWide && !isStoreManagerAccount(getUserRoles(user))) {
+    const visibility = buildSalesOrderVisibilityCondition(user);
     if (visibility) {
       where[Op.and] = [...(where[Op.and] || []), visibility];
     }
@@ -1244,9 +1231,8 @@ async function exportOrders(ctx) {
   } else if (!hasGlobalStoreScope) {
     where.store_id = orderStoreIds.length > 0 ? orderStoreIds : '__NO_ACCESS__';
   }
-  if (!isDealerTraceAccount(user)) {
-    const managerStoreIds = await resolveFormalManagerStoreIds(user, orderStoreIds);
-    const visibility = buildSalesOrderVisibilityCondition(user, managerStoreIds);
+  if (!isDealerTraceAccount(user) && !isStoreManagerAccount(getUserRoles(user))) {
+    const visibility = buildSalesOrderVisibilityCondition(user);
     if (visibility) where[Op.and] = [visibility];
   }
   if (startDate || endDate) {
@@ -1428,7 +1414,7 @@ function normalizeSubsidyPhotos(value) {
 }
 
 function userCanViewSubsidyPhotos(user) {
-  return getUserRoles(user).some(role => ['boss', 'admin', 'finance', 'manager', 'store_manager'].includes(role));
+  return getUserRoles(user).some(role => ['boss', 'admin', 'finance', 'manager', 'store_manager', 'store_admin'].includes(role));
 }
 
 function subsidyPhotoStoreWhere(user) {
@@ -2456,7 +2442,7 @@ async function create(ctx) {
 
 function canEditSalesDraft(user, order) {
   const roles = getUserRoles(user);
-  const privileged = roles.some(role => ['boss', 'admin', 'manager', 'store_manager'].includes(role));
+  const privileged = roles.some(role => ['boss', 'admin', 'manager', 'store_manager', 'store_admin'].includes(role));
   return privileged || String(user?.staffId || '') === String(order.create_staff_id || '') || String(user?.name || '') === String(order.create_user || '');
 }
 
@@ -3940,7 +3926,7 @@ async function reviewSalesReturn(ctx) {
   const user = ctx.state.user;
   const roles = getUserRoles(user);
   const isAdmin = roles.some(role => ['boss', 'admin'].includes(role));
-  const isManager = roles.some(role => ['boss', 'admin', 'manager'].includes(role));
+  const isManager = roles.some(role => ['boss', 'admin', 'manager', 'store_manager', 'store_admin'].includes(role));
   if (!isManager) ctx.throw(403, '仅店长或经销商总权限账号可以审批销售退单');
 
   const result = await sequelize.transaction(async transaction => {
@@ -4343,15 +4329,25 @@ async function assertOrderStoreVisible(storeId, user, message = '无权访问该
 
 async function assertSalesOrderVisible(order, user) {
   const store = order?.Store || await Store.findByPk(order?.store_id, {
-    attributes: ['store_id', 'distributor_id', 'manager_staff_id']
+    attributes: ['store_id', 'distributor_id']
   });
   if (!order || !store || !canAccessDistributor(user, store.distributor_id)) {
     const error = new Error('无权访问该销售订单');
     error.status = 403;
     throw error;
   }
-  if (isDealerTraceAccount(user) || isSalesOrderCreator(order, user) ||
-      String(store.manager_staff_id || '') === String(user?.staffId || '')) {
+  if (isDealerTraceAccount(user)) return;
+
+  const accessibleStoreIds = Array.isArray(user?.accessibleStoreIds)
+    ? user.accessibleStoreIds.map(String)
+    : [];
+  if (!accessibleStoreIds.includes('*') && !accessibleStoreIds.includes(String(order.store_id || ''))) {
+    const error = new Error('无权访问该销售订单');
+    error.status = 403;
+    throw error;
+  }
+
+  if (isStoreManagerAccount(getUserRoles(user)) || isSalesOrderCreator(order, user)) {
     return;
   }
   const error = new Error('无权访问该销售订单');

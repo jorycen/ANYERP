@@ -2,14 +2,15 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { Op } = require('sequelize');
 const { _test } = require('../src/modules/sales/controller');
+const { canViewSnTraceReference } = require('../src/utils/snTracePermission');
 
-test('经销商级角色可以查询全部订单，门店角色需由正式店长字段决定', () => {
+test('经销商级角色和店长可以查询授权门店全部订单', () => {
   assert.equal(_test.canQueryAllSalesOrders({ roles: ['finance'] }), true);
   assert.equal(_test.canQueryAllSalesOrders({ roles: ['cashier'] }), true);
   assert.equal(_test.canQueryAllSalesOrders({ roles: ['business'] }), true);
-  assert.equal(_test.canQueryAllSalesOrders({ roles: ['manager'] }), false);
-  assert.equal(_test.canQueryAllSalesOrders({ roles: ['store_manager'] }), false);
-  assert.equal(_test.canQueryAllSalesOrders({ roles: ['store_admin'] }), false);
+  assert.equal(_test.canQueryAllSalesOrders({ roles: ['manager'] }), true);
+  assert.equal(_test.canQueryAllSalesOrders({ roles: ['store_manager'] }), true);
+  assert.equal(_test.canQueryAllSalesOrders({ roles: ['store_admin'] }), true);
   assert.equal(_test.canQueryAllSalesOrders({ roles: ['clerk'] }), false);
   assert.equal(_test.canQueryAllSalesOrders({ roles: ['staff'] }), false);
   assert.equal(_test.canQueryAllSalesOrders({ roles: ['manager', 'finance'] }), true);
@@ -17,7 +18,7 @@ test('经销商级角色可以查询全部订单，门店角色需由正式店�
   assert.equal(_test.canQueryAllSalesOrders({ roleCode: 'clerk' }), false);
 });
 
-test('订单可见范围按创建人和门店资料正式店长计算', () => {
+test('店员订单可见范围按创建人计算', () => {
   const user = { staffId: 'STAFF-1', name: '销售员', roles: ['clerk'] };
   const condition = _test.buildSalesOrderVisibilityCondition(user, ['STORE-2']);
   const branches = condition[Op.or];
@@ -29,14 +30,29 @@ test('订单可见范围按创建人和门店资料正式店长计算', () => {
   assert.equal(_test.isSalesOrderCreator({ create_staff_id: 'STAFF-2', create_user: '销售员' }, user), false);
 });
 
-test('门店角色没有正式店长门店时不会因角色名称看到他人订单', () => {
+test('店员没有正式店长配置时仍只看本人订单', () => {
   const condition = _test.buildSalesOrderVisibilityCondition({
     staffId: 'STAFF-1',
     name: '店员',
-    roles: ['manager']
+    roles: ['clerk']
   });
   const branches = condition[Op.or];
   assert.equal(branches.some(branch => branch.store_id), false);
+});
+
+test('店长订单范围不依赖门店单一正式店长字段', () => {
+  assert.equal(_test.buildSalesOrderVisibilityCondition({
+    staffId: 'STAFF-1',
+    name: '店长A',
+    roles: ['manager']
+  }, ['STORE-1', 'STORE-2']), null);
+});
+
+test('多种店长角色对授权门店订单追踪明细同权', () => {
+  for (const role of ['manager', 'store_manager', 'store_admin']) {
+    assert.equal(canViewSnTraceReference({ roles: [role], accessibleStoreIds: ['STORE-1'] }, { store_id: 'STORE-1' }), true);
+    assert.equal(canViewSnTraceReference({ roles: [role], accessibleStoreIds: ['STORE-1'] }, { store_id: 'STORE-2' }), false);
+  }
 });
 
 test('订单查询列表仅按创建时间倒序排列', () => {

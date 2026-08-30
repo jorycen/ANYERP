@@ -29,7 +29,7 @@ function isRegionScopedAccount(roleCodes = []) {
 
 function isStoreManagerAccount(roleCodes = []) {
   const roles = normalizeRoleCodes(roleCodes);
-  return roles.includes('manager') || roles.includes('store_manager');
+  return roles.some(roleCode => ['manager', 'store_manager', 'store_admin'].includes(roleCode));
 }
 
 /**

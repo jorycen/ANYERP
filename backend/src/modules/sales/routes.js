@@ -53,7 +53,7 @@ const router = new Router();
 const subsidyPhotoUpload = multer({
   limits: { files: 20, fileSize: 10 * 1024 * 1024 }
 });
-const subsidyPhotoRoles = requireRole('finance', 'manager', 'store_manager');
+const subsidyPhotoRoles = requireRole('finance', 'manager', 'store_manager', 'store_admin');
 
 function normalizeDepositId(ctx, next) {
   ctx.params.depositId = ctx.params.depositId
@@ -81,9 +81,9 @@ router.get('/stats', stats);
 router.get('/auxiliary-staff', auxiliaryStaff);
 router.get('/monthly-tasks/options', getMonthlyTaskOptions);
 router.get('/monthly-tasks', listMonthlyTasks);
-router.post('/monthly-tasks', requireRole('admin', 'boss', 'manager', 'store_manager'), saveMonthlyTask);
-router.put('/monthly-tasks/:taskId', requireRole('admin', 'boss', 'manager', 'store_manager'), saveMonthlyTask);
-router.post('/monthly-tasks/:taskId/disable', requireRole('admin', 'boss', 'manager', 'store_manager'), disableMonthlyTask);
+router.post('/monthly-tasks', requireRole('admin', 'boss', 'manager', 'store_manager', 'store_admin'), saveMonthlyTask);
+router.put('/monthly-tasks/:taskId', requireRole('admin', 'boss', 'manager', 'store_manager', 'store_admin'), saveMonthlyTask);
+router.post('/monthly-tasks/:taskId/disable', requireRole('admin', 'boss', 'manager', 'store_manager', 'store_admin'), disableMonthlyTask);
 router.get('/payment-methods', paymentMethods);
 router.get('/deposits', listDeposits);
 router.post('/deposits', enforceStoreOwnership, createDeposit);

@@ -42,7 +42,7 @@ function canViewSnTraceReference(user = {}, reference = {}) {
   }
 
   const roles = normalizeRoles(user);
-  if (roles.includes('manager') || roles.includes('store_manager')) {
+  if (roles.some(role => ['manager', 'store_manager', 'store_admin'].includes(role))) {
     return includesValue(user.accessibleStoreIds, reference.store_id)
       || includesValue(user.accessibleStoreIds, reference.from_store_id)
       || includesValue(user.accessibleStoreIds, reference.to_store_id);

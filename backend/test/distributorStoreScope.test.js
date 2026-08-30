@@ -25,6 +25,7 @@ test('纯门店账号继续使用主门店语义', () => {
 test('店长报表跨门店范围识别兼容历史和当前角色编码', () => {
   assert.equal(isStoreManagerAccount(['manager']), true);
   assert.equal(isStoreManagerAccount(['store_manager']), true);
+  assert.equal(isStoreManagerAccount(['store_admin']), true);
   assert.equal(isStoreManagerAccount(['manager', 'finance']), true);
   assert.equal(isStoreManagerAccount(['clerk']), false);
 });
