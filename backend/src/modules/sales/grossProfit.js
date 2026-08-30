@@ -83,6 +83,41 @@ function calculateOrderReceivable(order = {}) {
   ));
 }
 
+function normalizeReferenceId(value) {
+  return String(value || '').trim();
+}
+
+function isFreightRecordApplicableToOrder({
+  orderStoreId,
+  orderCreatedAt,
+  sourceType,
+  storeId,
+  toStoreId,
+  sourceCreatedAt,
+  sourceUpdatedAt
+} = {}) {
+  const orderStore = normalizeReferenceId(orderStoreId);
+  if (!orderStore) return false;
+
+  const sourceStore = normalizeReferenceId(storeId);
+  const destinationStore = normalizeReferenceId(toStoreId);
+  const normalizedSourceType = normalizeReferenceId(sourceType).toLowerCase();
+  const applicableStore = normalizedSourceType === 'transfer'
+    ? (destinationStore || sourceStore)
+    : sourceStore;
+  if (!applicableStore || applicableStore !== orderStore) return false;
+
+  const sourceEffectiveAt = sourceUpdatedAt || sourceCreatedAt;
+  if (orderCreatedAt && sourceEffectiveAt) {
+    const orderTime = new Date(orderCreatedAt).getTime();
+    const sourceTime = new Date(sourceEffectiveAt).getTime();
+    if (Number.isFinite(orderTime) && Number.isFinite(sourceTime) && sourceTime > orderTime) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function resolveUnitProductPricing(productPrice = {}, orderItem = {}, supplier = null) {
   const configuredPricing = toNumber(productPrice.standard_price);
   const specialPrice = toNumber(orderItem.specialPrice ?? orderItem.special_price);
@@ -630,7 +665,8 @@ async function createSalesReturnGrossProfitLedger({ returnRequest, transaction =
   return rows;
 }
 
-async function buildFreightCostDetails(orderId, transaction) {
+async function buildFreightCostDetails(order, transaction) {
+  const orderId = order.order_id;
   const orderItems = await OrderItem.findAll({ where: { order_id: orderId }, transaction, raw: true });
   const details = [];
   for (const item of orderItems) {
@@ -651,17 +687,33 @@ async function buildFreightCostDetails(orderId, transaction) {
         association: 'freightRecord',
         required: true,
         where: { status: 'active' },
-        attributes: ['freight_id', 'source_type', 'source_no', 'platform_name', 'create_time']
+        attributes: [
+          'freight_id', 'source_type', 'source_no', 'platform_name',
+          'store_id', 'to_store_id', 'create_time', 'update_time'
+        ]
       }],
       order: [['create_time', 'DESC'], ['item_id', 'DESC']],
       transaction
     });
-    if (!rows.length) continue;
-    const exactRows = rows.filter(row => {
+    const applicableRows = rows.filter(row => {
+      const value = row.toJSON();
+      const source = value.freightRecord || {};
+      return isFreightRecordApplicableToOrder({
+        orderStoreId: order.store_id,
+        orderCreatedAt: order.create_time,
+        sourceType: source.source_type,
+        storeId: source.store_id,
+        toStoreId: source.to_store_id,
+        sourceCreatedAt: source.create_time,
+        sourceUpdatedAt: source.update_time
+      });
+    });
+    if (!applicableRows.length) continue;
+    const exactRows = applicableRows.filter(row => {
       const value = row.toJSON();
       return (snId && String(value.sn_id || '') === snId) || (snCode && String(value.sn_code || '') === snCode);
     });
-    const selected = (exactRows.length ? exactRows : rows)[0].toJSON();
+    const selected = (exactRows.length ? exactRows : applicableRows)[0].toJSON();
     const source = selected.freightRecord || {};
     const quantity = Math.max(1, Number(item.quantity || 1));
     const unitAmount = roundMoney(selected.unit_amount || (Number(selected.allocated_amount || 0) / Math.max(1, Number(selected.quantity || 1))));
@@ -712,7 +764,7 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     buildPaymentDetails(order, existing, transaction),
     buildProductPricingDetails(orderId, transaction),
     buildSupplementDetails(orderId, transaction),
-    buildFreightCostDetails(orderId, transaction)
+    buildFreightCostDetails(order, transaction)
   ]);
   const allSupplementDetails = [...supplementDetails, ...freightCostDetails];
   const values = calculateGrossProfitValues({
@@ -749,6 +801,10 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     update_time: new Date()
   };
 
+  await OrderItem.update(
+    { freight_cost: 0 },
+    { where: { order_id: orderId }, transaction }
+  );
   await Promise.all(freightCostDetails.map(detail => OrderItem.update(
     { freight_cost: detail.amount },
     { where: { item_id: detail.itemId }, transaction }
@@ -801,6 +857,7 @@ module.exports = {
   normalizeMethodName,
   isPolicySubsidyReceivable,
   calculateOrderReceivable,
+  isFreightRecordApplicableToOrder,
   resolveUnitProductPricing,
   calculateGrossProfitValues,
   calculateAndSaveOrderGrossProfit,

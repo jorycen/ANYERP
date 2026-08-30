@@ -7,6 +7,7 @@ const {
   normalizeMethodName,
   isPolicySubsidyReceivable,
   calculateOrderReceivable,
+  isFreightRecordApplicableToOrder,
   resolveUnitProductPricing,
   isExternalAdjustmentEligibleProduct
 } = require('../src/modules/sales/grossProfit');
@@ -122,6 +123,49 @@ test('用户应收保留国补和教育补贴，只扣除普通折扣', () => {
     national_subsidy: 300,
     education_subsidy: 200
   }), 1400);
+});
+
+test('商品运费只匹配订单门店对应的调拨目的门店', () => {
+  assert.equal(isFreightRecordApplicableToOrder({
+    orderStoreId: 'STORE_TIANFU',
+    orderCreatedAt: '2026-08-29T10:00:00+08:00',
+    sourceType: 'transfer',
+    storeId: 'STORE_LONGQUAN',
+    toStoreId: 'STORE_LONGQUAN',
+    sourceCreatedAt: '2026-08-27T10:00:00+08:00'
+  }), false);
+  assert.equal(isFreightRecordApplicableToOrder({
+    orderStoreId: 'STORE_LONGQUAN',
+    orderCreatedAt: '2026-08-29T10:00:00+08:00',
+    sourceType: 'transfer',
+    storeId: 'STORE_LONGQUAN',
+    toStoreId: 'STORE_LONGQUAN',
+    sourceCreatedAt: '2026-08-27T10:00:00+08:00'
+  }), true);
+});
+
+test('商品运费不使用订单生成之后的运费记录', () => {
+  assert.equal(isFreightRecordApplicableToOrder({
+    orderStoreId: 'STORE_1',
+    orderCreatedAt: '2026-08-29T10:00:00+08:00',
+    sourceType: 'purchase',
+    storeId: 'STORE_1',
+    sourceCreatedAt: '2026-08-29T09:00:00+08:00',
+    sourceUpdatedAt: '2026-08-29T10:00:01+08:00'
+  }), false);
+});
+
+test('采购运费只匹配采购归属门店', () => {
+  assert.equal(isFreightRecordApplicableToOrder({
+    orderStoreId: 'STORE_1',
+    sourceType: 'purchase',
+    storeId: 'STORE_2'
+  }), false);
+  assert.equal(isFreightRecordApplicableToOrder({
+    orderStoreId: 'STORE_1',
+    sourceType: 'purchase',
+    storeId: 'STORE_1'
+  }), true);
 });
 
 test('非服务商电脑基础毛利超过500元时扣除200元外调费', () => {
