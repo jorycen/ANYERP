@@ -31,9 +31,9 @@ test('店长角色可以导出授权门店订单，普通店员不能导出', ()
 });
 
 test('订单导出字段包含国补 POS/OMO 明细列', () => {
-  assert.equal(_test.ORDER_EXPORT_HEADERS.length, 61);
+  assert.equal(_test.ORDER_EXPORT_HEADERS.length, 62);
   assert.equal(_test.ORDER_EXPORT_HEADERS[0], '订单编号');
-  assert.equal(_test.ORDER_EXPORT_HEADERS[55], '补录信息');
+  assert.equal(_test.ORDER_EXPORT_HEADERS[56], '补录信息');
   assert.equal(_test.ORDER_EXPORT_HEADERS.at(-1), '操作人');
 });
 
@@ -95,6 +95,36 @@ test('订单导出按实际收款方式名称兼容历史列名', () => {
   assert.equal(rows[0].定金抵扣, 5);
   assert.equal(rows[0].其他收款方式2, 50);
   assert.equal(rows[0].收款金额汇总, 155);
+  assert.equal(rows[0].收款明细, '线上OMO平台:10；龙湖POS（北城专用）:20；智店通POS:30；旧机回收抵扣:40；定金抵扣:5；未知收款方式:50');
+});
+
+test('订单导出兼容关联对象和驼峰字段', () => {
+  const rows = _test.buildOrderExportRows([{
+    toJSON: () => ({
+      orderNo: 'ORD-CAMEL-1',
+      storeId: 'STORE-1',
+      storeName: '门店A',
+      customerSource: '线上',
+      customerSourceDetail: '商城',
+      customerName: '客户A',
+      customerPhone: '13800000000',
+      createUser: '销售员',
+      totalAmount: 100,
+      actualPayment: 100,
+      orderStatus: 'completed',
+      orderPayments: [{ paymentMethod: '现金', paymentAmount: 100 }],
+      auxiliarySalesList: [{ staffName: '辅助销售', ratio: 50 }],
+      orderItems: [{ productName: '笔记本电脑', salePrice: 100, qty: 1, subTotal: 100, freightCost: 6.5 }]
+    })
+  }]);
+
+  assert.equal(rows[0].订单编号, 'ORD-CAMEL-1');
+  assert.equal(rows[0].门店名称, '门店A');
+  assert.equal(rows[0].一级来源, '线上');
+  assert.equal(rows[0].二级来源, '商城');
+  assert.equal(rows[0].收款明细, '现金:100');
+  assert.equal(rows[0].商品采购运费, 6.5);
+  assert.equal(rows[0].辅助销售人比例分配, '销售员/辅助销售');
 });
 
 test('订单导出中不开票时开票金额为0', () => {

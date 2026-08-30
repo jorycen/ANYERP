@@ -509,7 +509,7 @@ const ORDER_EXPORT_HEADERS = [
   '会员称呼', '会员联系方式', '订单总计', '优惠金额', '国补', '教育补贴', '应收金额',
   '收款金额汇总', '门店二维码', '现金', '国补POS（电脑）', '国补POS（手机平板）', '国补OMO（电脑）', '国补OMO（手机平板）',
   '定金抵扣', '旧机回收抵扣', '商场优惠券', '智店通POS', '线上OMO平台', '对公转账',
-  '对私转账', '龙湖POS（北城专用）', '其他收款方式2', '归档状态', '开票状态', '开票信息',
+  '对私转账', '龙湖POS（北城专用）', '其他收款方式2', '收款明细', '归档状态', '开票状态', '开票信息',
   '开票金额', '国补状态', '国补人', '国补人ID', '商品名称', '商品编码', 'SN码', 'IMEI1',
   'IMEI2', '数量', '单价', '小计', '商品采购运费', '商品应收金额', '商品收款金额', '辅助销售人比例分配',
   '辅助销售人金额分配', '补录教育优惠', '商品提货运费', '追加商品', '退货商品', '预留字段1',
@@ -532,7 +532,9 @@ function parseExportJson(value, fallback = []) {
 }
 
 function normalizeExportPaymentMethod(payment, paymentMethodMap = {}) {
-  const rawMethod = String(payment?.payment_method || payment?.method || '').trim();
+  const rawMethod = String(
+    payment?.payment_method ?? payment?.paymentMethod ?? payment?.method ?? payment?.type ?? ''
+  ).trim();
   return String(paymentMethodMap[rawMethod] || rawMethod).trim();
 }
 
@@ -560,19 +562,78 @@ function exportPaymentAmount(payments, header, paymentMethodMap = {}) {
   return (payments || []).reduce((total, payment) => {
     const rawMethod = normalizeExportPaymentMethod(payment, paymentMethodMap);
     return resolveExportPaymentHeader(rawMethod) === header
-      ? total + Number(payment.amount || 0)
+      ? total + Number(payment.amount ?? payment.payment_amount ?? payment.paymentAmount ?? 0)
       : total;
   }, 0);
 }
 
+function getExportArray(data, keys) {
+  for (const key of keys) {
+    const value = data && data[key];
+    const parsed = parseJsonValue(value, null);
+    if (Array.isArray(parsed)) return parsed;
+  }
+  return [];
+}
+
+function getExportStoreName(data) {
+  const store = data?.Store || data?.store || data?.StoreInfo || data?.storeInfo || {};
+  return firstNonEmpty(data, ['store_name', 'storeName'], '')
+    || firstNonEmpty(store, ['name', 'store_name', 'storeName'], '');
+}
+
+function getExportCustomerSource(data) {
+  const source = data?.CustomerSource || data?.customerSourceInfo || {};
+  return firstNonEmpty(data, ['customer_source', 'customerSource', 'source', 'sourceName'], '')
+    || firstNonEmpty(source, ['name', 'source_name', 'sourceName'], '');
+}
+
+function getExportCustomerSourceDetail(data) {
+  return firstNonEmpty(data, [
+    'customer_source_detail', 'customerSourceDetail', 'source_detail', 'sourceDetail',
+    'secondary_source', 'secondarySource'
+  ], '');
+}
+
+function getExportPaymentDetailMethod(payment, paymentMethodMap = {}) {
+  const rawMethod = String(
+    payment?.payment_method ?? payment?.paymentMethod ?? payment?.method ?? payment?.type ?? ''
+  ).trim();
+  const suffixMatch = rawMethod.match(/-(客户实收|政策补贴应收)$/);
+  const baseMethod = suffixMatch ? rawMethod.slice(0, -suffixMatch[0].length) : rawMethod;
+  const normalizedMethod = normalizeExportPaymentMethod({ payment_method: baseMethod }, paymentMethodMap);
+  const resolvedMethod = resolveExportPaymentHeader(normalizedMethod);
+  const displayMethod = resolvedMethod === '其他收款方式2' && normalizedMethod !== '其他收款方式2'
+    ? normalizedMethod
+    : resolvedMethod;
+  return displayMethod + (suffixMatch ? suffixMatch[0] : '');
+}
+
+function getExportPaymentAmount(payment) {
+  return Number(payment?.amount ?? payment?.payment_amount ?? payment?.paymentAmount ?? 0);
+}
+
+function exportPaymentDetails(payments, paymentMethodMap = {}) {
+  return (payments || [])
+    .map(payment => ({
+      method: getExportPaymentDetailMethod(payment, paymentMethodMap),
+      amount: getExportPaymentAmount(payment)
+    }))
+    .filter(item => item.method || item.amount !== 0)
+    .map(item => `${item.method || '未命名收款'}:${item.amount}`)
+    .join('；');
+}
+
 function isExportMainProduct(item, allowUnknown = false) {
-  const product = item?.Product || {};
-  const category = String(product.category || item.category || '').toLowerCase();
-  const accessoryType = String(product.accessory_type || item.accessory_type || '').toLowerCase();
+  const product = item?.Product || item?.product || {};
+  const category = String(product.category || product.categoryName || item.category || item.categoryName || '').toLowerCase();
+  const accessoryType = String(
+    product.accessory_type || product.accessoryType || item.accessory_type || item.accessoryType || ''
+  ).toLowerCase();
   const nameAndConfig = [
-    product.name,
-    product.config,
-    item.product_name
+    product.name || product.productName,
+    product.config || product.configuration,
+    item.product_name || item.productName
   ].map(value => String(value || '').toLowerCase()).join(' ');
   if (accessoryType || EXPORT_ACCESSORY_KEYWORDS.some(keyword => category.includes(keyword))) return false;
   if (EXPORT_MAIN_PRODUCT_KEYWORDS.some(keyword => category.includes(keyword))) return true;
@@ -692,13 +753,20 @@ function isFreightSupplement(item) {
 
 function resolveExportManufacturerCode(item, manufacturerCodeById = new Map()) {
   const productId = String(item?.product_id || '').trim();
+  const product = item?.Product || item?.product || {};
   const candidates = [
     item?.manufacturer_code,
+    item?.manufacturerCode,
     item?.pn_code,
-    item?.Product?.manufacturer_code,
+    item?.pnCode,
+    product?.manufacturer_code,
+    product?.manufacturerCode,
     item?.OrderItem?.manufacturer_code,
+    item?.OrderItem?.manufacturerCode,
     item?.OrderItem?.pn_code,
+    item?.OrderItem?.pnCode,
     item?.OrderItem?.Product?.manufacturer_code,
+    item?.OrderItem?.Product?.manufacturerCode,
     productId ? manufacturerCodeById.get(productId) : ''
   ];
   return candidates.map(value => String(value || '').trim()).find(Boolean) || '';
@@ -815,22 +883,27 @@ function exportReturnText(returns) {
 function buildOrderExportRows(orders, paymentMethodMap = {}) {
   return orders.flatMap(order => {
     const data = order.toJSON();
-    const items = Array.isArray(data.OrderItems) && data.OrderItems.length ? data.OrderItems : [{}];
-    const payments = data.OrderPayments || [];
+    const itemsSource = getExportArray(data, ['OrderItems', 'orderItems', 'items', 'goods']);
+    const items = itemsSource.length ? itemsSource : [{}];
+    const payments = getExportArray(data, ['OrderPayments', 'orderPayments', 'payments', 'paymentMethods']);
     const supplements = getExportSupplements(data);
-    const auxiliary = data.auxiliary_sales_list;
-    const payableAmount = Math.max(0, Number(data.total_amount || 0)
-      - Number(data.discount_amount || 0)
-      - Number(data.national_subsidy || 0)
-      - Number(data.education_subsidy || 0)
-      - Number(data.deposit_deduction_total || 0));
-    const itemEntries = items.map((item, index) => ({ index, subtotal: Number(item.subtotal || 0) }));
+    const auxiliary = data.auxiliary_sales_list ?? data.auxiliarySalesList ?? [];
+    const totalAmount = Number(firstNonEmpty(data, ['total_amount', 'totalAmount'], 0));
+    const discountAmount = Number(firstNonEmpty(data, ['discount_amount', 'discountAmount', 'discount'], 0));
+    const nationalSubsidy = Number(firstNonEmpty(data, ['national_subsidy', 'nationalSubsidy'], 0));
+    const educationSubsidy = Number(firstNonEmpty(data, ['education_subsidy', 'educationSubsidy'], 0));
+    const depositDeduction = Number(firstNonEmpty(data, ['deposit_deduction_total', 'depositDeductionTotal'], 0));
+    const payableAmount = Math.max(0, totalAmount - discountAmount - nationalSubsidy - educationSubsidy - depositDeduction);
+    const itemEntries = items.map((item, index) => ({
+      index,
+      subtotal: Number(firstNonEmpty(item, ['subtotal', 'subTotal', 'itemSubtotal'], 0))
+    }));
     const mainItemEntries = itemEntries.filter(entry => isExportMainProduct(items[entry.index], items.length === 1));
-    const nationalSubsidyAmounts = allocateExportAmount(data.national_subsidy, mainItemEntries);
+    const nationalSubsidyAmounts = allocateExportAmount(nationalSubsidy, mainItemEntries);
     const paymentTotals = Object.fromEntries(
       ORDER_EXPORT_PAYMENT_HEADERS.map(header => [header, exportPaymentAmount(payments, header, paymentMethodMap)])
     );
-    const depositDeductionTotal = Number(data.deposit_deduction_total || paymentTotals['定金抵扣'] || 0);
+    const depositDeductionTotal = Number(depositDeduction || paymentTotals['定金抵扣'] || 0);
     paymentTotals['定金抵扣'] = depositDeductionTotal;
     const paymentAmountsByItem = Object.fromEntries(
       ORDER_EXPORT_PAYMENT_HEADERS.map(header => [header, allocateExportAmount(paymentTotals[header], itemEntries)])
@@ -838,9 +911,23 @@ function buildOrderExportRows(orders, paymentMethodMap = {}) {
     const supplementEducation = exportSupplementAmount(supplements, isEducationSupplement);
     const supplementFreight = exportSupplementAmount(supplements, isFreightSupplement);
     const supplementDetails = exportSupplementDetails(supplements);
+    const paymentDetails = exportPaymentDetails(payments, paymentMethodMap);
+    const orderNo = firstNonEmpty(data, ['order_no', 'orderNo'], '');
+    const createUser = firstNonEmpty(data, ['create_user', 'createUser'], '');
+    const submitUser = firstNonEmpty(data, ['submit_user', 'submitUser'], '') || createUser;
+    const orderStatus = firstNonEmpty(data, ['order_status', 'orderStatus', 'status'], '');
+    const createTime = firstNonEmpty(data, ['create_time', 'createTime'], '');
+    const updateTime = firstNonEmpty(data, ['update_time', 'updateTime'], '');
+    const storeId = firstNonEmpty(data, ['store_id', 'storeId'], '');
+    const storeName = getExportStoreName(data);
+    const customerSource = getExportCustomerSource(data);
+    const customerSourceDetail = getExportCustomerSourceDetail(data);
+    const customerName = firstNonEmpty(data, ['customer_name', 'customerName', 'contactName'], '');
+    const customerPhone = firstNonEmpty(data, ['customer_phone', 'customerPhone', 'contactMethod'], '');
 
     return items.map((item, itemIndex) => {
-      const subtotal = Number(item.subtotal || 0);
+      const product = item?.Product || item?.product || {};
+      const subtotal = Number(firstNonEmpty(item, ['subtotal', 'subTotal', 'itemSubtotal'], 0));
       const manufacturerCode = resolveExportManufacturerCode(item);
       const isMainProduct = isExportMainProduct(item, items.length === 1);
       const rowPaymentAmounts = Object.fromEntries(
@@ -848,45 +935,49 @@ function buildOrderExportRows(orders, paymentMethodMap = {}) {
       );
       const rowPaymentTotal = ORDER_EXPORT_PAYMENT_HEADERS.reduce((sum, header) => sum + Number(rowPaymentAmounts[header] || 0), 0);
       return {
-        订单编号: data.order_no || '',
-        下单时间: data.create_time || '',
-        提交人: data.submit_user || data.create_user || '',
-        门店名称: data.Store?.name || '',
-        门店ID: data.store_id || '',
-        一级来源: data.customer_source || '',
-        二级来源: data.customer_source_detail || '',
-        会员称呼: data.customer_name || '',
-        会员联系方式: data.customer_phone || '',
-        订单总计: Number(data.total_amount || 0),
-        优惠金额: Number(data.discount_amount || 0),
+        订单编号: orderNo,
+        下单时间: createTime,
+        提交人: submitUser,
+        门店名称: storeName,
+        门店ID: storeId,
+        一级来源: customerSource,
+        二级来源: customerSourceDetail,
+        会员称呼: customerName,
+        会员联系方式: customerPhone,
+        订单总计: totalAmount,
+        优惠金额: discountAmount,
         国补: isMainProduct ? (nationalSubsidyAmounts.get(itemIndex) || 0) : '',
-        教育补贴: Number(data.education_subsidy || 0),
+        教育补贴: educationSubsidy,
         应收金额: payableAmount,
         收款金额汇总: rowPaymentTotal,
         ...rowPaymentAmounts,
-        归档状态: getOrderExportArchiveStatus(data.order_status),
-        开票状态: data.invoice_status || '',
-        开票信息: data.invoice_info || '',
-        开票金额: getOrderExportInvoiceAmount(data.invoice_status, data.invoice_amount),
-        国补状态: isMainProduct ? (data.subsidy_status || '') : '',
-        国补人: isMainProduct ? (data.subsidy_person || '') : '',
-        国补人ID: isMainProduct ? (data.subsidy_id || '') : '',
-        商品名称: item.product_name || item.Product?.name || '',
+        收款明细: paymentDetails,
+        归档状态: getOrderExportArchiveStatus(orderStatus),
+        开票状态: firstNonEmpty(data, ['invoice_status', 'invoiceStatus'], ''),
+        开票信息: firstNonEmpty(data, ['invoice_info', 'invoiceInfo'], ''),
+        开票金额: getOrderExportInvoiceAmount(
+          firstNonEmpty(data, ['invoice_status', 'invoiceStatus'], ''),
+          firstNonEmpty(data, ['invoice_amount', 'invoiceAmount'], 0)
+        ),
+        国补状态: isMainProduct ? firstNonEmpty(data, ['subsidy_status', 'subsidyStatus'], '') : '',
+        国补人: isMainProduct ? firstNonEmpty(data, ['subsidy_person', 'subsidyPerson'], '') : '',
+        国补人ID: isMainProduct ? firstNonEmpty(data, ['subsidy_id', 'subsidyId'], '') : '',
+        商品名称: firstNonEmpty(item, ['product_name', 'productName', 'name'], '') || firstNonEmpty(product, ['name', 'product_name', 'productName'], ''),
         商品编码: manufacturerCode,
-        SN码: item.sn_code || '',
-        IMEI1: item.imei1 || '',
-        IMEI2: item.imei2 || '',
-        数量: Number(item.quantity || 0),
-        单价: Number(item.sale_price || 0),
+        SN码: firstNonEmpty(item, ['sn_code', 'snCode', 'serialNo'], ''),
+        IMEI1: firstNonEmpty(item, ['imei1', 'imei_1'], ''),
+        IMEI2: firstNonEmpty(item, ['imei2', 'imei_2'], ''),
+        数量: Number(firstNonEmpty(item, ['quantity', 'qty'], 0)),
+        单价: Number(firstNonEmpty(item, ['sale_price', 'salePrice', 'price'], 0)),
         小计: subtotal,
-        商品采购运费: Number(item.freight_cost ?? item.freightCost ?? 0),
+        商品采购运费: Number(firstNonEmpty(item, ['freight_cost', 'freightCost', 'purchaseFreight'], 0)),
         商品应收金额: subtotal,
         商品收款金额: subtotal,
-        辅助销售人比例分配: exportAuxiliaryNames(auxiliary, data.create_user || data.submit_user),
+        辅助销售人比例分配: exportAuxiliaryNames(auxiliary, createUser || submitUser),
         辅助销售人金额分配: exportAuxiliaryAmounts(
           auxiliary,
-          data.create_user || data.submit_user,
-          data.total_amount
+          createUser || submitUser,
+          totalAmount
         ),
         补录教育优惠: supplementEducation,
         商品提货运费: supplementFreight,
@@ -894,11 +985,11 @@ function buildOrderExportRows(orders, paymentMethodMap = {}) {
         退货商品: exportReturnText(data.salesReturns),
         预留字段1: '',
         补录信息: supplementDetails,
-        备注: data.remark || '',
-        创建日期: data.create_time || '',
-        订单状态: data.order_status || '',
-        '归档/作废时间': isArchiveStatus(data.order_status) || isCancelStatus(data.order_status) ? (data.update_time || '') : '',
-        操作人: data.approve_user || data.submit_user || data.create_user || ''
+        备注: firstNonEmpty(data, ['remark', 'orderRemark'], ''),
+        创建日期: createTime,
+        订单状态: orderStatus,
+        '归档/作废时间': isArchiveStatus(orderStatus) || isCancelStatus(orderStatus) ? updateTime : '',
+        操作人: firstNonEmpty(data, ['approve_user', 'approveUser', 'submit_user', 'submitUser', 'create_user', 'createUser'], '')
       };
     });
   });
@@ -933,6 +1024,7 @@ function buildDepositExportRows(deposits, paymentMethodMap = {}) {
       应收金额: amount,
       收款金额汇总: amount,
       ...paymentAmounts,
+      收款明细: exportPaymentDetails([{ payment_method: data.payment_method, amount }], paymentMethodMap),
       归档状态: data.status || '',
       开票状态: '',
       开票信息: '',
