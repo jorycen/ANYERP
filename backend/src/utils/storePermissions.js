@@ -33,14 +33,30 @@ function isStoreManagerAccount(roleCodes = []) {
 }
 
 /**
- * 库存只读范围。所有已登录账号都可以查看全部有效门店的库存，
+ * 库存只读范围。所有已登录账号都可以查看其可访问经销商下的全部有效门店库存，
  * 但库存写入仍由 accessibleStoreIds 和业务控制器单独校验。
  */
 async function resolveAllReadableStoreIds(user = {}) {
   const roles = normalizeRoleCodes(user.roles || user.roleCode || []);
   if (roles.includes('boss') || (user.accessibleStoreIds || []).includes('*')) return ['*'];
+
+  const distributorIds = uniqueIds(
+    Array.isArray(user.accessibleDistributorIds)
+      ? user.accessibleDistributorIds
+      : Array.isArray(user.distributorIds)
+        ? user.distributorIds
+        : user.distributorId
+          ? [user.distributorId]
+          : []
+  );
+  if (distributorIds.length === 0) return [];
+
   const stores = await Store.findAll({
-    where: { is_deleted: 0, status: 1 },
+    where: {
+      distributor_id: { [Op.in]: distributorIds },
+      is_deleted: 0,
+      status: 1
+    },
     attributes: ['store_id'],
     raw: true
   });
