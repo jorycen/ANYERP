@@ -511,7 +511,7 @@ const ORDER_EXPORT_HEADERS = [
   '定金抵扣', '旧机回收抵扣', '商场优惠券', '智店通POS', '线上OMO平台', '对公转账',
   '对私转账', '龙湖POS（北城专用）', '其他收款方式2', '归档状态', '开票状态', '开票信息',
   '开票金额', '国补状态', '国补人', '国补人ID', '商品名称', '商品编码', 'SN码', 'IMEI1',
-  'IMEI2', '数量', '单价', '小计', '商品应收金额', '商品收款金额', '辅助销售人比例分配',
+  'IMEI2', '数量', '单价', '小计', '商品采购运费', '商品应收金额', '商品收款金额', '辅助销售人比例分配',
   '辅助销售人金额分配', '补录教育优惠', '商品提货运费', '追加商品', '退货商品', '预留字段1',
   '补录信息', '备注', '创建日期', '订单状态', '归档/作废时间', '操作人'
 ];
@@ -879,6 +879,7 @@ function buildOrderExportRows(orders, paymentMethodMap = {}) {
         数量: Number(item.quantity || 0),
         单价: Number(item.sale_price || 0),
         小计: subtotal,
+        商品采购运费: Number(item.freight_cost ?? item.freightCost ?? 0),
         商品应收金额: subtotal,
         商品收款金额: subtotal,
         辅助销售人比例分配: exportAuxiliaryNames(auxiliary, data.create_user || data.submit_user),

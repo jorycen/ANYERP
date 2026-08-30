@@ -31,9 +31,9 @@ test('店长角色可以导出授权门店订单，普通店员不能导出', ()
 });
 
 test('订单导出字段包含国补 POS/OMO 明细列', () => {
-  assert.equal(_test.ORDER_EXPORT_HEADERS.length, 60);
+  assert.equal(_test.ORDER_EXPORT_HEADERS.length, 61);
   assert.equal(_test.ORDER_EXPORT_HEADERS[0], '订单编号');
-  assert.equal(_test.ORDER_EXPORT_HEADERS[54], '补录信息');
+  assert.equal(_test.ORDER_EXPORT_HEADERS[55], '补录信息');
   assert.equal(_test.ORDER_EXPORT_HEADERS.at(-1), '操作人');
 });
 
@@ -275,7 +275,7 @@ test('订单导出按主商品分摊国补，配件国补字段留空并按商�
 test('订单导出包含完整金额补录信息', () => {
   const rows = _test.buildOrderExportRows([{
     toJSON: () => ({
-      OrderItems: [{ product_name: '商品A', subtotal: 100, quantity: 1 }],
+      OrderItems: [{ product_name: '商品A', subtotal: 100, quantity: 1, freight_cost: 3.5 }],
       supplements: [
         { item_name: '教育优惠', amount: 20, amount_type: 'decrease', content: '学生证已核验' },
         { item_name: '提货费用', amount: 15, amount_type: 'increase' },
@@ -286,6 +286,7 @@ test('订单导出包含完整金额补录信息', () => {
 
   assert.equal(rows[0].补录教育优惠, -20);
   assert.equal(rows[0].商品提货运费, 15);
+  assert.equal(rows[0].商品采购运费, 3.5);
   assert.equal(rows[0].补录信息, '教育优惠:20(减少，学生证已核验)；提货费用:15(增加)；优惠券:30(增加，券码:COUPON-1)');
 });
 
