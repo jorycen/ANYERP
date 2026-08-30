@@ -138,3 +138,20 @@ test('调拨出库汇总同门店多个库存行并排除不可售库位', () =>
 
   assert.equal(quantity, 5);
 });
+
+test('调拨出库保留申请时已绑定且仍有数量的 SN 明细', () => {
+  const pending = _test.getPendingTransferItems([
+    { item_id: 1, product_id: 'P1', sn_id: 'SN1', sn_code: 'HA28CRPQ', quantity: 1 },
+    { item_id: 2, product_id: 'P2', quantity: 0 }
+  ]);
+
+  assert.equal(pending.length, 1);
+  assert.deepEqual(_test.buildPreselectedTransferSelection(pending[0]), {
+    itemId: 1,
+    productId: 'P1',
+    pnCode: '',
+    snId: 'SN1',
+    snCode: 'HA28CRPQ',
+    quantity: 1
+  });
+});

@@ -3230,6 +3230,22 @@ function visibleTransferItems(items = []) {
   return (items || []).filter(item => Number(item.quantity || 0) > 0);
 }
 
+function getPendingTransferItems(items = []) {
+  return visibleTransferItems(items);
+}
+
+function buildPreselectedTransferSelection(item) {
+  if (!item || (!item.sn_id && !item.sn_code)) return null;
+  return {
+    itemId: item.item_id,
+    productId: item.product_id,
+    pnCode: item.pn_code || '',
+    snId: item.sn_id || '',
+    snCode: item.sn_code || '',
+    quantity: Math.max(Number(item.quantity || 1), 1)
+  };
+}
+
 async function ensureTransferInbound(transfer, items, transaction) {
   const existing = await Inbound.findOne({
     where: { source_type: 'TRANSFER', source_no: transfer.transfer_no },
@@ -4180,7 +4196,6 @@ async function confirmTransferOutPartial(ctx) {
       }
     });
     if (!transferId) ctx.throw(400, 'Transfer ID is required');
-    if (!selections.length) ctx.throw(400, 'Please select at least one outbound item');
     if (!shippingPhotos.length) ctx.throw(400, 'Please upload at least one shipping photo');
 
     const transfer = await Transfer.findByPk(transferId, {
@@ -4192,9 +4207,12 @@ async function confirmTransferOutPartial(ctx) {
     await assertTransferOperationStore(ctx, transfer.from_store_id);
     if (transfer.status !== 'pending') ctx.throw(400, 'Transfer is not pending outbound confirmation');
 
-    const requestItems = (transfer.TransferItems || [])
-      .filter(item => !item.sn_id && !item.sn_code && Number(item.quantity || 0) > 0);
+    const requestItems = getPendingTransferItems(transfer.TransferItems || []);
     if (!requestItems.length) ctx.throw(400, 'Transfer has no pending item lines');
+    const preselectedSnItems = requestItems.filter(item => buildPreselectedTransferSelection(item));
+    if (!selections.length && !preselectedSnItems.length) {
+      ctx.throw(400, 'Please select at least one outbound item');
+    }
     const productIds = [...new Set(requestItems.map(item => item.product_id).filter(Boolean))];
     await assertActiveProducts(Product, productIds, { transaction: t });
     const products = await Product.findAll({
@@ -4208,10 +4226,68 @@ async function confirmTransferOutPartial(ctx) {
     for (const requestItem of requestItems) {
       const product = productMap.get(String(requestItem.product_id));
       if (!product) ctx.throw(400, `Product ${requestItem.product_id} does not exist`);
+      const preselected = buildPreselectedTransferSelection(requestItem);
       const selected = byItem.get(String(requestItem.item_id))
         || byProduct.get(String(requestItem.product_id))
-        || [];
+        || (preselected ? [preselected] : []);
       if (!selected.length) ctx.throw(400, `Please select outbound inventory for ${product.name || requestItem.product_id}`);
+
+      if (preselected) {
+        if (Number(product.need_sn) !== 1) {
+          ctx.throw(400, `商品 ${product.name} 的调拨明细不能绑定 SN`);
+        }
+        if (selected.length !== 1) {
+          ctx.throw(400, `SN product ${product.name} must use its original SN`);
+        }
+        const selectedSnId = selected[0].snId || selected[0].sn_id || selected[0].inventoryId || selected[0].inventory_id || '';
+        const selectedSnCode = String(selected[0].snCode || selected[0].sn_code || '').trim();
+        if ((preselected.snId && String(selectedSnId) !== String(preselected.snId))
+          || (preselected.snCode && selectedSnCode !== String(preselected.snCode).trim())) {
+          ctx.throw(400, `SN ${preselected.snCode || preselected.snId} 不允许替换`);
+        }
+        if (!preselected.snId || !preselected.snCode) {
+          ctx.throw(400, `SN product ${product.name} requires a concrete SN`);
+        }
+        const sn = await ProductSn.findOne({
+          where: {
+            sn_id: preselected.snId,
+            sn_code: preselected.snCode,
+            product_id: requestItem.product_id,
+            store_id: transfer.from_store_id,
+            status: 'in_stock',
+            is_deleted: 0
+          },
+          transaction: t,
+          lock: t.LOCK.UPDATE
+        });
+        if (!sn) ctx.throw(400, `SN ${preselected.snCode} is not available in the outbound store`);
+        const pnCode = String(selected[0].pnCode || selected[0].pn_code || selected[0].pn || requestItem.pn_code || sn.pn_code || '').trim();
+        if (!pnCode || !(await productHasPn(product, pnCode, t))) {
+          ctx.throw(400, `Please select a valid PN for ${product.name}`);
+        }
+        if (sn.pn_code && !samePnCode(sn.pn_code, pnCode)) {
+          ctx.throw(400, `SN ${preselected.snCode} does not match PN ${pnCode}`);
+        }
+        if (selectedSnIds.has(String(sn.sn_id))) {
+          ctx.throw(400, `SN ${sn.sn_code} cannot be selected twice`);
+        }
+        selectedSnIds.add(String(sn.sn_id));
+        await sn.update({ status: 'transferring' }, { transaction: t });
+        await requestItem.update({ pn_code: pnCode, quantity: 1 }, { transaction: t });
+        await SnLog.create({
+          log_id: generateUUID(),
+          sn_id: sn.sn_id,
+          sn_code: sn.sn_code,
+          product_id: requestItem.product_id,
+          store_id: transfer.from_store_id,
+          action: 'transfer_out_confirm',
+          remark: `Transfer ${transfer.from_store_id} -> ${transfer.to_store_id}: ${transfer.transfer_no}`,
+          create_user: transfer.apply_user || user.name || user.staffId
+        }, { transaction: t });
+        await updateInventory(requestItem.product_id, transfer.from_store_id, 'normal_qty', -1, t);
+        outboundQuantity += 1;
+        continue;
+      }
 
       if (Number(product.need_sn) === 1) {
         if (selected.length > Number(requestItem.quantity || 0)) {
@@ -5841,6 +5917,8 @@ module.exports = {
     isTransferApplicant,
     transferQuantitySummary,
     visibleTransferItems,
+    getPendingTransferItems,
+    buildPreselectedTransferSelection,
     isTransferAwaitingReceipt,
     isTransferRequestOpen: transfer => TRANSFER_REQUEST_STATUSES.has(String(transfer?.status || '').toLowerCase()),
     validateSnLocationAdjustment,
