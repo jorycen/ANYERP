@@ -8,7 +8,10 @@ const { generateId } = require('../../utils');
 const { ensureStandardLocationsForStores } = require('../../utils/standardLocations');
 const { isBoss, isDealerTraceAccount } = require('../../utils/snTracePermission');
 const { resolveAllReadableStoreIds } = require('../../utils/storePermissions');
-const { accessibleDistributorIds: getAccessibleDistributorIds } = require('../../utils/distributorScope');
+const {
+  accessibleDistributorIds: getAccessibleDistributorIds,
+  resolveOrderStoreIds
+} = require('../../utils/distributorScope');
 
 function canManageStoreManager(user) {
   return (user?.roles || []).some(role => ['admin', 'boss'].includes(role));
@@ -94,6 +97,35 @@ async function getAllStores(ctx) {
   });
 
   ctx.body = { code: 0, data: rows };
+}
+
+/**
+ * 新建销售订单门店选项：返回账号已配置经销商权限下的全部有效门店。
+ * 不接受前端传入的单一经销商作为范围来源，避免多经销商权限账号被旧缓存截断。
+ */
+async function getOrderStoreOptions(ctx) {
+  const user = ctx.state.user || {};
+  const storeIds = await resolveOrderStoreIds(user);
+  const where = { is_deleted: 0, status: 1 };
+  if (!storeIds.includes('*')) {
+    where.store_id = storeIds.length ? { [Op.in]: storeIds } : '__NO_STORE__';
+  }
+
+  const rows = await Store.findAll({
+    where,
+    attributes: ['store_id', 'distributor_id', 'region_id', 'name', 'manager_staff_id'],
+    include: [{ model: Region, attributes: ['region_code', 'name'], required: false }],
+    order: [['name', 'ASC']]
+  });
+
+  ctx.body = {
+    code: 0,
+    data: rows.map(row => ({
+      ...row.toJSON(),
+      region_code: row.Region?.region_code || '',
+      region_name: row.Region?.name || ''
+    }))
+  };
 }
 
 /**
@@ -361,4 +393,4 @@ async function deleteStore(ctx) {
   ctx.body = { code: 0, message: '删除成功' };
 }
 
-module.exports = { getStoreList, getAllStores, getReadableStoreList, getTransferStores, createStore, updateStore, deleteStore, getRegionList };
+module.exports = { getStoreList, getAllStores, getOrderStoreOptions, getReadableStoreList, getTransferStores, createStore, updateStore, deleteStore, getRegionList };

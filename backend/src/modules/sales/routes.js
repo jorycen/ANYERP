@@ -41,7 +41,7 @@ const {
   downloadAllSubsidyPhotosArchive,
   createSubsidyPhotosDownloadTicket
 } = require('./controller');
-const { enforceStoreOwnership, requireRole } = require('../../middleware/permission');
+const { enforceStoreOwnership, enforceOrderStoreOwnership, requireRole } = require('../../middleware/permission');
 const {
   getMonthlyTaskOptions,
   listMonthlyTasks,
@@ -106,17 +106,17 @@ router.post('/deposits/archive', normalizeDepositId, enforceStoreOwnership, arch
 router.post('/deposits/refund', normalizeDepositId, enforceStoreOwnership, refundDeposit);
 router.get('/product-pns/:storeId/:productId', getProductPns);
 router.get('/product-sns/:storeId/:productId', getProductSns);
-router.post('/create', enforceStoreOwnership, create);
-router.post('/draft', enforceStoreOwnership, saveSalesDraft);
-router.put('/draft/:orderId', enforceStoreOwnership, updateSalesDraft);
-router.post('/draft/:orderId/submit', enforceStoreOwnership, submitSalesDraft);
-router.delete('/draft/:orderId', enforceStoreOwnership, deleteSalesDraft);
+router.post('/create', enforceOrderStoreOwnership, create);
+router.post('/draft', enforceOrderStoreOwnership, saveSalesDraft);
+router.put('/draft/:orderId', enforceOrderStoreOwnership, updateSalesDraft);
+router.post('/draft/:orderId/submit', enforceOrderStoreOwnership, submitSalesDraft);
+router.delete('/draft/:orderId', enforceOrderStoreOwnership, deleteSalesDraft);
 router.put('/order-items', enforceStoreOwnership, updateOrderItems);
 router.post('/order-items', enforceStoreOwnership, updateOrderItems);
 router.get('/:orderId/gross-profit', getGrossProfit);
 router.put('/:orderId/supplements', enforceStoreOwnership, updateSupplements);
 router.get('/:orderId', detail);
-router.put('/:orderId', enforceStoreOwnership, update);
+router.put('/:orderId', enforceOrderStoreOwnership, update);
 router.post('/:orderId/approve', approve);
 router.post('/:orderId/reject', reject);
 router.post('/:orderId/return-request', enforceStoreOwnership, requestSalesReturn);

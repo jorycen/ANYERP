@@ -51,6 +51,7 @@ const { generateOrderNo, generateInboundNo, generateUUID, paginate, formatPagina
 const { normalizePnCode } = require('../../utils/productPn');
 const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
+const { canAccessDistributor, resolveOrderStoreIds } = require('../../utils/distributorScope');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { assertActiveProducts } = require('../../utils/activeProduct');
 const { syncSerializedInventoryBalance } = require('../inventory/serializedInventoryBalance');
@@ -197,13 +198,55 @@ async function auxiliaryStaff(ctx) {
 }
 
 function canQueryAllSalesOrders(user) {
-  const roles = getUserRoles(user);
-  return isDealerTraceAccount(user) || roles.some(role => ['manager', 'store_manager', 'store_admin'].includes(role));
+  // 门店角色是否能看全店订单取决于门店资料的正式店长字段，不能仅凭角色名称判断。
+  return isDealerTraceAccount(user);
 }
 
 function canExportSalesOrders(user) {
   const roles = getUserRoles(user);
   return isDealerTraceAccount(user) || roles.some(role => ['manager', 'store_manager', 'store_admin'].includes(role));
+}
+
+function isSalesOrderCreator(order, user) {
+  if (!order || !user) return false;
+  if (user.staffId && order.create_staff_id) {
+    return String(user.staffId) === String(order.create_staff_id);
+  }
+  return Boolean(user.name && order.create_user && String(user.name) === String(order.create_user));
+}
+
+function buildSalesOrderVisibilityCondition(user, managerStoreIds = []) {
+  if (isDealerTraceAccount(user)) return null;
+
+  const conditions = [];
+  if (user?.staffId) conditions.push({ create_staff_id: user.staffId });
+  if (user?.name) {
+    conditions.push({
+      [Op.and]: [
+        { [Op.or]: [{ create_staff_id: { [Op.is]: null } }, { create_staff_id: '' }] },
+        { create_user: user.name }
+      ]
+    });
+  }
+  if (managerStoreIds.length) {
+    conditions.push({ store_id: { [Op.in]: managerStoreIds } });
+  }
+  return conditions.length ? { [Op.or]: conditions } : { order_id: '__NO_MATCHING_ORDER__' };
+}
+
+async function resolveFormalManagerStoreIds(user, orderStoreIds) {
+  if (!user?.staffId || orderStoreIds.includes('*')) return [];
+  const rows = await Store.findAll({
+    where: {
+      manager_staff_id: user.staffId,
+      store_id: orderStoreIds.length ? { [Op.in]: orderStoreIds } : '__NO_STORE__',
+      is_deleted: 0,
+      status: 1
+    },
+    attributes: ['store_id'],
+    raw: true
+  });
+  return rows.map(row => String(row.store_id)).filter(Boolean);
 }
 
 const SALES_APPROVAL_STATUSES = Object.freeze({
@@ -324,10 +367,8 @@ async function list(ctx) {
   const user = ctx.state.user;
 
   const where = { is_deleted: 0 };
-  const accessibleStoreIds = Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds.filter(Boolean) : [];
-  const roles = getUserRoles(user);
+  const orderStoreIds = await resolveOrderStoreIds(user);
   const dealerWide = isDealerTraceAccount(user);
-  const canQueryAllStoreOrders = dealerWide || roles.some(role => ['manager', 'store_manager', 'store_admin'].includes(role));
   const storeInclude = { model: Store };
   const applicantInclude = {
     model: Staff,
@@ -339,7 +380,7 @@ async function list(ctx) {
       { model: Distributor, attributes: ['distributor_id', 'name'], required: false }
     ]
   };
-  const hasGlobalStoreScope = roles.includes('boss') || accessibleStoreIds.includes('*');
+  const hasGlobalStoreScope = orderStoreIds.includes('*');
 
   const dateRange = buildChinaDateRange(startDate, endDate);
   if (dateRange) {
@@ -375,22 +416,26 @@ async function list(ctx) {
   }
 
   if (storeId) {
-    if (!hasGlobalStoreScope && !accessibleStoreIds.map(String).includes(String(storeId))) {
+    if (!hasGlobalStoreScope && !orderStoreIds.map(String).includes(String(storeId))) {
       ctx.throw(403, '无权访问该门店订单');
     }
     where.store_id = storeId;
   } else if (!hasGlobalStoreScope) {
-    if (accessibleStoreIds.length === 0) {
+    if (orderStoreIds.length === 0) {
       ctx.body = formatPaginatedResult([], { page, pageSize, count: 0 });
       return;
     }
-    where.store_id = accessibleStoreIds;
+    where.store_id = orderStoreIds;
   }
 
-  // 店员只能查询自己创建的订单；店长及以上角色才可以查询门店内全部订单。
-  // 这里必须在服务端强制执行，不能依赖小程序传入的 userRole/searchAll 参数。
-  if (!canQueryAllStoreOrders) {
-    where.create_user = user.name || '__NO_MATCHING_STAFF__';
+  // 订单列表按订单专用经销商范围过滤；门店角色只看本人订单，
+  // 以及门店资料中正式店长为当前人的门店全部订单。
+  if (!dealerWide) {
+    const managerStoreIds = await resolveFormalManagerStoreIds(user, orderStoreIds);
+    const visibility = buildSalesOrderVisibilityCondition(user, managerStoreIds);
+    if (visibility) {
+      where[Op.and] = [...(where[Op.and] || []), visibility];
+    }
   }
 
   const itemWhere = {};
@@ -1187,18 +1232,22 @@ async function exportOrders(ctx) {
     storeId, startDate, endDate, customerPhone, customerName, orderNo,
     status, createUser, submitUser, productName, productCode, pnCode, snCode
   } = ctx.query;
-  const roles = getUserRoles(user);
   const where = { is_deleted: 0 };
   const storeInclude = { model: Store };
-  const accessibleStoreIds = Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds.filter(Boolean) : [];
-  const hasGlobalStoreScope = roles.includes('boss') || accessibleStoreIds.includes('*');
+  const orderStoreIds = await resolveOrderStoreIds(user);
+  const hasGlobalStoreScope = orderStoreIds.includes('*');
   if (storeId) {
-    if (!hasGlobalStoreScope && !accessibleStoreIds.map(String).includes(String(storeId))) {
+    if (!hasGlobalStoreScope && !orderStoreIds.map(String).includes(String(storeId))) {
       ctx.throw(403, '无权导出该门店订单');
     }
     where.store_id = storeId;
   } else if (!hasGlobalStoreScope) {
-    where.store_id = accessibleStoreIds.length > 0 ? accessibleStoreIds : '__NO_ACCESS__';
+    where.store_id = orderStoreIds.length > 0 ? orderStoreIds : '__NO_ACCESS__';
+  }
+  if (!isDealerTraceAccount(user)) {
+    const managerStoreIds = await resolveFormalManagerStoreIds(user, orderStoreIds);
+    const visibility = buildSalesOrderVisibilityCondition(user, managerStoreIds);
+    if (visibility) where[Op.and] = [visibility];
   }
   if (startDate || endDate) {
     const dateRange = buildChinaDateRange(startDate, endDate);
@@ -2192,7 +2241,7 @@ async function create(ctx) {
   if (requestedOrderId) {
     existingOrder = await Order.findOne({ where: { order_id: requestedOrderId, is_deleted: 0 } });
     if (!existingOrder) ctx.throw(404, '销售订单不存在');
-    assertStoreVisible(existingOrder.store_id, user);
+    await assertOrderStoreVisible(existingOrder.store_id, user);
     if (existingOrder.order_status !== 'draft') ctx.throw(400, '只有草稿状态的销售订单可以保存或提交');
     if (!canEditSalesDraft(user, existingOrder)) ctx.throw(403, '只有草稿创建人、店长或管理员可以编辑');
   }
@@ -2201,7 +2250,7 @@ async function create(ctx) {
   const orderId = existingOrder?.order_id || generateUUID();
   const actualStoreId = existingOrder?.store_id || storeId || user.storeId || '';
   if (!actualStoreId) ctx.throw(400, '请选择门店');
-  assertStoreVisible(actualStoreId, user, '无权操作该门店订单');
+  await assertOrderStoreVisible(actualStoreId, user, '无权操作该门店订单');
 
   const normalizedItems = items.map(item => applyOrderItemDefaults(normalizeOrderItemInput(item)));
   assertUniqueOrderSnItems(normalizedItems, isDraft ? '订单草稿' : '订单');
@@ -2536,7 +2585,7 @@ async function detail(ctx) {
     ctx.throw(404, '订单不存在');
   }
 
-  assertSalesOrderVisible(order.store_id, ctx.state.user, order.Store?.distributor_id);
+  await assertSalesOrderVisible(order, ctx.state.user);
   if (String(ctx.query.trace || '') === '1') {
     const orderData = order.toJSON();
     if (!canViewSnTraceReference(ctx.state.user, {
@@ -2788,7 +2837,7 @@ async function update(ctx) {
     ctx.throw(404, '订单不存在');
   }
 
-  assertStoreVisible(order.store_id, ctx.state.user);
+  await assertSalesOrderVisible(order, ctx.state.user);
   const previousRemark = order.remark || '';
   if (isSalesApprovalPendingStatus(order.order_status)) {
     ctx.throw(400, '待审批订单不能直接修改或归档，请先审批或拒绝');
@@ -2958,8 +3007,7 @@ async function getGrossProfit(ctx) {
   }
   const order = await Order.findByPk(orderId);
   if (!order) ctx.throw(404, '订单不存在');
-  const store = await Store.findByPk(order.store_id, { attributes: ['store_id', 'distributor_id'] });
-  assertSalesOrderVisible(order.store_id, ctx.state.user, store?.distributor_id);
+  await assertSalesOrderVisible(order, ctx.state.user);
 
   const snapshot = await calculateAndSaveOrderGrossProfit(orderId, {
     calculatedBy: ctx.state.user?.name || 'system'
@@ -2980,7 +3028,7 @@ async function updateSupplements(ctx) {
 
   const order = await Order.findByPk(orderId);
   if (!order) ctx.throw(404, '订单不存在');
-  assertStoreVisible(order.store_id, ctx.state.user);
+  await assertSalesOrderVisible(order, ctx.state.user);
 
   const normalized = [];
   for (const item of supplements) {
@@ -3096,7 +3144,7 @@ async function updateOrderItems(ctx) {
     ctx.throw(404, '订单不存在');
   }
 
-  assertStoreVisible(order.store_id, ctx.state.user);
+  await assertSalesOrderVisible(order, ctx.state.user);
 
   let results = [];
   await sequelize.transaction(async (transaction) => {
@@ -4280,8 +4328,35 @@ function assertStoreVisible(storeId, user, message = '无权访问该门店数�
   }
 }
 
-function assertSalesOrderVisible(storeId, user, distributorId = '') {
-  assertStoreVisible(storeId, user, '无权访问该销售订单');
+async function assertOrderStoreVisible(storeId, user, message = '无权访问该销售订单') {
+  const store = await Store.findOne({
+    where: { store_id: storeId, is_deleted: 0, status: 1 },
+    attributes: ['store_id', 'distributor_id']
+  });
+  if (!store || !canAccessDistributor(user, store.distributor_id)) {
+    const error = new Error(message);
+    error.status = 403;
+    throw error;
+  }
+  return store;
+}
+
+async function assertSalesOrderVisible(order, user) {
+  const store = order?.Store || await Store.findByPk(order?.store_id, {
+    attributes: ['store_id', 'distributor_id', 'manager_staff_id']
+  });
+  if (!order || !store || !canAccessDistributor(user, store.distributor_id)) {
+    const error = new Error('无权访问该销售订单');
+    error.status = 403;
+    throw error;
+  }
+  if (isDealerTraceAccount(user) || isSalesOrderCreator(order, user) ||
+      String(store.manager_staff_id || '') === String(user?.staffId || '')) {
+    return;
+  }
+  const error = new Error('无权访问该销售订单');
+  error.status = 403;
+  throw error;
 }
 
 async function validateDepositReservation({ payment, user, customerPhone, payableBeforeDeposit, transaction }) {
@@ -5130,6 +5205,8 @@ module.exports = {
   _test: {
     canQueryAllSalesOrders,
     canExportSalesOrders,
+    isSalesOrderCreator,
+    buildSalesOrderVisibilityCondition,
     buildSalesOrderListOrder,
     salesApprovalStageFromStatus,
     salesApprovalStageLabel,

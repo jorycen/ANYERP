@@ -101,6 +101,31 @@ function enforceStoreOwnership(ctx, next) {
 }
 
 /**
+ * 销售订单允许选择账号已配置经销商下的任意有效门店。
+ * 具体门店归属由控制器再次校验；这里负责兼容写入路由的门店参数。
+ */
+async function enforceOrderStoreOwnership(ctx, next) {
+  const requestedStoreId = ctx.request.body?.storeId
+    || ctx.request.body?.store_id
+    || ctx.query?.storeId
+    || ctx.query?.store_id
+    || '';
+  if (requestedStoreId) {
+    const { Store } = require('../models');
+    const { canAccessDistributor } = require('../utils/distributorScope');
+    const store = await Store.findOne({
+      where: { store_id: requestedStoreId, is_deleted: 0, status: 1 },
+      attributes: ['store_id', 'distributor_id']
+    });
+    if (!store || !canAccessDistributor(ctx.state.user || {}, store.distributor_id)) {
+      ctx.throw(403, '无权操作该门店订单');
+    }
+    if (ctx.request.body) ctx.request.body.store_id = store.store_id;
+  }
+  return next();
+}
+
+/**
  * 查询数据门店过滤
  * 店员/店长只能查自己门店
  */
@@ -117,6 +142,7 @@ module.exports = {
   requireRole,
   storeGuard,
   enforceStoreOwnership,
+  enforceOrderStoreOwnership,
   filterByStore,
   isDealerAccount,
   requireDistributorAccount,

@@ -87,6 +87,14 @@ async function storeAccessMiddleware(ctx, next) {
   if (!user || user.roles?.includes('boss') || user.accessibleStoreIds?.includes('*')) return next();
   if (ctx.path.startsWith('/api/v1/system/')) return next();
   if (ctx.path === '/api/v1/store/create' && ctx.method === 'POST') return next();
+  // 新建/编辑销售订单的门店范围由销售控制器按经销商权限校验，允许先通过门店切换参数。
+  if (ctx.method !== 'GET' && (
+    ctx.path === '/api/v1/sales/create' ||
+    ctx.path === '/api/v1/sales/draft' ||
+    /^\/api\/v1\/sales\/draft\/[^/]+$/.test(ctx.path) ||
+    /^\/api\/v1\/sales\/draft\/[^/]+\/(submit)$/.test(ctx.path) ||
+    /^\/api\/v1\/sales\/[^/]+$/.test(ctx.path)
+  )) return next();
   // 调拨申请由同一区域内任意登录用户发起，具体经销商/区域范围由调拨控制器二次校验。
   if (ctx.path === '/api/v1/inventory/transfer' && ctx.method === 'POST') return next();
   // 经销商级账号可以操作本经销商全部调拨门店，具体单据和区域范围由调拨控制器二次校验。
@@ -112,10 +120,13 @@ async function storeAccessMiddleware(ctx, next) {
   if (ctx.method === 'GET' &&
       (ctx.path === '/api/v1/sales/list' ||
        ctx.path === '/api/v1/sales/export' ||
-       ctx.path === '/api/v1/store/all') &&
+       ctx.path === '/api/v1/store/all' ||
+       ctx.path === '/api/v1/store/order-options') &&
       isDealerTraceAccount(user)) {
     return next();
   }
+
+  if (ctx.method === 'GET' && ctx.path === '/api/v1/store/order-options') return next();
 
   // 库存查询、报表查询和只读门店选项由各自控制器按业务范围校验，
   // 不在通用门店中间件中拦截跨门店的查询参数；库存写入接口仍走原门店权限链路。
@@ -161,7 +172,14 @@ async function storeAccessMiddleware(ctx, next) {
     ctx.path.startsWith('/api/v1/sales/subsidy-photos') ||
     /^\/api\/v1\/sales\/[^/]+$/.test(ctx.path)
   );
-  if (allowed.size === 0 && storeBusinessPrefixes.some(prefix => ctx.path.startsWith(prefix)) && !isReadOnlySalesQuery) {
+  const isSalesOrderScopedWrite = ctx.method !== 'GET' && (
+    ctx.path === '/api/v1/sales/create' ||
+    ctx.path === '/api/v1/sales/draft' ||
+    /^\/api\/v1\/sales\/draft\/[^/]+$/.test(ctx.path) ||
+    /^\/api\/v1\/sales\/draft\/[^/]+\/(submit)$/.test(ctx.path) ||
+    /^\/api\/v1\/sales\/[^/]+$/.test(ctx.path)
+  );
+  if (allowed.size === 0 && storeBusinessPrefixes.some(prefix => ctx.path.startsWith(prefix)) && !isReadOnlySalesQuery && !isSalesOrderScopedWrite) {
     ctx.throw(403, '当前账号尚未分配门店');
   }
   const isStoreKey = key => /store_?ids?$/.test(key.toLowerCase());

@@ -63,6 +63,16 @@ async function resolveStoresForDistributors(distributorIds) {
   return uniqueIds(rows.map(row => row.store_id));
 }
 
+/**
+ * 销售订单场景的门店范围：按账号已配置的经销商权限展开全部有效门店。
+ * 该范围只供订单创建/查询使用，不改变库存、财务等模块的门店权限。
+ */
+async function resolveOrderStoreIds(user = {}) {
+  const distributorIds = accessibleDistributorIds(user);
+  if (distributorIds.includes('*')) return ['*'];
+  return resolveStoresForDistributors(distributorIds);
+}
+
 async function validateDistributorIds(ids) {
   const normalized = uniqueIds(ids);
   if (!normalized.length) return [];
@@ -90,5 +100,6 @@ module.exports = {
   canAccessDistributor,
   distributorWhere,
   resolveStoresForDistributors,
+  resolveOrderStoreIds,
   validateDistributorIds
 };
