@@ -10,6 +10,7 @@ const {
   ApprovalActionLog
 } = require('../../models');
 const { generateUUID } = require('../../utils');
+const { isStoreScopedAccount } = require('../../utils/storePermissions');
 
 const APPROVER_TYPES = new Set([
   'fixed_user',
@@ -58,6 +59,30 @@ function nextInstanceNo() {
 
 function asStaffId(value) {
   return value === undefined || value === null || value === '' ? null : Number(value);
+}
+
+function getApprovalStoreIds(user = {}) {
+  const roles = user.roles || user.roleCode || [];
+  if (!isStoreScopedAccount(roles)) return null;
+  const storeIds = Array.isArray(user.accessibleStoreIds)
+    ? [...new Set(user.accessibleStoreIds.map(value => String(value || '').trim()).filter(Boolean))]
+    : [];
+  return storeIds.includes('*') ? null : storeIds;
+}
+
+function getApprovalStoreWhere(user = {}) {
+  const storeIds = getApprovalStoreIds(user);
+  if (storeIds === null) return null;
+  return { store_id: storeIds.length ? { [Op.in]: storeIds } : '__NO_STORE__' };
+}
+
+function canReadApprovalStore(user = {}, storeId) {
+  const storeIds = getApprovalStoreIds(user);
+  return storeIds === null || (Boolean(storeId) && storeIds.includes(String(storeId)));
+}
+
+function assertApprovalStoreVisible(user = {}, storeId) {
+  if (!canReadApprovalStore(user, storeId)) throw new Error('无权访问该门店的审批记录');
 }
 
 async function getSubject(subjectStaffId, transaction) {
@@ -204,6 +229,7 @@ async function startInstance(input, actor, transaction) {
   if (actor.distributorId && subject.distributor_id !== actor.distributorId && !actor.roles?.includes('boss')) {
     throw new Error('审批主题员工不在当前经销商范围内');
   }
+  assertApprovalStoreVisible(actor, subject.store_id);
   if (!input.businessId) throw new Error('业务单据ID不能为空');
   const instance = await ApprovalFlowInstance.create({
     instance_id: generateUUID(),
@@ -239,6 +265,7 @@ async function actionInstance(instanceId, action, comment, actor) {
   return sequelize.transaction(async transaction => {
     const instance = await ApprovalFlowInstance.findByPk(instanceId, { transaction, lock: transaction.LOCK.UPDATE });
     if (!instance) throw new Error('审批实例不存在');
+    assertApprovalStoreVisible(actor, instance.store_id);
     if (instance.status !== 'pending') throw new Error('该审批实例当前不可处理');
     const task = await ApprovalTask.findOne({
       where: { instance_id: instanceId, round_no: instance.resubmit_count, assignee_staff_id: actor.staffId, status: 'pending', node_index: instance.current_node_index },
@@ -280,6 +307,7 @@ async function resubmitInstance(instanceId, input, actor) {
   return sequelize.transaction(async transaction => {
     const instance = await ApprovalFlowInstance.findByPk(instanceId, { transaction, lock: transaction.LOCK.UPDATE });
     if (!instance) throw new Error('审批实例不存在');
+    assertApprovalStoreVisible(actor, instance.store_id);
     if (Number(instance.applicant_staff_id) !== Number(actor.staffId)) throw new Error('只有申请人可以重新提交');
     if (instance.status !== 'rejected') throw new Error('只有已拒绝的审批可以重新提交');
     const roundNo = Number(instance.resubmit_count || 0) + 1;
@@ -306,5 +334,9 @@ module.exports = {
   createInstance,
   startInstance,
   actionInstance,
-  resubmitInstance
+  resubmitInstance,
+  getApprovalStoreIds,
+  getApprovalStoreWhere,
+  canReadApprovalStore,
+  assertApprovalStoreVisible
 };

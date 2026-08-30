@@ -2,7 +2,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { normalizeFlowConfig } = require('../src/modules/approval/service');
+const {
+  normalizeFlowConfig,
+  getApprovalStoreIds,
+  canReadApprovalStore
+} = require('../src/modules/approval/service');
 
 test('审批流程配置支持串行签批和或签', () => {
   const config = normalizeFlowConfig({
@@ -25,4 +29,12 @@ test('审批流程配置拒绝空节点和未知审批人类型', () => {
 test('通用审批允许申请人进入审批人任务', () => {
   const source = fs.readFileSync(path.join(__dirname, '../src/modules/approval/service.js'), 'utf8');
   assert.doesNotMatch(source, /id !== Number\(instance\.applicant_staff_id\)/);
+});
+
+test('店长审批范围只包含已分配管理门店', () => {
+  const manager = { roles: ['manager'], accessibleStoreIds: ['STORE_1', 'STORE_2'] };
+  assert.deepEqual(getApprovalStoreIds(manager), ['STORE_1', 'STORE_2']);
+  assert.equal(canReadApprovalStore(manager, 'STORE_1'), true);
+  assert.equal(canReadApprovalStore(manager, 'STORE_3'), false);
+  assert.equal(getApprovalStoreIds({ roles: ['admin'], accessibleStoreIds: ['STORE_1'] }), null);
 });

@@ -10,7 +10,15 @@ const {
   ApprovalActionLog
 } = require('../../models');
 const { generateUUID } = require('../../utils');
-const { createInstance, actionInstance, resubmitInstance, normalizeFlowConfig, parseJson } = require('./service');
+const {
+  createInstance,
+  actionInstance,
+  resubmitInstance,
+  normalizeFlowConfig,
+  parseJson,
+  getApprovalStoreWhere,
+  canReadApprovalStore
+} = require('./service');
 
 function isAdmin(user) {
   return user.roles?.some(role => ['admin', 'boss'].includes(role));
@@ -127,9 +135,19 @@ async function listTasks(ctx) {
   const where = { assignee_staff_id: ctx.state.user.staffId };
   if (ctx.query.status) where.status = ctx.query.status;
   else where.status = 'pending';
+  const storeWhere = getApprovalStoreWhere(ctx.state.user);
+  const instanceInclude = {
+    model: ApprovalFlowInstance,
+    as: 'Instance',
+    attributes: ['instance_id', 'instance_no', 'business_type', 'business_id', 'title', 'summary', 'applicant_staff_id', 'subject_staff_id', 'store_id', 'status', 'resubmit_count', 'create_time']
+  };
+  if (storeWhere) {
+    instanceInclude.where = storeWhere;
+    instanceInclude.required = true;
+  }
   const tasks = await ApprovalTask.findAll({
     where,
-    include: [{ model: ApprovalFlowInstance, as: 'Instance', attributes: ['instance_id', 'instance_no', 'business_type', 'business_id', 'title', 'summary', 'applicant_staff_id', 'subject_staff_id', 'status', 'resubmit_count', 'create_time'] }],
+    include: [instanceInclude],
     order: [['create_time', 'DESC']]
   });
   ctx.body = tasks;
@@ -143,8 +161,22 @@ function instanceAccessWhere(user, scope) {
 async function listInstances(ctx) {
   const scope = ctx.query.scope || 'mine';
   const where = scope === 'todo' ? {} : { ...instanceAccessWhere(ctx.state.user, scope) };
+  const storeWhere = getApprovalStoreWhere(ctx.state.user);
+  if (storeWhere) Object.assign(where, storeWhere);
   if (scope === 'todo') {
-    const taskRows = await ApprovalTask.findAll({ where: { assignee_staff_id: ctx.state.user.staffId }, attributes: ['instance_id'], raw: true });
+    const taskInclude = {
+      model: ApprovalFlowInstance,
+      as: 'Instance',
+      attributes: [],
+      required: Boolean(storeWhere),
+      ...(storeWhere ? { where: storeWhere } : {})
+    };
+    const taskRows = await ApprovalTask.findAll({
+      where: { assignee_staff_id: ctx.state.user.staffId },
+      include: [taskInclude],
+      attributes: ['instance_id'],
+      raw: true
+    });
     where.instance_id = taskRows.length ? taskRows.map(row => row.instance_id) : '';
   }
   if (ctx.query.status) where.status = ctx.query.status;
@@ -153,6 +185,7 @@ async function listInstances(ctx) {
 }
 
 async function canReadInstance(ctx, instance) {
+  if (!canReadApprovalStore(ctx.state.user, instance.store_id)) return false;
   if (isAdmin(ctx.state.user)) return true;
   if (Number(instance.applicant_staff_id) === Number(ctx.state.user.staffId) || Number(instance.subject_staff_id) === Number(ctx.state.user.staffId)) return true;
   return Boolean(await ApprovalTask.findOne({ where: { instance_id: instance.instance_id, assignee_staff_id: ctx.state.user.staffId } }));
