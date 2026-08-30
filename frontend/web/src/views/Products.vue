@@ -1199,7 +1199,7 @@ const handleSubmit = async () => {
   })
   if (missingField) { ElMessage.warning(`请填写${missingField.field_label}`); return }
   if (!finalName) { ElMessage.warning('请填写补充字段'); return }
-  if (isEditing && pnLoadFailed.value) {
+  if (currentProduct.value && pnLoadFailed.value) {
     ElMessage.warning('PN主数据尚未加载成功，请刷新后重试')
     return
   }
