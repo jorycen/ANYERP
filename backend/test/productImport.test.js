@@ -43,7 +43,7 @@ test('PN比较统一为字符串并移除空格，且过滤占位值', () => {
   assert.deepEqual(_test.splitPnCodes('PN001, PN002, 无'), ['PN001', 'PN002']);
 });
 
-test('新建商品只允许选择第四级分类', () => {
+test('商品分类层级判断继续兼容历史调用', () => {
   assert.equal(_test.isFourLevelCategory({ level: 4 }), true);
   assert.equal(_test.isFourLevelCategory({ level: 3 }), false);
   assert.equal(_test.isFourLevelCategory(null), false);
@@ -76,6 +76,19 @@ test('商品名称分类前缀使用第2到第4级，不包含第1级', () => {
     { category_id: 'L1', name: '笔记本' }
   ]);
   assert.deepEqual(prefix, ['联想', 'ThinkPad', '游戏本']);
+});
+
+test('商品默认名称按二级、三级、四级和其他字段使用短横线拼接', () => {
+  assert.equal(_test.composeProductName(
+    { brand: '联想', series: '拯救者', model: 'R9000P' },
+    [{ field_key: '内存' }, { field_key: '颜色' }],
+    { 内存: '32G', 颜色: '黑色' }
+  ), '联想-拯救者-R9000P-32G-黑色');
+  assert.equal(_test.composeProductName(
+    { brand: '', series: '手工系列', model: '手工型号' },
+    [],
+    {}
+  ), '手工系列-手工型号');
 });
 
 test('商品分类树层级映射为分类、品牌、系列、型号', () => {

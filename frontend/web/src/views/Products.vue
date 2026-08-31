@@ -366,13 +366,14 @@
           </el-col>
           <el-col :span="12">
             <el-form-item label="商品分类">
-              <el-tree-select
-                v-model="productForm.categoryId"
-                :data="productCategoryTree"
-                :props="{ label: 'name', value: 'category_id', children: 'children', disabled: 'disabled' }"
-                placeholder="可选择任意级分类"
+              <el-cascader
+                v-model="productForm.categoryPath"
+                :options="productCategoryTree"
+                :props="{ label: 'name', value: 'category_id', children: 'children', disabled: 'disabled', checkStrictly: true }"
+                placeholder="请按层级选择分类（可选任意级）"
                 clearable
-                check-strictly
+                filterable
+                :show-all-levels="true"
                 style="width: 100%"
                 @change="onCategoryChange"
               />
@@ -406,7 +407,7 @@
         </el-row>
 
         <!-- 第四级分类动态字段 - 仅在分类配置了额外字段时显示 -->
-        <div v-if="categoryFields.length > 0" style="margin-bottom: 12px; padding: 10px; background: #f5f7fa; border-radius: 4px;">
+        <div v-if="categoryExtraFields.length > 0" style="margin-bottom: 12px; padding: 10px; background: #f5f7fa; border-radius: 4px;">
           <el-divider content-position="left" style="margin: 0 0 10px 0;">{{ categoryFieldCatName }} 补充字段</el-divider>
           <el-row :gutter="16">
             <el-col :span="8" v-for="field in categoryExtraFields" :key="field.field_key">
@@ -423,7 +424,7 @@
         </div>
 
         <el-form-item label="商品名称">
-          <el-input v-model="productForm.name" placeholder="可手工填写；留空时按品牌/系列/型号和补充字段组合" />
+          <el-input v-model="productForm.name" placeholder="可手工修改；留空时按二级-三级-四级-其他字段组合" />
           <div class="text-muted" style="margin-top: 4px;">当前名称：{{ computedProductName || '（尚未填写）' }}</div>
         </el-form-item>
         <el-form-item label="厂商编码 / PN" required>
@@ -758,6 +759,7 @@ const productForm = reactive({
   pnCode: '',
   pns: [],
   categoryId: '',
+  categoryPath: [],
   category: '',
   config: '',
   brand: '',
@@ -855,7 +857,7 @@ const computedProductName = computed(() => {
       parts.push(productForm.attributes[field.field_key])
     }
   }
-  return parts.join(' ') || productForm.name || ''
+  return parts.join('-') || productForm.name || ''
 })
 
 const standardFieldAliases = {
@@ -886,23 +888,40 @@ function findCategoryByPath(tree, path) {
   return found ? found.category_id : null
 }
 
+function findCategoryPath(tree, categoryId, parentPath = []) {
+  for (const node of tree || []) {
+    if (!node) continue
+    const nextPath = [...parentPath, node.category_id]
+    if (String(node.category_id) === String(categoryId)) return nextPath
+    const found = findCategoryPath(node.children, categoryId, nextPath)
+    if (found) return found
+  }
+  return []
+}
+
 const onCategoryChange = async (value) => {
-  if (!value) {
+  const categoryPath = Array.isArray(value) ? value.filter(Boolean) : (value ? [value] : [])
+  const categoryId = categoryPath[categoryPath.length - 1] || ''
+  productForm.categoryPath = categoryPath
+  productForm.categoryId = categoryId
+  productForm.category = ''
+  productForm.brand = ''
+  productForm.series = ''
+  productForm.model = ''
+  if (!categoryId) {
     productForm.attributes = {}
     categoryFields.value = []
     categoryFieldCatName.value = ''
     categoryNameParts.value = []
     return
   }
-  const selectedCategory = findCategoryNode(categoryTree.value, value)
+  const selectedCategory = findCategoryNode(categoryTree.value, categoryId)
   productForm.attributes = {}
   categoryFields.value = []
   categoryFieldCatName.value = ''
   categoryNameParts.value = []
-  if (!value) return
-
   try {
-    const res = await api.getCategoryFieldConfig(value)
+    const res = await api.getCategoryFieldConfig(categoryId)
     if (res.code === 0 && res.data && res.data.fields) {
       categoryFields.value = res.data.fields
       categoryFieldCatName.value = res.data.categoryName || ''
@@ -911,7 +930,7 @@ const onCategoryChange = async (value) => {
       for (const key of ['category', 'brand', 'series', 'model']) {
         if (dimensions[key]) productForm[key] = dimensions[key]
       }
-      if (currentProduct.value && String(value) === String(originalCategoryId.value)) {
+      if (currentProduct.value && String(categoryId) === String(originalCategoryId.value)) {
         productForm.brand = currentProduct.value.brand || ''
         productForm.series = currentProduct.value.series || ''
         productForm.model = currentProduct.value.model || ''
@@ -966,8 +985,8 @@ const handleCreate = async () => {
   resetForm()
   restoreProductDraft()
   ensureCreatePnRow()
-  if (productForm.categoryId) {
-    await onCategoryChange(productForm.categoryId)
+  if (productForm.categoryId || productForm.categoryPath?.length) {
+    await onCategoryChange(productForm.categoryPath?.length ? productForm.categoryPath : productForm.categoryId)
   }
   dialogVisible.value = true
 }
@@ -982,6 +1001,7 @@ const handleEdit = async (row) => {
   productForm.pnCode = row.manufacturer_codes?.[0] || String(row.manufacturer_code || '').split(',')[0].trim()
   productForm.pns = []
   productForm.categoryId = row.category_id || ''
+  productForm.categoryPath = findCategoryPath(categoryTree.value, productForm.categoryId)
   originalCategoryId.value = row.category_id || ''
   productForm.category = row.category || ''
   productForm.config = row.config || ''
@@ -1029,12 +1049,13 @@ const handleEdit = async (row) => {
       productForm.categoryId = catId
     }
   }
+  productForm.categoryPath = findCategoryPath(categoryTree.value, productForm.categoryId)
   originalCategoryId.value = productForm.categoryId
 
   dialogVisible.value = true
 
-  if (productForm.categoryId) {
-    await onCategoryChange(productForm.categoryId)
+  if (productForm.categoryId || productForm.categoryPath?.length) {
+    await onCategoryChange(productForm.categoryPath?.length ? productForm.categoryPath : productForm.categoryId)
   }
 }
 
@@ -1135,6 +1156,7 @@ const resetForm = () => {
   productForm.pnCode = ''
   productForm.pns = []
   productForm.categoryId = ''
+  productForm.categoryPath = []
   productForm.category = ''
   originalCategoryId.value = ''
   productForm.config = ''

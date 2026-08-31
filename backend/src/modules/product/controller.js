@@ -663,6 +663,20 @@ function getCategoryNamePrefix(lineage) {
     .filter(Boolean);
 }
 
+function composeProductName(dimensions = {}, fields = [], attributes = {}) {
+  const parts = [dimensions.brand, dimensions.series, dimensions.model]
+    .map(value => String(value || '').trim())
+    .filter(Boolean);
+  for (const field of fields || []) {
+    if (getProductDimensionKey(field.field_key)) continue;
+    const value = attributes?.[field.field_key];
+    if (value !== undefined && value !== null && String(value).trim()) {
+      parts.push(String(value).trim());
+    }
+  }
+  return parts.join('-');
+}
+
 async function resolveCategoryFieldConfig(categoryId) {
   if (!categoryId) {
     throw Object.assign(new Error('请指定分类'), { status: 400 });
@@ -893,23 +907,13 @@ async function resolveProductApplicationName(body) {
   }
   const attrs = parsedAttrs && typeof parsedAttrs === 'object' ? parsedAttrs : {};
   const dimensions = await resolveProductDimensions(body, attrs);
+  const resolvedFields = categoryId ? await resolveCategoryFieldConfig(categoryId) : { fields: [] };
+  const defaultName = composeProductName(dimensions.dimensions, resolvedFields.fields, attrs);
   let finalName = name || '';
-  if (!finalName) {
-    const parts = [dimensions.dimensions.brand, dimensions.dimensions.series, dimensions.dimensions.model]
-      .map(value => String(value || '').trim())
-      .filter(Boolean);
-    if (categoryId) {
-      const resolvedFields = await resolveCategoryFieldConfig(categoryId);
-      for (const field of resolvedFields.fields || []) {
-        if (getProductDimensionKey(field.field_key)) continue;
-        const value = attrs[field.field_key];
-        if (value) parts.push(value);
-      }
-    }
-    finalName = parts.join(' ') || name || '';
-  }
+  if (!finalName) finalName = defaultName;
   return {
     finalName: String(finalName || '').trim(),
+    defaultName,
     parsedAttrs: parsedAttrs || {},
     dimensions
   };
@@ -1168,7 +1172,7 @@ async function submitProductApplication(ctx) {
     application_no: applicationNo,
     product_name: finalName,
     category_id: ctx.request.body.categoryId,
-    category_name: dimensions.dimensions.category || '',
+    category_name: dimensions.path || dimensions.dimensions.category || '',
     category_path_legacy: dimensions.path || null,
     payload_json: payload,
     applicant_staff_id: ctx.state.user.staffId,
@@ -3731,6 +3735,7 @@ module.exports = {
     isFourLevelCategory,
     categoryDimensionsFromLineage,
     getCategoryNamePrefix,
+    composeProductName,
     selectNearestCategoryFields,
     applySerializedSalesStock
   }
