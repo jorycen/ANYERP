@@ -5,6 +5,8 @@
 
 const { sequelize } = require('../models');
 const { normalizePnCode, splitPnCodes, isUsablePnCode } = require('./productPn');
+const fs = require('fs');
+const path = require('path');
 
 async function checkAndAddColumn(tableName, columnName, columnDefinition, afterColumn = null) {
   try {
@@ -564,6 +566,24 @@ async function initializeCategorySortOrder() {
   } catch (error) {
     console.error(`[DB Migration] 初始化商品分类排序失败 - ${error.message}`);
   }
+}
+
+async function ensureProductSettlementSchema() {
+  const filePath = path.resolve(__dirname, '../../db_migrations/20260831_add_product_settlement.sql');
+  if (!fs.existsSync(filePath)) {
+    console.warn('[DB Migration] 产品端结算迁移文件不存在，跳过');
+    return;
+  }
+  const sql = fs.readFileSync(filePath, 'utf8');
+  const statements = sql
+    .replace(/^\s*--.*$/gm, '')
+    .split(';')
+    .map(statement => statement.trim())
+    .filter(Boolean);
+  for (const statement of statements) {
+    await sequelize.query(statement);
+  }
+  console.log('[DB Migration] 产品端结算表结构检查完成');
 }
 
 async function runMigrations() {
@@ -3356,6 +3376,7 @@ async function runMigrations() {
       console.warn('[DB Migration] 历史单据经手人快照补齐跳过:', error.message);
     }
 
+    await ensureProductSettlementSchema();
     await migrateProductData();
 
     await seedPermissionData();
@@ -4006,6 +4027,7 @@ async function seedPermissionData() {
 
 module.exports = {
   runMigrations,
+  ensureProductSettlementSchema,
   migrateMissingProductPns,
   ensureCriticalSchemaCompatibility,
   ensureProductDimensionSchema,

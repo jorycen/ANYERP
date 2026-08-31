@@ -538,6 +538,7 @@ export default {
   getDashboardFilters: () => api.get('/report/dashboard/filters'),
   getDashboardOverview: (params) => api.get('/report/dashboard/overview', { params }),
   getFinanceOverview: (params) => api.get('/report/finance-overview', { params }),
+  getProductSettlementOrders: (params) => api.get('/report/product-settlement-orders', { params }),
   getEmployeePerformanceReport: (params) => api.get('/report/employee-performance', { params }),
   getMonthlyTaskAchievement: (params) => api.get('/report/monthly-task-achievement', { params }),
   getMonthlyTaskOptions: () => api.get('/sales/monthly-tasks/options'),

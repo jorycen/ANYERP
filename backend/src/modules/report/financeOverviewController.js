@@ -2,6 +2,7 @@ const { QueryTypes } = require('sequelize');
 const { sequelize } = require('../../models');
 const { RealtimeSqlDashboardDataSource } = require('./dashboardDataSource');
 const { buildRanges, summarizeTrend, canViewProfit } = require('./dashboardService');
+const { queryProductSettlementSummary, listProductSettlementOrders } = require('./productSettlement');
 
 const dataSource = new RealtimeSqlDashboardDataSource();
 const PAYMENT_SOURCE_TYPES = ['purchase', 'purchase_adjustment', 'purchase_return', 'expense', 'reimbursement'];
@@ -227,6 +228,17 @@ async function getFinanceOverview(ctx) {
         revenue: 0,
         grossProfit: null,
         grossMargin: null,
+        productGrossProfit: null,
+        productGrossMargin: null,
+        combinedGrossProfit: null,
+        combinedGrossMargin: null,
+        productSettlement: {
+          productPricingAmount: 0,
+          purchaseCostAmount: 0,
+          orderCount: 0,
+          costPendingOrderCount: 0,
+          costPendingAmount: 0
+        },
         inventory: { totalAmount: 0, includeDemo, categories: [] },
         accounts: { totalAmount: 0, byType: [], accounts: [] },
         payments: { all: 0, uncreated: 0, created: 0, paid: 0 }
@@ -238,14 +250,23 @@ async function getFinanceOverview(ctx) {
 
   const ranges = buildRanges({ startDate: period.startDate, endDate: period.endDate });
   const filters = { storeIds, storeId: storeId || '', employeeId: '', productLine: '', includeDemo };
-  const [trendRows, inventory, accounts, payments] = await Promise.all([
+  const [trendRows, inventory, accounts, payments, productSettlement] = await Promise.all([
     dataSource.getTrend(filters, ranges.current, 'day'),
     dataSource.getInventory(filters),
     queryAccountSummary(regionId, accessibleRegionIds),
-    queryPaymentSummary(regionId, accessibleRegionIds)
+    queryPaymentSummary(regionId, accessibleRegionIds),
+    queryProductSettlementSummary({
+      startDate: period.startDate,
+      endDate: period.endDate,
+      storeIds
+    })
   ]);
   const summary = summarizeTrend(trendRows);
   const profitVisible = canViewProfit(user);
+  const productGrossProfit = profitVisible ? roundMoney(productSettlement.grossProfitAmount) : null;
+  const combinedGrossProfit = profitVisible && summary.salesAmount !== null
+    ? roundMoney(summary.grossProfit + productSettlement.grossProfitAmount)
+    : null;
 
   ctx.body = {
     code: 0,
@@ -255,6 +276,25 @@ async function getFinanceOverview(ctx) {
       revenue: roundMoney(summary.salesAmount),
       grossProfit: profitVisible ? roundMoney(summary.grossProfit) : null,
       grossMargin: profitVisible && summary.salesAmount ? Number(((summary.grossProfit / summary.salesAmount) * 100).toFixed(2)) : null,
+      productGrossProfit,
+      productGrossMargin: profitVisible && productSettlement.productPricingAmount
+        ? Number(((productSettlement.grossProfitAmount / productSettlement.productPricingAmount) * 100).toFixed(2))
+        : null,
+      combinedGrossProfit,
+      combinedGrossMargin: profitVisible && summary.salesAmount
+        ? Number((combinedGrossProfit / summary.salesAmount * 100).toFixed(2))
+        : null,
+      productSettlement: {
+        productPricingAmount: productSettlement.productPricingAmount,
+        purchaseCostAmount: productSettlement.purchaseCostAmount,
+        orderCount: productSettlement.orderCount,
+        costPendingOrderCount: productSettlement.costPendingOrderCount,
+        costPendingAmount: productSettlement.costPendingAmount,
+        policyIncome: {
+          recognizedAmount: 0,
+          note: '厂家返利、价保等政策收益沿用独立政策链路，不计入产品端毛利；到账后由财务收益口径确认。'
+        }
+      },
       inventory: {
         totalAmount: profitVisible ? roundMoney(inventory.inventoryAmount) : null,
         includeDemo,
@@ -266,4 +306,21 @@ async function getFinanceOverview(ctx) {
   };
 }
 
-module.exports = { getFinanceOverview };
+async function getProductSettlementOrders(ctx) {
+  const period = resolvePeriod(ctx.query);
+  const regionId = String(ctx.query.regionId || '').trim();
+  const storeId = String(ctx.query.storeId || '').trim();
+  const storeIds = await resolveStoreIds(ctx.state.user, regionId, storeId);
+  const endExclusive = new Date(`${period.endDate}T23:59:59.999+08:00`);
+  const data = await listProductSettlementOrders({
+    storeIds,
+    startDate: new Date(`${period.startDate}T00:00:00.000+08:00`),
+    endDate: endExclusive,
+    status: String(ctx.query.status || '').trim(),
+    page: ctx.query.page,
+    pageSize: ctx.query.pageSize
+  });
+  ctx.body = { code: 0, data };
+}
+
+module.exports = { getFinanceOverview, getProductSettlementOrders };

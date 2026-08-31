@@ -1238,6 +1238,92 @@ const OrderGrossProfit = sequelize.define('OrderGrossProfit', {
   update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_ORDER_GROSS_PROFIT', timestamps: false });
 
+// 产品端结算单。由已最终归档的销售订单一对一生成，不产生新的库存动作。
+// 产品端毛利只记录产品定价/结算价与实际采购成本的提货差；厂家返利、价保等政策仍走独立政策链路。
+const ProductSettlementOrder = sequelize.define('ProductSettlementOrder', {
+  settlement_id: { type: DataTypes.STRING(32), primaryKey: true },
+  settlement_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
+  source_order_id: { type: DataTypes.STRING(32), allowNull: false, unique: true },
+  source_order_no: { type: DataTypes.STRING(64), allowNull: false },
+  distributor_id: { type: DataTypes.STRING(32) },
+  region_id: { type: DataTypes.STRING(32) },
+  store_id: { type: DataTypes.STRING(32), allowNull: false },
+  business_date: { type: DataTypes.DATE, allowNull: false },
+  product_pricing_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  purchase_cost_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  gross_profit_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  cost_pending_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  status: { type: DataTypes.STRING(32), allowNull: false, defaultValue: 'posted' },
+  formula_version: { type: DataTypes.STRING(32), allowNull: false },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_PRODUCT_SETTLEMENT_ORDER', timestamps: false });
+
+const ProductSettlementItem = sequelize.define('ProductSettlementItem', {
+  settlement_item_id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true },
+  settlement_id: { type: DataTypes.STRING(32), allowNull: false },
+  source_order_item_id: { type: DataTypes.BIGINT(20), allowNull: false },
+  product_id: { type: DataTypes.STRING(32) },
+  product_name: { type: DataTypes.STRING(255) },
+  pn_code: { type: DataTypes.STRING(64) },
+  sn_id: { type: DataTypes.STRING(32) },
+  sn_code: { type: DataTypes.STRING(128) },
+  quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+  product_unit_price: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  product_price_source: { type: DataTypes.STRING(64) },
+  purchase_unit_cost: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  purchase_cost_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  cost_method: { type: DataTypes.STRING(64), allowNull: false },
+  cost_source: { type: DataTypes.STRING(128) },
+  cost_status: { type: DataTypes.STRING(32), allowNull: false, defaultValue: 'ready' },
+  gross_profit_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_PRODUCT_SETTLEMENT_ITEM', timestamps: false });
+
+// 销售退货完成后生成的产品端负向调整单，原产品端结算单保持不变。
+const ProductSettlementAdjustment = sequelize.define('ProductSettlementAdjustment', {
+  adjustment_id: { type: DataTypes.STRING(32), primaryKey: true },
+  adjustment_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
+  source_return_id: { type: DataTypes.STRING(32), allowNull: false, unique: true },
+  source_return_no: { type: DataTypes.STRING(64), allowNull: false },
+  source_order_id: { type: DataTypes.STRING(32), allowNull: false },
+  source_order_no: { type: DataTypes.STRING(64), allowNull: false },
+  distributor_id: { type: DataTypes.STRING(32) },
+  region_id: { type: DataTypes.STRING(32) },
+  store_id: { type: DataTypes.STRING(32), allowNull: false },
+  business_date: { type: DataTypes.DATE, allowNull: false },
+  product_pricing_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  purchase_cost_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  gross_profit_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  cost_pending_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  status: { type: DataTypes.STRING(32), allowNull: false, defaultValue: 'posted' },
+  formula_version: { type: DataTypes.STRING(32), allowNull: false },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_PRODUCT_SETTLEMENT_ADJUSTMENT', timestamps: false });
+
+const ProductSettlementAdjustmentItem = sequelize.define('ProductSettlementAdjustmentItem', {
+  adjustment_item_id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true },
+  adjustment_id: { type: DataTypes.STRING(32), allowNull: false },
+  source_return_item_id: { type: DataTypes.BIGINT(20), allowNull: false },
+  source_order_item_id: { type: DataTypes.BIGINT(20), allowNull: false },
+  product_id: { type: DataTypes.STRING(32) },
+  product_name: { type: DataTypes.STRING(255) },
+  pn_code: { type: DataTypes.STRING(64) },
+  sn_id: { type: DataTypes.STRING(32) },
+  sn_code: { type: DataTypes.STRING(128) },
+  quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+  product_unit_price: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  product_pricing_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  purchase_unit_cost: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  purchase_cost_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  cost_method: { type: DataTypes.STRING(64), allowNull: false },
+  cost_status: { type: DataTypes.STRING(32), allowNull: false, defaultValue: 'ready' },
+  gross_profit_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_PRODUCT_SETTLEMENT_ADJUSTMENT_ITEM', timestamps: false });
+
 // Negative gross-profit ledger created after a sales return is completed.
 // One row is stored for each original order participant so the return is
 // visible in personal performance without mutating the original snapshot.
@@ -2256,6 +2342,16 @@ Order.belongsTo(Staff, { foreignKey: 'create_staff_id', targetKey: 'staff_id', a
 
 Order.hasMany(OrderItem, { foreignKey: 'order_id', sourceKey: 'order_id' });
 OrderItem.belongsTo(Order, { foreignKey: 'order_id', targetKey: 'order_id' });
+Order.hasOne(ProductSettlementOrder, { foreignKey: 'source_order_id', sourceKey: 'order_id', as: 'productSettlement' });
+ProductSettlementOrder.belongsTo(Order, { foreignKey: 'source_order_id', targetKey: 'order_id', as: 'sourceOrder' });
+ProductSettlementOrder.hasMany(ProductSettlementItem, { foreignKey: 'settlement_id', sourceKey: 'settlement_id', as: 'items' });
+ProductSettlementItem.belongsTo(ProductSettlementOrder, { foreignKey: 'settlement_id', targetKey: 'settlement_id', as: 'settlement' });
+ProductSettlementOrder.hasMany(ProductSettlementAdjustment, { foreignKey: 'source_order_id', sourceKey: 'source_order_id', as: 'adjustments', constraints: false });
+ProductSettlementAdjustment.belongsTo(ProductSettlementOrder, { foreignKey: 'source_order_id', targetKey: 'source_order_id', as: 'sourceSettlement', constraints: false });
+ProductSettlementAdjustment.hasMany(ProductSettlementAdjustmentItem, { foreignKey: 'adjustment_id', sourceKey: 'adjustment_id', as: 'items' });
+ProductSettlementAdjustmentItem.belongsTo(ProductSettlementAdjustment, { foreignKey: 'adjustment_id', targetKey: 'adjustment_id', as: 'adjustment' });
+OrderItem.hasOne(ProductSettlementItem, { foreignKey: 'source_order_item_id', sourceKey: 'item_id', as: 'productSettlementItem' });
+ProductSettlementItem.belongsTo(OrderItem, { foreignKey: 'source_order_item_id', targetKey: 'item_id', as: 'sourceItem' });
 Order.hasMany(RebateEstimate, { foreignKey: 'sales_order_id', sourceKey: 'order_id', as: 'rebateEstimates' });
 RebateEstimate.belongsTo(Order, { foreignKey: 'sales_order_id', targetKey: 'order_id' });
 Order.hasMany(SalesSettlementCostAdjustment, { foreignKey: 'sales_order_id', sourceKey: 'order_id', as: 'costAdjustments' });
@@ -2485,6 +2581,10 @@ module.exports = {
   SalesReturnRedInvoice,
   OrderSupplement,
   OrderGrossProfit,
+  ProductSettlementOrder,
+  ProductSettlementItem,
+  ProductSettlementAdjustment,
+  ProductSettlementAdjustmentItem,
   SalesReturnGrossProfitLedger,
   DepositOrder,
   DepositRefund,

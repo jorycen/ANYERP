@@ -84,6 +84,7 @@ const {
   snapshotToResponse,
   calculateNationalSubsidyCustomerReceiptAmount
 } = require('./grossProfit');
+const { createProductSettlementOrder } = require('../report/productSettlement');
 const { isSubsidyEligibleItem } = require('./salesReturnSettlement');
 
 const SUBSIDY_PHOTO_UPLOAD_DIR = path.resolve(__dirname, '../../../uploads/national-subsidy-photos');
@@ -2753,6 +2754,11 @@ async function approve(ctx) {
       force: true,
       final: true
     });
+    await createProductSettlementOrder({
+      orderId: lockedOrder.order_id,
+      transaction,
+      createdBy: user.name || user.phone || 'system'
+    });
   });
 
   if (approvalStage === 'distributor') {
@@ -2975,6 +2981,11 @@ async function update(ctx) {
         calculatedBy: ctx.state.user?.name || 'system',
         force: true,
         final: true
+      });
+      await createProductSettlementOrder({
+        orderId: order.order_id,
+        transaction,
+        createdBy: ctx.state.user?.name || ctx.state.user?.phone || 'system'
       });
     } else {
       const affectsGrossProfit = [

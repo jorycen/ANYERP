@@ -26,6 +26,7 @@ const { assertSingleSnProductPn } = require('../../utils/productPn');
 const { ensureProductPnMaster } = require('../../utils/productPnMaster');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
 const { createSalesReturnGrossProfitLedger } = require('../sales/grossProfit');
+const { createProductSettlementReturnAdjustment } = require('../report/productSettlement');
 const { createSalesReturnSettlement } = require('../sales/salesReturnSettlement');
 const { assertActiveProducts } = require('../../utils/activeProduct');
 const { syncSerializedInventoryBalance } = require('./serializedInventoryBalance');
@@ -3711,6 +3712,11 @@ async function executeInbound(ctx) {
         { where: { order_id: salesReturn.order_id }, transaction: t }
       );
       await createSalesReturnGrossProfitLedger({
+        returnRequest: salesReturn,
+        transaction: t,
+        createdBy: user.name || user.staffId || 'system'
+      });
+      await createProductSettlementReturnAdjustment({
         returnRequest: salesReturn,
         transaction: t,
         createdBy: user.name || user.staffId || 'system'
