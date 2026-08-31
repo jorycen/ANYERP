@@ -1,7 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { Op } = require('sequelize');
-const { _test } = require('../src/modules/sales/controller');
+const models = require('../src/models');
+const salesController = require('../src/modules/sales/controller');
+const { _test } = salesController;
 const { canViewSnTraceReference } = require('../src/utils/snTracePermission');
 
 test('经销商级角色和店长可以查询授权门店全部订单', () => {
@@ -68,6 +70,62 @@ test('店长角色可以导出授权门店订单，普通店员不能导出', ()
   assert.equal(_test.canExportSalesOrders({ roles: ['staff'] }), false);
 });
 
+test('销售订单导出复用订单门店范围，不引用过期门店变量', async () => {
+  const originals = {
+    storeFindAll: models.Store.findAll,
+    orderFindAll: models.Order.findAll,
+    depositFindAll: models.DepositOrder.findAll,
+    paymentMethodFindAll: models.PaymentMethod.findAll,
+    returnSettlementFindAll: models.SalesReturnSettlement.findAll
+  };
+  const calls = {};
+
+  models.Store.findAll = async () => [{ store_id: 'STORE-1' }, { store_id: 'STORE-2' }];
+  models.Order.findAll = async options => {
+    calls.order = options;
+    return [];
+  };
+  models.DepositOrder.findAll = async options => {
+    calls.deposit = options;
+    return [];
+  };
+  models.PaymentMethod.findAll = async options => {
+    calls.paymentMethod = options;
+    return [];
+  };
+  models.SalesReturnSettlement.findAll = async options => {
+    calls.returnSettlement = options;
+    return [];
+  };
+
+  const ctx = {
+    state: {
+      user: { roles: ['finance'], accessibleDistributorIds: ['DIST-1'] }
+    },
+    query: {},
+    set() {},
+    throw(status, message) {
+      const error = new Error(message);
+      error.status = status;
+      throw error;
+    }
+  };
+
+  try {
+    await salesController.exportOrders(ctx);
+    assert.deepEqual(calls.order.where.store_id, ['STORE-1', 'STORE-2']);
+    assert.deepEqual(calls.deposit.where.store_id, ['STORE-1', 'STORE-2']);
+    assert.deepEqual(calls.returnSettlement.where.store_id, ['STORE-1', 'STORE-2']);
+    assert.ok(Buffer.isBuffer(ctx.body));
+  } finally {
+    models.Store.findAll = originals.storeFindAll;
+    models.Order.findAll = originals.orderFindAll;
+    models.DepositOrder.findAll = originals.depositFindAll;
+    models.PaymentMethod.findAll = originals.paymentMethodFindAll;
+    models.SalesReturnSettlement.findAll = originals.returnSettlementFindAll;
+  }
+});
+
 test('订单导出字段包含国补 POS/OMO 明细列', () => {
   assert.equal(_test.ORDER_EXPORT_HEADERS.length, 62);
   assert.equal(_test.ORDER_EXPORT_HEADERS[0], '订单编号');
@@ -105,7 +163,7 @@ test('订单导出的归档状态包含作废和退单状态', () => {
   assert.equal(_test.getOrderExportArchiveStatus('completed'), '已归档');
   assert.equal(_test.getOrderExportArchiveStatus('voided'), '已作废');
   assert.equal(_test.getOrderExportArchiveStatus('cancelled'), '已取消');
-  assert.equal(_test.getOrderExportArchiveStatus('return_pending'), '退库处理中');
+  assert.equal(_test.getOrderExportArchiveStatus('return_pending'), '退单审批中');
   assert.equal(_test.getOrderExportArchiveStatus('returned'), '已退单');
   assert.equal(_test.getOrderExportArchiveStatus('已退单'), '已退单');
   assert.equal(_test.getOrderExportArchiveStatus('draft'), '');

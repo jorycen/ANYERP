@@ -278,14 +278,14 @@ function buildCombinedDepositWhere({
   orderNo,
   createUser,
   submitUser,
-  accessibleStoreIds,
+  storeIds,
   hasGlobalStoreScope
 }) {
   const where = { is_deleted: 0 };
   if (storeId) {
     where.store_id = storeId;
   } else if (!hasGlobalStoreScope) {
-    where.store_id = accessibleStoreIds.length ? accessibleStoreIds : '__NO_ACCESS__';
+    where.store_id = storeIds.length ? storeIds : '__NO_ACCESS__';
   }
   const dateRange = buildChinaDateRange(startDate, endDate);
   if (dateRange) where.create_time = dateRange;
@@ -1306,7 +1306,7 @@ async function exportOrders(ctx) {
           status,
           createUser,
           submitUser,
-          accessibleStoreIds,
+          storeIds: orderStoreIds,
           hasGlobalStoreScope
         }),
         include: [{ model: Store }],
@@ -1319,7 +1319,7 @@ async function exportOrders(ctx) {
         where: {
           ...(storeId
             ? { store_id: storeId }
-            : (!hasGlobalStoreScope ? { store_id: accessibleStoreIds } : {})),
+            : (!hasGlobalStoreScope ? { store_id: orderStoreIds } : {})),
           ...(startDate || endDate ? { create_time: buildChinaDateRange(startDate, endDate) } : {})
         },
         include: [{ model: SalesReturnSettlementItem, as: 'items', required: false }],
