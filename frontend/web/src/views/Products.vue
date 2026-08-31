@@ -796,6 +796,13 @@ function isLeafCategory(node) {
   return Number(node?.level) === 4 && !(node?.children || []).filter(Boolean).some(child => Number(child.status ?? 1) === 1)
 }
 
+function normalizeCategoryTree(nodes) {
+  return (Array.isArray(nodes) ? nodes : []).filter(Boolean).map(node => ({
+    ...node,
+    children: normalizeCategoryTree(node.children)
+  }))
+}
+
 const productCategoryTree = computed(() => {
   const decorate = (nodes) => (nodes || []).filter(Boolean).map(node => ({
       ...node,
@@ -976,7 +983,7 @@ const loadData = async () => {
 const loadCategoryTree = async () => {
   try {
     const res = await api.getCategoryTree()
-    if (res.code === 0) categoryTree.value = res.data || []
+    if (res.code === 0) categoryTree.value = normalizeCategoryTree(res.data)
   } catch (err) { /* ignore */ }
 }
 
