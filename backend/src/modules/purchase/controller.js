@@ -468,6 +468,39 @@ function attachPurchasePaymentStatus(target, paidRequestIds = new Set()) {
   return target;
 }
 
+function getPurchaseLifecycleStatus(requestStatus, inboundRows = []) {
+  if (requestStatus === 'revoked') return 'revoked';
+
+  const rows = Array.isArray(inboundRows) ? inboundRows.filter(Boolean) : [];
+  if (rows.some(item => item.status === 'pending')) return 'pending_inbound';
+
+  const hasReturned = rows.some(item => item.status === 'returned');
+  const allInboundClosed = rows.length > 0
+    && rows.every(item => ['returned', 'cancelled'].includes(item.status));
+  if (hasReturned && allInboundClosed) return 'returned';
+
+  return requestStatus;
+}
+
+async function findPurchaseRequestIdsByLifecycleStatus(status) {
+  const inboundRows = await Inbound.findAll({
+    where: { purchase_request_id: { [Op.ne]: null } },
+    attributes: ['purchase_request_id', 'status'],
+    raw: true
+  });
+  const rowsByRequestId = new Map();
+  inboundRows.forEach(row => {
+    const requestId = String(row.purchase_request_id || '');
+    if (!requestId) return;
+    if (!rowsByRequestId.has(requestId)) rowsByRequestId.set(requestId, []);
+    rowsByRequestId.get(requestId).push(row);
+  });
+
+  return [...rowsByRequestId.entries()]
+    .filter(([, rows]) => getPurchaseLifecycleStatus('approved', rows) === status)
+    .map(([requestId]) => requestId);
+}
+
 function buildAdjustmentRows(request, inbounds, stores) {
   const storeMap = new Map(stores.map(store => [String(store.store_id), store.name]));
   const rows = [];
@@ -555,7 +588,14 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
   const storeIds = stores.map(s => s.store_id);
   where.store_id = storeIds;
 
-  if (status === 'pending_payment' || status === 'paid') {
+  if (status === 'pending_inbound' || status === 'returned') {
+    const lifecycleRequestIds = await findPurchaseRequestIdsByLifecycleStatus(status);
+    appendRequestIdCondition(
+      where,
+      lifecycleRequestIds.length ? { [Op.in]: lifecycleRequestIds } : '__NO_MATCH__'
+    );
+    if (status === 'pending_inbound') where.status = 'approved';
+  } else if (status === 'pending_payment' || status === 'paid') {
     where.status = 'approved';
     if (status === 'paid') {
       appendRequestIdCondition(where, paidRequestIds.size ? { [Op.in]: [...paidRequestIds] } : '__NO_MATCH__');
@@ -690,6 +730,10 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
     result.inbound_status = inboundRows.some(item => item.status === 'completed')
       ? 'completed'
       : (inboundRows[0]?.status || '');
+    result.lifecycle_status = getPurchaseLifecycleStatus(result.status, inboundRows);
+    if (['pending_inbound', 'revoked', 'returned'].includes(result.lifecycle_status)) {
+      result.display_status = result.lifecycle_status;
+    }
     result.pending_inbounds = inboundRows
       .filter(item => item.status === 'pending')
       .map(item => ({
@@ -2359,6 +2403,7 @@ module.exports = {
     getPurchaseAdjustmentItemDeltas,
     attachCurrentPurchaseItemAmounts,
     attachCurrentPurchaseAmounts,
-    attachPurchasePaymentStatus
+    attachPurchasePaymentStatus,
+    getPurchaseLifecycleStatus
   }
 };

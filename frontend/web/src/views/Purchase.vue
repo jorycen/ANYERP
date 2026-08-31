@@ -22,7 +22,10 @@
               <el-option label="待审批" value="pending" />
               <el-option label="待支付" value="pending_payment" />
               <el-option label="已支付" value="paid" />
+              <el-option label="待入库" value="pending_inbound" />
               <el-option label="已拒绝" value="rejected" />
+              <el-option label="已撤销" value="revoked" />
+              <el-option label="已退单" value="returned" />
             </el-select>
             <el-select v-model="queryParams.operatorStaffId" placeholder="经手人" clearable filterable style="width: 150px" @change="handleRequestFilterChange">
               <el-option label="全部经手人" value="" />
@@ -2010,12 +2013,12 @@ const restorePurchaseRequestDraft = () => {
 }
 
 const getStatusType = (status) => {
-  const types = { draft: 'info', pending: 'warning', approved: 'success', pending_payment: 'warning', paid: 'success', rejected: 'danger', purchased: 'info', revoked: 'info' }
+  const types = { draft: 'info', pending: 'warning', approved: 'success', pending_payment: 'warning', paid: 'success', pending_inbound: 'warning', rejected: 'danger', purchased: 'info', revoked: 'info', returned: 'danger' }
   return types[status] || 'info'
 }
 
 const getStatusText = (status) => {
-  const texts = { draft: '草稿', pending: '待审批', approved: '已通过', pending_payment: '待支付', paid: '已支付', rejected: '已拒绝', purchased: '已采购', revoked: '已撤销' }
+  const texts = { draft: '草稿', pending: '待审批', approved: '已通过', pending_payment: '待支付', paid: '已支付', pending_inbound: '待入库', rejected: '已拒绝', purchased: '已采购', revoked: '已撤销', returned: '已退单' }
   return texts[status] || status
 }
 

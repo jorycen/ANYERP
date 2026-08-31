@@ -97,3 +97,19 @@ test('采购申请审批通过后按支付结果展示待支付或已支付', ()
   purchaseController._test.attachPurchasePaymentStatus(pendingApproval, new Set(['REQ_REVIEW']));
   assert.equal(pendingApproval.display_status, 'pending');
 });
+
+test('采购申请生命周期状态可区分待入库、已撤销和已退单', () => {
+  const getLifecycleStatus = purchaseController._test.getPurchaseLifecycleStatus;
+
+  assert.equal(getLifecycleStatus('approved', [{ status: 'pending' }]), 'pending_inbound');
+  assert.equal(getLifecycleStatus('revoked', []), 'revoked');
+  assert.equal(
+    getLifecycleStatus('approved', [{ status: 'returned' }, { status: 'cancelled' }]),
+    'returned'
+  );
+  assert.equal(getLifecycleStatus('approved', [{ status: 'completed' }]), 'approved');
+  assert.equal(
+    getLifecycleStatus('approved', [{ status: 'completed' }, { status: 'returned' }]),
+    'approved'
+  );
+});
