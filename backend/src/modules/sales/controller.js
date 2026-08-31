@@ -52,7 +52,7 @@ const { normalizePnCode } = require('../../utils/productPn');
 const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
 const { canAccessDistributor, resolveOrderStoreIds } = require('../../utils/distributorScope');
-const { isStoreManagerAccount } = require('../../utils/storePermissions');
+const { isStoreManagerAccount, isStoreScopedAccount } = require('../../utils/storePermissions');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { assertActiveProducts } = require('../../utils/activeProduct');
 const { syncSerializedInventoryBalance } = require('../inventory/serializedInventoryBalance');
@@ -346,6 +346,20 @@ function buildSalesOrderListOrder() {
   return [['create_time', 'DESC']];
 }
 
+/**
+ * 销售订单的门店范围：经销商级账号按经销商展开，纯门店角色只按已配置管理门店。
+ * 详情接口使用的也是 accessibleStoreIds，列表和详情必须保持同一数据范围。
+ */
+async function resolveSalesOrderStoreIds(user = {}) {
+  const roles = getUserRoles(user);
+  if (isStoreScopedAccount(roles)) {
+    return [...new Set((Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds : [])
+      .map(value => String(value || '').trim())
+      .filter(Boolean))];
+  }
+  return resolveOrderStoreIds(user);
+}
+
 async function list(ctx) {
   const {
     storeId, startDate, endDate, customerPhone, customerName, orderNo,
@@ -355,7 +369,7 @@ async function list(ctx) {
   const user = ctx.state.user;
 
   const where = { is_deleted: 0 };
-  const orderStoreIds = await resolveOrderStoreIds(user);
+  const orderStoreIds = await resolveSalesOrderStoreIds(user);
   const dealerWide = isDealerTraceAccount(user);
   const storeInclude = { model: Store };
   const applicantInclude = {
@@ -1221,7 +1235,7 @@ async function exportOrders(ctx) {
   } = ctx.query;
   const where = { is_deleted: 0 };
   const storeInclude = { model: Store };
-  const orderStoreIds = await resolveOrderStoreIds(user);
+  const orderStoreIds = await resolveSalesOrderStoreIds(user);
   const hasGlobalStoreScope = orderStoreIds.includes('*');
   if (storeId) {
     if (!hasGlobalStoreScope && !orderStoreIds.map(String).includes(String(storeId))) {
@@ -5204,6 +5218,7 @@ module.exports = {
     isSalesOrderCreator,
     buildSalesOrderVisibilityCondition,
     buildSalesOrderListOrder,
+    resolveSalesOrderStoreIds,
     salesApprovalStageFromStatus,
     salesApprovalStageLabel,
     isSalesApprovalPendingStatus,

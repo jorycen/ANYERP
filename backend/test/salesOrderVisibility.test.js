@@ -61,6 +61,65 @@ test('订单查询列表仅按创建时间倒序排列', () => {
   assert.deepEqual(_test.buildSalesOrderListOrder(), [['create_time', 'DESC']]);
 });
 
+test('店长订单列表只查询已配置管理门店，不展示其他门店订单', async () => {
+  const originalFindAll = models.Order.findAll;
+  let queryOptions;
+  models.Order.findAll = async options => {
+    queryOptions = options;
+    return [];
+  };
+
+  const ctx = {
+    state: {
+      user: { roles: ['manager'], accessibleStoreIds: ['STORE-1'] }
+    },
+    query: {},
+    throw(status, message) {
+      const error = new Error(message);
+      error.status = status;
+      throw error;
+    }
+  };
+
+  try {
+    await salesController.list(ctx);
+    assert.deepEqual(queryOptions.where.store_id, ['STORE-1']);
+  } finally {
+    models.Order.findAll = originalFindAll;
+  }
+});
+
+test('店长不能通过订单列表筛选未授权门店', async () => {
+  const originalFindAll = models.Order.findAll;
+  let called = false;
+  models.Order.findAll = async () => {
+    called = true;
+    return [];
+  };
+
+  const ctx = {
+    state: {
+      user: { roles: ['store_manager'], accessibleStoreIds: ['STORE-1'] }
+    },
+    query: { storeId: 'STORE-2' },
+    throw(status, message) {
+      const error = new Error(message);
+      error.status = status;
+      throw error;
+    }
+  };
+
+  try {
+    await assert.rejects(
+      () => salesController.list(ctx),
+      error => error.status === 403 && error.message === '无权访问该门店订单'
+    );
+    assert.equal(called, false);
+  } finally {
+    models.Order.findAll = originalFindAll;
+  }
+});
+
 test('店长角色可以导出授权门店订单，普通店员不能导出', () => {
   assert.equal(_test.canExportSalesOrders({ roles: ['manager'] }), true);
   assert.equal(_test.canExportSalesOrders({ roles: ['store_manager'] }), true);
