@@ -196,25 +196,25 @@
                           </span>
                           <el-button link type="danger" size="small" @click="handleDeleteCategory(level3)">删除</el-button>
                         </div>
-                      </div>
-                      <div v-if="level3.children && level3.children.length" class="sub-categories">
-                        <div v-for="(level4, level4Index) in level3.children" :key="level4.category_id" class="category-row level-4">
-                          <el-icon><Folder /></el-icon>
-                          <span class="cat-name">{{ level4.name }}</span>
-                          <span class="cat-level">四级</span>
-                          <div class="cat-actions">
-                            <el-button link type="primary" size="small" :disabled="level4Index === 0" @click="handleMoveCategory(level4, level3.children, level4Index, -1)">上移</el-button>
-                            <el-button link type="primary" size="small" :disabled="level4Index === level3.children.length - 1" @click="handleMoveCategory(level4, level3.children, level4Index, 1)">下移</el-button>
-                            <el-button link type="primary" size="small" @click="handleEditCategory(level4)">编辑</el-button>
-                            <span class="finance-category-toggle">
-                              <span>展示在财务页面</span>
-                              <el-switch
-                                :model-value="Number(level4.show_in_finance) === 1"
-                                :loading="categoryFinanceLoadingId === level4.category_id"
-                                @change="value => toggleCategoryFinance(level4, value)"
-                              />
-                            </span>
-                            <el-button link type="danger" size="small" @click="handleDeleteCategory(level4)">删除</el-button>
+                        <div v-if="level3.children && level3.children.length" class="sub-categories">
+                          <div v-for="(level4, level4Index) in level3.children" :key="level4.category_id" class="category-row level-4">
+                            <el-icon><Folder /></el-icon>
+                            <span class="cat-name">{{ level4.name }}</span>
+                            <span class="cat-level">四级</span>
+                            <div class="cat-actions">
+                              <el-button link type="primary" size="small" :disabled="level4Index === 0" @click="handleMoveCategory(level4, level3.children, level4Index, -1)">上移</el-button>
+                              <el-button link type="primary" size="small" :disabled="level4Index === level3.children.length - 1" @click="handleMoveCategory(level4, level3.children, level4Index, 1)">下移</el-button>
+                              <el-button link type="primary" size="small" @click="handleEditCategory(level4)">编辑</el-button>
+                              <span class="finance-category-toggle">
+                                <span>展示在财务页面</span>
+                                <el-switch
+                                  :model-value="Number(level4.show_in_finance) === 1"
+                                  :loading="categoryFinanceLoadingId === level4.category_id"
+                                  @change="value => toggleCategoryFinance(level4, value)"
+                                />
+                              </span>
+                              <el-button link type="danger" size="small" @click="handleDeleteCategory(level4)">删除</el-button>
+                            </div>
                           </div>
                         </div>
                       </div>

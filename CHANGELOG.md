@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## 2026-08-31 - 修复商品管理分类树运行异常
+
+* 修正四级分类模板的作用域嵌套，避免在三级分类循环外访问 `level3.children` 导致页面报 `Cannot read properties of undefined (reading 'children')`。
+
 ## 2026-08-31 - 修复采购人员筛选与前端缓存
 
 * 提交人筛选同时匹配提交人、申请人和制单人字段，兼容按员工姓名或员工ID关联的历史数据。
