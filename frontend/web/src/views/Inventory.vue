@@ -2107,8 +2107,6 @@ onMounted(async () => {
   mainTab.value = String(route.meta.tab || 'summary')
   if (isStoreUser()) {
     inboundQuery.storeId = getStoreId()
-    summaryQuery.storeId = getStoreId()
-    snInventoryQuery.storeId = getStoreId()
     conversionQuery.storeId = getStoreId()
     conversionForm.storeId = getStoreId()
   }
@@ -2190,7 +2188,7 @@ const onTabChange = (tabName) => {
 const loadStores = async () => {
   if (storesLoaded.value) return
   try {
-    const res = await api.getReadableStoreList()
+    const res = await api.getInventoryReadableStoreList()
     if (res && res.code === 0 && Array.isArray(res.data)) {
       stores.value = res.data
       storesLoaded.value = true
@@ -2631,7 +2629,7 @@ const resetSnInventoryQuery = async () => {
   Object.assign(snInventoryQuery, {
     page: 1,
     keyword: '',
-    storeId: isStoreUser() ? getStoreId() : '',
+    storeId: '',
     locationId: '',
     resourceType: '',
     resourceStatus: '',

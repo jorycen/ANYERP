@@ -40,9 +40,6 @@ async function resolveAllReadableStoreIds(user = {}) {
   const roles = normalizeRoleCodes(user.roles || user.roleCode || []);
   if (roles.includes('boss') || (user.accessibleStoreIds || []).includes('*')) return ['*'];
 
-  // 店长类账号只能读取自己被分配/管理的门店；经销商级账号才按经销商范围展开门店。
-  if (isStoreScopedAccount(roles)) return uniqueIds(user.accessibleStoreIds || []);
-
   const distributorIds = uniqueIds(
     Array.isArray(user.accessibleDistributorIds)
       ? user.accessibleDistributorIds

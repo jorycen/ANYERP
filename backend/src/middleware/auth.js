@@ -132,6 +132,7 @@ async function storeAccessMiddleware(ctx, next) {
   // 不在通用门店中间件中拦截跨门店的查询参数；库存写入接口仍走原门店权限链路。
   if (ctx.method === 'GET' && new Set([
     '/api/v1/store/readable',
+    '/api/v1/store/inventory-readable',
     '/api/v1/inventory/list',
     '/api/v1/inventory/list/export',
     '/api/v1/inventory/summary-export',

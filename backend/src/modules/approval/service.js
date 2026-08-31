@@ -10,7 +10,7 @@ const {
   ApprovalActionLog
 } = require('../../models');
 const { generateUUID } = require('../../utils');
-const { isStoreScopedAccount } = require('../../utils/storePermissions');
+const { isStoreScopedAccount, isStoreManagerAccount } = require('../../utils/storePermissions');
 
 const APPROVER_TYPES = new Set([
   'fixed_user',
@@ -63,7 +63,13 @@ function asStaffId(value) {
 
 function getApprovalStoreIds(user = {}) {
   const roles = user.roles || user.roleCode || [];
-  if (!isStoreScopedAccount(roles)) return null;
+  const normalizedRoles = Array.isArray(roles)
+    ? roles.map(role => String(role || '').trim().toLowerCase()).filter(Boolean)
+    : String(roles || '').split(',').map(role => role.trim().toLowerCase()).filter(Boolean);
+  // admin/BOSS 的全局审批资格不能被店长角色覆盖；店长与普通辅助角色并存时，
+  // 仍按店长已授权门店限制审批，避免多角色账号因一个非门店角色意外放大全局范围。
+  if (normalizedRoles.includes('boss') || normalizedRoles.includes('admin')) return null;
+  if (!isStoreScopedAccount(normalizedRoles) && !isStoreManagerAccount(normalizedRoles)) return null;
   const storeIds = Array.isArray(user.accessibleStoreIds)
     ? [...new Set(user.accessibleStoreIds.map(value => String(value || '').trim()).filter(Boolean))]
     : [];
