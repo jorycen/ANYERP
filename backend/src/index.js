@@ -67,7 +67,15 @@ apiRouter.use('/storage', storageRouter.routes());
 app.use(apiRouter.routes());
 app.use(apiRouter.allowedMethods());
 
-app.use(static(path.join(__dirname, '../public')));
+app.use(static(path.join(__dirname, '../public'), {
+  setHeaders(res, filePath) {
+    if (path.basename(filePath) === 'index.html') {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+    }
+  }
+}));
 
 app.use(async (ctx) => {
   const requestPath = ctx.path;

@@ -468,6 +468,39 @@ function attachPurchasePaymentStatus(target, paidRequestIds = new Set()) {
   return target;
 }
 
+function appendPurchaseWhereCondition(where, condition) {
+  const existingConditions = Array.isArray(where[Op.and])
+    ? [...where[Op.and]]
+    : (where[Op.and] ? [where[Op.and]] : []);
+  existingConditions.push(condition);
+  where[Op.and] = existingConditions;
+}
+
+function buildPurchaseSubmitterCondition(value, staffIds = []) {
+  const text = String(value || '').trim();
+  const like = `%${text}%`;
+  return {
+    [Op.or]: [
+      { apply_user: { [Op.like]: like } },
+      { submit_user: { [Op.like]: like } },
+      { create_user: { [Op.like]: like } },
+      ...(staffIds.length ? [{ applicant_staff_id: { [Op.in]: staffIds } }] : [])
+    ]
+  };
+}
+
+function buildPurchaseOperatorCondition(operatorStaffId, operatorName = '') {
+  const conditions = [
+    { operator_staff_id: operatorStaffId },
+    // 历史采购单可能只保存经手人姓名，没有保存员工ID。
+    ...(operatorName ? [{ operator_name: operatorName }] : []),
+    // 旧数据未写入经手人字段时，用申请人/制单人作为兼容回退。
+    { applicant_staff_id: operatorStaffId },
+    { create_staff_id: operatorStaffId }
+  ];
+  return { [Op.or]: conditions };
+}
+
 function getPurchaseLifecycleStatus(requestStatus, inboundRows = []) {
   if (requestStatus === 'revoked') return 'revoked';
 
@@ -619,8 +652,38 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
       where.apply_user = { [Op.in]: identities };
     }
   }
-  if (operatorStaffId) where.operator_staff_id = operatorStaffId;
-  if (submitter) where.apply_user = { [Op.like]: `%${String(submitter).trim()}%` };
+  if (operatorStaffId) {
+    const operator = await Staff.findOne({
+      where: { staff_id: operatorStaffId, is_deleted: 0 },
+      attributes: ['staff_id', 'name'],
+      raw: true
+    });
+    appendPurchaseWhereCondition(
+      where,
+      buildPurchaseOperatorCondition(operatorStaffId, operator?.name || '')
+    );
+  }
+  if (submitter && String(submitter).trim()) {
+    const submitterText = String(submitter).trim();
+    const submitterStaffRows = await Staff.findAll({
+      where: {
+        [Op.or]: [
+          { name: { [Op.like]: `%${submitterText}%` } },
+          { phone: { [Op.like]: `%${submitterText}%` } }
+        ],
+        is_deleted: 0
+      },
+      attributes: ['staff_id'],
+      raw: true
+    });
+    appendPurchaseWhereCondition(
+      where,
+      buildPurchaseSubmitterCondition(
+        submitterText,
+        submitterStaffRows.map(row => row.staff_id).filter(Boolean)
+      )
+    );
+  }
   if (requestNo && String(requestNo).trim()) where.request_no = { [Op.like]: `%${String(requestNo).trim()}%` };
   if (supplierId) where.supplier_id = supplierId;
 
@@ -715,7 +778,7 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
     result.applicant_distributor_name = result.Applicant?.Distributor?.name || '';
     result.applicant_role_code = result.Applicant?.role_code || '';
     result.supplier_name = result.Supplier?.name || '';
-    result.submitter_name = result.submitter_name || result.apply_user || result.create_user || result.operator_name || '';
+    result.submitter_name = result.submitter_name || result.submit_user || result.apply_user || result.create_user || result.operator_name || '';
     
     // 汇总商品名称和数量用于前端展示
     if (result.items && result.items.length > 0) {
@@ -1008,6 +1071,7 @@ async function createRequest(ctx) {
 
   const now = new Date();
   const submitterName = user.name || user.phone || String(user.staffId || '');
+  const currentStaffId = user.staffId || user.id || null;
   let createdRequest;
 
   await sequelize.transaction(async transaction => {
@@ -1052,7 +1116,11 @@ async function createRequest(ctx) {
       freight_amount: normalizedFreightAmount,
       status: isDraft ? 'draft' : 'pending',
       apply_user: submitterName,
-      applicant_staff_id: user.staffId || user.id || null,
+      applicant_staff_id: currentStaffId,
+      operator_staff_id: currentStaffId,
+      operator_name: submitterName,
+      create_staff_id: currentStaffId,
+      create_user: submitterName,
       submit_user: isDraft ? null : submitterName,
       submit_time: isDraft ? null : now,
       create_time: now,
@@ -1214,6 +1282,8 @@ async function submitRequestDraft(ctx) {
   request.goods_type_id = goodsType.goods_type_id;
   request.product_type = goodsType.name;
   request.status = 'pending';
+  request.operator_staff_id = request.operator_staff_id || user.staffId || user.id || null;
+  request.operator_name = request.operator_name || user.name || user.phone || String(user.staffId || user.id || '');
   request.submit_user = user.name || user.phone || String(user.staffId || '');
   request.submit_time = new Date();
   request.update_time = new Date();
@@ -2404,6 +2474,8 @@ module.exports = {
     attachCurrentPurchaseItemAmounts,
     attachCurrentPurchaseAmounts,
     attachPurchasePaymentStatus,
-    getPurchaseLifecycleStatus
+    getPurchaseLifecycleStatus,
+    buildPurchaseSubmitterCondition,
+    buildPurchaseOperatorCondition
   }
 };

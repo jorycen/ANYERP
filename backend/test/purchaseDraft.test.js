@@ -113,3 +113,21 @@ test('采购申请生命周期状态可区分待入库、已撤销和已退单',
     'approved'
   );
 });
+
+test('采购申请人员筛选兼容提交人字段和历史经手人姓名快照', () => {
+  const { Op } = require('sequelize');
+  const { buildPurchaseSubmitterCondition, buildPurchaseOperatorCondition } = purchaseController._test;
+  const submitterCondition = buildPurchaseSubmitterCondition('张三', [101]);
+  const submitterOr = submitterCondition[Op.or];
+  const submitterFields = submitterOr.flatMap(item => Object.keys(item));
+  assert.deepEqual(submitterFields, ['apply_user', 'submit_user', 'create_user', 'applicant_staff_id']);
+
+  const operatorCondition = buildPurchaseOperatorCondition('101', '张三');
+  const operatorOr = operatorCondition[Op.or];
+  assert.deepEqual(operatorOr, [
+    { operator_staff_id: '101' },
+    { operator_name: '张三' },
+    { applicant_staff_id: '101' },
+    { create_staff_id: '101' }
+  ]);
+});
