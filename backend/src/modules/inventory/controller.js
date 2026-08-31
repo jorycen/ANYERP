@@ -5504,7 +5504,7 @@ async function getReturnStockWithItems(returnId, transaction) {
  * 查询退库申请列表
  */
 async function getReturnList(ctx) {
-  const { status, inboundId, returnId, returnNo, page = 1, pageSize = 20 } = ctx.query;
+  const { status, inboundId, returnId, returnNo, scope, page = 1, pageSize = 20 } = ctx.query;
   const where = {};
   if (status) where.status = status;
   if (inboundId) where.inbound_id = inboundId;
@@ -5513,6 +5513,9 @@ async function getReturnList(ctx) {
   const traceReturnLookup = returnId && String(ctx.query.trace || '') === '1';
   if (!ctx.state.user.accessibleStoreIds.includes('*') && !traceReturnLookup) {
     where.store_id = ctx.state.user.accessibleStoreIds;
+  }
+  if (scope === 'review' && !getUserRoles(ctx.state.user).some(role => ['purchaser', 'admin', 'boss'].includes(role))) {
+    where.return_id = '__NO_RETURN_APPROVAL_ACCESS__';
   }
 
   const { count, rows } = await ReturnStock.findAndCountAll({
@@ -5712,9 +5715,14 @@ async function approveReturn(ctx) {
   try {
     const { returnId, action = 'approved', comment = '' } = ctx.request.body;
     const user = ctx.state.user;
+    if (!getUserRoles(user).some(role => ['purchaser', 'admin', 'boss'].includes(role))) {
+      ctx.throw(403, '仅采购、经销商总权限账号或BOSS可以审批退库申请');
+    }
+    if (!['approved', 'rejected'].includes(action)) ctx.throw(400, '审批动作无效');
 
     const returnStock = await ReturnStock.findByPk(returnId, { transaction: t });
     if (!returnStock) ctx.throw(404, '退库申请不存在');
+    assertStoreVisible(ctx, returnStock.store_id);
     if (returnStock.status !== 'pending') ctx.throw(400, '只有待审批的退库申请才能审批');
 
     const nextStatus = action === 'rejected' ? 'rejected' : 'approved';

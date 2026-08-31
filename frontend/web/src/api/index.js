@@ -205,7 +205,7 @@ export default {
 
   // Sales
   getSalesList: (params) => api.get('/sales/list', { params }),
-  getSalesApprovalList: (params = {}) => api.get('/sales/list', { params: { ...params, status: 'pending_approval' } }),
+  getSalesApprovalList: (params = {}) => api.get('/sales/list', { params: { ...params, status: 'pending_approval', scope: 'review' } }),
   exportSales: (params) => exportExcel('/sales/export', params, `销售订单导出_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getSubsidyPhotos: (params) => api.get('/sales/subsidy-photos', { params }),
   createSubsidyPhotosDownloadTicket: (params) => api.get('/sales/subsidy-photos/batch-download-ticket', { params }),

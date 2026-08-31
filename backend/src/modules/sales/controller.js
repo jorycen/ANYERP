@@ -364,7 +364,7 @@ async function list(ctx) {
   const {
     storeId, startDate, endDate, customerPhone, customerName, orderNo,
     status, createUser, submitUser, productName, productCode, pnCode, snCode,
-    page = 1, pageSize = 20
+    scope, page = 1, pageSize = 20
   } = ctx.query;
   const user = ctx.state.user;
 
@@ -401,6 +401,19 @@ async function list(ctx) {
     where.order_status = status === SALES_APPROVAL_STATUSES.legacy
       ? { [Op.in]: [SALES_APPROVAL_STATUSES.legacy, SALES_APPROVAL_STATUSES.store, SALES_APPROVAL_STATUSES.distributor] }
       : status;
+  }
+  if (scope === 'review') {
+    const roles = getUserRoles(user);
+    const reviewStatuses = [];
+    if (roles.some(role => STORE_APPROVAL_ROLES.includes(role))) {
+      reviewStatuses.push(SALES_APPROVAL_STATUSES.legacy, SALES_APPROVAL_STATUSES.store);
+    }
+    if (roles.some(role => DISTRIBUTOR_APPROVAL_ROLES.includes(role))) {
+      reviewStatuses.push(SALES_APPROVAL_STATUSES.distributor);
+    }
+    where.order_status = reviewStatuses.length
+      ? { [Op.in]: [...new Set(reviewStatuses)] }
+      : '__NO_SALES_APPROVAL_ACCESS__';
   }
   if (createUser) {
     where.create_user = { [Op.like]: `%${createUser}%` };
@@ -3621,7 +3634,7 @@ function pickReturnItemQuantity(item, sourceItem, defaultQuantity = Number(sourc
  * 销售退单申请列表
  */
 async function listSalesReturnRequests(ctx) {
-  const { status, approvalStage, storeId, orderId, page = 1, pageSize = 100 } = ctx.query;
+  const { status, approvalStage, storeId, orderId, scope, page = 1, pageSize = 100 } = ctx.query;
   const where = {};
   if (status) where.status = status;
   if (approvalStage) where.approval_stage = approvalStage;
@@ -3630,6 +3643,26 @@ async function listSalesReturnRequests(ctx) {
   if (storeId) assertStoreVisible(storeId, ctx.state.user);
   if (!ctx.state.user.accessibleStoreIds.includes('*') && !storeId) {
     where.store_id = ctx.state.user.accessibleStoreIds;
+  }
+  if (scope === 'review') {
+    const roles = getUserRoles(ctx.state.user);
+    const stageConditions = [];
+    if (roles.some(role => STORE_APPROVAL_ROLES.includes(role))) {
+      stageConditions.push(
+        { approval_stage: 'pending_store' },
+        { approval_stage: { [Op.is]: null } },
+        { approval_stage: '' }
+      );
+    }
+    if (roles.some(role => DISTRIBUTOR_APPROVAL_ROLES.includes(role))) {
+      stageConditions.push({ approval_stage: 'pending_distributor' });
+    }
+    if (!stageConditions.length) {
+      where.return_id = '__NO_SALES_RETURN_APPROVAL_ACCESS__';
+    } else {
+      where.status = 'pending';
+      where[Op.and] = [{ [Op.or]: stageConditions }];
+    }
   }
 
   const { count, rows } = await SalesReturnRequest.findAndCountAll({

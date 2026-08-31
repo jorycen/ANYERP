@@ -88,7 +88,7 @@ async function storeAccessMiddleware(ctx, next) {
   if (ctx.path.startsWith('/api/v1/system/')) return next();
   if (ctx.path === '/api/v1/store/create' && ctx.method === 'POST') return next();
   // 新建/编辑销售订单的门店范围由销售控制器按经销商权限校验，允许先通过门店切换参数。
-  if (ctx.method !== 'GET' && (
+  if (isDealerTraceAccount(user) && ctx.method !== 'GET' && (
     ctx.path === '/api/v1/sales/create' ||
     ctx.path === '/api/v1/sales/draft' ||
     /^\/api\/v1\/sales\/draft\/[^/]+$/.test(ctx.path) ||

@@ -545,6 +545,9 @@ async function listBatchApplications(ctx) {
   const user = ctx.state.user;
   const where = {};
   const userRoles = roles(user);
+  if (ctx.query.scope === 'review' && !canReview(user)) {
+    where.application_id = '__NO_BATCH_APPROVAL_ACCESS__';
+  }
   if (ctx.query.status) where.status = ctx.query.status;
   if (ctx.query.operationType) where.operation_type = ctx.query.operationType;
   if (!isBoss(user)) {

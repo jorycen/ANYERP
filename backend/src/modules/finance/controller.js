@@ -684,6 +684,10 @@ async function getExpenseList(ctx) {
   const where = { is_deleted: 0 };
   const whereStore = {};
 
+  if (scope === 'review' && !getUserRoles(user).some(role => ['admin', 'boss'].includes(role))) {
+    where.expense_id = '__NO_EXPENSE_APPROVAL_ACCESS__';
+  }
+
   if (!user.accessibleStoreIds.includes('*')) {
     whereStore.store_id = user.accessibleStoreIds;
   }
@@ -792,6 +796,10 @@ async function reviewExpense(ctx) {
   if (!['approved', 'rejected'].includes(action)) ctx.throw(400, '审批动作无效');
   const record = await Expense.findByPk(ctx.params.id);
   if (!record || record.is_deleted) ctx.throw(404, '报销单不存在');
+  if (!(user.accessibleStoreIds || []).includes('*')
+    && !(user.accessibleStoreIds || []).map(String).includes(String(record.store_id || ''))) {
+    ctx.throw(403, '无权审批该门店费用记录');
+  }
   if (record.status !== 'pending_approval') ctx.throw(400, '当前报销单不可审批');
   if (record.source_type === 'purchase') {
     const purchase = await PurchaseRequest.findByPk(record.source_id);

@@ -468,6 +468,15 @@ async function reviewClaim(ctx) {
   await sequelize.transaction(async transaction => {
     const change = await ResourceRightChangeOrder.findByPk(ctx.params.changeId, { transaction, lock: transaction.LOCK.UPDATE });
     if (!change) ctx.throw(404, '套回申请不存在');
+    const accessibleStoreIds = Array.isArray(ctx.state.user?.accessibleStoreIds)
+      ? ctx.state.user.accessibleStoreIds.map(String)
+      : [];
+    if (!accessibleStoreIds.includes('*')) {
+      const sn = await ProductSn.findByPk(change.sn_id, { attributes: ['store_id'], transaction });
+      if (!sn || !accessibleStoreIds.includes(String(sn.store_id || ''))) {
+        ctx.throw(403, '无权审批该门店资源套回申请');
+      }
+    }
     if (change.approval_status !== 'pending_finance') ctx.throw(409, '该申请已处理');
     const right = await InventoryResourceRight.findOne({ where: { sn_id: change.sn_id, resource_type: change.resource_type }, transaction, lock: transaction.LOCK.UPDATE });
     if (!right || right.current_status !== 'LOCKED' || right.locked_source_type !== 'CLAIM' || right.locked_source_id !== change.change_id) ctx.throw(409, '权益锁定状态已变化，请人工核查');
@@ -501,8 +510,13 @@ async function reviewClaim(ctx) {
 
 async function listChanges(ctx) {
   requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
-  const { snCode, resourceType, approvalStatus, reason, startDate, endDate, page = 1, pageSize = 20 } = ctx.query;
+  const { snCode, resourceType, approvalStatus, reason, startDate, endDate, scope, page = 1, pageSize = 20 } = ctx.query;
   const where = {};
+  const user = ctx.state.user || {};
+  const userRoles = roles(user);
+  if (scope === 'review' && !userRoles.includes('finance') && !userRoles.includes('boss')) {
+    where.change_id = '__NO_RESOURCE_APPROVAL_ACCESS__';
+  }
   if (snCode) where.sn_code = { [Op.like]: `%${snCode}%` };
   if (resourceType) where.resource_type = resourceType;
   if (approvalStatus) where.approval_status = approvalStatus;
@@ -512,8 +526,23 @@ async function listChanges(ctx) {
     if (startDate) where.create_time[Op.gte] = new Date(`${startDate}T00:00:00+08:00`);
     if (endDate) where.create_time[Op.lte] = new Date(`${endDate}T23:59:59+08:00`);
   }
+  const accessibleStoreIds = Array.isArray(user.accessibleStoreIds)
+    ? user.accessibleStoreIds.map(String).filter(Boolean)
+    : [];
+  const snScopeInclude = accessibleStoreIds.includes('*')
+    ? { model: ProductSn, attributes: [], required: false }
+    : {
+      model: ProductSn,
+      attributes: [],
+      required: true,
+      where: {
+        is_deleted: 0,
+        store_id: accessibleStoreIds.length ? { [Op.in]: accessibleStoreIds } : '__NO_STORE__'
+      }
+    };
   const { count, rows } = await ResourceRightChangeOrder.findAndCountAll({
     where,
+    include: [snScopeInclude],
     order: buildPendingFirstOrder(sequelize, {
       statusColumn: 'ResourceRightChangeOrder.approval_status',
       pendingStatuses: ['pending'],

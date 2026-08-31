@@ -32,6 +32,7 @@ const {
 const { ensureProductPnsMaster, syncProductPnsMaster, assertPnAvailableForNewProduct } = require('../../utils/productPnMaster');
 const XLSX = require('xlsx');
 const { getUserRoles } = require('../../middleware/permission');
+const { accessibleDistributorIds } = require('../../utils/distributorScope');
 const { sendExcel } = require('../../utils/excelExport');
 
 // 字段标识到数据库列名的映射（field_key → DB column）
@@ -1193,6 +1194,12 @@ function canReviewProductApplication(user) {
   return roles.some(role => ['finance', 'purchaser', 'admin', 'boss'].includes(role));
 }
 
+function productApplicationDistributorWhere(user) {
+  const distributorIds = accessibleDistributorIds(user);
+  if (distributorIds.includes('*')) return {};
+  return { distributor_id: distributorIds.length ? { [Op.in]: distributorIds } : '__NO_DISTRIBUTOR__' };
+}
+
 async function getProductApplicationList(ctx) {
   const page = Number(ctx.query.page || 1);
   const pageSize = Number(ctx.query.pageSize || 20);
@@ -1211,12 +1218,14 @@ async function getProductApplicationList(ctx) {
     ];
   }
 
-  if (scope === 'my') {
+  if (scope === 'review' && !canReviewProductApplication(ctx.state.user)) {
+    where.application_id = '__NO_PRODUCT_APPROVAL_ACCESS__';
+  } else if (scope === 'my') {
     where.applicant_staff_id = ctx.state.user.staffId || ctx.state.user.id || -1;
   } else if (!canReviewProductApplication(ctx.state.user)) {
     where.applicant_staff_id = ctx.state.user.staffId;
-  } else if (!getUserRoles(ctx.state.user).includes('boss')) {
-    where.distributor_id = ctx.state.user.distributorId || '';
+  } else {
+    Object.assign(where, productApplicationDistributorWhere(ctx.state.user));
   }
 
   const { limit, offset } = paginate({}, { page, pageSize });
@@ -1279,7 +1288,9 @@ async function getProductApplicationDetail(ctx) {
   if (!canViewAll && Number(application.applicant_staff_id) !== Number(staffId)) {
     ctx.throw(403, '无权查看该商品申请');
   }
-  if (canViewAll && !roles.includes('boss') && application.distributor_id !== (user.distributorId || '')) {
+  const accessibleIds = accessibleDistributorIds(user);
+  if (canViewAll && !accessibleIds.includes('*')
+    && !accessibleIds.includes(String(application.distributor_id || ''))) {
     ctx.throw(403, '无权查看其他经销商的商品申请');
   }
 
@@ -1331,7 +1342,9 @@ async function reviewProductApplication(ctx) {
     });
     if (!application) ctx.throw(404, '商品申请不存在');
     if (application.status !== 'pending') ctx.throw(400, '该申请已完成审批');
-    if (!getUserRoles(ctx.state.user).includes('boss') && application.distributor_id !== (ctx.state.user.distributorId || '')) {
+    const accessibleIds = accessibleDistributorIds(ctx.state.user);
+    if (!accessibleIds.includes('*')
+      && !accessibleIds.includes(String(application.distributor_id || ''))) {
       ctx.throw(403, '无权审批其他经销商的商品申请');
     }
 

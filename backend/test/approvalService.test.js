@@ -36,7 +36,9 @@ test('店长审批范围只包含已分配管理门店', () => {
   assert.deepEqual(getApprovalStoreIds(manager), ['STORE_1', 'STORE_2']);
   assert.equal(canReadApprovalStore(manager, 'STORE_1'), true);
   assert.equal(canReadApprovalStore(manager, 'STORE_3'), false);
-  assert.equal(getApprovalStoreIds({ roles: ['admin'], accessibleStoreIds: ['STORE_1'] }), null);
+  assert.deepEqual(getApprovalStoreIds({ roles: ['admin'], accessibleStoreIds: ['STORE_1'] }), ['STORE_1']);
+  assert.deepEqual(getApprovalStoreIds({ roles: ['finance'], accessibleStoreIds: ['STORE_1'] }), ['STORE_1']);
+  assert.equal(getApprovalStoreIds({ roles: ['boss'], accessibleStoreIds: ['STORE_1'] }), null);
   assert.deepEqual(
     getApprovalStoreIds({ roles: ['manager', 'finance'], accessibleStoreIds: ['STORE_1'] }),
     ['STORE_1']

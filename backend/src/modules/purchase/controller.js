@@ -542,6 +542,10 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
   const where = { status: { [Op.ne]: 'deleted' } };
   const whereStore = {};
 
+  if (scope === 'review' && !getUserRoles(user).some(role => ['purchaser', 'admin', 'boss'].includes(role))) {
+    where.request_id = '__NO_PURCHASE_APPROVAL_ACCESS__';
+  }
+
   // 区域权限过滤
   if (!(user.accessibleStoreIds || []).includes('*')) {
     whereStore.store_id = user.accessibleStoreIds || [];

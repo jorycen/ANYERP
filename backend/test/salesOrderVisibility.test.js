@@ -120,6 +120,34 @@ test('店长不能通过订单列表筛选未授权门店', async () => {
   }
 });
 
+test('销售审批列表只返回当前角色可审批的阶段', async () => {
+  const originalFindAll = models.Order.findAll;
+  let queryOptions;
+  models.Order.findAll = async options => {
+    queryOptions = options;
+    return [];
+  };
+
+  const ctx = {
+    state: {
+      user: { roles: ['manager'], accessibleStoreIds: ['STORE-1'] }
+    },
+    query: { scope: 'review', status: 'pending_approval' },
+    throw(status, message) {
+      const error = new Error(message);
+      error.status = status;
+      throw error;
+    }
+  };
+
+  try {
+    await salesController.list(ctx);
+    assert.deepEqual(queryOptions.where.order_status[Op.in], ['pending_approval', 'pending_store_approval']);
+  } finally {
+    models.Order.findAll = originalFindAll;
+  }
+});
+
 test('店长角色可以导出授权门店订单，普通店员不能导出', () => {
   assert.equal(_test.canExportSalesOrders({ roles: ['manager'] }), true);
   assert.equal(_test.canExportSalesOrders({ roles: ['store_manager'] }), true);
