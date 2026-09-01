@@ -1651,6 +1651,8 @@ const Expense = sequelize.define('Expense', {
   expense_party: { type: DataTypes.STRING(255), allowNull: false },
   amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
   settled_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  accounting_month: { type: DataTypes.STRING(7), comment: '费用经营归属月份，格式 YYYY-MM' },
+  affects_store_profit: { type: DataTypes.TINYINT(1), defaultValue: 1, comment: '是否计入门店经营费用' },
   payment_method: { type: DataTypes.STRING(64), comment: 'CORPORATE/PERSONAL_ADVANCE' },
   has_invoice: { type: DataTypes.TINYINT(1), defaultValue: 0 },
   invoice_type: { type: DataTypes.STRING(64) },
@@ -1683,6 +1685,53 @@ const Expense = sequelize.define('Expense', {
   update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
   is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 },
 }, { tableName: 'T_EXPENSE', timestamps: false });
+
+// 费用对员工绩效毛利的部分分摊，不改写订单毛利或费用原始金额。
+const ExpensePerformanceAllocation = sequelize.define('ExpensePerformanceAllocation', {
+  allocation_id: { type: DataTypes.STRING(32), primaryKey: true },
+  allocation_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
+  expense_id: { type: DataTypes.STRING(32), allowNull: false },
+  expense_no: { type: DataTypes.STRING(64), allowNull: false },
+  distributor_id: { type: DataTypes.STRING(32) },
+  region_id: { type: DataTypes.STRING(32) },
+  store_id: { type: DataTypes.STRING(32), allowNull: false },
+  performance_month: { type: DataTypes.STRING(7), allowNull: false },
+  staff_id: { type: DataTypes.BIGINT(20), allowNull: false },
+  staff_name: { type: DataTypes.STRING(64), allowNull: false },
+  amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  reason: { type: DataTypes.STRING(1000), allowNull: false },
+  status: { type: DataTypes.STRING(32), defaultValue: 'pending_finance' },
+  applicant_staff_id: { type: DataTypes.BIGINT(20), allowNull: false },
+  applicant_name: { type: DataTypes.STRING(64), allowNull: false },
+  finance_reviewer_id: { type: DataTypes.BIGINT(20) },
+  finance_reviewer_name: { type: DataTypes.STRING(64) },
+  finance_review_comment: { type: DataTypes.STRING(512) },
+  finance_review_time: { type: DataTypes.DATE },
+  admin_reviewer_id: { type: DataTypes.BIGINT(20) },
+  admin_reviewer_name: { type: DataTypes.STRING(64) },
+  admin_review_comment: { type: DataTypes.STRING(512) },
+  admin_review_time: { type: DataTypes.DATE },
+  reject_stage: { type: DataTypes.STRING(32) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_EXPENSE_PERFORMANCE_ALLOCATION', timestamps: false });
+
+// 费用经营月份锁定表。锁定后只能通过冲销/调整流程改变，不直接覆盖历史事实。
+const ExpenseAccountingPeriod = sequelize.define('ExpenseAccountingPeriod', {
+  period_id: { type: DataTypes.STRING(32), primaryKey: true },
+  distributor_id: { type: DataTypes.STRING(32), allowNull: false },
+  month_key: { type: DataTypes.STRING(7), allowNull: false },
+  status: { type: DataTypes.STRING(16), defaultValue: 'open' },
+  closed_staff_id: { type: DataTypes.BIGINT(20) },
+  closed_user: { type: DataTypes.STRING(64) },
+  closed_time: { type: DataTypes.DATE },
+  reopened_staff_id: { type: DataTypes.BIGINT(20) },
+  reopened_user: { type: DataTypes.STRING(64) },
+  reopened_time: { type: DataTypes.DATE },
+  remark: { type: DataTypes.STRING(512) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_EXPENSE_ACCOUNTING_PERIOD', timestamps: false });
 
 // ----------------------------------------
 // 应付管理模型
@@ -2454,6 +2503,9 @@ Inbound.belongsTo(Store, { foreignKey: 'store_id', targetKey: 'store_id' });
 
 Expense.belongsTo(Store, { foreignKey: 'store_id', targetKey: 'store_id' });
 Expense.belongsTo(SettlementAccount, { foreignKey: 'settlement_account_id', targetKey: 'account_id', as: 'SettlementAccount' });
+Expense.hasMany(ExpensePerformanceAllocation, { foreignKey: 'expense_id', sourceKey: 'expense_id', as: 'performanceAllocations' });
+ExpensePerformanceAllocation.belongsTo(Expense, { foreignKey: 'expense_id', targetKey: 'expense_id', as: 'Expense' });
+ExpensePerformanceAllocation.belongsTo(Staff, { foreignKey: 'staff_id', targetKey: 'staff_id', as: 'Staff' });
 
 PurchaseRequest.hasMany(Inbound, { foreignKey: 'purchase_request_id', sourceKey: 'request_id' });
 Inbound.belongsTo(PurchaseRequest, { foreignKey: 'purchase_request_id', targetKey: 'request_id' });
@@ -2611,6 +2663,8 @@ module.exports = {
   SubsidyReceivableAdjustment,
   Expense,
   ExpenseType,
+  ExpensePerformanceAllocation,
+  ExpenseAccountingPeriod,
   CustomerSource,
   PaymentMethod,
   PaymentMethodStore,

@@ -586,6 +586,88 @@ async function ensureProductSettlementSchema() {
   console.log('[DB Migration] 产品端结算表结构检查完成');
 }
 
+async function ensureExpenseAccountingSchema() {
+  await checkAndAddColumn(
+    'T_EXPENSE',
+    'ACCOUNTING_MONTH',
+    'VARCHAR(7) NULL COMMENT "费用经营归属月份，格式 YYYY-MM"',
+    'EXPENSE_DATE'
+  );
+  await checkAndAddColumn(
+    'T_EXPENSE',
+    'AFFECTS_STORE_PROFIT',
+    'TINYINT(1) NOT NULL DEFAULT 1 COMMENT "是否计入门店经营费用"',
+    'ACCOUNTING_MONTH'
+  );
+  try {
+    await sequelize.query(`
+      UPDATE T_EXPENSE
+         SET ACCOUNTING_MONTH = DATE_FORMAT(COALESCE(EXPENSE_DATE, CREATE_TIME), '%Y-%m')
+       WHERE (ACCOUNTING_MONTH IS NULL OR ACCOUNTING_MONTH = '')
+         AND (EXPENSE_DATE IS NOT NULL OR CREATE_TIME IS NOT NULL)
+    `);
+  } catch (error) {
+    console.warn('[DB Migration] 费用经营月份回填跳过:', error.message);
+  }
+
+  await checkAndCreateTable('T_EXPENSE_PERFORMANCE_ALLOCATION', `
+    CREATE TABLE T_EXPENSE_PERFORMANCE_ALLOCATION (
+      ALLOCATION_ID VARCHAR(32) NOT NULL,
+      ALLOCATION_NO VARCHAR(64) NOT NULL,
+      EXPENSE_ID VARCHAR(32) NOT NULL,
+      EXPENSE_NO VARCHAR(64) NOT NULL,
+      DISTRIBUTOR_ID VARCHAR(32),
+      REGION_ID VARCHAR(32),
+      STORE_ID VARCHAR(32) NOT NULL,
+      PERFORMANCE_MONTH VARCHAR(7) NOT NULL,
+      STAFF_ID BIGINT NOT NULL,
+      STAFF_NAME VARCHAR(64) NOT NULL,
+      AMOUNT DECIMAL(12,2) NOT NULL,
+      REASON VARCHAR(1000) NOT NULL,
+      STATUS VARCHAR(32) NOT NULL DEFAULT 'pending_finance',
+      APPLICANT_STAFF_ID BIGINT NOT NULL,
+      APPLICANT_NAME VARCHAR(64) NOT NULL,
+      FINANCE_REVIEWER_ID BIGINT,
+      FINANCE_REVIEWER_NAME VARCHAR(64),
+      FINANCE_REVIEW_COMMENT VARCHAR(512),
+      FINANCE_REVIEW_TIME DATETIME,
+      ADMIN_REVIEWER_ID BIGINT,
+      ADMIN_REVIEWER_NAME VARCHAR(64),
+      ADMIN_REVIEW_COMMENT VARCHAR(512),
+      ADMIN_REVIEW_TIME DATETIME,
+      REJECT_STAGE VARCHAR(32),
+      CREATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UPDATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (ALLOCATION_ID),
+      UNIQUE KEY UK_EXPENSE_PERFORMANCE_ALLOCATION_NO (ALLOCATION_NO),
+      KEY IDX_EXPENSE_PERFORMANCE_EXPENSE (EXPENSE_ID, STATUS),
+      KEY IDX_EXPENSE_PERFORMANCE_MONTH (STORE_ID, PERFORMANCE_MONTH, STATUS),
+      KEY IDX_EXPENSE_PERFORMANCE_STAFF (STAFF_ID, PERFORMANCE_MONTH, STATUS)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='费用对员工绩效毛利分摊';
+  `);
+  await checkAndCreateTable('T_EXPENSE_ACCOUNTING_PERIOD', `
+    CREATE TABLE T_EXPENSE_ACCOUNTING_PERIOD (
+      PERIOD_ID VARCHAR(32) NOT NULL,
+      DISTRIBUTOR_ID VARCHAR(32) NOT NULL,
+      MONTH_KEY VARCHAR(7) NOT NULL,
+      STATUS VARCHAR(16) NOT NULL DEFAULT 'open',
+      CLOSED_STAFF_ID BIGINT,
+      CLOSED_USER VARCHAR(64),
+      CLOSED_TIME DATETIME,
+      REOPENED_STAFF_ID BIGINT,
+      REOPENED_USER VARCHAR(64),
+      REOPENED_TIME DATETIME,
+      REMARK VARCHAR(512),
+      CREATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UPDATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (PERIOD_ID),
+      UNIQUE KEY UK_EXPENSE_ACCOUNTING_PERIOD (DISTRIBUTOR_ID, MONTH_KEY),
+      KEY IDX_EXPENSE_ACCOUNTING_PERIOD_STATUS (DISTRIBUTOR_ID, STATUS, MONTH_KEY)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='费用经营月份锁定';
+  `);
+  console.log('[DB Migration] 费用经营核算结构检查完成');
+}
+
 async function runMigrations() {
   await ensureCriticalSchemaCompatibility();
   await ensureProductDimensionSchema();
@@ -3377,6 +3459,7 @@ async function runMigrations() {
     }
 
     await ensureProductSettlementSchema();
+    await ensureExpenseAccountingSchema();
     await migrateProductData();
 
     await seedPermissionData();
@@ -4029,6 +4112,7 @@ async function seedPermissionData() {
 module.exports = {
   runMigrations,
   ensureProductSettlementSchema,
+  ensureExpenseAccountingSchema,
   migrateMissingProductPns,
   ensureCriticalSchemaCompatibility,
   ensureProductDimensionSchema,

@@ -59,6 +59,14 @@ const {
   getCostAdjustmentList
 } = require('./rebateController');
 const { requireRole } = require('../../middleware/permission');
+const {
+  listExpensePerformanceAllocations,
+  createExpensePerformanceAllocations,
+  reviewExpensePerformanceAllocation,
+  listExpenseAccountingPeriods,
+  closeExpenseAccountingPeriod,
+  reopenExpenseAccountingPeriod
+} = require('./expenseAccountingController');
 
 const router = new Router();
 
@@ -73,11 +81,19 @@ router.get('/expense-list/export', exportExpenseList);
 router.get('/expense/:id', getExpenseDetail);
 router.post('/expense/:id/review', requireRole('admin'), reviewExpense);
 router.post('/expense/:id/cancel', cancelExpense);
+router.get('/expense/:id/performance-allocations', requireRole('finance'), listExpensePerformanceAllocations);
+router.post('/expense/:id/performance-allocations', requireRole('finance'), createExpensePerformanceAllocations);
 
 // 采购及调拨录单需要读取启用中的配送平台，配置和记录维护仍受财务角色保护。
 router.get('/freight/platforms', getPlatforms);
 
 router.use(requireRole('finance'));
+
+router.get('/expense-performance-allocations', listExpensePerformanceAllocations);
+router.post('/expense-performance-allocations/:allocationId/review', reviewExpensePerformanceAllocation);
+router.get('/expense-accounting-periods', listExpenseAccountingPeriods);
+router.post('/expense-accounting-periods/:monthKey/close', closeExpenseAccountingPeriod);
+router.post('/expense-accounting-periods/:monthKey/reopen', reopenExpenseAccountingPeriod);
 
 // 运费管理
 router.post('/freight/platforms', createPlatform);

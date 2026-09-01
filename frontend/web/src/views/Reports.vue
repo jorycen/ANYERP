@@ -212,7 +212,26 @@
             <div class="summary-item">基础毛利：<strong>¥{{ formatMoney(employeeSummary.baseGrossProfit) }}</strong></div>
             <div class="summary-item">已审批调整：<strong :class="Number(employeeSummary.approvedAdjustment || 0) >= 0 ? 'profit-positive' : 'profit-negative'">¥{{ formatMoney(employeeSummary.approvedAdjustment) }}</strong></div>
             <div class="summary-item">业绩毛利：<strong>¥{{ formatMoney(employeeSummary.grossProfit) }}</strong></div>
+            <div v-if="employeeCanViewProfit" class="summary-item">费用扣减：<strong class="profit-negative">¥{{ formatMoney(employeeSummary.expensePerformanceDeduction) }}</strong></div>
+            <div v-if="employeeCanViewProfit" class="summary-item">扣减后毛利：<strong :class="Number(employeeSummary.netGrossProfit || 0) >= 0 ? 'profit-positive' : 'profit-negative'">¥{{ formatMoney(employeeSummary.netGrossProfit) }}</strong></div>
           </div>
+
+          <el-table
+            v-if="employeeCanViewProfit && (employeeSummary.expenseDeductions || []).length"
+            :data="employeeSummary.expenseDeductions"
+            stripe
+            border
+            size="small"
+            style="margin: 16px 0"
+          >
+            <el-table-column prop="staffName" label="员工" width="130" />
+            <el-table-column prop="amount" label="费用扣减毛利" width="150">
+              <template #default="{ row }"><span class="profit-negative">-¥{{ formatMoney(row.amount) }}</span></template>
+            </el-table-column>
+            <el-table-column label="说明" min-width="220">
+              <template #default>费用分摊审批通过后计入员工绩效毛利，不修改订单原始毛利。</template>
+            </el-table-column>
+          </el-table>
 
           <el-table :data="employeeData" stripe border v-loading="employeeLoading">
             <el-table-column type="expand">
@@ -441,6 +460,7 @@ const employeeParams = reactive({ dateRange: [], storeId: '', staffName: '', pag
 const adjustmentForm = reactive({ adjustmentType: 'increase', amount: 0.01, reason: '' })
 const adjustmentParams = reactive({ page: 1, pageSize: 20 })
 const currentRoles = String(getRoleCode() || '').split(',').map(role => role.trim())
+const employeeCanViewProfit = computed(() => currentRoles.some(role => ['boss', 'admin', 'finance', 'manager', 'store_manager', 'store_admin'].includes(role)))
 const canReviewAdjustments = computed(() => currentRoles.includes('finance') || currentRoles.includes('admin'))
 const adjustmentCenterTitle = computed(() => {
   if (adjustmentScope.value === 'review') return '待我审核的毛利调整'

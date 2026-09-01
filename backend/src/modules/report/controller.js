@@ -11,11 +11,12 @@ const {
   Product,
   Store,
   PerformanceProfitAdjustment,
+  ExpensePerformanceAllocation,
   sequelize
 } = require('../../models');
 const { Op } = require('sequelize');
 const { loadLegacyCostMaps, calculateItemBaseProfit } = require('./profitCalculation');
-const { DashboardService } = require('./dashboardService');
+const { DashboardService, canViewProfit } = require('./dashboardService');
 const { ARCHIVED_STATUSES: POSITIVE_SALES_ORDER_STATUSES } = require('./dashboardDataSource');
 const { buildDecisionInsights, buildAiAdvisor } = require('./decisionEngine');
 const { resolveReportStoreIds } = require('../../utils/storePermissions');
@@ -553,6 +554,39 @@ async function getEmployeePerformanceReport(ctx) {
     toNumber(approvedAdjustmentRow?.amount) + toNumber(returnGrossProfitRow?.amount)
   );
 
+  const expenseAllocationWhere = {
+    store_id: { [Op.in]: storeIds },
+    status: 'approved'
+  };
+  if (staffName) expenseAllocationWhere.staff_name = staffName;
+  if (startDate && endDate) {
+    const start = new Date(`${startDate}T00:00:00Z`);
+    const end = new Date(`${endDate}T00:00:00Z`);
+    const months = [];
+    const cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1));
+    while (cursor <= end) {
+      months.push(`${cursor.getUTCFullYear()}-${String(cursor.getUTCMonth() + 1).padStart(2, '0')}`);
+      cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+    }
+    expenseAllocationWhere.performance_month = { [Op.in]: months };
+  }
+  const expenseAllocationRows = await ExpensePerformanceAllocation.findAll({
+    where: expenseAllocationWhere,
+    attributes: [
+      'staff_id',
+      'staff_name',
+      [sequelize.fn('SUM', sequelize.col('amount')), 'amount']
+    ],
+    group: ['staff_id', 'staff_name'],
+    order: [[sequelize.literal('amount'), 'DESC'], ['staff_name', 'ASC']],
+    raw: true
+  });
+  const profitVisible = canViewProfit(user);
+  const visibleExpenseAllocationRows = profitVisible ? expenseAllocationRows : [];
+  const totalExpensePerformanceDeduction = roundMoney(
+    visibleExpenseAllocationRows.reduce((sum, row) => sum + toNumber(row.amount), 0)
+  );
+
   const summary = {
     orderCount: summaryRows.reduce((sum, row) => sum + Number(row.orderCount || 0), 0),
     totalAmount: roundMoney(summaryRows.reduce((sum, row) => sum + toNumber(row.totalAmount), 0)),
@@ -560,6 +594,13 @@ async function getEmployeePerformanceReport(ctx) {
     baseGrossProfit: totalBaseGrossProfit,
     approvedAdjustment: totalApprovedAdjustment,
     grossProfit: roundMoney(totalBaseGrossProfit + totalApprovedAdjustment),
+    expensePerformanceDeduction: profitVisible ? totalExpensePerformanceDeduction : null,
+    netGrossProfit: profitVisible ? roundMoney(totalBaseGrossProfit + totalApprovedAdjustment - totalExpensePerformanceDeduction) : null,
+    expenseDeductions: visibleExpenseAllocationRows.map(row => ({
+      staffId: row.staff_id,
+      staffName: row.staff_name || '-',
+      amount: roundMoney(row.amount)
+    })),
     pageGrossProfit: roundMoney(list.reduce((sum, row) => sum + toNumber(row.grossProfit), 0)),
     legacyOrderCount: new Set(fallbackItems.map(item => item.order_id)).size
   };

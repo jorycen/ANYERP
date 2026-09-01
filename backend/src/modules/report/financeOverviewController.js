@@ -17,6 +17,18 @@ function roundMoney(value) {
   return Number(toNumber(value).toFixed(2));
 }
 
+function monthKeysBetween(startDate, endDate) {
+  const start = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
+  const result = [];
+  const cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1));
+  while (cursor <= end) {
+    result.push(`${cursor.getUTCFullYear()}-${String(cursor.getUTCMonth() + 1).padStart(2, '0')}`);
+    cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+  }
+  return result;
+}
+
 function chinaToday() {
   const now = new Date(Date.now() + 8 * 60 * 60 * 1000);
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
@@ -214,6 +226,75 @@ async function queryPaymentSummary(regionId, accessibleRegionIds) {
   return { all: roundMoney(uncreated + created + paid), uncreated, created, paid };
 }
 
+async function queryExpenseSummary(period, storeIds) {
+  const replacements = {
+    storeIds: storeIds.length ? storeIds : ['__NO_STORE__'],
+    monthKeys: monthKeysBetween(period.startDate, period.endDate)
+  };
+  const dateClause = period.periodType === 'day'
+    ? 'AND e.EXPENSE_DATE = :expenseDate'
+    : 'AND e.ACCOUNTING_MONTH IN (:monthKeys)';
+  if (period.periodType === 'day') replacements.expenseDate = period.startDate;
+  const [summaryRows, typeRows, storeRows] = await Promise.all([
+    sequelize.query(
+      `SELECT COUNT(*) AS expenseCount,
+              ROUND(COALESCE(SUM(e.AMOUNT), 0), 2) AS amount
+         FROM T_EXPENSE e
+        WHERE e.IS_DELETED = 0
+          AND e.AFFECTS_STORE_PROFIT = 1
+          AND e.STORE_ID IN (:storeIds)
+          AND e.STATUS NOT IN ('draft', 'pending_approval', 'rejected', 'cancelled')
+          ${dateClause}`,
+      { replacements, type: QueryTypes.SELECT }
+    ),
+    sequelize.query(
+      `SELECT e.EXPENSE_TYPE AS expenseType,
+              ROUND(COALESCE(SUM(e.AMOUNT), 0), 2) AS amount,
+              COUNT(*) AS expenseCount
+         FROM T_EXPENSE e
+        WHERE e.IS_DELETED = 0
+          AND e.AFFECTS_STORE_PROFIT = 1
+          AND e.STORE_ID IN (:storeIds)
+          AND e.STATUS NOT IN ('draft', 'pending_approval', 'rejected', 'cancelled')
+          ${dateClause}
+        GROUP BY e.EXPENSE_TYPE
+        ORDER BY amount DESC, e.EXPENSE_TYPE ASC`,
+      { replacements, type: QueryTypes.SELECT }
+    ),
+    sequelize.query(
+      `SELECT e.STORE_ID AS storeId,
+              s.NAME AS storeName,
+              ROUND(COALESCE(SUM(e.AMOUNT), 0), 2) AS amount,
+              COUNT(*) AS expenseCount
+         FROM T_EXPENSE e
+         LEFT JOIN T_STORE s ON s.STORE_ID = e.STORE_ID
+        WHERE e.IS_DELETED = 0
+          AND e.AFFECTS_STORE_PROFIT = 1
+          AND e.STORE_ID IN (:storeIds)
+          AND e.STATUS NOT IN ('draft', 'pending_approval', 'rejected', 'cancelled')
+          ${dateClause}
+        GROUP BY e.STORE_ID, s.NAME
+        ORDER BY amount DESC, e.STORE_ID ASC`,
+      { replacements, type: QueryTypes.SELECT }
+    )
+  ]);
+  return {
+    amount: roundMoney(summaryRows[0]?.amount),
+    expenseCount: Number(summaryRows[0]?.expenseCount || 0),
+    byType: typeRows.map(row => ({
+      expenseType: row.expenseType || '其他',
+      amount: roundMoney(row.amount),
+      expenseCount: Number(row.expenseCount || 0)
+    })),
+    byStore: storeRows.map(row => ({
+      storeId: row.storeId,
+      storeName: row.storeName || row.storeId || '-',
+      amount: roundMoney(row.amount),
+      expenseCount: Number(row.expenseCount || 0)
+    }))
+  };
+}
+
 async function getFinanceOverview(ctx) {
   const user = ctx.state.user;
   const period = resolvePeriod(ctx.query);
@@ -233,6 +314,8 @@ async function getFinanceOverview(ctx) {
         productGrossMargin: null,
         combinedGrossProfit: null,
         combinedGrossMargin: null,
+        operatingExpense: null,
+        storeOperatingProfit: null,
         productSettlement: {
           productPricingAmount: 0,
           purchaseCostAmount: 0,
@@ -251,7 +334,7 @@ async function getFinanceOverview(ctx) {
 
   const ranges = buildRanges({ startDate: period.startDate, endDate: period.endDate });
   const filters = { storeIds, storeId: storeId || '', employeeId: '', productLine: '', includeDemo };
-  const [trendRows, inventory, accounts, payments, productSettlement] = await Promise.all([
+  const [trendRows, inventory, accounts, payments, productSettlement, expenseSummary] = await Promise.all([
     dataSource.getTrend(filters, ranges.current, 'day'),
     dataSource.getInventory(filters),
     queryAccountSummary(regionId, accessibleRegionIds),
@@ -260,13 +343,17 @@ async function getFinanceOverview(ctx) {
       startDate: period.startDate,
       endDate: period.endDate,
       storeIds
-    })
+    }),
+    queryExpenseSummary(period, storeIds)
   ]);
   const summary = summarizeTrend(trendRows);
   const profitVisible = canViewProfit(user);
   const productGrossProfit = profitVisible ? roundMoney(productSettlement.grossProfitAmount) : null;
   const combinedGrossProfit = profitVisible && summary.salesAmount !== null
     ? roundMoney(summary.grossProfit + productSettlement.grossProfitAmount)
+    : null;
+  const storeOperatingProfit = profitVisible && summary.salesAmount !== null
+    ? roundMoney(summary.grossProfit - expenseSummary.amount)
     : null;
 
   ctx.body = {
@@ -285,6 +372,8 @@ async function getFinanceOverview(ctx) {
       combinedGrossMargin: profitVisible && summary.salesAmount
         ? Number((combinedGrossProfit / summary.salesAmount * 100).toFixed(2))
         : null,
+      operatingExpense: profitVisible ? expenseSummary : null,
+      storeOperatingProfit,
       productSettlement: {
         productPricingAmount: productSettlement.productPricingAmount,
         purchaseCostAmount: productSettlement.purchaseCostAmount,

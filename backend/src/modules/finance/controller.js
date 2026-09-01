@@ -4,13 +4,14 @@
 const {
   sequelize, DailyStatement, DailyStatementDetail, Expense, ExpenseType, PurchaseRequest, Store, Region, Order, OrderPayment, Supplier,
   SettlementAccount, SettlementAccountTransaction, SubsidyAccountRoute, SubsidyReceipt,
-  SubsidyReceiptAllocation, SubsidyReceivableAdjustment
+  SubsidyReceiptAllocation, SubsidyReceivableAdjustment, ExpensePerformanceAllocation
 } = require('../../models');
 const { Op, Sequelize, fn, col } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { sendExcel } = require('../../utils/excelExport');
 const { getUserRoles } = require('../../middleware/permission');
 const { ensureExpensePayable, cancelExpenseRecord } = require('./expenseService');
+const { assertPeriodOpen } = require('./expenseAccountingController');
 const { accessibleDistributorIds, canAccessDistributor, distributorWhere } = require('../../utils/distributorScope');
 
 function buildDailyPaymentMethodWhere(paymentMethod) {
@@ -21,6 +22,17 @@ function buildDailyPaymentMethodWhere(paymentMethod) {
     return { [Op.or]: [method, `${method}-客户实收`] };
   }
   return method;
+}
+
+function resolveExpenseAccountingMonth(value, expenseDate) {
+  const raw = value || expenseDate;
+  const candidate = raw ? String(raw).slice(0, 7) : new Date().toISOString().slice(0, 7);
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(candidate)) {
+    const error = new Error('费用经营归属月份格式必须为 YYYY-MM');
+    error.status = 400;
+    throw error;
+  }
+  return candidate;
 }
 
 async function getAccountBalance(accountId, transaction = null) {
@@ -298,6 +310,7 @@ async function submitExpense(ctx) {
   if (record.status === 'draft') {
     if (!canManageExpenseDraft(user, record)) ctx.throw(403, '只有费用单创建人、店长或管理员可以提交');
     await sequelize.transaction(async transaction => {
+      await assertPeriodOpen(record.distributor_id, record.accounting_month || resolveExpenseAccountingMonth(null, record.expense_date), transaction);
       if (record.payment_method === 'CORPORATE') {
         const payable = await ensureExpensePayable(record, { sourceType: 'expense', status: 'unpaid' }, transaction);
         await record.update({ status: 'pending_payment', payable_id: payable.payable_id, submit_user: user.name, update_time: new Date() }, { transaction });
@@ -561,7 +574,7 @@ async function createExpense(ctx) {
   const {
     storeId, expenseTypeId, expenseParty, amount, paymentMethod,
     hasInvoice, invoiceType, invoiceNo, expenseDate, attachmentUrls,
-    relatedOrderNo, remark, saveDraft = false, expenseId
+    relatedOrderNo, remark, accountingMonth, affectsStoreProfit = true, saveDraft = false, expenseId
   } = ctx.request.body;
   const isDraft = Boolean(saveDraft);
   const targetStoreId = storeId || user.storeId;
@@ -572,6 +585,7 @@ async function createExpense(ctx) {
   if (!String(expenseParty || '').trim()) ctx.throw(400, '请填写费用发生方');
   if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) ctx.throw(400, '费用金额必须大于0');
   if (!['CORPORATE', 'PERSONAL_ADVANCE'].includes(paymentMethod)) ctx.throw(400, '支付方式无效');
+  const resolvedAccountingMonth = resolveExpenseAccountingMonth(accountingMonth, expenseDate);
 
   const [expenseType, store] = await Promise.all([
     ExpenseType.findOne({ where: { type_id: expenseTypeId, status: 1 } }),
@@ -593,6 +607,7 @@ async function createExpense(ctx) {
   const currentExpenseId = existingRecord?.expense_id || expenseId || generateUUID();
   let record;
   await sequelize.transaction(async transaction => {
+    await assertPeriodOpen(store.distributor_id, resolvedAccountingMonth, transaction);
     const expensePayload = {
       expense_id: currentExpenseId,
       expense_no: expenseNo,
@@ -605,6 +620,8 @@ async function createExpense(ctx) {
       expense_party: String(expenseParty).trim(),
       amount: Number(amount),
       payment_method: paymentMethod,
+      accounting_month: resolvedAccountingMonth,
+      affects_store_profit: affectsStoreProfit ? 1 : 0,
       has_invoice: hasInvoice ? 1 : 0,
       invoice_type: hasInvoice ? String(invoiceType || '').trim() : '',
       invoice_no: hasInvoice ? String(invoiceNo || '').trim() : '',
@@ -677,7 +694,7 @@ async function deleteExpenseDraft(ctx) {
  * 支出列表
  */
 async function getExpenseList(ctx) {
-  const { storeId, expenseType, status, scope, startDate, endDate, page = 1, pageSize = 20 } = ctx.query;
+  const { storeId, expenseType, status, scope, startDate, endDate, accountingMonth, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
   const exportMode = Boolean(ctx.state.exportMode);
 
@@ -715,6 +732,9 @@ async function getExpenseList(ctx) {
       [Op.lte]: new Date(endDate + ' 23:59:59')
     };
   }
+  if (accountingMonth) {
+    where.accounting_month = resolveExpenseAccountingMonth(accountingMonth, accountingMonth + '-01');
+  }
 
   const expenseQuery = {
     where,
@@ -733,6 +753,17 @@ async function getExpenseList(ctx) {
     ? { count: 0, rows: await Expense.findAll(expenseQuery) }
     : await Expense.findAndCountAll({ ...expenseQuery, ...paginate({}, { page, pageSize }) });
   const { count, rows } = result;
+  const expenseIds = rows.map(row => row.expense_id).filter(Boolean);
+  if (expenseIds.length) {
+    const allocationRows = await ExpensePerformanceAllocation.findAll({
+      where: { expense_id: { [Op.in]: expenseIds }, status: { [Op.in]: ['pending_finance', 'pending_admin', 'approved'] } },
+      attributes: ['expense_id', [Sequelize.fn('SUM', Sequelize.col('amount')), 'amount']],
+      group: ['expense_id'],
+      raw: true
+    });
+    const allocationMap = new Map(allocationRows.map(row => [String(row.expense_id), Number(row.amount || 0)]));
+    rows.forEach(row => row.setDataValue('performance_allocation_amount', allocationMap.get(String(row.expense_id)) || 0));
+  }
 
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
 }
@@ -747,6 +778,7 @@ async function exportExpenseList(ctx) {
       费用单号: item.expense_no || '',
       时间: item.create_time || '',
       费用日期: item.expense_date || '',
+      经营归属月份: item.accounting_month || '',
       费用类型: item.expense_type || '',
       费用发生方: item.expense_party || '',
       金额: Number(item.amount || 0),
@@ -760,7 +792,7 @@ async function exportExpenseList(ctx) {
     };
   });
   sendExcel(ctx, data, [
-    '费用单号', '时间', '费用日期', '费用类型', '费用发生方', '金额', '已结算金额',
+    '费用单号', '时间', '费用日期', '经营归属月份', '费用类型', '费用发生方', '金额', '已结算金额',
     '门店', '制单人', '发起人', '状态', '付款方式', '备注'
   ], `费用管理_${new Date().toISOString().slice(0, 10)}.xlsx`, '费用管理');
 }

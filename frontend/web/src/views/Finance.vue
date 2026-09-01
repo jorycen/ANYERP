@@ -323,6 +323,19 @@
             <span style="font-weight: bold; line-height: 32px;">费用清单</span>
             <el-button type="primary" @click="handleAddExpense">添加费用</el-button>
             <el-button type="success" :loading="exportingList === 'expense'" @click="handleExportExpense">导出</el-button>
+            <el-date-picker v-model="expenseAccountingMonth" type="month" value-format="YYYY-MM" placeholder="费用经营月份" style="width: 150px" @change="handleExpenseMonthChange" />
+            <el-tag v-if="expensePeriod" :type="expensePeriod.status === 'closed' ? 'danger' : 'success'" effect="plain">
+              {{ expenseAccountingMonth }}：{{ expensePeriod.status === 'closed' ? '已锁定' : '开放中' }}
+            </el-tag>
+            <el-button v-if="!expensePeriod || expensePeriod.status !== 'closed'" type="warning" @click="closeExpensePeriod">锁定本月</el-button>
+            <el-button v-else-if="canReopenExpensePeriod" type="success" @click="reopenExpensePeriod">重新打开</el-button>
+          </div>
+
+          <div v-if="expenseOverview" class="expense-overview-row">
+            <div class="expense-overview-item">销售经营毛利：<strong>¥{{ formatMoney(expenseOverview.grossProfit) }}</strong></div>
+            <div class="expense-overview-item">经营费用：<strong class="profit-negative">¥{{ formatMoney(expenseOverview.operatingExpense?.amount) }}</strong></div>
+            <div class="expense-overview-item">门店经营利润：<strong :class="Number(expenseOverview.storeOperatingProfit || 0) >= 0 ? 'profit-positive' : 'profit-negative'">¥{{ formatMoney(expenseOverview.storeOperatingProfit) }}</strong></div>
+            <div class="expense-overview-item">费用单数：<strong>{{ expenseOverview.operatingExpense?.expenseCount || 0 }}</strong></div>
           </div>
 
           <el-table :data="expenseData" stripe border>
@@ -332,7 +345,12 @@
             <el-table-column prop="amount" label="金额" width="120">
               <template #default="{ row }">¥{{ row.amount }}</template>
             </el-table-column>
+            <el-table-column prop="expense_date" label="发生日期" width="110" />
+            <el-table-column prop="accounting_month" label="经营归属月" width="110" />
             <el-table-column prop="store_name" label="门店" width="120" />
+            <el-table-column label="绩效已分摊" width="110">
+              <template #default="{ row }">¥{{ formatMoney(row.performance_allocation_amount) }}</template>
+            </el-table-column>
             <el-table-column prop="create_user" label="制单人" width="80" />
           <el-table-column label="状态" width="100">
             <template #default="{ row }">
@@ -342,7 +360,7 @@
             </template>
           </el-table-column>
             <el-table-column prop="remark" label="备注" min-width="120" />
-            <el-table-column label="操作" width="220">
+            <el-table-column label="操作" width="300">
               <template #default="{ row }">
                 <el-button v-if="row.status === 'draft'" link type="primary" @click="handleEditExpense(row)">编辑</el-button>
                 <el-button v-if="row.status === 'draft'" link type="success" @click="handleSubmitExpenseDraft(row)">提交</el-button>
@@ -350,6 +368,7 @@
                 <el-button v-if="row.status === 'pending'" link type="primary" @click="handleSubmitExpense(row)">
                   报销
                 </el-button>
+                <el-button v-if="canManageExpenseAccounting(row)" link type="warning" @click="openExpenseAllocation(row)">绩效分摊</el-button>
                 <span v-else-if="row.status === 'processing'" style="color: #e6a23c; font-size: 12px;">
                   支付中 · {{ row.submit_user || '-' }}
                 </span>
@@ -366,6 +385,22 @@
             @size-change="loadExpenseData"
             @current-change="loadExpenseData"
           />
+
+          <el-divider content-position="left">待审核的费用绩效分摊</el-divider>
+          <el-table :data="expenseAllocationReviews" stripe border size="small" v-loading="expenseAllocationReviewLoading">
+            <el-table-column prop="allocation_no" label="分摊单号" width="180" />
+            <el-table-column prop="expense_no" label="费用单号" width="170" />
+            <el-table-column prop="performance_month" label="绩效月份" width="105" />
+            <el-table-column prop="staff_name" label="员工" width="90" />
+            <el-table-column label="扣减金额" width="110"><template #default="{ row }">¥{{ formatMoney(row.amount) }}</template></el-table-column>
+            <el-table-column prop="reason" label="原因" min-width="180" show-overflow-tooltip />
+            <el-table-column label="操作" width="130">
+              <template #default="{ row }">
+                <el-button link type="success" @click="reviewExpenseAllocation(row, 'approve')">通过</el-button>
+                <el-button link type="danger" @click="reviewExpenseAllocation(row, 'reject')">拒绝</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
 
           <div class="settlement-section">
             <div class="filter-bar">
@@ -1031,6 +1066,13 @@
         <el-form-item label="费用日期">
           <el-date-picker v-model="expenseForm.expenseDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
         </el-form-item>
+        <el-form-item label="经营归属月" required>
+          <el-date-picker v-model="expenseForm.accountingMonth" type="month" value-format="YYYY-MM" style="width: 100%" />
+          <div class="form-help">上月亏损本月体现时，可选择本月；付款日期不决定归属月份。</div>
+        </el-form-item>
+        <el-form-item label="计入门店经营利润">
+          <el-switch v-model="expenseForm.affectsStoreProfit" />
+        </el-form-item>
         <el-form-item label="支付方式">
           <el-select v-model="expenseForm.paymentMethod" placeholder="请选择" style="width: 100%">
             <el-option label="财务对公" value="CORPORATE" />
@@ -1056,6 +1098,40 @@
         <el-button @click="expenseDialogVisible = false">取消</el-button>
         <el-button type="info" @click="saveExpenseDraft">保存草稿</el-button>
         <el-button type="primary" @click="handleExpenseSubmit" :loading="submitLoading">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="expenseAllocationVisible" title="费用分摊到员工绩效毛利" width="720px" @closed="resetExpenseAllocationForm">
+      <el-alert
+        v-if="expenseAllocationExpense"
+        :title="`费用 ${expenseAllocationExpense.expense_no}：总额 ¥${formatMoney(expenseAllocationExpense.amount)}，已分摊 ¥${formatMoney(expenseAllocationExpense.performance_allocation_amount)}`"
+        type="info"
+        :closable="false"
+        style="margin-bottom: 16px"
+      />
+      <el-form label-width="100px">
+        <el-form-item label="绩效月份" required>
+          <el-date-picker v-model="expenseAllocationForm.performanceMonth" type="month" value-format="YYYY-MM" style="width: 180px" />
+        </el-form-item>
+        <el-form-item label="扣减原因" required>
+          <el-input v-model="expenseAllocationForm.reason" maxlength="1000" show-word-limit placeholder="例如：本月门店共同承担的异常费用" />
+        </el-form-item>
+        <el-form-item label="员工分摊">
+          <div class="allocation-editor">
+            <div v-for="(row, index) in expenseAllocationRows" :key="index" class="allocation-row">
+              <el-select v-model="row.staffId" placeholder="选择员工" filterable style="width: 220px">
+                <el-option v-for="staff in expenseStaffOptions" :key="staff.staffId" :label="staff.name" :value="String(staff.staffId)" />
+              </el-select>
+              <el-input-number v-model="row.amount" :min="0.01" :precision="2" :step="100" controls-position="right" style="width: 170px" />
+              <el-button v-if="expenseAllocationRows.length > 1" link type="danger" @click="expenseAllocationRows.splice(index, 1)">删除</el-button>
+            </div>
+            <el-button link type="primary" @click="expenseAllocationRows.push({ staffId: '', amount: 0 })">增加员工</el-button>
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="expenseAllocationVisible = false">取消</el-button>
+        <el-button type="primary" :loading="expenseAllocationSubmitting" @click="submitExpenseAllocation">提交审批</el-button>
       </template>
     </el-dialog>
 
@@ -1425,6 +1501,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import * as XLSX from 'xlsx'
 import api from '../api'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
+import { getRoleCode } from '../utils/user'
 import PaymentManagement from './PaymentManagement.vue'
 
 const route = useRoute()
@@ -1477,6 +1554,20 @@ const subsidyAdjustmentDialogVisible = ref(false)
 const subsidyAdjustmentForm = reactive({ detailId:'', orderNo:'', remaining:0, adjustmentType:'FEE', amount:0, financeCategory:'', reason:'' })
 const expenseData = ref([])
 const expenseTotal = ref(0)
+const expenseOverview = ref(null)
+const expenseAccountingMonth = ref(new Date().toISOString().slice(0, 7))
+const expensePeriod = ref(null)
+const expenseAllocationReviews = ref([])
+const expenseAllocationReviewLoading = ref(false)
+const expenseAllocationVisible = ref(false)
+const expenseAllocationSubmitting = ref(false)
+const expenseAllocationExpense = ref(null)
+const expenseAllocationRows = ref([{ staffId: '', amount: 0 }])
+const expenseStaffOptions = ref([])
+const expenseAllocationForm = reactive({ performanceMonth: '', reason: '' })
+const financeRoles = String(getRoleCode() || '').split(',').map(role => role.trim().toLowerCase()).filter(Boolean)
+const canManageExpenseAllocations = financeRoles.some(role => ['finance', 'admin', 'boss'].includes(role))
+const canReopenExpensePeriod = financeRoles.some(role => ['admin', 'boss'].includes(role))
 
 const expenseDialogVisible = ref(false)
 const submitLoading = ref(false)
@@ -1745,7 +1836,8 @@ const productSettlementQuery = reactive({
 
 const expenseQuery = reactive({
   page: 1,
-  pageSize: 20
+  pageSize: 20,
+  accountingMonth: expenseAccountingMonth.value
 })
 
 const runListExport = async (key, label, exporter, params) => {
@@ -1808,6 +1900,8 @@ const expenseForm = reactive({
   amount: 0,
   expenseParty: '',
   expenseDate: new Date().toISOString().slice(0, 10),
+  accountingMonth: new Date().toISOString().slice(0, 7),
+  affectsStoreProfit: true,
   paymentMethod: 'CORPORATE',
   hasInvoice: false,
   invoiceType: '',
@@ -1944,6 +2038,9 @@ onMounted(() => {
   loadSubsidyAuxiliary()
   loadExpenseData()
   loadExpenseSettleData()
+  loadExpensePeriod()
+  loadExpenseOverview()
+  loadExpenseAllocationReviews()
   loadExpenseTypes()
   loadPayableData()
   loadPayableDistributors()
@@ -2244,7 +2341,8 @@ const formatDateTime = (time) => {
 
 const loadExpenseData = async () => {
   try {
-    const params = { ...expenseQuery, status: 'draft,pending_payment,pending_approval,pending' }
+    expenseQuery.accountingMonth = expenseAccountingMonth.value
+    const params = { ...expenseQuery, status: 'draft,pending_payment,pending_approval,pending,approved,paid,processing' }
     const res = await api.getExpenseList(params)
     if (res.code === 0) {
       expenseData.value = res.data?.list || []
@@ -2321,12 +2419,112 @@ const handleEditExpense = (row) => {
   expenseForm.amount = Number(row.amount || 0)
   expenseForm.expenseParty = row.expense_party || ''
   expenseForm.expenseDate = row.expense_date || new Date().toISOString().slice(0, 10)
+  expenseForm.accountingMonth = row.accounting_month || expenseForm.expenseDate.slice(0, 7)
+  expenseForm.affectsStoreProfit = Number(row.affects_store_profit ?? 1) === 1
   expenseForm.paymentMethod = row.payment_method || 'CORPORATE'
   expenseForm.hasInvoice = Boolean(row.has_invoice)
   expenseForm.invoiceType = row.invoice_type || ''
   expenseForm.invoiceNo = row.invoice_no || ''
   expenseForm.remark = row.remark || ''
   expenseDialogVisible.value = true
+}
+
+const loadExpenseOverview = async () => {
+  try {
+    const res = await api.getFinanceOverview({
+      periodType: 'month',
+      date: `${expenseAccountingMonth.value}-01`
+    })
+    if (res.code === 0) expenseOverview.value = res.data || null
+  } catch (err) {
+    console.error('加载门店经营费用概览失败', err)
+  }
+}
+
+const handleExpenseMonthChange = async () => {
+  await Promise.all([loadExpenseData(), loadExpensePeriod(), loadExpenseOverview()])
+}
+
+const openExpenseAllocation = async (row) => {
+  expenseAllocationExpense.value = row
+  expenseAllocationForm.performanceMonth = row.accounting_month || expenseAccountingMonth.value
+  expenseAllocationForm.reason = ''
+  expenseAllocationRows.value = [{ staffId: '', amount: 0 }]
+  expenseAllocationVisible.value = true
+  try {
+    const res = await api.getDashboardFilters()
+    if (res.code === 0) expenseStaffOptions.value = res.data?.employees || []
+  } catch (err) {
+    ElMessage.error('加载员工列表失败')
+  }
+  try {
+    const res = await api.getExpensePerformanceAllocations(row.expense_id, { page: 1, pageSize: 100 })
+    if (res.code === 0) {
+      const existing = res.data?.list || []
+      expenseAllocationExpense.value = { ...row, performance_allocation_amount: existing
+        .filter(item => ['pending_finance', 'pending_admin', 'approved'].includes(item.status))
+        .reduce((sum, item) => sum + Number(item.amount || 0), 0) }
+    }
+  } catch (err) {
+    console.error('加载费用绩效分摊记录失败', err)
+  }
+}
+
+const resetExpenseAllocationForm = () => {
+  expenseAllocationExpense.value = null
+  expenseAllocationRows.value = [{ staffId: '', amount: 0 }]
+  expenseAllocationForm.performanceMonth = ''
+  expenseAllocationForm.reason = ''
+}
+
+const submitExpenseAllocation = async () => {
+  if (!expenseAllocationExpense.value?.expense_id) return
+  if (!expenseAllocationForm.performanceMonth) { ElMessage.warning('请选择绩效月份'); return }
+  if (!expenseAllocationForm.reason.trim()) { ElMessage.warning('请填写扣减原因'); return }
+  const allocations = expenseAllocationRows.value.filter(row => row.staffId && Number(row.amount) > 0)
+  if (!allocations.length) { ElMessage.warning('请至少填写一名员工的分摊金额'); return }
+  expenseAllocationSubmitting.value = true
+  try {
+    const res = await api.createExpensePerformanceAllocations(expenseAllocationExpense.value.expense_id, {
+      performanceMonth: expenseAllocationForm.performanceMonth,
+      reason: expenseAllocationForm.reason.trim(),
+      allocations: allocations.map(row => ({ staffId: row.staffId, amount: Number(row.amount) }))
+    })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '已提交审批')
+      expenseAllocationVisible.value = false
+      await loadExpenseData()
+      await loadExpenseAllocationReviews()
+    }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || '提交费用绩效分摊失败')
+  } finally {
+    expenseAllocationSubmitting.value = false
+  }
+}
+
+const reviewExpenseAllocation = async (row, action) => {
+  try {
+    const result = await ElMessageBox.prompt(
+      action === 'approve' ? '可填写审核意见' : '请填写拒绝原因',
+      action === 'approve' ? '审核费用绩效分摊' : '拒绝费用绩效分摊',
+      {
+        confirmButtonText: '确认',
+        cancelButtonText: '取消',
+        inputValidator: value => action === 'approve' || !!String(value || '').trim() || '拒绝原因不能为空'
+      }
+    )
+    const res = await api.reviewExpensePerformanceAllocation(row.allocation_id, {
+      action,
+      comment: String(result.value || '').trim()
+    })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '审核完成')
+      await loadExpenseAllocationReviews()
+    }
+  } catch (err) {
+    if (err !== 'cancel' && err !== 'close') ElMessage.error(err?.response?.data?.message || '审核失败')
+  }
 }
 
 const handleSubmitExpenseDraft = async (row) => {
@@ -2463,6 +2661,62 @@ const loadPayableData = async () => {
     }
   } catch (err) {
     console.error('Failed to load payables')
+  }
+}
+
+const loadExpensePeriod = async () => {
+  try {
+    const res = await api.getExpenseAccountingPeriods({ monthKey: expenseAccountingMonth.value })
+    if (res.code === 0) expensePeriod.value = (res.data || [])[0] || null
+  } catch (err) {
+    console.error('加载费用经营月份失败', err)
+  }
+}
+
+const loadExpenseAllocationReviews = async () => {
+  if (!canManageExpenseAllocations) return
+  expenseAllocationReviewLoading.value = true
+  try {
+    const res = await api.getExpensePerformanceAllocationReviews({ page: 1, pageSize: 100 })
+    if (res.code === 0) expenseAllocationReviews.value = res.data?.list || []
+  } catch (err) {
+    console.error('加载费用绩效分摊审批失败', err)
+  } finally {
+    expenseAllocationReviewLoading.value = false
+  }
+}
+
+const canManageExpenseAccounting = (row) => canManageExpenseAllocations
+  && ['pending_payment', 'pending', 'processing', 'approved', 'paid'].includes(String(row?.status || ''))
+  && Number(row?.affects_store_profit ?? 1) === 1
+
+const closeExpensePeriod = async () => {
+  try {
+    await ElMessageBox.confirm(`锁定费用经营月份 ${expenseAccountingMonth.value}？锁定后只能通过冲销或调整流程修改。`, '锁定费用月份', {
+      confirmButtonText: '确认锁定', cancelButtonText: '取消', type: 'warning'
+    })
+    const res = await api.closeExpenseAccountingPeriod(expenseAccountingMonth.value)
+    if (res.code === 0) {
+      ElMessage.success(res.message || '费用月份已锁定')
+      await loadExpensePeriod()
+    }
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err?.response?.data?.message || '锁定费用月份失败')
+  }
+}
+
+const reopenExpensePeriod = async () => {
+  try {
+    await ElMessageBox.confirm(`重新打开费用经营月份 ${expenseAccountingMonth.value}？`, '重新打开费用月份', {
+      confirmButtonText: '确认打开', cancelButtonText: '取消', type: 'warning'
+    })
+    const res = await api.reopenExpenseAccountingPeriod(expenseAccountingMonth.value)
+    if (res.code === 0) {
+      ElMessage.success(res.message || '费用月份已重新打开')
+      await loadExpensePeriod()
+    }
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err?.response?.data?.message || '重新打开费用月份失败')
   }
 }
 
@@ -3198,6 +3452,8 @@ const buildExpensePayload = () => ({
   amount: expenseForm.amount,
   expenseParty: expenseForm.expenseParty,
   expenseDate: expenseForm.expenseDate,
+  accountingMonth: expenseForm.accountingMonth,
+  affectsStoreProfit: expenseForm.affectsStoreProfit,
   paymentMethod: expenseForm.paymentMethod,
   hasInvoice: expenseForm.hasInvoice,
   invoiceType: expenseForm.invoiceType,
@@ -3300,6 +3556,8 @@ const resetForm = () => {
   expenseForm.amount = 0
   expenseForm.expenseParty = ''
   expenseForm.expenseDate = new Date().toISOString().slice(0, 10)
+  expenseForm.accountingMonth = new Date().toISOString().slice(0, 7)
+  expenseForm.affectsStoreProfit = true
   expenseForm.paymentMethod = 'CORPORATE'
   expenseForm.hasInvoice = false
   expenseForm.invoiceType = ''
@@ -3516,6 +3774,44 @@ const restoreAccountTxnDraft = () => {
 </script>
 
 <style scoped>
+.form-help {
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+
+.allocation-editor {
+  width: 100%;
+}
+
+.allocation-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.expense-overview-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  padding: 12px 16px;
+  margin-bottom: 14px;
+  background: #f5f7fa;
+  border-radius: 4px;
+}
+
+.expense-overview-item {
+  color: #606266;
+  font-size: 13px;
+}
+
+.expense-overview-item strong {
+  color: #303133;
+  margin-left: 4px;
+}
+
 .module-tabs :deep(.el-tabs__header) {
   display: none;
 }
