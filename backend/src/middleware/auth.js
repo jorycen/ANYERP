@@ -5,7 +5,7 @@
 const jwt = require('jsonwebtoken');
 const config = require('../config');
 const { Staff, Role } = require('../models');
-const { resolveAccessibleStoreIds, resolvePrimaryStoreId, resolveConfiguredRegions, isStoreScopedAccount } = require('../utils/storePermissions');
+const { resolveAccessibleStoreIds, resolvePrimaryStoreId, resolveConfiguredRegions, isStoreScopedAccount, isMallReportViewer } = require('../utils/storePermissions');
 const { resolveStaffDistributorIds } = require('../utils/distributorScope');
 const { isDealerTraceAccount } = require('../utils/snTracePermission');
 const { consumeDownloadTicket } = require('../utils/downloadTicket');
@@ -84,6 +84,16 @@ async function authMiddleware(ctx, next) {
  */
 async function storeAccessMiddleware(ctx, next) {
   const user = ctx.state.user;
+  if (isMallReportViewer(user?.roles || user?.roleCode)) {
+    const isAllowedQuery = ctx.method === 'GET' && (
+      ctx.path === '/api/v1/sales/list' ||
+      /^\/api\/v1\/sales\/[^/]+$/.test(ctx.path)
+    );
+    if (!isAllowedQuery) {
+      ctx.throw(403, '商场查询账号仅允许查询已上报商场数据');
+    }
+    return next();
+  }
   if (!user || user.roles?.includes('boss') || user.accessibleStoreIds?.includes('*')) return next();
   if (ctx.path.startsWith('/api/v1/system/')) return next();
   if (ctx.path === '/api/v1/store/create' && ctx.method === 'POST') return next();

@@ -6,7 +6,7 @@ function uniqueIds(values) {
   return [...new Set((values || []).map(value => String(value || '')).filter(Boolean))];
 }
 
-const STORE_ONLY_ROLE_CODES = new Set(['clerk', 'staff', 'manager', 'store_manager', 'store_admin']);
+const STORE_ONLY_ROLE_CODES = new Set(['clerk', 'staff', 'manager', 'store_manager', 'store_admin', 'mall_report_viewer']);
 
 function normalizeRoleCodes(roleCodes = []) {
   return [...new Set((Array.isArray(roleCodes) ? roleCodes : [roleCodes])
@@ -30,6 +30,10 @@ function isRegionScopedAccount(roleCodes = []) {
 function isStoreManagerAccount(roleCodes = []) {
   const roles = normalizeRoleCodes(roleCodes);
   return roles.some(roleCode => ['manager', 'store_manager', 'store_admin'].includes(roleCode));
+}
+
+function isMallReportViewer(roleCodes = []) {
+  return normalizeRoleCodes(roleCodes).includes('mall_report_viewer');
 }
 
 /**
@@ -188,5 +192,6 @@ module.exports = {
   resolveReportStoreIds,
   isStoreManagerAccount,
   isRegionScopedAccount,
-  isStoreScopedAccount
+  isStoreScopedAccount,
+  isMallReportViewer
 };

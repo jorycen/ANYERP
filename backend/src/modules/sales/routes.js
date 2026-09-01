@@ -31,6 +31,7 @@ const {
   availableDeposits,
   getProductPns,
   getProductSns,
+  reportToMall,
   recalculateSettlementCost,
   getGrossProfit,
   updateSupplements,
@@ -116,6 +117,7 @@ router.post('/order-items', enforceStoreOwnership, updateOrderItems);
 router.get('/:orderId/gross-profit', getGrossProfit);
 router.put('/:orderId/supplements', enforceStoreOwnership, updateSupplements);
 router.get('/:orderId', detail);
+router.post('/:orderId/report-to-mall', reportToMall);
 router.put('/:orderId', enforceOrderStoreOwnership, update);
 router.post('/:orderId/approve', approve);
 router.post('/:orderId/reject', reject);

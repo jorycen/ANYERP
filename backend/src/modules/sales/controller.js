@@ -52,7 +52,7 @@ const { normalizePnCode } = require('../../utils/productPn');
 const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
 const { canAccessDistributor, resolveOrderStoreIds } = require('../../utils/distributorScope');
-const { isStoreManagerAccount, isStoreScopedAccount } = require('../../utils/storePermissions');
+const { isStoreManagerAccount, isStoreScopedAccount, isMallReportViewer } = require('../../utils/storePermissions');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { assertActiveProducts } = require('../../utils/activeProduct');
 const { syncSerializedInventoryBalance } = require('../inventory/serializedInventoryBalance');
@@ -365,11 +365,14 @@ async function list(ctx) {
   const {
     storeId, startDate, endDate, customerPhone, customerName, orderNo,
     status, createUser, submitUser, productName, productCode, pnCode, snCode,
-    scope, page = 1, pageSize = 20
+    scope, onlyReportedToMall, page = 1, pageSize = 20
   } = ctx.query;
   const user = ctx.state.user;
 
   const where = { is_deleted: 0 };
+  if (isMallReportViewer(getUserRoles(user)) || ['true', '1', 'yes'].includes(String(onlyReportedToMall || '').toLowerCase())) {
+    where.mall_report_status = 'reported';
+  }
   const orderStoreIds = await resolveSalesOrderStoreIds(user);
   const dealerWide = isDealerTraceAccount(user);
   const storeInclude = { model: Store };
@@ -446,7 +449,7 @@ async function list(ctx) {
 
   // 订单列表先按账号已授权门店过滤；店长可查看授权门店全部订单，
   // 其他门店角色仅查看本人创建的订单。
-  if (!dealerWide && !isStoreManagerAccount(getUserRoles(user))) {
+  if (!dealerWide && !isStoreManagerAccount(getUserRoles(user)) && !isMallReportViewer(getUserRoles(user))) {
     const visibility = buildSalesOrderVisibilityCondition(user);
     if (visibility) {
       where[Op.and] = [...(where[Op.and] || []), visibility];
@@ -2661,6 +2664,42 @@ async function detail(ctx) {
   ctx.body = result;
 }
 
+/**
+ * 将已归档订单标记为已上报商场。
+ * 上报状态由后端统一落库，查询账号只读取该状态为 reported 的订单。
+ */
+async function reportToMall(ctx) {
+  const user = ctx.state.user;
+  if (!isStoreManagerAccount(getUserRoles(user))) {
+    ctx.throw(403, '只有店长账号可以上报商场');
+  }
+
+  const order = await Order.findByPk(ctx.params.orderId);
+  if (!order) ctx.throw(404, '订单不存在');
+  await assertSalesOrderVisible(order, user);
+  if (!['已归档', 'completed', 'archived'].includes(String(order.order_status || ''))) {
+    ctx.throw(400, '只有已归档订单可以上报商场');
+  }
+
+  if (order.mall_report_status === 'reported') {
+    ctx.body = { code: 0, message: '订单已上报商场', data: { orderNo: order.order_no, status: 'reported' } };
+    return;
+  }
+
+  const reportTime = new Date();
+  await order.update({
+    mall_report_status: 'reported',
+    mall_report_time: reportTime,
+    mall_report_staff_id: user.staffId || null,
+    mall_report_staff_name: user.name || user.phone || ''
+  });
+  ctx.body = {
+    code: 0,
+    message: '订单上报商场成功',
+    data: { orderNo: order.order_no, status: 'reported', reportTime }
+  };
+}
+
 async function archiveSalesOrderEffects(order, transaction, { inventoryAlreadyReserved = false } = {}) {
   await validateAndDeductInventoryForArchive(order, transaction, {
     inventoryReserved: inventoryAlreadyReserved
@@ -2852,6 +2891,9 @@ async function reject(ctx) {
  * 更新订单
  */
 async function update(ctx) {
+  if (isMallReportViewer(getUserRoles(ctx.state.user))) {
+    ctx.throw(403, '商场查询账号只读，不能修改订单');
+  }
   const { orderId } = ctx.params;
   const data = Object.assign({}, ctx.request.body, normalizeOrderExtendedFields(ctx.request.body || {}));
 
@@ -4417,6 +4459,15 @@ async function assertSalesOrderVisible(order, user) {
     throw error;
   }
 
+  if (isMallReportViewer(getUserRoles(user))) {
+    if (order.mall_report_status !== 'reported') {
+      const error = new Error('该订单尚未上报商场');
+      error.status = 404;
+      throw error;
+    }
+    return;
+  }
+
   if (isStoreManagerAccount(getUserRoles(user)) || isSalesOrderCreator(order, user)) {
     return;
   }
@@ -5302,6 +5353,7 @@ module.exports = {
   availableDeposits,
   getProductPns,
   getProductSns,
+  reportToMall,
   recalculateSettlementCost,
   getGrossProfit,
   updateSupplements,
@@ -5317,6 +5369,7 @@ module.exports = {
     isSalesOrderCreator,
     buildSalesOrderVisibilityCondition,
     buildSalesOrderListOrder,
+    isMallReportViewer,
     resolveSalesOrderStoreIds,
     salesApprovalStageFromStatus,
     salesApprovalStageLabel,

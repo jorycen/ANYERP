@@ -988,6 +988,11 @@ async function runMigrations() {
     await checkAndAddColumn('T_ORDER', 'OPERATOR_STAFF_ID', 'BIGINT COMMENT "销售经手人员工ID"');
     await checkAndAddColumn('T_ORDER', 'OPERATOR_NAME', 'VARCHAR(64) COMMENT "销售经手人姓名快照"');
     await checkAndAddColumn('T_ORDER', 'CREATE_USER', 'VARCHAR(64) COMMENT "销售订单制单人姓名快照"');
+    await checkAndAddColumn('T_ORDER', 'MALL_REPORT_STATUS', 'VARCHAR(32) COMMENT "商场上报状态：reported表示已上报"', 'APPROVE_COMMENT');
+    await checkAndAddColumn('T_ORDER', 'MALL_REPORT_TIME', 'DATETIME COMMENT "商场上报时间"', 'MALL_REPORT_STATUS');
+    await checkAndAddColumn('T_ORDER', 'MALL_REPORT_STAFF_ID', 'BIGINT COMMENT "商场上报操作人员工ID"', 'MALL_REPORT_TIME');
+    await checkAndAddColumn('T_ORDER', 'MALL_REPORT_STAFF_NAME', 'VARCHAR(64) COMMENT "商场上报操作人姓名快照"', 'MALL_REPORT_STAFF_ID');
+    await checkAndAddIndex('T_ORDER', 'idx_order_mall_report', 'ALTER TABLE T_ORDER ADD INDEX idx_order_mall_report (MALL_REPORT_STATUS, STORE_ID, CREATE_TIME)');
     await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'SELECTED_RESOURCE_TYPES', 'TEXT COMMENT "采购申请勾选的资源权益JSON"', 'STORE_ALLOCATIONS');
     await checkAndAddColumn('T_PURCHASE_REQUEST', 'PAYMENT_METHOD', 'VARCHAR(32) NOT NULL DEFAULT "COMPANY_CREDIT" COMMENT "COMPANY_CREDIT/PERSONAL_ADVANCE"', 'INVOICE_TYPE');
     await checkAndAddColumn('T_PURCHASE_REQUEST', 'OPERATOR_STAFF_ID', 'BIGINT COMMENT "采购经手人员工ID"');
@@ -3798,6 +3803,7 @@ async function seedPermissionData() {
       ['sales_order', '销售订单', 'sales', '/sales/order', 1],
       ['sales_subsidy_photos', '国补照片', 'sales', '/sales/subsidy-photos', 2],
       ['sales_monthly_tasks', '月度任务', 'sales', '/sales/monthly-tasks', 3],
+      ['sales_mall_query', '商场销量查询', 'sales', '/sales/mall-query', 4],
       ['inventory_summary', '库存汇总', 'inventory', '/inventory/summary', 1],
       ['inventory_sn_inventory', 'SN库存清单', 'inventory', '/inventory/sn-inventory', 2],
       ['inventory_batch_maintenance', '批量维护', 'inventory', '/inventory/batch-maintenance', 3],
@@ -3885,6 +3891,7 @@ async function seedPermissionData() {
         'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_achievement',
         'approval_tasks', 'approval_instances'
       ],
+      mall_report_viewer: ['sales_mall_query'],
       clerk: [
         'sales_order', 'inventory_summary', 'inventory_sn_inventory', 'inventory_inbound',
         'inventory_sn_trace', 'inventory_transfer', 'reports_dashboard', 'reports_sales',
@@ -3949,6 +3956,12 @@ async function seedPermissionData() {
     await sequelize.query(
       `INSERT IGNORE INTO T_MENU (MENU_ID, MENU_CODE, NAME, PARENT_ID, MENU_TYPE, PATH, ICON, SORT_ORDER, STATUS)
        VALUES (?, 'approval', '审批中心', NULL, 'menu', '/approval', 'Checked', 4, 1)`,
+      { replacements: [uuid().replace(/-/g, '').substring(0, 32)] }
+    );
+    await sequelize.query(
+      `INSERT INTO T_ROLE (ROLE_ID, ROLE_CODE, NAME, DESCRIPTION, IS_SYSTEM, STATUS)
+       VALUES (?, 'mall_report_viewer', '商场上报查询', '仅查询已上报商场数据', 1, 1)
+       ON DUPLICATE KEY UPDATE NAME = VALUES(NAME), DESCRIPTION = VALUES(DESCRIPTION), IS_SYSTEM = 1, STATUS = 1`,
       { replacements: [uuid().replace(/-/g, '').substring(0, 32)] }
     );
     await sequelize.query(

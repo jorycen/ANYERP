@@ -32,7 +32,7 @@ function hasAnyRole(user, allowedRoles) {
   return roles.includes('boss') || roles.includes('admin') || roles.some(role => allowedRoles.includes(role));
 }
 
-const STORE_ONLY_ROLE_CODES = new Set(['clerk', 'staff', 'manager', 'store_manager', 'store_admin']);
+const STORE_ONLY_ROLE_CODES = new Set(['clerk', 'staff', 'manager', 'store_manager', 'store_admin', 'mall_report_viewer']);
 const TRANSFER_OPERATION_PATHS = new Set([
   '/api/v1/inventory/transfer/confirm-out',
   '/api/v1/inventory/transfer/confirm-in',

@@ -11,6 +11,7 @@
     "db:migrate:used-product": "node scripts/migrate-used-product-columns.js",
     "db:migrate:used-product": "node scripts/migrate-used-product-columns.js",
     "db:repair-purchase-return": "node scripts/repair-purchase-return.js",
+    "db:provision-mall-report-accounts": "node scripts/provision-mall-report-accounts.js",
     "freight:preview": "node scripts/preview-freight-recalculation.js",
     "db:clear": "node clear_data.js",
     "pn:audit": "node scripts/audit-product-pn-consistency.js"

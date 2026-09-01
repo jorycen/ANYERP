@@ -6,7 +6,8 @@ const {
   isStoreManagerAccount,
   resolveAllReadableStoreIds,
   resolveReportStoreIds,
-  resolvePrimaryStoreId
+  resolvePrimaryStoreId,
+  isMallReportViewer
 } = require('../src/utils/storePermissions');
 const { Store } = require('../src/models');
 
@@ -45,6 +46,12 @@ test('经营报表恢复为账号已配置的门店范围', async () => {
     await resolveReportStoreIds({ roles: ['boss'], accessibleStoreIds: [] }),
     ['*']
   );
+});
+
+test('商场上报查询账号属于门店范围但不是店长写入角色', () => {
+  assert.equal(isMallReportViewer(['mall_report_viewer']), true);
+  assert.equal(isStoreScopedAccount(['mall_report_viewer']), true);
+  assert.equal(isStoreManagerAccount(['mall_report_viewer']), false);
 });
 
 test('库存只读范围按经销商展开，不受店长主门店限制', async () => {
