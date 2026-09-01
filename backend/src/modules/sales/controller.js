@@ -2661,8 +2661,10 @@ async function detail(ctx) {
   ctx.body = result;
 }
 
-async function archiveSalesOrderEffects(order, transaction) {
-  await validateAndDeductInventoryForArchive(order, transaction);
+async function archiveSalesOrderEffects(order, transaction, { inventoryAlreadyReserved = false } = {}) {
+  await validateAndDeductInventoryForArchive(order, transaction, {
+    inventoryReserved: inventoryAlreadyReserved
+  });
   await redeemReservedDepositsForOrder(order, transaction);
   const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
   await lockSaleRights(order, items, transaction);
@@ -2727,7 +2729,9 @@ async function approve(ctx) {
       return;
     }
 
-    await archiveSalesOrderEffects(lockedOrder, transaction);
+    await archiveSalesOrderEffects(lockedOrder, transaction, {
+      inventoryAlreadyReserved: Number(lockedOrder.inventory_reserved || 0) === 1
+    });
     await lockedOrder.update({
       order_status: '已归档',
       inventory_reserved: 0,
@@ -2890,6 +2894,7 @@ async function update(ctx) {
     if (releasedReservedOrderItems) {
       await releaseReservedInventoryForOrder(order, transaction);
       data.inventory_reserved = 0;
+      order.inventory_reserved = 0;
     }
     await syncOrderItemsFromPayload(order, data, transaction);
     if (releasedReservedOrderItems && !isArchiveStatus(nextStatus) && !isCancelStatus(nextStatus)) {
@@ -2904,8 +2909,11 @@ async function update(ctx) {
       delete archiveOrderFields.order_status;
       await order.update(archiveOrderFields, { transaction });
 
-      // 归档点击阶段只做完整校验，不扣库存、不核销权益；负毛利订单进入审批。
+      // 归档点击阶段先完成库存和资源权益校验。负毛利订单还要预占库存、锁定权益，
+      // 校验通过后才能进入审批，避免审批期间库存或国补资格被其他订单占用。
       await validateAndDeductInventoryForArchive(order, transaction, { deduct: false });
+      const archiveItems = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+      await lockSaleRights(order, archiveItems, transaction);
       const grossProfitSnapshot = await calculateAndSaveOrderGrossProfit(order.order_id, {
         transaction,
         calculatedBy: ctx.state.user?.name || 'system',
@@ -2915,9 +2923,13 @@ async function update(ctx) {
       archiveGrossProfitAmount = Number(grossProfitSnapshot?.gross_profit_amount || 0);
 
       if (archiveGrossProfitAmount < 0) {
+        if (Number(order.inventory_reserved || 0) !== 1) {
+          await reserveInventoryForOrder(order, transaction);
+          order.inventory_reserved = 1;
+        }
         data.order_status = SALES_APPROVAL_STATUSES.store;
         data.status = SALES_APPROVAL_STATUSES.store;
-        data.inventory_reserved = 0;
+        data.inventory_reserved = 1;
         data.approve_user = null;
         data.approve_time = null;
         data.approve_comment = null;
@@ -5068,7 +5080,10 @@ async function applySalesInventoryAllocations(allocations, transaction = null) {
   }
 }
 
-async function validateAndDeductInventoryForArchive(order, transaction = null, { deduct = true } = {}) {
+async function validateAndDeductInventoryForArchive(order, transaction = null, {
+  deduct = true,
+  inventoryReserved = false
+} = {}) {
   const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
   if (!items.length) {
     throw archiveError('订单中没有商品，无法归档');
@@ -5115,6 +5130,20 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
     ? await Product.findAll({ where: { product_id: { [Op.in]: productIds }, is_deleted: 0, status: 1 }, transaction })
     : [];
   const productMap = new Map(products.map(product => [String(product.product_id), product]));
+  const reservedPendingByProduct = new Map();
+  if (inventoryReserved && productIds.length) {
+    const reservedInventoryRows = await Inventory.findAll({
+      where: { product_id: { [Op.in]: productIds }, store_id: order.store_id },
+      ...inventoryQueryOptions(transaction)
+    });
+    for (const row of reservedInventoryRows) {
+      const productId = String(row.product_id || '');
+      reservedPendingByProduct.set(
+        productId,
+        Number(reservedPendingByProduct.get(productId) || 0) + Number(row.pending_qty || 0)
+      );
+    }
+  }
   const operations = [];
 
   for (const item of items) {
@@ -5151,6 +5180,10 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
       if (!(await isSalesWarehouseSn(snRecord, transaction))) {
         throw archiveError(`SN码 [${snCode}] 不在销售仓，不允许直接销售`);
       }
+      if (!item.sn_id) {
+        await item.update({ sn_id: snRecord.sn_id }, { transaction });
+        item.sn_id = snRecord.sn_id;
+      }
 
       operations.push({
         item,
@@ -5182,6 +5215,24 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
           await item.update({ sn_id: optionalSn.sn_id }, { transaction });
         }
       }
+      if (inventoryReserved) {
+        const productId = String(item.product_id || '');
+        const pendingQty = Number(reservedPendingByProduct.get(productId) || 0);
+        if (pendingQty < quantity) {
+          throw archiveError(`商品 ${item.product_name || product.name} 预占库存不足(可用:${pendingQty}，需要:${quantity})，不能归档`);
+        }
+        reservedPendingByProduct.set(productId, pendingQty - quantity);
+        operations.push({
+          item,
+          product,
+          quantity,
+          inventoryType: 'normal_qty',
+          inventoryAllocations: [],
+          inventoryReserved: true
+        });
+        continue;
+      }
+
       const inventoryPlan = await buildSalesInventoryPlan(item.product_id, order.store_id, quantity, transaction);
       if (inventoryPlan.totalStock < quantity) {
         throw archiveError(`商品 ${item.product_name || product.name} 库存不足(可用:${inventoryPlan.totalStock}, 需要:${quantity})，不能归档`);
@@ -5213,7 +5264,11 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
       }
     }
 
-    await applySalesInventoryAllocations(op.inventoryAllocations, transaction);
+    if (op.inventoryReserved) {
+      await _finalizePendingInventory(op.item.product_id, order.store_id, op.quantity, transaction);
+    } else {
+      await applySalesInventoryAllocations(op.inventoryAllocations, transaction);
+    }
   }
   return operations;
 }
@@ -5278,6 +5333,7 @@ module.exports = {
     normalizePnCode,
     validateAndDeductInventoryForArchive,
     reserveInventoryForOrder,
+    lockSaleRights,
     normalizeSubsidyPhotos,
     hasSubsidyPhotoFilter,
     inferSubsidyPhotoExtension,
