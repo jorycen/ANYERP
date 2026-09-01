@@ -1806,9 +1806,10 @@ async function getSnList(ctx) {
     const { count, rows } = await ProductSn.findAndCountAll({
       where,
       order: [
+        [sequelize.literal("CASE WHEN `ProductSn`.`status` = 'in_stock' THEN 0 ELSE 1 END"), 'ASC'],
         [sequelize.literal('CASE WHEN COALESCE(`ProductSn`.`original_inbound_time`, `ProductSn`.`inbound_time`) IS NULL THEN 1 ELSE 0 END'), 'ASC'],
-        [sequelize.literal('TIMESTAMPDIFF(SECOND, COALESCE(`ProductSn`.`original_inbound_time`, `ProductSn`.`inbound_time`), NOW())'), 'DESC'],
-        [sequelize.literal('COALESCE(`ProductSn`.`original_inbound_time`, `ProductSn`.`inbound_time`)'), 'ASC'],
+        [sequelize.literal("CASE WHEN `ProductSn`.`status` = 'in_stock' THEN COALESCE(`ProductSn`.`original_inbound_time`, `ProductSn`.`inbound_time`) END"), 'ASC'],
+        [sequelize.literal("CASE WHEN `ProductSn`.`status` <> 'in_stock' THEN COALESCE(`ProductSn`.`original_inbound_time`, `ProductSn`.`inbound_time`) END"), 'DESC'],
         [sequelize.literal('`ProductSn`.`sn_id`'), 'DESC']
       ],
       ...paginate({}, { page, pageSize })
