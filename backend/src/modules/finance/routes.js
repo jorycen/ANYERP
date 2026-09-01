@@ -61,6 +61,7 @@ const {
 const { requireRole } = require('../../middleware/permission');
 const {
   listExpensePerformanceAllocations,
+  listExpensePerformanceStaffOptions,
   createExpensePerformanceAllocations,
   reviewExpensePerformanceAllocation,
   listExpenseAccountingPeriods,
@@ -82,6 +83,7 @@ router.get('/expense/:id', getExpenseDetail);
 router.post('/expense/:id/review', requireRole('admin'), reviewExpense);
 router.post('/expense/:id/cancel', cancelExpense);
 router.get('/expense/:id/performance-allocations', requireRole('finance'), listExpensePerformanceAllocations);
+router.get('/expense/:id/performance-staff-options', requireRole('finance'), listExpensePerformanceStaffOptions);
 router.post('/expense/:id/performance-allocations', requireRole('finance'), createExpensePerformanceAllocations);
 
 // 采购及调拨录单需要读取启用中的配送平台，配置和记录维护仍受财务角色保护。

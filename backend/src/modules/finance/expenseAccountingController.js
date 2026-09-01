@@ -135,6 +135,34 @@ async function listExpensePerformanceAllocations(ctx) {
   });
 }
 
+async function listExpensePerformanceStaffOptions(ctx) {
+  const user = ctx.state.user;
+  const expense = await getAccessibleExpense(ctx.params.id, user);
+  const staffRows = await Staff.findAll({
+    where: {
+      distributor_id: expense.distributor_id,
+      status: 1,
+      is_deleted: 0
+    },
+    attributes: ['staff_id', 'name', 'phone', 'store_id', 'distributor_id'],
+    order: [['name', 'ASC'], ['staff_id', 'ASC']],
+    raw: true
+  });
+
+  ctx.body = {
+    code: 0,
+    data: {
+      employees: staffRows.map(row => ({
+        staffId: String(row.staff_id),
+        name: row.name,
+        phone: row.phone || '',
+        storeId: row.store_id || '',
+        distributorId: row.distributor_id || ''
+      }))
+    }
+  };
+}
+
 async function createExpensePerformanceAllocations(ctx) {
   const user = ctx.state.user;
   const expense = await getAccessibleExpense(ctx.params.id, user);
@@ -305,6 +333,7 @@ async function changeExpenseAccountingPeriod(ctx, action) {
 
 module.exports = {
   listExpensePerformanceAllocations,
+  listExpensePerformanceStaffOptions,
   createExpensePerformanceAllocations,
   reviewExpensePerformanceAllocation,
   listExpenseAccountingPeriods,

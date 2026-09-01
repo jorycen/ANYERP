@@ -33,3 +33,9 @@ test('费用经营月份迁移和API路由已注册', () => {
   assert.match(routes, /performance-allocations/);
   assert.match(routes, /expense-accounting-periods/);
 });
+
+test('费用绩效分摊提供按费用所属经销商读取员工选项的接口', () => {
+  const routes = fs.readFileSync(require.resolve('../src/modules/finance/routes'), 'utf8');
+  assert.match(routes, /performance-staff-options/);
+  assert.equal(typeof accountingController.listExpensePerformanceStaffOptions, 'function');
+});

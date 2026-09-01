@@ -2452,7 +2452,7 @@ const openExpenseAllocation = async (row) => {
   expenseAllocationRows.value = [{ staffId: '', amount: 0 }]
   expenseAllocationVisible.value = true
   try {
-    const res = await api.getDashboardFilters()
+    const res = await api.getExpensePerformanceStaffOptions(row.expense_id)
     if (res.code === 0) expenseStaffOptions.value = res.data?.employees || []
   } catch (err) {
     ElMessage.error('加载员工列表失败')
