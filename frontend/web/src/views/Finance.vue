@@ -92,6 +92,100 @@
           />
         </el-tab-pane>
 
+        <el-tab-pane label="产品端毛利" name="product-settlement" lazy>
+          <div class="filter-bar">
+            <el-date-picker
+              v-model="productSettlementQuery.dateRange"
+              type="daterange"
+              range-separator="至"
+              start-placeholder="开始日期"
+              end-placeholder="结束日期"
+              value-format="YYYY-MM-DD"
+            />
+            <el-select v-model="productSettlementQuery.storeId" placeholder="选择门店" clearable style="width: 150px">
+              <el-option label="全部门店" value="" />
+              <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
+            </el-select>
+            <el-select v-model="productSettlementQuery.entryType" placeholder="单据类型" clearable style="width: 140px">
+              <el-option label="全部类型" value="" />
+              <el-option label="销售结算" value="sale" />
+              <el-option label="退货调整" value="return" />
+            </el-select>
+            <el-select v-model="productSettlementQuery.status" placeholder="结算状态" clearable style="width: 140px">
+              <el-option label="全部状态" value="" />
+              <el-option label="已入账" value="posted" />
+              <el-option label="待补成本" value="cost_pending" />
+            </el-select>
+            <el-input v-model="productSettlementQuery.keyword" placeholder="商品 / PN / SN" clearable style="width: 180px" />
+            <el-input v-model="productSettlementQuery.sourceOrderNo" placeholder="来源销售订单号" clearable style="width: 180px" />
+            <el-button type="primary" @click="loadProductSettlementData">搜索</el-button>
+            <el-button type="success" :loading="exportingList === 'product-settlement'" @click="handleExportProductSettlement">导出</el-button>
+          </div>
+
+          <el-alert
+            title="产品端毛利仅统计产品端结算价与实际采购成本的提货差；运费已摊入商品，不重复计算，返利和价保沿独立政策链路管理。"
+            type="info"
+            :closable="false"
+            show-icon
+            class="product-settlement-note"
+          />
+
+          <el-table :data="productSettlementData" stripe border v-loading="productSettlementLoading">
+            <el-table-column label="单据类型" width="120">
+              <template #default="{ row }">
+                <el-tag :type="row.entryType === 'return' ? 'warning' : 'primary'" size="small">
+                  {{ row.entryType === 'return' ? '退货调整' : '销售结算' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="entryNo" label="产品端单号" width="190" />
+            <el-table-column prop="sourceOrderNo" label="来源销售订单" width="180" />
+            <el-table-column prop="businessDate" label="业务日期" width="170">
+              <template #default="{ row }">{{ formatDateTime(row.businessDate) }}</template>
+            </el-table-column>
+            <el-table-column prop="storeName" label="门店" min-width="130" />
+            <el-table-column label="产品定价金额" width="135" align="right">
+              <template #default="{ row }">¥{{ formatMoney(row.productPricingAmount) }}</template>
+            </el-table-column>
+            <el-table-column label="实际采购成本" width="135" align="right">
+              <template #default="{ row }">¥{{ formatMoney(row.purchaseCostAmount) }}</template>
+            </el-table-column>
+            <el-table-column label="产品端毛利" width="130" align="right">
+              <template #default="{ row }">
+                <span :class="Number(row.grossProfitAmount) < 0 ? 'negative-amount' : 'positive-amount'">
+                  ¥{{ formatMoney(row.grossProfitAmount) }}
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column label="待补成本" width="120" align="right">
+              <template #default="{ row }">¥{{ formatMoney(row.costPendingAmount) }}</template>
+            </el-table-column>
+            <el-table-column label="状态" width="110">
+              <template #default="{ row }">
+                <el-tag :type="row.status === 'cost_pending' ? 'warning' : 'success'" size="small">
+                  {{ row.status === 'cost_pending' ? '待补成本' : '已入账' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <div class="daily-summary">
+            <span>共计 <strong>{{ productSettlementTotal }}</strong> 笔</span>
+            <span style="margin-left: 24px;">产品定价：<strong class="total-amount">¥{{ formatMoney(productSettlementSummary.productPricingAmount) }}</strong></span>
+            <span style="margin-left: 24px;">采购成本：<strong>¥{{ formatMoney(productSettlementSummary.purchaseCostAmount) }}</strong></span>
+            <span style="margin-left: 24px;">产品端毛利：<strong class="total-amount">¥{{ formatMoney(productSettlementSummary.grossProfitAmount) }}</strong></span>
+          </div>
+
+          <el-pagination
+            v-model:current-page="productSettlementQuery.page"
+            v-model:page-size="productSettlementQuery.pageSize"
+            :total="productSettlementTotal"
+            layout="total, sizes, prev, pager, next"
+            @size-change="loadProductSettlementData"
+            @current-change="loadProductSettlementData"
+          />
+        </el-tab-pane>
+
         <el-tab-pane label="国补应收单" name="nationalSubsidyReceivable">
           <div class="filter-bar">
             <el-date-picker
@@ -1346,6 +1440,15 @@ const stores = ref([])
 const dailyDetails = ref([])
 const dailyTotal = ref(0)
 const dailyTotalAmount = ref(0)
+const productSettlementData = ref([])
+const productSettlementTotal = ref(0)
+const productSettlementLoading = ref(false)
+const productSettlementSummary = ref({
+  productPricingAmount: 0,
+  purchaseCostAmount: 0,
+  grossProfitAmount: 0,
+  costPendingAmount: 0
+})
 const paymentMethods = ref([])
 const paymentMethodFilter = ref('')
 const settledFilter = ref('')
@@ -1629,6 +1732,17 @@ const subsidyQuery = reactive({
   settled: ''
 })
 
+const productSettlementQuery = reactive({
+  page: 1,
+  pageSize: 20,
+  dateRange: [],
+  storeId: '',
+  entryType: '',
+  status: '',
+  keyword: '',
+  sourceOrderNo: ''
+})
+
 const expenseQuery = reactive({
   page: 1,
   pageSize: 20
@@ -1660,8 +1774,18 @@ const buildSubsidyExportParams = () => ({
   ...(subsidyQuery.settled !== '' ? { settled: subsidyQuery.settled } : {})
 })
 
+const buildProductSettlementParams = () => ({
+  ...(productSettlementQuery.dateRange?.length === 2 ? { startDate: productSettlementQuery.dateRange[0], endDate: productSettlementQuery.dateRange[1] } : {}),
+  ...(productSettlementQuery.storeId ? { storeId: productSettlementQuery.storeId } : {}),
+  ...(productSettlementQuery.entryType ? { entryType: productSettlementQuery.entryType } : {}),
+  ...(productSettlementQuery.status ? { status: productSettlementQuery.status } : {}),
+  ...(productSettlementQuery.keyword ? { keyword: productSettlementQuery.keyword } : {}),
+  ...(productSettlementQuery.sourceOrderNo ? { sourceOrderNo: productSettlementQuery.sourceOrderNo } : {})
+})
+
 const handleExportDaily = () => runListExport('daily', '日结单', api.exportDailyDetails, buildDailyExportParams())
 const handleExportSubsidy = () => runListExport('subsidy', '国补应收单', api.exportNationalSubsidyReceivables, buildSubsidyExportParams())
+const handleExportProductSettlement = () => runListExport('product-settlement', '产品端毛利', api.exportProductSettlementOrders, buildProductSettlementParams())
 const handleExportExpense = () => runListExport('expense', '费用清单', api.exportExpenseList, { ...expenseQuery })
 const handleExportPayable = () => runListExport('payable', '应付管理', api.exportPayableList, {
   ...(payableDateRange.value?.length === 2 ? { startDate: payableDateRange.value[0], endDate: payableDateRange.value[1] } : {}),
@@ -1815,6 +1939,7 @@ onMounted(() => {
   loadPaymentMethods()
   loadSettlementAccounts()
   loadDailyData()
+  loadProductSettlementData()
   loadSubsidyReceivables()
   loadSubsidyAuxiliary()
   loadExpenseData()
@@ -1861,6 +1986,31 @@ const loadDailyData = async () => {
     }
     selectedDetailIds.value = []
   } catch (err) { ElMessage.error('加载日结清单失败') }
+}
+
+const loadProductSettlementData = async () => {
+  productSettlementLoading.value = true
+  try {
+    const res = await api.getProductSettlementOrders({
+      page: productSettlementQuery.page,
+      pageSize: productSettlementQuery.pageSize,
+      ...buildProductSettlementParams()
+    })
+    if (res.code === 0) {
+      productSettlementData.value = res.data?.items || res.data?.list || []
+      productSettlementTotal.value = Number(res.data?.total || res.data?.pagination?.total || 0)
+      productSettlementSummary.value = {
+        productPricingAmount: Number(res.data?.summary?.productPricingAmount || 0),
+        purchaseCostAmount: Number(res.data?.summary?.purchaseCostAmount || 0),
+        grossProfitAmount: Number(res.data?.summary?.grossProfitAmount || 0),
+        costPendingAmount: Number(res.data?.summary?.costPendingAmount || 0)
+      }
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载产品端毛利清单失败')
+  } finally {
+    productSettlementLoading.value = false
+  }
 }
 
 const onDetailSelectionChange = (val) => {
@@ -3401,6 +3551,15 @@ const restoreAccountTxnDraft = () => {
   font-size: 14px;
   display: flex;
   align-items: center;
+}
+.product-settlement-note {
+  margin-bottom: 16px;
+}
+.positive-amount {
+  color: #67c23a;
+}
+.negative-amount {
+  color: #f56c6c;
 }
 .settlement-total {
   margin-top: 12px;

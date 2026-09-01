@@ -1,4 +1,5 @@
 const { QueryTypes } = require('sequelize');
+const XLSX = require('xlsx');
 const { sequelize } = require('../../models');
 const { RealtimeSqlDashboardDataSource } = require('./dashboardDataSource');
 const { buildRanges, summarizeTrend, canViewProfit } = require('./dashboardService');
@@ -306,21 +307,66 @@ async function getFinanceOverview(ctx) {
   };
 }
 
-async function getProductSettlementOrders(ctx) {
+async function resolveProductSettlementQuery(ctx) {
   const period = resolvePeriod(ctx.query);
   const regionId = String(ctx.query.regionId || '').trim();
   const storeId = String(ctx.query.storeId || '').trim();
   const storeIds = await resolveStoreIds(ctx.state.user, regionId, storeId);
-  const endExclusive = new Date(`${period.endDate}T23:59:59.999+08:00`);
-  const data = await listProductSettlementOrders({
+  const endExclusive = new Date(`${period.endDate}T00:00:00.000+08:00`);
+  endExclusive.setTime(endExclusive.getTime() + 24 * 60 * 60 * 1000);
+  return {
+    period,
     storeIds,
     startDate: new Date(`${period.startDate}T00:00:00.000+08:00`),
     endDate: endExclusive,
     status: String(ctx.query.status || '').trim(),
+    entryType: String(ctx.query.entryType || '').trim(),
+    keyword: String(ctx.query.keyword || '').trim(),
+    settlementNo: String(ctx.query.settlementNo || ctx.query.settlement_no || '').trim(),
+    sourceOrderNo: String(ctx.query.sourceOrderNo || ctx.query.source_order_no || '').trim()
+  };
+}
+
+async function getProductSettlementOrders(ctx) {
+  const filters = await resolveProductSettlementQuery(ctx);
+  const data = await listProductSettlementOrders({
+    ...filters,
     page: ctx.query.page,
     pageSize: ctx.query.pageSize
   });
   ctx.body = { code: 0, data };
 }
 
-module.exports = { getFinanceOverview, getProductSettlementOrders };
+async function exportProductSettlementOrders(ctx) {
+  const filters = await resolveProductSettlementQuery(ctx);
+  const data = await listProductSettlementOrders({
+    ...filters,
+    page: 1,
+    pageSize: 10000,
+    maxPageSize: 10000
+  });
+  if (data.total > 10000) ctx.throw(400, '导出结果超过10000条，请缩小筛选范围后再导出');
+  const rows = data.items.map(row => ({
+    单据类型: row.entryType === 'return' ? '退货负向调整' : '销售结算',
+    产品端单号: row.entryNo,
+    来源销售订单: row.sourceOrderNo,
+    业务日期: row.businessDate,
+    门店: row.storeName,
+    产品定价金额: row.productPricingAmount,
+    实际采购成本: row.purchaseCostAmount,
+    产品端毛利: row.grossProfitAmount,
+    待补成本金额: row.costPendingAmount,
+    状态: row.status === 'cost_pending' ? '待补成本' : '已入账',
+    公式版本: row.formulaVersion
+  }));
+  const worksheet = XLSX.utils.json_to_sheet(rows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, '产品端毛利');
+  const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+  const fileName = `产品端毛利_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  ctx.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  ctx.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+  ctx.body = buffer;
+}
+
+module.exports = { getFinanceOverview, getProductSettlementOrders, exportProductSettlementOrders };

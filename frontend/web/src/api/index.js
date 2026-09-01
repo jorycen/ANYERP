@@ -539,6 +539,7 @@ export default {
   getDashboardOverview: (params) => api.get('/report/dashboard/overview', { params }),
   getFinanceOverview: (params) => api.get('/report/finance-overview', { params }),
   getProductSettlementOrders: (params) => api.get('/report/product-settlement-orders', { params }),
+  exportProductSettlementOrders: (params) => exportExcel('/report/product-settlement-orders/export', params, `产品端毛利_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getEmployeePerformanceReport: (params) => api.get('/report/employee-performance', { params }),
   getMonthlyTaskAchievement: (params) => api.get('/report/monthly-task-achievement', { params }),
   getMonthlyTaskOptions: () => api.get('/sales/monthly-tasks/options'),

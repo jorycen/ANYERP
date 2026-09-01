@@ -322,43 +322,173 @@ async function queryProductSettlementSummary({ startDate, endDate, storeIds = []
   }
 }
 
-async function listProductSettlementOrders({ storeIds = [], startDate, endDate, status, page = 1, pageSize = 20 } = {}) {
-  const where = { store_id: { [Op.in]: storeIds.length ? storeIds : ['__NO_STORE__'] } };
-  if (status) where.status = status;
-  if (startDate || endDate) {
-    where.business_date = {};
-    if (startDate) where.business_date[Op.gte] = startDate;
-    if (endDate) where.business_date[Op.lt] = endDate;
+function buildProductSettlementEntrySql({
+  storeIds = [],
+  startDate,
+  endDate,
+  status,
+  entryType,
+  keyword,
+  settlementNo,
+  sourceOrderNo
+} = {}) {
+  const conditions = ['entries.STORE_ID IN (:storeIds)'];
+  const replacements = { storeIds: storeIds.length ? storeIds : ['__NO_STORE__'] };
+  if (startDate) {
+    conditions.push('entries.BUSINESS_DATE >= :startDate');
+    replacements.startDate = startDate;
   }
+  if (endDate) {
+    conditions.push('entries.BUSINESS_DATE < :endDate');
+    replacements.endDate = endDate;
+  }
+  if (status) {
+    conditions.push('entries.STATUS = :status');
+    replacements.status = status;
+  }
+  if (entryType === 'sale' || entryType === 'return') {
+    conditions.push('entries.ENTRY_TYPE = :entryType');
+    replacements.entryType = entryType;
+  }
+  if (settlementNo) {
+    conditions.push('entries.ENTRY_NO LIKE :settlementNo');
+    replacements.settlementNo = `%${settlementNo}%`;
+  }
+  if (sourceOrderNo) {
+    conditions.push('entries.SOURCE_ORDER_NO LIKE :sourceOrderNo');
+    replacements.sourceOrderNo = `%${sourceOrderNo}%`;
+  }
+  if (keyword) {
+    replacements.itemKeyword = `%${keyword}%`;
+    conditions.push(`(
+      EXISTS (
+        SELECT 1 FROM T_PRODUCT_SETTLEMENT_ITEM item
+         WHERE item.SETTLEMENT_ID = entries.ENTRY_ID
+           AND (item.PRODUCT_NAME LIKE :itemKeyword OR item.PN_CODE LIKE :itemKeyword OR item.SN_CODE LIKE :itemKeyword)
+      )
+      OR EXISTS (
+        SELECT 1 FROM T_PRODUCT_SETTLEMENT_ADJUSTMENT_ITEM item
+         WHERE item.ADJUSTMENT_ID = entries.ENTRY_ID
+           AND (item.PRODUCT_NAME LIKE :itemKeyword OR item.PN_CODE LIKE :itemKeyword OR item.SN_CODE LIKE :itemKeyword)
+      )
+    )`);
+  }
+  return {
+    sql: `
+      SELECT entries.*, store.NAME AS STORE_NAME
+        FROM (
+          SELECT 'sale' AS ENTRY_TYPE,
+                 SETTLEMENT_ID AS ENTRY_ID,
+                 SETTLEMENT_NO AS ENTRY_NO,
+                 SOURCE_ORDER_ID,
+                 SOURCE_ORDER_NO,
+                 DISTRIBUTOR_ID,
+                 REGION_ID,
+                 STORE_ID,
+                 BUSINESS_DATE,
+                 PRODUCT_PRICING_AMOUNT,
+                 PURCHASE_COST_AMOUNT,
+                 GROSS_PROFIT_AMOUNT,
+                 COST_PENDING_AMOUNT,
+                 STATUS,
+                 FORMULA_VERSION
+            FROM T_PRODUCT_SETTLEMENT_ORDER
+          UNION ALL
+          SELECT 'return' AS ENTRY_TYPE,
+                 ADJUSTMENT_ID AS ENTRY_ID,
+                 ADJUSTMENT_NO AS ENTRY_NO,
+                 SOURCE_ORDER_ID,
+                 SOURCE_ORDER_NO,
+                 DISTRIBUTOR_ID,
+                 REGION_ID,
+                 STORE_ID,
+                 BUSINESS_DATE,
+                 PRODUCT_PRICING_AMOUNT,
+                 PURCHASE_COST_AMOUNT,
+                 GROSS_PROFIT_AMOUNT,
+                 COST_PENDING_AMOUNT,
+                 STATUS,
+                 FORMULA_VERSION
+            FROM T_PRODUCT_SETTLEMENT_ADJUSTMENT
+        ) entries
+        LEFT JOIN T_STORE store ON store.STORE_ID = entries.STORE_ID
+       WHERE ${conditions.join(' AND ')}`,
+    replacements
+  };
+}
+
+async function listProductSettlementOrders({
+  storeIds = [],
+  startDate,
+  endDate,
+  status,
+  entryType,
+  keyword,
+  settlementNo,
+  sourceOrderNo,
+  page = 1,
+  pageSize = 20,
+  maxPageSize = 100
+} = {}) {
   const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
-  const safePageSize = Math.min(100, Math.max(1, Number.parseInt(pageSize, 10) || 20));
-  const { count, rows } = await ProductSettlementOrder.findAndCountAll({
-    where,
-    order: [['business_date', 'DESC'], ['settlement_id', 'DESC']],
-    limit: safePageSize,
-    offset: (safePage - 1) * safePageSize,
-    raw: true
+  const safeMaxPageSize = Math.max(1, Number.parseInt(maxPageSize, 10) || 100);
+  const safePageSize = Math.min(safeMaxPageSize, Math.max(1, Number.parseInt(pageSize, 10) || 20));
+  const query = buildProductSettlementEntrySql({
+    storeIds,
+    startDate,
+    endDate,
+    status,
+    entryType,
+    keyword,
+    settlementNo,
+    sourceOrderNo
   });
+  const summaryRows = await sequelize.query(
+    `SELECT COUNT(*) AS total,
+            ROUND(COALESCE(SUM(PRODUCT_PRICING_AMOUNT), 0), 2) AS productPricingAmount,
+            ROUND(COALESCE(SUM(PURCHASE_COST_AMOUNT), 0), 2) AS purchaseCostAmount,
+            ROUND(COALESCE(SUM(GROSS_PROFIT_AMOUNT), 0), 2) AS grossProfitAmount,
+            ROUND(COALESCE(SUM(COST_PENDING_AMOUNT), 0), 2) AS costPendingAmount
+       FROM (${query.sql}) filtered_entries`,
+    { replacements: query.replacements, type: QueryTypes.SELECT }
+  );
+  const rows = await sequelize.query(
+    `${query.sql}
+      ORDER BY entries.BUSINESS_DATE DESC, entries.ENTRY_ID DESC
+      LIMIT ${safePageSize} OFFSET ${(safePage - 1) * safePageSize}`,
+    { replacements: query.replacements, type: QueryTypes.SELECT }
+  );
+  const summary = summaryRows[0] || {};
   return {
     items: rows.map(row => ({
-      settlementId: row.settlement_id,
-      settlementNo: row.settlement_no,
-      sourceOrderId: row.source_order_id,
-      sourceOrderNo: row.source_order_no,
-      distributorId: row.distributor_id,
-      regionId: row.region_id,
-      storeId: row.store_id,
-      businessDate: row.business_date,
-      productPricingAmount: money(row.product_pricing_amount),
-      purchaseCostAmount: money(row.purchase_cost_amount),
-      grossProfitAmount: money(row.gross_profit_amount),
-      costPendingAmount: money(row.cost_pending_amount),
-      status: row.status,
-      formulaVersion: row.formula_version
+      entryType: row.ENTRY_TYPE,
+      entryId: row.ENTRY_ID,
+      entryNo: row.ENTRY_NO,
+      settlementId: row.ENTRY_TYPE === 'sale' ? row.ENTRY_ID : null,
+      settlementNo: row.ENTRY_TYPE === 'sale' ? row.ENTRY_NO : null,
+      sourceOrderId: row.SOURCE_ORDER_ID,
+      sourceOrderNo: row.SOURCE_ORDER_NO,
+      distributorId: row.DISTRIBUTOR_ID,
+      regionId: row.REGION_ID,
+      storeId: row.STORE_ID,
+      storeName: row.STORE_NAME || '',
+      businessDate: row.BUSINESS_DATE,
+      productPricingAmount: money(row.PRODUCT_PRICING_AMOUNT),
+      purchaseCostAmount: money(row.PURCHASE_COST_AMOUNT),
+      grossProfitAmount: money(row.GROSS_PROFIT_AMOUNT),
+      costPendingAmount: money(row.COST_PENDING_AMOUNT),
+      status: row.STATUS,
+      formulaVersion: row.FORMULA_VERSION
     })),
-    total: count,
+    total: Number(summary.total || 0),
     page: safePage,
-    pageSize: safePageSize
+    pageSize: safePageSize,
+    summary: {
+      productPricingAmount: money(summary.productPricingAmount),
+      purchaseCostAmount: money(summary.purchaseCostAmount),
+      grossProfitAmount: money(summary.grossProfitAmount),
+      costPendingAmount: money(summary.costPendingAmount)
+    }
   };
 }
 
@@ -371,6 +501,7 @@ module.exports = {
   _test: {
     buildProductSettlementItem,
     summarizeProductSettlementItems,
-    normalizePricingDetails
+    normalizePricingDetails,
+    buildProductSettlementEntrySql
   }
 };

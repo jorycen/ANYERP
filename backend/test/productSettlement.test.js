@@ -62,3 +62,22 @@ test('产品端退货负向明细的金额可以与正向结算相抵', () => {
   assert.equal(summary.purchaseCostAmount, -4300);
   assert.equal(summary.grossProfitAmount, -700);
 });
+
+test('产品端毛利清单查询同时覆盖销售结算和退货调整并支持业务筛选', () => {
+  const query = _test.buildProductSettlementEntrySql({
+    storeIds: ['STORE1'],
+    status: 'posted',
+    entryType: 'return',
+    keyword: 'SN001',
+    settlementNo: 'PSET',
+    sourceOrderNo: 'SO'
+  });
+
+  assert.match(query.sql, /FROM T_PRODUCT_SETTLEMENT_ORDER/);
+  assert.match(query.sql, /FROM T_PRODUCT_SETTLEMENT_ADJUSTMENT/);
+  assert.match(query.sql, /T_PRODUCT_SETTLEMENT_ADJUSTMENT_ITEM/);
+  assert.match(query.sql, /entries\.ENTRY_TYPE = :entryType/);
+  assert.equal(query.replacements.entryType, 'return');
+  assert.equal(query.replacements.storeIds[0], 'STORE1');
+  assert.equal(query.replacements.itemKeyword, '%SN001%');
+});
