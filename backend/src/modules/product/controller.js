@@ -1432,7 +1432,7 @@ async function updateProduct(ctx) {
   if (resolvedDimensions) {
     updateData.category_id = categoryId || null;
     updateData.category = resolvedDimensions.dimensions.category || null;
-    updateData.category_path_legacy = body.categoryPathLegacy || body.category_path_legacy || resolvedDimensions.path || null;
+    updateData.category_path_legacy = resolvedDimensions.path || body.categoryPathLegacy || body.category_path_legacy || null;
     updateData.brand = resolvedDimensions.dimensions.brand || null;
     updateData.series = resolvedDimensions.dimensions.series || null;
     updateData.model = resolvedDimensions.dimensions.model || null;
@@ -3434,7 +3434,9 @@ async function executeProductImportRows(rows) {
           name: finalName,
           category: dimensions.category || product?.category || '',
           category_id: categoryId || product?.category_id || null,
-          category_path_legacy: pathParts.length > 1 ? categoryPath : (product?.category_path_legacy || null),
+          category_path_legacy: categoryPath
+            ? (resolvedDimensions.path || categoryPath)
+            : (product?.category_path_legacy || null),
           manufacturer_code: splitPnCodes(manufacturerCodes).join(', '),
           config: attrMap['厂商商品名称'] || attrMap['产品配置'] || attrMap['config'] || '',
           brand: dimensions.brand || cols.brand || null,
