@@ -12,6 +12,8 @@ const { resolveAccessibleStoreIds } = require('../src/utils/storePermissions');
 
 const SOURCE_ROLE_CODES = ['manager', 'store_manager', 'store_admin'];
 const TARGET_ROLE_CODE = 'mall_report_viewer';
+const ACCOUNT_SUFFIX = '260';
+const LEGACY_ACCOUNT_SUFFIX = 'D';
 
 function initialPassword(phone) {
   const digits = String(phone || '').replace(/\D/g, '');
@@ -93,8 +95,16 @@ async function provision() {
       continue;
     }
 
-    const accountPhone = `${source.phone}D`;
-    const [account, created] = await Staff.findOrCreate({
+    const accountPhone = `${source.phone}${ACCOUNT_SUFFIX}`;
+    const legacyAccountPhone = `${source.phone}${LEGACY_ACCOUNT_SUFFIX}`;
+    let account = await Staff.findOne({ where: { phone: accountPhone } });
+    let created = false;
+    if (!account) {
+      account = await Staff.findOne({ where: { phone: legacyAccountPhone } });
+      if (account) await account.update({ phone: accountPhone });
+    }
+    if (!account) {
+      [account, created] = await Staff.findOrCreate({
       where: { phone: accountPhone },
       defaults: {
         distributor_id: source.distributor_id,
@@ -107,7 +117,8 @@ async function provision() {
         status: 1,
         is_deleted: 0
       }
-    });
+      });
+    }
 
     if (!created) {
       await account.update({
