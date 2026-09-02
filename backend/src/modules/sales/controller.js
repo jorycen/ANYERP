@@ -5340,6 +5340,7 @@ module.exports = {
   requestSalesReturn,
   reviewSalesReturn,
   confirmSalesReturnRefund,
+  releaseDepositRedemptionForOrder,
   createSalesReturnInbound,
   stats,
   approve,

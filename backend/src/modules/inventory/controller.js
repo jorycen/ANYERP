@@ -28,6 +28,7 @@ const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freigh
 const { createSalesReturnGrossProfitLedger } = require('../sales/grossProfit');
 const { createProductSettlementReturnAdjustment } = require('../report/productSettlement');
 const { createSalesReturnSettlement } = require('../sales/salesReturnSettlement');
+const { releaseDepositRedemptionForOrder } = require('../sales/controller');
 const { assertActiveProducts } = require('../../utils/activeProduct');
 const { syncSerializedInventoryBalance } = require('./serializedInventoryBalance');
 const { ensurePurchaseReturnAccounting } = require('../purchase/purchaseReturnAccounting');
@@ -36,6 +37,12 @@ const REUSABLE_INBOUND_SN_STATUSES = new Set(['out_stock', 'sold']);
 
 function isTransferInboundRecord(inbound) {
   return String(inbound?.source_type || '').trim().toUpperCase() === 'TRANSFER';
+}
+
+async function restoreDepositForCompletedSalesReturn(order, fullyReturned, transaction, release = releaseDepositRedemptionForOrder) {
+  if (!fullyReturned) return false;
+  await release(order, transaction, '销售退单整单退货，恢复定金');
+  return true;
 }
 
 function buildNonTransferInboundCondition() {
@@ -3732,6 +3739,7 @@ async function executeInbound(ctx) {
         transaction: t,
         lock: t.LOCK.UPDATE
       });
+      await restoreDepositForCompletedSalesReturn(settlementOrder, fullyReturned, t);
       await createSalesReturnSettlement({
         returnRequest: salesReturn,
         order: settlementOrder,
@@ -5968,6 +5976,7 @@ module.exports = {
     resolveTransferInboundSnBinding,
     normalizeSnIdentityValue,
     samePnCode,
-    isPurchaseInboundItemProgressComplete
+    isPurchaseInboundItemProgressComplete,
+    restoreDepositForCompletedSalesReturn
   }
 };

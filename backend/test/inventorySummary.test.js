@@ -1,6 +1,35 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { _test } = require('../src/modules/inventory/controller');
+const salesController = require('../src/modules/sales/controller');
+
+test('销售退单库存控制器可以调用正式定金释放函数', () => {
+  assert.equal(typeof salesController.releaseDepositRedemptionForOrder, 'function');
+});
+
+test('销售退单只有整单完成退货后才恢复定金核销', async () => {
+  const calls = [];
+  const release = async (...args) => calls.push(args);
+
+  assert.equal(await _test.restoreDepositForCompletedSalesReturn(
+    { order_id: 'ORDER-1' },
+    false,
+    { id: 'TX-1' },
+    release
+  ), false);
+  assert.equal(calls.length, 0);
+
+  assert.equal(await _test.restoreDepositForCompletedSalesReturn(
+    { order_id: 'ORDER-1' },
+    true,
+    { id: 'TX-2' },
+    release
+  ), true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0].order_id, 'ORDER-1');
+  assert.equal(calls[0][1].id, 'TX-2');
+  assert.equal(calls[0][2], '销售退单整单退货，恢复定金');
+});
 
 test('inventory summary maps legacy normal quantity to the bound non-sale location', () => {
   const snapshot = _test.getInventoryQuantitySnapshot({
