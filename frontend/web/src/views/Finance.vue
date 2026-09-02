@@ -1004,9 +1004,18 @@
         <el-table :data="unpaidList" stripe border @selection-change="onSelectionChange" ref="settlementTableRef">
           <el-table-column type="selection" width="50" />
           <el-table-column prop="product_name" label="采购商品" min-width="150" />
+          <el-table-column label="订单类型" width="120">
+            <template #default="{ row }">
+              <el-tag :type="getPayableSourceTagType(row)" size="small">{{ getPayableSourceText(row) }}</el-tag>
+            </template>
+          </el-table-column>
           <el-table-column label="本次金额" width="170">
             <template #default="{ row }">
+              <span v-if="Number(row.available_amount || 0) < 0" style="color: #f56c6c; font-weight: 600">
+                ¥{{ formatMoney(row.settle_amount) }}
+              </span>
               <el-input-number
+                v-else
                 v-model="row.settle_amount"
                 :min="0.01"
                 :max="Number(row.available_amount || 0)"
@@ -1020,9 +1029,11 @@
           <el-table-column prop="distributor_name" label="经销商" width="130">
             <template #default="{ row }">{{ row.distributor_name || row.distributor_id || '-' }}</template>
           </el-table-column>
-          <el-table-column prop="request_no" label="采购单号" width="180" />
+          <el-table-column label="采购单号" width="180">
+            <template #default="{ row }">{{ row.source_no || row.request_no || '-' }}</template>
+          </el-table-column>
           <el-table-column prop="total_amount" label="应付金额" width="130">
-            <template #default="{ row }">¥{{ row.total_amount }}</template>
+            <template #default="{ row }">¥{{ formatMoney(row.total_amount) }}</template>
           </el-table-column>
           <el-table-column prop="create_time" label="创建时间" width="160" />
         </el-table>
@@ -1220,7 +1231,7 @@
           <el-descriptions-item label="采购单号">{{ purchaseDetail.request_no || '-' }}</el-descriptions-item>
           <el-descriptions-item label="供应商">{{ purchaseDetail.supplier_name || purchaseDetail.Supplier?.name || '-' }}</el-descriptions-item>
           <el-descriptions-item label="申请门店">{{ purchaseDetail.store_name || purchaseDetail.Store?.name || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="状态">{{ purchaseDetail.status || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="状态">{{ purchaseDetail.display_status || purchaseDetail.lifecycle_status || purchaseDetail.status || '-' }}</el-descriptions-item>
           <el-descriptions-item label="申请金额">¥{{ formatMoney(purchaseDetail.current_total_amount ?? purchaseDetail.total_amount) }}</el-descriptions-item>
           <el-descriptions-item label="是否使用返利">
             <el-tag :type="hasPurchaseRebateDeduction(purchaseDetail) ? 'success' : 'info'">
@@ -3026,7 +3037,10 @@ const openSettlementDialog = async () => {
     await nextTick()
     const selectedIds = new Set(payableIds.map(String))
     unpaidList.value.forEach(item => {
-      if (selectedIds.has(String(item.payable_id))) settlementTableRef.value?.toggleRowSelection(item, true)
+      const isSupplierCredit = Number(item.available_amount || 0) < 0
+      if (selectedIds.has(String(item.payable_id)) || isSupplierCredit) {
+        settlementTableRef.value?.toggleRowSelection(item, true)
+      }
     })
   } catch (err) {
     ElMessage.error('获取待结算明细失败')

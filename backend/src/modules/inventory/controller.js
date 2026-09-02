@@ -5770,7 +5770,10 @@ async function executeReturn(ctx) {
     if (!returnStock) ctx.throw(404, '退库申请不存在');
     if (returnStock.status !== 'approved') ctx.throw(400, '只有已审批通过的退库申请才能执行退库');
 
-    const inbound = await Inbound.findByPk(returnStock.inbound_id, { transaction: t });
+    const inbound = await Inbound.findByPk(returnStock.inbound_id, {
+      include: [{ model: InboundItem, as: 'items' }],
+      transaction: t
+    });
     if (!inbound) ctx.throw(404, '入库单不存在');
     if (inbound.status !== 'completed') ctx.throw(400, '当前入库单状态不能执行退库');
 
@@ -5838,7 +5841,35 @@ async function executeReturn(ctx) {
       payable_id: accounting.payableId
     }, { transaction: t });
 
-    await inbound.update({ status: 'returned', update_time: new Date() }, { transaction: t });
+    // 只有该入库单的全部数量都退完，原采购申请才显示“已退货”。
+    // 部分退库仍保留 completed，由采购申请生命周期状态推导为“部分退货”。
+    const completedReturnItems = await ReturnStockItem.findAll({
+      include: [{
+        model: ReturnStock,
+        where: { inbound_id: inbound.inbound_id, status: 'completed' },
+        attributes: []
+      }],
+      transaction: t
+    });
+    const returnedByInboundItem = new Map();
+    completedReturnItems.forEach(item => {
+      if (!item.inbound_item_id) return;
+      const key = String(item.inbound_item_id);
+      returnedByInboundItem.set(key, (returnedByInboundItem.get(key) || 0) + Number(item.quantity || 0));
+    });
+    (returnStock.items || []).forEach(item => {
+      if (!item.inbound_item_id) return;
+      const key = String(item.inbound_item_id);
+      returnedByInboundItem.set(key, (returnedByInboundItem.get(key) || 0) + Number(item.quantity || 0));
+    });
+    const allInboundItemsReturned = (inbound.items || []).length > 0
+      && (inbound.items || []).every(item => (
+        Number(returnedByInboundItem.get(String(item.item_id)) || 0) >= Number(item.quantity || 0)
+      ));
+    await inbound.update({
+      status: allInboundItemsReturned ? 'returned' : 'completed',
+      update_time: new Date()
+    }, { transaction: t });
 
     await t.commit();
     ctx.body = {

@@ -25,7 +25,8 @@
               <el-option label="待入库" value="pending_inbound" />
               <el-option label="已拒绝" value="rejected" />
               <el-option label="已撤销" value="revoked" />
-              <el-option label="已退单" value="returned" />
+              <el-option label="部分退货" value="partial_return" />
+              <el-option label="已退货" value="returned" />
             </el-select>
             <el-select v-model="queryParams.operatorStaffId" placeholder="经手人" clearable filterable style="width: 150px" @change="handleRequestFilterChange">
               <el-option label="全部经手人" value="" />
@@ -64,6 +65,14 @@
             </el-table-column>
             <el-table-column prop="total_amount" label="申请金额" width="120">
               <template #default="{ row }">¥{{ formatMoney(row.current_actual_total ?? row.actual_total ?? row.total_amount) }}</template>
+            </el-table-column>
+            <el-table-column label="负向订单" width="150">
+              <template #default="{ row }">
+                <span v-if="row.negative_purchase_orders?.length" style="color: #f56c6c">
+                  {{ row.negative_purchase_orders.length }}笔 / ¥{{ formatMoney(row.negative_purchase_orders.reduce((sum, item) => sum + Number(item.total_amount || 0), 0)) }}
+                </span>
+                <span v-else>-</span>
+              </template>
             </el-table-column>
             <el-table-column prop="status" label="状态" width="100">
               <template #default="{ row }">
@@ -402,6 +411,19 @@
             <el-table-column prop="reason" label="原因" min-width="180" show-overflow-tooltip />
             <el-table-column prop="create_user" label="操作人" width="110" />
             <el-table-column prop="create_time" label="操作时间" width="160">
+              <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
+            </el-table-column>
+          </el-table>
+          <h4 class="mt-20">负向采购订单</h4>
+          <el-table :data="currentRequest.negative_purchase_orders || []" border size="small">
+            <el-table-column prop="order_no" label="负订单号" width="180" />
+            <el-table-column prop="order_type_name" label="类型" width="140" />
+            <el-table-column prop="total_quantity" label="负订单数量" width="110" align="right" />
+            <el-table-column prop="total_amount" label="负订单金额" width="130" align="right">
+              <template #default="{ row }">¥{{ formatMoney(row.total_amount) }}</template>
+            </el-table-column>
+            <el-table-column prop="reason" label="原因" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="create_time" label="生成时间" width="160">
               <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
             </el-table-column>
           </el-table>
@@ -2013,12 +2035,12 @@ const restorePurchaseRequestDraft = () => {
 }
 
 const getStatusType = (status) => {
-  const types = { draft: 'info', pending: 'warning', approved: 'success', pending_payment: 'warning', paid: 'success', pending_inbound: 'warning', rejected: 'danger', purchased: 'info', revoked: 'info', returned: 'danger' }
+  const types = { draft: 'info', pending: 'warning', approved: 'success', pending_payment: 'warning', paid: 'success', pending_inbound: 'warning', rejected: 'danger', purchased: 'info', revoked: 'info', partial_return: 'warning', returned: 'danger' }
   return types[status] || 'info'
 }
 
 const getStatusText = (status) => {
-  const texts = { draft: '草稿', pending: '待审批', approved: '已通过', pending_payment: '待支付', paid: '已支付', pending_inbound: '待入库', rejected: '已拒绝', purchased: '已采购', revoked: '已撤销', returned: '已退单' }
+  const texts = { draft: '草稿', pending: '待审批', approved: '已通过', pending_payment: '待支付', paid: '已支付', pending_inbound: '待入库', rejected: '已拒绝', purchased: '已采购', revoked: '已撤销', partial_return: '部分退货', returned: '已退货' }
   return texts[status] || status
 }
 

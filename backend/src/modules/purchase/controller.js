@@ -394,6 +394,39 @@ function getPurchaseAdjustmentItemDeltas(adjustments = []) {
   return result;
 }
 
+function buildNegativePurchaseOrders(adjustments = []) {
+  return (adjustments || [])
+    .filter(adjustment => Number(adjustment.total_quantity_delta || 0) < 0)
+    .map(adjustment => {
+      const row = typeof adjustment.toJSON === 'function' ? adjustment.toJSON() : { ...adjustment };
+      return {
+        order_id: row.adjustment_id,
+        order_no: row.adjustment_no,
+        order_type: 'purchase_return',
+        order_type_name: '采购退货负订单',
+        request_id: row.request_id,
+        request_no: row.request_no,
+        total_quantity: Number(row.total_quantity_delta || 0),
+        total_amount: toSignedMoney(row.total_amount_delta || 0),
+        reason: row.reason || '',
+        status: row.status || 'completed',
+        create_user: row.create_user || '',
+        create_time: row.create_time || null,
+        items: (row.items || []).map(item => ({
+          request_item_id: item.request_item_id,
+          inbound_id: item.inbound_id,
+          inbound_item_id: item.inbound_item_id,
+          product_id: item.product_id,
+          product_name: item.product_name || '',
+          quantity: Number(item.quantity_delta || 0),
+          unit_price: Number(item.unit_price || 0),
+          amount: toSignedMoney(item.amount_delta || 0),
+          remark: item.remark || ''
+        }))
+      };
+    });
+}
+
 function attachCurrentPurchaseItemAmounts(items = [], adjustments = []) {
   const deltas = getPurchaseAdjustmentItemDeltas(adjustments);
   return (items || []).map(item => {
@@ -511,6 +544,7 @@ function getPurchaseLifecycleStatus(requestStatus, inboundRows = []) {
   const allInboundClosed = rows.length > 0
     && rows.every(item => ['returned', 'cancelled'].includes(item.status));
   if (hasReturned && allInboundClosed) return 'returned';
+  if (hasReturned) return 'partial_return';
 
   return requestStatus;
 }
@@ -752,11 +786,18 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
   const adjustmentRows = requestIds.length
     ? await PurchaseAdjustment.findAll({
       where: { request_id: { [Op.in]: requestIds }, status: 'completed' },
-      attributes: ['adjustment_id', 'request_id', 'total_amount_delta'],
+      attributes: [
+        'adjustment_id', 'adjustment_no', 'request_id', 'request_no',
+        'total_quantity_delta', 'total_amount_delta', 'reason', 'status',
+        'create_user', 'create_time'
+      ],
       include: [{
         model: PurchaseAdjustmentItem,
         as: 'items',
-        attributes: ['quantity_delta', 'unit_price', 'amount_delta']
+        attributes: [
+          'request_item_id', 'inbound_id', 'inbound_item_id', 'product_id',
+          'product_name', 'quantity_delta', 'unit_price', 'amount_delta', 'remark'
+        ]
       }]
     })
     : [];
@@ -769,7 +810,9 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
 
   const formattedRows = rows.map(row => {
     const result = row.toJSON();
-    attachCurrentPurchaseAmounts(result, adjustmentsByRequest.get(String(result.request_id)) || []);
+    const requestAdjustments = adjustmentsByRequest.get(String(result.request_id)) || [];
+    attachCurrentPurchaseAmounts(result, requestAdjustments);
+    result.negative_purchase_orders = buildNegativePurchaseOrders(requestAdjustments);
     attachPurchasePaymentStatus(result, paidRequestIds);
     result.store_name = result.Store?.name || '';
     result.applicant_store_id = result.Applicant?.store_id || '';
@@ -794,7 +837,7 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
       ? 'completed'
       : (inboundRows[0]?.status || '');
     result.lifecycle_status = getPurchaseLifecycleStatus(result.status, inboundRows);
-    if (['pending_inbound', 'revoked', 'returned'].includes(result.lifecycle_status)) {
+    if (['pending_inbound', 'revoked', 'partial_return', 'returned'].includes(result.lifecycle_status)) {
       result.display_status = result.lifecycle_status;
     }
     result.pending_inbounds = inboundRows
@@ -887,6 +930,7 @@ async function getRequestDetail(ctx) {
 
   const result = request.toJSON();
   attachCurrentPurchaseAmounts(result, result.adjustments || []);
+  result.negative_purchase_orders = buildNegativePurchaseOrders(result.adjustments || []);
   attachPurchasePaymentStatus(result, await getPaidPurchaseRequestIds());
   result.store_name = result.Store?.name || '';
   result.applicant_store_id = result.Applicant?.store_id || '';
@@ -2471,6 +2515,7 @@ module.exports = {
     validatePurchaseAllocations,
     getPurchaseAdjustmentTotals,
     getPurchaseAdjustmentItemDeltas,
+    buildNegativePurchaseOrders,
     attachCurrentPurchaseItemAmounts,
     attachCurrentPurchaseAmounts,
     attachPurchasePaymentStatus,

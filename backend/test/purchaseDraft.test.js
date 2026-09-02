@@ -110,7 +110,7 @@ test('采购申请生命周期状态可区分待入库、已撤销和已退单',
   assert.equal(getLifecycleStatus('approved', [{ status: 'completed' }]), 'approved');
   assert.equal(
     getLifecycleStatus('approved', [{ status: 'completed' }, { status: 'returned' }]),
-    'approved'
+    'partial_return'
   );
 });
 

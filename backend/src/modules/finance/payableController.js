@@ -369,7 +369,7 @@ async function getPayableSettlementItems(ctx) {
     ? String(payableIds).split(',').map(item => item.trim()).filter(Boolean)
     : null;
   const where = {
-      status: { [Op.in]: ['unpaid', 'partial_settled', 'settling'] },
+    status: { [Op.in]: ['unpaid', 'partial_settled', 'settling'] },
     source_type: { [Op.notIn]: ['expense', 'reimbursement'] }
   };
   if (supplierId) where.supplier_id = supplierId;
@@ -380,13 +380,38 @@ async function getPayableSettlementItems(ctx) {
   }
   applyDistributorFilter(where, ctx.state.user);
   const payables = await Payable.findAll({ where, order: [['create_time', 'DESC']] });
-  await enrichPayableDistributorNames(payables);
-  const summary = await getAllocationSummary(payables.map(item => item.payable_id));
-  const requestIds = [...new Set(payables.map(item => item.request_id).filter(Boolean))];
+  const creditWhere = {
+    status: 'credit',
+    total_amount: { [Op.lt]: 0 },
+    source_type: { [Op.in]: ['purchase_return', 'purchase_adjustment'] }
+  };
+  if (supplierId) creditWhere.supplier_id = supplierId;
+  if (!supplierId && ids?.length) creditWhere.payable_id = { [Op.in]: ids };
+  if (distributorId) creditWhere.distributor_id = distributorId;
+  if (!distributorId && ids?.length) {
+    const selectedDistributorIds = [...new Set(payables.map(row => row.distributor_id).filter(Boolean).map(String))];
+    if (selectedDistributorIds.length === 1) creditWhere.distributor_id = selectedDistributorIds[0];
+  }
+  applyDistributorFilter(creditWhere, ctx.state.user);
+  const creditRows = await Payable.findAll({ where: creditWhere, order: [['create_time', 'ASC']] });
+  const payableMap = new Map(payables.map(row => [String(row.payable_id), row]));
+  creditRows.forEach(row => payableMap.set(String(row.payable_id), row));
+  const allPayables = [...payableMap.values()];
+  await enrichPayableDistributorNames(allPayables);
+  const summary = await getAllocationSummary(allPayables.map(item => item.payable_id));
+  const requestIds = [...new Set(allPayables.map(item => item.request_id).filter(Boolean))];
   const requestItems = requestIds.length
     ? await PurchaseRequestItem.findAll({ where: { request_id: { [Op.in]: requestIds } } })
     : [];
   const adjustmentQuantityDeltas = await getPurchaseAdjustmentQuantityDeltas(requestIds);
+  const negativeSourceNos = creditRows.map(row => row.source_no).filter(Boolean);
+  const negativeAdjustments = negativeSourceNos.length
+    ? await PurchaseAdjustment.findAll({
+      where: { adjustment_no: { [Op.in]: negativeSourceNos }, status: 'completed' },
+      attributes: ['adjustment_no', 'total_quantity_delta', 'total_amount_delta']
+    })
+    : [];
+  const negativeAdjustmentMap = new Map(negativeAdjustments.map(row => [String(row.adjustment_no), row]));
   const itemMap = new Map();
   requestItems.forEach(item => {
     const key = String(item.request_id);
@@ -394,12 +419,42 @@ async function getPayableSettlementItems(ctx) {
     itemMap.get(key).push(item);
   });
   const rows = [];
-  payables.forEach(payable => {
+  allPayables.forEach(payable => {
     const allocated = summary.get(String(payable.payable_id)) || {
       amount: 0,
       quantityByItem: new Map(),
       amountByItem: new Map()
     };
+    if (['purchase_return', 'purchase_adjustment'].includes(payable.source_type)
+      && Number(payable.total_amount || 0) < 0) {
+      const remaining = getPayableRemaining(payable.total_amount, allocated.amount, payable.offset_amount);
+      if (remaining < -0.005) {
+        const adjustment = negativeAdjustmentMap.get(String(payable.source_no || ''));
+        rows.push({
+          payable_id: payable.payable_id,
+          request_id: payable.request_id,
+          request_no: payable.request_no,
+          supplier_id: payable.supplier_id,
+          supplier_name: payable.supplier_name,
+          distributor_id: payable.distributor_id,
+          distributor_name: payable.distributor_name,
+          source_type: payable.source_type,
+          source_no: payable.source_no,
+          total_amount: payable.total_amount,
+          settled_amount: allocated.amount,
+          remaining_amount: remaining,
+          product_name: payable.source_type === 'purchase_return' ? '采购退货负订单' : '采购负向调整',
+          available_quantity: adjustment ? Number(adjustment.total_quantity_delta || 0) : null,
+          available_amount: remaining,
+          unit_price: adjustment && Number(adjustment.total_quantity_delta || 0) !== 0
+            ? Number(adjustment.total_amount_delta || 0) / Number(adjustment.total_quantity_delta || 0)
+            : null,
+          create_time: payable.create_time
+        });
+      }
+      return;
+    }
+
     const items = payable.source_type === 'purchase' && (
       Number(allocated.amount || 0) <= 0 ||
       allocated.quantityByItem.size > 0 ||
@@ -524,7 +579,7 @@ async function createSettlement(ctx) {
         payable_id: { [Op.in]: selectedIds },
         supplier_id: supplierId,
         source_type: { [Op.notIn]: ['expense', 'reimbursement'] },
-        status: { [Op.in]: ['unpaid', 'partial_settled', 'settling'] }
+        status: { [Op.in]: ['unpaid', 'partial_settled', 'settling', 'credit'] }
       };
     if (distributorId) payableWhere.distributor_id = distributorId;
     applyDistributorFilter(payableWhere, user);
@@ -570,6 +625,22 @@ async function createSettlement(ctx) {
         if (!used) {
           used = { amount: 0, quantityByItem: new Map(), amountByItem: new Map() };
           summary.set(payableId, used);
+        }
+        const isCreditPayable = Number(payable.total_amount || 0) < 0
+          && ['purchase_return', 'purchase_adjustment'].includes(payable.source_type);
+        if (isCreditPayable) {
+          if (item) ctx.throw(400, '负向采购退货只能按订单金额结算');
+          const remaining = getPayableRemaining(payable.total_amount, used.amount, payable.offset_amount);
+          const amountValue = allocation.amount ?? allocation.settleAmount ?? allocation.settle_amount;
+          const amount = amountValue === undefined || amountValue === null || amountValue === ''
+            ? remaining
+            : roundAmount(amountValue);
+          if (amount >= 0 || amount < remaining - 0.005) {
+            ctx.throw(400, '负向采购退货结算金额超过可抵扣金额');
+          }
+          rows.push({ payable, requestItem: null, quantity: null, unitPrice: null, amount });
+          used.amount = Number(used.amount || 0) + amount;
+          continue;
         }
         if (item) {
           if (String(item.request_id) !== String(payable.request_id)) ctx.throw(400, 'purchase item does not belong to payable');
@@ -619,48 +690,12 @@ async function createSettlement(ctx) {
       for (const payable of payables) {
         const used = summary.get(String(payable.payable_id)) || { amount: 0 };
         const remaining = getPayableRemaining(payable.total_amount, used.amount, payable.offset_amount);
-        if (remaining > 0) rows.push({ payable, requestItem: null, quantity: null, unitPrice: null, amount: remaining });
-      }
-    }
-    const creditRows = await Payable.findAll({
-      where: {
-        supplier_id: supplierId,
-        status: 'credit',
-        total_amount: { [Op.lt]: 0 },
-        distributor_id: payableDistributorIds[0]
-      },
-      transaction,
-      lock: transaction.LOCK.UPDATE,
-      order: [['create_time', 'ASC']]
-    });
-    let creditRemaining = creditRows.reduce((sum, payable) => sum + Math.max(0, Math.abs(Number(payable.total_amount || 0)) - Number(payable.offset_amount || 0)), 0);
-    for (const row of rows) {
-      if (creditRemaining <= 0 || row.amount <= 0) continue;
-      const offset = Math.min(row.amount, creditRemaining);
-      row.amount = roundAmount(row.amount - offset);
-      row.offsetAmount = roundAmount((row.offsetAmount || 0) + offset);
-      creditRemaining = roundAmount(creditRemaining - offset);
-      let creditToApply = offset;
-      for (const credit of creditRows) {
-        if (creditToApply <= 0) break;
-        const availableCredit = Math.max(0, Math.abs(Number(credit.total_amount || 0)) - Number(credit.offset_amount || 0));
-        if (availableCredit <= 0) continue;
-        const creditUsed = Math.min(creditToApply, availableCredit);
-        credit.offset_amount = roundAmount(Number(credit.offset_amount || 0) + creditUsed);
-        creditToApply = roundAmount(creditToApply - creditUsed);
-        if (Math.abs(Number(credit.total_amount || 0)) - Number(credit.offset_amount || 0) <= 0.005) {
-          credit.status = 'offset';
+        if (Math.abs(remaining) > 0.005) {
+          rows.push({ payable, requestItem: null, quantity: null, unitPrice: null, amount: remaining });
         }
-        await credit.save({ transaction, fields: ['offset_amount', 'status'] });
       }
     }
-    for (const row of rows) {
-      if (row.offsetAmount > 0) {
-        row.payable.offset_amount = roundAmount(Number(row.payable.offset_amount || 0) + row.offsetAmount);
-        await row.payable.save({ transaction, fields: ['offset_amount'] });
-      }
-    }
-    const finalRows = rows.filter(row => row.amount > 0);
+    const finalRows = rows.filter(row => Math.abs(Number(row.amount || 0)) > 0.005);
     const totalAmount = roundAmount(finalRows.reduce((sum, row) => sum + row.amount, 0));
     if (totalAmount <= 0) ctx.throw(400, 'settlement amount must be greater than zero');
     const taxStatus = combineTaxStatuses(finalRows.map(row => requestTaxMap.get(String(row.payable.request_id)) || 'UNKNOWN'));
