@@ -482,6 +482,11 @@ export default {
     });
   },
   getProductImportTask: (taskId) => api.get(`/product/import/task/${taskId}`),
+  downloadProductImportErrors: (taskId) => exportExcel(
+    `/product/import/task/${taskId}/errors`,
+    {},
+    '商品导入失败清单.xlsx'
+  ),
   exportProducts: (params) => exportExcel('/product/export', params, `商品导出_${new Date().toISOString().slice(0, 10)}.xlsx`),
   exportCostPrices: (params) => exportExcel('/product/export', { ...(params || {}), exportType: 'price' }, `商品成本导出_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getPnList: (params) => api.get('/product/pn-list', { params }),

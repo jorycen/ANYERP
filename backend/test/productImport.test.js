@@ -43,6 +43,13 @@ test('PN比较统一为字符串并移除空格，且过滤占位值', () => {
   assert.deepEqual(_test.splitPnCodes('PN001, PN002, 无'), ['PN001', 'PN002']);
 });
 
+test('异步导入失败清单保留原始列并追加异常原因', () => {
+  const rows = _test.importTaskErrorRows({
+    error_json: JSON.stringify([{ row: 3, product: { 商品名称: '测试商品', 厂商编码: 'M001' }, message: '厂商编码已存在' }])
+  });
+  assert.deepEqual(rows, [{ 行号: 3, 商品名称: '测试商品', 厂商编码: 'M001', 异常原因: '厂商编码已存在' }]);
+});
+
 test('商品分类层级判断继续兼容历史调用', () => {
   assert.equal(_test.isFourLevelCategory({ level: 4 }), true);
   assert.equal(_test.isFourLevelCategory({ level: 3 }), false);

@@ -659,7 +659,7 @@
         <el-table-column prop="message" label="失败原因" />
       </el-table>
       <template #footer>
-        <el-button v-if="isImportTaskFinished && importResult.errors.length > 0" @click="downloadImportErrors">下载失败清单</el-button>
+        <el-button v-if="isImportTaskFinished && importResult.errors.length > 0" :loading="importErrorsDownloading" @click="downloadImportErrors">下载失败清单</el-button>
         <el-button @click="importResultVisible = false">关闭</el-button>
       </template>
     </el-dialog>
@@ -1636,6 +1636,7 @@ const handleCostImportSubmit = async () => {
 // ========== 批量导入 ==========
 const importDialogVisible = ref(false); const importFile = ref(null)
 const importLoading = ref(false); const importResultVisible = ref(false)
+const importErrorsDownloading = ref(false)
 const importResult = reactive({
   taskId: '', taskNo: '', importType: '', status: '', totalRows: 0, processedRows: 0,
   success: 0, failed: 0, errors: [], affectedProducts: 0, pending: 0, effective: 0,
@@ -1673,7 +1674,16 @@ const applyImportTaskData = (data) => {
   importResult.processedRows = data.processedRows || 0
   importResult.success = data.success || 0
   importResult.failed = data.failed || 0
-  importResult.errors = data.errors || []
+  importResult.errors = Array.isArray(data.errors)
+    ? data.errors
+    : (() => {
+        try {
+          const parsed = JSON.parse(data.errors || '[]')
+          return Array.isArray(parsed) ? parsed : []
+        } catch (_) {
+          return []
+        }
+      })()
   importResult.affectedProducts = data.affectedProducts || 0
   importResult.pending = data.pending || 0
   importResult.effective = data.effective || 0
@@ -1715,20 +1725,32 @@ const showImportTaskResult = (data, importType) => {
   if (importResult.taskId && !isImportTaskFinished.value) pollImportTask()
 }
 
-const downloadImportErrors = () => {
+const downloadImportErrors = async () => {
   if (!importResult.errors.length) {
     ElMessage.warning('暂无失败记录')
     return
   }
-  const rows = importResult.errors.map(item => ({
-    '行号': item.row,
-    ...(item.product || {}),
-    '异常原因': item.message
-  }))
-  const ws = XLSX.utils.json_to_sheet(rows)
-  const wb = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(wb, ws, '失败清单')
-  XLSX.writeFile(wb, importResult.importType === 'price' ? '商品定价导入失败清单.xlsx' : '商品导入失败清单.xlsx')
+  importErrorsDownloading.value = true
+  try {
+    if (importResult.taskId) {
+      await api.downloadProductImportErrors(importResult.taskId)
+    } else {
+      const rows = importResult.errors.map(item => ({
+        '行号': item.row,
+        ...(item.product || {}),
+        '异常原因': item.message
+      }))
+      const ws = XLSX.utils.json_to_sheet(rows)
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, '失败清单')
+      XLSX.writeFile(wb, importResult.importType === 'price' ? '商品定价导入失败清单.xlsx' : '商品导入失败清单.xlsx')
+    }
+    ElMessage.success('失败清单已下载')
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || err?.message || '失败清单下载失败')
+  } finally {
+    importErrorsDownloading.value = false
+  }
 }
 
 onUnmounted(clearImportTaskPoll)

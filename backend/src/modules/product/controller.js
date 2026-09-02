@@ -2357,6 +2357,14 @@ function parseTaskErrors(value) {
   }
 }
 
+function importTaskErrorRows(task) {
+  return parseTaskErrors(task?.error_json).map(item => ({
+    '行号': item?.row ?? '',
+    ...(item?.product && typeof item.product === 'object' ? item.product : {}),
+    '异常原因': item?.message || item?.reason || '导入失败'
+  }));
+}
+
 function importTaskData(task) {
   return {
     taskId: task.task_id,
@@ -2409,6 +2417,20 @@ async function getProductImportTask(ctx) {
   const task = await ProductImportTask.findByPk(ctx.params.taskId);
   if (!task) ctx.throw(404, '导入任务不存在');
   ctx.body = { code: 0, data: importTaskData(task) };
+}
+
+async function downloadProductImportErrors(ctx) {
+  const task = await ProductImportTask.findByPk(ctx.params.taskId);
+  if (!task) ctx.throw(404, '导入任务不存在');
+
+  const rows = importTaskErrorRows(task);
+  if (rows.length === 0) ctx.throw(404, '该导入任务没有失败记录');
+
+  const fileName = task.import_type === 'price'
+    ? '商品定价导入失败清单.xlsx'
+    : '商品导入失败清单.xlsx';
+  const headers = [...new Set(rows.flatMap(row => Object.keys(row)))];
+  sendExcel(ctx, rows, headers, fileName, '失败清单');
 }
 
 async function parsePriceImportRows(ctx) {
@@ -3722,11 +3744,12 @@ module.exports = {
   },
   getCategoryTree, createCategory, updateCategory, deleteCategory, sortCategories,
   getPriceList, exportCostPrices, setPrice, refreshCostPrice, batchRefreshCost, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory, applyPendingProductPriceChanges,
-  getProductImportTask, recoverProductImportTasks,
+  getProductImportTask, downloadProductImportErrors, recoverProductImportTasks,
   getPnList, addPn, searchProduct, getPnAvailability,
   _test: {
     parseImportWorkbook,
     importTaskData,
+    importTaskErrorRows,
     normalizePnCode,
     splitPnCodes,
     ensureProductPns,

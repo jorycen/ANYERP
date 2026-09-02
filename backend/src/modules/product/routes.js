@@ -10,7 +10,7 @@ const {
   getCategoryTree, createCategory, updateCategory, deleteCategory, sortCategories,
   getCategoryFields, saveCategoryFields, getCategoryFieldConfig,
   getPriceList, exportCostPrices, setPrice, refreshCostPrice, batchRefreshCost, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory,
-  getProductImportTask,
+  getProductImportTask, downloadProductImportErrors,
   getPnList, addPn, searchProduct, getPnAvailability
 } = require('./controller');
 const { requireRole } = require('../../middleware/permission');
@@ -34,6 +34,7 @@ router.post('/batch-delete', batchDeleteProducts);
 router.delete('/delete/:productId', deleteProduct);
 router.post('/toggle-pause/:productId', togglePause);
 router.post('/import', upload.single('file'), importProducts);
+router.get('/import/task/:taskId/errors', downloadProductImportErrors);
 router.get('/import/task/:taskId', getProductImportTask);
 
 // 商品条码
