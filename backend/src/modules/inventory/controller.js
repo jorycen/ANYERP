@@ -2,6 +2,8 @@
  * 库房管理控制器
  * 优化版：非SN商品直接操作聚合库存，SN商品同时维护SN记录和聚合库存
  */
+const fs = require('fs');
+const path = require('path');
 const {
   sequelize, Region, ProductSn, Product, ProductPn, ProductPrice, ProductPriceChangeLog,
   SnDistributorPrice, SnDistributorPriceChangeLog, ResourceCategory,
@@ -34,6 +36,80 @@ const { syncSerializedInventoryBalance } = require('./serializedInventoryBalance
 const { ensurePurchaseReturnAccounting } = require('../purchase/purchaseReturnAccounting');
 
 const REUSABLE_INBOUND_SN_STATUSES = new Set(['out_stock', 'sold']);
+const TRANSFER_SHIPPING_PHOTO_DIR = path.resolve(__dirname, '../../../uploads/transfer-shipping-photos');
+const TRANSFER_SHIPPING_PHOTO_ROUTE = '/api/v1/inventory/transfer/shipping-photos';
+const TRANSFER_PHOTO_EXTENSIONS = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp'
+};
+
+function parseArrayBodyValue(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+async function persistTransferShippingPhotos(ctx, transferId) {
+  const references = parseArrayBodyValue(ctx.request.body?.shippingPhotos)
+    .map(value => String(value || '').trim())
+    .filter(Boolean)
+    .slice(0, 9);
+  const files = Array.isArray(ctx.files) ? ctx.files : [];
+  if (references.length + files.length > 9) {
+    ctx.throw(400, '最多上传9张出库凭证照片');
+  }
+
+  const storedPaths = [];
+  const photos = [...references];
+  try {
+    if (files.length) await fs.promises.mkdir(TRANSFER_SHIPPING_PHOTO_DIR, { recursive: true });
+    for (const file of files) {
+      const extension = TRANSFER_PHOTO_EXTENSIONS[String(file.mimetype || '').toLowerCase()];
+      if (!extension) ctx.throw(400, '出库凭证仅支持 JPG、PNG、WEBP 图片');
+      if (!file.buffer?.length) ctx.throw(400, '出库凭证照片内容为空');
+
+      const photoId = generateUUID();
+      const filePath = path.join(TRANSFER_SHIPPING_PHOTO_DIR, `${photoId}${extension}`);
+      await fs.promises.writeFile(filePath, file.buffer);
+      storedPaths.push(filePath);
+      photos.push(`${TRANSFER_SHIPPING_PHOTO_ROUTE}/${encodeURIComponent(transferId)}/${photoId}`);
+    }
+    return { photos: photos.slice(0, 9), storedPaths };
+  } catch (error) {
+    await Promise.all(storedPaths.map(filePath => fs.promises.unlink(filePath).catch(() => {})));
+    throw error;
+  }
+}
+
+async function getTransferShippingPhoto(ctx) {
+  const { transferId, photoId } = ctx.params;
+  const transfer = await Transfer.findByPk(transferId, {
+    attributes: ['transfer_id', 'from_store_id', 'to_store_id', 'shipping_photos']
+  });
+  if (!transfer) ctx.throw(404, '调拨单不存在');
+
+  const accessibleStoreIds = ctx.state.user?.accessibleStoreIds || [];
+  const canView = accessibleStoreIds.includes('*')
+    || [transfer.from_store_id, transfer.to_store_id].some(storeId => accessibleStoreIds.map(String).includes(String(storeId || '')));
+  if (!canView) ctx.throw(403, '无权查看该调拨凭证');
+
+  const photos = parseArrayBodyValue(transfer.shipping_photos);
+  const photoUrl = photos.find(photo => String(photo || '').endsWith(`/${photoId}`));
+  if (!photoUrl || !/^[a-zA-Z0-9-]+$/.test(String(photoId || ''))) ctx.throw(404, '出库凭证不存在');
+
+  const names = await fs.promises.readdir(TRANSFER_SHIPPING_PHOTO_DIR).catch(() => []);
+  const fileName = names.find(name => name.startsWith(`${photoId}.`));
+  if (!fileName) ctx.throw(404, '出库凭证文件不存在');
+  const filePath = path.join(TRANSFER_SHIPPING_PHOTO_DIR, fileName);
+  ctx.type = path.extname(fileName);
+  ctx.body = fs.createReadStream(filePath);
+}
 
 function isTransferInboundRecord(inbound) {
   return String(inbound?.source_type || '').trim().toUpperCase() === 'TRANSFER';
@@ -4187,12 +4263,13 @@ async function getTransferDetail(ctx) {
  */
 async function confirmTransferOutPartial(ctx) {
   const t = await sequelize.transaction();
+  const createdShippingPhotoPaths = [];
   try {
     const user = ctx.state.user || {};
     const body = ctx.request.body || {};
     const transferId = body.transferId || body.transfer_id;
-    const selections = Array.isArray(body.items) ? body.items.filter(Boolean) : [];
-    const shippingPhotos = Array.isArray(body.shippingPhotos) ? body.shippingPhotos.filter(Boolean).slice(0, 9) : [];
+    const selections = parseArrayBodyValue(body.items).filter(Boolean);
+    let shippingPhotos = [];
     const remainingAction = String(body.remainingAction || 'reject').trim().toLowerCase();
     const byItem = new Map();
     const byProduct = new Map();
@@ -4211,7 +4288,6 @@ async function confirmTransferOutPartial(ctx) {
       }
     });
     if (!transferId) ctx.throw(400, 'Transfer ID is required');
-    if (!shippingPhotos.length) ctx.throw(400, 'Please upload at least one shipping photo');
 
     const transfer = await Transfer.findByPk(transferId, {
       include: [{ model: TransferItem }],
@@ -4221,6 +4297,11 @@ async function confirmTransferOutPartial(ctx) {
     if (!transfer) ctx.throw(404, 'Transfer does not exist');
     await assertTransferOperationStore(ctx, transfer.from_store_id);
     if (transfer.status !== 'pending') ctx.throw(400, 'Transfer is not pending outbound confirmation');
+
+    const persistedPhotos = await persistTransferShippingPhotos(ctx, transferId);
+    shippingPhotos = persistedPhotos.photos;
+    createdShippingPhotoPaths.push(...persistedPhotos.storedPaths);
+    if (!shippingPhotos.length) ctx.throw(400, 'Please upload at least one shipping photo');
 
     const requestItems = getPendingTransferItems(transfer.TransferItems || []);
     if (!requestItems.length) ctx.throw(400, 'Transfer has no pending item lines');
@@ -4425,6 +4506,7 @@ async function confirmTransferOutPartial(ctx) {
     };
   } catch (err) {
     await t.rollback();
+    await Promise.all(createdShippingPhotoPaths.map(filePath => fs.promises.unlink(filePath).catch(() => {})));
     if (err.status) ctx.throw(err.status, err.message);
     console.error('confirmTransferOut partial error:', err);
     ctx.throw(500, 'Outbound confirmation failed');
@@ -5948,6 +6030,7 @@ module.exports = {
   getTransferList,
   getTransferDetail,
   confirmTransferOut: confirmTransferOutPartial,
+  getTransferShippingPhoto,
   confirmTransferIn,
   returnTransfer,
   revokeTransfer,

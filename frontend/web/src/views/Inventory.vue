@@ -1242,6 +1242,26 @@
             </template>
           </el-table-column>
         </el-table>
+
+        <div class="transfer-out-photo-section">
+          <div class="transfer-out-photo-title">
+            <span>发货照片</span>
+            <el-tag type="danger" size="small">至少1张</el-tag>
+          </div>
+          <el-upload
+            v-model:file-list="transferOutPhotoFiles"
+            class="transfer-out-photo-uploader"
+            list-type="picture-card"
+            :auto-upload="false"
+            accept="image/jpeg,image/png,image/webp"
+            :limit="9"
+            :on-change="handleTransferOutPhotoChange"
+            :on-exceed="handleTransferOutPhotoExceed"
+          >
+            <el-icon><Plus /></el-icon>
+          </el-upload>
+          <div class="transfer-out-photo-tip">支持 JPG、PNG、WEBP，单张不超过10MB，最多9张</div>
+        </div>
       </div>
 
       <template #footer>
@@ -1964,6 +1984,7 @@ const transferOutConfirmLoading = ref(false)
 const transferOutSnLoading = ref(false)
 const transferOutConfirmRow = ref(null)
 const transferOutSnRows = ref([])
+const transferOutPhotoFiles = ref([])
 const transferForm = reactive({
   fromStoreId: '',
   fromStoreName: '',
@@ -3691,9 +3712,10 @@ const resetTransferHistoryQuery = () => {
 }
 
 const handleConfirmTransferOut = async (row) => {
+  transferOutConfirmRow.value = row
+  transferOutPhotoFiles.value = []
   const snItems = (row.TransferItems || []).filter(item => Number(item.need_sn || 0) === 1 && !item.sn_id)
   if (snItems.length > 0) {
-    transferOutConfirmRow.value = row
     transferOutSnRows.value = snItems.flatMap(item => {
       const quantity = Math.max(Number(item.quantity || 0), 1)
       return Array.from({ length: quantity }, (_, index) => ({
@@ -3710,25 +3732,8 @@ const handleConfirmTransferOut = async (row) => {
     return
   }
 
-  try {
-    await ElMessageBox.confirm(
-      `确认将调拨单 ${row.transfer_no} 的商品从「${row.from_store_name}」出库吗？`,
-      '确认调拨出库',
-      { confirmButtonText: '确认出库', cancelButtonText: '取消', type: 'warning' }
-    )
-    const res = await api.confirmTransferOut({ transferId: row.transfer_id })
-    if (res.code === 0) {
-      ElMessage.success('调拨出库确认成功')
-      loadTransferLists()
-    } else {
-      ElMessage.error(res.message || '确认出库失败')
-    }
-  } catch (err) {
-    if (err !== 'cancel') {
-      const msg = err.response?.data?.message || err.message || '确认出库失败'
-      ElMessage.error(msg)
-    }
-  }
+  transferOutSnRows.value = []
+  transferOutConfirmVisible.value = true
 }
 
 const handleRevokeTransfer = async (row) => {
@@ -3799,6 +3804,51 @@ const isConfirmSnDisabled = (snId, currentRow) => {
   return transferOutSnRows.value.some(row => row !== currentRow && String(row.snId || '') === String(snId || ''))
 }
 
+const handleTransferOutPhotoChange = (uploadFile, uploadFiles) => {
+  const file = uploadFile.raw
+  if (!file) return
+  const supportedTypes = new Set(['image/jpeg', 'image/png', 'image/webp'])
+  if (!supportedTypes.has(String(file.type || '').toLowerCase())) {
+    ElMessage.warning('发货照片仅支持 JPG、PNG、WEBP 图片')
+    transferOutPhotoFiles.value = uploadFiles.filter(item => item.uid !== uploadFile.uid)
+    return
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    ElMessage.warning('单张发货照片不能超过10MB')
+    transferOutPhotoFiles.value = uploadFiles.filter(item => item.uid !== uploadFile.uid)
+    return
+  }
+  transferOutPhotoFiles.value = uploadFiles.slice(-9)
+}
+
+const handleTransferOutPhotoExceed = () => {
+  ElMessage.warning('最多上传9张发货照片')
+}
+
+const buildTransferOutItems = () => {
+  const row = transferOutConfirmRow.value
+  const itemRows = (row?.TransferItems || []).filter(item => Number(item.quantity || 0) > 0)
+  const nonSnItems = itemRows
+    .filter(item => Number(item.need_sn || 0) !== 1)
+    .map(item => ({
+      itemId: item.item_id,
+      productId: item.product_id,
+      quantity: Number(item.quantity || 1),
+      pnCode: item.pn_code || item.pnCode || ''
+    }))
+  const snItems = transferOutSnRows.value.map(item => {
+    const selected = item.snOptions.find(sn => String(sn.sn_id) === String(item.snId))
+    return {
+      itemId: item.itemId,
+      productId: item.productId,
+      snId: item.snId,
+      snCode: selected?.sn_code || selected?.snCode || '',
+      pnCode: selected?.pn_code || selected?.pnCode || ''
+    }
+  })
+  return [...nonSnItems, ...snItems]
+}
+
 const submitConfirmTransferOut = async () => {
   if (!transferOutConfirmRow.value) return
   const missing = transferOutSnRows.value.find(row => !row.snId)
@@ -3806,22 +3856,21 @@ const submitConfirmTransferOut = async () => {
     ElMessage.warning(`请选择 ${missing.productName} 的SN`)
     return
   }
+  const photoFiles = transferOutPhotoFiles.value.map(item => item.raw).filter(Boolean)
+  if (!photoFiles.length) {
+    ElMessage.warning('请至少上传一张发货照片')
+    return
+  }
 
   transferOutConfirmLoading.value = true
   try {
-    const res = await api.confirmTransferOut({
-      transferId: transferOutConfirmRow.value.transfer_id,
-      items: transferOutSnRows.value.map(row => {
-        const selected = row.snOptions.find(sn => String(sn.sn_id) === String(row.snId))
-        return {
-          itemId: row.itemId,
-          productId: row.productId,
-          snId: row.snId,
-          snCode: selected?.sn_code || selected?.snCode || '',
-          pnCode: selected?.pn_code || selected?.pnCode || ''
-        }
-      })
+    const formData = new FormData()
+    formData.append('transferId', String(transferOutConfirmRow.value.transfer_id))
+    formData.append('items', JSON.stringify(buildTransferOutItems()))
+    photoFiles.forEach((file, index) => {
+      formData.append('shippingPhotos', file, file.name || `shipping-photo-${index + 1}.jpg`)
     })
+    const res = await api.confirmTransferOut(formData)
     if (res.code === 0) {
       ElMessage.success('调拨出库确认成功')
       transferOutConfirmVisible.value = false
@@ -3843,6 +3892,7 @@ const submitConfirmTransferOut = async () => {
 const resetTransferOutConfirm = () => {
   transferOutConfirmRow.value = null
   transferOutSnRows.value = []
+  transferOutPhotoFiles.value = []
   transferOutSnLoading.value = false
   transferOutConfirmLoading.value = false
 }
@@ -4691,5 +4741,23 @@ const getReturnStatusText = (status) => {
   gap: 4px 10px;
   color: #303133;
   font-weight: 600;
+}
+.transfer-out-photo-section {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #ebeef5;
+}
+.transfer-out-photo-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: #303133;
+  font-weight: 600;
+}
+.transfer-out-photo-tip {
+  margin-top: 6px;
+  color: #909399;
+  font-size: 12px;
 }
 </style>

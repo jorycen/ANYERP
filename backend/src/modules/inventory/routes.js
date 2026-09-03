@@ -7,7 +7,7 @@ const {
   getList, exportList, exportSummaryList, getSnInventoryList, exportSnInventoryList, setSnSpecialPrice, cancelSnSpecialPrice,
   getSnSpecialPriceHistory, getSnList, getInboundList, getInboundDetail, getSnTraceInboundDetail,
   executeInbound, getReturnList, requestReturn, approveReturn, executeReturn,
-  inbound, outbound, transfer, getTransferList, confirmTransferOut,
+  inbound, outbound, transfer, getTransferList, confirmTransferOut, getTransferShippingPhoto,
   confirmTransferIn, returnTransfer, revokeTransfer, rejectTransfer, getTransferDetail, getConversionList, getConversionDetail, createConversion,
   voidConversion, getLocationsByStore, updateSn, adjustSnLocation, snTrace
 } = require('./controller');
@@ -74,7 +74,8 @@ router.post('/outbound', enforceStoreOwnership, outbound);
 router.post('/transfer', transfer);
 router.get('/transfer-list', getTransferList);
 router.get('/transfer/:transferId', getTransferDetail);
-router.post('/transfer/confirm-out', enforceStoreOwnership, confirmTransferOut);
+router.get('/transfer/shipping-photos/:transferId/:photoId', getTransferShippingPhoto);
+router.post('/transfer/confirm-out', upload.array('shippingPhotos', 9), enforceStoreOwnership, confirmTransferOut);
 router.post('/transfer/confirm-in', enforceStoreOwnership, confirmTransferIn);
 router.post('/transfer/return', enforceStoreOwnership, returnTransfer);
 router.post('/transfer/revoke', enforceStoreOwnership, revokeTransfer);
