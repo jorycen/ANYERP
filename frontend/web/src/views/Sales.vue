@@ -119,7 +119,26 @@
           </el-col>
           <el-col :span="8">
             <el-form-item label="客户姓名">
-              <el-input v-model="orderForm.customerName" placeholder="请输入客户姓名" />
+              <el-autocomplete
+                v-if="isProductOutboundSource"
+                v-model="orderForm.customerName"
+                :fetch-suggestions="searchSupplierSuggestions"
+                :loading="supplierSearchLoading"
+                :trigger-on-focus="false"
+                :debounce="300"
+                clearable
+                placeholder="输入供应商名称/联系人/电话"
+                style="width: 100%"
+                @select="handleSupplierSelect"
+              >
+                <template #default="{ item }">
+                  <div class="supplier-suggestion">
+                    <span>{{ item.name }}</span>
+                    <span class="supplier-suggestion-meta">{{ item.contact || item.phone || '' }}</span>
+                  </div>
+                </template>
+              </el-autocomplete>
+              <el-input v-else v-model="orderForm.customerName" placeholder="请输入客户姓名" />
             </el-form-item>
           </el-col>
           <el-col :span="8">
@@ -135,7 +154,7 @@
                 <el-select v-model="orderForm.customerSourceL1" placeholder="一级来源" clearable style="width: 140px" @change="onCustomerSourceL1Change">
                   <el-option v-for="cs in customerSourceL1List" :key="cs.source_id" :label="cs.name" :value="cs.source_id" />
                 </el-select>
-                <el-select v-model="orderForm.customerSourceL2" placeholder="二级来源" clearable style="width: 140px" :disabled="!orderForm.customerSourceL1">
+                <el-select v-model="orderForm.customerSourceL2" placeholder="二级来源" clearable style="width: 140px" :disabled="!orderForm.customerSourceL1" @change="onCustomerSourceL2Change">
                   <el-option v-for="cs in customerSourceL2Options" :key="cs.source_id" :label="cs.name" :value="cs.source_id" />
                 </el-select>
               </div>
@@ -880,6 +899,16 @@ const ensureDepositPaymentMethod = () => {
 
 const customerSourceL1List = ref([])
 const customerSourceL2Options = ref([])
+const supplierSearchLoading = ref(false)
+
+const selectedCustomerSourceL1 = computed(() => {
+  return customerSourceL1List.value.find(item => String(item.source_id) === String(orderForm.customerSourceL1)) || null
+})
+
+const isProductOutboundSource = computed(() => {
+  const sourceName = selectedCustomerSourceL1.value?.name || orderForm.customerSourceL1
+  return String(sourceName || '').trim() === '产品端出库'
+})
 
 const loadCustomerSources = async () => {
   try {
@@ -899,6 +928,45 @@ const onCustomerSourceL1Change = (l1Id) => {
     customerSourceL2Options.value = parent?.children || []
   } else {
     customerSourceL2Options.value = []
+  }
+  syncCustomerSourceValue()
+}
+
+const onCustomerSourceL2Change = () => {
+  syncCustomerSourceValue()
+}
+
+const syncCustomerSourceValue = () => {
+  const parent = selectedCustomerSourceL1.value
+  const child = customerSourceL2Options.value.find(item => String(item.source_id) === String(orderForm.customerSourceL2))
+  orderForm.customerSource = [parent?.name, child?.name].filter(Boolean).join(' / ')
+}
+
+const searchSupplierSuggestions = async (queryString, callback) => {
+  if (!isProductOutboundSource.value || !String(queryString || '').trim()) {
+    callback([])
+    return
+  }
+  supplierSearchLoading.value = true
+  try {
+    const res = await api.getSupplierList({
+      keyword: String(queryString).trim(),
+      status: 1,
+      page: 1,
+      pageSize: 10
+    })
+    callback(res.code === 0 ? (res.data?.list || []) : [])
+  } catch (error) {
+    callback([])
+  } finally {
+    supplierSearchLoading.value = false
+  }
+}
+
+const handleSupplierSelect = (supplier) => {
+  orderForm.customerName = supplier?.name || ''
+  if (!orderForm.customerPhone && supplier?.phone) {
+    orderForm.customerPhone = supplier.phone
   }
 }
 
@@ -2000,4 +2068,14 @@ const getDepositStatusText = (status) => {
   margin-top: 10px;
 }
 .summary-item span { color: #f56c6c; }
+.supplier-suggestion {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.supplier-suggestion-meta {
+  color: #909399;
+  font-size: 12px;
+}
 </style>

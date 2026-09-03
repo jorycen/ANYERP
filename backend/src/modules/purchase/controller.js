@@ -2308,7 +2308,8 @@ async function getSupplierList(ctx) {
   if (keyword) {
     where[Op.or] = [
       { name: { [Op.like]: `%${keyword}%` } },
-      { contact: { [Op.like]: `%${keyword}%` } }
+      { contact: { [Op.like]: `%${keyword}%` } },
+      { phone: { [Op.like]: `%${keyword}%` } }
     ];
   }
 
