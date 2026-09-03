@@ -599,6 +599,30 @@ async function ensureExpenseAccountingSchema() {
     'TINYINT(1) NOT NULL DEFAULT 1 COMMENT "是否计入门店经营费用"',
     'ACCOUNTING_MONTH'
   );
+  await checkAndAddColumn(
+    'T_EXPENSE',
+    'ATTRIBUTION_TYPE',
+    'VARCHAR(32) NOT NULL DEFAULT "STORE" COMMENT "费用归属：个人/门店/产品端/公司/返利"',
+    'ACCOUNTING_MONTH'
+  );
+  await checkAndAddColumn(
+    'T_EXPENSE',
+    'ATTRIBUTION_METHOD',
+    'VARCHAR(16) NOT NULL DEFAULT "AVERAGE" COMMENT "费用分摊方式：平均或手工金额"',
+    'ATTRIBUTION_TYPE'
+  );
+  await checkAndAddColumn(
+    'T_EXPENSE',
+    'ATTRIBUTION_DETAILS_JSON',
+    'LONGTEXT COMMENT "费用归属及分摊明细JSON"',
+    'ATTRIBUTION_METHOD'
+  );
+  await checkAndAddColumn(
+    'T_EXPENSE',
+    'REBATE_SETTLEMENT_ID',
+    'VARCHAR(32) COMMENT "返利归属对应待核销单ID"',
+    'ATTRIBUTION_DETAILS_JSON'
+  );
   try {
     await sequelize.query(`
       UPDATE T_EXPENSE

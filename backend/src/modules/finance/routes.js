@@ -12,7 +12,7 @@ const {
 } = require('./freightController');
 const {
   getDailyDetails, getNationalSubsidyReceivables, exportDailyDetails, exportNationalSubsidyReceivables, getDailyStatement, getDailyStatementDetail,
-  batchSettle, settleNationalSubsidyReceivables, getSettlementSummary, createExpense, saveExpenseDraft, updateExpenseDraft, deleteExpenseDraft, getExpenseList, exportExpenseList, getExpenseDetail,
+  batchSettle, settleNationalSubsidyReceivables, getSettlementSummary, createExpense, saveExpenseDraft, updateExpenseDraft, deleteExpenseDraft, getExpenseList, exportExpenseList, getExpenseDetail, updateExpenseAttribution,
   submitExpense, payExpense, reviewExpense, cancelExpense, getSettlementAccountsWithBalance, getAccountTransactions, addAccountTransaction,
   getSubsidyAccountRoutes, saveSubsidyAccountRoute, createSubsidyReceipt, getSubsidyReceipts,
   allocateSubsidyReceipt, refundSubsidyReceipt, reverseSubsidyReceipt, submitSubsidyAdjustment,
@@ -81,6 +81,7 @@ router.put('/expense-draft/:id/submit', submitExpense);
 router.get('/expense-list', getExpenseList);
 router.get('/expense-list/export', exportExpenseList);
 router.get('/expense/:id', getExpenseDetail);
+router.put('/expense/:id/attribution', updateExpenseAttribution);
 router.post('/expense/:id/review', requireRole('admin'), reviewExpense);
 router.post('/expense/:id/cancel', cancelExpense);
 router.get('/expense/:id/performance-allocations', requireRole('finance'), listExpensePerformanceAllocations);

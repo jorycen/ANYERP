@@ -28,6 +28,7 @@
                 </template>
                 <template v-else>
                   <el-button link type="primary" @click="openInstance(row.instance_id)">查看</el-button>
+                  <el-button v-if="row.Instance?.business_type === 'expense'" link type="warning" @click="openAttributionEditor(row)">调整分摊</el-button>
                   <el-button link type="success" @click="review(row, 'approve')">通过</el-button>
                   <el-button link type="danger" @click="review(row, 'reject')">拒绝</el-button>
                 </template>
@@ -129,6 +130,18 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="attributionEditVisible" title="调整费用分摊金额" width="620px">
+      <el-alert title="只能调整当前审批节点的费用分摊金额，合计必须等于费用总额；调整会记录审计日志。" type="info" :closable="false" />
+      <el-table :data="attributionEditRows" border stripe style="margin-top: 14px">
+        <el-table-column prop="target_name" label="归属对象" min-width="180" />
+        <el-table-column label="分摊金额" width="220">
+          <template #default="{ row }"><el-input-number v-model="row.amount" :min="0" :precision="2" controls-position="right" /></template>
+        </el-table-column>
+      </el-table>
+      <div class="attribution-total">合计：¥{{ attributionEditTotal.toFixed(2) }} / 费用总额：¥{{ attributionEditAmount.toFixed(2) }}</div>
+      <template #footer><el-button @click="attributionEditVisible = false">取消</el-button><el-button type="primary" :loading="attributionEditLoading" @click="saveAttributionEditor">保存调整</el-button></template>
+    </el-dialog>
+
     <el-dialog v-model="flowDialogVisible" :title="flowForm.definitionId ? '编辑流程草稿' : '新增审批流程'" width="900px">
       <el-form label-width="110px">
         <el-form-item label="流程编码"><el-input v-model="flowForm.flowCode" :disabled="!!flowForm.definitionId" placeholder="如 expense_reimburse" /></el-form-item>
@@ -180,6 +193,12 @@ const detailVisible = ref(false)
 const currentInstance = ref(null)
 let detailRequestSerial = 0
 const flowDialogVisible = ref(false)
+const attributionEditVisible = ref(false)
+const attributionEditLoading = ref(false)
+const attributionEditExpenseId = ref('')
+const attributionEditAmount = ref(0)
+const attributionEditRows = ref([])
+const attributionEditTotal = computed(() => attributionEditRows.value.reduce((sum, row) => sum + Number(row.amount || 0), 0))
 const assigneeOptions = reactive({ staff: [], roles: [], stores: [] })
 const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
 const roleCodes = computed(() => {
@@ -326,7 +345,7 @@ async function loadOtherApprovalTasks() {
     loaders.push({
       type: 'expense',
       request: () => api.getExpenseList({ status: 'pending_approval', scope: 'review', page: 1, pageSize: 100 }),
-      map: row => moduleTask('expense', row, {
+      map: row => row.source_type !== 'purchase' ? null : moduleTask('expense', row, {
         id: row.expense_id || row.expenseId,
         no: row.expense_no || row.expenseNo,
         title: `${row.expense_type || '费用'} · ${row.expense_party || '-'}`,
@@ -557,6 +576,51 @@ async function openInstance(id) {
   } catch (error) {
     detailVisible.value = false
     ElMessage.error(error.response?.data?.message || error.message || '审批详情加载失败')
+  }
+}
+async function openAttributionEditor(row) {
+  const expenseId = row.Instance?.business_id
+  if (!expenseId) return
+  try {
+    const response = await api.getExpenseDetail(expenseId)
+    const data = response?.data?.data || response?.data || response || {}
+    let details = data.attribution_details
+    if (!Array.isArray(details)) {
+      try { details = JSON.parse(data.attribution_details_json || '[]') } catch (error) { details = [] }
+    }
+    attributionEditExpenseId.value = expenseId
+    attributionEditAmount.value = Number(data.amount || row.amount || 0)
+    attributionEditRows.value = details.map(item => ({ ...item, amount: Number(item.amount || 0) }))
+    attributionEditVisible.value = true
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.message || '加载费用分摊失败')
+  }
+}
+async function saveAttributionEditor() {
+  if (!attributionEditExpenseId.value) return
+  if (Math.abs(attributionEditTotal.value - attributionEditAmount.value) > 0.01) {
+    ElMessage.warning('分摊金额必须等于费用总额')
+    return
+  }
+  attributionEditLoading.value = true
+  try {
+    const response = await api.updateExpenseAttribution(attributionEditExpenseId.value, {
+      attributionMethod: 'MANUAL',
+      allocationDetails: attributionEditRows.value.map(item => ({
+        targetId: item.target_id,
+        targetName: item.target_name,
+        amount: Number(item.amount || 0)
+      }))
+    })
+    if (response?.code === 0) {
+      ElMessage.success(response.message || '费用归属已调整')
+      attributionEditVisible.value = false
+      await reload()
+    }
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.message || '调整费用分摊失败')
+  } finally {
+    attributionEditLoading.value = false
   }
 }
 function openSales(row) { router.push({ name: 'Sales', query: { orderId: row.order_id } }) }

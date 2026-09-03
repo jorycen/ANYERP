@@ -1146,7 +1146,7 @@ async function batchSettleRebateResources(ctx) {
     const recordMap = new Map(records.map(record => [record.settlement_id, record]));
     for (const item of normalizedItems) {
       const record = recordMap.get(item.settlementId);
-      if (!['MANUAL_REBATE', 'MANUFACTURER_REBATE', 'REBATE_RECEIPT'].includes(record.source_type)) {
+      if (!['MANUAL_REBATE', 'MANUFACTURER_REBATE', 'REBATE_RECEIPT', 'EXPENSE_REBATE'].includes(record.source_type)) {
         ctx.throw(400, '批量核销仅支持返利类下账单');
       }
       const result = await reconcileRebateSettlement(ctx, record, transaction, item.allocations);
@@ -1165,7 +1165,7 @@ async function settleResource(ctx) {
     if (!record) ctx.throw(404, '资源待下账记录不存在');
     if (!['PENDING', 'PARTIALLY_SETTLED'].includes(record.status)) ctx.throw(409, '该资源记录已完成下账');
     const category = await ResourceCategory.findOne({ where: { category_code: record.resource_type }, transaction });
-    if (['MANUAL_REBATE', 'MANUFACTURER_REBATE', 'REBATE_RECEIPT'].includes(record.source_type)) {
+    if (['MANUAL_REBATE', 'MANUFACTURER_REBATE', 'REBATE_RECEIPT', 'EXPENSE_REBATE'].includes(record.source_type)) {
       result = await reconcileRebateSettlement(ctx, record, transaction);
       return;
     }
@@ -1255,7 +1255,7 @@ async function reverseResourceSettlement(ctx) {
       transaction,
       lock: transaction.LOCK.UPDATE
     });
-    if (activeAllocations.length > 0 || ['MANUAL_REBATE', 'MANUFACTURER_REBATE', 'REBATE_RECEIPT'].includes(record.source_type)) {
+    if (activeAllocations.length > 0 || ['MANUAL_REBATE', 'MANUFACTURER_REBATE', 'REBATE_RECEIPT', 'EXPENSE_REBATE'].includes(record.source_type)) {
       if (activeAllocations.length === 0) ctx.throw(409, '未找到返利下账单对应的核销记录');
       for (const allocation of activeAllocations) {
         const posting = await RebatePostingOrder.findByPk(allocation.posting_id, {

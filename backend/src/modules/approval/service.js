@@ -197,6 +197,11 @@ async function writeLog(instanceId, taskId, action, actor, comment, detail, tran
 }
 
 async function completeBusinessApproval(instance, transaction, actor, comment = '') {
+  if (instance.business_type === 'expense') {
+    const { applyExpenseApproval } = require('../finance/expenseService');
+    await applyExpenseApproval(instance, transaction, actor, 'approved', comment);
+    return;
+  }
   if (instance.business_type === 'payable_settlement') {
     const { applyPayableSettlementApproval } = require('../finance/payableController');
     await applyPayableSettlementApproval(instance, transaction, actor, 'approved', comment);
@@ -208,6 +213,11 @@ async function completeBusinessApproval(instance, transaction, actor, comment = 
 }
 
 async function rejectBusinessApproval(instance, transaction, actor, comment = '') {
+  if (instance.business_type === 'expense') {
+    const { applyExpenseApproval } = require('../finance/expenseService');
+    await applyExpenseApproval(instance, transaction, actor, 'rejected', comment);
+    return;
+  }
   if (instance.business_type !== 'payable_settlement') return;
   const { applyPayableSettlementApproval } = require('../finance/payableController');
   await applyPayableSettlementApproval(instance, transaction, actor, 'rejected', comment);

@@ -230,6 +230,7 @@ const selectedRows = ref([])
 const postingOrders = ref([])
 
 const sourceOptions = [
+  { label: '费用归属返利', value: 'EXPENSE_REBATE' },
   { label: '手工新增', value: 'MANUAL_REBATE' },
   { label: '返利收款', value: 'REBATE_RECEIPT' },
   { label: '自动生成', value: 'MANUFACTURER_REBATE' },
@@ -281,7 +282,7 @@ const statusType = value => ({
 const formatDateTime = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
 const isBatchSelectable = row => ['PENDING', 'PARTIALLY_SETTLED'].includes(row.status)
   && Boolean(row.counterparty_id)
-  && ['MANUAL_REBATE', 'MANUFACTURER_REBATE', 'REBATE_RECEIPT'].includes(row.source_type)
+  && ['MANUAL_REBATE', 'MANUFACTURER_REBATE', 'REBATE_RECEIPT', 'EXPENSE_REBATE'].includes(row.source_type)
 
 async function loadAuxiliary() {
   try {
@@ -290,10 +291,10 @@ async function loadAuxiliary() {
       api.getResourceCategories({ activeOnly: 1 })
     ])
     suppliers.value = supplierRes.data?.list || supplierRes.data || []
-    resourceOptions.value = (categoryRes.data || []).map(item => ({
+    resourceOptions.value = [{ label: '费用归属返利', value: 'EXPENSE_REBATE' }, ...(categoryRes.data || []).map(item => ({
       label: item.name,
       value: item.category_code
-    }))
+    }))]
   } catch (error) {
     ElMessage.error('加载返利基础资料失败')
   }

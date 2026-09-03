@@ -348,6 +348,11 @@
             <el-table-column prop="expense_date" label="发生日期" width="110" />
             <el-table-column prop="accounting_month" label="经营归属月" width="110" />
             <el-table-column prop="store_name" label="门店" width="120" />
+            <el-table-column label="费用归属" width="180">
+              <template #default="{ row }">
+                {{ expenseAttributionText(row) }}
+              </template>
+            </el-table-column>
             <el-table-column label="绩效已分摊" width="110">
               <template #default="{ row }">¥{{ formatMoney(row.performance_allocation_amount) }}</template>
             </el-table-column>
@@ -368,7 +373,10 @@
                 <el-button v-if="row.status === 'pending'" link type="primary" @click="handleSubmitExpense(row)">
                   报销
                 </el-button>
-                <el-button v-if="canManageExpenseAccounting(row)" link type="warning" @click="openExpenseAllocation(row)">绩效分摊</el-button>
+                <el-button v-if="row.status === 'pending_approval' && row.source_type === 'expense'" link type="warning" @click="handleEditExpenseAttribution(row)">
+                  调整归属
+                </el-button>
+                <el-button v-if="canManageExpenseAccounting(row) && !['PERSONAL', 'REBATE'].includes(row.attribution_type)" link type="warning" @click="openExpenseAllocation(row)">绩效分摊</el-button>
                 <span v-else-if="row.status === 'processing'" style="color: #e6a23c; font-size: 12px;">
                   支付中 · {{ row.submit_user || '-' }}
                 </span>
@@ -404,7 +412,7 @@
 
           <div class="settlement-section">
             <div class="filter-bar">
-              <span style="font-weight: bold; line-height: 32px;">报销结算单</span>
+              <span style="font-weight: bold; line-height: 32px;">费用付款管理</span>
               <el-select v-model="expenseSettleFilter" placeholder="状态筛选" clearable style="width: 130px" @change="loadExpenseSettleData">
                 <el-option label="全部" value="" />
                 <el-option label="支付中" value="processing" />
@@ -1056,7 +1064,7 @@
     </el-dialog>
 
     <!-- 添加支出对话框-->
-    <el-dialog v-model="expenseDialogVisible" :title="expenseForm.expenseId ? '编辑费用草稿' : '添加费用'" width="500px" @close="handleDialogClose">
+    <el-dialog v-model="expenseDialogVisible" :title="expenseAttributionOnly ? '调整费用归属' : (expenseForm.expenseId ? '编辑费用草稿' : '添加费用')" width="500px" @close="handleDialogClose">
       <el-form :model="expenseForm" label-width="100px">
         <el-form-item label="报销类型" required>
           <el-select v-model="expenseForm.expenseTypeId" placeholder="请选择类型" style="width: 100%">
@@ -1076,6 +1084,57 @@
         </el-form-item>
         <el-form-item label="费用日期">
           <el-date-picker v-model="expenseForm.expenseDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="费用归属" required>
+          <el-select v-model="expenseForm.attributionType" style="width: 100%" @change="handleAttributionTypeChange">
+            <el-option label="归属个人（申请人）" value="PERSONAL" />
+            <el-option label="归属门店" value="STORE" />
+            <el-option label="归属产品端" value="PRODUCT_SIDE" />
+            <el-option label="归属公司" value="COMPANY" />
+            <el-option label="归属返利" value="REBATE" />
+          </el-select>
+        </el-form-item>
+        <template v-if="expenseForm.attributionType === 'STORE'">
+          <el-form-item label="分摊门店">
+            <el-select v-model="expenseForm.allocationStoreIds" multiple filterable collapse-tags placeholder="默认当前门店，可多选" style="width: 100%">
+              <el-option v-for="s in stores" :key="s.store_id" :label="s.name" :value="s.store_id" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="分摊方式">
+            <el-select v-model="expenseForm.attributionMethod" style="width: 100%">
+              <el-option label="平均分摊" value="AVERAGE" />
+              <el-option label="按金额分摊" value="MANUAL" />
+            </el-select>
+          </el-form-item>
+          <div v-if="expenseForm.attributionMethod === 'MANUAL' && expenseForm.allocationStoreIds.length" class="expense-allocation-inputs">
+            <div v-for="storeId in expenseForm.allocationStoreIds" :key="storeId" class="expense-allocation-input-row">
+              <span>{{ stores.find(item => item.store_id === storeId)?.name || storeId }}</span>
+              <el-input-number v-model="expenseForm.allocationAmounts[storeId]" :min="0" :precision="2" controls-position="right" />
+            </div>
+          </div>
+        </template>
+        <template v-else-if="expenseForm.attributionType === 'COMPANY'">
+          <el-form-item label="公司归属到" required>
+            <el-radio-group v-model="expenseForm.companyTargetType">
+              <el-radio value="store">门店</el-radio><el-radio value="distributor">经销商</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item label="归属对象" required>
+            <el-select v-model="expenseForm.companyTargetId" filterable style="width: 100%">
+              <template v-if="expenseForm.companyTargetType === 'distributor'">
+                <el-option :label="currentDistributorName" :value="currentDistributorId" />
+              </template>
+              <template v-else>
+                <el-option v-for="s in stores" :key="s.store_id" :label="s.name" :value="s.store_id" />
+              </template>
+            </el-select>
+          </el-form-item>
+        </template>
+        <el-form-item v-else-if="expenseForm.attributionType === 'REBATE'" label="返利供应商" required>
+          <el-select v-model="expenseForm.rebateSupplierId" filterable style="width: 100%">
+            <el-option v-for="s in suppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
+          </el-select>
+          <div class="form-help">审批通过后同时进入付款管理和返利下账页面，返利到账后可核销冲销。</div>
         </el-form-item>
         <el-form-item label="经营归属月" required>
           <el-date-picker v-model="expenseForm.accountingMonth" type="month" value-format="YYYY-MM" style="width: 100%" />
@@ -1107,7 +1166,7 @@
       </el-form>
       <template #footer>
         <el-button @click="expenseDialogVisible = false">取消</el-button>
-        <el-button type="info" @click="saveExpenseDraft">保存草稿</el-button>
+        <el-button v-if="!expenseAttributionOnly" type="info" @click="saveExpenseDraft">保存草稿</el-button>
         <el-button type="primary" @click="handleExpenseSubmit" :loading="submitLoading">确定</el-button>
       </template>
     </el-dialog>
@@ -1914,10 +1973,24 @@ const expenseForm = reactive({
   accountingMonth: new Date().toISOString().slice(0, 7),
   affectsStoreProfit: true,
   paymentMethod: 'CORPORATE',
+  attributionType: 'STORE',
+  attributionMethod: 'AVERAGE',
+  allocationStoreIds: [],
+  allocationAmounts: {},
+  companyTargetType: 'store',
+  companyTargetId: '',
+  rebateSupplierId: '',
   hasInvoice: false,
   invoiceType: '',
   invoiceNo: '',
   remark: ''
+})
+
+const expenseAttributionOnly = ref(false)
+const currentDistributorId = computed(() => stores.value.find(item => item.store_id === expenseForm.storeId)?.distributor_id || '')
+const currentDistributorName = computed(() => {
+  const store = stores.value.find(item => item.store_id === expenseForm.storeId)
+  return store?.distributor_name || currentDistributorId.value || '当前经销商'
 })
 
 const expenseTypeOptions = ref([])
@@ -2424,6 +2497,7 @@ const parseQuantityInput = (value) => {
 }
 
 const handleEditExpense = (row) => {
+  expenseAttributionOnly.value = false
   expenseForm.expenseId = row.expense_id || ''
   expenseForm.expenseTypeId = row.expense_type_id || ''
   expenseForm.storeId = row.store_id || ''
@@ -2433,6 +2507,18 @@ const handleEditExpense = (row) => {
   expenseForm.accountingMonth = row.accounting_month || expenseForm.expenseDate.slice(0, 7)
   expenseForm.affectsStoreProfit = Number(row.affects_store_profit ?? 1) === 1
   expenseForm.paymentMethod = row.payment_method || 'CORPORATE'
+  expenseForm.attributionType = row.attribution_type || 'STORE'
+  expenseForm.attributionMethod = row.attribution_method || 'AVERAGE'
+  const attributionDetails = Array.isArray(row.attribution_details)
+    ? row.attribution_details
+    : (() => { try { return JSON.parse(row.attribution_details_json || '[]') } catch (_) { return [] } })()
+  expenseForm.allocationStoreIds = attributionDetails.filter(item => item.target_type === 'store').map(item => item.target_id)
+  expenseForm.allocationAmounts = Object.fromEntries(attributionDetails.filter(item => item.target_type === 'store').map(item => [item.target_id, Number(item.amount || 0)]))
+  if (expenseForm.attributionType === 'COMPANY') {
+    expenseForm.companyTargetType = attributionDetails[0]?.target_type || 'store'
+    expenseForm.companyTargetId = attributionDetails[0]?.target_id || ''
+  }
+  if (expenseForm.attributionType === 'REBATE') expenseForm.rebateSupplierId = attributionDetails[0]?.target_id || ''
   expenseForm.hasInvoice = Boolean(row.has_invoice)
   expenseForm.invoiceType = row.invoice_type || ''
   expenseForm.invoiceNo = row.invoice_no || ''
@@ -3460,6 +3546,76 @@ const handleAddExpense = () => {
   expenseDialogVisible.value = true
 }
 
+const expenseAttributionText = (row) => {
+  const labels = { PERSONAL: '个人', STORE: '门店', PRODUCT_SIDE: '产品端', COMPANY: '公司', REBATE: '返利' }
+  const details = Array.isArray(row?.attribution_details)
+    ? row.attribution_details
+    : (() => { try { return JSON.parse(row?.attribution_details_json || '[]') } catch (_) { return [] } })()
+  const targetText = details.map(item => `${item.target_name || item.target_id || '-'} ¥${formatMoney(item.amount)}`).join('、')
+  return `${labels[row?.attribution_type] || row?.attribution_type || '门店'}${targetText ? `：${targetText}` : ''}`
+}
+
+const handleAttributionTypeChange = () => {
+  expenseForm.attributionMethod = 'AVERAGE'
+  expenseForm.allocationStoreIds = []
+  expenseForm.allocationAmounts = {}
+  expenseForm.companyTargetId = ''
+  expenseForm.rebateSupplierId = ''
+}
+
+const buildAttributionPayload = () => {
+  if (expenseForm.attributionType === 'STORE') {
+    return {
+      attributionType: 'STORE',
+      attributionMethod: expenseForm.attributionMethod,
+      allocationDetails: expenseForm.allocationStoreIds.map(storeId => ({
+        targetId: storeId,
+        targetName: stores.value.find(item => item.store_id === storeId)?.name || '',
+        amount: expenseForm.attributionMethod === 'MANUAL' ? Number(expenseForm.allocationAmounts[storeId] || 0) : null
+      }))
+    }
+  }
+  if (expenseForm.attributionType === 'COMPANY') {
+    const target = expenseForm.companyTargetType === 'store'
+      ? stores.value.find(item => item.store_id === expenseForm.companyTargetId)
+      : null
+    return {
+      attributionType: 'COMPANY',
+      companyTargetType: expenseForm.companyTargetType,
+      companyTargetId: expenseForm.companyTargetId,
+      companyTargetName: target?.name || currentDistributorName.value
+    }
+  }
+  if (expenseForm.attributionType === 'REBATE') {
+    return {
+      attributionType: 'REBATE',
+      rebateSupplierId: expenseForm.rebateSupplierId,
+      rebateSupplierName: suppliers.value.find(item => item.supplier_id === expenseForm.rebateSupplierId)?.name || ''
+    }
+  }
+  return { attributionType: expenseForm.attributionType, attributionMethod: 'MANUAL', allocationDetails: [] }
+}
+
+const handleEditExpenseAttribution = (row) => {
+  const details = Array.isArray(row.attribution_details)
+    ? row.attribution_details
+    : (() => { try { return JSON.parse(row.attribution_details_json || '[]') } catch (_) { return [] } })()
+  expenseAttributionOnly.value = true
+  expenseForm.expenseId = row.expense_id
+  expenseForm.storeId = row.store_id || ''
+  expenseForm.amount = Number(row.amount || 0)
+  expenseForm.attributionType = row.attribution_type || 'STORE'
+  expenseForm.attributionMethod = row.attribution_method || 'AVERAGE'
+  expenseForm.allocationStoreIds = details.filter(item => item.target_type === 'store').map(item => item.target_id)
+  expenseForm.allocationAmounts = Object.fromEntries(details.filter(item => item.target_type === 'store').map(item => [item.target_id, Number(item.amount || 0)]))
+  if (expenseForm.attributionType === 'COMPANY') {
+    expenseForm.companyTargetType = details[0]?.target_type || 'store'
+    expenseForm.companyTargetId = details[0]?.target_id || ''
+  }
+  if (expenseForm.attributionType === 'REBATE') expenseForm.rebateSupplierId = details[0]?.target_id || ''
+  expenseDialogVisible.value = true
+}
+
 const buildExpensePayload = () => ({
   expenseTypeId: expenseForm.expenseTypeId,
   storeId: expenseForm.storeId,
@@ -3469,6 +3625,7 @@ const buildExpensePayload = () => ({
   accountingMonth: expenseForm.accountingMonth,
   affectsStoreProfit: expenseForm.affectsStoreProfit,
   paymentMethod: expenseForm.paymentMethod,
+  ...buildAttributionPayload(),
   hasInvoice: expenseForm.hasInvoice,
   invoiceType: expenseForm.invoiceType,
   invoiceNo: expenseForm.invoiceNo,
@@ -3496,6 +3653,21 @@ const validateExpenseForm = () => {
     ElMessage.warning('请选择支付方式')
     return false
   }
+  if (expenseForm.attributionType === 'COMPANY' && !expenseForm.companyTargetId) {
+    ElMessage.warning('请选择公司归属对象')
+    return false
+  }
+  if (expenseForm.attributionType === 'REBATE' && !expenseForm.rebateSupplierId) {
+    ElMessage.warning('请选择返利供应商')
+    return false
+  }
+  if (expenseForm.attributionType === 'STORE' && expenseForm.attributionMethod === 'MANUAL') {
+    const total = expenseForm.allocationStoreIds.reduce((sum, storeId) => sum + Number(expenseForm.allocationAmounts[storeId] || 0), 0)
+    if (Math.abs(total - Number(expenseForm.amount || 0)) > 0.01) {
+      ElMessage.warning('门店分摊金额必须等于费用总额')
+      return false
+    }
+  }
   return true
 }
 
@@ -3505,6 +3677,15 @@ const handleExpenseSubmit = async () => {
   submitLoading.value = true
   try {
     const data = buildExpensePayload()
+    if (expenseAttributionOnly.value) {
+      const res = await api.updateExpenseAttribution(expenseForm.expenseId, data)
+      if (res.code === 0) {
+        ElMessage.success(res.message || '费用归属已调整')
+        expenseDialogVisible.value = false
+        await loadExpenseData()
+      } else ElMessage.error(res.message || '调整失败')
+      return
+    }
     let res
     if (expenseForm.expenseId) {
       res = await api.updateExpenseDraft(expenseForm.expenseId, data)
@@ -3530,6 +3711,7 @@ const handleExpenseSubmit = async () => {
 }
 
 const handleDialogClose = () => {
+  expenseAttributionOnly.value = false
   resetForm()
 }
 
@@ -3564,6 +3746,7 @@ const restoreExpenseDraft = () => {
 }
 
 const resetForm = () => {
+  expenseAttributionOnly.value = false
   expenseForm.expenseId = ''
   expenseForm.expenseTypeId = ''
   expenseForm.storeId = ''
@@ -3573,6 +3756,13 @@ const resetForm = () => {
   expenseForm.accountingMonth = new Date().toISOString().slice(0, 7)
   expenseForm.affectsStoreProfit = true
   expenseForm.paymentMethod = 'CORPORATE'
+  expenseForm.attributionType = 'STORE'
+  expenseForm.attributionMethod = 'AVERAGE'
+  expenseForm.allocationStoreIds = []
+  expenseForm.allocationAmounts = {}
+  expenseForm.companyTargetType = 'store'
+  expenseForm.companyTargetId = ''
+  expenseForm.rebateSupplierId = ''
   expenseForm.hasInvoice = false
   expenseForm.invoiceType = ''
   expenseForm.invoiceNo = ''
@@ -3599,7 +3789,7 @@ const getExpenseStatusText = (status) => {
     pending: '待提交',
     pending_approval: '待审批',
     pending_payment: '待付款',
-    processing: '报销中',
+    processing: '待付款',
     approved: '待结算',
     paid: '已付款',
     rejected: '已拒绝'
