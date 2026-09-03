@@ -124,8 +124,15 @@
 
         <!-- ========== Tab 2: 分类管理 ========== -->
         <el-tab-pane v-if="!productApprovalOnly" label="分类管理" name="category">
-          <div class="filter-bar">
-            <el-button type="primary" @click="handleAddCategory(null)">新增一级分类</el-button>
+          <div class="category-toolbar">
+            <div>
+              <div class="category-toolbar-title">分类层级</div>
+              <div class="category-toolbar-subtitle">按分类、品牌、系列、型号逐级维护，最多支持四级分类</div>
+            </div>
+            <div class="category-toolbar-actions">
+              <span class="category-count">共 {{ categoryCount }} 个分类</span>
+              <el-button type="primary" :icon="Plus" @click="handleAddCategory(null)">新增一级分类</el-button>
+            </div>
           </div>
 
           <div v-loading="categoryLoading">
@@ -142,7 +149,7 @@
                     <el-button link type="primary" size="small" @click="handleAddCategory(level1)">添加子分类</el-button>
                     <el-button link type="primary" size="small" @click="handleEditCategory(level1)">编辑</el-button>
                     <span class="finance-category-toggle">
-                      <span>展示在财务页面</span>
+                      <span>财务展示</span>
                       <el-switch
                         :model-value="Number(level1.show_in_finance) === 1"
                         :loading="categoryFinanceLoadingId === level1.category_id"
@@ -165,7 +172,7 @@
                         <el-button v-if="level2.level < 3" link type="primary" size="small" @click="handleAddCategory(level2)">添加子分类</el-button>
                         <el-button link type="primary" size="small" @click="handleEditCategory(level2)">编辑</el-button>
                         <span class="finance-category-toggle">
-                          <span>展示在财务页面</span>
+                          <span>财务展示</span>
                           <el-switch
                             :model-value="Number(level2.show_in_finance) === 1"
                             :loading="categoryFinanceLoadingId === level2.category_id"
@@ -187,7 +194,7 @@
                         <el-button link type="primary" size="small" @click="handleAddCategory(level3)">添加子分类</el-button>
                         <el-button link type="primary" size="small" @click="handleEditCategory(level3)">编辑</el-button>
                           <span class="finance-category-toggle">
-                            <span>展示在财务页面</span>
+                            <span>财务展示</span>
                             <el-switch
                               :model-value="Number(level3.show_in_finance) === 1"
                               :loading="categoryFinanceLoadingId === level3.category_id"
@@ -206,7 +213,7 @@
                               <el-button link type="primary" size="small" :disabled="level4Index === level3.children.length - 1" @click="handleMoveCategory(level4, level3.children, level4Index, 1)">下移</el-button>
                               <el-button link type="primary" size="small" @click="handleEditCategory(level4)">编辑</el-button>
                               <span class="finance-category-toggle">
-                                <span>展示在财务页面</span>
+                                <span>财务展示</span>
                                 <el-switch
                                   :model-value="Number(level4.show_in_finance) === 1"
                                   :loading="categoryFinanceLoadingId === level4.category_id"
@@ -704,7 +711,7 @@
 import { ref, reactive, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Folder, Upload } from '@element-plus/icons-vue'
+import { Folder, Plus, Upload } from '@element-plus/icons-vue'
 import * as XLSX from 'xlsx'
 import api from '../api'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
@@ -1315,6 +1322,11 @@ const editingCategory = ref(null)
 const parentCategory = ref(null)
 const categoryForm = reactive({ name: '', sortOrder: 0 })
 
+const categoryCount = computed(() => {
+  const countNodes = (nodes = []) => nodes.reduce((sum, node) => sum + 1 + countNodes(node.children || []), 0)
+  return countNodes(categoryTree.value)
+})
+
 const handleAddCategory = (parent) => {
   if (parent && Number(parent.level) >= 4) {
     ElMessage.warning('分类最多支持四级')
@@ -1892,6 +1904,23 @@ watch(() => route.path, syncTabFromRoute)
 .text-muted { color: #c0c4cc; }
 .cost-price { font-weight: 600; color: #e6a23c; }
 
+.products-page :deep(.el-card__body) { padding: 0 22px 24px; }
+.category-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin: 0 0 18px;
+  padding: 16px 18px;
+  border: 1px solid #e7edf5;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #f8fbff 0%, #f4f7fb 100%);
+}
+.category-toolbar-title { color: #1f2937; font-size: 16px; font-weight: 700; line-height: 24px; }
+.category-toolbar-subtitle { margin-top: 3px; color: #8a97a8; font-size: 12px; }
+.category-toolbar-actions { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
+.category-count { color: #7b8798; font-size: 13px; white-space: nowrap; }
+
 /* 表格自动换行样式 */
 :deep(.el-table .cell) {
   white-space: normal !important;
@@ -1899,14 +1928,55 @@ watch(() => route.path, syncTabFromRoute)
 }
 
 
-.category-tree { padding: 8px 0; }
-.category-row { display: flex; align-items: center; gap: 8px; padding: 10px 14px; margin: 4px 0; border-radius: 8px; background: #f5f7fa; transition: all 0.2s; }
-.category-row:hover { background: #ecf5ff; }
-.cat-name { font-weight: 500; flex: 1; }
-.cat-level { font-size: 12px; color: #909399; background: #e4e7ed; padding: 2px 8px; border-radius: 4px; }
-.cat-actions { display: flex; gap: 4px; }
-.finance-category-toggle { display: inline-flex; align-items: center; gap: 4px; margin: 0 4px; color: #606266; font-size: 12px; white-space: nowrap; }
-.sub-categories { margin-left: 28px; border-left: 2px solid #e4e7ed; padding-left: 12px; }
+.category-tree { padding: 12px; border: 1px solid #e8eef6; border-radius: 14px; background: #f8fafc; }
+.category-node.level1 { margin-bottom: 14px; }
+.category-node.level1:last-child { margin-bottom: 0; }
+.category-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  min-height: 48px;
+  margin: 6px 0;
+  padding: 10px 14px;
+  border: 1px solid #e7edf5;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 2px 6px rgba(31, 41, 55, 0.035);
+  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+}
+.category-row.level-1 {
+  min-height: 54px;
+  border-color: #d9e7f8;
+  background: linear-gradient(90deg, #eef6ff 0%, #fff 42%);
+}
+.category-row.level-2 { background: #fff; }
+.category-row.level-3, .category-row.level-4 { min-height: 44px; background: #fbfcfe; }
+.category-row:hover { border-color: #b7d4f5; background: #f7fbff; box-shadow: 0 5px 14px rgba(64, 158, 255, 0.09); }
+.cat-name { min-width: 120px; max-width: 240px; overflow: hidden; color: #27364b; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.category-row.level-1 .cat-name { color: #1f4f85; font-size: 15px; }
+.cat-level { flex: 0 0 auto; padding: 3px 8px; border-radius: 5px; color: #718096; background: #edf1f6; font-size: 11px; line-height: 16px; }
+.category-row.level-1 .cat-level { color: #337ecc; background: #dceeff; }
+.cat-actions { display: flex; flex: 1 1 560px; align-items: center; justify-content: flex-end; min-width: 0; gap: 3px 6px; flex-wrap: wrap; }
+.cat-actions :deep(.el-button) { margin-left: 0; padding: 5px 6px; border-radius: 5px; font-size: 12px; }
+.finance-category-toggle { display: inline-flex; align-items: center; gap: 6px; margin: 0 2px 0 5px; padding: 3px 7px 3px 8px; border-radius: 6px; color: #66758a; background: #f3f6fa; font-size: 12px; white-space: nowrap; }
+.finance-category-toggle :deep(.el-switch) { --el-switch-height: 18px; --el-switch-button-size: 14px; }
+.sub-categories { margin: 8px 0 0 24px; padding-left: 16px; border-left: 2px solid #d9e5f2; }
+
+@media (max-width: 1100px) {
+  .category-toolbar { align-items: flex-start; flex-direction: column; }
+  .category-toolbar-actions { width: 100%; justify-content: space-between; }
+  .cat-actions { flex-basis: 100%; justify-content: flex-start; }
+}
+
+@media (max-width: 640px) {
+  .products-page :deep(.el-card__body) { padding: 0 12px 18px; }
+  .category-tree { padding: 8px; }
+  .sub-categories { margin-left: 10px; padding-left: 10px; }
+  .category-row { padding: 10px; }
+  .cat-name { max-width: calc(100% - 80px); }
+  .cat-actions { justify-content: flex-start; }
+}
 
 .import-tips { margin-bottom: 16px; padding: 16px; background: #f5f7fa; border-radius: 8px; }
 .import-tips p { margin: 0 0 12px 0; color: #606266; }
