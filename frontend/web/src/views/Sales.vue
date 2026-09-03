@@ -221,11 +221,14 @@
                 <template #default="{ row, $index }">
                   <el-select
                     v-if="row.needSn"
-                    v-model="row.snCode"
-                    placeholder="选择SN"
+                    v-model="row.snCodes"
+                    placeholder="可多选SN"
                     size="small"
                     clearable
                     filterable
+                    multiple
+                    collapse-tags
+                    collapse-tags-tooltip
                     :loading="row.snLoading"
                     style="width: 100%"
                     @change="(val) => onSnChange(val, $index)"
@@ -236,26 +239,22 @@
                       :label="sn.sn_code"
                       :value="sn.sn_code"
                     />
-                    <el-option
-                      v-if="row.snCode && !(row.snList || []).some(sn => sn.sn_code === row.snCode)"
-                      :key="`current-${row.snCode}`"
-                      :label="row.snCode"
-                      :value="row.snCode"
-                    />
+                    <el-option v-for="sn in getCurrentSnFallbacks(row)" :key="`current-${sn.sn_code}`" :label="sn.sn_code" :value="sn.sn_code" />
                   </el-select>
                   <span v-else class="muted">无需SN</span>
                 </template>
               </el-table-column>
               <el-table-column label="货品销售标签 / 可用权益" min-width="250">
                 <template #default="{ row }">
-                  <template v-if="row.selectedSn">
-                    <div><el-tag size="small" :type="row.selectedSn.warning_message ? 'warning' : 'success'">{{ row.selectedSn.sales_resource_label }}</el-tag></div>
+                  <template v-if="row.selectedSns?.length">
+                    <div class="selected-sn-count">已选 {{ row.selectedSns.length }} 个 SN</div>
+                    <div><el-tag size="small" :type="row.selectedSns.some(sn => sn.warning_message) ? 'warning' : 'success'">{{ row.selectedSns[0].sales_resource_label || '已选SN' }}</el-tag></div>
                     <div class="resource-checks">
                       <el-checkbox-group v-model="row.selectedResourceTypes">
                         <el-checkbox v-for="resource in saleResourceCategories" :key="resource.category_code" :value="resource.category_code" :disabled="!resourceAvailable(row, resource.category_code)">{{ resource.short_name || resource.name }}</el-checkbox>
                       </el-checkbox-group>
                     </div>
-                    <div v-if="row.selectedSn.warning_message" class="resource-warning">{{ row.selectedSn.warning_message }}</div>
+                    <div v-if="row.selectedSns.some(sn => sn.warning_message)" class="resource-warning">{{ row.selectedSns.find(sn => sn.warning_message)?.warning_message }}</div>
                   </template>
                   <span v-else class="muted">选择SN后自动显示</span>
                 </template>
@@ -267,12 +266,13 @@
               </el-table-column>
               <el-table-column label="数量" width="70">
                 <template #default="{ row }">
-                  <el-input v-model="row.quantity" size="small" style="width: 60px" />
+                  <span v-if="row.needSn && row.snCodes?.length" class="sn-quantity">{{ row.snCodes.length }}</span>
+                  <el-input v-else v-model="row.quantity" size="small" style="width: 60px" />
                 </template>
               </el-table-column>
               <el-table-column label="小计" width="90">
                 <template #default="{ row }">
-                  ¥{{ ((row.salePrice || 0) * (row.quantity || 1)).toFixed(2) }}
+                  ¥{{ getItemSubtotal(row).toFixed(2) }}
                 </template>
               </el-table-column>
               <el-table-column label="操作" width="60">
@@ -730,7 +730,7 @@ const rejectOrderId = ref('')
 
 const totalAmount = computed(() => {
   return orderForm.items.reduce((sum, item) => {
-    return sum + ((item.salePrice || 0) * (item.quantity || 1))
+    return sum + getItemSubtotal(item)
   }, 0)
 })
 
@@ -741,6 +741,13 @@ const actualPayment = computed(() => {
 const selectedDeposit = computed(() => {
   return availableDepositList.value.find(item => item.deposit_id === orderForm.depositId) || null
 })
+
+const getItemSubtotal = (item) => {
+  const selectedCount = item?.needSn && Array.isArray(item.selectedSns) && item.selectedSns.length
+    ? item.selectedSns.length
+    : Number(item?.quantity || 1)
+  return Number(item?.salePrice || 0) * selectedCount
+}
 
 onMounted(async () => {
   if (traceReadonly.value) {
@@ -1330,6 +1337,8 @@ const hydrateDraftForm = (order) => {
     pnCode: item.pn_code || '',
     snCode: item.sn_code || '',
     snId: item.sn_id || '',
+    snCodes: item.sn_code ? [item.sn_code] : [],
+    snIds: item.sn_id ? [item.sn_id] : [],
     supplierId: item.supplier_id || '',
     supplierName: item.supplier_name || '',
     salePrice: Number(item.sale_price || 0),
@@ -1344,6 +1353,7 @@ const hydrateDraftForm = (order) => {
     pnLoading: false,
     snLoading: false,
     selectedSn: item.sn_code ? { sn_code: item.sn_code, sn_id: item.sn_id || '' } : null,
+    selectedSns: item.sn_code ? [{ sn_code: item.sn_code, sn_id: item.sn_id || '', supplier_id: item.supplier_id || '', supplier_name: item.supplier_name || '' }] : [],
     selectedResourceTypes: typeof item.selected_resource_types === 'string' ? (() => { try { return JSON.parse(item.selected_resource_types) } catch (_) { return [] } })() : (item.selected_resource_types || []),
     useGovSubsidy: Boolean(item.use_gov_subsidy),
     useEduSubsidy: Boolean(item.use_edu_subsidy),
@@ -1427,6 +1437,8 @@ const addItem = () => {
     pnCode: '',
     snCode: '',
     snId: '',
+    snCodes: [],
+    snIds: [],
     supplierId: '',
     supplierName: '',
     salePrice: 0,
@@ -1441,6 +1453,7 @@ const addItem = () => {
     pnLoading: false,
     snLoading: false,
     selectedSn: null,
+    selectedSns: [],
     selectedResourceTypes: [],
     useGovSubsidy: false,
     useEduSubsidy: false,
@@ -1520,12 +1533,15 @@ const onProductChange = async (productId, index) => {
     orderForm.items[index].standardPrice = parseFloat(found.standard_price) || 0
     orderForm.items[index].pnCode = matchedPns[0] || ''
     orderForm.items[index].snCode = ''
+    orderForm.items[index].snCodes = []
+    orderForm.items[index].snIds = []
     orderForm.items[index].pnList = matchedPns
     orderForm.items[index].snList = []
     orderForm.items[index].snId = ''
     orderForm.items[index].supplierId = ''
     orderForm.items[index].supplierName = ''
     orderForm.items[index].selectedSn = null
+    orderForm.items[index].selectedSns = []
     orderForm.items[index].selectedResourceTypes = []
     orderForm.items[index].useGovSubsidy = false
     orderForm.items[index].useEduSubsidy = false
@@ -1560,6 +1576,12 @@ const onProductChange = async (productId, index) => {
     orderForm.items[index].productName = ''
     orderForm.items[index].salePrice = 0
     orderForm.items[index].needSn = false
+    orderForm.items[index].snCode = ''
+    orderForm.items[index].snCodes = []
+    orderForm.items[index].snId = ''
+    orderForm.items[index].snIds = []
+    orderForm.items[index].selectedSn = null
+    orderForm.items[index].selectedSns = []
     orderForm.items[index].pnList = []
   }
 }
@@ -1592,10 +1614,14 @@ const loadSnList = async (index) => {
 const onPnChange = async (index) => {
   const item = orderForm.items[index]
   item.snCode = ''
+  item.snCodes = []
   item.snId = ''
+  item.snIds = []
   item.supplierId = ''
   item.supplierName = ''
   item.selectedSn = null
+  item.selectedSns = []
+  if (item.needSn) item.quantity = 1
   item.selectedResourceTypes = []
   item.useGovSubsidy = false
   item.useEduSubsidy = false
@@ -1608,15 +1634,25 @@ const onPnChange = async (index) => {
 
 const onSnChange = (value, index) => {
   const item = orderForm.items[index]
-  const snCode = String(value || '').trim()
-  item.snCode = snCode
-  const sn = (item.snList || []).find(row => row.sn_code === snCode)
-  item.snId = sn?.sn_id || ''
-  item.supplierId = sn?.supplier_id || ''
-  item.supplierName = sn?.supplier_name || ''
-  item.selectedSn = sn || null
-  item.salePrice = sn
-    ? (parseFloat(sn.effective_sale_price) || item.standardPrice || 0)
+  const snCodes = (Array.isArray(value) ? value : [value])
+    .map(code => String(code || '').trim())
+    .filter(Boolean)
+  const selectedSns = snCodes.map(snCode => (
+    (item.snList || []).find(row => String(row.sn_code || '').trim() === snCode)
+      || { sn_code: snCode, sn_id: '' }
+  ))
+  const firstSn = selectedSns[0] || null
+  item.snCodes = snCodes
+  item.snIds = selectedSns.map(sn => sn.sn_id).filter(Boolean)
+  item.snCode = firstSn?.sn_code || ''
+  item.snId = firstSn?.sn_id || ''
+  item.supplierId = firstSn?.supplier_id || ''
+  item.supplierName = firstSn?.supplier_name || ''
+  item.selectedSns = selectedSns
+  item.selectedSn = firstSn
+  item.quantity = snCodes.length || 1
+  item.salePrice = firstSn
+    ? (parseFloat(firstSn.effective_sale_price) || item.standardPrice || 0)
     : (item.standardPrice || 0)
   item.selectedResourceTypes = []
   item.useGovSubsidy = false
@@ -1624,8 +1660,20 @@ const onSnChange = (value, index) => {
   item.useSalesReport = false
 }
 
+const getCurrentSnFallbacks = (item) => {
+  const selectedCodes = Array.isArray(item?.snCodes) ? item.snCodes : []
+  return selectedCodes
+    .filter(code => !(item.snList || []).some(sn => String(sn.sn_code || '').trim() === String(code).trim()))
+    .map(sn_code => ({ sn_code }))
+}
+
 const resourceAvailable = (item, type) => {
-  return item.selectedSn?.rights?.some(right => right.resource_type === type && right.current_status === 'AVAILABLE') || false
+  const selectedSns = Array.isArray(item.selectedSns) && item.selectedSns.length
+    ? item.selectedSns
+    : (item.selectedSn ? [item.selectedSn] : [])
+  return selectedSns.length > 0 && selectedSns.every(sn => (
+    sn.rights?.some(right => right.resource_type === type && right.current_status === 'AVAILABLE')
+  ))
 }
 
 const onPnBlur = async (index) => {
@@ -1639,22 +1687,37 @@ const buildSalesOrderPayload = (untaxedInvoiceConfirmed = false) => ({
   customerSource: orderForm.customerSource,
   invoiceStatus: orderForm.invoiceStatus,
   untaxedInvoiceConfirmed,
-  items: orderForm.items.map(item => ({
-    productId: item.productId,
-    productName: item.productName,
-    pnCode: item.pnCode,
-    snCode: item.snCode,
-    snId: item.snId || '',
-    supplierId: item.supplierId || '',
-    supplierName: item.supplierName || '',
-    salePrice: item.salePrice,
-    quantity: item.quantity,
-    subtotal: item.salePrice * item.quantity,
-    useGovSubsidy: item.useGovSubsidy,
-    useEduSubsidy: item.useEduSubsidy,
-    useSalesReport: item.useSalesReport,
-    selectedResourceTypes: item.selectedResourceTypes || []
-  })),
+  items: orderForm.items.flatMap(item => {
+    const baseItem = {
+      productId: item.productId,
+      productName: item.productName,
+      pnCode: item.pnCode,
+      supplierId: item.supplierId || '',
+      supplierName: item.supplierName || '',
+      salePrice: item.salePrice,
+      quantity: item.quantity,
+      subtotal: item.salePrice * item.quantity,
+      useGovSubsidy: item.useGovSubsidy,
+      useEduSubsidy: item.useEduSubsidy,
+      useSalesReport: item.useSalesReport,
+      selectedResourceTypes: item.selectedResourceTypes || []
+    }
+    const selectedSns = item.needSn && Array.isArray(item.selectedSns)
+      ? item.selectedSns.filter(sn => sn && sn.sn_code)
+      : []
+    if (!selectedSns.length) {
+      return [{ ...baseItem, snCode: item.snCode, snId: item.snId || '' }]
+    }
+    return selectedSns.map(sn => ({
+      ...baseItem,
+      snCode: sn.sn_code,
+      snId: sn.sn_id || '',
+      supplierId: sn.supplier_id || '',
+      supplierName: sn.supplier_name || '',
+      quantity: 1,
+      subtotal: item.salePrice
+    }))
+  }),
   payments: selectedPayments.value.map(pm => ({
     method: pm,
     amount: paymentAmounts[pm] || 0,
@@ -1728,7 +1791,9 @@ const handleSubmit = async () => {
   submitLoading.value = true
   try {
     let untaxedInvoiceConfirmed = false
-    if (orderForm.invoiceStatus !== '不开票' && orderForm.items.some(item => item.selectedSn?.tax_type === 'UNTAXED')) {
+    if (orderForm.invoiceStatus !== '不开票' && orderForm.items.some(item => (
+      item.selectedSns?.some(sn => sn?.tax_type === 'UNTAXED') || item.selectedSn?.tax_type === 'UNTAXED'
+    ))) {
       await ElMessageBox.confirm('该机器为未税库存，请确认是否允许开票销售。', '未税库存提醒', { type: 'warning', confirmButtonText: '确认继续', cancelButtonText: '返回修改' })
       untaxedInvoiceConfirmed = true
     }
@@ -2077,5 +2142,16 @@ const getDepositStatusText = (status) => {
 .supplier-suggestion-meta {
   color: #909399;
   font-size: 12px;
+}
+.selected-sn-count {
+  margin-bottom: 4px;
+  color: var(--el-color-primary);
+  font-size: 12px;
+}
+.sn-quantity {
+  display: inline-block;
+  width: 60px;
+  color: var(--el-text-color-primary);
+  text-align: center;
 }
 </style>
