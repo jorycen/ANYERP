@@ -3916,12 +3916,17 @@ async function outbound(ctx) {
 /**
  * 调拨操作 - 创建调拨申请
  */
+function normalizeTransferRemark(value) {
+  return String(value || '').trim().slice(0, 2000);
+}
+
 async function transfer(ctx) {
   const t = await sequelize.transaction();
   try {
     const user = ctx.state.user;
-    const { fromStoreId, toStoreId, deliveryPlatformId, deliveryPlatformName, freightAmount,
+    const { fromStoreId, toStoreId, deliveryPlatformId, deliveryPlatformName, freightAmount, remark,
       freight_platform_id, freight_platform_name, freight_amount } = ctx.request.body;
+    const normalizedRemark = normalizeTransferRemark(remark);
     const normalizedFreightPlatformId = deliveryPlatformId || freight_platform_id || '';
     const normalizedFreightPlatformName = deliveryPlatformName || freight_platform_name || '';
     const rawFreightAmount = freightAmount === undefined ? freight_amount : freightAmount;
@@ -4020,6 +4025,7 @@ async function transfer(ctx) {
       remaining_status: 'pending',
       status: 'pending',
       apply_user: user.name || user.staffId,
+      remark: normalizedRemark || null,
       distributor_id: transferScope.distributorId,
       region_id: transferScope.regionId
     }, { transaction: t });
@@ -6091,6 +6097,7 @@ module.exports = {
     normalizeSnIdentityValue,
     samePnCode,
     isPurchaseInboundItemProgressComplete,
-    restoreDepositForCompletedSalesReturn
+    restoreDepositForCompletedSalesReturn,
+    normalizeTransferRemark
   }
 };

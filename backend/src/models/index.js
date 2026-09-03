@@ -1503,6 +1503,7 @@ const Transfer = sequelize.define('Transfer', {
   receiving_user: { type: DataTypes.STRING(64) },
   shipping_time: { type: DataTypes.DATE },
   receiving_time: { type: DataTypes.DATE },
+  remark: { type: DataTypes.STRING(2000), comment: '调拨备注' },
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_TRANSFER', timestamps: false, createdAt: 'create_time', updatedAt: false });
 

@@ -516,6 +516,7 @@
                 </template>
               </el-table-column>
               <el-table-column prop="total_quantity" label="数量" width="80" />
+              <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
               <el-table-column prop="apply_user" label="申请人" width="100" />
               <el-table-column label="出库确认人" width="110">
                 <template #default="{ row }">{{ row.shipping_user || row.confirm_user || '-' }}</template>
@@ -557,6 +558,7 @@
                 </template>
               </el-table-column>
               <el-table-column prop="total_quantity" label="数量" width="80" />
+              <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
               <el-table-column prop="apply_user" label="申请人" width="100" />
               <el-table-column label="入库确认人" width="110">
                 <template #default="{ row }">{{ row.receiving_user || row.inbound_confirm_user || '-' }}</template>
@@ -610,6 +612,7 @@
                 </template>
               </el-table-column>
               <el-table-column prop="total_quantity" label="数量" width="80" />
+              <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
               <el-table-column prop="apply_user" label="申请人" width="100" />
               <el-table-column label="参与人" width="160">
                 <template #default="{ row }">
@@ -1127,6 +1130,9 @@
         <el-form-item label="运费金额">
           <el-input-number v-model="transferForm.freightAmount" :min="0" :precision="2" :step="1" controls-position="right" style="width: 100%" />
         </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="transferForm.remark" type="textarea" :rows="2" maxlength="2000" show-word-limit placeholder="选填，最多2000字" />
+        </el-form-item>
         <el-form-item label="添加商品">
           <div class="transfer-add-row">
             <el-select
@@ -1187,6 +1193,7 @@
           </el-descriptions-item>
           <el-descriptions-item label="调出门店">{{ transferDetailRow.from_store_name || '-' }}</el-descriptions-item>
           <el-descriptions-item label="调入门店">{{ transferDetailRow.to_store_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="备注" :span="2">{{ transferDetailRow.remark || '-' }}</el-descriptions-item>
           <el-descriptions-item label="申请人">{{ transferDetailRow.apply_user || '-' }}</el-descriptions-item>
           <el-descriptions-item label="申请时间">{{ formatDate(transferDetailRow.create_time) }}</el-descriptions-item>
           <el-descriptions-item label="调出确认人">{{ transferDetailRow.shipping_user || transferDetailRow.confirm_user || '-' }}</el-descriptions-item>
@@ -1991,6 +1998,7 @@ const transferForm = reactive({
   toStoreId: '',
   freightPlatformId: '',
   freightAmount: 0,
+  remark: '',
   items: []
 })
 const freightPlatforms = ref([])
@@ -3596,6 +3604,7 @@ const resetTransferForm = () => {
   transferForm.toStoreId = ''
   transferForm.freightPlatformId = ''
   transferForm.freightAmount = 0
+  transferForm.remark = ''
   transferForm.items = []
   transferAddForm.productId = ''
   transferAddForm.snId = ''
@@ -3638,6 +3647,7 @@ const submitTransfer = async () => {
       deliveryPlatformId: transferForm.freightPlatformId,
       deliveryPlatformName: freightPlatforms.value.find(item => item.platform_id === transferForm.freightPlatformId)?.platform_name || '',
       freightAmount: Number(transferForm.freightAmount || 0),
+      remark: transferForm.remark || '',
       items: transferForm.items
     })
     if (res.code === 0) {

@@ -139,6 +139,12 @@ test('调拨出库汇总同门店多个库存行并排除不可售库位', () =>
   assert.equal(quantity, 5);
 });
 
+test('调拨备注按选填字段保存并限制为2000字符', () => {
+  assert.equal(_test.normalizeTransferRemark(), '');
+  assert.equal(_test.normalizeTransferRemark('  现场调货  '), '现场调货');
+  assert.equal(_test.normalizeTransferRemark('x'.repeat(2100)).length, 2000);
+});
+
 test('调拨出库保留申请时已绑定且仍有数量的 SN 明细', () => {
   const pending = _test.getPendingTransferItems([
     { item_id: 1, product_id: 'P1', sn_id: 'SN1', sn_code: 'HA28CRPQ', quantity: 1 },

@@ -854,6 +854,7 @@ async function runMigrations() {
     await checkAndAddColumn('T_ORDER_ITEM', 'SUPPLIER_NAME', 'VARCHAR(255) COMMENT "采购来源供应商名称快照"', 'SUPPLIER_ID');
     await checkAndAddColumn('T_TRANSFER', 'DISTRIBUTOR_ID', 'VARCHAR(32) COMMENT "调拨所属经销商"', 'TO_STORE_ID');
     await checkAndAddColumn('T_TRANSFER', 'REGION_ID', 'VARCHAR(32) COMMENT "调拨所属区域"', 'DISTRIBUTOR_ID');
+    await checkAndAddColumn('T_TRANSFER', 'REMARK', 'VARCHAR(2000) COMMENT "调拨备注"', 'REGION_ID');
     await checkAndAddColumn('T_TRANSFER', 'SHIPPING_PHOTOS', 'JSON COMMENT "调出凭证照片"', 'REGION_ID');
     await checkAndAddColumn('T_TRANSFER', 'RECEIVING_PHOTOS', 'JSON COMMENT "收货凭证照片"', 'SHIPPING_PHOTOS');
     await checkAndAddColumn('T_TRANSFER', 'SHIPPING_USER', 'VARCHAR(64) COMMENT "出库确认人"', 'CONFIRM_USER');
