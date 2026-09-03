@@ -131,6 +131,8 @@
             </div>
             <div class="category-toolbar-actions">
               <span class="category-count">共 {{ categoryCount }} 个分类</span>
+              <el-button size="small" plain @click="expandAllCategories">全部展开</el-button>
+              <el-button size="small" plain @click="collapseAllCategories">全部折叠</el-button>
               <el-button type="primary" :icon="Plus" @click="handleAddCategory(null)">新增一级分类</el-button>
             </div>
           </div>
@@ -140,6 +142,16 @@
             <div v-else class="category-tree">
               <div v-for="(level1, level1Index) in categoryTree" :key="level1.category_id" class="category-node level1">
                 <div class="category-row" :class="'level-' + level1.level">
+                  <el-button
+                    v-if="level1.children && level1.children.length"
+                    link
+                    class="category-expand-button"
+                    :aria-label="isCategoryExpanded(level1) ? '折叠分类' : '展开分类'"
+                    @click.stop="toggleCategoryExpanded(level1)"
+                  >
+                    <el-icon><ArrowDown v-if="isCategoryExpanded(level1)" /><ArrowRight v-else /></el-icon>
+                  </el-button>
+                  <span v-else class="category-expand-placeholder" />
                   <el-icon><Folder /></el-icon>
                   <span class="cat-name">{{ level1.name }}</span>
                   <span class="cat-level">一级</span>
@@ -160,9 +172,19 @@
                   </div>
                 </div>
 
-                <div v-if="level1.children && level1.children.length" class="sub-categories">
+                <div v-if="level1.children && level1.children.length && isCategoryExpanded(level1)" class="sub-categories">
                   <div v-for="(level2, level2Index) in level1.children" :key="level2.category_id" class="category-node level2">
                     <div class="category-row" :class="'level-' + level2.level">
+                      <el-button
+                        v-if="level2.children && level2.children.length"
+                        link
+                        class="category-expand-button"
+                        :aria-label="isCategoryExpanded(level2) ? '折叠分类' : '展开分类'"
+                        @click.stop="toggleCategoryExpanded(level2)"
+                      >
+                        <el-icon><ArrowDown v-if="isCategoryExpanded(level2)" /><ArrowRight v-else /></el-icon>
+                      </el-button>
+                      <span v-else class="category-expand-placeholder" />
                       <el-icon><Folder /></el-icon>
                       <span class="cat-name">{{ level2.name }}</span>
                       <span class="cat-level">二级</span>
@@ -183,8 +205,18 @@
                       </div>
                     </div>
 
-                    <div v-if="level2.children && level2.children.length" class="sub-categories">
+                    <div v-if="level2.children && level2.children.length && isCategoryExpanded(level2)" class="sub-categories">
                       <div v-for="(level3, level3Index) in level2.children" :key="level3.category_id" class="category-row level-3">
+                        <el-button
+                          v-if="level3.children && level3.children.length"
+                          link
+                          class="category-expand-button"
+                          :aria-label="isCategoryExpanded(level3) ? '折叠分类' : '展开分类'"
+                          @click.stop="toggleCategoryExpanded(level3)"
+                        >
+                          <el-icon><ArrowDown v-if="isCategoryExpanded(level3)" /><ArrowRight v-else /></el-icon>
+                        </el-button>
+                        <span v-else class="category-expand-placeholder" />
                         <el-icon><Folder /></el-icon>
                         <span class="cat-name">{{ level3.name }}</span>
                         <span class="cat-level">三级</span>
@@ -203,8 +235,9 @@
                           </span>
                           <el-button link type="danger" size="small" @click="handleDeleteCategory(level3)">删除</el-button>
                         </div>
-                        <div v-if="level3.children && level3.children.length" class="sub-categories">
+                        <div v-if="level3.children && level3.children.length && isCategoryExpanded(level3)" class="sub-categories">
                           <div v-for="(level4, level4Index) in level3.children" :key="level4.category_id" class="category-row level-4">
+                            <span class="category-expand-placeholder" />
                             <el-icon><Folder /></el-icon>
                             <span class="cat-name">{{ level4.name }}</span>
                             <span class="cat-level">四级</span>
@@ -711,7 +744,7 @@
 import { ref, reactive, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Folder, Plus, Upload } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowRight, Folder, Plus, Upload } from '@element-plus/icons-vue'
 import * as XLSX from 'xlsx'
 import api from '../api'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
@@ -990,7 +1023,18 @@ const loadData = async () => {
 const loadCategoryTree = async () => {
   try {
     const res = await api.getCategoryTree()
-    if (res.code === 0) categoryTree.value = normalizeCategoryTree(res.data)
+    if (res.code === 0) {
+      categoryTree.value = normalizeCategoryTree(res.data)
+      const nextState = { ...categoryExpanded.value }
+      const visit = (nodes = []) => {
+        nodes.forEach(node => {
+          if (!(node.category_id in nextState)) nextState[node.category_id] = true
+          visit(node.children || [])
+        })
+      }
+      visit(categoryTree.value)
+      categoryExpanded.value = nextState
+    }
   } catch (err) { /* ignore */ }
 }
 
@@ -1317,6 +1361,7 @@ const categoryDialogVisible = ref(false)
 const categoryDialogTitle = ref('')
 const categorySaveLoading = ref(false)
 const categoryFinanceLoadingId = ref('')
+const categoryExpanded = ref({})
 const categoryParentName = ref('无（一级分类）')
 const editingCategory = ref(null)
 const parentCategory = ref(null)
@@ -1326,6 +1371,31 @@ const categoryCount = computed(() => {
   const countNodes = (nodes = []) => nodes.reduce((sum, node) => sum + 1 + countNodes(node.children || []), 0)
   return countNodes(categoryTree.value)
 })
+
+const isCategoryExpanded = (category) => categoryExpanded.value[category.category_id] !== false
+
+const toggleCategoryExpanded = (category) => {
+  const categoryId = category.category_id
+  categoryExpanded.value = {
+    ...categoryExpanded.value,
+    [categoryId]: !isCategoryExpanded(category)
+  }
+}
+
+const setCategoryExpanded = (expanded) => {
+  const nextState = { ...categoryExpanded.value }
+  const visit = (nodes = []) => {
+    nodes.forEach(node => {
+      if (node.children?.length) nextState[node.category_id] = expanded
+      visit(node.children || [])
+    })
+  }
+  visit(categoryTree.value)
+  categoryExpanded.value = nextState
+}
+
+const expandAllCategories = () => setCategoryExpanded(true)
+const collapseAllCategories = () => setCategoryExpanded(false)
 
 const handleAddCategory = (parent) => {
   if (parent && Number(parent.level) >= 4) {
@@ -1953,6 +2023,11 @@ watch(() => route.path, syncTabFromRoute)
 .category-row.level-2 { background: #fff; }
 .category-row.level-3, .category-row.level-4 { min-height: 44px; background: #fbfcfe; }
 .category-row:hover { border-color: #b7d4f5; background: #f7fbff; box-shadow: 0 5px 14px rgba(64, 158, 255, 0.09); }
+.category-expand-button,
+.category-expand-placeholder { flex: 0 0 20px; width: 20px; height: 20px; margin: 0; padding: 0; }
+.category-expand-button { color: #7b8da5; }
+.category-expand-button:hover { color: var(--el-color-primary); background: #eaf3ff; }
+.category-expand-button :deep(.el-icon) { font-size: 14px; }
 .cat-name { min-width: 120px; max-width: 240px; overflow: hidden; color: #27364b; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .category-row.level-1 .cat-name { color: #1f4f85; font-size: 15px; }
 .cat-level { flex: 0 0 auto; padding: 3px 8px; border-radius: 5px; color: #718096; background: #edf1f6; font-size: 11px; line-height: 16px; }
