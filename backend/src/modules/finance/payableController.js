@@ -38,6 +38,10 @@ function assertDistributorOperation(ctx, distributorId, message = '无权操作�
   if (!canAccessDistributor(ctx.state.user, distributorId)) ctx.throw(403, message);
 }
 
+function normalizeSettlementRemark(value) {
+  return String(value || '').trim().slice(0, 512) || null;
+}
+
 function applyDistributorFilter(whereObject, user) {
   const ids = accessibleDistributorIds(user);
   if (!ids.includes('*')) {
@@ -717,7 +721,7 @@ async function createSettlement(ctx) {
       total_amount: totalAmount,
       status: 'draft',
       payment_status: 'unpaid',
-      remark: String(remark || '').trim().slice(0, 512) || null,
+      remark: normalizeSettlementRemark(remark),
       create_user: user?.name || user?.phone || ''
     }, { transaction });
     for (const row of finalRows) {
@@ -916,7 +920,7 @@ async function createExpenseSettlement(ctx) {
       paid_amount: 0,
       status: 'draft',
       payment_status: 'unpaid',
-      remark: String(remark || '').trim().slice(0, 512) || null,
+      remark: normalizeSettlementRemark(remark),
       create_user: user?.name || user?.phone || ''
     }, { transaction });
     await SettlementItem.create({
@@ -1049,6 +1053,7 @@ function normalizePaymentBatch(row) {
         distributor_id: settlement?.distributor_id || record.distributor_id || data.distributor_id || '',
         distributor_name: settlement?.distributor_name || record.distributor_name || data.distributor_name || data.distributor_id || '',
         tax_status: settlement?.tax_status || record.tax_status || 'UNKNOWN',
+        settlement_remark: settlement?.remark || '',
         counterparty_payment_info: counterpartyPaymentInfo
       };
     })
@@ -1280,6 +1285,43 @@ async function getSettlementById(settlementId, user = null) {
   }
 
   return settlement;
+}
+
+/**
+ * 只更新结算单备注，不改变金额、状态及其他财务字段。
+ */
+async function updateSettlementRemark(ctx) {
+  const { id } = ctx.params;
+  const user = ctx.state.user;
+  const remark = normalizeSettlementRemark(ctx.request.body?.remark);
+
+  await sequelize.transaction(async transaction => {
+    const settlement = await Settlement.findOne({
+      where: { settlement_id: id, is_deleted: 0 },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!settlement) ctx.throw(404, '结算单不存在');
+    assertDistributorOperation(ctx, settlement.distributor_id);
+
+    const previousRemark = settlement.remark || null;
+    await settlement.update({ remark }, { transaction });
+    await recordBusinessAction({
+      businessType: 'payable_settlement',
+      businessId: settlement.settlement_id,
+      businessNo: settlement.settlement_no,
+      action: 'remark_updated',
+      user,
+      detail: { before: { remark: previousRemark }, after: { remark } },
+      transaction
+    });
+  });
+
+  ctx.body = {
+    code: 0,
+    message: '结算单备注已更新',
+    data: { settlement_id: id, remark }
+  };
 }
 
 /**
@@ -1955,7 +1997,7 @@ async function getPaymentBatches(ctx) {
       include: [{
         model: Settlement,
         attributes: [
-          'settlement_id', 'supplier_name', 'payee_name', 'distributor_id', 'tax_status',
+          'settlement_id', 'settlement_no', 'supplier_name', 'payee_name', 'distributor_id', 'tax_status', 'remark',
           'supplier_account_snapshot', 'other_payment_remark', 'other_payment_image'
         ],
         include: [{ model: SettlementItem, as: 'items' }],
@@ -1990,7 +2032,7 @@ async function getPaymentBatchDetail(ctx) {
       include: [{
         model: Settlement,
         attributes: [
-          'settlement_id', 'supplier_name', 'payee_name', 'distributor_id', 'tax_status',
+          'settlement_id', 'settlement_no', 'supplier_name', 'payee_name', 'distributor_id', 'tax_status', 'remark',
           'supplier_account_snapshot', 'other_payment_remark', 'other_payment_image'
         ],
         include: [{ model: SettlementItem, as: 'items' }],
@@ -2072,6 +2114,7 @@ async function voidPaymentBatch(ctx) {
 }
 
 module.exports = {
+  normalizeSettlementRemark,
   getPayableList,
   exportPayableList,
   getPayableTaxStatus,
@@ -2083,6 +2126,7 @@ module.exports = {
   getSettlementList,
   exportSettlementList,
   getSettlementDetail,
+  updateSettlementRemark,
   deleteSettlementDraft,
   submitSettlement,
   confirmSettlement,

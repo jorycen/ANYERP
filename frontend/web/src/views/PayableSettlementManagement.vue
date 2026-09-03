@@ -69,9 +69,10 @@
         <el-table-column prop="create_time" label="创建时间" width="170">
           <template #default="{ row }">{{ dateTime(row.create_time) }}</template>
         </el-table-column>
-        <el-table-column label="操作" min-width="250" fixed="right">
+        <el-table-column label="操作" min-width="330" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openDetail(row)">详情</el-button>
+            <el-button link type="primary" @click="openRemarkEditor(row)">修改备注</el-button>
             <el-button v-if="row.status === 'pending_approval'" link type="success" @click="approve(row)">通过</el-button>
             <el-button v-if="row.status === 'pending_approval'" link type="danger" @click="reject(row)">退回</el-button>
             <el-button v-if="row.status === 'draft' && !row.submit_time" link type="warning" @click="submit(row)">提交</el-button>
@@ -117,7 +118,12 @@
           <el-descriptions-item label="提交时间">{{ dateTime(detail.submit_time || detail.confirmed_time) }}</el-descriptions-item>
           <el-descriptions-item label="审批人">{{ detail.approval_user || '-' }}</el-descriptions-item>
           <el-descriptions-item label="审批时间">{{ dateTime(detail.approval_time) }}</el-descriptions-item>
-          <el-descriptions-item label="备注" :span="2">{{ detail.remark || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="备注" :span="2">
+            <div class="remark-cell">
+              <span>{{ detail.remark || '-' }}</span>
+              <el-button link type="primary" @click="openRemarkEditor(detail)">修改备注</el-button>
+            </div>
+          </el-descriptions-item>
           <el-descriptions-item label="审批意见" :span="2">{{ detail.approval_comment || '-' }}</el-descriptions-item>
         </el-descriptions>
 
@@ -145,6 +151,28 @@
           <el-table-column prop="remark" label="付款备注" min-width="180" />
         </el-table>
       </div>
+    </el-dialog>
+
+    <el-dialog v-model="remarkVisible" title="修改结算单备注" width="560px">
+      <el-form label-width="90px">
+        <el-form-item label="结算单号">
+          <span>{{ remarkTarget?.settlement_no || '-' }}</span>
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input
+            v-model="remarkForm.remark"
+            type="textarea"
+            :rows="5"
+            maxlength="512"
+            show-word-limit
+            placeholder="请输入结算单备注，可留空"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="remarkVisible = false">取消</el-button>
+        <el-button type="primary" :loading="remarkSubmitting" @click="saveRemark">保存</el-button>
+      </template>
     </el-dialog>
 
     <el-dialog v-model="paymentVisible" title="部分付款" width="560px">
@@ -187,6 +215,10 @@ const loading = ref(false)
 const accounts = ref([])
 const detailVisible = ref(false)
 const detail = ref(null)
+const remarkVisible = ref(false)
+const remarkTarget = ref(null)
+const remarkSubmitting = ref(false)
+const remarkForm = reactive({ remark: '' })
 const paymentVisible = ref(false)
 const paymentSettlement = ref(null)
 const paymentSubmitting = ref(false)
@@ -279,6 +311,34 @@ const openDetail = async row => {
     } else ElMessage.error(res.message || '加载详情失败')
   } catch (error) {
     ElMessage.error(error.response?.data?.message || '加载详情失败')
+  }
+}
+
+const openRemarkEditor = row => {
+  remarkTarget.value = row
+  remarkForm.remark = String(row?.remark || '')
+  remarkVisible.value = true
+}
+
+const saveRemark = async () => {
+  const row = remarkTarget.value
+  if (!row?.settlement_id) return ElMessage.warning('结算单信息不完整')
+  remarkSubmitting.value = true
+  try {
+    const res = await api.updateSettlementRemark(row.settlement_id, { remark: remarkForm.remark })
+    if (res.code === 0) {
+      const remark = res.data?.remark ?? (String(remarkForm.remark || '').trim() || null)
+      data.value = data.value.map(item => item.settlement_id === row.settlement_id ? { ...item, remark } : item)
+      if (detail.value?.settlement_id === row.settlement_id) detail.value = { ...detail.value, remark }
+      remarkVisible.value = false
+      ElMessage.success(res.message || '备注已更新')
+    } else {
+      ElMessage.error(res.message || '备注更新失败')
+    }
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '备注更新失败')
+  } finally {
+    remarkSubmitting.value = false
   }
 }
 
@@ -410,5 +470,11 @@ const loadDistributorOptions = async () => {
 
 .payment-form {
   margin-top: 20px;
+}
+
+.remark-cell {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 </style>

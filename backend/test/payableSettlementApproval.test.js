@@ -128,3 +128,46 @@ test('结算单模型保留备注和审批字段', async () => {
   assert.equal(settlement.status, 'pending_approval');
   assert.equal(settlement.approval_comment, '已核对');
 });
+
+test('结算单备注更新只修改备注并记录审计信息', async () => {
+  const originalFindOne = models.Settlement.findOne;
+  const originalTransaction = models.sequelize.transaction;
+  const originalLogCreate = models.BusinessActionLog.create;
+  const updates = {};
+  const logs = [];
+
+  models.Settlement.findOne = async () => ({
+    settlement_id: 'SETTLEMENT_REMARK_1',
+    settlement_no: 'S_REMARK_1',
+    distributor_id: null,
+    remark: '旧备注',
+    update: async values => Object.assign(updates, values)
+  });
+  models.sequelize.transaction = async callback => callback({ LOCK: { UPDATE: 'UPDATE' } });
+  models.BusinessActionLog.create = async values => {
+    logs.push(values);
+    return values;
+  };
+
+  try {
+    const ctx = {
+      ...context({ body: { remark: `  ${'新备注'.repeat(300)}  ` } }),
+      params: { id: 'SETTLEMENT_REMARK_1' }
+    };
+    await payableController.updateSettlementRemark(ctx);
+    assert.equal(updates.remark.length, 512);
+    assert.equal(ctx.body.data.settlement_id, 'SETTLEMENT_REMARK_1');
+    assert.equal(ctx.body.data.remark.length, 512);
+    assert.equal(logs[0].action, 'remark_updated');
+    assert.equal(JSON.parse(logs[0].detail_json).before.remark, '旧备注');
+  } finally {
+    models.Settlement.findOne = originalFindOne;
+    models.sequelize.transaction = originalTransaction;
+    models.BusinessActionLog.create = originalLogCreate;
+  }
+});
+
+test('结算单备注允许清空并统一去除首尾空格', () => {
+  assert.equal(payableController.normalizeSettlementRemark('  备注  '), '备注');
+  assert.equal(payableController.normalizeSettlementRemark('   '), null);
+});

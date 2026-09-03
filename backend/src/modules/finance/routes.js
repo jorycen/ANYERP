@@ -26,6 +26,7 @@ const {
   createExpenseSettlement,
   getSettlementList, exportSettlementList,
   getSettlementDetail,
+  updateSettlementRemark,
   deleteSettlementDraft,
   submitSettlement,
   confirmSettlement,
@@ -136,6 +137,7 @@ router.post('/create-expense-settlement', createExpenseSettlement);
 router.get('/settlement-list', getSettlementList);
 router.get('/settlement-list/export', exportSettlementList);
 router.get('/settlement/:id', getSettlementDetail);
+router.put('/settlement/:id/remark', updateSettlementRemark);
 router.delete('/settlement/:id', deleteSettlementDraft);
 router.post('/settlement/submit', submitSettlement);
 router.post('/settlement/confirm', confirmSettlement);

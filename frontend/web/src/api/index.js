@@ -427,6 +427,7 @@ export default {
   getSettlementList: (params) => api.get('/finance/settlement-list', { params }),
   exportSettlementList: (params) => exportExcel('/finance/settlement-list/export', params, `应付结算单_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getSettlementDetail: (id) => api.get(`/finance/settlement/${id}`),
+  updateSettlementRemark: (id, data) => api.put(`/finance/settlement/${id}/remark`, data),
   deleteSettlementDraft: (id) => api.delete(`/finance/settlement/${id}`),
   submitSettlement: (data) => api.post('/finance/settlement/submit', data),
   confirmSettlement: (data) => api.post('/finance/settlement/confirm', data),
