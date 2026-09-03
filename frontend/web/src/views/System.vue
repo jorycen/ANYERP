@@ -195,7 +195,7 @@
           <div class="filter-bar">
             <el-button type="primary" @click="openCustomerSourceDialog()">新增一级来源</el-button>
           </div>
-          <el-table :data="customerSourceData" stripe border row-key="source_id" v-loading="csLoading">
+          <el-table :data="customerSourceData" stripe border v-loading="csLoading">
             <el-table-column prop="sort_order" label="排序" width="70" />
             <el-table-column prop="name" label="一级来源" min-width="180" />
             <el-table-column label="二级来源" min-width="300">
@@ -1681,7 +1681,17 @@ const loadCustomerSources = async () => {
   csLoading.value = true
   try {
     const res = await api.getCustomerSourceTree()
-    if (res.code === 0) customerSourceData.value = res.data || []
+    if (res.code === 0) {
+      const rows = Array.isArray(res.data) ? res.data : []
+      customerSourceData.value = rows
+        .filter(row => row && row.source_id)
+        .map(row => ({
+          ...row,
+          children: Array.isArray(row.children)
+            ? row.children.filter(child => child && child.source_id)
+            : []
+        }))
+    }
   } catch (err) { ElMessage.error('加载客户来源失败') }
   finally { csLoading.value = false }
 }
@@ -1762,7 +1772,7 @@ const handleDeleteCustomerSource = async (row) => {
 }
 
 const moveUpCustomerSource = (index) => {
-  if (index <= 0) return
+  if (index <= 0 || index >= customerSourceData.value.length || !customerSourceData.value[index]) return
   const list = [...customerSourceData.value]
   ;[list[index - 1], list[index]] = [list[index], list[index - 1]]
   customerSourceData.value = list
@@ -1771,7 +1781,7 @@ const moveUpCustomerSource = (index) => {
 
 const moveDownCustomerSource = (index) => {
   const list = customerSourceData.value
-  if (index >= list.length - 1) return
+  if (index < 0 || index >= list.length - 1 || !list[index] || !list[index + 1]) return
   const newList = [...list]
   ;[newList[index], newList[index + 1]] = [newList[index + 1], newList[index]]
   customerSourceData.value = newList
@@ -1779,7 +1789,9 @@ const moveDownCustomerSource = (index) => {
 }
 
 const saveCustomerSourceSort = async () => {
-  const items = customerSourceData.value.map((item, idx) => ({ id: item.source_id, sortOrder: idx + 1 }))
+  const items = customerSourceData.value
+    .filter(item => item && item.source_id)
+    .map((item, idx) => ({ id: item.source_id, sortOrder: idx + 1 }))
   try { await api.sortCustomerSources({ items }) } catch (err) {}
 }
 
