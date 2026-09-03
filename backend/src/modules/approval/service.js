@@ -80,9 +80,11 @@ function getApprovalStoreWhere(user = {}) {
   return { store_id: storeIds.length ? { [Op.in]: storeIds } : '__NO_STORE__' };
 }
 
-function canReadApprovalStore(user = {}, storeId) {
+function canReadApprovalStore(user = {}, storeId, businessType = '') {
   const storeIds = getApprovalStoreIds(user);
-  return storeIds === null || (Boolean(storeId) && storeIds.includes(String(storeId)));
+  if (storeIds === null) return true;
+  if (!storeId && businessType === 'payable_settlement') return true;
+  return Boolean(storeId) && storeIds.includes(String(storeId));
 }
 
 function assertApprovalStoreVisible(user = {}, storeId) {
@@ -160,14 +162,21 @@ async function resolveRule(rule, subject, transaction) {
 async function resolveApprovers(node, instance, transaction) {
   const subject = await getSubject(instance.subject_staff_id, transaction);
   const ids = [];
-  for (const rule of node.approvers || []) ids.push(...await resolveRule(rule, subject, transaction));
+  const fixedUserIds = new Set();
+  for (const rule of node.approvers || []) {
+    if (rule.type === 'fixed_user' && rule.staffId) fixedUserIds.add(Number(rule.staffId));
+    ids.push(...await resolveRule(rule, subject, transaction));
+  }
   const candidates = ids.length ? await Staff.findAll({
     where: { staff_id: { [Op.in]: [...new Set(ids)] }, status: 1, is_deleted: 0 },
     include: [{ model: Role, as: 'Roles', attributes: ['role_code'], through: { attributes: [] }, required: false }],
     transaction
   }) : [];
   const unique = candidates
-    .filter(staff => !subject.distributor_id || staff.distributor_id === subject.distributor_id || (staff.Roles || []).some(role => role.role_code === 'boss'))
+    .filter(staff => fixedUserIds.has(Number(staff.staff_id))
+      || !subject.distributor_id
+      || staff.distributor_id === subject.distributor_id
+      || (staff.Roles || []).some(role => role.role_code === 'boss'))
     .map(staff => Number(staff.staff_id))
     .filter(id => id);
   if (!unique.length) throw new Error(`审批节点“${node.name}”未解析到可用审批人，请检查门店店长、直属上级或角色范围配置`);
@@ -187,17 +196,28 @@ async function writeLog(instanceId, taskId, action, actor, comment, detail, tran
   }, { transaction });
 }
 
-async function completeBusinessApproval(instance, transaction, actor) {
+async function completeBusinessApproval(instance, transaction, actor, comment = '') {
+  if (instance.business_type === 'payable_settlement') {
+    const { applyPayableSettlementApproval } = require('../finance/payableController');
+    await applyPayableSettlementApproval(instance, transaction, actor, 'approved', comment);
+    return;
+  }
   if (instance.business_type !== 'sn_change') return;
   const { applySnChangeApplication } = require('../inventory/snChangeApplication');
   await applySnChangeApplication(instance, transaction, actor);
 }
 
-async function createNodeTasks(instance, config, nodeIndex, roundNo, transaction, actor = null) {
+async function rejectBusinessApproval(instance, transaction, actor, comment = '') {
+  if (instance.business_type !== 'payable_settlement') return;
+  const { applyPayableSettlementApproval } = require('../finance/payableController');
+  await applyPayableSettlementApproval(instance, transaction, actor, 'rejected', comment);
+}
+
+async function createNodeTasks(instance, config, nodeIndex, roundNo, transaction, actor = null, completionComment = '') {
   const node = config.nodes[nodeIndex];
   if (!node) {
     await instance.update({ status: 'approved', completed_time: new Date(), update_time: new Date() }, { transaction });
-    await completeBusinessApproval(instance, transaction, actor);
+    await completeBusinessApproval(instance, transaction, actor, completionComment);
     return;
   }
   const assigneeIds = await resolveApprovers(node, instance, transaction);
@@ -233,7 +253,9 @@ async function startInstance(input, actor, transaction) {
   if (actor.distributorId && subject.distributor_id !== actor.distributorId && !actor.roles?.includes('boss')) {
     throw new Error('审批主题员工不在当前经销商范围内');
   }
-  assertApprovalStoreVisible(actor, subject.store_id);
+  if (!(flow.business_type === 'payable_settlement' && !subject.store_id)) {
+    assertApprovalStoreVisible(actor, subject.store_id);
+  }
   if (!input.businessId) throw new Error('业务单据ID不能为空');
   const instance = await ApprovalFlowInstance.create({
     instance_id: generateUUID(),
@@ -283,6 +305,7 @@ async function actionInstance(instanceId, action, comment, actor) {
     await writeLog(instanceId, task.task_id, action, actor, comment, { nodeIndex: task.node_index, roundNo: instance.resubmit_count }, transaction);
 
     if (action === 'reject') {
+      await rejectBusinessApproval(instance, transaction, actor, comment);
       if (task.sign_mode === 'or') {
         const remaining = await ApprovalTask.count({ where: { instance_id: instanceId, round_no: instance.resubmit_count, node_index: task.node_index, status: 'pending' }, transaction });
         if (remaining > 0) return instance;
@@ -302,7 +325,7 @@ async function actionInstance(instanceId, action, comment, actor) {
     }
 
     const config = parseJson(instance.definition_snapshot_json, {});
-    await createNodeTasks(instance, config, Number(instance.current_node_index) + 1, instance.resubmit_count, transaction, actor);
+    await createNodeTasks(instance, config, Number(instance.current_node_index) + 1, instance.resubmit_count, transaction, actor, comment);
     return instance;
   });
 }
@@ -326,6 +349,10 @@ async function resubmitInstance(instanceId, input, actor) {
       update_time: new Date()
     }, { transaction });
     await createNodeTasks(instance, parseJson(instance.definition_snapshot_json, {}), 0, roundNo, transaction, actor);
+    if (instance.business_type === 'payable_settlement') {
+      const { applyPayableSettlementApproval } = require('../finance/payableController');
+      await applyPayableSettlementApproval(instance, transaction, actor, 'resubmitted', input.comment || '');
+    }
     await writeLog(instanceId, null, 'resubmit', actor, input.comment, { roundNo }, transaction);
     return instance;
   });

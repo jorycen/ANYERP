@@ -400,6 +400,7 @@ function businessTypeText(value) {
     purchase: '采购审批',
     expense: '报销审批',
     product: '商品审批',
+    payable_settlement: '应付结算单审批',
     return: '退库审批',
     sales_return: '销售退单',
     resource: '资源套回',

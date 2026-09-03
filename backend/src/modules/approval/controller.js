@@ -28,6 +28,17 @@ function bodyError(ctx, error) {
   ctx.throw(400, error.message || String(error));
 }
 
+function approvalInstanceVisibilityWhere(user) {
+  const storeWhere = getApprovalStoreWhere(user);
+  if (!storeWhere) return null;
+  return {
+    [Op.or]: [
+      storeWhere,
+      { business_type: 'payable_settlement', store_id: { [Op.is]: null } }
+    ]
+  };
+}
+
 function toFlow(row) {
   const data = row.toJSON();
   data.config = parseJson(data.config_json, {});
@@ -135,7 +146,7 @@ async function listTasks(ctx) {
   const where = { assignee_staff_id: ctx.state.user.staffId };
   if (ctx.query.status) where.status = ctx.query.status;
   else where.status = 'pending';
-  const storeWhere = getApprovalStoreWhere(ctx.state.user);
+  const storeWhere = approvalInstanceVisibilityWhere(ctx.state.user);
   const instanceInclude = {
     model: ApprovalFlowInstance,
     as: 'Instance',
@@ -161,7 +172,7 @@ function instanceAccessWhere(user, scope) {
 async function listInstances(ctx) {
   const scope = ctx.query.scope || 'mine';
   const where = scope === 'todo' ? {} : { ...instanceAccessWhere(ctx.state.user, scope) };
-  const storeWhere = getApprovalStoreWhere(ctx.state.user);
+  const storeWhere = approvalInstanceVisibilityWhere(ctx.state.user);
   if (storeWhere) Object.assign(where, storeWhere);
   if (scope === 'todo') {
     const taskInclude = {
@@ -185,7 +196,7 @@ async function listInstances(ctx) {
 }
 
 async function canReadInstance(ctx, instance) {
-  if (!canReadApprovalStore(ctx.state.user, instance.store_id)) return false;
+  if (!canReadApprovalStore(ctx.state.user, instance.store_id, instance.business_type)) return false;
   if (isAdmin(ctx.state.user)) return true;
   if (Number(instance.applicant_staff_id) === Number(ctx.state.user.staffId) || Number(instance.subject_staff_id) === Number(ctx.state.user.staffId)) return true;
   return Boolean(await ApprovalTask.findOne({ where: { instance_id: instance.instance_id, assignee_staff_id: ctx.state.user.staffId } }));

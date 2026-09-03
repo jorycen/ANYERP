@@ -73,8 +73,7 @@
           <template #default="{ row }">
             <el-button link type="primary" @click="openDetail(row)">详情</el-button>
             <el-button link type="primary" @click="openRemarkEditor(row)">修改备注</el-button>
-            <el-button v-if="row.status === 'pending_approval'" link type="success" @click="approve(row)">通过</el-button>
-            <el-button v-if="row.status === 'pending_approval'" link type="danger" @click="reject(row)">退回</el-button>
+            <el-button v-if="row.status === 'pending_approval'" link type="success" @click="openApprovalCenter">审批中心</el-button>
             <el-button v-if="row.status === 'draft' && !row.submit_time" link type="warning" @click="submit(row)">提交</el-button>
             <el-button v-if="row.status === 'draft' && !row.submit_time" link type="danger" @click="deleteDraft(row)">删除</el-button>
             <el-button v-if="row.status === 'confirmed' && remaining(row) > 0" link type="primary" @click="openPayment(row)">部分付款</el-button>
@@ -368,31 +367,7 @@ const deleteDraft = async row => {
   }
 }
 
-const approve = async row => {
-  try {
-    const result = await ElMessageBox.prompt('审批意见（可选）', '审批通过', { inputPlaceholder: '请输入审批意见' })
-    const res = await api.confirmSettlement({ settlementId: row.settlement_id, comment: result.value || '' })
-    if (res.code === 0) {
-      ElMessage.success(res.message || '审批通过')
-      await loadData()
-    } else ElMessage.error(res.message || '审批失败')
-  } catch (error) {
-    if (error !== 'cancel' && error !== 'close') ElMessage.error(error.response?.data?.message || '审批失败')
-  }
-}
-
-const reject = async row => {
-  try {
-    const result = await ElMessageBox.prompt('请输入退回原因', '退回草稿', { inputPlaceholder: '退回原因', inputValidator: value => String(value || '').trim() ? true : '退回原因不能为空' })
-    const res = await api.rejectSettlement({ settlementId: row.settlement_id, comment: result.value || '' })
-    if (res.code === 0) {
-      ElMessage.success(res.message || '已退回草稿')
-      await loadData()
-    } else ElMessage.error(res.message || '退回失败')
-  } catch (error) {
-    if (error !== 'cancel' && error !== 'close') ElMessage.error(error.response?.data?.message || '退回失败')
-  }
-}
+const openApprovalCenter = () => router.push('/approval/tasks')
 
 const openPayment = row => {
   paymentSettlement.value = row

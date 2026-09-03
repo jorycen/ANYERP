@@ -7,6 +7,9 @@ const {
   SettlementItem,
   SettlementPaymentBatch,
   SettlementPaymentRecord,
+  ApprovalFlowDefinition,
+  ApprovalFlowInstance,
+  Staff,
   Expense,
   Supplier,
   SupplierPaymentAccount,
@@ -33,6 +36,13 @@ const {
 const { recordBusinessAction } = require('../../utils/businessActionLog');
 const { sendExcel } = require('../../utils/excelExport');
 const { accessibleDistributorIds, canAccessDistributor, distributorWhere } = require('../../utils/distributorScope');
+const { startInstance } = require('../approval/service');
+
+const PAYABLE_SETTLEMENT_APPROVAL_FLOW_CODE = 'payable_settlement';
+const PAYABLE_SETTLEMENT_APPROVER_PHONES = [
+  '15308182113',
+  '18980060806'
+];
 
 function assertDistributorOperation(ctx, distributorId, message = '无权操作该经销商数据') {
   if (!canAccessDistributor(ctx.state.user, distributorId)) ctx.throw(403, message);
@@ -40,6 +50,52 @@ function assertDistributorOperation(ctx, distributorId, message = '无权操作�
 
 function normalizeSettlementRemark(value) {
   return String(value || '').trim().slice(0, 512) || null;
+}
+
+async function resolvePayableSettlementFixedApprovers(transaction) {
+  const approvers = [];
+  for (const phone of PAYABLE_SETTLEMENT_APPROVER_PHONES) {
+    const staff = await Staff.findOne({
+      where: { phone, status: 1, is_deleted: 0 },
+      transaction
+    });
+    if (!staff) {
+      const error = new Error(`应付结算审批账号未找到或已停用：${phone}`);
+      error.status = 400;
+      throw error;
+    }
+    approvers.push(staff);
+  }
+  return approvers;
+}
+
+async function ensurePayableSettlementApprovalFlow(transaction) {
+  const existing = await ApprovalFlowDefinition.findOne({
+    where: { flow_code: PAYABLE_SETTLEMENT_APPROVAL_FLOW_CODE, status: 'published' },
+    order: [['version', 'DESC']],
+    transaction
+  });
+  if (existing) return existing;
+
+  const [duanChao, laiXi] = await resolvePayableSettlementFixedApprovers(transaction);
+  return ApprovalFlowDefinition.create({
+    definition_id: generateUUID(),
+    flow_code: PAYABLE_SETTLEMENT_APPROVAL_FLOW_CODE,
+    name: '应付结算单审批',
+    business_type: 'payable_settlement',
+    subject_type: 'staff',
+    version: 1,
+    status: 'published',
+    config_json: JSON.stringify({
+      nodes: [
+        { name: '提交人直属上级审批', signMode: 'serial', approvers: [{ type: 'direct_supervisor' }] },
+        { name: '段超审批', signMode: 'serial', approvers: [{ type: 'fixed_user', staffId: Number(duanChao.staff_id) }] },
+        { name: '赖曦审批', signMode: 'serial', approvers: [{ type: 'fixed_user', staffId: Number(laiXi.staff_id) }] }
+      ]
+    }),
+    create_time: new Date(),
+    update_time: new Date()
+  }, { transaction });
 }
 
 function applyDistributorFilter(whereObject, user) {
@@ -1287,6 +1343,103 @@ async function getSettlementById(settlementId, user = null) {
   return settlement;
 }
 
+async function applyPayableSettlementApproval(instance, transaction, actor, action, comment = '') {
+  const settlement = await Settlement.findOne({
+    where: { settlement_id: instance.business_id, is_deleted: 0 },
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  if (!settlement) {
+    const error = new Error('应付结算单不存在或已删除');
+    error.status = 404;
+    throw error;
+  }
+
+  const operator = actor?.name || actor?.phone || String(actor?.staffId || '');
+  const approvalComment = String(comment || '').trim().slice(0, 512) || null;
+  if (action === 'approved') {
+    if (settlement.status === 'confirmed') return settlement;
+    if (settlement.status !== 'pending_approval') throw new Error('当前结算单状态不可完成审批');
+    await settlement.update({
+      status: 'confirmed',
+      confirmed_time: new Date(),
+      approval_user: operator,
+      approval_time: new Date(),
+      approval_comment: approvalComment
+    }, { transaction });
+    await recordBusinessAction({
+      businessType: 'payable_settlement',
+      businessId: settlement.settlement_id,
+      businessNo: settlement.settlement_no,
+      action: 'approval_approved',
+      fromStatus: 'pending_approval',
+      toStatus: 'confirmed',
+      user: actor,
+      comment: approvalComment || '',
+      detail: { approvalInstanceId: instance.instance_id },
+      transaction
+    });
+    return settlement;
+  }
+
+  if (action === 'rejected') {
+    if (settlement.status === 'draft') return settlement;
+    if (settlement.status !== 'pending_approval') throw new Error('当前结算单状态不可拒绝');
+    await settlement.update({
+      status: 'draft',
+      approval_user: operator,
+      approval_time: new Date(),
+      approval_comment: approvalComment
+    }, { transaction });
+    await recordBusinessAction({
+      businessType: 'payable_settlement',
+      businessId: settlement.settlement_id,
+      businessNo: settlement.settlement_no,
+      action: 'approval_rejected',
+      fromStatus: 'pending_approval',
+      toStatus: 'draft',
+      user: actor,
+      comment: approvalComment || '',
+      detail: { approvalInstanceId: instance.instance_id },
+      transaction
+    });
+    return settlement;
+  }
+
+  if (action === 'resubmitted') {
+    if (settlement.status !== 'draft') throw new Error('当前结算单状态不可重新提交');
+    await settlement.update({
+      status: 'pending_approval',
+      submit_time: new Date(),
+      approval_user: null,
+      approval_time: null,
+      approval_comment: null
+    }, { transaction });
+    await recordBusinessAction({
+      businessType: 'payable_settlement',
+      businessId: settlement.settlement_id,
+      businessNo: settlement.settlement_no,
+      action: 'resubmitted',
+      fromStatus: 'draft',
+      toStatus: 'pending_approval',
+      user: actor,
+      comment: approvalComment || '',
+      detail: { approvalInstanceId: instance.instance_id },
+      transaction
+    });
+    return settlement;
+  }
+
+  throw new Error('不支持的应付结算审批动作');
+}
+
+async function findPayableSettlementApprovalInstance(settlementId) {
+  return ApprovalFlowInstance.findOne({
+    where: { business_type: 'payable_settlement', business_id: String(settlementId) },
+    order: [['create_time', 'DESC']]
+  });
+}
+
 /**
  * 只更新结算单备注，不改变金额、状态及其他财务字段。
  */
@@ -1385,20 +1538,61 @@ function throwStatusError(ctx, error) {
 async function submitSettlement(ctx) {
   try {
     const { settlementId } = ctx.request.body;
-    const settlement = await getSettlementById(settlementId, ctx.state.user);
+    const user = ctx.state.user;
+    if (!settlementId) ctx.throw(400, '结算单ID不能为空');
+    let approvalInstance;
+    await sequelize.transaction(async transaction => {
+      const settlement = await Settlement.findOne({
+        where: { settlement_id: settlementId, is_deleted: 0 },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      if (!settlement) ctx.throw(404, '结算单不存在');
+      assertDistributorOperation(ctx, settlement.distributor_id);
+      if (settlement.status !== 'draft') ctx.throw(400, '只有草稿状态的结算单可以提交');
 
-    if (settlement.status !== 'draft') {
-      ctx.throw(400, '只有草稿状态的结算单可以提交');
-    }
+      await ensurePayableSettlementApprovalFlow(transaction);
+      approvalInstance = await startInstance({
+        flowCode: PAYABLE_SETTLEMENT_APPROVAL_FLOW_CODE,
+        businessType: 'payable_settlement',
+        businessId: settlement.settlement_id,
+        subjectStaffId: user.staffId,
+        title: `应付结算单 ${settlement.settlement_no}`,
+        summary: `供应商：${settlement.supplier_name || '-'}，结算金额：¥${settlement.total_amount || 0}`,
+        payload: {
+          settlement_id: settlement.settlement_id,
+          settlement_no: settlement.settlement_no,
+          supplier_name: settlement.supplier_name || '',
+          distributor_id: settlement.distributor_id || '',
+          total_amount: settlement.total_amount,
+          remark: settlement.remark || ''
+        }
+      }, user, transaction);
 
-    await settlement.update({
-      status: 'pending_approval',
-      submit_time: new Date(),
-      approval_user: null,
-      approval_time: null,
-      approval_comment: null
+      await settlement.update({
+        status: 'pending_approval',
+        submit_time: new Date(),
+        approval_user: null,
+        approval_time: null,
+        approval_comment: null
+      }, { transaction });
+      await recordBusinessAction({
+        businessType: 'payable_settlement',
+        businessId: settlement.settlement_id,
+        businessNo: settlement.settlement_no,
+        action: 'submitted',
+        fromStatus: 'draft',
+        toStatus: 'pending_approval',
+        user,
+        detail: { approvalInstanceId: approvalInstance.instance_id },
+        transaction
+      });
     });
-    ctx.body = { code: 0, message: '结算单已提交，等待审批' };
+    ctx.body = {
+      code: 0,
+      message: '结算单已提交，等待提交人直属上级审批',
+      data: { approvalInstanceId: approvalInstance.instance_id }
+    };
   } catch (error) {
     throwStatusError(ctx, error);
   }
@@ -1411,6 +1605,9 @@ async function confirmSettlement(ctx) {
   try {
     const { settlementId, comment = '' } = ctx.request.body;
     const user = ctx.state.user;
+    if (await findPayableSettlementApprovalInstance(settlementId)) {
+      ctx.throw(400, '应付结算单请在审批中心按流程审批');
+    }
     const settlement = await getSettlementById(settlementId, ctx.state.user);
 
     if (settlement.status === 'pending_approval') {
@@ -1446,6 +1643,9 @@ async function rejectSettlement(ctx) {
   try {
     const { settlementId, comment = '' } = ctx.request.body;
     const user = ctx.state.user;
+    if (await findPayableSettlementApprovalInstance(settlementId)) {
+      ctx.throw(400, '应付结算单请在审批中心按流程审批');
+    }
     const settlement = await getSettlementById(settlementId, ctx.state.user);
     if (settlement.status !== 'pending_approval') {
       ctx.throw(400, '只有待审批结算单可以拒绝');
@@ -2115,6 +2315,10 @@ async function voidPaymentBatch(ctx) {
 
 module.exports = {
   normalizeSettlementRemark,
+  PAYABLE_SETTLEMENT_APPROVAL_FLOW_CODE,
+  PAYABLE_SETTLEMENT_APPROVER_PHONES,
+  ensurePayableSettlementApprovalFlow,
+  applyPayableSettlementApproval,
   getPayableList,
   exportPayableList,
   getPayableTaxStatus,
