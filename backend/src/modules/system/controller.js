@@ -332,7 +332,7 @@ async function getRoleMenus(ctx) {
   });
   ctx.body = {
     code: 0,
-    message: 'success',
+    message: '成功',
     data: roleMenus.map(rm => String(rm.menu_id))
   };
 }

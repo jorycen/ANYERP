@@ -290,11 +290,11 @@ function allocationSql(filters) {
 
 class DashboardDataSource {
   async getFilters() {
-    throw new Error('DashboardDataSource.getFilters must be implemented');
+    throw new Error('数据看板数据源必须实现筛选项查询方法');
   }
 
   async getOverview() {
-    throw new Error('DashboardDataSource.getOverview must be implemented');
+    throw new Error('数据看板数据源必须实现概览查询方法');
   }
 }
 

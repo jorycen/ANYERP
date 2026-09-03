@@ -43,6 +43,28 @@ function isRetryableError(error) {
   return RETRYABLE_STATUS_CODES.has(error.response.status)
 }
 
+function localizeClientError(error) {
+  const serverMessage = error.response?.data?.message
+  if (serverMessage) {
+    error.message = /[\u4e00-\u9fff]/.test(String(serverMessage))
+      ? String(serverMessage)
+      : '操作失败，请稍后重试'
+    return error
+  }
+
+  const message = String(error.message || '')
+  if (/^Network Error$/i.test(message)) {
+    error.message = '网络连接失败，请检查网络设置'
+  } else if (/timeout of \d+ms exceeded/i.test(message)) {
+    error.message = '请求超时，请稍后重试'
+  } else if (/^Request failed with status code \d+$/i.test(message)) {
+    error.message = `请求失败（HTTP ${error.response?.status || '未知'}）`
+  } else if (/canceled|cancelled/i.test(message)) {
+    error.message = '请求已取消'
+  }
+  return error
+}
+
 function attachResponseInterceptor(client, onSuccess, onUnauthorized) {
   client.interceptors.response.use(
     onSuccess,
@@ -62,7 +84,7 @@ function attachResponseInterceptor(client, onSuccess, onUnauthorized) {
         return client.request(config)
       }
 
-      return Promise.reject(error)
+      return Promise.reject(localizeClientError(error))
     }
   )
 }

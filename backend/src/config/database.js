@@ -183,7 +183,7 @@ function getDatabaseStatus() {
     lastError: lastDatabaseError ? {
       name: lastDatabaseError.name,
       code: lastDatabaseError.code || lastDatabaseError.parent?.code || lastDatabaseError.original?.code,
-      message: lastDatabaseError.message
+      message: '数据库异常，请稍后重试'
     } : null
   };
 }

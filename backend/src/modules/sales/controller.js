@@ -3297,7 +3297,7 @@ async function paymentMethods(ctx) {
     where: { status: 1 },
     order: [['sort_order', 'ASC']]
   });
-  ctx.body = { code: 0, data: methods, message: 'success' };
+  ctx.body = { code: 0, data: methods, message: '成功' };
 }
 
 function buildDepositListOrder() {
@@ -3501,7 +3501,7 @@ async function availableDeposits(ctx) {
       available_amount: getDepositAvailableAmount(row)
     }));
 
-  ctx.body = { code: 0, data: availableRows, message: 'success' };
+  ctx.body = { code: 0, data: availableRows, message: '成功' };
 }
 
 async function getProductPns(ctx) {
@@ -3927,7 +3927,7 @@ async function createSalesReturnInbound({ request, user, transaction, ctx }) {
     transaction,
     lock: transaction.LOCK.UPDATE
   });
-  if (!requestItems.length) ctx.throw(400, 'Sales return request has no items');
+  if (!requestItems.length) ctx.throw(400, '销售退单申请没有商品明细');
 
   const orderItems = await OrderItem.findAll({
     where: { item_id: { [Op.in]: requestItems.map(item => item.order_item_id).filter(Boolean) } },
@@ -3947,7 +3947,7 @@ async function createSalesReturnInbound({ request, user, transaction, ctx }) {
 
   for (const item of requestItems) {
     const product = productMap.get(String(item.product_id || ''));
-    if (!product) ctx.throw(400, `Sales return product does not exist: ${item.product_name || item.product_id}`);
+    if (!product) ctx.throw(400, `销售退单商品不存在：${item.product_name || item.product_id}`);
 
     const quantity = Math.max(1, Number(item.quantity || 1));
     const orderItem = orderItemMap.get(String(item.order_item_id || ''));
@@ -3963,7 +3963,7 @@ async function createSalesReturnInbound({ request, user, transaction, ctx }) {
     if (physicalSnKey) seenPhysicalSns.add(physicalSnKey);
 
     if (Number(product.need_sn) === 1) {
-      if (!snCode || quantity !== 1) ctx.throw(400, `Invalid SN return item: ${item.product_name || product.name}`);
+    if (!snCode || quantity !== 1) ctx.throw(400, `SN退货明细无效：${item.product_name || product.name}`);
       const sn = await ProductSn.findOne({
         where: {
           product_id: item.product_id,
@@ -3980,7 +3980,7 @@ async function createSalesReturnInbound({ request, user, transaction, ctx }) {
       if (sn.status === 'sold') {
         await sn.update({
           status: 'return_pending',
-          remark: `${sn.remark || ''} [sales return pending inbound:${request.return_no}]`.trim()
+          remark: `${sn.remark || ''} [销售退单待重新入库：${request.return_no}]`.trim()
         }, { transaction });
         await SnLog.create({
           log_id: generateUUID(),
@@ -3990,7 +3990,7 @@ async function createSalesReturnInbound({ request, user, transaction, ctx }) {
           product_name: sn.product_name || product.name,
           store_id: request.store_id,
           action: 'return',
-          remark: `Sales return approved, pending re-inbound: ${request.return_no}`,
+          remark: `销售退单已审批，待重新入库：${request.return_no}`,
           create_user: request.create_user || user.name || user.staffId || '',
           create_time: new Date()
         }, { transaction });
@@ -4005,7 +4005,7 @@ async function createSalesReturnInbound({ request, user, transaction, ctx }) {
       sn_code: snCode,
       unit_price: unitPrice,
       quantity,
-      remark: `Sales return: ${request.return_no}`,
+      remark: `销售退单：${request.return_no}`,
       inventory_type: 'normal_qty'
     });
     totalQuantity += quantity;

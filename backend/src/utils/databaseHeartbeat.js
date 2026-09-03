@@ -69,7 +69,7 @@ function normalizeHeartbeatConfig(rawConfig) {
   const endMinutes = parseTime(rawConfig.endTime);
 
   if (startMinutes === null || endMinutes === null || startMinutes >= endMinutes) {
-    throw new Error('DB_HEARTBEAT_START_TIME/END_TIME must use HH:mm and start must be earlier than end');
+    throw new Error('数据库心跳开始/结束时间必须使用 HH:mm 格式，且开始时间必须早于结束时间');
   }
 
   // Validate the configured IANA time zone before the scheduler starts.

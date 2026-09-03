@@ -6,7 +6,7 @@ SET @column_exists := (
 );
 SET @sql := IF(
   @column_exists = 0,
-  'ALTER TABLE T_PRODUCT ADD COLUMN CATEGORY_ID VARCHAR(32) NULL COMMENT ''selected product category node'' AFTER CATEGORY',
+  'ALTER TABLE T_PRODUCT ADD COLUMN CATEGORY_ID VARCHAR(32) NULL COMMENT ''选定的商品分类节点'' AFTER CATEGORY',
   'SELECT 1'
 );
 PREPARE add_product_category_id FROM @sql;
@@ -19,7 +19,7 @@ SET @column_exists := (
 );
 SET @sql := IF(
   @column_exists = 0,
-  'ALTER TABLE T_PRODUCT ADD COLUMN CATEGORY_PATH_LEGACY VARCHAR(512) NULL COMMENT ''legacy category path for compatibility'' AFTER CATEGORY_ID',
+  'ALTER TABLE T_PRODUCT ADD COLUMN CATEGORY_PATH_LEGACY VARCHAR(512) NULL COMMENT ''历史分类路径（兼容字段）'' AFTER CATEGORY_ID',
   'SELECT 1'
 );
 PREPARE add_product_category_path_legacy FROM @sql;
@@ -32,7 +32,7 @@ SET @column_exists := (
 );
 SET @sql := IF(
   @column_exists = 0,
-  'ALTER TABLE T_PRODUCT_APPLICATION ADD COLUMN CATEGORY_PATH_LEGACY VARCHAR(512) NULL COMMENT ''legacy category path for compatibility'' AFTER CATEGORY_NAME',
+  'ALTER TABLE T_PRODUCT_APPLICATION ADD COLUMN CATEGORY_PATH_LEGACY VARCHAR(512) NULL COMMENT ''历史分类路径（兼容字段）'' AFTER CATEGORY_NAME',
   'SELECT 1'
 );
 PREPARE add_application_category_path_legacy FROM @sql;

@@ -30,7 +30,7 @@ async function responseFormatter(ctx, next) {
   // 格式化成功响应
   ctx.body = {
     code: 0,
-    message: 'success',
+    message: '成功',
     data: ctx.body
   };
 }

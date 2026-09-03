@@ -541,27 +541,27 @@ async function createSettlement(ctx) {
     distributorId
   } = ctx.request.body;
   const user = ctx.state.user;
-  if (!supplierId) ctx.throw(400, 'supplier is required');
+  if (!supplierId) ctx.throw(400, '请选择供应商');
   const selectedIds = [...new Set([
     ...payableIds,
     ...allocations.map(item => item.payableId || item.payable_id)
   ].filter(Boolean).map(String))];
-  if (!selectedIds.length) ctx.throw(400, 'select payable items first');
+  if (!selectedIds.length) ctx.throw(400, '请先选择应付款项');
   if (distributorId) assertDistributorOperation(ctx, distributorId);
   const supplier = await Supplier.findByPk(supplierId);
-  if (!supplier) ctx.throw(404, 'supplier not found');
+  if (!supplier) ctx.throw(404, '供应商不存在');
 
   let supplierAccountSnapshot = null;
   let finalSupplierAccountId = null;
   if (paymentAccountType === 'other') {
-    if (!String(otherPaymentRemark || '').trim()) ctx.throw(400, 'other payment remark is required');
-    if (!otherPaymentImage) ctx.throw(400, 'other payment evidence is required');
+    if (!String(otherPaymentRemark || '').trim()) ctx.throw(400, '请填写其他付款说明');
+    if (!otherPaymentImage) ctx.throw(400, '请上传其他付款凭证');
   } else {
-    if (!supplierAccountId) ctx.throw(400, 'supplier payment account is required');
+    if (!supplierAccountId) ctx.throw(400, '请选择供应商付款账户');
     const supplierAccount = await SupplierPaymentAccount.findOne({
       where: { account_id: supplierAccountId, supplier_id: supplierId, status: 1, is_deleted: 0 }
     });
-    if (!supplierAccount) ctx.throw(404, 'supplier payment account is unavailable');
+    if (!supplierAccount) ctx.throw(404, '供应商付款账户不可用');
     finalSupplierAccountId = supplierAccount.account_id;
     supplierAccountSnapshot = JSON.stringify({
       accountId: supplierAccount.account_id,
@@ -588,7 +588,7 @@ async function createSettlement(ctx) {
       transaction,
       lock: transaction.LOCK.UPDATE
     });
-    if (payables.length !== selectedIds.length) ctx.throw(400, 'some payable items are unavailable');
+    if (payables.length !== selectedIds.length) ctx.throw(400, '部分应付款项不可用，请刷新后重试');
     const payableDistributorIds = [...new Set(payables.map(item => item.distributor_id).filter(Boolean).map(String))];
     if (payableDistributorIds.length !== 1) ctx.throw(400, '结算单必须只包含一个经销商的应付款，不能合并结算');
     if (distributorId && payableDistributorIds[0] !== String(distributorId)) ctx.throw(400, '结算经销商与应付款所属经销商不一致');
@@ -618,7 +618,7 @@ async function createSettlement(ctx) {
       for (const allocation of sourceAllocations) {
         const payableId = String(allocation.payableId || allocation.payable_id || '');
         const payable = payableMap.get(payableId);
-        if (!payable) ctx.throw(400, 'payable does not belong to supplier');
+        if (!payable) ctx.throw(400, '应付款项不属于所选供应商');
         const requestItemId = allocation.requestItemId || allocation.request_item_id;
         const item = requestItemId ? requestItemMap.get(String(requestItemId)) : null;
         let used = summary.get(payableId);
@@ -643,7 +643,7 @@ async function createSettlement(ctx) {
           continue;
         }
         if (item) {
-          if (String(item.request_id) !== String(payable.request_id)) ctx.throw(400, 'purchase item does not belong to payable');
+          if (String(item.request_id) !== String(payable.request_id)) ctx.throw(400, '采购明细不属于该应付款项');
           const unitPrice = actualUnitPrice(item);
           const amountValue = allocation.amount ?? allocation.settleAmount ?? allocation.settle_amount;
           if (amountValue !== undefined && amountValue !== null && amountValue !== '') {
@@ -660,7 +660,7 @@ async function createSettlement(ctx) {
               payable.offset_amount
             );
             if (amount <= 0 || amount > itemRemaining + 0.005 || amount > payableRemaining + 0.005) {
-              ctx.throw(400, 'settlement amount exceeds remaining amount');
+              ctx.throw(400, '结算金额超过剩余可结算金额');
             }
             rows.push({ payable, requestItem: item, quantity: null, unitPrice, amount });
             used.amountByItem.set(String(item.item_id), usedAmount + amount);
@@ -670,7 +670,7 @@ async function createSettlement(ctx) {
             const usedQuantity = Number(used.quantityByItem.get(String(item.item_id)) || 0);
             const adjustedQuantity = Math.max(0, Number(item.quantity || 0) + Number(adjustmentQuantityDeltas.get(String(item.item_id)) || 0));
             const availableQuantity = adjustedQuantity - usedQuantity;
-            if (quantity <= 0 || quantity > availableQuantity + 0.00005) ctx.throw(400, 'settlement quantity exceeds remaining quantity');
+            if (quantity <= 0 || quantity > availableQuantity + 0.00005) ctx.throw(400, '结算数量超过剩余可结算数量');
             const amount = roundAmount(quantity * unitPrice);
             rows.push({ payable, requestItem: item, quantity, unitPrice, amount });
             used.quantityByItem.set(String(item.item_id), usedQuantity + quantity);
@@ -681,7 +681,7 @@ async function createSettlement(ctx) {
           const remaining = getPayableRemaining(payable.total_amount, used.amount, payable.offset_amount);
           const amountValue = allocation.amount ?? allocation.settleAmount ?? allocation.settle_amount;
           const amount = roundAmount(amountValue);
-          if (amount <= 0 || amount > remaining + 0.005) ctx.throw(400, 'settlement amount exceeds remaining amount');
+          if (amount <= 0 || amount > remaining + 0.005) ctx.throw(400, '结算金额超过剩余可结算金额');
           rows.push({ payable, requestItem: null, quantity: null, unitPrice: null, amount });
           used.amount = Number(used.amount || 0) + amount;
         }
@@ -697,7 +697,7 @@ async function createSettlement(ctx) {
     }
     const finalRows = rows.filter(row => Math.abs(Number(row.amount || 0)) > 0.005);
     const totalAmount = roundAmount(finalRows.reduce((sum, row) => sum + row.amount, 0));
-    if (totalAmount <= 0) ctx.throw(400, 'settlement amount must be greater than zero');
+    if (totalAmount <= 0) ctx.throw(400, '结算金额必须大于零');
     const taxStatus = combineTaxStatuses(finalRows.map(row => requestTaxMap.get(String(row.payable.request_id)) || 'UNKNOWN'));
     if (taxStatus === 'MIXED') ctx.throw(400, '含税与未税应付款不能在同一张结算单中同时发起');
     const regionIds = [...new Set(finalRows.map(row => row.payable.region_id).filter(Boolean).map(String))];
@@ -737,7 +737,7 @@ async function createSettlement(ctx) {
       await refreshPayableState(payableId, transaction);
     }
   });
-  ctx.body = { code: 0, message: 'settlement created', data: settlement };
+  ctx.body = { code: 0, message: '结算单创建成功', data: settlement };
 }
 
 async function createSettlementLegacy(ctx) {
@@ -877,22 +877,22 @@ async function createSettlementLegacy(ctx) {
 async function createExpenseSettlement(ctx) {
   const { payableId, amount: requestedAmount, remark } = ctx.request.body;
   const user = ctx.state.user;
-  if (!payableId) ctx.throw(400, 'payableId is required');
+  if (!payableId) ctx.throw(400, '应付款ID不能为空');
   let settlement;
   await sequelize.transaction(async transaction => {
     const payable = await Payable.findByPk(payableId, {
       transaction,
       lock: transaction.LOCK.UPDATE
     });
-    if (!payable || !['expense', 'reimbursement'].includes(payable.source_type)) ctx.throw(404, 'expense payable not found');
+    if (!payable || !['expense', 'reimbursement'].includes(payable.source_type)) ctx.throw(404, '费用应付款不存在');
     assertDistributorOperation(ctx, payable.distributor_id);
-    if (!['unpaid', 'partial_settled', 'settling'].includes(payable.status)) ctx.throw(400, 'expense payable is unavailable');
+    if (!['unpaid', 'partial_settled', 'settling'].includes(payable.status)) ctx.throw(400, '费用应付款当前不可结算');
     const allocation = (await getAllocationSummary([payableId], transaction)).get(String(payableId));
     const remaining = roundAmount(Number(payable.total_amount || 0) - Number(allocation?.amount || 0));
     const amount = requestedAmount === undefined || requestedAmount === null || requestedAmount === ''
       ? remaining
       : roundAmount(requestedAmount);
-    if (amount <= 0 || amount > remaining + 0.005) ctx.throw(400, 'reimbursement amount exceeds remaining amount');
+    if (amount <= 0 || amount > remaining + 0.005) ctx.throw(400, '报销金额超过剩余可结算金额');
     const expense = payable.source_id
       ? await Expense.findByPk(payable.source_id, { attributes: ['invoice_type'], transaction })
       : null;
@@ -900,7 +900,7 @@ async function createExpenseSettlement(ctx) {
       settlement_id: generateUUID(),
       settlement_no: `EXS${moment().format('YYYYMMDDHHmmss')}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`,
       supplier_id: null,
-      supplier_name: payable.payee_name || payable.supplier_name || 'employee',
+      supplier_name: payable.payee_name || payable.supplier_name || '员工',
       settlement_type: payable.source_type === 'reimbursement' ? 'reimbursement' : 'expense',
       payee_type: payable.payee_type || 'counterparty',
       payee_id: payable.payee_id || '',
@@ -911,7 +911,7 @@ async function createExpenseSettlement(ctx) {
       region_id: payable.region_id || null,
       distributor_id: payable.distributor_id,
       tax_status: getPayableTaxStatus(expense?.invoice_type),
-      other_payment_remark: payable.source_type === 'reimbursement' ? 'personal advance reimbursement' : 'expense settlement',
+      other_payment_remark: payable.source_type === 'reimbursement' ? '私人垫付报销' : '费用结算',
       total_amount: amount,
       paid_amount: 0,
       status: 'draft',
@@ -934,7 +934,7 @@ async function createExpenseSettlement(ctx) {
     await refreshPayableState(payableId, transaction);
     if (payable.source_id) await refreshExpenseState(payable.source_id, transaction);
   });
-  ctx.body = { code: 0, message: 'expense settlement created', data: settlement };
+  ctx.body = { code: 0, message: '费用结算单创建成功', data: settlement };
 }
 
 async function createExpenseSettlementLegacy(ctx) {
@@ -1434,9 +1434,9 @@ async function voidSettlement(ctx) {
         transaction,
         lock: transaction.LOCK.UPDATE
       });
-      if (!settlement || settlement.is_deleted) ctx.throw(404, 'settlement not found');
-      if (settlement.status === 'voided') ctx.throw(400, 'settlement already voided');
-      if (settlement.payment_status !== 'unpaid') ctx.throw(400, 'paid settlement cannot be voided');
+      if (!settlement || settlement.is_deleted) ctx.throw(404, '结算单不存在');
+      if (settlement.status === 'voided') ctx.throw(400, '结算单已经作废');
+      if (settlement.payment_status !== 'unpaid') ctx.throw(400, '已付款结算单不能作废');
       await settlement.update({ status: 'voided', voided_time: new Date() }, { transaction });
       for (const payableId of new Set((settlement.items || []).map(item => item.payable_id).filter(Boolean))) {
         await refreshPayableState(payableId, transaction);
@@ -1445,7 +1445,7 @@ async function voidSettlement(ctx) {
         await refreshExpenseState(settlement.source_id, transaction);
       }
     });
-    ctx.body = { code: 0, message: 'settlement voided' };
+    ctx.body = { code: 0, message: '结算单已作废' };
   } catch (error) {
     throwStatusError(ctx, error);
   }

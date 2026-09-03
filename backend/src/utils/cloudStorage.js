@@ -82,7 +82,7 @@ function getSignedCloudFileUrl(fileId) {
   return Promise.resolve().then(async () => {
     try {
       if (!storageConfig.cloudbaseAuthAvailable) {
-        throw Object.assign(new Error('CloudBase SDK未发现服务端身份配置'), { code: 'CLOUD_STORAGE_AUTH_MISSING' });
+        throw Object.assign(new Error('云存储服务未发现服务端身份配置'), { code: 'CLOUD_STORAGE_AUTH_MISSING' });
       }
       const result = await getCloudbaseApp().getTempFileURL({
         fileList: [{ fileID: parsed.fileId, maxAge: storageConfig.expiresSeconds }]
@@ -98,7 +98,7 @@ function getSignedCloudFileUrl(fileId) {
           source: 'cloudbase-node-sdk'
         };
       }
-      const sdkError = new Error((item && (item.message || item.errMsg)) || (result && result.message) || 'CloudBase未返回临时地址');
+      const sdkError = new Error((item && (item.message || item.errMsg)) || (result && result.message) || '云存储服务未返回临时地址');
       sdkError.code = (item && item.code) || (result && result.code) || 'CLOUD_STORAGE_EMPTY_URL';
       throw sdkError;
     } catch (cloudbaseError) {

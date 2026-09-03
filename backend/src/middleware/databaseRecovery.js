@@ -12,7 +12,7 @@ async function databaseHealth(ctx) {
   ctx.body = {
     code: ctx.status,
     data: status,
-    message: status.ready ? 'database ready' : 'database not ready'
+    message: status.ready ? '数据库已就绪' : '数据库未就绪'
   };
 }
 

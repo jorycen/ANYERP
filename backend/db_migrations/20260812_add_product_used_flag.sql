@@ -11,7 +11,7 @@ SET @column_exists := (
 );
 SET @sql := IF(
   @column_exists = 0,
-  'ALTER TABLE T_PRODUCT ADD COLUMN IS_USED_PRODUCT TINYINT(1) NOT NULL DEFAULT 0 COMMENT ''used product flag'' AFTER REMARK',
+  'ALTER TABLE T_PRODUCT ADD COLUMN IS_USED_PRODUCT TINYINT(1) NOT NULL DEFAULT 0 COMMENT ''二手商品标记'' AFTER REMARK',
   'SELECT 1'
 );
 PREPARE add_used_product_column FROM @sql;
@@ -27,7 +27,7 @@ SET @column_exists := (
 );
 SET @sql := IF(
   @column_exists = 0,
-  'ALTER TABLE T_PURCHASE_REQUEST_ITEM ADD COLUMN IS_USED_PRODUCT TINYINT(1) NOT NULL DEFAULT 0 COMMENT ''used product flag'' AFTER PN_CODE',
+  'ALTER TABLE T_PURCHASE_REQUEST_ITEM ADD COLUMN IS_USED_PRODUCT TINYINT(1) NOT NULL DEFAULT 0 COMMENT ''二手商品标记'' AFTER PN_CODE',
   'SELECT 1'
 );
 PREPARE add_purchase_item_used_product_column FROM @sql;

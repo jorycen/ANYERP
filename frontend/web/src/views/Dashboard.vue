@@ -70,7 +70,7 @@
       <el-col :span="24">
         <el-card>
           <template #header>
-            <span>Recent Sales Orders</span>
+            <span>最近销售订单</span>
           </template>
           <el-table :data="recentOrders" stripe>
             <el-table-column prop="order_no" label="订单号" width="180" />

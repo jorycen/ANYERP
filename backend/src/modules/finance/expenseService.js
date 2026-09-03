@@ -64,7 +64,7 @@ async function createReimbursementSettlement(expense, operator, transaction = nu
     ? remainingAmount
     : roundAmount(requestedAmount);
   if (amount <= 0 || amount > remainingAmount + 0.005) {
-    const error = new Error('reimbursement amount exceeds remaining amount');
+    const error = new Error('报销金额超过剩余可结算金额');
     error.status = 400;
     throw error;
   }

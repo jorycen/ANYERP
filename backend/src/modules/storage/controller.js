@@ -21,7 +21,7 @@ async function resolveCloudFileUrls(ctx) {
         status: error.status || 500,
         message: error.message
       });
-      return { fileId, url: '', error: error.code || error.message || 'resolve failed' };
+      return { fileId, url: '', error: error.code || error.message || '解析文件地址失败' };
     }
   }));
 

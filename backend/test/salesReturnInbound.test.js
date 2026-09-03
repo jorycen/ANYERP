@@ -13,7 +13,7 @@ test('销售退库重新入库只允许退库待入库的原SN', () => {
       sn: { sn_code: 'SN-001', status: 'sold' },
       requestedSnCode: 'SN-001'
     }),
-    { status: 409, message: 'Sales return SN is not pending re-inbound' }
+    { status: 409, message: '销售退单SN当前不是待重新入库状态' }
   );
 
   assert.deepEqual(
@@ -21,6 +21,6 @@ test('销售退库重新入库只允许退库待入库的原SN', () => {
       sn: { sn_code: 'SN-001', status: 'return_pending' },
       requestedSnCode: 'SN-002'
     }),
-    { status: 400, message: 'Sales return SN must be SN-001' }
+    { status: 400, message: '销售退单SN必须为 SN-001' }
   );
 });

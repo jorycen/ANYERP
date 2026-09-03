@@ -58,7 +58,7 @@ test('next window delay targets 09:30 Asia/Shanghai', () => {
 test('heartbeat window configuration rejects invalid or overnight ranges', () => {
   assert.throws(
     () => normalizeHeartbeatConfig({ ...heartbeatConfig, startTime: '23:00', endTime: '09:30' }),
-    /start must be earlier than end/
+    /开始时间必须早于结束时间/
   );
   assert.throws(
     () => normalizeHeartbeatConfig({ ...heartbeatConfig, timeZone: 'Invalid/Timezone' }),

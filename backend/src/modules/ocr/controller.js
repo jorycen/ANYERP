@@ -157,7 +157,7 @@ async function recognizeCoupon(ctx) {
   if (proxiedResult) {
     ctx.body = {
       code: 0,
-      message: 'ok',
+      message: '成功',
       data: proxiedResult
     };
     return;
@@ -174,7 +174,7 @@ async function recognizeCoupon(ctx) {
     const result = await runPaddleOcr(tempPath, scene);
     ctx.body = {
       code: 0,
-      message: 'ok',
+      message: '成功',
       data: result
     };
   } finally {

@@ -1006,7 +1006,7 @@ async function addAccountTransaction(ctx) {
   const { accountId, type, amount, description, relatedRef } = ctx.request.body;
 
   if (!accountId) ctx.throw(400, '请选择结算账户');
-  if (!type || !['income', 'expense'].includes(type)) ctx.throw(400, '类型必须是 income 或 expense');
+  if (!type || !['income', 'expense'].includes(type)) ctx.throw(400, '类型必须是入账或出账');
   if (!amount || amount <= 0) ctx.throw(400, '金额必须大于0');
 
   const account = await SettlementAccount.findByPk(accountId);

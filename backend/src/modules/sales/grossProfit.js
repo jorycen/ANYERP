@@ -595,7 +595,7 @@ async function createSalesReturnGrossProfitLedger({ returnRequest, transaction =
   if (existing.length > 0) return existing;
 
   const order = await Order.findByPk(returnRequest.order_id, { transaction, lock: transaction?.LOCK?.UPDATE });
-  if (!order) throw new Error(`Return gross profit order does not exist: ${returnRequest.order_id}`);
+  if (!order) throw new Error(`销售退单对应的原订单不存在：${returnRequest.order_id}`);
   const returnItems = await SalesReturnRequestItem.findAll({
     where: { return_id: returnRequest.return_id },
     transaction,

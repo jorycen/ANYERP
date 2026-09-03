@@ -2143,7 +2143,7 @@ async function snTrace(ctx) {
   try {
     const requestedSnCode = String(ctx.params.snCode || '').trim();
     const requestedPnCode = String(ctx.query.pnCode || '').trim();
-    if (!requestedSnCode) ctx.throw(400, 'SN code is required');
+    if (!requestedSnCode) ctx.throw(400, 'SN码不能为空');
 
     const timeline = [];
     const timelineKeys = new Set();
@@ -2427,7 +2427,7 @@ async function snTrace(ctx) {
   } catch (err) {
     if (err.status) ctx.throw(err.status, err.message);
     console.error('snTrace error:', err);
-    ctx.throw(500, 'Failed to query SN trace');
+    ctx.throw(500, '查询SN追踪记录失败');
   }
 }
 
@@ -3168,10 +3168,10 @@ async function updateInventory(productId, storeId, field, delta, transaction, lo
 
 
 function validateSalesReturnInboundSn({ sn, requestedSnCode = '' }) {
-  if (!sn) return { status: 409, message: 'Sales return SN does not exist' };
-  if (sn.status !== 'return_pending') return { status: 409, message: 'Sales return SN is not pending re-inbound' };
+  if (!sn) return { status: 409, message: '销售退单SN不存在' };
+  if (sn.status !== 'return_pending') return { status: 409, message: '销售退单SN当前不是待重新入库状态' };
   if (requestedSnCode && String(requestedSnCode) !== String(sn.sn_code || '')) {
-    return { status: 400, message: `Sales return SN must be ${sn.sn_code}` };
+    return { status: 400, message: `销售退单SN必须为 ${sn.sn_code}` };
   }
   return null;
 }
@@ -3579,10 +3579,10 @@ async function executeInbound(ctx) {
           }, { transaction: t });
         } else if (transferSn) {
           if (!['transferring', 'in_stock'].includes(transferSn.status)) {
-            ctx.throw(400, `Transfer SN ${transferSn.sn_code} cannot be received in status ${transferSn.status}`);
+            ctx.throw(400, `调拨SN ${transferSn.sn_code} 在当前状态 ${transferSn.status} 下不能接收入库`);
           }
           if (transferSn.status === 'in_stock' && String(transferSn.store_id) !== String(inbound.store_id)) {
-            ctx.throw(400, `Transfer SN ${transferSn.sn_code} is already in another store`);
+            ctx.throw(400, `调拨SN ${transferSn.sn_code} 已在其他门店库存中`);
           }
 
           const transferPnCode = await resolveSnProductPn(
@@ -3591,7 +3591,7 @@ async function executeInbound(ctx) {
             t
           );
           if (transferSn.pn_code && transferPnCode && !samePnCode(transferSn.pn_code, transferPnCode)) {
-            ctx.throw(400, `Transfer SN ${transferSn.sn_code} does not match PN ${transferPnCode}`);
+            ctx.throw(400, `调拨SN ${transferSn.sn_code} 与PN ${transferPnCode} 不匹配`);
           }
 
           await transferSn.update({
@@ -3615,7 +3615,7 @@ async function executeInbound(ctx) {
           }, { transaction: t });
         } else {
           if (isSalesReturnInbound) {
-            ctx.throw(409, `Sales return SN ${dbItem.sn_code || requestedSnCode} does not exist`);
+            ctx.throw(409, `销售退单SN ${dbItem.sn_code || requestedSnCode} 不存在`);
           }
         if (!requestedSnCode) {
           ctx.throw(400, `商品 ${dbItem.product_name} 需要SN管理，SN码不能为空`);
@@ -3762,9 +3762,9 @@ async function executeInbound(ctx) {
         transaction: t,
         lock: t.LOCK.UPDATE
       });
-      if (!salesReturn) ctx.throw(404, 'Sales return request does not exist');
+      if (!salesReturn) ctx.throw(404, '销售退单申请不存在');
       if (salesReturn.status !== 'approved') {
-        ctx.throw(409, 'Sales return request is not approved');
+        ctx.throw(409, '销售退单申请尚未审批通过');
       }
       await salesReturn.update({
         status: 'completed',
@@ -4287,27 +4287,27 @@ async function confirmTransferOutPartial(ctx) {
         byProduct.get(key).push(selection);
       }
     });
-    if (!transferId) ctx.throw(400, 'Transfer ID is required');
+    if (!transferId) ctx.throw(400, '调拨单ID不能为空');
 
     const transfer = await Transfer.findByPk(transferId, {
       include: [{ model: TransferItem }],
       transaction: t,
       lock: t.LOCK.UPDATE
     });
-    if (!transfer) ctx.throw(404, 'Transfer does not exist');
+    if (!transfer) ctx.throw(404, '调拨单不存在');
     await assertTransferOperationStore(ctx, transfer.from_store_id);
-    if (transfer.status !== 'pending') ctx.throw(400, 'Transfer is not pending outbound confirmation');
+    if (transfer.status !== 'pending') ctx.throw(400, '调拨单当前不是待出库确认状态');
 
     const persistedPhotos = await persistTransferShippingPhotos(ctx, transferId);
     shippingPhotos = persistedPhotos.photos;
     createdShippingPhotoPaths.push(...persistedPhotos.storedPaths);
-    if (!shippingPhotos.length) ctx.throw(400, 'Please upload at least one shipping photo');
+    if (!shippingPhotos.length) ctx.throw(400, '请至少上传一张发货照片');
 
     const requestItems = getPendingTransferItems(transfer.TransferItems || []);
-    if (!requestItems.length) ctx.throw(400, 'Transfer has no pending item lines');
+    if (!requestItems.length) ctx.throw(400, '调拨单没有待处理明细');
     const preselectedSnItems = requestItems.filter(item => buildPreselectedTransferSelection(item));
     if (!selections.length && !preselectedSnItems.length) {
-      ctx.throw(400, 'Please select at least one outbound item');
+      ctx.throw(400, '请至少选择一项出库商品');
     }
     const productIds = [...new Set(requestItems.map(item => item.product_id).filter(Boolean))];
     await assertActiveProducts(Product, productIds, { transaction: t });
@@ -4321,19 +4321,19 @@ async function confirmTransferOutPartial(ctx) {
 
     for (const requestItem of requestItems) {
       const product = productMap.get(String(requestItem.product_id));
-      if (!product) ctx.throw(400, `Product ${requestItem.product_id} does not exist`);
+      if (!product) ctx.throw(400, `商品 ${requestItem.product_id} 不存在`);
       const preselected = buildPreselectedTransferSelection(requestItem);
       const selected = byItem.get(String(requestItem.item_id))
         || byProduct.get(String(requestItem.product_id))
         || (preselected ? [preselected] : []);
-      if (!selected.length) ctx.throw(400, `Please select outbound inventory for ${product.name || requestItem.product_id}`);
+      if (!selected.length) ctx.throw(400, `请选择商品 ${product.name || requestItem.product_id} 的出库库存`);
 
       if (preselected) {
         if (Number(product.need_sn) !== 1) {
           ctx.throw(400, `商品 ${product.name} 的调拨明细不能绑定 SN`);
         }
         if (selected.length !== 1) {
-          ctx.throw(400, `SN product ${product.name} must use its original SN`);
+          ctx.throw(400, `SN商品 ${product.name} 必须使用原SN`);
         }
         const selectedSnId = selected[0].snId || selected[0].sn_id || selected[0].inventoryId || selected[0].inventory_id || '';
         const selectedSnCode = String(selected[0].snCode || selected[0].sn_code || '').trim();
@@ -4342,7 +4342,7 @@ async function confirmTransferOutPartial(ctx) {
           ctx.throw(400, `SN ${preselected.snCode || preselected.snId} 不允许替换`);
         }
         if (!preselected.snId || !preselected.snCode) {
-          ctx.throw(400, `SN product ${product.name} requires a concrete SN`);
+          ctx.throw(400, `SN商品 ${product.name} 必须填写具体SN`);
         }
         const sn = await ProductSn.findOne({
           where: {
@@ -4356,16 +4356,16 @@ async function confirmTransferOutPartial(ctx) {
           transaction: t,
           lock: t.LOCK.UPDATE
         });
-        if (!sn) ctx.throw(400, `SN ${preselected.snCode} is not available in the outbound store`);
+        if (!sn) ctx.throw(400, `SN ${preselected.snCode} 不在调出门店可用库存中`);
         const pnCode = String(selected[0].pnCode || selected[0].pn_code || selected[0].pn || requestItem.pn_code || sn.pn_code || '').trim();
         if (!pnCode || !(await productHasPn(product, pnCode, t))) {
-          ctx.throw(400, `Please select a valid PN for ${product.name}`);
+          ctx.throw(400, `请选择商品 ${product.name} 的有效PN`);
         }
         if (sn.pn_code && !samePnCode(sn.pn_code, pnCode)) {
-          ctx.throw(400, `SN ${preselected.snCode} does not match PN ${pnCode}`);
+          ctx.throw(400, `SN ${preselected.snCode} 与PN ${pnCode} 不匹配`);
         }
         if (selectedSnIds.has(String(sn.sn_id))) {
-          ctx.throw(400, `SN ${sn.sn_code} cannot be selected twice`);
+          ctx.throw(400, `SN ${sn.sn_code} 不能重复选择`);
         }
         selectedSnIds.add(String(sn.sn_id));
         await sn.update({ status: 'transferring' }, { transaction: t });
@@ -4377,7 +4377,7 @@ async function confirmTransferOutPartial(ctx) {
           product_id: requestItem.product_id,
           store_id: transfer.from_store_id,
           action: 'transfer_out_confirm',
-          remark: `Transfer ${transfer.from_store_id} -> ${transfer.to_store_id}: ${transfer.transfer_no}`,
+          remark: `调拨出库确认：${transfer.from_store_id} → ${transfer.to_store_id}，单号：${transfer.transfer_no}`,
           create_user: transfer.apply_user || user.name || user.staffId
         }, { transaction: t });
         await updateInventory(requestItem.product_id, transfer.from_store_id, 'normal_qty', -1, t);
@@ -4387,21 +4387,21 @@ async function confirmTransferOutPartial(ctx) {
 
       if (Number(product.need_sn) === 1) {
         if (selected.length > Number(requestItem.quantity || 0)) {
-          ctx.throw(400, `Selected SN quantity for ${product.name} exceeds the request`);
+          ctx.throw(400, `商品 ${product.name} 选择的SN数量超过申请数量`);
         }
         const defaultPn = String(selected[0].pnCode || selected[0].pn_code || selected[0].pn || requestItem.pn_code || '').trim();
         if (!defaultPn || !(await productHasPn(product, defaultPn, t))) {
-          ctx.throw(400, `Please select a valid PN for ${product.name}`);
+          ctx.throw(400, `请选择商品 ${product.name} 的有效PN`);
         }
         await requestItem.update({ quantity: 0, pn_code: defaultPn }, { transaction: t });
         for (const selection of selected) {
           const snId = selection.snId || selection.sn_id || selection.inventoryId || selection.inventory_id || '';
           const snCode = String(selection.snCode || selection.sn_code || '').trim();
           const pnCode = String(selection.pnCode || selection.pn_code || selection.pn || defaultPn).trim();
-          if (!snId || !snCode) ctx.throw(400, `SN product ${product.name} requires a concrete SN`);
-          if (selectedSnIds.has(String(snId))) ctx.throw(400, `SN ${snCode} cannot be selected twice`);
+          if (!snId || !snCode) ctx.throw(400, `SN商品 ${product.name} 必须填写具体SN`);
+          if (selectedSnIds.has(String(snId))) ctx.throw(400, `SN ${snCode} 不能重复选择`);
           selectedSnIds.add(String(snId));
-          if (!(await productHasPn(product, pnCode, t))) ctx.throw(400, `PN ${pnCode} does not belong to ${product.name}`);
+          if (!(await productHasPn(product, pnCode, t))) ctx.throw(400, `PN ${pnCode} 不属于商品 ${product.name}`);
           const sn = await ProductSn.findOne({
             where: {
               sn_id: snId,
@@ -4414,8 +4414,8 @@ async function confirmTransferOutPartial(ctx) {
             transaction: t,
             lock: t.LOCK.UPDATE
           });
-          if (!sn) ctx.throw(400, `SN ${snCode} is not available in the outbound store`);
-          if (sn.pn_code && !samePnCode(sn.pn_code, pnCode)) ctx.throw(400, `SN ${snCode} does not match PN ${pnCode}`);
+          if (!sn) ctx.throw(400, `SN ${snCode} 不在调出门店可用库存中`);
+          if (sn.pn_code && !samePnCode(sn.pn_code, pnCode)) ctx.throw(400, `SN ${snCode} 与PN ${pnCode} 不匹配`);
           await sn.update({ status: 'transferring' }, { transaction: t });
           await TransferItem.create({
             transfer_id: transfer.transfer_id,
@@ -4432,7 +4432,7 @@ async function confirmTransferOutPartial(ctx) {
             product_id: requestItem.product_id,
             store_id: transfer.from_store_id,
             action: 'transfer_out_confirm',
-            remark: `Transfer ${transfer.from_store_id} -> ${transfer.to_store_id}: ${transfer.transfer_no}`,
+            remark: `调拨出库确认：${transfer.from_store_id} → ${transfer.to_store_id}，单号：${transfer.transfer_no}`,
             create_user: transfer.apply_user || user.name || user.staffId
           }, { transaction: t });
           outboundQuantity += 1;
@@ -4446,14 +4446,14 @@ async function confirmTransferOutPartial(ctx) {
         return sum + (Number.isFinite(value) && value > 0 ? value : 1);
       }, 0), 1);
       if (selectedQuantity > Number(requestItem.quantity || 0)) {
-        ctx.throw(400, `Selected quantity for ${product.name} exceeds the request`);
+        ctx.throw(400, `商品 ${product.name} 选择的数量超过申请数量`);
       }
       const selectedPn = String(selected[0].pnCode || selected[0].pn_code || selected[0].pn || requestItem.pn_code || '').trim();
       if (!selectedPn || !(await productHasPn(product, selectedPn, t))) {
-        ctx.throw(400, `Please select a valid PN for ${product.name}`);
+        ctx.throw(400, `请选择商品 ${product.name} 的有效PN`);
       }
       const availableQty = await getTransferableStock(product, requestItem.product_id, transfer.from_store_id, t);
-      if (availableQty < selectedQuantity) ctx.throw(400, `Product ${product.name} stock is insufficient`);
+      if (availableQty < selectedQuantity) ctx.throw(400, `商品 ${product.name} 库存不足`);
       await requestItem.update({ quantity: selectedQuantity, pn_code: selectedPn }, { transaction: t });
       await updateInventory(requestItem.product_id, transfer.from_store_id, 'normal_qty', -selectedQuantity, t);
       outboundQuantity += selectedQuantity;
@@ -4462,7 +4462,7 @@ async function confirmTransferOutPartial(ctx) {
     const totalQuantity = Math.max(Number(transfer.total_quantity || 0), 0);
     const remainingQuantity = Math.max(totalQuantity - outboundQuantity, 0);
     if (remainingQuantity > 0 && remainingAction !== 'reject') {
-      ctx.throw(400, 'Partial outbound requires confirming rejection of the remaining quantity');
+      ctx.throw(400, '部分出库必须确认拒收剩余数量');
     }
     const actualItems = visibleTransferItems(await TransferItem.findAll({
       where: { transfer_id: transfer.transfer_id },
@@ -4502,14 +4502,14 @@ async function confirmTransferOutPartial(ctx) {
     ctx.body = {
       code: 0,
       data: { transferId: transfer.transfer_id, outboundQuantity, remainingQuantity, remainingStatus: remainingQuantity > 0 ? 'rejected' : 'fulfilled' },
-      message: remainingQuantity > 0 ? 'Partial outbound confirmed; remaining quantity rejected' : 'Outbound confirmed'
+      message: remainingQuantity > 0 ? '部分出库已确认，剩余数量已拒收' : '出库已确认'
     };
   } catch (err) {
     await t.rollback();
     await Promise.all(createdShippingPhotoPaths.map(filePath => fs.promises.unlink(filePath).catch(() => {})));
     if (err.status) ctx.throw(err.status, err.message);
     console.error('confirmTransferOut partial error:', err);
-    ctx.throw(500, 'Outbound confirmation failed');
+    ctx.throw(500, '出库确认失败');
   }
 }
 
