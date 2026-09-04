@@ -3935,9 +3935,11 @@ async function seedPermissionData() {
           { replacements: [code] }
         );
         if (existing.length) {
+          // 已有菜单的父级和顺序可能由“菜单管理”调整过，初始化只能同步菜单元数据，
+          // 不能在服务重启或重新部署时覆盖管理员保存的导航结构。
           await sequelize.query(
-            `UPDATE T_MENU SET NAME = ?, PARENT_ID = ?, MENU_TYPE = 'menu', PATH = ?, SORT_ORDER = ?, STATUS = 1 WHERE MENU_ID = ?`,
-            { replacements: [name, parents[0].MENU_ID, path, sortOrder, existing[0].MENU_ID] }
+            `UPDATE T_MENU SET NAME = ?, MENU_TYPE = 'menu', PATH = ?, STATUS = 1 WHERE MENU_ID = ?`,
+            { replacements: [name, path, existing[0].MENU_ID] }
           );
         } else {
           await sequelize.query(
