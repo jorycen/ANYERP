@@ -447,12 +447,18 @@
         </el-row>
 
         <!-- 选择分类后展示分类配置的商品字段 -->
-        <div v-if="productForm.categoryId && categoryExtraFields.length > 0" style="margin-bottom: 12px; padding: 10px; background: #f5f7fa; border-radius: 4px;">
+        <div v-if="productForm.categoryId && categoryFields.length > 0" style="margin-bottom: 12px; padding: 10px; background: #f5f7fa; border-radius: 4px;">
           <el-divider content-position="left" style="margin: 0 0 10px 0;">{{ categoryFieldCatName }} 商品字段</el-divider>
           <el-row :gutter="16">
-            <el-col :span="8" v-for="field in categoryExtraFields" :key="field.field_key">
+            <el-col :span="8" v-for="field in categoryFields" :key="field.field_key">
               <el-form-item :label="field.field_label" :required="Number(field.required) === 1" label-width="75px">
-                <el-select v-if="field.field_type === 'select'" v-model="productForm.attributes[field.field_key]"
+                <el-select v-if="field.field_type === 'select' && getStandardFieldKey(field.field_key)" v-model="productForm[getStandardFieldKey(field.field_key)]"
+                  :placeholder="field.placeholder || ('请选择' + field.field_label)" size="small" clearable style="width: 100%">
+                  <el-option v-for="opt in field.options" :key="opt" :label="opt" :value="opt" />
+                </el-select>
+                <el-input v-else-if="getStandardFieldKey(field.field_key)" v-model="productForm[getStandardFieldKey(field.field_key)]"
+                  :placeholder="field.placeholder || field.field_label" size="small" />
+                <el-select v-else-if="field.field_type === 'select'" v-model="productForm.attributes[field.field_key]"
                   :placeholder="field.placeholder || ('请选择' + field.field_label)" size="small" clearable style="width: 100%">
                   <el-option v-for="opt in field.options" :key="opt" :label="opt" :value="opt" />
                 </el-select>
@@ -909,13 +915,18 @@ const getStandardFieldKey = (fieldKey) => {
   return Object.entries(standardFieldAliases).find(([, aliases]) => aliases.includes(normalizedKey))?.[0] || ''
 }
 const categoryExtraFields = computed(() => {
-  return categoryFields.value.filter(field => !getStandardFieldKey(field.field_key))
+  return categoryFields.value.filter(field => !['category', 'brand', 'series', 'model'].includes(getStandardFieldKey(field.field_key)))
 })
+
+const getCategoryFieldValue = (field) => {
+  const standardKey = getStandardFieldKey(field.field_key)
+  return standardKey ? productForm[standardKey] : productForm.attributes[field.field_key]
+}
 
 const autoProductName = computed(() => {
   const parts = [productForm.brand, productForm.series, productForm.model].filter(Boolean)
   for (const field of categoryExtraFields.value) {
-    const value = productForm.attributes[field.field_key]
+    const value = getCategoryFieldValue(field)
     if (value !== undefined && value !== null && String(value).trim()) parts.push(String(value).trim())
   }
   return parts.map(value => String(value).trim()).filter(Boolean).join(' ')
@@ -979,6 +990,9 @@ const onCategoryChange = async (value) => {
   productForm.brand = ''
   productForm.series = ''
   productForm.model = ''
+  for (const key of ['processor', 'memory', 'storage', 'color', 'gpu', 'accessory_type']) {
+    productForm[key] = ''
+  }
   if (!categoryId) {
     productForm.attributes = {}
     categoryFields.value = []
@@ -1338,6 +1352,12 @@ const handleSubmit = async () => {
     const attributes = {}
     for (const [k, v] of Object.entries(productForm.attributes)) {
       if (v !== undefined && v !== null && v !== '') attributes[k] = v
+    }
+    for (const field of categoryFields.value) {
+      const standardKey = getStandardFieldKey(field.field_key)
+      if (!standardKey || !['processor', 'memory', 'storage', 'color', 'gpu', 'accessory_type'].includes(standardKey)) continue
+      const value = productForm[standardKey]
+      if (value !== undefined && value !== null && value !== '') attributes[field.field_key] = value
     }
     const barcodes = [...productForm.barcodes]
     const data = {
