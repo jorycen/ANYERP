@@ -446,9 +446,9 @@
           </el-col>
         </el-row>
 
-        <!-- 第四级分类动态字段 - 仅在分类配置了额外字段时显示 -->
-        <div v-if="categoryExtraFields.length > 0" style="margin-bottom: 12px; padding: 10px; background: #f5f7fa; border-radius: 4px;">
-          <el-divider content-position="left" style="margin: 0 0 10px 0;">{{ categoryFieldCatName }} 补充字段</el-divider>
+        <!-- 选择分类后展示分类配置的商品字段 -->
+        <div v-if="productForm.categoryId && categoryExtraFields.length > 0" style="margin-bottom: 12px; padding: 10px; background: #f5f7fa; border-radius: 4px;">
+          <el-divider content-position="left" style="margin: 0 0 10px 0;">{{ categoryFieldCatName }} 商品字段</el-divider>
           <el-row :gutter="16">
             <el-col :span="8" v-for="field in categoryExtraFields" :key="field.field_key">
               <el-form-item :label="field.field_label" :required="Number(field.required) === 1" label-width="75px">
@@ -464,8 +464,8 @@
         </div>
 
         <el-form-item label="商品名称">
-          <el-input v-model="productForm.name" placeholder="可手工修改；留空时按二级-三级-四级-其他字段组合" />
-          <div class="text-muted" style="margin-top: 4px;">当前名称：{{ computedProductName || '（尚未填写）' }}</div>
+          <el-input v-model="productForm.name" placeholder="按二级、三级、四级分类及商品字段自动生成，可手工修改" @input="onProductNameInput" />
+          <div class="text-muted" style="margin-top: 4px;">{{ productNameManual ? '已手工编辑商品名称' : `自动名称：${autoProductName || '（填写分类或商品字段后生成）'}` }}</div>
         </el-form-item>
         <el-form-item label="厂商编码 / PN" required>
           <div class="text-muted" style="margin-bottom: 6px;">厂商编码就是PN，商品只在这里维护。69码属于独立条码；历史厂商编码仅用于清理，不再新增。</div>
@@ -791,6 +791,7 @@ const formNewBarcode = ref('')
 const categoryFields = ref([])
 const categoryFieldCatName = ref('')
 const categoryNameParts = ref([])
+const productNameManual = ref(false)
 
 const productForm = reactive({
   productId: null,
@@ -896,17 +897,6 @@ const addFormBarcode = () => {
 }
 const removeFormBarcode = (index) => { productForm.barcodes.splice(index, 1) }
 
-const computedProductName = computed(() => {
-  if (String(productForm.name || '').trim()) return String(productForm.name).trim()
-  const parts = [productForm.brand, productForm.series, productForm.model].filter(Boolean)
-  for (const field of categoryExtraFields.value) {
-    if (productForm.attributes[field.field_key]) {
-      parts.push(productForm.attributes[field.field_key])
-    }
-  }
-  return parts.join('-') || productForm.name || ''
-})
-
 const standardFieldAliases = {
   category: ['category', 'categoryname', '商品分类', '分类'],
   brand: ['brand', '品牌'], series: ['series', '系列'], model: ['model', '型号'],
@@ -921,6 +911,40 @@ const getStandardFieldKey = (fieldKey) => {
 const categoryExtraFields = computed(() => {
   return categoryFields.value.filter(field => !getStandardFieldKey(field.field_key))
 })
+
+const autoProductName = computed(() => {
+  const parts = [productForm.brand, productForm.series, productForm.model].filter(Boolean)
+  for (const field of categoryExtraFields.value) {
+    const value = productForm.attributes[field.field_key]
+    if (value !== undefined && value !== null && String(value).trim()) parts.push(String(value).trim())
+  }
+  return parts.map(value => String(value).trim()).filter(Boolean).join(' ')
+})
+
+const computedProductName = computed(() => String(productForm.name || '').trim() || autoProductName.value)
+
+const syncAutoProductName = () => {
+  if (!productNameManual.value) productForm.name = autoProductName.value
+}
+
+const onProductNameInput = () => {
+  if (String(productForm.name || '').trim()) {
+    productNameManual.value = true
+    return
+  }
+  productNameManual.value = false
+  syncAutoProductName()
+}
+
+const productNameWatchSource = () => [
+  productForm.categoryId,
+  productForm.brand,
+  productForm.series,
+  productForm.model,
+  categoryFields.value.map(field => field.field_key).join('|'),
+  JSON.stringify(productForm.attributes || {})
+]
+watch(productNameWatchSource, syncAutoProductName)
 
 function findCategoryByPath(tree, path) {
   if (!path || !tree) return null
@@ -1052,6 +1076,7 @@ const handleCreate = async () => {
 const handleEdit = async (row) => {
   dialogTitle.value = '编辑商品'
   currentProduct.value = row
+  productNameManual.value = true
   productForm.productId = row.product_id
   pnLoadFailed.value = false
   productForm.name = row.name
@@ -1208,6 +1233,7 @@ const updateFocusProduct = async (row, value) => {
 
 const resetForm = () => {
   pnLoadFailed.value = false
+  productNameManual.value = false
   productForm.productId = null
   productForm.name = ''
   productForm.productCode = ''
@@ -1248,6 +1274,7 @@ const handleDialogClose = () => { resetForm() }
 const saveProductDraft = () => {
   saveDraft(productDraftKey(), {
     productForm: cloneDraft(productForm),
+    productNameManual: productNameManual.value,
     formNewBarcode: formNewBarcode.value
   })
   ElMessage.success('草稿已保存')
@@ -1257,6 +1284,7 @@ const restoreProductDraft = () => {
   const draft = loadDraft(productDraftKey())
   if (!draft?.productForm) return
   Object.assign(productForm, draft.productForm)
+  productNameManual.value = Boolean(draft.productNameManual)
   productForm.barcodes = Array.isArray(draft.productForm.barcodes) ? draft.productForm.barcodes : []
   if (Array.isArray(draft.productForm.pns)) {
     productForm.pns = draft.productForm.pns.map(createFormPn)

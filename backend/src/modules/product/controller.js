@@ -674,7 +674,7 @@ function composeProductName(dimensions = {}, fields = [], attributes = {}) {
       parts.push(String(value).trim());
     }
   }
-  return parts.join('-');
+  return parts.join(' ');
 }
 
 async function resolveCategoryFieldConfig(categoryId) {
