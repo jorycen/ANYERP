@@ -1495,7 +1495,7 @@ async function updateProduct(ctx) {
     }
 
     if (Array.isArray(pns)) {
-      await syncProductPnsMaster({ productId, pns, transaction });
+      await syncProductPnsMaster({ productId, pns, operatorName: getUserName(ctx), transaction });
     } else if (barcodes !== undefined || manufacturerInput !== undefined) {
       // 兼容未提交 pns 数组的旧客户端：PN 字段是当前快照，应替换旧有效 PN，不能继续追加。
       const nextCodes = getManufacturerCodes(barcodes || [], manufacturerInput);
@@ -1506,6 +1506,7 @@ async function updateProduct(ctx) {
             pnCode: code,
             isPrimary: index === 0
           })),
+          operatorName: getUserName(ctx),
           transaction
         });
       }

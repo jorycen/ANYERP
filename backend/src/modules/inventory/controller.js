@@ -2478,6 +2478,7 @@ async function snTraceLegacy(ctx) {
         id: t.log_id,
         type: t.action,
         label: t.action === 'modify_sn' ? 'SN修改' :
+               t.action === 'pn_updated' ? 'PN修改' :
                t.action === 'sale' ? '已销售' :
                t.action === 'inbound' ? '入库' :
                t.action === 'return' ? '退库' : t.action,

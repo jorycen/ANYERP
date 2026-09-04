@@ -1,5 +1,5 @@
 const { Op } = require('sequelize');
-const { Product, ProductPn } = require('../models');
+const { Product, ProductPn, ProductSn, SnLog } = require('../models');
 const { sequelize } = require('../config/database');
 const { generateUUID } = require('./index');
 const {
@@ -26,6 +26,48 @@ function createPnConflictError(code) {
 
 function isEffectivePn(row) {
   return Number(row?.status || 0) === 1 && Number(row?.is_deleted || 0) === 0;
+}
+
+const CURRENT_SN_STATUSES = ['in_stock', 'reserved', 'occupied'];
+
+async function syncCurrentSnPnCode({ productId, pnId, pnCode, operatorName = 'system', transaction = null }) {
+  if (!productId || !pnId || !isUsablePnCode(pnCode)) return 0;
+
+  const product = await Product.findByPk(productId, {
+    attributes: ['name'],
+    transaction
+  });
+  const snRows = await ProductSn.findAll({
+    where: {
+      product_id: productId,
+      pn_id: pnId,
+      status: { [Op.in]: CURRENT_SN_STATUSES },
+      is_deleted: 0
+    },
+    transaction,
+    lock: transaction?.LOCK?.UPDATE
+  });
+  let changed = 0;
+  for (const sn of snRows) {
+    const oldPnCode = String(sn.pn_code || '').trim();
+    if (oldPnCode === pnCode) continue;
+
+    await sn.update({ pn_code: pnCode }, { transaction });
+    await SnLog.create({
+      log_id: generateUUID(),
+      sn_id: sn.sn_id,
+      sn_code: sn.sn_code,
+      product_id: productId,
+      product_name: product?.name || '',
+      store_id: sn.store_id,
+      action: 'pn_updated',
+      remark: `商品PN由 ${oldPnCode || '空'} 修改为 ${pnCode}`,
+      create_user: operatorName || 'system',
+      create_time: new Date()
+    }, { transaction });
+    changed += 1;
+  }
+  return changed;
 }
 
 async function assertPnAvailableForNewProduct({ pnCode, transaction = null }) {
@@ -175,7 +217,7 @@ async function ensureProductPnsMaster({ productId, codes, transaction = null }) 
  * 以编辑页提交的 PN 列表为商品当前 PN 主数据快照。
  * 未出现在本次列表中的 PN 只做软删除，保留历史记录和原 pn_id。
  */
-async function syncProductPnsMaster({ productId, pns, transaction = null }) {
+async function syncProductPnsMaster({ productId, pns, operatorName = 'system', transaction = null }) {
   const productKey = String(productId || '');
   if (!productKey) return [];
   if (!Array.isArray(pns)) {
@@ -240,6 +282,7 @@ async function syncProductPnsMaster({ productId, pns, transaction = null }) {
       }), 0);
   const retainedIds = new Set();
   const synced = [];
+  const activeExistingRows = existingRows.filter(isEffectivePn);
 
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
@@ -247,7 +290,13 @@ async function syncProductPnsMaster({ productId, pns, transaction = null }) {
     if (entry.pnId && (!existingBySubmittedId || String(existingBySubmittedId.product_id) !== productKey)) {
       throw Object.assign(new Error(`PN记录 [${entry.pnId}] 不属于当前商品`), { status: 400 });
     }
-    const existing = existingBySubmittedId || existingByKey.get(entry.key);
+    const legacySingleSnPn = Number(product.need_sn) === 1 &&
+      entries.length === 1 &&
+      !entry.pnId &&
+      activeExistingRows.length === 1
+      ? activeExistingRows[0]
+      : null;
+    const existing = existingBySubmittedId || existingByKey.get(entry.key) || legacySingleSnPn;
     const sameCodeRows = await ProductPn.findAll({
       where: { [Op.and]: [pnCodeWhere(entry.code)] },
       transaction
@@ -268,6 +317,7 @@ async function syncProductPnsMaster({ productId, pns, transaction = null }) {
       is_primary: index === selectedPrimaryIndex ? 1 : 0
     };
 
+    const previousPnCode = String(existing?.pn_code || '').trim();
     const record = existing
       ? await existing.update(updateData, { transaction })
       : await ProductPn.create({
@@ -281,6 +331,15 @@ async function syncProductPnsMaster({ productId, pns, transaction = null }) {
         }, { transaction });
     retainedIds.add(record.pn_id);
     synced.push(record);
+    if (previousPnCode !== entry.code) {
+      await syncCurrentSnPnCode({
+        productId,
+        pnId: record.pn_id,
+        pnCode: entry.code,
+        operatorName,
+        transaction
+      });
+    }
   }
 
   const obsoleteIds = existingRows
@@ -312,5 +371,6 @@ module.exports = {
   ensureProductPnMaster,
   ensureProductPnsMaster,
   syncProductPnsMaster,
-  ensureSnPnId
+  ensureSnPnId,
+  syncCurrentSnPnCode
 };
