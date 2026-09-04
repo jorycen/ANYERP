@@ -124,6 +124,22 @@ test('调拨入库沿用出库明细SN并拒绝替换', () => {
   assert.equal(binding.sourceSnCodeMismatch, false);
 });
 
+test('调拨入库将历史跨门店仓位SN修复到调入门店销售仓', () => {
+  assert.equal(_test.resolveTransferInboundLocationId({
+    alreadyInDestination: true,
+    currentLocationId: 'OLD_STORE_SALES',
+    defaultLocationId: 'DESTINATION_SALES',
+    destinationLocationIds: new Set(['DESTINATION_SALES'])
+  }), 'DESTINATION_SALES');
+
+  assert.equal(_test.resolveTransferInboundLocationId({
+    alreadyInDestination: true,
+    currentLocationId: 'DESTINATION_DISPLAY',
+    defaultLocationId: 'DESTINATION_SALES',
+    destinationLocationIds: new Set(['DESTINATION_SALES', 'DESTINATION_DISPLAY'])
+  }), 'DESTINATION_DISPLAY');
+});
+
 test('调拨出库汇总同门店多个库存行并排除不可售库位', () => {
   const quantity = _test.getTransferableInventoryQuantity([
     { location_id: 'SALES_A', normal_qty: 2 },

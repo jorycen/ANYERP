@@ -3921,6 +3921,22 @@ function normalizeTransferRemark(value) {
   return String(value || '').trim().slice(0, 2000);
 }
 
+function resolveTransferInboundLocationId({
+  requestedLocationId = '',
+  defaultLocationId = '',
+  alreadyInDestination = false,
+  currentLocationId = '',
+  destinationLocationIds = new Set()
+} = {}) {
+  const requested = String(requestedLocationId || '').trim();
+  if (requested) return requested;
+
+  const current = String(currentLocationId || '').trim();
+  if (alreadyInDestination && current && destinationLocationIds.has(current)) return current;
+
+  return String(defaultLocationId || '').trim();
+}
+
 async function transfer(ctx) {
   const t = await sequelize.transaction();
   try {
@@ -4810,13 +4826,17 @@ async function confirmTransferIn(ctx) {
           transaction: t
         })
       : [];
-    const defaultTransferLocation = transferInbound
-      ? await Location.findOne({
-          where: { store_id: transfer.to_store_id, status: 1, type: 'normal_qty' },
-          attributes: ['location_id'],
-          transaction: t
-        })
-      : null;
+    // 即使是已完成调拨的历史单据，也要准备调入门店的有效销售仓，
+    // 以便修复旧数据中 SN 仍指向调出门店仓位的情况。
+    const destinationLocations = await Location.findAll({
+      where: { store_id: transfer.to_store_id, status: 1 },
+      attributes: ['location_id', 'type'],
+      transaction: t
+    });
+    const destinationLocationIds = new Set(
+      destinationLocations.map(location => String(location.location_id || '')).filter(Boolean)
+    );
+    const defaultTransferLocation = destinationLocations.find(location => location.type === 'normal_qty') || null;
 
     const requestedLocationIds = [...new Set(
       requestedItems
@@ -4857,7 +4877,8 @@ async function confirmTransferIn(ctx) {
       }
       const snId = snBinding.snId;
       const expectedSnCode = snBinding.snCode;
-      const locationId = requested.locationId || requested.location_id || defaultTransferLocation?.location_id || '';
+      const requestedLocationId = String(requested.locationId || requested.location_id || '').trim();
+      const locationId = requestedLocationId || defaultTransferLocation?.location_id || '';
       const quantity = Math.max(Number(item.quantity || requested.quantity || 1), 1);
 
       if (product && Number(product.need_sn) === 1 && !snId) {
@@ -4889,7 +4910,14 @@ async function confirmTransferIn(ctx) {
           ctx.throw(400, `SN ${sn.sn_code} 不属于本次调拨的调出门店`);
         }
 
-        const targetLocationId = locationId || (alreadyInDestination ? sn.location_id || '' : '');
+        const previousLocationId = String(sn.location_id || '').trim();
+        const targetLocationId = resolveTransferInboundLocationId({
+          requestedLocationId,
+          defaultLocationId: defaultTransferLocation?.location_id || '',
+          alreadyInDestination,
+          currentLocationId: previousLocationId,
+          destinationLocationIds
+        });
         await sn.update({
           store_id: transfer.to_store_id,
           status: 'in_stock',
@@ -4923,6 +4951,16 @@ async function confirmTransferIn(ctx) {
             sn_code: sn.sn_code,
             location_id: targetLocationId || null
           }, { transaction: t });
+        }
+
+        // 历史调拨可能已在目标门店，但 SN 仍指向原门店仓位；
+        // 仅更新 SN 不会重建 T_INVENTORY，需要同步物化库存投影。
+        if (alreadyInDestination && previousLocationId !== targetLocationId) {
+          await syncSerializedInventoryBalance({
+            productId: item.product_id,
+            storeId: transfer.to_store_id,
+            transaction: t
+          });
         }
       }
 
@@ -6059,6 +6097,7 @@ module.exports = {
     buildTransferVisibilityWhere,
     isDistributorAccount,
     isTransferApplicant,
+    resolveTransferInboundLocationId,
     transferQuantitySummary,
     visibleTransferItems,
     getPendingTransferItems,
