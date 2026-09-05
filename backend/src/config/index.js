@@ -118,6 +118,27 @@ module.exports = {
       .filter(Boolean)
   },
 
+  // 重庆光环（香港置地）订单上报。非敏感参数沿用旧配置，凭证从环境变量读取。
+  guanghuan: {
+    storeId: process.env.GUANGHUAN_STORE_ID || 'D0218911',
+    mallCode: process.env.GUANGHUAN_MALL_CODE || 'GHL419',
+    storeCode: process.env.GUANGHUAN_STORE_CODE || 'GHL419',
+    tillId: process.env.GUANGHUAN_TILL_ID || '01',
+    checkCode: process.env.GUANGHUAN_CHECK_CODE || '',
+    appSubId: process.env.GUANGHUAN_APP_SUB_ID || '100001KKM',
+    appToken: process.env.GUANGHUAN_APP_TOKEN || '',
+    apiId: process.env.GUANGHUAN_API_ID || 'kukumao.orderCollect',
+    apiVersion: process.env.GUANGHUAN_API_VERSION || '1.0.0',
+    signMethod: process.env.GUANGHUAN_SIGN_METHOD || 'md5',
+    format: process.env.GUANGHUAN_FORMAT || 'json',
+    partnerId: process.env.GUANGHUAN_PARTNER_ID || '100001',
+    sysId: process.env.GUANGHUAN_SYS_ID || '69b911cfb1816aaa6c8d8ab4',
+    appPubId: process.env.GUANGHUAN_APP_PUB_ID || '10001',
+    signKey: process.env.GUANGHUAN_SIGN_KEY || '',
+    baseUrl: process.env.GUANGHUAN_BASE_URL || 'https://cdghkkm.hklring.com:10001/posbox/crland',
+    timeoutMs: parsePositiveInteger(process.env.GUANGHUAN_TIMEOUT_MS, 30000)
+  },
+
   // 分页配置
   page: {
     defaultSize: 20,

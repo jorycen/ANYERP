@@ -56,6 +56,8 @@ const { isStoreManagerAccount, isStoreScopedAccount, isMallReportViewer } = requ
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { assertActiveProducts } = require('../../utils/activeProduct');
 const { syncSerializedInventoryBalance } = require('../inventory/serializedInventoryBalance');
+const { guanghuan: guanghuanConfig } = require('../../config');
+const guanghuanClient = require('./guanghuanClient');
 
 async function isRentalDemoSn(sn, transaction = null) {
   if (sn?.inventory_type === 'rental_demo_qty') return true;
@@ -2677,39 +2679,85 @@ async function detail(ctx) {
   ctx.body = result;
 }
 
-/**
- * 将已归档订单标记为已上报商场。
- * 上报状态由后端统一落库，查询账号只读取该状态为 reported 的订单。
- */
-async function reportToMall(ctx) {
-  const user = ctx.state.user;
-  if (!isStoreManagerAccount(getUserRoles(user))) {
-    ctx.throw(403, '只有店长账号可以上报商场');
-  }
+const mallReportInflight = new Map();
 
-  const order = await Order.findByPk(ctx.params.orderId);
-  if (!order) ctx.throw(404, '订单不存在');
-  await assertSalesOrderVisible(order, user);
+async function executeMallReport(order, user) {
   if (!['已归档', 'completed', 'archived'].includes(String(order.order_status || ''))) {
-    ctx.throw(400, '只有已归档订单可以上报商场');
+    const error = new Error('只有已归档订单可以上报商场');
+    error.status = 400;
+    throw error;
+  }
+  // 同时具备状态和时间才代表后端已经收到商场成功响应。旧数据只有状态时允许重新上报。
+  if (order.mall_report_status === 'reported' && order.mall_report_time) {
+    return { orderNo: order.order_no, status: 'reported', reportTime: order.mall_report_time, repeated: true };
   }
 
-  if (order.mall_report_status === 'reported') {
-    ctx.body = { code: 0, message: '订单已上报商场', data: { orderNo: order.order_no, status: 'reported' } };
-    return;
+  const previousMallStatus = order.mall_report_status || '';
+  let mallResult = null;
+  if (String(order.store_id) === String(guanghuanConfig.storeId)) {
+    const fullOrder = await Order.findByPk(order.order_id, {
+      include: [{ model: OrderItem }, { model: OrderPayment }]
+    });
+    if (!fullOrder) {
+      const error = new Error('订单不存在');
+      error.status = 404;
+      throw error;
+    }
+    try {
+      mallResult = await guanghuanClient.reportOrder(fullOrder);
+      console.info(`[GuanghuanSync] order=${order.order_no} code=${mallResult.code}`);
+    } catch (error) {
+      console.error(`[GuanghuanSync] order=${order.order_no} failed=${error.code || error.message}`);
+      error.status = error.status || 502;
+      throw error;
+    }
   }
 
   const reportTime = new Date();
-  await order.update({
-    mall_report_status: 'reported',
-    mall_report_time: reportTime,
-    mall_report_staff_id: user.staffId || null,
-    mall_report_staff_name: user.name || user.phone || ''
+  await sequelize.transaction(async transaction => {
+    await order.update({
+      mall_report_status: 'reported',
+      mall_report_time: reportTime,
+      mall_report_staff_id: user.staffId || null,
+      mall_report_staff_name: user.name || user.phone || ''
+    }, { transaction });
+    await recordBusinessAction({
+      businessType: 'sales_order',
+      businessId: order.order_id,
+      businessNo: order.order_no,
+      action: 'mall_reported',
+      fromStatus: previousMallStatus,
+      toStatus: 'reported',
+      user,
+      comment: mallResult ? `重庆光环接口返回成功（${mallResult.code}）` : '订单已标记为商场上报',
+      transaction
+    });
   });
+  return { orderNo: order.order_no, status: 'reported', reportTime };
+}
+
+async function syncOrderToMall(order, user) {
+  const key = String(order.order_id);
+  if (mallReportInflight.has(key)) return mallReportInflight.get(key);
+  const running = executeMallReport(order, user).finally(() => mallReportInflight.delete(key));
+  mallReportInflight.set(key, running);
+  return running;
+}
+
+/**
+ * 上报成功后才写入 reported；重庆光环门店会先调用商场接口。
+ */
+async function reportToMall(ctx) {
+  const user = ctx.state.user;
+  if (!isStoreManagerAccount(getUserRoles(user))) ctx.throw(403, '只有店长账号可以上报商场');
+  const order = await Order.findByPk(ctx.params.orderId);
+  if (!order) ctx.throw(404, '订单不存在');
+  await assertSalesOrderVisible(order, user);
+  const result = await syncOrderToMall(order, user);
   ctx.body = {
     code: 0,
-    message: '订单上报商场成功',
-    data: { orderNo: order.order_no, status: 'reported', reportTime }
+    message: result.repeated ? '订单已上报商场' : '订单上报商场成功',
+    data: result
   };
 }
 
@@ -2916,6 +2964,22 @@ async function update(ctx) {
   }
 
   await assertSalesOrderVisible(order, ctx.state.user);
+  const requestedMallStatus = data.mall_report_status ?? data.mallReportStatus;
+  const hasMallReportField = requestedMallStatus !== undefined
+    || data.mall_report_time !== undefined || data.mallReportTime !== undefined
+    || data.mall_report_staff_id !== undefined || data.mallReportStaffId !== undefined
+    || data.mall_report_staff_name !== undefined || data.mallReportStaffName !== undefined;
+  if (hasMallReportField) {
+    if (requestedMallStatus !== 'reported') ctx.throw(400, '商场上报状态不能通过订单编辑修改');
+    if (!isStoreManagerAccount(getUserRoles(ctx.state.user))) ctx.throw(403, '只有店长账号可以上报商场');
+    const result = await syncOrderToMall(order, ctx.state.user);
+    ctx.body = {
+      code: 0,
+      message: result.repeated ? '订单已上报商场' : '订单上报商场成功',
+      data: result
+    };
+    return;
+  }
   const previousRemark = order.remark || '';
   if (isSalesApprovalPendingStatus(order.order_status)) {
     ctx.throw(400, '待审批订单不能直接修改或归档，请先审批或拒绝');
