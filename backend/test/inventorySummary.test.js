@@ -214,8 +214,8 @@ test('inventory export expands one product into store rows and keeps store-speci
   }]);
 
   assert.deepEqual(rows.map(row => [row.store_name, row.normal_qty, row.total_stock_qty]), [
-    ['成都门店', 3, 5],
-    ['重庆门店', 2, 5]
+    ['成都门店', 3, 6],
+    ['重庆门店', 2, 6]
   ]);
 });
 
@@ -247,7 +247,7 @@ test('inventory summary export keeps only in-stock target categories and sorts t
   ]);
 });
 
-test('导出当前门店库存合计五类仓库，排除样品仓和资源分类重复数量', () => {
+test('导出门店及总库存合计六类仓库，不重复累加资源分类数量', () => {
   const rows = _test.buildStoreInventoryExportRows([{
     total_stock_qty: 10,
     store_stock_info: [
@@ -258,11 +258,30 @@ test('导出当前门店库存合计五类仓库，排除样品仓和资源分�
       { store_id: 'C', demo_qty: 9 }
     ]
   }]);
-  assert.equal(rows.find(row => row.store_id === 'A').current_store_stock_qty, 27);
+  assert.equal(rows.find(row => row.store_id === 'A').current_store_stock_qty, 127);
   assert.equal(rows.find(row => row.store_id === 'A').normal_qty, 5);
   assert.equal(rows.find(row => row.store_id === 'A').demo_qty, 100);
   assert.equal(rows.find(row => row.store_id === 'B').current_store_stock_qty, 5);
-  assert.equal(rows.find(row => row.store_id === 'C').current_store_stock_qty, 0);
+  assert.equal(rows.find(row => row.store_id === 'C').current_store_stock_qty, 9);
+  for (const row of rows) {
+    assert.equal(row.total_stock_qty, 141);
+    assert.equal(row.current_store_stock_qty + row.other_store_stock_qty, row.total_stock_qty);
+  }
+});
+
+test('83VX0025CD鹏瑞利销售2台样品1台，单店筛选合计3台', () => {
+  const [row] = _test.buildStoreInventoryExportRows([{
+    manufacturer_code: '83VX0025CD', total_stock_qty: 2,
+    store_stock_info: [
+      { store_id: 'D0218262', store_name: '青羊鹏瑞利', normal_qty: 2, full_resource_qty: 2 },
+      { store_id: 'D0218262', store_name: '青羊鹏瑞利', demo_qty: 1 }
+    ]
+  }]);
+  assert.equal(row.normal_qty, 2);
+  assert.equal(row.demo_qty, 1);
+  assert.equal(row.current_store_stock_qty, 3);
+  assert.equal(row.total_stock_qty, 3);
+  assert.equal(row.other_store_stock_qty, 0);
 });
 
 test('inventory summary uses serialized stock projection for SN products', () => {

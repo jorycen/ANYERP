@@ -1426,8 +1426,10 @@ function buildStoreInventoryExportRows(productRows) {
 
     const storeRows = [...storeMap.values()];
     if (storeRows.length === 0) return;
+    const storeTotal = store => STORE_EXPORT_QUANTITY_FIELDS.reduce((sum, field) => sum + store[field], 0);
+    const totalStock = storeRows.reduce((sum, store) => sum + storeTotal(store), 0);
     storeRows.forEach(store => {
-      const totalStock = Number(productRow.total_stock_qty || 0);
+      const currentStock = storeTotal(store);
       rows.push({
         ...productRow,
         store_id: store.store_id,
@@ -1441,9 +1443,8 @@ function buildStoreInventoryExportRows(productRows) {
         unsellable_qty: store.unsellable_qty,
         pending_qty: store.pending_qty,
         rental_demo_qty: store.rental_demo_qty,
-        current_store_stock_qty: store.normal_qty + store.display_qty + store.unsellable_qty
-          + store.pending_qty + store.rental_demo_qty,
-        other_store_stock_qty: Math.max(totalStock - store.normal_qty, 0),
+        current_store_stock_qty: currentStock,
+        other_store_stock_qty: totalStock - currentStock,
         total_stock_qty: totalStock,
         _store_product_index: productIndex
       });
