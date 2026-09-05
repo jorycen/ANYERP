@@ -247,6 +247,24 @@ test('inventory summary export keeps only in-stock target categories and sorts t
   ]);
 });
 
+test('导出当前门店库存合计五类仓库，排除样品仓和资源分类重复数量', () => {
+  const rows = _test.buildStoreInventoryExportRows([{
+    total_stock_qty: 10,
+    store_stock_info: [
+      { store_id: 'A', normal_qty: '2', full_resource_qty: 2, demo_qty: 100 },
+      { store_id: 'A', normal_qty: 3, subsidy_only_qty: 3, display_qty: '4' },
+      { store_id: 'A', unsellable_qty: 5, pending_qty: 6, rental_demo_qty: 7 },
+      { store_id: 'B', normal_qty: 5 },
+      { store_id: 'C', demo_qty: 9 }
+    ]
+  }]);
+  assert.equal(rows.find(row => row.store_id === 'A').current_store_stock_qty, 27);
+  assert.equal(rows.find(row => row.store_id === 'A').normal_qty, 5);
+  assert.equal(rows.find(row => row.store_id === 'A').demo_qty, 100);
+  assert.equal(rows.find(row => row.store_id === 'B').current_store_stock_qty, 5);
+  assert.equal(rows.find(row => row.store_id === 'C').current_store_stock_qty, 0);
+});
+
 test('inventory summary uses serialized stock projection for SN products', () => {
   assert.equal(_test.getSummaryNormalQty({ need_sn: 1 }, { normal_qty: 10 }, { total: 7 }), 7);
   assert.equal(_test.getSummaryNormalQty({ need_sn: 0 }, { normal_qty: 10 }, { total: 7 }), 10);

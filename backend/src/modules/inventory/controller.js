@@ -1441,7 +1441,8 @@ function buildStoreInventoryExportRows(productRows) {
         unsellable_qty: store.unsellable_qty,
         pending_qty: store.pending_qty,
         rental_demo_qty: store.rental_demo_qty,
-        current_store_stock_qty: store.normal_qty,
+        current_store_stock_qty: store.normal_qty + store.display_qty + store.unsellable_qty
+          + store.pending_qty + store.rental_demo_qty,
         other_store_stock_qty: Math.max(totalStock - store.normal_qty, 0),
         total_stock_qty: totalStock,
         _store_product_index: productIndex
@@ -1816,7 +1817,7 @@ async function getList(ctx) {
         商品编码: row.product_code || '',
         厂商编码: row.manufacturer_code || '',
         销售定价: Number(row.standard_price || 0),
-        现有库存: Number(row.normal_qty || 0),
+        销售仓: Number(row.normal_qty || 0),
         正规货: Number(row.regular_qty || 0),
         国补货: Number(row.subsidy_qty || 0),
         纯二手货: Number(row.second_qty || 0),
@@ -1833,7 +1834,7 @@ async function getList(ctx) {
       }));
       sendExcel(ctx, data, [
         '门店', '类别', '商品名称', '产品配置', '商品编码', '厂商编码', '销售定价',
-        '现有库存', '正规货', '国补货', '纯二手货', '铺货仓库存', '样品仓库存',
+        '销售仓', '正规货', '国补货', '纯二手货', '铺货仓库存', '样品仓库存',
         '不可售库存', '占用仓库存', '租赁样机仓库存', '当前门店库存', '其他门店库存', '总库存',
         '近7天销量', '近30天销量'
       ], `库存汇总_${new Date().toISOString().slice(0, 10)}.xlsx`, '库存汇总');
