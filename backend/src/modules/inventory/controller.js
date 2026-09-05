@@ -18,6 +18,7 @@ const { generateInboundNo, generateOutboundNo, generateTransferNo, generateUUID,
 const { getUserRoles } = require('../../middleware/permission');
 const { initializeSnResourceRightsFromInbound, summariesForSns } = require('./resourceRights');
 const { ensureStandardLocationsForStores } = require('../../utils/standardLocations');
+const { resolveInventoryWriteLocation } = require('../../utils/inventoryLocation');
 const { sendExcel } = require('../../utils/excelExport');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { assertTransferStoreScope, isTransferScope, transferRegionKeys } = require('../../utils/transferScope');
@@ -3125,7 +3126,9 @@ async function getSnTraceInboundDetail(ctx) {
  * @param {object} transaction Sequelize事务
  */
 async function updateInventory(productId, storeId, field, delta, transaction, locationId = '') {
-  const normalizedLocationId = locationId || '';
+  const normalizedLocationId = delta > 0
+    ? await resolveInventoryWriteLocation(Location, { storeId, field, locationId, transaction })
+    : (locationId || '');
 
   if (delta < 0 && !normalizedLocationId) {
     let remaining = Math.abs(delta);

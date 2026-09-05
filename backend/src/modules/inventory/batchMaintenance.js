@@ -8,6 +8,7 @@ const {
 const { generateUUID, generateBatchNo, paginate, formatPaginatedResult } = require('../../utils');
 const { assertSingleSnProductPn } = require('../../utils/productPn');
 const { ensureProductPnMaster } = require('../../utils/productPnMaster');
+const { resolveInventoryWriteLocation } = require('../../utils/inventoryLocation');
 const { getUserRoles } = require('../../middleware/permission');
 const {
   findResourceRule, calculatePreSaleRuleAmount
@@ -241,7 +242,11 @@ async function inventoryQty(productId, storeId, inventoryType, locationId, trans
 }
 
 async function updateInventoryQty(productId, storeId, inventoryType, delta, transaction, locationId = '', context = {}) {
-  const normalizedLocationId = locationId || '';
+  const normalizedLocationId = delta > 0
+    ? await resolveInventoryWriteLocation(Location, {
+      storeId, field: inventoryType, locationId, transaction
+    })
+    : (locationId || '');
   let row = await Inventory.findOne({
     where: { product_id: productId, store_id: storeId, location_id: normalizedLocationId },
     transaction,
