@@ -1,7 +1,7 @@
 <template>
   <el-sub-menu v-if="hasChildren" :index="menu.menuCode">
     <template #title>
-      <el-icon><component :is="iconMap[menu.icon] || House" /></el-icon>
+      <el-icon v-if="menu.icon"><component :is="iconMap[menu.icon]" /></el-icon>
       <span>{{ menu.name }}</span>
     </template>
     <SidebarMenuItem
@@ -12,15 +12,13 @@
     />
   </el-sub-menu>
   <el-menu-item v-else :index="menu.path || menu.menuCode">
-    <el-icon><component :is="iconMap[menu.icon] || House" /></el-icon>
+    <el-icon v-if="menu.icon"><component :is="iconMap[menu.icon]" /></el-icon>
     <span>{{ menu.name }}</span>
   </el-menu-item>
 </template>
 
 <script setup>
 import { computed } from 'vue'
-import { House } from '@element-plus/icons-vue'
-
 defineOptions({ name: 'SidebarMenuItem' })
 
 const props = defineProps({

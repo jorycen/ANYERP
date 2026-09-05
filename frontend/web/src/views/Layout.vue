@@ -1,13 +1,19 @@
 <template>
-  <el-container class="layout-container">
-    <el-aside width="200px" class="sidebar">
+  <el-container class="layout-container" :class="{ 'is-sidebar-collapsed': sidebarCollapsed }">
+    <el-aside :width="sidebarWidth" class="sidebar">
       <div class="logo">
-        <h2>ANY-ERP</h2>
+        <span class="logo-mark">A</span>
+        <div v-if="!sidebarCollapsed" class="logo-copy">
+          <strong>ANY-ERP</strong>
+          <span>连锁经营管理</span>
+        </div>
       </div>
       <el-menu
         :default-active="activeMenu"
         :default-openeds="openedMenus"
         class="sidebar-menu"
+        :collapse="sidebarCollapsed"
+        :collapse-transition="false"
         :router="true"
       >
         <SidebarMenuItem
@@ -22,7 +28,13 @@
     <el-container>
       <el-header class="header">
         <div class="header-left">
-          <span class="page-title">{{ pageTitle }}</span>
+          <button class="sidebar-toggle" type="button" :aria-label="sidebarCollapsed ? '展开菜单' : '收起菜单'" @click="sidebarCollapsed = !sidebarCollapsed">
+            <el-icon><Expand v-if="sidebarCollapsed" /><Fold v-else /></el-icon>
+          </button>
+          <div class="title-stack">
+            <span class="title-context">ANY-ERP / 工作台</span>
+            <span class="page-title">{{ pageTitle }}</span>
+          </div>
         </div>
         <div class="header-right">
           <span class="role-tag">
@@ -30,8 +42,12 @@
           </span>
           <el-dropdown @command="handleCommand">
             <span class="user-info">
-              <el-icon><User /></el-icon>
-              {{ userName }}
+              <span class="user-avatar">{{ userInitial }}</span>
+              <span class="user-copy">
+                <strong>{{ userName }}</strong>
+                <small>账号设置</small>
+              </span>
+              <el-icon class="user-chevron"><ArrowDown /></el-icon>
             </span>
             <template #dropdown>
               <el-dropdown-menu>
@@ -65,7 +81,8 @@
         <el-form-item label="旧密码" prop="oldPassword">
           <el-input
             v-model="passwordForm.oldPassword"
-            type="text"
+            type="password"
+            show-password
             autocomplete="current-password"
             placeholder="请输入旧密码"
             @keyup.enter="submitPasswordChange"
@@ -74,7 +91,8 @@
         <el-form-item label="新密码" prop="newPassword">
           <el-input
             v-model="passwordForm.newPassword"
-            type="text"
+            type="password"
+            show-password
             autocomplete="new-password"
             placeholder="请输入至少 6 位的新密码"
           />
@@ -82,7 +100,8 @@
         <el-form-item label="确认密码" prop="confirmPassword">
           <el-input
             v-model="passwordForm.confirmPassword"
-            type="text"
+            type="password"
+            show-password
             autocomplete="new-password"
             placeholder="请再次输入新密码"
             @keyup.enter="submitPasswordChange"
@@ -108,7 +127,7 @@ import SidebarMenuItem from '../components/SidebarMenuItem.vue'
 import { isSalesQueryOnly } from '../utils/user'
 import {
   House, Sell, Box, ShoppingCart, Money, Goods,
-  Shop, DataAnalysis, Setting, User, Checked
+  Shop, DataAnalysis, Setting, User, Checked, Fold, Expand, ArrowDown
 } from '@element-plus/icons-vue'
 
 const router = useRouter()
@@ -118,6 +137,7 @@ const queryOnly = isSalesQueryOnly()
 const userName = ref('')
 const roleName = ref('')
 const menuTree = ref([])
+const sidebarCollapsed = ref(false)
 const passwordDialogVisible = ref(false)
 const passwordSubmitting = ref(false)
 const passwordFormRef = ref(null)
@@ -217,6 +237,8 @@ const pageTitles = {
 }
 
 const pageTitle = computed(() => pageTitles[route.path] || '')
+const sidebarWidth = computed(() => sidebarCollapsed.value ? '72px' : '224px')
+const userInitial = computed(() => String(userName.value || 'A').trim().slice(0, 1).toUpperCase())
 
 onMounted(async () => {
   let userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
@@ -376,6 +398,8 @@ async function submitPasswordChange() {
 <style scoped>
 .layout-container {
   height: 100vh;
+  min-width: 1024px;
+  background: var(--erp-canvas);
 }
 
 .layout-container > .el-container {
@@ -383,8 +407,12 @@ async function submitPasswordChange() {
 }
 
 .sidebar {
-  background: #304156;
+  position: relative;
+  z-index: 2;
+  background: var(--erp-sidebar);
   overflow-y: auto;
+  overflow-x: hidden;
+  transition: width .2s ease;
 }
 
 .sidebar-menu {
@@ -392,33 +420,88 @@ async function submitPasswordChange() {
 }
 
 .sidebar-menu:not(.el-menu--collapse) {
-  width: 200px;
+  width: 224px;
 }
 
 .logo {
-  height: 60px;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  height: 72px;
   display: flex;
   align-items: center;
-  justify-content: center;
-  background: #243444;
+  gap: 11px;
+  padding: 0 18px;
+  background: var(--erp-sidebar);
+  border-bottom: 1px solid rgba(255, 255, 255, .08);
 }
 
-.logo h2 {
+.logo-mark {
+  display: inline-flex;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
   color: #fff;
+  background: var(--erp-primary);
   font-size: 18px;
+  font-weight: 750;
 }
+
+.logo-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.logo-copy strong { color: #fff; font-size: 16px; letter-spacing: .02em; }
+.logo-copy span { margin-top: 4px; color: #98a2b3; font-size: 11px; white-space: nowrap; }
+
+.is-sidebar-collapsed .logo { justify-content: center; padding: 0; }
 
 .header {
+  height: 72px;
+  padding: 0 24px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: #fff;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+  background: rgba(255, 255, 255, .96);
+  border-bottom: 1px solid var(--erp-border-soft);
+  box-shadow: none;
 }
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.sidebar-toggle {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--erp-border);
+  border-radius: 8px;
+  color: #667085;
+  background: #fff;
+  cursor: pointer;
+  transition: .15s ease;
+}
+
+.sidebar-toggle:hover { color: var(--erp-primary); border-color: #b9cdfd; background: var(--erp-primary-soft); }
+
+.title-stack { display: flex; flex-direction: column; }
+.title-context { color: #98a2b3; font-size: 11px; line-height: 16px; }
+.page-title { color: var(--erp-text); font-size: 18px; font-weight: 650; line-height: 26px; }
 
 .main-content {
   min-width: 0;
+  padding: 20px 24px 28px;
   overflow: auto;
+  background: var(--erp-canvas);
 }
 
 .header-right {
@@ -431,51 +514,77 @@ async function submitPasswordChange() {
   font-size: 12px;
 }
 
-.page-title {
-  font-size: 16px;
-  font-weight: 500;
-}
-
 .user-info {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 9px;
+  min-width: 126px;
+  padding: 6px 9px 6px 7px;
+  border-radius: 9px;
   cursor: pointer;
+  outline: none;
+  transition: background .15s ease;
 }
 
-.main-content {
-  background: #f5f7fa;
-  padding: 20px;
+.user-info:hover { background: #f7f9fc; }
+.user-avatar { display: inline-flex; width: 32px; height: 32px; align-items: center; justify-content: center; border-radius: 9px; color: #fff; background: #344054; font-size: 13px; font-weight: 650; }
+.user-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; line-height: 1.2; }
+.user-copy strong { max-width: 110px; overflow: hidden; color: #344054; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.user-copy small { margin-top: 3px; color: #98a2b3; font-size: 10px; }
+.user-chevron { color: #98a2b3; font-size: 12px; }
+
+@media (max-width: 1280px) {
+  .header { padding-inline: 18px; }
+  .main-content { padding: 16px 18px 24px; }
+  .role-tag { display: none; }
 }
 </style>
 
 <style>
 .sidebar-menu {
-  background-color: #304156 !important;
+  padding: 12px 10px 20px;
+  background-color: var(--erp-sidebar) !important;
 }
 
+.sidebar-menu.el-menu--collapse { width: 72px; padding-inline: 8px; }
+.sidebar-menu.el-menu--collapse .el-menu-item,
+.sidebar-menu.el-menu--collapse .el-sub-menu__title { padding: 0 16px !important; }
+
 .sidebar-menu .el-menu-item {
-  color: #bfcbd9;
-  background-color: #304156 !important;
+  height: 44px;
+  margin: 3px 0;
+  border-radius: 8px;
+  color: #b7c0ce;
+  background-color: transparent !important;
+  font-size: 13px;
 }
 
 .sidebar-menu .el-menu-item:hover {
-  background-color: #263445 !important;
-  color: #409eff !important;
+  background-color: var(--erp-sidebar-hover) !important;
+  color: #fff !important;
 }
 
 .sidebar-menu .el-menu-item.is-active {
-  background-color: #263445 !important;
-  color: #409eff !important;
+  background-color: var(--erp-primary) !important;
+  color: #fff !important;
+  font-weight: 600;
 }
 
 .sidebar-menu .el-sub-menu__title {
-  color: #bfcbd9 !important;
-  background-color: #304156 !important;
+  height: 44px;
+  margin: 3px 0;
+  border-radius: 8px;
+  color: #b7c0ce !important;
+  background-color: transparent !important;
+  font-size: 13px;
 }
 
 .sidebar-menu .el-sub-menu__title:hover {
-  background-color: #263445 !important;
-  color: #409eff !important;
+  background-color: var(--erp-sidebar-hover) !important;
+  color: #fff !important;
 }
+
+.sidebar-menu .el-menu { background: transparent !important; }
+.sidebar-menu .el-sub-menu .el-menu-item { padding-left: 48px !important; color: #98a2b3; }
+.sidebar-menu .el-icon { font-size: 17px; }
 </style>
