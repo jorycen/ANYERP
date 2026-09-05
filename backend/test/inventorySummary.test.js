@@ -3,6 +3,32 @@ const assert = require('node:assert/strict');
 const { _test } = require('../src/modules/inventory/controller');
 const salesController = require('../src/modules/sales/controller');
 
+test('SN销售仓明细保留非销售仓数量，不重复计入销售余额', () => {
+  const fields = ['display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty', 'rental_demo_qty'];
+  const inventory = [
+    { store_id: 'A', location_id: 'sale', normal_qty: 99 },
+    ...fields.map(field => ({ store_id: 'A', location_id: field, [field]: 1, normal_qty: 0 }))
+  ];
+  const rows = _test.mergeSnSalesStockBreakdown(inventory,
+    [{ store_id: 'A', location_id: 'sale', normal_qty: 24, full_resource_qty: 24 }]);
+  assert.equal(rows.reduce((sum, row) => sum + Number(row.normal_qty || 0), 0), 24);
+  for (const field of fields) {
+    assert.equal(rows.reduce((sum, row) => sum + Number(row[field] || 0), 0), 1);
+  }
+  assert.equal(inventory[0].normal_qty, 99);
+});
+
+test('没有销售SN时保留样品明细并清除陈旧销售明细', () => {
+  const rows = _test.mergeSnSalesStockBreakdown([
+    { store_id: 'A', location_id: '', normal_qty: 9, full_resource_qty: 9, demo_qty: 1 },
+    { store_id: 'A', location_id: 'sale', normal_qty: 10 }
+  ], []);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].demo_qty, 1);
+  assert.equal(rows[0].normal_qty, 0);
+  assert.equal(rows[0].full_resource_qty, 0);
+});
+
 test('销售退单库存控制器可以调用正式定金释放函数', () => {
   assert.equal(typeof salesController.releaseDepositRedemptionForOrder, 'function');
 });

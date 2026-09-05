@@ -1469,6 +1469,17 @@ function buildInventorySummaryExportRows(productRows, primaryPnMap = new Map()) 
     }));
 }
 
+function mergeSnSalesStockBreakdown(inventoryRows, snSalesRows) {
+  const nonSalesRows = inventoryRows.map(row => ({
+    ...row,
+    normal_qty: 0,
+    full_resource_qty: 0,
+    subsidy_only_qty: 0,
+    no_subsidy_qty: 0
+  })).filter(row => STORE_EXPORT_QUANTITY_FIELDS.slice(1).some(field => Number(row[field] || 0) > 0));
+  return [...snSalesRows, ...nonSalesRows];
+}
+
 /**
  * 库存聚合列表 - 按商品汇总，显示5种库存数量
  */
@@ -1701,11 +1712,12 @@ async function getList(ctx) {
         snLocationMap[sn.product_id][key].no_subsidy_qty += resourceQuantity.no_subsidy_qty;
       }
 
-      for (const [productId, rowsByLocation] of Object.entries(snLocationMap)) {
-        const rows = Object.values(rowsByLocation);
-        if (rows.length > 0) {
-          storeStockMap[productId] = rows;
-        }
+      for (const product of products) {
+        if (Number(product.need_sn) !== 1) continue;
+        storeStockMap[product.product_id] = mergeSnSalesStockBreakdown(
+          storeStockMap[product.product_id] || [],
+          Object.values(snLocationMap[product.product_id] || {})
+        );
       }
     }
 
@@ -6089,6 +6101,7 @@ module.exports = {
   adjustSnLocation,
   snTrace,
   _test: {
+    mergeSnSalesStockBreakdown,
     calculateStockAgeDays,
     resolveOriginalInboundTime,
     resolveEffectiveSalePrice,
