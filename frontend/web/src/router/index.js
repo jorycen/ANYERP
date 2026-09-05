@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { isSalesQueryOnly } from '../utils/user'
 
 const routes = [
   {
@@ -325,6 +326,11 @@ router.beforeEach((to, from, next) => {
 
   if (to.path === '/login' && token) {
     next('/')
+    return
+  }
+
+  if (token && isSalesQueryOnly(userInfo) && to.path !== '/sales/order') {
+    next('/sales/order')
     return
   }
 

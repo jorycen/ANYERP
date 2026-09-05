@@ -105,6 +105,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import SidebarMenuItem from '../components/SidebarMenuItem.vue'
+import { isSalesQueryOnly } from '../utils/user'
 import {
   House, Sell, Box, ShoppingCart, Money, Goods,
   Shop, DataAnalysis, Setting, User, Checked
@@ -243,9 +244,13 @@ onMounted(async () => {
     window.location.href = '/login'
     return
   }
-  userName.value = userInfo.name || '管理员'
-  roleName.value = userInfo.roleName || ''
-  menuTree.value = buildMenuTree(menus)
+  userName.value = isSalesQueryOnly(userInfo) ? String(userInfo.name || '用户').replace(/[（(]商场查询[）)]/g, '') : (userInfo.name || '管理员')
+  roleName.value = isSalesQueryOnly(userInfo) ? '门店查询' : (userInfo.roleName || '')
+  menuTree.value = isSalesQueryOnly(userInfo)
+    ? [{ menuCode: 'sales', name: '销售管理', icon: 'Sell', children: [
+      { menuCode: 'sales_order', name: '业绩查询', path: '/sales/order' }
+    ] }]
+    : buildMenuTree(menus)
 })
 
 function getDefaultMenus() {

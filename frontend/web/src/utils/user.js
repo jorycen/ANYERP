@@ -20,6 +20,11 @@ export function getRoleCodes() {
     .filter(Boolean)
 }
 
+export function isSalesQueryOnly(user = getUserInfo()) {
+  const roles = Array.isArray(user.roles) && user.roles.length ? user.roles : String(user.roleCode || '').split(',')
+  return roles.some(role => String(role).trim().toLowerCase() === 'mall_report_viewer')
+}
+
 export function getStoreId() {
   const roles = getRoleCodes()
   const storeOnlyRoles = new Set(['clerk', 'staff', 'manager', 'store_manager', 'store_admin'])

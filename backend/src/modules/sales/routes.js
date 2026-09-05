@@ -124,4 +124,17 @@ router.post('/:orderId/reject', reject);
 router.post('/:orderId/return-request', enforceStoreOwnership, requestSalesReturn);
 router.post('/:orderId/recalculate-settlement-cost', recalculateSettlementCost);
 
+// 按实际路由处理器白名单保护查询角色，避免 /stats、/deposits 等
+// 单段静态路径被通用中间件误认为订单 ID。
+const { isMallReportViewer } = require('../../utils/storePermissions');
+for (const layer of router.stack) {
+  if (layer.stack.includes(list) || layer.stack.includes(detail)) continue;
+  layer.stack.unshift(async (ctx, next) => {
+    if (isMallReportViewer(ctx.state.user?.roles || ctx.state.user?.roleCode)) {
+      ctx.throw(403, '当前账号仅支持查询');
+    }
+    return next();
+  });
+}
+
 module.exports = router;

@@ -353,7 +353,7 @@ function buildSalesOrderListOrder() {
  */
 async function resolveSalesOrderStoreIds(user = {}) {
   const roles = getUserRoles(user);
-  if (isStoreScopedAccount(roles)) {
+  if (isMallReportViewer(roles) || isStoreScopedAccount(roles)) {
     return [...new Set((Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds : [])
       .map(value => String(value || '').trim())
       .filter(Boolean))];
@@ -498,6 +498,19 @@ async function list(ctx) {
   const rows = normalizedRows.slice(offset, offset + Number(pageSize));
 
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count: normalizedRows.length });
+  if (isMallReportViewer(getUserRoles(user))) {
+    // 与列表使用同一批过滤后的订单，汇总不受翻页影响。
+    ctx.body.summary = {
+      orderCount: normalizedRows.length,
+      totalAmount: money(normalizedRows.reduce((sum, row) => sum + Number(row.total_amount || 0), 0)),
+      actualPayment: money(normalizedRows.reduce((sum, row) => sum + Number(row.actual_payment || 0), 0))
+    };
+    ctx.body.storeOptions = await Store.findAll({
+      where: { store_id: orderStoreIds, is_deleted: 0 },
+      attributes: ['store_id', 'name'],
+      order: [['name', 'ASC']]
+    });
+  }
 }
 
 /**
@@ -4440,6 +4453,20 @@ async function assertOrderStoreVisible(storeId, user, message = '无权访问该
 }
 
 async function assertSalesOrderVisible(order, user) {
+  // 查询角色优先校验，不能被其他经销商角色或追踪入口提前放行。
+  if (isMallReportViewer(getUserRoles(user))) {
+    if (!(user.accessibleStoreIds || []).map(String).includes(String(order?.store_id || ''))) {
+      const error = new Error('无权访问该销售订单');
+      error.status = 403;
+      throw error;
+    }
+    if (order?.mall_report_status !== 'reported' || Number(order?.is_deleted || 0) !== 0) {
+      const error = new Error('订单不存在');
+      error.status = 404;
+      throw error;
+    }
+    return;
+  }
   const store = order?.Store || await Store.findByPk(order?.store_id, {
     attributes: ['store_id', 'distributor_id']
   });

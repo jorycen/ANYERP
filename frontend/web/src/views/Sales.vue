@@ -3,8 +3,8 @@
     <el-card>
       <template #header>
         <div class="card-header">
-          <span>销售订单</span>
-          <div v-if="!traceReadonly" class="sales-actions">
+          <span>{{ queryOnly ? '业绩查询' : '销售订单' }}</span>
+          <div v-if="!traceReadonly && !queryOnly" class="sales-actions">
             <el-button @click="openDepositManager">定金管理</el-button>
             <el-button type="primary" @click="handleCreate">新建订单</el-button>
             <el-button v-if="canExportOrders" :loading="exporting" @click="handleExport">导出订单</el-button>
@@ -32,7 +32,7 @@
           <el-option label="退库处理中" value="return_pending" />
           <el-option label="已退单" value="returned" />
           <el-option label="已完成（历史）" value="completed" />
-          <el-option label="定金收款" value="deposit" />
+          <el-option v-if="!queryOnly" label="定金收款" value="deposit" />
         </el-select>
         <el-date-picker
           v-model="dateRange"
@@ -47,6 +47,12 @@
         <el-button type="primary" :loading="loading" @click="handleSearch">搜索</el-button>
       </div>
 
+      <el-row v-if="queryOnly" :gutter="16" class="query-summary" v-loading="loading">
+        <el-col :xs="24" :sm="8"><el-card shadow="never"><el-statistic title="订单数" :value="querySummary.orderCount" /></el-card></el-col>
+        <el-col :xs="24" :sm="8"><el-card shadow="never"><el-statistic title="订单金额合计" :value="Number(querySummary.totalAmount)" :precision="2" prefix="¥" /></el-card></el-col>
+        <el-col :xs="24" :sm="8"><el-card shadow="never"><el-statistic title="实付金额合计" :value="Number(querySummary.actualPayment)" :precision="2" prefix="¥" /></el-card></el-col>
+        <el-col :span="24"><p class="query-summary-note">按当前筛选条件汇总全部查询结果，金额与订单记录一致。</p></el-col>
+      </el-row>
       <div v-if="!traceReadonly" class="sales-table-scroll">
         <table class="sales-order-table">
           <thead>
@@ -79,12 +85,12 @@
               <td class="remark-column" :title="row.remark || ''">{{ row.remark || '-' }}</td>
               <td><el-tag :type="getStatusType(row.order_status)">{{ getStatusText(row.order_status) }}</el-tag></td>
               <td class="operation-column">
-              <el-button link type="primary" @click="handleEditDraft(row)" v-if="!row.record_type && row.order_status === 'draft'">编辑</el-button>
-              <el-button link type="success" @click="handleSubmitDraft(row)" v-if="!row.record_type && row.order_status === 'draft'">提交</el-button>
-              <el-button link type="danger" @click="handleDeleteDraft(row)" v-if="!row.record_type && row.order_status === 'draft' && !row.submit_time">删除</el-button>
-              <el-button link type="success" @click="handleArchive(row)" v-if="!row.record_type && row.order_status === '未归档'">归档</el-button>
-              <el-button link type="danger" @click="handleVoid(row)" v-if="!row.record_type && isUnarchivedOrder(row.order_status)">作废</el-button>
-              <el-button link type="warning" @click="handleReturn(row)" v-if="!row.record_type && isArchivedOrder(row.order_status)">退单</el-button>
+              <el-button link type="primary" @click="handleEditDraft(row)" v-if="!queryOnly && !row.record_type && row.order_status === 'draft'">编辑</el-button>
+              <el-button link type="success" @click="handleSubmitDraft(row)" v-if="!queryOnly && !row.record_type && row.order_status === 'draft'">提交</el-button>
+              <el-button link type="danger" @click="handleDeleteDraft(row)" v-if="!queryOnly && !row.record_type && row.order_status === 'draft' && !row.submit_time">删除</el-button>
+              <el-button link type="success" @click="handleArchive(row)" v-if="!queryOnly && !row.record_type && row.order_status === '未归档'">归档</el-button>
+              <el-button link type="danger" @click="handleVoid(row)" v-if="!queryOnly && !row.record_type && isUnarchivedOrder(row.order_status)">作废</el-button>
+              <el-button link type="warning" @click="handleReturn(row)" v-if="!queryOnly && !row.record_type && isArchivedOrder(row.order_status)">退单</el-button>
               <el-button link type="primary" @click="handleView(row)">查看</el-button>
               </td>
             </tr>
@@ -394,7 +400,7 @@
           <el-descriptions-item label="国补">¥{{ currentOrder.national_subsidy }}</el-descriptions-item>
           <el-descriptions-item label="教补">¥{{ currentOrder.education_subsidy }}</el-descriptions-item>
           <el-descriptions-item label="备注" :span="2">
-            <div v-if="currentOrder.record_type === 'deposit'">{{ currentOrder.remark || '-' }}</div>
+            <div v-if="queryOnly || traceReadonly || currentOrder.record_type === 'deposit'">{{ currentOrder.remark || '-' }}</div>
             <div v-else class="remark-editor">
               <el-input v-model="remarkDraft" type="textarea" :rows="2" maxlength="2000" show-word-limit />
               <el-button type="primary" :loading="remarkSaving" @click="saveRemark">保存备注</el-button>
@@ -615,10 +621,12 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
-import { getStoreId, isStoreUser, isDistributorAccount, hasRole } from '../utils/user'
+import { getStoreId, isStoreUser, isDistributorAccount, hasRole, isSalesQueryOnly } from '../utils/user'
 
 const route = useRoute()
-const traceReadonly = computed(() => Boolean(route.query.orderId) && String(route.query.trace || '') === '1')
+const queryOnly = isSalesQueryOnly()
+const querySummary = ref({ orderCount: 0, totalAmount: 0, actualPayment: 0 })
+const traceReadonly = computed(() => !queryOnly && Boolean(route.query.orderId) && String(route.query.trace || '') === '1')
 const stores = ref([])
 const storesLoaded = ref(false)
 const storesLoading = ref(false)
@@ -754,8 +762,13 @@ onMounted(async () => {
     await openRouteOrderDetail()
     return
   }
-  if (isStoreUser()) {
+  if (isStoreUser() && !queryOnly) {
     queryParams.storeId = getStoreId()
+  }
+  if (queryOnly) {
+    await loadData()
+    await openRouteOrderDetail()
+    return
   }
   await Promise.allSettled([
     loadData(),
@@ -837,8 +850,15 @@ const loadData = async () => {
     if (res.code === 0) {
       tableData.value = res.data?.list || []
       total.value = res.data?.pagination?.total || res.data?.total || 0
+      if (queryOnly) {
+        querySummary.value = res.data?.summary || { orderCount: 0, totalAmount: 0, actualPayment: 0 }
+        stores.value = res.data?.storeOptions || []
+      }
     }
   } catch (err) {
+    tableData.value = []
+    total.value = 0
+    querySummary.value = { orderCount: 0, totalAmount: 0, actualPayment: 0 }
     ElMessage.error('加载销售数据失败: ' + (err.message || ''))
   } finally {
     loading.value = false
@@ -1276,6 +1296,7 @@ const openOrderDetail = async (orderId) => {
 }
 
 const saveRemark = async () => {
+  if (queryOnly || traceReadonly.value) return
   if (!currentOrder.value?.order_id || currentOrder.value.record_type === 'deposit') return
   remarkSaving.value = true
   try {
@@ -1916,6 +1937,8 @@ const getDepositStatusText = (status) => {
 </script>
 
 <style scoped>
+.query-summary { margin-bottom: 16px; }
+.query-summary-note { color: #909399; font-size: 12px; margin: 12px 0 0; }
 :global(.sales-order-dialog) {
   max-width: calc(100vw - 32px);
 }
