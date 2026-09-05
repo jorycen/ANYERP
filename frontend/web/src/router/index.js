@@ -312,6 +312,17 @@ const router = createRouter({
   routes
 })
 
+const queryMirrorPaths = new Set([
+  '/', '/sales/order', '/sales/subsidy-photos', '/sales/monthly-tasks',
+  '/inventory/summary', '/inventory/sn-inventory', '/inventory/batch-maintenance',
+  '/inventory/inbound', '/inventory/sn-trace', '/inventory/resource-rights',
+  '/inventory/transfer', '/inventory/conversion',
+  '/products/product', '/products/category', '/products/price', '/products/approval',
+  '/stores', '/reports/dashboard', '/reports/sales', '/reports/inventory',
+  '/reports/employee', '/reports/achievement', '/approval/tasks', '/approval/instances',
+  '/system/users'
+])
+
 router.beforeEach((to, from, next) => {
   const token = localStorage.getItem('token')
   const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
@@ -329,8 +340,8 @@ router.beforeEach((to, from, next) => {
     return
   }
 
-  if (token && isSalesQueryOnly(userInfo) && to.path !== '/sales/order') {
-    next('/sales/order')
+  if (token && isSalesQueryOnly(userInfo)) {
+    next(queryMirrorPaths.has(to.path) ? undefined : '/sales/order')
     return
   }
 

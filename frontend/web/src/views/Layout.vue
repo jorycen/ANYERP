@@ -44,7 +44,7 @@
       </el-header>
 
       <el-main class="main-content">
-        <router-view />
+        <router-view v-if="!queryOnly || route.path === '/sales/order'" />
       </el-main>
     </el-container>
 
@@ -113,6 +113,7 @@ import {
 
 const router = useRouter()
 const route = useRoute()
+const queryOnly = isSalesQueryOnly()
 
 const userName = ref('')
 const roleName = ref('')
@@ -247,11 +248,49 @@ onMounted(async () => {
   userName.value = isSalesQueryOnly(userInfo) ? String(userInfo.name || '用户').replace(/[（(]商场查询[）)]/g, '') : (userInfo.name || '管理员')
   roleName.value = isSalesQueryOnly(userInfo) ? '门店查询' : (userInfo.roleName || '')
   menuTree.value = isSalesQueryOnly(userInfo)
-    ? [{ menuCode: 'sales', name: '销售管理', icon: 'Sell', children: [
-      { menuCode: 'sales_order', name: '业绩查询', path: '/sales/order' }
-    ] }]
+    ? getManagerMirrorMenus()
     : buildMenuTree(menus)
 })
+
+function getManagerMirrorMenus() {
+  return [
+    { menuCode: 'home', name: '首页', path: '/', icon: 'House' },
+    { menuCode: 'sales', name: '销售管理', icon: 'Sell', children: [
+      { menuCode: 'sales_order', name: '业绩查询', path: '/sales/order' },
+      { menuCode: 'sales_subsidy_photos', name: '国补照片', path: '/sales/subsidy-photos' },
+      { menuCode: 'sales_monthly_tasks', name: '月度任务', path: '/sales/monthly-tasks' }
+    ] },
+    { menuCode: 'inventory', name: '库存管理', icon: 'Box', children: [
+      { menuCode: 'inventory_summary', name: '库存汇总', path: '/inventory/summary' },
+      { menuCode: 'inventory_sn_inventory', name: 'SN库存清单', path: '/inventory/sn-inventory' },
+      { menuCode: 'inventory_batch_maintenance', name: '批量维护', path: '/inventory/batch-maintenance' },
+      { menuCode: 'inventory_inbound', name: '入库单管理', path: '/inventory/inbound' },
+      { menuCode: 'inventory_sn_trace', name: 'SN追踪', path: '/inventory/sn-trace' },
+      { menuCode: 'inventory_resource_rights', name: '库存资源权益', path: '/inventory/resource-rights' },
+      { menuCode: 'inventory_transfer', name: '调拨管理', path: '/inventory/transfer' },
+      { menuCode: 'inventory_conversion', name: '拆装管理', path: '/inventory/conversion' }
+    ] },
+    { menuCode: 'products', name: '商品管理', icon: 'Goods', children: [
+      { menuCode: 'product_product', name: '商品管理', path: '/products/product' },
+      { menuCode: 'product_category', name: '分类管理', path: '/products/category' },
+      { menuCode: 'product_price', name: '价格管理', path: '/products/price' },
+      { menuCode: 'product_approval', name: '新建商品审批', path: '/products/approval' }
+    ] },
+    { menuCode: 'stores', name: '门店管理', path: '/stores', icon: 'Shop' },
+    { menuCode: 'reports', name: '报表统计', icon: 'DataAnalysis', children: [
+      { menuCode: 'reports_dashboard', name: '经营数据看板', path: '/reports/dashboard' },
+      { menuCode: 'reports_sales', name: '销售报表', path: '/reports/sales' },
+      { menuCode: 'reports_inventory', name: '库存报表', path: '/reports/inventory' },
+      { menuCode: 'reports_employee', name: '员工业绩统计', path: '/reports/employee' },
+      { menuCode: 'reports_achievement', name: '业务达成', path: '/reports/achievement' }
+    ] },
+    { menuCode: 'approval', name: '审批中心', icon: 'Checked', children: [
+      { menuCode: 'approval_tasks', name: '待我审批', path: '/approval/tasks' },
+      { menuCode: 'approval_instances', name: '我的申请', path: '/approval/instances' }
+    ] },
+    { menuCode: 'system', name: '系统管理', path: '/system/users', icon: 'Setting' }
+  ]
+}
 
 function getDefaultMenus() {
   return [
