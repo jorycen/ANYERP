@@ -175,6 +175,7 @@
           <el-select v-model="requestForm.invoiceType" placeholder="请选择发票类型" style="width: 100%">
             <el-option label="未税（收据或普票）" value="未税（收据或普票）" />
             <el-option label="增专票（13%）" value="增专票（13%）" />
+            <el-option label="专票6%" value="专票6%" />
           </el-select>
         </el-form-item>
         <el-form-item label="付款方式" required>

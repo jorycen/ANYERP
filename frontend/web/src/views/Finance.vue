@@ -545,10 +545,10 @@
             <el-table-column prop="distributor_name" label="经销商" width="130">
               <template #default="{ row }">{{ row.distributor_name || row.distributor_id || '-' }}</template>
             </el-table-column>
-            <el-table-column label="税务属性" width="100">
+            <el-table-column prop="invoice_type" label="发票类型" width="180">
               <template #default="{ row }">
-                <el-tag :type="getPayableTaxTagType(row.tax_status)" size="small">
-                  {{ getPayableTaxText(row.tax_status) }}
+                <el-tag type="info" size="small">
+                  {{ row.invoice_type || '未填写' }}
                 </el-tag>
               </template>
             </el-table-column>
