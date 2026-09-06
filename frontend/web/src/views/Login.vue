@@ -2,7 +2,10 @@
   <div class="login-container">
     <section class="brand-panel">
       <div class="brand-content">
-        <div class="brand-name"><span>A</span>ANY-ERP</div>
+        <div class="brand-name">
+          <span class="brand-logo-tile"><img src="/brand/aino-cloud-logo.jpg" alt="艾诺云标志"></span>
+          <div class="brand-system-name"><strong>艾诺云</strong><small>ANY-ERP 连锁经营管理平台</small></div>
+        </div>
         <div class="brand-message">
           <p class="brand-kicker">连锁经营管理平台</p>
           <h1>让门店经营数据<br>清晰、准确、可追溯</h1>
@@ -20,6 +23,7 @@
 
     <section class="login-panel">
       <div class="login-box">
+        <img class="company-wordmark" src="/brand/aino-cloud-wordmark.png" alt="成都艾诺云科技有限公司">
         <div class="login-header">
           <p>欢迎回来</p>
           <h2>登录 ANY-ERP</h2>
@@ -120,8 +124,12 @@ const handleLogin = async () => {
   flex-direction: column;
 }
 
-.brand-name { display: flex; align-items: center; gap: 12px; font-size: 18px; font-weight: 700; letter-spacing: .02em; }
-.brand-name span { display: inline-flex; width: 38px; height: 38px; align-items: center; justify-content: center; border-radius: 10px; background: #2563eb; }
+.brand-name { display: flex; align-items: center; gap: 13px; }
+.brand-logo-tile { display: inline-flex; width: 50px; height: 50px; align-items: center; justify-content: center; overflow: hidden; border-radius: 12px; background: #fff; box-shadow: 0 8px 24px rgba(0, 0, 0, .16); }
+.brand-logo-tile img { width: 44px; height: 44px; object-fit: contain; }
+.brand-system-name { display: flex; flex-direction: column; }
+.brand-system-name strong { color: #fff; font-size: 20px; font-weight: 700; letter-spacing: .04em; }
+.brand-system-name small { margin-top: 3px; color: #a9b9d2; font-size: 11px; letter-spacing: .03em; }
 .brand-message { margin: auto 0; }
 .brand-kicker { margin-bottom: 18px; color: #93c5fd; font-size: 14px; font-weight: 600; letter-spacing: .12em; }
 .brand-message h1 { max-width: 620px; margin: 0; font-size: clamp(38px, 4vw, 58px); font-weight: 650; line-height: 1.2; letter-spacing: -.035em; }
@@ -146,6 +154,8 @@ const handleLogin = async () => {
   width: 100%;
   max-width: 390px;
 }
+
+.company-wordmark { display: block; width: min(100%, 350px); height: auto; margin: 0 0 36px; }
 
 .login-header {
   margin-bottom: 34px;
@@ -180,5 +190,6 @@ const handleLogin = async () => {
   .brand-panel { display: none; }
   .login-panel { min-width: 0; padding: 28px; background: #f4f6fa; }
   .login-box { padding: 30px 26px; border: 1px solid #e4e7ec; border-radius: 14px; background: #fff; box-shadow: 0 12px 30px rgba(16, 24, 40, .08); }
+  .company-wordmark { width: min(100%, 300px); margin-bottom: 28px; }
 }
 </style>

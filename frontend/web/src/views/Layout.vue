@@ -2,10 +2,10 @@
   <el-container class="layout-container" :class="{ 'is-sidebar-collapsed': sidebarCollapsed }">
     <el-aside :width="sidebarWidth" class="sidebar">
       <div class="logo">
-        <span class="logo-mark">A</span>
+        <span class="logo-mark"><img src="/brand/aino-cloud-logo.jpg" alt="艾诺云标志"></span>
         <div v-if="!sidebarCollapsed" class="logo-copy">
-          <strong>ANY-ERP</strong>
-          <span>连锁经营管理</span>
+          <strong>艾诺云</strong>
+          <span>ANY-ERP 连锁经营管理</span>
         </div>
       </div>
       <el-menu
@@ -444,11 +444,12 @@ async function submitPasswordChange() {
   align-items: center;
   justify-content: center;
   border-radius: 10px;
-  color: #fff;
-  background: var(--erp-primary);
-  font-size: 18px;
-  font-weight: 750;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, .18);
 }
+
+.logo-mark img { width: 32px; height: 32px; object-fit: contain; }
 
 .logo-copy {
   display: flex;
@@ -457,7 +458,7 @@ async function submitPasswordChange() {
   line-height: 1.25;
 }
 
-.logo-copy strong { color: #fff; font-size: 16px; letter-spacing: .02em; }
+.logo-copy strong { color: #fff; font-size: 16px; letter-spacing: .08em; }
 .logo-copy span { margin-top: 4px; color: #98a2b3; font-size: 11px; white-space: nowrap; }
 
 .is-sidebar-collapsed .logo { justify-content: center; padding: 0; }
