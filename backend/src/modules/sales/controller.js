@@ -4171,10 +4171,20 @@ async function reviewSalesReturn(ctx) {
         transaction,
         ctx
       });
-      await Order.update(
-        { order_status: 'return_inbound', update_time: now },
-        { where: { order_id: request.order_id }, transaction }
-      );
+      // 延迟加载，避免库存控制器引用定金恢复函数时产生循环初始化。
+      await require('../inventory/controller').completeApprovedSalesReturnInbound({
+        inbound, user, transaction, fail: ctx.throw.bind(ctx)
+      });
+      nextStatus = 'completed';
+      nextStage = 'completed';
+      await recordBusinessAction({
+        businessType: 'sales_return', businessId: request.return_id,
+        businessNo: request.return_no, action: 'approve_and_inbound',
+        fromStatus: 'pending', toStatus: 'completed', user,
+        comment: comment || '退单最终审批通过，自动完成入库',
+        detail: { inboundId: inbound.inbound_id, inboundNo: inbound.inbound_no },
+        transaction
+      });
     }
     if (rejected) {
       await Order.update(
@@ -4199,7 +4209,7 @@ async function reviewSalesReturn(ctx) {
     message: result.status === 'rejected'
       ? '退单申请已拒绝'
       : result.inboundNo
-        ? `退单审批已完成，已生成待重新入库单 ${result.inboundNo}`
+        ? `退单审批已完成，商品已自动入库（${result.inboundNo}）`
         : '退单审批已完成'
   };
 }

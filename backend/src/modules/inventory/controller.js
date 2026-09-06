@@ -3410,7 +3410,7 @@ function resolveTransferInboundSnBinding(transferItem = {}, inboundItem = {}, re
 /**
  * 执行入库
  */
-async function executeInbound(ctx) {
+async function executeInboundInTransaction({ inboundId, items = [], user, fail }, t) {
   const VALID_INVENTORY_TYPES = ['normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty', 'rental_demo_qty'];
   const PRODUCT_TYPE_TO_FIELD = {
     '服务商全资源': 'regular_qty',
@@ -3422,22 +3422,19 @@ async function executeInbound(ctx) {
     '纯二批': 'second_qty'
   };
 
-  const t = await sequelize.transaction();
-  try {
-    const { inboundId, items = [] } = ctx.request.body;
-    const user = ctx.state.user;
-    if (!Array.isArray(items) || items.length === 0) ctx.throw(400, '请至少提交一条入库明细');
+
+    if (!Array.isArray(items) || items.length === 0) fail(400, '请至少提交一条入库明细');
 
     const inbound = await Inbound.findByPk(inboundId, { transaction: t, lock: t.LOCK.UPDATE });
-    if (!inbound) ctx.throw(404, '入库单不存在');
+    if (!inbound) fail(404, '入库单不存在');
 
     if (inbound.status !== 'pending') {
-      ctx.throw(400, '该入库单已处理');
+      fail(400, '该入库单已处理');
     }
 
     const isTransferInbound = isTransferInboundRecord(inbound);
     if (isTransferInbound) {
-      ctx.throw(400, '调拨入库请在调拨管理中操作');
+      fail(400, '调拨入库请在调拨管理中操作');
     }
     const isSalesReturnInbound = String(inbound.source_type || '').toUpperCase() === 'SALES_RETURN';
     const isPurchaseInbound = String(inbound.source_type || '').toLowerCase() === 'purchase' || Boolean(inbound.purchase_request_id);
@@ -3473,7 +3470,7 @@ async function executeInbound(ctx) {
     for (const item of items) {
       const product = productMap.get(item.productId);
       if (!product) {
-        ctx.throw(400, `商品 ${item.productId} 不存在`);
+        fail(400, `商品 ${item.productId} 不存在`);
       }
 
       const dbItems = inboundItems.filter(di => di.product_id === item.productId);
@@ -3481,28 +3478,28 @@ async function executeInbound(ctx) {
         ? dbItems.find(di => String(di.item_id) === String(item.inboundItemId || item.inbound_item_id))
         : dbItems.find(di => item.locationId && String(di.location_id || '') === String(item.locationId)) || dbItems[0];
       if (!dbItem) {
-        ctx.throw(400, `入库单中未找到商品 ${item.productId || product.name} 的明细`);
+        fail(400, `入库单中未找到商品 ${item.productId || product.name} 的明细`);
       }
 
       const quantity = Number(item.quantity);
       if (!Number.isInteger(quantity) || quantity <= 0) {
-        ctx.throw(400, `商品 ${dbItem.product_name || product.name} 的入库数量必须为正整数`);
+        fail(400, `商品 ${dbItem.product_name || product.name} 的入库数量必须为正整数`);
       }
       const itemKey = String(dbItem.item_id);
       const storedReceivedQuantity = Math.max(Number(dbItem.received_quantity || 0), 0);
       const currentProgress = progressByItem.get(itemKey) || { quantity: 0, snCodes: [] };
       const remainingQuantity = Math.max(Number(dbItem.quantity || 0) - storedReceivedQuantity - currentProgress.quantity, 0);
       if (quantity > remainingQuantity) {
-        ctx.throw(400, `商品 ${dbItem.product_name || product.name} 本次最多还能入库 ${remainingQuantity} 件`);
+        fail(400, `商品 ${dbItem.product_name || product.name} 本次最多还能入库 ${remainingQuantity} 件`);
       }
       currentProgress.quantity += quantity;
       progressByItem.set(itemKey, currentProgress);
       if (dbItem.location_id && item.locationId && String(dbItem.location_id) !== String(item.locationId)) {
-        ctx.throw(400, `商品 ${dbItem.product_name || product.name} 的入库库位与入库明细不一致`);
+        fail(400, `商品 ${dbItem.product_name || product.name} 的入库库位与入库明细不一致`);
       }
       const locationId = item.locationId || dbItem.location_id || defaultTransferLocation?.location_id || null;
       if (!locationId) {
-        ctx.throw(400, `商品 ${dbItem.product_name || product.name} 请选择入库库位`);
+        fail(400, `商品 ${dbItem.product_name || product.name} 请选择入库库位`);
       }
       const location = locationId
         ? await Location.findOne({
@@ -3520,17 +3517,17 @@ async function executeInbound(ctx) {
         const submittedSnCode = String(item.snCode || item.sn_code || '').trim();
         const requestedSnCode = submittedSnCode || (isPurchaseInbound ? '' : String(dbItem.sn_code || '').trim());
         if (isPurchaseInbound && quantity !== 1) {
-          ctx.throw(400, `商品 ${dbItem.product_name || product.name} 为 SN 商品，每次只能入库 1 件`);
+          fail(400, `商品 ${dbItem.product_name || product.name} 为 SN 商品，每次只能入库 1 件`);
         }
         if (isPurchaseInbound && !submittedSnCode) {
-          ctx.throw(400, `商品 ${dbItem.product_name || product.name} 需要 SN 管理，本次入库必须填写 SN`);
+          fail(400, `商品 ${dbItem.product_name || product.name} 需要 SN 管理，本次入库必须填写 SN`);
         }
         if (isPurchaseInbound) {
           const existingSnCodes = parseInboundSnCodes(dbItem.received_sn_codes);
           const duplicateSn = existingSnCodes.concat(currentProgress.snCodes)
             .some(code => code.toLowerCase() === requestedSnCode.toLowerCase());
           if (duplicateSn) {
-            ctx.throw(400, `商品 ${dbItem.product_name || product.name} 的 SN ${requestedSnCode} 已入库或在本次提交中重复`);
+            fail(400, `商品 ${dbItem.product_name || product.name} 的 SN ${requestedSnCode} 已入库或在本次提交中重复`);
           }
           currentProgress.snCodes.push(requestedSnCode);
         }
@@ -3557,7 +3554,7 @@ async function executeInbound(ctx) {
 
         if (salesReturnSn) {
           const salesReturnValidation = validateSalesReturnInboundSn({ sn: salesReturnSn, requestedSnCode });
-          if (salesReturnValidation) ctx.throw(salesReturnValidation.status, salesReturnValidation.message);
+          if (salesReturnValidation) fail(salesReturnValidation.status, salesReturnValidation.message);
 
           const salesReturnPnCode = await resolveSnProductPn(
             product,
@@ -3597,10 +3594,10 @@ async function executeInbound(ctx) {
           }, { transaction: t });
         } else if (transferSn) {
           if (!['transferring', 'in_stock'].includes(transferSn.status)) {
-            ctx.throw(400, `调拨SN ${transferSn.sn_code} 在当前状态 ${transferSn.status} 下不能接收入库`);
+            fail(400, `调拨SN ${transferSn.sn_code} 在当前状态 ${transferSn.status} 下不能接收入库`);
           }
           if (transferSn.status === 'in_stock' && String(transferSn.store_id) !== String(inbound.store_id)) {
-            ctx.throw(400, `调拨SN ${transferSn.sn_code} 已在其他门店库存中`);
+            fail(400, `调拨SN ${transferSn.sn_code} 已在其他门店库存中`);
           }
 
           const transferPnCode = await resolveSnProductPn(
@@ -3609,7 +3606,7 @@ async function executeInbound(ctx) {
             t
           );
           if (transferSn.pn_code && transferPnCode && !samePnCode(transferSn.pn_code, transferPnCode)) {
-            ctx.throw(400, `调拨SN ${transferSn.sn_code} 与PN ${transferPnCode} 不匹配`);
+            fail(400, `调拨SN ${transferSn.sn_code} 与PN ${transferPnCode} 不匹配`);
           }
 
           await transferSn.update({
@@ -3633,10 +3630,10 @@ async function executeInbound(ctx) {
           }, { transaction: t });
         } else {
           if (isSalesReturnInbound) {
-            ctx.throw(409, `销售退单SN ${dbItem.sn_code || requestedSnCode} 不存在`);
+            fail(409, `销售退单SN ${dbItem.sn_code || requestedSnCode} 不存在`);
           }
         if (!requestedSnCode) {
-          ctx.throw(400, `商品 ${dbItem.product_name} 需要SN管理，SN码不能为空`);
+          fail(400, `商品 ${dbItem.product_name} 需要SN管理，SN码不能为空`);
         }
 
         const pnCode = await resolveSnProductPn(
@@ -3648,10 +3645,10 @@ async function executeInbound(ctx) {
 
         const existingSn = await findInboundSnByIdentity({ pnCode, snCode, transaction: t });
         if (existingSn && String(existingSn.product_id || '') !== String(dbItem.product_id || '')) {
-          ctx.throw(409, `PN码 [${pnCode || '-'}] 下的SN码 [${snCode}] 已关联其他商品，不能直接入库`);
+          fail(409, `PN码 [${pnCode || '-'}] 下的SN码 [${snCode}] 已关联其他商品，不能直接入库`);
         }
         if (existingSn && !REUSABLE_INBOUND_SN_STATUSES.has(String(existingSn.status || '').trim())) {
-          ctx.throw(400, `PN码 [${pnCode || '-'}] 下的SN码 [${snCode}] 当前状态为${existingSn.status || '未知'}，不允许重复入库`);
+          fail(400, `PN码 [${pnCode || '-'}] 下的SN码 [${snCode}] 当前状态为${existingSn.status || '未知'}，不允许重复入库`);
         }
 
         const pnMaster = await ensureProductPnMaster({
@@ -3762,7 +3759,7 @@ async function executeInbound(ctx) {
         )
       ));
       if (incompleteSnItem) {
-        ctx.throw(409, `商品 ${incompleteSnItem.product_name || incompleteSnItem.product_id} 的入库数量已完成，但SN数量不足，不能完成入库`);
+        fail(409, `商品 ${incompleteSnItem.product_name || incompleteSnItem.product_id} 的入库数量已完成，但SN数量不足，不能完成入库`);
       }
     }
     const nextInboundStatus = isPurchaseInbound && !allPurchaseItemsReceived ? 'pending' : 'completed';
@@ -3780,9 +3777,9 @@ async function executeInbound(ctx) {
         transaction: t,
         lock: t.LOCK.UPDATE
       });
-      if (!salesReturn) ctx.throw(404, '销售退单申请不存在');
+      if (!salesReturn) fail(404, '销售退单申请不存在');
       if (salesReturn.status !== 'approved') {
-        ctx.throw(409, '销售退单申请尚未审批通过');
+        fail(409, '销售退单申请尚未审批通过');
       }
       await salesReturn.update({
         status: 'completed',
@@ -3849,7 +3846,7 @@ async function executeInbound(ctx) {
         transaction: t,
         lock: t.LOCK.UPDATE
       });
-      if (!transfer) ctx.throw(404, '关联调拨单不存在');
+      if (!transfer) fail(404, '关联调拨单不存在');
       if (transfer.status === 'out_confirmed') {
         await transfer.update({
           status: 'completed',
@@ -3858,17 +3855,38 @@ async function executeInbound(ctx) {
           receiving_time: new Date()
         }, { transaction: t });
       } else if (transfer.status !== 'completed') {
-        ctx.throw(400, '关联调拨单当前状态不允许入库');
+        fail(400, '关联调拨单当前状态不允许入库');
       }
     }
 
-    await t.commit();
-    ctx.body = { code: 0, message: '入库完成' };
-  } catch (error) {
-    await t.rollback();
-    console.error('Error in executeInbound:', error);
-    throw error;
+    return { code: 0, message: '入库完成' };
+}
+
+async function executeInbound(ctx) {
+  ctx.body = await sequelize.transaction(transaction => executeInboundInTransaction({
+    ...ctx.request.body, user: ctx.state.user, fail: ctx.throw.bind(ctx)
+  }, transaction));
+}
+
+// 由销售退单最终审批调用，事务由审批入口统一提交或回滚。
+async function completeApprovedSalesReturnInbound({ inbound, user, transaction, fail }) {
+  if (!transaction) throw new Error('退单自动入库必须使用审批事务');
+  if (inbound.source_type !== 'SALES_RETURN' || inbound.status !== 'pending') {
+    fail(409, '退单入库单状态无效');
   }
+  const locationId = await resolveInventoryWriteLocation(Location, {
+    storeId: inbound.store_id, field: 'normal_qty', transaction
+  });
+  const rows = await InboundItem.findAll({
+    where: { inbound_id: inbound.inbound_id }, transaction, lock: transaction.LOCK.UPDATE
+  });
+  return executeInboundInTransaction({
+    inboundId: inbound.inbound_id, user, fail,
+    items: rows.map(item => ({
+      inboundItemId: item.item_id, productId: item.product_id,
+      quantity: Number(item.quantity), locationId, snCode: item.sn_code, pnCode: item.pn_code
+    }))
+  }, transaction);
 }
 
 /**
@@ -6080,6 +6098,7 @@ module.exports = {
   getInboundDetail,
   getSnTraceInboundDetail,
   executeInbound,
+  completeApprovedSalesReturnInbound,
   updateInventory,
   getAvailableQty,
   getReturnList,
