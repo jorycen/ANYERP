@@ -9,14 +9,14 @@
 
       <el-tabs v-model="activeTab" class="module-tabs">
         <el-tab-pane label="采购申请" name="request">
-          <div class="filter-bar">
-            <el-input v-model="queryParams.requestNo" placeholder="申请单号" clearable style="width: 180px" @keyup.enter="handleRequestSearch" />
-            <el-input v-model="queryParams.submitter" placeholder="提交人" clearable style="width: 140px" />
-            <el-input v-model="queryParams.keyword" placeholder="商品名称/PN/商品编码" clearable style="width: 230px" />
-            <el-select v-model="queryParams.supplierId" placeholder="供应商" clearable filterable style="width: 180px">
+          <div class="filter-bar erp-query-grid">
+            <div class="erp-query-field"><span class="erp-query-label">申请单号</span><el-input v-model="queryParams.requestNo" placeholder="申请单号" clearable style="width: 180px" @keyup.enter="handleRequestSearch" /></div>
+            <div class="erp-query-field"><span class="erp-query-label">提交人</span><el-input v-model="queryParams.submitter" placeholder="提交人" clearable style="width: 140px" /></div>
+            <div class="erp-query-field"><span class="erp-query-label">商品名称 / PN / 商品编码</span><el-input v-model="queryParams.keyword" placeholder="商品名称/PN/商品编码" clearable style="width: 230px" /></div>
+            <div class="erp-query-field"><span class="erp-query-label">供应商</span><el-select v-model="queryParams.supplierId" placeholder="供应商" clearable filterable style="width: 180px">
               <el-option v-for="supplier in allSuppliers" :key="supplier.supplier_id" :label="supplier.name" :value="supplier.supplier_id" />
-            </el-select>
-            <el-select v-model="queryParams.status" placeholder="状态" clearable style="width: 150px" @change="handleRequestFilterChange">
+            </el-select></div>
+            <div class="erp-query-field"><span class="erp-query-label">状态</span><el-select v-model="queryParams.status" placeholder="状态" clearable style="width: 150px" @change="handleRequestFilterChange">
               <el-option label="全部" value="" />
               <el-option label="草稿" value="draft" />
               <el-option label="待审批" value="pending" />
@@ -27,15 +27,16 @@
               <el-option label="已撤销" value="revoked" />
               <el-option label="部分退货" value="partial_return" />
               <el-option label="已退货" value="returned" />
-            </el-select>
-            <el-select v-model="queryParams.operatorStaffId" placeholder="经手人" clearable filterable style="width: 150px" @change="handleRequestFilterChange">
+            </el-select></div>
+            <div class="erp-query-field"><span class="erp-query-label">经手人</span><el-select v-model="queryParams.operatorStaffId" placeholder="经手人" clearable filterable style="width: 150px" @change="handleRequestFilterChange">
               <el-option label="全部经手人" value="" />
               <el-option v-for="staff in operatorStaffList" :key="staff.staffId" :label="staff.name" :value="staff.staffId" />
-            </el-select>
-            <el-button type="primary" @click="handleRequestSearch">查询</el-button>
+            </el-select></div>
+            <div class="erp-query-actions"><el-button type="primary" @click="handleRequestSearch">查询</el-button>
             <el-button @click="resetRequestSearch">重置</el-button>
             <el-button type="primary" @click="handleCreate">新建采购申请</el-button>
             <el-button type="success" :loading="exportLoading" @click="handleExportRequests">导出</el-button>
+          </div>
           </div>
           <el-table :data="tableData" stripe border>
             <el-table-column prop="request_no" label="申请单号" width="180" />

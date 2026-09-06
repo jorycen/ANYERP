@@ -398,7 +398,7 @@ async function submitPasswordChange() {
 <style scoped>
 .layout-container {
   height: 100vh;
-  min-width: 1024px;
+  min-width: 0;
   background: var(--erp-canvas);
 }
 
@@ -588,4 +588,11 @@ async function submitPasswordChange() {
 .sidebar-menu .el-menu { background: transparent !important; }
 .sidebar-menu .el-sub-menu .el-menu-item { padding-left: 48px !important; color: #98a2b3; }
 .sidebar-menu .el-icon { font-size: 17px; }
+</style>
+
+<style>
+.sidebar-menu .el-menu-item,
+.sidebar-menu .el-sub-menu__title { height: 40px; line-height: 40px; margin-block: 2px; }
+.sidebar-menu .el-sub-menu .el-menu-item { padding-left: 40px !important; }
+.sidebar { scrollbar-width: thin; scrollbar-color: #475467 var(--erp-sidebar); }
 </style>

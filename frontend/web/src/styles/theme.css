@@ -217,3 +217,32 @@ select { font: inherit; }
   #app .main-content > [class$="-page"] > .el-card > .el-card__body,
   #app .main-content > .el-card > .el-card__body { padding-inline: 16px; }
 }
+
+/* Presentation-only query layout; input models and query triggers remain in each view. */
+#app .erp-query-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  align-items: end;
+  gap: 16px;
+  padding: 16px;
+  background: #fbfcfe;
+}
+.erp-query-field { min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+.erp-query-label { color: var(--erp-text-secondary); font-size: 12px; line-height: 18px; font-weight: 500; }
+#app .erp-query-field > .el-input,
+#app .erp-query-field > .el-select,
+#app .erp-query-field > .el-date-editor { width: 100% !important; min-width: 0; box-sizing: border-box; }
+.erp-query-field--range { grid-column: span 2; }
+.erp-age-range { display: flex; align-items: center; gap: 8px; min-width: 0; }
+#app .erp-age-range .el-input-number { flex: 1; width: 0 !important; min-width: 0; }
+.erp-age-range .age-separator { flex: none; color: var(--erp-text-secondary); }
+#app .erp-query-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; padding-top: 12px; border-top: 1px solid var(--erp-border); }
+#app .erp-query-actions .el-button { margin-left: 0; }
+#app .erp-query-actions .el-button--success,
+#app .erp-query-actions .el-button--warning { --el-button-bg-color: #fff; --el-button-border-color: var(--erp-border); --el-button-text-color: var(--erp-text-secondary); --el-button-hover-bg-color: var(--erp-primary-soft); --el-button-hover-text-color: var(--erp-primary); --el-button-hover-border-color: #b9cdfd; }
+#app .sales-page .card-header { flex-wrap: wrap; }
+#app .sales-page .sales-actions { flex-wrap: wrap; }
+@media (max-width: 760px) {
+  #app .erp-query-grid { grid-template-columns: minmax(0, 1fr); padding: 12px; }
+  .erp-query-field--range { grid-column: span 1; }
+}

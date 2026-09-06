@@ -16,18 +16,19 @@
             <span class="legend-item"><i class="legend-dot subsidy-resource" />仅国补</span>
             <span class="legend-item"><i class="legend-dot no-subsidy-resource" />无法国补</span>
           </div>
-          <div class="filter-bar">
-            <el-input v-model="summaryQuery.keyword" placeholder="搜索商品名称/编码/厂商编码" clearable style="width: 240px" @keyup.enter="loadSummary" />
-            <el-select v-model="summaryQuery.category" placeholder="商品类别" clearable style="width: 150px" @change="loadSummary">
+          <div class="filter-bar erp-query-grid">
+            <div class="erp-query-field"><span class="erp-query-label">商品名称 / 编码 / 厂商编码</span><el-input v-model="summaryQuery.keyword" placeholder="搜索商品名称/编码/厂商编码" clearable style="width: 240px" @keyup.enter="loadSummary" /></div>
+            <div class="erp-query-field"><span class="erp-query-label">商品类别</span><el-select v-model="summaryQuery.category" placeholder="商品类别" clearable style="width: 150px" @change="loadSummary">
               <el-option v-for="cat in categories" :key="cat" :label="cat" :value="cat" />
-            </el-select>
-            <el-select v-model="summaryQuery.storeId" placeholder="门店" clearable style="width: 150px" @change="loadSummary">
+            </el-select></div>
+            <div class="erp-query-field"><span class="erp-query-label">门店</span><el-select v-model="summaryQuery.storeId" placeholder="门店" clearable style="width: 150px" @change="loadSummary">
           <el-option label="全部门店" :value="''" />
           <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
-            </el-select>
-            <el-button type="primary" @click="loadSummary">查询</el-button>
+            </el-select></div>
+            <div class="erp-query-actions"><el-button type="primary" @click="loadSummary">查询</el-button>
             <el-button type="success" :loading="summaryExporting" @click="handleExportSummary">导出</el-button>
             <el-button type="warning" :loading="summarySimpleExporting" @click="handleExportSummarySimple">导出库存简表</el-button>
+          </div>
           </div>
           <div class="model-filter-panel">
             <span class="model-filter-label">机型分类</span>
@@ -204,19 +205,19 @@
 
         <!-- SN库存清单 -->
         <el-tab-pane label="SN库存清单" name="sn-inventory">
-          <div class="filter-bar">
-            <el-input
+          <div class="filter-bar erp-query-grid">
+            <div class="erp-query-field"><span class="erp-query-label">SN / PN / 商品名称 / 编码</span><el-input
               v-model="snInventoryQuery.keyword"
               placeholder="搜索SN/PN/商品名称/编码"
               clearable
               style="width: 230px"
               @keyup.enter="querySnInventory"
-            />
-            <el-select v-model="snInventoryQuery.storeId" placeholder="门店" clearable style="width: 150px" @change="onSnInventoryStoreChange">
+            /></div>
+            <div class="erp-query-field"><span class="erp-query-label">门店</span><el-select v-model="snInventoryQuery.storeId" placeholder="门店" clearable style="width: 150px" @change="onSnInventoryStoreChange">
               <el-option label="全部门店" :value="''" />
               <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
-            </el-select>
-            <el-select
+            </el-select></div>
+            <div class="erp-query-field"><span class="erp-query-label">库位</span><el-select
               v-model="snInventoryQuery.locationId"
               placeholder="库位"
               clearable
@@ -225,23 +226,24 @@
               @change="querySnInventory"
             >
               <el-option v-for="location in snInventoryLocations" :key="location.location_id" :label="location.name" :value="location.location_id" />
-            </el-select>
-            <el-select v-model="snInventoryQuery.resourceType" placeholder="资源类型" clearable style="width: 140px" @change="querySnInventory">
+            </el-select></div>
+            <div class="erp-query-field"><span class="erp-query-label">资源类型</span><el-select v-model="snInventoryQuery.resourceType" placeholder="资源类型" clearable style="width: 140px" @change="querySnInventory">
               <el-option v-for="resource in snInventoryResourceOptions" :key="resource.value" :label="resource.label" :value="resource.value" />
-            </el-select>
-            <el-select v-model="snInventoryQuery.resourceStatus" placeholder="资源状态" clearable style="width: 130px" @change="querySnInventory">
+            </el-select></div>
+            <div class="erp-query-field"><span class="erp-query-label">资源状态</span><el-select v-model="snInventoryQuery.resourceStatus" placeholder="资源状态" clearable style="width: 130px" @change="querySnInventory">
               <el-option v-for="status in resourceStatusOptions" :key="status.value" :label="status.label" :value="status.value" />
-            </el-select>
-            <el-select v-model="snInventoryQuery.specialOnly" placeholder="价格类型" clearable style="width: 130px" @change="querySnInventory">
+            </el-select></div>
+            <div class="erp-query-field"><span class="erp-query-label">价格类型</span><el-select v-model="snInventoryQuery.specialOnly" placeholder="价格类型" clearable style="width: 130px" @change="querySnInventory">
               <el-option label="仅看特价SN" value="1" />
               <el-option label="全部SN" value="" />
-            </el-select>
-            <el-input-number v-model="snInventoryQuery.minAgeDays" :min="0" :max="9999" controls-position="right" placeholder="最小库龄" style="width: 125px" />
+            </el-select></div>
+            <div class="erp-query-field erp-query-field--range"><span class="erp-query-label">库龄（天）</span><div class="erp-age-range"><el-input-number v-model="snInventoryQuery.minAgeDays" :min="0" :max="9999" controls-position="right" placeholder="最小库龄" style="width: 125px" />
             <span class="age-separator">至</span>
-            <el-input-number v-model="snInventoryQuery.maxAgeDays" :min="0" :max="9999" controls-position="right" placeholder="最大库龄" style="width: 125px" />
-            <el-button type="primary" @click="querySnInventory">查询</el-button>
+            <el-input-number v-model="snInventoryQuery.maxAgeDays" :min="0" :max="9999" controls-position="right" placeholder="最大库龄" style="width: 125px" /></div></div>
+            <div class="erp-query-actions"><el-button type="primary" @click="querySnInventory">查询</el-button>
             <el-button type="success" :loading="snInventoryExporting" @click="handleExportSnInventory">导出</el-button>
             <el-button @click="resetSnInventoryQuery">重置</el-button>
+          </div>
           </div>
 
           <el-table :data="snInventoryData" stripe border v-loading="snInventoryLoading">

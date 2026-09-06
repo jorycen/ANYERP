@@ -12,17 +12,17 @@
         </div>
       </template>
 
-      <div v-if="!traceReadonly" class="filter-bar">
-        <el-select v-model="queryParams.storeId" placeholder="门店" clearable class="sales-filter-control" v-loading="storesLoading">
+      <div v-if="!traceReadonly" class="filter-bar erp-query-grid">
+        <div class="erp-query-field"><span class="erp-query-label">门店</span><el-select v-model="queryParams.storeId" placeholder="门店" clearable class="sales-filter-control" v-loading="storesLoading">
           <el-option label="全部门店" :value="''" />
           <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
-        </el-select>
-        <el-input v-model="queryParams.submitUser" placeholder="提交人" clearable class="sales-filter-control" @keyup.enter="handleSearch" />
-        <el-input v-model="queryParams.customerName" placeholder="客户姓名" clearable class="sales-filter-control" @keyup.enter="handleSearch" />
-        <el-input v-model="queryParams.orderNo" placeholder="订单号" clearable class="sales-filter-control" @keyup.enter="handleSearch" />
-        <el-input v-model="queryParams.productName" placeholder="商品名称（模糊查找）" clearable class="sales-filter-product" @keyup.enter="handleSearch" />
-        <el-input v-model="queryParams.productCode" placeholder="商品编码" clearable class="sales-filter-control" @keyup.enter="handleSearch" />
-        <el-select v-model="queryParams.status" placeholder="状态" clearable class="sales-filter-status">
+        </el-select></div>
+        <div class="erp-query-field"><span class="erp-query-label">提交人</span><el-input v-model="queryParams.submitUser" placeholder="提交人" clearable class="sales-filter-control" @keyup.enter="handleSearch" /></div>
+        <div class="erp-query-field"><span class="erp-query-label">客户姓名</span><el-input v-model="queryParams.customerName" placeholder="客户姓名" clearable class="sales-filter-control" @keyup.enter="handleSearch" /></div>
+        <div class="erp-query-field"><span class="erp-query-label">订单号</span><el-input v-model="queryParams.orderNo" placeholder="订单号" clearable class="sales-filter-control" @keyup.enter="handleSearch" /></div>
+        <div class="erp-query-field"><span class="erp-query-label">商品名称（模糊查找）</span><el-input v-model="queryParams.productName" placeholder="商品名称（模糊查找）" clearable class="sales-filter-product" @keyup.enter="handleSearch" /></div>
+        <div class="erp-query-field"><span class="erp-query-label">商品编码</span><el-input v-model="queryParams.productCode" placeholder="商品编码" clearable class="sales-filter-control" @keyup.enter="handleSearch" /></div>
+        <div class="erp-query-field"><span class="erp-query-label">状态</span><el-select v-model="queryParams.status" placeholder="状态" clearable class="sales-filter-status">
           <el-option label="全部" value="" />
           <el-option label="草稿" value="draft" />
           <el-option label="待审批" value="pending_approval" />
@@ -33,8 +33,8 @@
           <el-option label="已退单" value="returned" />
           <el-option label="已完成（历史）" value="completed" />
           <el-option v-if="!queryOnly" label="定金收款" value="deposit" />
-        </el-select>
-        <el-date-picker
+        </el-select></div>
+        <div class="erp-query-field erp-query-field--range"><span class="erp-query-label">日期范围</span><el-date-picker
           v-model="dateRange"
           type="daterange"
           value-format="YYYY-MM-DD"
@@ -43,9 +43,10 @@
           end-placeholder="结束日期"
           clearable
           class="sales-filter-date"
-        />
-        <el-button type="primary" :loading="loading" @click="handleSearch">搜索</el-button>
+        /></div>
+        <div class="erp-query-actions"><el-button type="primary" :loading="loading" @click="handleSearch">搜索</el-button>
       </div>
+          </div>
 
       <el-row v-if="queryOnly" :gutter="16" class="query-summary" v-loading="loading">
         <el-col :xs="24" :sm="8"><el-card shadow="never"><el-statistic title="订单数" :value="querySummary.orderCount" /></el-card></el-col>
@@ -377,7 +378,7 @@
     </el-dialog>
 
     <!-- 订单详情对话框 -->
-    <el-dialog v-model="detailVisible" :title="currentOrder?.record_type === 'deposit' ? '定金收款详情' : '订单详情'" width="1000px">
+    <el-dialog v-model="detailVisible" class="sales-detail-dialog" :title="currentOrder?.record_type === 'deposit' ? '定金收款详情' : '订单详情'" width="1000px">
       <div v-if="currentOrder" class="order-detail">
         <el-descriptions :column="2" border>
           <el-descriptions-item label="订单号">{{ currentOrder.order_no }}</el-descriptions-item>
@@ -1937,6 +1938,19 @@ const getDepositStatusText = (status) => {
 </script>
 
 <style scoped>
+.sales-table-scroll { border-radius: 8px; }
+.sales-order-table { font-size: 13px; }
+.sales-order-table th { height: 44px; }
+.sales-order-table td { padding-block: 10px; }
+.sales-order-table .money-column { font-variant-numeric: tabular-nums; }
+.sales-order-table td:nth-child(4) { white-space: normal; line-height: 20px; }
+.sales-order-table td:nth-child(11) { white-space: normal; }
+.sales-order-table td:nth-child(11) :deep(.el-tag) { height: auto; white-space: normal; padding: 4px 8px; line-height: 18px; }
+.sales-order-table td.operation-column { white-space: normal; line-height: 30px; }
+.sales-order-table .operation-column :deep(.el-button) { margin: 0 10px 0 0; }
+.order-detail h4 { padding: 10px 12px; border-left: 3px solid var(--erp-primary); background: var(--erp-primary-soft); border-radius: 0 6px 6px 0; color: var(--erp-text); }
+:global(.sales-detail-dialog) { max-width: calc(100vw - 32px); }
+
 .query-summary { margin-bottom: 16px; }
 .query-summary-note { color: #909399; font-size: 12px; margin: 12px 0 0; }
 :global(.sales-order-dialog) {
@@ -2056,7 +2070,7 @@ const getDepositStatusText = (status) => {
   white-space: nowrap;
 }
 .sales-order-table .operation-column {
-  width: 300px;
+  width: 240px;
 }
 .sales-table-state {
   box-sizing: border-box;
