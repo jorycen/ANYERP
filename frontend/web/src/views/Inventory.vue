@@ -74,8 +74,6 @@
             <el-table-column prop="standard_price" label="销售定价" width="100">
               <template #default="{ row }">¥{{ row.standard_price }}</template>
             </el-table-column>
-            <el-table-column prop="changhong_inventory" label="佳华库存" width="95" />
-            <el-table-column prop="tianjin_inventory" label="汇一库存" width="95" />
             <el-table-column prop="normal_qty" label="现有库存" width="100">
               <template #default="{ row }">
                 <el-popover placement="bottom" :width="420" trigger="hover">
@@ -182,6 +180,8 @@
                 <span v-else>-</span>
               </template>
             </el-table-column>
+            <el-table-column prop="changhong_inventory" label="佳华库存" width="95" />
+            <el-table-column prop="tianjin_inventory" label="汇一库存" width="95" />
           </el-table>
 
           <div v-if="summaryHasSearched && isSummaryQuickModelFilter" class="summary-continue-query">
