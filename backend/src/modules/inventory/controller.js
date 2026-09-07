@@ -496,6 +496,31 @@ function calculateStockAgeDays(inboundTime, now = new Date()) {
   return Math.max(0, Math.floor((now.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)));
 }
 
+function buildSnListBusinessOrder(db = sequelize) {
+  const sortPrioritySql = `CASE
+    WHEN \`ProductSn\`.\`status\` = 'in_stock' AND \`ProductSn\`.\`inventory_type\` = 'normal_qty' THEN 10
+    WHEN \`ProductSn\`.\`status\` = 'in_stock' AND \`ProductSn\`.\`inventory_type\` = 'display_qty' THEN 20
+    WHEN \`ProductSn\`.\`status\` IN ('reserved', 'occupied')
+      OR (\`ProductSn\`.\`status\` = 'in_stock' AND \`ProductSn\`.\`inventory_type\` = 'pending_qty') THEN 30
+    WHEN \`ProductSn\`.\`status\` = 'in_stock' AND \`ProductSn\`.\`inventory_type\` = 'demo_qty' THEN 40
+    WHEN \`ProductSn\`.\`status\` = 'in_stock' AND \`ProductSn\`.\`inventory_type\` = 'rental_demo_qty' THEN 50
+    WHEN \`ProductSn\`.\`status\` = 'in_stock' AND \`ProductSn\`.\`inventory_type\` = 'unsellable_qty' THEN 60
+    WHEN \`ProductSn\`.\`status\` = 'sold' THEN 90
+    ELSE 99
+  END`;
+  const currentInventorySql = `(\`ProductSn\`.\`status\` IN ('reserved', 'occupied')
+    OR (\`ProductSn\`.\`status\` = 'in_stock' AND \`ProductSn\`.\`inventory_type\` IN (
+      'normal_qty', 'display_qty', 'pending_qty', 'demo_qty', 'rental_demo_qty', 'unsellable_qty'
+    )))`;
+
+  return [
+    [db.literal(sortPrioritySql), 'ASC'],
+    [db.literal(`CASE WHEN ${currentInventorySql} THEN COALESCE(\`ProductSn\`.\`original_inbound_time\`, \`ProductSn\`.\`inbound_time\`) END`), 'ASC'],
+    [db.literal(`CASE WHEN NOT (${currentInventorySql}) THEN \`ProductSn\`.\`update_time\` END`), 'DESC'],
+    [db.literal('`ProductSn`.`sn_id`'), 'DESC']
+  ];
+}
+
 function resolveOriginalInboundTime(originalInboundTime, inboundTime) {
   return originalInboundTime || inboundTime || null;
 }
@@ -1903,13 +1928,7 @@ async function getSnList(ctx) {
 
     const { count, rows } = await ProductSn.findAndCountAll({
       where,
-      order: [
-        [sequelize.literal("CASE WHEN `ProductSn`.`status` = 'in_stock' THEN 0 ELSE 1 END"), 'ASC'],
-        [sequelize.literal('CASE WHEN COALESCE(`ProductSn`.`original_inbound_time`, `ProductSn`.`inbound_time`) IS NULL THEN 1 ELSE 0 END'), 'ASC'],
-        [sequelize.literal("CASE WHEN `ProductSn`.`status` = 'in_stock' THEN COALESCE(`ProductSn`.`original_inbound_time`, `ProductSn`.`inbound_time`) END"), 'ASC'],
-        [sequelize.literal("CASE WHEN `ProductSn`.`status` <> 'in_stock' THEN COALESCE(`ProductSn`.`original_inbound_time`, `ProductSn`.`inbound_time`) END"), 'DESC'],
-        [sequelize.literal('`ProductSn`.`sn_id`'), 'DESC']
-      ],
+      order: buildSnListBusinessOrder(),
       ...paginate({}, { page, pageSize })
     });
 
@@ -6154,6 +6173,7 @@ module.exports = {
     getSnSalesResourceQuantitySnapshot,
     getInventoryProductType,
     getSnStatusLabel,
+    buildSnListBusinessOrder,
     isSpecialPriceProduct,
     matchesInventoryModelFilter,
     compareInventoryModelRows,
