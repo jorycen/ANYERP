@@ -1516,7 +1516,7 @@ function buildInventorySummaryExportRows(productRows, primaryPnMap = new Map()) 
     .map(({ row }) => row)
     .map(row => ({
       产品名称: row.product_name || '',
-      PN: primaryPnMap.get(row.product_id) || '',
+      PN: primaryPnMap.get(row.product_id) || row.pn_code || row.manufacturer_code || '',
       定价: Number(row.standard_price || 0),
       库存: Number(row.normal_qty || 0),
       佳华库存: row.changhong_inventory || '-',
@@ -1818,6 +1818,7 @@ async function getList(ctx) {
         spec: p.config || '',
         product_code: p.product_code || '',
         manufacturer_code: p.manufacturer_code || '',
+        pn_code: p.manufacturer_code || '',
         standard_price: p.ProductPrice ? p.ProductPrice.standard_price : 0,
         retail_price: p.ProductPrice ? p.ProductPrice.retail_price : 0,
         min_sale_price: p.ProductPrice ? p.ProductPrice.min_sale_price : 0,
@@ -1886,7 +1887,7 @@ async function getList(ctx) {
         if (!primaryPnMap.has(row.product_id)) primaryPnMap.set(row.product_id, row.pn_code || '');
       });
       const data = buildInventorySummaryExportRows(exportRows, primaryPnMap);
-      sendExcel(ctx, data, ['产品名称', 'PN', '定价', '库存'],
+      sendExcel(ctx, data, ['产品名称', 'PN', '定价', '库存', '佳华库存', '汇一库存'],
         `库存简表_${new Date().toISOString().slice(0, 10)}.xlsx`, '库存简表');
       return;
     }
@@ -1898,8 +1899,7 @@ async function getList(ctx) {
         类别: row.category || '',
         商品名称: row.product_name || '',
         产品配置: row.spec || '',
-        商品编码: row.product_code || '',
-        厂商编码: row.manufacturer_code || '',
+        PN: row.pn_code || row.manufacturer_code || '',
         销售定价: Number(row.standard_price || 0),
         销售仓: Number(row.normal_qty || 0),
         正规货: Number(row.regular_qty || 0),
@@ -1919,7 +1919,7 @@ async function getList(ctx) {
         近30天销量: Number(row.sales_30_qty || 0)
       }));
       sendExcel(ctx, data, [
-        '门店', '类别', '商品名称', '产品配置', '商品编码', '厂商编码', '销售定价',
+        '门店', '类别', '商品名称', '产品配置', 'PN', '销售定价',
         '销售仓', '正规货', '国补货', '纯二手货', '铺货仓库存', '样品仓库存',
         '不可售库存', '占用仓库存', '租赁样机仓库存', '当前门店库存', '其他门店库存', '总库存',
         '佳华库存', '汇一库存', '近7天销量', '近30天销量'

@@ -257,6 +257,15 @@ test('inventory summary export keeps only in-stock target categories and sorts t
   ]);
 });
 
+test('库存简表将厂商编码作为唯一 PN 字段兜底', () => {
+  const [row] = _test.buildInventorySummaryExportRows([
+    { product_id: 'sp', category: '配件', product_name: '内存条', manufacturer_code: '888046957', normal_qty: 1 }
+  ]);
+  assert.equal(row.PN, '888046957');
+  assert.equal(Object.hasOwn(row, '商品编码'), false);
+  assert.equal(Object.hasOwn(row, '厂商编码'), false);
+});
+
 test('导出门店及总库存合计六类仓库，不重复累加资源分类数量', () => {
   const rows = _test.buildStoreInventoryExportRows([{
     total_stock_qty: 10,

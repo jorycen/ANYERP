@@ -58,8 +58,7 @@
             <el-table-column prop="category" label="类别" width="100" />
             <el-table-column prop="product_name" label="商品名称" min-width="140" />
             <el-table-column prop="spec" label="产品配置" width="130" />
-            <el-table-column prop="product_code" label="商品编码" width="120" />
-            <el-table-column prop="manufacturer_code" label="厂商编码" width="120" />
+            <el-table-column prop="pn_code" label="PN" width="140" />
             <el-table-column v-if="isSummaryQuickModelFilter" label="近7天机型指标" width="150">
               <template #default="{ row }">
                 <template v-if="summaryQuery.modelFilter === 'hot7'">
