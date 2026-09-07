@@ -126,13 +126,17 @@ async function ensureSupplierRebateAccount(supplier, transaction = null) {
 async function addRebate(ctx) {
   const body = ctx.request.body || {};
   const supplierId = body.supplierId || body.supplier_id;
-  const amount = Math.round(toNumber(body.amount) * 100) / 100;
+  const direction = String(body.direction || 'increase').trim().toLowerCase();
+  const inputAmount = Math.round(toNumber(body.amount) * 100) / 100;
   const remark = String(body.remark || '').trim();
   const postingDate = body.postingDate || body.posting_date || new Date().toISOString().slice(0, 10);
   if (!supplierId) ctx.throw(400, '请选择供应商');
-  if (!Number.isFinite(amount) || amount <= 0) ctx.throw(400, '请输入正确的上账金额');
+  if (!['increase', 'decrease'].includes(direction)) ctx.throw(400, '请选择正确的上账类型');
+  if (!Number.isFinite(inputAmount) || inputAmount <= 0) ctx.throw(400, '请输入正确的上账金额');
   if (!remark) ctx.throw(400, '返利上账必须填写备注');
   if (!parseDate(postingDate)) ctx.throw(400, '请选择正确的上账日期');
+  const isDecrease = direction === 'decrease';
+  const amount = isDecrease ? -inputAmount : inputAmount;
 
   const supplier = await Supplier.findOne({
     where: { supplier_id: supplierId, status: 1, is_deleted: 0 }
@@ -175,8 +179,8 @@ async function addRebate(ctx) {
       rebate_id: rebateId,
       supplier_id: supplier.supplier_id,
       supplier_name: supplier.name,
-      type: 'credit',
-      amount,
+      type: isDecrease ? 'debit' : 'credit',
+      amount: inputAmount,
       balance,
       related_no: postingNo,
       remark,
@@ -187,15 +191,19 @@ async function addRebate(ctx) {
     }, { transaction });
     await recordSupplierRebateAccountTransaction(
       supplierId,
-      'income',
-      amount,
-      `返利上账：${remark}`,
+      isDecrease ? 'expense' : 'income',
+      inputAmount,
+      `返利${isDecrease ? '扣减' : '增加'}上账：${remark}`,
       postingNo,
       user.name || user.phone || '',
       transaction
     );
   });
-  ctx.body = { code: 0, message: '返利上账单已生效，可立即用于采购抵扣', data: postingOrder };
+  ctx.body = {
+    code: 0,
+    message: isDecrease ? '返利扣减上账单已生效' : '返利上账单已生效，可立即用于采购抵扣',
+    data: postingOrder
+  };
 }
 
 async function reverseRebate(ctx) {
@@ -213,6 +221,7 @@ async function getRebatePostingOrders(ctx) {
   if (remark) where.remark = { [Op.like]: `%${remark}%` };
   if (String(unmatchedOnly || '') === '1') {
     where.status = { [Op.in]: ['UNMATCHED', 'PARTIALLY_MATCHED'] };
+    where.amount = { [Op.gt]: 0 };
   }
   const start = chinaDateBoundary(startDate, false);
   const end = chinaDateBoundary(endDate, true);
@@ -272,25 +281,30 @@ async function reverseRebatePostingOrder(ctx) {
       lock: transaction.LOCK.UPDATE
     });
     const amount = Number(order.amount || 0);
+    const absoluteAmount = Math.abs(amount);
+    const isDecrease = amount < 0;
     const balance = Number(latest?.balance || 0);
-    const activePostingAmount = Number(await RebatePostingOrder.sum('amount', {
-      where: {
-        supplier_id: order.supplier_id,
-        status: { [Op.ne]: 'REVERSED' }
-      },
-      transaction
-    }) || 0);
-    if (balance + 0.0001 < activePostingAmount) {
-      ctx.throw(
-        409,
-        `该供应商仍有 ¥${(activePostingAmount - balance).toFixed(2)} 返利被采购占用；请先完成采购退单`
-      );
+    if (!isDecrease) {
+      const activePostingAmount = Number(await RebatePostingOrder.sum('amount', {
+        where: {
+          supplier_id: order.supplier_id,
+          status: { [Op.ne]: 'REVERSED' },
+          amount: { [Op.gt]: 0 }
+        },
+        transaction
+      }) || 0);
+      if (balance + 0.0001 < activePostingAmount) {
+        ctx.throw(
+          409,
+          `该供应商仍有 ¥${(activePostingAmount - balance).toFixed(2)} 返利被采购占用；请先完成采购退单`
+        );
+      }
     }
     const originalRebate = await SupplierRebate.findOne({
       where: {
         source_type: 'posting_order',
         source_id: order.posting_id,
-        type: 'credit',
+        type: isDecrease ? 'debit' : 'credit',
         status: 'active'
       },
       transaction,
@@ -301,8 +315,8 @@ async function reverseRebatePostingOrder(ctx) {
       rebate_id: generateUUID(),
       supplier_id: order.supplier_id,
       supplier_name: order.supplier_name,
-      type: 'debit',
-      amount,
+      type: isDecrease ? 'credit' : 'debit',
+      amount: absoluteAmount,
       balance: balance - amount,
       related_no: order.posting_no,
       remark: `返利上账单冲销：${reason}`,
@@ -314,8 +328,8 @@ async function reverseRebatePostingOrder(ctx) {
     }, { transaction });
     await recordSupplierRebateAccountTransaction(
       order.supplier_id,
-      'expense',
-      amount,
+      isDecrease ? 'income' : 'expense',
+      absoluteAmount,
       `返利上账单冲销：${reason}`,
       `${order.posting_no}:REV`,
       ctx.state.user.name || ctx.state.user.phone || '',

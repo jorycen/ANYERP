@@ -113,6 +113,12 @@
             <el-option v-for="item in suppliers" :key="item.supplier_id" :label="item.name" :value="item.supplier_id" />
           </el-select>
         </el-form-item>
+        <el-form-item label="上账类型" required>
+          <el-radio-group v-model="form.direction">
+            <el-radio value="increase">增加（默认）</el-radio>
+            <el-radio value="decrease">扣减</el-radio>
+          </el-radio-group>
+        </el-form-item>
         <el-form-item label="上账金额" required>
           <el-input-number v-model="form.amount" :min="0.01" :precision="2" :step="1000" style="width: 100%" />
         </el-form-item>
@@ -162,7 +168,7 @@ const query = reactive({
   status: '',
   remark: ''
 })
-const form = reactive({ postingDate: today(), supplierId: '', amount: 0, remark: '' })
+const form = reactive({ postingDate: today(), supplierId: '', direction: 'increase', amount: 0, remark: '' })
 
 const money = value => Number(value || 0).toFixed(2)
 const formatDateTime = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
@@ -221,7 +227,7 @@ function resetQuery() {
 }
 
 function resetForm() {
-  Object.assign(form, { postingDate: today(), supplierId: '', amount: 0, remark: '' })
+  Object.assign(form, { postingDate: today(), supplierId: '', direction: 'increase', amount: 0, remark: '' })
 }
 
 function openCreate() {

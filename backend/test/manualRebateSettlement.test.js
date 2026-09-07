@@ -340,6 +340,152 @@ test('返利上账生成上账单、可用余额和账户流水', async () => {
   }
 });
 
+test('返利扣减上账生成负上账金额并同步减少返利余额', async () => {
+  const originals = {
+    transaction: models.sequelize.transaction,
+    supplierFindOne: models.Supplier.findOne,
+    supplierFindByPk: models.Supplier.findByPk,
+    accountFindOne: models.SettlementAccount.findOne,
+    postingCreate: models.RebatePostingOrder.create,
+    rebateFindOne: models.SupplierRebate.findOne,
+    rebateCreate: models.SupplierRebate.create,
+    accountSum: models.SettlementAccountTransaction.sum,
+    accountCreate: models.SettlementAccountTransaction.create
+  };
+  let postingRow;
+  let rebateRow;
+  let accountRow;
+  models.sequelize.transaction = async handler => handler({ LOCK: { UPDATE: 'UPDATE' } });
+  models.Supplier.findOne = async () => ({ supplier_id: 'SUP_1', name: '测试厂商' });
+  models.Supplier.findByPk = async () => ({ supplier_id: 'SUP_1', name: '测试厂商' });
+  models.SettlementAccount.findOne = async () => ({ account_id: 'ACC_SUP_1', status: 1 });
+  models.RebatePostingOrder.create = async values => { postingRow = values; return values; };
+  models.SupplierRebate.findOne = async () => ({ balance: 5000 });
+  models.SupplierRebate.create = async values => { rebateRow = values; };
+  models.SettlementAccountTransaction.sum = async (field, options) => (
+    options.where.type === 'income' ? 5000 : 0
+  );
+  models.SettlementAccountTransaction.create = async values => { accountRow = values; };
+
+  try {
+    const ctx = context({
+      body: {
+        supplierId: 'SUP_1',
+        postingDate: '2026-09-07',
+        direction: 'decrease',
+        amount: 1200,
+        remark: '冲减重复返利'
+      }
+    });
+    await rebateController.addRebate(ctx);
+
+    assert.equal(postingRow.amount, -1200);
+    assert.equal(rebateRow.type, 'debit');
+    assert.equal(rebateRow.amount, 1200);
+    assert.equal(rebateRow.balance, 3800);
+    assert.equal(accountRow.type, 'expense');
+    assert.equal(accountRow.amount, 1200);
+    assert.equal(accountRow.balance_after, 3800);
+    assert.match(ctx.body.message, /扣减/);
+  } finally {
+    models.sequelize.transaction = originals.transaction;
+    models.Supplier.findOne = originals.supplierFindOne;
+    models.Supplier.findByPk = originals.supplierFindByPk;
+    models.SettlementAccount.findOne = originals.accountFindOne;
+    models.RebatePostingOrder.create = originals.postingCreate;
+    models.SupplierRebate.findOne = originals.rebateFindOne;
+    models.SupplierRebate.create = originals.rebateCreate;
+    models.SettlementAccountTransaction.sum = originals.accountSum;
+    models.SettlementAccountTransaction.create = originals.accountCreate;
+  }
+});
+
+test('冲销返利扣减上账时恢复返利余额', async () => {
+  const originals = {
+    transaction: models.sequelize.transaction,
+    postingFindByPk: models.RebatePostingOrder.findByPk,
+    postingSum: models.RebatePostingOrder.sum,
+    rebateFindOne: models.SupplierRebate.findOne,
+    rebateCreate: models.SupplierRebate.create,
+    accountFindOne: models.SettlementAccount.findOne,
+    accountSum: models.SettlementAccountTransaction.sum,
+    accountCreate: models.SettlementAccountTransaction.create
+  };
+  const postingUpdates = {};
+  const originalRebateUpdates = {};
+  let reversalRebate;
+  let accountTransaction;
+  models.sequelize.transaction = async handler => handler({ LOCK: { UPDATE: 'UPDATE' } });
+  models.RebatePostingOrder.findByPk = async () => ({
+    posting_id: 'RPO_DECREASE',
+    posting_no: 'RPO20260907001',
+    supplier_id: 'SUP_1',
+    supplier_name: '测试厂商',
+    amount: -1200,
+    matched_amount: 0,
+    status: 'UNMATCHED',
+    update: async values => Object.assign(postingUpdates, values)
+  });
+  models.RebatePostingOrder.sum = async () => { throw new Error('扣减上账冲销无需检查采购占用'); };
+  models.SupplierRebate.findOne = async options => {
+    if (options.where.source_type === 'posting_order') {
+      return {
+        rebate_id: 'REB_DECREASE',
+        update: async values => Object.assign(originalRebateUpdates, values)
+      };
+    }
+    return { balance: 3800 };
+  };
+  models.SupplierRebate.create = async values => { reversalRebate = values; };
+  models.SettlementAccount.findOne = async () => ({ account_id: 'ACC_SUP_1' });
+  models.SettlementAccountTransaction.sum = async (field, options) => (
+    options.where.type === 'income' ? 5000 : 1200
+  );
+  models.SettlementAccountTransaction.create = async values => { accountTransaction = values; };
+
+  try {
+    const ctx = context({ params: { postingId: 'RPO_DECREASE' }, body: { reason: '扣减录入错误' } });
+    await rebateController.reverseRebatePostingOrder(ctx);
+
+    assert.equal(reversalRebate.type, 'credit');
+    assert.equal(reversalRebate.amount, 1200);
+    assert.equal(reversalRebate.balance, 5000);
+    assert.equal(accountTransaction.type, 'income');
+    assert.equal(accountTransaction.amount, 1200);
+    assert.equal(accountTransaction.balance_after, 5000);
+    assert.equal(originalRebateUpdates.status, 'reversed');
+    assert.equal(postingUpdates.status, 'REVERSED');
+  } finally {
+    models.sequelize.transaction = originals.transaction;
+    models.RebatePostingOrder.findByPk = originals.postingFindByPk;
+    models.RebatePostingOrder.sum = originals.postingSum;
+    models.SupplierRebate.findOne = originals.rebateFindOne;
+    models.SupplierRebate.create = originals.rebateCreate;
+    models.SettlementAccount.findOne = originals.accountFindOne;
+    models.SettlementAccountTransaction.sum = originals.accountSum;
+    models.SettlementAccountTransaction.create = originals.accountCreate;
+  }
+});
+
+test('返利下账核销候选排除负数扣减上账单', async () => {
+  const original = models.RebatePostingOrder.findAndCountAll;
+  let queryOptions;
+  models.RebatePostingOrder.findAndCountAll = async options => {
+    queryOptions = options;
+    return { count: 0, rows: [] };
+  };
+
+  try {
+    const ctx = context({ query: { supplierId: 'SUP_1', unmatchedOnly: '1' } });
+    await rebateController.getRebatePostingOrders(ctx);
+
+    assert.equal(queryOptions.where.amount[Op.gt], 0);
+    assert.deepEqual(queryOptions.where.status[Op.in], ['UNMATCHED', 'PARTIALLY_MATCHED']);
+  } finally {
+    models.RebatePostingOrder.findAndCountAll = original;
+  }
+});
+
 test('返利上账时后台自动创建供应商返利内部账户', async () => {
   const originals = {
     transaction: models.sequelize.transaction,
