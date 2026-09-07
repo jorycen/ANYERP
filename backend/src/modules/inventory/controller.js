@@ -1520,7 +1520,9 @@ function buildInventorySummaryExportRows(productRows, primaryPnMap = new Map()) 
       定价: Number(row.standard_price || 0),
       库存: Number(row.normal_qty || 0),
       佳华库存: row.changhong_inventory || '-',
-      汇一库存: row.tianjin_inventory || '-'
+      汇一库存: row.tianjin_inventory || '-',
+      近7天销量: Number(row.sales_7_qty || 0),
+      近30天销量: Number(row.sales_30_qty || 0)
     }));
 }
 
@@ -1887,7 +1889,7 @@ async function getList(ctx) {
         if (!primaryPnMap.has(row.product_id)) primaryPnMap.set(row.product_id, row.pn_code || '');
       });
       const data = buildInventorySummaryExportRows(exportRows, primaryPnMap);
-      sendExcel(ctx, data, ['产品名称', 'PN', '定价', '库存', '佳华库存', '汇一库存'],
+      sendExcel(ctx, data, ['产品名称', 'PN', '定价', '库存', '佳华库存', '汇一库存', '近7天销量', '近30天销量'],
         `库存简表_${new Date().toISOString().slice(0, 10)}.xlsx`, '库存简表');
       return;
     }
