@@ -1598,9 +1598,36 @@ async function approveRequest(ctx) {
     if ((!item.productId && !isUsedProduct) || (isUsedProduct && !String(item.productName || item.product_name || '').trim()) || Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
   }
   try {
-  const previousStatus = request.status;
+  // 审批状态校验和入库单生成必须串行执行，避免重复点击或客户端重试
+  // 同时通过两次审批并各自生成一套入库单。
+  const lockedRequest = await PurchaseRequest.findByPk(requestId, {
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  if (!lockedRequest) ctx.throw(404, '采购申请不存在');
+  if (lockedRequest.status === status) {
+    await transaction.commit();
+    transactionCommitted = true;
+    ctx.body = { code: 0, message: '审批已完成，请勿重复提交' };
+    return;
+  }
+  if (lockedRequest.status !== 'pending') {
+    ctx.throw(409, '采购申请已处理，不能重复审批');
+  }
+  if (status === 'approved') {
+    const existingInbound = await Inbound.findOne({
+      where: { purchase_request_id: requestId },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (existingInbound) {
+      ctx.throw(409, `采购申请已生成入库单 ${existingInbound.inbound_no}，不能重复审批`);
+    }
+  }
+
+  const previousStatus = lockedRequest.status;
   const approveTime = new Date();
-  await request.update({
+  await lockedRequest.update({
     status,
     approve_user: user.name,
     approve_time: approveTime,

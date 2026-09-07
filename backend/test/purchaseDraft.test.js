@@ -38,6 +38,20 @@ test('采购审批禁止没有明细的空采购申请', () => {
   assert.match(purchaseControllerSource, /PurchaseRequestItem\.create\([\s\S]*?\{ transaction \}\)/);
 });
 
+test('采购审批通过使用行锁和已有入库单校验防止重复生成', () => {
+  assert.match(
+    purchaseControllerSource,
+    /PurchaseRequest\.findByPk\(requestId, \{[\s\S]*?transaction,[\s\S]*?lock: transaction\.LOCK\.UPDATE[\s\S]*?\}\)/
+  );
+  assert.match(purchaseControllerSource, /lockedRequest\.status === status/);
+  assert.match(purchaseControllerSource, /lockedRequest\.status !== 'pending'/);
+  assert.match(
+    purchaseControllerSource,
+    /Inbound\.findOne\(\{[\s\S]*?purchase_request_id: requestId[\s\S]*?lock: transaction\.LOCK\.UPDATE/
+  );
+  assert.match(purchaseControllerSource, /不能重复审批/);
+});
+
 test('采购申请门店库位分配可以展开为入库明细', () => {
   const allocations = purchaseController._test.flattenPurchaseAllocations({
     quantity: 5,
