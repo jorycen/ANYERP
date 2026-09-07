@@ -1515,6 +1515,7 @@ function buildInventorySummaryExportRows(productRows, primaryPnMap = new Map()) 
     })
     .map(({ row }) => row)
     .map(row => ({
+      产品类型: row.category || '',
       产品名称: row.product_name || '',
       PN: primaryPnMap.get(row.product_id) || row.pn_code || row.manufacturer_code || '',
       定价: Number(row.standard_price || 0),
@@ -1889,7 +1890,7 @@ async function getList(ctx) {
         if (!primaryPnMap.has(row.product_id)) primaryPnMap.set(row.product_id, row.pn_code || '');
       });
       const data = buildInventorySummaryExportRows(exportRows, primaryPnMap);
-      sendExcel(ctx, data, ['产品名称', 'PN', '定价', '库存', '佳华库存', '汇一库存', '近7天销量', '近30天销量'],
+      sendExcel(ctx, data, ['产品类型', '产品名称', 'PN', '定价', '库存', '佳华库存', '汇一库存', '近7天销量', '近30天销量'],
         `库存简表_${new Date().toISOString().slice(0, 10)}.xlsx`, '库存简表');
       return;
     }
