@@ -28,6 +28,9 @@
             <div class="erp-query-actions"><el-button type="primary" @click="loadSummary">查询</el-button>
             <el-button type="success" :loading="summaryExporting" @click="handleExportSummary">导出</el-button>
             <el-button type="warning" :loading="summarySimpleExporting" @click="handleExportSummarySimple">导出库存简表</el-button>
+            <el-button :loading="supplierImporting" @click="chooseSupplierFile('changhong')">上传佳华库存</el-button>
+            <el-button :loading="supplierImporting" @click="chooseSupplierFile('tianjin')">上传汇一库存</el-button>
+            <input ref="supplierFileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleSupplierFileChange" />
           </div>
           </div>
           <div class="model-filter-panel">
@@ -72,6 +75,8 @@
             <el-table-column prop="standard_price" label="销售定价" width="100">
               <template #default="{ row }">¥{{ row.standard_price }}</template>
             </el-table-column>
+            <el-table-column prop="changhong_inventory" label="佳华库存" width="95" />
+            <el-table-column prop="tianjin_inventory" label="汇一库存" width="95" />
             <el-table-column prop="normal_qty" label="现有库存" width="100">
               <template #default="{ row }">
                 <el-popover placement="bottom" :width="420" trigger="hover">
@@ -1785,6 +1790,9 @@ const categories = ref([])
 
 // 库存汇总
 const summaryData = ref([])
+const supplierFileInput = ref(null)
+const supplierImportVendor = ref('')
+const supplierImporting = ref(false)
 const summaryTotal = ref(0)
 const summaryLoading = ref(false)
 const summaryExporting = ref(false)
@@ -2342,6 +2350,29 @@ const selectInventoryModelFilter = (modelFilter) => {
   summaryQuery.page = 1
   summaryQuery.pageSize = ['hot7', 'highMargin7'].includes(summaryQuery.modelFilter) ? 10 : 20
   loadSummary()
+}
+
+const chooseSupplierFile = (vendor) => {
+  supplierImportVendor.value = vendor
+  if (supplierFileInput.value) {
+    supplierFileInput.value.value = ''
+    supplierFileInput.value.click()
+  }
+}
+
+const handleSupplierFileChange = async (event) => {
+  const file = event.target.files?.[0]
+  if (!file) return
+  supplierImporting.value = true
+  try {
+    const res = await api.importSupplierInventory(file, supplierImportVendor.value)
+    ElMessage.success(res.message || `${supplierImportVendor.value === 'changhong' ? '佳华' : '汇一'}库存导入成功`)
+    await loadSummary()
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || err.message || '服务商库存导入失败')
+  } finally {
+    supplierImporting.value = false
+  }
 }
 
 const handleExportSummary = async () => {

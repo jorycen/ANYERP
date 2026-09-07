@@ -9,7 +9,7 @@ const {
   executeInbound, getReturnList, requestReturn, approveReturn, executeReturn,
   inbound, outbound, transfer, getTransferList, confirmTransferOut, getTransferShippingPhoto,
   confirmTransferIn, returnTransfer, revokeTransfer, rejectTransfer, getTransferDetail, getConversionList, getConversionDetail, createConversion,
-  voidConversion, getLocationsByStore, updateSn, adjustSnLocation, snTrace
+  voidConversion, getLocationsByStore, updateSn, adjustSnLocation, snTrace, importSupplierInventory
 } = require('./controller');
 const { submitSnChangeApplication } = require('./snChangeApplication');
 const { enforceStoreOwnership, requireRole } = require('../../middleware/permission');
@@ -22,6 +22,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 router.get('/list', getList);
 router.get('/list/export', exportList);
 router.get('/summary-export', exportSummaryList);
+router.post('/supplier-inventory/import', requireRole('manager', 'admin'), upload.single('file'), importSupplierInventory);
 router.get('/sn-inventory-list', getSnInventoryList);
 router.get('/sn-inventory-list/export', exportSnInventoryList);
 router.put('/sn/:snId/special-price', requireRole('admin'), setSnSpecialPrice);

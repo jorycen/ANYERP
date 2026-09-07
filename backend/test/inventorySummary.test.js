@@ -233,7 +233,8 @@ test('inventory summary export keeps only in-stock target categories and sorts t
     { product_id: 'phone', category: '手机', product_name: '手机', standard_price: 30, normal_qty: 2 },
     { product_id: 'tablet', category: '平板', product_name: '平板', standard_price: 20, normal_qty: 1 },
     { product_id: 'notebook', category: '电子产品/笔记本', product_name: '笔记本', standard_price: 10, normal_qty: 5 },
-    { product_id: 'empty', category: '手机', product_name: '无库存手机', standard_price: 60, normal_qty: 0 },
+    { product_id: 'supplier', category: '手机', product_name: '服务商有货手机', standard_price: 60, normal_qty: 0, changhong_inventory: '少量', tianjin_inventory: '8' },
+    { product_id: 'empty', category: '手机', product_name: '无库存手机', standard_price: 60, normal_qty: 0, changhong_inventory: '-', tianjin_inventory: '0' },
     { product_id: 'other', category: '其他', product_name: '其他商品', standard_price: 70, normal_qty: 6 }
   ], new Map([
     ['accessory', 'PN-A'],
@@ -241,16 +242,18 @@ test('inventory summary export keeps only in-stock target categories and sorts t
     ['phone', 'PN-P'],
     ['tablet', 'PN-T'],
     ['notebook', 'PN-N'],
+    ['supplier', 'PN-S'],
     ['empty', 'PN-E'],
     ['other', 'PN-O']
   ]));
 
   assert.deepEqual(rows, [
-    { 产品名称: '笔记本', PN: 'PN-N', 定价: 10, 库存: 5 },
-    { 产品名称: '平板', PN: 'PN-T', 定价: 20, 库存: 1 },
-    { 产品名称: '手机', PN: 'PN-P', 定价: 30, 库存: 2 },
-    { 产品名称: '台机', PN: 'PN-D', 定价: 40, 库存: 3 },
-    { 产品名称: '配件', PN: 'PN-A', 定价: 50, 库存: 4 }
+    { 产品名称: '笔记本', PN: 'PN-N', 定价: 10, 库存: 5, 佳华库存: '-', 汇一库存: '-' },
+    { 产品名称: '平板', PN: 'PN-T', 定价: 20, 库存: 1, 佳华库存: '-', 汇一库存: '-' },
+    { 产品名称: '服务商有货手机', PN: 'PN-S', 定价: 60, 库存: 0, 佳华库存: '少量', 汇一库存: '8' },
+    { 产品名称: '手机', PN: 'PN-P', 定价: 30, 库存: 2, 佳华库存: '-', 汇一库存: '-' },
+    { 产品名称: '台机', PN: 'PN-D', 定价: 40, 库存: 3, 佳华库存: '-', 汇一库存: '-' },
+    { 产品名称: '配件', PN: 'PN-A', 定价: 50, 库存: 4, 佳华库存: '-', 汇一库存: '-' }
   ]);
 });
 

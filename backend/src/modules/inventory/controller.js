@@ -35,6 +35,12 @@ const { releaseDepositRedemptionForOrder } = require('../sales/controller');
 const { assertActiveProducts } = require('../../utils/activeProduct');
 const { syncSerializedInventoryBalance } = require('./serializedInventoryBalance');
 const { ensurePurchaseReturnAccounting } = require('../purchase/purchaseReturnAccounting');
+const {
+  VENDORS: SUPPLIER_INVENTORY_VENDORS,
+  parseSupplierWorkbook,
+  replaceSupplierInventory,
+  inventoryByProduct
+} = require('./supplierInventory');
 
 const REUSABLE_INBOUND_SN_STATUSES = new Set(['out_stock', 'sold']);
 const TRANSFER_SHIPPING_PHOTO_DIR = path.resolve(__dirname, '../../../uploads/transfer-shipping-photos');
@@ -1497,7 +1503,11 @@ function buildStoreInventoryExportRows(productRows) {
 function buildInventorySummaryExportRows(productRows, primaryPnMap = new Map()) {
   return [...productRows]
     .map(row => ({ row, categoryRank: getInventorySummaryCategoryRank(row.category) }))
-    .filter(({ row, categoryRank }) => categoryRank !== null && Number(row.normal_qty || 0) > 0)
+    .filter(({ row, categoryRank }) => categoryRank !== null && (
+      Number(row.normal_qty || 0) > 0
+      || !['-', '0', ''].includes(String(row.changhong_inventory || ''))
+      || !['-', '0', ''].includes(String(row.tianjin_inventory || ''))
+    ))
     .sort((a, b) => {
       if (a.categoryRank !== b.categoryRank) return a.categoryRank - b.categoryRank;
       return String(a.row.product_name || '').localeCompare(String(b.row.product_name || ''), 'zh-Hans-CN')
@@ -1508,8 +1518,34 @@ function buildInventorySummaryExportRows(productRows, primaryPnMap = new Map()) 
       产品名称: row.product_name || '',
       PN: primaryPnMap.get(row.product_id) || '',
       定价: Number(row.standard_price || 0),
-      库存: Number(row.normal_qty || 0)
+      库存: Number(row.normal_qty || 0),
+      佳华库存: row.changhong_inventory || '-',
+      汇一库存: row.tianjin_inventory || '-'
     }));
+}
+
+async function importSupplierInventory(ctx) {
+  if (!ctx.file?.buffer?.length) ctx.throw(400, '请选择Excel文件');
+  const vendor = String(ctx.request.body?.vendor || '').trim();
+  if (!SUPPLIER_INVENTORY_VENDORS[vendor]) ctx.throw(400, '请选择佳华或汇一');
+  const user = ctx.state.user || {};
+  const distributorId = user.distributorId || user.distributor_id;
+  if (!distributorId) ctx.throw(400, '当前账号未关联经销商');
+  let parsed;
+  try {
+    parsed = parseSupplierWorkbook(ctx.file.buffer, vendor);
+  } catch (error) {
+    ctx.throw(400, error.message || 'Excel解析失败');
+  }
+  const count = await replaceSupplierInventory({
+    distributorId, vendor,
+    fileName: ctx.file.originalname || '',
+    uploadedBy: user.staffId || user.staff_id || user.userId || '',
+    records: parsed.records
+  });
+  ctx.body = { code: 0, message: `${SUPPLIER_INVENTORY_VENDORS[vendor]}库存导入成功`, data: {
+    vendor, vendorName: SUPPLIER_INVENTORY_VENDORS[vendor], count, ignoredSheets: parsed.ignoredSheets
+  } };
 }
 
 function mergeSnSalesStockBreakdown(inventoryRows, snSalesRows) {
@@ -1607,6 +1643,7 @@ async function getList(ctx) {
     });
     const count = products.length;
     const productIds = products.map(p => p.product_id);
+    const supplierInventoryMap = await inventoryByProduct(productIds, user.distributorId || user.distributor_id);
     const allStockMap = await buildSalesStockMap(productIds, storeId, storeIds);
 
     const inventoryWhere = { product_id: { [Op.in]: productIds } };
@@ -1809,6 +1846,12 @@ async function getList(ctx) {
         max_gross_profit_7: sales.max_gross_profit_7,
         gross_margin_7: sales.gross_margin_7,
         special_sn_count: specialProductMap[p.product_id] || 0,
+        changhong_inventory: supplierInventoryMap.get(String(p.product_id))?.changhong || '-',
+        tianjin_inventory: supplierInventoryMap.get(String(p.product_id))?.tianjin || '-',
+        supplier_inventory_updated_at: {
+          changhong: supplierInventoryMap.get(String(p.product_id))?.changhongUpdatedAt || null,
+          tianjin: supplierInventoryMap.get(String(p.product_id))?.tianjinUpdatedAt || null
+        },
         _category_rank: getInventoryCategoryRank(p.category, p.accessory_type, p.name, p.config),
         _create_time: p.create_time
       };
@@ -1870,6 +1913,8 @@ async function getList(ctx) {
         当前门店库存: Number(row.current_store_stock_qty || 0),
         其他门店库存: Number(row.other_store_stock_qty || 0),
         总库存: Number(row.total_stock_qty || 0),
+        佳华库存: row.changhong_inventory || '-',
+        汇一库存: row.tianjin_inventory || '-',
         近7天销量: Number(row.sales_7_qty || 0),
         近30天销量: Number(row.sales_30_qty || 0)
       }));
@@ -1877,7 +1922,7 @@ async function getList(ctx) {
         '门店', '类别', '商品名称', '产品配置', '商品编码', '厂商编码', '销售定价',
         '销售仓', '正规货', '国补货', '纯二手货', '铺货仓库存', '样品仓库存',
         '不可售库存', '占用仓库存', '租赁样机仓库存', '当前门店库存', '其他门店库存', '总库存',
-        '近7天销量', '近30天销量'
+        '佳华库存', '汇一库存', '近7天销量', '近30天销量'
       ], `库存汇总_${new Date().toISOString().slice(0, 10)}.xlsx`, '库存汇总');
       return;
     }
@@ -6119,6 +6164,7 @@ async function getLocationsByStore(ctx) {
 }
 
 module.exports = {
+  importSupplierInventory,
   getList,
   exportList,
   exportSummaryList,
