@@ -3,6 +3,13 @@ const assert = require('node:assert/strict');
 const { _test } = require('../src/modules/inventory/controller');
 const salesController = require('../src/modules/sales/controller');
 
+test('SN库存清单状态筛选将两种占用状态合并为已占用', () => {
+  assert.deepEqual(_test.getSnInventoryStatusFilter('in_stock'), ['in_stock']);
+  assert.deepEqual(_test.getSnInventoryStatusFilter('occupied'), ['reserved', 'occupied']);
+  assert.deepEqual(_test.getSnInventoryStatusFilter('sold'), ['sold']);
+  assert.deepEqual(_test.getSnInventoryStatusFilter('unknown'), []);
+});
+
 test('SN销售仓明细保留非销售仓数量，不重复计入销售余额', () => {
   const fields = ['display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty', 'rental_demo_qty'];
   const inventory = [

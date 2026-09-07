@@ -178,6 +178,15 @@ function getSnStatusLabel(status) {
   return labels[String(status || '').trim()] || String(status || '未知');
 }
 
+function getSnInventoryStatusFilter(status) {
+  const filters = {
+    in_stock: ['in_stock'],
+    occupied: ['reserved', 'occupied'],
+    sold: ['sold']
+  };
+  return filters[String(status || '').trim()] || [];
+}
+
 const TRANSFER_PARTICIPANT_FIELDS = [
   'apply_user',
   'confirm_user',
@@ -563,7 +572,7 @@ async function resolveSnPriceScope(ctx, snId, { requireInStock = false } = {}) {
  */
 async function getSnInventoryList(ctx) {
   const {
-    keyword = '', storeId = '', locationId = '', resourceType = '', resourceStatus = '',
+    keyword = '', storeId = '', locationId = '', status = '', resourceType = '', resourceStatus = '',
     specialOnly = '', minAgeDays = '', maxAgeDays = '', page = 1, pageSize = 20
   } = ctx.query;
   const user = ctx.state.user || {};
@@ -597,6 +606,12 @@ async function getSnInventoryList(ctx) {
   if (locationId) {
     where.push('sn.LOCATION_ID = :locationId');
     replacements.locationId = locationId;
+  }
+  if (status) {
+    const statusValues = getSnInventoryStatusFilter(status);
+    if (statusValues.length === 0) ctx.throw(400, 'SN状态筛选值无效');
+    where.push('sn.STATUS IN (:statusValues)');
+    replacements.statusValues = statusValues;
   }
   if (keyword) {
     where.push('(sn.SN_CODE LIKE :keyword OR sn.PN_CODE LIKE :keyword OR p.NAME LIKE :keyword OR p.PRODUCT_CODE LIKE :keyword)');
@@ -6173,6 +6188,7 @@ module.exports = {
     getSnSalesResourceQuantitySnapshot,
     getInventoryProductType,
     getSnStatusLabel,
+    getSnInventoryStatusFilter,
     buildSnListBusinessOrder,
     isSpecialPriceProduct,
     matchesInventoryModelFilter,

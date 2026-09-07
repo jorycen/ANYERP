@@ -227,6 +227,11 @@
             >
               <el-option v-for="location in snInventoryLocations" :key="location.location_id" :label="location.name" :value="location.location_id" />
             </el-select></div>
+            <div class="erp-query-field"><span class="erp-query-label">SN状态</span><el-select v-model="snInventoryQuery.status" placeholder="SN状态" clearable style="width: 130px" @change="querySnInventory">
+              <el-option label="在库" value="in_stock" />
+              <el-option label="已占用" value="occupied" />
+              <el-option label="已销售" value="sold" />
+            </el-select></div>
             <div class="erp-query-field"><span class="erp-query-label">资源类型</span><el-select v-model="snInventoryQuery.resourceType" placeholder="资源类型" clearable style="width: 140px" @change="querySnInventory">
               <el-option v-for="resource in snInventoryResourceOptions" :key="resource.value" :label="resource.label" :value="resource.value" />
             </el-select></div>
@@ -1827,6 +1832,7 @@ const snInventoryQuery = reactive({
   keyword: '',
   storeId: '',
   locationId: '',
+  status: '',
   resourceType: '',
   resourceStatus: '',
   specialOnly: '',
@@ -2662,6 +2668,7 @@ const resetSnInventoryQuery = async () => {
     keyword: '',
     storeId: '',
     locationId: '',
+    status: '',
     resourceType: '',
     resourceStatus: '',
     specialOnly: '',
