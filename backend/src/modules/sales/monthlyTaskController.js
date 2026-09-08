@@ -220,10 +220,13 @@ async function getMonthlyTaskOptions(ctx) {
     limit: 1000,
     raw: true
   });
-  return {
-    stores: stores.map(row => ({ storeId: row.store_id, name: row.name })),
-    staff: staffRows.filter(row => visibleStaffIds.has(String(row.staff_id))).map(row => ({ staffId: String(row.staff_id), name: row.name, storeId: row.store_id || '', storeIds: staffStoreMap.get(String(row.staff_id)) || [] })),
-    products: products.map(row => ({ productId: row.product_id, productCode: row.product_code, name: row.name }))
+  ctx.body = {
+    code: 0,
+    data: {
+      stores: stores.map(row => ({ storeId: row.store_id, name: row.name })),
+      staff: staffRows.filter(row => visibleStaffIds.has(String(row.staff_id))).map(row => ({ staffId: String(row.staff_id), name: row.name, storeId: row.store_id || '', storeIds: staffStoreMap.get(String(row.staff_id)) || [] })),
+      products: products.map(row => ({ productId: row.product_id, productCode: row.product_code, name: row.name }))
+    }
   };
 }
 
