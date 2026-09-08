@@ -21,7 +21,7 @@ const {
 const { Op, QueryTypes } = require('sequelize');
 const { generateUUID } = require('../../utils');
 
-const FORMULA_VERSION = 'ORDER_GP_V8_20260810_FREIGHT';
+const FORMULA_VERSION = 'ORDER_GP_V9_FREIGHT_SEPARATE';
 const VAT_RATE = 0.13;
 const NATIONAL_SUBSIDY_RECEIPT_TAX_RATE = 0.006;
 
@@ -164,6 +164,7 @@ function calculateGrossProfitValues({
   paymentDetails = [],
   productPricingDetails = [],
   supplementDetails = [],
+  freightCostDetails = [],
   invoiceAmount = 0,
   externalAdjustmentEligible = false
 } = {}) {
@@ -211,6 +212,10 @@ function calculateGrossProfitValues({
       signedAmount: amountType === 'decrease' ? -amount : amount
     };
   });
+  const normalizedFreightCosts = freightCostDetails.map(item => ({
+    ...item,
+    amount: roundMoney(Math.abs(toNumber(item.amount)))
+  }));
 
   const productPricingAmount = roundMoney(
     normalizedProductPricing.reduce((sum, item) => sum + item.pricingAmount, 0)
@@ -220,8 +225,9 @@ function calculateGrossProfitValues({
   const vatTaxableAmount = roundMoney(Math.max(0, normalizedInvoiceAmount - productPricingAmount));
   const vatAmount = roundMoney(vatTaxableAmount * VAT_RATE);
   const supplementAmount = roundMoney(normalizedSupplements.reduce((sum, item) => sum + item.signedAmount, 0));
+  const freightCostAmount = roundMoney(normalizedFreightCosts.reduce((sum, item) => sum + item.amount, 0));
   const grossProfitBeforeExternalAdjustment = roundMoney(
-    normalizedReceivableAmount - productPricingAmount - paymentFeeAmount - vatAmount + supplementAmount
+    normalizedReceivableAmount - productPricingAmount - paymentFeeAmount - vatAmount + supplementAmount - freightCostAmount
   );
   const externalAdjustmentFee = externalAdjustmentEligible && grossProfitBeforeExternalAdjustment > 500 ? 200 : 0;
   const grossProfitAmount = roundMoney(grossProfitBeforeExternalAdjustment - externalAdjustmentFee);
@@ -234,13 +240,15 @@ function calculateGrossProfitValues({
     vatTaxableAmount,
     vatAmount,
     supplementAmount,
+    freightCostAmount,
     grossProfitBeforeExternalAdjustment,
     externalAdjustmentEligible: !!externalAdjustmentEligible,
     externalAdjustmentFee,
     grossProfitAmount,
     paymentDetails: normalizedPayments,
     productPricingDetails: normalizedProductPricing,
-    supplementDetails: normalizedSupplements
+    supplementDetails: normalizedSupplements,
+    freightCostDetails: normalizedFreightCosts
   };
 }
 
@@ -271,7 +279,7 @@ function snapshotToResponse(snapshot, order = null) {
   const supplementAmount = roundMoney(row.supplement_amount);
   const freightCostAmount = roundMoney(row.freight_cost_amount);
   const grossProfitBeforeExternalAdjustment = roundMoney(
-    receivableAmount - productPricingAmount - paymentFeeAmount - vatAmount + supplementAmount
+    receivableAmount - productPricingAmount - paymentFeeAmount - vatAmount + supplementAmount - freightCostAmount
   );
   const productPricingDetails = parseJsonArray(
     row.product_pricing_details || row.settlement_cost_details
@@ -281,6 +289,7 @@ function snapshotToResponse(snapshot, order = null) {
     isExternalAdjustmentEligibleProduct(item)
   );
   const externalAdjustmentFee = externalAdjustmentEligible && grossProfitBeforeExternalAdjustment > 500 ? 200 : 0;
+  const storedAdjustmentDetails = parseJsonArray(row.supplement_details);
   return {
     grossProfitId: row.gross_profit_id,
     orderId: row.order_id,
@@ -308,11 +317,12 @@ function snapshotToResponse(snapshot, order = null) {
     grossProfitAmount: roundMoney(row.gross_profit_amount),
     paymentDetails: parseJsonArray(row.payment_fee_details),
     productPricingDetails,
-    supplementDetails: parseJsonArray(row.supplement_details),
+    supplementDetails: storedAdjustmentDetails.filter(item => item.source !== 'freight_cost'),
+    freightCostDetails: storedAdjustmentDetails.filter(item => item.source === 'freight_cost'),
     snapshotStatus: row.snapshot_status,
     calculatedBy: row.calculated_by || '',
     calculatedAt: row.calculated_at,
-    formula: '用户应收 - 服务商商品定价（特价SN优先）/非服务商本次采购价 - 支付手续费 - 增值税 + 补录净额；非服务商的电脑、手机或平板且基础毛利超过500元时另扣200元外调费'
+    formula: '用户应收 - 服务商商品定价（特价SN优先）/非服务商本次采购价 - 支付手续费 - 增值税 + 补录净额 - 运费；非服务商的电脑、手机或平板且基础毛利超过500元时另扣200元外调费'
   };
 }
 
@@ -766,12 +776,12 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     buildSupplementDetails(orderId, transaction),
     buildFreightCostDetails(order, transaction)
   ]);
-  const allSupplementDetails = [...supplementDetails, ...freightCostDetails];
   const values = calculateGrossProfitValues({
     receivableAmount: calculateOrderReceivable(order),
     paymentDetails,
     productPricingDetails,
-    supplementDetails: allSupplementDetails,
+    supplementDetails,
+    freightCostDetails,
     invoiceAmount: order.invoice_amount,
     externalAdjustmentEligible: productPricingDetails.some(item => item.externalAdjustmentEligible)
   });
@@ -790,11 +800,11 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     vat_taxable_amount: values.vatTaxableAmount,
     vat_amount: values.vatAmount,
     supplement_amount: values.supplementAmount,
-    freight_cost_amount: roundMoney(freightCostDetails.reduce((sum, item) => sum + item.amount, 0)),
+    freight_cost_amount: values.freightCostAmount,
     gross_profit_amount: values.grossProfitAmount,
     payment_fee_details: values.paymentDetails,
     product_pricing_details: values.productPricingDetails,
-    supplement_details: values.supplementDetails,
+    supplement_details: [...values.supplementDetails, ...values.freightCostDetails],
     snapshot_status: archived ? 'final' : 'draft',
     calculated_by: calculatedBy || 'system',
     calculated_at: new Date(),

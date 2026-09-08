@@ -49,7 +49,7 @@ const { PassThrough } = require('stream');
 const { Op, literal, QueryTypes } = require('sequelize');
 const { generateOrderNo, generateInboundNo, generateUUID, paginate, formatPaginatedResult } = require('../../utils');
 const { normalizePnCode } = require('../../utils/productPn');
-const { summariesForSns, alignOrderSubsidyRights, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
+const { summariesForSns, alignOrderSubsidyRights, isGovSubsidyEligibleCategory, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
 const { canAccessDistributor, resolveOrderStoreIds } = require('../../utils/distributorScope');
 const { isStoreManagerAccount, isStoreScopedAccount, isMallReportViewer } = require('../../utils/storePermissions');
@@ -2627,7 +2627,7 @@ async function detail(ctx) {
           { model: Distributor, attributes: ['distributor_id', 'name'], required: false }
         ]
       },
-      { model: OrderItem, include: [{ model: Product, attributes: ['product_id', 'need_sn'] }] },
+      { model: OrderItem, include: [{ model: Product, attributes: ['product_id', 'need_sn', 'category'] }] },
       { model: OrderPayment, include: [{ model: DepositOrder }] },
       { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false },
       { model: DepositRedemption, as: 'depositRedemptions' },
@@ -2657,7 +2657,12 @@ async function detail(ctx) {
   const supplements = Array.isArray(result.supplements) ? result.supplements : [];
   result.supplement_count = supplements.length;
   result.supplement_total = getSupplementNetAmount(supplements);
-  const items = result.OrderItems || [];
+  const items = (result.OrderItems || []).map(item => ({
+    ...item,
+    category: item.category || item.Product?.category || '',
+    gov_subsidy_eligible: isGovSubsidyEligibleCategory(item.category || item.Product?.category)
+  }));
+  result.OrderItems = items;
   const snCodes = items.map(item => item.sn_code).filter(Boolean);
   if (snCodes.length > 0) {
     const snRows = await ProductSn.findAll({

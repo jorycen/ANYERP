@@ -11,6 +11,16 @@ const {
   resolveUnitProductPricing,
   isExternalAdjustmentEligibleProduct
 } = require('../src/modules/sales/grossProfit');
+const { isGovSubsidyEligibleCategory } = require('../src/modules/inventory/resourceRights');
+
+test('国补商品范围只包含笔记本、台机、手机和平板', () => {
+  ['笔记本', '台机', '手机', '平板'].forEach(category => {
+    assert.equal(isGovSubsidyEligibleCategory(category), true);
+  });
+  ['电脑配件', '选件', '台式机', ''].forEach(category => {
+    assert.equal(isGovSubsidyEligibleCategory(category), false);
+  });
+});
 
 test('订单毛利按应收、产品定价、应收税率费用、增值税和补录净额计算', () => {
   const result = calculateGrossProfitValues({
@@ -153,6 +163,19 @@ test('商品运费不使用订单生成之后的运费记录', () => {
     sourceCreatedAt: '2026-08-29T09:00:00+08:00',
     sourceUpdatedAt: '2026-08-29T10:00:01+08:00'
   }), false);
+});
+
+test('运费独立于补录净额并单独扣减毛利', () => {
+  const result = calculateGrossProfitValues({
+    receivableAmount: 1000,
+    productPricingDetails: [{ pricingAmount: 800 }],
+    supplementDetails: [{ itemName: '人工补录', amount: 10, amountType: 'increase' }],
+    freightCostDetails: [{ itemName: '调拨运费', amount: 19.75, amountType: 'decrease' }]
+  });
+
+  assert.equal(result.supplementAmount, 10);
+  assert.equal(result.freightCostAmount, 19.75);
+  assert.equal(result.grossProfitAmount, 190.25);
 });
 
 test('采购运费只匹配采购归属门店', () => {

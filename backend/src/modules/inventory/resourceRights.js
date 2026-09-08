@@ -17,6 +17,11 @@ const STATUS_LABELS = {
   AVAILABLE: '可用', LOCKED: '已锁定', USED: '已核销', CLAIMED_BACK: '已套回',
   NOT_APPLICABLE: '不适用', EXCEPTION: '异常'
 };
+const GOV_SUBSIDY_PRODUCT_CATEGORIES = new Set(['笔记本', '台机', '手机', '平板']);
+
+function isGovSubsidyEligibleCategory(category) {
+  return GOV_SUBSIDY_PRODUCT_CATEGORIES.has(String(category || '').trim());
+}
 
 function parseJsonArray(value) {
   if (Array.isArray(value)) return value.filter(Boolean);
@@ -1580,22 +1585,36 @@ async function alignOrderSubsidyRights(order, items, transaction) {
     { resourceType: 'GOV_SUBSIDY', amount: order.national_subsidy, label: '国补' },
     { resourceType: 'EDU_SUBSIDY', amount: order.education_subsidy, label: '教育补贴' }
   ];
+  const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean))];
+  const products = productIds.length
+    ? await Product.findAll({
+        where: { product_id: { [Op.in]: productIds } },
+        attributes: ['product_id', 'category'],
+        raw: true,
+        transaction
+      })
+    : [];
+  const categoryByProduct = new Map(products.map(product => [String(product.product_id), product.category]));
   const snItems = items.filter(item => item.sn_id);
 
   for (const config of configs) {
     if (Number(config.amount || 0) <= 0) continue;
+    const candidates = config.resourceType === 'GOV_SUBSIDY'
+      ? snItems.filter(item => isGovSubsidyEligibleCategory(categoryByProduct.get(String(item.product_id))))
+      : snItems;
     const selectedItems = items.filter(item => selectedResources(item).includes(config.resourceType));
     const invalidItems = selectedItems.filter(item => !item.sn_id);
-    const validItems = selectedItems.filter(item => item.sn_id);
+    const validItems = selectedItems.filter(item => candidates.some(candidate => candidate.item_id === item.item_id));
+    const ineligibleItems = selectedItems.filter(item => item.sn_id && !validItems.includes(item));
 
-    for (const item of invalidItems) {
+    for (const item of [...invalidItems, ...ineligibleItems]) {
       await updateItemResourceSelection(item, config.resourceType, false, transaction);
     }
     if (validItems.length > 0) continue;
-    if (snItems.length !== 1) {
+    if (candidates.length !== 1) {
       throw Object.assign(new Error(`${config.label}未能匹配唯一的SN商品，请明确选择使用资格的SN`), { status: 409 });
     }
-    await updateItemResourceSelection(snItems[0], config.resourceType, true, transaction);
+    await updateItemResourceSelection(candidates[0], config.resourceType, true, transaction);
   }
 }
 
@@ -1674,5 +1693,5 @@ module.exports = {
   cancelResourceSettlement, reverseResourceSettlement, createPendingSettlement,
   findResourceRule, calculatePreSaleRuleAmount,
   initializeSnResourceRightsFromInbound, triggerSaleResourceBenefits,
-  alignOrderSubsidyRights, lockSaleRights, finishSaleRights, releaseSaleRights
+  alignOrderSubsidyRights, isGovSubsidyEligibleCategory, lockSaleRights, finishSaleRights, releaseSaleRights
 };
