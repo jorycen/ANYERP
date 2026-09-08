@@ -269,6 +269,10 @@
             <el-table-column label="状态变更时间" width="170">
               <template #default="{ row }">{{ formatDate(row.status_change_time) }}</template>
             </el-table-column>
+            <el-table-column v-if="canViewSnPurchaseCost" label="采购成本" width="115" align="right">
+              <template #default="{ row }">¥{{ formatMoney(row.purchase_cost) }}</template>
+            </el-table-column>
+            <el-table-column v-if="canViewSnPurchaseCost" prop="purchase_supplier_name" label="采购供应商" min-width="140" show-overflow-tooltip />
             <el-table-column label="资源情况" min-width="220">
               <template #default="{ row }">
                 <div v-if="row.resource_statuses?.length" class="resource-status-list">
@@ -1831,6 +1835,7 @@ const syncTabFromRoute = () => {
 }
 const canManageResourceRights = computed(() => hasRole(['finance', 'manager']))
 const canManageSnPrice = computed(() => hasRole(['admin']))
+const canViewSnPurchaseCost = computed(() => hasRole(['finance', 'purchaser']))
 const stores = ref([])
 const storesLoaded = ref(false)
 const transferStores = ref([])

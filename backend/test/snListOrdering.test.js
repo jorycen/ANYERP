@@ -42,3 +42,12 @@ test('销售仓在库的排序优先级早于已销售 SN', () => {
       < priority({ status: 'sold', inventoryType: 'normal_qty' })
   );
 });
+
+test('SN采购成本仅经销商管理、财务和采购岗位可见', () => {
+  for (const role of ['boss', 'admin', 'finance', 'purchaser']) {
+    assert.equal(_test.canViewSnPurchaseCost({ roles: [role] }), true);
+  }
+  for (const role of ['business', 'cashier', 'manager', 'store_manager', 'store_admin', 'clerk', 'staff', 'mall_report_viewer']) {
+    assert.equal(_test.canViewSnPurchaseCost({ roles: [role] }), false);
+  }
+});

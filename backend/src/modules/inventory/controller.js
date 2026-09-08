@@ -551,6 +551,12 @@ function canManageDistributorPrice(user, distributorId) {
   return roles.includes('admin') && canAccessDistributor(user, distributorId);
 }
 
+// 单台采购成本属于敏感经营数据，仅经销商管理、财务和采购岗位可见。
+function canViewSnPurchaseCost(user) {
+  const roles = getUserRoles(user);
+  return roles.some(role => ['boss', 'admin', 'finance', 'purchaser'].includes(role));
+}
+
 async function resolveSnPriceScope(ctx, snId, { requireInStock = false } = {}) {
   const sn = await ProductSn.findOne({
     where: { sn_id: snId, is_deleted: 0 },
@@ -583,6 +589,7 @@ async function getSnInventoryList(ctx) {
   } = ctx.query;
   const user = ctx.state.user || {};
   const exportMode = Boolean(ctx.state.inventoryExportMode);
+  const canViewPurchaseCost = canViewSnPurchaseCost(user);
   const allowedStoreIds = await resolveAllReadableStoreIds(user);
 
   if (storeId && !allowedStoreIds.includes('*') && !allowedStoreIds.map(String).includes(String(storeId))) {
@@ -700,7 +707,9 @@ async function getSnInventoryList(ctx) {
        sp.SPECIAL_PRICE AS special_price,
        sp.REMARK AS special_price_remark,
        sp.UPDATE_USER AS special_price_update_user,
-       sp.UPDATE_TIME AS special_price_update_time
+       sp.UPDATE_TIME AS special_price_update_time${canViewPurchaseCost ? `,
+       sn.INBOUND_PRICE AS purchase_cost,
+       sn.SUPPLIER_NAME AS purchase_supplier_name` : ''}
      ${joins}${whereSql}
       ORDER BY (COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME) IS NULL) ASC,
                TIMESTAMPDIFF(SECOND, COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME), NOW()) DESC,
@@ -758,6 +767,10 @@ async function getSnInventoryList(ctx) {
       库位: row.location_name || '',
       状态: row.status_label || '',
       状态变更时间: row.status_change_time || '',
+      ...(canViewPurchaseCost ? {
+        采购成本: Number(row.purchase_cost || 0),
+        采购供应商: row.purchase_supplier_name || ''
+      } : {}),
       资源情况: (row.resource_statuses || []).map(resource => `${resource.resource_name}: ${resource.status_name}`).join('\n'),
       统一售价: Number(row.unified_sale_price || 0),
       SN特价: row.is_special_price ? Number(row.special_price || 0) : '',
@@ -768,6 +781,7 @@ async function getSnInventoryList(ctx) {
     }));
     sendExcel(ctx, data, [
       'SN', 'PN', '商品名称', '所在门店', '库位', '状态', '状态变更时间', '资源情况',
+      ...(canViewPurchaseCost ? ['采购成本', '采购供应商'] : []),
       '统一售价', 'SN特价', '当前适用售价', '库龄', '入库时间', '备注'
     ], `SN库存清单_${new Date().toISOString().slice(0, 10)}.xlsx`, 'SN库存清单');
     return;
@@ -6275,6 +6289,7 @@ module.exports = {
     resolveOriginalInboundTime,
     resolveEffectiveSalePrice,
     canManageDistributorPrice,
+    canViewSnPurchaseCost,
     getTransferVisibilityLevel,
     buildTransferVisibilityWhere,
     isDistributorAccount,
