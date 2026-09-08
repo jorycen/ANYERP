@@ -1552,10 +1552,60 @@ function selectedResources(item) {
   ].filter(Boolean))];
 }
 
+function resourceFlagField(resourceType) {
+  return {
+    GOV_SUBSIDY: 'use_gov_subsidy',
+    EDU_SUBSIDY: 'use_edu_subsidy',
+    SALES_REPORT: 'use_sales_report'
+  }[resourceType] || null;
+}
+
+async function updateItemResourceSelection(item, resourceType, selected, transaction) {
+  const resources = selectedResources(item).filter(type => type !== resourceType);
+  if (selected) resources.push(resourceType);
+  const changes = { selected_resource_types: [...new Set(resources)] };
+  const flagField = resourceFlagField(resourceType);
+  if (flagField) changes[flagField] = selected ? 1 : 0;
+  await item.update(changes, { transaction });
+}
+
+/**
+ * 订单级补贴金额只能落到已解析出有效 SN 的商品行。
+ * 历史订单若把补贴标记遗留在非 SN 行，且订单只有一个有效 SN，则在归档事务内自动纠正；
+ * 多个 SN 无法唯一判断时明确阻断，避免把资格核销到错误商品。
+ */
+async function alignOrderSubsidyRights(order, items, transaction) {
+  const configs = [
+    { resourceType: 'GOV_SUBSIDY', amount: order.national_subsidy, label: '国补' },
+    { resourceType: 'EDU_SUBSIDY', amount: order.education_subsidy, label: '教育补贴' }
+  ];
+  const snItems = items.filter(item => item.sn_id);
+
+  for (const config of configs) {
+    if (Number(config.amount || 0) <= 0) continue;
+    const selectedItems = items.filter(item => selectedResources(item).includes(config.resourceType));
+    const invalidItems = selectedItems.filter(item => !item.sn_id);
+    const validItems = selectedItems.filter(item => item.sn_id);
+
+    for (const item of invalidItems) {
+      await updateItemResourceSelection(item, config.resourceType, false, transaction);
+    }
+    if (validItems.length > 0) continue;
+    if (snItems.length !== 1) {
+      throw Object.assign(new Error(`${config.label}未能匹配唯一的SN商品，请明确选择使用资格的SN`), { status: 409 });
+    }
+    await updateItemResourceSelection(snItems[0], config.resourceType, true, transaction);
+  }
+}
+
 async function lockSaleRights(order, items, transaction) {
   for (const item of items) {
-    if (!item.sn_id) continue;
-    for (const resourceType of selectedResources(item)) {
+    const resources = selectedResources(item);
+    if (resources.length && !item.sn_id) {
+      const productName = item.product_name || item.pn_code || '未命名商品';
+      throw Object.assign(new Error(`商品“${productName}”未绑定有效SN，不能使用SN资格`), { status: 409 });
+    }
+    for (const resourceType of resources) {
       const category = await ResourceCategory.findOne({ where: { category_code: resourceType, status: 1 }, transaction });
       if (!category || !category.supports_sale_use) throw Object.assign(new Error('所选资源类别不存在、已停用或不允许销售使用'), { status: 409 });
       const right = await InventoryResourceRight.findOne({ where: { sn_id: item.sn_id, resource_type: resourceType }, transaction, lock: transaction.LOCK.UPDATE });
@@ -1578,6 +1628,10 @@ async function lockSaleRights(order, items, transaction) {
 
 async function finishSaleRights(order, items, transaction) {
   for (const item of items) for (const resourceType of selectedResources(item)) {
+    if (!item.sn_id) {
+      const productName = item.product_name || item.pn_code || '未命名商品';
+      throw Object.assign(new Error(`商品“${productName}”未绑定有效SN，不能核销SN资格`), { status: 409 });
+    }
     const category = await ResourceCategory.findOne({ where: { category_code: resourceType }, transaction });
     const right = await InventoryResourceRight.findOne({ where: { sn_id: item.sn_id, resource_type: resourceType }, transaction, lock: transaction.LOCK.UPDATE });
     if (!right || right.current_status !== 'LOCKED' || right.locked_source_type !== 'SALE_ORDER' || right.locked_source_id !== order.order_id) throw Object.assign(new Error(`SN ${item.sn_code} 的${category?.name || resourceType}锁定状态异常`), { status: 409 });
@@ -1619,5 +1673,5 @@ module.exports = {
   cancelResourceSettlement, reverseResourceSettlement, createPendingSettlement,
   findResourceRule, calculatePreSaleRuleAmount,
   initializeSnResourceRightsFromInbound, triggerSaleResourceBenefits,
-  lockSaleRights, finishSaleRights, releaseSaleRights
+  alignOrderSubsidyRights, lockSaleRights, finishSaleRights, releaseSaleRights
 };

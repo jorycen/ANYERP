@@ -49,7 +49,7 @@ const { PassThrough } = require('stream');
 const { Op, literal, QueryTypes } = require('sequelize');
 const { generateOrderNo, generateInboundNo, generateUUID, paginate, formatPaginatedResult } = require('../../utils');
 const { normalizePnCode } = require('../../utils/productPn');
-const { summariesForSns, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
+const { summariesForSns, alignOrderSubsidyRights, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
 const { canAccessDistributor, resolveOrderStoreIds } = require('../../utils/distributorScope');
 const { isStoreManagerAccount, isStoreScopedAccount, isMallReportViewer } = require('../../utils/storePermissions');
@@ -2327,7 +2327,20 @@ async function create(ctx) {
     item.sn_id = null;
   }
 
-  const snItems = normalizedItems.filter(item => item.sn_id || item.sn_code);
+  // 订单级补贴只能预标记到商品主数据明确要求 SN、且本行确实填写了 SN 的商品。
+  // 防止配件/服务行因前端残留 snCode 被误判为国补资格载体。
+  for (const item of normalizedItems) {
+    const product = productMap.get(item.product_id);
+    if (Number(product?.need_sn || 0) === 1) continue;
+    item.use_gov_subsidy = false;
+    item.use_edu_subsidy = false;
+    item.selected_resource_types = (item.selected_resource_types || [])
+      .filter(type => !['GOV_SUBSIDY', 'EDU_SUBSIDY'].includes(type));
+  }
+  const snItems = normalizedItems.filter(item => {
+    const product = productMap.get(item.product_id);
+    return Number(product?.need_sn || 0) === 1 && Boolean(item.sn_code);
+  });
   if (Number(nationalSubsidy) > 0 && !normalizedItems.some(item => item.use_gov_subsidy)) {
     // 创建阶段不因 SN 缺失或尚不存在而阻断；仅在唯一明确的 SN 行上预标记权益。
     if (snItems.length === 1) {
@@ -2767,6 +2780,7 @@ async function archiveSalesOrderEffects(order, transaction, { inventoryAlreadyRe
   });
   await redeemReservedDepositsForOrder(order, transaction);
   const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+  await alignOrderSubsidyRights(order, items, transaction);
   await lockSaleRights(order, items, transaction);
   await finishSaleRights(order, items, transaction);
   await calculateSalesSettlementCosts(order, transaction);
@@ -3032,6 +3046,7 @@ async function update(ctx) {
       // 校验通过后才能进入审批，避免审批期间库存或国补资格被其他订单占用。
       await validateAndDeductInventoryForArchive(order, transaction, { deduct: false });
       const archiveItems = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+      await alignOrderSubsidyRights(order, archiveItems, transaction);
       await lockSaleRights(order, archiveItems, transaction);
       const grossProfitSnapshot = await calculateAndSaveOrderGrossProfit(order.order_id, {
         transaction,
@@ -5488,6 +5503,7 @@ module.exports = {
     normalizePnCode,
     validateAndDeductInventoryForArchive,
     reserveInventoryForOrder,
+    alignOrderSubsidyRights,
     lockSaleRights,
     normalizeSubsidyPhotos,
     hasSubsidyPhotoFilter,

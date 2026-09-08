@@ -91,3 +91,65 @@ test('归档前校验通过后锁定国补资格，审批期间保持占用', as
     models.ResourceRightChangeOrder.create = originals.changeCreate;
   }
 });
+
+test('国补误挂在非SN商品时自动迁移到全单唯一有效SN商品', async () => {
+  const invalidItem = buildItem({
+    item_id: 1,
+    sn_id: null,
+    sn_code: '',
+    product_name: 'Legion Y960 白色',
+    update: async values => Object.assign(invalidItem, values)
+  });
+  const snItem = buildItem({
+    item_id: 2,
+    sn_id: 'SN_2',
+    sn_code: 'PF5WZXGE',
+    product_name: 'Legion Y9000P',
+    use_gov_subsidy: 0,
+    selected_resource_types: [],
+    update: async values => Object.assign(snItem, values)
+  });
+
+  await salesController._test.alignOrderSubsidyRights(
+    { national_subsidy: 1000, education_subsidy: 0 },
+    [invalidItem, snItem],
+    buildTransaction()
+  );
+
+  assert.equal(invalidItem.use_gov_subsidy, 0);
+  assert.deepEqual(invalidItem.selected_resource_types, []);
+  assert.equal(snItem.use_gov_subsidy, 1);
+  assert.deepEqual(snItem.selected_resource_types, ['GOV_SUBSIDY']);
+});
+
+test('国补误挂且存在多个有效SN时要求明确选择，不进行猜测', async () => {
+  const invalidItem = buildItem({
+    sn_id: null,
+    sn_code: '',
+    update: async values => Object.assign(invalidItem, values)
+  });
+  const snItems = ['SN_1', 'SN_2'].map((snId, index) => ({
+    ...buildItem({ item_id: index + 2, sn_id: snId, sn_code: `CODE_${index + 1}`, use_gov_subsidy: 0, selected_resource_types: [] }),
+    update: async () => {}
+  }));
+
+  await assert.rejects(
+    salesController._test.alignOrderSubsidyRights(
+      { national_subsidy: 1000, education_subsidy: 0 },
+      [invalidItem, ...snItems],
+      buildTransaction()
+    ),
+    error => error.status === 409 && error.message.includes('请明确选择使用资格的SN')
+  );
+});
+
+test('非SN商品残留资源标记时锁定阶段给出明确错误', async () => {
+  await assert.rejects(
+    salesController._test.lockSaleRights(
+      { order_id: 'ORDER_1', order_no: 'SO001' },
+      [buildItem({ sn_id: null, sn_code: '', product_name: 'Legion Y960 白色' })],
+      buildTransaction()
+    ),
+    error => error.status === 409 && error.message.includes('Legion Y960 白色') && error.message.includes('未绑定有效SN')
+  );
+});
