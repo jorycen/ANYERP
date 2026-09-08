@@ -10,7 +10,7 @@
       <el-tabs v-model="activeTab" class="module-tabs">
         <el-tab-pane label="采购申请" name="request">
           <div class="filter-bar erp-query-grid">
-            <div class="erp-query-field"><span class="erp-query-label">申请单号</span><el-input v-model="queryParams.requestNo" placeholder="申请单号" clearable style="width: 180px" @keyup.enter="handleRequestSearch" /></div>
+            <div class="erp-query-field"><span class="erp-query-label">关联单号</span><el-input v-model="queryParams.documentNo" placeholder="PR / PRA / IN / RET" clearable style="width: 210px" @keyup.enter="handleRequestSearch" /></div>
             <div class="erp-query-field"><span class="erp-query-label">提交人</span><el-input v-model="queryParams.submitter" placeholder="提交人" clearable style="width: 140px" /></div>
             <div class="erp-query-field"><span class="erp-query-label">商品名称 / PN / 商品编码</span><el-input v-model="queryParams.keyword" placeholder="商品名称/PN/商品编码" clearable style="width: 230px" /></div>
             <div class="erp-query-field"><span class="erp-query-label">供应商</span><el-select v-model="queryParams.supplierId" placeholder="供应商" clearable filterable style="width: 180px">
@@ -355,6 +355,49 @@
           <el-descriptions-item label="审批意见" :span="2">{{ currentRequest.approve_comment || '-' }}</el-descriptions-item>
           <el-descriptions-item label="备注" :span="2">{{ currentRequest.remark || '-' }}</el-descriptions-item>
         </el-descriptions>
+
+        <h4 class="mt-20">关联单据流</h4>
+        <el-alert
+          title="可从采购申请、入库单、采购退单/调整单和实际退库单相互追溯；数量和金额保留业务正负方向。"
+          type="info"
+          :closable="false"
+          show-icon
+          style="margin-bottom: 10px"
+        />
+        <el-table :data="currentRequest.document_relations || []" border size="small" row-key="key">
+          <el-table-column label="单据类型" width="150">
+            <template #default="{ row }">
+              <div :style="{ paddingLeft: `${Number(row.depth || 0) * 16}px` }">
+                <span v-if="row.depth" class="document-flow-branch">↳</span>
+                {{ row.document_type_name }}
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="document_no" label="单据号" width="205" />
+          <el-table-column prop="upstream_no" label="上游单号" width="205">
+            <template #default="{ row }">{{ row.upstream_no || '-' }}</template>
+          </el-table-column>
+          <el-table-column prop="business_action" label="关联动作" width="130" />
+          <el-table-column prop="product_summary" label="商品" min-width="220" show-overflow-tooltip />
+          <el-table-column label="数量" width="80" align="right">
+            <template #default="{ row }">{{ formatSignedQuantity(row.quantity) }}</template>
+          </el-table-column>
+          <el-table-column label="金额" width="120" align="right">
+            <template #default="{ row }">{{ formatSignedDocumentAmount(row.amount) }}</template>
+          </el-table-column>
+          <el-table-column prop="status_name" label="状态" width="90" />
+          <el-table-column label="操作" width="80" fixed="right">
+            <template #default="{ row }">
+              <el-button
+                v-if="['inbound', 'adjustment_inbound_link', 'return_stock'].includes(row.document_type) && row.document_id"
+                link
+                type="primary"
+                @click="openRelatedDocument(row)"
+              >查看</el-button>
+              <span v-else>-</span>
+            </template>
+          </el-table-column>
+        </el-table>
 
         <h4 class="mt-20">流程记录</h4>
         <el-timeline v-if="currentRequest.action_logs?.length">
@@ -794,7 +837,7 @@ const queryParams = reactive({
   page: 1,
   pageSize: 20,
   status: '',
-  requestNo: '',
+  documentNo: '',
   submitter: '',
   keyword: '',
   supplierId: '',
@@ -1085,7 +1128,7 @@ const loadOperatorStaff = async () => {
 const resetRequestSearch = () => {
   queryParams.page = 1
   queryParams.status = ''
-  queryParams.requestNo = ''
+  queryParams.documentNo = ''
   queryParams.submitter = ''
   queryParams.keyword = ''
   queryParams.supplierId = ''
@@ -1300,6 +1343,27 @@ const handleView = async (row) => {
   } catch (err) {
     ElMessage.error('获取详情失败')
   }
+}
+
+const formatSignedQuantity = (value) => {
+  const quantity = Number(value || 0)
+  return quantity > 0 ? `+${quantity}` : String(quantity)
+}
+
+const formatSignedDocumentAmount = (value) => {
+  const amount = Number(value || 0)
+  const prefix = amount > 0 ? '+' : amount < 0 ? '-' : ''
+  return `${prefix}¥${Math.abs(amount).toFixed(2)}`
+}
+
+const openRelatedDocument = (row) => {
+  if (!row?.document_id) return
+  viewDialogVisible.value = false
+  if (row.document_type === 'return_stock') {
+    router.push({ name: 'InventoryInbound', query: { returnId: String(row.document_id), trace: '1' } })
+    return
+  }
+  router.push({ name: 'InventoryInbound', query: { inboundId: String(row.document_id) } })
 }
 
 const pendingInboundsFor = (row) => {

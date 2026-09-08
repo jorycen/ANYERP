@@ -509,6 +509,176 @@ function appendPurchaseWhereCondition(where, condition) {
   where[Op.and] = existingConditions;
 }
 
+async function findPurchaseRequestIdsByDocumentNo(documentNo) {
+  const text = String(documentNo || '').trim();
+  if (!text) return [];
+  const like = { [Op.like]: `%${text}%` };
+  const requestIds = new Set();
+  const sourceRequestNos = new Set();
+  const inboundIds = new Set();
+
+  const [requests, adjustments, inbounds, returns] = await Promise.all([
+    PurchaseRequest.findAll({ where: { request_no: like }, attributes: ['request_id'], raw: true }),
+    PurchaseAdjustment.findAll({ where: { adjustment_no: like }, attributes: ['request_id'], raw: true }),
+    Inbound.findAll({
+      where: { inbound_no: like },
+      attributes: ['inbound_id', 'purchase_request_id', 'source_no'],
+      raw: true
+    }),
+    ReturnStock.findAll({
+      where: { return_no: like },
+      attributes: ['purchase_request_id', 'inbound_id'],
+      raw: true
+    })
+  ]);
+
+  requests.forEach(row => row.request_id && requestIds.add(String(row.request_id)));
+  adjustments.forEach(row => row.request_id && requestIds.add(String(row.request_id)));
+  [...inbounds, ...returns].forEach(row => {
+    if (row.purchase_request_id) requestIds.add(String(row.purchase_request_id));
+    if (row.inbound_id) inboundIds.add(String(row.inbound_id));
+    if (row.source_no) sourceRequestNos.add(String(row.source_no));
+  });
+
+  if (inboundIds.size) {
+    const relatedInbounds = await Inbound.findAll({
+      where: { inbound_id: { [Op.in]: [...inboundIds] } },
+      attributes: ['purchase_request_id', 'source_no'],
+      raw: true
+    });
+    relatedInbounds.forEach(row => {
+      if (row.purchase_request_id) requestIds.add(String(row.purchase_request_id));
+      if (row.source_no) sourceRequestNos.add(String(row.source_no));
+    });
+  }
+
+  if (sourceRequestNos.size) {
+    const sourceRequests = await PurchaseRequest.findAll({
+      where: { request_no: { [Op.in]: [...sourceRequestNos] } },
+      attributes: ['request_id'],
+      raw: true
+    });
+    sourceRequests.forEach(row => row.request_id && requestIds.add(String(row.request_id)));
+  }
+  return [...requestIds];
+}
+
+function purchaseDocumentStatusLabel(status) {
+  return ({
+    draft: '草稿', pending: '待处理', approved: '已通过', completed: '已完成',
+    cancelled: '已取消', returned: '已退货', revoked: '已撤销'
+  })[String(status || '').toLowerCase()] || status || '-';
+}
+
+function purchaseAdjustmentOperation(remark) {
+  const text = String(remark || '');
+  return text.startsWith('stock_return')
+    ? { code: 'stock_return', name: '已入库后退库' }
+    : { code: 'pending_cancel', name: '取消待入库' };
+}
+
+function buildPurchaseDocumentRelations(request, returnStocks = []) {
+  const inbounds = request.Inbounds || [];
+  const adjustments = request.adjustments || [];
+  const inboundMap = new Map(inbounds.map(inbound => [String(inbound.inbound_id), inbound]));
+  const rows = [{
+    key: `request:${request.request_id}`,
+    depth: 0,
+    document_type: 'purchase_request',
+    document_type_name: '采购申请',
+    document_id: request.request_id,
+    document_no: request.request_no,
+    upstream_no: '',
+    business_action: '原采购申请',
+    product_summary: (request.items || []).map(item => `${item.product_name || item.product_id} ×${item.quantity || 0}`).join('；'),
+    quantity: (request.items || []).reduce((sum, item) => sum + Number(item.quantity || 0), 0),
+    amount: Number(request.total_amount || 0),
+    status: request.status,
+    status_name: purchaseDocumentStatusLabel(request.status),
+    operator: request.submit_user || request.apply_user || request.create_user || '',
+    event_time: request.create_time
+  }];
+
+  inbounds.forEach(inbound => rows.push({
+    key: `inbound:${inbound.inbound_id}`,
+    depth: 1,
+    document_type: 'inbound',
+    document_type_name: '入库单',
+    document_id: inbound.inbound_id,
+    document_no: inbound.inbound_no,
+    upstream_no: request.request_no,
+    business_action: '采购入库',
+    product_summary: (inbound.items || []).map(item => `${item.product_name || item.product_id} ×${item.quantity || 0}`).join('；'),
+    quantity: Number(inbound.total_quantity ?? (inbound.items || []).reduce((sum, item) => sum + Number(item.quantity || 0), 0)),
+    amount: Number(inbound.total_amount || 0),
+    status: inbound.status,
+    status_name: purchaseDocumentStatusLabel(inbound.status),
+    operator: inbound.receive_user || inbound.create_user || '',
+    event_time: inbound.receive_time || inbound.create_time
+  }));
+
+  adjustments.forEach(adjustment => {
+    rows.push({
+      key: `adjustment:${adjustment.adjustment_id}`,
+      depth: 1,
+      document_type: 'purchase_adjustment',
+      document_type_name: '采购退单/调整',
+      document_id: adjustment.adjustment_id,
+      document_no: adjustment.adjustment_no,
+      upstream_no: request.request_no,
+      business_action: '生成负向采购订单',
+      product_summary: (adjustment.items || []).map(item => item.product_name || item.product_id).filter(Boolean).join('；'),
+      quantity: Number(adjustment.total_quantity_delta || 0),
+      amount: Number(adjustment.total_amount_delta || 0),
+      status: adjustment.status,
+      status_name: purchaseDocumentStatusLabel(adjustment.status),
+      operator: adjustment.create_user || '',
+      event_time: adjustment.create_time
+    });
+    (adjustment.items || []).forEach(item => {
+      const inbound = inboundMap.get(String(item.inbound_id || '')) || {};
+      const operation = purchaseAdjustmentOperation(item.remark);
+      rows.push({
+        key: `adjustment-link:${adjustment.adjustment_id}:${item.item_id || item.inbound_item_id}`,
+        depth: 2,
+        document_type: 'adjustment_inbound_link',
+        document_type_name: '关联入库明细',
+        document_id: inbound.inbound_id || item.inbound_id,
+        document_no: inbound.inbound_no || item.inbound_id || '-',
+        upstream_no: adjustment.adjustment_no,
+        business_action: operation.name,
+        operation_type: operation.code,
+        product_summary: item.product_name || item.product_id || '',
+        quantity: Number(item.quantity_delta || 0),
+        amount: Number(item.amount_delta || 0),
+        status: inbound.status || '',
+        status_name: purchaseDocumentStatusLabel(inbound.status),
+        operator: adjustment.create_user || '',
+        event_time: adjustment.create_time
+      });
+    });
+  });
+
+  returnStocks.forEach(returnStock => rows.push({
+    key: `return:${returnStock.return_id}`,
+    depth: 2,
+    document_type: 'return_stock',
+    document_type_name: '实际退库单',
+    document_id: returnStock.return_id,
+    document_no: returnStock.return_no,
+    upstream_no: inboundMap.get(String(returnStock.inbound_id || ''))?.inbound_no || returnStock.inbound_no || request.request_no,
+    business_action: '已入库后退回库存',
+    product_summary: (returnStock.items || []).map(item => `${item.product_name || item.product_id} ×${item.quantity || 0}`).join('；'),
+    quantity: -Math.abs(Number(returnStock.total_quantity || 0)),
+    amount: -Math.abs(Number(returnStock.total_amount || 0)),
+    status: returnStock.status,
+    status_name: purchaseDocumentStatusLabel(returnStock.status),
+    operator: returnStock.execute_user || returnStock.create_user || '',
+    event_time: returnStock.execute_time || returnStock.create_time
+  }));
+  return rows;
+}
+
 function buildPurchaseSubmitterCondition(value, staffIds = []) {
   const text = String(value || '').trim();
   const like = `%${text}%`;
@@ -635,7 +805,7 @@ function buildAdjustmentRows(request, inbounds, stores) {
  * 采购申请列表
  */
 async function queryRequestList(ctx, { exportMode = false } = {}) {
-  const { status, scope, operatorStaffId, submitter, requestNo, keyword, supplierId, page = 1, pageSize = 20 } = ctx.query;
+  const { status, scope, operatorStaffId, submitter, documentNo, requestNo, keyword, supplierId, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
   const paidRequestIds = await getPaidPurchaseRequestIds();
 
@@ -718,7 +888,11 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
       )
     );
   }
-  if (requestNo && String(requestNo).trim()) where.request_no = { [Op.like]: `%${String(requestNo).trim()}%` };
+  const relatedDocumentNo = String(documentNo || requestNo || '').trim();
+  if (relatedDocumentNo) {
+    const relatedRequestIds = await findPurchaseRequestIdsByDocumentNo(relatedDocumentNo);
+    appendRequestIdCondition(where, relatedRequestIds.length ? { [Op.in]: relatedRequestIds } : '__NO_MATCH__');
+  }
   if (supplierId) where.supplier_id = supplierId;
 
   if (keyword && String(keyword).trim()) {
@@ -969,6 +1143,19 @@ async function getRequestDetail(ctx) {
       return itemJson;
     });
   }
+
+  const inboundIds = (result.Inbounds || []).map(inbound => inbound.inbound_id).filter(Boolean);
+  const returnWhere = [{ purchase_request_id: request.request_id }];
+  if (inboundIds.length) returnWhere.push({ inbound_id: { [Op.in]: inboundIds } });
+  const returnStocks = await ReturnStock.findAll({
+    where: { [Op.or]: returnWhere },
+    include: [{ model: ReturnStockItem, as: 'items' }],
+    order: [['create_time', 'ASC'], ['return_id', 'ASC']]
+  });
+  result.document_relations = buildPurchaseDocumentRelations(
+    result,
+    returnStocks.map(row => row.toJSON())
+  );
 
   result.action_logs = await listBusinessActions('purchase_request', request.request_id);
 
@@ -2549,6 +2736,9 @@ module.exports = {
     attachPurchasePaymentStatus,
     getPurchaseLifecycleStatus,
     buildPurchaseSubmitterCondition,
-    buildPurchaseOperatorCondition
+    buildPurchaseOperatorCondition,
+    findPurchaseRequestIdsByDocumentNo,
+    purchaseAdjustmentOperation,
+    buildPurchaseDocumentRelations
   }
 };
