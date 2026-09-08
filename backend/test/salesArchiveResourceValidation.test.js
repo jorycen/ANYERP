@@ -117,9 +117,9 @@ test('国补误挂在非SN商品时自动迁移到全单唯一有效SN商品', a
   );
 
   assert.equal(invalidItem.use_gov_subsidy, 0);
-  assert.deepEqual(invalidItem.selected_resource_types, []);
+  assert.equal(invalidItem.selected_resource_types, '[]');
   assert.equal(snItem.use_gov_subsidy, 1);
-  assert.deepEqual(snItem.selected_resource_types, ['GOV_SUBSIDY']);
+  assert.equal(snItem.selected_resource_types, '["GOV_SUBSIDY"]');
 });
 
 test('国补误挂且存在多个有效SN时要求明确选择，不进行猜测', async () => {

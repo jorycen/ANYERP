@@ -1563,7 +1563,8 @@ function resourceFlagField(resourceType) {
 async function updateItemResourceSelection(item, resourceType, selected, transaction) {
   const resources = selectedResources(item).filter(type => type !== resourceType);
   if (selected) resources.push(resourceType);
-  const changes = { selected_resource_types: [...new Set(resources)] };
+  // Sequelize TEXT 字段只接受字符串；统一按现有 JSON 文本格式持久化。
+  const changes = { selected_resource_types: JSON.stringify([...new Set(resources)]) };
   const flagField = resourceFlagField(resourceType);
   if (flagField) changes[flagField] = selected ? 1 : 0;
   await item.update(changes, { transaction });

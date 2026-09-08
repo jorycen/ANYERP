@@ -203,6 +203,30 @@ async function ensureCriticalSchemaCompatibility() {
     'TINYINT(1) NOT NULL DEFAULT 0 COMMENT "二手商品标记"',
     'PN_CODE'
   );
+  await checkAndAddColumn(
+    'T_PURCHASE_REQUEST_ITEM',
+    'DIRECT_INBOUND',
+    'TINYINT(1) DEFAULT 0 COMMENT "审批通过后直接入库"',
+    'IS_USED_PRODUCT'
+  );
+  await checkAndAddColumn(
+    'T_PURCHASE_REQUEST_ITEM',
+    'DIRECT_INBOUND_SN_CODE',
+    'VARCHAR(128) COMMENT "直接入库SN"',
+    'DIRECT_INBOUND'
+  );
+  await checkAndAddColumn(
+    'T_PURCHASE_REQUEST_ITEM',
+    'SOURCE_SN_ID',
+    'VARCHAR(32) COMMENT "特殊仓采购转换来源SN"',
+    'DIRECT_INBOUND_SN_CODE'
+  );
+  await checkAndAddColumn(
+    'T_PURCHASE_REQUEST_ITEM',
+    'TARGET_LOCATION_ID',
+    'VARCHAR(32) COMMENT "特殊仓采购转换目标库位"',
+    'SOURCE_SN_ID'
+  );
 
   const [column] = await sequelize.query(
     `SELECT COUNT(*) AS cnt
@@ -228,6 +252,21 @@ async function ensureCriticalSchemaCompatibility() {
 
   if (Number(purchaseItemColumn?.cnt || 0) !== 1) {
     throw new Error('数据库缺少必要字段：T_PURCHASE_REQUEST_ITEM.IS_USED_PRODUCT');
+  }
+
+  const requiredPurchaseItemColumns = await sequelize.query(
+    `SELECT COLUMN_NAME
+     FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'T_PURCHASE_REQUEST_ITEM'
+       AND COLUMN_NAME IN ('DIRECT_INBOUND', 'DIRECT_INBOUND_SN_CODE', 'SOURCE_SN_ID', 'TARGET_LOCATION_ID')`,
+    { type: sequelize.QueryTypes.SELECT }
+  );
+  const existingPurchaseItemColumns = new Set(requiredPurchaseItemColumns.map(row => row.COLUMN_NAME));
+  const missingPurchaseItemColumns = ['DIRECT_INBOUND', 'DIRECT_INBOUND_SN_CODE', 'SOURCE_SN_ID', 'TARGET_LOCATION_ID']
+    .filter(columnName => !existingPurchaseItemColumns.has(columnName));
+  if (missingPurchaseItemColumns.length > 0) {
+    throw new Error(`数据库缺少必要字段：T_PURCHASE_REQUEST_ITEM.${missingPurchaseItemColumns.join('、')}`);
   }
 
   // 二手采购明细没有商品主数据 ID，必须允许 PRODUCT_ID 为空。
