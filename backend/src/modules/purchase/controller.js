@@ -15,9 +15,64 @@ const { getUserRoles } = require('../../middleware/permission');
 const { isStoreScopedAccount } = require('../../utils/storePermissions');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
 const { createProductRecord } = require('../product/controller');
-const { executeInbound, updateInventory, getAvailableQty } = require('../inventory/controller');
+const { executeInbound, updateInventory, getAvailableQty, moveSnInventoryAggregate } = require('../inventory/controller');
 const { getAllocationSummary, getPayableRemaining, refreshPayableState } = require('../finance/settlementAllocation');
 const { assertActiveProducts } = require('../../utils/activeProduct');
+
+const SN_PURCHASE_SOURCE_TYPES = new Set(['display_qty', 'rental_demo_qty']);
+const SN_PURCHASE_TARGET_TYPES = new Set(['normal_qty', 'demo_qty']);
+
+function getSnPurchaseFields(item = {}) {
+  const sourceSnId = String(item.sourceSnId || item.source_sn_id || '').trim();
+  const allocations = parsePurchaseAllocationArray(item.storeAllocations || item.store_allocations);
+  const firstLocation = allocations.flatMap(allocation => allocation.locationAllocations || allocation.location_allocations || [])
+    .find(location => location.locationId || location.location_id);
+  const targetLocationId = String(item.targetLocationId || item.target_location_id || firstLocation?.locationId || firstLocation?.location_id || '').trim();
+  return { sourceSnId, targetLocationId };
+}
+
+async function validateSnPurchaseConversion(ctx, items, storeId, transaction, { approval = false } = {}) {
+  const converted = (items || []).filter(item => getSnPurchaseFields(item).sourceSnId);
+  if (!converted.length) return [];
+  if (converted.length !== items.length || converted.length !== 1) {
+    ctx.throw(400, '特殊仓SN采购申请每单只能包含一个SN，且不能与普通采购商品混合');
+  }
+  const item = converted[0];
+  const { sourceSnId, targetLocationId } = getSnPurchaseFields(item);
+  if (Number(item.quantity || 0) !== 1) ctx.throw(400, '特殊仓SN采购数量必须为1');
+  if (!targetLocationId) ctx.throw(400, '请选择销售仓或样品仓作为目标库位');
+
+  const sn = await ProductSn.findOne({
+    where: { sn_id: sourceSnId, is_deleted: 0 },
+    transaction,
+    lock: transaction?.LOCK?.UPDATE
+  });
+  if (!sn) ctx.throw(404, '来源SN不存在');
+  if (String(sn.product_id) !== String(item.productId || item.product_id || '')) ctx.throw(409, '来源SN与采购商品不一致');
+  if (String(sn.store_id || '') !== String(storeId || '')) ctx.throw(409, '特殊仓SN只能采购至当前所在门店');
+  if (sn.status !== 'in_stock') ctx.throw(409, '来源SN已不在库，不能继续采购');
+
+  const [sourceLocation, targetLocation] = await Promise.all([
+    Location.findOne({ where: { location_id: sn.location_id, store_id: storeId, status: 1 }, transaction }),
+    Location.findOne({ where: { location_id: targetLocationId, store_id: storeId, status: 1 }, transaction })
+  ]);
+  if (!sourceLocation || !SN_PURCHASE_SOURCE_TYPES.has(String(sourceLocation.type || sn.inventory_type || ''))) {
+    ctx.throw(409, '只有铺货仓或租赁样机仓的在库SN可以发起该采购申请');
+  }
+  if (!targetLocation || !SN_PURCHASE_TARGET_TYPES.has(String(targetLocation.type || ''))) {
+    ctx.throw(400, '目标库位只能选择当前门店启用的销售仓或样品仓');
+  }
+
+  if (!approval) {
+    const duplicate = await PurchaseRequestItem.findOne({
+      where: { source_sn_id: sourceSnId },
+      include: [{ model: PurchaseRequest, where: { status: { [Op.in]: ['draft', 'pending'] } }, attributes: ['request_no'] }],
+      transaction
+    });
+    if (duplicate) ctx.throw(409, `该SN已有未结束的采购申请 ${duplicate.PurchaseRequest?.request_no || ''}`.trim());
+  }
+  return [{ item, sn, sourceLocation, targetLocation }];
+}
 
 function normalizeFileList(...values) {
   const result = [];
@@ -1121,12 +1176,22 @@ async function getRequestDetail(ctx) {
     const stores = await Store.findAll();
     const storeMap = new Map();
     stores.forEach(s => storeMap.set(s.store_id, s.name));
+    const sourceSnIds = result.items.map(item => item.source_sn_id).filter(Boolean);
+    const targetLocationIds = result.items.map(item => item.target_location_id).filter(Boolean);
+    const [sourceSns, targetLocations] = await Promise.all([
+      sourceSnIds.length ? ProductSn.findAll({ where: { sn_id: { [Op.in]: sourceSnIds } }, attributes: ['sn_id', 'sn_code'] }) : [],
+      targetLocationIds.length ? Location.findAll({ where: { location_id: { [Op.in]: targetLocationIds } }, attributes: ['location_id', 'name', 'type'] }) : []
+    ]);
+    const sourceSnMap = new Map(sourceSns.map(sn => [String(sn.sn_id), sn.sn_code]));
+    const targetLocationMap = new Map(targetLocations.map(location => [String(location.location_id), location]));
 
     result.items = attachCurrentPurchaseItemAmounts(result.items, result.adjustments || []).map(item => {
       const itemJson = item;
       const productSnapshot = productSnapshots.get(String(itemJson.product_id || ''));
       if (!itemJson.product_code && productSnapshot) itemJson.product_code = productSnapshot.product_code || '';
       if (!itemJson.manufacturer_code && productSnapshot) itemJson.manufacturer_code = productSnapshot.manufacturer_code || '';
+      itemJson.source_sn_code = sourceSnMap.get(String(itemJson.source_sn_id || '')) || '';
+      itemJson.target_location_name = targetLocationMap.get(String(itemJson.target_location_id || ''))?.name || '';
       let storeAllocations = [];
       if (itemJson.store_allocations) {
         try {
@@ -1192,6 +1257,9 @@ async function createRequest(ctx) {
     saveDraft = false
   } = ctx.request.body;
   const isDraft = Boolean(saveDraft);
+  if (isDraft && (items || []).some(item => getSnPurchaseFields(item).sourceSnId)) {
+    ctx.throw(400, '特殊仓SN采购请直接提交审批，不支持保存草稿');
+  }
 
   const screenshotIds = normalizeFileList(supplierChatScreenshotIds, supplier_chat_screenshot_ids);
   const screenshotUrls = normalizeFileList(
@@ -1306,6 +1374,7 @@ async function createRequest(ctx) {
   let createdRequest;
 
   await sequelize.transaction(async transaction => {
+    await validateSnPurchaseConversion(ctx, items, finalStoreId, transaction);
     if (!isDraft) await assertNewPurchasePnsAvailable(items, transaction);
     await assertActivePurchaseProducts(items, transaction);
     const productSnapshots = await loadPurchaseProductSnapshots(items, transaction);
@@ -1377,6 +1446,8 @@ async function createRequest(ctx) {
         is_used_product: Boolean(item.isUsedProduct || item.is_used_product) ? 1 : 0,
         direct_inbound: Boolean(item.directInbound || item.direct_inbound) ? 1 : 0,
         direct_inbound_sn_code: String(item.directInboundSnCode || item.direct_inbound_sn_code || '').trim() || null,
+        source_sn_id: getSnPurchaseFields(item).sourceSnId || null,
+        target_location_id: getSnPurchaseFields(item).targetLocationId || null,
         quantity: quantity,
         unit_price: unitPrice,
         subtotal: subtotal,
@@ -1777,7 +1848,9 @@ async function approveRequest(ctx) {
     quantity: item.quantity,
     isUsedProduct: item.is_used_product,
     directInbound: item.direct_inbound,
-    directInboundSnCode: item.direct_inbound_sn_code
+    directInboundSnCode: item.direct_inbound_sn_code,
+    sourceSnId: item.source_sn_id,
+    targetLocationId: item.target_location_id
   }));
   for (const item of items) {
     const isUsedProduct = Number(item.isUsedProduct || item.is_used_product) === 1;
@@ -1836,6 +1909,7 @@ async function approveRequest(ctx) {
 
   // 如果审批通过，自动生成入库单
   if (status === 'approved' && request.items && request.items.length > 0) {
+    const snPurchaseConversions = await validateSnPurchaseConversion(ctx, request.items, request.store_id, transaction, { approval: true });
     for (const item of request.items) {
       if (!Number(item.is_used_product) || item.product_id) continue;
       const directInbound = Number(item.direct_inbound) === 1;
@@ -1864,6 +1938,52 @@ async function approveRequest(ctx) {
       }
     }
 
+    if (snPurchaseConversions.length) {
+      const conversion = snPurchaseConversions[0];
+      const conversionSupplier = request.supplier_id
+        ? await Supplier.findByPk(request.supplier_id, { transaction })
+        : null;
+      const targetInventoryType = await moveSnInventoryAggregate({
+        sn: conversion.sn,
+        storeId: request.store_id,
+        oldLocationId: String(conversion.sn.location_id || ''),
+        oldLocation: conversion.sourceLocation,
+        targetLocation: conversion.targetLocation,
+        transaction
+      });
+      await conversion.sn.update({
+        location_id: conversion.targetLocation.location_id,
+        inventory_type: targetInventoryType,
+        inbound_price: conversion.item.unit_price,
+        supplier_id: request.supplier_id,
+        supplier_name: conversionSupplier?.name || conversion.sn.supplier_name || '',
+        source_type: 'PURCHASED_FROM_SPECIAL_WAREHOUSE',
+        update_time: new Date()
+      }, { transaction });
+      await SnLog.create({
+        log_id: generateUUID(),
+        sn_id: conversion.sn.sn_id,
+        sn_code: conversion.sn.sn_code,
+        product_id: conversion.sn.product_id,
+        product_name: conversion.item.product_name || '',
+        store_id: request.store_id,
+        action: 'special_warehouse_purchase',
+        remark: `采购申请 ${request.request_no} 审批通过：${conversion.sourceLocation.name} → ${conversion.targetLocation.name}（免再次入库）`,
+        create_user: user.name || user.phone || '-'
+      }, { transaction });
+      await recordBusinessAction({
+        businessType: 'purchase_request',
+        businessId: request.request_id,
+        businessNo: request.request_no,
+        action: 'special_warehouse_converted',
+        fromStatus: conversion.sourceLocation.type,
+        toStatus: conversion.targetLocation.type,
+        user,
+        comment: conversion.sn.sn_code,
+        transaction
+      });
+    }
+
     // 获取所有商品信息备用
     const productIds = request.items.map(item => item.product_id);
     const products = await Product.findAll({
@@ -1872,6 +1992,14 @@ async function approveRequest(ctx) {
     });
     const productMap = new Map();
     products.forEach(p => productMap.set(p.product_id, p));
+
+    // 特殊仓SN采购已在同一事务内完成库位转换，不再生成待入库单。
+    if (snPurchaseConversions.length) {
+      await transaction.commit();
+      transactionCommitted = true;
+      ctx.body = { code: 0, message: '审批完成，SN已转入目标仓库，无需再次入库' };
+      return;
+    }
 
     // 按照门店分配创建入库单
     const storeItemsMap = new Map();
@@ -2124,6 +2252,9 @@ async function createPurchaseAdjustment(ctx) {
     if (!request) ctx.throw(404, '采购申请不存在');
     assertStoreVisible(ctx, request.store_id);
     if (request.status !== 'approved') ctx.throw(400, '只有已通过的采购订单才能办理退单/数量调整');
+    if ((request.items || []).some(item => item.source_sn_id)) {
+      ctx.throw(400, '特殊仓SN采购已完成免入库转换，不能按待入库采购单调整');
+    }
 
     const inbounds = await Inbound.findAll({
       where: { purchase_request_id: requestId },
@@ -2403,7 +2534,10 @@ async function revokeRequest(ctx) {
 
   const request = await PurchaseRequest.findOne({
     where: { request_id: requestId },
-    include: [{ model: Inbound, include: [{ model: InboundItem, as: 'items' }] }]
+    include: [
+      { model: PurchaseRequestItem, as: 'items' },
+      { model: Inbound, include: [{ model: InboundItem, as: 'items' }] }
+    ]
   });
   if (!request) ctx.throw(404, '采购申请不存在');
   assertStoreVisible(ctx, request.store_id);
@@ -2418,6 +2552,9 @@ async function revokeRequest(ctx) {
 
   if (!['pending', 'approved', 'purchased'].includes(request.status)) {
     ctx.throw(400, '当前采购申请状态不允许撤销');
+  }
+  if (request.status !== 'pending' && (request.items || []).some(item => item.source_sn_id)) {
+    ctx.throw(400, '特殊仓SN采购审批通过后已完成库存转换，不能直接撤销');
   }
   const inbounds = request.Inbounds || [];
   if (inbounds.some(inbound => inbound.status === 'completed')) {
@@ -2726,6 +2863,7 @@ module.exports = {
   deleteSupplier,
   sortSuppliers,
   _test: {
+    getSnPurchaseFields,
     flattenPurchaseAllocations,
     validatePurchaseAllocations,
     getPurchaseAdjustmentTotals,

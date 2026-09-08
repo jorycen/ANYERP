@@ -928,6 +928,8 @@ const PurchaseRequestItem = sequelize.define('PurchaseRequestItem', {
   is_used_product: { type: DataTypes.TINYINT(1), defaultValue: 0 },
   direct_inbound: { type: DataTypes.TINYINT(1), defaultValue: 0 },
   direct_inbound_sn_code: { type: DataTypes.STRING(128) },
+  source_sn_id: { type: DataTypes.STRING(32), comment: '特殊仓采购转换来源SN' },
+  target_location_id: { type: DataTypes.STRING(32), comment: '特殊仓采购转换目标库位' },
   quantity: { type: DataTypes.INTEGER, allowNull: false },
   unit_price: { type: DataTypes.DECIMAL(12, 2) },
   subtotal: { type: DataTypes.DECIMAL(12, 2) },

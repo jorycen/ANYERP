@@ -298,11 +298,12 @@
               <template #default="{ row }">{{ row.stock_age_days == null ? '未知' : `${row.stock_age_days}天` }}</template>
             </el-table-column>
             <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
-            <el-table-column v-if="canManageSnPrice" label="操作" width="190" fixed="right">
+            <el-table-column label="操作" width="260" fixed="right">
               <template #default="{ row }">
-                <el-button link type="primary" @click="openSnSpecialPrice(row)">{{ row.is_special_price ? '修改特价' : '设为特价' }}</el-button>
-                <el-button v-if="row.is_special_price" link type="danger" @click="cancelSnSpecialPrice(row)">取消特价</el-button>
-                <el-button link type="info" @click="openSnPriceHistory(row)">记录</el-button>
+                <el-button v-if="canStartSnPurchase(row)" link type="success" @click="openSnPurchase(row)">发起采购申请</el-button>
+                <el-button v-if="canManageSnPrice" link type="primary" @click="openSnSpecialPrice(row)">{{ row.is_special_price ? '修改特价' : '设为特价' }}</el-button>
+                <el-button v-if="canManageSnPrice && row.is_special_price" link type="danger" @click="cancelSnSpecialPrice(row)">取消特价</el-button>
+                <el-button v-if="canManageSnPrice" link type="info" @click="openSnPriceHistory(row)">记录</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -316,6 +317,55 @@
             @size-change="loadSnInventory"
             @current-change="loadSnInventory"
           />
+
+          <el-dialog v-model="snPurchaseVisible" title="发起特殊仓SN采购申请" width="620px" @closed="resetSnPurchaseForm">
+            <el-alert title="审批通过后系统将直接把该SN转入目标仓，不再生成待入库单。" type="info" :closable="false" show-icon class="mb-16" />
+            <el-descriptions :column="2" border class="mb-16">
+              <el-descriptions-item label="SN">{{ snPurchaseForm.snCode }}</el-descriptions-item>
+              <el-descriptions-item label="当前库位">{{ snPurchaseForm.sourceLocationName }}</el-descriptions-item>
+              <el-descriptions-item label="商品" :span="2">{{ snPurchaseForm.productName }}</el-descriptions-item>
+              <el-descriptions-item label="PN">{{ snPurchaseForm.pnCode || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="门店">{{ snPurchaseForm.storeName }}</el-descriptions-item>
+            </el-descriptions>
+            <el-form label-width="100px">
+              <el-form-item label="供应商" required>
+                <el-select v-model="snPurchaseForm.supplierId" filterable placeholder="请选择供应商" style="width:100%">
+                  <el-option v-for="item in snPurchaseSuppliers" :key="item.supplier_id" :label="item.name" :value="item.supplier_id" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="采购价" required>
+                <el-input-number v-model="snPurchaseForm.price" :min="0" :precision="2" :step="100" style="width:100%" />
+              </el-form-item>
+              <el-form-item label="货型" required>
+                <el-select v-model="snPurchaseForm.goodsTypeId" placeholder="请选择货型" style="width:100%">
+                  <el-option v-for="item in snPurchaseGoodsTypes" :key="item.goods_type_id" :label="item.name" :value="item.goods_type_id" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="付款方式" required>
+                <el-radio-group v-model="snPurchaseForm.paymentMethod">
+                  <el-radio value="COMPANY_CREDIT">公司账期</el-radio>
+                  <el-radio value="PERSONAL_ADVANCE">个人垫付</el-radio>
+                </el-radio-group>
+              </el-form-item>
+              <el-form-item label="发票类型">
+                <el-select v-model="snPurchaseForm.invoiceType" clearable placeholder="请选择" style="width:100%">
+                  <el-option label="增值税专用发票" value="SPECIAL" />
+                  <el-option label="增值税普通发票" value="NORMAL" />
+                  <el-option label="无票" value="NONE" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="目标库位" required>
+                <el-select v-model="snPurchaseForm.targetLocationId" placeholder="请选择销售仓或样品仓" style="width:100%">
+                  <el-option v-for="item in snPurchaseTargetLocations" :key="item.location_id" :label="item.name" :value="item.location_id" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="备注"><el-input v-model="snPurchaseForm.remark" type="textarea" :rows="2" /></el-form-item>
+            </el-form>
+            <template #footer>
+              <el-button @click="snPurchaseVisible = false">取消</el-button>
+              <el-button type="primary" :loading="snPurchaseSubmitting" @click="submitSnPurchase">提交采购申请</el-button>
+            </template>
+          </el-dialog>
         </el-tab-pane>
 
         <!-- 批量维护 -->
@@ -1826,6 +1876,16 @@ const snInventoryLoading = ref(false)
 const snInventoryExporting = ref(false)
 const snInventoryLocations = ref([])
 const snInventoryResourceOptions = ref([])
+const snPurchaseVisible = ref(false)
+const snPurchaseSubmitting = ref(false)
+const snPurchaseSuppliers = ref([])
+const snPurchaseGoodsTypes = ref([])
+const snPurchaseTargetLocations = ref([])
+const snPurchaseForm = reactive({
+  snId: '', snCode: '', productId: '', productName: '', productCode: '', pnCode: '',
+  storeId: '', storeName: '', sourceLocationName: '', supplierId: '', price: 0,
+  goodsTypeId: '', paymentMethod: 'COMPANY_CREDIT', invoiceType: '', targetLocationId: '', remark: ''
+})
 const resourceStatusOptions = [
   { label: '可用', value: 'AVAILABLE' },
   { label: '已锁定', value: 'LOCKED' },
@@ -2406,6 +2466,93 @@ const loadSnInventoryLocations = async () => {
     snInventoryLocations.value = Array.isArray(res.data) ? res.data : []
   } catch (err) {
     ElMessage.error('加载库位失败')
+  }
+}
+
+const canStartSnPurchase = row => (
+  row?.status === 'in_stock' && ['display_qty', 'rental_demo_qty'].includes(String(row.location_type || row.inventory_type || ''))
+)
+
+const resetSnPurchaseForm = () => {
+  Object.assign(snPurchaseForm, {
+    snId: '', snCode: '', productId: '', productName: '', productCode: '', pnCode: '',
+    storeId: '', storeName: '', sourceLocationName: '', supplierId: '', price: 0,
+    goodsTypeId: '', paymentMethod: 'COMPANY_CREDIT', invoiceType: '', targetLocationId: '', remark: ''
+  })
+  snPurchaseTargetLocations.value = []
+}
+
+const openSnPurchase = async row => {
+  resetSnPurchaseForm()
+  Object.assign(snPurchaseForm, {
+    snId: row.sn_id,
+    snCode: row.sn_code,
+    productId: row.product_id,
+    productName: row.product_name,
+    productCode: row.product_code || '',
+    pnCode: row.pn_code || '',
+    storeId: row.store_id,
+    storeName: row.store_name,
+    sourceLocationName: row.location_name
+  })
+  snPurchaseVisible.value = true
+  try {
+    const [supplierRes, goodsTypeRes, locationRes] = await Promise.all([
+      api.getAllSuppliers(),
+      api.getGoodsTypes({ activeOnly: 1 }),
+      api.getLocationsByStore(row.store_id)
+    ])
+    snPurchaseSuppliers.value = supplierRes.data || []
+    snPurchaseGoodsTypes.value = goodsTypeRes.data || []
+    snPurchaseTargetLocations.value = (locationRes.data || []).filter(location => ['normal_qty', 'demo_qty'].includes(location.type))
+    if (snPurchaseGoodsTypes.value.length === 1) snPurchaseForm.goodsTypeId = snPurchaseGoodsTypes.value[0].goods_type_id
+    if (snPurchaseTargetLocations.value.length === 1) snPurchaseForm.targetLocationId = snPurchaseTargetLocations.value[0].location_id
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载采购申请选项失败')
+  }
+}
+
+const submitSnPurchase = async () => {
+  if (!snPurchaseForm.supplierId) return ElMessage.warning('请选择供应商')
+  if (!snPurchaseForm.goodsTypeId) return ElMessage.warning('请选择货型')
+  if (!snPurchaseForm.targetLocationId) return ElMessage.warning('请选择目标库位')
+  if (Number(snPurchaseForm.price) < 0) return ElMessage.warning('采购价不能小于0')
+  const goodsType = snPurchaseGoodsTypes.value.find(item => item.goods_type_id === snPurchaseForm.goodsTypeId)
+  snPurchaseSubmitting.value = true
+  try {
+    const res = await api.createPurchaseRequest({
+      supplierId: snPurchaseForm.supplierId,
+      storeId: snPurchaseForm.storeId,
+      invoiceType: snPurchaseForm.invoiceType,
+      paymentMethod: snPurchaseForm.paymentMethod,
+      goodsTypeId: snPurchaseForm.goodsTypeId,
+      productType: goodsType?.name || '',
+      remark: snPurchaseForm.remark || `特殊仓SN采购：${snPurchaseForm.snCode}`,
+      items: [{
+        productId: snPurchaseForm.productId,
+        productName: snPurchaseForm.productName,
+        productCode: snPurchaseForm.productCode,
+        pnCode: snPurchaseForm.pnCode,
+        quantity: 1,
+        price: Number(snPurchaseForm.price || 0),
+        goodsTypeId: snPurchaseForm.goodsTypeId,
+        productType: goodsType?.name || '',
+        sourceSnId: snPurchaseForm.snId,
+        targetLocationId: snPurchaseForm.targetLocationId,
+        storeAllocations: [{
+          storeId: snPurchaseForm.storeId,
+          quantity: 1,
+          locationAllocations: [{ locationId: snPurchaseForm.targetLocationId, quantity: 1 }]
+        }]
+      }]
+    })
+    ElMessage.success(res.message || '采购申请提交成功')
+    snPurchaseVisible.value = false
+    await loadSnInventory()
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '提交采购申请失败')
+  } finally {
+    snPurchaseSubmitting.value = false
   }
 }
 

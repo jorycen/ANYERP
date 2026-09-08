@@ -692,6 +692,7 @@ async function getSnInventoryList(ctx) {
        st.NAME AS store_name,
        st.DISTRIBUTOR_ID AS distributor_id,
        COALESCE(loc.NAME, '未指定库位') AS location_name,
+       loc.TYPE AS location_type,
        COALESCE(pp.STANDARD_PRICE, 0) AS unified_sale_price,
        COALESCE(pp.RETAIL_PRICE, 0) AS retail_price,
        COALESCE(pp.MIN_SALE_PRICE, 0) AS min_sale_price,
@@ -2188,7 +2189,7 @@ async function updateSn(ctx) {
   }
 }
 
-function validateSnLocationAdjustment({ sn, storeId, locationId, targetLocation }) {
+function validateSnLocationAdjustment({ sn, storeId, locationId, targetLocation, oldLocation }) {
   if (!storeId) return { status: 400, message: '门店不能为空' };
   if (!locationId) return { status: 400, message: '目标库位不能为空' };
   if (!sn) return { status: 404, message: 'SN记录不存在' };
@@ -2197,6 +2198,9 @@ function validateSnLocationAdjustment({ sn, storeId, locationId, targetLocation 
   }
   if (sn.status !== 'in_stock') {
     return { status: 409, message: '只有在库SN可以调整库位' };
+  }
+  if (['display_qty', 'rental_demo_qty'].includes(String(oldLocation?.type || sn.inventory_type || ''))) {
+    return { status: 409, message: '铺货仓及租赁样机仓SN不能直接调整库位，请发起采购申请' };
   }
   if (!targetLocation) {
     return { status: 400, message: '目标库位不存在、已停用或不属于当前门店' };
@@ -2230,9 +2234,7 @@ async function adjustSnLocation(ctx) {
       where: { location_id: locationId, store_id: storeId, status: 1 },
       transaction: t
     });
-    const validationError = validateSnLocationAdjustment({ sn, storeId, locationId, targetLocation });
-    if (validationError) ctx.throw(validationError.status, validationError.message);
-
+    if (!sn) ctx.throw(404, 'SN记录不存在');
     const oldLocationId = String(sn.location_id || '');
     if (oldLocationId === locationId) {
       await t.commit();
@@ -2246,6 +2248,9 @@ async function adjustSnLocation(ctx) {
           transaction: t
         })
       : null;
+
+    const validationError = validateSnLocationAdjustment({ sn, storeId, locationId, targetLocation, oldLocation });
+    if (validationError) ctx.throw(validationError.status, validationError.message);
 
     const targetInventoryType = await moveSnInventoryAggregate({
       sn,
@@ -6239,6 +6244,7 @@ module.exports = {
   executeInbound,
   completeApprovedSalesReturnInbound,
   updateInventory,
+  moveSnInventoryAggregate,
   getAvailableQty,
   getReturnList,
   requestReturn,

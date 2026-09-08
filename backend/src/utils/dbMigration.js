@@ -4132,6 +4132,9 @@ async function seedPermissionData() {
     await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'IS_USED_PRODUCT', 'TINYINT(1) DEFAULT 0 COMMENT "二手商品标记"', 'PN_CODE');
     await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'DIRECT_INBOUND', 'TINYINT(1) DEFAULT 0 COMMENT "审批通过后直接入库"', 'IS_USED_PRODUCT');
     await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'DIRECT_INBOUND_SN_CODE', 'VARCHAR(128) COMMENT "直接入库SN"', 'DIRECT_INBOUND');
+    await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'SOURCE_SN_ID', 'VARCHAR(32) COMMENT "特殊仓采购转换来源SN"', 'DIRECT_INBOUND_SN_CODE');
+    await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'TARGET_LOCATION_ID', 'VARCHAR(32) COMMENT "特殊仓采购转换目标库位"', 'SOURCE_SN_ID');
+    await checkAndAddIndex('T_PURCHASE_REQUEST_ITEM', 'idx_purchase_request_item_source_sn', 'ALTER TABLE T_PURCHASE_REQUEST_ITEM ADD INDEX idx_purchase_request_item_source_sn (SOURCE_SN_ID)');
     await ensureRoleChildMenus();
 
     console.log('[DB Migration] 权限种子数据已创建');

@@ -418,6 +418,12 @@
           <el-table-column label="厂商编码" width="150" show-overflow-tooltip>
             <template #default="{ row }">{{ row.manufacturer_code || '-' }}</template>
           </el-table-column>
+          <el-table-column v-if="(currentRequest.items || []).some(item => item.source_sn_id)" label="来源SN" width="170">
+            <template #default="{ row }">{{ row.source_sn_code || '-' }}</template>
+          </el-table-column>
+          <el-table-column v-if="(currentRequest.items || []).some(item => item.source_sn_id)" label="免入库目标仓" width="130">
+            <template #default="{ row }">{{ row.target_location_name || '-' }}</template>
+          </el-table-column>
           <el-table-column prop="unit_price" label="单价" width="100">
             <template #default="{ row }">¥{{ row.unit_price }}</template>
           </el-table-column>
