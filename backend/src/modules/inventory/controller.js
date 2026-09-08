@@ -5,7 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const {
-  sequelize, Region, ProductSn, Product, ProductPn, ProductPrice, ProductPriceChangeLog,
+  sequelize, Region, ProductSn, Product, ProductPn, ProductPrice, ProductPriceChangeLog, ProductCategory,
   SnDistributorPrice, SnDistributorPriceChangeLog, ResourceCategory,
   ProductBarcode, Store, Location, InventoryWarning, Inbound, InboundItem,
   ReturnStock, ReturnStockItem, PurchaseRequest, PurchaseRequestItem, PurchaseAdjustment, Payable, Supplier, Inventory,
@@ -1380,6 +1380,59 @@ function getInventoryProductType(category, accessoryType, name, config) {
   return '';
 }
 
+function buildProductCategoryOrderMap(categories = []) {
+  const childrenByParent = new Map();
+  const normalizedRows = categories
+    .filter(category => Number(category.status ?? 1) === 1)
+    .map(category => ({
+      ...category,
+      category_id: String(category.category_id || ''),
+      parent_id: String(category.parent_id || '')
+    }))
+    .filter(category => category.category_id);
+
+  normalizedRows.forEach(category => {
+    if (!childrenByParent.has(category.parent_id)) childrenByParent.set(category.parent_id, []);
+    childrenByParent.get(category.parent_id).push(category);
+  });
+  childrenByParent.forEach(children => children.sort((a, b) =>
+    Number(a.sort_order || 0) - Number(b.sort_order || 0)
+    || String(a.category_id).localeCompare(String(b.category_id))
+  ));
+
+  const orderMap = new Map();
+  const visited = new Set();
+  let order = 0;
+  const visit = (parentId, parentPath = []) => {
+    for (const category of childrenByParent.get(String(parentId || '')) || []) {
+      if (visited.has(category.category_id)) continue;
+      visited.add(category.category_id);
+      const path = [...parentPath, String(category.name || '').trim()].filter(Boolean);
+      orderMap.set(`id:${category.category_id}`, order);
+      if (path.length) orderMap.set(`path:${path.join('/')}`, order);
+      order += 1;
+      visit(category.category_id, path);
+    }
+  };
+
+  visit('');
+  normalizedRows
+    .filter(category => !visited.has(category.category_id))
+    .sort((a, b) => Number(a.level || 0) - Number(b.level || 0)
+      || Number(a.sort_order || 0) - Number(b.sort_order || 0)
+      || String(a.category_id).localeCompare(String(b.category_id)))
+    .forEach(category => visit(category.parent_id));
+  return orderMap;
+}
+
+function getProductCategoryOrder(product, orderMap) {
+  const categoryId = String(product?.category_id || '').trim();
+  if (categoryId && orderMap.has(`id:${categoryId}`)) return orderMap.get(`id:${categoryId}`);
+  const categoryPath = String(product?.category_path_legacy || product?.category || '').trim();
+  if (categoryPath && orderMap.has(`path:${categoryPath}`)) return orderMap.get(`path:${categoryPath}`);
+  return Number.MAX_SAFE_INTEGER;
+}
+
 const INVENTORY_SUMMARY_CATEGORY_KEYWORDS = [
   ['笔记本', ['笔记本', 'laptop']],
   ['平板', ['平板', 'pad', 'ipad', 'tablet']],
@@ -1496,8 +1549,8 @@ function buildStoreInventoryExportRows(productRows) {
       });
     });
   });
-  return rows.sort((a, b) => String(a.store_name || '').localeCompare(String(b.store_name || ''), 'zh-Hans-CN')
-    || Number(a._store_product_index || 0) - Number(b._store_product_index || 0));
+  return rows.sort((a, b) => Number(a._store_product_index || 0) - Number(b._store_product_index || 0)
+    || String(a.store_name || '').localeCompare(String(b.store_name || ''), 'zh-Hans-CN'));
 }
 
 function buildInventorySummaryExportRows(productRows, primaryPnMap = new Map()) {
@@ -1508,11 +1561,6 @@ function buildInventorySummaryExportRows(productRows, primaryPnMap = new Map()) 
       || !['-', '0', ''].includes(String(row.changhong_inventory || ''))
       || !['-', '0', ''].includes(String(row.tianjin_inventory || ''))
     ))
-    .sort((a, b) => {
-      if (a.categoryRank !== b.categoryRank) return a.categoryRank - b.categoryRank;
-      return String(a.row.product_name || '').localeCompare(String(b.row.product_name || ''), 'zh-Hans-CN')
-        || String(a.row.product_id || '').localeCompare(String(b.row.product_id || ''));
-    })
     .map(({ row }) => row)
     .map(row => ({
       产品类型: row.category || '',
@@ -1626,6 +1674,12 @@ async function getList(ctx) {
       include: [{ model: ProductPrice, attributes: ['standard_price', 'retail_price', 'min_sale_price', 'cost_price'] }],
       order: [['create_time', 'DESC']]
     });
+    const categoryRows = await ProductCategory.findAll({
+      where: { status: 1 },
+      attributes: ['category_id', 'parent_id', 'name', 'level', 'sort_order', 'status'],
+      raw: true
+    });
+    const categoryOrderMap = buildProductCategoryOrderMap(categoryRows);
 
     const allProductIds = allProducts.map(p => p.product_id);
     const salesMap = await buildSalesCountMap(allProductIds, storeId, storeIds);
@@ -1856,10 +1910,12 @@ async function getList(ctx) {
           changhong: supplierInventoryMap.get(String(p.product_id))?.changhongUpdatedAt || null,
           tianjin: supplierInventoryMap.get(String(p.product_id))?.tianjinUpdatedAt || null
         },
+        _category_order: getProductCategoryOrder(p, categoryOrderMap),
         _category_rank: getInventoryCategoryRank(p.category, p.accessory_type, p.name, p.config),
         _create_time: p.create_time
       };
     }).sort((a, b) => {
+      if (a._category_order !== b._category_order) return a._category_order - b._category_order;
       const modelCompare = compareInventoryModelRows(a, b, modelFilter);
       if (modelCompare !== 0) return modelCompare;
       const aHasStock = Number(a.normal_qty || 0) > 0 ? 0 : 1;
@@ -1869,7 +1925,7 @@ async function getList(ctx) {
       return new Date(b._create_time || 0).getTime() - new Date(a._create_time || 0).getTime();
     });
 
-    const exportRows = sortedRows.map(({ _category_rank, _create_time, ...row }) => row);
+    const exportRows = sortedRows.map(({ _category_order, _category_rank, _create_time, ...row }) => row);
 
     if (summaryExportMode) {
       const primaryPnRows = exportRows.length > 0
@@ -6236,6 +6292,8 @@ module.exports = {
     getSalesResourceQuantitySnapshot,
     getSnSalesResourceQuantitySnapshot,
     getInventoryProductType,
+    buildProductCategoryOrderMap,
+    getProductCategoryOrder,
     getSnStatusLabel,
     getSnInventoryStatusFilter,
     buildSnListBusinessOrder,

@@ -226,14 +226,14 @@ test('inventory export expands one product into store rows and keeps store-speci
   ]);
 });
 
-test('inventory summary export keeps only in-stock target categories and sorts them', () => {
+test('inventory summary export keeps the category-management order supplied by inventory query', () => {
   const rows = _test.buildInventorySummaryExportRows([
-    { product_id: 'accessory', category: '配件', product_name: '配件', standard_price: 50, normal_qty: 4 },
-    { product_id: 'desktop', category: '台式机', product_name: '台机', standard_price: 40, normal_qty: 3 },
-    { product_id: 'phone', category: '手机', product_name: '手机', standard_price: 30, normal_qty: 2 },
-    { product_id: 'tablet', category: '平板', product_name: '平板', standard_price: 20, normal_qty: 1 },
     { product_id: 'notebook', category: '电子产品/笔记本', product_name: '笔记本', standard_price: 10, normal_qty: 5 },
+    { product_id: 'tablet', category: '平板', product_name: '平板', standard_price: 20, normal_qty: 1 },
     { product_id: 'supplier', category: '手机', product_name: '服务商有货手机', standard_price: 60, normal_qty: 0, changhong_inventory: '少量', tianjin_inventory: '8' },
+    { product_id: 'phone', category: '手机', product_name: '手机', standard_price: 30, normal_qty: 2 },
+    { product_id: 'desktop', category: '台式机', product_name: '台机', standard_price: 40, normal_qty: 3 },
+    { product_id: 'accessory', category: '配件', product_name: '配件', standard_price: 50, normal_qty: 4 },
     { product_id: 'empty', category: '手机', product_name: '无库存手机', standard_price: 60, normal_qty: 0, changhong_inventory: '-', tianjin_inventory: '0' },
     { product_id: 'other', category: '其他', product_name: '其他商品', standard_price: 70, normal_qty: 6 }
   ], new Map([
@@ -265,6 +265,30 @@ test('库存简表将厂商编码作为唯一 PN 字段兜底', () => {
   assert.equal(row.产品类型, '配件');
   assert.equal(Object.hasOwn(row, '商品编码'), false);
   assert.equal(Object.hasOwn(row, '厂商编码'), false);
+});
+
+test('库存分类排序按分类管理一级到四级顺序精确排列', () => {
+  const orderMap = _test.buildProductCategoryOrderMap([
+    { category_id: 'root-b', parent_id: null, name: '配件', level: 1, sort_order: 2, status: 1 },
+    { category_id: 'root-a', parent_id: null, name: '电脑', level: 1, sort_order: 1, status: 1 },
+    { category_id: 'brand-b', parent_id: 'root-a', name: '品牌B', level: 2, sort_order: 2, status: 1 },
+    { category_id: 'brand-a', parent_id: 'root-a', name: '品牌A', level: 2, sort_order: 1, status: 1 },
+    { category_id: 'series-b', parent_id: 'brand-a', name: '系列B', level: 3, sort_order: 2, status: 1 },
+    { category_id: 'series-a', parent_id: 'brand-a', name: '系列A', level: 3, sort_order: 1, status: 1 },
+    { category_id: 'model-b', parent_id: 'series-a', name: '型号B', level: 4, sort_order: 2, status: 1 },
+    { category_id: 'model-a', parent_id: 'series-a', name: '型号A', level: 4, sort_order: 1, status: 1 }
+  ]);
+  const products = [
+    { product_id: 'accessory', category_id: 'root-b' },
+    { product_id: 'brand-b', category_id: 'brand-b' },
+    { product_id: 'series-b', category_id: 'series-b' },
+    { product_id: 'model-b', category_id: 'model-b' },
+    { product_id: 'model-a', category_path_legacy: '电脑/品牌A/系列A/型号A' },
+    { product_id: 'unknown', category: '历史未配置分类' }
+  ].sort((a, b) => _test.getProductCategoryOrder(a, orderMap) - _test.getProductCategoryOrder(b, orderMap));
+  assert.deepEqual(products.map(product => product.product_id), [
+    'model-a', 'model-b', 'series-b', 'brand-b', 'accessory', 'unknown'
+  ]);
 });
 
 test('库存简表导出近7天和近30天销量', () => {
