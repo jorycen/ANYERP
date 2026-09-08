@@ -367,7 +367,7 @@ async function list(ctx) {
   const {
     storeId, startDate, endDate, customerPhone, customerName, orderNo,
     status, createUser, submitUser, productName, productCode, pnCode, snCode,
-    scope, onlyReportedToMall, page = 1, pageSize = 20
+    invoiceInfo, subsidyPerson, scope, onlyReportedToMall, page = 1, pageSize = 20
   } = ctx.query;
   const user = ctx.state.user;
 
@@ -434,6 +434,15 @@ async function list(ctx) {
         ]
       }
     ];
+  }
+  const invoiceKeyword = String(invoiceInfo || subsidyPerson || '').trim();
+  if (invoiceKeyword) {
+    where[Op.and] = [...(where[Op.and] || []), {
+      [Op.or]: [
+        { subsidy_person: { [Op.like]: `%${invoiceKeyword}%` } },
+        { invoice_info: { [Op.like]: `%${invoiceKeyword}%` } }
+      ]
+    }];
   }
 
   if (storeId) {

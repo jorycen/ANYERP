@@ -120,6 +120,30 @@ test('店长不能通过订单列表筛选未授权门店', async () => {
   }
 });
 
+test('订单列表的开票信息关键词同时匹配国补人和开票信息', async () => {
+  const originalFindAll = models.Order.findAll;
+  let queryOptions;
+  models.Order.findAll = async options => {
+    queryOptions = options;
+    return [];
+  };
+
+  const ctx = {
+    state: { user: { roles: ['manager'], accessibleStoreIds: ['STORE-1'] } },
+    query: { invoiceInfo: '张三' }
+  };
+
+  try {
+    await salesController.list(ctx);
+    const keywordCondition = queryOptions.where[Op.and].find(condition => condition[Op.or]);
+    const branches = keywordCondition[Op.or];
+    assert.equal(branches[0].subsidy_person[Op.like], '%张三%');
+    assert.equal(branches[1].invoice_info[Op.like], '%张三%');
+  } finally {
+    models.Order.findAll = originalFindAll;
+  }
+});
+
 test('销售审批列表只返回当前角色可审批的阶段', async () => {
   const originalFindAll = models.Order.findAll;
   let queryOptions;
