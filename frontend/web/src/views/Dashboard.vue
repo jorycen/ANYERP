@@ -16,6 +16,11 @@
       </article>
     </section>
 
+    <section class="content-card task-card">
+      <header class="section-header"><div><h3>月度任务达成</h3><p>按自然月实时汇总</p></div><div class="task-filters"><el-radio-group v-model="taskDimension" size="small" @change="loadMonthlyTask"><el-radio-button label="store">门店</el-radio-button><el-radio-button label="staff">员工</el-radio-button></el-radio-group><el-select v-if="taskDimension === 'store'" v-model="taskStoreId" clearable placeholder="全部门店" @change="loadMonthlyTask"><el-option label="全部门店" value="" /><el-option v-for="item in taskStores" :key="item.storeId" :label="item.name" :value="item.storeId" /></el-select><el-select v-else v-model="taskStaffId" clearable filterable placeholder="全部员工" @change="loadMonthlyTask"><el-option label="全部员工" value="" /><el-option v-for="item in taskStaff" :key="item.staffId" :label="item.name" :value="String(item.staffId)" /></el-select></div></header>
+      <el-table v-loading="taskLoading" :data="taskRows" size="small" empty-text="当前范围暂无月度任务"><el-table-column prop="targetName" :label="taskDimension === 'store' ? '门店' : '员工'" min-width="130" /><el-table-column label="销售达成" min-width="180"><template #default="{ row }">¥{{ money(row.sales?.actual) }} / ¥{{ money(row.sales?.target) }}</template></el-table-column><el-table-column label="总体完成率" width="130"><template #default="{ row }"><el-tag :type="Number(row.overallRate || 0) >= 100 ? 'success' : 'warning'">{{ row.overallRate == null ? '--' : `${row.overallRate}%` }}</el-tag></template></el-table-column></el-table>
+    </section>
+
     <section class="content-card">
       <header class="section-header">
         <div><h3>最近销售订单</h3><p>快速查看最近提交的销售记录</p></div>
@@ -45,6 +50,7 @@ const userName = computed(() => userInfo.name || '伙伴')
 function menusContainPath(menus, prefix) { return (menus || []).some(menu => String(menu.path || '').startsWith(prefix) || menusContainPath(menu.children, prefix)) }
 const canOpenSales = computed(() => menusContainPath(userInfo.menus, '/sales'))
 const stats = reactive({ todaySales: 0, todayOrders: 0, inventoryCount: 0 })
+const taskLoading = ref(false), taskDimension = ref('store'), taskStoreId = ref(''), taskStaffId = ref(''), taskStores = ref([]), taskStaff = ref([]), taskRows = ref([])
 const now = new Date()
 const greeting = computed(() => now.getHours() < 12 ? '上午好' : now.getHours() < 18 ? '下午好' : '晚上好')
 const todayText = computed(() => new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' }).format(now))
@@ -60,14 +66,15 @@ function number(value) { return new Intl.NumberFormat('zh-CN').format(Number(val
 function formatDateTime(value) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-' }
 function statusText(status) { return ({ completed: '已完成', archived: '已归档', '已归档': '已归档', cancelled: '已取消', pending: '待处理', draft: '草稿' })[status] || status || '-' }
 function statusType(status) { return ({ completed: 'success', archived: 'success', '已归档': 'success', cancelled: 'danger', pending: 'warning', draft: 'info' })[status] || 'info' }
+async function loadMonthlyTask() { taskLoading.value = true; try { const r = await api.getMonthlyTaskAchievement({ monthKey: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(now).slice(0, 7), dimension: taskDimension.value, storeId: taskDimension.value === 'store' ? taskStoreId.value : '', staffId: taskDimension.value === 'staff' ? taskStaffId.value : '' }); const d = r.data || r; taskRows.value = taskDimension.value === 'store' ? (d.stores || []) : (d.employees || []) } finally { taskLoading.value = false } }
 
 onMounted(async () => {
   loading.value = true
   try {
-    const [salesResult, inventoryResult, ordersResult] = await Promise.allSettled([
+    const [salesResult, inventoryResult, ordersResult, filtersResult] = await Promise.allSettled([
       api.getSalesReport({ date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(now) }),
       api.getInventoryReport(),
-      api.getSalesList({ page: 1, pageSize: 8 })
+      api.getSalesList({ page: 1, pageSize: 8 }), api.getDashboardFilters()
     ])
     if (salesResult.status === 'fulfilled' && salesResult.value.code === 0) {
       stats.todaySales = salesResult.value.data?.totalAmount || 0
@@ -78,6 +85,8 @@ onMounted(async () => {
       stats.inventoryCount = Array.isArray(inventoryData) ? inventoryData.length : Number(inventoryData?.total || inventoryData?.count || 0)
     }
     if (ordersResult.status === 'fulfilled' && ordersResult.value.code === 0) recentOrders.value = ordersResult.value.data?.list || ordersResult.value.data || []
+    if (filtersResult.status === 'fulfilled') { const d = filtersResult.value.data || filtersResult.value; taskStores.value = d.stores || []; taskStaff.value = d.employees || [] }
+    await loadMonthlyTask()
   } finally { loading.value = false }
 })
 </script>
@@ -96,6 +105,7 @@ onMounted(async () => {
 .metric-icon.blue { color: #2563eb; background: #eff6ff; }.metric-icon.violet { color: #7c3aed; background: #f5f3ff; }.metric-icon.green { color: #079455; background: #ecfdf3; }.metric-icon.orange { color: #dc6803; background: #fff7ed; }
 .metric-content { display: flex; min-width: 0; flex-direction: column; }.metric-content > span { color: #667085; font-size: 12px; }.metric-content strong { margin-top: 4px; overflow: hidden; color: #182230; font-size: 22px; font-weight: 680; letter-spacing: -.02em; text-overflow: ellipsis; white-space: nowrap; }.metric-content small { margin-top: 5px; color: #98a2b3; font-size: 10px; }
 .content-card { padding: 0 20px 20px; border: 1px solid var(--erp-border-soft); border-radius: 11px; background: #fff; box-shadow: var(--erp-shadow); }
+.task-filters { display: flex; gap: 10px; align-items: center; }.task-filters .el-select { width: 160px; }
 .section-header { display: flex; min-height: 70px; align-items: center; justify-content: space-between; gap: 20px; }.section-header h3 { margin: 0; color: #182230; font-size: 16px; font-weight: 650; }.section-header p { margin-top: 4px; color: #98a2b3; font-size: 11px; }.money { color: #344054; font-weight: 650; }
 @media (max-width: 1320px) { .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 </style>

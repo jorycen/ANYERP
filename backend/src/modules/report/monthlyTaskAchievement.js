@@ -103,7 +103,7 @@ async function loadActuals(storeIds, startAt, endAt) {
        AND o.STORE_ID IN (:storeIds)
        AND o.CREATE_TIME >= :startAt
        AND o.CREATE_TIME < :endAt
-     ORDER BY o.CREATE_TIME ASC, o.ORDER_ID ASC, oi.ITEM_ID ASC`, replacements, { type: QueryTypes.SELECT });
+     ORDER BY o.CREATE_TIME ASC, o.ORDER_ID ASC, oi.ITEM_ID ASC`, { replacements, type: QueryTypes.SELECT });
 
   const storeActuals = new Map();
   const employeeActuals = new Map();
@@ -138,7 +138,7 @@ async function loadActuals(storeIds, startAt, endAt) {
        AND o.STORE_ID IN (:storeIds)
        AND o.CREATE_TIME >= :startAt
        AND o.CREATE_TIME < :endAt
-     GROUP BY pa.ORDER_ID, o.STORE_ID`, replacements, { type: QueryTypes.SELECT });
+     GROUP BY pa.ORDER_ID, o.STORE_ID`, { replacements, type: QueryTypes.SELECT });
   for (const row of adjustmentRows) {
     const storeActual = storeActuals.get(String(row.storeId)) || createActual();
     storeActual.grossProfit += number(row.signedAmount);
@@ -168,7 +168,7 @@ async function loadActuals(storeIds, startAt, endAt) {
       LEFT JOIN T_ORDER o ON o.ORDER_ID = srs.ORDER_ID
      WHERE srs.STORE_ID IN (:storeIds)
        AND srs.CREATE_TIME >= :startAt
-       AND srs.CREATE_TIME < :endAt`, replacements, { type: QueryTypes.SELECT });
+       AND srs.CREATE_TIME < :endAt`, { replacements, type: QueryTypes.SELECT });
   for (const row of returnItems) {
     const storeActual = storeActuals.get(String(row.storeId)) || createActual();
     addActual(storeActual, row.salesAmount, 0, row.productId, row.quantity);
@@ -198,7 +198,7 @@ async function loadActuals(storeIds, startAt, endAt) {
       FROM T_SALES_RETURN_GROSS_PROFIT
      WHERE STORE_ID IN (:storeIds)
        AND CREATE_TIME >= :startAt
-       AND CREATE_TIME < :endAt`, replacements, { type: QueryTypes.SELECT });
+       AND CREATE_TIME < :endAt`, { replacements, type: QueryTypes.SELECT });
   for (const row of returnLedgerRows) {
     const key = employeeKey(row.staffId, row.employeeName);
     const actual = employeeActuals.get(key) || { ...createActual(), staffId: row.staffId ? String(row.staffId) : null, employeeName: row.employeeName || '', storeIds: new Set() };
@@ -280,8 +280,10 @@ function summarizeAchievements(rows, profitVisible) {
 async function getMonthlyTaskAchievement(ctx) {
   const user = ctx.state.user;
   const profitVisible = canViewProfit(user);
+  const dimension = String(ctx.query.dimension || 'store').trim().toLowerCase() === 'staff' ? 'staff' : 'store';
+  const requestedStaffId = String(ctx.query.staffId || ctx.query.staff_id || '').trim();
   const monthKey = String(ctx.query.monthKey || ctx.query.month_key || '').trim() || new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 7);
-  const storeIds = await resolveStores(user, ctx.query.storeId || ctx.query.store_id);
+  const storeIds = await resolveStores(user, dimension === 'store' ? (ctx.query.storeId || ctx.query.store_id) : '');
   const { startAt, endAt } = monthRange(monthKey);
   if (!storeIds.length) {
     ctx.body = { code: 0, data: { monthKey, stores: [], employees: [] } };
@@ -303,6 +305,9 @@ async function getMonthlyTaskAchievement(ctx) {
   staffRows.forEach(row => {
     if (row.store_id && storeIds.includes(String(row.store_id))) visibleStaffIds.add(String(row.staff_id));
   });
+  if (dimension === 'staff' && requestedStaffId && !visibleStaffIds.has(requestedStaffId)) {
+    ctx.throw(403, '无权访问该员工任务达成');
+  }
   const batchesByTask = new Map();
   const productsByBatch = new Map();
   products.forEach(row => {
@@ -330,7 +335,7 @@ async function getMonthlyTaskAchievement(ctx) {
     allocationMap.set(String(row.staff_id), list);
     allocationTotalByTask.set(String(row.task_id), number(allocationTotalByTask.get(String(row.task_id))) + money(row.allocated_target));
   });
-  const storesResult = visibleTasks.filter(task => task.target_type === 'store').map(task => buildAchievement({
+  const storesResult = (dimension === 'staff' ? [] : visibleTasks.filter(task => task.target_type === 'store')).map(task => buildAchievement({
     task,
     actual: actuals.storeActuals.get(String(task.target_id)) || createActual(),
     grossProfitTarget: task.gross_profit_target,
@@ -340,8 +345,7 @@ async function getMonthlyTaskAchievement(ctx) {
     allocationTotal: allocationTotalByTask.get(String(task.task_id)) || 0,
     profitVisible
   }));
-  const selectedStaffId = ctx.query.staffId || ctx.query.staff_id;
-  const employeesResult = visibleTasks.filter(task => task.target_type === 'staff' && (!selectedStaffId || String(task.target_id) === String(selectedStaffId))).map(task => {
+  const employeesResult = (dimension === 'store' ? [] : visibleTasks.filter(task => task.target_type === 'staff' && (!requestedStaffId || String(task.target_id) === requestedStaffId))).map(task => {
     const staff = staffMap.get(String(task.target_id));
     const allocationsForStaff = allocationMap.get(String(task.target_id)) || [];
     const allocated = allocationsForStaff.reduce((sum, row) => sum + row.allocatedTarget, 0);
@@ -360,6 +364,7 @@ async function getMonthlyTaskAchievement(ctx) {
       monthKey,
       meta: {
         source: 'monthly_tasks',
+        dimension,
         canViewProfit: profitVisible,
         calculation: 'ANY-ERP 按自然月实时汇总已归档销售与已完成退货，前端只负责展示'
       },
