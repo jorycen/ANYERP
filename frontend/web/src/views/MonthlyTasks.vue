@@ -10,15 +10,12 @@
 
       <div class="filter-bar">
         <el-date-picker v-model="monthKey" type="month" value-format="YYYY-MM" placeholder="选择月份" />
-        <el-select v-model="targetType" style="width: 150px">
-          <el-option label="门店任务" value="store" />
-          <el-option label="员工任务" value="staff" />
-        </el-select>
         <el-button type="primary" :loading="loading" @click="loadTasks">查询</el-button>
       </div>
 
       <el-alert v-if="monthKey < currentMonthKey" title="历史月份任务只读" type="info" :closable="false" class="history-tip" />
       <el-table :data="filteredTasks" stripe border v-loading="loading">
+        <el-table-column type="expand" width="48"><template #default="{ row }"><div class="staff-task-box"><div class="staff-task-heading">员工任务 <el-button link type="primary" :disabled="monthKey < currentMonthKey" @click="openCreateStaff(row)">新增员工任务</el-button></div><el-table :data="row.staffTasks" size="small"><el-table-column prop="targetName" label="员工" /><el-table-column label="销售额目标"><template #default="{ row: staff }">¥{{ money(staff.salesTarget) }}</template></el-table-column><el-table-column label="毛利目标"><template #default="{ row: staff }">¥{{ money(staff.grossProfitTarget) }}</template></el-table-column><el-table-column label="操作" width="110"><template #default="{ row: staff }"><el-button link type="primary" @click="openEdit(staff)">编辑</el-button><el-button link type="danger" @click="disableTask(staff)">停用</el-button></template></el-table-column></el-table></div></template></el-table-column>
         <el-table-column prop="targetName" label="任务对象" min-width="150" />
         <el-table-column prop="storeName" label="所属门店" min-width="130" />
         <el-table-column label="销售额目标" width="130" align="right">
@@ -43,12 +40,7 @@
     <el-dialog v-model="dialogVisible" :title="editing ? '编辑月度任务' : '新增月度任务'" width="920px">
       <el-form label-width="110px">
         <el-form-item label="月份"><el-input v-model="form.monthKey" disabled /></el-form-item>
-        <el-form-item label="任务类型">
-          <el-radio-group v-model="form.targetType" :disabled="editing">
-            <el-radio label="store">门店</el-radio>
-            <el-radio label="staff">员工</el-radio>
-          </el-radio-group>
-        </el-form-item>
+        <el-form-item label="任务类型"><el-tag>{{ form.targetType === 'store' ? '门店任务' : '员工任务' }}</el-tag></el-form-item>
         <el-form-item :label="form.targetType === 'store' ? '门店' : '员工'">
           <el-select v-model="form.targetId" filterable style="width: 320px" :disabled="editing">
             <el-option v-for="item in targetOptions" :key="item.id" :label="item.label" :value="item.id" />
@@ -103,7 +95,6 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 
 const monthKey = ref(new Date().toISOString().slice(0, 7))
-const targetType = ref('store')
 const currentMonthKey = new Date().toISOString().slice(0, 7)
 const loading = ref(false)
 const saving = ref(false)
@@ -113,17 +104,17 @@ const dialogVisible = ref(false)
 const editing = ref(false)
 const form = reactive(emptyForm())
 
-const filteredTasks = computed(() => tasks.value.filter(row => row.targetType === targetType.value))
+const filteredTasks = computed(() => tasks.value.filter(row => row.targetType === 'store').map(row => ({ ...row, staffTasks: tasks.value.filter(staff => staff.targetType === 'staff' && staff.parentStoreId === row.targetId) })))
 const targetOptions = computed(() => form.targetType === 'store'
   ? options.stores.map(item => ({ id: item.storeId, label: item.name }))
-  : options.staff.map(item => ({ id: item.staffId, label: item.name })))
+  : options.staff.filter(item => item.storeId === form.parentStoreId || (item.storeIds || []).includes(form.parentStoreId)).map(item => ({ id: item.staffId, label: item.name })))
 const staffForStore = computed(() => form.targetType !== 'store'
   ? []
   : options.staff.filter(item => !form.targetId || item.storeId === form.targetId || (item.storeIds || []).includes(form.targetId)))
 const allocationTotal = computed(() => form.grossProfitAllocations.reduce((sum, item) => sum + Number(item.allocatedTarget || 0), 0))
 
 function emptyForm() {
-  return { taskId: '', monthKey: monthKey.value, targetType: 'store', targetId: '', salesTarget: 0, grossProfitTarget: 0, productBatches: [], grossProfitAllocations: [] }
+  return { taskId: '', monthKey: monthKey.value, targetType: 'store', targetId: '', parentStoreId: '', salesTarget: 0, grossProfitTarget: 0, productBatches: [], grossProfitAllocations: [] }
 }
 
 function money(value) { return Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }
@@ -165,7 +156,7 @@ async function loadTasks() {
   } finally { loading.value = false }
 }
 
-function resetForm() { Object.assign(form, emptyForm(), { monthKey: monthKey.value, targetType: targetType.value }) }
+function resetForm() { Object.assign(form, emptyForm(), { monthKey: monthKey.value }) }
 function openCreate() { editing.value = false; resetForm(); dialogVisible.value = true }
 function openEdit(row) {
   editing.value = true
@@ -173,6 +164,7 @@ function openEdit(row) {
   form.monthKey = monthKey.value
   dialogVisible.value = true
 }
+function openCreateStaff(store) { editing.value = false; Object.assign(form, emptyForm(), { monthKey: monthKey.value, targetType: 'staff', parentStoreId: store.targetId }); dialogVisible.value = true }
 function addBatch() { form.productBatches.push({ batchName: `批次${form.productBatches.length + 1}`, products: [{ productId: '', targetQuantity: 1 }] }) }
 function removeBatch(index) { form.productBatches.splice(index, 1) }
 function addProduct(index) { form.productBatches[index].products.push({ productId: '', targetQuantity: 1 }) }
@@ -184,7 +176,7 @@ async function save() {
   if (allocationTotal.value > Number(form.grossProfitTarget || 0)) return ElMessage.warning('员工毛利分摊合计不能超过毛利目标')
   saving.value = true
   try {
-    const payload = { monthKey: form.monthKey, targetType: form.targetType, targetId: form.targetId, salesTarget: form.salesTarget, grossProfitTarget: form.grossProfitTarget, productBatches: form.productBatches, grossProfitAllocations: form.grossProfitAllocations }
+    const payload = { monthKey: form.monthKey, targetType: form.targetType, targetId: form.targetId, parentStoreId: form.parentStoreId, salesTarget: form.salesTarget, grossProfitTarget: form.grossProfitTarget, productBatches: form.productBatches, grossProfitAllocations: form.grossProfitAllocations }
     if (editing.value) await api.updateMonthlyTask(form.taskId, payload)
     else await api.saveMonthlyTask(payload)
     ElMessage.success('保存成功')
@@ -202,7 +194,6 @@ async function disableTask(row) {
   } catch (error) { if (error !== 'cancel') ElMessage.error(error.message || '停用失败') }
 }
 
-watch(() => form.targetType, () => { if (!editing.value) { form.targetId = ''; form.grossProfitAllocations = [] } })
 watch(monthKey, loadTasks)
 onMounted(async () => { await loadOptions(); await loadTasks() })
 </script>
@@ -214,4 +205,5 @@ onMounted(async () => { await loadOptions(); await loadTasks() })
 .batch-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .batch-product-row { display: flex; gap: 10px; align-items: center; margin: 8px 0; }
 .allocation-note { color: #909399; margin-top: 10px; font-size: 13px; }
+.staff-task-box { padding: 10px 26px; background: #fafcff; }.staff-task-heading { display:flex; justify-content:space-between; margin-bottom:8px; font-weight:600; }
 </style>

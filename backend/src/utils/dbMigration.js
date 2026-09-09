@@ -911,6 +911,12 @@ async function runMigrations() {
       WHERE ORIGINAL_INBOUND_TIME IS NULL
         AND INBOUND_TIME IS NOT NULL
     `);
+    await checkAndAddColumn('T_MONTHLY_TASK', 'PARENT_STORE_ID', 'VARCHAR(32) COMMENT "员工任务所属门店快照"', 'TARGET_ID');
+    await sequelize.query(`
+      UPDATE T_MONTHLY_TASK t JOIN T_STAFF s ON t.TARGET_TYPE = 'staff' AND t.TARGET_ID = s.STAFF_ID
+      SET t.PARENT_STORE_ID = s.STORE_ID
+      WHERE (t.PARENT_STORE_ID IS NULL OR t.PARENT_STORE_ID = '') AND s.STORE_ID IS NOT NULL AND s.STORE_ID <> ''
+    `);
     await checkAndAddColumn('T_SUPPLIER', 'IS_SERVICE_PROVIDER', 'TINYINT(1) NOT NULL DEFAULT 1 COMMENT "是否服务商"', 'ADDRESS');
     await checkAndAddColumn('T_SUPPLIER', 'GROSS_PROFIT_UPLIFT_AMOUNT', 'DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT "非服务商每件毛利上浮金额"', 'IS_SERVICE_PROVIDER');
     await checkAndAddColumn('T_ORDER_ITEM', 'SUPPLIER_ID', 'VARCHAR(32) COMMENT "采购来源供应商ID快照"', 'SUBTOTAL');

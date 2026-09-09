@@ -2042,6 +2042,7 @@ const MonthlyTask = sequelize.define('MonthlyTask', {
   month_key: { type: DataTypes.STRING(7), allowNull: false },
   target_type: { type: DataTypes.STRING(16), allowNull: false, comment: '任务对象类型' },
   target_id: { type: DataTypes.STRING(32), allowNull: false },
+  parent_store_id: { type: DataTypes.STRING(32), comment: '员工任务所属门店快照' },
   sales_target: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   gross_profit_target: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   status: { type: DataTypes.TINYINT(1), defaultValue: 1 },

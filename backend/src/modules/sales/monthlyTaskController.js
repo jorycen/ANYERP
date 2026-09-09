@@ -40,6 +40,7 @@ function taskPayload(row) {
     monthKey: row.month_key,
     targetType: row.target_type,
     targetId: String(row.target_id),
+    parentStoreId: row.parent_store_id || '',
     targetName: row.targetName || '',
     storeId: row.storeId || '',
     storeName: row.storeName || '',
@@ -73,7 +74,7 @@ async function visibleStoreIds(user, forManage = false) {
   return raw.map(String);
 }
 
-async function assertTargetScope(user, targetType, targetId) {
+async function assertTargetScope(user, targetType, targetId, parentStoreId = '') {
   const storeIds = await visibleStoreIds(user, true);
   if (targetType === 'store') {
     const store = await Store.findOne({
@@ -100,7 +101,9 @@ async function assertTargetScope(user, targetType, targetId) {
   if (!storeIds.length || ![...staffStoreIds].some(storeId => storeIds.includes(storeId))) {
     throw Object.assign(new Error('无权配置该员工任务'), { status: 403 });
   }
-  return { store: null, staff };
+  const resolvedParentStoreId = String(parentStoreId || staff.store_id || '').trim();
+  if (!resolvedParentStoreId || !staffStoreIds.has(resolvedParentStoreId)) throw Object.assign(new Error('员工必须归属到所选门店'), { status: 400 });
+  return { store: null, staff, parentStoreId: resolvedParentStoreId };
 }
 
 async function loadTaskRows(user, monthKey, includeDisabled = false) {
@@ -176,8 +179,8 @@ async function loadTaskRows(user, monthKey, includeDisabled = false) {
     return taskPayload({
       ...task,
       targetName: store?.name || staff?.name || targetId,
-      storeId: task.target_type === 'store' ? targetId : (staff?.store_id || ''),
-      storeName: task.target_type === 'store' ? (store?.name || '') : (storeMap.get(String(staff?.store_id || ''))?.name || ''),
+      storeId: task.target_type === 'store' ? targetId : (task.parent_store_id || staff?.store_id || ''),
+      storeName: task.target_type === 'store' ? (store?.name || '') : (storeMap.get(String(task.parent_store_id || staff?.store_id || ''))?.name || ''),
       productBatches: batchesByTask.get(String(task.task_id)) || [],
       grossProfitAllocations: allocationsByTask.get(String(task.task_id)) || []
     });
@@ -287,7 +290,8 @@ async function saveMonthlyTask(ctx) {
   if (!validMonth(monthKey)) ctx.throw(400, '月份格式不正确');
   if (monthKey < currentMonthKey()) ctx.throw(400, '历史月份任务只读，不能修改');
   if (!targetId) ctx.throw(400, '请选择任务对象');
-  const target = await assertTargetScope(user, targetType, targetId);
+  const parentStoreId = String(body.parentStoreId || body.parent_store_id || '').trim();
+  const target = await assertTargetScope(user, targetType, targetId, parentStoreId);
   const targetDistributorId = String(target.store?.distributor_id || target.staff?.distributor_id || '').trim();
   if (!targetDistributorId || !canAccessDistributor(user, targetDistributorId)) ctx.throw(403, '无权配置该经销商任务');
   const salesTarget = money(body.salesTarget ?? body.sales_target);
@@ -307,7 +311,7 @@ async function saveMonthlyTask(ctx) {
     const restored = Boolean(task && Number(task.status || 0) !== 1);
     const oldSnapshot = task ? task.toJSON() : null;
     if (!task) {
-      task = await MonthlyTask.create({ task_id: generateUUID(), distributor_id: targetDistributorId, month_key: monthKey, target_type: targetType, target_id: targetId, sales_target: salesTarget, gross_profit_target: grossProfitTarget, status: 1, create_staff_id: user.staffId || null, create_user: user.name || user.phone || '', update_staff_id: user.staffId || null, update_user: user.name || user.phone || '' }, { transaction });
+      task = await MonthlyTask.create({ task_id: generateUUID(), distributor_id: targetDistributorId, month_key: monthKey, target_type: targetType, target_id: targetId, parent_store_id: targetType === 'staff' ? target.parentStoreId : null, sales_target: salesTarget, gross_profit_target: grossProfitTarget, status: 1, create_staff_id: user.staffId || null, create_user: user.name || user.phone || '', update_staff_id: user.staffId || null, update_user: user.name || user.phone || '' }, { transaction });
     } else {
       await task.update({ sales_target: salesTarget, gross_profit_target: grossProfitTarget, status: 1, update_staff_id: user.staffId || null, update_user: user.name || user.phone || '', update_time: new Date() }, { transaction });
     }
