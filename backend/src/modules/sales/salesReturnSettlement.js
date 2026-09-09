@@ -1,6 +1,7 @@
 const moment = require('moment');
 const {
   OrderPayment,
+  OrderItem,
   PaymentMethod,
   DailyStatement,
   DailyStatementDetail,
@@ -51,6 +52,32 @@ function orderReceivable(order) {
 
 function lineGross(item) {
   return Math.max(0, money(Number(item?.unit_price ?? item?.sale_price ?? 0) * Number(item?.quantity || 0)));
+}
+
+function sourceOrderLineGross(item) {
+  return Math.max(0, money(Number(item?.sale_price ?? item?.unit_price ?? 0) * Number(item?.quantity || 0)));
+}
+
+function calculateReturnSettlementAmounts({ order, orderItems, requestItems }) {
+  const orderGross = money((orderItems || []).reduce((sum, item) => sum + sourceOrderLineGross(item), 0));
+  const returnGross = money((requestItems || []).reduce((sum, item) => sum + lineGross(item), 0));
+  const returnedReceivable = orderGross > 0
+    ? money(orderReceivable(order) * Math.min(1, returnGross / orderGross))
+    : 0;
+  const eligibleOrderGross = money((orderItems || [])
+    .filter(isSubsidyEligibleItem)
+    .reduce((sum, item) => sum + sourceOrderLineGross(item), 0));
+  const eligibleReturnGross = money((requestItems || [])
+    .filter(isSubsidyEligibleItem)
+    .reduce((sum, item) => sum + lineGross(item), 0));
+  const subsidyRatio = eligibleOrderGross > 0 ? Math.min(1, eligibleReturnGross / eligibleOrderGross) : 0;
+  const policyAmount = money(Number(order.national_subsidy || 0) * subsidyRatio);
+  const educationAmount = money(Number(order.education_subsidy || 0) * subsidyRatio);
+  const customerRefundAmount = money(Math.min(
+    Number(order.actual_payment || 0),
+    Math.max(0, returnedReceivable - policyAmount - educationAmount)
+  ));
+  return { orderGross, returnGross, returnedReceivable, eligibleOrderGross, eligibleReturnGross, policyAmount, educationAmount, customerRefundAmount };
 }
 
 function chinaDate() {
@@ -189,25 +216,18 @@ async function createSalesReturnSettlement({ returnRequest, order, requestItems,
   });
   if (existing) return existing;
 
-  const orderItems = order.OrderItems || [];
-  const orderGross = money(orderItems.reduce((sum, item) => sum + lineGross({ ...item, unit_price: item.sale_price }), 0));
-  const returnGross = money(requestItems.reduce((sum, item) => sum + lineGross(item), 0));
-  const returnedReceivable = orderGross > 0
-    ? money(orderReceivable(order) * Math.min(1, returnGross / orderGross))
-    : 0;
-  const eligibleOrderGross = money(orderItems
-    .filter(isSubsidyEligibleItem)
-    .reduce((sum, item) => sum + lineGross({ ...item, unit_price: item.sale_price }), 0));
-  const eligibleReturnGross = money(requestItems
-    .filter(isSubsidyEligibleItem)
-    .reduce((sum, item) => sum + lineGross(item), 0));
-  const subsidyRatio = eligibleOrderGross > 0 ? Math.min(1, eligibleReturnGross / eligibleOrderGross) : 0;
-  const policyAmount = money(Number(order.national_subsidy || 0) * subsidyRatio);
-  const educationAmount = money(Number(order.education_subsidy || 0) * subsidyRatio);
-  const customerRefundAmount = money(Math.min(
-    Number(order.actual_payment || 0),
-    Math.max(0, returnedReceivable - policyAmount - educationAmount)
-  ));
+  // 不依赖调用方是否正确预加载关联，订单商品金额必须从订单明细事实读取。
+  const orderItems = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+  const {
+    orderGross,
+    returnGross,
+    returnedReceivable,
+    eligibleOrderGross,
+    eligibleReturnGross,
+    policyAmount,
+    educationAmount,
+    customerRefundAmount
+  } = calculateReturnSettlementAmounts({ order, orderItems, requestItems });
   const settlementId = generateUUID();
   const settlement = await SalesReturnSettlement.create({
     settlement_id: settlementId,
@@ -310,5 +330,6 @@ async function createSalesReturnSettlement({ returnRequest, order, requestItems,
 module.exports = {
   createSalesReturnSettlement,
   isSubsidyEligibleItem,
-  orderReceivable
+  orderReceivable,
+  _test: { calculateReturnSettlementAmounts }
 };
