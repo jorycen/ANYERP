@@ -917,6 +917,34 @@ async function runMigrations() {
       SET t.PARENT_STORE_ID = s.STORE_ID
       WHERE (t.PARENT_STORE_ID IS NULL OR t.PARENT_STORE_ID = '') AND s.STORE_ID IS NOT NULL AND s.STORE_ID <> ''
     `);
+    // 历史门店分摊最初只保存在分摊明细中。补齐员工任务，使列表和员工维度报表使用同一任务事实。
+    await sequelize.query(`
+      INSERT IGNORE INTO T_MONTHLY_TASK
+        (TASK_ID, DISTRIBUTOR_ID, MONTH_KEY, TARGET_TYPE, TARGET_ID, PARENT_STORE_ID, SALES_TARGET, GROSS_PROFIT_TARGET, STATUS, CREATE_TIME, UPDATE_TIME)
+      SELECT REPLACE(UUID(), '-', ''), store_task.DISTRIBUTOR_ID, store_task.MONTH_KEY, 'staff', allocation.STAFF_ID,
+        store_task.TARGET_ID, 0, allocation.ALLOCATED_TARGET, 1, NOW(), NOW()
+      FROM T_MONTHLY_TASK_GROSS_PROFIT_ALLOCATION allocation
+      INNER JOIN T_MONTHLY_TASK store_task ON store_task.TASK_ID = allocation.TASK_ID
+        AND store_task.TARGET_TYPE = 'store'
+      LEFT JOIN T_MONTHLY_TASK staff_task ON staff_task.DISTRIBUTOR_ID = store_task.DISTRIBUTOR_ID
+        AND staff_task.MONTH_KEY = store_task.MONTH_KEY AND staff_task.TARGET_TYPE = 'staff'
+        AND staff_task.TARGET_ID = allocation.STAFF_ID
+      WHERE staff_task.TASK_ID IS NULL
+    `);
+    await sequelize.query(`
+      UPDATE T_MONTHLY_TASK staff_task
+      INNER JOIN T_MONTHLY_TASK_GROSS_PROFIT_ALLOCATION allocation ON allocation.STAFF_ID = staff_task.TARGET_ID
+      INNER JOIN T_MONTHLY_TASK store_task ON store_task.TASK_ID = allocation.TASK_ID
+        AND store_task.TARGET_TYPE = 'store'
+        AND store_task.DISTRIBUTOR_ID = staff_task.DISTRIBUTOR_ID
+        AND store_task.MONTH_KEY = staff_task.MONTH_KEY
+      SET staff_task.PARENT_STORE_ID = store_task.TARGET_ID,
+        staff_task.GROSS_PROFIT_TARGET = allocation.ALLOCATED_TARGET,
+        staff_task.STATUS = 1,
+        staff_task.UPDATE_TIME = NOW()
+      WHERE staff_task.TARGET_TYPE = 'staff'
+        AND (staff_task.PARENT_STORE_ID IS NULL OR staff_task.PARENT_STORE_ID = '' OR staff_task.PARENT_STORE_ID = store_task.TARGET_ID)
+    `);
     await checkAndAddColumn('T_SUPPLIER', 'IS_SERVICE_PROVIDER', 'TINYINT(1) NOT NULL DEFAULT 1 COMMENT "是否服务商"', 'ADDRESS');
     await checkAndAddColumn('T_SUPPLIER', 'GROSS_PROFIT_UPLIFT_AMOUNT', 'DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT "非服务商每件毛利上浮金额"', 'IS_SERVICE_PROVIDER');
     await checkAndAddColumn('T_ORDER_ITEM', 'SUPPLIER_ID', 'VARCHAR(32) COMMENT "采购来源供应商ID快照"', 'SUBTOTAL');
