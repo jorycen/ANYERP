@@ -31,3 +31,29 @@ test('月度任务选项接口必须写入 Koa ctx.body，不能返回空响应�
     }
   });
 });
+
+test('BOSS 的月度任务门店选项不会被主经销商收窄', async () => {
+  mock.restoreAll();
+  mock.method(models.Store, 'findAll', async options => {
+    if (options.attributes?.length === 1) {
+      assert.equal(options.where.distributor_id, undefined);
+      return [{ store_id: 'cd-store' }, { store_id: 'cq-store' }];
+    }
+    return [{ store_id: 'cd-store', name: '成都门店' }, { store_id: 'cq-store', name: '重庆门店' }];
+  });
+  mock.method(models.Staff, 'findAll', async () => []);
+  mock.method(models.StaffStorePermission, 'findAll', async () => []);
+  mock.method(models.Product, 'findAll', async () => []);
+
+  const modulePath = require.resolve('../src/modules/sales/monthlyTaskController');
+  delete require.cache[modulePath];
+  const { getMonthlyTaskOptions } = require(modulePath);
+  const ctx = { state: { user: { roles: ['boss'], distributorId: 'DIST001' } } };
+
+  await getMonthlyTaskOptions(ctx);
+
+  assert.deepEqual(ctx.body.data.stores, [
+    { storeId: 'cd-store', name: '成都门店' },
+    { storeId: 'cq-store', name: '重庆门店' }
+  ]);
+});

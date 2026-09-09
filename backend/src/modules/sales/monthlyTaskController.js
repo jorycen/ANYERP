@@ -13,6 +13,7 @@ const { Op } = require('sequelize');
 const { generateUUID } = require('../../utils');
 const { getUserRoles } = require('../../middleware/permission');
 const { resolveReportStoreIds, resolveAllReadableStoreIds } = require('../../utils/storePermissions');
+const { canAccessDistributor, distributorWhere } = require('../../utils/distributorScope');
 const { recordBusinessAction } = require('../../utils/businessActionLog');
 
 function currentMonthKey() {
@@ -62,7 +63,8 @@ async function visibleStoreIds(user, forManage = false) {
     : await resolveReportStoreIds(user);
   if (raw.includes('*')) {
     const rows = await Store.findAll({
-      where: { distributor_id: user.distributorId, is_deleted: 0, status: 1 },
+      // BOSS 的 * 表示系统内所有有效门店，不能再按账号主经销商收窄。
+      where: { is_deleted: 0, status: 1 },
       attributes: ['store_id'],
       raw: true
     });
@@ -75,7 +77,7 @@ async function assertTargetScope(user, targetType, targetId) {
   const storeIds = await visibleStoreIds(user, true);
   if (targetType === 'store') {
     const store = await Store.findOne({
-      where: { store_id: String(targetId), distributor_id: user.distributorId, is_deleted: 0, status: 1 }
+      where: { store_id: String(targetId), is_deleted: 0, status: 1 }
     });
     if (!store) throw Object.assign(new Error('门店不存在或已停用'), { status: 400 });
     if (!storeIds.includes(String(store.store_id))) throw Object.assign(new Error('无权配置该门店任务'), { status: 403 });
@@ -83,7 +85,7 @@ async function assertTargetScope(user, targetType, targetId) {
   }
   if (targetType !== 'staff') throw Object.assign(new Error('任务对象类型不正确'), { status: 400 });
   const staff = await Staff.findOne({
-    where: { staff_id: String(targetId), distributor_id: user.distributorId, is_deleted: 0, status: 1 },
+    where: { staff_id: String(targetId), is_deleted: 0, status: 1 },
     raw: true
   });
   if (!staff) throw Object.assign(new Error('员工不存在或已停用'), { status: 400 });
@@ -95,7 +97,7 @@ async function assertTargetScope(user, targetType, targetId) {
     raw: true
   });
   permissionRows.forEach(row => staffStoreIds.add(String(row.store_id)));
-  if (storeIds.length && ![...staffStoreIds].some(storeId => storeIds.includes(storeId))) {
+  if (!storeIds.length || ![...staffStoreIds].some(storeId => storeIds.includes(storeId))) {
     throw Object.assign(new Error('无权配置该员工任务'), { status: 403 });
   }
   return { store: null, staff };
@@ -107,7 +109,7 @@ async function loadTaskRows(user, monthKey, includeDisabled = false) {
   const [tasks, staffRows, permissionRows] = await Promise.all([
     MonthlyTask.findAll({
       where: {
-        distributor_id: user.distributorId,
+        ...distributorWhere(user),
         month_key: monthKey,
         ...(includeDisabled ? {} : { status: 1 })
       },
@@ -115,7 +117,7 @@ async function loadTaskRows(user, monthKey, includeDisabled = false) {
       raw: true
     }),
     Staff.findAll({
-      where: { distributor_id: user.distributorId, is_deleted: 0 },
+      where: { is_deleted: 0 },
       attributes: ['staff_id', 'name', 'store_id'],
       raw: true
     }),
@@ -192,14 +194,14 @@ async function getMonthlyTaskOptions(ctx) {
     raw: true
   });
   const staffRows = await Staff.findAll({
-    where: { distributor_id: user.distributorId, is_deleted: 0, status: 1 },
+    where: { is_deleted: 0, status: 1 },
     attributes: ['staff_id', 'name', 'store_id'],
     order: [['name', 'ASC']],
     raw: true
   });
   const permissionRows = await StaffStorePermission.findAll({
     where: { store_id: { [Op.in]: storeIds.length ? storeIds : ['__NO_STORE__'] } },
-    attributes: ['staff_id'],
+    attributes: ['staff_id', 'store_id'],
     raw: true
   });
   const visibleStaffIds = new Set(permissionRows.map(row => String(row.staff_id)));
@@ -257,7 +259,7 @@ async function validateAllocations({ taskType, store, allocations, grossProfitTa
   if (!rows.length) return [];
   const storeIds = [String(store.store_id)];
   const staffRows = await Staff.findAll({
-    where: { staff_id: { [Op.in]: rows.map(row => row.staffId) }, distributor_id: user.distributorId, is_deleted: 0, status: 1 },
+    where: { staff_id: { [Op.in]: rows.map(row => row.staffId) }, is_deleted: 0, status: 1 },
     attributes: ['staff_id', 'store_id'],
     raw: true
   });
@@ -272,8 +274,9 @@ async function saveMonthlyTask(ctx) {
   const user = ctx.state.user;
   const body = ctx.request.body || {};
   if (ctx.params.taskId) {
-    const existingTask = await MonthlyTask.findOne({ where: { task_id: ctx.params.taskId, distributor_id: user.distributorId } });
+    const existingTask = await MonthlyTask.findOne({ where: { task_id: ctx.params.taskId } });
     if (!existingTask) ctx.throw(404, '月度任务不存在');
+    if (!canAccessDistributor(user, existingTask.distributor_id)) ctx.throw(403, '无权编辑该经销商任务');
     if (body.monthKey && String(body.monthKey) !== String(existingTask.month_key)) ctx.throw(400, '编辑任务不能修改所属月份');
     if (body.targetType && String(body.targetType) !== String(existingTask.target_type)) ctx.throw(400, '编辑任务不能修改任务类型');
     if (body.targetId && String(body.targetId) !== String(existingTask.target_id)) ctx.throw(400, '编辑任务不能修改任务对象');
@@ -285,6 +288,8 @@ async function saveMonthlyTask(ctx) {
   if (monthKey < currentMonthKey()) ctx.throw(400, '历史月份任务只读，不能修改');
   if (!targetId) ctx.throw(400, '请选择任务对象');
   const target = await assertTargetScope(user, targetType, targetId);
+  const targetDistributorId = String(target.store?.distributor_id || target.staff?.distributor_id || '').trim();
+  if (!targetDistributorId || !canAccessDistributor(user, targetDistributorId)) ctx.throw(403, '无权配置该经销商任务');
   const salesTarget = money(body.salesTarget ?? body.sales_target);
   const grossProfitTarget = money(body.grossProfitTarget ?? body.gross_profit_target);
   if (salesTarget < 0 || grossProfitTarget < 0) ctx.throw(400, '任务目标不能为负数');
@@ -297,14 +302,14 @@ async function saveMonthlyTask(ctx) {
   const allocations = await validateAllocations({ taskType: targetType, store: target.store, allocations: body.grossProfitAllocations || body.gross_profit_allocations, grossProfitTarget, user });
   const transaction = await sequelize.transaction();
   try {
-    let task = await MonthlyTask.findOne({ where: { distributor_id: user.distributorId, month_key: monthKey, target_type: targetType, target_id: targetId }, transaction, lock: transaction.LOCK.UPDATE });
+    let task = await MonthlyTask.findOne({ where: { distributor_id: targetDistributorId, month_key: monthKey, target_type: targetType, target_id: targetId }, transaction, lock: transaction.LOCK.UPDATE });
     const existed = Boolean(task);
-    if (task && Number(task.status || 0) !== 1) ctx.throw(400, '任务已停用，请重新建立任务');
+    const restored = Boolean(task && Number(task.status || 0) !== 1);
     const oldSnapshot = task ? task.toJSON() : null;
     if (!task) {
-      task = await MonthlyTask.create({ task_id: generateUUID(), distributor_id: user.distributorId, month_key: monthKey, target_type: targetType, target_id: targetId, sales_target: salesTarget, gross_profit_target: grossProfitTarget, status: 1, create_staff_id: user.staffId || null, create_user: user.name || user.phone || '', update_staff_id: user.staffId || null, update_user: user.name || user.phone || '' }, { transaction });
+      task = await MonthlyTask.create({ task_id: generateUUID(), distributor_id: targetDistributorId, month_key: monthKey, target_type: targetType, target_id: targetId, sales_target: salesTarget, gross_profit_target: grossProfitTarget, status: 1, create_staff_id: user.staffId || null, create_user: user.name || user.phone || '', update_staff_id: user.staffId || null, update_user: user.name || user.phone || '' }, { transaction });
     } else {
-      await task.update({ sales_target: salesTarget, gross_profit_target: grossProfitTarget, update_staff_id: user.staffId || null, update_user: user.name || user.phone || '', update_time: new Date() }, { transaction });
+      await task.update({ sales_target: salesTarget, gross_profit_target: grossProfitTarget, status: 1, update_staff_id: user.staffId || null, update_user: user.name || user.phone || '', update_time: new Date() }, { transaction });
     }
     await MonthlyTaskProductBatch.destroy({ where: { task_id: task.task_id }, transaction });
     await MonthlyTaskGrossProfitAllocation.destroy({ where: { task_id: task.task_id }, transaction });
@@ -320,9 +325,9 @@ async function saveMonthlyTask(ctx) {
     if (allocations.length) {
       await MonthlyTaskGrossProfitAllocation.bulkCreate(allocations.map(item => ({ allocation_id: generateUUID(), task_id: task.task_id, staff_id: item.staffId, allocated_target: item.allocatedTarget, create_staff_id: user.staffId || null, create_user: user.name || user.phone || '', update_staff_id: user.staffId || null, update_user: user.name || user.phone || '', create_time: new Date(), update_time: new Date() })), { transaction });
     }
-    await recordBusinessAction({ businessType: 'monthly_task', businessId: task.task_id, businessNo: `${monthKey}-${targetType}-${targetId}`, action: existed ? 'update' : 'create', user, detail: { before: oldSnapshot, after: { monthKey, targetType, targetId, salesTarget, grossProfitTarget, productBatches, allocations } }, transaction });
+    await recordBusinessAction({ businessType: 'monthly_task', businessId: task.task_id, businessNo: `${monthKey}-${targetType}-${targetId}`, action: restored ? 'reactivate' : (existed ? 'update' : 'create'), user, detail: { before: oldSnapshot, after: { monthKey, targetType, targetId, targetDistributorId, salesTarget, grossProfitTarget, productBatches, allocations } }, transaction });
     await transaction.commit();
-    ctx.body = { code: 0, message: existed ? '月度任务已更新' : '月度任务已保存', data: { taskId: task.task_id } };
+    ctx.body = { code: 0, message: restored ? '月度任务已恢复并更新' : (existed ? '月度任务已更新' : '月度任务已保存'), data: { taskId: task.task_id } };
   } catch (error) {
     await transaction.rollback();
     if (error.status) ctx.throw(error.status, error.message);
@@ -338,8 +343,9 @@ async function listMonthlyTasks(ctx) {
 }
 
 async function disableMonthlyTask(ctx) {
-  const task = await MonthlyTask.findOne({ where: { task_id: ctx.params.taskId, distributor_id: ctx.state.user.distributorId, status: 1 } });
+  const task = await MonthlyTask.findOne({ where: { task_id: ctx.params.taskId, status: 1 } });
   if (!task) ctx.throw(404, '月度任务不存在');
+  if (!canAccessDistributor(ctx.state.user, task.distributor_id)) ctx.throw(403, '无权停用该经销商任务');
   if (task.month_key < currentMonthKey()) ctx.throw(400, '历史月份任务只读，不能停用');
   await assertTargetScope(ctx.state.user, task.target_type, task.target_id);
   await task.update({ status: 0, update_staff_id: ctx.state.user.staffId || null, update_user: ctx.state.user.name || ctx.state.user.phone || '', update_time: new Date() });
