@@ -1325,6 +1325,28 @@ async function runMigrations() {
     await checkAndAddColumn('T_RETURN_STOCK_ITEM', 'INVENTORY_TYPE', 'VARCHAR(32) DEFAULT "normal_qty" COMMENT "库存类型"', 'LOCATION_ID');
     await checkAndAddColumn('T_RETURN_STOCK_ITEM', 'PRODUCT_TYPE', 'VARCHAR(32) COMMENT "货型"', 'INVENTORY_TYPE');
     await checkAndAddColumn('T_RETURN_STOCK_ITEM', 'INBOUND_ITEM_ID', 'BIGINT(20) COMMENT "来源入库明细ID"', 'RETURN_ID');
+    await checkAndCreateTable('T_INBOUND_ITEM_SN', `
+      CREATE TABLE T_INBOUND_ITEM_SN (
+        INBOUND_ITEM_SN_ID BIGINT(20) NOT NULL AUTO_INCREMENT COMMENT '关联ID',
+        INBOUND_ID VARCHAR(32) NOT NULL COMMENT '入库单ID',
+        INBOUND_ITEM_ID BIGINT(20) NOT NULL COMMENT '入库明细ID',
+        SN_ID VARCHAR(32) NOT NULL COMMENT '实际入库SN ID',
+        SN_CODE VARCHAR(128) NOT NULL COMMENT '入库时SN快照',
+        PRODUCT_ID VARCHAR(32) NOT NULL COMMENT '商品ID',
+        CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (INBOUND_ITEM_SN_ID),
+        UNIQUE KEY uk_inbound_item_sn (INBOUND_ITEM_ID, SN_ID),
+        KEY idx_inbound_item_sn_inbound (INBOUND_ID),
+        KEY idx_inbound_item_sn_sn (SN_ID)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='入库明细与实际SN关联'
+    `);
+    // 只回填已保存SN ID的历史入库明细；其余历史数据不得按库存状态猜选。
+    await sequelize.query(`
+      INSERT IGNORE INTO T_INBOUND_ITEM_SN (INBOUND_ID, INBOUND_ITEM_ID, SN_ID, SN_CODE, PRODUCT_ID)
+      SELECT ii.INBOUND_ID, ii.ITEM_ID, ii.SN_ID, ii.SN_CODE, ii.PRODUCT_ID
+      FROM T_INBOUND_ITEM ii
+      WHERE ii.SN_ID IS NOT NULL AND ii.SN_ID <> ''
+    `);
     try {
       await sequelize.query(`
         UPDATE T_RETURN_STOCK rs

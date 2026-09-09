@@ -1457,6 +1457,17 @@ const InboundItem = sequelize.define('InboundItem', {
   purchase_request_item_id: { type: DataTypes.BIGINT(20) }
 }, { tableName: 'T_INBOUND_ITEM', timestamps: false });
 
+// 入库明细与实际接收SN的不可变关联。SN后续调拨、销售退回或改码不改变采购入库归属。
+const InboundItemSn = sequelize.define('InboundItemSn', {
+  inbound_item_sn_id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true },
+  inbound_id: { type: DataTypes.STRING(32), allowNull: false },
+  inbound_item_id: { type: DataTypes.BIGINT(20), allowNull: false },
+  sn_id: { type: DataTypes.STRING(32), allowNull: false },
+  sn_code: { type: DataTypes.STRING(128), allowNull: false },
+  product_id: { type: DataTypes.STRING(32), allowNull: false },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_INBOUND_ITEM_SN', timestamps: false });
+
 // 出库单
 const Outbound = sequelize.define('Outbound', {
   outbound_id: { type: DataTypes.STRING(32), primaryKey: true },
@@ -2654,6 +2665,7 @@ module.exports = {
   OrderAttachment,
   Inbound,
   InboundItem,
+  InboundItemSn,
   Outbound,
   OutboundItem,
   Transfer,

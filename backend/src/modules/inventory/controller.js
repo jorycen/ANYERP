@@ -7,7 +7,7 @@ const path = require('path');
 const {
   sequelize, Region, ProductSn, Product, ProductPn, ProductPrice, ProductPriceChangeLog, ProductCategory,
   SnDistributorPrice, SnDistributorPriceChangeLog, ResourceCategory,
-  ProductBarcode, Store, Location, InventoryWarning, Inbound, InboundItem,
+  ProductBarcode, Store, Location, InventoryWarning, Inbound, InboundItem, InboundItemSn,
   ReturnStock, ReturnStockItem, PurchaseRequest, PurchaseRequestItem, PurchaseAdjustment, Payable, Supplier, Inventory,
   SalesReturnRequest, SalesReturnRequestItem,
   SnLog, Order, OrderItem, Transfer, TransferItem, InventoryConversion,
@@ -3374,6 +3374,42 @@ function isPurchaseInboundItemProgressComplete(item, product, progress = {}) {
   return snCodes.length >= totalQuantity;
 }
 
+function collectInboundItemSnReferences(inboundItem, bindings = []) {
+  const snIds = new Set(bindings.map(item => String(item.sn_id || '').trim()).filter(Boolean));
+  const snCodes = new Set(bindings.map(item => String(item.sn_code || '').trim()).filter(Boolean));
+
+  // 旧单据未回填关联表时，只能使用单据自身保存的精确SN事实，绝不从同款当前库存猜选。
+  if (snIds.size === 0 && snCodes.size === 0) {
+    if (inboundItem.sn_id) snIds.add(String(inboundItem.sn_id).trim());
+    if (inboundItem.sn_code) snCodes.add(String(inboundItem.sn_code).trim());
+    parseInboundSnCodes(inboundItem.received_sn_codes).forEach(snCode => snCodes.add(String(snCode).trim()));
+  }
+  return { snIds, snCodes };
+}
+
+async function resolveInboundItemReturnSns({ inboundItem, storeId, transaction }) {
+  const bindings = await InboundItemSn.findAll({
+    where: { inbound_item_id: inboundItem.item_id },
+    transaction
+  });
+  const { snIds, snCodes } = collectInboundItemSnReferences(inboundItem, bindings);
+  if (snIds.size === 0 && snCodes.size === 0) return [];
+
+  const conditions = [];
+  if (snIds.size > 0) conditions.push({ sn_id: { [Op.in]: [...snIds] } });
+  if (snCodes.size > 0) conditions.push({ sn_code: { [Op.in]: [...snCodes] } });
+  return ProductSn.findAll({
+    where: {
+      product_id: inboundItem.product_id,
+      store_id: storeId,
+      status: 'in_stock',
+      is_deleted: 0,
+      [Op.or]: conditions
+    },
+    transaction
+  });
+}
+
 async function getTransferableStock(product, productId, storeId, transaction) {
   const inventories = await Inventory.findAll({
     where: { product_id: productId, store_id: storeId },
@@ -3855,6 +3891,19 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail }
           original_pickup_price: originalPickupPrice,
           inventory_type: inventoryType
         }, { transaction: t });
+        if (isPurchaseInbound) {
+          await InboundItemSn.findOrCreate({
+            where: { inbound_item_id: dbItem.item_id, sn_id: snRecord.sn_id },
+            defaults: {
+              inbound_id: inbound.inbound_id,
+              inbound_item_id: dbItem.item_id,
+              sn_id: snRecord.sn_id,
+              sn_code: snRecord.sn_code,
+              product_id: dbItem.product_id
+            },
+            transaction: t
+          });
+        }
         }
       } else {
         const pnCode = normalizePnCode(item.pnCode || dbItem.pn_code || splitCodes(product.manufacturer_code)[0] || '');
@@ -5975,20 +6024,13 @@ async function requestReturn(ctx) {
       totalAmount += (Number(item.unit_price) || 0) * quantity;
 
       if (product && product.need_sn === 1) {
-        const snRecords = await ProductSn.findAll({
-          where: {
-            product_id: item.product_id,
-            ...(item.pn_code ? { pn_code: item.pn_code } : {}),
-            store_id: inbound.store_id,
-            status: 'in_stock',
-            is_deleted: 0
-          },
-          order: [['inbound_time', 'ASC']],
-          limit: quantity,
+        const snRecords = await resolveInboundItemReturnSns({
+          inboundItem: item,
+          storeId: inbound.store_id,
           transaction: t
         });
-        if (snRecords.length < quantity) {
-          ctx.throw(400, `商品 ${item.product_name || item.product_id} 当前在库SN数量不足，不能发起退库`);
+        if (snRecords.length !== quantity) {
+          ctx.throw(400, `商品 ${item.product_name || item.product_id} 的原入库SN当前不完整在库，不能发起退库`);
         }
 
         for (const snRecord of snRecords) {
@@ -6338,6 +6380,8 @@ module.exports = {
     normalizeSnIdentityValue,
     samePnCode,
     isPurchaseInboundItemProgressComplete,
+    collectInboundItemSnReferences,
+    resolveInboundItemReturnSns,
     restoreDepositForCompletedSalesReturn,
     normalizeTransferRemark
   }
