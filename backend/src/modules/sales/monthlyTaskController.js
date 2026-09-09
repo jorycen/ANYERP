@@ -273,6 +273,67 @@ async function validateAllocations({ taskType, store, allocations, grossProfitTa
   return rows;
 }
 
+// 员工毛利目标不允许脱离门店任务单独维护；它始终以门店任务中的分摊为准。
+async function getStaffAllocatedGrossProfitTarget({ distributorId, monthKey, staffId, parentStoreId, transaction }) {
+  const storeTask = await MonthlyTask.findOne({
+    where: { distributor_id: distributorId, month_key: monthKey, target_type: 'store', target_id: parentStoreId },
+    attributes: ['task_id'],
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  if (!storeTask) return 0;
+  const allocation = await MonthlyTaskGrossProfitAllocation.findOne({
+    where: { task_id: storeTask.task_id, staff_id: staffId },
+    attributes: ['allocated_target'],
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  return money(allocation?.allocated_target);
+}
+
+// 保存门店任务时，将分摊结果物化到员工任务，确保员工任务报表无需再猜测分摊来源。
+async function syncAllocatedStaffTasks({ distributorId, monthKey, storeId, allocations, user, transaction }) {
+  const allocatedByStaff = new Map(allocations.map(item => [String(item.staffId), money(item.allocatedTarget)]));
+  const allocationStaffIds = [...allocatedByStaff.keys()];
+  const relatedTasks = await MonthlyTask.findAll({
+    where: {
+      distributor_id: distributorId,
+      month_key: monthKey,
+      target_type: 'staff',
+      [Op.or]: [
+        ...(allocationStaffIds.length ? [{ target_id: { [Op.in]: allocationStaffIds } }] : []),
+        { parent_store_id: String(storeId) }
+      ]
+    },
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  const taskByStaffId = new Map(relatedTasks.map(item => [String(item.target_id), item]));
+  const now = new Date();
+  for (const [staffId, allocatedTarget] of allocatedByStaff) {
+    const task = taskByStaffId.get(staffId);
+    if (task && task.parent_store_id && String(task.parent_store_id) !== String(storeId)) {
+      throw Object.assign(new Error('员工当月已归属其他门店任务，不能重复分摊'), { status: 400 });
+    }
+    if (!task) {
+      await MonthlyTask.create({
+        task_id: generateUUID(), distributor_id: distributorId, month_key: monthKey, target_type: 'staff', target_id: staffId,
+        parent_store_id: storeId, sales_target: 0, gross_profit_target: allocatedTarget, status: 1,
+        create_staff_id: user.staffId || null, create_user: user.name || user.phone || '',
+        update_staff_id: user.staffId || null, update_user: user.name || user.phone || '', create_time: now, update_time: now
+      }, { transaction });
+    } else {
+      await task.update({ parent_store_id: storeId, gross_profit_target: allocatedTarget, status: 1, update_staff_id: user.staffId || null, update_user: user.name || user.phone || '', update_time: now }, { transaction });
+    }
+  }
+  // 移除分摊时不删除员工的销售额/商品任务，只将自动带入的毛利目标归零。
+  for (const task of relatedTasks) {
+    if (String(task.parent_store_id) === String(storeId) && !allocatedByStaff.has(String(task.target_id))) {
+      await task.update({ gross_profit_target: 0, update_staff_id: user.staffId || null, update_user: user.name || user.phone || '', update_time: now }, { transaction });
+    }
+  }
+}
+
 async function saveMonthlyTask(ctx) {
   const user = ctx.state.user;
   const body = ctx.request.body || {};
@@ -295,17 +356,20 @@ async function saveMonthlyTask(ctx) {
   const targetDistributorId = String(target.store?.distributor_id || target.staff?.distributor_id || '').trim();
   if (!targetDistributorId || !canAccessDistributor(user, targetDistributorId)) ctx.throw(403, '无权配置该经销商任务');
   const salesTarget = money(body.salesTarget ?? body.sales_target);
-  const grossProfitTarget = money(body.grossProfitTarget ?? body.gross_profit_target);
-  if (salesTarget < 0 || grossProfitTarget < 0) ctx.throw(400, '任务目标不能为负数');
+  const requestedGrossProfitTarget = money(body.grossProfitTarget ?? body.gross_profit_target);
+  if (salesTarget < 0 || requestedGrossProfitTarget < 0) ctx.throw(400, '任务目标不能为负数');
   const productBatches = normalizeBatches(body.productBatches || body.product_batches);
   const productIds = [...new Set(productBatches.flatMap(batch => batch.products.map(item => item.productId)))];
   if (productIds.length) {
     const count = await Product.count({ where: { product_id: { [Op.in]: productIds }, is_deleted: 0, status: 1 } });
     if (count !== productIds.length) ctx.throw(400, '指定商品中存在无效或已停用商品');
   }
-  const allocations = await validateAllocations({ taskType: targetType, store: target.store, allocations: body.grossProfitAllocations || body.gross_profit_allocations, grossProfitTarget, user });
+  const allocations = await validateAllocations({ taskType: targetType, store: target.store, allocations: body.grossProfitAllocations || body.gross_profit_allocations, grossProfitTarget: requestedGrossProfitTarget, user });
   const transaction = await sequelize.transaction();
   try {
+    const grossProfitTarget = targetType === 'staff'
+      ? await getStaffAllocatedGrossProfitTarget({ distributorId: targetDistributorId, monthKey, staffId: targetId, parentStoreId: target.parentStoreId, transaction })
+      : requestedGrossProfitTarget;
     let task = await MonthlyTask.findOne({ where: { distributor_id: targetDistributorId, month_key: monthKey, target_type: targetType, target_id: targetId }, transaction, lock: transaction.LOCK.UPDATE });
     const existed = Boolean(task);
     const restored = Boolean(task && Number(task.status || 0) !== 1);
@@ -313,7 +377,7 @@ async function saveMonthlyTask(ctx) {
     if (!task) {
       task = await MonthlyTask.create({ task_id: generateUUID(), distributor_id: targetDistributorId, month_key: monthKey, target_type: targetType, target_id: targetId, parent_store_id: targetType === 'staff' ? target.parentStoreId : null, sales_target: salesTarget, gross_profit_target: grossProfitTarget, status: 1, create_staff_id: user.staffId || null, create_user: user.name || user.phone || '', update_staff_id: user.staffId || null, update_user: user.name || user.phone || '' }, { transaction });
     } else {
-      await task.update({ sales_target: salesTarget, gross_profit_target: grossProfitTarget, status: 1, update_staff_id: user.staffId || null, update_user: user.name || user.phone || '', update_time: new Date() }, { transaction });
+      await task.update({ parent_store_id: targetType === 'staff' ? target.parentStoreId : null, sales_target: salesTarget, gross_profit_target: grossProfitTarget, status: 1, update_staff_id: user.staffId || null, update_user: user.name || user.phone || '', update_time: new Date() }, { transaction });
     }
     await MonthlyTaskProductBatch.destroy({ where: { task_id: task.task_id }, transaction });
     await MonthlyTaskGrossProfitAllocation.destroy({ where: { task_id: task.task_id }, transaction });
@@ -328,6 +392,9 @@ async function saveMonthlyTask(ctx) {
     }
     if (allocations.length) {
       await MonthlyTaskGrossProfitAllocation.bulkCreate(allocations.map(item => ({ allocation_id: generateUUID(), task_id: task.task_id, staff_id: item.staffId, allocated_target: item.allocatedTarget, create_staff_id: user.staffId || null, create_user: user.name || user.phone || '', update_staff_id: user.staffId || null, update_user: user.name || user.phone || '', create_time: new Date(), update_time: new Date() })), { transaction });
+    }
+    if (targetType === 'store') {
+      await syncAllocatedStaffTasks({ distributorId: targetDistributorId, monthKey, storeId: targetId, allocations, user, transaction });
     }
     await recordBusinessAction({ businessType: 'monthly_task', businessId: task.task_id, businessNo: `${monthKey}-${targetType}-${targetId}`, action: restored ? 'reactivate' : (existed ? 'update' : 'create'), user, detail: { before: oldSnapshot, after: { monthKey, targetType, targetId, targetDistributorId, salesTarget, grossProfitTarget, productBatches, allocations } }, transaction });
     await transaction.commit();

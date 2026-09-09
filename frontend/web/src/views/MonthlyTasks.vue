@@ -15,7 +15,7 @@
 
       <el-alert v-if="monthKey < currentMonthKey" title="历史月份任务只读" type="info" :closable="false" class="history-tip" />
       <el-table :data="filteredTasks" stripe border v-loading="loading">
-        <el-table-column type="expand" width="48"><template #default="{ row }"><div class="staff-task-box"><div class="staff-task-heading">员工任务 <el-button link type="primary" :disabled="monthKey < currentMonthKey" @click="openCreateStaff(row)">新增员工任务</el-button></div><el-table :data="row.staffTasks" size="small"><el-table-column prop="targetName" label="员工" /><el-table-column label="销售额目标"><template #default="{ row: staff }">¥{{ money(staff.salesTarget) }}</template></el-table-column><el-table-column label="毛利目标"><template #default="{ row: staff }">¥{{ money(staff.grossProfitTarget) }}</template></el-table-column><el-table-column label="操作" width="110"><template #default="{ row: staff }"><el-button link type="primary" @click="openEdit(staff)">编辑</el-button><el-button link type="danger" @click="disableTask(staff)">停用</el-button></template></el-table-column></el-table></div></template></el-table-column>
+        <el-table-column type="expand" width="48"><template #default="{ row }"><div class="staff-task-box"><div class="staff-task-heading">员工任务 <el-button link type="primary" :disabled="monthKey < currentMonthKey" @click="openCreateStaff(row)">新增员工销售任务</el-button></div><el-table :data="row.staffTasks" size="small"><el-table-column prop="targetName" label="员工" /><el-table-column label="销售额目标"><template #default="{ row: staff }">¥{{ money(staff.salesTarget) }}</template></el-table-column><el-table-column label="毛利目标（门店分摊）"><template #default="{ row: staff }">¥{{ money(staff.grossProfitTarget) }}</template></el-table-column><el-table-column label="操作" width="110"><template #default="{ row: staff }"><el-button link type="primary" @click="openEdit(staff)">编辑</el-button><el-button link type="danger" @click="disableTask(staff)">停用</el-button></template></el-table-column></el-table></div></template></el-table-column>
         <el-table-column prop="targetName" label="任务对象" min-width="150" />
         <el-table-column prop="storeName" label="所属门店" min-width="130" />
         <el-table-column label="销售额目标" width="130" align="right">
@@ -48,7 +48,7 @@
         </el-form-item>
         <el-row :gutter="20">
           <el-col :span="12"><el-form-item label="销售额目标"><el-input-number v-model="form.salesTarget" :min="0" :precision="2" :step="1000" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="毛利目标"><el-input-number v-model="form.grossProfitTarget" :min="0" :precision="2" :step="100" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item :label="form.targetType === 'staff' ? '毛利目标（门店分摊）' : '毛利目标'"><el-input-number v-model="form.grossProfitTarget" :min="0" :precision="2" :step="100" :disabled="form.targetType === 'staff'" /><div v-if="form.targetType === 'staff'" class="allocation-note">由所属门店的毛利分摊自动同步，不能单独修改。</div></el-form-item></el-col>
         </el-row>
 
         <el-divider content-position="left">指定商品销量批次</el-divider>
