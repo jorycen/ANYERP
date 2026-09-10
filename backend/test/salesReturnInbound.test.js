@@ -8,6 +8,11 @@ test('销售退库重新入库只允许退库待入库的原SN', () => {
     requestedSnCode: 'SN-001'
   }), null);
 
+  assert.equal(_test.validateSalesReturnInboundSn({
+    sn: { sn_code: 'cpu供电', status: 'return_pending' },
+    requestedSnCode: ' CPU供电 '
+  }), null);
+
   assert.deepEqual(
     _test.validateSalesReturnInboundSn({
       sn: { sn_code: 'SN-001', status: 'sold' },

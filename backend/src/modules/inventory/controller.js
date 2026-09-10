@@ -3345,7 +3345,10 @@ async function updateInventory(productId, storeId, field, delta, transaction, lo
 function validateSalesReturnInboundSn({ sn, requestedSnCode = '' }) {
   if (!sn) return { status: 409, message: '销售退单SN不存在' };
   if (sn.status !== 'return_pending') return { status: 409, message: '销售退单SN当前不是待重新入库状态' };
-  if (requestedSnCode && String(requestedSnCode) !== String(sn.sn_code || '')) {
+  // SN 查询在数据库中通常不区分大小写；退库校验也必须使用同一口径，避免历史 SN 的大小写录入差异被误判为换 SN。
+  const normalizedRequestedSn = String(requestedSnCode || '').trim().toLowerCase();
+  const normalizedOriginalSn = String(sn.sn_code || '').trim().toLowerCase();
+  if (normalizedRequestedSn && normalizedRequestedSn !== normalizedOriginalSn) {
     return { status: 400, message: `销售退单SN必须为 ${sn.sn_code}` };
   }
   return null;
