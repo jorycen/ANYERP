@@ -187,6 +187,10 @@ attachResponseInterceptor(
 )
 
 export const apiBaseUrl = API_BASE_URL
+export const customerOpsRequest = (method, path, data, key) => api.request({
+  method, url: `/customer-ops${path}`, ...(method === 'get' ? { params: data } : { data }),
+  headers: key ? { 'Idempotency-Key': key } : {}
+}).then(result => result.data)
 
 function exportExcel(url, params, fallbackFileName) {
   return exportApi.get(url, {

@@ -32,6 +32,7 @@ const { startDatabaseHeartbeat } = require('./utils/databaseHeartbeat');
 const { recoverExecutingBatchApplications } = require('./modules/inventory/batchMaintenance');
 
 const app = new Koa();
+const customerOpsRouters = require('./modules/customerOps/routes');
 const PORT = process.env.PORT || 3000;
 
 app.use(errorHandler);
@@ -63,7 +64,11 @@ apiRouter.use('/dict', dictRouter.routes());
 apiRouter.use('/ocr', ocrRouter.routes());
 apiRouter.use('/approval', approvalRouter.routes());
 apiRouter.use('/storage', storageRouter.routes());
+apiRouter.use('/customer-ops', customerOpsRouters.staff.routes());
 
+// A separate router prevents consumer sessions from entering the staff auth chain.
+app.use(customerOpsRouters.customer.routes());
+app.use(customerOpsRouters.customer.allowedMethods());
 app.use(apiRouter.routes());
 app.use(apiRouter.allowedMethods());
 

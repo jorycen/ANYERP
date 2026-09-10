@@ -25,6 +25,14 @@ const routes = [
     path: '/',
     component: () => import('../views/Layout.vue'),
     children: [
+      { path: 'customer-ops/members', name: 'CustomerOps-members',
+        component: () => import('../views/CustomerOperations.vue'), meta: { roles: ['admin', 'boss'], tab: 'members' } },
+      { path: 'customer-ops/points', name: 'CustomerOps-points',
+        component: () => import('../views/CustomerOperations.vue'), meta: { roles: ['admin', 'boss'], tab: 'points' } },
+      { path: 'customer-ops/rewards', name: 'CustomerOps-rewards',
+        component: () => import('../views/CustomerOperations.vue'), meta: { roles: ['admin', 'boss'], tab: 'rewards' } },
+      { path: 'customer-ops/exchanges', name: 'CustomerOps-exchanges',
+        component: () => import('../views/CustomerOperations.vue'), meta: { roles: ['admin', 'boss'], tab: 'exchanges' } },
       {
         path: '',
         name: 'Dashboard',

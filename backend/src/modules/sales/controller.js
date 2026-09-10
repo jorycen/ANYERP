@@ -2880,6 +2880,7 @@ async function approve(ctx) {
       comment: '经销商总权限审批通过',
       transaction
     });
+    await require('../customerOps/service').snapshotOrder(lockedOrder, transaction);
     await calculateAndSaveOrderGrossProfit(lockedOrder.order_id, {
       transaction,
       calculatedBy: user.name || 'system',
@@ -3136,6 +3137,7 @@ async function update(ctx) {
       });
     }
     if (archivedNow) {
+      await require('../customerOps/service').snapshotOrder(order, transaction);
       await calculateAndSaveOrderGrossProfit(order.order_id, {
         transaction,
         calculatedBy: ctx.state.user?.name || 'system',

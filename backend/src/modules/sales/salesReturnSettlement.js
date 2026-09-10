@@ -214,7 +214,10 @@ async function createSalesReturnSettlement({ returnRequest, order, requestItems,
     transaction,
     lock: transaction?.LOCK?.UPDATE
   });
-  if (existing) return existing;
+  if (existing) {
+    await require('../customerOps/service').reverseReturn(order, returnRequest, transaction);
+    return existing;
+  }
 
   // 不依赖调用方是否正确预加载关联，订单商品金额必须从订单明细事实读取。
   const orderItems = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
@@ -324,6 +327,7 @@ async function createSalesReturnSettlement({ returnRequest, order, requestItems,
     await settlement.update({ red_invoice_id: redInvoice.red_invoice_id }, { transaction });
   }
   await refreshDailyStatementTotals(await getOrCreateDailyStatement(order.store_id, transaction), transaction);
+  await require('../customerOps/service').reverseReturn(order, returnRequest, transaction);
   return settlement;
 }
 
