@@ -210,13 +210,17 @@
                 <template #default="{ row, $index }">
                   <el-tag v-if="row.isUsedProduct" type="warning" size="small">二手商品</el-tag>
                   <span v-if="row.isUsedProduct" class="used-product-name">{{ row.productName || '-' }}</span>
+                  <div v-else-if="row.productId && editingProductIndex !== $index" class="selected-product-display">
+                    <span>{{ row.productName || '-' }}</span>
+                    <el-button link type="primary" size="small" @click="editingProductIndex = $index">更换</el-button>
+                  </div>
                   <el-select v-else
                     v-model="row.productId"
                     placeholder="搜索商品"
                     filterable
                     remote
                     :remote-method="searchProducts"
-                    @change="onProductChange($index)"
+                    @change="onProductChange($index); editingProductIndex = -1"
                     style="width: 100%;"
                     size="small"
                   >
@@ -787,6 +791,7 @@ const router = useRouter()
 const route = useRoute()
 
 const activeTab = ref('request')
+const editingProductIndex = ref(-1)
 const syncTabFromRoute = () => {
   activeTab.value = String(route.meta.tab || 'request')
 }
@@ -1843,6 +1848,7 @@ const onItemAmountChange = () => {
 }
 
 const addRequestItem = () => {
+  editingProductIndex.value = requestForm.items.length
   requestForm.items.push({
     productId: '', productName: '', productCode: '', manufacturerCode: '', price: 0, quantity: 1, rebateDeduction: 0, storeAllocations: [],
     selectedResourceTypes: goodsTypeResourceCodes(requestForm.productType)
@@ -2387,6 +2393,24 @@ const handleLocationAllocateDialogClose = () => {
   color: #606266;
   background: #fafafa;
   font-size: 15px;
+}
+
+.selected-product-display,
+.used-product-name {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  line-height: 20px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.selected-product-display .el-button {
+  flex: 0 0 auto;
+  margin-top: 0;
 }
 
 .product-option {
