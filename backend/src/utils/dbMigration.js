@@ -917,6 +917,18 @@ async function runMigrations() {
       SET t.PARENT_STORE_ID = s.STORE_ID
       WHERE (t.PARENT_STORE_ID IS NULL OR t.PARENT_STORE_ID = '') AND s.STORE_ID IS NOT NULL AND s.STORE_ID <> ''
     `);
+    // 历史版本可能在采购单仅部分收货后将入库单误置为完成；保留已收货明细，恢复剩余数量为待入库。
+    await sequelize.query(`
+      UPDATE T_INBOUND inbound
+      SET inbound.STATUS = 'pending', inbound.UPDATE_TIME = NOW()
+      WHERE inbound.STATUS = 'completed'
+        AND (LOWER(COALESCE(inbound.SOURCE_TYPE, '')) = 'purchase' OR inbound.PURCHASE_REQUEST_ID IS NOT NULL)
+        AND EXISTS (
+          SELECT 1 FROM T_INBOUND_ITEM item
+          WHERE item.INBOUND_ID = inbound.INBOUND_ID
+            AND COALESCE(item.RECEIVED_QUANTITY, 0) < COALESCE(item.QUANTITY, 0)
+        )
+    `);
     // 历史门店分摊最初只保存在分摊明细中。补齐员工任务，使列表和员工维度报表使用同一任务事实。
     await sequelize.query(`
       INSERT IGNORE INTO T_MONTHLY_TASK
