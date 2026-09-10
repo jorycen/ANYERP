@@ -333,12 +333,18 @@
             </el-descriptions>
             <el-form label-width="100px">
               <el-form-item label="供应商" required>
-                <el-select v-model="snPurchaseForm.supplierId" filterable placeholder="请选择供应商" style="width:100%">
+                <el-select v-model="snPurchaseForm.supplierId" filterable placeholder="请选择供应商" style="width:100%" @change="onSnPurchaseSupplierChange">
                   <el-option v-for="item in snPurchaseSuppliers" :key="item.supplier_id" :label="item.name" :value="item.supplier_id" />
                 </el-select>
               </el-form-item>
               <el-form-item label="采购价" required>
                 <el-input-number v-model="snPurchaseForm.price" :min="0" :precision="2" :step="100" style="width:100%" />
+              </el-form-item>
+              <el-form-item v-if="snPurchaseForm.supplierId && (snPurchaseRebateBalance > 0 || Number(snPurchaseForm.rebateDeduction || 0) > 0)" label="返利抵扣">
+                <div style="width:100%">
+                  <div style="margin-bottom:6px;color:#909399;font-size:13px">供应商返利余额：¥{{ snPurchaseRebateBalance.toFixed(2) }}</div>
+                  <el-input-number v-model="snPurchaseForm.rebateDeduction" :min="0" :max="snPurchaseRebateCap" :precision="2" :step="100" style="width:100%" @change="normalizeSnPurchaseRebate" />
+                </div>
               </el-form-item>
               <el-form-item label="货型" required>
                 <el-select v-model="snPurchaseForm.goodsTypeId" placeholder="请选择货型" style="width:100%">
@@ -365,6 +371,11 @@
               </el-form-item>
               <el-form-item label="备注"><el-input v-model="snPurchaseForm.remark" type="textarea" :rows="2" /></el-form-item>
             </el-form>
+            <div class="order-summary">
+              <div class="summary-item total">采购原价: <span>¥{{ Number(snPurchaseForm.price || 0).toFixed(2) }}</span></div>
+              <div v-if="snPurchaseRebateDeduction > 0" class="summary-item deduction" style="color:#67c23a">返利抵扣: <span>-¥{{ snPurchaseRebateDeduction.toFixed(2) }}</span></div>
+              <div class="summary-item actual">实际应付: <span style="color:#f56c6c;font-weight:700">¥{{ snPurchaseActualTotal.toFixed(2) }}</span></div>
+            </div>
             <template #footer>
               <el-button @click="snPurchaseVisible = false">取消</el-button>
               <el-button type="primary" :loading="snPurchaseSubmitting" @click="submitSnPurchase">提交采购申请</el-button>
@@ -1886,11 +1897,23 @@ const snPurchaseSubmitting = ref(false)
 const snPurchaseSuppliers = ref([])
 const snPurchaseGoodsTypes = ref([])
 const snPurchaseTargetLocations = ref([])
+const snPurchaseRebateBalance = ref(0)
 const snPurchaseForm = reactive({
   snId: '', snCode: '', productId: '', productName: '', productCode: '', pnCode: '',
   storeId: '', storeName: '', sourceLocationName: '', supplierId: '', price: 0,
-  goodsTypeId: '', paymentMethod: 'COMPANY_CREDIT', invoiceType: '', targetLocationId: '', remark: ''
+  goodsTypeId: '', paymentMethod: 'COMPANY_CREDIT', invoiceType: '', targetLocationId: '', remark: '', rebateDeduction: 0
 })
+const snPurchaseRebateCap = computed(() => Math.max(0, Math.min(
+  Number(snPurchaseRebateBalance.value || 0),
+  Number(snPurchaseForm.price || 0)
+)))
+const snPurchaseRebateDeduction = computed(() => Math.min(
+  Math.max(0, Number(snPurchaseForm.rebateDeduction || 0)),
+  snPurchaseRebateCap.value
+))
+const snPurchaseActualTotal = computed(() => Math.max(0,
+  Number(snPurchaseForm.price || 0) - snPurchaseRebateDeduction.value
+))
 const resourceStatusOptions = [
   { label: '可用', value: 'AVAILABLE' },
   { label: '已锁定', value: 'LOCKED' },
@@ -2482,9 +2505,29 @@ const resetSnPurchaseForm = () => {
   Object.assign(snPurchaseForm, {
     snId: '', snCode: '', productId: '', productName: '', productCode: '', pnCode: '',
     storeId: '', storeName: '', sourceLocationName: '', supplierId: '', price: 0,
-    goodsTypeId: '', paymentMethod: 'COMPANY_CREDIT', invoiceType: '', targetLocationId: '', remark: ''
+    goodsTypeId: '', paymentMethod: 'COMPANY_CREDIT', invoiceType: '', targetLocationId: '', remark: '', rebateDeduction: 0
   })
+  snPurchaseRebateBalance.value = 0
   snPurchaseTargetLocations.value = []
+}
+
+const normalizeSnPurchaseRebate = () => {
+  snPurchaseForm.rebateDeduction = Math.min(
+    Math.max(0, Number(snPurchaseForm.rebateDeduction || 0)),
+    snPurchaseRebateCap.value
+  )
+}
+
+const onSnPurchaseSupplierChange = async supplierId => {
+  snPurchaseForm.rebateDeduction = 0
+  snPurchaseRebateBalance.value = 0
+  if (!supplierId) return
+  try {
+    const res = await api.getRebateBalance({ supplierId })
+    snPurchaseRebateBalance.value = res.code === 0 ? Number(res.data?.balance || 0) : 0
+  } catch (_) {
+    ElMessage.warning('未能读取供应商返利余额')
+  }
 }
 
 const openSnPurchase = async row => {
@@ -2522,6 +2565,10 @@ const submitSnPurchase = async () => {
   if (!snPurchaseForm.goodsTypeId) return ElMessage.warning('请选择货型')
   if (!snPurchaseForm.targetLocationId) return ElMessage.warning('请选择目标库位')
   if (Number(snPurchaseForm.price) < 0) return ElMessage.warning('采购价不能小于0')
+  normalizeSnPurchaseRebate()
+  if (Number(snPurchaseForm.rebateDeduction || 0) > snPurchaseRebateBalance.value) {
+    return ElMessage.warning('返利抵扣不能超过供应商返利余额')
+  }
   const goodsType = snPurchaseGoodsTypes.value.find(item => item.goods_type_id === snPurchaseForm.goodsTypeId)
   snPurchaseSubmitting.value = true
   try {
@@ -2533,6 +2580,7 @@ const submitSnPurchase = async () => {
       goodsTypeId: snPurchaseForm.goodsTypeId,
       productType: goodsType?.name || '',
       remark: snPurchaseForm.remark || `特殊仓SN采购：${snPurchaseForm.snCode}`,
+      rebateDeduction: Number(snPurchaseForm.rebateDeduction || 0),
       items: [{
         productId: snPurchaseForm.productId,
         productName: snPurchaseForm.productName,
@@ -2540,6 +2588,7 @@ const submitSnPurchase = async () => {
         pnCode: snPurchaseForm.pnCode,
         quantity: 1,
         price: Number(snPurchaseForm.price || 0),
+        rebateDeduction: Number(snPurchaseForm.rebateDeduction || 0),
         goodsTypeId: snPurchaseForm.goodsTypeId,
         productType: goodsType?.name || '',
         sourceSnId: snPurchaseForm.snId,
@@ -4960,5 +5009,20 @@ const getReturnStatusText = (status) => {
   margin-top: 6px;
   color: #909399;
   font-size: 12px;
+}
+.order-summary {
+  margin-top: 16px;
+  padding: 12px 15px;
+  border-radius: 4px;
+  background: #f5f7fa;
+}
+.summary-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 0;
+}
+.summary-item.total {
+  font-size: 16px;
+  font-weight: 700;
 }
 </style>
