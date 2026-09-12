@@ -62,7 +62,7 @@
     </el-dialog>
     <el-dialog v-model="ruleOpen" title="积分规则" width="680px">
       <p>发布后对新归档订单生效。已归档订单和已得积分不会重算。</p><p>金额按优惠后客户负担金额计分，包含抵扣定金，排除政策补贴；积分向下取整。</p>
-      <el-form label-width="120px"><el-form-item label="消费金额（分）"><el-input v-model="rule.denominator" /></el-form-item><el-form-item label="获得积分"><el-input v-model="rule.numerator" /></el-form-item><el-form-item label="参与商品ID"><el-input v-model="rule.products" type="textarea" placeholder="从商品管理查询商品ID，以逗号分隔" /></el-form-item></el-form>
+      <el-form label-width="120px"><el-form-item label="消费金额（分）"><el-input v-model="rule.denominator" /></el-form-item><el-form-item label="获得积分"><el-input v-model="rule.numerator" /></el-form-item><el-form-item label="参与商品ID（可选）"><el-input v-model="rule.products" type="textarea" placeholder="留空表示所有消费商品均参与；填写后仅限指定商品" /></el-form-item></el-form>
       <el-table :data="rules"><el-table-column prop="numerator" label="积分" /><el-table-column prop="denominator" label="金额（分）" /><el-table-column label="生效时间"><template #default="{row}">{{date(row.effective_at)}}</template></el-table-column></el-table>
       <template #footer><el-button type="primary" :loading="saving" @click="publishRule">发布新版本</el-button></template>
     </el-dialog>

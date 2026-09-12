@@ -20,10 +20,10 @@ function makeSnapshot(order, items, rule) {
   const deduction = cents(order.discount_amount) + cents(order.national_subsidy) + cents(order.education_subsidy);
   if (deduction > gross) throw new Error('订单优惠与补贴超过商品金额，须先核对订单');
   const nets = allocate(gross - deduction, weights);
-  const eligible = new Set(rule.product_ids.map(String));
+  const eligible = new Set((rule.product_ids || []).map(String));
   return { numerator: String(rule.numerator), denominator: String(rule.denominator), rule_id: rule.id,
     lines: items.map((item, index) => ({ item_id: String(item.item_id), quantity: Number(item.quantity),
-      amount: eligible.has(String(item.product_id)) ? String(nets[index]) : '0' })) };
+      amount: (!eligible.size || eligible.has(String(item.product_id))) ? String(nets[index]) : '0' })) };
 }
 function remaining(snapshot, returned = {}) {
   return snapshot.lines.reduce((sum, line) => {

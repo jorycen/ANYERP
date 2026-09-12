@@ -174,7 +174,7 @@ staff.post('/point-rules', async ctx => {
   const b = ctx.request.body, distributor_id = S.distributor(ctx.state.user, b.distributor_id);
   if (!/^\d{1,9}$/.test(String(b.numerator)) || !/^\d{1,9}$/.test(String(b.denominator)) || BigInt(b.denominator) < 1n || BigInt(b.numerator) < 1n) S.fail(400, '积分比例必须为正整数，分母单位为分');
   const product_ids = [...new Set((Array.isArray(b.product_ids) ? b.product_ids : []).map(String))];
-  if (!product_ids.length || product_ids.length > 1000 || await Product.count({ where: { product_id: product_ids } }) !== product_ids.length) S.fail(400, '请指定有效的参与商品ID');
+  if (product_ids.length > 1000 || (product_ids.length && await Product.count({ where: { product_id: product_ids } }) !== product_ids.length)) S.fail(400, '请指定有效的参与商品ID');
   ctx.body = await V.transaction(async transaction => {
     await Distributor.findByPk(distributor_id, V.lock(transaction));
     const row = await M.Rule.create({ distributor_id, numerator: b.numerator, denominator: b.denominator,
