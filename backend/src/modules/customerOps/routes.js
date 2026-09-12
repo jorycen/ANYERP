@@ -39,7 +39,8 @@ customer.post('/auth/wechat', limit, async ctx => {
 customer.use(S.customerAuth);
 customer.use(limit);
 customer.post('/member/phone', async ctx => {
-  const phone = await W.phone(ctx.request.body.code);
+  const phone = String(ctx.request.body.phone || '').replace(/\s+/g, '');
+  if (!/^1\d{10}$/.test(phone)) S.fail(400, '请输入正确的手机号');
   await ctx.state.member.update({ phone, phone_verified_at: new Date() });
   ctx.body = { verified: true };
 });
