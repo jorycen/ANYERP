@@ -15,6 +15,11 @@ async function transaction(work) {
   }
 }
 const lock = transaction => ({ transaction, lock: transaction.LOCK.UPDATE });
+const claimableStatuses = ['未归档', '已归档', 'completed', 'archived', 'pending_approval', 'pending_store_approval', 'pending_distributor_approval'];
+function phoneInput(value) {
+  if (typeof value !== 'string' || !/^1\d{10}$/.test(value.trim())) S.fail(400, '请输入11位购机手机号');
+  return value.trim();
+}
 async function account(memberId, distributorId, t) {
   const row = await M.Account.findOne({ where: { member_id: memberId, distributor_id: distributorId }, ...lock(t) });
   return row || M.Account.create({ member_id: memberId, distributor_id: distributorId }, { transaction: t });
@@ -24,7 +29,7 @@ async function post(account, delta, fields, t) {
   await M.Ledger.create({ ...fields, account_id: account.id, member_id: account.member_id,
     distributor_id: account.distributor_id, delta: String(delta), before: String(before), after: String(after) }, { transaction: t });
   const changes = { balance: String(after) };
-  if (fields.type === 'earn') changes.earned = String(BigInt(account.earned) + delta);
+  if (fields.type === 'earn' || fields.type === 'order_adjust') changes.earned = String(BigInt(account.earned) + delta);
   if (fields.type === 'return') changes.reversed = String(BigInt(account.reversed) - delta);
   if (fields.type === 'exchange') changes.spent = String(BigInt(account.spent) - delta);
   await account.update(changes, { transaction: t });
@@ -75,8 +80,8 @@ async function bind(member, input) {
         distributorId: existingAccount.distributor_id, balance: String(existingAccount.balance) };
     }
     if (claim.expires_at <= new Date() || order.is_deleted || !['已归档', 'completed', 'archived'].includes(order.order_status)) S.fail(409, '订单当前不可领取');
-    const verified = member.phone_verified_at && member.phone && member.phone === order.customer_phone;
-    if (!verified && claim.approved_member_id !== member.id) S.fail(409, '请授权与订单一致的手机号；不一致请联系原门店核验');
+    const matches = member.phone && member.phone === order.customer_phone;
+    if (!matches && claim.approved_member_id !== member.id) S.fail(409, '请输入与订单一致的手机号；不一致请联系原门店核验');
     const balance = await account(member.id, claim.distributor_id, t);
     const net = math.remaining(claim.snapshot, await returned(order.order_id, t));
     const awarded = math.points(net, claim.snapshot);
@@ -88,6 +93,80 @@ async function bind(member, input) {
     await M.Member.update({ source_store_id: order.store_id }, { where: { id: member.id, source_store_id: null }, transaction: t });
     return { awardedPoints: String(awarded), balance: String(balance.balance), distributorId: balance.distributor_id };
   });
+}
+// Each order commits independently. Replays and racing members are serialized by
+// the existing order row and the unique binding / earn-ledger business keys.
+async function claimByPhone(member, input) {
+  const phone = phoneInput(input.phone);
+  if (input.after !== undefined && (typeof input.after !== 'string' || input.after.length > 32)) S.fail(400, '分页参数无效');
+  const candidates = await Order.findAll({ where: { customer_phone: phone, is_deleted: 0,
+    ...(input.after ? { order_id: { [Op.gt]: input.after } } : {}) },
+    attributes: ['order_id'], order: [['order_id', 'ASC']], limit: 51 });
+  const results = [];
+  for (const candidate of candidates.slice(0, 50)) {
+    try {
+      results.push(await transaction(async t => {
+        const order = await Order.findByPk(candidate.order_id, lock(t));
+        const result = { orderId: candidate.order_id, orderNo: order?.order_no, awardedPoints: '0', status: 'skipped' };
+        if (!order || order.is_deleted || order.customer_phone !== phone) return { ...result, reason: '订单信息已变化' };
+        const previous = await M.Binding.findOne({ where: { order_id: order.order_id }, transaction: t });
+        if (previous) return { ...result, reason: '订单已领取', status: 'already_claimed' };
+        if (!claimableStatuses.includes(order.order_status)) return { ...result, reason: '草稿、取消或退货中的订单不可领取' };
+        if (order.order_status === '未归档' && !order.submit_time) return { ...result, reason: '订单尚未提交' };
+        const store = await Store.findByPk(order.store_id, { transaction: t });
+        if (!store || store.is_deleted) return { ...result, reason: '订单门店不可用' };
+        const rule = await M.Rule.findOne({ where: { distributor_id: store.distributor_id,
+          effective_at: { [Op.lte]: new Date() } }, order: [['effective_at', 'DESC']], transaction: t });
+        if (!rule) return { ...result, reason: '门店尚未配置积分规则' };
+        const items = await OrderItem.findAll({ where: { order_id: order.order_id }, order: [['item_id', 'ASC']], transaction: t });
+        if (!items.length) return { ...result, reason: '订单无商品' };
+        const snapshot = math.makeSnapshot(order, items, rule);
+        snapshot.phoneSource = 'manual';
+        const awarded = math.points(math.remaining(snapshot, await returned(order.order_id, t)), snapshot);
+        if (awarded <= 0n) return { ...result, reason: '订单没有可领取积分' };
+        const balance = await account(member.id, store.distributor_id, t);
+        await M.Binding.create({ order_id: order.order_id, member_id: member.id, account_id: balance.id,
+          awarded: String(awarded), snapshot }, { transaction: t });
+        await post(balance, awarded, { type: 'earn', business_key: `earn:${order.order_id}`, order_id: order.order_id,
+          store_id: order.store_id, actor: `member:${member.id}`, snapshot }, t);
+        await M.Member.update({ phone, phone_verified_at: null }, { where: { id: member.id }, transaction: t });
+        await M.Member.update({ source_store_id: order.store_id }, { where: { id: member.id, source_store_id: null }, transaction: t });
+        return { ...result, status: 'claimed', awardedPoints: String(awarded), distributorId: store.distributor_id };
+      }));
+    } catch (error) {
+      // Never publish SQL, phone, SN, or internal order data in the batch result.
+      console.error('[customer claim]', candidate.order_id, error.original?.code || error.name);
+      results.push({ orderId: candidate.order_id, status: 'failed', awardedPoints: '0', reason: '领取未完成，请重试或联系门店核对' });
+    }
+  }
+  return { results, awardedPoints: String(results.reduce((sum, r) => sum + BigInt(r.awardedPoints), 0n)),
+    claimedCount: results.filter(r => r.status === 'claimed').length,
+    next: candidates.length > 50 ? candidates[49].order_id : null };
+}
+// Submission awards must follow later price/item corrections and cancellation.
+// Call only inside the sales transaction after locking and saving the order.
+async function reconcileOrder(order, t) {
+  let binding;
+  try { binding = await M.Binding.findOne({ where: { order_id: order.order_id }, ...lock(t) }); }
+  catch (error) {
+    if (process.env.CUSTOMER_OPS_ENABLED !== 'true' && error.original?.code === 'ER_NO_SUCH_TABLE') return;
+    throw error;
+  }
+  if (!binding) return;
+  const store = await Store.findByPk(order.store_id, { transaction: t });
+  const balance = await M.Account.findByPk(binding.account_id, lock(t));
+  if (!store || store.distributor_id !== balance.distributor_id) S.fail(409, '已领取积分订单不能跨经销商移动');
+  const rule = await M.Rule.findByPk(binding.snapshot.rule_id, { transaction: t });
+  // Legacy imported snapshots without a rule remain governed by return reversal.
+  if (!rule) return;
+  const items = await OrderItem.findAll({ where: { order_id: order.order_id }, order: [['item_id', 'ASC']], transaction: t });
+  const snapshot = math.makeSnapshot(order, items, rule);
+  const cancelled = order.is_deleted || ['cancelled', 'canceled', 'voided', '已取消', '作废', '已作废', 'draft'].includes(order.order_status);
+  const target = cancelled ? 0n : math.points(math.remaining(snapshot, await returned(order.order_id, t)), snapshot);
+  const delta = target - (BigInt(binding.awarded) - BigInt(binding.reversed));
+  if (delta) await post(balance, delta, { type: 'order_adjust', business_key: `order_adjust:${order.order_id}:${crypto.randomBytes(16).toString('hex')}`,
+    order_id: order.order_id, store_id: order.store_id, actor: 'system', reason: cancelled ? '订单作废冲回' : '订单计分金额调整', snapshot }, t);
+  await binding.update({ awarded: String(target + BigInt(binding.reversed)), snapshot }, { transaction: t });
 }
 async function exchange(member, rewardId, key, quotedPoints) {
   S.requestKey(key);
@@ -165,4 +244,4 @@ async function reverseReturn(order, request, t) {
     return_id: request.return_id, store_id: order.store_id, actor: 'system', snapshot: { remaining: String(net) } }, t);
   await binding.update({ reversed: String(target) }, { transaction: t });
 }
-module.exports = { transaction, lock, account, post, snapshotOrder, claimCode, bind, exchange, redeem, reverseReturn };
+module.exports = { transaction, lock, account, post, snapshotOrder, claimCode, bind, claimByPhone, phoneInput, reconcileOrder, exchange, redeem, reverseReturn };

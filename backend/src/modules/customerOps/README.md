@@ -49,3 +49,10 @@
 ## 回退
 
 停用新的客户入口和规则发布即可暂停发放/兑换，保留账户、流水、核销记录与退货冲回接点。不得以删表或改余额方式回退。小票网络错误会提示重试，不生成伪造积分码；未参与活动的订单正常打印普通小票。
+# 2026-09-13 入口调整
+
+`POST /api/v1/customer/member/claim-orders` 使用消费者 JWT，body 为 `{phone, after?}`。phone 必须为11位号码字符串；after 是上页返回的 next。返回 results（每单 status/reason/awardedPoints）、本页 claimedCount/awardedPoints 和 next。客户端自动翻页至 next 为空，失败后重新领取可安全重试。
+
+已提交未归档和已归档订单均可领取，使用首次领取时有效规则；不再依赖 Claim 表、扫码 token 或手机号授权接口。仅返回订单号与领取结果，不返回客户姓名、SN、金额或完整订单明细。仍保留旧二维码接口兼容既有版本。
+
+手机号由用户手填，不验证归属，不应显示“微信已验证”。订单唯一绑定、积分流水唯一键和事务保持不变。修改计分金额或作废调用 reconcileOrder，退款沿用 reverseReturn。无新表或迁移，发布后端后再编译两个小程序。固定公众号码保存在 sdxcx/utils/official-account-qr.js，打印无需网络调用。

@@ -61,7 +61,7 @@
       </el-form><template #footer><el-button @click="rewardOpen=false">取消</el-button><el-button type="primary" :loading="saving" @click="saveReward">保存</el-button></template>
     </el-dialog>
     <el-dialog v-model="ruleOpen" title="积分规则" width="680px">
-      <p>发布后对新归档订单生效。已归档订单和已得积分不会重算。</p><p>金额按优惠后客户负担金额计分，包含抵扣定金，排除政策补贴；积分向下取整。</p>
+      <p>手机号批量领取使用领取时有效的规则，已提交未归档订单也可领取。已领取订单保留原规则，不因发布新版本重算。</p><p>金额按优惠后客户负担金额计分，包含抵扣定金，排除政策补贴；积分向下取整。</p>
       <el-form label-width="120px"><el-form-item label="消费金额（分）"><el-input v-model="rule.denominator" /></el-form-item><el-form-item label="获得积分"><el-input v-model="rule.numerator" /></el-form-item><el-form-item label="参与商品ID（可选）"><el-input v-model="rule.products" type="textarea" placeholder="留空表示所有消费商品均参与；填写后仅限指定商品" /></el-form-item></el-form>
       <el-table :data="rules"><el-table-column prop="numerator" label="积分" /><el-table-column prop="denominator" label="金额（分）" /><el-table-column label="生效时间"><template #default="{row}">{{date(row.effective_at)}}</template></el-table-column></el-table>
       <template #footer><el-button type="primary" :loading="saving" @click="publishRule">发布新版本</el-button></template>
@@ -76,7 +76,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { customerOpsRequest as request } from '../api'
 const route=useRoute(), router=useRouter(), tab=computed(()=>route.meta.tab)
-const titles={members:'会员管理',points:'积分管理',rewards:'积分商品',exchanges:'兑换核销'}, types={earn:'购机获得',exchange:'兑换扣减',return:'退货冲回',adjustment:'后台调整'}, states={pending:'待使用',redeemed:'已核销',expired:'已失效'}
+const titles={members:'会员管理',points:'积分管理',rewards:'积分商品',exchanges:'兑换核销'}, types={earn:'购机获得',exchange:'兑换扣减',return:'退货冲回',adjustment:'后台调整',order_adjust:'订单积分调整'}, states={pending:'待使用',redeemed:'已核销',expired:'已失效'}
 const options=ref({distributors:[],stores:[]}), dealer=ref(''), rows=ref([]), page=ref(1), total=ref(0), error=ref(''), loading=ref(false), saving=ref(false), memberFilter=ref(''), redemptions=ref([])
 const rewardOpen=ref(false), reward=ref({}), ruleOpen=ref(false), rules=ref([]), rule=ref({numerator:'1',denominator:'100',products:''}), adjustOpen=ref(false), adjust=ref({}), claimOpen=ref(false), claim=ref({})
 const dealerStores=computed(()=>options.value.stores.filter(s=>s.distributor_id===dealer.value))
@@ -87,7 +87,7 @@ async function action(fn){saving.value=true;try{await fn();ElMessage.success('�
 async function editReward(id){try{reward.value=id?await request('get',`/rewards/${id}`):{name:'',kind:'service',image:'',points:'500',stock:null,per_member_limit:null,valid_days:30,instructions:'',on_sale:false,store_ids:[]};rewardOpen.value=true}catch(e){ElMessage.error(e.message)}}
 function saveReward(){return action(async()=>{await request(reward.value.id?'patch':'post',reward.value.id?`/rewards/${reward.value.id}`:'/rewards',{...reward.value,distributor_id:dealer.value,stock:reward.value.stock??null,per_member_limit:reward.value.per_member_limit??null});rewardOpen.value=false})}
 async function loadRules(){try{rules.value=(await request('get','/point-rules',{distributor_id:dealer.value})).list}catch(e){ElMessage.error(e.message)}}
-function publishRule(){return action(async()=>{await ElMessageBox.confirm('新版本将用于后续归档订单，是否发布？','发布积分规则');await request('post','/point-rules',{...rule.value,distributor_id:dealer.value,product_ids:rule.value.products.split(/[,，\s]+/).filter(Boolean)});await loadRules()})}
+function publishRule(){return action(async()=>{await ElMessageBox.confirm('新版本将用于后续首次领取积分的订单，是否发布？','发布积分规则');await request('post','/point-rules',{...rule.value,distributor_id:dealer.value,product_ids:rule.value.products.split(/[,，\s]+/).filter(Boolean)});await loadRules()})}
 let adjustKey=''
 watch(adjust,()=>{adjustKey=''}, {deep:true})
 function saveAdjust(){return action(async()=>{adjustKey ||= crypto.randomUUID();await request('post','/points/adjustments',{...adjust.value,distributor_id:dealer.value},adjustKey);adjustOpen.value=false;adjustKey=''})}

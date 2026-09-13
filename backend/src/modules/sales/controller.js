@@ -3035,6 +3035,8 @@ async function update(ctx) {
   let archiveGrossProfitAmount = null;
   await sequelize.transaction(async (transaction) => {
     const hasItemsPayload = hasOrderItemsPayload(data);
+    await order.reload({ transaction, lock: transaction.LOCK.UPDATE });
+    if (order.order_status !== previousStatus) ctx.throw(409, '订单状态已变化，请刷新后重试');
     const releasedReservedOrderItems = hasItemsPayload && Number(order.inventory_reserved || 0) === 1;
 
     // 商品列表是当前状态的权威来源。只要本次带了商品列表，先释放旧占用，
@@ -3106,6 +3108,7 @@ async function update(ctx) {
       finalOrderData.order_status = data.status;
     }
     await order.update(finalOrderData, { transaction });
+    await require('../customerOps/service').reconcileOrder(order, transaction);
     const statusAfterUpdate = order.order_status;
     if (statusAfterUpdate !== previousStatus) {
       await recordBusinessAction({

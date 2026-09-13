@@ -100,6 +100,76 @@ test('customer operations on isolated MySQL: races, ownership, returns, rollback
     }));
     assert.equal(await M.Ledger.count({ where: { business_key: 'rollback-test' } }), 0);
     assert.equal((await M.Account.findByPk(binding.account_id)).balance, '-80');
+
+    // Fixed official-account entry: no claim token, no final archive required.
+    await M.Rule.create({ id: 'batch_rule', distributor_id: 'test_dist', numerator: '1', denominator: '100', product_ids: [], effective_at: new Date(Date.now() - 60000) });
+    const batchMember = await M.Member.create({});
+    const batchOther = await M.Member.create({});
+    const phone = '13100000000';
+    const makeOrder = async (id, status, phoneValue = phone) => {
+      const row = await Core.Order.create({ order_id: id, order_no: id, store_id: 'test_store',
+        customer_phone: phoneValue, order_status: status, submit_time: status === 'draft' ? null : new Date() });
+      await Core.OrderItem.create({ order_id: id, sale_price: '20', subtotal: '20', quantity: 1 });
+      return row;
+    };
+    const first = await makeOrder('batch_a', '未归档');
+    await makeOrder('batch_b', '已归档');
+    await makeOrder('batch_c', 'draft');
+    await makeOrder('batch_d', 'return_pending');
+    await makeOrder('batch_e', '已作废');
+    await makeOrder('batch_f', '未归档', '13200000000');
+    const races = await Promise.all([V.claimByPhone(batchMember, { phone }), V.claimByPhone(batchOther, { phone })]);
+    assert.equal(races.reduce((n, r) => n + r.claimedCount, 0), 2);
+    assert.equal(await M.Binding.count({ where: { order_id: ['batch_a', 'batch_b'] } }), 2);
+    assert.equal(await M.Claim.count({ where: { order_id: ['batch_a', 'batch_b'] } }), 0);
+    assert.equal((await V.claimByPhone(batchMember, { phone })).claimedCount, 0);
+    assert.equal((await V.claimByPhone(batchMember, { phone: '13999999999' })).results.length, 0);
+    await assert.rejects(V.claimByPhone(batchMember, { phone: 'bad' }), /手机号/);
+    const firstBinding = await M.Binding.findOne({ where: { order_id: first.order_id } });
+    const firstAccount = await M.Account.findByPk(firstBinding.account_id);
+    const initialBalance = BigInt(firstAccount.balance);
+    const firstItem = await Core.OrderItem.findOne({ where: { order_id: first.order_id } });
+    await V.transaction(async t => {
+      const locked = await Core.Order.findByPk(first.order_id, V.lock(t));
+      await firstItem.update({ sale_price: '10', subtotal: '10' }, { transaction: t });
+      await V.reconcileOrder(locked, t);
+    });
+    assert.equal(BigInt((await firstAccount.reload()).balance), initialBalance - 10n);
+    await V.transaction(t => V.reconcileOrder(first, t));
+    assert.equal(await M.Ledger.count({ where: { order_id: first.order_id, type: 'order_adjust' } }), 1);
+    await V.transaction(async t => {
+      const locked = await Core.Order.findByPk(first.order_id, V.lock(t));
+      await locked.update({ order_status: '已作废' }, { transaction: t });
+      await V.reconcileOrder(locked, t);
+    });
+    assert.equal(BigInt((await firstAccount.reload()).balance), initialBalance - 20n);
+    assert.equal((await M.Binding.findByPk(firstBinding.id)).awarded, '0');
+
+    const second = await Core.Order.findByPk('batch_b');
+    const secondBinding = await M.Binding.findOne({ where: { order_id: second.order_id } });
+    const secondItem = await Core.OrderItem.findOne({ where: { order_id: second.order_id } });
+    const batchReturn = await Core.SalesReturnRequest.create({ return_id: 'batch_return', return_no: 'batch_return', order_id: second.order_id,
+      order_no: second.order_no, store_id: second.store_id, status: 'completed' });
+    await Core.SalesReturnRequestItem.create({ return_id: batchReturn.return_id, order_item_id: secondItem.item_id, quantity: 1, unit_price: '20', subtotal: '20' });
+    await V.transaction(t => V.reverseReturn(second, batchReturn, t));
+    await V.transaction(t => V.reverseReturn(second, batchReturn, t));
+    assert.equal((await secondBinding.reload()).reversed, '20');
+    const postBatch = (token, body) => fetch(url + '/member/claim-orders', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    assert.equal((await postBatch(employeeToken, { phone })).status, 401);
+    assert.equal((await postBatch(S.sign(batchMember), { phone: 'invalid' })).status, 400);
+    assert.equal((await postBatch(S.sign(batchMember), { phone })).status, 200);
+    // Keyset pagination includes every order beyond the first batch.
+    for (let i = 0; i < 51; i++) await makeOrder('page_' + String(i).padStart(2, '0'), '未归档', '13300000000');
+    const page1 = await V.claimByPhone(batchMember, { phone: '13300000000' });
+    assert.equal(page1.claimedCount, 50);
+    assert.ok(page1.next);
+    const page2 = await V.claimByPhone(batchMember, { phone: '13300000000', after: page1.next });
+    assert.equal(page2.claimedCount, 1);
+    assert.equal(page2.next, null);
+    for (const acc of await M.Account.findAll()) {
+      const rows = await M.Ledger.findAll({ where: { account_id: acc.id } });
+      assert.equal(rows.reduce((sum, row) => sum + BigInt(row.delta), 0n), BigInt(acc.balance));
+    }
   } catch (error) {
     failure = error;
     throw error;

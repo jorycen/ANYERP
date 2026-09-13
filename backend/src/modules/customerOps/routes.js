@@ -39,10 +39,9 @@ customer.post('/auth/wechat', limit, async ctx => {
 customer.use(S.customerAuth);
 customer.use(limit);
 customer.post('/member/phone', async ctx => {
-  const phone = String(ctx.request.body.phone || '').replace(/\s+/g, '');
-  if (!/^1\d{10}$/.test(phone)) S.fail(400, '请输入正确的手机号');
-  await ctx.state.member.update({ phone, phone_verified_at: new Date() });
-  ctx.body = { verified: true };
+  const phone = V.phoneInput(ctx.request.body.phone);
+  await ctx.state.member.update({ phone, phone_verified_at: null });
+  ctx.body = { saved: true, verified: false };
 });
 customer.get('/member/profile', async ctx => {
   const member = ctx.state.member;
@@ -50,6 +49,7 @@ customer.get('/member/profile', async ctx => {
   ctx.body = { memberId: member.id, phone: member.phone ? member.phone.replace(/^(\d{3})\d+(\d{4})$/, '$1****$2') : null, accounts };
 });
 customer.post('/member/bind-order', async ctx => { ctx.body = await V.bind(ctx.state.member, ctx.request.body); });
+customer.post('/member/claim-orders', async ctx => { ctx.body = await V.claimByPhone(ctx.state.member, ctx.request.body); });
 customer.get('/member/points', async ctx => {
   const row = await M.Account.findOne({ where: { member_id: ctx.state.member.id, distributor_id: String(ctx.query.distributor_id || '') } });
   ctx.body = { balance: String(row?.balance || '0'), available: String(BigInt(row?.balance || 0) > 0n ? row.balance : '0') };
