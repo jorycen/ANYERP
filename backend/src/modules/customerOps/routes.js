@@ -4,6 +4,7 @@ const M = require('./models');
 const S = require('./security');
 const V = require('./service');
 const W = require('./wechat');
+const P = require('./rewardPolicy');
 const { Store, Distributor, Product, Order } = require('../../models');
 const { recordBusinessAction } = require('../../utils/businessActionLog');
 const customer = new Router({ prefix: '/api/v1/customer' });
@@ -65,20 +66,44 @@ async function list(model, where, ctx, attributes) {
   return { list: result.rows, total: result.count, page, pageSize: limit };
 }
 customer.get('/member/points/ledger', async ctx => { ctx.body = await list(M.Ledger, { member_id: ctx.state.member.id,
-  ...(ctx.query.distributor_id ? { distributor_id: ctx.query.distributor_id } : {}) }, ctx, ['id', 'delta', 'after', 'type', 'created_at']); });
+  ...(ctx.query.direction === 'earn' ? { delta: { [Op.gt]: 0 } } : ctx.query.direction === 'spend' ? { delta: { [Op.lt]: 0 } } : {}),
+  ...(ctx.query.distributor_id ? { distributor_id: ctx.query.distributor_id } : {}) }, ctx, ['id', 'delta', 'after', 'type', 'reason', 'created_at']); });
 customer.get('/stores', async ctx => {
   const rows = await Store.findAll({ where: { status: 1, is_deleted: 0 }, attributes: ['store_id', 'distributor_id', 'name', 'address', 'phone'] });
   const dealers = await Distributor.findAll({ where: { distributor_id: [...new Set(rows.map(r => r.distributor_id))], status: 1 }, attributes: ['distributor_id', 'name'] });
   ctx.body = rows.filter(r => dealers.some(d => d.distributor_id === r.distributor_id)).map(r => ({ ...r.toJSON(), distributor_name: dealers.find(d => d.distributor_id === r.distributor_id).name }));
 });
-customer.get('/rewards', async ctx => { ctx.body = await list(M.Reward, { on_sale: true,
-  ...(ctx.query.distributor_id ? { distributor_id: ctx.query.distributor_id } : {}) }, ctx, ['id', 'distributor_id', 'name', 'image', 'kind', 'points', 'stock', 'valid_days']); });
+async function rewardStates(rows, memberId) {
+  if (!rows.length) return [];
+  const ids = rows.map(r => r.id);
+  const [accounts, exchanges, links] = await Promise.all([
+    M.Account.findAll({ where: { member_id: memberId } }),
+    M.Exchange.findAll({ where: { member_id: memberId, reward_id: ids }, attributes: ['reward_id'] }),
+    M.RewardStore.findAll({ where: { reward_id: ids } })
+  ]);
+  const stores = await Store.findAll({ where: { store_id: links.map(l => l.store_id), status: 1, is_deleted: 0 }, attributes: ['store_id', 'distributor_id'] });
+  return rows.map(row => P.dto(row, P.availability(row,
+    accounts.find(a => a.distributor_id === row.distributor_id)?.balance || '0',
+    exchanges.filter(e => e.reward_id === row.id).length,
+    links.some(l => l.reward_id === row.id && stores.some(s => s.store_id === l.store_id && s.distributor_id === row.distributor_id)))));
+}
+customer.get('/rewards', async ctx => {
+  const type = ctx.query.type;
+  if (type && !['service', 'product', 'coupon'].includes(type)) S.fail(400, '权益分类无效');
+  const rows = await M.Reward.findAll({ where: { on_sale: true,
+    ...(type ? { kind: type === 'product' ? ['gift', 'product'] : type } : {}),
+    ...(ctx.query.distributor_id ? { distributor_id: ctx.query.distributor_id } : {}) } });
+  const keyword = String(ctx.query.keyword || '').trim().slice(0, 100).toLowerCase();
+  const sorted = (await rewardStates(rows, ctx.state.member.id)).filter(r => !keyword || `${r.name} ${r.description || ''}`.toLowerCase().includes(keyword)).sort(P.compare);
+  const { limit, offset, page } = pagination(ctx);
+  ctx.body = { list: sorted.slice(offset, offset + limit), total: sorted.length, page, pageSize: limit };
+});
 customer.get('/rewards/:id', async ctx => {
   const item = await M.Reward.findOne({ where: { id: ctx.params.id, on_sale: true } });
   if (!item) S.fail(404, '权益不存在');
   const links = await M.RewardStore.findAll({ where: { reward_id: item.id } });
-  const stores = await Store.findAll({ where: { store_id: links.map(l => l.store_id) }, attributes: ['store_id', 'name', 'address'] });
-  ctx.body = { ...item.toJSON(), stores };
+  const stores = await Store.findAll({ where: { store_id: links.map(l => l.store_id), distributor_id: item.distributor_id, status: 1, is_deleted: 0 }, attributes: ['store_id', 'name', 'address'] });
+  ctx.body = { ...(await rewardStates([item], ctx.state.member.id))[0], stores, applicable_store: stores };
 });
 function exchangeDto(row) {
   const { code_hash, request_key, ...data } = row.toJSON();
@@ -88,7 +113,7 @@ customer.post('/rewards/:id/exchange', async ctx => {
   const quote = ctx.request.body.expected_points;
   if (typeof quote !== 'string' || !/^[1-9]\d{0,11}$/.test(quote)) S.fail(400, '请先加载权益详情再兑换');
   // A client quote is only a precondition, never the amount charged.
-  ctx.body = exchangeDto(await V.exchange(ctx.state.member, ctx.params.id, ctx.get('Idempotency-Key'), quote));
+  ctx.body = exchangeDto(await V.exchange(ctx.state.member, ctx.params.id, ctx.get('Idempotency-Key'), quote, ctx.request.body.expected_cash));
 });
 customer.get('/member/exchanges', async ctx => {
   const where = { member_id: ctx.state.member.id };
@@ -96,6 +121,18 @@ customer.get('/member/exchanges', async ctx => {
   if (ctx.query.status === 'redeemed') where.status = 'redeemed';
   if (ctx.query.status === 'expired') Object.assign(where, { status: 'pending', expires_at: { [Op.lte]: new Date() } });
   const data = await list(M.Exchange, where, ctx); data.list = data.list.map(exchangeDto); ctx.body = data;
+});
+customer.get('/member/coupons', async ctx => {
+  const where = { member_id: ctx.state.member.id, 'snapshot.kind': 'coupon',
+    ...(ctx.query.distributor_id ? { distributor_id: ctx.query.distributor_id } : {}) };
+  if (ctx.query.status === 'pending') Object.assign(where, { status: 'pending', expires_at: { [Op.gt]: new Date() } });
+  if (ctx.query.status === 'redeemed') where.status = 'redeemed';
+  if (ctx.query.status === 'expired') Object.assign(where, { status: 'pending', expires_at: { [Op.lte]: new Date() } });
+  const data = await list(M.Exchange, where, ctx); data.list = data.list.map(exchangeDto); ctx.body = data;
+});
+customer.get('/member/rules', async ctx => {
+  ctx.body = { earning: '消费10元获得1积分，不足1积分向下取整', spending: '10积分可抵1元',
+    notes: ['积分按经销商分别使用。', '计分金额沿用订单优惠后客户负担金额，排除政策补贴，定金不重复计分。', '活动赠送积分单独记录，不改变基础消费积分比例。', '历史已领取订单保留原积分规则。', '抵扣请到店由工作人员办理；可用范围以门店规则为准。', '兑换权益过期不退积分、不自动补库存。'] };
 });
 customer.get('/exchange/:id', async ctx => {
   const row = await M.Exchange.findOne({ where: { id: ctx.params.id, member_id: ctx.state.member.id } });
@@ -120,7 +157,7 @@ staff.get('/options', async ctx => {
   ctx.body = { distributors, stores, canRedeem: user.roles.some(r => ['boss','admin','manager','store_manager','store_admin','clerk','staff'].includes(r)) && stores.length > 0 };
 });
 staff.post('/redemptions/preview', async ctx => { const b = ctx.request.body; ctx.body = await V.redeem(b.code, b.store_id, ctx.state.user, false); });
-staff.post('/exchange/:id/redeem', async ctx => { const b = ctx.request.body; ctx.body = await V.redeem(b.code, b.store_id, ctx.state.user, true, ctx.params.id); });
+staff.post('/exchange/:id/redeem', async ctx => { const b = ctx.request.body; ctx.body = await V.redeem(b.code, b.store_id, ctx.state.user, true, ctx.params.id, b); });
 staff.post('/orders/:id/claim-code', async ctx => {
   if (process.env.CUSTOMER_OPS_ENABLED !== 'true') { ctx.body = { enabled: false }; return; }
   const claim = await M.Claim.findOne({ where: { order_id: ctx.params.id } });
@@ -175,8 +212,9 @@ for (const [path, model] of [['points/ledger', M.Ledger], ['point-rules', M.Rule
 }
 staff.post('/point-rules', async ctx => {
   const b = ctx.request.body, distributor_id = S.distributor(ctx.state.user, b.distributor_id);
-  if (!/^\d{1,9}$/.test(String(b.numerator)) || !/^\d{1,9}$/.test(String(b.denominator)) || BigInt(b.denominator) < 1n || BigInt(b.numerator) < 1n) S.fail(400, '积分比例必须为正整数，分母单位为分');
+  if (String(b.numerator) !== '1' || String(b.denominator) !== '1000') S.fail(400, '基础规则固定为消费10元获得1积分');
   const product_ids = [...new Set((Array.isArray(b.product_ids) ? b.product_ids : []).map(String))];
+  if (product_ids.length) S.fail(400, '基础规则适用于全部消费商品，不设置分类倍率');
   if (product_ids.length > 1000 || (product_ids.length && await Product.count({ where: { product_id: product_ids } }) !== product_ids.length)) S.fail(400, '请指定有效的参与商品ID');
   ctx.body = await V.transaction(async transaction => {
     await Distributor.findByPk(distributor_id, V.lock(transaction));
@@ -188,7 +226,8 @@ staff.post('/point-rules', async ctx => {
 });
 async function saveReward(ctx) {
   const b = ctx.request.body, distributor_id = S.distributor(ctx.state.user, b.distributor_id);
-  if (!b.name || String(b.name).length > 128 || !['gift', 'service'].includes(b.kind) || !/^[1-9]\d{0,11}$/.test(String(b.points))) S.fail(400, '名称、类型或所需积分无效');
+  if (!b.name || String(b.name).length > 128 || !['gift', 'product', 'service', 'coupon'].includes(b.kind) || !/^[1-9]\d{0,11}$/.test(String(b.points))) S.fail(400, '名称、类型或所需积分无效');
+  const extra = P.validate(b);
   if (!Number.isInteger(b.valid_days) || b.valid_days < 1 || b.valid_days > 3650) S.fail(400, '有效天数应为1到3650');
   for (const key of ['stock', 'per_member_limit']) if (b[key] !== null && (!Number.isInteger(b[key]) || b[key] < 0)) S.fail(400, '数量应为非负整数或留空');
   if (b.image && !/^https:\/\//.test(b.image)) S.fail(400, '图片必须使用HTTPS地址');
@@ -198,7 +237,7 @@ async function saveReward(ctx) {
     let row = ctx.params.id ? await M.Reward.findByPk(ctx.params.id, V.lock(transaction)) : null;
     if (ctx.params.id && (!row || row.distributor_id !== distributor_id)) S.fail(404, '权益不存在');
     if (row && row.revision !== b.revision) S.fail(409, '商品已被兑换或更新，请刷新后重试');
-    const fields = { distributor_id, name: String(b.name), kind: b.kind, points: String(b.points), image: b.image || '',
+    const fields = { ...extra, distributor_id, name: String(b.name), kind: b.kind, points: String(b.points), image: b.image || '',
       valid_days: b.valid_days, stock: b.stock, per_member_limit: b.per_member_limit, instructions: String(b.instructions || '').slice(0, 10000), on_sale: b.on_sale === true,
       revision: row ? row.revision + 1 : 0 };
     const before = row?.toJSON();
@@ -217,15 +256,22 @@ staff.get('/rewards/:id', async ctx => {
 });
 staff.post('/points/adjustments', async ctx => {
   const b = ctx.request.body, key = S.requestKey(ctx.get('Idempotency-Key'));
+  if (b.type && !['activity', 'adjustment'].includes(b.type)) S.fail(400, '积分调整类型无效');
   S.distributor(ctx.state.user, b.distributor_id);
   if (!/^-?[1-9]\d{0,11}$/.test(String(b.delta)) || !String(b.reason || '').trim() || String(b.reason).length > 512) S.fail(400, '请输入非零整数积分与512字以内的调整原因');
   ctx.body = await V.transaction(async transaction => {
-    const account = await M.Account.findOne({ where: { member_id: b.member_id, distributor_id: b.distributor_id }, ...V.lock(transaction) });
+    let account = await M.Account.findOne({ where: { member_id: b.member_id, distributor_id: b.distributor_id }, ...V.lock(transaction) });
+    if (!account && b.type === 'activity') {
+      const member = await M.Member.findByPk(String(b.member_id || ''), V.lock(transaction));
+      if (!member || member.status !== 'active') S.fail(404, '会员不存在或已停用');
+      account = await V.account(member.id, b.distributor_id, transaction);
+    }
     if (!account) S.fail(404, '积分账户不存在');
     const business_key = `adjust:${ctx.state.user.staffId}:${key}`;
     const existing = await M.Ledger.findOne({ where: { business_key }, transaction });
-    if (existing) { if (existing.account_id !== account.id || String(existing.delta) !== String(b.delta) || existing.reason !== b.reason) S.fail(409, '幂等键内容冲突'); return existing; }
-    await V.post(account, BigInt(b.delta), { type: 'adjustment', business_key, actor: String(ctx.state.user.staffId), reason: b.reason }, transaction);
+    if (existing) { if (existing.account_id !== account.id || String(existing.delta) !== String(b.delta) || existing.reason !== b.reason || existing.type !== (b.type === 'activity' ? 'activity' : 'adjustment')) S.fail(409, '幂等键内容冲突'); return existing; }
+    if (b.type === 'activity' && BigInt(b.delta) <= 0n) S.fail(400, '活动赠送积分必须为正数');
+    await V.post(account, BigInt(b.delta), { type: b.type === 'activity' ? 'activity' : 'adjustment', business_key, actor: String(ctx.state.user.staffId), reason: b.reason }, transaction);
     return { balance: String(account.balance) };
   });
 });

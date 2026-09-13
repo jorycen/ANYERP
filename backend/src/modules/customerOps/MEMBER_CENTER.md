@@ -1,0 +1,46 @@
+# 会员中心改造与验收（2026-09-14）
+
+## 页面与入口
+
+消费者项目：`D:\艾诺云\小艾虾\member`。在微信开发者工具重新编译此目录。
+首页显示积分、3项优先权益、积分差额、服务权益；底部会员首页/权益兑换/我的。
+我的保留手机号批量领取和每单结果，增加我的优惠券、我的兑换和完整积分明细入口。
+商品来自真实ERP接口；没有预置商品、虚构余额或自动上架示例。
+
+## 后台操作
+
+1. 在客户运营→积分商品选择经销商，配置服务、实物礼品或优惠券；填写HTTPS图片、积分、现金补差、库存、限兑、有效天数、兑换起止时间、说明及门店后上架。
+2. 优惠券填写券面额、最低消费和文字使用范围；免费服务券面额填0，明确服务说明。
+3. 到店核销在ERP客户运营→兑换核销查询客户凭证。现金先在原门店系统收款，再填写实收金额和原凭据编号；系统拒绝现金少收。优惠券核对适用范围、填写消费额和原单号，优惠在原单处理。
+4. 活动赠分在积分管理→人工调整，类型选“活动赠送”，填写正整数及活动原因。
+5. 新开经销商需在积分规则中发布固定基础规则。积分归属经销商独立，不能合并使用。
+
+## 字段兼容
+
+外部type=product兼容旧kind=gift；points_required对应旧points；exchange_limit对应per_member_limit；status对应on_sale；适用门店继续使用T_REWARD_ITEM_STORE。
+新增description、original_price、cash_required、sort、valid_start_time/end_time、self_only和优惠券字段。
+优惠券复用T_REWARD_EXCHANGE，券的类型、金额、门槛及范围保存在不可随商品编辑改变的兑换快照中。
+旧纯积分API/核销仍兼容；新现金或优惠券核销缺少确认字段时拒绝，不允许旧客户端绕过条件。
+
+## 接口
+
+消费者根路径`/api/v1/customer`：`/rewards`支持type、keyword、distributor_id、page、pageSize；返回can_exchange、points_shortfall和availability_text。
+`/rewards/:id`含条件和适用门店；兑换POST携带expected_points、expected_cash及Idempotency-Key。
+`/member/coupons`支持pending/redeemed/expired；`/member/points/ledger`支持direction=earn/spend及分页；`/member/rules`提供简化规则。
+后台沿用`/api/v1/customer-ops`及原boss/admin管理权限。门店核销服务校验员工权限、有效门店、凭证归属、负积分、过期及核销唯一性。
+现金补差是到店收款核销，未接入微信在线支付；优惠券范围为人工核验声明，不是商品分类自动匹配。未增加自动订单改价和收款入账。
+
+## 迁移与验证
+
+在ANY-ERP/backend运行`node scripts/migrate-member-center.js`预览，`--apply`实施；新数据库先运行现有migrate-customer-ops.js建基础表。
+本轮已在配置的ERP数据库执行新增13列和已启用经销商的固定规则版本；未改历史积分。
+迁移前后核对原积分流水数量、账户积分总额、兑换及商品数量不变，再次预览无待处理项。
+已通过9项后端测试，包括独立MySQL数据库的并发、回滚、重复领取、现金补差、优惠券归属/门槛、过期、分页和迁移幂等。测试库已清理。
+9页WXML、2份WXSS通过本机微信官方编译器；页面脚本语法和注册检查通过。
+Web按Git HEAD与本次客户运营页面单独构建；没有打包工作区未提交库存改动。
+浏览器布局检查使用临时测试样例，仅用于检查模板和样式，不写入小程序或数据库。
+
+## 尚需部署验收
+
+GitHub提交不等于云服务已发布。需部署本次后端与随附Web产物，再在微信开发者工具编译member并进行真实登录、领取、兑换、到店核销及优惠券使用的真机验收。
+小程序只留本地，未上传微信；员工sdxcx本轮未修改。

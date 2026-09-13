@@ -35,7 +35,7 @@ const Ledger = define('T_MEMBER_POINT_LEDGER', {
   exchange_id: text(32), actor: text(64), reason: text(512), snapshot: D.JSON
 }, [unique('business_key'), { fields: ['account_id', 'created_at', 'id'] }]);
 const Rule = define('T_POINT_RULE', {
-  distributor_id: ref(), numerator: integer('1'), denominator: integer('100'),
+  distributor_id: ref(), numerator: integer('1'), denominator: integer('1000'),
   effective_at: { type: D.DATE, allowNull: false }, actor: text(64),
   basis: { type: D.STRING(32), allowNull: false, defaultValue: 'customer_net' },
   // Published versions are immutable; explicit product IDs avoid guessed category eligibility.
@@ -46,7 +46,15 @@ const Reward = define('T_REWARD_ITEM', {
   kind: { type: D.STRING(16), allowNull: false }, points: integer(), stock: { type: D.INTEGER, allowNull: true },
   per_member_limit: { type: D.INTEGER, allowNull: true }, valid_days: { type: D.INTEGER, allowNull: false },
   instructions: D.TEXT, revision: { type: D.INTEGER, allowNull: false, defaultValue: 0 },
-  on_sale: { type: D.BOOLEAN, defaultValue: false, allowNull: false }
+  on_sale: { type: D.BOOLEAN, defaultValue: false, allowNull: false },
+  description: D.TEXT, original_price: { type: D.DECIMAL(12, 2), defaultValue: '0.00', allowNull: false },
+  cash_required: { type: D.DECIMAL(12, 2), defaultValue: '0.00', allowNull: false },
+  sort: { type: D.INTEGER, defaultValue: 0, allowNull: false },
+  valid_start_time: D.DATE, valid_end_time: D.DATE,
+  self_only: { type: D.BOOLEAN, defaultValue: true, allowNull: false },
+  coupon_value: { type: D.DECIMAL(12, 2), defaultValue: '0.00', allowNull: false },
+  coupon_min_spend: { type: D.DECIMAL(12, 2), defaultValue: '0.00', allowNull: false },
+  coupon_scope: text(512)
 });
 const RewardStore = define('T_REWARD_ITEM_STORE', { reward_id: ref(), store_id: ref() }, [unique('reward_id', 'store_id')]);
 const Exchange = define('T_REWARD_EXCHANGE', {
@@ -58,7 +66,9 @@ const Exchange = define('T_REWARD_EXCHANGE', {
 }, [unique('member_id', 'request_key'), unique('code_hash'), { fields: ['member_id', 'created_at'] }]);
 const Redemption = define('T_REWARD_REDEMPTION', {
   exchange_id: ref(), member_id: ref(), distributor_id: ref(), store_id: ref(),
-  staff_id: { type: D.BIGINT, allowNull: false }
+  staff_id: { type: D.BIGINT, allowNull: false },
+  cash_received: { type: D.DECIMAL(12, 2), defaultValue: '0.00', allowNull: false },
+  receipt_reference: text(128), coupon_check: D.JSON
 }, [unique('exchange_id')]);
 const Claim = define('T_ORDER_MEMBER_CLAIM', {
   order_id: ref(), store_id: ref(), distributor_id: ref(),

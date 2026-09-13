@@ -5,6 +5,7 @@ const { Order, OrderItem, Store, SalesReturnRequest, SalesReturnRequestItem } = 
 const M = require('./models');
 const S = require('./security');
 const math = require('./math');
+const P = require('./rewardPolicy');
 const txOptions = { retry: { max: 0 } };
 async function transaction(work) {
   for (let attempt = 0; ; attempt++) {
@@ -29,7 +30,7 @@ async function post(account, delta, fields, t) {
   await M.Ledger.create({ ...fields, account_id: account.id, member_id: account.member_id,
     distributor_id: account.distributor_id, delta: String(delta), before: String(before), after: String(after) }, { transaction: t });
   const changes = { balance: String(after) };
-  if (fields.type === 'earn' || fields.type === 'order_adjust') changes.earned = String(BigInt(account.earned) + delta);
+  if (['earn', 'order_adjust', 'activity'].includes(fields.type)) changes.earned = String(BigInt(account.earned) + delta);
   if (fields.type === 'return') changes.reversed = String(BigInt(account.reversed) - delta);
   if (fields.type === 'exchange') changes.spent = String(BigInt(account.spent) - delta);
   await account.update(changes, { transaction: t });
@@ -168,7 +169,7 @@ async function reconcileOrder(order, t) {
     order_id: order.order_id, store_id: order.store_id, actor: 'system', reason: cancelled ? '订单作废冲回' : '订单计分金额调整', snapshot }, t);
   await binding.update({ awarded: String(target + BigInt(binding.reversed)), snapshot }, { transaction: t });
 }
-async function exchange(member, rewardId, key, quotedPoints) {
+async function exchange(member, rewardId, key, quotedPoints, quotedCash) {
   S.requestKey(key);
   return transaction(async t => {
     const previous = await M.Exchange.findOne({ where: { member_id: member.id, request_key: key }, transaction: t });
@@ -178,6 +179,8 @@ async function exchange(member, rewardId, key, quotedPoints) {
     const balance = await account(member.id, item.distributor_id, t);
     const reward = await M.Reward.findByPk(rewardId, lock(t));
     if (quotedPoints !== undefined && String(quotedPoints) !== String(reward.points)) S.fail(409, '积分价格已更新，请刷新详情后兑换');
+    if ((quotedCash === undefined && math.cents(reward.cash_required) > 0n) || (quotedCash !== undefined && P.money(quotedCash) !== P.money(reward.cash_required))) S.fail(409, '现金价格已更新，请刷新详情后兑换');
+    if ((reward.valid_start_time && reward.valid_start_time > new Date()) || (reward.valid_end_time && reward.valid_end_time <= new Date())) S.fail(409, '不在权益兑换有效期内');
     if (!reward.on_sale || (reward.stock !== null && reward.stock <= 0)) S.fail(409, '权益已下架或售罄');
     if (BigInt(balance.balance) < BigInt(reward.points)) S.fail(409, '积分不足');
     if (reward.per_member_limit !== null && await M.Exchange.count({ where: { member_id: member.id, reward_id: rewardId }, transaction: t }) >= reward.per_member_limit) S.fail(409, '已达到兑换数量限制');
@@ -191,14 +194,17 @@ async function exchange(member, rewardId, key, quotedPoints) {
       distributor_id: reward.distributor_id, points: String(reward.points), request_key: key,
       expires_at: new Date(Date.now() + reward.valid_days * 86400000), code_hash: S.hash(code),
       snapshot: { name: reward.name, image: reward.image, kind: reward.kind, instructions: reward.instructions,
+        description: reward.description, cash_required: P.money(reward.cash_required), self_only: reward.self_only,
+        coupon_value: P.money(reward.coupon_value), coupon_min_spend: P.money(reward.coupon_min_spend), coupon_scope: reward.coupon_scope,
+        stores: activeStores.map(s => ({ store_id: s.store_id, name: s.name, address: s.address })),
         storeIds: activeStores.map(s => s.store_id) } }, { transaction: t });
     await post(balance, -BigInt(reward.points), { type: 'exchange', exchange_id: id,
-      business_key: `exchange:${id}`, actor: `member:${member.id}` }, t);
+      business_key: `exchange:${id}`, actor: `member:${member.id}`, reason: `兑换${reward.name}` }, t);
     await reward.update({ ...(reward.stock !== null ? { stock: reward.stock - 1 } : {}), revision: reward.revision + 1 }, { transaction: t });
     return row;
   });
 }
-async function redeem(code, storeId, user, confirm, expectedId) {
+async function redeem(code, storeId, user, confirm, expectedId, evidence = {}) {
   return transaction(async t => {
     const store = await Store.findByPk(storeId, { transaction: t });
     if (!store || store.is_deleted || store.status !== 1) S.fail(403, '门店不可用');
@@ -211,14 +217,32 @@ async function redeem(code, storeId, user, confirm, expectedId) {
     const used = await M.Redemption.findOne({ where: { exchange_id: row.id }, transaction: t });
     const member = await M.Member.findByPk(row.member_id, { transaction: t });
     const result = { id: row.id, name: row.snapshot.name, points: String(row.points), expiresAt: row.expires_at,
+      cashRequired: P.money(row.snapshot.cash_required || '0'), selfOnly: row.snapshot.self_only !== false,
+      kind: row.snapshot.kind, couponValue: row.snapshot.coupon_value || '0.00',
+      couponMinSpend: row.snapshot.coupon_min_spend || '0.00', couponScope: row.snapshot.coupon_scope || '',
       status: row.status === 'pending' && row.expires_at <= new Date() ? 'expired' : row.status,
       member: member.phone ? member.phone.replace(/^(\d{3})\d+(\d{4})$/, '$1****$2') : member.id.slice(-8),
       redemption: used, alreadyRedeemed: Boolean(used) };
     if (!confirm || used) return result;
     if (row.status !== 'pending' || row.expires_at <= new Date()) S.fail(409, '权益已失效');
     if (BigInt(balance.balance) < 0n) S.fail(409, '会员有待抵扣积分，暂不可核销');
+    let coupon_check = null;
+    if (row.snapshot.kind === 'coupon') {
+      if (evidence.scope_confirmed !== true) S.fail(400, '请核对优惠券使用范围');
+      if (math.cents(evidence.eligible_amount || '0') < math.cents(row.snapshot.coupon_min_spend || '0')) S.fail(409, '消费金额未达到优惠券门槛');
+      if (!String(evidence.receipt_reference || '').trim()) S.fail(400, '请填写优惠券使用的销售单号或服务工单号');
+      coupon_check = { eligible_amount: P.money(evidence.eligible_amount || '0'), scope_confirmed: true,
+        scope: row.snapshot.coupon_scope, value: row.snapshot.coupon_value, checked_at: new Date().toISOString() };
+    }
+    const cash = P.money(row.snapshot.cash_required || '0');
+    if (math.cents(cash) > 0n) {
+      if (evidence.cash_confirmed !== true || P.money(evidence.cash_received || '0') !== cash) S.fail(409, '请核对并确认已收齐现金补差');
+      if (!String(evidence.receipt_reference || '').trim()) S.fail(400, '请填写收款流水或销售单号');
+    }
+    if (String(evidence.receipt_reference || '').length > 128) S.fail(400, '凭据编号不能超过128字');
     const redemption = await M.Redemption.create({ exchange_id: row.id, member_id: row.member_id,
-      distributor_id: row.distributor_id, store_id: storeId, staff_id: user.staffId }, { transaction: t });
+      distributor_id: row.distributor_id, store_id: storeId, staff_id: user.staffId,
+      cash_received: cash, receipt_reference: String(evidence.receipt_reference || '').trim() || null, coupon_check }, { transaction: t });
     await row.update({ status: 'redeemed' }, { transaction: t });
     return { ...result, status: 'redeemed', redemption };
   });
