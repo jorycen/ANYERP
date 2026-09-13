@@ -55,6 +55,7 @@ test('customer operations on isolated MySQL: races, ownership, returns, rollback
     const app = new Koa();
     app.use(async (ctx, next) => { try { await next(); } catch (e) { ctx.status = e.status || 500; ctx.body = { message: e.message }; } });
     app.use(require('koa-bodyparser')());
+    app.use(require('../src/middleware/responseFormatter').responseFormatter);
     const customer = require('../src/modules/customerOps/routes').customer;
     app.use(customer.routes());
     server = app.listen(0, '127.0.0.1');
@@ -69,7 +70,9 @@ test('customer operations on isolated MySQL: races, ownership, returns, rollback
     const credential = await get(`/exchange/${exchanged.id}/credential`, S.sign(owner));
     assert.equal(credential.status, 200);
     const qr = await credential.json();
-    assert.ok(qr.image.startsWith('data:image/png;base64,'));
+    assert.equal(qr.code, 0);
+    assert.equal(qr.data.code, S.token('redeem', exchanged.id));
+    assert.ok(qr.data.image.startsWith('data:image/png;base64,'));
     assert.equal((await M.Account.findByPk(binding.account_id)).balance, '20');
     assert.equal((await M.Reward.findByPk(reward.id)).stock, 0);
     assert.equal((await V.exchange(owner, reward.id, exchanged.request_key)).id, exchanged.id);

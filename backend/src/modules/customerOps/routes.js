@@ -106,7 +106,10 @@ customer.get('/exchange/:id/credential', async ctx => {
   if (!row || row.status !== 'pending' || row.expires_at <= new Date()) S.fail(409, '兑换凭证不可用');
   const code = S.token('redeem', row.id);
   const QR = require('qrcode');
-  ctx.body = { code, image: await QR.toDataURL(code, { errorCorrectionLevel: 'M', margin: 4, width: 320 }) };
+  // The formatter treats a top-level `code` as an existing response envelope.
+  // Keep the redemption code inside data so clients see numeric success code 0.
+  ctx.body = { code: 0, message: '成功', data: { code,
+    image: await QR.toDataURL(code, { errorCorrectionLevel: 'M', margin: 4, width: 320 }) } };
 });
 staff.get('/options', async ctx => {
   const user = ctx.state.user;
