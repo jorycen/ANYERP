@@ -1009,6 +1009,13 @@
       </el-form>
 
       <div v-if="unpaidList.length > 0">
+        <el-alert
+          title="负向退货或调整单默认不参与抵扣；请核对金额后手动勾选。"
+          type="info"
+          :closable="false"
+          show-icon
+          style="margin-bottom: 12px"
+        />
         <el-table :data="unpaidList" stripe border @selection-change="onSelectionChange" ref="settlementTableRef">
           <el-table-column type="selection" width="50" />
           <el-table-column prop="product_name" label="采购商品" min-width="150" />
@@ -3123,8 +3130,7 @@ const openSettlementDialog = async () => {
     await nextTick()
     const selectedIds = new Set(payableIds.map(String))
     unpaidList.value.forEach(item => {
-      const isSupplierCredit = Number(item.available_amount || 0) < 0
-      if (selectedIds.has(String(item.payable_id)) || isSupplierCredit) {
+      if (selectedIds.has(String(item.payable_id))) {
         settlementTableRef.value?.toggleRowSelection(item, true)
       }
     })

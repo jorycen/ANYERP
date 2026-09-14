@@ -116,6 +116,8 @@ async function refreshPayableState(payableId, transaction = null) {
   if (!payable) return null;
   const state = await getActiveSettlementState(payableId, transaction);
   const remaining = getPayableRemaining(payable.total_amount, state.settledAmount, payable.offset_amount);
+  // 负向采购退货/调整只有在被有效结算单实际引用后才标记“已抵扣”。
+  // 草稿删除、作废后该结算单不再计入 active state，会自动恢复为“供应商待抵扣”。
   const status = Number(payable.total_amount || 0) < 0
     ? (remaining >= -0.005 ? 'offset' : 'credit')
     : (remaining <= 0.005 ? 'paid' : getOpenPayableStatus(payable.total_amount, state.settledAmount, state.paidAmount));
