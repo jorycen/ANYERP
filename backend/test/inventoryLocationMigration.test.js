@@ -10,6 +10,10 @@ const migrationSource = fs.readFileSync(
   path.join(__dirname, '../src/utils/dbMigration.js'),
   'utf8'
 );
+const startupSource = fs.readFileSync(
+  path.join(__dirname, '../src/index.js'),
+  'utf8'
+);
 
 test('inventory location model is covered by automatic migrations', () => {
   for (const column of ['location_id', 'store_id', 'name', 'type', 'is_sellable', 'status']) {
@@ -41,6 +45,19 @@ test('inbound item model tracks partial receipt progress and received SNs', () =
   assert.match(migrationSource, /checkAndAddColumn\('T_INBOUND_ITEM', 'RECEIVED_SN_CODES'/);
   assert.match(migrationSource, /checkAndAddColumn\('T_INBOUND_ITEM', 'RECEIVE_USER'/);
   assert.match(migrationSource, /checkAndAddColumn\('T_INBOUND_ITEM', 'RECEIVE_TIME'/);
+});
+
+test('backend startup performs schema compatibility only', () => {
+  assert.match(startupSource, /runSchemaMigrations\(\)/);
+  assert.doesNotMatch(startupSource, /await runMigrations\(\)/);
+  assert.doesNotMatch(startupSource, /refreshOutdatedGrossProfitSnapshots/);
+  assert.match(migrationSource, /async function runSchemaMigrations\(\)/);
+  const schemaMigrationSource = migrationSource.slice(
+    migrationSource.indexOf('async function runSchemaMigrations()'),
+    migrationSource.indexOf('async function ensureCriticalSchemaCompatibility()')
+  );
+  assert.doesNotMatch(schemaMigrationSource, /UPDATE\s+T_/i);
+  assert.doesNotMatch(schemaMigrationSource, /INSERT\s+(?:IGNORE\s+)?INTO\s+T_/i);
 });
 
 test('location disable stock check counts standard inventory buckets without double-counting normal stock', () => {

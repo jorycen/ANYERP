@@ -21,13 +21,12 @@ const approvalRouter = require('./modules/approval/routes');
 const storageRouter = require('./modules/storage/routes');
 
 const { ensureDatabaseReady, markDatabaseUnhealthy } = require('./config/database');
-const { runMigrations } = require('./utils/dbMigration');
+const { runSchemaMigrations } = require('./utils/dbMigration');
 const { errorHandler } = require('./middleware/errorHandler');
 const { responseFormatter } = require('./middleware/responseFormatter');
 const { databaseRecoveryMiddleware, databaseHealth } = require('./middleware/databaseRecovery');
 const { authMiddleware, storeAccessMiddleware } = require('./middleware/auth');
 const { applyPendingProductPriceChanges, recoverProductImportTasks } = require('./modules/product/controller');
-const { refreshOutdatedGrossProfitSnapshots } = require('./modules/sales/grossProfit');
 const { startDatabaseHeartbeat } = require('./utils/databaseHeartbeat');
 const { recoverExecutingBatchApplications } = require('./modules/inventory/batchMaintenance');
 
@@ -123,13 +122,10 @@ function initializeDatabaseInBackground(retryDelayMs = Number(process.env.DB_STA
   (async () => {
     try {
       await ensureDatabaseReady('startup database activation', { force: true });
-      await runMigrations();
-      const grossProfitMigration = await refreshOutdatedGrossProfitSnapshots();
-      if (grossProfitMigration.total > 0) {
-        console.log(
-          `[GrossProfit] formula migration completed: ${grossProfitMigration.refreshed}/${grossProfitMigration.total}, failed ${grossProfitMigration.failed}`
-        );
-      }
+      // Startup may check/add schema only. Historical repairs and seed data
+      // are explicit operator actions; a restart must not rewrite business
+      // documents, balances, permissions, or master data.
+      await runSchemaMigrations();
       await ensureDatabaseReady('post-migration database activation', { force: true });
       await recoverExecutingBatchApplications();
       await recoverProductImportTasks();

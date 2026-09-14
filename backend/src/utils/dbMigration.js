@@ -189,6 +189,17 @@ async function ensureProductDimensionSchema() {
   }
 }
 
+// This is deliberately smaller than runMigrations().  The latter predates the
+// migration ledger and mixes DDL with historical data repairs.  It must never
+// be called while starting the API server because a restart must not alter
+// business facts.
+async function runSchemaMigrations() {
+  await ensureCriticalSchemaCompatibility();
+  await ensureSerializedInventorySchema();
+  await ensureProductPnEffectiveUniqueIndex();
+  console.log('[DB Schema] startup schema compatibility check completed');
+}
+
 // Ensure fields used by the product/order read path exist before the rest of
 // the startup migrations run.
 async function ensureCriticalSchemaCompatibility() {
@@ -4261,6 +4272,7 @@ async function seedPermissionData() {
 
 module.exports = {
   runMigrations,
+  runSchemaMigrations,
   ensureProductSettlementSchema,
   ensureExpenseAccountingSchema,
   migrateMissingProductPns,
