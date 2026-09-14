@@ -2,7 +2,7 @@
   <section class="customer-operations">
     <div class="toolbar">
       <h2>{{ titles[tab] }}</h2>
-      <el-select v-model="dealer" placeholder="选择经销商" @change="reload"><el-option v-for="d in options.distributors" :key="d.distributor_id" :label="d.name" :value="d.distributor_id" /></el-select>
+      <el-select v-model="dealer" placeholder="积分归属经销商" @change="reload"><el-option v-for="d in options.distributors" :key="d.distributor_id" :label="d.name" :value="d.distributor_id" /></el-select>
       <el-input v-if="tab === 'points'" v-model="memberFilter" placeholder="按会员ID查询" clearable @change="reload" />
       <el-button @click="reload">刷新</el-button>
       <el-button v-if="tab === 'rewards'" type="primary" @click="editReward()">新增积分商品</el-button>
@@ -14,7 +14,7 @@
     <el-card v-if="tab==='exchanges'" class="redemption-panel">
       <template #header>到店核销</template>
       <p>现金补差先通过门店现有收款流程收款；优惠券先核对门槛和范围，并在原销售单记录优惠。本入口记录核销凭据，不生成第二笔收款或自动改价。</p>
-      <el-form label-width="120px"><el-form-item label="核销门店"><el-select v-model="redeemForm.store_id" @change="redemptionPreview=null"><el-option v-for="s in dealerStores" :key="s.store_id" :label="s.name" :value="s.store_id" /></el-select></el-form-item>
+      <el-form label-width="120px"><el-form-item label="核销门店"><el-select v-model="redeemForm.store_id" @change="redemptionPreview=null"><el-option v-for="s in redemptionStores" :key="s.store_id" :label="storeLabel(s)" :value="s.store_id" /></el-select></el-form-item>
       <el-form-item label="客户核销码"><el-input v-model="redeemForm.code" @input="redemptionPreview=null" placeholder="客户在我的兑换或我的优惠券中出示的核销码" /></el-form-item>
       <el-form-item><el-button :loading="saving" @click="previewRedemption">查询凭证</el-button></el-form-item>
       <template v-if="redemptionPreview"><el-alert :title="redemptionPreview.name+' · '+(states[redemptionPreview.status] || redemptionPreview.status)" :closable="false" />
@@ -62,13 +62,15 @@
     <el-pagination v-model:current-page="page" :total="total" :page-size="20" layout="total, prev, pager, next" @current-change="load" />
     <template v-if="tab==='exchanges'"><h3>门店核销记录</h3><el-table :data="redemptions" border><el-table-column prop="exchange_id" label="兑换ID" /><el-table-column prop="store_id" label="门店" /><el-table-column prop="staff_id" label="员工" /><el-table-column label="核销时间"><template #default="{row}">{{date(row.created_at)}}</template></el-table-column></el-table></template>
     <el-dialog v-model="rewardOpen" title="积分商品" width="600px">
-      <el-form label-width="110px"><el-form-item label="名称"><el-input v-model="reward.name" /></el-form-item>
+      <el-form label-width="130px"><el-form-item label="积分归属经销商"><el-select v-model="reward.distributor_id" :disabled="!!reward.id" @change="changeRewardDealer"><el-option v-for="d in options.distributors" :key="d.distributor_id" :label="d.name" :value="d.distributor_id" /></el-select><div class="form-help">兑换扣除此经销商的积分，适用门店可单独选择。</div></el-form-item><el-form-item label="名称"><el-input v-model="reward.name" /></el-form-item>
         <el-form-item label="类型"><el-radio-group v-model="reward.kind"><el-radio value="service" label="service">服务权益</el-radio><el-radio value="gift" label="gift">实物礼品</el-radio><el-radio value="coupon" label="coupon">优惠券</el-radio></el-radio-group></el-form-item>
         <el-form-item label="图片地址"><el-input v-model="reward.image" placeholder="公开HTTPS图片地址" /></el-form-item>
         <el-form-item label="简短介绍"><el-input v-model="reward.description" type="textarea" :rows="2" /></el-form-item>
         <el-form-item label="参考价值（元）"><el-input v-model="reward.original_price" /></el-form-item>
-        <el-form-item label="所需积分"><el-input v-model="reward.points" /></el-form-item>
-        <el-form-item label="现金补差（元）"><el-input v-model="reward.cash_required" :disabled="reward.kind==='coupon'" /><span>0表示纯积分兑换</span></el-form-item>
+        <el-form-item label="兑换方式"><el-radio-group v-model="exchangeMode"><el-radio value="points" label="points">纯积分</el-radio><el-radio value="mixed" label="mixed" :disabled="reward.kind==='coupon'">积分＋现金</el-radio></el-radio-group></el-form-item>
+        <el-form-item label="所需积分"><el-input v-model="reward.points" placeholder="例如800" /></el-form-item>
+        <el-form-item v-if="exchangeMode==='mixed'" label="到店支付（元）"><el-input v-model="reward.cash_required" placeholder="例如39" /><div class="form-help">门店线下收款，member小程序只展示金额，不发起在线支付。</div></el-form-item>
+        <el-form-item label="小程序展示"><el-tag size="large">{{reward.points || '0'}}积分{{exchangeMode==='mixed'?' + ¥'+(reward.cash_required || '0'):''}}</el-tag><span v-if="exchangeMode==='mixed'">现金到店支付</span></el-form-item>
         <el-form-item label="展示优先级"><el-input-number v-model="reward.sort" :min="-1000000" :max="1000000" /><span>同等可兑条件下，数值越大越靠前</span></el-form-item>
         <el-form-item label="兑换开始"><el-date-picker v-model="reward.valid_start_time" type="datetime" placeholder="不限" /></el-form-item>
         <el-form-item label="兑换结束"><el-date-picker v-model="reward.valid_end_time" type="datetime" placeholder="不限" /></el-form-item>
@@ -77,7 +79,7 @@
         <el-form-item label="剩余数量"><el-input-number v-model="reward.stock" :min="0" /><span>留空不限</span></el-form-item>
         <el-form-item label="每人限兑"><el-input-number v-model="reward.per_member_limit" :min="0" /><span>留空不限</span></el-form-item>
         <el-form-item label="有效天数"><el-input-number v-model="reward.valid_days" :min="1" :max="3650" /></el-form-item>
-        <el-form-item label="适用门店"><el-select v-model="reward.store_ids" multiple><el-option v-for="s in dealerStores" :key="s.store_id" :label="s.name" :value="s.store_id" /></el-select></el-form-item>
+        <el-form-item label="适用门店"><el-select v-model="reward.store_ids" multiple filterable style="width:100%" placeholder="选择可使用的门店"><el-option-group v-for="g in rewardStoreGroups" :key="g.id" :label="g.name"><el-option v-for="s in g.stores" :key="s.store_id" :label="s.name" :value="s.store_id" /></el-option-group></el-select><div class="form-help"><el-button link type="primary" @click="reward.store_ids=rewardStores.map(s=>s.store_id)">全选可选门店</el-button><el-button link @click="reward.store_ids=[]">清空</el-button><div>{{options.canChooseAllRewardStores?'boss可同时选择成都、重庆等经销商下的门店；只在所选门店使用。':'仅可选择当前积分归属经销商内的授权门店。'}}</div></div></el-form-item>
         <el-form-item label="使用说明"><el-input v-model="reward.instructions" type="textarea" :rows="4" /></el-form-item><el-form-item label="上架"><el-switch v-model="reward.on_sale" /></el-form-item>
       </el-form><template #footer><el-button @click="rewardOpen=false">取消</el-button><el-button type="primary" :loading="saving" @click="saveReward">保存</el-button></template>
     </el-dialog>
@@ -99,16 +101,22 @@ import { customerOpsRequest as request } from '../api'
 const route=useRoute(), router=useRouter(), tab=computed(()=>route.meta.tab)
 const titles={members:'会员管理',points:'积分管理',rewards:'积分商品',exchanges:'兑换核销'}, types={earn:'购机获得',exchange:'兑换扣减',return:'退货冲回',adjustment:'后台调整',activity:'活动赠送',order_adjust:'订单积分调整'}, states={pending:'待使用',redeemed:'已核销',expired:'已失效'}
 const rewardTypes={service:'服务',gift:'实物礼品',product:'实物礼品',coupon:'优惠券'}
-const options=ref({distributors:[],stores:[]}), dealer=ref(''), rows=ref([]), page=ref(1), total=ref(0), error=ref(''), loading=ref(false), saving=ref(false), memberFilter=ref(''), redemptions=ref([])
+const exchangeMode=ref('points')
+const options=ref({distributors:[],stores:[],canChooseAllRewardStores:false}), dealer=ref(''), rows=ref([]), page=ref(1), total=ref(0), error=ref(''), loading=ref(false), saving=ref(false), memberFilter=ref(''), redemptions=ref([])
 const rewardOpen=ref(false), reward=ref({}), ruleOpen=ref(false), rules=ref([]), rule=ref({numerator:'1',denominator:'1000',products:''}), adjustOpen=ref(false), adjust=ref({type:'adjustment'}), claimOpen=ref(false), claim=ref({})
 const redeemForm=ref({code:'',store_id:'',cash_received:'',cash_confirmed:false,eligible_amount:'',scope_confirmed:false,receipt_reference:''}), redemptionPreview=ref(null)
-const dealerStores=computed(()=>options.value.stores.filter(s=>s.distributor_id===dealer.value))
+const rewardStores=computed(()=>options.value.stores.filter(s=>options.value.canChooseAllRewardStores || String(s.distributor_id)===String(reward.value.distributor_id)))
+const rewardStoreGroups=computed(()=>options.value.distributors.map(d=>({id:d.distributor_id,name:d.name,stores:rewardStores.value.filter(s=>String(s.distributor_id)===String(d.distributor_id))})).filter(g=>g.stores.length))
+const redemptionStores=computed(()=>options.value.stores)
+function storeLabel(s){const d=options.value.distributors.find(d=>String(d.distributor_id)===String(s.distributor_id));return `${d?.name || ''} · ${s.name}`}
+function changeRewardDealer(){if(!options.value.canChooseAllRewardStores)reward.value.store_ids=[]}
+watch(()=>reward.value.kind,kind=>{if(kind==='coupon'){exchangeMode.value='points';reward.value.cash_required='0.00'}})
 const date=v=>v?new Date(v).toLocaleString('zh-CN'):''
 async function load(){if(!dealer.value)return;loading.value=true;error.value='';try{const result=await request('get',tab.value==='points'?'/points/ledger':`/${tab.value}`,{distributor_id:dealer.value,page:page.value,member_id:memberFilter.value||undefined});rows.value=result.list;total.value=result.total;if(tab.value==='exchanges')redemptions.value=(await request('get','/redemptions',{distributor_id:dealer.value,page:page.value})).list}catch(e){error.value=e.message}finally{loading.value=false}}
 function reload(){redemptionPreview.value=null;page.value=1;return load()}
 async function action(fn){saving.value=true;try{await fn();ElMessage.success('操作成功');await load()}catch(e){if(e!=='cancel')ElMessage.error(e.message||'操作失败')}finally{saving.value=false}}
-async function editReward(id){try{reward.value=id?await request('get',`/rewards/${id}`):{name:'',kind:'service',image:'',description:'',original_price:'0.00',cash_required:'0.00',sort:0,valid_start_time:null,valid_end_time:null,self_only:true,coupon_value:'0.00',coupon_min_spend:'0.00',coupon_scope:'',points:'300',stock:null,per_member_limit:null,valid_days:30,instructions:'',on_sale:false,store_ids:[]};if(reward.value.kind==='product')reward.value.kind='gift';rewardOpen.value=true}catch(e){ElMessage.error(e.message)}}
-function saveReward(){return action(async()=>{await request(reward.value.id?'patch':'post',reward.value.id?`/rewards/${reward.value.id}`:'/rewards',{...reward.value,cash_required:reward.value.kind==='coupon'?'0.00':reward.value.cash_required,distributor_id:dealer.value,stock:reward.value.stock??null,per_member_limit:reward.value.per_member_limit??null});rewardOpen.value=false})}
+async function editReward(id){try{reward.value=id?await request('get',`/rewards/${id}`):{distributor_id:dealer.value,name:'',kind:'service',image:'',description:'',original_price:'0.00',cash_required:'0.00',sort:0,valid_start_time:null,valid_end_time:null,self_only:true,coupon_value:'0.00',coupon_min_spend:'0.00',coupon_scope:'',points:'300',stock:null,per_member_limit:null,valid_days:30,instructions:'',on_sale:false,store_ids:[]};if(reward.value.kind==='product')reward.value.kind='gift';exchangeMode.value=Number(reward.value.cash_required)>0?'mixed':'points';rewardOpen.value=true}catch(e){ElMessage.error(e.message)}}
+function saveReward(){return action(async()=>{if(exchangeMode.value==='mixed' && !(Number(reward.value.cash_required)>0))throw new Error('积分＋现金换购需要填写大于0的到店支付金额');await request(reward.value.id?'patch':'post',reward.value.id?`/rewards/${reward.value.id}`:'/rewards',{...reward.value,cash_required:exchangeMode.value==='mixed' && reward.value.kind!=='coupon'?reward.value.cash_required:'0.00',distributor_id:reward.value.distributor_id,stock:reward.value.stock??null,per_member_limit:reward.value.per_member_limit??null});rewardOpen.value=false})}
 async function previewRedemption(){saving.value=true;redemptionPreview.value=null;try{redeemForm.value.cash_confirmed=false;redeemForm.value.scope_confirmed=false;redeemForm.value.cash_received='';redeemForm.value.eligible_amount='';redeemForm.value.receipt_reference='';redemptionPreview.value=await request('post','/redemptions/preview',redeemForm.value)}catch(e){ElMessage.error(e.message)}finally{saving.value=false}}
 function confirmRedemption(){return action(async()=>{await ElMessageBox.confirm('请确认客户身份、权益范围与交付情况。核销后不能重复使用。','确认到店核销');await request('post',`/exchange/${redemptionPreview.value.id}/redeem`,redeemForm.value);redemptionPreview.value=null})}
 async function loadRules(){try{rules.value=(await request('get','/point-rules',{distributor_id:dealer.value})).list}catch(e){ElMessage.error(e.message)}}
@@ -121,5 +129,5 @@ watch(()=>route.fullPath,()=>{memberFilter.value=String(route.query.member||'');
 onMounted(async()=>{try{options.value=await request('get','/options');dealer.value=String(route.query.dealer||options.value.distributors[0]?.distributor_id||'');memberFilter.value=String(route.query.member||'');await load()}catch(e){error.value=e.message}})
 </script>
 <style scoped>
-.redemption-panel{margin:20px 0}.customer-operations{padding:20px}.toolbar{display:flex;gap:12px;align-items:center;margin-bottom:18px;flex-wrap:wrap}.toolbar h2{margin:0 auto 0 0}.toolbar .el-input{width:240px}.toolbar .el-select{width:200px}.el-pagination{margin:20px 0}.el-dialog .el-input{margin-bottom:8px}.el-form-item span{margin-left:12px;color:#64748b}
+.form-help{width:100%;font-size:12px;color:#64748b;line-height:1.7;margin-top:6px}.redemption-panel{margin:20px 0}.customer-operations{padding:20px}.toolbar{display:flex;gap:12px;align-items:center;margin-bottom:18px;flex-wrap:wrap}.toolbar h2{margin:0 auto 0 0}.toolbar .el-input{width:240px}.toolbar .el-select{width:200px}.el-pagination{margin:20px 0}.el-dialog .el-input{margin-bottom:8px}.el-form-item span{margin-left:12px;color:#64748b}
 </style>

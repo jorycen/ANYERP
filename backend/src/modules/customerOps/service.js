@@ -6,6 +6,7 @@ const M = require('./models');
 const S = require('./security');
 const math = require('./math');
 const P = require('./rewardPolicy');
+const RS = require('./rewardStores');
 const txOptions = { retry: { max: 0 } };
 async function transaction(work) {
   for (let attempt = 0; ; attempt++) {
@@ -185,8 +186,7 @@ async function exchange(member, rewardId, key, quotedPoints, quotedCash) {
     if (BigInt(balance.balance) < BigInt(reward.points)) S.fail(409, '积分不足');
     if (reward.per_member_limit !== null && await M.Exchange.count({ where: { member_id: member.id, reward_id: rewardId }, transaction: t }) >= reward.per_member_limit) S.fail(409, '已达到兑换数量限制');
     const stores = await M.RewardStore.findAll({ where: { reward_id: rewardId }, transaction: t });
-    const activeStores = await Store.findAll({ where: { store_id: stores.map(s => s.store_id),
-      distributor_id: reward.distributor_id, status: 1, is_deleted: 0 }, transaction: t });
+    const activeStores = await RS.activeStores(stores.map(s => s.store_id), t);
     if (!activeStores.length) S.fail(409, '权益当前没有可用门店');
     const id = crypto.randomBytes(16).toString('hex');
     const code = S.token('redeem', id);
@@ -196,7 +196,7 @@ async function exchange(member, rewardId, key, quotedPoints, quotedCash) {
       snapshot: { name: reward.name, image: reward.image, kind: reward.kind, instructions: reward.instructions,
         description: reward.description, cash_required: P.money(reward.cash_required), self_only: reward.self_only,
         coupon_value: P.money(reward.coupon_value), coupon_min_spend: P.money(reward.coupon_min_spend), coupon_scope: reward.coupon_scope,
-        stores: activeStores.map(s => ({ store_id: s.store_id, name: s.name, address: s.address })),
+        stores: activeStores.map(s => ({ store_id: s.store_id, distributor_id: s.distributor_id, name: s.name, address: s.address })),
         storeIds: activeStores.map(s => s.store_id) } }, { transaction: t });
     await post(balance, -BigInt(reward.points), { type: 'exchange', exchange_id: id,
       business_key: `exchange:${id}`, actor: `member:${member.id}`, reason: `兑换${reward.name}` }, t);
@@ -206,14 +206,14 @@ async function exchange(member, rewardId, key, quotedPoints, quotedCash) {
 }
 async function redeem(code, storeId, user, confirm, expectedId, evidence = {}) {
   return transaction(async t => {
-    const store = await Store.findByPk(storeId, { transaction: t });
+    const store = (await RS.activeStores([storeId], t))[0];
     if (!store || store.is_deleted || store.status !== 1) S.fail(403, '门店不可用');
     S.store(user, store);
     const found = await M.Exchange.findOne({ where: { code_hash: S.hash(code) }, transaction: t });
     if (!found || (expectedId && expectedId !== found.id)) S.fail(404, '核销凭证无效');
     const balance = await M.Account.findByPk(found.account_id, lock(t));
     const row = await M.Exchange.findByPk(found.id, lock(t));
-    if (row.distributor_id !== store.distributor_id || !row.snapshot.storeIds.includes(store.store_id)) S.fail(403, '该权益不适用于本店');
+    if (!RS.accepts(row.snapshot, store, row.distributor_id)) S.fail(403, '该权益不适用于本店');
     const used = await M.Redemption.findOne({ where: { exchange_id: row.id }, transaction: t });
     const member = await M.Member.findByPk(row.member_id, { transaction: t });
     const result = { id: row.id, name: row.snapshot.name, points: String(row.points), expiresAt: row.expires_at,

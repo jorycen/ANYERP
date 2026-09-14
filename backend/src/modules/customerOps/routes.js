@@ -5,6 +5,7 @@ const S = require('./security');
 const V = require('./service');
 const W = require('./wechat');
 const P = require('./rewardPolicy');
+const RS = require('./rewardStores');
 const { Store, Distributor, Product, Order } = require('../../models');
 const { recordBusinessAction } = require('../../utils/businessActionLog');
 const customer = new Router({ prefix: '/api/v1/customer' });
@@ -81,11 +82,11 @@ async function rewardStates(rows, memberId) {
     M.Exchange.findAll({ where: { member_id: memberId, reward_id: ids }, attributes: ['reward_id'] }),
     M.RewardStore.findAll({ where: { reward_id: ids } })
   ]);
-  const stores = await Store.findAll({ where: { store_id: links.map(l => l.store_id), status: 1, is_deleted: 0 }, attributes: ['store_id', 'distributor_id'] });
+  const stores = await RS.activeStores(links.map(l => l.store_id));
   return rows.map(row => P.dto(row, P.availability(row,
     accounts.find(a => a.distributor_id === row.distributor_id)?.balance || '0',
     exchanges.filter(e => e.reward_id === row.id).length,
-    links.some(l => l.reward_id === row.id && stores.some(s => s.store_id === l.store_id && s.distributor_id === row.distributor_id)))));
+    links.some(l => l.reward_id === row.id && stores.some(s => s.store_id === l.store_id)))));
 }
 customer.get('/rewards', async ctx => {
   const type = ctx.query.type;
@@ -102,7 +103,7 @@ customer.get('/rewards/:id', async ctx => {
   const item = await M.Reward.findOne({ where: { id: ctx.params.id, on_sale: true } });
   if (!item) S.fail(404, '权益不存在');
   const links = await M.RewardStore.findAll({ where: { reward_id: item.id } });
-  const stores = await Store.findAll({ where: { store_id: links.map(l => l.store_id), distributor_id: item.distributor_id, status: 1, is_deleted: 0 }, attributes: ['store_id', 'name', 'address'] });
+  const stores = (await RS.activeStores(links.map(l => l.store_id))).map(s => ({ store_id: s.store_id, distributor_id: s.distributor_id, name: s.name, address: s.address }));
   ctx.body = { ...(await rewardStates([item], ctx.state.member.id))[0], stores, applicable_store: stores };
 });
 function exchangeDto(row) {
@@ -151,10 +152,10 @@ customer.get('/exchange/:id/credential', async ctx => {
 staff.get('/options', async ctx => {
   const user = ctx.state.user;
   const ids = user.accessibleDistributorIds || [user.distributorId];
-  const distributors = await Distributor.findAll({ where: { status: 1, ...(ids.includes('*') || user.roles.includes('boss') ? {} : { distributor_id: ids }) }, attributes: ['distributor_id', 'name'] });
+  const distributors = await Distributor.findAll({ where: { status: 1, is_deleted: 0, ...(ids.includes('*') || user.roles.includes('boss') ? {} : { distributor_id: ids }) }, attributes: ['distributor_id', 'name'] });
   const stores = await Store.findAll({ where: { status: 1, is_deleted: 0, distributor_id: distributors.map(d => d.distributor_id),
     ...(user.roles.includes('boss') || user.accessibleStoreIds?.includes('*') ? {} : { store_id: user.accessibleStoreIds || [] }) }, attributes: ['store_id', 'distributor_id', 'name'] });
-  ctx.body = { distributors, stores, canRedeem: user.roles.some(r => ['boss','admin','manager','store_manager','store_admin','clerk','staff'].includes(r)) && stores.length > 0 };
+  ctx.body = { distributors, stores, canChooseAllRewardStores: user.roles.includes('boss'), canRedeem: user.roles.some(r => ['boss','admin','manager','store_manager','store_admin','clerk','staff'].includes(r)) && stores.length > 0 };
 });
 staff.post('/redemptions/preview', async ctx => { const b = ctx.request.body; ctx.body = await V.redeem(b.code, b.store_id, ctx.state.user, false); });
 staff.post('/exchange/:id/redeem', async ctx => { const b = ctx.request.body; ctx.body = await V.redeem(b.code, b.store_id, ctx.state.user, true, ctx.params.id, b); });
@@ -232,11 +233,16 @@ async function saveReward(ctx) {
   for (const key of ['stock', 'per_member_limit']) if (b[key] !== null && (!Number.isInteger(b[key]) || b[key] < 0)) S.fail(400, '数量应为非负整数或留空');
   if (b.image && !/^https:\/\//.test(b.image)) S.fail(400, '图片必须使用HTTPS地址');
   const storeIds = [...new Set(Array.isArray(b.store_ids) ? b.store_ids.map(String) : [])];
-  if (!storeIds.length || await Store.count({ where: { store_id: storeIds, distributor_id, status: 1, is_deleted: 0 } }) !== storeIds.length) S.fail(400, '请选择同经销商有效门店');
   ctx.body = await V.transaction(async transaction => {
+    await RS.validateSelection(ctx.state.user, distributor_id, storeIds, transaction);
     let row = ctx.params.id ? await M.Reward.findByPk(ctx.params.id, V.lock(transaction)) : null;
     if (ctx.params.id && (!row || row.distributor_id !== distributor_id)) S.fail(404, '权益不存在');
     if (row && row.revision !== b.revision) S.fail(409, '商品已被兑换或更新，请刷新后重试');
+    if (row && !ctx.state.user.roles.includes('boss')) {
+      const existingLinks = await M.RewardStore.findAll({ where: { reward_id: row.id }, transaction });
+      const existingStores = await Store.findAll({ where: { store_id: existingLinks.map(l => l.store_id) }, transaction });
+      if (existingStores.some(s => s.distributor_id !== distributor_id)) S.fail(403, '跨经销商权益请由boss维护');
+    }
     const fields = { ...extra, distributor_id, name: String(b.name), kind: b.kind, points: String(b.points), image: b.image || '',
       valid_days: b.valid_days, stock: b.stock, per_member_limit: b.per_member_limit, instructions: String(b.instructions || '').slice(0, 10000), on_sale: b.on_sale === true,
       revision: row ? row.revision + 1 : 0 };
