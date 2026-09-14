@@ -492,9 +492,16 @@ function taskCounterparty(row) {
 }
 function taskTaxStatus(row) {
   const data = taskData(row)
-  const value = data.tax_status || data.taxStatus || data.invoice_type || data.invoiceType || data.has_invoice
+  const value = String(data.tax_status || data.taxStatus || data.invoice_type || data.invoiceType || data.has_invoice || '').trim()
   if (value === true || value === 1 || value === '1') return '有发票'
-  return value || '未填写'
+  const normalized = value.toUpperCase()
+  if (normalized === 'TAX_INCLUDED') return '含税'
+  if (normalized === 'UNTAXED') return '未税'
+  if (normalized === 'MIXED') return '混合税务'
+  if (normalized === 'UNKNOWN' || !value || normalized === 'NONE') return '待补充'
+  if (value.includes('专票') || normalized === 'SPECIAL') return '含税'
+  if (value.includes('未税') || value.includes('收据') || value.includes('普票')) return '未税'
+  return '待补充'
 }
 const detailFieldLabels = {
   application_no: '申请单号', application_id: '申请ID', request_no: '采购申请单号', request_id: '采购申请ID',

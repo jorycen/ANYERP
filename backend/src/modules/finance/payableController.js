@@ -113,8 +113,8 @@ function applyDistributorFilter(whereObject, user) {
 function getPayableTaxStatus(invoiceType) {
   const value = String(invoiceType || '').trim().toLowerCase();
   if (!value) return 'UNKNOWN';
-  if (value.includes('未税') || value.includes('untaxed')) return 'UNTAXED';
-  if (value.includes('含税') || value.includes('增专票') || value.includes('tax_included')) return 'TAX_INCLUDED';
+  if (value.includes('未税') || value.includes('untaxed') || value === '收据' || value.includes('普票')) return 'UNTAXED';
+  if (value.includes('含税') || value.includes('增专票') || value.includes('专票') || value === 'special' || value.includes('tax_included')) return 'TAX_INCLUDED';
   return 'UNKNOWN';
 }
 

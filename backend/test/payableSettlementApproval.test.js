@@ -3,9 +3,13 @@ const assert = require('node:assert/strict');
 const models = require('../src/models');
 const payableController = require('../src/modules/finance/payableController');
 
-test('应付单税务属性按已有发票类型映射，缺失时保持未知', () => {
+test('应付单税务属性按已有发票类型映射，缺失时保持待补充', () => {
   assert.equal(payableController.getPayableTaxStatus('未税（收据或普票）'), 'UNTAXED');
+  assert.equal(payableController.getPayableTaxStatus('收据'), 'UNTAXED');
   assert.equal(payableController.getPayableTaxStatus('增专票（13%）'), 'TAX_INCLUDED');
+  assert.equal(payableController.getPayableTaxStatus('专票13%'), 'TAX_INCLUDED');
+  assert.equal(payableController.getPayableTaxStatus('SPECIAL'), 'TAX_INCLUDED');
+  assert.equal(payableController.getPayableTaxStatus('NONE'), 'UNKNOWN');
   assert.equal(payableController.getPayableTaxStatus(''), 'UNKNOWN');
 });
 

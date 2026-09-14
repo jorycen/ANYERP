@@ -1706,14 +1706,16 @@ const getPayableSourceTagType = (row) => {
 const getPayableTaxText = (status) => ({
   TAX_INCLUDED: '含税',
   UNTAXED: '未税',
-  UNKNOWN: '未知'
-}[status] || '未知')
+  MIXED: '混合税务',
+  UNKNOWN: '待补充'
+}[String(status || '').toUpperCase()] || '待补充')
 
 const getPayableTaxTagType = (status) => ({
   TAX_INCLUDED: 'success',
   UNTAXED: 'warning',
+  MIXED: 'danger',
   UNKNOWN: 'info'
-}[status] || 'info')
+}[String(status || '').toUpperCase()] || 'info')
 
 const getPayableStatusText = (status) => ({
   unpaid: '待付款',
