@@ -25,6 +25,7 @@
           <el-option label="全部门店" :value="''" />
           <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
             </el-select></div>
+            <el-checkbox v-model="summaryQuery.stockOnly" :true-value="1" :false-value="0" @change="onSummaryStockOnlyChange">只显示有库存商品</el-checkbox>
             <div class="erp-query-actions"><el-button type="primary" @click="loadSummary">查询</el-button>
             <el-button type="success" :loading="summaryExporting" @click="handleExportSummary">导出</el-button>
             <el-button type="warning" :loading="summarySimpleExporting" @click="handleExportSummarySimple">导出库存简表</el-button>
@@ -136,6 +137,25 @@
                 </el-popover>
               </template>
             </el-table-column>
+            <el-table-column prop="rental_demo_qty" label="租赁样机仓库存" width="130">
+              <template #default="{ row }">
+                <el-popover placement="bottom" :width="280" trigger="hover">
+                  <template #default>
+                    <div class="stock-breakdown">
+                      <div class="breakdown-title">各门店租赁样机仓库存</div>
+                      <div v-if="getStockBreakdownRows(row, 'rental_demo_qty').length" class="breakdown-locations">
+                        <div v-for="item in getStockBreakdownRows(row, 'rental_demo_qty')" :key="item.key" class="breakdown-item">
+                          <span class="breakdown-label">{{ item.store_name }}</span>
+                          <span class="breakdown-value">{{ item.quantity }}</span>
+                        </div>
+                      </div>
+                      <div v-else class="breakdown-empty">暂无库存明细</div>
+                    </div>
+                  </template>
+                  <template #reference><span class="stock-quantity-reference">{{ row.rental_demo_qty || 0 }}</span></template>
+                </el-popover>
+              </template>
+            </el-table-column>
             <el-table-column prop="unsellable_qty" label="不可售库存" width="110">
               <template #default="{ row }">
                 <el-popover placement="bottom" :width="260" trigger="hover">
@@ -174,10 +194,10 @@
                 </el-popover>
               </template>
             </el-table-column>
-            <el-table-column label="查看序列号" width="120">
+            <el-table-column label="操作" width="120">
               <template #default="{ row }">
                 <el-button v-if="row.need_sn === 1" link type="primary" @click="openSnDialog(row)">查看序列号</el-button>
-                <span v-else>-</span>
+                <el-button v-else link type="warning" @click="openProductLocationDialog(row)">调整库位</el-button>
               </template>
             </el-table-column>
             <el-table-column prop="changhong_inventory" label="佳华库存" width="95" />
@@ -302,9 +322,12 @@
               <template #default="{ row }">{{ row.stock_age_days == null ? '未知' : `${row.stock_age_days}天` }}</template>
             </el-table-column>
             <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
-            <el-table-column label="操作" width="260" fixed="right">
+            <el-table-column label="操作" width="420" fixed="right">
               <template #default="{ row }">
+                <el-button link type="primary" @click="openSnDialog(row)">修改SN</el-button>
+                <el-button v-if="row.status === 'in_stock'" link type="warning" @click="openSnLocationDialog(row)">调整库位</el-button>
                 <el-button v-if="canStartSnPurchase(row)" link type="success" @click="openSnPurchase(row)">发起采购申请</el-button>
+                <el-button v-if="row.status === 'in_stock'" link type="info" @click="openTransferDialog(row)">调拨</el-button>
                 <el-button v-if="canManageSnPrice" link type="primary" @click="openSnSpecialPrice(row)">{{ row.is_special_price ? '修改特价' : '设为特价' }}</el-button>
                 <el-button v-if="canManageSnPrice && row.is_special_price" link type="danger" @click="cancelSnSpecialPrice(row)">取消特价</el-button>
                 <el-button v-if="canManageSnPrice" link type="info" @click="openSnPriceHistory(row)">记录</el-button>
@@ -1066,16 +1089,24 @@
         <el-table-column prop="inbound_time" label="入库时间" width="160">
           <template #default="{ row }">{{ formatDate(row.inbound_time) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="300">
-          <template #default="{ row }">
-            <el-button size="small" type="primary" link @click="openSnTrace(row)">追踪</el-button>
-            <el-button
+            <el-table-column label="操作" width="300">
+              <template #default="{ row }">
+                <el-button size="small" type="primary" link @click="openSnDialog(row)">修改SN</el-button>
+                <el-button size="small" type="primary" link @click="openSnTrace(row)">追踪</el-button>
+                <el-button
               v-if="row.status === 'in_stock'"
               size="small"
               type="warning"
               link
               @click="openSnLocationDialog(row)"
-            >调整库位</el-button>
+                >调整库位</el-button>
+                <el-button
+                  v-if="canStartSnPurchase(row)"
+                  size="small"
+                  type="success"
+                  link
+                  @click="openSnPurchase(row)"
+                >发起采购</el-button>
             <el-button
               v-if="row.status === 'in_stock'"
               size="small"
@@ -1138,6 +1169,34 @@
         <el-button @click="snLocationDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="snLocationSaving" @click="saveSnLocation">确定调整</el-button>
       </template>
+    </el-dialog>
+
+    <el-dialog v-model="productLocationDialogVisible" title="调整商品库位" width="560px">
+      <el-descriptions :column="2" border>
+        <el-descriptions-item label="商品">{{ productLocationForm.productName || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="PN">{{ productLocationForm.pnCode || '-' }}</el-descriptions-item>
+      </el-descriptions>
+      <el-form label-width="90px" style="margin-top: 20px">
+        <el-form-item label="门店" required>
+          <el-select v-model="productLocationForm.storeId" filterable style="width:100%" @change="loadProductLocationOptions">
+            <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="原库位" required>
+          <el-select v-model="productLocationForm.fromLocationId" filterable style="width:100%">
+            <el-option v-for="item in productLocationSourceOptions" :key="item.location_id" :label="`${item.name}（库存 ${item.quantity}）`" :value="item.location_id" :disabled="Number(item.quantity || 0) <= 0" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="目标库位" required>
+          <el-select v-model="productLocationForm.toLocationId" filterable style="width:100%">
+            <el-option v-for="item in productLocationOptions" :key="item.location_id" :label="item.name" :value="item.location_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="调整数量" required>
+          <el-input-number v-model="productLocationForm.quantity" :min="1" :precision="0" style="width:100%" />
+        </el-form-item>
+      </el-form>
+      <template #footer><el-button @click="productLocationDialogVisible=false">取消</el-button><el-button type="primary" :loading="productLocationSaving" @click="saveProductLocation">确定调整</el-button></template>
     </el-dialog>
 
     <!-- SN追踪对话框 -->
@@ -1881,9 +1940,14 @@ const summaryQuery = reactive({
   category: '',
   storeId: '',
   productType: '',
-  modelFilter: ''
+  modelFilter: '',
+  stockOnly: 0
 })
 const isSummaryQuickModelFilter = computed(() => ['hot7', 'highMargin7'].includes(summaryQuery.modelFilter))
+const onSummaryStockOnlyChange = () => {
+  summaryQuery.page = 1
+  loadSummary()
+}
 
 // SN库存清单
 const snInventoryData = ref([])
@@ -2061,6 +2125,11 @@ const snLocationForm = reactive({
   currentLocationName: '',
   targetLocationId: ''
 })
+const productLocationDialogVisible = ref(false)
+const productLocationSaving = ref(false)
+const productLocationOptions = ref([])
+const productLocationSourceOptions = ref([])
+const productLocationForm = reactive({ productId: '', productName: '', pnCode: '', storeId: '', fromLocationId: '', toLocationId: '', quantity: 1 })
 // SN追踪对话框
 const traceDialogVisible = ref(false)
 const traceSnCode = ref('')
@@ -3984,6 +4053,40 @@ const handleConfirmTransferOut = async (row) => {
 
   transferOutSnRows.value = []
   transferOutConfirmVisible.value = true
+}
+
+const loadProductLocationOptions = async () => {
+  productLocationOptions.value = []
+  productLocationSourceOptions.value = []
+  if (!productLocationForm.storeId) return
+  try {
+    const res = await api.getLocationsByStore(productLocationForm.storeId)
+    productLocationOptions.value = Array.isArray(res.data) ? res.data : []
+    const storeRow = summaryData.value.find(item => item.product_id === productLocationForm.productId)
+    productLocationSourceOptions.value = (storeRow?.store_stock_info || [])
+      .filter(item => item.store_id === productLocationForm.storeId)
+      .map(item => ({ location_id: item.location_id, name: item.location_name, quantity: Number(item.normal_qty || 0) + Number(item.demo_qty || 0) + Number(item.display_qty || 0) + Number(item.unsellable_qty || 0) + Number(item.pending_qty || 0) + Number(item.rental_demo_qty || 0) }))
+  } catch (err) { ElMessage.error(err.response?.data?.message || '加载库位失败') }
+}
+
+const openProductLocationDialog = async (row) => {
+  Object.assign(productLocationForm, { productId: row.product_id, productName: row.product_name || '', pnCode: row.pn_code || '', storeId: '', fromLocationId: '', toLocationId: '', quantity: 1 })
+  const storeRows = (row.store_stock_info || []).filter(item => Object.keys(item).some(key => key.endsWith('_qty') && Number(item[key] || 0) > 0))
+  productLocationForm.storeId = storeRows[0]?.store_id || ''
+  productLocationDialogVisible.value = true
+  await loadProductLocationOptions()
+}
+
+const saveProductLocation = async () => {
+  if (!productLocationForm.storeId || !productLocationForm.fromLocationId || !productLocationForm.toLocationId) return ElMessage.warning('请选择门店、原库位和目标库位')
+  if (productLocationForm.fromLocationId === productLocationForm.toLocationId) return ElMessage.warning('原库位和目标库位不能相同')
+  productLocationSaving.value = true
+  try {
+    const res = await api.adjustProductLocation(productLocationForm.productId, productLocationForm)
+    if (res.code === 0) { ElMessage.success(res.message || '库存库位调整成功'); productLocationDialogVisible.value = false; await loadSummary() }
+    else ElMessage.error(res.message || '库存库位调整失败')
+  } catch (err) { ElMessage.error(err.response?.data?.message || '库存库位调整失败') }
+  finally { productLocationSaving.value = false }
 }
 
 const handleRevokeTransfer = async (row) => {

@@ -7,7 +7,7 @@ const {
   getList, exportList, exportSummaryList, getSnInventoryList, exportSnInventoryList, setSnSpecialPrice, cancelSnSpecialPrice,
   getSnSpecialPriceHistory, getSnList, getInboundList, getInboundDetail, getSnTraceInboundDetail,
   executeInbound, getReturnList, requestReturn, approveReturn, executeReturn,
-  inbound, outbound, transfer, getTransferList, confirmTransferOut, getTransferShippingPhoto,
+  inbound, outbound, adjustProductLocation, transfer, getTransferList, confirmTransferOut, getTransferShippingPhoto,
   confirmTransferIn, returnTransfer, revokeTransfer, rejectTransfer, getTransferDetail, getConversionList, getConversionDetail, createConversion,
   voidConversion, getLocationsByStore, updateSn, adjustSnLocation, snTrace, importSupplierInventory
 } = require('./controller');
@@ -32,6 +32,7 @@ router.get('/sn-list', getSnList);
 router.post('/sn-change-applications', submitSnChangeApplication);
 router.put('/sn/:snId', updateSn);
 router.post('/sn/:snId/location-adjust', adjustSnLocation);
+router.post('/product/:productId/location-adjust', adjustProductLocation);
 router.get('/sn-trace/:snCode', snTrace);
 router.get('/sn-trace-inbound/:inboundId', getSnTraceInboundDetail);
 router.get('/resource-rights', resourceRights.listRights);

@@ -1631,7 +1631,7 @@ function mergeSnSalesStockBreakdown(inventoryRows, snSalesRows) {
 async function getList(ctx) {
   try {
     const {
-      storeId, regionId, category, keyword, productType = '', modelFilter = '', page = 1, pageSize = 20
+      storeId, regionId, category, keyword, productType = '', modelFilter = '', stockOnly = '', page = 1, pageSize = 20
     } = ctx.query;
     const user = ctx.state.user;
     const exportMode = Boolean(ctx.state.inventoryExportMode);
@@ -1713,7 +1713,6 @@ async function getList(ctx) {
         special_sn_count: specialProductMap[product.product_id] || 0
       }, modelFilter);
     });
-    const count = products.length;
     const productIds = products.map(p => p.product_id);
     const supplierInventoryMap = await inventoryByProduct(productIds, user.distributorId || user.distributor_id);
     const allStockMap = await buildSalesStockMap(productIds, storeId, storeIds);
@@ -1789,6 +1788,7 @@ async function getList(ctx) {
     }
 
     const snSalesStockMap = {};
+    const snWarehouseStockMap = {};
     if (productIds.length > 0) {
       const snRows = await ProductSn.findAll({
         where: {
@@ -1804,6 +1804,19 @@ async function getList(ctx) {
       const snLocationMap = {};
       for (const sn of snRows) {
         const location = sn.location_id ? locationMap.get(sn.location_id) : null;
+        const serializedWarehouseType = normalizeInventoryQuantityField(location?.type || sn.inventory_type);
+        if (!snWarehouseStockMap[sn.product_id]) {
+          snWarehouseStockMap[sn.product_id] = {
+            display_qty: 0,
+            demo_qty: 0,
+            unsellable_qty: 0,
+            pending_qty: 0,
+            rental_demo_qty: 0
+          };
+        }
+        if (serializedWarehouseType !== 'normal_qty' && Object.prototype.hasOwnProperty.call(snWarehouseStockMap[sn.product_id], serializedWarehouseType)) {
+          snWarehouseStockMap[sn.product_id][serializedWarehouseType] += 1;
+        }
         if (!isInStockSalesWarehouseSn(sn, location)) continue;
 
         if (!snSalesStockMap[sn.product_id]) {
@@ -1866,6 +1879,12 @@ async function getList(ctx) {
 
       for (const product of products) {
         if (Number(product.need_sn) !== 1) continue;
+        const serializedWarehouseStock = snWarehouseStockMap[product.product_id];
+        if (serializedWarehouseStock) {
+          for (const field of ['display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty', 'rental_demo_qty']) {
+            invMap[product.product_id][field] = serializedWarehouseStock[field];
+          }
+        }
         storeStockMap[product.product_id] = mergeSnSalesStockBreakdown(
           storeStockMap[product.product_id] || [],
           Object.values(snLocationMap[product.product_id] || {})
@@ -1940,7 +1959,14 @@ async function getList(ctx) {
       return new Date(b._create_time || 0).getTime() - new Date(a._create_time || 0).getTime();
     });
 
-    const exportRows = sortedRows.map(({ _category_order, _category_rank, _create_time, ...row }) => row);
+    const visibleRows = String(stockOnly) === '1'
+      ? sortedRows.filter(row => [
+        row.normal_qty, row.display_qty, row.demo_qty, row.unsellable_qty,
+        row.pending_qty, row.rental_demo_qty
+      ].some(value => Number(value || 0) > 0))
+      : sortedRows;
+    const count = visibleRows.length;
+    const exportRows = visibleRows.map(({ _category_order, _category_rank, _create_time, ...row }) => row);
 
     if (summaryExportMode) {
       const primaryPnRows = exportRows.length > 0
@@ -2081,7 +2107,7 @@ async function getSnList(ctx) {
         ? Store.findAll({ where: { store_id: { [Op.in]: storeIds } }, attributes: ['store_id', 'name', 'region_id'] })
         : [],
       locationIds.length
-        ? Location.findAll({ where: { location_id: { [Op.in]: locationIds } }, attributes: ['location_id', 'name'] })
+        ? Location.findAll({ where: { location_id: { [Op.in]: locationIds } }, attributes: ['location_id', 'name', 'type'] })
         : []
     ]);
     const productMap = new Map(products.map(product => [String(product.product_id), product]));
@@ -2136,7 +2162,9 @@ async function getSnList(ctx) {
         stock_qty: currentStoreId || storeId ? stock.current : stock.total,
         stock_rank: stock.current > 0 ? 0 : (stock.total > 0 ? 1 : 2),
         store_name: data.Store?.name || '',
-        location_name: data.Location?.name || '未指定库位'
+        location_name: data.Location?.name || '未指定库位',
+        location_type: data.Location?.type || data.inventory_type || '',
+        inventory_type: data.inventory_type || data.Location?.type || ''
       };
     });
 
@@ -3375,6 +3403,43 @@ function isPurchaseInboundItemProgressComplete(item, product, progress = {}) {
   if (snCodes.length === 0 && item?.sn_code) snCodes.push(String(item.sn_code).trim());
   snCodes.push(...(progress?.snCodes || []));
   return snCodes.length >= totalQuantity;
+}
+
+async function adjustProductLocation(ctx) {
+  const t = await sequelize.transaction();
+  try {
+    const { productId } = ctx.params;
+    const body = ctx.request.body || {};
+    const storeId = String(body.storeId || '').trim();
+    const fromLocationId = String(body.fromLocationId || '').trim();
+    const toLocationId = String(body.toLocationId || '').trim();
+    const quantity = Math.floor(Number(body.quantity));
+    if (!storeId || !fromLocationId || !toLocationId || !Number.isInteger(quantity) || quantity <= 0) ctx.throw(400, '门店、原库位、目标库位和数量不能为空且数量必须为正整数');
+    if (fromLocationId === toLocationId) ctx.throw(400, '原库位与目标库位不能相同');
+    assertStoreVisible(ctx, storeId);
+    const product = await Product.findOne({ where: { product_id: productId, is_deleted: 0, status: 1 }, transaction: t, lock: t.LOCK.UPDATE });
+    if (!product) ctx.throw(404, '商品不存在或已停用');
+    if (Number(product.need_sn) === 1) ctx.throw(400, 'SN商品请通过SN调整库位');
+    const [fromLocation, toLocation] = await Promise.all([
+      Location.findOne({ where: { location_id: fromLocationId, store_id: storeId, status: 1 }, transaction: t }),
+      Location.findOne({ where: { location_id: toLocationId, store_id: storeId, status: 1 }, transaction: t })
+    ]);
+    if (!fromLocation || !toLocation) ctx.throw(400, '原库位或目标库位不存在、已停用或不属于当前门店');
+    const sourceField = normalizeInventoryQuantityField(fromLocation.type);
+    const source = await Inventory.findOne({ where: { product_id: productId, store_id: storeId, location_id: fromLocationId }, transaction: t, lock: t.LOCK.UPDATE });
+    const available = Number(source?.[sourceField] || 0);
+    if (available < quantity) ctx.throw(400, `原库位库存不足，当前可调整数量为 ${available}`);
+    await updateInventory(productId, storeId, sourceField, -quantity, t, fromLocationId);
+    await updateInventory(productId, storeId, normalizeInventoryQuantityField(toLocation.type), quantity, t, toLocationId);
+    await recordBusinessAction({ businessType: 'inventory', businessId: productId, businessNo: `PRODUCT-LOCATION-${generateUUID().slice(0, 12)}`, action: 'product_location_adjust', user: ctx.state.user || {}, comment: `非SN商品库位调整：${fromLocation.name} → ${toLocation.name}`, detail: { productId, storeId, fromLocationId, toLocationId, quantity }, transaction: t });
+    await t.commit();
+    ctx.body = { code: 0, message: '库存库位调整成功', data: { productId, storeId, fromLocationId, toLocationId, quantity } };
+  } catch (err) {
+    await t.rollback();
+    if (err.status) ctx.throw(err.status, err.message);
+    console.error('adjustProductLocation error:', err);
+    ctx.throw(500, '库存库位调整失败');
+  }
 }
 
 function collectInboundItemSnReferences(inboundItem, bindings = []) {
@@ -6327,6 +6392,7 @@ module.exports = {
   getLocationsByStore,
   updateSn,
   adjustSnLocation,
+  adjustProductLocation,
   snTrace,
   _test: {
     mergeSnSalesStockBreakdown,

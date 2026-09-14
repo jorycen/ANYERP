@@ -302,6 +302,7 @@ export default {
   getSnList: (params) => api.get('/inventory/sn-list', { params }),
   submitSnChangeApplication: (data) => api.post('/inventory/sn-change-applications', data),
   adjustSnLocation: (snId, data) => api.post(`/inventory/sn/${snId}/location-adjust`, data),
+  adjustProductLocation: (productId, data) => api.post(`/inventory/product/${productId}/location-adjust`, data),
   snTrace: (snCode, params) => api.get(`/inventory/sn-trace/${encodeURIComponent(snCode)}`, { params }),
   getSnTraceInboundDetail: (inboundId) => api.get(`/inventory/sn-trace-inbound/${encodeURIComponent(inboundId)}`),
   getResourceRights: (params) => api.get('/inventory/resource-rights', { params }),
