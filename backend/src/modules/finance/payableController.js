@@ -165,7 +165,7 @@ async function enrichSettlementMetadata(rows, transaction = null) {
       ? Expense.findAll({ where: { expense_id: { [Op.in]: expenseIds } }, attributes: ['expense_id', 'invoice_type'], transaction })
       : []
   ]);
-  const requestMap = new Map(requests.map(row => [String(row.request_id), row.invoice_type]));
+  const requestMap = new Map(requests.map(row => [String(row.request_id), row]));
   const expenseMap = new Map(expenses.map(row => [String(row.expense_id), row.invoice_type]));
   const payableMap = new Map(payables.map(row => [String(row.payable_id), row]));
   const distributorIds = [...new Set(list.map(row => row.distributor_id).filter(Boolean).map(String))];
@@ -179,11 +179,15 @@ async function enrichSettlementMetadata(rows, transaction = null) {
     if (!['TAX_INCLUDED', 'UNTAXED', 'MIXED'].includes(rowTaxStatus)) {
       const taxStatuses = (row.items || []).map(item => payableMap.get(String(item.payable_id))).filter(Boolean).map(payable => {
         if (['expense', 'reimbursement'].includes(payable.source_type)) return getPayableTaxStatus(expenseMap.get(String(payable.source_id)));
-        return getPayableTaxStatus(requestMap.get(String(payable.request_id)));
+        return getPayableTaxStatus(requestMap.get(String(payable.request_id))?.invoice_type);
       });
       setDataValue(row, 'tax_status', combineTaxStatuses(taxStatuses));
     }
     setDataValue(row, 'distributor_name', distributorMap.get(String(row.distributor_id || '')) || row.distributor_id || '未知经销商');
+    (row.items || []).forEach(item => {
+      const payable = payableMap.get(String(item.payable_id));
+      if (payable?.request_id) setDataValue(item, 'purchase_request_id', String(payable.request_id));
+    });
   });
 }
 

@@ -4,6 +4,7 @@ const {
   Staff,
   Store,
   Role,
+  Settlement,
   ApprovalFlowDefinition,
   ApprovalFlowInstance,
   ApprovalTask,
@@ -161,7 +162,30 @@ async function listTasks(ctx) {
     include: [instanceInclude],
     order: [['create_time', 'DESC']]
   });
-  ctx.body = tasks;
+  const settlementIds = tasks
+    .filter(task => task.Instance?.business_type === 'payable_settlement')
+    .map(task => String(task.Instance.business_id || ''))
+    .filter(Boolean);
+  const settlements = settlementIds.length ? await Settlement.findAll({
+    where: { settlement_id: settlementIds, is_deleted: 0 },
+    attributes: ['settlement_id', 'settlement_no', 'supplier_name', 'tax_status', 'total_amount', 'paid_amount', 'submit_time']
+  }) : [];
+  const settlementMap = new Map(settlements.map(row => [String(row.settlement_id), row.toJSON()]));
+  ctx.body = tasks.map(task => {
+    const data = task.toJSON();
+    if (data.Instance?.business_type === 'payable_settlement') {
+      const settlement = settlementMap.get(String(data.Instance.business_id));
+      data.Instance.display = settlement ? {
+        settlement_no: settlement.settlement_no,
+        supplier_name: settlement.supplier_name,
+        tax_status: settlement.tax_status,
+        amount: Number(settlement.total_amount || 0),
+        paid_amount: Number(settlement.paid_amount || 0),
+        submit_time: settlement.submit_time
+      } : {};
+    }
+    return data;
+  });
 }
 
 function instanceAccessWhere(user, scope) {

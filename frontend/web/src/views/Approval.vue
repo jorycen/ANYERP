@@ -8,26 +8,30 @@
       <el-tabs v-model="activeTab" class="module-tabs">
         <el-tab-pane label="待我审批" name="tasks">
           <el-table :data="mergedTasks" stripe border v-loading="loading">
-            <el-table-column label="审批主题" min-width="220"><template #default="{ row }">{{ taskTitle(row) }}</template></el-table-column>
-            <el-table-column label="当前节点" width="160"><template #default="{ row }">{{ taskNode(row) }}</template></el-table-column>
-            <el-table-column label="业务类型" width="150"><template #default="{ row }">{{ taskBusinessType(row) }}</template></el-table-column>
-            <el-table-column label="申请编号" width="190"><template #default="{ row }">{{ taskNo(row) }}</template></el-table-column>
-            <el-table-column label="金额/毛利" width="120"><template #default="{ row }"><span :class="{ 'negative-profit': row.isSalesApproval }">{{ taskAmount(row) }}</span></template></el-table-column>
+            <el-table-column label="业务类型" width="140"><template #default="{ row }">{{ taskBusinessType(row) }}</template></el-table-column>
+            <el-table-column label="业务信息" min-width="210"><template #default="{ row }">{{ taskMainInfo(row) }}</template></el-table-column>
+            <el-table-column label="金额/负毛利" width="130"><template #default="{ row }"><span :class="{ 'negative-profit': row.isSalesApproval }">{{ taskAmount(row) }}</span></template></el-table-column>
+            <el-table-column label="供应商/销售人" min-width="150"><template #default="{ row }">{{ taskCounterparty(row) }}</template></el-table-column>
+            <el-table-column label="税务情况" width="130"><template #default="{ row }">{{ taskTaxStatus(row) }}</template></el-table-column>
             <el-table-column label="提交时间" width="180"><template #default="{ row }">{{ taskCreateTime(row) }}</template></el-table-column>
+            <el-table-column label="当前节点" width="160"><template #default="{ row }">{{ taskNode(row) }}</template></el-table-column>
             <el-table-column label="操作" width="220" fixed="right">
               <template #default="{ row }">
                 <template v-if="row.isSalesApproval">
-                  <el-button link type="primary" @click="openSales(row.salesRow)">查看</el-button>
+                  <el-button link type="primary" @click="openSales(row.salesRow)">审批详情</el-button>
+                  <el-button link @click="openOriginalFromRow(row)">原始单据</el-button>
                   <el-button link type="success" @click="reviewSales(row.salesRow, 'approve')">通过</el-button>
                   <el-button link type="danger" @click="reviewSales(row.salesRow, 'reject')">拒绝</el-button>
                 </template>
                 <template v-else-if="row.isModuleApproval">
-                  <el-button link type="primary" @click="openModule(row)">查看</el-button>
+                  <el-button link type="primary" @click="openModule(row)">审批详情</el-button>
+                  <el-button link @click="openOriginalFromRow(row)">原始单据</el-button>
                   <el-button link type="success" @click="reviewModule(row, 'approve')">通过</el-button>
                   <el-button link type="danger" @click="reviewModule(row, 'reject')">拒绝</el-button>
                 </template>
                 <template v-else>
-                  <el-button link type="primary" @click="openInstance(row.instance_id)">查看</el-button>
+                  <el-button link type="primary" @click="openInstance(row.instance_id, row)">审批详情</el-button>
+                  <el-button v-if="canViewOriginal(row.Instance)" link @click="openOriginalFromRow(row)">原始单据</el-button>
                   <el-button v-if="row.Instance?.business_type === 'expense'" link type="warning" @click="openAttributionEditor(row)">调整分摊</el-button>
                   <el-button link type="success" @click="review(row, 'approve')">通过</el-button>
                   <el-button link type="danger" @click="review(row, 'reject')">拒绝</el-button>
@@ -80,11 +84,9 @@
       <template v-if="currentInstance">
         <el-descriptions :column="2" border>
           <el-descriptions-item label="主题">{{ currentInstance.title }}</el-descriptions-item>
-          <el-descriptions-item label="状态">{{ statusText(currentInstance.status) }}</el-descriptions-item>
           <el-descriptions-item label="申请编号">{{ currentInstance.instance_no }}</el-descriptions-item>
-          <el-descriptions-item label="业务单据">{{ currentInstance.business_type }} / {{ currentInstance.business_id }}</el-descriptions-item>
-          <el-descriptions-item v-if="currentInstance.applicant_name || currentInstance.applicant_staff_id" label="发起人">{{ currentInstance.applicant_name || currentInstance.applicant_staff_id }}</el-descriptions-item>
-          <el-descriptions-item v-if="currentInstance.store_name || currentInstance.store_id" label="申请门店">{{ currentInstance.store_name || currentInstance.store_id }}</el-descriptions-item>
+          <el-descriptions-item v-if="currentInstance.applicant_name" label="发起人">{{ currentInstance.applicant_name }}</el-descriptions-item>
+          <el-descriptions-item v-if="currentInstance.store_name" label="申请门店">{{ currentInstance.store_name }}</el-descriptions-item>
           <el-descriptions-item label="提交时间">{{ currentInstance.create_time || '-' }}</el-descriptions-item>
           <el-descriptions-item label="说明" :span="2">{{ currentInstance.summary || '-' }}</el-descriptions-item>
           <el-descriptions-item v-if="currentInstance.returnReason !== undefined" label="退单缘由" :span="2">{{ currentInstance.returnReason || '-' }}</el-descriptions-item>
@@ -109,16 +111,36 @@
                 </el-table-column>
               </el-table>
             </div>
-            <el-collapse v-if="detailHasContent(currentInstance.moduleData)" class="raw-detail">
-              <el-collapse-item title="查看完整发起数据" name="raw">
-                <pre>{{ formatJson(currentInstance.moduleData) }}</pre>
-              </el-collapse-item>
-            </el-collapse>
           </template>
         </template>
         <template v-else-if="currentInstance.payload !== undefined && currentInstance.payload !== null">
           <el-divider>发起信息</el-divider>
-          <pre class="raw-detail-content">{{ formatJson(currentInstance.payload) }}</pre>
+          <el-descriptions v-if="detailScalarFields(currentInstance.payload, currentInstance.business_type).length" :column="2" border>
+            <el-descriptions-item v-for="field in detailScalarFields(currentInstance.payload, currentInstance.business_type)" :key="field.key" :label="field.label" :span="field.span">{{ field.value }}</el-descriptions-item>
+          </el-descriptions>
+        </template>
+        <template v-if="currentInstance.originalData">
+          <el-divider>{{ currentInstance.originalTitle || '原始单据' }}</el-divider>
+          <el-descriptions :column="2" border>
+            <el-descriptions-item v-for="field in detailScalarFields(currentInstance.originalData, currentInstance.business_type)" :key="field.key" :label="field.label" :span="field.span">{{ field.value }}</el-descriptions-item>
+          </el-descriptions>
+          <div v-for="section in detailArraySections(currentInstance.originalData)" :key="section.key" class="detail-section">
+            <div class="detail-section-title">{{ section.label }}</div>
+            <el-table :data="section.rows" stripe border size="small"><el-table-column v-for="column in section.columns" :key="column.key" :label="column.label" min-width="120"><template #default="{ row }">{{ formatDetailValue(row[column.key]) }}</template></el-table-column></el-table>
+          </div>
+          <div v-if="currentInstance.business_type === 'payable_settlement' && currentInstance.originalData.items?.length" class="detail-section">
+            <div class="detail-section-title">关联采购单</div>
+            <el-table :data="currentInstance.originalData.items" stripe border size="small">
+              <el-table-column prop="request_no" label="采购单号" min-width="180" />
+              <el-table-column prop="amount" label="结算金额" width="130"><template #default="{ row }">¥{{ formatMoney(row.amount) }}</template></el-table-column>
+              <el-table-column label="操作" width="120"><template #default="{ row }"><el-button v-if="row.purchase_request_id" link type="primary" @click="openSettlementPurchase(row.purchase_request_id)">查看采购单</el-button></template></el-table-column>
+            </el-table>
+          </div>
+          <template v-if="currentInstance.linkedDocument">
+            <el-divider>采购单详情</el-divider>
+            <el-descriptions :column="2" border><el-descriptions-item v-for="field in detailScalarFields(currentInstance.linkedDocument)" :key="field.key" :label="field.label" :span="field.span">{{ field.value }}</el-descriptions-item></el-descriptions>
+            <div v-for="section in detailArraySections(currentInstance.linkedDocument)" :key="`linked-${section.key}`" class="detail-section"><div class="detail-section-title">{{ section.label }}</div><el-table :data="section.rows" stripe border size="small"><el-table-column v-for="column in section.columns" :key="column.key" :label="column.label" min-width="120"><template #default="{ row }">{{ formatDetailValue(row[column.key]) }}</template></el-table-column></el-table></div>
+          </template>
         </template>
         <el-divider>审批任务</el-divider>
         <el-timeline>
@@ -127,6 +149,12 @@
             <span v-if="task.comment">：{{ task.comment }}</span>
           </el-timeline-item>
         </el-timeline>
+      </template>
+      <template #footer>
+        <el-button v-if="canViewOriginal(currentInstance)" @click="openOriginalDocument">查看原始单据</el-button>
+        <el-button v-if="detailReviewRow" type="success" @click="reviewFromDetail('approve')">通过</el-button>
+        <el-button v-if="detailReviewRow" type="danger" @click="reviewFromDetail('reject')">拒绝</el-button>
+        <el-button @click="detailVisible = false">关闭</el-button>
       </template>
     </el-dialog>
 
@@ -191,6 +219,7 @@ const instances = ref([])
 const flows = ref([])
 const detailVisible = ref(false)
 const currentInstance = ref(null)
+const detailReviewRow = ref(null)
 let detailRequestSerial = 0
 const flowDialogVisible = ref(false)
 const attributionEditVisible = ref(false)
@@ -447,7 +476,25 @@ function taskNo(row) { return row.isSalesApproval ? row.salesRow?.order_no || '-
 function taskCreateTime(row) { return row.isSalesApproval ? row.salesRow?.create_time || '-' : row.create_time || row.Instance?.create_time || '-' }
 function taskAmount(row) {
   if (row.isSalesApproval) return formatProfit(row.salesRow?.grossProfitSnapshot?.gross_profit_amount)
-  return row.amountText || '-'
+  return row.amountText || row.Instance?.display?.amount || '-'
+}
+function taskData(row) { return row.isSalesApproval ? row.salesRow || {} : (row.moduleRow || row.Instance?.display || {}) }
+function taskMainInfo(row) {
+  const data = taskData(row)
+  if (row.isSalesApproval) return data.product_name || data.productName || data.order_no || '-'
+  if (row.Instance?.business_type === 'payable_settlement') return data.settlement_no || data.title || row.Instance?.instance_no || '-'
+  return data.product_name || data.productName || data.items_summary || data.name || taskTitle(row)
+}
+function taskCounterparty(row) {
+  const data = taskData(row)
+  if (row.isSalesApproval) return data.salesperson_name || data.salesperson || data.sales_name || data.create_user || '-'
+  return data.supplier_name || data.supplierName || data.employee_name || data.applicant_name || data.applicantName || '-'
+}
+function taskTaxStatus(row) {
+  const data = taskData(row)
+  const value = data.tax_status || data.taxStatus || data.invoice_type || data.invoiceType || data.has_invoice
+  if (value === true || value === 1 || value === '1') return '有发票'
+  return value || '未填写'
 }
 const detailFieldLabels = {
   application_no: '申请单号', application_id: '申请ID', request_no: '采购申请单号', request_id: '采购申请ID',
@@ -474,7 +521,16 @@ const detailArrayColumnLabels = {
   current_quantity: '当前数量', unit_price: '单价', amount: '金额', amount_delta: '金额变化',
   store_name: '门店', storeName: '门店', reason: '原因', original_name: '附件名称', mime_type: '文件类型', file_size: '文件大小'
 }
-const hiddenDetailKeys = new Set(['Applicant', 'applicant', 'Store', 'Supplier', 'settlement', 'originalOrder', 'adjustments', 'action_logs', 'payload_json', 'definition_snapshot_json'])
+const detailAllowedKeys = new Set([
+  'application_no', 'request_no', 'expense_no', 'return_no', 'change_order_no', 'adjustment_no', 'order_no', 'settlement_no',
+  'create_time', 'submit_time', 'applicant_name', 'submitter_name', 'submit_user', 'apply_user', 'applicant_store_name', 'store_name',
+  'supplier_name', 'employee_name', 'salesperson_name', 'name', 'product_name', 'productName', 'product_code', 'productCode', 'pn_code', 'pnCode', 'sn_code', 'snCode',
+  'category_name', 'expense_type', 'expense_party', 'payment_method', 'invoice_type', 'tax_status', 'tax_rate', 'product_type',
+  'reason', 'return_reason', 'remark', 'amount', 'total_amount', 'actual_total', 'current_actual_total', 'paid_amount', 'unpaid_amount',
+  'refund_amount', 'change_amount', 'signed_amount', 'base_gross_profit', 'gross_profit_amount', 'sales_gross_profit', 'sales_amount', 'sales_settlement_cost',
+  'adjustment_type', 'review_comment', 'reviewer_name', 'review_time', 'attachment_url', 'source_no', 'payee_name', 'payment_status'
+])
+const hiddenDetailKeys = new Set(['Applicant', 'applicant', 'Store', 'Supplier', 'settlement', 'originalOrder', 'adjustments', 'action_logs', 'payload_json', 'definition_snapshot_json', 'category_id', 'categoryId', 'category_path_legacy', 'brand', 'model', 'series', 'category', 'business_id', 'request_id', 'application_id', 'expense_id', 'return_id', 'change_id', 'adjustment_id', 'order_id', 'settlement_id', 'applicant_staff_id', 'store_id', 'supplier_id', 'distributor_id', 'status', 'approval_status', 'approval_stage'])
 function detailLabel(key) {
   if (detailFieldLabels[key]) return detailFieldLabels[key]
   return String(key).replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ')
@@ -490,18 +546,18 @@ function formatJson(value) {
 }
 function detailScalarFields(data = {}) {
   return Object.entries(data)
-    .filter(([key, value]) => !hiddenDetailKeys.has(key) && !Array.isArray(value) && (value === null || ['string', 'number', 'boolean'].includes(typeof value)))
+    .filter(([key, value]) => detailAllowedKeys.has(key) && !hiddenDetailKeys.has(key) && !Array.isArray(value) && (value === null || ['string', 'number', 'boolean'].includes(typeof value)))
     .filter(([, value]) => value !== null && value !== '')
     .map(([key, value]) => ({ key, label: detailLabel(key), value: formatDetailValue(value), span: key === 'remark' || key === 'reason' || key === 'return_reason' || key === 'review_comment' ? 2 : 1 }))
 }
 function detailArraySections(data = {}) {
   return Object.entries(data)
-    .filter(([key, value]) => Array.isArray(value) && value.length && !hiddenDetailKeys.has(key))
+    .filter(([key, value]) => ['items', 'OrderItems', 'InboundItems', 'originalOrderItems', 'attachments'].includes(key) && Array.isArray(value) && value.length && !hiddenDetailKeys.has(key))
     .map(([key, rows]) => {
       const objectRows = rows.filter(row => row && typeof row === 'object' && !Array.isArray(row))
       if (!objectRows.length) return null
       const keys = [...new Set(objectRows.flatMap(row => Object.keys(row)))]
-        .filter(columnKey => objectRows.some(row => row[columnKey] !== undefined && row[columnKey] !== null && row[columnKey] !== '' && typeof row[columnKey] !== 'object'))
+        .filter(columnKey => !hiddenDetailKeys.has(columnKey) && objectRows.some(row => row[columnKey] !== undefined && row[columnKey] !== null && row[columnKey] !== '' && typeof row[columnKey] !== 'object'))
       const preferred = ['product_name', 'product_code', 'pn_code', 'sn_code', 'quantity', 'current_quantity', 'unit_price', 'amount', 'amount_delta', 'original_name', 'mime_type', 'file_size']
       const orderedKeys = [...preferred.filter(columnKey => keys.includes(columnKey)), ...keys.filter(columnKey => !preferred.includes(columnKey))].slice(0, 8)
       return {
@@ -566,9 +622,10 @@ async function loadModuleDetail(row) {
   }
   return source
 }
-async function openInstance(id) {
+async function openInstance(id, row = null) {
   const serial = ++detailRequestSerial
   currentInstance.value = null
+  detailReviewRow.value = row
   detailVisible.value = true
   try {
     const instance = responseData(await api.getApprovalInstance(id))
@@ -623,10 +680,10 @@ async function saveAttributionEditor() {
     attributionEditLoading.value = false
   }
 }
-function openSales(row) { router.push({ name: 'Sales', query: { orderId: row.order_id } }) }
 async function openModule(row) {
   const serial = ++detailRequestSerial
   currentInstance.value = buildModuleInstance(row)
+  detailReviewRow.value = row
   currentInstance.value.detailLoading = true
   detailVisible.value = true
   try {
@@ -638,6 +695,54 @@ async function openModule(row) {
     currentInstance.value = { ...currentInstance.value, detailLoading: false }
     console.warn('加载审批发起详情失败:', error)
   }
+}
+async function openSales(row) {
+  const serial = ++detailRequestSerial
+  detailReviewRow.value = { isSalesApproval: true, salesRow: row }
+  currentInstance.value = {
+    title: `销售订单 ${row.order_no || '-'}`,
+    instance_no: row.order_no || '-', business_type: 'sales_negative_gross_profit', create_time: row.create_time || '-',
+    applicant_name: row.salesperson_name || row.salesperson || row.create_user || '', moduleData: row, Tasks: [], detailLoading: true
+  }
+  detailVisible.value = true
+  try {
+    const order = responseData(await api.getSalesDetail(row.order_id)) || row
+    if (serial === detailRequestSerial) currentInstance.value = { ...currentInstance.value, moduleData: row, originalData: order, originalTitle: '销售订单', detailLoading: false }
+  } catch (error) {
+    if (serial === detailRequestSerial) currentInstance.value = { ...currentInstance.value, detailLoading: false }
+  }
+}
+function canViewOriginal(instance) {
+  return Boolean(instance?.business_type === 'payable_settlement' || instance?.business_type === 'sales_negative_gross_profit')
+}
+async function openOriginalDocument() {
+  if (!currentInstance.value || currentInstance.value.originalData) return
+  try {
+    if (currentInstance.value.business_type === 'payable_settlement') {
+      const id = currentInstance.value.business_id || currentInstance.value.payload?.settlement_id
+      currentInstance.value = { ...currentInstance.value, originalData: responseData(await api.getSettlementDetail(id)), originalTitle: '应付结算单及关联采购单' }
+    }
+  } catch (error) { ElMessage.error(error.response?.data?.message || '加载原始单据失败') }
+}
+async function openSettlementPurchase(requestId) {
+  try {
+    const document = responseData(await api.getPurchaseRequestDetail(requestId))
+    currentInstance.value = { ...currentInstance.value, linkedDocument: document || null }
+  } catch (error) { ElMessage.error(error.response?.data?.message || '加载关联采购单失败') }
+}
+async function openOriginalFromRow(row) {
+  if (row.isSalesApproval) return openSales(row.salesRow)
+  if (row.isModuleApproval) return openModule(row)
+  await openInstance(row.instance_id, row)
+  await openOriginalDocument()
+}
+async function reviewFromDetail(action) {
+  const row = detailReviewRow.value
+  if (!row) return
+  if (row.isSalesApproval) await reviewSales(row.salesRow, action)
+  else if (row.isModuleApproval) await reviewModule(row, action)
+  else await review(row, action)
+  detailVisible.value = false
 }
 async function reviewSales(row, action) {
   const stage = salesApprovalStage(row)
