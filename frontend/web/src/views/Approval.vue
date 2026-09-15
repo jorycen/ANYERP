@@ -7,11 +7,20 @@
 
       <el-tabs v-model="activeTab" class="module-tabs">
         <el-tab-pane label="待我审批" name="tasks">
-          <el-table :data="mergedTasks" stripe border v-loading="loading">
+          <div class="approval-filters">
+            <el-input v-model="taskFilters.applicant" clearable placeholder="按发起人筛选" style="width: 190px" />
+            <el-input v-model="taskFilters.supplier" clearable placeholder="按供应商筛选" style="width: 190px" />
+            <el-select v-model="taskFilters.type" clearable placeholder="业务类型" style="width: 180px">
+              <el-option v-for="item in taskTypeOptions" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+            <el-button @click="resetTaskFilters">重置</el-button>
+          </div>
+          <el-table :data="filteredMergedTasks" stripe border v-loading="loading">
             <el-table-column label="业务类型" width="140"><template #default="{ row }">{{ taskBusinessType(row) }}</template></el-table-column>
             <el-table-column label="业务信息" min-width="210"><template #default="{ row }">{{ taskMainInfo(row) }}</template></el-table-column>
             <el-table-column label="金额/负毛利" width="130"><template #default="{ row }"><span :class="{ 'negative-profit': row.isSalesApproval }">{{ taskAmount(row) }}</span></template></el-table-column>
-            <el-table-column label="供应商/销售人" min-width="150"><template #default="{ row }">{{ taskCounterparty(row) }}</template></el-table-column>
+            <el-table-column label="发起人" min-width="130"><template #default="{ row }">{{ taskApplicant(row) }}</template></el-table-column>
+            <el-table-column label="供应商" min-width="150"><template #default="{ row }">{{ taskSupplier(row) }}</template></el-table-column>
             <el-table-column label="税务情况" width="130"><template #default="{ row }">{{ taskTaxStatus(row) }}</template></el-table-column>
             <el-table-column label="提交时间" width="180"><template #default="{ row }">{{ taskCreateTime(row) }}</template></el-table-column>
             <el-table-column label="当前节点" width="160"><template #default="{ row }">{{ taskNode(row) }}</template></el-table-column>
@@ -39,7 +48,7 @@
               </template>
             </el-table-column>
           </el-table>
-          <el-empty v-if="!loading && mergedTasks.length === 0" description="暂无待审批单据" :image-size="60" />
+          <el-empty v-if="!loading && filteredMergedTasks.length === 0" description="暂无符合条件的待审批单据" :image-size="60" />
         </el-tab-pane>
 
         <el-tab-pane label="我的申请" name="instances">
@@ -244,6 +253,7 @@ const roleCodes = computed(() => {
 const canReviewSales = computed(() => roleCodes.value.some(role => ['boss', 'admin', 'manager', 'store_manager', 'store_admin'].includes(role)))
 const canConfigure = computed(() => roleCodes.value.some(role => ['admin', 'boss'].includes(role)))
 const flowForm = reactive({ definitionId: '', flowCode: '', name: '', businessType: '', nodes: [] })
+const taskFilters = reactive({ applicant: '', supplier: '', type: '' })
 const mergedTasks = computed(() => {
   const genericTasks = tasks.value.map(row => ({ ...row, isSalesApproval: false }))
   const salesApprovalTasks = salesTasks.value.map(row => ({
@@ -263,6 +273,22 @@ const mergedTasks = computed(() => {
     new Date(taskCreateTime(right)).getTime() - new Date(taskCreateTime(left)).getTime()
   ))
 })
+const taskTypeOptions = computed(() => [...new Map(mergedTasks.value.map(row => {
+  const value = row.isSalesApproval ? 'sales_negative_gross_profit' : (row.moduleType || row.Instance?.business_type || '')
+  return [value, { value, label: taskBusinessType(row) }]
+})).values()].filter(item => item.value))
+const normalizedTaskFilter = value => String(value || '').trim().toLowerCase()
+const filteredMergedTasks = computed(() => {
+  const applicant = normalizedTaskFilter(taskFilters.applicant)
+  const supplier = normalizedTaskFilter(taskFilters.supplier)
+  return mergedTasks.value.filter(row => {
+    const type = row.isSalesApproval ? 'sales_negative_gross_profit' : (row.moduleType || row.Instance?.business_type || '')
+    return (!taskFilters.type || type === taskFilters.type)
+      && (!applicant || normalizedTaskFilter(taskApplicant(row)).includes(applicant))
+      && (!supplier || normalizedTaskFilter(taskSupplier(row)).includes(supplier))
+  })
+})
+function resetTaskFilters() { Object.assign(taskFilters, { applicant: '', supplier: '', type: '' }) }
 
 const newRule = () => ({ type: 'store_manager', staffId: '', roleCode: '', scope: 'subject_store' })
 const newNode = () => ({ name: '', signMode: 'serial', approvers: [newRule()] })
@@ -507,6 +533,15 @@ function taskCounterparty(row) {
   const data = taskData(row)
   if (row.isSalesApproval) return data.salesperson_name || data.salesperson || data.sales_name || data.create_user || '-'
   return data.supplier_name || data.supplierName || data.employee_name || data.applicant_name || data.applicantName || '-'
+}
+function taskApplicant(row) {
+  const data = taskData(row)
+  if (row.isSalesApproval) return data.submit_user || data.submitter_name || data.create_user || data.salesperson_name || '-'
+  return moduleApplicant(data) || row.Instance?.applicant_name || row.Instance?.Applicant?.name || '-'
+}
+function taskSupplier(row) {
+  const data = taskData(row)
+  return data.supplier_name || data.supplierName || data.Supplier?.name || '-'
 }
 function taskTaxStatus(row) {
   const data = taskData(row)
@@ -857,5 +892,5 @@ onMounted(() => { syncTabFromRoute(); reload() })
 .detail-section-title { margin-bottom: 8px; color: var(--el-text-color-primary); font-weight: 600; }
 .raw-detail { margin-top: 16px; }
 .raw-detail-content,.raw-detail pre { margin: 0; padding: 12px; max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-all; background: var(--el-fill-color-light); border-radius: 4px; font: 12px/1.6 Consolas, monospace; }
-.page-header,.toolbar,.node-head,.rule-row{display:flex;align-items:center;gap:10px}.page-header{justify-content:space-between}.toolbar{margin-bottom:12px}.node-card{border:1px solid var(--el-border-color);padding:12px;margin-bottom:12px;border-radius:4px}.node-head{margin-bottom:10px}.node-head .el-input{max-width:360px}.rule-row{margin:8px 0;flex-wrap:wrap}
+.page-header,.toolbar,.node-head,.rule-row,.approval-filters{display:flex;align-items:center;gap:10px}.page-header{justify-content:space-between}.toolbar,.approval-filters{margin-bottom:12px}.approval-filters{flex-wrap:wrap}.node-card{border:1px solid var(--el-border-color);padding:12px;margin-bottom:12px;border-radius:4px}.node-head{margin-bottom:10px}.node-head .el-input{max-width:360px}.rule-row{margin:8px 0;flex-wrap:wrap}
 </style>
