@@ -278,6 +278,8 @@ export default {
   createDeposit: (data) => api.post('/sales/deposits', data),
   archiveDeposit: (id) => api.post(`/sales/deposits/${id}/archive`),
   refundDeposit: (id, data) => api.post(`/sales/deposits/${id}/refund`, data),
+  getDepositRefunds: (params) => api.get('/sales/deposit-refunds', { params }),
+  reviewDepositRefund: (id, data) => api.post(`/sales/deposit-refunds/${id}/review`, data),
   getAvailableDeposits: (params) => api.get('/sales/deposits/available', { params }),
   getProductPns: (storeId, productId) => api.get(`/sales/product-pns/${storeId}/${productId}`),
   getProductSns: (storeId, productId, pnCode) => api.get(`/sales/product-sns/${storeId}/${productId}`, { params: { pnCode } }),

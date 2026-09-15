@@ -230,6 +230,10 @@ const attributionEditRows = ref([])
 const attributionEditTotal = computed(() => attributionEditRows.value.reduce((sum, row) => sum + Number(row.amount || 0), 0))
 const assigneeOptions = reactive({ staff: [], roles: [], stores: [] })
 const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
+const designatedRefundApproverStage = (() => {
+  const phone = String(userInfo.phone || '').trim()
+  return phone === '14780834570' ? 'pending_deng' : phone === '18010607277' ? 'pending_li' : ''
+})()
 const roleCodes = computed(() => {
   const rawRoles = Array.isArray(userInfo.roles) && userInfo.roles.length
     ? userInfo.roles
@@ -343,19 +347,33 @@ async function loadOtherApprovalTasks() {
       request: () => api.getSalesReturnRequests({ status: 'pending', scope: 'review', page: 1, pageSize: 100 }),
       map: row => {
         const stage = row.approval_stage || row.approvalStage || 'pending_store'
-        if (stage === 'pending_distributor' && !canReviewRole(['admin'])) return null
-        if (stage !== 'pending_distributor' && !canReviewRole(['admin', 'manager'])) return null
+        if (stage === 'pending_store' && !canReviewRole(['admin', 'manager'])) return null
+        if (stage !== 'pending_store' && stage !== designatedRefundApproverStage) return null
         return moduleTask('sales_return', row, {
           id: row.return_id || row.returnId || row.id,
           no: row.return_no || row.returnNo,
           title: row.customer_name || row.customerName || '销售退单申请',
           summary: `原订单 ${row.order_no || row.orderNo || '-'}，退款 ${moneyText(row.refund_amount || row.refundAmount || row.total_amount || row.totalAmount)}`,
           amountText: moneyText(row.refund_amount || row.refundAmount || row.total_amount || row.totalAmount),
-          node: stage === 'pending_distributor' ? '经销商审批' : '店长审批'
+          node: stage === 'pending_deng' ? '邓红梅审批' : stage === 'pending_li' ? '李燕审批' : '店长审批'
         })
       }
     }
   ]
+  if (designatedRefundApproverStage || canReviewRole(['admin', 'manager'])) {
+    loaders.push({
+      type: 'deposit_refund',
+      request: () => api.getDepositRefunds({ status: 'pending', scope: 'review', page: 1, pageSize: 100 }),
+      map: row => moduleTask('deposit_refund', row, {
+        id: row.refund_id || row.refundId,
+        no: row.refund_no || row.refundNo,
+        title: row.DepositOrder?.customer_name || '退定金申请',
+        summary: `定金单 ${row.DepositOrder?.deposit_no || '-'}，退款 ${moneyText(row.amount)}`,
+        amountText: moneyText(row.amount),
+        node: (row.approval_stage || '') === 'pending_deng' ? '邓红梅审批' : (row.approval_stage || '') === 'pending_li' ? '李燕审批' : '店长审批'
+      })
+    })
+  }
   if (canReviewRole(['admin', 'purchaser'])) {
     loaders.push({
       type: 'purchase',
@@ -800,6 +818,7 @@ async function reviewModule(row, action) {
       reviewerRole: userInfo.roleCode || '',
       reviewerId: userInfo.staffId || userInfo.userId || ''
     })
+    else if (row.moduleType === 'deposit_refund') await api.reviewDepositRefund(id, { action: approved, comment })
     else if (row.moduleType === 'resource') await api.reviewResourceClaim(id, { action: action === 'approve' ? 'approve' : 'reject', comment })
     else if (row.moduleType === 'profit') {
       if (action === 'approve') await api.approveProfitAdjustment(id, { comment })

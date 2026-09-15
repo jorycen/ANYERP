@@ -245,6 +245,10 @@ const SALES_APPROVAL_STATUSES = Object.freeze({
   store: 'pending_store_approval',
   distributor: 'pending_distributor_approval'
 });
+const DEPOSIT_REFUND_APPROVER_PHONES = Object.freeze({
+  deng: '14780834570',
+  li: '18010607277'
+});
 const STORE_APPROVAL_ROLES = ['manager', 'store_manager', 'store_admin', 'admin', 'boss', 'distributor'];
 const DISTRIBUTOR_APPROVAL_ROLES = ['admin', 'boss', 'distributor'];
 
@@ -3565,24 +3569,116 @@ async function refundDeposit(ctx) {
       ctx.throw(400, '定金当前只支持全额退款记录');
     }
 
-    await DepositRefund.create({
+    const refund = await DepositRefund.create({
       refund_id: generateUUID(),
       refund_no: generateBusinessNo('DRF'),
       deposit_id: deposit.deposit_id,
       amount: refundAmount,
       reason: reason || '',
+      status: 'pending',
+      approval_stage: 'pending_store',
       create_staff_id: user.staffId,
       create_user: user.name
     }, { transaction });
 
     await deposit.update({
-      refunded_amount: refundAmount,
-      status: 'refunded',
+      status: 'refund_pending',
       update_time: new Date()
     }, { transaction });
+
+    return refund;
   });
 
-  ctx.body = { message: '定金退款记录已生成' };
+  ctx.body = { code: 0, message: '退定金申请已提交，等待店长审批' };
+}
+
+function depositRefundReviewerStage(user) {
+  const phone = String(user?.phone || '').trim();
+  if (phone === DEPOSIT_REFUND_APPROVER_PHONES.deng) return 'pending_deng';
+  if (phone === DEPOSIT_REFUND_APPROVER_PHONES.li) return 'pending_li';
+  return '';
+}
+
+async function listDepositRefunds(ctx) {
+  const { status, approvalStage, storeId, scope, page = 1, pageSize = 50 } = ctx.query;
+  const where = {};
+  if (status) where.status = status;
+  if (approvalStage) where.approval_stage = approvalStage;
+  const user = ctx.state.user;
+  const include = [{ model: DepositOrder, as: 'DepositOrder', include: [{ model: Store }] }];
+  if (scope === 'review') {
+    const assignedStage = depositRefundReviewerStage(user);
+    const roles = getUserRoles(user);
+    if (assignedStage) {
+      where.approval_stage = assignedStage;
+    } else if (roles.some(role => STORE_APPROVAL_ROLES.includes(role))) {
+      where.approval_stage = 'pending_store';
+    } else {
+      where.refund_id = '__NO_DEPOSIT_REFUND_APPROVAL_ACCESS__';
+    }
+    where.status = 'pending';
+  }
+  if (storeId) {
+    assertStoreVisible(storeId, user, '无权访问该门店退定金申请');
+    include[0].where = { store_id: storeId };
+  } else if (!depositRefundReviewerStage(user) && !user.accessibleStoreIds.includes('*')) {
+    include[0].where = { store_id: user.accessibleStoreIds };
+  }
+  const { count, rows } = await DepositRefund.findAndCountAll({
+    where,
+    include,
+    order: [['create_time', 'DESC'], ['refund_id', 'DESC']],
+    distinct: true,
+    ...paginate({}, { page, pageSize })
+  });
+  ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+async function reviewDepositRefund(ctx) {
+  const { refundId } = ctx.params;
+  const { action = 'approved', comment = '' } = ctx.request.body || {};
+  if (!['approved', 'rejected'].includes(action)) ctx.throw(400, '审批操作无效');
+  const user = ctx.state.user;
+  const roles = getUserRoles(user);
+  const result = await sequelize.transaction(async transaction => {
+    const refund = await DepositRefund.findByPk(refundId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!refund) ctx.throw(404, '退定金申请不存在');
+    if (refund.status !== 'pending') ctx.throw(400, '该退定金申请当前无需审批');
+    const deposit = await DepositOrder.findByPk(refund.deposit_id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!deposit) ctx.throw(404, '关联定金单不存在');
+    const stage = refund.approval_stage || 'pending_store';
+    const assignedStage = depositRefundReviewerStage(user);
+    if (stage === 'pending_store') {
+      if (!roles.some(role => STORE_APPROVAL_ROLES.includes(role))) ctx.throw(403, '仅店长可以审批退定金申请');
+      assertDepositStoreVisible(deposit, user);
+    } else if (stage !== assignedStage) {
+      ctx.throw(403, stage === 'pending_deng' ? '仅邓红梅可以审批该退定金申请' : '仅李燕可以审批该退定金申请');
+    }
+    const now = new Date();
+    const reviewFields = stage === 'pending_store'
+      ? { store_review_user: user.name || user.staffId || '', store_review_comment: comment || '', store_review_time: now }
+      : stage === 'pending_deng'
+        ? { deng_review_user: user.name || user.staffId || '', deng_review_comment: comment || '', deng_review_time: now }
+        : { li_review_user: user.name || user.staffId || '', li_review_comment: comment || '', li_review_time: now };
+    if (action === 'rejected') {
+      await refund.update({ ...reviewFields, status: 'rejected', approval_stage: 'rejected' }, { transaction });
+      await deposit.update({ status: 'available', update_time: now }, { transaction });
+      return { status: 'rejected' };
+    }
+    if (stage === 'pending_store') {
+      await refund.update({ ...reviewFields, approval_stage: 'pending_deng' }, { transaction });
+      return { status: 'pending', approvalStage: 'pending_deng' };
+    }
+    if (stage === 'pending_deng') {
+      await refund.update({ ...reviewFields, approval_stage: 'pending_li' }, { transaction });
+      return { status: 'pending', approvalStage: 'pending_li' };
+    }
+    await syncDepositRefundToDailyStatement(deposit, refund, transaction, now);
+    await refund.update({ ...reviewFields, status: 'approved', approval_stage: 'approved' }, { transaction });
+    await deposit.update({ refunded_amount: refund.amount, status: 'refunded', update_time: now }, { transaction });
+    return { status: 'approved', approvalStage: 'approved' };
+  });
+  ctx.body = { code: 0, data: result, message: result.status === 'approved' ? '退定金审批通过，负向日结明细已生成' : result.status === 'rejected' ? '退定金申请已拒绝' : '退定金申请已流转至下一审批环节' };
 }
 
 async function availableDeposits(ctx) {
@@ -3830,9 +3926,8 @@ async function listSalesReturnRequests(ctx) {
         { approval_stage: '' }
       );
     }
-    if (roles.some(role => DISTRIBUTOR_APPROVAL_ROLES.includes(role))) {
-      stageConditions.push({ approval_stage: 'pending_distributor' });
-    }
+    const assignedStage = depositRefundReviewerStage(ctx.state.user);
+    if (assignedStage) stageConditions.push({ approval_stage: assignedStage });
     if (!stageConditions.length) {
       where.return_id = '__NO_SALES_RETURN_APPROVAL_ACCESS__';
     } else {
@@ -4155,26 +4250,34 @@ async function reviewSalesReturn(ctx) {
   const result = await sequelize.transaction(async transaction => {
     const request = await SalesReturnRequest.findByPk(returnId, { transaction, lock: transaction.LOCK.UPDATE });
     if (!request) ctx.throw(404, '退单申请不存在');
-    assertStoreVisible(request.store_id, user);
     if (request.status !== 'pending') ctx.throw(400, '该退单申请当前无需审批');
 
     const now = new Date();
     const rejected = action === 'rejected';
     const stage = request.approval_stage || 'pending_store';
-    if (stage === 'pending_distributor' && !isAdmin) {
-      ctx.throw(403, '仅经销商总权限账号可以审批该退单申请');
+    const assignedStage = depositRefundReviewerStage(user);
+    if (stage === 'pending_store' && !isManager) {
+      ctx.throw(403, '仅店长可以审批该退单申请');
+    }
+    if (stage === 'pending_store') assertStoreVisible(request.store_id, user);
+    if (stage !== 'pending_store' && stage !== assignedStage) {
+      ctx.throw(403, stage === 'pending_deng' ? '仅邓红梅可以审批该退单申请' : '仅李燕可以审批该退单申请');
     }
 
-    const reviewData = stage === 'pending_distributor'
-      ? { distributor_review_user: user.name || user.staffId || '', distributor_review_comment: comment || '', distributor_review_time: now }
-      : { store_review_user: user.name || user.staffId || '', store_review_comment: comment || '', store_review_time: now };
+    const reviewData = stage === 'pending_store'
+      ? { store_review_user: user.name || user.staffId || '', store_review_comment: comment || '', store_review_time: now }
+      : stage === 'pending_deng'
+        ? { deng_review_user: user.name || user.staffId || '', deng_review_comment: comment || '', deng_review_time: now }
+        : { li_review_user: user.name || user.staffId || '', li_review_comment: comment || '', li_review_time: now };
     let nextStatus = 'pending';
     let nextStage = stage;
     if (rejected) {
       nextStatus = 'rejected';
       nextStage = 'rejected';
     } else if (stage === 'pending_store') {
-      nextStage = 'pending_distributor';
+      nextStage = 'pending_deng';
+    } else if (stage === 'pending_deng') {
+      nextStage = 'pending_li';
     } else {
       nextStatus = 'approved';
       nextStage = 'approved';
@@ -5486,6 +5589,8 @@ module.exports = {
   createDeposit,
   archiveDeposit,
   refundDeposit,
+  listDepositRefunds,
+  reviewDepositRefund,
   availableDeposits,
   getProductPns,
   getProductSns,
@@ -5835,6 +5940,36 @@ async function syncDepositToDailyStatement(deposit, transaction) {
     }, { transaction });
   }
 
+  await refreshDailyStatementTotals(statement, transaction);
+}
+
+async function syncDepositRefundToDailyStatement(deposit, refund, transaction, approvedAt = new Date()) {
+  const dateStr = getChinaDateString(approvedAt);
+  const [statement] = await DailyStatement.findOrCreate({
+    where: { store_id: deposit.store_id, statement_date: dateStr },
+    defaults: {
+      statement_id: generateUUID(), store_id: deposit.store_id, statement_date: dateStr,
+      total_revenue: 0, total_order_count: 0, total_settled: 0, status: 'pending'
+    },
+    transaction
+  });
+  const settlementAccountId = await resolveSettlementAccount(deposit.store_id, deposit.payment_method, transaction);
+  const detailPayload = {
+    order_no: refund.refund_no,
+    customer_name: deposit.customer_name || '',
+    payment_method: deposit.payment_method,
+    payment_code: deposit.payment_method,
+    business_type: 'deposit_refund',
+    amount: money(-Math.abs(Number(refund.amount || 0))),
+    settlement_account_id: settlementAccountId
+  };
+  const existing = await DailyStatementDetail.findOne({
+    where: { statement_id: statement.statement_id, order_id: refund.refund_id, business_type: 'deposit_refund' },
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  if (existing) await existing.update(detailPayload, { transaction });
+  else await DailyStatementDetail.create({ detail_id: generateUUID(), statement_id: statement.statement_id, order_id: refund.refund_id, ...detailPayload, settled: 0 }, { transaction });
   await refreshDailyStatementTotals(statement, transaction);
 }
 

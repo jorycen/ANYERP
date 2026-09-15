@@ -195,9 +195,32 @@ async function ensureProductDimensionSchema() {
 // business facts.
 async function runSchemaMigrations() {
   await ensureCriticalSchemaCompatibility();
+  await ensureDepositRefundApprovalSchema();
   await ensureSerializedInventorySchema();
   await ensureProductPnEffectiveUniqueIndex();
   console.log('[DB Schema] startup schema compatibility check completed');
+}
+
+// 退款审批只增加结构，不触碰任何历史定金或日结业务事实。
+async function ensureDepositRefundApprovalSchema() {
+  await checkAndAddColumn('T_SALES_RETURN_REQUEST', 'DENG_REVIEW_USER', 'VARCHAR(64) COMMENT "邓红梅审批人"', 'STORE_REVIEW_TIME');
+  await checkAndAddColumn('T_SALES_RETURN_REQUEST', 'DENG_REVIEW_COMMENT', 'VARCHAR(512) COMMENT "邓红梅审批意见"', 'DENG_REVIEW_USER');
+  await checkAndAddColumn('T_SALES_RETURN_REQUEST', 'DENG_REVIEW_TIME', 'DATETIME COMMENT "邓红梅审批时间"', 'DENG_REVIEW_COMMENT');
+  await checkAndAddColumn('T_SALES_RETURN_REQUEST', 'LI_REVIEW_USER', 'VARCHAR(64) COMMENT "李燕审批人"', 'DENG_REVIEW_TIME');
+  await checkAndAddColumn('T_SALES_RETURN_REQUEST', 'LI_REVIEW_COMMENT', 'VARCHAR(512) COMMENT "李燕审批意见"', 'LI_REVIEW_USER');
+  await checkAndAddColumn('T_SALES_RETURN_REQUEST', 'LI_REVIEW_TIME', 'DATETIME COMMENT "李燕审批时间"', 'LI_REVIEW_COMMENT');
+  await checkAndAddColumn('T_DEPOSIT_REFUND', 'STATUS', "VARCHAR(32) NOT NULL DEFAULT 'pending' COMMENT '退款审批状态'", 'REASON');
+  await checkAndAddColumn('T_DEPOSIT_REFUND', 'APPROVAL_STAGE', "VARCHAR(32) NOT NULL DEFAULT 'pending_store' COMMENT '当前审批环节'", 'STATUS');
+  await checkAndAddColumn('T_DEPOSIT_REFUND', 'STORE_REVIEW_USER', 'VARCHAR(64) COMMENT "店长审批人"', 'APPROVAL_STAGE');
+  await checkAndAddColumn('T_DEPOSIT_REFUND', 'STORE_REVIEW_COMMENT', 'VARCHAR(512) COMMENT "店长审批意见"', 'STORE_REVIEW_USER');
+  await checkAndAddColumn('T_DEPOSIT_REFUND', 'STORE_REVIEW_TIME', 'DATETIME COMMENT "店长审批时间"', 'STORE_REVIEW_COMMENT');
+  await checkAndAddColumn('T_DEPOSIT_REFUND', 'DENG_REVIEW_USER', 'VARCHAR(64) COMMENT "邓红梅审批人"', 'STORE_REVIEW_TIME');
+  await checkAndAddColumn('T_DEPOSIT_REFUND', 'DENG_REVIEW_COMMENT', 'VARCHAR(512) COMMENT "邓红梅审批意见"', 'DENG_REVIEW_USER');
+  await checkAndAddColumn('T_DEPOSIT_REFUND', 'DENG_REVIEW_TIME', 'DATETIME COMMENT "邓红梅审批时间"', 'DENG_REVIEW_COMMENT');
+  await checkAndAddColumn('T_DEPOSIT_REFUND', 'LI_REVIEW_USER', 'VARCHAR(64) COMMENT "李燕审批人"', 'DENG_REVIEW_TIME');
+  await checkAndAddColumn('T_DEPOSIT_REFUND', 'LI_REVIEW_COMMENT', 'VARCHAR(512) COMMENT "李燕审批意见"', 'LI_REVIEW_USER');
+  await checkAndAddColumn('T_DEPOSIT_REFUND', 'LI_REVIEW_TIME', 'DATETIME COMMENT "李燕审批时间"', 'LI_REVIEW_COMMENT');
+  await checkAndAddIndex('T_DEPOSIT_REFUND', 'idx_deposit_refund_stage', 'ALTER TABLE T_DEPOSIT_REFUND ADD INDEX idx_deposit_refund_stage (APPROVAL_STAGE)');
 }
 
 // Ensure fields used by the product/order read path exist before the rest of

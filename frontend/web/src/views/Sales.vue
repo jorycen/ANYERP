@@ -536,6 +536,7 @@
           <el-option label="已归档" value="archived" />
           <el-option label="已核销" value="redeemed" />
           <el-option label="已退款" value="refunded" />
+          <el-option label="退款审批中" value="refund_pending" />
         </el-select>
         <el-input v-model="depositQuery.customerPhone" placeholder="客户电话" clearable style="width: 180px" />
         <el-button type="primary" @click="loadDeposits">搜索</el-button>
@@ -1918,6 +1919,7 @@ const getDepositStatusType = (status) => {
     submitted: 'warning',
     archived: 'success',
     redeemed: 'info',
+    refund_pending: 'warning',
     refunded: 'danger',
     voided: 'danger'
   }
@@ -1930,6 +1932,7 @@ const getDepositStatusText = (status) => {
     submitted: '已提交',
     archived: '已归档',
     redeemed: '已核销',
+    refund_pending: '退款审批中',
     refunded: '已退款',
     voided: '已作废'
   }

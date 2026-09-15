@@ -28,6 +28,8 @@ const {
   createDeposit,
   archiveDeposit,
   refundDeposit,
+  listDepositRefunds,
+  reviewDepositRefund,
   availableDeposits,
   getProductPns,
   getProductSns,
@@ -91,6 +93,8 @@ router.post('/deposits', enforceStoreOwnership, createDeposit);
 router.get('/deposits/available', availableDeposits);
 router.post('/deposits/:depositId/archive', enforceStoreOwnership, archiveDeposit);
 router.post('/deposits/:depositId/refund', enforceStoreOwnership, refundDeposit);
+router.get('/deposit-refunds', listDepositRefunds);
+router.post('/deposit-refunds/:refundId/review', reviewDepositRefund);
 router.get('/deposit-list', listDeposits);
 router.get('/deposits/list', listDeposits);
 router.post('/deposit', enforceStoreOwnership, createDeposit);
