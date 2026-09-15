@@ -58,6 +58,7 @@ test('backend startup performs schema compatibility only', () => {
   );
   assert.doesNotMatch(schemaMigrationSource, /UPDATE\s+T_/i);
   assert.doesNotMatch(schemaMigrationSource, /INSERT\s+(?:IGNORE\s+)?INTO\s+T_/i);
+  assert.doesNotMatch(migrationSource, /SET\s+inbound\.STATUS\s*=\s*'pending'/i);
 });
 
 test('location disable stock check counts standard inventory buckets without double-counting normal stock', () => {
