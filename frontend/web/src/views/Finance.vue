@@ -526,7 +526,7 @@
             border
             @selection-change="onPayableSelectionChange"
           >
-            <el-table-column type="selection" width="50" reserve-selection />
+            <el-table-column type="selection" width="50" reserve-selection :selectable="isPayableSettlementSelectable" />
             <el-table-column label="来源单号" width="190">
               <template #default="{ row }">
                 <el-button v-if="row.source_type === 'purchase' || row.request_id" link type="primary" @click="openPurchaseRequestDetail(row)">
@@ -3292,6 +3292,12 @@ const onSelectionChange = (selection) => {
 
 const onPayableSelectionChange = (selection) => {
   selectedPayableRows.value = selection
+}
+
+const isPayableSettlementSelectable = (row) => {
+  const status = String(row?.status || '')
+  if (!['unpaid', 'partial_settled', 'settling', 'credit'].includes(status)) return false
+  return Math.abs(getPayableRemainingAmount(row)) > 0.005
 }
 
 const onPaymentAccountTypeChange = (value) => {
