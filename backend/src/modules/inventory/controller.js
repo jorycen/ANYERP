@@ -6189,6 +6189,12 @@ async function approveReturn(ctx) {
     }, { transaction: t });
 
     await t.commit();
+    if (nextStatus === 'approved') {
+      // 审批通过即自动执行退库，复用现有库存扣减与财务记账事务。
+      await executeReturn(ctx);
+      ctx.body = { ...ctx.body, message: '退库申请已审批并自动完成退库' };
+      return;
+    }
     ctx.body = { code: 0, message: nextStatus === 'approved' ? '退库申请已通过' : '退库申请已拒绝' };
   } catch (error) {
     await t.rollback();

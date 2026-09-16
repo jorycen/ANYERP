@@ -573,7 +573,6 @@
                 <template #default="{ row }">
                   <el-button v-if="row.status === 'pending'" link type="success" @click="approveReturn(row, 'approved')">通过</el-button>
                   <el-button v-if="row.status === 'pending'" link type="danger" @click="approveReturn(row, 'rejected')">拒绝</el-button>
-                  <el-button v-if="row.status === 'approved'" link type="primary" @click="executeApprovedReturn(row)">执行退库</el-button>
                 </template>
               </el-table-column>
             </el-table>
