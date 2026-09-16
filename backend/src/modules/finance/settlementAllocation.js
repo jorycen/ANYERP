@@ -43,7 +43,11 @@ function getOpenPayableStatus(total, settled, paid = 0) {
 
 function getPayableRemaining(total, settled = 0, offset = 0) {
   const totalAmount = Number(total || 0);
-  if (totalAmount < 0) return roundAmount(-Math.max(Math.abs(totalAmount) - Number(offset || 0), 0));
+  if (totalAmount < 0) {
+    // 负向应付款以绝对值计算可抵扣余额；已生成结算单的负金额也必须计入已抵扣。
+    const settledCredit = Math.abs(Number(settled || 0));
+    return roundAmount(-Math.max(Math.abs(totalAmount) - settledCredit - Number(offset || 0), 0));
+  }
   return roundAmount(totalAmount - Number(settled || 0) - Number(offset || 0));
 }
 
