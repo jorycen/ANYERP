@@ -151,6 +151,47 @@ test('待审批结算单退回草稿并保留退回原因', async () => {
   }
 });
 
+test('作废待审批结算单时取消关联审批实例和待办任务', async () => {
+  const originals = {
+    settlementFindByPk: models.Settlement.findByPk,
+    instanceFindAll: models.ApprovalFlowInstance.findAll,
+    taskUpdate: models.ApprovalTask.update,
+    approvalLogCreate: models.ApprovalActionLog.create,
+    transaction: models.sequelize.transaction
+  };
+  const settlementUpdates = [];
+  const instanceUpdates = [];
+  const taskUpdates = [];
+  const approvalLogs = [];
+  models.Settlement.findByPk = async () => ({
+    settlement_id: 'SETTLEMENT_VOID_1', status: 'pending_approval', payment_status: 'unpaid', items: [],
+    update: async values => settlementUpdates.push(values)
+  });
+  models.ApprovalFlowInstance.findAll = async () => [{
+    instance_id: 'APPROVAL_VOID_1',
+    update: async values => instanceUpdates.push(values)
+  }];
+  models.ApprovalTask.update = async (values, options) => taskUpdates.push({ values, options });
+  models.ApprovalActionLog.create = async values => { approvalLogs.push(values); return values; };
+  models.sequelize.transaction = async callback => callback({ LOCK: { UPDATE: 'UPDATE' } });
+
+  try {
+    const ctx = context({ body: { settlementId: 'SETTLEMENT_VOID_1' } });
+    await payableController.voidSettlement(ctx);
+    assert.equal(settlementUpdates[0].status, 'voided');
+    assert.equal(taskUpdates[0].values.status, 'cancelled');
+    assert.equal(instanceUpdates[0].status, 'cancelled');
+    assert.equal(approvalLogs[0].action, 'cancelled');
+    assert.match(approvalLogs[0].comment, /已作废/);
+  } finally {
+    models.Settlement.findByPk = originals.settlementFindByPk;
+    models.ApprovalFlowInstance.findAll = originals.instanceFindAll;
+    models.ApprovalTask.update = originals.taskUpdate;
+    models.ApprovalActionLog.create = originals.approvalLogCreate;
+    models.sequelize.transaction = originals.transaction;
+  }
+});
+
 test('制单人可以审批自己的结算单', async () => {
   const original = models.Settlement.findByPk;
   const originalApprovalFindOne = models.ApprovalFlowInstance.findOne;

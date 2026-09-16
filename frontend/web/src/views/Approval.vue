@@ -869,7 +869,13 @@ async function review(row, action) {
   let comment = ''
   if (action === 'reject') { const result = await ElMessageBox.prompt('请输入拒绝原因', '拒绝审批', { inputType: 'textarea' }).catch(() => null); if (!result) return; comment = result.value }
   else if (!(await ElMessageBox.confirm('确认通过该审批？', '审批确认', { type: 'warning' }).catch(() => false))) return
-  await api.actionApproval(row.instance_id, { action, comment }); ElMessage.success('审批处理完成'); await reload()
+  try {
+    await api.actionApproval(row.instance_id, { action, comment })
+    ElMessage.success('审批处理完成')
+    await reload()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || error.message || '审批处理失败')
+  }
 }
 async function resubmit(row) { const result = await ElMessageBox.prompt('可填写重新提交说明', '重新提交', { inputType: 'textarea' }).catch(() => null); if (result === null) return; await api.resubmitApproval(row.instance_id, { comment: result.value }); ElMessage.success('已重新提交'); await reload() }
 function newFlow() { Object.assign(flowForm, { definitionId: '', flowCode: '', name: '', businessType: '', nodes: [newNode()] }); flowDialogVisible.value = true }

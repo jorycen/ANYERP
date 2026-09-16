@@ -9,6 +9,8 @@ const {
   SettlementPaymentRecord,
   ApprovalFlowDefinition,
   ApprovalFlowInstance,
+  ApprovalTask,
+  ApprovalActionLog,
   Staff,
   Expense,
   Supplier,
@@ -1684,6 +1686,36 @@ async function voidSettlement(ctx) {
       if (settlement.status === 'voided') ctx.throw(400, '结算单已经作废');
       if (settlement.payment_status !== 'unpaid') ctx.throw(400, '已付款结算单不能作废');
       await settlement.update({ status: 'voided', voided_time: new Date() }, { transaction });
+      const approvalInstances = await ApprovalFlowInstance.findAll({
+        where: {
+          business_type: 'payable_settlement',
+          business_id: String(settlement.settlement_id),
+          status: 'pending'
+        },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      const now = new Date();
+      for (const instance of approvalInstances) {
+        await ApprovalTask.update(
+          { status: 'cancelled', acted_time: now },
+          {
+            where: { instance_id: instance.instance_id, status: { [Op.in]: ['pending', 'waiting'] } },
+            transaction
+          }
+        );
+        await instance.update({ status: 'cancelled', completed_time: now, update_time: now }, { transaction });
+        await ApprovalActionLog.create({
+          log_id: generateUUID(),
+          instance_id: instance.instance_id,
+          task_id: null,
+          action: 'cancelled',
+          actor_staff_id: ctx.state.user.staffId,
+          actor_name: ctx.state.user.name || ctx.state.user.phone || String(ctx.state.user.staffId),
+          comment: '关联应付结算单已作废，审批自动终止',
+          detail_json: JSON.stringify({ settlementId: settlement.settlement_id, reason: 'settlement_voided' })
+        }, { transaction });
+      }
       for (const payableId of new Set((settlement.items || []).map(item => item.payable_id).filter(Boolean))) {
         await refreshPayableState(payableId, transaction);
       }
