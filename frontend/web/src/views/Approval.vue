@@ -525,7 +525,14 @@ function salesApprovalStage(row = {}) {
 function salesApprovalStageText(row = {}) {
   return salesApprovalStage(row) === 'distributor' ? '待经销商总权限审批' : '待店长审批'
 }
-function taskNode(row) { return row.isSalesApproval ? salesApprovalStageText(row.salesRow || {}) : row.node_name || '-' }
+function taskNode(row) {
+  if (row.isSalesApproval) return salesApprovalStageText(row.salesRow || {})
+  if (row.moduleType === 'sales_return') {
+    const stage = row.moduleRow?.approval_stage || row.moduleRow?.approvalStage || ''
+    return stage === 'pending_li' ? '李燕审批' : stage === 'pending_deng' ? '邓红梅审批' : stage === 'pending_duan' ? '段超审批' : '店长审批'
+  }
+  return row.node_name || '-'
+}
 function taskBusinessType(row) { return businessTypeText(row.isSalesApproval ? 'sales_negative_gross_profit' : row.Instance?.business_type) }
 function taskNo(row) { return row.isSalesApproval ? row.salesRow?.order_no || '-' : row.Instance?.instance_no || '-' }
 function taskCreateTime(row) { return row.isSalesApproval ? row.salesRow?.create_time || '-' : row.create_time || row.Instance?.create_time || '-' }
