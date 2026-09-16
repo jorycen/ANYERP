@@ -1213,7 +1213,7 @@ async function refreshSettlementPaymentState(settlement, transaction = null) {
  * 结算单列表
  */
 function buildSettlementListWhere(query, user) {
-  const { supplierId, regionId, distributorId, taxStatus, settlementType, status, paymentStatus } = query;
+  const { supplierId, regionId, distributorId, taxStatus, settlementType, status, paymentStatus, settlementNo, payeeName } = query;
   const where = { is_deleted: 0 };
 
   if (supplierId) where.supplier_id = supplierId;
@@ -1226,6 +1226,11 @@ function buildSettlementListWhere(query, user) {
   }
   if (status) where.status = status;
   if (paymentStatus) where.payment_status = paymentStatus;
+  if (settlementNo) where.settlement_no = { [Op.like]: `%${String(settlementNo).trim()}%` };
+  if (payeeName) {
+    const keyword = `%${String(payeeName).trim()}%`;
+    where[Op.or] = [{ payee_name: { [Op.like]: keyword } }, { supplier_name: { [Op.like]: keyword } }];
+  }
   applyDistributorFilter(where, user);
   return where;
 }

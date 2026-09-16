@@ -9,6 +9,21 @@
       </template>
 
       <div class="filter-bar">
+        <el-select
+          v-model="query.payeeName"
+          placeholder="收款方"
+          clearable
+          filterable
+          remote
+          reserve-keyword
+          :remote-method="searchPayees"
+          :loading="payeeLoading"
+          style="width: 180px"
+          @change="reload"
+        >
+          <el-option v-for="name in payeeOptions" :key="name" :label="name" :value="name" />
+        </el-select>
+        <el-input v-model="query.settlementNo" placeholder="结算单号" clearable style="width: 190px" @keyup.enter="reload" />
         <el-select v-model="query.distributorId" placeholder="经销商" clearable style="width: 150px" @change="reload">
           <el-option v-for="item in distributorOptions" :key="item.distributor_id" :label="item.name" :value="item.distributor_id" />
         </el-select>
@@ -226,7 +241,9 @@ const distributorOptions = ref([
   { distributor_id: 'DIST001', name: '艾诺云' },
   { distributor_id: 'DIST002', name: '艾诺志兴' }
 ])
-const query = reactive({ page: 1, pageSize: 20, settlementType: 'supplier,expense,reimbursement', distributorId: '', taxStatus: '', status: '', paymentStatus: '' })
+const query = reactive({ page: 1, pageSize: 20, settlementType: 'supplier,expense,reimbursement', distributorId: '', taxStatus: '', status: '', paymentStatus: '', settlementNo: '', payeeName: '' })
+const payeeOptions = ref([])
+const payeeLoading = ref(false)
 
 const paymentRemaining = computed(() => Math.max(0, remaining(paymentSettlement.value)))
 
@@ -310,6 +327,21 @@ const openDetail = async row => {
     } else ElMessage.error(res.message || '加载详情失败')
   } catch (error) {
     ElMessage.error(error.response?.data?.message || '加载详情失败')
+  }
+}
+
+const searchPayees = async keyword => {
+  if (!keyword) {
+    payeeOptions.value = []
+    return
+  }
+  payeeLoading.value = true
+  try {
+    const res = await api.getSettlementList({ ...query, page: 1, pageSize: 50, payeeName: keyword })
+    const rows = res.code === 0 ? (res.data?.list || []) : []
+    payeeOptions.value = [...new Set(rows.map(row => row.payee_name || row.supplier_name).filter(Boolean))]
+  } finally {
+    payeeLoading.value = false
   }
 }
 
