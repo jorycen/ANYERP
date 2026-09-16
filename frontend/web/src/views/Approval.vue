@@ -128,6 +128,17 @@
             <el-descriptions-item v-for="field in detailScalarFields(currentInstance.payload, currentInstance.business_type)" :key="field.key" :label="field.label" :span="field.span">{{ field.value }}</el-descriptions-item>
           </el-descriptions>
         </template>
+        <template v-if="currentInstance.business_type === 'payable_settlement'">
+          <el-divider>收款方账户</el-divider>
+          <el-descriptions :column="2" border>
+            <el-descriptions-item label="收款方">{{ currentInstance.counterparty_payment_info?.payeeName || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="收款单位">{{ currentInstance.counterparty_payment_info?.companyName || '未登记收款账户' }}</el-descriptions-item>
+            <el-descriptions-item label="开户行">{{ currentInstance.counterparty_payment_info?.bankName || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="收款账号">{{ currentInstance.counterparty_payment_info?.accountNumber || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="收款方税号">{{ currentInstance.counterparty_payment_info?.taxNo || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="收款备注" :span="2">{{ currentInstance.counterparty_payment_info?.remark || '-' }}</el-descriptions-item>
+          </el-descriptions>
+        </template>
         <template v-if="currentInstance.originalData">
           <el-divider>{{ currentInstance.originalTitle || '原始单据' }}</el-divider>
           <el-descriptions :column="2" border>

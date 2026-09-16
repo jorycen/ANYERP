@@ -235,7 +235,24 @@ async function getInstance(ctx) {
   });
   if (!row) ctx.throw(404, '审批实例不存在');
   if (!(await canReadInstance(ctx, row))) ctx.throw(403, '无权查看该审批实例');
-  ctx.body = toInstance(row);
+  const data = toInstance(row);
+  if (data.business_type === 'payable_settlement') {
+    const settlement = await Settlement.findOne({
+      where: { settlement_id: data.business_id, is_deleted: 0 },
+      attributes: ['payee_name', 'supplier_name', 'supplier_account_snapshot', 'other_payment_remark']
+    });
+    const snapshot = parseJson(settlement?.supplier_account_snapshot, {}) || {};
+    data.counterparty_payment_info = {
+      payeeName: settlement?.payee_name || settlement?.supplier_name || '',
+      companyName: snapshot.companyName || '',
+      bankName: snapshot.bankName || '',
+      accountNumber: snapshot.accountNumber || '',
+      taxNo: snapshot.taxNo || '',
+      remark: snapshot.remark || settlement?.other_payment_remark || '',
+      available: Boolean(snapshot.companyName || snapshot.bankName || snapshot.accountNumber || snapshot.taxNo || snapshot.remark || settlement?.other_payment_remark)
+    };
+  }
+  ctx.body = data;
 }
 
 async function submitInstance(ctx) {
