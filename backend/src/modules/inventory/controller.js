@@ -3156,14 +3156,14 @@ async function getInboundDetailById(ctx, inboundId, { distributorTrace = false }
     const isSalesReturnInbound = String(inbound.source_type || '').toLowerCase() === 'sales_return';
     const purchaseWhere = !isSalesReturnInbound && inbound.purchase_request_id
       ? { request_id: inbound.purchase_request_id }
-      : !isSalesReturnInbound && String(inbound.source_type || '').toLowerCase() === 'purchase' && inbound.source_no
+      : !isSalesReturnInbound && inbound.source_no
         ? { request_no: inbound.source_no }
         : null;
     const purchaseRequest = purchaseWhere
       ? await PurchaseRequest.findOne({
           where: purchaseWhere,
           attributes: ['request_id', 'request_no', 'apply_user', 'submit_user', 'supplier_id'],
-          include: distributorTrace ? [{ model: Supplier, attributes: ['supplier_id', 'name'] }] : []
+          include: [{ model: Supplier, attributes: ['supplier_id', 'name'] }]
         })
       : null;
     const salesReturnRequest = isSalesReturnInbound && inbound.source_no
@@ -3187,16 +3187,14 @@ async function getInboundDetailById(ctx, inboundId, { distributorTrace = false }
       result.purchase_initiator_name = initiator;
       result.purchase_applicant_name = initiator;
     }
-    if (distributorTrace) {
-      result.purchase_source = {
-        request_id: purchaseRequest?.request_id || inbound.purchase_request_id || '',
-        request_no: purchaseRequest?.request_no || (inbound.source_type === 'purchase' ? inbound.source_no : '') || '',
-        supplier_id: purchaseRequest?.supplier_id || '',
-        supplier_name: purchaseRequest?.Supplier?.name || '',
-        source_type: inbound.source_type || '',
-        source_no: inbound.source_no || ''
-      };
-    }
+    result.purchase_source = {
+      request_id: purchaseRequest?.request_id || inbound.purchase_request_id || '',
+      request_no: purchaseRequest?.request_no || inbound.source_no || '',
+      supplier_id: purchaseRequest?.supplier_id || '',
+      supplier_name: purchaseRequest?.Supplier?.name || '',
+      source_type: inbound.source_type || '',
+      source_no: inbound.source_no || ''
+    };
 
     if (result.items && result.items.length > 0) {
       const productIds = result.items.map(item => item.product_id).filter(id => id);
