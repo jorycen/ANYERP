@@ -540,6 +540,7 @@
                 style="width: 180px"
                 @keyup.enter="searchReturnByNo"
               />
+              <el-input v-model="returnQuery.inboundNo" placeholder="原入库单号" clearable style="width: 180px" @keyup.enter="searchReturnByNo" />
               <el-select v-model="returnQuery.status" placeholder="状态" clearable style="width: 140px" @change="loadReturnList">
                 <el-option label="全部" value="" />
                 <el-option label="待审批" value="pending" />
@@ -2072,6 +2073,7 @@ const returnQuery = reactive({
   pageSize: 20,
   status: '',
   returnNo: '',
+  inboundNo: '',
   returnId: ''
 })
 

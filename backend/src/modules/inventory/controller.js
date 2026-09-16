@@ -5965,12 +5965,13 @@ async function getReturnStockWithItems(returnId, transaction) {
  * 查询退库申请列表
  */
 async function getReturnList(ctx) {
-  const { status, inboundId, returnId, returnNo, scope, page = 1, pageSize = 20 } = ctx.query;
+  const { status, inboundId, returnId, returnNo, inboundNo, scope, page = 1, pageSize = 20 } = ctx.query;
   const where = {};
   if (status) where.status = status;
   if (inboundId) where.inbound_id = inboundId;
   if (returnId) where.return_id = returnId;
   if (returnNo) where.return_no = { [Op.like]: `%${String(returnNo).trim()}%` };
+  if (inboundNo) where.inbound_no = { [Op.like]: `%${String(inboundNo).trim()}%` };
   const traceReturnLookup = returnId && String(ctx.query.trace || '') === '1';
   if (!ctx.state.user.accessibleStoreIds.includes('*') && !traceReturnLookup) {
     where.store_id = ctx.state.user.accessibleStoreIds;
