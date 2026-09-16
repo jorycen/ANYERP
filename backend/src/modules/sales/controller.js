@@ -249,6 +249,11 @@ const DEPOSIT_REFUND_APPROVER_PHONES = Object.freeze({
   deng: '14780834570',
   li: '18010607277'
 });
+const SALES_RETURN_APPROVER_PHONES = Object.freeze({
+  duan: '15308182113',
+  deng: '14780834570',
+  li: '18010607277'
+});
 const STORE_APPROVAL_ROLES = ['manager', 'store_manager', 'store_admin', 'admin', 'boss', 'distributor'];
 const DISTRIBUTOR_APPROVAL_ROLES = ['admin', 'boss', 'distributor'];
 
@@ -3960,7 +3965,11 @@ async function requestSalesReturn(ctx) {
     returnGovSubsidy: returnGovSubsidyInput,
     return_gov_subsidy: returnGovSubsidySnake,
     policySubsidyRefundAmount: policySubsidyRefundAmountInput,
-    policy_subsidy_refund_amount: policySubsidyRefundAmountSnake
+    policy_subsidy_refund_amount: policySubsidyRefundAmountSnake,
+    refundHandling,
+    refund_handling: refundHandlingSnake,
+    refundRemark,
+    refund_remark: refundRemarkSnake
   } = ctx.request.body || {};
   const normalizedReason = normalizeSalesReturnReason(reason);
   if (!normalizedReason) ctx.throw(400, '退单缘由不能为空');
@@ -4046,6 +4055,12 @@ async function requestSalesReturn(ctx) {
       : 0;
     const refundAmount = maxRefundAmount;
     const effectiveReturnGovSubsidy = uniqueSelectedItems.some(({ sourceItem }) => isSubsidyEligibleItem(sourceItem));
+    const refundHandlingValue = refundHandling !== undefined ? refundHandling : refundHandlingSnake;
+    const normalizedRefundHandling = ['actual_refund', 'no_refund', 'pending'].includes(String(refundHandlingValue || '').trim())
+      ? String(refundHandlingValue).trim()
+      : 'pending';
+    const refundRemarkValue = refundRemark !== undefined ? refundRemark : refundRemarkSnake;
+    const normalizedRefundRemark = String(refundRemarkValue || '').trim().slice(0, 512);
     const returnId = generateUUID();
     const returnNo = generateBusinessNo('RET');
 
@@ -4076,6 +4091,8 @@ async function requestSalesReturn(ctx) {
         requestedPolicySubsidyRefund: effectiveReturnGovSubsidy && Number.isFinite(requestedPolicySubsidyRefund)
           ? Math.max(0, money(requestedPolicySubsidyRefund))
           : 0,
+        refundHandling: normalizedRefundHandling,
+        refundRemark: normalizedRefundRemark,
         selectedItemIds: uniqueSelectedItems.map(row => String(row.sourceItem.item_id || ''))
       }),
       reason: normalizedReason,
@@ -4255,17 +4272,26 @@ async function reviewSalesReturn(ctx) {
     const now = new Date();
     const rejected = action === 'rejected';
     const stage = request.approval_stage || 'pending_store';
-    const assignedStage = depositRefundReviewerStage(user);
+    const phone = String(user?.phone || '').trim();
+    const assignedStage = phone === SALES_RETURN_APPROVER_PHONES.duan
+      ? 'pending_duan'
+      : phone === SALES_RETURN_APPROVER_PHONES.deng
+        ? 'pending_deng'
+        : phone === SALES_RETURN_APPROVER_PHONES.li
+          ? 'pending_li'
+          : '';
     if (stage === 'pending_store' && !isManager) {
       ctx.throw(403, '仅店长可以审批该退单申请');
     }
     if (stage === 'pending_store') assertStoreVisible(request.store_id, user);
     if (stage !== 'pending_store' && stage !== assignedStage) {
-      ctx.throw(403, stage === 'pending_deng' ? '仅邓红梅可以审批该退单申请' : '仅李燕可以审批该退单申请');
+      ctx.throw(403, stage === 'pending_duan' ? '仅段超可以审批该退单申请' : stage === 'pending_deng' ? '仅邓红梅可以审批该退单申请' : '仅李燕可以审批该退单申请');
     }
 
     const reviewData = stage === 'pending_store'
       ? { store_review_user: user.name || user.staffId || '', store_review_comment: comment || '', store_review_time: now }
+      : stage === 'pending_duan'
+        ? { distributor_review_user: user.name || user.staffId || '', distributor_review_comment: comment || '', distributor_review_time: now }
       : stage === 'pending_deng'
         ? { deng_review_user: user.name || user.staffId || '', deng_review_comment: comment || '', deng_review_time: now }
         : { li_review_user: user.name || user.staffId || '', li_review_comment: comment || '', li_review_time: now };
@@ -4275,6 +4301,8 @@ async function reviewSalesReturn(ctx) {
       nextStatus = 'rejected';
       nextStage = 'rejected';
     } else if (stage === 'pending_store') {
+      nextStage = 'pending_duan';
+    } else if (stage === 'pending_duan') {
       nextStage = 'pending_deng';
     } else if (stage === 'pending_deng') {
       nextStage = 'pending_li';

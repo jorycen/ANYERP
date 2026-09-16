@@ -511,6 +511,16 @@
         <el-form-item label="退单原因" required>
           <el-input v-model="returnForm.reason" type="textarea" :rows="4" maxlength="500" show-word-limit placeholder="请输入退单原因" />
         </el-form-item>
+        <el-form-item label="退款处理">
+          <el-radio-group v-model="returnForm.refundHandling">
+            <el-radio label="actual_refund">实际退款</el-radio>
+            <el-radio label="no_refund">无需退款</el-radio>
+            <el-radio label="pending">待处理</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="处理备注">
+          <el-input v-model="returnForm.refundRemark" maxlength="512" show-word-limit placeholder="可填写退款处理说明" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="returnDialogVisible = false">取消</el-button>
@@ -648,7 +658,7 @@ const remarkSaving = ref(false)
 const returnDialogVisible = ref(false)
 const returnSubmitting = ref(false)
 const returnOrder = ref(null)
-const returnForm = reactive({ reason: '' })
+const returnForm = reactive({ reason: '', refundHandling: 'pending', refundRemark: '' })
 
 const canExportOrders = computed(() => isDistributorAccount() || hasRole(['manager', 'store_manager', 'store_admin']))
 const actionLabel = (action) => ({
@@ -1124,6 +1134,8 @@ const handleVoid = async (row) => {
 const handleReturn = (row) => {
   returnOrder.value = row
   returnForm.reason = ''
+  returnForm.refundHandling = 'pending'
+  returnForm.refundRemark = ''
   returnDialogVisible.value = true
 }
 
@@ -1134,7 +1146,12 @@ const submitReturn = async () => {
   if (!reason) return ElMessage.warning('请输入退单原因')
   returnSubmitting.value = true
   try {
-    const res = await api.submitSalesReturnRequest({ orderId, reason })
+    const res = await api.submitSalesReturnRequest({
+      orderId,
+      reason,
+      refundHandling: returnForm.refundHandling || 'pending',
+      refundRemark: String(returnForm.refundRemark || '').trim()
+    })
     if (res.code === 0) {
       ElMessage.success(res.message || '退单申请已提交')
       returnDialogVisible.value = false
