@@ -106,6 +106,12 @@
               <el-option label="全部门店" value="" />
               <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
             </el-select>
+            <el-select v-model="dailyCustomerName" placeholder="客户名称" clearable filterable remote :remote-method="searchDailyCustomers" :loading="dailyCustomerLoading" style="width: 170px" @change="loadDailyData">
+              <el-option v-for="name in dailyCustomerOptions" :key="name" :label="name" :value="name" />
+            </el-select>
+            <el-select v-model="dailyBusinessTypeFilter" placeholder="业务类型" clearable style="width: 140px" @change="loadDailyData">
+              <el-option label="销售收款" value="sales_receipt" /><el-option label="定金收款" value="deposit_receipt" />
+            </el-select>
             <el-select v-model="productSettlementQuery.entryType" placeholder="单据类型" clearable style="width: 140px">
               <el-option label="全部类型" value="" />
               <el-option label="销售结算" value="sale" />
@@ -1619,6 +1625,10 @@ const paymentMethods = ref([])
 const paymentMethodFilter = ref('')
 const settledFilter = ref('')
 const settlementAccountFilter = ref('')
+const dailyCustomerName = ref('')
+const dailyCustomerOptions = ref([])
+const dailyCustomerLoading = ref(false)
+const dailyBusinessTypeFilter = ref('')
 const settlementAccounts = ref([])
 const selectedDetailIds = ref([])
 const exportingList = ref('')
@@ -2179,6 +2189,8 @@ const loadDailyData = async () => {
     if (paymentMethodFilter.value) params.paymentMethod = paymentMethodFilter.value
     if (settledFilter.value !== '') params.settled = settledFilter.value
     if (settlementAccountFilter.value) params.settlementAccountId = settlementAccountFilter.value
+    if (dailyCustomerName.value) params.customerName = dailyCustomerName.value
+    if (dailyBusinessTypeFilter.value) params.businessType = dailyBusinessTypeFilter.value
 
     const res = await api.getDailyDetails(params)
     if (res.code === 0) {
@@ -2188,6 +2200,15 @@ const loadDailyData = async () => {
     }
     selectedDetailIds.value = []
   } catch (err) { ElMessage.error('加载日结清单失败') }
+}
+
+const searchDailyCustomers = async keyword => {
+  if (!keyword) { dailyCustomerOptions.value = []; return }
+  dailyCustomerLoading.value = true
+  try {
+    const res = await api.getDailyDetails({ page: 1, pageSize: 100, customerName: keyword })
+    dailyCustomerOptions.value = [...new Set((res.data?.list || []).map(row => row.customer_name).filter(Boolean))]
+  } finally { dailyCustomerLoading.value = false }
 }
 
 const loadProductSettlementData = async () => {

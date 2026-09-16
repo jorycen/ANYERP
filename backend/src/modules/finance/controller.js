@@ -60,7 +60,7 @@ async function getAccountBalance(accountId, transaction = null) {
  * 直接查询 DailyStatementDetail 平铺展示
  */
 async function getStatementDetails(ctx, businessWhere) {
-  const { storeId, startDate, endDate, settled, paymentMethod, settlementAccountId, page = 1, pageSize = 20 } = ctx.query;
+  const { storeId, startDate, endDate, settled, paymentMethod, settlementAccountId, customerName, businessType, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
   const exportMode = Boolean(ctx.state.exportMode);
 
@@ -75,6 +75,8 @@ async function getStatementDetails(ctx, businessWhere) {
   if (settlementAccountId) {
     where.settlement_account_id = settlementAccountId;
   }
+  if (customerName) where.customer_name = { [Op.like]: `%${String(customerName).trim()}%` };
+  if (businessType) where.business_type = businessType;
 
   const statementWhere = {};
   if (startDate && endDate) {
