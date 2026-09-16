@@ -1318,12 +1318,14 @@
             <template #default="{ row }">{{ row.manufacturer_code || '-' }}</template>
           </el-table-column>
           <el-table-column prop="pn_code" label="PN码" width="140" />
+          <el-table-column label="原始数量" width="90"><template #default="{ row }">{{ row.quantity }}</template></el-table-column>
           <el-table-column label="当前数量" width="90">
             <template #default="{ row }">{{ row.current_quantity ?? row.quantity }}</template>
           </el-table-column>
           <el-table-column prop="unit_price" label="单价" width="110">
             <template #default="{ row }">¥{{ row.unit_price || 0 }}</template>
           </el-table-column>
+          <el-table-column label="原始小计" width="110"><template #default="{ row }">¥{{ formatMoney(purchaseItemSubtotal(row)) }}</template></el-table-column>
           <el-table-column label="当前小计" width="110">
             <template #default="{ row }">¥{{ formatMoney(row.current_subtotal ?? purchaseItemSubtotal(row)) }}</template>
           </el-table-column>
@@ -1334,6 +1336,16 @@
             <template #default="{ row }">¥{{ formatMoney(row.current_actual_amount ?? purchaseItemActualAmount(row)) }}</template>
           </el-table-column>
         </el-table>
+        <template v-if="purchaseDetail.adjustments && purchaseDetail.adjustments.length">
+          <h4 style="margin: 18px 0 8px">采购退单 / 数量调整明细</h4>
+          <el-table :data="purchaseDetail.adjustments" stripe border size="small">
+            <el-table-column prop="adjustment_no" label="调整单号" width="180" />
+            <el-table-column label="退单商品" min-width="220"><template #default="{ row }">{{ (row.items || []).map(item => `${item.product_name || '-'} ×${item.quantity || 0}（¥${formatMoney(item.amount || 0)}）`).join('；') || '-' }}</template></el-table-column>
+            <el-table-column prop="total_quantity_delta" label="数量变化" width="100" />
+            <el-table-column prop="total_amount_delta" label="金额变化" width="110"><template #default="{ row }">¥{{ formatMoney(row.total_amount_delta) }}</template></el-table-column>
+            <el-table-column prop="reason" label="原因" min-width="160" />
+          </el-table>
+        </template>
       </div>
     </el-dialog>
 
