@@ -125,9 +125,9 @@
             </el-form-item>
           </el-col>
           <el-col :span="8">
-            <el-form-item label="客户姓名">
+            <el-form-item :label="isInstantRetailSource ? '平台订单号' : isWholesaleSource ? '供应商' : '客户姓名'">
               <el-autocomplete
-                v-if="isProductOutboundSource"
+                v-if="isWholesaleSource"
                 v-model="orderForm.customerName"
                 :fetch-suggestions="searchSupplierSuggestions"
                 :loading="supplierSearchLoading"
@@ -145,7 +145,7 @@
                   </div>
                 </template>
               </el-autocomplete>
-              <el-input v-else v-model="orderForm.customerName" placeholder="请输入客户姓名" />
+              <el-input v-else v-model="orderForm.customerName" :placeholder="isInstantRetailSource ? '请输入平台订单号' : '请输入客户姓名'" />
             </el-form-item>
           </el-col>
           <el-col :span="8">
@@ -948,6 +948,9 @@ const isProductOutboundSource = computed(() => {
   const sourceName = selectedCustomerSourceL1.value?.name || orderForm.customerSourceL1
   return String(sourceName || '').trim() === '产品端出库'
 })
+const selectedCustomerSourceL2 = computed(() => customerSourceL2Options.value.find(item => String(item.source_id) === String(orderForm.customerSourceL2)) || null)
+const isWholesaleSource = computed(() => isProductOutboundSource.value && String(selectedCustomerSourceL2.value?.name || '').trim() === '批发')
+const isInstantRetailSource = computed(() => String(selectedCustomerSourceL1.value?.name || orderForm.customerSourceL1 || '').trim() === '即时零售')
 
 const loadCustomerSources = async () => {
   try {
@@ -982,7 +985,7 @@ const syncCustomerSourceValue = () => {
 }
 
 const searchSupplierSuggestions = async (queryString, callback) => {
-  if (!isProductOutboundSource.value || !String(queryString || '').trim()) {
+  if (!isWholesaleSource.value || !String(queryString || '').trim()) {
     callback([])
     return
   }
