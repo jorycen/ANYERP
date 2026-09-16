@@ -103,6 +103,14 @@ async function getOrCreateDailyStatement(storeId, transaction) {
 
 async function addDailyDetail({ statement, order, returnRequest, paymentMethod, paymentCode, businessType, amount, transaction }) {
   if (amount <= 0) return null;
+  const originalDetail = order?.order_id
+    ? await DailyStatementDetail.findOne({
+        where: { order_id: order.order_id, amount: { [Op.gt]: 0 }, settlement_account_id: { [Op.ne]: null } },
+        order: [['detail_id', 'ASC']],
+        attributes: ['settlement_account_id'],
+        transaction
+      })
+    : null;
   return DailyStatementDetail.create({
     detail_id: generateUUID(),
     statement_id: statement.statement_id,
@@ -113,7 +121,8 @@ async function addDailyDetail({ statement, order, returnRequest, paymentMethod, 
     payment_code: paymentCode || paymentMethod,
     business_type: businessType,
     amount: -money(amount),
-    settled: 0
+    settled: 0,
+    settlement_account_id: originalDetail?.settlement_account_id || null
   }, { transaction });
 }
 
