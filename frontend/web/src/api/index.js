@@ -371,6 +371,7 @@ export default {
   getPurchaseRequestList: (params) => api.get('/purchase/request-list', { params }),
   exportPurchaseRequests: (params) => exportExcel('/purchase/request-list/export', params, `采购申请_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getPurchaseRequestDetail: (id, params) => api.get(`/purchase/request-detail/${id}`, { params }),
+  updatePurchaseRequestRemark: (id, data) => api.put(`/purchase/request/${id}/remark`, data),
   createPurchaseRequest: (data) => api.post('/purchase/create-request', data),
   savePurchaseRequestDraft: (data) => api.post('/purchase/request-draft', data),
   updatePurchaseRequestDraft: (id, data) => api.put(`/purchase/request-draft/${id}`, data),

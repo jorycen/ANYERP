@@ -357,7 +357,7 @@
           <el-descriptions-item label="审批人">{{ currentRequest.approve_user || '-' }}</el-descriptions-item>
           <el-descriptions-item label="审批时间">{{ formatDate(currentRequest.approve_time) }}</el-descriptions-item>
           <el-descriptions-item label="审批意见" :span="2">{{ currentRequest.approve_comment || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="备注" :span="2">{{ currentRequest.remark || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="备注" :span="2">{{ currentRequest.remark || '-' }} <el-button link type="primary" @click="editRequestRemark(currentRequest)">编辑备注</el-button></el-descriptions-item>
         </el-descriptions>
 
         <h4 class="mt-20">关联单据流</h4>
@@ -1354,6 +1354,16 @@ const handleView = async (row) => {
   } catch (err) {
     ElMessage.error('获取详情失败')
   }
+}
+
+const editRequestRemark = async (request) => {
+  const result = await ElMessageBox.prompt('请输入采购申请备注', '编辑备注', { inputValue: request.remark || '', inputType: 'textarea', confirmButtonText: '保存', cancelButtonText: '取消' }).catch(() => null)
+  if (!result) return
+  try {
+    const res = await api.updatePurchaseRequestRemark(request.request_id, { remark: result.value })
+    if (res.code === 0) { request.remark = res.data.remark; ElMessage.success(res.message || '备注已更新') }
+    else ElMessage.error(res.message || '备注更新失败')
+  } catch (err) { ElMessage.error(err.response?.data?.message || '备注更新失败') }
 }
 
 const formatSignedQuantity = (value) => {
