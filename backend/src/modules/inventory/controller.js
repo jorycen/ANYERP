@@ -2929,7 +2929,7 @@ function inboundItemDisplayQuantity(item, inboundStatus) {
 
 async function getInboundList(ctx) {
   try {
-    const { storeId, status, inboundNo, page = 1, pageSize = 20 } = ctx.query;
+    const { storeId, status, inboundNo, sourceNo, counterpartyName, page = 1, pageSize = 20 } = ctx.query;
 
     const where = { [Op.and]: [buildNonTransferInboundCondition()] };
     if (storeId) {
@@ -2941,6 +2941,11 @@ async function getInboundList(ctx) {
     } else if (!ctx.state.user.accessibleStoreIds.includes('*')) where.store_id = ctx.state.user.accessibleStoreIds;
     if (status) where.status = status;
     if (inboundNo) where.inbound_no = { [Op.like]: `%${String(inboundNo).trim()}%` };
+    if (sourceNo) where.source_no = { [Op.like]: `%${String(sourceNo).trim()}%` };
+    if (counterpartyName) {
+      const requests = await PurchaseRequest.findAll({ attributes: ['request_no'], include: [{ model: Supplier, attributes: [], where: { name: { [Op.like]: `%${String(counterpartyName).trim()}%` } }, required: true }] });
+      where.source_no = { [Op.in]: requests.map(item => item.request_no) };
+    }
 
     const { count, rows } = await Inbound.findAndCountAll({
       where,
@@ -2962,6 +2967,12 @@ async function getInboundList(ctx) {
     }
 
     await attachPurchaseInitiatorNames(rows);
+    const sourceNos = rows.map(row => row.source_no).filter(Boolean);
+    if (sourceNos.length) {
+      const requests = await PurchaseRequest.findAll({ where: { request_no: { [Op.in]: sourceNos } }, attributes: ['request_no'], include: [{ model: Supplier, attributes: ['name'] }] });
+      const supplierMap = new Map(requests.map(request => [request.request_no, request.Supplier?.name || '']));
+      rows.forEach(row => { row.dataValues.supplier_name = supplierMap.get(row.source_no) || ''; });
+    }
 
     const allProductIds = [];
     rows.forEach(row => {
@@ -2990,6 +3001,7 @@ async function getInboundList(ctx) {
         };
       });
       result.store_name = result.Store?.name || '';
+      result.counterparty_name = result.supplier_name || '';
 
       if (result.items && result.items.length > 0) {
         const itemsSummary = result.items.map(item => {

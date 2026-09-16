@@ -477,6 +477,8 @@
               style="width: 180px"
               @keyup.enter="searchInboundByNo"
             />
+            <el-input v-model="inboundQuery.sourceNo" placeholder="来源单号" clearable style="width: 180px" @keyup.enter="loadInboundList" />
+            <el-input v-model="inboundQuery.counterpartyName" placeholder="往来单位" clearable style="width: 160px" @keyup.enter="loadInboundList" />
             <el-select v-model="inboundQuery.status" placeholder="状态" clearable style="width: 120px" @change="loadInboundList">
               <el-option label="全部" value="" />
               <el-option label="待入库" value="pending" />
@@ -496,6 +498,7 @@
             <el-table-column prop="inbound_no" label="入库单号" width="180" />
             <el-table-column prop="store_name" label="门店" width="120" />
             <el-table-column prop="source_no" label="来源单号" width="150" />
+            <el-table-column prop="counterparty_name" label="往来单位" width="160" show-overflow-tooltip />
             <el-table-column prop="items_summary" label="商品摘要" min-width="200" show-overflow-tooltip />
             <el-table-column prop="total_quantity" label="总数量" width="100" />
             <el-table-column prop="total_amount" label="总金额" width="120">
@@ -2058,6 +2061,8 @@ const inboundQuery = reactive({
   inboundNo: '',
   status: '',
   storeId: ''
+  ,sourceNo: '',
+  counterpartyName: ''
 })
 
 const returnList = ref([])
