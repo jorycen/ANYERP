@@ -431,8 +431,14 @@
           <el-table-column prop="unit_price" label="单价" width="100">
             <template #default="{ row }">¥{{ row.unit_price }}</template>
           </el-table-column>
+          <el-table-column label="原始数量" width="90">
+            <template #default="{ row }">{{ row.quantity }}</template>
+          </el-table-column>
           <el-table-column label="当前数量" width="90">
             <template #default="{ row }">{{ row.current_quantity ?? row.quantity }}</template>
+          </el-table-column>
+          <el-table-column label="原始小计" width="110">
+            <template #default="{ row }">¥{{ formatMoney(requestItemSubtotal(row)) }}</template>
           </el-table-column>
           <el-table-column label="当前小计" width="110">
             <template #default="{ row }">¥{{ formatMoney(row.current_subtotal ?? requestItemSubtotal(row)) }}</template>
@@ -478,6 +484,9 @@
               <template #default="{ row }">¥{{ formatMoney(row.total_amount) }}</template>
             </el-table-column>
             <el-table-column prop="reason" label="原因" min-width="180" show-overflow-tooltip />
+            <el-table-column label="退单明细" min-width="220">
+              <template #default="{ row }">{{ (row.items || []).map(item => `${item.product_name || '-'} ×${item.quantity || 0}（¥${formatMoney(item.amount || 0)}）`).join('；') || '-' }}</template>
+            </el-table-column>
             <el-table-column prop="create_time" label="生成时间" width="160">
               <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
             </el-table-column>
