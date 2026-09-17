@@ -19,7 +19,7 @@ const { loadLegacyCostMaps, calculateItemBaseProfit } = require('./profitCalcula
 const { DashboardService, canViewProfit } = require('./dashboardService');
 const { ARCHIVED_STATUSES: POSITIVE_SALES_ORDER_STATUSES } = require('./dashboardDataSource');
 const { buildDecisionInsights, buildAiAdvisor } = require('./decisionEngine');
-const { resolveReportStoreIds } = require('../../utils/storePermissions');
+const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/storePermissions');
 const { FORMULA_VERSION: GROSS_PROFIT_FORMULA_VERSION } = require('../sales/grossProfit');
 
 const dashboardService = new DashboardService();
@@ -55,6 +55,21 @@ function hasRole(user, role) {
   return String(user?.roleCode || '').split(',').map(item => item.trim()).includes(role);
 }
 
+function buildEmployeeParticipationCondition(staffId) {
+  const normalizedStaffId = String(staffId || '');
+  const numericStaffId = Number(normalizedStaffId);
+  const staffIdValue = Number.isFinite(numericStaffId) ? numericStaffId : normalizedStaffId;
+  return {
+    [Op.or]: [
+      { create_staff_id: normalizedStaffId },
+      sequelize.where(sequelize.fn('JSON_SEARCH', sequelize.col('auxiliary_sales_list'), 'one', normalizedStaffId, null, '$[*].staffId'), { [Op.ne]: null }),
+      sequelize.where(sequelize.fn('JSON_SEARCH', sequelize.col('auxiliary_sales_list'), 'one', normalizedStaffId, null, '$[*].staff_id'), { [Op.ne]: null }),
+      sequelize.where(sequelize.fn('JSON_CONTAINS', sequelize.col('auxiliary_sales_list'), JSON.stringify({ staffId: staffIdValue })), 1),
+      sequelize.where(sequelize.fn('JSON_CONTAINS', sequelize.col('auxiliary_sales_list'), JSON.stringify({ staff_id: staffIdValue })), 1)
+    ]
+  };
+}
+
 async function getEmployeeReportStoreIds(user, requestedStoreId) {
   return getReportStoreIds(user, requestedStoreId);
 }
@@ -79,6 +94,7 @@ async function getReportStoreIds(user, requestedStoreId) {
 async function getSalesReport(ctx) {
   const { storeId, regionId, startDate, endDate, archiveScope = 'archived' } = ctx.query;
   const user = ctx.state.user;
+  const selfOnly = isSelfOnlyReportUser(user);
 
   const whereStore = {};
   const reportStoreIds = await resolveReportStoreIds(user);
@@ -103,6 +119,16 @@ async function getSalesReport(ctx) {
     ];
   } else {
     where.order_status = { [Op.in]: POSITIVE_SALES_ORDER_STATUSES };
+  }
+  if (selfOnly) {
+    const participation = buildEmployeeParticipationCondition(user.staffId);
+    if (where[Op.or]) {
+      const statusScope = { [Op.or]: where[Op.or] };
+      delete where[Op.or];
+      where[Op.and] = [statusScope, participation];
+    } else {
+      where[Op.and] = [participation];
+    }
   }
 
   if (startDate && endDate) {

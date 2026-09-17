@@ -7,6 +7,7 @@ function uniqueIds(values) {
 }
 
 const STORE_ONLY_ROLE_CODES = new Set(['clerk', 'staff', 'manager', 'store_manager', 'store_admin', 'mall_report_viewer']);
+const SELF_ONLY_REPORT_ROLE_CODES = new Set(['clerk', 'staff']);
 
 function normalizeRoleCodes(roleCodes = []) {
   return [...new Set((Array.isArray(roleCodes) ? roleCodes : [roleCodes])
@@ -30,6 +31,12 @@ function isRegionScopedAccount(roleCodes = []) {
 function isStoreManagerAccount(roleCodes = []) {
   const roles = normalizeRoleCodes(roleCodes);
   return roles.some(roleCode => ['manager', 'store_manager', 'store_admin'].includes(roleCode));
+}
+
+// 仅普通店员角色的经营报表必须限定为本人业绩；兼任店长或经销商角色时保留其更高权限。
+function isSelfOnlyReportUser(user = {}) {
+  const roles = normalizeRoleCodes(user.roles || user.roleCode || []);
+  return roles.length > 0 && roles.every(role => SELF_ONLY_REPORT_ROLE_CODES.has(role));
 }
 
 function isMallReportViewer(roleCodes = []) {
@@ -190,6 +197,7 @@ module.exports = {
   resolveConfiguredRegions,
   resolveAllReadableStoreIds,
   resolveReportStoreIds,
+  isSelfOnlyReportUser,
   isStoreManagerAccount,
   isRegionScopedAccount,
   isStoreScopedAccount,

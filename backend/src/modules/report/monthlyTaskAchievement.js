@@ -9,7 +9,7 @@ const {
   Staff,
   StaffStorePermission
 } = require('../../models');
-const { resolveReportStoreIds } = require('../../utils/storePermissions');
+const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/storePermissions');
 const { normalizeParticipants } = require('./dashboardDataSource');
 const { canViewProfit } = require('./dashboardService');
 
@@ -280,8 +280,10 @@ function summarizeAchievements(rows, profitVisible) {
 async function getMonthlyTaskAchievement(ctx) {
   const user = ctx.state.user;
   const profitVisible = canViewProfit(user);
-  const dimension = String(ctx.query.dimension || 'store').trim().toLowerCase() === 'staff' ? 'staff' : 'store';
-  const requestedStaffId = String(ctx.query.staffId || ctx.query.staff_id || '').trim();
+  const selfOnly = isSelfOnlyReportUser(user);
+  const requestedDimension = String(ctx.query.dimension || 'store').trim().toLowerCase() === 'staff' ? 'staff' : 'store';
+  const dimension = selfOnly ? 'staff' : requestedDimension;
+  const requestedStaffId = selfOnly ? String(user.staffId || '') : String(ctx.query.staffId || ctx.query.staff_id || '').trim();
   const monthKey = String(ctx.query.monthKey || ctx.query.month_key || '').trim() || new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 7);
   const storeIds = await resolveStores(user, dimension === 'store' ? (ctx.query.storeId || ctx.query.store_id) : '');
   const { startAt, endAt } = monthRange(monthKey);

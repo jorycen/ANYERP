@@ -4,7 +4,7 @@ const {
   roundMoney,
   toNumber
 } = require('./dashboardDataSource');
-const { resolveReportStoreIds } = require('../../utils/storePermissions');
+const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/storePermissions');
 
 const PROFIT_ROLES = new Set(['boss', 'admin', 'finance', 'manager']);
 const AGE_BUCKET_ORDER = ['0-7天', '8-15天', '16-30天', '31-60天', '60天以上'];
@@ -306,6 +306,7 @@ class DashboardService {
   }
 
   async buildFilters(user) {
+    const selfOnly = isSelfOnlyReportUser(user);
     let storeIds = await resolveReportStoreIds(user);
     if (storeIds.includes('*')) {
       const rows = await this.dataSource.query(
@@ -315,6 +316,10 @@ class DashboardService {
     }
     if (!storeIds.length) return { stores: [], employees: [], productLines: [], regions: [] };
     const filters = await this.dataSource.getFilters({ storeIds });
+    if (selfOnly) {
+      filters.employees = (filters.employees || []).filter(row => String(row.staffId) === String(user.staffId));
+    }
+    filters.selfOnly = selfOnly;
     filters.regions = await this.dataSource.query(
       `SELECT DISTINCT r.REGION_ID AS regionId, r.REGION_CODE AS regionCode, r.NAME AS name
          FROM T_STORE s
@@ -327,6 +332,7 @@ class DashboardService {
   }
 
   async buildOverview(user, query = {}) {
+    const selfOnly = isSelfOnlyReportUser(user);
     const ranges = buildRanges(query);
     const granularity = ['day', 'week', 'month'].includes(query.granularity)
       ? query.granularity
@@ -363,7 +369,7 @@ class DashboardService {
       storeIds,
       storeId: query.storeId || '',
       regionId: query.regionId || '',
-      employeeId: query.employeeId || '',
+      employeeId: selfOnly ? String(user.staffId || '') : (query.employeeId || ''),
       productLine: query.productLine || '',
       archiveScope: query.archiveScope === 'all' ? 'all' : 'archived'
     };
@@ -426,6 +432,7 @@ class DashboardService {
         granularity,
         timezone: 'Asia/Shanghai',
         canViewProfit: profitVisible,
+        selfOnly,
         archiveScope: filters.archiveScope,
         allocationRule: '主销售人与辅助销售人平均拆分销售额和业绩毛利',
         generatedAt: new Date().toISOString()
