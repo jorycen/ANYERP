@@ -1011,7 +1011,7 @@ async function createManualRebateSettlement(ctx) {
   const numericAmount = money(amount);
   const normalizedRemark = String(remark || '').trim();
   if (!supplierId) ctx.throw(400, '请选择供应商');
-  if (!Number.isFinite(numericAmount) || numericAmount <= 0) ctx.throw(400, '请输入正确的返利金额');
+  if (!Number.isFinite(numericAmount) || numericAmount === 0) ctx.throw(400, '返利金额不能为0');
   if (!normalizedRemark) ctx.throw(400, '手工返利必须填写备注');
 
   const supplier = await Supplier.findOne({
@@ -1044,7 +1044,7 @@ async function createManualRebateSettlement(ctx) {
     remark: normalizedRemark
   });
   ctx.body = {
-    message: '待核销返利下账单已添加',
+    message: numericAmount < 0 ? '返利扣减下账单已添加' : '待核销返利下账单已添加',
     settlementId: record.settlement_id
   };
 }
@@ -1055,11 +1055,64 @@ function reconciliationStatus(total, matched) {
   return 'PARTIALLY_MATCHED';
 }
 
+async function settleNegativeRebateCorrection(ctx, record, transaction) {
+  if (record.status !== 'PENDING') ctx.throw(409, '返利扣减下账单只能在待下账状态确认');
+  const amount = Math.abs(money(record.amount));
+  const user = ctx.state.user || {};
+  const latest = await SupplierRebate.findOne({
+    where: { supplier_id: record.counterparty_id },
+    order: [['create_time', 'DESC'], ['rebate_id', 'DESC']],
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  const balance = money(money(latest?.balance) - amount);
+  const rebate = await SupplierRebate.create({
+    rebate_id: generateUUID(),
+    supplier_id: record.counterparty_id,
+    supplier_name: record.counterparty_name || '',
+    type: 'debit',
+    amount,
+    balance,
+    related_no: record.settlement_no,
+    remark: record.remark,
+    status: 'active',
+    source_type: 'resource_settlement_deduction',
+    source_id: record.settlement_id,
+    create_user: user.name || user.phone || ''
+  }, { transaction });
+  const account = await SettlementAccount.findOne({
+    where: { account_type: 'SUPPLIER_REBATE', supplier_id: record.counterparty_id, status: 1 },
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  if (account) {
+    const income = Number(await SettlementAccountTransaction.sum('amount', { where: { account_id: account.account_id, type: 'income' }, transaction }) || 0);
+    const expense = Number(await SettlementAccountTransaction.sum('amount', { where: { account_id: account.account_id, type: 'expense' }, transaction }) || 0);
+    await SettlementAccountTransaction.create({
+      transaction_id: generateUUID(), account_id: account.account_id, type: 'expense', amount,
+      balance_after: money(income - expense - amount),
+      description: `返利扣减下账：${record.remark}`,
+      related_ref: record.settlement_no, create_user: user.name || user.phone || ''
+    }, { transaction });
+  }
+  await record.update({
+    matched_amount: 0,
+    status: 'SETTLED',
+    target_account_id: account?.account_id || null,
+    settled_at: new Date(),
+    settled_by: user.staffId || null,
+    settled_by_name: user.name || '',
+    update_time: new Date()
+  }, { transaction });
+  return { fullyMatched: true, allocationTotal: 0, matchedAmount: 0, rebateId: rebate.rebate_id || rebate.rebateId };
+}
+
 async function reconcileRebateSettlement(ctx, record, transaction, allocationsInput = ctx.request.body?.allocations) {
   if (!['PENDING', 'PARTIALLY_SETTLED'].includes(record.status)) {
     ctx.throw(409, '该返利下账单已完成核销');
   }
   if (!record.counterparty_id) ctx.throw(400, '返利下账单缺少供应商，无法核销');
+  if (money(record.amount) < 0) return settleNegativeRebateCorrection(ctx, record, transaction);
   const input = Array.isArray(allocationsInput) ? allocationsInput : [];
   const grouped = new Map();
   for (const item of input) {
@@ -1255,6 +1308,69 @@ async function reverseResourceSettlement(ctx) {
     if (!record) ctx.throw(404, '下账记录不存在');
     if (!['SETTLED', 'PARTIALLY_SETTLED'].includes(record.status)) ctx.throw(409, '只有已核销或部分核销记录可以撤销核销');
 
+    if (money(record.amount) < 0) {
+      const originalRebate = await SupplierRebate.findOne({
+        where: {
+          source_type: 'resource_settlement_deduction',
+          source_id: record.settlement_id,
+          status: 'active'
+        },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      if (!originalRebate) ctx.throw(409, '未找到原返利扣减流水，无法冲销');
+      const amount = Math.abs(money(record.amount));
+      const latest = await SupplierRebate.findOne({
+        where: { supplier_id: record.counterparty_id },
+        order: [['create_time', 'DESC'], ['rebate_id', 'DESC']],
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      await SupplierRebate.create({
+        rebate_id: generateUUID(),
+        supplier_id: record.counterparty_id,
+        supplier_name: record.counterparty_name || '',
+        type: 'credit',
+        amount,
+        balance: money(money(latest?.balance) + amount),
+        related_no: record.settlement_no,
+        remark: `返利扣减冲销：${reason}`,
+        status: 'active',
+        source_type: 'resource_settlement_deduction_reversal',
+        source_id: record.settlement_id,
+        reversal_of: originalRebate.rebate_id,
+        create_user: ctx.state.user.name || ctx.state.user.phone || ''
+      }, { transaction });
+      await originalRebate.update({ status: 'reversed' }, { transaction });
+      if (record.target_account_id) {
+        const account = await SettlementAccount.findOne({
+          where: { account_id: record.target_account_id, status: 1 },
+          transaction,
+          lock: transaction.LOCK.UPDATE
+        });
+        if (account) {
+          const income = Number(await SettlementAccountTransaction.sum('amount', { where: { account_id: account.account_id, type: 'income' }, transaction }) || 0);
+          const expense = Number(await SettlementAccountTransaction.sum('amount', { where: { account_id: account.account_id, type: 'expense' }, transaction }) || 0);
+          await SettlementAccountTransaction.create({
+            transaction_id: generateUUID(), account_id: account.account_id, type: 'income', amount,
+            balance_after: money(income - expense + amount),
+            description: `返利扣减冲销：${reason}`,
+            related_ref: `${record.settlement_no}:REV`, create_user: ctx.state.user.name || ctx.state.user.phone || ''
+          }, { transaction });
+        }
+      }
+      await record.update({
+        status: 'REVERSED',
+        reversed_at: new Date(),
+        reversed_by: ctx.state.user.staffId || null,
+        reversed_by_name: ctx.state.user.name || '',
+        correction_reason: reason,
+        update_time: new Date()
+      }, { transaction });
+      reconciliationReversed = true;
+      return;
+    }
+
     const activeAllocations = await RebateSettlementAllocation.findAll({
       where: { settlement_id: record.settlement_id, status: 'ACTIVE' },
       transaction,
@@ -1391,7 +1507,7 @@ async function reverseResourceSettlement(ctx) {
       );
     }
   });
-  ctx.body = { message: reconciliationReversed ? '返利下账核销已撤销' : '资源下账已冲销' };
+  ctx.body = { message: reconciliationReversed ? '返利下账已撤销' : '资源下账已冲销' };
 }
 
 async function triggerSaleResourceBenefits(order, items, transaction) {

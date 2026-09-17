@@ -31,7 +31,7 @@
     </div>
 
     <el-alert
-      title="返利必须先通过“返利上账单”形成可用额度；返利下账只负责关联核销，不会再次增加返利余额。"
+      title="正数返利下账需关联返利上账单核销；负数用于供应商扣减修正，确认扣减后直接减少可用返利额度。"
       type="info"
       :closable="false"
       show-icon
@@ -97,8 +97,8 @@
             v-if="['PENDING', 'PARTIALLY_SETTLED'].includes(row.status)"
             link
             type="success"
-            @click="openReconcile(row)"
-          >核销</el-button>
+            @click="Number(row.amount || 0) < 0 ? settleNegativeCorrection(row) : openReconcile(row)"
+          >{{ Number(row.amount || 0) < 0 ? '确认扣减' : '核销' }}</el-button>
           <el-button
             v-if="row.status === 'PENDING' && row.source_type === 'MANUAL_REBATE'"
             link
@@ -136,7 +136,8 @@
           </el-select>
         </el-form-item>
         <el-form-item label="返利金额" required>
-          <el-input-number v-model="form.amount" :min="0.01" :precision="2" :step="1000" style="width: 100%" />
+          <el-input-number v-model="form.amount" :precision="2" :step="1000" style="width: 100%" />
+          <div style="color:#909399;font-size:12px;line-height:20px">输入负数表示供应商扣减返利；确认扣减后会直接减少可用返利额度。</div>
         </el-form-item>
         <el-form-item label="备注" required>
           <el-input
@@ -280,7 +281,8 @@ const statusType = value => ({
   REVERSED: 'danger'
 }[value] || 'info')
 const formatDateTime = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
-const isBatchSelectable = row => ['PENDING', 'PARTIALLY_SETTLED'].includes(row.status)
+const isBatchSelectable = row => Number(row.amount || 0) > 0
+  && ['PENDING', 'PARTIALLY_SETTLED'].includes(row.status)
   && Boolean(row.counterparty_id)
   && ['MANUAL_REBATE', 'MANUFACTURER_REBATE', 'REBATE_RECEIPT', 'EXPENSE_REBATE'].includes(row.source_type)
 
@@ -361,7 +363,7 @@ function openCreateDialog() {
 
 async function createManualRebate() {
   if (!form.supplierId) return ElMessage.warning('请选择供应商')
-  if (Number(form.amount || 0) <= 0) return ElMessage.warning('请输入正确的返利金额')
+  if (Number(form.amount || 0) === 0) return ElMessage.warning('返利金额不能为0')
   if (!String(form.remark || '').trim()) return ElMessage.warning('手工返利必须填写备注')
   saving.value = true
   try {
@@ -392,6 +394,22 @@ async function openReconcile(row) {
     reconcileVisible.value = true
   } catch (error) {
     ElMessage.error(error.response?.data?.message || '加载可核销返利上账单失败')
+  }
+}
+
+async function settleNegativeCorrection(row) {
+  try {
+    await ElMessageBox.confirm(
+      `确认扣减 ${row.counterparty_name || '该供应商'} 的返利 ¥${money(Math.abs(Number(row.amount || 0)))}？该操作会减少可用返利额度。`,
+      '确认返利扣减',
+      { type: 'warning', confirmButtonText: '确认扣减', cancelButtonText: '取消' }
+    )
+    const res = await api.settleResource(row.settlement_id, {})
+    ElMessage.success(res.data?.message || res.message || '返利扣减已生效')
+    await load()
+    emit('changed')
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error.response?.data?.message || '返利扣减失败')
   }
 }
 
@@ -503,8 +521,11 @@ async function cancel(row) {
 
 async function reverse(row) {
   try {
+    const isNegativeCorrection = Number(row.amount || 0) < 0
     const { value } = await ElMessageBox.prompt(
-      '撤销后，本单全部有效核销金额将退回对应返利上账单，不影响供应商返利余额。请输入原因。',
+      isNegativeCorrection
+        ? '撤销后将恢复本次扣减的返利额度。请输入原因。'
+        : '撤销后，本单全部有效核销金额将退回对应返利上账单，不影响供应商返利余额。请输入原因。',
       '撤销返利下账核销',
       { inputPattern: /\S+/, inputErrorMessage: '必须填写冲销原因', type: 'warning' }
     )

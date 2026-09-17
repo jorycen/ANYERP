@@ -187,6 +187,30 @@ test('返利下账单部分核销上账单且不重复增加返利余额', async
   }
 });
 
+test('手工返利下账允许负数作为供应商扣减修正单', async () => {
+  const originals = {
+    supplierFindOne: models.Supplier.findOne,
+    categoryFindOne: models.ResourceCategory.findOne,
+    settlementCreate: models.ResourceSettlement.create
+  };
+  let created;
+  models.Supplier.findOne = async () => ({ supplier_id: 'SUP_1', name: '测试厂商' });
+  models.ResourceCategory.findOne = async () => ({ category_code: 'MANUAL_REBATE', status: 1 });
+  models.ResourceSettlement.create = async values => { created = values; return values; };
+  try {
+    const ctx = context({
+      body: { supplierId: 'SUP_1', amount: -800, remark: '供应商追扣活动返利' }
+    });
+    await resourceRights.createManualRebateSettlement(ctx);
+    assert.equal(created.amount, -800);
+    assert.match(ctx.body.message, /扣减/);
+  } finally {
+    models.Supplier.findOne = originals.supplierFindOne;
+    models.ResourceCategory.findOne = originals.categoryFindOne;
+    models.ResourceSettlement.create = originals.settlementCreate;
+  }
+});
+
 test('返利下账支持批量选择并按下账单顺序勾稽同一上账单', async () => {
   const originals = {
     transaction: models.sequelize.transaction,
