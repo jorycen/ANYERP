@@ -182,6 +182,16 @@ test('inventory summary search includes the real product of an in-stock SN histo
   assert.equal(conditions.some(condition => condition.product_id?.[require('sequelize').Op.in]?.includes('PRODUCT_WITH_HISTORICAL_PN')), true);
 });
 
+test('inventory summary search matches space-separated model and color keywords', () => {
+  const { Op } = require('sequelize');
+  const conditions = _test.buildInventoryProductKeywordConditions('Y70 白');
+  const tokenGroups = conditions[0][Op.and];
+
+  assert.equal(tokenGroups.length, 2);
+  assert.equal(tokenGroups[0][Op.or].some(condition => condition.model?.[Op.like] === '%Y70%'), true);
+  assert.equal(tokenGroups[1][Op.or].some(condition => condition.color?.[Op.like] === '%白%'), true);
+});
+
 test('inventory model quick filters classify the three product types and special prices', () => {
   assert.equal(_test.getInventoryProductType('电脑/笔记本', '', '', ''), 'computer');
   assert.equal(_test.getInventoryProductType('手机', '', '', ''), 'phone');

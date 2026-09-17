@@ -1032,14 +1032,28 @@ function normalizeInventoryQuantityField(value) {
 }
 
 function buildInventoryProductKeywordConditions(keyword, historicalSnProductIds = []) {
-  const pattern = `%${String(keyword || '').trim()}%`;
-  const conditions = [
-    { name: { [Op.like]: pattern } },
-    { product_code: { [Op.like]: pattern } },
-    { config: { [Op.like]: pattern } },
-    { manufacturer_code: { [Op.like]: pattern } },
-    { remark: { [Op.like]: pattern } }
-  ];
+  const tokens = String(keyword || '').trim().split(/\s+/).filter(Boolean);
+  const buildTokenConditions = (token) => {
+    const pattern = `%${token}%`;
+    return [
+      { name: { [Op.like]: pattern } },
+      { product_code: { [Op.like]: pattern } },
+      { config: { [Op.like]: pattern } },
+      { manufacturer_code: { [Op.like]: pattern } },
+      { remark: { [Op.like]: pattern } },
+      { brand: { [Op.like]: pattern } },
+      { series: { [Op.like]: pattern } },
+      { model: { [Op.like]: pattern } },
+      { memory: { [Op.like]: pattern } },
+      { storage: { [Op.like]: pattern } },
+      { color: { [Op.like]: pattern } }
+    ];
+  };
+  // 多个词需分别命中商品的任意可检索属性：例如“Y70 白”可匹配型号 Y70 与颜色 冰魄白。
+  const productKeywordCondition = tokens.length > 1
+    ? { [Op.and]: tokens.map(token => ({ [Op.or]: buildTokenConditions(token) })) }
+    : { [Op.or]: buildTokenConditions(tokens[0] || '') };
+  const conditions = [productKeywordCondition];
   if (historicalSnProductIds.length > 0) {
     conditions.push({ product_id: { [Op.in]: historicalSnProductIds } });
   }
