@@ -697,6 +697,7 @@
               <el-option label="上账" value="credit" />
               <el-option label="抵扣" value="debit" />
             </el-select>
+            <el-button type="success" :loading="exportingList === 'rebate'" @click="handleExportRebate">导出流水</el-button>
           </div>
 
           <div class="rebate-summary">
@@ -1980,6 +1981,10 @@ const handleExportDaily = () => runListExport('daily', '日结单', api.exportDa
 const handleExportSubsidy = () => runListExport('subsidy', '国补应收单', api.exportNationalSubsidyReceivables, buildSubsidyExportParams())
 const handleExportProductSettlement = () => runListExport('product-settlement', '产品端毛利', api.exportProductSettlementOrders, buildProductSettlementParams())
 const handleExportExpense = () => runListExport('expense', '费用清单', api.exportExpenseList, { ...expenseQuery })
+const handleExportRebate = () => runListExport('rebate', '返利流水', api.exportRebateList, {
+  ...(rebateSupplierFilter.value ? { supplierId: rebateSupplierFilter.value } : {}),
+  ...(rebateTypeFilter.value ? { type: rebateTypeFilter.value } : {})
+})
 const handleExportPayable = () => runListExport('payable', '应付管理', api.exportPayableList, {
   ...(payableDateRange.value?.length === 2 ? { startDate: payableDateRange.value[0], endDate: payableDateRange.value[1] } : {}),
   ...(payableSupplierFilter.value ? { supplierId: payableSupplierFilter.value } : {}),

@@ -46,6 +46,7 @@ const {
 const {
   addRebate,
   getRebateList,
+  exportRebateList,
   getRebateBalance,
   getRebateSummary,
   reverseRebate,
@@ -159,6 +160,7 @@ router.post('/add-rebate', addRebate);
 router.get('/rebate-posting-orders', getRebatePostingOrders);
 router.post('/rebate-posting-orders/:postingId/reverse', reverseRebatePostingOrder);
 router.get('/rebate-list', getRebateList);
+router.get('/rebate-list/export', exportRebateList);
 router.get('/rebate-balance', getRebateBalance);
 router.get('/rebate-summary', getRebateSummary);
 router.post('/rebate/:rebateId/reverse', reverseRebate);

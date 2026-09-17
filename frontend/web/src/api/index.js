@@ -489,6 +489,7 @@ export default {
   getAccountTransactions: (accountId, params) => api.get(`/finance/settlement-account/${accountId}/transactions`, { params }),
   addAccountTransaction: (data) => api.post('/finance/settlement-account/transaction', data),
   getRebateList: (params) => api.get('/finance/rebate-list', { params }),
+  exportRebateList: (params) => exportExcel('/finance/rebate-list/export', params, `返利流水_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getRebateBalance: (params) => api.get('/finance/rebate-balance', { params }),
   getRebateSummary: () => api.get('/finance/rebate-summary'),
   addRebate: (data) => api.post('/finance/add-rebate', data),

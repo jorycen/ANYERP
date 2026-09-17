@@ -18,6 +18,7 @@ const {
 } = require('../../models');
 const { Op } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
+const { sendExcel } = require('../../utils/excelExport');
 
 function toNumber(value) {
   if (value === null || value === undefined || value === '') return 0;
@@ -363,7 +364,44 @@ async function getRebateList(ctx) {
     ...paginate({}, { page, pageSize })
   });
 
-  ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+  const list = await fillRebateSupplierNames(rows);
+  ctx.body = formatPaginatedResult(list, { page, pageSize, count });
+}
+
+async function fillRebateSupplierNames(rows) {
+  const list = rows.map(row => (typeof row.get === 'function' ? row.get({ plain: true }) : row));
+  const supplierIds = [...new Set(list.map(item => item.supplier_id).filter(Boolean))];
+  const suppliers = supplierIds.length > 0
+    ? await Supplier.findAll({
+      where: { supplier_id: { [Op.in]: supplierIds } },
+      attributes: ['supplier_id', 'name']
+    })
+    : [];
+  const supplierNameMap = new Map(suppliers.map(item => [item.supplier_id, item.name]));
+  return list.map(item => ({
+    ...item,
+    supplier_name: item.supplier_name || supplierNameMap.get(item.supplier_id) || `供应商(${item.supplier_id || '未知'})`
+  }));
+}
+
+async function exportRebateList(ctx) {
+  const { supplierId, type } = ctx.query;
+  const where = {};
+  if (supplierId) where.supplier_id = supplierId;
+  if (type) where.type = type;
+  const rows = await SupplierRebate.findAll({ where, order: [['create_time', 'DESC']] });
+  const list = await fillRebateSupplierNames(rows);
+  const data = list.map(item => ({
+    供应商: item.supplier_name,
+    类型: item.type === 'credit' ? '上账' : '抵扣',
+    金额: item.type === 'credit' ? Number(item.amount || 0) : -Number(item.amount || 0),
+    余额: Number(item.balance || 0),
+    关联单号: item.related_no || '',
+    备注: item.remark || '',
+    操作人: item.create_user || '',
+    时间: item.create_time || ''
+  }));
+  sendExcel(ctx, data, ['供应商', '类型', '金额', '余额', '关联单号', '备注', '操作人', '时间'], `返利流水_${new Date().toISOString().slice(0, 10)}.xlsx`, '返利流水');
 }
 
 /**
@@ -398,7 +436,7 @@ async function getRebateSummary(ctx) {
   }
 
   const summary = Array.from(latestMap.values())
-    .filter(item => parseFloat(item.balance || 0) > 0);
+    .filter(item => parseFloat(item.balance || 0) !== 0);
   const supplierIds = summary.map(item => item.supplier_id).filter(Boolean);
   const suppliers = supplierIds.length > 0
     ? await Supplier.findAll({ where: { supplier_id: { [Op.in]: supplierIds } } })
@@ -408,7 +446,7 @@ async function getRebateSummary(ctx) {
   const list = summary
     .map(item => ({
       supplier_id: item.supplier_id,
-      supplier_name: supplierNameMap.get(item.supplier_id) || item.supplier_name || '',
+      supplier_name: supplierNameMap.get(item.supplier_id) || item.supplier_name || `供应商(${item.supplier_id || '未知'})`,
       balance: parseFloat(item.balance || 0),
       last_time: item.create_time
     }))
@@ -689,6 +727,7 @@ async function getCostAdjustmentList(ctx) {
 module.exports = {
   addRebate,
   getRebateList,
+  exportRebateList,
   getRebateBalance,
   getRebateSummary,
   reverseRebate,
