@@ -4,6 +4,7 @@ const { FORMULA_VERSION: CURRENT_GROSS_PROFIT_FORMULA_VERSION } = require('../sa
 
 // 正向经营统计只纳入已归档销售；整单退货的原订单保留追溯，但不再重复计入正向销售。
 const ARCHIVED_STATUSES = ['已归档', 'completed', 'archived'];
+const VOIDED_STATUSES = ['已作废', 'voided', 'cancelled', 'canceled'];
 const GROSS_PROFIT_FORMULA_VERSION = CURRENT_GROSS_PROFIT_FORMULA_VERSION;
 
 function normalizeCategoryPath(value) {
@@ -248,17 +249,22 @@ function bucketSql(granularity) {
 function buildSalesWhere(filters, range, options = {}) {
   const clauses = [
     'o.IS_DELETED = 0',
-    'o.ORDER_STATUS IN (:archivedStatuses)',
     'o.STORE_ID IN (:storeIds)',
     'o.CREATE_TIME >= :startAt',
     'o.CREATE_TIME <= :endAt'
   ];
   const replacements = {
-    archivedStatuses: ARCHIVED_STATUSES,
     storeIds: filters.storeIds,
     startAt: range.startAt,
     endAt: range.endAt
   };
+  if (filters.archiveScope === 'all') {
+    clauses.splice(1, 0, '(o.ORDER_STATUS IS NULL OR o.ORDER_STATUS NOT IN (:voidedStatuses))');
+    replacements.voidedStatuses = VOIDED_STATUSES;
+  } else {
+    clauses.splice(1, 0, 'o.ORDER_STATUS IN (:archivedStatuses)');
+    replacements.archivedStatuses = ARCHIVED_STATUSES;
+  }
 
   if (filters.storeId) {
     clauses.push('o.STORE_ID = :storeId');
@@ -686,11 +692,13 @@ class DailyKpiDashboardDataSource extends DashboardDataSource {
 
 module.exports = {
   ARCHIVED_STATUSES,
+  VOIDED_STATUSES,
   GROSS_PROFIT_FORMULA_VERSION,
   DashboardDataSource,
   RealtimeSqlDashboardDataSource,
   DailyKpiDashboardDataSource,
   normalizeParticipants,
   roundMoney,
-  toNumber
+  toNumber,
+  _test: { buildSalesWhere }
 };

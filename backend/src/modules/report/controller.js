@@ -77,7 +77,7 @@ async function getReportStoreIds(user, requestedStoreId) {
  * 销售报表
  */
 async function getSalesReport(ctx) {
-  const { storeId, regionId, startDate, endDate } = ctx.query;
+  const { storeId, regionId, startDate, endDate, archiveScope = 'archived' } = ctx.query;
   const user = ctx.state.user;
 
   const whereStore = {};
@@ -94,9 +94,16 @@ async function getSalesReport(ctx) {
 
   const where = {
     is_deleted: 0,
-    store_id: storeIds,
-    order_status: { [Op.in]: POSITIVE_SALES_ORDER_STATUSES }
+    store_id: storeIds
   };
+  if (archiveScope === 'all') {
+    where[Op.or] = [
+      { order_status: null },
+      { order_status: { [Op.notIn]: ['已作废', 'voided', 'cancelled', 'canceled'] } }
+    ];
+  } else {
+    where.order_status = { [Op.in]: POSITIVE_SALES_ORDER_STATUSES };
+  }
 
   if (startDate && endDate) {
     where.create_time = {

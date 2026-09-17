@@ -364,7 +364,8 @@ class DashboardService {
       storeId: query.storeId || '',
       regionId: query.regionId || '',
       employeeId: query.employeeId || '',
-      productLine: query.productLine || ''
+      productLine: query.productLine || '',
+      archiveScope: query.archiveScope === 'all' ? 'all' : 'archived'
     };
     const profitVisible = canViewProfit(user);
     const [
@@ -425,6 +426,7 @@ class DashboardService {
         granularity,
         timezone: 'Asia/Shanghai',
         canViewProfit: profitVisible,
+        archiveScope: filters.archiveScope,
         allocationRule: '主销售人与辅助销售人平均拆分销售额和业绩毛利',
         generatedAt: new Date().toISOString()
       },

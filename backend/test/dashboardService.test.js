@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeParticipants, ARCHIVED_STATUSES, GROSS_PROFIT_FORMULA_VERSION } = require('../src/modules/report/dashboardDataSource');
+const { normalizeParticipants, ARCHIVED_STATUSES, GROSS_PROFIT_FORMULA_VERSION, _test: dashboardDataSourceTest } = require('../src/modules/report/dashboardDataSource');
 const {
   buildRanges,
   comparisonRate,
@@ -22,6 +22,15 @@ test('经营看板正向统计排除整单退货原订单并使用当前毛利�
   assert.deepEqual(ARCHIVED_STATUSES, ['已归档', 'completed', 'archived']);
   assert.equal(ARCHIVED_STATUSES.includes('returned'), false);
   assert.equal(GROSS_PROFIT_FORMULA_VERSION, 'ORDER_GP_V8_20260810_FREIGHT');
+});
+
+test('经营看板全部范围包含未归档订单且排除已作废订单', () => {
+  const allScope = dashboardDataSourceTest.buildSalesWhere({ storeIds: ['STORE-1'], archiveScope: 'all' }, {
+    startAt: '2026-09-01 00:00:00', endAt: '2026-09-01 23:59:59'
+  });
+  assert.match(allScope.sql, /ORDER_STATUS IS NULL OR o\.ORDER_STATUS NOT IN/);
+  assert.deepEqual(allScope.replacements.voidedStatuses, ['已作废', 'voided', 'cancelled', 'canceled']);
+  assert.equal(Object.hasOwn(allScope.replacements, 'archivedStatuses'), false);
 });
 
 test('退单负向毛利只记到对应个人，普通调整仍按参与人均分', () => {
