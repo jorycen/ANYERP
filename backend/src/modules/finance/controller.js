@@ -3,7 +3,7 @@
  */
 const {
   sequelize, DailyStatement, DailyStatementDetail, Expense, ExpenseType, PurchaseRequest, Store, Region, Order, OrderPayment, Supplier,
-  SettlementAccount, SettlementAccountTransaction, SubsidyAccountRoute, SubsidyReceipt,
+  SettlementAccount, SettlementAccountTransaction, SubsidyAccountRoute, SubsidyReceipt, PaymentMethod, PaymentMethodStore,
   SubsidyReceiptAllocation, SubsidyReceivableAdjustment, ExpensePerformanceAllocation,
   ApprovalFlowInstance, ApprovalTask
 } = require('../../models');
@@ -473,10 +473,11 @@ async function settleStatementDetails(ctx, businessType) {
     if (details.length === 0) {
       ctx.throw(400, '没有可下账的记录');
     }
+    await fillMissingDailySettlementAccounts(details, transaction);
     const unassignedDetails = details.filter(detail => !detail.settlement_account_id);
     if (unassignedDetails.length > 0) {
       const methods = [...new Set(unassignedDetails.map(detail => detail.payment_method).filter(Boolean))];
-      ctx.throw(400, `存在未配置下账账户的收款记录：${methods.join('、') || '未知收款方式'}`);
+      ctx.throw(400, `存在未配置下账账户的收款记录：${methods.join('、') || '未知收款方式'}；请先在收款方式管理中为该门店配置结算账号`);
     }
 
     const now = new Date();
@@ -725,6 +726,52 @@ async function createExpense(ctx) {
     status: isDraft ? 'draft' : 'pending_approval',
     message: isDraft ? '费用单草稿已保存' : '报销单已提交审批'
   };
+}
+
+async function fillMissingDailySettlementAccounts(details, transaction) {
+  const missingDetails = details.filter(detail => !detail.settlement_account_id);
+  if (missingDetails.length === 0) return;
+
+  const statementIds = [...new Set(missingDetails.map(detail => detail.statement_id).filter(Boolean))];
+  const statements = await DailyStatement.findAll({
+    where: { statement_id: statementIds },
+    attributes: ['statement_id', 'store_id'],
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  const storeByStatementId = new Map(statements.map(statement => [statement.statement_id, statement.store_id]));
+  const paymentNames = [...new Set(missingDetails.map(detail => String(detail.payment_method || '').trim()).filter(Boolean))];
+  const methods = await PaymentMethod.findAll({
+    where: { name: { [Op.in]: paymentNames }, status: 1 },
+    attributes: ['method_id', 'name', 'is_global', 'settlement_account_id'],
+    transaction
+  });
+  const methodByName = new Map(methods.map(method => [method.name, method]));
+  const methodIds = methods.map(method => method.method_id);
+  const storeConfigs = methodIds.length > 0
+    ? await PaymentMethodStore.findAll({
+      where: { method_id: { [Op.in]: methodIds } },
+      attributes: ['method_id', 'store_id', 'settlement_account_id'],
+      transaction
+    })
+    : [];
+  const accountByStoreMethod = new Map(
+    storeConfigs
+      .filter(config => config.settlement_account_id)
+      .map(config => [`${config.store_id}:${config.method_id}`, config.settlement_account_id])
+  );
+
+  for (const detail of missingDetails) {
+    const method = methodByName.get(String(detail.payment_method || '').trim());
+    const storeId = storeByStatementId.get(detail.statement_id);
+    const accountId = method
+      ? (Number(method.is_global) === 1
+        ? method.settlement_account_id
+        : accountByStoreMethod.get(`${storeId}:${method.method_id}`))
+      : null;
+    if (!accountId) continue;
+    await detail.update({ settlement_account_id: accountId }, { transaction });
+  }
 }
 
 function canManageExpenseDraft(user, record) {

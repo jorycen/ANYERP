@@ -113,3 +113,52 @@ test('日结单负数流水下账后以非零 settled 作为已下账状态', as
     models.SettlementAccountTransaction.create = originals.transactionCreate;
   }
 });
+
+test('日结单下账会用当前门店收款配置补齐历史缺失的结算账号', async () => {
+  const originals = {
+    transaction: models.sequelize.transaction,
+    detailFindAll: models.DailyStatementDetail.findAll,
+    statementFindAll: models.DailyStatement.findAll,
+    statementFindByPk: models.DailyStatement.findByPk,
+    paymentMethodFindAll: models.PaymentMethod.findAll,
+    paymentMethodStoreFindAll: models.PaymentMethodStore.findAll,
+    accountFindByPk: models.SettlementAccount.findByPk,
+    transactionSum: models.SettlementAccountTransaction.sum,
+    transactionCreate: models.SettlementAccountTransaction.create
+  };
+  const detail = {
+    detail_id: 'HISTORICAL_NEGATIVE_DETAIL', statement_id: 'STATEMENT_2', settlement_account_id: null,
+    payment_method: '门店二维码', amount: -3500, settled: 0,
+    update: async values => Object.assign(detail, values)
+  };
+  let accountTransaction;
+  models.sequelize.transaction = async handler => handler({ LOCK: { UPDATE: 'UPDATE' } });
+  models.DailyStatementDetail.findAll = async () => [detail];
+  models.DailyStatement.findAll = async () => [{ statement_id: 'STATEMENT_2', store_id: 'STORE_1' }];
+  models.DailyStatement.findByPk = async () => ({ total_settled: 0, total_revenue: -3500, update: async () => {} });
+  models.PaymentMethod.findAll = async () => [{ method_id: 'METHOD_1', name: '门店二维码', is_global: 0, settlement_account_id: null }];
+  models.PaymentMethodStore.findAll = async () => [{ method_id: 'METHOD_1', store_id: 'STORE_1', settlement_account_id: 'ACCOUNT_1' }];
+  models.SettlementAccount.findByPk = async () => ({ account_id: 'ACCOUNT_1' });
+  models.SettlementAccountTransaction.sum = async () => 0;
+  models.SettlementAccountTransaction.create = async values => { accountTransaction = values; };
+
+  try {
+    const ctx = context({ detailIds: [detail.detail_id] });
+    await financeController.batchSettle(ctx);
+    assert.equal(detail.settlement_account_id, 'ACCOUNT_1');
+    assert.equal(detail.settled, -3500);
+    assert.equal(accountTransaction.account_id, 'ACCOUNT_1');
+    assert.equal(accountTransaction.type, 'expense');
+    assert.equal(accountTransaction.amount, 3500);
+  } finally {
+    models.sequelize.transaction = originals.transaction;
+    models.DailyStatementDetail.findAll = originals.detailFindAll;
+    models.DailyStatement.findAll = originals.statementFindAll;
+    models.DailyStatement.findByPk = originals.statementFindByPk;
+    models.PaymentMethod.findAll = originals.paymentMethodFindAll;
+    models.PaymentMethodStore.findAll = originals.paymentMethodStoreFindAll;
+    models.SettlementAccount.findByPk = originals.accountFindByPk;
+    models.SettlementAccountTransaction.sum = originals.transactionSum;
+    models.SettlementAccountTransaction.create = originals.transactionCreate;
+  }
+});

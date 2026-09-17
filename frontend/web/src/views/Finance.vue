@@ -2429,7 +2429,7 @@ const handleSettleDetail = async (row) => {
       ElMessage.error(res.message || '下账失败')
     }
   } catch (err) {
-    if (err !== 'cancel') ElMessage.error('下账失败')
+    if (err !== 'cancel') ElMessage.error(err.response?.data?.message || err.message || '下账失败')
   }
 }
 
@@ -2454,7 +2454,7 @@ const openBatchSettleDialog = async () => {
       ElMessage.error(res.message || '批量下账失败')
     }
   } catch (err) {
-    if (err !== 'cancel') ElMessage.error('批量下账失败')
+    if (err !== 'cancel') ElMessage.error(err.response?.data?.message || err.message || '批量下账失败')
   }
 }
 
