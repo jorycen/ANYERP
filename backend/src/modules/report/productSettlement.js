@@ -11,6 +11,7 @@ const {
   ProductSettlementItem,
   ProductSettlementAdjustment,
   ProductSettlementAdjustmentItem,
+  RebateEstimate,
   sequelize
 } = require('../../models');
 const { Op, QueryTypes } = require('sequelize');
@@ -274,10 +275,13 @@ async function queryProductSettlementSummary({ startDate, endDate, storeIds = []
     grossProfitAmount: 0,
     orderCount: 0,
     costPendingOrderCount: 0,
-    costPendingAmount: 0
+    costPendingAmount: 0,
+    realizedPolicyIncomeAmount: 0,
+    estimatedPolicyIncomeAmount: 0,
+    realizedGrossProfitAmount: 0
   };
   try {
-    const rows = await sequelize.query(
+    const [rows, policyRows] = await Promise.all([sequelize.query(
       `SELECT
           ROUND(COALESCE(SUM(CASE WHEN STATUS = 'posted' THEN PRODUCT_PRICING_AMOUNT ELSE 0 END), 0), 2) AS productPricingAmount,
           ROUND(COALESCE(SUM(CASE WHEN STATUS = 'posted' THEN PURCHASE_COST_AMOUNT ELSE 0 END), 0), 2) AS purchaseCostAmount,
@@ -296,15 +300,31 @@ async function queryProductSettlementSummary({ startDate, endDate, storeIds = []
         AND BUSINESS_DATE >= :startDate
         AND BUSINESS_DATE < DATE_ADD(:endDate, INTERVAL 1 DAY)`,
       { replacements: { storeIds, startDate, endDate }, type: QueryTypes.SELECT }
-    );
+    ), sequelize.query(
+      `SELECT
+          ROUND(COALESCE(SUM(CASE WHEN estimate.STATUS = 'received' THEN estimate.REBATE_ESTIMATE_AMOUNT ELSE 0 END), 0), 2) AS realizedPolicyIncomeAmount,
+          ROUND(COALESCE(SUM(CASE WHEN estimate.STATUS IN ('estimated', 'confirmed') THEN estimate.REBATE_ESTIMATE_AMOUNT ELSE 0 END), 0), 2) AS estimatedPolicyIncomeAmount
+       FROM T_REBATE_ESTIMATE estimate
+       INNER JOIN T_SALES_ORDER sale ON sale.ORDER_ID = estimate.SALES_ORDER_ID
+       WHERE sale.STORE_ID IN (:storeIds)
+         AND estimate.UPDATED_AT >= :startDate
+         AND estimate.UPDATED_AT < DATE_ADD(:endDate, INTERVAL 1 DAY)`,
+      { replacements: { storeIds, startDate, endDate }, type: QueryTypes.SELECT }
+    )]);
     const row = rows[0] || {};
+    const policy = policyRows[0] || {};
+    const grossProfitAmount = money(row.grossProfitAmount);
+    const realizedPolicyIncomeAmount = money(policy.realizedPolicyIncomeAmount);
     return {
       productPricingAmount: money(row.productPricingAmount),
       purchaseCostAmount: money(row.purchaseCostAmount),
-      grossProfitAmount: money(row.grossProfitAmount),
+      grossProfitAmount,
       orderCount: Number(row.orderCount || 0),
       costPendingOrderCount: Number(row.costPendingOrderCount || 0),
-      costPendingAmount: money(row.costPendingAmount)
+      costPendingAmount: money(row.costPendingAmount),
+      realizedPolicyIncomeAmount,
+      estimatedPolicyIncomeAmount: money(policy.estimatedPolicyIncomeAmount),
+      realizedGrossProfitAmount: money(grossProfitAmount + realizedPolicyIncomeAmount)
     };
   } catch (error) {
     // 兼容尚未完成数据库迁移的旧实例，不能阻断原有财务总览。
@@ -315,7 +335,10 @@ async function queryProductSettlementSummary({ startDate, endDate, storeIds = []
         grossProfitAmount: 0,
         orderCount: 0,
         costPendingOrderCount: 0,
-        costPendingAmount: 0
+        costPendingAmount: 0,
+        realizedPolicyIncomeAmount: 0,
+        estimatedPolicyIncomeAmount: 0,
+        realizedGrossProfitAmount: 0
       };
     }
     throw error;
@@ -452,6 +475,19 @@ async function listProductSettlementOrders({
        FROM (${query.sql}) filtered_entries`,
     { replacements: query.replacements, type: QueryTypes.SELECT }
   );
+  const policyConditions = ['sale.STORE_ID IN (:storeIds)'];
+  const policyReplacements = { storeIds: storeIds.length ? storeIds : ['__NO_STORE__'] };
+  if (startDate) { policyConditions.push('estimate.UPDATED_AT >= :startDate'); policyReplacements.startDate = startDate; }
+  if (endDate) { policyConditions.push('estimate.UPDATED_AT < DATE_ADD(:endDate, INTERVAL 1 DAY)'); policyReplacements.endDate = endDate; }
+  const policyRows = await sequelize.query(
+    `SELECT
+       ROUND(COALESCE(SUM(CASE WHEN estimate.STATUS = 'received' THEN estimate.REBATE_ESTIMATE_AMOUNT ELSE 0 END), 0), 2) AS realizedPolicyIncomeAmount,
+       ROUND(COALESCE(SUM(CASE WHEN estimate.STATUS IN ('estimated', 'confirmed') THEN estimate.REBATE_ESTIMATE_AMOUNT ELSE 0 END), 0), 2) AS estimatedPolicyIncomeAmount
+     FROM T_REBATE_ESTIMATE estimate
+     INNER JOIN T_SALES_ORDER sale ON sale.ORDER_ID = estimate.SALES_ORDER_ID
+     WHERE ${policyConditions.join(' AND ')}`,
+    { replacements: policyReplacements, type: QueryTypes.SELECT }
+  );
   const rows = await sequelize.query(
     `${query.sql}
       ORDER BY entries.BUSINESS_DATE DESC, entries.ENTRY_ID DESC
@@ -459,6 +495,9 @@ async function listProductSettlementOrders({
     { replacements: query.replacements, type: QueryTypes.SELECT }
   );
   const summary = summaryRows[0] || {};
+  const policy = policyRows[0] || {};
+  const baseGrossProfitAmount = money(summary.grossProfitAmount);
+  const realizedPolicyIncomeAmount = money(policy.realizedPolicyIncomeAmount);
   return {
     items: rows.map(row => ({
       entryType: row.ENTRY_TYPE,
@@ -486,8 +525,11 @@ async function listProductSettlementOrders({
     summary: {
       productPricingAmount: money(summary.productPricingAmount),
       purchaseCostAmount: money(summary.purchaseCostAmount),
-      grossProfitAmount: money(summary.grossProfitAmount),
-      costPendingAmount: money(summary.costPendingAmount)
+      grossProfitAmount: baseGrossProfitAmount,
+      costPendingAmount: money(summary.costPendingAmount),
+      realizedPolicyIncomeAmount,
+      estimatedPolicyIncomeAmount: money(policy.estimatedPolicyIncomeAmount),
+      realizedGrossProfitAmount: money(baseGrossProfitAmount + realizedPolicyIncomeAmount)
     }
   };
 }

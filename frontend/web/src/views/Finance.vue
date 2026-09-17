@@ -179,7 +179,10 @@
             <span>共计 <strong>{{ productSettlementTotal }}</strong> 笔</span>
             <span style="margin-left: 24px;">产品定价：<strong class="total-amount">¥{{ formatMoney(productSettlementSummary.productPricingAmount) }}</strong></span>
             <span style="margin-left: 24px;">采购成本：<strong>¥{{ formatMoney(productSettlementSummary.purchaseCostAmount) }}</strong></span>
-            <span style="margin-left: 24px;">产品端毛利：<strong class="total-amount">¥{{ formatMoney(productSettlementSummary.grossProfitAmount) }}</strong></span>
+            <span style="margin-left: 24px;">基础产品端毛利：<strong>¥{{ formatMoney(productSettlementSummary.grossProfitAmount) }}</strong></span>
+            <span style="margin-left: 24px;">已实现政策收益：<strong>¥{{ formatMoney(productSettlementSummary.realizedPolicyIncomeAmount) }}</strong></span>
+            <span style="margin-left: 24px;">已实现产品端利润：<strong class="total-amount">¥{{ formatMoney(productSettlementSummary.realizedGrossProfitAmount) }}</strong></span>
+            <span style="margin-left: 24px;">预计政策收益：<strong>¥{{ formatMoney(productSettlementSummary.estimatedPolicyIncomeAmount) }}</strong></span>
           </div>
 
           <el-pagination
@@ -1628,7 +1631,10 @@ const productSettlementSummary = ref({
   productPricingAmount: 0,
   purchaseCostAmount: 0,
   grossProfitAmount: 0,
-  costPendingAmount: 0
+  costPendingAmount: 0,
+  realizedPolicyIncomeAmount: 0,
+  estimatedPolicyIncomeAmount: 0,
+  realizedGrossProfitAmount: 0
 })
 const paymentMethods = ref([])
 const paymentMethodFilter = ref('')
@@ -2239,7 +2245,10 @@ const loadProductSettlementData = async () => {
         productPricingAmount: Number(res.data?.summary?.productPricingAmount || 0),
         purchaseCostAmount: Number(res.data?.summary?.purchaseCostAmount || 0),
         grossProfitAmount: Number(res.data?.summary?.grossProfitAmount || 0),
-        costPendingAmount: Number(res.data?.summary?.costPendingAmount || 0)
+        costPendingAmount: Number(res.data?.summary?.costPendingAmount || 0),
+        realizedPolicyIncomeAmount: Number(res.data?.summary?.realizedPolicyIncomeAmount || 0),
+        estimatedPolicyIncomeAmount: Number(res.data?.summary?.estimatedPolicyIncomeAmount || 0),
+        realizedGrossProfitAmount: Number(res.data?.summary?.realizedGrossProfitAmount || 0)
       }
     }
   } catch (err) {

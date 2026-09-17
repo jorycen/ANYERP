@@ -348,7 +348,7 @@ async function getFinanceOverview(ctx) {
   ]);
   const summary = summarizeTrend(trendRows);
   const profitVisible = canViewProfit(user);
-  const productGrossProfit = profitVisible ? roundMoney(productSettlement.grossProfitAmount) : null;
+  const productGrossProfit = profitVisible ? roundMoney(productSettlement.realizedGrossProfitAmount ?? productSettlement.grossProfitAmount) : null;
   const combinedGrossProfit = profitVisible && summary.salesAmount !== null
     ? roundMoney(summary.grossProfit + productSettlement.grossProfitAmount)
     : null;
@@ -381,8 +381,9 @@ async function getFinanceOverview(ctx) {
         costPendingOrderCount: productSettlement.costPendingOrderCount,
         costPendingAmount: productSettlement.costPendingAmount,
         policyIncome: {
-          recognizedAmount: 0,
-          note: '厂家返利、价保等政策收益沿用独立政策链路，不计入产品端毛利；到账后由财务收益口径确认。'
+          recognizedAmount: profitVisible ? roundMoney(productSettlement.realizedPolicyIncomeAmount) : null,
+          estimatedAmount: profitVisible ? roundMoney(productSettlement.estimatedPolicyIncomeAmount) : null,
+          note: '产品端主利润仅计入已到账且已核销的厂家政策收益；预计金额仅用于经营预判。'
         }
       },
       inventory: {

@@ -49,7 +49,7 @@ const { PassThrough } = require('stream');
 const { Op, literal, QueryTypes } = require('sequelize');
 const { generateOrderNo, generateInboundNo, generateUUID, paginate, formatPaginatedResult } = require('../../utils');
 const { normalizePnCode } = require('../../utils/productPn');
-const { summariesForSns, alignOrderSubsidyRights, isGovSubsidyEligibleCategory, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits } = require('../inventory/resourceRights');
+const { summariesForSns, alignOrderSubsidyRights, isGovSubsidyEligibleCategory, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits, createSaleResourceTasks } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
 const { canAccessDistributor, resolveOrderStoreIds } = require('../../utils/distributorScope');
 const { isStoreManagerAccount, isStoreScopedAccount, isMallReportViewer } = require('../../utils/storePermissions');
@@ -2379,11 +2379,10 @@ async function create(ctx) {
       snItems[0].selected_resource_types = [...new Set([...(snItems[0].selected_resource_types || []), 'GOV_SUBSIDY'])];
     }
   }
-  if (Number(educationSubsidy) > 0 && !normalizedItems.some(item => item.use_edu_subsidy)) {
-    if (snItems.length === 1) {
-      snItems[0].use_edu_subsidy = true;
-      snItems[0].selected_resource_types = [...new Set([...(snItems[0].selected_resource_types || []), 'EDU_SUBSIDY'])];
-    }
+  // 教育优惠分为两条互斥路径：订单直录金额归公司；可用资源核销归补录人员。
+  // 直录金额不再自动绑定 SN 教育权益，避免后续再次生成资源任务。
+  if (Number(educationSubsidy) > 0 && normalizedItems.some(item => item.use_edu_subsidy)) {
+    ctx.throw(409, '教育优惠不能同时直接录入并使用可用资源核销，请二选一');
   }
   if (!isDraft && invoiceStatus && invoiceStatus !== '不开票' && snItems.length) {
     const snWhere = snItems.map(item => item.sn_id ? { sn_id: item.sn_id } : { sn_code: item.sn_code, product_id: item.product_id });
@@ -2822,6 +2821,7 @@ async function archiveSalesOrderEffects(order, transaction, { inventoryAlreadyRe
   await calculateSalesSettlementCosts(order, transaction);
   const refreshedItems = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
   await triggerSaleResourceBenefits(order, refreshedItems, transaction);
+  await createSaleResourceTasks(order, refreshedItems, transaction);
 }
 
 /**
@@ -4982,12 +4982,14 @@ async function createEstimateAndAdjustment({
   originalPickupPrice,
   currentPickupPrice,
   finalSalesSettlementCost,
+  distributorId,
   remark,
   transaction
 }) {
   const estimateId = generateUUID();
   await RebateEstimate.create({
     estimate_id: estimateId,
+    distributor_id: distributorId,
     sales_order_id: order.order_id,
     sales_order_no: order.order_no,
     sales_order_item_id: item.item_id,
@@ -5011,6 +5013,7 @@ async function createEstimateAndAdjustment({
     resourceType: 'MANUFACTURER_REBATE', amount: rebateAmount,
     counterpartyId: priceHistory?.supplier_id || policy?.supplier_id || null,
     counterpartyName: priceHistory?.supplier_name || policy?.supplier_name || '',
+    distributorId,
     remark: `销售订单 ${order.order_no} 厂商返利预估到账确认`, transaction
   });
 
@@ -5060,6 +5063,8 @@ async function calculateSalesSettlementCosts(order, transaction = null, options 
   }
 
   const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+  const orderStore = await Store.findByPk(order.store_id, { attributes: ['distributor_id'], transaction });
+  const distributorId = orderStore?.distributor_id || null;
   const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean))];
   const productPrices = await ProductPrice.findAll({ where: { product_id: { [Op.in]: productIds } }, transaction });
   const priceMap = new Map(productPrices.map(price => [price.product_id, price]));
@@ -5143,6 +5148,7 @@ async function calculateSalesSettlementCosts(order, transaction = null, options 
         originalPickupPrice,
         currentPickupPrice,
         finalSalesSettlementCost,
+        distributorId,
         remark: row.remark,
         transaction
       });

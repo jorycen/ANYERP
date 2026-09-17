@@ -1113,6 +1113,7 @@ async function runMigrations() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='资源权益待下账及到账记录'
     `);
     await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'COUNTERPARTY_ID', 'VARCHAR(32) COMMENT "来源供应商或结算对象ID"', 'RESOURCE_TYPE');
+    await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'DISTRIBUTOR_ID', 'VARCHAR(32) COMMENT "返利所属经销商"', 'COUNTERPARTY_ID');
     await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'COUNTERPARTY_NAME', 'VARCHAR(255) COMMENT "来源供应商或结算对象名称"', 'COUNTERPARTY_ID');
     await checkAndAddColumn('T_RESOURCE_SETTLEMENT', 'MATCHED_AMOUNT', 'DECIMAL(12,2) DEFAULT 0 COMMENT "已核销金额"', 'AMOUNT');
     await checkAndMakeColumnNullable('T_RESOURCE_SETTLEMENT', 'SN_ID', 'VARCHAR(32)');
@@ -1786,6 +1787,7 @@ async function runMigrations() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='供应商返利表'
     `);
     await checkAndAddColumn('T_SUPPLIER_REBATE', 'STATUS', 'VARCHAR(32) DEFAULT "active" COMMENT "处理状态"', 'REMARK');
+    await checkAndAddColumn('T_SUPPLIER_REBATE', 'DISTRIBUTOR_ID', 'VARCHAR(32) COMMENT "返利所属经销商"', 'SUPPLIER_ID');
     await checkAndAddColumn('T_SUPPLIER_REBATE', 'SOURCE_TYPE', 'VARCHAR(32) DEFAULT "manual" COMMENT "来源类型"', 'STATUS');
     await checkAndAddColumn('T_SUPPLIER_REBATE', 'SOURCE_ID', 'VARCHAR(64) COMMENT "来源ID"', 'SOURCE_TYPE');
     await checkAndAddColumn('T_SUPPLIER_REBATE', 'REVERSAL_OF', 'VARCHAR(32) COMMENT "被冲销返利ID"', 'SOURCE_ID');
@@ -1824,6 +1826,7 @@ async function runMigrations() {
     `);
     await checkAndMakeColumnNullable('T_REBATE_POSTING_ORDER', 'SUPPLIER_ID', 'VARCHAR(32)');
     await checkAndAddColumn('T_REBATE_POSTING_ORDER', 'SETTLEMENT_TYPE', 'VARCHAR(32) DEFAULT "supplier" COMMENT "结算类型"', 'SUPPLIER_NAME');
+    await checkAndAddColumn('T_REBATE_POSTING_ORDER', 'DISTRIBUTOR_ID', 'VARCHAR(32) COMMENT "返利所属经销商"', 'SUPPLIER_ID');
     await checkAndAddColumn('T_REBATE_POSTING_ORDER', 'PAYEE_TYPE', 'VARCHAR(32) DEFAULT "supplier" COMMENT "收款方类型"', 'SETTLEMENT_TYPE');
     await checkAndAddColumn('T_REBATE_POSTING_ORDER', 'PAYEE_ID', 'VARCHAR(64) COMMENT "收款对象ID"', 'PAYEE_TYPE');
     await checkAndAddColumn('T_REBATE_POSTING_ORDER', 'PAYEE_NAME', 'VARCHAR(255) COMMENT "收款对象名称"', 'PAYEE_ID');
@@ -1943,6 +1946,7 @@ async function runMigrations() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='厂家返利预估表'
     `);
     await checkAndAddColumn('T_REBATE_ESTIMATE', 'SOURCE_TYPE', 'VARCHAR(32) DEFAULT "manual" COMMENT "来源类型"', 'STATUS');
+    await checkAndAddColumn('T_REBATE_ESTIMATE', 'DISTRIBUTOR_ID', 'VARCHAR(32) COMMENT "返利所属经销商"', 'SUPPLIER_ID');
     await checkAndAddColumn('T_REBATE_ESTIMATE', 'SOURCE_ID', 'VARCHAR(64) COMMENT "来源业务ID"', 'SOURCE_TYPE');
     await checkAndAddColumn('T_REBATE_ESTIMATE', 'REVERSAL_OF', 'VARCHAR(32) COMMENT "被冲销返利预估ID"', 'SOURCE_ID');
     await sequelize.query(`

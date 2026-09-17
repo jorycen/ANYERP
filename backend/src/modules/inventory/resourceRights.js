@@ -18,6 +18,8 @@ const STATUS_LABELS = {
   NOT_APPLICABLE: '不适用', EXCEPTION: '异常'
 };
 const GOV_SUBSIDY_PRODUCT_CATEGORIES = new Set(['笔记本', '台机', '手机', '平板']);
+const SALE_RESOURCE_TASK_TYPES = new Set(['EDU_SUBSIDY', 'SALES_REPORT', 'SALES_RED_PACKET']);
+const SHARE_INCENTIVE_TYPE = 'SALES_RED_PACKET';
 
 function isGovSubsidyEligibleCategory(category) {
   return GOV_SUBSIDY_PRODUCT_CATEGORIES.has(String(category || '').trim());
@@ -763,7 +765,7 @@ async function deleteGoodsType(ctx) {
   ctx.body = { message: '货型已删除，历史采购记录继续保留' };
 }
 
-async function createPendingSettlement({ sourceType, sourceId, sn, resourceType, amount, counterpartyId = null, counterpartyName = '', remark = '', transaction }) {
+async function createPendingSettlement({ sourceType, sourceId, sn, resourceType, amount, counterpartyId = null, counterpartyName = '', distributorId = null, remark = '', transaction }) {
   const numericAmount = Number(amount || 0);
   if (!Number.isFinite(numericAmount) || numericAmount <= 0) return null;
   const category = await ResourceCategory.findOne({ where: { category_code: resourceType }, transaction });
@@ -774,6 +776,7 @@ async function createPendingSettlement({ sourceType, sourceId, sn, resourceType,
     defaults: {
       settlement_id: generateUUID(), settlement_no: businessNo('RST'), source_type: sourceType,
       source_id: sourceId, sn_id: sn.sn_id, sn_code: sn.sn_code, product_id: sn.product_id,
+      distributor_id: distributorId,
       resource_type: resourceType, counterparty_id: counterpartyId, counterparty_name: counterpartyName,
       amount: numericAmount, status: 'PENDING',
       target_account_id: category.default_account_id || null, remark
@@ -1649,7 +1652,8 @@ async function triggerSaleResourceBenefits(order, items, transaction) {
           item,
           resourceType: category.category_code,
           amount,
-          ratio: rule?.performance_profit_ratio ?? category.performance_profit_ratio,
+          // 教育优惠资源核销的返款按 80% 回算给补录人员，剩余 20% 保留在产品端返利应收。
+          ratio: category.category_code === 'EDU_SUBSIDY' ? 80 : (rule?.performance_profit_ratio ?? category.performance_profit_ratio),
           transaction
         });
       }
@@ -1786,6 +1790,98 @@ async function finishSaleRights(order, items, transaction) {
   }
 }
 
+// 销售归档仅冻结/核销SN资格；需要员工后续完成的事项以独立状态流水保存，
+// 不能把“员工已操作”误作厂家返利到账或 Care 可用金余额。
+async function createSaleResourceTasks(order, items, transaction) {
+  for (const item of items) {
+    if (!item.sn_id) continue;
+    for (const resourceType of selectedResources(item)) {
+      if (!SALE_RESOURCE_TASK_TYPES.has(resourceType)) continue;
+      const category = await ResourceCategory.findOne({ where: { category_code: resourceType, status: 1 }, transaction });
+      if (!category) continue;
+      const existing = await ResourceRightChangeOrder.findOne({
+        where: { related_sale_order_id: order.order_id, sn_id: item.sn_id, resource_type: resourceType, change_reason: 'SALE_RESOURCE_TASK' },
+        transaction
+      });
+      if (existing) continue;
+      await ResourceRightChangeOrder.create({
+        change_id: generateUUID(), change_order_no: businessNo('SRT'), sn_id: item.sn_id, sn_code: item.sn_code,
+        product_id: item.product_id, resource_type: resourceType, before_status: 'USED', after_status: 'USED',
+        change_amount: 0, change_reason: 'SALE_RESOURCE_TASK', approval_status: 'pending_submit',
+        related_sale_order_id: order.order_id, applicant_staff_id: order.create_staff_id || null,
+        applicant_name: order.create_user || '', remark: `销售订单 ${order.order_no} 的${category.name || resourceType}待完成`
+      }, { transaction });
+    }
+  }
+}
+
+function resourceTaskLabel(resourceType) {
+  return { EDU_SUBSIDY: '教育优惠返款', SALES_REPORT: '销售报号', SALES_RED_PACKET: '晒单激励' }[resourceType] || resourceType;
+}
+
+async function assertSaleResourceTaskReadable(ctx, task, { review = false } = {}) {
+  const order = await Order.findByPk(task.related_sale_order_id);
+  if (!order) ctx.throw(404, '关联销售订单不存在');
+  const user = ctx.state.user || {};
+  const actorId = Number(user.staffId || 0);
+  const manager = roles(user).some(role => ['boss', 'admin', 'manager', 'store_manager', 'store_admin'].includes(role));
+  const stores = Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds.map(String) : [];
+  const storeAllowed = stores.includes('*') || stores.includes(String(order.store_id));
+  if (review) {
+    if (!manager || !storeAllowed) ctx.throw(403, '仅订单所属门店店长可审核晒单');
+  } else if (Number(task.applicant_staff_id || order.create_staff_id || 0) !== actorId && !(manager && storeAllowed)) {
+    ctx.throw(403, '无权操作该销售资源任务');
+  }
+  return order;
+}
+
+async function listSaleResourceTasks(ctx) {
+  const orderId = String(ctx.query.orderId || '').trim();
+  if (!orderId) ctx.throw(400, '请指定销售订单');
+  const where = { change_reason: 'SALE_RESOURCE_TASK' };
+  where.related_sale_order_id = orderId;
+  const rows = await ResourceRightChangeOrder.findAll({ where, order: [['create_time', 'DESC']] });
+  if (rows.length) await assertSaleResourceTaskReadable(ctx, rows[0]);
+  ctx.body = rows.map(row => ({ ...row.toJSON(), resource_name: resourceTaskLabel(row.resource_type) }));
+}
+
+async function submitSaleResourceTask(ctx) {
+  const attachments = parseJsonArray(ctx.request.body?.attachments || ctx.request.body?.attachmentUrls);
+  const task = await ResourceRightChangeOrder.findByPk(ctx.params.changeId);
+  if (!task || task.change_reason !== 'SALE_RESOURCE_TASK') ctx.throw(404, '销售资源任务不存在');
+  await assertSaleResourceTaskReadable(ctx, task);
+  if (!['pending_submit', 'rejected'].includes(task.approval_status)) ctx.throw(409, '该资源任务当前不能提交');
+  if (task.resource_type === SHARE_INCENTIVE_TYPE && attachments.length === 0) ctx.throw(400, '晒单任务至少需要上传一张图片');
+  const nextStatus = task.resource_type === SHARE_INCENTIVE_TYPE ? 'pending_manager_review' : 'completed';
+  await task.update({
+    attachment_url: attachments.length ? JSON.stringify(attachments) : null,
+    approval_status: nextStatus,
+    applicant_staff_id: ctx.state.user.staffId || task.applicant_staff_id,
+    applicant_name: ctx.state.user.name || task.applicant_name,
+    review_comment: null,
+    review_time: task.resource_type === SHARE_INCENTIVE_TYPE ? null : new Date(),
+    reviewer_name: task.resource_type === SHARE_INCENTIVE_TYPE ? null : 'system',
+    remark: `${resourceTaskLabel(task.resource_type)}${nextStatus === 'completed' ? '已完成确认' : '已提交，待店长审核'}`
+  });
+  ctx.body = { message: nextStatus === 'completed' ? '资源事项已完成' : '晒单已提交，等待店长审核' };
+}
+
+async function reviewSaleResourceTask(ctx) {
+  const approved = ctx.request.body?.approved === true || ctx.request.body?.action === 'approve';
+  const comment = String(ctx.request.body?.comment || '').trim();
+  const task = await ResourceRightChangeOrder.findByPk(ctx.params.changeId);
+  if (!task || task.change_reason !== 'SALE_RESOURCE_TASK' || task.resource_type !== SHARE_INCENTIVE_TYPE) ctx.throw(404, '晒单任务不存在');
+  await assertSaleResourceTaskReadable(ctx, task, { review: true });
+  if (task.approval_status !== 'pending_manager_review') ctx.throw(409, '晒单任务当前不在待审核状态');
+  if (!approved && !comment) ctx.throw(400, '拒绝晒单必须填写原因');
+  await task.update({
+    approval_status: approved ? 'completed' : 'rejected', reviewer_staff_id: ctx.state.user.staffId || null,
+    reviewer_name: ctx.state.user.name || ctx.state.user.phone || '', review_comment: comment || null, review_time: new Date(),
+    remark: approved ? '晒单已由店长审核完成；礼品或红包通过体外流程发放' : `晒单被店长拒绝：${comment}`
+  });
+  ctx.body = { message: approved ? '晒单已审核完成' : '晒单已拒绝，可补图后重新提交' };
+}
+
 async function releaseSaleRights(order, items, transaction) {
   for (const item of items) for (const resourceType of selectedResources(item)) {
     const right = await InventoryResourceRight.findOne({ where: { sn_id: item.sn_id, resource_type: resourceType }, transaction, lock: transaction.LOCK.UPDATE });
@@ -1808,6 +1904,7 @@ module.exports = {
   listResourceSettlements, createManualRebateSettlement, settleResource, batchSettleRebateResources,
   cancelResourceSettlement, reverseResourceSettlement, createPendingSettlement,
   findResourceRule, calculatePreSaleRuleAmount,
-  initializeSnResourceRightsFromInbound, triggerSaleResourceBenefits,
+  initializeSnResourceRightsFromInbound, triggerSaleResourceBenefits, createSaleResourceTasks,
+  listSaleResourceTasks, submitSaleResourceTask, reviewSaleResourceTask,
   alignOrderSubsidyRights, isGovSubsidyEligibleCategory, lockSaleRights, finishSaleRights, releaseSaleRights
 };

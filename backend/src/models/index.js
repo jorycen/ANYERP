@@ -342,6 +342,7 @@ const InventoryResourceCostAdjustment = sequelize.define('InventoryResourceCostA
 // 权益使用/套回后形成的待下账记录；下账后才进入真实资金或受限额度账户。
 const ResourceSettlement = sequelize.define('ResourceSettlement', {
   settlement_id: { type: DataTypes.STRING(32), primaryKey: true },
+  distributor_id: { type: DataTypes.STRING(32) },
   settlement_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
   source_type: { type: DataTypes.STRING(32), allowNull: false },
   source_id: { type: DataTypes.STRING(64), allowNull: false },
@@ -1904,6 +1905,7 @@ const PurchaseInvoiceAllocation = sequelize.define('PurchaseInvoiceAllocation', 
 
 const SupplierRebate = sequelize.define('SupplierRebate', {
   rebate_id: { type: DataTypes.STRING(32), primaryKey: true },
+  distributor_id: { type: DataTypes.STRING(32) },
   supplier_id: { type: DataTypes.STRING(32), allowNull: false },
   supplier_name: { type: DataTypes.STRING(255) },
   type: { type: DataTypes.STRING(32), allowNull: false, comment: '返利操作类型' },
@@ -1922,6 +1924,7 @@ const SupplierRebate = sequelize.define('SupplierRebate', {
 // 返利预上账单。生效时增加供应商返利可用余额，后续与返利下账单进行核销。
 const RebatePostingOrder = sequelize.define('RebatePostingOrder', {
   posting_id: { type: DataTypes.STRING(32), primaryKey: true },
+  distributor_id: { type: DataTypes.STRING(32) },
   posting_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
   supplier_id: { type: DataTypes.STRING(32), allowNull: true },
   supplier_name: { type: DataTypes.STRING(255) },
@@ -1966,6 +1969,7 @@ const RebateSettlementAllocation = sequelize.define('RebateSettlementAllocation'
 // 厂家返利预估记录，用于后台对账，不直接等同销售奖励。
 const RebateEstimate = sequelize.define('RebateEstimate', {
   estimate_id: { type: DataTypes.STRING(32), primaryKey: true },
+  distributor_id: { type: DataTypes.STRING(32) },
   sales_order_id: { type: DataTypes.STRING(32), allowNull: false },
   sales_order_no: { type: DataTypes.STRING(64) },
   sales_order_item_id: { type: DataTypes.BIGINT(20) },
