@@ -583,6 +583,13 @@
                 <el-table-column label="门店" width="160">
                   <template #default="{ row }">{{ row.name }}</template>
                 </el-table-column>
+                <el-table-column label="门店税率" width="180">
+                  <template #default="{ row }">
+                    <el-input v-model="row.taxRateOverride" placeholder="留空用默认税率" clearable size="small" :disabled="!row.checked">
+                      <template #append>%</template>
+                    </el-input>
+                  </template>
+                </el-table-column>
                 <el-table-column :label="isGuobuPaymentMethod(pmForm.name) ? '客户实收账户' : '结算账户'" min-width="200">
                   <template #default="{ row }">
                     <el-select v-model="row.accountId" placeholder="选择结算账号" clearable size="small" style="width: 100%" :disabled="!row.checked">
@@ -1858,7 +1865,8 @@ const openPaymentMethodDialog = (row) => {
     name: s.name,
     checked: false,
     accountId: '',
-    receivableAccountId: ''
+    receivableAccountId: '',
+    taxRateOverride: null
   }))
 
   if (row) {
@@ -1876,7 +1884,8 @@ const openPaymentMethodDialog = (row) => {
       row.Stores.forEach(s => {
         storeMap.set(s.store_id, {
           accountId: s.PaymentMethodStore?.settlement_account_id || '',
-          receivableAccountId: s.PaymentMethodStore?.receivable_settlement_account_id || ''
+          receivableAccountId: s.PaymentMethodStore?.receivable_settlement_account_id || '',
+          taxRateOverride: s.PaymentMethodStore?.tax_rate_override ?? null
         })
       })
       pmStoreConfigRows.value.forEach(r => {
@@ -1884,6 +1893,7 @@ const openPaymentMethodDialog = (row) => {
           r.checked = true
           r.accountId = storeMap.get(r.store_id).accountId
           r.receivableAccountId = storeMap.get(r.store_id).receivableAccountId
+          r.taxRateOverride = storeMap.get(r.store_id).taxRateOverride
         }
       })
     }
@@ -1903,7 +1913,7 @@ const openPaymentMethodDialog = (row) => {
 
 const onPmIsGlobalChange = () => {
   if (pmForm.isGlobal) {
-    pmStoreConfigRows.value.forEach(r => { r.checked = false; r.accountId = ''; r.receivableAccountId = '' })
+    pmStoreConfigRows.value.forEach(r => { r.checked = false; r.accountId = ''; r.receivableAccountId = ''; r.taxRateOverride = null })
   }
 }
 
@@ -1911,6 +1921,7 @@ const onPmStoreChecked = (row) => {
   if (!row.checked) {
     row.accountId = ''
     row.receivableAccountId = ''
+    row.taxRateOverride = null
   }
 }
 
@@ -1941,7 +1952,10 @@ const handlePmSubmit = async () => {
     const storeConfigs = checkedRows.map(r => ({
       storeId: r.store_id,
       settlementAccountId: r.accountId || null,
-      receivableSettlementAccountId: isGuobuPaymentMethod(pmForm.name) ? r.receivableAccountId || null : null
+      receivableSettlementAccountId: isGuobuPaymentMethod(pmForm.name) ? r.receivableAccountId || null : null,
+      taxRateOverride: r.taxRateOverride === '' || r.taxRateOverride === null || r.taxRateOverride === undefined
+        ? null
+        : Number(r.taxRateOverride)
     }))
     const data = {
       name: pmForm.name,

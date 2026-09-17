@@ -2269,7 +2269,8 @@ const PaymentMethodStore = sequelize.define('PaymentMethodStore', {
   method_id: { type: DataTypes.STRING(64), allowNull: false },
   store_id: { type: DataTypes.STRING(64), allowNull: false },
   settlement_account_id: { type: DataTypes.STRING(64) },
-  receivable_settlement_account_id: { type: DataTypes.STRING(64), comment: '政策补贴应收账户ID' }
+  receivable_settlement_account_id: { type: DataTypes.STRING(64), comment: '政策补贴应收账户ID' },
+  tax_rate_override: { type: DataTypes.DECIMAL(8, 4), allowNull: true, comment: '门店收款手续费税率覆盖值（百分数）' }
 }, { tableName: 'T_DICT_PAYMENT_METHOD_STORE', timestamps: false });
 
 // ----------------------------------------

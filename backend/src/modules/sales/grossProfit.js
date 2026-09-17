@@ -9,6 +9,7 @@ const {
   DepositOrder,
   DepositRedemption,
   PaymentMethod,
+  PaymentMethodStore,
   ProductPrice,
   Product,
   ProductSn,
@@ -331,25 +332,56 @@ async function buildPaymentDetails(order, existingSnapshot, transaction) {
     OrderPayment.findAll({ where: { order_id: order.order_id }, transaction, raw: true }),
     DepositRedemption.findAll({
       where: { order_id: order.order_id },
-      include: [{ model: DepositOrder, attributes: ['deposit_id', 'deposit_no', 'payment_method'] }],
+      include: [{ model: DepositOrder, attributes: ['deposit_id', 'deposit_no', 'payment_method', 'store_id'] }],
       transaction
     }),
     PaymentMethod.findAll({ transaction, raw: true })
   ]);
 
-  const taxRateByMethod = new Map();
+  const methodIdByName = new Map();
+  const defaultTaxRateByMethod = new Map();
   methods.forEach(method => {
     const rate = toNumber(method.default_tax_rate);
-    taxRateByMethod.set(normalizeMethodName(method.name), rate);
-    taxRateByMethod.set(normalizeMethodName(method.code), rate);
+    const methodId = String(method.method_id || '');
+    methodIdByName.set(normalizeMethodName(method.name), methodId);
+    methodIdByName.set(normalizeMethodName(method.code), methodId);
+    defaultTaxRateByMethod.set(normalizeMethodName(method.name), rate);
+    defaultTaxRateByMethod.set(normalizeMethodName(method.code), rate);
   });
 
+  const storeIds = new Set([String(order.store_id || '')]);
+  redemptions.forEach(redemption => {
+    const depositStoreId = redemption.DepositOrder?.store_id;
+    if (depositStoreId) storeIds.add(String(depositStoreId));
+  });
+  const taxOverrides = await PaymentMethodStore.findAll({
+    where: { store_id: { [Op.in]: [...storeIds].filter(Boolean) } },
+    attributes: ['method_id', 'store_id', 'tax_rate_override'],
+    transaction,
+    raw: true
+  });
+  const taxOverrideByStoreMethod = new Map(
+    taxOverrides
+      .filter(item => item.tax_rate_override !== null && item.tax_rate_override !== undefined)
+      .map(item => [`${item.store_id}:${item.method_id}`, toNumber(item.tax_rate_override)])
+  );
+
   // 已封存订单重算其他组成项时继续沿用原收款税率快照。
+  const snapshotTaxRateByMethod = new Map();
   if (existingSnapshot?.snapshot_status === 'final') {
     parseJsonArray(existingSnapshot.payment_fee_details).forEach(detail => {
-      taxRateByMethod.set(normalizeMethodName(detail.method), toNumber(detail.taxRate));
+      snapshotTaxRateByMethod.set(normalizeMethodName(detail.method), toNumber(detail.taxRate));
     });
   }
+
+  const resolveTaxRate = (method, storeId) => {
+    const normalizedMethod = normalizeMethodName(method);
+    if (snapshotTaxRateByMethod.has(normalizedMethod)) return snapshotTaxRateByMethod.get(normalizedMethod);
+    const methodId = methodIdByName.get(normalizedMethod);
+    const overrideKey = `${storeId || ''}:${methodId || ''}`;
+    if (methodId && taxOverrideByStoreMethod.has(overrideKey)) return taxOverrideByStoreMethod.get(overrideKey);
+    return defaultTaxRateByMethod.get(normalizedMethod) || 0;
+  };
 
   const details = payments
     .filter(payment => !isPolicySubsidyReceivable(payment.payment_method))
@@ -358,7 +390,7 @@ async function buildPaymentDetails(order, existingSnapshot, transaction) {
       paymentId: payment.payment_id,
       method: payment.payment_method,
       amount: roundMoney(payment.amount),
-      taxRate: taxRateByMethod.get(normalizeMethodName(payment.payment_method)) || 0
+      taxRate: resolveTaxRate(payment.payment_method, order.store_id)
     }));
 
   redemptions
@@ -374,7 +406,7 @@ async function buildPaymentDetails(order, existingSnapshot, transaction) {
         depositNo: deposit.deposit_no || '',
         method,
         amount: roundMoney(row.amount),
-        taxRate: taxRateByMethod.get(normalizeMethodName(method)) || 0
+        taxRate: resolveTaxRate(method, deposit.store_id || order.store_id)
       });
     });
 

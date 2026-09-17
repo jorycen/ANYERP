@@ -2533,6 +2533,7 @@ async function runMigrations() {
         STORE_ID VARCHAR(64) NOT NULL COMMENT '门店ID',
         SETTLEMENT_ACCOUNT_ID VARCHAR(64) COMMENT '结算账号ID',
         RECEIVABLE_SETTLEMENT_ACCOUNT_ID VARCHAR(64) COMMENT '政策补贴应收账户ID',
+        TAX_RATE_OVERRIDE DECIMAL(8,4) NULL COMMENT '门店收款手续费税率覆盖值（百分数）',
         CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
         PRIMARY KEY (ID),
         UNIQUE KEY uk_method_store (METHOD_ID, STORE_ID),
@@ -2550,6 +2551,12 @@ async function runMigrations() {
       'RECEIVABLE_SETTLEMENT_ACCOUNT_ID',
       'VARCHAR(64) COMMENT "政策补贴应收账户ID"',
       'SETTLEMENT_ACCOUNT_ID'
+    );
+    await checkAndAddColumn(
+      'T_DICT_PAYMENT_METHOD_STORE',
+      'TAX_RATE_OVERRIDE',
+      'DECIMAL(8,4) NULL COMMENT "门店收款手续费税率覆盖值（百分数）"',
+      'RECEIVABLE_SETTLEMENT_ACCOUNT_ID'
     );
     await sequelize.query(`
       UPDATE T_DICT_PAYMENT_METHOD pm

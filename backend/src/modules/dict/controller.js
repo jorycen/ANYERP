@@ -219,6 +219,7 @@ async function getPaymentMethodList(ctx) {
       PaymentMethodStore: {
         settlement_account_id: pms.settlement_account_id,
         receivable_settlement_account_id: pms.receivable_settlement_account_id,
+        tax_rate_override: pms.tax_rate_override,
         SettlementAccount: pms.SettlementAccount,
         ReceivableSettlementAccount: pms.ReceivableSettlementAccount
       }
@@ -276,6 +277,7 @@ async function getAllPaymentMethods(ctx) {
       PaymentMethodStore: {
         settlement_account_id: pms.settlement_account_id,
         receivable_settlement_account_id: pms.receivable_settlement_account_id,
+        tax_rate_override: pms.tax_rate_override,
         SettlementAccount: pms.SettlementAccount,
         ReceivableSettlementAccount: pms.ReceivableSettlementAccount
       }
@@ -327,6 +329,7 @@ async function getPaymentMethodsByStore(ctx) {
       storeMethodMap.set(cfg.PaymentMethod.method_id, {
         settlement_account_id: cfg.settlement_account_id,
         receivable_settlement_account_id: cfg.receivable_settlement_account_id,
+        tax_rate_override: cfg.tax_rate_override,
         SettlementAccount: cfg.SettlementAccount,
         ReceivableSettlementAccount: cfg.ReceivableSettlementAccount
       });
@@ -337,6 +340,10 @@ async function getPaymentMethodsByStore(ctx) {
     const storeCfg = storeMethodMap.get(m.method_id);
     return {
       ...m.toJSON(),
+      effective_tax_rate: storeCfg?.tax_rate_override === null || storeCfg?.tax_rate_override === undefined
+        ? m.default_tax_rate
+        : storeCfg.tax_rate_override,
+      tax_rate_override: storeCfg?.tax_rate_override ?? null,
       store_settlement_account_id: storeCfg?.settlement_account_id || null,
       store_receivable_settlement_account_id: storeCfg?.receivable_settlement_account_id || null,
       storeSettlementAccount: storeCfg?.SettlementAccount || null,
@@ -352,6 +359,10 @@ async function getPaymentMethodsByStore(ctx) {
         code: cfg.PaymentMethod.code,
         icon: cfg.PaymentMethod.icon,
         default_tax_rate: cfg.PaymentMethod.default_tax_rate,
+        effective_tax_rate: cfg.tax_rate_override === null || cfg.tax_rate_override === undefined
+          ? cfg.PaymentMethod.default_tax_rate
+          : cfg.tax_rate_override,
+        tax_rate_override: cfg.tax_rate_override ?? null,
         sort_order: cfg.PaymentMethod.sort_order,
         settlement_account_id: null,
         receivable_settlement_account_id: null,
@@ -405,6 +416,21 @@ async function validatePaymentMethodAccounts(ctx, {
   }
 }
 
+function normalizeStoreTaxRate(ctx, value) {
+  if (value === undefined || value === null || value === '') return null;
+  const taxRate = Number(value);
+  if (!Number.isFinite(taxRate) || taxRate < 0 || taxRate > 100) {
+    ctx.throw(400, '门店税率必须是0至100之间的百分数');
+  }
+  return taxRate;
+}
+
+function validateStoreTaxRates(ctx, storeConfigs) {
+  for (const config of Array.isArray(storeConfigs) ? storeConfigs : []) {
+    normalizeStoreTaxRate(ctx, config.taxRateOverride);
+  }
+}
+
 async function createPaymentMethod(ctx) {
   const {
     name, code, icon, isGlobal, storeConfigs, sortOrder,
@@ -420,6 +446,7 @@ async function createPaymentMethod(ctx) {
     receivableSettlementAccountId,
     storeConfigs
   });
+  validateStoreTaxRates(ctx, storeConfigs);
 
   const t = await (require('../../models').sequelize).transaction();
   try {
@@ -443,7 +470,8 @@ async function createPaymentMethod(ctx) {
             method_id: method.method_id,
             store_id: cfg.storeId,
             settlement_account_id: cfg.settlementAccountId || null,
-            receivable_settlement_account_id: cfg.receivableSettlementAccountId || null
+            receivable_settlement_account_id: cfg.receivableSettlementAccountId || null,
+            tax_rate_override: normalizeStoreTaxRate(ctx, cfg.taxRateOverride)
           }, { transaction: t });
         }
       }
@@ -479,6 +507,7 @@ async function updatePaymentMethod(ctx) {
     receivableSettlementAccountId,
     storeConfigs
   });
+  validateStoreTaxRates(ctx, storeConfigs);
 
   const t = await (require('../../models').sequelize).transaction();
   try {
@@ -508,7 +537,8 @@ async function updatePaymentMethod(ctx) {
               method_id: id,
               store_id: cfg.storeId,
               settlement_account_id: cfg.settlementAccountId || null,
-              receivable_settlement_account_id: cfg.receivableSettlementAccountId || null
+              receivable_settlement_account_id: cfg.receivableSettlementAccountId || null,
+              tax_rate_override: normalizeStoreTaxRate(ctx, cfg.taxRateOverride)
             }, { transaction: t });
           }
         }
