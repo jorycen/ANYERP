@@ -364,6 +364,13 @@ async function getPaymentMethodsByStore(ctx) {
     }
   }
 
+  // 门店专属方式在上面是后追加的；合并后统一排序，保证与管理页一致。
+  result.sort((a, b) => {
+    const orderDiff = Number(a.sort_order || 0) - Number(b.sort_order || 0);
+    if (orderDiff !== 0) return orderDiff;
+    return String(a.method_id || '').localeCompare(String(b.method_id || ''));
+  });
+
   ctx.body = { code: 0, data: result };
 }
 
