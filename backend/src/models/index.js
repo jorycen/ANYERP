@@ -1891,6 +1891,13 @@ const SettlementPaymentRecord = sequelize.define('SettlementPaymentRecord', {
   void_transaction_id: { type: DataTypes.STRING(64) }
 }, { tableName: 'T_SETTLEMENT_PAYMENT_RECORD', timestamps: false });
 
+const PurchaseInvoice = sequelize.define('PurchaseInvoice', {
+  invoice_id: { type: DataTypes.STRING(32), primaryKey: true }, distributor_id: { type: DataTypes.STRING(32), allowNull: false }, supplier_name: { type: DataTypes.STRING(255) }, supplier_tax_no: { type: DataTypes.STRING(64), allowNull: false }, invoice_code: { type: DataTypes.STRING(64), allowNull: false }, invoice_no: { type: DataTypes.STRING(64), allowNull: false }, invoice_date: { type: DataTypes.DATEONLY, allowNull: false }, invoice_type: { type: DataTypes.STRING(64), allowNull: false }, tax_rate: { type: DataTypes.DECIMAL(6, 4) }, amount_without_tax: { type: DataTypes.DECIMAL(12, 2), allowNull: false }, tax_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false }, total_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false }, status: { type: DataTypes.STRING(32), defaultValue: 'active' }, remark: { type: DataTypes.STRING(512) }, create_user: { type: DataTypes.STRING(64) }, create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_PURCHASE_INVOICE', timestamps: false });
+const PurchaseInvoiceAllocation = sequelize.define('PurchaseInvoiceAllocation', {
+  allocation_id: { type: DataTypes.STRING(32), primaryKey: true }, invoice_id: { type: DataTypes.STRING(32), allowNull: false }, payment_id: { type: DataTypes.STRING(32), allowNull: false }, settlement_id: { type: DataTypes.STRING(32), allowNull: false }, amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false }, create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_PURCHASE_INVOICE_ALLOCATION', timestamps: false });
+
 // ----------------------------------------
 // 返利管理模型
 // ----------------------------------------
@@ -2576,6 +2583,10 @@ SettlementPaymentBatch.hasMany(SettlementPaymentRecord, { foreignKey: 'batch_id'
 SettlementPaymentRecord.belongsTo(SettlementPaymentBatch, { foreignKey: 'batch_id', targetKey: 'batch_id' });
 SettlementAccount.hasMany(SettlementPaymentBatch, { foreignKey: 'account_id', sourceKey: 'account_id' });
 SettlementPaymentBatch.belongsTo(SettlementAccount, { foreignKey: 'account_id', targetKey: 'account_id' });
+PurchaseInvoice.hasMany(PurchaseInvoiceAllocation, { foreignKey: 'invoice_id', sourceKey: 'invoice_id', as: 'allocations' });
+PurchaseInvoiceAllocation.belongsTo(PurchaseInvoice, { foreignKey: 'invoice_id', targetKey: 'invoice_id' });
+SettlementPaymentRecord.hasMany(PurchaseInvoiceAllocation, { foreignKey: 'payment_id', sourceKey: 'payment_id', as: 'invoiceAllocations' });
+PurchaseInvoiceAllocation.belongsTo(SettlementPaymentRecord, { foreignKey: 'payment_id', targetKey: 'payment_id' });
 
 // 支付方式关联结算账号
 SettlementAccount.hasMany(PaymentMethod, { foreignKey: 'settlement_account_id', sourceKey: 'account_id' });
@@ -2720,6 +2731,8 @@ module.exports = {
   SettlementItem,
   SettlementPaymentBatch,
   SettlementPaymentRecord,
+  PurchaseInvoice,
+  PurchaseInvoiceAllocation,
   SupplierRebate,
   RebatePostingOrder,
   RebateSettlementAllocation,

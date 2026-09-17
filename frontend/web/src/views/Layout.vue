@@ -203,6 +203,7 @@ const pageTitles = {
   '/finance/rebate-settlement': '返利下账',
   '/finance/expense': '费用管理',
   '/finance/payable': '应付管理',
+  '/finance/purchase-invoice': '发票管理',
   '/finance/reimbursement': '报销结算',
   '/finance/payment': '付款管理',
   '/finance/settlement': '应付结算单管理',

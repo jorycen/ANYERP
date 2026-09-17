@@ -195,10 +195,16 @@ async function ensureProductDimensionSchema() {
 // business facts.
 async function runSchemaMigrations() {
   await ensureCriticalSchemaCompatibility();
+  await ensurePurchaseInvoiceSchema();
   await ensureDepositRefundApprovalSchema();
   await ensureSerializedInventorySchema();
   await ensureProductPnEffectiveUniqueIndex();
   console.log('[DB Schema] startup schema compatibility check completed');
+}
+
+async function ensurePurchaseInvoiceSchema() {
+  await checkAndCreateTable('T_PURCHASE_INVOICE', `CREATE TABLE T_PURCHASE_INVOICE (INVOICE_ID VARCHAR(32) NOT NULL PRIMARY KEY, DISTRIBUTOR_ID VARCHAR(32) NOT NULL, SUPPLIER_NAME VARCHAR(255), SUPPLIER_TAX_NO VARCHAR(64) NOT NULL, INVOICE_CODE VARCHAR(64) NOT NULL, INVOICE_NO VARCHAR(64) NOT NULL, INVOICE_DATE DATE NOT NULL, INVOICE_TYPE VARCHAR(64) NOT NULL, TAX_RATE DECIMAL(6,4), AMOUNT_WITHOUT_TAX DECIMAL(12,2) NOT NULL, TAX_AMOUNT DECIMAL(12,2) NOT NULL, TOTAL_AMOUNT DECIMAL(12,2) NOT NULL, STATUS VARCHAR(32) NOT NULL DEFAULT 'active', REMARK VARCHAR(512), CREATE_USER VARCHAR(64), CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE KEY uk_purchase_invoice_no (SUPPLIER_TAX_NO, INVOICE_CODE, INVOICE_NO), KEY idx_purchase_invoice_distributor (DISTRIBUTOR_ID, INVOICE_DATE)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='采购进项发票台账'`);
+  await checkAndCreateTable('T_PURCHASE_INVOICE_ALLOCATION', `CREATE TABLE T_PURCHASE_INVOICE_ALLOCATION (ALLOCATION_ID VARCHAR(32) NOT NULL PRIMARY KEY, INVOICE_ID VARCHAR(32) NOT NULL, PAYMENT_ID VARCHAR(32) NOT NULL, SETTLEMENT_ID VARCHAR(32) NOT NULL, AMOUNT DECIMAL(12,2) NOT NULL, CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP, KEY idx_invoice_allocation_invoice (INVOICE_ID), KEY idx_invoice_allocation_payment (PAYMENT_ID)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='采购进项发票付款分摊'`);
 }
 
 // 退款审批只增加结构，不触碰任何历史定金或日结业务事实。
@@ -3988,7 +3994,8 @@ async function seedPermissionData() {
       ['finance_rebate_settlement', '返利下账', 'finance', '/finance/rebate-settlement', 4],
       ['finance_expense', '费用管理', 'finance', '/finance/expense', 5],
       ['finance_payable', '应付管理', 'finance', '/finance/payable', 6],
-      ['finance_reimbursement', '报销结算', 'finance', '/finance/reimbursement', 7],
+      ['finance_purchase_invoice', '发票管理', 'finance', '/finance/purchase-invoice', 7],
+      ['finance_reimbursement', '报销结算', 'finance', '/finance/reimbursement', 8],
       ['finance_payment', '付款管理', 'finance', '/finance/payment', 8],
       ['finance_rebate', '返利管理', 'finance', '/finance/rebate', 9],
       ['finance_resource_rights', '资源权益核销与成本调整', 'finance', '/finance/resource-rights', 10],
@@ -4034,7 +4041,7 @@ async function seedPermissionData() {
         'sales_order', 'sales_subsidy_photos',
         'inventory_resource_rights',
         'finance_daily', 'finance_product_settlement', 'finance_subsidy_receivable', 'finance_rebate_settlement', 'finance_expense',
-        'finance_payable', 'finance_reimbursement', 'finance_payment', 'finance_rebate',
+        'finance_payable', 'finance_purchase_invoice', 'finance_reimbursement', 'finance_payment', 'finance_rebate',
         'finance_resource_rights', 'finance_account', 'finance_settlement', 'finance_freight',
         'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_achievement',
         'approval_tasks', 'approval_instances', 'product_approval'

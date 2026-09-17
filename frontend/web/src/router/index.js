@@ -255,6 +255,12 @@ const routes = [
         meta: { tab: 'employee' }
       },
       {
+        path: 'finance/purchase-invoice',
+        name: 'PurchaseInvoiceManagement',
+        component: () => import('../views/PurchaseInvoiceManagement.vue'),
+        meta: { roles: ['finance', 'admin', 'boss'] }
+      },
+      {
         path: 'reports/achievement',
         name: 'ReportsAchievement',
         component: () => import('../views/Reports.vue'),
