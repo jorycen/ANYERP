@@ -112,12 +112,28 @@ function applyDistributorFilter(whereObject, user) {
   return whereObject;
 }
 
+function parsePayableInvoice(invoiceType) {
+  const raw = String(invoiceType || '').trim();
+  const value = raw.toLowerCase();
+  const rateMatch = raw.match(/(\d+(?:\.\d+)?)\s*%/);
+  const taxRate = rateMatch ? Number(rateMatch[1]) : null;
+  if (!value || value === 'none') return { raw, documentType: '待补充', taxStatus: 'UNKNOWN', taxRate: null };
+  if (value.includes('未税') || value.includes('untaxed') || value === '收据' || value.includes('普票')) {
+    return {
+      raw,
+      documentType: value.includes('收据') && value.includes('普票') ? '收据或普通发票' : value.includes('收据') ? '收据' : '普通发票',
+      taxStatus: 'UNTAXED',
+      taxRate: null
+    };
+  }
+  if (value.includes('含税') || value.includes('增专票') || value.includes('专票') || value === 'special' || value.includes('tax_included')) {
+    return { raw, documentType: '增值税专用发票', taxStatus: 'TAX_INCLUDED', taxRate };
+  }
+  return { raw, documentType: raw, taxStatus: 'UNKNOWN', taxRate: null };
+}
+
 function getPayableTaxStatus(invoiceType) {
-  const value = String(invoiceType || '').trim().toLowerCase();
-  if (!value) return 'UNKNOWN';
-  if (value.includes('未税') || value.includes('untaxed') || value === '收据' || value.includes('普票')) return 'UNTAXED';
-  if (value.includes('含税') || value.includes('增专票') || value.includes('专票') || value === 'special' || value.includes('tax_included')) return 'TAX_INCLUDED';
-  return 'UNKNOWN';
+  return parsePayableInvoice(invoiceType).taxStatus;
 }
 
 function combineTaxStatuses(statuses) {
@@ -307,8 +323,11 @@ async function getPayableList(ctx) {
     const invoiceType = request?.invoice_type
       || expenseInvoiceTypes.get(String(row.source_id))
       || '';
-    row.setDataValue('invoice_type', invoiceType);
-    row.setDataValue('tax_status', getPayableTaxStatus(invoiceType));
+    const invoice = parsePayableInvoice(invoiceType);
+    row.setDataValue('invoice_type_raw', invoice.raw);
+    row.setDataValue('invoice_type', invoice.documentType);
+    row.setDataValue('invoice_tax_rate', invoice.taxRate);
+    row.setDataValue('tax_status', invoice.taxStatus);
   });
 
   const summaryRows = await Payable.findAll({
@@ -2363,6 +2382,7 @@ module.exports = {
   getPayableList,
   exportPayableList,
   getPayableTaxStatus,
+  parsePayableInvoice,
   combineTaxStatuses,
   getUnpaidBySupplier,
   getPayableSettlementItems,

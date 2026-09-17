@@ -13,6 +13,21 @@ test('应付单税务属性按已有发票类型映射，缺失时保持待补�
   assert.equal(payableController.getPayableTaxStatus(''), 'UNKNOWN');
 });
 
+test('应付发票展示保留票据类型、税务属性与专票税率', () => {
+  assert.deepEqual(payableController.parsePayableInvoice('增专票（13%）'), {
+    raw: '增专票（13%）', documentType: '增值税专用发票', taxStatus: 'TAX_INCLUDED', taxRate: 13
+  });
+  assert.deepEqual(payableController.parsePayableInvoice('专票6%'), {
+    raw: '专票6%', documentType: '增值税专用发票', taxStatus: 'TAX_INCLUDED', taxRate: 6
+  });
+  assert.deepEqual(payableController.parsePayableInvoice('收据'), {
+    raw: '收据', documentType: '收据', taxStatus: 'UNTAXED', taxRate: null
+  });
+  assert.deepEqual(payableController.parsePayableInvoice('SPECIAL'), {
+    raw: 'SPECIAL', documentType: '增值税专用发票', taxStatus: 'TAX_INCLUDED', taxRate: null
+  });
+});
+
 test('同一付款申请不能混合含税与未税，经销商可保持单一口径', () => {
   assert.equal(payableController.combineTaxStatuses(['TAX_INCLUDED', 'TAX_INCLUDED']), 'TAX_INCLUDED');
   assert.equal(payableController.combineTaxStatuses(['UNTAXED', 'UNKNOWN']), 'UNTAXED');

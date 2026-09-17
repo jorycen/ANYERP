@@ -551,12 +551,20 @@
             <el-table-column prop="distributor_name" label="经销商" width="130">
               <template #default="{ row }">{{ row.distributor_name || row.distributor_id || '-' }}</template>
             </el-table-column>
-            <el-table-column prop="invoice_type" label="发票类型" width="180">
+            <el-table-column prop="invoice_type" label="票据类型" width="150">
               <template #default="{ row }">
                 <el-tag type="info" size="small">
-                  {{ row.invoice_type || '未填写' }}
+                  {{ row.invoice_type || '待补充' }}
                 </el-tag>
               </template>
+            </el-table-column>
+            <el-table-column label="税务属性" width="100">
+              <template #default="{ row }">
+                {{ row.tax_status === 'TAX_INCLUDED' ? '含税' : row.tax_status === 'UNTAXED' ? '未税' : row.tax_status === 'MIXED' ? '混合税务' : '待补充' }}
+              </template>
+            </el-table-column>
+            <el-table-column label="税率" width="80">
+              <template #default="{ row }">{{ row.invoice_tax_rate === null || row.invoice_tax_rate === undefined ? '-' : `${row.invoice_tax_rate}%` }}</template>
             </el-table-column>
             <el-table-column label="收款方" width="150">
               <template #default="{ row }">{{ getPayablePayeeName(row) }}</template>
