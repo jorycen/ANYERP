@@ -1373,10 +1373,13 @@ async function buildSpecialProductMap(productIds, distributorId, storeId = '', s
 }
 
 const INVENTORY_CATEGORY_KEYWORDS = {
-  computer: ['电脑', '笔记本', '台式机', '一体机', '主机'],
+  computer: ['电脑', '笔记本'],
+  desktop: ['台机', '台式机', '一体机', '主机'],
   tablet: ['平板', 'pad', 'ipad'],
   phone: ['手机', 'iphone'],
-  accessory: ['配件', '鼠标', '键盘', '手柄', '支架', '摄像头', '保护夹', '保护壳', '贴膜', '充电器', '耳机', '数据线', 'u盘', '杯', '包', '硬盘', '打印机', '内存', '膜']
+  accessory: ['电脑配件', '配件', '鼠标', '键盘', '手柄', '支架', '摄像头', '保护夹', '保护壳', '贴膜', '充电器', '耳机', '数据线', 'u盘', '杯', '包', '硬盘', '打印机', '内存', '膜'],
+  option: ['选件'],
+  used: ['二手']
 };
 
 function includesAny(text, keywords) {
@@ -1385,27 +1388,37 @@ function includesAny(text, keywords) {
 
 function getInventoryCategoryRank(category, accessoryType, name, config) {
   const categoryText = String(category || '').toLowerCase();
+  if (includesAny(categoryText, INVENTORY_CATEGORY_KEYWORDS.used)) return 6;
+  if (includesAny(categoryText, INVENTORY_CATEGORY_KEYWORDS.option)) return 5;
+  if (includesAny(categoryText, INVENTORY_CATEGORY_KEYWORDS.desktop)) return 1;
+  if (includesAny(categoryText, INVENTORY_CATEGORY_KEYWORDS.accessory)) return 4;
   if (includesAny(categoryText, INVENTORY_CATEGORY_KEYWORDS.computer)) return 0;
-  if (includesAny(categoryText, INVENTORY_CATEGORY_KEYWORDS.tablet)) return 1;
-  if (includesAny(categoryText, INVENTORY_CATEGORY_KEYWORDS.phone)) return 2;
-  if (includesAny(categoryText, INVENTORY_CATEGORY_KEYWORDS.accessory)) return 3;
+  if (includesAny(categoryText, INVENTORY_CATEGORY_KEYWORDS.tablet)) return 2;
+  if (includesAny(categoryText, INVENTORY_CATEGORY_KEYWORDS.phone)) return 3;
 
   const accessoryText = String(accessoryType || '').toLowerCase();
-  if (accessoryText) return 3;
+  if (accessoryText) return 4;
 
   const text = [name, config].map(value => String(value || '')).join(' ').toLowerCase();
-  if (includesAny(text, INVENTORY_CATEGORY_KEYWORDS.accessory)) return 3;
+  if (includesAny(text, INVENTORY_CATEGORY_KEYWORDS.used)) return 6;
+  if (includesAny(text, INVENTORY_CATEGORY_KEYWORDS.option)) return 5;
+  if (includesAny(text, INVENTORY_CATEGORY_KEYWORDS.desktop)) return 1;
+  if (includesAny(text, INVENTORY_CATEGORY_KEYWORDS.accessory)) return 4;
   if (includesAny(text, INVENTORY_CATEGORY_KEYWORDS.computer)) return 0;
-  if (includesAny(text, INVENTORY_CATEGORY_KEYWORDS.tablet)) return 1;
-  if (includesAny(text, INVENTORY_CATEGORY_KEYWORDS.phone)) return 2;
-  return 4;
+  if (includesAny(text, INVENTORY_CATEGORY_KEYWORDS.tablet)) return 2;
+  if (includesAny(text, INVENTORY_CATEGORY_KEYWORDS.phone)) return 3;
+  return 7;
 }
 
 function getInventoryProductType(category, accessoryType, name, config) {
   const rank = getInventoryCategoryRank(category, accessoryType, name, config);
   if (rank === 0) return 'computer';
-  if (rank === 1) return 'tablet';
-  if (rank === 2) return 'phone';
+  if (rank === 1) return 'desktop';
+  if (rank === 2) return 'tablet';
+  if (rank === 3) return 'phone';
+  if (rank === 4) return 'accessory';
+  if (rank === 5) return 'option';
+  if (rank === 6) return 'used';
   return '';
 }
 

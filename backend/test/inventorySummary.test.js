@@ -194,8 +194,12 @@ test('inventory summary search matches space-separated model and color keywords'
 
 test('inventory model quick filters classify the three product types and special prices', () => {
   assert.equal(_test.getInventoryProductType('电脑/笔记本', '', '', ''), 'computer');
+  assert.equal(_test.getInventoryProductType('台机', '来酷Lecoo', '', ''), 'desktop');
   assert.equal(_test.getInventoryProductType('手机', '', '', ''), 'phone');
   assert.equal(_test.getInventoryProductType('平板', '', '', ''), 'tablet');
+  assert.equal(_test.getInventoryProductType('电脑配件', '硬盘', '', ''), 'accessory');
+  assert.equal(_test.getInventoryProductType('选件', '鼠标', '', ''), 'option');
+  assert.equal(_test.getInventoryProductType('二手', '笔记本', '', ''), 'used');
   assert.equal(_test.isSpecialPriceProduct({
     ProductPrice: { standard_price: 5000, retail_price: 4500 }
   }), true);

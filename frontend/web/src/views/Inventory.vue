@@ -1927,8 +1927,12 @@ const summarySimpleExporting = ref(false)
 const summaryHasSearched = ref(false)
 const inventoryProductTypeOptions = [
   { label: '电脑', value: 'computer' },
+  { label: '台机', value: 'desktop' },
   { label: '手机', value: 'phone' },
-  { label: '平板', value: 'tablet' }
+  { label: '平板', value: 'tablet' },
+  { label: '配件', value: 'accessory' },
+  { label: '选件', value: 'option' },
+  { label: '二手', value: 'used' }
 ]
 const inventoryModelFilterOptions = [
   { label: '重点机型', value: 'focus' },
