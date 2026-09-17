@@ -1370,7 +1370,7 @@ const editRequestRemark = async (request) => {
   if (!result) return
   try {
     const res = await api.updatePurchaseRequestRemark(request.request_id, { remark: result.value })
-    if (res.code === 0) { request.remark = res.data.remark; ElMessage.success(res.message || '备注已更新') }
+    if (res.code === 0) { request.remark = res.data.remark; request.reason = res.data.remark; ElMessage.success(res.message || '备注已更新') }
     else ElMessage.error(res.message || '备注更新失败')
   } catch (err) { ElMessage.error(err.response?.data?.message || '备注更新失败') }
 }

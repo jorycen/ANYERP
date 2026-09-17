@@ -1233,9 +1233,9 @@ async function getRequestDetail(ctx) {
 async function updateRequestRemark(ctx) {
   const request = await PurchaseRequest.findByPk(ctx.params.requestId);
   if (!request) ctx.throw(404, '采购申请不存在');
-  assertStoreVisible(request.store_id, ctx.state.user);
+  assertStoreVisible(ctx, request.store_id);
   const remark = String(ctx.request.body?.remark || '').trim().slice(0, 1000);
-  await request.update({ remark, update_time: new Date() });
+  await request.update({ reason: remark, update_time: new Date() });
   ctx.body = { code: 0, message: '采购申请备注已更新', data: { request_id: request.request_id, remark } };
 }
 

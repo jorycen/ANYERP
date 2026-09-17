@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const purchaseRouter = require('../src/modules/purchase/routes');
 const purchaseController = require('../src/modules/purchase/controller');
+const models = require('../src/models');
 
 const purchaseControllerSource = fs.readFileSync(
   path.join(__dirname, '../src/modules/purchase/controller.js'),
@@ -36,6 +37,33 @@ test('采购审批禁止没有明细的空采购申请', () => {
   );
   assert.match(purchaseControllerSource, /await sequelize\.transaction\(async transaction =>/);
   assert.match(purchaseControllerSource, /PurchaseRequestItem\.create\([\s\S]*?\{ transaction \}\)/);
+});
+
+test('采购申请备注使用正确的门店权限参数并保存到原因字段', async () => {
+  const originalFindByPk = models.PurchaseRequest.findByPk;
+  const updates = {};
+  const request = {
+    request_id: 'REQUEST_REMARK_1',
+    store_id: 'STORE_1',
+    update: async values => Object.assign(updates, values)
+  };
+  models.PurchaseRequest.findByPk = async () => request;
+  const ctx = {
+    params: { requestId: request.request_id },
+    request: { body: { remark: '  补充采购备注  ' } },
+    state: { user: { accessibleStoreIds: ['STORE_1'] } },
+    throw(status, message) { throw Object.assign(new Error(message), { status }); }
+  };
+
+  try {
+    await purchaseController.updateRequestRemark(ctx);
+    assert.equal(updates.reason, '补充采购备注');
+    assert.ok(updates.update_time instanceof Date);
+    assert.equal(ctx.body.code, 0);
+    assert.equal(ctx.body.data.remark, '补充采购备注');
+  } finally {
+    models.PurchaseRequest.findByPk = originalFindByPk;
+  }
 });
 
 test('采购审批通过使用行锁和已有入库单校验防止重复生成', () => {
