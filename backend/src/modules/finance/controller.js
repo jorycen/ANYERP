@@ -528,16 +528,19 @@ async function settleStatementDetails(ctx, businessType) {
       });
       const currentBalance = await getAccountBalance(accountId, transaction);
       const balanceAfter = currentBalance + settledAmount;
+      const isNegativeSettlement = settledAmount < 0;
 
       await SettlementAccountTransaction.create({
         transaction_id: generateUUID(),
         account_id: accountId,
-        type: 'income',
-        amount: settledAmount,
+        type: isNegativeSettlement ? 'expense' : 'income',
+        amount: Math.abs(settledAmount),
         balance_after: balanceAfter,
         description: businessType === 'national_subsidy_receivable'
           ? `国补应收单批量下账（${details.length}笔）`
-          : `日结单批量下账（${details.length}笔）`,
+          : isNegativeSettlement
+            ? `日结单退款下账（${details.length}笔）`
+            : `日结单批量下账（${details.length}笔）`,
         related_ref: settlementBatchRef,
         create_user: user.name
       }, { transaction });

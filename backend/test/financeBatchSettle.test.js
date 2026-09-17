@@ -100,7 +100,9 @@ test('日结单负数流水下账后以非零 settled 作为已下账状态', as
     assert.equal(detail.settled, -88.5);
     assert.ok(detail.settled_at instanceof Date);
     assert.equal(statementUpdates.status, 'settled');
-    assert.equal(accountTransaction.amount, -88.5);
+    assert.equal(accountTransaction.type, 'expense');
+    assert.equal(accountTransaction.amount, 88.5);
+    assert.equal(accountTransaction.balance_after, -88.5);
     assert.equal(ctx.body.message, '下账成功，共 1 笔，金额: ¥-88.50');
   } finally {
     models.sequelize.transaction = originals.transaction;
