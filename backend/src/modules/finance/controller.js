@@ -67,7 +67,8 @@ async function getStatementDetails(ctx, businessWhere) {
   const where = {};
   if (businessWhere) where[Op.or] = businessWhere;
   if (settled !== undefined && settled !== '') {
-    where.settled = parseFloat(settled) > 0 ? { [Op.gt]: 0 } : 0;
+    // 已下账的负向退款会把 settled 保存为负数；不能以“> 0”判断下账状态。
+    where.settled = parseFloat(settled) > 0 ? { [Op.ne]: 0 } : 0;
   }
   if (paymentMethod) {
     where.payment_method = buildDailyPaymentMethodWhere(paymentMethod);
@@ -231,7 +232,7 @@ async function exportDailyDetails(ctx) {
     已下账金额: Number(row.settled || 0),
     结算账号: row.settlementAccount?.account_name || '',
     门店: row.store_name || '',
-    状态: Number(row.settled || 0) > 0 ? '已下账' : '未下账',
+    状态: Number(row.settled || 0) !== 0 ? '已下账' : '未下账',
     下账时间: row.settled_at || ''
   }));
   sendExcel(ctx, data, [

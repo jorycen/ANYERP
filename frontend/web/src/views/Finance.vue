@@ -56,8 +56,8 @@
             </el-table-column>
             <el-table-column label="状态" width="100">
               <template #default="{ row }">
-                <el-tag :type="parseFloat(row.settled || 0) > 0 ? 'success' : 'warning'" size="small">
-                  {{ parseFloat(row.settled || 0) > 0 ? '已下账' : '未下账' }}
+                <el-tag :type="parseFloat(row.settled || 0) !== 0 ? 'success' : 'warning'" size="small">
+                  {{ parseFloat(row.settled || 0) !== 0 ? '已下账' : '未下账' }}
                 </el-tag>
               </template>
             </el-table-column>

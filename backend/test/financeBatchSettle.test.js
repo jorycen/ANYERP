@@ -64,3 +64,50 @@ test('日结单批量下账超过3条时使用固定长度批次关联号并汇�
     models.SettlementAccountTransaction.create = originals.transactionCreate;
   }
 });
+
+test('日结单负数流水下账后以非零 settled 作为已下账状态', async () => {
+  const originals = {
+    transaction: models.sequelize.transaction,
+    detailFindAll: models.DailyStatementDetail.findAll,
+    statementFindByPk: models.DailyStatement.findByPk,
+    accountFindByPk: models.SettlementAccount.findByPk,
+    transactionSum: models.SettlementAccountTransaction.sum,
+    transactionCreate: models.SettlementAccountTransaction.create
+  };
+  const detail = {
+    detail_id: 'NEGATIVE_DETAIL', statement_id: 'NEGATIVE_STATEMENT', settlement_account_id: 'ACCOUNT_1',
+    amount: -88.5, settled: 0,
+    update: async values => Object.assign(detail, values)
+  };
+  const statementUpdates = {};
+  let accountTransaction;
+
+  models.sequelize.transaction = async handler => handler({ LOCK: { UPDATE: 'UPDATE' } });
+  models.DailyStatementDetail.findAll = async () => [detail];
+  models.DailyStatement.findByPk = async () => ({
+    total_settled: 0,
+    total_revenue: -88.5,
+    update: async values => Object.assign(statementUpdates, values)
+  });
+  models.SettlementAccount.findByPk = async () => ({ account_id: 'ACCOUNT_1' });
+  models.SettlementAccountTransaction.sum = async () => 0;
+  models.SettlementAccountTransaction.create = async values => { accountTransaction = values; };
+
+  try {
+    const ctx = context({ detailIds: [detail.detail_id] });
+    await financeController.batchSettle(ctx);
+
+    assert.equal(detail.settled, -88.5);
+    assert.ok(detail.settled_at instanceof Date);
+    assert.equal(statementUpdates.status, 'settled');
+    assert.equal(accountTransaction.amount, -88.5);
+    assert.equal(ctx.body.message, '下账成功，共 1 笔，金额: ¥-88.50');
+  } finally {
+    models.sequelize.transaction = originals.transaction;
+    models.DailyStatementDetail.findAll = originals.detailFindAll;
+    models.DailyStatement.findByPk = originals.statementFindByPk;
+    models.SettlementAccount.findByPk = originals.accountFindByPk;
+    models.SettlementAccountTransaction.sum = originals.transactionSum;
+    models.SettlementAccountTransaction.create = originals.transactionCreate;
+  }
+});
