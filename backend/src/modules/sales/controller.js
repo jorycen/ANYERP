@@ -257,6 +257,19 @@ const SALES_RETURN_APPROVER_PHONES = Object.freeze({
 const STORE_APPROVAL_ROLES = ['manager', 'store_manager', 'store_admin', 'admin', 'boss', 'distributor'];
 const DISTRIBUTOR_APPROVAL_ROLES = ['admin', 'boss', 'distributor'];
 
+function salesReturnReviewerStage(user) {
+  const phone = String(user?.phone || '').trim();
+  if (phone === SALES_RETURN_APPROVER_PHONES.duan) return 'pending_duan';
+  if (phone === SALES_RETURN_APPROVER_PHONES.deng) return 'pending_deng';
+  if (phone === SALES_RETURN_APPROVER_PHONES.li) return 'pending_li';
+  return '';
+}
+
+function normalizeSalesReturnApprovalStage(stage) {
+  // 三段审批启用前遗留的“经销商审批”已经完成此前环节，统一交由李燕作最终审批。
+  return stage === 'pending_distributor' ? 'pending_li' : stage;
+}
+
 function salesApprovalStageFromStatus(status) {
   const normalized = String(status || '').trim();
   if ([SALES_APPROVAL_STATUSES.legacy, SALES_APPROVAL_STATUSES.store].includes(normalized)) return 'store';
@@ -3931,8 +3944,11 @@ async function listSalesReturnRequests(ctx) {
         { approval_stage: '' }
       );
     }
-    const assignedStage = depositRefundReviewerStage(ctx.state.user);
-    if (assignedStage) stageConditions.push({ approval_stage: assignedStage });
+    const assignedStage = salesReturnReviewerStage(ctx.state.user);
+    if (assignedStage) {
+      stageConditions.push({ approval_stage: assignedStage });
+      if (assignedStage === 'pending_li') stageConditions.push({ approval_stage: 'pending_distributor' });
+    }
     if (!stageConditions.length) {
       where.return_id = '__NO_SALES_RETURN_APPROVAL_ACCESS__';
     } else {
@@ -4271,15 +4287,8 @@ async function reviewSalesReturn(ctx) {
 
     const now = new Date();
     const rejected = action === 'rejected';
-    const stage = request.approval_stage || 'pending_store';
-    const phone = String(user?.phone || '').trim();
-    const assignedStage = phone === SALES_RETURN_APPROVER_PHONES.duan
-      ? 'pending_duan'
-      : phone === SALES_RETURN_APPROVER_PHONES.deng
-        ? 'pending_deng'
-        : phone === SALES_RETURN_APPROVER_PHONES.li
-          ? 'pending_li'
-          : '';
+    const stage = normalizeSalesReturnApprovalStage(request.approval_stage || 'pending_store');
+    const assignedStage = salesReturnReviewerStage(user);
     if (stage === 'pending_store' && !isManager) {
       ctx.throw(403, '仅店长可以审批该退单申请');
     }

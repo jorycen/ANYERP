@@ -75,7 +75,7 @@ async function fixture(t, { sn = true, partial = false, missingLocation = false,
     // Failure after stock mutation must abort the outer approval transaction.
     stub(models.Order, 'findByPk', async () => { if (request.status === 'completed') throw new Error('settlement unavailable'); return order; });
   }
-  const ctx = { params: { returnId: 'R' }, request: { body: {} }, state: { user: { roles: ['admin'], role: 'admin', name: '审核人', accessibleStoreIds: ['*'] } },
+  const ctx = { params: { returnId: 'R' }, request: { body: {} }, state: { user: { roles: ['admin'], role: 'admin', name: '李燕', phone: '18010607277', accessibleStoreIds: ['*'] } },
     throw(status, message) { throw Object.assign(new Error(message), { status }); } };
   return { ctx, request, serial, balance, order, state, tx, get inbound() { return inbound; }, inboundItems };
 }
@@ -102,6 +102,14 @@ test('final approval completes original SN inbound and accounting exactly once',
   assert.equal(f.balance.normal_qty, 1);
 });
 
+test('历史经销商审批阶段由李燕完成最终审批', async t => {
+  const f = await fixture(t, { stage: 'pending_distributor' });
+  await sales.reviewSalesReturn(f.ctx);
+  assert.equal(f.request.status, 'completed');
+  assert.equal(f.request.approval_stage, 'completed');
+  assert.equal(f.request.li_review_user, '李燕');
+});
+
 test('partial non-SN return restores only selected quantity and keeps deposit', async t => {
   const f = await fixture(t, { sn: false, partial: true });
   await sales.reviewSalesReturn(f.ctx);
@@ -114,7 +122,7 @@ test('partial non-SN return restores only selected quantity and keeps deposit', 
 test('first approval stage does not receive stock', async t => {
   const f = await fixture(t, { stage: 'pending_store' });
   await sales.reviewSalesReturn(f.ctx);
-  assert.equal(f.request.approval_stage, 'pending_distributor');
+  assert.equal(f.request.approval_stage, 'pending_duan');
   assert.equal(f.balance.normal_qty, 0);
   assert.equal(f.inbound, null);
 });
