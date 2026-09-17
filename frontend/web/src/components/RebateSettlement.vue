@@ -166,6 +166,18 @@
         show-icon
         class="page-alert"
       />
+      <div class="reconcile-filter">
+        <span>供应商</span>
+        <el-select v-model="reconcileSupplierId" disabled filterable style="width: 260px">
+          <el-option
+            v-for="item in suppliers"
+            :key="item.supplier_id"
+            :label="item.name"
+            :value="item.supplier_id"
+          />
+        </el-select>
+        <el-button type="primary" :loading="postingLoading" @click="loadPostingOrders">查询单据</el-button>
+      </div>
       <el-table v-if="reconcileMode === 'batch'" :data="selectedSettlements" border stripe max-height="180" class="selected-settlements">
         <el-table-column prop="settlement_no" label="下账单号" min-width="190" />
         <el-table-column prop="counterparty_name" label="供应商" min-width="140" />
@@ -218,6 +230,7 @@ const emit = defineEmits(['changed'])
 const loading = ref(false)
 const saving = ref(false)
 const reconciling = ref(false)
+const postingLoading = ref(false)
 const rows = ref([])
 const total = ref(0)
 const suppliers = ref([])
@@ -229,6 +242,7 @@ const currentSettlement = ref(null)
 const selectedSettlements = ref([])
 const selectedRows = ref([])
 const postingOrders = ref([])
+const reconcileSupplierId = ref('')
 
 const sourceOptions = [
   { label: '费用归属返利', value: 'EXPENSE_REBATE' },
@@ -382,18 +396,30 @@ async function openReconcile(row) {
   reconcileMode.value = 'single'
   currentSettlement.value = row
   selectedSettlements.value = [row]
+  reconcileSupplierId.value = row.counterparty_id || ''
   postingOrders.value = []
+  reconcileVisible.value = true
+  await loadPostingOrders()
+}
+
+async function loadPostingOrders() {
+  if (!reconcileSupplierId.value) {
+    ElMessage.warning('下账单缺少供应商，无法查询返利上账单')
+    return
+  }
+  postingLoading.value = true
   try {
     const res = await api.getRebatePostingOrders({
-      supplierId: row.counterparty_id,
+      supplierId: reconcileSupplierId.value,
       unmatchedOnly: 1,
       page: 1,
       pageSize: 500
     })
     postingOrders.value = (res.data?.list || []).map(item => ({ ...item, allocationAmount: 0 }))
-    reconcileVisible.value = true
   } catch (error) {
     ElMessage.error(error.response?.data?.message || '加载可核销返利上账单失败')
+  } finally {
+    postingLoading.value = false
   }
 }
 
@@ -421,14 +447,10 @@ async function openBatchReconcile() {
   reconcileMode.value = 'batch'
   currentSettlement.value = null
   selectedSettlements.value = [...selectedRows.value].sort((left, right) => new Date(left.create_time || 0) - new Date(right.create_time || 0))
+  reconcileSupplierId.value = supplierIds[0]
   postingOrders.value = []
-  try {
-    const res = await api.getRebatePostingOrders({ supplierId: supplierIds[0], unmatchedOnly: 1, page: 1, pageSize: 500 })
-    postingOrders.value = (res.data?.list || []).map(item => ({ ...item, allocationAmount: 0 }))
-    reconcileVisible.value = true
-  } catch (error) {
-    ElMessage.error(error.response?.data?.message || '加载可核销返利上账单失败')
-  }
+  reconcileVisible.value = true
+  await loadPostingOrders()
 }
 
 async function submitReconciliation() {
@@ -553,6 +575,13 @@ onMounted(async () => {
   margin-bottom: 14px;
 }
 .page-alert {
+  margin-bottom: 14px;
+}
+.reconcile-filter {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
   margin-bottom: 14px;
 }
 .allocation-summary {
