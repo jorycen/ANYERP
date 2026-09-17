@@ -227,6 +227,11 @@ async function ensureDepositRefundApprovalSchema() {
 // the startup migrations run.
 async function ensureCriticalSchemaCompatibility() {
   await checkAndAddColumn(
+    'T_DICT_PAYMENT_METHOD_STORE',
+    'tax_rate_override',
+    'DECIMAL(8,4) NULL COMMENT "门店收款手续费税率覆盖值（百分数）"'
+  );
+  await checkAndAddColumn(
     'T_PRODUCT',
     'IS_USED_PRODUCT',
     'TINYINT(1) NOT NULL DEFAULT 0 COMMENT "二手商品标记"'
