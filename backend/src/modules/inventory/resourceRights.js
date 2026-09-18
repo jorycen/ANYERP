@@ -1,4 +1,5 @@
 const { Op } = require('sequelize');
+const XLSX = require('xlsx');
 const {
   sequelize, Product, ProductSn, InventoryResourceRight, ResourceRightChangeOrder,
   ProductResourceCostConfig, InventoryResourceCostAdjustment, ResourceCategory,
@@ -20,6 +21,8 @@ const STATUS_LABELS = {
 const GOV_SUBSIDY_PRODUCT_CATEGORIES = new Set(['笔记本', '台机', '手机', '平板']);
 const SALE_RESOURCE_TASK_TYPES = new Set(['EDU_SUBSIDY', 'SALES_REPORT', 'SALES_RED_PACKET']);
 const SHARE_INCENTIVE_TYPE = 'SALES_RED_PACKET';
+STATUS_LABELS.PENDING_EFFECTIVE = '未到生效日期';
+STATUS_LABELS.EXPIRED = '已过期';
 
 function isGovSubsidyEligibleCategory(category) {
   return GOV_SUBSIDY_PRODUCT_CATEGORIES.has(String(category || '').trim());
@@ -108,12 +111,22 @@ function normalizeRights(rows = [], categories = []) {
   });
 }
 
+function effectiveRightStatus(row, at = new Date()) {
+  if (row?.current_status !== 'AVAILABLE') return row?.current_status || 'NOT_APPLICABLE';
+  const timestamp = new Date(at).getTime();
+  const start = row.effective_start ? new Date(row.effective_start).getTime() : null;
+  const end = row.effective_end ? new Date(row.effective_end).getTime() : null;
+  if (start && timestamp < start) return 'PENDING_EFFECTIVE';
+  if (end && timestamp > end) return 'EXPIRED';
+  return 'AVAILABLE';
+}
+
 function buildSalesResourceSummary(sn, rows = [], categories = []) {
   const rights = normalizeRights(rows, categories);
   const names = new Map(categories.map(category => [category.category_code, category.short_name || category.name]));
   const resourceName = type => names.get(type) || RESOURCE_LABELS[type] || type;
-  const available = rights.filter(row => row.current_status === 'AVAILABLE').map(row => resourceName(row.resource_type));
-  const unavailable = rights.filter(row => row.current_status !== 'AVAILABLE').map(row => `${resourceName(row.resource_type)}${STATUS_LABELS[row.current_status] || row.current_status}`);
+  const available = rights.filter(row => effectiveRightStatus(row) === 'AVAILABLE').map(row => resourceName(row.resource_type));
+  const unavailable = rights.filter(row => effectiveRightStatus(row) !== 'AVAILABLE').map(row => `${resourceName(row.resource_type)}${STATUS_LABELS[effectiveRightStatus(row)] || effectiveRightStatus(row)}`);
   const consumed = rights.filter(row => ['USED', 'CLAIMED_BACK'].includes(row.current_status));
   let label = '普通现货';
   let warning = '';
@@ -126,7 +139,7 @@ function buildSalesResourceSummary(sn, rows = [], categories = []) {
   } else if (consumed.length) {
     label = '资源已消耗货';
     warning = consumed.map(row => `${resourceName(row.resource_type)}${row.current_status === 'USED' ? '已核销' : '已套回'}，不可再使用。`).join(' ');
-  } else if (categories.length > 0 && categories.every(category => rights.some(row => row.resource_type === category.category_code && row.current_status === 'AVAILABLE'))) {
+  } else if (categories.length > 0 && categories.every(category => rights.some(row => row.resource_type === category.category_code && effectiveRightStatus(row) === 'AVAILABLE'))) {
     label = '全资源货';
   } else if (available.length > 0) {
     label = `${available.join('+')}货`;
@@ -268,6 +281,124 @@ async function batchAdjustRights(ctx) {
     }
   });
   ctx.body = { message: '批量权益调整完成', affected };
+}
+
+const IMPORT_HEADER_ALIASES = {
+  sn: ['sn', 'sn_code', 'sn码', '序列号'],
+  pn: ['pn', 'pn_code', 'pn码', '厂商编码', '商品编码'],
+  resourceType: ['resource_type', 'resourceType', '资源类型', '权益类型', '权益'],
+  amount: ['amount', 'resource_amount', '资源金额', '权益金额', '金额'],
+  status: ['status', '状态', '调整状态'],
+  effectiveStart: ['effective_start', 'effectiveStart', '开始时间', '生效开始时间', '生效时间'],
+  effectiveEnd: ['effective_end', 'effectiveEnd', '结束时间', '生效结束时间', '失效时间'],
+  remark: ['remark', '备注', '说明']
+};
+
+function normalizeImportHeader(value) {
+  return String(value ?? '').trim().replace(/[\s_\-()（）]/g, '').toLowerCase();
+}
+
+function normalizeImportRows(rows) {
+  const aliases = new Map();
+  for (const [field, names] of Object.entries(IMPORT_HEADER_ALIASES)) {
+    for (const name of names) aliases.set(normalizeImportHeader(name), field);
+  }
+  return rows.map(row => Object.fromEntries(Object.entries(row).map(([key, value]) => [aliases.get(normalizeImportHeader(key)) || key, value])));
+}
+
+function parseImportList(value) {
+  return [...new Set(String(value ?? '').split(/[\s,，、;；]+/).map(item => item.trim()).filter(Boolean))];
+}
+
+function parseImportDate(value, fieldName, rowNumber) {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  let date = value instanceof Date ? value : null;
+  if (!date && typeof value === 'number') {
+    const parsed = XLSX.SSF.parse_date_code(value);
+    if (parsed) date = new Date(parsed.y, parsed.m - 1, parsed.d, parsed.H || 0, parsed.M || 0, Math.floor(parsed.S || 0));
+  }
+  if (!date) {
+    const text = String(value).trim().replace(/年|月/g, '-').replace(/日/g, '').replace(/[./]/g, '-');
+    date = new Date(/^\d{4}-\d{1,2}-\d{1,2}$/.test(text) ? `${text}T00:00:00` : text);
+  }
+  if (!date || Number.isNaN(date.getTime())) throw Object.assign(new Error(`第${rowNumber}行${fieldName}格式无效`), { status: 400 });
+  return date;
+}
+
+function normalizeImportAmount(value, rowNumber) {
+  if (value === undefined || value === null || String(value).trim() === '') return 0;
+  const amount = Number(String(value).replace(/,/g, '').trim());
+  if (!Number.isFinite(amount) || amount < 0) throw Object.assign(new Error(`第${rowNumber}行资源金额无效`), { status: 400 });
+  return money(amount);
+}
+
+async function applyImportedRightRow({ row, rowNumber, user }) {
+  const snCodes = parseImportList(row.sn);
+  const pnCodes = parseImportList(row.pn);
+  if (!snCodes.length && !pnCodes.length) throw Object.assign(new Error(`第${rowNumber}行必须填写PN或SN`), { status: 400 });
+  const resourceTypes = parseImportList(row.resourceType);
+  if (!resourceTypes.length) throw Object.assign(new Error(`第${rowNumber}行资源类型不能为空`), { status: 400 });
+  const status = String(row.status || 'AVAILABLE').trim().toUpperCase();
+  if (!['AVAILABLE', 'NOT_APPLICABLE', 'EXCEPTION'].includes(status)) throw Object.assign(new Error(`第${rowNumber}行状态无效`), { status: 400 });
+  const amount = normalizeImportAmount(row.amount, rowNumber);
+  const effectiveStart = parseImportDate(row.effectiveStart, '开始时间', rowNumber);
+  const effectiveEnd = parseImportDate(row.effectiveEnd, '结束时间', rowNumber);
+  if (effectiveStart && effectiveEnd && effectiveStart > effectiveEnd) throw Object.assign(new Error(`第${rowNumber}行开始时间不能晚于结束时间`), { status: 400 });
+  const remark = String(row.remark || '').trim().slice(0, 512);
+  const categories = await ResourceCategory.findAll({ where: { status: 1 } });
+  const validTypes = new Set(categories.map(category => category.category_code));
+  for (const type of resourceTypes) if (!validTypes.has(type)) throw Object.assign(new Error(`第${rowNumber}行资源类型 ${type} 无效或已停用`), { status: 400 });
+
+  return sequelize.transaction(async transaction => {
+    const selector = snCodes.length ? { sn_code: { [Op.in]: snCodes } } : { pn_code: { [Op.in]: pnCodes } };
+    const sns = await ProductSn.findAll({ where: { is_deleted: 0, status: 'in_stock', ...selector }, transaction, lock: transaction.LOCK.UPDATE });
+    if (!sns.length) throw Object.assign(new Error(`第${rowNumber}行未找到在库SN`), { status: 404 });
+    let affected = 0;
+    let skipped = 0;
+    for (const sn of sns) {
+      for (const resourceType of resourceTypes) {
+        let right = await InventoryResourceRight.findOne({ where: { sn_id: sn.sn_id, resource_type: resourceType }, transaction, lock: transaction.LOCK.UPDATE });
+        const before = right?.current_status || 'NOT_APPLICABLE';
+        if (['LOCKED', 'USED', 'CLAIMED_BACK'].includes(before)) { skipped += 1; continue; }
+        const values = { current_status: status, amount, effective_start: effectiveStart, effective_end: effectiveEnd, source: 'EXCEL_IMPORT', remark, version: Number(right?.version || 0) + 1 };
+        if (!right) {
+          right = await InventoryResourceRight.create({ right_id: generateUUID(), sn_id: sn.sn_id, sn_code: sn.sn_code, product_id: sn.product_id, resource_type: resourceType, initial_status: status, ...values }, { transaction });
+        } else {
+          await right.update(values, { transaction });
+        }
+        await ResourceRightChangeOrder.create({
+          change_id: generateUUID(), change_order_no: businessNo(), sn_id: sn.sn_id, sn_code: sn.sn_code, product_id: sn.product_id,
+          resource_type: resourceType, before_status: before, after_status: status, change_amount: amount, change_reason: 'BATCH_ADJUST', approval_status: 'approved',
+          applicant_staff_id: user.staffId, applicant_name: user.name, reviewer_staff_id: user.staffId, reviewer_name: user.name, review_time: new Date(), remark
+        }, { transaction });
+        affected += 1;
+      }
+    }
+    return { affected, skipped, matched: sns.length };
+  });
+}
+
+async function importBatchRights(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
+  if (!ctx.file?.buffer) ctx.throw(400, '请上传Excel文件');
+  const workbook = XLSX.read(ctx.file.buffer, { type: 'buffer', cellDates: true });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: true });
+  if (!rawRows.length) ctx.throw(400, 'Excel没有可导入的数据');
+  if (rawRows.length > 2000) ctx.throw(400, '单次最多导入2000行');
+  const rows = normalizeImportRows(rawRows);
+  const results = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const rowNumber = index + 2;
+    try {
+      const result = await applyImportedRightRow({ row: rows[index], rowNumber, user: ctx.state.user || {} });
+      results.push({ row: rowNumber, status: 'success', ...result });
+    } catch (error) {
+      results.push({ row: rowNumber, status: 'failed', message: error.message });
+    }
+  }
+  const success = results.filter(item => item.status === 'success');
+  ctx.body = { message: `导入完成：成功${success.length}行，失败${results.length - success.length}行`, affected: success.reduce((sum, item) => sum + item.affected, 0), skipped: success.reduce((sum, item) => sum + item.skipped, 0), results };
 }
 
 async function batchRefreshRights(ctx) {
@@ -1754,7 +1885,7 @@ async function lockSaleRights(order, items, transaction) {
         right.locked_source_type === 'SALE_ORDER' &&
         right.locked_source_id === order.order_id;
       if (alreadyLockedByOrder) continue;
-      if (!right || right.current_status !== 'AVAILABLE') throw Object.assign(new Error(`SN ${item.sn_code} 的${category.name}不可用`), { status: 409 });
+      if (!right || effectiveRightStatus(right) !== 'AVAILABLE') throw Object.assign(new Error(`SN ${item.sn_code} 的${category.name}不可用`), { status: 409 });
       await right.update({ current_status: 'LOCKED', locked_source_type: 'SALE_ORDER', locked_source_id: order.order_id, version: Number(right.version || 0) + 1 }, { transaction });
       await ResourceRightChangeOrder.create({
         change_id: generateUUID(), change_order_no: businessNo(), sn_id: item.sn_id, sn_code: item.sn_code,
@@ -1898,7 +2029,7 @@ async function releaseSaleRights(order, items, transaction) {
 
 module.exports = {
   LEGACY_RESOURCE_TYPES, buildSalesResourceSummary, summariesForSns,
-  listRights, snRights, saveSnRights, batchAdjustRights, batchRefreshRights, reverseSaleUseResource, submitClaim, reviewClaim, listChanges, listCostConfigs, listCostAdjustments, saveCostConfig,
+  listRights, snRights, saveSnRights, batchAdjustRights, importBatchRights, batchRefreshRights, reverseSaleUseResource, submitClaim, reviewClaim, listChanges, listCostConfigs, listCostAdjustments, saveCostConfig,
   listResourceCategories, saveResourceCategory, deleteResourceCategory,
   listGoodsTypes, saveGoodsType, deleteGoodsType,
   listResourceSettlements, createManualRebateSettlement, settleResource, batchSettleRebateResources,

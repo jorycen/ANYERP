@@ -164,39 +164,19 @@
       <template #footer><el-button @click="claimDialog=false">取消</el-button><el-button type="primary" @click="submitClaim">提交财务审批</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="batchDialog" title="批量调整SN权益" width="640px">
-      <el-alert title="仅调整未销售在库SN的权益状态，已归档销售单不受影响。SN码可用换行、逗号或空格分隔。" type="warning" :closable="false" style="margin-bottom:12px" />
-      <el-form label-width="110px">
-        <el-form-item label="指定SN">
-          <el-input v-model="batchForm.snCodesText" type="textarea" :rows="4" placeholder="留空时按商品筛选全部在库SN" />
-        </el-form-item>
-        <el-form-item label="商品">
-          <el-select v-model="batchForm.productId" filterable remote clearable reserve-keyword placeholder="搜索商品，可选" :remote-method="searchProducts" :loading="productLoading" style="width:100%">
-            <el-option v-for="item in products" :key="item.product_id" :label="`${item.name} (${item.product_code || ''})`" :value="item.product_id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="权益">
-          <el-select v-model="batchForm.resourceTypes" multiple placeholder="选择要调整的权益" style="width:100%">
-            <el-option v-for="item in resourceOptions" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="调整为">
-          <el-select v-model="batchForm.status" style="width:180px">
-            <el-option label="可用" value="AVAILABLE" />
-            <el-option label="不适用" value="NOT_APPLICABLE" />
-            <el-option label="异常" value="EXCEPTION" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="金额">
-          <el-input-number v-model="batchForm.amount" :min="0" :precision="2" />
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input v-model="batchForm.remark" type="textarea" :rows="2" />
-        </el-form-item>
-      </el-form>
+    <el-dialog v-model="batchDialog" title="Excel导入批量调整权益" width="640px">
+      <el-alert title="仅调整未销售在库SN的权益，已锁定、已核销和已套回权益会跳过，已归档销售单不受影响。" type="warning" :closable="false" style="margin-bottom:12px" />
+      <div class="import-help">
+        <p>每行一条调整规则：只填 PN 调整该 PN 下全部在库 SN；填写 SN 时按 SN 调整，若 PN、SN 同时填写则 SN 优先。开始时间不填表示立即生效，结束时间不填表示永久有效。</p>
+        <p>表头：PN、SN、资源类型、资源金额、状态、开始时间、结束时间、备注。</p>
+      </div>
+      <el-button @click="downloadBatchTemplate">下载Excel模板</el-button>
+      <input ref="batchFileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="onBatchFileChange" />
+      <el-button type="primary" @click="batchFileInput?.click()">选择Excel文件</el-button>
+      <span v-if="batchFile" class="file-name">{{ batchFile.name }}</span>
       <template #footer>
         <el-button @click="batchDialog=false">取消</el-button>
-        <el-button type="primary" @click="submitBatchAdjust">确认调整</el-button>
+        <el-button type="primary" :loading="batchImporting" :disabled="!batchFile" @click="submitBatchImport">开始导入</el-button>
       </template>
     </el-dialog>
   </div>
@@ -205,6 +185,7 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import * as XLSX from 'xlsx'
 import api from '../api'
 import { hasRole } from '../utils/user'
 
@@ -231,6 +212,7 @@ const snForm = reactive({ taxType:'UNKNOWN', sourceType:'OTHER', rights:[] })
 const claimDialog = ref(false); const claimForm = reactive({ snId:'', snCode:'', resourceType:'', amount:0, attachmentUrl:'', remark:'' })
 const batchDialog = ref(false)
 const batchForm = reactive({ snCodesText:'', productId:'', resourceTypes:[], status:'AVAILABLE', amount:0, remark:'' })
+const batchFileInput = ref(null); const batchFile = ref(null); const batchImporting = ref(false)
 
 const payloadList = res => res.data?.list || res.data || []
 const payloadTotal = res => res.data?.pagination?.total || res.data?.total || 0
@@ -343,9 +325,27 @@ async function submitBatchAdjust(){
   }catch(e){ElMessage.error(e.response?.data?.message||'批量调整失败')}
 }
 
+function onBatchFileChange(event){ batchFile.value=event.target.files?.[0] || null }
+function downloadBatchTemplate(){
+  const rows=[{PN:'示例PN',SN:'',资源类型:'GOV_SUBSIDY',资源金额:500,状态:'AVAILABLE',开始时间:'',结束时间:'',备注:'按PN匹配全部在库SN'}]
+  const sheet=XLSX.utils.json_to_sheet(rows); const book=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(book,sheet,'权益调整'); XLSX.writeFile(book,'资源权益批量调整模板.xlsx')
+}
+async function submitBatchImport(){
+  if(!batchFile.value)return ElMessage.warning('请选择Excel文件')
+  batchImporting.value=true
+  try{
+    const res=await api.importBatchResourceRights(batchFile.value); const data=res.data || res
+    const failed=(data.results||[]).filter(item=>item.status==='failed')
+    if(failed.length) ElMessage.warning(`${data.message}，失败原因：${failed.slice(0,3).map(item=>`第${item.row}行 ${item.message}`).join('；')}`)
+    else ElMessage.success(data.message || '导入完成')
+    batchDialog.value=false; await loadRights(); await loadChanges()
+  }catch(e){ElMessage.error(e.response?.data?.message||'Excel导入失败')}
+  finally{batchImporting.value=false}
+}
+
 onMounted(async () => { await loadCategories(); loadSuppliers(); loadActive(tab.value) })
 </script>
 
 <style scoped>
-.filter-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}.el-pagination{margin-top:14px;justify-content:flex-end}
+.filter-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}.el-pagination{margin-top:14px;justify-content:flex-end}.import-help{padding:4px 0 12px;color:#606266;line-height:1.7}.import-help p{margin:0}.file-name{margin-left:10px;color:#606266}
 </style>

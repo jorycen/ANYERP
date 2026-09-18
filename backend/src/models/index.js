@@ -219,6 +219,8 @@ const InventoryResourceRight = sequelize.define('InventoryResourceRight', {
   initial_status: { type: DataTypes.STRING(32), allowNull: false, defaultValue: 'NOT_APPLICABLE' },
   current_status: { type: DataTypes.STRING(32), allowNull: false, defaultValue: 'NOT_APPLICABLE' },
   amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  effective_start: { type: DataTypes.DATE },
+  effective_end: { type: DataTypes.DATE },
   source: { type: DataTypes.STRING(128) },
   locked_source_type: { type: DataTypes.STRING(32) },
   locked_source_id: { type: DataTypes.STRING(32) },

@@ -318,6 +318,10 @@ export default {
   getResourceCostAdjustments: (params) => api.get('/inventory/resource-rights/cost-adjustments', { params }),
   saveProductResourceCostConfig: (data) => api.post('/inventory/resource-rights/cost-configs', data),
   batchAdjustResourceRights: (data) => api.post('/inventory/resource-rights/batch-adjust', data),
+  importBatchResourceRights: (file) => {
+    const formData = new FormData(); formData.append('file', file)
+    return api.post('/inventory/resource-rights/batch-import', formData, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 180000 })
+  },
   batchRefreshResourceRights: (data) => api.post('/inventory/resource-rights/batch-refresh', data),
   reverseSaleUseResource: (data) => api.post('/inventory/resource-rights/reverse-sale-use', data),
   getResourceCategories: (params) => api.get('/inventory/resource-categories', { params }),
