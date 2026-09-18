@@ -3,6 +3,10 @@ const assert = require('node:assert/strict');
 const models = require('../src/models');
 const salesController = require('../src/modules/sales/controller');
 
+// These tests exercise the resource alignment decision, not the product query.
+// Keep the fixture independent from a live MySQL connection.
+models.Product.findAll = async () => [{ product_id: 'PRODUCT_1', category: '笔记本' }];
+
 function buildTransaction() {
   return { LOCK: { UPDATE: 'UPDATE' } };
 }
@@ -22,9 +26,11 @@ function buildItem(overrides = {}) {
 
 test('归档前缺少已选择的国补资格时直接阻止锁定和审批', async () => {
   const originals = {
+    productFindAll: models.Product.findAll,
     categoryFindOne: models.ResourceCategory.findOne,
     rightFindOne: models.InventoryResourceRight.findOne
   };
+  models.Product.findAll = async () => [{ product_id: 'PRODUCT_1', category: '笔记本' }];
   models.ResourceCategory.findOne = async () => ({
     category_code: 'GOV_SUBSIDY',
     name: '国补资格',
@@ -42,6 +48,7 @@ test('归档前缺少已选择的国补资格时直接阻止锁定和审批', as
       error => error.status === 409 && error.message === 'SN SN001 的国补资格不可用'
     );
   } finally {
+    models.Product.findAll = originals.productFindAll;
     models.ResourceCategory.findOne = originals.categoryFindOne;
     models.InventoryResourceRight.findOne = originals.rightFindOne;
   }

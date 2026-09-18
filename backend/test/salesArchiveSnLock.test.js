@@ -2,12 +2,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const models = require('../src/models');
 const salesController = require('../src/modules/sales/controller');
+const customerOpsService = require('../src/modules/customerOps/service');
 
 function buildContext(items) {
   return {
     params: { orderId: 'ORDER_1' },
     request: { body: { items } },
-    state: { user: { accessibleStoreIds: ['STORE_1'] } },
+    state: { user: { staffId: 'STAFF_1', name: 'tester', accessibleStoreIds: ['STORE_1'], accessibleDistributorIds: ['DIST_1'] } },
     body: null
   };
 }
@@ -16,16 +17,22 @@ async function withSalesStubs({ lockedCount }, callback) {
   const originals = {
     orderFindByPk: models.Order.findByPk,
     itemFindAll: models.OrderItem.findAll,
+    productFindAll: models.Product.findAll,
     rightCount: models.InventoryResourceRight.count,
     grossProfitFindOne: models.OrderGrossProfit.findOne,
-    transaction: models.sequelize.transaction
+    transaction: models.sequelize.transaction,
+    reconcileOrder: customerOpsService.reconcileOrder
   };
   const updatedItem = {};
   const order = {
     order_id: 'ORDER_1',
     order_no: 'SO001',
+    create_staff_id: 'STAFF_1',
+    create_user: 'tester',
+    Store: { store_id: 'STORE_1', distributor_id: 'DIST_1' },
     store_id: 'STORE_1',
     order_status: '未归档',
+    reload: async () => {},
     update: async () => {}
   };
   const item = {
@@ -39,18 +46,22 @@ async function withSalesStubs({ lockedCount }, callback) {
 
   models.Order.findByPk = async () => order;
   models.OrderItem.findAll = async () => [item];
+  models.Product.findAll = async () => [{ product_id: 'PRODUCT_1', status: 1, is_deleted: 0 }];
   models.InventoryResourceRight.count = async () => lockedCount;
   models.OrderGrossProfit.findOne = async () => null;
-  models.sequelize.transaction = async handler => handler({});
+  models.sequelize.transaction = async handler => handler({ LOCK: { UPDATE: 'UPDATE' } });
+  customerOpsService.reconcileOrder = async () => {};
 
   try {
     await callback(updatedItem);
   } finally {
     models.Order.findByPk = originals.orderFindByPk;
     models.OrderItem.findAll = originals.itemFindAll;
+    models.Product.findAll = originals.productFindAll;
     models.InventoryResourceRight.count = originals.rightCount;
     models.OrderGrossProfit.findOne = originals.grossProfitFindOne;
     models.sequelize.transaction = originals.transaction;
+    customerOpsService.reconcileOrder = originals.reconcileOrder;
   }
 }
 
