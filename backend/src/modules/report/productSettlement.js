@@ -305,7 +305,7 @@ async function queryProductSettlementSummary({ startDate, endDate, storeIds = []
           ROUND(COALESCE(SUM(CASE WHEN estimate.STATUS = 'received' THEN estimate.REBATE_ESTIMATE_AMOUNT ELSE 0 END), 0), 2) AS realizedPolicyIncomeAmount,
           ROUND(COALESCE(SUM(CASE WHEN estimate.STATUS IN ('estimated', 'confirmed') THEN estimate.REBATE_ESTIMATE_AMOUNT ELSE 0 END), 0), 2) AS estimatedPolicyIncomeAmount
        FROM T_REBATE_ESTIMATE estimate
-       INNER JOIN T_SALES_ORDER sale ON sale.ORDER_ID = estimate.SALES_ORDER_ID
+       INNER JOIN T_ORDER sale ON sale.ORDER_ID = estimate.SALES_ORDER_ID
        WHERE sale.STORE_ID IN (:storeIds)
          AND estimate.UPDATED_AT >= :startDate
          AND estimate.UPDATED_AT < DATE_ADD(:endDate, INTERVAL 1 DAY)`,
@@ -484,7 +484,7 @@ async function listProductSettlementOrders({
        ROUND(COALESCE(SUM(CASE WHEN estimate.STATUS = 'received' THEN estimate.REBATE_ESTIMATE_AMOUNT ELSE 0 END), 0), 2) AS realizedPolicyIncomeAmount,
        ROUND(COALESCE(SUM(CASE WHEN estimate.STATUS IN ('estimated', 'confirmed') THEN estimate.REBATE_ESTIMATE_AMOUNT ELSE 0 END), 0), 2) AS estimatedPolicyIncomeAmount
      FROM T_REBATE_ESTIMATE estimate
-     INNER JOIN T_SALES_ORDER sale ON sale.ORDER_ID = estimate.SALES_ORDER_ID
+     INNER JOIN T_ORDER sale ON sale.ORDER_ID = estimate.SALES_ORDER_ID
      WHERE ${policyConditions.join(' AND ')}`,
     { replacements: policyReplacements, type: QueryTypes.SELECT }
   );

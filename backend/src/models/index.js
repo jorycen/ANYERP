@@ -1989,7 +1989,6 @@ const RebateEstimate = sequelize.define('RebateEstimate', {
   rebate_estimate_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   status: { type: DataTypes.STRING(32), defaultValue: 'estimated' },
   remark: { type: DataTypes.STRING(512) },
-  status: { type: DataTypes.STRING(32), defaultValue: 'active' },
   source_type: { type: DataTypes.STRING(32), defaultValue: 'manual' },
   source_id: { type: DataTypes.STRING(64) },
   reversal_of: { type: DataTypes.STRING(32) },
