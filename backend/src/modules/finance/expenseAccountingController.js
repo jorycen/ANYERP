@@ -91,6 +91,7 @@ function allocationNo() {
 }
 
 async function listExpensePerformanceAllocations(ctx) {
+  if (await require('../approval/businessRuntime').reviewList(ctx, 'expense_performance_allocation')) return;
   const user = ctx.state.user;
   const { expenseId, scope = 'expense', status, performanceMonth, page = 1, pageSize = 20 } = ctx.query;
   const accessibleStoreIds = getAccessibleStoreIds(user);
@@ -251,34 +252,11 @@ async function reviewExpensePerformanceAllocation(ctx) {
     if (!allocation) ctx.throw(404, '费用绩效分摊记录不存在');
     assertStoreAccess(user, allocation.store_id);
     if (!canAccessDistributor(user, allocation.distributor_id)) ctx.throw(403, '无权审核该费用绩效分摊');
-    const now = new Date();
-    if (allocation.status === 'pending_finance') {
-      if (!hasAnyRole(user, ['finance'])) ctx.throw(403, '当前阶段仅财务账号可审核');
-      await allocation.update({
-        status: action === 'approve' ? 'pending_admin' : 'rejected',
-        finance_reviewer_id: user.staffId || user.id,
-        finance_reviewer_name: user.name || user.phone || '',
-        finance_review_comment: comment,
-        finance_review_time: now,
-        reject_stage: action === 'reject' ? 'finance' : null,
-        update_time: now
-      }, { transaction });
-    } else if (allocation.status === 'pending_admin') {
-      if (!hasAnyRole(user, ['admin'])) ctx.throw(403, '当前阶段仅 admin 账号可审核');
-      await allocation.update({
-        status: action === 'approve' ? 'approved' : 'rejected',
-        admin_reviewer_id: user.staffId || user.id,
-        admin_reviewer_name: user.name || user.phone || '',
-        admin_review_comment: comment,
-        admin_review_time: now,
-        reject_stage: action === 'reject' ? 'admin' : null,
-        update_time: now
-      }, { transaction });
-    } else {
-      ctx.throw(400, '当前费用绩效分摊记录不可审核');
-    }
+    if (!await require('../approval/businessRuntime').advance(ctx, 'expense_performance_allocation', allocation, transaction, action, comment)) { result = allocation; return; }
+    await allocation.update({ status: action === 'approve' ? 'approved' : 'rejected', admin_reviewer_id: user.staffId, admin_reviewer_name: user.name, admin_review_comment: comment, admin_review_time: new Date(), update_time: new Date() }, { transaction });
     result = allocation;
   });
+  if (ctx.state.businessApproval?.status === 'pending') return;
   ctx.body = { code: 0, message: action === 'approve' ? '审核通过' : '费用绩效分摊已拒绝', data: result };
 }
 

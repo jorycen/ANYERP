@@ -15,6 +15,7 @@
             </el-select>
             <el-button @click="resetTaskFilters">重置</el-button>
           </div>
+          <el-alert v-for="issue in approvalIssues" :key="`${issue.businessType}:${issue.message}`" :title="`${businessTypeText(issue.businessType)}：${issue.message}`" type="warning" :closable="false" />
           <el-table :data="filteredMergedTasks" stripe border v-loading="loading">
             <el-table-column label="业务类型" width="140"><template #default="{ row }">{{ taskBusinessType(row) }}</template></el-table-column>
             <el-table-column label="业务信息" min-width="210"><template #default="{ row }">{{ taskMainInfo(row) }}</template></el-table-column>
@@ -35,8 +36,8 @@
                 <template v-else-if="row.isModuleApproval">
                   <el-button link type="primary" @click="openModule(row)">审批详情</el-button>
                   <el-button link @click="openOriginalFromRow(row)">原始单据</el-button>
-                  <el-button link type="success" @click="reviewModule(row, 'approve')">通过</el-button>
-                  <el-button link type="danger" @click="reviewModule(row, 'reject')">拒绝</el-button>
+                  <el-button link type="success" @click="reviewModule(row, 'approve')">{{ row.manualPath ? '前往确认' : '通过' }}</el-button>
+                  <el-button v-if="!row.manualPath" link type="danger" @click="reviewModule(row, 'reject')">拒绝</el-button>
                 </template>
                 <template v-else>
                   <el-button link type="primary" @click="openInstance(row.instance_id, row)">审批详情</el-button>
@@ -63,20 +64,23 @@
             <el-table-column label="操作" width="150">
               <template #default="{ row }">
                 <el-button link type="primary" @click="openInstance(row.instance_id)">详情</el-button>
-                <el-button v-if="row.status === 'rejected'" link type="warning" @click="resubmit(row)">重新提交</el-button>
+                <el-button v-if="row.status === 'rejected' && !row.payload?.managedBusiness" link type="warning" @click="resubmit(row)">重新提交</el-button>
               </template>
             </el-table-column>
           </el-table>
         </el-tab-pane>
 
         <el-tab-pane v-if="canConfigure" label="流程配置" name="flows">
-          <div class="toolbar"><el-button type="primary" @click="newFlow">新增流程</el-button></div>
+          <div class="toolbar"><el-button type="primary" @click="newFlow">新增流程</el-button><el-button @click="initializeFlows">补齐系统流程</el-button><span>共 {{ new Set(flows.map(row => row.flow_code)).size }} 类流程</span></div>
+          <el-alert title="修改已发布流程会生成草稿，发布后用于新申请；进行中的申请保留原流程。人员缺失的流程请补齐后发布。" type="info" :closable="false" style="margin-bottom:12px" />
           <el-table :data="flows" stripe border>
             <el-table-column prop="name" label="流程名称" min-width="180" />
             <el-table-column prop="flow_code" label="流程编码" width="180" />
             <el-table-column label="业务类型" width="160"><template #default="{ row }">{{ businessTypeText(row.business_type) }}</template></el-table-column>
             <el-table-column prop="version" label="版本" width="80" />
-            <el-table-column prop="status" label="状态" width="100" />
+            <el-table-column label="接入情况" width="170"><template #default="{ row }">{{ row.binding_status === 'business' ? '已绑定业务审批' : '独立流程（未绑定业务）' }}</template></el-table-column>
+            <el-table-column label="状态" width="100"><template #default="{ row }">{{ ({ draft: '草稿', published: '已发布', disabled: '已停用' })[row.status] || row.status }}</template></el-table-column>
+            <el-table-column label="待完善" min-width="140"><template #default="{ row }">{{ (row.config?.missingApprovers || []).join('、') || '-' }}</template></el-table-column>
             <el-table-column label="操作" width="240">
               <template #default="{ row }">
                 <el-button link type="primary" @click="editFlow(row)">编辑</el-button>
@@ -201,6 +205,7 @@
           <div v-for="(rule, ruleIndex) in node.approvers" :key="ruleIndex" class="rule-row">
             <el-select v-model="rule.type" style="width:170px" @change="clearRule(rule)">
               <el-option label="门店店长" value="store_manager" />
+              <el-option label="门店授权人员" value="store_staff" />
               <el-option label="直属上级" value="direct_supervisor" />
               <el-option label="指定人员" value="fixed_user" />
               <el-option label="审批部门/角色" value="role" />
@@ -250,10 +255,7 @@ const attributionEditRows = ref([])
 const attributionEditTotal = computed(() => attributionEditRows.value.reduce((sum, row) => sum + Number(row.amount || 0), 0))
 const assigneeOptions = reactive({ staff: [], roles: [], stores: [] })
 const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
-const designatedRefundApproverStage = (() => {
-  const phone = String(userInfo.phone || '').trim()
-  return phone === '14780834570' ? 'pending_deng' : phone === '18010607277' ? 'pending_li' : ''
-})()
+const approvalIssues = ref([])
 const roleCodes = computed(() => {
   const rawRoles = Array.isArray(userInfo.roles) && userInfo.roles.length
     ? userInfo.roles
@@ -366,136 +368,30 @@ async function loadPurchaseApprovalRows() {
   })
 }
 async function loadOtherApprovalTasks() {
-  const loaders = [
-    {
-      type: 'return',
-      request: () => api.getReturnList({ status: 'pending', scope: 'review', page: 1, pageSize: 100 }),
-      map: row => moduleTask('return', row, {
-        id: row.return_id || row.returnId,
-        no: row.return_no || row.returnNo,
-        title: row.supplier_name || row.supplierName || '退库申请',
-        summary: `原入库单 ${row.inbound_no || row.inboundNo || '-'}，共 ${row.total_quantity || row.totalQuantity || 0} 件`,
-        amountText: moneyText(row.total_amount || row.totalAmount),
-        node: '退库审批'
-      })
-    },
-    {
-      type: 'sales_return',
-      request: () => api.getSalesReturnRequests({ status: 'pending', scope: 'review', page: 1, pageSize: 100 }),
-      map: row => {
-        const stage = row.approval_stage || row.approvalStage || 'pending_store'
-        if (stage === 'pending_store' && !canReviewRole(['admin', 'manager'])) return null
-        if (stage !== 'pending_store' && stage !== designatedRefundApproverStage) return null
-        return moduleTask('sales_return', row, {
-          id: row.return_id || row.returnId || row.id,
-          no: row.return_no || row.returnNo,
-          title: row.customer_name || row.customerName || '销售退单申请',
-          summary: `原订单 ${row.order_no || row.orderNo || '-'}，退款 ${moneyText(row.refund_amount || row.refundAmount || row.total_amount || row.totalAmount)}`,
-          amountText: moneyText(row.refund_amount || row.refundAmount || row.total_amount || row.totalAmount),
-          node: stage === 'pending_deng' ? '邓红梅审批' : stage === 'pending_li' ? '李燕审批' : '店长审批'
-        })
-      }
-    }
-  ]
-  if (designatedRefundApproverStage || canReviewRole(['admin', 'manager'])) {
-    loaders.push({
-      type: 'deposit_refund',
-      request: () => api.getDepositRefunds({ status: 'pending', scope: 'review', page: 1, pageSize: 100 }),
-      map: row => moduleTask('deposit_refund', row, {
-        id: row.refund_id || row.refundId,
-        no: row.refund_no || row.refundNo,
-        title: row.DepositOrder?.customer_name || '退定金申请',
-        summary: `定金单 ${row.DepositOrder?.deposit_no || '-'}，退款 ${moneyText(row.amount)}`,
-        amountText: moneyText(row.amount),
-        node: (row.approval_stage || '') === 'pending_deng' ? '邓红梅审批' : (row.approval_stage || '') === 'pending_li' ? '李燕审批' : '店长审批'
-      })
-    })
-  }
-  if (canReviewRole(['admin', 'purchaser'])) {
-    loaders.push({
-      type: 'purchase',
-      request: loadPurchaseApprovalRows,
-      map: row => moduleTask('purchase', row, {
-        id: row.request_id || row.requestId,
-        no: row.request_no || row.requestNo,
-        title: row.supplier_name || row.supplierName || '采购申请',
-        summary: row.items_summary || '采购商品明细',
-        amountText: moneyText(row.total_amount || row.totalAmount),
-        node: '采购审批'
-      })
-    })
-  }
-  if (canReviewRole(['admin'])) {
-    loaders.push({
-      type: 'expense',
-      request: () => api.getExpenseList({ status: 'pending_approval', scope: 'review', page: 1, pageSize: 100 }),
-      map: row => row.source_type !== 'purchase' ? null : moduleTask('expense', row, {
-        id: row.expense_id || row.expenseId,
-        no: row.expense_no || row.expenseNo,
-        title: `${row.expense_type || '费用'} · ${row.expense_party || '-'}`,
-        summary: row.source_type === 'purchase' ? `采购个人垫付 ${row.source_no || ''}` : `${row.region_name || row.store_name || ''} 费用报销`,
-        amountText: moneyText(row.amount),
-        node: '报销审批'
-      })
-    })
-  }
-  if (canReviewRole(['admin', 'finance', 'purchaser'])) {
-    loaders.push({
-      type: 'product',
-      request: () => api.getProductApplicationList({ status: 'pending', scope: 'review', page: 1, pageSize: 100 }),
-      map: row => moduleTask('product', row, {
-        id: row.application_id || row.applicationId,
-        no: row.application_no || row.applicationNo,
-        title: row.product_name || row.productName || '新建商品审批',
-        summary: `${row.category_name || '未分类'} · 商品信息审批`,
-        node: '商品审批'
-      })
-    })
-  }
-  if (canReviewRole(['finance'])) {
-    loaders.push({
-      type: 'resource',
-      request: () => api.getResourceClaimList({ approvalStatus: 'pending_finance', scope: 'review', page: 1, pageSize: 100 }),
-      map: row => moduleTask('resource', row, {
-        id: row.change_id || row.changeId,
-        no: row.change_order_no || row.changeOrderNo,
-        title: `${row.resource_type || '资源'}套回`,
-        summary: `SN ${row.sn_code || '-'}，套回金额 ${moneyText(row.change_amount)}`,
-        amountText: moneyText(row.change_amount),
-        node: '财务审批'
-      })
-    })
-  }
-  if (canReviewRole(['admin', 'finance'])) {
-    loaders.push({
-      type: 'profit',
-      request: () => api.getProfitAdjustments({ scope: 'review', page: 1, pageSize: 100 }),
-      map: row => moduleTask('profit', row, {
-        id: row.adjustment_id || row.adjustmentId,
-        no: row.adjustment_no || row.adjustmentNo,
-        title: `${row.employee_name || '员工'}业绩毛利调整`,
-        summary: `订单 ${row.order_no || '-'}，调整 ${moneyText(row.signed_amount, true)}`,
-        amountText: moneyText(row.signed_amount, true),
-        node: row.status === 'pending_admin' ? '管理员复审' : '财务初审'
-      })
-    })
-  }
-  const groups = await Promise.all(loaders.map(async loader => {
-    try {
-      return responseList(await loader.request()).map(loader.map).filter(Boolean)
-    } catch (error) {
-      console.warn(`加载${loader.type}审批失败:`, error)
-      return []
-    }
+  const response = await api.getBusinessApprovalTasks()
+  const rows = Array.isArray(response?.data) ? response.data : response?.data?.data || []
+  approvalIssues.value = response.issues || []
+  moduleTasks.value = rows.map(item => ({
+    ...moduleTask(item.business_type, item.row, {
+      id: item.business_id, no: item.business_no, node: item.node_name,
+      title: item.row.product_name || item.row.supplier_name || businessTypeText(item.business_type),
+      summary: item.row.reason || item.row.remark || '',
+      amountText: moneyText(item.row.total_amount ?? item.row.amount ?? item.row.change_amount ?? item.row.signed_amount)
+    }),
+    managedBusiness: true, manualPath: item.manual_path, approvalInstanceId: item.instance_id
   }))
-  moduleTasks.value = groups.flat()
+}
+async function initializeFlows() {
+  await api.initializeApprovalFlows()
+  ElMessage.success('系统流程已补齐')
+  await loadFlows()
 }
 async function loadInstances() { instances.value = (await api.getApprovalInstances({ scope: 'mine' })).data || [] }
 async function loadFlows() { if (canConfigure.value) flows.value = (await api.getApprovalFlows()).data || [] }
 async function loadOptions() { if (canConfigure.value) Object.assign(assigneeOptions, (await api.getApprovalAssigneeOptions()).data || {}) }
-async function reload() { loading.value = true; try { await Promise.all([loadTasks(), loadSalesTasks(), loadOtherApprovalTasks(), loadInstances(), loadFlows(), loadOptions()]) } finally { loading.value = false } }
+async function reload() { loading.value = true; try { await Promise.all([loadTasks(), loadOtherApprovalTasks(), loadInstances(), loadFlows(), loadOptions()]) } finally { loading.value = false } }
 
-function statusText(value) { return ({ pending: '审批中', approved: '已通过', rejected: '已拒绝' }[value] || value || '-') }
+function statusText(value) { return ({ pending: '审批中', approved: '已通过', rejected: '已拒绝', cancelled: '已撤销' }[value] || value || '-') }
 function businessTypeText(value) {
   return ({
     sn_change: 'SN修改申请',
@@ -508,6 +404,10 @@ function businessTypeText(value) {
     sales_return: '销售退单',
     resource: '资源套回',
     profit: '毛利调整',
+    purchase_expense: '采购垫付报销审批',
+    inventory_transfer_receipt: '调拨入库确认',
+    inventory_batch: '批量库存维护审批',
+    sale_share: '销售晒单审核',
     purchase_request: '采购申请审批',
     product_application: '新建商品审批',
     inventory_transfer: '库存调拨审批',
@@ -536,6 +436,7 @@ function salesApprovalStageText(row = {}) {
   return salesApprovalStage(row) === 'distributor' ? '待经销商总权限审批' : '待店长审批'
 }
 function taskNode(row) {
+  if (row.managedBusiness) return row.node_name || '-'
   if (row.isSalesApproval) return salesApprovalStageText(row.salesRow || {})
   if (row.moduleType === 'sales_return') {
     const stage = row.moduleRow?.approval_stage || row.moduleRow?.approvalStage || ''
@@ -690,9 +591,15 @@ function buildModuleInstance(row, moduleData = row.moduleRow || {}) {
   }
 }
 async function loadModuleDetail(row) {
+  const aliases = { purchase_request: 'purchase', product_application: 'product', purchase_expense: 'expense', profit_adjustment: 'profit' }
+  if (row.managedBusiness && aliases[row.moduleType]) row = { ...row, moduleType: aliases[row.moduleType] }
   const id = row.Instance?.business_id
   const source = row.moduleRow || {}
   if (!id) return source
+  if (row.moduleType === 'sales_order_negative_gross_profit') return responseData(await api.getSalesDetail(id))
+  if (['inventory_transfer', 'inventory_transfer_receipt'].includes(row.moduleType)) return responseData(await api.getTransferDetail(id))
+  if (row.moduleType === 'inventory_batch') return responseData(await api.getInventoryBatchApplicationDetail(id))
+  if (row.moduleType === 'return_stock') return responseList(await api.getReturnList({ returnId: id }))[0] || source
   if (row.moduleType === 'purchase') return responseData(await api.getPurchaseRequestDetail(id))
   if (row.moduleType === 'expense') return responseData(await api.getExpenseDetail(id))
   if (row.moduleType === 'product') {
@@ -776,8 +683,9 @@ async function openModule(row) {
   detailVisible.value = true
   try {
     const moduleData = await loadModuleDetail(row)
+    const approval = row.approvalInstanceId ? responseData(await api.getApprovalInstance(row.approvalInstanceId)) : null
     if (serial !== detailRequestSerial) return
-    currentInstance.value = { ...buildModuleInstance(row, moduleData), detailLoading: false }
+    currentInstance.value = { ...buildModuleInstance(row, moduleData), Tasks: approval?.Tasks || [], detailLoading: false }
   } catch (error) {
     if (serial !== detailRequestSerial) return
     currentInstance.value = { ...currentInstance.value, detailLoading: false }
@@ -856,6 +764,7 @@ async function reviewSales(row, action) {
   }
 }
 async function reviewModule(row, action) {
+  if (row.manualPath) { await router.push(row.manualPath); return }
   let comment = ''
   if (action === 'reject') {
     const result = await ElMessageBox.prompt('请输入拒绝原因', '拒绝审批', { inputType: 'textarea' }).catch(() => null)
@@ -867,6 +776,12 @@ async function reviewModule(row, action) {
   const approved = action === 'approve' ? 'approved' : 'rejected'
   const id = row.Instance?.business_id
   try {
+    if (row.managedBusiness) {
+      const result = await api.actionBusinessApproval(row.moduleType, id, { action, comment })
+      ElMessage.success(result.message || '审批已记录')
+      await reload()
+      return
+    }
     if (row.moduleType === 'purchase') await api.approvePurchaseRequest(id, { status: approved, comment })
     else if (row.moduleType === 'expense') await api.reviewExpense(id, { action: approved, comment })
     else if (row.moduleType === 'product') await api.reviewProductApplication(id, { action: approved, comment })

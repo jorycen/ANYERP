@@ -84,7 +84,7 @@ router.get('/expense-list', getExpenseList);
 router.get('/expense-list/export', exportExpenseList);
 router.get('/expense/:id', getExpenseDetail);
 router.put('/expense/:id/attribution', updateExpenseAttribution);
-router.post('/expense/:id/review', requireRole('admin'), reviewExpense);
+router.post('/expense/:id/review', reviewExpense);
 router.post('/expense/:id/cancel', cancelExpense);
 router.get('/expense/:id/performance-allocations', requireRole('finance'), listExpensePerformanceAllocations);
 router.get('/expense/:id/performance-staff-options', requireRole('finance'), listExpensePerformanceStaffOptions);

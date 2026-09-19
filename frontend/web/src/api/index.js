@@ -642,6 +642,9 @@ export default {
 
   // Approval center
   getApprovalFlows: (params) => api.get('/approval/flows', { params }),
+  initializeApprovalFlows: () => api.post('/approval/initialize'),
+  getBusinessApprovalTasks: () => api.get('/approval/business-tasks'),
+  actionBusinessApproval: (type, id, data) => api.post(`/approval/business/${type}/${id}/action`, data),
   getApprovalFlow: (id) => api.get(`/approval/flows/${id}`),
   createApprovalFlow: (data) => api.post('/approval/flows', data),
   updateApprovalFlow: (id, data) => api.put(`/approval/flows/${id}`, data),

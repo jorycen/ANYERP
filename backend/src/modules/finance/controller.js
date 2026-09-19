@@ -806,6 +806,7 @@ async function deleteExpenseDraft(ctx) {
  * 支出列表
  */
 async function getExpenseList(ctx) {
+  if (await require('../approval/businessRuntime').reviewList(ctx, 'purchase_expense')) return;
   const { storeId, expenseType, status, scope, startDate, endDate, accountingMonth, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
   const exportMode = Boolean(ctx.state.exportMode);
@@ -1038,6 +1039,8 @@ async function reviewExpense(ctx) {
   }
 
   await sequelize.transaction(async transaction => {
+    await record.reload({ transaction, lock: transaction.LOCK.UPDATE });
+    if (!await require('../approval/businessRuntime').advance(ctx, 'purchase_expense', record, transaction, action, comment || '')) return;
     await record.update({
       status: action,
       review_staff_id: user.staffId || user.id || null,
@@ -1055,7 +1058,7 @@ async function reviewExpense(ctx) {
   });
   ctx.body = {
     code: 0,
-    message: action === 'approved' ? '审批通过，已进入待结算列表' : '报销申请已拒绝',
+    message: ctx.state.businessApproval?.status === 'pending' ? '本次审批已记录，等待下一审批人' : action === 'approved' ? '审批通过，已进入待结算列表' : '报销申请已拒绝',
     data: null
   };
 }
@@ -1560,6 +1563,7 @@ async function submitSubsidyAdjustment(ctx) {
 }
 
 async function getSubsidyAdjustments(ctx) {
+  if (await require('../approval/businessRuntime').reviewList(ctx, 'subsidy_receivable_adjustment')) return;
   const { status = 'PENDING', page = 1, pageSize = 20 } = ctx.query;
   const where = {};
   if (status) where.status = status;
@@ -1573,12 +1577,13 @@ async function reviewSubsidyAdjustment(ctx) {
   const user = ctx.state.user;
   const { id } = ctx.params;
   const { action, comment = '' } = ctx.request.body || {};
-  if (!getUserRoles(user).some(role => ['admin', 'boss'].includes(role))) ctx.throw(403, '只有 admin 或 BOSS 可以审批国补差额');
+
   if (!['approve', 'reject'].includes(action)) ctx.throw(400, '审批动作无效');
   await sequelize.transaction(async transaction => {
     const adjustment = await SubsidyReceivableAdjustment.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
     if (!adjustment) ctx.throw(404, '差额审批不存在');
     if (adjustment.status !== 'PENDING') ctx.throw(400, '该差额已审批');
+    if (!await require('../approval/businessRuntime').advance(ctx, 'subsidy_receivable_adjustment', adjustment, transaction, action, comment)) return;
     if (action === 'approve') {
       const detail = await DailyStatementDetail.findByPk(adjustment.detail_id, { transaction, lock: transaction.LOCK.UPDATE });
       const remaining = money(Number(detail.amount) - Number(detail.settled));
@@ -1593,6 +1598,7 @@ async function reviewSubsidyAdjustment(ctx) {
       review_comment: comment, review_time: new Date()
     }, { transaction });
   });
+  if (ctx.state.businessApproval?.status === 'pending') return;
   ctx.body = { code: 0, message: action === 'approve' ? '差额审批通过' : '差额审批已拒绝' };
 }
 

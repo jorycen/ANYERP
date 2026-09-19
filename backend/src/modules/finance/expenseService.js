@@ -111,56 +111,12 @@ function normalizeAttribution({
 }
 
 async function ensureExpenseApprovalFlow(transaction = null) {
-  const flowCode = 'expense_attribution';
   const existing = await ApprovalFlowDefinition.findOne({
-    where: { flow_code: flowCode, business_type: 'expense', status: 'published' },
-    order: [['version', 'DESC']],
-    transaction
+    where: { flow_code: 'expense_attribution', business_type: 'expense', status: 'published' },
+    order: [['version', 'DESC']], transaction
   });
-  if (existing && !isLegacyExpenseDefaultFlow(existing)) return existing;
-  const fixedApprovers = await resolveExpenseDefaultApprovers(transaction);
-  const defaultConfig = buildExpenseDefaultApprovalConfig(fixedApprovers);
-  if (existing) {
-    await ApprovalFlowDefinition.update(
-      { status: 'disabled', update_time: new Date() },
-      { where: { flow_code: flowCode, status: 'published' }, transaction }
-    );
-    return ApprovalFlowDefinition.create({
-      definition_id: generateUUID(),
-      flow_code: flowCode,
-      name: '报销审批流程',
-      business_type: 'expense',
-      subject_type: 'staff',
-      version: Number(existing.version || 1) + 1,
-      status: 'published',
-      config_json: JSON.stringify(defaultConfig),
-      create_time: new Date(),
-      update_time: new Date()
-    }, { transaction });
-  }
-  const created = await ApprovalFlowDefinition.create({
-    definition_id: generateUUID(),
-    flow_code: flowCode,
-    name: '费用归属报销审批',
-    business_type: 'expense',
-    subject_type: 'staff',
-    version: 1,
-    status: 'published',
-    config_json: JSON.stringify({
-      nodes: [
-        { name: '直属领导审核', signMode: 'serial', approvers: [{ type: 'direct_supervisor', scope: 'subject_store' }] },
-        { name: '财务审核', signMode: 'or', approvers: [{ type: 'role', roleCode: 'finance', scope: 'subject_distributor' }] },
-        { name: '经销商总账号审核', signMode: 'or', approvers: [
-          { type: 'role', roleCode: 'admin', scope: 'subject_distributor' },
-          { type: 'role', roleCode: 'boss', scope: 'subject_distributor' }
-        ] }
-      ]
-    }),
-    create_time: new Date(),
-    update_time: new Date()
-  }, { transaction });
-  await created.update({ config_json: JSON.stringify(defaultConfig), name: '报销审批流程', update_time: new Date() }, { transaction });
-  return created;
+  if (!existing) throw new Error('报销审批流程未发布或已停用，请在审批中心配置并发布');
+  return existing;
 }
 
 async function resolveExpenseDefaultApprovers(transaction = null) {

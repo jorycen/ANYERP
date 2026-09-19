@@ -35,7 +35,7 @@ const { releaseDepositRedemptionForOrder } = require('../sales/controller');
 const { assertActiveProducts } = require('../../utils/activeProduct');
 const { syncSerializedInventoryBalance } = require('./serializedInventoryBalance');
 const { ensurePurchaseReturnAccounting } = require('../purchase/purchaseReturnAccounting');
-const { getConfiguredFlowNodeApprovers } = require('../approval/service');
+const { advance: advanceApproval } = require('../approval/businessRuntime');
 const {
   VENDORS: SUPPLIER_INVENTORY_VENDORS,
   parseSupplierWorkbook,
@@ -332,6 +332,7 @@ async function changeTransferRequestStatus(ctx, targetStatus, action, actorCheck
 
     const reason = String(ctx.request.body?.reason || ctx.request.body?.comment || '').trim().slice(0, 1000);
     const fromStatus = transfer.status;
+    if (action === 'rejected' && !await advanceApproval(ctx, 'inventory_transfer', transfer, t, 'reject', reason)) { await t.commit(); return; }
     await transfer.update({ status: targetStatus }, { transaction: t });
     await setFreightRecordStatus('transfer', transfer.transfer_id, 'cancelled', user, t);
     await recordBusinessAction({
@@ -4403,6 +4404,7 @@ async function transfer(ctx) {
     const totalQuantity = normalizedItems.reduce((sum, item) => sum + Number(item.quantity || 1), 0);
 
     await Transfer.create({
+      applicant_staff_id: user.staffId,
       transfer_id: transferId,
       transfer_no: transferNo,
       from_store_id: fromStoreId,
@@ -4694,6 +4696,7 @@ async function confirmTransferOutPartial(ctx) {
     if (!transfer) ctx.throw(404, '调拨单不存在');
     await assertTransferOperationStore(ctx, transfer.from_store_id);
     if (transfer.status !== 'pending') ctx.throw(400, '调拨单当前不是待出库确认状态');
+    if (!await advanceApproval(ctx, 'inventory_transfer', transfer, t, 'approve', body.comment || '')) { await t.commit(); return; }
 
     const persistedPhotos = await persistTransferShippingPhotos(ctx, transferId);
     shippingPhotos = persistedPhotos.photos;
@@ -5181,6 +5184,7 @@ async function confirmTransferIn(ctx) {
       ctx.throw(400, '当前状态不允许确认入库');
     }
 
+    if (transfer.status !== 'completed' && !await advanceApproval(ctx, 'inventory_transfer_receipt', transfer, t, 'approve', ctx.request.body.comment || '')) { await t.commit(); return; }
     const items = visibleTransferItems(transfer.TransferItems || []);
     const requestedByItemId = new Map(
       requestedItems
@@ -6012,7 +6016,8 @@ async function voidConversion(ctx) {
 async function getReturnStockWithItems(returnId, transaction) {
   return ReturnStock.findByPk(returnId, {
     include: [{ model: ReturnStockItem, as: 'items' }],
-    transaction
+    transaction,
+    lock: transaction.LOCK.UPDATE
   });
 }
 
@@ -6020,6 +6025,7 @@ async function getReturnStockWithItems(returnId, transaction) {
  * 查询退库申请列表
  */
 async function getReturnList(ctx) {
+  if (await require('../approval/businessRuntime').reviewList(ctx, 'return_stock')) return;
   const { status, inboundId, returnId, returnNo, inboundNo, scope, page = 1, pageSize = 20 } = ctx.query;
   const where = {};
   if (status) where.status = status;
@@ -6133,6 +6139,7 @@ async function requestReturn(ctx) {
     const returnNo = generateReturnNo();
 
     await ReturnStock.create({
+      applicant_staff_id: user.staffId,
       return_id: returnId,
       return_no: returnNo,
       inbound_id: inboundId,
@@ -6225,24 +6232,14 @@ async function approveReturn(ctx) {
   try {
     const { returnId, action = 'approved', comment = '' } = ctx.request.body;
     const user = ctx.state.user;
-    const configuredApprovers = await getConfiguredFlowNodeApprovers({
-      flowCode: 'return_stock',
-      businessType: 'return_stock',
-      nodeIndex: 0,
-      transaction: t
-    });
-    if (configuredApprovers !== null && !configuredApprovers.includes(Number(user.staffId))) {
-      ctx.throw(403, '当前账号不在退库审批配置中');
-    }
-    if (configuredApprovers === null && !getUserRoles(user).some(role => ['purchaser', 'admin', 'boss'].includes(role))) {
-      ctx.throw(403, '仅采购、经销商总权限账号或BOSS可以审批退库申请');
-    }
     if (!['approved', 'rejected'].includes(action)) ctx.throw(400, '审批动作无效');
 
     const returnStock = await ReturnStock.findByPk(returnId, { transaction: t });
     if (!returnStock) ctx.throw(404, '退库申请不存在');
     assertStoreVisible(ctx, returnStock.store_id);
     if (returnStock.status !== 'pending') ctx.throw(400, '只有待审批的退库申请才能审批');
+    await returnStock.reload({ transaction: t, lock: t.LOCK.UPDATE });
+    if (!await advanceApproval(ctx, 'return_stock', returnStock, t, action, comment)) { await t.commit(); return; }
 
     const nextStatus = action === 'rejected' ? 'rejected' : 'approved';
     await returnStock.update({
@@ -6252,14 +6249,15 @@ async function approveReturn(ctx) {
       approve_time: new Date()
     }, { transaction: t });
 
-    await t.commit();
     if (nextStatus === 'approved') {
-      // 审批通过即自动执行退库，复用现有库存扣减与财务记账事务。
-      await executeReturn(ctx);
+      // 审批任务、库存和财务效果必须在同一事务提交。
+      await executeReturn(ctx, t);
+      await t.commit();
       ctx.body = { ...ctx.body, message: '退库申请已审批并自动完成退库' };
       return;
     }
-    ctx.body = { code: 0, message: nextStatus === 'approved' ? '退库申请已通过' : '退库申请已拒绝' };
+    await t.commit();
+    ctx.body = { code: 0, message: '退库申请已拒绝' };
   } catch (error) {
     await t.rollback();
     console.error('Error in approveReturn:', error);
@@ -6270,14 +6268,15 @@ async function approveReturn(ctx) {
 /**
  * 执行已审批退库
  */
-async function executeReturn(ctx) {
-  const t = await sequelize.transaction();
+async function executeReturn(ctx, parentTransaction = null) {
+  const t = parentTransaction || await sequelize.transaction();
   try {
     const { returnId } = ctx.request.body;
     const user = ctx.state.user;
 
     const returnStock = await getReturnStockWithItems(returnId, t);
     if (!returnStock) ctx.throw(404, '退库申请不存在');
+    assertStoreVisible(ctx, returnStock.store_id);
     if (returnStock.status !== 'approved') ctx.throw(400, '只有已审批通过的退库申请才能执行退库');
 
     const inbound = await Inbound.findByPk(returnStock.inbound_id, {
@@ -6367,11 +6366,6 @@ async function executeReturn(ctx) {
       const key = String(item.inbound_item_id);
       returnedByInboundItem.set(key, (returnedByInboundItem.get(key) || 0) + Number(item.quantity || 0));
     });
-    (returnStock.items || []).forEach(item => {
-      if (!item.inbound_item_id) return;
-      const key = String(item.inbound_item_id);
-      returnedByInboundItem.set(key, (returnedByInboundItem.get(key) || 0) + Number(item.quantity || 0));
-    });
     const allInboundItemsReturned = (inbound.items || []).length > 0
       && (inbound.items || []).every(item => (
         Number(returnedByInboundItem.get(String(item.item_id)) || 0) >= Number(item.quantity || 0)
@@ -6381,7 +6375,7 @@ async function executeReturn(ctx) {
       update_time: new Date()
     }, { transaction: t });
 
-    await t.commit();
+    if (!parentTransaction) await t.commit();
     ctx.body = {
       code: 0,
       returnId,
@@ -6394,7 +6388,7 @@ async function executeReturn(ctx) {
       message: '退库已执行，已生成负向采购调整和供应商待抵扣'
     };
   } catch (error) {
-    await t.rollback();
+    if (!parentTransaction && !t.finished) await t.rollback();
     console.error('Error in executeReturn:', error);
     throw error;
   }

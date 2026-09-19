@@ -35,7 +35,7 @@ function approvalInstanceVisibilityWhere(user) {
   return {
     [Op.or]: [
       storeWhere,
-      { business_type: 'payable_settlement', store_id: { [Op.is]: null } }
+      { store_id: { [Op.is]: null }, distributor_id: { [Op.in]: require('../../utils/distributorScope').accessibleDistributorIds(user).filter(id => id !== '*') } }
     ]
   };
 }
@@ -43,6 +43,8 @@ function approvalInstanceVisibilityWhere(user) {
 function toFlow(row) {
   const data = row.toJSON();
   data.config = parseJson(data.config_json, {});
+  const bound = new Set(require('./catalog').defaultCatalog().map(item => item.flowCode));
+  data.binding_status = bound.has(data.flow_code) ? 'business' : 'standalone';
   delete data.config_json;
   return data;
 }
@@ -85,6 +87,8 @@ function validateFlowBody(ctx, body) {
 async function createFlow(ctx) {
   const input = validateFlowBody(ctx, ctx.request.body || {});
   const existing = await ApprovalFlowDefinition.findOne({ where: { flow_code: input.flowCode }, order: [['version', 'DESC']] });
+  const builtin = require('./catalog').defaultCatalog().find(item => item.flowCode === input.flowCode);
+  if ((builtin && builtin.businessType !== input.businessType) || (existing && existing.business_type !== input.businessType)) ctx.throw(400, '流程编码已绑定业务类型，不可更改');
   const row = await ApprovalFlowDefinition.create({
     definition_id: generateUUID(),
     flow_code: input.flowCode,
@@ -104,6 +108,7 @@ async function updateFlow(ctx) {
   const row = await ApprovalFlowDefinition.findByPk(ctx.params.definitionId);
   if (!row) ctx.throw(404, '审批流程不存在');
   const input = validateFlowBody(ctx, ctx.request.body || {});
+  if (input.flowCode !== row.flow_code || input.businessType !== row.business_type) ctx.throw(400, '已有流程的编码和业务类型不可修改，请仅调整名称和审批节点');
   if (row.status !== 'draft') {
     const latest = await ApprovalFlowDefinition.findOne({ where: { flow_code: row.flow_code }, order: [['version', 'DESC']] });
     const next = await ApprovalFlowDefinition.create({
@@ -129,6 +134,18 @@ async function publishFlow(ctx) {
   const row = await ApprovalFlowDefinition.findByPk(ctx.params.definitionId);
   if (!row) ctx.throw(404, '审批流程不存在');
   if (row.status !== 'draft') ctx.throw(400, '只有草稿流程可以发布');
+  let config;
+  try { config = normalizeFlowConfig(row.config_json); } catch (error) { bodyError(ctx, error); }
+  const fixedIds = config.nodes.flatMap(node => node.approvers).filter(rule => rule.type === 'fixed_user').map(rule => Number(rule.staffId));
+  if (fixedIds.length) {
+    const active = await Staff.findAll({ where: { staff_id: { [Op.in]: fixedIds }, status: 1, is_deleted: 0 }, attributes: ['staff_id'] });
+    if (fixedIds.some(id => !active.some(staff => Number(staff.staff_id) === id))) ctx.throw(400, '流程包含不存在或已停用的审批人，请重新选择');
+  }
+  const roleCodes = [...new Set(config.nodes.flatMap(node => node.approvers).filter(rule => rule.type === 'role').map(rule => rule.roleCode))];
+  if (roleCodes.length) {
+    const activeRoles = await Role.findAll({ where: { role_code: { [Op.in]: roleCodes }, status: 1 }, attributes: ['role_code'] });
+    if (roleCodes.some(code => !activeRoles.some(role => role.role_code === code))) ctx.throw(400, '流程包含不存在或已停用的审批角色，请重新选择');
+  }
   await sequelize.transaction(async transaction => {
     await ApprovalFlowDefinition.update({ status: 'disabled', update_staff_id: ctx.state.user.staffId, update_time: new Date() }, { where: { flow_code: row.flow_code, status: 'published' }, transaction });
     await row.update({ status: 'published', update_staff_id: ctx.state.user.staffId, update_time: new Date() }, { transaction });
@@ -157,6 +174,8 @@ async function listTasks(ctx) {
     instanceInclude.where = storeWhere;
     instanceInclude.required = true;
   }
+  instanceInclude.where = { ...(instanceInclude.where || {}), business_type: { [Op.notIn]: Object.keys(require('./businessRuntime').registry) } };
+  instanceInclude.required = true;
   const tasks = await ApprovalTask.findAll({
     where,
     include: [instanceInclude],
@@ -195,9 +214,9 @@ function instanceAccessWhere(user, scope) {
 
 async function listInstances(ctx) {
   const scope = ctx.query.scope || 'mine';
-  const where = scope === 'todo' ? {} : { ...instanceAccessWhere(ctx.state.user, scope) };
+  const where = scope === 'todo' ? {} : { [Op.and]: [instanceAccessWhere(ctx.state.user, scope)] };
   const storeWhere = approvalInstanceVisibilityWhere(ctx.state.user);
-  if (storeWhere) Object.assign(where, storeWhere);
+  if (storeWhere) where[Op.and] = [...(where[Op.and] || []), storeWhere];
   if (scope === 'todo') {
     const taskInclude = {
       model: ApprovalFlowInstance,
@@ -220,7 +239,8 @@ async function listInstances(ctx) {
 }
 
 async function canReadInstance(ctx, instance) {
-  if (!canReadApprovalStore(ctx.state.user, instance.store_id, instance.business_type)) return false;
+  const managed = parseJson(instance.payload_json, {}).managedBusiness;
+  if (managed ? !require('./businessRuntime').visible(ctx.state.user, instance) : !canReadApprovalStore(ctx.state.user, instance.store_id, instance.business_type, instance.distributor_id)) return false;
   if (isAdmin(ctx.state.user)) return true;
   if (Number(instance.applicant_staff_id) === Number(ctx.state.user.staffId) || Number(instance.subject_staff_id) === Number(ctx.state.user.staffId)) return true;
   return Boolean(await ApprovalTask.findOne({ where: { instance_id: instance.instance_id, assignee_staff_id: ctx.state.user.staffId } }));
@@ -256,6 +276,11 @@ async function getInstance(ctx) {
 }
 
 async function submitInstance(ctx) {
+  const input = ctx.request.body || {};
+  if (['storeId', 'distributorId', 'initialNodeIndex'].some(key => input[key] !== undefined)) ctx.throw(400, '审批归属和起始节点由业务单据确定，不可手动指定');
+  if (input.payload?.managedBusiness || require('./businessRuntime').registry[input.businessType]) ctx.throw(400, '请从原业务单据提交审批');
+  const selectedFlow = await ApprovalFlowDefinition.findOne({ where: input.flowId ? { definition_id: input.flowId } : { flow_code: input.flowCode || '' }, order: [['version', 'DESC']] });
+  if (selectedFlow && require('./businessRuntime').registry[selectedFlow.business_type]) ctx.throw(400, '请从原业务单据提交审批');
   try {
     const row = await createInstance(ctx.request.body || {}, ctx.state.user);
     ctx.body = { code: 0, message: '审批申请已提交', data: toInstance(row) };
@@ -263,6 +288,10 @@ async function submitInstance(ctx) {
 }
 
 async function action(ctx) {
+  const instance = await ApprovalFlowInstance.findByPk(ctx.params.instanceId);
+  if (instance && parseJson(instance.payload_json, {}).managedBusiness) {
+    return require('./businessRuntime').dispatch(ctx, instance.business_type, instance.business_id, ctx.request.body?.action, ctx.request.body?.comment || '');
+  }
   try {
     const row = await actionInstance(ctx.params.instanceId, ctx.request.body?.action, ctx.request.body?.comment, ctx.state.user);
     ctx.body = { code: 0, message: ctx.request.body?.action === 'approve' ? '审批已通过' : '审批已拒绝', data: toInstance(row) };

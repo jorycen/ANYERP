@@ -33,7 +33,7 @@ const { ensureProductPnsMaster, syncProductPnsMaster, assertPnAvailableForNewPro
 const XLSX = require('xlsx');
 const { getUserRoles } = require('../../middleware/permission');
 const { accessibleDistributorIds } = require('../../utils/distributorScope');
-const { assertConfiguredFlowApprover } = require('../approval/service');
+const { advance: advanceApproval } = require('../approval/businessRuntime');
 const { sendExcel } = require('../../utils/excelExport');
 
 // 字段标识到数据库列名的映射（field_key → DB column）
@@ -1168,6 +1168,7 @@ async function submitProductApplication(ctx) {
   const payload = productApplicationPayload(ctx.request.body, finalName, parsedAttrs, dimensions.dimensions);
   const applicationId = generateUUID();
   const applicationNo = `PA${Date.now()}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`;
+  await sequelize.transaction(async transaction => {
   await ProductApplication.create({
     application_id: applicationId,
     application_no: applicationNo,
@@ -1182,6 +1183,7 @@ async function submitProductApplication(ctx) {
     status: 'pending',
     create_time: new Date(),
     update_time: new Date()
+  }, { transaction });
   });
 
   ctx.body = {
@@ -1206,6 +1208,7 @@ function productApplicationDistributorWhere(user) {
 }
 
 async function getProductApplicationList(ctx) {
+  if (await require('../approval/businessRuntime').reviewList(ctx, 'product_application')) return;
   const page = Number(ctx.query.page || 1);
   const pageSize = Number(ctx.query.pageSize || 20);
   const scope = String(ctx.query.scope || '');
@@ -1347,13 +1350,9 @@ async function reviewProductApplication(ctx) {
     });
     if (!application) ctx.throw(404, '商品申请不存在');
     if (application.status !== 'pending') ctx.throw(400, '该申请已完成审批');
-    await assertConfiguredFlowApprover({
-      flowCode: 'product_application',
-      businessType: 'product_application',
-      subjectStaffId: application.applicant_staff_id,
-      nodeIndex: 0,
-      transaction
-    }, ctx.state.user, '当前账号不在商品审批部门中');
+    if (!await advanceApproval(ctx, 'product_application', application, transaction, action, comment)) {
+      await transaction.commit(); return;
+    }
     const accessibleIds = accessibleDistributorIds(ctx.state.user);
     if (!accessibleIds.includes('*')
       && !accessibleIds.includes(String(application.distributor_id || ''))) {

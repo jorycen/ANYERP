@@ -66,7 +66,7 @@ router.put('/sn/:snId/resource-rights', resourceRights.saveSnRights);
 router.get('/batch-maintenance', batchMaintenance.listBatchApplications);
 router.post('/batch-maintenance/import', requireRole('manager', 'admin'), upload.single('file'), batchMaintenance.createBatchApplication);
 router.get('/batch-maintenance/:applicationId', batchMaintenance.getBatchApplicationDetail);
-router.post('/batch-maintenance/:applicationId/review', requireRole('admin'), batchMaintenance.reviewBatchApplication);
+router.post('/batch-maintenance/:applicationId/review', batchMaintenance.reviewBatchApplication);
 router.get('/inbound-list', getInboundList);
 router.get('/inbound-detail/:inboundId', getInboundDetail);
 router.post('/execute-inbound', enforceStoreOwnership, executeInbound);

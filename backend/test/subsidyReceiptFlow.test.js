@@ -33,5 +33,5 @@ test('国补到账限制区域兜底、超额核销和差额审批', () => {
   assert.match(controllerSource, /分配金额不得超过银行实际到账金额/);
   assert.match(controllerSource, /核销金额超过剩余应收/);
   assert.doesNotMatch(controllerSource, /申请人不得审批自己的差额申请/);
-  assert.match(controllerSource, /只有 admin 或 BOSS 可以审批国补差额/);
+  assert.match(controllerSource, /advance\(ctx, 'subsidy_receivable_adjustment', adjustment, transaction, action, comment\)/);
 });

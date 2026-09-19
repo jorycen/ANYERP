@@ -547,6 +547,7 @@ async function createBatchApplication(ctx) {
 }
 
 async function listBatchApplications(ctx) {
+  if (await require('../approval/businessRuntime').reviewList(ctx, 'inventory_batch')) return;
   const user = ctx.state.user;
   const where = {};
   const userRoles = roles(user);
@@ -1021,7 +1022,7 @@ async function recoverExecutingBatchApplications() {
 async function reviewBatchApplication(ctx) {
   const user = ctx.state.user;
   const { action, comment = '' } = ctx.request.body || {};
-  if (!canReview(user)) ctx.throw(403, '只有经销商总权限账号或BOSS可以审批批量库存维护');
+
   if (!['approve', 'reject'].includes(action)) ctx.throw(400, '审批动作无效');
 
   const transaction = await sequelize.transaction();
@@ -1029,6 +1030,7 @@ async function reviewBatchApplication(ctx) {
     const app = await InventoryBatchApplication.findByPk(ctx.params.applicationId, { transaction, lock: transaction.LOCK.UPDATE });
     if (!app) ctx.throw(404, '批量维护申请不存在');
     if (app.status !== 'pending') ctx.throw(409, '该申请已处理');
+    if (!await require('../approval/businessRuntime').advance(ctx, 'inventory_batch', app, transaction, action, comment)) { await transaction.commit(); return; }
     if (!isBoss(user) && String(app.applicant_distributor_id || '') !== String(user.distributorId || '')) {
       ctx.throw(403, '只能审批本经销商范围内的批量库存申请');
     }

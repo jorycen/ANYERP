@@ -5,6 +5,14 @@ const controller = require('./controller');
 const router = new Router();
 
 router.get('/flows', controller.listFlows);
+router.post('/initialize', requireRole('admin', 'boss'), async ctx => {
+  await require('./catalog').seedApprovalFlowCatalog();
+  ctx.body = { code: 0, message: '已补齐缺失流程，现有配置保持不变' };
+});
+router.get('/business-tasks', async ctx => require('./businessRuntime').listBusinessTasks(ctx));
+router.post('/business/:businessType/:businessId/action', async ctx => {
+  await require('./businessRuntime').dispatch(ctx, ctx.params.businessType, ctx.params.businessId, ctx.request.body?.action, ctx.request.body?.comment || '');
+});
 router.get('/flows/:definitionId', controller.getFlow);
 router.post('/flows', requireRole('admin', 'boss'), controller.createFlow);
 router.put('/flows/:definitionId', requireRole('admin', 'boss'), controller.updateFlow);

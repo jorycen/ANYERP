@@ -75,30 +75,10 @@ async function resolvePayableSettlementFixedApprovers(transaction) {
 async function ensurePayableSettlementApprovalFlow(transaction) {
   const existing = await ApprovalFlowDefinition.findOne({
     where: { flow_code: PAYABLE_SETTLEMENT_APPROVAL_FLOW_CODE, status: 'published' },
-    order: [['version', 'DESC']],
-    transaction
+    order: [['version', 'DESC']], transaction
   });
-  if (existing) return existing;
-
-  const [duanChao, laiXi] = await resolvePayableSettlementFixedApprovers(transaction);
-  return ApprovalFlowDefinition.create({
-    definition_id: generateUUID(),
-    flow_code: PAYABLE_SETTLEMENT_APPROVAL_FLOW_CODE,
-    name: '应付结算单审批',
-    business_type: 'payable_settlement',
-    subject_type: 'staff',
-    version: 1,
-    status: 'published',
-    config_json: JSON.stringify({
-      nodes: [
-        { name: '提交人直属上级审批', signMode: 'serial', approvers: [{ type: 'direct_supervisor' }] },
-        { name: '段超审批', signMode: 'serial', approvers: [{ type: 'fixed_user', staffId: Number(duanChao.staff_id) }] },
-        { name: '赖曦审批', signMode: 'serial', approvers: [{ type: 'fixed_user', staffId: Number(laiXi.staff_id) }] }
-      ]
-    }),
-    create_time: new Date(),
-    update_time: new Date()
-  }, { transaction });
+  if (!existing) throw new Error('应付结算审批流程未发布或已停用，请在审批中心配置并发布');
+  return existing;
 }
 
 function applyDistributorFilter(whereObject, user) {

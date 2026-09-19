@@ -600,7 +600,7 @@ async function submitClaim(ctx) {
 }
 
 async function reviewClaim(ctx) {
-  requireAnyRole(ctx, ['finance'], '仅财务账号可以审批资源套回');
+
   const { action, comment } = ctx.request.body || {};
   if (!['approve', 'reject'].includes(action)) ctx.throw(400, '审批操作无效');
   await sequelize.transaction(async transaction => {
@@ -616,6 +616,7 @@ async function reviewClaim(ctx) {
       }
     }
     if (change.approval_status !== 'pending_finance') ctx.throw(409, '该申请已处理');
+    if (!await require('../approval/businessRuntime').advance(ctx, 'resource_claim', change, transaction, action, comment || '')) return;
     const right = await InventoryResourceRight.findOne({ where: { sn_id: change.sn_id, resource_type: change.resource_type }, transaction, lock: transaction.LOCK.UPDATE });
     if (!right || right.current_status !== 'LOCKED' || right.locked_source_type !== 'CLAIM' || right.locked_source_id !== change.change_id) ctx.throw(409, '权益锁定状态已变化，请人工核查');
     if (action === 'reject') {
@@ -643,10 +644,12 @@ async function reviewClaim(ctx) {
       transaction
     });
   });
+  if (ctx.state.businessApproval?.status === 'pending') return;
   ctx.body = { message: action === 'approve' ? '资源套回已审批并计入产品资源成本' : '资源套回申请已拒绝并释放权益' };
 }
 
 async function listChanges(ctx) {
+  if (await require('../approval/businessRuntime').reviewList(ctx, 'resource_claim')) return;
   requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
   const { snCode, resourceType, approvalStatus, reason, startDate, endDate, scope, page = 1, pageSize = 20 } = ctx.query;
   const where = {};
@@ -1984,6 +1987,9 @@ async function submitSaleResourceTask(ctx) {
   if (!['pending_submit', 'rejected'].includes(task.approval_status)) ctx.throw(409, '该资源任务当前不能提交');
   if (task.resource_type === SHARE_INCENTIVE_TYPE && attachments.length === 0) ctx.throw(400, '晒单任务至少需要上传一张图片');
   const nextStatus = task.resource_type === SHARE_INCENTIVE_TYPE ? 'pending_manager_review' : 'completed';
+  await sequelize.transaction(async transaction => {
+  await task.reload({ transaction, lock: transaction.LOCK.UPDATE });
+  if (!['pending_submit', 'rejected'].includes(task.approval_status)) ctx.throw(409, '资源任务状态已变化');
   await task.update({
     attachment_url: attachments.length ? JSON.stringify(attachments) : null,
     approval_status: nextStatus,
@@ -1993,6 +1999,7 @@ async function submitSaleResourceTask(ctx) {
     review_time: task.resource_type === SHARE_INCENTIVE_TYPE ? null : new Date(),
     reviewer_name: task.resource_type === SHARE_INCENTIVE_TYPE ? null : 'system',
     remark: `${resourceTaskLabel(task.resource_type)}${nextStatus === 'completed' ? '已完成确认' : '已提交，待店长审核'}`
+  }, { transaction });
   });
   ctx.body = { message: nextStatus === 'completed' ? '资源事项已完成' : '晒单已提交，等待店长审核' };
 }
@@ -2000,16 +2007,17 @@ async function submitSaleResourceTask(ctx) {
 async function reviewSaleResourceTask(ctx) {
   const approved = ctx.request.body?.approved === true || ctx.request.body?.action === 'approve';
   const comment = String(ctx.request.body?.comment || '').trim();
-  const task = await ResourceRightChangeOrder.findByPk(ctx.params.changeId);
-  if (!task || task.change_reason !== 'SALE_RESOURCE_TASK' || task.resource_type !== SHARE_INCENTIVE_TYPE) ctx.throw(404, '晒单任务不存在');
-  await assertSaleResourceTaskReadable(ctx, task, { review: true });
-  if (task.approval_status !== 'pending_manager_review') ctx.throw(409, '晒单任务当前不在待审核状态');
-  if (!approved && !comment) ctx.throw(400, '拒绝晒单必须填写原因');
-  await task.update({
-    approval_status: approved ? 'completed' : 'rejected', reviewer_staff_id: ctx.state.user.staffId || null,
-    reviewer_name: ctx.state.user.name || ctx.state.user.phone || '', review_comment: comment || null, review_time: new Date(),
-    remark: approved ? '晒单已由店长审核完成；礼品或红包通过体外流程发放' : `晒单被店长拒绝：${comment}`
+  await sequelize.transaction(async transaction => {
+    const task = await ResourceRightChangeOrder.findByPk(ctx.params.changeId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!task || task.change_reason !== 'SALE_RESOURCE_TASK' || task.resource_type !== SHARE_INCENTIVE_TYPE) ctx.throw(404, '晒单任务不存在');
+    if (!await require('../approval/businessRuntime').advance(ctx, 'sale_share', task, transaction, approved ? 'approve' : 'reject', comment)) return;
+    await task.update({
+      approval_status: approved ? 'completed' : 'rejected', reviewer_staff_id: ctx.state.user.staffId,
+      reviewer_name: ctx.state.user.name || ctx.state.user.phone || '', review_comment: comment || null, review_time: new Date(),
+      remark: approved ? '晒单已审核完成；礼品或红包通过体外流程发放' : '晒单被拒绝：' + comment
+    }, { transaction });
   });
+  if (ctx.state.businessApproval?.status === 'pending') return;
   ctx.body = { message: approved ? '晒单已审核完成' : '晒单已拒绝，可补图后重新提交' };
 }
 

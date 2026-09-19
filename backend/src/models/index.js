@@ -605,6 +605,7 @@ const InventoryWarning = sequelize.define('InventoryWarning', {
 
 // 退库日志
 const ReturnStock = sequelize.define('ReturnStock', {
+  applicant_staff_id: { type: DataTypes.BIGINT(20) },
   return_id: { type: DataTypes.STRING(32), primaryKey: true },
   return_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
   inbound_id: { type: DataTypes.STRING(32), allowNull: false },
@@ -1513,6 +1514,7 @@ const OutboundItem = sequelize.define('OutboundItem', {
 
 // 调拨单
 const Transfer = sequelize.define('Transfer', {
+  applicant_staff_id: { type: DataTypes.BIGINT(20) },
   transfer_id: { type: DataTypes.STRING(32), primaryKey: true },
   transfer_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
   from_store_id: { type: DataTypes.STRING(32), allowNull: false },

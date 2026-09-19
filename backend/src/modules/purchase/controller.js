@@ -18,7 +18,7 @@ const { createProductRecord } = require('../product/controller');
 const { executeInbound, updateInventory, getAvailableQty, moveSnInventoryAggregate } = require('../inventory/controller');
 const { getAllocationSummary, getPayableRemaining, refreshPayableState } = require('../finance/settlementAllocation');
 const { assertActiveProducts } = require('../../utils/activeProduct');
-const { assertConfiguredFlowApprover } = require('../approval/service');
+const { advance: advanceApproval } = require('../approval/businessRuntime');
 
 const SN_PURCHASE_SOURCE_TYPES = new Set(['display_qty', 'rental_demo_qty']);
 const SN_PURCHASE_TARGET_TYPES = new Set(['normal_qty', 'demo_qty']);
@@ -1088,6 +1088,7 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
 }
 
 async function getRequestList(ctx) {
+  if (await require('../approval/businessRuntime').reviewList(ctx, 'purchase_request')) return;
   const { page = 1, pageSize = 20 } = ctx.query;
   const { rows, count } = await queryRequestList(ctx);
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
@@ -1844,12 +1845,7 @@ async function approveRequest(ctx) {
     ctx.throw(404, '采购申请不存在');
   }
   assertStoreVisible(ctx, request.store_id);
-  await assertConfiguredFlowApprover({
-    flowCode: 'purchase_request',
-    businessType: 'purchase_request',
-    subjectStaffId: request.applicant_staff_id || request.create_staff_id,
-    nodeIndex: 0
-  }, user, '当前账号不在采购申请审批部门中');
+  if (!['approved', 'rejected'].includes(status)) ctx.throw(400, '审批动作无效');
   if (status === 'approved' && (!request.items || request.items.length === 0)) {
     ctx.throw(400, '采购申请缺少商品明细，无法审批通过，请重新创建采购申请');
   }
@@ -1901,6 +1897,9 @@ async function approveRequest(ctx) {
     }
   }
 
+  if (!await advanceApproval(ctx, 'purchase_request', lockedRequest, transaction, status, comment)) {
+    await transaction.commit(); transactionCommitted = true; return;
+  }
   const previousStatus = lockedRequest.status;
   const approveTime = new Date();
   await lockedRequest.update({

@@ -158,6 +158,7 @@ async function createProfitAdjustment(ctx) {
 }
 
 async function listProfitAdjustments(ctx) {
+  if (await require('../approval/businessRuntime').reviewList(ctx, 'profit_adjustment')) return;
   const user = ctx.state.user;
   const { scope = 'mine', orderId, status, page = 1, pageSize = 20 } = ctx.query;
   const storeIds = await getAccessibleStoreIds(user);
@@ -234,38 +235,8 @@ async function reviewProfitAdjustment(ctx, action) {
 
     const storeIds = await getAccessibleStoreIds(user);
     if (!storeIds.includes(adjustment.store_id)) ctx.throw(403, '无权审核该申请');
-    const now = new Date();
-    if (adjustment.status === 'pending_finance') {
-      if (!hasRole(user, 'finance')) ctx.throw(403, '当前阶段仅财务账号可审核');
-      await adjustment.update({
-        status: action === 'approve' ? 'pending_admin' : 'rejected',
-        finance_reviewer_id: user.staffId,
-        finance_reviewer_name: user.name,
-        finance_review_comment: comment,
-        finance_review_time: now,
-        reject_stage: action === 'reject' ? 'finance' : null,
-        update_time: now
-      }, { transaction });
-      responseMessage = action === 'approve' ? '财务初审通过，待 admin 复审' : '财务初审已拒绝';
-      return;
-    }
-
-    if (adjustment.status === 'pending_admin') {
-      if (!hasRole(user, 'admin')) ctx.throw(403, '当前阶段仅 admin 账号可审核');
-      await adjustment.update({
-        status: action === 'approve' ? 'approved' : 'rejected',
-        admin_reviewer_id: user.staffId,
-        admin_reviewer_name: user.name,
-        admin_review_comment: comment,
-        admin_review_time: now,
-        reject_stage: action === 'reject' ? 'admin' : null,
-        update_time: now
-      }, { transaction });
-      responseMessage = action === 'approve' ? 'admin 复审通过，调整已计入业绩' : 'admin 复审已拒绝';
-      return;
-    }
-
-    ctx.throw(400, '该申请已审核，请勿重复操作');
+    if (!await require('../approval/businessRuntime').advance(ctx, 'profit_adjustment', adjustment, transaction, action, comment)) { responseMessage = '本次审批已记录，等待下一审批人'; return; }
+    await adjustment.update({ status: action === 'approve' ? 'approved' : 'rejected', admin_reviewer_id: user.staffId, admin_reviewer_name: user.name, admin_review_comment: comment, admin_review_time: new Date(), update_time: new Date() }, { transaction });
   });
 
   ctx.body = {

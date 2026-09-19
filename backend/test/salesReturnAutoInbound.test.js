@@ -28,7 +28,7 @@ async function fixture(t, { sn = true, partial = false, missingLocation = false,
     } };
     records.push(row); return row;
   };
-  const request = record({ return_id: 'R', return_no: 'SR1', order_id: 'O', store_id: 'S', status: 'pending', approval_stage: stage });
+  const request = record({ return_id: 'R', return_no: 'SR1', order_id: 'O', store_id: 'S', applicant_staff_id: 1, status: 'pending', approval_stage: stage });
   const item = record({ item_id: 'RI', return_id: 'R', order_item_id: 'OI', product_id: 'P', product_name: '商品', quantity: sn ? 1 : 2, pn_code: 'PN', sn_code: sn ? 'SN' : '' });
   const orderItem = { item_id: 'OI', product_id: 'P', quantity: partial ? 4 : item.quantity, original_inventory_cost: 0 };
   const order = record({ order_id: 'O', order_status: 'return_pending', OrderItems: [orderItem] });
@@ -38,6 +38,20 @@ async function fixture(t, { sn = true, partial = false, missingLocation = false,
   let inbound = null;
   const inboundItems = [];
   const stub = (model, name, fn) => t.mock.method(model, name, fn);
+  const nodes = [1, 2, 3, 4].map(id => ({ name: `节点${id}`, signMode: 'serial', approvers: [{ type: 'fixed_user', staffId: id }] }));
+  const index = stage === 'pending_store' ? 0 : 3;
+  const approval = record({ instance_id: 'AI', business_type: 'sales_return', business_id: 'R', subject_staff_id: 1, store_id: 'S', distributor_id: 'D', status: 'pending', current_node_index: index, resubmit_count: 0, payload_json: '{"managedBusiness":true}', definition_snapshot_json: JSON.stringify({ nodes }) });
+  const tasks = [record({ task_id: 'T', instance_id: 'AI', assignee_staff_id: index + 1, status: 'pending', node_index: index, round_no: 0, sign_mode: 'serial' })];
+  const matches = (task, where) => Object.entries(where).every(([key, value]) => task[key] === value);
+  stub(models.Staff, 'findByPk', async id => ({ staff_id: Number(id), name: '员工', status: 1, distributor_id: 'D' }));
+  stub(models.Staff, 'findAll', async () => [1, 2, 3, 4].map(staff_id => ({ staff_id, status: 1, distributor_id: 'D' })));
+  stub(models.Store, 'findByPk', async () => ({ distributor_id: 'D' }));
+  stub(models.ApprovalFlowInstance, 'findOne', async () => approval);
+  stub(models.ApprovalFlowInstance, 'findByPk', async () => approval);
+  stub(models.ApprovalTask, 'findOne', async ({ where }) => tasks.find(task => matches(task, where)));
+  stub(models.ApprovalTask, 'bulkCreate', async (values, options) => { assert.equal(options.transaction, tx); tasks.push(...values.map(record)); });
+  stub(models.ApprovalTask, 'update', async (patch, options) => { assert.equal(options.transaction, tx); });
+  stub(models.ApprovalActionLog, 'create', async (values, options) => { assert.equal(options.transaction, tx); });
   stub(models.sequelize, 'transaction', async callback => {
     state.transactions++;
     const snapshots = records.map(row => ({ row, data: { ...row } }));
@@ -75,9 +89,9 @@ async function fixture(t, { sn = true, partial = false, missingLocation = false,
     // Failure after stock mutation must abort the outer approval transaction.
     stub(models.Order, 'findByPk', async () => { if (request.status === 'completed') throw new Error('settlement unavailable'); return order; });
   }
-  const ctx = { params: { returnId: 'R' }, request: { body: {} }, state: { user: { roles: ['admin'], role: 'admin', name: '李燕', phone: '18010607277', accessibleStoreIds: ['*'] } },
+  const ctx = { params: { returnId: 'R' }, request: { body: {} }, state: { user: { staffId: index + 1, roles: ['admin'], role: 'admin', name: '李燕', phone: '18010607277', accessibleStoreIds: ['*'] } },
     throw(status, message) { throw Object.assign(new Error(message), { status }); } };
-  return { ctx, request, serial, balance, order, state, tx, get inbound() { return inbound; }, inboundItems };
+  return { ctx, request, serial, balance, order, state, tx, approval, tasks, get inbound() { return inbound; }, inboundItems };
 }
 
 test('final approval completes original SN inbound and accounting exactly once', async t => {
@@ -122,7 +136,9 @@ test('partial non-SN return restores only selected quantity and keeps deposit', 
 test('first approval stage does not receive stock', async t => {
   const f = await fixture(t, { stage: 'pending_store' });
   await sales.reviewSalesReturn(f.ctx);
-  assert.equal(f.request.approval_stage, 'pending_duan');
+  assert.equal(f.approval.current_node_index, 1);
+  assert.equal(f.approval.status, 'pending');
+  assert.equal(f.request.status, 'pending');
   assert.equal(f.balance.normal_qty, 0);
   assert.equal(f.inbound, null);
 });
@@ -139,11 +155,14 @@ for (const [name, options, pattern] of [
   assert.equal(f.balance.normal_qty, 0);
   assert.equal(f.state.commits, 0);
   assert.equal(f.state.rollbacks, 1);
+  assert.equal(f.approval.status, 'pending');
+  assert.equal(f.tasks[0].status, 'pending');
 });
 
 test('rejected return does not enter inventory', async t => {
   const f = await fixture(t);
   f.ctx.request.body.action = 'rejected';
+  f.ctx.request.body.comment = '不同意退货';
   await sales.reviewSalesReturn(f.ctx);
   assert.equal(f.request.status, 'rejected');
   assert.equal(f.order.order_status, '已归档');

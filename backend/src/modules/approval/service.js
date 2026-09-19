@@ -14,6 +14,7 @@ const { generateUUID } = require('../../utils');
 const APPROVER_TYPES = new Set([
   'fixed_user',
   'store_manager',
+  'store_staff',
   'direct_supervisor',
   'role'
 ]);
@@ -36,6 +37,8 @@ function normalizeFlowConfig(config) {
       approvers.forEach(rule => {
         if (!APPROVER_TYPES.has(rule.type)) throw new Error(`审批人类型不支持：${rule.type}`);
         if (rule.type === 'fixed_user' && !rule.staffId && !rule.staff_id) throw new Error('指定人员审批必须填写员工');
+        if (rule.type === 'fixed_user' && (!Number.isSafeInteger(Number(rule.staffId || rule.staff_id)) || Number(rule.staffId || rule.staff_id) <= 0)) throw new Error('指定审批人员工ID无效');
+        if (rule.scope && !['subject_store', 'subject_distributor'].includes(rule.scope)) throw new Error('审批范围无效');
         if (rule.type === 'role' && !rule.roleCode && !rule.role_code) throw new Error('角色审批必须填写角色');
       });
       return {
@@ -80,10 +83,10 @@ function getApprovalStoreWhere(user = {}) {
   return { store_id: storeIds.length ? { [Op.in]: storeIds } : '__NO_STORE__' };
 }
 
-function canReadApprovalStore(user = {}, storeId, businessType = '') {
+function canReadApprovalStore(user = {}, storeId, businessType = '', distributorId = null) {
   const storeIds = getApprovalStoreIds(user);
   if (storeIds === null) return true;
-  if (!storeId && businessType === 'payable_settlement') return true;
+  if (!storeId && distributorId) return require('../../utils/distributorScope').canAccessDistributor(user, distributorId);
   return Boolean(storeId) && storeIds.includes(String(storeId));
 }
 
@@ -99,6 +102,11 @@ async function getSubject(subjectStaffId, transaction) {
 
 async function resolveRule(rule, subject, transaction) {
   const type = rule.type;
+  if (type === 'store_staff') {
+    if (!subject.store_id) return [];
+    const rows = await StaffStorePermission.findAll({ where: { store_id: subject.store_id }, attributes: ['staff_id'], order: [['staff_id', 'ASC']], transaction });
+    return rows.map(row => Number(row.staff_id));
+  }
   if (type === 'store_manager') {
     if (!subject.store_id) return [];
     const managerRoles = ['manager', 'store_manager', 'store_admin'];
@@ -141,11 +149,12 @@ async function resolveRule(rule, subject, transaction) {
       is_deleted: 0,
       ...(subject.distributor_id && roleCode !== 'boss' ? { distributor_id: subject.distributor_id } : {})
     },
-    include: [{ model: Role, as: 'Roles', where: { role_code: roleCode, status: 1 }, attributes: [], through: { attributes: [] }, required: true }],
-    attributes: ['staff_id'],
+    include: [{ model: Role, as: 'Roles', where: { role_code: roleCode, status: 1 }, attributes: ['role_code'], through: { attributes: [] }, required: false }],
+    attributes: ['staff_id', 'role_code'],
+    order: [['staff_id', 'ASC']],
     transaction
   });
-  let ids = roleUsers.map(row => Number(row.staff_id));
+  let ids = roleUsers.filter(row => row.role_code === roleCode || (row.Roles || []).some(role => role.role_code === roleCode)).map(row => Number(row.staff_id));
   const scope = rule.scope || 'subject_store';
   if (scope === 'subject_store') {
     if (!subject.store_id) return [];
@@ -160,7 +169,10 @@ async function resolveRule(rule, subject, transaction) {
 }
 
 async function resolveApprovers(node, instance, transaction) {
-  const subject = await getSubject(instance.subject_staff_id, transaction);
+  const employee = await getSubject(instance.subject_staff_id, transaction);
+  const subject = { ...(employee.toJSON ? employee.toJSON() : employee),
+    ...(instance.store_id !== undefined ? { store_id: instance.store_id } : {}),
+    ...(instance.distributor_id ? { distributor_id: instance.distributor_id } : {}) };
   const ids = [];
   const fixedUserIds = new Set();
   for (const rule of node.approvers || []) {
@@ -172,13 +184,15 @@ async function resolveApprovers(node, instance, transaction) {
     include: [{ model: Role, as: 'Roles', attributes: ['role_code'], through: { attributes: [] }, required: false }],
     transaction
   }) : [];
-  const unique = candidates
+  const eligible = candidates
     .filter(staff => fixedUserIds.has(Number(staff.staff_id))
       || !subject.distributor_id
       || staff.distributor_id === subject.distributor_id
+      || staff.role_code === 'boss'
       || (staff.Roles || []).some(role => role.role_code === 'boss'))
     .map(staff => Number(staff.staff_id))
     .filter(id => id);
+  const unique = [...new Set(ids)].filter(id => eligible.includes(id));
   if (!unique.length) throw new Error(`审批节点“${node.name}”未解析到可用审批人，请检查门店店长、直属上级或角色范围配置`);
   return unique;
 }
@@ -197,6 +211,7 @@ async function writeLog(instanceId, taskId, action, actor, comment, detail, tran
 }
 
 async function completeBusinessApproval(instance, transaction, actor, comment = '') {
+  if (parseJson(instance.payload_json, {}).managedBusiness) return;
   if (instance.business_type === 'expense') {
     const { applyExpenseApproval } = require('../finance/expenseService');
     await applyExpenseApproval(instance, transaction, actor, 'approved', comment);
@@ -213,6 +228,7 @@ async function completeBusinessApproval(instance, transaction, actor, comment = 
 }
 
 async function rejectBusinessApproval(instance, transaction, actor, comment = '') {
+  if (parseJson(instance.payload_json, {}).managedBusiness) return;
   if (instance.business_type === 'expense') {
     const { applyExpenseApproval } = require('../finance/expenseService');
     await applyExpenseApproval(instance, transaction, actor, 'rejected', comment);
@@ -260,12 +276,14 @@ async function startInstance(input, actor, transaction) {
   const config = normalizeFlowConfig(flow.config_json);
   const subjectStaffId = asStaffId(input.subjectStaffId) || Number(actor.staffId);
   const subject = await getSubject(subjectStaffId, transaction);
-  if (actor.distributorId && subject.distributor_id !== actor.distributorId && !actor.roles?.includes('boss')) {
+  if (!input.payload?.managedBusiness && actor.distributorId && subject.distributor_id !== actor.distributorId && !actor.roles?.includes('boss')) {
     throw new Error('审批主题员工不在当前经销商范围内');
   }
-  if (!(flow.business_type === 'payable_settlement' && !subject.store_id)) {
-    assertApprovalStoreVisible(actor, subject.store_id);
+  const storeId = input.storeId !== undefined ? input.storeId : subject.store_id;
+  if (storeId) {
+    assertApprovalStoreVisible(actor, storeId);
   }
+  if (!config.nodes[input.initialNodeIndex || 0]) throw new Error('历史审批阶段与流程配置不匹配');
   if (!input.businessId) throw new Error('业务单据ID不能为空');
   const instance = await ApprovalFlowInstance.create({
     instance_id: generateUUID(),
@@ -278,15 +296,15 @@ async function startInstance(input, actor, transaction) {
     summary: String(input.summary || '').slice(0, 1000),
     applicant_staff_id: Number(actor.staffId),
     subject_staff_id: subject.staff_id,
-    distributor_id: subject.distributor_id,
-    store_id: subject.store_id,
+    distributor_id: input.distributorId || subject.distributor_id,
+    store_id: input.storeId !== undefined ? input.storeId : subject.store_id,
     current_node_index: 0,
     status: 'pending',
     resubmit_count: 0,
     payload_json: input.payload === undefined ? null : JSON.stringify(input.payload),
     definition_snapshot_json: JSON.stringify(config)
   }, { transaction });
-  await createNodeTasks(instance, config, 0, 0, transaction);
+  await createNodeTasks(instance, config, input.initialNodeIndex || 0, 0, transaction);
   await writeLog(instance.instance_id, null, 'submit', actor, input.comment, { flowCode: flow.flow_code, version: flow.version }, transaction);
   return instance;
 }
@@ -306,7 +324,7 @@ async function getConfiguredFlowNodeApprovers({ flowCode, businessType, subjectS
 
 async function assertConfiguredFlowApprover(options, actor, message = '当前账号不是该审批节点的审批人') {
   const approverIds = await getConfiguredFlowNodeApprovers(options);
-  if (approverIds === null) return;
+  if (approverIds === null) throw Object.assign(new Error('审批流程未配置或已停用，请在审批中心发布流程'), { status: 409 });
   if (!approverIds.includes(Number(actor?.staffId))) {
     const error = new Error(message);
     error.status = 403;
@@ -318,13 +336,16 @@ async function createInstance(input, actor) {
   return sequelize.transaction(transaction => startInstance(input, actor, transaction));
 }
 
-async function actionInstance(instanceId, action, comment, actor) {
+async function actionInstance(instanceId, action, comment, actor, options = {}) {
   if (!['approve', 'reject'].includes(action)) throw new Error('审批动作无效');
   if (action === 'reject' && !String(comment || '').trim()) throw new Error('拒绝时必须填写审批意见');
-  return sequelize.transaction(async transaction => {
+  const execute = async transaction => {
     const instance = await ApprovalFlowInstance.findByPk(instanceId, { transaction, lock: transaction.LOCK.UPDATE });
     if (!instance) throw new Error('审批实例不存在');
-    assertApprovalStoreVisible(actor, instance.store_id);
+    const managedWithoutStore = options.managedBusiness && !instance.store_id && actor.approvalDistributorId
+      && String(actor.approvalDistributorId) === String(instance.distributor_id);
+    if (!managedWithoutStore && !canReadApprovalStore(actor, instance.store_id, instance.business_type, instance.distributor_id)) throw new Error('无权访问该门店的审批记录');
+    if (parseJson(instance.payload_json, {}).managedBusiness && !options.managedBusiness) throw new Error('该审批必须通过业务审批入口处理');
     if (instance.status !== 'pending') throw new Error('该审批实例当前不可处理');
     const task = await ApprovalTask.findOne({
       where: { instance_id: instanceId, round_no: instance.resubmit_count, assignee_staff_id: actor.staffId, status: 'pending', node_index: instance.current_node_index },
@@ -338,11 +359,12 @@ async function actionInstance(instanceId, action, comment, actor) {
     await writeLog(instanceId, task.task_id, action, actor, comment, { nodeIndex: task.node_index, roundNo: instance.resubmit_count }, transaction);
 
     if (action === 'reject') {
-      await rejectBusinessApproval(instance, transaction, actor, comment);
       if (task.sign_mode === 'or') {
         const remaining = await ApprovalTask.count({ where: { instance_id: instanceId, round_no: instance.resubmit_count, node_index: task.node_index, status: 'pending' }, transaction });
         if (remaining > 0) return instance;
       }
+      await rejectBusinessApproval(instance, transaction, actor, comment);
+      await ApprovalTask.update({ status: 'cancelled', acted_time: now }, { where: { instance_id: instanceId, status: { [Op.in]: ['waiting', 'pending'] } }, transaction });
       await instance.update({ status: 'rejected', completed_time: now, update_time: now }, { transaction });
       return instance;
     }
@@ -360,14 +382,16 @@ async function actionInstance(instanceId, action, comment, actor) {
     const config = parseJson(instance.definition_snapshot_json, {});
     await createNodeTasks(instance, config, Number(instance.current_node_index) + 1, instance.resubmit_count, transaction, actor, comment);
     return instance;
-  });
+  };
+  return options.transaction ? execute(options.transaction) : sequelize.transaction(execute);
 }
 
 async function resubmitInstance(instanceId, input, actor) {
   return sequelize.transaction(async transaction => {
     const instance = await ApprovalFlowInstance.findByPk(instanceId, { transaction, lock: transaction.LOCK.UPDATE });
     if (!instance) throw new Error('审批实例不存在');
-    assertApprovalStoreVisible(actor, instance.store_id);
+    if (parseJson(instance.payload_json, {}).managedBusiness) throw new Error('请从原业务单据修改并重新提交');
+    if (!canReadApprovalStore(actor, instance.store_id, instance.business_type, instance.distributor_id)) throw new Error('无权访问该门店的审批记录');
     if (Number(instance.applicant_staff_id) !== Number(actor.staffId)) throw new Error('只有申请人可以重新提交');
     if (instance.status !== 'rejected') throw new Error('只有已拒绝的审批可以重新提交');
     const roundNo = Number(instance.resubmit_count || 0) + 1;
@@ -394,6 +418,7 @@ async function resubmitInstance(instanceId, input, actor) {
 module.exports = {
   APPROVER_TYPES,
   normalizeFlowConfig,
+  resolveApprovers,
   parseJson,
   createInstance,
   startInstance,

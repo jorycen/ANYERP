@@ -31,29 +31,46 @@ function defaultCatalog(fixed = new Map()) {
     { flowCode: 'profit_adjustment', name: '\u6bdb\u5229\u8c03\u6574\u5ba1\u6279', businessType: 'profit_adjustment', nodes: [or('\u8d22\u52a1\u5ba1\u6279\u90e8\u95e8', [role('finance'), role('admin'), role('boss')])] },
     { flowCode: 'subsidy_receivable_adjustment', name: '\u56fd\u8865\u5dee\u989d\u5ba1\u6279', businessType: 'subsidy_receivable_adjustment', nodes: [or('\u8d22\u52a1\u5ba1\u6279\u90e8\u95e8', [role('finance'), role('admin'), role('boss')])] },
     { flowCode: 'expense_performance_allocation', name: '\u8d39\u7528\u7ee9\u6548\u5206\u914d\u5ba1\u6279', businessType: 'expense_performance_allocation', nodes: [or('\u8d22\u52a1\u5ba1\u6279\u90e8\u95e8', [role('finance'), role('admin'), role('boss')])] }
-  ].map(item => ({ ...item, config: { nodes: item.nodes } }));
+  ].concat([
+    { flowCode: 'purchase_expense', name: '采购垫付报销审批', businessType: 'purchase_expense', nodes: [or('报销审批', [role('admin'), role('boss')])] },
+    { flowCode: 'inventory_transfer_receipt', name: '调拨入库确认', businessType: 'inventory_transfer_receipt', nodes: [or('调入门店确认', [{ type: 'store_manager' }, role('admin'), role('boss')])] },
+    { flowCode: 'inventory_batch', name: '批量库存维护审批', businessType: 'inventory_batch', nodes: [or('库存维护审批', [role('admin'), role('boss')])] },
+    { flowCode: 'sale_share', name: '销售晒单审核', businessType: 'sale_share', nodes: [or('店长审核', [{ type: 'store_manager' }])] }
+  ]).map(item => {
+    if (['profit_adjustment', 'expense_performance_allocation'].includes(item.flowCode)) {
+      item.nodes = [or('财务初审', [role('finance'), role('boss')]), or('管理员复审', [role('admin'), role('boss')])];
+    }
+    if (item.flowCode === 'subsidy_receivable_adjustment') item.nodes = [or('国补差额审批', [role('admin'), role('boss')])];
+    if (item.flowCode === 'inventory_transfer') item.nodes = [or('调出门店审批', [{ type: 'store_manager' }, role('admin'), role('boss')])];
+    if (item.flowCode === 'payable_settlement') item.nodes[0].approvers = [{ type: 'direct_supervisor' }];
+    if (item.flowCode === 'resource_claim') item.nodes = [or('财务审批', [role('finance'), role('boss')])];
+    if (['inventory_transfer', 'inventory_transfer_receipt'].includes(item.flowCode)) item.nodes = [or(item.flowCode === 'inventory_transfer' ? '调出门店确认' : '调入门店确认', [{ type: 'store_staff' }, role('admin'), role('boss'), role('purchaser'), role('finance'), role('business')])];
+    if (['sales_return', 'deposit_refund', 'expense_attribution', 'sales_order_negative_gross_profit'].includes(item.flowCode)) item.nodes[0].signMode = 'or';
+    if (item.flowCode === 'sales_order_negative_gross_profit') item.nodes[0].approvers.push(role('admin'), role('boss'), role('distributor'));
+    return { ...item, config: { nodes: item.nodes } };
+  });
 }
 
 async function seedApprovalFlowCatalog(transaction = null) {
   const staffRows = await Staff.findAll({ where: { phone: { [Op.in]: FIXED_APPROVERS.map(item => item.phone) }, status: 1, is_deleted: 0 }, attributes: ['staff_id', 'phone'], transaction });
-  const staffByPhone = new Map(staffRows.map(row => [String(row.phone), Number(row.staff_id)]));
+  const staffByPhone = new Map();
+  for (const row of staffRows) {
+    const phone = String(row.phone);
+    staffByPhone.set(phone, staffByPhone.has(phone) ? 0 : Number(row.staff_id));
+  }
   const fixed = new Map(FIXED_APPROVERS.map(item => [item.name, staffByPhone.get(item.phone)]));
   for (const item of defaultCatalog(fixed)) {
-    if (JSON.stringify(item.config).includes('\"staffId\":0')) continue;
+    const missingApprovers = item.nodes.filter(node => node.approvers.some(rule => rule.type === 'fixed_user' && !rule.staffId)).map(node => node.name);
     const existing = await ApprovalFlowDefinition.findOne({ where: { flow_code: item.flowCode }, order: [['version', 'DESC']], transaction });
-    if (existing) {
-      let existingConfig = null;
-      try { existingConfig = JSON.parse(existing.config_json || '{}'); } catch (_) { existingConfig = null; }
-      const oldSalesReturn = item.flowCode === 'sales_return' && Array.isArray(existingConfig?.nodes) && existingConfig.nodes.length === 2;
-      const oldDepositRefund = item.flowCode === 'deposit_refund' && Array.isArray(existingConfig?.nodes) && existingConfig.nodes.length === 3
-        && existingConfig.nodes[1]?.approvers?.some(approver => approver?.type === 'role' && approver.roleCode === 'finance');
-      if (existing.status === 'published' && (oldSalesReturn || oldDepositRefund)) {
-        await existing.update({ status: 'disabled', update_time: new Date() }, { transaction });
-        await ApprovalFlowDefinition.create({ definition_id: crypto.randomUUID().replace(/-/g, '').slice(0, 32), flow_code: item.flowCode, name: item.name, business_type: item.businessType, subject_type: 'staff', version: Number(existing.version || 1) + 1, status: 'published', config_json: JSON.stringify(item.config), create_time: new Date(), update_time: new Date() }, { transaction });
-      }
-      continue;
+    if (existing) continue;
+    try {
+      await ApprovalFlowDefinition.create({ definition_id: crypto.randomUUID().replace(/-/g, '').slice(0, 32), flow_code: item.flowCode, name: item.name, business_type: item.businessType, subject_type: 'staff', version: 1, status: missingApprovers.length ? 'draft' : 'published', config_json: JSON.stringify({ ...item.config, missingApprovers }), create_time: new Date(), update_time: new Date() }, { transaction });
+    } catch (error) {
+      // Multiple server processes may initialize the same catalog concurrently.
+      if (error.name !== 'SequelizeUniqueConstraintError') throw error;
+      const concurrent = await ApprovalFlowDefinition.findOne({ where: { flow_code: item.flowCode }, transaction });
+      if (!concurrent) throw error;
     }
-    await ApprovalFlowDefinition.create({ definition_id: crypto.randomUUID().replace(/-/g, '').slice(0, 32), flow_code: item.flowCode, name: item.name, business_type: item.businessType, subject_type: 'staff', version: 1, status: 'published', config_json: JSON.stringify(item.config), create_time: new Date(), update_time: new Date() }, { transaction });
   }
 }
 

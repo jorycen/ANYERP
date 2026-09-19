@@ -58,7 +58,7 @@ const { assertActiveProducts } = require('../../utils/activeProduct');
 const { syncSerializedInventoryBalance } = require('../inventory/serializedInventoryBalance');
 const { guanghuan: guanghuanConfig } = require('../../config');
 const guanghuanClient = require('./guanghuanClient');
-const { getConfiguredFlowNodeApprovers } = require('../approval/service');
+const { advance: advanceApproval } = require('../approval/businessRuntime');
 
 async function isRentalDemoSn(sn, transaction = null) {
   if (sn?.inventory_type === 'rental_demo_qty') return true;
@@ -387,6 +387,7 @@ async function resolveSalesOrderStoreIds(user = {}) {
 }
 
 async function list(ctx) {
+  if (await require('../approval/businessRuntime').reviewList(ctx, 'sales_order_negative_gross_profit')) return;
   const {
     storeId, startDate, endDate, customerPhone, customerName, orderNo,
     status, createUser, submitUser, productName, productCode, pnCode, snCode,
@@ -2839,9 +2840,7 @@ async function approve(ctx) {
   if (!approvalStage) {
     ctx.throw(400, '该订单无需审批');
   }
-  if (!canApproveSalesStage(user, approvalStage)) {
-    ctx.throw(403, approvalStage === 'store' ? '负毛利订单第一审批必须由店长完成' : '负毛利订单第二审批必须由经销商总权限完成');
-  }
+
 
   const previousStatus = order.order_status;
   const approveTime = new Date();
@@ -2854,32 +2853,7 @@ async function approve(ctx) {
     if (!lockedOrder || !lockedStage || lockedStage !== approvalStage) {
       ctx.throw(409, '订单审批状态已发生变化，请刷新后重试');
     }
-    if (!canApproveSalesStage(user, lockedStage)) {
-      ctx.throw(403, lockedStage === 'store' ? '负毛利订单第一审批必须由店长完成' : '负毛利订单第二审批必须由经销商总权限完成');
-    }
-    if (lockedStage === 'store') {
-      await lockedOrder.update({
-        order_status: SALES_APPROVAL_STATUSES.distributor,
-        approve_user: user.name || user.phone || String(user.staffId || ''),
-        approve_time: approveTime,
-        approve_comment: '店长初审通过',
-        remark: (lockedOrder.remark || '') + '\n店长初审通过，待经销商总权限复审',
-        update_time: approveTime
-      }, { transaction });
-      await recordBusinessAction({
-        businessType: 'sales_order',
-        businessId: lockedOrder.order_id,
-        businessNo: lockedOrder.order_no,
-        action: 'store_approval_passed',
-        fromStatus: previousStatus,
-        toStatus: SALES_APPROVAL_STATUSES.distributor,
-        user,
-        comment: '店长初审通过',
-        transaction
-      });
-      return;
-    }
-
+    if (!await advanceApproval(ctx, 'sales_order_negative_gross_profit', lockedOrder, transaction, 'approve', ctx.request.body?.comment || '')) return;
     await archiveSalesOrderEffects(lockedOrder, transaction, {
       inventoryAlreadyReserved: Number(lockedOrder.inventory_reserved || 0) === 1
     });
@@ -2917,7 +2891,8 @@ async function approve(ctx) {
     });
   });
 
-  if (approvalStage === 'distributor') {
+  if (ctx.state.businessApproval?.status === 'pending') return;
+  if (ctx.state.businessApproval?.status === 'approved') {
     syncToDailyStatement(orderId, order.store_id).catch(err => console.error('[DailySync] archive error:', err.message));
     ctx.body = { code: 0, status: '已归档', approvalStage: '', message: '经销商总权限审批通过，订单已自动归档' };
     return;
@@ -2944,9 +2919,7 @@ async function reject(ctx) {
   if (!approvalStage) {
     ctx.throw(400, '该订单无需审批');
   }
-  if (!canApproveSalesStage(user, approvalStage)) {
-    ctx.throw(403, approvalStage === 'store' ? '负毛利订单第一审批必须由店长完成' : '负毛利订单第二审批必须由经销商总权限完成');
-  }
+
 
   const { reason } = ctx.request.body;
   const previousStatus = order.order_status;
@@ -2961,9 +2934,7 @@ async function reject(ctx) {
     if (!lockedOrder || !lockedStage || lockedStage !== approvalStage) {
       ctx.throw(409, '订单审批状态已发生变化，请刷新后重试');
     }
-    if (!canApproveSalesStage(user, lockedStage)) {
-      ctx.throw(403, lockedStage === 'store' ? '负毛利订单第一审批必须由店长完成' : '负毛利订单第二审批必须由经销商总权限完成');
-    }
+    if (!await advanceApproval(ctx, 'sales_order_negative_gross_profit', lockedOrder, transaction, 'reject', reason || '')) return;
     if (lockedOrder.inventory_reserved) {
       await releaseReservedInventoryForOrder(lockedOrder, transaction);
     }
@@ -2992,6 +2963,7 @@ async function reject(ctx) {
     });
   });
 
+  if (ctx.state.businessApproval?.status === 'pending') return;
   ctx.body = {
     code: 0,
     status: '未归档',
@@ -3619,6 +3591,7 @@ function depositRefundReviewerStage(user) {
 }
 
 async function listDepositRefunds(ctx) {
+  if (await require('../approval/businessRuntime').reviewList(ctx, 'deposit_refund')) return;
   const { status, approvalStage, storeId, scope, page = 1, pageSize = 50 } = ctx.query;
   const where = {};
   if (status) where.status = status;
@@ -3666,25 +3639,7 @@ async function reviewDepositRefund(ctx) {
     const deposit = await DepositOrder.findByPk(refund.deposit_id, { transaction, lock: transaction.LOCK.UPDATE });
     if (!deposit) ctx.throw(404, '关联定金单不存在');
     const stage = refund.approval_stage || 'pending_store';
-    const assignedStage = depositRefundReviewerStage(user);
-    const stageNodeIndex = stage === 'pending_store' ? 0 : stage === 'pending_deng' ? 1 : 2;
-    const configuredApprovers = await getConfiguredFlowNodeApprovers({
-      flowCode: 'deposit_refund',
-      businessType: 'deposit_refund',
-      subjectStaffId: deposit.create_staff_id || refund.create_staff_id,
-      nodeIndex: stageNodeIndex,
-      transaction
-    });
-    if (configuredApprovers !== null) {
-      if (!configuredApprovers.includes(Number(user.staffId))) ctx.throw(403, '当前账号不是该退定金审批节点的审批人');
-      if (stage === 'pending_store') roles.push('store_manager');
-    }
-    if (stage === 'pending_store') {
-      if (!roles.some(role => STORE_APPROVAL_ROLES.includes(role))) ctx.throw(403, '仅店长可以审批退定金申请');
-      assertDepositStoreVisible(deposit, user);
-    } else if (stage !== assignedStage) {
-      ctx.throw(403, stage === 'pending_deng' ? '仅邓红梅可以审批该退定金申请' : '仅李燕可以审批该退定金申请');
-    }
+    if (!await advanceApproval(ctx, 'deposit_refund', refund, transaction, action, comment)) return { status: 'pending' };
     const now = new Date();
     const reviewFields = stage === 'pending_store'
       ? { store_review_user: user.name || user.staffId || '', store_review_comment: comment || '', store_review_time: now }
@@ -3695,14 +3650,6 @@ async function reviewDepositRefund(ctx) {
       await refund.update({ ...reviewFields, status: 'rejected', approval_stage: 'rejected' }, { transaction });
       await deposit.update({ status: 'available', update_time: now }, { transaction });
       return { status: 'rejected' };
-    }
-    if (stage === 'pending_store') {
-      await refund.update({ ...reviewFields, approval_stage: 'pending_deng' }, { transaction });
-      return { status: 'pending', approvalStage: 'pending_deng' };
-    }
-    if (stage === 'pending_deng') {
-      await refund.update({ ...reviewFields, approval_stage: 'pending_li' }, { transaction });
-      return { status: 'pending', approvalStage: 'pending_li' };
     }
     await syncDepositRefundToDailyStatement(deposit, refund, transaction, now);
     await refund.update({ ...reviewFields, status: 'approved', approval_stage: 'approved' }, { transaction });
@@ -3937,6 +3884,7 @@ function pickReturnItemQuantity(item, sourceItem, defaultQuantity = Number(sourc
  * 销售退单申请列表
  */
 async function listSalesReturnRequests(ctx) {
+  if (await require('../approval/businessRuntime').reviewList(ctx, 'sales_return')) return;
   const { status, approvalStage, storeId, orderId, scope, page = 1, pageSize = 100 } = ctx.query;
   const where = {};
   if (status) where.status = status;
@@ -4291,7 +4239,7 @@ async function reviewSalesReturn(ctx) {
   const roles = getUserRoles(user);
   const isAdmin = roles.some(role => ['boss', 'admin'].includes(role));
   const isManager = roles.some(role => ['boss', 'admin', 'manager', 'store_manager', 'store_admin'].includes(role));
-  if (!isManager) ctx.throw(403, '仅店长或经销商总权限账号可以审批销售退单');
+  if (!['approved', 'rejected'].includes(action)) ctx.throw(400, '审批动作无效');
 
   const result = await sequelize.transaction(async transaction => {
     const request = await SalesReturnRequest.findByPk(returnId, { transaction, lock: transaction.LOCK.UPDATE });
@@ -4301,25 +4249,7 @@ async function reviewSalesReturn(ctx) {
     const now = new Date();
     const rejected = action === 'rejected';
     const stage = normalizeSalesReturnApprovalStage(request.approval_stage || 'pending_store');
-    const assignedStage = salesReturnReviewerStage(user);
-    const stageNodeIndex = stage === 'pending_store' ? 0 : stage === 'pending_duan' ? 1 : stage === 'pending_deng' ? 2 : 3;
-    const configuredApprovers = await getConfiguredFlowNodeApprovers({
-      flowCode: 'sales_return',
-      businessType: 'sales_return',
-      subjectStaffId: request.create_staff_id,
-      nodeIndex: stageNodeIndex,
-      transaction
-    });
-    if (configuredApprovers !== null && !configuredApprovers.includes(Number(user.staffId))) {
-      ctx.throw(403, '当前账号不是该销售退单审批节点的审批人');
-    }
-    if (configuredApprovers === null && stage === 'pending_store' && !isManager) {
-      ctx.throw(403, '仅店长可以审批该退单申请');
-    }
-    if (stage === 'pending_store') assertStoreVisible(request.store_id, user);
-    if (stage !== 'pending_store' && stage !== assignedStage) {
-      ctx.throw(403, stage === 'pending_duan' ? '仅段超可以审批该退单申请' : stage === 'pending_deng' ? '仅邓红梅可以审批该退单申请' : '仅李燕可以审批该退单申请');
-    }
+    if (!await advanceApproval(ctx, 'sales_return', request, transaction, action, comment)) return { status: 'pending' };
 
     const reviewData = stage === 'pending_store'
       ? { store_review_user: user.name || user.staffId || '', store_review_comment: comment || '', store_review_time: now }
@@ -4333,12 +4263,6 @@ async function reviewSalesReturn(ctx) {
     if (rejected) {
       nextStatus = 'rejected';
       nextStage = 'rejected';
-    } else if (stage === 'pending_store') {
-      nextStage = 'pending_duan';
-    } else if (stage === 'pending_duan') {
-      nextStage = 'pending_deng';
-    } else if (stage === 'pending_deng') {
-      nextStage = 'pending_li';
     } else {
       nextStatus = 'approved';
       nextStage = 'approved';

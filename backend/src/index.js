@@ -122,10 +122,12 @@ function initializeDatabaseInBackground(retryDelayMs = Number(process.env.DB_STA
   (async () => {
     try {
       await ensureDatabaseReady('startup database activation', { force: true });
-      // Startup may check/add schema only. Historical repairs and seed data
-      // are explicit operator actions; a restart must not rewrite business
-      // documents, balances, permissions, or master data.
+      // Startup checks schema and adds missing approval definitions only.
+      // Historical repairs remain explicit operator actions; never rewrite
+      // business documents, balances, permissions or existing configurations.
       await runSchemaMigrations();
+      // Add missing approval definitions only; never rewrite existing flows or documents.
+      await require('./modules/approval/catalog').seedApprovalFlowCatalog();
       await ensureDatabaseReady('post-migration database activation', { force: true });
       await recoverExecutingBatchApplications();
       await recoverProductImportTasks();
@@ -140,6 +142,7 @@ function initializeDatabaseInBackground(retryDelayMs = Number(process.env.DB_STA
 
 function startServer() {
   try {
+    require('./modules/approval/businessRuntime').installHooks();
     app.listen(PORT, () => {
       console.log(`ANY-ERP server started: http://localhost:${PORT}`);
       console.log(`API: http://localhost:${PORT}/api/v1`);
