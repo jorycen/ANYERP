@@ -5,6 +5,7 @@
 
 const { sequelize } = require('../models');
 const { normalizePnCode, splitPnCodes, isUsablePnCode } = require('./productPn');
+const { seedApprovalFlowCatalog } = require('../modules/approval/catalog');
 const fs = require('fs');
 const path = require('path');
 
@@ -195,11 +196,104 @@ async function ensureProductDimensionSchema() {
 // business facts.
 async function runSchemaMigrations() {
   await ensureCriticalSchemaCompatibility();
+  await ensureFinanceSchemaCompatibility();
   await ensurePurchaseInvoiceSchema();
   await ensureDepositRefundApprovalSchema();
   await ensureSerializedInventorySchema();
   await ensureProductPnEffectiveUniqueIndex();
   console.log('[DB Schema] startup schema compatibility check completed');
+}
+
+// 财务页面依赖的基础表只能在启动时做结构兼容，不能在这里回填业务数据。
+// 旧版启动流程遗漏了这些表，导致日结页和返利上账页同时报“表不存在/字段不存在”。
+async function ensureFinanceSchemaCompatibility() {
+  await checkAndCreateTable('T_DAILY_STATEMENT', `
+    CREATE TABLE T_DAILY_STATEMENT (
+      STATEMENT_ID VARCHAR(32) NOT NULL,
+      STORE_ID VARCHAR(32) NOT NULL,
+      STATEMENT_DATE DATE NOT NULL,
+      TOTAL_REVENUE DECIMAL(12,2) DEFAULT 0,
+      TOTAL_ORDER_COUNT INT DEFAULT 0,
+      TOTAL_SETTLED DECIMAL(12,2) DEFAULT 0,
+      STATUS VARCHAR(32) DEFAULT 'pending',
+      SUBMIT_STAFF VARCHAR(64),
+      CONFIRM_STAFF VARCHAR(64),
+      PRIMARY KEY (STATEMENT_ID),
+      UNIQUE KEY uk_store_date (STORE_ID, STATEMENT_DATE)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+  await checkAndCreateTable('T_DAILY_STATEMENT_DETAIL', `
+    CREATE TABLE T_DAILY_STATEMENT_DETAIL (
+      DETAIL_ID VARCHAR(64) NOT NULL,
+      STATEMENT_ID VARCHAR(32) NOT NULL,
+      ORDER_ID VARCHAR(32) NOT NULL,
+      ORDER_NO VARCHAR(64),
+      CUSTOMER_NAME VARCHAR(64),
+      PAYMENT_METHOD VARCHAR(128),
+      PAYMENT_CODE VARCHAR(64),
+      BUSINESS_TYPE VARCHAR(32) DEFAULT 'sales_receipt',
+      AMOUNT DECIMAL(12,2) DEFAULT 0,
+      SETTLEMENT_ACCOUNT_ID VARCHAR(64),
+      SETTLED DECIMAL(12,2) DEFAULT 0,
+      SETTLED_AT DATETIME,
+      PRIMARY KEY (DETAIL_ID),
+      KEY idx_statement (STATEMENT_ID),
+      KEY idx_order (ORDER_ID)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+  await checkAndCreateTable('T_REBATE_POSTING_ORDER', `
+    CREATE TABLE T_REBATE_POSTING_ORDER (
+      POSTING_ID VARCHAR(32) NOT NULL,
+      DISTRIBUTOR_ID VARCHAR(32),
+      POSTING_NO VARCHAR(64) NOT NULL,
+      SUPPLIER_ID VARCHAR(32),
+      SUPPLIER_NAME VARCHAR(255),
+      SETTLEMENT_TYPE VARCHAR(32) DEFAULT 'supplier',
+      PAYEE_TYPE VARCHAR(32) DEFAULT 'supplier',
+      PAYEE_ID VARCHAR(64),
+      PAYEE_NAME VARCHAR(255),
+      SOURCE_TYPE VARCHAR(32),
+      SOURCE_ID VARCHAR(64),
+      SOURCE_NO VARCHAR(64),
+      POSTING_DATE DATE NOT NULL,
+      AMOUNT DECIMAL(12,2) NOT NULL,
+      MATCHED_AMOUNT DECIMAL(12,2) DEFAULT 0,
+      STATUS VARCHAR(32) DEFAULT 'UNMATCHED',
+      REBATE_ID VARCHAR(32),
+      CREATE_STAFF_ID BIGINT,
+      CREATE_USER VARCHAR(64),
+      CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      REVERSED_AT DATETIME,
+      REVERSED_BY BIGINT,
+      REVERSED_BY_NAME VARCHAR(64),
+      REVERSAL_REASON VARCHAR(512),
+      REMARK VARCHAR(512) NOT NULL,
+      PRIMARY KEY (POSTING_ID),
+      UNIQUE KEY uk_rebate_posting_no (POSTING_NO),
+      KEY idx_rebate_posting_supplier (SUPPLIER_ID, STATUS, POSTING_DATE),
+      KEY idx_rebate_posting_status (STATUS, CREATE_TIME)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+  await checkAndAddColumn('T_REBATE_POSTING_ORDER', 'DISTRIBUTOR_ID', 'VARCHAR(32)', 'POSTING_ID');
+  await checkAndCreateTable('T_REBATE_SETTLEMENT_ALLOCATION', `
+    CREATE TABLE T_REBATE_SETTLEMENT_ALLOCATION (
+      ALLOCATION_ID VARCHAR(32) NOT NULL,
+      SETTLEMENT_ID VARCHAR(32) NOT NULL,
+      POSTING_ID VARCHAR(32) NOT NULL,
+      AMOUNT DECIMAL(12,2) NOT NULL,
+      STATUS VARCHAR(32) DEFAULT 'ACTIVE',
+      CREATE_STAFF_ID BIGINT,
+      CREATE_USER VARCHAR(64),
+      CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      REVERSED_AT DATETIME,
+      REVERSED_BY BIGINT,
+      REVERSED_BY_NAME VARCHAR(64),
+      REVERSAL_REASON VARCHAR(512),
+      PRIMARY KEY (ALLOCATION_ID),
+      KEY idx_rebate_allocation_settlement (SETTLEMENT_ID, STATUS),
+      KEY idx_rebate_allocation_posting (POSTING_ID, STATUS)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
 }
 
 async function ensurePurchaseInvoiceSchema() {
@@ -313,6 +407,9 @@ async function ensureCriticalSchemaCompatibility() {
   const existingPurchaseItemColumns = new Set(requiredPurchaseItemColumns.map(row => row.COLUMN_NAME));
   const missingPurchaseItemColumns = ['DIRECT_INBOUND', 'DIRECT_INBOUND_SN_CODE', 'SOURCE_SN_ID', 'TARGET_LOCATION_ID']
     .filter(columnName => !existingPurchaseItemColumns.has(columnName));
+  // 资源权益会在采购/调拨入库时写入有效期；旧数据库可能没有这两个兼容字段。
+  await checkAndAddColumn('T_INVENTORY_RESOURCE_RIGHT', 'EFFECTIVE_START', 'DATETIME NULL');
+  await checkAndAddColumn('T_INVENTORY_RESOURCE_RIGHT', 'EFFECTIVE_END', 'DATETIME NULL');
   if (missingPurchaseItemColumns.length > 0) {
     throw new Error(`数据库缺少必要字段：T_PURCHASE_REQUEST_ITEM.${missingPurchaseItemColumns.join('、')}`);
   }
@@ -3646,6 +3743,7 @@ async function runMigrations() {
       console.warn('[DB Migration] 历史单据经手人快照补齐跳过:', error.message);
     }
 
+    await seedApprovalFlowCatalog();
     await ensureProductSettlementSchema();
     await ensureExpenseAccountingSchema();
     await migrateProductData();

@@ -14,6 +14,9 @@
               <el-option label="全部门店" value="" />
               <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
             </el-select>
+            <el-select v-model="dailyCustomerName" placeholder="客户名称" clearable filterable remote :remote-method="searchDailyCustomers" :loading="dailyCustomerLoading" style="width: 190px" @change="loadDailyData">
+              <el-option v-for="name in dailyCustomerOptions" :key="name" :label="name" :value="name" />
+            </el-select>
             <el-select v-model="paymentMethodFilter" placeholder="收款方式" clearable style="width: 130px" @change="loadDailyData">
               <el-option label="全部" value="" />
               <el-option v-for="pm in paymentMethods" :key="pm.method_id" :label="pm.name" :value="pm.name" />
@@ -105,9 +108,6 @@
             <el-select v-model="productSettlementQuery.storeId" placeholder="选择门店" clearable style="width: 150px">
               <el-option label="全部门店" value="" />
               <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
-            </el-select>
-            <el-select v-model="dailyCustomerName" placeholder="客户名称" clearable filterable remote :remote-method="searchDailyCustomers" :loading="dailyCustomerLoading" style="width: 170px" @change="loadDailyData">
-              <el-option v-for="name in dailyCustomerOptions" :key="name" :label="name" :value="name" />
             </el-select>
             <el-select v-model="dailyBusinessTypeFilter" placeholder="业务类型" clearable style="width: 140px" @change="loadDailyData">
               <el-option label="销售收款" value="sales_receipt" /><el-option label="定金收款" value="deposit_receipt" />
@@ -234,7 +234,12 @@
           >
             <el-table-column type="selection" width="40" :selectable="(row) => Number(row.remaining_amount || 0) > 0" />
             <el-table-column prop="statement_date" label="应收日期" width="110" sortable />
-            <el-table-column prop="order_no" label="订单号" width="180" />
+            <el-table-column label="订单号" width="180">
+              <template #default="{ row }">
+                <el-button v-if="row.order_id || row.order_no" link type="primary" @click="openSubsidyOrderDetail(row)">{{ row.order_no || row.order_id }}</el-button>
+                <span v-else>-</span>
+              </template>
+            </el-table-column>
             <el-table-column prop="customer_name" label="国补客户" width="110" />
             <el-table-column label="国补类型" min-width="180">
               <template #default="{ row }">{{ subsidyPaymentType(row.payment_method) }}</template>
@@ -1196,6 +1201,35 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="subsidyOrderDetailVisible" title="销售订单详情" width="1000px">
+      <el-skeleton v-if="subsidyOrderDetailLoading" :rows="6" animated />
+      <template v-else-if="subsidyOrderDetail">
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="订单号">{{ subsidyOrderDetail.order_no || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="订单状态">{{ subsidyOrderDetail.order_status || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="客户">{{ subsidyOrderDetail.customer_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="联系电话">{{ subsidyOrderDetail.customer_phone || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="门店">{{ subsidyOrderDetail.Store?.name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="创建时间">{{ formatDateTime(subsidyOrderDetail.create_time) }}</el-descriptions-item>
+          <el-descriptions-item label="商品总额">¥{{ formatMoney(subsidyOrderDetail.total_amount) }}</el-descriptions-item>
+          <el-descriptions-item label="实付金额">¥{{ formatMoney(subsidyOrderDetail.actual_payment) }}</el-descriptions-item>
+          <el-descriptions-item label="国补金额">¥{{ formatMoney(subsidyOrderDetail.national_subsidy) }}</el-descriptions-item>
+          <el-descriptions-item label="教育补贴">¥{{ formatMoney(subsidyOrderDetail.education_subsidy) }}</el-descriptions-item>
+          <el-descriptions-item label="备注" :span="2">{{ subsidyOrderDetail.remark || '-' }}</el-descriptions-item>
+        </el-descriptions>
+        <div style="margin-top: 16px; font-weight: 600">商品明细</div>
+        <el-table :data="subsidyOrderDetail.OrderItems || []" border size="small" style="margin-top: 8px">
+          <el-table-column prop="product_name" label="商品名称" min-width="220" />
+          <el-table-column prop="pn_code" label="PN" width="140" />
+          <el-table-column prop="sn_code" label="SN" width="160" />
+          <el-table-column prop="quantity" label="数量" width="80" />
+          <el-table-column prop="sale_price" label="单价" width="110"><template #default="{ row }">¥{{ formatMoney(row.sale_price) }}</template></el-table-column>
+          <el-table-column prop="subtotal" label="小计" width="110"><template #default="{ row }">¥{{ formatMoney(row.subtotal) }}</template></el-table-column>
+        </el-table>
+      </template>
+      <el-empty v-else description="暂无订单详情" />
+    </el-dialog>
+
     <el-dialog v-model="expenseAllocationVisible" title="费用分摊到员工绩效毛利" width="720px" @closed="resetExpenseAllocationForm">
       <el-alert
         v-if="expenseAllocationExpense"
@@ -1666,6 +1700,9 @@ const subsidyReceiptForm = reactive({
 const subsidyAllocationTotal = computed(() => subsidyReceiptForm.allocations.reduce((sum, row) => sum + Number(row.amount || 0), 0))
 const subsidyAdjustmentDialogVisible = ref(false)
 const subsidyAdjustmentForm = reactive({ detailId:'', orderNo:'', remaining:0, adjustmentType:'FEE', amount:0, financeCategory:'', reason:'' })
+const subsidyOrderDetailVisible = ref(false)
+const subsidyOrderDetailLoading = ref(false)
+const subsidyOrderDetail = ref(null)
 const expenseData = ref([])
 const expenseTotal = ref(0)
 const expenseOverview = ref(null)
@@ -2225,7 +2262,13 @@ const searchDailyCustomers = async keyword => {
   if (!keyword) { dailyCustomerOptions.value = []; return }
   dailyCustomerLoading.value = true
   try {
-    const res = await api.getDailyDetails({ page: 1, pageSize: 100, customerName: keyword })
+    const params = { page: 1, pageSize: 100, customerName: keyword }
+    if (queryParams.dateRange?.length === 2) {
+      params.startDate = queryParams.dateRange[0]
+      params.endDate = queryParams.dateRange[1]
+    }
+    if (queryParams.storeId) params.storeId = queryParams.storeId
+    const res = await api.getDailyDetails(params)
     dailyCustomerOptions.value = [...new Set((res.data?.list || []).map(row => row.customer_name).filter(Boolean))]
   } finally { dailyCustomerLoading.value = false }
 }
@@ -2297,6 +2340,24 @@ const loadSubsidyReceivables = async () => {
 const onSubsidySelectionChange = rows => {
   selectedSubsidyRows.value = rows
   selectedSubsidyIds.value = rows.map(row => row.detail_id)
+}
+
+const openSubsidyOrderDetail = async row => {
+  if (!row?.order_id) return ElMessage.warning('该国补应收单未关联销售订单')
+  subsidyOrderDetailVisible.value = true
+  subsidyOrderDetailLoading.value = true
+  subsidyOrderDetail.value = null
+  try {
+    const res = await api.getSalesDetail(row.order_id)
+    const detail = res.data?.order_id ? res.data : (res.data || res)
+    if (!detail?.order_id) throw new Error(res.message || '订单详情为空')
+    subsidyOrderDetail.value = detail
+  } catch (err) {
+    subsidyOrderDetailVisible.value = false
+    ElMessage.error(err.response?.data?.message || err.message || '加载订单详情失败')
+  } finally {
+    subsidyOrderDetailLoading.value = false
+  }
 }
 
 const loadSubsidyAuxiliary = async () => {

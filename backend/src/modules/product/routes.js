@@ -26,7 +26,7 @@ router.get('/application-list', getProductApplicationList);
 router.post('/application', submitProductApplication);
 router.get('/application/:applicationId', getProductApplicationDetail);
 router.post('/application/:applicationId/revoke', revokeProductApplication);
-router.post('/application/:applicationId/review', requireRole('finance', 'purchaser'), reviewProductApplication);
+router.post('/application/:applicationId/review', reviewProductApplication);
 // 兼容现有客户端：手工新建商品统一转为审批申请。
 router.post('/create', submitProductApplication);
 router.put('/update/:productId', updateProduct);

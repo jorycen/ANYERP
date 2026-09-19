@@ -192,6 +192,7 @@
               <el-option label="全部员工" value="" />
               <el-option v-for="name in employeeOptions" :key="name" :label="name" :value="name" />
             </el-select>
+            <el-input v-model="employeeParams.orderNo" placeholder="订单号" clearable style="width: 190px" @keyup.enter="loadEmployeePerformance" />
             <el-button type="primary" @click="loadEmployeePerformance">查询</el-button>
             <el-button @click="openAdjustmentCenter('mine')">我的毛利调整</el-button>
             <el-button v-if="canReviewAdjustments" type="warning" @click="openAdjustmentCenter('review')">待我审核</el-button>
@@ -456,7 +457,7 @@ const salesPerformanceParams = reactive({
   employeeId: ''
 })
 const inventoryParams = reactive({ storeId: '' })
-const employeeParams = reactive({ dateRange: [], storeId: '', staffName: '', page: 1, pageSize: 20 })
+const employeeParams = reactive({ dateRange: [], storeId: '', staffName: '', orderNo: '', page: 1, pageSize: 20 })
 const adjustmentForm = reactive({ adjustmentType: 'increase', amount: 0.01, reason: '' })
 const adjustmentParams = reactive({ page: 1, pageSize: 20 })
 const currentRoles = String(getRoleCode() || '').split(',').map(role => role.trim())
@@ -560,6 +561,7 @@ const loadEmployeePerformance = async () => {
     const params = {
       storeId: employeeParams.storeId,
       staffName: employeeParams.staffName,
+      orderNo: employeeParams.orderNo,
       page: employeeParams.page,
       pageSize: employeeParams.pageSize
     }

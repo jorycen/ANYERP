@@ -49,6 +49,12 @@
 
       <el-table v-loading="loading" :data="data" stripe border>
         <el-table-column prop="settlement_no" label="结算单号" width="190" />
+        <el-table-column label="报销/采购单号" width="190">
+          <template #default="{ row }">
+            <el-button v-if="row.source_no && ['expense', 'reimbursement', 'purchase'].includes(row.source_type)" link type="primary" @click="openSourceDetail(row)">{{ row.source_no }}</el-button>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="distributor_name" label="经销商" width="130">
           <template #default="{ row }">{{ distributorText(row) }}</template>
         </el-table-column>
@@ -142,7 +148,14 @@
         </el-descriptions>
 
         <el-table :data="detail.items || []" stripe border class="detail-table">
-          <el-table-column prop="request_no" label="采购单号" width="180" />
+          <el-table-column label="报销/采购单号" width="180">
+            <template #default="{ row }">
+              <el-button v-if="row.source_id || row.purchase_request_id" link type="primary" @click="openSourceDetail({ source_type: row.source_type, source_id: row.source_id, purchase_request_id: row.purchase_request_id, source_no: row.source_no })">
+                {{ row.source_no || row.request_no || '-' }}
+              </el-button>
+              <span v-else>{{ row.request_no || '-' }}</span>
+            </template>
+          </el-table-column>
           <el-table-column prop="product_name" label="采购商品" min-width="180" />
           <el-table-column label="结算数量" width="110">
             <template #default="{ row }">{{ row.quantity === null || row.quantity === undefined ? '-' : quantity(row.quantity) }}</template>
@@ -163,6 +176,43 @@
             <template #default="{ row }">{{ dateTime(row.payment_time) }}</template>
           </el-table-column>
           <el-table-column prop="remark" label="付款备注" min-width="180" />
+        </el-table>
+      </div>
+    </el-dialog>
+
+    <el-dialog v-model="sourceDetailVisible" :title="sourceDetailType === 'expense' ? '报销单详情' : '采购单详情'" width="900px">
+      <div v-if="sourceDetailType === 'expense' && sourceDetail">
+        <el-descriptions :column="2" border size="small">
+          <el-descriptions-item label="报销单号">{{ sourceDetail.expense_no || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="报销类型">{{ sourceDetail.expense_type || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="费用发生方">{{ sourceDetail.expense_party || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="金额">¥{{ money(sourceDetail.amount) }}</el-descriptions-item>
+          <el-descriptions-item label="状态">{{ sourceDetail.status || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="费用日期">{{ dateTime(sourceDetail.expense_date) }}</el-descriptions-item>
+          <el-descriptions-item label="申请人">{{ sourceDetail.applicant_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="关联采购单">
+            <el-button v-if="sourceDetail.related_order_no || sourceDetail.source_type === 'purchase'" link type="primary" @click="openRelatedPurchase(sourceDetail)">
+              {{ sourceDetail.related_order_no || sourceDetail.source_no || '查看采购单' }}
+            </el-button>
+            <span v-else>-</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="备注" :span="2">{{ sourceDetail.remark || '-' }}</el-descriptions-item>
+        </el-descriptions>
+      </div>
+      <div v-else-if="sourceDetailType === 'purchase' && sourceDetail">
+        <el-descriptions :column="2" border size="small">
+          <el-descriptions-item label="采购单号">{{ sourceDetail.request_no || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="状态">{{ sourceDetail.status || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="供应商">{{ sourceDetail.Supplier?.name || sourceDetail.supplier_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="总金额">¥{{ money(sourceDetail.actual_total ?? sourceDetail.total_amount) }}</el-descriptions-item>
+          <el-descriptions-item label="申请原因" :span="2">{{ sourceDetail.reason || '-' }}</el-descriptions-item>
+        </el-descriptions>
+        <el-table :data="sourceDetail.items || []" stripe border class="detail-table">
+          <el-table-column prop="product_name" label="商品" min-width="220" />
+          <el-table-column prop="quantity" label="数量" width="100" />
+          <el-table-column prop="unit_price" label="单价" width="120">
+            <template #default="{ row }">¥{{ money(row.unit_price) }}</template>
+          </el-table-column>
         </el-table>
       </div>
     </el-dialog>
@@ -229,6 +279,9 @@ const loading = ref(false)
 const accounts = ref([])
 const detailVisible = ref(false)
 const detail = ref(null)
+const sourceDetailVisible = ref(false)
+const sourceDetailType = ref('expense')
+const sourceDetail = ref(null)
 const remarkVisible = ref(false)
 const remarkTarget = ref(null)
 const remarkSubmitting = ref(false)
@@ -328,6 +381,34 @@ const openDetail = async row => {
   } catch (error) {
     ElMessage.error(error.response?.data?.message || '加载详情失败')
   }
+}
+
+const openSourceDetail = async row => {
+  const type = ['expense', 'reimbursement'].includes(String(row?.source_type || '').toLowerCase()) ? 'expense' : 'purchase'
+  const id = row?.source_id || row?.purchase_request_id
+  if (!id) return ElMessage.warning('当前单据没有关联来源单据')
+  try {
+    const res = type === 'expense'
+      ? await api.getExpenseDetail(id)
+      : await api.getPurchaseRequestDetail(id)
+    if (res.code === 0) {
+      sourceDetailType.value = type
+      sourceDetail.value = res.data
+      sourceDetailVisible.value = true
+    } else ElMessage.error(res.message || '加载来源单据失败')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '加载来源单据失败')
+  }
+}
+
+const openRelatedPurchase = async expense => {
+  const purchaseId = expense?.source_type === 'purchase'
+    ? expense.source_id
+    : expense?.purchase_request_id
+  const purchaseNo = expense?.related_order_no || expense?.source_no
+  if (!purchaseId && !purchaseNo) return ElMessage.warning('该报销单没有关联采购单')
+  if (purchaseId) return openSourceDetail({ source_type: 'purchase', source_id: purchaseId })
+  ElMessage.info('该报销单只保存了采购单号，暂时无法打开采购详情')
 }
 
 const searchPayees = async keyword => {

@@ -157,17 +157,17 @@ const doSearch = async () => {
 }
 
 const eventColor = (type) => {
-  const map = { inbound: '#67C23A', sale: '#F56C6C', return: '#E6A23C', modify_sn: '#409EFF', transfer: '#9B59B6', transfer_out: '#9B59B6', transfer_out_confirm: '#8E44AD', transfer_in_confirm: '#3498DB' }
+  const map = { inbound: '#67C23A', purchase_inbound: '#67C23A', transfer_inbound: '#3498DB', sale: '#F56C6C', return: '#E6A23C', modify_sn: '#409EFF', transfer: '#9B59B6', transfer_out: '#9B59B6', transfer_out_confirm: '#8E44AD', transfer_in_confirm: '#3498DB' }
   return map[type] || '#909399'
 }
 
 const timelineType = (type) => {
-  const map = { inbound: 'success', sale: 'danger', return: 'warning', modify_sn: 'primary', transfer: '', transfer_out: '', transfer_out_confirm: '', transfer_in_confirm: '' }
+  const map = { inbound: 'success', purchase_inbound: 'success', transfer_inbound: '', sale: 'danger', return: 'warning', modify_sn: 'primary', transfer: '', transfer_out: '', transfer_out_confirm: '', transfer_in_confirm: '' }
   return map[type] || ''
 }
 
 const tagType = (type) => {
-  const map = { inbound: 'success', sale: 'danger', return: 'warning', modify_sn: '', transfer: '', transfer_out: '', transfer_out_confirm: '', transfer_in_confirm: '' }
+  const map = { inbound: 'success', purchase_inbound: 'success', transfer_inbound: '', sale: 'danger', return: 'warning', modify_sn: '', transfer: '', transfer_out: '', transfer_out_confirm: '', transfer_in_confirm: '' }
   return map[type] || 'info'
 }
 

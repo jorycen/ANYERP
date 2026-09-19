@@ -356,7 +356,7 @@ async function getInventoryReport(ctx) {
 }
 
 async function getEmployeePerformanceReport(ctx) {
-  const { storeId, staffName, startDate, endDate, page = 1, pageSize = 20 } = ctx.query;
+  const { storeId, staffName, orderNo, startDate, endDate, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
 
   const storeIds = await getEmployeeReportStoreIds(user, storeId);
@@ -371,6 +371,7 @@ async function getEmployeePerformanceReport(ctx) {
     order_status: { [Op.in]: POSITIVE_SALES_ORDER_STATUSES }
   };
   if (staffName) where.create_user = staffName;
+  if (orderNo) where.order_no = { [Op.like]: `%${String(orderNo).trim()}%` };
   if (startDate && endDate) {
     where.create_time = {
       [Op.gte]: new Date(startDate),

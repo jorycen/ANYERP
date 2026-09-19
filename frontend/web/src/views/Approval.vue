@@ -203,7 +203,7 @@
               <el-option label="门店店长" value="store_manager" />
               <el-option label="直属上级" value="direct_supervisor" />
               <el-option label="指定人员" value="fixed_user" />
-              <el-option label="角色+范围" value="role" />
+              <el-option label="审批部门/角色" value="role" />
             </el-select>
             <el-select v-if="rule.type === 'fixed_user'" v-model="rule.staffId" filterable style="width:220px" placeholder="选择人员"><el-option v-for="item in assigneeOptions.staff" :key="item.staff_id" :label="`${item.name} (${item.phone})`" :value="item.staff_id" /></el-select>
             <el-select v-if="rule.type === 'role'" v-model="rule.roleCode" style="width:180px" placeholder="选择角色"><el-option v-for="item in assigneeOptions.roles" :key="item.role_code" :label="item.name" :value="item.role_code" /></el-select>
@@ -507,7 +507,17 @@ function businessTypeText(value) {
     return: '退库审批',
     sales_return: '销售退单',
     resource: '资源套回',
-    profit: '毛利调整'
+    profit: '毛利调整',
+    purchase_request: '采购申请审批',
+    product_application: '新建商品审批',
+    inventory_transfer: '库存调拨审批',
+    sales_order_negative_gross_profit: '销售负毛利归档审批',
+    deposit_refund: '定金退款审批',
+    return_stock: '退库审批',
+    resource_claim: '资源权益套回审批',
+    profit_adjustment: '毛利调整审批',
+    subsidy_receivable_adjustment: '国补差额审批',
+    expense_performance_allocation: '费用绩效分摊审批'
   }[value] || value || '-')
 }
 function statusType(value) { return ({ pending: 'warning', approved: 'success', rejected: 'danger' }[value] || 'info') }

@@ -22,7 +22,7 @@ router.post('/request-draft/:requestId/submit', submitRequestDraft);
 router.delete('/request-draft/:requestId', deleteRequestDraft);
 
 // 审批、撤销和供应商维护仍属于采购管理职责。
-router.post('/approve-request/:requestId', requirePurchaser, approveRequest);
+router.post('/approve-request/:requestId', approveRequest);
 router.post('/revoke-request/:requestId', revokeRequest);
 router.get('/adjustment-preview/:requestId', requirePurchaser, getAdjustmentPreview);
 router.post('/create-adjustment', requirePurchaser, createPurchaseAdjustment);

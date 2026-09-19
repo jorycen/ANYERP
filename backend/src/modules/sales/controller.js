@@ -58,6 +58,7 @@ const { assertActiveProducts } = require('../../utils/activeProduct');
 const { syncSerializedInventoryBalance } = require('../inventory/serializedInventoryBalance');
 const { guanghuan: guanghuanConfig } = require('../../config');
 const guanghuanClient = require('./guanghuanClient');
+const { getConfiguredFlowNodeApprovers } = require('../approval/service');
 
 async function isRentalDemoSn(sn, transaction = null) {
   if (sn?.inventory_type === 'rental_demo_qty') return true;
@@ -3666,6 +3667,18 @@ async function reviewDepositRefund(ctx) {
     if (!deposit) ctx.throw(404, '关联定金单不存在');
     const stage = refund.approval_stage || 'pending_store';
     const assignedStage = depositRefundReviewerStage(user);
+    const stageNodeIndex = stage === 'pending_store' ? 0 : stage === 'pending_deng' ? 1 : 2;
+    const configuredApprovers = await getConfiguredFlowNodeApprovers({
+      flowCode: 'deposit_refund',
+      businessType: 'deposit_refund',
+      subjectStaffId: deposit.create_staff_id || refund.create_staff_id,
+      nodeIndex: stageNodeIndex,
+      transaction
+    });
+    if (configuredApprovers !== null) {
+      if (!configuredApprovers.includes(Number(user.staffId))) ctx.throw(403, '当前账号不是该退定金审批节点的审批人');
+      if (stage === 'pending_store') roles.push('store_manager');
+    }
     if (stage === 'pending_store') {
       if (!roles.some(role => STORE_APPROVAL_ROLES.includes(role))) ctx.throw(403, '仅店长可以审批退定金申请');
       assertDepositStoreVisible(deposit, user);
@@ -4289,7 +4302,18 @@ async function reviewSalesReturn(ctx) {
     const rejected = action === 'rejected';
     const stage = normalizeSalesReturnApprovalStage(request.approval_stage || 'pending_store');
     const assignedStage = salesReturnReviewerStage(user);
-    if (stage === 'pending_store' && !isManager) {
+    const stageNodeIndex = stage === 'pending_store' ? 0 : stage === 'pending_duan' ? 1 : stage === 'pending_deng' ? 2 : 3;
+    const configuredApprovers = await getConfiguredFlowNodeApprovers({
+      flowCode: 'sales_return',
+      businessType: 'sales_return',
+      subjectStaffId: request.create_staff_id,
+      nodeIndex: stageNodeIndex,
+      transaction
+    });
+    if (configuredApprovers !== null && !configuredApprovers.includes(Number(user.staffId))) {
+      ctx.throw(403, '当前账号不是该销售退单审批节点的审批人');
+    }
+    if (configuredApprovers === null && stage === 'pending_store' && !isManager) {
       ctx.throw(403, '仅店长可以审批该退单申请');
     }
     if (stage === 'pending_store') assertStoreVisible(request.store_id, user);

@@ -35,6 +35,7 @@ const { releaseDepositRedemptionForOrder } = require('../sales/controller');
 const { assertActiveProducts } = require('../../utils/activeProduct');
 const { syncSerializedInventoryBalance } = require('./serializedInventoryBalance');
 const { ensurePurchaseReturnAccounting } = require('../purchase/purchaseReturnAccounting');
+const { getConfiguredFlowNodeApprovers } = require('../approval/service');
 const {
   VENDORS: SUPPLIER_INVENTORY_VENDORS,
   parseSupplierWorkbook,
@@ -2514,13 +2515,19 @@ async function snTrace(ctx) {
         || purchaseRequestMap.get(`no:${inbound.source_no}`);
       const salesReturnRequest = salesReturnMap.get(String(inbound.source_no || ''));
       const initiator = resolveInboundInitiator(inbound, request, salesReturnRequest);
+      const inboundSourceType = String(inbound.source_type || '').trim().toUpperCase();
+      const isTransferInbound = inboundSourceType === 'TRANSFER';
+      const isPurchaseInbound = inboundSourceType === 'PURCHASE' || Boolean(inbound.purchase_request_id) || Boolean(request);
+      const inboundEventType = isTransferInbound ? 'transfer_inbound' : (isPurchaseInbound ? 'purchase_inbound' : 'inbound');
+      const inboundLabel = isTransferInbound ? '\u8c03\u62e8\u5165\u5e93' : (isPurchaseInbound ? '\u91c7\u8d2d\u5165\u5e93' : '\u5165\u5e93');
+      const inboundDescriptionLabel = isTransferInbound ? '\u8c03\u62e8\u5165\u5e93\u5355\u53f7' : (isPurchaseInbound ? '\u91c7\u8d2d\u5165\u5e93\u5355\u53f7' : '\u5165\u5e93\u5355\u53f7');
       if (inbound.inbound_no) initiatorByReference.set(String(inbound.inbound_no), initiator);
       if (inbound.source_no) initiatorByReference.set(String(inbound.source_no), initiator);
       appendReferenceEvent({
         id: `inbound-${inbound.inbound_id}`,
-        type: 'inbound',
-        label: '\u5165\u5e93',
-        description: `\u5165\u5e93\u5355\u53f7: ${inbound.inbound_no}${inbound.pn_code ? `; PN: ${inbound.pn_code}` : ''}`,
+        type: inboundEventType,
+        label: inboundLabel,
+        description: `${inboundDescriptionLabel}: ${inbound.inbound_no}${inbound.pn_code ? `; PN: ${inbound.pn_code}` : ''}`,
         user: initiator,
         time: inbound.receive_time || inbound.create_time
       }, {
@@ -3708,7 +3715,7 @@ function resolveTransferInboundSnBinding(transferItem = {}, inboundItem = {}, re
 /**
  * 执行入库
  */
-async function executeInboundInTransaction({ inboundId, items = [], user, fail }, t) {
+async function executeInboundInTransaction({ inboundId, items = [], user, fail, deferInbound = false, defer_inbound = false, action = '' }, t) {
   const VALID_INVENTORY_TYPES = ['normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty', 'rental_demo_qty'];
   const PRODUCT_TYPE_TO_FIELD = {
     '服务商全资源': 'regular_qty',
@@ -3724,6 +3731,18 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail }
     if (!Array.isArray(items) || items.length === 0) fail(400, '请至少提交一条入库明细');
 
     const inbound = await Inbound.findByPk(inboundId, { transaction: t, lock: t.LOCK.UPDATE });
+    // 兼容历史数据：部分采购入库曾被错误写成 completed，但明细实际尚未收齐。
+    // 恢复为 pending 后允许继续入库，避免被错误状态锁死。
+    const earlyIsPurchaseInbound = String(inbound?.source_type || '').toLowerCase() === 'purchase' || Boolean(inbound?.purchase_request_id);
+    if (inbound?.status === 'completed' && earlyIsPurchaseInbound) {
+      const earlyInboundItems = await InboundItem.findAll({ where: { inbound_id: inboundId }, transaction: t });
+      const hasUnreceivedItem = earlyInboundItems.some(item => (
+        Math.max(Number(item.received_quantity || 0), 0) < Math.max(Number(item.quantity || 0), 0)
+      ));
+      if (hasUnreceivedItem) {
+        await inbound.update({ status: 'pending', update_time: new Date() }, { transaction: t });
+      }
+    }
     if (!inbound) fail(404, '入库单不存在');
 
     if (inbound.status !== 'pending') {
@@ -4073,7 +4092,16 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail }
         fail(409, `商品 ${incompleteSnItem.product_name || incompleteSnItem.product_id} 的入库数量已完成，但SN数量不足，不能完成入库`);
       }
     }
-    const nextInboundStatus = isPurchaseInbound && !allPurchaseItemsReceived ? 'pending' : 'completed';
+    const shouldDeferInbound = Boolean(deferInbound || defer_inbound || action === 'defer');
+    if (shouldDeferInbound && !isPurchaseInbound) {
+      fail(400, '只有采购入库支持暂缓入库');
+    }
+    if (shouldDeferInbound && allPurchaseItemsReceived) {
+      fail(400, '暂缓入库不能提交全部数量，请减少本次入库数量后再暂缓');
+    }
+    const nextInboundStatus = isPurchaseInbound && (shouldDeferInbound || !allPurchaseItemsReceived)
+      ? 'pending'
+      : 'completed';
     const receiveTime = new Date();
     await inbound.update({
       status: nextInboundStatus,
@@ -6197,7 +6225,16 @@ async function approveReturn(ctx) {
   try {
     const { returnId, action = 'approved', comment = '' } = ctx.request.body;
     const user = ctx.state.user;
-    if (!getUserRoles(user).some(role => ['purchaser', 'admin', 'boss'].includes(role))) {
+    const configuredApprovers = await getConfiguredFlowNodeApprovers({
+      flowCode: 'return_stock',
+      businessType: 'return_stock',
+      nodeIndex: 0,
+      transaction: t
+    });
+    if (configuredApprovers !== null && !configuredApprovers.includes(Number(user.staffId))) {
+      ctx.throw(403, '当前账号不在退库审批配置中');
+    }
+    if (configuredApprovers === null && !getUserRoles(user).some(role => ['purchaser', 'admin', 'boss'].includes(role))) {
       ctx.throw(403, '仅采购、经销商总权限账号或BOSS可以审批退库申请');
     }
     if (!['approved', 'rejected'].includes(action)) ctx.throw(400, '审批动作无效');

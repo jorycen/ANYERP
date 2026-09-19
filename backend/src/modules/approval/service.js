@@ -291,6 +291,29 @@ async function startInstance(input, actor, transaction) {
   return instance;
 }
 
+async function getConfiguredFlowNodeApprovers({ flowCode, businessType, subjectStaffId, nodeIndex = 0, transaction = null }) {
+  const flow = await ApprovalFlowDefinition.findOne({
+    where: { flow_code: flowCode, business_type: businessType, status: 'published' },
+    order: [['version', 'DESC']],
+    transaction
+  });
+  if (!flow) return null;
+  const config = normalizeFlowConfig(flow.config_json);
+  const node = config.nodes[Number(nodeIndex)];
+  if (!node) return [];
+  return resolveApprovers(node, { subject_staff_id: subjectStaffId }, transaction);
+}
+
+async function assertConfiguredFlowApprover(options, actor, message = '当前账号不是该审批节点的审批人') {
+  const approverIds = await getConfiguredFlowNodeApprovers(options);
+  if (approverIds === null) return;
+  if (!approverIds.includes(Number(actor?.staffId))) {
+    const error = new Error(message);
+    error.status = 403;
+    throw error;
+  }
+}
+
 async function createInstance(input, actor) {
   return sequelize.transaction(transaction => startInstance(input, actor, transaction));
 }
@@ -374,6 +397,8 @@ module.exports = {
   parseJson,
   createInstance,
   startInstance,
+  getConfiguredFlowNodeApprovers,
+  assertConfiguredFlowApprover,
   actionInstance,
   resubmitInstance,
   getApprovalStoreIds,

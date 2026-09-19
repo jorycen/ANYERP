@@ -33,6 +33,7 @@ const { ensureProductPnsMaster, syncProductPnsMaster, assertPnAvailableForNewPro
 const XLSX = require('xlsx');
 const { getUserRoles } = require('../../middleware/permission');
 const { accessibleDistributorIds } = require('../../utils/distributorScope');
+const { assertConfiguredFlowApprover } = require('../approval/service');
 const { sendExcel } = require('../../utils/excelExport');
 
 // 字段标识到数据库列名的映射（field_key → DB column）
@@ -1346,6 +1347,13 @@ async function reviewProductApplication(ctx) {
     });
     if (!application) ctx.throw(404, '商品申请不存在');
     if (application.status !== 'pending') ctx.throw(400, '该申请已完成审批');
+    await assertConfiguredFlowApprover({
+      flowCode: 'product_application',
+      businessType: 'product_application',
+      subjectStaffId: application.applicant_staff_id,
+      nodeIndex: 0,
+      transaction
+    }, ctx.state.user, '当前账号不在商品审批部门中');
     const accessibleIds = accessibleDistributorIds(ctx.state.user);
     if (!accessibleIds.includes('*')
       && !accessibleIds.includes(String(application.distributor_id || ''))) {

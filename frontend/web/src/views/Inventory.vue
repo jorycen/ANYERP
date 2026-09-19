@@ -980,7 +980,8 @@
       <template #footer>
         <el-button @click="executeInboundVisible = false">取消</el-button>
         <el-button type="info" @click="saveInboundDraft">保存草稿</el-button>
-        <el-button type="primary" @click="submitInbound" :loading="inboundLoading">确认入库</el-button>
+        <el-button type="warning" @click="submitInbound(true)" :loading="inboundLoading">暂缓入库</el-button>
+        <el-button type="primary" @click="submitInbound(false)" :loading="inboundLoading">确认完成入库</el-button>
       </template>
     </el-dialog>
 
@@ -1217,7 +1218,7 @@
             v-for="(event, idx) in traceTimeline"
             :key="idx"
             :timestamp="formatDate(event.time)"
-            :color="event.type === 'inbound' ? '#67C23A' : event.type === 'sale' ? '#F56C6C' : event.type === 'return' ? '#E6A23C' : event.type === 'modify_sn' ? '#409EFF' : event.type === 'transfer' ? '#9B59B6' : event.type === 'transfer_out' || event.type === 'transfer_out_confirm' ? '#8E44AD' : event.type === 'transfer_in_confirm' ? '#3498DB' : '#909399'"
+            :color="event.type === 'inbound' || event.type === 'purchase_inbound' ? '#67C23A' : event.type === 'transfer_inbound' ? '#3498DB' : event.type === 'sale' ? '#F56C6C' : event.type === 'return' ? '#E6A23C' : event.type === 'modify_sn' ? '#409EFF' : event.type === 'transfer' ? '#9B59B6' : event.type === 'transfer_out' || event.type === 'transfer_out_confirm' ? '#8E44AD' : event.type === 'transfer_in_confirm' ? '#3498DB' : '#909399'"
             :type="event.type === 'inbound' ? 'success' : event.type === 'sale' ? 'danger' : event.type === 'return' ? 'warning' : event.type === 'modify_sn' ? 'primary' : ''"
           >
             <div>
@@ -3223,7 +3224,7 @@ const allocatedQty = (item) => {
   return (item.qtyRows || []).reduce((sum, r) => sum + (parseInt(r.quantity) || 0), 0)
 }
 
-const submitInbound = async () => {
+const submitInbound = async (deferInbound = false) => {
   const items = []
   const seenSn = new Set()
 
@@ -3231,7 +3232,7 @@ const submitInbound = async () => {
     if (product.needSn) {
       const snRows = product.snRows || []
       const maxQuantity = Number(product.quantity || 0)
-      if (snRows.length > maxQuantity) {
+      if (snRows.length > maxQuantity || (!deferInbound && snRows.length !== maxQuantity)) {
         ElMessage.warning(`商品 ${product.productName} 的SN行数超过待入库数量，请刷新后重试`)
         return
       }
@@ -3282,7 +3283,7 @@ const submitInbound = async () => {
       }
 
       const totalAllocated = allocatedQty(product)
-      if (totalAllocated <= 0 || totalAllocated > product.quantity) {
+      if (totalAllocated <= 0 || totalAllocated > product.quantity || (!deferInbound && totalAllocated !== product.quantity)) {
         ElMessage.warning(`商品 ${product.productName} 分配数量(${totalAllocated})与待入库数量(${product.quantity})不一致`)
         return
       }
@@ -3298,11 +3299,12 @@ const submitInbound = async () => {
   try {
     const res = await api.executeInbound({
       inboundId: currentInbound.value.inbound_id,
-      items
+      items,
+      deferInbound
     })
 
     if (res.code === 0) {
-      ElMessage.success('入库完成')
+      ElMessage.success(deferInbound ? '已暂缓入库，后续可继续入库' : '入库完成')
       clearDraft(inboundDraftKey())
       executeInboundVisible.value = false
       loadInboundList()

@@ -5,7 +5,8 @@ const {
   SettlementItem,
   ExpensePerformanceAllocation,
   ResourceSettlement,
-  ApprovalFlowDefinition
+  ApprovalFlowDefinition,
+  Staff
 } = require('../../models');
 const { Op } = require('sequelize');
 const { generateUUID } = require('../../utils');
@@ -13,6 +14,13 @@ const moment = require('moment');
 const { roundAmount, getAllocationSummary, refreshExpenseState } = require('./settlementAllocation');
 
 const EXPENSE_ATTRIBUTION_TYPES = new Set(['PERSONAL', 'STORE', 'PRODUCT_SIDE', 'COMPANY', 'REBATE']);
+const EXPENSE_DEFAULT_APPROVERS = [
+  { name: '段超', phone: '15308182113' },
+  { name: '张欢', phone: '17711068535' },
+  { name: '邓红梅', phone: '14780834570' },
+  { name: '赖曦', phone: '18980060806' },
+  { name: '李燕', phone: '18010607277' }
+];
 
 function normalizeAttributionType(value) {
   const raw = String(value || '').trim().toUpperCase();
@@ -109,8 +117,28 @@ async function ensureExpenseApprovalFlow(transaction = null) {
     order: [['version', 'DESC']],
     transaction
   });
-  if (existing) return existing;
-  return ApprovalFlowDefinition.create({
+  if (existing && !isLegacyExpenseDefaultFlow(existing)) return existing;
+  const fixedApprovers = await resolveExpenseDefaultApprovers(transaction);
+  const defaultConfig = buildExpenseDefaultApprovalConfig(fixedApprovers);
+  if (existing) {
+    await ApprovalFlowDefinition.update(
+      { status: 'disabled', update_time: new Date() },
+      { where: { flow_code: flowCode, status: 'published' }, transaction }
+    );
+    return ApprovalFlowDefinition.create({
+      definition_id: generateUUID(),
+      flow_code: flowCode,
+      name: '报销审批流程',
+      business_type: 'expense',
+      subject_type: 'staff',
+      version: Number(existing.version || 1) + 1,
+      status: 'published',
+      config_json: JSON.stringify(defaultConfig),
+      create_time: new Date(),
+      update_time: new Date()
+    }, { transaction });
+  }
+  const created = await ApprovalFlowDefinition.create({
     definition_id: generateUUID(),
     flow_code: flowCode,
     name: '费用归属报销审批',
@@ -131,6 +159,45 @@ async function ensureExpenseApprovalFlow(transaction = null) {
     create_time: new Date(),
     update_time: new Date()
   }, { transaction });
+  await created.update({ config_json: JSON.stringify(defaultConfig), name: '报销审批流程', update_time: new Date() }, { transaction });
+  return created;
+}
+
+async function resolveExpenseDefaultApprovers(transaction = null) {
+  const approvers = [];
+  for (const item of EXPENSE_DEFAULT_APPROVERS) {
+    const staff = await Staff.findOne({ where: { phone: item.phone, status: 1, is_deleted: 0 }, transaction });
+    if (!staff) {
+      const error = new Error(`报销审批账号未找到或已停用：${item.name}（${item.phone}）`);
+      error.status = 400;
+      throw error;
+    }
+    approvers.push({ ...item, staffId: Number(staff.staff_id) });
+  }
+  return approvers;
+}
+
+function buildExpenseDefaultApprovalConfig(approvers) {
+  return {
+    nodes: [
+      { name: '店长审批', signMode: 'serial', approvers: [{ type: 'store_manager', scope: 'subject_store' }] },
+      ...approvers.map(item => ({
+        name: `${item.name}审批`,
+        signMode: 'serial',
+        approvers: [{ type: 'fixed_user', staffId: item.staffId }]
+      }))
+    ]
+  };
+}
+
+function isLegacyExpenseDefaultFlow(flow) {
+  const config = parseJson(flow?.config_json, {});
+  const nodes = Array.isArray(config.nodes) ? config.nodes : [];
+  const types = nodes.map(node => node?.approvers?.[0]?.type);
+  return nodes.length === 3
+    && types[0] === 'direct_supervisor'
+    && types[1] === 'role'
+    && types[2] === 'role';
 }
 
 async function startExpenseApproval(expense, user, transaction) {

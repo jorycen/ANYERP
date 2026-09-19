@@ -18,6 +18,7 @@ const {
   SettlementAccount,
   SettlementAccountTransaction,
   Distributor,
+  Store,
   PurchaseRequest,
   PurchaseRequestItem,
   PurchaseAdjustment,
@@ -168,8 +169,8 @@ async function enrichSettlementMetadata(rows, transaction = null) {
   const payableIds = [...new Set(list.flatMap(row => (row.items || []).map(item => item.payable_id).filter(Boolean).map(String)))];
   const payables = payableIds.length
     ? await Payable.findAll({
-        where: { payable_id: { [Op.in]: payableIds } },
-        attributes: ['payable_id', 'request_id', 'source_type', 'source_id'],
+      where: { payable_id: { [Op.in]: payableIds } },
+        attributes: ['payable_id', 'request_id', 'request_no', 'source_type', 'source_id', 'source_no'],
         transaction
       })
     : [];
@@ -177,14 +178,49 @@ async function enrichSettlementMetadata(rows, transaction = null) {
   const expenseIds = [...new Set(payables.filter(row => ['expense', 'reimbursement'].includes(row.source_type) && row.source_id).map(row => String(row.source_id)))];
   const [requests, expenses] = await Promise.all([
     requestIds.length
-      ? PurchaseRequest.findAll({ where: { request_id: { [Op.in]: requestIds } }, attributes: ['request_id', 'invoice_type'], transaction })
+      ? PurchaseRequest.findAll({
+          where: { request_id: { [Op.in]: requestIds } },
+          attributes: ['request_id', 'request_no', 'status', 'total_amount', 'actual_total', 'reason', 'create_time', 'store_id', 'supplier_id', 'invoice_type'],
+          include: [
+            { model: PurchaseRequestItem, as: 'items' },
+            { model: Supplier, attributes: ['supplier_id', 'name'], required: false },
+            { model: Store, attributes: ['store_id', 'name'], required: false }
+          ],
+          transaction
+        })
       : [],
     expenseIds.length
-      ? Expense.findAll({ where: { expense_id: { [Op.in]: expenseIds } }, attributes: ['expense_id', 'invoice_type'], transaction })
+      ? Expense.findAll({
+          where: { expense_id: { [Op.in]: expenseIds } },
+          attributes: [
+            'expense_id', 'expense_no', 'expense_type', 'expense_party', 'amount', 'status',
+            'expense_date', 'payment_method', 'invoice_type', 'invoice_no', 'applicant_name',
+            'source_type', 'source_id', 'source_no', 'related_order_no', 'remark', 'create_time'
+          ],
+          transaction
+        })
       : []
   ]);
+  const purchaseExpenseRequestIds = [...new Set(
+    expenses
+      .filter(row => row.source_type === 'purchase' && row.source_id)
+      .map(row => String(row.source_id))
+  )].filter(id => !requestIds.includes(id));
+  if (purchaseExpenseRequestIds.length) {
+    const linkedRequests = await PurchaseRequest.findAll({
+      where: { request_id: { [Op.in]: purchaseExpenseRequestIds } },
+      attributes: ['request_id', 'request_no', 'status', 'total_amount', 'actual_total', 'reason', 'create_time', 'store_id', 'supplier_id', 'invoice_type'],
+      include: [
+        { model: PurchaseRequestItem, as: 'items' },
+        { model: Supplier, attributes: ['supplier_id', 'name'], required: false },
+        { model: Store, attributes: ['store_id', 'name'], required: false }
+      ],
+      transaction
+    });
+    requests.push(...linkedRequests);
+  }
   const requestMap = new Map(requests.map(row => [String(row.request_id), row]));
-  const expenseMap = new Map(expenses.map(row => [String(row.expense_id), row.invoice_type]));
+  const expenseMap = new Map(expenses.map(row => [String(row.expense_id), row]));
   const payableMap = new Map(payables.map(row => [String(row.payable_id), row]));
   const distributorIds = [...new Set(list.map(row => row.distributor_id).filter(Boolean).map(String))];
   const distributors = distributorIds.length
@@ -196,7 +232,7 @@ async function enrichSettlementMetadata(rows, transaction = null) {
     const rowTaxStatus = String(row.tax_status || '').toUpperCase();
     if (!['TAX_INCLUDED', 'UNTAXED', 'MIXED'].includes(rowTaxStatus)) {
       const taxStatuses = (row.items || []).map(item => payableMap.get(String(item.payable_id))).filter(Boolean).map(payable => {
-        if (['expense', 'reimbursement'].includes(payable.source_type)) return getPayableTaxStatus(expenseMap.get(String(payable.source_id)));
+        if (['expense', 'reimbursement'].includes(payable.source_type)) return getPayableTaxStatus(expenseMap.get(String(payable.source_id))?.invoice_type);
         return getPayableTaxStatus(requestMap.get(String(payable.request_id))?.invoice_type);
       });
       setDataValue(row, 'tax_status', combineTaxStatuses(taxStatuses));
@@ -204,7 +240,25 @@ async function enrichSettlementMetadata(rows, transaction = null) {
     setDataValue(row, 'distributor_name', distributorMap.get(String(row.distributor_id || '')) || row.distributor_id || '未知经销商');
     (row.items || []).forEach(item => {
       const payable = payableMap.get(String(item.payable_id));
-      if (payable?.request_id) setDataValue(item, 'purchase_request_id', String(payable.request_id));
+      if (!payable) return;
+      setDataValue(item, 'source_type', payable.source_type || '');
+      setDataValue(item, 'source_id', payable.source_id || '');
+      setDataValue(item, 'source_no', payable.source_no || payable.request_no || '');
+      if (payable.request_id) {
+        const request = requestMap.get(String(payable.request_id));
+        setDataValue(item, 'purchase_request_id', String(payable.request_id));
+        setDataValue(item, 'purchase_request', request ? request.toJSON() : null);
+      }
+      if (['expense', 'reimbursement'].includes(payable.source_type)) {
+        const expense = expenseMap.get(String(payable.source_id));
+        setDataValue(item, 'expense_id', expense?.expense_id || payable.source_id || '');
+        setDataValue(item, 'expense', expense ? expense.toJSON() : null);
+        if (expense?.source_type === 'purchase' && expense.source_id) {
+          const request = requestMap.get(String(expense.source_id));
+          setDataValue(item, 'purchase_request_id', String(expense.source_id));
+          setDataValue(item, 'purchase_request', request ? request.toJSON() : null);
+        }
+      }
     });
   });
 }
