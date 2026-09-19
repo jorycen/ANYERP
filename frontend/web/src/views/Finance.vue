@@ -543,7 +543,10 @@
             <el-table-column type="selection" width="50" reserve-selection :selectable="isPayableSettlementSelectable" />
             <el-table-column label="来源单号" width="190">
               <template #default="{ row }">
-                <el-button v-if="row.source_type === 'purchase' || row.request_id" link type="primary" @click="openPurchaseRequestDetail(row)">
+                <el-button v-if="['expense', 'reimbursement'].includes(row.source_type) && row.source_id" link type="primary" @click="openPayableExpenseDetail(row)">
+                  {{ row.source_no || row.request_no || '-' }}
+                </el-button>
+                <el-button v-else-if="row.source_type === 'purchase' || row.request_id" link type="primary" @click="openPurchaseRequestDetail(row)">
                   {{ row.source_no || row.request_no || '-' }}
                 </el-button>
                 <span v-else>{{ row.source_no || row.request_no || '-' }}</span>
@@ -1401,6 +1404,60 @@
       </div>
     </el-dialog>
 
+    <el-dialog v-model="payableExpenseDetailVisible" :title="payableExpenseDetailTitle" width="900px">
+      <el-skeleton v-if="payableExpenseDetailLoading" :rows="6" animated />
+      <template v-else-if="payableExpenseDetail">
+        <el-descriptions :column="2" border size="small">
+          <el-descriptions-item label="单号">{{ payableExpenseDetail.expense_no || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="类型">{{ payableExpenseDetail.expense_type || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="费用发生方">{{ payableExpenseDetail.expense_party || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="金额">¥{{ formatMoney(payableExpenseDetail.amount) }}</el-descriptions-item>
+          <el-descriptions-item label="已结算金额">¥{{ formatMoney(payableExpenseDetail.settled_amount) }}</el-descriptions-item>
+          <el-descriptions-item label="状态">
+            <el-tag :type="getExpenseStatusType(payableExpenseDetail.status)" size="small">{{ getExpenseStatusText(payableExpenseDetail.status) }}</el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="申请门店">{{ payableExpenseDetail.Store?.name || payableExpenseDetail.store_name || payableExpenseDetail.store_id || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="申请人">{{ payableExpenseDetail.applicant_name || payableExpenseDetail.submit_user || payableExpenseDetail.create_user || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="费用日期">{{ payableExpenseDetail.expense_date || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="经营归属月">{{ payableExpenseDetail.accounting_month || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="支付方式">{{ expensePaymentMethodText(payableExpenseDetail.payment_method) }}</el-descriptions-item>
+          <el-descriptions-item label="费用归属">{{ expenseAttributionText(payableExpenseDetail) }}</el-descriptions-item>
+          <el-descriptions-item label="票据类型">{{ payableExpenseDetail.invoice_type || (payableExpenseDetail.has_invoice ? '待补充' : '无发票') }}</el-descriptions-item>
+          <el-descriptions-item label="发票号码">{{ payableExpenseDetail.invoice_no || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="审批人">{{ payableExpenseDetail.review_user_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="审批时间">{{ formatDateTime(payableExpenseDetail.review_time) }}</el-descriptions-item>
+          <el-descriptions-item label="审批意见" :span="2">{{ payableExpenseDetail.review_comment || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="关联订单">{{ payableExpenseDetail.related_order_no || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="关联采购单">
+            <el-button v-if="payableExpenseDetail.source_type === 'purchase' && payableExpenseDetail.source_id" link type="primary" @click="openExpenseRelatedPurchase(payableExpenseDetail)">
+              {{ payableExpenseDetail.source_no || '查看采购单' }}
+            </el-button>
+            <span v-else>-</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="备注" :span="2">{{ payableExpenseDetail.remark || '-' }}</el-descriptions-item>
+        </el-descriptions>
+
+        <template v-if="expenseAttributionDetails(payableExpenseDetail).length">
+          <h4 style="margin: 18px 0 8px">归属与分摊明细</h4>
+          <el-table :data="expenseAttributionDetails(payableExpenseDetail)" stripe border size="small">
+            <el-table-column label="归属类型" width="130"><template #default="{ row }">{{ expenseAttributionTargetTypeText(row.target_type) }}</template></el-table-column>
+            <el-table-column label="归属对象" min-width="180"><template #default="{ row }">{{ row.target_name || row.name || row.target_id || '-' }}</template></el-table-column>
+            <el-table-column label="分摊金额" width="130"><template #default="{ row }">¥{{ formatMoney(row.amount) }}</template></el-table-column>
+          </el-table>
+        </template>
+
+        <template v-if="expenseAttachmentUrls(payableExpenseDetail).length">
+          <h4 style="margin: 18px 0 8px">附件</h4>
+          <div class="expense-detail-attachments">
+            <el-link v-for="(url, index) in expenseAttachmentUrls(payableExpenseDetail)" :key="`${url}-${index}`" :href="url" target="_blank" type="primary">
+              附件{{ index + 1 }}
+            </el-link>
+          </div>
+        </template>
+      </template>
+      <el-empty v-else description="暂无费用或报销详情" />
+    </el-dialog>
+
     <!-- 厂家政策对话框 -->
     <el-dialog
       v-model="manufacturerPolicyDialogVisible"
@@ -1738,6 +1795,10 @@ const payableStatusFilter = ref('')
 const payableSourceNoFilter = ref('')
 const purchaseDetailVisible = ref(false)
 const purchaseDetail = ref(null)
+const payableExpenseDetailVisible = ref(false)
+const payableExpenseDetailLoading = ref(false)
+const payableExpenseDetail = ref(null)
+const payableExpenseDetailTitle = ref('费用详情')
 const payableTableRef = ref(null)
 const selectedPayableRows = ref([])
 const payableFilterSummary = ref({ totalCount: 0, totalAmount: 0 })
@@ -3214,6 +3275,70 @@ const loadSettlementLines = async (params = {}) => {
   }))
 }
 
+const openPayableExpenseDetail = async row => {
+  const expenseId = row?.source_id
+  if (!expenseId) {
+    ElMessage.warning('该应付款未关联费用或报销单')
+    return
+  }
+  payableExpenseDetailTitle.value = row.source_type === 'reimbursement' ? '报销单详情' : '费用单详情'
+  payableExpenseDetail.value = null
+  payableExpenseDetailLoading.value = true
+  payableExpenseDetailVisible.value = true
+  try {
+    const res = await api.getExpenseDetail(expenseId)
+    if (res.code === 0) payableExpenseDetail.value = res.data || null
+    else ElMessage.error(res.message || '加载费用或报销详情失败')
+  } catch (err) {
+    payableExpenseDetailVisible.value = false
+    ElMessage.error(err.response?.data?.message || err.message || '加载费用或报销详情失败')
+  } finally {
+    payableExpenseDetailLoading.value = false
+  }
+}
+
+const openExpenseRelatedPurchase = expense => openPurchaseRequestDetail({
+  request_id: expense?.source_id,
+  source_no: expense?.source_no
+})
+
+const expenseAttributionDetails = expense => {
+  if (Array.isArray(expense?.attribution_details)) return expense.attribution_details
+  try {
+    const value = JSON.parse(expense?.attribution_details_json || '[]')
+    return Array.isArray(value) ? value : []
+  } catch (_) {
+    return []
+  }
+}
+
+const expenseAttachmentUrls = expense => {
+  const safeUrls = values => values.map(item => String(item || '').trim()).filter(url => /^(https?:\/\/|\/)/i.test(url))
+  if (Array.isArray(expense?.attachment_urls)) return safeUrls(expense.attachment_urls)
+  const raw = String(expense?.attachment_urls || '').trim()
+  if (!raw) return []
+  try {
+    const value = JSON.parse(raw)
+    if (Array.isArray(value)) return safeUrls(value)
+  } catch (_) {
+    // 兼容历史逗号或换行分隔附件。
+  }
+  return safeUrls(raw.split(/[\n,]/))
+}
+
+const expensePaymentMethodText = value => ({
+  CORPORATE: '财务对公',
+  PERSONAL_ADVANCE: '私人垫付'
+}[value] || value || '-')
+
+const expenseAttributionTargetTypeText = value => ({
+  staff: '个人',
+  store: '门店',
+  distributor: '经销商',
+  product_side: '产品端',
+  supplier: '返利供应商'
+}[String(value || '').toLowerCase()] || value || '-')
+
 const openSettlementDialog = async () => {
   if (!selectedPayableRows.value.length) {
     ElMessage.warning('请选择需要结算的应付款')
@@ -4231,5 +4356,10 @@ const restoreAccountTxnDraft = () => {
   max-width: 100%;
   max-height: 70vh;
   object-fit: contain;
+}
+.expense-detail-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 </style>
