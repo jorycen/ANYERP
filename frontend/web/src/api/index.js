@@ -443,6 +443,7 @@ export default {
   getPurchaseInvoiceCandidates: (params) => api.get('/finance/purchase-invoices/candidates', { params }),
   getPurchaseInvoices: (params) => api.get('/finance/purchase-invoices', { params }),
   createPurchaseInvoice: (data) => api.post('/finance/purchase-invoices', data),
+  exportPurchaseInvoices: (params) => exportExcel('/finance/purchase-invoices/export', params, `采购进项发票_${new Date().toISOString().slice(0, 10)}.xlsx`),
   exportPayableList: (params) => exportExcel('/finance/payable-list/export', params, `应付管理_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getUnpaidBySupplier: (params) => api.get('/finance/unpaid-by-supplier', { params }),
   getPayableSettlementItems: (params) => api.get('/finance/payable-settlement-items', { params }),
