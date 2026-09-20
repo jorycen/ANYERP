@@ -878,10 +878,16 @@
             <el-tag :type="item.needSn ? 'warning' : 'info'" size="small">{{ item.needSn ? 'SN管理' : '无SN' }}</el-tag>
             <span class="item-qty">待入库: {{ item.quantity }}</span>
             <span class="item-location">库位：{{ item.locationName || '未指定库位' }}</span>
+            <el-button
+              size="small"
+              :type="item.receiveEnabled ? 'primary' : 'warning'"
+              plain
+              @click="item.receiveEnabled = !item.receiveEnabled"
+            >{{ item.receiveEnabled ? '本次入库' : '暂缓入库' }}</el-button>
           </div>
 
           <!-- PN厂商编码选择：只允许选择商品主数据中的PN -->
-          <div class="pn-select-row">
+          <div v-if="item.receiveEnabled" class="pn-select-row">
             <span class="pn-label">厂商编码：</span>
             <el-select v-model="item.pnCode" placeholder="选择商品已有厂商编码 / PN" size="small" clearable filterable style="width: 260px">
               <el-option v-for="pn in (item.pns || [])" :key="pn.pn_id || pn.pn_code" :label="pn.pn_code" :value="pn.pn_code" />
@@ -889,7 +895,7 @@
           </div>
 
           <!-- SN商品：每行一个SN -->
-          <el-table v-if="item.needSn" :data="item.snRows" stripe border size="small" class="sn-table">
+          <el-table v-if="item.receiveEnabled && item.needSn" :data="item.snRows" stripe border size="small" class="sn-table">
             <el-table-column label="操作" width="70" align="center">
               <template #default="{ $index: snIndex }">
                 <el-button v-if="item.snRows.length > 1" size="small" type="danger" link @click="removeSnRow(item, snIndex)">删除</el-button>
@@ -946,7 +952,7 @@
           </el-table>
 
           <!-- 非SN商品：按入库库位拆分数量 -->
-          <el-table v-else :data="item.qtyRows" stripe border size="small" class="sn-table">
+          <el-table v-else-if="item.receiveEnabled" :data="item.qtyRows" stripe border size="small" class="sn-table">
             <el-table-column type="index" label="#" width="50" />
             <el-table-column label="入库库位" width="180">
               <template #default="{ row: r }">
@@ -973,20 +979,27 @@
           </el-table>
 
           <!-- 非SN：添加库位分配行 -->
-          <div v-if="!item.needSn" style="margin-top: 6px">
+          <div v-if="item.receiveEnabled && !item.needSn" style="margin-top: 6px">
             <el-button size="small" type="primary" link @click="addQtyRow(item)">+ 添加库位分配</el-button>
             <span style="margin-left: 12px; font-size: 12px; color: #909399">
               已分配 {{ allocatedQty(item) }} / {{ item.quantity }}
               <span v-if="allocatedQty(item) !== item.quantity" style="color: #f56c6c">（数量不匹配）</span>
             </span>
           </div>
+          <el-alert
+            v-if="!item.receiveEnabled"
+            title="该商品本次暂缓入库，数量将继续保留在待入库清单中"
+            type="warning"
+            :closable="false"
+            show-icon
+            style="margin-top: 10px"
+          />
         </div>
       </div>
       <template #footer>
         <el-button @click="executeInboundVisible = false">取消</el-button>
         <el-button type="info" @click="saveInboundDraft">保存草稿</el-button>
-        <el-button type="warning" @click="submitInbound(true)" :loading="inboundLoading">暂缓入库</el-button>
-        <el-button type="primary" @click="submitInbound(false)" :loading="inboundLoading">确认完成入库</el-button>
+        <el-button type="primary" @click="submitInbound" :loading="inboundLoading">确认本次入库</el-button>
       </template>
     </el-dialog>
 
@@ -3156,6 +3169,7 @@ const openExecuteDialog = async (row) => {
           needSn,
           needImei,
           transferInbound: isTransferInbound,
+          receiveEnabled: true,
           quantity: qty,
           locationId: item.location_id || defaultTransferLocationId,
           locationName: item.location_name || defaultTransferLocation?.name || '',
@@ -3234,24 +3248,26 @@ const allocatedQty = (item) => {
   return (item.qtyRows || []).reduce((sum, r) => sum + (parseInt(r.quantity) || 0), 0)
 }
 
-const submitInbound = async (deferInbound = false) => {
+const submitInbound = async () => {
   const items = []
   const seenSn = new Set()
+  const deferredItemIds = []
 
   for (const product of executeProducts.value) {
+    if (product.receiveEnabled === false) {
+      deferredItemIds.push(product.inboundItemId)
+      continue
+    }
     if (product.needSn) {
       const snRows = product.snRows || []
       const maxQuantity = Number(product.quantity || 0)
-      if (snRows.length > maxQuantity || (!deferInbound && snRows.length !== maxQuantity)) {
+      if (snRows.length > maxQuantity) {
         ElMessage.warning(`商品 ${product.productName} 的SN行数超过待入库数量，请刷新后重试`)
         return
       }
       for (const snRow of snRows) {
         const snCode = String(snRow.snCode || '').trim()
-        if (!snCode) {
-          ElMessage.warning(`商品 ${product.productName} 需要SN管理，请填写SN码`)
-          return
-        }
+        if (!snCode) continue
         if (!snRow.locationId) {
           ElMessage.warning(`商品 ${product.productName} 请选择入库库位`)
           return
@@ -3279,6 +3295,12 @@ const submitInbound = async (deferInbound = false) => {
           remark: snRow.remark
         })
       }
+      const receivedSnCount = snRows.filter(row => String(row.snCode || '').trim()).length
+      if (receivedSnCount === 0) {
+        ElMessage.warning(`商品 ${product.productName} 尚未填写任何SN；如未到货，请切换为“暂缓入库”`)
+        return
+      }
+      if (receivedSnCount < maxQuantity) deferredItemIds.push(product.inboundItemId)
     } else {
       for (const qtyRow of product.qtyRows) {
         const qty = parseInt(qtyRow.quantity) || 0
@@ -3299,15 +3321,16 @@ const submitInbound = async (deferInbound = false) => {
       }
 
       const totalAllocated = allocatedQty(product)
-      if (totalAllocated <= 0 || totalAllocated > product.quantity || (!deferInbound && totalAllocated !== product.quantity)) {
-        ElMessage.warning(`商品 ${product.productName} 分配数量(${totalAllocated})与待入库数量(${product.quantity})不一致`)
+      if (totalAllocated <= 0 || totalAllocated > product.quantity) {
+        ElMessage.warning(`商品 ${product.productName} 本次入库数量应为 1-${product.quantity}`)
         return
       }
+      if (totalAllocated < Number(product.quantity || 0)) deferredItemIds.push(product.inboundItemId)
     }
   }
 
   if (items.length === 0) {
-    ElMessage.warning('没有可入库的商品')
+    ElMessage.warning('请至少选择一个已到货商品进行入库')
     return
   }
 
@@ -3316,11 +3339,11 @@ const submitInbound = async (deferInbound = false) => {
     const res = await api.executeInbound({
       inboundId: currentInbound.value.inbound_id,
       items,
-      deferInbound
+      deferredItemIds: [...new Set(deferredItemIds.filter(Boolean))]
     })
 
     if (res.code === 0) {
-      ElMessage.success(deferInbound ? '已暂缓入库，后续可继续入库' : '入库完成')
+      ElMessage.success(deferredItemIds.length ? '已入库到货商品，暂缓商品仍保留待入库' : '入库完成')
       clearDraft(inboundDraftKey())
       executeInboundVisible.value = false
       loadInboundList()
@@ -3377,6 +3400,7 @@ const restoreInboundDraft = () => {
       }
       return {
         ...product,
+        receiveEnabled: saved.receiveEnabled !== false,
         pnCode: saved.pnCode || product.pnCode,
         snRows: savedRows
       }
@@ -3387,6 +3411,7 @@ const restoreInboundDraft = () => {
       : product.qtyRows
     return {
       ...product,
+      receiveEnabled: saved.receiveEnabled !== false,
       pnCode: saved.pnCode || product.pnCode,
       qtyRows: savedRows
     }

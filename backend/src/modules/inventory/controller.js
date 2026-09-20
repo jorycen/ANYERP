@@ -3724,7 +3724,7 @@ function resolveTransferInboundSnBinding(transferItem = {}, inboundItem = {}, re
 /**
  * 执行入库
  */
-async function executeInboundInTransaction({ inboundId, items = [], user, fail, deferInbound = false, defer_inbound = false, action = '' }, t) {
+async function executeInboundInTransaction({ inboundId, items = [], user, fail, deferInbound = false, defer_inbound = false, deferredItemIds = [], deferred_item_ids = [], action = '' }, t) {
   const VALID_INVENTORY_TYPES = ['normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty', 'rental_demo_qty'];
   const PRODUCT_TYPE_TO_FIELD = {
     '服务商全资源': 'regular_qty',
@@ -3765,6 +3765,14 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
     const isSalesReturnInbound = String(inbound.source_type || '').toUpperCase() === 'SALES_RETURN';
     const isPurchaseInbound = String(inbound.source_type || '').toLowerCase() === 'purchase' || Boolean(inbound.purchase_request_id);
     const inboundItems = await InboundItem.findAll({ where: { inbound_id: inboundId }, transaction: t });
+    const requestedDeferredItemIds = [...new Set(
+      [...(Array.isArray(deferredItemIds) ? deferredItemIds : []), ...(Array.isArray(deferred_item_ids) ? deferred_item_ids : [])]
+        .filter(Boolean)
+        .map(String)
+    )];
+    const inboundItemIdSet = new Set(inboundItems.map(item => String(item.item_id)));
+    const invalidDeferredItemId = requestedDeferredItemIds.find(itemId => !inboundItemIdSet.has(itemId));
+    if (invalidDeferredItemId) fail(400, '暂缓入库商品不属于当前入库单');
     const purchaseRequest = inbound.purchase_request_id
       ? await PurchaseRequest.findByPk(inbound.purchase_request_id, { transaction: t, lock: t.LOCK.UPDATE })
       : null;
@@ -4111,7 +4119,7 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
         fail(409, `商品 ${incompleteSnItem.product_name || incompleteSnItem.product_id} 的入库数量已完成，但SN数量不足，不能完成入库`);
       }
     }
-    const shouldDeferInbound = Boolean(deferInbound || defer_inbound || action === 'defer');
+    const shouldDeferInbound = Boolean(deferInbound || defer_inbound || action === 'defer' || requestedDeferredItemIds.length);
     if (shouldDeferInbound && !isPurchaseInbound) {
       fail(400, '只有采购入库支持暂缓入库');
     }
@@ -4221,7 +4229,14 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
       }
     }
 
-    return { code: 0, message: '入库完成' };
+    return {
+      code: 0,
+      message: nextInboundStatus === 'pending' ? '已入库到货商品，未到商品继续保留待入库' : '入库完成',
+      data: {
+        inboundStatus: nextInboundStatus,
+        deferredItemIds: requestedDeferredItemIds
+      }
+    };
 }
 
 async function executeInbound(ctx) {
