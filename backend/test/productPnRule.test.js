@@ -7,6 +7,10 @@ const {
   syncProductPnsMaster,
   syncCurrentSnPnCode
 } = require('../src/utils/productPnMaster');
+const {
+  getForcedPurchasePnSnapshot,
+  syncPurchaseRequestPnSnapshots
+} = require('../src/modules/product/controller');
 
 test('SN商品只能绑定一个PN，并拒绝不一致的入库PN', () => {
   assert.equal(
@@ -157,4 +161,49 @@ test('商品PN修改不改写已销售SN的历史PN快照', async () => {
     models.ProductSn.findAll = originals.productSnFindAll;
     models.SnLog.create = originals.snLogCreate;
   }
+});
+
+test('强制修改使用完整PN列表和主PN更新采购申请快照', async () => {
+  const originalUpdate = models.PurchaseRequestItem.update;
+  let received = null;
+  models.PurchaseRequestItem.update = async (values, options) => {
+    received = { values, options };
+    return [3];
+  };
+
+  try {
+    const snapshot = getForcedPurchasePnSnapshot([
+      { pnCode: 'PN-A', isPrimary: false },
+      { pnCode: 'PN-B', isPrimary: true }
+    ]);
+    assert.deepEqual(snapshot, {
+      manufacturerCode: 'PN-A, PN-B',
+      pnCode: 'PN-B'
+    });
+
+    const count = await syncPurchaseRequestPnSnapshots({
+      productId: 'PRODUCT_1',
+      pns: [
+        { pnCode: 'PN-A', isPrimary: false },
+        { pnCode: 'PN-B', isPrimary: true }
+      ],
+      transaction: 'TX'
+    });
+    assert.equal(count, 3);
+    assert.deepEqual(received.values, {
+      manufacturer_code: 'PN-A, PN-B',
+      pn_code: 'PN-B'
+    });
+    assert.deepEqual(received.options.where, { product_id: 'PRODUCT_1' });
+    assert.equal(received.options.transaction, 'TX');
+  } finally {
+    models.PurchaseRequestItem.update = originalUpdate;
+  }
+});
+
+test('强制修改拒绝没有有效PN的提交', () => {
+  assert.throws(
+    () => getForcedPurchasePnSnapshot([{ pnCode: '', isPrimary: true }]),
+    /至少保留一个有效PN/
+  );
 });

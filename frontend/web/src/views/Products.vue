@@ -585,7 +585,15 @@
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="info" @click="saveProductDraft">保存草稿</el-button>
-        <el-button type="primary" @click="handleSubmit" :loading="submitLoading">确定</el-button>
+        <el-button type="primary" @click="handleSubmit(false)" :loading="submitLoading">
+          {{ productForm.productId ? '普通修改' : '确定' }}
+        </el-button>
+        <el-button
+          v-if="productForm.productId"
+          type="danger"
+          @click="handleForceSubmit"
+          :loading="submitLoading"
+        >强制修改</el-button>
       </template>
     </el-dialog>
 
@@ -1335,7 +1343,26 @@ const restoreProductDraft = () => {
   ElMessage.success('已恢复上次草稿')
 }
 
-const handleSubmit = async () => {
+const handleForceSubmit = async () => {
+  try {
+    await ElMessageBox.confirm(
+      '强制修改会同步更新该商品以前所有采购申请明细中的PN快照。此操作会改变历史采购申请的显示内容，是否继续？',
+      '确认强制修改',
+      {
+        confirmButtonText: '确认强制修改',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    await handleSubmit(true)
+  } catch (err) {
+    if (err !== 'cancel' && err !== 'close') {
+      ElMessage.error(err?.response?.data?.message || err?.message || '强制修改失败')
+    }
+  }
+}
+
+const handleSubmit = async (forceUpdatePurchasePn = false) => {
   const finalName = String(computedProductName.value || productForm.name || '').trim()
   const missingField = categoryFields.value.find(field => {
     if (Number(field.required) !== 1) return false
@@ -1401,6 +1428,7 @@ const handleSubmit = async () => {
       status: productForm.status,
       barcodes,
       pns: pnEntries,
+      forceUpdatePurchasePn: Boolean(forceUpdatePurchasePn && productForm.productId),
       attributes: Object.keys(attributes).length > 0 ? attributes : null,
     }
     let res
@@ -1411,7 +1439,7 @@ const handleSubmit = async () => {
     }
     if (res.code === 0) {
       const isApplication = !productForm.productId && res.pendingApproval
-      ElMessage.success(isApplication ? '新建商品申请已提交，等待审批' : (productForm.productId ? '更新成功' : '创建成功'))
+      ElMessage.success(isApplication ? '新建商品申请已提交，等待审批' : (res.message || (productForm.productId ? '更新成功' : '创建成功')))
       clearDraft(productDraftKey())
       dialogVisible.value = false
       if (isApplication) {

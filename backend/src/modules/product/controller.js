@@ -14,6 +14,7 @@ const {
   ProductPriceImportBatch,
   ProductPriceChangeLog,
   ProductImportTask,
+  PurchaseRequestItem,
   Inventory,
   Location,
   Store,
@@ -70,6 +71,36 @@ const FIELD_TO_COLUMN = {
 };
 
 const DB_COLUMNS = new Set(Object.values(FIELD_TO_COLUMN));
+
+function getForcedPurchasePnSnapshot(pns) {
+  const entries = Array.isArray(pns)
+    ? pns.map(item => ({
+        code: String(item?.pnCode ?? item?.pn_code ?? '').trim(),
+        isPrimary: item?.isPrimary === true || Number(item?.isPrimary) === 1
+      })).filter(item => isUsablePnCode(item.code))
+    : [];
+  const codes = splitPnCodes(entries.map(item => item.code));
+  if (!codes.length) {
+    throw Object.assign(new Error('强制修改前请至少保留一个有效PN'), { status: 400 });
+  }
+  const primaryCode = entries.find(item => item.isPrimary)?.code || codes[0];
+  return {
+    manufacturerCode: codes.join(', '),
+    pnCode: primaryCode
+  };
+}
+
+async function syncPurchaseRequestPnSnapshots({ productId, pns, transaction = null }) {
+  const snapshot = getForcedPurchasePnSnapshot(pns);
+  const [affectedCount] = await PurchaseRequestItem.update({
+    manufacturer_code: snapshot.manufacturerCode,
+    pn_code: snapshot.pnCode
+  }, {
+    where: { product_id: productId },
+    transaction
+  });
+  return Number(affectedCount || 0);
+}
 
 function splitAttributes(attributes) {
   if (!attributes || typeof attributes !== 'object') return { cols: {}, extras: {} };
@@ -1419,7 +1450,8 @@ async function updateProduct(ctx) {
   const body = ctx.request.body;
   const {
     name, categoryId, config, needSn, needImei, unit, remark, barcodes, status,
-    attributes, manufacturerCode, manufacturer_code, isFocusProduct, is_focus_product, pns
+    attributes, manufacturerCode, manufacturer_code, isFocusProduct, is_focus_product, pns,
+    forceUpdatePurchasePn
   } = body;
   const manufacturerInput = manufacturerCode !== undefined ? manufacturerCode : manufacturer_code;
 
@@ -1482,6 +1514,7 @@ async function updateProduct(ctx) {
   }
 
   const transaction = await sequelize.transaction();
+  let updatedPurchaseRequestItemCount = 0;
   try {
     await product.update(updateData, { transaction });
 
@@ -1521,13 +1554,29 @@ async function updateProduct(ctx) {
         });
       }
     }
+    if (forceUpdatePurchasePn === true) {
+      if (!Array.isArray(pns)) {
+        ctx.throw(400, '强制修改采购申请PN时必须提交当前PN列表');
+      }
+      updatedPurchaseRequestItemCount = await syncPurchaseRequestPnSnapshots({
+        productId,
+        pns,
+        transaction
+      });
+    }
     await transaction.commit();
   } catch (error) {
     await transaction.rollback();
     throw error;
   }
 
-  ctx.body = { code: 0, message: '商品更新成功' };
+  ctx.body = {
+    code: 0,
+    message: forceUpdatePurchasePn === true
+      ? `商品更新成功，已同步 ${updatedPurchaseRequestItemCount} 条历史采购申请明细`
+      : '商品更新成功',
+    updatedPurchaseRequestItemCount
+  };
 }
 
 async function deleteProduct(ctx) {
@@ -3770,6 +3819,8 @@ async function exportProducts(ctx) {
 }
 
 module.exports = {
+  getForcedPurchasePnSnapshot,
+  syncPurchaseRequestPnSnapshots,
   createProductRecord,
   getProductList, createProduct, submitProductApplication, getProductApplicationList, getProductApplicationDetail, revokeProductApplication, reviewProductApplication,
   updateProduct, deleteProduct, batchDeleteProducts, togglePause, importProducts, exportProducts,
