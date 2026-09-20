@@ -84,3 +84,12 @@ test('待付款清单支持勾选批量付款和逐单部分付款金额', () =>
   assert.match(view, /批量付款（支持部分付款）/);
   assert.match(view, /createBatchSettlementPayment/);
 });
+
+test('待付款清单支持按结算单号模糊查询并按相同条件导出', () => {
+  const controller = read('backend/src/modules/finance/payableController.js');
+  const view = read('frontend/web/src/views/PaymentManagement.vue');
+  assert.match(controller, /candidateWhere\.settlement_no\s*=\s*\{ \[Op\.like\]:/);
+  assert.match(view, /placeholder="输入结算单号"/);
+  assert.match(view, /params\.settlementNo = paymentCandidateNoFilter\.value\.trim\(\)/);
+  assert.match(view, /@keyup\.enter="searchPaymentCandidates"/);
+});

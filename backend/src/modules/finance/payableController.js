@@ -1936,6 +1936,9 @@ function buildPaymentCandidateWhere(query = {}, user = null) {
   if (query.distributorId) candidateWhere.distributor_id = query.distributorId;
   if (query.taxStatus) candidateWhere.tax_status = query.taxStatus;
   if (query.paymentStatus) candidateWhere.payment_status = query.paymentStatus;
+  if (query.settlementNo && String(query.settlementNo).trim()) {
+    candidateWhere.settlement_no = { [Op.like]: `%${String(query.settlementNo).trim()}%` };
+  }
   if (query.startDate || query.endDate) {
     candidateWhere.create_time = {};
     if (query.startDate) candidateWhere.create_time[Op.gte] = new Date(`${query.startDate}T00:00:00.000+08:00`);

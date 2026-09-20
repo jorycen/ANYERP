@@ -28,6 +28,15 @@
             <el-option label="含税" value="TAX_INCLUDED" />
             <el-option label="未税" value="UNTAXED" />
           </el-select>
+          <el-input
+            v-model="paymentCandidateNoFilter"
+            placeholder="输入结算单号"
+            clearable
+            style="width: 180px"
+            @keyup.enter="searchPaymentCandidates"
+            @clear="searchPaymentCandidates"
+          />
+          <el-button @click="searchPaymentCandidates">查询</el-button>
           <el-button type="primary" @click="handleExportPayments">导出付款清单</el-button>
           <el-button type="warning" :disabled="selectedPaymentCandidates.length === 0" @click="openBatchPayment">
             批量付款（已选 {{ selectedPaymentCandidates.length }}）
@@ -461,6 +470,7 @@ const paymentCandidatesLoading = ref(false)
 const paymentCandidateStatusFilter = ref('')
 const paymentCandidateDistributorFilter = ref('')
 const paymentCandidateTaxFilter = ref('')
+const paymentCandidateNoFilter = ref('')
 const distributorOptions = ref([
   { distributor_id: 'DIST001', name: '艾诺云' },
   { distributor_id: 'DIST002', name: '艾诺志兴' }
@@ -606,6 +616,7 @@ const loadPaymentCandidates = async () => {
     if (paymentCandidateStatusFilter.value) params.paymentStatus = paymentCandidateStatusFilter.value
     if (paymentCandidateDistributorFilter.value) params.distributorId = paymentCandidateDistributorFilter.value
     if (paymentCandidateTaxFilter.value) params.taxStatus = paymentCandidateTaxFilter.value
+    if (paymentCandidateNoFilter.value.trim()) params.settlementNo = paymentCandidateNoFilter.value.trim()
     const res = await api.getSettlementPaymentCandidates(params)
     if (res.code === 0) {
       paymentCandidateData.value = res.data?.list || []
@@ -647,6 +658,11 @@ const openSettlementDetail = async (row) => {
   } catch (err) {
     ElMessage.error(err.response?.data?.message || '加载结算单详情失败')
   }
+}
+
+const searchPaymentCandidates = () => {
+  paymentCandidateQuery.page = 1
+  loadPaymentCandidates()
 }
 
 const openRemarkEditor = (row) => {
@@ -813,6 +829,7 @@ const handleExportPayments = async () => {
     if (paymentCandidateStatusFilter.value) params.paymentStatus = paymentCandidateStatusFilter.value
     if (paymentCandidateDistributorFilter.value) params.distributorId = paymentCandidateDistributorFilter.value
     if (paymentCandidateTaxFilter.value) params.taxStatus = paymentCandidateTaxFilter.value
+    if (paymentCandidateNoFilter.value.trim()) params.settlementNo = paymentCandidateNoFilter.value.trim()
     await api.exportSettlementPayments(params)
   } catch (err) {
     ElMessage.error('导出付款清单失败')
