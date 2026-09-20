@@ -570,6 +570,9 @@ test('返利上账时后台自动创建供应商返利内部账户', async () =>
 
 test('自动迁移允许待下账返利不关联SN并初始化手工返利类型', () => {
   const migration = fs.readFileSync(path.join(__dirname, '../src/utils/dbMigration.js'), 'utf8');
+  assert.match(migration, /runSchemaMigrations[\s\S]*ensureResourceSettlementSchemaCompatibility\(\)/);
+  assert.match(migration, /ensureResourceSettlementSchemaCompatibility[\s\S]*'T_RESOURCE_SETTLEMENT'[\s\S]*'DISTRIBUTOR_ID'/);
+  assert.match(migration, /idx_resource_settlement_distributor \(DISTRIBUTOR_ID, STATUS, CREATE_TIME\)/);
   assert.match(migration, /checkAndMakeColumnNullable\('T_RESOURCE_SETTLEMENT', 'SN_ID'/);
   assert.match(migration, /checkAndMakeColumnNullable\('T_RESOURCE_SETTLEMENT', 'SN_CODE'/);
   assert.match(migration, /checkAndMakeColumnNullable\('T_RESOURCE_SETTLEMENT', 'PRODUCT_ID'/);

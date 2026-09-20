@@ -1,3 +1,7 @@
+# 2026-09-20
+
+- Fixed the rebate settlement page failure caused by a missing `T_RESOURCE_SETTLEMENT.DISTRIBUTOR_ID` column. Startup schema checks now add the column and query index automatically, and new databases include it at table creation.
+
 ## 2026-09-19 修复产品端毛利页面数据库表缺失
 
 * 修正政策收益汇总误关联不存在的 `T_SALES_ORDER`，统一关联实际销售订单表 `T_ORDER`；将产品端结算、厂家政策、厂家价格、返利预估和销售结算成本调整表纳入服务启动时的安全结构检查，修复产品端毛利页面“数据库表不存在”和“加载返利对账记录失败”。

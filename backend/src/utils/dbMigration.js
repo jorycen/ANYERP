@@ -292,6 +292,7 @@ async function runSchemaMigrations() {
   await checkAndAddColumn('T_TRANSFER', 'APPLICANT_STAFF_ID', 'BIGINT NULL');
   await ensureCriticalSchemaCompatibility();
   await ensureFinanceSchemaCompatibility();
+  await ensureResourceSettlementSchemaCompatibility();
   await ensureProductSettlementFeatureSchema();
   await ensurePurchaseInvoiceSchema();
   await ensureDepositRefundApprovalSchema();
@@ -299,6 +300,63 @@ async function runSchemaMigrations() {
   await ensureProductPnEffectiveUniqueIndex();
   await ensureFinancialProfitFeatureSchema();
   console.log('[DB Schema] startup schema compatibility check completed');
+}
+
+// The rebate settlement page filters by distributor. This column used to be added only
+// by the legacy full migration, so deployed databases also need this startup schema check.
+async function ensureResourceSettlementSchemaCompatibility() {
+  await checkAndCreateTable('T_RESOURCE_SETTLEMENT', `
+    CREATE TABLE T_RESOURCE_SETTLEMENT (
+      SETTLEMENT_ID VARCHAR(32) NOT NULL,
+      DISTRIBUTOR_ID VARCHAR(32),
+      SETTLEMENT_NO VARCHAR(64) NOT NULL,
+      SOURCE_TYPE VARCHAR(32) NOT NULL,
+      SOURCE_ID VARCHAR(64) NOT NULL,
+      BATCH_NO VARCHAR(64),
+      SN_ID VARCHAR(32),
+      SN_CODE VARCHAR(128),
+      PRODUCT_ID VARCHAR(32),
+      RESOURCE_TYPE VARCHAR(32) NOT NULL,
+      COUNTERPARTY_ID VARCHAR(32),
+      COUNTERPARTY_NAME VARCHAR(255),
+      AMOUNT DECIMAL(12,2) NOT NULL,
+      MATCHED_AMOUNT DECIMAL(12,2) DEFAULT 0,
+      STATUS VARCHAR(32) DEFAULT 'PENDING',
+      TARGET_ACCOUNT_ID VARCHAR(64),
+      SETTLED_AT DATETIME,
+      SETTLED_BY BIGINT,
+      SETTLED_BY_NAME VARCHAR(64),
+      CREATE_STAFF_ID BIGINT,
+      CREATE_USER VARCHAR(64),
+      CANCELLED_AT DATETIME,
+      CANCELLED_BY BIGINT,
+      CANCELLED_BY_NAME VARCHAR(64),
+      REVERSED_AT DATETIME,
+      REVERSED_BY BIGINT,
+      REVERSED_BY_NAME VARCHAR(64),
+      CORRECTION_REASON VARCHAR(512),
+      CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UPDATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      REMARK VARCHAR(512),
+      PRIMARY KEY (SETTLEMENT_ID),
+      UNIQUE KEY uk_resource_settlement_no (SETTLEMENT_NO),
+      UNIQUE KEY uk_resource_settlement_source (SOURCE_TYPE, SOURCE_ID, RESOURCE_TYPE),
+      KEY idx_resource_settlement_status (STATUS, CREATE_TIME),
+      KEY idx_resource_settlement_sn (SN_ID, RESOURCE_TYPE),
+      KEY idx_resource_settlement_distributor (DISTRIBUTOR_ID, STATUS, CREATE_TIME)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='resource settlement records'
+  `);
+  await checkAndAddColumn(
+    'T_RESOURCE_SETTLEMENT',
+    'DISTRIBUTOR_ID',
+    'VARCHAR(32) COMMENT "settlement distributor"',
+    'SETTLEMENT_ID'
+  );
+  await checkAndAddIndex(
+    'T_RESOURCE_SETTLEMENT',
+    'idx_resource_settlement_distributor',
+    'ALTER TABLE T_RESOURCE_SETTLEMENT ADD INDEX idx_resource_settlement_distributor (DISTRIBUTOR_ID, STATUS, CREATE_TIME)'
+  );
 }
 
 // 财务页面依赖的基础表只能在启动时做结构兼容，不能在这里回填业务数据。
@@ -1423,6 +1481,7 @@ async function runMigrations() {
     await checkAndCreateTable('T_RESOURCE_SETTLEMENT', `
       CREATE TABLE T_RESOURCE_SETTLEMENT (
         SETTLEMENT_ID VARCHAR(32) NOT NULL, SETTLEMENT_NO VARCHAR(64) NOT NULL,
+        DISTRIBUTOR_ID VARCHAR(32),
         SOURCE_TYPE VARCHAR(32) NOT NULL, SOURCE_ID VARCHAR(64) NOT NULL, BATCH_NO VARCHAR(64),
         SN_ID VARCHAR(32), SN_CODE VARCHAR(128), PRODUCT_ID VARCHAR(32),
         RESOURCE_TYPE VARCHAR(32) NOT NULL, COUNTERPARTY_ID VARCHAR(32), COUNTERPARTY_NAME VARCHAR(255), AMOUNT DECIMAL(12,2) NOT NULL,
@@ -4591,6 +4650,7 @@ async function seedPermissionData() {
 module.exports = {
   runMigrations,
   runSchemaMigrations,
+  ensureResourceSettlementSchemaCompatibility,
   ensureProductSettlementSchema,
   ensureProductSettlementFeatureSchema,
   ensureExpenseAccountingSchema,
