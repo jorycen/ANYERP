@@ -38,3 +38,11 @@ test('应付结算单列表返回当前审批节点和审批人', () => {
   assert.match(view, /当前审批环节/);
   assert.match(view, /row\.approval_progress_text/);
 });
+
+test('审批中心不重复展示需要在调拨管理处理的人工调拨任务', () => {
+  const runtime = read('backend/src/modules/approval/businessRuntime.js');
+  const view = read('frontend/web/src/views/Approval.vue');
+  assert.match(runtime, /if \(!onlyType && d\.manual\) continue/);
+  assert.match(view, /inventory_transfer_receipt/);
+  assert.match(view, /!item\.manual_path/);
+});

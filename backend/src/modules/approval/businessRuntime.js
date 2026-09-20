@@ -118,6 +118,9 @@ async function listBusinessTasks(ctx, onlyType = null) {
   const tasks = [], issues = [];
   for (const [type, d] of Object.entries(registry)) {
     if (onlyType && onlyType !== type) continue;
+    // 需要选择实物、扫码或上传凭证的人工业务必须在原业务页面处理。
+    // 手机端一直按此口径展示；统一审批中心不再重复列出调拨出/入库确认。
+    if (!onlyType && d.manual) continue;
     const model = M[d.model];
     const where = { [d.status || 'status']: { [Op.in]: d.states }, ...d.extra };
     if (model.rawAttributes.is_deleted) where.is_deleted = 0;

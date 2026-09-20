@@ -371,7 +371,8 @@ async function loadOtherApprovalTasks() {
   const response = await api.getBusinessApprovalTasks()
   const rows = Array.isArray(response?.data) ? response.data : response?.data?.data || []
   approvalIssues.value = response.issues || []
-  moduleTasks.value = rows.map(item => ({
+  // 调拨确认需在调拨管理选择SN/上传凭证，与手机端保持一致，不在审批中心重复展示。
+  moduleTasks.value = rows.filter(item => !item.manual_path && !['inventory_transfer', 'inventory_transfer_receipt'].includes(item.business_type)).map(item => ({
     ...moduleTask(item.business_type, item.row, {
       id: item.business_id, no: item.business_no, node: item.node_name,
       title: item.row.product_name || item.row.supplier_name || businessTypeText(item.business_type),
