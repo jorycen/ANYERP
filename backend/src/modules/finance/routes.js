@@ -12,7 +12,7 @@ const {
 } = require('./freightController');
 const {
   getDailyDetails, getNationalSubsidyReceivables, exportDailyDetails, exportNationalSubsidyReceivables, getDailyStatement, getDailyStatementDetail,
-  batchSettle, settleNationalSubsidyReceivables, getSettlementSummary, createExpense, saveExpenseDraft, updateExpenseDraft, deleteExpenseDraft, getExpenseList, exportExpenseList, getExpenseDetail, updateExpenseAttribution,
+  batchSettle, settleNationalSubsidyReceivables, createManualNationalSubsidyReceivable, getSettlementSummary, createExpense, saveExpenseDraft, updateExpenseDraft, deleteExpenseDraft, getExpenseList, exportExpenseList, getExpenseDetail, updateExpenseAttribution,
   submitExpense, payExpense, reviewExpense, cancelExpense, getSettlementAccountsWithBalance, getAccountTransactions, addAccountTransaction,
   getSubsidyAccountRoutes, saveSubsidyAccountRoute, createSubsidyReceipt, getSubsidyReceipts,
   allocateSubsidyReceipt, refundSubsidyReceipt, reverseSubsidyReceipt, submitSubsidyAdjustment,
@@ -113,6 +113,7 @@ router.get('/daily-details', getDailyDetails);
 router.get('/daily-details/export', exportDailyDetails);
 router.get('/national-subsidy-receivables', getNationalSubsidyReceivables);
 router.get('/national-subsidy-receivables/export', exportNationalSubsidyReceivables);
+router.post('/national-subsidy-receivables/manual', createManualNationalSubsidyReceivable);
 router.get('/national-subsidy-account-routes', getSubsidyAccountRoutes);
 router.put('/national-subsidy-account-routes', saveSubsidyAccountRoute);
 router.get('/national-subsidy-receipts', getSubsidyReceipts);

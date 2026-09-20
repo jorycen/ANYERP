@@ -214,8 +214,17 @@
               <el-option label="待回款" value="0" />
               <el-option label="已发生到账" value="1" />
             </el-select>
+            <el-input
+              v-model="subsidyQuery.unionpayOrderNo"
+              placeholder="云闪付订单号"
+              clearable
+              style="width: 210px"
+              @keyup.enter="loadSubsidyReceivables"
+            />
             <el-button type="primary" @click="loadSubsidyReceivables">搜索</el-button>
             <el-button type="success" :loading="exportingList === 'subsidy'" @click="handleExportSubsidy">导出</el-button>
+            <el-button type="primary" plain @click="openManualSubsidyDialog">手工登记国补数据</el-button>
+            <el-button type="warning" plain @click="openUnionpayBatchSettleDialog">按云闪付订单号批量下账</el-button>
             <el-button
               type="success"
               :disabled="selectedSubsidyIds.length === 0"
@@ -236,10 +245,12 @@
             <el-table-column prop="statement_date" label="应收日期" width="110" sortable />
             <el-table-column label="订单号" width="180">
               <template #default="{ row }">
-                <el-button v-if="row.order_id || row.order_no" link type="primary" @click="openSubsidyOrderDetail(row)">{{ row.order_no || row.order_id }}</el-button>
+                <el-button v-if="row.source_type !== 'manual' && (row.order_id || row.order_no)" link type="primary" @click="openSubsidyOrderDetail(row)">{{ row.order_no || row.order_id }}</el-button>
+                <span v-else-if="row.order_no">{{ row.order_no }}</span>
                 <span v-else>-</span>
               </template>
             </el-table-column>
+            <el-table-column prop="unionpay_order_no" label="云闪付订单号" min-width="190" show-overflow-tooltip />
             <el-table-column prop="customer_name" label="国补客户" width="110" />
             <el-table-column label="国补类型" min-width="180">
               <template #default="{ row }">{{ subsidyPaymentType(row.payment_method) }}</template>
@@ -257,6 +268,9 @@
               <template #default="{ row }">{{ row.settlementAccount?.account_name || '-' }}</template>
             </el-table-column>
             <el-table-column prop="store_name" label="门店" width="130" />
+            <el-table-column label="数据来源" width="90">
+              <template #default="{ row }">{{ row.source_type === 'manual' ? '手工登记' : '销售订单' }}</template>
+            </el-table-column>
             <el-table-column label="状态" width="100">
               <template #default="{ row }">
                 <el-tag :type="Number(row.remaining_amount || 0) <= 0 ? 'success' : (Number(row.settled || 0) > 0 ? 'warning' : 'info')" size="small">
@@ -947,6 +961,39 @@
         </el-tab-pane>
       </el-tabs>
     </el-card>
+
+    <el-dialog v-model="manualSubsidyDialogVisible" title="手工登记国补数据" width="620px">
+      <el-form label-width="120px">
+        <el-form-item label="应收日期" required>
+          <el-date-picker v-model="manualSubsidyForm.statementDate" type="date" value-format="YYYY-MM-DD" style="width:100%" />
+        </el-form-item>
+        <el-form-item label="门店" required>
+          <el-select v-model="manualSubsidyForm.storeId" filterable style="width:100%" placeholder="请选择门店">
+            <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="云闪付订单号" required><el-input v-model="manualSubsidyForm.unionpayOrderNo" /></el-form-item>
+        <el-form-item label="国补客户"><el-input v-model="manualSubsidyForm.customerName" /></el-form-item>
+        <el-form-item label="国补类型" required>
+          <el-input v-model="manualSubsidyForm.paymentMethod" placeholder="例如：国补POS-政策补贴应收" />
+        </el-form-item>
+        <el-form-item label="应收金额" required><el-input-number v-model="manualSubsidyForm.amount" :min="0.01" :precision="2" style="width:100%" /></el-form-item>
+        <el-form-item label="备注"><el-input v-model="manualSubsidyForm.remark" type="textarea" :rows="3" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="manualSubsidyDialogVisible=false">取消</el-button>
+        <el-button type="primary" :loading="manualSubsidySubmitting" @click="submitManualSubsidy">确认登记</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="unionpayBatchSettleDialogVisible" title="按云闪付订单号批量下账" width="620px">
+      <el-alert title="每行填写一个云闪付订单号，也支持逗号分隔。系统会先校验全部号码，存在未匹配记录时不会执行下账。" type="warning" :closable="false" show-icon />
+      <el-input v-model="unionpayBatchSettleText" type="textarea" :rows="12" placeholder="请输入云闪付订单号" style="margin-top:16px" />
+      <template #footer>
+        <el-button @click="unionpayBatchSettleDialogVisible=false">取消</el-button>
+        <el-button type="primary" :loading="unionpayBatchSettleSubmitting" @click="submitUnionpayBatchSettle">确认批量下账</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog v-model="subsidyReceiptDialogVisible" :title="subsidyReceiptMode === 'create' ? '登记国补银行到账' : '分配未核销到账款'" width="760px">
       <el-form label-width="110px">
@@ -1749,6 +1796,16 @@ const subsidyAccountRoutes = ref([])
 const subsidyReceipts = ref([])
 const subsidyAdjustments = ref([])
 const subsidyReceiptDialogVisible = ref(false)
+const currentChinaDate = () => new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10)
+const manualSubsidyDialogVisible = ref(false)
+const manualSubsidySubmitting = ref(false)
+const manualSubsidyForm = reactive({
+  statementDate:currentChinaDate(), storeId:'', unionpayOrderNo:'',
+  customerName:'', paymentMethod:'国补POS-政策补贴应收', amount:0, remark:''
+})
+const unionpayBatchSettleDialogVisible = ref(false)
+const unionpayBatchSettleText = ref('')
+const unionpayBatchSettleSubmitting = ref(false)
 const subsidyReceiptMode = ref('create')
 const subsidyReceiptForm = reactive({
   receiptId:'', receiptDate:new Date().toISOString().slice(0,10), accountId:'',
@@ -2034,7 +2091,8 @@ const subsidyQuery = reactive({
   pageSize: 20,
   dateRange: [],
   storeId: '',
-  settled: ''
+  settled: '',
+  unionpayOrderNo: ''
 })
 
 const productSettlementQuery = reactive({
@@ -2077,7 +2135,8 @@ const buildDailyExportParams = () => ({
 const buildSubsidyExportParams = () => ({
   ...(subsidyQuery.dateRange?.length === 2 ? { startDate: subsidyQuery.dateRange[0], endDate: subsidyQuery.dateRange[1] } : {}),
   ...(subsidyQuery.storeId ? { storeId: subsidyQuery.storeId } : {}),
-  ...(subsidyQuery.settled !== '' ? { settled: subsidyQuery.settled } : {})
+  ...(subsidyQuery.settled !== '' ? { settled: subsidyQuery.settled } : {}),
+  ...(subsidyQuery.unionpayOrderNo ? { unionpayOrderNo: subsidyQuery.unionpayOrderNo.trim() } : {})
 })
 
 const buildProductSettlementParams = () => ({
@@ -2389,6 +2448,7 @@ const loadSubsidyReceivables = async () => {
     }
     if (subsidyQuery.storeId) params.storeId = subsidyQuery.storeId
     if (subsidyQuery.settled !== '') params.settled = subsidyQuery.settled
+    if (subsidyQuery.unionpayOrderNo) params.unionpayOrderNo = subsidyQuery.unionpayOrderNo.trim()
     const res = await api.getNationalSubsidyReceivables(params)
     if (res.code === 0) {
       subsidyReceivables.value = res.data?.list || []
@@ -2409,7 +2469,63 @@ const onSubsidySelectionChange = rows => {
   selectedSubsidyIds.value = rows.map(row => row.detail_id)
 }
 
+const openManualSubsidyDialog = () => {
+  Object.assign(manualSubsidyForm, {
+    statementDate:currentChinaDate(),
+    storeId:subsidyQuery.storeId || '', unionpayOrderNo:'', customerName:'',
+    paymentMethod:'国补POS-政策补贴应收', amount:0, remark:''
+  })
+  manualSubsidyDialogVisible.value = true
+}
+
+const submitManualSubsidy = async () => {
+  if (!manualSubsidyForm.statementDate || !manualSubsidyForm.storeId || !manualSubsidyForm.unionpayOrderNo.trim()) {
+    return ElMessage.warning('请填写应收日期、门店和云闪付订单号')
+  }
+  if (!manualSubsidyForm.paymentMethod.trim() || Number(manualSubsidyForm.amount || 0) <= 0) {
+    return ElMessage.warning('请填写国补类型和正确的应收金额')
+  }
+  manualSubsidySubmitting.value = true
+  try {
+    await api.createManualNationalSubsidyReceivable({ ...manualSubsidyForm })
+    ElMessage.success('国补数据登记成功')
+    manualSubsidyDialogVisible.value = false
+    await loadSubsidyReceivables()
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || err.message || '国补数据登记失败')
+  } finally {
+    manualSubsidySubmitting.value = false
+  }
+}
+
+const parseUnionpayOrderNos = value => [...new Set(String(value || '').split(/[\s,，;；]+/).map(item => item.trim()).filter(Boolean))]
+
+const openUnionpayBatchSettleDialog = () => {
+  unionpayBatchSettleText.value = subsidyQuery.unionpayOrderNo ? subsidyQuery.unionpayOrderNo.trim() : ''
+  unionpayBatchSettleDialogVisible.value = true
+}
+
+const submitUnionpayBatchSettle = async () => {
+  const unionpayOrderNos = parseUnionpayOrderNos(unionpayBatchSettleText.value)
+  if (!unionpayOrderNos.length) return ElMessage.warning('请至少填写一个云闪付订单号')
+  try {
+    await ElMessageBox.confirm(`确认按 ${unionpayOrderNos.length} 个云闪付订单号批量下账？`, '批量下账确认', { type:'warning' })
+  } catch (_) { return }
+  unionpayBatchSettleSubmitting.value = true
+  try {
+    const res = await api.settleNationalSubsidyReceivables({ unionpayOrderNos })
+    ElMessage.success(res.message || '批量下账成功')
+    unionpayBatchSettleDialogVisible.value = false
+    await Promise.all([loadSubsidyReceivables(), loadAccountList()])
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || err.message || '批量下账失败')
+  } finally {
+    unionpayBatchSettleSubmitting.value = false
+  }
+}
+
 const openSubsidyOrderDetail = async row => {
+  if (row?.source_type === 'manual') return ElMessage.info('该记录为手工登记数据，没有关联销售订单')
   if (!row?.order_id) return ElMessage.warning('该国补应收单未关联销售订单')
   subsidyOrderDetailVisible.value = true
   subsidyOrderDetailLoading.value = true

@@ -5834,6 +5834,8 @@ async function syncToDailyStatement(orderId, storeId) {
           payment_method: paymentMethodName,
           payment_code: paymentMethodName,
           business_type: businessType,
+          unionpay_order_no: businessType === 'national_subsidy_receivable' ? String(order.invoice_info || '').trim() : null,
+          source_type: 'system',
           customer_name: order.customer_name,
           order_no: order.order_no
         });
@@ -5847,6 +5849,8 @@ async function syncToDailyStatement(orderId, storeId) {
           payment_method: paymentMethodName,
           payment_code: paymentMethodName,
           business_type: businessType,
+          unionpay_order_no: businessType === 'national_subsidy_receivable' ? String(order.invoice_info || '').trim() : null,
+          source_type: 'system',
           amount: statementAmount,
           settlement_account_id: settleAccountId,
           settled: 0

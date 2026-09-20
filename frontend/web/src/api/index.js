@@ -403,6 +403,7 @@ export default {
   exportDailyDetails: (params) => exportExcel('/finance/daily-details/export', params, `日结单_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getNationalSubsidyReceivables: (params) => api.get('/finance/national-subsidy-receivables', { params }),
   exportNationalSubsidyReceivables: (params) => exportExcel('/finance/national-subsidy-receivables/export', params, `国补应收单_${new Date().toISOString().slice(0, 10)}.xlsx`),
+  createManualNationalSubsidyReceivable: (data) => api.post('/finance/national-subsidy-receivables/manual', data),
   getSubsidyAccountRoutes: () => api.get('/finance/national-subsidy-account-routes'),
   saveSubsidyAccountRoute: (data) => api.put('/finance/national-subsidy-account-routes', data),
   getSubsidyReceipts: (params) => api.get('/finance/national-subsidy-receipts', { params }),

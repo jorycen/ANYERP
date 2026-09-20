@@ -60,7 +60,7 @@ async function getAccountBalance(accountId, transaction = null) {
  * 直接查询 DailyStatementDetail 平铺展示
  */
 async function getStatementDetails(ctx, businessWhere) {
-  const { storeId, startDate, endDate, settled, paymentMethod, settlementAccountId, customerName, businessType, page = 1, pageSize = 20 } = ctx.query;
+  const { storeId, startDate, endDate, settled, paymentMethod, settlementAccountId, customerName, businessType, unionpayOrderNo, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
   const exportMode = Boolean(ctx.state.exportMode);
 
@@ -78,6 +78,19 @@ async function getStatementDetails(ctx, businessWhere) {
   }
   if (customerName) where.customer_name = { [Op.like]: `%${String(customerName).trim()}%` };
   if (businessType) where.business_type = businessType;
+  if (unionpayOrderNo) {
+    const keyword = String(unionpayOrderNo).trim();
+    const matchingOrders = await Order.findAll({
+      where: { invoice_info: { [Op.like]: `%${keyword}%` } },
+      attributes: ['order_id']
+    });
+    where[Op.and] = [{
+      [Op.or]: [
+        { unionpay_order_no: { [Op.like]: `%${keyword}%` } },
+        { order_id: { [Op.in]: matchingOrders.map(order => order.order_id) } }
+      ]
+    }];
+  }
 
   const statementWhere = {};
   if (startDate && endDate) {
@@ -159,6 +172,13 @@ async function getStatementDetails(ctx, businessWhere) {
       accountMap[a.account_id] = a.toJSON();
     }
   }
+  const linkedOrders = rows.length
+    ? await Order.findAll({
+        where: { order_id: rows.map(row => row.order_id) },
+        attributes: ['order_id', 'invoice_info']
+      })
+    : [];
+  const unionpayByOrderId = new Map(linkedOrders.map(order => [String(order.order_id), String(order.invoice_info || '').trim()]));
   const approvedAdjustments = rows.length
     ? await SubsidyReceivableAdjustment.findAll({
         attributes: ['detail_id', [Sequelize.fn('SUM', Sequelize.col('amount')), 'approved_amount']],
@@ -180,6 +200,7 @@ async function getStatementDetails(ctx, businessWhere) {
       store_name: store ? store.name : null,
       store_id: stmt ? stmt.store_id : null,
       region_id: store ? store.region_id : null,
+      unionpay_order_no: d.unionpay_order_no || unionpayByOrderId.get(String(d.order_id)) || '',
       remaining_amount: remainingAmount,
       approved_adjustment_amount: adjustmentAmount,
       receipt_status: remainingAmount <= 0 && adjustmentAmount > 0
@@ -248,6 +269,7 @@ async function exportNationalSubsidyReceivables(ctx) {
   const data = rows.map(row => ({
     应收日期: row.statement_date || '',
     订单号: row.order_no || row.order_id || '',
+    云闪付订单号: row.unionpay_order_no || '',
     国补客户: row.customer_name || '',
     国补类型: row.payment_method || '',
     应收金额: Number(row.amount || 0),
@@ -263,9 +285,123 @@ async function exportNationalSubsidyReceivables(ctx) {
     结清时间: row.settled_at || ''
   }));
   sendExcel(ctx, data, [
-    '应收日期', '订单号', '国补客户', '国补类型', '应收金额', '累计核销',
+    '应收日期', '订单号', '云闪付订单号', '国补客户', '国补类型', '应收金额', '累计核销',
     '剩余应收', '应收账户', '门店', '状态', '结清时间'
   ], `国补应收单_${new Date().toISOString().slice(0, 10)}.xlsx`, '国补应收单');
+}
+
+function normalizeUnionpayOrderNos(value) {
+  const values = Array.isArray(value) ? value : String(value || '').split(/[\s,，;；]+/);
+  return [...new Set(values.map(item => String(item || '').trim()).filter(Boolean))];
+}
+
+async function resolveManualSubsidyReceivableAccount(storeId, paymentMethod, transaction) {
+  const method = await PaymentMethod.findOne({
+    where: {
+      status: 1,
+      [Op.or]: [{ name: paymentMethod }, { code: paymentMethod }]
+    },
+    transaction
+  });
+  if (!method) return { accountId: null, paymentCode: paymentMethod };
+  if (Number(method.is_global) === 1) {
+    return {
+      accountId: method.receivable_settlement_account_id || method.settlement_account_id || null,
+      paymentCode: method.code || method.name
+    };
+  }
+  const config = await PaymentMethodStore.findOne({
+    where: { method_id: method.method_id, store_id: storeId },
+    transaction
+  });
+  return {
+    accountId: config?.receivable_settlement_account_id || config?.settlement_account_id || method.receivable_settlement_account_id || null,
+    paymentCode: method.code || method.name
+  };
+}
+
+async function createManualNationalSubsidyReceivable(ctx) {
+  const user = ctx.state.user;
+  const {
+    statementDate, storeId, unionpayOrderNo, customerName = '',
+    paymentMethod = '国补POS-政策补贴应收', amount, remark = ''
+  } = ctx.request.body || {};
+  const normalizedOrderNo = String(unionpayOrderNo || '').trim();
+  const normalizedPaymentMethod = String(paymentMethod || '').trim();
+  const receivableAmount = money(amount);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(statementDate || ''))) ctx.throw(400, '请选择正确的应收日期');
+  if (!storeId) ctx.throw(400, '请选择门店');
+  if (!normalizedOrderNo) ctx.throw(400, '请填写云闪付订单号');
+  if (!normalizedPaymentMethod) ctx.throw(400, '请填写国补类型');
+  if (receivableAmount <= 0) ctx.throw(400, '应收金额必须大于0');
+  const allowedStoreIds = (user.accessibleStoreIds || []).map(String);
+  if (!allowedStoreIds.includes('*') && !allowedStoreIds.includes(String(storeId))) ctx.throw(403, '无权登记该门店的国补数据');
+
+  let created;
+  await sequelize.transaction(async transaction => {
+    const store = await Store.findByPk(storeId, { transaction });
+    if (!store) ctx.throw(404, '门店不存在');
+    const linkedOrders = await Order.findAll({
+      where: { invoice_info: normalizedOrderNo },
+      attributes: ['order_id'],
+      transaction
+    });
+    const duplicate = await DailyStatementDetail.findOne({
+      where: {
+        [Op.and]: [
+          {
+            [Op.or]: [
+              { unionpay_order_no: normalizedOrderNo },
+              ...(linkedOrders.length ? [{ order_id: linkedOrders.map(order => order.order_id) }] : [])
+            ]
+          },
+          {
+            [Op.or]: [
+              { business_type: 'national_subsidy_receivable' },
+              { payment_method: { [Op.like]: '国补%-政策补贴应收' } }
+            ]
+          }
+        ]
+      },
+      transaction
+    });
+    if (duplicate) ctx.throw(409, `云闪付订单号 ${normalizedOrderNo} 已登记`);
+
+    const [statement] = await DailyStatement.findOrCreate({
+      where: { store_id: storeId, statement_date: statementDate },
+      defaults: {
+        statement_id: generateUUID(), store_id: storeId, statement_date: statementDate,
+        total_revenue: 0, total_order_count: 0, total_settled: 0, status: 'pending'
+      },
+      transaction
+    });
+    await statement.reload({ transaction, lock: transaction.LOCK.UPDATE });
+    const account = await resolveManualSubsidyReceivableAccount(storeId, normalizedPaymentMethod, transaction);
+    created = await DailyStatementDetail.create({
+      detail_id: generateUUID(),
+      statement_id: statement.statement_id,
+      order_id: generateUUID(),
+      order_no: `GBSD${Date.now()}`,
+      unionpay_order_no: normalizedOrderNo,
+      customer_name: String(customerName || '').trim(),
+      payment_method: normalizedPaymentMethod,
+      payment_code: account.paymentCode,
+      business_type: 'national_subsidy_receivable',
+      source_type: 'manual',
+      remark: String(remark || '').trim(),
+      create_user: user.name || userIdOf(user),
+      create_time: new Date(),
+      amount: receivableAmount,
+      settlement_account_id: account.accountId,
+      settled: 0
+    }, { transaction });
+    await statement.update({
+      total_revenue: money(Number(statement.total_revenue || 0) + receivableAmount),
+      total_order_count: Number(statement.total_order_count || 0) + 1,
+      status: 'pending'
+    }, { transaction });
+  });
+  ctx.body = { code: 0, message: '国补数据登记成功', data: created };
 }
 
 /**
@@ -461,15 +597,18 @@ async function settleStatementDetails(ctx, businessType) {
   // 使用固定长度的批次关联号，明细本身仍通过 settled/settled_at 和本次业务操作关联。
   const settlementBatchRef = `${businessType === 'national_subsidy_receivable' ? 'SUBSIDY' : 'DAILY'}_SETTLE_${generateUUID()}`;
   await sequelize.transaction(async transaction => {
-    const details = await DailyStatementDetail.findAll({
+    let details = await DailyStatementDetail.findAll({
       where: {
         detail_id: detailIds,
-        settled: 0,
+        ...(businessType === 'national_subsidy_receivable' ? {} : { settled: 0 }),
         [Op.or]: businessWhere
       },
       transaction,
       lock: transaction.LOCK.UPDATE
     });
+    if (businessType === 'national_subsidy_receivable') {
+      details = details.filter(detail => money(Number(detail.amount || 0) - Number(detail.settled || 0)) > 0);
+    }
     if (details.length === 0) {
       ctx.throw(400, '没有可下账的记录');
     }
@@ -486,7 +625,9 @@ async function settleStatementDetails(ctx, businessType) {
     settledCount = details.length;
 
     for (const detail of details) {
-      const amount = parseFloat(detail.amount) || 0;
+      const amount = businessType === 'national_subsidy_receivable'
+        ? money(Number(detail.amount || 0) - Number(detail.settled || 0))
+        : (parseFloat(detail.amount) || 0);
       totalSettledAmount += amount;
       await detail.update({ settled: detail.amount, settled_at: now }, { transaction });
 
@@ -556,7 +697,42 @@ async function batchSettle(ctx) {
 }
 
 async function settleNationalSubsidyReceivables(ctx) {
-  ctx.throw(400, '国补应收请使用银行到账登记和核销流程');
+  const unionpayOrderNos = normalizeUnionpayOrderNos(
+    ctx.request.body?.unionpayOrderNos || ctx.request.body?.unionpayOrderNoText
+  );
+  if (unionpayOrderNos.length === 0) {
+    return settleStatementDetails(ctx, 'national_subsidy_receivable');
+  }
+  const linkedOrders = await Order.findAll({
+    where: { invoice_info: { [Op.in]: unionpayOrderNos } },
+    attributes: ['order_id', 'invoice_info']
+  });
+  const orderNoById = new Map(linkedOrders.map(order => [String(order.order_id), String(order.invoice_info || '').trim()]));
+  const details = await DailyStatementDetail.findAll({
+    where: {
+      [Op.and]: [
+        {
+          [Op.or]: [
+            { business_type: 'national_subsidy_receivable' },
+            { payment_method: { [Op.like]: '国补%-政策补贴应收' } }
+          ]
+        },
+        {
+          [Op.or]: [
+            { unionpay_order_no: { [Op.in]: unionpayOrderNos } },
+            ...(linkedOrders.length ? [{ order_id: linkedOrders.map(order => order.order_id) }] : [])
+          ]
+        }
+      ]
+    }
+  });
+  const matchedOrderNos = new Set(details.map(detail => (
+    String(detail.unionpay_order_no || '').trim() || orderNoById.get(String(detail.order_id)) || ''
+  )).filter(Boolean));
+  const unmatched = unionpayOrderNos.filter(orderNo => !matchedOrderNos.has(orderNo));
+  if (unmatched.length) ctx.throw(400, `以下云闪付订单号未找到国补应收记录：${unmatched.join('、')}`);
+  ctx.request.body = { ...(ctx.request.body || {}), detailIds: details.map(detail => detail.detail_id) };
+  return settleStatementDetails(ctx, 'national_subsidy_receivable');
 }
 
 /**
@@ -1647,6 +1823,7 @@ module.exports = {
   getDailyStatementDetail,
   batchSettle,
   settleNationalSubsidyReceivables,
+  createManualNationalSubsidyReceivable,
   getSettlementSummary,
   createExpense,
   saveExpenseDraft,

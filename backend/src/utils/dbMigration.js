@@ -2898,6 +2898,24 @@ async function runMigrations() {
       'VARCHAR(32) DEFAULT "sales_receipt" COMMENT "业务类型"',
       'PAYMENT_CODE'
     );
+    await checkAndAddColumn('T_DAILY_STATEMENT_DETAIL', 'UNIONPAY_ORDER_NO', 'VARCHAR(128) COMMENT "云闪付订单号"', 'BUSINESS_TYPE');
+    await checkAndAddColumn('T_DAILY_STATEMENT_DETAIL', 'SOURCE_TYPE', 'VARCHAR(32) DEFAULT "system" COMMENT "数据来源：system/manual"', 'UNIONPAY_ORDER_NO');
+    await checkAndAddColumn('T_DAILY_STATEMENT_DETAIL', 'REMARK', 'VARCHAR(512) COMMENT "备注"', 'SOURCE_TYPE');
+    await checkAndAddColumn('T_DAILY_STATEMENT_DETAIL', 'CREATE_USER', 'VARCHAR(64) COMMENT "创建人"', 'REMARK');
+    await checkAndAddColumn('T_DAILY_STATEMENT_DETAIL', 'CREATE_TIME', 'DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT "创建时间"', 'CREATE_USER');
+    await checkAndAddIndex(
+      'T_DAILY_STATEMENT_DETAIL',
+      'idx_daily_unionpay_order_no',
+      'ALTER TABLE T_DAILY_STATEMENT_DETAIL ADD INDEX idx_daily_unionpay_order_no (UNIONPAY_ORDER_NO)'
+    );
+    await sequelize.query(`
+      UPDATE T_DAILY_STATEMENT_DETAIL d
+      INNER JOIN T_ORDER o ON o.ORDER_ID = d.ORDER_ID
+      SET d.UNIONPAY_ORDER_NO = TRIM(o.INVOICE_INFO), d.SOURCE_TYPE = 'system'
+      WHERE (d.UNIONPAY_ORDER_NO IS NULL OR d.UNIONPAY_ORDER_NO = '')
+        AND o.INVOICE_INFO IS NOT NULL AND TRIM(o.INVOICE_INFO) <> ''
+        AND (d.BUSINESS_TYPE = 'national_subsidy_receivable' OR d.PAYMENT_METHOD LIKE '国补%-政策补贴应收')
+    `);
     await checkAndAddIndex(
       'T_DAILY_STATEMENT_DETAIL',
       'idx_daily_business_settled',
