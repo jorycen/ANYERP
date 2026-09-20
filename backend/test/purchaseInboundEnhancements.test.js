@@ -29,3 +29,12 @@ test('手机采购入库强制校验并保存SN、IMEI1、IMEI2', () => {
   assert.match(source, /imei2:\s*submittedImei2/);
 });
 
+test('应付结算单列表返回当前审批节点和审批人', () => {
+  const source = read('backend/src/modules/finance/payableController.js');
+  const view = read('frontend/web/src/views/PayableSettlementManagement.vue');
+  assert.match(source, /approval_stage_name\s*=\s*nodeName/);
+  assert.match(source, /approval_progress_text\s*=\s*approverNames\.length/);
+  assert.match(source, /await enrichSettlementApprovalProgress\(rows\)/);
+  assert.match(view, /当前审批环节/);
+  assert.match(view, /row\.approval_progress_text/);
+});

@@ -81,6 +81,12 @@
             <el-tag :type="statusType(row.status)">{{ statusText(row.status) }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="当前审批环节" min-width="190">
+          <template #default="{ row }">
+            <span v-if="row.status === 'pending_approval'" class="approval-progress">{{ row.approval_progress_text || '审批流程处理中' }}</span>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="payment_status" label="付款状态" width="110">
           <template #default="{ row }">
             <el-tag :type="paymentStatusType(row.payment_status)">{{ paymentStatusText(row.payment_status) }}</el-tag>
@@ -144,6 +150,7 @@
               <el-button link type="primary" @click="openRemarkEditor(detail)">修改备注</el-button>
             </div>
           </el-descriptions-item>
+          <el-descriptions-item label="当前审批环节">{{ detail.status === 'pending_approval' ? (detail.approval_progress_text || '审批流程处理中') : '-' }}</el-descriptions-item>
           <el-descriptions-item label="审批意见" :span="2">{{ detail.approval_comment || '-' }}</el-descriptions-item>
         </el-descriptions>
 

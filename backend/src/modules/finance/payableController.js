@@ -1204,6 +1204,55 @@ function normalizeSettlements(rows) {
   return rows.map(normalizeSettlement);
 }
 
+async function enrichSettlementApprovalProgress(rows) {
+  const pendingRows = (rows || []).filter(row => String(row.status || row.dataValues?.status || '') === 'pending_approval');
+  const businessIds = pendingRows.map(row => String(row.settlement_id || row.dataValues?.settlement_id || '')).filter(Boolean);
+  if (!businessIds.length) return rows;
+
+  const instances = await ApprovalFlowInstance.findAll({
+    where: { business_type: 'payable_settlement', business_id: { [Op.in]: businessIds }, status: 'pending' },
+    attributes: ['instance_id', 'business_id', 'current_node_index', 'resubmit_count'],
+    order: [['create_time', 'DESC']]
+  });
+  const latestByBusinessId = new Map();
+  for (const instance of instances) {
+    const businessId = String(instance.business_id || '');
+    if (!latestByBusinessId.has(businessId)) latestByBusinessId.set(businessId, instance);
+  }
+  const activeInstances = [...latestByBusinessId.values()];
+  const instanceIds = activeInstances.map(item => item.instance_id);
+  const tasks = instanceIds.length
+    ? await ApprovalTask.findAll({
+        where: { instance_id: { [Op.in]: instanceIds }, status: 'pending' },
+        attributes: ['instance_id', 'node_index', 'node_name', 'assignee_staff_id', 'task_order'],
+        order: [['task_order', 'ASC']]
+      })
+    : [];
+  const currentTasks = tasks.filter(task => {
+    const instance = activeInstances.find(item => String(item.instance_id) === String(task.instance_id));
+    return instance && Number(task.node_index) === Number(instance.current_node_index);
+  });
+  const staffIds = [...new Set(currentTasks.map(task => Number(task.assignee_staff_id)).filter(Boolean))];
+  const staffRows = staffIds.length
+    ? await Staff.findAll({ where: { staff_id: { [Op.in]: staffIds } }, attributes: ['staff_id', 'name', 'phone'] })
+    : [];
+  const staffMap = new Map(staffRows.map(staff => [Number(staff.staff_id), staff.name || staff.phone || String(staff.staff_id)]));
+
+  for (const row of pendingRows) {
+    const target = row.dataValues || row;
+    const instance = latestByBusinessId.get(String(target.settlement_id || ''));
+    const nodeTasks = instance
+      ? currentTasks.filter(task => String(task.instance_id) === String(instance.instance_id))
+      : [];
+    const nodeName = nodeTasks[0]?.node_name || (instance ? `第${Number(instance.current_node_index || 0) + 1}环节` : '审批流程未关联');
+    const approverNames = [...new Set(nodeTasks.map(task => staffMap.get(Number(task.assignee_staff_id))).filter(Boolean))];
+    target.approval_stage_name = nodeName;
+    target.approval_approver_names = approverNames;
+    target.approval_progress_text = approverNames.length ? `${nodeName}（${approverNames.join('、')}）` : nodeName;
+  }
+  return rows;
+}
+
 function normalizePaymentBatch(row) {
   const data = row.toJSON ? row.toJSON() : row;
   return {
@@ -1365,6 +1414,7 @@ async function getSettlementList(ctx) {
   });
 
   await enrichSettlementMetadata(rows);
+  await enrichSettlementApprovalProgress(rows);
   ctx.body = formatPaginatedResult(normalizeSettlements(rows), { page, pageSize, count });
 }
 
@@ -1384,6 +1434,7 @@ async function exportSettlementList(ctx) {
     ]
   });
   await enrichSettlementMetadata(rows);
+  await enrichSettlementApprovalProgress(rows);
   const data = normalizeSettlements(rows).map(row => ({
     结算单号: row.settlement_no || '',
     收款方: row.payee_name || row.supplier_name || '',
@@ -1399,6 +1450,7 @@ async function exportSettlementList(ctx) {
     结算金额: Number(row.total_amount || 0),
     已付金额: Number(row.paid_amount || 0),
     状态: row.status || '',
+    当前审批环节: row.approval_progress_text || '',
     付款状态: row.payment_status || '',
     经手人: row.operator_name || '',
     制单人: row.create_user || '',
@@ -1409,7 +1461,7 @@ async function exportSettlementList(ctx) {
   sendExcel(ctx, data, [
     '结算单号', '收款方', '收款单位', '收款开户行', '收款账号', '收款方税号', '收款备注',
     '来源单号', '结算类型', '经销商', '税务属性', '结算金额', '已付金额',
-    '状态', '付款状态', '经手人', '制单人', '备注', '创建时间', '确认时间'
+    '状态', '当前审批环节', '付款状态', '经手人', '制单人', '备注', '创建时间', '确认时间'
   ], `应付结算单_${new Date().toISOString().slice(0, 10)}.xlsx`, '应付结算单');
 }
 
@@ -1430,6 +1482,7 @@ async function getSettlementDetail(ctx) {
   }
   assertDistributorOperation(ctx, settlement.distributor_id);
   await enrichSettlementMetadata([settlement]);
+  await enrichSettlementApprovalProgress([settlement]);
 
   ctx.body = { code: 0, data: normalizeSettlement(settlement) };
 }
