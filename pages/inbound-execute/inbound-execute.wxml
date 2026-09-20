@@ -78,6 +78,14 @@
             <text>第 {{rowIndex + 1}} 台</text>
             <button class="defer-button" data-product-index="{{productIndex}}" data-row-index="{{rowIndex}}" bindtap="deferSnRow">暂缓入库</button>
           </view>
+          <view class="field-block compact" wx:if="{{product.needImei}}">
+            <text class="field-label">IMEI1</text>
+            <input class="text-input single" value="{{row.imei1}}" data-product-index="{{productIndex}}" data-row-index="{{rowIndex}}" data-field="imei1" bindinput="onIdentifierInput" placeholder="请输入 IMEI1" />
+          </view>
+          <view class="field-block compact" wx:if="{{product.needImei}}">
+            <text class="field-label">IMEI2</text>
+            <input class="text-input single" value="{{row.imei2}}" data-product-index="{{productIndex}}" data-row-index="{{rowIndex}}" data-field="imei2" bindinput="onIdentifierInput" placeholder="请输入 IMEI2" />
+          </view>
           <view class="field-block compact">
             <text class="field-label">SN 码</text>
             <view class="pn-row">

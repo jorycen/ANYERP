@@ -173,11 +173,12 @@
         </el-form-item>
         <el-form-item label="发票类型">
           <el-select v-model="requestForm.invoiceType" placeholder="请选择发票类型" style="width: 100%">
-            <el-option label="收据（未税）" value="收据" />
-            <el-option label="普通发票（未税）" value="普通发票" />
-            <el-option label="增值税专用发票（13%）" value="增值税专用发票13%" />
-            <el-option label="增值税专用发票（6%）" value="增值税专用发票6%" />
+            <el-option label="13%含税" value="13%含税" />
+            <el-option label="未税" value="未税" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="快递单号">
+          <el-input v-model="requestForm.expressNo" placeholder="请输入快递单号（选填）" />
         </el-form-item>
         <el-form-item label="付款方式" required>
           <el-select v-model="requestForm.paymentMethod" placeholder="请选择付款方式" style="width: 100%">
@@ -523,6 +524,12 @@
         <el-form-item label="商品名称" required>
           <el-input v-model="usedProductForm.name" placeholder="请输入二手商品名称" />
         </el-form-item>
+        <el-form-item label="商品分类"><el-input v-model="usedProductForm.category" placeholder="请输入商品分类" /></el-form-item>
+        <el-form-item label="商品配置"><el-input v-model="usedProductForm.config" placeholder="请输入商品配置" /></el-form-item>
+        <el-form-item label="单位"><el-input v-model="usedProductForm.unit" placeholder="台" /></el-form-item>
+        <el-form-item label="序列号管理"><el-switch v-model="usedProductForm.needSn" /></el-form-item>
+        <el-form-item label="IMEI管理"><el-switch v-model="usedProductForm.needImei" /></el-form-item>
+        <el-form-item label="商品备注"><el-input v-model="usedProductForm.remark" type="textarea" :rows="2" /></el-form-item>
         <el-form-item label="PN码" :required="usedProductForm.directInbound">
           <el-input v-model="usedProductForm.pnCode" :placeholder="usedProductForm.directInbound ? '勾选审批完成及入库时必填' : '可选，填写厂商编码'" />
         </el-form-item>
@@ -539,6 +546,8 @@
         <el-form-item v-if="usedProductForm.directInbound" label="SN号" required>
           <el-input v-model="usedProductForm.snCode" placeholder="请输入唯一SN号" />
         </el-form-item>
+        <el-form-item v-if="usedProductForm.directInbound && usedProductForm.needImei" label="IMEI1" required><el-input v-model="usedProductForm.imei1" /></el-form-item>
+        <el-form-item v-if="usedProductForm.directInbound && usedProductForm.needImei" label="IMEI2" required><el-input v-model="usedProductForm.imei2" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="usedProductDialogVisible = false">取消</el-button>
@@ -873,7 +882,8 @@ const supplierQuery = reactive({
 
 const requestForm = reactive({
   supplierId: '',
-  invoiceType: '',
+  invoiceType: '13%含税',
+  expressNo: '',
   paymentMethod: 'COMPANY_CREDIT',
   productType: '',
   remark: '',
@@ -885,11 +895,19 @@ const requestForm = reactive({
 
 const usedProductForm = reactive({
   name: '',
+  category: '',
+  config: '',
+  unit: '台',
+  needSn: true,
+  needImei: false,
+  remark: '',
   pnCode: '',
   price: 0,
   quantity: 1,
   directInbound: false,
   snCode: ''
+  ,imei1: ''
+  ,imei2: ''
 })
 
 const freightPlatforms = ref([])
@@ -1304,7 +1322,8 @@ const handleEditDraft = async (row) => {
     const request = res.data
     editingRequestId.value = request.request_id
     requestForm.supplierId = request.supplier_id || ''
-    requestForm.invoiceType = request.invoice_type || ''
+    requestForm.invoiceType = ['13%含税', '未税'].includes(request.invoice_type) ? request.invoice_type : '13%含税'
+    requestForm.expressNo = request.express_no || ''
     requestForm.paymentMethod = request.payment_method || 'COMPANY_CREDIT'
     requestForm.productType = request.product_type || goodsTypeOptions.value[0]?.name || ''
     requestForm.remark = request.reason || ''
@@ -1325,6 +1344,7 @@ const handleEditDraft = async (row) => {
       ,isUsedProduct: Number(item.is_used_product) === 1
       ,directInbound: Number(item.direct_inbound) === 1
       ,directInboundSnCode: item.direct_inbound_sn_code || ''
+      ,newProductPayload: item.new_product_payload || null
     }))
     await loadRebateBalance(request.supplier_id)
     requestDialogVisible.value = true
@@ -1890,6 +1910,7 @@ const buildPurchaseRequestPayload = () => {
   return {
     supplierId: requestForm.supplierId,
     invoiceType: requestForm.invoiceType,
+    expressNo: requestForm.expressNo,
     paymentMethod: requestForm.paymentMethod,
     goodsTypeId: selectedGoodsType?.goods_type_id || '',
     productType: requestForm.productType,
@@ -1912,6 +1933,7 @@ const buildPurchaseRequestPayload = () => {
       isUsedProduct: Boolean(item.isUsedProduct),
       directInbound: Boolean(item.directInbound),
       directInboundSnCode: item.directInboundSnCode || '',
+      newProductPayload: item.newProductPayload || null,
       storeAllocations: item.storeAllocations,
       selectedResourceTypes: item.selectedResourceTypes || []
     }))
@@ -2036,7 +2058,8 @@ const handleDialogClose = () => {
 
 const resetForm = () => {
   requestForm.supplierId = ''
-  requestForm.invoiceType = ''
+  requestForm.invoiceType = '13%含税'
+  requestForm.expressNo = ''
   requestForm.paymentMethod = 'COMPANY_CREDIT'
   requestForm.productType = goodsTypeOptions.value[0]?.name || ''
   requestForm.remark = ''
@@ -2048,11 +2071,19 @@ const resetForm = () => {
 
 const resetUsedProductForm = () => {
   usedProductForm.name = ''
+  usedProductForm.category = ''
+  usedProductForm.config = ''
+  usedProductForm.unit = '台'
+  usedProductForm.needSn = true
+  usedProductForm.needImei = false
+  usedProductForm.remark = ''
   usedProductForm.pnCode = ''
   usedProductForm.price = 0
   usedProductForm.quantity = 1
   usedProductForm.directInbound = false
   usedProductForm.snCode = ''
+  usedProductForm.imei1 = ''
+  usedProductForm.imei2 = ''
 }
 
 const openUsedProductDialog = () => {
@@ -2077,6 +2108,10 @@ const saveUsedProduct = () => {
     ElMessage.warning('勾选审批完成及入库时必须填写PN码')
     return
   }
+  if (usedProductForm.directInbound && usedProductForm.needImei && (!String(usedProductForm.imei1 || '').trim() || !String(usedProductForm.imei2 || '').trim())) {
+    ElMessage.warning('手机商品直接入库必须填写IMEI1和IMEI2')
+    return
+  }
   requestForm.items.push({
     isUsedProduct: true,
     productId: '',
@@ -2089,6 +2124,20 @@ const saveUsedProduct = () => {
     rebateDeduction: 0,
     directInbound: Boolean(usedProductForm.directInbound),
     directInboundSnCode: usedProductForm.directInbound ? snCode : '',
+    newProductPayload: {
+      name,
+      manualName: name,
+      category: String(usedProductForm.category || '').trim(),
+      config: String(usedProductForm.config || '').trim(),
+      unit: String(usedProductForm.unit || '台').trim(),
+      needSn: usedProductForm.needSn ? 1 : 0,
+      needImei: usedProductForm.needImei ? 1 : 0,
+      remark: String(usedProductForm.remark || '').trim(),
+      pnCode: String(usedProductForm.pnCode || '').trim(),
+      barcodes: usedProductForm.pnCode ? [{ type: 'manufacturer', code: String(usedProductForm.pnCode).trim() }] : []
+      ,imei1: String(usedProductForm.imei1 || '').trim()
+      ,imei2: String(usedProductForm.imei2 || '').trim()
+    },
     storeAllocations: [],
     selectedResourceTypes: goodsTypeResourceCodes(requestForm.productType)
   })

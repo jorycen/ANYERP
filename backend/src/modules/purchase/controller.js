@@ -15,6 +15,19 @@ const { getUserRoles } = require('../../middleware/permission');
 const { isStoreScopedAccount } = require('../../utils/storePermissions');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
 const { createProductRecord } = require('../product/controller');
+
+const VALID_PURCHASE_INVOICE_TYPES = new Set(['未税', '13%含税']);
+function validatePurchaseInvoiceType(ctx, value) {
+  const normalized = String(value || '').trim();
+  if (!VALID_PURCHASE_INVOICE_TYPES.has(normalized)) ctx.throw(400, '发票类型只允许选择“13%含税”或“未税”');
+  return normalized;
+}
+
+function stringifyNewProductPayload(item) {
+  const payload = item?.newProductPayload || item?.new_product_payload;
+  if (!payload) return null;
+  return typeof payload === 'string' ? payload : JSON.stringify(payload);
+}
 const { executeInbound, updateInventory, getAvailableQty, moveSnInventoryAggregate } = require('../inventory/controller');
 const { getAllocationSummary, getPayableRemaining, refreshPayableState } = require('../finance/settlementAllocation');
 const { assertActiveProducts } = require('../../utils/activeProduct');
@@ -1249,6 +1262,7 @@ async function createRequest(ctx) {
     items,
     storeId,
     invoiceType,
+    expressNo,
     paymentMethod,
     goodsTypeId,
     productType,
@@ -1268,6 +1282,7 @@ async function createRequest(ctx) {
     saveDraft = false
   } = ctx.request.body;
   const isDraft = Boolean(saveDraft);
+  const normalizedInvoiceType = validatePurchaseInvoiceType(ctx, invoiceType);
   if (isDraft && (items || []).some(item => getSnPurchaseFields(item).sourceSnId)) {
     ctx.throw(400, '特殊仓SN采购请直接提交审批，不支持保存草稿');
   }
@@ -1413,7 +1428,8 @@ async function createRequest(ctx) {
       supplier_id: supplierId || null,
       goods_type_id: canonicalGoodsTypeId,
       product_type: canonicalProductType,
-      invoice_type: invoiceType || '',
+      invoice_type: normalizedInvoiceType,
+      express_no: String(expressNo || '').trim() || null,
       payment_method: normalizedPaymentMethod,
       supplier_chat_screenshot_ids: screenshotIds.length ? JSON.stringify(screenshotIds) : null,
       supplier_chat_screenshot_urls: screenshotDisplayValues.length ? JSON.stringify(screenshotDisplayValues) : null,
@@ -1465,7 +1481,8 @@ async function createRequest(ctx) {
         goods_type_id: canonicalGoodsTypeId,
         product_type: canonicalProductType,
         store_allocations: item.storeAllocations ? JSON.stringify(item.storeAllocations) : null,
-        selected_resource_types: JSON.stringify(normalizeSelectedResourceTypes(item.selectedResourceTypes || item.selected_resource_types))
+        selected_resource_types: JSON.stringify(normalizeSelectedResourceTypes(item.selectedResourceTypes || item.selected_resource_types)),
+        new_product_payload: isUsedProduct ? stringifyNewProductPayload(item) : null
       }, { transaction });
     }
 
@@ -1646,7 +1663,7 @@ async function deleteRequestDraft(ctx) {
 async function updateRequestDraft(ctx) {
   const { requestId } = ctx.params;
   const user = ctx.state.user;
-  const { supplierId, remark, items, invoiceType, paymentMethod, goodsTypeId, productType, rebateDeduction,
+  const { supplierId, remark, items, invoiceType, expressNo, paymentMethod, goodsTypeId, productType, rebateDeduction,
     freightPlatformId, freightPlatformName, freightAmount, freight_platform_id, freight_platform_name, freight_amount } = ctx.request.body;
   const request = await PurchaseRequest.findByPk(requestId);
   const usedProductPlaceholder = '__USED_PRODUCT__';
@@ -1663,6 +1680,7 @@ async function updateRequestDraft(ctx) {
   if (!['COMPANY_CREDIT', 'PERSONAL_ADVANCE'].includes(paymentMethod || 'COMPANY_CREDIT')) {
     ctx.throw(400, '付款方式无效');
   }
+  const normalizedInvoiceType = validatePurchaseInvoiceType(ctx, invoiceType);
   for (const item of items) {
     if (!item.productId || Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
   }
@@ -1701,7 +1719,8 @@ async function updateRequestDraft(ctx) {
     const productSnapshots = await loadPurchaseProductSnapshots(items, transaction);
     await request.update({
       supplier_id: supplierId || null,
-      invoice_type: invoiceType || '',
+      invoice_type: normalizedInvoiceType,
+      express_no: String(expressNo || '').trim() || null,
       payment_method: paymentMethod || 'COMPANY_CREDIT',
       goods_type_id: canonicalGoodsTypeId,
       product_type: canonicalProductType,
@@ -1737,7 +1756,8 @@ async function updateRequestDraft(ctx) {
         goods_type_id: canonicalGoodsTypeId,
         product_type: canonicalProductType,
         store_allocations: item.storeAllocations ? JSON.stringify(item.storeAllocations) : null,
-        selected_resource_types: JSON.stringify(normalizeSelectedResourceTypes(item.selectedResourceTypes || item.selected_resource_types))
+        selected_resource_types: JSON.stringify(normalizeSelectedResourceTypes(item.selectedResourceTypes || item.selected_resource_types)),
+        new_product_payload: isUsedProduct ? stringifyNewProductPayload(item) : null
       }, { transaction });
     }
     await syncFreightRecord({
@@ -1922,14 +1942,18 @@ async function approveRequest(ctx) {
       if (directInbound && (!snCode || Number(item.quantity || 0) !== 1)) {
         ctx.throw(400, '二手商品勾选审批完成及入库时，数量必须为1且必须填写SN号');
       }
+      let newProductPayload = {};
+      try { newProductPayload = JSON.parse(item.new_product_payload || '{}'); } catch (_) { newProductPayload = {}; }
       const created = await createProductRecord({
-        name: item.product_name,
-        manualName: item.product_name,
-        pnCode: item.pn_code || '',
-        barcodes: item.pn_code ? [{ type: 'manufacturer', code: item.pn_code }] : [],
-        needSn: directInbound ? 1 : 0,
-        unit: '台',
-        remark: '采购申请审批生成的二手商品',
+        ...newProductPayload,
+        name: newProductPayload.name || item.product_name,
+        manualName: newProductPayload.manualName || item.product_name,
+        pnCode: newProductPayload.pnCode || item.pn_code || '',
+        barcodes: newProductPayload.barcodes || (item.pn_code ? [{ type: 'manufacturer', code: item.pn_code }] : []),
+        needSn: directInbound ? 1 : Number(newProductPayload.needSn ?? 1),
+        needImei: Number(newProductPayload.needImei || 0),
+        unit: newProductPayload.unit || '台',
+        remark: newProductPayload.remark || '采购申请审批生成的二手商品',
         isUsedProduct: true
       }, transaction);
       await item.update({ product_id: created.productId, product_name: created.productName, pn_code: item.pn_code || null }, { transaction });
@@ -2090,14 +2114,20 @@ async function approveRequest(ctx) {
       if (directItems.length) {
         directInboundExecutions.push({
           inboundId,
-          items: directItems.map(item => ({
-            productId: item.product_id,
-            inboundItemId: item._inboundItemId,
-            quantity: item.allocatedQuantity || item.quantity,
-            locationId: item.locationId || null,
-            pnCode: item.pn_code || '',
-            snCode: item.direct_inbound_sn_code
-          }))
+          items: directItems.map(item => {
+            let productPayload = {};
+            try { productPayload = JSON.parse(item.new_product_payload || '{}'); } catch (_) { productPayload = {}; }
+            return {
+              productId: item.product_id,
+              inboundItemId: item._inboundItemId,
+              quantity: item.allocatedQuantity || item.quantity,
+              locationId: item.locationId || null,
+              pnCode: item.pn_code || '',
+              snCode: item.direct_inbound_sn_code,
+              imei1: productPayload.imei1 || '',
+              imei2: productPayload.imei2 || ''
+            };
+          })
         });
       }
     }

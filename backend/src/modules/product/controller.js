@@ -701,11 +701,11 @@ function getCategoryNamePrefix(lineage) {
 function composeProductName(dimensions = {}, fields = [], attributes = {}) {
   const parts = [dimensions.brand, dimensions.series, dimensions.model]
     .map(value => String(value || '').trim())
-    .filter(Boolean);
+    .filter(value => value && value !== '-');
   for (const field of fields || []) {
     if (getProductDimensionKey(field.field_key)) continue;
     const value = attributes?.[field.field_key];
-    if (value !== undefined && value !== null && String(value).trim()) {
+    if (value !== undefined && value !== null && String(value).trim() && String(value).trim() !== '-') {
       parts.push(String(value).trim());
     }
   }

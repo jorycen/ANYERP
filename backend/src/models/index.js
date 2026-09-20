@@ -761,6 +761,7 @@ const Supplier = sequelize.define('Supplier', {
   phone: { type: DataTypes.STRING(32) },
   address: { type: DataTypes.STRING(512) },
   invoice_type: { type: DataTypes.STRING(32) },
+  express_no: { type: DataTypes.STRING(128), comment: '快递单号' },
   is_service_provider: { type: DataTypes.TINYINT(1), defaultValue: 1, comment: '是否服务商；服务商毛利成本使用产品定价' },
   gross_profit_uplift_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0, comment: '非服务商每件毛利上浮金额' },
   remark: { type: DataTypes.STRING(512) },
@@ -944,7 +945,8 @@ const PurchaseRequestItem = sequelize.define('PurchaseRequestItem', {
   goods_type_id: { type: DataTypes.STRING(32), comment: '关联货型配置ID' },
   product_type: { type: DataTypes.STRING(128), comment: '货型名称快照' },
   store_allocations: { type: DataTypes.TEXT },
-  selected_resource_types: { type: DataTypes.TEXT }
+  selected_resource_types: { type: DataTypes.TEXT },
+  new_product_payload: { type: DataTypes.TEXT, comment: '二手商品完整建档信息JSON' }
 }, { tableName: 'T_PURCHASE_REQUEST_ITEM', timestamps: false });
 
 // 采购单

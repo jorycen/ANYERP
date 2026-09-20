@@ -354,7 +354,7 @@
 
           <el-table :data="expenseData" stripe border>
             <el-table-column prop="expense_no" label="费用单号" width="160" />
-            <el-table-column prop="create_time" label="时间" width="160" />
+            <el-table-column prop="create_time" label="时间" width="160"><template #default="{ row }">{{ formatDateTime(row.create_time) }}</template></el-table-column>
             <el-table-column prop="expense_type" label="费用类型" width="100" />
             <el-table-column prop="amount" label="金额" width="120">
               <template #default="{ row }">¥{{ row.amount }}</template>
@@ -435,7 +435,7 @@
             </div>
             <el-table :data="expenseSettleData" stripe border>
               <el-table-column prop="expense_no" label="费用单号" width="160" />
-              <el-table-column prop="create_time" label="时间" width="160" />
+              <el-table-column prop="create_time" label="时间" width="160"><template #default="{ row }">{{ formatDateTime(row.create_time) }}</template></el-table-column>
               <el-table-column prop="expense_type" label="费用类型" width="100" />
               <el-table-column prop="amount" label="金额" width="120">
                 <template #default="{ row }">¥{{ row.amount }}</template>
@@ -611,7 +611,7 @@
             <el-table-column prop="purchase_initiator" label="采购发起人" width="130">
               <template #default="{ row }">{{ ['purchase', 'purchase_adjustment', 'purchase_return'].includes(row.source_type) ? (row.purchase_initiator || '-') : '-' }}</template>
             </el-table-column>
-            <el-table-column prop="create_time" label="创建时间" width="160" />
+            <el-table-column prop="create_time" label="创建时间" width="160"><template #default="{ row }">{{ formatDateTime(row.create_time) }}</template></el-table-column>
             <el-table-column label="操作" width="140">
               <template #default="{ row }">
                 <el-button v-if="row.source_type === 'expense' || row.source_type === 'reimbursement'" link type="primary" @click="handleCreateExpenseSettlement(row)">
@@ -679,7 +679,7 @@
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="create_time" label="创建时间" width="160" />
+            <el-table-column prop="create_time" label="创建时间" width="160"><template #default="{ row }">{{ formatDateTime(row.create_time) }}</template></el-table-column>
             <el-table-column label="操作" width="220">
               <template #default="{ row }">
                 <el-button link type="primary" @click="openSettlementDetail(row)">详情</el-button>
@@ -757,7 +757,7 @@
             <el-table-column prop="related_no" label="关联单号" width="160" />
             <el-table-column prop="remark" label="备注" min-width="140" />
             <el-table-column prop="create_user" label="操作人" width="100" />
-            <el-table-column prop="create_time" label="时间" width="160" />
+            <el-table-column prop="create_time" label="时间" width="160"><template #default="{ row }">{{ formatDateTime(row.create_time) }}</template></el-table-column>
           </el-table>
 
           <el-pagination
@@ -1076,7 +1076,7 @@
           <el-table-column prop="total_amount" label="应付金额" width="130">
             <template #default="{ row }">¥{{ formatMoney(row.total_amount) }}</template>
           </el-table-column>
-          <el-table-column prop="create_time" label="创建时间" width="160" />
+          <el-table-column prop="create_time" label="创建时间" width="160"><template #default="{ row }">{{ formatDateTime(row.create_time) }}</template></el-table-column>
         </el-table>
         <div class="settlement-total">
           已选<strong>{{ selectedPayableIds.length }}</strong> 项，

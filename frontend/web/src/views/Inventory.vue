@@ -926,6 +926,12 @@
                 <el-input v-model="r.snCode" placeholder="SN码" size="small" :disabled="item.transferInbound && Boolean(r.snCode)" />
               </template>
             </el-table-column>
+            <el-table-column v-if="item.needImei" label="IMEI1" width="180">
+              <template #default="{ row: r }"><el-input v-model="r.imei1" placeholder="IMEI1" size="small" /></template>
+            </el-table-column>
+            <el-table-column v-if="item.needImei" label="IMEI2" width="180">
+              <template #default="{ row: r }"><el-input v-model="r.imei2" placeholder="IMEI2" size="small" /></template>
+            </el-table-column>
             <el-table-column label="入库库位" width="160">
               <template #default="{ row: r }">
                 <el-select v-model="r.locationId" size="small" style="width: 140px" placeholder="请选择库位">
@@ -3139,6 +3145,7 @@ const openExecuteDialog = async (row) => {
       const productGroups = []
       for (const item of (res.data.items || [])) {
         const needSn = Number(item.need_sn) === 1
+        const needImei = Number(item.need_imei) === 1
         const qty = Number(item.remaining_quantity ?? item.remainingQuantity ?? item.quantity) || 1
         const pns = pnMap[item.product_id] || []
 
@@ -3147,6 +3154,7 @@ const openExecuteDialog = async (row) => {
           productId: item.product_id,
           productName: item.product_name,
           needSn,
+          needImei,
           transferInbound: isTransferInbound,
           quantity: qty,
           locationId: item.location_id || defaultTransferLocationId,
@@ -3167,6 +3175,8 @@ const openExecuteDialog = async (row) => {
                   ? ''
                   : (item.sn_code || item.snCode || '')),
               locationId: item.location_id || defaultTransferLocationId,
+              imei1: '',
+              imei2: '',
               remark: ''
             })
           }
@@ -3246,6 +3256,10 @@ const submitInbound = async (deferInbound = false) => {
           ElMessage.warning(`商品 ${product.productName} 请选择入库库位`)
           return
         }
+        if (product.needImei && (!String(snRow.imei1 || '').trim() || !String(snRow.imei2 || '').trim())) {
+          ElMessage.warning(`手机商品 ${product.productName} 必须填写IMEI1和IMEI2`)
+          return
+        }
         const snKey = `${product.productId}|${product.pnCode || ''}|${snCode}`.toLowerCase()
         if (seenSn.has(snKey)) {
           ElMessage.warning(`SN码 ${snCode} 重复，请检查`)
@@ -3258,6 +3272,8 @@ const submitInbound = async (deferInbound = false) => {
           pnCode: product.pnCode || '',
           snId: snRow.snId || '',
           snCode,
+          imei1: String(snRow.imei1 || '').trim(),
+          imei2: String(snRow.imei2 || '').trim(),
           quantity: 1,
           locationId: snRow.locationId || '',
           remark: snRow.remark

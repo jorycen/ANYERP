@@ -84,6 +84,9 @@ const sequelize = new Sequelize(
     host: config.database.host,
     port: config.database.port,
     dialect: 'mysql',
+    // 业务统一使用中国标准时间。MySQL 的 DATETIME 不携带时区，显式声明后
+    // Sequelize 才会按 +08:00 写入和解析，避免 API 返回时间少 8 小时。
+    timezone: '+08:00',
     charset: config.database.charset,
     logging: config.database.logging,
     pool: {
@@ -95,7 +98,8 @@ const sequelize = new Sequelize(
     },
     dialectOptions: {
       charset: 'utf8mb4',
-      connectTimeout
+      connectTimeout,
+      timezone: '+08:00'
     },
     retry: {
       match: TRANSIENT_DB_ERROR_PATTERNS,

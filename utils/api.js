@@ -1211,6 +1211,7 @@ function normalizeTransfer(row) {
       inventoryStatusLabel: item.inventory_status_label || item.inventoryStatusLabel || item.status_label || item.statusLabel || '',
       quantity: normalizeQuantity(item.quantity),
       needSn: item.need_sn === true || item.needSn === true || Number(item.need_sn) === 1 || Number(item.needSn) === 1,
+      needImei: item.need_imei === true || item.needImei === true || Number(item.need_imei) === 1 || Number(item.needImei) === 1,
        pnCode: normalizePnCode(item.pn_code || item.pnCode),
       requested: item.requested === true || item.requested === 1
     }))

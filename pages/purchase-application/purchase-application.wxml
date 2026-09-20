@@ -51,6 +51,9 @@
         </view>
       </view>
 
+      <text class="field-label">快递单号</text>
+      <input class="input" placeholder="请输入快递单号（选填）" value="{{form.expressNo}}" bindinput="onExpressNoInput" />
+
       <text class="field-label">备注</text>
       <textarea class="textarea" placeholder="采购备注" value="{{form.remark}}" bindinput="onRemarkInput"></textarea>
     </view>
@@ -146,6 +149,16 @@
     </view>
     <text class="field-label required">商品名称</text>
     <input class="input" placeholder="请输入二手商品名称" value="{{usedProduct.name}}" data-field="name" bindinput="onUsedProductInput" />
+    <text class="field-label">商品分类</text>
+    <input class="input" placeholder="请输入商品分类" value="{{usedProduct.category}}" data-field="category" bindinput="onUsedProductInput" />
+    <text class="field-label">商品配置</text>
+    <input class="input" placeholder="请输入商品配置" value="{{usedProduct.config}}" data-field="config" bindinput="onUsedProductInput" />
+    <text class="field-label">单位</text>
+    <input class="input" placeholder="台" value="{{usedProduct.unit}}" data-field="unit" bindinput="onUsedProductInput" />
+    <view class="switch-row"><text>需要SN</text><switch checked="{{usedProduct.needSn}}" data-field="needSn" bindchange="onUsedProductSwitch" color="#1aad19" /></view>
+    <view class="switch-row"><text>需要IMEI</text><switch checked="{{usedProduct.needImei}}" data-field="needImei" bindchange="onUsedProductSwitch" color="#1aad19" /></view>
+    <text class="field-label">商品备注</text>
+    <textarea class="textarea" placeholder="商品备注" value="{{usedProduct.remark}}" data-field="remark" bindinput="onUsedProductInput"></textarea>
     <text class="field-label {{usedProduct.directInbound ? 'required' : ''}}">PN码</text>
     <input class="input" placeholder="{{usedProduct.directInbound ? '勾选审批完成及入库时必填' : '可选，填写厂商编码'}}" value="{{usedProduct.pnCode}}" data-field="pnCode" bindinput="onUsedProductInput" />
     <view class="two-columns compact">
@@ -166,6 +179,12 @@
     <view wx:if="{{usedProduct.directInbound}}">
       <text class="field-label required">SN号</text>
       <input class="input" placeholder="请输入唯一SN号" value="{{usedProduct.snCode}}" data-field="snCode" bindinput="onUsedProductInput" />
+      <block wx:if="{{usedProduct.needImei}}">
+        <text class="field-label required">IMEI1</text>
+        <input class="input" placeholder="请输入IMEI1" value="{{usedProduct.imei1}}" data-field="imei1" bindinput="onUsedProductInput" />
+        <text class="field-label required">IMEI2</text>
+        <input class="input" placeholder="请输入IMEI2" value="{{usedProduct.imei2}}" data-field="imei2" bindinput="onUsedProductInput" />
+      </block>
     </view>
     <button class="submit-btn" bindtap="addUsedProductToRequest">加入采购明细</button>
   </view>

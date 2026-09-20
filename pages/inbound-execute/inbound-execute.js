@@ -157,6 +157,7 @@ Page({
         productId: item.productId,
         productName: item.productName || '未命名商品',
         needSn: !!item.needSn,
+        needImei: !!item.needImei,
         quantity,
         originalQuantity,
         receivedQuantity,
@@ -180,6 +181,8 @@ Page({
               ? ''
               : (item.snCode || ''),
             locationId: defaultLocationId,
+            imei1: '',
+            imei2: '',
             locationIndex: locationIndex(locations, defaultLocationId),
             remark: ''
           });
@@ -250,6 +253,11 @@ Page({
     const data = e.currentTarget.dataset;
     this.setRowField(data.productIndex, 'snRows', data.rowIndex, 'snCode', e.detail.value);
     this.refreshSnAllocation(Number(data.productIndex));
+  },
+
+  onIdentifierInput(e) {
+    const data = e.currentTarget.dataset;
+    this.setRowField(data.productIndex, 'snRows', data.rowIndex, data.field, e.detail.value);
   },
 
   deferSnRow(e) {
@@ -391,6 +399,9 @@ Page({
           const snCode = String(row.snCode || '').trim();
           if (!snCode) continue;
           if (!row.locationId) throw new Error(`商品“${product.productName}”第 ${product.snRows.indexOf(row) + 1} 项请选择库位`);
+          if (product.needImei && (!String(row.imei1 || '').trim() || !String(row.imei2 || '').trim())) {
+            throw new Error(`手机商品“${product.productName}”必须填写 IMEI1 和 IMEI2`);
+          }
           const uniqueKey = `${product.productId}|${pnCode}|${snCode}`.toLowerCase();
           if (seenSn.has(uniqueKey)) throw new Error(`SN 码“${snCode}”重复，请检查`);
           seenSn.add(uniqueKey);
@@ -399,6 +410,8 @@ Page({
             productId: product.productId,
             pnCode,
             snCode,
+            imei1: String(row.imei1 || '').trim(),
+            imei2: String(row.imei2 || '').trim(),
             quantity: 1,
             locationId: row.locationId,
             remark: String(row.remark || '').trim()

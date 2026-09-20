@@ -3,7 +3,7 @@ const userUtils = require('../profile/user-utils.js');
 const imageUpload = require('../../utils/image-upload.js');
 const { normalizePnCode } = require('../../utils/pn.js');
 
-const INVOICE_TYPES = ['收据', '专票6%', '专票13%'];
+const INVOICE_TYPES = ['13%含税', '未税'];
 const PAYMENT_METHODS = [
   { label: '公司账期', value: 'COMPANY_CREDIT' },
   { label: '个人垫付', value: 'PERSONAL_ADVANCE' }
@@ -68,11 +68,19 @@ function emptyNewProduct() {
 function emptyUsedProduct() {
   return {
     name: '',
+    category: '',
+    config: '',
+    unit: '台',
+    needSn: true,
+    needImei: false,
+    remark: '',
     pnCode: '',
     price: '',
     quantity: 1,
     directInbound: false,
     snCode: ''
+    ,imei1: ''
+    ,imei2: ''
   };
 }
 
@@ -259,13 +267,14 @@ Page({
       supplierIndex: -1,
       supplierId: '',
       supplierName: '',
-      invoiceTypeIndex: 2,
-      invoiceType: INVOICE_TYPES[2],
+      invoiceTypeIndex: 0,
+      invoiceType: INVOICE_TYPES[0],
       paymentMethodIndex: 0,
       paymentMethod: 'COMPANY_CREDIT',
       freightPlatformId: '',
       freightPlatformName: '',
       freightAmount: '',
+      expressNo: '',
       productTypeIndex: -1,
       productType: '',
       remark: '',
@@ -334,6 +343,10 @@ Page({
     });
   },
 
+  onUsedProductSwitch(e) {
+    this.setData({ [`usedProduct.${e.currentTarget.dataset.field}`]: Boolean(e.detail.value) });
+  },
+
   addUsedProductToRequest() {
     const usedProduct = this.data.usedProduct || emptyUsedProduct();
     const name = String(usedProduct.name || '').trim();
@@ -351,6 +364,10 @@ Page({
     }
     if (usedProduct.directInbound && (quantity !== 1 || !snCode)) {
       wx.showToast({ title: '勾选审批完成及入库时，数量必须为1且必须填写SN号', icon: 'none' });
+      return;
+    }
+    if (usedProduct.directInbound && usedProduct.needImei && (!String(usedProduct.imei1 || '').trim() || !String(usedProduct.imei2 || '').trim())) {
+      wx.showToast({ title: '手机商品直接入库必须填写IMEI1和IMEI2', icon: 'none' });
       return;
     }
     const user = userUtils.getUserInfo();
@@ -378,6 +395,20 @@ Page({
       quantity,
       directInbound: Boolean(usedProduct.directInbound),
       directInboundSnCode: usedProduct.directInbound ? snCode : '',
+      newProductPayload: {
+        name,
+        manualName: name,
+        category: String(usedProduct.category || '').trim(),
+        config: String(usedProduct.config || '').trim(),
+        unit: String(usedProduct.unit || '台').trim(),
+        needSn: usedProduct.needSn ? 1 : 0,
+        needImei: usedProduct.needImei ? 1 : 0,
+        remark: String(usedProduct.remark || '').trim(),
+        pnCode,
+        barcodes: pnCode ? [{ type: 'manufacturer', code: pnCode }] : []
+        ,imei1: String(usedProduct.imei1 || '').trim()
+        ,imei2: String(usedProduct.imei2 || '').trim()
+      },
       storeAllocations: [allocation],
       selectedResourceTypes: (this.data.goodsTypes[this.data.form.productTypeIndex]?.resourceTypes || []).slice(),
       selectedResourceMap: resourceMap(this.data.goodsTypes[this.data.form.productTypeIndex]?.resourceTypes || [])
@@ -518,6 +549,10 @@ Page({
 
   onRemarkInput(e) {
     this.setData({ 'form.remark': e.detail.value });
+  },
+
+  onExpressNoInput(e) {
+    this.setData({ 'form.expressNo': e.detail.value });
   },
 
   loadStores() {
@@ -971,6 +1006,7 @@ Page({
     const payload = {
       supplierId: form.supplierId,
       invoiceType: form.invoiceType,
+      expressNo: String(form.expressNo || '').trim(),
       paymentMethod: form.paymentMethod,
       goodsTypeId: this.data.goodsTypes[form.productTypeIndex]?.goodsTypeId || '',
       productType: form.productType,
@@ -993,6 +1029,7 @@ Page({
         isUsedProduct: Boolean(item.isUsedProduct),
         directInbound: Boolean(item.directInbound),
         directInboundSnCode: item.directInboundSnCode || '',
+        newProductPayload: item.newProductPayload || null,
         price: Number(item.price),
         quantity: Number(item.quantity),
         goodsTypeId: this.data.goodsTypes[form.productTypeIndex]?.goodsTypeId || '',
@@ -1046,13 +1083,14 @@ Page({
         supplierIndex: -1,
         supplierId: '',
         supplierName: '',
-        invoiceTypeIndex: 2,
-        invoiceType: INVOICE_TYPES[2],
+        invoiceTypeIndex: 0,
+        invoiceType: INVOICE_TYPES[0],
         paymentMethodIndex: 0,
         paymentMethod: 'COMPANY_CREDIT',
         freightPlatformId: '',
         freightPlatformName: '',
         freightAmount: '',
+        expressNo: '',
         productTypeIndex: this.data.goodsTypes.length ? 0 : -1,
         productType: this.data.goodsTypes[0]?.name || '',
         remark: '',
@@ -1279,7 +1317,7 @@ Page({
     const attributes = this.data.newProduct.attributes || {};
     const composedName = this.data.categoryFields
       .map(field => attributes[field.fieldKey])
-      .filter(Boolean)
+      .filter(value => value && String(value).trim() !== '-')
       .join(' ');
     const computedProductName = composedName || (this.data.newProduct.manualName || '').trim();
     this.setData({ computedProductName });

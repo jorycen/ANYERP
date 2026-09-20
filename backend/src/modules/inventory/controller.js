@@ -3268,6 +3268,10 @@ async function getInboundDetailById(ctx, inboundId, { distributorTrace = false }
           ...item,
           location_name: item.location_id ? (locationMap.get(item.location_id) || item.location_id) : '',
           need_sn: productMap.get(item.product_id)?.need_sn || 0,
+          need_imei: (() => {
+            const product = productMap.get(item.product_id);
+            return Number(product?.need_imei) === 1 || /手机/.test(`${product?.category || ''} ${product?.name || ''}`) ? 1 : 0;
+          })(),
           sn_codes: snCodes,
           received_quantity: Math.max(Number(item.received_quantity || 0), 0),
           receive_user: item.receive_user || '',
@@ -3837,12 +3841,20 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
 
       if (Number(product.need_sn) === 1) {
         const submittedSnCode = String(item.snCode || item.sn_code || '').trim();
+        const submittedImei1 = String(item.imei1 || item.imei_1 || '').trim();
+        const submittedImei2 = String(item.imei2 || item.imei_2 || '').trim();
+        const requiresImei = isPurchaseInbound && (
+          Number(product.need_imei) === 1 || /手机/.test(`${product.category || ''} ${product.name || ''}`)
+        );
         const requestedSnCode = submittedSnCode || (isPurchaseInbound ? '' : String(dbItem.sn_code || '').trim());
         if (isPurchaseInbound && quantity !== 1) {
           fail(400, `商品 ${dbItem.product_name || product.name} 为 SN 商品，每次只能入库 1 件`);
         }
         if (isPurchaseInbound && !submittedSnCode) {
           fail(400, `商品 ${dbItem.product_name || product.name} 需要 SN 管理，本次入库必须填写 SN`);
+        }
+        if (requiresImei && (!submittedImei1 || !submittedImei2)) {
+          fail(400, `手机商品 ${dbItem.product_name || product.name} 入库必须填写 SN、IMEI1、IMEI2`);
         }
         if (isPurchaseInbound) {
           const existingSnCodes = parseInboundSnCodes(dbItem.received_sn_codes);
@@ -3983,6 +3995,8 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
           pn_id: pnMaster.pn_id,
           pn_code: pnCode,
           sn_code: snCode,
+          imei1: submittedImei1 || null,
+          imei2: submittedImei2 || null,
           status: 'in_stock',
           inventory_type: inventoryType,
           store_id: inbound.store_id,

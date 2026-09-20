@@ -960,7 +960,7 @@ const autoProductName = computed(() => {
     const value = getCategoryFieldValue(field)
     if (value !== undefined && value !== null && String(value).trim()) parts.push(String(value).trim())
   }
-  return parts.map(value => String(value).trim()).filter(Boolean).join(' ')
+  return parts.map(value => String(value).trim()).filter(value => value && value !== '-').join(' ')
 })
 
 const computedProductName = computed(() => String(productForm.name || '').trim() || autoProductName.value)
