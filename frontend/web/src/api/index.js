@@ -487,6 +487,7 @@ export default {
   }),
   validateSettlementPaymentImport: (data) => api.post('/finance/settlement-payment/import/validate', data),
   commitSettlementPaymentImport: (data) => api.post('/finance/settlement-payment/import/commit', data),
+  createBatchSettlementPayment: (data) => api.post('/finance/settlement-payment/batch', data),
   createDirectSettlementPayment: (data) => api.post('/finance/settlement-payment/direct', data),
   getSettlementPaymentBatches: (params) => api.get('/finance/settlement-payment/batches', { params }),
   getSettlementPaymentBatchDetail: (id) => api.get(`/finance/settlement-payment/batch/${id}`),

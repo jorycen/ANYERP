@@ -29,6 +29,9 @@
             <el-option label="未税" value="UNTAXED" />
           </el-select>
           <el-button type="primary" @click="handleExportPayments">导出付款清单</el-button>
+          <el-button type="warning" :disabled="selectedPaymentCandidates.length === 0" @click="openBatchPayment">
+            批量付款（已选 {{ selectedPaymentCandidates.length }}）
+          </el-button>
           <el-upload
             :auto-upload="false"
             :show-file-list="false"
@@ -40,7 +43,8 @@
         </div>
       </div>
 
-      <el-table v-loading="paymentCandidatesLoading" :data="paymentCandidateData" stripe border>
+      <el-table v-loading="paymentCandidatesLoading" :data="paymentCandidateData" stripe border row-key="settlement_id" @selection-change="handlePaymentSelectionChange">
+        <el-table-column type="selection" width="48" :selectable="row => Number(row.remaining_amount) > 0" />
         <el-table-column prop="settlement_no" label="结算单号" width="180">
           <template #default="{ row }">
             <el-button link type="primary" @click="openSettlementDetail(row)">
@@ -253,6 +257,55 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="batchPaymentVisible" title="批量付款（支持部分付款）" width="900px">
+      <el-alert
+        title="本次只处理已勾选的结算单；可修改每张单据的付款金额，少于剩余应付时将记为部分付款。"
+        type="info"
+        show-icon
+        :closable="false"
+      />
+      <el-table :data="batchPaymentRows" stripe border class="mt-20" max-height="420">
+        <el-table-column prop="settlementNo" label="结算单号" width="180" />
+        <el-table-column prop="supplierName" label="供应商" min-width="150" show-overflow-tooltip />
+        <el-table-column label="剩余应付" width="120">
+          <template #default="{ row }">¥{{ formatAmount(row.remainingAmount) }}</template>
+        </el-table-column>
+        <el-table-column label="本次付款" width="190">
+          <template #default="{ row }">
+            <el-input-number v-model="row.amount" :min="0.01" :max="row.remainingAmount" :precision="2" :step="100" controls-position="right" style="width: 165px" />
+          </template>
+        </el-table-column>
+        <el-table-column label="付款后状态" width="110">
+          <template #default="{ row }">
+            <el-tag :type="Number(row.amount) < Number(row.remainingAmount) ? 'warning' : 'success'">
+              {{ Number(row.amount) < Number(row.remainingAmount) ? '部分付款' : '付清' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-form label-width="90px" class="mt-20">
+        <el-form-item label="付款账户" required>
+          <el-select v-model="batchPaymentForm.accountId" placeholder="请选择付款账户" filterable style="width: 100%">
+            <el-option v-for="acc in settlementAccounts" :key="acc.account_id" :label="formatSettlementAccountOption(acc)" :value="acc.account_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="批次备注">
+          <el-input v-model="batchPaymentForm.remark" maxlength="200" placeholder="选填" />
+        </el-form-item>
+      </el-form>
+      <el-alert
+        v-if="batchPaymentAccount"
+        :title="`共 ${batchPaymentRows.length} 笔，付款合计 ¥${formatAmount(batchPaymentTotal)}；账户余额 ¥${formatAmount(batchPaymentAccount.balance)}，付款后 ¥${formatAmount(batchPaymentProjectedBalance)}`"
+        :type="batchPaymentProjectedBalance < 0 ? 'warning' : 'info'"
+        show-icon
+        :closable="false"
+      />
+      <template #footer>
+        <el-button @click="batchPaymentVisible = false">取消</el-button>
+        <el-button type="primary" :loading="batchPaymentSubmitting" @click="submitBatchPayment">确认批量付款</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="paymentImportPreviewVisible" title="付款导入确认" width="860px">
       <div v-if="paymentImportErrors.length > 0">
         <el-alert title="导入校验失败，整批未处理" type="error" show-icon :closable="false" />
@@ -434,6 +487,11 @@ const immediatePaymentVisible = ref(false)
 const immediatePaymentSettlement = ref(null)
 const immediatePaymentSubmitting = ref(false)
 const immediatePaymentForm = reactive({ accountId: '', amount: 0 })
+const selectedPaymentCandidates = ref([])
+const batchPaymentVisible = ref(false)
+const batchPaymentRows = ref([])
+const batchPaymentSubmitting = ref(false)
+const batchPaymentForm = reactive({ accountId: '', remark: '' })
 
 const paymentCandidateQuery = reactive({ page: 1, pageSize: 20 })
 const paymentBatchQuery = reactive({ page: 1, pageSize: 20 })
@@ -450,6 +508,9 @@ const immediatePaymentAccount = computed(() => {
 const immediatePaymentProjectedBalance = computed(() => {
   return Number(immediatePaymentAccount.value?.balance || 0) - Number(immediatePaymentForm.amount || 0)
 })
+const batchPaymentTotal = computed(() => batchPaymentRows.value.reduce((sum, row) => sum + Number(row.amount || 0), 0))
+const batchPaymentAccount = computed(() => settlementAccounts.value.find(acc => acc.account_id === batchPaymentForm.accountId) || null)
+const batchPaymentProjectedBalance = computed(() => Number(batchPaymentAccount.value?.balance || 0) - batchPaymentTotal.value)
 
 onMounted(() => {
   loadDistributorOptions()
@@ -630,6 +691,65 @@ const openImmediatePayment = (row) => {
   immediatePaymentForm.accountId = paymentAccountId.value || ''
   immediatePaymentForm.amount = Number(row.remaining_amount || 0)
   immediatePaymentVisible.value = true
+}
+
+const handlePaymentSelectionChange = rows => {
+  selectedPaymentCandidates.value = rows
+}
+
+const openBatchPayment = () => {
+  const rows = selectedPaymentCandidates.value
+  if (!rows.length) return ElMessage.warning('请先勾选待付款结算单')
+  const distributorIds = [...new Set(rows.map(row => String(row.distributor_id || '')))]
+  if (distributorIds.length > 1) return ElMessage.warning('不同经销商的结算单不能在同一批次付款')
+  const taxStatuses = [...new Set(rows.map(row => String(row.tax_status || 'UNKNOWN').toUpperCase()))]
+  if (taxStatuses.length > 1) return ElMessage.warning('含税与未税结算单不能在同一批次付款')
+  batchPaymentRows.value = rows.map(row => ({
+    settlementId: row.settlement_id,
+    settlementNo: row.settlement_no,
+    supplierName: row.supplier_name || '',
+    remainingAmount: Number(row.remaining_amount || 0),
+    amount: Number(row.remaining_amount || 0)
+  }))
+  batchPaymentForm.accountId = paymentAccountId.value || ''
+  batchPaymentForm.remark = ''
+  batchPaymentVisible.value = true
+}
+
+const submitBatchPayment = async () => {
+  if (!batchPaymentForm.accountId) return ElMessage.warning('请选择付款账户')
+  if (!batchPaymentRows.value.length) return ElMessage.warning('请至少勾选一张待付款结算单')
+  const invalid = batchPaymentRows.value.find(row => !Number.isFinite(Number(row.amount)) || Number(row.amount) <= 0 || Number(row.amount) > Number(row.remainingAmount))
+  if (invalid) return ElMessage.warning(`结算单 ${invalid.settlementNo} 的付款金额不正确`)
+  if (batchPaymentProjectedBalance.value < 0) {
+    try {
+      await ElMessageBox.confirm(
+        `账户余额不足，本批付款后余额为 ¥${formatAmount(batchPaymentProjectedBalance.value)}。仍要继续吗？`,
+        '余额不足提示',
+        { confirmButtonText: '继续付款', cancelButtonText: '取消', type: 'warning' }
+      )
+    } catch (err) {
+      if (err === 'cancel' || err === 'close') return
+      throw err
+    }
+  }
+  batchPaymentSubmitting.value = true
+  try {
+    const res = await api.createBatchSettlementPayment({
+      accountId: batchPaymentForm.accountId,
+      remark: batchPaymentForm.remark,
+      items: batchPaymentRows.value.map(row => ({ settlementNo: row.settlementNo, amount: Number(row.amount) }))
+    })
+    if (res.code !== 0) return ElMessage.error(res.message || '批量付款失败')
+    ElMessage.success(res.message || '批量付款成功')
+    batchPaymentVisible.value = false
+    selectedPaymentCandidates.value = []
+    await Promise.all([loadPaymentCandidates(), loadPaymentBatches(), loadSettlementAccounts()])
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '批量付款失败')
+  } finally {
+    batchPaymentSubmitting.value = false
+  }
 }
 
 const submitImmediatePayment = async () => {

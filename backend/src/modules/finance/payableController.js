@@ -2270,6 +2270,25 @@ async function commitPaymentImport(ctx) {
   };
 }
 
+async function createBatchPayment(ctx) {
+  const { accountId, items, remark } = ctx.request.body || {};
+  if (!Array.isArray(items) || items.length === 0) ctx.throw(400, '请至少勾选一张待付款结算单');
+  const batchToken = generateUUID();
+  ctx.request.body = {
+    accountId,
+    remark: String(remark || '').trim() || '勾选批量付款',
+    rows: items.map((item, index) => ({
+      settlementNo: item.settlementNo || item.settlement_no,
+      amount: item.amount,
+      paymentTime: new Date().toISOString(),
+      remark: String(item.remark || remark || '').trim() || '勾选批量付款',
+      importKey: `MANUAL_BATCH:${batchToken}:${index + 1}`
+    }))
+  };
+  await commitPaymentImport(ctx);
+  if (ctx.body?.code === 0) ctx.body.message = '批量付款成功';
+}
+
 async function createDirectPayment(ctx) {
   const { settlementId, accountId, amount } = ctx.request.body;
   const user = ctx.state.user;
@@ -2545,6 +2564,7 @@ module.exports = {
   exportPaymentCandidates,
   validatePaymentImport,
   commitPaymentImport,
+  createBatchPayment,
   createDirectPayment,
   getPaymentBatches,
   getPaymentBatchDetail,

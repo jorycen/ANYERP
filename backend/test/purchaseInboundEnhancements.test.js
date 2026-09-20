@@ -72,3 +72,15 @@ test('我的申请只返回本人发起的审批并展示当前审批进度', ()
   assert.match(view, /label="当前进度"/);
   assert.match(view, /row\.current_progress_text/);
 });
+
+test('待付款清单支持勾选批量付款和逐单部分付款金额', () => {
+  const controller = read('backend/src/modules/finance/payableController.js');
+  const routes = read('backend/src/modules/finance/routes.js');
+  const view = read('frontend/web/src/views/PaymentManagement.vue');
+  assert.match(controller, /async function createBatchPayment/);
+  assert.match(controller, /MANUAL_BATCH:/);
+  assert.match(routes, /settlement-payment\/batch/);
+  assert.match(view, /type="selection"/);
+  assert.match(view, /批量付款（支持部分付款）/);
+  assert.match(view, /createBatchSettlementPayment/);
+});

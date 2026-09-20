@@ -36,6 +36,7 @@ const {
   exportPaymentCandidates,
   validatePaymentImport,
   commitPaymentImport,
+  createBatchPayment,
   createDirectPayment,
   getPaymentBatches,
   getPaymentBatchDetail,
@@ -154,6 +155,7 @@ router.get('/settlement-payment/candidates', getPaymentCandidates);
 router.get('/settlement-payment/export', exportPaymentCandidates);
 router.post('/settlement-payment/import/validate', validatePaymentImport);
 router.post('/settlement-payment/import/commit', commitPaymentImport);
+router.post('/settlement-payment/batch', createBatchPayment);
 router.post('/settlement-payment/direct', createDirectPayment);
 router.get('/settlement-payment/batches', getPaymentBatches);
 router.get('/settlement-payment/batch/:id', getPaymentBatchDetail);
