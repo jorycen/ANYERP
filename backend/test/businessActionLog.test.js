@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const models = require('../src/models');
 const inventoryRouter = require('../src/modules/inventory/routes');
 const { _test: inventoryTest } = require('../src/modules/inventory/controller');
@@ -56,4 +58,14 @@ test('调拨申请撤销和拒绝接口已注册，且权限状态判断只允�
   assert.equal(inventoryTest.isTransferAwaitingReceipt('returned'), false);
   assert.equal(inventoryTest.isTransferApplicant({ name: '申请人' }, { apply_user: '申请人' }), true);
   assert.equal(inventoryTest.isTransferApplicant({ name: '其他人' }, { apply_user: '申请人' }), false);
+});
+
+test('小程序拒绝调拨必须填写原因，后端空原因返回业务校验错误', () => {
+  const pageSource = fs.readFileSync(path.join(__dirname, '../../pages/transfer-manage/transfer-manage.js'), 'utf8');
+  const controllerSource = fs.readFileSync(path.join(__dirname, '../src/modules/inventory/controller.js'), 'utf8');
+
+  assert.match(pageSource, /rejectTransfer[\s\S]*editable:\s*true/);
+  assert.match(pageSource, /requireInput:\s*true/);
+  assert.doesNotMatch(pageSource, /rejectTransfer\(transfer\.transferId,\s*\{\s*reason:\s*''\s*\}\)/);
+  assert.match(controllerSource, /action === 'rejected' && !reason[\s\S]*ctx\.throw\(400,/);
 });

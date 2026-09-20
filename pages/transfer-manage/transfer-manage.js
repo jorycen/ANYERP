@@ -1189,7 +1189,13 @@ Page({
   rejectTransfer(e) {
     const transfer = this.data.transfers.find(item => item.transferId === e.currentTarget.dataset.id);
     if (!transfer) return;
-    this.confirmAction('确认拒绝这条调拨申请？', () => api.inventory.rejectTransfer(transfer.transferId, { reason: '' }));
+    this.confirmAction('', reason => api.inventory.rejectTransfer(transfer.transferId, { reason }), {
+      title: '拒绝调拨',
+      editable: true,
+      requireInput: true,
+      placeholderText: '请输入拒绝原因',
+      confirmText: '确认拒绝'
+    });
   },
 
   returnTransfer(e) {
@@ -1233,14 +1239,22 @@ Page({
     }));
   },
 
-  confirmAction(content, taskFactory) {
+  confirmAction(content, taskFactory, options = {}) {
     wx.showModal({
-      title: '调拨确认',
+      title: options.title || '调拨确认',
       content,
+      editable: Boolean(options.editable),
+      placeholderText: options.placeholderText || '',
+      confirmText: options.confirmText || '确定',
       success: res => {
         if (!res.confirm) return;
+        const input = String(res.content || '').trim();
+        if (options.requireInput && !input) {
+          wx.showToast({ title: options.placeholderText || '请输入内容', icon: 'none' });
+          return;
+        }
         wx.showLoading({ title: '处理中' });
-        taskFactory()
+        taskFactory(input)
           .then(() => {
             wx.hideLoading();
             wx.showToast({ title: '处理成功', icon: 'success' });

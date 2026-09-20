@@ -331,6 +331,9 @@ async function changeTransferRequestStatus(ctx, targetStatus, action, actorCheck
     assertTransferRequestOpen(ctx, transfer);
 
     const reason = String(ctx.request.body?.reason || ctx.request.body?.comment || '').trim().slice(0, 1000);
+    if (action === 'rejected' && !reason) {
+      ctx.throw(400, '拒绝调拨申请时必须填写拒绝原因');
+    }
     const fromStatus = transfer.status;
     if (action === 'rejected' && !await advanceApproval(ctx, 'inventory_transfer', transfer, t, 'reject', reason)) { await t.commit(); return; }
     await transfer.update({ status: targetStatus }, { transaction: t });

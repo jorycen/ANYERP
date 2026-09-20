@@ -1,5 +1,6 @@
 # 2026-09-20
 
+- 修复小程序拒绝调拨固定提交空原因而触发 500 的问题；拒绝时改为输入拒绝原因，后端对空原因返回明确的业务校验提示。
 - Fixed the rebate settlement page failure caused by a missing `T_RESOURCE_SETTLEMENT.DISTRIBUTOR_ID` column. Startup schema checks now add the column and query index automatically, and new databases include it at table creation.
 
 ## 2026-09-19 修复产品端毛利页面数据库表缺失
