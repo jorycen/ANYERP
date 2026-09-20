@@ -1105,7 +1105,7 @@ Page({
       const statusMap = {
         pending: '待审批', approved: '已通过', rejected: '已拒绝',
         purchased: '已采购', partial: '部分入库', partially_received: '部分入库',
-        completed: '已完成', received: '已完成', revoked: '已撤销', cancelled: '已取消'
+        completed: '已完成', received: '已完成', revoked: '已撤销', cancelled: '已取消', replaced: '已转新采购'
       };
       const applications = listOf(result).map(item => ({
         requestId: item.request_id || item.requestId || item.id || '',

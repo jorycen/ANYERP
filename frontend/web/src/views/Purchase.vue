@@ -2183,12 +2183,12 @@ const restorePurchaseRequestDraft = () => {
 }
 
 const getStatusType = (status) => {
-  const types = { draft: 'info', pending: 'warning', approved: 'success', pending_payment: 'warning', paid: 'success', pending_inbound: 'warning', rejected: 'danger', purchased: 'info', revoked: 'info', partial_return: 'warning', returned: 'danger' }
+  const types = { draft: 'info', pending: 'warning', approved: 'success', pending_payment: 'warning', paid: 'success', pending_inbound: 'warning', rejected: 'danger', purchased: 'info', revoked: 'info', partial_return: 'warning', returned: 'danger', replaced: 'info' }
   return types[status] || 'info'
 }
 
 const getStatusText = (status) => {
-  const texts = { draft: '草稿', pending: '待审批', approved: '已通过', pending_payment: '待支付', paid: '已支付', pending_inbound: '待入库', rejected: '已拒绝', purchased: '已采购', revoked: '已撤销', partial_return: '部分退货', returned: '已退货' }
+  const texts = { draft: '草稿', pending: '待审批', approved: '已通过', pending_payment: '待支付', paid: '已支付', pending_inbound: '待入库', rejected: '已拒绝', purchased: '已采购', revoked: '已撤销', partial_return: '部分退货', returned: '已退货', replaced: '已转新采购' }
   return texts[status] || status
 }
 

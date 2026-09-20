@@ -93,3 +93,16 @@ test('待付款清单支持按结算单号模糊查询并按相同条件导出',
   assert.match(view, /params\.settlementNo = paymentCandidateNoFilter\.value\.trim\(\)/);
   assert.match(view, /@keyup\.enter="searchPaymentCandidates"/);
 });
+
+test('特殊仓SN重新采购时只调整原采购订单和应付而不重复变更库存', () => {
+  const controller = read('backend/src/modules/purchase/controller.js');
+  const web = read('frontend/web/src/views/Purchase.vue');
+  assert.match(controller, /async function adjustOriginalPurchaseForSpecialSn/);
+  assert.match(controller, /InboundItemSn\.findOne/);
+  assert.match(controller, /special_warehouse_repurchase:/);
+  assert.match(controller, /仅调整原采购订单，不变更库存/);
+  assert.match(controller, /status: 'replaced'/);
+  assert.match(controller, /await adjustOriginalPurchaseForSpecialSn/);
+  assert.match(controller, /特殊仓转新采购调整/);
+  assert.match(web, /replaced: '已转新采购'/);
+});
