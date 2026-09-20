@@ -308,21 +308,31 @@ function buildPayableListWhere(query, user) {
   return where;
 }
 
+function isPayableListVisible(payable, allocationSummary) {
+  const allocated = allocationSummary.get(String(payable.payable_id))?.amount || 0;
+  const remaining = getPayableRemaining(payable.total_amount, allocated, payable.offset_amount);
+  return Math.abs(remaining) > 0.005;
+}
+
 async function getPayableList(ctx) {
   const { page = 1, pageSize = 20 } = ctx.query;
   if (ctx.query.distributorId) assertDistributorOperation(ctx, ctx.query.distributorId);
   const where = buildPayableListWhere(ctx.query, ctx.state.user);
 
-  const { count, rows } = await Payable.findAndCountAll({
+  const candidateRows = await Payable.findAll({
     where,
     order: buildPendingFirstOrder(sequelize, {
       statusColumn: 'Payable.status',
       pendingStatuses: ['unpaid', 'partial_settled'],
       dateColumns: ['Payable.create_time'],
       idColumn: 'Payable.payable_id'
-    }),
-    ...paginate({}, { page, pageSize })
+    })
   });
+  const allocationSummary = await getAllocationSummary(candidateRows.map(row => row.payable_id));
+  const openRows = candidateRows.filter(row => isPayableListVisible(row, allocationSummary));
+  const paging = paginate({}, { page, pageSize });
+  const rows = openRows.slice(paging.offset, paging.offset + paging.limit);
+  const count = openRows.length;
 
   const requestIds = [...new Set(rows.map(row => row.request_id).filter(Boolean))];
   const expenseIds = [...new Set(rows
@@ -364,16 +374,11 @@ async function getPayableList(ctx) {
     row.setDataValue('tax_status', invoice.taxStatus);
   });
 
-  const summaryRows = await Payable.findAll({
-    where,
-    attributes: ['payable_id', 'total_amount']
-  });
-  const allocationSummary = await getAllocationSummary(summaryRows.map(row => row.payable_id));
-  const summary = summaryRows.reduce((result, row) => {
+  const summary = openRows.reduce((result, row) => {
     const allocated = allocationSummary.get(String(row.payable_id))?.amount || 0;
     result.totalAmount += Math.max(0, getPayableRemaining(row.total_amount, allocated, row.offset_amount));
     return result;
-  }, { totalCount: summaryRows.length, totalAmount: 0 });
+  }, { totalCount: openRows.length, totalAmount: 0 });
   rows.forEach(row => {
     const allocated = allocationSummary.get(String(row.payable_id))?.amount || 0;
     const request = requestSnapshots.get(String(row.request_id));
@@ -403,7 +408,7 @@ async function getPayableList(ctx) {
 async function exportPayableList(ctx) {
   if (ctx.query.distributorId) assertDistributorOperation(ctx, ctx.query.distributorId);
   const where = buildPayableListWhere(ctx.query, ctx.state.user);
-  const rows = await Payable.findAll({
+  const candidateRows = await Payable.findAll({
     where,
     order: buildPendingFirstOrder(sequelize, {
       statusColumn: 'Payable.status',
@@ -412,6 +417,8 @@ async function exportPayableList(ctx) {
       idColumn: 'Payable.payable_id'
     })
   });
+  const allocationSummary = await getAllocationSummary(candidateRows.map(row => row.payable_id));
+  const rows = candidateRows.filter(row => isPayableListVisible(row, allocationSummary));
   await enrichPayableDistributorNames(rows);
   const requestIds = [...new Set(rows
     .filter(row => ['purchase', 'purchase_adjustment', 'purchase_return'].includes(row.source_type) && row.request_id)
@@ -423,7 +430,6 @@ async function exportPayableList(ctx) {
     })
     : [];
   const requestSnapshots = new Map(requests.map(item => [String(item.request_id), item]));
-  const allocationSummary = await getAllocationSummary(rows.map(row => row.payable_id));
   const data = rows.map(row => {
     const item = row.toJSON();
     const allocated = allocationSummary.get(String(item.payable_id))?.amount || 0;
@@ -2414,6 +2420,7 @@ module.exports = {
   ensurePayableSettlementApprovalFlow,
   applyPayableSettlementApproval,
   getPayableList,
+  isPayableListVisible,
   exportPayableList,
   getPayableTaxStatus,
   parsePayableInvoice,

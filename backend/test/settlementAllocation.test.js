@@ -7,6 +7,7 @@ const {
   getPayableRemaining,
   getExpenseStatus
 } = require('../src/modules/finance/settlementAllocation');
+const { isPayableListVisible } = require('../src/modules/finance/payableController');
 
 test('purchase settlement unit price deducts per-unit rebate', () => {
   assert.equal(actualUnitPrice({ quantity: 10, unit_price: 100, rebate_deduction: 50 }), 95);
@@ -35,4 +36,18 @@ test('purchase return remaining amount offsets unpaid payable before supplier cr
   assert.equal(getPayableRemaining(10000, 0, 2000), 8000);
   assert.equal(getPayableRemaining(10000, 9000, 1000), 0);
   assert.equal(getPayableRemaining(-2000, 0, 500), -1500);
+});
+
+test('payable worklist hides fully allocated payments and credits but keeps partial rows', () => {
+  const summary = new Map([
+    ['POS_FULL', { amount: 1000 }],
+    ['POS_PARTIAL', { amount: 400 }],
+    ['NEG_FULL', { amount: -500 }],
+    ['NEG_PARTIAL', { amount: -200 }]
+  ]);
+
+  assert.equal(isPayableListVisible({ payable_id: 'POS_FULL', total_amount: 1000, offset_amount: 0 }, summary), false);
+  assert.equal(isPayableListVisible({ payable_id: 'POS_PARTIAL', total_amount: 1000, offset_amount: 0 }, summary), true);
+  assert.equal(isPayableListVisible({ payable_id: 'NEG_FULL', total_amount: -500, offset_amount: 0 }, summary), false);
+  assert.equal(isPayableListVisible({ payable_id: 'NEG_PARTIAL', total_amount: -500, offset_amount: 0 }, summary), true);
 });

@@ -513,9 +513,7 @@
             <el-select v-model="payableStatusFilter" placeholder="状态筛选" clearable style="width: 170px" @change="onPayableFilterChange">
               <el-option label="待付款" value="unpaid" />
               <el-option label="部分结算" value="partial_settled" />
-              <el-option label="结算中" value="settling" />
               <el-option label="供应商待抵扣" value="credit" />
-              <el-option label="已抵扣" value="offset" />
             </el-select>
             <el-input
               v-model="payableSourceNoFilter"
