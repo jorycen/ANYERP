@@ -46,3 +46,13 @@ test('审批中心不重复展示需要在调拨管理处理的人工调拨任�
   assert.match(view, /inventory_transfer_receipt/);
   assert.match(view, /!item\.manual_path/);
 });
+
+test('我的申请只返回本人发起的审批并展示当前审批进度', () => {
+  const controller = read('backend/src/modules/approval/controller.js');
+  const view = read('frontend/web/src/views/Approval.vue');
+  assert.match(controller, /return \{ applicant_staff_id: user\.staffId \}/);
+  assert.match(controller, /current_progress_text/);
+  assert.match(controller, /await enrichInstanceProgress\(rows\)/);
+  assert.match(view, /label="当前进度"/);
+  assert.match(view, /row\.current_progress_text/);
+});

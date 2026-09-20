@@ -209,7 +209,37 @@ async function listTasks(ctx) {
 
 function instanceAccessWhere(user, scope) {
   if (scope === 'all' && isAdmin(user)) return {};
-  return { [Op.or]: [{ applicant_staff_id: user.staffId }, { subject_staff_id: user.staffId }] };
+  return { applicant_staff_id: user.staffId };
+}
+
+async function enrichInstanceProgress(rows) {
+  const pendingRows = rows.filter(row => row.status === 'pending');
+  if (!pendingRows.length) return;
+  const instanceIds = pendingRows.map(row => row.instance_id);
+  const instanceMap = new Map(pendingRows.map(row => [String(row.instance_id), row]));
+  const tasks = await ApprovalTask.findAll({
+    where: { instance_id: { [Op.in]: instanceIds }, status: 'pending' },
+    include: [{ model: Staff, as: 'Assignee', attributes: ['staff_id', 'name', 'phone'] }],
+    order: [['node_index', 'ASC'], ['task_order', 'ASC']]
+  });
+  const taskMap = new Map();
+  for (const task of tasks) {
+    const instance = instanceMap.get(String(task.instance_id));
+    if (!instance
+      || Number(task.node_index) !== Number(instance.current_node_index)
+      || Number(task.round_no) !== Number(instance.resubmit_count)) continue;
+    const key = String(task.instance_id);
+    if (!taskMap.has(key)) taskMap.set(key, []);
+    taskMap.get(key).push(task);
+  }
+  for (const instance of pendingRows) {
+    const currentTasks = taskMap.get(String(instance.instance_id)) || [];
+    const nodeName = currentTasks[0]?.node_name || `第${Number(instance.current_node_index || 0) + 1}环节`;
+    const approverNames = [...new Set(currentTasks.map(task => task.Assignee?.name || task.Assignee?.phone).filter(Boolean))];
+    instance.setDataValue('current_stage_name', nodeName);
+    instance.setDataValue('current_approver_names', approverNames);
+    instance.setDataValue('current_progress_text', approverNames.length ? `${nodeName}（${approverNames.join('、')}）` : nodeName);
+  }
 }
 
 async function listInstances(ctx) {
@@ -235,6 +265,7 @@ async function listInstances(ctx) {
   }
   if (ctx.query.status) where.status = ctx.query.status;
   const rows = await ApprovalFlowInstance.findAll({ where, order: [['create_time', 'DESC']], limit: Math.min(Number(ctx.query.limit || 100), 500) });
+  await enrichInstanceProgress(rows);
   ctx.body = rows.map(toInstance);
 }
 

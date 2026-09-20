@@ -57,6 +57,9 @@
             <el-table-column prop="title" label="审批主题" min-width="220" />
             <el-table-column label="业务类型" width="150"><template #default="{ row }">{{ businessTypeText(row.business_type) }}</template></el-table-column>
             <el-table-column prop="instance_no" label="申请编号" width="190" />
+            <el-table-column label="当前进度" min-width="210">
+              <template #default="{ row }">{{ instanceProgressText(row) }}</template>
+            </el-table-column>
             <el-table-column prop="status" label="状态" width="100">
               <template #default="{ row }"><el-tag :type="statusType(row.status)">{{ statusText(row.status) }}</el-tag></template>
             </el-table-column>
@@ -392,6 +395,7 @@ async function loadFlows() { if (canConfigure.value) flows.value = (await api.ge
 async function loadOptions() { if (canConfigure.value) Object.assign(assigneeOptions, (await api.getApprovalAssigneeOptions()).data || {}) }
 async function reload() { loading.value = true; try { await Promise.all([loadTasks(), loadOtherApprovalTasks(), loadInstances(), loadFlows(), loadOptions()]) } finally { loading.value = false } }
 
+function instanceProgressText(row) { return row.current_progress_text || statusText(row.status) }
 function statusText(value) { return ({ pending: '审批中', approved: '已通过', rejected: '已拒绝', cancelled: '已撤销' }[value] || value || '-') }
 function businessTypeText(value) {
   return ({
