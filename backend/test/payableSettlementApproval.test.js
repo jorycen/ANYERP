@@ -28,6 +28,17 @@ test('应付发票展示保留票据类型、税务属性与专票税率', () =>
   });
 });
 
+test('应付管理导出默认严格使用待付款查询状态，并保留明确选择的状态', () => {
+  assert.deepEqual(payableController.buildPayableExportQuery({ supplierId: 'SUP_1' }), {
+    supplierId: 'SUP_1',
+    status: 'unpaid'
+  });
+  assert.deepEqual(payableController.buildPayableExportQuery({ supplierId: 'SUP_1', status: 'credit' }), {
+    supplierId: 'SUP_1',
+    status: 'credit'
+  });
+});
+
 test('应付管理导出将来源类型和状态转换为中文', () => {
   assert.equal(payableController.getPayableSourceTypeLabel('purchase'), '采购');
   assert.equal(payableController.getPayableSourceTypeLabel('purchase_adjustment'), '采购调整');

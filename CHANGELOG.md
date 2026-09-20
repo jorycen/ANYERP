@@ -1,5 +1,6 @@
 # 2026-09-20
 
+- 修复应付管理导出未携带默认待付款状态的问题；列表查询与导出现在共用日期、供应商、经销商、来源、状态和单号筛选参数，后端导出接口也默认限定待付款口径。
 - 优化应付管理导出报表，将来源类型和单据状态等英文枚举统一转换为中文。
 - 修复小程序拒绝调拨固定提交空原因而触发 500 的问题；拒绝时改为输入拒绝原因，后端对空原因返回明确的业务校验提示。
 - Fixed the rebate settlement page failure caused by a missing `T_RESOURCE_SETTLEMENT.DISTRIBUTOR_ID` column. Startup schema checks now add the column and query index automatically, and new databases include it at table creation.

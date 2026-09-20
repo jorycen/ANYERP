@@ -2095,14 +2095,20 @@ const handleExportRebate = () => runListExport('rebate', '返利流水', api.exp
   ...(rebateSupplierFilter.value ? { supplierId: rebateSupplierFilter.value } : {}),
   ...(rebateTypeFilter.value ? { type: rebateTypeFilter.value } : {})
 })
-const handleExportPayable = () => runListExport('payable', '应付管理', api.exportPayableList, {
+const buildPayableFilterParams = () => ({
+  status: payableStatusFilter.value || 'unpaid',
   ...(payableDateRange.value?.length === 2 ? { startDate: payableDateRange.value[0], endDate: payableDateRange.value[1] } : {}),
   ...(payableSupplierFilter.value ? { supplierId: payableSupplierFilter.value } : {}),
   ...(payableDistributorFilter.value ? { distributorId: payableDistributorFilter.value } : {}),
   ...(payableSourceFilter.value ? { sourceType: payableSourceFilter.value } : {}),
-  ...(payableStatusFilter.value ? { status: payableStatusFilter.value } : {}),
-  ...(payableSourceNoFilter.value ? { sourceNo: payableSourceNoFilter.value } : {})
+  ...(payableSourceNoFilter.value.trim() ? { sourceNo: payableSourceNoFilter.value.trim() } : {})
 })
+const handleExportPayable = () => runListExport(
+  'payable',
+  '应付管理',
+  api.exportPayableList,
+  buildPayableFilterParams()
+)
 const handleExportReimbursementSettlement = () => runListExport('reimbursement-settlement', '报销结算单', api.exportSettlementList, {
   settlementType: 'reimbursement',
   ...(reimbursementSettlementStatusFilter.value ? { status: reimbursementSettlementStatusFilter.value } : {}),
@@ -2922,15 +2928,7 @@ const loadSuppliers = async () => {
 
 const loadPayableData = async () => {
   try {
-    const params = { ...payableQuery, status: payableStatusFilter.value || 'unpaid' }
-    if (payableSupplierFilter.value) params.supplierId = payableSupplierFilter.value
-    if (payableDistributorFilter.value) params.distributorId = payableDistributorFilter.value
-    if (payableSourceFilter.value) params.sourceType = payableSourceFilter.value
-    if (payableSourceNoFilter.value.trim()) params.sourceNo = payableSourceNoFilter.value.trim()
-    if (Array.isArray(payableDateRange.value) && payableDateRange.value.length === 2) {
-      params.startDate = payableDateRange.value[0]
-      params.endDate = payableDateRange.value[1]
-    }
+    const params = { ...payableQuery, ...buildPayableFilterParams() }
     const res = await api.getPayableList(params)
     if (res.code === 0) {
       payableData.value = res.data?.list || []

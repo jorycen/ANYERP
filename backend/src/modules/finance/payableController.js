@@ -431,9 +431,13 @@ async function getPayableList(ctx) {
   ctx.body = result;
 }
 
+function buildPayableExportQuery(query = {}) {
+  return { ...query, status: query.status || 'unpaid' };
+}
+
 async function exportPayableList(ctx) {
   if (ctx.query.distributorId) assertDistributorOperation(ctx, ctx.query.distributorId);
-  const where = buildPayableListWhere(ctx.query, ctx.state.user);
+  const where = buildPayableListWhere(buildPayableExportQuery(ctx.query), ctx.state.user);
   const candidateRows = await Payable.findAll({
     where,
     order: buildPendingFirstOrder(sequelize, {
@@ -2448,6 +2452,7 @@ module.exports = {
   getPayableList,
   isPayableListVisible,
   exportPayableList,
+  buildPayableExportQuery,
   getPayableSourceTypeLabel,
   getPayableStatusLabel,
   getPayableTaxStatus,
