@@ -28,6 +28,22 @@ test('应付发票展示保留票据类型、税务属性与专票税率', () =>
   });
 });
 
+test('应付管理导出将来源类型和状态转换为中文', () => {
+  assert.equal(payableController.getPayableSourceTypeLabel('purchase'), '采购');
+  assert.equal(payableController.getPayableSourceTypeLabel('purchase_adjustment'), '采购调整');
+  assert.equal(payableController.getPayableSourceTypeLabel('purchase_return'), '采购退库');
+  assert.equal(payableController.getPayableSourceTypeLabel('expense'), '费用');
+  assert.equal(payableController.getPayableSourceTypeLabel('reimbursement'), '报销');
+  assert.equal(payableController.getPayableSourceTypeLabel('unknown'), '其他');
+  assert.equal(payableController.getPayableStatusLabel('unpaid'), '待付款');
+  assert.equal(payableController.getPayableStatusLabel('partial_settled'), '部分结算');
+  assert.equal(payableController.getPayableStatusLabel('settling'), '结算中');
+  assert.equal(payableController.getPayableStatusLabel('credit'), '供应商待抵扣');
+  assert.equal(payableController.getPayableStatusLabel('offset'), '已抵扣');
+  assert.equal(payableController.getPayableStatusLabel('paid'), '已付款');
+  assert.equal(payableController.getPayableStatusLabel('cancelled'), '已取消');
+});
+
 test('同一付款申请不能混合含税与未税，经销商可保持单一口径', () => {
   assert.equal(payableController.combineTaxStatuses(['TAX_INCLUDED', 'TAX_INCLUDED']), 'TAX_INCLUDED');
   assert.equal(payableController.combineTaxStatuses(['UNTAXED', 'UNKNOWN']), 'UNTAXED');

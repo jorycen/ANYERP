@@ -113,6 +113,32 @@ function parsePayableInvoice(invoiceType) {
   return { raw, documentType: raw, taxStatus: 'UNKNOWN', taxRate: null };
 }
 
+const PAYABLE_SOURCE_TYPE_LABELS = {
+  purchase: '采购',
+  purchase_adjustment: '采购调整',
+  purchase_return: '采购退库',
+  expense: '费用',
+  reimbursement: '报销'
+};
+
+const PAYABLE_STATUS_LABELS = {
+  unpaid: '待付款',
+  partial_settled: '部分结算',
+  settling: '结算中',
+  credit: '供应商待抵扣',
+  offset: '已抵扣',
+  paid: '已付款',
+  cancelled: '已取消'
+};
+
+function getPayableSourceTypeLabel(sourceType) {
+  return PAYABLE_SOURCE_TYPE_LABELS[String(sourceType || '').trim()] || '其他';
+}
+
+function getPayableStatusLabel(status) {
+  return PAYABLE_STATUS_LABELS[String(status || '').trim()] || '未知状态';
+}
+
 function getPayableTaxStatus(invoiceType) {
   return parsePayableInvoice(invoiceType).taxStatus;
 }
@@ -436,7 +462,7 @@ async function exportPayableList(ctx) {
     const request = item.source_type === 'purchase' ? requestSnapshots.get(String(item.request_id)) : null;
     return {
       来源单号: item.source_no || item.request_no || '',
-      来源类型: item.source_type || '',
+      来源类型: getPayableSourceTypeLabel(item.source_type),
       收款方: item.payee_name || item.supplier_name || '',
       经销商: item.distributor_name || item.distributor_id || '',
       采购原价: request ? Number(request.total_amount || 0) : '',
@@ -445,7 +471,7 @@ async function exportPayableList(ctx) {
       已结算金额: Number(allocated || 0),
       剩余应付金额: getPayableRemaining(item.total_amount, allocated, item.offset_amount),
       已付金额: Number(item.paid_amount || 0),
-      状态: item.status || '',
+      状态: getPayableStatusLabel(item.status),
       采购发起人: ['purchase', 'purchase_adjustment', 'purchase_return'].includes(item.source_type)
         ? request?.apply_user || request?.submit_user || request?.create_user || ''
         : '',
@@ -2422,6 +2448,8 @@ module.exports = {
   getPayableList,
   isPayableListVisible,
   exportPayableList,
+  getPayableSourceTypeLabel,
+  getPayableStatusLabel,
   getPayableTaxStatus,
   parsePayableInvoice,
   combineTaxStatuses,
