@@ -297,6 +297,7 @@ async function runSchemaMigrations() {
   await ensureDepositRefundApprovalSchema();
   await ensureSerializedInventorySchema();
   await ensureProductPnEffectiveUniqueIndex();
+  await ensureFinancialProfitFeatureSchema();
   console.log('[DB Schema] startup schema compatibility check completed');
 }
 
@@ -3650,6 +3651,9 @@ async function runMigrations() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商品价格表'
     `);
     await checkAndAddColumn('T_PRODUCT_PRICE', 'RETAIL_PRICE', 'DECIMAL(12,2) DEFAULT 0 COMMENT "零售价（销售默认带入价）"', 'STANDARD_PRICE');
+    await checkAndAddColumn('T_PRODUCT_PRICE', 'OUTPUT_TAX_RATE', 'DECIMAL(6,4) DEFAULT 0.1300 COMMENT "销项税率"', 'MIN_SALE_PRICE');
+    await checkAndAddColumn('T_PRODUCT_PRICE', 'INPUT_TAX_RATE', 'DECIMAL(6,4) DEFAULT 0.1300 COMMENT "进项税率"', 'OUTPUT_TAX_RATE');
+    await checkAndAddColumn('T_PRODUCT_PRICE', 'INPUT_TAX_DEDUCTIBLE', 'TINYINT(1) DEFAULT 1 COMMENT "进项税是否可抵扣"', 'INPUT_TAX_RATE');
 
     await checkAndCreateTable('T_PRODUCT_IMPORT_TASK', `
       CREATE TABLE T_PRODUCT_IMPORT_TASK (
@@ -4217,6 +4221,40 @@ async function migrateMissingProductPns(uuid) {
   }
 }
 
+async function ensureFinancialProfitFeatureSchema() {
+  await checkAndAddColumn('T_PRODUCT_PRICE', 'OUTPUT_TAX_RATE', 'DECIMAL(6,4) DEFAULT 0.1300 COMMENT "销项税率"', 'MIN_SALE_PRICE');
+  await checkAndAddColumn('T_PRODUCT_PRICE', 'INPUT_TAX_RATE', 'DECIMAL(6,4) DEFAULT 0.1300 COMMENT "进项税率"', 'OUTPUT_TAX_RATE');
+  await checkAndAddColumn('T_PRODUCT_PRICE', 'INPUT_TAX_DEDUCTIBLE', 'TINYINT(1) DEFAULT 1 COMMENT "进项税是否可抵扣"', 'INPUT_TAX_RATE');
+
+  const [parents] = await sequelize.query(
+    "SELECT MENU_ID FROM T_MENU WHERE MENU_CODE = 'finance' AND STATUS = 1 LIMIT 1"
+  );
+  if (!parents.length) return;
+  const [existing] = await sequelize.query(
+    "SELECT MENU_ID FROM T_MENU WHERE MENU_CODE = 'finance_profit_statement' LIMIT 1"
+  );
+  let menuId = existing[0]?.MENU_ID;
+  if (!menuId) {
+    menuId = require('crypto').randomUUID().replace(/-/g, '').substring(0, 32);
+    await sequelize.query(
+      `INSERT INTO T_MENU (MENU_ID, MENU_CODE, NAME, PARENT_ID, MENU_TYPE, PATH, ICON, SORT_ORDER, STATUS)
+       VALUES (?, 'finance_profit_statement', '财务利润表', ?, 'menu', '/finance/profit-statement', NULL, 3, 1)`,
+      { replacements: [menuId, parents[0].MENU_ID] }
+    );
+  } else {
+    await sequelize.query(
+      "UPDATE T_MENU SET NAME = '财务利润表', PATH = '/finance/profit-statement', STATUS = 1 WHERE MENU_ID = ?",
+      { replacements: [menuId] }
+    );
+  }
+  await sequelize.query(
+    `INSERT IGNORE INTO T_ROLE_MENU (ROLE_ID, MENU_ID)
+     SELECT ROLE_ID, ? FROM T_ROLE
+      WHERE ROLE_CODE IN ('boss', 'admin', 'finance') AND STATUS = 1`,
+    { replacements: [menuId] }
+  );
+}
+
 async function seedPermissionData() {
   try {
     const uuid = require('crypto').randomUUID;
@@ -4237,6 +4275,7 @@ async function seedPermissionData() {
       ['purchase_supplier', '供应商管理', 'purchase', '/purchase/supplier', 2],
       ['finance_daily', '日结单', 'finance', '/finance/daily', 1],
       ['finance_product_settlement', '产品端毛利', 'finance', '/finance/product-settlement', 2],
+      ['finance_profit_statement', '财务利润表', 'finance', '/finance/profit-statement', 3],
       ['finance_subsidy_receivable', '国补应收单', 'finance', '/finance/subsidy-receivable', 3],
       ['finance_rebate_settlement', '返利下账', 'finance', '/finance/rebate-settlement', 4],
       ['finance_expense', '费用管理', 'finance', '/finance/expense', 5],
@@ -4287,7 +4326,7 @@ async function seedPermissionData() {
       finance: [
         'sales_order', 'sales_subsidy_photos',
         'inventory_resource_rights',
-        'finance_daily', 'finance_product_settlement', 'finance_subsidy_receivable', 'finance_rebate_settlement', 'finance_expense',
+        'finance_daily', 'finance_product_settlement', 'finance_profit_statement', 'finance_subsidy_receivable', 'finance_rebate_settlement', 'finance_expense',
         'finance_payable', 'finance_purchase_invoice', 'finance_reimbursement', 'finance_payment', 'finance_rebate',
         'finance_resource_rights', 'finance_account', 'finance_settlement', 'finance_freight',
         'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_achievement',
@@ -4559,5 +4598,6 @@ module.exports = {
   ensureCriticalSchemaCompatibility,
   ensureProductDimensionSchema,
   ensureSerializedInventorySchema,
-  ensureProductPnEffectiveUniqueIndex
+  ensureProductPnEffectiveUniqueIndex,
+  ensureFinancialProfitFeatureSchema
 };

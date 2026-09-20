@@ -23,6 +23,10 @@ const {
   exportProductSettlementOrders
 } = require('./financeOverviewController');
 const { getMonthlyTaskAchievement } = require('./monthlyTaskAchievement');
+const {
+  getFinancialProfitOrders,
+  exportFinancialProfitOrders
+} = require('./financialProfitController');
 const { requireDistributorAccount } = require('../../middleware/permission');
 
 const router = new Router();
@@ -38,6 +42,8 @@ router.get('/dashboard/overview', getDashboardOverview);
 router.get('/finance-overview', requireDistributorAccount(), getFinanceOverview);
 router.get('/product-settlement-orders/export', requireDistributorAccount(), exportProductSettlementOrders);
 router.get('/product-settlement-orders', requireDistributorAccount(), getProductSettlementOrders);
+router.get('/financial-profit-orders/export', requireDistributorAccount(), exportFinancialProfitOrders);
+router.get('/financial-profit-orders', requireDistributorAccount(), getFinancialProfitOrders);
 router.get('/monthly-task-achievement', getMonthlyTaskAchievement);
 router.get('/profit-adjustments', listProfitAdjustments);
 router.post('/profit-adjustments', upload.array('files', 5), createProfitAdjustment);

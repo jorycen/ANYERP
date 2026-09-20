@@ -478,6 +478,9 @@ const ProductPrice = sequelize.define('ProductPrice', {
   standard_price: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0, comment: '产品定价（订单毛利商品成本）' },
   retail_price: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0, comment: '零售价（销售默认带入价）' },
   min_sale_price: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0, comment: '最低销售价' },
+  output_tax_rate: { type: DataTypes.DECIMAL(6, 4), defaultValue: 0.13, comment: '销项税率' },
+  input_tax_rate: { type: DataTypes.DECIMAL(6, 4), defaultValue: 0.13, comment: '进项税率' },
+  input_tax_deductible: { type: DataTypes.TINYINT, defaultValue: 1, comment: '进项税是否可抵扣' },
   effective_time: { type: DataTypes.DATE, comment: '生效时间' },
   create_user: { type: DataTypes.STRING(64) },
   status: { type: DataTypes.TINYINT, defaultValue: 1 }

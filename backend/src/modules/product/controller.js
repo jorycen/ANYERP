@@ -294,6 +294,9 @@ function priceFieldLabel(field) {
   if (field === 'standard_price') return '定价';
   if (field === 'retail_price') return '零售价';
   if (field === 'min_sale_price') return '最低售价';
+  if (field === 'output_tax_rate') return '销项税率(%)';
+  if (field === 'input_tax_rate') return '进项税率(%)';
+  if (field === 'input_tax_deductible') return '进项可抵扣';
   return field;
 }
 
@@ -1916,7 +1919,7 @@ async function getPriceList(ctx) {
     where: productWhere,
     attributes: ['product_id', 'product_code', 'manufacturer_code', 'name', 'unit', 'category'],
     include: [
-      { model: ProductPrice, attributes: ['price_id', 'standard_price', 'retail_price', 'min_sale_price', 'cost_price'] }
+      { model: ProductPrice, attributes: ['price_id', 'standard_price', 'retail_price', 'min_sale_price', 'cost_price', 'output_tax_rate', 'input_tax_rate', 'input_tax_deductible'] }
     ],
     order: [['product_code', 'DESC']],
     ...paginate({}, { page: parseInt(page), pageSize: parseInt(pageSize) }),
@@ -1956,7 +1959,10 @@ async function getPriceList(ctx) {
     standard_price: p.ProductPrice ? p.ProductPrice.standard_price : 0,
     retail_price: p.ProductPrice ? p.ProductPrice.retail_price : 0,
     min_sale_price: p.ProductPrice ? p.ProductPrice.min_sale_price : 0,
-    cost_price: p.ProductPrice ? p.ProductPrice.cost_price : 0
+    cost_price: p.ProductPrice ? p.ProductPrice.cost_price : 0,
+    output_tax_rate: p.ProductPrice ? p.ProductPrice.output_tax_rate : 0.13,
+    input_tax_rate: p.ProductPrice ? p.ProductPrice.input_tax_rate : 0.13,
+    input_tax_deductible: p.ProductPrice ? Number(p.ProductPrice.input_tax_deductible) : 1
   }));
 
   ctx.body = formatPaginatedResult(list, { page, pageSize, count });
@@ -2017,7 +2023,7 @@ async function exportCostPrices(ctx) {
 }
 
 async function setPrice(ctx) {
-  const { productId, standardPrice, retailPrice, minSalePrice } = ctx.request.body;
+  const { productId, standardPrice, retailPrice, minSalePrice, outputTaxRate, inputTaxRate, inputTaxDeductible } = ctx.request.body;
 
   if (!productId || standardPrice === undefined || minSalePrice === undefined) {
     ctx.throw(400, '商品ID、标准售价和最低销售价不能为空');
@@ -2028,6 +2034,17 @@ async function setPrice(ctx) {
   }
 
   const effectiveRetailPrice = retailPrice === undefined ? Number(standardPrice) : Number(retailPrice);
+  const normalizeTaxRate = value => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return null;
+    return parsed > 1 ? parsed / 100 : parsed;
+  };
+  const nextOutputTaxRate = normalizeTaxRate(outputTaxRate);
+  const nextInputTaxRate = normalizeTaxRate(inputTaxRate);
+  if ((nextOutputTaxRate !== null && (nextOutputTaxRate < 0 || nextOutputTaxRate > 1))
+    || (nextInputTaxRate !== null && (nextInputTaxRate < 0 || nextInputTaxRate > 1))) {
+    ctx.throw(400, '税率必须在0%至100%之间');
+  }
   if (Number(minSalePrice) > effectiveRetailPrice) {
     ctx.throw(400, '最低售价必须小于或等于零售价');
   }
@@ -2046,15 +2063,26 @@ async function setPrice(ctx) {
     const oldStandardPrice = moneyNumber(price?.standard_price);
     const oldRetailPrice = moneyNumber(price?.retail_price);
     const oldMinSalePrice = moneyNumber(price?.min_sale_price);
+    const oldOutputTaxRate = Number(price?.output_tax_rate ?? 0.13);
+    const oldInputTaxRate = Number(price?.input_tax_rate ?? 0.13);
+    const oldInputTaxDeductible = Number(price?.input_tax_deductible ?? 1) === 1 ? 1 : 0;
     const nextStandardPrice = moneyNumber(standardPrice);
     const nextRetailPrice = moneyNumber(effectiveRetailPrice);
     const nextMinSalePrice = moneyNumber(minSalePrice);
+    const effectiveOutputTaxRate = nextOutputTaxRate ?? oldOutputTaxRate;
+    const effectiveInputTaxRate = nextInputTaxRate ?? oldInputTaxRate;
+    const effectiveInputTaxDeductible = inputTaxDeductible === undefined
+      ? oldInputTaxDeductible
+      : (inputTaxDeductible === false || Number(inputTaxDeductible) === 0 ? 0 : 1);
 
     if (price) {
       await price.update({
         standard_price: nextStandardPrice,
         retail_price: nextRetailPrice,
         min_sale_price: nextMinSalePrice,
+        output_tax_rate: effectiveOutputTaxRate,
+        input_tax_rate: effectiveInputTaxRate,
+        input_tax_deductible: effectiveInputTaxDeductible,
         effective_time: now,
         create_user: userName
       }, { transaction });
@@ -2065,6 +2093,9 @@ async function setPrice(ctx) {
         standard_price: nextStandardPrice,
         retail_price: nextRetailPrice,
         min_sale_price: nextMinSalePrice,
+        output_tax_rate: effectiveOutputTaxRate,
+        input_tax_rate: effectiveInputTaxRate,
+        input_tax_deductible: effectiveInputTaxDeductible,
         cost_price: 0,
         effective_time: now,
         create_user: userName
@@ -2107,6 +2138,27 @@ async function setPrice(ctx) {
         price_field: 'min_sale_price',
         old_price: oldMinSalePrice,
         new_price: nextMinSalePrice
+      },
+      {
+        change_id: generateUUID(),
+        ...logBase,
+        price_field: 'output_tax_rate',
+        old_price: oldOutputTaxRate * 100,
+        new_price: effectiveOutputTaxRate * 100
+      },
+      {
+        change_id: generateUUID(),
+        ...logBase,
+        price_field: 'input_tax_rate',
+        old_price: oldInputTaxRate * 100,
+        new_price: effectiveInputTaxRate * 100
+      },
+      {
+        change_id: generateUUID(),
+        ...logBase,
+        price_field: 'input_tax_deductible',
+        old_price: oldInputTaxDeductible,
+        new_price: effectiveInputTaxDeductible
       }
     ], { transaction });
 

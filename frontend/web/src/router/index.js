@@ -136,6 +136,12 @@ const routes = [
         meta: { roles: ['finance', 'admin', 'boss'], tab: 'product-settlement' }
       },
       {
+        path: 'finance/profit-statement',
+        name: 'FinanceProfitStatement',
+        component: () => import('../views/FinancialProfitStatement.vue'),
+        meta: { roles: ['finance', 'admin', 'boss'] }
+      },
+      {
         path: 'finance/subsidy-receivable',
         name: 'FinanceSubsidyReceivable',
         component: () => import('../views/Finance.vue'),

@@ -303,6 +303,29 @@
                 </el-tooltip>
               </template>
             </el-table-column>
+            <el-table-column label="销项税率" width="125">
+              <template #default="{ row }">
+                <span v-if="!row._editing">{{ row._outputTaxRate }}%</span>
+                <el-input-number v-else v-model="row._outputTaxRate" :min="0" :max="100" :precision="2" :step="1" size="small" controls-position="right" />
+              </template>
+            </el-table-column>
+            <el-table-column label="进项税率" width="125">
+              <template #default="{ row }">
+                <span v-if="!row._editing">{{ row._inputTaxRate }}%</span>
+                <el-input-number v-else v-model="row._inputTaxRate" :min="0" :max="100" :precision="2" :step="1" size="small" controls-position="right" />
+              </template>
+            </el-table-column>
+            <el-table-column label="进项可抵扣" width="120" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="!row._editing" :type="row._inputTaxDeductible ? 'success' : 'info'">{{ row._inputTaxDeductible ? '是' : '否' }}</el-tag>
+                <el-switch v-else v-model="row._inputTaxDeductible" />
+              </template>
+            </el-table-column>
+            <el-table-column label="不含税库存成本" width="155">
+              <template #default="{ row }">
+                <span class="cost-price">¥{{ formatNum(row._inputTaxDeductible ? Number(row.cost_price || 0) / (1 + Number(row._inputTaxRate || 0) / 100) : row.cost_price) }}</span>
+              </template>
+            </el-table-column>
             <el-table-column label="产品定价" width="140">
               <template #default="{ row }">
                 <span v-if="!row._editing">¥{{ formatNum(row.standard_price) }}</span>
@@ -714,10 +737,10 @@
       <el-table :data="priceHistoryData" stripe border v-loading="priceHistoryLoading" max-height="420">
         <el-table-column prop="price_field_label" label="字段" width="100" />
         <el-table-column label="调整前" width="110">
-          <template #default="{ row }">¥{{ formatNum(row.old_price) }}</template>
+          <template #default="{ row }">{{ formatPriceHistoryValue(row, row.old_price) }}</template>
         </el-table-column>
         <el-table-column label="调整后" width="110">
-          <template #default="{ row }">¥{{ formatNum(row.new_price) }}</template>
+          <template #default="{ row }">{{ formatPriceHistoryValue(row, row.new_price) }}</template>
         </el-table-column>
         <el-table-column prop="status_label" label="状态" width="90" />
         <el-table-column prop="source_label" label="来源" width="100" />
@@ -1556,13 +1579,30 @@ const loadPriceData = async () => {
   try {
     const res = await api.getPriceList(priceParams)
     if (res.code === 0) {
-      priceTableData.value = (res.data?.list || []).map(p => ({ ...p, _editing: false, _stdPrice: p.standard_price || 0, _retailPrice: p.retail_price || p.standard_price || 0, _minPrice: p.min_sale_price || 0 }))
+      priceTableData.value = (res.data?.list || []).map(p => ({
+        ...p,
+        _editing: false,
+        _stdPrice: p.standard_price || 0,
+        _retailPrice: p.retail_price || p.standard_price || 0,
+        _minPrice: p.min_sale_price || 0,
+        _outputTaxRate: Number((Number(p.output_tax_rate ?? 0.13) * 100).toFixed(2)),
+        _inputTaxRate: Number((Number(p.input_tax_rate ?? 0.13) * 100).toFixed(2)),
+        _inputTaxDeductible: Number(p.input_tax_deductible ?? 1) === 1
+      }))
       priceTotal.value = res.data?.pagination?.total || res.data?.total || 0
     }
   } catch (err) { ElMessage.error(err?.response?.data?.message || '加载失败') }
   finally { priceLoading.value = false }
 }
-const startEditPrice = (row) => { row._editing = true; row._stdPrice = row.standard_price || 0; row._retailPrice = row.retail_price || row.standard_price || 0; row._minPrice = row.min_sale_price || 0 }
+const startEditPrice = (row) => {
+  row._editing = true
+  row._stdPrice = row.standard_price || 0
+  row._retailPrice = row.retail_price || row.standard_price || 0
+  row._minPrice = row.min_sale_price || 0
+  row._outputTaxRate = Number((Number(row.output_tax_rate ?? 0.13) * 100).toFixed(2))
+  row._inputTaxRate = Number((Number(row.input_tax_rate ?? 0.13) * 100).toFixed(2))
+  row._inputTaxDeductible = Number(row.input_tax_deductible ?? 1) === 1
+}
 const cancelEditPrice = (row) => { row._editing = false }
 const savePrice = async (row) => {
   if (Number(row._minPrice) > Number(row._retailPrice)) {
@@ -1570,8 +1610,25 @@ const savePrice = async (row) => {
     return
   }
   try {
-    const res = await api.setPrice({ productId: row.product_id, standardPrice: row._stdPrice, retailPrice: row._retailPrice, minSalePrice: row._minPrice })
-    if (res.code === 0) { row.standard_price = row._stdPrice; row.retail_price = row._retailPrice; row.min_sale_price = row._minPrice; row._editing = false; ElMessage.success('更新成功') }
+    const res = await api.setPrice({
+      productId: row.product_id,
+      standardPrice: row._stdPrice,
+      retailPrice: row._retailPrice,
+      minSalePrice: row._minPrice,
+      outputTaxRate: row._outputTaxRate,
+      inputTaxRate: row._inputTaxRate,
+      inputTaxDeductible: row._inputTaxDeductible
+    })
+    if (res.code === 0) {
+      row.standard_price = row._stdPrice
+      row.retail_price = row._retailPrice
+      row.min_sale_price = row._minPrice
+      row.output_tax_rate = Number(row._outputTaxRate) / 100
+      row.input_tax_rate = Number(row._inputTaxRate) / 100
+      row.input_tax_deductible = row._inputTaxDeductible ? 1 : 0
+      row._editing = false
+      ElMessage.success('更新成功')
+    }
     else ElMessage.error(res.message || '更新失败')
   } catch (err) { ElMessage.error(err?.response?.data?.message || '更新失败') }
 }
@@ -1953,6 +2010,11 @@ const handleImportSubmit = async () => {
 }
 
 const formatNum = (v) => { if (v === null || v === undefined) return '0.00'; return Number(v).toFixed(2) }
+const formatPriceHistoryValue = (row, value) => {
+  if (row?.price_field === 'output_tax_rate' || row?.price_field === 'input_tax_rate') return `${formatNum(value)}%`
+  if (row?.price_field === 'input_tax_deductible') return Number(value) === 1 ? '是' : '否'
+  return `¥${formatNum(value)}`
+}
 const formatTime = (t) => { if (!t) return '-'; const d = new Date(t); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0') }
 
 const loadProductApplications = async () => {
