@@ -380,11 +380,10 @@
                   <el-radio value="PERSONAL_ADVANCE">个人垫付</el-radio>
                 </el-radio-group>
               </el-form-item>
-              <el-form-item label="发票类型">
-                <el-select v-model="snPurchaseForm.invoiceType" clearable placeholder="请选择" style="width:100%">
-                  <el-option label="增值税专用发票" value="SPECIAL" />
-                  <el-option label="增值税普通发票" value="NORMAL" />
-                  <el-option label="无票" value="NONE" />
+              <el-form-item label="采购税率" required>
+                <el-select v-model="snPurchaseForm.invoiceType" placeholder="请选择采购税率" style="width:100%">
+                  <el-option label="13%含税" value="13%含税" />
+                  <el-option label="未税" value="未税" />
                 </el-select>
               </el-form-item>
               <el-form-item label="目标库位" required>
@@ -2648,6 +2647,7 @@ const openSnPurchase = async row => {
 
 const submitSnPurchase = async () => {
   if (!snPurchaseForm.supplierId) return ElMessage.warning('请选择供应商')
+  if (!['13%含税', '未税'].includes(snPurchaseForm.invoiceType)) return ElMessage.warning('请选择采购税率')
   if (!snPurchaseForm.goodsTypeId) return ElMessage.warning('请选择货型')
   if (!snPurchaseForm.targetLocationId) return ElMessage.warning('请选择目标库位')
   if (Number(snPurchaseForm.price) < 0) return ElMessage.warning('采购价不能小于0')

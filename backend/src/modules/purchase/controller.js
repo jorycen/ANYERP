@@ -19,7 +19,8 @@ const { createProductRecord } = require('../product/controller');
 const VALID_PURCHASE_INVOICE_TYPES = new Set(['未税', '13%含税']);
 function validatePurchaseInvoiceType(ctx, value) {
   const normalized = String(value || '').trim();
-  if (!VALID_PURCHASE_INVOICE_TYPES.has(normalized)) ctx.throw(400, '发票类型只允许选择“13%含税”或“未税”');
+  if (!normalized) ctx.throw(400, '请选择采购税率');
+  if (!VALID_PURCHASE_INVOICE_TYPES.has(normalized)) ctx.throw(400, '采购税率只允许选择“13%含税”或“未税”');
   return normalized;
 }
 
@@ -1282,7 +1283,9 @@ async function createRequest(ctx) {
     saveDraft = false
   } = ctx.request.body;
   const isDraft = Boolean(saveDraft);
-  const normalizedInvoiceType = validatePurchaseInvoiceType(ctx, invoiceType);
+  const normalizedInvoiceType = isDraft && !String(invoiceType || '').trim()
+    ? ''
+    : validatePurchaseInvoiceType(ctx, invoiceType);
   if (isDraft && (items || []).some(item => getSnPurchaseFields(item).sourceSnId)) {
     ctx.throw(400, '特殊仓SN采购请直接提交审批，不支持保存草稿');
   }
@@ -1535,6 +1538,7 @@ function canSubmitDraft(user, request) {
 
 async function validateDraftSubmission(request, ctx) {
   if (!request.supplier_id) ctx.throw(400, '提交采购申请前请选择供应商');
+  validatePurchaseInvoiceType(ctx, request.invoice_type);
   if (!request.items || request.items.length === 0) ctx.throw(400, '请添加商品明细');
   assertPurchaseAllocationStoresVisible(ctx, request.items, request.store_id);
   try {
@@ -1680,7 +1684,9 @@ async function updateRequestDraft(ctx) {
   if (!['COMPANY_CREDIT', 'PERSONAL_ADVANCE'].includes(paymentMethod || 'COMPANY_CREDIT')) {
     ctx.throw(400, '付款方式无效');
   }
-  const normalizedInvoiceType = validatePurchaseInvoiceType(ctx, invoiceType);
+  const normalizedInvoiceType = String(invoiceType || '').trim()
+    ? validatePurchaseInvoiceType(ctx, invoiceType)
+    : '';
   for (const item of items) {
     if (!item.productId || Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
   }

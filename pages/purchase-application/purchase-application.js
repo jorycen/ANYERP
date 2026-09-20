@@ -267,8 +267,8 @@ Page({
       supplierIndex: -1,
       supplierId: '',
       supplierName: '',
-      invoiceTypeIndex: 0,
-      invoiceType: INVOICE_TYPES[0],
+      invoiceTypeIndex: -1,
+      invoiceType: '',
       paymentMethodIndex: 0,
       paymentMethod: 'COMPANY_CREDIT',
       freightPlatformId: '',
@@ -456,11 +456,8 @@ Page({
       'form.supplierId': supplier.supplierId || '',
       'form.supplierName': supplier.name || ''
     };
-    const invoiceIndex = INVOICE_TYPES.indexOf(supplier.invoiceType);
-    if (invoiceIndex >= 0) {
-      updates['form.invoiceTypeIndex'] = invoiceIndex;
-      updates['form.invoiceType'] = supplier.invoiceType;
-    }
+    updates['form.invoiceTypeIndex'] = -1;
+    updates['form.invoiceType'] = '';
     this.setData(updates);
   },
 
@@ -474,11 +471,8 @@ Page({
       'form.supplierId': supplier.supplierId || '',
       'form.supplierName': supplier.name || ''
     };
-    const invoiceIndex = INVOICE_TYPES.indexOf(supplier.invoiceType);
-    if (invoiceIndex >= 0) {
-      updates['form.invoiceTypeIndex'] = invoiceIndex;
-      updates['form.invoiceType'] = supplier.invoiceType;
-    }
+    updates['form.invoiceTypeIndex'] = -1;
+    updates['form.invoiceType'] = '';
     this.setData(updates);
   },
 
@@ -938,6 +932,10 @@ Page({
       wx.showToast({ title: '请选择供应商', icon: 'none' });
       return;
     }
+    if (!INVOICE_TYPES.includes(form.invoiceType)) {
+      wx.showToast({ title: '请选择采购税率', icon: 'none' });
+      return;
+    }
     if (!form.productType) {
       wx.showToast({ title: '请选择货型', icon: 'none' });
       return;
@@ -1083,8 +1081,8 @@ Page({
         supplierIndex: -1,
         supplierId: '',
         supplierName: '',
-        invoiceTypeIndex: 0,
-        invoiceType: INVOICE_TYPES[0],
+        invoiceTypeIndex: -1,
+        invoiceType: '',
         paymentMethodIndex: 0,
         paymentMethod: 'COMPANY_CREDIT',
         freightPlatformId: '',
