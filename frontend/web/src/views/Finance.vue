@@ -617,7 +617,9 @@
                 <el-button v-if="row.source_type === 'expense' || row.source_type === 'reimbursement'" link type="primary" @click="handleCreateExpenseSettlement(row)">
                   生成结算单
                 </el-button>
-                <el-button v-else-if="Number(row.remaining_amount || 0) > 0" link type="primary" @click="openSingleSettlementDialog(row)">结算</el-button>
+                <el-button v-else-if="Math.abs(Number(row.remaining_amount || 0)) > 0.005" link type="primary" @click="openSingleSettlementDialog(row)">
+                  {{ Number(row.remaining_amount || 0) < 0 ? '抵扣' : '结算' }}
+                </el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -3365,7 +3367,11 @@ const openSettlementDialog = async () => {
   settlementDialogVisible.value = true
   try {
     settlementForm.supplierId = supplierId
-    unpaidList.value = await loadSettlementLines({ supplierId, payableIds: payableIds.join(',') })
+    unpaidList.value = await loadSettlementLines({
+      supplierId,
+      payableIds: payableIds.join(','),
+      ...(distributorIds.length === 1 ? { distributorId: distributorIds[0] } : {})
+    })
     await nextTick()
     const selectedIds = new Set(payableIds.map(String))
     unpaidList.value.forEach(item => {
@@ -3407,13 +3413,21 @@ const openSingleSettlementDialog = async (row) => {
   selectedPayables.value = []
   settlementDialogVisible.value = true
   try {
+    const isCredit = Number(row.remaining_amount || 0) < 0
     unpaidList.value = await loadSettlementLines({
       supplierId: settlementForm.supplierId,
-      payableIds: row.payable_id
+      ...(row.distributor_id ? { distributorId: row.distributor_id } : {}),
+      // A credit must be combined with positive payables. Loading the supplier's
+      // open rows lets the user choose what this credit should offset.
+      ...(!isCredit ? { payableIds: row.payable_id } : {})
     })
     await nextTick()
     if (unpaidList.value.length && settlementTableRef.value) {
-      unpaidList.value.forEach(item => settlementTableRef.value.toggleRowSelection(item, true))
+      unpaidList.value.forEach(item => {
+        if (String(item.payable_id) === String(row.payable_id)) {
+          settlementTableRef.value.toggleRowSelection(item, true)
+        }
+      })
     }
   } catch (err) {
     ElMessage.error('获取待结算明细失败')

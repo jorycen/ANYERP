@@ -7,7 +7,10 @@ const {
   getPayableRemaining,
   getExpenseStatus
 } = require('../src/modules/finance/settlementAllocation');
-const { isPayableListVisible } = require('../src/modules/finance/payableController');
+const {
+  buildPayableSettlementResidual,
+  isPayableListVisible
+} = require('../src/modules/finance/payableController');
 
 test('purchase settlement unit price deducts per-unit rebate', () => {
   assert.equal(actualUnitPrice({ quantity: 10, unit_price: 100, rebate_deduction: 50 }), 95);
@@ -50,4 +53,24 @@ test('payable worklist hides fully allocated payments and credits but keeps part
   assert.equal(isPayableListVisible({ payable_id: 'POS_PARTIAL', total_amount: 1000, offset_amount: 0 }, summary), true);
   assert.equal(isPayableListVisible({ payable_id: 'NEG_FULL', total_amount: -500, offset_amount: 0 }, summary), false);
   assert.equal(isPayableListVisible({ payable_id: 'NEG_PARTIAL', total_amount: -500, offset_amount: 0 }, summary), true);
+});
+
+test('settlement residual keeps an accounting balance when purchase item quantity is exhausted', () => {
+  const row = buildPayableSettlementResidual({
+    payable_id: 'POS',
+    request_id: 'REQ',
+    request_no: 'PR001',
+    supplier_id: 'SUP',
+    distributor_id: 'DIST',
+    source_type: 'purchase',
+    total_amount: 888,
+    create_time: '2026-09-20'
+  }, 88, 800);
+
+  assert.equal(row.payable_id, 'POS');
+  assert.equal(row.product_name, '整单剩余金额');
+  assert.equal(row.settled_amount, 88);
+  assert.equal(row.remaining_amount, 800);
+  assert.equal(row.available_amount, 800);
+  assert.equal(row.available_quantity, null);
 });

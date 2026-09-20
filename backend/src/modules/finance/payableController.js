@@ -55,6 +55,27 @@ function normalizeSettlementRemark(value) {
   return String(value || '').trim().slice(0, 512) || null;
 }
 
+function buildPayableSettlementResidual(payable, allocatedAmount, remaining, productName = '整单剩余金额') {
+  return {
+    payable_id: payable.payable_id,
+    request_id: payable.request_id,
+    request_no: payable.request_no,
+    supplier_id: payable.supplier_id,
+    supplier_name: payable.supplier_name,
+    distributor_id: payable.distributor_id,
+    distributor_name: payable.distributor_name,
+    source_type: payable.source_type,
+    total_amount: payable.total_amount,
+    settled_amount: allocatedAmount,
+    remaining_amount: remaining,
+    product_name: productName,
+    available_quantity: null,
+    available_amount: remaining,
+    unit_price: null,
+    create_time: payable.create_time
+  };
+}
+
 async function resolvePayableSettlementFixedApprovers(transaction) {
   const approvers = [];
   for (const phone of PAYABLE_SETTLEMENT_APPROVER_PHONES) {
@@ -658,27 +679,22 @@ async function getPayableSettlementItems(ctx) {
         });
         itemRemaining = roundAmount(itemRemaining - availableAmount);
       });
+      // Adjustments can reduce every purchase line to zero while the payable still
+      // has an accounting balance. Keep that balance available for settlement.
+      if (itemRemaining > 0.005) {
+        rows.push(buildPayableSettlementResidual(payable, allocated.amount, itemRemaining));
+      }
       return;
     }
     const remaining = getPayableRemaining(payable.total_amount, allocated.amount, payable.offset_amount);
-    if (remaining > 0) rows.push({
-      payable_id: payable.payable_id,
-      request_id: payable.request_id,
-      request_no: payable.request_no,
-      supplier_id: payable.supplier_id,
-      supplier_name: payable.supplier_name,
-      distributor_id: payable.distributor_id,
-      distributor_name: payable.distributor_name,
-      source_type: payable.source_type,
-      total_amount: payable.total_amount,
-      settled_amount: allocated.amount,
-        remaining_amount: remaining,
-      product_name: payable.source_type === 'purchase_adjustment' ? '采购调整' : '整单金额',
-      available_quantity: null,
-      available_amount: remaining,
-      unit_price: null,
-      create_time: payable.create_time
-    });
+    if (remaining > 0) {
+      rows.push(buildPayableSettlementResidual(
+        payable,
+        allocated.amount,
+        remaining,
+        payable.source_type === 'purchase_adjustment' ? '采购调整' : '整单金额'
+      ));
+    }
   });
   ctx.body = { code: 0, data: rows };
 }
@@ -2445,6 +2461,7 @@ async function voidPaymentBatch(ctx) {
 
 module.exports = {
   normalizeSettlementRemark,
+  buildPayableSettlementResidual,
   PAYABLE_SETTLEMENT_APPROVAL_FLOW_CODE,
   PAYABLE_SETTLEMENT_APPROVER_PHONES,
   ensurePayableSettlementApprovalFlow,
