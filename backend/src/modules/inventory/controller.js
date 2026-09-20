@@ -28,6 +28,7 @@ const { accessibleDistributorIds, canAccessDistributor } = require('../../utils/
 const { assertSingleSnProductPn } = require('../../utils/productPn');
 const { ensureProductPnMaster } = require('../../utils/productPnMaster');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
+const { createPurchaseReimbursementAfterInbound } = require('../finance/expenseService');
 const { createSalesReturnGrossProfitLedger } = require('../sales/grossProfit');
 const { createProductSettlementReturnAdjustment } = require('../report/productSettlement');
 const { createSalesReturnSettlement } = require('../sales/salesReturnSettlement');
@@ -3761,7 +3762,7 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
     const isPurchaseInbound = String(inbound.source_type || '').toLowerCase() === 'purchase' || Boolean(inbound.purchase_request_id);
     const inboundItems = await InboundItem.findAll({ where: { inbound_id: inboundId }, transaction: t });
     const purchaseRequest = inbound.purchase_request_id
-      ? await PurchaseRequest.findByPk(inbound.purchase_request_id, { transaction: t })
+      ? await PurchaseRequest.findByPk(inbound.purchase_request_id, { transaction: t, lock: t.LOCK.UPDATE })
       : null;
     const salesReturnRequest = isSalesReturnInbound && inbound.source_no
       ? await SalesReturnRequest.findOne({
@@ -4113,6 +4114,10 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
       receive_time: receiveTime,
       update_time: receiveTime
     }, { transaction: t });
+
+    if (isPurchaseInbound && nextInboundStatus === 'completed' && purchaseRequest) {
+      await createPurchaseReimbursementAfterInbound(purchaseRequest, user, t);
+    }
 
     if (isSalesReturnInbound) {
       const salesReturn = await SalesReturnRequest.findOne({

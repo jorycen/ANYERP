@@ -6,7 +6,7 @@ const { Op } = require('sequelize');
 const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { sendExcel } = require('../../utils/excelExport');
 const { recordRebateDeduction, recordSupplierRebateAccountTransaction, _getRebateBalance } = require('../finance/rebateController');
-const { createPurchaseReimbursement, createSettlementReversal, cancelExpenseRecord } = require('../finance/expenseService');
+const { createPurchaseReimbursementAfterInbound, createSettlementReversal, cancelExpenseRecord } = require('../finance/expenseService');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { canViewSnTraceReference } = require('../../utils/snTracePermission');
 const { isUsablePnCode } = require('../../utils/productPn');
@@ -1382,7 +1382,6 @@ async function createRequest(ctx) {
   const now = new Date();
   const submitterName = user.name || user.phone || String(user.staffId || '');
   const currentStaffId = user.staffId || user.id || null;
-  let createdRequest;
 
   await sequelize.transaction(async transaction => {
     await validateSnPurchaseConversion(ctx, items, finalStoreId, transaction);
@@ -1406,7 +1405,7 @@ async function createRequest(ctx) {
       );
     }
 
-    createdRequest = await PurchaseRequest.create({
+    await PurchaseRequest.create({
       request_id: requestId,
       request_no: requestNo,
       store_id: finalStoreId,
@@ -1494,10 +1493,6 @@ async function createRequest(ctx) {
       transaction
     });
 
-    if (normalizedPaymentMethod === 'PERSONAL_ADVANCE' && !isDraft) {
-      createdRequest.Supplier = await Supplier.findByPk(supplierId, { transaction });
-      await createPurchaseReimbursement(createdRequest, user, transaction);
-    }
   });
 
   ctx.body = {
@@ -1622,11 +1617,6 @@ async function submitRequestDraft(ctx) {
     toStatus: 'pending',
     user
   });
-
-  if (request.payment_method === 'PERSONAL_ADVANCE') {
-    request.Supplier = await Supplier.findByPk(request.supplier_id);
-    await createPurchaseReimbursement(request, user);
-  }
 
   ctx.body = { code: 0, message: '采购申请提交成功', requestId, requestNo: request.request_no, status: 'pending' };
 }
@@ -2010,6 +2000,7 @@ async function approveRequest(ctx) {
 
     // 特殊仓SN采购已在同一事务内完成库位转换，不再生成待入库单。
     if (snPurchaseConversions.length) {
+      await createPurchaseReimbursementAfterInbound(request, user, transaction, { allowWithoutInbound: true });
       await transaction.commit();
       transactionCommitted = true;
       ctx.body = { code: 0, message: '审批完成，SN已转入目标仓库，无需再次入库' };

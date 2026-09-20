@@ -6,7 +6,10 @@ const {
   ExpensePerformanceAllocation,
   ResourceSettlement,
   ApprovalFlowDefinition,
-  Staff
+  Staff,
+  Inbound,
+  PurchaseAdjustment,
+  Supplier
 } = require('../../models');
 const { Op } = require('sequelize');
 const { generateUUID } = require('../../utils');
@@ -361,9 +364,17 @@ async function createPurchaseReimbursement(request, user, transaction = null) {
   });
   if (existing) return existing;
 
-  const amount = money(request.actual_total !== null && request.actual_total !== undefined
+  const baseAmount = money(request.actual_total !== null && request.actual_total !== undefined
     ? request.actual_total
     : request.total_amount);
+  const adjustmentAmount = money(await PurchaseAdjustment.sum('total_amount_delta', {
+    where: { request_id: request.request_id, status: 'completed' },
+    transaction
+  }) || 0);
+  const amount = money(baseAmount + adjustmentAmount);
+  if (amount <= 0) return null;
+  const applicantStaffId = request.applicant_staff_id || request.operator_staff_id || request.create_staff_id || user.staffId || user.id || null;
+  const applicantName = request.apply_user || request.submit_user || request.create_user || request.operator_name || user.name || user.phone || '';
   return Expense.create({
     expense_id: generateUUID(),
     expense_no: `RB${Date.now()}${String(Math.floor(Math.random() * 100)).padStart(2, '0')}`,
@@ -377,8 +388,8 @@ async function createPurchaseReimbursement(request, user, transaction = null) {
     invoice_type: request.invoice_type || '',
     expense_date: new Date(),
     status: 'pending_approval',
-    applicant_staff_id: user.staffId || user.id || null,
-    applicant_name: user.name || user.phone || '',
+    applicant_staff_id: applicantStaffId,
+    applicant_name: applicantName,
     source_type: 'purchase',
     source_id: request.request_id,
     source_no: request.request_no,
@@ -388,6 +399,27 @@ async function createPurchaseReimbursement(request, user, transaction = null) {
     create_time: new Date(),
     update_time: new Date()
   }, { transaction });
+}
+
+function arePurchaseInboundsCompleted(inbounds) {
+  return Array.isArray(inbounds) && inbounds.length > 0 && inbounds.every(inbound => (
+    ['completed', 'returned'].includes(String(inbound?.status || '').toLowerCase())
+  ));
+}
+
+async function createPurchaseReimbursementAfterInbound(request, user, transaction = null, options = {}) {
+  if (!request || request.payment_method !== 'PERSONAL_ADVANCE') return null;
+  const inbounds = await Inbound.findAll({
+    where: { purchase_request_id: request.request_id },
+    attributes: ['inbound_id', 'status'],
+    transaction,
+    lock: transaction?.LOCK?.UPDATE
+  });
+  if (!options.allowWithoutInbound && !arePurchaseInboundsCompleted(inbounds)) return null;
+  if (options.allowWithoutInbound && inbounds.length > 0 && !arePurchaseInboundsCompleted(inbounds)) return null;
+
+  request.Supplier = request.Supplier || await Supplier.findByPk(request.supplier_id, { transaction });
+  return createPurchaseReimbursement(request, user, transaction);
 }
 
 function reversalError(message, status = 400) {
@@ -527,6 +559,8 @@ module.exports = {
   ensureExpensePayable,
   createReimbursementSettlement,
   createPurchaseReimbursement,
+  arePurchaseInboundsCompleted,
+  createPurchaseReimbursementAfterInbound,
   createSettlementReversal,
   cancelExpenseRecord
 };
