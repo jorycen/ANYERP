@@ -175,9 +175,16 @@ async function resolveApprovers(node, instance, transaction) {
     ...(instance.distributor_id ? { distributor_id: instance.distributor_id } : {}) };
   const ids = [];
   const fixedUserIds = new Set();
+  const explicitlyAuthorizedStoreIds = new Set();
   for (const rule of node.approvers || []) {
     if (rule.type === 'fixed_user' && rule.staffId) fixedUserIds.add(Number(rule.staffId));
-    ids.push(...await resolveRule(rule, subject, transaction));
+    const resolvedIds = await resolveRule(rule, subject, transaction);
+    const usesExplicitStorePermission = ['store_staff', 'store_manager'].includes(rule.type)
+      || (rule.type === 'role' && (rule.scope || 'subject_store') === 'subject_store');
+    if (usesExplicitStorePermission) {
+      resolvedIds.forEach(id => explicitlyAuthorizedStoreIds.add(Number(id)));
+    }
+    ids.push(...resolvedIds);
   }
   const candidates = ids.length ? await Staff.findAll({
     where: { staff_id: { [Op.in]: [...new Set(ids)] }, status: 1, is_deleted: 0 },
@@ -186,6 +193,7 @@ async function resolveApprovers(node, instance, transaction) {
   }) : [];
   const eligible = candidates
     .filter(staff => fixedUserIds.has(Number(staff.staff_id))
+      || explicitlyAuthorizedStoreIds.has(Number(staff.staff_id))
       || !subject.distributor_id
       || staff.distributor_id === subject.distributor_id
       || staff.role_code === 'boss'

@@ -5,8 +5,10 @@ const path = require('node:path');
 const {
   normalizeFlowConfig,
   getApprovalStoreIds,
-  canReadApprovalStore
+  canReadApprovalStore,
+  resolveApprovers
 } = require('../src/modules/approval/service');
+const M = require('../src/models');
 
 test('审批流程配置支持串行签批和或签', () => {
   const config = normalizeFlowConfig({
@@ -29,6 +31,71 @@ test('审批流程配置拒绝空节点和未知审批人类型', () => {
 test('通用审批允许申请人进入审批人任务', () => {
   const source = fs.readFileSync(path.join(__dirname, '../src/modules/approval/service.js'), 'utf8');
   assert.doesNotMatch(source, /id !== Number\(instance\.applicant_staff_id\)/);
+});
+
+test('explicit store permission remains valid across distributor ownership', async t => {
+  const subject = {
+    staff_id: 14,
+    status: 1,
+    is_deleted: 0,
+    store_id: 'D023000',
+    distributor_id: 'DIST002',
+    toJSON() { return { ...this }; }
+  };
+  const crossDistributorAdmin = {
+    staff_id: 47,
+    status: 1,
+    is_deleted: 0,
+    role_code: 'admin',
+    distributor_id: 'DIST001',
+    Roles: [{ role_code: 'admin' }]
+  };
+  t.mock.method(M.Staff, 'findByPk', async () => subject);
+  t.mock.method(M.StaffStorePermission, 'findAll', async () => [{ staff_id: 47 }]);
+  t.mock.method(M.Staff, 'findAll', async () => [crossDistributorAdmin]);
+
+  const ids = await resolveApprovers({
+    name: 'transfer receipt',
+    signMode: 'or',
+    approvers: [{ type: 'store_staff', scope: 'subject_store' }]
+  }, {
+    subject_staff_id: 14,
+    store_id: 'D023000',
+    distributor_id: 'DIST002'
+  });
+
+  assert.deepEqual(ids, [47]);
+});
+
+test('distributor-scoped role remains limited to its distributor', async t => {
+  const subject = {
+    staff_id: 14,
+    status: 1,
+    is_deleted: 0,
+    store_id: 'D023000',
+    distributor_id: 'DIST002',
+    toJSON() { return { ...this }; }
+  };
+  t.mock.method(M.Staff, 'findByPk', async () => subject);
+  t.mock.method(M.StaffStorePermission, 'findAll', async () => []);
+  t.mock.method(M.Staff, 'findAll', async () => [{
+    staff_id: 47,
+    status: 1,
+    is_deleted: 0,
+    role_code: 'admin',
+    distributor_id: 'DIST001',
+    Roles: [{ role_code: 'admin' }]
+  }]);
+
+  await assert.rejects(resolveApprovers({
+    name: 'distributor approval',
+    signMode: 'or',
+    approvers: [{ type: 'role', roleCode: 'admin', scope: 'subject_distributor' }]
+  }, {
+    subject_staff_id: 14,
+    store_id: 'D023000',
+    distributor_id: 'DIST002'
+  }));
 });
 
 test('店长审批范围只包含已分配管理门店', () => {
