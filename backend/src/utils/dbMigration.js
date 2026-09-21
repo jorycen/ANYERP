@@ -760,27 +760,30 @@ async function ensureCriticalSchemaCompatibility() {
   await checkAndMakeColumnNullable('T_PURCHASE_REQUEST_ITEM', 'PRODUCT_ID', 'VARCHAR(32)');
 }
 
-async function dropProductSnGlobalUniqueIndex() {
+async function ensureProductSnGlobalUniqueIndex() {
   try {
-    const indexes = await sequelize.query(
-      `SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS columns
-       FROM information_schema.STATISTICS
-       WHERE TABLE_SCHEMA = DATABASE()
-       AND TABLE_NAME = 'T_PRODUCT_SN'
-       AND NON_UNIQUE = 0
-       GROUP BY INDEX_NAME`,
+    const [duplicate] = await sequelize.query(
+      `SELECT COUNT(*) AS cnt FROM (
+         SELECT UPPER(TRIM(SN_CODE)) AS normalized_sn
+           FROM T_PRODUCT_SN
+          WHERE COALESCE(TRIM(SN_CODE), '') != ''
+          GROUP BY UPPER(TRIM(SN_CODE))
+         HAVING COUNT(*) > 1
+       ) duplicated_sn`,
       { type: sequelize.QueryTypes.SELECT }
     );
-
-    for (const idx of indexes) {
-      const columns = String(idx.columns || '').toUpperCase();
-      if (columns === 'SN_CODE') {
-        await sequelize.query(`ALTER TABLE T_PRODUCT_SN DROP INDEX \`${idx.INDEX_NAME}\``);
-        console.log(`[DB Migration] 已删除SN全局唯一索引: ${idx.INDEX_NAME}`);
-      }
+    if (Number(duplicate?.cnt || 0) > 0) {
+      console.warn(`[DB Migration] 检测到 ${duplicate.cnt} 组历史重复SN，已启用应用层全局唯一限制；清理历史数据后将自动创建数据库唯一索引`);
+      return false;
     }
+    return checkAndAddIndex(
+      'T_PRODUCT_SN',
+      'uk_product_sn_code_global',
+      'ALTER TABLE T_PRODUCT_SN ADD UNIQUE KEY uk_product_sn_code_global (SN_CODE)'
+    );
   } catch (error) {
-    console.error(`[DB Migration] 删除SN全局唯一索引失败 - ${error.message}`);
+    console.error(`[DB Migration] 创建SN全局唯一索引失败 - ${error.message}`);
+    return false;
   }
 }
 
@@ -1451,7 +1454,7 @@ async function runMigrations() {
     await checkAndAddColumn('T_TRANSFER', 'OUTBOUND_QUANTITY', 'INT NOT NULL DEFAULT 0 COMMENT "实际出库数量"', 'TOTAL_QUANTITY');
     await checkAndAddColumn('T_TRANSFER', 'REMAINING_QUANTITY', 'INT NOT NULL DEFAULT 0 COMMENT "剩余调拨数量"', 'OUTBOUND_QUANTITY');
     await checkAndAddColumn('T_TRANSFER', 'REMAINING_STATUS', 'VARCHAR(32) NOT NULL DEFAULT "pending" COMMENT "剩余数量状态"', 'REMAINING_QUANTITY');
-    await dropProductSnGlobalUniqueIndex();
+    await ensureProductSnGlobalUniqueIndex();
     await checkAndAddIndex('T_PRODUCT_SN', 'uk_product_sn_pn_sn', 'ALTER TABLE T_PRODUCT_SN ADD UNIQUE KEY uk_product_sn_pn_sn (PN_CODE, SN_CODE)');
     await checkAndAddIndex('T_PRODUCT_SN', 'idx_product_sn_code', 'ALTER TABLE T_PRODUCT_SN ADD INDEX idx_product_sn_code (SN_CODE)');
     await checkAndCreateTable('T_INVENTORY_RESOURCE_RIGHT', `

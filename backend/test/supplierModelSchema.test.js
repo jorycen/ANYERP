@@ -14,7 +14,7 @@ test('快递单号属于采购申请而不是供应商，供应商查询不会�
 test('安全启动迁移会补齐采购申请快递单号字段', () => {
   const migration = fs.readFileSync(path.resolve(__dirname, '../src/utils/dbMigration.js'), 'utf8');
   const start = migration.indexOf('async function ensureCriticalSchemaCompatibility()');
-  const end = migration.indexOf('async function dropProductSnGlobalUniqueIndex()');
+  const end = migration.indexOf('async function ensureProductSnGlobalUniqueIndex()');
   const compatibility = migration.slice(start, end);
 
   assert.match(compatibility, /'T_PURCHASE_REQUEST',\s*'EXPRESS_NO'/);

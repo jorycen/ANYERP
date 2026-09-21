@@ -55,19 +55,21 @@ function normalizeSnIdentityValue(value) {
 
 async function findInboundSnByIdentity({ pnCode, snCode, transaction }) {
   const exact = await ProductSn.findOne({
-    where: { pn_code: pnCode, sn_code: snCode },
+    where: { sn_code: String(snCode || '').trim() },
     transaction,
     lock: transaction?.LOCK?.UPDATE
   });
   if (exact) return exact;
 
   const candidates = await ProductSn.findAll({
-    where: { sn_code: snCode },
+    where: sequelize.where(
+      sequelize.fn('UPPER', sequelize.fn('TRIM', sequelize.col('sn_code'))),
+      String(snCode || '').trim().toUpperCase()
+    ),
     transaction,
     lock: transaction?.LOCK?.UPDATE
   });
-  const pnKey = normalizeSnIdentityValue(pnCode);
-  return candidates.find(item => normalizeSnIdentityValue(item.pn_code) === pnKey) || null;
+  return candidates[0] || null;
 }
 
 // @koa/multer/busboy 在部分请求头编码下会把 UTF-8 文件名按 latin1 交给业务层。
@@ -377,7 +379,7 @@ async function validateRows(ctx, rows, options, transaction) {
       }
       if (operationType === 'ADJUST') rowErrors.push('SN商品不得通过数量调整维护，请使用SN清单入库或出库');
       if (!snCode) rowErrors.push('SN商品必须填写SN');
-      const snKey = `${pnCode || ''}:${snCode}`;
+      const snKey = normalizeSnIdentityValue(snCode);
       if (snCode && seenSn.has(snKey)) rowErrors.push('导入文件中SN重复');
       if (snCode) seenSn.add(snKey);
 
@@ -385,7 +387,7 @@ async function validateRows(ctx, rows, options, transaction) {
         if (snCode) {
           const existing = await findInboundSnByIdentity({ pnCode, snCode, transaction });
           if (existing && String(existing.product_id || '') !== String(product.product_id || '')) {
-            rowErrors.push(`SN已关联其他商品，不能按当前商品入库`);
+            rowErrors.push(`SN已全局关联其他商品（原PN：${existing.pn_code || '-'}），不能按当前商品重复创建`);
           }
           if (existing && !isReusableInboundSnStatus(existing.status)) {
             rowErrors.push(`SN当前状态为${existing.status || '未知'}，不允许重复入库`);

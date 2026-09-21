@@ -940,21 +940,24 @@ function samePnCode(left, right) {
 }
 
 async function findInboundSnByIdentity({ pnCode, snCode, transaction }) {
+  // SN 是全局身份标识。重新入库必须复用原记录，不能因 PN 不同再创建一条。
   const exact = await ProductSn.findOne({
-    where: { pn_code: pnCode, sn_code: snCode },
+    where: { sn_code: String(snCode || '').trim() },
     transaction,
     lock: transaction?.LOCK?.UPDATE
   });
   if (exact) return exact;
 
-  // 兼容历史 PN 中存在大小写或内部空格差异的记录，避免漏查后再次 INSERT。
+  // 兼容历史 SN 中存在前后空格或大小写差异的记录。
   const candidates = await ProductSn.findAll({
-    where: { sn_code: snCode },
+    where: sequelize.where(
+      sequelize.fn('UPPER', sequelize.fn('TRIM', sequelize.col('sn_code'))),
+      String(snCode || '').trim().toUpperCase()
+    ),
     transaction,
     lock: transaction?.LOCK?.UPDATE
   });
-  const pnKey = normalizeSnIdentityValue(pnCode);
-  return candidates.find(item => normalizeSnIdentityValue(item.pn_code) === pnKey) || null;
+  return candidates[0] || null;
 }
 
 async function ensureDefaultProductPricing(product, purchasePrice, user, transaction) {
@@ -3987,10 +3990,10 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
 
         const existingSn = await findInboundSnByIdentity({ pnCode, snCode, transaction: t });
         if (existingSn && String(existingSn.product_id || '') !== String(dbItem.product_id || '')) {
-          fail(409, `PN码 [${pnCode || '-'}] 下的SN码 [${snCode}] 已关联其他商品，不能直接入库`);
+          fail(409, `SN码 [${snCode}] 已全局关联其他商品（原PN：${existingSn.pn_code || '-'}），不能重复创建`);
         }
         if (existingSn && !REUSABLE_INBOUND_SN_STATUSES.has(String(existingSn.status || '').trim())) {
-          fail(400, `PN码 [${pnCode || '-'}] 下的SN码 [${snCode}] 当前状态为${existingSn.status || '未知'}，不允许重复入库`);
+          fail(400, `SN码 [${snCode}] 当前状态为${existingSn.status || '未知'}，不允许重复入库`);
         }
 
         const pnMaster = await ensureProductPnMaster({
@@ -5683,11 +5686,14 @@ async function buildConversionTargetRows(targetItems, conversionType, storeId, s
         throw err;
       }
       const existingSn = await ProductSn.findOne({
-        where: { pn_code: pnCode, sn_code: snCode, is_deleted: 0 },
+        where: sequelize.where(
+          sequelize.fn('UPPER', sequelize.fn('TRIM', sequelize.col('sn_code'))),
+          snCode.toUpperCase()
+        ),
         transaction
       });
       if (existingSn) {
-        const err = new Error(`PN码 [${pnCode || '-'}] 下的SN码 [${snCode}] 已存在`);
+        const err = new Error(`SN码 [${snCode}] 已存在，SN在全系统不允许重复`);
         err.status = 400;
         throw err;
       }
@@ -6558,6 +6564,7 @@ module.exports = {
     getAvailableQty,
     salesReturnRequesterName,
     resolveTransferInboundSnBinding,
+    findInboundSnByIdentity,
     normalizeSnIdentityValue,
     samePnCode,
     isPurchaseInboundItemProgressComplete,
