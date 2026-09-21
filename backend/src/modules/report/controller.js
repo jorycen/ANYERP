@@ -436,6 +436,60 @@ function buildInventoryReportMetrics(categoryStats = []) {
   return { rows, summary };
 }
 
+function buildInventoryCategoryOrderMap(categories = []) {
+  const childrenByParent = new Map();
+  const rows = categories
+    .filter(row => Number(row.status ?? 1) === 1)
+    .map(row => ({ ...row, category_id: String(row.category_id || ''), parent_id: String(row.parent_id || '') }))
+    .filter(row => row.category_id);
+  rows.forEach(row => {
+    if (!childrenByParent.has(row.parent_id)) childrenByParent.set(row.parent_id, []);
+    childrenByParent.get(row.parent_id).push(row);
+  });
+  childrenByParent.forEach(children => children.sort((a, b) =>
+    Number(a.sort_order || 0) - Number(b.sort_order || 0)
+    || String(a.category_id).localeCompare(String(b.category_id))
+  ));
+  const orderMap = new Map();
+  const visited = new Set();
+  let order = 0;
+  const visit = (parentId, parentPath = []) => {
+    for (const row of childrenByParent.get(String(parentId || '')) || []) {
+      if (visited.has(row.category_id)) continue;
+      visited.add(row.category_id);
+      const path = [...parentPath, String(row.name || '').trim()].filter(Boolean);
+      orderMap.set(path.join('/'), order++);
+      visit(row.category_id, path);
+    }
+  };
+  visit('');
+  rows.filter(row => !visited.has(row.category_id))
+    .sort((a, b) => Number(a.level || 0) - Number(b.level || 0)
+      || Number(a.sort_order || 0) - Number(b.sort_order || 0)
+      || String(a.category_id).localeCompare(String(b.category_id)))
+    .forEach(row => visit(row.parent_id));
+  return orderMap;
+}
+
+function sortInventoryCategoryStats(rows = [], categories = []) {
+  const orderMap = buildInventoryCategoryOrderMap(categories);
+  const rank = row => {
+    const parts = [row.category, row.brand, row.series, row.model]
+      .map(value => String(value || '').trim())
+      .filter(Boolean);
+    for (let length = parts.length; length > 0; length -= 1) {
+      const path = parts.slice(0, length).join('/');
+      if (orderMap.has(path)) return orderMap.get(path);
+    }
+    return Number.MAX_SAFE_INTEGER;
+  };
+  return [...rows].sort((a, b) => rank(a) - rank(b)
+    || String(a.category || '').localeCompare(String(b.category || ''), 'zh-Hans-CN')
+    || String(a.brand || '').localeCompare(String(b.brand || ''), 'zh-Hans-CN')
+    || String(a.series || '').localeCompare(String(b.series || ''), 'zh-Hans-CN')
+    || String(a.model || '').localeCompare(String(b.model || ''), 'zh-Hans-CN'));
+}
+
 async function getInventoryReport(ctx) {
   const { storeId, regionId, category } = ctx.query;
   const user = ctx.state.user;
@@ -517,9 +571,15 @@ async function getInventoryReport(ctx) {
     raw: true
   });
 
+  const categoryRows = await ProductCategory.findAll({
+    where: { status: 1 },
+    attributes: ['category_id', 'parent_id', 'name', 'level', 'sort_order', 'status'],
+    raw: true
+  });
   const { rows: normalizedCategoryStats, summary } = buildInventoryReportMetrics(categoryStats);
+  const sortedCategoryStats = sortInventoryCategoryStats(normalizedCategoryStats, categoryRows);
 
-  ctx.body = { inStockStats, categoryStats: normalizedCategoryStats, summary };
+  ctx.body = { inStockStats, categoryStats: sortedCategoryStats, summary };
 }
 
 async function getEmployeePerformanceReport(ctx) {
@@ -840,5 +900,11 @@ module.exports = {
   getEmployeePerformanceReport,
   getDashboardFilters,
   getDashboardOverview,
-  _test: { aggregateProductSalesMetrics, buildCategoryPath, buildInventoryReportMetrics }
+  _test: {
+    aggregateProductSalesMetrics,
+    buildCategoryPath,
+    buildInventoryReportMetrics,
+    buildInventoryCategoryOrderMap,
+    sortInventoryCategoryStats
+  }
 };
