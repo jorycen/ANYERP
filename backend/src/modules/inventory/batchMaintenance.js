@@ -386,7 +386,9 @@ async function validateRows(ctx, rows, options, transaction) {
       if (operationType === 'INBOUND') {
         if (snCode) {
           const existing = await findInboundSnByIdentity({ pnCode, snCode, transaction });
-          if (existing && String(existing.product_id || '') !== String(product.product_id || '')) {
+          if (existing
+            && String(existing.product_id || '') !== String(product.product_id || '')
+            && !isReusableInboundSnStatus(existing.status)) {
             rowErrors.push(`SN已全局关联其他商品（原PN：${existing.pn_code || '-'}），不能按当前商品重复创建`);
           }
           if (existing && !isReusableInboundSnStatus(existing.status)) {
@@ -598,7 +600,9 @@ async function createSnInbound(item, application, transaction) {
     snCode: item.sn_code,
     transaction
   });
-  if (existing && String(existing.product_id || '') !== String(item.product_id || '')) {
+  if (existing
+    && String(existing.product_id || '') !== String(item.product_id || '')
+    && !isReusableInboundSnStatus(existing.status)) {
     throw Object.assign(
       new Error(`第 ${item.row_no} 行SN ${item.sn_code} 已关联其他商品，不能按当前商品入库`),
       { status: 409 }

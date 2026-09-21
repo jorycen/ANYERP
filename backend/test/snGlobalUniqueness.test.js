@@ -26,6 +26,14 @@ test('重新入库按SN全局查找并复用已销售记录，不再受PN限制'
   }
 });
 
+test('已销售SN即使历史商品档案不同也允许复用并重新绑定本次入库商品', () => {
+  const controller = fs.readFileSync(path.resolve(__dirname, '../src/modules/inventory/controller.js'), 'utf8');
+  const batch = fs.readFileSync(path.resolve(__dirname, '../src/modules/inventory/batchMaintenance.js'), 'utf8');
+
+  assert.match(controller, /String\(existingSn\.product_id[\s\S]+!REUSABLE_INBOUND_SN_STATUSES\.has/);
+  assert.match(batch, /String\(existing\.product_id[\s\S]+!isReusableInboundSnStatus\(existing\.status\)/);
+});
+
 test('数据库迁移启用SN全局唯一索引且不再主动删除该索引', () => {
   const migration = fs.readFileSync(path.resolve(__dirname, '../src/utils/dbMigration.js'), 'utf8');
   assert.match(migration, /uk_product_sn_code_global/);

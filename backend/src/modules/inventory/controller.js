@@ -3989,7 +3989,9 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
         const snCode = requestedSnCode;
 
         const existingSn = await findInboundSnByIdentity({ pnCode, snCode, transaction: t });
-        if (existingSn && String(existingSn.product_id || '') !== String(dbItem.product_id || '')) {
+        if (existingSn
+          && String(existingSn.product_id || '') !== String(dbItem.product_id || '')
+          && !REUSABLE_INBOUND_SN_STATUSES.has(String(existingSn.status || '').trim())) {
           fail(409, `SN码 [${snCode}] 已全局关联其他商品（原PN：${existingSn.pn_code || '-'}），不能重复创建`);
         }
         if (existingSn && !REUSABLE_INBOUND_SN_STATUSES.has(String(existingSn.status || '').trim())) {
