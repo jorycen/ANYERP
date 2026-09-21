@@ -14,11 +14,10 @@ test('API 日期统一序列化为北京时间且不会重复加八小时', () =
   assert.equal(body.data[0].create_time, '2026-09-20 09:02:03');
 });
 
-test('采购申请税率与小程序统一为未税、6%和13%并兼容旧含税标签', () => {
+test('采购申请税率统一为含税13%和未税', () => {
   const source = read('backend/src/modules/purchase/controller.js');
-  assert.match(source, /new Set\(\['未税', '6%', '13%'\]\)/);
-  assert.match(source, /\['6%含税', '6%'\]/);
-  assert.match(source, /\['13%含税', '13%'\]/);
+  assert.match(source, /new Set\(\['含税13%', '未税'\]\)/);
+  assert.doesNotMatch(source, /PURCHASE_INVOICE_TYPE_ALIASES/);
   assert.match(source, /请选择采购税率/);
   assert.match(source, /express_no:\s*String\(expressNo/);
   assert.match(source, /new_product_payload:\s*isUsedProduct/);
@@ -34,11 +33,11 @@ test('Web和小程序采购申请都要求主动选择采购税率', () => {
   assert.match(web, /invoiceType:\s*''/);
   assert.match(web, /请选择采购税率/);
   assert.match(inventoryWeb, /label="采购税率" required/);
-  assert.match(inventoryWeb, /\['未税', '6%', '13%'\]\.includes\(snPurchaseForm\.invoiceType\)/);
+  assert.match(inventoryWeb, /\['含税13%', '未税'\]\.includes\(snPurchaseForm\.invoiceType\)/);
   assert.match(miniWxml, /field-label required">采购税率/);
   assert.match(miniJs, /invoiceTypeIndex:\s*-1/);
   assert.match(miniJs, /INVOICE_TYPES\.includes\(form\.invoiceType\)/);
-  assert.match(miniJs, /INVOICE_TYPES = \['未税', '6%', '13%'\]/);
+  assert.match(miniJs, /INVOICE_TYPES = \['含税13%', '未税'\]/);
 });
 
 test('手机采购入库强制校验并保存SN、IMEI1、IMEI2', () => {
