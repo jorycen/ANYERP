@@ -24,6 +24,7 @@ const { DashboardService, canViewProfit } = require('./dashboardService');
 const { ARCHIVED_STATUSES: POSITIVE_SALES_ORDER_STATUSES } = require('./dashboardDataSource');
 const { buildDecisionInsights, buildAiAdvisor } = require('./decisionEngine');
 const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/storePermissions');
+const { appendOperatingSourceCondition, INTERNAL_TRANSFER_SOURCE } = require('./operatingScope');
 const {
   FORMULA_VERSION: GROSS_PROFIT_FORMULA_VERSION,
   snapshotToResponse
@@ -249,6 +250,7 @@ async function getSalesReport(ctx) {
     is_deleted: 0,
     store_id: storeIds
   };
+  appendOperatingSourceCondition(where);
   if (archiveScope === 'all') {
     where[Op.or] = [
       { order_status: null },
@@ -291,7 +293,14 @@ async function getSalesReport(ctx) {
     raw: true
   });
 
-  const returnSettlementWhere = { store_id: storeIds };
+  const returnSettlementWhere = {
+    store_id: storeIds,
+    [Op.and]: [sequelize.literal(`NOT EXISTS (
+      SELECT 1 FROM T_ORDER operating_order
+       WHERE operating_order.ORDER_ID = SalesReturnSettlement.ORDER_ID
+         AND COALESCE(TRIM(operating_order.CUSTOMER_SOURCE), '') LIKE '${INTERNAL_TRANSFER_SOURCE}%'
+    )`)]
+  };
   if (startDate && endDate) {
     returnSettlementWhere.create_time = {
       [Op.gte]: new Date(startDate),
@@ -597,6 +606,7 @@ async function getEmployeePerformanceReport(ctx) {
     store_id: { [Op.in]: storeIds },
     order_status: { [Op.in]: POSITIVE_SALES_ORDER_STATUSES }
   };
+  appendOperatingSourceCondition(where);
   if (staffName) where.create_user = staffName;
   if (orderNo) where.order_no = { [Op.like]: `%${String(orderNo).trim()}%` };
   if (startDate && endDate) {
@@ -610,7 +620,13 @@ async function getEmployeePerformanceReport(ctx) {
     where: {
       is_deleted: 0,
       store_id: { [Op.in]: storeIds },
-      create_user: { [Op.ne]: null }
+      create_user: { [Op.ne]: null },
+      [Op.and]: [{
+        [Op.or]: [
+          { customer_source: null },
+          { customer_source: { [Op.notLike]: `${INTERNAL_TRANSFER_SOURCE}%` } }
+        ]
+      }]
     },
     attributes: [[sequelize.fn('DISTINCT', sequelize.col('create_user')), 'name']],
     raw: true

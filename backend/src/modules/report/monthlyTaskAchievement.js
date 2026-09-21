@@ -14,6 +14,7 @@ const { normalizeParticipants } = require('./dashboardDataSource');
 const { canViewProfit } = require('./dashboardService');
 
 const ARCHIVED_STATUSES = ['已归档', 'completed', 'archived', 'returned'];
+const { INTERNAL_TRANSFER_SOURCE } = require('./operatingScope');
 
 function number(value) {
   const parsed = Number(value || 0);
@@ -76,7 +77,13 @@ function employeeKey(staffId, name) {
 
 async function loadActuals(storeIds, startAt, endAt) {
   if (!storeIds.length) return { storeActuals: new Map(), employeeActuals: new Map() };
-  const replacements = { storeIds, startAt, endAt, archivedStatuses: ARCHIVED_STATUSES };
+  const replacements = {
+    storeIds,
+    startAt,
+    endAt,
+    archivedStatuses: ARCHIVED_STATUSES,
+    internalTransferSource: `${INTERNAL_TRANSFER_SOURCE}%`
+  };
   const orderRows = await sequelize.query(`
     SELECT o.ORDER_ID AS orderId,
            o.ORDER_NO AS orderNo,
@@ -99,6 +106,7 @@ async function loadActuals(storeIds, startAt, endAt) {
       LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
         AND gp.FORMULA_VERSION = 'ORDER_GP_V5_20260706'
      WHERE o.IS_DELETED = 0
+       AND COALESCE(TRIM(o.CUSTOMER_SOURCE), '') NOT LIKE :internalTransferSource
        AND o.ORDER_STATUS IN (:archivedStatuses)
        AND o.STORE_ID IN (:storeIds)
        AND o.CREATE_TIME >= :startAt
@@ -134,6 +142,7 @@ async function loadActuals(storeIds, startAt, endAt) {
       INNER JOIN T_ORDER o ON o.ORDER_ID = pa.ORDER_ID
      WHERE pa.STATUS = 'approved'
        AND o.IS_DELETED = 0
+       AND COALESCE(TRIM(o.CUSTOMER_SOURCE), '') NOT LIKE :internalTransferSource
        AND o.ORDER_STATUS IN (:archivedStatuses)
        AND o.STORE_ID IN (:storeIds)
        AND o.CREATE_TIME >= :startAt
@@ -167,6 +176,7 @@ async function loadActuals(storeIds, startAt, endAt) {
       INNER JOIN T_SALES_RETURN_SETTLEMENT_ITEM sri ON sri.SETTLEMENT_ID = srs.SETTLEMENT_ID
       LEFT JOIN T_ORDER o ON o.ORDER_ID = srs.ORDER_ID
      WHERE srs.STORE_ID IN (:storeIds)
+       AND COALESCE(TRIM(o.CUSTOMER_SOURCE), '') NOT LIKE :internalTransferSource
        AND srs.CREATE_TIME >= :startAt
        AND srs.CREATE_TIME < :endAt`, { replacements, type: QueryTypes.SELECT });
   for (const row of returnItems) {
@@ -190,15 +200,17 @@ async function loadActuals(storeIds, startAt, endAt) {
   }
 
   const returnLedgerRows = await sequelize.query(`
-    SELECT STORE_ID AS storeId,
-           STAFF_ID AS staffId,
-           EMPLOYEE_NAME AS employeeName,
-           RETURNED_SALES_AMOUNT AS salesAmount,
-           GROSS_PROFIT_AMOUNT AS grossProfitAmount
-      FROM T_SALES_RETURN_GROSS_PROFIT
-     WHERE STORE_ID IN (:storeIds)
-       AND CREATE_TIME >= :startAt
-       AND CREATE_TIME < :endAt`, { replacements, type: QueryTypes.SELECT });
+    SELECT return_gp.STORE_ID AS storeId,
+           return_gp.STAFF_ID AS staffId,
+           return_gp.EMPLOYEE_NAME AS employeeName,
+           return_gp.RETURNED_SALES_AMOUNT AS salesAmount,
+           return_gp.GROSS_PROFIT_AMOUNT AS grossProfitAmount
+      FROM T_SALES_RETURN_GROSS_PROFIT return_gp
+      INNER JOIN T_ORDER o ON o.ORDER_ID = return_gp.ORDER_ID
+     WHERE return_gp.STORE_ID IN (:storeIds)
+       AND COALESCE(TRIM(o.CUSTOMER_SOURCE), '') NOT LIKE :internalTransferSource
+       AND return_gp.CREATE_TIME >= :startAt
+       AND return_gp.CREATE_TIME < :endAt`, { replacements, type: QueryTypes.SELECT });
   for (const row of returnLedgerRows) {
     const key = employeeKey(row.staffId, row.employeeName);
     const actual = employeeActuals.get(key) || { ...createActual(), staffId: row.staffId ? String(row.staffId) : null, employeeName: row.employeeName || '', storeIds: new Set() };

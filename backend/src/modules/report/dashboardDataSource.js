@@ -1,4 +1,5 @@
 const { QueryTypes } = require('sequelize');
+const { INTERNAL_TRANSFER_SOURCE, operatingSourceSql } = require('./operatingScope');
 const { sequelize } = require('../../models');
 const { FORMULA_VERSION: CURRENT_GROSS_PROFIT_FORMULA_VERSION } = require('../sales/grossProfit');
 
@@ -249,6 +250,7 @@ function bucketSql(granularity) {
 function buildSalesWhere(filters, range, options = {}) {
   const clauses = [
     'o.IS_DELETED = 0',
+    operatingSourceSql('o'),
     'o.STORE_ID IN (:storeIds)',
     'o.CREATE_TIME >= :startAt',
     'o.CREATE_TIME <= :endAt'
@@ -256,7 +258,8 @@ function buildSalesWhere(filters, range, options = {}) {
   const replacements = {
     storeIds: filters.storeIds,
     startAt: range.startAt,
-    endAt: range.endAt
+    endAt: range.endAt,
+    internalTransferSource: `${INTERNAL_TRANSFER_SOURCE}%`
   };
   if (filters.archiveScope === 'all') {
     clauses.splice(1, 0, '(o.ORDER_STATUS IS NULL OR o.ORDER_STATUS NOT IN (:voidedStatuses))');
