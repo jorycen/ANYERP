@@ -2,11 +2,28 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { normalizeParticipants, ARCHIVED_STATUSES, GROSS_PROFIT_FORMULA_VERSION, _test: dashboardDataSourceTest } = require('../src/modules/report/dashboardDataSource');
 const {
+  DashboardService,
   buildRanges,
   comparisonRate,
   buildEmployeePerformance,
   canViewProfit
 } = require('../src/modules/report/dashboardService');
+
+test('经营看板区域筛选兼容MySQL DISTINCT严格排序规则', async () => {
+  let regionSql = '';
+  const dataSource = {
+    query: async sql => {
+      if (sql.includes('SELECT STORE_ID AS storeId')) return [{ storeId: 'STORE_1' }];
+      if (sql.includes('SELECT DISTINCT r.REGION_ID')) regionSql = sql;
+      return [];
+    },
+    getFilters: async () => ({ stores: [], employees: [], productLines: [] })
+  };
+
+  await new DashboardService(dataSource).buildFilters({ roles: ['boss'], accessibleStoreIds: ['*'] });
+  assert.match(regionSql, /r\.SORT_ORDER AS sortOrder/);
+  assert.match(regionSql, /ORDER BY sortOrder ASC, regionId ASC/);
+});
 
 test('经营看板默认日期使用中国时区本周并生成等长环比周期', () => {
   const ranges = buildRanges({}, new Date('2026-07-05T03:00:00.000Z'));
@@ -21,7 +38,7 @@ test('经营看板默认日期使用中国时区本周并生成等长环比周�
 test('经营看板正向统计排除整单退货原订单并使用当前毛利公式', () => {
   assert.deepEqual(ARCHIVED_STATUSES, ['已归档', 'completed', 'archived']);
   assert.equal(ARCHIVED_STATUSES.includes('returned'), false);
-  assert.equal(GROSS_PROFIT_FORMULA_VERSION, 'ORDER_GP_V8_20260810_FREIGHT');
+  assert.equal(GROSS_PROFIT_FORMULA_VERSION, 'ORDER_GP_V9_FREIGHT_SEPARATE');
 });
 
 test('经营看板全部范围包含未归档订单且排除已作废订单', () => {

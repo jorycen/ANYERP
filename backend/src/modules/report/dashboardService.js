@@ -321,11 +321,12 @@ class DashboardService {
     }
     filters.selfOnly = selfOnly;
     filters.regions = await this.dataSource.query(
-      `SELECT DISTINCT r.REGION_ID AS regionId, r.REGION_CODE AS regionCode, r.NAME AS name
+      `SELECT DISTINCT r.REGION_ID AS regionId, r.REGION_CODE AS regionCode, r.NAME AS name,
+              r.SORT_ORDER AS sortOrder
          FROM T_STORE s
          INNER JOIN T_REGION r ON r.REGION_ID = s.REGION_ID
         WHERE s.IS_DELETED = 0 AND s.STATUS = 1 AND s.STORE_ID IN (:storeIds)
-        ORDER BY r.SORT_ORDER ASC, r.REGION_ID ASC`,
+        ORDER BY sortOrder ASC, regionId ASC`,
       { storeIds }
     );
     return filters;

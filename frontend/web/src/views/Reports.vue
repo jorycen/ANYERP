@@ -6,7 +6,7 @@
       </template>
 
       <el-tabs v-model="activeTab" class="module-tabs" @tab-change="onTabChange">
-        <el-tab-pane label="经营数据看板" name="dashboard">
+        <el-tab-pane label="经营数据看板" name="dashboard" lazy>
           <BusinessDashboard />
         </el-tab-pane>
 
@@ -507,7 +507,7 @@ import { getRoleCode } from '../utils/user'
 import BusinessDashboard from '../components/BusinessDashboard.vue'
 
 const route = useRoute()
-const activeTab = ref('dashboard')
+const activeTab = ref(String(route.meta.tab || 'dashboard'))
 const syncTabFromRoute = () => {
   const tab = String(route.meta.tab || 'dashboard')
   if (activeTab.value !== tab) activeTab.value = tab
