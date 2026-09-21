@@ -50,6 +50,13 @@ test('经营看板全部范围包含未归档订单且排除已作废订单', ()
   assert.equal(Object.hasOwn(allScope.replacements, 'archivedStatuses'), false);
 });
 
+test('经营看板销售额以订单实收总额为准，并按明细比例分摊订单级差额', () => {
+  const sql = dashboardDataSourceTest.orderItemSalesAmountSql();
+  assert.match(sql, /o\.TOTAL_AMOUNT/);
+  assert.match(sql, /oi\.SUBTOTAL/);
+  assert.match(sql, /oit\.ITEM_SUBTOTAL/);
+});
+
 test('退单负向毛利只记到对应个人，普通调整仍按参与人均分', () => {
   const result = buildEmployeePerformance([{
     order_id: 'ORDER_RETURN_1',

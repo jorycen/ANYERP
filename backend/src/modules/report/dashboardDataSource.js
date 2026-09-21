@@ -297,6 +297,25 @@ function allocationSql(filters) {
   return '(1 / GREATEST(1, 1 + COALESCE(JSON_LENGTH(o.AUXILIARY_SALES_LIST), 0)))';
 }
 
+// 经营销售额以销售单实收总额为准。明细小计仅用于按比例分摊订单级优惠，
+// 防止订单总额与明细小计不一致时，门店和汇总销售额被少算。
+function orderItemSalesAmountSql(itemAlias = 'oi', orderAlias = 'o', totalsAlias = 'oit') {
+  return `CASE
+    WHEN COALESCE(${totalsAlias}.ITEM_SUBTOTAL, 0) <> 0
+    THEN COALESCE(${orderAlias}.TOTAL_AMOUNT, ${totalsAlias}.ITEM_SUBTOTAL)
+      * COALESCE(${itemAlias}.SUBTOTAL, 0) / ${totalsAlias}.ITEM_SUBTOTAL
+    ELSE COALESCE(${itemAlias}.SUBTOTAL, 0)
+  END`;
+}
+
+function orderItemTotalsJoin() {
+  return `INNER JOIN (
+    SELECT ORDER_ID, SUM(COALESCE(SUBTOTAL, 0)) AS ITEM_SUBTOTAL
+      FROM T_ORDER_ITEM
+     GROUP BY ORDER_ID
+  ) oit ON oit.ORDER_ID = o.ORDER_ID`;
+}
+
 class DashboardDataSource {
   async getFilters() {
     throw new Error('数据看板数据源必须实现筛选项查询方法');
@@ -359,11 +378,12 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
     const bucket = bucketSql(granularity);
     return this.query(
       `SELECT ${bucket} AS bucket,
-              ROUND(SUM(oi.SUBTOTAL * ${factor}), 2) AS salesAmount,
+              ROUND(SUM((${orderItemSalesAmountSql()}) * ${factor}), 2) AS salesAmount,
               ROUND(SUM((${grossProfitSql()}) * ${factor}), 2) AS grossProfit,
               COUNT(DISTINCT o.ORDER_ID) AS orderCount
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+         ${orderItemTotalsJoin()}
          LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
          LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
          LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
@@ -381,11 +401,12 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
     return this.query(
       `SELECT o.STORE_ID AS storeId,
               MAX(s.NAME) AS storeName,
-              ROUND(SUM(oi.SUBTOTAL * ${factor}), 2) AS salesAmount,
+              ROUND(SUM((${orderItemSalesAmountSql()}) * ${factor}), 2) AS salesAmount,
               ROUND(SUM((${grossProfitSql()}) * ${factor}), 2) AS grossProfit,
               COUNT(DISTINCT o.ORDER_ID) AS orderCount
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+         ${orderItemTotalsJoin()}
          LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
          LEFT JOIN T_STORE s ON s.STORE_ID = o.STORE_ID
          LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
@@ -407,11 +428,12 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
               MAX(COALESCE(p.NAME, oi.PRODUCT_NAME)) AS productName,
               MAX(COALESCE(p.PRODUCT_CODE, '')) AS productCode,
               MAX(COALESCE(p.IS_FOCUS_PRODUCT, 0)) AS isFocusProduct,
-              ROUND(SUM(oi.SUBTOTAL * ${factor}), 2) AS salesAmount,
+              ROUND(SUM((${orderItemSalesAmountSql()}) * ${factor}), 2) AS salesAmount,
               ROUND(SUM((${grossProfitSql()}) * ${factor}), 2) AS grossProfit,
               ROUND(SUM(oi.QUANTITY * ${factor}), 2) AS quantity
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+         ${orderItemTotalsJoin()}
          LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
          LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
          LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
@@ -428,10 +450,11 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
     const factor = allocationSql(filters);
     return this.query(
       `SELECT COALESCE(NULLIF(SUBSTRING_INDEX(p.CATEGORY, '/', 1), ''), '未分类') AS productLine,
-              ROUND(SUM(oi.SUBTOTAL * ${factor}), 2) AS salesAmount,
+              ROUND(SUM((${orderItemSalesAmountSql()}) * ${factor}), 2) AS salesAmount,
               ROUND(SUM((${grossProfitSql()}) * ${factor}), 2) AS grossProfit
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+         ${orderItemTotalsJoin()}
          LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
          LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
          LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
@@ -454,7 +477,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
               o.CREATE_STAFF_ID AS create_staff_id,
               o.CREATE_USER AS create_user,
               o.AUXILIARY_SALES_LIST AS auxiliary_sales_list,
-              ROUND(SUM(oi.SUBTOTAL) + COALESCE((
+              ROUND(MAX(COALESCE(o.TOTAL_AMOUNT, 0)) + COALESCE((
                 SELECT SUM(r.RETURNED_SALES_AMOUNT)
                   FROM T_SALES_RETURN_GROSS_PROFIT r
                  WHERE r.ORDER_ID = o.ORDER_ID
@@ -703,5 +726,5 @@ module.exports = {
   normalizeParticipants,
   roundMoney,
   toNumber,
-  _test: { buildSalesWhere }
+  _test: { buildSalesWhere, orderItemSalesAmountSql }
 };
