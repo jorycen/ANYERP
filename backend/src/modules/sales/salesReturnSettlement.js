@@ -58,7 +58,43 @@ function sourceOrderLineGross(item) {
   return Math.max(0, money(Number(item?.sale_price ?? item?.unit_price ?? 0) * Number(item?.quantity || 0)));
 }
 
-function calculateReturnSettlementAmounts({ order, orderItems, requestItems }) {
+function mergeReturnItemsWithOrderResources(orderItems, requestItems) {
+  const sourceByItemId = new Map((orderItems || []).map(item => [String(item.item_id || ''), item]));
+  return (requestItems || []).map(item => {
+    const raw = item && typeof item.toJSON === 'function' ? item.toJSON() : item;
+    const source = sourceByItemId.get(String(raw?.order_item_id || '')) || {};
+    return {
+      ...raw,
+      selected_resource_types: source.selected_resource_types,
+      use_gov_subsidy: source.use_gov_subsidy,
+      use_edu_subsidy: source.use_edu_subsidy,
+      use_sales_report: source.use_sales_report,
+      category: source.category || source.Product?.category || raw?.category || ''
+    };
+  });
+}
+
+async function getOrderDailyReceiptTotals(orderId, transaction = null) {
+  const details = await DailyStatementDetail.findAll({
+    where: { order_id: orderId, amount: { [Op.gt]: 0 } },
+    attributes: [
+      'detail_id', 'payment_method', 'payment_code', 'business_type',
+      'amount', 'settlement_account_id'
+    ],
+    transaction,
+    raw: true
+  });
+  const customerDetails = details.filter(item => String(item.business_type || '') !== 'national_subsidy_receivable');
+  const policyDetails = details.filter(item => String(item.business_type || '') === 'national_subsidy_receivable');
+  return {
+    customerReceiptAmount: money(customerDetails.reduce((sum, item) => sum + Number(item.amount || 0), 0)),
+    policySubsidyAmount: money(policyDetails.reduce((sum, item) => sum + Number(item.amount || 0), 0)),
+    customerDetails,
+    policyDetails
+  };
+}
+
+function calculateReturnSettlementAmounts({ order, orderItems, requestItems, customerReceiptAmount, policySubsidyAmount }) {
   const orderGross = money((orderItems || []).reduce((sum, item) => sum + sourceOrderLineGross(item), 0));
   const returnGross = money((requestItems || []).reduce((sum, item) => sum + lineGross(item), 0));
   const returnedReceivable = orderGross > 0
@@ -71,12 +107,17 @@ function calculateReturnSettlementAmounts({ order, orderItems, requestItems }) {
     .filter(isSubsidyEligibleItem)
     .reduce((sum, item) => sum + lineGross(item), 0));
   const subsidyRatio = eligibleOrderGross > 0 ? Math.min(1, eligibleReturnGross / eligibleOrderGross) : 0;
-  const policyAmount = money(Number(order.national_subsidy || 0) * subsidyRatio);
+  const sourcePolicySubsidy = Number.isFinite(Number(policySubsidyAmount)) && Number(policySubsidyAmount) >= 0
+    ? Number(policySubsidyAmount)
+    : Number(order.national_subsidy || 0);
+  const policyAmount = money(sourcePolicySubsidy * subsidyRatio);
   const educationAmount = money(Number(order.education_subsidy || 0) * subsidyRatio);
-  const customerRefundAmount = money(Math.min(
-    Number(order.actual_payment || 0),
-    Math.max(0, returnedReceivable - policyAmount - educationAmount)
-  ));
+  const sourceCustomerReceipt = Number.isFinite(Number(customerReceiptAmount)) && Number(customerReceiptAmount) >= 0
+    ? Number(customerReceiptAmount)
+    : Number(order.actual_payment || 0);
+  const customerRefundAmount = orderGross > 0
+    ? money(sourceCustomerReceipt * Math.min(1, returnGross / orderGross))
+    : 0;
   return { orderGross, returnGross, returnedReceivable, eligibleOrderGross, eligibleReturnGross, policyAmount, educationAmount, customerRefundAmount };
 }
 
@@ -101,7 +142,7 @@ async function getOrCreateDailyStatement(storeId, transaction) {
   return statement;
 }
 
-async function addDailyDetail({ statement, order, returnRequest, paymentMethod, paymentCode, businessType, amount, transaction }) {
+async function addDailyDetail({ statement, order, returnRequest, paymentMethod, paymentCode, businessType, amount, settlementAccountId, transaction }) {
   if (amount <= 0) return null;
   const originalDetail = order?.order_id
     ? await DailyStatementDetail.findOne({
@@ -122,7 +163,7 @@ async function addDailyDetail({ statement, order, returnRequest, paymentMethod, 
     business_type: businessType,
     amount: -money(amount),
     settled: 0,
-    settlement_account_id: originalDetail?.settlement_account_id || null
+    settlement_account_id: settlementAccountId || originalDetail?.settlement_account_id || null
   }, { transaction });
 }
 
@@ -140,9 +181,16 @@ async function refreshDailyStatementTotals(statement, transaction) {
   }, { transaction });
 }
 
-async function createCustomerNegativeDetails({ order, returnRequest, customerRefundAmount, transaction }) {
+async function createCustomerNegativeDetails({ order, returnRequest, customerRefundAmount, dailyReceiptDetails = [], transaction }) {
   if (customerRefundAmount <= 0) return [];
-  const payments = await OrderPayment.findAll({ where: { order_id: order.order_id }, transaction });
+  const payments = dailyReceiptDetails.length
+    ? dailyReceiptDetails.map(item => ({
+        payment_method: item.payment_method || item.payment_code,
+        payment_code: item.payment_code || item.payment_method,
+        amount: item.amount,
+        settlement_account_id: item.settlement_account_id
+      }))
+    : await OrderPayment.findAll({ where: { order_id: order.order_id }, transaction });
   const codes = payments.map(row => row.payment_method).filter(Boolean);
   const methods = codes.length
     ? await PaymentMethod.findAll({ where: { code: { [Op.in]: codes } }, transaction })
@@ -180,9 +228,10 @@ async function createCustomerNegativeDetails({ order, returnRequest, customerRef
         order,
         returnRequest,
         paymentMethod: names.get(payment.payment_method) || payment.payment_method,
-        paymentCode: payment.payment_method,
+        paymentCode: payment.payment_code || payment.payment_method,
         businessType: 'sales_return_customer_receipt',
         amount,
+        settlementAccountId: payment.settlement_account_id || null,
         transaction
       });
       if (detail) details.push(detail);
@@ -230,6 +279,8 @@ async function createSalesReturnSettlement({ returnRequest, order, requestItems,
 
   // 不依赖调用方是否正确预加载关联，订单商品金额必须从订单明细事实读取。
   const orderItems = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+  const resolvedRequestItems = mergeReturnItemsWithOrderResources(orderItems, requestItems);
+  const dailyReceipts = await getOrderDailyReceiptTotals(order.order_id, transaction);
   const {
     orderGross,
     returnGross,
@@ -239,7 +290,17 @@ async function createSalesReturnSettlement({ returnRequest, order, requestItems,
     policyAmount,
     educationAmount,
     customerRefundAmount
-  } = calculateReturnSettlementAmounts({ order, orderItems, requestItems });
+  } = calculateReturnSettlementAmounts({
+    order,
+    orderItems,
+    requestItems: resolvedRequestItems,
+    customerReceiptAmount: dailyReceipts.customerDetails.length
+      ? dailyReceipts.customerReceiptAmount
+      : Number(order.actual_payment || 0),
+    policySubsidyAmount: dailyReceipts.policyDetails.length
+      ? dailyReceipts.policySubsidyAmount
+      : Number(order.national_subsidy || 0)
+  });
   const settlementId = generateUUID();
   const settlement = await SalesReturnSettlement.create({
     settlement_id: settlementId,
@@ -265,7 +326,9 @@ async function createSalesReturnSettlement({ returnRequest, order, requestItems,
       eligibleReturnGross,
       policyAmount,
       educationAmount,
-      customerRefundAmount
+      customerRefundAmount,
+      dailyCustomerReceiptAmount: dailyReceipts.customerReceiptAmount,
+      amountSource: dailyReceipts.customerReceiptAmount > 0 ? 'daily_statement_actual_receipt' : 'order_actual_payment_fallback'
     }),
     create_user: user?.name || user?.staffId || 'system',
     create_time: new Date(),
@@ -276,14 +339,22 @@ async function createSalesReturnSettlement({ returnRequest, order, requestItems,
   let allocatedCustomer = 0;
   let allocatedPolicy = 0;
   let allocatedEducation = 0;
-  for (let index = 0; index < requestItems.length; index += 1) {
-    const item = requestItems[index];
+  const eligibleItemIndexes = resolvedRequestItems
+    .map((item, index) => (isSubsidyEligibleItem(item) ? index : -1))
+    .filter(index => index >= 0);
+  const lastEligibleItemIndex = eligibleItemIndexes.length
+    ? eligibleItemIndexes[eligibleItemIndexes.length - 1]
+    : -1;
+  for (let index = 0; index < resolvedRequestItems.length; index += 1) {
+    const item = resolvedRequestItems[index];
     const gross = lineGross(item);
-    const isLast = index === requestItems.length - 1;
+    const isLast = index === resolvedRequestItems.length - 1;
     const itemUser = isLast ? money(returnedReceivable - allocatedUser) : money(returnedReceivable * gross / Math.max(returnGross, 0.01));
-    const eligibleRatio = eligibleReturnGross > 0 && isSubsidyEligibleItem(item) ? gross / eligibleReturnGross : 0;
-    const itemPolicy = isLast && eligibleReturnGross > 0 ? money(policyAmount - allocatedPolicy) : money(policyAmount * eligibleRatio);
-    const itemEducation = isLast && eligibleReturnGross > 0 ? money(educationAmount - allocatedEducation) : money(educationAmount * eligibleRatio);
+    const eligible = eligibleReturnGross > 0 && isSubsidyEligibleItem(item);
+    const eligibleRatio = eligible ? gross / eligibleReturnGross : 0;
+    const isLastEligible = index === lastEligibleItemIndex;
+    const itemPolicy = !eligible ? 0 : (isLastEligible ? money(policyAmount - allocatedPolicy) : money(policyAmount * eligibleRatio));
+    const itemEducation = !eligible ? 0 : (isLastEligible ? money(educationAmount - allocatedEducation) : money(educationAmount * eligibleRatio));
     const itemCustomer = isLast ? money(customerRefundAmount - allocatedCustomer) : money(customerRefundAmount * Math.max(0, itemUser - itemPolicy - itemEducation) / Math.max(returnedReceivable - policyAmount - educationAmount, 0.01));
     allocatedUser = money(allocatedUser + itemUser);
     allocatedCustomer = money(allocatedCustomer + itemCustomer);
@@ -306,7 +377,13 @@ async function createSalesReturnSettlement({ returnRequest, order, requestItems,
     }, { transaction });
   }
 
-  await createCustomerNegativeDetails({ order, returnRequest, customerRefundAmount, transaction });
+  await createCustomerNegativeDetails({
+    order,
+    returnRequest,
+    customerRefundAmount,
+    dailyReceiptDetails: dailyReceipts.customerDetails,
+    transaction
+  });
   await ensurePolicyNegativeDetail({ order, returnRequest, policyAmount, transaction });
   if (educationAmount > 0) {
     const statement = await getOrCreateDailyStatement(order.store_id, transaction);
@@ -344,5 +421,7 @@ module.exports = {
   createSalesReturnSettlement,
   isSubsidyEligibleItem,
   orderReceivable,
+  getOrderDailyReceiptTotals,
+  mergeReturnItemsWithOrderResources,
   _test: { calculateReturnSettlementAmounts }
 };

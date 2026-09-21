@@ -455,6 +455,11 @@ Page({
     if (typeof order.actualAmount === 'undefined' && typeof order.actualPayment !== 'undefined') {
       order.actualAmount = order.actualPayment;
     }
+    order.directReceiptAmount = Number(
+      order.directReceiptAmount !== undefined
+        ? order.directReceiptAmount
+        : (order.direct_receipt_amount || 0)
+    );
     if (!order.customerSource && order.source) {
       order.customerSource = order.source;
     }
@@ -941,7 +946,9 @@ Page({
     }, 0);
     const allItems = (this.data.goodsList && this.data.goodsList.length) ? this.data.goodsList : (items || []);
     const totalGross = allItems.reduce((sum, item) => sum + (Number(item.unitPrice !== undefined ? item.unitPrice : item.price) || 0) * (Number(item.quantity) || 1), 0);
-    const customerPaymentTotal = paymentMethods.reduce((sum, method) => String(method && (method.type || method.paymentType || method.payment_method) || '').indexOf('政策补贴应收') >= 0 ? sum : sum + (Number(method.amount) || 0), 0) || Number(this.data.actualAmount || order.actualAmount || order.actualPayment || 0);
+    const customerPaymentTotal = Number(order.directReceiptAmount || order.direct_receipt_amount || 0) ||
+      paymentMethods.reduce((sum, method) => String(method && (method.type || method.paymentType || method.payment_method) || '').indexOf('政策补贴应收') >= 0 ? sum : sum + (Number(method.amount) || 0), 0) ||
+      Number(this.data.actualAmount || order.actualAmount || order.actualPayment || 0);
     const policyPaymentTotal = paymentMethods.reduce((sum, method) => String(method && (method.type || method.paymentType || method.payment_method) || '').indexOf('政策补贴应收') < 0 ? sum : sum + (Number(method.amount) || 0), 0) || Number(this.data.nationalSubsidy || order.nationalSubsidy || order.national_subsidy || 0);
     const eligibleItems = allItems.filter(item => [].concat(item.selectedResourceTypes || [], item.selected_resource_types || [], item.resourceTypes || [], item.resource_types || [], item.resourceRights || item.resource_rights || []).map(value => typeof value === 'object' ? (value.resourceType || value.resource_type) : value).some(value => String(value || '').toUpperCase() === 'GOV_SUBSIDY'));
     const eligibleGross = eligibleItems.length ? eligibleItems.reduce((sum, item) => sum + (Number(item.unitPrice !== undefined ? item.unitPrice : item.price) || 0) * (Number(item.quantity) || 1), 0) : (String(this.data.subsidyStatus || order.subsidyStatus || order.subsidy_status || '') === '国补' ? totalGross : 0);
@@ -971,7 +978,7 @@ Page({
     this.setData({
       showReturnModal: true,
       returnItems,
-      returnGovSubsidy: false,
+      returnGovSubsidy: returnGovSubsidyAvailable,
       returnGovSubsidyAvailable,
       returnAmount: '0.00',
       returnCustomerAmount: '0.00',

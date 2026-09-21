@@ -88,7 +88,10 @@ const {
   calculateNationalSubsidyCustomerReceiptAmount
 } = require('./grossProfit');
 const { createProductSettlementOrder } = require('../report/productSettlement');
-const { isSubsidyEligibleItem } = require('./salesReturnSettlement');
+const {
+  isSubsidyEligibleItem,
+  getOrderDailyReceiptTotals
+} = require('./salesReturnSettlement');
 
 const SUBSIDY_PHOTO_UPLOAD_DIR = path.resolve(__dirname, '../../../uploads/national-subsidy-photos');
 const SUBSIDY_PHOTO_ALLOWED_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
@@ -2675,6 +2678,10 @@ async function detail(ctx) {
   }
 
   const result = order.toJSON();
+  const dailyReceipts = await getOrderDailyReceiptTotals(order.order_id);
+  result.direct_receipt_amount = dailyReceipts.customerReceiptAmount;
+  result.policy_subsidy_receivable_amount = dailyReceipts.policySubsidyAmount;
+  result.daily_receipt_details = dailyReceipts.customerDetails;
   result.approval_stage = salesApprovalStageFromStatus(result.order_status);
   result.approval_stage_label = salesApprovalStageLabel(result.order_status);
   const supplements = Array.isArray(result.supplements) ? result.supplements : [];
@@ -4027,11 +4034,16 @@ async function requestSalesReturn(ctx) {
 
     const orderGross = orderItems.reduce((sum, item) => sum + money(Number(item.sale_price || 0) * Number(item.quantity || 0)), 0);
     const selectedGross = uniqueSelectedItems.reduce((sum, row) => sum + money(Number(row.sourceItem.sale_price || 0) * Number(row.quantity || 0)), 0);
-    const maxRefundAmount = orderGross > 0
-      ? money(Math.max(0, Number(order.total_amount || 0) - Number(order.discount_amount || 0)) * Math.min(1, selectedGross / orderGross))
+    const dailyReceipts = await getOrderDailyReceiptTotals(order.order_id, transaction);
+    const sourceCustomerReceipt = dailyReceipts.customerReceiptAmount > 0
+      ? dailyReceipts.customerReceiptAmount
+      : Number(order.actual_payment || 0);
+    const refundAmount = orderGross > 0
+      ? money(sourceCustomerReceipt * Math.min(1, selectedGross / orderGross))
       : 0;
-    const refundAmount = maxRefundAmount;
-    const effectiveReturnGovSubsidy = uniqueSelectedItems.some(({ sourceItem }) => isSubsidyEligibleItem(sourceItem));
+    const effectiveReturnGovSubsidy = uniqueSelectedItems.some(({ sourceItem }) => (
+      selectedResourcesForReturn(sourceItem, order).includes('GOV_SUBSIDY') || isSubsidyEligibleItem(sourceItem)
+    ));
     const refundHandlingValue = refundHandling !== undefined ? refundHandling : refundHandlingSnake;
     const normalizedRefundHandling = ['actual_refund', 'no_refund', 'pending'].includes(String(refundHandlingValue || '').trim())
       ? String(refundHandlingValue).trim()
@@ -4070,6 +4082,10 @@ async function requestSalesReturn(ctx) {
           : 0,
         refundHandling: normalizedRefundHandling,
         refundRemark: normalizedRefundRemark,
+        refundAmountSource: dailyReceipts.customerReceiptAmount > 0
+          ? 'daily_statement_actual_receipt'
+          : 'order_actual_payment_fallback',
+        originalDirectReceiptAmount: dailyReceipts.customerReceiptAmount,
         selectedItemIds: uniqueSelectedItems.map(row => String(row.sourceItem.item_id || ''))
       }),
       reason: normalizedReason,
@@ -4270,7 +4286,7 @@ async function reviewSalesReturn(ctx) {
 
     await request.update({ status: nextStatus, approval_stage: nextStage, update_time: now, ...reviewData }, { transaction });
     let inbound = null;
-    let subsidyRestore = { restored: 0, policySubsidyRefundAmount: 0 };
+    let resourceRestore = { restored: 0, restoredNationalSubsidy: 0, policySubsidyRefundAmount: 0 };
     if (nextStatus === 'approved') {
       inbound = await createSalesReturnInbound({ request, user, transaction, ctx });
       const returnItems = await SalesReturnRequestItem.findAll({
@@ -4284,7 +4300,7 @@ async function reviewSalesReturn(ctx) {
         lock: transaction.LOCK.UPDATE
       });
       const orderItemMap = new Map((order?.OrderItems || []).map(item => [String(item.item_id), item]));
-      subsidyRestore = await restoreReturnedNationalSubsidy({
+      resourceRestore = await restoreReturnedResources({
         request,
         order,
         requestItems: returnItems,
@@ -4320,8 +4336,9 @@ async function reviewSalesReturn(ctx) {
       approvalStage: nextStage,
       inboundId: inbound?.inbound_id || '',
       inboundNo: inbound?.inbound_no || '',
-      restoredNationalSubsidy: subsidyRestore.restored,
-      policySubsidyRefundAmount: subsidyRestore.policySubsidyRefundAmount
+      restoredResources: resourceRestore.restored,
+      restoredNationalSubsidy: resourceRestore.restoredNationalSubsidy,
+      policySubsidyRefundAmount: resourceRestore.policySubsidyRefundAmount
     };
   });
 
@@ -4405,24 +4422,24 @@ function selectedResourcesForReturn(item = {}, order = {}) {
     item.use_gov_subsidy || item.useGovSubsidy ? 'GOV_SUBSIDY' : null,
     item.use_edu_subsidy || item.useEduSubsidy ? 'EDU_SUBSIDY' : null,
     item.use_sales_report || item.useSalesReport ? 'SALES_REPORT' : null
-  ].filter(Boolean))];
+  ].filter(Boolean).map(value => String(value).trim().toUpperCase()))];
   if (resources.length > 0) return resources;
   const subsidyStatus = item.subsidy_status || item.subsidyStatus || order.subsidy_status || order.subsidyStatus || '';
   return String(subsidyStatus) === '国补' ? ['GOV_SUBSIDY'] : [];
 }
 
-async function restoreReturnedNationalSubsidy({ request, order, requestItems, orderItemMap, user, transaction, ctx }) {
-  if (!Number(request.return_gov_subsidy || 0)) return { restored: 0, policySubsidyRefundAmount: 0 };
-
-  const returnedEligibleItems = requestItems.filter(requestItem => {
+async function restoreReturnedResources({ request, order, requestItems, orderItemMap, user, transaction, ctx }) {
+  const returnedResourceItems = requestItems.map(requestItem => {
     const sourceItem = orderItemMap.get(String(requestItem.order_item_id || ''));
-    return sourceItem && selectedResourcesForReturn(sourceItem, order).includes('GOV_SUBSIDY');
-  });
-  if (returnedEligibleItems.length === 0) return { restored: 0, policySubsidyRefundAmount: 0 };
-
+    const resourceTypes = sourceItem ? selectedResourcesForReturn(sourceItem, order) : [];
+    return { requestItem, sourceItem, resourceTypes };
+  }).filter(item => item.sourceItem && item.resourceTypes.length > 0);
+  const returnedEligibleItems = returnedResourceItems
+    .filter(item => Number(request.return_gov_subsidy || 0) && item.resourceTypes.includes('GOV_SUBSIDY'))
+    .map(item => item.requestItem);
   let restored = 0;
-  for (const requestItem of returnedEligibleItems) {
-    const sourceItem = orderItemMap.get(String(requestItem.order_item_id || ''));
+  let restoredNationalSubsidy = 0;
+  for (const { requestItem, sourceItem, resourceTypes } of returnedResourceItems) {
     const snCode = String(requestItem.sn_code || sourceItem?.sn_code || '').trim();
     if (!snCode) continue;
     const sn = await ProductSn.findOne({
@@ -4437,49 +4454,52 @@ async function restoreReturnedNationalSubsidy({ request, order, requestItems, or
       lock: transaction.LOCK.UPDATE
     });
     if (!sn) continue;
-    const right = await InventoryResourceRight.findOne({
-      where: { sn_id: sn.sn_id, resource_type: 'GOV_SUBSIDY' },
-      transaction,
-      lock: transaction.LOCK.UPDATE
-    });
-    if (!right || right.current_status !== 'USED') continue;
-    await right.update({
-      current_status: 'AVAILABLE',
-      locked_source_type: null,
-      locked_source_id: null,
-      version: Number(right.version || 0) + 1
-    }, { transaction });
-    await ResourceRightChangeOrder.create({
-      change_id: generateUUID(),
-      change_order_no: generateBusinessNo('RRC'),
-      sn_id: sn.sn_id,
-      sn_code: sn.sn_code,
-      product_id: sn.product_id,
-      resource_type: 'GOV_SUBSIDY',
-      before_status: 'USED',
-      after_status: 'AVAILABLE',
-      change_amount: Number(right.amount || 0),
-      change_reason: 'SALES_RETURN_RESTORE',
-      approval_status: 'approved',
-      related_sale_order_id: order.order_id,
-      applicant_staff_id: user.staffId || null,
-      applicant_name: user.name || user.staffId || '',
-      reviewer_staff_id: user.staffId || null,
-      reviewer_name: user.name || user.staffId || '',
-      review_time: new Date(),
-      remark: `销售退单 ${request.return_no} 退回国补资格`
-    }, { transaction });
-    const saleUseChanges = await ResourceRightChangeOrder.findAll({
-      where: {
-        related_sale_order_id: order.order_id,
+    for (const resourceType of resourceTypes) {
+      if (resourceType === 'GOV_SUBSIDY' && !Number(request.return_gov_subsidy || 0)) continue;
+      const saleUseChanges = await ResourceRightChangeOrder.findAll({
+        where: {
+          related_sale_order_id: order.order_id,
+          sn_id: sn.sn_id,
+          resource_type: resourceType,
+          after_status: 'USED',
+          change_reason: 'SALE_USED'
+        },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      if (!saleUseChanges.length) continue;
+      const right = await InventoryResourceRight.findOne({
+        where: { sn_id: sn.sn_id, resource_type: resourceType },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      if (!right || right.current_status !== 'USED') continue;
+      await right.update({
+        current_status: 'AVAILABLE',
+        locked_source_type: null,
+        locked_source_id: null,
+        version: Number(right.version || 0) + 1
+      }, { transaction });
+      await ResourceRightChangeOrder.create({
+        change_id: generateUUID(),
+        change_order_no: generateBusinessNo('RRC'),
         sn_id: sn.sn_id,
-        resource_type: 'GOV_SUBSIDY',
-        after_status: 'USED'
-      },
-      transaction,
-      lock: transaction.LOCK.UPDATE
-    });
-    if (saleUseChanges.length > 0) {
+        sn_code: sn.sn_code,
+        product_id: sn.product_id,
+        resource_type: resourceType,
+        before_status: 'USED',
+        after_status: 'AVAILABLE',
+        change_amount: Number(right.amount || 0),
+        change_reason: 'SALES_RETURN_RESTORE',
+        approval_status: 'approved',
+        related_sale_order_id: order.order_id,
+        applicant_staff_id: user.staffId || null,
+        applicant_name: user.name || user.staffId || '',
+        reviewer_staff_id: user.staffId || null,
+        reviewer_name: user.name || user.staffId || '',
+        review_time: new Date(),
+        remark: `销售退单 ${request.return_no} 退回${resourceType}权益`
+      }, { transaction });
       const pendingSettlements = await ResourceSettlement.findAll({
         where: {
           source_type: 'SALE_USE',
@@ -4495,12 +4515,30 @@ async function restoreReturnedNationalSubsidy({ request, order, requestItems, or
           cancelled_at: new Date(),
           cancelled_by: user.staffId || null,
           cancelled_by_name: user.name || user.staffId || '',
-          correction_reason: `销售退单 ${request.return_no} 退回国补资格`,
+          correction_reason: `销售退单 ${request.return_no} 退回${resourceType}权益`,
           update_time: new Date()
         }, { transaction });
       }
+      await ResourceRightChangeOrder.update({
+        approval_status: 'cancelled',
+        remark: `销售退单 ${request.return_no} 已取消待处理资源事项`
+      }, {
+        where: {
+          related_sale_order_id: order.order_id,
+          sn_id: sn.sn_id,
+          resource_type: resourceType,
+          change_reason: 'SALE_RESOURCE_TASK',
+          approval_status: { [Op.in]: ['pending_submit', 'pending_manager_review', 'rejected'] }
+        },
+        transaction
+      });
+      restored += 1;
+      if (resourceType === 'GOV_SUBSIDY') restoredNationalSubsidy += 1;
     }
-    restored += 1;
+  }
+
+  if (returnedEligibleItems.length === 0) {
+    return { restored, restoredNationalSubsidy, policySubsidyRefundAmount: 0 };
   }
 
   const orderPayments = await OrderPayment.findAll({ where: { order_id: order.order_id }, transaction });
@@ -4530,7 +4568,7 @@ async function restoreReturnedNationalSubsidy({ request, order, requestItems, or
     : 0;
   // 国补退回金额按退回国补适用商品自动分摊，不能由申请人手工改写。
   const policySubsidyRefundAmount = money(Math.min(policyPaymentTotal, calculatedRefund));
-  if (policySubsidyRefundAmount <= 0) return { restored, policySubsidyRefundAmount: 0 };
+  if (policySubsidyRefundAmount <= 0) return { restored, restoredNationalSubsidy, policySubsidyRefundAmount: 0 };
 
   const paymentRows = policyPayments.length > 0
     ? policyPayments
@@ -4578,7 +4616,7 @@ async function restoreReturnedNationalSubsidy({ request, order, requestItems, or
   }
   await refreshDailyStatementTotals(statement, transaction);
   await request.update({ policy_subsidy_refund_amount: policySubsidyRefundAmount }, { transaction });
-  return { restored, policySubsidyRefundAmount };
+  return { restored, restoredNationalSubsidy, policySubsidyRefundAmount };
 }
 
 function isNationalSubsidyPayment(payment) {

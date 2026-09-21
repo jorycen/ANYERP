@@ -659,16 +659,11 @@
       </view>
       <scroll-view class="return-modal-scroll" scroll-y="true" enhanced="true" enable-flex="true">
         <view class="modal-body">
-          <view class="return-total">客户实收退款：¥{{returnCustomerAmount}}</view>
-          <view class="return-breakdown" wx:if="{{returnPolicyAmount > 0}}">国补代收冲减：¥{{returnPolicyAmount}}（国补资格同步退回）</view>
-          <view class="return-breakdown" wx:if="{{returnNationalSubsidyAmount > 0}}">退回国补资格金额：¥{{returnNationalSubsidyAmount}}</view>
+          <view class="return-total">客户实际到账退款：¥{{returnCustomerAmount}}</view>
+          <view class="return-breakdown" wx:if="{{returnPolicyAmount > 0}}">国补政策应收冲减：¥{{returnPolicyAmount}}</view>
           <view class="return-subsidy-choice" wx:if="{{returnGovSubsidyAvailable}}">
-            <text class="return-subsidy-title">已核销国补资格</text>
-            <text class="return-subsidy-hint">选择“是”会冲减国补政策应收，并将退回商品恢复为可国补；选择“否”则保留已核销状态。</text>
-            <radio-group bindchange="onReturnGovSubsidyChange">
-              <label class="return-subsidy-option"><radio value="yes" checked="{{returnGovSubsidy}}" />是，退回国补资格</label>
-              <label class="return-subsidy-option"><radio value="no" checked="{{!returnGovSubsidy}}" />否，保留已核销状态</label>
-            </radio-group>
+            <text class="return-subsidy-title">资源权益自动回退</text>
+            <text class="return-subsidy-hint">退回商品已使用的国补、教育优惠及其他资源权益将同步恢复，并冲减对应待结算记录。</text>
           </view>
           <checkbox-group bindchange="onReturnItemChange">
             <block wx:for="{{returnItems}}" wx:key="returnIndex">

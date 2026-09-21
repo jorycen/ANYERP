@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   isSubsidyEligibleItem,
   orderReceivable,
+  mergeReturnItemsWithOrderResources,
   _test
 } = require('../src/modules/sales/salesReturnSettlement');
 
@@ -44,6 +45,47 @@ test('全额退单使用订单明细销售价计算客户退款，不依赖预�
     educationAmount: 0,
     customerRefundAmount: 14499
   });
+});
+
+test('国补退单按日结实际到账退款并独立退回补贴权益', () => {
+  const orderItems = [
+    { item_id: 8547, sale_price: 4353, quantity: 1, selected_resource_types: '["GOV_SUBSIDY"]', use_gov_subsidy: 1 },
+    { item_id: 8548, sale_price: 0, quantity: 1, selected_resource_types: '[]' }
+  ];
+  const requestItems = mergeReturnItemsWithOrderResources(orderItems, [
+    { order_item_id: 8547, unit_price: 4353, quantity: 1 },
+    { order_item_id: 8548, unit_price: 0, quantity: 1 }
+  ]);
+  const result = _test.calculateReturnSettlementAmounts({
+    order: {
+      total_amount: 4452,
+      discount_amount: 0,
+      actual_payment: 3799.05,
+      national_subsidy: 652.95,
+      education_subsidy: 0
+    },
+    orderItems,
+    requestItems,
+    customerReceiptAmount: 3776.85
+  });
+
+  assert.equal(result.returnedReceivable, 4452);
+  assert.equal(result.customerRefundAmount, 3776.85);
+  assert.equal(result.policyAmount, 652.95);
+});
+
+test('部分退单按商品金额比例分摊日结实际到账', () => {
+  const result = _test.calculateReturnSettlementAmounts({
+    order: { total_amount: 1000, actual_payment: 800, national_subsidy: 200 },
+    orderItems: [
+      { item_id: 1, sale_price: 600, quantity: 1, use_gov_subsidy: 1 },
+      { item_id: 2, sale_price: 400, quantity: 1 }
+    ],
+    requestItems: [{ order_item_id: 2, unit_price: 400, quantity: 1 }],
+    customerReceiptAmount: 790
+  });
+
+  assert.equal(result.customerRefundAmount, 316);
 });
 
 test('退单结算相关迁移、财务确认路由和导出字段已注册', () => {
