@@ -12,7 +12,7 @@
 
         <el-tab-pane label="销售报表" name="sales">
           <div class="filter-bar">
-            <el-date-picker v-model="salesParams.date" type="date" placeholder="选择日期" />
+            <el-date-picker v-model="salesParams.date" type="date" value-format="YYYY-MM-DD" placeholder="选择日期" clearable />
             <el-select v-model="salesParams.regionCode" placeholder="选择区域" clearable style="width: 150px">
               <el-option label="全部区域" value="" />
               <el-option label="成都" value="CD" />
@@ -39,15 +39,30 @@
           </el-table>
 
           <div style="margin-top: 18px;">
-            <div class="report-section-heading"><div><h3>商品维度销售统计</h3><p>按商品分类、品牌、系列、型号分别汇总，历史路径不会作为展示维度。</p></div></div>
+            <div class="report-section-heading"><div><h3>商品维度销售统计</h3><p>按完整商品分类、品牌、系列、型号汇总；产品端或财务成本不完整时明确显示待补成本。</p></div></div>
             <el-table :data="salesCategoryData" stripe border>
-              <el-table-column prop="category" label="商品分类" width="110" />
+              <el-table-column prop="categoryPath" label="商品分类" min-width="180" show-overflow-tooltip />
               <el-table-column prop="brand" label="品牌" width="100" />
               <el-table-column prop="series" label="系列" width="120" />
               <el-table-column prop="model" label="型号" min-width="140" />
-              <el-table-column prop="totalQuantity" label="数量" width="90" />
+              <el-table-column prop="totalQuantity" label="销售数量" width="100" align="right" />
               <el-table-column prop="totalAmount" label="销售额" width="120">
-                <template #default="{ row }">¥{{ row.totalAmount }}</template>
+                <template #default="{ row }">¥{{ formatMoney(row.totalAmount) }}</template>
+              </el-table-column>
+              <el-table-column v-if="salesCanViewProfit" prop="salesGrossProfit" label="销售毛利" width="125" align="right">
+                <template #default="{ row }">¥{{ formatMoney(row.salesGrossProfit) }}</template>
+              </el-table-column>
+              <el-table-column v-if="salesCanViewProfit" prop="productGrossProfit" label="产品端毛利" width="135" align="right">
+                <template #default="{ row }">
+                  <el-tag v-if="row.productGrossProfit === null" type="warning" size="small">待补成本</el-tag>
+                  <span v-else>¥{{ formatMoney(row.productGrossProfit) }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column v-if="salesCanViewProfit" prop="financialGrossProfit" label="财务毛利" width="135" align="right">
+                <template #default="{ row }">
+                  <el-tag v-if="row.financialGrossProfit === null" type="warning" size="small">待补成本</el-tag>
+                  <span v-else>¥{{ formatMoney(row.financialGrossProfit) }}</span>
+                </template>
               </el-table-column>
             </el-table>
           </div>
@@ -426,6 +441,7 @@ const syncTabFromRoute = () => {
 const stores = ref([])
 const salesData = ref([])
 const salesCategoryData = ref([])
+const salesCanViewProfit = ref(false)
 const inventoryData = ref([])
 const employeeData = ref([])
 const employeeOptions = ref([])
@@ -499,10 +515,17 @@ const loadStores = async () => {
 
 const loadSalesReport = async () => {
   try {
-    const res = await api.getSalesReport(salesParams)
+    const params = {}
+    if (salesParams.date) {
+      params.startDate = salesParams.date
+      params.endDate = salesParams.date
+    }
+    if (salesParams.regionCode) params.regionCode = salesParams.regionCode
+    const res = await api.getSalesReport(params)
     if (res.code === 0) {
-      salesData.value = res.data?.list || []
+      salesData.value = res.data?.statsByDate || []
       salesCategoryData.value = res.data?.statsByCategory || []
+      salesCanViewProfit.value = Boolean(res.data?.canViewProfit)
       initSalesChart()
     }
   } catch (err) { ElMessage.error('加载失败') }

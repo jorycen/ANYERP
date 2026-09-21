@@ -9,7 +9,11 @@ const {
   SalesReturnSettlement,
   ProductSn,
   Product,
+  ProductPrice,
+  ProductCategory,
+  ProductSettlementItem,
   Store,
+  Region,
   PerformanceProfitAdjustment,
   ExpensePerformanceAllocation,
   sequelize
@@ -55,6 +59,132 @@ function hasRole(user, role) {
   return String(user?.roleCode || '').split(',').map(item => item.trim()).includes(role);
 }
 
+function taxRate(value, fallback = 0.13) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : fallback;
+}
+
+function buildCategoryPath(categoryId, categoryMap, fallback = '') {
+  const names = [];
+  const visited = new Set();
+  let currentId = String(categoryId || '');
+  while (currentId && !visited.has(currentId)) {
+    visited.add(currentId);
+    const current = categoryMap.get(currentId);
+    if (!current) break;
+    if (current.name) names.unshift(current.name);
+    currentId = String(current.parent_id || '');
+  }
+  return names.join(' / ') || fallback || '未分类';
+}
+
+function aggregateProductSalesMetrics(rows = []) {
+  const groups = new Map();
+  rows.forEach(row => {
+    const dimensions = {
+      category: row.category || '未分类',
+      categoryPath: row.categoryPath || row.category || '未分类',
+      brand: row.brand || '-',
+      series: row.series || '-',
+      model: row.model || '-'
+    };
+    const key = JSON.stringify(dimensions);
+    const current = groups.get(key) || {
+      ...dimensions,
+      itemCount: 0,
+      totalQuantity: 0,
+      totalAmount: 0,
+      salesGrossProfit: 0,
+      productGrossProfit: 0,
+      financialGrossProfit: 0,
+      productGrossProfitPendingCount: 0,
+      financialGrossProfitPendingCount: 0
+    };
+    current.itemCount += 1;
+    current.totalQuantity += toNumber(row.quantity);
+    current.totalAmount += toNumber(row.salesAmount);
+    current.salesGrossProfit += toNumber(row.salesGrossProfit);
+    if (row.productGrossProfit === null || row.productGrossProfit === undefined) current.productGrossProfitPendingCount += 1;
+    else current.productGrossProfit += toNumber(row.productGrossProfit);
+    if (row.financialGrossProfit === null || row.financialGrossProfit === undefined) current.financialGrossProfitPendingCount += 1;
+    else current.financialGrossProfit += toNumber(row.financialGrossProfit);
+    groups.set(key, current);
+  });
+  return [...groups.values()].map(row => ({
+    ...row,
+    totalQuantity: Number(row.totalQuantity.toFixed(2)),
+    totalAmount: roundMoney(row.totalAmount),
+    salesGrossProfit: roundMoney(row.salesGrossProfit),
+    productGrossProfit: row.productGrossProfitPendingCount ? null : roundMoney(row.productGrossProfit),
+    financialGrossProfit: row.financialGrossProfitPendingCount ? null : roundMoney(row.financialGrossProfit)
+  })).sort((a, b) => b.totalAmount - a.totalAmount || a.categoryPath.localeCompare(b.categoryPath, 'zh-CN'));
+}
+
+async function queryProductSalesStats(where) {
+  const items = await OrderItem.findAll({
+    include: [{
+      model: Order,
+      where,
+      required: true,
+      attributes: ['order_id', 'total_amount', 'discount_amount']
+    }, {
+      model: Product,
+      as: 'Product',
+      required: false,
+      attributes: ['product_id', 'category_id', 'category', 'brand', 'series', 'model']
+    }]
+  });
+  if (!items.length) return [];
+
+  const itemIds = items.map(item => item.item_id).filter(Boolean);
+  const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean).map(String))];
+  const [legacyMaps, settlementItems, prices, categories] = await Promise.all([
+    loadLegacyCostMaps(items),
+    ProductSettlementItem.findAll({ where: { source_order_item_id: { [Op.in]: itemIds } }, raw: true }),
+    productIds.length ? ProductPrice.findAll({ where: { product_id: { [Op.in]: productIds } }, raw: true }) : [],
+    ProductCategory.findAll({ attributes: ['category_id', 'parent_id', 'name'], raw: true })
+  ]);
+  const settlementMap = new Map(settlementItems.map(item => [String(item.source_order_item_id), item]));
+  const priceMap = new Map(prices.map(price => [String(price.product_id), price]));
+  const categoryMap = new Map(categories.map(category => [String(category.category_id), category]));
+  const orderSubtotalMap = new Map();
+  items.forEach(item => {
+    const orderId = String(item.order_id || '');
+    orderSubtotalMap.set(orderId, toNumber(orderSubtotalMap.get(orderId)) + Math.max(0, toNumber(item.subtotal)));
+  });
+
+  const rows = items.map(item => {
+    const product = item.Product || {};
+    const order = item.Order || {};
+    const price = priceMap.get(String(item.product_id || '')) || {};
+    const settlement = settlementMap.get(String(item.item_id || ''));
+    const quantity = Math.max(0, toNumber(item.quantity));
+    const salesAmount = roundMoney(item.subtotal);
+    const baseProfit = calculateItemBaseProfit(item, legacyMaps);
+    const orderSubtotal = orderSubtotalMap.get(String(item.order_id || '')) || 0;
+    const orderRevenue = Math.max(0, toNumber(order.total_amount) - toNumber(order.discount_amount));
+    const allocatedGrossRevenue = orderSubtotal > 0 ? roundMoney(orderRevenue * salesAmount / orderSubtotal) : salesAmount;
+    const netRevenue = roundMoney(allocatedGrossRevenue / (1 + taxRate(price.output_tax_rate)));
+    const unitCost = toNumber(settlement?.purchase_unit_cost) || toNumber(item.original_inventory_cost) || toNumber(price.cost_price);
+    const deductible = Number(price.input_tax_deductible ?? 1) === 1;
+    const grossCost = roundMoney(unitCost * quantity);
+    const bookCost = deductible ? roundMoney(grossCost / (1 + taxRate(price.input_tax_rate))) : grossCost;
+    return {
+      category: product.category || '未分类',
+      categoryPath: buildCategoryPath(product.category_id, categoryMap, product.category),
+      brand: product.brand,
+      series: product.series,
+      model: product.model,
+      quantity,
+      salesAmount,
+      salesGrossProfit: baseProfit.grossProfit,
+      productGrossProfit: settlement && settlement.cost_status === 'ready' ? roundMoney(settlement.gross_profit_amount) : null,
+      financialGrossProfit: quantity > 0 && unitCost <= 0 ? null : roundMoney(netRevenue - bookCost)
+    };
+  });
+  return aggregateProductSalesMetrics(rows);
+}
+
 function buildEmployeeParticipationCondition(staffId) {
   const normalizedStaffId = String(staffId || '');
   const numericStaffId = Number(normalizedStaffId);
@@ -92,7 +222,7 @@ async function getReportStoreIds(user, requestedStoreId) {
  * 销售报表
  */
 async function getSalesReport(ctx) {
-  const { storeId, regionId, startDate, endDate, archiveScope = 'archived' } = ctx.query;
+  const { storeId, regionId, regionCode, startDate, endDate, archiveScope = 'archived' } = ctx.query;
   const user = ctx.state.user;
   const selfOnly = isSelfOnlyReportUser(user);
 
@@ -104,6 +234,10 @@ async function getSalesReport(ctx) {
   }
   if (storeId) whereStore.store_id = storeId;
   if (regionId) whereStore.region_id = regionId;
+  else if (regionCode) {
+    const region = await Region.findOne({ where: { region_code: regionCode, status: 1 }, attributes: ['region_id'], raw: true });
+    whereStore.region_id = region?.region_id || '__NO_REGION__';
+  }
 
   const stores = await Store.findAll({ where: whereStore });
   const storeIds = stores.map(s => s.store_id);
@@ -189,35 +323,14 @@ async function getSalesReport(ctx) {
     };
   });
 
-  // 按商品类别统计
-  const statsByCategory = await OrderItem.findAll({
-    where: { '$Order.store_id$': storeIds },
-    attributes: [
-      [sequelize.col('Product.category'), 'category'],
-      [sequelize.col('Product.brand'), 'brand'],
-      [sequelize.col('Product.series'), 'series'],
-      [sequelize.col('Product.model'), 'model'],
-      [sequelize.fn('COUNT', sequelize.col('OrderItem.item_id')), 'itemCount'],
-      [sequelize.fn('SUM', sequelize.col('OrderItem.quantity')), 'totalQuantity'],
-      [sequelize.fn('SUM', sequelize.col('OrderItem.subtotal')), 'totalAmount']
-    ],
-    include: [{
-      model: Order,
-      where,
-      attributes: []
-    }, {
-      model: Product,
-      as: 'Product',
-      attributes: []
-    }],
-    group: [
-      sequelize.col('Product.category'),
-      sequelize.col('Product.brand'),
-      sequelize.col('Product.series'),
-      sequelize.col('Product.model')
-    ],
-    raw: true
-  });
+  const statsByCategory = await queryProductSalesStats(where);
+  const profitVisible = canViewProfit(user);
+  const visibleStatsByCategory = profitVisible ? statsByCategory : statsByCategory.map(row => ({
+    ...row,
+    salesGrossProfit: null,
+    productGrossProfit: null,
+    financialGrossProfit: null
+  }));
 
   // 按日期统计
   const statsByDate = await Order.findAll({
@@ -287,7 +400,8 @@ async function getSalesReport(ctx) {
     },
     negativeSettlementSummary: returnSettlementSummary,
     statsByStore: adjustedStatsByStore,
-    statsByCategory,
+    statsByCategory: visibleStatsByCategory,
+    canViewProfit: profitVisible,
     statsByDate: adjustedStatsByDate
   };
 }
@@ -668,5 +782,6 @@ module.exports = {
   getInventoryReport,
   getEmployeePerformanceReport,
   getDashboardFilters,
-  getDashboardOverview
+  getDashboardOverview,
+  _test: { aggregateProductSalesMetrics, buildCategoryPath }
 };
