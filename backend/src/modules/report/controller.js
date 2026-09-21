@@ -412,6 +412,30 @@ async function getSalesReport(ctx) {
 /**
  * 库存报表
  */
+function buildInventoryReportMetrics(categoryStats = []) {
+  const rows = categoryStats.map(row => {
+    const totalCount = Number(row.totalCount || 0);
+    const staleCount = Number(row.staleCount || 0);
+    return {
+      ...row,
+      totalCount,
+      totalCost: roundMoney(row.totalCost),
+      staleCount,
+      staleRate: totalCount > 0 ? Number((staleCount / totalCount * 100).toFixed(2)) : 0
+    };
+  });
+  const summary = rows.reduce((result, row) => ({
+    totalCount: result.totalCount + row.totalCount,
+    totalCost: roundMoney(result.totalCost + row.totalCost),
+    staleCount: result.staleCount + row.staleCount,
+    staleRate: 0
+  }), { totalCount: 0, totalCost: 0, staleCount: 0, staleRate: 0 });
+  summary.staleRate = summary.totalCount > 0
+    ? Number((summary.staleCount / summary.totalCount * 100).toFixed(2))
+    : 0;
+  return { rows, summary };
+}
+
 async function getInventoryReport(ctx) {
   const { storeId, regionId, category } = ctx.query;
   const user = ctx.state.user;
@@ -430,17 +454,37 @@ async function getInventoryReport(ctx) {
 
   const whereSn = { is_deleted: 0, status: 'in_stock', store_id: { [Op.in]: storeIds } };
   if (storeId) whereSn.store_id = storeId;
+  const productWhere = { is_deleted: 0 };
+  if (category) productWhere.category = category;
+  const inventoryUnitCostSql = `COALESCE(
+    NULLIF(\`ProductSn\`.\`inbound_price\`, 0),
+    NULLIF(\`ProductSn\`.\`original_pickup_price\`, 0),
+    (SELECT NULLIF(pp.COST_PRICE, 0)
+       FROM T_PRODUCT_PRICE pp
+      WHERE pp.PRODUCT_ID = \`ProductSn\`.\`product_id\` AND pp.STATUS = 1
+      ORDER BY pp.EFFECTIVE_TIME DESC, pp.PRICE_ID DESC
+      LIMIT 1),
+    0
+  )`;
+  const staleCountSql = `SUM(CASE
+    WHEN COALESCE(\`ProductSn\`.\`original_inbound_time\`, \`ProductSn\`.\`inbound_time\`) IS NOT NULL
+     AND TIMESTAMPDIFF(DAY, COALESCE(\`ProductSn\`.\`original_inbound_time\`, \`ProductSn\`.\`inbound_time\`), NOW()) > 30
+    THEN 1 ELSE 0 END)`;
 
   // 在库统计
   const inStockStats = await ProductSn.findAll({
     where: whereSn,
     attributes: [
       'product_id',
-      [sequelize.fn('COUNT', sequelize.col('sn_id')), 'inStockCount']
+      [sequelize.fn('COUNT', sequelize.col('sn_id')), 'inStockCount'],
+      [sequelize.literal(`ROUND(SUM(${inventoryUnitCostSql}), 2)`), 'totalCost'],
+      [sequelize.literal(staleCountSql), 'staleCount']
     ],
     include: [{
       model: Product,
-      attributes: ['name', 'category', 'brand', 'series', 'model']
+      attributes: ['name', 'category', 'brand', 'series', 'model'],
+      where: productWhere,
+      required: true
     }],
     group: ['product_id'],
     raw: true
@@ -454,11 +498,15 @@ async function getInventoryReport(ctx) {
       [sequelize.col('Product.brand'), 'brand'],
       [sequelize.col('Product.series'), 'series'],
       [sequelize.col('Product.model'), 'model'],
-      [sequelize.fn('COUNT', sequelize.col('sn_id')), 'totalCount']
+      [sequelize.fn('COUNT', sequelize.col('sn_id')), 'totalCount'],
+      [sequelize.literal(`ROUND(SUM(${inventoryUnitCostSql}), 2)`), 'totalCost'],
+      [sequelize.literal(staleCountSql), 'staleCount']
     ],
     include: [{
       model: Product,
-      attributes: []
+      attributes: [],
+      where: productWhere,
+      required: true
     }],
     group: [
       sequelize.col('Product.category'),
@@ -469,7 +517,9 @@ async function getInventoryReport(ctx) {
     raw: true
   });
 
-  ctx.body = { inStockStats, categoryStats };
+  const { rows: normalizedCategoryStats, summary } = buildInventoryReportMetrics(categoryStats);
+
+  ctx.body = { inStockStats, categoryStats: normalizedCategoryStats, summary };
 }
 
 async function getEmployeePerformanceReport(ctx) {
@@ -790,5 +840,5 @@ module.exports = {
   getEmployeePerformanceReport,
   getDashboardFilters,
   getDashboardOverview,
-  _test: { aggregateProductSalesMetrics, buildCategoryPath }
+  _test: { aggregateProductSalesMetrics, buildCategoryPath, buildInventoryReportMetrics }
 };

@@ -176,12 +176,26 @@
             <el-button type="primary" @click="loadInventoryReport">查询</el-button>
           </div>
 
+          <div class="summary-row">
+            <div class="summary-item">在库数量：<strong>{{ inventorySummary.totalCount || 0 }}</strong></div>
+            <div class="summary-item">成本合计：<strong>¥{{ formatMoney(inventorySummary.totalCost) }}</strong></div>
+            <div class="summary-item">滞销数量（库龄＞30天）：<strong>{{ inventorySummary.staleCount || 0 }}</strong></div>
+            <div class="summary-item">滞销率：<strong>{{ formatPercent(inventorySummary.staleRate) }}</strong></div>
+          </div>
+
           <el-table :data="inventoryData" stripe border>
             <el-table-column prop="category" label="商品分类" width="110" />
             <el-table-column prop="brand" label="品牌" width="100" />
             <el-table-column prop="series" label="系列" width="120" />
             <el-table-column prop="model" label="型号" min-width="140" />
             <el-table-column prop="totalCount" label="在库数量" width="100" />
+            <el-table-column label="成本合计" width="130" align="right">
+              <template #default="{ row }">¥{{ formatMoney(row.totalCost) }}</template>
+            </el-table-column>
+            <el-table-column prop="staleCount" label="滞销数量" width="105" align="right" />
+            <el-table-column label="滞销率（库龄＞30天）" width="170" align="right">
+              <template #default="{ row }">{{ formatPercent(row.staleRate) }}</template>
+            </el-table-column>
           </el-table>
 
           <div class="chart-container">
@@ -518,6 +532,7 @@ const salesData = ref([])
 const salesCategoryData = ref([])
 const salesCanViewProfit = ref(false)
 const inventoryData = ref([])
+const inventorySummary = ref({ totalCount: 0, totalCost: 0, staleCount: 0, staleRate: 0 })
 const employeeData = ref([])
 const employeeOptions = ref([])
 const employeeSummary = ref({})
@@ -648,6 +663,7 @@ const loadInventoryReport = async () => {
     const res = await api.getInventoryReport(inventoryParams)
     if (res.code === 0) {
       inventoryData.value = res.data?.categoryStats || []
+      inventorySummary.value = res.data?.summary || { totalCount: 0, totalCost: 0, staleCount: 0, staleRate: 0 }
       initInventoryChart()
     }
   } catch (err) { ElMessage.error('加载失败') }
@@ -824,6 +840,8 @@ const formatMoney = (value) => Number(value || 0).toLocaleString('zh-CN', {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2
 })
+
+const formatPercent = (value) => `${Number(value || 0).toFixed(2)}%`
 
 const formatSignedMoney = (value) => {
   const amount = Number(value || 0)
