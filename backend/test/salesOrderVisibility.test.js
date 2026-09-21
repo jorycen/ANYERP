@@ -639,6 +639,38 @@ test('合并销售列表中的定金记录使用定金业务类型和订单兼�
   assert.equal(row.actual_payment, 300);
 });
 
+test('销售退单列表使用退单号并沿用源订单提交人，不把审批人当操作人', () => {
+  const row = _test.normalizeSalesReturnListRow({
+    toJSON: () => ({
+      return_id: 'RET-ID-1',
+      return_no: 'RET202609161337231967',
+      order_id: 'ORDER-ID-1',
+      order_no: 'ORD202609161237567008',
+      status: 'completed',
+      reason: '商品型号调整',
+      create_user: '退单申请人',
+      li_review_user: '最终审批人',
+      order: {
+        order_id: 'ORDER-ID-1',
+        order_no: 'ORD202609161237567008',
+        submit_user: '源单提交人',
+        create_user: '源单创建人',
+        Store: { name: '测试门店' }
+      },
+      settlement: { user_receivable_amount: -100, customer_received_amount: -80 },
+      items: [{ product_name: '测试商品', unit_price: 100, quantity: 1, subtotal: 100 }]
+    })
+  });
+
+  assert.equal(row.record_type, 'sales_return');
+  assert.equal(row.order_no, 'RET202609161337231967');
+  assert.equal(row.source_order_no, 'ORD202609161237567008');
+  assert.equal(row.submit_user, '源单提交人');
+  assert.equal(row.operator_user, '源单提交人');
+  assert.equal(row.total_amount, -100);
+  assert.equal(row.OrderItems[0].quantity, -1);
+});
+
 test('经销商级国补照片查询按分配门店过滤', () => {
   const query = _test.buildSubsidyPhotoQuery({ roles: ['finance'], distributorId: 'DIST-1', accessibleStoreIds: ['STORE-1', 'STORE-2'] });
   assert.deepEqual(query.where.store_id[Op.in], ['STORE-1', 'STORE-2']);

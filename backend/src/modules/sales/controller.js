@@ -360,6 +360,44 @@ function normalizeSalesOrderListRow(order) {
   };
 }
 
+function normalizeSalesReturnListRow(returnRequest) {
+  const data = returnRequest && typeof returnRequest.toJSON === 'function' ? returnRequest.toJSON() : (returnRequest || {});
+  const sourceOrder = data.order || {};
+  const settlement = data.settlement || {};
+  const sourceSubmitter = sourceOrder.submit_user || sourceOrder.create_user || '';
+  const completed = String(data.status || '') === 'completed';
+  const rejected = String(data.status || '') === 'rejected';
+  return {
+    ...sourceOrder,
+    record_type: 'sales_return',
+    return_id: data.return_id,
+    source_order_id: sourceOrder.order_id || data.order_id,
+    source_order_no: sourceOrder.order_no || data.order_no,
+    order_id: data.return_id,
+    order_no: data.return_no,
+    order_status: rejected ? 'return_rejected' : (completed ? 'returned' : 'return_pending'),
+    create_time: data.create_time,
+    submit_time: data.create_time,
+    submit_user: sourceSubmitter,
+    create_user: sourceSubmitter,
+    operator_user: sourceSubmitter,
+    total_amount: Number(settlement.user_receivable_amount || -Math.abs(Number(data.refund_amount || 0))),
+    actual_payment: Number(settlement.customer_received_amount || -Math.abs(Number(data.refund_amount || 0))),
+    national_subsidy: Number(settlement.policy_subsidy_receivable_amount || 0),
+    education_subsidy: Number(settlement.education_subsidy_amount || 0),
+    remark: `退单原因：${data.reason || '-'}；源销售订单：${sourceOrder.order_no || data.order_no || '-'}`,
+    Store: sourceOrder.Store || null,
+    OrderItems: (data.items || []).map(item => ({
+      ...item,
+      sale_price: -Math.abs(Number(item.unit_price || 0)),
+      quantity: -Math.abs(Number(item.quantity || 0)),
+      subtotal: -Math.abs(Number(item.subtotal || 0))
+    })),
+    OrderPayments: [],
+    action_logs: []
+  };
+}
+
 function compareCombinedSalesRows(a, b) {
   const pending = new Set(['draft', 'pending_approval', 'pending_store_approval', 'pending_distributor_approval', '未归档', 'deposit_receipt']);
   const aPending = pending.has(String(a.order_status || '')) ? 0 : 1;
@@ -531,7 +569,29 @@ async function list(ctx) {
     order: buildSalesOrderListOrder()
   };
   const orders = await Order.findAll(orderQuery);
-  const normalizedRows = orders.map(normalizeSalesOrderListRow);
+  let returnRows = [];
+  if (String(orderNo || '').trim()) {
+    const returnOrderWhere = { ...where };
+    delete returnOrderWhere.order_no;
+    const returnRequests = await SalesReturnRequest.findAll({
+      where: { return_no: { [Op.like]: `%${String(orderNo).trim()}%` } },
+      include: [
+        {
+          model: Order,
+          as: 'order',
+          where: returnOrderWhere,
+          required: true,
+          include: [storeInclude, applicantInclude, itemInclude, { model: OrderPayment }]
+        },
+        { model: SalesReturnRequestItem, as: 'items', required: false },
+        { model: SalesReturnSettlement, as: 'settlement', required: false }
+      ],
+      distinct: true,
+      order: [['create_time', 'DESC']]
+    });
+    returnRows = returnRequests.map(normalizeSalesReturnListRow);
+  }
+  const normalizedRows = [...orders.map(normalizeSalesOrderListRow), ...returnRows].sort(compareCombinedSalesRows);
   const offset = (Number(page) - 1) * Number(pageSize);
   const rows = normalizedRows.slice(offset, offset + Number(pageSize));
 
@@ -1228,6 +1288,8 @@ function buildSalesReturnSettlementExportRows(settlements, options = {}) {
   const returnOrderById = options.returnOrderById instanceof Map ? options.returnOrderById : new Map();
   return (settlements || []).flatMap(settlement => {
     const data = settlement.toJSON ? settlement.toJSON() : settlement;
+    const sourceOrder = returnOrderById.get(String(data.order_id || '')) || {};
+    const sourceSubmitter = sourceOrder.submit_user || sourceOrder.create_user || '';
     const items = Array.isArray(data.items) && data.items.length ? data.items : [{}];
     return items.map(item => {
       const derivedAmounts = deriveReturnSettlementAmounts(data, item, returnOrderById);
@@ -1259,7 +1321,7 @@ function buildSalesReturnSettlementExportRows(settlements, options = {}) {
       Object.assign(row, {
         订单编号: data.return_no || data.settlement_no || '',
         下单时间: data.create_time || '',
-        提交人: data.create_user || '',
+        提交人: sourceSubmitter,
         门店ID: data.store_id || '',
         会员称呼: '',
         订单总计: userReceivable,
@@ -1284,7 +1346,7 @@ function buildSalesReturnSettlementExportRows(settlements, options = {}) {
         备注: `销售退货单 ${data.return_no || ''}，原销售订单 ${data.order_no || ''}`,
         创建日期: data.create_time || '',
         订单状态: '销售退单负向结算',
-        操作人: data.finance_confirm_user || data.create_user || ''
+        操作人: sourceSubmitter
       });
       return row;
     });
@@ -1402,7 +1464,13 @@ async function exportOrders(ctx) {
           ...(storeId
             ? { store_id: storeId }
             : (!hasGlobalStoreScope ? { store_id: orderStoreIds } : {})),
-          ...(startDate || endDate ? { create_time: buildChinaDateRange(startDate, endDate) } : {})
+          ...(startDate || endDate ? { create_time: buildChinaDateRange(startDate, endDate) } : {}),
+          ...(orderNo ? {
+            [Op.or]: [
+              { return_no: { [Op.like]: `%${String(orderNo).trim()}%` } },
+              { order_no: { [Op.like]: `%${String(orderNo).trim()}%` } }
+            ]
+          } : {})
         },
         include: [{ model: SalesReturnSettlementItem, as: 'items', required: false }],
         order: [['create_time', 'DESC'], ['settlement_id', 'DESC']]
@@ -1425,7 +1493,7 @@ async function exportOrders(ctx) {
   const returnOrders = returnOrderIds.length
     ? await Order.findAll({
       where: { order_id: { [Op.in]: returnOrderIds } },
-      attributes: ['order_id', 'total_amount', 'discount_amount', 'national_subsidy', 'education_subsidy', 'actual_payment'],
+      attributes: ['order_id', 'submit_user', 'create_user', 'total_amount', 'discount_amount', 'national_subsidy', 'education_subsidy', 'actual_payment'],
       include: [{
         model: OrderItem,
         attributes: ['item_id', 'product_id', 'sale_price', 'quantity', 'use_gov_subsidy', 'use_edu_subsidy'],
@@ -5671,6 +5739,7 @@ module.exports = {
     subsidyPhotoStoreWhere,
     buildSubsidyPhotoQuery,
     buildChinaDateRange,
+    normalizeSalesReturnListRow,
     buildOrderExportRows,
     buildSalesReturnSettlementExportRows,
     buildDepositExportRows,

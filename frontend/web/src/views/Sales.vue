@@ -75,7 +75,7 @@
           <tbody v-if="!loading && tableData.length">
             <tr v-for="row in tableData" :key="row.order_id">
               <td class="order-no-cell"><span class="order-no-text">{{ row.order_no || '-' }}</span></td>
-              <td>{{ row.record_type === 'deposit' ? '定金收款' : '销售订单' }}</td>
+              <td>{{ row.record_type === 'deposit' ? '定金收款' : (row.record_type === 'sales_return' ? '销售退单' : '销售订单') }}</td>
               <td>{{ row.Store?.name || '-' }}</td>
               <td>{{ formatDate(row.create_time) }}</td>
               <td>{{ row.submit_user || row.create_user || '-' }}</td>
@@ -378,7 +378,7 @@
     </el-dialog>
 
     <!-- 订单详情对话框 -->
-    <el-dialog v-model="detailVisible" class="sales-detail-dialog" :title="currentOrder?.record_type === 'deposit' ? '定金收款详情' : '订单详情'" width="1000px">
+    <el-dialog v-model="detailVisible" class="sales-detail-dialog" :title="currentOrder?.record_type === 'deposit' ? '定金收款详情' : (currentOrder?.record_type === 'sales_return' ? '销售退单详情' : '订单详情')" width="1000px">
       <div v-if="currentOrder" class="order-detail">
         <el-descriptions :column="2" border>
           <el-descriptions-item label="订单号">{{ currentOrder.order_no }}</el-descriptions-item>
@@ -1070,11 +1070,11 @@ const handleCreate = async () => {
 }
 
 const handleView = async (row) => {
-  if (row.record_type === 'deposit') {
+  if (row.record_type === 'deposit' || row.record_type === 'sales_return') {
     currentOrder.value = {
       ...row,
-      OrderItems: [],
-      OrderPayments: [{
+      OrderItems: row.record_type === 'sales_return' ? (row.OrderItems || []) : [],
+      OrderPayments: row.record_type === 'sales_return' ? [] : [{
         payment_method: row.payment_method,
         amount: row.amount,
         payment_time: row.create_time
@@ -1319,7 +1319,7 @@ const openOrderDetail = async (orderId) => {
 
 const saveRemark = async () => {
   if (queryOnly || traceReadonly.value) return
-  if (!currentOrder.value?.order_id || currentOrder.value.record_type === 'deposit') return
+  if (!currentOrder.value?.order_id || currentOrder.value.record_type) return
   remarkSaving.value = true
   try {
     const res = await api.updateSales(currentOrder.value.order_id, { remark: remarkDraft.value })
@@ -1924,12 +1924,12 @@ const formatDate = (dateStr) => {
 }
 
 const getStatusType = (status) => {
-  const types = { draft: 'info', completed: 'success', archived: 'success', '已归档': 'success', '未归档': 'warning', pending_approval: 'warning', pending_store_approval: 'warning', pending_distributor_approval: 'warning', cancelled: 'danger', voided: 'danger', '已作废': 'danger', return_pending: 'warning', returned: 'info', deposit_receipt: 'success' }
+  const types = { draft: 'info', completed: 'success', archived: 'success', '已归档': 'success', '未归档': 'warning', pending_approval: 'warning', pending_store_approval: 'warning', pending_distributor_approval: 'warning', cancelled: 'danger', voided: 'danger', '已作废': 'danger', return_pending: 'warning', return_rejected: 'danger', returned: 'info', deposit_receipt: 'success' }
   return types[status] || 'info'
 }
 
 const getStatusText = (status) => {
-  const texts = { draft: '草稿', completed: '已归档', archived: '已归档', '已归档': '已归档', '未归档': '未归档', pending_approval: '待店长审批', pending_store_approval: '待店长审批', pending_distributor_approval: '待经销商总权限审批', cancelled: '已取消', voided: '已作废', '已作废': '已作废', return_pending: '退单审批中', returned: '已退单', deposit_receipt: '定金收款' }
+  const texts = { draft: '草稿', completed: '已归档', archived: '已归档', '已归档': '已归档', '未归档': '未归档', pending_approval: '待店长审批', pending_store_approval: '待店长审批', pending_distributor_approval: '待经销商总权限审批', cancelled: '已取消', voided: '已作废', '已作废': '已作废', return_pending: '退单审批中', return_rejected: '退单已拒绝', returned: '已退单', deposit_receipt: '定金收款' }
   return texts[status] || status
 }
 
