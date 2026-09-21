@@ -332,23 +332,50 @@ function normalizeImportAmount(value, rowNumber) {
   return money(amount);
 }
 
-async function applyImportedRightRow({ row, rowNumber, user }) {
+const IMPORT_STATUS_ALIASES = new Map([
+  ['AVAILABLE', 'AVAILABLE'], ['可用', 'AVAILABLE'], ['有效', 'AVAILABLE'], ['正常', 'AVAILABLE'],
+  ['NOT_APPLICABLE', 'NOT_APPLICABLE'], ['不适用', 'NOT_APPLICABLE'], ['无权益', 'NOT_APPLICABLE'],
+  ['EXCEPTION', 'EXCEPTION'], ['异常', 'EXCEPTION']
+].map(([label, value]) => [normalizeImportHeader(label), value]));
+
+function normalizeImportStatus(value, rowNumber) {
+  const input = String(value || '可用').trim();
+  const status = IMPORT_STATUS_ALIASES.get(normalizeImportHeader(input));
+  if (!status) throw Object.assign(new Error(`第${rowNumber}行状态“${input}”无效，请填写可用、不适用或异常`), { status: 400 });
+  return status;
+}
+
+function buildImportResourceTypeAliases(categories) {
+  const aliases = new Map();
+  for (const category of categories) {
+    const labels = [category.category_code, category.name, category.short_name, RESOURCE_LABELS[category.category_code]];
+    for (const label of labels.filter(Boolean)) aliases.set(normalizeImportHeader(label), category.category_code);
+  }
+  return aliases;
+}
+
+function normalizeImportResourceTypes(value, categories, rowNumber) {
+  const inputs = parseImportList(value);
+  if (!inputs.length) throw Object.assign(new Error(`第${rowNumber}行资源类型不能为空`), { status: 400 });
+  const aliases = buildImportResourceTypeAliases(categories);
+  return [...new Set(inputs.map(input => {
+    const resourceType = aliases.get(normalizeImportHeader(input));
+    if (!resourceType) throw Object.assign(new Error(`第${rowNumber}行资源类型“${input}”无效或已停用，请填写系统中的中文资源名称`), { status: 400 });
+    return resourceType;
+  }))];
+}
+
+async function applyImportedRightRow({ row, rowNumber, user, categories }) {
   const snCodes = parseImportList(row.sn);
   const pnCodes = parseImportList(row.pn);
   if (!snCodes.length && !pnCodes.length) throw Object.assign(new Error(`第${rowNumber}行必须填写PN或SN`), { status: 400 });
-  const resourceTypes = parseImportList(row.resourceType);
-  if (!resourceTypes.length) throw Object.assign(new Error(`第${rowNumber}行资源类型不能为空`), { status: 400 });
-  const status = String(row.status || 'AVAILABLE').trim().toUpperCase();
-  if (!['AVAILABLE', 'NOT_APPLICABLE', 'EXCEPTION'].includes(status)) throw Object.assign(new Error(`第${rowNumber}行状态无效`), { status: 400 });
+  const resourceTypes = normalizeImportResourceTypes(row.resourceType, categories, rowNumber);
+  const status = normalizeImportStatus(row.status, rowNumber);
   const amount = normalizeImportAmount(row.amount, rowNumber);
   const effectiveStart = parseImportDate(row.effectiveStart, '开始时间', rowNumber);
   const effectiveEnd = parseImportDate(row.effectiveEnd, '结束时间', rowNumber);
   if (effectiveStart && effectiveEnd && effectiveStart > effectiveEnd) throw Object.assign(new Error(`第${rowNumber}行开始时间不能晚于结束时间`), { status: 400 });
   const remark = String(row.remark || '').trim().slice(0, 512);
-  const categories = await ResourceCategory.findAll({ where: { status: 1 } });
-  const validTypes = new Set(categories.map(category => category.category_code));
-  for (const type of resourceTypes) if (!validTypes.has(type)) throw Object.assign(new Error(`第${rowNumber}行资源类型 ${type} 无效或已停用`), { status: 400 });
-
   return sequelize.transaction(async transaction => {
     const selector = snCodes.length ? { sn_code: { [Op.in]: snCodes } } : { pn_code: { [Op.in]: pnCodes } };
     const sns = await ProductSn.findAll({ where: { is_deleted: 0, status: 'in_stock', ...selector }, transaction, lock: transaction.LOCK.UPDATE });
@@ -387,11 +414,12 @@ async function importBatchRights(ctx) {
   if (!rawRows.length) ctx.throw(400, 'Excel没有可导入的数据');
   if (rawRows.length > 2000) ctx.throw(400, '单次最多导入2000行');
   const rows = normalizeImportRows(rawRows);
+  const categories = await ResourceCategory.findAll({ where: { status: 1 } });
   const results = [];
   for (let index = 0; index < rows.length; index += 1) {
     const rowNumber = index + 2;
     try {
-      const result = await applyImportedRightRow({ row: rows[index], rowNumber, user: ctx.state.user || {} });
+      const result = await applyImportedRightRow({ row: rows[index], rowNumber, user: ctx.state.user || {}, categories });
       results.push({ row: rowNumber, status: 'success', ...result });
     } catch (error) {
       results.push({ row: rowNumber, status: 'failed', message: error.message });
@@ -2045,5 +2073,6 @@ module.exports = {
   findResourceRule, calculatePreSaleRuleAmount,
   initializeSnResourceRightsFromInbound, triggerSaleResourceBenefits, createSaleResourceTasks,
   listSaleResourceTasks, submitSaleResourceTask, reviewSaleResourceTask,
-  alignOrderSubsidyRights, isGovSubsidyEligibleCategory, lockSaleRights, finishSaleRights, releaseSaleRights
+  alignOrderSubsidyRights, isGovSubsidyEligibleCategory, lockSaleRights, finishSaleRights, releaseSaleRights,
+  _test: { normalizeImportRows, normalizeImportStatus, normalizeImportResourceTypes }
 };

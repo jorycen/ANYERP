@@ -164,13 +164,13 @@
       <template #footer><el-button @click="claimDialog=false">取消</el-button><el-button type="primary" @click="submitClaim">提交财务审批</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="batchDialog" title="Excel导入批量调整权益" width="640px">
+    <el-dialog v-model="batchDialog" title="表格导入批量调整权益" width="640px">
       <el-alert title="仅调整未销售在库SN的权益，已锁定、已核销和已套回权益会跳过，已归档销售单不受影响。" type="warning" :closable="false" style="margin-bottom:12px" />
       <div class="import-help">
         <p>每行一条调整规则：只填 PN 调整该 PN 下全部在库 SN；填写 SN 时按 SN 调整，若 PN、SN 同时填写则 SN 优先。开始时间不填表示立即生效，结束时间不填表示永久有效。</p>
         <p>表头：PN、SN、资源类型、资源金额、状态、开始时间、结束时间、备注。</p>
       </div>
-      <el-button @click="downloadBatchTemplate">下载Excel模板</el-button>
+      <el-button @click="downloadBatchTemplate">下载导入模板</el-button>
       <input ref="batchFileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="onBatchFileChange" />
       <el-button type="primary" @click="batchFileInput?.click()">选择Excel文件</el-button>
       <span v-if="batchFile" class="file-name">{{ batchFile.name }}</span>
@@ -327,8 +327,26 @@ async function submitBatchAdjust(){
 
 function onBatchFileChange(event){ batchFile.value=event.target.files?.[0] || null }
 function downloadBatchTemplate(){
-  const rows=[{PN:'示例PN',SN:'',资源类型:'GOV_SUBSIDY',资源金额:500,状态:'AVAILABLE',开始时间:'',结束时间:'',备注:'按PN匹配全部在库SN'}]
-  const sheet=XLSX.utils.json_to_sheet(rows); const book=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(book,sheet,'权益调整'); XLSX.writeFile(book,'资源权益批量调整模板.xlsx')
+  const defaultResourceName=resourceOptions.value[0]?.label || '国补'
+  const rows=[{PN:'示例PN',SN:'',资源类型:defaultResourceName,资源金额:500,状态:'可用',开始时间:'',结束时间:'',备注:'按PN匹配全部在库SN'}]
+  const instructions=[
+    {填写项目:'PN与SN',填写说明:'二选一即可；同时填写时以SN为准。填写PN会调整该PN下全部符合条件的在库SN。'},
+    {填写项目:'资源类型',填写说明:`请填写系统中的中文资源名称：${resourceOptions.value.map(item=>item.label).join('、') || '国补'}`},
+    {填写项目:'资源金额',填写说明:'填写大于或等于0的数字，不填写按0处理。'},
+    {填写项目:'状态',填写说明:'仅可填写：可用、不适用、异常；不填写默认为可用。'},
+    {填写项目:'开始时间',填写说明:'不填写表示立即生效；可填写日期或日期时间。'},
+    {填写项目:'结束时间',填写说明:'不填写表示永久有效；可填写日期或日期时间。'},
+    {填写项目:'备注',填写说明:'选填，用于说明本次权益调整原因。'},
+    {填写项目:'导入范围',填写说明:'仅调整未销售且在库的SN；已锁定、已核销、已套回的权益会自动跳过。'}
+  ]
+  const sheet=XLSX.utils.json_to_sheet(rows)
+  sheet['!cols']=[{wch:22},{wch:22},{wch:18},{wch:14},{wch:12},{wch:20},{wch:20},{wch:34}]
+  const instructionSheet=XLSX.utils.json_to_sheet(instructions)
+  instructionSheet['!cols']=[{wch:16},{wch:72}]
+  const book=XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(book,sheet,'权益调整')
+  XLSX.utils.book_append_sheet(book,instructionSheet,'填写说明')
+  XLSX.writeFile(book,'资源权益批量调整模板.xlsx')
 }
 async function submitBatchImport(){
   if(!batchFile.value)return ElMessage.warning('请选择Excel文件')
