@@ -396,6 +396,39 @@ async function ensureFinanceSchemaCompatibility() {
       KEY idx_order (ORDER_ID)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
+  await checkAndCreateTable('T_SUPPLIER_REBATE', `
+    CREATE TABLE T_SUPPLIER_REBATE (
+      REBATE_ID VARCHAR(32) NOT NULL,
+      DISTRIBUTOR_ID VARCHAR(32),
+      SUPPLIER_ID VARCHAR(32) NOT NULL,
+      SUPPLIER_NAME VARCHAR(255),
+      TYPE VARCHAR(32) NOT NULL,
+      AMOUNT DECIMAL(12,2) NOT NULL,
+      BALANCE DECIMAL(12,2) NOT NULL,
+      RELATED_NO VARCHAR(64),
+      REMARK VARCHAR(512),
+      STATUS VARCHAR(32) DEFAULT 'active',
+      SOURCE_TYPE VARCHAR(32) DEFAULT 'manual',
+      SOURCE_ID VARCHAR(64),
+      REVERSAL_OF VARCHAR(32),
+      CREATE_USER VARCHAR(64),
+      CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (REBATE_ID),
+      KEY idx_rebate_supplier (SUPPLIER_ID),
+      KEY idx_rebate_type (TYPE),
+      KEY idx_supplier_rebate_distributor (DISTRIBUTOR_ID, CREATE_TIME)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='供应商返利表'
+  `);
+  await checkAndAddColumn('T_SUPPLIER_REBATE', 'DISTRIBUTOR_ID', 'VARCHAR(32) COMMENT "返利所属经销商"', 'REBATE_ID');
+  await checkAndAddColumn('T_SUPPLIER_REBATE', 'STATUS', 'VARCHAR(32) DEFAULT "active" COMMENT "处理状态"', 'REMARK');
+  await checkAndAddColumn('T_SUPPLIER_REBATE', 'SOURCE_TYPE', 'VARCHAR(32) DEFAULT "manual" COMMENT "来源类型"', 'STATUS');
+  await checkAndAddColumn('T_SUPPLIER_REBATE', 'SOURCE_ID', 'VARCHAR(64) COMMENT "来源ID"', 'SOURCE_TYPE');
+  await checkAndAddColumn('T_SUPPLIER_REBATE', 'REVERSAL_OF', 'VARCHAR(32) COMMENT "被冲销返利ID"', 'SOURCE_ID');
+  await checkAndAddIndex(
+    'T_SUPPLIER_REBATE',
+    'idx_supplier_rebate_distributor',
+    'ALTER TABLE T_SUPPLIER_REBATE ADD INDEX idx_supplier_rebate_distributor (DISTRIBUTOR_ID, CREATE_TIME)'
+  );
   await checkAndCreateTable('T_REBATE_POSTING_ORDER', `
     CREATE TABLE T_REBATE_POSTING_ORDER (
       POSTING_ID VARCHAR(32) NOT NULL,
