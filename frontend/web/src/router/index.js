@@ -168,8 +168,7 @@ const routes = [
       {
         path: 'finance/reimbursement',
         name: 'FinanceReimbursement',
-        component: () => import('../views/Finance.vue'),
-        meta: { roles: ['finance', 'admin', 'boss'], tab: 'reimbursement' }
+        redirect: '/finance/expense'
       },
       {
         path: 'finance/payment',

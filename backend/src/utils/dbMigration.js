@@ -4355,10 +4355,9 @@ async function seedPermissionData() {
       ['finance_profit_statement', '财务利润表', 'finance', '/finance/profit-statement', 3],
       ['finance_subsidy_receivable', '国补应收单', 'finance', '/finance/subsidy-receivable', 3],
       ['finance_rebate_settlement', '返利下账', 'finance', '/finance/rebate-settlement', 4],
-      ['finance_expense', '费用管理', 'finance', '/finance/expense', 5],
+      ['finance_expense', '费用/报销管理', 'finance', '/finance/expense', 5],
       ['finance_payable', '应付管理', 'finance', '/finance/payable', 6],
       ['finance_purchase_invoice', '发票管理', 'finance', '/finance/purchase-invoice', 7],
-      ['finance_reimbursement', '报销结算', 'finance', '/finance/reimbursement', 8],
       ['finance_payment', '付款管理', 'finance', '/finance/payment', 8],
       ['finance_rebate', '返利管理', 'finance', '/finance/rebate', 9],
       ['finance_resource_rights', '资源权益核销与成本调整', 'finance', '/finance/resource-rights', 10],
@@ -4395,7 +4394,7 @@ async function seedPermissionData() {
       'purchase_order', 'purchase_inbound', 'finance_report',
       'product_list', 'product_list_legacy',
       'system_user', 'system_role', 'system_menu', 'system_region',
-      'paymentManagement'
+      'paymentManagement', 'finance_reimbursement'
     ];
     const roleChildMenus = {
       boss: childMenus.map(([code]) => code),
@@ -4404,7 +4403,7 @@ async function seedPermissionData() {
         'sales_order', 'sales_subsidy_photos',
         'inventory_resource_rights',
         'finance_daily', 'finance_product_settlement', 'finance_profit_statement', 'finance_subsidy_receivable', 'finance_rebate_settlement', 'finance_expense',
-        'finance_payable', 'finance_purchase_invoice', 'finance_reimbursement', 'finance_payment', 'finance_rebate',
+        'finance_payable', 'finance_purchase_invoice', 'finance_payment', 'finance_rebate',
         'finance_resource_rights', 'finance_account', 'finance_settlement', 'finance_freight',
         'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_achievement',
         'approval_tasks', 'approval_instances', 'product_approval'

@@ -1087,7 +1087,7 @@ async function exportExpenseList(ctx) {
   sendExcel(ctx, data, [
     '费用单号', '时间', '费用日期', '经营归属月份', '费用类型', '费用发生方', '金额', '已结算金额',
     '门店', '制单人', '发起人', '状态', '付款方式', '备注'
-  ], `费用管理_${new Date().toISOString().slice(0, 10)}.xlsx`, '费用管理');
+  ], `费用报销管理_${new Date().toISOString().slice(0, 10)}.xlsx`, '费用报销管理');
 }
 
 async function getExpenseDetail(ctx) {

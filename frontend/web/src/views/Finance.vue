@@ -346,7 +346,7 @@
           <RebateSettlement @changed="handleRebateSettlementChanged" />
         </el-tab-pane>
 
-        <el-tab-pane label="费用管理" name="expense">
+        <el-tab-pane label="费用/报销管理" name="expense">
           <div class="filter-bar">
             <span style="font-weight: bold; line-height: 32px;">费用清单</span>
             <el-button type="primary" @click="handleAddExpense">添加费用</el-button>
@@ -647,70 +647,6 @@
             @current-change="loadPayableData"
           />
 
-        </el-tab-pane>
-
-        <el-tab-pane label="报销结算" name="reimbursement">
-          <div class="filter-bar">
-            <span style="font-weight: bold; line-height: 32px;">个人垫付报销结算单</span>
-            <el-button type="success" :loading="exportingList === 'reimbursement-settlement'" @click="handleExportReimbursementSettlement">导出</el-button>
-              <el-select v-model="reimbursementSettlementStatusFilter" placeholder="结算状态" clearable style="width: 130px" @change="loadReimbursementSettlementData">
-                <el-option label="全部" value="" />
-                <el-option label="草稿" value="draft" />
-                <el-option label="待审批" value="pending_approval" />
-                <el-option label="待付款" value="confirmed" />
-              <el-option label="已作废" value="voided" />
-            </el-select>
-            <el-select v-model="reimbursementPaymentStatusFilter" placeholder="付款状态" clearable style="width: 130px" @change="loadReimbursementSettlementData">
-              <el-option label="全部" value="" />
-              <el-option label="未付款" value="unpaid" />
-              <el-option label="部分付款" value="partial_paid" />
-              <el-option label="已付款" value="paid" />
-            </el-select>
-          </div>
-
-          <el-table :data="reimbursementSettlementData" stripe border>
-            <el-table-column prop="settlement_no" label="结算单号" width="190" />
-            <el-table-column label="报销人" width="130">
-              <template #default="{ row }">{{ row.payee_name || row.supplier_name || '-' }}</template>
-            </el-table-column>
-            <el-table-column label="来源单号" width="180">
-              <template #default="{ row }">{{ row.source_no || '-' }}</template>
-            </el-table-column>
-            <el-table-column prop="total_amount" label="结算金额" width="120">
-              <template #default="{ row }">¥{{ row.total_amount }}</template>
-            </el-table-column>
-            <el-table-column prop="status" label="状态" width="100">
-              <template #default="{ row }">
-                <el-tag :type="getSettlementStatusTagType(row.status)">
-                  {{ getSettlementStatusText(row.status) }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="payment_status" label="付款状态" width="100">
-              <template #default="{ row }">
-                <el-tag :type="getPaymentStatusTagType(row.payment_status)">
-                  {{ getPaymentStatusText(row.payment_status) }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="create_time" label="创建时间" width="160"><template #default="{ row }">{{ formatDateTime(row.create_time) }}</template></el-table-column>
-            <el-table-column label="操作" width="220">
-              <template #default="{ row }">
-                <el-button link type="primary" @click="openSettlementDetail(row)">详情</el-button>
-                <el-button v-if="row.status === 'draft'" link type="warning" @click="handleSubmitSettlement(row)">提交</el-button>
-                <el-button v-if="row.status !== 'voided'" link type="danger" @click="handleVoidSettlement(row)">作废</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-
-          <el-pagination
-            v-model:current-page="reimbursementSettlementQuery.page"
-            v-model:page-size="reimbursementSettlementQuery.pageSize"
-            :total="reimbursementSettlementTotal"
-            layout="total, sizes, prev, pager, next"
-            @size-change="loadReimbursementSettlementData"
-            @current-change="loadReimbursementSettlementData"
-          />
         </el-tab-pane>
 
         <el-tab-pane label="付款管理" name="payment" lazy>
