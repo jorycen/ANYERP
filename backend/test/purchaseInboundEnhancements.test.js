@@ -14,30 +14,30 @@ test('API 日期统一序列化为北京时间且不会重复加八小时', () =
   assert.equal(body.data[0].create_time, '2026-09-20 09:02:03');
 });
 
-test('采购申请税率统一为含税13%和未税', () => {
+test('采购申请凭证类型统一为含税13%、专票13%、未税和收据', () => {
   const source = read('backend/src/modules/purchase/controller.js');
-  assert.match(source, /new Set\(\['含税13%', '未税'\]\)/);
+  assert.match(source, /new Set\(\['含税13%', '专票13%', '未税', '收据'\]\)/);
   assert.doesNotMatch(source, /PURCHASE_INVOICE_TYPE_ALIASES/);
-  assert.match(source, /请选择采购税率/);
+  assert.match(source, /请选择采购凭证类型/);
   assert.match(source, /express_no:\s*String\(expressNo/);
   assert.match(source, /new_product_payload:\s*isUsedProduct/);
   assert.match(source, /JSON\.parse\(item\.new_product_payload/);
 });
 
-test('Web和小程序采购申请都要求主动选择采购税率', () => {
+test('Web和小程序采购申请都要求主动选择采购凭证类型', () => {
   const web = read('frontend/web/src/views/Purchase.vue');
   const inventoryWeb = read('frontend/web/src/views/Inventory.vue');
   const miniJs = read('pages/purchase-application/purchase-application.js');
   const miniWxml = read('pages/purchase-application/purchase-application.wxml');
-  assert.match(web, /label="采购税率" required/);
+  assert.match(web, /label="采购凭证类型" required/);
   assert.match(web, /invoiceType:\s*''/);
-  assert.match(web, /请选择采购税率/);
-  assert.match(inventoryWeb, /label="采购税率" required/);
-  assert.match(inventoryWeb, /\['含税13%', '未税'\]\.includes\(snPurchaseForm\.invoiceType\)/);
-  assert.match(miniWxml, /field-label required">采购税率/);
+  assert.match(web, /请选择采购凭证类型/);
+  assert.match(inventoryWeb, /label="采购凭证类型" required/);
+  assert.match(inventoryWeb, /\['含税13%', '专票13%', '未税', '收据'\]\.includes\(snPurchaseForm\.invoiceType\)/);
+  assert.match(miniWxml, /field-label required">采购凭证类型/);
   assert.match(miniJs, /invoiceTypeIndex:\s*-1/);
   assert.match(miniJs, /INVOICE_TYPES\.includes\(form\.invoiceType\)/);
-  assert.match(miniJs, /INVOICE_TYPES = \['含税13%', '未税'\]/);
+  assert.match(miniJs, /INVOICE_TYPES = \['含税13%', '专票13%', '未税', '收据'\]/);
 });
 
 test('手机采购入库强制校验并保存SN、IMEI1、IMEI2', () => {

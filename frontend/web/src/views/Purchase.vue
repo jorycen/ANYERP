@@ -55,7 +55,7 @@
             <el-table-column label="付款方式" width="110">
               <template #default="{ row }">{{ getPaymentMethodText(row.payment_method) }}</template>
             </el-table-column>
-            <el-table-column prop="invoice_type" label="采购税率" width="100" />
+            <el-table-column prop="invoice_type" label="采购凭证类型" width="110" />
             <el-table-column prop="product_type" label="货型" width="130" />
             <el-table-column prop="items_summary" label="商品摘要" min-width="200" show-overflow-tooltip />
             <el-table-column prop="total_amount" label="采购原价" width="120">
@@ -171,10 +171,12 @@
             <el-option v-for="s in allSuppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="采购税率" required>
-          <el-select v-model="requestForm.invoiceType" placeholder="请选择采购税率" style="width: 100%">
+        <el-form-item label="采购凭证类型" required>
+          <el-select v-model="requestForm.invoiceType" placeholder="请选择采购凭证类型" style="width: 100%">
             <el-option label="含税13%" value="含税13%" />
+            <el-option label="专票13%" value="专票13%" />
             <el-option label="未税" value="未税" />
+            <el-option label="收据" value="收据" />
           </el-select>
         </el-form-item>
         <el-form-item label="快递单号">
@@ -342,7 +344,7 @@
           </el-descriptions-item>
           <el-descriptions-item label="供应商">{{ currentRequest.supplier_name }}</el-descriptions-item>
           <el-descriptions-item label="付款方式">{{ getPaymentMethodText(currentRequest.payment_method) }}</el-descriptions-item>
-          <el-descriptions-item label="采购税率">{{ currentRequest.invoice_type || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="采购凭证类型">{{ currentRequest.invoice_type || '-' }}</el-descriptions-item>
           <el-descriptions-item label="货型">{{ currentRequest.product_type || currentRequest.items?.[0]?.product_type || '-' }}</el-descriptions-item>
           <el-descriptions-item label="申请门店">{{ currentRequest.store_name }}</el-descriptions-item>
           <el-descriptions-item label="申请金额">¥{{ formatMoney(requestActualAmount(currentRequest)) }}</el-descriptions-item>
@@ -1322,7 +1324,7 @@ const handleEditDraft = async (row) => {
     const request = res.data
     editingRequestId.value = request.request_id
     requestForm.supplierId = request.supplier_id || ''
-    requestForm.invoiceType = ['含税13%', '未税'].includes(request.invoice_type) ? request.invoice_type : ''
+    requestForm.invoiceType = ['含税13%', '专票13%', '未税', '收据'].includes(request.invoice_type) ? request.invoice_type : ''
     requestForm.expressNo = request.express_no || ''
     requestForm.paymentMethod = request.payment_method || 'COMPANY_CREDIT'
     requestForm.productType = request.product_type || goodsTypeOptions.value[0]?.name || ''
@@ -1990,8 +1992,8 @@ const handleSubmit = async () => {
     ElMessage.warning('请选择供应商')
     return
   }
-  if (!['含税13%', '未税'].includes(requestForm.invoiceType)) {
-    ElMessage.warning('请选择采购税率')
+  if (!['含税13%', '专票13%', '未税', '收据'].includes(requestForm.invoiceType)) {
+    ElMessage.warning('请选择采购凭证类型')
     return
   }
   if (!requestForm.productType) {

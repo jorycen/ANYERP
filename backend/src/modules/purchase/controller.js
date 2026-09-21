@@ -16,11 +16,11 @@ const { isStoreScopedAccount } = require('../../utils/storePermissions');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
 const { createProductRecord } = require('../product/controller');
 
-const VALID_PURCHASE_INVOICE_TYPES = new Set(['含税13%', '未税']);
+const VALID_PURCHASE_INVOICE_TYPES = new Set(['含税13%', '专票13%', '未税', '收据']);
 function validatePurchaseInvoiceType(ctx, value) {
   const normalized = String(value || '').trim();
-  if (!normalized) ctx.throw(400, '请选择采购税率');
-  if (!VALID_PURCHASE_INVOICE_TYPES.has(normalized)) ctx.throw(400, '采购税率只允许选择“含税13%”或“未税”');
+  if (!normalized) ctx.throw(400, '请选择采购凭证类型');
+  if (!VALID_PURCHASE_INVOICE_TYPES.has(normalized)) ctx.throw(400, '采购凭证类型只允许选择“含税13%”、“专票13%”、“未税”或“收据”');
   return normalized;
 }
 

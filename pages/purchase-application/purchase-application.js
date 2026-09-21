@@ -3,7 +3,7 @@ const userUtils = require('../profile/user-utils.js');
 const imageUpload = require('../../utils/image-upload.js');
 const { normalizePnCode } = require('../../utils/pn.js');
 
-const INVOICE_TYPES = ['含税13%', '未税'];
+const INVOICE_TYPES = ['含税13%', '专票13%', '未税', '收据'];
 const PAYMENT_METHODS = [
   { label: '公司账期', value: 'COMPANY_CREDIT' },
   { label: '个人垫付', value: 'PERSONAL_ADVANCE' }
@@ -933,7 +933,7 @@ Page({
       return;
     }
     if (!INVOICE_TYPES.includes(form.invoiceType)) {
-      wx.showToast({ title: '请选择采购税率', icon: 'none' });
+      wx.showToast({ title: '请选择采购凭证类型', icon: 'none' });
       return;
     }
     if (!form.productType) {
