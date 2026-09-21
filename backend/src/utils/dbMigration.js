@@ -689,6 +689,12 @@ async function ensureCriticalSchemaCompatibility() {
     'VARCHAR(32) COMMENT "特殊仓采购转换目标库位"',
     'SOURCE_SN_ID'
   );
+  await checkAndAddColumn(
+    'T_PURCHASE_REQUEST',
+    'EXPRESS_NO',
+    'VARCHAR(128) COMMENT "快递单号"',
+    'INVOICE_TYPE'
+  );
 
   const [column] = await sequelize.query(
     `SELECT COUNT(*) AS cnt

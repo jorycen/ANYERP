@@ -435,21 +435,31 @@ async function getRebateSummary(ctx) {
     }
   }
 
-  const summary = Array.from(latestMap.values())
-    .filter(item => parseFloat(item.balance || 0) !== 0);
-  const supplierIds = summary.map(item => item.supplier_id).filter(Boolean);
-  const suppliers = supplierIds.length > 0
-    ? await Supplier.findAll({ where: { supplier_id: { [Op.in]: supplierIds } } })
-    : [];
-  const supplierNameMap = new Map(suppliers.map(item => [item.supplier_id, item.name]));
-
-  const list = summary
-    .map(item => ({
+  const suppliers = await Supplier.findAll({
+    where: { is_deleted: 0, status: 1 },
+    attributes: ['supplier_id', 'name'],
+    order: [['sort_order', 'ASC'], ['create_time', 'DESC']]
+  });
+  const supplierIds = new Set(suppliers.map(item => item.supplier_id));
+  const list = suppliers.map(supplier => {
+    const latest = latestMap.get(supplier.supplier_id);
+    return {
+      supplier_id: supplier.supplier_id,
+      supplier_name: supplier.name || `供应商(${supplier.supplier_id})`,
+      balance: parseFloat(latest?.balance || 0),
+      last_time: latest?.create_time || null
+    };
+  });
+  for (const item of latestMap.values()) {
+    if (!item.supplier_id || supplierIds.has(item.supplier_id)) continue;
+    list.push({
       supplier_id: item.supplier_id,
-      supplier_name: supplierNameMap.get(item.supplier_id) || item.supplier_name || `供应商(${item.supplier_id || '未知'})`,
+      supplier_name: item.supplier_name || `供应商(${item.supplier_id})`,
       balance: parseFloat(item.balance || 0),
       last_time: item.create_time
-    }))
+    });
+  }
+  list
     .sort((a, b) => b.balance - a.balance || new Date(b.last_time) - new Date(a.last_time));
 
   const totalBalance = list.reduce((sum, item) => sum + item.balance, 0);
