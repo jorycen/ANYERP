@@ -450,7 +450,8 @@
             <view class="gross-profit-line"><text>支付手续费</text><text class="profit-minus">- {{grossProfitDetail.paymentFeeText}}</text></view>
             <view class="gross-profit-line"><text>开票金额</text><text>{{grossProfitDetail.invoiceText}}</text></view>
             <view class="gross-profit-line"><text>增值税</text><text class="profit-minus">- {{grossProfitDetail.vatText}}</text></view>
-            <view class="gross-profit-line"><text>补录净额</text><text class="profit-plus">+ {{grossProfitDetail.supplementText}}</text></view>
+            <view class="gross-profit-line"><text>补录净额</text><text class="{{grossProfitDetail.supplementTone}}">{{grossProfitDetail.supplementPrefix}} {{grossProfitDetail.supplementText}}</text></view>
+            <view class="gross-profit-line"><text>运费</text><text class="profit-minus">- {{grossProfitDetail.freightCostText}}</text></view>
             <view class="gross-profit-line" wx:if="{{grossProfitDetail.externalAdjustmentFee > 0}}"><text>外调费</text><text class="profit-minus">- {{grossProfitDetail.externalAdjustmentText}}</text></view>
           </view>
 
@@ -475,6 +476,14 @@
             <view class="gross-profit-detail-row" wx:for="{{grossProfitDetail.supplementDetails}}" wx:key="supplementId">
               <text>{{item.displayName}}</text>
               <text class="{{item.amountType === 'decrease' ? 'profit-minus' : 'profit-plus'}}">{{item.amountText}}</text>
+            </view>
+          </view>
+
+          <view class="gross-profit-detail-section" wx:if="{{grossProfitDetail.freightCostDetails.length}}">
+            <text class="gross-profit-section-title">运费明细</text>
+            <view class="gross-profit-detail-row" wx:for="{{grossProfitDetail.freightCostDetails}}" wx:key="itemId">
+              <text>{{item.displayName}}</text>
+              <text class="profit-minus">- {{item.amountText}}</text>
             </view>
           </view>
 

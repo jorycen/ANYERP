@@ -255,6 +255,81 @@
                 <div class="profit-process">
                   <div class="process-line">{{ row.calculation?.revenueNote }}</div>
                   <div class="process-line">整单毛利：{{ row.calculation?.orderFormula }}</div>
+                  <template v-if="row.calculation?.snapshot">
+                    <el-descriptions class="snapshot-breakdown" :column="5" border size="small">
+                      <el-descriptions-item label="用户应收">
+                        <span class="profit-positive">+¥{{ formatMoney(row.calculation.snapshot.receivableAmount) }}</span>
+                      </el-descriptions-item>
+                      <el-descriptions-item label="商品定价">
+                        <span class="profit-negative">-¥{{ formatMoney(row.calculation.snapshot.productPricingAmount) }}</span>
+                      </el-descriptions-item>
+                      <el-descriptions-item label="支付手续费">
+                        <span class="profit-negative">-¥{{ formatMoney(row.calculation.snapshot.paymentFeeAmount) }}</span>
+                      </el-descriptions-item>
+                      <el-descriptions-item label="增值税">
+                        <span class="profit-negative">-¥{{ formatMoney(row.calculation.snapshot.vatAmount) }}</span>
+                      </el-descriptions-item>
+                      <el-descriptions-item label="补录净额">
+                        <span :class="Number(row.calculation.snapshot.supplementAmount || 0) >= 0 ? 'profit-positive' : 'profit-negative'">
+                          {{ Number(row.calculation.snapshot.supplementAmount || 0) >= 0 ? '+' : '' }}¥{{ formatMoney(row.calculation.snapshot.supplementAmount) }}
+                        </span>
+                      </el-descriptions-item>
+                      <el-descriptions-item label="运费">
+                        <span class="profit-negative">-¥{{ formatMoney(row.calculation.snapshot.freightCostAmount) }}</span>
+                      </el-descriptions-item>
+                      <el-descriptions-item label="开票金额">¥{{ formatMoney(row.calculation.snapshot.invoiceAmount) }}</el-descriptions-item>
+                      <el-descriptions-item label="外调费">
+                        <span class="profit-negative">-¥{{ formatMoney(row.calculation.snapshot.externalAdjustmentFee) }}</span>
+                      </el-descriptions-item>
+                      <el-descriptions-item label="基础毛利">
+                        <strong :class="Number(row.calculation.snapshot.grossProfitAmount || 0) >= 0 ? 'profit-positive' : 'profit-negative'">
+                          ¥{{ formatMoney(row.calculation.snapshot.grossProfitAmount) }}
+                        </strong>
+                      </el-descriptions-item>
+                    </el-descriptions>
+
+                    <el-table v-if="row.calculation.snapshot.paymentDetails?.length" :data="row.calculation.snapshot.paymentDetails" size="small" border class="snapshot-detail-table">
+                      <el-table-column label="支付方式" min-width="150">
+                        <template #default="{ row: detail }">{{ detail.method || detail.paymentMethod || '-' }}</template>
+                      </el-table-column>
+                      <el-table-column label="支付金额" width="120">
+                        <template #default="{ row: detail }">¥{{ formatMoney(detail.amount) }}</template>
+                      </el-table-column>
+                      <el-table-column label="手续费率" width="110">
+                        <template #default="{ row: detail }">{{ Number(detail.taxRate || 0) }}%</template>
+                      </el-table-column>
+                      <el-table-column label="手续费" width="120">
+                        <template #default="{ row: detail }"><span class="profit-negative">-¥{{ formatMoney(detail.fee) }}</span></template>
+                      </el-table-column>
+                    </el-table>
+
+                    <el-table v-if="row.calculation.snapshot.supplementDetails?.length" :data="row.calculation.snapshot.supplementDetails" size="small" border class="snapshot-detail-table">
+                      <el-table-column label="补录项目" min-width="180">
+                        <template #default="{ row: detail }">{{ detail.itemName || detail.content || '补录' }}</template>
+                      </el-table-column>
+                      <el-table-column label="方向" width="100">
+                        <template #default="{ row: detail }">{{ detail.amountType === 'decrease' ? '扣减' : '增加' }}</template>
+                      </el-table-column>
+                      <el-table-column label="金额" width="130">
+                        <template #default="{ row: detail }">
+                          <span :class="detail.amountType === 'decrease' ? 'profit-negative' : 'profit-positive'">
+                            {{ detail.amountType === 'decrease' ? '-' : '+' }}¥{{ formatMoney(detail.amount) }}
+                          </span>
+                        </template>
+                      </el-table-column>
+                    </el-table>
+
+                    <el-table v-if="row.calculation.snapshot.freightCostDetails?.length" :data="row.calculation.snapshot.freightCostDetails" size="small" border class="snapshot-detail-table">
+                      <el-table-column label="运费来源" min-width="160">
+                        <template #default="{ row: detail }">{{ detail.sourceNo || detail.platformName || detail.sourceType || '-' }}</template>
+                      </el-table-column>
+                      <el-table-column prop="snCode" label="SN" min-width="150" />
+                      <el-table-column prop="quantity" label="数量" width="80" />
+                      <el-table-column label="运费" width="130">
+                        <template #default="{ row: detail }"><span class="profit-negative">-¥{{ formatMoney(detail.amount) }}</span></template>
+                      </el-table-column>
+                    </el-table>
+                  </template>
                   <el-table :data="row.calculation?.items || []" size="small" border>
                     <el-table-column prop="productName" label="商品" min-width="180" />
                     <el-table-column prop="pnCode" label="PN" width="130" />
@@ -868,6 +943,12 @@ const initInventoryChart = () => {
 .process-line {
   margin-bottom: 8px;
   color: #606266;
+}
+.snapshot-breakdown {
+  margin-bottom: 12px;
+}
+.snapshot-detail-table {
+  margin-bottom: 12px;
 }
 .profit-positive {
   color: #67c23a;

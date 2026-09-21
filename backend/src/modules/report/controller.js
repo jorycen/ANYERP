@@ -24,7 +24,10 @@ const { DashboardService, canViewProfit } = require('./dashboardService');
 const { ARCHIVED_STATUSES: POSITIVE_SALES_ORDER_STATUSES } = require('./dashboardDataSource');
 const { buildDecisionInsights, buildAiAdvisor } = require('./decisionEngine');
 const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/storePermissions');
-const { FORMULA_VERSION: GROSS_PROFIT_FORMULA_VERSION } = require('../sales/grossProfit');
+const {
+  FORMULA_VERSION: GROSS_PROFIT_FORMULA_VERSION,
+  snapshotToResponse
+} = require('../sales/grossProfit');
 
 const dashboardService = new DashboardService();
 
@@ -560,6 +563,9 @@ async function getEmployeePerformanceReport(ctx) {
     const totalAmount = roundMoney(orderJson.total_amount);
     const actualPayment = roundMoney(orderJson.actual_payment);
     const grossProfitSnapshot = orderJson.grossProfitSnapshot;
+    const snapshotDetail = grossProfitSnapshot
+      ? snapshotToResponse(grossProfitSnapshot, orderJson)
+      : null;
     const pricingDetails = parseJsonArray(grossProfitSnapshot?.product_pricing_details);
     const pricingDetailByItem = new Map(
       pricingDetails.map(detail => [String(detail.itemId || ''), detail])
@@ -637,10 +643,11 @@ async function getEmployeePerformanceReport(ctx) {
       calculation: {
         orderFormula: `${baseGrossProfit.toFixed(2)} + 已审批调整 ${approvedAdjustment.toFixed(2)} = ${grossProfit.toFixed(2)}`,
         revenueNote: usesNewSnapshot
-          ? '基础毛利使用订单毛利快照：用户应收－产品定价－应收税率费用－增值税＋补录净额'
+          ? `基础毛利使用订单毛利快照：${snapshotDetail.formula}`
           : (usesLegacyFallback
             ? '该历史订单未生成新毛利快照，当前按原成本口径兼容计算'
             : '该订单尚未生成新毛利快照，暂按原归档销售毛利兼容展示'),
+        snapshot: snapshotDetail,
         items: itemCalculations
       }
     };

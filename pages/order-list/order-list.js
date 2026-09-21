@@ -81,6 +81,9 @@ Page({
       invoiceText: '-',
       vatText: '-',
       supplementText: '-',
+      supplementPrefix: '+',
+      supplementTone: 'profit-plus',
+      freightCostText: '-',
       externalAdjustmentText: '-',
       externalAdjustmentFee: 0,
       grossProfitText: '-',
@@ -88,6 +91,7 @@ Page({
       productPricingDetails: [],
       paymentDetails: [],
       supplementDetails: [],
+      freightCostDetails: [],
       formula: ''
     }
   },
@@ -669,13 +673,20 @@ Page({
     const supplementDetails = Array.isArray(payload.supplementDetails)
       ? payload.supplementDetails
       : (Array.isArray(payload.supplement_details) ? payload.supplement_details : []);
+    const freightCostDetails = Array.isArray(payload.freightCostDetails)
+      ? payload.freightCostDetails
+      : (Array.isArray(payload.freight_cost_details) ? payload.freight_cost_details : []);
+    const supplementAmount = Number(this.pickGrossProfitValue(payload, ['supplementAmount', 'supplement_amount']) || 0);
     const detail = {
       receivableText: this.formatGrossProfitMoney(this.pickGrossProfitValue(payload, ['receivableAmount', 'received_amount'])),
       productPricingText: this.formatGrossProfitMoney(this.pickGrossProfitValue(payload, ['productPricingAmount', 'product_pricing_amount', 'settlementCostAmount'])),
       paymentFeeText: this.formatGrossProfitMoney(this.pickGrossProfitValue(payload, ['paymentFeeAmount', 'payment_fee_amount'])),
       invoiceText: this.formatGrossProfitMoney(this.pickGrossProfitValue(payload, ['invoiceAmount', 'invoice_amount'])),
       vatText: this.formatGrossProfitMoney(this.pickGrossProfitValue(payload, ['vatAmount', 'vat_amount'])),
-      supplementText: this.formatGrossProfitMoney(this.pickGrossProfitValue(payload, ['supplementAmount', 'supplement_amount'])),
+      supplementText: this.formatGrossProfitMoney(Math.abs(supplementAmount)),
+      supplementPrefix: supplementAmount < 0 ? '-' : '+',
+      supplementTone: supplementAmount < 0 ? 'profit-minus' : 'profit-plus',
+      freightCostText: this.formatGrossProfitMoney(this.pickGrossProfitValue(payload, ['freightCostAmount', 'freight_cost_amount'])),
       externalAdjustmentText: this.formatGrossProfitMoney(this.pickGrossProfitValue(payload, ['externalAdjustmentFee', 'external_adjustment_fee']) || 0),
       externalAdjustmentFee: Number(this.pickGrossProfitValue(payload, ['externalAdjustmentFee', 'external_adjustment_fee']) || 0),
       grossProfitText: this.formatGrossProfitMoney(grossProfit),
@@ -697,6 +708,11 @@ Page({
         displayName: item.itemName || item.content || '补录',
         amountText: `${item.amountType === 'decrease' ? '-' : '+'} ${this.formatGrossProfitMoney(item.amount || 0)}`
       })),
+      freightCostDetails: freightCostDetails.map(item => ({
+        ...item,
+        displayName: item.sourceNo || item.platformName || item.snCode || '运费',
+        amountText: this.formatGrossProfitMoney(item.amount || 0)
+      })),
       formula: payload.formula || '',
       snapshotStatus: payload.snapshotStatus || payload.snapshot_status || '',
       calculatedAt: payload.calculatedAt || payload.calculated_at || '',
@@ -717,7 +733,8 @@ Page({
         grossProfitTone: order.grossProfitTone || 'unknown',
         productPricingDetails: [],
         paymentDetails: [],
-        supplementDetails: []
+        supplementDetails: [],
+        freightCostDetails: []
       })
     });
 
@@ -746,7 +763,8 @@ Page({
       grossProfitDetail: Object.assign({}, this.data.grossProfitDetail, {
         productPricingDetails: [],
         paymentDetails: [],
-        supplementDetails: []
+        supplementDetails: [],
+        freightCostDetails: []
       })
     });
   },

@@ -9,7 +9,8 @@ const {
   calculateOrderReceivable,
   isFreightRecordApplicableToOrder,
   resolveUnitProductPricing,
-  isExternalAdjustmentEligibleProduct
+  isExternalAdjustmentEligibleProduct,
+  snapshotToResponse
 } = require('../src/modules/sales/grossProfit');
 const { isGovSubsidyEligibleCategory } = require('../src/modules/inventory/resourceRights');
 
@@ -176,6 +177,40 @@ test('运费独立于补录净额并单独扣减毛利', () => {
   assert.equal(result.supplementAmount, 10);
   assert.equal(result.freightCostAmount, 19.75);
   assert.equal(result.grossProfitAmount, 190.25);
+});
+
+test('毛利快照响应完整保留手续费、增值税、补录和运费明细', () => {
+  const result = snapshotToResponse({
+    gross_profit_id: 'GP-1',
+    order_id: 'ORDER-1',
+    order_no: 'SO-1',
+    formula_version: 'v2',
+    receivable_amount: 1200,
+    product_pricing_amount: 900,
+    payment_fee_amount: 6,
+    invoice_amount: 1000,
+    vat_taxable_amount: 100,
+    vat_amount: 13,
+    supplement_amount: 10,
+    freight_cost_amount: 20,
+    gross_profit_amount: 271,
+    payment_fee_details: [{ method: '微信', amount: 1200, taxRate: 0.5, fee: 6 }],
+    product_pricing_details: [{ itemId: 'ITEM-1', pricingAmount: 900 }],
+    supplement_details: [
+      { source: 'manual', itemName: '补录奖励', amount: 10, amountType: 'increase' },
+      { source: 'freight_cost', sourceNo: 'FREIGHT-1', amount: 20, amountType: 'decrease' }
+    ]
+  });
+
+  assert.equal(result.paymentFeeAmount, 6);
+  assert.equal(result.vatAmount, 13);
+  assert.equal(result.supplementAmount, 10);
+  assert.equal(result.freightCostAmount, 20);
+  assert.equal(result.paymentDetails.length, 1);
+  assert.equal(result.supplementDetails.length, 1);
+  assert.equal(result.freightCostDetails.length, 1);
+  assert.match(result.formula, /支付手续费/);
+  assert.match(result.formula, /运费/);
 });
 
 test('采购运费只匹配采购归属门店', () => {
