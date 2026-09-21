@@ -173,8 +173,9 @@
         </el-form-item>
         <el-form-item label="采购税率" required>
           <el-select v-model="requestForm.invoiceType" placeholder="请选择采购税率" style="width: 100%">
-            <el-option label="13%含税" value="13%含税" />
             <el-option label="未税" value="未税" />
+            <el-option label="6%" value="6%" />
+            <el-option label="13%" value="13%" />
           </el-select>
         </el-form-item>
         <el-form-item label="快递单号">
@@ -1322,7 +1323,8 @@ const handleEditDraft = async (row) => {
     const request = res.data
     editingRequestId.value = request.request_id
     requestForm.supplierId = request.supplier_id || ''
-    requestForm.invoiceType = ['13%含税', '未税'].includes(request.invoice_type) ? request.invoice_type : ''
+    const invoiceType = { '6%含税': '6%', '13%含税': '13%' }[request.invoice_type] || request.invoice_type
+    requestForm.invoiceType = ['未税', '6%', '13%'].includes(invoiceType) ? invoiceType : ''
     requestForm.expressNo = request.express_no || ''
     requestForm.paymentMethod = request.payment_method || 'COMPANY_CREDIT'
     requestForm.productType = request.product_type || goodsTypeOptions.value[0]?.name || ''
@@ -1990,7 +1992,7 @@ const handleSubmit = async () => {
     ElMessage.warning('请选择供应商')
     return
   }
-  if (!['13%含税', '未税'].includes(requestForm.invoiceType)) {
+  if (!['未税', '6%', '13%'].includes(requestForm.invoiceType)) {
     ElMessage.warning('请选择采购税率')
     return
   }

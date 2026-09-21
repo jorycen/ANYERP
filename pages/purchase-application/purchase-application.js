@@ -3,7 +3,7 @@ const userUtils = require('../profile/user-utils.js');
 const imageUpload = require('../../utils/image-upload.js');
 const { normalizePnCode } = require('../../utils/pn.js');
 
-const INVOICE_TYPES = ['13%含税', '未税'];
+const INVOICE_TYPES = ['未税', '6%', '13%'];
 const PAYMENT_METHODS = [
   { label: '公司账期', value: 'COMPANY_CREDIT' },
   { label: '个人垫付', value: 'PERSONAL_ADVANCE' }
