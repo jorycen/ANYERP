@@ -2,8 +2,13 @@
   <div class="page-container">
     <div class="page-header">
       <h2>采购进项发票管理</h2>
-      <el-button type="success" :loading="exporting" @click="exportInvoices">导出已收发票</el-button>
+      <div class="header-actions">
+        <el-button type="success" :loading="candidateExporting" @click="exportCandidates">导出未登记发票</el-button>
+        <el-button type="primary" :loading="importing" @click="invoiceFileInput?.click()">导入发票登记</el-button>
+        <input ref="invoiceFileInput" type="file" accept=".xlsx,.xls" class="hidden-file-input" @change="importInvoiceFile" />
+      </div>
     </div>
+    <el-alert title="先导出全部未登记发票清单，在表格最后填写税号和发票号码后原文件导入；未填写的行会自动跳过。同一张发票对应多笔付款时，请填写相同的税号和发票号码。批量导入按13%专票登记，开票日期默认为导入当天。" type="info" :closable="false" />
     <el-alert title="待收票按有效账户付款流水计算；付款后第20天临期，第30天逾期。点击结算单号可查看该结算单的采购明细。" type="info" :closable="false" />
 
     <el-row :gutter="12" class="summary">
@@ -76,7 +81,6 @@
       <el-form :model="form" label-width="100px">
         <el-row :gutter="12">
           <el-col :span="12"><el-form-item label="销方税号" required><el-input v-model="form.supplierTaxNo" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="发票代码" required><el-input v-model="form.invoiceCode" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="发票号码" required><el-input v-model="form.invoiceNo" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="开票日期" required><el-date-picker v-model="form.invoiceDate" value-format="YYYY-MM-DD" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="票种" required><el-input v-model="form.invoiceType" /></el-form-item></el-col>
@@ -131,6 +135,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import * as XLSX from 'xlsx'
 import api from '../api'
 
 const activeTab = ref('pending')
@@ -140,6 +145,9 @@ const summary = ref({})
 const visible = ref(false)
 const saving = ref(false)
 const exporting = ref(false)
+const candidateExporting = ref(false)
+const importing = ref(false)
+const invoiceFileInput = ref(null)
 const selected = ref([])
 const dialogRows = ref([])
 const amounts = ref({})
@@ -148,7 +156,7 @@ const settlementDetailLoading = ref(false)
 const settlementDetail = ref(null)
 const filter = reactive({ supplier: '', dateRange: [], warning: '' })
 const invoiceFilter = reactive({ keyword: '', dateRange: [] })
-const blank = () => ({ supplierTaxNo: '', invoiceCode: '', invoiceNo: '', invoiceDate: '', invoiceType: '增值税专用发票', taxRate: 0.13, amountWithoutTax: 0, taxAmount: 0, totalAmount: 0 })
+const blank = () => ({ supplierTaxNo: '', invoiceNo: '', invoiceDate: '', invoiceType: '增值税专用发票', taxRate: 0.13, amountWithoutTax: 0, taxAmount: 0, totalAmount: 0 })
 const form = ref(blank())
 
 const money = value => Number(value || 0).toFixed(2)
@@ -239,9 +247,53 @@ const exportInvoices = async () => {
   }
 }
 
+const exportCandidates = async () => {
+  candidateExporting.value = true
+  try {
+    await api.exportPurchaseInvoiceCandidates()
+    ElMessage.success('未登记发票清单导出成功')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '未登记发票清单导出失败')
+  } finally {
+    candidateExporting.value = false
+  }
+}
+
+const importInvoiceFile = async event => {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file) return
+  importing.value = true
+  try {
+    const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true })
+    const worksheet = workbook.Sheets[workbook.SheetNames[0]]
+    const rows = XLSX.utils.sheet_to_json(worksheet, { defval: '', raw: false })
+    if (!rows.length) return ElMessage.warning('导入文件没有数据')
+    const importRows = rows.map((row, index) => ({
+      excelRow: index + 2,
+      paymentId: row['付款流水ID'],
+      supplierTaxNo: row['税号'],
+      invoiceNo: row['发票号码']
+    })).filter(row => String(row.supplierTaxNo || '').trim() || String(row.invoiceNo || '').trim())
+    if (!importRows.length) return ElMessage.warning('请先在导出文件中填写税号和发票号码')
+    const response = await api.importPurchaseInvoices(importRows)
+    if (response.code !== 0) {
+      const firstError = response.data?.errors?.[0]
+      throw new Error(firstError ? `第${firstError.row || '-'}行：${firstError.message}` : response.message || '导入失败')
+    }
+    ElMessage.success(response.message || '发票导入登记成功')
+    await load()
+  } catch (error) {
+    const firstError = error.response?.data?.data?.errors?.[0]
+    ElMessage.error(firstError ? `第${firstError.row || '-'}行：${firstError.message}` : error.response?.data?.message || error.message || '发票导入失败')
+  } finally {
+    importing.value = false
+  }
+}
+
 onMounted(() => load().catch(error => ElMessage.error(error.response?.data?.message || '采购发票数据加载失败')))
 </script>
 
 <style scoped>
-.page-header,.received-filters,.settlement-link{display:flex;align-items:center}.page-header{justify-content:space-between}.summary{margin:16px 0}.filters{margin:16px 0 4px}.received-filters{gap:12px;margin:12px 0}.settlement-link{gap:8px}.detail-title{margin:18px 0 8px}
+.page-header,.header-actions,.received-filters,.settlement-link{display:flex;align-items:center}.page-header{justify-content:space-between}.header-actions,.received-filters{gap:12px}.hidden-file-input{display:none}.summary{margin:16px 0}.filters{margin:16px 0 4px}.received-filters{margin:12px 0}.settlement-link{gap:8px}.detail-title{margin:18px 0 8px}
 </style>
