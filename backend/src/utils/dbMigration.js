@@ -396,6 +396,16 @@ async function ensureFinanceSchemaCompatibility() {
       KEY idx_order (ORDER_ID)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
+  await checkAndAddColumn('T_DAILY_STATEMENT_DETAIL', 'UNIONPAY_ORDER_NO', 'VARCHAR(128) COMMENT "云闪付订单号"', 'BUSINESS_TYPE');
+  await checkAndAddColumn('T_DAILY_STATEMENT_DETAIL', 'SOURCE_TYPE', 'VARCHAR(32) DEFAULT "system" COMMENT "数据来源：system/manual"', 'UNIONPAY_ORDER_NO');
+  await checkAndAddColumn('T_DAILY_STATEMENT_DETAIL', 'REMARK', 'VARCHAR(512) COMMENT "备注"', 'SOURCE_TYPE');
+  await checkAndAddColumn('T_DAILY_STATEMENT_DETAIL', 'CREATE_USER', 'VARCHAR(64) COMMENT "创建人"', 'REMARK');
+  await checkAndAddColumn('T_DAILY_STATEMENT_DETAIL', 'CREATE_TIME', 'DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT "创建时间"', 'CREATE_USER');
+  await checkAndAddIndex(
+    'T_DAILY_STATEMENT_DETAIL',
+    'idx_daily_unionpay_order_no',
+    'ALTER TABLE T_DAILY_STATEMENT_DETAIL ADD INDEX idx_daily_unionpay_order_no (UNIONPAY_ORDER_NO)'
+  );
   await checkAndCreateTable('T_SUPPLIER_REBATE', `
     CREATE TABLE T_SUPPLIER_REBATE (
       REBATE_ID VARCHAR(32) NOT NULL,
@@ -679,6 +689,12 @@ async function ensureCriticalSchemaCompatibility() {
   );
   await checkAndAddColumn(
     'T_PURCHASE_REQUEST_ITEM',
+    'NEW_PRODUCT_PAYLOAD',
+    'TEXT COMMENT "二手商品完整建档信息JSON"',
+    'DIRECT_INBOUND_SN_CODE'
+  );
+  await checkAndAddColumn(
+    'T_PURCHASE_REQUEST_ITEM',
     'SOURCE_SN_ID',
     'VARCHAR(32) COMMENT "特殊仓采购转换来源SN"',
     'DIRECT_INBOUND_SN_CODE'
@@ -727,11 +743,11 @@ async function ensureCriticalSchemaCompatibility() {
      FROM information_schema.COLUMNS
      WHERE TABLE_SCHEMA = DATABASE()
        AND TABLE_NAME = 'T_PURCHASE_REQUEST_ITEM'
-       AND COLUMN_NAME IN ('DIRECT_INBOUND', 'DIRECT_INBOUND_SN_CODE', 'SOURCE_SN_ID', 'TARGET_LOCATION_ID')`,
+       AND COLUMN_NAME IN ('DIRECT_INBOUND', 'DIRECT_INBOUND_SN_CODE', 'NEW_PRODUCT_PAYLOAD', 'SOURCE_SN_ID', 'TARGET_LOCATION_ID')`,
     { type: sequelize.QueryTypes.SELECT }
   );
   const existingPurchaseItemColumns = new Set(requiredPurchaseItemColumns.map(row => row.COLUMN_NAME));
-  const missingPurchaseItemColumns = ['DIRECT_INBOUND', 'DIRECT_INBOUND_SN_CODE', 'SOURCE_SN_ID', 'TARGET_LOCATION_ID']
+  const missingPurchaseItemColumns = ['DIRECT_INBOUND', 'DIRECT_INBOUND_SN_CODE', 'NEW_PRODUCT_PAYLOAD', 'SOURCE_SN_ID', 'TARGET_LOCATION_ID']
     .filter(columnName => !existingPurchaseItemColumns.has(columnName));
   // 资源权益会在采购/调拨入库时写入有效期；旧数据库可能没有这两个兼容字段。
   await checkAndAddColumn('T_INVENTORY_RESOURCE_RIGHT', 'EFFECTIVE_START', 'DATETIME NULL');

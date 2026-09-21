@@ -33,6 +33,7 @@ const { recoverExecutingBatchApplications } = require('./modules/inventory/batch
 const app = new Koa();
 const customerOpsRouters = require('./modules/customerOps/routes');
 const PORT = process.env.PORT || 3000;
+let schemaInitializationReady = false;
 
 app.use(errorHandler);
 app.use(responseFormatter);
@@ -46,6 +47,14 @@ app.use(bodyParser({
 const apiRouter = new Router({ prefix: '/api/v1' });
 
 apiRouter.get('/health/db', databaseHealth);
+apiRouter.use(async (ctx, next) => {
+  if (!schemaInitializationReady) {
+    ctx.status = 503;
+    ctx.body = { code: 503, message: '系统正在检查数据库结构，请稍后重试' };
+    return;
+  }
+  await next();
+});
 apiRouter.use(databaseRecoveryMiddleware);
 apiRouter.use('/auth', authRouter.routes());
 
@@ -120,6 +129,7 @@ function startBackgroundJobs() {
 
 function initializeDatabaseInBackground(retryDelayMs = Number(process.env.DB_STARTUP_RECOVERY_RETRY_MS || 60000)) {
   (async () => {
+    schemaInitializationReady = false;
     try {
       await ensureDatabaseReady('startup database activation', { force: true });
       // Startup checks schema and adds missing approval definitions only.
@@ -129,10 +139,20 @@ function initializeDatabaseInBackground(retryDelayMs = Number(process.env.DB_STA
       // Add missing approval definitions only; never rewrite existing flows or documents.
       await require('./modules/approval/catalog').seedApprovalFlowCatalog();
       await ensureDatabaseReady('post-migration database activation', { force: true });
-      await recoverExecutingBatchApplications();
-      await recoverProductImportTasks();
+      schemaInitializationReady = true;
+      try {
+        await recoverExecutingBatchApplications();
+      } catch (error) {
+        console.error('[Startup] inventory batch recovery failed:', error.message);
+      }
+      try {
+        await recoverProductImportTasks();
+      } catch (error) {
+        console.error('[Startup] product import recovery failed:', error.message);
+      }
       console.log('[Startup] database initialization completed');
     } catch (error) {
+      schemaInitializationReady = false;
       markDatabaseUnhealthy(error);
       console.error('[Startup] database initialization failed, will retry in background:', error.message);
       setTimeout(() => initializeDatabaseInBackground(retryDelayMs), retryDelayMs).unref?.();

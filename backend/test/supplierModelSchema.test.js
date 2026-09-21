@@ -18,6 +18,25 @@ test('安全启动迁移会补齐采购申请快递单号字段', () => {
   const compatibility = migration.slice(start, end);
 
   assert.match(compatibility, /'T_PURCHASE_REQUEST',\s*'EXPRESS_NO'/);
+  assert.match(compatibility, /'T_PURCHASE_REQUEST_ITEM',\s*'NEW_PRODUCT_PAYLOAD'/);
+});
+
+test('安全启动迁移会补齐日结明细的云闪付和登记信息字段', () => {
+  const migration = fs.readFileSync(path.resolve(__dirname, '../src/utils/dbMigration.js'), 'utf8');
+  const start = migration.indexOf('async function ensureFinanceSchemaCompatibility()');
+  const end = migration.indexOf('async function ensureProductSettlementFeatureSchema()');
+  const compatibility = migration.slice(start, end);
+
+  for (const column of ['UNIONPAY_ORDER_NO', 'SOURCE_TYPE', 'REMARK', 'CREATE_USER', 'CREATE_TIME']) {
+    assert.match(compatibility, new RegExp(`'T_DAILY_STATEMENT_DETAIL',\\s*'${column}'`));
+  }
+});
+
+test('接口在安全启动迁移完成前不会接收业务请求', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../src/index.js'), 'utf8');
+  assert.match(source, /let schemaInitializationReady = false/);
+  assert.match(source, /系统正在检查数据库结构，请稍后重试/);
+  assert.ok(source.indexOf("ensureDatabaseReady('post-migration database activation'") < source.indexOf('schemaInitializationReady = true;'));
 });
 
 test('返利余额汇总展示全部有效供应商并为无流水供应商显示零余额', async () => {
