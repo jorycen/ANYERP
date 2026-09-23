@@ -64,7 +64,10 @@ function dayDiff(startKey, endKey) {
 }
 
 function toChinaBoundary(key, endOfDay = false) {
-  return new Date(`${key}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`);
+  // T_ORDER.CREATE_TIME is a MySQL DATETIME and the connection is configured
+  // with Asia/Shanghai. Pass a local wall-clock value to the query so the
+  // driver cannot convert a JS Date through UTC and shift the report range.
+  return `${key} ${endOfDay ? '23:59:59.999' : '00:00:00.000'}`;
 }
 
 function buildRanges(query = {}, now = new Date()) {

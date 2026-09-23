@@ -33,6 +33,8 @@ test('经营看板默认日期使用中国时区本周并生成等长环比周�
   assert.equal(ranges.previous.endDate, '2026-06-28');
   assert.equal(ranges.yoy.startDate, '2025-06-29');
   assert.equal(ranges.yoy.endDate, '2025-07-05');
+  assert.equal(ranges.current.startAt, '2026-06-29 00:00:00.000');
+  assert.equal(ranges.current.endAt, '2026-07-05 23:59:59.999');
 });
 
 test('经营看板正向统计排除整单退货原订单并使用当前毛利公式', () => {
