@@ -53,8 +53,9 @@ customer.get('/member/profile', async ctx => {
 customer.post('/member/bind-order', async ctx => { ctx.body = await V.bind(ctx.state.member, ctx.request.body); });
 customer.post('/member/claim-orders', async ctx => { ctx.body = await V.claimByPhone(ctx.state.member, ctx.request.body); });
 customer.get('/member/points', async ctx => {
-  const row = await M.Account.findOne({ where: { member_id: ctx.state.member.id, distributor_id: String(ctx.query.distributor_id || '') } });
-  ctx.body = { balance: String(row?.balance || '0'), available: String(BigInt(row?.balance || 0) > 0n ? row.balance : '0') };
+  const rows = await M.Account.findAll({ where: { member_id: ctx.state.member.id }, attributes: ['balance'] });
+  const balance = rows.reduce((sum, row) => sum + BigInt(row.balance || 0), 0n);
+  ctx.body = { balance: String(balance), available: String(balance > 0n ? balance : 0n) };
 });
 function pagination(ctx) {
   const page = Math.max(1, Math.min(10000, parseInt(ctx.query.page) || 1));
@@ -68,7 +69,7 @@ async function list(model, where, ctx, attributes) {
 }
 customer.get('/member/points/ledger', async ctx => { ctx.body = await list(M.Ledger, { member_id: ctx.state.member.id,
   ...(ctx.query.direction === 'earn' ? { delta: { [Op.gt]: 0 } } : ctx.query.direction === 'spend' ? { delta: { [Op.lt]: 0 } } : {}),
-  ...(ctx.query.distributor_id ? { distributor_id: ctx.query.distributor_id } : {}) }, ctx, ['id', 'delta', 'after', 'type', 'reason', 'created_at']); });
+  }, ctx, ['id', 'delta', 'after', 'type', 'reason', 'created_at', 'distributor_id']); });
 customer.get('/stores', async ctx => {
   const rows = await Store.findAll({ where: { status: 1, is_deleted: 0 }, attributes: ['store_id', 'distributor_id', 'name', 'address', 'phone'] });
   const dealers = await Distributor.findAll({ where: { distributor_id: [...new Set(rows.map(r => r.distributor_id))], status: 1 }, attributes: ['distributor_id', 'name'] });
@@ -78,13 +79,14 @@ async function rewardStates(rows, memberId) {
   if (!rows.length) return [];
   const ids = rows.map(r => r.id);
   const [accounts, exchanges, links] = await Promise.all([
-    M.Account.findAll({ where: { member_id: memberId } }),
+    M.Account.findAll({ where: { member_id: memberId }, attributes: ['balance'] }),
     M.Exchange.findAll({ where: { member_id: memberId, reward_id: ids }, attributes: ['reward_id'] }),
     M.RewardStore.findAll({ where: { reward_id: ids } })
   ]);
   const stores = await RS.activeStores(links.map(l => l.store_id));
+  const balance = accounts.reduce((sum, account) => sum + BigInt(account.balance || 0), 0n);
   return rows.map(row => P.dto(row, P.availability(row,
-    accounts.find(a => a.distributor_id === row.distributor_id)?.balance || '0',
+    String(balance),
     exchanges.filter(e => e.reward_id === row.id).length,
     links.some(l => l.reward_id === row.id && stores.some(s => s.store_id === l.store_id)))));
 }

@@ -22,7 +22,6 @@ function defaultCatalog(fixed = new Map()) {
     { flowCode: 'payable_settlement', name: '\u5e94\u4ed8\u7ed3\u7b97\u5ba1\u6279', businessType: 'payable_settlement', nodes: [serial('\u63d0\u4ea4\u4eba\u76f4\u5c5e\u4e0a\u7ea7\u5ba1\u6279', [role('manager', 'subject_store')]), serial('\u6bb5\u8d85\u5ba1\u6279', [fixedRule('\u6bb5\u8d85')]), serial('\u8d56\u66e6\u5ba1\u6279', [fixedRule('\u8d56\u66e6')])] },
     { flowCode: 'purchase_request', name: '\u91c7\u8d2d\u7533\u8bf7\u5ba1\u6279', businessType: 'purchase_request', nodes: [or('\u91c7\u8d2d\u5ba1\u6279\u90e8\u95e8', [role('purchaser'), role('admin'), role('boss')])] },
     { flowCode: 'product_application', name: '\u65b0\u5efa\u5546\u54c1\u5ba1\u6279', businessType: 'product_application', nodes: [or('\u5546\u54c1\u5ba1\u6279\u90e8\u95e8', [role('purchaser'), role('finance'), role('admin'), role('boss')])] },
-    { flowCode: 'inventory_transfer', name: '\u5e93\u5b58\u8c03\u62e8\u5ba1\u6279', businessType: 'inventory_transfer', nodes: [serial('\u8c03\u51fa\u95e8\u5e97\u5ba1\u6279', [{ type: 'store_manager', scope: 'subject_store' }]), or('\u8c03\u62e8\u7ba1\u7406\u90e8\u95e8\u5ba1\u6279', [role('admin'), role('boss')])] },
     { flowCode: 'sales_order_negative_gross_profit', name: '\u9500\u552e\u8d1f\u6bdb\u5229\u5ba1\u6279', businessType: 'sales_order_negative_gross_profit', nodes: [serial('\u5e97\u957f\u5ba1\u6279', [{ type: 'store_manager', scope: 'subject_store' }]), or('\u7ecf\u9500\u5546\u603b\u8d26\u53f7\u5ba1\u6279', [role('admin'), role('boss')])] },
     { flowCode: 'sales_return', name: '\u9500\u552e\u9000\u5355\u5ba1\u6279', businessType: 'sales_return', nodes: [serial('\u5e97\u957f\u5ba1\u6279', [{ type: 'store_manager', scope: 'subject_store' }]), serial('\u6bb5\u8d85\u5ba1\u6279', [fixedRule('\u6bb5\u8d85')]), serial('\u9093\u7ea2\u6885\u5ba1\u6279', [fixedRule('\u9093\u7ea2\u6885')]), serial('\u674e\u71d5\u5ba1\u6279', [fixedRule('\u674e\u71d5')])] },
     { flowCode: 'deposit_refund', name: '\u5b9a\u91d1\u9000\u6b3e\u5ba1\u6279', businessType: 'deposit_refund', nodes: [serial('\u5e97\u957f\u5ba1\u6279', [{ type: 'store_manager', scope: 'subject_store' }]), serial('\u9093\u7ea2\u6885\u5ba1\u6279', [fixedRule('\u9093\u7ea2\u6885')]), serial('\u674e\u71d5\u5ba1\u6279', [fixedRule('\u674e\u71d5')])] },
@@ -33,7 +32,6 @@ function defaultCatalog(fixed = new Map()) {
     { flowCode: 'expense_performance_allocation', name: '\u8d39\u7528\u7ee9\u6548\u5206\u914d\u5ba1\u6279', businessType: 'expense_performance_allocation', nodes: [or('\u8d22\u52a1\u5ba1\u6279\u90e8\u95e8', [role('finance'), role('admin'), role('boss')])] }
   ].concat([
     { flowCode: 'purchase_expense', name: '采购垫付报销审批', businessType: 'purchase_expense', nodes: [or('报销审批', [role('admin'), role('boss')])] },
-    { flowCode: 'inventory_transfer_receipt', name: '调拨入库确认', businessType: 'inventory_transfer_receipt', nodes: [or('调入门店确认', [{ type: 'store_manager' }, role('admin'), role('boss')])] },
     { flowCode: 'inventory_batch', name: '批量库存维护审批', businessType: 'inventory_batch', nodes: [or('库存维护审批', [role('admin'), role('boss')])] },
     { flowCode: 'sale_share', name: '销售晒单审核', businessType: 'sale_share', nodes: [or('店长审核', [{ type: 'store_manager' }])] }
   ]).map(item => {
@@ -41,10 +39,8 @@ function defaultCatalog(fixed = new Map()) {
       item.nodes = [or('财务初审', [role('finance'), role('boss')]), or('管理员复审', [role('admin'), role('boss')])];
     }
     if (item.flowCode === 'subsidy_receivable_adjustment') item.nodes = [or('国补差额审批', [role('admin'), role('boss')])];
-    if (item.flowCode === 'inventory_transfer') item.nodes = [or('调出门店审批', [{ type: 'store_manager' }, role('admin'), role('boss')])];
     if (item.flowCode === 'payable_settlement') item.nodes[0].approvers = [{ type: 'direct_supervisor' }];
     if (item.flowCode === 'resource_claim') item.nodes = [or('财务审批', [role('finance'), role('boss')])];
-    if (['inventory_transfer', 'inventory_transfer_receipt'].includes(item.flowCode)) item.nodes = [or(item.flowCode === 'inventory_transfer' ? '调出门店确认' : '调入门店确认', [{ type: 'store_staff' }, role('admin'), role('boss'), role('purchaser'), role('finance'), role('business')])];
     if (['sales_return', 'deposit_refund', 'expense_attribution', 'sales_order_negative_gross_profit'].includes(item.flowCode)) item.nodes[0].signMode = 'or';
     if (item.flowCode === 'sales_order_negative_gross_profit') item.nodes[0].approvers.push(role('admin'), role('boss'), role('distributor'));
     return { ...item, config: { nodes: item.nodes } };

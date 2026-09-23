@@ -15,8 +15,10 @@ const registry = {
   expense_performance_allocation: { model: 'ExpensePerformanceAllocation', id: 'allocation_id', no: 'allocation_no', states: ['pending_finance', 'pending_admin'], module: '../finance/expenseAccountingController', handler: 'reviewExpensePerformanceAllocation', param: 'allocationId' },
   purchase_expense: { model: 'Expense', id: 'expense_id', no: 'expense_no', states: ['pending_approval'], extra: { [Op.or]: [{ source_type: { [Op.ne]: 'expense' } }, { source_type: { [Op.is]: null } }] }, module: '../finance/controller', handler: 'reviewExpense', param: 'id', past: true },
   sales_order_negative_gross_profit: { model: 'Order', id: 'order_id', no: 'order_no', status: 'order_status', states: ['pending_store_approval', 'pending_approval', 'pending_distributor_approval'], module: '../sales/controller', handler: 'approve', reject: 'reject', param: 'orderId' },
-  inventory_transfer: { model: 'Transfer', id: 'transfer_id', no: 'transfer_no', states: ['pending'], store: 'from_store_id', manual: '/inventory/transfer' },
-  inventory_transfer_receipt: { model: 'Transfer', id: 'transfer_id', no: 'transfer_no', states: ['out_confirmed'], store: 'to_store_id', manual: '/inventory/transfer' },
+  // Retained only so legacy managed approval instances stay hidden from the
+  // generic approval center. New transfer operations do not call this runtime.
+  inventory_transfer: { model: 'Transfer', id: 'transfer_id', no: 'transfer_no', states: ['pending'], store: 'from_store_id', manual: '/inventory/transfer', retired: true },
+  inventory_transfer_receipt: { model: 'Transfer', id: 'transfer_id', no: 'transfer_no', states: ['out_confirmed'], store: 'to_store_id', manual: '/inventory/transfer', retired: true },
   inventory_batch: { model: 'InventoryBatchApplication', id: 'application_id', no: 'application_no', states: ['pending'], module: '../inventory/batchMaintenance', handler: 'reviewBatchApplication', param: 'applicationId' },
   sale_share: { model: 'ResourceRightChangeOrder', id: 'change_id', no: 'change_order_no', status: 'approval_status', states: ['pending_manager_review'], extra: { change_reason: 'SALE_RESOURCE_TASK' }, module: '../inventory/resourceRights', handler: 'reviewSaleResourceTask', param: 'changeId' }
 };
@@ -118,6 +120,7 @@ async function listBusinessTasks(ctx, onlyType = null) {
   const tasks = [], issues = [];
   for (const [type, d] of Object.entries(registry)) {
     if (onlyType && onlyType !== type) continue;
+    if (d.retired) continue;
     // 需要选择实物、扫码或上传凭证的人工业务必须在原业务页面处理。
     // 手机端一直按此口径展示；统一审批中心不再重复列出调拨出/入库确认。
     if (!onlyType && d.manual) continue;

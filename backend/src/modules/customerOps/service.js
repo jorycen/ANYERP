@@ -23,8 +23,21 @@ function phoneInput(value) {
   return value.trim();
 }
 async function account(memberId, distributorId, t) {
-  const row = await M.Account.findOne({ where: { member_id: memberId, distributor_id: distributorId }, ...lock(t) });
-  return row || M.Account.create({ member_id: memberId, distributor_id: distributorId }, { transaction: t });
+  // 积分属于会员，不再按艾诺云/艾诺志兴拆分。保留 distributor_id
+  // 仅用于兼容历史数据及记录来源，新产生的积分统一写入该会员的首个账户。
+  const rows = await M.Account.findAll({ where: { member_id: memberId }, order: [['created_at', 'ASC'], ['id', 'ASC']], ...lock(t) });
+  if (rows.length) {
+    // 首次访问时把历史分账余额合并到一个账户，避免旧数据继续造成两套可用积分。
+    if (rows.length > 1 && t) {
+      const total = rows.reduce((sum, row) => sum + BigInt(row.balance || 0), 0n);
+      await rows[0].update({ balance: String(total) }, { transaction: t });
+      for (const legacy of rows.slice(1)) {
+        if (BigInt(legacy.balance || 0) !== 0n) await legacy.update({ balance: '0' }, { transaction: t });
+      }
+    }
+    return rows[0];
+  }
+  return M.Account.create({ member_id: memberId, distributor_id: distributorId }, { transaction: t });
 }
 async function post(account, delta, fields, t) {
   const before = BigInt(account.balance), after = before + delta;

@@ -336,7 +336,6 @@ async function changeTransferRequestStatus(ctx, targetStatus, action, actorCheck
       ctx.throw(400, '拒绝调拨申请时必须填写拒绝原因');
     }
     const fromStatus = transfer.status;
-    if (action === 'rejected' && !await advanceApproval(ctx, 'inventory_transfer', transfer, t, 'reject', reason)) { await t.commit(); return; }
     await transfer.update({ status: targetStatus }, { transaction: t });
     await setFreightRecordStatus('transfer', transfer.transfer_id, 'cancelled', user, t);
     await recordBusinessAction({
@@ -4738,8 +4737,6 @@ async function confirmTransferOutPartial(ctx) {
     if (!transfer) ctx.throw(404, '调拨单不存在');
     await assertTransferOperationStore(ctx, transfer.from_store_id);
     if (transfer.status !== 'pending') ctx.throw(400, '调拨单当前不是待出库确认状态');
-    if (!await advanceApproval(ctx, 'inventory_transfer', transfer, t, 'approve', body.comment || '')) { await t.commit(); return; }
-
     const persistedPhotos = await persistTransferShippingPhotos(ctx, transferId);
     shippingPhotos = persistedPhotos.photos;
     createdShippingPhotoPaths.push(...persistedPhotos.storedPaths);
@@ -5226,7 +5223,6 @@ async function confirmTransferIn(ctx) {
       ctx.throw(400, '当前状态不允许确认入库');
     }
 
-    if (transfer.status !== 'completed' && !await advanceApproval(ctx, 'inventory_transfer_receipt', transfer, t, 'approve', ctx.request.body.comment || '')) { await t.commit(); return; }
     const items = visibleTransferItems(transfer.TransferItems || []);
     const requestedByItemId = new Map(
       requestedItems

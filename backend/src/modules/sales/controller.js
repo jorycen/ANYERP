@@ -568,13 +568,58 @@ async function list(ctx) {
     distinct: true,
     order: buildSalesOrderListOrder()
   };
-  const orders = await Order.findAll(orderQuery);
+  const normalizedPage = Math.max(Number(page) || 1, 1);
+  const normalizedPageSize = Math.min(Math.max(Number(pageSize) || 20, 1), 100);
+  const offset = (normalizedPage - 1) * normalizedPageSize;
+  const candidateLimit = offset + normalizedPageSize;
+  const hasItemFilter = Object.keys(itemWhere).length > 0 || Boolean(productCode);
+  const idInclude = hasItemFilter
+    ? [{ ...itemInclude, attributes: ['order_id'], include: itemInclude.include }]
+    : [];
+
+  // Mall reporting still needs the complete filtered set for its summary.
+  // Other users only need the current page; first fetch order IDs and then
+  // load the existing associations for those IDs to avoid full-table reads.
+  let orders;
+  let orderCount;
+  if (isMallReportViewer(getUserRoles(user))) {
+    orders = await Order.findAll(orderQuery);
+    orderCount = orders.length;
+  } else {
+    const [idRows, count] = await Promise.all([
+      Order.findAll({
+        where,
+        attributes: ['order_id'],
+        include: idInclude,
+        distinct: true,
+        order: orderQuery.order,
+        limit: candidateLimit,
+        offset: 0
+      }),
+      Order.count({
+        where,
+        ...(hasItemFilter ? { include: idInclude, distinct: true, col: 'order_id' } : {})
+      })
+    ]);
+    orderCount = Number(count || 0);
+    const orderIds = idRows.map(row => row.order_id);
+    orders = orderIds.length
+      ? await Order.findAll({
+        ...orderQuery,
+        where: { ...where, order_id: { [Op.in]: orderIds } }
+      })
+      : [];
+  }
   let returnRows = [];
+  let returnCount = 0;
   if (String(orderNo || '').trim()) {
     const returnOrderWhere = { ...where };
     delete returnOrderWhere.order_no;
-    const returnRequests = await SalesReturnRequest.findAll({
-      where: { return_no: { [Op.like]: `%${String(orderNo).trim()}%` } },
+    const returnWhere = { return_no: { [Op.like]: `%${String(orderNo).trim()}%` } };
+    const [returnRequests, returnTotal] = await Promise.all([SalesReturnRequest.findAll({
+      where: returnWhere,
+      limit: isMallReportViewer(getUserRoles(user)) ? undefined : candidateLimit,
+      offset: 0,
       include: [
         {
           model: Order,
@@ -588,14 +633,20 @@ async function list(ctx) {
       ],
       distinct: true,
       order: [['create_time', 'DESC']]
-    });
+    }), SalesReturnRequest.count({ where: returnWhere, include: [{ model: Order, as: 'order', where: returnOrderWhere, required: true }], distinct: true, col: 'return_id' })]);
     returnRows = returnRequests.map(normalizeSalesReturnListRow);
+    returnCount = Number(returnTotal || 0);
   }
   const normalizedRows = [...orders.map(normalizeSalesOrderListRow), ...returnRows].sort(compareCombinedSalesRows);
-  const offset = (Number(page) - 1) * Number(pageSize);
-  const rows = normalizedRows.slice(offset, offset + Number(pageSize));
+  const rows = isMallReportViewer(getUserRoles(user))
+    ? normalizedRows.slice(offset, offset + normalizedPageSize)
+    : normalizedRows.slice(offset, offset + normalizedPageSize);
 
-  ctx.body = formatPaginatedResult(rows, { page, pageSize, count: normalizedRows.length });
+  ctx.body = formatPaginatedResult(rows, {
+    page: normalizedPage,
+    pageSize: normalizedPageSize,
+    count: isMallReportViewer(getUserRoles(user)) ? normalizedRows.length : orderCount + returnCount
+  });
   if (isMallReportViewer(getUserRoles(user))) {
     // 与列表使用同一批过滤后的订单，汇总不受翻页影响。
     ctx.body.summary = {

@@ -173,9 +173,7 @@
         </el-form-item>
         <el-form-item label="采购凭证类型" required>
           <el-select v-model="requestForm.invoiceType" placeholder="请选择采购凭证类型" style="width: 100%">
-            <el-option label="含税13%" value="含税13%" />
             <el-option label="专票13%" value="专票13%" />
-            <el-option label="未税" value="未税" />
             <el-option label="收据" value="收据" />
           </el-select>
         </el-form-item>
@@ -1324,7 +1322,7 @@ const handleEditDraft = async (row) => {
     const request = res.data
     editingRequestId.value = request.request_id
     requestForm.supplierId = request.supplier_id || ''
-    requestForm.invoiceType = ['含税13%', '专票13%', '未税', '收据'].includes(request.invoice_type) ? request.invoice_type : ''
+    requestForm.invoiceType = ['专票13%', '收据'].includes(request.invoice_type) ? request.invoice_type : ''
     requestForm.expressNo = request.express_no || ''
     requestForm.paymentMethod = request.payment_method || 'COMPANY_CREDIT'
     requestForm.productType = request.product_type || goodsTypeOptions.value[0]?.name || ''
@@ -1992,7 +1990,7 @@ const handleSubmit = async () => {
     ElMessage.warning('请选择供应商')
     return
   }
-  if (!['含税13%', '专票13%', '未税', '收据'].includes(requestForm.invoiceType)) {
+  if (!['专票13%', '收据'].includes(requestForm.invoiceType)) {
     ElMessage.warning('请选择采购凭证类型')
     return
   }

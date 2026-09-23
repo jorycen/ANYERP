@@ -100,8 +100,8 @@ test('补齐18类流程，缺失固定审批人保留草稿，不覆盖自定义
   t.mock.method(M.ApprovalFlowDefinition, 'findOne', async ({ where }) => where.flow_code === 'purchase_request' ? { status: 'disabled' } : null);
   t.mock.method(M.ApprovalFlowDefinition, 'create', async values => saved.push(values));
   await C.seedApprovalFlowCatalog();
-  assert.equal(C.defaultCatalog().length, 18);
-  assert.equal(saved.length, 17);
+  assert.equal(C.defaultCatalog().length, 16);
+  assert.equal(saved.length, 15);
   assert.equal(saved.find(row => row.flow_code === 'expense_attribution').status, 'draft');
   assert.equal(saved.find(row => row.flow_code === 'product_application').status, 'published');
   assert.equal(saved.some(row => row.flow_code === 'purchase_request'), false);

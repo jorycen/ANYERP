@@ -14,9 +14,9 @@ test('API 日期统一序列化为北京时间且不会重复加八小时', () =
   assert.equal(body.data[0].create_time, '2026-09-20 09:02:03');
 });
 
-test('采购申请凭证类型统一为含税13%、专票13%、未税和收据', () => {
+test('采购申请凭证类型统一为专票13%和收据', () => {
   const source = read('backend/src/modules/purchase/controller.js');
-  assert.match(source, /new Set\(\['含税13%', '专票13%', '未税', '收据'\]\)/);
+  assert.match(source, /new Set\(\['专票13%', '收据'\]\)/);
   assert.doesNotMatch(source, /PURCHASE_INVOICE_TYPE_ALIASES/);
   assert.match(source, /请选择采购凭证类型/);
   assert.match(source, /express_no:\s*String\(expressNo/);
@@ -33,11 +33,11 @@ test('Web和小程序采购申请都要求主动选择采购凭证类型', () =>
   assert.match(web, /invoiceType:\s*''/);
   assert.match(web, /请选择采购凭证类型/);
   assert.match(inventoryWeb, /label="采购凭证类型" required/);
-  assert.match(inventoryWeb, /\['含税13%', '专票13%', '未税', '收据'\]\.includes\(snPurchaseForm\.invoiceType\)/);
+  assert.match(inventoryWeb, /\['专票13%', '收据'\]\.includes\(snPurchaseForm\.invoiceType\)/);
   assert.match(miniWxml, /field-label required">采购凭证类型/);
   assert.match(miniJs, /invoiceTypeIndex:\s*-1/);
   assert.match(miniJs, /INVOICE_TYPES\.includes\(form\.invoiceType\)/);
-  assert.match(miniJs, /INVOICE_TYPES = \['含税13%', '专票13%', '未税', '收据'\]/);
+  assert.match(miniJs, /INVOICE_TYPES = \['专票13%', '收据'\]/);
 });
 
 test('手机采购入库强制校验并保存SN、IMEI1、IMEI2', () => {
@@ -59,10 +59,9 @@ test('应付结算单列表返回当前审批节点和审批人', () => {
 
 test('审批中心不重复展示需要在调拨管理处理的人工调拨任务', () => {
   const runtime = read('backend/src/modules/approval/businessRuntime.js');
-  const view = read('frontend/web/src/views/Approval.vue');
-  assert.match(runtime, /if \(!onlyType && d\.manual\) continue/);
-  assert.match(view, /inventory_transfer_receipt/);
-  assert.match(view, /!item\.manual_path/);
+  assert.match(runtime, /inventory_transfer:\s*\{[^}]*retired:\s*true/);
+  assert.match(runtime, /inventory_transfer_receipt:\s*\{[^}]*retired:\s*true/);
+  assert.match(runtime, /if \(d\.retired\) continue/);
 });
 
 test('我的申请只返回本人发起的审批并展示当前审批进度', () => {

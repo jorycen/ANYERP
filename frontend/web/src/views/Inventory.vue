@@ -382,9 +382,7 @@
               </el-form-item>
               <el-form-item label="采购凭证类型" required>
                 <el-select v-model="snPurchaseForm.invoiceType" placeholder="请选择采购凭证类型" style="width:100%">
-                  <el-option label="含税13%" value="含税13%" />
                   <el-option label="专票13%" value="专票13%" />
-                  <el-option label="未税" value="未税" />
                   <el-option label="收据" value="收据" />
                 </el-select>
               </el-form-item>
@@ -2662,7 +2660,7 @@ const openSnPurchase = async row => {
 
 const submitSnPurchase = async () => {
   if (!snPurchaseForm.supplierId) return ElMessage.warning('请选择供应商')
-  if (!['含税13%', '专票13%', '未税', '收据'].includes(snPurchaseForm.invoiceType)) return ElMessage.warning('请选择采购凭证类型')
+  if (!['专票13%', '收据'].includes(snPurchaseForm.invoiceType)) return ElMessage.warning('请选择采购凭证类型')
   if (!snPurchaseForm.goodsTypeId) return ElMessage.warning('请选择货型')
   if (!snPurchaseForm.targetLocationId) return ElMessage.warning('请选择目标库位')
   if (Number(snPurchaseForm.price) < 0) return ElMessage.warning('采购价不能小于0')

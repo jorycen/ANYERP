@@ -1385,6 +1385,14 @@ async function runMigrations() {
     await checkAndAddColumn('T_PRODUCT', 'CREATE_TIME', 'DATETIME COMMENT "创建时间"', 'CONFIG');
     await checkAndAddIndex('T_PRODUCT', 'idx_product_focus', 'ALTER TABLE T_PRODUCT ADD INDEX idx_product_focus (IS_FOCUS_PRODUCT, IS_DELETED, STATUS)');
     await checkAndAddIndex('T_ORDER', 'idx_order_bi_scope', 'ALTER TABLE T_ORDER ADD INDEX idx_order_bi_scope (IS_DELETED, ORDER_STATUS, STORE_ID, CREATE_TIME)');
+    await checkAndAddIndex('T_ORDER', 'idx_order_list_scope_time', 'ALTER TABLE T_ORDER ADD INDEX idx_order_list_scope_time (IS_DELETED, STORE_ID, CREATE_TIME, ORDER_ID)');
+    await checkAndAddIndex('T_ORDER_ITEM', 'idx_order_item_order', 'ALTER TABLE T_ORDER_ITEM ADD INDEX idx_order_item_order (ORDER_ID)');
+    await checkAndAddIndex('T_ORDER_ITEM', 'idx_order_item_product_order', 'ALTER TABLE T_ORDER_ITEM ADD INDEX idx_order_item_product_order (PRODUCT_ID, ORDER_ID)');
+    await checkAndAddIndex('T_ORDER_ITEM', 'idx_order_item_pn_order', 'ALTER TABLE T_ORDER_ITEM ADD INDEX idx_order_item_pn_order (PN_CODE, ORDER_ID)');
+    await checkAndAddIndex('T_ORDER_ITEM', 'idx_order_item_sn_order', 'ALTER TABLE T_ORDER_ITEM ADD INDEX idx_order_item_sn_order (SN_CODE, ORDER_ID)');
+    await checkAndAddIndex('T_ORDER_PAYMENT', 'idx_order_payment_order', 'ALTER TABLE T_ORDER_PAYMENT ADD INDEX idx_order_payment_order (ORDER_ID)');
+    await checkAndAddIndex('T_ORDER_SUPPLEMENT', 'idx_order_supplement_order_deleted', 'ALTER TABLE T_ORDER_SUPPLEMENT ADD INDEX idx_order_supplement_order_deleted (ORDER_ID, IS_DELETED)');
+    await checkAndAddIndex('T_ORDER_GROSS_PROFIT', 'idx_order_gross_profit_order_version', 'ALTER TABLE T_ORDER_GROSS_PROFIT ADD INDEX idx_order_gross_profit_order_version (ORDER_ID, FORMULA_VERSION)');
     await checkAndAddColumn('T_PRODUCT_SN', 'PN_CODE', 'VARCHAR(64) COMMENT "PN料号"', 'PRODUCT_ID');
     await checkAndAddColumn('T_PRODUCT_SN', 'INVENTORY_TYPE', 'VARCHAR(32) DEFAULT "normal_qty" COMMENT "库存类型"', 'STATUS');
     await checkAndAddColumn('T_PRODUCT_SN', 'ORIGINAL_PICKUP_PRICE', 'DECIMAL(12,2) DEFAULT 0 COMMENT "原始提货价"', 'INBOUND_PRICE');
