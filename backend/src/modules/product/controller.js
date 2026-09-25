@@ -3027,7 +3027,17 @@ async function importCostRefresh(ctx) {
         continue;
       }
 
-      const costPrice = await calculateFifoCost(product.product_id);
+      const costRaw = getRowValue(row, ['成本价', '成本价格', '库存成本', 'cost_price', 'costPrice']);
+      const importedCostPrice = parseMoney(costRaw);
+      if (costRaw !== undefined && (importedCostPrice === null || importedCostPrice < 0)) {
+        results.failed++;
+        results.errors.push({ row: index + 2, product: row, message: '成本价必须是大于等于0的数字' });
+        continue;
+      }
+      // 兼容旧模板：未填写成本价时仍按库存入库价加权刷新；填写后以导入值为准。
+      const costPrice = importedCostPrice === null
+        ? await calculateFifoCost(product.product_id)
+        : moneyNumber(importedCostPrice);
       const existingPrice = await ProductPrice.findOne({ where: { product_id: product.product_id } });
 
       if (existingPrice) {

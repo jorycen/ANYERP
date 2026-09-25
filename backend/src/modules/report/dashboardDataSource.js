@@ -123,6 +123,8 @@ function createFinanceCategoryNode(category) {
     level: category.level,
     quantity: 0,
     amount: 0,
+    overdueQuantity: 0,
+    overdueAmount: 0,
     children: []
   };
 }
@@ -147,6 +149,8 @@ function addFinanceClassificationAmount(target, parentCategory, leafCategory, ca
     }
     childTarget.quantity += row.quantity;
     childTarget.amount += row.inventoryAmount;
+    childTarget.overdueQuantity += row.overdueQuantity || 0;
+    childTarget.overdueAmount += row.overdueAmount || 0;
     currentTarget = childTarget;
   });
 }
@@ -163,6 +167,11 @@ function sortFinanceCategoryChildren(children, categoryIndex) {
       ...child,
       quantity: Number(child.quantity || 0),
       amount: roundMoney(child.amount),
+      overdueQuantity: Number(child.overdueQuantity || 0),
+      overdueAmount: roundMoney(child.overdueAmount),
+      overdueRate: child.quantity > 0
+        ? roundMoney((child.overdueQuantity / child.quantity) * 100)
+        : 0,
       children: sortFinanceCategoryChildren(child.children || [], categoryIndex)
     }));
 }
@@ -556,6 +565,9 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
                 MAX(p.CATEGORY) AS categoryPath,
                 COUNT(*) AS quantity,
                 ROUND(SUM(COALESCE(NULLIF(ps.INBOUND_PRICE, 0), pp.COST_PRICE, 0)), 2) AS inventoryAmount,
+                SUM(CASE WHEN ps.INBOUND_TIME IS NOT NULL AND DATEDIFF(NOW(), ps.INBOUND_TIME) > 30 THEN 1 ELSE 0 END) AS overdueQuantity,
+                ROUND(SUM(CASE WHEN ps.INBOUND_TIME IS NOT NULL AND DATEDIFF(NOW(), ps.INBOUND_TIME) > 30
+                  THEN COALESCE(NULLIF(ps.INBOUND_PRICE, 0), pp.COST_PRICE, 0) ELSE 0 END), 2) AS overdueAmount,
                 MIN(ps.INBOUND_TIME) AS oldestInboundTime
            FROM T_PRODUCT_SN ps
            INNER JOIN T_PRODUCT p ON p.PRODUCT_ID = ps.PRODUCT_ID
@@ -588,6 +600,8 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
                   + COALESCE(i.DISPLAY_QTY, 0)${nonSnDemoQuantitySql}
                   + COALESCE(i.UNSELLABLE_QTY, 0) + COALESCE(i.PENDING_QTY, 0)
                 ) * COALESCE(pp.COST_PRICE, 0)), 2) AS inventoryAmount,
+                0 AS overdueQuantity,
+                0 AS overdueAmount,
                 NULL AS oldestInboundTime
            FROM T_INVENTORY i
            INNER JOIN T_PRODUCT p ON p.PRODUCT_ID = i.PRODUCT_ID AND COALESCE(p.NEED_SN, 0) = 0
@@ -638,7 +652,9 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       .map(row => ({
         ...row,
         quantity: toNumber(row.quantity),
-        inventoryAmount: roundMoney(row.inventoryAmount)
+        inventoryAmount: roundMoney(row.inventoryAmount),
+        overdueQuantity: toNumber(row.overdueQuantity),
+        overdueAmount: roundMoney(row.overdueAmount)
       }))
       .filter(row => row.quantity > 0);
     const inventoryQuantity = rows.reduce((sum, row) => sum + row.quantity, 0);
@@ -654,6 +670,8 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
         level: category.level,
         quantity: 0,
         amount: 0,
+        overdueQuantity: 0,
+        overdueAmount: 0,
         children: []
       }]));
     rows.forEach(row => {
@@ -662,6 +680,8 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       if (!target) return;
       target.quantity += row.quantity;
       target.amount += row.inventoryAmount;
+      target.overdueQuantity += row.overdueQuantity;
+      target.overdueAmount += row.overdueAmount;
 
       const classification = findFinanceClassification(row, category, categoryIndex);
       addFinanceClassificationAmount(target, category, classification, categoryIndex, row);
@@ -694,6 +714,11 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
           ...category,
           quantity: Number(category.quantity || 0),
           amount: roundMoney(category.amount),
+          overdueQuantity: Number(category.overdueQuantity || 0),
+          overdueAmount: roundMoney(category.overdueAmount),
+          overdueRate: category.quantity > 0
+            ? roundMoney((category.overdueQuantity / category.quantity) * 100)
+            : 0,
           children: sortFinanceCategoryChildren(category.children, categoryIndex)
         })),
       ageStructure: ageRows.map(row => ({

@@ -281,7 +281,7 @@
             <el-button type="success" @click="handleBatchRefreshCost" :loading="batchRefreshLoading" :disabled="selectedPriceRows.length === 0">
               批量刷新成本 ({{ selectedPriceRows.length }})
             </el-button>
-            <el-button type="success" plain @click="handleCostImport">批量刷新成本导入</el-button>
+            <el-button type="success" plain @click="handleCostImport">批量导入商品成本</el-button>
             <el-button type="success" plain @click="handleCostExport" :loading="costExportLoading">成本导出</el-button>
             <el-button type="warning" @click="handlePriceImport">批量导入定价</el-button>
           </div>
@@ -689,7 +689,8 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="costImportDialogVisible" title="批量刷新成本" width="700px">
+    <el-dialog v-model="costImportDialogVisible" title="批量导入商品成本" width="700px">
+      <el-alert title="请填写商品编码或商品名称，并在成本价列填写新的成本；成本价为空时仍按库存入库价自动刷新。" type="info" :closable="false" show-icon style="margin-bottom: 12px;" />
       <div class="import-tips">
         <p>下载模板后填写要刷新的商品编码或商品名称；无需填写成本价，系统会按当前库存对应的采购/入库价加权平均后刷新库存成本。</p>
         <el-button type="primary" size="small" @click="downloadCostTemplate">下载成本刷新模板</el-button>
@@ -705,7 +706,7 @@
       </div>
       <template #footer>
         <el-button @click="costImportDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleCostImportSubmit" :loading="costImportLoading" :disabled="!costImportFile">开始刷新</el-button>
+        <el-button type="primary" @click="handleCostImportSubmit" :loading="costImportLoading" :disabled="!costImportFile">开始导入</el-button>
       </template>
     </el-dialog>
 
@@ -1814,13 +1815,14 @@ const clearCostFile = () => {
 
 const downloadCostTemplate = () => {
   const data = [{
+    '成本价': '',
     '商品编码': '',
     '商品名称': ''
   }]
   const ws = XLSX.utils.json_to_sheet(data)
   const wb = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb, ws, '成本刷新模板')
-  ws['!cols'] = [{ wch: 16 }, { wch: 24 }]
+  ws['!cols'] = [{ wch: 16 }, { wch: 24 }, { wch: 14 }]
   XLSX.writeFile(wb, '商品成本刷新模板.xlsx')
 }
 

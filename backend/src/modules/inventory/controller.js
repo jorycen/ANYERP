@@ -1852,6 +1852,34 @@ async function getList(ctx) {
         if (serializedWarehouseType !== 'normal_qty' && Object.prototype.hasOwnProperty.call(snWarehouseStockMap[sn.product_id], serializedWarehouseType)) {
           snWarehouseStockMap[sn.product_id][serializedWarehouseType] += 1;
         }
+
+        // SN 商品的仓位明细以 ProductSn 为准。样品仓、租赁样机仓等非销售仓
+        // 也必须进入门店导出明细，不能只依赖 T_INVENTORY 的历史汇总记录。
+        const snLocationKey = `${sn.store_id || ''}|${sn.location_id || ''}`;
+        if (!snLocationMap[sn.product_id]) snLocationMap[sn.product_id] = {};
+        if (!snLocationMap[sn.product_id][snLocationKey]) {
+          snLocationMap[sn.product_id][snLocationKey] = {
+            store_id: sn.store_id || '',
+            store_name: allStoreMap.get(sn.store_id) || sn.store_id || 'Unknown store',
+            location_id: sn.location_id || '',
+            location_name: location?.name || (sn.location_id || 'Unknown location'),
+            normal_qty: 0,
+            full_resource_qty: 0,
+            subsidy_only_qty: 0,
+            no_subsidy_qty: 0,
+            display_qty: 0,
+            demo_qty: 0,
+            unsellable_qty: 0,
+            pending_qty: 0,
+            rental_demo_qty: 0
+          };
+        }
+        const snLocationRow = snLocationMap[sn.product_id][snLocationKey];
+        if (serializedWarehouseType === 'normal_qty') {
+          snLocationRow.normal_qty += 1;
+        } else if (Object.prototype.hasOwnProperty.call(snLocationRow, serializedWarehouseType)) {
+          snLocationRow[serializedWarehouseType] += 1;
+        }
         if (!isInStockSalesWarehouseSn(sn, location)) continue;
 
         if (!snSalesStockMap[sn.product_id]) {
@@ -1905,7 +1933,6 @@ async function getList(ctx) {
             rental_demo_qty: 0
           };
         }
-        snLocationMap[sn.product_id][key].normal_qty += 1;
         const resourceQuantity = getSnSalesResourceQuantitySnapshot(sn, snResourceSummaryMap.get(sn.sn_id));
         snLocationMap[sn.product_id][key].full_resource_qty += resourceQuantity.full_resource_qty;
         snLocationMap[sn.product_id][key].subsidy_only_qty += resourceQuantity.subsidy_only_qty;
@@ -1920,10 +1947,9 @@ async function getList(ctx) {
             invMap[product.product_id][field] = serializedWarehouseStock[field];
           }
         }
-        storeStockMap[product.product_id] = mergeSnSalesStockBreakdown(
-          storeStockMap[product.product_id] || [],
-          Object.values(snLocationMap[product.product_id] || {})
-        );
+        // SN 商品以当前在库 ProductSn 为唯一库存明细口径，不能再和
+        // T_INVENTORY 的历史汇总行叠加，否则会把同一台机器重复计算。
+        storeStockMap[product.product_id] = Object.values(snLocationMap[product.product_id] || {});
       }
     }
 
@@ -2030,6 +2056,7 @@ async function getList(ctx) {
     if (exportMode) {
       const storeExportRows = buildStoreInventoryExportRows(exportRows);
       const data = storeExportRows.map(row => ({
+        '\u95e8\u5e97\u7f16\u53f7': row.store_id || '',
         门店: row.store_name || '',
         类别: row.category || '',
         商品名称: row.product_name || '',
@@ -2054,6 +2081,7 @@ async function getList(ctx) {
         近30天销量: Number(row.sales_30_qty || 0)
       }));
       sendExcel(ctx, data, [
+        '\u95e8\u5e97\u7f16\u53f7',
         '门店', '类别', '商品名称', '产品配置', 'PN', '销售定价',
         '销售仓', '正规货', '国补货', '纯二手货', '铺货仓库存', '样品仓库存',
         '不可售库存', '占用仓库存', '租赁样机仓库存', '当前门店库存', '其他门店库存', '总库存',
@@ -3270,10 +3298,7 @@ async function getInboundDetailById(ctx, inboundId, { distributorTrace = false }
           ...item,
           location_name: item.location_id ? (locationMap.get(item.location_id) || item.location_id) : '',
           need_sn: productMap.get(item.product_id)?.need_sn || 0,
-          need_imei: (() => {
-            const product = productMap.get(item.product_id);
-            return Number(product?.need_imei) === 1 || /手机/.test(`${product?.category || ''} ${product?.name || ''}`) ? 1 : 0;
-          })(),
+          need_imei: Number(productMap.get(item.product_id)?.need_imei) === 1 ? 1 : 0,
           sn_codes: snCodes,
           received_quantity: Math.max(Number(item.received_quantity || 0), 0),
           receive_user: item.receive_user || '',
@@ -3853,9 +3878,7 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
         const submittedSnCode = String(item.snCode || item.sn_code || '').trim();
         const submittedImei1 = String(item.imei1 || item.imei_1 || '').trim();
         const submittedImei2 = String(item.imei2 || item.imei_2 || '').trim();
-        const requiresImei = isPurchaseInbound && (
-          Number(product.need_imei) === 1 || /手机/.test(`${product.category || ''} ${product.name || ''}`)
-        );
+        const requiresImei = isPurchaseInbound && Number(product.need_imei) === 1;
         const requestedSnCode = submittedSnCode || (isPurchaseInbound ? '' : String(dbItem.sn_code || '').trim());
         if (isPurchaseInbound && quantity !== 1) {
           fail(400, `商品 ${dbItem.product_name || product.name} 为 SN 商品，每次只能入库 1 件`);
@@ -3864,7 +3887,7 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
           fail(400, `商品 ${dbItem.product_name || product.name} 需要 SN 管理，本次入库必须填写 SN`);
         }
         if (requiresImei && (!submittedImei1 || !submittedImei2)) {
-          fail(400, `手机商品 ${dbItem.product_name || product.name} 入库必须填写 SN、IMEI1、IMEI2`);
+          fail(400, `商品 ${dbItem.product_name || product.name} 入库必须填写 SN、IMEI1、IMEI2`);
         }
         if (isPurchaseInbound) {
           const existingSnCodes = parseInboundSnCodes(dbItem.received_sn_codes);

@@ -559,7 +559,7 @@
           <el-form-item :label="isGuobuPaymentMethod(pmForm.name) ? '客户实收账户' : '默认结算账户'">
             <div style="display: flex; align-items: center; gap: 8px; width: 100%">
               <el-select v-model="pmForm.settlementAccountId" placeholder="选择结算账号" clearable style="flex: 1">
-                <el-option v-for="acc in fundAccounts" :key="acc.account_id" :label="acc.account_name" :value="acc.account_id" />
+                <el-option v-for="acc in paymentMethodAccounts" :key="acc.account_id" :label="`${acc.account_name}（${accountTypeText(acc.account_type)}）`" :value="acc.account_id" />
               </el-select>
               <el-button link type="primary" @click="openSaMgmtDialog">管理结算账号</el-button>
             </div>
@@ -593,7 +593,7 @@
                 <el-table-column :label="isGuobuPaymentMethod(pmForm.name) ? '客户实收账户' : '结算账户'" min-width="200">
                   <template #default="{ row }">
                     <el-select v-model="row.accountId" placeholder="选择结算账号" clearable size="small" style="width: 100%" :disabled="!row.checked">
-                      <el-option v-for="acc in fundAccounts" :key="acc.account_id" :label="acc.account_name" :value="acc.account_id" />
+                      <el-option v-for="acc in paymentMethodAccounts" :key="acc.account_id" :label="`${acc.account_name}（${accountTypeText(acc.account_type)}）`" :value="acc.account_id" />
                     </el-select>
                   </template>
                 </el-table-column>
@@ -1822,6 +1822,7 @@ const pmStoreConfigRows = ref([])
 const settlementAccounts = ref([])
 const policyReceivableAccounts = computed(() => settlementAccounts.value.filter(a => a.account_type === 'POLICY_RECEIVABLE'))
 const fundAccounts = computed(() => settlementAccounts.value.filter(a => a.account_type === 'FUND'))
+const paymentMethodAccounts = computed(() => settlementAccounts.value.filter(a => ['FUND', 'SUPPLIER_REBATE'].includes(a.account_type)))
 const subsidyAccountRoutes = ref([])
 const isGuobuPaymentMethod = name => String(name || '').startsWith('国补')
 

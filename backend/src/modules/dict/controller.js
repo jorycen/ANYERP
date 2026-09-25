@@ -390,23 +390,23 @@ async function validatePaymentMethodAccounts(ctx, {
   receivableSettlementAccountId,
   storeConfigs
 }) {
-  const fundIds = new Set();
+  const settlementIds = new Set();
   const receivableIds = new Set();
-  if (settlementAccountId) fundIds.add(String(settlementAccountId));
+  if (settlementAccountId) settlementIds.add(String(settlementAccountId));
   if (receivableSettlementAccountId) receivableIds.add(String(receivableSettlementAccountId));
   for (const config of Array.isArray(storeConfigs) ? storeConfigs : []) {
-    if (config.settlementAccountId) fundIds.add(String(config.settlementAccountId));
+    if (config.settlementAccountId) settlementIds.add(String(config.settlementAccountId));
     if (config.receivableSettlementAccountId) receivableIds.add(String(config.receivableSettlementAccountId));
   }
-  const allIds = [...new Set([...fundIds, ...receivableIds])];
+  const allIds = [...new Set([...settlementIds, ...receivableIds])];
   if (allIds.length === 0) return;
   const accounts = await SettlementAccount.findAll({
     where: { account_id: { [Op.in]: allIds }, status: 1 }
   });
   const accountMap = new Map(accounts.map(account => [String(account.account_id), account]));
-  for (const accountId of fundIds) {
-    if (accountMap.get(accountId)?.account_type !== 'FUND') {
-      ctx.throw(400, '收款方式只能绑定启用的资金账户');
+  for (const accountId of settlementIds) {
+    if (!['FUND', 'SUPPLIER_REBATE'].includes(accountMap.get(accountId)?.account_type)) {
+      ctx.throw(400, '收款方式只能绑定启用的资金账户或返利账户');
     }
   }
   for (const accountId of receivableIds) {

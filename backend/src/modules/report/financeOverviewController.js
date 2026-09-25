@@ -190,11 +190,17 @@ async function queryPaymentSummary(regionId, accessibleRegionIds) {
     ...(regionId ? { regionId } : {}),
     ...(accessibleRegionIds ? { accessibleRegionIds: accessibleRegionIds.length ? accessibleRegionIds : ['__NO_REGION__'] } : {})
   };
-  const [uncreatedRows, settlementRows] = await Promise.all([
+  const [uncreatedRows, settlementRows, uncreatedSupplierRows, settlementSupplierRows] = await Promise.all([
     sequelize.query(
       `SELECT ROUND(SUM(GREATEST(
                 p.TOTAL_AMOUNT - COALESCE(p.OFFSET_AMOUNT, 0) - COALESCE(p.PAID_AMOUNT, 0)
                 - COALESCE(a.ALLOCATED_AMOUNT, 0), 0)), 2) AS amount
+              ,ROUND(SUM(CASE WHEN p.SOURCE_TYPE IN ('purchase', 'purchase_adjustment', 'purchase_return') THEN GREATEST(
+                p.TOTAL_AMOUNT - COALESCE(p.OFFSET_AMOUNT, 0) - COALESCE(p.PAID_AMOUNT, 0)
+                - COALESCE(a.ALLOCATED_AMOUNT, 0), 0) ELSE 0 END), 2) AS purchaseAmount
+              ,ROUND(SUM(CASE WHEN p.SOURCE_TYPE IN ('expense', 'reimbursement') THEN GREATEST(
+                p.TOTAL_AMOUNT - COALESCE(p.OFFSET_AMOUNT, 0) - COALESCE(p.PAID_AMOUNT, 0)
+                - COALESCE(a.ALLOCATED_AMOUNT, 0), 0) ELSE 0 END), 2) AS expenseAmount
          FROM T_PAYABLE p
          LEFT JOIN (
            SELECT si.PAYABLE_ID, SUM(si.AMOUNT) AS ALLOCATED_AMOUNT
@@ -211,6 +217,10 @@ async function queryPaymentSummary(regionId, accessibleRegionIds) {
     sequelize.query(
       `SELECT ROUND(SUM(CASE WHEN s.PAYMENT_STATUS IN ('unpaid', 'partial_paid')
                             THEN GREATEST(s.TOTAL_AMOUNT - COALESCE(s.PAID_AMOUNT, 0), 0) ELSE 0 END), 2) AS createdAmount,
+              ROUND(SUM(CASE WHEN s.SETTLEMENT_TYPE = 'supplier' AND s.PAYMENT_STATUS IN ('unpaid', 'partial_paid')
+                            THEN GREATEST(s.TOTAL_AMOUNT - COALESCE(s.PAID_AMOUNT, 0), 0) ELSE 0 END), 2) AS purchaseAmount,
+              ROUND(SUM(CASE WHEN s.SETTLEMENT_TYPE IN ('expense', 'reimbursement') AND s.PAYMENT_STATUS IN ('unpaid', 'partial_paid')
+                            THEN GREATEST(s.TOTAL_AMOUNT - COALESCE(s.PAID_AMOUNT, 0), 0) ELSE 0 END), 2) AS expenseAmount,
               ROUND(SUM(COALESCE(s.PAID_AMOUNT, 0)), 2) AS paidAmount
          FROM T_SETTLEMENT s
         WHERE s.IS_DELETED = 0
@@ -218,12 +228,71 @@ async function queryPaymentSummary(regionId, accessibleRegionIds) {
           AND s.SETTLEMENT_TYPE IN ('supplier', 'expense', 'reimbursement')
           ${settlementRegionClause}`,
       { replacements, type: QueryTypes.SELECT }
+    ),
+    sequelize.query(
+      `SELECT COALESCE(NULLIF(p.SUPPLIER_NAME, ''), NULLIF(p.PAYEE_NAME, ''), '未命名供应商') AS supplierName,
+              ROUND(SUM(GREATEST(
+                p.TOTAL_AMOUNT - COALESCE(p.OFFSET_AMOUNT, 0) - COALESCE(p.PAID_AMOUNT, 0)
+                - COALESCE(a.ALLOCATED_AMOUNT, 0), 0)), 2) AS amount
+         FROM T_PAYABLE p
+         LEFT JOIN (
+           SELECT si.PAYABLE_ID, SUM(si.AMOUNT) AS ALLOCATED_AMOUNT
+             FROM T_SETTLEMENT_ITEM si
+             INNER JOIN T_SETTLEMENT s ON s.SETTLEMENT_ID = si.SETTLEMENT_ID
+            WHERE s.IS_DELETED = 0 AND s.STATUS <> 'voided'
+            GROUP BY si.PAYABLE_ID
+         ) a ON a.PAYABLE_ID = p.PAYABLE_ID
+        WHERE p.SOURCE_TYPE IN (:sourceTypes)
+          AND p.STATUS NOT IN ('paid', 'offset', 'cancelled')
+          ${regionClause}
+        GROUP BY COALESCE(NULLIF(p.SUPPLIER_NAME, ''), NULLIF(p.PAYEE_NAME, ''), '未命名供应商')
+        ORDER BY amount DESC
+        `,
+      { replacements, type: QueryTypes.SELECT }
+    ),
+    sequelize.query(
+      `SELECT COALESCE(NULLIF(s.SUPPLIER_NAME, ''), NULLIF(s.PAYEE_NAME, ''), '未命名供应商') AS supplierName,
+              ROUND(SUM(CASE WHEN s.PAYMENT_STATUS IN ('unpaid', 'partial_paid')
+                        THEN GREATEST(s.TOTAL_AMOUNT - COALESCE(s.PAID_AMOUNT, 0), 0) ELSE 0 END), 2) AS amount
+         FROM T_SETTLEMENT s
+        WHERE s.IS_DELETED = 0
+          AND s.STATUS <> 'voided'
+          AND s.SETTLEMENT_TYPE IN ('supplier', 'expense', 'reimbursement')
+          ${settlementRegionClause}
+        GROUP BY COALESCE(NULLIF(s.SUPPLIER_NAME, ''), NULLIF(s.PAYEE_NAME, ''), '未命名供应商')
+        HAVING amount > 0
+        ORDER BY amount DESC
+        `,
+      { replacements, type: QueryTypes.SELECT }
     )
   ]);
   const uncreated = roundMoney(uncreatedRows[0]?.amount);
   const created = roundMoney(settlementRows[0]?.createdAmount);
   const paid = roundMoney(settlementRows[0]?.paidAmount);
-  return { all: roundMoney(uncreated + created + paid), uncreated, created, paid };
+  const purchase = roundMoney(toNumber(uncreatedRows[0]?.purchaseAmount) + toNumber(settlementRows[0]?.purchaseAmount));
+  const expense = roundMoney(toNumber(uncreatedRows[0]?.expenseAmount) + toNumber(settlementRows[0]?.expenseAmount));
+  const normalizeSupplierRows = rows => rows.map(row => ({
+    name: String(row.supplierName || '未命名供应商'),
+    amount: roundMoney(row.amount)
+  })).filter(row => row.amount > 0);
+  const uncreatedSuppliers = normalizeSupplierRows(uncreatedSupplierRows);
+  const createdSuppliers = normalizeSupplierRows(settlementSupplierRows);
+  const allSupplierMap = new Map();
+  [...uncreatedSuppliers, ...createdSuppliers].forEach(row => {
+    allSupplierMap.set(row.name, roundMoney((allSupplierMap.get(row.name) || 0) + row.amount));
+  });
+  const allSuppliers = [...allSupplierMap.entries()]
+    .map(([name, amount]) => ({ name, amount }))
+    .sort((left, right) => right.amount - left.amount)
+    .slice(0, 5);
+  return {
+    all: roundMoney(uncreated + created), uncreated, created, paid, purchase, expense,
+    supplierTop: {
+      all: allSuppliers,
+      uncreated: uncreatedSuppliers.slice(0, 5),
+      created: createdSuppliers.slice(0, 5)
+    }
+  };
 }
 
 async function queryExpenseSummary(period, storeIds) {
@@ -310,6 +379,8 @@ async function getFinanceOverview(ctx) {
         revenue: 0,
         grossProfit: null,
         grossMargin: null,
+        salesGrossProfit: null,
+        salesGrossMargin: null,
         productGrossProfit: null,
         productGrossMargin: null,
         combinedGrossProfit: null,
@@ -325,7 +396,7 @@ async function getFinanceOverview(ctx) {
         },
         inventory: { totalAmount: 0, includeDemo, categories: [] },
         accounts: { totalAmount: 0, byType: [], accounts: [] },
-        payments: { all: 0, uncreated: 0, created: 0, paid: 0 }
+        payments: { all: 0, uncreated: 0, created: 0, paid: 0, purchase: 0, expense: 0, supplierTop: { all: [], uncreated: [], created: [] } }
       }
     };
     return;
@@ -352,6 +423,9 @@ async function getFinanceOverview(ctx) {
   const combinedGrossProfit = profitVisible && summary.salesAmount !== null
     ? roundMoney(summary.grossProfit + productSettlement.grossProfitAmount)
     : null;
+  const combinedGrossMargin = profitVisible && summary.salesAmount
+    ? Number((combinedGrossProfit / summary.salesAmount * 100).toFixed(2))
+    : null;
   const storeOperatingProfit = profitVisible && summary.salesAmount !== null
     ? roundMoney(summary.grossProfit - expenseSummary.amount)
     : null;
@@ -362,16 +436,16 @@ async function getFinanceOverview(ctx) {
       period,
       regionId,
       revenue: roundMoney(summary.salesAmount),
-      grossProfit: profitVisible ? roundMoney(summary.grossProfit) : null,
-      grossMargin: profitVisible && summary.salesAmount ? Number(((summary.grossProfit / summary.salesAmount) * 100).toFixed(2)) : null,
+      grossProfit: combinedGrossProfit,
+      grossMargin: combinedGrossMargin,
+      salesGrossProfit: profitVisible ? roundMoney(summary.grossProfit) : null,
+      salesGrossMargin: profitVisible && summary.salesAmount ? Number(((summary.grossProfit / summary.salesAmount) * 100).toFixed(2)) : null,
       productGrossProfit,
       productGrossMargin: profitVisible && productSettlement.productPricingAmount
         ? Number(((productSettlement.grossProfitAmount / productSettlement.productPricingAmount) * 100).toFixed(2))
         : null,
       combinedGrossProfit,
-      combinedGrossMargin: profitVisible && summary.salesAmount
-        ? Number((combinedGrossProfit / summary.salesAmount * 100).toFixed(2))
-        : null,
+      combinedGrossMargin,
       operatingExpense: profitVisible ? expenseSummary : null,
       storeOperatingProfit,
       productSettlement: {
