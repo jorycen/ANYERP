@@ -342,7 +342,7 @@
           </el-table>
         </el-tab-pane>
 
-        <el-tab-pane label="返利下账" name="rebate-settlement" lazy>
+        <el-tab-pane label="返利池" name="rebate-settlement" lazy>
           <RebateSettlement @changed="handleRebateSettlementChanged" />
         </el-tab-pane>
 
@@ -653,7 +653,7 @@
           <PaymentManagement embedded />
         </el-tab-pane>
 
-        <el-tab-pane label="返利管理" name="rebate">
+        <el-tab-pane label="返利上账" name="rebate">
           <RebatePostingOrders :key="rebatePostingKey" @changed="handleRebatePostingChanged" />
 
           <div class="filter-bar">
@@ -1150,7 +1150,7 @@
           <el-select v-model="expenseForm.rebateSupplierId" filterable style="width: 100%">
             <el-option v-for="s in suppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
           </el-select>
-          <div class="form-help">审批通过后同时进入付款管理和返利下账页面，返利到账后可核销冲销。</div>
+          <div class="form-help">审批通过后同时进入付款管理和返利池，实际到账后在返利上账中登记并完成核销。</div>
         </el-form-item>
         <el-form-item label="经营归属月" required>
           <el-date-picker v-model="expenseForm.accountingMonth" type="month" value-format="YYYY-MM" style="width: 100%" />
@@ -1575,7 +1575,7 @@
           :disabled="accountDetailRow?.account_type === 'SUPPLIER_REBATE'"
           @click="openAccountTransactionDialog(accountDetailRow)"
         >
-          {{ accountDetailRow?.account_type === 'SUPPLIER_REBATE' ? '返利管理记账' : '记账' }}
+          {{ accountDetailRow?.account_type === 'SUPPLIER_REBATE' ? '返利上账' : '记账' }}
         </el-button>
       </div>
       <el-table :data="accountTransactions" stripe border>
@@ -1911,7 +1911,7 @@ const reimbursementPaymentStatusFilter = ref('')
 const settlementDetailVisible = ref(false)
 const settlementDetail = ref(null)
 
-// 返利管理
+// 返利上账
 const rebateData = ref([])
 const rebatePostingKey = ref(0)
 const rebateTotal = ref(0)

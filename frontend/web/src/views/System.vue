@@ -658,7 +658,7 @@
           </el-form-item>
           <el-form-item v-if="saForm.accountType === 'SUPPLIER_REBATE' && !editingSaId" label="新增返利金额">
             <el-input-number v-model="saForm.openingAmount" :min="0" :precision="2" :step="1000" style="width:100%" />
-            <div class="form-tip">金额将计入返利池，并生成返利收款待下账单。</div>
+            <div class="form-tip">金额将计入返利账户，并在返利池中生成对应的应收返利明细。</div>
           </el-form-item>
           <el-form-item label="所属经销商" :required="saForm.accountType === 'FUND'">
             <el-select v-model="saForm.distributorId" clearable filterable style="width:100%" placeholder="资金账户必须选择经销商；其他账户可共享">

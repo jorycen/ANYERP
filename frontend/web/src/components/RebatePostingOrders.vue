@@ -1,8 +1,8 @@
 <template>
   <div class="rebate-posting-orders">
     <div class="section-header">
-      <strong>返利上账单</strong>
-      <el-button type="primary" @click="openCreate">返利上账</el-button>
+      <strong>返利上账</strong>
+      <el-button type="primary" @click="openCreate">登记到账</el-button>
       <el-date-picker
         v-model="query.dateRange"
         type="daterange"
@@ -24,7 +24,7 @@
     </div>
 
     <el-alert
-      title="返利上账单生效后立即增加供应商可用返利；返利下账仅关联核销，不会再次增加余额。"
+      title="这里记录厂商实际到账。到账后可在返利池中选择应收明细进行核销；核销不会重复增加返利余额。"
       type="info"
       :closable="false"
       show-icon
@@ -35,38 +35,38 @@
       <el-table-column type="expand" width="45">
         <template #default="{ row }">
           <div class="allocation-detail">
-            <div v-if="!row.Allocations?.length">暂无下账核销记录</div>
+            <div v-if="!row.Allocations?.length">暂无返利池核销记录</div>
             <el-table v-else :data="row.Allocations" size="small" border>
-              <el-table-column label="返利下账单号" min-width="180">
+              <el-table-column label="返利池明细号" min-width="180">
                 <template #default="{ row: item }">{{ item.Settlement?.settlement_no || '-' }}</template>
               </el-table-column>
               <el-table-column label="核销金额" width="130" align="right">
                 <template #default="{ row: item }">¥{{ money(item.amount) }}</template>
               </el-table-column>
-              <el-table-column label="下账单状态" width="130">
+              <el-table-column label="返利池状态" width="130">
                 <template #default="{ row: item }">{{ settlementStatusText(item.Settlement?.status) }}</template>
               </el-table-column>
               <el-table-column label="核销时间" width="175">
                 <template #default="{ row: item }">{{ formatDateTime(item.create_time) }}</template>
               </el-table-column>
               <el-table-column prop="create_user" label="核销人" width="110" />
-              <el-table-column label="下账备注" min-width="220">
+              <el-table-column label="返利池备注" min-width="220">
                 <template #default="{ row: item }">{{ item.Settlement?.remark || '-' }}</template>
               </el-table-column>
             </el-table>
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="posting_no" label="上账单号" min-width="190" fixed />
+      <el-table-column prop="posting_no" label="到账批次号" min-width="190" fixed />
       <el-table-column prop="posting_date" label="上账日期" width="115" />
       <el-table-column prop="supplier_name" label="供应商" min-width="150" />
-      <el-table-column label="上账金额" width="125" align="right">
+      <el-table-column label="到账金额" width="125" align="right">
         <template #default="{ row }">¥{{ money(row.amount) }}</template>
       </el-table-column>
-      <el-table-column label="已核销" width="125" align="right">
+      <el-table-column label="已匹配返利" width="125" align="right">
         <template #default="{ row }">¥{{ money(row.matched_amount) }}</template>
       </el-table-column>
-      <el-table-column label="剩余待核销" width="135" align="right">
+      <el-table-column label="剩余未匹配" width="135" align="right">
         <template #default="{ row }">¥{{ money(row.remaining_amount) }}</template>
       </el-table-column>
       <el-table-column label="状态" width="115">
@@ -74,7 +74,7 @@
           <el-tag :type="statusType(row.status)">{{ statusText(row.status) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="remark" label="活动/备注" min-width="220" show-overflow-tooltip />
+      <el-table-column prop="remark" label="厂商结算说明" min-width="220" show-overflow-tooltip />
       <el-table-column prop="create_user" label="创建人" width="105" />
       <el-table-column label="创建时间" width="170">
         <template #default="{ row }">{{ formatDateTime(row.create_time) }}</template>
@@ -103,9 +103,9 @@
       @current-change="load"
     />
 
-    <el-dialog v-model="createVisible" title="新增返利上账单" width="540px" @closed="resetForm">
+    <el-dialog v-model="createVisible" title="登记返利到账" width="540px" @closed="resetForm">
       <el-form label-width="95px">
-        <el-form-item label="上账日期" required>
+        <el-form-item label="到账日期" required>
           <el-date-picker v-model="form.postingDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
         </el-form-item>
         <el-form-item label="供应商" required>
@@ -113,16 +113,16 @@
             <el-option v-for="item in suppliers" :key="item.supplier_id" :label="item.name" :value="item.supplier_id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="上账类型" required>
+        <el-form-item label="到账类型" required>
           <el-radio-group v-model="form.direction">
             <el-radio value="increase">增加（默认）</el-radio>
             <el-radio value="decrease">扣减</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item label="上账金额" required>
+        <el-form-item label="到账金额" required>
           <el-input-number v-model="form.amount" :min="0.01" :precision="2" :step="1000" style="width: 100%" />
         </el-form-item>
-        <el-form-item label="活动/备注" required>
+        <el-form-item label="厂商结算说明" required>
           <el-input
             v-model="form.remark"
             type="textarea"
@@ -135,7 +135,7 @@
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="create">确认上账</el-button>
+        <el-button type="primary" :loading="saving" @click="create">确认登记</el-button>
       </template>
     </el-dialog>
   </div>
@@ -243,7 +243,7 @@ async function create() {
   saving.value = true
   try {
     const res = await api.addRebate(form)
-    ElMessage.success(res.message || '返利上账单已生效')
+    ElMessage.success(res.message || '返利到账记录已生效')
     createVisible.value = false
     await load()
     emit('changed')
@@ -258,11 +258,11 @@ async function reverse(row) {
   try {
     const { value } = await ElMessageBox.prompt(
       '冲销会扣回本单上账金额；如返利已用于采购，必须先完成采购退单。请输入冲销原因。',
-      '冲销返利上账单',
+      '冲销返利到账记录',
       { inputPattern: /\S+/, inputErrorMessage: '必须填写冲销原因', type: 'warning' }
     )
     await api.reverseRebatePostingOrder(row.posting_id, { reason: value })
-    ElMessage.success('返利上账单已冲销')
+    ElMessage.success('返利到账记录已冲销')
     await load()
     emit('changed')
   } catch (error) {
