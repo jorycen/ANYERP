@@ -1198,7 +1198,7 @@ const loadUserDistributors = async () => {
 const loadRoles = async () => {
   try {
     const res = await api.getRoles()
-    if (res.code === 0) roleData.value = res.data || []
+    roleData.value = Array.isArray(res) ? res : (res.code === 0 ? res.data || [] : [])
   } catch (err) { ElMessage.error('加载角色失败') }
 }
 
@@ -1273,10 +1273,8 @@ const resetRoleForm = () => {
 const loadMenus = async () => {
   try {
     const res = await api.getMenus()
-    if (res.code === 0) {
-      menuData.value = res.data || []
-      menuReorderDirty.value = false
-    }
+    menuData.value = Array.isArray(res) ? res : (res.code === 0 ? res.data || [] : [])
+    menuReorderDirty.value = false
   } catch (err) { ElMessage.error('加载菜单失败') }
 }
 

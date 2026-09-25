@@ -111,7 +111,7 @@ async function getMenus(ctx) {
     order: [['sort_order', 'ASC'], ['menu_id', 'ASC']]
   });
 
-  ctx.body = buildMenuTree(menus);
+  ctx.body = { code: 0, data: buildMenuTree(menus) };
 }
 
 /**
@@ -186,7 +186,7 @@ async function getRoles(ctx) {
     attributes: ['role_id', 'name', 'description', 'is_system', 'status'],
     order: [['role_id', 'ASC']]
   });
-  ctx.body = roles;
+  ctx.body = { code: 0, data: roles };
 }
 
 async function resolveLocationStoreIds(ctx, rawStoreIds, { fallbackToAll = false, allowEmpty = false } = {}) {
