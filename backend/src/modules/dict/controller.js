@@ -405,8 +405,8 @@ async function validatePaymentMethodAccounts(ctx, {
   });
   const accountMap = new Map(accounts.map(account => [String(account.account_id), account]));
   for (const accountId of settlementIds) {
-    if (!['FUND', 'SUPPLIER_REBATE'].includes(accountMap.get(accountId)?.account_type)) {
-      ctx.throw(400, '收款方式只能绑定启用的资金账户或返利账户');
+    if (!['FUND', 'SUPPLIER_REBATE', 'POLICY_RECEIVABLE'].includes(accountMap.get(accountId)?.account_type)) {
+      ctx.throw(400, '收款方式只能绑定启用的资金账户、返利账户或政策应收账户');
     }
   }
   for (const accountId of receivableIds) {

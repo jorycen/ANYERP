@@ -1822,7 +1822,7 @@ const pmStoreConfigRows = ref([])
 const settlementAccounts = ref([])
 const policyReceivableAccounts = computed(() => settlementAccounts.value.filter(a => a.account_type === 'POLICY_RECEIVABLE'))
 const fundAccounts = computed(() => settlementAccounts.value.filter(a => a.account_type === 'FUND'))
-const paymentMethodAccounts = computed(() => settlementAccounts.value.filter(a => ['FUND', 'SUPPLIER_REBATE'].includes(a.account_type)))
+const paymentMethodAccounts = computed(() => settlementAccounts.value.filter(a => ['FUND', 'SUPPLIER_REBATE', 'POLICY_RECEIVABLE'].includes(a.account_type)))
 const subsidyAccountRoutes = ref([])
 const isGuobuPaymentMethod = name => String(name || '').startsWith('国补')
 
