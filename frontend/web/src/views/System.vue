@@ -1500,15 +1500,17 @@ const handleAssignScope = async (row) => {
 
 const handleRoleMenus = async (row) => {
   currentRole.value = row
-  menuDialogVisible.value = true
-  await nextTick()
-  // 对话框复用同一个树实例，切换角色前先清空上一个角色的选中状态。
-  menuTreeRef.value?.setCheckedKeys([])
   try {
+    if (menuData.value.length === 0) await loadMenus()
+    menuDialogVisible.value = true
+    await nextTick()
+    // 对话框复用同一个树实例，切换角色前先清空上一个角色的选中状态。
+    menuTreeRef.value?.setCheckedKeys([])
     const res = await api.getRoleMenus(row.role_id)
     const menuIds = Array.isArray(res)
       ? res
       : (Array.isArray(res?.data) ? res.data : [])
+    await nextTick()
     menuTreeRef.value?.setCheckedKeys(menuIds.map(menuId => String(menuId)))
   } catch (err) {
     ElMessage.error(err.response?.data?.message || '加载角色权限失败')
@@ -1645,13 +1647,19 @@ const handleMenuSubmit = async () => {
       menuIds: checkedKeys
     })
     if (res.code === 0) {
+      const verify = await api.getRoleMenus(currentRole.value.role_id)
+      const savedKeys = new Set((Array.isArray(verify) ? verify : verify?.data || []).map(menuId => String(menuId)))
+      const unsavedKeys = checkedKeys.filter(menuId => !savedKeys.has(menuId))
+      if (unsavedKeys.length > 0 || savedKeys.size !== checkedKeys.length) {
+        throw new Error('权限保存后校验不一致，请刷新后重试')
+      }
       ElMessage.success('分配成功')
       menuDialogVisible.value = false
     } else {
       ElMessage.error(res.message || '分配失败')
     }
   } catch (err) {
-    ElMessage.error('分配失败')
+    ElMessage.error(err.response?.data?.message || err.message || '分配失败')
   } finally {
     submitLoading.value = false
   }
