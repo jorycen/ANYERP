@@ -888,7 +888,7 @@
     </el-dialog>
 
     <!-- 角色菜单权限对话框 -->
-    <el-dialog v-model="menuDialogVisible" title="菜单权限" width="400px">
+    <el-dialog v-model="menuDialogVisible" title="菜单权限" width="400px" @opened="applyRoleMenuChecks">
       <el-form label-width="100px">
         <el-form-item label="角色">{{ currentRole?.name }}</el-form-item>
         <el-form-item label="菜单权限">
@@ -904,7 +904,7 @@
       </el-form>
       <template #footer>
         <el-button @click="menuDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleMenuSubmit" :loading="submitLoading">确定</el-button>
+        <el-button type="primary" @click="handleMenuSubmit" :loading="submitLoading || roleMenuLoading">确定</el-button>
       </template>
     </el-dialog>
   </div>
@@ -975,6 +975,8 @@ const canManageUserDistributors = computed(() => {
     .some(role => ['admin', 'boss'].includes(role))
 })
 const currentRole = ref(null)
+const roleMenuLoading = ref(false)
+const pendingRoleMenuIds = ref([])
 const dialogStoreIds = ref([])
 const dialogRegionIds = ref([])
 const dialogScopeType = ref('combined')
@@ -1500,21 +1502,28 @@ const handleAssignScope = async (row) => {
 
 const handleRoleMenus = async (row) => {
   currentRole.value = row
+  pendingRoleMenuIds.value = []
+  roleMenuLoading.value = true
+  menuDialogVisible.value = true
   try {
     if (menuData.value.length === 0) await loadMenus()
-    menuDialogVisible.value = true
-    await nextTick()
-    // 对话框复用同一个树实例，切换角色前先清空上一个角色的选中状态。
-    menuTreeRef.value?.setCheckedKeys([])
     const res = await api.getRoleMenus(row.role_id)
-    const menuIds = Array.isArray(res)
+    pendingRoleMenuIds.value = (Array.isArray(res)
       ? res
-      : (Array.isArray(res?.data) ? res.data : [])
-    await nextTick()
-    menuTreeRef.value?.setCheckedKeys(menuIds.map(menuId => String(menuId)))
+      : (Array.isArray(res?.data) ? res.data : [])).map(menuId => String(menuId))
+    await applyRoleMenuChecks()
   } catch (err) {
     ElMessage.error(err.response?.data?.message || '加载角色权限失败')
+  } finally {
+    roleMenuLoading.value = false
   }
+}
+
+const applyRoleMenuChecks = async () => {
+  await nextTick()
+  menuTreeRef.value?.setCheckedKeys([])
+  await nextTick()
+  menuTreeRef.value?.setCheckedKeys(pendingRoleMenuIds.value)
 }
 
 const loadSuppliers = async () => {
