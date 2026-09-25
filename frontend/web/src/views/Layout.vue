@@ -248,8 +248,11 @@ onMounted(async () => {
   if (localStorage.getItem('token')) {
     try {
       const response = await api.getUserInfo()
-      if (response?.code === 0 && response.data) {
-        userInfo = response.data
+      const refreshedUserInfo = response?.code === 0 && response.data
+        ? response.data
+        : (response?.menus ? response : null)
+      if (refreshedUserInfo) {
+        userInfo = refreshedUserInfo
         localStorage.setItem('userInfo', JSON.stringify(userInfo))
       }
     } catch (error) {
