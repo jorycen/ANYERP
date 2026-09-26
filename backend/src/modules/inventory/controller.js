@@ -1068,6 +1068,35 @@ function buildInventoryProductKeywordConditions(keyword, historicalSnProductIds 
   return conditions;
 }
 
+const INVENTORY_KEYWORD_TEXT_FIELDS = [
+  'name', 'config', 'remark', 'brand', 'series', 'model', 'memory', 'storage', 'color'
+];
+
+function getInventoryKeywordRelevance(product, keyword) {
+  const tokens = String(keyword || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return 0;
+
+  const semanticText = INVENTORY_KEYWORD_TEXT_FIELDS
+    .map(field => String(product?.[field] || '').toLowerCase())
+    .join(' ');
+  const codeText = [product?.product_code, product?.manufacturer_code]
+    .map(value => String(value || '').toLowerCase())
+    .join(' ');
+
+  let semanticHits = 0;
+  let codeOnlyHits = 0;
+  tokens.forEach(token => {
+    if (semanticText.includes(token)) {
+      semanticHits += 1;
+    } else if (codeText.includes(token)) {
+      // 编码仍然可以参与搜索，但不能压过商品名称/配置中的语义命中。
+      codeOnlyHits += 1;
+    }
+  });
+
+  return semanticHits * 100 + codeOnlyHits * 10 + (semanticHits === tokens.length ? 5 : 0);
+}
+
 function getSnInventoryMoveFields(locationType, snInventoryType) {
   const primaryField = normalizeInventoryQuantityField(locationType || snInventoryType);
   const fields = [primaryField];
@@ -2015,6 +2044,7 @@ async function getList(ctx) {
         },
         _category_order: getProductCategoryOrder(p, categoryOrderMap),
         _category_rank: getInventoryCategoryRank(p.category, p.accessory_type, p.name, p.config),
+        _keyword_relevance: getInventoryKeywordRelevance(p, keyword),
         _create_time: p.create_time
       };
     }).sort((a, b) => {
@@ -2024,6 +2054,8 @@ async function getList(ctx) {
       if (salesStockCompare !== 0) return salesStockCompare;
       const totalInventoryCompare = Number(b.total_inventory_qty || 0) - Number(a.total_inventory_qty || 0);
       if (totalInventoryCompare !== 0) return totalInventoryCompare;
+      const keywordRelevanceCompare = Number(b._keyword_relevance || 0) - Number(a._keyword_relevance || 0);
+      if (keywordRelevanceCompare !== 0) return keywordRelevanceCompare;
       if (a._category_order !== b._category_order) return a._category_order - b._category_order;
       if (a._category_rank !== b._category_rank) return a._category_rank - b._category_rank;
       return new Date(b._create_time || 0).getTime() - new Date(a._create_time || 0).getTime();
@@ -2036,7 +2068,7 @@ async function getList(ctx) {
       ].some(value => Number(value || 0) > 0))
       : sortedRows;
     const count = visibleRows.length;
-    const exportRows = visibleRows.map(({ _category_order, _category_rank, _create_time, total_inventory_qty, ...row }) => row);
+    const exportRows = visibleRows.map(({ _category_order, _category_rank, _keyword_relevance, _create_time, total_inventory_qty, ...row }) => row);
 
     if (summaryExportMode) {
       const primaryPnRows = exportRows.length > 0
