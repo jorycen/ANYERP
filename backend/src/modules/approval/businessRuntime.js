@@ -93,7 +93,13 @@ async function advance(ctx, type, row, transaction, action, comment = '') {
   if (!task) ctx.throw(403, '当前账号不是该节点的待审批人');
   // Generic service handles store-less documents using their distributor scope here.
   const actor = { ...ctx.state.user, approvalDistributorId: info.distributor_id };
-  instance = await S.actionInstance(instance.instance_id, ['approve', 'approved'].includes(action) ? 'approve' : 'reject', comment, actor, { transaction, managedBusiness: true });
+  instance = await S.actionInstance(
+    instance.instance_id,
+    ['approve', 'approved'].includes(action) ? 'approve' : 'reject',
+    comment,
+    actor,
+    { transaction, managedBusiness: true, rejectImmediately: type === 'purchase_request' }
+  );
   ctx.state.businessApproval = { status: instance.status, instanceId: instance.instance_id };
   if (instance.status === 'pending') {
     ctx.body = { code: 0, status: 'pending', message: '本次审批已记录，等待其他审批人或下一节点', data: { instanceId: instance.instance_id } };

@@ -367,7 +367,7 @@ async function actionInstance(instanceId, action, comment, actor, options = {}) 
     await writeLog(instanceId, task.task_id, action, actor, comment, { nodeIndex: task.node_index, roundNo: instance.resubmit_count }, transaction);
 
     if (action === 'reject') {
-      if (task.sign_mode === 'or') {
+      if (task.sign_mode === 'or' && !options.rejectImmediately) {
         const remaining = await ApprovalTask.count({ where: { instance_id: instanceId, round_no: instance.resubmit_count, node_index: task.node_index, status: 'pending' }, transaction });
         if (remaining > 0) return instance;
       }
