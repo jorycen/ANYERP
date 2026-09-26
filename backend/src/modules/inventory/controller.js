@@ -1532,9 +1532,9 @@ function compareInventoryModelRows(a, b, modelFilter) {
 }
 
 function getSummaryNormalQty(product, inventory, stock) {
-  return Number(product?.need_sn) === 1
-    ? Number(stock?.total || 0)
-    : Number(inventory?.normal_qty || 0);
+  // 库存汇总页的“销售库”统一取销售库明细汇总，避免普通商品沿用
+  // 历史 normal_qty，把其他仓位或旧数据误计入销售库。
+  return Number(stock?.total || 0);
 }
 
 const STORE_EXPORT_QUANTITY_FIELDS = [
@@ -1988,6 +1988,14 @@ async function getList(ctx) {
         current_store_stock_qty: stock.current,
         other_store_stock_qty: stock.other,
         total_stock_qty: stock.total,
+        // 排序使用销售库库存和全部库存，不能再依赖历史 normal_qty 字段。
+        // 对 SN 商品和普通商品统一以销售库汇总结果作为第一排序依据。
+        total_inventory_qty: Number(stock.total || 0)
+          + Number(inv.display_qty || 0)
+          + Number(inv.demo_qty || 0)
+          + Number(inv.unsellable_qty || 0)
+          + Number(inv.pending_qty || 0)
+          + Number(inv.rental_demo_qty || 0),
         current_store_name: stock.currentStore?.store_name || '',
         store_stock_info: storeStockMap[p.product_id]?.length ? storeStockMap[p.product_id] : (stock.stores || []),
         other_store_stock_info: stock.otherStores || [],
@@ -2010,12 +2018,13 @@ async function getList(ctx) {
         _create_time: p.create_time
       };
     }).sort((a, b) => {
-      if (a._category_order !== b._category_order) return a._category_order - b._category_order;
       const modelCompare = compareInventoryModelRows(a, b, modelFilter);
       if (modelCompare !== 0) return modelCompare;
-      const aHasStock = Number(a.normal_qty || 0) > 0 ? 0 : 1;
-      const bHasStock = Number(b.normal_qty || 0) > 0 ? 0 : 1;
-      if (aHasStock !== bHasStock) return aHasStock - bHasStock;
+      const salesStockCompare = Number(b.total_stock_qty || 0) - Number(a.total_stock_qty || 0);
+      if (salesStockCompare !== 0) return salesStockCompare;
+      const totalInventoryCompare = Number(b.total_inventory_qty || 0) - Number(a.total_inventory_qty || 0);
+      if (totalInventoryCompare !== 0) return totalInventoryCompare;
+      if (a._category_order !== b._category_order) return a._category_order - b._category_order;
       if (a._category_rank !== b._category_rank) return a._category_rank - b._category_rank;
       return new Date(b._create_time || 0).getTime() - new Date(a._create_time || 0).getTime();
     });
@@ -2027,7 +2036,7 @@ async function getList(ctx) {
       ].some(value => Number(value || 0) > 0))
       : sortedRows;
     const count = visibleRows.length;
-    const exportRows = visibleRows.map(({ _category_order, _category_rank, _create_time, ...row }) => row);
+    const exportRows = visibleRows.map(({ _category_order, _category_rank, _create_time, total_inventory_qty, ...row }) => row);
 
     if (summaryExportMode) {
       const primaryPnRows = exportRows.length > 0
