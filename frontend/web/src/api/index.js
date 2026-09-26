@@ -593,6 +593,7 @@ export default {
   getOrderStoreOptions: () => api.get('/store/order-options'),
   getReadableStoreList: () => api.get('/store/readable'),
   getInventoryReadableStoreList: () => api.get('/store/inventory-readable'),
+  getInventorySummaryStoreList: () => api.get('/store/inventory-summary-readable'),
   getTransferStores: () => api.get('/store/transfer-options'),
   createStore: (data) => api.post('/store/create', data),
   updateStore: (id, data) => api.put(`/store/update/${id}`, data),

@@ -23,7 +23,7 @@
             </el-select></div>
             <div class="erp-query-field"><span class="erp-query-label">门店</span><el-select v-model="summaryQuery.storeId" placeholder="门店" clearable style="width: 150px" @change="loadSummary">
           <el-option label="全部门店" :value="''" />
-          <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
+          <el-option v-for="store in summaryStores" :key="store.store_id" :label="`${store.distributor_name || '未知经销商'} / ${store.name}`" :value="store.store_id" />
             </el-select></div>
             <el-checkbox v-model="summaryQuery.stockOnly" :true-value="1" :false-value="0" @change="onSummaryStockOnlyChange">只显示有库存商品</el-checkbox>
             <div class="erp-query-actions"><el-button type="primary" @click="loadSummary">查询</el-button>
@@ -99,6 +99,8 @@
                 </el-popover>
               </template>
             </el-table-column>
+            <el-table-column prop="aino_yun_inventory_qty" label="艾诺云库存" width="100" />
+            <el-table-column prop="aino_zhixing_inventory_qty" label="艾诺志兴库存" width="110" />
             <el-table-column prop="display_qty" label="铺货仓库存" width="110">
               <template #default="{ row }">
                 <el-popover placement="bottom" :width="260" trigger="hover">
@@ -1930,6 +1932,8 @@ const canManageSnPrice = computed(() => hasRole(['admin']))
 const canViewSnPurchaseCost = computed(() => hasRole(['finance', 'purchaser']))
 const stores = ref([])
 const storesLoaded = ref(false)
+const summaryStores = ref([])
+const summaryStoresLoaded = ref(false)
 const transferStores = ref([])
 const transferStoresLoaded = ref(false)
 const categories = ref([])
@@ -2341,6 +2345,7 @@ onMounted(async () => {
     conversionForm.storeId = getStoreId()
   }
   loadStores()
+  loadSummaryStores()
   loadFreightPlatforms()
   loadCategories()
   const inboundIdFromQuery = String(route.query.inboundId || '').trim()
@@ -2535,6 +2540,21 @@ const selectInventoryModelFilter = (modelFilter) => {
   summaryQuery.page = 1
   summaryQuery.pageSize = ['hot7', 'highMargin7'].includes(summaryQuery.modelFilter) ? 10 : 20
   loadSummary()
+}
+
+const loadSummaryStores = async () => {
+  if (summaryStoresLoaded.value) return
+  try {
+    const res = await api.getInventorySummaryStoreList()
+    if (res && res.code === 0 && Array.isArray(res.data)) {
+      summaryStores.value = res.data
+      summaryStoresLoaded.value = true
+    } else {
+      summaryStores.value = []
+    }
+  } catch (err) {
+    summaryStores.value = []
+  }
 }
 
 const chooseSupplierFile = (vendor) => {

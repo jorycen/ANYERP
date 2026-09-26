@@ -1,7 +1,7 @@
 /**
  * 门店管理控制器
  */
-const { Store, Region, Location, Staff } = require('../../models');
+const { Store, Region, Location, Staff, Distributor } = require('../../models');
 const { Op } = require('sequelize');
 const { paginate, formatPaginatedResult } = require('../../utils');
 const { generateId } = require('../../utils');
@@ -160,6 +160,25 @@ async function getInventoryReadableStoreList(ctx) {
     order: [['name', 'ASC']]
   });
   ctx.body = { code: 0, data: rows };
+}
+
+/**
+ * 库存汇总专用门店选项：只提供数量汇总筛选，不代表 SN 明细或库存操作权限。
+ */
+async function getInventorySummaryStoreList(ctx) {
+  const rows = await Store.findAll({
+    where: { is_deleted: 0, status: 1 },
+    attributes: ['store_id', 'name', 'distributor_id', 'region_id'],
+    include: [{ model: Distributor, attributes: ['distributor_id', 'name'], required: false }],
+    order: [['name', 'ASC']]
+  });
+  ctx.body = {
+    code: 0,
+    data: rows.map(row => ({
+      ...row.toJSON(),
+      distributor_name: row.Distributor?.name || ''
+    }))
+  };
 }
 
 /**
@@ -410,4 +429,4 @@ async function deleteStore(ctx) {
   ctx.body = { code: 0, message: '删除成功' };
 }
 
-module.exports = { getStoreList, getAllStores, getOrderStoreOptions, getReadableStoreList, getInventoryReadableStoreList, getTransferStores, createStore, updateStore, deleteStore, getRegionList };
+module.exports = { getStoreList, getAllStores, getOrderStoreOptions, getReadableStoreList, getInventoryReadableStoreList, getInventorySummaryStoreList, getTransferStores, createStore, updateStore, deleteStore, getRegionList };

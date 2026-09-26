@@ -9,6 +9,7 @@ const {
   SnDistributorPrice, SnDistributorPriceChangeLog, ResourceCategory,
   ProductBarcode, Store, Location, InventoryWarning, Inbound, InboundItem, InboundItemSn,
   ReturnStock, ReturnStockItem, PurchaseRequest, PurchaseRequestItem, PurchaseAdjustment, Payable, Supplier, Inventory,
+  Distributor,
   SalesReturnRequest, SalesReturnRequestItem,
   SnLog, Order, OrderItem, Transfer, TransferItem, InventoryConversion,
   InventoryConversionItem
@@ -1578,6 +1579,25 @@ function getSummaryNormalQty(product, inventory, stock) {
   return Number(stock?.total || 0);
 }
 
+function getInventoryDistributorBucket(distributorName) {
+  const name = String(distributorName || '').trim();
+  if (name === '艾诺云') return 'aino_yun_inventory_qty';
+  if (name === '艾诺志兴') return 'aino_zhixing_inventory_qty';
+  return '';
+}
+
+function summarizeDistributorInventory(storeStockRows = []) {
+  const summary = {
+    aino_yun_inventory_qty: 0,
+    aino_zhixing_inventory_qty: 0
+  };
+  storeStockRows.forEach(row => {
+    const bucket = getInventoryDistributorBucket(row.distributor_name);
+    if (bucket) summary[bucket] += Number(row.normal_qty || 0);
+  });
+  return summary;
+}
+
 const STORE_EXPORT_QUANTITY_FIELDS = [
   'normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty', 'rental_demo_qty'
 ];
@@ -1720,24 +1740,24 @@ async function getList(ctx) {
     const whereStore = {};
     const readableStoreIds = transferScope
       ? (Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds : [])
-      : await resolveAllReadableStoreIds(user);
-    if (!readableStoreIds.includes('*')) {
+      : [];
+    if (transferScope && !readableStoreIds.includes('*')) {
       whereStore.store_id = readableStoreIds.length ? readableStoreIds : '__NO_STORE__';
     }
     if (transferScope && storeId) {
       await assertTransferStoreScope(ctx, storeId);
       whereStore.store_id = storeId;
     } else if (storeId) {
-      const allowedStoreIds = readableStoreIds.map(String);
-      if (!readableStoreIds.includes('*') && !allowedStoreIds.includes(String(storeId))) {
-        whereStore.store_id = '__NO_STORE__';
-      } else {
-        whereStore.store_id = storeId;
-      }
+      // 库存汇总允许跨经销商按门店筛选；调拨场景仍由上方权限校验控制。
+      whereStore.store_id = storeId;
     }
     if (regionId) whereStore.region_id = regionId;
 
-    const stores = await Store.findAll({ where: whereStore });
+    const stores = await Store.findAll({
+      where: { ...whereStore, is_deleted: 0, status: 1 },
+      attributes: ['store_id', 'name', 'distributor_id', 'region_id'],
+      include: [{ model: Distributor, attributes: ['distributor_id', 'name'], required: false }]
+    });
     const storeIds = stores.map(s => s.store_id);
 
     const productWhere = { is_deleted: 0, status: 1 };
@@ -1803,7 +1823,11 @@ async function getList(ctx) {
     });
 
     const allStoreMap = new Map();
-    stores.forEach(s => allStoreMap.set(s.store_id, s.name));
+    const storeDistributorNameMap = new Map();
+    stores.forEach(s => {
+      allStoreMap.set(s.store_id, s.name);
+      storeDistributorNameMap.set(s.store_id, s.Distributor?.name || '');
+    });
 
     const locations = await Location.findAll({
       where: { store_id: { [Op.in]: storeIds }, status: 1 },
@@ -1857,6 +1881,7 @@ async function getList(ctx) {
         storeStockMap[inv.product_id].push({
           store_id: inv.store_id,
           store_name: storeName,
+          distributor_name: storeDistributorNameMap.get(inv.store_id) || '',
           location_id: locationId,
           location_name: location?.name || (locationId || '未指定库位'),
           ...storeQtyRow
@@ -1903,6 +1928,7 @@ async function getList(ctx) {
           snLocationMap[sn.product_id][snLocationKey] = {
             store_id: sn.store_id || '',
             store_name: allStoreMap.get(sn.store_id) || sn.store_id || 'Unknown store',
+            distributor_name: storeDistributorNameMap.get(sn.store_id) || '',
             location_id: sn.location_id || '',
             location_name: location?.name || (sn.location_id || 'Unknown location'),
             normal_qty: 0,
@@ -1941,6 +1967,7 @@ async function getList(ctx) {
           stockStore = {
             store_id: sn.store_id || '',
             store_name: allStoreMap.get(sn.store_id) || sn.store_id || '未知门店',
+            distributor_name: storeDistributorNameMap.get(sn.store_id) || '',
             normal_qty: 0,
             is_current: Boolean(storeId && sn.store_id === storeId)
           };
@@ -1962,6 +1989,7 @@ async function getList(ctx) {
           snLocationMap[sn.product_id][key] = {
             store_id: sn.store_id || '',
             store_name: allStoreMap.get(sn.store_id) || sn.store_id || '未知门店',
+            distributor_name: storeDistributorNameMap.get(sn.store_id) || '',
             location_id: sn.location_id || '',
             location_name: location?.name || (sn.location_id || '未指定库位'),
             normal_qty: 0,
@@ -2005,6 +2033,9 @@ async function getList(ctx) {
       const sales = salesMap[p.product_id] || {
         sales_7_qty: 0, sales_30_qty: 0, sales_7_amount: 0, gross_profit_7: 0, avg_gross_profit_7: 0, max_gross_profit_7: 0, gross_margin_7: 0
       };
+      const distributorInventory = summarizeDistributorInventory(
+        storeStockMap[p.product_id] || stock.stores || []
+      );
       return {
         product_id: p.product_id,
         category: p.category || '',
@@ -2019,6 +2050,7 @@ async function getList(ctx) {
         cost_price: p.ProductPrice ? p.ProductPrice.cost_price : 0,
         need_sn: p.need_sn || 0,
         normal_qty: getSummaryNormalQty(p, inv, stock),
+        ...distributorInventory,
         regular_qty: inv.regular_qty,
         subsidy_qty: inv.subsidy_qty,
         second_qty: inv.second_qty,
