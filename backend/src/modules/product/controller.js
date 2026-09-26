@@ -985,6 +985,7 @@ function hasProductApplicationValue(value) {
 }
 
 async function validateProductApplicationInput(body = {}, { finalName, parsedAttrs } = {}) {
+  await resolveFourLevelCategory(body.categoryId);
   if (!String(finalName || '').trim()) {
     throw Object.assign(new Error('商品名称不能为空'), { status: 400 });
   }
@@ -1096,6 +1097,7 @@ async function createProductRecord(body, transaction = null) {
     isUsedProduct, is_used_product
   } = body;
   const productId = generateUUID();
+  await resolveFourLevelCategory(categoryId);
   const { finalName, parsedAttrs } = await resolveProductApplicationName(body);
   if (!finalName) throw new Error('商品名称不能为空');
 

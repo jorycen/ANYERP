@@ -4479,6 +4479,16 @@ const loadConversionProductCategoryTree = async () => {
   }
 }
 
+const findConversionProductCategoryNode = (nodes, categoryId) => {
+  for (const node of nodes || []) {
+    if (!node) continue
+    if (String(node.category_id) === String(categoryId)) return node
+    const found = findConversionProductCategoryNode(node.children, categoryId)
+    if (found) return found
+  }
+  return null
+}
+
 const onConversionProductCategoryChange = async (value) => {
   conversionProductForm.attributes = {}
   conversionProductCategoryFields.value = []
@@ -4551,6 +4561,14 @@ const addConversionProductBarcode = () => {
 }
 
 const buildConversionProductPayload = () => {
+  const selectedCategory = findConversionProductCategoryNode(
+    conversionProductCategoryTree.value,
+    conversionProductForm.categoryId
+  )
+  if (!selectedCategory || Number(selectedCategory.level) !== 4 || (selectedCategory.children || []).some(child => Number(child.status ?? 1) === 1)) {
+    ElMessage.warning('新建商品必须选择完整的1-4级分类，请选择第4级分类')
+    return null
+  }
   const finalName = conversionProductName.value
   if (!finalName) {
     ElMessage.warning('请填写商品属性或商品简称')

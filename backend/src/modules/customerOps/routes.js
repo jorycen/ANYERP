@@ -8,6 +8,7 @@ const P = require('./rewardPolicy');
 const RS = require('./rewardStores');
 const { Store, Distributor, Product, Order } = require('../../models');
 const { recordBusinessAction } = require('../../utils/businessActionLog');
+const { getSignedCloudFileUrl, validateCloudFileId } = require('../../utils/cloudStorage');
 const customer = new Router({ prefix: '/api/v1/customer' });
 const staff = new Router();
 const attempts = new Map();
@@ -85,10 +86,15 @@ async function rewardStates(rows, memberId) {
   ]);
   const stores = await RS.activeStores(links.map(l => l.store_id));
   const balance = accounts.reduce((sum, account) => sum + BigInt(account.balance || 0), 0n);
-  return rows.map(row => P.dto(row, P.availability(row,
+  const result = rows.map(row => P.dto(row, P.availability(row,
     String(balance),
     exchanges.filter(e => e.reward_id === row.id).length,
     links.some(l => l.reward_id === row.id && stores.some(s => s.store_id === l.store_id)))));
+  await Promise.all(result.map(async item => {
+    if (!String(item.image || '').startsWith('cloud://')) return;
+    try { item.image = (await getSignedCloudFileUrl(item.image)).url; } catch (_) { item.image = ''; }
+  }));
+  return result;
 }
 customer.get('/rewards', async ctx => {
   const type = ctx.query.type;
@@ -233,7 +239,10 @@ async function saveReward(ctx) {
   const extra = P.validate(b);
   if (!Number.isInteger(b.valid_days) || b.valid_days < 1 || b.valid_days > 3650) S.fail(400, '有效天数应为1到3650');
   for (const key of ['stock', 'per_member_limit']) if (b[key] !== null && (!Number.isInteger(b[key]) || b[key] < 0)) S.fail(400, '数量应为非负整数或留空');
-  if (b.image && !/^https:\/\//.test(b.image)) S.fail(400, '图片必须使用HTTPS地址');
+  if (b.image) {
+    if (String(b.image).startsWith('cloud://')) validateCloudFileId(b.image);
+    else if (!/^https:\/\//.test(b.image)) S.fail(400, '图片必须使用HTTPS地址');
+  }
   const storeIds = [...new Set(Array.isArray(b.store_ids) ? b.store_ids.map(String) : [])];
   ctx.body = await V.transaction(async transaction => {
     await RS.validateSelection(ctx.state.user, distributor_id, storeIds, transaction);

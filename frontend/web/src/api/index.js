@@ -245,6 +245,15 @@ export default {
     onProgress
   ),
   resolveCloudFileUrls: (fileIds) => api.post('/storage/file-urls', { fileIds }),
+  uploadFile: (file, category = 'general', onUploadProgress) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('category', category)
+    return api.post('/storage/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress
+    })
+  },
   replaceSubsidyPhotos: (orderId, data) => api.post(`/sales/subsidy-photos/${orderId}`, data, {
     headers: { 'Content-Type': 'multipart/form-data' }
   }),

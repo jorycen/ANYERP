@@ -1,5 +1,7 @@
 const COS = require('cos-nodejs-sdk-v5');
 const cloudbase = require('@cloudbase/node-sdk');
+const path = require('path');
+const crypto = require('crypto');
 const config = require('../config');
 
 let cosClient = null;
@@ -51,6 +53,72 @@ function getCloudbaseApp() {
     ...(storageConfig.cloudbaseSessionToken ? { sessionToken: storageConfig.cloudbaseSessionToken } : {})
   });
   return cloudbaseApp;
+}
+
+function normalizeUploadCategory(category) {
+  const value = String(category || 'general').trim().toLowerCase();
+  const normalized = value.replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+  return normalized || 'general';
+}
+
+function normalizeFileExtension(originalName, mimeType) {
+  const originalExt = path.extname(String(originalName || '')).toLowerCase();
+  if (/^\.[a-z0-9]{1,8}$/.test(originalExt)) return originalExt;
+  const mimeExt = {
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'image/webp': '.webp',
+    'application/pdf': '.pdf'
+  }[String(mimeType || '').toLowerCase()];
+  return mimeExt || '';
+}
+
+async function uploadCloudFile({ buffer, originalName, mimeType, category = 'general' }) {
+  const storageConfig = getCloudStorageConfig();
+  const canUseCloudbase = storageConfig.cloudbaseAuthAvailable;
+  const canUseCos = Boolean(storageConfig.secretId && storageConfig.secretKey);
+  if (!storageConfig.enabled || (!canUseCloudbase && !canUseCos)) {
+    throw Object.assign(new Error('云存储上传凭证未配置'), {
+      status: 503,
+      code: 'CLOUD_STORAGE_NOT_CONFIGURED'
+    });
+  }
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    throw Object.assign(new Error('上传文件内容为空'), { status: 400, code: 'EMPTY_UPLOAD_FILE' });
+  }
+
+  const now = new Date();
+  const datePath = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0')].join('/');
+  const extension = normalizeFileExtension(originalName, mimeType);
+  const key = `${normalizeUploadCategory(category)}/${datePath}/${crypto.randomUUID()}${extension}`;
+  let fileId;
+  if (canUseCloudbase) {
+    const result = await getCloudbaseApp().uploadFile({ cloudPath: key, fileContent: buffer });
+    fileId = result && (result.fileID || result.fileId);
+  } else {
+    await getCosClient().putObject({
+      Bucket: storageConfig.bucket,
+      Region: storageConfig.region,
+      Key: key,
+      Body: buffer,
+      ContentType: mimeType || 'application/octet-stream'
+    });
+    fileId = `cloud://${storageConfig.envId}.${storageConfig.bucket}/${key}`;
+  }
+  if (!fileId) {
+    throw Object.assign(new Error('云存储未返回文件标识'), { status: 502, code: 'CLOUD_STORAGE_UPLOAD_EMPTY' });
+  }
+  const resolved = await getSignedCloudFileUrl(fileId);
+  return {
+    fileId,
+    url: resolved.url,
+    expiresIn: resolved.expiresIn,
+    source: resolved.source,
+    key,
+    originalName: String(originalName || '').slice(0, 255),
+    mimeType: String(mimeType || '').slice(0, 128),
+    size: buffer.length
+  };
 }
 
 function validateCloudFileId(fileId) {
@@ -145,5 +213,6 @@ module.exports = {
   getCloudStorageConfig,
   parseCloudFileId,
   validateCloudFileId,
-  getSignedCloudFileUrl
+  getSignedCloudFileUrl,
+  uploadCloudFile
 };

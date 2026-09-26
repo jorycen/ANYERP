@@ -64,7 +64,13 @@
     <el-dialog v-model="rewardOpen" title="积分商品" width="600px">
       <el-form label-width="130px"><el-form-item label="积分归属经销商"><el-select v-model="reward.distributor_id" :disabled="!!reward.id" @change="changeRewardDealer"><el-option v-for="d in options.distributors" :key="d.distributor_id" :label="d.name" :value="d.distributor_id" /></el-select><div class="form-help">兑换扣除此经销商的积分，适用门店可单独选择。</div></el-form-item><el-form-item label="名称"><el-input v-model="reward.name" /></el-form-item>
         <el-form-item label="类型"><el-radio-group v-model="reward.kind"><el-radio value="service" label="service">服务权益</el-radio><el-radio value="gift" label="gift">实物礼品</el-radio><el-radio value="coupon" label="coupon">优惠券</el-radio></el-radio-group></el-form-item>
-        <el-form-item label="图片地址"><el-input v-model="reward.image" placeholder="公开HTTPS图片地址" /></el-form-item>
+        <el-form-item label="图片">
+          <el-upload accept="image/jpeg,image/png,image/webp" :auto-upload="false" :show-file-list="false" :disabled="imageUploading" @change="handleRewardImageChange">
+            <el-button :loading="imageUploading">{{ imageUploading ? '上传中…' : '选择图片' }}</el-button>
+          </el-upload>
+          <el-image v-if="rewardImageUrl" :src="rewardImageUrl" fit="contain" style="width: 120px; height: 120px; margin-top: 8px; border: 1px solid #e5e7eb;" />
+          <div class="form-help">图片会自动上传到云存储，保存时只记录文件地址。</div>
+        </el-form-item>
         <el-form-item label="简短介绍"><el-input v-model="reward.description" type="textarea" :rows="2" /></el-form-item>
         <el-form-item label="参考价值（元）"><el-input v-model="reward.original_price" /></el-form-item>
         <el-form-item label="兑换方式"><el-radio-group v-model="exchangeMode"><el-radio value="points" label="points">纯积分</el-radio><el-radio value="mixed" label="mixed" :disabled="reward.kind==='coupon'">积分＋现金</el-radio></el-radio-group></el-form-item>
@@ -97,13 +103,14 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { customerOpsRequest as request } from '../api'
+import api, { customerOpsRequest as request } from '../api'
 const route=useRoute(), router=useRouter(), tab=computed(()=>route.meta.tab)
 const titles={members:'会员管理',points:'积分管理',rewards:'积分商品',exchanges:'兑换核销'}, types={earn:'购机获得',exchange:'兑换扣减',return:'退货冲回',adjustment:'后台调整',activity:'活动赠送',order_adjust:'订单积分调整'}, states={pending:'待使用',redeemed:'已核销',expired:'已失效'}
 const rewardTypes={service:'服务',gift:'实物礼品',product:'实物礼品',coupon:'优惠券'}
 const exchangeMode=ref('points')
 const options=ref({distributors:[],stores:[],canChooseAllRewardStores:false}), dealer=ref(''), rows=ref([]), page=ref(1), total=ref(0), error=ref(''), loading=ref(false), saving=ref(false), memberFilter=ref(''), redemptions=ref([])
 const rewardOpen=ref(false), reward=ref({}), ruleOpen=ref(false), rules=ref([]), rule=ref({numerator:'1',denominator:'1000',products:''}), adjustOpen=ref(false), adjust=ref({type:'adjustment'}), claimOpen=ref(false), claim=ref({})
+const imageUploading=ref(false), rewardImageUrl=ref('')
 const redeemForm=ref({code:'',store_id:'',cash_received:'',cash_confirmed:false,eligible_amount:'',scope_confirmed:false,receipt_reference:''}), redemptionPreview=ref(null)
 const rewardStores=computed(()=>options.value.stores.filter(s=>options.value.canChooseAllRewardStores || String(s.distributor_id)===String(reward.value.distributor_id)))
 const rewardStoreGroups=computed(()=>options.value.distributors.map(d=>({id:d.distributor_id,name:d.name,stores:rewardStores.value.filter(s=>String(s.distributor_id)===String(d.distributor_id))})).filter(g=>g.stores.length))
@@ -115,7 +122,9 @@ const date=v=>v?new Date(v).toLocaleString('zh-CN'):''
 async function load(){if(!dealer.value)return;loading.value=true;error.value='';try{const result=await request('get',tab.value==='points'?'/points/ledger':`/${tab.value}`,{distributor_id:dealer.value,page:page.value,member_id:memberFilter.value||undefined});rows.value=result.list;total.value=result.total;if(tab.value==='exchanges')redemptions.value=(await request('get','/redemptions',{distributor_id:dealer.value,page:page.value})).list}catch(e){error.value=e.message}finally{loading.value=false}}
 function reload(){redemptionPreview.value=null;page.value=1;return load()}
 async function action(fn){saving.value=true;try{await fn();ElMessage.success('操作成功');await load()}catch(e){if(e!=='cancel')ElMessage.error(e.message||'操作失败')}finally{saving.value=false}}
-async function editReward(id){try{reward.value=id?await request('get',`/rewards/${id}`):{distributor_id:dealer.value,name:'',kind:'service',image:'',description:'',original_price:'0.00',cash_required:'0.00',sort:0,valid_start_time:null,valid_end_time:null,self_only:true,coupon_value:'0.00',coupon_min_spend:'0.00',coupon_scope:'',points:'300',stock:null,per_member_limit:null,valid_days:30,instructions:'',on_sale:false,store_ids:[]};if(reward.value.kind==='product')reward.value.kind='gift';exchangeMode.value=Number(reward.value.cash_required)>0?'mixed':'points';rewardOpen.value=true}catch(e){ElMessage.error(e.message)}}
+async function refreshRewardImagePreview(){rewardImageUrl.value=String(reward.value.image||'');if(!rewardImageUrl.value.startsWith('cloud://'))return;const result=await api.resolveCloudFileUrls([rewardImageUrl.value]);rewardImageUrl.value=result.data?.items?.[0]?.url||''}
+async function handleRewardImageChange(file){const raw=file?.raw;if(!raw)return;imageUploading.value=true;try{const result=await api.uploadFile(raw,'points-rewards');const uploaded=result.data||{};reward.value.image=uploaded.fileId||'';rewardImageUrl.value=uploaded.url||'';ElMessage.success('图片上传成功')}catch(e){ElMessage.error(e.message||'图片上传失败')}finally{imageUploading.value=false}}
+async function editReward(id){try{reward.value=id?await request('get',`/rewards/${id}`):{distributor_id:dealer.value,name:'',kind:'service',image:'',description:'',original_price:'0.00',cash_required:'0.00',sort:0,valid_start_time:null,valid_end_time:null,self_only:true,coupon_value:'0.00',coupon_min_spend:'0.00',coupon_scope:'',points:'300',stock:null,per_member_limit:null,valid_days:30,instructions:'',on_sale:false,store_ids:[]};if(reward.value.kind==='product')reward.value.kind='gift';exchangeMode.value=Number(reward.value.cash_required)>0?'mixed':'points';await refreshRewardImagePreview();rewardOpen.value=true}catch(e){ElMessage.error(e.message)}}
 function saveReward(){return action(async()=>{if(exchangeMode.value==='mixed' && !(Number(reward.value.cash_required)>0))throw new Error('积分＋现金换购需要填写大于0的到店支付金额');await request(reward.value.id?'patch':'post',reward.value.id?`/rewards/${reward.value.id}`:'/rewards',{...reward.value,cash_required:exchangeMode.value==='mixed' && reward.value.kind!=='coupon'?reward.value.cash_required:'0.00',distributor_id:reward.value.distributor_id,stock:reward.value.stock??null,per_member_limit:reward.value.per_member_limit??null});rewardOpen.value=false})}
 async function previewRedemption(){saving.value=true;redemptionPreview.value=null;try{redeemForm.value.cash_confirmed=false;redeemForm.value.scope_confirmed=false;redeemForm.value.cash_received='';redeemForm.value.eligible_amount='';redeemForm.value.receipt_reference='';redemptionPreview.value=await request('post','/redemptions/preview',redeemForm.value)}catch(e){ElMessage.error(e.message)}finally{saving.value=false}}
 function confirmRedemption(){return action(async()=>{await ElMessageBox.confirm('请确认客户身份、权益范围与交付情况。核销后不能重复使用。','确认到店核销');await request('post',`/exchange/${redemptionPreview.value.id}/redeem`,redeemForm.value);redemptionPreview.value=null})}

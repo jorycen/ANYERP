@@ -885,7 +885,7 @@ function normalizeCategoryTree(nodes) {
 const productCategoryTree = computed(() => {
   const decorate = (nodes) => (nodes || []).filter(Boolean).map(node => ({
       ...node,
-      disabled: Number(node.status ?? 1) !== 1,
+      disabled: Number(node.status ?? 1) !== 1 || !isLeafCategory(node),
       children: decorate(node.children)
     }))
   return decorate(categoryTree.value)
@@ -1364,6 +1364,13 @@ const handleForceSubmit = async () => {
 }
 
 const handleSubmit = async (forceUpdatePurchasePn = false) => {
+  if (!productForm.productId) {
+    const selectedCategory = findCategoryNode(categoryTree.value, productForm.categoryId)
+    if (!selectedCategory || !isLeafCategory(selectedCategory)) {
+      ElMessage.warning('新建商品必须选择完整的1-4级分类，请选择第4级分类')
+      return
+    }
+  }
   const finalName = String(computedProductName.value || productForm.name || '').trim()
   const missingField = categoryFields.value.find(field => {
     if (Number(field.required) !== 1) return false
