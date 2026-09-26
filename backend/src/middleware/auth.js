@@ -127,6 +127,13 @@ async function storeAccessMiddleware(ctx, next) {
     ctx.path === '/api/v1/purchase/supplier-all'
   )) return next();
 
+  // 采购申请是全员可读页面，具体数据范围由采购控制器按用户可访问门店过滤。
+  if (ctx.method === 'GET' && (
+    ctx.path === '/api/v1/purchase/request-list' ||
+    ctx.path === '/api/v1/purchase/request-list/export' ||
+    /^\/api\/v1\/purchase\/request-detail\/[^/]+$/.test(ctx.path)
+  )) return next();
+
   if (ctx.method === 'GET' &&
       (ctx.path === '/api/v1/sales/list' ||
        ctx.path === '/api/v1/sales/export' ||

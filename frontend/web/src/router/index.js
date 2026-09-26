@@ -109,6 +109,7 @@ const routes = [
         name: 'Purchase',
         component: () => import('../views/Purchase.vue'),
         meta: {
+          roles: '*',
           traceRoles: '*',
           tab: 'request'
         }
