@@ -424,6 +424,15 @@ async function resolveSalesOrderStoreIds(user = {}) {
       .map(value => String(value || '').trim())
       .filter(Boolean))];
   }
+  if (isStoreManagerAccount(roles)) {
+    const assignedStoreIds = [...new Set((Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds : [])
+      .map(value => String(value || '').trim())
+      .filter(value => value && value !== '*'))];
+    const primaryStoreId = String(user.storeId || '').trim();
+    // 店长只查询自己的主门店，但可以看到该门店所有人的订单。
+    if (primaryStoreId && assignedStoreIds.includes(primaryStoreId)) return [primaryStoreId];
+    return assignedStoreIds.length ? [assignedStoreIds[0]] : [];
+  }
   return resolveOrderStoreIds(user);
 }
 
