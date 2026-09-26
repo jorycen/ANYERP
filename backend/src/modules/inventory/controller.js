@@ -1741,6 +1741,7 @@ async function getList(ctx) {
     const storeIds = stores.map(s => s.store_id);
 
     const productWhere = { is_deleted: 0, status: 1 };
+    let historicalSnProductIds = [];
     if (category) productWhere.category = category;
     if (keyword) {
       const historicalSnRows = storeIds.length > 0
@@ -1756,7 +1757,7 @@ async function getList(ctx) {
           raw: true
         })
         : [];
-      const historicalSnProductIds = historicalSnRows.map(row => row.product_id).filter(Boolean);
+      historicalSnProductIds = historicalSnRows.map(row => row.product_id).filter(Boolean);
       productWhere[Op.or] = buildInventoryProductKeywordConditions(keyword, historicalSnProductIds);
     }
 
