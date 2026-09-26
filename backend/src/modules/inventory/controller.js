@@ -1072,7 +1072,7 @@ const INVENTORY_KEYWORD_TEXT_FIELDS = [
   'name', 'config', 'remark', 'brand', 'series', 'model', 'memory', 'storage', 'color'
 ];
 
-function getInventoryKeywordRelevance(product, keyword) {
+function getInventoryKeywordRelevance(product, keyword, historicalSnProductIds = []) {
   const tokens = String(keyword || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return 0;
 
@@ -1082,6 +1082,18 @@ function getInventoryKeywordRelevance(product, keyword) {
   const codeText = [product?.product_code, product?.manufacturer_code]
     .map(value => String(value || '').toLowerCase())
     .join(' ');
+
+  const isHistoricalSnMatch = historicalSnProductIds
+    .some(productId => String(productId) === String(product?.product_id));
+  if (tokens.length === 1) {
+    const token = tokens[0];
+    const codeMatch = codeText.includes(token);
+    if (codeMatch || isHistoricalSnMatch) {
+      // 单条件查询优先展示 PN/SN 命中，再展示名称/配置命中。
+      return 1000 + (codeMatch ? 50 : 0) + (isHistoricalSnMatch ? 25 : 0);
+    }
+    return semanticText.includes(token) ? 100 : 0;
+  }
 
   let semanticHits = 0;
   let codeOnlyHits = 0;
@@ -2044,7 +2056,7 @@ async function getList(ctx) {
         },
         _category_order: getProductCategoryOrder(p, categoryOrderMap),
         _category_rank: getInventoryCategoryRank(p.category, p.accessory_type, p.name, p.config),
-        _keyword_relevance: getInventoryKeywordRelevance(p, keyword),
+        _keyword_relevance: getInventoryKeywordRelevance(p, keyword, historicalSnProductIds),
         _create_time: p.create_time
       };
     }).sort((a, b) => {
