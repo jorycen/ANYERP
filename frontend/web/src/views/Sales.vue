@@ -119,7 +119,7 @@
         <el-row :gutter="20">
           <el-col :span="8">
             <el-form-item label="门店">
-              <el-select v-model="orderForm.storeId" placeholder="选择门店" :disabled="isStoreUser()" v-loading="storesLoading">
+              <el-select v-model="orderForm.storeId" placeholder="选择门店" v-loading="storesLoading">
                 <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
               </el-select>
             </el-form-item>
@@ -894,7 +894,8 @@ const loadStores = async () => {
   if (storesLoaded.value) return stores.value
   storesLoading.value = true
   try {
-    const res = await api.getAllStores()
+    // 销售订单允许在同一经销商内临时切换门店，不能使用只返回个人所属门店的通用列表。
+    const res = await api.getOrderStoreOptions()
     if (res && res.code === 0 && Array.isArray(res.data)) {
       stores.value = res.data
       storesLoaded.value = true

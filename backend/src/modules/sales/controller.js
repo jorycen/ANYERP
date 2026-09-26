@@ -52,7 +52,7 @@ const { normalizePnCode } = require('../../utils/productPn');
 const { summariesForSns, alignOrderSubsidyRights, isGovSubsidyEligibleCategory, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits, createSaleResourceTasks } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
 const { canAccessDistributor, resolveOrderStoreIds } = require('../../utils/distributorScope');
-const { isStoreManagerAccount, isStoreScopedAccount, isMallReportViewer } = require('../../utils/storePermissions');
+const { isStoreManagerAccount, isMallReportViewer } = require('../../utils/storePermissions');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { assertActiveProducts } = require('../../utils/activeProduct');
 const { syncSerializedInventoryBalance } = require('../inventory/serializedInventoryBalance');
@@ -419,7 +419,7 @@ function buildSalesOrderListOrder() {
  */
 async function resolveSalesOrderStoreIds(user = {}) {
   const roles = getUserRoles(user);
-  if (isMallReportViewer(roles) || isStoreScopedAccount(roles)) {
+  if (isMallReportViewer(roles)) {
     return [...new Set((Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds : [])
       .map(value => String(value || '').trim())
       .filter(Boolean))];
@@ -3866,7 +3866,7 @@ async function getProductPns(ctx) {
 async function getProductSns(ctx) {
   const { storeId, productId } = ctx.params;
   const { pnCode } = ctx.query;
-  assertStoreVisible(storeId, ctx.state.user);
+  await assertOrderStoreVisible(storeId, ctx.state.user, '无权访问该门店销售库存');
 
   const where = {
     product_id: productId,
@@ -4830,6 +4830,12 @@ async function assertSalesOrderVisible(order, user) {
   }
   if (isDealerTraceAccount(user)) return;
 
+  // 销售订单允许在同一经销商内临时切换门店。订单创建人和店长可以继续处理
+  // 自己经销商范围内的订单，订单归属门店的库存校验仍在归档流程中单独执行。
+  if (isStoreManagerAccount(getUserRoles(user)) || isSalesOrderCreator(order, user)) {
+    return;
+  }
+
   const accessibleStoreIds = Array.isArray(user?.accessibleStoreIds)
     ? user.accessibleStoreIds.map(String)
     : [];
@@ -4848,9 +4854,6 @@ async function assertSalesOrderVisible(order, user) {
     return;
   }
 
-  if (isStoreManagerAccount(getUserRoles(user)) || isSalesOrderCreator(order, user)) {
-    return;
-  }
   const error = new Error('无权访问该销售订单');
   error.status = 403;
   throw error;

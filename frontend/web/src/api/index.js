@@ -590,6 +590,7 @@ export default {
   // Store
   getStoreList: (params) => api.get('/store/list', { params }),
   getAllStores: () => api.get('/store/all'),
+  getOrderStoreOptions: () => api.get('/store/order-options'),
   getReadableStoreList: () => api.get('/store/readable'),
   getInventoryReadableStoreList: () => api.get('/store/inventory-readable'),
   getTransferStores: () => api.get('/store/transfer-options'),

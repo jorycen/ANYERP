@@ -145,6 +145,15 @@ async function storeAccessMiddleware(ctx, next) {
 
   if (ctx.method === 'GET' && ctx.path === '/api/v1/store/order-options') return next();
 
+  // 销售订单创建/草稿提交允许在同一经销商内切换门店，具体经销商归属由
+  // enforceOrderStoreOwnership 和销售控制器再次校验；不能在这里按个人所属门店拦截。
+  if (ctx.method !== 'GET' && (
+    ctx.path === '/api/v1/sales/create' ||
+    ctx.path === '/api/v1/sales/draft' ||
+    /^\/api\/v1\/sales\/draft\/[^/]+$/.test(ctx.path) ||
+    /^\/api\/v1\/sales\/draft\/[^/]+\/submit$/.test(ctx.path)
+  )) return next();
+
   // 库存查询、报表查询和只读门店选项由各自控制器按业务范围校验，
   // 不在通用门店中间件中拦截跨门店的查询参数；库存写入接口仍走原门店权限链路。
   if (ctx.method === 'GET' && new Set([
