@@ -667,6 +667,7 @@ export default {
   createApprovalFlow: (data) => api.post('/approval/flows', data),
   updateApprovalFlow: (id, data) => api.put(`/approval/flows/${id}`, data),
   publishApprovalFlow: (id) => api.post(`/approval/flows/${id}/publish`),
+  enableApprovalFlow: (id) => api.post(`/approval/flows/${id}/enable`),
   disableApprovalFlow: (id) => api.post(`/approval/flows/${id}/disable`),
   getApprovalAssigneeOptions: () => api.get('/approval/assignee-options'),
   getApprovalTasks: (params) => api.get('/approval/tasks', { params }),

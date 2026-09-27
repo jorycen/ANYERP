@@ -153,6 +153,34 @@ async function publishFlow(ctx) {
   ctx.body = { code: 0, message: '审批流程已发布' };
 }
 
+async function validatePublishConfig(ctx, row) {
+  let config;
+  try { config = normalizeFlowConfig(row.config_json); } catch (error) { bodyError(ctx, error); }
+  const fixedIds = config.nodes.flatMap(node => node.approvers).filter(rule => rule.type === 'fixed_user').map(rule => Number(rule.staffId));
+  if (fixedIds.length) {
+    const active = await Staff.findAll({ where: { staff_id: { [Op.in]: fixedIds }, status: 1, is_deleted: 0 }, attributes: ['staff_id'] });
+    if (fixedIds.some(id => !active.some(staff => Number(staff.staff_id) === id))) ctx.throw(400, '\u6d41\u7a0b\u5305\u542b\u4e0d\u5b58\u5728\u6216\u5df2\u505c\u7528\u7684\u5ba1\u6279\u4eba\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9');
+  }
+  const roleCodes = [...new Set(config.nodes.flatMap(node => node.approvers).filter(rule => rule.type === 'role').map(rule => rule.roleCode))];
+  if (roleCodes.length) {
+    const activeRoles = await Role.findAll({ where: { role_code: { [Op.in]: roleCodes }, status: 1 }, attributes: ['role_code'] });
+    if (roleCodes.some(code => !activeRoles.some(role => role.role_code === code))) ctx.throw(400, '\u6d41\u7a0b\u5305\u542b\u4e0d\u5b58\u5728\u6216\u5df2\u505c\u7528\u7684\u5ba1\u6279\u89d2\u8272\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9');
+  }
+  return config;
+}
+
+async function enableFlow(ctx) {
+  const row = await ApprovalFlowDefinition.findByPk(ctx.params.definitionId);
+  if (!row) ctx.throw(404, '\u5ba1\u6279\u6d41\u7a0b\u4e0d\u5b58\u5728');
+  if (row.status !== 'disabled') ctx.throw(400, '\u53ea\u6709\u5df2\u505c\u7528\u7684\u6d41\u7a0b\u53ef\u4ee5\u91cd\u65b0\u542f\u7528');
+  await validatePublishConfig(ctx, row);
+  await sequelize.transaction(async transaction => {
+    await ApprovalFlowDefinition.update({ status: 'disabled', update_staff_id: ctx.state.user.staffId, update_time: new Date() }, { where: { flow_code: row.flow_code, status: 'published' }, transaction });
+    await row.update({ status: 'published', update_staff_id: ctx.state.user.staffId, update_time: new Date() }, { transaction });
+  });
+  ctx.body = { code: 0, message: '\u5ba1\u6279\u6d41\u7a0b\u5df2\u542f\u7528', data: toFlow(row) };
+}
+
 async function disableFlow(ctx) {
   const row = await ApprovalFlowDefinition.findByPk(ctx.params.definitionId);
   if (!row) ctx.throw(404, '审批流程不存在');
@@ -347,4 +375,4 @@ async function getAssigneeOptions(ctx) {
   ctx.body = { staff, roles, stores };
 }
 
-module.exports = { listFlows, getFlow, createFlow, updateFlow, publishFlow, disableFlow, listTasks, listInstances, getInstance, submitInstance, action, resubmit, getAssigneeOptions };
+module.exports = { listFlows, getFlow, createFlow, updateFlow, publishFlow, enableFlow, disableFlow, listTasks, listInstances, getInstance, submitInstance, action, resubmit, getAssigneeOptions };

@@ -89,6 +89,7 @@
                 <el-button link type="primary" @click="editFlow(row)">编辑</el-button>
                 <el-button v-if="row.status === 'draft'" link type="success" @click="publish(row)">发布</el-button>
                 <el-button v-if="row.status === 'published'" link type="danger" @click="disable(row)">停用</el-button>
+                <el-button v-if="row.status === 'disabled'" link type="success" @click="enable(row)">启用</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -833,6 +834,7 @@ function removeNode(index) { flowForm.nodes.splice(index, 1) }
 function clearRule(rule) { rule.staffId = ''; rule.roleCode = '' }
 async function saveFlow() { const data = { flowCode: flowForm.flowCode, name: flowForm.name, businessType: flowForm.businessType, config: { nodes: flowForm.nodes } }; if (flowForm.definitionId) await api.updateApprovalFlow(flowForm.definitionId, data); else await api.createApprovalFlow(data); ElMessage.success('流程草稿已保存'); flowDialogVisible.value = false; await loadFlows() }
 async function publish(row) { const confirmed = await ElMessageBox.confirm('发布后将作为新申请的审批规则，是否继续？', '发布流程').then(() => true).catch(() => false); if (!confirmed) return; await api.publishApprovalFlow(row.definition_id); ElMessage.success('流程已发布'); await loadFlows() }
+async function enable(row) { const confirmed = await ElMessageBox.confirm('启用后将作为新申请的审批规则，是否继续？', '启用流程').then(() => true).catch(() => false); if (!confirmed) return; await api.enableApprovalFlow(row.definition_id); ElMessage.success('流程已启用'); await loadFlows() }
 async function disable(row) { await api.disableApprovalFlow(row.definition_id); ElMessage.success('流程已停用'); await loadFlows() }
 watch(activeTab, value => { if (value === 'flows') loadFlows() })
 watch(() => route.path, syncTabFromRoute)

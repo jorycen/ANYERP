@@ -65,6 +65,9 @@ async function latest(type, row, transaction) {
   return M.ApprovalFlowInstance.findOne({ where: { business_type: type, business_id: String(row[registry[type].id]) }, order: [['create_time', 'DESC']], transaction, ...(transaction ? { lock: transaction.LOCK.UPDATE } : {}) });
 }
 async function begin(type, row, transaction, { historical = false } = {}) {
+  // 调拨已明确改为业务确认流程，不再创建通用审批实例；
+  // 保留 registry 仅用于兼容历史审批记录和查询隔离。
+  if (registry[type]?.retired) return null;
   if (!pending(type, row)) return null;
   const previous = await latest(type, row, transaction);
   if (previous?.status === 'pending') return previous;
