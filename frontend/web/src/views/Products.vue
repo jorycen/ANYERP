@@ -534,17 +534,22 @@
           <el-input v-model="productForm.config" placeholder="厂商商品名称" />
         </el-form-item>
         <el-row :gutter="20">
-          <el-col :span="8">
+          <el-col :span="6">
             <el-form-item label="需要SN码">
               <el-switch v-model="productForm.needSn" />
             </el-form-item>
           </el-col>
-          <el-col :span="8">
+          <el-col :span="6">
+            <el-form-item label="需要管理IMEI">
+              <el-switch v-model="productForm.needImei" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
             <el-form-item label="状态">
               <el-switch v-model="productForm.status" :active-value="1" :inactive-value="0" />
             </el-form-item>
           </el-col>
-          <el-col :span="8">
+          <el-col :span="6">
             <el-form-item label="单位">
               <el-input v-model="productForm.unit" placeholder="台" size="small" />
             </el-form-item>
