@@ -2125,6 +2125,8 @@ async function runMigrations() {
     await checkAndAddColumn('T_SETTLEMENT', 'SUPPLIER_ACCOUNT_SNAPSHOT', 'TEXT COMMENT "供应商付款账户快照"', 'SUPPLIER_ACCOUNT_ID');
     await checkAndAddColumn('T_SETTLEMENT', 'OTHER_PAYMENT_REMARK', 'TEXT COMMENT "其他付款说明"', 'SUPPLIER_ACCOUNT_SNAPSHOT');
     await checkAndAddColumn('T_SETTLEMENT', 'OTHER_PAYMENT_IMAGE', 'LONGTEXT COMMENT "其他付款图片"', 'OTHER_PAYMENT_REMARK');
+    await checkAndAddColumn('T_SETTLEMENT', 'REBATE_DEDUCTION', 'DECIMAL(12,2) DEFAULT 0 COMMENT "结算时使用的供应商返利金额"', 'OTHER_PAYMENT_IMAGE');
+    await checkAndAddColumn('T_SETTLEMENT', 'REBATE_ALLOCATION_JSON', 'TEXT COMMENT "结算返利按应付款分配快照"', 'REBATE_DEDUCTION');
     await checkAndAddColumn('T_SETTLEMENT', 'REMARK', 'TEXT COMMENT "结算单备注"');
     await checkAndAddColumn('T_SETTLEMENT', 'CREATE_STAFF_ID', 'BIGINT COMMENT "结算单制单人员工ID"');
     await checkAndAddColumn('T_SETTLEMENT', 'OPERATOR_STAFF_ID', 'BIGINT COMMENT "结算单经手人员工ID"');

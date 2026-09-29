@@ -5,6 +5,7 @@ const {
   Store,
   Role,
   Settlement,
+  SettlementItem,
   ApprovalFlowDefinition,
   ApprovalFlowInstance,
   ApprovalTask,
@@ -215,7 +216,8 @@ async function listTasks(ctx) {
     .filter(Boolean);
   const settlements = settlementIds.length ? await Settlement.findAll({
     where: { settlement_id: settlementIds, is_deleted: 0 },
-    attributes: ['settlement_id', 'settlement_no', 'supplier_name', 'tax_status', 'total_amount', 'paid_amount', 'submit_time']
+    attributes: ['settlement_id', 'settlement_no', 'supplier_name', 'payee_name', 'source_type', 'source_id', 'source_no', 'tax_status', 'total_amount', 'paid_amount', 'status', 'payment_status', 'remark', 'create_user', 'submit_time', 'create_time'],
+    include: [{ model: SettlementItem, as: 'items', attributes: ['request_no', 'product_name', 'quantity', 'unit_price', 'amount'], required: false }]
   }) : [];
   const settlementMap = new Map(settlements.map(row => [String(row.settlement_id), row.toJSON()]));
   ctx.body = tasks.map(task => {
@@ -225,10 +227,26 @@ async function listTasks(ctx) {
       data.Instance.display = settlement ? {
         settlement_no: settlement.settlement_no,
         supplier_name: settlement.supplier_name,
+        payee_name: settlement.payee_name,
+        source_type: settlement.source_type,
+        source_no: settlement.source_no,
         tax_status: settlement.tax_status,
         amount: Number(settlement.total_amount || 0),
         paid_amount: Number(settlement.paid_amount || 0),
-        submit_time: settlement.submit_time
+        status: settlement.status,
+        payment_status: settlement.payment_status,
+        remark: settlement.remark || '',
+        create_user: settlement.create_user || '',
+        submit_time: settlement.submit_time,
+        create_time: settlement.create_time,
+        purchase_request_nos: [...new Set((settlement.items || []).map(item => item.request_no).filter(Boolean))],
+        items: (settlement.items || []).map(item => ({
+          request_no: item.request_no || '',
+          product_name: item.product_name || '',
+          quantity: Number(item.quantity || 0),
+          unit_price: Number(item.unit_price || 0),
+          amount: Number(item.amount || 0)
+        }))
       } : {};
     }
     return data;
@@ -318,7 +336,8 @@ async function getInstance(ctx) {
   if (data.business_type === 'payable_settlement') {
     const settlement = await Settlement.findOne({
       where: { settlement_id: data.business_id, is_deleted: 0 },
-      attributes: ['payee_name', 'supplier_name', 'supplier_account_snapshot', 'other_payment_remark']
+      attributes: ['settlement_id', 'settlement_no', 'payee_name', 'supplier_name', 'source_type', 'source_id', 'source_no', 'tax_status', 'total_amount', 'paid_amount', 'status', 'payment_status', 'remark', 'create_user', 'create_time', 'submit_time', 'supplier_account_snapshot', 'other_payment_remark'],
+      include: [{ model: SettlementItem, as: 'items', attributes: ['request_no', 'product_name', 'quantity', 'unit_price', 'amount'], required: false }]
     });
     const snapshot = parseJson(settlement?.supplier_account_snapshot, {}) || {};
     data.counterparty_payment_info = {
@@ -330,6 +349,32 @@ async function getInstance(ctx) {
       remark: snapshot.remark || settlement?.other_payment_remark || '',
       available: Boolean(snapshot.companyName || snapshot.bankName || snapshot.accountNumber || snapshot.taxNo || snapshot.remark || settlement?.other_payment_remark)
     };
+    data.settlement_detail = settlement ? {
+      settlement_id: settlement.settlement_id,
+      settlement_no: settlement.settlement_no,
+      supplier_name: settlement.supplier_name || '',
+      payee_name: settlement.payee_name || '',
+      source_type: settlement.source_type || '',
+      source_id: settlement.source_id || '',
+      source_no: settlement.source_no || '',
+      tax_status: settlement.tax_status || '',
+      total_amount: Number(settlement.total_amount || 0),
+      paid_amount: Number(settlement.paid_amount || 0),
+      status: settlement.status || '',
+      payment_status: settlement.payment_status || '',
+      remark: settlement.remark || settlement.other_payment_remark || '',
+      create_user: settlement.create_user || '',
+      create_time: settlement.create_time,
+      submit_time: settlement.submit_time,
+      purchase_request_nos: [...new Set((settlement.items || []).map(item => item.request_no).filter(Boolean))],
+      items: (settlement.items || []).map(item => ({
+        request_no: item.request_no || '',
+        product_name: item.product_name || '',
+        quantity: Number(item.quantity || 0),
+        unit_price: Number(item.unit_price || 0),
+        amount: Number(item.amount || 0)
+      }))
+    } : null;
   }
   ctx.body = data;
 }

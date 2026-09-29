@@ -132,6 +132,7 @@
           <el-descriptions-item label="收款方税号">{{ counterpartyTaxNo(detail) }}</el-descriptions-item>
           <el-descriptions-item label="收款备注" :span="2">{{ counterpartyRemark(detail) }}</el-descriptions-item>
           <el-descriptions-item label="结算金额">¥{{ money(detail.total_amount) }}</el-descriptions-item>
+          <el-descriptions-item label="返款抵扣">-¥{{ money(detail.rebate_deduction) }}</el-descriptions-item>
           <el-descriptions-item label="已付金额">¥{{ money(detail.paid_amount) }}</el-descriptions-item>
           <el-descriptions-item label="结算状态">
             <el-tag :type="statusType(detail.status)">{{ statusText(detail.status) }}</el-tag>

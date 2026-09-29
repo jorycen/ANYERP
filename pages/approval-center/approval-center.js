@@ -14,6 +14,7 @@ const TYPE_CONFIG = {
   salesReturn: { label: '销售退单', className: 'return' },
   resource: { label: '资源套回', className: 'resource' },
   profit: { label: '毛利调整', className: 'profit' },
+  payable_settlement: { label: '应付结算审批', className: 'purchase' },
   generic: { label: '通用审批', className: 'generic' }
 };
 
@@ -25,7 +26,8 @@ const APPROVAL_BUSINESS_TYPE_LABELS = {
   return: '退库审批',
   sales_return: '销售退单',
   resource: '资源套回',
-  profit: '毛利调整'
+  profit: '毛利调整',
+  payable_settlement: '应付结算审批'
 };
 
 function approvalBusinessTypeLabel(type) {
@@ -208,6 +210,7 @@ function loadTaskDetails(task) {
   let detailPromise = Promise.resolve(null);
   if (task.type === 'sales') detailPromise = api.order.getDetails(task.businessId).catch(() => null);
   if (task.type === 'purchase') detailPromise = api.purchase.detail(task.businessId).catch(() => null);
+  if (task.type === 'expense') detailPromise = api.expense.detail(task.businessId).catch(() => null);
   if (task.type === 'generic' && task.instanceId) detailPromise = api.approval.instance(task.instanceId).catch(() => null);
 
   return detailPromise.then(detail => {
@@ -236,6 +239,37 @@ function loadTaskDetails(task) {
           amount: ''
         }));
       }
+      if (businessType === 'payable_settlement') {
+        const settlement = source.settlement_detail || instance.settlement_detail || instance.display || {};
+        const requestNos = Array.isArray(settlement.purchase_request_nos) ? settlement.purchase_request_nos : [];
+        task.typeLabel = '应付结算审批';
+        task.title = settlement.settlement_no || task.title;
+        task.amountLabel = '结算金额';
+        task.amountText = money(settlement.total_amount);
+        task.summary = `${settlement.supplier_name || settlement.payee_name || '供应商'}${requestNos.length ? ` · 采购申请 ${requestNos.join('、')}` : ''}`;
+        task.applicant = settlement.create_user || task.applicant;
+        task.details = [
+          { label: '结算单号', value: settlement.settlement_no || task.businessId || '-' },
+          { label: '供应商', value: settlement.supplier_name || '-' },
+          { label: '收款方', value: settlement.payee_name || settlement.supplier_name || '-' },
+          { label: '结算金额', value: `¥${money(settlement.total_amount)}` },
+          { label: '已付款金额', value: `¥${money(settlement.paid_amount)}` },
+          { label: '关联采购申请', value: requestNos.join('、') || settlement.source_no || '-' },
+          { label: '税务属性', value: settlement.tax_status || '-' },
+          { label: '付款状态', value: settlement.payment_status || '-' },
+          { label: '收款单位', value: (source.counterparty_payment_info || {}).companyName || '-' },
+          { label: '开户银行', value: (source.counterparty_payment_info || {}).bankName || '-' },
+          { label: '收款账号', value: (source.counterparty_payment_info || {}).accountNumber || '-' },
+          { label: '税号', value: (source.counterparty_payment_info || {}).taxNo || '-' },
+          { label: '结算备注', value: settlement.remark || '-' }
+        ];
+        task.items = (settlement.items || []).map(item => ({
+          name: item.product_name || '结算明细',
+          meta: [item.request_no ? `采购申请 ${item.request_no}` : '', item.unit_price ? `单价 ¥${money(item.unit_price)}` : ''].filter(Boolean).join(' / '),
+          quantity: Number(item.quantity || 0),
+          amount: item.amount ? `¥${money(item.amount)}` : ''
+        }));
+      }
     }
     const currentUser = userUtils.getUserInfo();
     if (['sales', 'purchase', 'product'].includes(task.type)) {
@@ -248,6 +282,38 @@ function loadTaskDetails(task) {
         if (row.label === '审批要求') row.value = '归档前最终毛利为负';
         return row;
       });
+    }
+    if (task.type === 'expense') {
+      const sourceType = source.source_type || source.sourceType || '';
+      const purchaseRequest = source.purchase_request || source.purchaseRequest || {};
+      const linkedPurchaseNo = purchaseRequest.request_no || source.source_no || source.sourceNo || (sourceType === 'purchase' ? source.related_order_no : '') || '';
+      task.title = `${source.expense_type || '报销'} · ${source.expense_party || source.applicant_name || '-'}`;
+      task.summary = `${sourceType === 'purchase' ? '采购垫付报销' : (source.remark || '费用报销')}${linkedPurchaseNo ? ` · 关联采购申请 ${linkedPurchaseNo}` : ''}`;
+      task.amountLabel = '报销金额';
+      task.amountText = money(source.amount);
+      task.applicant = source.applicant_name || source.create_user || task.applicant;
+      task.details = [
+        { label: '报销单号', value: source.expense_no || task.businessId || '-' },
+        { label: '报销金额', value: `¥${money(source.amount)}` },
+        { label: '报销日期', value: source.expense_date || '-' },
+        { label: '经营归属月份', value: source.accounting_month || '-' },
+        { label: '报销类型', value: source.expense_type || '-' },
+        { label: '费用发生方', value: source.expense_party || '-' },
+        { label: '支付方式', value: source.payment_method || '-' },
+        { label: '发票信息', value: source.has_invoice ? `有${source.invoice_type ? ` · ${source.invoice_type}` : ''}${source.invoice_no ? ` · ${source.invoice_no}` : ''}` : '无' },
+        { label: '关联采购申请', value: linkedPurchaseNo || '-' },
+        { label: '采购供应商', value: purchaseRequest.Supplier?.name || purchaseRequest.supplier_name || '-' },
+        { label: '采购申请金额', value: purchaseRequest.total_amount != null ? `¥${money(purchaseRequest.total_amount)}` : '-' },
+        { label: '采购申请原因', value: purchaseRequest.reason || '-' },
+        { label: '关联订单', value: source.related_order_no || '-' },
+        { label: '报销说明', value: source.remark || '-' }
+      ];
+      task.items = (purchaseRequest.items || source.items || source.purchase_items || []).map(item => ({
+        name: item.product_name || item.productName || '采购明细',
+        meta: item.request_no || item.requestNo || '',
+        quantity: Number(item.quantity || 0),
+        amount: item.amount ? `¥${money(item.amount)}` : ''
+      }));
     }
     if (task.type === 'purchase') {
       const targetStore = task.raw.store_name || task.raw.storeName || task.raw.Store?.name || '';
@@ -632,10 +698,17 @@ Page({
           task.businessId = instance.business_id || instance.businessId || task.instanceId;
           task.key = `generic:${task.instanceId || task.businessId}`;
           task.no = instance.instance_no || instance.instanceNo || instance.business_id || task.businessId;
-          task.title = instance.title || approvalBusinessTypeLabel(businessType);
-          task.summary = instance.summary || '-';
+          const display = instance.display || {};
+          task.title = display.settlement_no || instance.title || approvalBusinessTypeLabel(businessType);
+          task.summary = businessType === 'payable_settlement'
+            ? `${display.supplier_name || display.payee_name || '供应商'}${(display.purchase_request_nos || []).length ? ` · 采购申请 ${(display.purchase_request_nos || []).join('、')}` : ''}`
+            : (instance.summary || '-');
           task.typeLabel = approvalBusinessTypeLabel(businessType);
-          task.applicant = instance.applicant_name || instance.applicantName || '';
+          task.applicant = display.create_user || instance.applicant_name || instance.applicantName || '';
+          if (businessType === 'payable_settlement') {
+            task.amountLabel = '结算金额';
+            task.amountText = money(display.amount);
+          }
           task.createTime = createTime;
           task.createTimeText = formatTime(createTime);
           task.sortTime = new Date(createTime || 0).getTime() || 0;
@@ -847,10 +920,11 @@ Page({
           task.businessId = row.expense_id || row.expenseId;
           task.key = `expense:${task.businessId}`;
           task.no = row.expense_no || row.expenseNo || task.businessId;
-          task.title = `${row.expense_type || '费用'} · ${row.expense_party || '-'}`;
+          const linkedPurchaseNo = row.source_no || row.sourceNo || (row.source_type === 'purchase' ? row.related_order_no : '') || '';
+          task.title = `${row.expense_type || '报销'} · ${row.expense_party || row.applicant_name || '-'}`;
           task.summary = row.source_type === 'purchase'
-            ? `采购个人垫付 ${row.source_no || ''}`
-            : `${row.region_name || row.store_name || ''} 费用报销`;
+            ? `采购垫付报销${linkedPurchaseNo ? ` · 关联采购申请 ${linkedPurchaseNo}` : ''}`
+            : `${row.region_name || row.store_name || ''} 费用报销${row.remark ? ` · ${row.remark}` : ''}`;
           task.amountLabel = '报销金额';
           task.amountText = money(row.amount);
           task.applicant = row.applicant_name || row.create_user || '';
@@ -862,6 +936,8 @@ Page({
             { label: '费用发生方', value: row.expense_party || '-' },
             { label: '支付方式', value: '私人垫付' },
             { label: '发票', value: row.has_invoice ? `有${row.invoice_type ? ` · ${row.invoice_type}` : ''}` : '无' },
+            { label: '关联采购申请', value: linkedPurchaseNo || '-' },
+            { label: '关联订单', value: row.related_order_no || '-' },
             { label: '说明', value: row.remark || '-' }
           ];
           task.photos = photoList(

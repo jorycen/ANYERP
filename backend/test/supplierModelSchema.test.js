@@ -39,7 +39,7 @@ test('接口在安全启动迁移完成前不会接收业务请求', () => {
   assert.ok(source.indexOf("ensureDatabaseReady('post-migration database activation'") < source.indexOf('schemaInitializationReady = true;'));
 });
 
-test('返利余额汇总展示全部有效供应商并为无流水供应商显示零余额', async () => {
+test('返利余额汇总不展示余额为零的供应商', async () => {
   const originalRebateFindAll = SupplierRebate.findAll;
   const originalSupplierFindAll = Supplier.findAll;
   SupplierRebate.findAll = async () => [{
@@ -56,8 +56,7 @@ test('返利余额汇总展示全部有效供应商并为无流水供应商显�
     assert.equal(ctx.body.code, 0);
     assert.equal(ctx.body.data.totalBalance, 120);
     assert.deepEqual(ctx.body.data.list.map(item => [item.supplier_name, item.balance]), [
-      ['供应商甲', 120],
-      ['供应商乙', 0]
+      ['供应商甲', 120]
     ]);
   } finally {
     SupplierRebate.findAll = originalRebateFindAll;

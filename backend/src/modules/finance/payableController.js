@@ -40,6 +40,7 @@ const { recordBusinessAction } = require('../../utils/businessActionLog');
 const { sendExcel } = require('../../utils/excelExport');
 const { accessibleDistributorIds, canAccessDistributor, distributorWhere } = require('../../utils/distributorScope');
 const { startInstance } = require('../approval/service');
+const { recordRebateDeduction, reverseSettlementRebateDeduction, _getRebateBalance } = require('./rebateController');
 
 const PAYABLE_SETTLEMENT_APPROVAL_FLOW_CODE = 'payable_settlement';
 const PAYABLE_SETTLEMENT_APPROVER_PHONES = [
@@ -74,6 +75,38 @@ function buildPayableSettlementResidual(payable, allocatedAmount, remaining, pro
     unit_price: null,
     create_time: payable.create_time
   };
+}
+
+function parseSettlementRebateAllocation(value) {
+  if (!value) return [];
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+async function reverseSettlementRebate(settlement, user, transaction) {
+  const amount = roundAmount(settlement.rebate_deduction || 0);
+  if (amount <= 0) return;
+  await reverseSettlementRebateDeduction(
+    settlement.supplier_id,
+    settlement.supplier_name,
+    amount,
+    settlement.settlement_id,
+    `结算单 ${settlement.settlement_no} 作废，退回返利抵扣`,
+    user?.name || user?.phone || '',
+    transaction
+  );
+  for (const allocation of parseSettlementRebateAllocation(settlement.rebate_allocation_json)) {
+    const payable = await Payable.findByPk(allocation.payableId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!payable) continue;
+    await payable.update({
+      offset_amount: Math.max(0, roundAmount(Number(payable.offset_amount || 0) - Number(allocation.amount || 0)))
+    }, { transaction });
+    await refreshPayableState(payable.payable_id, transaction);
+  }
 }
 
 async function resolvePayableSettlementFixedApprovers(transaction) {
@@ -706,6 +739,7 @@ async function createSettlement(ctx) {
     allocations = [],
     supplierAccountId,
     paymentAccountType = 'saved',
+    rebateDeduction = 0,
     otherPaymentRemark,
     otherPaymentImage,
     remark,
@@ -724,7 +758,9 @@ async function createSettlement(ctx) {
 
   let supplierAccountSnapshot = null;
   let finalSupplierAccountId = null;
-  if (paymentAccountType === 'other') {
+  if (paymentAccountType === 'rebate') {
+    if (roundAmount(rebateDeduction) <= 0) ctx.throw(400, '请输入返款金额');
+  } else if (paymentAccountType === 'other') {
     if (!String(otherPaymentRemark || '').trim()) ctx.throw(400, '请填写其他付款说明');
     if (!otherPaymentImage) ctx.throw(400, '请上传其他付款凭证');
   } else {
@@ -866,9 +902,34 @@ async function createSettlement(ctx) {
         }
       }
     }
-    const finalRows = rows.filter(row => Math.abs(Number(row.amount || 0)) > 0.005);
+    rows.forEach(row => { row.grossAmount = roundAmount(row.amount); });
+    const requestedRebate = paymentAccountType === 'rebate' ? roundAmount(rebateDeduction) : 0;
+    const grossTotalAmount = roundAmount(rows.reduce((sum, row) => sum + Number(row.grossAmount || 0), 0));
+    if (requestedRebate < 0 || requestedRebate > grossTotalAmount + 0.005) {
+      ctx.throw(400, '返款金额不能超过本次结算金额');
+    }
+    if (requestedRebate > 0) {
+      const currentBalance = await _getRebateBalance(supplierId, transaction);
+      if (requestedRebate > currentBalance + 0.005) {
+        ctx.throw(400, `供应商返利余额不足，当前余额 ¥${currentBalance.toFixed(2)}`);
+      }
+    }
+    let rebateRemaining = requestedRebate;
+    const rebateAllocation = new Map();
+    rows.forEach(row => {
+      const applied = rebateRemaining > 0 && row.grossAmount > 0
+        ? roundAmount(Math.min(rebateRemaining, row.grossAmount))
+        : 0;
+      row.amount = roundAmount(row.grossAmount - applied);
+      rebateRemaining = roundAmount(rebateRemaining - applied);
+      if (applied > 0) {
+        const key = String(row.payable.payable_id);
+        rebateAllocation.set(key, roundAmount((rebateAllocation.get(key) || 0) + applied));
+      }
+    });
+    const finalRows = rows.filter(row => Math.abs(Number(row.grossAmount || 0)) > 0.005);
     const totalAmount = roundAmount(finalRows.reduce((sum, row) => sum + row.amount, 0));
-    if (totalAmount <= 0) ctx.throw(400, '结算金额必须大于零');
+    if (totalAmount <= 0 && requestedRebate <= 0) ctx.throw(400, '结算金额必须大于零');
     const taxStatus = combineTaxStatuses(finalRows.map(row => requestTaxMap.get(String(row.payable.request_id)) || 'UNKNOWN'));
     if (taxStatus === 'MIXED') ctx.throw(400, '含税与未税应付款不能在同一张结算单中同时发起');
     const regionIds = [...new Set(finalRows.map(row => row.payable.region_id).filter(Boolean).map(String))];
@@ -881,6 +942,10 @@ async function createSettlement(ctx) {
       supplier_account_snapshot: supplierAccountSnapshot,
       other_payment_remark: paymentAccountType === 'other' ? String(otherPaymentRemark).trim() : null,
       other_payment_image: paymentAccountType === 'other' ? otherPaymentImage : null,
+      rebate_deduction: requestedRebate,
+      rebate_allocation_json: requestedRebate > 0
+        ? JSON.stringify([...rebateAllocation.entries()].map(([payableId, amount]) => ({ payableId, amount })))
+        : null,
       settlement_type: 'supplier',
       region_id: regionIds.length === 1 ? regionIds[0] : null,
       distributor_id: payableDistributorIds[0],
@@ -903,6 +968,25 @@ async function createSettlement(ctx) {
         request_no: row.payable.request_no,
         amount: row.amount
       }, { transaction });
+    }
+    if (requestedRebate > 0) {
+      await recordRebateDeduction(
+        supplierId,
+        supplier.name,
+        requestedRebate,
+        settlement.settlement_id,
+        `结算单 ${settlement.settlement_no} 使用返款`,
+        user?.name || user?.phone || '',
+        transaction
+      );
+      for (const [payableId, amount] of rebateAllocation.entries()) {
+        const payable = payableMap.get(String(payableId));
+        if (!payable) continue;
+        await payable.update({
+          offset_amount: roundAmount(Number(payable.offset_amount || 0) + amount),
+          offset_payable_id: null
+        }, { transaction });
+      }
     }
     for (const payableId of new Set(finalRows.map(row => row.payable.payable_id))) {
       await refreshPayableState(payableId, transaction);
@@ -1669,6 +1753,7 @@ async function deleteSettlementDraft(ctx) {
     }
 
     const payableIds = new Set((settlement.items || []).map(item => item.payable_id).filter(Boolean));
+    await reverseSettlementRebate(settlement, user, transaction);
     await settlement.update({ is_deleted: 1 }, { transaction });
 
     for (const payableId of payableIds) {
@@ -1848,6 +1933,7 @@ async function voidSettlement(ctx) {
       if (!settlement || settlement.is_deleted) ctx.throw(404, '结算单不存在');
       if (settlement.status === 'voided') ctx.throw(400, '结算单已经作废');
       if (settlement.payment_status !== 'unpaid') ctx.throw(400, '已付款结算单不能作废');
+      await reverseSettlementRebate(settlement, ctx.state.user, transaction);
       await settlement.update({ status: 'voided', voided_time: new Date() }, { transaction });
       const approvalInstances = await ApprovalFlowInstance.findAll({
         where: {

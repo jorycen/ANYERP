@@ -462,9 +462,11 @@ async function getRebateSummary(ctx) {
   list
     .sort((a, b) => b.balance - a.balance || new Date(b.last_time) - new Date(a.last_time));
 
-  const totalBalance = list.reduce((sum, item) => sum + item.balance, 0);
+  // 余额为 0 的供应商不属于当前返利余额流水范围，不在汇总列表中展示。
+  const visibleList = list.filter(item => Number(item.balance || 0) !== 0);
+  const totalBalance = visibleList.reduce((sum, item) => sum + item.balance, 0);
 
-  ctx.body = { code: 0, data: { list, totalBalance } };
+  ctx.body = { code: 0, data: { list: visibleList, totalBalance } };
 }
 
 async function _getRebateBalance(supplierId, transaction = null) {
@@ -493,6 +495,41 @@ async function recordRebateDeduction(supplierId, supplierName, amount, relatedNo
     return newBalance;
   };
   return transaction ? execute(transaction) : sequelize.transaction(execute);
+}
+
+async function reverseSettlementRebateDeduction(supplierId, supplierName, amount, relatedNo, remark, user, transaction = null) {
+  const numericAmount = toNumber(amount);
+  if (numericAmount <= 0) return;
+  const currentBalance = await _getRebateBalance(supplierId, transaction);
+  const existing = await SupplierRebate.findOne({
+    where: { source_type: 'settlement_reversal', source_id: relatedNo, status: 'active' },
+    transaction
+  });
+  if (existing) return;
+  const rebate = await SupplierRebate.create({
+    rebate_id: generateUUID(),
+    supplier_id: supplierId,
+    supplier_name: supplierName || '',
+    type: 'credit',
+    amount: numericAmount,
+    balance: currentBalance + numericAmount,
+    related_no: relatedNo,
+    remark: remark || '',
+    status: 'active',
+    source_type: 'settlement_reversal',
+    source_id: relatedNo,
+    create_user: user || ''
+  }, { transaction });
+  await recordSupplierRebateAccountTransaction(
+    supplierId,
+    'income',
+    numericAmount,
+    remark || '结算返利抵扣退回',
+    relatedNo,
+    user || '',
+    transaction
+  );
+  return rebate;
 }
 
 async function createManufacturerPolicy(ctx) {
@@ -751,6 +788,7 @@ module.exports = {
   getRebateEstimateList,
   getCostAdjustmentList,
   recordRebateDeduction,
+  reverseSettlementRebateDeduction,
   recordSupplierRebateAccountTransaction,
   ensureSupplierRebateAccount,
   _getRebateBalance

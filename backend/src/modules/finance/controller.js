@@ -2,7 +2,7 @@
  * 财务管理控制器
  */
 const {
-  sequelize, DailyStatement, DailyStatementDetail, Expense, ExpenseType, PurchaseRequest, Store, Region, Order, OrderPayment, Supplier,
+  sequelize, DailyStatement, DailyStatementDetail, Expense, ExpenseType, PurchaseRequest, PurchaseRequestItem, Store, Region, Order, OrderPayment, Supplier,
   SettlementAccount, SettlementAccountTransaction, SubsidyAccountRoute, SubsidyReceipt, PaymentMethod, PaymentMethodStore,
   SubsidyReceiptAllocation, SubsidyReceivableAdjustment, ExpensePerformanceAllocation,
   ApprovalFlowInstance, ApprovalTask
@@ -1107,6 +1107,18 @@ async function getExpenseDetail(ctx) {
 
   const data = record.toJSON();
   data.attribution_details = parseExpenseDetails(data.attribution_details_json);
+  if (record.source_type === 'purchase' && record.source_id) {
+    const request = await PurchaseRequest.findOne({
+      where: { request_id: record.source_id },
+      attributes: ['request_id', 'request_no', 'status', 'total_amount', 'actual_total', 'reason', 'create_time', 'store_id', 'supplier_id', 'invoice_type'],
+      include: [
+        { model: PurchaseRequestItem, as: 'items' },
+        { model: Supplier, attributes: ['supplier_id', 'name'], required: false },
+        { model: Store, attributes: ['store_id', 'name'], required: false }
+      ]
+    });
+    data.purchase_request = request ? request.toJSON() : null;
+  }
   ctx.body = { code: 0, data };
 }
 

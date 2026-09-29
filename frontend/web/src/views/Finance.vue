@@ -985,6 +985,7 @@
         </el-form-item>
         <el-form-item label="收款账户" required>
           <el-select v-model="settlementForm.paymentAccountType" placeholder="请选择收款账户" style="width: 100%" @change="onPaymentAccountTypeChange">
+            <el-option v-if="settlementRebateBalance > 0" label="返款" value="rebate" />
             <el-option
               v-for="account in currentSupplierPaymentAccounts"
               :key="account.accountId"
@@ -993,6 +994,10 @@
             />
             <el-option label="其他" value="other" />
           </el-select>
+        </el-form-item>
+        <el-form-item v-if="settlementForm.paymentAccountType === 'rebate'" label="返款金额" required>
+          <el-input-number v-model="settlementForm.rebateDeduction" :min="0.01" :max="Math.min(settlementRebateBalance, Number(settlementTotalAmount))" :precision="2" :step="100" style="width: 100%" />
+          <div class="form-help">可用返款余额：¥{{ formatMoney(settlementRebateBalance) }}；本次结算金额：¥{{ settlementTotalAmount }}</div>
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="settlementForm.remark" type="textarea" :rows="2" maxlength="512" show-word-limit placeholder="请输入结算备注" />
@@ -1064,6 +1069,7 @@
         <div class="settlement-total">
           已选<strong>{{ selectedPayableIds.length }}</strong> 项，
           结算总金额：<strong class="total-amount">¥{{ settlementTotalAmount }}</strong>
+          <template v-if="settlementForm.paymentAccountType === 'rebate'">，返款后应付：<strong class="total-amount">¥{{ settlementCashAmount }}</strong></template>
         </div>
       </div>
       <div v-else>
@@ -1073,7 +1079,7 @@
       <template #footer>
         <el-button @click="settlementDialogVisible = false">取消</el-button>
         <el-button type="info" @click="saveSettlementDraft">保存草稿</el-button>
-        <el-button type="primary" @click="handleSettlementSubmit" :loading="settlementLoading" :disabled="selectedPayableIds.length === 0 || Number(settlementTotalAmount) <= 0">
+        <el-button type="primary" @click="handleSettlementSubmit" :loading="settlementLoading" :disabled="selectedPayableIds.length === 0 || (Number(settlementTotalAmount) <= 0 && Number(settlementForm.rebateDeduction || 0) <= 0)">
           生成结算单
         </el-button>
       </template>
@@ -1285,6 +1291,7 @@
           <el-descriptions-item label="结算单号">{{ settlementDetail.settlement_no || '-' }}</el-descriptions-item>
           <el-descriptions-item label="供应商">{{ settlementDetail.supplier_name || '-' }}</el-descriptions-item>
           <el-descriptions-item label="结算金额">¥{{ settlementDetail.total_amount || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="返款抵扣">-¥{{ formatMoney(settlementDetail.rebate_deduction || 0) }}</el-descriptions-item>
           <el-descriptions-item label="已付金额">¥{{ settlementDetail.paid_amount || 0 }}</el-descriptions-item>
           <el-descriptions-item label="结算状态">
             <el-tag :type="getSettlementStatusTagType(settlementDetail.status)">
@@ -1899,6 +1906,7 @@ const payableData = ref([])
 const payableTotal = ref(0)
 const settlementDialogVisible = ref(false)
 const settlementLoading = ref(false)
+const settlementRebateBalance = ref(0)
 const unpaidList = ref([])
 const selectedPayables = ref([])
 const settlementTableRef = ref(null)
@@ -1977,6 +1985,7 @@ const settlementForm = reactive({
   supplierAccountId: '',
   otherPaymentRemark: '',
   otherPaymentImage: '',
+  rebateDeduction: 0,
   remark: ''
 })
 
@@ -2163,6 +2172,8 @@ const settlementTotalAmount = computed(() => {
   return selectedPayables.value.reduce((sum, row) => sum + settlementLineAmount(row), 0).toFixed(2)
 })
 
+const settlementCashAmount = computed(() => Math.max(0, Number(settlementTotalAmount.value) - Number(settlementForm.rebateDeduction || 0)).toFixed(2))
+
 const formatSettlementAccountOption = (account) => {
   return `${account.account_name || '-'}（余额：¥${Number(account.balance || 0).toFixed(2)}）`
 }
@@ -2257,6 +2268,7 @@ const resetPaymentAccountFields = () => {
   settlementForm.supplierAccountId = ''
   settlementForm.otherPaymentRemark = ''
   settlementForm.otherPaymentImage = ''
+  settlementForm.rebateDeduction = 0
   otherPaymentFileList.value = []
 }
 
@@ -3419,6 +3431,7 @@ const openSettlementDialog = async () => {
   settlementDialogVisible.value = true
   try {
     settlementForm.supplierId = supplierId
+    settlementRebateBalance.value = Number((await api.getRebateBalance({ supplierId })).data?.balance || 0)
     unpaidList.value = await loadSettlementLines({
       supplierId,
       payableIds: payableIds.join(','),
@@ -3465,6 +3478,7 @@ const openSingleSettlementDialog = async (row) => {
   selectedPayables.value = []
   settlementDialogVisible.value = true
   try {
+    settlementRebateBalance.value = Number((await api.getRebateBalance({ supplierId: settlementForm.supplierId })).data?.balance || 0)
     const isCredit = Number(row.remaining_amount || 0) < 0
     unpaidList.value = await loadSettlementLines({
       supplierId: settlementForm.supplierId,
@@ -3563,7 +3577,12 @@ const handleCreateExpenseSettlementLegacy = async (row) => {
 
 const onSupplierChange = async (supplierId) => {
   resetPaymentAccountFields()
+  settlementRebateBalance.value = 0
   try {
+    if (supplierId) {
+      const rebate = await api.getRebateBalance({ supplierId })
+      settlementRebateBalance.value = Number(rebate.data?.balance || 0)
+    }
     unpaidList.value = await loadSettlementLines(supplierId ? { supplierId } : {})
     selectedPayables.value = []
   } catch (err) {
@@ -3607,6 +3626,7 @@ const onPaymentAccountTypeChange = (value) => {
   settlementForm.supplierAccountId = ''
   settlementForm.otherPaymentRemark = ''
   settlementForm.otherPaymentImage = ''
+  if (value !== 'rebate') settlementForm.rebateDeduction = 0
   otherPaymentFileList.value = []
 
   if (value && value.startsWith('saved:')) {
@@ -3652,12 +3672,20 @@ const handleSettlementSubmit = async () => {
       return
     }
     const paymentAccountType = settlementForm.paymentAccountType
+    const isRebatePayment = paymentAccountType === 'rebate'
     const isOtherPaymentAccount = paymentAccountType === 'other'
+    if (isRebatePayment) {
+      const amount = Number(settlementForm.rebateDeduction || 0)
+      if (amount <= 0 || amount > Number(settlementTotalAmount.value) + 0.005 || amount > settlementRebateBalance.value + 0.005) {
+        ElMessage.warning('请输入不超过结算金额和返款余额的返款金额')
+        return
+      }
+    }
     if (isOtherPaymentAccount && (!settlementForm.otherPaymentRemark.trim() || !settlementForm.otherPaymentImage)) {
       ElMessage.warning('其他账户必须填写说明并上传凭证')
       return
     }
-    if (!isOtherPaymentAccount && !settlementForm.supplierAccountId) {
+    if (!isOtherPaymentAccount && !isRebatePayment && !settlementForm.supplierAccountId) {
       ElMessage.warning('请选择供应商付款账户')
       return
     }
@@ -3669,8 +3697,9 @@ const handleSettlementSubmit = async () => {
         requestItemId: row.request_item_id,
         amount: Number(row.settle_amount || 0)
       })),
-      paymentAccountType: isOtherPaymentAccount ? 'other' : 'saved',
-      supplierAccountId: isOtherPaymentAccount ? '' : settlementForm.supplierAccountId,
+      paymentAccountType: isOtherPaymentAccount ? 'other' : (isRebatePayment ? 'rebate' : 'saved'),
+      supplierAccountId: isOtherPaymentAccount || isRebatePayment ? '' : settlementForm.supplierAccountId,
+      rebateDeduction: isRebatePayment ? Number(settlementForm.rebateDeduction || 0) : 0,
       otherPaymentRemark: isOtherPaymentAccount ? settlementForm.otherPaymentRemark.trim() : '',
       otherPaymentImage: isOtherPaymentAccount ? settlementForm.otherPaymentImage : '',
       remark: settlementForm.remark.trim()
@@ -3817,6 +3846,8 @@ const handleVoidSettlement = async (row) => {
 const resetSettlementForm = () => {
   settlementForm.supplierId = ''
   settlementForm.remark = ''
+  settlementForm.rebateDeduction = 0
+  settlementRebateBalance.value = 0
   resetPaymentAccountFields()
   unpaidList.value = []
   selectedPayables.value = []

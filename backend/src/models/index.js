@@ -1834,6 +1834,8 @@ const Settlement = sequelize.define('Settlement', {
   supplier_account_snapshot: { type: DataTypes.TEXT },
   other_payment_remark: { type: DataTypes.TEXT },
   other_payment_image: { type: DataTypes.TEXT('long') },
+  rebate_deduction: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0, comment: '结算时使用的供应商返利金额' },
+  rebate_allocation_json: { type: DataTypes.TEXT, comment: '结算返利按应付款分配快照' },
   total_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
   paid_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   status: { type: DataTypes.STRING(32), defaultValue: 'draft', comment: '结算单状态' },

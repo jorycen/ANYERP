@@ -2513,6 +2513,9 @@ const api = {
     },
     settlements(params = {}) {
       return http.request('/finance/settlement-list' + toQuery(Object.assign({ page: 1, pageSize: 100 }, params)));
+    },
+    settlementDetail(settlementId) {
+      return http.request('/finance/settlement/' + encodeURIComponent(settlementId));
     }
   },
 
