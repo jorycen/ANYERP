@@ -224,19 +224,6 @@ function normalizeParticipants(order) {
   return participants;
 }
 
-function legacyGrossProfitSql(itemAlias = 'oi') {
-  return `CASE
-    WHEN COALESCE(${itemAlias}.ORIGINAL_INVENTORY_COST, 0) <> 0
-      OR COALESCE(${itemAlias}.SALES_SETTLEMENT_COST, 0) <> 0
-      OR COALESCE(${itemAlias}.SALES_GROSS_PROFIT, 0) <> 0
-      OR COALESCE(${itemAlias}.COST_ADJUSTMENT_AMOUNT, 0) <> 0
-      OR COALESCE(${itemAlias}.ORIGINAL_PICKUP_PRICE, 0) <> 0
-    THEN COALESCE(${itemAlias}.SALES_GROSS_PROFIT, 0)
-    ELSE COALESCE(${itemAlias}.SUBTOTAL, 0)
-      - COALESCE(NULLIF(ps.INBOUND_PRICE, 0), pp.COST_PRICE, 0) * COALESCE(${itemAlias}.QUANTITY, 1)
-  END`;
-}
-
 function grossProfitSql(itemAlias = 'oi', orderAlias = 'o', snapshotAlias = 'gp') {
   return `CASE
     WHEN ${snapshotAlias}.GROSS_PROFIT_ID IS NOT NULL
@@ -246,7 +233,7 @@ function grossProfitSql(itemAlias = 'oi', orderAlias = 'o', snapshotAlias = 'gp'
           THEN COALESCE(${itemAlias}.SUBTOTAL, 0) / ${orderAlias}.TOTAL_AMOUNT
           ELSE 0
         END
-    ELSE ${legacyGrossProfitSql(itemAlias)}
+    ELSE 0
   END`;
 }
 
@@ -319,7 +306,9 @@ function orderItemSalesAmountSql(itemAlias = 'oi', orderAlias = 'o', totalsAlias
 
 function orderItemTotalsJoin() {
   return `INNER JOIN (
-    SELECT ORDER_ID, SUM(COALESCE(SUBTOTAL, 0)) AS ITEM_SUBTOTAL
+    SELECT ORDER_ID,
+           SUM(COALESCE(SUBTOTAL, 0)) AS ITEM_SUBTOTAL,
+           COUNT(*) AS ITEM_COUNT
       FROM T_ORDER_ITEM
      GROUP BY ORDER_ID
   ) oit ON oit.ORDER_ID = o.ORDER_ID`;
@@ -407,7 +396,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
   async getStoreRanking(filters, range) {
     const where = buildSalesWhere(filters, range);
     const factor = allocationSql(filters);
-    return this.query(
+    const rows = await this.query(
       `SELECT o.STORE_ID AS storeId,
               MAX(s.NAME) AS storeName,
               ROUND(SUM((${orderItemSalesAmountSql()}) * ${factor}), 2) AS salesAmount,
@@ -423,10 +412,46 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
          LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
         WHERE ${where.sql}
         GROUP BY o.STORE_ID
-        ORDER BY salesAmount DESC
-        LIMIT 10`,
+        ORDER BY salesAmount DESC`,
       where.replacements
     );
+
+    // Store ranking uses the same final performance-gross-profit adjustments
+    // as monthly task achievement. Keep these additions outside the item join
+    // so an order-level adjustment is counted once per order, not once per item.
+    const adjustmentRows = await this.query(
+      `SELECT o.STORE_ID AS storeId, SUM(pa.SIGNED_AMOUNT) AS grossProfit
+         FROM T_PERFORMANCE_PROFIT_ADJUSTMENT pa
+         INNER JOIN T_ORDER o ON o.ORDER_ID = pa.ORDER_ID
+        WHERE pa.STATUS = 'approved'
+          AND ${where.sql}
+        GROUP BY o.STORE_ID`,
+      where.replacements
+    );
+    const returnRows = await this.query(
+      `SELECT r.STORE_ID AS storeId,
+              SUM(COALESCE(r.RETURNED_SALES_AMOUNT, 0)) AS returnedSales,
+              SUM(COALESCE(r.GROSS_PROFIT_AMOUNT, 0)) AS grossProfit
+         FROM T_SALES_RETURN_GROSS_PROFIT r
+        WHERE r.STORE_ID IN (:storeIds)
+          AND r.CREATE_TIME >= :startAt
+          AND r.CREATE_TIME <= :endAt
+        GROUP BY r.STORE_ID`,
+      { ...where.replacements, storeIds: filters.storeIds }
+    );
+    const adjustments = new Map(adjustmentRows.map(row => [String(row.storeId), Number(row.grossProfit || 0)]));
+    const returns = new Map(returnRows.map(row => [String(row.storeId), row]));
+    return rows
+      .map(row => {
+        const adjustment = adjustments.get(String(row.storeId)) || 0;
+        const returned = returns.get(String(row.storeId)) || {};
+        return {
+          ...row,
+          salesAmount: Number((Number(row.salesAmount || 0) + Number(returned.returnedSales || 0)).toFixed(2)),
+          grossProfit: Number((Number(row.grossProfit || 0) + adjustment + Number(returned.grossProfit || 0)).toFixed(2))
+        };
+      })
+      .sort((left, right) => Number(right.salesAmount || 0) - Number(left.salesAmount || 0));
   }
 
   async getProductRows(filters, range) {
@@ -460,6 +485,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
     return this.query(
       `SELECT COALESCE(NULLIF(SUBSTRING_INDEX(p.CATEGORY, '/', 1), ''), '未分类') AS productLine,
               ROUND(SUM((${orderItemSalesAmountSql()}) * ${factor}), 2) AS salesAmount,
+              ROUND(SUM(oi.QUANTITY * ${factor}), 2) AS quantity,
               ROUND(SUM((${grossProfitSql()}) * ${factor}), 2) AS grossProfit
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
@@ -470,6 +496,27 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
          LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
         WHERE ${where.sql}
         GROUP BY COALESCE(NULLIF(SUBSTRING_INDEX(p.CATEGORY, '/', 1), ''), '未分类')
+        ORDER BY salesAmount DESC`,
+      where.replacements
+    );
+  }
+
+  async getProductCategoryRows(filters, range) {
+    const where = buildSalesWhere(filters, range);
+    const factor = allocationSql(filters);
+    return this.query(
+      `SELECT COALESCE(NULLIF(TRIM(p.CATEGORY), ''), '未分类') AS categoryPath,
+              ROUND(SUM((${orderItemSalesAmountSql()}) * ${factor}), 2) AS salesAmount,
+              ROUND(SUM(oi.QUANTITY * ${factor}), 2) AS quantity
+         FROM T_ORDER o
+         INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+         ${orderItemTotalsJoin()}
+         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
+         LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
+         LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
+         LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
+        WHERE ${where.sql}
+        GROUP BY COALESCE(NULLIF(TRIM(p.CATEGORY), ''), '未分类')
         ORDER BY salesAmount DESC`,
       where.replacements
     );
@@ -751,5 +798,8 @@ module.exports = {
   normalizeParticipants,
   roundMoney,
   toNumber,
-  _test: { buildSalesWhere, orderItemSalesAmountSql }
+  grossProfitSql,
+  orderItemSalesAmountSql,
+  orderItemTotalsJoin,
+  _test: { buildSalesWhere, orderItemSalesAmountSql, grossProfitSql, orderItemTotalsJoin }
 };

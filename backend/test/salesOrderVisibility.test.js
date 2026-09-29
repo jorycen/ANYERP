@@ -527,6 +527,29 @@ test('订单导出包含完整金额补录信息', () => {
   assert.equal(rows[0].补录信息, '教育优惠:20(减少，学生证已核验)；提货费用:15(增加)；优惠券:30(增加，券码:COUPON-1)');
 });
 
+test('订单导出保留毛利快照中的运费来源和金额', () => {
+  const rows = _test.buildOrderExportRows([{
+    toJSON: () => ({
+      order_no: 'ORD-FREIGHT-1',
+      OrderItems: [{ item_id: 10, product_name: '商品A', subtotal: 100, quantity: 1, freight_cost: 0 }],
+      grossProfitSnapshot: {
+        supplement_details: [{
+          source: 'freight_cost',
+          itemId: 10,
+          amount: 46.3,
+          amountType: 'decrease',
+          sourceNo: 'TRF-1',
+          platformName: '闪送'
+        }]
+      }
+    })
+  }]);
+
+  assert.equal(rows[0]['商品采购运费'], 46.3);
+  assert.match(rows[0]['补录信息'], /46.3/);
+  assert.match(rows[0]['补录信息'], /TRF-1/);
+});
+
 test('负毛利订单按店长初审和经销商总权限复审严格串行', () => {
   assert.equal(_test.salesApprovalStageFromStatus('pending_approval'), 'store');
   assert.equal(_test.salesApprovalStageFromStatus('pending_store_approval'), 'store');

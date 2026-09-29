@@ -14,6 +14,7 @@
     "db:restore-historical-purchase-inbounds": "node scripts/restore-historical-purchase-inbounds.js --preview",
     "db:backfill-settlement-tax-status": "node scripts/backfill-settlement-tax-status.js --preview",
     "db:provision-mall-report-accounts": "node scripts/provision-mall-report-accounts.js",
+    "db:refresh-order-gross-profit": "node scripts/refresh-order-gross-profit-snapshots.js",
     "freight:preview": "node scripts/preview-freight-recalculation.js",
     "db:clear": "node clear_data.js",
     "pn:audit": "node scripts/audit-product-pn-consistency.js"

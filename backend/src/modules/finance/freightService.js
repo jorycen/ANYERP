@@ -3,6 +3,8 @@ const {
   FreightPlatform,
   FreightRecord,
   FreightRecordItem,
+  Order,
+  OrderItem,
   Store,
   sequelize
 } = require('../../models');
@@ -161,6 +163,82 @@ function buildFreightWhere({ startDate, endDate, storeId, platformId, sourceType
   return where;
 }
 
+function freightMatchesOrderItem(record, freightItem, order, orderItem) {
+  if (!record || record.status !== 'active' || !order || !orderItem) return false;
+  const orderStoreId = String(order.store_id || '').trim();
+  const recordStoreId = String(record.store_id || '').trim();
+  const destinationStoreId = String(record.to_store_id || '').trim();
+  const applicableStoreId = String(record.source_type || '').toLowerCase() === 'transfer'
+    ? (destinationStoreId || recordStoreId)
+    : recordStoreId;
+  if (!orderStoreId || applicableStoreId !== orderStoreId) return false;
+
+  const sourceTime = new Date(record.update_time || record.create_time).getTime();
+  const orderTime = new Date(order.create_time).getTime();
+  if (Number.isFinite(sourceTime) && Number.isFinite(orderTime) && sourceTime > orderTime) return false;
+
+  const productId = String(orderItem.product_id || '').trim();
+  const snId = String(orderItem.sn_id || '').trim();
+  const snCode = String(orderItem.sn_code || '').trim();
+  return (productId && productId === String(freightItem.product_id || '').trim())
+    || (snId && snId === String(freightItem.sn_id || '').trim())
+    || (snCode && snCode === String(freightItem.sn_code || '').trim());
+}
+
+async function attachRelatedSalesOrders(rows) {
+  if (!rows.length) return rows;
+  const freightRows = rows.map(row => row.toJSON ? row.toJSON() : row);
+  const identifiers = [...new Set(freightRows.flatMap(row => (row.items || []).flatMap(item => [
+    item.product_id, item.sn_id, item.sn_code
+  ])).map(value => String(value || '').trim()).filter(Boolean))];
+  if (!identifiers.length) return rows;
+
+  const orderItems = await OrderItem.findAll({
+    where: {
+      [Op.or]: identifiers.flatMap(value => [
+        { product_id: value }, { sn_id: value }, { sn_code: value }
+      ])
+    },
+    include: [{ model: Order, attributes: ['order_id', 'order_no', 'store_id', 'create_time'], where: { is_deleted: 0 }, required: true }],
+    attributes: ['item_id', 'order_id', 'product_id', 'sn_id', 'sn_code'],
+    raw: true,
+    nest: true
+  });
+
+  const candidatesByOrderItem = new Map();
+  for (const item of orderItems) {
+    const order = item.Order || item.OrderItem?.Order;
+    if (!order) continue;
+    const key = String(item.item_id);
+    const candidates = [];
+    for (const record of freightRows) {
+      for (const freightItem of record.items || []) {
+        if (freightMatchesOrderItem(record, freightItem, order, item)) {
+          candidates.push({ record, time: new Date(record.update_time || record.create_time).getTime() || 0 });
+        }
+      }
+    }
+    candidates.sort((a, b) => b.time - a.time);
+    if (candidates[0]) candidatesByOrderItem.set(key, candidates[0].record.freight_id);
+  }
+
+  const orderNosByFreight = new Map();
+  for (const item of orderItems) {
+    const freightId = candidatesByOrderItem.get(String(item.item_id));
+    const order = item.Order || item.OrderItem?.Order;
+    if (!freightId || !order?.order_no) continue;
+    if (!orderNosByFreight.has(freightId)) orderNosByFreight.set(freightId, new Set());
+    orderNosByFreight.get(freightId).add(String(order.order_no));
+  }
+  rows.forEach(row => {
+    const freightId = row.freight_id;
+    const orderNos = [...(orderNosByFreight.get(freightId) || [])];
+    if (row.setDataValue) row.setDataValue('related_order_nos', orderNos);
+    else row.related_order_nos = orderNos;
+  });
+  return rows;
+}
+
 async function listFreightRecords({ filters = {}, user, page = 1, pageSize = 20 } = {}) {
   const where = buildFreightWhere(filters);
   const accessibleStoreIds = user?.accessibleStoreIds || [];
@@ -172,7 +250,7 @@ async function listFreightRecords({ filters = {}, user, page = 1, pageSize = 20 
   }
   const limit = Math.min(Math.max(Number(pageSize) || 20, 1), 200);
   const currentPage = Math.max(Number(page) || 1, 1);
-  return FreightRecord.findAndCountAll({
+  const result = await FreightRecord.findAndCountAll({
     where,
     include: [{ model: FreightRecordItem, as: 'items', attributes: ['item_id', 'product_id', 'sn_id', 'sn_code', 'quantity', 'allocated_amount', 'unit_amount'] }],
     order: [['create_time', 'DESC'], ['freight_id', 'DESC']],
@@ -180,6 +258,8 @@ async function listFreightRecords({ filters = {}, user, page = 1, pageSize = 20 
     limit,
     distinct: true
   });
+  await attachRelatedSalesOrders(result.rows);
+  return result;
 }
 
 async function getFreightExportRows({ filters = {}, user } = {}) {
@@ -192,11 +272,13 @@ async function getFreightExportRows({ filters = {}, user } = {}) {
       ])
     }];
   }
-  return FreightRecord.findAll({
+  const rows = await FreightRecord.findAll({
     where,
     include: [{ model: FreightRecordItem, as: 'items', attributes: ['product_id', 'sn_code', 'quantity', 'allocated_amount', 'unit_amount'] }],
     order: [['create_time', 'DESC'], ['freight_id', 'DESC']]
   });
+  await attachRelatedSalesOrders(rows);
+  return rows;
 }
 
 module.exports = {

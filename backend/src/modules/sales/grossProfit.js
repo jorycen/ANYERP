@@ -863,14 +863,40 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
   }, { transaction });
 }
 
-async function refreshOutdatedGrossProfitSnapshots() {
+async function refreshOutdatedGrossProfitSnapshots({ onProgress } = {}) {
+  onProgress?.({ phase: 'load_outdated_snapshots' });
   const snapshots = await OrderGrossProfit.findAll({
     where: { formula_version: { [Op.ne]: FORMULA_VERSION } },
     attributes: ['order_id', 'snapshot_status'],
     raw: true
   });
+  onProgress?.({ phase: 'load_missing_snapshots' });
+  const missingSnapshots = await sequelize.query(
+    `SELECT o.ORDER_ID AS order_id
+       FROM T_ORDER o
+       LEFT JOIN T_ORDER_GROSS_PROFIT gp
+         ON gp.ORDER_ID = o.ORDER_ID
+        AND gp.FORMULA_VERSION = :formulaVersion
+      WHERE o.IS_DELETED = 0
+        AND o.ORDER_STATUS IN (:archivedStatuses)
+        AND gp.GROSS_PROFIT_ID IS NULL`,
+    {
+      replacements: {
+        formulaVersion: FORMULA_VERSION,
+        archivedStatuses: ['已归档', 'completed', 'archived', 'returned']
+      },
+      type: QueryTypes.SELECT
+    }
+  );
+  const snapshotIds = new Set(snapshots.map(snapshot => String(snapshot.order_id)));
+  missingSnapshots.forEach(snapshot => {
+    if (!snapshotIds.has(String(snapshot.order_id))) {
+      snapshots.push({ order_id: snapshot.order_id, snapshot_status: 'final' });
+    }
+  });
   let refreshed = 0;
   let failed = 0;
+  onProgress?.({ phase: 'refreshing', total: snapshots.length, refreshed, failed });
   for (const snapshot of snapshots) {
     try {
       await calculateAndSaveOrderGrossProfit(snapshot.order_id, {
@@ -879,8 +905,12 @@ async function refreshOutdatedGrossProfitSnapshots() {
         final: snapshot.snapshot_status === 'final'
       });
       refreshed += 1;
+      if (refreshed % 10 === 0 || refreshed === snapshots.length) {
+        onProgress?.({ phase: 'refreshing', total: snapshots.length, refreshed, failed });
+      }
     } catch (error) {
       failed += 1;
+      onProgress?.({ phase: 'failed', total: snapshots.length, refreshed, failed, orderId: snapshot.order_id, message: error.message });
       console.error(
         `[GrossProfit] failed to migrate order ${snapshot.order_id}:`,
         error.message

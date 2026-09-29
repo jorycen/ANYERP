@@ -1,6 +1,7 @@
 <template>
   <div class="approval-page">
     <el-card>
+      <div class="batch-approval-toolbar"><el-button type="success" :loading="batchApproving" :disabled="!mergedTasks.length" @click="approveAll">全部通过<span v-if="mergedTasks.length">（{{ mergedTasks.length }}）</span></el-button></div>
       <template #header>
         <div class="page-header"><span>审批管理中心</span><el-button @click="reload">刷新</el-button></div>
       </template>
@@ -136,6 +137,42 @@
             <el-descriptions-item v-for="field in detailScalarFields(currentInstance.payload, currentInstance.business_type)" :key="field.key" :label="field.label" :span="field.span">{{ field.value }}</el-descriptions-item>
           </el-descriptions>
         </template>
+        <template v-if="currentInstance.business_type === 'payable_settlement' && currentInstance.settlement_detail">
+          <el-divider>应付审批关键信息</el-divider>
+          <el-descriptions :column="2" border>
+            <el-descriptions-item label="订单发起人">{{ currentInstance.settlement_detail.applicant_name || currentInstance.applicant_name || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="付款性质">{{ currentInstance.settlement_detail.funding_type || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="供应商">{{ currentInstance.settlement_detail.supplier_name || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="实际收款方">{{ currentInstance.settlement_detail.payee_name || currentInstance.settlement_detail.supplier_name || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="应付结算单号">{{ currentInstance.settlement_detail.settlement_no || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="来源单号">{{ currentInstance.settlement_detail.source_no || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="结算金额">¥{{ formatMoney(currentInstance.settlement_detail.total_amount) }}</el-descriptions-item>
+            <el-descriptions-item label="返款抵扣">¥{{ formatMoney(currentInstance.settlement_detail.rebate_deduction) }}</el-descriptions-item>
+            <el-descriptions-item label="审批备注" :span="2">{{ currentInstance.settlement_detail.remark || '-' }}</el-descriptions-item>
+          </el-descriptions>
+          <div v-if="currentInstance.settlement_detail.purchase_requests?.length" class="detail-section">
+            <div class="detail-section-title">关联采购申请</div>
+            <el-table :data="currentInstance.settlement_detail.purchase_requests" stripe border size="small">
+              <el-table-column prop="request_no" label="采购申请单号" min-width="180" />
+              <el-table-column prop="applicant_name" label="采购申请人" min-width="120" />
+              <el-table-column prop="payment_method" label="采购付款方式" min-width="130" />
+              <el-table-column prop="actual_total" label="实际金额" width="120"><template #default="{ row }">¥{{ formatMoney(row.actual_total || row.total_amount) }}</template></el-table-column>
+              <el-table-column prop="reason" label="采购说明" min-width="180" />
+            </el-table>
+          </div>
+          <div v-if="currentInstance.settlement_detail.items?.length" class="detail-section">
+            <div class="detail-section-title">本次采购商品</div>
+            <el-table :data="currentInstance.settlement_detail.items" stripe border size="small">
+              <el-table-column prop="request_no" label="采购申请单号" min-width="170" />
+              <el-table-column prop="product_name" label="商品名称" min-width="180" />
+              <el-table-column prop="product_code" label="商品编码" min-width="130" />
+              <el-table-column prop="pn_code" label="PN" min-width="120" />
+              <el-table-column prop="quantity" label="数量" width="80" />
+              <el-table-column prop="unit_price" label="单价" width="110"><template #default="{ row }">¥{{ formatMoney(row.unit_price) }}</template></el-table-column>
+              <el-table-column prop="amount" label="金额" width="120"><template #default="{ row }">¥{{ formatMoney(row.amount) }}</template></el-table-column>
+            </el-table>
+          </div>
+        </template>
         <template v-if="currentInstance.business_type === 'payable_settlement'">
           <el-divider>收款方账户</el-divider>
           <el-descriptions :column="2" border>
@@ -241,6 +278,7 @@ const syncTabFromRoute = () => {
   activeTab.value = String(route.meta.tab || 'tasks')
 }
 const loading = ref(false)
+const batchApproving = ref(false)
 const tasks = ref([])
 const salesTasks = ref([])
 const moduleTasks = ref([])
@@ -395,6 +433,43 @@ async function loadInstances() { instances.value = (await api.getApprovalInstanc
 async function loadFlows() { if (canConfigure.value) flows.value = (await api.getApprovalFlows()).data || [] }
 async function loadOptions() { if (canConfigure.value) Object.assign(assigneeOptions, (await api.getApprovalAssigneeOptions()).data || {}) }
 async function reload() { loading.value = true; try { await Promise.all([loadTasks(), loadOtherApprovalTasks(), loadInstances(), loadFlows(), loadOptions()]) } finally { loading.value = false } }
+
+async function approveTaskDirect(row) {
+  if (row.isSalesApproval) return api.approveOrder(row.salesRow.order_id)
+  if (row.isModuleApproval) {
+    if (row.manualPath) return { skipped: true }
+    return api.actionBusinessApproval(row.moduleType, row.Instance?.business_id, { action: 'approve', comment: '' })
+  }
+  return api.actionApproval(row.instance_id, { action: 'approve', comment: '' })
+}
+
+async function approveAll() {
+  if (batchApproving.value || !mergedTasks.value.length) return
+  const confirmed = await ElMessageBox.confirm(
+    `确认将当前 ${mergedTasks.value.length} 条待审批单据全部通过？`,
+    '一键审批',
+    { type: 'warning', confirmButtonText: '全部通过', cancelButtonText: '取消' }
+  ).catch(() => false)
+  if (!confirmed) return
+  batchApproving.value = true
+  const failed = []
+  const total = mergedTasks.value.length
+  try {
+    for (const row of mergedTasks.value) {
+      try {
+        const result = await approveTaskDirect(row)
+        if (result?.skipped) failed.push(`${taskNo(row)}：需前往业务页面确认`)
+      } catch (error) {
+        failed.push(`${taskNo(row)}：${error.response?.data?.message || error.message || '审批失败'}`)
+      }
+    }
+    await reload()
+    if (failed.length) ElMessage.warning(`已处理 ${total - failed.length} 条，${failed.length} 条未通过：${failed.slice(0, 3).join('；')}`)
+    else ElMessage.success('全部待审批单据已通过')
+  } finally {
+    batchApproving.value = false
+  }
+}
 
 function instanceProgressText(row) { return row.current_progress_text || statusText(row.status) }
 function statusText(value) { return ({ pending: '审批中', approved: '已通过', rejected: '已拒绝', cancelled: '已撤销' }[value] || value || '-') }
@@ -844,6 +919,7 @@ onMounted(() => { syncTabFromRoute(); reload() })
 <style scoped>
 .module-tabs :deep(.el-tabs__header) { display: none; }
 .negative-profit { color: var(--el-color-danger); font-weight: 600; }
+.batch-approval-toolbar { display: flex; justify-content: flex-end; margin-bottom: 12px; }
 .detail-section { margin-top: 16px; }
 .detail-section-title { margin-bottom: 8px; color: var(--el-text-color-primary); font-weight: 600; }
 .raw-detail { margin-top: 16px; }

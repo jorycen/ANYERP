@@ -898,7 +898,10 @@ function allocateExportAmount(total, entries) {
 }
 
 function exportSupplementItemName(item) {
-  return String(item?.item_name ?? item?.itemName ?? item?.name ?? '').trim();
+  const explicitName = String(item?.item_name ?? item?.itemName ?? item?.name ?? '').trim();
+  if (explicitName) return explicitName;
+  if (String(item?.source || '').trim() === 'freight_cost') return '运费成本';
+  return '';
 }
 
 function exportSupplementAmountValue(item) {
@@ -955,7 +958,10 @@ function exportSupplementDetails(supplements) {
       const direction = exportSupplementAmountType(item) === 'decrease' ? '减少' : '增加';
       const content = String(item.content || '').trim();
       const couponCode = String(item.coupon_code || '').trim();
-      const details = [direction, content, couponCode ? `券码:${couponCode}` : '']
+      const sourceNo = String(item.sourceNo ?? item.source_no ?? '').trim();
+      const platformName = String(item.platformName ?? item.platform_name ?? '').trim();
+      const sourceText = [sourceNo ? `来源单号:${sourceNo}` : '', platformName ? `平台:${platformName}` : ''];
+      const details = [direction, ...sourceText, content, couponCode ? `券码:${couponCode}` : '']
         .filter(Boolean)
         .join('，');
       return `${itemName}${amount ? `:${amount}` : ''}${details ? `(${details})` : ''}`;
@@ -975,6 +981,25 @@ function getSupplementNetAmount(supplements = []) {
     const amount = exportSupplementAmountValue(item);
     return total + amount * (exportSupplementAmountType(item) === 'decrease' ? -1 : 1);
   }, 0));
+}
+
+function getExportFreightCost(item, supplements = []) {
+  const storedAmount = Number(firstNonEmpty(item, ['freight_cost', 'freightCost', 'purchaseFreight'], 0));
+  if (Number.isFinite(storedAmount) && storedAmount > 0) return storedAmount;
+  const itemId = String(item?.item_id ?? item?.itemId ?? '').trim();
+  const productId = String(item?.product_id ?? item?.productId ?? '').trim();
+  const snCode = String(item?.sn_code ?? item?.snCode ?? '').trim();
+  return normalizeExportSupplements(supplements)
+    .filter(detail => String(detail.source || '').trim() === 'freight_cost')
+    .filter(detail => {
+      const detailItemId = String(detail.itemId ?? detail.item_id ?? '').trim();
+      const detailProductId = String(detail.productId ?? detail.product_id ?? '').trim();
+      const detailSnCode = String(detail.snCode ?? detail.sn_code ?? '').trim();
+      return (itemId && detailItemId === itemId)
+        || (productId && detailProductId === productId)
+        || (snCode && detailSnCode === snCode);
+    })
+    .reduce((total, detail) => total + Math.abs(exportSupplementAmountValue(detail)), 0);
 }
 
 function isEducationSupplement(item) {
@@ -1204,7 +1229,7 @@ function buildOrderExportRows(orders, paymentMethodMap = {}) {
         数量: Number(firstNonEmpty(item, ['quantity', 'qty'], 0)),
         单价: Number(firstNonEmpty(item, ['sale_price', 'salePrice', 'price'], 0)),
         小计: subtotal,
-        商品采购运费: Number(firstNonEmpty(item, ['freight_cost', 'freightCost', 'purchaseFreight'], 0)),
+        商品采购运费: getExportFreightCost(item, supplements),
         商品应收金额: subtotal,
         商品收款金额: subtotal,
         辅助销售人比例分配: exportAuxiliaryNames(auxiliary, createUser || submitUser),

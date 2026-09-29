@@ -17,6 +17,7 @@
             <el-table-column label="来源类型" width="110"><template #default="{ row }">{{ row.source_type === 'purchase' ? '采购申请' : '调拨申请' }}</template></el-table-column>
             <el-table-column prop="platform_name" label="配送平台" width="120" />
             <el-table-column prop="amount" label="运费金额" width="120"><template #default="{ row }">¥{{ money(row.amount) }}</template></el-table-column>
+            <el-table-column label="关联销售订单" min-width="190"><template #default="{ row }">{{ (row.related_order_nos || []).join('、') || '-' }}</template></el-table-column>
             <el-table-column label="门店" min-width="180"><template #default="{ row }">{{ row.source_type === 'transfer' ? `${row.from_store_name || '-'} → ${row.to_store_name || '-'}` : row.store_name }}</template></el-table-column>
             <el-table-column prop="status" label="状态" width="90"><template #default="{ row }">{{ row.status === 'cancelled' ? '已取消' : row.status === 'draft' ? '草稿' : '生效' }}</template></el-table-column>
             <el-table-column prop="create_user" label="创建人" width="110" />

@@ -174,6 +174,62 @@ async function queryAccountSummary(regionId, accessibleRegionIds) {
   };
 }
 
+async function queryRebateOverview(regionId, accessibleRegionIds, storeIds) {
+  const regionClause = regionId
+    ? 'AND sa.REGION_ID = :regionId'
+    : accessibleRegionIds
+      ? 'AND (sa.REGION_ID IN (:accessibleRegionIds) OR sa.REGION_ID IS NULL)'
+      : '';
+  const replacements = {
+    storeIds: storeIds.length ? storeIds : ['__NO_STORE__'],
+    ...(regionId ? { regionId } : {}),
+    ...(accessibleRegionIds ? { accessibleRegionIds: accessibleRegionIds.length ? accessibleRegionIds : ['__NO_REGION__'] } : {})
+  };
+  const [receivedRows, pendingRows] = await Promise.all([
+    sequelize.query(
+      `SELECT sa.ACCOUNT_ID AS accountId,
+              sa.ACCOUNT_NAME AS supplierName,
+              sa.SUPPLIER_ID AS supplierId,
+              ROUND(COALESCE(SUM(CASE WHEN sat.TYPE = 'income' THEN sat.AMOUNT ELSE -sat.AMOUNT END), 0), 2) AS amount
+         FROM T_SETTLEMENT_ACCOUNT sa
+         LEFT JOIN T_SETTLEMENT_ACCOUNT_TRANSACTION sat ON sat.ACCOUNT_ID = sa.ACCOUNT_ID
+        WHERE sa.STATUS = 1
+          AND sa.ACCOUNT_TYPE = 'SUPPLIER_REBATE'
+          ${regionClause}
+        GROUP BY sa.ACCOUNT_ID, sa.ACCOUNT_NAME, sa.SUPPLIER_ID
+        HAVING amount > 0
+        ORDER BY amount DESC`,
+      { replacements, type: QueryTypes.SELECT }
+    ),
+    sequelize.query(
+      `SELECT COALESCE(NULLIF(e.SUPPLIER_NAME, ''), '未命名供应商') AS supplierName,
+              e.SUPPLIER_ID AS supplierId,
+              ROUND(SUM(e.REBATE_ESTIMATE_AMOUNT), 2) AS amount
+         FROM T_REBATE_ESTIMATE e
+         INNER JOIN T_ORDER o ON o.ORDER_ID = e.SALES_ORDER_ID
+        WHERE e.STATUS IN ('estimated', 'confirmed')
+          AND o.STORE_ID IN (:storeIds)
+        GROUP BY COALESCE(NULLIF(e.SUPPLIER_NAME, ''), '未命名供应商'), e.SUPPLIER_ID
+        HAVING amount > 0
+        ORDER BY amount DESC`,
+      { replacements, type: QueryTypes.SELECT }
+    )
+  ]);
+  const normalize = rows => rows.map(row => ({
+    supplierId: row.supplierId || '',
+    supplierName: row.supplierName || '未命名供应商',
+    amount: roundMoney(row.amount)
+  }));
+  const receivedList = normalize(receivedRows);
+  const pendingList = normalize(pendingRows);
+  return {
+    receivedAmount: roundMoney(receivedList.reduce((sum, row) => sum + row.amount, 0)),
+    pendingAmount: roundMoney(pendingList.reduce((sum, row) => sum + row.amount, 0)),
+    receivedList,
+    pendingList
+  };
+}
+
 async function queryPaymentSummary(regionId, accessibleRegionIds) {
   const regionClause = regionId
     ? 'AND p.REGION_ID = :regionId'
@@ -396,6 +452,7 @@ async function getFinanceOverview(ctx) {
         },
         inventory: { totalAmount: 0, includeDemo, categories: [] },
         accounts: { totalAmount: 0, byType: [], accounts: [] },
+        rebate: { receivedAmount: 0, pendingAmount: 0, receivedList: [], pendingList: [] },
         payments: { all: 0, uncreated: 0, created: 0, paid: 0, purchase: 0, expense: 0, supplierTop: { all: [], uncreated: [], created: [] } }
       }
     };
@@ -405,7 +462,7 @@ async function getFinanceOverview(ctx) {
 
   const ranges = buildRanges({ startDate: period.startDate, endDate: period.endDate });
   const filters = { storeIds, storeId: storeId || '', employeeId: '', productLine: '', includeDemo };
-  const [trendRows, inventory, accounts, payments, productSettlement, expenseSummary] = await Promise.all([
+  const [trendRows, inventory, accounts, payments, productSettlement, expenseSummary, rebate] = await Promise.all([
     dataSource.getTrend(filters, ranges.current, 'day'),
     dataSource.getInventory(filters),
     queryAccountSummary(regionId, accessibleRegionIds),
@@ -415,7 +472,8 @@ async function getFinanceOverview(ctx) {
       endDate: period.endDate,
       storeIds
     }),
-    queryExpenseSummary(period, storeIds)
+    queryExpenseSummary(period, storeIds),
+    queryRebateOverview(regionId, accessibleRegionIds, storeIds)
   ]);
   const summary = summarizeTrend(trendRows);
   const profitVisible = canViewProfit(user);
@@ -466,6 +524,7 @@ async function getFinanceOverview(ctx) {
         categories: profitVisible ? inventory.categories : []
       },
       accounts,
+      rebate,
       payments
     }
   };

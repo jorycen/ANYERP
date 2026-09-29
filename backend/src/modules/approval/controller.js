@@ -4,6 +4,9 @@ const {
   Staff,
   Store,
   Role,
+  Payable,
+  PurchaseRequest,
+  PurchaseRequestItem,
   Settlement,
   SettlementItem,
   ApprovalFlowDefinition,
@@ -216,7 +219,7 @@ async function listTasks(ctx) {
     .filter(Boolean);
   const settlements = settlementIds.length ? await Settlement.findAll({
     where: { settlement_id: settlementIds, is_deleted: 0 },
-    attributes: ['settlement_id', 'settlement_no', 'supplier_name', 'payee_name', 'source_type', 'source_id', 'source_no', 'tax_status', 'total_amount', 'paid_amount', 'status', 'payment_status', 'remark', 'create_user', 'submit_time', 'create_time'],
+    attributes: ['settlement_id', 'settlement_no', 'supplier_name', 'payee_name', 'settlement_type', 'payee_type', 'source_type', 'source_id', 'source_no', 'tax_status', 'total_amount', 'paid_amount', 'status', 'payment_status', 'remark', 'create_user', 'submit_time', 'create_time'],
     include: [{ model: SettlementItem, as: 'items', attributes: ['request_no', 'product_name', 'quantity', 'unit_price', 'amount'], required: false }]
   }) : [];
   const settlementMap = new Map(settlements.map(row => [String(row.settlement_id), row.toJSON()]));
@@ -226,8 +229,10 @@ async function listTasks(ctx) {
       const settlement = settlementMap.get(String(data.Instance.business_id));
       data.Instance.display = settlement ? {
         settlement_no: settlement.settlement_no,
+        applicant_name: settlement.create_user || '',
         supplier_name: settlement.supplier_name,
         payee_name: settlement.payee_name,
+        funding_type: ['personal_advance', 'personal', 'employee', 'staff', 'reimbursement', 'expense'].includes(String(settlement.payee_type || settlement.settlement_type || '').toLowerCase()) ? '个人垫付' : '供应商付款',
         source_type: settlement.source_type,
         source_no: settlement.source_no,
         tax_status: settlement.tax_status,
@@ -334,11 +339,44 @@ async function getInstance(ctx) {
   if (!(await canReadInstance(ctx, row))) ctx.throw(403, '无权查看该审批实例');
   const data = toInstance(row);
   if (data.business_type === 'payable_settlement') {
+    const applicant = data.applicant_staff_id
+      ? await Staff.findByPk(data.applicant_staff_id, { attributes: ['staff_id', 'name', 'phone'] })
+      : null;
     const settlement = await Settlement.findOne({
       where: { settlement_id: data.business_id, is_deleted: 0 },
-      attributes: ['settlement_id', 'settlement_no', 'payee_name', 'supplier_name', 'source_type', 'source_id', 'source_no', 'tax_status', 'total_amount', 'paid_amount', 'status', 'payment_status', 'remark', 'create_user', 'create_time', 'submit_time', 'supplier_account_snapshot', 'other_payment_remark'],
-      include: [{ model: SettlementItem, as: 'items', attributes: ['request_no', 'product_name', 'quantity', 'unit_price', 'amount'], required: false }]
+      attributes: ['settlement_id', 'settlement_no', 'payee_name', 'supplier_name', 'settlement_type', 'payee_type', 'source_type', 'source_id', 'source_no', 'tax_status', 'total_amount', 'paid_amount', 'status', 'payment_status', 'remark', 'create_user', 'create_staff_id', 'create_time', 'submit_time', 'supplier_account_snapshot', 'other_payment_remark'],
+      include: [{ model: SettlementItem, as: 'items', attributes: ['payable_id', 'request_item_id', 'request_no', 'product_id', 'product_name', 'quantity', 'unit_price', 'amount'], required: false }]
     });
+    const settlementItems = settlement?.items || [];
+    const payableIds = [...new Set(settlementItems.map(item => item.payable_id).filter(Boolean))];
+    const payables = payableIds.length ? await Payable.findAll({
+      where: { payable_id: payableIds },
+      attributes: ['payable_id', 'request_id', 'request_no', 'supplier_name', 'payee_type', 'payee_name', 'source_type', 'source_no', 'total_amount']
+    }) : [];
+    const payableMap = new Map(payables.map(item => [String(item.payable_id), item]));
+    const requestIds = [...new Set(payables.map(item => item.request_id).filter(Boolean))];
+    const requestNos = [...new Set([...settlementItems.map(item => item.request_no), ...payables.map(item => item.request_no)].filter(Boolean))];
+    const requests = requestIds.length || requestNos.length ? await PurchaseRequest.findAll({
+      where: {
+        [Op.or]: [
+          ...(requestIds.length ? [{ request_id: requestIds }] : []),
+          ...(requestNos.length ? [{ request_no: requestNos }] : [])
+        ]
+      },
+      attributes: ['request_id', 'request_no', 'payment_method', 'apply_user', 'applicant_staff_id', 'create_user', 'submit_user', 'store_id', 'total_amount', 'actual_total', 'reason', 'create_time']
+    }) : [];
+    const requestMap = new Map(requests.map(item => [String(item.request_id), item]));
+    const requestNoMap = new Map(requests.map(item => [String(item.request_no), item]));
+    const requestItemIds = [...new Set(settlementItems.map(item => item.request_item_id).filter(Boolean))];
+    const requestItems = requestItemIds.length ? await PurchaseRequestItem.findAll({
+      where: { item_id: requestItemIds },
+      attributes: ['item_id', 'request_id', 'product_id', 'product_name', 'product_code', 'pn_code', 'quantity', 'unit_price', 'subtotal']
+    }) : [];
+    const requestItemMap = new Map(requestItems.map(item => [String(item.item_id), item]));
+    const paymentMethods = [...requests.map(item => item.payment_method), settlement?.payee_type, settlement?.settlement_type]
+      .filter(Boolean).map(value => String(value).toLowerCase());
+    const isPersonalAdvance = paymentMethods.some(value => ['personal_advance', 'personal', 'employee', 'staff', 'reimbursement', 'expense'].includes(value));
+    const fundingType = isPersonalAdvance ? '个人垫付' : '供应商付款';
     const snapshot = parseJson(settlement?.supplier_account_snapshot, {}) || {};
     data.counterparty_payment_info = {
       payeeName: settlement?.payee_name || settlement?.supplier_name || '',
@@ -354,27 +392,54 @@ async function getInstance(ctx) {
       settlement_no: settlement.settlement_no,
       supplier_name: settlement.supplier_name || '',
       payee_name: settlement.payee_name || '',
+      funding_type: fundingType,
+      settlement_type: settlement.settlement_type || '',
+      payee_type: settlement.payee_type || '',
       source_type: settlement.source_type || '',
       source_id: settlement.source_id || '',
       source_no: settlement.source_no || '',
       tax_status: settlement.tax_status || '',
       total_amount: Number(settlement.total_amount || 0),
       paid_amount: Number(settlement.paid_amount || 0),
+      rebate_deduction: Number(settlement.rebate_deduction || 0),
       status: settlement.status || '',
       payment_status: settlement.payment_status || '',
       remark: settlement.remark || settlement.other_payment_remark || '',
       create_user: settlement.create_user || '',
+      applicant_name: applicant?.name || settlement.create_user || '',
+      applicant_phone: applicant?.phone || '',
       create_time: settlement.create_time,
       submit_time: settlement.submit_time,
-      purchase_request_nos: [...new Set((settlement.items || []).map(item => item.request_no).filter(Boolean))],
-      items: (settlement.items || []).map(item => ({
-        request_no: item.request_no || '',
-        product_name: item.product_name || '',
-        quantity: Number(item.quantity || 0),
-        unit_price: Number(item.unit_price || 0),
+      purchase_request_nos: [...new Set(settlementItems.map(item => item.request_no || payableMap.get(String(item.payable_id))?.request_no).filter(Boolean))],
+      purchase_requests: requests.map(request => ({
+        request_id: request.request_id,
+        request_no: request.request_no || '',
+        payment_method: request.payment_method || '',
+        applicant_name: request.apply_user || request.submit_user || request.create_user || '',
+        store_id: request.store_id || '',
+        total_amount: Number(request.total_amount || 0),
+        actual_total: Number(request.actual_total || 0),
+        reason: request.reason || '',
+        create_time: request.create_time
+      })),
+      items: settlementItems.map(item => {
+        const requestItem = requestItemMap.get(String(item.request_item_id));
+        const payable = payableMap.get(String(item.payable_id));
+        const request = requestItem ? requestMap.get(String(requestItem.request_id)) : requestNoMap.get(String(item.request_no || payable?.request_no || ''));
+        return {
+        request_no: item.request_no || payable?.request_no || request?.request_no || '',
+        product_id: item.product_id || requestItem?.product_id || '',
+        product_code: requestItem?.product_code || '',
+        pn_code: requestItem?.pn_code || '',
+        product_name: item.product_name || requestItem?.product_name || '',
+        quantity: Number(item.quantity || requestItem?.quantity || 0),
+        unit_price: Number(item.unit_price || requestItem?.unit_price || 0),
         amount: Number(item.amount || 0)
-      }))
+        };
+      })
     } : null;
+    data.applicant_name = applicant?.name || data.settlement_detail?.applicant_name || data.applicant_name || '';
+    data.applicant_phone = applicant?.phone || '';
   }
   ctx.body = data;
 }

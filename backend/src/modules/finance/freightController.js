@@ -108,6 +108,7 @@ async function exportRecords(ctx) {
       来源单号: json.source_no,
       配送平台: json.platform_name || '',
       运费金额: json.amount,
+      关联销售订单: Array.isArray(json.related_order_nos) ? json.related_order_nos.join('、') : '',
       商品ID: item.product_id || '',
       SN码: item.sn_code || '',
       分摊数量: item.quantity || '',

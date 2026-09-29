@@ -10,10 +10,16 @@ const {
   StaffStorePermission
 } = require('../../models');
 const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/storePermissions');
-const { normalizeParticipants } = require('./dashboardDataSource');
+const {
+  ARCHIVED_STATUSES,
+  GROSS_PROFIT_FORMULA_VERSION,
+  normalizeParticipants,
+  grossProfitSql,
+  orderItemSalesAmountSql,
+  orderItemTotalsJoin
+} = require('./dashboardDataSource');
 const { canViewProfit } = require('./dashboardService');
 
-const ARCHIVED_STATUSES = ['已归档', 'completed', 'archived', 'returned'];
 const { INTERNAL_TRANSFER_SOURCE } = require('./operatingScope');
 
 function number(value) {
@@ -96,15 +102,13 @@ async function loadActuals(storeIds, startAt, endAt) {
            oi.PRODUCT_ID AS productId,
            oi.PRODUCT_NAME AS productName,
            oi.QUANTITY AS quantity,
-           oi.SUBTOTAL AS subtotal,
-           CASE WHEN gp.GROSS_PROFIT_ID IS NOT NULL
-                THEN COALESCE(gp.GROSS_PROFIT_AMOUNT, 0) * COALESCE(oi.SUBTOTAL, 0) / NULLIF(o.TOTAL_AMOUNT, 0)
-                ELSE COALESCE(oi.SALES_GROSS_PROFIT, 0)
-           END AS itemGrossProfit
+           (${orderItemSalesAmountSql()}) AS salesAmount,
+           (${grossProfitSql()}) AS itemGrossProfit
       FROM T_ORDER o
       INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+      ${orderItemTotalsJoin()}
       LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
-        AND gp.FORMULA_VERSION = 'ORDER_GP_V5_20260706'
+        AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
      WHERE o.IS_DELETED = 0
        AND COALESCE(TRIM(o.CUSTOMER_SOURCE), '') NOT LIKE :internalTransferSource
        AND o.ORDER_STATUS IN (:archivedStatuses)
@@ -125,13 +129,13 @@ async function loadActuals(storeIds, startAt, endAt) {
     const participants = normalizeParticipants(order);
     const participantCount = participants.length || 1;
     const storeActual = storeActuals.get(String(order.storeId)) || createActual();
-    order.items.forEach(item => addActual(storeActual, item.subtotal, item.itemGrossProfit, item.productId, item.quantity));
+    order.items.forEach(item => addActual(storeActual, item.salesAmount, item.itemGrossProfit, item.productId, item.quantity));
     storeActuals.set(String(order.storeId), storeActual);
     participants.forEach(participant => {
       const key = employeeKey(participant.staffId, participant.name);
       const actual = employeeActuals.get(key) || { ...createActual(), staffId: participant.staffId, employeeName: participant.name, storeIds: new Set() };
       actual.storeIds.add(String(order.storeId));
-      order.items.forEach(item => addActual(actual, number(item.subtotal) / participantCount, number(item.itemGrossProfit) / participantCount, item.productId, number(item.quantity) / participantCount));
+      order.items.forEach(item => addActual(actual, number(item.salesAmount) / participantCount, number(item.itemGrossProfit) / participantCount, item.productId, number(item.quantity) / participantCount));
       employeeActuals.set(key, actual);
     });
   }
@@ -181,7 +185,7 @@ async function loadActuals(storeIds, startAt, endAt) {
        AND srs.CREATE_TIME < :endAt`, { replacements, type: QueryTypes.SELECT });
   for (const row of returnItems) {
     const storeActual = storeActuals.get(String(row.storeId)) || createActual();
-    addActual(storeActual, row.salesAmount, 0, row.productId, row.quantity);
+    addActual(storeActual, -Math.abs(number(row.salesAmount)), 0, row.productId, row.quantity);
     storeActuals.set(String(row.storeId), storeActual);
     const order = orders.get(String(row.orderId)) || {
       create_staff_id: row.createStaffId,

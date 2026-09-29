@@ -253,7 +253,7 @@ function buildEmployeePerformance(orderRows, adjustmentRows, selectedEmployeeId,
   ));
 
   return {
-    ranking: ranking.slice(0, 20),
+    ranking,
     details: details.slice(0, 100)
   };
 }
@@ -286,6 +286,43 @@ function mapProductRows(rows, canViewProfit) {
       : [],
     focusProducts: normalized.filter(row => row.isFocusProduct).sort((a, b) => b.salesAmount - a.salesAmount).slice(0, 20)
   };
+}
+
+function buildProductCategoryTree(rows) {
+  const roots = [];
+  const nodes = new Map();
+
+  (rows || []).forEach(row => {
+    const rawPath = String(row.categoryPath || row.category_path || row.category || '').trim();
+    const parts = (rawPath || '未分类').split('/').map(part => part.trim()).filter(Boolean).slice(0, 4);
+    if (!parts.length) parts.push('未分类');
+    const salesAmount = roundMoney(row.salesAmount);
+    const quantity = Number(row.quantity || 0);
+    let parent = null;
+
+    parts.forEach((name, index) => {
+      const path = parts.slice(0, index + 1).join('/');
+      let node = nodes.get(path);
+      if (!node) {
+        node = { categoryId: path, name, path, level: index + 1, salesAmount: 0, quantity: 0, children: [] };
+        nodes.set(path, node);
+        if (parent) parent.children.push(node);
+        else roots.push(node);
+      }
+      node.salesAmount = roundMoney(node.salesAmount + salesAmount);
+      node.quantity += quantity;
+      parent = node;
+    });
+  });
+
+  const sortNodes = list => list
+    .sort((left, right) => right.salesAmount - left.salesAmount || right.quantity - left.quantity || left.name.localeCompare(right.name, 'zh-CN'))
+    .map(node => ({
+      ...node,
+      quantity: Number(node.quantity.toFixed(2)),
+      children: sortNodes(node.children)
+    }));
+  return sortNodes(roots);
 }
 
 function getRoles(user) {
@@ -386,6 +423,7 @@ class DashboardService {
       previousStoreRanking,
       productRows,
       productLineRows,
+      productCategoryRows,
       employeeOrderRows,
       approvedAdjustments,
       inventory
@@ -397,6 +435,7 @@ class DashboardService {
       this.dataSource.getStoreRanking(filters, ranges.previous),
       this.dataSource.getProductRows(filters, ranges.current),
       this.dataSource.getProductLineRows(filters, ranges.current),
+      this.dataSource.getProductCategoryRows(filters, ranges.current),
       this.dataSource.getEmployeeOrderRows(filters, ranges.current),
       this.dataSource.getApprovedAdjustments(filters, ranges.current),
       this.dataSource.getInventory(filters)
@@ -455,8 +494,10 @@ class DashboardService {
       productLineAnalysis: productLineRows.map(row => ({
         productLine: row.productLine,
         salesAmount: roundMoney(row.salesAmount),
+        quantity: Number(row.quantity || 0),
         grossProfit: profitVisible ? roundMoney(row.grossProfit) : null
       })),
+      productCategoryAnalysis: buildProductCategoryTree(productCategoryRows),
       productAnalysis,
       inventory: inventoryView
     };

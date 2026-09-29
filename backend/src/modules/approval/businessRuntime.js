@@ -190,6 +190,12 @@ function installHooks() {
             await instance.update({ status: 'cancelled', completed_time: new Date() }, { transaction: options.transaction });
             await M.ApprovalTask.update({ status: 'cancelled' }, { where: { instance_id: instance.instance_id, status: { [Op.in]: ['pending', 'waiting'] } }, transaction: options.transaction });
           }
+          if (type === 'sales_return' && row.status === 'cancelled' && row.order_id) {
+            await M.Order.update(
+              { order_status: '已归档', update_time: new Date() },
+              { where: { order_id: row.order_id, order_status: 'return_pending' }, transaction: options.transaction }
+            );
+          }
         }
         return;
       }

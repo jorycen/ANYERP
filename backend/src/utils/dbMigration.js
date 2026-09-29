@@ -492,6 +492,20 @@ async function ensureFinanceSchemaCompatibility() {
       KEY idx_rebate_allocation_posting (POSTING_ID, STATUS)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
+
+  // Payable settlement creation persists the rebate amount directly on
+  // T_SETTLEMENT. Keep this in the startup compatibility path as well as the
+  // historical full migration so existing databases are repaired on restart.
+  await checkAndAddColumn(
+    'T_SETTLEMENT',
+    'REBATE_DEDUCTION',
+    'DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT "结算时使用的供应商返利金额"'
+  );
+  await checkAndAddColumn(
+    'T_SETTLEMENT',
+    'REBATE_ALLOCATION_JSON',
+    'TEXT COMMENT "结算返利按应付款分配快照"'
+  );
 }
 
 // 产品端毛利页面依赖的结构必须跟随安全启动检查创建。这里只补表和字段，
@@ -2063,6 +2077,8 @@ async function runMigrations() {
         SETTLEMENT_NO VARCHAR(64) NOT NULL COMMENT '结算单号',
         SUPPLIER_ID VARCHAR(32) NOT NULL COMMENT '供应商ID',
         SUPPLIER_NAME VARCHAR(255) COMMENT '供应商名称',
+        REBATE_DEDUCTION DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '结算时使用的供应商返利金额',
+        REBATE_ALLOCATION_JSON TEXT COMMENT '结算返利按应付款分配快照',
         TOTAL_AMOUNT DECIMAL(12,2) NOT NULL COMMENT '结算金额',
         PAID_AMOUNT DECIMAL(12,2) DEFAULT 0 COMMENT '已付金额',
         STATUS VARCHAR(32) DEFAULT 'draft' COMMENT '结算单状态',
@@ -2125,8 +2141,12 @@ async function runMigrations() {
     await checkAndAddColumn('T_SETTLEMENT', 'SUPPLIER_ACCOUNT_SNAPSHOT', 'TEXT COMMENT "供应商付款账户快照"', 'SUPPLIER_ACCOUNT_ID');
     await checkAndAddColumn('T_SETTLEMENT', 'OTHER_PAYMENT_REMARK', 'TEXT COMMENT "其他付款说明"', 'SUPPLIER_ACCOUNT_SNAPSHOT');
     await checkAndAddColumn('T_SETTLEMENT', 'OTHER_PAYMENT_IMAGE', 'LONGTEXT COMMENT "其他付款图片"', 'OTHER_PAYMENT_REMARK');
-    await checkAndAddColumn('T_SETTLEMENT', 'REBATE_DEDUCTION', 'DECIMAL(12,2) DEFAULT 0 COMMENT "结算时使用的供应商返利金额"', 'OTHER_PAYMENT_IMAGE');
-    await checkAndAddColumn('T_SETTLEMENT', 'REBATE_ALLOCATION_JSON', 'TEXT COMMENT "结算返利按应付款分配快照"', 'REBATE_DEDUCTION');
+    // Do not depend on a neighbouring column here. Older deployments can be
+    // missing one of the preceding payment snapshot fields as well, and an
+    // invalid AFTER clause used to leave this required field absent while the
+    // API continued starting.
+    await checkAndAddColumn('T_SETTLEMENT', 'REBATE_DEDUCTION', 'DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT "结算时使用的供应商返利金额"');
+    await checkAndAddColumn('T_SETTLEMENT', 'REBATE_ALLOCATION_JSON', 'TEXT COMMENT "结算返利按应付款分配快照"');
     await checkAndAddColumn('T_SETTLEMENT', 'REMARK', 'TEXT COMMENT "结算单备注"');
     await checkAndAddColumn('T_SETTLEMENT', 'CREATE_STAFF_ID', 'BIGINT COMMENT "结算单制单人员工ID"');
     await checkAndAddColumn('T_SETTLEMENT', 'OPERATOR_STAFF_ID', 'BIGINT COMMENT "结算单经手人员工ID"');
