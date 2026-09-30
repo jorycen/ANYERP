@@ -597,10 +597,20 @@ page {
 
 .hero-region-picker { display: block; }
 .hero-region-arrow { margin-left: 8rpx; color: #a9d0ef; }
-.rebate-card-grid { display: flex; gap: 16rpx; margin-top: 24rpx; }
-.rebate-card { flex: 1; padding: 22rpx; border-radius: 18rpx; }
-.rebate-card.received { background: linear-gradient(145deg, #eafaf3, #f7fffb); border: 1rpx solid #cdeedc; }
-.rebate-card.pending { background: linear-gradient(145deg, #fff6e8, #fffdf8); border: 1rpx solid #f4dfb8; }
+.rebate-card-grid { display: block; margin-top: 24rpx; }
+.rebate-card {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin-bottom: 18rpx;
+  padding: 20rpx;
+  border: 0;
+  border-radius: 16rpx;
+  background: #f6f9fc;
+}
+.rebate-card:last-child { margin-bottom: 0; }
+.rebate-card.received,
+.rebate-card.pending { border: 0; background: #f6f9fc; }
 .rebate-label, .rebate-hint { display: block; }
 .rebate-label { color: #52647a; font-size: 23rpx; }
 .rebate-amount { display: block; margin-top: 12rpx; color: #16865d; font-size: 32rpx; font-weight: 700; }
