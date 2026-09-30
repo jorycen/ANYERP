@@ -119,15 +119,16 @@ Page({
       return;
     }
     const that = this;
-    const DataStorage = require('../../utils/storage.js');
-    DataStorage.getStores((stores) => {
-      if (stores && stores.length > 0) {
+    const api = require('../../utils/api.js');
+    api.store.getOrderStoreOptions().then(result => {
+      const stores = (result && result.data) || result || [];
+      if (stores.length > 0) {
         that.initStoreSelection(stores);
       } else {
         wx.removeStorageSync('tempStoreInfo');
         that.setData({ storeList: [], selectedStoreId: '', selectedStoreIndex: 0, tempStoreName: '' });
       }
-    }, (err) => {
+    }).catch((err) => {
       that.setData({ storeList: [] });
     });
   },
@@ -135,7 +136,7 @@ Page({
   loadStoresFromApiWithoutLoading: function() {
     const that = this;
     const api = require('../../utils/api.js');
-    api.store.getStores('').then(result => {
+    api.store.getOrderStoreOptions().then(result => {
       const stores = (result && result.data) || result || [];
       if (stores && stores.length > 0) {
         that.initStoreSelection(stores);
@@ -148,16 +149,17 @@ Page({
   switchStore: function () {
     wx.showLoading({ title: '加载中...' });
     const that = this;
-    const DataStorage = require('../../utils/storage.js');
-    DataStorage.getStores((stores) => {
+    const api = require('../../utils/api.js');
+    api.store.getOrderStoreOptions().then(result => {
       wx.hideLoading();
-      if (stores && stores.length > 0) {
+      const stores = (result && result.data) || result || [];
+      if (stores.length > 0) {
         that.initStoreSelection(stores);
         that.setData({ showStorePicker: true });
       } else {
         that.loadStoresFromApi(true);
       }
-    }, (err) => {
+    }).catch((err) => {
       wx.hideLoading();
       that.loadStoresFromApi(true);
     });
@@ -169,7 +171,7 @@ Page({
     if (showPicker) {
       wx.showLoading({ title: '加载中...' });
     }
-    api.store.getStores('').then(result => {
+    api.store.getOrderStoreOptions().then(result => {
       if (showPicker) wx.hideLoading();
       const stores = (result && result.data) || result || [];
       if (stores && stores.length > 0) {

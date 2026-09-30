@@ -52,7 +52,7 @@ const { normalizePnCode } = require('../../utils/productPn');
 const { summariesForSns, alignOrderSubsidyRights, isGovSubsidyEligibleCategory, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits, createSaleResourceTasks } = require('../inventory/resourceRights');
 const { getUserRoles } = require('../../middleware/permission');
 const { canAccessDistributor, resolveOrderStoreIds } = require('../../utils/distributorScope');
-const { isStoreManagerAccount, isMallReportViewer } = require('../../utils/storePermissions');
+const { isStoreManagerAccount, isMallReportViewer, isStoreScopedAccount } = require('../../utils/storePermissions');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { assertActiveProducts } = require('../../utils/activeProduct');
 const { syncSerializedInventoryBalance } = require('../inventory/serializedInventoryBalance');
@@ -423,15 +423,6 @@ async function resolveSalesOrderStoreIds(user = {}) {
     return [...new Set((Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds : [])
       .map(value => String(value || '').trim())
       .filter(Boolean))];
-  }
-  if (isStoreManagerAccount(roles)) {
-    const assignedStoreIds = [...new Set((Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds : [])
-      .map(value => String(value || '').trim())
-      .filter(value => value && value !== '*'))];
-    const primaryStoreId = String(user.storeId || '').trim();
-    // 店长只查询自己的主门店，但可以看到该门店所有人的订单。
-    if (primaryStoreId && assignedStoreIds.includes(primaryStoreId)) return [primaryStoreId];
-    return assignedStoreIds.length ? [assignedStoreIds[0]] : [];
   }
   return resolveOrderStoreIds(user);
 }
@@ -4873,7 +4864,8 @@ async function assertSalesOrderVisible(order, user) {
 
   // 销售订单允许在同一经销商内临时切换门店。订单创建人和店长可以继续处理
   // 自己经销商范围内的订单，订单归属门店的库存校验仍在归档流程中单独执行。
-  if (isStoreManagerAccount(getUserRoles(user)) || isSalesOrderCreator(order, user)) {
+  if (!isMallReportViewer(getUserRoles(user)) &&
+    (isStoreScopedAccount(getUserRoles(user)) || isSalesOrderCreator(order, user))) {
     return;
   }
 

@@ -2529,6 +2529,10 @@ const api = {
   },
 
   store: {
+    getOrderStoreOptions() {
+      return http.request('/store/order-options')
+        .then(result => ({ code: 200, data: getListPayload(result).map(normalizeStore) }));
+    },
     list(params = {}) {
       return http.request('/store/list' + toQuery(Object.assign({ page: 1, pageSize: 100 }, params)))
         .then(result => ({ code: 200, data: getListPayload(result).map(normalizeStore), raw: result }));

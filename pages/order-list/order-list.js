@@ -412,7 +412,7 @@ Page({
 
     if (rawRole === 'distributor' || rawRole === 'admin') {
       userRole = 'distributor';
-    } else if (rawRole === 'store_admin' || rawRole === 'manager') {
+    } else if (rawRole === 'store_admin' || rawRole === 'manager' || rawRole === 'store_manager') {
       userRole = 'store_admin';
     }
 
@@ -905,7 +905,10 @@ Page({
           } else {
             // 列表接口已经按当前账号权限返回订单；当旧订单缺少创建人字段时，
             // 不应因为前端二次校验失败而隐藏操作区。
-            canOperate = Boolean(sameCreator || sameCreatorId || !orderCreator && !orderCreatorId);
+            const orderStoreId = order.storeId || order.store_id || '';
+            const sameSelectedStore = orderStoreId && queryUser.storeId &&
+              String(orderStoreId) === String(queryUser.storeId);
+            canOperate = Boolean(sameSelectedStore || sameCreator || sameCreatorId || !orderCreator && !orderCreatorId);
           }
 
           // 兼容处理：客户来源字段
@@ -2718,6 +2721,9 @@ Page({
     const orderStoreId = order && (order.storeId || order.store_id || '');
     if (queryUser.userRole === 'store_admin') {
       return !orderStoreId || String(orderStoreId) === String(queryUser.storeId || '');
+    }
+    if (orderStoreId && queryUser.storeId && String(orderStoreId) === String(queryUser.storeId)) {
+      return true;
     }
     const orderCreator = String(order && (
       order.createUser || order.create_user || order.creatorName || order.creator_name ||
