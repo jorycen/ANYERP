@@ -87,7 +87,7 @@
                 <el-button link type="danger" @click="handleDeleteDraft(row)" v-if="row.status === 'draft' && !row.submit_time">删除</el-button>
                 <el-button link type="primary" @click="handleApprove(row)" v-if="row.status === 'pending'">审批</el-button>
                 <el-button link type="success" @click="goToInbound(row)" v-if="row.status === 'approved' && row.pending_inbounds?.length">去入库</el-button>
-                <el-button link type="warning" @click="handleRevoke(row)" v-if="row.status === 'approved'">撤销</el-button>
+                <el-button link type="warning" @click="handleRevoke(row)" v-if="row.can_revoke">撤回</el-button>
                 <el-button link type="danger" @click="handleAdjustment(row)" v-if="row.status === 'approved'">退单</el-button>
                 <el-button link type="primary" @click="handleView(row)">查看</el-button>
               </template>

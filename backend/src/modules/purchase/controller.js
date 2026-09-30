@@ -13,6 +13,7 @@ const { isUsablePnCode } = require('../../utils/productPn');
 const { assertPnAvailableForNewProduct } = require('../../utils/productPnMaster');
 const { getUserRoles } = require('../../middleware/permission');
 const { isStoreScopedAccount } = require('../../utils/storePermissions');
+const { canAccessDistributor } = require('../../utils/distributorScope');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
 const { createProductRecord } = require('../product/controller');
 
@@ -1095,7 +1096,8 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
         store_name: item.Store?.name || ''
       }));
     result.has_completed_inbound = inboundRows.some(item => item.status === 'completed');
-    result.can_revoke = ['pending', 'approved', 'purchased'].includes(result.status) && !result.has_completed_inbound;
+    // 只有审批尚未完成时允许撤回；撤回后会回到草稿，原单可继续编辑提交。
+    result.can_revoke = result.status === 'pending' && !result.has_completed_inbound;
     
     return result;
   });
@@ -2792,13 +2794,13 @@ async function revokeRequest(ctx) {
   const isApplicant = request.applicant_staff_id && currentStaffId
     ? Number(request.applicant_staff_id) === Number(currentStaffId)
     : [user.name, user.phone, String(currentStaffId || '')].filter(Boolean).includes(request.apply_user);
-  if (!isApplicant && !isPrivileged) ctx.throw(403, '只有申请人可以撤销该采购申请');
+  const distributorAllowed = request.distributor_id
+    ? canAccessDistributor(user, request.distributor_id)
+    : false;
+  if (!isApplicant && !isPrivileged && !distributorAllowed) ctx.throw(403, '只有发起人或经销商账号可以撤回该采购申请');
 
-  if (!['pending', 'approved', 'purchased'].includes(request.status)) {
-    ctx.throw(400, '当前采购申请状态不允许撤销');
-  }
-  if (request.status !== 'pending' && (request.items || []).some(item => item.source_sn_id)) {
-    ctx.throw(400, '特殊仓SN采购审批通过后已完成库存转换，不能直接撤销');
+  if (request.status !== 'pending') {
+    ctx.throw(400, '仅审批未完成的采购申请可以撤回');
   }
   const inbounds = request.Inbounds || [];
   if (inbounds.some(inbound => inbound.status === 'completed')) {
@@ -2863,27 +2865,29 @@ async function revokeRequest(ctx) {
     }
 
     await request.update({
-      status: 'revoked',
+      status: 'draft',
       revoke_user: operatorName,
       revoke_time: new Date(),
       revoke_comment: String(comment || '').trim(),
+      submit_time: null,
+      submit_user: null,
       update_time: new Date()
     }, { transaction });
-    await setFreightRecordStatus('purchase', requestId, 'cancelled', user, transaction);
+    await setFreightRecordStatus('purchase', requestId, 'draft', user, transaction);
     await recordBusinessAction({
       businessType: 'purchase_request',
       businessId: request.request_id,
       businessNo: request.request_no,
-      action: 'revoked',
+      action: 'revoked_to_draft',
       fromStatus: request.status,
-      toStatus: 'revoked',
+      toStatus: 'draft',
       user,
       comment: comment || '',
       transaction
     });
 
     await transaction.commit();
-    ctx.body = { code: 0, message: '撤销成功' };
+    ctx.body = { code: 0, message: '采购申请已撤回并退回草稿' };
   } catch (error) {
     if (!transactionCommitted) await transaction.rollback();
     throw error;

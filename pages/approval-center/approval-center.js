@@ -539,6 +539,7 @@ Page({
     selectedTask: null,
     reviewComment: '',
     submitting: false,
+    approvingAll: false,
     partialError: '',
     approvalPage: 1,
     approvalHasMore: false,
@@ -672,6 +673,48 @@ Page({
   loadMoreApprovals() {
     if (this.data.loading || this.data.loadingMore || !this.data.approvalHasMore) return;
     return this.loadApprovals({ page: this.data.approvalPage + 1, pageSize: APPROVAL_PAGE_SIZE });
+  },
+
+  approveAll() {
+    if (this.data.approvingAll || this.data.loading || this.data.submitting || !this.data.tasks.length) return;
+    wx.showModal({
+      title: '一键审批',
+      content: `确认将全部 ${this.data.tasks.length} 条待审批单据通过吗？`,
+      confirmText: '全部通过',
+      confirmColor: '#07c160',
+      success: async result => {
+        if (!result.confirm) return;
+        this.setData({ approvingAll: true });
+        wx.showLoading({ title: '正在批量审批' });
+        const failed = [];
+        try {
+          while (this.data.approvalHasMore) {
+            await this.loadMoreApprovals();
+          }
+          const total = this.data.tasks.length;
+          for (const task of this.data.tasks) {
+            try {
+              await this.executeReview(task, 'approved', '');
+            } catch (error) {
+              failed.push(`${task.no || task.title || '单据'}：${error.message || '审批失败'}`);
+            }
+          }
+          await this.loadApprovals({ page: 1 });
+          wx.showToast({
+            title: failed.length ? `已处理${total - failed.length}条，失败${failed.length}条` : '全部审批通过',
+            icon: failed.length ? 'none' : 'success',
+            duration: 2600
+          });
+          if (failed.length) console.warn('一键审批失败明细:', failed);
+        } catch (error) {
+          console.error('一键审批加载失败:', error);
+          wx.showToast({ title: error.message || '批量审批失败', icon: 'none', duration: 2600 });
+        } finally {
+          wx.hideLoading();
+          this.setData({ approvingAll: false });
+        }
+      }
+    });
   },
 
   loadGenericTasks(options = {}) {

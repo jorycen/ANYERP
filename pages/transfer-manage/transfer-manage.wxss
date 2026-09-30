@@ -4,6 +4,12 @@
   background: #f5f7f8;
 }
 
+.reject-modal-mask { position: fixed; z-index: 1000; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, .45); }
+.reject-modal { width: 620rpx; padding: 32rpx; border-radius: 18rpx; background: #fff; box-sizing: border-box; }
+.reject-modal-title { display: block; margin-bottom: 24rpx; font-size: 32rpx; font-weight: 600; color: #1f2937; }
+.reject-reason-input { width: 100%; min-height: 180rpx; padding: 20rpx; border: 1rpx solid #d9dce3; border-radius: 10rpx; box-sizing: border-box; font-size: 28rpx; }
+.reject-modal-actions { display: flex; justify-content: flex-end; gap: 20rpx; margin-top: 24rpx; }
+
 .page-header {
   display: flex;
   align-items: center;

@@ -64,8 +64,10 @@ test('小程序拒绝调拨必须填写原因，后端空原因返回业务校�
   const pageSource = fs.readFileSync(path.join(__dirname, '../../pages/transfer-manage/transfer-manage.js'), 'utf8');
   const controllerSource = fs.readFileSync(path.join(__dirname, '../src/modules/inventory/controller.js'), 'utf8');
 
-  assert.match(pageSource, /rejectTransfer[\s\S]*editable:\s*true/);
-  assert.match(pageSource, /requireInput:\s*true/);
+  assert.match(pageSource, /rejectingTransferId/);
+  assert.match(pageSource, /onRejectReasonInput/);
+  assert.match(pageSource, /if \(!reason\)/);
+  assert.match(pageSource, /rejectTransfer\(transferId, \{ reason \}\)/);
   assert.doesNotMatch(pageSource, /rejectTransfer\(transfer\.transferId,\s*\{\s*reason:\s*''\s*\}\)/);
   assert.match(controllerSource, /action === 'rejected' && !reason[\s\S]*ctx\.throw\(400,/);
 });

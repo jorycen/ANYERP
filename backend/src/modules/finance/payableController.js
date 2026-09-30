@@ -2359,6 +2359,87 @@ async function commitPaymentImport(ctx) {
   };
 }
 
+/**
+ * 发起人或经销商账号可在审批完成前撤回结算单，撤回后恢复为可编辑草稿。
+ */
+async function revokeSettlement(ctx) {
+  try {
+    const { settlementId, comment = '' } = ctx.request.body || {};
+    const user = ctx.state.user;
+    if (!settlementId) ctx.throw(400, '结算单ID不能为空');
+    await sequelize.transaction(async transaction => {
+      const settlement = await Settlement.findOne({
+        where: { settlement_id: settlementId, is_deleted: 0 },
+        include: [{ model: SettlementItem, as: 'items' }],
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      if (!settlement) ctx.throw(404, '结算单不存在');
+      const operator = user?.name || user?.phone || String(user?.staffId || user?.id || '');
+      const isInitiator = [user?.name, user?.phone, user?.staffId, user?.id]
+        .filter(value => value !== undefined && value !== null && String(value).trim() !== '')
+        .some(value => String(value) === String(settlement.create_user));
+      if (!isInitiator && !canAccessDistributor(user, settlement.distributor_id)) {
+        ctx.throw(403, '只有结算单发起人或经销商账号可以撤回');
+      }
+      if (settlement.status !== 'pending_approval') ctx.throw(400, '仅审批未完成的结算单可以撤回');
+      if (settlement.payment_status !== 'unpaid' || Number(settlement.paid_amount || 0) > 0) {
+        ctx.throw(400, '已付款结算单不能撤回');
+      }
+
+      const now = new Date();
+      const approvalInstances = await ApprovalFlowInstance.findAll({
+        where: { business_type: 'payable_settlement', business_id: String(settlement.settlement_id), status: 'pending' },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      for (const instance of approvalInstances) {
+        await ApprovalTask.update(
+          { status: 'cancelled', acted_time: now },
+          { where: { instance_id: instance.instance_id, status: { [Op.in]: ['pending', 'waiting'] } }, transaction }
+        );
+        await instance.update({ status: 'cancelled', completed_time: now, update_time: now }, { transaction });
+        await ApprovalActionLog.create({
+          log_id: generateUUID(),
+          instance_id: instance.instance_id,
+          task_id: null,
+          action: 'cancelled',
+          actor_staff_id: user?.staffId || user?.id || null,
+          actor_name: operator,
+          comment: String(comment || '').trim() || '结算单已撤回',
+          detail_json: JSON.stringify({ settlementId: settlement.settlement_id, reason: 'settlement_revoked_to_draft' })
+        }, { transaction });
+      }
+
+      await settlement.update({
+        status: 'draft',
+        submit_time: null,
+        approval_user: operator || null,
+        approval_time: now,
+        approval_comment: String(comment || '').trim().slice(0, 512) || null,
+        update_time: now
+      }, { transaction });
+      for (const payableId of new Set((settlement.items || []).map(item => item.payable_id).filter(Boolean))) {
+        await refreshPayableState(payableId, transaction);
+      }
+      await recordBusinessAction({
+        businessType: 'payable_settlement',
+        businessId: settlement.settlement_id,
+        businessNo: settlement.settlement_no,
+        action: 'revoked_to_draft',
+        fromStatus: 'pending_approval',
+        toStatus: 'draft',
+        user,
+        comment,
+        transaction
+      });
+    });
+    ctx.body = { code: 0, message: '结算单已撤回并退回草稿' };
+  } catch (error) {
+    throwStatusError(ctx, error);
+  }
+}
+
 async function createBatchPayment(ctx) {
   const { accountId, items, remark } = ctx.request.body || {};
   if (!Array.isArray(items) || items.length === 0) ctx.throw(400, '请至少勾选一张待付款结算单');
@@ -2648,6 +2729,7 @@ module.exports = {
   submitSettlement,
   confirmSettlement,
   rejectSettlement,
+  revokeSettlement,
   voidSettlement,
   getPaymentCandidates,
   exportPaymentCandidates,

@@ -2062,6 +2062,12 @@ const api = {
     create(data) {
       return http.request({ url: '/purchase/create-request', method: 'POST', data });
     },
+    updateDraft(requestId, data) {
+      return http.request({ url: '/purchase/request-draft/' + encodeURIComponent(requestId), method: 'PUT', data });
+    },
+    submitDraft(requestId) {
+      return http.request({ url: '/purchase/request-draft/' + encodeURIComponent(requestId) + '/submit', method: 'POST' });
+    },
     approve(requestId, data) {
       return http.request({
         url: '/purchase/approve-request/' + encodeURIComponent(requestId),
@@ -2516,6 +2522,9 @@ const api = {
     },
     settlementDetail(settlementId) {
       return http.request('/finance/settlement/' + encodeURIComponent(settlementId));
+    },
+    revokeSettlement(settlementId, data = {}) {
+      return http.request({ url: '/finance/settlement/revoke', method: 'POST', data: { settlementId, ...data } });
     }
   },
 

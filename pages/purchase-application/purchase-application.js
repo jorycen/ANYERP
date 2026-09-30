@@ -262,6 +262,7 @@ Page({
     isSubmitting: false,
     isSavingProduct: false,
     revokingRecordKey: '',
+    editingRequestId: '',
     requestTotal: '0.00',
     form: {
       supplierIndex: -1,
@@ -1052,7 +1053,10 @@ Page({
     this._purchaseSubmissionLocked = true;
     this.setData({ isSubmitting: true });
     wx.showLoading({ title: '提交中' });
-    api.purchase.create(payload).then(() => {
+    const saveRequest = this.data.editingRequestId
+      ? api.purchase.updateDraft(this.data.editingRequestId, payload).then(() => api.purchase.submitDraft(this.data.editingRequestId))
+      : api.purchase.create(payload);
+    saveRequest.then(() => {
       wx.showToast({ title: '已进入采购审批流程', icon: 'success' });
       this.resetPurchaseForm();
       this.setData({ activeTab: 'list' });
@@ -1069,6 +1073,7 @@ Page({
 
   resetPurchaseForm() {
     this.setData({
+      editingRequestId: '',
       productKeyword: '',
       supplierKeyword: '',
       productList: [],
@@ -1173,6 +1178,29 @@ Page({
     wx.navigateTo({
       url: `/pages/application-detail/application-detail?type=${encodeURIComponent(record.type)}&id=${encodeURIComponent(record.recordId)}`
     });
+  },
+
+  editPurchaseDraft(e) {
+    const key = e.currentTarget.dataset.key;
+    const record = this.data.myRecords.find(item => item.recordKey === key);
+    if (!record || record.status !== 'draft') return;
+    api.purchase.detail(record.recordId).then(result => {
+      const detail = result?.data || result || {};
+      const parseList = value => {
+        if (Array.isArray(value)) return value;
+        try { return value ? JSON.parse(value) : []; } catch (_) { return []; }
+      };
+      const items = (detail.items || []).map(item => ({
+        productId: item.product_id || item.productId || '', productName: item.product_name || item.productName || '',
+        pnCode: item.pn_code || item.pnCode || '', price: Number(item.unit_price || item.unitPrice || 0),
+        quantity: Number(item.quantity || 0), storeAllocations: parseList(item.store_allocations || item.storeAllocations), selectedResourceTypes: []
+      }));
+      this.setData({ activeTab: 'create', editingRequestId: record.recordId,
+        'form.supplierId': detail.supplier_id || detail.supplierId || '', 'form.supplierName': detail.supplier_name || '',
+        'form.invoiceType': detail.invoice_type || '专票13%', 'form.paymentMethod': detail.payment_method || 'COMPANY_CREDIT',
+        'form.productType': detail.product_type || '', 'form.remark': detail.reason || detail.remark || '', 'form.items': items
+      }, () => this.updateRequestTotal());
+    }).catch(err => wx.showToast({ title: err.message || '草稿加载失败', icon: 'none' }));
   },
 
   performRevoke(record) {

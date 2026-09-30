@@ -5,7 +5,9 @@
         <text class="eyebrow">OWNER'S VIEW</text>
         <text class="page-title">财务管理</text>
       </view>
-      <view class="demo-badge">{{dataSourceText}}</view>
+      <picker class="hero-region-picker" mode="selector" range="{{regions}}" range-key="label" value="{{selectedRegionIndex}}" bindchange="selectRegion">
+        <view class="demo-badge">{{selectedRegionLabel}} <text class="hero-region-arrow">⌄</text></view>
+      </picker>
     </view>
     <text class="hero-subtitle">老板经营总览 · {{periodLabel}}</text>
 
@@ -130,9 +132,25 @@
         <view wx:if="{{category.key === selectedInventoryCategory && category.children.length}}" class="inventory-detail-card">
           <view class="inventory-detail-heading">
             <text class="inventory-detail-title">{{category.name}}明细</text>
-            <text class="unit-note">点击二级分类展开三级明细</text>
+            <text class="unit-note">逐级点击，可展开至四级分类</text>
           </view>
-          <block wx:for="{{category.children}}" wx:for-item="child" wx:key="key">
+          <block wx:for="{{inventoryDetailRows}}" wx:for-item="child" wx:key="key">
+            <view
+              class="data-row inventory-child-row {{child.canExpand ? 'inventory-expandable' : ''}} {{child.expanded ? 'expanded' : ''}}"
+              data-key="{{child.key}}"
+              bindtap="toggleInventoryCategory"
+              style="padding-left: {{child.indent}}rpx;"
+            >
+              <view class="row-name-wrap">
+                <view class="child-dot"></view>
+                <text class="row-name">{{child.name}}</text>
+              </view>
+              <text class="row-quantity">{{child.quantity}} 件</text>
+              <text class="row-amount">¥{{child.amount}}</text>
+              <text wx:if="{{child.canExpand}}" class="inventory-expand-mark">{{child.expanded ? '−' : '+'}}</text>
+            </view>
+          </block>
+          <block wx:if="{{false}}" wx:for="{{category.children}}" wx:for-item="child" wx:key="key">
             <view
               class="data-row inventory-child-row {{child.children.length ? 'inventory-expandable' : ''}} {{child.expanded ? 'expanded' : ''}}"
               data-key="{{child.key}}"
@@ -175,6 +193,36 @@
         <text class="account-name">{{item.name}}</text>
         <text class="account-amount">¥{{item.amount}}</text>
       </view>
+    </view>
+  </view>
+
+  <view class="section rebate-section">
+    <view class="section-heading compact-heading">
+      <view>
+        <text class="section-kicker">返利查询</text>
+        <text class="section-title">返利资金池</text>
+      </view>
+      <text class="unit-note">点击查看明细</text>
+    </view>
+    <view class="rebate-card-grid">
+      <view class="rebate-card received" data-type="received" bindtap="selectRebateType">
+        <text class="rebate-label">已到账返利</text>
+        <text class="rebate-amount">¥{{rebate.receivedAmount}}</text>
+        <text class="rebate-hint">可用返利余额</text>
+      </view>
+      <view class="rebate-card pending" data-type="pending" bindtap="selectRebateType">
+        <text class="rebate-label">未到账返利池</text>
+        <text class="rebate-amount">¥{{rebate.pendingAmount}}</text>
+        <text class="rebate-hint">待确认返利预估</text>
+      </view>
+    </view>
+    <view class="rebate-detail" wx:if="{{selectedRebateType}}">
+      <view class="rebate-detail-title"><text>{{selectedRebateLabel}}</text><text>{{selectedRebateList.length}} 家供应商</text></view>
+      <view class="data-row rebate-row" wx:for="{{selectedRebateList}}" wx:key="supplierId">
+        <text class="row-name">{{item.supplierName}}</text>
+        <text class="row-amount">¥{{item.amount}}</text>
+      </view>
+      <view class="inventory-empty-state" wx:if="{{!selectedRebateList.length}}">暂无明细</view>
     </view>
   </view>
 

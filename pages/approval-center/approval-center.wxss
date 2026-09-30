@@ -53,6 +53,7 @@
   line-height: 86rpx;
   text-align: center;
 }
+.total-badge-loading { opacity: 0.55; }
 
 .filter-scroll {
   width: 100%;

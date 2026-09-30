@@ -109,3 +109,13 @@
     <button class="modal-cancel" bindtap="closeProductModal">取消</button>
   </view></view>
 </view>
+<view wx:if="{{rejectingTransferId}}" class="reject-modal-mask">
+  <view class="reject-modal">
+    <text class="reject-modal-title">拒绝调拨申请</text>
+    <textarea class="reject-reason-input" maxlength="500" placeholder="请输入拒绝原因" value="{{rejectReason}}" bindinput="onRejectReasonInput" />
+    <view class="reject-modal-actions">
+      <button size="mini" bindtap="cancelRejectTransfer">取消</button>
+      <button size="mini" type="warn" bindtap="submitRejectTransfer">确认拒绝</button>
+    </view>
+  </view>
+</view>

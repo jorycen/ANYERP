@@ -60,7 +60,15 @@ function buildFinanceCategoryIndex(rows) {
   return { byId, byPath, childrenByParent, nodes: [...byId.values()] };
 }
 
-function findFinanceCategory(categoryPath, categoryIndex) {
+function findFinanceCategory(categoryPath, categoryIndex, categoryId) {
+  const exactCategory = categoryId ? categoryIndex.byId.get(String(categoryId)) : null;
+  if (exactCategory) {
+    let current = exactCategory;
+    while (current) {
+      if (current.showInFinance) return current;
+      current = current.parentId ? categoryIndex.byId.get(current.parentId) : null;
+    }
+  }
   const normalizedPath = normalizeCategoryPath(categoryPath);
   const parts = normalizedPath ? normalizedPath.split('/') : [];
   for (let index = parts.length; index > 0; index -= 1) {
@@ -522,6 +530,44 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
     );
   }
 
+  // Use the product category id and the category table to restore the full
+  // four-level path. This intentionally overrides the legacy text-only query
+  // above, which cannot expand products stored with a leaf category id.
+  async getProductCategoryRows(filters, range) {
+    const where = buildSalesWhere(filters, range);
+    const factor = allocationSql(filters);
+    const [rows, categoryRows] = await Promise.all([
+      this.query(
+        `SELECT p.CATEGORY_ID AS categoryId,
+                MAX(p.CATEGORY) AS categoryPath,
+                ROUND(SUM((${orderItemSalesAmountSql()}) * ${factor}), 2) AS salesAmount,
+                ROUND(SUM(oi.QUANTITY * ${factor}), 2) AS quantity
+           FROM T_ORDER o
+           INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+           ${orderItemTotalsJoin()}
+           LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
+           LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
+           LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
+           LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
+          WHERE ${where.sql}
+          GROUP BY p.CATEGORY_ID
+          ORDER BY salesAmount DESC`,
+        where.replacements
+      ),
+      this.query(
+        `SELECT CATEGORY_ID AS categoryId, PARENT_ID AS parentId, NAME AS name,
+                LEVEL AS level, SORT_ORDER AS sortOrder, SHOW_IN_FINANCE AS showInFinance
+           FROM T_PRODUCT_CATEGORY
+          WHERE STATUS = 1`
+      )
+    ]);
+    const categoryIndex = buildFinanceCategoryIndex(categoryRows);
+    return rows.map(row => ({
+      ...row,
+      categoryPath: categoryIndex.byId.get(String(row.categoryId || ''))?.path || row.categoryPath
+    }));
+  }
+
   async getEmployeeOrderRows(filters, range) {
     const where = buildSalesWhere(filters, range);
     return this.query(
@@ -605,6 +651,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
     const [snRows, nonSnRows, ageRows, categoryRows] = await Promise.all([
       this.query(
         `SELECT ps.PRODUCT_ID AS productId,
+                MAX(p.CATEGORY_ID) AS categoryId,
                 MAX(p.NAME) AS productName,
                 MAX(p.BRAND) AS brand,
                 MAX(p.SERIES) AS series,
@@ -630,6 +677,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       ),
       this.query(
         `SELECT i.PRODUCT_ID AS productId,
+                MAX(p.CATEGORY_ID) AS categoryId,
                 MAX(p.NAME) AS productName,
                 MAX(p.BRAND) AS brand,
                 MAX(p.SERIES) AS series,
@@ -722,7 +770,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
         children: []
       }]));
     rows.forEach(row => {
-      const category = findFinanceCategory(row.categoryPath, categoryIndex);
+      const category = findFinanceCategory(row.categoryPath, categoryIndex, row.categoryId);
       const target = category ? categoryMap.get(category.categoryId) : null;
       if (!target) return;
       target.quantity += row.quantity;

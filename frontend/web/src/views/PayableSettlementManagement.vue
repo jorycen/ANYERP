@@ -101,6 +101,7 @@
             <el-button link type="primary" @click="openDetail(row)">详情</el-button>
             <el-button link type="primary" @click="openRemarkEditor(row)">修改备注</el-button>
             <el-button v-if="row.status === 'pending_approval'" link type="success" @click="openApprovalCenter">审批中心</el-button>
+            <el-button v-if="row.status === 'pending_approval'" link type="warning" @click="revokeSettlement(row)">撤回</el-button>
             <el-button v-if="row.status === 'draft' && !row.submit_time" link type="warning" @click="submit(row)">提交</el-button>
             <el-button v-if="row.status === 'draft' && !row.submit_time" link type="danger" @click="deleteDraft(row)">删除</el-button>
             <el-button v-if="row.status === 'confirmed' && remaining(row) > 0" link type="primary" @click="openPayment(row)">部分付款</el-button>
@@ -566,6 +567,19 @@ const loadDistributorOptions = async () => {
 
 .payment-form {
   margin-top: 20px;
+}
+
+const revokeSettlement = async row => {
+  try {
+    await ElMessageBox.confirm(`确认撤回结算单 ${row.settlement_no}？撤回后将恢复为草稿并允许重新编辑提交。`, '撤回结算单', { type: 'warning' })
+    const res = await api.revokeSettlement({ settlementId: row.settlement_id })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '结算单已撤回并退回草稿')
+      await loadData()
+    } else ElMessage.error(res.message || '撤回失败')
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error.response?.data?.message || '撤回失败')
+  }
 }
 
 .remark-cell {

@@ -467,6 +467,7 @@ export default {
   updateSettlementRemark: (id, data) => api.put(`/finance/settlement/${id}/remark`, data),
   deleteSettlementDraft: (id) => api.delete(`/finance/settlement/${id}`),
   submitSettlement: (data) => api.post('/finance/settlement/submit', data),
+  revokeSettlement: (data) => api.post('/finance/settlement/revoke', data),
   confirmSettlement: (data) => api.post('/finance/settlement/confirm', data),
   rejectSettlement: (data) => api.post('/finance/settlement/reject', data),
   voidSettlement: (data) => api.post('/finance/settlement/void', data),

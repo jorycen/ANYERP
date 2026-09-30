@@ -4183,12 +4183,18 @@ const handleRevokeTransfer = async (row) => {
 
 const handleRejectTransfer = async (row) => {
   try {
-    await ElMessageBox.confirm(
-      `确认拒绝调拨申请 ${row.transfer_no} 吗？`,
+    const result = await ElMessageBox.prompt(
+      `请输入拒绝调拨申请 ${row.transfer_no} 的理由`,
       '拒绝调拨申请',
-      { confirmButtonText: '确认拒绝', cancelButtonText: '取消', type: 'warning' }
+      {
+        confirmButtonText: '确认拒绝',
+        cancelButtonText: '取消',
+        inputType: 'textarea',
+        inputPlaceholder: '请输入拒绝理由',
+        inputValidator: value => Boolean(String(value || '').trim()) || '拒绝理由不能为空'
+      }
     )
-    const res = await api.rejectTransfer({ transferId: row.transfer_id })
+    const res = await api.rejectTransfer({ transferId: row.transfer_id, reason: String(result.value || '').trim() })
     if (res.code === 0) {
       ElMessage.success('调拨申请已拒绝')
       loadTransferLists()

@@ -81,6 +81,27 @@ function findInventoryCategory(categories, targetKey) {
   return null;
 }
 
+function flattenInventoryRows(category, level = 1, rows = []) {
+  (category.children || []).forEach(child => {
+    if (level > 4) return;
+    rows.push({
+      ...child,
+      level,
+      indent: Math.max(0, level - 1) * 24,
+      canExpand: Array.isArray(child.children) && child.children.length > 0
+    });
+    if (child.expanded && child.children && child.children.length) {
+      flattenInventoryRows(child, level + 1, rows);
+    }
+  });
+  return rows;
+}
+
+function getInventoryDetailRows(categories, selectedKey) {
+  const root = findInventoryCategory(categories || [], selectedKey);
+  return root ? flattenInventoryRows(root, 1, []) : [];
+}
+
 Page({
   data: {
     periods: PERIODS,
@@ -103,12 +124,17 @@ Page({
     accountTotal: '--',
     pendingPaymentTotal: '--',
     inventory: [],
+    inventoryDetailRows: [],
     selectedInventoryCategory: '',
     expandedInventoryCategories: [],
     inventoryDemoModes: INVENTORY_DEMO_MODES,
     selectedInventoryDemoMode: 'include',
     accounts: [],
     paymentAmounts: [],
+    rebate: { receivedAmount: '--', pendingAmount: '--', receivedList: [], pendingList: [] },
+    selectedRebateType: '',
+    selectedRebateLabel: '',
+    selectedRebateList: [],
     isLoading: false,
     errorMessage: '',
     dataSourceText: '实时数据 · ANY-ERP',
@@ -152,7 +178,10 @@ Page({
 
   selectInventoryCategory(event) {
     const selectedInventoryCategory = event.currentTarget.dataset.key || '';
-    this.setData({ selectedInventoryCategory });
+    this.setData({
+      selectedInventoryCategory,
+      inventoryDetailRows: getInventoryDetailRows(this.data.inventory, selectedInventoryCategory)
+    });
   },
 
   selectInventoryDemoMode(event) {
@@ -171,6 +200,13 @@ Page({
         label: String(item.name || item.region_name || item.regionName || '').replace('区域', '')
       })).filter(item => item.regionId && (!item.regionCode || ['CD', 'CQ'].includes(String(item.regionCode).toUpperCase())));
       this.setData({ regions: [{ regionId: '', label: '全部' }].concat(rows) });
+      const normalizedRegions = (this.data.regions || []).map(item => ({
+        ...item,
+        label: String(item.regionCode || '').toUpperCase() === 'CD'
+          ? '成都'
+          : (String(item.regionCode || '').toUpperCase() === 'CQ' ? '重庆' : '全部')
+      }));
+      this.setData({ regions: normalizedRegions });
     } catch (error) {
       console.warn('[财务管理] 区域加载失败:', error && error.message ? error.message : error);
       this.setData({ regions: [{ regionId: '', label: '全部' }] });
@@ -216,9 +252,14 @@ Page({
         accountTotal: '--',
         pendingPaymentTotal: '--',
         inventory: [],
+        inventoryDetailRows: [],
         selectedInventoryCategory: '',
         expandedInventoryCategories: [],
         accounts: [],
+        rebate: { receivedAmount: '--', pendingAmount: '--', receivedList: [], pendingList: [] },
+        selectedRebateType: '',
+        selectedRebateLabel: '',
+        selectedRebateList: [],
         paymentAmounts: this.formatPaymentAmounts(null),
         errorMessage: '真实数据加载失败，请检查登录状态和接口权限',
         lastUpdated: this.formatTime(new Date()),
@@ -232,6 +273,7 @@ Page({
     const inventory = data.inventory || {};
     const accounts = data.accounts || {};
     const payments = data.payments || {};
+    const rebate = data.rebate || {};
     const grossProfit = data.grossProfit;
     const expandedInventoryCategories = this.data.expandedInventoryCategories || [];
     const inventoryCategories = (inventory.categories || [])
@@ -248,9 +290,19 @@ Page({
       accountTotal: accounts.totalAmount === null || accounts.totalAmount === undefined ? '--' : formatMoney(accounts.totalAmount),
       pendingPaymentTotal: formatMoney(Number(payments.uncreated || 0) + Number(payments.created || 0)),
       inventory: inventoryCategories,
+      inventoryDetailRows: getInventoryDetailRows(inventoryCategories, selectedInventoryCategory),
       selectedInventoryCategory,
       expandedInventoryCategories,
       accounts: (accounts.byType || []).map(item => ({ name: item.name, amount: formatMoney(item.amount) })),
+      rebate: {
+        receivedAmount: formatMoney(rebate.receivedAmount || 0),
+        pendingAmount: formatMoney(rebate.pendingAmount || 0),
+        receivedList: (rebate.receivedList || []).map(item => ({ ...item, amount: formatMoney(item.amount) })),
+        pendingList: (rebate.pendingList || []).map(item => ({ ...item, amount: formatMoney(item.amount) }))
+      },
+      selectedRebateType: '',
+      selectedRebateLabel: '',
+      selectedRebateList: [],
       paymentAmounts: this.formatPaymentAmounts(payments),
       errorMessage: '',
       lastUpdated: this.formatTime(new Date()),
@@ -269,7 +321,18 @@ Page({
       : this.data.expandedInventoryCategories.concat(key);
     this.setData({
       inventory: toggleInventoryCategory(this.data.inventory, key),
+      inventoryDetailRows: getInventoryDetailRows(toggleInventoryCategory(this.data.inventory, key), this.data.selectedInventoryCategory),
       expandedInventoryCategories
+    });
+  },
+
+  selectRebateType(event) {
+    const selectedRebateType = event.currentTarget.dataset.type === 'pending' ? 'pending' : 'received';
+    const selectedRebateLabel = selectedRebateType === 'pending' ? '未到账返利池明细' : '已到账返利明细';
+    this.setData({
+      selectedRebateType,
+      selectedRebateLabel,
+      selectedRebateList: this.data.rebate[`${selectedRebateType}List`] || []
     });
   },
 

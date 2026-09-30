@@ -15,6 +15,7 @@ function emptyDashboard() {
     storeRanking: [],
     employeeRanking: [],
     productLineAnalysis: [],
+    productCategoryAnalysis: [],
     productAnalysis: { salesTop10: [], quantityTop10: [], focusProducts: [] },
     inventory: { inventoryQuantity: 0, skuCount: 0, inventoryAmount: null, ageStructure: [], staleProducts: [] }
   };
@@ -93,6 +94,9 @@ function normalizeDashboard(result) {
     employeeRanking: rows(['employeeRanking', 'employee_ranking', 'employees', 'statsByEmployee', 'stats_by_employee']),
     productLineAnalysis: rows(['productLineAnalysis', 'product_line_analysis', 'productLines', 'product_lines', 'statsByCategory', 'stats_by_category'])
   });
+  dashboard.productCategoryAnalysis = normalizeCategoryNodes(
+    firstDefined(source, ['productCategoryAnalysis', 'product_category_analysis', 'categoryAnalysis', 'category_analysis']) || []
+  );
 
   const productAnalysis = source.productAnalysis || source.product_analysis || {};
   dashboard.productAnalysis = Object.assign({}, emptyDashboard().productAnalysis, productAnalysis, {
@@ -136,6 +140,30 @@ function normalizeRowNumber(row, keys) {
   return toNumber(firstDefined(row, keys), 0);
 }
 
+function normalizeCategoryNodes(rows) {
+  const normalized = (Array.isArray(rows) ? rows : []).map(row => {
+    const children = normalizeCategoryNodes(row.children || row.items);
+    const salesAmount = normalizeRowNumber(row, ['salesAmount', 'sales_amount', 'totalAmount', 'total_amount', 'amount']);
+    const quantity = normalizeRowNumber(row, ['quantity', 'salesQuantity', 'sales_quantity', 'count']);
+    return Object.assign({}, row, {
+      categoryId: row.categoryId || row.category_id || row.path || row.name || '',
+      name: row.name || row.categoryName || row.category_name || row.category || '未分类',
+      path: row.path || row.categoryPath || row.category_path || row.name || '',
+      level: normalizeRowNumber(row, ['level']) || 1,
+      salesAmount,
+      quantity,
+      amountDisplay: formatCompactMoneyText(salesAmount),
+      quantityDisplay: formatNumberText(quantity),
+      hasChildren: children.length > 0,
+      children
+    });
+  });
+  const maxSales = Math.max.apply(null, normalized.map(row => Number(row.salesAmount || 0)).concat([1]));
+  return normalized.map(row => Object.assign({}, row, {
+    barWidth: `${Math.max(2, Number(row.salesAmount || 0) / maxSales * 100)}%`
+  }));
+}
+
 function normalizeAchievementMetric(metric) {
   const rate = metric && metric.rate !== null && metric.rate !== undefined ? Number(metric.rate) : null;
   return Object.assign({}, metric || {}, {
@@ -169,6 +197,8 @@ Page({
     maxEmployeeSales: 1,
     maxProductLineSales: 1,
     maxInventoryQuantity: 1,
+    categoryViewRows: [],
+    categoryBreadcrumb: [],
     businessAchievement: { monthKey: '', stores: [], employees: [] }
   },
 
@@ -427,7 +457,8 @@ Page({
       grossProfitDisplay: formatCompactMoneyText(row.grossProfit)
     }));
     dashboard.productLineAnalysis = dashboard.productLineAnalysis.map(row => Object.assign({}, row, {
-      amountDisplay: formatCompactMoneyText(row.salesAmount)
+      amountDisplay: formatCompactMoneyText(row.salesAmount),
+      quantityDisplay: formatNumberText(row.quantity)
     }));
     dashboard.productAnalysis.salesTop10 = (dashboard.productAnalysis.salesTop10 || []).map(row => {
       const salesAmount = normalizeRowNumber(row, ['salesAmount', 'sales_amount', 'totalAmount', 'total_amount', 'amount']);
@@ -440,6 +471,8 @@ Page({
 
     this.setData({
       dashboard,
+      categoryViewRows: dashboard.productCategoryAnalysis || [],
+      categoryBreadcrumb: [],
       maxStoreSales: storeMax,
       maxEmployeeSales: employeeMax,
       maxProductLineSales: productLineMax,
@@ -466,6 +499,45 @@ Page({
     const item = this.data.filters.productLines[index] || {};
     this.setData({ productLinePickerIndex: index, selectedProductLine: item.id || '' });
     this.loadOverview();
+  },
+
+  onCategoryRootTap() {
+    this.setData({
+      categoryViewRows: this.data.dashboard.productCategoryAnalysis || [],
+      categoryBreadcrumb: []
+    });
+  },
+
+  findCategoryNode(nodes, targetPath) {
+    for (const node of nodes || []) {
+      if (node.path === targetPath) return node;
+      const found = this.findCategoryNode(node.children, targetPath);
+      if (found) return found;
+    }
+    return null;
+  },
+
+  onCategoryTap(e) {
+    const path = String(e.currentTarget.dataset.path || '');
+    const node = this.findCategoryNode(this.data.dashboard.productCategoryAnalysis, path);
+    if (!node || !node.children || !node.children.length) return;
+    const names = path.split('/');
+    this.setData({
+      categoryViewRows: node.children,
+      categoryBreadcrumb: names.map((name, index) => ({ name, path: names.slice(0, index + 1).join('/') }))
+    });
+  },
+
+  onCategoryBreadcrumbTap(e) {
+    const path = String(e.currentTarget.dataset.path || '');
+    if (!path) return this.onCategoryRootTap();
+    const node = this.findCategoryNode(this.data.dashboard.productCategoryAnalysis, path);
+    if (!node) return;
+    const names = path.split('/');
+    this.setData({
+      categoryViewRows: node.children || [],
+      categoryBreadcrumb: names.map((name, index) => ({ name, path: names.slice(0, index + 1).join('/') }))
+    });
   },
 
   switchSection(e) {

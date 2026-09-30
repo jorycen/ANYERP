@@ -214,6 +214,7 @@
         <view class="stage-row"><text class="stage-label">当前环节</text><text class="stage-value">{{item.currentStage}}</text></view>
         <view class="review-info" wx:if="{{item.reviewComment || item.reviewUserName}}">审批批注：{{item.reviewComment || '-'}}<text wx:if="{{item.reviewUserName}}">（{{item.reviewUserName}}）</text></view>
         <button class="detail-btn" size="mini" data-key="{{item.recordKey}}" bindtap="openRecordDetail">查看申请详情</button>
+        <button class="detail-btn" size="mini" wx:if="{{item.type === 'purchase' && item.status === 'draft'}}" data-key="{{item.recordKey}}" bindtap="editPurchaseDraft">继续编辑</button>
         <view class="record-action-row" wx:if="{{item.canRevoke || item.revokeDisabledReason}}">
           <text class="revoke-disabled" wx:if="{{item.revokeDisabledReason}}">{{item.revokeDisabledReason}}</text>
           <button class="revoke-btn" size="mini" wx:if="{{item.canRevoke}}" loading="{{revokingRecordKey === item.recordKey}}" disabled="{{revokingRecordKey}}" data-key="{{item.recordKey}}" bindtap="revokeRecord">撤销申请</button>

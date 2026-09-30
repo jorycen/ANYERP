@@ -31,6 +31,7 @@ const {
   submitSettlement,
   confirmSettlement,
   rejectSettlement,
+  revokeSettlement,
   voidSettlement,
   getPaymentCandidates,
   exportPaymentCandidates,
@@ -153,6 +154,7 @@ router.delete('/settlement/:id', deleteSettlementDraft);
 router.post('/settlement/submit', submitSettlement);
 router.post('/settlement/confirm', confirmSettlement);
 router.post('/settlement/reject', rejectSettlement);
+router.post('/settlement/revoke', revokeSettlement);
 router.post('/settlement/void', voidSettlement);
 router.get('/settlement-payment/candidates', getPaymentCandidates);
 router.get('/settlement-payment/export', exportPaymentCandidates);

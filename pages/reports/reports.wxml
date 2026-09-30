@@ -117,11 +117,21 @@
 
     <view class="two-column" wx:if="{{activeSection === 'overview' || activeSection === 'product'}}">
       <view class="panel half-panel">
-        <view class="panel-title-row"><text class="panel-title">品类销售</text></view>
-        <view class="mini-list" wx:if="{{dashboard.productLineAnalysis.length}}">
-          <view class="mini-row" wx:for="{{dashboard.productLineAnalysis}}" wx:key="productLine">
-            <view class="mini-head"><text>{{item.productLine}}</text><text>¥{{item.amountDisplay}}</text></view>
-            <view class="progress-track"><view class="progress-bar green" style="width: {{item.barWidth}};"></view></view>
+        <view class="panel-title-row"><text class="panel-title">品类销售</text><text class="panel-note">支持4级</text></view>
+        <view class="category-breadcrumb">
+          <text class="category-crumb root" bindtap="onCategoryRootTap">全部品类</text>
+          <block wx:for="{{categoryBreadcrumb}}" wx:key="path">
+            <text class="category-separator">/</text>
+            <text class="category-crumb" data-path="{{item.path}}" bindtap="onCategoryBreadcrumbTap">{{item.name}}</text>
+          </block>
+        </view>
+        <view class="category-list" wx:if="{{categoryViewRows.length}}">
+          <view class="category-row" wx:for="{{categoryViewRows}}" wx:key="path" data-path="{{item.path}}" bindtap="onCategoryTap">
+            <view class="category-row-main">
+              <view class="category-row-title"><text>{{item.name}}</text><text wx:if="{{item.hasChildren}}" class="category-arrow">›</text></view>
+              <view class="category-row-meta"><text>销量 {{item.quantityDisplay}}</text><text>销售额 ¥{{item.amountDisplay}}</text></view>
+              <view class="progress-track"><view class="progress-bar green" style="width: {{item.barWidth}};"></view></view>
+            </view>
           </view>
         </view>
         <view class="empty-inline" wx:else>暂无品类数据</view>

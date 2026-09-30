@@ -4,7 +4,7 @@
       <text class="summary-title">待我审批</text>
       <text class="summary-subtitle">已按当前账号角色和门店权限汇总</text>
     </view>
-    <view class="total-badge">{{tasks.length}}</view>
+    <view class="total-badge {{approvingAll ? 'total-badge-loading' : ''}}" bindtap="approveAll">{{tasks.length}}</view>
   </view>
 
   <view class="mode-tabs">

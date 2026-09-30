@@ -151,6 +151,8 @@ Page({
     activeTransferId: '',
     shippingTransfer: null,
     receivingTransfer: null,
+    rejectingTransferId: '',
+    rejectReason: '',
     shipping: {
       items: [],
       pnOptions: [],
@@ -1189,13 +1191,33 @@ Page({
   rejectTransfer(e) {
     const transfer = this.data.transfers.find(item => item.transferId === e.currentTarget.dataset.id);
     if (!transfer) return;
-    this.confirmAction('', reason => api.inventory.rejectTransfer(transfer.transferId, { reason }), {
-      title: '拒绝调拨',
-      editable: true,
-      requireInput: true,
-      placeholderText: '请输入拒绝原因',
-      confirmText: '确认拒绝'
-    });
+    this.setData({ rejectingTransferId: transfer.transferId, rejectReason: '' });
+  },
+
+  onRejectReasonInput(e) {
+    this.setData({ rejectReason: e.detail.value || '' });
+  },
+
+  cancelRejectTransfer() {
+    this.setData({ rejectingTransferId: '', rejectReason: '' });
+  },
+
+  submitRejectTransfer() {
+    const transferId = this.data.rejectingTransferId;
+    const reason = String(this.data.rejectReason || '').trim();
+    if (!transferId) return;
+    if (!reason) {
+      wx.showToast({ title: '请输入拒绝原因', icon: 'none' });
+      return;
+    }
+    wx.showLoading({ title: '处理中' });
+    api.inventory.rejectTransfer(transferId, { reason }).then(() => {
+      wx.showToast({ title: '调拨申请已拒绝', icon: 'success' });
+      this.setData({ rejectingTransferId: '', rejectReason: '' });
+      return this.loadTransfers();
+    }).catch(err => {
+      wx.showToast({ title: err.message || '拒绝失败', icon: 'none' });
+    }).finally(() => wx.hideLoading());
   },
 
   returnTransfer(e) {
