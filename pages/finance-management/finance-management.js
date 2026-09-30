@@ -81,9 +81,11 @@ function findInventoryCategory(categories, targetKey) {
   return null;
 }
 
+const MAX_INVENTORY_LEVEL = 4;
+
 function flattenInventoryRows(category, level = 1, rows = []) {
   (category.children || []).forEach(child => {
-    if (level > 4) return;
+    if (level > MAX_INVENTORY_LEVEL) return;
     rows.push({
       ...child,
       level,

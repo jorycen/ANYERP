@@ -53,7 +53,6 @@
         <text class="section-kicker">销售表现</text>
         <text class="section-title">营业额与毛利</text>
       </view>
-      <text class="compare">{{compare}}</text>
     </view>
     <view class="revenue-main">
       <view class="revenue-primary">
@@ -72,7 +71,7 @@
   <view class="quick-grid">
     <view class="quick-card inventory-quick">
       <view class="quick-icon">库</view>
-      <text class="quick-label">库存总额</text>
+      <text class="quick-label">库存分析</text>
       <text class="quick-value">¥{{inventoryTotal}}</text>
       <text class="quick-hint">按采购成本</text>
     </view>
@@ -250,5 +249,4 @@
     <view class="payment-note">采购和报销统一统计，付款状态来自现有业务流程。</view>
   </view>
 
-  <view class="footer-note">数据更新时间：{{lastUpdated}} · {{dataSourceText}}</view>
 </scroll-view>
