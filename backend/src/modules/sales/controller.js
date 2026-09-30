@@ -4418,7 +4418,14 @@ async function reviewSalesReturn(ctx) {
     const now = new Date();
     const rejected = action === 'rejected';
     const stage = normalizeSalesReturnApprovalStage(request.approval_stage || 'pending_store');
-    if (!await advanceApproval(ctx, 'sales_return', request, transaction, action, comment)) return { status: 'pending' };
+    if (!await advanceApproval(ctx, 'sales_return', request, transaction, action, comment)) {
+      const stages = ['pending_store', 'pending_duan', 'pending_deng', 'pending_li'];
+      const nextStage = stages[Number(ctx.state.businessApproval?.currentNodeIndex)];
+      if (nextStage && nextStage !== request.approval_stage) {
+        await request.update({ approval_stage: nextStage, update_time: new Date() }, { transaction });
+      }
+      return { status: 'pending' };
+    }
 
     const reviewData = stage === 'pending_store'
       ? { store_review_user: user.name || user.staffId || '', store_review_comment: comment || '', store_review_time: now }
