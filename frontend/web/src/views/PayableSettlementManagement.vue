@@ -476,6 +476,19 @@ const submit = async row => {
   }
 }
 
+const revokeSettlement = async row => {
+  try {
+    await ElMessageBox.confirm(`Confirm revoke settlement ${row.settlement_no}? It will return to draft status.`, 'Revoke settlement', { type: 'warning' })
+    const res = await api.revokeSettlement({ settlementId: row.settlement_id })
+    if (res.code === 0) {
+      ElMessage.success(res.message || 'Settlement revoked')
+      await loadData()
+    } else ElMessage.error(res.message || 'Revoke failed')
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error.response?.data?.message || 'Revoke failed')
+  }
+}
+
 const deleteDraft = async row => {
   try {
     await ElMessageBox.confirm(`确认删除结算单草稿 ${row.settlement_no}？`, '删除草稿', { type: 'warning' })
@@ -567,19 +580,6 @@ const loadDistributorOptions = async () => {
 
 .payment-form {
   margin-top: 20px;
-}
-
-const revokeSettlement = async row => {
-  try {
-    await ElMessageBox.confirm(`确认撤回结算单 ${row.settlement_no}？撤回后将恢复为草稿并允许重新编辑提交。`, '撤回结算单', { type: 'warning' })
-    const res = await api.revokeSettlement({ settlementId: row.settlement_id })
-    if (res.code === 0) {
-      ElMessage.success(res.message || '结算单已撤回并退回草稿')
-      await loadData()
-    } else ElMessage.error(res.message || '撤回失败')
-  } catch (error) {
-    if (error !== 'cancel' && error !== 'close') ElMessage.error(error.response?.data?.message || '撤回失败')
-  }
 }
 
 .remark-cell {
