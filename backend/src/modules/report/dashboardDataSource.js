@@ -93,33 +93,44 @@ function isCategoryDescendant(category, ancestorCategory, categoryIndex) {
 function findFinanceClassification(row, parentCategory, categoryIndex) {
   const rowPath = normalizeCategoryPath(row.categoryPath);
   const exactPathCategory = categoryIndex.byPath.get(rowPath);
-  if (exactPathCategory && isCategoryDescendant(exactPathCategory, parentCategory, categoryIndex)) {
+  // 商品记录通常只保存一级根分类（例如“笔记本”），不能因此提前结束分类匹配；
+  // 只有真正命中根分类下的子分类时，才直接使用路径结果，后续再按系列/型号补齐层级。
+  if (exactPathCategory
+    && exactPathCategory.categoryId !== parentCategory.categoryId
+    && isCategoryDescendant(exactPathCategory, parentCategory, categoryIndex)) {
     return exactPathCategory;
   }
+  return null;
+}
 
-  const children = categoryIndex.childrenByParent.get(parentCategory.categoryId) || [];
-  const series = normalizeCategoryName(row.series);
-  if (!series) return null;
-  const seriesCategory = children.find(child => normalizeCategoryName(child.name) === series);
-  if (!seriesCategory) return null;
+function ensureFinanceClassification(row, parentCategory, categoryIndex) {
+  const values = [row.brand, row.series, row.model]
+    .map(value => String(value || '').trim())
+    .filter(Boolean);
+  if (!values.length) return null;
 
-  const model = normalizeCategoryName(row.model);
-  if (!model) return seriesCategory;
-  const descendants = [];
-  const collectDescendants = category => {
-    (categoryIndex.childrenByParent.get(category.categoryId) || []).forEach(child => {
-      descendants.push(child);
-      collectDescendants(child);
-    });
-  };
-  collectDescendants(seriesCategory);
-  const modelMatches = descendants
-    .filter(child => {
-      const childName = normalizeCategoryName(child.name);
-      return childName && (model === childName || model.startsWith(childName));
-    })
-    .sort((left, right) => normalizeCategoryName(right.name).length - normalizeCategoryName(left.name).length);
-  return modelMatches[0] || seriesCategory;
+  let current = parentCategory;
+  values.forEach(value => {
+    const children = categoryIndex.childrenByParent.get(current.categoryId) || [];
+    let child = children.find(item => normalizeCategoryName(item.name) === normalizeCategoryName(value));
+    if (!child) {
+      child = {
+        key: `finance:${current.categoryId}:${normalizeCategoryName(value)}`,
+        categoryId: `finance:${current.categoryId}:${normalizeCategoryName(value)}`,
+        parentId: current.categoryId,
+        name: value,
+        path: `${current.path}/${value}`,
+        level: Number(current.level || 0) + 1,
+        sortOrder: 0,
+        showInFinance: false
+      };
+      categoryIndex.byId.set(child.categoryId, child);
+      categoryIndex.byPath.set(child.path, child);
+      categoryIndex.childrenByParent.set(current.categoryId, children.concat(child));
+    }
+    current = child;
+  });
+  return current === parentCategory ? null : current;
 }
 
 function createFinanceCategoryNode(category) {
@@ -778,7 +789,8 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       target.overdueQuantity += row.overdueQuantity;
       target.overdueAmount += row.overdueAmount;
 
-      const classification = findFinanceClassification(row, category, categoryIndex);
+      const classification = findFinanceClassification(row, category, categoryIndex)
+        || ensureFinanceClassification(row, category, categoryIndex);
       addFinanceClassificationAmount(target, category, classification, categoryIndex, row);
     });
     const staleProducts = rows

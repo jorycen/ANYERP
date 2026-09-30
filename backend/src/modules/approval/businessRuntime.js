@@ -205,9 +205,9 @@ function installHooks() {
       }
       const field = d.status || 'status';
       if (!row.isNewRecord && row.previous(field) === row[field]) return;
-      // Legacy nontransactional paths are resolved on first review. Never commit
-      // an approval separately from a caller's business transaction.
-      if (options.transaction) await begin(type, row, options.transaction);
+      // 草稿重新提交通常走非事务的独立接口。状态从草稿变为待审批时，
+      // 必须立即创建新审批实例，否则撤销时被取消的旧实例会被误认为仍是当前实例。
+      await begin(type, row, options.transaction || null);
     };
     M[d.model].addHook('afterSave', `approval_${type}`, save);
     M[d.model].addHook('afterBulkCreate', `approval_${type}`, async (rows, options) => {

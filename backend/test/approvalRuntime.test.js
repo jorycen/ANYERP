@@ -8,7 +8,7 @@ const C = require('../src/modules/approval/catalog');
 function fixture(t, nodes) {
   const tx = { LOCK: { UPDATE: 'UPDATE' } };
   const state = { instances: [], tasks: [], logs: [], flow: { definition_id: 'flow-1', flow_code: 'purchase_request', business_type: 'purchase_request', name: '采购审批', version: 1, status: 'published', config_json: JSON.stringify({ nodes }) } };
-  const row = data => Object.assign(data, { toJSON() { return { ...this }; }, async update(patch, options) { assert.equal(options.transaction, tx); Object.assign(this, patch); return this; } });
+  const row = data => Object.assign(data, { toJSON() { return { ...this }; }, async update(patch, options) { assert.ok(options.transaction === tx || options.transaction == null); Object.assign(this, patch); return this; } });
   const employees = [1, 2, 3, 4].map(id => row({ staff_id: id, name: `员工${id}`, status: 1, is_deleted: 0, store_id: 'HOME', distributor_id: 'D1', Roles: [] }));
   t.mock.method(M.sequelize, 'query', async () => { throw new Error('Tests must not access a database'); });
   t.mock.method(M.Staff, 'findByPk', async id => employees.find(e => e.staff_id === Number(id)));
@@ -17,16 +17,16 @@ function fixture(t, nodes) {
   t.mock.method(M.ApprovalFlowDefinition, 'findOne', async () => state.flow?.status === 'published' ? state.flow : null);
   t.mock.method(M.ApprovalFlowInstance, 'findOne', async () => state.instances.at(-1) || null);
   t.mock.method(M.ApprovalFlowInstance, 'findByPk', async id => state.instances.find(i => i.instance_id === id));
-  t.mock.method(M.ApprovalFlowInstance, 'create', async (values, options) => { assert.equal(options.transaction, tx); const instance = row(values); state.instances.push(instance); return instance; });
+  t.mock.method(M.ApprovalFlowInstance, 'create', async (values, options) => { assert.ok(options.transaction === tx || options.transaction == null); const instance = row(values); state.instances.push(instance); return instance; });
   const matches = (task, where) => Object.entries(where).every(([key, value]) => task[key] === value);
-  t.mock.method(M.ApprovalTask, 'bulkCreate', async (values, options) => { assert.equal(options.transaction, tx); state.tasks.push(...values.map(row)); });
+  t.mock.method(M.ApprovalTask, 'bulkCreate', async (values, options) => { assert.ok(options.transaction === tx || options.transaction == null); state.tasks.push(...values.map(row)); });
   t.mock.method(M.ApprovalTask, 'findOne', async ({ where }) => state.tasks.find(task => matches(task, where)) || null);
   t.mock.method(M.ApprovalTask, 'count', async ({ where }) => state.tasks.filter(task => matches(task, where)).length);
   t.mock.method(M.ApprovalTask, 'update', async (patch, { where, transaction }) => {
     assert.equal(transaction, tx);
     for (const task of state.tasks) if (task.instance_id === where.instance_id && (typeof where.status === 'object' ? ['pending', 'waiting'].includes(task.status) : task.status === where.status)) Object.assign(task, patch);
   });
-  t.mock.method(M.ApprovalActionLog, 'create', async (values, options) => { assert.equal(options.transaction, tx); state.logs.push(values); });
+  t.mock.method(M.ApprovalActionLog, 'create', async (values, options) => { assert.ok(options.transaction === tx || options.transaction == null); state.logs.push(values); });
   const business = row({ request_id: 'PR1', request_no: '采购1', status: 'pending', applicant_staff_id: 1, store_id: 'STORE', distributor_id: 'D1' });
   const ctx = id => ({ state: { user: { staffId: id, name: `员工${id}`, roles: ['clerk'], accessibleStoreIds: ['STORE'], distributorId: 'D1' } }, request: { body: {} }, throw(status, message) { throw Object.assign(new Error(message), { status }); } });
   return { state, tx, business, ctx };
@@ -161,6 +161,11 @@ test('业务提交钩子在原事务创建快照，撤销时取消在途任务',
   await save(business, { transaction: tx });
   assert.equal(state.instances[0].status, 'cancelled');
   assert.equal(state.tasks[0].status, 'cancelled');
+  business.status = 'pending'; business.previous = () => 'draft';
+  await save(business, {});
+  assert.equal(state.instances.length, 2);
+  assert.equal(state.instances[1].status, 'pending');
+  assert.equal(state.tasks[1].status, 'pending');
 });
 
 test('无门店审批必须匹配经销商，不能依赖应付类型放行', () => {
