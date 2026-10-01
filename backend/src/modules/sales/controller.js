@@ -424,6 +424,13 @@ async function resolveSalesOrderStoreIds(user = {}) {
       .map(value => String(value || '').trim())
       .filter(Boolean))];
   }
+  // Store managers see orders only for stores assigned to their account. The
+  // broader distributor store set is for creating and finding one's own orders.
+  if (isStoreManagerAccount(roles)) {
+    return [...new Set((Array.isArray(user.accessibleStoreIds) ? user.accessibleStoreIds : [])
+      .map(value => String(value || '').trim())
+      .filter(Boolean))];
+  }
   return resolveOrderStoreIds(user);
 }
 
@@ -441,7 +448,7 @@ async function list(ctx) {
     where.mall_report_status = 'reported';
   }
   const orderStoreIds = await resolveSalesOrderStoreIds(user);
-  const dealerWide = isDealerTraceAccount(user);
+  const dealerWide = isDealerTraceAccount(user) && !isStoreManagerAccount(getUserRoles(user));
   const storeInclude = { model: Store };
   const applicantInclude = {
     model: Staff,
@@ -4860,12 +4867,22 @@ async function assertSalesOrderVisible(order, user) {
     error.status = 403;
     throw error;
   }
-  if (isDealerTraceAccount(user)) return;
+  const roles = getUserRoles(user);
+  const isManager = isStoreManagerAccount(roles);
+  const isDealer = isDealerTraceAccount(user) && !isManager;
+  if (isDealer) return;
 
-  // 销售订单允许在同一经销商内临时切换门店。订单创建人和店长可以继续处理
-  // 自己经销商范围内的订单，订单归属门店的库存校验仍在归档流程中单独执行。
-  if (!isMallReportViewer(getUserRoles(user)) &&
-    (isStoreScopedAccount(getUserRoles(user)) || isSalesOrderCreator(order, user))) {
+  // A manager's read/operation scope is their assigned store(s), not the
+  // currently selected store. A regular employee may access only own orders,
+  // including orders they created in another store of the same distributor.
+  if (!isMallReportViewer(roles) && isManager) {
+    const managerStoreIds = await resolveSalesOrderStoreIds(user);
+    if (managerStoreIds.includes('*') || managerStoreIds.map(String).includes(String(order.store_id || ''))) return;
+    const error = new Error('无权访问该销售订单');
+    error.status = 403;
+    throw error;
+  }
+  if (!isMallReportViewer(roles) && isStoreScopedAccount(roles) && isSalesOrderCreator(order, user)) {
     return;
   }
 
