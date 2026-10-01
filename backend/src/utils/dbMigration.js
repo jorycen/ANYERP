@@ -4461,6 +4461,7 @@ async function seedPermissionData() {
       ['reports_inventory', '库存报表', 'reports', '/reports/inventory', 3],
       ['reports_employee', '员工业绩统计', 'reports', '/reports/employee', 4],
       ['reports_achievement', '业务达成', 'reports', '/reports/achievement', 5],
+      ['reports_finance', '财务报表', 'reports', '/reports/finance', 6],
       ['approval_tasks', '待我审批', 'approval', '/approval/tasks', 1],
       ['approval_instances', '我的申请', 'approval', '/approval/instances', 2],
       ['approval_flows', '流程配置', 'approval', '/approval/flows', 3],
@@ -4493,7 +4494,7 @@ async function seedPermissionData() {
         'finance_daily', 'finance_product_settlement', 'finance_profit_statement', 'finance_subsidy_receivable', 'finance_rebate_settlement', 'finance_expense',
         'finance_payable', 'finance_purchase_invoice', 'finance_payment', 'finance_rebate',
         'finance_resource_rights', 'finance_account', 'finance_settlement', 'finance_freight',
-        'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_achievement',
+        'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_achievement', 'reports_finance',
         'approval_tasks', 'approval_instances', 'product_approval'
       ],
       purchaser: [

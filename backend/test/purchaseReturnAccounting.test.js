@@ -129,3 +129,26 @@ test('采购申请生命周期区分部分退货和全部退货', () => {
     { status: 'cancelled' }
   ]), 'returned');
 });
+
+test('采购退单取消全部未入库数量时入库单数量归零并标记取消', () => {
+  const summary = purchaseTest.summarizePendingInboundItems([
+    { quantity: 0, received_quantity: 0, unit_price: 100 },
+    { quantity: 0, received_quantity: 0, unit_price: 50 }
+  ]);
+
+  assert.equal(summary.totalQuantity, 0);
+  assert.equal(summary.pendingQuantity, 0);
+  assert.equal(summary.totalAmount, 0);
+  assert.equal(summary.status, 'cancelled');
+});
+
+test('取消剩余未入库数量时保留已收货数量并完成入库单', () => {
+  const summary = purchaseTest.summarizePendingInboundItems([
+    { quantity: 2, received_quantity: 2, unit_price: 100 }
+  ]);
+
+  assert.equal(summary.totalQuantity, 2);
+  assert.equal(summary.receivedQuantity, 2);
+  assert.equal(summary.pendingQuantity, 0);
+  assert.equal(summary.status, 'completed');
+});

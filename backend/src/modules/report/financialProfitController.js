@@ -39,7 +39,7 @@ function resolveDates(query = {}) {
   return { startDate, endDate };
 }
 
-async function resolveStoreIds(user, requestedStoreId) {
+async function resolveStoreIds(user, requestedStoreId, requestedRegionId) {
   let storeIds = Array.isArray(user?.accessibleStoreIds) ? user.accessibleStoreIds.map(String) : [];
   if (storeIds.includes('*')) {
     const stores = await sequelize.query(
@@ -54,7 +54,18 @@ async function resolveStoreIds(user, requestedStoreId) {
       error.status = 403;
       throw error;
     }
-    return [String(requestedStoreId)];
+    storeIds = [String(requestedStoreId)];
+  }
+  if (requestedRegionId) {
+    const rows = await sequelize.query(
+      `SELECT STORE_ID AS storeId
+         FROM T_STORE
+        WHERE IS_DELETED = 0 AND STATUS = 1
+          AND REGION_ID = :regionId
+          AND STORE_ID IN (:storeIds)`,
+      { replacements: { regionId: String(requestedRegionId), storeIds: storeIds.length ? storeIds : ['__NO_STORE__'] }, type: QueryTypes.SELECT }
+    );
+    storeIds = rows.map(row => String(row.storeId));
   }
   return storeIds;
 }
@@ -228,7 +239,11 @@ async function resolveFilters(ctx) {
   const dates = resolveDates(ctx.query);
   return {
     ...dates,
-    storeIds: await resolveStoreIds(ctx.state.user, String(ctx.query.storeId || '').trim()),
+    storeIds: await resolveStoreIds(
+      ctx.state.user,
+      String(ctx.query.storeId || '').trim(),
+      String(ctx.query.regionId || '').trim()
+    ),
     orderNo: String(ctx.query.orderNo || '').trim(),
     status: String(ctx.query.status || '').trim()
   };

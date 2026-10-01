@@ -272,6 +272,12 @@ const routes = [
         meta: { tab: 'achievement' }
       },
       {
+        path: 'reports/finance',
+        name: 'ReportsFinance',
+        component: () => import('../views/FinancialReports.vue'),
+        meta: { roles: ['finance', 'admin', 'boss'] }
+      },
+      {
         path: 'approval/tasks',
         name: 'Approval',
         component: () => import('../views/Approval.vue'),

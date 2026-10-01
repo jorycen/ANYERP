@@ -406,19 +406,36 @@ async function validatePurchaseAllocations(items, fallbackStoreId, transaction =
   }
 }
 
+function summarizePendingInboundItems(items = []) {
+  const summary = items.reduce((result, item) => {
+    const quantity = Math.max(0, Number(item.quantity || 0));
+    const receivedQuantity = Math.min(quantity, Math.max(0, Number(item.received_quantity || 0)));
+    result.totalQuantity += quantity;
+    result.receivedQuantity += receivedQuantity;
+    result.pendingQuantity += Math.max(0, quantity - receivedQuantity);
+    result.totalAmount += quantity * Number(item.unit_price || 0);
+    return result;
+  }, { totalQuantity: 0, receivedQuantity: 0, pendingQuantity: 0, totalAmount: 0 });
+
+  summary.status = summary.pendingQuantity > 0
+    ? 'pending'
+    : summary.receivedQuantity > 0
+      ? 'completed'
+      : 'cancelled';
+  summary.totalAmount = toSignedMoney(summary.totalAmount);
+  return summary;
+}
+
 async function refreshPendingInboundSummary(inbound, transaction) {
   const items = await InboundItem.findAll({
     where: { inbound_id: inbound.inbound_id },
     transaction
   });
-  const totalQuantity = items.reduce((sum, item) => sum + Math.max(0, Number(item.quantity || 0)), 0);
-  const totalAmount = items.reduce((sum, item) => (
-    sum + Math.max(0, Number(item.quantity || 0)) * Number(item.unit_price || 0)
-  ), 0);
+  const summary = summarizePendingInboundItems(items);
   await inbound.update({
-    total_quantity: totalQuantity,
-    total_amount: toSignedMoney(totalAmount),
-    status: totalQuantity > 0 ? 'pending' : 'cancelled',
+    total_quantity: summary.totalQuantity,
+    total_amount: summary.totalAmount,
+    status: summary.status,
     update_time: new Date()
   }, { transaction });
 }
@@ -3125,6 +3142,7 @@ module.exports = {
     buildPurchaseSubmitterCondition,
     buildPurchaseOperatorCondition,
     findPurchaseRequestIdsByDocumentNo,
+    summarizePendingInboundItems,
     purchaseAdjustmentOperation,
     buildPurchaseDocumentRelations
   }

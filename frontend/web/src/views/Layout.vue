@@ -220,6 +220,7 @@ const pageTitles = {
   '/reports/inventory': '库存报表',
   '/reports/employee': '员工业绩统计',
   '/reports/achievement': '业务达成',
+  '/reports/finance': '财务报表',
   '/sales/monthly-tasks': '月度任务',
   '/approval/tasks': '待我审批',
   '/approval/instances': '我的申请',
@@ -307,7 +308,8 @@ function getManagerMirrorMenus() {
       { menuCode: 'reports_sales', name: '销售报表', path: '/reports/sales' },
       { menuCode: 'reports_inventory', name: '库存报表', path: '/reports/inventory' },
       { menuCode: 'reports_employee', name: '员工业绩统计', path: '/reports/employee' },
-      { menuCode: 'reports_achievement', name: '业务达成', path: '/reports/achievement' }
+      { menuCode: 'reports_achievement', name: '业务达成', path: '/reports/achievement' },
+      { menuCode: 'reports_finance', name: '财务报表', path: '/reports/finance' }
     ] },
     { menuCode: 'approval', name: '审批中心', icon: 'Checked', children: [
       { menuCode: 'approval_tasks', name: '待我审批', path: '/approval/tasks' },
