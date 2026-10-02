@@ -25,7 +25,10 @@ STATUS_LABELS.PENDING_EFFECTIVE = '未到生效日期';
 STATUS_LABELS.EXPIRED = '已过期';
 
 function isGovSubsidyEligibleCategory(category) {
-  return GOV_SUBSIDY_PRODUCT_CATEGORIES.has(String(category || '').trim());
+  // 历史商品的 category 可能仍保存为完整路径（如“笔记本/联想/拯救者/R9000P”）。
+  // 国补范围按一级商品分类判断，不能因为路径层级或分隔符而误判为不适用。
+  const topLevel = String(category || '').trim().split(/[\\/>]+/)[0].trim();
+  return GOV_SUBSIDY_PRODUCT_CATEGORIES.has(topLevel);
 }
 
 function parseJsonArray(value) {

@@ -101,12 +101,18 @@ async function advance(ctx, type, row, transaction, action, comment = '') {
     ['approve', 'approved'].includes(action) ? 'approve' : 'reject',
     comment,
     actor,
-    { transaction, managedBusiness: true, rejectImmediately: type === 'purchase_request' }
+    {
+      transaction,
+      managedBusiness: true,
+      rejectImmediately: type === 'purchase_request',
+      stopAfterAction: type === 'sales_order_negative_gross_profit'
+    }
   );
   ctx.state.businessApproval = {
     status: instance.status,
     instanceId: instance.instance_id,
-    currentNodeIndex: Number(instance.current_node_index)
+    currentNodeIndex: Number(instance.current_node_index),
+    returnedToDraft: type === 'sales_order_negative_gross_profit' && instance.status === 'cancelled'
   };
   if (instance.status === 'pending') {
     ctx.body = { code: 0, status: 'pending', message: '本次审批已记录，等待其他审批人或下一节点', data: { instanceId: instance.instance_id } };

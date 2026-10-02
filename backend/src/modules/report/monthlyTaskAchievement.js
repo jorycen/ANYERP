@@ -46,7 +46,7 @@ function monthRange(monthKey) {
 async function resolveStores(user, requestedStoreId) {
   let storeIds = await resolveReportStoreIds(user);
   if (storeIds.includes('*')) {
-    const rows = await Store.findAll({ where: { distributor_id: user.distributorId, is_deleted: 0, status: 1 }, attributes: ['store_id'], raw: true });
+    const rows = await Store.findAll({ where: { is_deleted: 0, status: 1 }, attributes: ['store_id'], raw: true });
     storeIds = rows.map(row => String(row.store_id));
   } else {
     storeIds = storeIds.map(String);
@@ -301,16 +301,24 @@ async function getMonthlyTaskAchievement(ctx) {
   const dimension = selfOnly ? 'staff' : requestedDimension;
   const requestedStaffId = selfOnly ? String(user.staffId || '') : String(ctx.query.staffId || ctx.query.staff_id || '').trim();
   const monthKey = String(ctx.query.monthKey || ctx.query.month_key || '').trim() || new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 7);
+  const reportScope = await resolveReportStoreIds(user);
+  const globalScope = reportScope.includes('*');
   const storeIds = await resolveStores(user, dimension === 'store' ? (ctx.query.storeId || ctx.query.store_id) : '');
   const { startAt, endAt } = monthRange(monthKey);
   if (!storeIds.length) {
     ctx.body = { code: 0, data: { monthKey, stores: [], employees: [] } };
     return;
   }
+  const taskWhere = { month_key: monthKey, status: 1 };
+  const staffWhere = { is_deleted: 0, status: 1 };
+  if (!globalScope) {
+    taskWhere.distributor_id = user.distributorId;
+    staffWhere.distributor_id = user.distributorId;
+  }
   const [stores, tasks, staffRows, permissions, allocations, batches, products, actuals] = await Promise.all([
     Store.findAll({ where: { store_id: { [Op.in]: storeIds }, is_deleted: 0, status: 1 }, attributes: ['store_id', 'name'], raw: true }),
-    MonthlyTask.findAll({ where: { distributor_id: user.distributorId, month_key: monthKey, status: 1 }, raw: true }),
-    Staff.findAll({ where: { distributor_id: user.distributorId, is_deleted: 0, status: 1 }, attributes: ['staff_id', 'name', 'store_id'], raw: true }),
+    MonthlyTask.findAll({ where: taskWhere, raw: true }),
+    Staff.findAll({ where: staffWhere, attributes: ['staff_id', 'name', 'store_id'], raw: true }),
     StaffStorePermission.findAll({ where: { store_id: { [Op.in]: storeIds } }, attributes: ['staff_id', 'store_id'], raw: true }),
     MonthlyTaskGrossProfitAllocation.findAll({ raw: true }),
     MonthlyTaskProductBatch.findAll({ raw: true }),

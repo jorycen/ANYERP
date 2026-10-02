@@ -2848,15 +2848,27 @@ async function detail(ctx) {
   if (snCodes.length > 0) {
     const snRows = await ProductSn.findAll({
       where: { sn_code: { [Op.in]: snCodes } },
-      attributes: ['sn_id', 'sn_code', 'pn_code', 'inventory_type', 'tax_type', 'status'],
+      attributes: ['sn_id', 'product_id', 'sn_code', 'pn_code', 'inventory_type', 'tax_type', 'status'],
       raw: true
     });
     const snMap = new Map(snRows.map(sn => [`${sn.pn_code || ''}|${sn.sn_code}`, sn]));
+    const snProductIds = [...new Set(snRows.map(sn => sn.product_id).filter(Boolean))];
+    const snProducts = snProductIds.length
+      ? await Product.findAll({
+          where: { product_id: { [Op.in]: snProductIds }, is_deleted: 0 },
+          attributes: ['product_id', 'category'],
+          raw: true
+        })
+      : [];
+    const categoryByProductId = new Map(snProducts.map(product => [String(product.product_id), product.category]));
     const summaryMap = await summariesForSns(snRows);
     result.OrderItems = items.map(item => {
       const sn = snMap.get(`${item.pn_code || ''}|${item.sn_code}`) || snRows.find(row => row.sn_code === item.sn_code);
+      const category = item.category || item.Product?.category || categoryByProductId.get(String(sn?.product_id || '')) || '';
       return {
         ...item,
+        category,
+        gov_subsidy_eligible: item.gov_subsidy_eligible || isGovSubsidyEligibleCategory(category),
         pn_code: item.pn_code || sn?.pn_code || '',
         sn_code: item.sn_code || '',
         inventory_type: item.inventory_type || sn?.inventory_type || '',
@@ -2984,6 +2996,36 @@ async function archiveSalesOrderEffects(order, transaction, { inventoryAlreadyRe
   await createSaleResourceTasks(order, refreshedItems, transaction);
 }
 
+async function returnSalesOrderToDraftAfterApproval(order, transaction, user, previousStatus, comment, action) {
+  if (order.inventory_reserved) {
+    await releaseReservedInventoryForOrder(order, transaction);
+  }
+  const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+  await releaseSaleRights(order, items, transaction);
+  await releaseDepositRedemptionForOrder(order, transaction, '审批处理后退回草稿');
+  const now = new Date();
+  const actorName = user.name || user.phone || String(user.staffId || '');
+  await order.update({
+    order_status: 'draft',
+    inventory_reserved: 0,
+    approve_user: actorName,
+    approve_time: now,
+    approve_comment: comment || '',
+    update_time: now
+  }, { transaction });
+  await recordBusinessAction({
+    businessType: 'sales_order',
+    businessId: order.order_id,
+    businessNo: order.order_no,
+    action: 'approval_returned_to_draft',
+    fromStatus: previousStatus,
+    toStatus: 'draft',
+    user,
+    comment: comment || `审批人已${action === 'approve' ? '通过' : '拒绝'}，订单退回草稿`,
+    transaction
+  });
+}
+
 /**
  * 审批通过后自动归档。
  */
@@ -3012,6 +3054,17 @@ async function approve(ctx) {
       ctx.throw(409, '订单审批状态已发生变化，请刷新后重试');
     }
     if (!await advanceApproval(ctx, 'sales_order_negative_gross_profit', lockedOrder, transaction, 'approve', ctx.request.body?.comment || '')) return;
+    if (ctx.state.businessApproval?.returnedToDraft) {
+      await returnSalesOrderToDraftAfterApproval(
+        lockedOrder,
+        transaction,
+        user,
+        previousStatus,
+        ctx.request.body?.comment || '',
+        'approve'
+      );
+      return;
+    }
     await archiveSalesOrderEffects(lockedOrder, transaction, {
       inventoryAlreadyReserved: Number(lockedOrder.inventory_reserved || 0) === 1
     });
@@ -3055,6 +3108,15 @@ async function approve(ctx) {
     ctx.body = { code: 0, status: '已归档', approvalStage: '', message: '经销商总权限审批通过，订单已自动归档' };
     return;
   }
+  if (ctx.state.businessApproval?.returnedToDraft) {
+    ctx.body = {
+      code: 0,
+      status: 'draft',
+      approvalStage: '',
+      message: '审批已结束，订单已退回草稿，可修改后重新提交'
+    };
+    return;
+  }
   ctx.body = {
     code: 0,
     status: SALES_APPROVAL_STATUSES.distributor,
@@ -3093,6 +3155,10 @@ async function reject(ctx) {
       ctx.throw(409, '订单审批状态已发生变化，请刷新后重试');
     }
     if (!await advanceApproval(ctx, 'sales_order_negative_gross_profit', lockedOrder, transaction, 'reject', reason || '')) return;
+    if (ctx.state.businessApproval?.returnedToDraft) {
+      await returnSalesOrderToDraftAfterApproval(lockedOrder, transaction, user, previousStatus, reason || '', 'reject');
+      return;
+    }
     if (lockedOrder.inventory_reserved) {
       await releaseReservedInventoryForOrder(lockedOrder, transaction);
     }
@@ -3122,6 +3188,15 @@ async function reject(ctx) {
   });
 
   if (ctx.state.businessApproval?.status === 'pending') return;
+  if (ctx.state.businessApproval?.returnedToDraft) {
+    ctx.body = {
+      code: 0,
+      status: 'draft',
+      approvalStage: '',
+      message: '审批已结束，订单已退回草稿，可修改后重新提交'
+    };
+    return;
+  }
   ctx.body = {
     code: 0,
     status: '未归档',

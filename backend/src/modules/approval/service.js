@@ -366,6 +366,20 @@ async function actionInstance(instanceId, action, comment, actor, options = {}) 
     await task.update({ status: action === 'approve' ? 'approved' : 'rejected', action, comment: comment || '', acted_time: now }, { transaction });
     await writeLog(instanceId, task.task_id, action, actor, comment, { nodeIndex: task.node_index, roundNo: instance.resubmit_count }, transaction);
 
+    // 某些业务（目前为销售订单负毛利审批）要求任一审批人处理后立即结束审批，
+    // 由业务模块把单据退回发起草稿，而不是继续流转到下一审批人/节点。
+    if (options.stopAfterAction) {
+      await ApprovalTask.update({ status: 'cancelled', acted_time: now }, {
+        where: {
+          instance_id: instanceId,
+          status: { [Op.in]: ['pending', 'waiting'] }
+        },
+        transaction
+      });
+      await instance.update({ status: 'cancelled', completed_time: now, update_time: now }, { transaction });
+      return instance;
+    }
+
     if (action === 'reject') {
       if (task.sign_mode === 'or' && !options.rejectImmediately) {
         const remaining = await ApprovalTask.count({ where: { instance_id: instanceId, round_no: instance.resubmit_count, node_index: task.node_index, status: 'pending' }, transaction });

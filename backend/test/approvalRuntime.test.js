@@ -48,6 +48,18 @@ test('串行节点依次审批，第二节点完成前不得执行业务', async
   assert.equal(state.instances[0].current_node_index, 1);
   assert.equal(await R.advance(ctx(4), 'purchase_request', business, tx, 'approved'), true);
 });
+
+test('销售订单任一审批动作都会取消审批并退回发起草稿', async t => {
+  const { state, tx, business, ctx } = fixture(t, [node('serial', [2, 3]), node('or', [4])]);
+  state.flow.flow_code = 'sales_order_negative_gross_profit';
+  state.flow.business_type = 'sales_order_negative_gross_profit';
+  business.order_id = 'ORDER-1';
+  business.order_status = 'pending_store_approval';
+  assert.equal(await R.advance(ctx(2), 'sales_order_negative_gross_profit', business, tx, 'approved'), true);
+  assert.equal(state.instances[0].status, 'cancelled');
+  assert.equal(state.tasks[0].status, 'approved');
+  assert.equal(state.tasks[1].status, 'cancelled');
+});
 test('或签单人拒绝保持审批中，另一人通过后才最终通过', async t => {
   const { state, tx, business, ctx } = fixture(t, [node('or', [2, 3])]);
   assert.equal(await R.advance(ctx(2), 'purchase_request', business, tx, 'reject', '不同意'), false);

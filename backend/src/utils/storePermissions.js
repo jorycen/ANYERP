@@ -79,7 +79,10 @@ async function resolveAllReadableStoreIds(user = {}) {
  */
 async function resolveReportStoreIds(user = {}) {
   const roles = normalizeRoleCodes(user.roles || user.roleCode || []);
-  if (roles.includes('boss') || (user.accessibleStoreIds || []).includes('*')) return ['*'];
+  // 经营报表中的“经销商总权限”和系统管理员都需要查看系统内全部门店，
+  // 不能把报表范围退化成登录账号所属的单一 distributor_id。
+  if (roles.some(role => ['boss', 'admin', 'system_admin'].includes(role))
+    || (user.accessibleStoreIds || []).includes('*')) return ['*'];
   return uniqueIds(user.accessibleStoreIds || []);
 }
 

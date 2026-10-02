@@ -46,6 +46,10 @@ test('经营报表恢复为账号已配置的门店范围', async () => {
     await resolveReportStoreIds({ roles: ['boss'], accessibleStoreIds: [] }),
     ['*']
   );
+  assert.deepEqual(
+    await resolveReportStoreIds({ roles: ['admin'], accessibleStoreIds: ['STORE_1'] }),
+    ['*']
+  );
 });
 
 test('商场上报查询账号属于门店范围但不是店长写入角色', () => {

@@ -21,6 +21,9 @@ test('国补商品范围只包含笔记本、台机、手机和平板', () => {
   ['电脑配件', '选件', '台式机', ''].forEach(category => {
     assert.equal(isGovSubsidyEligibleCategory(category), false);
   });
+  ['笔记本/联想/拯救者/R9000P', '台机/联想/拯救者刃9000'].forEach(category => {
+    assert.equal(isGovSubsidyEligibleCategory(category), true);
+  });
 });
 
 test('订单毛利按应收、产品定价、应收税率费用、增值税和补录净额计算', () => {
