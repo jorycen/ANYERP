@@ -299,6 +299,7 @@ async function runSchemaMigrations() {
   await ensureSerializedInventorySchema();
   await ensureProductPnEffectiveUniqueIndex();
   await ensureFinancialProfitFeatureSchema();
+  await ensureFinancialReportMenu();
   console.log('[DB Schema] startup schema compatibility check completed');
 }
 
@@ -4420,6 +4421,39 @@ async function ensureFinancialProfitFeatureSchema() {
   );
 }
 
+// 财务报表页面属于报表统计子菜单。旧环境未执行完整权限种子时，
+// 页面和路由虽然已经存在，但登录返回的菜单树不会包含该入口。
+// 启动时只补齐这一项缺失的菜单及角色关联，不覆盖管理员已有的菜单配置。
+async function ensureFinancialReportMenu() {
+  const [parents] = await sequelize.query(
+    "SELECT MENU_ID FROM T_MENU WHERE MENU_CODE = 'reports' AND STATUS = 1 LIMIT 1"
+  );
+  if (!parents.length) return;
+  const [existing] = await sequelize.query(
+    "SELECT MENU_ID FROM T_MENU WHERE MENU_CODE = 'reports_finance' LIMIT 1"
+  );
+  let menuId = existing[0]?.MENU_ID;
+  if (!menuId) {
+    menuId = require('crypto').randomUUID().replace(/-/g, '').substring(0, 32);
+    await sequelize.query(
+      `INSERT INTO T_MENU (MENU_ID, MENU_CODE, NAME, PARENT_ID, MENU_TYPE, PATH, ICON, SORT_ORDER, STATUS)
+       VALUES (?, 'reports_finance', '财务报表', ?, 'menu', '/reports/finance', NULL, 6, 1)`,
+      { replacements: [menuId, parents[0].MENU_ID] }
+    );
+  } else {
+    await sequelize.query(
+      "UPDATE T_MENU SET NAME = '财务报表', PARENT_ID = ?, PATH = '/reports/finance', STATUS = 1 WHERE MENU_ID = ?",
+      { replacements: [parents[0].MENU_ID, menuId] }
+    );
+  }
+  await sequelize.query(
+    `INSERT IGNORE INTO T_ROLE_MENU (ROLE_ID, MENU_ID)
+     SELECT ROLE_ID, ? FROM T_ROLE
+      WHERE ROLE_CODE IN ('boss', 'admin', 'finance') AND STATUS = 1`,
+    { replacements: [menuId] }
+  );
+}
+
 async function seedPermissionData() {
   try {
     const uuid = require('crypto').randomUUID;
@@ -4767,5 +4801,6 @@ module.exports = {
   ensureProductDimensionSchema,
   ensureSerializedInventorySchema,
   ensureProductPnEffectiveUniqueIndex,
-  ensureFinancialProfitFeatureSchema
+  ensureFinancialProfitFeatureSchema,
+  ensureFinancialReportMenu
 };
