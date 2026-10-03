@@ -3179,7 +3179,9 @@ const openExecuteDialog = async (row) => {
       for (const item of (res.data.items || [])) {
         const needSn = Number(item.need_sn) === 1
         const needImei = Number(item.need_imei) === 1
-        const qty = Number(item.remaining_quantity ?? item.remainingQuantity ?? item.quantity) || 1
+        const rawRemainingQuantity = item.remaining_quantity ?? item.remainingQuantity ?? item.quantity
+        const qty = Math.max(0, Number(rawRemainingQuantity) || 0)
+        if (qty <= 0) continue
         const pns = pnMap[item.product_id] || []
 
         const group = {
@@ -3223,6 +3225,11 @@ const openExecuteDialog = async (row) => {
         }
 
         productGroups.push(group)
+      }
+
+      if (productGroups.length === 0) {
+        ElMessage.info('当前入库单没有待入库商品')
+        return
       }
 
       executeProducts.value = productGroups

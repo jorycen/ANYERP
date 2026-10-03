@@ -190,11 +190,15 @@ async function getTransferStores(ctx) {
   const where = { is_deleted: 0, status: 1 };
   let currentRegionKeys = [];
   if (!user.roles?.includes('boss')) {
-    let distributorId = String(user.distributorId || '');
+    const distributorIds = getAccessibleDistributorIds(user);
     const accessibleStoreIds = Array.isArray(user.accessibleStoreIds)
       ? user.accessibleStoreIds.filter(id => id && id !== '*')
       : [];
-    if (!distributorId && accessibleStoreIds.length) {
+    if (distributorIds.length) {
+      where.distributor_id = distributorIds.length === 1
+        ? distributorIds[0]
+        : { [Op.in]: distributorIds };
+    } else if (accessibleStoreIds.length) {
       const assignedStore = await Store.findOne({
         where: { store_id: { [Op.in]: accessibleStoreIds }, is_deleted: 0, status: 1 },
         attributes: ['distributor_id', 'region_id'],
@@ -207,8 +211,10 @@ async function getTransferStores(ctx) {
         assignedStore?.Region?.region_code,
         assignedStore?.Region?.name
       ].filter(Boolean).map(String);
+      if (assignedStore?.distributor_id) where.distributor_id = assignedStore.distributor_id;
+    } else {
+      where.distributor_id = '__NO_DISTRIBUTOR__';
     }
-    if (distributorId) where.distributor_id = distributorId;
   }
 
   // 调拨候选可以展示同经销商的全部有效门店；提交时仍由库存控制器校验经销商和区域。
