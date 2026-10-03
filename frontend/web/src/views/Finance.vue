@@ -738,8 +738,13 @@
               <el-table-column prop="product_name" label="商品" min-width="180" />
               <el-table-column prop="sn" label="SN" min-width="150" />
               <el-table-column prop="policy_name" label="政策/权益" min-width="140" />
+              <el-table-column prop="quantity" label="数量" width="80" />
+              <el-table-column prop="unit_price_delta" label="单价差/单台返" width="115">
+                <template #default="{ row }">¥{{ Number(row.unit_price_delta || 0).toFixed(2) }}</template>
+              </el-table-column>
+              <el-table-column prop="source_policy_batch_no" label="政策批次" width="150" />
               <el-table-column label="类型" width="110">
-                <template #default="{ row }">{{ row.policy_type === 'PO_REWARD' ? 'PO奖励' : row.policy_type }}</template>
+                <template #default="{ row }">{{ ({ PO_REWARD: 'PO奖励', po_rebate: 'PO后返', p0_difference: 'PO价保' })[row.policy_type] || row.policy_type }}</template>
               </el-table-column>
               <el-table-column label="预估金额" width="120">
                 <template #default="{ row }">¥{{ Number(row.rebate_estimate_amount || 0).toFixed(2) }}</template>
@@ -797,6 +802,14 @@
               >
                 <el-button type="success">导入价格表</el-button>
               </el-upload>
+              <el-upload
+                :auto-upload="false"
+                :show-file-list="false"
+                accept=".xlsx,.xls"
+                :on-change="handleNbPolicyImport"
+              >
+                <el-button type="primary">上传NB政策</el-button>
+              </el-upload>
               <el-select v-model="manufacturerPriceSupplierFilter" placeholder="供应商/厂家" clearable filterable style="width: 180px" @change="loadManufacturerPrices">
                 <el-option v-for="s in suppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
               </el-select>
@@ -810,6 +823,14 @@
               <el-table-column prop="pickup_price" label="提货价" width="110">
                 <template #default="{ row }">¥{{ row.pickup_price }}</template>
               </el-table-column>
+              <el-table-column prop="settlement_price" label="结算价" width="110">
+                <template #default="{ row }">¥{{ row.settlement_price || row.pickup_price }}</template>
+              </el-table-column>
+              <el-table-column prop="po_rebate_amount" label="单台PO后返" width="120">
+                <template #default="{ row }">¥{{ row.po_rebate_amount || 0 }}</template>
+              </el-table-column>
+              <el-table-column prop="extra_resource" label="加磅资源" width="130" />
+              <el-table-column prop="pickup_policy" label="提货政策" min-width="180" show-overflow-tooltip />
               <el-table-column prop="p0_price" label="P0价" width="110">
                 <template #default="{ row }">¥{{ row.p0_price || 0 }}</template>
               </el-table-column>
@@ -3336,6 +3357,82 @@ const loadSettlementLines = async (params = {}) => {
     settle_amount: Number(row.available_amount || 0)
   }))
 }
+
+const handleNbPolicyImport = async (uploadFile) => {
+  const file = uploadFile.raw
+  if (!file) return
+  try {
+    let rows = await readNbPolicyWorkbookRows(file)
+    if (!rows.length) {
+      ElMessage.warning('NB政策表没有可导入的数据')
+      return
+    }
+    const normalizedKeys = Object.keys(rows[0]).map(key => String(key).toLowerCase().replace(/[\s_\-（）()]/g, ''))
+    const hasPeriodColumns = normalizedKeys.some(key => ['生效日期', '开始日期', '开始时间', '促销开始时间', '政策开始时间', '周期开始', '有效期开始', 'effectivedate'].includes(key))
+      && normalizedKeys.some(key => ['失效日期', '结束日期', '结束时间', '促销结束时间', '政策结束时间', '周期结束', '有效期结束', 'expiredate'].includes(key))
+    if (!hasPeriodColumns) {
+      const { value: period } = await ElMessageBox.prompt('表格未识别到周期列，请输入政策周期，例如：2026-09-16 至 2026-10-07', '确认NB政策周期', {
+        inputPattern: /^\d{4}-\d{2}-\d{2}\s*(至|~)\s*\d{4}-\d{2}-\d{2}$/,
+        inputErrorMessage: '请按 YYYY-MM-DD 至 YYYY-MM-DD 输入完整日期'
+      })
+      const match = String(period).match(/^(\d{4}-\d{2}-\d{2})\s*(?:至|~)\s*(\d{4}-\d{2}-\d{2})$/)
+      if (!match) return
+      rows = rows.map(row => ({ ...row, 生效日期: row.生效日期 || match[1], 失效日期: row.失效日期 || match[2] }))
+    }
+    const res = await api.importManufacturerOperations({ rows, sourceFileUrl: file.name })
+    if (res.code === 0) {
+      ElMessage.success(`NB政策导入成功，共 ${res.data?.count || rows.length} 条`)
+      loadManufacturerPrices()
+    } else {
+      const errors = res.data?.errors || []
+      const preview = errors.slice(0, 3).map(e => `第${e.row}行：${e.message}`).join('；')
+      ElMessage.error(preview || res.message || 'NB政策导入失败')
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || 'NB政策导入失败')
+  }
+}
+
+const readNbPolicyWorkbookRows = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader()
+  reader.onload = (event) => {
+    try {
+      const workbook = XLSX.read(new Uint8Array(event.target.result), { type: 'array' })
+      const normalize = value => String(value || '').toLowerCase().replace(/[\s_\-（）()]/g, '')
+      for (const sheetName of workbook.SheetNames) {
+        const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: '' })
+        const headerIndex = matrix.slice(0, 20).findIndex(row => {
+          const cells = row.map(normalize)
+          const hasProduct = cells.some(value => ['pn', 'pncode', '商品编号', '产品编号', '厂商编码', '型号', 'model'].includes(value))
+          const hasPolicyData = cells.some(value => value.includes('结算') || value.includes('后返') || value.includes('资源') || value.includes('提货政策'))
+          return hasProduct && hasPolicyData
+        })
+        if (headerIndex < 0) continue
+        const headers = matrix[headerIndex].map((value, index) => String(value || `列${index + 1}`).trim())
+        const repeatable = /供应商|厂家|厂商|supplier|manufacturer|生效|开始|失效|结束|周期|有效期/i
+        const carry = {}
+        const records = matrix.slice(headerIndex + 1)
+          .map(values => Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ''])))
+          .filter(record => Object.values(record).some(value => String(value || '').trim()))
+          .map(record => {
+            for (const header of headers) {
+              const value = String(record[header] || '').trim()
+              if (value) carry[header] = record[header]
+              else if (repeatable.test(header) && carry[header] !== undefined) record[header] = carry[header]
+            }
+            return record
+          })
+        if (records.length) {
+          resolve(records)
+          return
+        }
+      }
+      resolve([])
+    } catch (err) { reject(err) }
+  }
+  reader.onerror = reject
+  reader.readAsArrayBuffer(file)
+})
 
 const openPayableExpenseDetail = async row => {
   const expenseId = row?.source_id

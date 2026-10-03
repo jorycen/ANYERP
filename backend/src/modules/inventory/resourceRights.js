@@ -1,12 +1,12 @@
 const { Op } = require('sequelize');
 const XLSX = require('xlsx');
 const {
-  sequelize, Product, ProductSn, InventoryResourceRight, ResourceRightChangeOrder,
+  sequelize, Product, ProductPn, ProductSn, OrderItem, InventoryResourceRight, ResourceRightChangeOrder,
   ProductResourceCostConfig, InventoryResourceCostAdjustment, ResourceCategory,
   GoodsType, GoodsTypeResource,
   ResourceSettlement, RebatePostingOrder, RebateSettlementAllocation,
   SettlementAccount, SettlementAccountTransaction, SupplierRebate, RebateEstimate, Supplier,
-  StaffCareCreditTransaction, PerformanceProfitAdjustment, Order
+  StaffCareCreditTransaction, PerformanceProfitAdjustment, Order, ManufacturerPriceHistory
 } = require('../../models');
 const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 
@@ -179,7 +179,10 @@ async function listRights(ctx) {
   if (status) where.current_status = status;
   const { count, rows } = await InventoryResourceRight.findAndCountAll({
     where,
-    include: [{ model: Product, attributes: ['name', 'product_code'] }],
+    include: [
+      { model: Product, attributes: ['name', 'product_code'] },
+      { model: ProductSn, attributes: ['status'] }
+    ],
     order: [['update_time', 'DESC']], distinct: true,
     ...paginate({}, { page, pageSize })
   });
@@ -432,6 +435,317 @@ async function importBatchRights(ctx) {
   ctx.body = { message: `导入完成：成功${success.length}行，失败${results.length - success.length}行`, affected: success.reduce((sum, item) => sum + item.affected, 0), skipped: success.reduce((sum, item) => sum + item.skipped, 0), results };
 }
 
+function normalizedEducationHeader(value) {
+  return String(value ?? '').trim().replace(/[\s_\-()（）:：]/g, '').toLowerCase();
+}
+
+function educationHeaderIndexes(headers) {
+  const values = headers.map(normalizedEducationHeader);
+  const serviceStart = values.findIndex(value => value.includes('服务产品名称') || value.includes('服务产品编码'));
+  const limit = serviceStart < 0 ? values.length : serviceStart;
+  const beforeService = values.slice(0, limit);
+  const productCode = beforeService.findIndex(value =>
+    /商品编号|商品编码|物料编码|型号编码|pncode|^pn$|^mtm$/.test(value)
+  );
+  const start = beforeService.findIndex(value => value.includes('促销开始') || value.includes('开始时间') || value.includes('生效开始'));
+  const end = beforeService.findIndex(value => value.includes('促销结束') || value.includes('结束时间') || value.includes('生效结束'));
+  if (productCode < 0 || start < 0 || end < 0) return null;
+  const studentDiscount = beforeService.findIndex((value, index) => index > productCode && (value.includes('学生优惠') || value.includes('教育优惠')));
+  const resourceRecalculation = beforeService.findIndex((value, index) => index > productCode && (value.includes('资源回算') || value.includes('资源回算金额')));
+  if (studentDiscount < 0 && resourceRecalculation < 0) return null;
+  return { productCode, start, end, studentDiscount, resourceRecalculation };
+}
+
+function parseEducationDate(value, endOfDay = false) {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  let parts = null;
+  if (value instanceof Date) parts = [value.getFullYear(), value.getMonth() + 1, value.getDate()];
+  else if (typeof value === 'number') {
+    const parsed = XLSX.SSF.parse_date_code(value);
+    if (parsed) parts = [parsed.y, parsed.m, parsed.d];
+  } else {
+    const text = String(value).trim();
+    let match = text.match(/^(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$/);
+    if (match) parts = match.slice(1).map(Number);
+    if (!parts && (match = text.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/))) parts = match.slice(1).map(Number);
+    if (!parts && (match = text.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/))) {
+      const year = Number(match[3]) < 100 ? (Number(match[3]) >= 70 ? 1900 + Number(match[3]) : 2000 + Number(match[3])) : Number(match[3]);
+      parts = [year, Number(match[1]), Number(match[2])];
+    }
+  }
+  if (!parts) {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) parts = [parsed.getFullYear(), parsed.getMonth() + 1, parsed.getDate()];
+  }
+  if (!parts) return null;
+  const [year, month, day] = parts;
+  const date = new Date(`${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function parseEducationAmount(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  const text = String(value).trim();
+  if (/^(?:\/|—|--|不参与|无|n\/a)$/i.test(text)) return null;
+  const amount = Number(text.replace(/[￥¥,，\s]/g, ''));
+  return Number.isFinite(amount) && amount >= 0 ? money(amount) : null;
+}
+
+function extractEducationPolicies(workbook) {
+  const policies = [];
+  const errors = [];
+  for (const sheetName of workbook.SheetNames || []) {
+    const sheet = workbook.Sheets[sheetName];
+    const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
+    const headerAt = matrix.findIndex(row => educationHeaderIndexes(row));
+    if (headerAt < 0) continue;
+    const columns = educationHeaderIndexes(matrix[headerAt]);
+    let carriedStart = '';
+    let carriedEnd = '';
+    for (let index = headerAt + 1; index < matrix.length; index += 1) {
+      const row = matrix[index] || [];
+      if (String(row[columns.start] || '').trim()) carriedStart = row[columns.start];
+      if (String(row[columns.end] || '').trim()) carriedEnd = row[columns.end];
+      const productCode = String(row[columns.productCode] || '').trim().toUpperCase();
+      if (!productCode) continue;
+      const start = parseEducationDate(carriedStart);
+      const end = parseEducationDate(carriedEnd, true);
+      if (!start || !end || start > end) {
+        errors.push({ sheet: sheetName, row: index + 1, productCode, message: '促销开始/结束时间无效' });
+        continue;
+      }
+      const studentDiscount = columns.studentDiscount >= 0 ? parseEducationAmount(row[columns.studentDiscount]) : null;
+      const recalculation = columns.resourceRecalculation >= 0 ? parseEducationAmount(row[columns.resourceRecalculation]) : null;
+      const fallback = studentDiscount ?? recalculation;
+      if (fallback === null) continue;
+      policies.push({
+        productCode,
+        productName: String(row[columns.productCode + 1] || '').trim(),
+        promotionStart: start,
+        promotionEnd: end,
+        studentDiscount: studentDiscount ?? fallback,
+        resourceRecalculationAmount: recalculation ?? fallback,
+        sourceSheet: sheetName,
+        sourceRow: index + 1
+      });
+    }
+  }
+  return { policies, errors };
+}
+
+function chooseEducationPolicy(policies, at = new Date()) {
+  const timestamp = new Date(at).getTime();
+  const active = policies.filter(policy => new Date(policy.promotionStart).getTime() <= timestamp && new Date(policy.promotionEnd).getTime() >= timestamp);
+  if (active.length) return active.sort((a, b) => new Date(b.promotionStart) - new Date(a.promotionStart))[0];
+  const future = policies.filter(policy => new Date(policy.promotionStart).getTime() > timestamp);
+  if (future.length) return future.sort((a, b) => new Date(a.promotionStart) - new Date(b.promotionStart))[0];
+  return [...policies].sort((a, b) => new Date(b.promotionStart) - new Date(a.promotionStart))[0] || null;
+}
+
+async function importEducationPolicies(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
+  if (!ctx.file?.buffer) ctx.throw(400, '请上传教育优惠Excel文件');
+  const workbook = XLSX.read(ctx.file.buffer, { type: 'buffer', cellDates: true });
+  const extracted = extractEducationPolicies(workbook);
+  if (!extracted.policies.length) ctx.throw(400, '没有识别到包含促销时间、商品编号和学生优惠/资源回算金额的明细表');
+  const grouped = new Map();
+  for (const policy of extracted.policies) {
+    const rows = grouped.get(policy.productCode) || [];
+    const key = `${policy.promotionStart.toISOString().slice(0, 10)}|${policy.promotionEnd.toISOString().slice(0, 10)}`;
+    const existingIndex = rows.findIndex(item => `${item.promotionStart.toISOString().slice(0, 10)}|${item.promotionEnd.toISOString().slice(0, 10)}` === key);
+    if (existingIndex >= 0) rows[existingIndex] = policy;
+    else rows.push(policy);
+    grouped.set(policy.productCode, rows);
+  }
+  const category = await ResourceCategory.findOne({ where: { category_code: 'EDU_SUBSIDY', status: 1 } });
+  if (!category) ctx.throw(409, '教育补贴资源类别未启用，请先在资源类别中启用教育补贴');
+  const results = [];
+  for (const [productCode, rows] of grouped.entries()) {
+    try {
+      let product = await Product.findOne({ where: { product_code: productCode, is_deleted: 0 } });
+      if (!product) {
+        const pn = await ProductPn.findOne({ where: { pn_code: productCode, is_deleted: 0, status: 1 } });
+        if (pn) product = await Product.findByPk(pn.product_id);
+      }
+      if (!product || product.is_deleted) throw new Error('系统中未找到该商品编号');
+      const policies = rows.map(policy => ({
+        promotionStart: policy.promotionStart.toISOString(),
+        promotionEnd: policy.promotionEnd.toISOString(),
+        studentDiscount: policy.studentDiscount,
+        resourceRecalculationAmount: policy.resourceRecalculationAmount,
+        sourceSheet: policy.sourceSheet,
+        sourceRow: policy.sourceRow
+      })).sort((a, b) => new Date(a.promotionStart) - new Date(b.promotionStart));
+      const selected = chooseEducationPolicy(rows);
+      let affectedSnCount = 0;
+      await sequelize.transaction(async transaction => {
+        const configs = await ProductResourceCostConfig.findAll({
+          where: { product_id: product.product_id, resource_type: 'EDU_SUBSIDY' },
+          transaction,
+          lock: transaction.LOCK.UPDATE
+        });
+        const values = {
+          cost_amount: selected.resourceRecalculationAmount,
+          calculation_type: 'fixed_amount',
+          calculation_value: selected.resourceRecalculationAmount,
+          effective_start: selected.promotionStart,
+          effective_end: selected.promotionEnd,
+          trigger_condition: 'sale_archived',
+          affects_performance_profit: 1,
+          performance_profit_ratio: 80,
+          rule_config_json: JSON.stringify({ educationPolicies: policies }),
+          status: 1,
+          remark: `教育优惠表格导入，主表优惠 ¥${selected.studentDiscount.toFixed(2)}，资源回算 ¥${selected.resourceRecalculationAmount.toFixed(2)}`,
+          update_user: ctx.state.user.name || '',
+          update_time: new Date()
+        };
+        let policyConfigId = configs[0]?.config_id || '';
+        if (configs.length) {
+          for (const config of configs) await config.update(values, { transaction });
+        } else {
+          const createdConfig = await ProductResourceCostConfig.create({
+            config_id: generateUUID(), product_id: product.product_id, resource_type: 'EDU_SUBSIDY',
+            supplier_id: '', supplier_name: '', ...values, create_user: ctx.state.user.name || ''
+          }, { transaction });
+          policyConfigId = createdConfig.config_id;
+        }
+
+        const sns = await ProductSn.findAll({ where: { product_id: product.product_id, is_deleted: 0, status: { [Op.in]: ['in_stock', 'sold'] } }, transaction, lock: transaction.LOCK.UPDATE });
+        for (const sn of sns) {
+          let right = await InventoryResourceRight.findOne({ where: { sn_id: sn.sn_id, resource_type: 'EDU_SUBSIDY' }, transaction, lock: transaction.LOCK.UPDATE });
+          if (right && !['AVAILABLE', 'NOT_APPLICABLE', 'EXCEPTION'].includes(right.current_status)) continue;
+          const rightValues = {
+            rule_config_id: policyConfigId || null,
+            current_status: 'AVAILABLE', amount: selected.resourceRecalculationAmount,
+            effective_start: selected.promotionStart, effective_end: selected.promotionEnd,
+            source: 'EDUCATION_POLICY_IMPORT', supplier_id: sn.supplier_id || right?.supplier_id || null,
+            supplier_name: sn.supplier_name || right?.supplier_name || '',
+            remark: `教育优惠表格导入：${selected.sourceSheet} 第${selected.sourceRow}行`,
+            version: Number(right?.version || 0) + 1, update_time: new Date()
+          };
+          if (right && right.current_status === 'EXCEPTION') continue;
+          const unchanged = right
+            && right.current_status === 'AVAILABLE'
+            && money(right.amount) === selected.resourceRecalculationAmount
+            && String(right.effective_start || '') === String(selected.promotionStart || '')
+            && String(right.effective_end || '') === String(selected.promotionEnd || '')
+            && right.source === 'EDUCATION_POLICY_IMPORT';
+          if (unchanged) continue;
+          const beforeStatus = right?.current_status || 'NOT_APPLICABLE';
+          if (right) await right.update(rightValues, { transaction });
+          else {
+            right = await InventoryResourceRight.create({
+              right_id: generateUUID(), sn_id: sn.sn_id, sn_code: sn.sn_code,
+              product_id: product.product_id, resource_type: 'EDU_SUBSIDY', initial_status: 'AVAILABLE',
+              ...rightValues
+            }, { transaction });
+          }
+          await ResourceRightChangeOrder.create({
+            change_id: generateUUID(), change_order_no: businessNo(), sn_id: sn.sn_id, sn_code: sn.sn_code,
+            product_id: product.product_id, resource_type: 'EDU_SUBSIDY',
+            before_status: beforeStatus,
+            after_status: 'AVAILABLE', change_amount: selected.resourceRecalculationAmount,
+            change_reason: 'BATCH_ADJUST', approval_status: 'approved',
+            applicant_staff_id: ctx.state.user.staffId || null, applicant_name: ctx.state.user.name || '',
+            reviewer_staff_id: ctx.state.user.staffId || null, reviewer_name: ctx.state.user.name || '', review_time: new Date(),
+            remark: `教育优惠政策导入：${selected.sourceSheet} 第${selected.sourceRow}行`
+          }, { transaction });
+          affectedSnCount += 1;
+        }
+      });
+      results.push({ productCode, status: 'success', policyCount: policies.length, affectedInventory: affectedSnCount });
+    } catch (error) {
+      results.push({ productCode, status: 'failed', message: error.message });
+    }
+  }
+  const success = results.filter(item => item.status === 'success').length;
+  ctx.body = {
+    message: `教育优惠导入完成：成功${success}个商品，失败${results.length - success}个商品`,
+    affectedProducts: success,
+    results: results.concat(extracted.errors.map(error => ({ ...error, status: 'failed' })))
+  };
+}
+
+function policyForSaleDate(rule, saleDate) {
+  const date = new Date(saleDate || new Date()).getTime();
+  const config = parseJsonObject(rule?.rule_config_json);
+  const policies = Array.isArray(config.educationPolicies) ? config.educationPolicies : [];
+  return policies.find(policy => {
+    const start = new Date(policy.promotionStart).getTime();
+    const end = new Date(policy.promotionEnd).getTime();
+    return Number.isFinite(start) && Number.isFinite(end) && start <= date && date <= end;
+  }) || null;
+}
+
+async function supplementEducationResource(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
+  const orderNo = String(ctx.request.body?.orderNo || '').trim();
+  const snId = String(ctx.request.body?.snId || '').trim();
+  const attachmentUrl = String(ctx.request.body?.attachmentUrl || '').trim();
+  if (!orderNo || !snId || !attachmentUrl) ctx.throw(400, '请填写销售单号并上传凭证图片');
+  const result = await sequelize.transaction(async transaction => {
+    const sn = await ProductSn.findByPk(snId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!sn || sn.is_deleted) ctx.throw(404, 'SN不存在');
+    const order = await Order.findOne({ where: { order_no: orderNo, is_deleted: 0 }, transaction, lock: transaction.LOCK.UPDATE });
+    if (!order || !['已归档', 'completed', 'archived'].includes(String(order.order_status || ''))) ctx.throw(409, '仅支持已归档的销售单');
+    const item = await OrderItem.findOne({ where: { order_id: order.order_id, sn_id: sn.sn_id }, transaction, lock: transaction.LOCK.UPDATE });
+    if (!item || String(item.product_id) !== String(sn.product_id)) ctx.throw(409, '销售单中没有对应的SN商品');
+    if (selectedResources(item).includes('EDU_SUBSIDY')) ctx.throw(409, '该销售商品归档时已使用教育补贴，无需补录');
+
+    const right = await InventoryResourceRight.findOne({ where: { sn_id: sn.sn_id, resource_type: 'EDU_SUBSIDY' }, transaction, lock: transaction.LOCK.UPDATE });
+    if (!right || right.current_status !== 'AVAILABLE') ctx.throw(409, '该商品教育补贴权益已使用或不可补录');
+    const existing = await ResourceRightChangeOrder.findOne({
+      where: { sn_id: sn.sn_id, related_sale_order_id: order.order_id, resource_type: 'EDU_SUBSIDY', change_reason: { [Op.in]: ['SALE_USED', 'SALE_TRIGGER', 'EDU_SUBSIDY_SUPPLEMENT'] } },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (existing) ctx.throw(409, '该销售商品已有教育补贴资源记录，不能重复补录');
+
+    const configs = await ProductResourceCostConfig.findAll({
+      where: { product_id: sn.product_id, resource_type: 'EDU_SUBSIDY', status: 1 }, transaction
+    });
+    const orderedConfigs = configs.sort((a, b) => (String(a.supplier_id || '') === String(sn.supplier_id || '') ? -1 : 0) - (String(b.supplier_id || '') === String(sn.supplier_id || '') ? -1 : 0));
+    let selected = null;
+    let rule = null;
+    for (const config of orderedConfigs) {
+      selected = policyForSaleDate(config, order.create_time);
+      if (selected) { rule = config; break; }
+    }
+    if (!rule) {
+      rule = await findResourceRule({ productId: sn.product_id, resourceType: 'EDU_SUBSIDY', supplierId: sn.supplier_id || '', saleDate: order.create_time, transaction });
+      selected = rule ? { studentDiscount: Number(rule.cost_amount || 0), resourceRecalculationAmount: Number(rule.cost_amount || 0) } : null;
+    }
+    if (!selected) ctx.throw(409, '没有找到该销售日期适用的教育优惠政策，请先导入教育优惠表');
+    const studentDiscount = money(selected.studentDiscount);
+    const fullAmount = money(selected.resourceRecalculationAmount ?? studentDiscount);
+    if (studentDiscount <= 0 || fullAmount <= 0) ctx.throw(409, '该政策教育优惠或资源回算金额为0，无法补录');
+    const supplierId = right.supplier_id || sn.supplier_id;
+    const supplierName = right.supplier_name || sn.supplier_name || '';
+    if (!supplierId) ctx.throw(409, '该SN缺少供应商归属，无法生成供应商返利待下账');
+
+    const change = await ResourceRightChangeOrder.create({
+      change_id: generateUUID(), change_order_no: businessNo('EDU'), sn_id: sn.sn_id, sn_code: sn.sn_code,
+      product_id: sn.product_id, resource_type: 'EDU_SUBSIDY', before_status: 'AVAILABLE', after_status: 'USED',
+      change_amount: fullAmount, change_reason: 'EDU_SUBSIDY_SUPPLEMENT', approval_status: 'approved',
+      related_sale_order_id: order.order_id, attachment_url: attachmentUrl,
+      applicant_staff_id: ctx.state.user.staffId || null, applicant_name: ctx.state.user.name || '',
+      reviewer_staff_id: ctx.state.user.staffId || null, reviewer_name: ctx.state.user.name || '', review_time: new Date(),
+      remark: `销售单 ${order.order_no} 归档后教育优惠资源补录；政策优惠 ¥${studentDiscount.toFixed(2)}，供应商回算 ¥${fullAmount.toFixed(2)}`
+    }, { transaction });
+    await right.update({ current_status: 'USED', amount: fullAmount, locked_source_type: null, locked_source_id: null, version: Number(right.version || 0) + 1, update_time: new Date() }, { transaction });
+    await createPendingSettlement({
+      sourceType: 'SALE_USE', sourceId: change.change_id,
+      sn: { sn_id: sn.sn_id, sn_code: sn.sn_code, product_id: sn.product_id },
+      resourceType: 'EDU_SUBSIDY', amount: fullAmount,
+      counterpartyId: supplierId, counterpartyName: supplierName, forceSettlement: true,
+      remark: `销售单 ${order.order_no} 教育优惠资源补录`, transaction
+    });
+    await createPerformanceProfitAdjustment({ order, item, resourceType: 'EDU_SUBSIDY', amount: studentDiscount, ratio: 80, transaction });
+    return { changeOrderNo: change.change_order_no, supplierRebateAmount: fullAmount, performanceProfitAmount: money(studentDiscount * 0.8) };
+  });
+  ctx.body = { code: 0, data: result, message: `教育优惠资源补录完成；供应商待下账 ¥${result.supplierRebateAmount.toFixed(2)}，员工业绩毛利增加 ¥${result.performanceProfitAmount.toFixed(2)}` };
+}
+
 async function batchRefreshRights(ctx) {
   requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
   const { productId, resourceTypes = [], snCodes = [] } = ctx.request.body || {};
@@ -674,6 +988,7 @@ async function reviewClaim(ctx) {
       resourceType: change.resource_type, amount, remark: `资源套回 ${change.change_order_no}`,
       transaction
     });
+    await createClaimPriceProtection({ change, sn, transaction });
   });
   if (ctx.state.businessApproval?.status === 'pending') return;
   ctx.body = { message: action === 'approve' ? '资源套回已审批并计入产品资源成本' : '资源套回申请已拒绝并释放权益' };
@@ -1221,6 +1536,47 @@ async function createManualRebateSettlement(ctx) {
   };
 }
 
+async function createClaimPriceProtection({ change, sn, transaction }) {
+  if (!sn?.supplier_id || !sn?.pn_code) return null;
+  const claimDate = new Date();
+  const pickupDateValue = sn.original_inbound_time || sn.inbound_time || claimDate;
+  const dateOnly = value => {
+    const date = new Date(value);
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  };
+  const findPrice = effectiveDate => ManufacturerPriceHistory.findOne({
+    where: {
+      supplier_id: sn.supplier_id,
+      pn: sn.pn_code,
+      [Op.and]: [
+        { effective_date: { [Op.lte]: dateOnly(effectiveDate) } },
+        { [Op.or]: [{ expire_date: null }, { expire_date: { [Op.gte]: dateOnly(effectiveDate) } }] },
+        { [Op.or]: [{ product_id: sn.product_id }, { product_id: null }, { product_id: '' }] }
+      ]
+    },
+    order: [['effective_date', 'DESC'], ['created_at', 'DESC']],
+    transaction
+  });
+  const [pickupPolicy, currentPolicy, supplier] = await Promise.all([
+    findPrice(pickupDateValue), findPrice(claimDate),
+    Supplier.findByPk(sn.supplier_id, { attributes: ['supplier_id', 'is_service_provider'], transaction })
+  ]);
+  const isServiceProvider = Boolean(supplier && Number(supplier.is_service_provider) !== 0);
+  const pickupSettlementPrice = Number(pickupPolicy?.settlement_price || (isServiceProvider ? 0 : sn.original_pickup_price || sn.inbound_price || 0));
+  const currentSettlementPrice = Number(currentPolicy?.settlement_price || currentPolicy?.pickup_price || 0);
+  const unitDelta = Number((currentSettlementPrice - pickupSettlementPrice).toFixed(2));
+  if (unitDelta <= 0) return null;
+  const sourceId = `PRICE_CLAIM_${change.change_id}`;
+  return createPendingSettlement({
+    sourceType: 'MANUFACTURER_REBATE', sourceId,
+    sn: { sn_id: sn.sn_id, sn_code: sn.sn_code, product_id: sn.product_id },
+    resourceType: 'MANUFACTURER_REBATE', amount: unitDelta,
+    counterpartyId: sn.supplier_id, counterpartyName: sn.supplier_name || '', forceSettlement: true,
+    remark: `套回单 ${change.change_order_no}；PO价保 = 当前结算价 ${currentSettlementPrice.toFixed(2)} - 提货时结算价 ${pickupSettlementPrice.toFixed(2)}；数量 1`,
+    transaction
+  });
+}
+
 function reconciliationStatus(total, matched) {
   if (matched <= 0) return 'UNMATCHED';
   if (matched + 0.0001 >= total) return 'MATCHED';
@@ -1724,6 +2080,55 @@ async function triggerSaleResourceBenefits(order, items, transaction) {
 
   for (const item of snItems) {
     for (const category of categories) {
+      if (category.resource_kind === 'PO_REWARD') {
+        const resourceRight = rightsBySnType.get(`${item.sn_id}:${category.category_code}`);
+        if (resourceRight?.current_status === 'AVAILABLE' && resourceRight.supplier_id) {
+          const archiveDate = order.archive_time || new Date();
+          const date = new Date(archiveDate);
+          const dateOnly = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+          const nbPolicy = await ManufacturerPriceHistory.findOne({
+            where: {
+              supplier_id: resourceRight.supplier_id,
+              pn: item.pn_code,
+              [Op.and]: [
+                { effective_date: { [Op.lte]: dateOnly } },
+                { [Op.or]: [{ expire_date: null }, { expire_date: { [Op.gte]: dateOnly } }] },
+                { [Op.or]: [{ product_id: item.product_id }, { product_id: null }, { product_id: '' }] }
+              ]
+            },
+            order: [['effective_date', 'DESC'], ['created_at', 'DESC']],
+            transaction
+          });
+          if (Number(nbPolicy?.po_rebate_amount || 0) > 0) {
+            await ResourceRightChangeOrder.create({
+              change_id: generateUUID(),
+              change_order_no: businessNo(),
+              sn_id: item.sn_id,
+              sn_code: item.sn_code,
+              product_id: item.product_id,
+              resource_type: category.category_code,
+              before_status: 'AVAILABLE',
+              after_status: 'USED',
+              change_amount: money(Number(nbPolicy.po_rebate_amount) * Number(item.quantity || 1)),
+              change_reason: 'SALE_TRIGGER_NB_POLICY',
+              approval_status: 'approved',
+              related_sale_order_id: order.order_id,
+              applicant_name: order.create_user,
+              reviewer_name: 'system',
+              review_time: new Date(),
+              remark: `NB政策批次 ${nbPolicy.import_batch_no || '-'} 已在销售结算链路生成PO后返，避免重复计入`
+            }, { transaction });
+            await resourceRight.update({
+              current_status: 'USED',
+              amount: money(Number(nbPolicy.po_rebate_amount) * Number(item.quantity || 1)),
+              locked_source_type: null,
+              locked_source_id: null,
+              version: Number(resourceRight.version || 0) + 1
+            }, { transaction });
+            continue;
+          }
+        }
+      }
       if (Number(category.supports_sale_use) === 1 && selectedResources(item).includes(category.category_code)) continue;
       const right = rightsBySnType.get(`${item.sn_id}:${category.category_code}`);
       if (!right) continue;
@@ -2129,7 +2534,7 @@ async function releaseSaleRights(order, items, transaction) {
 
 module.exports = {
   LEGACY_RESOURCE_TYPES, buildSalesResourceSummary, summariesForSns,
-  listRights, snRights, saveSnRights, batchAdjustRights, importBatchRights, batchRefreshRights, reverseSaleUseResource, submitClaim, reviewClaim, listChanges, listCostConfigs, listCostAdjustments, saveCostConfig,
+  listRights, snRights, saveSnRights, batchAdjustRights, importBatchRights, importEducationPolicies, supplementEducationResource, batchRefreshRights, reverseSaleUseResource, submitClaim, reviewClaim, listChanges, listCostConfigs, listCostAdjustments, saveCostConfig,
   listResourceCategories, saveResourceCategory, deleteResourceCategory,
   listGoodsTypes, saveGoodsType, deleteGoodsType,
   listResourceSettlements, createManualRebateSettlement, settleResource, batchSettleRebateResources, linkRebateSettlement,
@@ -2138,5 +2543,5 @@ module.exports = {
   initializeSnResourceRightsFromInbound, triggerSaleResourceBenefits, createSaleResourceTasks,
   listSaleResourceTasks, submitSaleResourceTask, reviewSaleResourceTask,
   alignOrderSubsidyRights, isGovSubsidyEligibleCategory, lockSaleRights, finishSaleRights, releaseSaleRights,
-  _test: { normalizeImportRows, normalizeImportStatus, normalizeImportResourceTypes }
+  _test: { normalizeImportRows, normalizeImportStatus, normalizeImportResourceTypes, educationHeaderIndexes, parseEducationDate, parseEducationAmount, extractEducationPolicies, chooseEducationPolicy }
 };

@@ -327,6 +327,11 @@ export default {
   getResourceCostAdjustments: (params) => api.get('/inventory/resource-rights/cost-adjustments', { params }),
   saveProductResourceCostConfig: (data) => api.post('/inventory/resource-rights/cost-configs', data),
   batchAdjustResourceRights: (data) => api.post('/inventory/resource-rights/batch-adjust', data),
+  importEducationSubsidyPolicies: (file) => {
+    const formData = new FormData(); formData.append('file', file)
+    return api.post('/inventory/resource-rights/education-policy/import', formData, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 180000 })
+  },
+  supplementEducationResource: (data) => api.post('/inventory/resource-rights/education-supplement', data),
   importBatchResourceRights: (file) => {
     const formData = new FormData(); formData.append('file', file)
     return api.post('/inventory/resource-rights/batch-import', formData, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 180000 })
@@ -522,6 +527,7 @@ export default {
   updateManufacturerPolicy: (id, data) => api.put(`/finance/manufacturer-policy/${id}`, data),
   getManufacturerPolicyList: (params) => api.get('/finance/manufacturer-policy-list', { params }),
   importManufacturerPrices: (data) => api.post('/finance/manufacturer-price/import', data),
+  importManufacturerOperations: (data) => api.post('/finance/manufacturer-operations/import', data),
   getManufacturerPriceHistory: (params) => api.get('/finance/manufacturer-price-history', { params }),
   getRebateEstimateList: (params) => api.get('/finance/rebate-estimate-list', { params }),
   getSalesCostAdjustmentList: (params) => api.get('/finance/sales-cost-adjustment-list', { params }),

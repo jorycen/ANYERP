@@ -30,7 +30,12 @@ function toNumber(value) {
 function parseDate(value) {
   if (!value) return null;
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
-  const date = new Date(value);
+  if (typeof value === 'number' && Number.isFinite(value) && value > 1000 && value < 100000) {
+    return new Date(Date.UTC(1899, 11, 30) + Math.floor(value) * 86400000);
+  }
+  const localized = String(value).trim().replace(/[年月]/g, '-').replace(/日/g, '').replace(/[/.]/g, '-');
+  const normalized = localized.replace(/-+/g, '-').replace(/-$/, '');
+  const date = new Date(normalized);
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
@@ -635,6 +640,14 @@ function getRowValue(row, keys) {
   for (const key of keys) {
     if (row[key] !== undefined && row[key] !== null && row[key] !== '') return row[key];
   }
+  const normalize = value => String(value || '').toLowerCase().replace(/[\s_\-（）()【】\[\]：:]/g, '');
+  const entries = Object.entries(row || {});
+  for (const key of keys) {
+    const target = normalize(key);
+    if (target.length < 3) continue;
+    const match = entries.find(([header, value]) => normalize(header).includes(target) && value !== undefined && value !== null && value !== '');
+    if (match) return match[1];
+  }
   return '';
 }
 
@@ -650,15 +663,19 @@ async function importManufacturerPrices(ctx) {
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index] || {};
     const rowNo = index + 2;
-    const supplierName = String(getRowValue(row, ['供应商', '厂家', 'supplier_name', 'manufacturer_name'])).trim();
+    const supplierName = String(getRowValue(row, ['供应商', '供应商名称', '厂家', '厂家名称', '厂商名称', 'supplier_name', 'manufacturer_name'])).trim();
     const supplierId = String(getRowValue(row, ['供应商ID', '厂家ID', 'supplier_id', 'manufacturer_id'])).trim();
-    const pn = String(getRowValue(row, ['PN', 'pn', 'pn_code', '厂商编码'])).trim();
+    const pn = String(getRowValue(row, ['PN', 'pn', 'pn_code', '厂商编码', '商品编号', 'product_code'])).trim();
     const model = String(getRowValue(row, ['型号', 'model'])).trim();
     const productName = String(getRowValue(row, ['商品名称', 'product_name'])).trim();
-    const effectiveDate = parseDate(getRowValue(row, ['生效日期', 'effective_date']));
-    const expireDate = parseDate(getRowValue(row, ['失效日期', 'expire_date']));
-    const pickupPrice = toNumber(getRowValue(row, ['提货价', 'pickup_price']));
+    const effectiveDate = parseDate(getRowValue(row, ['生效日期', '开始日期', '开始时间', '促销开始时间', '政策开始时间', '周期开始', '有效期开始', 'effective_date']));
+    const expireDate = parseDate(getRowValue(row, ['失效日期', '结束日期', '结束时间', '促销结束时间', '政策结束时间', '周期结束', '有效期结束', 'expire_date']));
+    const settlementPrice = toNumber(getRowValue(row, ['厂商结算价', '厂家结算价', '厂商结算价格', '结算价', '结算价格', 'settlement_price']));
+    const pickupPrice = toNumber(getRowValue(row, ['提货价', '采购价', 'pickup_price'])) || settlementPrice;
     const p0Price = toNumber(getRowValue(row, ['P0价', 'p0_price']));
+    const poRebateAmount = toNumber(getRowValue(row, ['PO后返', 'PO后返金额', 'PO返利', '单台PO后返', 'po_rebate_amount']));
+    const extraResource = String(getRowValue(row, ['加磅资源', '是否有加磅资源', 'extra_resource'])).trim();
+    const pickupPolicy = String(getRowValue(row, ['提货政策', '提货政策说明', 'SO/PO政策', 'pickup_policy'])).trim();
 
     if (!supplierId && !supplierName) {
       errors.push({ row: rowNo, message: '供应商/厂家不能为空' });
@@ -672,8 +689,12 @@ async function importManufacturerPrices(ctx) {
       errors.push({ row: rowNo, pn, message: '生效日期格式错误' });
       continue;
     }
-    if (!pickupPrice || pickupPrice <= 0) {
-      errors.push({ row: rowNo, pn, message: '提货价必须大于0' });
+    if (expireDate && new Date(expireDate).getTime() < new Date(effectiveDate).getTime()) {
+      errors.push({ row: rowNo, pn, message: '失效日期不能早于生效日期' });
+      continue;
+    }
+    if ((!pickupPrice || pickupPrice <= 0) && (!settlementPrice || settlementPrice <= 0)) {
+      errors.push({ row: rowNo, pn, message: '结算价或提货价必须大于0' });
       continue;
     }
 
@@ -688,6 +709,7 @@ async function importManufacturerPrices(ctx) {
     const product = await Product.findOne({
       where: {
         [Op.or]: [
+          { product_code: pn },
           { manufacturer_code: { [Op.like]: `%${pn}%` } },
           ...(productName ? [{ name: { [Op.like]: `%${productName}%` } }] : [])
         ]
@@ -706,6 +728,10 @@ async function importManufacturerPrices(ctx) {
       expire_date: expireDate,
       pickup_price: pickupPrice,
       p0_price: p0Price || null,
+      settlement_price: settlementPrice || pickupPrice,
+      po_rebate_amount: poRebateAmount,
+      extra_resource: extraResource,
+      pickup_policy: pickupPolicy,
       import_batch_no: batchNo,
       source_file_url: sourceFileUrl,
       remark: String(getRowValue(row, ['备注', 'remark'])).trim(),
@@ -720,6 +746,10 @@ async function importManufacturerPrices(ctx) {
 
   await ManufacturerPriceHistory.bulkCreate(validRows);
   ctx.body = { code: 0, message: '厂家价格导入成功', data: { batchNo, count: validRows.length } };
+}
+
+async function importManufacturerOperations(ctx) {
+  return importManufacturerPrices(ctx);
 }
 
 async function getManufacturerPriceHistory(ctx) {
@@ -784,6 +814,7 @@ module.exports = {
   updateManufacturerPolicy,
   getManufacturerPolicyList,
   importManufacturerPrices,
+  importManufacturerOperations,
   getManufacturerPriceHistory,
   getRebateEstimateList,
   getCostAdjustmentList,

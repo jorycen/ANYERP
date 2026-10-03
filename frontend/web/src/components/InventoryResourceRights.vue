@@ -11,6 +11,8 @@
             <el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
           <el-button type="primary" @click="loadRights">查询</el-button>
+          <el-button type="success" :loading="educationImporting" @click="educationFileInput?.click()">上传教育优惠表</el-button>
+          <input ref="educationFileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="onEducationFileChange" />
           <el-button @click="openBySn">初始化/维护SN权益</el-button>
           <el-button @click="openBatchAdjust">批量调整权益</el-button>
         </div>
@@ -21,8 +23,9 @@
           <el-table-column label="状态" width="110"><template #default="{row}"><el-tag :type="statusType(row.current_status)">{{ statusText(row.current_status) }}</el-tag></template></el-table-column>
           <el-table-column prop="amount" label="确认金额" width="110"><template #default="{row}">¥{{ money(row.amount) }}</template></el-table-column>
           <el-table-column prop="update_time" label="更新时间" width="170" />
-          <el-table-column label="操作" width="230" fixed="right"><template #default="{row}">
+          <el-table-column label="操作" width="330" fixed="right"><template #default="{row}">
             <el-button link type="primary" @click="editSn(row.sn_id)">详情/维护</el-button>
+            <el-button v-if="row.resource_type === 'EDU_SUBSIDY' && row.current_status === 'AVAILABLE' && row.ProductSn?.status !== 'in_stock'" link type="success" @click="openEducationSupplement(row)">资源补录</el-button>
             <el-button v-if="row.current_status === 'AVAILABLE'" link type="warning" @click="openClaim(row)">申请套回</el-button>
             <el-button v-if="canReverse(row)" link type="danger" @click="reverseSaleUse(row)">冲销核销</el-button>
           </template></el-table-column>
@@ -48,6 +51,7 @@
           <el-table-column label="状态变化" width="170"><template #default="{row}">{{ statusText(row.before_status) }} → {{ statusText(row.after_status) }}</template></el-table-column>
           <el-table-column prop="change_amount" label="金额" width="100"><template #default="{row}">¥{{ money(row.change_amount) }}</template></el-table-column>
           <el-table-column label="原因" width="130"><template #default="{row}">{{ reasonText(row.change_reason) }}</template></el-table-column>
+          <el-table-column label="凭证" width="90"><template #default="{row}"><el-button v-if="row.attachment_url" link type="primary" @click="openAttachment(row.attachment_url)">查看</el-button><span v-else>—</span></template></el-table-column>
           <el-table-column label="审批" width="110"><template #default="{row}"><el-tag>{{ approvalText(row.approval_status) }}</el-tag></template></el-table-column>
           <el-table-column prop="applicant_name" label="申请人" width="100" />
           <el-table-column prop="reviewer_name" label="审批人" width="100" />
@@ -164,6 +168,23 @@
       <template #footer><el-button @click="claimDialog=false">取消</el-button><el-button type="primary" @click="submitClaim">提交财务审批</el-button></template>
     </el-dialog>
 
+    <el-dialog v-model="educationSupplementDialog" title="教育优惠资源补录" width="560px">
+      <el-alert title="仅限已归档、且归档时未使用教育补贴的商品。确认后供应商待下账按资源回算金额全额增加，员工业绩毛利按学生优惠金额的80%增加。" type="info" :closable="false" style="margin-bottom:14px" />
+      <el-form label-width="110px">
+        <el-form-item label="商品SN">{{ educationSupplementForm.snCode }}</el-form-item>
+        <el-form-item label="销售单号" required><el-input v-model="educationSupplementForm.orderNo" placeholder="请输入已归档销售单号" maxlength="64" /></el-form-item>
+        <el-form-item label="优惠凭证" required>
+          <input ref="educationProofInput" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" style="display:none" @change="onEducationProofChange" />
+          <el-button :loading="educationProofUploading" @click="educationProofInput?.click()">上传图片或PDF</el-button>
+          <span v-if="educationSupplementForm.attachmentUrl" class="file-name">已上传</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="educationSupplementDialog=false">取消</el-button>
+        <el-button type="primary" :loading="educationSupplementSubmitting" :disabled="!educationSupplementForm.orderNo || !educationSupplementForm.attachmentUrl" @click="submitEducationSupplement">确认补录</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="batchDialog" title="表格导入批量调整权益" width="640px">
       <el-alert title="仅调整未销售在库SN的权益，已锁定、已核销和已套回权益会跳过，已归档销售单不受影响。" type="warning" :closable="false" style="margin-bottom:12px" />
       <div class="import-help">
@@ -213,6 +234,10 @@ const claimDialog = ref(false); const claimForm = reactive({ snId:'', snCode:'',
 const batchDialog = ref(false)
 const batchForm = reactive({ snCodesText:'', productId:'', resourceTypes:[], status:'AVAILABLE', amount:0, remark:'' })
 const batchFileInput = ref(null); const batchFile = ref(null); const batchImporting = ref(false)
+const educationFileInput = ref(null); const educationImporting = ref(false)
+const educationSupplementDialog = ref(false); const educationProofInput = ref(null)
+const educationProofUploading = ref(false); const educationSupplementSubmitting = ref(false)
+const educationSupplementForm = reactive({ snId:'', snCode:'', orderNo:'', attachmentUrl:'' })
 
 const payloadList = res => res.data?.list || res.data || []
 const payloadTotal = res => res.data?.pagination?.total || res.data?.total || 0
@@ -221,7 +246,7 @@ const resourceText = value => resourceOptions.value.find(item => item.value === 
 const statusText = value => statusOptions.find(item => item.value === value)?.label || value
 const statusType = value => ({AVAILABLE:'success',LOCKED:'warning',USED:'info',CLAIMED_BACK:'danger',EXCEPTION:'danger'}[value] || '')
 const approvalText = value => ({pending_finance:'待财务审批',approved:'已通过',rejected:'已拒绝'}[value] || value)
-const reasonText = value => ({SALE_USED:'销售使用',SALE_USE_REVERSAL:'销售核销冲销',COMPANY_CLAIMED_BACK:'公司套回',ORDER_LOCKED:'订单锁定',ORDER_CANCEL_RELEASE:'订单取消释放',MANUAL_ADJUST:'人工调整',PURCHASE_INBOUND:'采购入库',BATCH_ADJUST:'批量调整',SALE_TRIGGER:'销售触发',SALE_TRIGGER_NOT_ELIGIBLE:'销售未达成条件'}[value] || value)
+const reasonText = value => ({SALE_USED:'销售使用',SALE_USE_REVERSAL:'销售核销冲销',EDU_SUBSIDY_SUPPLEMENT:'教育优惠资源补录',COMPANY_CLAIMED_BACK:'公司套回',ORDER_LOCKED:'订单锁定',ORDER_CANCEL_RELEASE:'订单取消释放',MANUAL_ADJUST:'人工调整',PURCHASE_INBOUND:'采购入库',BATCH_ADJUST:'批量调整',SALE_TRIGGER:'销售触发',SALE_TRIGGER_NOT_ELIGIBLE:'销售未达成条件'}[value] || value)
 const calcTypeText = value => ({fixed_amount:'固定金额',percentage_inventory_cost:'库存成本比例',percentage_sale_amount:'销售金额比例'}[value] || value)
 const rulePeriodText = row => row.effective_start || row.effective_end ? `${String(row.effective_start || '不限').slice(0,10)} 至 ${String(row.effective_end || '不限').slice(0,10)}` : '长期有效'
 const triggerText = row => {
@@ -359,6 +384,65 @@ async function submitBatchImport(){
     batchDialog.value=false; await loadRights(); await loadChanges()
   }catch(e){ElMessage.error(e.response?.data?.message||'Excel导入失败')}
   finally{batchImporting.value=false}
+}
+
+async function onEducationFileChange(event){
+  const file=event.target.files?.[0]
+  event.target.value=''
+  if(!file)return
+  educationImporting.value=true
+  try{
+    const res=await api.importEducationSubsidyPolicies(file)
+    const data=res.data || res
+    const failures=(data.results||[]).filter(item=>item.status==='failed')
+    if(failures.length) ElMessage.warning(`${data.message}；示例：${failures.slice(0,3).map(item=>`${item.productCode || `${item.sheet || ''}第${item.row || ''}行`} ${item.message}`).join('；')}`)
+    else ElMessage.success(data.message || '教育优惠表导入完成')
+    await loadRights()
+  }catch(e){ElMessage.error(e.response?.data?.message||'教育优惠表导入失败')}
+  finally{educationImporting.value=false}
+}
+
+function openEducationSupplement(row){
+  Object.assign(educationSupplementForm,{snId:row.sn_id,snCode:row.sn_code,orderNo:'',attachmentUrl:''})
+  educationSupplementDialog.value=true
+}
+
+async function onEducationProofChange(event){
+  const file=event.target.files?.[0]
+  event.target.value=''
+  if(!file)return
+  educationProofUploading.value=true
+  try{
+    const result=await api.uploadFile(file,'education-supplement')
+    const uploaded=result.data||{}
+    educationSupplementForm.attachmentUrl=uploaded.fileId||uploaded.url||''
+    if(!educationSupplementForm.attachmentUrl)throw new Error('上传成功但未取得附件标识')
+    ElMessage.success('凭证已上传')
+  }catch(e){ElMessage.error(e.response?.data?.message||e.message||'凭证上传失败')}
+  finally{educationProofUploading.value=false}
+}
+
+async function submitEducationSupplement(){
+  if(!educationSupplementForm.orderNo.trim())return ElMessage.warning('请输入销售单号')
+  if(!educationSupplementForm.attachmentUrl)return ElMessage.warning('请先上传优惠凭证')
+  educationSupplementSubmitting.value=true
+  try{
+    const res=await api.supplementEducationResource({snId:educationSupplementForm.snId,orderNo:educationSupplementForm.orderNo.trim(),attachmentUrl:educationSupplementForm.attachmentUrl})
+    ElMessage.success(res.message||res.data?.message||'教育优惠资源补录完成')
+    educationSupplementDialog.value=false
+    await Promise.all([loadRights(),loadChanges(),loadLedger()])
+  }catch(e){ElMessage.error(e.response?.data?.message||'教育优惠资源补录失败')}
+  finally{educationSupplementSubmitting.value=false}
+}
+
+async function openAttachment(fileId){
+  try{
+    if(/^https?:\/\//i.test(fileId))return window.open(fileId,'_blank','noopener')
+    const result=await api.resolveCloudFileUrls([fileId])
+    const url=result.data?.items?.[0]?.url
+    if(!url)throw new Error(result.data?.items?.[0]?.error||'附件地址暂不可用')
+    window.open(url,'_blank','noopener')
+  }catch(e){ElMessage.error(e.message||'附件打开失败')}
 }
 
 onMounted(async () => { await loadCategories(); loadSuppliers(); loadActive(tab.value) })

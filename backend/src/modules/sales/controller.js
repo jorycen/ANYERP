@@ -5110,12 +5110,14 @@ function canSeeCost(user) {
   return Boolean(user && user.staffId);
 }
 
-async function findCurrentManufacturerPrice({ productId, pn, saleDate, transaction = null }) {
+async function findCurrentManufacturerPrice({ productId, pn, saleDate, supplierId = null, transaction = null }) {
   if (!pn) return null;
-  const date = saleDate || new Date();
+  const inputDate = saleDate ? new Date(saleDate) : new Date();
+  const date = new Date(inputDate.getFullYear(), inputDate.getMonth(), inputDate.getDate());
   return ManufacturerPriceHistory.findOne({
     where: {
       pn,
+      ...(supplierId ? { supplier_id: supplierId } : {}),
       [Op.and]: [
         { effective_date: { [Op.lte]: date } },
         {
@@ -5140,7 +5142,8 @@ async function findCurrentManufacturerPrice({ productId, pn, saleDate, transacti
 
 async function findActiveManufacturerPolicies({ supplierId, productId, pn, saleDate, transaction = null }) {
   if (!supplierId) return [];
-  const date = saleDate || new Date();
+  const inputDate = saleDate ? new Date(saleDate) : new Date();
+  const date = new Date(inputDate.getFullYear(), inputDate.getMonth(), inputDate.getDate());
   return ManufacturerRebatePolicy.findAll({
     where: {
       supplier_id: supplierId,
@@ -5209,6 +5212,9 @@ async function createEstimateAndAdjustment({
   policyName,
   policyType,
   rebateAmount,
+  quantity = 1,
+  unitPriceDelta = 0,
+  sourcePolicyBatchNo = null,
   affectCost,
   costAdjustmentAmount,
   originalInventoryCost,
@@ -5236,7 +5242,12 @@ async function createEstimateAndAdjustment({
     policy_name: policyName,
     policy_type: policyType,
     rebate_estimate_amount: rebateAmount,
+    quantity,
+    unit_price_delta: unitPriceDelta,
+    source_policy_batch_no: sourcePolicyBatchNo,
     status: 'estimated',
+    source_type: 'manufacturer_policy',
+    source_id: estimateId,
     remark
   }, { transaction });
 
@@ -5301,7 +5312,7 @@ async function calculateSalesSettlementCosts(order, transaction = null, options 
   const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean))];
   const productPrices = await ProductPrice.findAll({ where: { product_id: { [Op.in]: productIds } }, transaction });
   const priceMap = new Map(productPrices.map(price => [price.product_id, price]));
-  const saleDate = order.create_time || new Date();
+  const saleDate = options.saleDate || new Date();
 
   for (const item of items) {
     const snRecord = item.sn_code
@@ -5310,16 +5321,29 @@ async function calculateSalesSettlementCosts(order, transaction = null, options 
     const productPrice = priceMap.get(item.product_id);
     const originalInventoryCost = money(snRecord?.inbound_price || productPrice?.cost_price || 0);
     const originalPickupPrice = money(snRecord?.original_pickup_price || snRecord?.inbound_price || item.original_pickup_price || 0);
+    const pickupHistory = await findCurrentManufacturerPrice({
+      productId: item.product_id,
+      pn: item.pn_code,
+      supplierId: snRecord?.supplier_id,
+      saleDate: snRecord?.original_inbound_time || snRecord?.inbound_time || order.create_time,
+      transaction
+    });
     const priceHistory = await findCurrentManufacturerPrice({
       productId: item.product_id,
       pn: item.pn_code,
+      supplierId: snRecord?.supplier_id,
       saleDate,
       transaction
     });
     const currentPickupPrice = money(priceHistory?.pickup_price || 0);
-    const p0DifferenceAmount = originalPickupPrice > currentPickupPrice && currentPickupPrice > 0
-      ? money(originalPickupPrice - currentPickupPrice)
+    const inventorySupplier = snRecord?.supplier_id ? await Supplier.findByPk(snRecord.supplier_id, { attributes: ['supplier_id', 'is_service_provider'], transaction }) : null;
+    const isServiceProvider = Boolean(inventorySupplier && Number(inventorySupplier.is_service_provider) !== 0);
+    const pickupSettlementPrice = money(pickupHistory?.settlement_price || (isServiceProvider ? 0 : originalPickupPrice));
+    const currentSettlementPrice = money(priceHistory?.settlement_price || priceHistory?.pickup_price || 0);
+    const unitPriceDelta = pickupSettlementPrice > 0 && currentSettlementPrice > 0
+      ? money(currentSettlementPrice - pickupSettlementPrice)
       : 0;
+    const p0DifferenceAmount = unitPriceDelta > 0 ? unitPriceDelta : 0;
 
     let totalCostAdjustment = 0;
     const pendingRows = [];
@@ -5330,10 +5354,27 @@ async function calculateSalesSettlementCosts(order, transaction = null, options 
         policy: null,
         policyName: 'P差',
         policyType: 'p0_difference',
-        rebateAmount: p0DifferenceAmount,
+        rebateAmount: money(p0DifferenceAmount * Number(item.quantity || 1)),
+        unitPriceDelta,
         affectCost: true,
         costAdjustmentAmount: p0DifferenceAmount,
-        remark: 'P差 = 原始提货价 - 销售时厂家当前提货价'
+        remark: `PO价保 = 归档日结算价 ${currentSettlementPrice.toFixed(2)} - 提货时结算价 ${pickupSettlementPrice.toFixed(2)}，数量 ${Number(item.quantity || 1)}`
+      });
+    }
+
+    const poRebateAmount = money(Number(priceHistory?.po_rebate_amount || 0) * Number(item.quantity || 1));
+    if (poRebateAmount > 0) {
+      const poProfitAdjustment = money(Number(priceHistory.po_rebate_amount || 0) * 0.8);
+      totalCostAdjustment += poProfitAdjustment;
+      pendingRows.push({
+        policy: null,
+        policyName: 'NB政策PO后返',
+        policyType: 'po_rebate',
+        rebateAmount: poRebateAmount,
+        affectCost: true,
+        costAdjustmentAmount: poProfitAdjustment,
+        unitPriceDelta: Number(priceHistory.po_rebate_amount || 0),
+        remark: `NB政策批次 ${priceHistory.import_batch_no || '-'}；单件后返 ${Number(priceHistory.po_rebate_amount || 0).toFixed(2)} × 数量 ${Number(item.quantity || 1)}`
       });
     }
 
@@ -5347,15 +5388,18 @@ async function calculateSalesSettlementCosts(order, transaction = null, options 
 
     for (const policy of policies) {
       if (policy.policy_type === 'p0_difference') continue;
-      const rebateAmount = calculatePolicyRebate(policy, originalInventoryCost);
-      if (rebateAmount <= 0) continue;
-      const costAdjustmentAmount = calculateCostAdjustment(policy, rebateAmount);
+      if (Number(priceHistory?.po_rebate_amount || 0) > 0 && ['PO_REWARD', 'po_rebate', 'po_reward', 'po_after_rebate'].includes(String(policy.policy_type || '').toLowerCase())) continue;
+      const rebateUnitAmount = calculatePolicyRebate(policy, originalInventoryCost);
+      if (rebateUnitAmount <= 0) continue;
+      const rebateAmount = money(rebateUnitAmount * Number(item.quantity || 1));
+      const costAdjustmentAmount = calculateCostAdjustment(policy, rebateUnitAmount);
       totalCostAdjustment += costAdjustmentAmount;
       pendingRows.push({
         policy,
         policyName: policy.policy_name,
         policyType: policy.policy_type,
         rebateAmount,
+        unitPriceDelta: rebateUnitAmount,
         affectCost: !!policy.affect_sales_settlement_cost,
         costAdjustmentAmount,
         remark: policy.cost_adjustment_remark || policy.remark || ''
@@ -5375,6 +5419,9 @@ async function calculateSalesSettlementCosts(order, transaction = null, options 
         policyName: row.policyName,
         policyType: row.policyType,
         rebateAmount: row.rebateAmount,
+        quantity: Number(item.quantity || 1),
+        unitPriceDelta: row.unitPriceDelta || 0,
+        sourcePolicyBatchNo: priceHistory?.import_batch_no || null,
         affectCost: row.affectCost,
         costAdjustmentAmount: row.costAdjustmentAmount,
         originalInventoryCost,

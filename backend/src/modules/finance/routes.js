@@ -58,6 +58,7 @@ const {
   updateManufacturerPolicy,
   getManufacturerPolicyList,
   importManufacturerPrices,
+  importManufacturerOperations,
   getManufacturerPriceHistory,
   getRebateEstimateList,
   getCostAdjustmentList
@@ -180,6 +181,7 @@ router.post('/manufacturer-policy', createManufacturerPolicy);
 router.put('/manufacturer-policy/:policyId', updateManufacturerPolicy);
 router.get('/manufacturer-policy-list', getManufacturerPolicyList);
 router.post('/manufacturer-price/import', importManufacturerPrices);
+router.post('/manufacturer-operations/import', importManufacturerOperations);
 router.get('/manufacturer-price-history', getManufacturerPriceHistory);
 router.get('/rebate-estimate-list', getRebateEstimateList);
 router.get('/sales-cost-adjustment-list', getCostAdjustmentList);
