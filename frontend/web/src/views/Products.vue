@@ -284,6 +284,7 @@
             <el-button type="success" plain @click="handleCostImport">批量导入商品成本</el-button>
             <el-button type="success" plain @click="handleCostExport" :loading="costExportLoading">成本导出</el-button>
             <el-button type="warning" @click="handlePriceImport">批量导入定价</el-button>
+            <span class="muted">库存成本进入价格管理、搜索或翻页时自动同步</span>
           </div>
 
           <el-table :data="priceTableData" stripe border v-loading="priceLoading" @selection-change="onPriceSelectionChange" ref="priceTableRef">
@@ -1597,6 +1598,7 @@ const handleMoveCategory = async (row, siblings, index, direction) => {
 // ========== 价格管理 ==========
 const priceLoading = ref(false); const priceTableData = ref([]); const priceTotal = ref(0)
 const priceParams = reactive({ page: 1, pageSize: 20, keyword: '' })
+let priceLoadSequence = 0
 const priceTableRef = ref(null); const selectedPriceRows = ref([])
 const batchRefreshLoading = ref(false)
 const priceImportDialogVisible = ref(false)
@@ -1616,9 +1618,11 @@ const priceHistoryProduct = ref(null)
 const priceHistoryParams = reactive({ page: 1, pageSize: 20, productId: '' })
 
 const loadPriceData = async () => {
+  const sequence = ++priceLoadSequence
   priceLoading.value = true
   try {
     const res = await api.getPriceList(priceParams)
+    if (sequence !== priceLoadSequence) return
     if (res.code === 0) {
       priceTableData.value = (res.data?.list || []).map(p => ({
         ...p,
@@ -1631,9 +1635,27 @@ const loadPriceData = async () => {
         _inputTaxDeductible: Number(p.input_tax_deductible ?? 1) === 1
       }))
       priceTotal.value = res.data?.pagination?.total || res.data?.total || 0
+      const productIds = priceTableData.value.map(row => row.product_id).filter(Boolean)
+      if (productIds.length) {
+        try {
+          const costRes = await api.batchRefreshCost({ productIds })
+          if (sequence !== priceLoadSequence) return
+          if (costRes.code === 0) {
+            const costMap = new Map((costRes.data || []).map(item => [item.productId, Number(item.costPrice || 0)]))
+            priceTableData.value = priceTableData.value.map(row => ({
+              ...row,
+              cost_price: costMap.has(row.product_id) ? costMap.get(row.product_id) : row.cost_price
+            }))
+          } else {
+            ElMessage.warning(costRes.message || '库存成本自动同步失败，请手动刷新')
+          }
+        } catch (costError) {
+          if (sequence === priceLoadSequence) ElMessage.warning(costError?.response?.data?.message || '库存成本自动同步失败，请手动刷新')
+        }
+      }
     }
   } catch (err) { ElMessage.error(err?.response?.data?.message || '加载失败') }
-  finally { priceLoading.value = false }
+  finally { if (sequence === priceLoadSequence) priceLoading.value = false }
 }
 const startEditPrice = (row) => {
   row._editing = true
