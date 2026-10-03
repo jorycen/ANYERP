@@ -12,6 +12,8 @@
           </el-select>
           <el-button type="primary" @click="loadRights">查询</el-button>
           <el-button type="success" @click="openEducationImport">上传教育优惠表</el-button>
+          <el-button type="primary" plain @click="openNbPolicyImport">上传产品运作政策</el-button>
+          <el-button link type="primary" @click="tab='nb-policy'; loadNbPolicies()">查看产品运作政策</el-button>
           <el-button @click="openBySn">初始化/维护SN权益</el-button>
           <el-button @click="openBatchAdjust">批量调整权益</el-button>
         </div>
