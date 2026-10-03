@@ -528,6 +528,8 @@ export default {
   getManufacturerPolicyList: (params) => api.get('/finance/manufacturer-policy-list', { params }),
   importManufacturerPrices: (data) => api.post('/finance/manufacturer-price/import', data),
   importManufacturerOperations: (data) => api.post('/finance/manufacturer-operations/import', data),
+  importInventoryNbPolicy: (data) => api.post('/inventory/resource-rights/nb-policy/import', data),
+  getInventoryNbPolicies: (params) => api.get('/inventory/resource-rights/nb-policy', { params }),
   getManufacturerPriceHistory: (params) => api.get('/finance/manufacturer-price-history', { params }),
   getRebateEstimateList: (params) => api.get('/finance/rebate-estimate-list', { params }),
   getSalesCostAdjustmentList: (params) => api.get('/finance/sales-cost-adjustment-list', { params }),

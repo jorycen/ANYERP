@@ -1536,6 +1536,25 @@ async function createManualRebateSettlement(ctx) {
   };
 }
 
+async function listNbPolicies(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
+  const { supplierId, pn, page = 1, pageSize = 20 } = ctx.query;
+  const where = {};
+  if (supplierId) where.supplier_id = supplierId;
+  if (pn) where.pn = { [Op.like]: `%${pn}%` };
+  const { count, rows } = await ManufacturerPriceHistory.findAndCountAll({
+    where,
+    order: [['effective_date', 'DESC'], ['created_at', 'DESC']],
+    ...paginate({}, { page, pageSize })
+  });
+  ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+async function importNbPolicy(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
+  return require('../finance/rebateController').importManufacturerOperations(ctx);
+}
+
 async function createClaimPriceProtection({ change, sn, transaction }) {
   if (!sn?.supplier_id || !sn?.pn_code) return null;
   const claimDate = new Date();
@@ -2537,6 +2556,7 @@ module.exports = {
   listRights, snRights, saveSnRights, batchAdjustRights, importBatchRights, importEducationPolicies, supplementEducationResource, batchRefreshRights, reverseSaleUseResource, submitClaim, reviewClaim, listChanges, listCostConfigs, listCostAdjustments, saveCostConfig,
   listResourceCategories, saveResourceCategory, deleteResourceCategory,
   listGoodsTypes, saveGoodsType, deleteGoodsType,
+  listNbPolicies, importNbPolicy,
   listResourceSettlements, createManualRebateSettlement, settleResource, batchSettleRebateResources, linkRebateSettlement,
   cancelResourceSettlement, reverseResourceSettlement, createPendingSettlement,
   findResourceRule, calculatePreSaleRuleAmount,

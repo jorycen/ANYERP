@@ -740,12 +740,16 @@ async function importManufacturerPrices(ctx) {
   }
 
   if (errors.length > 0) {
-    ctx.body = { code: 400, message: '导入校验失败，整批未处理', data: { errors } };
+    ctx.body = { code: 400, message: '导入校验失败，整批未处理', data: { errors, results: errors.map(error => ({ pn: error.pn || '', row: error.row, status: 'failed', message: error.message })) } };
     return;
   }
 
   await ManufacturerPriceHistory.bulkCreate(validRows);
-  ctx.body = { code: 0, message: '厂家价格导入成功', data: { batchNo, count: validRows.length } };
+  ctx.body = {
+    code: 0,
+    message: '厂家价格/产品政策导入成功',
+    data: { batchNo, count: validRows.length, results: validRows.map(row => ({ pn: row.pn, status: 'success' })) }
+  };
 }
 
 async function importManufacturerOperations(ctx) {

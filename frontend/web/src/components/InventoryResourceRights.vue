@@ -11,8 +11,7 @@
             <el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
           <el-button type="primary" @click="loadRights">查询</el-button>
-          <el-button type="success" :loading="educationImporting" @click="educationFileInput?.click()">上传教育优惠表</el-button>
-          <input ref="educationFileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="onEducationFileChange" />
+          <el-button type="success" @click="openEducationImport">上传教育优惠表</el-button>
           <el-button @click="openBySn">初始化/维护SN权益</el-button>
           <el-button @click="openBatchAdjust">批量调整权益</el-button>
         </div>
@@ -31,6 +30,33 @@
           </template></el-table-column>
         </el-table>
         <el-pagination v-model:current-page="rightsQuery.page" v-model:page-size="rightsQuery.pageSize" :total="rightsTotal" layout="total, prev, pager, next" @current-change="loadRights" />
+      </el-tab-pane>
+
+      <el-tab-pane v-if="!financeOnly" label="产品运作政策" name="nb-policy">
+        <div class="filter-bar">
+          <el-alert title="按政策周期维护商品结算价、PO后返、加磅资源及SO/PO提货政策；销售或套回时生成逐单返利记录。" type="info" :closable="false" />
+        </div>
+        <div class="filter-bar">
+          <el-select v-model="nbPolicyQuery.supplierId" placeholder="供应商" clearable filterable style="width:200px" @change="loadNbPolicies">
+            <el-option v-for="item in suppliers" :key="item.supplier_id" :label="item.name" :value="item.supplier_id" />
+          </el-select>
+          <el-input v-model="nbPolicyQuery.pn" placeholder="商品编号/PN" clearable style="width:180px" @keyup.enter="loadNbPolicies" />
+          <el-button @click="loadNbPolicies">查询</el-button>
+          <el-button type="primary" @click="openNbPolicyImport">上传产品政策表</el-button>
+        </div>
+        <el-table :data="nbPolicies" border stripe v-loading="nbPolicyLoading">
+          <el-table-column prop="supplier_name" label="供应商" min-width="140" />
+          <el-table-column prop="pn" label="商品编号/PN" min-width="140" />
+          <el-table-column prop="model" label="型号" min-width="140" />
+          <el-table-column prop="settlement_price" label="结算价" width="110"><template #default="{row}">¥{{ money(row.settlement_price || row.pickup_price) }}</template></el-table-column>
+          <el-table-column prop="po_rebate_amount" label="单台PO后返" width="120"><template #default="{row}">¥{{ money(row.po_rebate_amount) }}</template></el-table-column>
+          <el-table-column prop="extra_resource" label="加磅资源" min-width="130" />
+          <el-table-column prop="pickup_policy" label="提货政策" min-width="180" show-overflow-tooltip />
+          <el-table-column prop="effective_date" label="开始日期" width="120"><template #default="{row}">{{ String(row.effective_date || '').slice(0,10) }}</template></el-table-column>
+          <el-table-column prop="expire_date" label="结束日期" width="120"><template #default="{row}">{{ row.expire_date ? String(row.expire_date).slice(0,10) : '不限' }}</template></el-table-column>
+          <el-table-column prop="import_batch_no" label="导入批次" min-width="160" />
+        </el-table>
+        <el-pagination v-model:current-page="nbPolicyQuery.page" v-model:page-size="nbPolicyQuery.pageSize" :total="nbPolicyTotal" layout="total, prev, pager, next" @current-change="loadNbPolicies" />
       </el-tab-pane>
 
       <el-tab-pane :label="financeOnly ? '资源套回审批' : '权益变更记录'" name="changes">
@@ -185,6 +211,49 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="educationImportDialog" title="上传教育优惠表" width="760px" destroy-on-close>
+      <el-alert title="选择教育优惠Excel文件后开始导入；完成后可在此查看成功商品、更新库存SN数及失败原因。" type="info" :closable="false" style="margin-bottom:14px" />
+      <input ref="educationFileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="onEducationFileChange" />
+      <el-button :disabled="educationImporting" @click="educationFileInput?.click()">选择Excel文件</el-button>
+      <span v-if="educationFile" class="file-name">{{ educationFile.name }}</span>
+      <el-button v-if="educationImportResult" link type="primary" @click="educationImportResult=null">清除上次结果</el-button>
+      <div v-if="educationImportResult" class="import-result">
+        <el-result :icon="educationImportResult.failed ? 'warning' : 'success'" :title="educationImportResult.message" :sub-title="`成功 ${educationImportResult.success} 个商品，失败 ${educationImportResult.failed} 条，更新在库SN ${educationImportResult.affectedSn} 台`" />
+        <el-table v-if="educationImportResult.rows.length" :data="educationImportResult.rows" border max-height="300">
+          <el-table-column prop="productCode" label="商品编号" min-width="150" />
+          <el-table-column prop="sheet" label="工作表" min-width="120" />
+          <el-table-column prop="row" label="行号" width="80" />
+          <el-table-column label="结果" width="90"><template #default="{row}"><el-tag :type="row.status==='success'?'success':'danger'">{{ row.status==='success'?'成功':'失败' }}</el-tag></template></el-table-column>
+          <el-table-column label="更新SN" width="100"><template #default="{row}">{{ row.affectedInventory ?? '-' }}</template></el-table-column>
+          <el-table-column prop="message" label="说明/失败原因" min-width="220" />
+        </el-table>
+      </div>
+      <template #footer>
+        <el-button @click="educationImportDialog=false">关闭</el-button>
+        <el-button type="primary" :loading="educationImporting" :disabled="!educationFile" @click="submitEducationImport">开始导入</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="nbPolicyImportDialog" title="上传产品政策表" width="760px" destroy-on-close>
+      <el-alert title="支持多工作表及常见表头；未识别到政策周期列时，会提示手工填写完整起止日期。" type="info" :closable="false" style="margin-bottom:14px" />
+      <input ref="nbPolicyFileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="onNbPolicyFileChange" />
+      <el-button :disabled="nbPolicyImporting" @click="nbPolicyFileInput?.click()">选择Excel文件</el-button>
+      <span v-if="nbPolicyFile" class="file-name">{{ nbPolicyFile.name }}</span>
+      <div v-if="nbPolicyImportResult" class="import-result">
+        <el-result :icon="nbPolicyImportResult.failed ? 'warning' : 'success'" :title="nbPolicyImportResult.message" :sub-title="`成功 ${nbPolicyImportResult.success} 条，失败 ${nbPolicyImportResult.failed} 条`" />
+        <el-table v-if="nbPolicyImportResult.rows.length" :data="nbPolicyImportResult.rows" border max-height="300">
+          <el-table-column prop="pn" label="商品编号/PN" min-width="150" />
+          <el-table-column prop="row" label="行号" width="80" />
+          <el-table-column label="结果" width="90"><template #default="{row}"><el-tag :type="row.status==='success'?'success':'danger'">{{ row.status==='success'?'成功':'失败' }}</el-tag></template></el-table-column>
+          <el-table-column prop="message" label="说明/失败原因" min-width="240" />
+        </el-table>
+      </div>
+      <template #footer>
+        <el-button @click="nbPolicyImportDialog=false">关闭</el-button>
+        <el-button type="primary" :loading="nbPolicyImporting" :disabled="!nbPolicyFile" @click="submitNbPolicyImport">开始导入</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="batchDialog" title="表格导入批量调整权益" width="640px">
       <el-alert title="仅调整未销售在库SN的权益，已锁定、已核销和已套回权益会跳过，已归档销售单不受影响。" type="warning" :closable="false" style="margin-bottom:12px" />
       <div class="import-help">
@@ -235,6 +304,11 @@ const batchDialog = ref(false)
 const batchForm = reactive({ snCodesText:'', productId:'', resourceTypes:[], status:'AVAILABLE', amount:0, remark:'' })
 const batchFileInput = ref(null); const batchFile = ref(null); const batchImporting = ref(false)
 const educationFileInput = ref(null); const educationImporting = ref(false)
+const educationImportDialog = ref(false); const educationFile = ref(null); const educationImportResult = ref(null)
+const nbPolicies = ref([]); const nbPolicyTotal = ref(0); const nbPolicyLoading = ref(false)
+const nbPolicyQuery = reactive({ supplierId:'', pn:'', page:1, pageSize:20 })
+const nbPolicyImportDialog = ref(false); const nbPolicyFileInput = ref(null); const nbPolicyFile = ref(null)
+const nbPolicyImporting = ref(false); const nbPolicyImportResult = ref(null)
 const educationSupplementDialog = ref(false); const educationProofInput = ref(null)
 const educationProofUploading = ref(false); const educationSupplementSubmitting = ref(false)
 const educationSupplementForm = reactive({ snId:'', snCode:'', orderNo:'', attachmentUrl:'' })
@@ -259,7 +333,7 @@ async function loadRights(){ loading.value=true; try{ const res=await api.getRes
 async function loadChanges(){ loading.value=true; try{ const res=await api.getResourceRightChanges(changeQuery); changes.value=payloadList(res); changeTotal.value=payloadTotal(res) }catch(e){ ElMessage.error(e.response?.data?.message||'加载变更记录失败') }finally{ loading.value=false } }
 async function loadCosts(){ try{ const res=await api.getProductResourceCostConfigs({}); costs.value=res.data || [] }catch(e){ ElMessage.error('加载成本定义失败') } }
 async function loadLedger(){ try{const res=await api.getResourceCostAdjustments(ledgerQuery);ledger.value=payloadList(res);ledgerTotal.value=payloadTotal(res)}catch(e){ElMessage.error('加载成本流水失败')} }
-function loadActive(name){ if(name==='rights')loadRights(); else if(name==='changes')loadChanges(); else if(name==='cost-ledger')loadLedger(); else loadCosts() }
+function loadActive(name){ if(name==='rights')loadRights(); else if(name==='changes')loadChanges(); else if(name==='cost-ledger')loadLedger(); else if(name==='nb-policy')loadNbPolicies(); else loadCosts() }
 async function loadCategories(){
   const res=await api.getResourceCategories({activeOnly:1})
   resourceOptions.value=(res.data||[]).map(row=>({label:row.name,value:row.category_code}))
@@ -386,20 +460,99 @@ async function submitBatchImport(){
   finally{batchImporting.value=false}
 }
 
-async function onEducationFileChange(event){
+function openEducationImport(){ educationFile.value=null; educationImportResult.value=null; educationImportDialog.value=true }
+function onEducationFileChange(event){
   const file=event.target.files?.[0]
   event.target.value=''
   if(!file)return
+  educationFile.value=file
+  educationImportResult.value=null
+}
+async function submitEducationImport(){
+  if(!educationFile.value)return ElMessage.warning('请选择教育优惠表')
   educationImporting.value=true
   try{
-    const res=await api.importEducationSubsidyPolicies(file)
+    const res=await api.importEducationSubsidyPolicies(educationFile.value)
     const data=res.data || res
-    const failures=(data.results||[]).filter(item=>item.status==='failed')
-    if(failures.length) ElMessage.warning(`${data.message}；示例：${failures.slice(0,3).map(item=>`${item.productCode || `${item.sheet || ''}第${item.row || ''}行`} ${item.message}`).join('；')}`)
-    else ElMessage.success(data.message || '教育优惠表导入完成')
+    const rows=data.results||[]
+    const success=rows.filter(item=>item.status==='success').length
+    const failed=rows.filter(item=>item.status==='failed').length
+    educationImportResult.value={message:data.message||'教育优惠表导入完成',success,failed,affectedSn:rows.reduce((sum,item)=>sum+Number(item.affectedInventory||0),0),rows}
+    if(failed) ElMessage.warning(data.message||'教育优惠表部分导入失败')
+    else ElMessage.success(data.message||'教育优惠表导入完成')
     await loadRights()
-  }catch(e){ElMessage.error(e.response?.data?.message||'教育优惠表导入失败')}
+  }catch(e){
+    const message=e.response?.data?.message||e.message||'教育优惠表导入失败'
+    educationImportResult.value={message,success:0,failed:1,affectedSn:0,rows:[{status:'failed',message}]}
+    ElMessage.error(message)
+  }
   finally{educationImporting.value=false}
+}
+
+async function loadNbPolicies(){
+  nbPolicyLoading.value=true
+  try{const res=await api.getInventoryNbPolicies(nbPolicyQuery);nbPolicies.value=payloadList(res);nbPolicyTotal.value=payloadTotal(res)}
+  catch(e){ElMessage.error(e.response?.data?.message||'加载产品运作政策失败')}
+  finally{nbPolicyLoading.value=false}
+}
+function openNbPolicyImport(){nbPolicyFile.value=null;nbPolicyImportResult.value=null;nbPolicyImportDialog.value=true}
+function onNbPolicyFileChange(event){const file=event.target.files?.[0];event.target.value='';if(file){nbPolicyFile.value=file;nbPolicyImportResult.value=null}}
+function readNbPolicyRows(file){return new Promise((resolve,reject)=>{
+  const reader=new FileReader()
+  reader.onload=event=>{
+    try{
+      const workbook=XLSX.read(new Uint8Array(event.target.result),{type:'array'})
+      const normalize=value=>String(value||'').toLowerCase().replace(/[\s_\-（）()]/g,'')
+      for(const sheetName of workbook.SheetNames){
+        const matrix=XLSX.utils.sheet_to_json(workbook.Sheets[sheetName],{header:1,defval:''})
+        const headerAt=matrix.slice(0,20).findIndex(row=>{
+          const cells=row.map(normalize)
+          return cells.some(v=>['pn','pncode','productcode','商品编号','产品编号','厂商编码','型号','model'].includes(v))&&cells.some(v=>v.includes('结算')||v.includes('后返')||v.includes('资源')||v.includes('提货政策'))
+        })
+        if(headerAt<0)continue
+        const headers=matrix[headerAt].map((value,index)=>String(value||`列${index+1}`).trim())
+        const carry={};const repeatable=/供应商|厂家|厂商|supplier|manufacturer|生效|开始|失效|结束|周期|有效期/i
+        const records=matrix.slice(headerAt+1).map(values=>Object.fromEntries(headers.map((header,index)=>[header,values[index]??'']))).filter(row=>Object.values(row).some(value=>String(value||'').trim())).map(row=>{for(const header of headers){const value=String(row[header]||'').trim();if(value)carry[header]=row[header];else if(repeatable.test(header)&&carry[header]!==undefined)row[header]=carry[header]}return row})
+        if(records.length){resolve(records);return}
+      }
+      resolve([])
+    }catch(error){reject(error)}
+  }
+  reader.onerror=reject;reader.readAsArrayBuffer(file)
+})}
+async function submitNbPolicyImport(){
+  if(!nbPolicyFile.value)return ElMessage.warning('请选择产品政策表')
+  nbPolicyImporting.value=true
+  try{
+    let rows=await readNbPolicyRows(nbPolicyFile.value)
+    if(!rows.length)throw new Error('未识别到商品编号、结算价等政策表头')
+    const normalized=Object.keys(rows[0]).map(key=>String(key).toLowerCase().replace(/[\s_\-（）()]/g,''))
+    const hasStart=normalized.some(key=>['生效日期','开始日期','开始时间','促销开始时间','政策开始时间','周期开始','有效期开始','effectivedate'].includes(key))
+    const hasEnd=normalized.some(key=>['失效日期','结束日期','结束时间','促销结束时间','政策结束时间','周期结束','有效期结束','expiredate'].includes(key))
+    if(!hasStart||!hasEnd){
+      const {value:period}=await ElMessageBox.prompt('表格未识别到政策周期列，请输入完整周期，例如：2026-09-16 至 2026-10-07','确认产品政策周期',{inputPattern:/^\d{4}-\d{2}-\d{2}\s*(至|~)\s*\d{4}-\d{2}-\d{2}$/,inputErrorMessage:'请按 YYYY-MM-DD 至 YYYY-MM-DD 输入'})
+      const match=String(period).match(/^(\d{4}-\d{2}-\d{2})\s*(?:至|~)\s*(\d{4}-\d{2}-\d{2})$/)
+      if(!match)return
+      rows=rows.map(row=>({...row,生效日期:row.生效日期||match[1],失效日期:row.失效日期||match[2]}))
+    }
+    const res=await api.importInventoryNbPolicy({rows,sourceFileUrl:nbPolicyFile.value.name})
+    const data=res.data||res
+    const results=data.results||[]
+    const failed=results.filter(item=>item.status==='failed')
+    const success=results.filter(item=>item.status==='success')
+    nbPolicyImportResult.value={message:data.message||`NB政策导入完成：${data.count||success.length}条`,success:success.length||Number(data.count||0),failed:failed.length,rows:results}
+    if(failed.length)ElMessage.warning(data.message||'NB政策部分导入失败')
+    else ElMessage.success(data.message||`NB政策导入成功，共${data.count||success.length}条`)
+    await loadNbPolicies()
+  }catch(e){
+    const body=e.response?.data||{}
+    const errors=body.data?.errors||body.errors||[]
+    const rows=errors.map(item=>({pn:item.pn||item.productCode,row:item.row,status:'failed',message:item.message}))
+    const message=body.message||e.message||'NB政策导入失败'
+    nbPolicyImportResult.value={message,success:0,failed:rows.length||1,rows:rows.length?rows:[{status:'failed',message}]}
+    ElMessage.error(message)
+  }
+  finally{nbPolicyImporting.value=false}
 }
 
 function openEducationSupplement(row){
@@ -449,5 +602,5 @@ onMounted(async () => { await loadCategories(); loadSuppliers(); loadActive(tab.
 </script>
 
 <style scoped>
-.filter-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}.el-pagination{margin-top:14px;justify-content:flex-end}.import-help{padding:4px 0 12px;color:#606266;line-height:1.7}.import-help p{margin:0}.file-name{margin-left:10px;color:#606266}
+.filter-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}.el-pagination{margin-top:14px;justify-content:flex-end}.import-help{padding:4px 0 12px;color:#606266;line-height:1.7}.import-help p{margin:0}.file-name{margin-left:10px;color:#606266}.import-result{margin-top:14px}
 </style>

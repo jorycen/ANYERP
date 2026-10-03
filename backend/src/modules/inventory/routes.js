@@ -41,6 +41,8 @@ router.get('/sale-resource-tasks', resourceRights.listSaleResourceTasks);
 router.post('/sale-resource-tasks/:changeId/submit', resourceRights.submitSaleResourceTask);
 router.post('/sale-resource-tasks/:changeId/review', resourceRights.reviewSaleResourceTask);
 router.get('/resource-rights/cost-configs', resourceRights.listCostConfigs);
+router.get('/resource-rights/nb-policy', resourceRights.listNbPolicies);
+router.post('/resource-rights/nb-policy/import', resourceRights.importNbPolicy);
 router.get('/resource-rights/cost-adjustments', resourceRights.listCostAdjustments);
 router.post('/resource-rights/cost-configs', resourceRights.saveCostConfig);
 router.post('/resource-rights/batch-adjust', resourceRights.batchAdjustRights);
