@@ -330,13 +330,16 @@ function getDefaultMenus() {
 }
 
 function buildMenuTree(menus) {
-  const stringFields = ['menuCode', 'name', 'path', 'icon', 'menuType']
+  const menuNameOverrides = {
+    finance_rebate_settlement: '待下账返利池',
+    finance_rebate: '已上账返利'
+  }
   const flat = menus.map(m => {
     const item = {}
     // Handle both camelCase (from DB) and original format
     item.menuId = m.menu_id || m.menuId || ''
     item.menuCode = m.menu_code || m.menuCode || ''
-    item.name = m.name || ''
+    item.name = menuNameOverrides[item.menuCode] || m.name || ''
     item.path = m.path || ''
     item.icon = m.icon || ''
     item.menuType = m.menu_type || m.menuType || ''
