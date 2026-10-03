@@ -6,6 +6,7 @@ const {
   MonthlyTaskProduct,
   MonthlyTaskGrossProfitAllocation,
   Store,
+  Region,
   Staff,
   StaffStorePermission
 } = require('../../models');
@@ -316,7 +317,7 @@ async function getMonthlyTaskAchievement(ctx) {
     staffWhere.distributor_id = user.distributorId;
   }
   const [stores, tasks, staffRows, permissions, allocations, batches, products, actuals] = await Promise.all([
-    Store.findAll({ where: { store_id: { [Op.in]: storeIds }, is_deleted: 0, status: 1 }, attributes: ['store_id', 'name'], raw: true }),
+    Store.findAll({ where: { store_id: { [Op.in]: storeIds }, is_deleted: 0, status: 1 }, attributes: ['store_id', 'name', 'region_id'], raw: true }),
     MonthlyTask.findAll({ where: taskWhere, raw: true }),
     Staff.findAll({ where: staffWhere, attributes: ['staff_id', 'name', 'store_id'], raw: true }),
     StaffStorePermission.findAll({ where: { store_id: { [Op.in]: storeIds } }, attributes: ['staff_id', 'store_id'], raw: true }),
@@ -326,6 +327,11 @@ async function getMonthlyTaskAchievement(ctx) {
     loadActuals(storeIds, startAt, endAt)
   ]);
   const storeMap = new Map(stores.map(row => [String(row.store_id), row]));
+  const regionIds = [...new Set(stores.map(row => String(row.region_id || '')).filter(Boolean))];
+  const regions = regionIds.length
+    ? await Region.findAll({ where: { region_id: { [Op.in]: regionIds } }, attributes: ['region_id', 'region_code', 'name'], raw: true })
+    : [];
+  const regionMap = new Map(regions.map(row => [String(row.region_id), row]));
   const staffMap = new Map(staffRows.map(row => [String(row.staff_id), row]));
   const visibleStaffIds = new Set(permissions.map(row => String(row.staff_id)));
   staffRows.forEach(row => {
@@ -361,16 +367,20 @@ async function getMonthlyTaskAchievement(ctx) {
     allocationMap.set(String(row.staff_id), list);
     allocationTotalByTask.set(String(row.task_id), number(allocationTotalByTask.get(String(row.task_id))) + money(row.allocated_target));
   });
-  const storesResult = (dimension === 'staff' ? [] : visibleTasks.filter(task => task.target_type === 'store')).map(task => buildAchievement({
+  const storesResult = (dimension === 'staff' ? [] : visibleTasks.filter(task => task.target_type === 'store')).map(task => {
+    const store = storeMap.get(String(task.target_id)) || {};
+    const region = regionMap.get(String(store.region_id || '')) || {};
+    return Object.assign(buildAchievement({
     task,
     actual: actuals.storeActuals.get(String(task.target_id)) || createActual(),
     grossProfitTarget: task.gross_profit_target,
-    name: storeMap.get(String(task.target_id))?.name || task.target_id,
+    name: store.name || task.target_id,
     storeId: task.target_id,
-    storeName: storeMap.get(String(task.target_id))?.name || '',
+    storeName: store.name || '',
     allocationTotal: allocationTotalByTask.get(String(task.task_id)) || 0,
     profitVisible
-  }));
+    }), { regionId: region.region_id || '', regionCode: region.region_code || '', regionName: region.name || '' });
+  });
   const employeesResult = (dimension === 'store' ? [] : visibleTasks.filter(task => task.target_type === 'staff' && (!requestedStaffId || String(task.target_id) === requestedStaffId))).map(task => {
     const staff = staffMap.get(String(task.target_id));
     const allocationsForStaff = allocationMap.get(String(task.target_id)) || [];

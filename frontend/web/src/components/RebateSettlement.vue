@@ -2,7 +2,7 @@
   <div class="rebate-settlement">
     <div class="filter-bar">
       <el-button type="primary" @click="openCreateDialog">新增手工返利入池</el-button>
-      <el-button type="success" :disabled="selectedRows.length === 0" @click="openBatchReconcile">批量关联到账</el-button>
+      <el-button type="success" :disabled="selectedRows.length === 0" @click="openBatchReconcile">批量关联已上账返利</el-button>
       <el-date-picker
         v-model="query.dateRange"
         type="daterange"
@@ -14,13 +14,13 @@
       />
       <el-input v-model="query.snCode" placeholder="SN（模糊查询）" clearable style="width: 170px" @keyup.enter="search" />
       <el-input v-model="query.remark" placeholder="备注（模糊查询）" clearable style="width: 190px" @keyup.enter="search" />
-      <el-select v-model="query.resourceType" placeholder="返利/资源类型" clearable style="width: 155px">
+      <el-select v-model="query.resourceType" placeholder="返利类型" clearable style="width: 155px">
         <el-option v-for="item in resourceOptions" :key="item.value" :label="item.label" :value="item.value" />
       </el-select>
       <el-select v-model="query.sourceType" placeholder="来源类型" clearable style="width: 140px">
         <el-option v-for="item in sourceOptions" :key="item.value" :label="item.label" :value="item.value" />
       </el-select>
-      <el-select v-model="query.status" placeholder="下账状态" clearable style="width: 130px">
+      <el-select v-model="query.status" placeholder="关联状态" clearable style="width: 130px">
         <el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" />
       </el-select>
       <el-select v-model="query.supplierId" placeholder="供应商" clearable filterable style="width: 170px">
@@ -31,7 +31,7 @@
     </div>
 
     <el-alert
-      title="返利池记录应收返利明细。选中明细后可登记到账并核销，或关联已有到账批次；负数仅用于供应商扣减修正。"
+      title="这里汇总等待关联已上账返利的应收明细。可从本页选择待下账返利关联已上账单，也可从已上账返利页反向选择待下账明细。"
       type="info"
       :closable="false"
       show-icon
@@ -44,7 +44,7 @@
         width="50"
         :selectable="isBatchSelectable"
       />
-      <el-table-column prop="settlement_no" label="返利池明细号" min-width="185" fixed />
+      <el-table-column prop="settlement_no" label="待下账返利单号" min-width="185" fixed />
       <el-table-column label="创建时间" width="165">
         <template #default="{ row }">{{ formatDateTime(row.create_time) }}</template>
       </el-table-column>
@@ -61,13 +61,13 @@
       <el-table-column label="金额" width="120" align="right">
         <template #default="{ row }">¥{{ money(row.amount) }}</template>
       </el-table-column>
-      <el-table-column label="已匹配到账" width="120" align="right">
+      <el-table-column label="已关联金额" width="120" align="right">
         <template #default="{ row }">¥{{ money(row.matched_amount) }}</template>
       </el-table-column>
-      <el-table-column label="剩余应收" width="130" align="right">
+      <el-table-column label="剩余待关联" width="130" align="right">
         <template #default="{ row }">¥{{ money(remainingAmount(row)) }}</template>
       </el-table-column>
-      <el-table-column label="关联到账批次" min-width="200">
+      <el-table-column label="已关联返利单" min-width="200">
         <template #default="{ row }">
           {{ allocationPostingNos(row) || '-' }}
         </template>
@@ -75,13 +75,15 @@
       <el-table-column prop="remark" label="备注" min-width="190" show-overflow-tooltip />
       <el-table-column label="状态" width="100">
         <template #default="{ row }">
-          <el-tag :type="statusType(row.status)">{{ statusText(row.status) }}</el-tag>
+          <el-tag :type="statusType(row.status)">{{ statusText(row.status, row) }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column prop="create_user" label="创建人" width="100" />
-      <el-table-column prop="settled_by_name" label="核销人" width="100" />
-      <el-table-column label="核销时间" width="165">
-        <template #default="{ row }">{{ row.settled_at ? formatDateTime(row.settled_at) : '-' }}</template>
+      <el-table-column label="关联人" width="100">
+        <template #default="{ row }">{{ row.settled_by_name || latestAllocation(row)?.create_user || '-' }}</template>
+      </el-table-column>
+      <el-table-column label="关联时间" width="165">
+        <template #default="{ row }">{{ row.settled_at || latestAllocation(row)?.create_time ? formatDateTime(row.settled_at || latestAllocation(row)?.create_time) : '-' }}</template>
       </el-table-column>
       <el-table-column label="取消/冲销信息" min-width="190" show-overflow-tooltip>
         <template #default="{ row }">
@@ -91,14 +93,14 @@
           <span v-else>-</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="145" fixed="right">
+      <el-table-column label="操作" width="190" fixed="right">
         <template #default="{ row }">
           <el-button
-            v-if="['PENDING', 'PARTIALLY_SETTLED'].includes(row.status)"
+            v-if="['PENDING', 'PARTIALLY_SETTLED'].includes(row.status) && (Number(row.amount || 0) < 0 || row.counterparty_id)"
             link
             type="success"
             @click="Number(row.amount || 0) < 0 ? settleNegativeCorrection(row) : openReconcile(row)"
-          >{{ Number(row.amount || 0) < 0 ? '确认扣减' : '核销' }}</el-button>
+          >{{ Number(row.amount || 0) < 0 ? '确认扣减' : '去关联' }}</el-button>
           <el-button
             v-if="row.status === 'PENDING' && row.source_type === 'MANUAL_REBATE'"
             link
@@ -110,7 +112,7 @@
             link
             type="danger"
             @click="reverse(row)"
-          >撤销核销</el-button>
+          >撤销关联</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -156,11 +158,11 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="reconcileVisible" :title="reconcileMode === 'batch' ? '批量关联到账批次' : '关联到账批次'" width="880px">
+    <el-dialog v-model="reconcileVisible" :title="reconcileMode === 'batch' ? '批量关联已上账返利' : '关联已上账返利'" width="980px">
       <el-alert
         :title="reconcileMode === 'batch'
-          ? `已选 ${selectedSettlements.length} 笔返利池明细，合计剩余应收 ¥${money(selectedRemainingTotal)}`
-          : `返利池明细 ${currentSettlement?.settlement_no || ''} 剩余应收 ¥${money(currentRemaining)}`"
+          ? `已选 ${selectedSettlements.length} 笔待下账返利，合计剩余 ¥${money(selectedRemainingTotal)}`
+          : `待下账返利 ${currentSettlement?.settlement_no || ''} 剩余 ¥${money(currentRemaining)}`"
         type="warning"
         :closable="false"
         show-icon
@@ -176,31 +178,33 @@
             :value="item.supplier_id"
           />
         </el-select>
+        <el-date-picker v-model="postingDateRange" type="daterange" range-separator="至" start-placeholder="上账开始日期" end-placeholder="上账结束日期" value-format="YYYY-MM-DD" style="width:250px" />
+        <el-input v-model="postingRemark" placeholder="上账备注筛选" clearable style="width:190px" @keyup.enter="loadPostingOrders" />
         <el-button type="primary" :loading="postingLoading" @click="loadPostingOrders">查询单据</el-button>
       </div>
       <el-table v-if="reconcileMode === 'batch'" :data="selectedSettlements" border stripe max-height="180" class="selected-settlements">
-        <el-table-column prop="settlement_no" label="返利池明细号" min-width="190" />
+        <el-table-column prop="settlement_no" label="待下账返利单号" min-width="190" />
         <el-table-column prop="counterparty_name" label="供应商" min-width="140" />
-        <el-table-column label="剩余待核销" width="140" align="right">
+        <el-table-column label="剩余待关联" width="140" align="right">
           <template #default="{ row }">¥{{ money(remainingAmount(row)) }}</template>
         </el-table-column>
       </el-table>
       <el-table :data="postingOrders" border stripe max-height="430" empty-text="该供应商暂无可关联的到账批次">
-        <el-table-column prop="posting_no" label="到账批次号" min-width="190" />
-        <el-table-column prop="posting_date" label="到账日期" width="115" />
+        <el-table-column prop="posting_no" label="已上账返利单号" min-width="190" />
+        <el-table-column prop="posting_date" label="上账日期" width="115" />
         <el-table-column prop="remark" label="厂商结算说明" min-width="210" show-overflow-tooltip />
         <el-table-column label="到账金额" width="120" align="right">
           <template #default="{ row }">¥{{ money(row.amount) }}</template>
         </el-table-column>
-        <el-table-column label="剩余未匹配" width="130" align="right">
+        <el-table-column label="剩余待关联" width="130" align="right">
           <template #default="{ row }">¥{{ money(row.remaining_amount) }}</template>
         </el-table-column>
-        <el-table-column label="本次匹配金额" width="165">
+        <el-table-column label="本次关联金额" width="165">
           <template #default="{ row }">
             <el-input-number
               v-model="row.allocationAmount"
               :min="0"
-              :max="Math.min(Number(row.remaining_amount || 0), currentRemaining)"
+              :max="Math.min(Number(row.remaining_amount || 0), reconcileMode === 'batch' ? selectedRemainingTotal : currentRemaining)"
               :precision="2"
               :step="100"
               controls-position="right"
@@ -210,12 +214,12 @@
         </el-table-column>
       </el-table>
       <div class="allocation-summary">
-        本次核销合计：<strong>¥{{ money(allocationTotal) }}</strong>
-        <span>{{ reconcileMode === 'batch' ? '匹配后所选返利池明细合计剩余' : '匹配后返利池明细剩余' }}：¥{{ money(Math.max(0, (reconcileMode === 'batch' ? selectedRemainingTotal : currentRemaining) - allocationTotal)) }}</span>
+        本次关联合计：<strong>¥{{ money(allocationTotal) }}</strong>
+        <span>{{ reconcileMode === 'batch' ? '关联后所选待下账返利合计剩余' : '关联后待下账返利剩余' }}：¥{{ money(Math.max(0, (reconcileMode === 'batch' ? selectedRemainingTotal : currentRemaining) - allocationTotal)) }}</span>
       </div>
       <template #footer>
         <el-button @click="reconcileVisible = false">取消</el-button>
-        <el-button type="primary" :loading="reconciling" @click="submitReconciliation">确认核销</el-button>
+        <el-button type="primary" :loading="reconciling" @click="submitReconciliation">确认关联</el-button>
       </template>
     </el-dialog>
   </div>
@@ -243,6 +247,8 @@ const selectedSettlements = ref([])
 const selectedRows = ref([])
 const postingOrders = ref([])
 const reconcileSupplierId = ref('')
+const postingDateRange = ref([])
+const postingRemark = ref('')
 
 const sourceOptions = [
   { label: '费用归属返利', value: 'EXPENSE_REBATE' },
@@ -253,9 +259,9 @@ const sourceOptions = [
   { label: '公司套回', value: 'COMPANY_CLAIM' }
 ]
 const statusOptions = [
-  { label: '待核销', value: 'PENDING' },
-  { label: '部分核销', value: 'PARTIALLY_SETTLED' },
-  { label: '已核销', value: 'SETTLED' },
+  { label: '待关联', value: 'PENDING' },
+  { label: '部分关联', value: 'PARTIALLY_SETTLED' },
+  { label: '已关联', value: 'SETTLED' },
   { label: '已取消', value: 'CANCELLED' },
   { label: '已冲销', value: 'REVERSED' }
 ]
@@ -284,9 +290,16 @@ const allocationPostingNos = row => (row.Allocations || [])
   .map(item => item.PostingOrder?.posting_no)
   .filter(Boolean)
   .join('、')
+const latestAllocation = row => [...(row.Allocations || [])]
+  .sort((left, right) => new Date(right.create_time || 0) - new Date(left.create_time || 0))[0] || null
 const resourceText = value => resourceOptions.value.find(item => item.value === value)?.label || value
 const sourceText = value => sourceOptions.find(item => item.value === value)?.label || value
-const statusText = value => statusOptions.find(item => item.value === value)?.label || value
+const statusText = (value, row = null) => {
+  if (Number(row?.amount || 0) < 0) {
+    return { PENDING: '待扣减', SETTLED: '已扣减', REVERSED: '已冲销' }[value] || value
+  }
+  return statusOptions.find(item => item.value === value)?.label || value
+}
 const statusType = value => ({
   PENDING: 'warning',
   PARTIALLY_SETTLED: 'primary',
@@ -298,7 +311,6 @@ const formatDateTime = value => value ? new Date(value).toLocaleString('zh-CN', 
 const isBatchSelectable = row => Number(row.amount || 0) > 0
   && ['PENDING', 'PARTIALLY_SETTLED'].includes(row.status)
   && Boolean(row.counterparty_id)
-  && ['MANUAL_REBATE', 'MANUFACTURER_REBATE', 'REBATE_RECEIPT', 'EXPENSE_REBATE'].includes(row.source_type)
 
 async function loadAuxiliary() {
   try {
@@ -337,7 +349,7 @@ async function load() {
     rows.value = res.data?.list || []
     total.value = res.data?.pagination?.total || res.data?.total || 0
   } catch (error) {
-    ElMessage.error(error.response?.data?.message || '加载返利池失败')
+    ElMessage.error(error.response?.data?.message || '加载待下账返利池失败')
   } finally {
     loading.value = false
   }
@@ -382,7 +394,7 @@ async function createManualRebate() {
   saving.value = true
   try {
     const res = await api.createManualRebateSettlement(form)
-    ElMessage.success(res.data?.message || res.message || '手工返利已加入返利池')
+    ElMessage.success(res.data?.message || res.message || '手工返利已加入待下账返利池')
     createVisible.value = false
     search()
   } catch (error) {
@@ -398,26 +410,34 @@ async function openReconcile(row) {
   selectedSettlements.value = [row]
   reconcileSupplierId.value = row.counterparty_id || ''
   postingOrders.value = []
+  postingDateRange.value = []
+  postingRemark.value = ''
   reconcileVisible.value = true
   await loadPostingOrders()
 }
 
 async function loadPostingOrders() {
   if (!reconcileSupplierId.value) {
-    ElMessage.warning('返利池明细缺少供应商，无法查询到账批次')
+    ElMessage.warning('待下账返利缺少供应商，无法查询已上账返利')
     return
   }
   postingLoading.value = true
   try {
-    const res = await api.getRebatePostingOrders({
+    const params = {
       supplierId: reconcileSupplierId.value,
       unmatchedOnly: 1,
+      remark: postingRemark.value,
       page: 1,
       pageSize: 500
-    })
+    }
+    if (postingDateRange.value?.length === 2) {
+      params.startDate = postingDateRange.value[0]
+      params.endDate = postingDateRange.value[1]
+    }
+    const res = await api.getRebatePostingOrders(params)
     postingOrders.value = (res.data?.list || []).map(item => ({ ...item, allocationAmount: 0 }))
   } catch (error) {
-    ElMessage.error(error.response?.data?.message || '加载可关联到账批次失败')
+    ElMessage.error(error.response?.data?.message || '加载可关联已上账返利失败')
   } finally {
     postingLoading.value = false
   }
@@ -458,19 +478,19 @@ async function submitReconciliation() {
   const allocations = postingOrders.value
     .filter(item => Number(item.allocationAmount || 0) > 0)
     .map(item => ({ postingId: item.posting_id, amount: Number(item.allocationAmount) }))
-  if (allocations.length === 0) return ElMessage.warning('请至少填写一笔核销金额')
+  if (allocations.length === 0) return ElMessage.warning('请至少填写一笔关联金额')
   if (allocationTotal.value > currentRemaining.value + 0.0001) {
-    return ElMessage.warning('本次匹配金额不能超过返利池明细剩余应收')
+    return ElMessage.warning('本次关联金额不能超过待下账返利剩余金额')
   }
   reconciling.value = true
   try {
-    const res = await api.settleResource(currentSettlement.value.settlement_id, { allocations })
-    ElMessage.success(res.data?.message || res.message || '返利核销成功')
+    const res = await api.linkRebateSettlement(currentSettlement.value.settlement_id, { allocations })
+    ElMessage.success(res.data?.message || res.message || '返利关联成功')
     reconcileVisible.value = false
     await load()
     emit('changed')
   } catch (error) {
-    ElMessage.error(error.response?.data?.message || '返利核销失败')
+    ElMessage.error(error.response?.data?.message || '返利关联失败')
   } finally {
     reconciling.value = false
   }
@@ -507,20 +527,20 @@ function buildBatchItems() {
 }
 
 async function submitBatchReconciliation() {
-  if (allocationTotal.value <= 0) return ElMessage.warning('请至少填写一笔核销金额')
-  if (allocationTotal.value > selectedRemainingTotal.value + 0.0001) return ElMessage.warning('本次匹配金额不能超过所选返利池明细剩余应收')
+  if (allocationTotal.value <= 0) return ElMessage.warning('请至少填写一笔关联金额')
+  if (allocationTotal.value > selectedRemainingTotal.value + 0.0001) return ElMessage.warning('本次关联金额不能超过所选待下账返利剩余金额')
   const items = buildBatchItems()
-  if (items.length === 0) return ElMessage.warning('请至少填写一笔核销金额')
+  if (items.length === 0) return ElMessage.warning('请至少填写一笔关联金额')
   reconciling.value = true
   try {
     const res = await api.batchSettleRebateResources({ items })
-    ElMessage.success(res.data?.message || res.message || '批量返利核销成功')
+    ElMessage.success(res.data?.message || res.message || '批量返利关联成功')
     reconcileVisible.value = false
     selectedRows.value = []
     await load()
     emit('changed')
   } catch (error) {
-    ElMessage.error(error.response?.data?.message || '批量返利核销失败')
+    ElMessage.error(error.response?.data?.message || '批量返利关联失败')
   } finally {
     reconciling.value = false
   }
@@ -529,7 +549,7 @@ async function submitBatchReconciliation() {
 async function cancel(row) {
   try {
     const { value } = await ElMessageBox.prompt(
-      '取消后该记录不再允许下账，请填写取消原因。',
+      '取消后该记录不再参与关联，请填写取消原因。',
       '取消待下账返利',
       { inputPattern: /\S+/, inputErrorMessage: '必须填写取消原因', type: 'warning' }
     )
@@ -546,17 +566,17 @@ async function reverse(row) {
     const isNegativeCorrection = Number(row.amount || 0) < 0
     const { value } = await ElMessageBox.prompt(
       isNegativeCorrection
-        ? '撤销后将恢复本次扣减的返利额度。请输入原因。'
-        : '撤销后，本单全部有效匹配金额将退回对应到账批次，不影响供应商返利余额。请输入原因。',
-      '撤销返利池核销',
+      ? '撤销后将恢复本次扣减的返利额度。请输入原因。'
+        : '撤销后，本单已关联金额将退回对应已上账返利单的待关联余额。请输入原因。',
+      '撤销返利关联',
       { inputPattern: /\S+/, inputErrorMessage: '必须填写冲销原因', type: 'warning' }
     )
     await api.reverseResourceSettlement(row.settlement_id, { reason: value })
-    ElMessage.success('返利池核销已撤销')
+    ElMessage.success('返利关联已撤销')
     await load()
     emit('changed')
   } catch (error) {
-    if (error !== 'cancel') ElMessage.error(error.response?.data?.message || '撤销核销失败')
+    if (error !== 'cancel') ElMessage.error(error.response?.data?.message || '撤销关联失败')
   }
 }
 

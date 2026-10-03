@@ -342,6 +342,7 @@ export default {
   getResourceSettlements: (params) => api.get('/inventory/resource-settlements', { params }),
   createManualRebateSettlement: (data) => api.post('/inventory/resource-settlements/manual-rebate', data),
   batchSettleRebateResources: (data) => api.post('/inventory/resource-settlements/batch-settle', data),
+  linkRebateSettlement: (settlementId, data) => api.post(`/inventory/resource-settlements/${settlementId}/link`, data),
   settleResource: (settlementId, data = {}) => api.post(`/inventory/resource-settlements/${settlementId}/settle`, data),
   cancelResourceSettlement: (settlementId, data) => api.post(`/inventory/resource-settlements/${settlementId}/cancel`, data),
   reverseResourceSettlement: (settlementId, data) => api.post(`/inventory/resource-settlements/${settlementId}/reverse`, data),

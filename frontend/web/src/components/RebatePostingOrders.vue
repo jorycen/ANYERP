@@ -1,8 +1,9 @@
 <template>
   <div class="rebate-posting-orders">
     <div class="section-header">
-      <strong>返利上账</strong>
+      <strong>已上账返利</strong>
       <el-button type="primary" @click="openCreate">登记到账</el-button>
+      <el-button type="success" :disabled="selectedPostingRows.length === 0" @click="openBatchLink">批量关联待下账返利</el-button>
       <el-date-picker
         v-model="query.dateRange"
         type="daterange"
@@ -15,7 +16,7 @@
       <el-select v-model="query.supplierId" placeholder="供应商" clearable filterable style="width: 170px">
         <el-option v-for="item in suppliers" :key="item.supplier_id" :label="item.name" :value="item.supplier_id" />
       </el-select>
-      <el-select v-model="query.status" placeholder="核销状态" clearable style="width: 145px">
+      <el-select v-model="query.status" placeholder="关联状态" clearable style="width: 145px">
         <el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" />
       </el-select>
       <el-input v-model="query.remark" placeholder="备注（模糊查询）" clearable style="width: 190px" @keyup.enter="search" />
@@ -24,32 +25,32 @@
     </div>
 
     <el-alert
-      title="这里记录厂商实际到账。到账后可在返利池中选择应收明细进行核销；核销不会重复增加返利余额。"
+      title="这里记录已上账返利。可在本页批量选择返利单并关联待下账返利池明细；关联仅勾稽两边金额，不重复增加返利余额。"
       type="info"
       :closable="false"
       show-icon
       class="page-alert"
     />
 
-    <el-table :data="rows" border stripe v-loading="loading" empty-text="暂无返利上账单">
+    <el-table :data="rows" border stripe v-loading="loading" empty-text="暂无已上账返利单" @selection-change="handlePostingSelectionChange">
       <el-table-column type="expand" width="45">
         <template #default="{ row }">
           <div class="allocation-detail">
-            <div v-if="!row.Allocations?.length">暂无返利池核销记录</div>
+            <div v-if="!row.Allocations?.length">暂无待下账返利关联记录</div>
             <el-table v-else :data="row.Allocations" size="small" border>
-              <el-table-column label="返利池明细号" min-width="180">
+              <el-table-column label="待下账返利单号" min-width="180">
                 <template #default="{ row: item }">{{ item.Settlement?.settlement_no || '-' }}</template>
               </el-table-column>
-              <el-table-column label="核销金额" width="130" align="right">
+              <el-table-column label="关联金额" width="130" align="right">
                 <template #default="{ row: item }">¥{{ money(item.amount) }}</template>
               </el-table-column>
-              <el-table-column label="返利池状态" width="130">
+              <el-table-column label="待下账状态" width="130">
                 <template #default="{ row: item }">{{ settlementStatusText(item.Settlement?.status) }}</template>
               </el-table-column>
-              <el-table-column label="核销时间" width="175">
+              <el-table-column label="关联时间" width="175">
                 <template #default="{ row: item }">{{ formatDateTime(item.create_time) }}</template>
               </el-table-column>
-              <el-table-column prop="create_user" label="核销人" width="110" />
+              <el-table-column prop="create_user" label="关联人" width="110" />
               <el-table-column label="返利池备注" min-width="220">
                 <template #default="{ row: item }">{{ item.Settlement?.remark || '-' }}</template>
               </el-table-column>
@@ -57,16 +58,17 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="posting_no" label="到账批次号" min-width="190" fixed />
+      <el-table-column type="selection" width="48" :selectable="isPostingSelectable" />
+      <el-table-column prop="posting_no" label="已上账返利单号" min-width="190" fixed />
       <el-table-column prop="posting_date" label="上账日期" width="115" />
       <el-table-column prop="supplier_name" label="供应商" min-width="150" />
       <el-table-column label="到账金额" width="125" align="right">
         <template #default="{ row }">¥{{ money(row.amount) }}</template>
       </el-table-column>
-      <el-table-column label="已匹配返利" width="125" align="right">
+      <el-table-column label="已关联金额" width="125" align="right">
         <template #default="{ row }">¥{{ money(row.matched_amount) }}</template>
       </el-table-column>
-      <el-table-column label="剩余未匹配" width="135" align="right">
+      <el-table-column label="剩余待关联" width="135" align="right">
         <template #default="{ row }">¥{{ money(row.remaining_amount) }}</template>
       </el-table-column>
       <el-table-column label="状态" width="115">
@@ -79,8 +81,9 @@
       <el-table-column label="创建时间" width="170">
         <template #default="{ row }">{{ formatDateTime(row.create_time) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="105" fixed="right">
+      <el-table-column label="操作" width="160" fixed="right">
         <template #default="{ row }">
+          <el-button v-if="isPostingSelectable(row)" link type="success" @click="openLinkForPosting(row)">去关联</el-button>
           <el-button
             v-if="row.status !== 'REVERSED' && Number(row.matched_amount || 0) === 0"
             link
@@ -88,7 +91,7 @@
             @click="reverse(row)"
           >冲销</el-button>
           <span v-else-if="row.status === 'REVERSED'">已冲销</span>
-          <span v-else>先撤销核销</span>
+          <span v-else-if="row.status !== 'REVERSED' && Number(row.matched_amount || 0) > 0">先撤销关联</span>
         </template>
       </el-table-column>
     </el-table>
@@ -103,7 +106,46 @@
       @current-change="load"
     />
 
-    <el-dialog v-model="createVisible" title="登记返利到账" width="540px" @closed="resetForm">
+    <el-dialog v-model="linkVisible" title="选择待下账返利并关联" width="1050px">
+      <el-alert
+        :title="`已选 ${selectedPostingRows.length} 张已上账返利单，可关联余额 ¥${money(selectedPostingRemaining)}`"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="page-alert"
+      />
+      <div class="link-filters">
+        <el-select :model-value="linkSupplierId" disabled style="width:220px">
+          <el-option v-for="item in suppliers" :key="item.supplier_id" :label="item.name" :value="item.supplier_id" />
+        </el-select>
+        <el-select v-model="linkQuery.resourceType" placeholder="返利类型" clearable style="width:180px">
+          <el-option v-for="item in resourceOptions" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
+        <el-date-picker v-model="linkQuery.dateRange" type="daterange" range-separator="至" start-placeholder="创建开始日期" end-placeholder="创建结束日期" value-format="YYYY-MM-DD" style="width:250px" />
+        <el-input v-model="linkQuery.snCode" placeholder="SN（模糊查询）" clearable style="width:160px" @keyup.enter="loadLinkableSettlements" />
+        <el-input v-model="linkQuery.remark" placeholder="备注（模糊查询）" clearable style="width:180px" @keyup.enter="loadLinkableSettlements" />
+        <el-button type="primary" :loading="linkLoading" @click="loadLinkableSettlements">查询</el-button>
+        <el-button @click="resetLinkQuery">重置</el-button>
+      </div>
+      <el-table :data="linkableSettlements" border stripe v-loading="linkLoading" max-height="480" @selection-change="handleSettlementSelectionChange">
+        <el-table-column type="selection" width="48" :selectable="isSettlementSelectable" />
+        <el-table-column prop="settlement_no" label="待下账返利单号" min-width="190" />
+        <el-table-column label="创建时间" width="165"><template #default="{ row }">{{ formatDateTime(row.create_time) }}</template></el-table-column>
+        <el-table-column label="类型" width="130"><template #default="{ row }">{{ row.ResourceCategory?.name || row.resource_type }}</template></el-table-column>
+        <el-table-column prop="counterparty_name" label="供应商" min-width="145" />
+        <el-table-column label="金额" width="115" align="right"><template #default="{ row }">¥{{ money(row.amount) }}</template></el-table-column>
+        <el-table-column label="已关联" width="115" align="right"><template #default="{ row }">¥{{ money(row.matched_amount) }}</template></el-table-column>
+        <el-table-column label="剩余待关联" width="125" align="right"><template #default="{ row }">¥{{ money(remainingSettlement(row)) }}</template></el-table-column>
+        <el-table-column prop="remark" label="备注" min-width="200" show-overflow-tooltip />
+      </el-table>
+      <div class="link-summary">已选待下账返利余额：<strong>¥{{ money(selectedSettlementRemaining) }}</strong>；本次最多关联：<strong>¥{{ money(Math.min(selectedSettlementRemaining, selectedPostingRemaining)) }}</strong></div>
+      <template #footer>
+        <el-button @click="linkVisible = false">取消</el-button>
+        <el-button type="primary" :loading="linkSaving" @click="submitSelectedAssociations">确认关联</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="createVisible" title="登记已上账返利" width="540px" @closed="resetForm">
       <el-form label-width="95px">
         <el-form-item label="到账日期" required>
           <el-date-picker v-model="form.postingDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
@@ -142,7 +184,7 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 
@@ -150,14 +192,22 @@ const emit = defineEmits(['changed'])
 const loading = ref(false)
 const saving = ref(false)
 const createVisible = ref(false)
+const linkVisible = ref(false)
+const linkLoading = ref(false)
+const linkSaving = ref(false)
 const rows = ref([])
 const total = ref(0)
 const suppliers = ref([])
+const resourceOptions = ref([])
+const selectedPostingRows = ref([])
+const linkableSettlements = ref([])
+const selectedSettlementRows = ref([])
+const linkQuery = reactive({ resourceType: '', dateRange: [], snCode: '', remark: '' })
 const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })
 const statusOptions = [
-  { label: '待核销', value: 'UNMATCHED' },
-  { label: '部分核销', value: 'PARTIALLY_MATCHED' },
-  { label: '已核销', value: 'MATCHED' },
+  { label: '待关联', value: 'UNMATCHED' },
+  { label: '部分关联', value: 'PARTIALLY_MATCHED' },
+  { label: '已关联', value: 'MATCHED' },
   { label: '已冲销', value: 'REVERSED' }
 ]
 const query = reactive({
@@ -169,6 +219,10 @@ const query = reactive({
   remark: ''
 })
 const form = reactive({ postingDate: today(), supplierId: '', direction: 'increase', amount: 0, remark: '' })
+const linkSupplierId = computed(() => String(selectedPostingRows.value[0]?.supplier_id || ''))
+const selectedPostingRemaining = computed(() => selectedPostingRows.value.reduce((sum, row) => sum + Math.max(0, Number(row.remaining_amount || 0)), 0))
+const remainingSettlement = row => Math.max(0, Number(row?.amount || 0) - Number(row?.matched_amount || 0))
+const selectedSettlementRemaining = computed(() => selectedSettlementRows.value.reduce((sum, row) => sum + remainingSettlement(row), 0))
 
 const money = value => Number(value || 0).toFixed(2)
 const formatDateTime = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
@@ -180,16 +234,140 @@ const statusType = value => ({
   REVERSED: 'info'
 }[value] || 'info')
 const settlementStatusText = value => ({
-  PENDING: '待核销',
-  PARTIALLY_SETTLED: '部分核销',
-  SETTLED: '已核销',
+  PENDING: '待关联',
+  PARTIALLY_SETTLED: '部分关联',
+  SETTLED: '已关联',
   CANCELLED: '已取消',
   REVERSED: '已冲销'
 }[value] || value || '-')
 
+const isPostingSelectable = row => Number(row?.amount || 0) > 0
+  && Number(row?.remaining_amount || 0) > 0
+  && ['UNMATCHED', 'PARTIALLY_MATCHED'].includes(row?.status)
+const isSettlementSelectable = row => Number(row?.amount || 0) > 0
+  && remainingSettlement(row) > 0
+  && String(row?.counterparty_id || '') === linkSupplierId.value
+  && ['PENDING', 'PARTIALLY_SETTLED'].includes(row?.status)
+
+function handlePostingSelectionChange(selection) {
+  selectedPostingRows.value = selection
+}
+
+function handleSettlementSelectionChange(selection) {
+  selectedSettlementRows.value = selection
+}
+
 async function loadSuppliers() {
-  const res = await api.getSupplierList({ page: 1, pageSize: 500 })
+  const [res, categoryRes] = await Promise.all([
+    api.getSupplierList({ page: 1, pageSize: 500 }),
+    api.getResourceCategories({ activeOnly: 1 })
+  ])
   suppliers.value = res.data?.list || res.data || []
+  resourceOptions.value = (categoryRes.data || []).map(item => ({ label: item.name, value: item.category_code }))
+}
+
+function openLinkForPosting(row) {
+  selectedPostingRows.value = [row]
+  linkQuery.resourceType = ''
+  linkQuery.dateRange = []
+  linkQuery.snCode = ''
+  linkQuery.remark = ''
+  selectedSettlementRows.value = []
+  linkableSettlements.value = []
+  linkVisible.value = true
+  loadLinkableSettlements()
+}
+
+function openBatchLink() {
+  if (!selectedPostingRows.value.length) return ElMessage.warning('请先选择已上账返利单')
+  const supplierIds = [...new Set(selectedPostingRows.value.map(row => String(row.supplier_id || '')))]
+  if (supplierIds.length !== 1 || !supplierIds[0]) return ElMessage.warning('批量关联必须选择同一供应商的已上账返利单')
+  linkQuery.resourceType = ''
+  linkQuery.dateRange = []
+  linkQuery.snCode = ''
+  linkQuery.remark = ''
+  selectedSettlementRows.value = []
+  linkableSettlements.value = []
+  linkVisible.value = true
+  loadLinkableSettlements()
+}
+
+async function loadLinkableSettlements() {
+  if (!linkSupplierId.value) return ElMessage.warning('所选已上账返利单缺少供应商')
+  linkLoading.value = true
+  try {
+    const params = {
+      supplierId: linkSupplierId.value,
+      linkableOnly: 1,
+      resourceType: linkQuery.resourceType,
+      snCode: linkQuery.snCode,
+      remark: linkQuery.remark,
+      page: 1,
+      pageSize: 500
+    }
+    if (linkQuery.dateRange?.length === 2) {
+      params.startDate = linkQuery.dateRange[0]
+      params.endDate = linkQuery.dateRange[1]
+    }
+    const res = await api.getResourceSettlements(params)
+    linkableSettlements.value = res.data?.list || []
+    selectedSettlementRows.value = []
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '加载待下账返利失败')
+  } finally {
+    linkLoading.value = false
+  }
+}
+
+function resetLinkQuery() {
+  linkQuery.resourceType = ''
+  linkQuery.dateRange = []
+  linkQuery.snCode = ''
+  linkQuery.remark = ''
+  loadLinkableSettlements()
+}
+
+function buildAssociationItems() {
+  const settlements = [...selectedSettlementRows.value]
+    .sort((left, right) => new Date(left.create_time || 0) - new Date(right.create_time || 0))
+    .map(row => ({ settlementId: row.settlement_id, remaining: Math.round(remainingSettlement(row) * 100), allocations: [] }))
+  const postings = [...selectedPostingRows.value]
+    .sort((left, right) => String(left.posting_date || '').localeCompare(String(right.posting_date || '')))
+    .map(row => ({ postingId: row.posting_id, remaining: Math.round(Number(row.remaining_amount || 0) * 100) }))
+  let postingIndex = 0
+  for (const settlement of settlements) {
+    while (settlement.remaining > 0 && postingIndex < postings.length) {
+      const posting = postings[postingIndex]
+      if (posting.remaining <= 0) {
+        postingIndex += 1
+        continue
+      }
+      const amount = Math.min(settlement.remaining, posting.remaining)
+      settlement.allocations.push({ postingId: posting.postingId, amount: amount / 100 })
+      settlement.remaining -= amount
+      posting.remaining -= amount
+    }
+  }
+  return settlements.filter(row => row.allocations.length).map(({ settlementId, allocations }) => ({ settlementId, allocations }))
+}
+
+async function submitSelectedAssociations() {
+  if (!selectedSettlementRows.value.length) return ElMessage.warning('请至少选择一笔待下账返利')
+  const items = buildAssociationItems()
+  if (!items.length) return ElMessage.warning('已上账返利单没有可关联余额')
+  linkSaving.value = true
+  try {
+    const res = await api.batchSettleRebateResources({ items })
+    ElMessage.success(res.data?.message || res.message || '返利关联成功')
+    linkVisible.value = false
+    selectedPostingRows.value = []
+    await load()
+    emit('changed')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '返利关联失败')
+  } finally {
+    linkSaving.value = false
+  }
 }
 
 async function load() {
@@ -296,6 +474,18 @@ onMounted(async () => {
 }
 .page-alert {
   margin-bottom: 12px;
+}
+.link-filters {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.link-summary {
+  margin-top: 12px;
+  text-align: right;
+  color: #606266;
 }
 .allocation-detail {
   padding: 8px 46px;

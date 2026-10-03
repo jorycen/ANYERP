@@ -930,12 +930,12 @@ async function deleteGoodsType(ctx) {
   ctx.body = { message: '货型已删除，历史采购记录继续保留' };
 }
 
-async function createPendingSettlement({ sourceType, sourceId, sn, resourceType, amount, counterpartyId = null, counterpartyName = '', distributorId = null, remark = '', transaction }) {
+async function createPendingSettlement({ sourceType, sourceId, sn, resourceType, amount, counterpartyId = null, counterpartyName = '', distributorId = null, remark = '', forceSettlement = false, transaction }) {
   const numericAmount = Number(amount || 0);
   if (!Number.isFinite(numericAmount) || numericAmount <= 0) return null;
   const category = await ResourceCategory.findOne({ where: { category_code: resourceType }, transaction });
   if (!category) throw Object.assign(new Error('资源类别配置不存在，无法生成待下账记录'), { status: 409 });
-  if (Number(category.generates_settlement) === 0) return null;
+  if (!forceSettlement && Number(category.generates_settlement) === 0) return null;
   const [record] = await ResourceSettlement.findOrCreate({
     where: { source_type: sourceType, source_id: sourceId, resource_type: resourceType },
     defaults: {
@@ -1136,6 +1136,10 @@ async function listResourceSettlements(ctx) {
   } = ctx.query;
   const where = {};
   if (status) where.status = status;
+  if (String(ctx.query.linkableOnly || '') === '1') {
+    where.status = { [Op.in]: ['PENDING', 'PARTIALLY_SETTLED'] };
+    where.amount = { [Op.gt]: 0 };
+  }
   if (resourceType) where.resource_type = resourceType;
   if (sourceType) where.source_type = sourceType;
   if (snCode) where.sn_code = { [Op.like]: `%${snCode}%` };
@@ -1277,9 +1281,9 @@ async function settleNegativeRebateCorrection(ctx, record, transaction) {
 
 async function reconcileRebateSettlement(ctx, record, transaction, allocationsInput = ctx.request.body?.allocations) {
   if (!['PENDING', 'PARTIALLY_SETTLED'].includes(record.status)) {
-    ctx.throw(409, '该返利下账单已完成核销');
+    ctx.throw(409, '该待下账返利已完成关联');
   }
-  if (!record.counterparty_id) ctx.throw(400, '返利下账单缺少供应商，无法核销');
+  if (!record.counterparty_id) ctx.throw(400, '待下账返利缺少供应商，无法关联');
   if (money(record.amount) < 0) return settleNegativeRebateCorrection(ctx, record, transaction);
   const input = Array.isArray(allocationsInput) ? allocationsInput : [];
   const grouped = new Map();
@@ -1289,14 +1293,14 @@ async function reconcileRebateSettlement(ctx, record, transaction, allocationsIn
     if (!postingId || amount <= 0) continue;
     grouped.set(postingId, money((grouped.get(postingId) || 0) + amount));
   }
-  if (grouped.size === 0) ctx.throw(400, '请选择返利上账单并填写核销金额');
+  if (grouped.size === 0) ctx.throw(400, '请选择已上账返利单并填写关联金额');
 
   const settlementAmount = money(record.amount);
   const previousMatched = money(record.matched_amount);
   const remaining = money(settlementAmount - previousMatched);
   const allocationTotal = money([...grouped.values()].reduce((sum, value) => sum + value, 0));
   if (allocationTotal > remaining + 0.0001) {
-    ctx.throw(400, `本次核销金额不能超过下账单剩余金额 ¥${remaining.toFixed(2)}`);
+    ctx.throw(400, `本次关联金额不能超过待下账返利剩余金额 ¥${remaining.toFixed(2)}`);
   }
 
   const user = ctx.state.user || {};
@@ -1305,13 +1309,13 @@ async function reconcileRebateSettlement(ctx, record, transaction, allocationsIn
       transaction,
       lock: transaction.LOCK.UPDATE
     });
-    if (!posting || posting.status === 'REVERSED') ctx.throw(404, '返利上账单不存在或已冲销');
-    if (posting.supplier_id !== record.counterparty_id) ctx.throw(400, '只能核销同一供应商的返利上账单');
+    if (!posting || posting.status === 'REVERSED' || money(posting.amount) <= 0) ctx.throw(404, '有效的正向已上账返利单不存在');
+    if (posting.supplier_id !== record.counterparty_id) ctx.throw(400, '只能关联同一供应商的已上账返利单');
     const postingAmount = money(posting.amount);
     const postingMatched = money(posting.matched_amount);
     const postingRemaining = money(postingAmount - postingMatched);
     if (amount > postingRemaining + 0.0001) {
-      ctx.throw(400, `上账单 ${posting.posting_no} 剩余待核销金额仅 ¥${postingRemaining.toFixed(2)}`);
+      ctx.throw(400, `已上账返利单 ${posting.posting_no} 剩余待关联金额仅 ¥${postingRemaining.toFixed(2)}`);
     }
     const newPostingMatched = money(postingMatched + amount);
     await RebateSettlementAllocation.create({
@@ -1349,16 +1353,16 @@ async function reconcileRebateSettlement(ctx, record, transaction, allocationsIn
 }
 
 async function batchSettleRebateResources(ctx) {
-  requireAnyRole(ctx, ['boss', 'admin', 'finance'], '无权执行返利下账');
+  requireAnyRole(ctx, ['boss', 'admin', 'finance'], '无权关联返利');
   const items = Array.isArray(ctx.request.body?.items) ? ctx.request.body.items : [];
-  if (items.length === 0) ctx.throw(400, '请选择待核销返利下账单');
+  if (items.length === 0) ctx.throw(400, '请选择待下账返利');
   const normalizedItems = items.map(item => ({
     settlementId: item.settlementId || item.settlement_id,
     allocations: Array.isArray(item.allocations) ? item.allocations : []
   })).filter(item => item.settlementId);
-  if (normalizedItems.length !== items.length) ctx.throw(400, '批量核销下账单格式无效');
+  if (normalizedItems.length !== items.length) ctx.throw(400, '批量关联待下账返利格式无效');
   const settlementIds = [...new Set(normalizedItems.map(item => item.settlementId))];
-  if (settlementIds.length !== normalizedItems.length) ctx.throw(400, '批量核销下账单不能重复选择');
+  if (settlementIds.length !== normalizedItems.length) ctx.throw(400, '批量关联时不能重复选择待下账返利');
 
   const results = [];
   await sequelize.transaction(async transaction => {
@@ -1368,18 +1372,37 @@ async function batchSettleRebateResources(ctx) {
       transaction,
       lock: transaction.LOCK.UPDATE
     });
-    if (records.length !== settlementIds.length) ctx.throw(404, '部分返利下账单不存在');
+    if (records.length !== settlementIds.length) ctx.throw(404, '部分待下账返利记录不存在');
     const recordMap = new Map(records.map(record => [record.settlement_id, record]));
     for (const item of normalizedItems) {
       const record = recordMap.get(item.settlementId);
-      if (!['MANUAL_REBATE', 'MANUFACTURER_REBATE', 'REBATE_RECEIPT', 'EXPENSE_REBATE'].includes(record.source_type)) {
-        ctx.throw(400, '批量核销仅支持返利类下账单');
+      if (money(record.amount) <= 0 || !record.counterparty_id) {
+        ctx.throw(400, '批量关联仅支持有供应商归属的正向待下账返利');
       }
       const result = await reconcileRebateSettlement(ctx, record, transaction, item.allocations);
       results.push({ settlementId: record.settlement_id, ...result });
     }
   });
-  ctx.body = { message: '批量返利下账核销成功', data: { items: results } };
+  ctx.body = { message: '批量返利关联成功', data: { items: results } };
+}
+
+async function linkRebateSettlement(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin', 'finance'], '无权关联返利');
+  let result = null;
+  await sequelize.transaction(async transaction => {
+    const record = await ResourceSettlement.findByPk(ctx.params.settlementId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!record) ctx.throw(404, '待下账返利记录不存在');
+    if (money(record.amount) <= 0) ctx.throw(400, '只有正向待下账返利可以关联');
+    if (!record.counterparty_id) ctx.throw(400, '待下账返利缺少供应商，无法关联');
+    result = await reconcileRebateSettlement(ctx, record, transaction);
+  });
+  ctx.body = {
+    message: result.fullyMatched ? '待下账返利已关联' : '待下账返利已部分关联',
+    data: result
+  };
 }
 
 async function settleResource(ctx) {
@@ -1741,6 +1764,9 @@ async function triggerSaleResourceBenefits(order, items, transaction) {
         continue;
       }
       const amount = calculateRuleAmount({ rule, right, item });
+      if (category.resource_kind === 'PO_REWARD' && amount > 0 && !right.supplier_id) {
+        throw Object.assign(new Error(`SN ${item.sn_code} 缺少供应商归属，无法生成PO后返待下账`), { status: 409 });
+      }
       const change = await ResourceRightChangeOrder.create({
         change_id: generateUUID(),
         change_order_no: businessNo(),
@@ -1797,7 +1823,7 @@ async function triggerSaleResourceBenefits(order, items, transaction) {
           transaction
         });
       }
-      if (Number(category.generates_settlement) === 1 && amount > 0) {
+      if ((Number(category.generates_settlement) === 1 || category.resource_kind === 'PO_REWARD') && amount > 0) {
         await createPendingSettlement({
           sourceType: rebateEstimate ? 'MANUFACTURER_REBATE' : 'SALE_TRIGGER',
           sourceId: rebateEstimate?.estimate_id || change.change_id,
@@ -1806,19 +1832,24 @@ async function triggerSaleResourceBenefits(order, items, transaction) {
           amount,
           counterpartyId: right.supplier_id || null,
           counterpartyName: right.supplier_name || '',
+          forceSettlement: category.resource_kind === 'PO_REWARD',
           remark: `销售订单 ${order.order_no} 触发${category.name}`,
           transaction
         });
       }
-      const affectsProfit = Number(rule?.affects_performance_profit ?? category.affects_performance_profit) === 1;
+      const affectsProfit = category.category_code === 'EDU_SUBSIDY'
+        || category.resource_kind === 'PO_REWARD'
+        || Number(rule?.affects_performance_profit ?? category.affects_performance_profit) === 1;
       if (affectsProfit) {
         await createPerformanceProfitAdjustment({
           order,
           item,
           resourceType: category.category_code,
           amount,
-          // 教育优惠资源核销的返款按 80% 回算给补录人员，剩余 20% 保留在产品端返利应收。
-          ratio: category.category_code === 'EDU_SUBSIDY' ? 80 : (rule?.performance_profit_ratio ?? category.performance_profit_ratio),
+          // 教育补贴和 PO 后返全额进入供应商待下账；店员毛利按 80% 计入。
+          ratio: ['EDU_SUBSIDY', 'PO_REWARD'].includes(category.category_code) || category.resource_kind === 'PO_REWARD'
+            ? 80
+            : (rule?.performance_profit_ratio ?? category.performance_profit_ratio),
           transaction
         });
       }
@@ -1932,6 +1963,21 @@ async function lockSaleRights(order, items, transaction) {
 }
 
 async function finishSaleRights(order, items, transaction) {
+  const educationItems = items.filter(item => selectedResources(item).includes('EDU_SUBSIDY'));
+  const educationTotal = money(order.education_subsidy || 0);
+  const itemGross = item => Math.abs(Number(item.sale_price || 0) * Number(item.quantity || 0));
+  const educationGrossTotal = educationItems.reduce((sum, item) => sum + itemGross(item), 0);
+  let allocatedEducation = 0;
+  const educationAmountByItem = new Map();
+  educationItems.forEach((item, index) => {
+    const amount = index === educationItems.length - 1
+      ? money(educationTotal - allocatedEducation)
+      : educationGrossTotal > 0
+        ? money(educationTotal * itemGross(item) / educationGrossTotal)
+        : money(educationTotal / educationItems.length);
+    educationAmountByItem.set(String(item.item_id), amount);
+    allocatedEducation = money(allocatedEducation + amount);
+  });
   for (const item of items) for (const resourceType of selectedResources(item)) {
     if (!item.sn_id) {
       const productName = item.product_name || item.pn_code || '未命名商品';
@@ -1947,11 +1993,26 @@ async function finishSaleRights(order, items, transaction) {
       change_amount: 0, change_reason: 'SALE_USED', approval_status: 'approved', related_sale_order_id: order.order_id,
       applicant_name: order.create_user, remark: `销售订单 ${order.order_no} 归档核销`
     }, { transaction });
+    const settlementAmount = resourceType === 'EDU_SUBSIDY'
+      ? Number(educationAmountByItem.get(String(item.item_id)) || 0)
+      : Number(right.amount || 0);
+    if (resourceType === 'EDU_SUBSIDY' && settlementAmount > 0 && !right.supplier_id) {
+      throw Object.assign(new Error(`SN ${item.sn_code} 缺少供应商归属，无法生成教育补贴返利待下账`), { status: 409 });
+    }
     await createPendingSettlement({
       sourceType: 'SALE_USE', sourceId: change.change_id,
       sn: { sn_id: item.sn_id, sn_code: item.sn_code, product_id: item.product_id },
-      resourceType, amount: right.amount, remark: `销售订单 ${order.order_no} 使用权益`, transaction
+      resourceType, amount: settlementAmount,
+      counterpartyId: right.supplier_id || null,
+      counterpartyName: right.supplier_name || '',
+      forceSettlement: resourceType === 'EDU_SUBSIDY',
+      remark: `销售订单 ${order.order_no} 使用权益`, transaction
     });
+    if (resourceType === 'EDU_SUBSIDY' && settlementAmount > 0) {
+      await createPerformanceProfitAdjustment({
+        order, item, resourceType, amount: settlementAmount, ratio: 80, transaction
+      });
+    }
   }
 }
 
@@ -2071,7 +2132,7 @@ module.exports = {
   listRights, snRights, saveSnRights, batchAdjustRights, importBatchRights, batchRefreshRights, reverseSaleUseResource, submitClaim, reviewClaim, listChanges, listCostConfigs, listCostAdjustments, saveCostConfig,
   listResourceCategories, saveResourceCategory, deleteResourceCategory,
   listGoodsTypes, saveGoodsType, deleteGoodsType,
-  listResourceSettlements, createManualRebateSettlement, settleResource, batchSettleRebateResources,
+  listResourceSettlements, createManualRebateSettlement, settleResource, batchSettleRebateResources, linkRebateSettlement,
   cancelResourceSettlement, reverseResourceSettlement, createPendingSettlement,
   findResourceRule, calculatePreSaleRuleAmount,
   initializeSnResourceRightsFromInbound, triggerSaleResourceBenefits, createSaleResourceTasks,
