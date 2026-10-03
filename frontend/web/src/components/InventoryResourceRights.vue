@@ -218,12 +218,12 @@
       <span v-if="educationFile" class="file-name">{{ educationFile.name }}</span>
       <el-button v-if="educationImportResult" link type="primary" @click="educationImportResult=null">清除上次结果</el-button>
       <div v-if="educationImportResult" class="import-result">
-        <el-result :icon="educationImportResult.failed ? 'warning' : 'success'" :title="educationImportResult.message" :sub-title="`成功 ${educationImportResult.success} 个商品，失败 ${educationImportResult.failed} 条，更新在库SN ${educationImportResult.affectedSn} 台`" />
+        <el-result :icon="educationImportResult.failed ? 'warning' : 'success'" :title="educationImportResult.message" :sub-title="`成功 ${educationImportResult.success} 个商品，过期/未生效跳过 ${educationImportResult.skipped} 个，失败 ${educationImportResult.failed} 条，清理过期权益 ${educationImportResult.clearedRights} 条，更新在库SN ${educationImportResult.affectedSn} 台`" />
         <el-table v-if="educationImportResult.rows.length" :data="educationImportResult.rows" border max-height="300">
           <el-table-column prop="productCode" label="商品编号" min-width="150" />
           <el-table-column prop="sheet" label="工作表" min-width="120" />
           <el-table-column prop="row" label="行号" width="80" />
-          <el-table-column label="结果" width="90"><template #default="{row}"><el-tag :type="row.status==='success'?'success':'danger'">{{ row.status==='success'?'成功':'失败' }}</el-tag></template></el-table-column>
+          <el-table-column label="结果" width="90"><template #default="{row}"><el-tag :type="row.status==='success'?'success':row.status==='skipped'?'info':'danger'">{{ row.status==='success'?'成功':row.status==='skipped'?'已跳过':'失败' }}</el-tag></template></el-table-column>
           <el-table-column label="更新SN" width="100"><template #default="{row}">{{ row.affectedInventory ?? '-' }}</template></el-table-column>
           <el-table-column prop="message" label="说明/失败原因" min-width="220" />
         </el-table>
@@ -320,7 +320,7 @@ const resourceText = value => resourceOptions.value.find(item => item.value === 
 const statusText = value => statusOptions.find(item => item.value === value)?.label || value
 const statusType = value => ({AVAILABLE:'success',LOCKED:'warning',USED:'info',CLAIMED_BACK:'danger',EXCEPTION:'danger'}[value] || '')
 const approvalText = value => ({pending_finance:'待财务审批',approved:'已通过',rejected:'已拒绝'}[value] || value)
-const reasonText = value => ({SALE_USED:'销售使用',SALE_USE_REVERSAL:'销售核销冲销',EDU_SUBSIDY_SUPPLEMENT:'教育优惠资源补录',COMPANY_CLAIMED_BACK:'公司套回',ORDER_LOCKED:'订单锁定',ORDER_CANCEL_RELEASE:'订单取消释放',MANUAL_ADJUST:'人工调整',PURCHASE_INBOUND:'采购入库',BATCH_ADJUST:'批量调整',SALE_TRIGGER:'销售触发',SALE_TRIGGER_NOT_ELIGIBLE:'销售未达成条件'}[value] || value)
+const reasonText = value => ({SALE_USED:'销售使用',SALE_USE_REVERSAL:'销售核销冲销',EDU_SUBSIDY_SUPPLEMENT:'教育优惠资源补录',EDU_POLICY_EXPIRED:'教育优惠政策过期',COMPANY_CLAIMED_BACK:'公司套回',ORDER_LOCKED:'订单锁定',ORDER_CANCEL_RELEASE:'订单取消释放',MANUAL_ADJUST:'人工调整',PURCHASE_INBOUND:'采购入库',BATCH_ADJUST:'批量调整',SALE_TRIGGER:'销售触发',SALE_TRIGGER_NOT_ELIGIBLE:'销售未达成条件'}[value] || value)
 const calcTypeText = value => ({fixed_amount:'固定金额',percentage_inventory_cost:'库存成本比例',percentage_sale_amount:'销售金额比例'}[value] || value)
 const rulePeriodText = row => row.effective_start || row.effective_end ? `${String(row.effective_start || '不限').slice(0,10)} 至 ${String(row.effective_end || '不限').slice(0,10)}` : '长期有效'
 const triggerText = row => {
@@ -477,13 +477,14 @@ async function submitEducationImport(){
     const rows=data.results||[]
     const success=rows.filter(item=>item.status==='success').length
     const failed=rows.filter(item=>item.status==='failed').length
-    educationImportResult.value={message:data.message||'教育优惠表导入完成',success,failed,affectedSn:rows.reduce((sum,item)=>sum+Number(item.affectedInventory||0),0),rows}
+    const skipped=rows.filter(item=>item.status==='skipped').length
+    educationImportResult.value={message:data.message||'教育优惠表导入完成',success,failed,skipped,clearedRights:Number(data.clearedExpiredRights||0)+rows.reduce((sum,item)=>sum+Number(item.clearedExpiredRights||0),0),affectedSn:rows.reduce((sum,item)=>sum+Number(item.affectedInventory||0),0),rows}
     if(failed) ElMessage.warning(data.message||'教育优惠表部分导入失败')
     else ElMessage.success(data.message||'教育优惠表导入完成')
     await loadRights()
   }catch(e){
     const message=e.response?.data?.message||e.message||'教育优惠表导入失败'
-    educationImportResult.value={message,success:0,failed:1,affectedSn:0,rows:[{status:'failed',message}]}
+    educationImportResult.value={message,success:0,failed:1,skipped:0,clearedRights:0,affectedSn:0,rows:[{status:'failed',message}]}
     ElMessage.error(message)
   }
   finally{educationImporting.value=false}

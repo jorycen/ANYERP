@@ -542,12 +542,115 @@ function chooseEducationPolicy(policies, at = new Date()) {
   return [...policies].sort((a, b) => new Date(b.promotionStart) - new Date(a.promotionStart))[0] || null;
 }
 
+async function clearExpiredEducationRights({ productId, now, user = {}, transaction }) {
+  const rights = await InventoryResourceRight.findAll({
+    where: {
+      product_id: productId,
+      resource_type: 'EDU_SUBSIDY',
+      current_status: { [Op.in]: ['AVAILABLE', 'NOT_APPLICABLE'] },
+      amount: { [Op.gt]: 0 },
+      source: 'EDUCATION_POLICY_IMPORT',
+      effective_end: { [Op.lt]: now }
+    },
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  for (const right of rights) {
+    const amount = money(right.amount);
+    await right.update({
+      current_status: 'NOT_APPLICABLE',
+      amount: 0,
+      rule_config_id: null,
+      effective_start: null,
+      effective_end: null,
+      source: 'EDUCATION_POLICY_EXPIRED',
+      remark: '教育优惠政策已过期，导入时自动清理可用权益',
+      version: Number(right.version || 0) + 1,
+      update_time: now
+    }, { transaction });
+    await ResourceRightChangeOrder.create({
+      change_id: generateUUID(),
+      change_order_no: businessNo(),
+      sn_id: right.sn_id,
+      sn_code: right.sn_code,
+      product_id: right.product_id,
+      resource_type: 'EDU_SUBSIDY',
+      before_status: right.current_status,
+      after_status: 'NOT_APPLICABLE',
+      change_amount: amount,
+      change_reason: 'EDU_POLICY_EXPIRED',
+      approval_status: 'approved',
+      applicant_staff_id: user.staffId || null,
+      applicant_name: user.name || '',
+      reviewer_staff_id: user.staffId || null,
+      reviewer_name: user.name || '',
+      review_time: now,
+      remark: '教育优惠政策到期，自动清理未使用权益'
+    }, { transaction });
+  }
+  return rights.length;
+}
+
+async function cleanupExpiredEducationPolicies({ now, user = {} }) {
+  let clearedRights = 0;
+  await sequelize.transaction(async transaction => {
+    const configs = await ProductResourceCostConfig.findAll({
+      where: { resource_type: 'EDU_SUBSIDY', status: 1 },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    for (const config of configs) {
+      const configJson = parseJsonObject(config.rule_config_json);
+      const importedEducationPolicy = Array.isArray(configJson.educationPolicies)
+        || String(config.remark || '').startsWith('教育优惠表格导入');
+      if (!importedEducationPolicy) continue;
+      const policies = Array.isArray(configJson.educationPolicies) ? configJson.educationPolicies : [];
+      const hasCurrentPolicy = policies.some(policy =>
+        new Date(policy.promotionStart).getTime() <= now.getTime()
+        && new Date(policy.promotionEnd).getTime() >= now.getTime()
+      ) || (!policies.length
+        && config.effective_start && config.effective_end
+        && new Date(config.effective_start).getTime() <= now.getTime()
+        && new Date(config.effective_end).getTime() >= now.getTime());
+      if (!hasCurrentPolicy) {
+        await config.update({
+          status: 0,
+          cost_amount: 0,
+          calculation_value: 0,
+          update_user: user.name || '',
+          update_time: now,
+          remark: '教育优惠政策已过期，导入时自动停用'
+        }, { transaction });
+      }
+    }
+
+    const expiredProductRows = await InventoryResourceRight.findAll({
+      attributes: ['product_id'],
+      where: {
+        resource_type: 'EDU_SUBSIDY',
+        current_status: { [Op.in]: ['AVAILABLE', 'NOT_APPLICABLE'] },
+        amount: { [Op.gt]: 0 },
+        source: 'EDUCATION_POLICY_IMPORT',
+        effective_end: { [Op.lt]: now }
+      },
+      group: ['product_id'],
+      raw: true,
+      transaction
+    });
+    for (const row of expiredProductRows) {
+      clearedRights += await clearExpiredEducationRights({ productId: row.product_id, now, user, transaction });
+    }
+  });
+  return clearedRights;
+}
+
 async function importEducationPolicies(ctx) {
   requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
   if (!ctx.file?.buffer) ctx.throw(400, '请上传教育优惠Excel文件');
   const workbook = XLSX.read(ctx.file.buffer, { type: 'buffer', cellDates: true });
   const extracted = extractEducationPolicies(workbook);
   if (!extracted.policies.length) ctx.throw(400, '没有识别到包含促销时间、商品编号和学生优惠/资源回算金额的明细表');
+  const now = new Date();
   const grouped = new Map();
   for (const policy of extracted.policies) {
     const rows = grouped.get(policy.productCode) || [];
@@ -559,6 +662,7 @@ async function importEducationPolicies(ctx) {
   }
   const category = await ResourceCategory.findOne({ where: { category_code: 'EDU_SUBSIDY', status: 1 } });
   if (!category) ctx.throw(409, '教育补贴资源类别未启用，请先在资源类别中启用教育补贴');
+  const clearedExpiredRights = await cleanupExpiredEducationPolicies({ now, user: ctx.state.user || {} });
   const results = [];
   for (const [productCode, rows] of grouped.entries()) {
     try {
@@ -568,7 +672,46 @@ async function importEducationPolicies(ctx) {
         if (pn) product = await Product.findByPk(pn.product_id);
       }
       if (!product || product.is_deleted) throw new Error('系统中未找到该商品编号');
-      const policies = rows.map(policy => ({
+      const currentRows = rows.filter(policy =>
+        new Date(policy.promotionStart).getTime() <= now.getTime()
+        && new Date(policy.promotionEnd).getTime() >= now.getTime()
+      );
+      if (!currentRows.length) {
+        let clearedRights = 0;
+        await sequelize.transaction(async transaction => {
+          const configs = await ProductResourceCostConfig.findAll({
+            where: { product_id: product.product_id, resource_type: 'EDU_SUBSIDY' },
+            transaction,
+            lock: transaction.LOCK.UPDATE
+          });
+          for (const config of configs) {
+            const configJson = parseJsonObject(config.rule_config_json);
+            const importedEducationPolicy = Array.isArray(configJson.educationPolicies)
+              || String(config.remark || '').startsWith('教育优惠表格导入');
+            if (importedEducationPolicy && Number(config.status) !== 0) {
+              await config.update({
+                status: 0,
+                cost_amount: 0,
+                calculation_value: 0,
+                update_user: ctx.state.user.name || '',
+                update_time: now,
+                remark: '教育优惠政策已过期，导入时自动停用'
+              }, { transaction });
+            }
+          }
+          clearedRights = await clearExpiredEducationRights({ productId: product.product_id, now, user: ctx.state.user || {}, transaction });
+        });
+        results.push({
+          productCode,
+          status: 'skipped',
+          policyCount: 0,
+          affectedInventory: 0,
+          clearedExpiredRights: clearedRights,
+          message: `没有当前有效政策，已跳过导入并清理${clearedRights}条过期可用权益`
+        });
+        continue;
+      }
+      const policies = currentRows.map(policy => ({
         promotionStart: policy.promotionStart.toISOString(),
         promotionEnd: policy.promotionEnd.toISOString(),
         studentDiscount: policy.studentDiscount,
@@ -576,8 +719,9 @@ async function importEducationPolicies(ctx) {
         sourceSheet: policy.sourceSheet,
         sourceRow: policy.sourceRow
       })).sort((a, b) => new Date(a.promotionStart) - new Date(b.promotionStart));
-      const selected = chooseEducationPolicy(rows);
+      const selected = chooseEducationPolicy(currentRows, now);
       let affectedSnCount = 0;
+      let clearedRights = 0;
       await sequelize.transaction(async transaction => {
         const configs = await ProductResourceCostConfig.findAll({
           where: { product_id: product.product_id, resource_type: 'EDU_SUBSIDY' },
@@ -609,6 +753,8 @@ async function importEducationPolicies(ctx) {
           }, { transaction });
           policyConfigId = createdConfig.config_id;
         }
+
+        clearedRights = await clearExpiredEducationRights({ productId: product.product_id, now, user: ctx.state.user || {}, transaction });
 
         const sns = await ProductSn.findAll({ where: { product_id: product.product_id, is_deleted: 0, status: { [Op.in]: ['in_stock', 'sold'] } }, transaction, lock: transaction.LOCK.UPDATE });
         for (const sn of sns) {
@@ -653,15 +799,17 @@ async function importEducationPolicies(ctx) {
           affectedSnCount += 1;
         }
       });
-      results.push({ productCode, status: 'success', policyCount: policies.length, affectedInventory: affectedSnCount });
+      results.push({ productCode, status: 'success', policyCount: policies.length, affectedInventory: affectedSnCount, clearedExpiredRights: clearedRights });
     } catch (error) {
       results.push({ productCode, status: 'failed', message: error.message });
     }
   }
   const success = results.filter(item => item.status === 'success').length;
+  const skipped = results.filter(item => item.status === 'skipped').length;
   ctx.body = {
-    message: `教育优惠导入完成：成功${success}个商品，失败${results.length - success}个商品`,
+    message: `教育优惠导入完成：成功${success}个商品，过期/未生效跳过${skipped}个商品，失败${results.length - success - skipped}个商品`,
     affectedProducts: success,
+    clearedExpiredRights,
     results: results.concat(extracted.errors.map(error => ({ ...error, status: 'failed' })))
   };
 }
