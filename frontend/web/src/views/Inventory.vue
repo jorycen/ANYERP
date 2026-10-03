@@ -326,6 +326,7 @@
             <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
             <el-table-column label="操作" width="420" fixed="right">
               <template #default="{ row }">
+                <el-button v-if="canViewSnResourceRights" link type="success" @click="openSnResourceDetail(row)">查看权益</el-button>
                 <el-button link type="primary" @click="openSnDialog(row)">修改SN</el-button>
                 <el-button v-if="row.status === 'in_stock'" link type="warning" @click="openSnLocationDialog(row)">调整库位</el-button>
                 <el-button v-if="canStartSnPurchase(row)" link type="success" @click="openSnPurchase(row)">发起采购申请</el-button>
@@ -1078,6 +1079,27 @@
     </el-dialog>
 
     <!-- 序列号查看对话框 -->
+    <el-dialog v-model="snResourceDetailVisible" title="SN权益" width="760px">
+      <el-skeleton v-if="snResourceDetailLoading" :rows="4" animated />
+      <template v-else-if="snResourceDetail">
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="SN">{{ snResourceDetail.sn?.sn_code || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="商品">{{ snResourceDetail.sn?.Product?.name || snResourceDetail.sn?.product_id || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="货品销售标签" :span="2">{{ snResourceDetail.sales_resource_label || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="可用资源">{{ snResourceDetail.available_resource_summary || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="不可用资源">{{ snResourceDetail.unavailable_resource_summary || '-' }}</el-descriptions-item>
+        </el-descriptions>
+        <el-table :data="snResourceDetail.rights || []" border style="margin-top:16px">
+          <el-table-column label="权益类型" min-width="150"><template #default="{row}">{{ snInventoryResourceOptions.find(item => item.value === row.resource_type)?.label || row.resource_type }}</template></el-table-column>
+          <el-table-column label="状态" width="120"><template #default="{row}">{{ resourceStatusOptions.find(item => item.value === row.current_status)?.label || row.current_status || '-' }}</template></el-table-column>
+          <el-table-column label="金额" width="130" align="right"><template #default="{row}">¥{{ formatMoney(row.amount) }}</template></el-table-column>
+          <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
+        </el-table>
+      </template>
+      <el-empty v-else description="该SN暂无权益记录" />
+      <template #footer><el-button @click="snResourceDetailVisible=false">关闭</el-button></template>
+    </el-dialog>
+
     <el-dialog v-model="snDialogVisible" :title="'序列号 - ' + snProductName" width="1100px">
       <div class="filter-bar">
         <el-select v-model="snFilter.status" placeholder="状态" clearable style="width: 120px" @change="loadSnData">
@@ -1115,6 +1137,7 @@
         </el-table-column>
             <el-table-column label="操作" width="300">
               <template #default="{ row }">
+                <el-button v-if="canViewSnResourceRights" size="small" type="success" link @click="openSnResourceDetail(row)">查看权益</el-button>
                 <el-button size="small" type="primary" link @click="openSnDialog(row)">修改SN</el-button>
                 <el-button size="small" type="primary" link @click="openSnTrace(row)">追踪</el-button>
                 <el-button
@@ -1928,6 +1951,7 @@ const syncTabFromRoute = () => {
   onTabChange(tab)
 }
 const canManageResourceRights = computed(() => hasRole(['finance', 'manager']))
+const canViewSnResourceRights = computed(() => hasRole(['finance', 'manager', 'admin', 'boss']))
 const canManageSnPrice = computed(() => hasRole(['admin']))
 const canViewSnPurchaseCost = computed(() => hasRole(['finance', 'purchaser']))
 const stores = ref([])
@@ -2128,6 +2152,9 @@ const returnLoading = ref(false)
 const returnReason = ref('')
 
 // SN弹窗
+const snResourceDetailVisible = ref(false)
+const snResourceDetailLoading = ref(false)
+const snResourceDetail = ref(null)
 const snDialogVisible = ref(false)
 const snProductId = ref('')
 const snProductName = ref('')
@@ -3553,6 +3580,23 @@ const executeApprovedReturn = async (row) => {
 }
 
 // 查看序列号
+const openSnResourceDetail = async (row) => {
+  const snId = row.sn_id || row.snId
+  if (!snId) return ElMessage.warning('未找到SN编号，无法查看权益')
+  snResourceDetailVisible.value = true
+  snResourceDetailLoading.value = true
+  snResourceDetail.value = null
+  try {
+    const res = await api.getSnResourceRights(snId)
+    snResourceDetail.value = res.data || res
+  } catch (err) {
+    snResourceDetailVisible.value = false
+    ElMessage.error(err.response?.data?.message || '加载SN权益失败')
+  } finally {
+    snResourceDetailLoading.value = false
+  }
+}
+
 const openSnDialog = (row) => {
   snProductId.value = row.product_id
   snProductName.value = row.product_name
