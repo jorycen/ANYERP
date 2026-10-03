@@ -4,6 +4,7 @@
       <el-tab-pane v-if="!financeOnly" label="SN权益" name="rights">
         <div class="filter-bar">
           <el-input v-model="rightsQuery.snCode" placeholder="SN码" clearable style="width:220px" />
+          <el-input v-model="rightsQuery.pnCode" placeholder="商品PN" clearable style="width:180px" @keyup.enter="loadRights" />
           <el-select v-model="rightsQuery.resourceType" placeholder="权益类型" clearable style="width:150px">
             <el-option v-for="item in resourceOptions" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
@@ -11,12 +12,15 @@
             <el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
           <el-button type="primary" @click="loadRights">查询</el-button>
+          <el-button :loading="rightsExporting" @click="exportRights">导出</el-button>
           <el-button type="success" @click="openEducationImport">上传教育优惠表</el-button>
+          <el-button type="primary" plain @click="openNbPolicies">产品运作政策</el-button>
           <el-button @click="openBySn">初始化/维护SN权益</el-button>
           <el-button @click="openBatchAdjust">批量调整权益</el-button>
         </div>
         <el-table :data="rights" border stripe v-loading="loading">
           <el-table-column prop="sn_code" label="SN" min-width="170" />
+          <el-table-column label="PN" min-width="140"><template #default="{row}">{{ row.ProductSn?.pn_code || '-' }}</template></el-table-column>
           <el-table-column label="商品" min-width="180"><template #default="{row}">{{ row.Product?.name || row.product_id }}</template></el-table-column>
           <el-table-column label="权益" width="120"><template #default="{row}">{{ resourceText(row.resource_type) }}</template></el-table-column>
           <el-table-column label="状态" width="110"><template #default="{row}"><el-tag :type="statusType(row.current_status)">{{ statusText(row.current_status) }}</el-tag></template></el-table-column>
@@ -33,6 +37,9 @@
       </el-tab-pane>
 
       <el-tab-pane v-if="!financeOnly" label="产品运作政策" name="nb-policy">
+        <div class="filter-bar">
+          <el-button @click="tab = 'rights'">返回SN权益</el-button>
+        </div>
         <div class="filter-bar">
           <el-alert title="按政策周期维护商品结算价、PO后返、加磅资源及SO/PO提货政策；销售或套回时生成逐单返利记录。" type="info" :closable="false" />
         </div>
@@ -285,7 +292,8 @@ const loading = ref(false)
 const resourceOptions = ref([])
 const statusOptions = [{label:'可用',value:'AVAILABLE'},{label:'已锁定',value:'LOCKED'},{label:'已核销',value:'USED'},{label:'已套回',value:'CLAIMED_BACK'},{label:'不适用',value:'NOT_APPLICABLE'},{label:'异常',value:'EXCEPTION'}]
 const rights = ref([]); const rightsTotal = ref(0)
-const rightsQuery = reactive({ snCode:'', resourceType:'', status:'', page:1, pageSize:20 })
+const rightsQuery = reactive({ snCode:'', pnCode:'', resourceType:'', status:'', page:1, pageSize:20 })
+const rightsExporting = ref(false)
 const changes = ref([]); const changeTotal = ref(0)
 const changeQuery = reactive({ snCode:'', resourceType:'', approvalStatus: props.financeOnly ? 'pending_finance' : '', page:1, pageSize:20 })
 const costs = ref([]); const products = ref([]); const productLoading = ref(false)
@@ -330,10 +338,12 @@ const triggerText = row => {
 }
 
 async function loadRights(){ loading.value=true; try{ const res=await api.getResourceRights(rightsQuery); rights.value=payloadList(res); rightsTotal.value=payloadTotal(res) }catch(e){ ElMessage.error(e.response?.data?.message||'加载权益失败') }finally{ loading.value=false } }
+async function exportRights(){ rightsExporting.value=true; try{ await api.exportResourceRights({snCode:rightsQuery.snCode,pnCode:rightsQuery.pnCode,resourceType:rightsQuery.resourceType,status:rightsQuery.status}); ElMessage.success('导出完成') }catch(e){ ElMessage.error(e.response?.data?.message||'导出失败') }finally{ rightsExporting.value=false } }
 async function loadChanges(){ loading.value=true; try{ const res=await api.getResourceRightChanges(changeQuery); changes.value=payloadList(res); changeTotal.value=payloadTotal(res) }catch(e){ ElMessage.error(e.response?.data?.message||'加载变更记录失败') }finally{ loading.value=false } }
 async function loadCosts(){ try{ const res=await api.getProductResourceCostConfigs({}); costs.value=res.data || [] }catch(e){ ElMessage.error('加载成本定义失败') } }
 async function loadLedger(){ try{const res=await api.getResourceCostAdjustments(ledgerQuery);ledger.value=payloadList(res);ledgerTotal.value=payloadTotal(res)}catch(e){ElMessage.error('加载成本流水失败')} }
 function loadActive(name){ if(name==='rights')loadRights(); else if(name==='changes')loadChanges(); else if(name==='cost-ledger')loadLedger(); else if(name==='nb-policy')loadNbPolicies(); else loadCosts() }
+function openNbPolicies(){ tab.value='nb-policy'; loadNbPolicies() }
 async function loadCategories(){
   const res=await api.getResourceCategories({activeOnly:1})
   resourceOptions.value=(res.data||[]).map(row=>({label:row.name,value:row.category_code}))

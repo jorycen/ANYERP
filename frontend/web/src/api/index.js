@@ -317,6 +317,7 @@ export default {
   snTrace: (snCode, params) => api.get(`/inventory/sn-trace/${encodeURIComponent(snCode)}`, { params }),
   getSnTraceInboundDetail: (inboundId) => api.get(`/inventory/sn-trace-inbound/${encodeURIComponent(inboundId)}`),
   getResourceRights: (params) => api.get('/inventory/resource-rights', { params }),
+  exportResourceRights: (params) => exportExcel('/inventory/resource-rights/export', params, `库存资源权益_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getResourceClaimList: (params) => api.get('/inventory/resource-rights/changes', { params }),
   getSnResourceRights: (snId) => api.get(`/inventory/sn/${snId}/resource-rights`),
   saveSnResourceRights: (snId, data) => api.put(`/inventory/sn/${snId}/resource-rights`, data),

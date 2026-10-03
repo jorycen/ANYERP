@@ -171,17 +171,22 @@ async function summariesForSns(snRows, transaction = null) {
 
 async function listRights(ctx) {
   requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
-  const { snCode, productId, resourceType, status, page = 1, pageSize = 20 } = ctx.query;
+  const { snCode, pnCode, productId, resourceType, status, page = 1, pageSize = 20 } = ctx.query;
   const where = {};
   if (snCode) where.sn_code = { [Op.like]: `%${snCode}%` };
   if (productId) where.product_id = productId;
   if (resourceType) where.resource_type = resourceType;
   if (status) where.current_status = status;
+  const snInclude = { model: ProductSn, attributes: ['status', 'pn_code'] };
+  if (pnCode) {
+    snInclude.where = { pn_code: { [Op.like]: `%${pnCode}%` } };
+    snInclude.required = true;
+  }
   const { count, rows } = await InventoryResourceRight.findAndCountAll({
     where,
     include: [
       { model: Product, attributes: ['name', 'product_code'] },
-      { model: ProductSn, attributes: ['status'] }
+      snInclude
     ],
     order: [['update_time', 'DESC']], distinct: true,
     ...paginate({}, { page, pageSize })
@@ -1698,6 +1703,46 @@ async function listNbPolicies(ctx) {
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
 }
 
+async function exportRights(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
+  const { snCode, pnCode, productId, resourceType, status } = ctx.query;
+  const where = {};
+  if (snCode) where.sn_code = { [Op.like]: `%${snCode}%` };
+  if (productId) where.product_id = productId;
+  if (resourceType) where.resource_type = resourceType;
+  if (status) where.current_status = status;
+  const snInclude = { model: ProductSn, attributes: ['status', 'pn_code'] };
+  if (pnCode) {
+    snInclude.where = { pn_code: { [Op.like]: `%${pnCode}%` } };
+    snInclude.required = true;
+  }
+  const rows = await InventoryResourceRight.findAll({
+    where,
+    include: [
+      { model: Product, attributes: ['name', 'product_code'] },
+      snInclude
+    ],
+    order: [['update_time', 'DESC']]
+  });
+  const exportRows = rows.map(row => ({
+    SN: row.sn_code,
+    PN: row.ProductSn?.pn_code || '',
+    商品名称: row.Product?.name || '',
+    商品编码: row.Product?.product_code || '',
+    权益类型: RESOURCE_LABELS[row.resource_type] || row.resource_type,
+    状态: STATUS_LABELS[row.current_status] || row.current_status,
+    确认金额: Number(row.amount || 0),
+    更新时间: row.update_time || '',
+    备注: row.remark || ''
+  }));
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(exportRows), '库存资源权益');
+  const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+  ctx.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  ctx.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent('库存资源权益.xlsx')}`);
+  ctx.body = buffer;
+}
+
 async function importNbPolicy(ctx) {
   requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
   return require('../finance/rebateController').importManufacturerOperations(ctx);
@@ -2701,7 +2746,7 @@ async function releaseSaleRights(order, items, transaction) {
 
 module.exports = {
   LEGACY_RESOURCE_TYPES, buildSalesResourceSummary, summariesForSns,
-  listRights, snRights, saveSnRights, batchAdjustRights, importBatchRights, importEducationPolicies, supplementEducationResource, batchRefreshRights, reverseSaleUseResource, submitClaim, reviewClaim, listChanges, listCostConfigs, listCostAdjustments, saveCostConfig,
+  listRights, exportRights, snRights, saveSnRights, batchAdjustRights, importBatchRights, importEducationPolicies, supplementEducationResource, batchRefreshRights, reverseSaleUseResource, submitClaim, reviewClaim, listChanges, listCostConfigs, listCostAdjustments, saveCostConfig,
   listResourceCategories, saveResourceCategory, deleteResourceCategory,
   listGoodsTypes, saveGoodsType, deleteGoodsType,
   listNbPolicies, importNbPolicy,

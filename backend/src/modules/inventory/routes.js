@@ -35,6 +35,7 @@ router.post('/sn/:snId/location-adjust', adjustSnLocation);
 router.post('/product/:productId/location-adjust', adjustProductLocation);
 router.get('/sn-trace/:snCode', snTrace);
 router.get('/sn-trace-inbound/:inboundId', getSnTraceInboundDetail);
+router.get('/resource-rights/export', resourceRights.exportRights);
 router.get('/resource-rights', resourceRights.listRights);
 router.get('/resource-rights/changes', resourceRights.listChanges);
 router.get('/sale-resource-tasks', resourceRights.listSaleResourceTasks);
