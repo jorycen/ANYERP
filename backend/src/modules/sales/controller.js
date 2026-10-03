@@ -23,6 +23,7 @@ const {
   Product,
   ProductPn,
   ProductSn,
+  Supplier,
   Location,
   ProductPrice,
   SnDistributorPrice,
@@ -5928,6 +5929,7 @@ module.exports = {
   downloadAllSubsidyPhotosArchive,
   createSubsidyPhotosDownloadTicket,
   _test: {
+    calculateSalesSettlementCosts,
     canQueryAllSalesOrders,
     canExportSalesOrders,
     isSalesOrderCreator,
