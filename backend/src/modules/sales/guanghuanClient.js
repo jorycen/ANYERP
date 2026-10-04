@@ -46,28 +46,60 @@ function paymentMethodCode(value) {
   return 'OT';
 }
 
+function isNonReceivedPayment(payment) {
+  const method = String(payment?.payment_method || payment?.method || '').trim();
+  if (String(payment?.deposit_id || payment?.depositId || '').trim()) return true;
+  if (method.includes('政策补贴应收')) return true;
+  return ['定金', '定金抵扣', 'deposit'].includes(method.toLowerCase());
+}
+
+function allocateReceivedAmount(items, totalAmount) {
+  const weights = items.map(item => {
+    const quantity = Math.max(1, Number(item.quantity || 1));
+    const subtotal = Number(item.subtotal);
+    const salePrice = Number(item.sale_price || item.salePrice || 0);
+    return Number.isFinite(subtotal) && subtotal > 0 ? subtotal : salePrice * quantity;
+  });
+  const weightTotal = weights.reduce((sum, value) => sum + Math.max(0, value), 0);
+  const totalCents = Math.max(0, Math.round(Number(totalAmount || 0) * 100));
+  let allocatedCents = 0;
+  return items.map((_, index) => {
+    const remainingCents = Math.max(0, totalCents - allocatedCents);
+    const cents = index === items.length - 1
+      ? remainingCents
+      : Math.min(remainingCents, weightTotal > 0
+        ? Math.round(totalCents * Math.max(0, weights[index]) / weightTotal)
+        : Math.round(totalCents / items.length));
+    allocatedCents += cents;
+    return cents / 100;
+  });
+}
+
 function buildRequestData(order, config = defaultConfig) {
   const plain = typeof order?.toJSON === 'function' ? order.toJSON() : order || {};
   const items = plain.OrderItems || plain.orderItems || [];
   const payments = plain.OrderPayments || plain.orderPayments || [];
+  const receivedPayments = payments.filter(payment => !isNonReceivedPayment(payment));
   if (!plain.order_no) throw new Error('订单号为空，不能上报商场');
   if (!items.length) throw new Error('订单没有商品明细，不能上报商场');
-  if (!payments.length) throw new Error('订单没有收款明细，不能上报商场');
+  if (!receivedPayments.length) throw new Error('订单没有客户实收明细，不能上报商场');
+  const receivedAmount = normalizeAmount(receivedPayments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0));
+  const receivedItemAmounts = allocateReceivedAmount(items, receivedAmount);
 
   const orderTime = plain.submit_time || plain.create_time || new Date();
   return {
     cashierId: String(plain.create_staff_id || plain.create_user || plain.submit_user || 'ERP'),
     checkCode: config.checkCode,
-    itemList: items.map(item => ({
+    itemList: items.map((item, index) => ({
       itemCode: String(item.pn_code || item.product_id || '').trim(),
-      price: normalizeAmount(item.sale_price),
+      price: normalizeAmount(receivedItemAmounts[index] / Math.max(1, Number(item.quantity || 1))),
       quantity: Number(item.quantity || 1)
     })),
     mall: config.mallCode,
     mobile: String(plain.customer_phone || ''),
     orderId: String(plain.order_no),
     comments: String(plain.order_no),
-    payList: payments.map(payment => ({
+    payList: receivedPayments.map(payment => ({
       cardBank: '',
       cardNumber: '',
       discountAmt: 0,
@@ -79,7 +111,7 @@ function buildRequestData(order, config = defaultConfig) {
     store: config.storeCode,
     tillId: config.tillId,
     time: formatOrderTime(orderTime),
-    totalAmt: normalizeAmount(plain.total_amount),
+    totalAmt: receivedAmount,
     type: 'SALE',
     refOrderId: '',
     source: '01'
