@@ -207,11 +207,13 @@
             <div v-for="section in detailArraySections(currentInstance.linkedDocument)" :key="`linked-${section.key}`" class="detail-section"><div class="detail-section-title">{{ section.label }}</div><el-table :data="section.rows" stripe border size="small"><el-table-column v-for="column in section.columns" :key="column.key" :label="column.label" min-width="120"><template #default="{ row }">{{ formatDetailValue(row[column.key]) }}</template></el-table-column></el-table></div>
           </template>
         </template>
-        <el-divider>审批任务</el-divider>
-        <el-timeline>
-          <el-timeline-item v-for="task in currentInstance.Tasks || []" :key="task.task_id" :timestamp="task.acted_time || task.create_time">
-            {{ task.node_name }} - {{ task.Assignee?.name || task.assignee_staff_id }} - {{ taskStatusText(task.status) }}
-            <span v-if="task.comment">：{{ task.comment }}</span>
+        <el-divider>审批流程</el-divider>
+        <el-empty v-if="!(currentInstance.Tasks || []).length" description="暂无审批记录" :image-size="60" />
+        <el-timeline v-else>
+          <el-timeline-item v-for="task in currentInstance.Tasks" :key="task.task_id" :timestamp="task.acted_time || task.update_time || task.create_time" :type="task.status === 'approved' ? 'success' : task.status === 'rejected' ? 'danger' : 'primary'">
+            <div class="approval-timeline-head"><strong>{{ task.node_name || '审批节点' }}</strong><el-tag size="small" :type="task.status === 'approved' ? 'success' : task.status === 'rejected' ? 'danger' : task.status === 'pending' ? 'warning' : 'info'">{{ taskStatusText(task.status) }}</el-tag></div>
+            <div>审批人：{{ task.Assignee?.name || task.assignee?.name || task.assignee_staff_id || '未指定' }}</div>
+            <div v-if="task.comment" class="approval-timeline-comment">意见：{{ task.comment }}</div>
           </el-timeline-item>
         </el-timeline>
       </template>

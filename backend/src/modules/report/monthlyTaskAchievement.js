@@ -22,6 +22,7 @@ const {
 const { canViewProfit } = require('./dashboardService');
 
 const { INTERNAL_TRANSFER_SOURCE } = require('./operatingScope');
+const { buildRanges } = require('./dashboardService');
 
 function number(value) {
   const parsed = Number(value || 0);
@@ -42,6 +43,20 @@ function monthRange(monthKey) {
   const [year, month] = monthKey.split('-').map(Number);
   const endAt = new Date(`${month === 12 ? year + 1 : year}-${String(month === 12 ? 1 : month + 1).padStart(2, '0')}-01T00:00:00.000+08:00`);
   return { startAt, endAt };
+}
+
+function reportActualRange(query, monthKey) {
+  if (!query.startDate && !query.endDate) return monthRange(monthKey);
+  const lastMonthDay = new Date(Date.UTC(Number(monthKey.slice(0, 4)), Number(monthKey.slice(5, 7)), 0))
+    .toISOString().slice(0, 10);
+  const { current } = buildRanges({
+    startDate: query.startDate || `${monthKey}-01`,
+    endDate: query.endDate || lastMonthDay
+  });
+  const endDate = new Date(`${current.endDate}T00:00:00Z`);
+  endDate.setUTCDate(endDate.getUTCDate() + 1);
+  const endExclusive = `${endDate.toISOString().slice(0, 10)} 00:00:00.000`;
+  return { startAt: current.startAt, endAt: endExclusive };
 }
 
 async function resolveStores(user, requestedStoreId) {
@@ -82,13 +97,17 @@ function employeeKey(staffId, name) {
   return staffId ? `id:${staffId}` : `name:${String(name || '').trim()}`;
 }
 
-async function loadActuals(storeIds, startAt, endAt) {
+async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived') {
   if (!storeIds.length) return { storeActuals: new Map(), employeeActuals: new Map() };
+  const orderStatusFilter = archiveScope === 'all'
+    ? '(o.ORDER_STATUS IS NULL OR o.ORDER_STATUS NOT IN (:voidedStatuses))'
+    : 'o.ORDER_STATUS IN (:archivedStatuses)';
   const replacements = {
     storeIds,
     startAt,
     endAt,
     archivedStatuses: ARCHIVED_STATUSES,
+    voidedStatuses: require('./dashboardDataSource').VOIDED_STATUSES,
     internalTransferSource: `${INTERNAL_TRANSFER_SOURCE}%`
   };
   const orderRows = await sequelize.query(`
@@ -112,7 +131,7 @@ async function loadActuals(storeIds, startAt, endAt) {
         AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
      WHERE o.IS_DELETED = 0
        AND COALESCE(TRIM(o.CUSTOMER_SOURCE), '') NOT LIKE :internalTransferSource
-       AND o.ORDER_STATUS IN (:archivedStatuses)
+       AND ${orderStatusFilter}
        AND o.STORE_ID IN (:storeIds)
        AND o.CREATE_TIME >= :startAt
        AND o.CREATE_TIME < :endAt
@@ -148,7 +167,7 @@ async function loadActuals(storeIds, startAt, endAt) {
      WHERE pa.STATUS = 'approved'
        AND o.IS_DELETED = 0
        AND COALESCE(TRIM(o.CUSTOMER_SOURCE), '') NOT LIKE :internalTransferSource
-       AND o.ORDER_STATUS IN (:archivedStatuses)
+       AND ${orderStatusFilter}
        AND o.STORE_ID IN (:storeIds)
        AND o.CREATE_TIME >= :startAt
        AND o.CREATE_TIME < :endAt
@@ -186,7 +205,9 @@ async function loadActuals(storeIds, startAt, endAt) {
        AND srs.CREATE_TIME < :endAt`, { replacements, type: QueryTypes.SELECT });
   for (const row of returnItems) {
     const storeActual = storeActuals.get(String(row.storeId)) || createActual();
-    addActual(storeActual, -Math.abs(number(row.salesAmount)), 0, row.productId, row.quantity);
+    // Dashboard sales ranking takes returned sales from the return GP ledger;
+    // settlement items remain the source for returned product quantities only.
+    addActual(storeActual, 0, 0, row.productId, row.quantity);
     storeActuals.set(String(row.storeId), storeActual);
     const order = orders.get(String(row.orderId)) || {
       create_staff_id: row.createStaffId,
@@ -224,6 +245,7 @@ async function loadActuals(storeIds, startAt, endAt) {
     actual.grossProfit += number(row.grossProfitAmount);
     employeeActuals.set(key, actual);
     const storeActual = storeActuals.get(String(row.storeId)) || createActual();
+    storeActual.salesAmount += number(row.salesAmount);
     storeActual.grossProfit += number(row.grossProfitAmount);
     storeActuals.set(String(row.storeId), storeActual);
   }
@@ -301,11 +323,12 @@ async function getMonthlyTaskAchievement(ctx) {
   const requestedDimension = String(ctx.query.dimension || 'store').trim().toLowerCase() === 'staff' ? 'staff' : 'store';
   const dimension = selfOnly ? 'staff' : requestedDimension;
   const requestedStaffId = selfOnly ? String(user.staffId || '') : String(ctx.query.staffId || ctx.query.staff_id || '').trim();
+  const archiveScope = String(ctx.query.archiveScope || ctx.query.archive_scope || 'archived').trim().toLowerCase() === 'all' ? 'all' : 'archived';
   const monthKey = String(ctx.query.monthKey || ctx.query.month_key || '').trim() || new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 7);
   const reportScope = await resolveReportStoreIds(user);
   const globalScope = reportScope.includes('*');
   const storeIds = await resolveStores(user, dimension === 'store' ? (ctx.query.storeId || ctx.query.store_id) : '');
-  const { startAt, endAt } = monthRange(monthKey);
+  const { startAt, endAt } = reportActualRange(ctx.query, monthKey);
   if (!storeIds.length) {
     ctx.body = { code: 0, data: { monthKey, stores: [], employees: [] } };
     return;
@@ -324,7 +347,7 @@ async function getMonthlyTaskAchievement(ctx) {
     MonthlyTaskGrossProfitAllocation.findAll({ raw: true }),
     MonthlyTaskProductBatch.findAll({ raw: true }),
     MonthlyTaskProduct.findAll({ raw: true }),
-    loadActuals(storeIds, startAt, endAt)
+    loadActuals(storeIds, startAt, endAt, archiveScope)
   ]);
   const storeMap = new Map(stores.map(row => [String(row.store_id), row]));
   const regionIds = [...new Set(stores.map(row => String(row.region_id || '')).filter(Boolean))];
