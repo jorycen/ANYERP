@@ -9,6 +9,8 @@ const {
   Inbound,
   InboundItem,
   ReturnStockItem,
+  Inventory,
+  ProductPrice,
   Payable,
   Store,
   Supplier
@@ -104,6 +106,41 @@ function canOffsetOriginalPayable(originalPayable, allocationAmount) {
   return originalPayable.status !== 'paid';
 }
 
+async function reduceInventoryCostForPurchaseReturn(returnItems, transaction) {
+  const byProduct = new Map();
+  for (const item of returnItems || []) {
+    const productId = String(item.product_id || '');
+    const quantity = Math.max(0, Number(item.quantity || 0));
+    if (!productId || quantity <= 0) continue;
+    const current = byProduct.get(productId) || { quantity: 0, value: 0 };
+    current.quantity += quantity;
+    current.value += quantity * Math.max(0, Number(item.unit_price || 0));
+    byProduct.set(productId, current);
+  }
+
+  for (const [productId, returned] of byProduct) {
+    const price = await ProductPrice.findOne({
+      where: { product_id: productId }, transaction, lock: transaction.LOCK.UPDATE
+    });
+    if (!price) continue;
+    const inventoryRows = await Inventory.findAll({ where: { product_id: productId }, transaction });
+    const remainingQuantity = inventoryRows.reduce((total, row) => {
+      const normal = Math.max(0, Number(row.normal_qty || 0));
+      const typedNormal = Math.max(0, Number(row.regular_qty || 0)
+        + Number(row.subsidy_qty || 0) + Number(row.second_qty || 0));
+      return total + Math.max(normal, typedNormal)
+        + Math.max(0, Number(row.display_qty || 0))
+        + Math.max(0, Number(row.demo_qty || 0))
+        + Math.max(0, Number(row.unsellable_qty || 0))
+        + Math.max(0, Number(row.rental_demo_qty || 0));
+    }, 0);
+    const quantityBeforeReturn = remainingQuantity + returned.quantity;
+    const valueBeforeReturn = quantityBeforeReturn * Math.max(0, Number(price.cost_price || 0));
+    const remainingValue = Math.max(0, valueBeforeReturn - returned.value);
+    await price.update({ cost_price: remainingQuantity > 0 ? money(remainingValue / remainingQuantity) : 0 }, { transaction });
+  }
+}
+
 async function ensurePurchaseReturnAccounting({ returnStock, transaction, userName = '' }) {
   const inbound = await Inbound.findByPk(returnStock.inbound_id, {
     include: [{ model: InboundItem, as: 'items' }],
@@ -134,6 +171,18 @@ async function ensurePurchaseReturnAccounting({ returnStock, transaction, userNa
     returnItems,
     returnNo: returnStock.return_no
   });
+  const requestItemsById = new Map((request.items || []).map(item => [String(item.item_id), item]));
+  await reduceInventoryCostForPurchaseReturn(adjustmentRows.map(row => {
+    const requestItem = requestItemsById.get(String(row.request_item_id));
+    const rebatePerUnit = Number(row.original_quantity || 0) > 0
+      ? Number(requestItem?.rebate_deduction || 0) / Number(row.original_quantity)
+      : 0;
+    return {
+      product_id: row.product_id,
+      quantity: Math.abs(Number(row.quantity_delta || 0)),
+      unit_price: Math.max(0, Number(row.unit_price || 0) - rebatePerUnit)
+    };
+  }), transaction);
   const summary = getReturnAdjustmentSummary(adjustmentRows);
   if (summary.totalQuantityDelta >= 0) throw new Error(`退库 ${returnStock.return_no} 的数量变化无效`);
 
@@ -263,5 +312,6 @@ module.exports = {
   buildReturnAdjustmentItems,
   getReturnAdjustmentSummary,
   canOffsetOriginalPayable,
+  reduceInventoryCostForPurchaseReturn,
   ensurePurchaseReturnAccounting
 };

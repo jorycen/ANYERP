@@ -296,6 +296,14 @@ async function runSchemaMigrations() {
   await ensureProductSettlementFeatureSchema();
   await ensurePurchaseInvoiceSchema();
   await ensureDepositRefundApprovalSchema();
+  // OrderItem queries select every model attribute. Keep older databases in
+  // sync with the nullable product association used by sales-order details.
+  await checkAndAddColumn(
+    'T_ORDER_ITEM',
+    'PRODUCT_ID',
+    'VARCHAR(32) NULL COMMENT "关联商品ID"',
+    'ORDER_ID'
+  );
   await ensureSerializedInventorySchema();
   await ensureProductPnEffectiveUniqueIndex();
   await ensureFinancialProfitFeatureSchema();

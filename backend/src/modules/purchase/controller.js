@@ -34,6 +34,7 @@ const { executeInbound, updateInventory, getAvailableQty, moveSnInventoryAggrega
 const { getAllocationSummary, getPayableRemaining, refreshPayableState } = require('../finance/settlementAllocation');
 const { assertActiveProducts } = require('../../utils/activeProduct');
 const { advance: advanceApproval } = require('../approval/businessRuntime');
+const { reduceInventoryCostForPurchaseReturn } = require('./purchaseReturnAccounting');
 
 const SN_PURCHASE_SOURCE_TYPES = new Set(['display_qty', 'rental_demo_qty']);
 const SN_PURCHASE_TARGET_TYPES = new Set(['normal_qty', 'demo_qty']);
@@ -1872,7 +1873,7 @@ async function ensurePayableForApprovedRequest(request, user, transaction = null
  */
 async function approveRequest(ctx) {
   const { requestId } = ctx.params;
-  const { status, comment } = ctx.request.body;
+  const { status, comment, newProductCategories } = ctx.request.body;
   const user = ctx.state.user;
 
   const request = await PurchaseRequest.findByPk(requestId, {
@@ -1886,6 +1887,9 @@ async function approveRequest(ctx) {
   if (status === 'approved' && (!request.items || request.items.length === 0)) {
     ctx.throw(400, '采购申请缺少商品明细，无法审批通过，请重新创建采购申请');
   }
+  const productCategoryByItemId = new Map((Array.isArray(newProductCategories) ? newProductCategories : [])
+    .filter(item => item && item.itemId && item.categoryId)
+    .map(item => [String(item.itemId), String(item.categoryId)]));
 
   const transaction = await sequelize.transaction();
   let transactionCommitted = false;
@@ -1974,6 +1978,7 @@ async function approveRequest(ctx) {
       try { newProductPayload = JSON.parse(item.new_product_payload || '{}'); } catch (_) { newProductPayload = {}; }
       const created = await createProductRecord({
         ...newProductPayload,
+        categoryId: newProductPayload.categoryId || newProductPayload.category_id || productCategoryByItemId.get(String(item.item_id)) || '',
         name: newProductPayload.name || item.product_name,
         manualName: newProductPayload.manualName || item.product_name,
         pnCode: newProductPayload.pnCode || item.pn_code || '',
@@ -2643,6 +2648,11 @@ async function createPurchaseAdjustment(ctx) {
             const typeField = { '正规货': 'regular_qty', '国补货': 'subsidy_qty', '纯二批': 'second_qty', regular: 'regular_qty', subsidy: 'subsidy_qty', second: 'second_qty' }[String(inboundItem.product_type).toLowerCase()];
             if (typeField) await updateInventory(requestItem.product_id, inbound.store_id, typeField, -returnItem.quantity, transaction, returnItem.locationId);
           }
+          await reduceInventoryCostForPurchaseReturn([{
+            product_id: requestItem.product_id,
+            quantity: returnItem.quantity,
+            unit_price: Math.max(0, unitPrice - rebatePerUnit)
+          }], transaction);
         }
       createdReturns.push({ returnId, returnNo });
         currentReturnByInboundItem.set(String(inboundItem.item_id), (currentReturnByInboundItem.get(String(inboundItem.item_id)) || 0) + returnQuantity);

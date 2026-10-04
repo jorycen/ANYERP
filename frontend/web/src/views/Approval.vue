@@ -129,6 +129,21 @@
                 </el-table-column>
               </el-table>
             </div>
+            <div v-if="purchaseItemsNeedingCategory.length" class="detail-section">
+              <div class="detail-section-title">新建二手商品类别</div>
+              <el-alert title="审批通过后会自动创建商品，请为每个新建商品选择四级类别。" type="info" :closable="false" />
+              <el-table :data="purchaseItemsNeedingCategory" stripe border size="small" style="margin-top: 10px">
+                <el-table-column prop="product_name" label="商品名称" min-width="220" />
+                <el-table-column prop="pn_code" label="PN" min-width="160" />
+                <el-table-column label="四级商品类别" min-width="260">
+                  <template #default="{ row }">
+                    <el-select v-model="row.approvalCategoryId" filterable clearable placeholder="请选择四级商品类别" style="width: 100%">
+                      <el-option v-for="category in approvalProductCategoryOptions" :key="category.categoryId" :label="category.displayName" :value="category.categoryId" />
+                    </el-select>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
           </template>
         </template>
         <template v-else-if="currentInstance.payload !== undefined && currentInstance.payload !== null">
@@ -300,6 +315,12 @@ const attributionEditTotal = computed(() => attributionEditRows.value.reduce((su
 const assigneeOptions = reactive({ staff: [], roles: [], stores: [] })
 const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
 const approvalIssues = ref([])
+const approvalProductCategoryOptions = ref([])
+const purchaseItemsNeedingCategory = computed(() => {
+  if (!['purchase', 'purchase_request'].includes(detailReviewRow.value?.moduleType)) return []
+  const items = currentInstance.value?.moduleData?.items || []
+  return items.filter(item => Number(item.is_used_product || item.isUsedProduct) === 1 && !(item.product_id || item.productId) && !item.categoryFromPayload)
+})
 const roleCodes = computed(() => {
   const rawRoles = Array.isArray(userInfo.roles) && userInfo.roles.length
     ? userInfo.roles
@@ -683,7 +704,18 @@ async function loadModuleDetail(row) {
   if (['inventory_transfer', 'inventory_transfer_receipt'].includes(row.moduleType)) return responseData(await api.getTransferDetail(id))
   if (row.moduleType === 'inventory_batch') return responseData(await api.getInventoryBatchApplicationDetail(id))
   if (row.moduleType === 'return_stock') return responseList(await api.getReturnList({ returnId: id }))[0] || source
-  if (row.moduleType === 'purchase') return responseData(await api.getPurchaseRequestDetail(id))
+  if (row.moduleType === 'purchase') {
+    const data = responseData(await api.getPurchaseRequestDetail(id)) || source
+    return {
+      ...data,
+      items: (data.items || []).map(item => {
+        let payload = item.new_product_payload || item.newProductPayload || {}
+        if (typeof payload === 'string') { try { payload = JSON.parse(payload || '{}') } catch (error) { payload = {} } }
+        const categoryId = payload.categoryId || payload.category_id || ''
+        return { ...item, approvalCategoryId: categoryId, categoryFromPayload: Boolean(categoryId) }
+      })
+    }
+  }
   if (row.moduleType === 'expense') return responseData(await api.getExpenseDetail(id))
   if (row.moduleType === 'product') {
     const data = responseData(await api.getProductApplicationDetail(id)) || source
@@ -769,10 +801,36 @@ async function openModule(row) {
     const approval = row.approvalInstanceId ? responseData(await api.getApprovalInstance(row.approvalInstanceId)) : null
     if (serial !== detailRequestSerial) return
     currentInstance.value = { ...buildModuleInstance(row, moduleData), Tasks: approval?.Tasks || [], detailLoading: false }
+    if (['purchase', 'purchase_request'].includes(row.moduleType) && purchaseItemsNeedingCategory.value.length) loadApprovalProductCategories()
   } catch (error) {
     if (serial !== detailRequestSerial) return
     currentInstance.value = { ...currentInstance.value, detailLoading: false }
     console.warn('加载审批发起详情失败:', error)
+  }
+}
+function flattenApprovalProductCategories(nodes = [], parentPath = []) {
+  const options = []
+  for (const node of nodes || []) {
+    if (!node) continue
+    const categoryId = node.category_id || node.categoryId || node.id || ''
+    const name = node.name || ''
+    const children = (node.children || []).filter(child => Number(child.status ?? 1) === 1)
+    const path = [...parentPath, name].filter(Boolean)
+    if (categoryId && Number(node.level) === 4 && children.length === 0) {
+      options.push({ categoryId, displayName: path.join('/') })
+    }
+    options.push(...flattenApprovalProductCategories(children, path))
+  }
+  return options
+}
+async function loadApprovalProductCategories() {
+  if (approvalProductCategoryOptions.value.length) return
+  try {
+    const response = await api.getCategoryTree()
+    const data = responseData(response)
+    approvalProductCategoryOptions.value = flattenApprovalProductCategories(data)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || error.message || '商品类别加载失败')
   }
 }
 async function openSales(row) {
@@ -848,6 +906,12 @@ async function reviewSales(row, action) {
 }
 async function reviewModule(row, action) {
   if (row.manualPath) { await router.push(row.manualPath); return }
+  const isPurchaseRequest = ['purchase', 'purchase_request'].includes(row.moduleType)
+  const purchaseCategoryRows = isPurchaseRequest ? purchaseItemsNeedingCategory.value : []
+  if (action === 'approve' && purchaseCategoryRows.some(item => !item.approvalCategoryId)) {
+    ElMessage.warning('请先为每个新建商品选择四级商品类别')
+    return
+  }
   let comment = ''
   if (action === 'reject') {
     const result = await ElMessageBox.prompt('请输入拒绝原因', '拒绝审批', { inputType: 'textarea' }).catch(() => null)
@@ -858,14 +922,17 @@ async function reviewModule(row, action) {
   const moduleRow = row.moduleRow || {}
   const approved = action === 'approve' ? 'approved' : 'rejected'
   const id = row.Instance?.business_id
+  const newProductCategories = action === 'approve'
+    ? purchaseCategoryRows.map(item => ({ itemId: item.item_id || item.itemId, categoryId: item.approvalCategoryId }))
+    : []
   try {
     if (row.managedBusiness) {
-      const result = await api.actionBusinessApproval(row.moduleType, id, { action, comment })
+      const result = await api.actionBusinessApproval(row.moduleType, id, { action, comment, businessData: { newProductCategories } })
       ElMessage.success(result.message || '审批已记录')
       await reload()
       return
     }
-    if (row.moduleType === 'purchase') await api.approvePurchaseRequest(id, { status: approved, comment })
+    if (isPurchaseRequest && !row.managedBusiness) await api.approvePurchaseRequest(id, { status: approved, comment, newProductCategories })
     else if (row.moduleType === 'expense') await api.reviewExpense(id, { action: approved, comment })
     else if (row.moduleType === 'product') await api.reviewProductApplication(id, { action: approved, comment })
     else if (row.moduleType === 'return') await api.approveReturn({ returnId: id, storeId: moduleRow.store_id || moduleRow.storeId || '', action: approved, comment })
