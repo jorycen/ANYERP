@@ -104,8 +104,8 @@ async function advance(ctx, type, row, transaction, action, comment = '') {
     {
       transaction,
       managedBusiness: true,
-      rejectImmediately: type === 'purchase_request',
       stopAfterAction: type === 'sales_order_negative_gross_profit'
+        && ['reject', 'rejected'].includes(action)
     }
   );
   ctx.state.businessApproval = {
