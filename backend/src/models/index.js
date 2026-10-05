@@ -1096,6 +1096,7 @@ const OrderItem = sequelize.define('OrderItem', {
   freight_cost: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0, comment: '销售时扣减的最近一次运费成本' },
   use_gov_subsidy: { type: DataTypes.TINYINT(1), defaultValue: 0 },
   use_edu_subsidy: { type: DataTypes.TINYINT(1), defaultValue: 0 },
+  education_subsidy_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0, comment: '本商品行教育优惠金额' },
   use_sales_report: { type: DataTypes.TINYINT(1), defaultValue: 0 },
   selected_resource_types: { type: DataTypes.TEXT }
 }, { tableName: 'T_ORDER_ITEM', timestamps: false });

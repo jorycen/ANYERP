@@ -261,6 +261,9 @@
                         <el-checkbox v-for="resource in saleResourceCategories" :key="resource.category_code" :value="resource.category_code" :disabled="!resourceAvailable(row, resource.category_code)">{{ resource.short_name || resource.name }}</el-checkbox>
                       </el-checkbox-group>
                     </div>
+                    <div v-if="isEduSubsidySelected(row)" class="resource-education-amount">
+                      教育优惠：¥{{ getItemEducationSubsidyAmount(row).toFixed(2) }}
+                    </div>
                     <div v-if="row.selectedSns.some(sn => sn.warning_message)" class="resource-warning">{{ row.selectedSns.find(sn => sn.warning_message)?.warning_message }}</div>
                   </template>
                   <span v-else class="muted">选择SN后自动显示</span>
@@ -300,8 +303,9 @@
             </el-form-item>
           </el-col>
           <el-col :span="8">
-            <el-form-item label="教补金额">
-              <el-input v-model="orderForm.educationSubsidy" placeholder="0" style="width: 100%" />
+            <el-form-item label="教育优惠合计">
+              <el-input :model-value="educationSubsidyTotal.toFixed(2)" readonly style="width: 100%" />
+              <div class="field-tip">按商品行勾选的教育优惠权益金额自动汇总</div>
             </el-form-item>
           </el-col>
           <el-col :span="8">
@@ -363,7 +367,7 @@
         <div class="order-summary">
           <div class="summary-item">商品总额: <span>¥{{ totalAmount.toFixed(2) }}</span></div>
           <div class="summary-item">国补: <span>-¥{{ orderForm.nationalSubsidy.toFixed(2) }}</span></div>
-          <div class="summary-item">教补: <span>-¥{{ orderForm.educationSubsidy.toFixed(2) }}</span></div>
+          <div class="summary-item">教补: <span>-¥{{ educationSubsidyTotal.toFixed(2) }}</span></div>
           <div class="summary-item">折扣: <span>-¥{{ orderForm.discountAmount.toFixed(2) }}</span></div>
           <div class="summary-item" v-if="selectedDeposit">定金抵扣: <span>-¥{{ Number(selectedDeposit.available_amount || selectedDeposit.amount || 0).toFixed(2) }}</span></div>
           <div class="summary-item total">实付金额: <span>¥{{ actualPayment.toFixed(2) }}</span></div>
@@ -755,7 +759,7 @@ const totalAmount = computed(() => {
 })
 
 const actualPayment = computed(() => {
-  return Math.max(0, totalAmount.value - (orderForm.nationalSubsidy || 0) - (orderForm.educationSubsidy || 0) - (orderForm.discountAmount || 0))
+  return Math.max(0, totalAmount.value - (orderForm.nationalSubsidy || 0) - educationSubsidyTotal.value - (orderForm.discountAmount || 0))
 })
 
 const selectedDeposit = computed(() => {
@@ -768,6 +772,31 @@ const getItemSubtotal = (item) => {
     : Number(item?.quantity || 1)
   return Number(item?.salePrice || 0) * selectedCount
 }
+
+const isEduSubsidySelected = (item) => Boolean(item?.useEduSubsidy)
+  || (Array.isArray(item?.selectedResourceTypes) && item.selectedResourceTypes.includes('EDU_SUBSIDY'))
+
+const getSnEducationSubsidyAmount = (sn) => Number(
+  sn?.rights?.find(right => right.resource_type === 'EDU_SUBSIDY' && right.current_status === 'AVAILABLE')?.amount || 0
+)
+
+const getItemEducationSubsidyAmount = (item) => {
+  if (!isEduSubsidySelected(item)) return 0
+  const sns = Array.isArray(item?.selectedSns) && item.selectedSns.length
+    ? item.selectedSns
+    : (item?.selectedSn ? [item.selectedSn] : [])
+  if (sns.length && sns.some(sn => Array.isArray(sn.rights))) {
+    return sns.reduce((sum, sn) => sum + getSnEducationSubsidyAmount(sn), 0)
+  }
+  return Number(item?.educationSubsidyAmount || 0)
+}
+
+const educationSubsidyTotal = computed(() => {
+  const selectedItems = orderForm.items.filter(isEduSubsidySelected)
+  return selectedItems.length
+    ? selectedItems.reduce((sum, item) => sum + getItemEducationSubsidyAmount(item), 0)
+    : Number(orderForm.educationSubsidy || 0)
+})
 
 onMounted(async () => {
   if (traceReadonly.value) {
@@ -1399,6 +1428,7 @@ const hydrateDraftForm = (order) => {
     selectedSn: item.sn_code ? { sn_code: item.sn_code, sn_id: item.sn_id || '' } : null,
     selectedSns: item.sn_code ? [{ sn_code: item.sn_code, sn_id: item.sn_id || '', supplier_id: item.supplier_id || '', supplier_name: item.supplier_name || '' }] : [],
     selectedResourceTypes: typeof item.selected_resource_types === 'string' ? (() => { try { return JSON.parse(item.selected_resource_types) } catch (_) { return [] } })() : (item.selected_resource_types || []),
+    educationSubsidyAmount: Number(item.education_subsidy_amount || 0),
     useGovSubsidy: Boolean(item.use_gov_subsidy),
     useEduSubsidy: Boolean(item.use_edu_subsidy),
     useSalesReport: Boolean(item.use_sales_report)
@@ -1499,6 +1529,7 @@ const addItem = () => {
     selectedSn: null,
     selectedSns: [],
     selectedResourceTypes: [],
+    educationSubsidyAmount: 0,
     useGovSubsidy: false,
     useEduSubsidy: false,
     useSalesReport: false
@@ -1743,6 +1774,7 @@ const buildSalesOrderPayload = (untaxedInvoiceConfirmed = false) => ({
       subtotal: item.salePrice * item.quantity,
       useGovSubsidy: item.useGovSubsidy,
       useEduSubsidy: item.useEduSubsidy,
+      educationSubsidyAmount: getItemEducationSubsidyAmount(item),
       useSalesReport: item.useSalesReport,
       selectedResourceTypes: item.selectedResourceTypes || []
     }
@@ -1754,6 +1786,7 @@ const buildSalesOrderPayload = (untaxedInvoiceConfirmed = false) => ({
     }
     return selectedSns.map(sn => ({
       ...baseItem,
+      educationSubsidyAmount: getSnEducationSubsidyAmount(sn),
       snCode: sn.sn_code,
       snId: sn.sn_id || '',
       supplierId: sn.supplier_id || '',
@@ -1768,7 +1801,7 @@ const buildSalesOrderPayload = (untaxedInvoiceConfirmed = false) => ({
     depositId: isDepositPaymentName(pm) ? orderForm.depositId : undefined
   })),
   nationalSubsidy: orderForm.nationalSubsidy,
-  educationSubsidy: orderForm.educationSubsidy,
+  educationSubsidy: educationSubsidyTotal.value,
   discountAmount: orderForm.discountAmount,
   remark: orderForm.remark
 })

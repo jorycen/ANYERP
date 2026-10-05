@@ -2270,6 +2270,7 @@ function normalizeOrderItemInput(item = {}) {
     imei2: firstNonEmpty(item, ['imei2', 'imei_2', 'IMEI2']),
     use_gov_subsidy: selectedResourceTypes.includes('GOV_SUBSIDY') || toBoolean(firstNonEmpty(item, ['useGovSubsidy', 'use_gov_subsidy'], false)),
     use_edu_subsidy: selectedResourceTypes.includes('EDU_SUBSIDY') || toBoolean(firstNonEmpty(item, ['useEduSubsidy', 'use_edu_subsidy'], false)),
+    education_subsidy_amount: money(firstNonEmpty(item, ['educationSubsidyAmount', 'education_subsidy_amount'], 0)),
     use_sales_report: selectedResourceTypes.includes('SALES_REPORT') || toBoolean(firstNonEmpty(item, ['useSalesReport', 'use_sales_report'], false)),
     selected_resource_types: selectedResourceTypes,
     sale_price: salePrice,
@@ -2301,8 +2302,44 @@ function applyOrderItemDefaults(item) {
   return Object.assign({}, item, {
     sale_price: salePrice,
     quantity,
-    subtotal
+    subtotal,
+    education_subsidy_amount: Number(item.education_subsidy_amount || 0)
   });
+}
+
+async function resolveOrderEducationSubsidyAmounts(items = [], transaction = null) {
+  let total = 0;
+  for (const item of items) {
+    if (!item.use_edu_subsidy) {
+      item.education_subsidy_amount = 0;
+      continue;
+    }
+    let sn = item.sn_id ? await ProductSn.findByPk(item.sn_id, { transaction }) : null;
+    if (!sn && item.sn_code) {
+      sn = await ProductSn.findOne({
+        where: { sn_code: item.sn_code, product_id: item.product_id, is_deleted: 0 },
+        transaction
+      });
+    }
+    if (!sn) {
+      throw Object.assign(new Error(`商品 ${item.product_name || item.pn_code || ''} 选择了教育优惠，请先选择有效SN`), { status: 409 });
+    }
+    item.sn_id = sn.sn_id;
+    const right = await InventoryResourceRight.findOne({
+      where: { sn_id: sn.sn_id, resource_type: 'EDU_SUBSIDY' },
+      transaction
+    });
+    if (!right || right.current_status !== 'AVAILABLE') {
+      throw Object.assign(new Error(`SN ${item.sn_code || sn.sn_code} 没有可用的教育优惠权益`), { status: 409 });
+    }
+    const amount = money(right.amount || 0);
+    if (amount <= 0) {
+      throw Object.assign(new Error(`SN ${item.sn_code || sn.sn_code} 的教育优惠金额为0，不能选择教育优惠`), { status: 409 });
+    }
+    item.education_subsidy_amount = amount;
+    total = money(total + amount);
+  }
+  return total;
 }
 
 async function syncOrderItemsFromPayload(order, data = {}, transaction = null, options = {}) {
@@ -2321,6 +2358,7 @@ async function syncOrderItemsFromPayload(order, data = {}, transaction = null, o
   let hasLockedResource = null;
 
   const normalizedItems = rawItems.map(item => applyOrderItemDefaults(normalizeOrderItemInput(item)));
+  await resolveOrderEducationSubsidyAmounts(normalizedItems, transaction);
   assertUniqueOrderSnItems(normalizedItems, '订单');
   await assertActiveProducts(
     Product,
@@ -2392,6 +2430,7 @@ async function syncOrderItemsFromPayload(order, data = {}, transaction = null, o
       subtotal: normalized.subtotal === undefined ? 0 : normalized.subtotal,
       use_gov_subsidy: normalized.use_gov_subsidy ? 1 : 0,
       use_edu_subsidy: normalized.use_edu_subsidy ? 1 : 0,
+      education_subsidy_amount: normalized.education_subsidy_amount || 0,
       use_sales_report: normalized.use_sales_report ? 1 : 0,
       selected_resource_types: JSON.stringify(normalized.selected_resource_types || [])
     };
@@ -2426,6 +2465,17 @@ async function syncOrderItemsFromPayload(order, data = {}, transaction = null, o
     }
   }
 
+  const currentItems = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+  if (currentItems.some(item => Number(item.use_edu_subsidy || 0) === 1)) {
+    const educationSubsidyTotal = money(currentItems.reduce(
+      (sum, item) => sum + Number(item.education_subsidy_amount || 0),
+      0
+    ));
+    data.educationSubsidy = educationSubsidyTotal;
+    data.education_subsidy = educationSubsidyTotal;
+    order.setDataValue('education_subsidy', educationSubsidyTotal);
+  }
+
   return results;
 }
 
@@ -2438,7 +2488,7 @@ async function create(ctx) {
   const {
     customerName, customerPhone, customerSource,
     items, payments = [], discountAmount = 0,
-    nationalSubsidy = 0, educationSubsidy = 0,
+    nationalSubsidy = 0, educationSubsidy: requestedEducationSubsidy = 0,
     invoiceStatus = '不开票', remark, storeId, status, orderStatus, untaxedInvoiceConfirmed = false,
     saveDraft = false, orderId: requestedOrderId
   } = requestBody;
@@ -2473,6 +2523,10 @@ async function create(ctx) {
   await assertOrderStoreVisible(actualStoreId, user, '无权操作该门店订单');
 
   const normalizedItems = items.map(item => applyOrderItemDefaults(normalizeOrderItemInput(item)));
+  const selectedEducationSubsidy = await resolveOrderEducationSubsidyAmounts(normalizedItems);
+  const educationSubsidy = normalizedItems.some(item => item.use_edu_subsidy)
+    ? selectedEducationSubsidy
+    : Number(requestedEducationSubsidy || 0);
   assertUniqueOrderSnItems(normalizedItems, isDraft ? '订单草稿' : '订单');
   const totalAmount = normalizedItems.reduce((sum, item) => sum + Number(item.subtotal || 0), 0);
   const payableBeforeDeposit = Math.max(0, money(totalAmount - Number(discountAmount) - Number(nationalSubsidy) - Number(educationSubsidy)));
@@ -2538,9 +2592,6 @@ async function create(ctx) {
   }
   // 教育优惠分为两条互斥路径：订单直录金额归公司；可用资源核销归补录人员。
   // 直录金额不再自动绑定 SN 教育权益，避免后续再次生成资源任务。
-  if (Number(educationSubsidy) > 0 && normalizedItems.some(item => item.use_edu_subsidy)) {
-    ctx.throw(409, '教育优惠不能同时直接录入并使用可用资源核销，请二选一');
-  }
   if (!isDraft && invoiceStatus && invoiceStatus !== '不开票' && snItems.length) {
     const snWhere = snItems.map(item => item.sn_id ? { sn_id: item.sn_id } : { sn_code: item.sn_code, product_id: item.product_id });
     const selectedSns = await ProductSn.findAll({ where: { [Op.or]: snWhere, is_deleted: 0 } });
@@ -2632,6 +2683,7 @@ async function create(ctx) {
       subtotal: item.subtotal,
       use_gov_subsidy: item.use_gov_subsidy ? 1 : 0,
       use_edu_subsidy: item.use_edu_subsidy ? 1 : 0,
+      education_subsidy_amount: item.education_subsidy_amount || 0,
       use_sales_report: item.use_sales_report ? 1 : 0,
       selected_resource_types: JSON.stringify(item.selected_resource_types || [])
     }, { transaction });
@@ -3569,6 +3621,9 @@ async function updateOrderItems(ctx) {
     // 该接口也被历史 orderItemRepair 兼容调用用于单行库存 ID 修复，
     // 不能把单行请求误当成整个页面商品列表而删除其他明细。
     results = await syncOrderItemsFromPayload(order, data, transaction, { replaceAll: false });
+    if (data.education_subsidy !== undefined) {
+      await order.update({ education_subsidy: data.education_subsidy }, { transaction });
+    }
   });
 
   ctx.body = {

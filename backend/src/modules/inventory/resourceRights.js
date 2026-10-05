@@ -2584,14 +2584,17 @@ async function finishSaleRights(order, items, transaction) {
   const educationTotal = money(order.education_subsidy || 0);
   const itemGross = item => Math.abs(Number(item.sale_price || 0) * Number(item.quantity || 0));
   const educationGrossTotal = educationItems.reduce((sum, item) => sum + itemGross(item), 0);
+  const hasLineEducationAmounts = educationItems.some(item => Number(item.education_subsidy_amount || 0) > 0);
   let allocatedEducation = 0;
   const educationAmountByItem = new Map();
   educationItems.forEach((item, index) => {
-    const amount = index === educationItems.length - 1
-      ? money(educationTotal - allocatedEducation)
-      : educationGrossTotal > 0
-        ? money(educationTotal * itemGross(item) / educationGrossTotal)
-        : money(educationTotal / educationItems.length);
+    const amount = hasLineEducationAmounts
+      ? money(item.education_subsidy_amount || 0)
+      : index === educationItems.length - 1
+        ? money(educationTotal - allocatedEducation)
+        : educationGrossTotal > 0
+          ? money(educationTotal * itemGross(item) / educationGrossTotal)
+          : money(educationTotal / educationItems.length);
     educationAmountByItem.set(String(item.item_id), amount);
     allocatedEducation = money(allocatedEducation + amount);
   });

@@ -298,12 +298,36 @@ async function runSchemaMigrations() {
   await ensureDepositRefundApprovalSchema();
   // OrderItem queries select every model attribute. Keep older databases in
   // sync with the nullable product association used by sales-order details.
-  await checkAndAddColumn(
-    'T_ORDER_ITEM',
-    'PRODUCT_ID',
-    'VARCHAR(32) NULL COMMENT "关联商品ID"',
-    'ORDER_ID'
+  // Sales order product-code filtering joins OrderItem to Product through
+  // PRODUCT_ID. Do not let startup silently continue when this required
+  // compatibility column cannot be added: otherwise the query fails later
+  // with Unknown column `OrderItems.product_id`.
+  const [orderItemProductIdColumn] = await sequelize.query(
+    `SELECT COLUMN_NAME
+     FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'T_ORDER_ITEM'
+     AND COLUMN_NAME = 'PRODUCT_ID'`,
+    { type: sequelize.QueryTypes.SELECT }
   );
+  if (!orderItemProductIdColumn) {
+    await sequelize.query(
+      'ALTER TABLE T_ORDER_ITEM ADD COLUMN PRODUCT_ID VARCHAR(32) NULL COMMENT "关联商品ID" AFTER ORDER_ID'
+    );
+  }
+  const [orderItemEducationAmountColumn] = await sequelize.query(
+    `SELECT COLUMN_NAME
+     FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'T_ORDER_ITEM'
+     AND COLUMN_NAME = 'EDUCATION_SUBSIDY_AMOUNT'`,
+    { type: sequelize.QueryTypes.SELECT }
+  );
+  if (!orderItemEducationAmountColumn) {
+    await sequelize.query(
+      'ALTER TABLE T_ORDER_ITEM ADD COLUMN EDUCATION_SUBSIDY_AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT "本商品行教育优惠金额" AFTER PRODUCT_ID'
+    );
+  }
   await ensureSerializedInventorySchema();
   await ensureProductPnEffectiveUniqueIndex();
   await ensureFinancialProfitFeatureSchema();
