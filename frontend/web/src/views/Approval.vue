@@ -461,6 +461,7 @@ async function approveTaskDirect(row) {
   if (row.isSalesApproval) return api.approveOrder(row.salesRow.order_id)
   if (row.isModuleApproval) {
     if (row.manualPath) return { skipped: true }
+    if (row.moduleType === 'manufacturer_rebate_confirmation') return { skipped: true }
     return api.actionBusinessApproval(row.moduleType, row.Instance?.business_id, { action: 'approve', comment: '' })
   }
   return api.actionApproval(row.instance_id, { action: 'approve', comment: '' })
@@ -520,6 +521,7 @@ function businessTypeText(value) {
     return_stock: '退库审批',
     resource_claim: '资源权益套回审批',
     profit_adjustment: '毛利调整审批',
+    manufacturer_rebate_confirmation: '厂商返利金额确认',
     subsidy_receivable_adjustment: '国补差额审批',
     expense_performance_allocation: '费用绩效分摊审批'
   }[value] || value || '-')
@@ -590,6 +592,7 @@ function taskTaxStatus(row) {
   return '待补充'
 }
 const detailFieldLabels = {
+  sales_order_no: '销售订单号', sale_price: '销售价格', original_pickup_price: '我的提货价格', pickup_price_at_sale: '销售时政策提货价', settlement_price_at_sale: '当前结算价格', policy_name: '当前政策', policy_content: '政策内容', sn: 'SN',
   application_no: '申请单号', application_id: '申请ID', request_no: '采购申请单号', request_id: '采购申请ID',
   expense_no: '费用单号', expense_id: '费用ID', return_no: '退库单号', return_id: '退库申请ID',
   change_order_no: '变更单号', change_id: '变更ID', adjustment_no: '调整单号', adjustment_id: '调整ID',
@@ -615,6 +618,7 @@ const detailArrayColumnLabels = {
   store_name: '门店', storeName: '门店', reason: '原因', original_name: '附件名称', mime_type: '文件类型', file_size: '文件大小'
 }
 const detailAllowedKeys = new Set([
+  'sales_order_no', 'sale_price', 'original_pickup_price', 'pickup_price_at_sale', 'settlement_price_at_sale', 'policy_name', 'policy_content', 'sn',
   'application_no', 'request_no', 'expense_no', 'return_no', 'change_order_no', 'adjustment_no', 'order_no', 'settlement_no',
   'create_time', 'submit_time', 'applicant_name', 'submitter_name', 'submit_user', 'apply_user', 'applicant_store_name', 'store_name',
   'supplier_name', 'employee_name', 'salesperson_name', 'name', 'product_name', 'productName', 'product_code', 'productCode', 'pn_code', 'pnCode', 'sn_code', 'snCode',
@@ -641,7 +645,7 @@ function detailScalarFields(data = {}) {
   return Object.entries(data)
     .filter(([key, value]) => detailAllowedKeys.has(key) && !hiddenDetailKeys.has(key) && !Array.isArray(value) && (value === null || ['string', 'number', 'boolean'].includes(typeof value)))
     .filter(([, value]) => value !== null && value !== '')
-    .map(([key, value]) => ({ key, label: detailLabel(key), value: formatDetailValue(value), span: key === 'remark' || key === 'reason' || key === 'return_reason' || key === 'review_comment' ? 2 : 1 }))
+    .map(([key, value]) => ({ key, label: detailLabel(key), value: formatDetailValue(value), span: key === 'remark' || key === 'reason' || key === 'return_reason' || key === 'review_comment' || key === 'policy_content' ? 2 : 1 }))
 }
 function detailArraySections(data = {}) {
   return Object.entries(data)
@@ -907,6 +911,19 @@ async function reviewSales(row, action) {
 async function reviewModule(row, action) {
   if (row.manualPath) { await router.push(row.manualPath); return }
   const isPurchaseRequest = ['purchase', 'purchase_request'].includes(row.moduleType)
+  let rebateAmount = null
+  if (action === 'approve' && row.moduleType === 'manufacturer_rebate_confirmation') {
+    const result = await ElMessageBox.prompt('请填写该 SN 实际应得的厂商返利金额；不符合返利条件请填写 0。', '确认厂商返利金额', {
+      inputType: 'number',
+      inputValue: '',
+      inputPattern: /^\d+(?:\.\d{1,2})?$/,
+      inputErrorMessage: '请输入大于或等于 0、最多两位小数的金额',
+      confirmButtonText: '提交金额并审批',
+      cancelButtonText: '取消'
+    }).catch(() => null)
+    if (!result) return
+    rebateAmount = Number(result.value)
+  }
   const purchaseCategoryRows = isPurchaseRequest ? purchaseItemsNeedingCategory.value : []
   if (action === 'approve' && purchaseCategoryRows.some(item => !item.approvalCategoryId)) {
     ElMessage.warning('请先为每个新建商品选择四级商品类别')
@@ -927,7 +944,7 @@ async function reviewModule(row, action) {
     : []
   try {
     if (row.managedBusiness) {
-      const result = await api.actionBusinessApproval(row.moduleType, id, { action, comment, businessData: { newProductCategories } })
+      const result = await api.actionBusinessApproval(row.moduleType, id, { action, comment, businessData: { newProductCategories, ...(rebateAmount !== null ? { rebateAmount } : {}) } })
       ElMessage.success(result.message || '审批已记录')
       await reload()
       return

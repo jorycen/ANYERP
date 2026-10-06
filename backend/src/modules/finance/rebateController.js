@@ -805,6 +805,53 @@ async function getCostAdjustmentList(ctx) {
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
 }
 
+async function reviewManufacturerRebateConfirmation(ctx) {
+  const user = ctx.state.user;
+  const estimateId = ctx.params.estimateId;
+  const action = ctx.request.body?.action;
+  const comment = String(ctx.request.body?.comment || '').trim();
+  if (!['approve', 'reject'].includes(action)) ctx.throw(400, '审批操作无效');
+  let confirmed = false;
+  await sequelize.transaction(async transaction => {
+    const estimate = await RebateEstimate.findByPk(estimateId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!estimate || estimate.source_type !== 'manufacturer_rebate_confirmation') ctx.throw(404, '厂商返利确认单不存在');
+    if (estimate.status !== 'pending_confirmation') ctx.throw(409, '该返利确认单已处理，请刷新后重试');
+    if (action === 'approve') {
+      const rawAmount = ctx.request.body?.rebateAmount;
+      if (rawAmount === undefined || rawAmount === null || String(rawAmount).trim() === '') ctx.throw(400, '请填写厂商实际返利金额');
+      const amount = Number(rawAmount);
+      if (!Number.isFinite(amount) || amount < 0 || !/^\d+(?:\.\d{1,2})?$/.test(String(rawAmount).trim())) ctx.throw(400, '返利金额必须是大于或等于0且最多两位小数的数字');
+      await estimate.update({ rebate_estimate_amount: amount, updated_at: new Date() }, { transaction });
+    } else if (!comment) {
+      ctx.throw(400, '拒绝时必须填写审批意见');
+    }
+    const advanced = await require('../approval/businessRuntime').advance(
+      ctx, 'manufacturer_rebate_confirmation', estimate, transaction, action, comment
+    );
+    if (!advanced) return;
+    if (action === 'approve') {
+      await require('../inventory/resourceRights').createPendingSettlement({
+        sourceType: 'MANUFACTURER_REBATE',
+        sourceId: estimate.estimate_id,
+        sn: { sn_id: estimate.sn_id || null, sn_code: estimate.sn || '', product_id: estimate.product_id },
+        resourceType: 'MANUFACTURER_REBATE',
+        amount: Number(estimate.rebate_estimate_amount || 0),
+        counterpartyId: estimate.supplier_id,
+        counterpartyName: estimate.supplier_name || '',
+        distributorId: estimate.distributor_id,
+        remark: `销售订单 ${estimate.sales_order_no || ''} 厂商返利人工确认`,
+        transaction
+      });
+      await estimate.update({ status: 'confirmed', updated_at: new Date() }, { transaction });
+      confirmed = true;
+    } else {
+      await estimate.update({ status: 'rejected', remark: `${estimate.remark || ''}${comment ? `；拒绝原因：${comment}` : ''}`.slice(0, 512), updated_at: new Date() }, { transaction });
+    }
+  });
+  if (ctx.state.businessApproval?.status === 'pending') return;
+  ctx.body = { code: 0, status: confirmed ? 'confirmed' : 'rejected', message: confirmed ? '返利金额已确认，已进入待下账返利池' : '返利确认单已拒绝' };
+}
+
 module.exports = {
   addRebate,
   getRebateList,
@@ -821,6 +868,7 @@ module.exports = {
   importManufacturerOperations,
   getManufacturerPriceHistory,
   getRebateEstimateList,
+  reviewManufacturerRebateConfirmation,
   getCostAdjustmentList,
   recordRebateDeduction,
   reverseSettlementRebateDeduction,

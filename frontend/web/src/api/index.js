@@ -583,6 +583,7 @@ export default {
   setPrice: (data) => api.post('/product/price/set', data),
   refreshCostPrice: (productId) => api.post(`/product/price/refresh-cost/${productId}`),
   batchRefreshCost: (data) => api.post('/product/price/batch-refresh-cost', data),
+  setCostPriceLock: (data) => api.post('/product/price/cost-lock', data),
   getPriceChangeHistory: (params) => api.get('/product/price/history', { params }),
   validateImportPrices: (file) => {
     const formData = new FormData();

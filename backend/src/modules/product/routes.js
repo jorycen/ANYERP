@@ -9,7 +9,7 @@ const {
   getBarcodes, addBarcode, deleteBarcode,
   getCategoryTree, createCategory, updateCategory, deleteCategory, sortCategories,
   getCategoryFields, saveCategoryFields, getCategoryFieldConfig,
-  getPriceList, exportCostPrices, setPrice, refreshCostPrice, batchRefreshCost, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory,
+  getPriceList, exportCostPrices, setPrice, refreshCostPrice, batchRefreshCost, setCostPriceLock, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory,
   getProductImportTask, downloadProductImportErrors,
   getPnList, addPn, searchProduct, getPnAvailability
 } = require('./controller');
@@ -60,6 +60,7 @@ router.get('/price/export', exportCostPrices);
 router.post('/price/set', setPrice);
 router.post('/price/refresh-cost/:productId', refreshCostPrice);
 router.post('/price/batch-refresh-cost', batchRefreshCost);
+router.post('/price/cost-lock', setCostPriceLock);
 router.post('/price/import/validate', upload.single('file'), validateImportPrices);
 router.post('/price/import', upload.single('file'), importPrices);
 router.post('/price/import-cost-refresh', upload.single('file'), importCostRefresh);

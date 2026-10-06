@@ -304,6 +304,11 @@
                 </el-tooltip>
               </template>
             </el-table-column>
+            <el-table-column label="锁定成本" width="105" align="center">
+              <template #default="{ row }">
+                <el-switch v-model="row._costPriceLocked" @change="toggleCostPriceLock(row)" />
+              </template>
+            </el-table-column>
             <el-table-column label="销项税率" width="125">
               <template #default="{ row }">
                 <span v-if="!row._editing">{{ row._outputTaxRate }}%</span>
@@ -1632,7 +1637,8 @@ const loadPriceData = async () => {
         _minPrice: p.min_sale_price || 0,
         _outputTaxRate: Number((Number(p.output_tax_rate ?? 0.13) * 100).toFixed(2)),
         _inputTaxRate: Number((Number(p.input_tax_rate ?? 0.13) * 100).toFixed(2)),
-        _inputTaxDeductible: Number(p.input_tax_deductible ?? 1) === 1
+        _inputTaxDeductible: Number(p.input_tax_deductible ?? 1) === 1,
+        _costPriceLocked: Number(p.cost_price_locked || 0) === 1
       }))
       priceTotal.value = res.data?.pagination?.total || res.data?.total || 0
       const productIds = priceTableData.value.map(row => row.product_id).filter(Boolean)
@@ -1667,6 +1673,21 @@ const startEditPrice = (row) => {
   row._inputTaxDeductible = Number(row.input_tax_deductible ?? 1) === 1
 }
 const cancelEditPrice = (row) => { row._editing = false }
+const toggleCostPriceLock = async (row) => {
+  const locked = Boolean(row._costPriceLocked)
+  try {
+    const res = await api.setCostPriceLock({
+      productId: row.product_id,
+      locked,
+      ...(locked ? { costPrice: Number(row.cost_price || 0) } : {})
+    })
+    if (res.code !== 0) throw new Error(res.message || '库存成本锁定状态保存失败')
+    ElMessage.success(locked ? '库存成本已锁定，自动同步不会再改写' : '已解除锁定，后续会按库存数据自动重算')
+  } catch (err) {
+    row._costPriceLocked = !locked
+    ElMessage.error(err?.response?.data?.message || err.message || '库存成本锁定状态保存失败')
+  }
+}
 const savePrice = async (row) => {
   if (Number(row._minPrice) > Number(row._retailPrice)) {
     ElMessage.warning('最低售价必须小于或等于零售价')

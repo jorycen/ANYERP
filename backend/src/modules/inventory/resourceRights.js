@@ -2619,7 +2619,18 @@ async function finishSaleRights(order, items, transaction) {
     if (resourceType === 'EDU_SUBSIDY' && settlementAmount > 0 && !right.supplier_id) {
       throw Object.assign(new Error(`SN ${item.sn_code} 缺少供应商归属，无法生成教育补贴返利待下账`), { status: 409 });
     }
-    await createPendingSettlement({
+    const waitingManualManufacturerRebate = resourceType === 'MANUFACTURER_REBATE'
+      ? await RebateEstimate.findOne({
+        where: {
+          sales_order_id: order.order_id,
+          sn_id: item.sn_id,
+          source_type: 'manufacturer_rebate_confirmation',
+          status: 'pending_confirmation'
+        }, transaction
+      })
+      : null;
+    if (!waitingManualManufacturerRebate) {
+      await createPendingSettlement({
       sourceType: 'SALE_USE', sourceId: change.change_id,
       sn: { sn_id: item.sn_id, sn_code: item.sn_code, product_id: item.product_id },
       resourceType, amount: settlementAmount,
@@ -2627,7 +2638,8 @@ async function finishSaleRights(order, items, transaction) {
       counterpartyName: right.supplier_name || '',
       forceSettlement: resourceType === 'EDU_SUBSIDY',
       remark: `销售订单 ${order.order_no} 使用权益`, transaction
-    });
+      });
+    }
     if (resourceType === 'EDU_SUBSIDY' && settlementAmount > 0) {
       await createPerformanceProfitAdjustment({
         order, item, resourceType, amount: settlementAmount, ratio: 80, transaction

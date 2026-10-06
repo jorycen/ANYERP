@@ -3042,8 +3042,8 @@ async function archiveSalesOrderEffects(order, transaction, { inventoryAlreadyRe
   const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
   await alignOrderSubsidyRights(order, items, transaction);
   await lockSaleRights(order, items, transaction);
-  await finishSaleRights(order, items, transaction);
   await calculateSalesSettlementCosts(order, transaction);
+  await finishSaleRights(order, items, transaction);
   const refreshedItems = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
   await triggerSaleResourceBenefits(order, refreshedItems, transaction);
   await createSaleResourceTasks(order, refreshedItems, transaction);
@@ -5279,10 +5279,11 @@ async function createEstimateAndAdjustment({
   finalSalesSettlementCost,
   distributorId,
   remark,
+  createEstimate = true,
   transaction
 }) {
-  const estimateId = generateUUID();
-  await RebateEstimate.create({
+  const estimateId = createEstimate ? generateUUID() : null;
+  if (createEstimate) await RebateEstimate.create({
     estimate_id: estimateId,
     distributor_id: distributorId,
     sales_order_id: order.order_id,
@@ -5307,7 +5308,7 @@ async function createEstimateAndAdjustment({
     remark
   }, { transaction });
 
-  await createPendingSettlement({
+  if (createEstimate) await createPendingSettlement({
     sourceType: 'MANUFACTURER_REBATE', sourceId: estimateId,
     sn: { sn_id: item.sn_id || `NO_SN_${item.item_id}`, sn_code: item.sn_code || '', product_id: item.product_id },
     resourceType: 'MANUFACTURER_REBATE', amount: rebateAmount,
@@ -5351,6 +5352,10 @@ async function calculateSalesSettlementCosts(order, transaction = null, options 
   if (existing > 0 && !options.force) return;
 
   if (options.force) {
+    const manualConfirmationCount = await RebateEstimate.count({
+      where: { sales_order_id: order.order_id, source_type: 'manufacturer_rebate_confirmation' }, transaction
+    });
+    if (manualConfirmationCount > 0) throw Object.assign(new Error('该订单已生成厂商返利人工确认单，不能重算结算成本'), { status: 409 });
     const estimates = await RebateEstimate.findAll({ where: { sales_order_id: order.order_id }, attributes: ['estimate_id'], transaction });
     const estimateIds = estimates.map(item => item.estimate_id);
     if (estimateIds.length > 0) {
@@ -5396,6 +5401,9 @@ async function calculateSalesSettlementCosts(order, transaction = null, options 
     const isServiceProvider = Boolean(inventorySupplier && Number(inventorySupplier.is_service_provider) !== 0);
     const pickupSettlementPrice = money(pickupHistory?.settlement_price || (isServiceProvider ? 0 : originalPickupPrice));
     const currentSettlementPrice = money(priceHistory?.settlement_price || priceHistory?.pickup_price || 0);
+    const manufacturerRebateRight = snRecord ? await InventoryResourceRight.findOne({
+      where: { sn_id: snRecord.sn_id, resource_type: 'MANUFACTURER_REBATE' }, transaction
+    }) : null;
     const unitPriceDelta = pickupSettlementPrice > 0 && currentSettlementPrice > 0
       ? money(currentSettlementPrice - pickupSettlementPrice)
       : 0;
@@ -5418,8 +5426,58 @@ async function calculateSalesSettlementCosts(order, transaction = null, options 
       });
     }
 
+    const policies = await findActiveManufacturerPolicies({
+      supplierId: priceHistory?.supplier_id,
+      productId: item.product_id,
+      pn: item.pn_code,
+      saleDate,
+      transaction
+    });
+    const policyContent = [priceHistory?.pickup_policy, priceHistory?.extra_resource, ...policies.map(policy => policy.policy_name), ...policies.map(policy => policy.remark)]
+      .map(value => String(value || '').trim()).filter(Boolean).filter((value, index, values) => values.indexOf(value) === index).join('；');
+    const hasPolicyInEffect = Boolean(priceHistory && (
+      String(priceHistory.pickup_policy || '').trim()
+      || String(priceHistory.extra_resource || '').trim()
+      || Number(priceHistory.po_rebate_amount || 0) > 0
+      || policies.some(policy => String(policy.policy_name || policy.remark || '').trim())
+    ));
+    const needsManualManufacturerRebate = Boolean(manufacturerRebateRight && hasPolicyInEffect && item.sn_code);
+    if (needsManualManufacturerRebate) {
+      const confirmationId = generateUUID();
+      await RebateEstimate.create({
+        estimate_id: confirmationId,
+        distributor_id: distributorId,
+        store_id: order.store_id,
+        applicant_staff_id: order.create_staff_id || null,
+        applicant_name: order.create_user || '',
+        sales_order_id: order.order_id,
+        sales_order_no: order.order_no,
+        sales_order_item_id: item.item_id,
+        supplier_id: snRecord.supplier_id || priceHistory?.supplier_id || '',
+        supplier_name: snRecord.supplier_name || priceHistory?.supplier_name || '',
+        product_id: item.product_id,
+        product_name: item.product_name,
+        pn: item.pn_code,
+        sn: item.sn_code,
+        sn_id: snRecord.sn_id,
+        sale_price: money(item.sale_price || 0),
+        original_pickup_price: originalPickupPrice,
+        pickup_price_at_sale: money(priceHistory?.pickup_price || 0),
+        settlement_price_at_sale: currentSettlementPrice,
+        policy_content: policyContent.slice(0, 1000),
+        policy_name: policies[0]?.policy_name || (priceHistory?.pickup_policy ? '提货政策' : '厂商返利政策'),
+        policy_type: 'manual_confirmation',
+        rebate_estimate_amount: 0,
+        quantity: 1,
+        status: 'pending_confirmation',
+        source_type: 'manufacturer_rebate_confirmation',
+        source_id: confirmationId,
+        remark: '销售归档后由审批人按实际厂商政策填写返利金额'
+      }, { transaction });
+    }
+
     const poRebateAmount = money(Number(priceHistory?.po_rebate_amount || 0) * Number(item.quantity || 1));
-    if (poRebateAmount > 0) {
+    if (!needsManualManufacturerRebate && poRebateAmount > 0) {
       const poProfitAdjustment = money(Number(priceHistory.po_rebate_amount || 0) * 0.8);
       totalCostAdjustment += poProfitAdjustment;
       pendingRows.push({
@@ -5434,20 +5492,12 @@ async function calculateSalesSettlementCosts(order, transaction = null, options 
       });
     }
 
-    const policies = await findActiveManufacturerPolicies({
-      supplierId: priceHistory?.supplier_id,
-      productId: item.product_id,
-      pn: item.pn_code,
-      saleDate,
-      transaction
-    });
-
     for (const policy of policies) {
       if (policy.policy_type === 'p0_difference') continue;
       if (Number(priceHistory?.po_rebate_amount || 0) > 0 && ['PO_REWARD', 'po_rebate', 'po_reward', 'po_after_rebate'].includes(String(policy.policy_type || '').toLowerCase())) continue;
       const rebateUnitAmount = calculatePolicyRebate(policy, originalInventoryCost);
       if (rebateUnitAmount <= 0) continue;
-      const rebateAmount = money(rebateUnitAmount * Number(item.quantity || 1));
+      const rebateAmount = needsManualManufacturerRebate ? 0 : money(rebateUnitAmount * Number(item.quantity || 1));
       const costAdjustmentAmount = calculateCostAdjustment(policy, rebateUnitAmount);
       totalCostAdjustment += costAdjustmentAmount;
       pendingRows.push({
@@ -5486,6 +5536,7 @@ async function calculateSalesSettlementCosts(order, transaction = null, options 
         finalSalesSettlementCost,
         distributorId,
         remark: row.remark,
+        createEstimate: !(needsManualManufacturerRebate && row.policy),
         transaction
       });
     }

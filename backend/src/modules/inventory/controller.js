@@ -969,6 +969,7 @@ async function ensureDefaultProductPricing(product, purchasePrice, user, transac
     transaction,
     lock: transaction?.LOCK?.UPDATE || true
   });
+  if (price && Number(price.cost_price_locked || 0) === 1) return;
   if (price && Number(price.standard_price || 0) > 0) return;
 
   const now = new Date();

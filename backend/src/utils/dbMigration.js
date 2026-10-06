@@ -643,6 +643,15 @@ async function ensureProductSettlementFeatureSchema() {
   await checkAndAddColumn('T_REBATE_ESTIMATE', 'SOURCE_TYPE', 'VARCHAR(32) DEFAULT "manual"', 'STATUS');
   await checkAndAddColumn('T_REBATE_ESTIMATE', 'SOURCE_ID', 'VARCHAR(64)', 'SOURCE_TYPE');
   await checkAndAddColumn('T_REBATE_ESTIMATE', 'REVERSAL_OF', 'VARCHAR(32)', 'SOURCE_ID');
+  await checkAndAddColumn('T_REBATE_ESTIMATE', 'STORE_ID', 'VARCHAR(32) NULL', 'DISTRIBUTOR_ID');
+  await checkAndAddColumn('T_REBATE_ESTIMATE', 'APPLICANT_STAFF_ID', 'BIGINT(20) NULL', 'STORE_ID');
+  await checkAndAddColumn('T_REBATE_ESTIMATE', 'APPLICANT_NAME', 'VARCHAR(64) NULL', 'APPLICANT_STAFF_ID');
+  await checkAndAddColumn('T_REBATE_ESTIMATE', 'SN_ID', 'VARCHAR(32) NULL', 'APPLICANT_NAME');
+  await checkAndAddColumn('T_REBATE_ESTIMATE', 'SALE_PRICE', 'DECIMAL(12,2) NOT NULL DEFAULT 0', 'SN');
+  await checkAndAddColumn('T_REBATE_ESTIMATE', 'ORIGINAL_PICKUP_PRICE', 'DECIMAL(12,2) NOT NULL DEFAULT 0', 'SALE_PRICE');
+  await checkAndAddColumn('T_REBATE_ESTIMATE', 'PICKUP_PRICE_AT_SALE', 'DECIMAL(12,2) NOT NULL DEFAULT 0', 'SALE_PRICE');
+  await checkAndAddColumn('T_REBATE_ESTIMATE', 'SETTLEMENT_PRICE_AT_SALE', 'DECIMAL(12,2) NOT NULL DEFAULT 0', 'PICKUP_PRICE_AT_SALE');
+  await checkAndAddColumn('T_REBATE_ESTIMATE', 'POLICY_CONTENT', 'VARCHAR(1000) NULL', 'SETTLEMENT_PRICE_AT_SALE');
   await checkAndAddColumn('T_REBATE_ESTIMATE', 'QUANTITY', 'DECIMAL(12,3) NOT NULL DEFAULT 1', 'REBATE_ESTIMATE_AMOUNT');
   await checkAndAddColumn('T_REBATE_ESTIMATE', 'UNIT_PRICE_DELTA', 'DECIMAL(12,2) NOT NULL DEFAULT 0', 'QUANTITY');
   await checkAndAddColumn('T_REBATE_ESTIMATE', 'SOURCE_POLICY_BATCH_NO', 'VARCHAR(64) NULL', 'UNIT_PRICE_DELTA');
@@ -2464,6 +2473,15 @@ async function runMigrations() {
     await checkAndAddColumn('T_REBATE_ESTIMATE', 'DISTRIBUTOR_ID', 'VARCHAR(32) COMMENT "返利所属经销商"', 'SUPPLIER_ID');
     await checkAndAddColumn('T_REBATE_ESTIMATE', 'SOURCE_ID', 'VARCHAR(64) COMMENT "来源业务ID"', 'SOURCE_TYPE');
     await checkAndAddColumn('T_REBATE_ESTIMATE', 'REVERSAL_OF', 'VARCHAR(32) COMMENT "被冲销返利预估ID"', 'SOURCE_ID');
+    await checkAndAddColumn('T_REBATE_ESTIMATE', 'STORE_ID', 'VARCHAR(32) NULL', 'DISTRIBUTOR_ID');
+    await checkAndAddColumn('T_REBATE_ESTIMATE', 'APPLICANT_STAFF_ID', 'BIGINT(20) NULL', 'STORE_ID');
+    await checkAndAddColumn('T_REBATE_ESTIMATE', 'APPLICANT_NAME', 'VARCHAR(64) NULL', 'APPLICANT_STAFF_ID');
+    await checkAndAddColumn('T_REBATE_ESTIMATE', 'SN_ID', 'VARCHAR(32) NULL', 'APPLICANT_NAME');
+    await checkAndAddColumn('T_REBATE_ESTIMATE', 'SALE_PRICE', 'DECIMAL(12,2) NOT NULL DEFAULT 0', 'SN');
+    await checkAndAddColumn('T_REBATE_ESTIMATE', 'ORIGINAL_PICKUP_PRICE', 'DECIMAL(12,2) NOT NULL DEFAULT 0', 'SALE_PRICE');
+    await checkAndAddColumn('T_REBATE_ESTIMATE', 'PICKUP_PRICE_AT_SALE', 'DECIMAL(12,2) NOT NULL DEFAULT 0', 'SALE_PRICE');
+    await checkAndAddColumn('T_REBATE_ESTIMATE', 'SETTLEMENT_PRICE_AT_SALE', 'DECIMAL(12,2) NOT NULL DEFAULT 0', 'PICKUP_PRICE_AT_SALE');
+    await checkAndAddColumn('T_REBATE_ESTIMATE', 'POLICY_CONTENT', 'VARCHAR(1000) NULL', 'SETTLEMENT_PRICE_AT_SALE');
     await sequelize.query(`
       INSERT IGNORE INTO T_RESOURCE_SETTLEMENT
         (SETTLEMENT_ID, SETTLEMENT_NO, SOURCE_TYPE, SOURCE_ID, SN_ID, SN_CODE, PRODUCT_ID,
@@ -2476,6 +2494,7 @@ async function runMigrations() {
              e.CREATED_AT, CONCAT('历史厂商返利预估迁移：', COALESCE(e.SALES_ORDER_NO, ''))
       FROM T_REBATE_ESTIMATE e
       WHERE e.REBATE_ESTIMATE_AMOUNT > 0 AND e.STATUS IN ('estimated', 'confirmed')
+      AND COALESCE(e.SOURCE_TYPE, '') <> 'manufacturer_rebate_confirmation'
     `);
 
     await checkAndCreateTable('T_SALES_SETTLEMENT_COST_ADJUSTMENT', `
@@ -3859,6 +3878,7 @@ async function runMigrations() {
     await checkAndAddColumn('T_PRODUCT_PRICE', 'OUTPUT_TAX_RATE', 'DECIMAL(6,4) DEFAULT 0.1300 COMMENT "销项税率"', 'MIN_SALE_PRICE');
     await checkAndAddColumn('T_PRODUCT_PRICE', 'INPUT_TAX_RATE', 'DECIMAL(6,4) DEFAULT 0.1300 COMMENT "进项税率"', 'OUTPUT_TAX_RATE');
     await checkAndAddColumn('T_PRODUCT_PRICE', 'INPUT_TAX_DEDUCTIBLE', 'TINYINT(1) DEFAULT 1 COMMENT "进项税是否可抵扣"', 'INPUT_TAX_RATE');
+    await checkAndAddColumn('T_PRODUCT_PRICE', 'COST_PRICE_LOCKED', 'TINYINT(1) DEFAULT 0 COMMENT "人工锁定库存成本，禁止自动重算"', 'COST_PRICE');
 
     await checkAndCreateTable('T_PRODUCT_IMPORT_TASK', `
       CREATE TABLE T_PRODUCT_IMPORT_TASK (
@@ -4430,6 +4450,7 @@ async function ensureFinancialProfitFeatureSchema() {
   await checkAndAddColumn('T_PRODUCT_PRICE', 'OUTPUT_TAX_RATE', 'DECIMAL(6,4) DEFAULT 0.1300 COMMENT "销项税率"', 'MIN_SALE_PRICE');
   await checkAndAddColumn('T_PRODUCT_PRICE', 'INPUT_TAX_RATE', 'DECIMAL(6,4) DEFAULT 0.1300 COMMENT "进项税率"', 'OUTPUT_TAX_RATE');
   await checkAndAddColumn('T_PRODUCT_PRICE', 'INPUT_TAX_DEDUCTIBLE', 'TINYINT(1) DEFAULT 1 COMMENT "进项税是否可抵扣"', 'INPUT_TAX_RATE');
+  await checkAndAddColumn('T_PRODUCT_PRICE', 'COST_PRICE_LOCKED', 'TINYINT(1) DEFAULT 0 COMMENT "人工锁定库存成本，禁止自动重算"', 'COST_PRICE');
 
   const [parents] = await sequelize.query(
     "SELECT MENU_ID FROM T_MENU WHERE MENU_CODE = 'finance' AND STATUS = 1 LIMIT 1"

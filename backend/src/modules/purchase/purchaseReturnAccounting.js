@@ -123,6 +123,7 @@ async function reduceInventoryCostForPurchaseReturn(returnItems, transaction) {
       where: { product_id: productId }, transaction, lock: transaction.LOCK.UPDATE
     });
     if (!price) continue;
+    if (Number(price.cost_price_locked || 0) === 1) continue;
     const inventoryRows = await Inventory.findAll({ where: { product_id: productId }, transaction });
     const remainingQuantity = inventoryRows.reduce((total, row) => {
       const normal = Math.max(0, Number(row.normal_qty || 0));

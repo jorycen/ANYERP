@@ -1970,7 +1970,7 @@ async function getPriceList(ctx) {
     where: productWhere,
     attributes: ['product_id', 'product_code', 'manufacturer_code', 'name', 'unit', 'category'],
     include: [
-      { model: ProductPrice, attributes: ['price_id', 'standard_price', 'retail_price', 'min_sale_price', 'cost_price', 'output_tax_rate', 'input_tax_rate', 'input_tax_deductible'] }
+      { model: ProductPrice, attributes: ['price_id', 'standard_price', 'retail_price', 'min_sale_price', 'cost_price', 'cost_price_locked', 'output_tax_rate', 'input_tax_rate', 'input_tax_deductible'] }
     ],
     order: [['product_code', 'DESC']],
     ...paginate({}, { page: parseInt(page), pageSize: parseInt(pageSize) }),
@@ -2011,6 +2011,7 @@ async function getPriceList(ctx) {
     retail_price: p.ProductPrice ? p.ProductPrice.retail_price : 0,
     min_sale_price: p.ProductPrice ? p.ProductPrice.min_sale_price : 0,
     cost_price: p.ProductPrice ? p.ProductPrice.cost_price : 0,
+    cost_price_locked: p.ProductPrice ? Number(p.ProductPrice.cost_price_locked || 0) : 0,
     output_tax_rate: p.ProductPrice ? p.ProductPrice.output_tax_rate : 0.13,
     input_tax_rate: p.ProductPrice ? p.ProductPrice.input_tax_rate : 0.13,
     input_tax_deductible: p.ProductPrice ? Number(p.ProductPrice.input_tax_deductible) : 1
@@ -2325,9 +2326,12 @@ async function refreshCostPrice(ctx) {
     ctx.throw(404, '商品不存在');
   }
 
-  const costPrice = await calculateFifoCost(productId);
-
   let price = await ProductPrice.findOne({ where: { product_id: productId } });
+  if (price && Number(price.cost_price_locked || 0) === 1) {
+    ctx.body = { code: 0, costPrice: Number(price.cost_price || 0), locked: true, message: '库存成本已锁定，未执行自动重算' };
+    return;
+  }
+  const costPrice = await calculateFifoCost(productId);
   if (price) {
     await price.update({
       cost_price: costPrice,
@@ -2355,9 +2359,12 @@ async function batchRefreshCost(ctx) {
 
   const results = [];
   for (const productId of productIds) {
-    const costPrice = await calculateFifoCost(productId);
-
     let price = await ProductPrice.findOne({ where: { product_id: productId } });
+    if (price && Number(price.cost_price_locked || 0) === 1) {
+      results.push({ productId, costPrice: Number(price.cost_price || 0), locked: true });
+      continue;
+    }
+    const costPrice = await calculateFifoCost(productId);
     if (price) {
       await price.update({
         cost_price: costPrice,
@@ -2376,6 +2383,18 @@ async function batchRefreshCost(ctx) {
   }
 
   ctx.body = { code: 0, data: results, message: '批量刷新成本价完成' };
+}
+
+async function setCostPriceLock(ctx) {
+  const { productId, locked, costPrice } = ctx.request.body || {};
+  if (!productId || typeof locked !== 'boolean') ctx.throw(400, '缺少商品ID或锁定状态');
+  if (costPrice !== undefined && (!Number.isFinite(Number(costPrice)) || Number(costPrice) < 0)) ctx.throw(400, '库存成本必须为大于等于0的数字');
+  const price = await ProductPrice.findOne({ where: { product_id: productId } });
+  if (!price) ctx.throw(404, '商品价格记录不存在');
+  const update = { cost_price_locked: locked ? 1 : 0 };
+  if (costPrice !== undefined) update.cost_price = moneyNumber(costPrice);
+  await price.update(update);
+  ctx.body = { code: 0, data: { productId, locked, costPrice: Number(update.cost_price ?? price.cost_price) }, message: locked ? '库存成本锁定成功' : '已解除库存成本锁定' };
 }
 
 // ===== 其他 =====
@@ -3037,10 +3056,14 @@ async function importCostRefresh(ctx) {
         continue;
       }
       // 兼容旧模板：未填写成本价时仍按库存入库价加权刷新；填写后以导入值为准。
+      const existingPrice = await ProductPrice.findOne({ where: { product_id: product.product_id } });
+      if (Number(existingPrice?.cost_price_locked || 0) === 1 && importedCostPrice === null) {
+        results.success++;
+        continue;
+      }
       const costPrice = importedCostPrice === null
         ? await calculateFifoCost(product.product_id)
         : moneyNumber(importedCostPrice);
-      const existingPrice = await ProductPrice.findOne({ where: { product_id: product.product_id } });
 
       if (existingPrice) {
         await existingPrice.update({
@@ -3868,7 +3891,7 @@ module.exports = {
     ctx.body = { code: 0, message: '删除成功' };
   },
   getCategoryTree, createCategory, updateCategory, deleteCategory, sortCategories,
-  getPriceList, exportCostPrices, setPrice, refreshCostPrice, batchRefreshCost, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory, applyPendingProductPriceChanges,
+  getPriceList, exportCostPrices, setPrice, refreshCostPrice, batchRefreshCost, setCostPriceLock, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory, applyPendingProductPriceChanges,
   getProductImportTask, downloadProductImportErrors, recoverProductImportTasks,
   getPnList, addPn, searchProduct, getPnAvailability,
   _test: {
