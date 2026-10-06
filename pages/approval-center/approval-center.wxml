@@ -22,6 +22,13 @@
   </scroll-view>
 
   <view class="partial-error" wx:if="{{viewMode === 'pending' && partialError}}">{{partialError}}</view>
+  <view wx:if="{{viewMode === 'pending' && visibleTasks.length}}" class="batch-approval-bar">
+    <view>
+      <text class="batch-approval-title">批量审批</text>
+      <text class="batch-approval-count">当前待审批 {{visibleTasks.length}} 条</text>
+    </view>
+    <button class="batch-approval-button" loading="{{batchSubmitting}}" disabled="{{batchSubmitting}}" bindtap="approveAll">一键审批通过</button>
+  </view>
   <view wx:if="{{viewMode === 'history'}}" class="history-search">
     <view class="history-search-row">
       <input class="history-input" value="{{historyKeyword}}" bindinput="onHistoryKeywordInput" bindconfirm="searchProductHistory" placeholder="按审批单号、商品名、PN、申请人筛选" />
@@ -125,11 +132,18 @@
           </view>
         </view>
 
+         <view class="product-edit-section" wx:if="{{selectedTask.managedBusiness && selectedTask.businessType === 'manufacturer_rebate_confirmation' && !selectedTask.readOnly}}">
+           <text class="section-title">确认厂商实际返利金额</text>
+           <text class="field-label required">实际返利金额（元）</text>
+           <input class="edit-input" type="digit" value="{{manufacturerRebateAmount}}" bindinput="onManufacturerRebateAmountInput" placeholder="请填写金额；无返利请填0" />
+           <text class="edit-tip">通过后金额进入待下账返利池；拒绝需填写审批意见。</text>
+         </view>
+
          <view class="product-edit-section" wx:if="{{selectedTask.type === 'product' && !selectedTask.readOnly && selectedTask.detailLoaded}}">
            <text class="section-title">修改商品信息</text>
            <text class="field-label required">商品名称</text>
            <input class="edit-input" value="{{selectedTask.productEdit.name}}" data-field="name" bindinput="onProductEditInput" placeholder="请输入商品名称" />
-           <text class="field-label">商品分类</text>
+           <text class="field-label">四级商品分类（必须选择最后一级）</text>
            <picker mode="selector" range="{{productCategoryOptions}}" range-key="displayName" value="{{selectedTask.productEdit.categoryIndex}}" bindchange="onProductCategoryChange">
              <view class="edit-readonly">{{selectedTask.productEdit.categoryName}}</view>
            </picker>
@@ -179,8 +193,14 @@
               <text class="line-meta" wx:if="{{line.meta}}">{{line.meta}}</text>
             </view>
             <view class="line-number">
-              <text>x{{line.quantity}}</text>
+              <text>{{line.quantityText}}</text>
               <text wx:if="{{line.amount}}">{{line.amount}}</text>
+            </view>
+            <view class="purchase-category-picker" wx:if="{{selectedTask.type === 'purchase' && line.needsProductCategory}}">
+              <text class="field-label required">新建商品需选择四级类别</text>
+              <picker mode="selector" range="{{productCategoryOptions}}" range-key="displayName" value="{{line.categoryIndex}}" data-item-index="{{index}}" bindchange="onProductCategoryChange">
+                <view class="edit-readonly">{{line.categoryName || '请选择四级商品类别'}}</view>
+              </picker>
             </view>
           </view>
         </view>

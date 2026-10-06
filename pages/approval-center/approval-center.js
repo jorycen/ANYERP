@@ -231,6 +231,23 @@ function loadTaskDetails(task) {
         { label: '审批节点', value: task.raw.node_name || task.raw.nodeName || task.stageText || '-' },
         { label: '申请说明', value: payload.reason || instance.summary || '-' }
       ];
+      if (businessType === 'manufacturer_rebate_confirmation') {
+        const rebate = Object.assign({}, task.raw, source, instance);
+        task.typeLabel = '厂商返利金额确认';
+        task.details = [
+          { label: '销售订单号', value: rebate.sales_order_no || '-' },
+          { label: '商品', value: rebate.product_name || '-' },
+          { label: 'PN', value: rebate.pn || '-' },
+          { label: 'SN', value: rebate.sn || '-' },
+          { label: '销售价格', value: `¥${money(rebate.sale_price || 0)}` },
+          { label: '我的提货价格', value: `¥${money(rebate.original_pickup_price || 0)}` },
+          { label: '供应商', value: rebate.supplier_name || '-' },
+          { label: '销售时政策提货价', value: `¥${money(rebate.pickup_price_at_sale || 0)}` },
+          { label: '当前结算价格', value: `¥${money(rebate.settlement_price_at_sale || 0)}` },
+          { label: '当前政策', value: rebate.policy_name || '-' },
+          { label: '政策内容', value: rebate.policy_content || '-' }
+        ];
+      }
       if (businessType === 'sn_change') {
         task.items = (Array.isArray(payload.items) ? payload.items : []).map(item => ({
           name: item.productName || '库存商品',
@@ -538,6 +555,7 @@ Page({
     activeType: 'all',
     selectedTask: null,
     reviewComment: '',
+    manufacturerRebateAmount: '',
     submitting: false,
     approvingAll: false,
     partialError: '',
@@ -610,32 +628,10 @@ Page({
   loadApprovals(options = {}) {
     const { page, pageSize } = taskPageParams(options);
     const append = page > 1;
-    const roles = this.data.roles;
     const loaders = [
       { type: 'generic', run: () => this.loadGenericTasks({ page, pageSize }) },
-      { type: 'return', run: () => this.loadReturnTasks({ page, pageSize }) },
-      { type: 'salesReturn', run: () => this.loadSalesReturnTasks({ page, pageSize }) }
+      { type: 'generic', run: () => this.loadManagedTasks() }
     ];
-
-    if (hasAnyRole(roles, ['admin', 'manager'])) {
-      // 与 Web 审批中心保持相同的销售待审批首批加载口径，避免目标订单被首屏分页挡住。
-      loaders.push({ type: 'sales', run: () => this.loadSalesTasks({ page, pageSize: Math.max(pageSize, 100) }) });
-    }
-    if (hasAnyRole(roles, ['admin', 'purchaser'])) {
-      loaders.push({ type: 'purchase', run: () => this.loadPurchaseTasks({ page, pageSize }) });
-    }
-    if (hasAnyRole(roles, ['admin'])) {
-      loaders.push({ type: 'expense', run: () => this.loadExpenseTasks({ page, pageSize }) });
-    }
-    if (hasAnyRole(roles, ['admin', 'finance', 'purchaser'])) {
-      loaders.push({ type: 'product', run: () => this.loadProductTasks({ page, pageSize }) });
-    }
-    if (roles.includes('finance')) {
-      loaders.push({ type: 'resource', run: () => this.loadResourceTasks({ page, pageSize }) });
-    }
-    if (roles.includes('finance') || roles.includes('admin')) {
-      loaders.push({ type: 'profit', run: () => this.loadProfitTasks({ page, pageSize }) });
-    }
 
     this.setData({ loading: !append, loadingMore: append, partialError: '' });
     const settled = [];
@@ -652,7 +648,7 @@ Page({
       });
       uniqueTasks.sort((left, right) => right.sortTime - left.sortTime);
       this.updateTasks(uniqueTasks, failed);
-      this.setData({ approvalPage: page, approvalHasMore: settled.some(result => result && result.ok && result.value && result.value.length >= pageSize) });
+      this.setData({ approvalPage: page, approvalHasMore: false });
     };
     return Promise.all(loaders.map((loader, index) => loader.run()
       .then(value => {
@@ -694,6 +690,10 @@ Page({
           const total = this.data.tasks.length;
           for (const task of this.data.tasks) {
             try {
+              if (task.managedBusiness && task.businessType === 'manufacturer_rebate_confirmation') {
+                failed.push(`${task.no || task.title || '单据'}：厂商返利金额需逐笔填写，已跳过`);
+                continue;
+              }
               await this.executeReview(task, 'approved', '');
             } catch (error) {
               failed.push(`${task.no || task.title || '单据'}：${error.message || '审批失败'}`);
@@ -714,6 +714,68 @@ Page({
           this.setData({ approvingAll: false });
         }
       }
+    });
+  },
+
+  loadManagedTasks() {
+    return api.approval.businessTasks().then(result => {
+      const payload = result && result.data;
+      const rows = Array.isArray(payload) ? payload : (payload && Array.isArray(payload.data) ? payload.data : []);
+      return rows.filter(item => item && item.business_type && item.business_id)
+        .filter(item => !item.manual_path && !['inventory_transfer', 'inventory_transfer_receipt'].includes(item.business_type))
+        .map(item => {
+          const row = item.row || {};
+          const businessType = item.business_type;
+          const businessId = String(item.business_id);
+          const businessNo = item.business_no || businessId;
+          const task = businessType === 'product_application'
+            ? this.buildProductTask(row, false)
+            : taskBase(businessType === 'purchase_request' ? 'purchase' : 'generic', row);
+          task.key = `managed:${businessType}:${businessId}`;
+          task.typeLabel = businessType === 'manufacturer_rebate_confirmation'
+            ? '厂商返利金额确认'
+            : (businessType === 'purchase_request' ? '采购申请审批' : approvalBusinessTypeLabel(businessType));
+          task.businessId = businessId;
+          task.businessType = businessType;
+          task.managedBusiness = true;
+          task.no = businessNo;
+          task.instanceId = item.instance_id || '';
+          task.title = row.product_name || row.supplier_name || row.employee_name || businessNo;
+          task.summary = row.reason || row.remark || row.order_no || row.source_no || '-';
+          task.applicant = row.applicant_name || row.create_user || row.apply_user || '';
+          task.stageText = item.node_name || '待审批';
+          task.createTime = row.create_time || row.submit_time || '';
+          task.createTimeText = formatTime(task.createTime);
+          task.sortTime = new Date(task.createTime || 0).getTime() || 0;
+          task.amountLabel = '金额';
+          task.amountText = money(row.total_amount ?? row.amount ?? row.change_amount ?? row.signed_amount ?? 0);
+          if (businessType !== 'product_application') {
+            task.details = [
+              { label: '业务类型', value: task.typeLabel },
+              { label: '审批环节', value: task.stageText },
+              { label: '单据编号', value: businessNo },
+              { label: '申请人', value: task.applicant || '-' },
+              { label: '说明', value: task.summary }
+            ];
+          }
+          if (businessType === 'manufacturer_rebate_confirmation') {
+            task.details = [
+              { label: '销售订单号', value: row.sales_order_no || businessNo },
+              { label: '商品', value: row.product_name || '-' },
+              { label: 'PN', value: row.pn || '-' },
+              { label: 'SN', value: row.sn || '-' },
+              { label: '销售价格', value: `¥${money(row.sale_price || 0)}` },
+              { label: '我的提货价格', value: `¥${money(row.original_pickup_price || 0)}` },
+              { label: '供应商', value: row.supplier_name || '-' },
+              { label: '销售时政策提货价', value: `¥${money(row.pickup_price_at_sale || 0)}` },
+              { label: '当前结算价格', value: `¥${money(row.settlement_price_at_sale || 0)}` },
+              { label: '当前政策', value: row.policy_name || '-' },
+              { label: '政策内容', value: row.policy_content || '-' }
+            ];
+          }
+          task.raw = Object.assign({}, row, { business_type: businessType, business_id: businessId });
+          return task;
+        });
     });
   },
 
@@ -1334,7 +1396,7 @@ Page({
       detailLoading: true,
       detailLoaded: false
     });
-    this.setData({ selectedTask, reviewComment: '' }, () => {
+    this.setData({ selectedTask, reviewComment: '', manufacturerRebateAmount: '' }, () => {
       if (selectedTask.type === 'product') this.loadProductCategoryOptions(key);
     });
     loadTaskDetails(selectedTask).then(task => {
@@ -1414,6 +1476,10 @@ Page({
     this.setData({ reviewComment: e.detail.value });
   },
 
+  onManufacturerRebateAmountInput(e) {
+    this.setData({ manufacturerRebateAmount: e.detail.value });
+  },
+
   previewTaskPhotos(e) {
     const urls = e.currentTarget.dataset.photos || [];
     if (urls.length) wx.previewImage({ current: e.currentTarget.dataset.current || urls[0], urls });
@@ -1466,6 +1532,14 @@ Page({
     if (this.data.submitting || !this.data.selectedTask) return;
     const action = e.currentTarget.dataset.action;
     const comment = String(this.data.reviewComment || '').trim();
+    const isManufacturerRebate = this.data.selectedTask.managedBusiness
+      && this.data.selectedTask.businessType === 'manufacturer_rebate_confirmation';
+    const rebateAmountText = String(this.data.manufacturerRebateAmount || '').trim();
+    if (action === 'approved' && isManufacturerRebate
+      && (!/^\d+(?:\.\d{1,2})?$/.test(rebateAmountText) || !Number.isFinite(Number(rebateAmountText)))) {
+      wx.showToast({ title: '请填写有效的厂商返利金额，无返利请填0', icon: 'none' });
+      return;
+    }
     if (action === 'rejected' && !comment) {
       wx.showToast({ title: '拒绝时必须填写审批意见', icon: 'none' });
       return;
@@ -1479,7 +1553,9 @@ Page({
       success: result => {
         if (!result.confirm) return;
         this.setData({ submitting: true });
-        this.executeReview(this.data.selectedTask, action, comment)
+        const selectedTask = Object.assign({}, this.data.selectedTask,
+          isManufacturerRebate ? { rebateAmount: Number(rebateAmountText) } : {});
+        this.executeReview(selectedTask, action, comment)
           .then(response => {
             wx.showToast({ title: response && response.message || '审批完成', icon: 'success' });
             this.setData({ selectedTask: null, reviewComment: '' });
@@ -1501,6 +1577,26 @@ Page({
   },
 
   executeReview(task, action, comment) {
+    if (task.managedBusiness) {
+      const businessData = {};
+      if (task.businessType === 'purchase_request') {
+        businessData.newProductCategories = action === 'approved'
+          ? (task.items || []).filter(item => item.needsProductCategory && item.categoryId)
+            .map(item => ({ itemId: item.itemId, categoryId: item.categoryId }))
+          : [];
+      }
+      if (task.businessType === 'product_application' && action === 'approved') {
+        businessData.payload = buildProductReviewPayload(task);
+      }
+      if (task.businessType === 'manufacturer_rebate_confirmation' && action === 'approved') {
+        businessData.rebateAmount = task.rebateAmount;
+      }
+      return api.approval.businessAction(task.businessType, task.businessId, {
+        action: action === 'approved' ? 'approve' : 'reject',
+        comment,
+        businessData
+      });
+    }
     if (task.type === 'sales') {
       return action === 'approved'
         ? api.order.approve(task.businessId)

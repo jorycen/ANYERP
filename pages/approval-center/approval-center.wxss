@@ -21,7 +21,7 @@
 .mode-tab.active { background: #f0ebff; color: #5b3cc4; font-weight: 600; }
 .history-search { margin: 18rpx 0; padding: 18rpx; border-radius: 14rpx; background: #fff; }
 .history-search-row { display: flex; align-items: center; gap: 12rpx; }
-.history-input { flex: 1; min-width: 0; padding: 17rpx 18rpx; border: 1rpx solid #e2e6ec; border-radius: 10rpx; color: #344054; font-size: 23rpx; }
+.history-input { flex: 1; min-width: 0; height: 70rpx; box-sizing: border-box; padding: 0 18rpx; border: 1rpx solid #e2e6ec; border-radius: 10rpx; color: #344054; font-size: 23rpx; }
 .history-search-button { flex: 0 0 100rpx; margin: 0; padding: 0; background: #5b3cc4; color: #fff; font-size: 24rpx; line-height: 68rpx; }
 .history-status { margin-top: 16rpx; padding: 15rpx 18rpx; border: 1rpx solid #e2e6ec; border-radius: 10rpx; color: #667085; font-size: 23rpx; }
 .history-readonly-tip { padding: 18rpx; color: #667085; background: #f8f9fc; font-size: 24rpx; text-align: center; }
@@ -110,6 +110,28 @@
   color: #b54708;
   font-size: 23rpx;
 }
+
+.batch-approval-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  margin: 18rpx 0;
+  padding: 18rpx 20rpx;
+  border: 1rpx solid #cdeedc;
+  border-radius: 16rpx;
+  background: #f0fbf5;
+}
+
+.batch-approval-title,
+.batch-approval-count {
+  display: block;
+}
+
+.batch-approval-title { color: #176b49; font-size: 25rpx; font-weight: 600; }
+.batch-approval-count { margin-top: 6rpx; color: #6d8a7b; font-size: 21rpx; }
+.batch-approval-button { flex: 0 0 190rpx; margin: 0; padding: 0; border-radius: 10rpx; background: #07c160; color: #fff; font-size: 23rpx; line-height: 68rpx; }
+.batch-approval-button[disabled] { opacity: .65; }
 
 .task-card {
   margin-bottom: 20rpx;

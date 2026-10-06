@@ -2611,6 +2611,16 @@ const api = {
     tasks(params = {}) {
       return http.request('/approval/tasks' + toQuery(params));
     },
+    businessTasks() {
+      return http.request('/approval/business-tasks');
+    },
+    businessAction(businessType, businessId, data = {}) {
+      return http.request({
+        url: '/approval/business/' + encodeURIComponent(businessType) + '/' + encodeURIComponent(businessId) + '/action',
+        method: 'POST',
+        data
+      });
+    },
     instance(instanceId) {
       return http.request('/approval/instances/' + encodeURIComponent(instanceId));
     },
