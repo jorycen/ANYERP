@@ -167,53 +167,6 @@
           </section>
         </el-tab-pane>
 
-        <el-tab-pane label="客户来源分析" name="customer-source">
-          <div class="filter-bar">
-            <el-date-picker
-              v-model="customerSourceParams.dateRange"
-              type="daterange"
-              value-format="YYYY-MM-DD"
-              range-separator="至"
-              start-placeholder="开始日期"
-              end-placeholder="结束日期"
-            />
-            <el-select v-model="customerSourceParams.dimension" style="width: 150px">
-              <el-option label="按公司" value="company" />
-              <el-option label="按门店" value="store" />
-              <el-option label="按员工" value="employee" />
-            </el-select>
-            <el-button type="primary" :loading="customerSourceLoading" @click="loadCustomerSourceAnalysis">查询</el-button>
-          </div>
-          <el-alert
-            title="按销售订单统计客户来源。混合商品订单会分别计入涉及的类别；售后单数按关联有效退单的销售订单数统计。"
-            type="info"
-            :closable="false"
-            show-icon
-            class="source-analysis-note"
-          />
-          <el-row :gutter="12" class="source-summary">
-            <el-col :xs="12" :sm="6"><el-card shadow="never"><div class="source-metric-label">销售单数</div><strong>{{ customerSourceSummary.orderCount || 0 }}</strong></el-card></el-col>
-            <el-col :xs="12" :sm="6"><el-card shadow="never"><div class="source-metric-label">销售额</div><strong>¥{{ formatMoney(customerSourceSummary.salesAmount) }}</strong></el-card></el-col>
-            <el-col v-if="customerSourceCanViewProfit" :xs="12" :sm="6"><el-card shadow="never"><div class="source-metric-label">毛利</div><strong>¥{{ formatMoney(customerSourceSummary.grossProfit) }}</strong></el-card></el-col>
-            <el-col :xs="12" :sm="6"><el-card shadow="never"><div class="source-metric-label">涉及售后单数</div><strong>{{ customerSourceSummary.afterSalesOrderCount || 0 }}</strong></el-card></el-col>
-          </el-row>
-          <el-table :data="customerSourceRows" stripe border v-loading="customerSourceLoading" empty-text="暂无客户来源数据">
-            <el-table-column prop="dimensionName" :label="customerSourceDimensionLabel" min-width="130" />
-            <el-table-column prop="customerSource" label="客户来源" min-width="130" />
-            <el-table-column prop="sourceDetail" label="来源明细" min-width="130" />
-            <el-table-column prop="orderCount" label="销售单数" width="100" align="right" />
-            <el-table-column prop="salesAmount" label="销售额" width="130" align="right"><template #default="{ row }">¥{{ formatMoney(row.salesAmount) }}</template></el-table-column>
-            <el-table-column v-if="customerSourceCanViewProfit" prop="grossProfit" label="毛利" width="130" align="right"><template #default="{ row }">¥{{ formatMoney(row.grossProfit) }}</template></el-table-column>
-            <el-table-column prop="afterSalesOrderCount" label="售后单数" width="100" align="right" />
-            <el-table-column label="销售类别单数" min-width="240">
-              <template #default="{ row }">
-                <el-tag v-for="item in row.categories" :key="item.name" size="small" effect="plain" class="source-category-tag">{{ item.name }} {{ item.orderCount }} 单</el-tag>
-                <span v-if="!row.categories?.length">-</span>
-              </template>
-            </el-table-column>
-          </el-table>
-        </el-tab-pane>
-
         <el-tab-pane label="库存报表" name="inventory">
           <div class="filter-bar">
             <el-select v-model="inventoryParams.storeId" placeholder="选择门店" clearable>
@@ -578,10 +531,6 @@ const stores = ref([])
 const salesData = ref([])
 const salesCategoryData = ref([])
 const salesCanViewProfit = ref(false)
-const customerSourceRows = ref([])
-const customerSourceSummary = ref({})
-const customerSourceCanViewProfit = ref(false)
-const customerSourceLoading = ref(false)
 const inventoryData = ref([])
 const inventorySummary = ref({ totalCount: 0, totalCost: 0, staleCount: 0, staleRate: 0 })
 const employeeData = ref([])
@@ -614,8 +563,6 @@ const salesPerformanceParams = reactive({
   employeeId: ''
 })
 const inventoryParams = reactive({ storeId: '' })
-const customerSourceParams = reactive({ dateRange: currentMonthRange(), dimension: 'company' })
-const customerSourceDimensionLabel = computed(() => ({ company: '公司', store: '门店', employee: '员工' }[customerSourceParams.dimension] || '公司'))
 const employeeParams = reactive({ dateRange: [], storeId: '', staffName: '', orderNo: '', page: 1, pageSize: 20 })
 const adjustmentForm = reactive({ adjustmentType: 'increase', amount: 0.01, reason: '' })
 const adjustmentParams = reactive({ page: 1, pageSize: 20 })
@@ -637,9 +584,7 @@ onMounted(() => {
 watch(() => route.path, syncTabFromRoute)
 
 const onTabChange = (tabName) => {
-  if (tabName === 'customer-source' && customerSourceRows.value.length === 0) {
-    loadCustomerSourceAnalysis()
-  }
+
   if (tabName === 'sales') {
     if (salesData.value.length === 0) loadSalesReport()
     if (salesPerformanceDetails.value.length === 0) loadSalesPerformanceDetails()
@@ -915,40 +860,6 @@ function currentWeekRange() {
     String(date.getDate()).padStart(2, '0')
   ].join('-')
   return [format(monday), format(today)]
-}
-
-function currentMonthRange() {
-  const today = new Date()
-  const format = date => [
-    date.getFullYear(),
-    String(date.getMonth() + 1).padStart(2, '0'),
-    String(date.getDate()).padStart(2, '0')
-  ].join('-')
-  return [format(new Date(today.getFullYear(), today.getMonth(), 1)), format(today)]
-}
-
-const loadCustomerSourceAnalysis = async () => {
-  if (!customerSourceParams.dateRange || customerSourceParams.dateRange.length !== 2) {
-    ElMessage.warning('请选择客户来源分析的日期范围')
-    return
-  }
-  customerSourceLoading.value = true
-  try {
-    const res = await api.getCustomerSourceAnalysis({
-      startDate: customerSourceParams.dateRange[0],
-      endDate: customerSourceParams.dateRange[1],
-      dimension: customerSourceParams.dimension
-    })
-    if (res.code === 0) {
-      customerSourceRows.value = res.data?.rows || []
-      customerSourceSummary.value = res.data?.summary || {}
-      customerSourceCanViewProfit.value = Boolean(res.data?.canViewProfit)
-    }
-  } catch (err) {
-    ElMessage.error(err?.response?.data?.message || '加载客户来源分析失败')
-  } finally {
-    customerSourceLoading.value = false
-  }
 }
 
 const formatDateTime = (value) => {

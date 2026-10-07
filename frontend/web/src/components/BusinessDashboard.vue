@@ -77,7 +77,7 @@
         v-for="tab in dimensionTabs"
         :key="tab.value"
         :class="{ active: activeDimension === tab.value }"
-        @click="activeDimension = tab.value"
+        @click="selectDimension(tab.value)"
       >
         {{ tab.label }}
       </button>
@@ -92,7 +92,36 @@
       class="error-alert"
     />
 
-    <section v-if="dashboard.decisionInsights?.length" class="decision-panel">
+    <section v-if="activeDimension === 'customerSource'" class="customer-source-section">
+      <DashboardPanel title="客户来源分析">
+        <template #actions>
+          <el-select v-model="customerSourceDimension" style="width: 150px" @change="loadCustomerSourceAnalysis">
+            <el-option label="按公司" value="company" />
+            <el-option label="按门店" value="store" />
+            <el-option label="按员工" value="employee" />
+          </el-select>
+        </template>
+        <p class="customer-source-note">按销售订单客户来源统计；混合商品订单会分别计入涉及类别，售后单数按关联的有效退单统计。</p>
+        <div class="customer-source-summary">
+          <div><span>销售单数</span><strong>{{ customerSourceSummary.orderCount || 0 }}</strong></div>
+          <div><span>销售额</span><strong>{{ formatCurrency(customerSourceSummary.salesAmount) }}</strong></div>
+          <div v-if="customerSourceCanViewProfit"><span>毛利</span><strong>{{ formatCurrency(customerSourceSummary.grossProfit) }}</strong></div>
+          <div><span>涉及售后单数</span><strong>{{ customerSourceSummary.afterSalesOrderCount || 0 }}</strong></div>
+        </div>
+        <el-table :data="customerSourceRows" stripe v-loading="customerSourceLoading" empty-text="暂无客户来源数据">
+          <el-table-column prop="dimensionName" :label="customerSourceDimensionLabel" min-width="130" />
+          <el-table-column prop="customerSource" label="客户来源" min-width="130" />
+          <el-table-column prop="sourceDetail" label="来源明细" min-width="130" />
+          <el-table-column prop="orderCount" label="销售单数" width="100" align="right" />
+          <el-table-column label="销售额" width="130" align="right"><template #default="{ row }">{{ formatCurrency(row.salesAmount) }}</template></el-table-column>
+          <el-table-column v-if="customerSourceCanViewProfit" label="毛利" width="130" align="right"><template #default="{ row }">{{ formatCurrency(row.grossProfit) }}</template></el-table-column>
+          <el-table-column prop="afterSalesOrderCount" label="售后单数" width="100" align="right" />
+          <el-table-column label="销售类别单数" min-width="240"><template #default="{ row }"><el-tag v-for="item in row.categories" :key="item.name" size="small" effect="plain" class="source-category-tag">{{ item.name }} {{ item.orderCount }} 单</el-tag><span v-if="!row.categories?.length">-</span></template></el-table-column>
+        </el-table>
+      </DashboardPanel>
+    </section>
+
+    <section v-if="dashboard.decisionInsights?.length && activeDimension !== 'customerSource'" class="decision-panel">
       <div class="decision-panel-heading">
         <div>
           <h2>经营预警与建议</h2>
@@ -112,7 +141,7 @@
       </div>
     </section>
 
-    <section v-if="dashboard.kpis" class="kpi-grid">
+    <section v-if="dashboard.kpis && activeDimension !== 'customerSource'" class="kpi-grid">
       <article v-for="card in kpiCards" :key="card.key" class="kpi-card">
         <div class="kpi-icon" :class="card.color">
           <el-icon><component :is="card.icon" /></el-icon>
@@ -365,13 +394,20 @@ const dimensionTabs = [
   { label: '门店', value: 'store' },
   { label: '员工', value: 'employee' },
   { label: '产品线', value: 'productLine' },
-  { label: '产品', value: 'product' }
+  { label: '产品', value: 'product' },
+  { label: '客户来源', value: 'customerSource' }
 ]
 
 const filterOptions = reactive({ stores: [], employees: [], productLines: [], regions: [] })
 const filters = reactive({ regionId: '', storeId: '', employeeId: '', productLine: '', granularity: 'day' })
 const dateRange = ref(currentWeekRange())
 const dashboard = reactive(emptyDashboard())
+const customerSourceDimension = ref('company')
+const customerSourceDimensionLabel = computed(() => ({ company: '公司', store: '门店', employee: '员工' }[customerSourceDimension.value] || '公司'))
+const customerSourceRows = ref([])
+const customerSourceSummary = ref({})
+const customerSourceCanViewProfit = ref(false)
+const customerSourceLoading = ref(false)
 
 function emptyDashboard() {
   return {
@@ -460,8 +496,31 @@ function openCustomRange() {
   datePickerRef.value?.focus?.()
 }
 
+async function selectDimension(value) {
+  activeDimension.value = value
+  if (value === 'customerSource') await loadCustomerSourceAnalysis()
+}
+
+async function loadCustomerSourceAnalysis() {
+  if (!Array.isArray(dateRange.value) || dateRange.value.length !== 2) return
+  customerSourceLoading.value = true
+  try {
+    const res = await api.getCustomerSourceAnalysis({ startDate: dateRange.value[0], endDate: dateRange.value[1], dimension: customerSourceDimension.value })
+    if (res.code === 0) {
+      customerSourceRows.value = res.data?.rows || []
+      customerSourceSummary.value = res.data?.summary || {}
+      customerSourceCanViewProfit.value = Boolean(res.data?.canViewProfit)
+    }
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '客户来源分析加载失败')
+  } finally {
+    customerSourceLoading.value = false
+  }
+}
+
 function showSection(section) {
   if (activeDimension.value === 'overall') return true
+  if (activeDimension.value === 'customerSource') return false
   if (section === 'trend') return ['store'].includes(activeDimension.value)
   return activeDimension.value === section
 }
@@ -496,6 +555,7 @@ async function loadOverview() {
       Object.assign(dashboard, emptyDashboard(), res.data || {})
       await nextTick()
       renderCharts()
+      if (activeDimension.value === 'customerSource') await loadCustomerSourceAnalysis()
     }
   } catch (error) {
     errorMessage.value = error.response?.data?.message || error.message || '经营看板加载失败'
@@ -1086,6 +1146,14 @@ onBeforeUnmount(() => {
   gap: 10px;
   min-height: 170px;
 }
+
+.customer-source-note { margin: 0 0 14px; color: #718096; font-size: 12px; }
+.customer-source-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.customer-source-summary > div { padding: 14px; border: 1px solid #e8edf4; border-radius: 8px; background: #fbfcfe; }
+.customer-source-summary span, .customer-source-summary strong { display: block; }
+.customer-source-summary span { color: #718096; font-size: 12px; }
+.customer-source-summary strong { margin-top: 8px; color: #26364d; font-size: 19px; }
+.source-category-tag { margin: 2px 5px 2px 0; }
 
 .decision-panel {
   margin-bottom: 16px;
