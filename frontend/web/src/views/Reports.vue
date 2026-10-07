@@ -927,6 +927,30 @@ function currentMonthRange() {
   return [format(new Date(today.getFullYear(), today.getMonth(), 1)), format(today)]
 }
 
+const loadCustomerSourceAnalysis = async () => {
+  if (!customerSourceParams.dateRange || customerSourceParams.dateRange.length !== 2) {
+    ElMessage.warning('请选择客户来源分析的日期范围')
+    return
+  }
+  customerSourceLoading.value = true
+  try {
+    const res = await api.getCustomerSourceAnalysis({
+      startDate: customerSourceParams.dateRange[0],
+      endDate: customerSourceParams.dateRange[1],
+      dimension: customerSourceParams.dimension
+    })
+    if (res.code === 0) {
+      customerSourceRows.value = res.data?.rows || []
+      customerSourceSummary.value = res.data?.summary || {}
+      customerSourceCanViewProfit.value = Boolean(res.data?.canViewProfit)
+    }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || '加载客户来源分析失败')
+  } finally {
+    customerSourceLoading.value = false
+  }
+}
+
 const formatDateTime = (value) => {
   if (!value) return '-'
   return new Date(value).toLocaleString('zh-CN', { hour12: false })
@@ -1020,29 +1044,6 @@ const initInventoryChart = () => {
   background: #f8fafd;
 }
 
-const loadCustomerSourceAnalysis = async () => {
-  if (!customerSourceParams.dateRange || customerSourceParams.dateRange.length !== 2) {
-    ElMessage.warning('请选择客户来源分析的日期范围')
-    return
-  }
-  customerSourceLoading.value = true
-  try {
-    const res = await api.getCustomerSourceAnalysis({
-      startDate: customerSourceParams.dateRange[0],
-      endDate: customerSourceParams.dateRange[1],
-      dimension: customerSourceParams.dimension
-    })
-    if (res.code === 0) {
-      customerSourceRows.value = res.data?.rows || []
-      customerSourceSummary.value = res.data?.summary || {}
-      customerSourceCanViewProfit.value = Boolean(res.data?.canViewProfit)
-    }
-  } catch (err) {
-    ElMessage.error(err?.response?.data?.message || '加载客户来源分析失败')
-  } finally {
-    customerSourceLoading.value = false
-  }
-}
 .performance-reason {
   display: flex;
   flex-direction: column;
