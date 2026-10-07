@@ -13,6 +13,9 @@ const {
   ProductCategory,
   ProductSettlementItem,
   Store,
+  Distributor,
+  Staff,
+  SalesReturnRequest,
   Region,
   PerformanceProfitAdjustment,
   ExpensePerformanceAllocation,
@@ -443,6 +446,134 @@ function buildInventoryReportMetrics(categoryStats = []) {
     ? Number((summary.staleCount / summary.totalCount * 100).toFixed(2))
     : 0;
   return { rows, summary };
+}
+
+async function getCustomerSourceAnalysis(ctx) {
+  const { startDate, endDate, dimension = 'company' } = ctx.query;
+  const user = ctx.state.user;
+  const groupBy = ['company', 'store', 'employee'].includes(dimension) ? dimension : 'company';
+  const storeIds = await resolveReportStoreIds(user);
+  const where = {
+    is_deleted: 0,
+    store_id: storeIds.includes('*') ? { [Op.ne]: null } : { [Op.in]: storeIds },
+    order_status: { [Op.in]: POSITIVE_SALES_ORDER_STATUSES }
+  };
+  appendOperatingSourceCondition(where);
+  if (startDate && endDate) {
+    where.create_time = { [Op.gte]: new Date(startDate), [Op.lte]: new Date(`${endDate} 23:59:59`) };
+  }
+  if (isSelfOnlyReportUser(user)) {
+    const participation = buildEmployeeParticipationCondition(user.staffId);
+    where[Op.and] = [...(where[Op.and] || []), participation];
+  }
+
+  const [orders, categories] = await Promise.all([
+    Order.findAll({
+      where,
+      attributes: [
+        'order_id', 'store_id', 'create_staff_id', 'create_user', 'operator_staff_id', 'operator_name',
+        'customer_source', 'customer_source_detail', 'total_amount', 'create_time'
+      ],
+      include: [
+        { model: Store, attributes: ['store_id', 'name', 'distributor_id'], include: [{ model: Distributor, attributes: ['distributor_id', 'name'], required: false }] },
+        { model: Staff, as: 'Applicant', attributes: ['staff_id', 'name'], required: false },
+        { model: OrderGrossProfit, as: 'grossProfitSnapshot', attributes: ['gross_profit_amount'], required: false },
+        { model: OrderItem, include: [{ model: Product, as: 'Product', attributes: ['category_id', 'category'], required: false }] }
+      ],
+      order: [['create_time', 'DESC']]
+    }),
+    ProductCategory.findAll({ attributes: ['category_id', 'parent_id', 'name'], raw: true })
+  ]);
+
+  if (!orders.length) {
+    ctx.body = { dimension: groupBy, canViewProfit: canViewProfit(user), summary: { orderCount: 0, salesAmount: 0, grossProfit: 0, afterSalesOrderCount: 0 }, rows: [] };
+    return;
+  }
+
+  const orderIds = orders.map(order => order.order_id);
+  const orderIdSet = new Set(orderIds.map(String));
+  const returnRows = await SalesReturnRequest.findAll({
+    where: { order_id: { [Op.in]: orderIds }, status: { [Op.notIn]: ['cancelled', 'canceled', 'voided', 'rejected'] } },
+    attributes: ['order_id'],
+    raw: true
+  });
+  const afterSalesOrderIds = new Set(returnRows.map(row => String(row.order_id)));
+  const categoryMap = new Map(categories.map(row => [String(row.category_id), row]));
+  const groups = new Map();
+  const getRootCategory = product => {
+    let current = categoryMap.get(String(product?.category_id || ''));
+    let root = current;
+    const seen = new Set();
+    while (current?.parent_id && !seen.has(String(current.category_id))) {
+      seen.add(String(current.category_id));
+      const parent = categoryMap.get(String(current.parent_id));
+      if (!parent) break;
+      root = parent;
+      current = parent;
+    }
+    return String(root?.name || product?.category || '其他').trim() || '其他';
+  };
+  const categoryLabel = name => {
+    const normalized = String(name || '').replace(/\s+/g, '').toLowerCase();
+    if (/电脑|笔记本|thinkpad|thinkbook|yoga|小新/.test(normalized)) return '电脑销售';
+    if (/台机|台式|主机/.test(normalized)) return '台机销售';
+    if (/手机|iphone|motorola|moto/.test(normalized)) return '手机销售';
+    if (/平板|tablet|ipad/.test(normalized)) return '平板销售';
+    if (/配件/.test(normalized)) return '配件销售';
+    if (/选件/.test(normalized)) return '选件销售';
+    if (/二手/.test(normalized)) return '二手销售';
+    return `${name}销售`;
+  };
+
+  orders.forEach(order => {
+    const store = order.Store || {};
+    const distributor = store.Distributor || {};
+    const employeeId = order.operator_staff_id || order.create_staff_id || '';
+    const employeeName = order.operator_name || order.create_user || order.Applicant?.name || '未指定员工';
+    let dimensionId, dimensionName;
+    if (groupBy === 'store') {
+      dimensionId = store.store_id || order.store_id;
+      dimensionName = store.name || '未命名门店';
+    } else if (groupBy === 'employee') {
+      dimensionId = employeeId || employeeName;
+      dimensionName = employeeName;
+    } else {
+      dimensionId = distributor.distributor_id || store.distributor_id || 'unknown-company';
+      dimensionName = distributor.name || '未配置公司';
+    }
+    const sourceName = String(order.customer_source || '').trim() || '未填写来源';
+    const sourceDetail = String(order.customer_source_detail || '').trim() || '-';
+    const key = JSON.stringify([dimensionId, sourceName, sourceDetail]);
+    const group = groups.get(key) || {
+      dimensionId: String(dimensionId || ''), dimensionName, customerSource: sourceName, sourceDetail,
+      orderCount: 0, salesAmount: 0, grossProfit: 0, afterSalesOrderCount: 0, categories: new Map()
+    };
+    group.orderCount += 1;
+    group.salesAmount += toNumber(order.total_amount);
+    group.grossProfit += toNumber(order.grossProfitSnapshot?.gross_profit_amount);
+    if (afterSalesOrderIds.has(String(order.order_id))) group.afterSalesOrderCount += 1;
+    const orderCategories = new Set((order.OrderItems || []).map(item => categoryLabel(getRootCategory(item.Product))));
+    orderCategories.forEach(name => group.categories.set(name, (group.categories.get(name) || 0) + 1));
+    groups.set(key, group);
+  });
+
+  const rows = [...groups.values()].map(group => ({
+    ...group,
+    salesAmount: roundMoney(group.salesAmount),
+    grossProfit: canViewProfit(user) ? roundMoney(group.grossProfit) : null,
+    categories: [...group.categories.entries()].map(([name, orderCount]) => ({ name, orderCount })).sort((a, b) => b.orderCount - a.orderCount || a.name.localeCompare(b.name, 'zh-CN'))
+  })).sort((a, b) => b.salesAmount - a.salesAmount || a.dimensionName.localeCompare(b.dimensionName, 'zh-CN'));
+  ctx.body = {
+    dimension: groupBy,
+    canViewProfit: canViewProfit(user),
+    summary: {
+      orderCount: orders.length,
+      salesAmount: roundMoney(orders.reduce((sum, order) => sum + toNumber(order.total_amount), 0)),
+      grossProfit: canViewProfit(user) ? roundMoney(orders.reduce((sum, order) => sum + toNumber(order.grossProfitSnapshot?.gross_profit_amount), 0)) : null,
+      afterSalesOrderCount: [...afterSalesOrderIds].filter(id => orderIdSet.has(id)).length
+    },
+    rows
+  };
 }
 
 function buildInventoryCategoryOrderMap(categories = []) {
@@ -912,6 +1043,7 @@ async function getDashboardOverview(ctx) {
 
 module.exports = {
   getSalesReport,
+  getCustomerSourceAnalysis,
   getInventoryReport,
   getEmployeePerformanceReport,
   getDashboardFilters,

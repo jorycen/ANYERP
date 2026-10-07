@@ -5,6 +5,7 @@ const Router = require('koa-router');
 const multer = require('@koa/multer');
 const {
   getSalesReport,
+  getCustomerSourceAnalysis,
   getInventoryReport,
   getEmployeePerformanceReport,
   getDashboardFilters,
@@ -35,6 +36,7 @@ const upload = multer({
 });
 
 router.get('/sales', getSalesReport);
+router.get('/customer-source-analysis', getCustomerSourceAnalysis);
 router.get('/inventory', getInventoryReport);
 router.get('/employee-performance', getEmployeePerformanceReport);
 router.get('/dashboard/filters', getDashboardFilters);

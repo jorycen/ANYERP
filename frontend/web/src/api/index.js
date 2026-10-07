@@ -624,6 +624,7 @@ export default {
 
   // Report
   getSalesReport: (params) => api.get('/report/sales', { params }),
+  getCustomerSourceAnalysis: (params) => api.get('/report/customer-source-analysis', { params }),
   getInventoryReport: (params) => api.get('/report/inventory', { params }),
   getDashboardFilters: () => api.get('/report/dashboard/filters'),
   getDashboardOverview: (params) => api.get('/report/dashboard/overview', { params }),
