@@ -112,7 +112,7 @@
         </template>
         <p class="customer-source-note">按销售订单客户来源统计；混合商品订单会分别计入涉及类别，售后单数按关联的有效退单统计。</p>
         <div class="source-chart-toolbar">
-          <strong>来源贡献排名</strong>
+          <strong>客户来源占比</strong>
           <el-radio-group v-model="customerSourceMetric" size="small" @change="renderCustomerSourceChart">
             <el-radio-button label="salesAmount">销售额</el-radio-button>
             <el-radio-button label="orderCount">订单数</el-radio-button>
@@ -440,9 +440,17 @@ const customerSourceChartRows = computed(() => {
     group.grossProfit += Number(row.grossProfit || 0)
     groups.set(label, group)
   })
-  return [...groups.values()]
+  const sorted = [...groups.values()]
     .sort((a, b) => b[customerSourceMetric.value] - a[customerSourceMetric.value] || a.label.localeCompare(b.label, 'zh-CN'))
-    .slice(0, 12)
+  if (sorted.length <= 8) return sorted
+  const topSources = sorted.slice(0, 7)
+  const otherSources = sorted.slice(7).reduce((other, row) => ({
+    label: '其他来源',
+    orderCount: other.orderCount + row.orderCount,
+    salesAmount: other.salesAmount + row.salesAmount,
+    grossProfit: other.grossProfit + row.grossProfit
+  }), { label: '其他来源', orderCount: 0, salesAmount: 0, grossProfit: 0 })
+  return [...topSources, otherSources]
 })
 
 function emptyDashboard() {
@@ -620,39 +628,45 @@ function renderCustomerSourceChart() {
   const rows = customerSourceChartRows.value
   const valueKey = customerSourceMetric.value
   const valueLabel = { salesAmount: '销售额', orderCount: '订单数', grossProfit: '毛利' }[valueKey] || '销售额'
+  const total = rows.reduce((sum, row) => sum + Number(row[valueKey] || 0), 0)
+  const formatValue = value => valueKey === 'orderCount' ? `${formatNumber(value)} 单` : formatCurrency(value)
   const chart = getChart(customerSourceChartRef.value, 'customerSource')
   if (!chart) return
   chart.setOption({
-    color: ['#3478e5'],
+    color: ['#4f74c8', '#80be66', '#f0b84b', '#e66a6a', '#64b4d1', '#38a476', '#a67bd2', '#ff8a55'],
     tooltip: {
-      trigger: 'axis',
-      axisPointer: { type: 'shadow' },
-      formatter: params => {
-        const point = params?.[0]
-        if (!point) return ''
-        const value = valueKey === 'orderCount' ? formatNumber(point.value) : formatCurrency(point.value)
-        return `${point.name}<br/>${valueLabel}：${value}`
+      trigger: 'item',
+      formatter: params => `${params.name}<br/>${valueLabel}：${formatValue(params.value)}<br/>占比：${params.percent}%`
+    },
+    legend: {
+      orient: 'vertical',
+      type: 'scroll',
+      right: '5%',
+      top: 'middle',
+      textStyle: { color: '#53627a', fontSize: 12 },
+      formatter: name => {
+        const row = rows.find(item => item.label === name)
+        const share = total > 0 ? (Number(row?.[valueKey] || 0) / total * 100).toFixed(1) : '0.0'
+        return `${name}  ${share}%`
       }
     },
-    grid: { left: 150, right: 28, top: 10, bottom: 30 },
-    xAxis: {
-      type: 'value',
-      axisLabel: { formatter: valueKey === 'orderCount' ? value => formatNumber(value) : compactNumber, color: '#718096' },
-      splitLine: { lineStyle: { type: 'dashed', color: '#e8edf4' } }
-    },
-    yAxis: {
-      type: 'category',
-      inverse: true,
-      data: rows.map(row => row.label),
-      axisLabel: { color: '#53627a', width: 135, overflow: 'truncate' }
-    },
+    graphic: [{
+      type: 'text',
+      left: '35%',
+      top: '42%',
+      style: { text: `${valueLabel}\n${formatValue(total)}`, textAlign: 'center', fill: '#53627a', fontSize: 13, lineHeight: 22 }
+    }],
     series: [{
       name: valueLabel,
-      type: 'bar',
-      barMaxWidth: 22,
-      data: rows.map(row => row[valueKey]),
-      itemStyle: { color: '#3478e5', borderRadius: [0, 5, 5, 0] },
-      label: { show: true, position: 'right', color: '#53627a', formatter: params => valueKey === 'orderCount' ? formatNumber(params.value) : compactNumber(params.value) }
+      type: 'pie',
+      radius: ['48%', '72%'],
+      center: ['38%', '50%'],
+      minAngle: 2,
+      avoidLabelOverlap: true,
+      itemStyle: { borderColor: '#fff', borderWidth: 2 },
+      label: { show: false },
+      emphasis: { label: { show: true, formatter: '{b}\n{d}%', fontSize: 12, fontWeight: 600 } },
+      data: rows.map(row => ({ name: row.label, value: row[valueKey] }))
     }]
   }, true)
 }
