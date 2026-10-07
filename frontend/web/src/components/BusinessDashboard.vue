@@ -93,6 +93,15 @@
     />
 
     <section v-if="activeDimension === 'customerSource'" class="customer-source-section">
+      <div class="kpi-grid customer-source-kpi-grid">
+        <article v-for="card in customerSourceKpiCards" :key="card.key" class="kpi-card">
+          <div class="kpi-icon" :class="card.color"><el-icon><component :is="card.icon" /></el-icon></div>
+          <div class="kpi-content">
+            <div class="kpi-label">{{ card.label }}</div>
+            <div class="kpi-value">{{ card.value }}</div>
+          </div>
+        </article>
+      </div>
       <DashboardPanel title="客户来源分析">
         <template #actions>
           <el-select v-model="customerSourceDimension" style="width: 150px" @change="loadCustomerSourceAnalysis">
@@ -102,12 +111,6 @@
           </el-select>
         </template>
         <p class="customer-source-note">按销售订单客户来源统计；混合商品订单会分别计入涉及类别，售后单数按关联的有效退单统计。</p>
-        <div class="customer-source-summary">
-          <div><span>销售单数</span><strong>{{ customerSourceSummary.orderCount || 0 }}</strong></div>
-          <div><span>销售额</span><strong>{{ formatCurrency(customerSourceSummary.salesAmount) }}</strong></div>
-          <div v-if="customerSourceCanViewProfit"><span>毛利</span><strong>{{ formatCurrency(customerSourceSummary.grossProfit) }}</strong></div>
-          <div><span>涉及售后单数</span><strong>{{ customerSourceSummary.afterSalesOrderCount || 0 }}</strong></div>
-        </div>
         <el-table :data="customerSourceRows" stripe v-loading="customerSourceLoading" empty-text="暂无客户来源数据">
           <el-table-column prop="dimensionName" :label="customerSourceDimensionLabel" min-width="130" />
           <el-table-column prop="customerSource" label="客户来源" min-width="130" />
@@ -408,6 +411,12 @@ const customerSourceRows = ref([])
 const customerSourceSummary = ref({})
 const customerSourceCanViewProfit = ref(false)
 const customerSourceLoading = ref(false)
+const customerSourceKpiCards = computed(() => [
+  { key: 'orders', label: '销售单数', value: formatNumber(customerSourceSummary.value.orderCount), icon: Document, color: 'blue' },
+  { key: 'sales', label: '销售额', value: formatCurrency(customerSourceSummary.value.salesAmount), icon: Money, color: 'green' },
+  ...(customerSourceCanViewProfit.value ? [{ key: 'profit', label: '毛利额', value: formatCurrency(customerSourceSummary.value.grossProfit), icon: DataAnalysis, color: 'orange' }] : []),
+  { key: 'aftersales', label: '涉及售后单数', value: formatNumber(customerSourceSummary.value.afterSalesOrderCount), icon: UserFilled, color: 'purple' }
+])
 
 function emptyDashboard() {
   return {
@@ -1148,11 +1157,7 @@ onBeforeUnmount(() => {
 }
 
 .customer-source-note { margin: 0 0 14px; color: #718096; font-size: 12px; }
-.customer-source-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
-.customer-source-summary > div { padding: 14px; border: 1px solid #e8edf4; border-radius: 8px; background: #fbfcfe; }
-.customer-source-summary span, .customer-source-summary strong { display: block; }
-.customer-source-summary span { color: #718096; font-size: 12px; }
-.customer-source-summary strong { margin-top: 8px; color: #26364d; font-size: 19px; }
+.customer-source-kpi-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
 .source-category-tag { margin: 2px 5px 2px 0; }
 
 .decision-panel {
