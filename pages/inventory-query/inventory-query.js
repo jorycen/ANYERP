@@ -46,6 +46,7 @@ Page({
     storeId: '',
     storeName: '',
     loading: false,
+    exporting: false,
     refreshing: false,
     hasQueried: false,
     isSearchMode: false,
@@ -359,6 +360,71 @@ Page({
     Promise.resolve(task).finally(() => {
       this.setData({ refreshing: false });
     });
+  },
+
+  exportInventorySummary() {
+    if (this.data.exporting) return;
+    this.setData({ exporting: true });
+    wx.showLoading({ title: '正在导出' });
+    let loadingFinished = false;
+    const finishLoading = () => {
+      if (loadingFinished) return;
+      loadingFinished = true;
+      wx.hideLoading();
+      this.setData({ exporting: false });
+    };
+    try {
+      api.inventory.summaryExport({
+        keyword: String(this.data.keyword || '').trim(),
+        storeId: this.data.storeId || '',
+        productType: this.data.productType || '',
+        modelFilter: this.data.modelFilter || ''
+      }).then(request => {
+        wx.downloadFile({
+          url: request.url,
+          header: request.header,
+          timeout: 120000,
+          success: result => {
+            if (result.statusCode !== 200 || !result.tempFilePath) {
+              console.error('库存简表下载响应异常:', result.statusCode, result.tempFilePath || '');
+              wx.showToast({ title: result.statusCode === 401 ? '下载凭证失效，请重新登录后重试' : '导出失败，请重试', icon: 'none' });
+              return;
+            }
+            const openDownloadedFile = filePath => wx.openDocument({
+              filePath,
+              fileType: 'xlsx',
+              showMenu: true,
+              success: () => wx.showToast({ title: '库存简表已下载', icon: 'success' }),
+              fail: err => {
+                console.error('打开库存简表失败:', err);
+                wx.showToast({ title: '文件已下载，但打开失败', icon: 'none' });
+              }
+            });
+            wx.saveFile({
+              tempFilePath: result.tempFilePath,
+              success: saved => openDownloadedFile(saved.savedFilePath || result.tempFilePath),
+              fail: err => {
+                console.error('保存库存简表失败，改为打开临时文件:', err);
+                openDownloadedFile(result.tempFilePath);
+              }
+            });
+          },
+          fail: err => {
+            console.error('下载库存简表失败:', err);
+            wx.showToast({ title: '下载失败，请检查网络后重试', icon: 'none' });
+          },
+          complete: finishLoading
+        });
+      }).catch(err => {
+        console.error('创建库存简表下载凭证失败:', err);
+        wx.showToast({ title: Number(err && err.statusCode) === 401 ? '登录已过期，请重新登录' : (err && err.message || '导出失败，请稍后重试'), icon: 'none' });
+        finishLoading();
+      });
+    } catch (err) {
+      console.error('创建库存简表下载请求失败:', err);
+      finishLoading();
+      wx.showToast({ title: '导出失败，请稍后重试', icon: 'none' });
+    }
   },
 
   loadDefaultInventory() {

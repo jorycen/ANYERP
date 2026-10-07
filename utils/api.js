@@ -1555,6 +1555,16 @@ const api = {
   },
 
   inventory: {
+    summaryExport(params = {}) {
+      return http.request('/inventory/summary-export-ticket').then(result => {
+        const ticket = result && result.ticket;
+        if (!ticket) throw new Error('无法创建库存简表下载凭证');
+        return {
+          url: http.API_BASE_URL + '/inventory/summary-export' + toQuery(Object.assign({}, params, { downloadToken: ticket })),
+          header: { 'X-WX-SERVICE': http.CLOUD_RUN_SERVICE }
+        };
+      });
+    },
     list(params = {}) {
       return http.request('/inventory/list' + toQuery(Object.assign({ page: 1, pageSize: 100 }, params)))
         .then(result => ({

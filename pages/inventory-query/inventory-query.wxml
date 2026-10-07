@@ -19,6 +19,7 @@
         </view>
       </picker>
       <text class="result-count">{{resultTitle}}</text>
+      <button class="inventory-export-button" size="mini" loading="{{exporting}}" bindtap="exportInventorySummary">导出库存</button>
     </view>
     <view class="quick-filter-panel">
       <view class="quick-filter-row">

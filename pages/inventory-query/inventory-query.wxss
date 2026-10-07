@@ -549,6 +549,16 @@
   margin-top: 16rpx;
 }
 
+.inventory-export-button {
+  flex-shrink: 0;
+  margin: 0 0 0 12rpx;
+  padding: 0 14rpx;
+  color: #ffffff;
+  background: #0f8f24;
+  font-size: 22rpx;
+  line-height: 52rpx;
+}
+
 .sn-dialog-list {
   height: 58vh;
   max-height: 58vh;

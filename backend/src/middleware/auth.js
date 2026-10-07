@@ -161,6 +161,7 @@ async function storeAccessMiddleware(ctx, next) {
     '/api/v1/store/inventory-readable',
     '/api/v1/inventory/list',
     '/api/v1/inventory/list/export',
+    '/api/v1/inventory/summary-export-ticket',
     '/api/v1/inventory/summary-export',
     '/api/v1/inventory/sn-inventory-list',
     '/api/v1/inventory/sn-inventory-list/export',

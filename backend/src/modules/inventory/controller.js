@@ -21,6 +21,7 @@ const { initializeSnResourceRightsFromInbound, summariesForSns } = require('./re
 const { ensureStandardLocationsForStores } = require('../../utils/standardLocations');
 const { resolveInventoryWriteLocation } = require('../../utils/inventoryLocation');
 const { sendExcel } = require('../../utils/excelExport');
+const { issueDownloadTicket } = require('../../utils/downloadTicket');
 const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
 const { assertTransferStoreScope, isTransferScope, transferRegionKeys } = require('../../utils/transferScope');
 const { canViewSnTraceReference, isDealerTraceAccount } = require('../../utils/snTracePermission');
@@ -2196,6 +2197,12 @@ async function exportList(ctx) {
 async function exportSummaryList(ctx) {
   ctx.state.inventorySummaryExportMode = true;
   return getList(ctx);
+}
+
+async function createSummaryExportTicket(ctx) {
+  const token = String(ctx.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (!token) ctx.throw(401, '未登录，请先登录');
+  ctx.body = { code: 0, data: { ticket: issueDownloadTicket(token) } };
 }
 
 async function exportSnInventoryList(ctx) {
@@ -6582,6 +6589,7 @@ module.exports = {
   getList,
   exportList,
   exportSummaryList,
+  createSummaryExportTicket,
   getSnInventoryList,
   exportSnInventoryList,
   setSnSpecialPrice,
