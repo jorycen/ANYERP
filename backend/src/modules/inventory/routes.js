@@ -69,6 +69,7 @@ router.post('/resource-rights/claim', resourceRights.submitClaim);
 router.post('/resource-rights/claim/:changeId/review', resourceRights.reviewClaim);
 router.get('/sn/:snId/resource-rights', resourceRights.snRights);
 router.put('/sn/:snId/resource-rights', resourceRights.saveSnRights);
+router.post('/sn/:snId/other-policy/complete', resourceRights.completeOtherPolicyResource);
 router.get('/batch-maintenance', batchMaintenance.listBatchApplications);
 router.post('/batch-maintenance/import', requireRole('manager', 'admin'), upload.single('file'), batchMaintenance.createBatchApplication);
 router.get('/batch-maintenance/:applicationId', batchMaintenance.getBatchApplicationDetail);

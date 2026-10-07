@@ -1120,8 +1120,26 @@ const handleView = async (row) => {
 
 const handleArchive = async (row) => {
   try {
+    const detailResponse = await api.getSalesDetail(row.order_id)
+    const orderDetail = detailResponse.data?.data || detailResponse.data || {}
+    const orderItems = orderDetail.OrderItems || orderDetail.items || orderDetail.order_items || []
+    const soPolicyLines = []
+    for (const item of orderItems) {
+      const pn = item.pn_code || item.pn || item.product_code
+      if (!pn) continue
+      const response = await api.getInventoryNbPolicies({ pn, page: 1, pageSize: 100 })
+      const result = response.data || response
+      const container = result.data || result
+      const records = Array.isArray(container) ? container : (container.rows || container.list || [])
+      const today = new Date().toISOString().slice(0, 10)
+      const policy = records.find(entry => String(entry.pn || '') === String(pn) && String(entry.so_policy || '').trim()
+        && String(entry.effective_date || '').slice(0, 10) <= today
+        && (!entry.expire_date || String(entry.expire_date).slice(0, 10) >= today))
+      if (policy) soPolicyLines.push(`${pn}：${policy.so_policy}`)
+    }
+    const policyNotice = soPolicyLines.length ? `\n\n以下商品有 SO 政策待获取：\n${[...new Set(soPolicyLines)].join('\n')}\n归档后可在 SN 可用资源中查看并标记完成。` : ''
     await ElMessageBox.confirm(
-      `确认归档销售订单 ${row.order_no || ''}？归档后将执行库存、SN、毛利、返利和结算校验。`,
+      `确认归档销售订单 ${row.order_no || ''}？归档后将执行库存、SN、毛利、返利和结算校验。${policyNotice}`,
       '归档确认',
       { type: 'warning', confirmButtonText: '确认归档', cancelButtonText: '取消' }
     )

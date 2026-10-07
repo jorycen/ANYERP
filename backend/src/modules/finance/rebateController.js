@@ -663,46 +663,21 @@ async function importManufacturerPrices(ctx) {
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index] || {};
     const rowNo = index + 2;
-    const supplierName = String(getRowValue(row, ['供应商', '供应商名称', '厂家', '厂家名称', '厂商名称', 'supplier_name', 'manufacturer_name'])).trim();
-    const supplierId = String(getRowValue(row, ['供应商ID', '厂家ID', 'supplier_id', 'manufacturer_id'])).trim();
-    const pn = String(getRowValue(row, ['PN', 'pn', 'pn_code', '厂商编码', '商品编号', 'product_code'])).trim();
-    const model = String(getRowValue(row, ['型号', 'model'])).trim();
-    const productName = String(getRowValue(row, ['商品名称', 'product_name'])).trim();
-    const effectiveDate = parseDate(getRowValue(row, ['生效日期', '开始日期', '开始时间', '促销开始时间', '政策开始时间', '周期开始', '有效期开始', 'effective_date']));
-    const expireDate = parseDate(getRowValue(row, ['失效日期', '结束日期', '结束时间', '促销结束时间', '政策结束时间', '周期结束', '有效期结束', 'expire_date']));
-    const settlementPrice = toNumber(getRowValue(row, ['厂商结算价', '厂家结算价', '厂商结算价格', '结算价', '结算价格', 'settlement_price']));
-    const pickupPrice = toNumber(getRowValue(row, ['提货价', '采购价', 'pickup_price'])) || settlementPrice;
-    const p0Price = toNumber(getRowValue(row, ['P0价', 'p0_price']));
-    const poRebateAmount = toNumber(getRowValue(row, ['PO后返', 'PO后返金额', 'PO返利', '单台PO后返', 'po_rebate_amount']));
-    const extraResource = String(getRowValue(row, ['加磅资源', '是否有加磅资源', 'extra_resource'])).trim();
-    const pickupPolicy = String(getRowValue(row, ['提货政策', '提货政策说明', 'SO/PO政策', 'pickup_policy'])).trim();
+    const pn = String(getRowValue(row, ['PN', 'pn', 'pn_code', '商品编号', 'product_code', 'manufacturer_code'])).trim();
+    const productName = String(getRowValue(row, ['商品名称', '商品名', 'product_name'])).trim();
+    const settlementPrice = toNumber(getRowValue(row, ['结算价', '结算价格', 'settlement_price']));
+    const soPolicy = String(getRowValue(row, ['SO政策', 'SO政策说明', 'so_policy'])).trim();
+    const poPolicy = String(getRowValue(row, ['PO政策', 'PO政策说明', 'po_policy'])).trim();
+    const otherPolicy = String(getRowValue(row, ['其他政策', '其他政策说明', 'other_policy'])).trim();
+    const effectiveDate = new Date();
+    const expireDate = null;
 
-    if (!supplierId && !supplierName) {
-      errors.push({ row: rowNo, message: '供应商/厂家不能为空' });
-      continue;
-    }
     if (!pn) {
-      errors.push({ row: rowNo, message: 'PN不能为空' });
+      errors.push({ row: rowNo, message: '厂商编号不能为空' });
       continue;
     }
-    if (!effectiveDate) {
-      errors.push({ row: rowNo, pn, message: '生效日期格式错误' });
-      continue;
-    }
-    if (expireDate && new Date(expireDate).getTime() < new Date(effectiveDate).getTime()) {
-      errors.push({ row: rowNo, pn, message: '失效日期不能早于生效日期' });
-      continue;
-    }
-    if ((!pickupPrice || pickupPrice <= 0) && (!settlementPrice || settlementPrice <= 0)) {
-      errors.push({ row: rowNo, pn, message: '结算价或提货价必须大于0' });
-      continue;
-    }
-
-    let supplier = null;
-    if (supplierId) supplier = await Supplier.findByPk(supplierId);
-    if (!supplier && supplierName) supplier = await Supplier.findOne({ where: { name: supplierName } });
-    if (!supplier) {
-      errors.push({ row: rowNo, pn, message: '供应商不存在' });
+    if (!Number.isFinite(settlementPrice) || settlementPrice <= 0) {
+      errors.push({ row: rowNo, pn, message: '结算价必须大于0' });
       continue;
     }
 
@@ -710,28 +685,30 @@ async function importManufacturerPrices(ctx) {
       where: {
         [Op.or]: [
           { product_code: pn },
-          { manufacturer_code: { [Op.like]: `%${pn}%` } },
-          ...(productName ? [{ name: { [Op.like]: `%${productName}%` } }] : [])
+          { manufacturer_code: pn },
+          ...(productName ? [{ name: productName }] : [])
         ]
       }
     });
 
     validRows.push({
       id: generateUUID(),
-      supplier_id: supplier.supplier_id,
-      supplier_name: supplier.name,
+      supplier_id: '',
+      supplier_name: '',
       product_id: product?.product_id || null,
       product_name: product?.name || productName,
       pn,
-      model,
       effective_date: effectiveDate,
       expire_date: expireDate,
-      pickup_price: pickupPrice,
-      p0_price: p0Price || null,
-      settlement_price: settlementPrice || pickupPrice,
-      po_rebate_amount: poRebateAmount,
-      extra_resource: extraResource,
-      pickup_policy: pickupPolicy,
+      pickup_price: settlementPrice,
+      p0_price: null,
+      settlement_price: settlementPrice,
+      po_rebate_amount: 0,
+      extra_resource: '',
+      pickup_policy: '',
+      so_policy: soPolicy,
+      po_policy: poPolicy,
+      other_policy: otherPolicy,
       import_batch_no: batchNo,
       source_file_url: sourceFileUrl,
       remark: String(getRowValue(row, ['备注', 'remark'])).trim(),

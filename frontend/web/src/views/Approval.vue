@@ -592,7 +592,7 @@ function taskTaxStatus(row) {
   return '待补充'
 }
 const detailFieldLabels = {
-  sales_order_no: '销售订单号', sale_price: '销售价格', original_pickup_price: '我的提货价格', pickup_price_at_sale: '销售时政策提货价', settlement_price_at_sale: '当前结算价格', policy_name: '当前政策', policy_content: '政策内容', sn: 'SN',
+  sales_order_no: '销售订单号', sale_price: '销售价格', original_pickup_price: '提货价', settlement_price_at_sale: '当前结算价格', po_policy_at_sale: 'PO政策', so_policy_at_sale: 'SO政策', other_policy_at_sale: '其他政策', policy_remark: '备注', policy_name: '当前政策', policy_content: '政策内容', sn: 'SN',
   application_no: '申请单号', application_id: '申请ID', request_no: '采购申请单号', request_id: '采购申请ID',
   expense_no: '费用单号', expense_id: '费用ID', return_no: '退库单号', return_id: '退库申请ID',
   change_order_no: '变更单号', change_id: '变更ID', adjustment_no: '调整单号', adjustment_id: '调整ID',
@@ -618,7 +618,7 @@ const detailArrayColumnLabels = {
   store_name: '门店', storeName: '门店', reason: '原因', original_name: '附件名称', mime_type: '文件类型', file_size: '文件大小'
 }
 const detailAllowedKeys = new Set([
-  'sales_order_no', 'sale_price', 'original_pickup_price', 'pickup_price_at_sale', 'settlement_price_at_sale', 'policy_name', 'policy_content', 'sn',
+  'sales_order_no', 'sale_price', 'original_pickup_price', 'settlement_price_at_sale', 'po_policy_at_sale', 'so_policy_at_sale', 'other_policy_at_sale', 'policy_remark', 'policy_name', 'policy_content', 'sn',
   'application_no', 'request_no', 'expense_no', 'return_no', 'change_order_no', 'adjustment_no', 'order_no', 'settlement_no',
   'create_time', 'submit_time', 'applicant_name', 'submitter_name', 'submit_user', 'apply_user', 'applicant_store_name', 'store_name',
   'supplier_name', 'employee_name', 'salesperson_name', 'name', 'product_name', 'productName', 'product_code', 'productCode', 'pn_code', 'pnCode', 'sn_code', 'snCode',
@@ -645,7 +645,7 @@ function detailScalarFields(data = {}) {
   return Object.entries(data)
     .filter(([key, value]) => detailAllowedKeys.has(key) && !hiddenDetailKeys.has(key) && !Array.isArray(value) && (value === null || ['string', 'number', 'boolean'].includes(typeof value)))
     .filter(([, value]) => value !== null && value !== '')
-    .map(([key, value]) => ({ key, label: detailLabel(key), value: formatDetailValue(value), span: key === 'remark' || key === 'reason' || key === 'return_reason' || key === 'review_comment' || key === 'policy_content' ? 2 : 1 }))
+    .map(([key, value]) => ({ key, label: detailLabel(key), value: formatDetailValue(value), span: ['remark', 'reason', 'return_reason', 'review_comment', 'policy_content', 'po_policy_at_sale', 'so_policy_at_sale', 'other_policy_at_sale', 'policy_remark'].includes(key) ? 2 : 1 }))
 }
 function detailArraySections(data = {}) {
   return Object.entries(data)

@@ -1353,8 +1353,35 @@ const handleEditDraft = async (row) => {
   }
 }
 
+const confirmPurchaseSoPolicies = async (items = []) => {
+  const notices = []
+  for (const item of items) {
+    const pn = item.pnCode || item.pn_code || item.pn || ''
+    if (!pn) continue
+    const response = await api.getInventoryNbPolicies({ pn, page: 1, pageSize: 100 })
+    const data = response.data || response
+    const container = data.data || data
+    const rows = Array.isArray(container) ? container : (container.rows || container.list || [])
+    const today = new Date().toISOString().slice(0, 10)
+    const policy = rows.find(entry => String(entry.pn || '') === String(pn) && String(entry.so_policy || '').trim()
+      && String(entry.effective_date || '').slice(0, 10) <= today
+      && (!entry.expire_date || String(entry.expire_date).slice(0, 10) >= today))
+    if (policy) notices.push(`${pn}：${policy.so_policy}`)
+  }
+  const uniqueNotices = [...new Set(notices)]
+  if (!uniqueNotices.length) return
+  await ElMessageBox.confirm(
+    `以下商品有 SO 政策待获取：\n${uniqueNotices.join('\n')}\n确认继续提交采购申请？`,
+    'SO 政策待获取', { type: 'warning', confirmButtonText: '确认提交', cancelButtonText: '返回修改' }
+  )
+}
+
 const handleSubmitDraft = async (row) => {
   try {
+    const detailResponse = await api.getPurchaseRequestDetail(row.request_id)
+    const detail = detailResponse.data?.data || detailResponse.data || {}
+    const draftItems = detail.items || detail.PurchaseRequestItems || []
+    await confirmPurchaseSoPolicies(draftItems)
     await ElMessageBox.confirm('提交后将进入采购审批流程，是否继续？', '提交采购申请', {
       confirmButtonText: '确认提交',
       cancelButtonText: '取消',
@@ -2026,6 +2053,9 @@ const handleSubmit = async () => {
     ElMessage.warning('返利抵扣不能超过供应商返利余额')
     return
   }
+
+  try { await confirmPurchaseSoPolicies(requestForm.items) }
+  catch (err) { if (err !== 'cancel' && err !== 'close') ElMessage.error(err.response?.data?.message || 'SO政策查询失败'); return }
 
   submitLoading.value = true
   try {

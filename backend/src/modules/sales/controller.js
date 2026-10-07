@@ -5173,7 +5173,6 @@ async function findCurrentManufacturerPrice({ productId, pn, saleDate, supplierI
   return ManufacturerPriceHistory.findOne({
     where: {
       pn,
-      ...(supplierId ? { supplier_id: supplierId } : {}),
       [Op.and]: [
         { effective_date: { [Op.lte]: date } },
         {
@@ -5433,13 +5432,10 @@ async function calculateSalesSettlementCosts(order, transaction = null, options 
       saleDate,
       transaction
     });
-    const policyContent = [priceHistory?.pickup_policy, priceHistory?.extra_resource, ...policies.map(policy => policy.policy_name), ...policies.map(policy => policy.remark)]
+    const policyContent = [priceHistory?.so_policy, priceHistory?.po_policy, priceHistory?.other_policy, priceHistory?.remark, ...policies.map(policy => policy.policy_name), ...policies.map(policy => policy.remark)]
       .map(value => String(value || '').trim()).filter(Boolean).filter((value, index, values) => values.indexOf(value) === index).join('；');
     const hasPolicyInEffect = Boolean(priceHistory && (
-      String(priceHistory.pickup_policy || '').trim()
-      || String(priceHistory.extra_resource || '').trim()
-      || Number(priceHistory.po_rebate_amount || 0) > 0
-      || policies.some(policy => String(policy.policy_name || policy.remark || '').trim())
+      String(priceHistory.po_policy || '').trim()
     ));
     const needsManualManufacturerRebate = Boolean(manufacturerRebateRight && hasPolicyInEffect && item.sn_code);
     if (needsManualManufacturerRebate) {
@@ -5464,6 +5460,13 @@ async function calculateSalesSettlementCosts(order, transaction = null, options 
         original_pickup_price: originalPickupPrice,
         pickup_price_at_sale: money(priceHistory?.pickup_price || 0),
         settlement_price_at_sale: currentSettlementPrice,
+        po_rebate_amount_at_sale: money(priceHistory?.po_rebate_amount || 0),
+        po_extra_resource_at_sale: String(priceHistory?.extra_resource || '').slice(0, 255),
+        pickup_policy_at_sale: String(priceHistory?.pickup_policy || '').slice(0, 512),
+        policy_remark: String(priceHistory?.remark || '').slice(0, 512),
+        po_policy_at_sale: String(priceHistory?.po_policy || '').slice(0, 512),
+        so_policy_at_sale: String(priceHistory?.so_policy || '').slice(0, 512),
+        other_policy_at_sale: String(priceHistory?.other_policy || '').slice(0, 512),
         policy_content: policyContent.slice(0, 1000),
         policy_name: policies[0]?.policy_name || (priceHistory?.pickup_policy ? '提货政策' : '厂商返利政策'),
         policy_type: 'manual_confirmation',

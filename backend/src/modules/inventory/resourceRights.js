@@ -13,13 +13,13 @@ const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } 
 const LEGACY_RESOURCE_TYPES = ['GOV_SUBSIDY', 'EDU_SUBSIDY', 'SALES_REPORT'];
 const SOURCE_TYPES = ['REGULAR_TAX', 'UNTAXED', 'CHANNEL_RESOURCE', 'PROMOTION_RESOURCE', 'SPECIAL_PRICE', 'OTHER'];
 const RIGHT_STATUSES = ['AVAILABLE', 'LOCKED', 'USED', 'CLAIMED_BACK', 'NOT_APPLICABLE', 'EXCEPTION'];
-const RESOURCE_LABELS = { GOV_SUBSIDY: '国补', EDU_SUBSIDY: '教育补贴', SALES_REPORT: '销量报号' };
+const RESOURCE_LABELS = { GOV_SUBSIDY: '国补', EDU_SUBSIDY: '教育补贴', SALES_REPORT: '销量报号', OTHER_POLICY: '其他政策' };
 const STATUS_LABELS = {
   AVAILABLE: '可用', LOCKED: '已锁定', USED: '已核销', CLAIMED_BACK: '已套回',
   NOT_APPLICABLE: '不适用', EXCEPTION: '异常'
 };
 const GOV_SUBSIDY_PRODUCT_CATEGORIES = new Set(['笔记本', '台机', '手机', '平板']);
-const SALE_RESOURCE_TASK_TYPES = new Set(['EDU_SUBSIDY', 'SALES_REPORT', 'SALES_RED_PACKET']);
+const SALE_RESOURCE_TASK_TYPES = new Set(['EDU_SUBSIDY', 'SALES_REPORT', 'SALES_RED_PACKET', 'OTHER_POLICY']);
 const SHARE_INCENTIVE_TYPE = 'SALES_RED_PACKET';
 STATUS_LABELS.PENDING_EFFECTIVE = '未到生效日期';
 STATUS_LABELS.EXPIRED = '已过期';
@@ -128,7 +128,7 @@ function buildSalesResourceSummary(sn, rows = [], categories = []) {
   const rights = normalizeRights(rows, categories);
   const names = new Map(categories.map(category => [category.category_code, category.short_name || category.name]));
   const resourceName = type => names.get(type) || RESOURCE_LABELS[type] || type;
-  const available = rights.filter(row => effectiveRightStatus(row) === 'AVAILABLE').map(row => resourceName(row.resource_type));
+  const available = rights.filter(row => effectiveRightStatus(row) === 'AVAILABLE').map(row => row.resource_type === 'OTHER_POLICY' ? `其他政策：${row.remark || '待获取'}` : resourceName(row.resource_type));
   const unavailable = rights.filter(row => effectiveRightStatus(row) !== 'AVAILABLE').map(row => `${resourceName(row.resource_type)}${STATUS_LABELS[effectiveRightStatus(row)] || effectiveRightStatus(row)}`);
   const consumed = rights.filter(row => ['USED', 'CLAIMED_BACK'].includes(row.current_status));
   let label = '普通现货';
@@ -1690,10 +1690,8 @@ async function createManualRebateSettlement(ctx) {
 }
 
 async function listNbPolicies(ctx) {
-  requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
-  const { supplierId, pn, page = 1, pageSize = 20 } = ctx.query;
+  const { pn, page = 1, pageSize = 20 } = ctx.query;
   const where = {};
-  if (supplierId) where.supplier_id = supplierId;
   if (pn) where.pn = { [Op.like]: `%${pn}%` };
   const { count, rows } = await ManufacturerPriceHistory.findAndCountAll({
     where,
@@ -1758,7 +1756,6 @@ async function createClaimPriceProtection({ change, sn, transaction }) {
   };
   const findPrice = effectiveDate => ManufacturerPriceHistory.findOne({
     where: {
-      supplier_id: sn.supplier_id,
       pn: sn.pn_code,
       [Op.and]: [
         { effective_date: { [Op.lte]: dateOnly(effectiveDate) } },
@@ -2300,7 +2297,6 @@ async function triggerSaleResourceBenefits(order, items, transaction) {
           const dateOnly = new Date(date.getFullYear(), date.getMonth(), date.getDate());
           const nbPolicy = await ManufacturerPriceHistory.findOne({
             where: {
-              supplier_id: resourceRight.supplier_id,
               pn: item.pn_code,
               [Op.and]: [
                 { effective_date: { [Op.lte]: dateOnly } },
@@ -2653,6 +2649,35 @@ async function finishSaleRights(order, items, transaction) {
 async function createSaleResourceTasks(order, items, transaction) {
   for (const item of items) {
     if (!item.sn_id) continue;
+    const archiveDate = order.archive_time || new Date();
+    const archiveDay = new Date(new Date(archiveDate).getFullYear(), new Date(archiveDate).getMonth(), new Date(archiveDate).getDate());
+    const manufacturerPolicy = await ManufacturerPriceHistory.findOne({
+      where: { pn: item.pn_code, [Op.and]: [
+        { effective_date: { [Op.lte]: archiveDay } },
+        { [Op.or]: [{ expire_date: null }, { expire_date: { [Op.gte]: archiveDay } }] },
+        { [Op.or]: [{ product_id: item.product_id }, { product_id: null }, { product_id: '' }] }
+      ] }, order: [['effective_date', 'DESC'], ['created_at', 'DESC']], transaction
+    });
+    const otherPolicy = String(manufacturerPolicy?.other_policy || '').trim();
+    if (otherPolicy) {
+      const [right] = await InventoryResourceRight.findOrCreate({
+        where: { sn_id: item.sn_id, resource_type: 'OTHER_POLICY' },
+        defaults: { right_id: generateUUID(), sn_id: item.sn_id, sn_code: item.sn_code, product_id: item.product_id,
+          resource_type: 'OTHER_POLICY', initial_status: 'AVAILABLE', current_status: 'AVAILABLE', amount: 0,
+          source: 'MANUFACTURER_POLICY', remark: otherPolicy }, transaction
+      });
+      if (right.current_status !== 'USED') await right.update({ current_status: 'AVAILABLE', remark: otherPolicy, update_time: new Date() }, { transaction });
+      const existingTask = await ResourceRightChangeOrder.findOne({
+        where: { related_sale_order_id: order.order_id, sn_id: item.sn_id, resource_type: 'OTHER_POLICY', change_reason: 'SALE_RESOURCE_TASK' }, transaction
+      });
+      if (!existingTask) await ResourceRightChangeOrder.create({
+        change_id: generateUUID(), change_order_no: businessNo('SRT'), sn_id: item.sn_id, sn_code: item.sn_code,
+        product_id: item.product_id, resource_type: 'OTHER_POLICY', before_status: 'AVAILABLE', after_status: 'AVAILABLE',
+        change_amount: 0, change_reason: 'SALE_RESOURCE_TASK', approval_status: 'pending_submit',
+        related_sale_order_id: order.order_id, applicant_staff_id: order.create_staff_id || null,
+        applicant_name: order.create_user || '', remark: otherPolicy
+      }, { transaction });
+    }
     for (const resourceType of selectedResources(item)) {
       if (!SALE_RESOURCE_TASK_TYPES.has(resourceType)) continue;
       const category = await ResourceCategory.findOne({ where: { category_code: resourceType, status: 1 }, transaction });
@@ -2674,7 +2699,7 @@ async function createSaleResourceTasks(order, items, transaction) {
 }
 
 function resourceTaskLabel(resourceType) {
-  return { EDU_SUBSIDY: '教育优惠返款', SALES_REPORT: '销售报号', SALES_RED_PACKET: '晒单激励' }[resourceType] || resourceType;
+  return { EDU_SUBSIDY: '教育优惠返款', SALES_REPORT: '销售报号', SALES_RED_PACKET: '晒单激励', OTHER_POLICY: '其他政策待获取' }[resourceType] || resourceType;
 }
 
 async function assertSaleResourceTaskReadable(ctx, task, { review = false } = {}) {
@@ -2714,6 +2739,10 @@ async function submitSaleResourceTask(ctx) {
   await sequelize.transaction(async transaction => {
   await task.reload({ transaction, lock: transaction.LOCK.UPDATE });
   if (!['pending_submit', 'rejected'].includes(task.approval_status)) ctx.throw(409, '资源任务状态已变化');
+  if (task.resource_type === 'OTHER_POLICY') {
+    const right = await InventoryResourceRight.findOne({ where: { sn_id: task.sn_id, resource_type: 'OTHER_POLICY' }, transaction, lock: transaction.LOCK.UPDATE });
+    if (right) await right.update({ current_status: 'USED', update_time: new Date(), version: Number(right.version || 0) + 1 }, { transaction });
+  }
   await task.update({
     attachment_url: attachments.length ? JSON.stringify(attachments) : null,
     approval_status: nextStatus,
@@ -2726,6 +2755,25 @@ async function submitSaleResourceTask(ctx) {
   }, { transaction });
   });
   ctx.body = { message: nextStatus === 'completed' ? '资源事项已完成' : '晒单已提交，等待店长审核' };
+}
+
+async function completeOtherPolicyResource(ctx) {
+  await sequelize.transaction(async transaction => {
+    const right = await InventoryResourceRight.findOne({ where: { sn_id: ctx.params.snId, resource_type: 'OTHER_POLICY' }, transaction, lock: transaction.LOCK.UPDATE });
+    if (!right) ctx.throw(404, '没有待获取的其他政策资源');
+    if (right.current_status === 'USED') return;
+    const task = await ResourceRightChangeOrder.findOne({
+      where: { sn_id: right.sn_id, resource_type: 'OTHER_POLICY', change_reason: 'SALE_RESOURCE_TASK' },
+      order: [['create_time', 'DESC']], transaction
+    });
+    if (!task) ctx.throw(404, '没有待完成的其他政策任务');
+    await assertSaleResourceTaskReadable(ctx, task);
+    await right.update({ current_status: 'USED', update_time: new Date(), version: Number(right.version || 0) + 1 }, { transaction });
+    await ResourceRightChangeOrder.update({ approval_status: 'completed', after_status: 'USED', reviewer_name: ctx.state.user.name || 'system', review_time: new Date() }, {
+      where: { sn_id: right.sn_id, resource_type: 'OTHER_POLICY', change_reason: 'SALE_RESOURCE_TASK', approval_status: { [Op.in]: ['pending_submit', 'rejected'] } }, transaction
+    });
+  });
+  ctx.body = { message: '其他政策已标记完成' };
 }
 
 async function reviewSaleResourceTask(ctx) {
@@ -2769,7 +2817,7 @@ module.exports = {
   cancelResourceSettlement, reverseResourceSettlement, createPendingSettlement,
   findResourceRule, calculatePreSaleRuleAmount,
   initializeSnResourceRightsFromInbound, triggerSaleResourceBenefits, createSaleResourceTasks,
-  listSaleResourceTasks, submitSaleResourceTask, reviewSaleResourceTask,
+  listSaleResourceTasks, submitSaleResourceTask, reviewSaleResourceTask, completeOtherPolicyResource,
   alignOrderSubsidyRights, isGovSubsidyEligibleCategory, lockSaleRights, finishSaleRights, releaseSaleRights,
   _test: { normalizeImportRows, normalizeImportStatus, normalizeImportResourceTypes, educationHeaderIndexes, parseEducationDate, parseEducationAmount, extractEducationPolicies, chooseEducationPolicy }
 };

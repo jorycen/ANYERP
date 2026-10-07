@@ -321,6 +321,7 @@ export default {
   getResourceClaimList: (params) => api.get('/inventory/resource-rights/changes', { params }),
   getSnResourceRights: (snId) => api.get(`/inventory/sn/${snId}/resource-rights`),
   saveSnResourceRights: (snId, data) => api.put(`/inventory/sn/${snId}/resource-rights`, data),
+  completeOtherPolicyResource: (snId) => api.post(`/inventory/sn/${snId}/other-policy/complete`),
   getResourceRightChanges: (params) => api.get('/inventory/resource-rights/changes', { params }),
   submitResourceClaim: (data) => api.post('/inventory/resource-rights/claim', data),
   reviewResourceClaim: (id, data) => api.post(`/inventory/resource-rights/claim/${id}/review`, data),

@@ -1090,10 +1090,11 @@
           <el-descriptions-item label="不可用资源">{{ snResourceDetail.unavailable_resource_summary || '-' }}</el-descriptions-item>
         </el-descriptions>
         <el-table :data="snResourceDetail.rights || []" border style="margin-top:16px">
-          <el-table-column label="权益类型" min-width="150"><template #default="{row}">{{ snInventoryResourceOptions.find(item => item.value === row.resource_type)?.label || row.resource_type }}</template></el-table-column>
+          <el-table-column label="权益类型" min-width="150"><template #default="{row}">{{ row.resource_type === 'OTHER_POLICY' ? '其他政策待获取' : (snInventoryResourceOptions.find(item => item.value === row.resource_type)?.label || row.resource_type) }}</template></el-table-column>
           <el-table-column label="状态" width="120"><template #default="{row}">{{ resourceStatusOptions.find(item => item.value === row.current_status)?.label || row.current_status || '-' }}</template></el-table-column>
           <el-table-column label="金额" width="130" align="right"><template #default="{row}">¥{{ formatMoney(row.amount) }}</template></el-table-column>
           <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
+          <el-table-column label="操作" width="100"><template #default="{row}"><el-button v-if="row.resource_type === 'OTHER_POLICY' && row.current_status === 'AVAILABLE'" link type="success" @click="completeOtherPolicyResource(row)">已完成</el-button></template></el-table-column>
         </el-table>
       </template>
       <el-empty v-else description="该SN暂无权益记录" />
@@ -3594,6 +3595,18 @@ const openSnResourceDetail = async (row) => {
     ElMessage.error(err.response?.data?.message || '加载SN权益失败')
   } finally {
     snResourceDetailLoading.value = false
+  }
+}
+
+const completeOtherPolicyResource = async (right) => {
+  try {
+    await ElMessageBox.confirm(`确认 SN ${right.sn_code} 的其他政策已获取完成？`, '完成政策资源', { type: 'warning' })
+    await api.completeOtherPolicyResource(right.sn_id)
+    const res = await api.getSnResourceRights(right.sn_id)
+    snResourceDetail.value = res.data?.data || res.data || res
+    ElMessage.success('已标记完成')
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error.response?.data?.message || '标记失败')
   }
 }
 

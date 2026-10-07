@@ -29,7 +29,8 @@
           <el-table-column label="操作" width="330" fixed="right"><template #default="{row}">
             <el-button link type="primary" @click="editSn(row.sn_id)">详情/维护</el-button>
             <el-button v-if="row.resource_type === 'EDU_SUBSIDY' && row.current_status === 'AVAILABLE' && row.ProductSn?.status !== 'in_stock'" link type="success" @click="openEducationSupplement(row)">资源补录</el-button>
-            <el-button v-if="row.current_status === 'AVAILABLE'" link type="warning" @click="openClaim(row)">申请套回</el-button>
+            <el-button v-if="row.resource_type === 'OTHER_POLICY' && row.current_status === 'AVAILABLE'" link type="success" @click="completeOtherPolicy(row)">已完成</el-button>
+            <el-button v-if="row.current_status === 'AVAILABLE' && row.resource_type !== 'OTHER_POLICY'" link type="warning" @click="openClaim(row)">申请套回</el-button>
             <el-button v-if="canReverse(row)" link type="danger" @click="reverseSaleUse(row)">冲销核销</el-button>
           </template></el-table-column>
         </el-table>
@@ -41,27 +42,21 @@
           <el-button @click="tab = 'rights'">返回SN权益</el-button>
         </div>
         <div class="filter-bar">
-          <el-alert title="按政策周期维护商品结算价、PO后返、加磅资源及SO/PO提货政策；销售或套回时生成逐单返利记录。" type="info" :closable="false" />
+          <el-alert title="按PN维护商品结算价及SO、PO、其他政策；SO政策用于采购提醒，PO政策用于销售归档审批，其他政策用于销售后资源跟进。" type="info" :closable="false" />
         </div>
         <div class="filter-bar">
-          <el-select v-model="nbPolicyQuery.supplierId" placeholder="供应商" clearable filterable style="width:200px" @change="loadNbPolicies">
-            <el-option v-for="item in suppliers" :key="item.supplier_id" :label="item.name" :value="item.supplier_id" />
-          </el-select>
-          <el-input v-model="nbPolicyQuery.pn" placeholder="商品编号/PN" clearable style="width:180px" @keyup.enter="loadNbPolicies" />
+          <el-input v-model="nbPolicyQuery.pn" placeholder="PN" clearable style="width:180px" @keyup.enter="loadNbPolicies" />
           <el-button @click="loadNbPolicies">查询</el-button>
           <el-button type="primary" @click="openNbPolicyImport">上传产品政策表</el-button>
         </div>
         <el-table :data="nbPolicies" border stripe v-loading="nbPolicyLoading">
-          <el-table-column prop="supplier_name" label="供应商" min-width="140" />
-          <el-table-column prop="pn" label="商品编号/PN" min-width="140" />
-          <el-table-column prop="model" label="型号" min-width="140" />
-          <el-table-column prop="settlement_price" label="结算价" width="110"><template #default="{row}">¥{{ money(row.settlement_price || row.pickup_price) }}</template></el-table-column>
-          <el-table-column prop="po_rebate_amount" label="单台PO后返" width="120"><template #default="{row}">¥{{ money(row.po_rebate_amount) }}</template></el-table-column>
-          <el-table-column prop="extra_resource" label="加磅资源" min-width="130" />
-          <el-table-column prop="pickup_policy" label="提货政策" min-width="180" show-overflow-tooltip />
-          <el-table-column prop="effective_date" label="开始日期" width="120"><template #default="{row}">{{ String(row.effective_date || '').slice(0,10) }}</template></el-table-column>
-          <el-table-column prop="expire_date" label="结束日期" width="120"><template #default="{row}">{{ row.expire_date ? String(row.expire_date).slice(0,10) : '不限' }}</template></el-table-column>
-          <el-table-column prop="import_batch_no" label="导入批次" min-width="160" />
+          <el-table-column prop="pn" label="PN" min-width="140" />
+          <el-table-column prop="product_name" label="商品名称" min-width="160" />
+        <el-table-column prop="settlement_price" label="结算价" width="110"><template #default="{row}">¥{{ money(row.settlement_price) }}</template></el-table-column>
+        <el-table-column prop="so_policy" label="SO政策" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="po_policy" label="PO政策" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="other_policy" label="其他政策" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
         </el-table>
         <el-pagination v-model:current-page="nbPolicyQuery.page" v-model:page-size="nbPolicyQuery.pageSize" :total="nbPolicyTotal" layout="total, prev, pager, next" @current-change="loadNbPolicies" />
       </el-tab-pane>
@@ -173,7 +168,10 @@
         <el-descriptions :column="2" border>
           <el-descriptions-item label="SN">{{ snDetail.sn?.sn_code }}</el-descriptions-item>
           <el-descriptions-item label="货品销售标签"><el-tag>{{ snDetail.sales_resource_label }}</el-tag></el-descriptions-item>
-          <el-descriptions-item label="可用资源">{{ snDetail.available_resource_summary }}</el-descriptions-item>
+          <el-descriptions-item label="可用资源">
+            <div>{{ snDetail.available_resource_summary }}</div>
+            <el-button v-for="right in (snDetail.rights || []).filter(item => item.resource_type === 'OTHER_POLICY' && item.current_status === 'AVAILABLE')" :key="right.right_id" link type="success" @click="completeOtherPolicy(right)">已完成</el-button>
+          </el-descriptions-item>
           <el-descriptions-item label="不可用资源">{{ snDetail.unavailable_resource_summary }}</el-descriptions-item>
         </el-descriptions>
         <el-form label-width="110px" style="margin-top:16px">
@@ -242,7 +240,11 @@
     </el-dialog>
 
     <el-dialog v-model="nbPolicyImportDialog" title="上传产品政策表" width="760px" destroy-on-close>
-      <el-alert title="支持多工作表及常见表头；未识别到政策周期列时，会提示手工填写完整起止日期。" type="info" :closable="false" style="margin-bottom:14px" />
+      <el-alert title="模板仅包含 PN、商品名称、结算价、SO政策、PO政策、其他政策、备注；上传后即时生效。" type="info" :closable="false" style="margin-bottom:14px" />
+        <div class="filter-bar" style="margin-bottom:14px">
+          <el-button type="primary" plain @click="downloadNbPolicyTemplate">下载产品政策表模板</el-button>
+          <span class="muted">字段：PN、商品名称、结算价、SO政策、PO政策、其他政策、备注。</span>
+        </div>
       <input ref="nbPolicyFileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="onNbPolicyFileChange" />
       <el-button :disabled="nbPolicyImporting" @click="nbPolicyFileInput?.click()">选择Excel文件</el-button>
       <span v-if="nbPolicyFile" class="file-name">{{ nbPolicyFile.name }}</span>
@@ -314,7 +316,7 @@ const batchFileInput = ref(null); const batchFile = ref(null); const batchImport
 const educationFileInput = ref(null); const educationImporting = ref(false)
 const educationImportDialog = ref(false); const educationFile = ref(null); const educationImportResult = ref(null)
 const nbPolicies = ref([]); const nbPolicyTotal = ref(0); const nbPolicyLoading = ref(false)
-const nbPolicyQuery = reactive({ supplierId:'', pn:'', page:1, pageSize:20 })
+const nbPolicyQuery = reactive({ pn:'', page:1, pageSize:20 })
 const nbPolicyImportDialog = ref(false); const nbPolicyFileInput = ref(null); const nbPolicyFile = ref(null)
 const nbPolicyImporting = ref(false); const nbPolicyImportResult = ref(null)
 const educationSupplementDialog = ref(false); const educationProofInput = ref(null)
@@ -324,7 +326,7 @@ const educationSupplementForm = reactive({ snId:'', snCode:'', orderNo:'', attac
 const payloadList = res => res.data?.list || res.data || []
 const payloadTotal = res => res.data?.pagination?.total || res.data?.total || 0
 const money = value => Number(value || 0).toFixed(2)
-const resourceText = value => resourceOptions.value.find(item => item.value === value)?.label || value
+const resourceText = value => value === 'OTHER_POLICY' ? '其他政策待获取' : (resourceOptions.value.find(item => item.value === value)?.label || value)
 const statusText = value => statusOptions.find(item => item.value === value)?.label || value
 const statusType = value => ({AVAILABLE:'success',LOCKED:'warning',USED:'info',CLAIMED_BACK:'danger',EXCEPTION:'danger'}[value] || '')
 const approvalText = value => ({pending_finance:'待财务审批',approved:'已通过',rejected:'已拒绝'}[value] || value)
@@ -338,6 +340,10 @@ const triggerText = row => {
 }
 
 async function loadRights(){ loading.value=true; try{ const res=await api.getResourceRights(rightsQuery); rights.value=payloadList(res); rightsTotal.value=payloadTotal(res) }catch(e){ ElMessage.error(e.response?.data?.message||'加载权益失败') }finally{ loading.value=false } }
+async function completeOtherPolicy(row){
+  try{ await ElMessageBox.confirm(`确认 SN ${row.sn_code} 的其他政策已获取完成？`, '完成政策资源'); await api.completeOtherPolicyResource(row.sn_id); ElMessage.success('已标记完成'); await loadRights(); const res=await api.getSnResourceRights(row.sn_id); snDetail.value=res.data?.data||res.data }
+  catch(e){ if(e!=='cancel') ElMessage.error(e.response?.data?.message||'操作失败') }
+}
 async function exportRights(){ rightsExporting.value=true; try{ await api.exportResourceRights({snCode:rightsQuery.snCode,pnCode:rightsQuery.pnCode,resourceType:rightsQuery.resourceType,status:rightsQuery.status}); ElMessage.success('导出完成') }catch(e){ ElMessage.error(e.response?.data?.message||'导出失败') }finally{ rightsExporting.value=false } }
 async function loadChanges(){ loading.value=true; try{ const res=await api.getResourceRightChanges(changeQuery); changes.value=payloadList(res); changeTotal.value=payloadTotal(res) }catch(e){ ElMessage.error(e.response?.data?.message||'加载变更记录失败') }finally{ loading.value=false } }
 async function loadCosts(){ try{ const res=await api.getProductResourceCostConfigs({}); costs.value=res.data || [] }catch(e){ ElMessage.error('加载成本定义失败') } }
@@ -507,6 +513,14 @@ async function loadNbPolicies(){
   finally{nbPolicyLoading.value=false}
 }
 function openNbPolicyImport(){nbPolicyFile.value=null;nbPolicyImportResult.value=null;nbPolicyImportDialog.value=true}
+function downloadNbPolicyTemplate(){
+  const link=document.createElement('a')
+  link.href=`${import.meta.env.BASE_URL}templates/产品政策导入模板.xlsx`
+  link.download='产品政策导入模板.xlsx'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+}
 function onNbPolicyFileChange(event){const file=event.target.files?.[0];event.target.value='';if(file){nbPolicyFile.value=file;nbPolicyImportResult.value=null}}
 function readNbPolicyRows(file){return new Promise((resolve,reject)=>{
   const reader=new FileReader()
@@ -518,12 +532,11 @@ function readNbPolicyRows(file){return new Promise((resolve,reject)=>{
         const matrix=XLSX.utils.sheet_to_json(workbook.Sheets[sheetName],{header:1,defval:''})
         const headerAt=matrix.slice(0,20).findIndex(row=>{
           const cells=row.map(normalize)
-          return cells.some(v=>['pn','pncode','productcode','商品编号','产品编号','厂商编码','型号','model'].includes(v))&&cells.some(v=>v.includes('结算')||v.includes('后返')||v.includes('资源')||v.includes('提货政策'))
+          return cells.some(v=>['pn','pncode','productcode','商品编号','产品编号'].includes(v))&&cells.some(v=>v.includes('结算')||v.includes('so政策')||v.includes('po政策')||v.includes('其他政策'))
         })
         if(headerAt<0)continue
         const headers=matrix[headerAt].map((value,index)=>String(value||`列${index+1}`).trim())
-        const carry={};const repeatable=/供应商|厂家|厂商|supplier|manufacturer|生效|开始|失效|结束|周期|有效期/i
-        const records=matrix.slice(headerAt+1).map(values=>Object.fromEntries(headers.map((header,index)=>[header,values[index]??'']))).filter(row=>Object.values(row).some(value=>String(value||'').trim())).map(row=>{for(const header of headers){const value=String(row[header]||'').trim();if(value)carry[header]=row[header];else if(repeatable.test(header)&&carry[header]!==undefined)row[header]=carry[header]}return row})
+        const records=matrix.slice(headerAt+1).map(values=>Object.fromEntries(headers.map((header,index)=>[header,values[index]??'']))).filter(row=>Object.values(row).some(value=>String(value||'').trim()))
         if(records.length){resolve(records);return}
       }
       resolve([])
@@ -537,15 +550,6 @@ async function submitNbPolicyImport(){
   try{
     let rows=await readNbPolicyRows(nbPolicyFile.value)
     if(!rows.length)throw new Error('未识别到商品编号、结算价等政策表头')
-    const normalized=Object.keys(rows[0]).map(key=>String(key).toLowerCase().replace(/[\s_\-（）()]/g,''))
-    const hasStart=normalized.some(key=>['生效日期','开始日期','开始时间','促销开始时间','政策开始时间','周期开始','有效期开始','effectivedate'].includes(key))
-    const hasEnd=normalized.some(key=>['失效日期','结束日期','结束时间','促销结束时间','政策结束时间','周期结束','有效期结束','expiredate'].includes(key))
-    if(!hasStart||!hasEnd){
-      const {value:period}=await ElMessageBox.prompt('表格未识别到政策周期列，请输入完整周期，例如：2026-09-16 至 2026-10-07','确认产品政策周期',{inputPattern:/^\d{4}-\d{2}-\d{2}\s*(至|~)\s*\d{4}-\d{2}-\d{2}$/,inputErrorMessage:'请按 YYYY-MM-DD 至 YYYY-MM-DD 输入'})
-      const match=String(period).match(/^(\d{4}-\d{2}-\d{2})\s*(?:至|~)\s*(\d{4}-\d{2}-\d{2})$/)
-      if(!match)return
-      rows=rows.map(row=>({...row,生效日期:row.生效日期||match[1],失效日期:row.失效日期||match[2]}))
-    }
     const res=await api.importInventoryNbPolicy({rows,sourceFileUrl:nbPolicyFile.value.name})
     const data=res.data||res
     const results=data.results||[]
