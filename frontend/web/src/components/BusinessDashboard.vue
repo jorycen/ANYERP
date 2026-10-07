@@ -111,6 +111,15 @@
           </el-select>
         </template>
         <p class="customer-source-note">按销售订单客户来源统计；混合商品订单会分别计入涉及类别，售后单数按关联的有效退单统计。</p>
+        <div class="source-chart-toolbar">
+          <strong>来源贡献排名</strong>
+          <el-radio-group v-model="customerSourceMetric" size="small" @change="renderCustomerSourceChart">
+            <el-radio-button label="salesAmount">销售额</el-radio-button>
+            <el-radio-button label="orderCount">订单数</el-radio-button>
+            <el-radio-button v-if="customerSourceCanViewProfit" label="grossProfit">毛利</el-radio-button>
+          </el-radio-group>
+        </div>
+        <div ref="customerSourceChartRef" class="customer-source-chart"></div>
         <el-table :data="customerSourceRows" stripe v-loading="customerSourceLoading" empty-text="暂无客户来源数据">
           <el-table-column prop="dimensionName" :label="customerSourceDimensionLabel" min-width="130" />
           <el-table-column prop="customerSource" label="客户来源" min-width="130" />
@@ -407,6 +416,8 @@ const dateRange = ref(currentWeekRange())
 const dashboard = reactive(emptyDashboard())
 const customerSourceDimension = ref('company')
 const customerSourceDimensionLabel = computed(() => ({ company: '公司', store: '门店', employee: '员工' }[customerSourceDimension.value] || '公司'))
+const customerSourceMetric = ref('salesAmount')
+const customerSourceChartRef = ref(null)
 const customerSourceRows = ref([])
 const customerSourceSummary = ref({})
 const customerSourceCanViewProfit = ref(false)
@@ -417,6 +428,22 @@ const customerSourceKpiCards = computed(() => [
   ...(customerSourceCanViewProfit.value ? [{ key: 'profit', label: '毛利额', value: formatCurrency(customerSourceSummary.value.grossProfit), icon: DataAnalysis, color: 'orange' }] : []),
   { key: 'aftersales', label: '涉及售后单数', value: formatNumber(customerSourceSummary.value.afterSalesOrderCount), icon: UserFilled, color: 'purple' }
 ])
+const customerSourceChartRows = computed(() => {
+  const groups = new Map()
+  customerSourceRows.value.forEach(row => {
+    const source = String(row.customerSource || '未填写来源').trim()
+    const detail = String(row.sourceDetail || '').trim()
+    const label = detail && detail !== '-' ? `${source} / ${detail}` : source
+    const group = groups.get(label) || { label, orderCount: 0, salesAmount: 0, grossProfit: 0 }
+    group.orderCount += Number(row.orderCount || 0)
+    group.salesAmount += Number(row.salesAmount || 0)
+    group.grossProfit += Number(row.grossProfit || 0)
+    groups.set(label, group)
+  })
+  return [...groups.values()]
+    .sort((a, b) => b[customerSourceMetric.value] - a[customerSourceMetric.value] || a.label.localeCompare(b.label, 'zh-CN'))
+    .slice(0, 12)
+})
 
 function emptyDashboard() {
   return {
@@ -507,7 +534,10 @@ function openCustomRange() {
 
 async function selectDimension(value) {
   activeDimension.value = value
-  if (value === 'customerSource') await loadCustomerSourceAnalysis()
+  if (value === 'customerSource') {
+    await nextTick()
+    await loadCustomerSourceAnalysis()
+  }
 }
 
 async function loadCustomerSourceAnalysis() {
@@ -519,6 +549,9 @@ async function loadCustomerSourceAnalysis() {
       customerSourceRows.value = res.data?.rows || []
       customerSourceSummary.value = res.data?.summary || {}
       customerSourceCanViewProfit.value = Boolean(res.data?.canViewProfit)
+      if (!customerSourceCanViewProfit.value && customerSourceMetric.value === 'grossProfit') customerSourceMetric.value = 'salesAmount'
+      await nextTick()
+      renderCustomerSourceChart()
     }
   } catch (error) {
     ElMessage.error(error.response?.data?.message || '客户来源分析加载失败')
@@ -581,6 +614,47 @@ function getChart(element, key) {
     charts.set(key, chart)
   }
   return chart
+}
+
+function renderCustomerSourceChart() {
+  const rows = customerSourceChartRows.value
+  const valueKey = customerSourceMetric.value
+  const valueLabel = { salesAmount: '销售额', orderCount: '订单数', grossProfit: '毛利' }[valueKey] || '销售额'
+  const chart = getChart(customerSourceChartRef.value, 'customerSource')
+  if (!chart) return
+  chart.setOption({
+    color: ['#3478e5'],
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      formatter: params => {
+        const point = params?.[0]
+        if (!point) return ''
+        const value = valueKey === 'orderCount' ? formatNumber(point.value) : formatCurrency(point.value)
+        return `${point.name}<br/>${valueLabel}：${value}`
+      }
+    },
+    grid: { left: 150, right: 28, top: 10, bottom: 30 },
+    xAxis: {
+      type: 'value',
+      axisLabel: { formatter: valueKey === 'orderCount' ? value => formatNumber(value) : compactNumber, color: '#718096' },
+      splitLine: { lineStyle: { type: 'dashed', color: '#e8edf4' } }
+    },
+    yAxis: {
+      type: 'category',
+      inverse: true,
+      data: rows.map(row => row.label),
+      axisLabel: { color: '#53627a', width: 135, overflow: 'truncate' }
+    },
+    series: [{
+      name: valueLabel,
+      type: 'bar',
+      barMaxWidth: 22,
+      data: rows.map(row => row[valueKey]),
+      itemStyle: { color: '#3478e5', borderRadius: [0, 5, 5, 0] },
+      label: { show: true, position: 'right', color: '#53627a', formatter: params => valueKey === 'orderCount' ? formatNumber(params.value) : compactNumber(params.value) }
+    }]
+  }, true)
 }
 
 function percentageAxis(value) {
@@ -1158,6 +1232,8 @@ onBeforeUnmount(() => {
 
 .customer-source-note { margin: 0 0 14px; color: #718096; font-size: 12px; }
 .customer-source-kpi-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.source-chart-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 18px 0 4px; color: #303c50; font-size: 13px; }
+.customer-source-chart { height: 340px; margin-bottom: 20px; }
 .source-category-tag { margin: 2px 5px 2px 0; }
 
 .decision-panel {
