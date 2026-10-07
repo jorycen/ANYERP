@@ -193,6 +193,9 @@ async function disableFlow(ctx) {
 }
 
 async function listTasks(ctx) {
+  const paginated = ctx.query.page !== undefined || ctx.query.pageSize !== undefined;
+  const page = Math.max(1, Number(ctx.query.page) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number(ctx.query.pageSize) || 20));
   const where = { assignee_staff_id: ctx.state.user.staffId };
   if (ctx.query.status) where.status = ctx.query.status;
   else where.status = 'pending';
@@ -208,11 +211,15 @@ async function listTasks(ctx) {
   }
   instanceInclude.where = { ...(instanceInclude.where || {}), business_type: { [Op.notIn]: Object.keys(require('./businessRuntime').registry) } };
   instanceInclude.required = true;
-  const tasks = await ApprovalTask.findAll({
+  const result = await ApprovalTask.findAndCountAll({
     where,
     include: [instanceInclude],
-    order: [['create_time', 'DESC']]
+    order: [['create_time', 'DESC'], ['task_id', 'DESC']],
+    limit: pageSize,
+    offset: (page - 1) * pageSize,
+    distinct: true
   });
+  const tasks = result.rows;
   const settlementIds = tasks
     .filter(task => task.Instance?.business_type === 'payable_settlement')
     .map(task => String(task.Instance.business_id || ''))
@@ -223,7 +230,7 @@ async function listTasks(ctx) {
     include: [{ model: SettlementItem, as: 'items', attributes: ['request_no', 'product_name', 'quantity', 'unit_price', 'amount'], required: false }]
   }) : [];
   const settlementMap = new Map(settlements.map(row => [String(row.settlement_id), row.toJSON()]));
-  ctx.body = tasks.map(task => {
+  const list = tasks.map(task => {
     const data = task.toJSON();
     if (data.Instance?.business_type === 'payable_settlement') {
       const settlement = settlementMap.get(String(data.Instance.business_id));
@@ -256,6 +263,9 @@ async function listTasks(ctx) {
     }
     return data;
   });
+  ctx.body = paginated
+    ? { list, total: result.count, page, pageSize, totalPages: Math.ceil(result.count / pageSize) }
+    : list;
 }
 
 function instanceAccessWhere(user, scope) {
