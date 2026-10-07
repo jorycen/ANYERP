@@ -240,11 +240,13 @@ function loadTaskDetails(task) {
           { label: 'PN', value: rebate.pn || '-' },
           { label: 'SN', value: rebate.sn || '-' },
           { label: '销售价格', value: `¥${money(rebate.sale_price || 0)}` },
-          { label: '我的提货价格', value: `¥${money(rebate.original_pickup_price || 0)}` },
-          { label: '供应商', value: rebate.supplier_name || '-' },
-          { label: '销售时政策提货价', value: `¥${money(rebate.pickup_price_at_sale || 0)}` },
+          { label: '提货价', value: `¥${money(rebate.original_pickup_price || 0)}` },
+          { label: '\u4f9b\u5e94\u5546', value: rebate.supplier_name || '-' },
           { label: '当前结算价格', value: `¥${money(rebate.settlement_price_at_sale || 0)}` },
-          { label: '当前政策', value: rebate.policy_name || '-' },
+          { label: 'PO政策', value: rebate.po_policy_at_sale || '-' },
+          { label: 'SO政策', value: rebate.so_policy_at_sale || '-' },
+          { label: '其他政策', value: rebate.other_policy_at_sale || '-' },
+          { label: '备注', value: rebate.policy_remark || '-' },
           { label: '政策内容', value: rebate.policy_content || '-' }
         ];
       }
@@ -765,11 +767,13 @@ Page({
               { label: 'PN', value: row.pn || '-' },
               { label: 'SN', value: row.sn || '-' },
               { label: '销售价格', value: `¥${money(row.sale_price || 0)}` },
-              { label: '我的提货价格', value: `¥${money(row.original_pickup_price || 0)}` },
-              { label: '供应商', value: row.supplier_name || '-' },
-              { label: '销售时政策提货价', value: `¥${money(row.pickup_price_at_sale || 0)}` },
+              { label: '提货价', value: `¥${money(row.original_pickup_price || 0)}` },
+              { label: '\u4f9b\u5e94\u5546', value: row.supplier_name || '-' },
               { label: '当前结算价格', value: `¥${money(row.settlement_price_at_sale || 0)}` },
-              { label: '当前政策', value: row.policy_name || '-' },
+              { label: 'PO政策', value: row.po_policy_at_sale || '-' },
+              { label: 'SO政策', value: row.so_policy_at_sale || '-' },
+              { label: '其他政策', value: row.other_policy_at_sale || '-' },
+              { label: '备注', value: row.policy_remark || '-' },
               { label: '政策内容', value: row.policy_content || '-' }
             ];
           }
