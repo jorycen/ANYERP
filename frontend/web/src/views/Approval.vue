@@ -37,7 +37,7 @@
                 <template v-else-if="row.isModuleApproval">
                   <el-button link type="primary" @click="openModule(row)">审批详情</el-button>
                   <el-button link @click="openOriginalFromRow(row)">原始单据</el-button>
-                  <el-button link type="success" @click="reviewModule(row, 'approve')">{{ row.manualPath ? '前往确认' : '通过' }}</el-button>
+                  <el-button link type="success" @click="row.moduleType === 'product_application' ? openModule(row) : reviewModule(row, 'approve')">{{ row.manualPath ? '前往确认' : '通过' }}</el-button>
                   <el-button v-if="!row.manualPath" link type="danger" @click="reviewModule(row, 'reject')">拒绝</el-button>
                 </template>
                 <template v-else>
@@ -113,6 +113,34 @@
           <el-divider>发起信息</el-divider>
           <el-skeleton v-if="currentInstance.detailLoading" :rows="3" animated />
           <template v-else>
+            <div v-if="currentInstance.moduleType === 'product_application' && productApplicationEdit" class="detail-section">
+              <div class="detail-section-title">商品信息（按新建商品模板核对/修改）</div>
+              <el-alert title="审批通过时将按以下商品信息创建商品。分类必须完整选择到第 4 级。" type="info" :closable="false" />
+              <el-form :model="productApplicationEdit" label-width="100px" class="product-application-edit-form">
+                <el-row :gutter="12">
+                  <el-col :span="12"><el-form-item label="商品分类" required><el-cascader v-model="productApplicationEdit.categoryPath" :options="productApplicationCategoryTree" :props="{ label: 'name', value: 'category_id', children: 'children', emitPath: true }" :show-all-levels="true" filterable style="width:100%" placeholder="请选择 1-4 级分类" @change="onProductApplicationCategoryChange" /></el-form-item></el-col>
+                  <el-col :span="12"><el-form-item label="商品名称" required><el-input v-model="productApplicationEdit.name" /></el-form-item></el-col>
+                  <el-col :span="12"><el-form-item label="PN / 厂商编码" required><el-input v-model="productApplicationEdit.pnCode" /></el-form-item></el-col>
+                  <el-col :span="12"><el-form-item label="厂商商品名称"><el-input v-model="productApplicationEdit.config" /></el-form-item></el-col>
+                  <el-col :span="8"><el-form-item label="商品分类维度"><el-input v-model="productApplicationEdit.category" /></el-form-item></el-col>
+                  <el-col :span="8"><el-form-item label="品牌"><el-input v-model="productApplicationEdit.brand" /></el-form-item></el-col>
+                  <el-col :span="8"><el-form-item label="系列"><el-input v-model="productApplicationEdit.series" /></el-form-item></el-col>
+                  <el-col :span="8"><el-form-item label="型号"><el-input v-model="productApplicationEdit.model" /></el-form-item></el-col>
+                  <el-col :span="8"><el-form-item label="单位"><el-input v-model="productApplicationEdit.unit" /></el-form-item></el-col>
+                  <el-col :span="4"><el-form-item label="需要 SN"><el-switch v-model="productApplicationEdit.needSn" :active-value="1" :inactive-value="0" /></el-form-item></el-col>
+                  <el-col :span="4"><el-form-item label="需要 IMEI"><el-switch v-model="productApplicationEdit.needImei" :active-value="1" :inactive-value="0" /></el-form-item></el-col>
+                </el-row>
+                <el-row v-if="productApplicationCategoryFields.length" :gutter="12">
+                  <el-col v-for="field in productApplicationCategoryFields" :key="field.field_key" :span="8">
+                    <el-form-item :label="field.field_label" :required="Number(field.required) === 1">
+                      <el-select v-if="field.field_type === 'select'" :model-value="productApplicationFieldValue(field)" clearable style="width:100%" @update:model-value="value => setProductApplicationField(field, value)"><el-option v-for="option in field.options || []" :key="option" :label="option" :value="option" /></el-select>
+                      <el-input v-else :model-value="productApplicationFieldValue(field)" @update:model-value="value => setProductApplicationField(field, value)" />
+                    </el-form-item>
+                  </el-col>
+                </el-row>
+                <el-form-item label="备注"><el-input v-model="productApplicationEdit.remark" type="textarea" :rows="2" /></el-form-item>
+              </el-form>
+            </div>
             <el-descriptions v-if="detailScalarFields(currentInstance.moduleData).length" :column="2" border>
               <el-descriptions-item
                 v-for="field in detailScalarFields(currentInstance.moduleData)"
@@ -316,6 +344,9 @@ const assigneeOptions = reactive({ staff: [], roles: [], stores: [] })
 const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
 const approvalIssues = ref([])
 const approvalProductCategoryOptions = ref([])
+const productApplicationCategoryTree = ref([])
+const productApplicationCategoryFields = ref([])
+const productApplicationEdit = ref(null)
 const purchaseItemsNeedingCategory = computed(() => {
   if (!['purchase', 'purchase_request'].includes(detailReviewRow.value?.moduleType)) return []
   const items = currentInstance.value?.moduleData?.items || []
@@ -442,10 +473,16 @@ async function loadOtherApprovalTasks() {
       id: item.business_id, no: item.business_no, node: item.node_name,
       title: item.row.product_name || item.row.supplier_name || businessTypeText(item.business_type),
       summary: item.row.reason || item.row.remark || '',
-      amountText: moneyText(item.row.total_amount ?? item.row.amount ?? item.row.change_amount ?? item.row.signed_amount)
+      amountText: businessAmountText(item.row)
     }),
     managedBusiness: true, manualPath: item.manual_path, approvalInstanceId: item.instance_id
   }))
+}
+function businessAmountText(data = {}) {
+  const candidates = [data.actual_total, data.actualTotal, data.total_amount, data.totalAmount, data.refund_amount, data.refundAmount, data.amount, data.change_amount, data.signed_amount]
+  const value = candidates.find(item => item !== undefined && item !== null && item !== '' && Number(item) !== 0)
+    ?? candidates.find(item => item !== undefined && item !== null && item !== '')
+  return value === undefined ? '-' : moneyText(value)
 }
 async function initializeFlows() {
   await api.initializeApprovalFlows()
@@ -461,7 +498,7 @@ async function approveTaskDirect(row) {
   if (row.isSalesApproval) return api.approveOrder(row.salesRow.order_id)
   if (row.isModuleApproval) {
     if (row.manualPath) return { skipped: true }
-    if (row.moduleType === 'manufacturer_rebate_confirmation') return { skipped: true }
+    if (['manufacturer_rebate_confirmation', 'product_application'].includes(row.moduleType)) return { skipped: true }
     return api.actionBusinessApproval(row.moduleType, row.Instance?.business_id, { action: 'approve', comment: '' })
   }
   return api.actionApproval(row.instance_id, { action: 'approve', comment: '' })
@@ -674,7 +711,7 @@ function responseData(response) {
   return payload?.data ?? payload
 }
 function moduleApplicant(data = {}) {
-  return data.applicant_name || data.applicantName || data.submitter_name || data.submit_user || data.apply_user || data.Applicant?.name || data.applicant?.name || ''
+  return data.applicant_name || data.applicantName || data.submitter_name || data.submit_user || data.apply_user || data.create_user || data.createUser || data.operator_name || data.Applicant?.name || data.applicant?.name || ''
 }
 function moduleStore(data = {}) {
   return data.store_name || data.applicant_store_name || data.Store?.name || data.Applicant?.Store?.name || data.storeName || ''
@@ -709,7 +746,15 @@ async function loadModuleDetail(row) {
   if (row.moduleType === 'inventory_batch') return responseData(await api.getInventoryBatchApplicationDetail(id))
   if (row.moduleType === 'return_stock') return responseList(await api.getReturnList({ returnId: id }))[0] || source
   if (row.moduleType === 'purchase') {
-    const data = responseData(await api.getPurchaseRequestDetail(id)) || source
+    const response = responseData(await api.getPurchaseRequestDetail(id)) || {}
+    const data = {
+      ...source,
+      ...response,
+      apply_user: response.apply_user || response.applicant_name || response.submit_user || source.apply_user || source.applicant_name || source.submit_user || source.create_user || '',
+      applicant_name: response.applicant_name || response.apply_user || response.submit_user || source.applicant_name || source.apply_user || source.submit_user || source.create_user || '',
+      total_amount: Number(response.total_amount || response.actual_total || source.total_amount || source.actual_total || 0),
+      actual_total: Number(response.actual_total || response.total_amount || source.actual_total || source.total_amount || 0)
+    }
     return {
       ...data,
       items: (data.items || []).map(item => {
@@ -805,6 +850,7 @@ async function openModule(row) {
     const approval = row.approvalInstanceId ? responseData(await api.getApprovalInstance(row.approvalInstanceId)) : null
     if (serial !== detailRequestSerial) return
     currentInstance.value = { ...buildModuleInstance(row, moduleData), Tasks: approval?.Tasks || [], detailLoading: false }
+    if (row.moduleType === 'product_application') await initializeProductApplicationEditor(moduleData)
     if (['purchase', 'purchase_request'].includes(row.moduleType) && purchaseItemsNeedingCategory.value.length) loadApprovalProductCategories()
   } catch (error) {
     if (serial !== detailRequestSerial) return
@@ -836,6 +882,105 @@ async function loadApprovalProductCategories() {
   } catch (error) {
     ElMessage.error(error.response?.data?.message || error.message || '商品类别加载失败')
   }
+}
+const productApplicationStandardFields = {
+  category: ['category'], brand: ['brand'], series: ['series'], model: ['model'],
+  processor: ['processor', 'cpu'], memory: ['memory', 'mem'], storage: ['storage', 'harddisk'],
+  color: ['color'], gpu: ['gpu'], accessory_type: ['accessory_type']
+}
+function productApplicationStandardFieldKey(fieldKey) {
+  const normalized = String(fieldKey || '').trim().toLowerCase()
+  return Object.entries(productApplicationStandardFields).find(([, aliases]) => aliases.includes(normalized))?.[0] || ''
+}
+function findProductCategoryPath(nodes, targetId, path = []) {
+  for (const node of nodes || []) {
+    const nodeId = node.category_id || node.categoryId || node.id
+    const nextPath = [...path, nodeId]
+    if (String(nodeId) === String(targetId)) return nextPath
+    const found = findProductCategoryPath(node.children, targetId, nextPath)
+    if (found) return found
+  }
+  return []
+}
+async function loadProductApplicationCategoryFields(categoryId) {
+  productApplicationCategoryFields.value = []
+  if (!categoryId) return
+  try {
+    const response = responseData(await api.getCategoryFieldConfig(categoryId))
+    productApplicationCategoryFields.value = response?.fields || []
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || error.message || '商品分类字段加载失败')
+  }
+}
+async function initializeProductApplicationEditor(data = {}) {
+  let payload = data
+  if (typeof data.payload_json === 'string') {
+    try { payload = { ...JSON.parse(data.payload_json), ...data } } catch (error) { payload = data }
+  }
+  if (!productApplicationCategoryTree.value.length) {
+    const response = responseData(await api.getCategoryTree())
+    productApplicationCategoryTree.value = Array.isArray(response) ? response : response?.rows || []
+  }
+  const categoryId = payload.categoryId || payload.category_id || ''
+  productApplicationEdit.value = {
+    ...payload,
+    name: payload.name || payload.product_name || '',
+    categoryId,
+    categoryPath: findProductCategoryPath(productApplicationCategoryTree.value, categoryId),
+    pnCode: payload.pnCode || payload.manufacturerCode || payload.manufacturer_code || payload.pns?.find(item => item.isPrimary || Number(item.isPrimary) === 1)?.pnCode || '',
+    needSn: Number(payload.needSn ?? payload.need_sn ?? 0),
+    needImei: Number(payload.needImei ?? payload.need_imei ?? 0),
+    unit: payload.unit || '台',
+    attributes: payload.attributes && typeof payload.attributes === 'object' ? { ...payload.attributes } : {}
+  }
+  await loadProductApplicationCategoryFields(categoryId)
+}
+async function onProductApplicationCategoryChange(path = []) {
+  const selectedPath = Array.isArray(path) ? path : []
+  const categoryId = selectedPath[selectedPath.length - 1] || ''
+  if (!productApplicationEdit.value) return
+  productApplicationEdit.value.categoryPath = selectedPath
+  productApplicationEdit.value.categoryId = categoryId
+  await loadProductApplicationCategoryFields(categoryId)
+}
+function productApplicationFieldValue(field) {
+  const standardKey = productApplicationStandardFieldKey(field.field_key)
+  return standardKey ? productApplicationEdit.value?.[standardKey] || '' : productApplicationEdit.value?.attributes?.[field.field_key] || ''
+}
+function setProductApplicationField(field, value) {
+  if (!productApplicationEdit.value) return
+  const standardKey = productApplicationStandardFieldKey(field.field_key)
+  if (standardKey) productApplicationEdit.value[standardKey] = value
+  else productApplicationEdit.value.attributes[field.field_key] = value
+}
+function buildEditedProductApplicationPayload() {
+  const payload = { ...productApplicationEdit.value, attributes: { ...(productApplicationEdit.value?.attributes || {}) } }
+  delete payload.categoryPath
+  const pnCode = String(payload.pnCode || '').trim()
+  payload.pnCode = pnCode
+  payload.manufacturerCode = pnCode
+  const pns = Array.isArray(payload.pns) ? payload.pns.map(item => ({ ...item })) : []
+  const primary = pns.find(item => item.isPrimary || Number(item.isPrimary) === 1)
+  if (primary) primary.pnCode = pnCode
+  else if (pnCode) pns.push({ pnCode, isPrimary: true })
+  payload.pns = pns
+  return payload
+}
+function validateProductApplicationEditor() {
+  if (!productApplicationEdit.value || productApplicationEdit.value.categoryPath?.length !== 4 || !productApplicationEdit.value.categoryId) {
+    ElMessage.warning('请为商品选择完整的 1-4 级分类')
+    return false
+  }
+  if (!String(productApplicationEdit.value.name || '').trim() || !String(productApplicationEdit.value.pnCode || '').trim()) {
+    ElMessage.warning('商品名称和 PN / 厂商编码不能为空')
+    return false
+  }
+  const missingField = productApplicationCategoryFields.value.find(field => Number(field.required) === 1 && !String(productApplicationFieldValue(field) ?? '').trim())
+  if (missingField) {
+    ElMessage.warning(`请填写${missingField.field_label}`)
+    return false
+  }
+  return true
 }
 async function openSales(row) {
   const serial = ++detailRequestSerial
@@ -880,6 +1025,7 @@ async function openOriginalFromRow(row) {
 async function reviewFromDetail(action) {
   const row = detailReviewRow.value
   if (!row) return
+  if (action === 'approve' && row.moduleType === 'product_application' && !validateProductApplicationEditor()) return
   if (row.isSalesApproval) await reviewSales(row.salesRow, action)
   else if (row.isModuleApproval) await reviewModule(row, action)
   else await review(row, action)
@@ -929,6 +1075,11 @@ async function reviewModule(row, action) {
     ElMessage.warning('请先为每个新建商品选择四级商品类别')
     return
   }
+  let editedProductPayload = null
+  if (action === 'approve' && row.moduleType === 'product_application') {
+    if (!validateProductApplicationEditor()) return
+    editedProductPayload = buildEditedProductApplicationPayload()
+  }
   let comment = ''
   if (action === 'reject') {
     const result = await ElMessageBox.prompt('请输入拒绝原因', '拒绝审批', { inputType: 'textarea' }).catch(() => null)
@@ -944,7 +1095,7 @@ async function reviewModule(row, action) {
     : []
   try {
     if (row.managedBusiness) {
-      const result = await api.actionBusinessApproval(row.moduleType, id, { action, comment, businessData: { newProductCategories, ...(rebateAmount !== null ? { rebateAmount } : {}) } })
+      const result = await api.actionBusinessApproval(row.moduleType, id, { action, comment, businessData: { newProductCategories, ...(editedProductPayload ? { payload: editedProductPayload } : {}), ...(rebateAmount !== null ? { rebateAmount } : {}) } })
       ElMessage.success(result.message || '审批已记录')
       await reload()
       return
