@@ -146,7 +146,7 @@ async function loadPolicies() {
     const data = unwrap(await api.getSalesCashRebatePolicies(policyQuery))
     policies.value = data?.list || []
     policyTotal.value = data?.pagination?.total ?? data?.total ?? 0
-  } catch (error) { ElMessage.error(error.response?.data?.message || '加载红包政策失败') }
+  } catch (error) { ElMessage.error(error.response?.data?.message || error.message || '加载红包政策失败') }
   finally { policyLoading.value = false }
 }
 
@@ -157,7 +157,7 @@ async function loadEligible() {
     const data = unwrap(await api.getEligibleSalesCashRebateItems(eligibleQuery))
     eligibleRows.value = data?.list || []
     eligibleTotal.value = data?.total ?? 0
-  } catch (error) { ElMessage.error(error.response?.data?.message || '加载可套回销售明细失败') }
+  } catch (error) { ElMessage.error(error.response?.data?.message || error.message || '加载可套回销售明细失败') }
   finally { eligibleLoading.value = false }
 }
 
@@ -167,7 +167,7 @@ async function loadClaims() {
     const data = unwrap(await api.getSalesCashRebateClaims(claimQuery))
     claims.value = data?.list || []
     claimTotal.value = data?.pagination?.total ?? data?.total ?? 0
-  } catch (error) { ElMessage.error(error.response?.data?.message || '加载套回申请记录失败') }
+  } catch (error) { ElMessage.error(error.response?.data?.message || error.message || '加载套回申请记录失败') }
   finally { claimLoading.value = false }
 }
 
@@ -179,15 +179,19 @@ function loadActive(tab) {
 
 async function downloadTemplate() {
   try {
+    // The shared Axios interceptor unwraps successful responses and returns the
+    // response payload directly. For responseType=blob that payload is the Blob.
     const response = await api.getSalesCashRebateTemplate()
-    const blob = new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const sourceBlob = response instanceof Blob ? response : response?.data
+    if (!(sourceBlob instanceof Blob) || sourceBlob.size === 0) throw new Error('模板文件为空或接口未返回文件')
+    const blob = sourceBlob
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
     anchor.download = '商品销售红包模板.xlsx'
     anchor.click()
     URL.revokeObjectURL(url)
-  } catch (error) { ElMessage.error(error.response?.data?.message || '下载模板失败') }
+  } catch (error) { ElMessage.error(error.response?.data?.message || error.message || '下载模板失败') }
 }
 
 async function importPolicies(event) {
