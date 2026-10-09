@@ -210,7 +210,7 @@
               <el-tooltip placement="top" effect="light" :show-after="250">
                 <template #content>
                   <div class="store-ranking-tooltip">
-                    <strong>{{ device.label }}二级分类</strong>
+                    <strong>{{ device.label }}四级分类</strong>
                     <span v-for="item in storeDeviceCategories(row, device.key)" :key="item.name">{{ item.name }}：{{ formatNumber(item.quantity) }} 台</span>
                     <span v-if="!storeDeviceCategories(row, device.key).length">分类明细暂不可用</span>
                   </div>
@@ -402,10 +402,7 @@ const ProductTable = defineComponent({
             h('b', { class: index < 3 ? `rank rank-${index + 1}` : 'rank' }, String(index + 1)),
             h('div', { class: 'product-name-cell', title: row.productName }, [
               h('span', row.productName),
-              row.productCode ? h('small', row.productCode) : null,
-              props.variant === 'profit' && row.deviceCategory
-                ? h('small', { class: 'product-device-category' }, row.deviceCategory)
-                : null
+              row.manufacturerCode ? h('small', row.manufacturerCode) : null
             ]),
             ...(showQuantity ? [h('span', { class: 'product-quantity' }, formatNumber(row.quantity))] : []),
             h('strong', format(row[props.valueKey])),

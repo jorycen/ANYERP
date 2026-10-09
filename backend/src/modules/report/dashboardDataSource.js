@@ -526,9 +526,9 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       const quantity = Number(row.quantity || 0);
       result[key] += quantity;
       const pathParts = String(categoryPath || '').split('/').map(part => part.trim()).filter(Boolean);
-      const secondLevelName = pathParts[1] || '未细分';
+      const fourthLevelName = pathParts[3] || '未维护四级分类';
       const categoryMap = result.categoryBreakdown[key];
-      categoryMap.set(secondLevelName, (categoryMap.get(secondLevelName) || 0) + quantity);
+      categoryMap.set(fourthLevelName, (categoryMap.get(fourthLevelName) || 0) + quantity);
       byStore.set(storeId, result);
     });
     return [...byStore.entries()].map(([storeId, quantities]) => {
@@ -552,7 +552,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
     return this.query(
       `SELECT oi.PRODUCT_ID AS productId,
               MAX(COALESCE(p.NAME, oi.PRODUCT_NAME)) AS productName,
-              MAX(COALESCE(p.PRODUCT_CODE, '')) AS productCode,
+              MAX(COALESCE(p.MANUFACTURER_CODE, '')) AS manufacturerCode,
               MAX(COALESCE(p.CATEGORY, '')) AS categoryPath,
               MAX(COALESCE(p.CATEGORY, '')) AS categoryRoot,
               MAX(COALESCE(p.IS_FOCUS_PRODUCT, 0)) AS isFocusProduct,

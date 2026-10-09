@@ -274,7 +274,7 @@ function mapProductRows(rows, canViewProfit) {
     return {
       productId: row.productId,
       productName: row.productName || '未命名商品',
-      productCode: row.productCode || '',
+      manufacturerCode: row.manufacturerCode || '',
       deviceCategory,
       isFocusProduct: Number(row.isFocusProduct || 0) === 1,
       salesAmount,
