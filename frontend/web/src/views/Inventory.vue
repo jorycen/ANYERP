@@ -5004,7 +5004,7 @@ const getReturnStatusText = (status) => {
 </script>
 
 <style scoped>
-.module-tabs :deep(.el-tabs__header) {
+.module-tabs :deep(> .el-tabs__header) {
   display: none;
 }
 
