@@ -2930,15 +2930,15 @@ async function downloadSalesCashRebateTemplate(ctx) {
   ctx.body = buffer;
 }
 
-async function syncSalesCashRebateStockRights(pnCode, transaction) {
+async function syncSalesCashRebateStockRights(pnCode, productId, transaction) {
   const now = new Date();
   const sns = await ProductSn.findAll({
-    where: { pn_code: pnCode, status: 'in_stock', is_deleted: 0 },
+    where: { product_id: productId, status: 'in_stock', is_deleted: 0 },
     transaction, lock: transaction.LOCK.UPDATE
   });
   const policies = await SalesCashRebatePolicy.findAll({
     where: {
-      pn_code: pnCode, status: 1,
+      product_id: productId, status: 1,
       [Op.and]: [
         { [Op.or]: [{ effective_start: null }, { effective_start: { [Op.lte]: now } }] },
         { [Op.or]: [{ effective_end: null }, { effective_end: { [Op.gte]: now } }] }
@@ -2948,7 +2948,11 @@ async function syncSalesCashRebateStockRights(pnCode, transaction) {
   });
   let affected = 0;
   for (const sn of sns) {
-    const matches = policies.filter(policy => !policy.supplier_id || String(policy.supplier_id) === String(sn.supplier_id || ''))
+    const exactPnMatches = policies.filter(policy => String(policy.pn_code || '') === String(sn.pn_code || ''));
+    const pnMatches = exactPnMatches.length
+      ? exactPnMatches
+      : policies.filter(policy => String(policy.pn_code || '') === String(pnCode));
+    const matches = pnMatches.filter(policy => !policy.supplier_id || String(policy.supplier_id) === String(sn.supplier_id || ''))
       .sort((a, b) => Number(Boolean(b.supplier_id)) - Number(Boolean(a.supplier_id))
         || String(b.effective_start || '').localeCompare(String(a.effective_start || '')));
     const policy = matches[0];
@@ -3025,7 +3029,7 @@ async function importSalesCashRebatePolicies(ctx) {
         const existing = await SalesCashRebatePolicy.findOne({ where, transaction, lock: transaction.LOCK.UPDATE });
         if (existing) await existing.update(values, { transaction });
         else await SalesCashRebatePolicy.create({ policy_id: generateUUID(), ...where, ...values, create_user: ctx.state.user.name || '' }, { transaction });
-        affectedInventory = await syncSalesCashRebateStockRights(pnCode, transaction);
+        affectedInventory = await syncSalesCashRebateStockRights(pnCode, product.product_id, transaction);
       });
       results.push({ row: index + 1, pn: pnCode, status: 'success', affectedInventory });
     } catch (error) {
