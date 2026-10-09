@@ -199,28 +199,25 @@
           <el-table-column type="index" label="排名" width="42" />
           <el-table-column label="门店" width="90" show-overflow-tooltip>
             <template #default="{ row }">
-              <el-tooltip placement="right" effect="light" :show-after="300">
-                <template #content>
-                  <div class="store-ranking-tooltip">
-                    <strong>{{ row.storeName }}</strong>
-                    <span>销售额：{{ formatCurrency(row.salesAmount) }}</span>
-                    <span v-if="dashboard.meta.canViewProfit">毛利：{{ formatCurrency(row.grossProfit) }}</span>
-                    <span>笔记本：{{ formatNumber(row.laptopQuantity) }} 台</span>
-                    <span>手机：{{ formatNumber(row.phoneQuantity) }} 台</span>
-                    <span>平板：{{ formatNumber(row.tabletQuantity) }} 台</span>
-                    <span>台机：{{ formatNumber(row.desktopQuantity) }} 台</span>
-                  </div>
-                </template>
-                <span class="store-ranking-name">{{ row.storeName }}</span>
-              </el-tooltip>
+              <span>{{ row.storeName }}</span>
             </template>
           </el-table-column>
           <el-table-column label="销售额" width="95" align="right"><template #default="{ row }">{{ formatCurrency(row.salesAmount) }}</template></el-table-column>
           <el-table-column v-if="dashboard.meta.canViewProfit" label="毛利" width="82" align="right"><template #default="{ row }">{{ formatCurrency(row.grossProfit) }}</template></el-table-column>
-          <el-table-column label="笔记本" width="72" align="right"><template #default="{ row }">{{ formatNumber(row.laptopQuantity) }}</template></el-table-column>
-          <el-table-column label="手机" width="58" align="right"><template #default="{ row }">{{ formatNumber(row.phoneQuantity) }}</template></el-table-column>
-          <el-table-column label="平板" width="58" align="right"><template #default="{ row }">{{ formatNumber(row.tabletQuantity) }}</template></el-table-column>
-          <el-table-column label="台机" width="58" align="right"><template #default="{ row }">{{ formatNumber(row.desktopQuantity) }}</template></el-table-column>
+          <el-table-column v-for="device in storeDeviceColumns" :key="device.key" :label="device.label" :width="device.width" align="right">
+            <template #default="{ row }">
+              <el-tooltip placement="top" effect="light" :show-after="250">
+                <template #content>
+                  <div class="store-ranking-tooltip">
+                    <strong>{{ device.label }}二级分类</strong>
+                    <span v-for="item in storeDeviceCategories(row, device.key)" :key="item.name">{{ item.name }}：{{ formatNumber(item.quantity) }} 台</span>
+                    <span v-if="!storeDeviceCategories(row, device.key).length">暂无二级分类数据</span>
+                  </div>
+                </template>
+                <span class="store-device-quantity">{{ formatNumber(row[device.key]) }}</span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
         </el-table>
       </DashboardPanel>
 
@@ -253,7 +250,7 @@
           :can-view-profit="dashboard.meta.canViewProfit"
         />
       </DashboardPanel>
-      <DashboardPanel title="高毛利产品排行榜">
+      <DashboardPanel title="高毛利产品排行榜（笔记本、手机、平板、台机）">
         <ProductTable
           :rows="dashboard.productAnalysis.highMarginTop10"
           value-key="grossMargin"
@@ -423,6 +420,12 @@ const profitTrendRef = ref(null)
 const productLineRef = ref(null)
 const inventoryAgeRef = ref(null)
 const quickRange = ref('week')
+const storeDeviceColumns = [
+  { key: 'laptopQuantity', label: '笔记本', width: 72 },
+  { key: 'phoneQuantity', label: '手机', width: 58 },
+  { key: 'tabletQuantity', label: '平板', width: 58 },
+  { key: 'desktopQuantity', label: '台机', width: 58 }
+]
 const activeDimension = ref('overall')
 const charts = new Map()
 
@@ -458,7 +461,9 @@ const customerSourceChartRows = computed(() => {
   customerSourceRows.value.forEach(row => {
     const source = String(row.customerSource || '未填写来源').trim()
     const detail = String(row.sourceDetail || '').trim()
-    const label = detail && detail !== '-' ? `${source} / ${detail}` : source
+    const dimensionName = String(row.dimensionName || customerSourceDimensionLabel.value).trim()
+    const sourceLabel = detail && detail !== '-' ? `${source} / ${detail}` : source
+    const label = `${dimensionName} / ${sourceLabel}`
     const group = groups.get(label) || { label, orderCount: 0, salesAmount: 0, grossProfit: 0 }
     group.orderCount += Number(row.orderCount || 0)
     group.salesAmount += Number(row.salesAmount || 0)
@@ -805,6 +810,10 @@ function formatNumber(value) {
 
 function formatCurrency(value) {
   return `¥ ${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(Number(value || 0))}`
+}
+
+function storeDeviceCategories(row, key) {
+  return row?.categoryBreakdown?.[key] || []
 }
 
 function formatMetric(card) {
@@ -1261,12 +1270,13 @@ onBeforeUnmount(() => {
 .customer-source-kpi-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
 .source-chart-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 18px 0 4px; color: #303c50; font-size: 13px; }
 .customer-source-chart { height: 340px; margin-bottom: 20px; }
-.store-ranking-name { color: #1769e0; cursor: help; }
 .store-ranking-tooltip { display: flex; flex-direction: column; gap: 5px; min-width: 150px; }
+.store-device-quantity { cursor: help; }
 .store-ranking-table :deep(.el-scrollbar__bar.is-vertical) {
   width: 8px;
   opacity: 0.75;
 }
+
 .source-category-tag { margin: 2px 5px 2px 0; }
 
 .decision-panel {

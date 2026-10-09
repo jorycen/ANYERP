@@ -510,11 +510,39 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       else if (/笔记本|laptop|notebook|thinkpad|thinkbook|yoga|小新|电脑|(?:^|[/])pc(?:[/]|$)/.test(normalized)) key = 'laptopQuantity';
       if (!key) return;
       const storeId = String(row.storeId || '');
-      const result = byStore.get(storeId) || { laptopQuantity: 0, tabletQuantity: 0, phoneQuantity: 0, desktopQuantity: 0 };
-      result[key] += Number(row.quantity || 0);
+      const result = byStore.get(storeId) || {
+        laptopQuantity: 0,
+        tabletQuantity: 0,
+        phoneQuantity: 0,
+        desktopQuantity: 0,
+        categoryBreakdown: {
+          laptopQuantity: new Map(),
+          tabletQuantity: new Map(),
+          phoneQuantity: new Map(),
+          desktopQuantity: new Map()
+        }
+      };
+      const quantity = Number(row.quantity || 0);
+      result[key] += quantity;
+      const pathParts = String(categoryPath || '').split('/').map(part => part.trim()).filter(Boolean);
+      const secondLevelName = pathParts[1] || '未细分';
+      const categoryMap = result.categoryBreakdown[key];
+      categoryMap.set(secondLevelName, (categoryMap.get(secondLevelName) || 0) + quantity);
       byStore.set(storeId, result);
     });
-    return [...byStore.entries()].map(([storeId, quantities]) => ({ storeId, ...quantities }));
+    return [...byStore.entries()].map(([storeId, quantities]) => {
+      const { categoryBreakdown, ...totals } = quantities;
+      return {
+        storeId,
+        ...totals,
+        categoryBreakdown: Object.fromEntries(Object.entries(categoryBreakdown).map(([key, categories]) => [
+          key,
+          [...categories.entries()]
+            .map(([name, quantity]) => ({ name, quantity }))
+            .sort((left, right) => right.quantity - left.quantity)
+        ]))
+      };
+    });
   }
 
   async getProductRows(filters, range) {
@@ -524,6 +552,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       `SELECT oi.PRODUCT_ID AS productId,
               MAX(COALESCE(p.NAME, oi.PRODUCT_NAME)) AS productName,
               MAX(COALESCE(p.PRODUCT_CODE, '')) AS productCode,
+              MAX(COALESCE(p.CATEGORY, '')) AS categoryPath,
               MAX(COALESCE(p.IS_FOCUS_PRODUCT, 0)) AS isFocusProduct,
               ROUND(SUM((${orderItemSalesAmountSql()}) * ${factor}), 2) AS salesAmount,
               ROUND(SUM((${grossProfitSql()}) * ${factor}), 2) AS grossProfit,

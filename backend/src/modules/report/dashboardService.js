@@ -262,10 +262,19 @@ function mapProductRows(rows, canViewProfit) {
   const normalized = rows.map(row => {
     const salesAmount = roundMoney(row.salesAmount);
     const grossProfit = roundMoney(row.grossProfit);
+    const classificationText = `${row.categoryPath || ''}/${row.productName || ''}/${row.productCode || ''}`
+      .replace(/\s+/g, '')
+      .toLocaleLowerCase();
+    let deviceCategory = '';
+    if (/平板|tablet|ipad/.test(classificationText)) deviceCategory = '平板';
+    else if (/手机|iphone|motorola|moto/.test(classificationText)) deviceCategory = '手机';
+    else if (/台式|台机|desktop|主机|一体机|thinkcentre|thinkstation/.test(classificationText)) deviceCategory = '台机';
+    else if (/笔记本|laptop|notebook|thinkpad|thinkbook|yoga|小新|ideapad|matebook|macbook|chromebook/.test(classificationText)) deviceCategory = '笔记本';
     return {
       productId: row.productId,
       productName: row.productName || '未命名商品',
       productCode: row.productCode || '',
+      deviceCategory,
       isFocusProduct: Number(row.isFocusProduct || 0) === 1,
       salesAmount,
       grossProfit: canViewProfit ? grossProfit : null,
@@ -282,7 +291,7 @@ function mapProductRows(rows, canViewProfit) {
       : [],
     quantityTop10: [...normalized].sort((a, b) => b.quantity - a.quantity).slice(0, 10),
     highMarginTop10: canViewProfit
-      ? normalized.filter(row => row.salesAmount > 0).sort((a, b) => b.grossMargin - a.grossMargin).slice(0, 10)
+      ? normalized.filter(row => row.salesAmount > 0 && row.deviceCategory).sort((a, b) => b.grossMargin - a.grossMargin).slice(0, 10)
       : [],
     focusProducts: normalized.filter(row => row.isFocusProduct).sort((a, b) => b.salesAmount - a.salesAmount).slice(0, 20)
   };
@@ -494,6 +503,7 @@ class DashboardService {
         tabletQuantity: Number(storeProductTypeMap.get(String(row.storeId))?.tabletQuantity || 0),
         phoneQuantity: Number(storeProductTypeMap.get(String(row.storeId))?.phoneQuantity || 0),
         desktopQuantity: Number(storeProductTypeMap.get(String(row.storeId))?.desktopQuantity || 0),
+        categoryBreakdown: storeProductTypeMap.get(String(row.storeId))?.categoryBreakdown || {},
         periodCompare: comparisonRate(row.salesAmount, previousStoreMap.get(String(row.storeId))?.salesAmount)
       })),
       employeeRanking: employeePerformance.ranking,
