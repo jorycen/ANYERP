@@ -480,6 +480,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       this.query(
         `SELECT o.STORE_ID AS storeId,
                 p.CATEGORY_ID AS categoryId,
+                MAX(p.CATEGORY) AS productRootCategory,
                 MAX(p.CATEGORY) AS categoryPath,
                 MAX(COALESCE(p.NAME, oi.PRODUCT_NAME)) AS productName,
                 SUM(COALESCE(oi.QUANTITY, 0) * ${factor}) AS quantity
@@ -502,12 +503,12 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
     const byStore = new Map();
     rows.forEach(row => {
       const categoryPath = categoryIndex.byId.get(String(row.categoryId || ''))?.path || row.categoryPath || '';
-      const normalized = `${categoryPath}/${row.productName || ''}`.replace(/\s+/g, '').toLocaleLowerCase();
+      const rootCategory = String(row.productRootCategory || '').split('/')[0].trim().toLocaleLowerCase();
       let key = '';
-      if (/平板|tablet|ipad/.test(normalized)) key = 'tabletQuantity';
-      else if (/手机|iphone|motorola|moto/.test(normalized)) key = 'phoneQuantity';
-      else if (/台式|台机|desktop|主机|一体机/.test(normalized)) key = 'desktopQuantity';
-      else if (/笔记本|laptop|notebook|thinkpad|thinkbook|yoga|小新|电脑|(?:^|[/])pc(?:[/]|$)/.test(normalized)) key = 'laptopQuantity';
+      if (/^(平板|tablet)$/.test(rootCategory)) key = 'tabletQuantity';
+      else if (/^(手机|phone)$/.test(rootCategory)) key = 'phoneQuantity';
+      else if (/^(台机|台式机|desktop)$/.test(rootCategory)) key = 'desktopQuantity';
+      else if (/^(笔记本|laptop|notebook)$/.test(rootCategory)) key = 'laptopQuantity';
       if (!key) return;
       const storeId = String(row.storeId || '');
       const result = byStore.get(storeId) || {
@@ -553,6 +554,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
               MAX(COALESCE(p.NAME, oi.PRODUCT_NAME)) AS productName,
               MAX(COALESCE(p.PRODUCT_CODE, '')) AS productCode,
               MAX(COALESCE(p.CATEGORY, '')) AS categoryPath,
+              MAX(COALESCE(p.CATEGORY, '')) AS categoryRoot,
               MAX(COALESCE(p.IS_FOCUS_PRODUCT, 0)) AS isFocusProduct,
               ROUND(SUM((${orderItemSalesAmountSql()}) * ${factor}), 2) AS salesAmount,
               ROUND(SUM((${grossProfitSql()}) * ${factor}), 2) AS grossProfit,

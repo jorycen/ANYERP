@@ -262,14 +262,15 @@ function mapProductRows(rows, canViewProfit) {
   const normalized = rows.map(row => {
     const salesAmount = roundMoney(row.salesAmount);
     const grossProfit = roundMoney(row.grossProfit);
-    const classificationText = `${row.categoryPath || ''}/${row.productName || ''}/${row.productCode || ''}`
-      .replace(/\s+/g, '')
+    const rootCategory = String(row.categoryRoot || row.categoryPath || '')
+      .split('/')[0]
+      .trim()
       .toLocaleLowerCase();
     let deviceCategory = '';
-    if (/平板|tablet|ipad/.test(classificationText)) deviceCategory = '平板';
-    else if (/手机|iphone|motorola|moto/.test(classificationText)) deviceCategory = '手机';
-    else if (/台式|台机|desktop|主机|一体机|thinkcentre|thinkstation/.test(classificationText)) deviceCategory = '台机';
-    else if (/笔记本|laptop|notebook|thinkpad|thinkbook|yoga|小新|ideapad|matebook|macbook|chromebook/.test(classificationText)) deviceCategory = '笔记本';
+    if (/^(平板|tablet)$/.test(rootCategory)) deviceCategory = '平板';
+    else if (/^(手机|phone)$/.test(rootCategory)) deviceCategory = '手机';
+    else if (/^(台机|台式机|desktop)$/.test(rootCategory)) deviceCategory = '台机';
+    else if (/^(笔记本|laptop|notebook)$/.test(rootCategory)) deviceCategory = '笔记本';
     return {
       productId: row.productId,
       productName: row.productName || '未命名商品',

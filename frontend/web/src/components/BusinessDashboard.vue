@@ -79,7 +79,8 @@
         :class="{ active: activeDimension === tab.value }"
         @click="selectDimension(tab.value)"
       >
-        {{ tab.label }}
+        <el-icon v-if="tab.icon" class="dimension-tab-icon"><component :is="tab.icon" /></el-icon>
+        <span>{{ tab.label }}</span>
       </button>
     </div>
 
@@ -112,7 +113,7 @@
         </template>
         <p class="customer-source-note">按销售订单客户来源统计；混合商品订单会分别计入涉及类别，售后单数按关联的有效退单统计。</p>
         <div class="source-chart-toolbar">
-          <strong>客户来源占比</strong>
+          <strong>{{ customerSourceDimensionLabel }}客户来源分布</strong>
           <el-radio-group v-model="customerSourceMetric" size="small" @change="renderCustomerSourceChart">
             <el-radio-button label="salesAmount">销售额</el-radio-button>
             <el-radio-button label="orderCount">订单数</el-radio-button>
@@ -211,7 +212,7 @@
                   <div class="store-ranking-tooltip">
                     <strong>{{ device.label }}二级分类</strong>
                     <span v-for="item in storeDeviceCategories(row, device.key)" :key="item.name">{{ item.name }}：{{ formatNumber(item.quantity) }} 台</span>
-                    <span v-if="!storeDeviceCategories(row, device.key).length">暂无二级分类数据</span>
+                    <span v-if="!storeDeviceCategories(row, device.key).length">分类明细暂不可用</span>
                   </div>
                 </template>
                 <span class="store-device-quantity">{{ formatNumber(row[device.key]) }}</span>
@@ -331,6 +332,7 @@ import {
   Document,
   InfoFilled,
   Money,
+  Shop,
   UserFilled
 } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
@@ -400,7 +402,10 @@ const ProductTable = defineComponent({
             h('b', { class: index < 3 ? `rank rank-${index + 1}` : 'rank' }, String(index + 1)),
             h('div', { class: 'product-name-cell', title: row.productName }, [
               h('span', row.productName),
-              row.productCode ? h('small', row.productCode) : null
+              row.productCode ? h('small', row.productCode) : null,
+              props.variant === 'profit' && row.deviceCategory
+                ? h('small', { class: 'product-device-category' }, row.deviceCategory)
+                : null
             ]),
             ...(showQuantity ? [h('span', { class: 'product-quantity' }, formatNumber(row.quantity))] : []),
             h('strong', format(row[props.valueKey])),
@@ -430,12 +435,12 @@ const activeDimension = ref('overall')
 const charts = new Map()
 
 const dimensionTabs = [
-  { label: '总体', value: 'overall' },
-  { label: '门店', value: 'store' },
-  { label: '员工', value: 'employee' },
-  { label: '产品线', value: 'productLine' },
-  { label: '产品', value: 'product' },
-  { label: '客户来源', value: 'customerSource' }
+  { label: '总体', value: 'overall', icon: DataAnalysis },
+  { label: '门店', value: 'store', icon: Shop },
+  { label: '员工', value: 'employee', icon: UserFilled },
+  { label: '产品线', value: 'productLine', icon: Coin },
+  { label: '产品', value: 'product', icon: Box },
+  { label: '客户来源', value: 'customerSource', icon: DataAnalysis }
 ]
 
 const filterOptions = reactive({ stores: [], employees: [], productLines: [], regions: [] })
@@ -456,31 +461,30 @@ const customerSourceKpiCards = computed(() => [
   ...(customerSourceCanViewProfit.value ? [{ key: 'profit', label: '毛利额', value: formatCurrency(customerSourceSummary.value.grossProfit), icon: DataAnalysis, color: 'orange' }] : []),
   { key: 'aftersales', label: '涉及售后单数', value: formatNumber(customerSourceSummary.value.afterSalesOrderCount), icon: UserFilled, color: 'purple' }
 ])
-const customerSourceChartRows = computed(() => {
-  const groups = new Map()
+const customerSourceChartData = computed(() => {
+  const entities = new Map()
+  const sourceTotals = new Map()
   customerSourceRows.value.forEach(row => {
-    const source = String(row.customerSource || '未填写来源').trim()
-    const detail = String(row.sourceDetail || '').trim()
     const dimensionName = String(row.dimensionName || customerSourceDimensionLabel.value).trim()
-    const sourceLabel = detail && detail !== '-' ? `${source} / ${detail}` : source
-    const label = `${dimensionName} / ${sourceLabel}`
-    const group = groups.get(label) || { label, orderCount: 0, salesAmount: 0, grossProfit: 0 }
-    group.orderCount += Number(row.orderCount || 0)
-    group.salesAmount += Number(row.salesAmount || 0)
-    group.grossProfit += Number(row.grossProfit || 0)
-    groups.set(label, group)
+    const entityId = String(row.dimensionId || dimensionName)
+    const source = String(row.customerSource || '未填写来源').trim()
+    const entity = entities.get(entityId) || { id: entityId, name: dimensionName, sources: {} }
+    const sourceValues = entity.sources[source] || { orderCount: 0, salesAmount: 0, grossProfit: 0 }
+    sourceValues.orderCount += Number(row.orderCount || 0)
+    sourceValues.salesAmount += Number(row.salesAmount || 0)
+    sourceValues.grossProfit += Number(row.grossProfit || 0)
+    entity.sources[source] = sourceValues
+    entities.set(entityId, entity)
+    sourceTotals.set(source, (sourceTotals.get(source) || 0) + Number(row[customerSourceMetric.value] || 0))
   })
-  const sorted = [...groups.values()]
-    .sort((a, b) => b[customerSourceMetric.value] - a[customerSourceMetric.value] || a.label.localeCompare(b.label, 'zh-CN'))
-  if (sorted.length <= 8) return sorted
-  const topSources = sorted.slice(0, 7)
-  const otherSources = sorted.slice(7).reduce((other, row) => ({
-    label: '其他来源',
-    orderCount: other.orderCount + row.orderCount,
-    salesAmount: other.salesAmount + row.salesAmount,
-    grossProfit: other.grossProfit + row.grossProfit
-  }), { label: '其他来源', orderCount: 0, salesAmount: 0, grossProfit: 0 })
-  return [...topSources, otherSources]
+  const rows = [...entities.values()].map(entity => ({
+    ...entity,
+    total: Object.values(entity.sources).reduce((sum, values) => sum + Number(values[customerSourceMetric.value] || 0), 0)
+  })).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, 'zh-CN'))
+  const sources = [...sourceTotals.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-CN'))
+    .map(([source]) => source)
+  return { rows, sources }
 })
 
 function emptyDashboard() {
@@ -655,49 +659,83 @@ function getChart(element, key) {
 }
 
 function renderCustomerSourceChart() {
-  const rows = customerSourceChartRows.value
+  const { rows, sources } = customerSourceChartData.value
   const valueKey = customerSourceMetric.value
   const valueLabel = { salesAmount: '销售额', orderCount: '订单数', grossProfit: '毛利' }[valueKey] || '销售额'
-  const total = rows.reduce((sum, row) => sum + Number(row[valueKey] || 0), 0)
   const formatValue = value => valueKey === 'orderCount' ? `${formatNumber(value)} 单` : formatCurrency(value)
   const chart = getChart(customerSourceChartRef.value, 'customerSource')
   if (!chart) return
-  chart.setOption({
-    color: ['#4f74c8', '#80be66', '#f0b84b', '#e66a6a', '#64b4d1', '#38a476', '#a67bd2', '#ff8a55'],
-    tooltip: {
-      trigger: 'item',
-      formatter: params => `${params.name}<br/>${valueLabel}：${formatValue(params.value)}<br/>占比：${params.percent}%`
+  if (!rows.length) {
+    chart.clear()
+    return
+  }
+  const visibleRows = 8
+  const dataZoom = rows.length > visibleRows ? [
+    {
+      type: 'slider',
+      yAxisIndex: 0,
+      right: 2,
+      top: 52,
+      bottom: 30,
+      width: 10,
+      startValue: 0,
+      endValue: visibleRows - 1,
+      showDetail: false
     },
-    legend: {
-      orient: 'vertical',
-      type: 'scroll',
-      right: '5%',
-      top: 'middle',
-      textStyle: { color: '#53627a', fontSize: 12 },
-      formatter: name => {
-        const row = rows.find(item => item.label === name)
-        const share = total > 0 ? (Number(row?.[valueKey] || 0) / total * 100).toFixed(1) : '0.0'
-        return `${name}  ${share}%`
+    {
+      type: 'inside',
+      yAxisIndex: 0,
+      startValue: 0,
+      endValue: visibleRows - 1,
+      zoomOnMouseWheel: false,
+      moveOnMouseWheel: true,
+      moveOnMouseMove: true
+    }
+  ] : []
+  chart.setOption({
+    color: ['#3978d4', '#27a875', '#f2a93b', '#e56c72', '#36a8bd', '#8965ca', '#ee8152', '#70849d', '#bd6caa', '#6b9f48'],
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      formatter: params => {
+        const entityName = params?.[0]?.axisValue || ''
+        const lines = params
+          .filter(item => Number(item.value || 0) !== 0)
+          .map(item => `${item.marker}${item.seriesName}：${formatValue(item.value)}`)
+        return `${entityName}<br/>${lines.join('<br/>') || '暂无客户来源数据'}`
       }
     },
-    graphic: [{
-      type: 'text',
-      left: '35%',
-      top: '42%',
-      style: { text: `${valueLabel}\n${formatValue(total)}`, textAlign: 'center', fill: '#53627a', fontSize: 13, lineHeight: 22 }
-    }],
-    series: [{
-      name: valueLabel,
-      type: 'pie',
-      radius: ['48%', '72%'],
-      center: ['38%', '50%'],
-      minAngle: 2,
-      avoidLabelOverlap: true,
-      itemStyle: { borderColor: '#fff', borderWidth: 2 },
-      label: { show: false },
-      emphasis: { label: { show: true, formatter: '{b}\n{d}%', fontSize: 12, fontWeight: 600 } },
-      data: rows.map(row => ({ name: row.label, value: row[valueKey] }))
-    }]
+    legend: {
+      type: 'scroll',
+      top: 0,
+      left: 125,
+      right: 22,
+      height: 34,
+      textStyle: { color: '#53627a', fontSize: 12 },
+      data: sources
+    },
+    grid: { left: 130, right: rows.length > visibleRows ? 24 : 18, top: 48, bottom: 30, containLabel: false },
+    xAxis: {
+      type: 'value',
+      axisLabel: { color: '#7a8799', formatter: value => valueKey === 'orderCount' ? formatNumber(value) : `¥${compactNumber(value)}` },
+      splitLine: { lineStyle: { type: 'dashed', color: '#e8edf4' } }
+    },
+    yAxis: {
+      type: 'category',
+      inverse: true,
+      data: rows.map(row => row.name),
+      axisLabel: { color: '#53627a', width: 112, overflow: 'truncate' },
+      axisTick: { show: false }
+    },
+    dataZoom,
+    series: sources.map(source => ({
+      name: source,
+      type: 'bar',
+      stack: 'customer-source',
+      barMaxWidth: 22,
+      emphasis: { focus: 'series' },
+      data: rows.map(row => Number(row.sources[source]?.[valueKey] || 0))
+    }))
   }, true)
 }
 
@@ -936,12 +974,19 @@ onBeforeUnmount(() => {
 }
 
 .dimension-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   position: relative;
   border: 0;
   background: transparent;
   padding: 10px 12px;
   color: #344156;
   cursor: pointer;
+}
+
+.dimension-tab-icon {
+  font-size: 15px;
 }
 
 .dimension-tabs button.active {
@@ -1199,6 +1244,14 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
+.product-table :deep(.product-name-cell .product-device-category) {
+  width: fit-content;
+  padding: 1px 5px;
+  border-radius: 8px;
+  color: #3472c7;
+  background: #edf4ff;
+}
+
 .product-table :deep(.product-quantity),
 .product-table :deep(.product-table-row strong) {
   text-align: right;
@@ -1269,7 +1322,7 @@ onBeforeUnmount(() => {
 .customer-source-note { margin: 0 0 14px; color: #718096; font-size: 12px; }
 .customer-source-kpi-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
 .source-chart-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 18px 0 4px; color: #303c50; font-size: 13px; }
-.customer-source-chart { height: 340px; margin-bottom: 20px; }
+.customer-source-chart { height: 420px; margin-bottom: 20px; }
 .store-ranking-tooltip { display: flex; flex-direction: column; gap: 5px; min-width: 150px; }
 .store-device-quantity { cursor: help; }
 .store-ranking-table :deep(.el-scrollbar__bar.is-vertical) {
