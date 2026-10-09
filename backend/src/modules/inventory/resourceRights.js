@@ -179,7 +179,7 @@ async function summariesForSns(snRows, transaction = null) {
     }, transaction
   }) : [];
   return new Map(snRows.map(sn => {
-    const summary = buildSalesResourceSummary(sn, grouped.get(sn.sn_id) || [], categories);
+    const summary = buildSalesResourceSummary(sn, (grouped.get(sn.sn_id) || []).filter(row => row.resource_type !== 'SALES_CASH_REBATE'), categories);
     // 现金红包是销售政策，不是 SN 的库存权益台账。只对当前在库 SN
     // 展示可用政策；售出后的套回金额由订单归档与套回流程处理。
     if (String(sn.status || '').toLowerCase() !== 'in_stock') return [sn.sn_id, summary];
@@ -2930,6 +2930,56 @@ async function downloadSalesCashRebateTemplate(ctx) {
   ctx.body = buffer;
 }
 
+async function syncSalesCashRebateStockRights(pnCode, transaction) {
+  const now = new Date();
+  const sns = await ProductSn.findAll({
+    where: { pn_code: pnCode, status: 'in_stock', is_deleted: 0 },
+    transaction, lock: transaction.LOCK.UPDATE
+  });
+  const policies = await SalesCashRebatePolicy.findAll({
+    where: {
+      pn_code: pnCode, status: 1,
+      [Op.and]: [
+        { [Op.or]: [{ effective_start: null }, { effective_start: { [Op.lte]: now } }] },
+        { [Op.or]: [{ effective_end: null }, { effective_end: { [Op.gte]: now } }] }
+      ]
+    },
+    order: [['effective_start', 'DESC']], transaction
+  });
+  let affected = 0;
+  for (const sn of sns) {
+    const matches = policies.filter(policy => !policy.supplier_id || String(policy.supplier_id) === String(sn.supplier_id || ''))
+      .sort((a, b) => Number(Boolean(b.supplier_id)) - Number(Boolean(a.supplier_id))
+        || String(b.effective_start || '').localeCompare(String(a.effective_start || '')));
+    const policy = matches[0];
+    let right = await InventoryResourceRight.findOne({
+      where: { sn_id: sn.sn_id, resource_type: 'SALES_CASH_REBATE' }, transaction, lock: transaction.LOCK.UPDATE
+    });
+    if (!policy && !right) continue;
+    const values = {
+      sn_code: sn.sn_code, product_id: sn.product_id,
+      rule_config_id: policy?.policy_id || null,
+      current_status: policy ? 'AVAILABLE' : 'NOT_APPLICABLE',
+      amount: policy ? money(policy.amount) : 0,
+      effective_start: policy?.effective_start || null, effective_end: policy?.effective_end || null,
+      source: 'SALES_CASH_REBATE_POLICY_IMPORT',
+      supplier_id: sn.supplier_id || policy?.supplier_id || null,
+      supplier_name: sn.supplier_name || policy?.supplier_name || '',
+      remark: policy ? `${policy.rebate_type || ''}${policy.remark ? ` / ${policy.remark}` : ''}` : '当前无生效的销售红包政策',
+      version: Number(right?.version || 0) + 1, update_time: now
+    };
+    if (right) await right.update(values, { transaction });
+    else {
+      await InventoryResourceRight.create({
+        right_id: generateUUID(), sn_id: sn.sn_id, resource_type: 'SALES_CASH_REBATE',
+        initial_status: 'AVAILABLE', ...values
+      }, { transaction });
+    }
+    affected += 1;
+  }
+  return affected;
+}
+
 async function importSalesCashRebatePolicies(ctx) {
   requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
   if (!ctx.file?.buffer) ctx.throw(400, '请上传销售红包政策Excel文件');
@@ -2965,15 +3015,19 @@ async function importSalesCashRebatePolicies(ctx) {
         supplier_id: supplier?.supplier_id || null,
         effective_start: effectiveStart, effective_end: effectiveEnd
       };
-      const existing = await SalesCashRebatePolicy.findOne({ where });
       const values = {
         product_id: product.product_id, product_name: product.name, amount,
         supplier_name: supplier?.name || null, status: 1, remark,
         update_user: ctx.state.user.name || '', update_time: new Date()
       };
-      if (existing) await existing.update(values);
-      else await SalesCashRebatePolicy.create({ policy_id: generateUUID(), ...where, ...values, create_user: ctx.state.user.name || '' });
-      results.push({ row: index + 1, pn: pnCode, status: 'success' });
+      let affectedInventory = 0;
+      await sequelize.transaction(async transaction => {
+        const existing = await SalesCashRebatePolicy.findOne({ where, transaction, lock: transaction.LOCK.UPDATE });
+        if (existing) await existing.update(values, { transaction });
+        else await SalesCashRebatePolicy.create({ policy_id: generateUUID(), ...where, ...values, create_user: ctx.state.user.name || '' }, { transaction });
+        affectedInventory = await syncSalesCashRebateStockRights(pnCode, transaction);
+      });
+      results.push({ row: index + 1, pn: pnCode, status: 'success', affectedInventory });
     } catch (error) {
       results.push({ row: index + 1, pn: pnCode, status: 'failed', message: error.message });
     }
