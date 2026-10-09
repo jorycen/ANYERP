@@ -421,6 +421,7 @@ class DashboardService {
       previousTrend,
       storeRanking,
       previousStoreRanking,
+      storeProductTypeQuantities,
       productRows,
       productLineRows,
       productCategoryRows,
@@ -433,6 +434,7 @@ class DashboardService {
       this.dataSource.getTrend(filters, ranges.previous, granularity),
       this.dataSource.getStoreRanking(filters, ranges.current),
       this.dataSource.getStoreRanking(filters, ranges.previous),
+      this.dataSource.getStoreProductTypeQuantities(filters, ranges.current),
       this.dataSource.getProductRows(filters, ranges.current),
       this.dataSource.getProductLineRows(filters, ranges.current),
       this.dataSource.getProductCategoryRows(filters, ranges.current),
@@ -452,6 +454,7 @@ class DashboardService {
     );
     const productAnalysis = mapProductRows(productRows, profitVisible);
     const previousStoreMap = new Map((previousStoreRanking || []).map(row => [String(row.storeId), row]));
+    const storeProductTypeMap = new Map((storeProductTypeQuantities || []).map(row => [String(row.storeId), row]));
     const inventoryView = {
       ...inventory,
       inventoryAmount: profitVisible ? inventory.inventoryAmount : null,
@@ -487,6 +490,10 @@ class DashboardService {
         salesAmount: roundMoney(row.salesAmount),
         grossProfit: profitVisible ? roundMoney(row.grossProfit) : null,
         orderCount: Number(row.orderCount || 0),
+        laptopQuantity: Number(storeProductTypeMap.get(String(row.storeId))?.laptopQuantity || 0),
+        tabletQuantity: Number(storeProductTypeMap.get(String(row.storeId))?.tabletQuantity || 0),
+        phoneQuantity: Number(storeProductTypeMap.get(String(row.storeId))?.phoneQuantity || 0),
+        desktopQuantity: Number(storeProductTypeMap.get(String(row.storeId))?.desktopQuantity || 0),
         periodCompare: comparisonRate(row.salesAmount, previousStoreMap.get(String(row.storeId))?.salesAmount)
       })),
       employeeRanking: employeePerformance.ranking,

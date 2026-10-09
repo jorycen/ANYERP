@@ -473,6 +473,50 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       .sort((left, right) => Number(right.salesAmount || 0) - Number(left.salesAmount || 0));
   }
 
+  async getStoreProductTypeQuantities(filters, range) {
+    const where = buildSalesWhere(filters, range);
+    const factor = allocationSql(filters);
+    const [rows, categoryRows] = await Promise.all([
+      this.query(
+        `SELECT o.STORE_ID AS storeId,
+                p.CATEGORY_ID AS categoryId,
+                MAX(p.CATEGORY) AS categoryPath,
+                MAX(COALESCE(p.NAME, oi.PRODUCT_NAME)) AS productName,
+                SUM(COALESCE(oi.QUANTITY, 0) * ${factor}) AS quantity
+           FROM T_ORDER o
+           INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+           LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
+          WHERE ${where.sql}
+          GROUP BY o.STORE_ID, p.CATEGORY_ID, p.CATEGORY, p.PRODUCT_ID
+          ORDER BY o.STORE_ID ASC`,
+        where.replacements
+      ),
+      this.query(
+        `SELECT CATEGORY_ID AS categoryId, PARENT_ID AS parentId, NAME AS name,
+                LEVEL AS level, SORT_ORDER AS sortOrder, SHOW_IN_FINANCE AS showInFinance
+           FROM T_PRODUCT_CATEGORY
+          WHERE STATUS = 1`
+      )
+    ]);
+    const categoryIndex = buildFinanceCategoryIndex(categoryRows);
+    const byStore = new Map();
+    rows.forEach(row => {
+      const categoryPath = categoryIndex.byId.get(String(row.categoryId || ''))?.path || row.categoryPath || '';
+      const normalized = `${categoryPath}/${row.productName || ''}`.replace(/\s+/g, '').toLocaleLowerCase();
+      let key = '';
+      if (/平板|tablet|ipad/.test(normalized)) key = 'tabletQuantity';
+      else if (/手机|iphone|motorola|moto/.test(normalized)) key = 'phoneQuantity';
+      else if (/台式|台机|desktop|主机|一体机/.test(normalized)) key = 'desktopQuantity';
+      else if (/笔记本|laptop|notebook|thinkpad|thinkbook|yoga|小新|电脑|(?:^|[/])pc(?:[/]|$)/.test(normalized)) key = 'laptopQuantity';
+      if (!key) return;
+      const storeId = String(row.storeId || '');
+      const result = byStore.get(storeId) || { laptopQuantity: 0, tabletQuantity: 0, phoneQuantity: 0, desktopQuantity: 0 };
+      result[key] += Number(row.quantity || 0);
+      byStore.set(storeId, result);
+    });
+    return [...byStore.entries()].map(([storeId, quantities]) => ({ storeId, ...quantities }));
+  }
+
   async getProductRows(filters, range) {
     const where = buildSalesWhere(filters, range);
     const factor = allocationSql(filters);

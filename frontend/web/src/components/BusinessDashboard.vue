@@ -195,9 +195,9 @@
 
     <section v-show="showSection('store') || showSection('employee') || showSection('productLine')" class="analysis-grid">
       <DashboardPanel v-show="showSection('store')" title="门店销售 / 毛利排名">
-        <el-table :data="dashboard.storeRanking" class="store-ranking-table" size="small" height="420" empty-text="暂无门店销售数据">
-          <el-table-column type="index" label="排名" width="56" />
-          <el-table-column label="门店" min-width="130" show-overflow-tooltip>
+        <el-table :data="dashboard.storeRanking" class="store-ranking-table" size="small" height="260" table-layout="fixed" empty-text="暂无门店销售数据">
+          <el-table-column type="index" label="排名" width="42" />
+          <el-table-column label="门店" width="90" show-overflow-tooltip>
             <template #default="{ row }">
               <el-tooltip placement="right" effect="light" :show-after="300">
                 <template #content>
@@ -205,22 +205,22 @@
                     <strong>{{ row.storeName }}</strong>
                     <span>销售额：{{ formatCurrency(row.salesAmount) }}</span>
                     <span v-if="dashboard.meta.canViewProfit">毛利：{{ formatCurrency(row.grossProfit) }}</span>
-                    <span>销售单数：{{ formatNumber(row.orderCount) }}</span>
-                    <span>PC：{{ formatNumber(row.pcQuantity) }} 台</span>
-                    <span>平板：{{ formatNumber(row.tabletQuantity) }} 台</span>
+                    <span>笔记本：{{ formatNumber(row.laptopQuantity) }} 台</span>
                     <span>手机：{{ formatNumber(row.phoneQuantity) }} 台</span>
+                    <span>平板：{{ formatNumber(row.tabletQuantity) }} 台</span>
+                    <span>台机：{{ formatNumber(row.desktopQuantity) }} 台</span>
                   </div>
                 </template>
                 <span class="store-ranking-name">{{ row.storeName }}</span>
               </el-tooltip>
             </template>
           </el-table-column>
-          <el-table-column prop="orderCount" label="销售单数" width="90" align="right" />
-          <el-table-column label="销售额" min-width="120" align="right"><template #default="{ row }">{{ formatCurrency(row.salesAmount) }}</template></el-table-column>
-          <el-table-column v-if="dashboard.meta.canViewProfit" label="毛利" min-width="120" align="right"><template #default="{ row }">{{ formatCurrency(row.grossProfit) }}</template></el-table-column>
-          <el-table-column label="PC" width="76" align="right"><template #default="{ row }">{{ formatNumber(row.pcQuantity) }}</template></el-table-column>
-          <el-table-column label="平板" width="76" align="right"><template #default="{ row }">{{ formatNumber(row.tabletQuantity) }}</template></el-table-column>
-          <el-table-column label="手机" width="76" align="right"><template #default="{ row }">{{ formatNumber(row.phoneQuantity) }}</template></el-table-column>
+          <el-table-column label="销售额" width="95" align="right"><template #default="{ row }">{{ formatCurrency(row.salesAmount) }}</template></el-table-column>
+          <el-table-column v-if="dashboard.meta.canViewProfit" label="毛利" width="82" align="right"><template #default="{ row }">{{ formatCurrency(row.grossProfit) }}</template></el-table-column>
+          <el-table-column label="笔记本" width="72" align="right"><template #default="{ row }">{{ formatNumber(row.laptopQuantity) }}</template></el-table-column>
+          <el-table-column label="手机" width="58" align="right"><template #default="{ row }">{{ formatNumber(row.phoneQuantity) }}</template></el-table-column>
+          <el-table-column label="平板" width="58" align="right"><template #default="{ row }">{{ formatNumber(row.tabletQuantity) }}</template></el-table-column>
+          <el-table-column label="台机" width="58" align="right"><template #default="{ row }">{{ formatNumber(row.desktopQuantity) }}</template></el-table-column>
         </el-table>
       </DashboardPanel>
 
