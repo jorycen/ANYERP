@@ -621,9 +621,8 @@ Page({
       // 与 Web 审批中心保持相同的销售待审批首批加载口径，避免目标订单被首屏分页挡住。
       loaders.push({ type: 'sales', run: () => this.loadSalesTasks({ page, pageSize: Math.max(pageSize, 100) }) });
     }
-    if (hasAnyRole(roles, ['admin', 'purchaser'])) {
-      loaders.push({ type: 'purchase', run: () => this.loadPurchaseTasks({ page, pageSize }) });
-    }
+    // 采购待办由后端按当前登录人的实际审批节点过滤，与 Web 审批中心一致。
+    loaders.push({ type: 'purchase', run: () => this.loadPurchaseTasks({ page, pageSize }) });
     if (hasAnyRole(roles, ['admin'])) {
       loaders.push({ type: 'expense', run: () => this.loadExpenseTasks({ page, pageSize }) });
     }
@@ -719,11 +718,12 @@ Page({
 
   loadGenericTasks(options = {}) {
     const history = Boolean(options.history);
+    const { page, pageSize } = taskPageParams(options);
     const user = userUtils.getUserInfo();
     const statuses = history
       ? (this.data.historyStatus ? [this.data.historyStatus] : ['approved', 'rejected'])
       : ['pending'];
-    return Promise.all(statuses.map(status => api.approval.tasks({ status }).catch(() => [])))
+    return Promise.all(statuses.map(status => api.approval.tasks({ status, page, pageSize }).catch(() => [])))
       .then(results => {
         const seen = new Set();
         const rows = results.flatMap(result => listOf(result)).filter(row => {
@@ -881,7 +881,7 @@ Page({
     const user = userUtils.getUserInfo();
     const requestedStatus = historyStatusFor('purchase', history ? this.data.historyStatus : 'pending');
     const statuses = history ? [requestedStatus] : ['pending', 'pending_approval'];
-    return Promise.all(statuses.map(status => api.purchase.list({ status, scope: history ? 'review' : '', page, pageSize }).catch(() => null)))
+    return Promise.all(statuses.map(status => api.purchase.list({ status, scope: 'review', page, pageSize }).catch(() => null)))
       .then(results => {
         const seen = new Set();
         return results.flatMap(result => result ? listOf(result) : [])
@@ -1069,24 +1069,30 @@ Page({
   loadApprovalHistory(options = {}) {
     const { page, pageSize } = taskPageParams(options);
     const append = page > 1;
+    const sourcePage = page === 1 ? 1 : (Number(options.sourcePage) || (this._historySourcePage || 1) + 1);
     const roles = this.data.roles || [];
     this.setData({ historyLoading: !append, historyLoadingMore: append });
     const loaders = [
-      { type: 'generic', run: () => this.loadGenericTasks({ history: true, page, pageSize }) },
-      { type: 'return', run: () => this.loadReturnTasks({ history: true, page, pageSize }) },
-      { type: 'salesReturn', run: () => this.loadSalesReturnTasks({ history: true, page, pageSize }) }
+      { type: 'generic', run: () => this.loadGenericTasks({ history: true, page: sourcePage, pageSize }) },
+      { type: 'return', run: () => this.loadReturnTasks({ history: true, page: sourcePage, pageSize }) },
+      { type: 'salesReturn', run: () => this.loadSalesReturnTasks({ history: true, page: sourcePage, pageSize }) }
     ];
-    if (hasAnyRole(roles, ['admin', 'manager'])) loaders.push({ type: 'sales', run: () => this.loadSalesTasks({ history: true, page, pageSize }) });
-    if (hasAnyRole(roles, ['admin', 'purchaser'])) loaders.push({ type: 'purchase', run: () => this.loadPurchaseTasks({ history: true, page, pageSize }) });
-    if (hasAnyRole(roles, ['admin'])) loaders.push({ type: 'expense', run: () => this.loadExpenseTasks({ history: true, page, pageSize }) });
-    if (hasAnyRole(roles, ['admin', 'finance', 'purchaser'])) loaders.push({ type: 'product', run: () => this.loadProductTasks({ history: true, page, pageSize }) });
-    if (roles.includes('finance')) loaders.push({ type: 'resource', run: () => this.loadResourceTasks({ history: true, page, pageSize }) });
-    if (roles.includes('finance') || roles.includes('admin')) loaders.push({ type: 'profit', run: () => this.loadProfitTasks({ history: true, page, pageSize }) });
+    if (hasAnyRole(roles, ['admin', 'manager'])) loaders.push({ type: 'sales', run: () => this.loadSalesTasks({ history: true, page: sourcePage, pageSize }) });
+    if (hasAnyRole(roles, ['admin', 'purchaser'])) loaders.push({ type: 'purchase', run: () => this.loadPurchaseTasks({ history: true, page: sourcePage, pageSize }) });
+    if (hasAnyRole(roles, ['admin'])) loaders.push({ type: 'expense', run: () => this.loadExpenseTasks({ history: true, page: sourcePage, pageSize }) });
+    if (hasAnyRole(roles, ['admin', 'finance', 'purchaser'])) loaders.push({ type: 'product', run: () => this.loadProductTasks({ history: true, page: sourcePage, pageSize }) });
+    if (roles.includes('finance')) loaders.push({ type: 'resource', run: () => this.loadResourceTasks({ history: true, page: sourcePage, pageSize }) });
+    if (roles.includes('finance') || roles.includes('admin')) loaders.push({ type: 'profit', run: () => this.loadProfitTasks({ history: true, page: sourcePage, pageSize }) });
 
-    const settled = [];
-    const publish = () => {
+    return Promise.all(loaders.map(loader => loader.run()
+      .then(value => ({ value: value || [], failed: false }))
+      .catch(error => {
+        console.error(`加载${TYPE_CONFIG[loader.type].label}历史失败:`, error);
+        return { value: [], failed: true };
+      })))
+      .then(results => {
       const keyword = (this.data.historyKeyword || '').trim().toLowerCase();
-      const groups = settled.filter(Boolean).map(result => result.value || []);
+      const groups = results.map(result => result.value || []);
       const approvalHistory = groups.reduce((all, group) => all.concat(group), [])
         .filter(task => {
           if (!keyword) return true;
@@ -1098,7 +1104,9 @@ Page({
           return searchable.includes(keyword);
         });
       approvalHistory.sort((left, right) => right.sortTime - left.sortTime);
-      const merged = append ? this.data.productHistory.concat(approvalHistory) : approvalHistory;
+      const merged = append
+        ? (this._historyTaskPool || this.data.productHistory).concat(approvalHistory)
+        : approvalHistory;
       const uniqueHistory = [];
       const seenKeys = {};
       merged.forEach(task => {
@@ -1107,27 +1115,31 @@ Page({
         uniqueHistory.push(task);
       });
       uniqueHistory.sort((left, right) => right.sortTime - left.sortTime);
-      const hasMore = groups.some(group => group && group.length >= pageSize);
-      this.setData({ productHistory: uniqueHistory, historyPage: page, historyHasMore: hasMore });
-    };
-    return Promise.all(loaders.map((loader, index) => loader.run()
-      .then(value => {
-        settled[index] = { value };
-        publish();
-        return value;
-      })
-      .catch(error => {
-        console.error(`加载${TYPE_CONFIG[loader.type].label}历史失败:`, error);
-        settled[index] = { value: [] };
-        publish();
-        return [];
-      })))
+      this._historyTaskPool = uniqueHistory;
+      this._historySourcePage = sourcePage;
+      const end = page * pageSize;
+      const hasMore = uniqueHistory.length > end || groups.some(group => group.length >= pageSize);
+      this.setData({ productHistory: uniqueHistory.slice(0, end), historyPage: page, historyHasMore: hasMore });
+      if (results.some(result => result.failed)) wx.showToast({ title: '部分审批记录加载失败', icon: 'none' });
+      return uniqueHistory.slice(0, end);
+    })
       .finally(() => this.setData({ historyLoading: false, historyLoadingMore: false }));
   },
 
   loadMoreApprovalHistory() {
     if (this.data.historyLoading || this.data.historyLoadingMore || !this.data.historyHasMore) return;
-    return this.loadApprovalHistory({ page: this.data.historyPage + 1, pageSize: APPROVAL_PAGE_SIZE });
+    const page = this.data.historyPage + 1;
+    const end = page * APPROVAL_PAGE_SIZE;
+    const cached = this._historyTaskPool || [];
+    if (cached.length >= end) {
+      this.setData({
+        productHistory: cached.slice(0, end),
+        historyPage: page,
+        historyHasMore: cached.length > end || this.data.historyHasMore
+      });
+      return Promise.resolve();
+    }
+    return this.loadApprovalHistory({ page, sourcePage: (this._historySourcePage || 1) + 1, pageSize: APPROVAL_PAGE_SIZE });
   },
 
   loadReturnTasks(options = {}) {

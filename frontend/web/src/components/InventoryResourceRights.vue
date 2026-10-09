@@ -1,7 +1,7 @@
 <template>
   <div class="resource-rights">
     <el-tabs v-model="tab" @tab-change="loadActive">
-      <el-tab-pane v-if="!financeOnly" label="SN权益" name="rights">
+      <el-tab-pane v-if="!financeOnly" label="首页" name="rights">
         <div class="filter-bar">
           <el-input v-model="rightsQuery.snCode" placeholder="SN码" clearable style="width:220px" />
           <el-input v-model="rightsQuery.pnCode" placeholder="商品PN" clearable style="width:180px" @keyup.enter="loadRights" />
@@ -13,9 +13,6 @@
           </el-select>
           <el-button type="primary" @click="loadRights">查询</el-button>
           <el-button :loading="rightsExporting" @click="exportRights">导出</el-button>
-          <el-button type="success" @click="openEducationImport">上传教育优惠表</el-button>
-          <el-button type="primary" plain @click="openNbPolicies">产品运作政策</el-button>
-          <el-button type="warning" plain @click="tab = 'sales-cash-rebate'">销售红包管理</el-button>
           <el-button @click="openBySn">初始化/维护SN权益</el-button>
           <el-button @click="openBatchAdjust">批量调整权益</el-button>
         </div>
@@ -38,14 +35,27 @@
         <el-pagination v-model:current-page="rightsQuery.page" v-model:page-size="rightsQuery.pageSize" :total="rightsTotal" layout="total, prev, pager, next" @current-change="loadRights" />
       </el-tab-pane>
 
-      <el-tab-pane v-if="!financeOnly" label="商品销售红包管理" name="sales-cash-rebate" lazy>
-        <SalesCashRebateManagement />
+      <el-tab-pane v-if="!financeOnly" label="教育优惠政策" name="education-policy">
+        <div class="filter-bar">
+          <el-alert title="上传教育优惠政策表后，系统更新当前有效政策及符合条件的库存 SN 权益；已售商品按销售归档时的政策处理。" type="info" :closable="false" />
+        </div>
+        <div class="filter-bar">
+          <el-input v-model="educationPolicyQuery.pn" placeholder="按商品编号/PN筛选" clearable style="width:210px" @keyup.enter="loadEducationPolicies" />
+          <el-button type="primary" @click="loadEducationPolicies">查询/刷新</el-button>
+          <el-button type="success" @click="openEducationImport">上传教育优惠表</el-button>
+        </div>
+        <el-table :data="educationPolicies" border stripe v-loading="educationPolicyLoading">
+          <el-table-column prop="pn" label="商品编号/PN" min-width="150" />
+          <el-table-column prop="productName" label="商品名称" min-width="180" />
+          <el-table-column label="学生优惠" width="125" align="right"><template #default="{row}">¥{{ money(row.studentDiscount) }}</template></el-table-column>
+          <el-table-column label="资源回算金额" width="140" align="right"><template #default="{row}">¥{{ money(row.resourceRecalculationAmount) }}</template></el-table-column>
+          <el-table-column label="有效期" min-width="190"><template #default="{row}">{{ dateText(row.promotionStart) }} 至 {{ dateText(row.promotionEnd) }}</template></el-table-column>
+          <el-table-column prop="sourceSheet" label="来源工作表" min-width="140" show-overflow-tooltip />
+          <el-table-column prop="update_time" label="导入时间" width="170" />
+        </el-table>
       </el-tab-pane>
 
       <el-tab-pane v-if="!financeOnly" label="产品运作政策" name="nb-policy">
-        <div class="filter-bar">
-          <el-button @click="tab = 'rights'">返回SN权益</el-button>
-        </div>
         <div class="filter-bar">
           <el-alert title="按PN维护商品结算价及SO、PO、其他政策；SO政策用于采购提醒，PO政策用于销售归档审批，其他政策用于销售后资源跟进。" type="info" :closable="false" />
         </div>
@@ -64,6 +74,10 @@
         <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
         </el-table>
         <el-pagination v-model:current-page="nbPolicyQuery.page" v-model:page-size="nbPolicyQuery.pageSize" :total="nbPolicyTotal" layout="total, prev, pager, next" @current-change="loadNbPolicies" />
+      </el-tab-pane>
+
+      <el-tab-pane v-if="!financeOnly" label="销售红包管理" name="sales-cash-rebate" lazy>
+        <SalesCashRebateManagement />
       </el-tab-pane>
 
       <el-tab-pane :label="financeOnly ? '资源套回审批' : '权益变更记录'" name="changes">
@@ -321,6 +335,8 @@ const batchForm = reactive({ snCodesText:'', productId:'', resourceTypes:[], sta
 const batchFileInput = ref(null); const batchFile = ref(null); const batchImporting = ref(false)
 const educationFileInput = ref(null); const educationImporting = ref(false)
 const educationImportDialog = ref(false); const educationFile = ref(null); const educationImportResult = ref(null)
+const educationPolicyLoading = ref(false); const educationPolicies = ref([])
+const educationPolicyQuery = reactive({ pn: '' })
 const nbPolicies = ref([]); const nbPolicyTotal = ref(0); const nbPolicyLoading = ref(false)
 const nbPolicyQuery = reactive({ pn:'', page:1, pageSize:20 })
 const nbPolicyImportDialog = ref(false); const nbPolicyFileInput = ref(null); const nbPolicyFile = ref(null)
@@ -332,6 +348,7 @@ const educationSupplementForm = reactive({ snId:'', snCode:'', orderNo:'', attac
 const payloadList = res => res.data?.list || res.data || []
 const payloadTotal = res => res.data?.pagination?.total || res.data?.total || 0
 const money = value => Number(value || 0).toFixed(2)
+const dateText = value => value ? String(value).slice(0, 10) : '—'
 const resourceText = value => value === 'OTHER_POLICY' ? '其他政策待获取' : (resourceOptions.value.find(item => item.value === value)?.label || value)
 const statusText = value => statusOptions.find(item => item.value === value)?.label || value
 const statusType = value => ({AVAILABLE:'success',LOCKED:'warning',USED:'info',CLAIMED_BACK:'danger',EXCEPTION:'danger'}[value] || '')
@@ -353,9 +370,41 @@ async function completeOtherPolicy(row){
 async function exportRights(){ rightsExporting.value=true; try{ await api.exportResourceRights({snCode:rightsQuery.snCode,pnCode:rightsQuery.pnCode,resourceType:rightsQuery.resourceType,status:rightsQuery.status}); ElMessage.success('导出完成') }catch(e){ ElMessage.error(e.response?.data?.message||'导出失败') }finally{ rightsExporting.value=false } }
 async function loadChanges(){ loading.value=true; try{ const res=await api.getResourceRightChanges(changeQuery); changes.value=payloadList(res); changeTotal.value=payloadTotal(res) }catch(e){ ElMessage.error(e.response?.data?.message||'加载变更记录失败') }finally{ loading.value=false } }
 async function loadCosts(){ try{ const res=await api.getProductResourceCostConfigs({}); costs.value=res.data || [] }catch(e){ ElMessage.error('加载成本定义失败') } }
+async function loadEducationPolicies(){
+  educationPolicyLoading.value=true
+  try{
+    const res=await api.getProductResourceCostConfigs({})
+    const configs=Array.isArray(res.data)?res.data:[]
+    const pn=String(educationPolicyQuery.pn||'').trim().toLowerCase()
+    educationPolicies.value=configs.flatMap(config=>{
+      if(config.resource_type!=='EDU_SUBSIDY'||Number(config.status)===0)return []
+      let rule={}
+      try{rule=typeof config.rule_config_json==='string'?JSON.parse(config.rule_config_json||'{}'):(config.rule_config_json||{})}catch(e){}
+      const entries=Array.isArray(rule.educationPolicies)?rule.educationPolicies:[]
+      const product=config.Product||{}
+      const base={pn:product.product_code||config.product_id,productName:product.name||'-',update_time:config.update_time}
+      const rows=entries.length?entries.map(item=>({
+        ...base,
+        studentDiscount:item.studentDiscount,
+        resourceRecalculationAmount:item.resourceRecalculationAmount,
+        promotionStart:item.promotionStart,
+        promotionEnd:item.promotionEnd,
+        sourceSheet:item.sourceSheet||'-'
+      })): [{
+        ...base,
+        studentDiscount:(String(config.remark||'').match(/主表优惠\s*¥?([\d.]+)/)||[])[1]||0,
+        resourceRecalculationAmount:config.cost_amount,
+        promotionStart:config.effective_start,
+        promotionEnd:config.effective_end,
+        sourceSheet:'-'
+      }]
+      return rows
+    }).filter(row=>!pn||String(row.pn||'').toLowerCase().includes(pn)||String(row.productName||'').toLowerCase().includes(pn))
+  }catch(e){ElMessage.error(e.response?.data?.message||'加载教育优惠政策失败')}
+  finally{educationPolicyLoading.value=false}
+}
 async function loadLedger(){ try{const res=await api.getResourceCostAdjustments(ledgerQuery);ledger.value=payloadList(res);ledgerTotal.value=payloadTotal(res)}catch(e){ElMessage.error('加载成本流水失败')} }
-function loadActive(name){ if(name==='rights')loadRights(); else if(name==='changes')loadChanges(); else if(name==='cost-ledger')loadLedger(); else if(name==='nb-policy')loadNbPolicies(); else loadCosts() }
-function openNbPolicies(){ tab.value='nb-policy'; loadNbPolicies() }
+function loadActive(name){ if(name==='rights')loadRights(); else if(name==='education-policy')loadEducationPolicies(); else if(name==='changes')loadChanges(); else if(name==='cost-ledger')loadLedger(); else if(name==='nb-policy')loadNbPolicies(); else if(name==='sales-cash-rebate')return; else loadCosts() }
 async function loadCategories(){
   const res=await api.getResourceCategories({activeOnly:1})
   resourceOptions.value=(res.data||[]).map(row=>({label:row.name,value:row.category_code}))
@@ -504,6 +553,7 @@ async function submitEducationImport(){
     if(failed) ElMessage.warning(data.message||'教育优惠表部分导入失败')
     else ElMessage.success(data.message||'教育优惠表导入完成')
     await loadRights()
+    await loadEducationPolicies()
   }catch(e){
     const message=e.response?.data?.message||e.message||'教育优惠表导入失败'
     educationImportResult.value={message,success:0,failed:1,skipped:0,clearedRights:0,affectedSn:0,rows:[{status:'failed',message}]}

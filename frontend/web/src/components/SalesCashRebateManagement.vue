@@ -13,7 +13,7 @@
         <div class="filter-bar">
           <el-input v-model="policyQuery.pn" placeholder="按 PN 搜索" clearable style="width: 190px" @keyup.enter="loadPolicies" />
           <el-button type="primary" @click="loadPolicies">查询</el-button>
-          <el-button type="primary" plain @click="downloadTemplate">下载模板</el-button>
+          <el-button type="primary" @click="downloadTemplate">下载模板</el-button>
           <el-button type="success" :loading="importing" @click="fileInput?.click()">上传政策清单</el-button>
           <input ref="fileInput" type="file" accept=".xlsx,.xls" hidden @change="importPolicies" />
         </div>

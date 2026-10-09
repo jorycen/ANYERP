@@ -3,7 +3,7 @@
     <el-card>
       <template #header>
         <div class="card-header">
-          <span>库存管理</span>
+          <span>{{ mainTab === 'resource-rights' ? '首页' : '库存管理' }}</span>
         </div>
       </template>
 
