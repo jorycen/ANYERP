@@ -413,7 +413,7 @@ function resetForm() {
 
 function openCashReceipt(row) {
   cashReceiptRow.value = row
-  const existingAccount = row.target_account_id || ''
+  const existingAccount = row.target_account_id || row.ResourceCategory?.default_account_id || row.ResourceCategory?.DefaultAccount?.account_id || ''
   cashReceiptForm.accountId = existingAccount
   cashReceiptForm.receivedAmount = remainingAmount(row)
   cashReceiptVisible.value = true

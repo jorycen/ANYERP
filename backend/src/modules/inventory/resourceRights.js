@@ -1307,10 +1307,12 @@ async function saveResourceCategory(ctx) {
     const account = await SettlementAccount.findOne({ where: { account_id: body.defaultAccountId, status: 1 } });
     if (!account) ctx.throw(400, '默认到账账户不存在或已停用');
   }
+  const resourceKind = String(body.resourceKind || body.resource_kind || 'SALE_USE').trim();
+  if (!['SALE_USE', 'INTERNAL_MARKER', 'PO_REWARD', 'CARE_CREDIT', 'REBATE', 'OTHER'].includes(resourceKind)) ctx.throw(400, '权益类型无效');
   const values = {
     name,
     short_name: String(body.shortName || name).trim(),
-    resource_kind: String(body.resourceKind || body.resource_kind || 'SALE_USE').trim(),
+    resource_kind: resourceKind,
     default_account_id: body.defaultAccountId || null,
     supports_purchase_select: body.supportsPurchaseSelect === false ? 0 : 1,
     supports_sale_use: body.supportsSaleUse === false ? 0 : 1,
@@ -1346,6 +1348,7 @@ async function deleteResourceCategory(ctx) {
   requireAnyRole(ctx, ['boss', 'admin']);
   const category = await ResourceCategory.findByPk(ctx.params.categoryId);
   if (!category) ctx.throw(404, '资源类别不存在');
+  if (!String(category.category_code || '').startsWith('RES_')) ctx.throw(409, '系统内置权益类型被业务流程引用，不能删除；可停用或修改到账账户');
   await sequelize.transaction(async transaction => {
     await category.update({ status: 0, update_time: new Date() }, { transaction });
     await GoodsTypeResource.destroy({ where: { category_id: category.category_id }, transaction });
@@ -2015,7 +2018,7 @@ async function settleResource(ctx) {
     if (!['PENDING', 'PARTIALLY_SETTLED'].includes(record.status)) ctx.throw(409, '该资源记录已完成下账');
     const category = await ResourceCategory.findOne({ where: { category_code: record.resource_type }, transaction });
     if (record.source_type === 'CASH_RED_PACKET') {
-      const accountId = String(ctx.request.body?.accountId || '').trim();
+      const accountId = String(ctx.request.body?.accountId || record.target_account_id || category?.default_account_id || '').trim();
       const account = accountId ? await SettlementAccount.findOne({
         where: { account_id: accountId, account_type: 'FUND', status: 1 }, transaction, lock: transaction.LOCK.UPDATE
       }) : null;

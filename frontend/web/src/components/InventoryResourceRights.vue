@@ -2,6 +2,32 @@
   <div class="resource-rights">
     <el-tabs v-model="tab" @tab-change="loadActive">
       <el-tab-pane v-if="!financeOnly" label="首页" name="rights">
+        <el-card class="category-management-card" shadow="never">
+          <template #header>
+            <div class="category-management-header">
+              <div>
+                <strong>权益类型管理</strong>
+                <span class="category-management-hint">配置权益名称、类型及到账账户；例如教育补贴进入返利池，销售红包进入微信账户。</span>
+              </div>
+              <el-button v-if="canManageCategories" type="primary" @click="openCategoryEditor()">添加权益类型</el-button>
+            </div>
+          </template>
+          <el-table :data="resourceCategories" border stripe v-loading="categoryLoading">
+            <el-table-column prop="name" label="权益名称" min-width="150" />
+            <el-table-column label="类型" width="150"><template #default="{row}">{{ categoryKindText(row.resource_kind) }}</template></el-table-column>
+            <el-table-column label="到账账户" min-width="180"><template #default="{row}">{{ row.DefaultAccount?.account_name || '未设置' }}</template></el-table-column>
+            <el-table-column label="适用场景" min-width="220"><template #default="{row}">{{ categoryScenarioText(row) }}</template></el-table-column>
+            <el-table-column label="状态" width="90"><template #default="{row}"><el-tag :type="Number(row.status) === 1 ? 'success' : 'info'">{{ Number(row.status) === 1 ? '启用' : '停用' }}</el-tag></template></el-table-column>
+            <el-table-column v-if="canManageCategories" label="操作" width="150" fixed="right">
+              <template #default="{row}">
+                <el-button link type="primary" @click="openCategoryEditor(row)">编辑</el-button>
+                <el-button v-if="isCustomCategory(row)" link type="danger" @click="removeCategory(row)">删除</el-button>
+                <el-tooltip v-else content="系统权益类型被业务流程引用，不能删除" placement="top"><span class="system-category-label">系统</span></el-tooltip>
+              </template>
+            </el-table-column>
+            <template #empty><el-empty description="暂无权益类型" /></template>
+          </el-table>
+        </el-card>
         <div class="filter-bar">
           <el-input v-model="rightsQuery.snCode" placeholder="SN码" clearable style="width:220px" />
           <el-input v-model="rightsQuery.pnCode" placeholder="商品PN" clearable style="width:180px" @keyup.enter="loadRights" />
@@ -182,6 +208,29 @@
       </el-tab-pane>
     </el-tabs>
 
+    <el-dialog v-model="categoryEditorVisible" :title="categoryForm.categoryId ? '编辑权益类型' : '添加权益类型'" width="600px">
+      <el-form label-width="110px">
+        <el-form-item label="权益名称" required><el-input v-model="categoryForm.name" maxlength="128" placeholder="如：教育补贴、销售红包" /></el-form-item>
+        <el-form-item label="类型" required>
+          <el-select v-model="categoryForm.resourceKind" style="width:100%">
+            <el-option v-for="item in categoryKindOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="到账账户">
+          <el-select v-model="categoryForm.defaultAccountId" clearable filterable placeholder="选择权益到账账户" style="width:100%">
+            <el-option v-for="account in settlementAccounts" :key="account.account_id" :label="account.account_name" :value="account.account_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="采购可选"><el-switch v-model="categoryForm.supportsPurchaseSelect" /></el-form-item>
+        <el-form-item label="销售可用"><el-switch v-model="categoryForm.supportsSaleUse" /></el-form-item>
+        <el-form-item label="销售触发"><el-switch v-model="categoryForm.triggerOnSale" /></el-form-item>
+        <el-form-item label="生成待下账"><el-switch v-model="categoryForm.generatesSettlement" /></el-form-item>
+        <el-form-item label="启用"><el-switch v-model="categoryForm.status" :active-value="1" :inactive-value="0" /></el-form-item>
+        <el-form-item label="备注"><el-input v-model="categoryForm.remark" type="textarea" maxlength="512" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="categoryEditorVisible=false">取消</el-button><el-button type="primary" :loading="categorySaving" @click="saveCategory">保存</el-button></template>
+    </el-dialog>
+
     <el-dialog v-model="snDialog" title="SN资源权益" width="720px">
       <template v-if="snDetail">
         <el-descriptions :column="2" border>
@@ -310,6 +359,16 @@ import SalesCashRebateManagement from './SalesCashRebateManagement.vue'
 
 const props = defineProps({ financeOnly: { type: Boolean, default: false } })
 const tab = ref(props.financeOnly ? 'changes' : 'rights')
+const canManageCategories = hasRole(['boss', 'admin'])
+const categoryKindOptions = [
+  { label: '销售使用', value: 'SALE_USE' }, { label: '返利', value: 'REBATE' },
+  { label: '采购奖励', value: 'PO_REWARD' }, { label: '个人Care', value: 'CARE_CREDIT' },
+  { label: '内部标记', value: 'INTERNAL_MARKER' }, { label: '其他', value: 'OTHER' }
+]
+const resourceCategories = ref([]); const settlementAccounts = ref([]); const categoryLoading = ref(false)
+const categoryEditorVisible = ref(false); const categorySaving = ref(false)
+const emptyCategoryForm = () => ({ categoryId:'', name:'', shortName:'', resourceKind:'REBATE', defaultAccountId:'', supportsPurchaseSelect:false, supportsSaleUse:false, supportsCompanyClaim:false, triggerOnSale:false, generatesSettlement:true, generatesStaffCareCredit:false, affectsPerformanceProfit:false, performanceProfitRatio:100, status:1, remark:'' })
+const categoryForm = reactive(emptyCategoryForm())
 const loading = ref(false)
 const resourceOptions = ref([])
 const statusOptions = [{label:'可用',value:'AVAILABLE'},{label:'已锁定',value:'LOCKED'},{label:'已核销',value:'USED'},{label:'已套回',value:'CLAIMED_BACK'},{label:'不适用',value:'NOT_APPLICABLE'},{label:'异常',value:'EXCEPTION'}]
@@ -350,6 +409,9 @@ const payloadTotal = res => res.data?.pagination?.total || res.data?.total || 0
 const money = value => Number(value || 0).toFixed(2)
 const dateText = value => value ? String(value).slice(0, 10) : '—'
 const resourceText = value => value === 'OTHER_POLICY' ? '其他政策待获取' : (resourceOptions.value.find(item => item.value === value)?.label || value)
+const categoryKindText = value => categoryKindOptions.find(item => item.value === value)?.label || value || '其他'
+const categoryScenarioText = row => [Number(row.supports_purchase_select) === 1 ? '采购选择' : '', Number(row.supports_sale_use) === 1 ? '销售使用' : '', Number(row.trigger_on_sale) === 1 ? '销售归档触发' : '', Number(row.generates_settlement) === 1 ? '生成待下账' : ''].filter(Boolean).join('、') || '未配置'
+const isCustomCategory = row => String(row.category_code || '').startsWith('RES_')
 const statusText = value => statusOptions.find(item => item.value === value)?.label || value
 const statusType = value => ({AVAILABLE:'success',LOCKED:'warning',USED:'info',CLAIMED_BACK:'danger',EXCEPTION:'danger'}[value] || '')
 const approvalText = value => ({pending_finance:'待财务审批',approved:'已通过',rejected:'已拒绝'}[value] || value)
@@ -406,11 +468,68 @@ async function loadEducationPolicies(){
 async function loadLedger(){ try{const res=await api.getResourceCostAdjustments(ledgerQuery);ledger.value=payloadList(res);ledgerTotal.value=payloadTotal(res)}catch(e){ElMessage.error('加载成本流水失败')} }
 function loadActive(name){ if(name==='rights')loadRights(); else if(name==='education-policy')loadEducationPolicies(); else if(name==='changes')loadChanges(); else if(name==='cost-ledger')loadLedger(); else if(name==='nb-policy')loadNbPolicies(); else if(name==='sales-cash-rebate')return; else loadCosts() }
 async function loadCategories(){
-  const res=await api.getResourceCategories({activeOnly:1})
-  resourceOptions.value=(res.data||[]).map(row=>({label:row.name,value:row.category_code}))
+  categoryLoading.value=true
+  try{
+    const res=await api.getResourceCategories()
+    const rows=Array.isArray(res.data)?res.data:(res.data?.data||[])
+    resourceCategories.value=rows
+    resourceOptions.value=rows.filter(row=>Number(row.status)!==0).map(row=>({label:row.name,value:row.category_code}))
+  }catch(e){ElMessage.error(e.response?.data?.message||'加载权益类型失败')}
+  finally{categoryLoading.value=false}
   if(!resourceOptions.value.some(item=>item.value===costForm.resourceType)){
     costForm.resourceType=resourceOptions.value[0]?.value||''
   }
+}
+async function loadSettlementAccounts(){
+  try{
+    const res=await api.getAllSettlementAccounts()
+    settlementAccounts.value=Array.isArray(res.data)?res.data:(res.data?.data||[])
+  }catch(e){settlementAccounts.value=[]}
+}
+function suggestedAccountId(categoryCode){
+  const pattern=categoryCode==='EDU_SUBSIDY'?/返利池|返利/:categoryCode==='SALES_CASH_REBATE'?/微信/:null
+  return pattern?settlementAccounts.value.find(account=>pattern.test(String(account.account_name||'')))?.account_id||'':''
+}
+function openCategoryEditor(row=null){
+  if(!canManageCategories)return
+  Object.assign(categoryForm,emptyCategoryForm(),row?{
+    categoryId:row.category_id,name:row.name,shortName:row.short_name||row.name,resourceKind:row.resource_kind||'OTHER',
+    defaultAccountId:row.default_account_id||'',supportsPurchaseSelect:Number(row.supports_purchase_select)===1,
+    supportsSaleUse:Number(row.supports_sale_use)===1,supportsCompanyClaim:Number(row.supports_company_claim)===1,
+    triggerOnSale:Number(row.trigger_on_sale)===1,generatesSettlement:Number(row.generates_settlement)===1,
+    generatesStaffCareCredit:Number(row.generates_staff_care_credit)===1,affectsPerformanceProfit:Number(row.affects_performance_profit)===1,
+    performanceProfitRatio:Number(row.performance_profit_ratio??100),status:Number(row.status),remark:row.remark||''
+  }:{})
+  if(!categoryForm.defaultAccountId)categoryForm.defaultAccountId=suggestedAccountId(row?.category_code)
+  categoryEditorVisible.value=true
+}
+async function saveCategory(){
+  const name=String(categoryForm.name||'').trim()
+  if(!name)return ElMessage.warning('请填写权益名称')
+  categorySaving.value=true
+  try{
+    await api.saveResourceCategory({
+      categoryId:categoryForm.categoryId||undefined,name,shortName:String(categoryForm.shortName||name).trim(),
+      resourceKind:categoryForm.resourceKind,defaultAccountId:categoryForm.defaultAccountId||null,
+      supportsPurchaseSelect:categoryForm.supportsPurchaseSelect,supportsSaleUse:categoryForm.supportsSaleUse,
+      supportsCompanyClaim:categoryForm.supportsCompanyClaim,triggerOnSale:categoryForm.triggerOnSale,
+      generatesSettlement:categoryForm.generatesSettlement,generatesStaffCareCredit:categoryForm.generatesStaffCareCredit,
+      affectsPerformanceProfit:categoryForm.affectsPerformanceProfit,performanceProfitRatio:categoryForm.performanceProfitRatio,
+      status:categoryForm.status,remark:categoryForm.remark
+    })
+    categoryEditorVisible.value=false
+    await loadCategories()
+    ElMessage.success('权益类型已保存')
+  }catch(e){ElMessage.error(e.response?.data?.message||'保存权益类型失败')}
+  finally{categorySaving.value=false}
+}
+async function removeCategory(row){
+  try{
+    await ElMessageBox.confirm(`删除“${row.name}”后会停用该类型，历史记录会保留。`, '确认删除权益类型', {type:'warning'})
+    await api.deleteResourceCategory(row.category_id)
+    await loadCategories()
+    ElMessage.success('权益类型已停用')
+  }catch(e){if(e!=='cancel')ElMessage.error(e.response?.data?.message||'删除权益类型失败')}
 }
 async function loadSuppliers(){ try{const res=await api.getSupplierList({page:1,pageSize:500}); suppliers.value=res.data?.list || res.data || []}catch(e){} }
 async function openBySn(){
@@ -669,9 +788,10 @@ async function openAttachment(fileId){
   }catch(e){ElMessage.error(e.message||'附件打开失败')}
 }
 
-onMounted(async () => { await loadCategories(); loadSuppliers(); loadActive(tab.value) })
+onMounted(async () => { await Promise.all([loadCategories(),loadSettlementAccounts()]); loadSuppliers(); loadActive(tab.value) })
 </script>
 
 <style scoped>
+.category-management-card{margin-bottom:16px}.category-management-header{display:flex;align-items:center;justify-content:space-between;gap:16px}.category-management-hint{margin-left:12px;color:#909399;font-size:13px}.system-category-label{padding:0 8px;color:#909399;font-size:12px}
 .filter-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}.el-pagination{margin-top:14px;justify-content:flex-end}.import-help{padding:4px 0 12px;color:#606266;line-height:1.7}.import-help p{margin:0}.file-name{margin-left:10px;color:#606266}.import-result{margin-top:14px}
 </style>

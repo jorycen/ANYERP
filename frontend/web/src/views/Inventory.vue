@@ -1951,7 +1951,7 @@ const syncTabFromRoute = () => {
   if (mainTab.value !== tab) mainTab.value = tab
   onTabChange(tab)
 }
-const canManageResourceRights = computed(() => hasRole(['finance', 'manager']))
+const canManageResourceRights = computed(() => hasRole(['finance', 'manager', 'admin', 'boss']))
 const canViewSnResourceRights = computed(() => hasRole(['finance', 'manager', 'admin', 'boss']))
 const canManageSnPrice = computed(() => hasRole(['admin']))
 const canViewSnPurchaseCost = computed(() => hasRole(['finance', 'purchaser']))
