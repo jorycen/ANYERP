@@ -37,7 +37,9 @@ let schemaInitializationReady = false;
 
 app.use(errorHandler);
 app.use(responseFormatter);
-app.use(cors());
+// koa-cors 0.0.16 omits PATCH from its default method list; customer reward
+// edits and status changes use PATCH and must pass browser preflight checks.
+app.use(cors({ methods: 'GET,HEAD,PUT,POST,PATCH,DELETE,OPTIONS' }));
 app.use(bodyParser({
   jsonLimit: '10mb',
   formLimit: '10mb',

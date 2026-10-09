@@ -266,6 +266,37 @@ async function saveReward(ctx) {
   });
 }
 staff.post('/rewards', saveReward); staff.patch('/rewards/:id', saveReward);
+staff.patch('/rewards/:id/status', async ctx => {
+  const distributor_id = S.distributor(ctx.state.user, ctx.request.body.distributor_id);
+  const on_sale = ctx.request.body.on_sale;
+  if (typeof on_sale !== 'boolean') S.fail(400, '商品状态无效');
+  ctx.body = await V.transaction(async transaction => {
+    const row = await M.Reward.findByPk(ctx.params.id, V.lock(transaction));
+    if (!row || row.distributor_id !== distributor_id) S.fail(404, '积分商品不存在');
+    if (row.on_sale === on_sale) return row;
+    const before = row.toJSON();
+    await row.update({ on_sale, revision: row.revision + 1 }, { transaction });
+    await recordBusinessAction({ businessType: 'customer_reward', businessId: row.id, action: 'update', user: ctx.state.user,
+      detail: { before: { on_sale: before.on_sale }, after: { on_sale }, reason: on_sale ? '上架积分商品' : '下架积分商品' }, transaction });
+    return row;
+  });
+});
+staff.delete('/rewards/:id', async ctx => {
+  const distributor_id = S.distributor(ctx.state.user, ctx.request.body.distributor_id);
+  ctx.body = await V.transaction(async transaction => {
+    const row = await M.Reward.findByPk(ctx.params.id, V.lock(transaction));
+    if (!row || row.distributor_id !== distributor_id) S.fail(404, '积分商品不存在');
+    if (await M.Exchange.count({ where: { reward_id: row.id }, transaction })) {
+      S.fail(409, '该积分商品已有兑换记录，不能删除；请先下架');
+    }
+    const before = row.toJSON();
+    await recordBusinessAction({ businessType: 'customer_reward', businessId: row.id, action: 'delete', user: ctx.state.user,
+      detail: { before, reason: '删除未产生兑换记录的积分商品' }, transaction });
+    await M.RewardStore.destroy({ where: { reward_id: row.id }, transaction });
+    await row.destroy({ transaction });
+    return { id: row.id, deleted: true };
+  });
+});
 staff.get('/rewards/:id', async ctx => {
   const row = await M.Reward.findByPk(ctx.params.id); if (!row) S.fail(404, '权益不存在');
   S.distributor(ctx.state.user, row.distributor_id);
