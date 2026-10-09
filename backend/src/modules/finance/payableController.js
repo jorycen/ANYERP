@@ -1277,8 +1277,12 @@ function buildCounterpartyPaymentInfo(row) {
 function normalizeSettlement(row) {
   const data = row.toJSON ? row.toJSON() : row;
   const supplierAccountSnapshot = parseJsonText(data.supplier_account_snapshot);
+  const lifecycleStatus = data.status === 'confirmed'
+    ? (data.payment_status === 'paid' ? 'paid' : data.payment_status === 'partial_paid' ? 'partial_paid' : 'pending_payment')
+    : data.status;
   return {
     ...data,
+    lifecycle_status: lifecycleStatus,
     supplier_account_snapshot_parsed: supplierAccountSnapshot,
     counterparty_payment_info: buildCounterpartyPaymentInfo(data)
   };
@@ -1462,7 +1466,20 @@ function buildSettlementListWhere(query, user) {
     const settlementTypes = String(settlementType).split(',').map(item => item.trim()).filter(Boolean);
     where.settlement_type = settlementTypes.length > 1 ? { [Op.in]: settlementTypes } : settlementTypes[0];
   }
-  if (status) where.status = status;
+  if (status) {
+    const lifecycleStatusFilters = {
+      pending_payment: ['confirmed', 'unpaid'],
+      partial_paid: ['confirmed', 'partial_paid'],
+      paid: ['confirmed', 'paid']
+    };
+    if (lifecycleStatusFilters[status]) {
+      const [settlementStatus, paymentStatusValue] = lifecycleStatusFilters[status];
+      where.status = settlementStatus;
+      where.payment_status = paymentStatusValue;
+    } else {
+      where.status = status;
+    }
+  }
   if (paymentStatus) where.payment_status = paymentStatus;
   if (settlementNo) where.settlement_no = { [Op.like]: `%${String(settlementNo).trim()}%` };
   if (payeeName) {

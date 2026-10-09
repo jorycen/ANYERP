@@ -31,18 +31,14 @@
           <el-option label="含税" value="TAX_INCLUDED" />
           <el-option label="未税" value="UNTAXED" />
         </el-select>
-        <el-select v-model="query.status" placeholder="结算状态" clearable style="width: 150px" @change="reload">
+        <el-select v-model="query.status" placeholder="状态" clearable style="width: 150px" @change="reload">
           <el-option label="全部" value="" />
           <el-option label="草稿" value="draft" />
           <el-option label="待审批" value="pending_approval" />
-          <el-option label="待付款" value="confirmed" />
-          <el-option label="已作废" value="voided" />
-        </el-select>
-        <el-select v-model="query.paymentStatus" placeholder="付款状态" clearable style="width: 150px" @change="reload">
-          <el-option label="全部" value="" />
-          <el-option label="未付款" value="unpaid" />
+          <el-option label="待付款" value="pending_payment" />
           <el-option label="部分付款" value="partial_paid" />
           <el-option label="已付款" value="paid" />
+          <el-option label="已作废" value="voided" />
         </el-select>
         <el-button type="primary" @click="loadData">查询</el-button>
       </div>
@@ -76,20 +72,15 @@
         <el-table-column label="剩余应付" width="120">
           <template #default="{ row }">¥{{ money(remaining(row)) }}</template>
         </el-table-column>
-        <el-table-column prop="status" label="结算状态" width="110">
+        <el-table-column prop="lifecycle_status" label="状态" width="110">
           <template #default="{ row }">
-            <el-tag :type="statusType(row.status)">{{ statusText(row.status) }}</el-tag>
+            <el-tag :type="statusType(row.lifecycle_status || lifecycleStatus(row))">{{ statusText(row.lifecycle_status || lifecycleStatus(row)) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="当前审批环节" min-width="190">
           <template #default="{ row }">
             <span v-if="row.status === 'pending_approval'" class="approval-progress">{{ row.approval_progress_text || '审批流程处理中' }}</span>
             <span v-else>-</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="payment_status" label="付款状态" width="110">
-          <template #default="{ row }">
-            <el-tag :type="paymentStatusType(row.payment_status)">{{ paymentStatusText(row.payment_status) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="remark" label="备注" min-width="180" show-overflow-tooltip />
@@ -135,11 +126,8 @@
           <el-descriptions-item label="结算金额">¥{{ money(detail.total_amount) }}</el-descriptions-item>
           <el-descriptions-item label="返款抵扣">-¥{{ money(detail.rebate_deduction) }}</el-descriptions-item>
           <el-descriptions-item label="已付金额">¥{{ money(detail.paid_amount) }}</el-descriptions-item>
-          <el-descriptions-item label="结算状态">
-            <el-tag :type="statusType(detail.status)">{{ statusText(detail.status) }}</el-tag>
-          </el-descriptions-item>
-          <el-descriptions-item label="付款状态">
-            <el-tag :type="paymentStatusType(detail.payment_status)">{{ paymentStatusText(detail.payment_status) }}</el-tag>
+          <el-descriptions-item label="状态">
+            <el-tag :type="statusType(detail.lifecycle_status || lifecycleStatus(detail))">{{ statusText(detail.lifecycle_status || lifecycleStatus(detail)) }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="创建人">{{ detail.create_user || '-' }}</el-descriptions-item>
           <el-descriptions-item label="创建时间">{{ dateTime(detail.create_time) }}</el-descriptions-item>
@@ -303,7 +291,7 @@ const distributorOptions = ref([
   { distributor_id: 'DIST001', name: '艾诺云' },
   { distributor_id: 'DIST002', name: '艾诺志兴' }
 ])
-const query = reactive({ page: 1, pageSize: 20, settlementType: 'supplier,expense,reimbursement', distributorId: '', taxStatus: '', status: '', paymentStatus: '', settlementNo: '', payeeName: '' })
+const query = reactive({ page: 1, pageSize: 20, settlementType: 'supplier,expense,reimbursement', distributorId: '', taxStatus: '', status: '', settlementNo: '', payeeName: '' })
 const payeeOptions = ref([])
 const payeeLoading = ref(false)
 
@@ -346,10 +334,11 @@ const counterpartySummary = row => {
   if (values.length === 1 && !info.remark && !row?.other_payment_remark) return '未配置'
   return values.join(' / ')
 }
-const statusText = status => ({ draft: '草稿', pending_approval: '待审批', confirmed: '待付款', voided: '已作废' }[status] || status || '-')
-const statusType = status => ({ draft: 'info', pending_approval: 'warning', confirmed: 'success', voided: 'danger' }[status] || 'info')
-const paymentStatusText = status => ({ unpaid: '未付款', partial_paid: '部分付款', paid: '已付款' }[status] || status || '-')
-const paymentStatusType = status => ({ unpaid: 'info', partial_paid: 'warning', paid: 'success' }[status] || 'info')
+const lifecycleStatus = row => row?.status === 'confirmed'
+  ? (row.payment_status === 'paid' ? 'paid' : row.payment_status === 'partial_paid' ? 'partial_paid' : 'pending_payment')
+  : row?.status
+const statusText = status => ({ draft: '草稿', pending_approval: '待审批', confirmed: '待付款', pending_payment: '待付款', partial_paid: '部分付款', paid: '已付款', voided: '已作废' }[status] || status || '-')
+const statusType = status => ({ draft: 'info', pending_approval: 'warning', confirmed: 'warning', pending_payment: 'warning', partial_paid: 'warning', paid: 'success', voided: 'danger' }[status] || 'info')
 
 const reload = () => {
   query.page = 1

@@ -195,7 +195,33 @@
 
     <section v-show="showSection('store') || showSection('employee') || showSection('productLine')" class="analysis-grid">
       <DashboardPanel v-show="showSection('store')" title="门店销售 / 毛利排名">
-        <div ref="storeRankingRef" class="medium-chart"></div>
+        <el-table :data="dashboard.storeRanking" class="store-ranking-table" size="small" height="420" empty-text="暂无门店销售数据">
+          <el-table-column type="index" label="排名" width="56" />
+          <el-table-column label="门店" min-width="130" show-overflow-tooltip>
+            <template #default="{ row }">
+              <el-tooltip placement="right" effect="light" :show-after="300">
+                <template #content>
+                  <div class="store-ranking-tooltip">
+                    <strong>{{ row.storeName }}</strong>
+                    <span>销售额：{{ formatCurrency(row.salesAmount) }}</span>
+                    <span v-if="dashboard.meta.canViewProfit">毛利：{{ formatCurrency(row.grossProfit) }}</span>
+                    <span>销售单数：{{ formatNumber(row.orderCount) }}</span>
+                    <span>PC：{{ formatNumber(row.pcQuantity) }} 台</span>
+                    <span>平板：{{ formatNumber(row.tabletQuantity) }} 台</span>
+                    <span>手机：{{ formatNumber(row.phoneQuantity) }} 台</span>
+                  </div>
+                </template>
+                <span class="store-ranking-name">{{ row.storeName }}</span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+          <el-table-column prop="orderCount" label="销售单数" width="90" align="right" />
+          <el-table-column label="销售额" min-width="120" align="right"><template #default="{ row }">{{ formatCurrency(row.salesAmount) }}</template></el-table-column>
+          <el-table-column v-if="dashboard.meta.canViewProfit" label="毛利" min-width="120" align="right"><template #default="{ row }">{{ formatCurrency(row.grossProfit) }}</template></el-table-column>
+          <el-table-column label="PC" width="76" align="right"><template #default="{ row }">{{ formatNumber(row.pcQuantity) }}</template></el-table-column>
+          <el-table-column label="平板" width="76" align="right"><template #default="{ row }">{{ formatNumber(row.tabletQuantity) }}</template></el-table-column>
+          <el-table-column label="手机" width="76" align="right"><template #default="{ row }">{{ formatNumber(row.phoneQuantity) }}</template></el-table-column>
+        </el-table>
       </DashboardPanel>
 
       <DashboardPanel v-show="showSection('employee')" title="员工业绩排名（已按参与人数拆分）">
@@ -394,7 +420,6 @@ const errorMessage = ref('')
 const datePickerRef = ref(null)
 const salesTrendRef = ref(null)
 const profitTrendRef = ref(null)
-const storeRankingRef = ref(null)
 const productLineRef = ref(null)
 const inventoryAgeRef = ref(null)
 const quickRange = ref('week')
@@ -744,18 +769,6 @@ function renderCharts() {
       true
     )
   }
-
-  getChart(storeRankingRef.value, 'store')?.setOption({
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-    legend: { top: 0, data: dashboard.meta.canViewProfit ? ['销售额', '毛利额'] : ['销售额'] },
-    grid: { left: 90, right: 35, top: 38, bottom: 20 },
-    xAxis: { type: 'value', axisLabel: { formatter: compactNumber }, splitLine: { lineStyle: { type: 'dashed', color: '#e8edf4' } } },
-    yAxis: { type: 'category', inverse: true, data: dashboard.storeRanking.map(row => row.storeName) },
-    series: [
-      { name: '销售额', type: 'bar', barMaxWidth: 12, data: dashboard.storeRanking.map(row => row.salesAmount), itemStyle: { color: '#1769e0', borderRadius: 6 } },
-      ...(dashboard.meta.canViewProfit ? [{ name: '毛利额', type: 'bar', barMaxWidth: 12, data: dashboard.storeRanking.map(row => row.grossProfit), itemStyle: { color: '#72c786', borderRadius: 6 } }] : [])
-    ]
-  }, true)
 
   getChart(productLineRef.value, 'productLine')?.setOption({
     tooltip: { trigger: 'item', formatter: '{b}<br/>销售额：{c}<br/>占比：{d}%' },
@@ -1248,6 +1261,12 @@ onBeforeUnmount(() => {
 .customer-source-kpi-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
 .source-chart-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 18px 0 4px; color: #303c50; font-size: 13px; }
 .customer-source-chart { height: 340px; margin-bottom: 20px; }
+.store-ranking-name { color: #1769e0; cursor: help; }
+.store-ranking-tooltip { display: flex; flex-direction: column; gap: 5px; min-width: 150px; }
+.store-ranking-table :deep(.el-scrollbar__bar.is-vertical) {
+  width: 8px;
+  opacity: 0.75;
+}
 .source-category-tag { margin: 2px 5px 2px 0; }
 
 .decision-panel {
