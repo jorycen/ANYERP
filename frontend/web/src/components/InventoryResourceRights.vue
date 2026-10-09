@@ -2,32 +2,9 @@
   <div class="resource-rights">
     <el-tabs v-model="tab" @tab-change="loadActive">
       <el-tab-pane v-if="!financeOnly" label="首页" name="rights">
-        <el-card class="category-management-card" shadow="never">
-          <template #header>
-            <div class="category-management-header">
-              <div>
-                <strong>权益类型管理</strong>
-                <span class="category-management-hint">配置权益名称、类型及到账账户；例如教育补贴进入返利池，销售红包进入微信账户。</span>
-              </div>
-              <el-button v-if="canManageCategories" type="primary" @click="openCategoryEditor()">添加权益类型</el-button>
-            </div>
-          </template>
-          <el-table :data="resourceCategories" border stripe v-loading="categoryLoading">
-            <el-table-column prop="name" label="权益名称" min-width="150" />
-            <el-table-column label="类型" width="150"><template #default="{row}">{{ categoryKindText(row.resource_kind) }}</template></el-table-column>
-            <el-table-column label="到账账户" min-width="180"><template #default="{row}">{{ row.DefaultAccount?.account_name || '未设置' }}</template></el-table-column>
-            <el-table-column label="适用场景" min-width="220"><template #default="{row}">{{ categoryScenarioText(row) }}</template></el-table-column>
-            <el-table-column label="状态" width="90"><template #default="{row}"><el-tag :type="Number(row.status) === 1 ? 'success' : 'info'">{{ Number(row.status) === 1 ? '启用' : '停用' }}</el-tag></template></el-table-column>
-            <el-table-column v-if="canManageCategories" label="操作" width="150" fixed="right">
-              <template #default="{row}">
-                <el-button link type="primary" @click="openCategoryEditor(row)">编辑</el-button>
-                <el-button v-if="isCustomCategory(row)" link type="danger" @click="removeCategory(row)">删除</el-button>
-                <el-tooltip v-else content="系统权益类型被业务流程引用，不能删除" placement="top"><span class="system-category-label">系统</span></el-tooltip>
-              </template>
-            </el-table-column>
-            <template #empty><el-empty description="暂无权益类型" /></template>
-          </el-table>
-        </el-card>
+        <div v-if="canManageCategories" class="category-management-entry">
+          <el-button @click="openCategoryManagement">权益类型管理</el-button>
+        </div>
         <div class="filter-bar">
           <el-input v-model="rightsQuery.snCode" placeholder="SN码" clearable style="width:220px" />
           <el-input v-model="rightsQuery.pnCode" placeholder="商品PN" clearable style="width:180px" @keyup.enter="loadRights" />
@@ -208,6 +185,28 @@
       </el-tab-pane>
     </el-tabs>
 
+    <el-dialog v-model="categoryManagementVisible" title="权益类型管理" width="900px">
+      <div class="category-management-header">
+        <span class="category-management-hint">配置权益名称、类型及到账账户；例如教育补贴进入返利池，销售红包进入微信账户。</span>
+        <el-button type="primary" @click="openCategoryEditor()">添加权益类型</el-button>
+      </div>
+      <el-table :data="resourceCategories" border stripe v-loading="categoryLoading" style="margin-top:14px">
+        <el-table-column prop="name" label="权益名称" min-width="150" />
+        <el-table-column label="类型" width="150"><template #default="{row}">{{ categoryKindText(row.resource_kind) }}</template></el-table-column>
+        <el-table-column label="到账账户" min-width="180"><template #default="{row}">{{ row.DefaultAccount?.account_name || '未设置' }}</template></el-table-column>
+        <el-table-column label="适用场景" min-width="220"><template #default="{row}">{{ categoryScenarioText(row) }}</template></el-table-column>
+        <el-table-column label="状态" width="90"><template #default="{row}"><el-tag :type="Number(row.status) === 1 ? 'success' : 'info'">{{ Number(row.status) === 1 ? '启用' : '停用' }}</el-tag></template></el-table-column>
+        <el-table-column label="操作" width="150" fixed="right">
+          <template #default="{row}">
+            <el-button link type="primary" @click="openCategoryEditor(row)">编辑</el-button>
+            <el-button v-if="isCustomCategory(row)" link type="danger" @click="removeCategory(row)">删除</el-button>
+            <el-tooltip v-else content="系统权益类型被业务流程引用，不能删除" placement="top"><span class="system-category-label">系统</span></el-tooltip>
+          </template>
+        </el-table-column>
+        <template #empty><el-empty description="暂无权益类型" /></template>
+      </el-table>
+    </el-dialog>
+
     <el-dialog v-model="categoryEditorVisible" :title="categoryForm.categoryId ? '编辑权益类型' : '添加权益类型'" width="600px">
       <el-form label-width="110px">
         <el-form-item label="权益名称" required><el-input v-model="categoryForm.name" maxlength="128" placeholder="如：教育补贴、销售红包" /></el-form-item>
@@ -366,7 +365,7 @@ const categoryKindOptions = [
   { label: '内部标记', value: 'INTERNAL_MARKER' }, { label: '其他', value: 'OTHER' }
 ]
 const resourceCategories = ref([]); const settlementAccounts = ref([]); const categoryLoading = ref(false)
-const categoryEditorVisible = ref(false); const categorySaving = ref(false)
+const categoryManagementVisible = ref(false); const categoryEditorVisible = ref(false); const categorySaving = ref(false)
 const emptyCategoryForm = () => ({ categoryId:'', name:'', shortName:'', resourceKind:'REBATE', defaultAccountId:'', supportsPurchaseSelect:false, supportsSaleUse:false, supportsCompanyClaim:false, triggerOnSale:false, generatesSettlement:true, generatesStaffCareCredit:false, affectsPerformanceProfit:false, performanceProfitRatio:100, status:1, remark:'' })
 const categoryForm = reactive(emptyCategoryForm())
 const loading = ref(false)
@@ -493,6 +492,11 @@ function suggestedAccountId(categoryCode){
   }
   if(categoryCode==='SALES_CASH_REBATE')return settlementAccounts.value.find(account=>account.account_type==='FUND'&&String(account.account_name||'').includes('微信'))?.account_id||''
   return ''
+}
+async function openCategoryManagement(){
+  if(!canManageCategories)return
+  categoryManagementVisible.value=true
+  await loadCategories()
 }
 async function initializeSuggestedResourceAccounts(){
   if(!canManageCategories)return
@@ -819,6 +823,6 @@ onMounted(async () => { await Promise.all([loadCategories(),loadSettlementAccoun
 </script>
 
 <style scoped>
-.category-management-card{margin-bottom:16px}.category-management-header{display:flex;align-items:center;justify-content:space-between;gap:16px}.category-management-hint{margin-left:12px;color:#909399;font-size:13px}.system-category-label{padding:0 8px;color:#909399;font-size:12px}
+.category-management-entry{display:flex;justify-content:flex-end;margin-bottom:14px}.category-management-header{display:flex;align-items:center;justify-content:space-between;gap:16px}.category-management-hint{color:#909399;font-size:13px}.system-category-label{padding:0 8px;color:#909399;font-size:12px}
 .filter-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}.el-pagination{margin-top:14px;justify-content:flex-end}.import-help{padding:4px 0 12px;color:#606266;line-height:1.7}.import-help p{margin:0}.file-name{margin-left:10px;color:#606266}.import-result{margin-top:14px}
 </style>
