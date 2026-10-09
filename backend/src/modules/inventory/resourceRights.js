@@ -180,6 +180,9 @@ async function summariesForSns(snRows, transaction = null) {
   }) : [];
   return new Map(snRows.map(sn => {
     const summary = buildSalesResourceSummary(sn, grouped.get(sn.sn_id) || [], categories);
+    // 现金红包是销售政策，不是 SN 的库存权益台账。只对当前在库 SN
+    // 展示可用政策；售出后的套回金额由订单归档与套回流程处理。
+    if (String(sn.status || '').toLowerCase() !== 'in_stock') return [sn.sn_id, summary];
     const matching = cashPolicies.filter(policy => String(policy.pn_code) === String(sn.pn_code || '')
       && (!policy.supplier_id || String(policy.supplier_id) === String(sn.supplier_id || '')))
       .sort((a, b) => Number(Boolean(b.supplier_id)) - Number(Boolean(a.supplier_id))

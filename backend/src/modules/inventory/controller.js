@@ -747,6 +747,15 @@ async function getSnInventoryList(ctx) {
         status_name: RESOURCE_STATUS_LABELS[right.current_status] || right.current_status,
         amount: Number(right.amount || 0)
       }));
+    if (String(row.status || '').toLowerCase() === 'in_stock' && summary.cash_rebate) {
+      resourceStatuses.push({
+        resource_type: 'SALES_CASH_REBATE',
+        resource_name: '销售红包',
+        current_status: 'AVAILABLE',
+        status_name: `售出可套回 ¥${Number(summary.cash_rebate.amount || 0).toFixed(2)}`,
+        amount: Number(summary.cash_rebate.amount || 0)
+      });
+    }
     const unifiedSalePrice = Number(row.unified_sale_price || 0);
     const specialPrice = row.special_price_id ? Number(row.special_price || 0) : null;
     return {
