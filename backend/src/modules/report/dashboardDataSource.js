@@ -557,7 +557,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
               MAX(COALESCE(p.CATEGORY, '')) AS categoryRoot,
               MAX(COALESCE(p.IS_FOCUS_PRODUCT, 0)) AS isFocusProduct,
               ROUND(SUM((${orderItemSalesAmountSql()}) * ${factor}), 2) AS salesAmount,
-              ROUND(SUM((${grossProfitSql()}) * ${factor}), 2) AS grossProfit,
+              ROUND(SUM((${grossProfitSql()}) * ${factor}) + MAX(COALESCE(cpa.grossProfit, 0)), 2) AS grossProfit,
               ROUND(SUM(oi.QUANTITY * ${factor}), 2) AS quantity
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
@@ -566,6 +566,14 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
          LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
          LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
          LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
+         LEFT JOIN (
+           SELECT adj.PRODUCT_ID, SUM(adj.SIGNED_AMOUNT * ${factor}) AS grossProfit
+             FROM T_PERFORMANCE_PROFIT_ADJUSTMENT adj
+             INNER JOIN T_ORDER o ON o.ORDER_ID = adj.ORDER_ID
+             LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = adj.PRODUCT_ID
+            WHERE ${where.sql} AND adj.STATUS = 'approved' AND adj.PRODUCT_ID IS NOT NULL
+            GROUP BY adj.PRODUCT_ID
+         ) cpa ON cpa.PRODUCT_ID = oi.PRODUCT_ID
         WHERE ${where.sql}
         GROUP BY oi.PRODUCT_ID
         ORDER BY salesAmount DESC`,

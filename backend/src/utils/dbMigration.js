@@ -329,10 +329,136 @@ async function runSchemaMigrations() {
     );
   }
   await ensureSerializedInventorySchema();
+  await ensureSalesCashRebateSchema();
+  await backfillCompanyClaimSettlementSuppliers();
   await ensureProductPnEffectiveUniqueIndex();
   await ensureFinancialProfitFeatureSchema();
   await ensureFinancialReportMenu();
   console.log('[DB Schema] startup schema compatibility check completed');
+}
+
+async function ensureSalesCashRebateSchema() {
+  await checkAndCreateTable('T_SALES_CASH_REBATE_POLICY', `
+    CREATE TABLE T_SALES_CASH_REBATE_POLICY (
+      POLICY_ID VARCHAR(32) NOT NULL,
+      PN_CODE VARCHAR(64) NOT NULL,
+      PRODUCT_ID VARCHAR(32),
+      PRODUCT_NAME VARCHAR(255),
+      REBATE_TYPE VARCHAR(64) NOT NULL,
+      AMOUNT DECIMAL(12,2) NOT NULL,
+      SUPPLIER_ID VARCHAR(32),
+      SUPPLIER_NAME VARCHAR(255),
+      EFFECTIVE_START DATE,
+      EFFECTIVE_END DATE,
+      STATUS TINYINT(1) DEFAULT 1,
+      REMARK VARCHAR(512),
+      CREATE_USER VARCHAR(64),
+      CREATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UPDATE_USER VARCHAR(64),
+      UPDATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (POLICY_ID),
+      KEY idx_cash_rebate_pn_supplier (PN_CODE, SUPPLIER_ID, STATUS),
+      KEY idx_cash_rebate_period (EFFECTIVE_START, EFFECTIVE_END)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='sales cash rebate policies'
+  `);
+  await checkAndCreateTable('T_SALES_CASH_REBATE_CLAIM', `
+    CREATE TABLE T_SALES_CASH_REBATE_CLAIM (
+      CLAIM_ID VARCHAR(32) NOT NULL,
+      CLAIM_NO VARCHAR(64) NOT NULL,
+      SUPPLIER_ID VARCHAR(32),
+      SUPPLIER_NAME VARCHAR(255),
+      REBATE_TYPE VARCHAR(64) NOT NULL,
+      TOTAL_AMOUNT DECIMAL(12,2) NOT NULL DEFAULT 0,
+      ITEM_COUNT INT DEFAULT 0,
+      STORE_ID VARCHAR(32),
+      DISTRIBUTOR_ID VARCHAR(32),
+      APPLICANT_STAFF_ID BIGINT NOT NULL,
+      APPLICANT_NAME VARCHAR(64) NOT NULL,
+      STATUS VARCHAR(32) DEFAULT 'pending_finance',
+      REVIEWER_STAFF_ID BIGINT,
+      REVIEWER_NAME VARCHAR(64),
+      REVIEW_COMMENT VARCHAR(512),
+      REVIEW_TIME DATETIME,
+      CREATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UPDATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP,
+      REMARK VARCHAR(512),
+      PRIMARY KEY (CLAIM_ID),
+      UNIQUE KEY uk_cash_rebate_claim_no (CLAIM_NO),
+      KEY idx_cash_rebate_claim_status (STATUS, CREATE_TIME)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='sales cash rebate claim approval'
+  `);
+  await checkAndCreateTable('T_SALES_CASH_REBATE_CLAIM_ITEM', `
+    CREATE TABLE T_SALES_CASH_REBATE_CLAIM_ITEM (
+      CLAIM_ITEM_ID VARCHAR(32) NOT NULL,
+      CLAIM_ID VARCHAR(32) NOT NULL,
+      POLICY_ID VARCHAR(32) NOT NULL,
+      ORDER_ID VARCHAR(32) NOT NULL,
+      ORDER_NO VARCHAR(64) NOT NULL,
+      ORDER_ITEM_ID BIGINT NOT NULL,
+      SN_ID VARCHAR(32),
+      SN_CODE VARCHAR(128),
+      PRODUCT_ID VARCHAR(32),
+      PRODUCT_NAME VARCHAR(255),
+      PN_CODE VARCHAR(64),
+      STORE_ID VARCHAR(32),
+      SUPPLIER_ID VARCHAR(32),
+      SUPPLIER_NAME VARCHAR(255),
+      REBATE_TYPE VARCHAR(64) NOT NULL,
+      AMOUNT DECIMAL(12,2) NOT NULL,
+      RESOURCE_SETTLEMENT_ID VARCHAR(32),
+      CREATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (CLAIM_ITEM_ID),
+      KEY idx_cash_rebate_item_claim (CLAIM_ID),
+      KEY idx_cash_rebate_item_order (ORDER_ITEM_ID),
+      KEY idx_cash_rebate_item_sn (SN_ID)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='sales cash rebate claim items'
+  `);
+  await checkAndCreateTable('T_SALES_CASH_REBATE_RECEIPT', `
+    CREATE TABLE T_SALES_CASH_REBATE_RECEIPT (
+      RECEIPT_ID VARCHAR(32) NOT NULL,
+      SETTLEMENT_ID VARCHAR(32) NOT NULL,
+      ACCOUNT_ID VARCHAR(64) NOT NULL,
+      ACCOUNT_TRANSACTION_ID VARCHAR(32) NOT NULL,
+      ADJUSTMENT_ID VARCHAR(32) NOT NULL,
+      AMOUNT DECIMAL(12,2) NOT NULL,
+      STATUS VARCHAR(32) DEFAULT 'active',
+      CREATE_STAFF_ID BIGINT,
+      CREATE_USER VARCHAR(64),
+      CREATE_TIME DATETIME DEFAULT CURRENT_TIMESTAMP,
+      REVERSE_REASON VARCHAR(512),
+      PRIMARY KEY (RECEIPT_ID),
+      KEY idx_cash_rebate_receipt_settlement (SETTLEMENT_ID, STATUS)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='sales cash rebate receipt ledger'
+  `);
+  await checkAndAddColumn('T_PERFORMANCE_PROFIT_ADJUSTMENT', 'PRODUCT_ID', 'VARCHAR(32) NULL COMMENT "归属商品ID"', 'STORE_ID');
+  await sequelize.query(`
+    INSERT IGNORE INTO T_RESOURCE_CATEGORY
+      (CATEGORY_ID, CATEGORY_CODE, NAME, SHORT_NAME, RESOURCE_KIND, SUPPORTS_PURCHASE_SELECT,
+       SUPPORTS_SALE_USE, SUPPORTS_COMPANY_CLAIM, TRIGGER_ON_SALE, GENERATES_SETTLEMENT,
+       GENERATES_STAFF_CARE_CREDIT, AFFECTS_PERFORMANCE_PROFIT, SORT_ORDER, STATUS)
+    VALUES ('RC_SALES_CASH_REBATE', 'SALES_CASH_REBATE', '销售现金红包', '现金红包', 'REBATE', 0, 0, 0, 0, 1, 0, 0, 55, 1)
+  `);
+}
+
+// Earlier company-claim approvals created settlement rows without copying the
+// supplier attached to the SN/right. Backfill only those rows and only from an
+// unambiguous supplier ID already stored on the right or SN.
+async function backfillCompanyClaimSettlementSuppliers() {
+  await sequelize.query(
+    `UPDATE T_RESOURCE_SETTLEMENT rs
+     LEFT JOIN T_INVENTORY_RESOURCE_RIGHT rr
+       ON rr.SN_ID = rs.SN_ID AND rr.RESOURCE_TYPE = rs.RESOURCE_TYPE
+     LEFT JOIN T_PRODUCT_SN sn ON sn.SN_ID = rs.SN_ID
+     LEFT JOIN T_SUPPLIER s
+       ON s.SUPPLIER_ID = COALESCE(NULLIF(rr.SUPPLIER_ID, ''), NULLIF(sn.SUPPLIER_ID, ''))
+     SET rs.COUNTERPARTY_ID = COALESCE(NULLIF(rs.COUNTERPARTY_ID, ''), NULLIF(rr.SUPPLIER_ID, ''), NULLIF(sn.SUPPLIER_ID, '')),
+         rs.COUNTERPARTY_NAME = COALESCE(NULLIF(rs.COUNTERPARTY_NAME, ''), NULLIF(rr.SUPPLIER_NAME, ''), NULLIF(sn.SUPPLIER_NAME, ''), s.NAME),
+         rs.UPDATE_TIME = CURRENT_TIMESTAMP
+     WHERE rs.SOURCE_TYPE = 'COMPANY_CLAIM'
+       AND (rs.COUNTERPARTY_ID IS NULL OR rs.COUNTERPARTY_ID = ''
+         OR rs.COUNTERPARTY_NAME IS NULL OR rs.COUNTERPARTY_NAME = '')
+       AND COALESCE(NULLIF(rr.SUPPLIER_ID, ''), NULLIF(sn.SUPPLIER_ID, '')) IS NOT NULL`
+  );
 }
 
 // The rebate settlement page filters by distributor. This column used to be added only
@@ -4616,6 +4742,7 @@ async function seedPermissionData() {
         'sales_order', 'sales_subsidy_photos', 'sales_monthly_tasks',
         'inventory_summary', 'inventory_sn_inventory', 'inventory_batch_maintenance', 'inventory_inbound',
         'inventory_sn_trace', 'inventory_resource_rights', 'inventory_transfer', 'inventory_conversion',
+        'purchase_request',
         'product_product', 'product_category', 'product_price', 'product_approval',
         'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_achievement',
         'approval_tasks', 'approval_instances'
@@ -4624,6 +4751,7 @@ async function seedPermissionData() {
         'sales_order', 'sales_subsidy_photos', 'sales_monthly_tasks',
         'inventory_summary', 'inventory_sn_inventory', 'inventory_batch_maintenance', 'inventory_inbound',
         'inventory_sn_trace', 'inventory_transfer', 'inventory_conversion',
+        'purchase_request',
         'product_product', 'product_category', 'product_price', 'product_approval',
         'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_achievement',
         'approval_tasks', 'approval_instances'
@@ -4631,9 +4759,10 @@ async function seedPermissionData() {
       mall_report_viewer: ['sales_mall_query'],
       clerk: [
         'sales_order', 'inventory_summary', 'inventory_sn_inventory', 'inventory_inbound',
-        'inventory_sn_trace', 'inventory_transfer', 'reports_dashboard', 'reports_sales',
+        'inventory_sn_trace', 'inventory_transfer', 'purchase_request', 'reports_dashboard', 'reports_sales',
         'reports_inventory', 'reports_employee', 'reports_achievement', 'approval_tasks', 'approval_instances'
-      ]
+      ],
+      staff: ['purchase_request']
     };
     const ensureChildMenus = async () => {
       for (const [code, name, parentCode, path, sortOrder] of childMenus) {

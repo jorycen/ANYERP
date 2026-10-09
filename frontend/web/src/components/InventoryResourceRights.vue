@@ -15,6 +15,7 @@
           <el-button :loading="rightsExporting" @click="exportRights">导出</el-button>
           <el-button type="success" @click="openEducationImport">上传教育优惠表</el-button>
           <el-button type="primary" plain @click="openNbPolicies">产品运作政策</el-button>
+          <el-button type="warning" plain @click="tab = 'sales-cash-rebate'">销售红包管理</el-button>
           <el-button @click="openBySn">初始化/维护SN权益</el-button>
           <el-button @click="openBatchAdjust">批量调整权益</el-button>
         </div>
@@ -35,6 +36,10 @@
           </template></el-table-column>
         </el-table>
         <el-pagination v-model:current-page="rightsQuery.page" v-model:page-size="rightsQuery.pageSize" :total="rightsTotal" layout="total, prev, pager, next" @current-change="loadRights" />
+      </el-tab-pane>
+
+      <el-tab-pane v-if="!financeOnly" label="商品销售红包管理" name="sales-cash-rebate" lazy>
+        <SalesCashRebateManagement />
       </el-tab-pane>
 
       <el-tab-pane v-if="!financeOnly" label="产品运作政策" name="nb-policy">
@@ -287,6 +292,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import * as XLSX from 'xlsx'
 import api from '../api'
 import { hasRole } from '../utils/user'
+import SalesCashRebateManagement from './SalesCashRebateManagement.vue'
 
 const props = defineProps({ financeOnly: { type: Boolean, default: false } })
 const tab = ref(props.financeOnly ? 'changes' : 'rights')

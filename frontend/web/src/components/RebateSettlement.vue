@@ -96,7 +96,13 @@
       <el-table-column label="操作" width="190" fixed="right">
         <template #default="{ row }">
           <el-button
-            v-if="['PENDING', 'PARTIALLY_SETTLED'].includes(row.status) && (Number(row.amount || 0) < 0 || row.counterparty_id)"
+            v-if="row.source_type === 'CASH_RED_PACKET' && ['PENDING', 'PARTIALLY_SETTLED'].includes(row.status)"
+            link
+            type="success"
+            @click="openCashReceipt(row)"
+          >确认到账</el-button>
+          <el-button
+            v-else-if="['PENDING', 'PARTIALLY_SETTLED'].includes(row.status) && (Number(row.amount || 0) < 0 || row.counterparty_id)"
             link
             type="success"
             @click="Number(row.amount || 0) < 0 ? settleNegativeCorrection(row) : openReconcile(row)"
@@ -155,6 +161,25 @@
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="createManualRebate">确认新增</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="cashReceiptVisible" title="登记销售红包到账" width="540px">
+      <el-alert :title="`待收 ${cashReceiptRow?.settlement_no || ''}，剩余 ¥${money(remainingAmount(cashReceiptRow))}`" type="info" :closable="false" style="margin-bottom:14px" />
+      <el-form label-width="100px">
+        <el-form-item label="到账账户" required>
+          <el-select v-model="cashReceiptForm.accountId" filterable placeholder="选择现金/银行账户" style="width:100%">
+            <el-option v-for="account in fundAccounts" :key="account.account_id" :label="account.account_name" :value="account.account_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="本次到账" required>
+          <el-input-number v-model="cashReceiptForm.receivedAmount" :min="0.01" :max="remainingAmount(cashReceiptRow)" :precision="2" :step="100" style="width:100%" />
+          <div class="form-help">允许分次到账；每次到账会记入所选账户，并按实际到账金额增加对应商品毛利。</div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="cashReceiptVisible=false">取消</el-button>
+        <el-button type="primary" :loading="cashReceiptSaving" :disabled="!cashReceiptForm.accountId || Number(cashReceiptForm.receivedAmount || 0) <= 0" @click="submitCashReceipt">确认到账并上账</el-button>
       </template>
     </el-dialog>
 
@@ -235,6 +260,11 @@ const loading = ref(false)
 const saving = ref(false)
 const reconciling = ref(false)
 const postingLoading = ref(false)
+const cashReceiptVisible = ref(false)
+const cashReceiptSaving = ref(false)
+const cashReceiptRow = ref(null)
+const fundAccounts = ref([])
+const cashReceiptForm = reactive({ accountId: '', receivedAmount: 0 })
 const rows = ref([])
 const total = ref(0)
 const suppliers = ref([])
@@ -256,7 +286,8 @@ const sourceOptions = [
   { label: '返利收款', value: 'REBATE_RECEIPT' },
   { label: '自动生成', value: 'MANUFACTURER_REBATE' },
   { label: '销售使用', value: 'SALE_USE' },
-  { label: '公司套回', value: 'COMPANY_CLAIM' }
+  { label: '公司套回', value: 'COMPANY_CLAIM' },
+  { label: '销售现金红包', value: 'CASH_RED_PACKET' }
 ]
 const statusOptions = [
   { label: '待关联', value: 'PENDING' },
@@ -314,15 +345,17 @@ const isBatchSelectable = row => Number(row.amount || 0) > 0
 
 async function loadAuxiliary() {
   try {
-    const [supplierRes, categoryRes] = await Promise.all([
+    const [supplierRes, categoryRes, accountRes] = await Promise.all([
       api.getSupplierList({ page: 1, pageSize: 500 }),
-      api.getResourceCategories({ activeOnly: 1 })
+      api.getResourceCategories({ activeOnly: 1 }),
+      api.getAllSettlementAccounts()
     ])
     suppliers.value = supplierRes.data?.list || supplierRes.data || []
     resourceOptions.value = [{ label: '费用归属返利', value: 'EXPENSE_REBATE' }, ...(categoryRes.data || []).map(item => ({
       label: item.name,
       value: item.category_code
     }))]
+    fundAccounts.value = (accountRes.data || []).filter(item => item.account_type === 'FUND')
   } catch (error) {
     ElMessage.error('加载返利基础资料失败')
   }
@@ -376,6 +409,34 @@ function resetQuery() {
 
 function resetForm() {
   Object.assign(form, { supplierId: '', amount: 0, remark: '' })
+}
+
+function openCashReceipt(row) {
+  cashReceiptRow.value = row
+  const existingAccount = row.target_account_id || ''
+  cashReceiptForm.accountId = existingAccount
+  cashReceiptForm.receivedAmount = remainingAmount(row)
+  cashReceiptVisible.value = true
+}
+
+async function submitCashReceipt() {
+  const row = cashReceiptRow.value
+  if (!row || !cashReceiptForm.accountId) return
+  cashReceiptSaving.value = true
+  try {
+    const res = await api.settleResource(row.settlement_id, {
+      accountId: cashReceiptForm.accountId,
+      receivedAmount: Number(cashReceiptForm.receivedAmount || 0)
+    })
+    ElMessage.success(res.data?.message || res.message || '销售红包到账已登记')
+    cashReceiptVisible.value = false
+    await load()
+    emit('changed')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '登记红包到账失败')
+  } finally {
+    cashReceiptSaving.value = false
+  }
 }
 
 function handleSelectionChange(selection) {

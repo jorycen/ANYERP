@@ -532,10 +532,12 @@ async function buildProductPricingDetails(orderId, transaction) {
     const inboundSupplier = supplierContext.latestInboundByProduct.get(String(row.product_id || ''));
     const supplierId = row.supplier_id || snRow?.supplier_id || inboundSupplier?.supplier_id || '';
     const supplier = supplierId ? supplierContext.supplierMap.get(String(supplierId)) : null;
-    const purchasePrice = toNumber(row.original_inventory_cost)
-      || toNumber(row.original_pickup_price)
-      || toNumber(snRow?.inbound_price)
-      || toNumber(inboundSupplier?.inbound_price);
+    const purchasePrice = Number(productPrice?.cost_price_locked || 0) === 1
+      ? toNumber(productPrice.cost_price)
+      : toNumber(row.original_inventory_cost)
+        || toNumber(row.original_pickup_price)
+        || toNumber(snRow?.inbound_price)
+        || toNumber(inboundSupplier?.inbound_price);
     const specialPrice = specialPriceBySnId.get(String(snRow?.sn_id || row.sn_id || ''))
       || specialPriceBySnCode.get(String(snRow?.sn_code || row.sn_code || '').trim().toUpperCase())
       || 0;

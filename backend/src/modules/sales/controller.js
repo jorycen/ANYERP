@@ -4254,7 +4254,7 @@ async function requestSalesReturn(ctx) {
       lock: transaction.LOCK.UPDATE
     });
     if (!order) ctx.throw(404, '订单不存在');
-    assertStoreVisible(order.store_id, user);
+    await assertSalesOrderVisible(order, user);
     if (!isArchiveStatus(order.order_status)) {
       ctx.throw(400, '只有已归档订单才能提交退单申请');
     }
@@ -5379,7 +5379,9 @@ async function calculateSalesSettlementCosts(order, transaction = null, options 
       ? await ProductSn.findOne({ where: { sn_code: item.sn_code, product_id: item.product_id }, transaction })
       : null;
     const productPrice = priceMap.get(item.product_id);
-    const originalInventoryCost = money(snRecord?.inbound_price || productPrice?.cost_price || 0);
+    const originalInventoryCost = Number(productPrice?.cost_price_locked || 0) === 1
+      ? money(productPrice.cost_price)
+      : money(snRecord?.inbound_price || productPrice?.cost_price || 0);
     const originalPickupPrice = money(snRecord?.original_pickup_price || snRecord?.inbound_price || item.original_pickup_price || 0);
     const pickupHistory = await findCurrentManufacturerPrice({
       productId: item.product_id,

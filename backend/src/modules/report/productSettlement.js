@@ -58,14 +58,16 @@ function buildProductSettlementItem({ item, product, productPrice, productPricin
   );
 
   const isSn = Boolean(item.sn_id || item.sn_code || Number(product?.need_sn) === 1);
-  const rawCost = isSn
+  const lockedZeroCost = Number(productPrice?.cost_price_locked || 0) === 1
+    && money(productPrice?.cost_price) === 0;
+  const rawCost = lockedZeroCost ? 0 : isSn
     ? toNumber(item.original_inventory_cost) || toNumber(item.original_pickup_price)
       || toNumber(sn?.inbound_price) || toNumber(sn?.original_pickup_price)
     : toNumber(item.original_inventory_cost) || toNumber(productPrice?.cost_price);
   const purchaseUnitCost = money(rawCost);
-  const costStatus = productUnitPrice > 0 && purchaseUnitCost > 0 ? 'ready' : 'pending';
-  const costMethod = isSn ? 'sn_actual_cost' : 'weighted_average';
-  const costSource = isSn
+  const costStatus = lockedZeroCost || (productUnitPrice > 0 && purchaseUnitCost > 0) ? 'ready' : 'pending';
+  const costMethod = lockedZeroCost ? 'manual_locked_cost' : isSn ? 'sn_actual_cost' : 'weighted_average';
+  const costSource = lockedZeroCost ? 'locked_zero_inventory_cost' : isSn
     ? (item.original_inventory_cost > 0 || item.original_pickup_price > 0 || sn?.inbound_price > 0
       ? 'order_item_or_sn_inbound_cost' : 'missing_sn_cost')
     : (item.original_inventory_cost > 0 ? 'order_item_cost_snapshot' : 'product_price_cost_price');

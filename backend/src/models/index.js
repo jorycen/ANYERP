@@ -376,6 +376,82 @@ const ResourceSettlement = sequelize.define('ResourceSettlement', {
   remark: { type: DataTypes.STRING(512) }
 }, { tableName: 'T_RESOURCE_SETTLEMENT', timestamps: false });
 
+const SalesCashRebatePolicy = sequelize.define('SalesCashRebatePolicy', {
+  policy_id: { type: DataTypes.STRING(32), primaryKey: true },
+  pn_code: { type: DataTypes.STRING(64), allowNull: false },
+  product_id: { type: DataTypes.STRING(32) },
+  product_name: { type: DataTypes.STRING(255) },
+  rebate_type: { type: DataTypes.STRING(64), allowNull: false },
+  amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  supplier_id: { type: DataTypes.STRING(32) },
+  supplier_name: { type: DataTypes.STRING(255) },
+  effective_start: { type: DataTypes.DATEONLY },
+  effective_end: { type: DataTypes.DATEONLY },
+  status: { type: DataTypes.TINYINT(1), defaultValue: 1 },
+  remark: { type: DataTypes.STRING(512) },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_user: { type: DataTypes.STRING(64) },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_SALES_CASH_REBATE_POLICY', timestamps: false });
+
+const SalesCashRebateClaim = sequelize.define('SalesCashRebateClaim', {
+  claim_id: { type: DataTypes.STRING(32), primaryKey: true },
+  claim_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
+  supplier_id: { type: DataTypes.STRING(32) },
+  supplier_name: { type: DataTypes.STRING(255) },
+  rebate_type: { type: DataTypes.STRING(64), allowNull: false },
+  total_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+  item_count: { type: DataTypes.INTEGER, defaultValue: 0 },
+  store_id: { type: DataTypes.STRING(32) },
+  distributor_id: { type: DataTypes.STRING(32) },
+  applicant_staff_id: { type: DataTypes.BIGINT(20), allowNull: false },
+  applicant_name: { type: DataTypes.STRING(64), allowNull: false },
+  status: { type: DataTypes.STRING(32), defaultValue: 'pending_finance' },
+  reviewer_staff_id: { type: DataTypes.BIGINT(20) },
+  reviewer_name: { type: DataTypes.STRING(64) },
+  review_comment: { type: DataTypes.STRING(512) },
+  review_time: { type: DataTypes.DATE },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  remark: { type: DataTypes.STRING(512) }
+}, { tableName: 'T_SALES_CASH_REBATE_CLAIM', timestamps: false });
+
+const SalesCashRebateClaimItem = sequelize.define('SalesCashRebateClaimItem', {
+  claim_item_id: { type: DataTypes.STRING(32), primaryKey: true },
+  claim_id: { type: DataTypes.STRING(32), allowNull: false },
+  policy_id: { type: DataTypes.STRING(32), allowNull: false },
+  order_id: { type: DataTypes.STRING(32), allowNull: false },
+  order_no: { type: DataTypes.STRING(64), allowNull: false },
+  order_item_id: { type: DataTypes.BIGINT(20), allowNull: false },
+  sn_id: { type: DataTypes.STRING(32) },
+  sn_code: { type: DataTypes.STRING(128) },
+  product_id: { type: DataTypes.STRING(32) },
+  product_name: { type: DataTypes.STRING(255) },
+  pn_code: { type: DataTypes.STRING(64) },
+  store_id: { type: DataTypes.STRING(32) },
+  supplier_id: { type: DataTypes.STRING(32) },
+  supplier_name: { type: DataTypes.STRING(255) },
+  rebate_type: { type: DataTypes.STRING(64), allowNull: false },
+  amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  resource_settlement_id: { type: DataTypes.STRING(32) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_SALES_CASH_REBATE_CLAIM_ITEM', timestamps: false });
+
+const SalesCashRebateReceipt = sequelize.define('SalesCashRebateReceipt', {
+  receipt_id: { type: DataTypes.STRING(32), primaryKey: true },
+  settlement_id: { type: DataTypes.STRING(32), allowNull: false },
+  account_id: { type: DataTypes.STRING(64), allowNull: false },
+  account_transaction_id: { type: DataTypes.STRING(32), allowNull: false },
+  adjustment_id: { type: DataTypes.STRING(32), allowNull: false },
+  amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  status: { type: DataTypes.STRING(32), defaultValue: 'active' },
+  create_staff_id: { type: DataTypes.BIGINT(20) },
+  create_user: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  reverse_reason: { type: DataTypes.STRING(512) }
+}, { tableName: 'T_SALES_CASH_REBATE_RECEIPT', timestamps: false });
+
 // 销售个人 Care 可用金流水。该额度归属销售个人，不归属客户。
 const StaffCareCreditTransaction = sequelize.define('StaffCareCreditTransaction', {
   transaction_id: { type: DataTypes.STRING(32), primaryKey: true },
@@ -2071,6 +2147,7 @@ const PerformanceProfitAdjustment = sequelize.define('PerformanceProfitAdjustmen
   order_id: { type: DataTypes.STRING(32), allowNull: false },
   order_no: { type: DataTypes.STRING(64), allowNull: false },
   store_id: { type: DataTypes.STRING(32), allowNull: false },
+  product_id: { type: DataTypes.STRING(32) },
   employee_name: { type: DataTypes.STRING(64) },
   adjustment_type: { type: DataTypes.STRING(16), allowNull: false },
   amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
@@ -2697,6 +2774,10 @@ module.exports = {
   ProductResourceCostConfig,
   InventoryResourceCostAdjustment,
   ResourceSettlement,
+  SalesCashRebatePolicy,
+  SalesCashRebateClaim,
+  SalesCashRebateClaimItem,
+  SalesCashRebateReceipt,
   StaffCareCreditTransaction,
   ProductBarcode,
   SnLog,

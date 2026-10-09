@@ -5621,6 +5621,8 @@ async function ensurePn(productId, pnCode, transaction) {
 
 async function setProductCostPrice(productId, costPrice, user, transaction) {
   let price = await ProductPrice.findOne({ where: { product_id: productId }, transaction });
+  // A manually locked cost is authoritative, including an intentional zero.
+  if (price && Number(price.cost_price_locked || 0) === 1) return;
   const payload = {
     cost_price: money(costPrice),
     effective_time: new Date(),

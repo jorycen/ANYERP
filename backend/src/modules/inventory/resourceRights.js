@@ -6,7 +6,8 @@ const {
   GoodsType, GoodsTypeResource,
   ResourceSettlement, RebatePostingOrder, RebateSettlementAllocation,
   SettlementAccount, SettlementAccountTransaction, SupplierRebate, RebateEstimate, Supplier,
-  StaffCareCreditTransaction, PerformanceProfitAdjustment, Order, ManufacturerPriceHistory
+  StaffCareCreditTransaction, PerformanceProfitAdjustment, Order, ManufacturerPriceHistory,
+  SalesCashRebatePolicy, SalesCashRebateClaim, SalesCashRebateClaimItem, SalesCashRebateReceipt
 } = require('../../models');
 const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 
@@ -166,7 +167,31 @@ async function summariesForSns(snRows, transaction = null) {
     grouped.get(right.sn_id).push(right);
   }
   const categories = await getResourceCategories({ transaction });
-  return new Map(snRows.map(sn => [sn.sn_id, buildSalesResourceSummary(sn, grouped.get(sn.sn_id) || [], categories)]));
+  const now = new Date();
+  const pnCodes = [...new Set(snRows.map(sn => String(sn.pn_code || '').trim()).filter(Boolean))];
+  const cashPolicies = pnCodes.length ? await SalesCashRebatePolicy.findAll({
+    where: {
+      pn_code: { [Op.in]: pnCodes }, status: 1,
+      [Op.and]: [
+        { [Op.or]: [{ effective_start: null }, { effective_start: { [Op.lte]: now } }] },
+        { [Op.or]: [{ effective_end: null }, { effective_end: { [Op.gte]: now } }] }
+      ]
+    }, transaction
+  }) : [];
+  return new Map(snRows.map(sn => {
+    const summary = buildSalesResourceSummary(sn, grouped.get(sn.sn_id) || [], categories);
+    const matching = cashPolicies.filter(policy => String(policy.pn_code) === String(sn.pn_code || '')
+      && (!policy.supplier_id || String(policy.supplier_id) === String(sn.supplier_id || '')))
+      .sort((a, b) => Number(Boolean(b.supplier_id)) - Number(Boolean(a.supplier_id))
+        || String(b.effective_start || '').localeCompare(String(a.effective_start || '')));
+    const policy = matching[0];
+    if (policy) {
+      const label = `销售红包${policy.rebate_type} ¥${money(policy.amount).toFixed(2)}`;
+      summary.available_resource_summary = [summary.available_resource_summary === '无' ? '' : summary.available_resource_summary, label].filter(Boolean).join(' / ');
+      summary.cash_rebate = { policyId: policy.policy_id, rebateType: policy.rebate_type, amount: money(policy.amount) };
+    }
+    return [sn.sn_id, summary];
+  }));
 }
 
 async function listRights(ctx) {
@@ -1136,9 +1161,16 @@ async function reviewClaim(ctx) {
     }, { transaction });
     await right.update({ current_status: 'CLAIMED_BACK', amount, locked_source_type: null, locked_source_id: null, version: Number(right.version || 0) + 1 }, { transaction });
     await change.update({ approval_status: 'approved', reviewer_staff_id: ctx.state.user.staffId, reviewer_name: ctx.state.user.name, review_comment: comment || '', review_time: new Date() }, { transaction });
+    const supplierId = right.supplier_id || sn.supplier_id || null;
+    const supplier = supplierId
+      ? await Supplier.findByPk(supplierId, { attributes: ['supplier_id', 'name'], transaction })
+      : null;
     await createPendingSettlement({
       sourceType: 'COMPANY_CLAIM', sourceId: change.change_id, sn,
-      resourceType: change.resource_type, amount, remark: `资源套回 ${change.change_order_no}`,
+      resourceType: change.resource_type, amount,
+      counterpartyId: supplierId,
+      counterpartyName: right.supplier_name || sn.supplier_name || supplier?.name || '',
+      remark: `资源套回 ${change.change_order_no}`,
       transaction
     });
     await createClaimPriceProtection({ change, sn, transaction });
@@ -1979,6 +2011,64 @@ async function settleResource(ctx) {
     if (!record) ctx.throw(404, '资源待下账记录不存在');
     if (!['PENDING', 'PARTIALLY_SETTLED'].includes(record.status)) ctx.throw(409, '该资源记录已完成下账');
     const category = await ResourceCategory.findOne({ where: { category_code: record.resource_type }, transaction });
+    if (record.source_type === 'CASH_RED_PACKET') {
+      const accountId = String(ctx.request.body?.accountId || '').trim();
+      const account = accountId ? await SettlementAccount.findOne({
+        where: { account_id: accountId, account_type: 'FUND', status: 1 }, transaction, lock: transaction.LOCK.UPDATE
+      }) : null;
+      if (!account) ctx.throw(400, '请选择有效的现金或银行账户');
+      if (record.target_account_id && record.target_account_id !== account.account_id) ctx.throw(409, '同一红包待收记录分次到账时请使用同一账户');
+      const remaining = money(Number(record.amount || 0) - Number(record.matched_amount || 0));
+      const receivedAmount = money(ctx.request.body?.receivedAmount ?? remaining);
+      if (receivedAmount <= 0 || receivedAmount > remaining) ctx.throw(400, `到账金额必须大于0且不超过剩余待收 ¥${remaining.toFixed(2)}`);
+      const item = await SalesCashRebateClaimItem.findOne({ where: { claim_item_id: record.source_id }, transaction, lock: transaction.LOCK.UPDATE });
+      if (!item) ctx.throw(409, '找不到现金红包对应的销售商品明细');
+      const [incomeTotal, expenseTotal] = await Promise.all([
+        SettlementAccountTransaction.sum('amount', { where: { account_id: account.account_id, type: 'income' }, transaction }),
+        SettlementAccountTransaction.sum('amount', { where: { account_id: account.account_id, type: 'expense' }, transaction })
+      ]);
+      const receiptId = generateUUID();
+      const transactionId = generateUUID();
+      const adjustmentId = generateUUID();
+      await SettlementAccountTransaction.create({
+        transaction_id: transactionId, account_id: account.account_id, type: 'income', amount: receivedAmount,
+        balance_after: money(Number(incomeTotal || 0) - Number(expenseTotal || 0) + receivedAmount),
+        description: `销售现金红包到账：${record.settlement_no} ${item.sn_code || ''}`,
+        related_ref: `${record.settlement_no}:${receiptId}`, create_user: ctx.state.user.name || ctx.state.user.phone || ''
+      }, { transaction });
+      const order = await Order.findByPk(item.order_id, { transaction });
+      if (!order) ctx.throw(409, '现金红包关联的销售订单不存在');
+      const applicantStaffId = Number(ctx.state.user.staffId || 0);
+      if (!applicantStaffId) ctx.throw(401, '当前账号缺少员工身份，无法登记到账');
+      await PerformanceProfitAdjustment.create({
+        adjustment_id: adjustmentId, adjustment_no: `CRB-${receiptId}`,
+        order_id: item.order_id, order_no: item.order_no, store_id: item.store_id || order.store_id,
+        product_id: item.product_id, employee_name: order.operator_name || order.create_user || '',
+        adjustment_type: 'increase', amount: receivedAmount, signed_amount: receivedAmount,
+        base_gross_profit: 0, reason: `销售红包到账：${record.settlement_no} ${item.sn_code || ''}`,
+        status: 'approved', applicant_staff_id: applicantStaffId,
+        applicant_name: ctx.state.user.name || ctx.state.user.phone || '',
+        finance_reviewer_id: applicantStaffId, finance_reviewer_name: ctx.state.user.name || '',
+        finance_review_comment: '实际到账确认', finance_review_time: new Date(),
+        admin_reviewer_id: applicantStaffId, admin_reviewer_name: ctx.state.user.name || '', admin_review_time: new Date(),
+        create_time: new Date(), update_time: new Date()
+      }, { transaction });
+      await SalesCashRebateReceipt.create({
+        receipt_id: receiptId, settlement_id: record.settlement_id, account_id: account.account_id,
+        account_transaction_id: transactionId, adjustment_id: adjustmentId, amount: receivedAmount,
+        status: 'active', create_staff_id: applicantStaffId,
+        create_user: ctx.state.user.name || ctx.state.user.phone || '', create_time: new Date()
+      }, { transaction });
+      const matchedAmount = money(Number(record.matched_amount || 0) + receivedAmount);
+      const fullyReceived = matchedAmount + 0.0001 >= Number(record.amount || 0);
+      await record.update({
+        matched_amount: matchedAmount, status: fullyReceived ? 'SETTLED' : 'PARTIALLY_SETTLED',
+        target_account_id: account.account_id, settled_at: new Date(),
+        settled_by: applicantStaffId, settled_by_name: ctx.state.user.name || '', update_time: new Date()
+      }, { transaction });
+      result = { fullyMatched: fullyReceived, receivedAmount, matchedAmount, cashRedPacket: true };
+      return;
+    }
     if (['MANUAL_REBATE', 'MANUFACTURER_REBATE', 'REBATE_RECEIPT', 'EXPENSE_REBATE'].includes(record.source_type)) {
       result = await reconcileRebateSettlement(ctx, record, transaction);
       return;
@@ -2021,7 +2111,9 @@ async function settleResource(ctx) {
   });
   ctx.body = result
     ? {
-        message: result.fullyMatched ? '返利下账单已完成核销' : '返利下账单已部分核销',
+        message: result.cashRedPacket
+          ? (result.fullyMatched ? '销售红包到账已登记并完成核销' : '销售红包部分到账已登记')
+          : (result.fullyMatched ? '返利下账单已完成核销' : '返利下账单已部分核销'),
         data: result
       }
     : { message: '资源权益已下账' };
@@ -2122,6 +2214,39 @@ async function reverseResourceSettlement(ctx) {
         reversed_by_name: ctx.state.user.name || '',
         correction_reason: reason,
         update_time: new Date()
+      }, { transaction });
+      reconciliationReversed = true;
+      return;
+    }
+
+    if (record.source_type === 'CASH_RED_PACKET') {
+      const receipts = await SalesCashRebateReceipt.findAll({
+        where: { settlement_id: record.settlement_id, status: 'active' }, transaction, lock: transaction.LOCK.UPDATE
+      });
+      if (!receipts.length) ctx.throw(409, '未找到现金红包到账流水，无法冲销');
+      for (const receipt of receipts) {
+        const account = await SettlementAccount.findOne({ where: { account_id: receipt.account_id }, transaction, lock: transaction.LOCK.UPDATE });
+        if (!account) ctx.throw(409, '原收款账户不存在，无法冲销现金红包到账');
+        const [income, expense] = await Promise.all([
+          SettlementAccountTransaction.sum('amount', { where: { account_id: account.account_id, type: 'income' }, transaction }),
+          SettlementAccountTransaction.sum('amount', { where: { account_id: account.account_id, type: 'expense' }, transaction })
+        ]);
+        await SettlementAccountTransaction.create({
+          transaction_id: generateUUID(), account_id: account.account_id, type: 'expense', amount: receipt.amount,
+          balance_after: money(Number(income || 0) - Number(expense || 0) - Number(receipt.amount || 0)),
+          description: `销售现金红包到账冲销：${record.settlement_no} ${reason}`,
+          related_ref: `${record.settlement_no}:REV:${receipt.receipt_id}`, create_user: ctx.state.user.name || ctx.state.user.phone || ''
+        }, { transaction });
+        await PerformanceProfitAdjustment.update(
+          { status: 'reversed', update_time: new Date() },
+          { where: { adjustment_id: receipt.adjustment_id }, transaction }
+        );
+        await receipt.update({ status: 'reversed', reverse_reason: reason }, { transaction });
+      }
+      await record.update({
+        matched_amount: 0, status: 'REVERSED', reversed_at: new Date(),
+        reversed_by: ctx.state.user.staffId || null, reversed_by_name: ctx.state.user.name || '',
+        correction_reason: reason, update_time: new Date()
       }, { transaction });
       reconciliationReversed = true;
       return;
@@ -2757,6 +2882,253 @@ async function submitSaleResourceTask(ctx) {
   ctx.body = { message: nextStatus === 'completed' ? '资源事项已完成' : '晒单已提交，等待店长审核' };
 }
 
+function normalizeCashRebateHeader(value) {
+  return String(value || '').trim().toLowerCase().replace(/[\s_\-\/\\（）()【】\[\]：:]+/g, '');
+}
+
+function cashRebateCell(row, indexes, aliases) {
+  for (const alias of aliases) {
+    const index = indexes.get(normalizeCashRebateHeader(alias));
+    if (index !== undefined && row[index] !== undefined && row[index] !== null && String(row[index]).trim() !== '') return row[index];
+  }
+  return '';
+}
+
+function normalizeCashRebateDate(value, endOfDay = false) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+async function listSalesCashRebatePolicies(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
+  const where = {};
+  const pn = String(ctx.query.pn || '').trim();
+  if (pn) where.pn_code = { [Op.like]: `%${pn}%` };
+  const { count, rows } = await SalesCashRebatePolicy.findAndCountAll({
+    where, order: [['update_time', 'DESC'], ['policy_id', 'DESC']],
+    ...paginate({}, { page: ctx.query.page || 1, pageSize: ctx.query.pageSize || 20 })
+  });
+  ctx.body = formatPaginatedResult(rows, { page: ctx.query.page || 1, pageSize: ctx.query.pageSize || 20, count });
+}
+
+async function downloadSalesCashRebateTemplate(ctx) {
+  const workbook = XLSX.utils.book_new();
+  const sheet = XLSX.utils.json_to_sheet([{ PN: '示例PN', 商品名称: '商品名称', 红包类型: '现金红包', 金额: 100, 供应商: '', 生效日期: '', 失效日期: '', 备注: '' }]);
+  sheet['!cols'] = [{ wch: 22 }, { wch: 28 }, { wch: 18 }, { wch: 12 }, { wch: 24 }, { wch: 16 }, { wch: 16 }, { wch: 30 }];
+  XLSX.utils.book_append_sheet(workbook, sheet, '销售红包政策');
+  const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+  ctx.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  ctx.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent('商品销售红包模板.xlsx')}`);
+  ctx.body = buffer;
+}
+
+async function importSalesCashRebatePolicies(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
+  if (!ctx.file?.buffer) ctx.throw(400, '请上传销售红包政策Excel文件');
+  const workbook = XLSX.read(ctx.file.buffer, { type: 'buffer', cellDates: true });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const data = sheet ? XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }) : [];
+  if (data.length < 2) ctx.throw(400, '模板中没有可导入的数据行');
+  const headers = new Map(data[0].map((value, index) => [normalizeCashRebateHeader(value), index]));
+  const results = [];
+  for (let index = 1; index < data.length; index += 1) {
+    const row = data[index];
+    const pnCode = String(cashRebateCell(row, headers, ['PN', '商品PN', '厂商编码']) || '').trim();
+    const rebateType = String(cashRebateCell(row, headers, ['红包类型', '类型']) || '').trim();
+    const amount = money(cashRebateCell(row, headers, ['金额', '单件金额', '红包金额']));
+    if (!pnCode && !rebateType && !amount) continue;
+    try {
+      if (!pnCode || !rebateType || amount <= 0) throw new Error('PN、红包类型和大于0的单件金额为必填项');
+      const pn = await ProductPn.findOne({ where: { pn_code: pnCode, status: 1, is_deleted: 0 } });
+      if (!pn) throw new Error(`未找到有效PN：${pnCode}`);
+      const product = await Product.findByPk(pn.product_id);
+      if (!product || product.is_deleted) throw new Error(`PN ${pnCode} 对应商品不存在或已停用`);
+      const supplierText = String(cashRebateCell(row, headers, ['供应商', '供应商名称']) || '').trim();
+      const supplier = supplierText
+        ? await Supplier.findOne({ where: { [Op.or]: [{ supplier_id: supplierText }, { name: supplierText }], status: 1, is_deleted: 0 } })
+        : null;
+      if (supplierText && !supplier) throw new Error(`未找到供应商：${supplierText}`);
+      const effectiveStart = normalizeCashRebateDate(cashRebateCell(row, headers, ['生效日期', '开始日期', '生效开始']));
+      const effectiveEnd = normalizeCashRebateDate(cashRebateCell(row, headers, ['失效日期', '结束日期', '生效结束']));
+      if (effectiveStart && effectiveEnd && effectiveStart > effectiveEnd) throw new Error('生效日期不能晚于失效日期');
+      const remark = String(cashRebateCell(row, headers, ['备注']) || '').trim();
+      const where = {
+        pn_code: pnCode, rebate_type: rebateType,
+        supplier_id: supplier?.supplier_id || null,
+        effective_start: effectiveStart, effective_end: effectiveEnd
+      };
+      const existing = await SalesCashRebatePolicy.findOne({ where });
+      const values = {
+        product_id: product.product_id, product_name: product.name, amount,
+        supplier_name: supplier?.name || null, status: 1, remark,
+        update_user: ctx.state.user.name || '', update_time: new Date()
+      };
+      if (existing) await existing.update(values);
+      else await SalesCashRebatePolicy.create({ policy_id: generateUUID(), ...where, ...values, create_user: ctx.state.user.name || '' });
+      results.push({ row: index + 1, pn: pnCode, status: 'success' });
+    } catch (error) {
+      results.push({ row: index + 1, pn: pnCode, status: 'failed', message: error.message });
+    }
+  }
+  const success = results.filter(item => item.status === 'success').length;
+  ctx.body = { message: `销售红包政策导入完成：成功 ${success} 条，失败 ${results.length - success} 条`, success, failed: results.length - success, rows: results };
+}
+
+async function findEligibleSalesCashRebateItems(ctx, transaction = null) {
+  const where = ['o.IS_DELETED = 0', 'o.ARCHIVE_TIME IS NOT NULL', 'oi.SN_ID IS NOT NULL', 'pol.STATUS = 1'];
+  const replacements = {};
+  const pn = String(ctx.query.pn || '').trim();
+  const snCode = String(ctx.query.snCode || '').trim();
+  if (pn) { where.push('(oi.PN_CODE LIKE :pn OR sn.PN_CODE LIKE :pn)'); replacements.pn = `%${pn}%`; }
+  if (snCode) { where.push('COALESCE(oi.SN_CODE, sn.SN_CODE) LIKE :snCode'); replacements.snCode = `%${snCode}%`; }
+  const accessible = Array.isArray(ctx.state.user?.accessibleStoreIds) ? ctx.state.user.accessibleStoreIds.map(String) : [];
+  if (!accessible.includes('*')) {
+    if (accessible.length) { where.push('o.STORE_ID IN (:storeIds)'); replacements.storeIds = accessible; }
+    else where.push('1 = 0');
+  }
+  const rows = await sequelize.query(
+    `SELECT oi.ITEM_ID AS orderItemId, o.ORDER_ID AS orderId, o.ORDER_NO AS orderNo,
+            o.STORE_ID AS storeId, o.ARCHIVE_TIME AS archiveTime,
+            oi.SN_ID AS snId, COALESCE(oi.SN_CODE, sn.SN_CODE) AS snCode,
+            oi.PRODUCT_ID AS productId, COALESCE(p.NAME, oi.PRODUCT_NAME) AS productName,
+            COALESCE(NULLIF(oi.PN_CODE, ''), sn.PN_CODE) AS pnCode,
+            COALESCE(NULLIF(oi.SUPPLIER_ID, ''), NULLIF(sn.SUPPLIER_ID, '')) AS supplierId,
+            COALESCE(NULLIF(oi.SUPPLIER_NAME, ''), NULLIF(sn.SUPPLIER_NAME, '')) AS supplierName,
+            pol.POLICY_ID AS policyId, pol.REBATE_TYPE AS rebateType, pol.AMOUNT AS amount,
+            pol.SUPPLIER_ID AS policySupplierId, pol.EFFECTIVE_START AS effectiveStart, pol.EFFECTIVE_END AS effectiveEnd
+       FROM T_ORDER o
+       INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+       LEFT JOIN T_PRODUCT_SN sn ON sn.SN_ID = oi.SN_ID
+       LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
+       INNER JOIN T_SALES_CASH_REBATE_POLICY pol
+         ON pol.PN_CODE = COALESCE(NULLIF(oi.PN_CODE, ''), sn.PN_CODE)
+        AND (pol.SUPPLIER_ID IS NULL OR pol.SUPPLIER_ID = '' OR pol.SUPPLIER_ID = COALESCE(NULLIF(oi.SUPPLIER_ID, ''), NULLIF(sn.SUPPLIER_ID, '')))
+        AND (pol.EFFECTIVE_START IS NULL OR DATE(o.ARCHIVE_TIME) >= pol.EFFECTIVE_START)
+        AND (pol.EFFECTIVE_END IS NULL OR DATE(o.ARCHIVE_TIME) <= pol.EFFECTIVE_END)
+      WHERE ${where.join(' AND ')}
+      ORDER BY o.ARCHIVE_TIME DESC, oi.ITEM_ID DESC
+      LIMIT 10000`,
+    { replacements, type: sequelize.QueryTypes.SELECT, transaction }
+  );
+  const claimRows = await SalesCashRebateClaim.findAll({ where: { status: { [Op.in]: ['pending_finance', 'approved'] } }, attributes: ['claim_id'], transaction });
+  const activeClaimIds = claimRows.map(row => row.claim_id);
+  const claimedItems = activeClaimIds.length
+    ? await SalesCashRebateClaimItem.findAll({ where: { claim_id: { [Op.in]: activeClaimIds } }, attributes: ['order_item_id'], transaction })
+    : [];
+  const claimed = new Set(claimedItems.map(row => String(row.order_item_id)));
+  const grouped = new Map();
+  for (const row of rows) {
+    const key = String(row.orderItemId);
+    const choices = grouped.get(key) || [];
+    choices.push(row);
+    grouped.set(key, choices);
+  }
+  return [...grouped.values()].map(choices => choices.sort((a, b) => {
+    const specificity = Number(Boolean(b.policySupplierId)) - Number(Boolean(a.policySupplierId));
+    if (specificity) return specificity;
+    return String(b.effectiveStart || '').localeCompare(String(a.effectiveStart || ''));
+  })[0]).filter(row => !claimed.has(String(row.orderItemId)) && Number(row.amount) > 0 && row.supplierId);
+}
+
+async function listEligibleSalesCashRebateItems(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
+  const items = await findEligibleSalesCashRebateItems(ctx);
+  const page = Math.max(1, Number(ctx.query.page) || 1);
+  const pageSize = Math.min(200, Math.max(1, Number(ctx.query.pageSize) || 20));
+  ctx.body = { code: 0, data: { list: items.slice((page - 1) * pageSize, page * pageSize), total: items.length, page, pageSize } };
+}
+
+async function createSalesCashRebateClaim(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
+  const requested = Array.isArray(ctx.request.body?.items) ? ctx.request.body.items : [];
+  const itemIds = [...new Set(requested.map(item => String(item.orderItemId || '')).filter(Boolean))];
+  if (!itemIds.length) ctx.throw(400, '请先选择符合条件的已售商品');
+  if (!ctx.state.user?.staffId) ctx.throw(401, '当前账号缺少员工身份，无法提交套回审批');
+  const result = await sequelize.transaction(async transaction => {
+    const eligible = await findEligibleSalesCashRebateItems(ctx, transaction);
+    const selected = eligible.filter(row => itemIds.includes(String(row.orderItemId)));
+    if (selected.length !== itemIds.length) ctx.throw(409, '部分商品已不符合套回条件，请刷新后重新选择');
+    const suppliers = new Set(selected.map(row => String(row.supplierId || '')));
+    const rebateTypes = new Set(selected.map(row => String(row.rebateType || '')));
+    if (suppliers.size !== 1 || rebateTypes.size !== 1) ctx.throw(400, '同一张套回单请只选择同一供应商、同一红包类型的商品');
+    const first = selected[0];
+    const totalAmount = money(selected.reduce((sum, row) => sum + money(row.amount), 0));
+    const claim = await SalesCashRebateClaim.create({
+      claim_id: generateUUID(), claim_no: businessNo('CRB'), supplier_id: first.supplierId,
+      supplier_name: first.supplierName || '', rebate_type: first.rebateType,
+      total_amount: totalAmount, item_count: selected.length,
+      distributor_id: ctx.state.user.distributorId || null,
+      applicant_staff_id: ctx.state.user.staffId, applicant_name: ctx.state.user.name || ctx.state.user.phone || '',
+      status: 'pending_finance', remark: String(ctx.request.body?.remark || '').trim()
+    }, { transaction });
+    await SalesCashRebateClaimItem.bulkCreate(selected.map(row => ({
+      claim_item_id: generateUUID(), claim_id: claim.claim_id, policy_id: row.policyId,
+      order_id: row.orderId, order_no: row.orderNo, order_item_id: row.orderItemId,
+      sn_id: row.snId, sn_code: row.snCode, product_id: row.productId, product_name: row.productName,
+      pn_code: row.pnCode, store_id: row.storeId, supplier_id: row.supplierId,
+      supplier_name: row.supplierName || '', rebate_type: row.rebateType, amount: money(row.amount)
+    })), { transaction });
+    await require('../approval/businessRuntime').begin('sales_cash_rebate_claim', claim, transaction);
+    return { claimNo: claim.claim_no, itemCount: selected.length, totalAmount };
+  });
+  ctx.body = { code: 0, data: result, message: '销售红包套回单已提交审批' };
+}
+
+async function listSalesCashRebateClaims(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
+  const where = {};
+  if (ctx.query.status) where.status = ctx.query.status;
+  const { count, rows } = await SalesCashRebateClaim.findAndCountAll({
+    where, order: [['create_time', 'DESC']],
+    ...paginate({}, { page: ctx.query.page || 1, pageSize: ctx.query.pageSize || 20 })
+  });
+  const items = rows.length ? await SalesCashRebateClaimItem.findAll({ where: { claim_id: { [Op.in]: rows.map(row => row.claim_id) } }, order: [['create_time', 'ASC']] }) : [];
+  const itemsByClaim = new Map();
+  for (const item of items) {
+    const list = itemsByClaim.get(item.claim_id) || [];
+    list.push(item);
+    itemsByClaim.set(item.claim_id, list);
+  }
+  const list = rows.map(row => ({ ...row.toJSON(), items: itemsByClaim.get(row.claim_id) || [] }));
+  ctx.body = formatPaginatedResult(list, { page: ctx.query.page || 1, pageSize: ctx.query.pageSize || 20, count });
+}
+
+async function reviewSalesCashRebateClaim(ctx) {
+  const action = String(ctx.request.body?.action || '');
+  const comment = String(ctx.request.body?.comment || '').trim();
+  if (!['approve', 'reject'].includes(action)) ctx.throw(400, '审批操作无效');
+  await sequelize.transaction(async transaction => {
+    const claim = await SalesCashRebateClaim.findByPk(ctx.params.claimId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!claim) ctx.throw(404, '销售红包套回单不存在');
+    if (!await require('../approval/businessRuntime').advance(ctx, 'sales_cash_rebate_claim', claim, transaction, action, comment)) return;
+    const now = new Date();
+    await claim.update({
+      status: action === 'approve' ? 'approved' : 'rejected',
+      reviewer_staff_id: ctx.state.user.staffId || null, reviewer_name: ctx.state.user.name || '',
+      review_comment: comment, review_time: now, update_time: now
+    }, { transaction });
+    if (action !== 'approve') return;
+    const items = await SalesCashRebateClaimItem.findAll({ where: { claim_id: claim.claim_id }, transaction, lock: transaction.LOCK.UPDATE });
+    for (const item of items) {
+      const settlement = await createPendingSettlement({
+        sourceType: 'CASH_RED_PACKET', sourceId: item.claim_item_id,
+        sn: { sn_id: item.sn_id, sn_code: item.sn_code, product_id: item.product_id },
+        resourceType: 'SALES_CASH_REBATE', amount: item.amount,
+        counterpartyId: item.supplier_id, counterpartyName: item.supplier_name || '', forceSettlement: true,
+        remark: `${claim.claim_no} ${item.order_no} ${item.rebate_type}`, transaction
+      });
+      await item.update({ resource_settlement_id: settlement?.settlement_id || null }, { transaction });
+    }
+  });
+  if (ctx.state.businessApproval?.status === 'pending') return;
+  ctx.body = { code: 0, message: action === 'approve' ? '销售红包套回审批通过，已进入待收款列表' : '销售红包套回申请已拒绝' };
+}
+
 async function completeOtherPolicyResource(ctx) {
   await sequelize.transaction(async transaction => {
     const right = await InventoryResourceRight.findOne({ where: { sn_id: ctx.params.snId, resource_type: 'OTHER_POLICY' }, transaction, lock: transaction.LOCK.UPDATE });
@@ -2818,6 +3190,8 @@ module.exports = {
   findResourceRule, calculatePreSaleRuleAmount,
   initializeSnResourceRightsFromInbound, triggerSaleResourceBenefits, createSaleResourceTasks,
   listSaleResourceTasks, submitSaleResourceTask, reviewSaleResourceTask, completeOtherPolicyResource,
+  listSalesCashRebatePolicies, downloadSalesCashRebateTemplate, importSalesCashRebatePolicies,
+  listEligibleSalesCashRebateItems, createSalesCashRebateClaim, listSalesCashRebateClaims, reviewSalesCashRebateClaim,
   alignOrderSubsidyRights, isGovSubsidyEligibleCategory, lockSaleRights, finishSaleRights, releaseSaleRights,
   _test: { normalizeImportRows, normalizeImportStatus, normalizeImportResourceTypes, educationHeaderIndexes, parseEducationDate, parseEducationAmount, extractEducationPolicies, chooseEducationPolicy }
 };

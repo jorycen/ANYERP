@@ -333,6 +333,16 @@ export default {
     const formData = new FormData(); formData.append('file', file)
     return api.post('/inventory/resource-rights/education-policy/import', formData, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 180000 })
   },
+  getSalesCashRebatePolicies: (params) => api.get('/inventory/sales-cash-rebates/policies', { params }),
+  getSalesCashRebateTemplate: () => api.get('/inventory/sales-cash-rebates/policies/template', { responseType: 'blob' }),
+  importSalesCashRebatePolicies: (file) => {
+    const formData = new FormData(); formData.append('file', file)
+    return api.post('/inventory/sales-cash-rebates/policies/import', formData, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 180000 })
+  },
+  getEligibleSalesCashRebateItems: (params) => api.get('/inventory/sales-cash-rebates/eligible', { params }),
+  createSalesCashRebateClaim: (data) => api.post('/inventory/sales-cash-rebates/claims', data),
+  getSalesCashRebateClaims: (params) => api.get('/inventory/sales-cash-rebates/claims', { params }),
+  reviewSalesCashRebateClaim: (claimId, data) => api.post(`/inventory/sales-cash-rebates/claims/${claimId}/review`, data),
   supplementEducationResource: (data) => api.post('/inventory/resource-rights/education-supplement', data),
   importBatchResourceRights: (file) => {
     const formData = new FormData(); formData.append('file', file)

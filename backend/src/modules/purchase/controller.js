@@ -898,6 +898,7 @@ function buildAdjustmentRows(request, inbounds, stores) {
 async function queryRequestList(ctx, { exportMode = false } = {}) {
   const { status, scope, operatorStaffId, submitter, documentNo, requestNo, keyword, supplierId, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
+  const roles = getUserRoles(user);
   const paidRequestIds = await getPaidPurchaseRequestIds();
 
   const where = { status: { [Op.ne]: 'deleted' } };
@@ -933,7 +934,9 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
   } else if (status) {
     where.status = status;
   }
-  if (scope === 'my') {
+  // 店员/普通员工固定只能查看本人申请；店长按下方 accessibleStoreIds 查看本店申请。
+  // 不依赖前端传入 scope，避免通过修改请求参数扩大可见范围。
+  if (scope === 'my' || roles.some(role => ['clerk', 'staff'].includes(role))) {
     const staffId = user.staffId || user.id;
     const identities = [user.name, user.phone, staffId && String(staffId)].filter(Boolean);
     if (staffId) {
