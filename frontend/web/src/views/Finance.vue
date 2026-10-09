@@ -224,7 +224,7 @@
             <el-button type="primary" @click="loadSubsidyReceivables">搜索</el-button>
             <el-button type="success" :loading="exportingList === 'subsidy'" @click="handleExportSubsidy">导出</el-button>
             <el-button type="primary" plain @click="openManualSubsidyDialog">手工登记国补数据</el-button>
-            <el-button type="warning" plain @click="openUnionpayBatchSettleDialog">按云闪付订单号批量下账</el-button>
+            <el-button type="warning" plain @click="openSnBatchSettleDialog">按SN批量下账</el-button>
             <el-button
               type="success"
               :disabled="selectedSubsidyIds.length === 0"
@@ -251,6 +251,7 @@
               </template>
             </el-table-column>
             <el-table-column prop="unionpay_order_no" label="云闪付订单号" min-width="190" show-overflow-tooltip />
+            <el-table-column prop="sn_code" label="SN" min-width="160" show-overflow-tooltip />
             <el-table-column prop="customer_name" label="国补客户" width="110" />
             <el-table-column label="国补类型" min-width="180">
               <template #default="{ row }">{{ subsidyPaymentType(row.payment_method) }}</template>
@@ -943,9 +944,9 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="unionpayBatchSettleDialogVisible" title="按云闪付订单号批量下账" width="620px">
-      <el-alert title="每行填写一个云闪付订单号，也支持逗号分隔。系统会先校验全部号码，存在未匹配记录时不会执行下账。" type="warning" :closable="false" show-icon />
-      <el-input v-model="unionpayBatchSettleText" type="textarea" :rows="12" placeholder="请输入云闪付订单号" style="margin-top:16px" />
+    <el-dialog v-model="unionpayBatchSettleDialogVisible" title="按SN批量下账" width="620px">
+      <el-alert title="每行填写一个SN，也支持逗号分隔。系统会先校验全部SN，存在未匹配记录时不会执行下账。" type="warning" :closable="false" show-icon />
+      <el-input v-model="unionpayBatchSettleText" type="textarea" :rows="12" placeholder="请输入SN" style="margin-top:16px" />
       <template #footer>
         <el-button @click="unionpayBatchSettleDialogVisible=false">取消</el-button>
         <el-button type="primary" :loading="unionpayBatchSettleSubmitting" @click="submitUnionpayBatchSettle">确认批量下账</el-button>
@@ -2469,20 +2470,20 @@ const submitManualSubsidy = async () => {
 
 const parseUnionpayOrderNos = value => [...new Set(String(value || '').split(/[\s,，;；]+/).map(item => item.trim()).filter(Boolean))]
 
-const openUnionpayBatchSettleDialog = () => {
-  unionpayBatchSettleText.value = subsidyQuery.unionpayOrderNo ? subsidyQuery.unionpayOrderNo.trim() : ''
+const openSnBatchSettleDialog = () => {
+  unionpayBatchSettleText.value = ''
   unionpayBatchSettleDialogVisible.value = true
 }
 
 const submitUnionpayBatchSettle = async () => {
-  const unionpayOrderNos = parseUnionpayOrderNos(unionpayBatchSettleText.value)
-  if (!unionpayOrderNos.length) return ElMessage.warning('请至少填写一个云闪付订单号')
+  const snCodes = parseUnionpayOrderNos(unionpayBatchSettleText.value)
+  if (!snCodes.length) return ElMessage.warning('请至少填写一个SN')
   try {
-    await ElMessageBox.confirm(`确认按 ${unionpayOrderNos.length} 个云闪付订单号批量下账？`, '批量下账确认', { type:'warning' })
+    await ElMessageBox.confirm(`确认按 ${snCodes.length} 个SN批量下账？`, '批量下账确认', { type:'warning' })
   } catch (_) { return }
   unionpayBatchSettleSubmitting.value = true
   try {
-    const res = await api.settleNationalSubsidyReceivables({ unionpayOrderNos })
+    const res = await api.settleNationalSubsidyReceivables({ snCodes })
     ElMessage.success(res.message || '批量下账成功')
     unionpayBatchSettleDialogVisible.value = false
     await Promise.all([loadSubsidyReceivables(), loadAccountList()])

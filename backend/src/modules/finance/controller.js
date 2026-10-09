@@ -3,7 +3,7 @@
  */
 const {
   sequelize, DailyStatement, DailyStatementDetail, Expense, ExpenseType, PurchaseRequest, PurchaseRequestItem, Store, Region, Order, OrderPayment, Supplier,
-  SettlementAccount, SettlementAccountTransaction, SubsidyAccountRoute, SubsidyReceipt, PaymentMethod, PaymentMethodStore,
+  SettlementAccount, SettlementAccountTransaction, SubsidyAccountRoute, SubsidyReceipt, PaymentMethod, PaymentMethodStore, OrderItem,
   SubsidyReceiptAllocation, SubsidyReceivableAdjustment, ExpensePerformanceAllocation,
   ApprovalFlowInstance, ApprovalTask
 } = require('../../models');
@@ -179,6 +179,21 @@ async function getStatementDetails(ctx, businessWhere) {
       })
     : [];
   const unionpayByOrderId = new Map(linkedOrders.map(order => [String(order.order_id), String(order.invoice_info || '').trim()]));
+  const orderItems = rows.length
+    ? await OrderItem.findAll({
+        where: { order_id: rows.map(row => row.order_id) },
+        attributes: ['order_id', 'sn_code']
+      })
+    : [];
+  const snByOrderId = new Map();
+  for (const item of orderItems) {
+    const sn = String(item.sn_code || '').trim();
+    if (!sn) continue;
+    const key = String(item.order_id);
+    const values = snByOrderId.get(key) || [];
+    if (!values.includes(sn)) values.push(sn);
+    snByOrderId.set(key, values);
+  }
   const approvedAdjustments = rows.length
     ? await SubsidyReceivableAdjustment.findAll({
         attributes: ['detail_id', [Sequelize.fn('SUM', Sequelize.col('amount')), 'approved_amount']],
@@ -201,6 +216,7 @@ async function getStatementDetails(ctx, businessWhere) {
       store_id: stmt ? stmt.store_id : null,
       region_id: store ? store.region_id : null,
       unionpay_order_no: d.unionpay_order_no || unionpayByOrderId.get(String(d.order_id)) || '',
+      sn_code: (snByOrderId.get(String(d.order_id)) || []).join(', '),
       remaining_amount: remainingAmount,
       approved_adjustment_amount: adjustmentAmount,
       receipt_status: remainingAmount <= 0 && adjustmentAmount > 0
@@ -270,6 +286,7 @@ async function exportNationalSubsidyReceivables(ctx) {
     应收日期: row.statement_date || '',
     订单号: row.order_no || row.order_id || '',
     云闪付订单号: row.unionpay_order_no || '',
+    SN: row.sn_code || '',
     国补客户: row.customer_name || '',
     国补类型: row.payment_method || '',
     应收金额: Number(row.amount || 0),
@@ -285,7 +302,7 @@ async function exportNationalSubsidyReceivables(ctx) {
     结清时间: row.settled_at || ''
   }));
   sendExcel(ctx, data, [
-    '应收日期', '订单号', '云闪付订单号', '国补客户', '国补类型', '应收金额', '累计核销',
+    '应收日期', '订单号', '云闪付订单号', 'SN', '国补客户', '国补类型', '应收金额', '累计核销',
     '剩余应收', '应收账户', '门店', '状态', '结清时间'
   ], `国补应收单_${new Date().toISOString().slice(0, 10)}.xlsx`, '国补应收单');
 }
@@ -697,17 +714,17 @@ async function batchSettle(ctx) {
 }
 
 async function settleNationalSubsidyReceivables(ctx) {
-  const unionpayOrderNos = normalizeUnionpayOrderNos(
-    ctx.request.body?.unionpayOrderNos || ctx.request.body?.unionpayOrderNoText
+  const snCodes = normalizeUnionpayOrderNos(
+    ctx.request.body?.snCodes || ctx.request.body?.snText
   );
-  if (unionpayOrderNos.length === 0) {
+  if (snCodes.length === 0) {
     return settleStatementDetails(ctx, 'national_subsidy_receivable');
   }
-  const linkedOrders = await Order.findAll({
-    where: { invoice_info: { [Op.in]: unionpayOrderNos } },
-    attributes: ['order_id', 'invoice_info']
+  const matchedItems = await OrderItem.findAll({
+    where: { sn_code: { [Op.in]: snCodes } },
+    attributes: ['order_id', 'sn_code']
   });
-  const orderNoById = new Map(linkedOrders.map(order => [String(order.order_id), String(order.invoice_info || '').trim()]));
+  const orderIds = [...new Set(matchedItems.map(item => item.order_id))];
   const details = await DailyStatementDetail.findAll({
     where: {
       [Op.and]: [
@@ -718,19 +735,17 @@ async function settleNationalSubsidyReceivables(ctx) {
           ]
         },
         {
-          [Op.or]: [
-            { unionpay_order_no: { [Op.in]: unionpayOrderNos } },
-            ...(linkedOrders.length ? [{ order_id: linkedOrders.map(order => order.order_id) }] : [])
-          ]
+          order_id: orderIds.length ? { [Op.in]: orderIds } : { [Op.in]: [] }
         }
       ]
     }
   });
-  const matchedOrderNos = new Set(details.map(detail => (
-    String(detail.unionpay_order_no || '').trim() || orderNoById.get(String(detail.order_id)) || ''
-  )).filter(Boolean));
-  const unmatched = unionpayOrderNos.filter(orderNo => !matchedOrderNos.has(orderNo));
-  if (unmatched.length) ctx.throw(400, `以下云闪付订单号未找到国补应收记录：${unmatched.join('、')}`);
+  const matchedOrderIds = new Set(details.map(detail => String(detail.order_id)));
+  const matchedSnCodes = new Set(matchedItems
+    .filter(item => matchedOrderIds.has(String(item.order_id)))
+    .map(item => String(item.sn_code || '').trim()));
+  const unmatched = snCodes.filter(sn => !matchedSnCodes.has(sn));
+  if (unmatched.length) ctx.throw(400, `以下SN未找到国补应收记录：${unmatched.join('、')}`);
   ctx.request.body = { ...(ctx.request.body || {}), detailIds: details.map(detail => detail.detail_id) };
   return settleStatementDetails(ctx, 'national_subsidy_receivable');
 }

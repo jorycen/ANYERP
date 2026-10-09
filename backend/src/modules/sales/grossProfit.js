@@ -119,7 +119,12 @@ function isFreightRecordApplicableToOrder({
   return true;
 }
 
-function resolveUnitProductPricing(productPrice = {}, orderItem = {}, supplier = null) {
+function resolveUnitProductPricing(
+  productPrice = {},
+  orderItem = {},
+  supplier = null,
+  { useStandardPrice = false } = {}
+) {
   const configuredPricing = toNumber(productPrice.standard_price);
   const specialPrice = toNumber(orderItem.specialPrice ?? orderItem.special_price);
   const effectiveConfiguredPricing = specialPrice > 0 ? specialPrice : configuredPricing;
@@ -136,6 +141,11 @@ function resolveUnitProductPricing(productPrice = {}, orderItem = {}, supplier =
         isServiceProvider
       }
     : { unitPricing: roundMoney(unitPricing), source };
+
+  // 选件统一按商品定价计价，不受供应商服务商属性和采购成本影响。
+  if (useStandardPrice && configuredPricing > 0) {
+    return result(configuredPricing, 'product_standard_price');
+  }
 
   if (isServiceProvider && effectiveConfiguredPricing > 0) {
     return result(
@@ -544,7 +554,10 @@ async function buildProductPricingDetails(orderId, transaction) {
     const pricing = resolveUnitProductPricing(
       productPrice,
       { ...row, purchasePrice, specialPrice },
-      supplier
+      supplier,
+      {
+        useStandardPrice: /选件/.test(`${product.category || ''} ${product.accessory_type || ''}`)
+      }
     );
     const quantity = Number(row.quantity || 1);
     const isServiceProvider = pricing.isServiceProvider ?? true;
