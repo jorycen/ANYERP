@@ -338,6 +338,13 @@ async function runSchemaMigrations() {
 }
 
 async function ensureSalesCashRebateSchema() {
+  await checkAndAddColumn('T_ORDER', 'ARCHIVE_TIME', 'DATETIME NULL COMMENT "销售订单归档时间"', 'ORDER_STATUS');
+  await sequelize.query(`
+    UPDATE T_ORDER
+       SET ARCHIVE_TIME = COALESCE(UPDATE_TIME, CREATE_TIME)
+     WHERE ARCHIVE_TIME IS NULL
+       AND ORDER_STATUS IN ('已归档', 'completed', 'archived')
+  `);
   await checkAndCreateTable('T_SALES_CASH_REBATE_POLICY', `
     CREATE TABLE T_SALES_CASH_REBATE_POLICY (
       POLICY_ID VARCHAR(32) NOT NULL,

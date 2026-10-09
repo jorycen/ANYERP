@@ -1145,6 +1145,7 @@ const Order = sequelize.define('Order', {
   education_subsidy_ocr_text: { type: DataTypes.TEXT },
   personal_info_photo: { type: DataTypes.JSON },
   remark: { type: DataTypes.TEXT },
+  archive_time: { type: DataTypes.DATE },
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
   update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
   is_deleted: { type: DataTypes.TINYINT(1), defaultValue: 0 }

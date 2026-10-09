@@ -2980,7 +2980,13 @@ async function importSalesCashRebatePolicies(ctx) {
 }
 
 async function findEligibleSalesCashRebateItems(ctx, transaction = null) {
-  const where = ['o.IS_DELETED = 0', 'o.ARCHIVE_TIME IS NOT NULL', 'oi.SN_ID IS NOT NULL', 'pol.STATUS = 1'];
+  const where = [
+    'o.IS_DELETED = 0',
+    "o.ORDER_STATUS IN ('已归档', 'completed', 'archived')",
+    'COALESCE(o.ARCHIVE_TIME, o.UPDATE_TIME, o.CREATE_TIME) IS NOT NULL',
+    'oi.SN_ID IS NOT NULL',
+    'pol.STATUS = 1'
+  ];
   const replacements = {};
   const pn = String(ctx.query.pn || '').trim();
   const snCode = String(ctx.query.snCode || '').trim();
@@ -2993,7 +2999,7 @@ async function findEligibleSalesCashRebateItems(ctx, transaction = null) {
   }
   const rows = await sequelize.query(
     `SELECT oi.ITEM_ID AS orderItemId, o.ORDER_ID AS orderId, o.ORDER_NO AS orderNo,
-            o.STORE_ID AS storeId, o.ARCHIVE_TIME AS archiveTime,
+            o.STORE_ID AS storeId, COALESCE(o.ARCHIVE_TIME, o.UPDATE_TIME, o.CREATE_TIME) AS archiveTime,
             oi.SN_ID AS snId, COALESCE(oi.SN_CODE, sn.SN_CODE) AS snCode,
             oi.PRODUCT_ID AS productId, COALESCE(p.NAME, oi.PRODUCT_NAME) AS productName,
             COALESCE(NULLIF(oi.PN_CODE, ''), sn.PN_CODE) AS pnCode,
@@ -3008,10 +3014,10 @@ async function findEligibleSalesCashRebateItems(ctx, transaction = null) {
        INNER JOIN T_SALES_CASH_REBATE_POLICY pol
          ON pol.PN_CODE = COALESCE(NULLIF(oi.PN_CODE, ''), sn.PN_CODE)
         AND (pol.SUPPLIER_ID IS NULL OR pol.SUPPLIER_ID = '' OR pol.SUPPLIER_ID = COALESCE(NULLIF(oi.SUPPLIER_ID, ''), NULLIF(sn.SUPPLIER_ID, '')))
-        AND (pol.EFFECTIVE_START IS NULL OR DATE(o.ARCHIVE_TIME) >= pol.EFFECTIVE_START)
-        AND (pol.EFFECTIVE_END IS NULL OR DATE(o.ARCHIVE_TIME) <= pol.EFFECTIVE_END)
+        AND (pol.EFFECTIVE_START IS NULL OR DATE(COALESCE(o.ARCHIVE_TIME, o.UPDATE_TIME, o.CREATE_TIME)) >= pol.EFFECTIVE_START)
+        AND (pol.EFFECTIVE_END IS NULL OR DATE(COALESCE(o.ARCHIVE_TIME, o.UPDATE_TIME, o.CREATE_TIME)) <= pol.EFFECTIVE_END)
       WHERE ${where.join(' AND ')}
-      ORDER BY o.ARCHIVE_TIME DESC, oi.ITEM_ID DESC
+      ORDER BY COALESCE(o.ARCHIVE_TIME, o.UPDATE_TIME, o.CREATE_TIME) DESC, oi.ITEM_ID DESC
       LIMIT 10000`,
     { replacements, type: sequelize.QueryTypes.SELECT, transaction }
   );

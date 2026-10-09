@@ -3123,6 +3123,7 @@ async function approve(ctx) {
     });
     await lockedOrder.update({
       order_status: '已归档',
+      archive_time: lockedOrder.archive_time || approveTime,
       inventory_reserved: 0,
       approve_user: user.name || user.phone || String(user.staffId || ''),
       approve_time: approveTime,
@@ -3370,6 +3371,7 @@ async function update(ctx) {
         await archiveSalesOrderEffects(order, transaction);
         data.order_status = '已归档';
         data.status = '已归档';
+        data.archive_time = new Date();
         data.inventory_reserved = 0;
         archivedNow = true;
       }
