@@ -487,8 +487,35 @@ async function loadSettlementAccounts(){
   }catch(e){settlementAccounts.value=[]}
 }
 function suggestedAccountId(categoryCode){
-  const pattern=categoryCode==='EDU_SUBSIDY'?/返利池|返利/:categoryCode==='SALES_CASH_REBATE'?/微信/:null
-  return pattern?settlementAccounts.value.find(account=>pattern.test(String(account.account_name||'')))?.account_id||'':''
+  if(categoryCode==='EDU_SUBSIDY'){
+    return settlementAccounts.value.find(account=>String(account.account_name||'').includes('返利池'))?.account_id
+      ||settlementAccounts.value.find(account=>String(account.account_name||'').includes('返利'))?.account_id||''
+  }
+  if(categoryCode==='SALES_CASH_REBATE')return settlementAccounts.value.find(account=>account.account_type==='FUND'&&String(account.account_name||'').includes('微信'))?.account_id||''
+  return ''
+}
+async function initializeSuggestedResourceAccounts(){
+  if(!canManageCategories)return
+  let updated=false
+  for(const code of ['EDU_SUBSIDY','SALES_CASH_REBATE']){
+    const row=resourceCategories.value.find(item=>item.category_code===code&&Number(item.status)!==0)
+    if(!row||row.default_account_id)continue
+    const accountId=suggestedAccountId(code)
+    if(!accountId)continue
+    try{
+      await api.saveResourceCategory({
+        categoryId:row.category_id,name:row.name,shortName:row.short_name||row.name,
+        resourceKind:row.resource_kind||'OTHER',defaultAccountId:accountId,
+        supportsPurchaseSelect:Number(row.supports_purchase_select)===1,supportsSaleUse:Number(row.supports_sale_use)===1,
+        supportsCompanyClaim:Number(row.supports_company_claim)===1,triggerOnSale:Number(row.trigger_on_sale)===1,
+        generatesSettlement:Number(row.generates_settlement)===1,generatesStaffCareCredit:Number(row.generates_staff_care_credit)===1,
+        affectsPerformanceProfit:Number(row.affects_performance_profit)===1,performanceProfitRatio:Number(row.performance_profit_ratio??100),
+        status:Number(row.status),remark:row.remark||'',rule_config_json:row.rule_config_json||null
+      })
+      updated=true
+    }catch(e){ElMessage.warning(`权益类型“${row.name}”的推荐到账账户未能自动保存，请手动设置`)}
+  }
+  if(updated)await loadCategories()
 }
 function openCategoryEditor(row=null){
   if(!canManageCategories)return
@@ -788,7 +815,7 @@ async function openAttachment(fileId){
   }catch(e){ElMessage.error(e.message||'附件打开失败')}
 }
 
-onMounted(async () => { await Promise.all([loadCategories(),loadSettlementAccounts()]); loadSuppliers(); loadActive(tab.value) })
+onMounted(async () => { await Promise.all([loadCategories(),loadSettlementAccounts()]); await initializeSuggestedResourceAccounts(); loadSuppliers(); loadActive(tab.value) })
 </script>
 
 <style scoped>
