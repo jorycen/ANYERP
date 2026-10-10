@@ -31,7 +31,10 @@
             <el-button link type="primary" @click="editSn(row.sn_id)">详情/维护</el-button>
             <el-button v-if="row.resource_type === 'EDU_SUBSIDY' && row.current_status === 'AVAILABLE' && row.ProductSn?.status !== 'in_stock'" link type="success" @click="openEducationSupplement(row)">资源补录</el-button>
             <el-button v-if="row.resource_type === 'OTHER_POLICY' && row.current_status === 'AVAILABLE'" link type="success" @click="completeOtherPolicy(row)">已完成</el-button>
-            <el-button v-if="row.current_status === 'AVAILABLE' && row.resource_type !== 'OTHER_POLICY'" link type="warning" @click="openClaim(row)">申请套回</el-button>
+            <el-tooltip v-if="row.current_status === 'AVAILABLE' && row.resource_type !== 'OTHER_POLICY' && !canCompanyClaim(row)" content="该资源类型未开启公司套回，请在权益类型管理中启用" placement="top">
+              <span><el-button link type="info" disabled>不可套回</el-button></span>
+            </el-tooltip>
+            <el-button v-else-if="row.current_status === 'AVAILABLE' && row.resource_type !== 'OTHER_POLICY'" link type="warning" @click="openClaim(row)">申请套回</el-button>
             <el-button v-if="canReverse(row)" link type="danger" @click="reverseSaleUse(row)">冲销核销</el-button>
           </template></el-table-column>
         </el-table>
@@ -195,6 +198,7 @@
         <el-table-column label="类型" width="150"><template #default="{row}">{{ categoryKindText(row.resource_kind) }}</template></el-table-column>
         <el-table-column label="到账账户" min-width="180"><template #default="{row}">{{ row.DefaultAccount?.account_name || '未设置' }}</template></el-table-column>
         <el-table-column label="适用场景" min-width="220"><template #default="{row}">{{ categoryScenarioText(row) }}</template></el-table-column>
+        <el-table-column label="允许公司套回" width="120"><template #default="{row}"><el-tag :type="Number(row.supports_company_claim) === 1 ? 'success' : 'info'">{{ Number(row.supports_company_claim) === 1 ? '允许' : '不允许' }}</el-tag></template></el-table-column>
         <el-table-column label="状态" width="90"><template #default="{row}"><el-tag :type="Number(row.status) === 1 ? 'success' : 'info'">{{ Number(row.status) === 1 ? '启用' : '停用' }}</el-tag></template></el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{row}">
@@ -222,6 +226,7 @@
         </el-form-item>
         <el-form-item label="采购可选"><el-switch v-model="categoryForm.supportsPurchaseSelect" /></el-form-item>
         <el-form-item label="销售可用"><el-switch v-model="categoryForm.supportsSaleUse" /></el-form-item>
+        <el-form-item label="允许公司套回"><el-switch v-model="categoryForm.supportsCompanyClaim" /></el-form-item>
         <el-form-item label="销售触发"><el-switch v-model="categoryForm.triggerOnSale" /></el-form-item>
         <el-form-item label="生成待下账"><el-switch v-model="categoryForm.generatesSettlement" /></el-form-item>
         <el-form-item label="启用"><el-switch v-model="categoryForm.status" :active-value="1" :inactive-value="0" /></el-form-item>
@@ -580,8 +585,9 @@ async function editSn(snId){
   }catch(e){ElMessage.error(e.response?.data?.message||'加载SN权益失败')}
 }
 async function saveSn(){ try{ await api.saveSnResourceRights(currentSnId.value, snForm); ElMessage.success('已保存'); snDialog.value=false; loadRights() }catch(e){ElMessage.error(e.response?.data?.message||'保存失败')} }
-function openClaim(row){ Object.assign(claimForm,{snId:row.sn_id,snCode:row.sn_code,resourceType:row.resource_type,amount:Number(row.amount||0),attachmentUrl:'',remark:''}); claimDialog.value=true }
-async function submitClaim(){ try{ await api.submitResourceClaim(claimForm); ElMessage.success('已提交财务审批'); claimDialog.value=false; loadRights() }catch(e){ElMessage.error(e.response?.data?.message||'提交失败')} }
+function canCompanyClaim(row){ return Number(resourceCategories.value.find(item=>item.category_code===row?.resource_type)?.supports_company_claim)===1 }
+function openClaim(row){ if(!canCompanyClaim(row))return; Object.assign(claimForm,{snId:row.sn_id,snCode:row.sn_code,resourceType:row.resource_type,amount:Number(row.amount||0),attachmentUrl:'',remark:''}); claimDialog.value=true }
+async function submitClaim(){ if(!canCompanyClaim(claimForm))return ElMessage.warning('该资源类型未开启公司套回，请在权益类型管理中启用'); try{ await api.submitResourceClaim(claimForm); ElMessage.success('已提交财务审批'); claimDialog.value=false; loadRights() }catch(e){ElMessage.error(e.response?.data?.message||'提交失败')} }
 function canReverse(row){ return !props.financeOnly && row.resource_type === 'GOV_SUBSIDY' && row.current_status === 'USED' && hasRole(['finance']) }
 async function reverseSaleUse(row){
   try{

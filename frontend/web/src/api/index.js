@@ -452,6 +452,7 @@ export default {
   updateExpenseDraft: (id, data) => api.put(`/finance/expense-draft/${id}`, data),
   deleteExpenseDraft: (id) => api.delete(`/finance/expense-draft/${id}`),
   submitExpenseDraft: (id) => api.put(`/finance/expense-draft/${id}/submit`),
+  withdrawExpense: (id, data = {}) => api.post(`/finance/expense/${id}/withdraw`, data),
   getExpenseList: (params) => api.get('/finance/expense-list', { params }),
   exportExpenseList: (params) => exportExcel('/finance/expense-list/export', params, `费用报销管理_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getExpenseDetail: (id) => api.get(`/finance/expense/${id}`),

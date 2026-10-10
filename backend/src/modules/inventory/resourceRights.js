@@ -1099,7 +1099,8 @@ async function submitClaim(ctx) {
   requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
   const { snId, resourceType, amount, attachmentUrl, remark } = ctx.request.body || {};
   const category = await ResourceCategory.findOne({ where: { category_code: resourceType, status: 1 } });
-  if (!category || !category.supports_company_claim) ctx.throw(400, '请选择允许公司套回的资源类型');
+  if (!category) ctx.throw(400, '\u8d44\u6e90\u7c7b\u578b\u4e0d\u5b58\u5728\u6216\u5df2\u505c\u7528\uff0c\u8bf7\u5237\u65b0\u9875\u9762\u540e\u91cd\u8bd5');
+  if (Number(category.supports_company_claim) !== 1) ctx.throw(400, `\u8d44\u6e90\u7c7b\u578b\u201c${category.name}\u201d\u672a\u5f00\u542f\u516c\u53f8\u5957\u56de\uff0c\u8bf7\u5728\u5e93\u5b58\u8d44\u6e90\u6743\u76ca\u7684\u6743\u76ca\u7c7b\u578b\u7ba1\u7406\u4e2d\u542f\u7528\u540e\u91cd\u8bd5`);
   const result = await sequelize.transaction(async transaction => {
     const sn = await ProductSn.findByPk(snId, { transaction, lock: transaction.LOCK.UPDATE });
     if (!sn || sn.is_deleted) ctx.throw(404, 'SN不存在');

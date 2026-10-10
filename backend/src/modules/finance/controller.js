@@ -5,7 +5,7 @@ const {
   sequelize, DailyStatement, DailyStatementDetail, Expense, ExpenseType, PurchaseRequest, PurchaseRequestItem, Store, Region, Order, OrderPayment, Supplier,
   SettlementAccount, SettlementAccountTransaction, SubsidyAccountRoute, SubsidyReceipt, PaymentMethod, PaymentMethodStore, OrderItem,
   SubsidyReceiptAllocation, SubsidyReceivableAdjustment, ExpensePerformanceAllocation,
-  ApprovalFlowInstance, ApprovalTask
+  ApprovalFlowInstance, ApprovalTask, ApprovalActionLog
 } = require('../../models');
 const { Op, Sequelize, fn, col } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
@@ -816,7 +816,9 @@ async function createExpense(ctx) {
   if (expenseId) {
     existingRecord = await Expense.findOne({ where: { expense_id: expenseId, is_deleted: 0 } });
     if (!existingRecord) ctx.throw(404, '费用单不存在');
-    if (existingRecord.status !== 'draft') ctx.throw(400, '只有草稿状态的费用单可以编辑');
+    if (!['draft', 'withdrawn'].includes(existingRecord.status) || (existingRecord.status === 'withdrawn' && !isDraft)) {
+      ctx.throw(400, '只有草稿或已撤回的费用单可以编辑');
+    }
     if (!canManageExpenseDraft(user, existingRecord)) ctx.throw(403, '只有费用单创建人、店长或管理员可以编辑');
     if (String(existingRecord.store_id || '') !== String(targetStoreId || '')) ctx.throw(400, '费用单草稿不可更换门店');
   }
@@ -1058,6 +1060,13 @@ async function getExpenseList(ctx) {
     : await Expense.findAndCountAll({ ...expenseQuery, ...paginate({}, { page, pageSize }) });
   const { count, rows } = result;
   const expenseIds = rows.map(row => row.expense_id).filter(Boolean);
+  rows.forEach(row => {
+    const userId = user.staffId || user.id;
+    const isApplicant = Number(row.applicant_staff_id) === Number(userId)
+      || (!row.applicant_staff_id && [row.applicant_name, row.create_user].includes(user.name || user.phone));
+    row.setDataValue('can_withdraw', row.status === 'pending_approval' && row.source_type === 'expense' && isApplicant);
+    row.setDataValue('can_edit_withdrawn', row.status === 'withdrawn' && row.source_type === 'expense' && canManageExpenseDraft(user, row));
+  });
   if (expenseIds.length) {
     const allocationRows = await ExpensePerformanceAllocation.findAll({
       where: { expense_id: { [Op.in]: expenseIds }, status: { [Op.in]: ['pending_finance', 'pending_admin', 'approved'] } },
@@ -1287,6 +1296,43 @@ async function cancelExpense(ctx) {
   });
 
   ctx.body = { code: 0, expenseId: ctx.params.id, status: 'cancelled', message: '报销申请已撤销' };
+}
+
+async function withdrawExpense(ctx) {
+  const user = ctx.state.user;
+  const staffId = user.staffId || user.id;
+  const reason = String(ctx.request.body?.reason || '').trim() || '申请人撤回费用审批';
+  await sequelize.transaction(async transaction => {
+    const record = await Expense.findByPk(ctx.params.id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!record || record.is_deleted) ctx.throw(404, '费用单不存在');
+    if (record.source_type !== 'expense' || record.status !== 'pending_approval') {
+      ctx.throw(409, '只有审批中的费用申请可以撤回');
+    }
+    const isApplicant = Number(record.applicant_staff_id) === Number(staffId)
+      || (!record.applicant_staff_id && [record.applicant_name, record.create_user].includes(user.name || user.phone));
+    if (!isApplicant) ctx.throw(403, '只有申请人可以撤回费用申请');
+
+    const now = new Date();
+    const instances = await ApprovalFlowInstance.findAll({
+      where: { business_type: 'expense', business_id: String(record.expense_id), status: 'pending' },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    for (const instance of instances) {
+      await ApprovalTask.update(
+        { status: 'cancelled', acted_time: now },
+        { where: { instance_id: instance.instance_id, status: { [Op.in]: ['pending', 'waiting'] } }, transaction }
+      );
+      await instance.update({ status: 'cancelled', completed_time: now, update_time: now }, { transaction });
+      await ApprovalActionLog.create({
+        log_id: generateUUID(), instance_id: instance.instance_id, task_id: null,
+        action: 'withdrawn', actor_staff_id: staffId, actor_name: user.name || user.phone || '',
+        comment: reason, detail_json: JSON.stringify({ expenseId: record.expense_id })
+      }, { transaction });
+    }
+    await record.update({ status: 'withdrawn', update_time: now }, { transaction });
+  });
+  ctx.body = { code: 0, expenseId: ctx.params.id, status: 'withdrawn', message: '费用申请已撤回，可编辑后重新提交' };
 }
 
 /**
@@ -1863,6 +1909,7 @@ module.exports = {
   assertPurchaseExpenseReviewAllowed,
   reviewExpense,
   cancelExpense,
+  withdrawExpense,
   submitExpense,
   payExpense,
   getPayableList,

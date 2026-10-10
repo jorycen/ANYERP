@@ -394,11 +394,13 @@
             </template>
           </el-table-column>
             <el-table-column prop="remark" label="备注" min-width="120" />
-            <el-table-column label="操作" width="300">
+            <el-table-column label="操作" width="380">
               <template #default="{ row }">
                 <el-button v-if="row.status === 'draft'" link type="primary" @click="handleEditExpense(row)">编辑</el-button>
+                <el-button v-if="row.can_edit_withdrawn" link type="primary" @click="handleEditExpense(row)">编辑</el-button>
                 <el-button v-if="row.status === 'draft'" link type="success" @click="handleSubmitExpenseDraft(row)">提交</el-button>
                 <el-button v-if="row.status === 'draft'" link type="danger" @click="handleDeleteExpenseDraft(row)">删除</el-button>
+                <el-button v-if="row.can_withdraw" link type="warning" @click="handleWithdrawExpense(row)">撤回</el-button>
                 <el-button v-if="row.status === 'pending'" link type="primary" @click="handleSubmitExpense(row)">
                   报销
                 </el-button>
@@ -409,7 +411,7 @@
                 <span v-else-if="row.status === 'processing'" style="color: #e6a23c; font-size: 12px;">
                   支付中 · {{ row.submit_user || '-' }}
                 </span>
-                <span v-else style="color: #67c23a; font-size: 12px;">已完成</span>
+                <span v-else-if="['paid', 'approved', 'cancelled', 'rejected'].includes(row.status)" style="color: #67c23a; font-size: 12px;">已完成</span>
               </template>
             </el-table-column>
           </el-table>
@@ -1108,7 +1110,7 @@
     </el-dialog>
 
     <!-- 添加支出对话框-->
-    <el-dialog v-model="expenseDialogVisible" :title="expenseAttributionOnly ? '调整费用归属' : (expenseForm.expenseId ? '编辑费用草稿' : '添加费用')" width="500px" @close="handleDialogClose">
+    <el-dialog v-model="expenseDialogVisible" :title="expenseAttributionOnly ? '调整费用归属' : (expenseForm.status === 'withdrawn' ? '编辑并重新提交费用' : (expenseForm.expenseId ? '编辑费用草稿' : '添加费用'))" width="500px" @close="handleDialogClose">
       <el-form :model="expenseForm" label-width="100px">
         <el-form-item label="报销类型" required>
           <el-select v-model="expenseForm.expenseTypeId" placeholder="请选择类型" style="width: 100%">
@@ -1211,7 +1213,7 @@
       <template #footer>
         <el-button @click="expenseDialogVisible = false">取消</el-button>
         <el-button v-if="!expenseAttributionOnly" type="info" @click="saveExpenseDraft">保存草稿</el-button>
-        <el-button type="primary" @click="handleExpenseSubmit" :loading="submitLoading">确定</el-button>
+        <el-button type="primary" @click="handleExpenseSubmit" :loading="submitLoading">{{ expenseForm.status === 'withdrawn' ? '修改并重新提交' : '确定' }}</el-button>
       </template>
     </el-dialog>
 
@@ -2145,6 +2147,7 @@ const handleExportReimbursementSettlement = () => runListExport('reimbursement-s
 
 const expenseForm = reactive({
   expenseId: '',
+  status: '',
   expenseTypeId: '',
   storeId: '',
   amount: 0,
@@ -2704,7 +2707,7 @@ const formatDateTime = (time) => {
 const loadExpenseData = async () => {
   try {
     expenseQuery.accountingMonth = expenseAccountingMonth.value
-    const params = { ...expenseQuery, status: 'draft,pending_payment,pending_approval,pending,approved,paid,processing' }
+    const params = { ...expenseQuery, status: 'draft,withdrawn,pending_payment,pending_approval,pending,approved,paid,processing' }
     const res = await api.getExpenseList(params)
     if (res.code === 0) {
       expenseData.value = res.data?.list || []
@@ -2762,6 +2765,17 @@ const handleSubmitExpense = async (row) => {
   }
 }
 
+const handleWithdrawExpense = async (row) => {
+  try {
+    await ElMessageBox.confirm(`撤回费用单 ${row.expense_no} 后，审批将终止；修改后可重新提交。确认撤回？`, '撤回费用申请', { type: 'warning', confirmButtonText: '确认撤回', cancelButtonText: '取消' })
+    const res = await api.withdrawExpense(row.expense_id)
+    ElMessage.success(res.message || '费用申请已撤回')
+    await loadExpenseData()
+  } catch (err) {
+    if (err !== 'cancel' && err !== 'close') ElMessage.error(err.response?.data?.message || '撤回失败')
+  }
+}
+
 const formatQuantity = (value) => {
   const number = Number(value)
   if (!Number.isFinite(number)) return '-'
@@ -2777,6 +2791,7 @@ const parseQuantityInput = (value) => {
 const handleEditExpense = (row) => {
   expenseAttributionOnly.value = false
   expenseForm.expenseId = row.expense_id || ''
+  expenseForm.status = row.status || ''
   expenseForm.expenseTypeId = row.expense_type_id || ''
   expenseForm.storeId = row.store_id || ''
   expenseForm.amount = Number(row.amount || 0)
@@ -4194,6 +4209,7 @@ const restoreExpenseDraft = () => {
 const resetForm = () => {
   expenseAttributionOnly.value = false
   expenseForm.expenseId = ''
+  expenseForm.status = ''
   expenseForm.expenseTypeId = ''
   expenseForm.storeId = ''
   expenseForm.amount = 0
@@ -4224,7 +4240,8 @@ const getExpenseStatusType = (status) => {
     processing: 'warning',
     approved: 'success',
     paid: 'success',
-    rejected: 'danger'
+    rejected: 'danger',
+    withdrawn: 'info'
   }
   return types[status] || 'info'
 }
@@ -4238,7 +4255,8 @@ const getExpenseStatusText = (status) => {
     processing: '待付款',
     approved: '待结算',
     paid: '已付款',
-    rejected: '已拒绝'
+    rejected: '已拒绝',
+    withdrawn: '已撤回'
   }
   return texts[status] || status || '-'
 }

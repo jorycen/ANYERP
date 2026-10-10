@@ -13,7 +13,7 @@ const {
 const {
   getDailyDetails, getNationalSubsidyReceivables, exportDailyDetails, exportNationalSubsidyReceivables, getDailyStatement, getDailyStatementDetail,
   batchSettle, settleNationalSubsidyReceivables, createManualNationalSubsidyReceivable, getSettlementSummary, createExpense, saveExpenseDraft, updateExpenseDraft, deleteExpenseDraft, getExpenseList, exportExpenseList, getExpenseDetail, updateExpenseAttribution,
-  submitExpense, payExpense, reviewExpense, cancelExpense, getSettlementAccountsWithBalance, getAccountTransactions, addAccountTransaction,
+  submitExpense, payExpense, reviewExpense, cancelExpense, withdrawExpense, getSettlementAccountsWithBalance, getAccountTransactions, addAccountTransaction,
   getSubsidyAccountRoutes, saveSubsidyAccountRoute, createSubsidyReceipt, getSubsidyReceipts,
   allocateSubsidyReceipt, refundSubsidyReceipt, reverseSubsidyReceipt, submitSubsidyAdjustment,
   getSubsidyAdjustments, reviewSubsidyAdjustment, reverseSubsidyAdjustment
@@ -89,6 +89,7 @@ router.get('/expense/:id', getExpenseDetail);
 router.put('/expense/:id/attribution', updateExpenseAttribution);
 router.post('/expense/:id/review', reviewExpense);
 router.post('/expense/:id/cancel', cancelExpense);
+router.post('/expense/:id/withdraw', withdrawExpense);
 router.get('/expense/:id/performance-allocations', requireRole('finance'), listExpensePerformanceAllocations);
 router.get('/expense/:id/performance-staff-options', requireRole('finance'), listExpensePerformanceStaffOptions);
 router.post('/expense/:id/performance-allocations', requireRole('finance'), createExpensePerformanceAllocations);
