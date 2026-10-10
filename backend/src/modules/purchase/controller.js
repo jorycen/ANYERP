@@ -139,6 +139,20 @@ function normalizeGrossProfitUpliftAmount(value, fallback = 0) {
   return Math.round(amount * 100) / 100;
 }
 
+function assertCanAdjustPurchase(ctx, request) {
+  const user = ctx.state.user || {};
+  const roles = getUserRoles(user);
+  if (roles.some(role => ['purchaser', 'admin', 'boss'].includes(role))) return;
+  if (roles.some(role => ['manager', 'store_manager'].includes(role))) return;
+
+  const staffId = user.staffId || user.id;
+  const staffMatches = staffId && [request.applicant_staff_id, request.operator_staff_id]
+    .some(id => id && Number(id) === Number(staffId));
+  const legacyIdentity = [user.name, user.phone, String(staffId || '')].filter(Boolean);
+  const identityMatches = [request.apply_user, request.submit_user, request.create_user]
+    .some(identity => identity && legacyIdentity.includes(String(identity)));
+  if (!staffMatches && !identityMatches) ctx.throw(403, '无权处理他人发起的采购退单');
+}
 function assertStoreVisible(ctx, storeId) {
   const allowed = ctx.state.user.accessibleStoreIds || [];
   if (!allowed.includes('*') && !allowed.map(String).includes(String(storeId || ''))) {
@@ -2216,6 +2230,7 @@ async function getAdjustmentPreview(ctx) {
   });
 
   if (!request) ctx.throw(404, '采购申请不存在');
+  assertCanAdjustPurchase(ctx, request);
   assertStoreVisible(ctx, request.store_id);
   if (request.status !== 'approved') ctx.throw(400, '只有已通过的采购订单才能办理退单/数量调整');
 
@@ -2521,6 +2536,7 @@ async function createPurchaseAdjustment(ctx) {
       lock: transaction.LOCK.UPDATE
     });
     if (!request) ctx.throw(404, '采购申请不存在');
+    assertCanAdjustPurchase(ctx, request);
     assertStoreVisible(ctx, request.store_id);
     if (request.status !== 'approved') ctx.throw(400, '只有已通过的采购订单才能办理退单/数量调整');
     if ((request.items || []).some(item => item.source_sn_id)) {
