@@ -6,7 +6,7 @@ const jwt = require('jsonwebtoken');
 const config = require('../config');
 const { Staff, Role } = require('../models');
 const { resolveAccessibleStoreIds, resolvePrimaryStoreId, resolveConfiguredRegions, isStoreScopedAccount, isMallReportViewer } = require('../utils/storePermissions');
-const { resolveStaffDistributorIds } = require('../utils/distributorScope');
+const { resolveStaffDistributorIds, resolveOrderStoreIds } = require('../utils/distributorScope');
 const { isDealerTraceAccount } = require('../utils/snTracePermission');
 const { consumeDownloadTicket } = require('../utils/downloadTicket');
 
@@ -144,6 +144,22 @@ async function storeAccessMiddleware(ctx, next) {
   }
 
   if (ctx.method === 'GET' && ctx.path === '/api/v1/store/order-options') return next();
+
+  // 开单商品查询按订单可选门店校验，其他业务仍沿用个人门店权限。
+  if (ctx.method === 'GET' && new Set([
+    '/api/v1/product/search',
+    '/api/v1/product/list',
+    '/api/v1/product/pn-list'
+  ]).has(ctx.path)) {
+    const requestedStoreId = String(ctx.query?.storeId || ctx.query?.store_id || '').trim();
+    if (requestedStoreId) {
+      const orderStoreIds = await resolveOrderStoreIds(user);
+      if (!orderStoreIds.includes('*') && !orderStoreIds.map(String).includes(requestedStoreId)) {
+        ctx.throw(403, '无权访问该订单门店');
+      }
+    }
+    return next();
+  }
 
   // 销售订单创建/草稿提交允许在同一经销商内切换门店，具体经销商归属由
   // enforceOrderStoreOwnership 和销售控制器再次校验；不能在这里按个人所属门店拦截。
