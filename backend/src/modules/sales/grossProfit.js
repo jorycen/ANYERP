@@ -129,6 +129,9 @@ function resolveUnitProductPricing(
   const specialPrice = toNumber(orderItem.specialPrice ?? orderItem.special_price);
   const effectiveConfiguredPricing = specialPrice > 0 ? specialPrice : configuredPricing;
   const isServiceProvider = !supplier || Number(supplier.is_service_provider) !== 0;
+  const grossProfitUpliftAmount = isServiceProvider
+    ? 0
+    : Math.max(0, roundMoney(supplier.gross_profit_uplift_amount));
   const sourcePurchasePrice = toNumber(orderItem.purchasePrice) ||
     toNumber(orderItem.original_pickup_price) ||
     toNumber(orderItem.original_inventory_cost);
@@ -138,6 +141,7 @@ function resolveUnitProductPricing(
         unitPricing: roundMoney(unitPricing),
         source,
         purchasePrice: roundMoney(purchasePrice),
+        grossProfitUpliftAmount,
         isServiceProvider
       }
     : { unitPricing: roundMoney(unitPricing), source };
@@ -155,7 +159,7 @@ function resolveUnitProductPricing(
   }
 
   if (!isServiceProvider && purchasePrice > 0) {
-    return result(purchasePrice, 'purchase_price');
+    return result(purchasePrice + grossProfitUpliftAmount, 'purchase_price_with_uplift');
   }
 
   if (isServiceProvider && toNumber(productPrice.cost_price) > 0) {
@@ -447,6 +451,7 @@ async function resolveSupplierContext(items, order, transaction) {
   snRows.forEach(row => {
     if (row.sn_id) snMap.set(`id:${row.sn_id}`, row);
     if (row.sn_code) snMap.set(`code:${row.sn_code}`, row);
+    if (row.supplier_id) itemSupplierIds.add(String(row.supplier_id));
   });
 
   const latestInboundRows = productIds.length
