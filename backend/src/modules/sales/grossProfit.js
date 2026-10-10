@@ -340,7 +340,7 @@ function snapshotToResponse(snapshot, order = null) {
     snapshotStatus: row.snapshot_status,
     calculatedBy: row.calculated_by || '',
     calculatedAt: row.calculated_at,
-    formula: '用户应收 - 服务商商品定价（特价SN优先）/非服务商本次采购价 - 支付手续费 - 增值税 + 补录净额 - 运费；非服务商的电脑、手机或平板且基础毛利超过500元时另扣200元外调费'
+    formula: '用户应收 - 服务商商品定价（特价SN优先）/非服务商本次采购价加每件毛利上浮 - 支付手续费 - 增值税 + 补录净额 - 运费；非服务商的电脑、手机或平板且基础毛利超过500元时另扣200元外调费'
   };
 }
 
