@@ -1,6 +1,6 @@
 const { Op } = require('sequelize');
 const {
-  sequelize, Staff, Order, OrderItem, OrderGrossProfit,
+  sequelize, Staff, Order, OrderItem, OrderGrossProfit, Product, ProductCategory,
   StaffCareCreditTransaction, ResourceRightChangeOrder, PerformanceProfitAdjustment
 } = require('../../models');
 const { generateUUID } = require('../../utils');
@@ -14,7 +14,9 @@ function money(value) {
 }
 
 function isCareProduct(detail = {}) {
-  return /care|延保/i.test(`${detail.category || ''} ${detail.productName || detail.product_name || ''}`);
+  const path = String(detail.categoryPath || detail.category_path_legacy || '').trim();
+  const parts = path.split(/[\\/]/).map(part => part.trim().toLowerCase());
+  return parts[0] === '售后' && parts[1] === 'care服务';
 }
 
 function parseDetails(value) {
@@ -25,8 +27,39 @@ function parseDetails(value) {
   } catch (_) { return []; }
 }
 
-function careCostDetails(snapshot) {
-  return parseDetails(snapshot?.product_pricing_details).filter(isCareProduct);
+async function careCostDetails(snapshot, transaction = null) {
+  const details = parseDetails(snapshot?.product_pricing_details);
+  const productIds = [...new Set(details.map(detail => detail.productId).filter(Boolean))];
+  if (!productIds.length) return details.filter(isCareProduct);
+  const [products, categories] = await Promise.all([
+    Product.findAll({ where: { product_id: { [Op.in]: productIds } },
+      attributes: ['product_id', 'category_id', 'category_path_legacy'], transaction, raw: true }),
+    ProductCategory.findAll({ attributes: ['category_id', 'parent_id', 'name'], transaction, raw: true })
+  ]);
+  const productsById = new Map(products.map(product => [String(product.product_id), product]));
+  const categoryById = new Map(categories.map(category => [String(category.category_id), category]));
+  const careCategoryIds = new Set(categories.filter(category => {
+    const parent = categoryById.get(String(category.parent_id || ''));
+    return String(category.name || '').trim().toLowerCase() === 'care服务'
+      && String(parent?.name || '').trim() === '售后';
+  }).map(category => String(category.category_id)));
+  function belongsToCareCategory(categoryId) {
+    const visited = new Set();
+    let currentId = String(categoryId || '');
+    while (currentId && !visited.has(currentId)) {
+      if (careCategoryIds.has(currentId)) return true;
+      visited.add(currentId);
+      currentId = String(categoryById.get(currentId)?.parent_id || '');
+    }
+    return false;
+  }
+  return details.filter(detail => {
+    const product = productsById.get(String(detail.productId || ''));
+    if (product?.category_id && categoryById.has(String(product.category_id))) {
+      return belongsToCareCategory(product.category_id);
+    }
+    return isCareProduct(product || detail);
+  });
 }
 
 async function lockStaff(staffId, transaction) {
@@ -93,7 +126,7 @@ async function creditSalesReport({ task, order, item, transaction }) {
 
 async function orderCareQuote(order, transaction = null) {
   const snapshot = await OrderGrossProfit.findOne({ where: { order_id: order.order_id }, transaction });
-  const details = careCostDetails(snapshot);
+  const details = await careCostDetails(snapshot, transaction);
   return {
     careCost: money(details.reduce((sum, row) => sum + Number(row.pricingAmount || 0), 0)),
     careItems: details.map(row => ({ itemId: row.itemId, productName: row.productName,
@@ -245,7 +278,7 @@ async function reverseForSalesReturn({ request, order, requestItems, orderItemMa
   });
   if (!used) return;
   const snapshot = await OrderGrossProfit.findOne({ where: { order_id: order.order_id }, transaction });
-  const details = careCostDetails(snapshot);
+  const details = await careCostDetails(snapshot, transaction);
   const totalCost = money(details.reduce((sum, detail) => sum + Number(detail.pricingAmount || 0), 0));
   const returnedCost = money(requestItems.reduce((sum, requestItem) => {
     const detail = details.find(row => String(row.itemId) === String(requestItem.order_item_id));
