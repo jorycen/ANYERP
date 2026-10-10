@@ -260,6 +260,12 @@ const routes = [
         meta: { tab: 'employee' }
       },
       {
+        path: 'reports/care-credit',
+        name: 'ReportsCareCredit',
+        component: () => import('../views/Reports.vue'),
+        meta: { tab: 'care-credit' }
+      },
+      {
         path: 'finance/purchase-invoice',
         name: 'PurchaseInvoiceManagement',
         component: () => import('../views/PurchaseInvoiceManagement.vue'),

@@ -10,6 +10,10 @@
           <BusinessDashboard />
         </el-tab-pane>
 
+        <el-tab-pane label="CARE卡可用金" name="care-credit" lazy>
+          <CareCreditReport />
+        </el-tab-pane>
+
         <el-tab-pane label="销售报表" name="sales">
           <div class="filter-bar">
             <el-date-picker v-model="salesParams.date" type="date" value-format="YYYY-MM-DD" placeholder="选择日期" clearable />
@@ -519,6 +523,7 @@ import * as echarts from 'echarts'
 import api from '../api'
 import { getRoleCode } from '../utils/user'
 import BusinessDashboard from '../components/BusinessDashboard.vue'
+import CareCreditReport from '../components/CareCreditReport.vue'
 
 const route = useRoute()
 const activeTab = ref(String(route.meta.tab || 'dashboard'))

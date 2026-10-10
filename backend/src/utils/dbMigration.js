@@ -4704,6 +4704,7 @@ async function seedPermissionData() {
       ['reports_sales', '销售报表', 'reports', '/reports/sales', 2],
       ['reports_inventory', '库存报表', 'reports', '/reports/inventory', 3],
       ['reports_employee', '员工业绩统计', 'reports', '/reports/employee', 4],
+      ['reports_care_credit', 'CARE卡可用金', 'reports', '/reports/care-credit', 7],
       ['reports_achievement', '业务达成', 'reports', '/reports/achievement', 5],
       ['reports_finance', '财务报表', 'reports', '/reports/finance', 6],
       ['approval_tasks', '待我审批', 'approval', '/approval/tasks', 1],
@@ -4739,12 +4740,12 @@ async function seedPermissionData() {
         'finance_daily', 'finance_product_settlement', 'finance_profit_statement', 'finance_subsidy_receivable', 'finance_rebate_settlement', 'finance_expense',
         'finance_payable', 'finance_purchase_invoice', 'finance_payment', 'finance_rebate',
         'finance_resource_rights', 'finance_account', 'finance_settlement', 'finance_freight',
-        'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_achievement', 'reports_finance',
+        'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_care_credit', 'reports_achievement', 'reports_finance',
         'approval_tasks', 'approval_instances', 'approval_handled', 'product_approval'
       ],
       purchaser: [
         'purchase_request', 'purchase_supplier', 'reports_dashboard', 'reports_sales', 'reports_inventory',
-        'reports_employee', 'reports_achievement', 'approval_tasks', 'approval_instances', 'approval_handled', 'product_approval'
+        'reports_employee', 'reports_care_credit', 'reports_achievement', 'approval_tasks', 'approval_instances', 'approval_handled', 'product_approval'
       ],
       manager: [
         'sales_order', 'sales_subsidy_photos', 'sales_monthly_tasks',
@@ -4752,7 +4753,7 @@ async function seedPermissionData() {
         'inventory_sn_trace', 'inventory_resource_rights', 'inventory_transfer', 'inventory_conversion',
         'purchase_request',
         'product_product', 'product_category', 'product_price', 'product_approval',
-        'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_achievement',
+        'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_care_credit', 'reports_achievement',
         'approval_tasks', 'approval_instances', 'approval_handled'
       ],
       store_manager: [
@@ -4761,16 +4762,16 @@ async function seedPermissionData() {
         'inventory_sn_trace', 'inventory_transfer', 'inventory_conversion',
         'purchase_request',
         'product_product', 'product_category', 'product_price', 'product_approval',
-        'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_achievement',
+        'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_care_credit', 'reports_achievement',
         'approval_tasks', 'approval_instances', 'approval_handled'
       ],
       mall_report_viewer: ['sales_mall_query'],
       clerk: [
         'sales_order', 'inventory_summary', 'inventory_sn_inventory', 'inventory_inbound',
         'inventory_sn_trace', 'inventory_transfer', 'purchase_request', 'reports_dashboard', 'reports_sales',
-        'reports_inventory', 'reports_employee', 'reports_achievement', 'approval_tasks', 'approval_instances', 'approval_handled'
+        'reports_inventory', 'reports_employee', 'reports_care_credit', 'reports_achievement', 'approval_tasks', 'approval_instances', 'approval_handled'
       ],
-      staff: ['purchase_request', 'approval_tasks', 'approval_instances', 'approval_handled']
+      staff: ['purchase_request', 'reports_care_credit', 'approval_tasks', 'approval_instances', 'approval_handled']
     };
     const ensureChildMenus = async () => {
       for (const [code, name, parentCode, path, sortOrder] of childMenus) {
