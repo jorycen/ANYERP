@@ -67,6 +67,20 @@ test('开票金额低于产品定价时增值税计税差额核为零', () => {
   assert.equal(result.grossProfitAmount, -100);
 });
 
+test('不开票订单即使保存了开票金额也不计增值税', () => {
+  const result = calculateGrossProfitValues({
+    receivableAmount: 1200,
+    paymentDetails: [{ method: '现金', amount: 1200, taxRate: 0 }],
+    productPricingDetails: [{ quantity: 1, unitPricing: 900, pricingAmount: 900 }],
+    invoiceAmount: 1200,
+    invoiceStatus: '不开票'
+  });
+
+  assert.equal(result.invoiceAmount, 1200);
+  assert.equal(result.vatTaxableAmount, 0);
+  assert.equal(result.vatAmount, 0);
+});
+
 test('国补收款后缀用于税率匹配且政策补贴应收不属于用户应收分配', () => {
   assert.equal(normalizeMethodName('国补POS（电脑）-客户实收'), '国补POS（电脑）');
   assert.equal(isPolicySubsidyReceivable('国补POS（电脑）-政策补贴应收'), true);

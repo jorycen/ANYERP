@@ -177,6 +177,7 @@ function calculateGrossProfitValues({
   supplementDetails = [],
   freightCostDetails = [],
   invoiceAmount = 0,
+  invoiceStatus = '',
   externalAdjustmentEligible = false
 } = {}) {
   const basePayments = paymentDetails
@@ -233,7 +234,9 @@ function calculateGrossProfitValues({
   );
   const paymentFeeAmount = roundMoney(normalizedPayments.reduce((sum, item) => sum + item.fee, 0));
   const normalizedInvoiceAmount = roundMoney(invoiceAmount);
-  const vatTaxableAmount = roundMoney(Math.max(0, normalizedInvoiceAmount - productPricingAmount));
+  const vatTaxableAmount = String(invoiceStatus || '').trim() === '不开票'
+    ? 0
+    : roundMoney(Math.max(0, normalizedInvoiceAmount - productPricingAmount));
   const vatAmount = roundMoney(vatTaxableAmount * VAT_RATE);
   const supplementAmount = roundMoney(normalizedSupplements.reduce((sum, item) => sum + item.signedAmount, 0));
   const freightCostAmount = roundMoney(normalizedFreightCosts.reduce((sum, item) => sum + item.amount, 0));
@@ -830,6 +833,7 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     supplementDetails,
     freightCostDetails,
     invoiceAmount: order.invoice_amount,
+    invoiceStatus: order.invoice_status,
     externalAdjustmentEligible: productPricingDetails.some(item => item.externalAdjustmentEligible)
   });
   const archived = final === null
