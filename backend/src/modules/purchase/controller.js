@@ -16,6 +16,7 @@ const { isStoreScopedAccount } = require('../../utils/storePermissions');
 const { canAccessDistributor } = require('../../utils/distributorScope');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
 const { createProductRecord } = require('../product/controller');
+const { isPurchaseUpliftExemptCategory } = require('../../utils/purchaseGrossProfitPricing');
 
 const VALID_PURCHASE_INVOICE_TYPES = new Set(['专票13%', '收据']);
 function parsePurchaseGrossProfitMode(ctx, value) {
@@ -2072,6 +2073,17 @@ async function approveRequest(ctx) {
       await item.update({ product_id: created.productId, product_name: created.productName, pn_code: item.pn_code || null }, { transaction });
     }
     await assertActiveProducts(Product, request.items.map(item => item.product_id).filter(Boolean), { transaction });
+    const productIds = request.items.map(item => item.product_id).filter(Boolean);
+    const products = productIds.length ? await Product.findAll({
+      where: { product_id: { [Op.in]: productIds } }, transaction
+    }) : [];
+    const productMap = new Map(products.map(product => [String(product.product_id), product]));
+    const purchaseUpliftFor = item => {
+      if (request.gross_profit_use_standard_price === null) return null;
+      if (Number(request.gross_profit_use_standard_price) === 1) return 0;
+      const category = productMap.get(String(item.product_id || ''))?.category;
+      return Number(item.is_used_product) === 1 || isPurchaseUpliftExemptCategory(category) ? 0 : 200;
+    };
     await ensurePayableForApprovedRequest(request, user, transaction);
     await validatePurchaseAllocations(request.items, request.store_id, transaction);
     for (const item of request.items) {
@@ -2106,7 +2118,7 @@ async function approveRequest(ctx) {
         supplier_id: request.supplier_id,
         supplier_name: conversionSupplier?.name || conversion.sn.supplier_name || '',
         gross_profit_use_standard_price: request.gross_profit_use_standard_price,
-        gross_profit_uplift_amount: request.gross_profit_use_standard_price === null ? null : (Number(request.gross_profit_use_standard_price) === 1 ? 0 : 200),
+        gross_profit_uplift_amount: purchaseUpliftFor(conversion.item),
         source_type: 'PURCHASED_FROM_SPECIAL_WAREHOUSE',
         update_time: new Date()
       }, { transaction });
@@ -2135,15 +2147,6 @@ async function approveRequest(ctx) {
         transaction
       });
     }
-
-    // 获取所有商品信息备用
-    const productIds = request.items.map(item => item.product_id);
-    const products = await Product.findAll({
-      where: { product_id: { [Op.in]: productIds } },
-      transaction
-    });
-    const productMap = new Map();
-    products.forEach(p => productMap.set(p.product_id, p));
 
     // 特殊仓SN采购已在同一事务内完成库位转换，不再生成待入库单。
     if (snPurchaseConversions.length) {
@@ -2226,7 +2229,7 @@ async function approveRequest(ctx) {
           sn_code: Number(item.direct_inbound) === 1 ? item.direct_inbound_sn_code : null,
           unit_price: item.unit_price,
           gross_profit_use_standard_price: request.gross_profit_use_standard_price,
-          gross_profit_uplift_amount: request.gross_profit_use_standard_price === null ? null : (Number(request.gross_profit_use_standard_price) === 1 ? 0 : 200),
+          gross_profit_uplift_amount: purchaseUpliftFor(item),
           quantity: item.allocatedQuantity || item.quantity,
           product_type: item.product_type || '',
           location_id: item.locationId || null,

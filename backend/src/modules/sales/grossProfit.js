@@ -21,6 +21,7 @@ const {
 } = require('../../models');
 const { Op, QueryTypes } = require('sequelize');
 const { generateUUID } = require('../../utils');
+const { isPurchaseUpliftExemptCategory } = require('../../utils/purchaseGrossProfitPricing');
 
 const FORMULA_VERSION = 'ORDER_GP_V9_FREIGHT_SEPARATE';
 const VAT_RATE = 0.13;
@@ -123,7 +124,7 @@ function resolveUnitProductPricing(
   productPrice = {},
   orderItem = {},
   supplier = null,
-  { useStandardPrice = false, purchaseUseStandardPrice = null, purchaseUpliftAmount = null } = {}
+  { useStandardPrice = false, purchaseUseStandardPrice = null, purchaseUpliftAmount = null, noPurchaseUplift = false } = {}
 ) {
   const configuredPricing = toNumber(productPrice.standard_price);
   const specialPrice = toNumber(orderItem.specialPrice ?? orderItem.special_price);
@@ -132,7 +133,7 @@ function resolveUnitProductPricing(
   const isServiceProvider = hasPurchaseMode
     ? Number(purchaseUseStandardPrice) === 1
     : !supplier || Number(supplier.is_service_provider) !== 0;
-  const grossProfitUpliftAmount = isServiceProvider
+  const grossProfitUpliftAmount = isServiceProvider || noPurchaseUplift
     ? 0
     : Math.max(0, roundMoney(hasPurchaseMode ? (purchaseUpliftAmount ?? 200) : supplier.gross_profit_uplift_amount));
   const sourcePurchasePrice = toNumber(orderItem.purchasePrice) ||
@@ -162,7 +163,8 @@ function resolveUnitProductPricing(
   }
 
   if (!isServiceProvider && purchasePrice > 0) {
-    return result(purchasePrice + grossProfitUpliftAmount, 'purchase_price_with_uplift');
+    return result(purchasePrice + grossProfitUpliftAmount,
+      grossProfitUpliftAmount > 0 ? 'purchase_price_with_uplift' : 'purchase_price');
   }
 
   if (isServiceProvider && toNumber(productPrice.cost_price) > 0) {
@@ -343,7 +345,7 @@ function snapshotToResponse(snapshot, order = null) {
     snapshotStatus: row.snapshot_status,
     calculatedBy: row.calculated_by || '',
     calculatedAt: row.calculated_at,
-    formula: '用户应收 - 服务商商品定价（特价SN优先）/非服务商本次采购价加每件毛利上浮 - 支付手续费 - 增值税 + 补录净额 - 运费；非服务商的电脑、手机或平板且基础毛利超过500元时另扣200元外调费'
+    formula: '用户应收 - 公司定价商品定价（特价SN优先）/采购价商品的采购价及适用的每件上浮（售后、二手不上浮） - 支付手续费 - 增值税 + 补录净额 - 运费；符合条件的电脑、手机或平板且基础毛利超过500元时另扣200元外调费'
   };
 }
 
@@ -580,6 +582,7 @@ async function buildProductPricingDetails(orderId, transaction) {
       supplier,
       {
         useStandardPrice: /选件/.test(`${product.category || ''} ${product.accessory_type || ''}`),
+        noPurchaseUplift: isPurchaseUpliftExemptCategory(product.category),
         purchaseUseStandardPrice: snRow
           ? snRow.gross_profit_use_standard_price
           : inboundSupplier?.gross_profit_use_standard_price,
