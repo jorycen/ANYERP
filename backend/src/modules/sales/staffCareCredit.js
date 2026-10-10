@@ -4,6 +4,7 @@ const {
   StaffCareCreditTransaction, ResourceRightChangeOrder, PerformanceProfitAdjustment
 } = require('../../models');
 const { generateUUID } = require('../../utils');
+const { distributorWhere, canAccessDistributor } = require('../../utils/distributorScope');
 
 const SALES_REPORT_CREDIT = 160;
 const SALE_REPORT_SOURCE = 'SALE_REPORT_APPROVAL';
@@ -70,11 +71,7 @@ async function lockStaff(staffId, transaction) {
   return staff;
 }
 
-async function walletTotals(staffId, transaction = null) {
-  const rows = await StaffCareCreditTransaction.findAll({
-    where: { staff_id: staffId, status: { [Op.in]: ['active', 'reserved'] } },
-    attributes: ['type', 'amount', 'status'], transaction, raw: true
-  });
+function walletTotalsFromRows(rows) {
   const earned = money(rows.filter(row => row.type === 'income' && row.status === 'active')
     .reduce((sum, row) => sum + Number(row.amount || 0), 0));
   const spent = money(rows.filter(row => row.type === 'expense' && row.status === 'active')
@@ -86,6 +83,14 @@ async function walletTotals(staffId, transaction = null) {
     available: money(Math.max(0, earned - spent - reserved)),
     recoveryDue: money(Math.max(0, spent + reserved - earned))
   };
+}
+
+async function walletTotals(staffId, transaction = null) {
+  const rows = await StaffCareCreditTransaction.findAll({
+    where: { staff_id: staffId, status: { [Op.in]: ['active', 'reserved'] } },
+    attributes: ['type', 'amount', 'status'], transaction, raw: true
+  });
+  return walletTotalsFromRows(rows);
 }
 
 async function createCreditEntry({ staffId, staffName, type, amount, sourceType, sourceId,
@@ -144,12 +149,78 @@ function assertOwnOrder(ctx, order) {
 async function getMyCareCredit(ctx) {
   const staffId = Number(ctx.state.user?.staffId || 0);
   if (!staffId) ctx.throw(401, '请先登录员工账号');
+  ctx.body = await readCareWallet(staffId, ctx.query?.page);
+}
+
+async function readCareWallet(staffId, requestedPage = 1) {
+  const page = Math.max(1, Math.min(10000, Number.parseInt(requestedPage, 10) || 1));
+  const pageSize = 50;
   const [totals, rows] = await Promise.all([
     walletTotals(staffId),
     StaffCareCreditTransaction.findAll({ where: { staff_id: staffId },
-      order: [['create_time', 'DESC'], ['transaction_id', 'DESC']], limit: 50 })
+      order: [['create_time', 'DESC'], ['transaction_id', 'DESC']],
+      limit: pageSize + 1, offset: (page - 1) * pageSize })
   ]);
-  ctx.body = { ...totals, transactions: rows };
+  return { ...totals, page, hasMore: rows.length > pageSize,
+    transactions: rows.slice(0, pageSize) };
+}
+
+async function findAccessibleStaff(ctx, staffId) {
+  const staff = await Staff.findByPk(staffId);
+  if (!staff || Number(staff.is_deleted || 0) === 1) ctx.throw(404, '员工不存在');
+  if (!canAccessDistributor(ctx.state.user || {}, staff.distributor_id)) ctx.throw(403, '无权查看该员工账户');
+  return staff;
+}
+
+async function listStaffCareCredit(ctx) {
+  const staff = await Staff.findAll({ where: { ...distributorWhere(ctx.state.user || {}), is_deleted: 0 },
+    attributes: ['staff_id', 'name', 'store_id'], order: [['name', 'ASC']], raw: true });
+  const ids = staff.map(row => row.staff_id);
+  const entries = ids.length ? await StaffCareCreditTransaction.findAll({
+    where: { staff_id: { [Op.in]: ids }, status: { [Op.in]: ['active', 'reserved'] } },
+    attributes: ['staff_id', 'type', 'amount', 'status'], raw: true
+  }) : [];
+  const byStaff = new Map();
+  for (const entry of entries) {
+    const key = String(entry.staff_id);
+    if (!byStaff.has(key)) byStaff.set(key, []);
+    byStaff.get(key).push(entry);
+  }
+  ctx.body = staff.map(row => ({ staffId: row.staff_id, name: row.name,
+    storeId: row.store_id, ...walletTotalsFromRows(byStaff.get(String(row.staff_id)) || []) }));
+}
+
+async function getStaffCareCredit(ctx) {
+  const staff = await findAccessibleStaff(ctx, ctx.params.staffId);
+  ctx.body = { staffId: staff.staff_id, name: staff.name,
+    ...await readCareWallet(staff.staff_id, ctx.query?.page) };
+}
+
+async function adjustStaffCareCredit(ctx) {
+  const amount = Number(ctx.request.body?.amount);
+  const reason = String(ctx.request.body?.reason || '').trim();
+  const operationId = String(ctx.request.body?.operationId || '').trim();
+  if (!Number.isFinite(amount) || amount === 0 || Math.abs(amount) > 1000000
+    || Math.abs(amount * 100 - Math.round(amount * 100)) > 0.000001) ctx.throw(400, '调整金额须为非零金额，最多两位小数，且单次不超过100万元');
+  if (reason.length < 2 || reason.length > 200) ctx.throw(400, '请填写2至200字的调整原因');
+  if (!/^[A-Za-z0-9_-]{8,40}$/.test(operationId)) ctx.throw(400, '金额调整请求编号无效');
+  const staff = await findAccessibleStaff(ctx, ctx.params.staffId);
+  const record = await sequelize.transaction(async transaction => {
+    await lockStaff(staff.staff_id, transaction);
+    const sourceId = `${staff.staff_id}:${operationId}`;
+    const existing = await StaffCareCreditTransaction.findOne({
+      where: { source_type: 'MANUAL_ADJUST', source_id: sourceId }, transaction
+    });
+    if (existing && (existing.type !== (amount > 0 ? 'income' : 'expense')
+      || money(existing.amount) !== money(Math.abs(amount)))) ctx.throw(409, '该调整请求编号已用于不同金额');
+    if (existing) return existing;
+    return createCreditEntry({ staffId: staff.staff_id, staffName: staff.name,
+      type: amount > 0 ? 'income' : 'expense', amount: money(Math.abs(amount)),
+      sourceType: 'MANUAL_ADJUST', sourceId,
+      remark: `管理员${ctx.state.user.name || ctx.state.user.staffId}（ID:${ctx.state.user.staffId}）调整：${reason}`,
+      transaction });
+  });
+  ctx.body = { transactionId: record.transaction_id, ...await readCareWallet(staff.staff_id) };
 }
 
 async function getOrderCareCredit(ctx) {
@@ -313,7 +384,8 @@ async function reverseForSalesReturn({ request, order, requestItems, orderItemMa
 
 module.exports = {
   SALES_REPORT_CREDIT, isCareProduct, walletTotals, creditSalesReport,
-  getMyCareCredit, getOrderCareCredit, reserveOrderCareCredit, cancelOrderCareCredit,
+  getMyCareCredit, listStaffCareCredit, getStaffCareCredit, adjustStaffCareCredit,
+  getOrderCareCredit, reserveOrderCareCredit, cancelOrderCareCredit,
   activateOrderCareCredit, releaseOrderCareCredit, reverseForSalesReturn,
   _test: { careCostDetails, money }
 };
