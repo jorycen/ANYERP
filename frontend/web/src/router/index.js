@@ -290,6 +290,12 @@ const routes = [
         meta: { tab: 'instances' }
       },
       {
+        path: 'approval/handled',
+        name: 'ApprovalHandled',
+        component: () => import('../views/Approval.vue'),
+        meta: { tab: 'handled' }
+      },
+      {
         path: 'approval/flows',
         name: 'ApprovalFlows',
         component: () => import('../views/Approval.vue'),
@@ -344,7 +350,7 @@ const queryMirrorPaths = new Set([
   '/inventory/transfer', '/inventory/conversion',
   '/products/product', '/products/category', '/products/price', '/products/approval',
   '/stores', '/reports/dashboard', '/reports/sales', '/reports/inventory',
-  '/reports/employee', '/reports/achievement', '/approval/tasks', '/approval/instances',
+  '/reports/employee', '/reports/achievement', '/approval/tasks', '/approval/instances', '/approval/handled',
   '/system/users'
 ])
 

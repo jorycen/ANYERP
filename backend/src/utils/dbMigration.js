@@ -4708,7 +4708,8 @@ async function seedPermissionData() {
       ['reports_finance', '财务报表', 'reports', '/reports/finance', 6],
       ['approval_tasks', '待我审批', 'approval', '/approval/tasks', 1],
       ['approval_instances', '我的申请', 'approval', '/approval/instances', 2],
-      ['approval_flows', '流程配置', 'approval', '/approval/flows', 3],
+      ['approval_handled', '我的审批', 'approval', '/approval/handled', 3],
+      ['approval_flows', '流程配置', 'approval', '/approval/flows', 4],
       ['system_users', '用户管理', 'system', '/system/users', 1],
       ['system_roles', '角色管理', 'system', '/system/roles', 2],
       ['system_menus', '菜单管理', 'system', '/system/menus', 3],
@@ -4739,11 +4740,11 @@ async function seedPermissionData() {
         'finance_payable', 'finance_purchase_invoice', 'finance_payment', 'finance_rebate',
         'finance_resource_rights', 'finance_account', 'finance_settlement', 'finance_freight',
         'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_achievement', 'reports_finance',
-        'approval_tasks', 'approval_instances', 'product_approval'
+        'approval_tasks', 'approval_instances', 'approval_handled', 'product_approval'
       ],
       purchaser: [
         'purchase_request', 'purchase_supplier', 'reports_dashboard', 'reports_sales', 'reports_inventory',
-        'reports_employee', 'reports_achievement', 'approval_tasks', 'approval_instances', 'product_approval'
+        'reports_employee', 'reports_achievement', 'approval_tasks', 'approval_instances', 'approval_handled', 'product_approval'
       ],
       manager: [
         'sales_order', 'sales_subsidy_photos', 'sales_monthly_tasks',
@@ -4752,7 +4753,7 @@ async function seedPermissionData() {
         'purchase_request',
         'product_product', 'product_category', 'product_price', 'product_approval',
         'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_achievement',
-        'approval_tasks', 'approval_instances'
+        'approval_tasks', 'approval_instances', 'approval_handled'
       ],
       store_manager: [
         'sales_order', 'sales_subsidy_photos', 'sales_monthly_tasks',
@@ -4761,15 +4762,15 @@ async function seedPermissionData() {
         'purchase_request',
         'product_product', 'product_category', 'product_price', 'product_approval',
         'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_achievement',
-        'approval_tasks', 'approval_instances'
+        'approval_tasks', 'approval_instances', 'approval_handled'
       ],
       mall_report_viewer: ['sales_mall_query'],
       clerk: [
         'sales_order', 'inventory_summary', 'inventory_sn_inventory', 'inventory_inbound',
         'inventory_sn_trace', 'inventory_transfer', 'purchase_request', 'reports_dashboard', 'reports_sales',
-        'reports_inventory', 'reports_employee', 'reports_achievement', 'approval_tasks', 'approval_instances'
+        'reports_inventory', 'reports_employee', 'reports_achievement', 'approval_tasks', 'approval_instances', 'approval_handled'
       ],
-      staff: ['purchase_request']
+      staff: ['purchase_request', 'approval_tasks', 'approval_instances', 'approval_handled']
     };
     const ensureChildMenus = async () => {
       for (const [code, name, parentCode, path, sortOrder] of childMenus) {

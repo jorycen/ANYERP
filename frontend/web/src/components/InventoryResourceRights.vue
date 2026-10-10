@@ -585,7 +585,7 @@ async function editSn(snId){
   }catch(e){ElMessage.error(e.response?.data?.message||'加载SN权益失败')}
 }
 async function saveSn(){ try{ await api.saveSnResourceRights(currentSnId.value, snForm); ElMessage.success('已保存'); snDialog.value=false; loadRights() }catch(e){ElMessage.error(e.response?.data?.message||'保存失败')} }
-function canCompanyClaim(row){ return Number(resourceCategories.value.find(item=>item.category_code===row?.resource_type)?.supports_company_claim)===1 }
+function canCompanyClaim(row){ const resourceType=row?.resourceType||row?.resource_type; return Number(resourceCategories.value.find(item=>item.category_code===resourceType)?.supports_company_claim)===1 }
 function openClaim(row){ if(!canCompanyClaim(row))return; Object.assign(claimForm,{snId:row.sn_id,snCode:row.sn_code,resourceType:row.resource_type,amount:Number(row.amount||0),attachmentUrl:'',remark:''}); claimDialog.value=true }
 async function submitClaim(){ if(!canCompanyClaim(claimForm))return ElMessage.warning('该资源类型未开启公司套回，请在权益类型管理中启用'); try{ await api.submitResourceClaim(claimForm); ElMessage.success('已提交财务审批'); claimDialog.value=false; loadRights() }catch(e){ElMessage.error(e.response?.data?.message||'提交失败')} }
 function canReverse(row){ return !props.financeOnly && row.resource_type === 'GOV_SUBSIDY' && row.current_status === 'USED' && hasRole(['finance']) }

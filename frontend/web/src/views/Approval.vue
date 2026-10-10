@@ -74,14 +74,27 @@
           </el-table>
         </el-tab-pane>
 
+        <el-tab-pane label="我的审批" name="handled">
+          <el-table :data="handledInstances" stripe border v-loading="handledLoading">
+            <el-table-column prop="title" label="审批主题" min-width="220" />
+            <el-table-column label="业务类型" width="150"><template #default="{ row }">{{ businessTypeText(row.business_type) }}</template></el-table-column>
+            <el-table-column prop="instance_no" label="申请编号" width="190" />
+            <el-table-column label="当前进度" min-width="210"><template #default="{ row }">{{ instanceProgressText(row) }}</template></el-table-column>
+            <el-table-column prop="status" label="状态" width="100"><template #default="{ row }"><el-tag :type="statusType(row.status)">{{ statusText(row.status) }}</el-tag></template></el-table-column>
+            <el-table-column prop="create_time" label="提交时间" width="180" />
+            <el-table-column label="操作" width="100"><template #default="{ row }"><el-button link type="primary" @click="openInstance(row.instance_id)">审批详情</el-button></template></el-table-column>
+          </el-table>
+          <el-pagination v-if="handledTotal" v-model:current-page="handledPage" v-model:page-size="handledPageSize" :total="handledTotal" :page-sizes="[20, 50, 100]" layout="total, sizes, prev, pager, next, jumper" style="justify-content:flex-end;margin-top:16px" @current-change="loadHandledInstances" @size-change="onHandledPageSizeChange" />
+          <el-empty v-if="!handledLoading && !handledInstances.length" description="暂无经手的审批单" :image-size="70" />
+        </el-tab-pane>
+
         <el-tab-pane v-if="canConfigure" label="流程配置" name="flows">
           <div class="toolbar"><el-button type="primary" @click="newFlow">新增流程</el-button><el-button @click="initializeFlows">补齐系统流程</el-button><span>共 {{ new Set(flows.map(row => row.flow_code)).size }} 类流程</span></div>
-          <el-alert title="修改已发布流程会生成草稿，发布后用于新申请；进行中的申请保留原流程。人员缺失的流程请补齐后发布。" type="info" :closable="false" style="margin-bottom:12px" />
+          <el-alert title="编辑并保存后立即作为新申请的审批规则；已发起的审批单继续使用提交时的流程快照。流程列表只显示每类流程的当前配置。" type="info" :closable="false" style="margin-bottom:12px" />
           <el-table :data="flows" stripe border>
             <el-table-column prop="name" label="流程名称" min-width="180" />
             <el-table-column prop="flow_code" label="流程编码" width="180" />
             <el-table-column label="业务类型" width="160"><template #default="{ row }">{{ businessTypeText(row.business_type) }}</template></el-table-column>
-            <el-table-column prop="version" label="版本" width="80" />
             <el-table-column label="接入情况" width="170"><template #default="{ row }">{{ row.binding_status === 'business' ? '已绑定业务审批' : '独立流程（未绑定业务）' }}</template></el-table-column>
             <el-table-column label="状态" width="100"><template #default="{ row }">{{ ({ draft: '草稿', published: '已发布', disabled: '已停用' })[row.status] || row.status }}</template></el-table-column>
             <el-table-column label="待完善" min-width="140"><template #default="{ row }">{{ (row.config?.missingApprovers || []).join('、') || '-' }}</template></el-table-column>
@@ -153,7 +166,10 @@
               <div class="detail-section-title">{{ section.label }}</div>
               <el-table :data="section.rows" stripe border size="small">
                 <el-table-column v-for="column in section.columns" :key="column.key" :label="column.label" min-width="120">
-                  <template #default="{ row }">{{ formatDetailValue(row[column.key]) }}</template>
+                  <template #default="{ row }">
+                    <el-link v-if="column.key === 'url' && row[column.key]" :href="row[column.key]" target="_blank" type="primary">打开附件</el-link>
+                    <span v-else>{{ formatDetailValue(row[column.key]) }}</span>
+                  </template>
                 </el-table-column>
               </el-table>
             </div>
@@ -280,7 +296,7 @@
       <template #footer><el-button @click="attributionEditVisible = false">取消</el-button><el-button type="primary" :loading="attributionEditLoading" @click="saveAttributionEditor">保存调整</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="flowDialogVisible" :title="flowForm.definitionId ? '编辑流程草稿' : '新增审批流程'" width="900px">
+    <el-dialog v-model="flowDialogVisible" :title="flowForm.definitionId ? '编辑当前流程' : '新增审批流程'" width="900px">
       <el-form label-width="110px">
         <el-form-item label="流程编码"><el-input v-model="flowForm.flowCode" :disabled="!!flowForm.definitionId" placeholder="如 expense_reimburse" /></el-form-item>
         <el-form-item label="流程名称"><el-input v-model="flowForm.name" /></el-form-item>
@@ -305,7 +321,7 @@
         </div>
         <el-button plain @click="addNode">添加审批节点</el-button>
       </el-form>
-      <template #footer><el-button @click="flowDialogVisible = false">取消</el-button><el-button type="primary" @click="saveFlow">保存草稿</el-button></template>
+      <template #footer><el-button @click="flowDialogVisible = false">取消</el-button><el-button type="primary" @click="saveFlow">{{ flowForm.definitionId ? '保存并立即生效' : '保存草稿' }}</el-button></template>
     </el-dialog>
   </div>
 </template>
@@ -328,6 +344,11 @@ const tasks = ref([])
 const salesTasks = ref([])
 const moduleTasks = ref([])
 const instances = ref([])
+const handledInstances = ref([])
+const handledLoading = ref(false)
+const handledPage = ref(1)
+const handledPageSize = ref(20)
+const handledTotal = ref(0)
 const flows = ref([])
 const detailVisible = ref(false)
 const currentInstance = ref(null)
@@ -490,9 +511,21 @@ async function initializeFlows() {
   await loadFlows()
 }
 async function loadInstances() { instances.value = (await api.getApprovalInstances({ scope: 'mine' })).data || [] }
+async function loadHandledInstances() {
+  handledLoading.value = true
+  try {
+    const response = await api.getApprovalInstances({ scope: 'handled', page: handledPage.value, pageSize: handledPageSize.value })
+    const payload = response?.data || {}
+    handledInstances.value = payload.list || []
+    handledTotal.value = Number(payload.total || 0)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || error.message || '查询我的审批失败')
+  } finally { handledLoading.value = false }
+}
+function onHandledPageSizeChange() { handledPage.value = 1; loadHandledInstances() }
 async function loadFlows() { if (canConfigure.value) flows.value = (await api.getApprovalFlows()).data || [] }
 async function loadOptions() { if (canConfigure.value) Object.assign(assigneeOptions, (await api.getApprovalAssigneeOptions()).data || {}) }
-async function reload() { loading.value = true; try { await Promise.all([loadTasks(), loadOtherApprovalTasks(), loadInstances(), loadFlows(), loadOptions()]) } finally { loading.value = false } }
+async function reload() { loading.value = true; try { await Promise.all([loadTasks(), loadOtherApprovalTasks(), loadInstances(), loadFlows(), loadOptions(), ...(activeTab.value === 'handled' ? [loadHandledInstances()] : [])]) } finally { loading.value = false } }
 
 async function approveTaskDirect(row) {
   if (row.isSalesApproval) return api.approveOrder(row.salesRow.order_id)
@@ -648,18 +681,21 @@ const detailFieldLabels = {
   approval_stage: '审批阶段', review_comment: '审批意见', reviewer_name: '审批人', review_time: '审批时间',
   attachment_url: '附件地址', source_type: '来源类型', source_no: '来源单号'
 }
+Object.assign(detailFieldLabels, { expense_date: '\u8d39\u7528\u65e5\u671f', accounting_month: '\u6838\u7b97\u6708\u4efd', affects_store_profit: '\u8ba1\u5165\u95e8\u5e97\u5229\u6da6', has_invoice: '\u662f\u5426\u6709\u53d1\u7968', invoice_no: '\u53d1\u7968\u53f7', attribution_type: '\u8d39\u7528\u5f52\u5c5e', attribution_method: '\u5206\u644a\u65b9\u5f0f', related_order_no: '\u5173\u8054\u8ba2\u5355', target_type: '\u5f52\u5c5e\u7c7b\u578b', target_name: '\u5f52\u5c5e\u5bf9\u8c61', url: '\u9644\u4ef6' })
 const detailArrayLabels = { items: '商品明细', OrderItems: '订单商品明细', InboundItems: '入库商品明细', originalOrderItems: '原订单商品明细', attachments: '附件' }
+Object.assign(detailArrayLabels, { attribution_details: '\u8d39\u7528\u5f52\u5c5e\u5206\u644a' })
 const detailArrayColumnLabels = {
   product_name: '商品名称', product_code: '商品编码', pn_code: 'PN', sn_code: 'SN', quantity: '数量',
   current_quantity: '当前数量', unit_price: '单价', amount: '金额', amount_delta: '金额变化',
   store_name: '门店', storeName: '门店', reason: '原因', original_name: '附件名称', mime_type: '文件类型', file_size: '文件大小'
 }
+Object.assign(detailArrayColumnLabels, { target_type: '\u5f52\u5c5e\u7c7b\u578b', target_name: '\u5f52\u5c5e\u5bf9\u8c61', url: '\u9644\u4ef6' })
 const detailAllowedKeys = new Set([
   'sales_order_no', 'sale_price', 'original_pickup_price', 'settlement_price_at_sale', 'po_policy_at_sale', 'so_policy_at_sale', 'other_policy_at_sale', 'policy_remark', 'policy_name', 'policy_content', 'sn',
   'application_no', 'request_no', 'expense_no', 'return_no', 'change_order_no', 'adjustment_no', 'order_no', 'settlement_no',
   'create_time', 'submit_time', 'applicant_name', 'submitter_name', 'submit_user', 'apply_user', 'applicant_store_name', 'store_name',
   'supplier_name', 'employee_name', 'salesperson_name', 'name', 'product_name', 'productName', 'product_code', 'productCode', 'pn_code', 'pnCode', 'sn_code', 'snCode',
-  'category_name', 'expense_type', 'expense_party', 'payment_method', 'invoice_type', 'tax_status', 'tax_rate', 'product_type',
+  'category_name', 'expense_type', 'expense_party', 'expense_date', 'accounting_month', 'affects_store_profit', 'payment_method', 'has_invoice', 'invoice_type', 'invoice_no', 'attribution_type', 'attribution_method', 'related_order_no', 'tax_status', 'tax_rate', 'product_type',
   'reason', 'return_reason', 'remark', 'amount', 'total_amount', 'actual_total', 'current_actual_total', 'paid_amount', 'unpaid_amount',
   'refund_amount', 'change_amount', 'signed_amount', 'base_gross_profit', 'gross_profit_amount', 'sales_gross_profit', 'sales_amount', 'sales_settlement_cost',
   'adjustment_type', 'review_comment', 'reviewer_name', 'review_time', 'attachment_url', 'source_no', 'payee_name', 'payment_status'
@@ -686,13 +722,13 @@ function detailScalarFields(data = {}) {
 }
 function detailArraySections(data = {}) {
   return Object.entries(data)
-    .filter(([key, value]) => ['items', 'OrderItems', 'InboundItems', 'originalOrderItems', 'attachments'].includes(key) && Array.isArray(value) && value.length && !hiddenDetailKeys.has(key))
+    .filter(([key, value]) => ['items', 'OrderItems', 'InboundItems', 'originalOrderItems', 'attribution_details', 'attachments'].includes(key) && Array.isArray(value) && value.length && !hiddenDetailKeys.has(key))
     .map(([key, rows]) => {
       const objectRows = rows.filter(row => row && typeof row === 'object' && !Array.isArray(row))
       if (!objectRows.length) return null
       const keys = [...new Set(objectRows.flatMap(row => Object.keys(row)))]
         .filter(columnKey => !hiddenDetailKeys.has(columnKey) && objectRows.some(row => row[columnKey] !== undefined && row[columnKey] !== null && row[columnKey] !== '' && typeof row[columnKey] !== 'object'))
-      const preferred = ['product_name', 'product_code', 'pn_code', 'sn_code', 'quantity', 'current_quantity', 'unit_price', 'amount', 'amount_delta', 'original_name', 'mime_type', 'file_size']
+      const preferred = key === 'attribution_details' ? ['target_type', 'target_name', 'amount', 'reason'] : ['product_name', 'product_code', 'pn_code', 'sn_code', 'quantity', 'current_quantity', 'unit_price', 'amount', 'amount_delta', 'original_name', 'url', 'mime_type', 'file_size']
       const orderedKeys = [...preferred.filter(columnKey => keys.includes(columnKey)), ...keys.filter(columnKey => !preferred.includes(columnKey))].slice(0, 8)
       return {
         key,
@@ -1144,11 +1180,11 @@ function editFlow(row) { Object.assign(flowForm, { definitionId: row.definition_
 function addNode() { flowForm.nodes.push(newNode()) }
 function removeNode(index) { flowForm.nodes.splice(index, 1) }
 function clearRule(rule) { rule.staffId = ''; rule.roleCode = '' }
-async function saveFlow() { const data = { flowCode: flowForm.flowCode, name: flowForm.name, businessType: flowForm.businessType, config: { nodes: flowForm.nodes } }; if (flowForm.definitionId) await api.updateApprovalFlow(flowForm.definitionId, data); else await api.createApprovalFlow(data); ElMessage.success('流程草稿已保存'); flowDialogVisible.value = false; await loadFlows() }
-async function publish(row) { const confirmed = await ElMessageBox.confirm('发布后将作为新申请的审批规则，是否继续？', '发布流程').then(() => true).catch(() => false); if (!confirmed) return; await api.publishApprovalFlow(row.definition_id); ElMessage.success('流程已发布'); await loadFlows() }
+async function saveFlow() { const editing = Boolean(flowForm.definitionId); const data = { flowCode: flowForm.flowCode, name: flowForm.name, businessType: flowForm.businessType, config: { nodes: flowForm.nodes } }; if (editing) await api.updateApprovalFlow(flowForm.definitionId, data); else await api.createApprovalFlow(data); ElMessage.success(editing ? '流程已更新并立即生效' : '流程草稿已保存'); flowDialogVisible.value = false; await loadFlows() }
+async function publish(row) { const confirmed = await ElMessageBox.confirm('发布后将作为新申请的审批规则；已发起的审批单不受影响，是否继续？', '发布流程').then(() => true).catch(() => false); if (!confirmed) return; await api.publishApprovalFlow(row.definition_id); ElMessage.success('流程已发布'); await loadFlows() }
 async function enable(row) { const confirmed = await ElMessageBox.confirm('启用后将作为新申请的审批规则，是否继续？', '启用流程').then(() => true).catch(() => false); if (!confirmed) return; await api.enableApprovalFlow(row.definition_id); ElMessage.success('流程已启用'); await loadFlows() }
 async function disable(row) { await api.disableApprovalFlow(row.definition_id); ElMessage.success('流程已停用'); await loadFlows() }
-watch(activeTab, value => { if (value === 'flows') loadFlows() })
+watch(activeTab, value => { if (value === 'flows') loadFlows(); if (value === 'handled' && !handledLoading.value) loadHandledInstances() })
 watch(() => route.path, syncTabFromRoute)
 onMounted(() => { syncTabFromRoute(); reload() })
 </script>

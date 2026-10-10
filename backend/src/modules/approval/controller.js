@@ -3,6 +3,7 @@ const {
   sequelize,
   Staff,
   Store,
+  Expense,
   Role,
   Payable,
   PurchaseRequest,
@@ -65,9 +66,14 @@ function toInstance(row) {
 async function listFlows(ctx) {
   const where = {};
   if (ctx.query.businessType) where.business_type = ctx.query.businessType;
-  if (ctx.query.status) where.status = ctx.query.status;
   const rows = await ApprovalFlowDefinition.findAll({ where, order: [['flow_code', 'ASC'], ['version', 'DESC']] });
-  ctx.body = rows.map(toFlow);
+  const currentByCode = new Map();
+  for (const row of rows) {
+    if (!currentByCode.has(row.flow_code)) currentByCode.set(row.flow_code, row);
+  }
+  ctx.body = [...currentByCode.values()]
+    .filter(row => !ctx.query.status || row.status === ctx.query.status)
+    .map(toFlow);
 }
 
 async function getFlow(ctx) {
@@ -110,28 +116,44 @@ async function createFlow(ctx) {
 
 async function updateFlow(ctx) {
   const row = await ApprovalFlowDefinition.findByPk(ctx.params.definitionId);
-  if (!row) ctx.throw(404, '审批流程不存在');
+  if (!row) ctx.throw(404, '\u5ba1\u6279\u6d41\u7a0b\u4e0d\u5b58\u5728');
   const input = validateFlowBody(ctx, ctx.request.body || {});
-  if (input.flowCode !== row.flow_code || input.businessType !== row.business_type) ctx.throw(400, '已有流程的编码和业务类型不可修改，请仅调整名称和审批节点');
-  if (row.status !== 'draft') {
-    const latest = await ApprovalFlowDefinition.findOne({ where: { flow_code: row.flow_code }, order: [['version', 'DESC']] });
-    const next = await ApprovalFlowDefinition.create({
-      definition_id: generateUUID(),
-      flow_code: row.flow_code,
-      name: input.name,
-      business_type: input.businessType,
-      subject_type: input.subjectType,
-      version: Number(latest?.version || row.version) + 1,
-      status: 'draft',
-      config_json: JSON.stringify(input.config),
-      create_staff_id: ctx.state.user.staffId,
-      update_staff_id: ctx.state.user.staffId
-    });
-    ctx.body = { code: 0, message: '已创建新的审批流程草稿版本', data: toFlow(next) };
-    return;
+  if (input.flowCode !== row.flow_code || input.businessType !== row.business_type) ctx.throw(400, '\u5df2\u6709\u6d41\u7a0b\u7684\u7f16\u7801\u548c\u4e1a\u52a1\u7c7b\u578b\u4e0d\u53ef\u4fee\u6539\uff0c\u8bf7\u4ec5\u8c03\u6574\u540d\u79f0\u548c\u5ba1\u6279\u8282\u70b9');
+  await validateFlowConfigApprovers(ctx, input.config);
+
+  let current = row;
+  await sequelize.transaction(async transaction => {
+    if (row.status === 'draft') {
+      await row.update({ name: input.name, subject_type: input.subjectType, config_json: JSON.stringify(input.config), status: 'published', update_staff_id: ctx.state.user.staffId, update_time: new Date() }, { transaction });
+    } else {
+      const latest = await ApprovalFlowDefinition.findOne({ where: { flow_code: row.flow_code }, order: [['version', 'DESC']], transaction, lock: transaction.LOCK.UPDATE });
+      current = await ApprovalFlowDefinition.create({
+        definition_id: generateUUID(), flow_code: row.flow_code, name: input.name,
+        business_type: input.businessType, subject_type: input.subjectType,
+        version: Number(latest?.version || row.version) + 1, status: 'published',
+        config_json: JSON.stringify(input.config), create_staff_id: ctx.state.user.staffId,
+        update_staff_id: ctx.state.user.staffId
+      }, { transaction });
+    }
+    await ApprovalFlowDefinition.update(
+      { status: 'disabled', update_staff_id: ctx.state.user.staffId, update_time: new Date() },
+      { where: { flow_code: row.flow_code, status: 'published', definition_id: { [Op.ne]: current.definition_id } }, transaction }
+    );
+  });
+  ctx.body = { code: 0, message: '\u5ba1\u6279\u6d41\u7a0b\u5df2\u66f4\u65b0\u5e76\u7acb\u5373\u751f\u6548\uff1b\u8fdb\u884c\u4e2d\u7684\u5ba1\u6279\u4fdd\u7559\u63d0\u4ea4\u65f6\u7684\u6d41\u7a0b', data: toFlow(current) };
+}
+
+async function validateFlowConfigApprovers(ctx, config) {
+  const fixedIds = config.nodes.flatMap(node => node.approvers).filter(rule => rule.type === 'fixed_user').map(rule => Number(rule.staffId));
+  if (fixedIds.length) {
+    const active = await Staff.findAll({ where: { staff_id: { [Op.in]: fixedIds }, status: 1, is_deleted: 0 }, attributes: ['staff_id'] });
+    if (fixedIds.some(id => !active.some(staff => Number(staff.staff_id) === id))) ctx.throw(400, '\u6d41\u7a0b\u5305\u542b\u4e0d\u5b58\u5728\u6216\u5df2\u505c\u7528\u7684\u5ba1\u6279\u4eba\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9');
   }
-  await row.update({ name: input.name, business_type: input.businessType, subject_type: input.subjectType, config_json: JSON.stringify(input.config), update_staff_id: ctx.state.user.staffId, update_time: new Date() });
-  ctx.body = { code: 0, message: '审批流程草稿已更新', data: toFlow(row) };
+  const roleCodes = [...new Set(config.nodes.flatMap(node => node.approvers).filter(rule => rule.type === 'role').map(rule => rule.roleCode))];
+  if (roleCodes.length) {
+    const activeRoles = await Role.findAll({ where: { role_code: { [Op.in]: roleCodes }, status: 1 }, attributes: ['role_code'] });
+    if (roleCodes.some(code => !activeRoles.some(role => role.role_code === code))) ctx.throw(400, '\u6d41\u7a0b\u5305\u542b\u4e0d\u5b58\u5728\u6216\u5df2\u505c\u7528\u7684\u5ba1\u6279\u89d2\u8272\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9');
+  }
 }
 
 async function publishFlow(ctx) {
@@ -230,6 +252,13 @@ async function listTasks(ctx) {
     include: [{ model: SettlementItem, as: 'items', attributes: ['request_no', 'product_name', 'quantity', 'unit_price', 'amount'], required: false }]
   }) : [];
   const settlementMap = new Map(settlements.map(row => [String(row.settlement_id), row.toJSON()]));
+  const expenseIds = tasks.filter(task => task.Instance?.business_type === 'expense').map(task => String(task.Instance.business_id || '')).filter(Boolean);
+  const expenses = expenseIds.length ? await Expense.findAll({
+    where: { expense_id: expenseIds, is_deleted: 0 },
+    attributes: ['expense_id', 'expense_no', 'expense_type', 'expense_party', 'amount', 'accounting_month', 'affects_store_profit', 'payment_method', 'has_invoice', 'invoice_type', 'invoice_no', 'expense_date', 'attribution_type', 'attribution_method', 'attribution_details_json', 'attachment_urls', 'applicant_staff_id', 'applicant_name', 'operator_name', 'submit_user', 'source_type', 'source_no', 'related_order_no', 'remark', 'create_time'],
+    include: [{ model: Store, attributes: ['store_id', 'name'], required: false }]
+  }) : [];
+  const expenseMap = new Map(expenses.map(row => [String(row.expense_id), row.toJSON()]));
   const list = tasks.map(task => {
     const data = task.toJSON();
     if (data.Instance?.business_type === 'payable_settlement') {
@@ -259,6 +288,14 @@ async function listTasks(ctx) {
           unit_price: Number(item.unit_price || 0),
           amount: Number(item.amount || 0)
         }))
+      } : {};
+    }
+    if (data.Instance?.business_type === 'expense') {
+      const expense = expenseMap.get(String(data.Instance.business_id));
+      data.Instance.display = expense ? {
+        ...expense,
+        store_name: expense.Store?.name || '',
+        attribution_details: parseJson(expense.attribution_details_json, [])
       } : {};
     }
     return data;
@@ -305,10 +342,10 @@ async function enrichInstanceProgress(rows) {
 
 async function listInstances(ctx) {
   const scope = ctx.query.scope || 'mine';
-  const where = scope === 'todo' ? {} : { [Op.and]: [instanceAccessWhere(ctx.state.user, scope)] };
+  const where = ['todo', 'handled'].includes(scope) ? {} : { [Op.and]: [instanceAccessWhere(ctx.state.user, scope)] };
   const storeWhere = approvalInstanceVisibilityWhere(ctx.state.user);
   if (storeWhere) where[Op.and] = [...(where[Op.and] || []), storeWhere];
-  if (scope === 'todo') {
+  if (scope === 'todo' || scope === 'handled') {
     const taskInclude = {
       model: ApprovalFlowInstance,
       as: 'Instance',
@@ -322,12 +359,26 @@ async function listInstances(ctx) {
       attributes: ['instance_id'],
       raw: true
     });
-    where.instance_id = taskRows.length ? taskRows.map(row => row.instance_id) : '';
+    where.instance_id = taskRows.length ? [...new Set(taskRows.map(row => String(row.instance_id)))] : '';
   }
   if (ctx.query.status) where.status = ctx.query.status;
-  const rows = await ApprovalFlowInstance.findAll({ where, order: [['create_time', 'DESC']], limit: Math.min(Number(ctx.query.limit || 100), 500) });
+  const paginated = ctx.query.page !== undefined || ctx.query.pageSize !== undefined;
+  const page = Math.max(1, Number(ctx.query.page) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number(ctx.query.pageSize) || Number(ctx.query.limit) || 20));
+  const queryOptions = {
+    where,
+    order: [['create_time', 'DESC'], ['instance_id', 'DESC']],
+    ...(paginated ? { limit: pageSize, offset: (page - 1) * pageSize } : { limit: Math.min(Number(ctx.query.limit || 100), 500) })
+  };
+  const result = paginated
+    ? await ApprovalFlowInstance.findAndCountAll(queryOptions)
+    : { rows: await ApprovalFlowInstance.findAll(queryOptions) };
+  const rows = result.rows;
   await enrichInstanceProgress(rows);
-  ctx.body = rows.map(toInstance);
+  const list = rows.map(toInstance);
+  ctx.body = paginated
+    ? { list, total: result.count, page, pageSize, totalPages: Math.ceil(result.count / pageSize) }
+    : list;
 }
 
 async function canReadInstance(ctx, instance) {
@@ -343,6 +394,12 @@ async function getInstance(ctx) {
     include: [
       { model: ApprovalTask, as: 'Tasks', include: [{ model: Staff, as: 'Assignee', attributes: ['staff_id', 'name'] }], order: [['round_no', 'ASC'], ['node_index', 'ASC'], ['task_order', 'ASC']] },
       { model: ApprovalActionLog, as: 'Logs', include: [{ model: Staff, as: 'Actor', attributes: ['staff_id', 'name'] }], order: [['create_time', 'ASC']] }
+    ],
+    order: [
+      [{ model: ApprovalTask, as: 'Tasks' }, 'round_no', 'ASC'],
+      [{ model: ApprovalTask, as: 'Tasks' }, 'node_index', 'ASC'],
+      [{ model: ApprovalTask, as: 'Tasks' }, 'task_order', 'ASC'],
+      [{ model: ApprovalActionLog, as: 'Logs' }, 'create_time', 'ASC']
     ]
   });
   if (!row) ctx.throw(404, '审批实例不存在');
@@ -450,6 +507,19 @@ async function getInstance(ctx) {
     } : null;
     data.applicant_name = applicant?.name || data.settlement_detail?.applicant_name || data.applicant_name || '';
     data.applicant_phone = applicant?.phone || '';
+  }
+  if (data.business_type === 'expense') {
+    const expense = await Expense.findOne({ where: { expense_id: data.business_id, is_deleted: 0 }, include: [{ model: Store, attributes: ['store_id', 'name'], required: false }] });
+    if (expense) {
+      data.moduleData = expense.toJSON();
+      data.moduleData.store_name = data.moduleData.Store?.name || '';
+      data.moduleData.attribution_details = parseJson(data.moduleData.attribution_details_json, []);
+      let attachmentUrls = parseJson(data.moduleData.attachment_urls, []);
+      if (!Array.isArray(attachmentUrls)) attachmentUrls = [];
+      data.moduleData.attachments = attachmentUrls.map(item => typeof item === 'string' ? { url: item, original_name: item.split('/').pop() || '附件' } : item).filter(item => item && typeof item === 'object');
+      data.applicant_name = data.moduleData.applicant_name || data.moduleData.submit_user || data.moduleData.create_user || data.applicant_name || '';
+      data.store_name = data.moduleData.store_name || '';
+    }
   }
   ctx.body = data;
 }

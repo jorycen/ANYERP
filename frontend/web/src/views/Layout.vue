@@ -224,6 +224,7 @@ const pageTitles = {
   '/sales/monthly-tasks': '月度任务',
   '/approval/tasks': '待我审批',
   '/approval/instances': '我的申请',
+  '/approval/handled': '我的审批',
   '/approval/flows': '流程配置',
   '/system/users': '用户管理',
   '/system/roles': '角色管理',
@@ -313,7 +314,8 @@ function getManagerMirrorMenus() {
     ] },
     { menuCode: 'approval', name: '审批中心', icon: 'Checked', children: [
       { menuCode: 'approval_tasks', name: '待我审批', path: '/approval/tasks' },
-      { menuCode: 'approval_instances', name: '我的申请', path: '/approval/instances' }
+      { menuCode: 'approval_instances', name: '我的申请', path: '/approval/instances' },
+      { menuCode: 'approval_handled', name: '我的审批', path: '/approval/handled' }
     ] },
     { menuCode: 'system', name: '系统管理', path: '/system/users', icon: 'Setting' }
   ]
