@@ -549,12 +549,14 @@ async function list(ctx) {
   const itemInclude = { model: OrderItem };
   if (productName) itemWhere.product_name = { [Op.like]: `%${productName}%` };
   if (productCode) {
-    itemInclude.include = [{
-      model: Product,
+    // Nested required includes produce an invalid OrderItems alias in Sequelize's
+    // paginated order-ID subquery. Resolve product IDs before filtering items.
+    const products = await Product.findAll({
       where: { product_code: { [Op.like]: `%${productCode}%` } },
-      required: true
-    }];
-    itemInclude.required = true;
+      attributes: ['product_id'],
+      raw: true
+    });
+    itemWhere.product_id = { [Op.in]: products.map(product => product.product_id) };
   }
   if (Object.keys(itemWhere).length > 0) {
     itemInclude.where = itemWhere;
@@ -583,9 +585,9 @@ async function list(ctx) {
   const normalizedPageSize = Math.min(Math.max(Number(pageSize) || 20, 1), 100);
   const offset = (normalizedPage - 1) * normalizedPageSize;
   const candidateLimit = offset + normalizedPageSize;
-  const hasItemFilter = Object.keys(itemWhere).length > 0 || Boolean(productCode);
+  const hasItemFilter = Object.keys(itemWhere).length > 0;
   const idInclude = hasItemFilter
-    ? [{ ...itemInclude, attributes: ['order_id'], include: itemInclude.include }]
+    ? [{ ...itemInclude, attributes: ['order_id'] }]
     : [];
 
   // Mall reporting still needs the complete filtered set for its summary.
@@ -600,7 +602,7 @@ async function list(ctx) {
     const [idRows, count] = await Promise.all([
       Order.findAll({
         where,
-        attributes: ['order_id'],
+        attributes: ['order_id', 'create_time'],
         include: idInclude,
         distinct: true,
         order: orderQuery.order,

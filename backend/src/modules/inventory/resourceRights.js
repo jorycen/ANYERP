@@ -1291,8 +1291,12 @@ async function saveCostConfig(ctx) {
 
 async function listResourceCategories(ctx) {
   const activeOnly = String(ctx.query.activeOnly || '') === '1';
+  const purchaseSelectable = String(ctx.query.purchaseSelectable || '') === '1';
   const rows = await ResourceCategory.findAll({
-    where: activeOnly ? { status: 1 } : {},
+    where: {
+      ...(activeOnly ? { status: 1 } : {}),
+      ...(purchaseSelectable ? { supports_purchase_select: 1 } : {})
+    },
     include: [{ model: SettlementAccount, as: 'DefaultAccount', required: false }],
     order: [['sort_order', 'ASC'], ['name', 'ASC']]
   });
@@ -1391,8 +1395,10 @@ async function saveGoodsType(ctx) {
       .filter(Boolean)
   )];
   if (categoryIds.length) {
-    const count = await ResourceCategory.count({ where: { category_id: { [Op.in]: categoryIds } } });
-    if (count !== categoryIds.length) ctx.throw(400, '货型包含了不存在的资源子内容');
+    const count = await ResourceCategory.count({
+      where: { category_id: { [Op.in]: categoryIds }, status: 1, supports_purchase_select: 1 }
+    });
+    if (count !== categoryIds.length) ctx.throw(400, '货型只能关联已启用且允许采购选择的资源权益');
   }
   const duplicateWhere = { name };
   if (body.goodsTypeId) duplicateWhere.goods_type_id = { [Op.ne]: body.goodsTypeId };

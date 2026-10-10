@@ -476,7 +476,7 @@
         <el-form-item label="货型名称" required><el-input v-model="goodsTypeForm.name" placeholder="如：服务商全资源货" /></el-form-item>
         <el-form-item label="资源子内容">
           <el-select v-model="goodsTypeForm.resourceCategoryIds" multiple filterable clearable style="width:100%" placeholder="选择该货型包含的资源">
-            <el-option v-for="item in resourceCategoryData" :key="item.category_id" :label="item.status ? item.name : `${item.name}（已停用）`" :value="item.category_id" :disabled="!item.status" />
+            <el-option v-for="item in resourceCategoryData" :key="item.category_id" :label="Number(item.status) !== 1 ? `${item.name}（已停用）` : Number(item.supports_purchase_select) !== 1 ? `${item.name}（不可采购选择）` : item.name" :value="item.category_id" :disabled="Number(item.status) !== 1 || Number(item.supports_purchase_select) !== 1" />
           </el-select>
         </el-form-item>
         <el-form-item label="排序"><el-input-number v-model="goodsTypeForm.sortOrder" :min="0" /></el-form-item>

@@ -1250,11 +1250,13 @@ const loadProducts = async () => {
 
 const loadResourceOptions = async () => {
   try {
-    const res = await api.getResourceCategories({ activeOnly: 1 })
+    const res = await api.getResourceCategories({ activeOnly: 1, purchaseSelectable: 1 })
     resourceOptions.value = (res.data || [])
-      .filter(item => item.supports_purchase_select !== 0)
+      .filter(item => Number(item.status) === 1 && Number(item.supports_purchase_select) === 1)
       .map(item => ({ label: item.name, value: item.category_code }))
+      .filter(item => item.label && item.value)
   } catch (err) {
+    resourceOptions.value = []
     console.error('Failed to load resource categories')
   }
 }
@@ -1274,9 +1276,10 @@ const loadGoodsTypeOptions = async () => {
 
 const goodsTypeResourceCodes = name => {
   const goodsType = goodsTypeOptions.value.find(item => item.name === name)
+  const selectableCodes = new Set(resourceOptions.value.map(item => item.value))
   return (goodsType?.ResourceCategories || [])
-    .filter(item => item.status !== 0 && item.supports_purchase_select !== 0)
     .map(item => item.category_code)
+    .filter(code => selectableCodes.has(code))
 }
 
 const onGoodsTypeChange = name => {
@@ -1292,11 +1295,11 @@ const handleCreate = async () => {
     ElMessage.warning('当前账号没有可选收货门店，请先配置门店权限')
     return
   }
+  await loadResourceOptions()
+  await loadGoodsTypeOptions()
   resetForm()
   editingRequestId.value = ''
   restorePurchaseRequestDraft()
-  if (resourceOptions.value.length === 0) loadResourceOptions()
-  if (goodsTypeOptions.value.length === 0) loadGoodsTypeOptions()
   requestDialogVisible.value = true
 }
 
