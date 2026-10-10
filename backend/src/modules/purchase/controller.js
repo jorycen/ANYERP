@@ -1,7 +1,7 @@
 /**
  * 采购管理控制器
  */
-const { sequelize, PurchaseRequest, PurchaseRequestItem, PurchaseAdjustment, PurchaseAdjustmentItem, Supplier, SupplierPaymentAccount, Store, Staff, Distributor, Location, Product, ProductSn, Inbound, InboundItem, InboundItemSn, ReturnStock, ReturnStockItem, Payable, Expense, Settlement, SupplierRebate, ResourceCategory, GoodsType, SnLog } = require('../../models');
+const { sequelize, PurchaseRequest, PurchaseRequestItem, PurchaseAdjustment, PurchaseAdjustmentItem, Supplier, SupplierPaymentAccount, Store, Staff, Distributor, Location, Product, ProductPrice, ProductSn, Inbound, InboundItem, InboundItemSn, ReturnStock, ReturnStockItem, Payable, Expense, Settlement, SupplierRebate, ResourceCategory, GoodsType, SnLog } = require('../../models');
 const { Op } = require('sequelize');
 const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { sendExcel } = require('../../utils/excelExport');
@@ -18,6 +18,40 @@ const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freigh
 const { createProductRecord } = require('../product/controller');
 
 const VALID_PURCHASE_INVOICE_TYPES = new Set(['专票13%', '收据']);
+function parsePurchaseGrossProfitMode(ctx, value) {
+  if (value === undefined || value === null || value === false || value === 0 || value === '0') return 0;
+  if (value === true || value === 1 || value === '1') return 1;
+  ctx.throw(400, '毛利计价方式无效，请重新选择');
+}
+
+async function validatePurchaseGrossProfitMode(ctx, { supplierId, items, mode, reason, draft = false, transaction = null }) {
+  if (draft || !supplierId) return;
+  const supplier = await Supplier.findOne({ where: { supplier_id: supplierId, is_deleted: 0 }, transaction });
+  if (!supplier) ctx.throw(400, '请选择有效供应商');
+  if (Number(supplier.is_service_provider) !== mode && !String(reason || '').trim()) {
+    ctx.throw(400, '所选毛利计价方式与供应商惯常方式不同，请填写确认原因');
+  }
+  if (!mode) return;
+  const productIds = [...new Set((items || []).map(item => item.productId || item.product_id).filter(Boolean))];
+  const products = productIds.length ? await Product.findAll({
+    where: { product_id: { [Op.in]: productIds } },
+    attributes: ['product_id', 'name', 'category', 'accessory_type'], raw: true, transaction
+  }) : [];
+  const productMap = new Map(products.map(product => [String(product.product_id), product]));
+  const prices = productIds.length ? await ProductPrice.findAll({
+    where: { product_id: { [Op.in]: productIds } },
+    attributes: ['product_id', 'standard_price'], raw: true, transaction
+  }) : [];
+  const priceMap = new Map(prices.map(price => [String(price.product_id), Number(price.standard_price || 0)]));
+  for (const item of items || []) {
+    const productId = String(item.productId || item.product_id || '');
+    const product = productMap.get(productId);
+    if (/选件/.test(`${product?.category || ''} ${product?.accessory_type || ''}`)) continue;
+    if (!product || !(priceMap.get(productId) > 0)) {
+      ctx.throw(400, `商品“${item.productName || item.product_name || product?.name || productId}”没有有效产品部定价，不能选择按产品部定价`);
+    }
+  }
+}
 function validatePurchaseInvoiceType(ctx, value) {
   const normalized = String(value || '').trim();
   if (!normalized) ctx.throw(400, '请选择采购凭证类型');
@@ -1319,9 +1353,13 @@ async function createRequest(ctx) {
     freight_platform_id,
     freight_platform_name,
     freight_amount,
+    useProductStandardPrice,
+    grossProfitPricingReason,
     saveDraft = false
   } = ctx.request.body;
   const isDraft = Boolean(saveDraft);
+  const grossProfitMode = parsePurchaseGrossProfitMode(ctx, useProductStandardPrice);
+  const grossProfitReason = String(grossProfitPricingReason || '').trim().slice(0, 512);
   const normalizedInvoiceType = isDraft && !String(invoiceType || '').trim()
     ? ''
     : validatePurchaseInvoiceType(ctx, invoiceType);
@@ -1345,6 +1383,9 @@ async function createRequest(ctx) {
   if (!supplierId && !isDraft) {
     ctx.throw(400, '请选择供应商');
   }
+  await validatePurchaseGrossProfitMode(ctx, {
+    supplierId, items, mode: grossProfitMode, reason: grossProfitReason, draft: isDraft
+  });
   const normalizedPaymentMethod = paymentMethod || 'COMPANY_CREDIT';
   if (!['COMPANY_CREDIT', 'PERSONAL_ADVANCE'].includes(normalizedPaymentMethod)) {
     ctx.throw(400, '付款方式无效');
@@ -1468,6 +1509,8 @@ async function createRequest(ctx) {
       store_id: finalStoreId,
       distributor_id: purchaseStore.distributor_id,
       supplier_id: supplierId || null,
+      gross_profit_use_standard_price: grossProfitMode,
+      gross_profit_pricing_reason: grossProfitReason || null,
       goods_type_id: canonicalGoodsTypeId,
       product_type: canonicalProductType,
       invoice_type: normalizedInvoiceType,
@@ -1630,6 +1673,12 @@ async function submitRequestDraft(ctx) {
   const usedDraftItems = (request.items || []).filter(item => Number(item.is_used_product) === 1 && !item.product_id);
   usedDraftItems.forEach(item => { item.product_id = '__USED_PRODUCT__'; });
   const goodsType = await validateDraftSubmission(request, ctx);
+  await validatePurchaseGrossProfitMode(ctx, {
+    supplierId: request.supplier_id,
+    items: request.items,
+    mode: Number(request.gross_profit_use_standard_price || 0),
+    reason: request.gross_profit_pricing_reason
+  });
   usedDraftItems.forEach(item => { item.product_id = null; });
   await assertNewPurchasePnsAvailable(request.items);
   await assertActivePurchaseProducts(request.items);
@@ -1707,7 +1756,10 @@ async function updateRequestDraft(ctx) {
   const { requestId } = ctx.params;
   const user = ctx.state.user;
   const { supplierId, remark, items, invoiceType, expressNo, paymentMethod, goodsTypeId, productType, rebateDeduction,
+    useProductStandardPrice, grossProfitPricingReason,
     freightPlatformId, freightPlatformName, freightAmount, freight_platform_id, freight_platform_name, freight_amount } = ctx.request.body;
+  const grossProfitMode = parsePurchaseGrossProfitMode(ctx, useProductStandardPrice);
+  const grossProfitReason = String(grossProfitPricingReason || '').trim().slice(0, 512);
   const request = await PurchaseRequest.findByPk(requestId);
   const usedProductPlaceholder = '__USED_PRODUCT__';
   if (Array.isArray(items)) {
@@ -1764,6 +1816,8 @@ async function updateRequestDraft(ctx) {
     const productSnapshots = await loadPurchaseProductSnapshots(items, transaction);
     await request.update({
       supplier_id: supplierId || null,
+      gross_profit_use_standard_price: grossProfitMode,
+      gross_profit_pricing_reason: grossProfitReason || null,
       invoice_type: normalizedInvoiceType,
       express_no: String(expressNo || '').trim() || null,
       payment_method: paymentMethod || 'COMPANY_CREDIT',
@@ -1982,6 +2036,15 @@ async function approveRequest(ctx) {
 
   // 如果审批通过，自动生成入库单
   if (status === 'approved' && request.items && request.items.length > 0) {
+    if (request.gross_profit_use_standard_price !== null) {
+      await validatePurchaseGrossProfitMode(ctx, {
+        supplierId: request.supplier_id,
+        items: request.items,
+        mode: Number(request.gross_profit_use_standard_price),
+        reason: request.gross_profit_pricing_reason,
+        transaction
+      });
+    }
     const snPurchaseConversions = await validateSnPurchaseConversion(ctx, request.items, request.store_id, transaction, { approval: true });
     let originalPurchaseAdjustment = null;
     for (const item of request.items) {
@@ -2042,6 +2105,8 @@ async function approveRequest(ctx) {
         inbound_price: conversion.item.unit_price,
         supplier_id: request.supplier_id,
         supplier_name: conversionSupplier?.name || conversion.sn.supplier_name || '',
+        gross_profit_use_standard_price: request.gross_profit_use_standard_price,
+        gross_profit_uplift_amount: request.gross_profit_use_standard_price === null ? null : (Number(request.gross_profit_use_standard_price) === 1 ? 0 : 200),
         source_type: 'PURCHASED_FROM_SPECIAL_WAREHOUSE',
         update_time: new Date()
       }, { transaction });
@@ -2160,6 +2225,8 @@ async function approveRequest(ctx) {
           pn_code: item.pn_code,
           sn_code: Number(item.direct_inbound) === 1 ? item.direct_inbound_sn_code : null,
           unit_price: item.unit_price,
+          gross_profit_use_standard_price: request.gross_profit_use_standard_price,
+          gross_profit_uplift_amount: request.gross_profit_use_standard_price === null ? null : (Number(request.gross_profit_use_standard_price) === 1 ? 0 : 200),
           quantity: item.allocatedQuantity || item.quantity,
           product_type: item.product_type || '',
           location_id: item.locationId || null,

@@ -196,6 +196,8 @@ const ProductSn = sequelize.define('ProductSn', {
   original_pickup_price: { type: DataTypes.DECIMAL(12, 2) },
   supplier_id: { type: DataTypes.STRING(32), comment: '采购来源供应商ID' },
   supplier_name: { type: DataTypes.STRING(255), comment: '采购来源供应商名称快照' },
+  gross_profit_use_standard_price: { type: DataTypes.TINYINT(1), allowNull: true, comment: '采购毛利口径：1产品部定价，0采购价加上浮；NULL为历史口径' },
+  gross_profit_uplift_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: true, comment: '采购毛利单件上浮金额快照' },
   tax_type: { type: DataTypes.STRING(32), defaultValue: 'UNKNOWN', comment: '税务属性' },
   source_type: { type: DataTypes.STRING(32), defaultValue: 'OTHER', comment: '库存货源性质' },
   batch_no: { type: DataTypes.STRING(64) },
@@ -928,6 +930,8 @@ const PurchaseRequest = sequelize.define('PurchaseRequest', {
   store_id: { type: DataTypes.STRING(32), allowNull: false },
   distributor_id: { type: DataTypes.STRING(32), comment: '采购业务所属经销商快照' },
   supplier_id: { type: DataTypes.STRING(32) },
+  gross_profit_use_standard_price: { type: DataTypes.TINYINT(1), allowNull: true, comment: '1按产品部定价，0按采购价加200；NULL为历史单' },
+  gross_profit_pricing_reason: { type: DataTypes.STRING(512), comment: '毛利口径与供应商建议不同时的确认原因' },
   goods_type_id: { type: DataTypes.STRING(32), comment: '关联货型配置ID' },
   product_type: { type: DataTypes.STRING(128), comment: '货型名称快照' },
   invoice_type: { type: DataTypes.STRING(32) },
@@ -1566,7 +1570,9 @@ const InboundItem = sequelize.define('InboundItem', {
   product_type: { type: DataTypes.STRING(32), comment: '货型：正规货/国补货/纯二批' },
   store_allocations: { type: DataTypes.TEXT },
   selected_resource_types: { type: DataTypes.TEXT },
-  purchase_request_item_id: { type: DataTypes.BIGINT(20) }
+  purchase_request_item_id: { type: DataTypes.BIGINT(20) },
+  gross_profit_use_standard_price: { type: DataTypes.TINYINT(1), allowNull: true },
+  gross_profit_uplift_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: true }
 }, { tableName: 'T_INBOUND_ITEM', timestamps: false });
 
 // 入库明细与实际接收SN的不可变关联。SN后续调拨、销售退回或改码不改变采购入库归属。

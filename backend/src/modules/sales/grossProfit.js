@@ -123,20 +123,23 @@ function resolveUnitProductPricing(
   productPrice = {},
   orderItem = {},
   supplier = null,
-  { useStandardPrice = false } = {}
+  { useStandardPrice = false, purchaseUseStandardPrice = null, purchaseUpliftAmount = null } = {}
 ) {
   const configuredPricing = toNumber(productPrice.standard_price);
   const specialPrice = toNumber(orderItem.specialPrice ?? orderItem.special_price);
   const effectiveConfiguredPricing = specialPrice > 0 ? specialPrice : configuredPricing;
-  const isServiceProvider = !supplier || Number(supplier.is_service_provider) !== 0;
+  const hasPurchaseMode = purchaseUseStandardPrice !== null && purchaseUseStandardPrice !== undefined;
+  const isServiceProvider = hasPurchaseMode
+    ? Number(purchaseUseStandardPrice) === 1
+    : !supplier || Number(supplier.is_service_provider) !== 0;
   const grossProfitUpliftAmount = isServiceProvider
     ? 0
-    : Math.max(0, roundMoney(supplier.gross_profit_uplift_amount));
+    : Math.max(0, roundMoney(hasPurchaseMode ? (purchaseUpliftAmount ?? 200) : supplier.gross_profit_uplift_amount));
   const sourcePurchasePrice = toNumber(orderItem.purchasePrice) ||
     toNumber(orderItem.original_pickup_price) ||
     toNumber(orderItem.original_inventory_cost);
   const purchasePrice = sourcePurchasePrice || toNumber(productPrice.cost_price);
-  const result = (unitPricing, source) => supplier
+  const result = (unitPricing, source) => (supplier || hasPurchaseMode)
     ? {
         unitPricing: roundMoney(unitPricing),
         source,
@@ -457,9 +460,11 @@ async function resolveSupplierContext(items, order, transaction) {
   const latestInboundRows = productIds.length
     ? await sequelize.query(
         `SELECT ii.PRODUCT_ID AS product_id, ii.UNIT_PRICE AS inbound_price,
+                ii.GROSS_PROFIT_USE_STANDARD_PRICE AS gross_profit_use_standard_price,
+                ii.GROSS_PROFIT_UPLIFT_AMOUNT AS gross_profit_uplift_amount,
                 pr.SUPPLIER_ID AS supplier_id,
                 s.NAME AS supplier_name, s.IS_SERVICE_PROVIDER AS is_service_provider,
-                s.GROSS_PROFIT_UPLIFT_AMOUNT AS gross_profit_uplift_amount
+                s.GROSS_PROFIT_UPLIFT_AMOUNT AS supplier_gross_profit_uplift_amount
            FROM T_INBOUND_ITEM ii
            INNER JOIN T_INBOUND i ON i.INBOUND_ID = ii.INBOUND_ID
            LEFT JOIN T_PURCHASE_REQUEST pr ON pr.REQUEST_ID = i.PURCHASE_REQUEST_ID
@@ -472,7 +477,13 @@ async function resolveSupplierContext(items, order, transaction) {
       )
     : [];
   const latestInboundByProduct = new Map();
+  const purchaseModesByProduct = new Map();
   latestInboundRows.forEach(row => {
+    if (row.gross_profit_use_standard_price !== null && row.gross_profit_use_standard_price !== undefined) {
+      const productId = String(row.product_id);
+      if (!purchaseModesByProduct.has(productId)) purchaseModesByProduct.set(productId, new Set());
+      purchaseModesByProduct.get(productId).add(Number(row.gross_profit_use_standard_price));
+    }
     if (!latestInboundByProduct.has(String(row.product_id)) && (row.supplier_id || toNumber(row.inbound_price) > 0)) {
       latestInboundByProduct.set(String(row.product_id), row);
     }
@@ -484,7 +495,7 @@ async function resolveSupplierContext(items, order, transaction) {
     : [];
   const supplierMap = new Map(suppliers.map(row => [String(row.supplier_id), row]));
 
-  return { snMap, latestInboundByProduct, supplierMap };
+  return { snMap, latestInboundByProduct, supplierMap, purchaseModesByProduct };
 }
 
 async function buildProductPricingDetails(orderId, transaction) {
@@ -547,6 +558,10 @@ async function buildProductPricingDetails(orderId, transaction) {
     const productPrice = priceByProduct.get(String(row.product_id || ''));
     const product = productById.get(String(row.product_id || '')) || {};
     const snRow = supplierContext.snMap.get(`id:${row.sn_id}`) || supplierContext.snMap.get(`code:${row.sn_code}`);
+    if (!snRow && !/选件/.test(`${product.category || ''} ${product.accessory_type || ''}`) &&
+        (supplierContext.purchaseModesByProduct.get(String(row.product_id || ''))?.size || 0) > 1) {
+      throw new Error(`商品“${row.product_name || product.name || row.product_id}”存在不同计价方式的无 SN 采购批次，请先确认销售商品所属入库批次`);
+    }
     const inboundSupplier = supplierContext.latestInboundByProduct.get(String(row.product_id || ''));
     const supplierId = row.supplier_id || snRow?.supplier_id || inboundSupplier?.supplier_id || '';
     const supplier = supplierId ? supplierContext.supplierMap.get(String(supplierId)) : null;
@@ -564,7 +579,13 @@ async function buildProductPricingDetails(orderId, transaction) {
       { ...row, purchasePrice, specialPrice },
       supplier,
       {
-        useStandardPrice: /选件/.test(`${product.category || ''} ${product.accessory_type || ''}`)
+        useStandardPrice: /选件/.test(`${product.category || ''} ${product.accessory_type || ''}`),
+        purchaseUseStandardPrice: snRow
+          ? snRow.gross_profit_use_standard_price
+          : inboundSupplier?.gross_profit_use_standard_price,
+        purchaseUpliftAmount: snRow
+          ? snRow.gross_profit_uplift_amount
+          : inboundSupplier?.gross_profit_uplift_amount
       }
     );
     const quantity = Number(row.quantity || 1);

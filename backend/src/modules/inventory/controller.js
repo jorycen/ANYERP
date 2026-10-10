@@ -4145,6 +4145,8 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
           original_pickup_price: originalPickupPrice,
           supplier_id: supplier?.supplier_id || null,
           supplier_name: supplier?.name || null,
+          gross_profit_use_standard_price: dbItem.gross_profit_use_standard_price,
+          gross_profit_uplift_amount: dbItem.gross_profit_uplift_amount,
           remark: item.remark || '',
           is_deleted: 0
         };

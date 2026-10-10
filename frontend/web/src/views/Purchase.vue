@@ -177,6 +177,19 @@
             <el-option label="收据" value="收据" />
           </el-select>
         </el-form-item>
+        <el-form-item label="毛利计价方式" required>
+          <div>
+            <el-radio-group v-model="requestForm.useProductStandardPrice">
+              <el-radio :value="false">采购价＋200/件（默认）</el-radio>
+              <el-radio :value="true">产品部定价</el-radio>
+            </el-radio-group>
+            <div class="purchase-pricing-tip">选件仍按产品部定价；此选择只影响毛利成本，不改变采购付款或客户售价。</div>
+            <div v-if="purchasePricingConflictsWithSupplier" class="purchase-pricing-warning">与供应商惯常计价方式不同，请填写原因供审批人核对。</div>
+          </div>
+        </el-form-item>
+        <el-form-item v-if="purchasePricingConflictsWithSupplier" label="选择原因" required>
+          <el-input v-model="requestForm.grossProfitPricingReason" maxlength="512" placeholder="请说明本单为什么采用该计价方式" />
+        </el-form-item>
         <el-form-item label="快递单号">
           <el-input v-model="requestForm.expressNo" placeholder="请输入快递单号（选填）" />
         </el-form-item>
@@ -341,6 +354,8 @@
             <el-tag :type="getStatusType(currentRequest.display_status || currentRequest.status)">{{ getStatusText(currentRequest.display_status || currentRequest.status) }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="供应商">{{ currentRequest.supplier_name }}</el-descriptions-item>
+          <el-descriptions-item label="毛利计价方式">{{ currentRequest.gross_profit_use_standard_price == null ? '历史供应商口径' : Number(currentRequest.gross_profit_use_standard_price) === 1 ? '产品部定价' : '采购价＋200/件（选件除外）' }}</el-descriptions-item>
+          <el-descriptions-item v-if="currentRequest.gross_profit_pricing_reason" label="口径确认原因">{{ currentRequest.gross_profit_pricing_reason }}</el-descriptions-item>
           <el-descriptions-item label="付款方式">{{ getPaymentMethodText(currentRequest.payment_method) }}</el-descriptions-item>
           <el-descriptions-item label="采购凭证类型">{{ currentRequest.invoice_type || '-' }}</el-descriptions-item>
           <el-descriptions-item label="货型">{{ currentRequest.product_type || currentRequest.items?.[0]?.product_type || '-' }}</el-descriptions-item>
@@ -659,6 +674,8 @@
     <!-- 审批对话框 -->
     <el-dialog v-model="approveDialogVisible" title="审批采购申请" width="500px">
       <el-form :model="approveForm" label-width="100px">
+        <el-form-item label="毛利计价方式">{{ currentRequest?.gross_profit_use_standard_price == null ? '历史供应商口径' : Number(currentRequest.gross_profit_use_standard_price) === 1 ? '产品部定价' : '采购价＋200/件（选件除外）' }}</el-form-item>
+        <el-form-item v-if="currentRequest?.gross_profit_pricing_reason" label="选择原因">{{ currentRequest.gross_profit_pricing_reason }}</el-form-item>
         <el-form-item label="审批结果">
           <el-radio-group v-model="approveForm.action">
             <el-radio value="approved">通过</el-radio>
@@ -882,6 +899,8 @@ const supplierQuery = reactive({
 
 const requestForm = reactive({
   supplierId: '',
+  useProductStandardPrice: false,
+  grossProfitPricingReason: '',
   invoiceType: '',
   expressNo: '',
   paymentMethod: 'COMPANY_CREDIT',
@@ -944,6 +963,12 @@ const supplierForm = reactive({
   remark: '',
   status: 1,
   paymentAccounts: []
+})
+
+const purchasePricingConflictsWithSupplier = computed(() => {
+  const supplier = [...allSuppliers.value, ...supplierData.value]
+    .find(item => item.supplier_id === requestForm.supplierId)
+  return Boolean(supplier) && Number(supplier.is_service_provider) !== Number(requestForm.useProductStandardPrice)
 })
 
 const toNumber = (value) => {
@@ -1325,6 +1350,8 @@ const handleEditDraft = async (row) => {
     const request = res.data
     editingRequestId.value = request.request_id
     requestForm.supplierId = request.supplier_id || ''
+    requestForm.useProductStandardPrice = Number(request.gross_profit_use_standard_price || 0) === 1
+    requestForm.grossProfitPricingReason = request.gross_profit_pricing_reason || ''
     requestForm.invoiceType = ['专票13%', '收据'].includes(request.invoice_type) ? request.invoice_type : ''
     requestForm.expressNo = request.express_no || ''
     requestForm.paymentMethod = request.payment_method || 'COMPANY_CREDIT'
@@ -1936,6 +1963,8 @@ const buildPurchaseRequestPayload = () => {
   const selectedGoodsType = goodsTypeOptions.value.find(item => item.name === requestForm.productType)
   return {
     supplierId: requestForm.supplierId,
+    useProductStandardPrice: requestForm.useProductStandardPrice,
+    grossProfitPricingReason: requestForm.grossProfitPricingReason.trim(),
     invoiceType: requestForm.invoiceType,
     expressNo: requestForm.expressNo,
     paymentMethod: requestForm.paymentMethod,
@@ -2020,6 +2049,10 @@ const handleSubmit = async () => {
     ElMessage.warning('请选择供应商')
     return
   }
+  if (purchasePricingConflictsWithSupplier.value && !requestForm.grossProfitPricingReason.trim()) {
+    ElMessage.warning('毛利计价方式与供应商惯常方式不同，请填写选择原因')
+    return
+  }
   if (!['专票13%', '收据'].includes(requestForm.invoiceType)) {
     ElMessage.warning('请选择采购凭证类型')
     return
@@ -2059,6 +2092,12 @@ const handleSubmit = async () => {
 
   try { await confirmPurchaseSoPolicies(requestForm.items) }
   catch (err) { if (err !== 'cancel' && err !== 'close') ElMessage.error(err.response?.data?.message || 'SO政策查询失败'); return }
+  try {
+    await ElMessageBox.confirm(
+      `请核对本单毛利计价方式：${requestForm.useProductStandardPrice ? '产品部定价' : '采购价＋200/件'}；选件仍按产品部定价。提交审批后不可直接修改。`,
+      '确认毛利计价方式', { type: 'warning', confirmButtonText: '确认提交', cancelButtonText: '返回修改' }
+    )
+  } catch (_) { return }
 
   submitLoading.value = true
   try {
@@ -2092,6 +2131,8 @@ const handleDialogClose = () => {
 
 const resetForm = () => {
   requestForm.supplierId = ''
+  requestForm.useProductStandardPrice = false
+  requestForm.grossProfitPricingReason = ''
   requestForm.invoiceType = ''
   requestForm.expressNo = ''
   requestForm.paymentMethod = 'COMPANY_CREDIT'
@@ -2208,6 +2249,8 @@ const restorePurchaseRequestDraft = () => {
   const draft = loadDraft(PURCHASE_REQUEST_DRAFT_KEY)
   if (!draft) return
   Object.assign(requestForm, draft)
+  requestForm.useProductStandardPrice = draft.useProductStandardPrice === true
+  requestForm.grossProfitPricingReason = String(draft.grossProfitPricingReason || '')
   requestForm.paymentMethod = draft.paymentMethod || 'COMPANY_CREDIT'
   requestForm.items = Array.isArray(draft.items)
     ? draft.items.map(item => ({ rebateDeduction: 0, selectedResourceTypes: [], ...item }))
@@ -2432,6 +2475,8 @@ const handleLocationAllocateDialogClose = () => {
 </script>
 
 <style scoped>
+.purchase-pricing-tip { color: #909399; font-size: 12px; line-height: 1.5; }
+.purchase-pricing-warning { color: #e6a23c; font-size: 12px; line-height: 1.5; }
 .module-tabs :deep(.el-tabs__header) {
   display: none;
 }

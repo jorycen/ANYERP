@@ -287,6 +287,12 @@ async function ensureApprovalSchemaCompatibility() {
 }
 
 async function runSchemaMigrations() {
+  await checkAndAddColumn('T_PURCHASE_REQUEST', 'GROSS_PROFIT_USE_STANDARD_PRICE', 'TINYINT(1) NULL COMMENT "采购毛利口径：1产品部定价，0采购价加200；NULL历史口径"');
+  await checkAndAddColumn('T_PURCHASE_REQUEST', 'GROSS_PROFIT_PRICING_REASON', 'VARCHAR(512) NULL COMMENT "毛利计价口径确认原因"');
+  await checkAndAddColumn('T_INBOUND_ITEM', 'GROSS_PROFIT_USE_STANDARD_PRICE', 'TINYINT(1) NULL COMMENT "采购毛利口径快照"');
+  await checkAndAddColumn('T_INBOUND_ITEM', 'GROSS_PROFIT_UPLIFT_AMOUNT', 'DECIMAL(12,2) NULL COMMENT "采购毛利单件上浮快照"');
+  await checkAndAddColumn('T_PRODUCT_SN', 'GROSS_PROFIT_USE_STANDARD_PRICE', 'TINYINT(1) NULL COMMENT "采购毛利口径快照"');
+  await checkAndAddColumn('T_PRODUCT_SN', 'GROSS_PROFIT_UPLIFT_AMOUNT', 'DECIMAL(12,2) NULL COMMENT "采购毛利单件上浮快照"');
   await ensureApprovalSchemaCompatibility();
   await checkAndAddColumn('T_RETURN_STOCK', 'APPLICANT_STAFF_ID', 'BIGINT NULL');
   await checkAndAddColumn('T_TRANSFER', 'APPLICANT_STAFF_ID', 'BIGINT NULL');
