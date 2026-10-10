@@ -60,6 +60,9 @@ const { syncSerializedInventoryBalance } = require('../inventory/serializedInven
 const { guanghuan: guanghuanConfig } = require('../../config');
 const guanghuanClient = require('./guanghuanClient');
 const { advance: advanceApproval } = require('../approval/businessRuntime');
+const {
+  activateOrderCareCredit, releaseOrderCareCredit, reverseForSalesReturn
+} = require('./staffCareCredit');
 
 async function isRentalDemoSn(sn, transaction = null) {
   if (sn?.inventory_type === 'rental_demo_qty') return true;
@@ -3055,6 +3058,7 @@ async function returnSalesOrderToDraftAfterApproval(order, transaction, user, pr
   }
   const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
   await releaseSaleRights(order, items, transaction);
+  await releaseOrderCareCredit(order.order_id, transaction);
   await releaseDepositRedemptionForOrder(order, transaction, '审批处理后退回草稿');
   const now = new Date();
   const actorName = user.name || user.phone || String(user.staffId || '');
@@ -3149,6 +3153,7 @@ async function approve(ctx) {
       force: true,
       final: true
     });
+    await activateOrderCareCredit(lockedOrder, transaction);
     await createProductSettlementOrder({
       orderId: lockedOrder.order_id,
       transaction,
@@ -3218,6 +3223,7 @@ async function reject(ctx) {
     }
     const items = await OrderItem.findAll({ where: { order_id: lockedOrder.order_id }, transaction });
     await releaseSaleRights(lockedOrder, items, transaction);
+    await releaseOrderCareCredit(lockedOrder.order_id, transaction);
     await releaseDepositRedemptionForOrder(lockedOrder, transaction, '订单审批拒绝');
     await lockedOrder.update({
       order_status: '未归档',
@@ -3381,6 +3387,7 @@ async function update(ctx) {
       }
       const items = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
       await releaseSaleRights(order, items, transaction);
+      await releaseOrderCareCredit(order.order_id, transaction);
       await releaseDepositRedemptionForOrder(order, transaction, '订单取消');
       data.inventory_reserved = 0;
     }
@@ -3430,6 +3437,7 @@ async function update(ctx) {
         force: true,
         final: true
       });
+      await activateOrderCareCredit(order, transaction);
       await createProductSettlementOrder({
         orderId: order.order_id,
         transaction,
@@ -4599,6 +4607,9 @@ async function reviewSalesReturn(ctx) {
         user,
         transaction,
         ctx
+      });
+      await reverseForSalesReturn({
+        request, order, requestItems: returnItems, orderItemMap, transaction
       });
       // 延迟加载，避免库存控制器引用定金恢复函数时产生循环初始化。
       await require('../inventory/controller').completeApprovedSalesReturnInbound({

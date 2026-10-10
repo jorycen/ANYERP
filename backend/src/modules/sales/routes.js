@@ -45,6 +45,7 @@ const {
   createSubsidyPhotosDownloadTicket
 } = require('./controller');
 const { enforceStoreOwnership, enforceOrderStoreOwnership, requireRole } = require('../../middleware/permission');
+const staffCareCredit = require('./staffCareCredit');
 const {
   getMonthlyTaskOptions,
   listMonthlyTasks,
@@ -81,6 +82,10 @@ router.post('/return-requests', enforceStoreOwnership, requestSalesReturn);
 router.post('/return-requests/:returnId/review', reviewSalesReturn);
 router.post('/return-requests/:returnId/refund-confirm', requireRole('finance'), confirmSalesReturnRefund);
 router.get('/stats', stats);
+router.get('/care-credit/me', staffCareCredit.getMyCareCredit);
+router.get('/orders/:orderId/care-credit', staffCareCredit.getOrderCareCredit);
+router.post('/orders/:orderId/care-credit', staffCareCredit.reserveOrderCareCredit);
+router.post('/orders/:orderId/care-credit/cancel', staffCareCredit.cancelOrderCareCredit);
 router.get('/auxiliary-staff', auxiliaryStaff);
 router.get('/monthly-tasks/options', getMonthlyTaskOptions);
 router.get('/monthly-tasks', listMonthlyTasks);

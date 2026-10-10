@@ -2538,7 +2538,7 @@ async function triggerSaleResourceBenefits(order, items, transaction) {
         version: Number(right.version || 0) + 1
       }, { transaction });
 
-      if (Number(category.generates_staff_care_credit) === 1) {
+      if (category.category_code !== 'SALES_REPORT' && Number(category.generates_staff_care_credit) === 1) {
         await createStaffCareCredit({ order, item, resourceType: category.category_code, amount, transaction });
       }
       let rebateEstimate = null;
@@ -2676,6 +2676,18 @@ async function alignOrderSubsidyRights(order, items, transaction) {
       throw Object.assign(new Error(`${config.label}未能匹配唯一的SN商品，请明确选择使用资格的SN`), { status: 409 });
     }
     await updateItemResourceSelection(candidates[0], config.resourceType, true, transaction);
+  }
+
+  // 销量报号是售出后完成的事项。SN具备有效资格时自动关联商品行，
+  // 避免店员没有在下单页手工勾选就漏掉报号任务。
+  for (const item of snItems) {
+    if (selectedResources(item).includes('SALES_REPORT')) continue;
+    const right = await InventoryResourceRight.findOne({
+      where: { sn_id: item.sn_id, resource_type: 'SALES_REPORT' }, transaction
+    });
+    if (right && effectiveRightStatus(right) === 'AVAILABLE') {
+      await updateItemResourceSelection(item, 'SALES_REPORT', true, transaction);
+    }
   }
 }
 
@@ -2866,8 +2878,9 @@ async function submitSaleResourceTask(ctx) {
   if (!task || task.change_reason !== 'SALE_RESOURCE_TASK') ctx.throw(404, '销售资源任务不存在');
   await assertSaleResourceTaskReadable(ctx, task);
   if (!['pending_submit', 'rejected'].includes(task.approval_status)) ctx.throw(409, '该资源任务当前不能提交');
-  if (task.resource_type === SHARE_INCENTIVE_TYPE && attachments.length === 0) ctx.throw(400, '晒单任务至少需要上传一张图片');
-  const nextStatus = task.resource_type === SHARE_INCENTIVE_TYPE ? 'pending_manager_review' : 'completed';
+  const needsImageReview = [SHARE_INCENTIVE_TYPE, 'SALES_REPORT'].includes(task.resource_type);
+  if (needsImageReview && attachments.length === 0) ctx.throw(400, '请至少上传一张证明图片');
+  const nextStatus = needsImageReview ? 'pending_manager_review' : 'completed';
   await sequelize.transaction(async transaction => {
   await task.reload({ transaction, lock: transaction.LOCK.UPDATE });
   if (!['pending_submit', 'rejected'].includes(task.approval_status)) ctx.throw(409, '资源任务状态已变化');
@@ -2881,12 +2894,12 @@ async function submitSaleResourceTask(ctx) {
     applicant_staff_id: ctx.state.user.staffId || task.applicant_staff_id,
     applicant_name: ctx.state.user.name || task.applicant_name,
     review_comment: null,
-    review_time: task.resource_type === SHARE_INCENTIVE_TYPE ? null : new Date(),
-    reviewer_name: task.resource_type === SHARE_INCENTIVE_TYPE ? null : 'system',
+    review_time: needsImageReview ? null : new Date(),
+    reviewer_name: needsImageReview ? null : 'system',
     remark: `${resourceTaskLabel(task.resource_type)}${nextStatus === 'completed' ? '已完成确认' : '已提交，待店长审核'}`
   }, { transaction });
   });
-  ctx.body = { message: nextStatus === 'completed' ? '资源事项已完成' : '晒单已提交，等待店长审核' };
+  ctx.body = { message: nextStatus === 'completed' ? '资源事项已完成' : '图片已提交，等待店长审核' };
 }
 
 function normalizeCashRebateHeader(value) {
@@ -3224,16 +3237,27 @@ async function reviewSaleResourceTask(ctx) {
   const comment = String(ctx.request.body?.comment || '').trim();
   await sequelize.transaction(async transaction => {
     const task = await ResourceRightChangeOrder.findByPk(ctx.params.changeId, { transaction, lock: transaction.LOCK.UPDATE });
-    if (!task || task.change_reason !== 'SALE_RESOURCE_TASK' || task.resource_type !== SHARE_INCENTIVE_TYPE) ctx.throw(404, '晒单任务不存在');
-    if (!await require('../approval/businessRuntime').advance(ctx, 'sale_share', task, transaction, approved ? 'approve' : 'reject', comment)) return;
+    if (!task || task.change_reason !== 'SALE_RESOURCE_TASK' || ![SHARE_INCENTIVE_TYPE, 'SALES_REPORT'].includes(task.resource_type)) ctx.throw(404, '待审核资源任务不存在');
+    if (task.approval_status !== 'pending_manager_review') ctx.throw(409, '资源任务状态已变化');
+    if (task.resource_type === 'SALES_REPORT') {
+      const order = await assertSaleResourceTaskReadable(ctx, task, { review: true });
+      if (!['已归档', 'completed', 'archived'].includes(String(order.order_status || ''))) ctx.throw(409, '订单未归档或正在退货，不能发放报号奖励');
+      if (!parseJsonArray(task.attachment_url).length) ctx.throw(409, '报号任务缺少证明图片');
+      if (approved) {
+        const item = await OrderItem.findOne({ where: { order_id: order.order_id, sn_id: task.sn_id }, transaction });
+        await require('../sales/staffCareCredit').creditSalesReport({ task, order, item, transaction });
+      }
+    } else if (!await require('../approval/businessRuntime').advance(ctx, 'sale_share', task, transaction, approved ? 'approve' : 'reject', comment)) return;
     await task.update({
       approval_status: approved ? 'completed' : 'rejected', reviewer_staff_id: ctx.state.user.staffId,
       reviewer_name: ctx.state.user.name || ctx.state.user.phone || '', review_comment: comment || null, review_time: new Date(),
-      remark: approved ? '晒单已审核完成；礼品或红包通过体外流程发放' : '晒单被拒绝：' + comment
+      remark: approved
+        ? (task.resource_type === 'SALES_REPORT' ? '销售报号已审核完成；CARE可用金已入账' : '晒单已审核完成；礼品或红包通过体外流程发放')
+        : `${resourceTaskLabel(task.resource_type)}被拒绝：${comment}`
     }, { transaction });
   });
   if (ctx.state.businessApproval?.status === 'pending') return;
-  ctx.body = { message: approved ? '晒单已审核完成' : '晒单已拒绝，可补图后重新提交' };
+  ctx.body = { message: approved ? '资源任务已审核完成' : '图片已退回，可补图后重新提交' };
 }
 
 async function releaseSaleRights(order, items, transaction) {
