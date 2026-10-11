@@ -22,7 +22,7 @@ const {
 const { Op, QueryTypes } = require('sequelize');
 const { generateUUID } = require('../../utils');
 
-const FORMULA_VERSION = 'ORDER_GP_V10_COMPANY_PRICE_FIRST';
+const FORMULA_VERSION = 'ORDER_GP_V11_PRODUCT_COST_MODE';
 const VAT_RATE = 0.13;
 const NATIONAL_SUBSIDY_RECEIPT_TAX_RATE = 0.006;
 
@@ -124,12 +124,12 @@ function resolveUnitProductPricing(
   productPrice = {},
   orderItem = {},
   supplier = null,
-  { purchaseUpliftAmount = null } = {}
+  { purchaseUpliftAmount = null, costMode = 'PURCHASE_PRICE' } = {}
 ) {
   const configuredPricing = toNumber(productPrice.standard_price);
   const specialPrice = toNumber(orderItem.specialPrice ?? orderItem.special_price);
   const companyPricing = specialPrice > 0 ? specialPrice : configuredPricing;
-  const isCompanyPriced = companyPricing > 0;
+  const isCompanyPriced = String(costMode || '').toUpperCase() === 'COMPANY_PRICE';
   const grossProfitUpliftAmount = isCompanyPriced
     ? 0
     : Math.max(0, roundMoney(purchaseUpliftAmount ?? supplier?.gross_profit_uplift_amount ?? 0));
@@ -146,7 +146,9 @@ function resolveUnitProductPricing(
   });
 
   if (isCompanyPriced) {
-    return result(companyPricing, specialPrice > 0 ? 'sn_special_price' : 'product_standard_price');
+    return companyPricing > 0
+      ? result(companyPricing, specialPrice > 0 ? 'sn_special_price' : 'product_standard_price')
+      : result(0, 'missing_company_price');
   }
   if (purchasePrice > 0) return result(purchasePrice, 'purchase_price');
   return result(0, 'missing_purchase_price');
@@ -344,7 +346,7 @@ function snapshotToResponse(snapshot, order = null) {
     snapshotStatus: row.snapshot_status,
     calculatedBy: row.calculated_by || '',
     calculatedAt: row.calculated_at,
-    formula: '用户应收 - 有公司定价时按公司定价（SN特价优先）/无公司定价时按实际采购价 - 支付手续费 - 增值税 + 补录净额 - 运费 - 非定价且符合条件商品按供应商毛利上浮额度计算外调费'
+    formula: '用户应收 - 按商品毛利成本口径标签取公司定价（SN特价优先）或实际采购价 - 支付手续费 - 增值税 + 补录净额 - 运费 - 采购价口径且符合条件商品按供应商毛利上浮额度计算外调费'
   };
 }
 
@@ -506,7 +508,7 @@ async function buildProductPricingDetails(orderId, transaction) {
   const products = productIds.length
     ? await Product.findAll({
         where: { product_id: productIds },
-        attributes: ['product_id', 'name', 'category', 'accessory_type'],
+        attributes: ['product_id', 'name', 'category', 'accessory_type', 'gross_profit_cost_mode'],
         transaction,
         raw: true
       })
@@ -567,7 +569,8 @@ async function buildProductPricingDetails(orderId, transaction) {
       { ...row, purchasePrice, specialPrice },
       supplier,
       {
-        purchaseUpliftAmount: supplier?.gross_profit_uplift_amount ?? inboundSupplier?.supplier_gross_profit_uplift_amount
+        purchaseUpliftAmount: supplier?.gross_profit_uplift_amount ?? inboundSupplier?.supplier_gross_profit_uplift_amount,
+        costMode: product.gross_profit_cost_mode
       }
     );
     const quantity = Number(row.quantity || 1);

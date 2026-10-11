@@ -885,7 +885,8 @@ async function getProductList(ctx) {
     where,
     include: [
       { model: ProductBarcode, attributes: ['barcode_id', 'barcode_type', 'barcode_code'], where: { status: 1 }, required: false },
-      { model: ProductPn, attributes: ['pn_id', 'pn_code', 'is_primary'], where: { status: 1, is_deleted: 0 }, required: false }
+      { model: ProductPn, attributes: ['pn_id', 'pn_code', 'is_primary'], where: { status: 1, is_deleted: 0 }, required: false },
+      { model: ProductPrice, attributes: ['standard_price'], required: false }
     ],
     order: [['create_time', 'DESC'], ['product_id', 'DESC']],
     ...paginate({}, { page: parseInt(page), pageSize: parseInt(pageSize) }),
@@ -927,6 +928,8 @@ async function getProductList(ctx) {
       remark: p.remark || '',
       create_time: p.create_time || '',
       is_focus_product: Number(p.is_focus_product || 0),
+      gross_profit_cost_mode: p.gross_profit_cost_mode || 'PURCHASE_PRICE',
+      standard_price: Number(p.ProductPrice?.standard_price || 0),
       status: p.status
     };
   });
@@ -1094,8 +1097,10 @@ async function createProductRecord(body, transaction = null) {
     name, categoryId, config, needSn, needImei, unit, remark, barcodes, attributes,
     status = 1, manufacturerCode, manufacturer_code, pns,
     isFocusProduct, is_focus_product,
-    isUsedProduct, is_used_product
+    isUsedProduct, is_used_product, grossProfitCostMode, gross_profit_cost_mode
   } = body;
+  const costMode = String(grossProfitCostMode ?? gross_profit_cost_mode ?? 'PURCHASE_PRICE').toUpperCase();
+  if (!['COMPANY_PRICE', 'PURCHASE_PRICE'].includes(costMode)) throw new Error('商品毛利成本口径无效');
   const productId = generateUUID();
   await resolveFourLevelCategory(categoryId);
   const { finalName, parsedAttrs } = await resolveProductApplicationName(body);
@@ -1144,6 +1149,7 @@ async function createProductRecord(body, transaction = null) {
         unit: unit || '台',
         remark: remark || '',
         is_used_product: isUsedProduct === true || is_used_product === true || Number(isUsedProduct ?? is_used_product) === 1 ? 1 : 0,
+        gross_profit_cost_mode: costMode,
         is_focus_product: isFocusProduct === true || is_focus_product === true || Number(isFocusProduct ?? is_focus_product) === 1 ? 1 : 0,
         create_time: new Date(),
         status
@@ -1453,7 +1459,7 @@ async function updateProduct(ctx) {
   const {
     name, categoryId, config, needSn, needImei, unit, remark, barcodes, status,
     attributes, manufacturerCode, manufacturer_code, isFocusProduct, is_focus_product, pns,
-    forceUpdatePurchasePn
+    forceUpdatePurchasePn, grossProfitCostMode, gross_profit_cost_mode
   } = body;
   const manufacturerInput = manufacturerCode !== undefined ? manufacturerCode : manufacturer_code;
 
@@ -1472,6 +1478,12 @@ async function updateProduct(ctx) {
     : null;
 
   const updateData = {};
+  const costModeInput = grossProfitCostMode ?? gross_profit_cost_mode;
+  if (costModeInput !== undefined) {
+    const costMode = String(costModeInput).toUpperCase();
+    if (!['COMPANY_PRICE', 'PURCHASE_PRICE'].includes(costMode)) ctx.throw(400, '商品毛利成本口径无效');
+    updateData.gross_profit_cost_mode = costMode;
+  }
   if (name !== undefined) updateData.name = name;
   if (resolvedDimensions) {
     updateData.category_id = categoryId || null;
@@ -1968,7 +1980,7 @@ async function getPriceList(ctx) {
 
   const { count, rows } = await Product.findAndCountAll({
     where: productWhere,
-    attributes: ['product_id', 'product_code', 'manufacturer_code', 'name', 'unit', 'category'],
+    attributes: ['product_id', 'product_code', 'manufacturer_code', 'name', 'unit', 'category', 'gross_profit_cost_mode'],
     include: [
       { model: ProductPrice, attributes: ['price_id', 'standard_price', 'retail_price', 'min_sale_price', 'cost_price', 'cost_price_locked', 'output_tax_rate', 'input_tax_rate', 'input_tax_deductible'] }
     ],
@@ -2014,7 +2026,8 @@ async function getPriceList(ctx) {
     cost_price_locked: p.ProductPrice ? Number(p.ProductPrice.cost_price_locked || 0) : 0,
     output_tax_rate: p.ProductPrice ? p.ProductPrice.output_tax_rate : 0.13,
     input_tax_rate: p.ProductPrice ? p.ProductPrice.input_tax_rate : 0.13,
-    input_tax_deductible: p.ProductPrice ? Number(p.ProductPrice.input_tax_deductible) : 1
+    input_tax_deductible: p.ProductPrice ? Number(p.ProductPrice.input_tax_deductible) : 1,
+    gross_profit_cost_mode: p.gross_profit_cost_mode || 'PURCHASE_PRICE'
   }));
 
   ctx.body = formatPaginatedResult(list, { page, pageSize, count });

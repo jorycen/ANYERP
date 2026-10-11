@@ -180,7 +180,8 @@ async function loadPurchaseProductSnapshots(items, transaction = null) {
 
   const products = await Product.findAll({
     where: { product_id: { [Op.in]: productIds } },
-    attributes: ['product_id', 'product_code', 'manufacturer_code'],
+    attributes: ['product_id', 'product_code', 'manufacturer_code', 'gross_profit_cost_mode'],
+    include: [{ model: ProductPrice, attributes: ['standard_price'], required: false }],
     ...(transaction ? { transaction } : {})
   });
   return new Map(products.map(product => [String(product.product_id), product]));
@@ -1446,6 +1447,16 @@ async function createRequest(ctx) {
     if (!isDraft) await assertNewPurchasePnsAvailable(items, transaction);
     await assertActivePurchaseProducts(items, transaction);
     const productSnapshots = await loadPurchaseProductSnapshots(items, transaction);
+    const purchaseItemModeByProduct = new Map();
+    items.forEach((item, index) => {
+      const productId = String(item.productId || item.product_id || '');
+      if (!productId) return;
+      const productSnapshot = productSnapshots.get(productId);
+      const mode = String(item.grossProfitCostMode || item.gross_profit_cost_mode || productSnapshot?.gross_profit_cost_mode || 'PURCHASE_PRICE').toUpperCase();
+      const previousMode = purchaseItemModeByProduct.get(productId);
+      if (previousMode && previousMode !== mode) ctx.throw(400, `同一采购申请中的同一商品不能选择不同毛利成本口径（第${index + 1}项）`);
+      purchaseItemModeByProduct.set(productId, mode);
+    });
     // 表头、明细、返利、运费和审计记录必须原子提交，避免明细写入失败后留下可审批的空采购单。
     if (deduction > 0 && !isDraft) {
       const currentBalance = await _getRebateBalance(supplierId, transaction);
@@ -1502,6 +1513,11 @@ async function createRequest(ctx) {
       const item = items[itemIndex];
       const productId = item.productId || '';
       const productSnapshot = productSnapshots.get(String(productId));
+      const submittedCostMode = String(item.grossProfitCostMode || item.gross_profit_cost_mode || productSnapshot?.gross_profit_cost_mode || 'PURCHASE_PRICE').toUpperCase();
+      if (!['COMPANY_PRICE', 'PURCHASE_PRICE'].includes(submittedCostMode)) ctx.throw(400, `第${itemIndex + 1}个商品的毛利成本口径无效`);
+      if (!isDraft && submittedCostMode === 'COMPANY_PRICE' && (!productSnapshot?.ProductPrice || Number(productSnapshot.ProductPrice.standard_price || 0) <= 0)) {
+        ctx.throw(400, `第${itemIndex + 1}个商品选择按公司定价，但商品未维护有效公司定价`);
+      }
       const isUsedProduct = Boolean(item.isUsedProduct || item.is_used_product);
       const quantity = item.quantity || 0;
       const unitPrice = item.price || 0;
@@ -1515,6 +1531,7 @@ async function createRequest(ctx) {
         manufacturer_code: isUsedProduct ? (item.manufacturerCode || '') : (productSnapshot?.manufacturer_code || item.manufacturerCode || ''),
         pn_code: item.pnCode || '',
         is_used_product: Boolean(item.isUsedProduct || item.is_used_product) ? 1 : 0,
+        gross_profit_cost_mode: submittedCostMode,
         direct_inbound: Boolean(item.directInbound || item.direct_inbound) ? 1 : 0,
         direct_inbound_sn_code: String(item.directInboundSnCode || item.direct_inbound_sn_code || '').trim() || null,
         source_sn_id: getSnPurchaseFields(item).sourceSnId || null,
@@ -1765,6 +1782,16 @@ async function updateRequestDraft(ctx) {
   await sequelize.transaction(async transaction => {
     await assertActivePurchaseProducts(items, transaction);
     const productSnapshots = await loadPurchaseProductSnapshots(items, transaction);
+    const purchaseItemModeByProduct = new Map();
+    items.forEach((item, index) => {
+      const productId = String(item.productId || item.product_id || '');
+      if (!productId) return;
+      const productSnapshot = productSnapshots.get(productId);
+      const mode = String(item.grossProfitCostMode || item.gross_profit_cost_mode || productSnapshot?.gross_profit_cost_mode || 'PURCHASE_PRICE').toUpperCase();
+      const previousMode = purchaseItemModeByProduct.get(productId);
+      if (previousMode && previousMode !== mode) ctx.throw(400, `同一采购申请中的同一商品不能选择不同毛利成本口径（第${index + 1}项）`);
+      purchaseItemModeByProduct.set(productId, mode);
+    });
     await request.update({
       supplier_id: supplierId || null,
       gross_profit_use_standard_price: null,
@@ -1789,6 +1816,8 @@ async function updateRequestDraft(ctx) {
       const productId = item.productId || item.product_id || '';
       const isUsedProduct = Number(item.isUsedProduct || item.is_used_product) ? 1 : 0;
       const productSnapshot = productSnapshots.get(String(productId));
+      const submittedCostMode = String(item.grossProfitCostMode || item.gross_profit_cost_mode || productSnapshot?.gross_profit_cost_mode || 'PURCHASE_PRICE').toUpperCase();
+      if (!['COMPANY_PRICE', 'PURCHASE_PRICE'].includes(submittedCostMode)) ctx.throw(400, `第${index + 1}个商品的毛利成本口径无效`);
       await PurchaseRequestItem.create({
         request_id: requestId,
         product_id: isUsedProduct ? null : (productId || null),
@@ -1797,6 +1826,7 @@ async function updateRequestDraft(ctx) {
         manufacturer_code: isUsedProduct ? (item.manufacturerCode || item.manufacturer_code || '') : (productSnapshot?.manufacturer_code || item.manufacturerCode || item.manufacturer_code || ''),
         pn_code: item.pnCode || '',
         is_used_product: isUsedProduct,
+        gross_profit_cost_mode: submittedCostMode,
         direct_inbound: Number(item.directInbound || item.direct_inbound) ? 1 : 0,
         direct_inbound_sn_code: String(item.directInboundSnCode || item.direct_inbound_sn_code || '').trim() || null,
         quantity: Number(item.quantity),
@@ -1920,6 +1950,7 @@ async function approveRequest(ctx) {
     productId: item.product_id,
     productName: item.product_name,
     pnCode: item.pn_code,
+    grossProfitCostMode: item.gross_profit_cost_mode || 'PURCHASE_PRICE',
     quantity: item.quantity,
     isUsedProduct: item.is_used_product,
     directInbound: item.direct_inbound,
@@ -2009,9 +2040,17 @@ async function approveRequest(ctx) {
         needImei: Number(newProductPayload.needImei || 0),
         unit: newProductPayload.unit || '台',
         remark: newProductPayload.remark || '采购申请审批生成的二手商品',
-        isUsedProduct: true
+        isUsedProduct: true,
+        grossProfitCostMode: item.gross_profit_cost_mode || 'PURCHASE_PRICE'
       }, transaction);
       await item.update({ product_id: created.productId, product_name: created.productName, pn_code: item.pn_code || null }, { transaction });
+    }
+    for (const item of request.items) {
+      if (!item.product_id || !item.gross_profit_cost_mode) continue;
+      await Product.update(
+        { gross_profit_cost_mode: item.gross_profit_cost_mode },
+        { where: { product_id: item.product_id }, transaction }
+      );
     }
     await assertActiveProducts(Product, request.items.map(item => item.product_id).filter(Boolean), { transaction });
     const productIds = request.items.map(item => item.product_id).filter(Boolean);

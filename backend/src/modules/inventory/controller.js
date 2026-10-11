@@ -704,6 +704,7 @@ async function getSnInventoryList(ctx) {
        sn.REMARK AS remark,
        p.NAME AS product_name,
        p.PRODUCT_CODE AS product_code,
+       p.GROSS_PROFIT_COST_MODE AS gross_profit_cost_mode,
        st.NAME AS store_name,
        st.DISTRIBUTOR_ID AS distributor_id,
        COALESCE(loc.NAME, '未指定库位') AS location_name,
@@ -780,6 +781,7 @@ async function getSnInventoryList(ctx) {
       SN: row.sn_code || '',
       PN: row.pn_code || '',
       商品名称: row.product_name || '',
+      计价方式: row.gross_profit_cost_mode === 'COMPANY_PRICE' ? '按公司定价' : '按采购价',
       所在门店: row.store_name || '',
       库位: row.location_name || '',
       状态: row.status_label || '',
@@ -797,7 +799,7 @@ async function getSnInventoryList(ctx) {
       备注: row.remark || ''
     }));
     sendExcel(ctx, data, [
-      'SN', 'PN', '商品名称', '所在门店', '库位', '状态', '状态变更时间', '资源情况',
+      'SN', 'PN', '商品名称', '计价方式', '所在门店', '库位', '状态', '状态变更时间', '资源情况',
       ...(canViewPurchaseCost ? ['采购成本', '采购供应商'] : []),
       '统一售价', 'SN特价', '当前适用售价', '库龄', '入库时间', '备注'
     ], `SN库存清单_${new Date().toISOString().slice(0, 10)}.xlsx`, 'SN库存清单');
