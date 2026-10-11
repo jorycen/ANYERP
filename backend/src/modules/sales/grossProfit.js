@@ -21,9 +21,8 @@ const {
 } = require('../../models');
 const { Op, QueryTypes } = require('sequelize');
 const { generateUUID } = require('../../utils');
-const { isPurchaseUpliftExemptCategory } = require('../../utils/purchaseGrossProfitPricing');
 
-const FORMULA_VERSION = 'ORDER_GP_V9_FREIGHT_SEPARATE';
+const FORMULA_VERSION = 'ORDER_GP_V10_COMPANY_PRICE_FIRST';
 const VAT_RATE = 0.13;
 const NATIONAL_SUBSIDY_RECEIPT_TAX_RATE = 0.006;
 
@@ -36,13 +35,14 @@ function roundMoney(value) {
   return Math.round((toNumber(value) + Number.EPSILON) * 100) / 100;
 }
 
-function isExternalAdjustmentEligibleProduct({
-  category = '',
-  productName = '',
-  accessoryType = '',
-  isServiceProvider = true
-} = {}) {
-  if (isServiceProvider) return false;
+function isExternalAdjustmentEligibleProduct(item = {}) {
+  if (Object.prototype.hasOwnProperty.call(item, 'externalAdjustmentEligible')) {
+    return item.externalAdjustmentEligible === true;
+  }
+  if (Object.prototype.hasOwnProperty.call(item, 'external_adjustment_eligible')) {
+    return item.external_adjustment_eligible === true;
+  }
+  const { category = '', productName = '', accessoryType = '' } = item;
   const text = `${category} ${productName} ${accessoryType}`.toLowerCase();
   if (/配件|维修|服务|安装|保养|耗材/.test(text)) return false;
   return /电脑|笔记本|台式机|一体机|主机|平板|ipad|手机|iphone/.test(text);
@@ -124,58 +124,32 @@ function resolveUnitProductPricing(
   productPrice = {},
   orderItem = {},
   supplier = null,
-  { useStandardPrice = false, purchaseUseStandardPrice = null, purchaseUpliftAmount = null, noPurchaseUplift = false } = {}
+  { purchaseUpliftAmount = null } = {}
 ) {
   const configuredPricing = toNumber(productPrice.standard_price);
   const specialPrice = toNumber(orderItem.specialPrice ?? orderItem.special_price);
-  const effectiveConfiguredPricing = specialPrice > 0 ? specialPrice : configuredPricing;
-  const hasPurchaseMode = purchaseUseStandardPrice !== null && purchaseUseStandardPrice !== undefined;
-  const isServiceProvider = hasPurchaseMode
-    ? Number(purchaseUseStandardPrice) === 1
-    : !supplier || Number(supplier.is_service_provider) !== 0;
-  const grossProfitUpliftAmount = isServiceProvider || noPurchaseUplift
+  const companyPricing = specialPrice > 0 ? specialPrice : configuredPricing;
+  const isCompanyPriced = companyPricing > 0;
+  const grossProfitUpliftAmount = isCompanyPriced
     ? 0
     : Math.max(0, roundMoney(purchaseUpliftAmount ?? supplier?.gross_profit_uplift_amount ?? 0));
   const sourcePurchasePrice = toNumber(orderItem.purchasePrice) ||
     toNumber(orderItem.original_pickup_price) ||
     toNumber(orderItem.original_inventory_cost);
   const purchasePrice = sourcePurchasePrice || toNumber(productPrice.cost_price);
-  const result = (unitPricing, source) => (supplier || hasPurchaseMode)
-    ? {
-        unitPricing: roundMoney(unitPricing),
-        source,
-        purchasePrice: roundMoney(purchasePrice),
-        grossProfitUpliftAmount,
-        isServiceProvider
-      }
-    : { unitPricing: roundMoney(unitPricing), source };
+  const result = (unitPricing, source) => ({
+    unitPricing: roundMoney(unitPricing),
+    source,
+    purchasePrice: roundMoney(purchasePrice),
+    grossProfitUpliftAmount,
+    isCompanyPriced
+  });
 
-  // 选件统一按商品定价计价，不受供应商服务商属性和采购成本影响。
-  if (useStandardPrice && configuredPricing > 0) {
-    return result(configuredPricing, 'product_standard_price');
+  if (isCompanyPriced) {
+    return result(companyPricing, specialPrice > 0 ? 'sn_special_price' : 'product_standard_price');
   }
-
-  if (isServiceProvider && effectiveConfiguredPricing > 0) {
-    return result(
-      effectiveConfiguredPricing,
-      specialPrice > 0 ? 'sn_special_price' : 'product_standard_price'
-    );
-  }
-
-  if (!isServiceProvider && purchasePrice > 0) {
-    return result(purchasePrice, 'purchase_price');
-  }
-
-  if (isServiceProvider && toNumber(productPrice.cost_price) > 0) {
-    return result(toNumber(productPrice.cost_price), 'product_cost_fallback');
-  }
-
-  return result(
-    effectiveConfiguredPricing || purchasePrice,
-    isServiceProvider
-      ? (specialPrice > 0 ? 'sn_special_price_fallback' : 'product_standard_price_fallback')
-      : 'purchase_price_fallback'
-  );
+  if (purchasePrice > 0) return result(purchasePrice, 'purchase_price');
+  return result(0, 'missing_purchase_price');
 }
 
 function calculateGrossProfitValues({
@@ -331,7 +305,7 @@ function snapshotToResponse(snapshot, order = null) {
       toNumber(item.quantity || 1);
   }, 0));
   const usesSupplierUpliftRule = productPricingDetails.some(item =>
-    item.externalAdjustmentRuleVersion === 'SUPPLIER_UPLIFT_V1'
+    String(item.externalAdjustmentRuleVersion || '').startsWith('SUPPLIER_UPLIFT_')
   );
   const externalAdjustmentFee = externalAdjustmentEligible && grossProfitBeforeExternalAdjustment > 500
     ? (usesSupplierUpliftRule ? externalAdjustmentAmount : 200)
@@ -370,7 +344,7 @@ function snapshotToResponse(snapshot, order = null) {
     snapshotStatus: row.snapshot_status,
     calculatedBy: row.calculated_by || '',
     calculatedAt: row.calculated_at,
-    formula: '用户应收 - 公司定价商品定价（特价SN优先）/非定价商品实际采购成本 - 支付手续费 - 增值税 + 补录净额 - 运费 - 符合条件商品按供应商毛利上浮额度计算的外调费'
+    formula: '用户应收 - 有公司定价时按公司定价（SN特价优先）/无公司定价时按实际采购价 - 支付手续费 - 增值税 + 补录净额 - 运费 - 非定价且符合条件商品按供应商毛利上浮额度计算外调费'
   };
 }
 
@@ -487,10 +461,8 @@ async function resolveSupplierContext(items, order, transaction) {
   const latestInboundRows = productIds.length
     ? await sequelize.query(
         `SELECT ii.PRODUCT_ID AS product_id, ii.UNIT_PRICE AS inbound_price,
-                ii.GROSS_PROFIT_USE_STANDARD_PRICE AS gross_profit_use_standard_price,
-                ii.GROSS_PROFIT_UPLIFT_AMOUNT AS gross_profit_uplift_amount,
                 pr.SUPPLIER_ID AS supplier_id,
-                s.NAME AS supplier_name, s.IS_SERVICE_PROVIDER AS is_service_provider,
+                s.NAME AS supplier_name,
                 s.GROSS_PROFIT_UPLIFT_AMOUNT AS supplier_gross_profit_uplift_amount
            FROM T_INBOUND_ITEM ii
            INNER JOIN T_INBOUND i ON i.INBOUND_ID = ii.INBOUND_ID
@@ -504,13 +476,7 @@ async function resolveSupplierContext(items, order, transaction) {
       )
     : [];
   const latestInboundByProduct = new Map();
-  const purchaseModesByProduct = new Map();
   latestInboundRows.forEach(row => {
-    if (row.gross_profit_use_standard_price !== null && row.gross_profit_use_standard_price !== undefined) {
-      const productId = String(row.product_id);
-      if (!purchaseModesByProduct.has(productId)) purchaseModesByProduct.set(productId, new Set());
-      purchaseModesByProduct.get(productId).add(Number(row.gross_profit_use_standard_price));
-    }
     if (!latestInboundByProduct.has(String(row.product_id)) && (row.supplier_id || toNumber(row.inbound_price) > 0)) {
       latestInboundByProduct.set(String(row.product_id), row);
     }
@@ -522,7 +488,7 @@ async function resolveSupplierContext(items, order, transaction) {
     : [];
   const supplierMap = new Map(suppliers.map(row => [String(row.supplier_id), row]));
 
-  return { snMap, latestInboundByProduct, supplierMap, purchaseModesByProduct };
+  return { snMap, latestInboundByProduct, supplierMap };
 }
 
 async function buildProductPricingDetails(orderId, transaction) {
@@ -585,19 +551,14 @@ async function buildProductPricingDetails(orderId, transaction) {
     const productPrice = priceByProduct.get(String(row.product_id || ''));
     const product = productById.get(String(row.product_id || '')) || {};
     const snRow = supplierContext.snMap.get(`id:${row.sn_id}`) || supplierContext.snMap.get(`code:${row.sn_code}`);
-    if (!snRow && !/选件/.test(`${product.category || ''} ${product.accessory_type || ''}`) &&
-        (supplierContext.purchaseModesByProduct.get(String(row.product_id || ''))?.size || 0) > 1) {
-      throw new Error(`商品“${row.product_name || product.name || row.product_id}”存在不同计价方式的无 SN 采购批次，请先确认销售商品所属入库批次`);
-    }
     const inboundSupplier = supplierContext.latestInboundByProduct.get(String(row.product_id || ''));
     const supplierId = row.supplier_id || snRow?.supplier_id || inboundSupplier?.supplier_id || '';
     const supplier = supplierId ? supplierContext.supplierMap.get(String(supplierId)) : null;
-    const purchasePrice = Number(productPrice?.cost_price_locked || 0) === 1
-      ? toNumber(productPrice.cost_price)
-      : toNumber(row.original_inventory_cost)
-        || toNumber(row.original_pickup_price)
-        || toNumber(snRow?.inbound_price)
-        || toNumber(inboundSupplier?.inbound_price);
+    const purchasePrice = toNumber(row.original_inventory_cost)
+      || toNumber(row.original_pickup_price)
+      || toNumber(snRow?.inbound_price)
+      || toNumber(inboundSupplier?.inbound_price)
+      || toNumber(productPrice?.cost_price);
     const specialPrice = specialPriceBySnId.get(String(snRow?.sn_id || row.sn_id || ''))
       || specialPriceBySnCode.get(String(snRow?.sn_code || row.sn_code || '').trim().toUpperCase())
       || 0;
@@ -606,18 +567,16 @@ async function buildProductPricingDetails(orderId, transaction) {
       { ...row, purchasePrice, specialPrice },
       supplier,
       {
-        useStandardPrice: /选件/.test(`${product.category || ''} ${product.accessory_type || ''}`),
-        noPurchaseUplift: isPurchaseUpliftExemptCategory(product.category),
-        purchaseUseStandardPrice: snRow
-          ? snRow.gross_profit_use_standard_price
-          : inboundSupplier?.gross_profit_use_standard_price,
-        purchaseUpliftAmount: snRow
-          ? snRow.gross_profit_uplift_amount
-          : inboundSupplier?.gross_profit_uplift_amount
+        purchaseUpliftAmount: supplier?.gross_profit_uplift_amount ?? inboundSupplier?.supplier_gross_profit_uplift_amount
       }
     );
     const quantity = Number(row.quantity || 1);
-    const isServiceProvider = pricing.isServiceProvider ?? true;
+    const externalAdjustmentEligible = !pricing.isCompanyPriced && pricing.grossProfitUpliftAmount > 0 &&
+      isExternalAdjustmentEligibleProduct({
+        category: product.category,
+        productName: row.product_name || product.name,
+        accessoryType: product.accessory_type
+      });
     return {
       itemId: row.item_id,
       productId: row.product_id || '',
@@ -635,14 +594,9 @@ async function buildProductPricingDetails(orderId, transaction) {
       grossProfitUpliftAmount: pricing.grossProfitUpliftAmount ?? 0,
       supplierId: supplier?.supplier_id || supplierId,
       supplierName: supplier?.name || row.supplier_name || inboundSupplier?.supplier_name || '',
-      isServiceProvider,
-      externalAdjustmentEligible: isExternalAdjustmentEligibleProduct({
-        category: product.category,
-        productName: row.product_name || product.name,
-        accessoryType: product.accessory_type,
-        isServiceProvider
-      }),
-      externalAdjustmentRuleVersion: 'SUPPLIER_UPLIFT_V1',
+      isCompanyPriced: pricing.isCompanyPriced,
+      externalAdjustmentEligible,
+      externalAdjustmentRuleVersion: 'SUPPLIER_UPLIFT_V2',
       source: pricing.source
     };
   });

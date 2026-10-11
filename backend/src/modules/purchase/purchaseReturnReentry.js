@@ -40,8 +40,8 @@ async function createPurchaseReturnReentry({ inbound, userName, transaction }) {
     store_allocations: item.store_allocations,
     selected_resource_types: item.selected_resource_types,
     purchase_request_item_id: item.purchase_request_item_id,
-    gross_profit_use_standard_price: item.gross_profit_use_standard_price,
-    gross_profit_uplift_amount: item.gross_profit_uplift_amount
+    gross_profit_use_standard_price: null,
+    gross_profit_uplift_amount: null
   })).filter(item => item.quantity > 0);
 
   if (!rows.length) return null;
