@@ -278,7 +278,26 @@ onMounted(async () => {
   menuTree.value = isSalesQueryOnly(userInfo)
     ? getManagerMirrorMenus()
     : buildMenuTree(menus)
+  ensureCareCreditMenu(userInfo, menuTree.value)
 })
+
+function ensureCareCreditMenu(userInfo, menuTree) {
+  const roles = Array.isArray(userInfo.roles) && userInfo.roles.length
+    ? userInfo.roles
+    : String(userInfo.roleCode || '').split(',')
+  const supportedRoles = new Set(['admin', 'boss', 'finance', 'purchaser', 'manager', 'store_manager', 'clerk', 'staff'])
+  if (!roles.some(role => supportedRoles.has(String(role).trim().toLowerCase()))) return
+
+  let reportsMenu = menuTree.find(menu => menu.menuCode === 'reports' || menu.path === '/reports')
+  if (!reportsMenu) {
+    reportsMenu = { menuCode: 'reports', name: '报表统计', path: '/reports', icon: 'DataAnalysis', children: [] }
+    menuTree.push(reportsMenu)
+  }
+  reportsMenu.children ||= []
+  if (!reportsMenu.children.some(menu => menu.path === '/reports/care-credit' || menu.menuCode === 'reports_care_credit')) {
+    reportsMenu.children.push({ menuCode: 'reports_care_credit', name: 'CARE卡可用金', path: '/reports/care-credit' })
+  }
+}
 
 function getManagerMirrorMenus() {
   return [
@@ -310,7 +329,6 @@ function getManagerMirrorMenus() {
       { menuCode: 'reports_sales', name: '销售报表', path: '/reports/sales' },
       { menuCode: 'reports_inventory', name: '库存报表', path: '/reports/inventory' },
       { menuCode: 'reports_employee', name: '员工业绩统计', path: '/reports/employee' },
-      { menuCode: 'reports_care_credit', name: 'CARE卡可用金', path: '/reports/care-credit' },
       { menuCode: 'reports_achievement', name: '业务达成', path: '/reports/achievement' },
       { menuCode: 'reports_finance', name: '财务报表', path: '/reports/finance' }
     ] },
