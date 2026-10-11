@@ -310,6 +310,7 @@ function getManagerMirrorMenus() {
       { menuCode: 'reports_sales', name: '销售报表', path: '/reports/sales' },
       { menuCode: 'reports_inventory', name: '库存报表', path: '/reports/inventory' },
       { menuCode: 'reports_employee', name: '员工业绩统计', path: '/reports/employee' },
+      { menuCode: 'reports_care_credit', name: 'CARE卡可用金', path: '/reports/care-credit' },
       { menuCode: 'reports_achievement', name: '业务达成', path: '/reports/achievement' },
       { menuCode: 'reports_finance', name: '财务报表', path: '/reports/finance' }
     ] },
