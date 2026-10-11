@@ -38,6 +38,7 @@ const { releaseDepositRedemptionForOrder } = require('../sales/controller');
 const { assertActiveProducts } = require('../../utils/activeProduct');
 const { syncSerializedInventoryBalance } = require('./serializedInventoryBalance');
 const { ensurePurchaseReturnAccounting } = require('../purchase/purchaseReturnAccounting');
+const { createPurchaseReturnReentry } = require('../purchase/purchaseReturnReentry');
 const { advance: advanceApproval } = require('../approval/businessRuntime');
 const {
   VENDORS: SUPPLIER_INVENTORY_VENDORS,
@@ -6545,6 +6546,13 @@ async function executeReturn(ctx, parentTransaction = null) {
       status: allInboundItemsReturned ? 'returned' : 'completed',
       update_time: new Date()
     }, { transaction: t });
+    if (allInboundItemsReturned) {
+      await createPurchaseReturnReentry({
+        inbound,
+        userName: user.name || user.staffId || '',
+        transaction: t
+      });
+    }
 
     if (!parentTransaction) await t.commit();
     ctx.body = {

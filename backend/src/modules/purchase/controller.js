@@ -17,6 +17,7 @@ const { canAccessDistributor } = require('../../utils/distributorScope');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
 const { createProductRecord } = require('../product/controller');
 const { isPurchaseUpliftExemptCategory } = require('../../utils/purchaseGrossProfitPricing');
+const { createPurchaseReturnReentry } = require('./purchaseReturnReentry');
 
 const VALID_PURCHASE_INVOICE_TYPES = new Set(['专票13%', '收据']);
 function parsePurchaseGrossProfitMode(ctx, value) {
@@ -2785,6 +2786,11 @@ async function createPurchaseAdjustment(ctx) {
       });
       if (allItemsReturned && (inbound.items || []).length > 0) {
         await inbound.update({ status: 'returned', update_time: new Date() }, { transaction });
+        await createPurchaseReturnReentry({
+          inbound,
+          userName: user.name || user.phone || '',
+          transaction
+        });
       }
     }
 
