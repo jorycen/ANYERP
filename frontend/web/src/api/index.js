@@ -650,6 +650,7 @@ export default {
   getStaffCareCredits: () => api.get('/sales/care-credit/staff'),
   getStaffCareCredit: (staffId, params) => api.get(`/sales/care-credit/staff/${encodeURIComponent(staffId)}`, { params }),
   adjustStaffCareCredit: (staffId, data) => api.post(`/sales/care-credit/staff/${encodeURIComponent(staffId)}/adjust`, data),
+  setStaffCareCreditBalance: (staffId, data) => api.post(`/sales/care-credit/staff/${encodeURIComponent(staffId)}/set-balance`, data),
   getMonthlyTaskOptions: () => api.get('/sales/monthly-tasks/options'),
   getMonthlyTasks: (params) => api.get('/sales/monthly-tasks', { params }),
   saveMonthlyTask: (data) => api.post('/sales/monthly-tasks', data),

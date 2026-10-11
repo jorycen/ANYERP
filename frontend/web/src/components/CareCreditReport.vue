@@ -34,7 +34,43 @@
           <template #default="{ row }"><el-button link type="primary" @click="openDetail(row)">查看明细</el-button></template>
         </el-table-column>
       </el-table>
+      <div class="batch-adjust-actions">
+        <span>可粘贴姓名和目标余额，预览当前余额及差额后批量调整。</span>
+        <el-button type="warning" @click="openBatchAdjust">批量调整余额</el-button>
+      </div>
     </section>
+
+    <el-dialog v-model="batchAdjustVisible" title="批量调整 CARE 可用金" width="980px" top="5vh" :close-on-click-modal="!batchSubmitting">
+      <div class="batch-input-grid">
+        <el-form label-position="top">
+          <el-form-item label="销售人和目标余额">
+            <el-input v-model="batchInput" type="textarea" :rows="9" :disabled="batchSubmitting" placeholder="每行一人，支持：姓名 金额；也支持粘贴两列或 Markdown 表格" />
+          </el-form-item>
+          <el-form-item label="调整原因">
+            <el-input v-model="batchReason" maxlength="200" show-word-limit :disabled="batchSubmitting" placeholder="填写本次批量调整原因" />
+          </el-form-item>
+        </el-form>
+      </div>
+      <div class="batch-preview-toolbar">
+        <span>负数按负的账面净余额计算；账面净余额 = 可用余额 − 待追回金额。</span>
+        <el-button :disabled="batchSubmitting" @click="previewBatchAdjust">预览差额</el-button>
+      </div>
+      <el-table v-if="batchRows.length" :data="batchRows" stripe border max-height="360">
+        <el-table-column prop="name" label="销售人" min-width="120" />
+        <el-table-column label="当前账面净余额" width="150" align="right"><template #default="{ row }">¥{{ money(row.currentBalance) }}</template></el-table-column>
+        <el-table-column label="目标余额" width="130" align="right"><template #default="{ row }">¥{{ money(row.targetBalance) }}</template></el-table-column>
+        <el-table-column label="调整差额" width="130" align="right">
+          <template #default="{ row }"><span :class="row.delta >= 0 ? 'increase' : 'decrease'">{{ row.delta > 0 ? '+' : '' }}¥{{ money(row.delta) }}</span></template>
+        </el-table-column>
+        <el-table-column label="状态" width="130">
+          <template #default="{ row }"><el-tag :type="row.statusType" size="small">{{ row.status }}</el-tag></template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button :disabled="batchSubmitting" @click="batchAdjustVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="batchSubmitting" :disabled="!batchRows.length" @click="submitBatchAdjust">确认并执行调整</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog v-model="detailVisible" :title="`${detailStaff.name}的 CARE 可用金`" width="900px">
       <div class="detail-summary">
@@ -95,6 +131,50 @@ const detail = ref({ transactions: [], page: 1, hasMore: false })
 const adjustVisible = ref(false)
 const adjustSubmitting = ref(false)
 const adjustForm = reactive({ type: 'income', amount: 0.01, reason: '' })
+const batchAdjustVisible = ref(false)
+const batchSubmitting = ref(false)
+const batchInput = ref(`蒋君杰 6520
+杨荣 193
+邓永会 1101
+邱刚 2438
+王霖龙 600
+范志文 1133
+黄培华 171
+卢美琳 166
+雷兴盈 84
+凃祥林 46
+熊梁江 122
+尹惠 88
+李婕 107
+石高铭 305
+卢珏 10
+田公达 7
+董江波 13
+潘秋磊 -449
+徐启航 1766
+唐陈 138
+吴昊 741
+陈龙 112
+李佳晋 1055
+张翔 68
+陈学文 104
+范忠航 3540
+黄晓峰 1229
+汪磊 120
+葛宇 3428
+胡蝶 -184
+王清林 4236
+黄俊杰 1625
+邓航 292
+魏文超 365
+熊家敏 955
+潘昭华 172
+侯黔静 1712
+王茜 2664
+刘念 1513
+许乐 101`)
+const batchReason = ref('按本月结余清单调整 CARE 可用金目标余额')
+const batchRows = ref([])
 
 const money = value => Number(value || 0).toFixed(2)
 const dateTime = value => String(value || '').replace('T', ' ').slice(0, 19)
@@ -179,6 +259,123 @@ async function submitAdjustment() {
   }
 }
 
+function openBatchAdjust() {
+  if (!canManage.value) return
+  batchAdjustVisible.value = true
+  previewBatchAdjust()
+}
+
+function previewBatchAdjust() {
+  if (batchSubmitting.value) return
+  const staffByName = new Map()
+  for (const staff of staffRows.value) {
+    const name = String(staff.name || '').trim()
+    if (!staffByName.has(name)) staffByName.set(name, [])
+    staffByName.get(name).push(staff)
+  }
+  const parsed = []
+  const seenNames = new Set()
+  const lines = batchInput.value.split(/\r?\n/)
+  for (const [index, rawLine] of lines.entries()) {
+    const line = rawLine.trim()
+    if (!line || /^\|?\s*:?-{3,}/.test(line)) continue
+    const fields = (line.includes('|') ? line.split('|') : line.split(/[\t,，\s]+/))
+      .map(value => value.trim()).filter(Boolean)
+    if (fields.length < 2) {
+      parsed.push({ name: line, targetBalance: 0, currentBalance: 0, delta: 0, invalid: true, status: `第 ${index + 1} 行格式错误`, statusType: 'danger' })
+      continue
+    }
+    const name = fields[0].replace(/^[-*]\s*/, '').trim()
+    const amountText = fields[1].replace(/[¥￥,，]/g, '')
+    if (/销售人|姓名|本月结余|目标余额/.test(name) || /^(?:金额|余额)$/.test(amountText)) continue
+    const targetBalance = Number(amountText)
+    if (!name || !Number.isFinite(targetBalance) || Math.abs(targetBalance) > 1000000
+      || Math.abs(targetBalance * 100 - Math.round(targetBalance * 100)) > 0.000001) {
+      parsed.push({ name: name || line, targetBalance: 0, currentBalance: 0, delta: 0, invalid: true, status: `第 ${index + 1} 行金额无效`, statusType: 'danger' })
+      continue
+    }
+    if (seenNames.has(name)) {
+      parsed.push({ name, targetBalance, currentBalance: 0, delta: 0, invalid: true, status: '姓名重复', statusType: 'danger' })
+      continue
+    }
+    seenNames.add(name)
+    const matches = staffByName.get(name) || []
+    if (matches.length !== 1) {
+      parsed.push({ name, targetBalance, currentBalance: 0, delta: 0,
+        invalid: true, status: matches.length ? '员工姓名不唯一' : '未找到员工', statusType: 'danger' })
+      continue
+    }
+    const staff = matches[0]
+    const currentBalance = Number(staff.available || 0) - Number(staff.recoveryDue || 0)
+    const delta = Math.round((targetBalance - currentBalance) * 100) / 100
+    if (Math.abs(delta) > 1000000) {
+      parsed.push({ staffId: staff.staffId, name, targetBalance, currentBalance, delta,
+        invalid: true, status: '差额超过单笔上限 100 万', statusType: 'danger' })
+      continue
+    }
+    parsed.push({ staffId: staff.staffId, name, targetBalance, currentBalance, delta,
+      operationId: `care_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`,
+      status: Math.abs(delta) < 0.005 ? '余额已一致' : '待调整',
+      statusType: Math.abs(delta) < 0.005 ? 'info' : 'warning' })
+  }
+  batchRows.value = parsed
+  if (!parsed.length) ElMessage.warning('请粘贴至少一条有效的姓名和目标余额')
+}
+
+async function submitBatchAdjust() {
+  if (!canManage.value || batchSubmitting.value) return
+  const reason = String(batchReason.value || '').trim()
+  if (reason.length < 2 || reason.length > 200) return ElMessage.warning('请填写 2 到 200 个字的调整原因')
+  const invalidRows = batchRows.value.filter(row => row.invalid)
+  if (invalidRows.length) return ElMessage.warning('请先修正未匹配、重复或格式错误的行')
+  const pending = batchRows.value.filter(row => row.staffId && Math.abs(row.delta) >= 0.005 && row.status !== '已完成')
+  if (!pending.length) return ElMessage.info('没有需要调整的余额')
+  const totalIncome = pending.reduce((sum, row) => sum + Math.max(0, row.delta), 0)
+  const totalExpense = pending.reduce((sum, row) => sum + Math.max(0, -row.delta), 0)
+  try {
+    await ElMessageBox.confirm(
+      `将调整 ${pending.length} 位员工。增加合计 ¥${money(totalIncome)}，减少合计 ¥${money(totalExpense)}。请核对预览中的当前余额、目标余额和差额。`,
+      '确认批量调整 CARE 可用金', { type: 'warning', confirmButtonText: '确认调整', cancelButtonText: '返回核对' }
+    )
+  } catch { return }
+
+  batchSubmitting.value = true
+  try {
+    for (const row of pending) {
+      row.status = '处理中'
+      row.statusType = 'warning'
+      try {
+        const response = await api.setStaffCareCreditBalance(row.staffId, {
+          targetBalance: row.targetBalance,
+          reason,
+          operationId: row.operationId
+        })
+        const result = body(response)
+        row.delta = Number(result.adjustmentAmount || 0)
+        row.currentBalance = Math.round((row.targetBalance - row.delta) * 100) / 100
+        row.status = '已完成'
+        row.statusType = 'success'
+        row.transactionId = result.transactionId
+        const staff = staffRows.value.find(item => String(item.staffId) === String(row.staffId))
+        if (staff) {
+          staff.available = result.available
+          staff.reserved = result.reserved
+          staff.recoveryDue = result.recoveryDue
+        }
+      } catch (error) {
+        row.status = `失败：${error.message || '请求失败'}`
+        row.statusType = 'danger'
+      }
+    }
+    const failed = batchRows.value.filter(row => row.statusType === 'danger').length
+    if (failed) ElMessage.warning(`批量调整完成，${failed} 条失败；修正问题后可重新预览并重试。`)
+    else ElMessage.success(`批量调整完成，共处理 ${pending.length} 条。`)
+    await loadOverview()
+  } finally {
+    batchSubmitting.value = false
+  }
+}
+
 onMounted(loadOverview)
 </script>
 
@@ -192,6 +389,9 @@ onMounted(loadOverview)
 .balance-card span { color: #65758b; font-size: 13px; }.balance-card strong { color: #213249; font-size: 25px; }.balance-card small { color: #3479d6; }
 .balance-card.primary { cursor: pointer; border-color: #cce0fb; background: #f1f7ff; }.balance-card.primary strong { color: #1769c9; }
 .staff-section { margin-top: 18px; }.detail-summary { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; margin-bottom: 16px; color: #44546a; }
+.batch-adjust-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 14px 0 4px; color: #7b899c; font-size: 13px; }
+.batch-input-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.batch-preview-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; color: #7b899c; font-size: 13px; }
 .detail-pagination { display: flex; justify-content: center; margin-top: 15px; }.increase { color: #179060; }.decrease { color: #d65353; }
-@media (max-width: 700px) { .balance-grid { grid-template-columns: 1fr; } }
+@media (max-width: 700px) { .balance-grid { grid-template-columns: 1fr; }.batch-adjust-actions, .batch-preview-toolbar { align-items: flex-start; flex-direction: column; } }
 </style>

@@ -223,6 +223,56 @@ async function adjustStaffCareCredit(ctx) {
   ctx.body = { transactionId: record.transaction_id, ...await readCareWallet(staff.staff_id) };
 }
 
+async function setStaffCareCreditBalance(ctx) {
+  const targetBalance = Number(ctx.request.body?.targetBalance);
+  const reason = String(ctx.request.body?.reason || '').trim();
+  const operationId = String(ctx.request.body?.operationId || '').trim();
+  if (!Number.isFinite(targetBalance) || Math.abs(targetBalance) > 1000000
+    || Math.abs(targetBalance * 100 - Math.round(targetBalance * 100)) > 0.000001) {
+    ctx.throw(400, '目标余额须为两位小数以内的金额，且绝对值不超过100万元');
+  }
+  if (reason.length < 2 || reason.length > 200) ctx.throw(400, '请填写2到200字的调整原因');
+  if (!/^[A-Za-z0-9_-]{8,40}$/.test(operationId)) ctx.throw(400, '余额设置请求编号无效');
+  const staff = await findAccessibleStaff(ctx, ctx.params.staffId);
+  const target = money(targetBalance);
+  const sourceId = `${staff.staff_id}:${operationId}`;
+  const targetMarker = `目标余额：${target.toFixed(2)}`;
+  const record = await sequelize.transaction(async transaction => {
+    await lockStaff(staff.staff_id, transaction);
+    const existing = await StaffCareCreditTransaction.findOne({
+      where: { source_type: 'MANUAL_SET', source_id: sourceId }, transaction
+    });
+    if (existing) {
+      if (!String(existing.remark || '').includes(targetMarker)
+        || !String(existing.remark || '').endsWith(`原因：${reason}`)) {
+        ctx.throw(409, '该请求编号已用于不同的目标余额或原因');
+      }
+      return existing;
+    }
+
+    const totals = await walletTotals(staff.staff_id, transaction);
+    const currentBalance = money(totals.earned - totals.spent - totals.reserved);
+    const delta = money(target - currentBalance);
+    if (delta === 0) return null;
+    if (Math.abs(delta) > 1000000) ctx.throw(400, '本次调整差额超过单笔100万元上限');
+    const actor = ctx.state.user.name || ctx.state.user.staffId;
+    return createCreditEntry({
+      staffId: staff.staff_id,
+      staffName: staff.name,
+      type: delta > 0 ? 'income' : 'expense',
+      amount: Math.abs(delta),
+      sourceType: 'MANUAL_SET',
+      sourceId,
+      remark: `管理员${actor}（ID:${ctx.state.user.staffId}）批量设置 CARE 可用金；${targetMarker}；原因：${reason}`,
+      transaction
+    });
+  });
+  const adjustmentAmount = record
+    ? money((record.type === 'income' ? 1 : -1) * Number(record.amount || 0))
+    : 0;
+  ctx.body = { transactionId: record?.transaction_id || null, adjustmentAmount, ...await readCareWallet(staff.staff_id) };
+}
+
 async function getOrderCareCredit(ctx) {
   const order = await Order.findByPk(ctx.params.orderId);
   assertOwnOrder(ctx, order);
@@ -384,7 +434,7 @@ async function reverseForSalesReturn({ request, order, requestItems, orderItemMa
 
 module.exports = {
   SALES_REPORT_CREDIT, isCareProduct, walletTotals, creditSalesReport,
-  getMyCareCredit, listStaffCareCredit, getStaffCareCredit, adjustStaffCareCredit,
+  getMyCareCredit, listStaffCareCredit, getStaffCareCredit, adjustStaffCareCredit, setStaffCareCreditBalance,
   getOrderCareCredit, reserveOrderCareCredit, cancelOrderCareCredit,
   activateOrderCareCredit, releaseOrderCareCredit, reverseForSalesReturn,
   _test: { careCostDetails, money }

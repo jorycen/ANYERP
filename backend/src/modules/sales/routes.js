@@ -86,6 +86,7 @@ router.get('/care-credit/me', staffCareCredit.getMyCareCredit);
 router.get('/care-credit/staff', requireRole('admin', 'boss'), staffCareCredit.listStaffCareCredit);
 router.get('/care-credit/staff/:staffId', requireRole('admin', 'boss'), staffCareCredit.getStaffCareCredit);
 router.post('/care-credit/staff/:staffId/adjust', requireRole('admin', 'boss'), staffCareCredit.adjustStaffCareCredit);
+router.post('/care-credit/staff/:staffId/set-balance', requireRole('admin', 'boss'), staffCareCredit.setStaffCareCreditBalance);
 router.get('/orders/:orderId/care-credit', staffCareCredit.getOrderCareCredit);
 router.post('/orders/:orderId/care-credit', staffCareCredit.reserveOrderCareCredit);
 router.post('/orders/:orderId/care-credit/cancel', staffCareCredit.cancelOrderCareCredit);
