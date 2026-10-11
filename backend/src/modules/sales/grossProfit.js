@@ -135,7 +135,7 @@ function resolveUnitProductPricing(
     : !supplier || Number(supplier.is_service_provider) !== 0;
   const grossProfitUpliftAmount = isServiceProvider || noPurchaseUplift
     ? 0
-    : Math.max(0, roundMoney(hasPurchaseMode ? (purchaseUpliftAmount ?? 200) : supplier.gross_profit_uplift_amount));
+    : Math.max(0, roundMoney(purchaseUpliftAmount ?? supplier?.gross_profit_uplift_amount ?? 0));
   const sourcePurchasePrice = toNumber(orderItem.purchasePrice) ||
     toNumber(orderItem.original_pickup_price) ||
     toNumber(orderItem.original_inventory_cost);
@@ -163,8 +163,7 @@ function resolveUnitProductPricing(
   }
 
   if (!isServiceProvider && purchasePrice > 0) {
-    return result(purchasePrice + grossProfitUpliftAmount,
-      grossProfitUpliftAmount > 0 ? 'purchase_price_with_uplift' : 'purchase_price');
+    return result(purchasePrice, 'purchase_price');
   }
 
   if (isServiceProvider && toNumber(productPrice.cost_price) > 0) {
@@ -252,7 +251,19 @@ function calculateGrossProfitValues({
   const grossProfitBeforeExternalAdjustment = roundMoney(
     normalizedReceivableAmount - productPricingAmount - paymentFeeAmount - vatAmount + supplementAmount - freightCostAmount
   );
-  const externalAdjustmentFee = externalAdjustmentEligible && grossProfitBeforeExternalAdjustment > 500 ? 200 : 0;
+  const externalAdjustmentAmount = roundMoney(normalizedProductPricing.reduce((sum, item) => {
+    const eligible = item.externalAdjustmentEligible === true || item.external_adjustment_eligible === true ||
+      isExternalAdjustmentEligibleProduct(item);
+    if (!eligible) return sum;
+    return sum + roundMoney(item.grossProfitUpliftAmount ?? item.gross_profit_uplift_amount) * item.quantity;
+  }, 0));
+  const hasEligibleExternalAdjustmentProduct = externalAdjustmentEligible || normalizedProductPricing.some(item =>
+    item.externalAdjustmentEligible === true || item.external_adjustment_eligible === true ||
+    isExternalAdjustmentEligibleProduct(item)
+  );
+  const externalAdjustmentFee = hasEligibleExternalAdjustmentProduct && grossProfitBeforeExternalAdjustment > 500
+    ? externalAdjustmentAmount
+    : 0;
   const grossProfitAmount = roundMoney(grossProfitBeforeExternalAdjustment - externalAdjustmentFee);
 
   return {
@@ -265,7 +276,8 @@ function calculateGrossProfitValues({
     supplementAmount,
     freightCostAmount,
     grossProfitBeforeExternalAdjustment,
-    externalAdjustmentEligible: !!externalAdjustmentEligible,
+    externalAdjustmentEligible: !!hasEligibleExternalAdjustmentProduct,
+    externalAdjustmentAmount,
     externalAdjustmentFee,
     grossProfitAmount,
     paymentDetails: normalizedPayments,
@@ -311,7 +323,19 @@ function snapshotToResponse(snapshot, order = null) {
     item.externalAdjustmentEligible === true || item.external_adjustment_eligible === true ||
     isExternalAdjustmentEligibleProduct(item)
   );
-  const externalAdjustmentFee = externalAdjustmentEligible && grossProfitBeforeExternalAdjustment > 500 ? 200 : 0;
+  const externalAdjustmentAmount = roundMoney(productPricingDetails.reduce((sum, item) => {
+    const eligible = item.externalAdjustmentEligible === true || item.external_adjustment_eligible === true ||
+      isExternalAdjustmentEligibleProduct(item);
+    if (!eligible) return sum;
+    return sum + roundMoney(item.grossProfitUpliftAmount ?? item.gross_profit_uplift_amount) *
+      toNumber(item.quantity || 1);
+  }, 0));
+  const usesSupplierUpliftRule = productPricingDetails.some(item =>
+    item.externalAdjustmentRuleVersion === 'SUPPLIER_UPLIFT_V1'
+  );
+  const externalAdjustmentFee = externalAdjustmentEligible && grossProfitBeforeExternalAdjustment > 500
+    ? (usesSupplierUpliftRule ? externalAdjustmentAmount : 200)
+    : 0;
   const storedAdjustmentDetails = parseJsonArray(row.supplement_details);
   return {
     grossProfitId: row.gross_profit_id,
@@ -336,6 +360,7 @@ function snapshotToResponse(snapshot, order = null) {
     freightCostAmount,
     grossProfitBeforeExternalAdjustment,
     externalAdjustmentEligible,
+    externalAdjustmentAmount,
     externalAdjustmentFee,
     grossProfitAmount: roundMoney(row.gross_profit_amount),
     paymentDetails: parseJsonArray(row.payment_fee_details),
@@ -345,7 +370,7 @@ function snapshotToResponse(snapshot, order = null) {
     snapshotStatus: row.snapshot_status,
     calculatedBy: row.calculated_by || '',
     calculatedAt: row.calculated_at,
-    formula: '用户应收 - 公司定价商品定价（特价SN优先）/采购价商品的采购价及适用的每件上浮（售后、二手不上浮） - 支付手续费 - 增值税 + 补录净额 - 运费；符合条件的电脑、手机或平板且基础毛利超过500元时另扣200元外调费'
+    formula: '用户应收 - 公司定价商品定价（特价SN优先）/非定价商品实际采购成本 - 支付手续费 - 增值税 + 补录净额 - 运费 - 符合条件商品按供应商毛利上浮额度计算的外调费'
   };
 }
 
@@ -617,6 +642,7 @@ async function buildProductPricingDetails(orderId, transaction) {
         accessoryType: product.accessory_type,
         isServiceProvider
       }),
+      externalAdjustmentRuleVersion: 'SUPPLIER_UPLIFT_V1',
       source: pricing.source
     };
   });
