@@ -322,7 +322,7 @@ async function reserveOrderCareCredit(ctx) {
         await existing.update({ status: 'cancelled', remark: 'CARE余额不足，未抵扣余额；本单CARE成本全额计入毛利扣减' }, { transaction });
       }
       return { reservedAmount: 0, careCost: amount, grossProfitDeduction: amount,
-        available: totals.available, applied: false };
+        available: usable, applied: false };
     }
     const balanceAfter = money(totals.earned - totals.spent - totals.reserved + reservedAmount - amount);
     if (existing) await existing.update({ amount, status: 'reserved', balance_after: balanceAfter,
