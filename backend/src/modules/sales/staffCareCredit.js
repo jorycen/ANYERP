@@ -281,42 +281,61 @@ async function getOrderCareCredit(ctx) {
     StaffCareCreditTransaction.findOne({ where: { source_type: CARE_ORDER_SOURCE, source_id: order.order_id } })
   ]);
   const appliedAmount = ['reserved', 'active'].includes(applied?.status) ? money(applied.amount) : 0;
+  const usable = money(totals.available + (applied?.status === 'reserved' ? Number(applied.amount || 0) : 0));
+  const coveredInFull = applied?.status === 'active'
+    ? appliedAmount >= quote.careCost
+    : quote.careCost > 0 && usable >= quote.careCost;
   ctx.body = { orderId: order.order_id, orderStatus: order.order_status, ...quote,
-    ...totals, appliedAmount, careCostAfterCredit: money(Math.max(0, quote.careCost - appliedAmount)),
+    ...totals, appliedAmount, careCostAfterCredit: coveredInFull ? 0 : quote.careCost,
+    canCoverCareCost: coveredInFull, grossProfitDeduction: coveredInFull ? 0 : quote.careCost,
     appliedStatus: applied?.status || '' };
 }
 
 async function reserveOrderCareCredit(ctx) {
-  const amount = money(ctx.request.body?.amount);
-  if (!Number.isFinite(amount) || amount <= 0) ctx.throw(400, '抵扣金额必须大于0');
+  const requestedAmount = ctx.request.body?.amount;
+  const hasRequestedAmount = requestedAmount !== undefined && requestedAmount !== null && requestedAmount !== '';
+  const requestedValue = hasRequestedAmount ? Number(requestedAmount) : null;
+  if (hasRequestedAmount && (!Number.isFinite(requestedValue) || requestedValue <= 0)) {
+    ctx.throw(400, 'CARE 成本抵扣金额必须大于0');
+  }
   const result = await sequelize.transaction(async transaction => {
     const order = await Order.findByPk(ctx.params.orderId, { transaction, lock: transaction.LOCK.UPDATE });
     assertOwnOrder(ctx, order);
-    if (order.order_status !== '未归档') ctx.throw(409, '仅未归档订单可申请CARE成本抵扣');
+    if (order.order_status !== '\u672a\u5f52\u6863') ctx.throw(409, '仅未归档订单可申请CARE成本抵扣');
     await lockStaff(order.create_staff_id, transaction);
     const quote = await orderCareQuote(order, transaction);
     if (quote.careCost <= 0) ctx.throw(409, '订单没有可抵扣成本的CARE延保商品');
-    if (amount > quote.careCost) ctx.throw(400, '抵扣金额不能超过CARE商品成本');
+    const amount = quote.careCost;
+    if (hasRequestedAmount && money(requestedValue) !== amount) {
+      ctx.throw(400, 'CARE 商品成本只能全额抵扣，不支持拆分金额');
+    }
     const existing = await StaffCareCreditTransaction.findOne({
       where: { source_type: CARE_ORDER_SOURCE, source_id: order.order_id },
       transaction, lock: transaction.LOCK.UPDATE
     });
     if (existing && existing.status === 'active') ctx.throw(409, '该订单CARE抵扣已入账');
     const totals = await walletTotals(order.create_staff_id, transaction);
-    const usable = money(totals.available + (existing?.status === 'reserved' ? Number(existing.amount || 0) : 0));
-    if (amount > usable) ctx.throw(409, `CARE可用金不足，当前可用${usable.toFixed(2)}元`);
-    const balanceAfter = money(totals.earned - totals.spent - totals.reserved
-      + (existing?.status === 'reserved' ? Number(existing.amount || 0) : 0) - amount);
+    const reservedAmount = existing?.status === 'reserved' ? Number(existing.amount || 0) : 0;
+    const usable = money(totals.available + reservedAmount);
+    if (amount > usable) {
+      if (existing?.status === 'reserved') {
+        await existing.update({ status: 'cancelled', remark: 'CARE余额不足，未抵扣余额；本单CARE成本全额计入毛利扣减' }, { transaction });
+      }
+      return { reservedAmount: 0, careCost: amount, grossProfitDeduction: amount,
+        available: totals.available, applied: false };
+    }
+    const balanceAfter = money(totals.earned - totals.spent - totals.reserved + reservedAmount - amount);
     if (existing) await existing.update({ amount, status: 'reserved', balance_after: balanceAfter,
-      remark: `订单${order.order_no} CARE延保成本待抵扣` }, { transaction });
+      remark: `订单${order.order_no} CARE商品成本全额待抵扣` }, { transaction });
     else await StaffCareCreditTransaction.create({
       transaction_id: generateUUID(), staff_id: order.create_staff_id,
       staff_name: order.create_user || ctx.state.user.name || '', type: 'expense', amount,
       balance_after: balanceAfter, source_type: CARE_ORDER_SOURCE, source_id: order.order_id,
       order_id: order.order_id, order_no: order.order_no, status: 'reserved',
-      remark: `订单${order.order_no} CARE延保成本待抵扣`
+      remark: `订单${order.order_no} CARE商品成本全额待抵扣`
     }, { transaction });
-    return { reservedAmount: amount, careCost: quote.careCost, available: money(usable - amount) };
+    return { reservedAmount: amount, careCost: amount, grossProfitDeduction: 0,
+      available: money(usable - amount), applied: true };
   });
   ctx.body = result;
 }
@@ -341,15 +360,44 @@ async function cancelOrderCareCredit(ctx) {
 }
 
 async function activateOrderCareCredit(order, transaction) {
-  const record = await StaffCareCreditTransaction.findOne({
+  let record = await StaffCareCreditTransaction.findOne({
     where: { source_type: CARE_ORDER_SOURCE, source_id: order.order_id }, transaction,
     lock: transaction.LOCK.UPDATE
   });
-  if (record?.status !== 'reserved') return;
+  if (record?.status === 'active') return;
   const quote = await orderCareQuote(order, transaction);
-  if (money(record.amount) > quote.careCost) {
-    throw Object.assign(new Error('CARE商品成本已变化，请重新设置可用金抵扣'), { status: 409 });
+  if (quote.careCost <= 0) {
+    if (record?.status === 'reserved') await record.update({
+      status: 'cancelled', remark: '订单不含 CARE 商品，已释放预留可用金'
+    }, { transaction });
+    return;
   }
+
+  const totals = await walletTotals(order.create_staff_id, transaction);
+  const reservedAmount = record?.status === 'reserved' ? money(record.amount) : 0;
+  const usable = money(totals.available + reservedAmount);
+  if (usable < quote.careCost) {
+    if (record?.status === 'reserved') await record.update({
+      status: 'cancelled', remark: 'CARE余额不足，未抵扣余额；本单CARE成本全额计入毛利扣减'
+    }, { transaction });
+    return;
+  }
+
+  const balanceAfter = money(totals.earned - totals.spent - totals.reserved
+    + reservedAmount - quote.careCost);
+  if (record) {
+    await record.update({ amount: quote.careCost, status: 'active', balance_after: balanceAfter,
+      remark: `订单${order.order_no} CARE商品成本全额抵扣` }, { transaction });
+  } else {
+    record = await StaffCareCreditTransaction.create({
+      transaction_id: generateUUID(), staff_id: order.create_staff_id,
+      staff_name: order.create_user || '', type: 'expense', amount: quote.careCost,
+      balance_after: balanceAfter, source_type: CARE_ORDER_SOURCE, source_id: order.order_id,
+      order_id: order.order_id, order_no: order.order_no, status: 'active',
+      remark: `订单${order.order_no} CARE商品成本全额抵扣`
+    }, { transaction });
+  }
+
   const adjustmentNo = `AUTO-CARE-${order.order_id}`;
   await PerformanceProfitAdjustment.findOrCreate({
     where: { adjustment_no: adjustmentNo },
@@ -357,15 +405,14 @@ async function activateOrderCareCredit(order, transaction) {
       adjustment_id: generateUUID(), adjustment_no: adjustmentNo,
       order_id: order.order_id, order_no: order.order_no, store_id: order.store_id,
       employee_name: order.create_user || record.staff_name,
-      adjustment_type: 'increase', amount: money(record.amount), signed_amount: money(record.amount),
-      base_gross_profit: 0, reason: '个人CARE可用金抵扣本单延保成本', status: 'approved',
+      adjustment_type: 'increase', amount: quote.careCost, signed_amount: quote.careCost,
+      base_gross_profit: 0, reason: '个人 CARE 可用金全额抵扣本单 CARE 商品成本', status: 'approved',
       applicant_staff_id: 0, applicant_name: 'system', finance_reviewer_id: 0,
       finance_reviewer_name: 'system', finance_review_time: new Date(),
       admin_reviewer_id: 0, admin_reviewer_name: 'system', admin_review_time: new Date(),
       create_time: new Date(), update_time: new Date()
     }, transaction
   });
-  await record.update({ status: 'active', remark: `订单${order.order_no} CARE延保成本已抵扣` }, { transaction });
 }
 
 async function reverseForSalesReturn({ request, order, requestItems, orderItemMap, transaction }) {
