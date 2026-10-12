@@ -26,6 +26,23 @@ const FORMULA_VERSION = 'ORDER_GP_V11_PRODUCT_COST_MODE';
 const { allocateProfit } = require('../report/performanceAllocation');
 const VAT_RATE = 0.13;
 const NATIONAL_SUBSIDY_RECEIPT_TAX_RATE = 0.006;
+// Approved historical cost basis for sales made on October 1–7, 2026 (China time).
+// Keep this in the calculation path so a forced refresh cannot undo the snapshots.
+const EARLY_OCTOBER_2026_PN_COST = new Map([
+  ['ZAJA0009CN', 5400],
+  ['ZAJA0007CN', 4500],
+  ['ZAJA0001CN', 5400],
+  ['ZAJA0002CN', 4500],
+  ['ZAJA0012CN', 4500]
+]);
+const EARLY_OCTOBER_START = Date.parse('2026-10-01T00:00:00+08:00');
+const EARLY_OCTOBER_END = Date.parse('2026-10-08T00:00:00+08:00');
+
+function historicalPnCost(order, pnCode) {
+  const soldAt = new Date(order?.create_time).getTime();
+  if (!(soldAt >= EARLY_OCTOBER_START && soldAt < EARLY_OCTOBER_END)) return null;
+  return EARLY_OCTOBER_2026_PN_COST.get(String(pnCode || '').trim().toUpperCase()) ?? null;
+}
 
 function toNumber(value) {
   const number = Number(value || 0);
@@ -581,8 +598,16 @@ async function buildProductPricingDetails(orderId, transaction) {
               ? 'PURCHASE_PRICE' : product.gross_profit_cost_mode
       }
     );
+    const fixedCost = historicalPnCost(order, row.pn_code);
+    const effectivePricing = fixedCost === null ? pricing : {
+      ...pricing,
+      unitPricing: fixedCost,
+      source: 'historical_pn_cost_override',
+      grossProfitUpliftAmount: 0,
+      isCompanyPriced: true
+    };
     const quantity = Number(row.quantity || 1);
-    const externalAdjustmentEligible = !pricing.isCompanyPriced && pricing.grossProfitUpliftAmount > 0 &&
+    const externalAdjustmentEligible = !effectivePricing.isCompanyPriced && effectivePricing.grossProfitUpliftAmount > 0 &&
       isExternalAdjustmentEligibleProduct({
         category: product.category,
         productName: row.product_name || product.name,
@@ -597,18 +622,18 @@ async function buildProductPricingDetails(orderId, transaction) {
       pnCode: row.pn_code || '',
       snCode: row.sn_code || '',
       quantity,
-      unitPricing: pricing.unitPricing,
-      pricingAmount: roundMoney(pricing.unitPricing * quantity),
-      specialPrice: specialPrice > 0 ? roundMoney(specialPrice) : null,
-      isSpecialPrice: specialPrice > 0,
-      purchasePrice: pricing.purchasePrice ?? roundMoney(purchasePrice),
-      grossProfitUpliftAmount: pricing.grossProfitUpliftAmount ?? 0,
+      unitPricing: effectivePricing.unitPricing,
+      pricingAmount: roundMoney(effectivePricing.unitPricing * quantity),
+      specialPrice: fixedCost === null && specialPrice > 0 ? roundMoney(specialPrice) : null,
+      isSpecialPrice: fixedCost === null && specialPrice > 0,
+      purchasePrice: effectivePricing.purchasePrice ?? roundMoney(purchasePrice),
+      grossProfitUpliftAmount: effectivePricing.grossProfitUpliftAmount ?? 0,
       supplierId: supplier?.supplier_id || supplierId,
       supplierName: supplier?.name || row.supplier_name || inboundSupplier?.supplier_name || '',
-      isCompanyPriced: pricing.isCompanyPriced,
+      isCompanyPriced: effectivePricing.isCompanyPriced,
       externalAdjustmentEligible,
       externalAdjustmentRuleVersion: 'SUPPLIER_UPLIFT_V2',
-      source: pricing.source
+      source: effectivePricing.source
     };
   });
 }
