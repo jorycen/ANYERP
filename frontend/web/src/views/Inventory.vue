@@ -510,9 +510,6 @@
             <el-table-column prop="counterparty_name" label="往来单位" width="160" show-overflow-tooltip />
             <el-table-column prop="items_summary" label="商品摘要" min-width="200" show-overflow-tooltip />
             <el-table-column prop="total_quantity" label="总数量" width="100" />
-            <el-table-column prop="total_amount" label="总金额" width="120">
-              <template #default="{ row }">¥{{ row.total_amount }}</template>
-            </el-table-column>
             <el-table-column prop="status" label="状态" width="100">
               <template #default="{ row }">
                 <el-tag :type="getInboundStatusType(row.status)">{{ getInboundStatusText(row.status) }}</el-tag>
@@ -837,7 +834,6 @@
           <el-descriptions-item label="采购申请单号">{{ currentInbound.purchase_source?.request_no || '-' }}</el-descriptions-item>
           <el-descriptions-item label="供应商">{{ currentInbound.purchase_source?.supplier_name || '-' }}</el-descriptions-item>
           <el-descriptions-item label="总数量">{{ currentInbound.total_quantity }}</el-descriptions-item>
-          <el-descriptions-item label="总金额">¥{{ currentInbound.total_amount }}</el-descriptions-item>
           <el-descriptions-item label="创建时间">{{ formatDate(currentInbound.create_time) }}</el-descriptions-item>
           <el-descriptions-item label="创建人">{{ currentInbound.create_user }}</el-descriptions-item>
           <el-descriptions-item label="入库人员">{{ currentInbound.receive_user || '-' }}</el-descriptions-item>
@@ -855,9 +851,6 @@
             <template #default="{ row }">
               {{ (row.sn_codes || (row.sn_code ? [row.sn_code] : [])).join('、') || '-' }}
             </template>
-          </el-table-column>
-          <el-table-column prop="unit_price" label="单价" width="100">
-            <template #default="{ row }">¥{{ row.unit_price }}</template>
           </el-table-column>
           <el-table-column prop="quantity" label="数量" width="80" />
           <el-table-column label="入库人员" width="120">
@@ -1020,7 +1013,6 @@
           <el-descriptions-item label="入库单号">{{ currentInbound.inbound_no }}</el-descriptions-item>
           <el-descriptions-item label="门店">{{ currentInbound.store_name }}</el-descriptions-item>
           <el-descriptions-item label="总数量">{{ currentInbound.total_quantity }}</el-descriptions-item>
-          <el-descriptions-item label="总金额">¥{{ currentInbound.total_amount }}</el-descriptions-item>
         </el-descriptions>
 
         <el-form label-width="80px" class="mt-20">
