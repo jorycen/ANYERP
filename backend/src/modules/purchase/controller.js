@@ -1,7 +1,7 @@
 /**
  * 采购管理控制器
  */
-const { sequelize, PurchaseRequest, PurchaseRequestItem, PurchaseAdjustment, PurchaseAdjustmentItem, Supplier, SupplierPaymentAccount, Store, Staff, Distributor, Location, Product, ProductPrice, ProductSn, Inbound, InboundItem, InboundItemSn, ReturnStock, ReturnStockItem, Payable, Expense, Settlement, SupplierRebate, ResourceCategory, GoodsType, SnLog } = require('../../models');
+const { sequelize, PurchaseRequest, PurchaseRequestItem, PurchaseAdjustment, PurchaseAdjustmentItem, Supplier, SupplierPaymentAccount, Store, Staff, Distributor, Location, Product, ProductPrice, ProductSn, Inbound, InboundItem, InboundItemSn, ReturnStock, ReturnStockItem, Payable, Expense, Settlement, SettlementItem, SupplierRebate, ResourceCategory, GoodsType, SnLog } = require('../../models');
 const { Op } = require('sequelize');
 const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const { sendExcel } = require('../../utils/excelExport');
@@ -826,6 +826,24 @@ function getPurchaseLifecycleStatus(requestStatus, inboundRows = []) {
   return requestStatus;
 }
 
+function canRevokeReturnedPurchase(requestStatus, inboundRows = []) {
+  return requestStatus === 'approved'
+    && inboundRows.some(item => item.status === 'returned')
+    && inboundRows.every(item => ['returned', 'cancelled', 'pending'].includes(item.status)
+      && (item.status !== 'pending' || (item.items || []).every(detail => Number(detail.received_quantity || 0) === 0)));
+}
+
+function canRevokePurchaseForUser(user, request) {
+  const currentStaffId = user.staffId || user.id;
+  const isApplicant = request.applicant_staff_id && currentStaffId
+    ? Number(request.applicant_staff_id) === Number(currentStaffId)
+    : [user.name, user.phone, String(currentStaffId || '')].filter(Boolean).includes(request.apply_user);
+  const roles = getUserRoles(user);
+  const isDistributorAccount = roles.some(role => ['admin', 'boss', 'distributor'].includes(role));
+  return Boolean(isApplicant || (isDistributorAccount && request.distributor_id
+    && canAccessDistributor(user, request.distributor_id)));
+}
+
 async function findPurchaseRequestIdsByLifecycleStatus(status) {
   const inboundRows = await Inbound.findAll({
     where: { purchase_request_id: { [Op.ne]: null } },
@@ -1051,7 +1069,10 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
         model: Inbound,
         attributes: ['inbound_id', 'inbound_no', 'store_id', 'source_no', 'status'],
         separate: true,
-        include: [{ model: Store, attributes: ['store_id', 'name'], required: false }]
+        include: [
+          { model: Store, attributes: ['store_id', 'name'], required: false },
+          { model: InboundItem, as: 'items', attributes: ['received_quantity'], required: false }
+        ]
       }
     ],
     order: buildPendingFirstOrder(sequelize, {
@@ -1133,8 +1154,10 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
         store_name: item.Store?.name || ''
       }));
     result.has_completed_inbound = inboundRows.some(item => item.status === 'completed');
-    // 只有审批尚未完成时允许撤回；撤回后会回到草稿，原单可继续编辑提交。
-    result.can_revoke = result.status === 'pending' && !result.has_completed_inbound;
+    // 待审批申请可撤回草稿；全部退货的已通过采购单可最终撤销。
+    result.can_revoke = canRevokePurchaseForUser(ctx.state.user, result)
+      && ((result.status === 'pending' && !result.has_completed_inbound)
+        || canRevokeReturnedPurchase(result.status, inboundRows));
     
     return result;
   });
@@ -2889,21 +2912,117 @@ async function revokeRequest(ctx) {
   if (!request) ctx.throw(404, '采购申请不存在');
   assertStoreVisible(ctx, request.store_id);
 
-  const roles = getUserRoles(user);
-  const isPrivileged = roles.some(role => ['purchaser', 'finance', 'admin', 'boss'].includes(role));
-  const currentStaffId = user.staffId || user.id;
-  const isApplicant = request.applicant_staff_id && currentStaffId
-    ? Number(request.applicant_staff_id) === Number(currentStaffId)
-    : [user.name, user.phone, String(currentStaffId || '')].filter(Boolean).includes(request.apply_user);
-  const distributorAllowed = request.distributor_id
-    ? canAccessDistributor(user, request.distributor_id)
-    : false;
-  if (!isApplicant && !isPrivileged && !distributorAllowed) ctx.throw(403, '只有发起人或经销商账号可以撤回该采购申请');
+  if (!canRevokePurchaseForUser(user, request)) ctx.throw(403, '只有发起人或经销商账号可以撤销该采购申请');
+
+  const inbounds = request.Inbounds || [];
+  if (canRevokeReturnedPurchase(request.status, inbounds)) {
+    const transaction = await sequelize.transaction();
+    try {
+      const lockedRequest = await PurchaseRequest.findByPk(requestId, { transaction, lock: transaction.LOCK.UPDATE });
+      if (lockedRequest?.status !== 'approved') ctx.throw(409, '采购申请状态已变化，请刷新后重试');
+      const currentInbounds = await Inbound.findAll({
+        where: { purchase_request_id: requestId },
+        include: [{ model: InboundItem, as: 'items', attributes: ['received_quantity'] }],
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      if (!canRevokeReturnedPurchase(lockedRequest.status, currentInbounds)) ctx.throw(409, '商品尚未全部退回，不能撤销采购申请');
+
+      const credits = await Payable.findAll({
+        where: { request_id: requestId, source_type: { [Op.in]: ['purchase_return', 'purchase_adjustment'] }, total_amount: { [Op.lt]: 0 } },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      if (!credits.length) ctx.throw(409, '退单尚未生成负向应付款，请先核对退库记录');
+      const originals = await Payable.findAll({
+        where: { request_id: requestId, source_type: 'purchase', total_amount: { [Op.gt]: 0 } },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      const originalAmount = toSignedMoney(originals.reduce((sum, item) => sum + Number(item.total_amount || 0), 0));
+      const creditAmount = toSignedMoney(credits.reduce((sum, item) => sum + Number(item.total_amount || 0), 0));
+      if (originalAmount <= 0 || creditAmount < -originalAmount - 0.005) {
+        ctx.throw(409, '退单负向金额超过原采购应付，请先核对重复退库或历史结算');
+      }
+      const allocated = await getAllocationSummary(credits.map(item => item.payable_id), transaction);
+      if (credits.some(item => Math.abs(Number(allocated.get(String(item.payable_id))?.amount || 0)) > 0.005)) {
+        ctx.throw(409, '退单负向应付款已参与结算，请先核对结算记录');
+      }
+
+      for (const credit of credits) {
+        const offsetAmount = Number(credit.offset_amount || 0);
+        if (offsetAmount > 0.005) {
+          if (!credit.offset_payable_id) ctx.throw(409, '退单应付缺少原单抵扣关联，请先核对结算记录');
+          const original = await Payable.findByPk(credit.offset_payable_id, { transaction, lock: transaction.LOCK.UPDATE });
+          if (!original || Number(original.offset_amount || 0) + 0.005 < offsetAmount) {
+            ctx.throw(409, '原采购应付抵扣金额不一致，请先核对结算记录');
+          }
+          await original.update({ offset_amount: Math.max(0, Number(original.offset_amount || 0) - offsetAmount) }, { transaction });
+          await refreshPayableState(original.payable_id, transaction);
+        }
+        await credit.update({ offset_amount: 0, offset_payable_id: null }, { transaction });
+      }
+
+      const totalAmount = toSignedMoney(credits.reduce((sum, item) => sum + Number(item.total_amount || 0), 0));
+      if (totalAmount >= 0) ctx.throw(409, '退单负向结算金额无效');
+      const settlement = await Settlement.create({
+        settlement_id: generateUUID(),
+        settlement_no: `RV${Date.now()}${generateUUID().slice(-6).toUpperCase()}`,
+        supplier_id: request.supplier_id,
+        supplier_name: request.supplier_name || credits[0].supplier_name || '',
+        settlement_type: 'supplier',
+        payee_type: 'supplier',
+        payee_id: request.supplier_id,
+        payee_name: request.supplier_name || credits[0].supplier_name || '',
+        source_type: 'purchase_revocation',
+        source_id: requestId,
+        source_no: request.request_no,
+        distributor_id: request.distributor_id || credits[0].distributor_id || null,
+        region_id: [...new Set(credits.map(item => item.region_id).filter(Boolean))].length === 1 ? credits.find(item => item.region_id)?.region_id : null,
+        total_amount: totalAmount,
+        paid_amount: 0,
+        status: 'draft',
+        payment_status: 'unpaid',
+        is_deleted: 0,
+        remark: String(comment || '').trim() || `采购申请 ${request.request_no} 商品退回后撤销`,
+        create_user: operatorName,
+        create_time: new Date()
+      }, { transaction });
+      for (const credit of credits) {
+        await SettlementItem.create({
+          settlement_id: settlement.settlement_id,
+          payable_id: credit.payable_id,
+          request_no: request.request_no,
+          product_name: '采购退单',
+          amount: Number(credit.total_amount || 0)
+        }, { transaction });
+        await refreshPayableState(credit.payable_id, transaction);
+      }
+      await Inbound.update({ status: 'cancelled', update_time: new Date() }, {
+        where: { purchase_request_id: requestId, status: 'pending' }, transaction
+      });
+      await lockedRequest.update({
+        status: 'revoked', revoke_user: operatorName, revoke_time: new Date(),
+        revoke_comment: String(comment || '').trim(), update_time: new Date()
+      }, { transaction });
+      await setFreightRecordStatus('purchase', requestId, 'cancelled', user, transaction);
+      await recordBusinessAction({
+        businessType: 'purchase_request', businessId: requestId, businessNo: request.request_no,
+        action: 'revoked_after_return', fromStatus: 'approved', toStatus: 'revoked',
+        user, comment: comment || '', transaction
+      });
+      await transaction.commit();
+      ctx.body = { code: 0, message: '采购申请已撤销，采购结算已生成负向结算单', data: { settlementId: settlement.settlement_id } };
+      return;
+    } catch (error) {
+      if (!transaction.finished) await transaction.rollback();
+      throw error;
+    }
+  }
 
   if (request.status !== 'pending') {
-    ctx.throw(400, '仅审批未完成的采购申请可以撤回');
+    ctx.throw(400, '仅待审批申请或商品已全部退回的采购申请可以撤销');
   }
-  const inbounds = request.Inbounds || [];
   if (inbounds.some(inbound => inbound.status === 'completed')) {
     ctx.throw(400, '该采购申请已有商品入库，无法撤销，请先办理退库');
   }
