@@ -25,7 +25,7 @@ const VALID_INVENTORY_TYPES = new Set([
   'rental_demo_qty'
 ]);
 const OPERATION_LABELS = { INBOUND: '批量入库', OUTBOUND: '批量出库', ADJUST: '数量调整' };
-const REUSABLE_INBOUND_SN_STATUSES = new Set(['out_stock', 'sold']);
+const REUSABLE_INBOUND_SN_STATUSES = new Set(['out_stock', 'sold', 'returned']);
 const scheduledExecutionIds = new Set();
 
 function isReusableInboundSnStatus(status) {
@@ -648,6 +648,7 @@ async function createSnInbound(item, application, transaction) {
       store_id: item.store_id,
       location_id: item.location_id || '',
       inbound_time: new Date(),
+      ...(existing.status === 'returned' ? { original_inbound_time: new Date() } : {}),
       inbound_price: item.unit_price || 0,
       original_pickup_price: item.original_pickup_price || item.unit_price || 0,
       batch_no: application.application_no,

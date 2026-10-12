@@ -1,23 +1,4 @@
-const { sequelize } = require('../src/models');
-const { refreshOutdatedGrossProfitSnapshots, FORMULA_VERSION } = require('../src/modules/sales/grossProfit');
-
-(async () => {
-  console.log('[GrossProfit] loading outdated and missing snapshots...');
-  const result = await refreshOutdatedGrossProfitSnapshots({
-    onProgress(progress) {
-      if (progress.phase === 'refreshing' && progress.total !== undefined) {
-        console.log(`[GrossProfit] refreshed ${progress.refreshed}/${progress.total}, failed ${progress.failed}`);
-      } else if (progress.phase === 'failed') {
-        console.error(`[GrossProfit] failed order ${progress.orderId}: ${progress.message}`);
-      } else {
-        console.log(`[GrossProfit] ${progress.phase}...`);
-      }
-    }
-  });
-  console.log(JSON.stringify({ formulaVersion: FORMULA_VERSION, ...result }));
-  await sequelize.close();
-})().catch(async error => {
-  console.error(error.message);
-  await sequelize.close();
-  process.exitCode = 1;
-});
+// The legacy unguarded refresh could turn a missing purchase price into zero cost.
+// Use the scoped, transactional V11 migration instead.
+console.error('请使用 migrate-final-order-gross-profit-to-current.js --scope=october [--execute]；其他月份毛利已定稿，缺少采购价的订单会保留旧快照。');
+process.exitCode = 1;

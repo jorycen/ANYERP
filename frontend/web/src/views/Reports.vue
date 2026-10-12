@@ -79,7 +79,7 @@
             <div class="report-section-heading">
               <div>
                 <h3>员工业绩订单明细</h3>
-                <p>销售额、基础毛利及已审批调整，均按主销售与辅助销售参与人数平均拆分。</p>
+                <p>销售额按参与人数拆分；毛利按订单保存的辅助销售固定金额或比例分配，未设置时平均拆分。</p>
               </div>
               <el-tag type="info" effect="plain">最多展示 100 条</el-tag>
             </div>
@@ -348,6 +348,24 @@
                       </el-table-column>
                     </el-table>
                   </template>
+                  <div v-if="row.participantAllocations?.length" class="snapshot-detail-table">
+                    <strong>员工业绩毛利分配</strong>
+                    <el-table :data="row.participantAllocations" size="small" border>
+                      <el-table-column prop="employeeName" label="销售人" min-width="110" />
+                      <el-table-column label="身份" width="90">
+                        <template #default="{ row: participant }">{{ participant.role === 'primary' ? '主销售' : '辅助销售' }}</template>
+                      </el-table-column>
+                      <el-table-column label="分配依据" min-width="120">
+                        <template #default="{ row: participant }">{{ participant.role === 'primary' && row.customAllocation ? '剩余毛利' : Number(participant.fixedAmount) > 0 ? `固定 ¥${formatMoney(participant.fixedAmount)}` : Number(participant.ratio) > 0 ? `${participant.ratio}%` : '平均分配' }}</template>
+                      </el-table-column>
+                      <el-table-column label="基础毛利" width="115">
+                        <template #default="{ row: participant }">¥{{ formatMoney(participant.baseGrossProfit) }}</template>
+                      </el-table-column>
+                      <el-table-column label="业绩毛利" width="115">
+                        <template #default="{ row: participant }">¥{{ formatMoney(participant.grossProfit) }}</template>
+                      </el-table-column>
+                    </el-table>
+                  </div>
                   <el-table :data="row.calculation?.items || []" size="small" border>
                     <el-table-column prop="productName" label="商品" min-width="180" />
                     <el-table-column prop="pnCode" label="PN" width="130" />

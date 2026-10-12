@@ -2072,7 +2072,7 @@ async function approveRequest(ctx) {
       if (!item.product_id || !item.gross_profit_cost_mode) continue;
       await Product.update(
         { gross_profit_cost_mode: item.gross_profit_cost_mode },
-        { where: { product_id: item.product_id }, transaction }
+        { where: { product_id: item.product_id, category: { [Op.ne]: '选件' } }, transaction }
       );
     }
     await assertActiveProducts(Product, request.items.map(item => item.product_id).filter(Boolean), { transaction });

@@ -222,13 +222,15 @@ function participantKey(staffId, name) {
 function normalizeParticipants(order) {
   const participants = [];
   const seen = new Set();
-  const add = (staffId, name, role) => {
+  const add = (staffId, name, role, allocation = {}) => {
     const normalizedId = staffId === null || staffId === undefined || staffId === '' ? '' : String(staffId);
     const normalizedName = String(name || '').trim() || '未命名员工';
     const key = participantKey(normalizedId, normalizedName);
     if (seen.has(key)) return;
     seen.add(key);
-    participants.push({ key, staffId: normalizedId || null, name: normalizedName, role });
+    participants.push({ key, staffId: normalizedId || null, name: normalizedName, role,
+      profitAmount: allocation.profitAmount ?? allocation.profit_amount ?? '',
+      ratio: allocation.ratio ?? '' });
   };
 
   add(order.create_staff_id, order.create_user, 'primary');
@@ -237,7 +239,7 @@ function normalizeParticipants(order) {
     add(
       item.staffId ?? item.staff_id ?? item.id,
       item.name ?? item.staffName ?? item.staff_name ?? item.selected,
-      'auxiliary'
+      'auxiliary', item
     );
   });
   return participants;
@@ -401,7 +403,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
          ${orderItemTotalsJoin()}
-         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
+         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
          LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
          LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
          LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
@@ -424,7 +426,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
          ${orderItemTotalsJoin()}
-         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
+         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
          LEFT JOIN T_STORE s ON s.STORE_ID = o.STORE_ID
          LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
          LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
@@ -562,7 +564,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
          ${orderItemTotalsJoin()}
-         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
+         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
          LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
          LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
          LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
@@ -592,7 +594,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
          ${orderItemTotalsJoin()}
-         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
+         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
          LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
          LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
          LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
@@ -613,7 +615,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
          ${orderItemTotalsJoin()}
-         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
+         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
          LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
          LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
          LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
@@ -639,7 +641,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
            FROM T_ORDER o
            INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
            ${orderItemTotalsJoin()}
-           LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
+           LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
            LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
            LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
            LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
@@ -681,7 +683,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
               ROUND(SUM(${grossProfitSql()}), 2) AS base_gross_profit
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
-         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
+         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
          LEFT JOIN T_STORE s ON s.STORE_ID = o.STORE_ID
          LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
          LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0

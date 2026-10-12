@@ -24,12 +24,13 @@ const {
 const { Op } = require('sequelize');
 const { loadLegacyCostMaps, calculateItemBaseProfit } = require('./profitCalculation');
 const { DashboardService, canViewProfit } = require('./dashboardService');
+const { normalizeParticipants } = require('./dashboardDataSource');
+const { allocateProfit } = require('./performanceAllocation');
 const { ARCHIVED_STATUSES: POSITIVE_SALES_ORDER_STATUSES } = require('./dashboardDataSource');
 const { buildDecisionInsights, buildAiAdvisor } = require('./decisionEngine');
 const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/storePermissions');
 const { appendOperatingSourceCondition, INTERNAL_TRANSFER_SOURCE } = require('./operatingScope');
 const {
-  FORMULA_VERSION: GROSS_PROFIT_FORMULA_VERSION,
   snapshotToResponse
 } = require('../sales/grossProfit');
 
@@ -771,7 +772,6 @@ async function getEmployeePerformanceReport(ctx) {
       {
         model: OrderGrossProfit,
         as: 'grossProfitSnapshot',
-        where: { formula_version: GROSS_PROFIT_FORMULA_VERSION },
         required: false
       }
     ],
@@ -786,30 +786,30 @@ async function getEmployeePerformanceReport(ctx) {
     ? await Promise.all([
         PerformanceProfitAdjustment.findAll({
           where: { order_id: { [Op.in]: pageOrderIds }, status: 'approved' },
-          attributes: [
-            'order_id',
-            [sequelize.fn('SUM', sequelize.col('signed_amount')), 'amount']
-          ],
-          group: ['order_id'],
+          attributes: ['order_id', 'signed_amount'],
           raw: true
         }),
         SalesReturnGrossProfitLedger.findAll({
           where: { order_id: { [Op.in]: pageOrderIds } },
-          attributes: [
-            'order_id',
-            [sequelize.fn('SUM', sequelize.col('gross_profit_amount')), 'amount']
-          ],
-          group: ['order_id'],
+          attributes: ['order_id', 'participant_key', 'gross_profit_amount'],
           raw: true
         })
       ])
     : [[], []];
   const adjustmentMap = new Map();
-  [...approvedPageAdjustments, ...returnGrossProfitAdjustments].forEach(row => {
+  const directAdjustmentMap = new Map();
+  approvedPageAdjustments.forEach(row => {
     adjustmentMap.set(
       row.order_id,
-      roundMoney((adjustmentMap.get(row.order_id) || 0) + toNumber(row.amount))
+      roundMoney((adjustmentMap.get(row.order_id) || 0) + toNumber(row.signed_amount))
     );
+  });
+  returnGrossProfitAdjustments.forEach(row => {
+    adjustmentMap.set(row.order_id,
+      roundMoney((adjustmentMap.get(row.order_id) || 0) + toNumber(row.gross_profit_amount)));
+    const key = `${row.order_id}:${row.participant_key}`;
+    directAdjustmentMap.set(key,
+      roundMoney((directAdjustmentMap.get(key) || 0) + toNumber(row.gross_profit_amount)));
   });
   const pageItems = orders.flatMap(order => order.OrderItems || []);
   const legacyCostMaps = await loadLegacyCostMaps(pageItems);
@@ -875,6 +875,28 @@ async function getEmployeePerformanceReport(ctx) {
       : roundMoney(baseGrossProfit);
     const approvedAdjustment = adjustmentMap.get(orderJson.order_id) || 0;
     const grossProfit = roundMoney(baseGrossProfit + approvedAdjustment);
+    const participants = normalizeParticipants(orderJson);
+    const customAllocation = participants.some(item => Number(item.profitAmount) > 0 || Number(item.ratio) > 0);
+    const allocatedBase = allocateProfit(participants, baseGrossProfit);
+    const sharedAdjustment = roundMoney(approvedPageAdjustments
+      .filter(item => item.order_id === orderJson.order_id)
+      .reduce((sum, item) => sum + toNumber(item.signed_amount), 0));
+    const allocatedAdjustment = toNumber(baseGrossProfit)
+      ? allocatedBase.map((share, index) => index === participants.length - 1
+        ? roundMoney(sharedAdjustment - allocatedBase.slice(0, -1).reduce((sum, value) =>
+          sum + roundMoney(sharedAdjustment * value / baseGrossProfit), 0))
+        : roundMoney(sharedAdjustment * share / baseGrossProfit))
+      : allocateProfit(participants.map(item => ({ ...item, profitAmount: '', ratio: '' })), sharedAdjustment);
+    const participantAllocations = participants.map((participant, index) => ({
+      staffId: participant.staffId,
+      employeeName: participant.name,
+      role: participant.role,
+      ratio: participant.ratio,
+      fixedAmount: participant.profitAmount,
+      baseGrossProfit: allocatedBase[index],
+      approvedAdjustment: roundMoney(allocatedAdjustment[index] + (directAdjustmentMap.get(`${orderJson.order_id}:${participant.key}`) || 0)),
+      grossProfit: roundMoney(allocatedBase[index] + allocatedAdjustment[index] + (directAdjustmentMap.get(`${orderJson.order_id}:${participant.key}`) || 0))
+    }));
     const usesNewSnapshot = !!grossProfitSnapshot;
     const usesLegacyFallback = !usesNewSnapshot && itemCalculations.some(item => item.source === 'legacy_fallback');
     return {
@@ -893,6 +915,8 @@ async function getEmployeePerformanceReport(ctx) {
       baseGrossProfit,
       approvedAdjustment,
       grossProfit,
+      customAllocation,
+      participantAllocations,
       grossProfitSource: usesNewSnapshot
         ? 'order_gross_profit_snapshot'
         : (usesLegacyFallback ? 'legacy_fallback' : 'archived'),
@@ -923,7 +947,6 @@ async function getEmployeePerformanceReport(ctx) {
   });
 
   const snapshotRows = await OrderGrossProfit.findAll({
-    where: { formula_version: GROSS_PROFIT_FORMULA_VERSION },
     attributes: ['order_id', 'gross_profit_amount'],
     include: [{ model: Order, where, attributes: [], required: true }],
     raw: true

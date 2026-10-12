@@ -47,7 +47,9 @@ const {
   inventoryByProduct
 } = require('./supplierInventory');
 
-const REUSABLE_INBOUND_SN_STATUSES = new Set(['out_stock', 'sold']);
+// A completed purchase return removes the SN from stock. A later purchase may
+// receive the same physical SN again, reusing its identity and history.
+const REUSABLE_INBOUND_SN_STATUSES = new Set(['out_stock', 'sold', 'returned']);
 const TRANSFER_SHIPPING_PHOTO_DIR = path.resolve(__dirname, '../../../uploads/transfer-shipping-photos');
 const TRANSFER_SHIPPING_PHOTO_ROUTE = '/api/v1/inventory/transfer/shipping-photos';
 const TRANSFER_PHOTO_EXTENSIONS = {
@@ -4125,6 +4127,7 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
         if (existingSn && !REUSABLE_INBOUND_SN_STATUSES.has(String(existingSn.status || '').trim())) {
           fail(400, `SN码 [${snCode}] 当前状态为${existingSn.status || '未知'}，不允许重复入库`);
         }
+        const reenteringReturnedSn = existingSn?.status === 'returned';
 
         const pnMaster = await ensureProductPnMaster({
           productId: dbItem.product_id,
@@ -4165,6 +4168,7 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
           inbound,
           inboundItem: dbItem,
           supplier,
+          reenteringReturnedSn,
           transaction: t
         });
 

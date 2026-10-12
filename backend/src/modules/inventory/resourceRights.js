@@ -1578,7 +1578,8 @@ async function createPerformanceProfitAdjustment({ order, item, resourceType, am
   }, { transaction });
 }
 
-async function initializeSnResourceRightsFromInbound({ sn, inbound, inboundItem, supplier = null, transaction }) {
+async function initializeSnResourceRightsFromInbound({ sn, inbound, inboundItem, supplier = null,
+  reenteringReturnedSn = false, transaction }) {
   const resourceTypes = parseJsonArray(inboundItem.selected_resource_types);
   if (!sn || resourceTypes.length === 0) return [];
   const categories = await getPurchaseSelectableResourceCategories({ transaction });
@@ -1616,6 +1617,20 @@ async function initializeSnResourceRightsFromInbound({ sn, inbound, inboundItem,
       },
       transaction
     });
+    if (!wasCreated && reenteringReturnedSn && right.current_status === 'AVAILABLE') {
+      await right.update({
+        source_request_id: inbound?.purchase_request_id || null,
+        source_request_item_id: inboundItem.purchase_request_item_id || null,
+        source_inbound_id: inbound?.inbound_id || null,
+        supplier_id: supplier?.supplier_id || null,
+        supplier_name: supplier?.name || null,
+        rule_config_id: rule?.config_id || null,
+        amount,
+        source: 'PURCHASE_INBOUND',
+        remark: `采购退库后重新入库 ${inbound?.inbound_no || ''}`,
+        update_time: new Date()
+      }, { transaction });
+    }
     if (wasCreated) {
       await ResourceRightChangeOrder.create({
         change_id: generateUUID(),

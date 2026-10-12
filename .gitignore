@@ -30,6 +30,7 @@ backend-package/
 backend-clean/
 deploy-package/
 backend/backups/
+backend/tmp_mysql_replication/
 
 # OS/editor files
 .DS_Store

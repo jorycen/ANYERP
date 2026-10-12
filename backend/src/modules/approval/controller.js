@@ -343,8 +343,11 @@ async function enrichInstanceProgress(rows) {
 async function listInstances(ctx) {
   const scope = ctx.query.scope || 'mine';
   const where = ['todo', 'handled'].includes(scope) ? {} : { [Op.and]: [instanceAccessWhere(ctx.state.user, scope)] };
-  const storeWhere = approvalInstanceVisibilityWhere(ctx.state.user);
+  // An applicant or actual reviewer keeps access to their own history after
+  // changing stores. Other scopes still use the current store visibility.
+  const storeWhere = ['mine', 'handled'].includes(scope) ? null : approvalInstanceVisibilityWhere(ctx.state.user);
   if (storeWhere) where[Op.and] = [...(where[Op.and] || []), storeWhere];
+  let handledTasks = [];
   if (scope === 'todo' || scope === 'handled') {
     const taskInclude = {
       model: ApprovalFlowInstance,
@@ -354,11 +357,15 @@ async function listInstances(ctx) {
       ...(storeWhere ? { where: storeWhere } : {})
     };
     const taskRows = await ApprovalTask.findAll({
-      where: { assignee_staff_id: ctx.state.user.staffId },
+      where: {
+        assignee_staff_id: ctx.state.user.staffId,
+        ...(scope === 'handled' ? { status: ctx.query.reviewStatus && ['approved', 'rejected'].includes(ctx.query.reviewStatus) ? ctx.query.reviewStatus : { [Op.in]: ['approved', 'rejected'] } } : { status: 'pending' })
+      },
       include: [taskInclude],
-      attributes: ['instance_id'],
+      attributes: ['instance_id', 'status', 'node_name', 'comment', 'acted_time'],
       raw: true
     });
+    if (scope === 'handled') handledTasks = taskRows;
     where.instance_id = taskRows.length ? [...new Set(taskRows.map(row => String(row.instance_id)))] : '';
   }
   if (ctx.query.status) where.status = ctx.query.status;
@@ -375,18 +382,42 @@ async function listInstances(ctx) {
     : { rows: await ApprovalFlowInstance.findAll(queryOptions) };
   const rows = result.rows;
   await enrichInstanceProgress(rows);
-  const list = rows.map(toInstance);
+  const applicantIds = [...new Set(rows.map(row => row.applicant_staff_id).filter(Boolean))];
+  const applicants = applicantIds.length ? await Staff.findAll({
+    where: { staff_id: { [Op.in]: applicantIds } },
+    attributes: ['staff_id', 'name']
+  }) : [];
+  const applicantNames = new Map(applicants.map(row => [String(row.staff_id), row.name]));
+  const lastHandled = new Map();
+  for (const task of handledTasks) {
+    const key = String(task.instance_id);
+    const previous = lastHandled.get(key);
+    if (!previous || new Date(task.acted_time || 0) > new Date(previous.acted_time || 0)) lastHandled.set(key, task);
+  }
+  const list = rows.map(row => {
+    const data = toInstance(row);
+    data.applicant_name = applicantNames.get(String(row.applicant_staff_id)) || '';
+    const review = lastHandled.get(String(row.instance_id));
+    if (review) {
+      data.my_review_status = review.status;
+      data.my_review_node_name = review.node_name || '';
+      data.my_review_comment = review.comment || '';
+      data.my_review_time = review.acted_time || null;
+    }
+    return data;
+  });
   ctx.body = paginated
     ? { list, total: result.count, page, pageSize, totalPages: Math.ceil(result.count / pageSize) }
     : list;
 }
 
 async function canReadInstance(ctx, instance) {
+  if (Number(instance.applicant_staff_id) === Number(ctx.state.user.staffId) || Number(instance.subject_staff_id) === Number(ctx.state.user.staffId)) return true;
+  if (await ApprovalTask.findOne({ where: { instance_id: instance.instance_id, assignee_staff_id: ctx.state.user.staffId } })) return true;
   const managed = parseJson(instance.payload_json, {}).managedBusiness;
   if (managed ? !require('./businessRuntime').visible(ctx.state.user, instance) : !canReadApprovalStore(ctx.state.user, instance.store_id, instance.business_type, instance.distributor_id)) return false;
   if (isAdmin(ctx.state.user)) return true;
-  if (Number(instance.applicant_staff_id) === Number(ctx.state.user.staffId) || Number(instance.subject_staff_id) === Number(ctx.state.user.staffId)) return true;
-  return Boolean(await ApprovalTask.findOne({ where: { instance_id: instance.instance_id, assignee_staff_id: ctx.state.user.staffId } }));
+  return false;
 }
 
 async function getInstance(ctx) {

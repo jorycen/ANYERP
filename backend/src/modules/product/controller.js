@@ -1149,7 +1149,7 @@ async function createProductRecord(body, transaction = null) {
         unit: unit || '台',
         remark: remark || '',
         is_used_product: isUsedProduct === true || is_used_product === true || Number(isUsedProduct ?? is_used_product) === 1 ? 1 : 0,
-        gross_profit_cost_mode: costMode,
+        gross_profit_cost_mode: dimensions.category === '选件' ? 'COMPANY_PRICE' : costMode,
         is_focus_product: isFocusProduct === true || is_focus_product === true || Number(isFocusProduct ?? is_focus_product) === 1 ? 1 : 0,
         create_time: new Date(),
         status
@@ -1521,6 +1521,13 @@ async function updateProduct(ctx) {
     updateData.gpu = cols.gpu || null;
     updateData.accessory_type = cols.accessory_type || null;
     updateData.extras = Object.keys(extras).length > 0 ? JSON.stringify(extras) : null;
+  }
+
+  const effectiveCategory = Object.prototype.hasOwnProperty.call(updateData, 'category')
+    ? updateData.category : product.category;
+  if (effectiveCategory === '选件') {
+    const activePrice = await ProductPrice.findOne({ where: { product_id: productId, status: 1 }, raw: true });
+    if (Number(activePrice?.standard_price) > 0) updateData.gross_profit_cost_mode = 'COMPANY_PRICE';
   }
 
   if (barcodes !== undefined && !Array.isArray(pns)) {
@@ -1920,6 +1927,12 @@ async function applyPendingProductPriceChanges() {
         }, { transaction });
       }
 
+      if (nextStandardPrice > 0) {
+        await Product.update({ gross_profit_cost_mode: 'COMPANY_PRICE' }, {
+          where: { product_id: log.product_id, category: '选件' }, transaction
+        });
+      }
+
       await log.update({
         old_price: oldPrice,
         status: 'effective',
@@ -2165,6 +2178,10 @@ async function setPrice(ctx) {
         effective_time: now,
         create_user: userName
       }, { transaction });
+    }
+
+    if (product.category === '选件' && nextStandardPrice > 0) {
+      await product.update({ gross_profit_cost_mode: 'COMPANY_PRICE' }, { transaction });
     }
 
     const logBase = {
@@ -2891,6 +2908,15 @@ async function executePriceImportRows(rows, sourceFileName, userName) {
         updateOnDuplicate: ['standard_price', 'retail_price', 'min_sale_price', 'effective_time', 'create_user'],
         transaction
       });
+      const pricedAccessoryIds = targetRows
+        .filter(item => item.effectiveTime.getTime() <= now.getTime() &&
+          item.product.category === '选件' && item.standardPrice > 0)
+        .map(item => item.product.product_id);
+      if (pricedAccessoryIds.length) {
+        await Product.update({ gross_profit_cost_mode: 'COMPANY_PRICE' }, {
+          where: { product_id: { [Op.in]: pricedAccessoryIds } }, transaction
+        });
+      }
     }
     for (let i = 0; i < changeLogs.length; i += 1000) {
       await ProductPriceChangeLog.bulkCreate(changeLogs.slice(i, i + 1000), { transaction });

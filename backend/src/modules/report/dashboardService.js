@@ -5,6 +5,7 @@ const {
   toNumber
 } = require('./dashboardDataSource');
 const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/storePermissions');
+const { allocateProfit } = require('./performanceAllocation');
 
 const PROFIT_ROLES = new Set(['boss', 'admin', 'finance', 'manager']);
 const AGE_BUCKET_ORDER = ['0-7天', '8-15天', '16-30天', '31-60天', '60天以上'];
@@ -191,9 +192,15 @@ function buildEmployeePerformance(orderRows, adjustmentRows, selectedEmployeeId,
     const sharedAdjustments = adjustments.filter(row => !row.participantKey);
     const totalAdjustment = roundMoney(sharedAdjustments.reduce((sum, row) => sum + row.signedAmount, 0));
     const salesShare = roundMoney(toNumber(order.sales_amount) / participantCount);
-    const baseProfitShare = roundMoney(toNumber(order.base_gross_profit) / participantCount);
+    const baseProfitShares = allocateProfit(participants, order.base_gross_profit);
+    const sharedAdjustmentShares = toNumber(order.base_gross_profit)
+      ? baseProfitShares.map((share, index) => index === participants.length - 1
+        ? roundMoney(totalAdjustment - baseProfitShares.slice(0, -1).reduce((sum, value) =>
+          sum + roundMoney(totalAdjustment * value / toNumber(order.base_gross_profit)), 0))
+        : roundMoney(totalAdjustment * share / toNumber(order.base_gross_profit)))
+      : allocateProfit(participants.map(item => ({ ...item, profitAmount: '', ratio: '' })), totalAdjustment);
 
-    participants.forEach(participant => {
+    participants.forEach((participant, index) => {
       if (selectedEmployeeId && String(participant.staffId || '') !== String(selectedEmployeeId)) return;
       if (!rankMap.has(participant.key)) {
         rankMap.set(participant.key, {
@@ -212,7 +219,8 @@ function buildEmployeePerformance(orderRows, adjustmentRows, selectedEmployeeId,
       const directAdjustment = roundMoney(participantAdjustments
         .filter(row => row.participantKey)
         .reduce((sum, row) => sum + row.signedAmount, 0));
-      const participantAdjustment = roundMoney(directAdjustment + totalAdjustment / participantCount);
+      const participantAdjustment = roundMoney(directAdjustment + sharedAdjustmentShares[index]);
+      const baseProfitShare = baseProfitShares[index];
       const participantGrossProfitShare = roundMoney(baseProfitShare + participantAdjustment);
       const rank = rankMap.get(participant.key);
       rank.salesAmount += salesShare;
@@ -237,7 +245,9 @@ function buildEmployeePerformance(orderRows, adjustmentRows, selectedEmployeeId,
         allocatedAdjustment: canViewProfit ? participantAdjustment : null,
         allocatedGrossProfit: canViewProfit ? participantGrossProfitShare : null,
         reasons: canViewProfit ? participantAdjustments : [],
-        allocationReason: `主销售与${Math.max(0, participantCount - 1)}名辅助销售平均分摊`
+        allocationReason: participants.some(item => Number(item.profitAmount) > 0 || Number(item.ratio) > 0)
+          ? '按订单保存的辅助销售固定金额或比例分配毛利'
+          : `主销售与${Math.max(0, participantCount - 1)}名辅助销售平均分摊`
       });
     });
   });
@@ -490,7 +500,7 @@ class DashboardService {
         canViewProfit: profitVisible,
         selfOnly,
         archiveScope: filters.archiveScope,
-        allocationRule: '主销售人与辅助销售人平均拆分销售额和业绩毛利',
+        allocationRule: '销售额平均拆分；毛利按辅助销售固定金额或比例分配，未设置时平均拆分',
         generatedAt: new Date().toISOString()
       },
       kpis: buildKpis(current, yoy, previous, inventory, profitVisible),

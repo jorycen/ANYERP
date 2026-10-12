@@ -23,6 +23,7 @@ const { Op, QueryTypes } = require('sequelize');
 const { generateUUID } = require('../../utils');
 
 const FORMULA_VERSION = 'ORDER_GP_V11_PRODUCT_COST_MODE';
+const { allocateProfit } = require('../report/performanceAllocation');
 const VAT_RATE = 0.13;
 const NATIONAL_SUBSIDY_RECEIPT_TAX_RATE = 0.006;
 
@@ -472,9 +473,10 @@ async function resolveSupplierContext(items, order, transaction) {
            LEFT JOIN T_SUPPLIER s ON s.SUPPLIER_ID = pr.SUPPLIER_ID AND s.IS_DELETED = 0
           WHERE i.STORE_ID = :storeId
             AND i.STATUS = 'completed'
+            AND i.CREATE_TIME <= :orderTime
             AND ii.PRODUCT_ID IN (:productIds)
           ORDER BY i.CREATE_TIME DESC, i.INBOUND_ID DESC`,
-        { replacements: { storeId: order.store_id, productIds }, type: QueryTypes.SELECT, transaction }
+        { replacements: { storeId: order.store_id, orderTime: order.create_time, productIds }, type: QueryTypes.SELECT, transaction }
       )
     : [];
   const latestInboundByProduct = new Map();
@@ -570,7 +572,13 @@ async function buildProductPricingDetails(orderId, transaction) {
       supplier,
       {
         purchaseUpliftAmount: supplier?.gross_profit_uplift_amount ?? inboundSupplier?.supplier_gross_profit_uplift_amount,
-        costMode: product.gross_profit_cost_mode
+        costMode: product.category === '选件' && Number(productPrice?.status) === 1 &&
+          toNumber(productPrice?.standard_price) > 0
+          ? 'COMPANY_PRICE'
+          : String(snRow?.gross_profit_use_standard_price) === '1'
+            ? 'COMPANY_PRICE'
+            : String(snRow?.gross_profit_use_standard_price) === '0'
+              ? 'PURCHASE_PRICE' : product.gross_profit_cost_mode
       }
     );
     const quantity = Number(row.quantity || 1);
@@ -625,7 +633,7 @@ async function buildSupplementDetails(orderId, transaction) {
 function normalizeGrossProfitParticipants(order = {}) {
   const participants = [];
   const seen = new Set();
-  const add = (staffId, name, role) => {
+  const add = (staffId, name, role, allocation = {}) => {
     const normalizedStaffId = staffId === null || staffId === undefined || staffId === '' ? null : String(staffId);
     const normalizedName = String(name || '').trim() || '未命名员工';
     const key = normalizedStaffId ? `id:${normalizedStaffId}` : `name:${normalizedName}`;
@@ -635,7 +643,9 @@ function normalizeGrossProfitParticipants(order = {}) {
       key,
       staffId: normalizedStaffId,
       employeeName: normalizedName,
-      participantRole: role
+      participantRole: role,
+      profitAmount: allocation.profitAmount ?? allocation.profit_amount ?? '',
+      ratio: allocation.ratio ?? ''
     });
   };
 
@@ -645,7 +655,7 @@ function normalizeGrossProfitParticipants(order = {}) {
     add(
       item.staffId ?? item.staff_id ?? item.id,
       item.name ?? item.staffName ?? item.staff_name ?? item.selected,
-      'auxiliary'
+      'auxiliary', item
     );
   });
   return participants;
@@ -700,22 +710,30 @@ async function createSalesReturnGrossProfitLedger({ returnRequest, transaction =
   const negativeGrossProfit = -reversedGrossProfit;
   const participants = normalizeGrossProfitParticipants(order);
   if (!participants.length) return [];
+  const originalShares = allocateProfit(participants, snapshotGrossProfit);
+  let allocatedReturnProfit = 0;
+  const returnProfitShares = participants.map((_, index) => {
+    const isLast = index === participants.length - 1;
+    const amount = isLast
+      ? roundMoney(negativeGrossProfit - allocatedReturnProfit)
+      : snapshotGrossProfit
+        ? roundMoney(negativeGrossProfit * originalShares[index] / snapshotGrossProfit)
+        : roundMoney(negativeGrossProfit / participants.length);
+    allocatedReturnProfit = roundMoney(allocatedReturnProfit + amount);
+    return amount;
+  });
 
   const reason = `销售退单 ${returnRequest.return_no} 完成，冲减原订单毛利`;
   const rows = [];
   let allocatedSales = 0;
-  let allocatedGrossProfit = 0;
   for (let index = 0; index < participants.length; index += 1) {
     const participant = participants[index];
     const isLast = index === participants.length - 1;
     const salesAmount = isLast
       ? roundMoney(negativeSalesAmount - allocatedSales)
       : roundMoney(negativeSalesAmount / participants.length);
-    const grossProfitAmount = isLast
-      ? roundMoney(negativeGrossProfit - allocatedGrossProfit)
-      : roundMoney(negativeGrossProfit / participants.length);
+    const grossProfitAmount = returnProfitShares[index];
     allocatedSales = roundMoney(allocatedSales + salesAmount);
-    allocatedGrossProfit = roundMoney(allocatedGrossProfit + grossProfitAmount);
     rows.push(await SalesReturnGrossProfitLedger.create({
       ledger_id: generateUUID(),
       return_id: returnRequest.return_id,
@@ -838,6 +856,18 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     buildSupplementDetails(orderId, transaction),
     buildFreightCostDetails(order, transaction)
   ]);
+  if (existing?.snapshot_status === 'final' && existing.formula_version !== FORMULA_VERSION) {
+    const previousLines = new Map(parseJsonArray(existing.product_pricing_details)
+      .map(line => [String(line.itemId), line]));
+    const missingPriceLines = productPricingDetails.filter(line =>
+      String(line.source || '').startsWith('missing_') &&
+      Number(line.quantity || 1) > 0 &&
+      Number(previousLines.get(String(line.itemId))?.unitPricing || 0) > 0
+    );
+    if (missingPriceLines.length) {
+      throw new Error('商品缺少可用的定价或采购价，保留原归档毛利快照，待补价后重算');
+    }
+  }
   const values = calculateGrossProfitValues({
     receivableAmount: calculateOrderReceivable(order),
     paymentDetails,

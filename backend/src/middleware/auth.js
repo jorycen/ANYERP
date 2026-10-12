@@ -4,7 +4,7 @@
  */
 const jwt = require('jsonwebtoken');
 const config = require('../config');
-const { Staff, Role } = require('../models');
+const { Staff, Role, Distributor } = require('../models');
 const { resolveAccessibleStoreIds, resolvePrimaryStoreId, resolveConfiguredRegions, isStoreScopedAccount, isMallReportViewer } = require('../utils/storePermissions');
 const { resolveStaffDistributorIds, resolveOrderStoreIds } = require('../utils/distributorScope');
 const { isDealerTraceAccount } = require('../utils/snTracePermission');
@@ -84,6 +84,36 @@ async function authMiddleware(ctx, next) {
  */
 async function storeAccessMiddleware(ctx, next) {
   const user = ctx.state.user;
+  if (user?.distributorId) {
+    const distributor = await Distributor.findByPk(user.distributorId, { attributes: ['name'] });
+    if (String(distributor?.name || '').trim() === '艾诺云（虚拟）') {
+      const path = ctx.path;
+      const isOrderQuery = ctx.method === 'GET' && (
+        path === '/api/v1/sales/list' ||
+        /^\/api\/v1\/sales\/[^/]+$/.test(path) ||
+        path === '/api/v1/store/order-options' ||
+        path === '/api/v1/product/search' ||
+        path === '/api/v1/product/pn-list' ||
+        path === '/api/v1/product/pn-availability' ||
+        path.startsWith('/api/v1/inventory/') && /sn-list|list|goods-by|sales/.test(path) ||
+        path === '/api/v1/sales/payment-methods' ||
+        path === '/api/v1/sales/auxiliary-staff' ||
+        /^\/api\/v1\/sales\/product-(pns|sns)\//.test(path) ||
+        path === '/api/v1/sales/deposits/available' ||
+        path === '/api/v1/purchase/supplier-list' ||
+        path === '/api/v1/purchase/supplier-all'
+      );
+      const isOrderSubmit = ctx.method === 'POST' && (
+        path === '/api/v1/sales/create' ||
+        path === '/api/v1/sales/draft' ||
+        /^\/api\/v1\/sales\/draft\/[^/]+\/submit$/.test(path)
+      );
+      const isSessionRequest = path.startsWith('/api/v1/auth/');
+      if (!isOrderQuery && !isOrderSubmit && !isSessionRequest) {
+        ctx.throw(403, '该经销商账号仅允许提交及查询订单');
+      }
+    }
+  }
   if (isMallReportViewer(user?.roles || user?.roleCode)) {
     const isAllowedQuery = ctx.method === 'GET' && (
       ctx.path === '/api/v1/sales/list' ||
