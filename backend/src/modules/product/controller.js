@@ -638,7 +638,11 @@ async function resolveProductDimensions(body = {}, parsedAttrs = {}) {
   const dimensions = {};
   for (const key of PRODUCT_DIMENSION_KEYS) {
     const value = getProvidedValue(body, attributes, aliases[key]);
-    dimensions[key] = String(value ?? selected.dimensions[key] ?? '').trim();
+    // A selected category node defines the four visible classification dimensions.
+    // Older forms and imports may carry stale values from a previous category tree.
+    dimensions[key] = String(selected.category
+      ? selected.dimensions[key]
+      : (value ?? '')).trim();
   }
   return { ...selected, dimensions };
 }

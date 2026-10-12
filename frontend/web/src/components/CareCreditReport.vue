@@ -2,33 +2,33 @@
   <div class="care-credit-report">
     <div class="section-heading">
       <div>
-        <h3>CARE卡可用金余额</h3>
-        <p>账户余额为累计金额，不受其他报表日期筛选影响。</p>
+        <h3>CARE卡可用金统计</h3>
+        <p>金额为账户累计值，不受其他报表日期筛选影响。</p>
       </div>
       <el-button :loading="loading" @click="loadOverview">刷新余额</el-button>
     </div>
 
     <el-alert v-if="errorMessage" :title="errorMessage" type="error" show-icon :closable="false" />
     <div class="balance-grid" v-loading="loading">
-      <div class="balance-card primary" role="button" tabindex="0" @click="openDetail()" @keydown.enter="openDetail()">
-        <span>我的可用余额</span><strong>¥{{ money(myWallet.available) }}</strong><small>点击查看流水 ›</small>
+      <div class="balance-card" role="button" tabindex="0" @click="openDetail()" @keydown.enter="openDetail()">
+        <span>获取可用金总额</span><strong>¥{{ money(myWallet.earned) }}</strong><small>点击查看流水 ›</small>
       </div>
-      <div class="balance-card"><span>已锁定</span><strong>¥{{ money(myWallet.reserved) }}</strong></div>
-      <div class="balance-card"><span>待追回</span><strong>¥{{ money(myWallet.recoveryDue) }}</strong></div>
+      <div class="balance-card"><span>已使用金额</span><strong>¥{{ money(myWallet.spent) }}</strong></div>
+      <div class="balance-card primary"><span>现有余额</span><strong>¥{{ money(myWallet.available) }}</strong><small v-if="Number(myWallet.reserved || 0) > 0">另有已锁定 ¥{{ money(myWallet.reserved) }}</small></div>
     </div>
 
     <section v-if="canManage" class="staff-section">
-      <div class="section-heading"><h3>员工可用金余额</h3><span>仅显示有权访问的经销商员工</span></div>
+      <div class="section-heading"><h3>员工可用金统计</h3><span>仅显示有权访问的经销商员工</span></div>
       <el-table :data="staffRows" stripe border v-loading="loading" empty-text="暂无员工账户">
         <el-table-column prop="name" label="员工" min-width="130" />
-        <el-table-column label="可用余额" min-width="130" align="right">
+        <el-table-column label="获取可用金总额" min-width="150" align="right">
+          <template #default="{ row }">¥{{ money(row.earned) }}</template>
+        </el-table-column>
+        <el-table-column label="已使用金额" min-width="130" align="right">
+          <template #default="{ row }">¥{{ money(row.spent) }}</template>
+        </el-table-column>
+        <el-table-column label="现有余额" min-width="130" align="right">
           <template #default="{ row }">¥{{ money(row.available) }}</template>
-        </el-table-column>
-        <el-table-column label="已锁定" min-width="120" align="right">
-          <template #default="{ row }">¥{{ money(row.reserved) }}</template>
-        </el-table-column>
-        <el-table-column label="待追回" min-width="120" align="right">
-          <template #default="{ row }">¥{{ money(row.recoveryDue) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="150">
           <template #default="{ row }"><el-button link type="primary" @click="openDetail(row)">查看明细</el-button></template>
@@ -52,7 +52,7 @@
         </el-form>
       </div>
       <div class="batch-preview-toolbar">
-        <span>负数按负的账面净余额计算；账面净余额 = 可用余额 − 待追回金额。</span>
+        <span>目标余额不能小于 0；调整会保留原流水记录。</span>
         <el-button :disabled="batchSubmitting" @click="previewBatchAdjust">预览差额</el-button>
       </div>
       <el-table v-if="batchRows.length" :data="batchRows" stripe border max-height="360">
@@ -74,9 +74,10 @@
 
     <el-dialog v-model="detailVisible" :title="`${detailStaff.name}的 CARE 可用金`" width="900px">
       <div class="detail-summary">
-        <span>可用 ¥{{ money(detail.available) }}</span>
-        <span>已锁定 ¥{{ money(detail.reserved) }}</span>
-        <span>待追回 ¥{{ money(detail.recoveryDue) }}</span>
+        <span>获取可用金总额 ¥{{ money(detail.earned) }}</span>
+        <span>已使用金额 ¥{{ money(detail.spent) }}</span>
+        <span>现有余额 ¥{{ money(detail.available) }}</span>
+        <span v-if="Number(detail.reserved || 0) > 0">已锁定 ¥{{ money(detail.reserved) }}</span>
         <el-button v-if="canManage && detailStaff.staffId" type="primary" @click="openAdjust">调整金额</el-button>
       </div>
       <el-table :data="detail.transactions || []" stripe border v-loading="detailLoading" max-height="480" empty-text="暂无流水">
@@ -133,47 +134,8 @@ const adjustSubmitting = ref(false)
 const adjustForm = reactive({ type: 'income', amount: 0.01, reason: '' })
 const batchAdjustVisible = ref(false)
 const batchSubmitting = ref(false)
-const batchInput = ref(`蒋君杰 6520
-杨荣 193
-邓永会 1101
-邱刚 2438
-王霖龙 600
-范志文 1133
-黄培华 171
-卢美琳 166
-雷兴盈 84
-凃祥林 46
-熊梁江 122
-尹惠 88
-李婕 107
-石高铭 305
-卢珏 10
-田公达 7
-董江波 13
-潘秋磊 -449
-徐启航 1766
-唐陈 138
-吴昊 741
-陈龙 112
-李佳晋 1055
-张翔 68
-陈学文 104
-范忠航 3540
-黄晓峰 1229
-汪磊 120
-葛宇 3428
-胡蝶 -184
-王清林 4236
-黄俊杰 1625
-邓航 292
-魏文超 365
-熊家敏 955
-潘昭华 172
-侯黔静 1712
-王茜 2664
-刘念 1513
-许乐 101`)
-const batchReason = ref('按本月结余清单调整 CARE 可用金目标余额')
+const batchInput = ref('')
+const batchReason = ref('')
 const batchRows = ref([])
 
 const money = value => Number(value || 0).toFixed(2)
@@ -242,6 +204,9 @@ async function submitAdjustment() {
   if (!Number.isFinite(amount) || amount <= 0 || amount > 1000000) return ElMessage.warning('请输入有效调整金额')
   if (reason.length < 2) return ElMessage.warning('请填写至少两个字的调整原因')
   const signedAmount = adjustForm.type === 'expense' ? -amount : amount
+  if (signedAmount < 0 && amount > Number(detail.value.available || 0)) {
+    return ElMessage.warning('减少金额不能超过现有余额')
+  }
   try {
     await ElMessageBox.confirm(`确认给 ${detailStaff.name}${signedAmount > 0 ? '增加' : '减少'} ¥${money(amount)}？\n原因：${reason}`, '确认 CARE 可用金调整', { type: 'warning' })
   } catch { return }
@@ -289,7 +254,7 @@ function previewBatchAdjust() {
     const amountText = fields[1].replace(/[¥￥,，]/g, '')
     if (/销售人|姓名|本月结余|目标余额/.test(name) || /^(?:金额|余额)$/.test(amountText)) continue
     const targetBalance = Number(amountText)
-    if (!name || !Number.isFinite(targetBalance) || Math.abs(targetBalance) > 1000000
+    if (!name || !Number.isFinite(targetBalance) || targetBalance < 0 || targetBalance > 1000000
       || Math.abs(targetBalance * 100 - Math.round(targetBalance * 100)) > 0.000001) {
       parsed.push({ name: name || line, targetBalance: 0, currentBalance: 0, delta: 0, invalid: true, status: `第 ${index + 1} 行金额无效`, statusType: 'danger' })
       continue
@@ -358,6 +323,8 @@ async function submitBatchAdjust() {
         row.transactionId = result.transactionId
         const staff = staffRows.value.find(item => String(item.staffId) === String(row.staffId))
         if (staff) {
+          staff.earned = result.earned
+          staff.spent = result.spent
           staff.available = result.available
           staff.reserved = result.reserved
           staff.recoveryDue = result.recoveryDue
