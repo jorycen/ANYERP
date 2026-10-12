@@ -281,6 +281,13 @@
             <el-table-column prop="sn_code" label="SN" min-width="170" fixed />
             <el-table-column prop="pn_code" label="PN" width="130" />
             <el-table-column prop="product_name" label="商品名称" min-width="180" show-overflow-tooltip />
+            <el-table-column label="计价方式" width="120">
+              <template #default="{ row }">
+                <el-tag :type="row.gross_profit_cost_mode === 'COMPANY_PRICE' ? 'success' : 'warning'" size="small">
+                  {{ row.gross_profit_cost_mode === 'COMPANY_PRICE' ? '按公司定价' : '按采购价' }}
+                </el-tag>
+              </template>
+            </el-table-column>
             <el-table-column prop="store_name" label="所在门店" width="130" />
             <el-table-column prop="location_name" label="库位" width="120" />
             <el-table-column label="状态" width="100">

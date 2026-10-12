@@ -87,7 +87,7 @@
                 <el-button link type="danger" @click="handleDeleteDraft(row)" v-if="row.status === 'draft' && !row.submit_time">删除</el-button>
                 <el-button link type="primary" @click="handleApprove(row)" v-if="row.status === 'pending'">审批</el-button>
                 <el-button link type="success" @click="goToInbound(row)" v-if="row.status === 'approved' && row.pending_inbounds?.length">去入库</el-button>
-                <el-button link type="warning" @click="handleRevoke(row)" v-if="row.can_revoke">撤回</el-button>
+                <el-button link type="warning" @click="handleRevoke(row)" v-if="row.can_revoke">{{ row.status === 'approved' ? '撤销采购单' : '撤回' }}</el-button>
                 <el-button link type="danger" @click="handleAdjustment(row)" v-if="row.status === 'approved'">退单</el-button>
                 <el-button link type="primary" @click="handleView(row)">查看</el-button>
               </template>
@@ -177,8 +177,8 @@
             <el-option label="收据" value="收据" />
           </el-select>
         </el-form-item>
-        <el-form-item label="毛利取价规则">
-          <div class="purchase-pricing-tip">有公司定价（含 SN 特价）时按公司定价核算；没有公司定价时按实际采购价核算。符合条件的非定价商品，外调费按供应商资料中的毛利上浮额度计算。</div>
+        <el-form-item label="毛利成本口径">
+          <div class="purchase-pricing-tip">请逐个商品选择成本口径；审批通过后会写入商品标签。公司定价口径必须先维护公司定价。库存批次口径后续再确定。</div>
         </el-form-item>
         <el-form-item label="快递单号">
           <el-input v-model="requestForm.expressNo" placeholder="请输入快递单号（选填）" />
@@ -236,6 +236,15 @@
                       </div>
                     </el-option>
                   </el-select>
+                </template>
+              </el-table-column>
+              <el-table-column label="毛利成本口径" width="190">
+                <template #default="{ row }">
+                  <el-select v-model="row.grossProfitCostMode" size="small" style="width: 100%" :disabled="row.isUsedProduct">
+                    <el-option label="按公司定价" value="COMPANY_PRICE" :disabled="row.isUsedProduct || !hasCompanyPrice(row)" />
+                    <el-option label="按采购价" value="PURCHASE_PRICE" />
+                  </el-select>
+                  <div v-if="row.grossProfitCostMode === 'COMPANY_PRICE' && !hasCompanyPrice(row)" class="purchase-pricing-warning">商品未维护有效公司定价</div>
                 </template>
               </el-table-column>
               <el-table-column label="商品编码" width="140">
@@ -344,7 +353,7 @@
             <el-tag :type="getStatusType(currentRequest.display_status || currentRequest.status)">{{ getStatusText(currentRequest.display_status || currentRequest.status) }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="供应商">{{ currentRequest.supplier_name }}</el-descriptions-item>
-          <el-descriptions-item label="毛利取价规则">按公司定价优先；无公司定价时按实际采购价</el-descriptions-item>
+          <el-descriptions-item label="毛利成本口径">按每个采购商品明细的选择写入商品标签</el-descriptions-item>
           <el-descriptions-item label="付款方式">{{ getPaymentMethodText(currentRequest.payment_method) }}</el-descriptions-item>
           <el-descriptions-item label="采购凭证类型">{{ currentRequest.invoice_type || '-' }}</el-descriptions-item>
           <el-descriptions-item label="货型">{{ currentRequest.product_type || currentRequest.items?.[0]?.product_type || '-' }}</el-descriptions-item>
@@ -422,6 +431,9 @@
         <h4 class="mt-20">商品明细</h4>
         <el-table :data="currentRequest.items || []" border size="small">
           <el-table-column prop="product_name" label="商品名称" min-width="150" />
+          <el-table-column label="毛利成本口径" width="130">
+            <template #default="{ row }">{{ getGrossProfitCostModeText(row.gross_profit_cost_mode) }}</template>
+          </el-table-column>
           <el-table-column label="商品编码" width="120" show-overflow-tooltip>
             <template #default="{ row }">{{ row.product_code || '-' }}</template>
           </el-table-column>
@@ -663,7 +675,7 @@
     <!-- 审批对话框 -->
     <el-dialog v-model="approveDialogVisible" title="审批采购申请" width="500px">
       <el-form :model="approveForm" label-width="100px">
-        <el-form-item label="毛利取价规则">按公司定价优先；无公司定价时按实际采购价</el-form-item>
+        <el-form-item label="毛利成本口径">各商品按申请明细中选择的口径写入商品标签</el-form-item>
         <el-form-item label="审批结果">
           <el-radio-group v-model="approveForm.action">
             <el-radio value="approved">通过</el-radio>
@@ -1348,6 +1360,7 @@ const handleEditDraft = async (row) => {
       pnCode: item.pn_code || '',
       price: item.unit_price || 0,
       quantity: item.quantity || 1,
+      grossProfitCostMode: item.gross_profit_cost_mode || 'PURCHASE_PRICE',
       rebateDeduction: item.rebate_deduction || 0,
       storeAllocations: parseDraftJson(item.store_allocations_parsed || item.store_allocations),
       selectedResourceTypes: parseDraftJson(item.selected_resource_types)
@@ -1886,8 +1899,16 @@ const onProductChange = (index) => {
     requestForm.items[index].productCode = product.product_code || ''
     requestForm.items[index].manufacturerCode = product.manufacturer_code || ''
     requestForm.items[index].price = product.min_sale_price || 0
+    requestForm.items[index].grossProfitCostMode = product.gross_profit_cost_mode || 'PURCHASE_PRICE'
   }
 }
+
+const hasCompanyPrice = (item) => {
+  const product = products.value.find(row => String(row.product_id) === String(item?.productId || ''))
+  return Number(product?.standard_price || 0) > 0
+}
+
+const getGrossProfitCostModeText = (mode) => mode === 'COMPANY_PRICE' ? '按公司定价' : '按采购价'
 
 const handleDeleteDraft = async (row) => {
   try {
@@ -1925,6 +1946,7 @@ const addRequestItem = () => {
   editingProductIndex.value = requestForm.items.length
   requestForm.items.push({
     productId: '', productName: '', productCode: '', manufacturerCode: '', price: 0, quantity: 1, rebateDeduction: 0, storeAllocations: [],
+    grossProfitCostMode: 'PURCHASE_PRICE',
     selectedResourceTypes: goodsTypeResourceCodes(requestForm.productType)
   })
   if (toNumber(requestForm.rebateDeduction) > 0) {
@@ -1964,6 +1986,7 @@ const buildPurchaseRequestPayload = () => {
       goodsTypeId: selectedGoodsType?.goods_type_id || '',
       productType: requestForm.productType,
       rebateDeduction: Math.min(toNumber(item.rebateDeduction), itemSubtotal(item)),
+      grossProfitCostMode: item.grossProfitCostMode || 'PURCHASE_PRICE',
       isUsedProduct: Boolean(item.isUsedProduct),
       directInbound: Boolean(item.directInbound),
       directInboundSnCode: item.directInboundSnCode || '',
@@ -2009,6 +2032,10 @@ const validateDraftForm = () => {
       ElMessage.warning(`请完善第${index + 1}个商品的名称、价格和数量`)
       return false
     }
+    if (item.grossProfitCostMode === 'COMPANY_PRICE' && (!item.productId || !hasCompanyPrice(item))) {
+      ElMessage.warning(`商品「${item.productName || `第${index + 1}项商品`}」选择了按公司定价，但没有有效公司定价`)
+      return false
+    }
     if (item.isUsedProduct && item.directInbound && (toQuantity(item.quantity) !== 1 || !String(item.directInboundSnCode || '').trim())) {
       ElMessage.warning(`二手商品“${item.productName || index + 1}”勾选审批完成及入库时，必须填写SN号且数量为1`)
       return false
@@ -2045,6 +2072,10 @@ const handleSubmit = async () => {
     const item = requestForm.items[i]
     if ((!item.isUsedProduct && !item.productId) || (item.isUsedProduct && !String(item.productName || '').trim()) || toNumber(item.price) < 0 || toQuantity(item.quantity) <= 0) {
       ElMessage.warning(`请完善第${i + 1}个商品的名称、价格和数量`)
+      return
+    }
+    if (item.grossProfitCostMode === 'COMPANY_PRICE' && (!item.productId || !hasCompanyPrice(item))) {
+      ElMessage.warning(`商品「${item.productName || `第${i + 1}项商品`}」选择了按公司定价，但没有有效公司定价`)
       return
     }
     if (item.isUsedProduct && item.directInbound && (toQuantity(item.quantity) !== 1 || !String(item.directInboundSnCode || '').trim())) {
@@ -2155,6 +2186,7 @@ const saveUsedProduct = () => {
   }
   requestForm.items.push({
     isUsedProduct: true,
+    grossProfitCostMode: 'PURCHASE_PRICE',
     productId: '',
     productName: name,
     productCode: '二手商品待生成',

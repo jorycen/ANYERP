@@ -60,6 +60,13 @@
               </template>
             </el-table-column>
             <el-table-column prop="name" label="产品名称" min-width="240" show-overflow-tooltip />
+            <el-table-column label="毛利成本口径" width="140">
+              <template #default="{ row }">
+                <el-tag :type="row.gross_profit_cost_mode === 'COMPANY_PRICE' ? 'success' : 'warning'" size="small">
+                  {{ row.gross_profit_cost_mode === 'COMPANY_PRICE' ? '按公司定价' : '按采购价' }}
+                </el-tag>
+              </template>
+            </el-table-column>
             <el-table-column prop="config" label="厂商商品名称" min-width="140" show-overflow-tooltip>
               <template #default="{ row }">
                 <span :class="{ 'text-muted': !row.config }">{{ row.config || '-' }}</span>
