@@ -33,6 +33,7 @@ const { appendOperatingSourceCondition, INTERNAL_TRANSFER_SOURCE } = require('./
 const {
   snapshotToResponse
 } = require('../sales/grossProfit');
+const { careCostDetails } = require('../sales/staffCareCredit');
 
 const dashboardService = new DashboardService();
 
@@ -786,7 +787,7 @@ async function getEmployeePerformanceReport(ctx) {
     ? await Promise.all([
         PerformanceProfitAdjustment.findAll({
           where: { order_id: { [Op.in]: pageOrderIds }, status: 'approved' },
-          attributes: ['order_id', 'signed_amount'],
+          attributes: ['order_id', 'adjustment_no', 'signed_amount'],
           raw: true
         }),
         SalesReturnGrossProfitLedger.findAll({
@@ -797,12 +798,17 @@ async function getEmployeePerformanceReport(ctx) {
       ])
     : [[], []];
   const adjustmentMap = new Map();
+  const careCreditAdjustmentMap = new Map();
   const directAdjustmentMap = new Map();
   approvedPageAdjustments.forEach(row => {
     adjustmentMap.set(
       row.order_id,
       roundMoney((adjustmentMap.get(row.order_id) || 0) + toNumber(row.signed_amount))
     );
+    if (String(row.adjustment_no || '').startsWith('AUTO-CARE-')) {
+      careCreditAdjustmentMap.set(row.order_id,
+        roundMoney((careCreditAdjustmentMap.get(row.order_id) || 0) + toNumber(row.signed_amount)));
+    }
   });
   returnGrossProfitAdjustments.forEach(row => {
     adjustmentMap.set(row.order_id,
@@ -813,6 +819,12 @@ async function getEmployeePerformanceReport(ctx) {
   });
   const pageItems = orders.flatMap(order => order.OrderItems || []);
   const legacyCostMaps = await loadLegacyCostMaps(pageItems);
+  const careCostMap = new Map(await Promise.all(orders
+    .filter(order => careCreditAdjustmentMap.has(order.order_id) && order.grossProfitSnapshot)
+    .map(async order => {
+      const lines = await careCostDetails(order.grossProfitSnapshot);
+      return [order.order_id, roundMoney(lines.reduce((sum, line) => sum + toNumber(line.pricingAmount), 0))];
+    })));
 
   const list = orders.map(order => {
     const orderJson = order.toJSON();
@@ -874,6 +886,9 @@ async function getEmployeePerformanceReport(ctx) {
       ? roundMoney(grossProfitSnapshot.gross_profit_amount)
       : roundMoney(baseGrossProfit);
     const approvedAdjustment = adjustmentMap.get(orderJson.order_id) || 0;
+    const careCreditAdjustment = careCreditAdjustmentMap.get(orderJson.order_id) || 0;
+    const otherApprovedAdjustment = roundMoney(approvedAdjustment - careCreditAdjustment);
+    const careCostAmount = careCostMap.get(orderJson.order_id) || 0;
     const grossProfit = roundMoney(baseGrossProfit + approvedAdjustment);
     const participants = normalizeParticipants(orderJson);
     const customAllocation = participants.some(item => Number(item.profitAmount) > 0 || Number(item.ratio) > 0);
@@ -913,6 +928,9 @@ async function getEmployeePerformanceReport(ctx) {
       actualPayment,
       totalCost,
       baseGrossProfit,
+      careCostAmount,
+      careCreditAdjustment,
+      otherApprovedAdjustment,
       approvedAdjustment,
       grossProfit,
       customAllocation,
@@ -922,7 +940,7 @@ async function getEmployeePerformanceReport(ctx) {
         : (usesLegacyFallback ? 'legacy_fallback' : 'archived'),
       grossRate: calcRate(grossProfit, totalAmount),
       calculation: {
-        orderFormula: `${baseGrossProfit.toFixed(2)} + 已审批调整 ${approvedAdjustment.toFixed(2)} = ${grossProfit.toFixed(2)}`,
+        orderFormula: `${baseGrossProfit.toFixed(2)} + Care可用金抵扣 ${careCreditAdjustment.toFixed(2)} + 其他调整 ${otherApprovedAdjustment.toFixed(2)} = ${grossProfit.toFixed(2)}`,
         revenueNote: usesNewSnapshot
           ? `基础毛利使用订单毛利快照：${snapshotDetail.formula}`
           : (usesLegacyFallback
@@ -956,7 +974,7 @@ async function getEmployeePerformanceReport(ctx) {
     ...where,
     ...(snapshotOrderIds.length ? { order_id: { [Op.notIn]: snapshotOrderIds } } : {})
   };
-  const [approvedAdjustmentRows, returnGrossProfitRows, fallbackItems] = await Promise.all([
+  const [approvedAdjustmentRows, returnGrossProfitRows, fallbackItems, careCreditRows] = await Promise.all([
     PerformanceProfitAdjustment.findAll({
       where: { status: 'approved' },
       attributes: [[sequelize.fn('SUM', sequelize.col('PerformanceProfitAdjustment.signed_amount')), 'amount']],
@@ -970,6 +988,12 @@ async function getEmployeePerformanceReport(ctx) {
     }),
     OrderItem.findAll({
       include: [{ model: Order, where: fallbackOrderWhere, attributes: [], required: true }],
+      raw: true
+    }),
+    PerformanceProfitAdjustment.findAll({
+      where: { status: 'approved', adjustment_no: { [Op.like]: 'AUTO-CARE-%' } },
+      attributes: [[sequelize.fn('SUM', sequelize.col('PerformanceProfitAdjustment.signed_amount')), 'amount']],
+      include: [{ model: Order, where, attributes: [], required: true }],
       raw: true
     })
   ]);
@@ -988,6 +1012,7 @@ async function getEmployeePerformanceReport(ctx) {
   const totalApprovedAdjustment = roundMoney(
     toNumber(approvedAdjustmentRow?.amount) + toNumber(returnGrossProfitRow?.amount)
   );
+  const totalCareCreditAdjustment = roundMoney(careCreditRows[0]?.amount);
 
   const expenseAllocationWhere = {
     store_id: { [Op.in]: storeIds },
@@ -1027,6 +1052,8 @@ async function getEmployeePerformanceReport(ctx) {
     totalAmount: roundMoney(summaryRows.reduce((sum, row) => sum + toNumber(row.totalAmount), 0)),
     actualPayment: roundMoney(summaryRows.reduce((sum, row) => sum + toNumber(row.actualPayment), 0)),
     baseGrossProfit: totalBaseGrossProfit,
+    careCreditAdjustment: totalCareCreditAdjustment,
+    otherApprovedAdjustment: roundMoney(totalApprovedAdjustment - totalCareCreditAdjustment),
     approvedAdjustment: totalApprovedAdjustment,
     grossProfit: roundMoney(totalBaseGrossProfit + totalApprovedAdjustment),
     expensePerformanceDeduction: profitVisible ? totalExpensePerformanceDeduction : null,

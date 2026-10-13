@@ -493,5 +493,6 @@ module.exports = {
   getMyCareCredit, listStaffCareCredit, getStaffCareCredit, adjustStaffCareCredit, setStaffCareCreditBalance,
   getOrderCareCredit, reserveOrderCareCredit, cancelOrderCareCredit,
   activateOrderCareCredit, releaseOrderCareCredit, reverseForSalesReturn,
+  careCostDetails,
   _test: { careCostDetails, money }
 };

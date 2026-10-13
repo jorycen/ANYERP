@@ -842,7 +842,7 @@ async function createSettlement(ctx) {
           const amount = amountValue === undefined || amountValue === null || amountValue === ''
             ? remaining
             : roundAmount(amountValue);
-          if (amount >= 0 || amount < remaining - 0.005) {
+          if (amount > 0 || amount < remaining - 0.005) {
             ctx.throw(400, '负向采购退货结算金额超过可抵扣金额');
           }
           rows.push({ payable, requestItem: null, quantity: null, unitPrice: null, amount });
@@ -866,7 +866,7 @@ async function createSettlement(ctx) {
               used.amount,
               payable.offset_amount
             );
-            if (amount <= 0 || amount > itemRemaining + 0.005 || amount > payableRemaining + 0.005) {
+            if (amount < 0 || amount > itemRemaining + 0.005 || amount > payableRemaining + 0.005) {
               ctx.throw(400, '结算金额超过剩余可结算金额');
             }
             rows.push({ payable, requestItem: item, quantity: null, unitPrice, amount });
@@ -888,7 +888,7 @@ async function createSettlement(ctx) {
           const remaining = getPayableRemaining(payable.total_amount, used.amount, payable.offset_amount);
           const amountValue = allocation.amount ?? allocation.settleAmount ?? allocation.settle_amount;
           const amount = roundAmount(amountValue);
-          if (amount <= 0 || amount > remaining + 0.005) ctx.throw(400, '结算金额超过剩余可结算金额');
+          if (amount < 0 || amount > remaining + 0.005) ctx.throw(400, '结算金额超过剩余可结算金额');
           rows.push({ payable, requestItem: null, quantity: null, unitPrice: null, amount });
           used.amount = Number(used.amount || 0) + amount;
         }
@@ -905,7 +905,7 @@ async function createSettlement(ctx) {
     rows.forEach(row => { row.grossAmount = roundAmount(row.amount); });
     const requestedRebate = paymentAccountType === 'rebate' ? roundAmount(rebateDeduction) : 0;
     const grossTotalAmount = roundAmount(rows.reduce((sum, row) => sum + Number(row.grossAmount || 0), 0));
-    if (requestedRebate < 0 || requestedRebate > grossTotalAmount + 0.005) {
+    if (requestedRebate < 0 || (requestedRebate > 0 && requestedRebate > grossTotalAmount + 0.005)) {
       ctx.throw(400, '返款金额不能超过本次结算金额');
     }
     if (requestedRebate > 0) {
@@ -927,9 +927,8 @@ async function createSettlement(ctx) {
         rebateAllocation.set(key, roundAmount((rebateAllocation.get(key) || 0) + applied));
       }
     });
-    const finalRows = rows.filter(row => Math.abs(Number(row.grossAmount || 0)) > 0.005);
+    const finalRows = rows;
     const totalAmount = roundAmount(finalRows.reduce((sum, row) => sum + row.amount, 0));
-    if (totalAmount <= 0 && requestedRebate <= 0) ctx.throw(400, '结算金额必须大于零');
     const taxStatus = combineTaxStatuses(finalRows.map(row => requestTaxMap.get(String(row.payable.request_id)) || 'UNKNOWN'));
     if (taxStatus === 'MIXED') ctx.throw(400, '含税与未税应付款不能在同一张结算单中同时发起');
     const regionIds = [...new Set(finalRows.map(row => row.payable.region_id).filter(Boolean).map(String))];

@@ -244,7 +244,8 @@
             <div class="summary-item">销售额：<strong>¥{{ formatMoney(employeeSummary.totalAmount) }}</strong></div>
             <div class="summary-item">实收：<strong>¥{{ formatMoney(employeeSummary.actualPayment) }}</strong></div>
             <div class="summary-item">基础毛利：<strong>¥{{ formatMoney(employeeSummary.baseGrossProfit) }}</strong></div>
-            <div class="summary-item">已审批调整：<strong :class="Number(employeeSummary.approvedAdjustment || 0) >= 0 ? 'profit-positive' : 'profit-negative'">¥{{ formatMoney(employeeSummary.approvedAdjustment) }}</strong></div>
+            <div class="summary-item">Care可用金抵扣：<strong :class="Number(employeeSummary.careCreditAdjustment || 0) >= 0 ? 'profit-positive' : 'profit-negative'">{{ Number(employeeSummary.careCreditAdjustment || 0) >= 0 ? '+' : '-' }}¥{{ formatMoney(Math.abs(employeeSummary.careCreditAdjustment || 0)) }}</strong></div>
+            <div class="summary-item">其他调整：<strong :class="Number(employeeSummary.otherApprovedAdjustment || 0) >= 0 ? 'profit-positive' : 'profit-negative'">{{ Number(employeeSummary.otherApprovedAdjustment || 0) >= 0 ? '+' : '-' }}¥{{ formatMoney(Math.abs(employeeSummary.otherApprovedAdjustment || 0)) }}</strong></div>
             <div class="summary-item">业绩毛利：<strong>¥{{ formatMoney(employeeSummary.grossProfit) }}</strong></div>
             <div v-if="employeeCanViewProfit" class="summary-item">费用扣减：<strong class="profit-negative">¥{{ formatMoney(employeeSummary.expensePerformanceDeduction) }}</strong></div>
             <div v-if="employeeCanViewProfit" class="summary-item">扣减后毛利：<strong :class="Number(employeeSummary.netGrossProfit || 0) >= 0 ? 'profit-positive' : 'profit-negative'">¥{{ formatMoney(employeeSummary.netGrossProfit) }}</strong></div>
@@ -273,6 +274,11 @@
                 <div class="profit-process">
                   <div class="process-line">{{ row.calculation?.revenueNote }}</div>
                   <div class="process-line">整单毛利：{{ row.calculation?.orderFormula }}</div>
+                  <div v-if="row.careCostAmount || row.careCreditAdjustment" class="process-line">
+                    Care 商品成本 -¥{{ formatMoney(row.careCostAmount) }} 已计入基础毛利；
+                    可用金抵扣 {{ row.careCreditAdjustment >= 0 ? '+' : '-' }}¥{{ formatMoney(Math.abs(row.careCreditAdjustment)) }}；
+                    净计入员工成本 ¥{{ formatMoney(row.careCostAmount - row.careCreditAdjustment) }}
+                  </div>
                   <template v-if="row.calculation?.snapshot">
                     <el-descriptions class="snapshot-breakdown" :column="5" border size="small">
                       <el-descriptions-item label="用户应收">
@@ -406,9 +412,16 @@
                 </el-tooltip>
               </template>
             </el-table-column>
-            <el-table-column label="已审调整" width="105">
+            <el-table-column label="Care可用金抵扣" width="145">
               <template #default="{ row }">
-                <span :class="row.approvedAdjustment >= 0 ? 'profit-positive' : 'profit-negative'">¥{{ formatMoney(row.approvedAdjustment) }}</span>
+                <span :class="row.careCreditAdjustment >= 0 ? 'profit-positive' : 'profit-negative'">
+                  {{ row.careCreditAdjustment >= 0 ? '+' : '-' }}¥{{ formatMoney(Math.abs(row.careCreditAdjustment)) }}
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column label="其他调整" width="105">
+              <template #default="{ row }">
+                <span :class="row.otherApprovedAdjustment >= 0 ? 'profit-positive' : 'profit-negative'">{{ row.otherApprovedAdjustment >= 0 ? '+' : '-' }}¥{{ formatMoney(Math.abs(row.otherApprovedAdjustment)) }}</span>
               </template>
             </el-table-column>
             <el-table-column label="业绩毛利" width="110">

@@ -9,7 +9,11 @@ router.post('/initialize', requireRole('admin', 'boss'), async ctx => {
   await require('./catalog').seedApprovalFlowCatalog();
   ctx.body = { code: 0, message: '已补齐缺失流程，现有配置保持不变' };
 });
-router.get('/business-tasks', async ctx => require('./businessRuntime').listBusinessTasks(ctx));
+router.get('/business-tasks', async ctx => {
+  const runtime = require('./businessRuntime');
+  const businessType = String(ctx.query.businessType || '');
+  await runtime.listBusinessTasks(ctx, runtime.registry[businessType] ? businessType : null);
+});
 router.post('/business/:businessType/:businessId/action', async ctx => {
   await require('./businessRuntime').dispatch(ctx, ctx.params.businessType, ctx.params.businessId, ctx.request.body?.action, ctx.request.body?.comment || '');
 });

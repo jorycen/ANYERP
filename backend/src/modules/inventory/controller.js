@@ -595,7 +595,7 @@ async function resolveSnPriceScope(ctx, snId, { requireInStock = false } = {}) {
 async function getSnInventoryList(ctx) {
   const {
     keyword = '', storeId = '', locationId = '', status = '', resourceType = '', resourceStatus = '',
-    specialOnly = '', minAgeDays = '', maxAgeDays = '', page = 1, pageSize = 20
+    specialOnly = '', minAgeDays = '', maxAgeDays = '', productType = '', page = 1, pageSize = 20
   } = ctx.query;
   const user = ctx.state.user || {};
   const exportMode = Boolean(ctx.state.inventoryExportMode);
@@ -656,6 +656,10 @@ async function getSnInventoryList(ctx) {
     replacements.resourceStatus = resourceStatus;
   }
   if (String(specialOnly) === '1') where.push('sp.PRICE_ID IS NOT NULL');
+  if (['computer', 'phone', 'tablet', 'desktop'].includes(String(productType))) {
+    where.push(`${inventoryProductTypeSql()} = :productType`);
+    replacements.productType = String(productType);
+  }
 
   const minAge = Number(minAgeDays);
   if (minAgeDays !== '' && Number.isFinite(minAge) && minAge >= 0) {
@@ -1488,6 +1492,18 @@ function getInventoryProductType(category, accessoryType, name, config) {
   return '';
 }
 
+function inventoryProductTypeSql() {
+  const category = "LOWER(COALESCE(p.CATEGORY, ''))";
+  const detail = "LOWER(CONCAT_WS(' ', COALESCE(p.NAME, ''), COALESCE(p.CONFIG, '')))";
+  const includes = (expression, keywords) => `(${keywords.map(keyword => `${expression} LIKE '%${String(keyword).toLowerCase().replace(/'/g, "''")}%'`).join(' OR ')})`;
+  const categoryTypes = ['used', 'option', 'desktop', 'accessory', 'computer', 'tablet', 'phone'];
+  const detailTypes = categoryTypes;
+  const cases = categoryTypes.map(type => `WHEN ${includes(category, INVENTORY_CATEGORY_KEYWORDS[type])} THEN '${type}'`);
+  cases.push(`WHEN COALESCE(p.ACCESSORY_TYPE, '') <> '' THEN 'accessory'`);
+  cases.push(...detailTypes.map(type => `WHEN ${includes(detail, INVENTORY_CATEGORY_KEYWORDS[type])} THEN '${type}'`));
+  return `(CASE ${cases.join(' ')} ELSE '' END)`;
+}
+
 function buildProductCategoryOrderMap(categories = []) {
   const childrenByParent = new Map();
   const normalizedRows = categories
@@ -1809,18 +1825,18 @@ async function getList(ctx) {
     });
     const categoryOrderMap = buildProductCategoryOrderMap(categoryRows);
 
-    const allProductIds = allProducts.map(p => p.product_id);
-    const salesMap = await buildSalesCountMap(allProductIds, storeId, storeIds);
+    const scopedProducts = productType
+      ? allProducts.filter(product => getInventoryProductType(product.category, product.accessory_type, product.name, product.config) === productType)
+      : allProducts;
+    const scopedProductIds = scopedProducts.map(p => p.product_id);
+    const salesMap = await buildSalesCountMap(scopedProductIds, storeId, storeIds);
     const specialProductMap = await buildSpecialProductMap(
-      allProductIds,
+      scopedProductIds,
       user.distributorId,
       storeId,
       storeIds
     );
-    const products = allProducts.filter(product => {
-      if (productType && getInventoryProductType(product.category, product.accessory_type, product.name, product.config) !== productType) {
-        return false;
-      }
+    const products = scopedProducts.filter(product => {
       return matchesInventoryModelFilter(product, {
         ...(salesMap[product.product_id] || {}),
         special_sn_count: specialProductMap[product.product_id] || 0

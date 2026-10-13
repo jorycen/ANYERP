@@ -1070,7 +1070,7 @@
               <el-input-number
                 v-else
                 v-model="row.settle_amount"
-                :min="0.01"
+                :min="0"
                 :max="Number(row.available_amount || 0)"
                 :precision="2"
                 size="small"
@@ -1103,7 +1103,7 @@
       <template #footer>
         <el-button @click="settlementDialogVisible = false">取消</el-button>
         <el-button type="info" @click="saveSettlementDraft">保存草稿</el-button>
-        <el-button type="primary" @click="handleSettlementSubmit" :loading="settlementLoading" :disabled="selectedPayableIds.length === 0 || (Number(settlementTotalAmount) <= 0 && Number(settlementForm.rebateDeduction || 0) <= 0)">
+        <el-button type="primary" @click="handleSettlementSubmit" :loading="settlementLoading" :disabled="selectedPayableIds.length === 0">
           生成结算单
         </el-button>
       </template>

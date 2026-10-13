@@ -63,6 +63,8 @@ const { advance: advanceApproval } = require('../approval/businessRuntime');
 const {
   activateOrderCareCredit, releaseOrderCareCredit, reverseForSalesReturn
 } = require('./staffCareCredit');
+const { loadProfitAdjustments, presentProfit } = require('./profitPresentation');
+const { careCostDetails } = require('./staffCareCredit');
 
 async function isRentalDemoSn(sn, transaction = null) {
   if (sn?.inventory_type === 'rental_demo_qty') return true;
@@ -651,9 +653,15 @@ async function list(ctx) {
     returnCount = Number(returnTotal || 0);
   }
   const normalizedRows = [...orders.map(normalizeSalesOrderListRow), ...returnRows].sort(compareCombinedSalesRows);
-  const rows = isMallReportViewer(getUserRoles(user))
+  const pageRows = isMallReportViewer(getUserRoles(user))
     ? normalizedRows.slice(offset, offset + normalizedPageSize)
     : normalizedRows.slice(offset, offset + normalizedPageSize);
+  const profitAdjustments = await loadProfitAdjustments(pageRows
+    .filter(row => row.record_type !== 'sales_return')
+    .map(row => row.order_id));
+  const rows = pageRows.map(row => row.record_type === 'sales_return'
+    ? row
+    : { ...row, ...presentProfit(row.gross_profit_amount, profitAdjustments.get(row.order_id)) });
 
   ctx.body = formatPaginatedResult(rows, {
     page: normalizedPage,
@@ -3494,7 +3502,14 @@ async function getGrossProfit(ctx) {
   const snapshot = await calculateAndSaveOrderGrossProfit(orderId, {
     calculatedBy: ctx.state.user?.name || 'system'
   });
-  ctx.body = { code: 0, data: snapshotToResponse(snapshot, order) };
+  const adjustments = await loadProfitAdjustments([orderId]);
+  const careLines = await careCostDetails(snapshot);
+  const careCostAmount = Number(careLines.reduce((sum, line) => sum + Number(line.pricingAmount || 0), 0).toFixed(2));
+  ctx.body = { code: 0, data: {
+    ...snapshotToResponse(snapshot, order),
+    ...presentProfit(snapshot.gross_profit_amount, adjustments.get(orderId)),
+    careCostAmount
+  } };
 }
 
 async function updateSupplements(ctx) {
