@@ -3836,7 +3836,16 @@ async function archiveDeposit(ctx) {
 async function refundDeposit(ctx) {
   const { depositId } = ctx.params;
   const user = ctx.state.user;
-  const { amount, reason } = ctx.request.body || {};
+  const { amount, reason, refundChoice, refund_choice, refundMethod, refund_method, refundProofUrls, refund_proof_urls, refundBankInfo, refund_bank_info } = ctx.request.body || {};
+  const refundChoiceValue = String(refundChoice || refund_choice || 'yes');
+  const refundMethodValue = String(refundMethod || refund_method || '');
+  const refundProofValues = refundProofUrls || refund_proof_urls || [];
+  const refundProofJson = JSON.stringify(Array.isArray(refundProofValues) ? refundProofValues : [refundProofValues]);
+  const refundBankInfoValue = String(refundBankInfo || refund_bank_info || '').trim();
+  if (!['yes', 'no'].includes(refundChoiceValue)) ctx.throw(400, '退款选项无效');
+  if (refundChoiceValue === 'yes' && !['original', 'specified'].includes(refundMethodValue)) ctx.throw(400, '请选择退款方式');
+  if (refundChoiceValue === 'yes' && refundMethodValue === 'original' && (!Array.isArray(refundProofValues) || refundProofValues.length === 0)) ctx.throw(400, '请上传原支付单截图');
+  if (refundChoiceValue === 'yes' && refundMethodValue === 'specified' && !refundBankInfoValue && (!Array.isArray(refundProofValues) || refundProofValues.length === 0)) ctx.throw(400, '请上传收款截图或填写银行卡信息');
 
   if (!depositId) ctx.throw(400, '缺少定金单ID');
   await sequelize.transaction(async (transaction) => {
@@ -3867,6 +3876,10 @@ async function refundDeposit(ctx) {
       deposit_id: deposit.deposit_id,
       amount: refundAmount,
       reason: reason || '',
+      refund_choice: refundChoiceValue,
+      refund_method: refundChoiceValue === 'yes' ? refundMethodValue : '',
+      refund_proof_urls: refundProofJson,
+      refund_bank_info: refundBankInfoValue,
       status: 'pending',
       approval_stage: 'pending_store',
       create_staff_id: user.staffId,
@@ -4247,7 +4260,15 @@ async function requestSalesReturn(ctx) {
     refundHandling,
     refund_handling: refundHandlingSnake,
     refundRemark,
-    refund_remark: refundRemarkSnake
+    refund_remark: refundRemarkSnake,
+    refundChoice,
+    refund_choice: refundChoiceSnake,
+    refundMethod,
+    refund_method: refundMethodSnake,
+    refundProofUrls,
+    refund_proof_urls: refundProofUrlsSnake,
+    refundBankInfo,
+    refund_bank_info: refundBankInfoSnake
   } = ctx.request.body || {};
   const normalizedReason = normalizeSalesReturnReason(reason);
   if (!normalizedReason) ctx.throw(400, '退单缘由不能为空');
@@ -4258,6 +4279,11 @@ async function requestSalesReturn(ctx) {
   const returnGovSubsidy = returnGovSubsidyInput !== undefined
     ? toBoolean(returnGovSubsidyInput)
     : toBoolean(returnGovSubsidySnake);
+  const refundChoiceValue = String(refundChoice || refundChoiceSnake || 'yes');
+  const refundMethodValue = String(refundMethod || refundMethodSnake || '');
+  const refundProofValues = refundProofUrls || refundProofUrlsSnake || [];
+  const refundBankInfoValue = String(refundBankInfo || refundBankInfoSnake || '').trim();
+  if (!['yes', 'no'].includes(refundChoiceValue)) ctx.throw(400, '退款选项无效');
 
   const result = await sequelize.transaction(async transaction => {
     const order = await Order.findByPk(orderId, {
@@ -4335,6 +4361,9 @@ async function requestSalesReturn(ctx) {
     const refundAmount = orderGross > 0
       ? money(sourceCustomerReceipt * Math.min(1, selectedGross / orderGross))
       : 0;
+    if (refundChoiceValue === 'yes' && refundAmount > 0 && !['original', 'specified'].includes(refundMethodValue)) ctx.throw(400, '请选择退款方式');
+    if (refundChoiceValue === 'yes' && refundAmount > 0 && refundMethodValue === 'original' && (!Array.isArray(refundProofValues) || refundProofValues.length === 0)) ctx.throw(400, '请上传原支付单截图');
+    if (refundChoiceValue === 'yes' && refundAmount > 0 && refundMethodValue === 'specified' && !refundBankInfoValue && (!Array.isArray(refundProofValues) || refundProofValues.length === 0)) ctx.throw(400, '请上传收款截图或填写银行卡信息');
     const effectiveReturnGovSubsidy = uniqueSelectedItems.some(({ sourceItem }) => (
       selectedResourcesForReturn(sourceItem, order).includes('GOV_SUBSIDY') || isSubsidyEligibleItem(sourceItem)
     ));
@@ -4369,6 +4398,10 @@ async function requestSalesReturn(ctx) {
       policy_subsidy_refund_amount: effectiveReturnGovSubsidy && Number.isFinite(requestedPolicySubsidyRefund)
         ? Math.max(0, money(requestedPolicySubsidyRefund))
         : 0,
+      refund_choice: refundChoiceValue,
+      refund_method: refundChoiceValue === 'yes' ? refundMethodValue : '',
+      refund_proof_urls: JSON.stringify(Array.isArray(refundProofValues) ? refundProofValues : []),
+      refund_bank_info: refundBankInfoValue,
       resource_return_actions: JSON.stringify({
         returnGovSubsidy: effectiveReturnGovSubsidy,
         requestedPolicySubsidyRefund: effectiveReturnGovSubsidy && Number.isFinite(requestedPolicySubsidyRefund)

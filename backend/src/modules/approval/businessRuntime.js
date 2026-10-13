@@ -156,7 +156,15 @@ async function listBusinessTasks(ctx, onlyType = null) {
     let configuredFlow;
     let offset = 0;
     while (true) {
-      const rows = await model.findAll({ where, order: [[d.id, 'ASC']], limit: 200, offset });
+      const rows = await model.findAll({
+        where,
+        include: type === 'sales_return'
+          ? [{ model: M.SalesReturnRequestItem, as: 'items' }]
+          : type === 'deposit_refund' ? [{ model: M.DepositOrder, as: 'DepositOrder' }] : undefined,
+        order: [[d.id, 'ASC']],
+        limit: 200,
+        offset
+      });
       for (const row of rows) {
         try {
           const info = await context(type, row);
