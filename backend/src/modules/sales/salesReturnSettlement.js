@@ -245,7 +245,7 @@ async function ensurePolicyNegativeDetail({ order, returnRequest, policyAmount, 
   const existing = await DailyStatementDetail.findAll({
     where: {
       order_id: returnRequest.return_id,
-      business_type: 'national_subsidy_return'
+      business_type: { [Op.in]: ['national_subsidy_receivable', 'national_subsidy_return'] }
     },
     transaction
   });
@@ -259,7 +259,7 @@ async function ensurePolicyNegativeDetail({ order, returnRequest, policyAmount, 
     returnRequest,
     paymentMethod: '国补POS-政策补贴应收',
     paymentCode: 'NATIONAL_SUBSIDY_POLICY_RECEIVABLE',
-    businessType: 'national_subsidy_return',
+    businessType: 'national_subsidy_receivable',
     amount: remaining,
     transaction
   });

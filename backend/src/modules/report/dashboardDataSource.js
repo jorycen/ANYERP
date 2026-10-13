@@ -675,7 +675,12 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
               o.CREATE_STAFF_ID AS create_staff_id,
               o.CREATE_USER AS create_user,
               o.AUXILIARY_SALES_LIST AS auxiliary_sales_list,
-              ROUND(MAX(COALESCE(o.TOTAL_AMOUNT, 0)) + COALESCE((
+              ROUND(MAX(COALESCE(o.TOTAL_AMOUNT, 0) - COALESCE((
+                SELECT SUM(CASE WHEN os.AMOUNT_TYPE = 'decrease' THEN -os.AMOUNT ELSE os.AMOUNT END)
+                  FROM T_ORDER_SUPPLEMENT os
+                 WHERE os.ORDER_ID = o.ORDER_ID
+                   AND os.IS_DELETED = 0
+              ), 0)) + COALESCE((
                 SELECT SUM(r.RETURNED_SALES_AMOUNT)
                   FROM T_SALES_RETURN_GROSS_PROFIT r
                  WHERE r.ORDER_ID = o.ORDER_ID

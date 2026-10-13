@@ -595,7 +595,8 @@ async function getPayableSettlementItems(ctx) {
     source_type: { [Op.in]: ['purchase_return', 'purchase_adjustment'] }
   };
   if (supplierId) creditWhere.supplier_id = supplierId;
-  if (!supplierId && ids?.length) creditWhere.payable_id = { [Op.in]: ids };
+  // Keep explicit selections exact; don't add all supplier credits to the dialog.
+  if (ids?.length) creditWhere.payable_id = { [Op.in]: ids };
   if (distributorId) creditWhere.distributor_id = distributorId;
   if (!distributorId && ids?.length) {
     const selectedDistributorIds = [...new Set(payables.map(row => row.distributor_id).filter(Boolean).map(String))];
@@ -716,6 +717,8 @@ async function getPayableSettlementItems(ctx) {
       // has an accounting balance. Keep that balance available for settlement.
       if (itemRemaining > 0.005) {
         rows.push(buildPayableSettlementResidual(payable, allocated.amount, itemRemaining));
+      } else if (ids?.includes(String(payable.payable_id)) && Math.abs(payableRemaining) <= 0.005) {
+        rows.push(buildPayableSettlementResidual(payable, allocated.amount, 0));
       }
       return;
     }
@@ -727,6 +730,8 @@ async function getPayableSettlementItems(ctx) {
         remaining,
         payable.source_type === 'purchase_adjustment' ? '采购调整' : '整单金额'
       ));
+    } else if (ids?.includes(String(payable.payable_id)) && Math.abs(remaining) <= 0.005) {
+      rows.push(buildPayableSettlementResidual(payable, allocated.amount, 0));
     }
   });
   ctx.body = { code: 0, data: rows };

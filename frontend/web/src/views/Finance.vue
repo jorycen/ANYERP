@@ -3592,13 +3592,10 @@ const openSingleSettlementDialog = async (row) => {
   settlementDialogVisible.value = true
   try {
     settlementRebateBalance.value = Number((await api.getRebateBalance({ supplierId: settlementForm.supplierId })).data?.balance || 0)
-    const isCredit = Number(row.remaining_amount || 0) < 0
     unpaidList.value = await loadSettlementLines({
       supplierId: settlementForm.supplierId,
       ...(row.distributor_id ? { distributorId: row.distributor_id } : {}),
-      // A credit must be combined with positive payables. Loading the supplier's
-      // open rows lets the user choose what this credit should offset.
-      ...(!isCredit ? { payableIds: row.payable_id } : {})
+      payableIds: row.payable_id
     })
     await nextTick()
     if (unpaidList.value.length && settlementTableRef.value) {
@@ -3732,7 +3729,7 @@ const onPayableSelectionChange = (selection) => {
 const isPayableSettlementSelectable = (row) => {
   const status = String(row?.status || '')
   if (!['unpaid', 'partial_settled', 'settling', 'credit'].includes(status)) return false
-  return Math.abs(getPayableRemainingAmount(row)) > 0.005
+  return true
 }
 
 const onPaymentAccountTypeChange = (value) => {
