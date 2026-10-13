@@ -132,7 +132,8 @@ async function main() {
      WHERE gp.SNAPSHOT_STATUS = 'final'
        AND gp.FORMULA_VERSION <> :formulaVersion
        AND o.IS_DELETED = 0
-       AND (o.CREATE_TIME >= '2026-10-01' AND o.CREATE_TIME < '2026-11-01' OR o.ARCHIVE_TIME >= '2026-10-01' AND o.ARCHIVE_TIME < '2026-11-01')
+       AND o.CREATE_TIME >= '2026-10-01'
+       AND o.CREATE_TIME < '2026-11-01'
      ORDER BY gp.GROSS_PROFIT_ID`,
     { replacements: { formulaVersion: FORMULA_VERSION }, type: QueryTypes.SELECT }
   );
@@ -140,6 +141,25 @@ async function main() {
   console.log(JSON.stringify({ mode: execute ? 'execute' : 'preview', scope, formulaVersion: FORMULA_VERSION,
     candidates: candidates.length, selected: selected.length, concurrency }));
   if (!execute || !selected.length) return;
+  const selectedIds = selected.map(candidate => candidate.order_id);
+  const snapshotsBefore = await OrderGrossProfit.findAll({
+    where: { order_id: selectedIds }, raw: true
+  });
+  const settlementsBefore = await ProductSettlementOrder.findAll({
+    where: { source_order_id: selectedIds }, raw: true
+  });
+  const settlementItemsBefore = await ProductSettlementItem.findAll({
+    where: { settlement_id: settlementsBefore.map(row => row.settlement_id) }, raw: true
+  });
+  const returnLedgersBefore = await SalesReturnGrossProfitLedger.findAll({
+    where: { order_id: selectedIds }, raw: true
+  });
+  const backupFile = path.join(__dirname, '../../backup',
+    `migrate-final-order-gross-profit-${scope}-before-${Date.now()}.json`);
+  fs.mkdirSync(path.dirname(backupFile), { recursive: true });
+  fs.writeFileSync(backupFile, JSON.stringify({ snapshotsBefore, settlementsBefore,
+    settlementItemsBefore, returnLedgersBefore }, null, 2), { flag: 'wx' });
+  console.log(JSON.stringify({ backupFile, backedUpOrders: snapshotsBefore.length }));
   const summary = { refreshed: 0, skipped: 0, failed: 0, settlementChanged: 0, returnLedgerRows: 0,
     beforeGrossProfit: 0, afterGrossProfit: 0, failures: [] };
   let cursor = 0;

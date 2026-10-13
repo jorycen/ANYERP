@@ -128,7 +128,10 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived') 
       INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
       ${orderItemTotalsJoin()}
       LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
-        AND gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
+        AND (gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
+          OR (o.CREATE_TIME >= '2026-10-01' AND o.CREATE_TIME < '2026-11-01'
+            AND gp.SNAPSHOT_STATUS = 'final'
+            AND gp.FORMULA_VERSION = 'ORDER_GP_V9_FREIGHT_SEPARATE'))
      WHERE o.IS_DELETED = 0
        AND COALESCE(TRIM(o.CUSTOMER_SOURCE), '') NOT LIKE :internalTransferSource
        AND ${orderStatusFilter}

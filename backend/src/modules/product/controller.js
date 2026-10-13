@@ -1153,7 +1153,9 @@ async function createProductRecord(body, transaction = null) {
         unit: unit || '台',
         remark: remark || '',
         is_used_product: isUsedProduct === true || is_used_product === true || Number(isUsedProduct ?? is_used_product) === 1 ? 1 : 0,
-        gross_profit_cost_mode: dimensions.category === '选件' ? 'COMPANY_PRICE' : costMode,
+        gross_profit_cost_mode: dimensions.category === '选件' ||
+          (dimensions.category === '售后' && dimensions.brand === 'Care服务')
+          ? 'COMPANY_PRICE' : costMode,
         is_focus_product: isFocusProduct === true || is_focus_product === true || Number(isFocusProduct ?? is_focus_product) === 1 ? 1 : 0,
         create_time: new Date(),
         status
@@ -1529,6 +1531,11 @@ async function updateProduct(ctx) {
 
   const effectiveCategory = Object.prototype.hasOwnProperty.call(updateData, 'category')
     ? updateData.category : product.category;
+  const effectiveBrand = Object.prototype.hasOwnProperty.call(updateData, 'brand')
+    ? updateData.brand : product.brand;
+  if (effectiveCategory === '售后' && effectiveBrand === 'Care服务') {
+    updateData.gross_profit_cost_mode = 'COMPANY_PRICE';
+  }
   if (effectiveCategory === '选件') {
     const activePrice = await ProductPrice.findOne({ where: { product_id: productId, status: 1 }, raw: true });
     if (Number(activePrice?.standard_price) > 0) updateData.gross_profit_cost_mode = 'COMPANY_PRICE';

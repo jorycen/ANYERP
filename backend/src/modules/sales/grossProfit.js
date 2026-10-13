@@ -527,7 +527,7 @@ async function buildProductPricingDetails(orderId, transaction) {
   const products = productIds.length
     ? await Product.findAll({
         where: { product_id: productIds },
-        attributes: ['product_id', 'name', 'category', 'accessory_type', 'gross_profit_cost_mode'],
+        attributes: ['product_id', 'name', 'category', 'brand', 'accessory_type', 'gross_profit_cost_mode'],
         transaction,
         raw: true
       })
@@ -589,7 +589,10 @@ async function buildProductPricingDetails(orderId, transaction) {
       supplier,
       {
         purchaseUpliftAmount: supplier?.gross_profit_uplift_amount ?? inboundSupplier?.supplier_gross_profit_uplift_amount,
-        costMode: product.category === '选件' && Number(productPrice?.status) === 1 &&
+        costMode: product.category === '售后' && product.brand === 'Care服务'
+          ? new Date(order.create_time).getTime() >= Date.UTC(2026, 9, 1)
+            ? 'COMPANY_PRICE' : 'PURCHASE_PRICE'
+          : product.category === '选件' && Number(productPrice?.status) === 1 &&
           toNumber(productPrice?.standard_price) > 0
           ? 'COMPANY_PRICE'
           : String(snRow?.gross_profit_use_standard_price) === '1'
