@@ -88,7 +88,7 @@
                 <el-button link type="primary" @click="handleApprove(row)" v-if="row.status === 'pending'">审批</el-button>
                 <el-button link type="success" @click="goToInbound(row)" v-if="row.status === 'approved' && row.pending_inbounds?.length">去入库</el-button>
                 <el-button link type="warning" @click="handleRevoke(row)" v-if="row.can_revoke">{{ row.status === 'approved' ? '撤销采购单' : '撤回' }}</el-button>
-                <el-button link type="danger" @click="handleAdjustment(row)" v-if="row.status === 'approved'">退单</el-button>
+                <el-button link type="danger" @click="handleAdjustment(row)" v-if="row.status === 'approved' && canAdjustPurchase(row)">退单</el-button>
                 <el-button link type="primary" @click="handleView(row)">查看</el-button>
               </template>
             </el-table-column>
@@ -822,9 +822,20 @@ import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
+import { getUserInfo, hasRole, isStoreUser } from '../utils/user'
 
 const router = useRouter()
 const route = useRoute()
+const canAdjustPurchase = row => {
+  if (hasRole(['purchaser', 'admin', 'boss'])) return true
+  if (!isStoreUser()) return false
+  const user = getUserInfo()
+  const staffId = user.staffId || user.id
+  if (staffId && row.applicant_staff_id && Number(staffId) === Number(row.applicant_staff_id)) return true
+  const userIdentities = [user.name, user.phone, String(staffId || '')].filter(Boolean).map(String)
+  const requestIdentities = [row.apply_user, row.submit_user, row.create_user].filter(Boolean).map(String)
+  return requestIdentities.some(identity => userIdentities.includes(identity))
+}
 
 const activeTab = ref('request')
 const editingProductIndex = ref(-1)

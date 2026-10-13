@@ -144,15 +144,17 @@ function assertCanAdjustPurchase(ctx, request) {
   const user = ctx.state.user || {};
   const roles = getUserRoles(user);
   if (roles.some(role => ['purchaser', 'admin', 'boss'].includes(role))) return;
-  if (roles.some(role => ['manager', 'store_manager'].includes(role))) return;
+  const storeRoles = new Set(['clerk', 'staff', 'manager', 'store_manager', 'store_admin']);
+  const isStoreAccount = roles.length > 0 && roles.every(role => storeRoles.has(role));
+  if (!isStoreAccount) ctx.throw(403, '仅采购、管理员、BOSS 或采购申请所属门店账号可以办理退单/数量调整');
 
   const staffId = user.staffId || user.id;
-  const staffMatches = staffId && [request.applicant_staff_id, request.operator_staff_id]
+  const staffMatches = staffId && [request.applicant_staff_id, request.operator_staff_id, request.apply_staff_id, request.submit_staff_id]
     .some(id => id && Number(id) === Number(staffId));
   const legacyIdentity = [user.name, user.phone, String(staffId || '')].filter(Boolean);
   const identityMatches = [request.apply_user, request.submit_user, request.create_user]
     .some(identity => identity && legacyIdentity.includes(String(identity)));
-  if (!staffMatches && !identityMatches) ctx.throw(403, '无权处理他人发起的采购退单');
+  if (!staffMatches && !identityMatches) ctx.throw(403, '门店账号只能调整本门店自行发起的采购申请');
 }
 function assertStoreVisible(ctx, storeId) {
   const allowed = ctx.state.user.accessibleStoreIds || [];
@@ -462,12 +464,13 @@ function getPurchaseAdjustmentTotals(adjustments = []) {
   let actualDelta = 0;
   let rebateDelta = 0;
   for (const adjustment of adjustments || []) {
-    actualDelta += Number(adjustment.total_amount_delta || 0);
     for (const item of adjustment.items || []) {
+      if (String(item.remark || '').startsWith('stock_return')) continue;
       const quantityDelta = Number(item.quantity_delta || 0);
       const unitPrice = Number(item.unit_price || 0);
       const grossItemDelta = quantityDelta * unitPrice;
       grossDelta += grossItemDelta;
+      actualDelta += Number(item.amount_delta || 0);
       rebateDelta += grossItemDelta - Number(item.amount_delta || 0);
     }
   }
@@ -482,6 +485,7 @@ function getPurchaseAdjustmentItemDeltas(adjustments = []) {
   const result = new Map();
   for (const adjustment of adjustments || []) {
     for (const item of adjustment.items || []) {
+      if (String(item.remark || '').startsWith('stock_return')) continue;
       const key = String(item.request_item_id || '');
       if (!key) continue;
       const current = result.get(key) || { quantityDelta: 0, grossDelta: 0, actualDelta: 0, rebateDelta: 0 };
@@ -501,9 +505,11 @@ function getPurchaseAdjustmentItemDeltas(adjustments = []) {
 
 function buildNegativePurchaseOrders(adjustments = []) {
   return (adjustments || [])
-    .filter(adjustment => Number(adjustment.total_quantity_delta || 0) < 0)
+    .filter(adjustment => Number(adjustment.total_quantity_delta || 0) < 0
+      && (adjustment.items || []).some(item => !String(item.remark || '').startsWith('stock_return')))
     .map(adjustment => {
       const row = typeof adjustment.toJSON === 'function' ? adjustment.toJSON() : { ...adjustment };
+      const financialItems = (row.items || []).filter(item => !String(item.remark || '').startsWith('stock_return'));
       const isSpecialWarehouseRepurchase = (row.items || []).some(item => String(item.remark || '').startsWith('special_warehouse_repurchase'));
       return {
         order_id: row.adjustment_id,
@@ -512,13 +518,13 @@ function buildNegativePurchaseOrders(adjustments = []) {
         order_type_name: isSpecialWarehouseRepurchase ? '特殊仓转新采购调整' : '采购退货负订单',
         request_id: row.request_id,
         request_no: row.request_no,
-        total_quantity: Number(row.total_quantity_delta || 0),
-        total_amount: toSignedMoney(row.total_amount_delta || 0),
+        total_quantity: financialItems.reduce((sum, item) => sum + Number(item.quantity_delta || 0), 0),
+        total_amount: toSignedMoney(financialItems.reduce((sum, item) => sum + Number(item.amount_delta || 0), 0)),
         reason: row.reason || '',
         status: row.status || 'completed',
         create_user: row.create_user || '',
         create_time: row.create_time || null,
-        items: (row.items || []).map(item => ({
+        items: financialItems.map(item => ({
           request_item_id: item.request_item_id,
           inbound_id: item.inbound_id,
           inbound_item_id: item.inbound_item_id,
@@ -732,7 +738,9 @@ function buildPurchaseDocumentRelations(request, returnStocks = []) {
       document_id: adjustment.adjustment_id,
       document_no: adjustment.adjustment_no,
       upstream_no: request.request_no,
-      business_action: '生成负向采购订单',
+      business_action: (adjustment.items || []).length > 0 && (adjustment.items || []).every(item => String(item.remark || '').startsWith('stock_return'))
+        ? '实际退库（仅调整库存和数量）'
+        : '采购数量取消/调整',
       product_summary: (adjustment.items || []).map(item => item.product_name || item.product_id).filter(Boolean).join('；'),
       quantity: Number(adjustment.total_quantity_delta || 0),
       amount: Number(adjustment.total_amount_delta || 0),
@@ -869,7 +877,7 @@ function buildAdjustmentRows(request, inbounds, stores) {
   const receivedQuantityOf = (inbound, inboundItem) => {
     const total = Math.max(Number(inboundItem.quantity || 0), 0);
     const received = Math.max(Number(inboundItem.received_quantity || 0), 0);
-    return inbound.status === 'completed' ? Math.max(total, received) : Math.min(total, received);
+    return Math.min(total, received);
   };
   const pendingQuantityOf = (inbound, inboundItem) => Math.max(
     Number(inboundItem.quantity || 0) - receivedQuantityOf(inbound, inboundItem),
@@ -2670,6 +2678,7 @@ async function createPurchaseAdjustment(ctx) {
     let totalAmountDelta = 0;
     let totalRebateDelta = 0;
     let changedItemCount = 0;
+    let payableAmountDelta = 0;
 
     const createdReturns = [];
     const currentReturnByInboundItem = new Map();
@@ -2704,7 +2713,7 @@ async function createPurchaseAdjustment(ctx) {
         const inventoryType = inboundItem.inventory_type || 'normal_qty';
         const locationId = inboundItem.location_id || '';
         const alreadyReturned = returnedByInboundItem.get(String(inboundItem.item_id)) || 0;
-        const maxReturnQuantity = Math.max(0, Number(inboundItem.quantity || 0) - alreadyReturned);
+        const maxReturnQuantity = Math.max(0, Number(inboundItem.received_quantity || 0) - alreadyReturned);
         if (returnQuantity > maxReturnQuantity) ctx.throw(400, `商品 ${inboundItem.product_name || inboundItem.product_id} 可退库数量不足，最多可退 ${maxReturnQuantity}`);
         let returnItems = [];
         if (Number(product?.need_sn) === 1) {
@@ -2771,6 +2780,7 @@ async function createPurchaseAdjustment(ctx) {
 
       totalQuantityDelta -= returnQuantity;
       totalAmountDelta = toSignedMoney(totalAmountDelta + amountDelta);
+      if (operationType === 'pending_cancel') payableAmountDelta = toSignedMoney(payableAmountDelta + amountDelta);
       totalRebateDelta = toSignedMoney(totalRebateDelta + rebateDelta);
       changedItemCount += 1;
     }
@@ -2784,7 +2794,7 @@ async function createPurchaseAdjustment(ctx) {
       const allItemsReturned = (inbound.items || []).every(item => {
         const alreadyReturned = returnedByInboundItem.get(String(item.item_id)) || 0;
         const currentReturned = currentReturnByInboundItem.get(String(item.item_id)) || 0;
-        return alreadyReturned + currentReturned >= Number(item.quantity || 0);
+        return alreadyReturned + currentReturned >= Number(item.received_quantity || 0);
       });
       if (allItemsReturned && (inbound.items || []).length > 0) {
         await inbound.update({ status: 'returned', update_time: new Date() }, { transaction });
@@ -2837,7 +2847,7 @@ async function createPurchaseAdjustment(ctx) {
           update_time: new Date()
         }, { transaction });
       }
-    } else if (Math.abs(totalAmountDelta) > 0) {
+    } else if (Math.abs(payableAmountDelta) > 0) {
       payableId = generateUUID();
       await Payable.create({
         payable_id: payableId,
@@ -2853,38 +2863,21 @@ async function createPurchaseAdjustment(ctx) {
         source_no: adjustmentNo,
         region_id: request.store_id ? (await Store.findByPk(request.store_id, { attributes: ['region_id'], transaction }))?.region_id || null : null,
         distributor_id: request.distributor_id || request.Store?.distributor_id || null,
-        total_amount: totalAmountDelta,
+        total_amount: payableAmountDelta,
         offset_amount: 0,
         paid_amount: 0,
-        status: totalAmountDelta < 0 ? 'credit' : 'unpaid',
+        status: payableAmountDelta < 0 ? 'credit' : 'unpaid',
         create_time: new Date()
       }, { transaction });
-      if (totalAmountDelta < 0 && request.supplier_id) {
-        const originalPayable = await Payable.findOne({
-          where: { request_id: request.request_id, source_type: 'purchase', total_amount: { [Op.gt]: 0 } },
-          transaction,
-          lock: transaction.LOCK.UPDATE
-        });
-        if (originalPayable) {
-          const allocation = (await getAllocationSummary([originalPayable.payable_id], transaction)).get(String(originalPayable.payable_id)) || { amount: 0 };
-          // 只要已经生成过结算单，就必须保留原结算事实，负向调整留作供应商后续抵扣。
-          if (Number(allocation.amount || 0) <= 0) {
-            const remaining = Math.max(0, getPayableRemaining(originalPayable.total_amount, allocation.amount, originalPayable.offset_amount));
-            const offsetAmount = Math.min(Math.abs(totalAmountDelta), remaining);
-            if (offsetAmount > 0) {
-              await originalPayable.update({ offset_amount: toSignedMoney(Number(originalPayable.offset_amount || 0) + offsetAmount) }, { transaction });
-              await Payable.update({ offset_amount: offsetAmount, offset_payable_id: originalPayable.payable_id, status: Math.abs(totalAmountDelta) <= offsetAmount + 0.005 ? 'offset' : 'credit' }, { where: { payable_id: payableId }, transaction });
-              await refreshPayableState(originalPayable.payable_id, transaction);
-            }
-          }
-        }
-      }
     }
 
     await transaction.commit();
+    const adjustmentMessage = payableId
+      ? (payableAmountDelta < 0 ? '采购数量已取消，负向应付已保留在应付管理' : '采购数量调整完成，正向应付已生成')
+      : '采购退库完成，仅调整退库库存和数量；撤销采购时再生成负向应付';
     ctx.body = {
       code: 0,
-      message: totalQuantityDelta < 0 ? '采购退单完成，已生成负向待付款调整' : '采购数量调整完成，已生成正向待付款调整',
+      message: adjustmentMessage,
       data: { adjustmentId, adjustmentNo, payableId, totalQuantityDelta, totalAmountDelta, returns: createdReturns }
     };
   } catch (error) {
@@ -2928,8 +2921,63 @@ async function revokeRequest(ctx) {
       });
       if (!canRevokeReturnedPurchase(lockedRequest.status, currentInbounds)) ctx.throw(409, '商品尚未全部退回，不能撤销采购申请');
 
+      // Physical stock returns affect inventory only. Their payable credit is created
+      // when the purchase itself is revoked, and remains open in Payable Management.
+      const completedAdjustments = await PurchaseAdjustment.findAll({
+        where: { request_id: requestId, status: 'completed' },
+        include: [{ model: PurchaseAdjustmentItem, as: 'items' }],
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      const purchaseStore = lockedRequest.store_id
+        ? await Store.findByPk(lockedRequest.store_id, { attributes: ['region_id', 'distributor_id'], transaction })
+        : null;
+      const originalPayables = await Payable.findAll({
+        where: { request_id: requestId, source_type: 'purchase', total_amount: { [Op.gt]: 0 } },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      const revokeOriginalAmount = toSignedMoney(originalPayables.reduce((sum, item) => sum + Number(item.total_amount || 0), 0));
+      const existingCredits = await Payable.findAll({
+        where: { request_id: requestId, total_amount: { [Op.lt]: 0 }, status: { [Op.ne]: 'cancelled' } },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      let remainingCreditAmount = Math.max(0, toSignedMoney(revokeOriginalAmount + existingCredits.reduce((sum, item) => sum + Number(item.total_amount || 0), 0)));
+      for (const adjustment of completedAdjustments) {
+        const returnAmount = toSignedMoney((adjustment.items || [])
+          .filter(item => String(item.remark || '').startsWith('stock_return'))
+          .reduce((sum, item) => sum + Number(item.amount_delta || 0), 0));
+        if (returnAmount >= 0 || remainingCreditAmount <= 0) continue;
+        const existing = await Payable.findOne({
+          where: { source_type: 'purchase_adjustment', source_id: adjustment.adjustment_id },
+          transaction,
+          lock: transaction.LOCK.UPDATE
+        });
+        const payableAmount = -Math.min(Math.abs(returnAmount), remainingCreditAmount);
+        if (existing) {
+          if (existing.status === 'cancelled') {
+            await existing.update({ total_amount: payableAmount, offset_amount: 0, offset_payable_id: null, status: 'credit' }, { transaction });
+            remainingCreditAmount = toSignedMoney(remainingCreditAmount + payableAmount);
+          }
+          continue;
+        }
+        await Payable.create({
+          payable_id: generateUUID(), supplier_id: lockedRequest.supplier_id,
+          supplier_name: request.Supplier?.name || '', request_id: requestId,
+          request_no: lockedRequest.request_no, payee_type: 'supplier',
+          payee_id: lockedRequest.supplier_id, payee_name: request.Supplier?.name || '',
+          source_type: 'purchase_adjustment', source_id: adjustment.adjustment_id,
+          source_no: adjustment.adjustment_no, region_id: purchaseStore?.region_id || null,
+          distributor_id: lockedRequest.distributor_id || purchaseStore?.distributor_id || null,
+          total_amount: payableAmount, offset_amount: 0, paid_amount: 0,
+          status: 'credit', create_time: new Date()
+        }, { transaction });
+        remainingCreditAmount = toSignedMoney(remainingCreditAmount + payableAmount);
+      }
+
       const credits = await Payable.findAll({
-        where: { request_id: requestId, source_type: { [Op.in]: ['purchase_return', 'purchase_adjustment'] }, total_amount: { [Op.lt]: 0 } },
+        where: { request_id: requestId, source_type: { [Op.in]: ['purchase_return', 'purchase_adjustment'] }, total_amount: { [Op.lt]: 0 }, status: { [Op.ne]: 'cancelled' } },
         transaction,
         lock: transaction.LOCK.UPDATE
       });
@@ -2960,44 +3008,11 @@ async function revokeRequest(ctx) {
           await original.update({ offset_amount: Math.max(0, Number(original.offset_amount || 0) - offsetAmount) }, { transaction });
           await refreshPayableState(original.payable_id, transaction);
         }
-        await credit.update({ offset_amount: 0, offset_payable_id: null }, { transaction });
+        await credit.update({ offset_amount: 0, offset_payable_id: null, status: 'credit' }, { transaction });
       }
 
       const totalAmount = toSignedMoney(credits.reduce((sum, item) => sum + Number(item.total_amount || 0), 0));
       if (totalAmount >= 0) ctx.throw(409, '退单负向结算金额无效');
-      const settlement = await Settlement.create({
-        settlement_id: generateUUID(),
-        settlement_no: `RV${Date.now()}${generateUUID().slice(-6).toUpperCase()}`,
-        supplier_id: request.supplier_id,
-        supplier_name: request.supplier_name || credits[0].supplier_name || '',
-        settlement_type: 'supplier',
-        payee_type: 'supplier',
-        payee_id: request.supplier_id,
-        payee_name: request.supplier_name || credits[0].supplier_name || '',
-        source_type: 'purchase_revocation',
-        source_id: requestId,
-        source_no: request.request_no,
-        distributor_id: request.distributor_id || credits[0].distributor_id || null,
-        region_id: [...new Set(credits.map(item => item.region_id).filter(Boolean))].length === 1 ? credits.find(item => item.region_id)?.region_id : null,
-        total_amount: totalAmount,
-        paid_amount: 0,
-        status: 'draft',
-        payment_status: 'unpaid',
-        is_deleted: 0,
-        remark: String(comment || '').trim() || `采购申请 ${request.request_no} 商品退回后撤销`,
-        create_user: operatorName,
-        create_time: new Date()
-      }, { transaction });
-      for (const credit of credits) {
-        await SettlementItem.create({
-          settlement_id: settlement.settlement_id,
-          payable_id: credit.payable_id,
-          request_no: request.request_no,
-          product_name: '采购退单',
-          amount: Number(credit.total_amount || 0)
-        }, { transaction });
-        await refreshPayableState(credit.payable_id, transaction);
-      }
       await Inbound.update({ status: 'cancelled', update_time: new Date() }, {
         where: { purchase_request_id: requestId, status: 'pending' }, transaction
       });
@@ -3012,7 +3027,7 @@ async function revokeRequest(ctx) {
         user, comment: comment || '', transaction
       });
       await transaction.commit();
-      ctx.body = { code: 0, message: '采购申请已撤销，采购结算已生成负向结算单', data: { settlementId: settlement.settlement_id } };
+      ctx.body = { code: 0, message: '采购申请已撤销，负向应付款已保留在应付管理', data: { payableIds: credits.map(item => item.payable_id) } };
       return;
     } catch (error) {
       if (!transaction.finished) await transaction.rollback();

@@ -24,7 +24,7 @@ router.delete('/request-draft/:requestId', deleteRequestDraft);
 // 审批、撤销和供应商维护仍属于采购管理职责。
 router.post('/approve-request/:requestId', approveRequest);
 router.post('/revoke-request/:requestId', revokeRequest);
-// 退单权限在控制器中按单据判断：采购角色可处理，店员仅可处理自己发起的采购单。
+// 采购退单/数量调整的采购角色及所属门店本人校验在控制器中按单据执行。
 router.get('/adjustment-preview/:requestId', getAdjustmentPreview);
 router.post('/create-adjustment', createPurchaseAdjustment);
 router.post('/supplier/sort', requirePurchaser, sortSuppliers);
