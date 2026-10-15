@@ -318,7 +318,7 @@
             <el-table-column label="统一售价" width="110" align="right">
               <template #default="{ row }">¥{{ formatMoney(row.unified_sale_price) }}</template>
             </el-table-column>
-            <el-table-column label="SN特价" width="110" align="right">
+        <el-table-column label="SN特价" width="110" align="right">
               <template #default="{ row }">
                 <el-tag v-if="row.is_special_price" type="danger">¥{{ formatMoney(row.special_price) }}</el-tag>
                 <span v-else>-</span>
@@ -1335,7 +1335,10 @@
                 :value="item.product_id"
               />
             </el-select>
-                        <el-input-number v-model="transferAddForm.quantity" :min="1" :precision="0" style="width: 120px" />
+            <el-select v-model="transferAddForm.pnCode" placeholder="&#x9009;&#x62E9; PN" clearable filterable style="width: 220px" :disabled="!transferAddForm.productId || transferPnLoading">
+              <el-option v-for="pn in transferPnOptions" :key="pn.pn_id || pn.pn_code" :label="pn.pn_code" :value="pn.pn_code" />
+            </el-select>
+            <el-input-number v-model="transferAddForm.quantity" :min="1" :precision="0" style="width: 120px" />
             <el-button type="primary" @click="addTransferProductItem">添加</el-button>
           </div>
         </el-form-item>
@@ -1343,6 +1346,9 @@
 
       <h4 class="mt-20">调拨商品</h4>
       <el-table :data="transferForm.items" stripe border size="small">
+        <el-table-column prop="pnCode" label="PN" min-width="140">
+          <template #default="{ row: item }">{{ item.pnCode || '-' }}</template>
+        </el-table-column>
         <el-table-column label="商品名称" min-width="140">
           <template #default="{ row: item }">{{ item.productName }}</template>
         </el-table-column>
@@ -2217,6 +2223,8 @@ const transferHistoryQuery = reactive({
   endDate: ''
 })
 const transferProductOptions = ref([])
+const transferPnOptions = ref([])
+const transferPnLoading = ref(false)
 const transferSnOptions = ref([])
 const transferOutConfirmVisible = ref(false)
 const transferOutConfirmLoading = ref(false)
@@ -2237,6 +2245,7 @@ const freightPlatforms = ref([])
 const transferAddForm = reactive({
   productId: '',
   snId: '',
+  pnCode: '',
   quantity: 1
 })
 
@@ -3866,7 +3875,9 @@ const onTransferFromStoreChange = async (storeId) => {
   transferForm.items = []
   transferAddForm.productId = ''
   transferAddForm.snId = ''
+  transferAddForm.pnCode = ''
   transferAddForm.quantity = 1
+  transferPnOptions.value = []
   transferProductOptions.value = []
   transferSnOptions.value = []
   if (storeId) {
@@ -3897,8 +3908,24 @@ const searchTransferProducts = async (keyword = '') => {
 
 const onTransferProductChange = async () => {
   transferAddForm.snId = ''
+  transferAddForm.pnCode = ''
   transferAddForm.quantity = 1
   transferSnOptions.value = []
+  transferPnOptions.value = []
+  const productId = transferAddForm.productId
+  if (!productId) return
+  transferPnLoading.value = true
+  try {
+    const res = await api.getPnList({ productId, activeOnly: 1, page: 1, pageSize: 100 })
+    if (res.code === 0) {
+      transferPnOptions.value = res.data?.list || []
+      if (transferPnOptions.value.length === 1) transferAddForm.pnCode = transferPnOptions.value[0].pn_code || ''
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '\u52a0\u8f7d\u5546\u54c1 PN \u5931\u8d25')
+  } finally {
+    transferPnLoading.value = false
+  }
 }
 
 const loadTransferProductSns = async () => {
@@ -3921,6 +3948,7 @@ const loadTransferProductSns = async () => {
 }
 
 const addTransferProductItem = () => {
+  if (transferPnLoading.value) return
   if (!transferForm.fromStoreId) {
     ElMessage.warning('\u8bf7\u9009\u62e9\u8c03\u51fa\u95e8\u5e97')
     return
@@ -3928,6 +3956,13 @@ const addTransferProductItem = () => {
   const product = transferProductOptions.value.find(item => item.product_id === transferAddForm.productId)
   if (!product) {
     ElMessage.warning('\u8bf7\u9009\u62e9\u8c03\u62e8\u5546\u54c1')
+    return
+  }
+
+  const fallbackPn = transferPnOptions.value.length === 0 ? (product.pn_code || product.manufacturer_code || '') : ''
+  const pnCode = String(transferAddForm.pnCode || fallbackPn).trim()
+  if (transferPnOptions.value.length > 1 && !pnCode) {
+    ElMessage.warning('\u8bf7\u9009\u62e9\u5546\u54c1 PN')
     return
   }
 
@@ -3942,7 +3977,7 @@ const addTransferProductItem = () => {
     return
   }
 
-  const existing = transferForm.items.find(item => !item.snId && item.productId === product.product_id)
+  const existing = transferForm.items.find(item => !item.snId && item.productId === product.product_id && String(item.pnCode || '') === pnCode)
   if (existing) {
     const nextQty = Number(existing.quantity || 0) + quantity
     if (nextQty > availableQty) {
@@ -3956,13 +3991,16 @@ const addTransferProductItem = () => {
       snCode: '',
       productId: product.product_id,
       productName: product.product_name || product.name || '',
+      pnCode,
       quantity
     })
   }
 
   transferAddForm.productId = ''
   transferAddForm.snId = ''
+  transferAddForm.pnCode = ''
   transferAddForm.quantity = 1
+  transferPnOptions.value = []
   transferSnOptions.value = []
 }
 
@@ -3989,6 +4027,7 @@ const openTransferDialog = (row) => {
     snCode: row.sn_code,
     productId: row.product_id,
     productName: row.product_name || '',
+    pnCode: row.pn_code || '',
     quantity: 1
   })
   transferDialogVisible.value = true
@@ -4053,8 +4092,10 @@ const resetTransferForm = () => {
   transferForm.items = []
   transferAddForm.productId = ''
   transferAddForm.snId = ''
+  transferAddForm.pnCode = ''
   transferAddForm.quantity = 1
   transferProductOptions.value = []
+  transferPnOptions.value = []
   transferSnOptions.value = []
 }
 

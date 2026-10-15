@@ -2086,13 +2086,14 @@ async function exportPaymentCandidates(ctx) {
   await enrichSettlementMetadata(rows);
 
   const data = normalizeSettlements(rows).map(row => ({
+    付款对象类型: row.settlement_type === 'reimbursement' ? '个人报销' : row.settlement_type === 'expense' ? '费用' : '采购结算',
     对方公司: row.supplier_account_snapshot_parsed?.companyName || '',
     对方开户行: row.supplier_account_snapshot_parsed?.bankName || '',
     对方账号: row.supplier_account_snapshot_parsed?.accountNumber || '',
     对方税号: row.supplier_account_snapshot_parsed?.taxNo || '',
     对方账户备注: row.supplier_account_snapshot_parsed?.remark || row.other_payment_remark || '',
     结算单号: row.settlement_no,
-    供应商: row.supplier_name || '',
+    付款对象: row.payee_name || row.supplier_name || '',
     经销商: row.distributor_name || row.distributor_id || '',
     税务属性: row.tax_status || 'UNKNOWN',
     结算金额: Number(row.total_amount || 0),
@@ -2107,7 +2108,7 @@ async function exportPaymentCandidates(ctx) {
   const workbook = XLSX.utils.book_new();
   const paymentHeaders = [
     '对方公司', '对方开户行', '对方账号', '对方税号', '对方账户备注',
-    '结算单号', '供应商', '经销商', '税务属性', '结算金额', '已付金额', '剩余应付金额', '本次付款金额', '付款时间', '备注', '导入标识'
+    '付款对象类型', '结算单号', '付款对象', '经销商', '税务属性', '结算金额', '已付金额', '剩余应付金额', '本次付款金额', '付款时间', '备注', '导入标识'
   ];
   const worksheet = XLSX.utils.json_to_sheet(data, { header: paymentHeaders });
   worksheet['!cols'] = paymentHeaders.map((header, index) => index === paymentHeaders.length - 1 ? { hidden: true } : {});

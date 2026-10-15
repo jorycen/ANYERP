@@ -1,5 +1,6 @@
 const { QueryTypes } = require('sequelize');
 const { sequelize } = require('../../models');
+const { summarizeAllocatedExpenses } = require('../finance/expenseCostAllocation');
 const { sendExcel } = require('../../utils/excelExport');
 
 const ARCHIVED_STATUSES = ['completed', 'archived', '已归档', 'returned', '已退单'];
@@ -202,17 +203,13 @@ async function queryFinancialProfit(filters) {
   let items = [...grouped.values()].map(calculateOrder);
   if (filters.status) items = items.filter(item => item.status === filters.status);
 
-  const expenseRows = await sequelize.query(
-    `SELECT ROUND(COALESCE(SUM(e.AMOUNT), 0), 2) AS amount
-       FROM T_EXPENSE e
-      WHERE e.IS_DELETED = 0
-        AND e.AFFECTS_STORE_PROFIT = 1
-        AND e.STORE_ID IN (:storeIds)
-        AND e.STATUS NOT IN ('draft', 'pending_approval', 'rejected', 'cancelled')
-        AND e.EXPENSE_DATE BETWEEN :startDate AND :endDate`,
-    { replacements, type: QueryTypes.SELECT }
-  );
-  return { items, operatingExpense: money(expenseRows[0]?.amount) };
+  const expenseSummary = await summarizeAllocatedExpenses({
+    storeIds: filters.storeIds,
+    dateMode: 'date',
+    startDate: filters.startDate,
+    endDate: filters.endDate
+  });
+  return { items, operatingExpense: money(expenseSummary.amount) };
 }
 
 function summarize(items, operatingExpense) {

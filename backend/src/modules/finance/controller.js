@@ -515,6 +515,7 @@ async function payExpense(ctx) {
   await sequelize.transaction(async transaction => {
     const record = await Expense.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
     if (!record) ctx.throw(404, '支出记录不存在');
+    if (record.payable_id) ctx.throw(400, '该费用已进入付款管理，请在付款管理中登记实际付款');
     if (record.status !== 'processing') ctx.throw(400, '当前状态不可付款');
 
     const settleAccountId = settlementAccountId || record.settlement_account_id;

@@ -61,7 +61,16 @@
             </el-button>
           </template>
         </el-table-column>
-        <el-table-column prop="supplier_name" label="供应商" width="150" />
+        <el-table-column label="付款对象" width="150">
+          <template #default="{ row }">{{ row.payee_name || row.supplier_name || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="来源类型" width="110">
+          <template #default="{ row }">
+            <el-tag :type="row.settlement_type === 'reimbursement' ? 'warning' : 'info'" size="small">
+              {{ row.settlement_type === 'reimbursement' ? '个人报销' : row.settlement_type === 'expense' ? '费用' : '采购结算' }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="distributor_name" label="经销商" width="130">
           <template #default="{ row }">{{ distributorText(row) }}</template>
         </el-table-column>

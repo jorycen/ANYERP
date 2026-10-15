@@ -8,6 +8,7 @@ const {
   Store,
   Region,
   Staff,
+  Role,
   StaffStorePermission
 } = require('../../models');
 const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/storePermissions');
@@ -323,14 +324,20 @@ async function getMonthlyTaskAchievement(ctx) {
   const user = ctx.state.user;
   const profitVisible = canViewProfit(user);
   const selfOnly = isSelfOnlyReportUser(user);
+  const companyWideRank = String(ctx.query.companyWideRank || ctx.query.company_wide_rank || '') === '1'
+    && Boolean(user.staffId);
   const requestedDimension = String(ctx.query.dimension || 'store').trim().toLowerCase() === 'staff' ? 'staff' : 'store';
-  const dimension = selfOnly ? 'staff' : requestedDimension;
-  const requestedStaffId = selfOnly ? String(user.staffId || '') : String(ctx.query.staffId || ctx.query.staff_id || '').trim();
+  const dimension = selfOnly || companyWideRank ? 'staff' : requestedDimension;
+  const requestedStaffId = companyWideRank || selfOnly
+    ? String(user.staffId || '')
+    : String(ctx.query.staffId || ctx.query.staff_id || '').trim();
   const archiveScope = String(ctx.query.archiveScope || ctx.query.archive_scope || 'archived').trim().toLowerCase() === 'all' ? 'all' : 'archived';
   const monthKey = String(ctx.query.monthKey || ctx.query.month_key || '').trim() || new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 7);
-  const reportScope = await resolveReportStoreIds(user);
+  const reportScope = companyWideRank ? ['*'] : await resolveReportStoreIds(user);
   const globalScope = reportScope.includes('*');
-  const storeIds = await resolveStores(user, dimension === 'store' ? (ctx.query.storeId || ctx.query.store_id) : '');
+  const storeIds = companyWideRank
+    ? (await Store.findAll({ where: { is_deleted: 0, status: 1 }, attributes: ['store_id'], raw: true })).map(row => String(row.store_id))
+    : await resolveStores(user, dimension === 'store' ? (ctx.query.storeId || ctx.query.store_id) : '');
   const { startAt, endAt } = reportActualRange(ctx.query, monthKey);
   if (!storeIds.length) {
     ctx.body = { code: 0, data: { monthKey, stores: [], employees: [] } };
@@ -345,7 +352,11 @@ async function getMonthlyTaskAchievement(ctx) {
   const [stores, tasks, staffRows, permissions, allocations, batches, products, actuals] = await Promise.all([
     Store.findAll({ where: { store_id: { [Op.in]: storeIds }, is_deleted: 0, status: 1 }, attributes: ['store_id', 'name', 'region_id'], raw: true }),
     MonthlyTask.findAll({ where: taskWhere, raw: true }),
-    Staff.findAll({ where: staffWhere, attributes: ['staff_id', 'name', 'store_id'], raw: true }),
+    Staff.findAll({
+      where: staffWhere,
+      attributes: ['staff_id', 'name', 'store_id', 'role_code'],
+      include: [{ model: Role, as: 'Roles', attributes: ['role_code'], through: { attributes: [] }, required: false }]
+    }),
     StaffStorePermission.findAll({ where: { store_id: { [Op.in]: storeIds } }, attributes: ['staff_id', 'store_id'], raw: true }),
     MonthlyTaskGrossProfitAllocation.findAll({ raw: true }),
     MonthlyTaskProductBatch.findAll({ raw: true }),
@@ -407,7 +418,7 @@ async function getMonthlyTaskAchievement(ctx) {
     profitVisible
     }), { regionId: region.region_id || '', regionCode: region.region_code || '', regionName: region.name || '' });
   });
-  const employeesResult = (dimension === 'store' ? [] : visibleTasks.filter(task => task.target_type === 'staff' && (!requestedStaffId || String(task.target_id) === requestedStaffId))).map(task => {
+  const allEmployeesResult = (dimension === 'store' ? [] : visibleTasks.filter(task => task.target_type === 'staff')).map(task => {
     const staff = staffMap.get(String(task.target_id));
     const allocationsForStaff = allocationMap.get(String(task.target_id)) || [];
     const allocated = allocationsForStaff.reduce((sum, row) => sum + row.allocatedTarget, 0);
@@ -417,9 +428,50 @@ async function getMonthlyTaskAchievement(ctx) {
       || createActual();
     return buildAchievement({ task, actual, grossProfitTarget: grossTarget, name: staff?.name || task.target_id, storeId: staff?.store_id || '', storeName: storeMap.get(String(staff?.store_id || ''))?.name || '', profitVisible });
   });
+  if (companyWideRank) {
+    const rankableRoleCodes = new Set(['staff', 'clerk', 'manager', 'store_manager', 'store_admin']);
+    const eligibleStaff = staffRows.filter(staff => {
+      const roles = (staff.Roles || []).map(role => String(role.role_code || '').toLowerCase());
+      if (!roles.length && staff.role_code) roles.push(String(staff.role_code).toLowerCase());
+      return roles.some(role => rankableRoleCodes.has(role));
+    });
+    const eligibleIds = new Set(eligibleStaff.map(staff => String(staff.staff_id)));
+    const rankByStaffId = new Map(allEmployeesResult
+      .filter(row => eligibleIds.has(String(row.targetId)))
+      .map(row => [String(row.targetId), row]));
+    eligibleStaff.forEach(staff => {
+      const staffId = String(staff.staff_id);
+      if (rankByStaffId.has(staffId)) return;
+      const actual = actuals.employeeActuals.get(employeeKey(staffId, staff.name)) || createActual();
+      rankByStaffId.set(staffId, {
+        targetType: 'staff',
+        targetId: staffId,
+        targetName: staff.name || staffId,
+        storeId: staff.store_id || '',
+        storeName: storeMap.get(String(staff.store_id || ''))?.name || '',
+        overallRate: 0,
+        status: '未设置目标',
+        sales: { actual: money(actual.salesAmount), target: 0, rate: null },
+        grossProfit: profitVisible
+          ? { actual: money(actual.grossProfit), target: 0, rate: null }
+          : { actual: null, target: null, rate: null },
+        productBatches: [],
+        unallocatedGrossProfit: 0
+      });
+    });
+    allEmployeesResult.splice(0, allEmployeesResult.length, ...[...rankByStaffId.values()]);
+  }
   const sort = (left, right) => (number(right.overallRate) - number(left.overallRate)) || (number(right.sales.actual) - number(left.sales.actual)) || String(left.targetName).localeCompare(String(right.targetName), 'zh-CN');
   storesResult.sort(sort);
-  employeesResult.sort(sort);
+  allEmployeesResult.sort(sort);
+  const companyWideTaskRank = companyWideRank
+    ? allEmployeesResult.findIndex(row => String(row.targetId) === requestedStaffId) + 1
+    : null;
+  const employeesResult = companyWideRank
+    ? allEmployeesResult.filter(row => String(row.targetId) === requestedStaffId)
+    : requestedStaffId
+      ? allEmployeesResult.filter(row => String(row.targetId) === requestedStaffId)
+      : allEmployeesResult;
   ctx.body = {
     code: 0,
     data: {
@@ -428,6 +480,7 @@ async function getMonthlyTaskAchievement(ctx) {
         source: 'monthly_tasks',
         dimension,
         canViewProfit: profitVisible,
+        companyWideTaskRank,
         calculation: 'ANY-ERP 按自然月实时汇总已归档销售与已完成退货，前端只负责展示'
       },
       summary: {

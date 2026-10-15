@@ -472,9 +472,65 @@ class DashboardService {
       query.employeeId,
       profitVisible
     );
+    let companyWideGrossProfitRank = null;
+    if (String(query.companyWideRank || query.company_wide_rank || '') === '1' && profitVisible && user.staffId) {
+      const companyStores = await this.dataSource.query(
+        'SELECT STORE_ID AS storeId FROM T_STORE WHERE IS_DELETED = 0 AND STATUS = 1'
+      );
+      const companyStoreIds = companyStores.map(row => String(row.storeId));
+      if (companyStoreIds.length) {
+        const companyFilters = {
+          storeIds: companyStoreIds,
+          archiveScope: filters.archiveScope
+        };
+        const [companyOrderRows, companyAdjustmentRows] = await Promise.all([
+          this.dataSource.getEmployeeOrderRows(companyFilters, ranges.current),
+          this.dataSource.getApprovedAdjustments(companyFilters, ranges.current)
+        ]);
+        const companyRanking = buildEmployeePerformance(companyOrderRows, companyAdjustmentRows, '', true).ranking;
+        const companyRoster = await this.dataSource.query(`
+          SELECT DISTINCT s.STAFF_ID AS staffId, s.NAME AS employeeName
+            FROM T_STAFF s
+            LEFT JOIN T_STAFF_ROLE sr ON sr.STAFF_ID = s.STAFF_ID
+            LEFT JOIN T_ROLE r ON r.ROLE_ID = sr.ROLE_ID AND r.STATUS = 1
+           WHERE s.STATUS = 1 AND s.IS_DELETED = 0
+             AND (
+               LOWER(COALESCE(r.ROLE_CODE, '')) IN ('staff', 'clerk', 'manager', 'store_manager', 'store_admin')
+               OR (sr.STAFF_ID IS NULL AND LOWER(COALESCE(s.ROLE_CODE, '')) IN ('staff', 'clerk', 'manager', 'store_manager', 'store_admin'))
+             )
+        `);
+        const rankingByStaffId = new Map(companyRanking.map(row => [String(row.staffId || ''), row]));
+        companyRoster.forEach(staff => {
+          const staffId = String(staff.staffId || '');
+          if (staffId && !rankingByStaffId.has(staffId)) {
+            rankingByStaffId.set(staffId, {
+              staffId,
+              employeeName: staff.employeeName || staffId,
+              salesAmount: 0,
+              baseGrossProfit: 0,
+              approvedAdjustment: 0,
+              grossProfit: 0,
+              participatedOrderCount: 0
+            });
+          }
+        });
+        const rankedCompanyEmployees = [...rankingByStaffId.values()]
+          .filter(row => companyRoster.some(staff => String(staff.staffId) === String(row.staffId || '')))
+          .sort((a, b) => Number(b.grossProfit || 0) - Number(a.grossProfit || 0)
+            || Number(b.salesAmount || 0) - Number(a.salesAmount || 0)
+            || String(a.employeeName || '').localeCompare(String(b.employeeName || ''), 'zh-CN'));
+        const ownCompanyIndex = rankedCompanyEmployees.findIndex(row => String(row.staffId || '') === String(user.staffId));
+        companyWideGrossProfitRank = ownCompanyIndex >= 0 ? ownCompanyIndex + 1 : 0;
+      }
+    }
     const productAnalysis = mapProductRows(productRows, profitVisible);
     const previousStoreMap = new Map((previousStoreRanking || []).map(row => [String(row.storeId), row]));
     const storeProductTypeMap = new Map((storeProductTypeQuantities || []).map(row => [String(row.storeId), row]));
+    const productQuantities = [...storeProductTypeMap.values()].reduce((totals, row) => ({
+      laptop: totals.laptop + Number(row.laptopQuantity || 0),
+      phone: totals.phone + Number(row.phoneQuantity || 0),
+      tablet: totals.tablet + Number(row.tabletQuantity || 0)
+    }), { laptop: 0, phone: 0, tablet: 0 });
     const inventoryView = {
       ...inventory,
       inventoryAmount: profitVisible ? inventory.inventoryAmount : null,
@@ -500,6 +556,7 @@ class DashboardService {
         canViewProfit: profitVisible,
         selfOnly,
         archiveScope: filters.archiveScope,
+        companyWideGrossProfitRank,
         allocationRule: '销售额平均拆分；毛利按辅助销售固定金额或比例分配，未设置时平均拆分',
         generatedAt: new Date().toISOString()
       },
@@ -527,6 +584,7 @@ class DashboardService {
       })),
       productCategoryAnalysis: buildProductCategoryTree(productCategoryRows),
       productAnalysis,
+      productQuantities,
       inventory: inventoryView
     };
   }

@@ -41,6 +41,66 @@ function money(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
 }
 
+function expenseTaxStatus(invoiceType) {
+  const value = String(invoiceType || '').trim().toLowerCase();
+  if (!value) return 'UNKNOWN';
+  if (value.includes('未税') || value.includes('untaxed') || value.includes('收据') || value.includes('普票')) return 'UNTAXED';
+  if (value.includes('含税') || value.includes('专票') || value.includes('special') || value.includes('tax_included')) return 'TAX_INCLUDED';
+  return 'UNKNOWN';
+}
+
+async function createDirectExpensePayment(expense, operator, transaction) {
+  const payable = await ensureExpensePayable(expense, { sourceType: 'expense', status: 'unpaid' }, transaction);
+  const existing = await Settlement.findOne({
+    where: { source_type: 'expense', source_id: expense.expense_id, is_deleted: 0, status: { [Op.ne]: 'voided' } },
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  if (existing) {
+    await expense.update({ payable_id: payable.payable_id, settlement_id: existing.settlement_id, update_time: new Date() }, { transaction });
+    await refreshExpenseState(expense.expense_id, transaction);
+    return existing;
+  }
+
+  const settlement = await Settlement.create({
+    settlement_id: generateUUID(),
+    settlement_no: `EX${moment().format('YYYYMMDDHHmmss')}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`,
+    supplier_id: null,
+    supplier_name: expense.expense_party || '费用收款方',
+    settlement_type: 'expense',
+    payee_type: 'counterparty',
+    payee_id: '',
+    payee_name: expense.expense_party || '费用收款方',
+    source_type: 'expense',
+    source_id: expense.expense_id,
+    source_no: expense.expense_no,
+    region_id: expense.region_id || null,
+    distributor_id: expense.distributor_id || null,
+    tax_status: expenseTaxStatus(expense.invoice_type),
+    other_payment_remark: '审批通过的手工费用',
+    total_amount: money(expense.amount),
+    paid_amount: 0,
+    status: 'confirmed',
+    payment_status: 'unpaid',
+    confirmed_time: new Date(),
+    remark: String(expense.remark || '').trim(),
+    create_user: operator?.name || operator?.phone || '',
+    create_staff_id: operator?.staffId || null,
+    operator_staff_id: operator?.staffId || null,
+    operator_name: operator?.name || operator?.phone || ''
+  }, { transaction });
+
+  await SettlementItem.create({
+    settlement_id: settlement.settlement_id,
+    payable_id: payable.payable_id,
+    request_no: expense.expense_no,
+    amount: money(expense.amount)
+  }, { transaction });
+  await expense.update({ payable_id: payable.payable_id, settlement_id: settlement.settlement_id, update_time: new Date() }, { transaction });
+  await refreshExpenseState(expense.expense_id, transaction);
+  return settlement;
+}
+
 function normalizeAttribution({
   attributionType,
   attributionMethod = 'AVERAGE',
@@ -210,6 +270,12 @@ async function applyExpenseApproval(instance, transaction, actor, action, commen
     review_time: new Date(),
     update_time: new Date()
   }, { transaction });
+
+  if (expense.payment_method === 'CORPORATE') {
+    await createDirectExpensePayment(expense, actor, transaction);
+  } else if (expense.payment_method === 'PERSONAL_ADVANCE') {
+    await ensureExpensePayable(expense, { sourceType: 'reimbursement', status: 'unpaid' }, transaction);
+  }
 
   if (attributionType === 'PERSONAL') {
     const line = attribution[0];
@@ -557,6 +623,7 @@ module.exports = {
   startExpenseApproval,
   applyExpenseApproval,
   ensureExpensePayable,
+  createDirectExpensePayment,
   createReimbursementSettlement,
   createPurchaseReimbursement,
   arePurchaseInboundsCompleted,

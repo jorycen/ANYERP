@@ -4,6 +4,7 @@ const { sequelize } = require('../../models');
 const { RealtimeSqlDashboardDataSource } = require('./dashboardDataSource');
 const { buildRanges, summarizeTrend, canViewProfit } = require('./dashboardService');
 const { queryProductSettlementSummary, listProductSettlementOrders } = require('./productSettlement');
+const { summarizeAllocatedExpenses } = require('../finance/expenseCostAllocation');
 
 const dataSource = new RealtimeSqlDashboardDataSource();
 const PAYMENT_SOURCE_TYPES = ['purchase', 'purchase_adjustment', 'purchase_return', 'expense', 'reimbursement'];
@@ -352,72 +353,13 @@ async function queryPaymentSummary(regionId, accessibleRegionIds) {
 }
 
 async function queryExpenseSummary(period, storeIds) {
-  const replacements = {
-    storeIds: storeIds.length ? storeIds : ['__NO_STORE__'],
-    monthKeys: monthKeysBetween(period.startDate, period.endDate)
-  };
-  const dateClause = period.periodType === 'day'
-    ? 'AND e.EXPENSE_DATE = :expenseDate'
-    : 'AND e.ACCOUNTING_MONTH IN (:monthKeys)';
-  if (period.periodType === 'day') replacements.expenseDate = period.startDate;
-  const [summaryRows, typeRows, storeRows] = await Promise.all([
-    sequelize.query(
-      `SELECT COUNT(*) AS expenseCount,
-              ROUND(COALESCE(SUM(e.AMOUNT), 0), 2) AS amount
-         FROM T_EXPENSE e
-        WHERE e.IS_DELETED = 0
-          AND e.AFFECTS_STORE_PROFIT = 1
-          AND e.STORE_ID IN (:storeIds)
-          AND e.STATUS NOT IN ('draft', 'pending_approval', 'rejected', 'cancelled')
-          ${dateClause}`,
-      { replacements, type: QueryTypes.SELECT }
-    ),
-    sequelize.query(
-      `SELECT e.EXPENSE_TYPE AS expenseType,
-              ROUND(COALESCE(SUM(e.AMOUNT), 0), 2) AS amount,
-              COUNT(*) AS expenseCount
-         FROM T_EXPENSE e
-        WHERE e.IS_DELETED = 0
-          AND e.AFFECTS_STORE_PROFIT = 1
-          AND e.STORE_ID IN (:storeIds)
-          AND e.STATUS NOT IN ('draft', 'pending_approval', 'rejected', 'cancelled')
-          ${dateClause}
-        GROUP BY e.EXPENSE_TYPE
-        ORDER BY amount DESC, e.EXPENSE_TYPE ASC`,
-      { replacements, type: QueryTypes.SELECT }
-    ),
-    sequelize.query(
-      `SELECT e.STORE_ID AS storeId,
-              s.NAME AS storeName,
-              ROUND(COALESCE(SUM(e.AMOUNT), 0), 2) AS amount,
-              COUNT(*) AS expenseCount
-         FROM T_EXPENSE e
-         LEFT JOIN T_STORE s ON s.STORE_ID = e.STORE_ID
-        WHERE e.IS_DELETED = 0
-          AND e.AFFECTS_STORE_PROFIT = 1
-          AND e.STORE_ID IN (:storeIds)
-          AND e.STATUS NOT IN ('draft', 'pending_approval', 'rejected', 'cancelled')
-          ${dateClause}
-        GROUP BY e.STORE_ID, s.NAME
-        ORDER BY amount DESC, e.STORE_ID ASC`,
-      { replacements, type: QueryTypes.SELECT }
-    )
-  ]);
-  return {
-    amount: roundMoney(summaryRows[0]?.amount),
-    expenseCount: Number(summaryRows[0]?.expenseCount || 0),
-    byType: typeRows.map(row => ({
-      expenseType: row.expenseType || '其他',
-      amount: roundMoney(row.amount),
-      expenseCount: Number(row.expenseCount || 0)
-    })),
-    byStore: storeRows.map(row => ({
-      storeId: row.storeId,
-      storeName: row.storeName || row.storeId || '-',
-      amount: roundMoney(row.amount),
-      expenseCount: Number(row.expenseCount || 0)
-    }))
-  };
+  return summarizeAllocatedExpenses({
+    storeIds,
+    dateMode: period.periodType === 'day' ? 'date' : 'accounting_month',
+    startDate: period.startDate,
+    endDate: period.endDate,
+    monthKeys: period.periodType === 'day' ? [] : monthKeysBetween(period.startDate, period.endDate)
+  });
 }
 
 async function getFinanceOverview(ctx) {

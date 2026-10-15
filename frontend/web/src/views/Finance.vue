@@ -408,8 +408,8 @@
                   调整归属
                 </el-button>
                 <el-button v-if="canManageExpenseAccounting(row) && !['PERSONAL', 'REBATE'].includes(row.attribution_type)" link type="warning" @click="openExpenseAllocation(row)">绩效分摊</el-button>
-                <span v-else-if="row.status === 'processing'" style="color: #e6a23c; font-size: 12px;">
-                  支付中 · {{ row.submit_user || '-' }}
+              <span v-else-if="row.status === 'processing'" style="color: #e6a23c; font-size: 12px;">
+                  {{ row.payable_id ? '待付款（付款管理）' : '支付中 · ' + (row.submit_user || '-') }}
                 </span>
                 <span v-else-if="['paid', 'approved', 'cancelled', 'rejected'].includes(row.status)" style="color: #67c23a; font-size: 12px;">已完成</span>
               </template>
@@ -443,7 +443,8 @@
 
           <div class="settlement-section">
             <div class="filter-bar">
-              <span style="font-weight: bold; line-height: 32px;">费用付款管理</span>
+              <span style="font-weight: bold; line-height: 32px;">历史费用直付记录</span>
+              <el-tag type="info" effect="plain">仅未关联应付的旧单；新审批费用统一在付款管理付款</el-tag>
               <el-select v-model="expenseSettleFilter" placeholder="状态筛选" clearable style="width: 130px" @change="loadExpenseSettleData">
                 <el-option label="全部" value="" />
                 <el-option label="支付中" value="processing" />
@@ -497,11 +498,18 @@
 
         <el-tab-pane label="应付管理" name="payable">
           <div class="filter-bar">
-            <span style="font-weight: bold; line-height: 32px;">待付款清单</span>
+            <span style="font-weight: bold; line-height: 32px;">待结算清单</span>
             <el-button type="primary" @click="openSettlementDialog" :disabled="selectedPayableRows.length === 0">生成结算单</el-button>
             <el-button type="success" :loading="exportingList === 'payable'" @click="handleExportPayable">导出</el-button>
             <el-button @click="router.push('/finance/settlement')">应付结算单管理</el-button>
           </div>
+
+          <el-alert
+            title="采购应付款和审批通过的个人垫付报销均在此确认结算金额并生成结算单；结算单审批通过后进入付款管理，由财务/出纳登记实际付款。"
+            type="info"
+            :closable="false"
+            show-icon
+          />
 
           <div class="filter-bar">
             <el-date-picker
@@ -528,7 +536,7 @@
               <el-option label="报销" value="reimbursement" />
             </el-select>
             <el-select v-model="payableStatusFilter" placeholder="状态筛选" clearable style="width: 170px" @change="onPayableFilterChange">
-              <el-option label="待付款" value="unpaid" />
+              <el-option label="待结算" value="unpaid" />
               <el-option label="部分结算" value="partial_settled" />
               <el-option label="供应商待抵扣" value="credit" />
             </el-select>
@@ -1877,7 +1885,7 @@ const getPayableTaxTagType = (status) => ({
 }[String(status || '').toUpperCase()] || 'info')
 
 const getPayableStatusText = (status) => ({
-  unpaid: '待付款',
+  unpaid: '待结算',
   partial_settled: '部分结算',
   settling: '结算中',
   credit: '供应商待抵扣',
@@ -2728,7 +2736,7 @@ const loadExpenseSettleData = async () => {
     }
     const res = await api.getExpenseList(params)
     if (res.code === 0) {
-      expenseSettleData.value = res.data?.list || []
+      expenseSettleData.value = (res.data?.list || []).filter(row => !row.payable_id)
       expenseSettleTotal.value = res.data?.pagination?.total || res.data?.total || 0
     }
   } catch (err) {
@@ -3934,7 +3942,7 @@ const handleSubmitSettlement = async (row) => {
 const handleVoidSettlement = async (row) => {
   try {
     await ElMessageBox.confirm(
-      `确认作废结算单 ${row.settlement_no || ''}？作废后不会回到待付款清单。`,
+      `确认作废结算单 ${row.settlement_no || ''}？作废后不会回到待结算清单。`,
       '作废确认',
       { confirmButtonText: '确认作废', cancelButtonText: '取消', type: 'warning' }
     )

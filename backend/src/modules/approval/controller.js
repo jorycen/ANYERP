@@ -252,7 +252,7 @@ async function listTasks(ctx) {
     include: [{ model: SettlementItem, as: 'items', attributes: ['request_no', 'product_name', 'quantity', 'unit_price', 'amount'], required: false }]
   }) : [];
   const settlementMap = new Map(settlements.map(row => [String(row.settlement_id), row.toJSON()]));
-  const expenseIds = tasks.filter(task => task.Instance?.business_type === 'expense').map(task => String(task.Instance.business_id || '')).filter(Boolean);
+  const expenseIds = tasks.filter(task => ['expense', 'purchase_expense', 'expense_attribution'].includes(task.Instance?.business_type)).map(task => String(task.Instance.business_id || '')).filter(Boolean);
   const expenses = expenseIds.length ? await Expense.findAll({
     where: { expense_id: expenseIds, is_deleted: 0 },
     attributes: ['expense_id', 'expense_no', 'expense_type', 'expense_party', 'amount', 'accounting_month', 'affects_store_profit', 'payment_method', 'has_invoice', 'invoice_type', 'invoice_no', 'expense_date', 'attribution_type', 'attribution_method', 'attribution_details_json', 'attachment_urls', 'applicant_staff_id', 'applicant_name', 'operator_name', 'submit_user', 'source_type', 'source_no', 'related_order_no', 'remark', 'create_time'],
@@ -290,7 +290,7 @@ async function listTasks(ctx) {
         }))
       } : {};
     }
-    if (data.Instance?.business_type === 'expense') {
+    if (['expense', 'purchase_expense', 'expense_attribution'].includes(data.Instance?.business_type)) {
       const expense = expenseMap.get(String(data.Instance.business_id));
       data.Instance.display = expense ? {
         ...expense,
@@ -539,7 +539,7 @@ async function getInstance(ctx) {
     data.applicant_name = applicant?.name || data.settlement_detail?.applicant_name || data.applicant_name || '';
     data.applicant_phone = applicant?.phone || '';
   }
-  if (data.business_type === 'expense') {
+  if (['expense', 'purchase_expense', 'expense_attribution'].includes(data.business_type)) {
     const expense = await Expense.findOne({ where: { expense_id: data.business_id, is_deleted: 0 }, include: [{ model: Store, attributes: ['store_id', 'name'], required: false }] });
     if (expense) {
       data.moduleData = expense.toJSON();
