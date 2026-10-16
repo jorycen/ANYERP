@@ -1349,7 +1349,15 @@ async function getSettlementAccountsWithBalance(ctx) {
     const accountWhere = { status: 1 };
     if (regionId) accountWhere.region_id = regionId;
     const accountScope = distributorWhere(ctx.state.user);
-    if (Object.keys(accountScope).length) Object.assign(accountWhere, accountScope);
+    if (Object.keys(accountScope).length) {
+      const roles = getUserRoles(ctx.state.user);
+      const canViewSharedFunds = roles.some(role => ['admin', 'boss', 'finance'].includes(role));
+      if (canViewSharedFunds) {
+        accountWhere[Op.or] = [accountScope, { distributor_id: null }];
+      } else {
+        Object.assign(accountWhere, accountScope);
+      }
+    }
 
     const { count, rows } = await SettlementAccount.findAndCountAll({
       where: accountWhere,

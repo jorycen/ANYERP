@@ -39,10 +39,36 @@ const {
 const { recordBusinessAction } = require('../../utils/businessActionLog');
 const { sendExcel } = require('../../utils/excelExport');
 const { accessibleDistributorIds, canAccessDistributor, distributorWhere } = require('../../utils/distributorScope');
+const { getUserRoles } = require('../../middleware/permission');
 const { startInstance } = require('../approval/service');
 const { recordRebateDeduction, reverseSettlementRebateDeduction, _getRebateBalance } = require('./rebateController');
 
 const PAYABLE_SETTLEMENT_APPROVAL_FLOW_CODE = 'payable_settlement';
+const SHARED_FUND_ACCOUNT_ROLES = new Set(['admin', 'boss', 'finance']);
+
+function canAccessSharedFundAccounts(user) {
+  return getUserRoles(user).some(role => SHARED_FUND_ACCOUNT_ROLES.has(role));
+}
+
+function canAccessPaymentAccount(user, account) {
+  if (!account || String(account.account_type || '').toUpperCase() !== 'FUND') return false;
+  const distributorId = String(account.distributor_id || '').trim();
+  return distributorId
+    ? canAccessDistributor(user, distributorId)
+    : canAccessSharedFundAccounts(user);
+}
+
+function canUsePaymentAccountForSettlement(user, account, settlement) {
+  if (!account || !settlement || String(account.account_type || '').toUpperCase() !== 'FUND') return false;
+  if (!canAccessDistributor(user, settlement.distributor_id)) return false;
+
+  const accountDistributorId = String(account.distributor_id || '').trim();
+  if (!accountDistributorId) return canAccessSharedFundAccounts(user);
+
+  return accountDistributorId === String(settlement.distributor_id || '').trim()
+    && canAccessDistributor(user, accountDistributorId);
+}
+
 const PAYABLE_SETTLEMENT_APPROVER_PHONES = [
   '15308182113',
   '18980060806'
@@ -2202,7 +2228,7 @@ async function validatePaymentImportRows(rows, accountId, user = null) {
     const account = accountId
       ? await SettlementAccount.findOne({ where: { account_id: accountId, status: 1 } })
       : null;
-    if (!account || String(account.distributor_id || '') !== String(settlement.distributor_id || '')) {
+    if (!canUsePaymentAccountForSettlement(user, account, settlement)) {
       errors.push({ row: rowNo, settlementNo, message: '付款账户与结算单所属经销商不一致' });
       continue;
     }
@@ -2284,7 +2310,7 @@ async function commitPaymentImport(ctx) {
   const user = ctx.state.user;
   const account = await SettlementAccount.findOne({ where: { account_id: accountId, status: 1 } });
   if (!account) ctx.throw(400, '付款账户不存在或已停用');
-  if (!canAccessDistributor(ctx.state.user, account.distributor_id)) ctx.throw(403, '无权使用该经销商付款账户');
+  if (!canAccessPaymentAccount(ctx.state.user, account)) ctx.throw(403, '无权使用该付款账户');
 
   const result = await validatePaymentImportRows(rows, accountId, user);
   if (result.errors.length > 0) {
@@ -2511,7 +2537,7 @@ async function createDirectPayment(ctx) {
     });
     if (!settlement) ctx.throw(404, '结算单不存在');
     if (!canAccessDistributor(user, settlement.distributor_id)) ctx.throw(403, '无权付款该经销商结算单');
-    if (String(account.distributor_id || '') !== String(settlement.distributor_id || '')) {
+    if (!canUsePaymentAccountForSettlement(user, account, settlement)) {
       ctx.throw(400, '付款账户与结算单所属经销商不一致');
     }
     if (settlement.is_deleted || settlement.status !== 'confirmed' || settlement.payment_status === 'paid') {
