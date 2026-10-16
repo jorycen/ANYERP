@@ -2873,6 +2873,12 @@ async function detail(ctx) {
       { model: OrderItem, include: [{ model: Product, attributes: ['product_id', 'need_sn', 'category'] }] },
       { model: OrderPayment, include: [{ model: DepositOrder }] },
       { model: OrderSupplement, as: 'supplements', where: { is_deleted: 0 }, required: false },
+      {
+        model: OrderGrossProfit,
+        as: 'grossProfitSnapshot',
+        attributes: ['freight_cost_amount', 'supplement_details'],
+        required: false
+      },
       { model: DepositRedemption, as: 'depositRedemptions' },
       { model: OrderAttachment }
     ]
@@ -2895,6 +2901,19 @@ async function detail(ctx) {
   }
 
   const result = order.toJSON();
+  const grossProfitSnapshot = result.grossProfitSnapshot || {};
+  let grossProfitDetails = grossProfitSnapshot.supplement_details;
+  if (typeof grossProfitDetails === 'string') {
+    try {
+      grossProfitDetails = JSON.parse(grossProfitDetails);
+    } catch (_) {
+      grossProfitDetails = [];
+    }
+  }
+  result.freight_cost_amount = Number(grossProfitSnapshot.freight_cost_amount || 0);
+  result.freight_cost_details = Array.isArray(grossProfitDetails)
+    ? grossProfitDetails.filter(item => item?.source === 'freight_cost')
+    : [];
   const dailyReceipts = await getOrderDailyReceiptTotals(order.order_id);
   result.direct_receipt_amount = dailyReceipts.customerReceiptAmount;
   result.policy_subsidy_receivable_amount = dailyReceipts.policySubsidyAmount;

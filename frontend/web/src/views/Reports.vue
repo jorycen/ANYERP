@@ -227,6 +227,7 @@
             </el-select>
             <el-input v-model="employeeParams.orderNo" placeholder="订单号" clearable style="width: 190px" @keyup.enter="loadEmployeePerformance" />
             <el-button type="primary" @click="loadEmployeePerformance">查询</el-button>
+            <el-button v-if="employeeCanViewProfit" type="success" :loading="employeeExporting" @click="exportEmployeeProfits">导出毛利明细</el-button>
             <el-button @click="openAdjustmentCenter('mine')">我的毛利调整</el-button>
             <el-button v-if="canReviewAdjustments" type="warning" @click="openAdjustmentCenter('review')">待我审核</el-button>
           </div>
@@ -574,6 +575,7 @@ const employeeOptions = ref([])
 const employeeSummary = ref({})
 const employeeTotal = ref(0)
 const employeeLoading = ref(false)
+const employeeExporting = ref(false)
 const salesPerformanceLoading = ref(false)
 const salesPerformanceDetails = ref([])
 const salesPerformanceCanViewProfit = ref(false)
@@ -731,6 +733,27 @@ const loadEmployeePerformance = async () => {
     ElMessage.error('加载员工业绩失败')
   } finally {
     employeeLoading.value = false
+  }
+}
+
+const exportEmployeeProfits = async () => {
+  employeeExporting.value = true
+  try {
+    const params = {
+      storeId: employeeParams.storeId,
+      staffName: employeeParams.staffName,
+      orderNo: employeeParams.orderNo
+    }
+    if (employeeParams.dateRange && employeeParams.dateRange.length === 2) {
+      params.startDate = employeeParams.dateRange[0]
+      params.endDate = employeeParams.dateRange[1]
+    }
+    await api.exportEmployeePerformanceReport(params)
+    ElMessage.success('毛利明细已导出')
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || err?.message || '毛利明细导出失败')
+  } finally {
+    employeeExporting.value = false
   }
 }
 

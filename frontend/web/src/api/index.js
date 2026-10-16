@@ -645,6 +645,7 @@ export default {
   getFinancialProfitOrders: (params) => api.get('/report/financial-profit-orders', { params }),
   exportFinancialProfitOrders: (params) => exportExcel('/report/financial-profit-orders/export', params, `财务利润表_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getEmployeePerformanceReport: (params) => api.get('/report/employee-performance', { params }),
+  exportEmployeePerformanceReport: (params) => exportExcel('/report/employee-performance/export', params, `个人毛利明细_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getMonthlyTaskAchievement: (params) => api.get('/report/monthly-task-achievement', { params }),
   getMyCareCredit: (params) => api.get('/sales/care-credit/me', { params }),
   getStaffCareCredits: () => api.get('/sales/care-credit/staff'),

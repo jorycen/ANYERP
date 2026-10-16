@@ -602,8 +602,20 @@ const getPaymentStatusTagType = (status) => {
 
 const loadSettlementAccounts = async () => {
   try {
-    const res = await api.getSettlementAccountsBalance({ page: 1, pageSize: 500 })
-    if (res.code === 0) settlementAccounts.value = (res.data?.list || []).filter(account => account.account_type !== 'SUPPLIER_REBATE')
+    const pageSize = 100
+    const res = await api.getSettlementAccountsBalance({ page: 1, pageSize })
+    if (res.code !== 0) throw new Error(res.message || '加载付款账户失败')
+
+    const data = res.data || {}
+    const accounts = [...(data.list || [])]
+    const totalPages = Math.ceil(Number(data.total || accounts.length) / pageSize)
+    for (let page = 2; page <= totalPages; page += 1) {
+      const pageRes = await api.getSettlementAccountsBalance({ page, pageSize })
+      if (pageRes.code !== 0) throw new Error(pageRes.message || '加载付款账户失败')
+      accounts.push(...(pageRes.data?.list || []))
+    }
+
+    settlementAccounts.value = accounts.filter(account => account.account_type === 'FUND')
   } catch (err) {
     ElMessage.error('加载付款账户失败')
   }

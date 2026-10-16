@@ -491,6 +491,26 @@
           </div>
         </template>
 
+        <template v-if="Number(currentOrder.freight_cost_amount || 0) > 0 || currentOrder.freight_cost_details?.length">
+          <h4 class="mt-20">运费明细</h4>
+          <el-table :data="currentOrder.freight_cost_details || []" border size="small">
+            <el-table-column label="来源采购申请" min-width="190">
+              <template #default="{ row }">{{ row.sourceNo || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="配送平台" min-width="120">
+              <template #default="{ row }">{{ row.platformName || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="snCode" label="SN码" min-width="150" />
+            <el-table-column prop="quantity" label="数量" width="80" />
+            <el-table-column label="分摊运费" width="120">
+              <template #default="{ row }">¥{{ Number(row.amount || 0).toFixed(2) }}</template>
+            </el-table-column>
+          </el-table>
+          <div class="supplement-net-total">
+            运费合计：¥{{ Number(currentOrder.freight_cost_amount || 0).toFixed(2) }}
+          </div>
+        </template>
+
         <h4 class="mt-20" v-if="currentOrder.OrderPayments?.length">支付记录</h4>
         <el-table :data="currentOrder.OrderPayments || []" border size="small">
           <el-table-column prop="payment_method" label="支付方式" />

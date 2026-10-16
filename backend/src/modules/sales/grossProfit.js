@@ -235,8 +235,9 @@ function calculateGrossProfitValues({
     normalizedProductPricing.reduce((sum, item) => sum + item.pricingAmount, 0)
   );
   const paymentFeeAmount = roundMoney(normalizedPayments.reduce((sum, item) => sum + item.fee, 0));
-  const normalizedInvoiceAmount = roundMoney(invoiceAmount);
-  const vatTaxableAmount = String(invoiceStatus || '').trim() === '不开票'
+  const invoiceNotRequired = String(invoiceStatus || '').trim() === '不开票';
+  const normalizedInvoiceAmount = invoiceNotRequired ? 0 : roundMoney(invoiceAmount);
+  const vatTaxableAmount = invoiceNotRequired
     ? 0
     : roundMoney(Math.max(0, normalizedInvoiceAmount - productPricingAmount));
   const vatAmount = roundMoney(vatTaxableAmount * VAT_RATE);

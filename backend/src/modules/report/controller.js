@@ -34,8 +34,16 @@ const {
   snapshotToResponse
 } = require('../sales/grossProfit');
 const { careCostDetails } = require('../sales/staffCareCredit');
+const { sendExcel } = require('../../utils/excelExport');
 
 const dashboardService = new DashboardService();
+const EMPLOYEE_PROFIT_EXPORT_HEADERS = [
+  '订单号', '销售时间', '员工', '门店', '客户', '商品名称', 'PN', 'SN', '数量', '销售单价', '商品销售额',
+  '商品定价单价', '商品定价金额', '商品分摊收入', '商品分摊基础毛利', '毛利计算口径', '订单组成-用户应收',
+  '订单组成-商品定价', '订单组成-支付手续费', '订单组成-增值税', '订单组成-补录净额', '订单组成-运费',
+  '订单组成-开票金额', '订单组成-外调费', '支付方式明细', '补录明细', '运费明细', '订单基础毛利',
+  'Care可用金抵扣', '其他审批调整', '员工业绩毛利', '毛利率百分比', '毛利来源'
+];
 
 function toNumber(value) {
   const num = Number(value || 0);
@@ -724,12 +732,16 @@ async function getInventoryReport(ctx) {
   ctx.body = { inStockStats, categoryStats: sortedCategoryStats, summary };
 }
 
-async function getEmployeePerformanceReport(ctx) {
+async function getEmployeePerformanceReport(ctx, exportMode = false) {
   const { storeId, staffName, orderNo, startDate, endDate, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
 
   const storeIds = await getEmployeeReportStoreIds(user, storeId);
   if (storeIds.length === 0) {
+    if (exportMode) {
+      sendExcel(ctx, [], EMPLOYEE_PROFIT_EXPORT_HEADERS, `个人毛利明细_${startDate || '全部'}_${endDate || '全部'}.xlsx`, '销售商品毛利', { textHeaders: ['订单号', 'PN', 'SN'] });
+      return;
+    }
     ctx.body = { list: [], summary: {}, employees: [], pagination: { total: 0, page, pageSize, totalPages: 0 } };
     return;
   }
@@ -777,8 +789,10 @@ async function getEmployeePerformanceReport(ctx) {
       }
     ],
     order: [['create_time', 'DESC']],
-    offset: (Math.max(Number(page) || 1, 1) - 1) * Math.max(Number(pageSize) || 20, 1),
-    limit: Math.max(Number(pageSize) || 20, 1),
+    ...(exportMode ? {} : {
+      offset: (Math.max(Number(page) || 1, 1) - 1) * Math.max(Number(pageSize) || 20, 1),
+      limit: Math.max(Number(pageSize) || 20, 1)
+    }),
     distinct: true
   });
 
@@ -1066,6 +1080,59 @@ async function getEmployeePerformanceReport(ctx) {
     pageGrossProfit: roundMoney(list.reduce((sum, row) => sum + toNumber(row.grossProfit), 0)),
     legacyOrderCount: new Set(fallbackItems.map(item => item.order_id)).size
   };
+
+  if (exportMode) {
+    const exportRows = list.flatMap(order => {
+      const snapshot = order.calculation?.snapshot || {};
+      const items = order.calculation?.items || [];
+      const paymentDetails = (snapshot.paymentDetails || []).map(item =>
+        `${item.method || item.paymentMethod || '支付方式'} ${toNumber(item.amount).toFixed(2)}（手续费 ${toNumber(item.fee).toFixed(2)}）`
+      ).join('；');
+      const supplementDetails = (snapshot.supplementDetails || []).map(item =>
+        `${item.itemName || item.content || '补录'} ${toNumber(item.amount).toFixed(2)}`
+      ).join('；');
+      const freightDetails = (snapshot.freightCostDetails || []).map(item =>
+        `${item.sourceNo || item.platformName || item.sourceType || '运费'} ${item.snCode || item.sn || ''} ${toNumber(item.amount).toFixed(2)}`.trim()
+      ).join('；');
+      return (items.length ? items : [{}]).map(item => ({
+        订单号: order.orderNo,
+        销售时间: order.orderTime,
+        员工: order.employeeName,
+        门店: order.storeName,
+        客户: order.customerName,
+        商品名称: item.productName || '',
+        PN: item.pnCode || '',
+        SN: item.snCode || '',
+        数量: item.quantity ?? '',
+        销售单价: item.salePrice ?? '',
+        商品销售额: item.saleSubtotal ?? '',
+        商品定价单价: item.unitCost ?? '',
+        商品定价金额: item.costAmount ?? '',
+        商品分摊收入: item.allocatedRevenue ?? '',
+        商品分摊基础毛利: item.grossProfit ?? '',
+        毛利计算口径: item.formula || '',
+        '订单组成-用户应收': snapshot.receivableAmount ?? '',
+        '订单组成-商品定价': snapshot.productPricingAmount ?? '',
+        '订单组成-支付手续费': snapshot.paymentFeeAmount ?? '',
+        '订单组成-增值税': snapshot.vatAmount ?? '',
+        '订单组成-补录净额': snapshot.supplementAmount ?? '',
+        '订单组成-运费': snapshot.freightCostAmount ?? '',
+        '订单组成-开票金额': snapshot.invoiceAmount ?? '',
+        '订单组成-外调费': snapshot.externalAdjustmentFee ?? '',
+        支付方式明细: paymentDetails,
+        补录明细: supplementDetails,
+        运费明细: freightDetails,
+        订单基础毛利: order.baseGrossProfit,
+        Care可用金抵扣: order.careCreditAdjustment,
+        其他审批调整: order.otherApprovedAdjustment,
+        员工业绩毛利: order.grossProfit,
+        毛利率百分比: order.grossRate,
+        毛利来源: order.grossProfitSource
+      }));
+    });
+    sendExcel(ctx, exportRows, EMPLOYEE_PROFIT_EXPORT_HEADERS, `个人毛利明细_${startDate || '全部'}_${endDate || '全部'}.xlsx`, '销售商品毛利', { textHeaders: ['订单号', 'PN', 'SN'] });
+    return;
+  }
 
   ctx.body = {
     list,
