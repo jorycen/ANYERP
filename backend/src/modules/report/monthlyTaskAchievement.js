@@ -374,6 +374,7 @@ async function getMonthlyTaskAchievement(ctx) {
   staffRows.forEach(row => {
     if (row.store_id && storeIds.includes(String(row.store_id))) visibleStaffIds.add(String(row.staff_id));
   });
+  if ((selfOnly || companyWideRank) && requestedStaffId) visibleStaffIds.add(requestedStaffId);
   if (dimension === 'staff' && requestedStaffId && !visibleStaffIds.has(requestedStaffId)) {
     ctx.throw(403, '无权访问该员工任务达成');
   }
