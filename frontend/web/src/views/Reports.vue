@@ -20,6 +20,7 @@
               <span>统计周期</span>
               <el-date-picker v-model="salesStatementPeriod" type="monthrange" value-format="YYYY-MM" format="YYYY年MM月" range-separator="至" start-placeholder="开始月份" end-placeholder="结束月份" unlink-panels />
               <el-button type="primary" :loading="salesStatementLoading" @click="loadSalesReport">查询</el-button>
+              <el-button type="success" :loading="salesStatementExporting" :disabled="salesStatementLoading || !salesStatementRows.length" @click="exportSalesStatement">导出 Excel</el-button>
             </div>
             <span class="sales-statement-hint">按附件分组展示；选择单月或连续月份，数据来自已归档订单及已确认费用</span>
           </div>
@@ -457,7 +458,9 @@ const stores = ref([])
 const salesData = ref([])
 const salesCategoryData = ref([])
 const salesStatementLoading = ref(false)
+const salesStatementExporting = ref(false)
 const salesStatementRows = ref([])
+const salesStatementLoadedPeriod = ref(null)
 const statementCategories = [
   { key: 'nb', label: 'NB' }, { key: 'dt', label: 'DT' }, { key: 'phone', label: '手机' },
   { key: 'tablet', label: '平板' }, { key: 'service', label: '服务' }, { key: 'option', label: '其他IoT/选件' }
@@ -552,6 +555,7 @@ const loadSalesReport = async () => {
       const data = res.data || {}
       salesCanViewProfit.value = Boolean(data.canViewProfit)
       salesStatementRows.value = data.summary ? [data.summary, ...(data.rows || [])] : (data.rows || [])
+      salesStatementLoadedPeriod.value = data.period || { start: salesStatementPeriod.value[0], end: salesStatementPeriod.value[1] }
     }
   } catch (err) {
     ElMessage.error(err?.response?.data?.message || '销售报表加载失败')
@@ -852,12 +856,116 @@ const initInventoryChart = () => {
     ]}]
   })
 }
+const exportSalesStatement = async () => {
+  if (!salesStatementRows.value.length) {
+    ElMessage.warning('当前没有可导出的报表数据')
+    return
+  }
+
+  salesStatementExporting.value = true
+  try {
+    const XLSX = await import('xlsx')
+    const columns = []
+    const addColumn = (group, label, getValue, options = {}) => columns.push({ group, label, getValue, ...options })
+    const addCategory = (group, category, metrics) => metrics.forEach(metric => {
+      addColumn(group, category.label, metric.getValue, { category: category.label, leaf: metric.label, percentage: metric.percentage })
+    })
+    const percent = value => value === null || value === undefined ? '-' : Number(value) / 100
+    const moneyOrDash = value => salesCanViewProfit.value && value !== null && value !== undefined ? Number(value || 0) : '-'
+
+    addColumn('经营分析', '销售额', row => Number(row.salesTotal || 0), { vertical: true, money: true })
+    addColumn('经营分析', '毛利', row => moneyOrDash(row.grossProfit), { vertical: true, money: true })
+    addColumn('经营分析', '费用', row => Number(row.expenseTotal || 0), { vertical: true, money: true })
+    addColumn('经营分析', '净利润', row => moneyOrDash(row.netProfit), { vertical: true, money: true })
+    addColumn('经营分析', '毛利率', row => salesCanViewProfit.value ? percent(row.grossProfitRate) : '-', { vertical: true, percentage: true })
+    addColumn('经营分析', '费用率', row => percent(row.expenseRate), { vertical: true, percentage: true })
+    statementMarginCategories.forEach(category => addColumn('经营分析', `${category.label}毛利率`, row => salesCanViewProfit.value ? percent(row.categoryGrossProfitRate?.[category.key]) : '-', { vertical: true, percentage: true }))
+
+    addColumn('销售收入', '合计', row => Number(row.salesTotal || 0), { vertical: true, money: true })
+    statementCategories.forEach(category => addCategory('销售收入', category, [
+      { label: '销售额', getValue: row => Number(row.sales?.[category.key] || 0), money: true },
+      { label: '占比', getValue: row => percent(row.salesShare?.[category.key]), percentage: true }
+    ]))
+
+    addColumn('毛利构成', '合计', row => moneyOrDash(row.categoryGrossProfitTotal), { vertical: true, money: true })
+    statementCategories.forEach(category => addCategory('毛利构成', category, [
+      { label: '毛利', getValue: row => moneyOrDash(row.categoryGrossProfit?.[category.key]), money: true },
+      { label: '占比', getValue: row => salesCanViewProfit.value ? percent(row.categoryGrossProfitShare?.[category.key]) : '-', percentage: true }
+    ]))
+    addColumn('毛利构成', '已确认返利', row => moneyOrDash(row.rebate), { vertical: true, money: true })
+
+    addColumn('费用构成', '合计', row => Number(row.expenseTotal || 0), { vertical: true, money: true })
+    addColumn('费用构成', '固定费用', row => Number(row.expenses?.fixed || 0), { vertical: true, money: true })
+    addColumn('费用构成', '人员费用', row => Number(row.expenses?.personnel || 0), { vertical: true, money: true })
+    addColumn('费用构成', '日常费用', row => Number(row.expenses?.daily || 0), { vertical: true, money: true })
+    addColumn('费用构成', '其他费用', row => Number(row.expenses?.other || 0), { vertical: true, money: true })
+
+    const headerTop = ['门店编号', '门店名称']
+    const headerMiddle = ['', '']
+    const headerBottom = ['', '']
+    const merges = [{ s: { r: 0, c: 0 }, e: { r: 2, c: 0 } }, { s: { r: 0, c: 1 }, e: { r: 2, c: 1 } }]
+    let columnIndex = 2
+    while (columnIndex < columns.length + 2) {
+      const group = columns[columnIndex - 2].group
+      const start = columnIndex
+      while (columnIndex < columns.length + 2 && columns[columnIndex - 2].group === group) columnIndex += 1
+      headerTop[start] = group
+      for (let col = start + 1; col < columnIndex; col += 1) headerTop[col] = ''
+      if (columnIndex - start > 1) merges.push({ s: { r: 0, c: start }, e: { r: 0, c: columnIndex - 1 } })
+    }
+
+    columns.forEach((column, index) => {
+      const col = index + 2
+      if (column.category) {
+        const isFirstCategoryColumn = index === 0 || columns[index - 1].category !== column.category || columns[index - 1].group !== column.group
+        headerMiddle[col] = isFirstCategoryColumn ? column.category : ''
+        headerBottom[col] = column.leaf
+        if (isFirstCategoryColumn) {
+          const span = columns.slice(index).findIndex(next => next.group !== column.group || next.category !== column.category)
+          const endIndex = span < 0 ? columns.length - 1 : index + span - 1
+          if (endIndex > index) merges.push({ s: { r: 1, c: col }, e: { r: 1, c: endIndex + 2 } })
+        }
+      } else {
+        headerMiddle[col] = column.label
+        headerBottom[col] = ''
+        merges.push({ s: { r: 1, c: col }, e: { r: 2, c: col } })
+      }
+    })
+
+    const rows = salesStatementRows.value.map(row => [row.storeId || '', row.storeName || '', ...columns.map(column => column.getValue(row))])
+    const worksheet = XLSX.utils.aoa_to_sheet([headerTop, headerMiddle, headerBottom, ...rows])
+    worksheet['!merges'] = merges
+    worksheet['!cols'] = [{ wch: 16 }, { wch: 22 }, ...columns.map(column => ({ wch: column.category ? 13 : 15 }))]
+    worksheet['!views'] = [{ state: 'frozen', xSplit: 2, ySplit: 3 }]
+    rows.forEach((row, rowIndex) => columns.forEach((column, columnIndex) => {
+      const cell = worksheet[XLSX.utils.encode_cell({ r: rowIndex + 3, c: columnIndex + 2 })]
+      if (cell && typeof cell.v === 'number' && column.money) cell.z = '¥#,##0.00'
+      if (cell && typeof cell.v === 'number' && column.percentage) cell.z = '0.00%'
+    }))
+
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, worksheet, '销售报表')
+    const period = salesStatementLoadedPeriod.value || {}
+    const start = String(period.start || salesStatementPeriod.value[0] || '').replace('-', '.')
+    const end = String(period.end || salesStatementPeriod.value[1] || '').replace('-', '.')
+    const range = start === end ? start : `${start}-${end}`
+    XLSX.writeFile(workbook, `销售报表_${range}.xlsx`)
+  } catch (error) {
+    console.error('导出销售报表失败:', error)
+    ElMessage.error('销售报表导出失败，请稍后重试')
+  } finally {
+    salesStatementExporting.value = false
+  }
+}
+
 </script>
 
 <style scoped>
 .module-tabs :deep(.el-tabs__header) {
   display: none;
 }
+
+
 
 .sales-statement-toolbar {
   display: flex;
