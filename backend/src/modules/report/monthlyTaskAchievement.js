@@ -446,7 +446,10 @@ async function getMonthlyTaskAchievement(ctx) {
     const eligibleStaff = staffRows.filter(staff => {
       if (excludedRankStaffIds.has(String(staff.staff_id))) return false;
       const roles = (staff.Roles || []).map(role => String(role.role_code || '').toLowerCase());
-      if (!roles.length && staff.role_code) roles.push(String(staff.role_code).toLowerCase());
+      // A staff record can have multiple associated roles. Keep the primary
+      // role_code in the eligibility check even when the association table
+      // also contains a role that is not rankable (for example, BOSS).
+      if (staff.role_code) roles.push(String(staff.role_code).toLowerCase());
       return roles.some(role => rankableRoleCodes.has(role));
     });
     const eligibleIds = new Set(eligibleStaff.map(staff => String(staff.staff_id)));

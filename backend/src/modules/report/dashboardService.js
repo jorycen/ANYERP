@@ -497,7 +497,7 @@ class DashboardService {
            WHERE s.STATUS = 1 AND s.IS_DELETED = 0
              AND (
                LOWER(COALESCE(r.ROLE_CODE, '')) IN ('staff', 'clerk', 'manager', 'store_manager', 'store_admin')
-               OR (sr.STAFF_ID IS NULL AND LOWER(COALESCE(s.ROLE_CODE, '')) IN ('staff', 'clerk', 'manager', 'store_manager', 'store_admin'))
+               OR LOWER(COALESCE(s.ROLE_CODE, '')) IN ('staff', 'clerk', 'manager', 'store_manager', 'store_admin')
              )
              AND COALESCE(s.DISTRIBUTOR_ID, '') <> 'DIST003'
              AND NOT EXISTS (
