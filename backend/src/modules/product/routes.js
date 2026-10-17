@@ -9,7 +9,7 @@ const {
   getBarcodes, addBarcode, deleteBarcode,
   getCategoryTree, createCategory, updateCategory, deleteCategory, sortCategories,
   getCategoryFields, saveCategoryFields, getCategoryFieldConfig,
-  getPriceList, exportCostPrices, setPrice, refreshCostPrice, batchRefreshCost, setCostPriceLock, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory,
+  getPriceList, exportCostPrices, setPrice, refreshCostPrice, batchRefreshCost, setCostPriceLock, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory, getRecentPriceChanges,
   getProductImportTask, downloadProductImportErrors,
   getPnList, addPn, searchProduct, getPnAvailability
 } = require('./controller');
@@ -64,6 +64,7 @@ router.post('/price/cost-lock', setCostPriceLock);
 router.post('/price/import/validate', upload.single('file'), validateImportPrices);
 router.post('/price/import', upload.single('file'), importPrices);
 router.post('/price/import-cost-refresh', upload.single('file'), importCostRefresh);
+router.get('/price/recent-changes', getRecentPriceChanges);
 router.get('/price/history', getPriceChangeHistory);
 
 // PN管理

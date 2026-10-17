@@ -3066,6 +3066,66 @@ async function getPriceChangeHistory(ctx) {
   ctx.body = formatPaginatedResult(list, { page, pageSize, count });
 }
 
+async function getRecentPriceChanges(ctx) {
+  const rows = await sequelize.query(`
+    SELECT change_id AS changeId,
+           product_id AS productId,
+           product_code AS productCode,
+           product_name AS productName,
+           price_field AS priceField,
+           old_price AS oldPrice,
+           new_price AS currentPrice,
+           COALESCE(create_time, applied_time, effective_time) AS modifiedAt
+      FROM (
+        SELECT l.change_id,
+               l.product_id,
+               l.product_code,
+               l.product_name,
+               l.price_field,
+               l.old_price,
+               l.new_price,
+               l.create_time,
+               l.applied_time,
+               l.effective_time,
+               ROW_NUMBER() OVER (
+                 PARTITION BY l.product_id
+                 ORDER BY COALESCE(l.create_time, l.applied_time, l.effective_time) DESC,
+                          CASE l.price_field WHEN 'retail_price' THEN 3 WHEN 'standard_price' THEN 2 ELSE 1 END DESC,
+                          l.change_id DESC
+               ) AS product_rank
+          FROM T_PRODUCT_PRICE_CHANGE_LOG l
+          JOIN T_PRODUCT p ON p.PRODUCT_ID = l.PRODUCT_ID
+         WHERE l.STATUS = 'effective'
+           AND l.PRICE_FIELD IN ('retail_price', 'standard_price', 'min_sale_price')
+           AND l.OLD_PRICE <> l.NEW_PRICE
+           AND p.IS_DELETED = 0
+           AND p.STATUS = 1
+      ) recent
+     WHERE product_rank = 1
+     ORDER BY modifiedAt DESC, changeId DESC
+     LIMIT 3
+  `, { type: Sequelize.QueryTypes.SELECT });
+
+  ctx.body = {
+    code: 0,
+    data: rows.map(row => {
+      const oldPrice = moneyNumber(row.oldPrice);
+      const currentPrice = moneyNumber(row.currentPrice);
+      return {
+        changeId: row.changeId,
+        productId: row.productId,
+        productCode: row.productCode || '',
+        productName: row.productName || '',
+        priceField: row.priceField,
+        oldPrice,
+        currentPrice,
+        adjustmentAmount: moneyNumber(currentPrice - oldPrice),
+        modifiedAt: row.modifiedAt
+      };
+    })
+  };
+}
+
 async function importCostRefresh(ctx) {
   if (!ctx.file) {
     ctx.throw(400, '请上传文件');
@@ -3941,7 +4001,7 @@ module.exports = {
     ctx.body = { code: 0, message: '删除成功' };
   },
   getCategoryTree, createCategory, updateCategory, deleteCategory, sortCategories,
-  getPriceList, exportCostPrices, setPrice, refreshCostPrice, batchRefreshCost, setCostPriceLock, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory, applyPendingProductPriceChanges,
+  getPriceList, exportCostPrices, setPrice, refreshCostPrice, batchRefreshCost, setCostPriceLock, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory, getRecentPriceChanges, applyPendingProductPriceChanges,
   getProductImportTask, downloadProductImportErrors, recoverProductImportTasks,
   getPnList, addPn, searchProduct, getPnAvailability,
   _test: {
