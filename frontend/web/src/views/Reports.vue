@@ -15,160 +15,49 @@
         </el-tab-pane>
 
         <el-tab-pane label="销售报表" name="sales">
-          <div class="filter-bar">
-            <el-date-picker v-model="salesParams.date" type="date" value-format="YYYY-MM-DD" placeholder="选择日期" clearable />
-            <el-select v-model="salesParams.regionCode" placeholder="选择区域" clearable style="width: 150px">
-              <el-option label="全部区域" value="" />
-              <el-option label="成都" value="CD" />
-              <el-option label="重庆" value="CQ" />
-              <el-option label="地市" value="DS" />
-            </el-select>
-            <el-button type="primary" @click="loadSalesReport">查询</el-button>
-            <el-button type="success" @click="handleExport">导出</el-button>
+          <div class="sales-statement-toolbar">
+            <div class="sales-statement-period">
+              <span>统计周期</span>
+              <el-date-picker v-model="salesStatementPeriod" type="monthrange" value-format="YYYY-MM" format="YYYY年MM月" range-separator="至" start-placeholder="开始月份" end-placeholder="结束月份" unlink-panels />
+              <el-button type="primary" :loading="salesStatementLoading" @click="loadSalesReport">查询</el-button>
+            </div>
+            <span class="sales-statement-hint">按附件分组展示；选择单月或连续月份，数据来自已归档订单及已确认费用</span>
           </div>
-
-          <el-table :data="salesData" stripe border show-summary>
-            <el-table-column prop="date" label="日期" width="120" />
-            <el-table-column prop="regionName" label="区域" width="100" />
-            <el-table-column prop="orderCount" label="订单数" width="100" />
-            <el-table-column prop="totalAmount" label="销售额" width="120">
-              <template #default="{ row }">¥{{ row.totalAmount }}</template>
-            </el-table-column>
-            <el-table-column prop="nationalSubsidy" label="国补" width="120">
-              <template #default="{ row }">¥{{ row.nationalSubsidy }}</template>
-            </el-table-column>
-            <el-table-column prop="educationSubsidy" label="教补" width="120">
-              <template #default="{ row }">¥{{ row.educationSubsidy }}</template>
-            </el-table-column>
+          <el-table :data="salesStatementRows" stripe border row-key="storeName" :row-class-name="({ row }) => row.storeName === '合计' ? 'sales-statement-total-row' : ''" v-loading="salesStatementLoading" class="sales-statement-table" empty-text="当前周期暂无已归档销售数据">
+            <el-table-column prop="storeId" label="门店编号" width="125" fixed="left" />
+            <el-table-column prop="storeName" label="门店名称" width="170" fixed="left" />
+            <el-table-column label="经营分析" align="center">
+          <el-table-column label="销售额" width="125" align="right"><template #default="{ row }">¥{{ formatMoney(row.salesTotal) }}</template></el-table-column>
+          <el-table-column label="毛利" width="125" align="right"><template #default="{ row }">{{ formatStatementProfit(row.grossProfit) }}</template></el-table-column>
+          <el-table-column label="费用" width="125" align="right"><template #default="{ row }">{{ formatStatementProfit(row.expenseTotal) }}</template></el-table-column>
+          <el-table-column label="净利润" width="125" align="right"><template #default="{ row }">{{ formatStatementProfit(row.netProfit) }}</template></el-table-column>
+          <el-table-column label="毛利率" width="100" align="right"><template #default="{ row }">{{ formatStatementPercent(row.grossProfitRate) }}</template></el-table-column>
+          <el-table-column label="费用率" width="100" align="right"><template #default="{ row }">{{ formatStatementPercent(row.expenseRate) }}</template></el-table-column>
+          <el-table-column v-for="item in statementMarginCategories" :key="'margin-' + item.key" :label="item.label + '毛利率'" width="115" align="right"><template #default="{ row }">{{ formatStatementPercent(row.categoryGrossProfitRate?.[item.key]) }}</template></el-table-column>
+        </el-table-column>
+        <el-table-column label="销售收入" align="center">
+          <el-table-column label="合计" width="125" align="right"><template #default="{ row }">¥{{ formatMoney(row.salesTotal) }}</template></el-table-column>
+          <el-table-column v-for="item in statementCategories" :key="'sales-' + item.key" :label="item.label" align="center">
+            <el-table-column label="销售额" width="125" align="right"><template #default="{ row }">¥{{ formatMoney(row.sales?.[item.key]) }}</template></el-table-column>
+            <el-table-column label="占比" width="85" align="right"><template #default="{ row }">{{ formatStatementPercent(row.salesShare?.[item.key]) }}</template></el-table-column>
+          </el-table-column>
+        </el-table-column>
+        <el-table-column label="毛利构成" align="center">
+          <el-table-column label="合计" width="125" align="right"><template #default="{ row }">{{ formatStatementProfit(row.categoryGrossProfitTotal) }}</template></el-table-column>
+          <el-table-column v-for="item in statementCategories" :key="'profit-' + item.key" :label="item.label" align="center">
+            <el-table-column label="毛利" width="125" align="right"><template #default="{ row }">{{ formatStatementProfit(row.categoryGrossProfit?.[item.key]) }}</template></el-table-column>
+            <el-table-column label="占比" width="85" align="right"><template #default="{ row }">{{ formatStatementPercent(row.categoryGrossProfitShare?.[item.key]) }}</template></el-table-column>
+          </el-table-column>
+          <el-table-column label="已确认返利" width="125" align="right"><template #default="{ row }">{{ formatStatementProfit(row.rebate) }}</template></el-table-column>
+        </el-table-column>
+        <el-table-column label="费用构成" align="center">
+          <el-table-column label="合计" width="125" align="right"><template #default="{ row }">{{ formatStatementProfit(row.expenseTotal) }}</template></el-table-column>
+          <el-table-column label="固定费用" width="125" align="right"><template #default="{ row }">{{ formatStatementProfit(row.expenses?.fixed) }}</template></el-table-column>
+          <el-table-column label="人员费用" width="125" align="right"><template #default="{ row }">{{ formatStatementProfit(row.expenses?.personnel) }}</template></el-table-column>
+          <el-table-column label="日常费用" width="125" align="right"><template #default="{ row }">{{ formatStatementProfit(row.expenses?.daily) }}</template></el-table-column>
+          <el-table-column label="其他费用" width="125" align="right"><template #default="{ row }">{{ formatStatementProfit(row.expenses?.other) }}</template></el-table-column>
+        </el-table-column>
           </el-table>
-
-          <div style="margin-top: 18px;">
-            <div class="report-section-heading"><div><h3>商品维度销售统计</h3><p>按完整商品分类、品牌、系列、型号汇总；产品端或财务成本不完整时明确显示待补成本。</p></div></div>
-            <el-table :data="salesCategoryData" stripe border>
-              <el-table-column prop="categoryPath" label="商品分类" min-width="180" show-overflow-tooltip />
-              <el-table-column prop="brand" label="品牌" width="100" />
-              <el-table-column prop="series" label="系列" width="120" />
-              <el-table-column prop="model" label="型号" min-width="140" />
-              <el-table-column prop="totalQuantity" label="销售数量" width="100" align="right" />
-              <el-table-column prop="totalAmount" label="销售额" width="120">
-                <template #default="{ row }">¥{{ formatMoney(row.totalAmount) }}</template>
-              </el-table-column>
-              <el-table-column v-if="salesCanViewProfit" prop="salesGrossProfit" label="销售毛利" width="125" align="right">
-                <template #default="{ row }">¥{{ formatMoney(row.salesGrossProfit) }}</template>
-              </el-table-column>
-              <el-table-column v-if="salesCanViewProfit" prop="productGrossProfit" label="产品端毛利" width="135" align="right">
-                <template #default="{ row }">
-                  <el-tag v-if="row.productGrossProfit === null" type="warning" size="small">待补成本</el-tag>
-                  <span v-else>¥{{ formatMoney(row.productGrossProfit) }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column v-if="salesCanViewProfit" prop="financialGrossProfit" label="财务毛利" width="135" align="right">
-                <template #default="{ row }">
-                  <el-tag v-if="row.financialGrossProfit === null" type="warning" size="small">待补成本</el-tag>
-                  <span v-else>¥{{ formatMoney(row.financialGrossProfit) }}</span>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-
-          <div class="chart-container">
-            <div ref="salesChartRef" class="chart"></div>
-          </div>
-
-          <section class="employee-detail-report">
-            <div class="report-section-heading">
-              <div>
-                <h3>员工业绩订单明细</h3>
-                <p>销售额按参与人数拆分；毛利按订单保存的辅助销售固定金额或比例分配，未设置时平均拆分。</p>
-              </div>
-              <el-tag type="info" effect="plain">最多展示 100 条</el-tag>
-            </div>
-
-            <div class="filter-bar employee-detail-filters">
-              <el-date-picker
-                v-model="salesPerformanceParams.dateRange"
-                type="daterange"
-                range-separator="至"
-                start-placeholder="开始日期"
-                end-placeholder="结束日期"
-                value-format="YYYY-MM-DD"
-              />
-              <el-select v-model="salesPerformanceParams.storeId" placeholder="全部门店" clearable style="width: 160px">
-                <el-option label="全部门店" value="" />
-                <el-option
-                  v-for="store in dashboardFilterOptions.stores"
-                  :key="store.storeId"
-                  :label="store.name"
-                  :value="store.storeId"
-                />
-              </el-select>
-              <el-select
-                v-model="salesPerformanceParams.employeeId"
-                placeholder="全部员工"
-                clearable
-                filterable
-                style="width: 160px"
-              >
-                <el-option label="全部员工" value="" />
-                <el-option
-                  v-for="employee in dashboardFilterOptions.employees"
-                  :key="employee.staffId"
-                  :label="employee.name"
-                  :value="String(employee.staffId)"
-                />
-              </el-select>
-              <el-button type="primary" :loading="salesPerformanceLoading" @click="loadSalesPerformanceDetails">查询明细</el-button>
-            </div>
-
-            <el-table
-              :data="salesPerformanceDetails"
-              stripe
-              border
-              v-loading="salesPerformanceLoading"
-              empty-text="当前筛选范围暂无员工业绩订单"
-            >
-              <el-table-column prop="orderTime" label="时间" width="160">
-                <template #default="{ row }">{{ formatDateTime(row.orderTime) }}</template>
-              </el-table-column>
-              <el-table-column prop="orderNo" label="订单号" min-width="165" />
-              <el-table-column prop="storeName" label="门店" min-width="120" />
-              <el-table-column prop="employeeName" label="员工" width="100" />
-              <el-table-column prop="role" label="参与身份" width="90">
-                <template #default="{ row }">
-                  <el-tag :type="row.role === 'primary' ? 'primary' : 'warning'" size="small" effect="light">
-                    {{ row.role === 'primary' ? '主销售' : '辅助销售' }}
-                  </el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column prop="participantCount" label="参与人数" width="85" align="right" />
-              <el-table-column label="分摊销售额" width="120" align="right">
-                <template #default="{ row }">¥{{ formatMoney(row.allocatedSalesAmount) }}</template>
-              </el-table-column>
-              <el-table-column v-if="salesPerformanceCanViewProfit" label="基础毛利" width="110" align="right">
-                <template #default="{ row }">¥{{ formatMoney(row.allocatedBaseGrossProfit) }}</template>
-              </el-table-column>
-              <el-table-column v-if="salesPerformanceCanViewProfit" label="毛利调整" width="110" align="right">
-                <template #default="{ row }">
-                  <span :class="Number(row.allocatedAdjustment || 0) >= 0 ? 'profit-positive' : 'profit-negative'">
-                    {{ formatSignedMoney(row.allocatedAdjustment) }}
-                  </span>
-                </template>
-              </el-table-column>
-              <el-table-column v-if="salesPerformanceCanViewProfit" label="业绩毛利" width="110" align="right">
-                <template #default="{ row }">¥{{ formatMoney(row.allocatedGrossProfit) }}</template>
-              </el-table-column>
-              <el-table-column v-if="salesPerformanceCanViewProfit" label="产生原因" min-width="260">
-                <template #default="{ row }">
-                  <div class="performance-reason">
-                    <span>{{ row.allocationReason }}</span>
-                    <span v-for="reason in row.reasons || []" :key="reason.adjustmentNo">
-                      {{ reason.adjustmentNo }}：{{ reason.reason }}（{{ formatSignedMoney(reason.signedAmount) }}）
-                    </span>
-                  </div>
-                </template>
-              </el-table-column>
-            </el-table>
-          </section>
         </el-tab-pane>
 
         <el-tab-pane label="库存报表" name="inventory">
@@ -567,6 +456,16 @@ const syncTabFromRoute = () => {
 const stores = ref([])
 const salesData = ref([])
 const salesCategoryData = ref([])
+const salesStatementLoading = ref(false)
+const salesStatementRows = ref([])
+const statementCategories = [
+  { key: 'nb', label: 'NB' }, { key: 'dt', label: 'DT' }, { key: 'phone', label: '手机' },
+  { key: 'tablet', label: '平板' }, { key: 'service', label: '服务' }, { key: 'option', label: '其他IoT/选件' }
+]
+const statementMarginCategories = statementCategories.filter(item => item.key !== 'dt')
+const currentDate = new Date()
+const currentMonth = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`
+const salesStatementPeriod = ref([currentMonth, currentMonth])
 const salesCanViewProfit = ref(false)
 const inventoryData = ref([])
 const inventorySummary = ref({ totalCount: 0, totalCost: 0, staleCount: 0, staleRate: 0 })
@@ -594,7 +493,6 @@ const adjustmentOrderId = ref('')
 const salesChartRef = ref(null)
 const inventoryChartRef = ref(null)
 
-const salesParams = reactive({ date: '', regionCode: '' })
 const salesPerformanceParams = reactive({
   dateRange: currentWeekRange(),
   storeId: '',
@@ -617,6 +515,7 @@ onMounted(() => {
   activeTab.value = String(route.meta.tab || 'dashboard')
   loadStores()
   loadDashboardFilterOptions()
+  if (activeTab.value === 'sales') loadSalesReport()
 })
 
 watch(() => route.path, syncTabFromRoute)
@@ -624,8 +523,7 @@ watch(() => route.path, syncTabFromRoute)
 const onTabChange = (tabName) => {
 
   if (tabName === 'sales') {
-    if (salesData.value.length === 0) loadSalesReport()
-    if (salesPerformanceDetails.value.length === 0) loadSalesPerformanceDetails()
+    loadSalesReport()
   }
   if (tabName === 'inventory' && inventoryData.value.length === 0) {
     loadInventoryReport()
@@ -643,21 +541,23 @@ const loadStores = async () => {
 }
 
 const loadSalesReport = async () => {
+  if (!salesStatementPeriod.value || salesStatementPeriod.value.length !== 2) {
+    ElMessage.warning('请选择开始月份和结束月份')
+    return
+  }
+  salesStatementLoading.value = true
   try {
-    const params = {}
-    if (salesParams.date) {
-      params.startDate = salesParams.date
-      params.endDate = salesParams.date
-    }
-    if (salesParams.regionCode) params.regionCode = salesParams.regionCode
-    const res = await api.getSalesReport(params)
+    const res = await api.getSalesStatement({ startMonth: salesStatementPeriod.value[0], endMonth: salesStatementPeriod.value[1] })
     if (res.code === 0) {
-      salesData.value = res.data?.statsByDate || []
-      salesCategoryData.value = res.data?.statsByCategory || []
-      salesCanViewProfit.value = Boolean(res.data?.canViewProfit)
-      initSalesChart()
+      const data = res.data || {}
+      salesCanViewProfit.value = Boolean(data.canViewProfit)
+      salesStatementRows.value = data.summary ? [data.summary, ...(data.rows || [])] : (data.rows || [])
     }
-  } catch (err) { ElMessage.error('加载失败') }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || '销售报表加载失败')
+  } finally {
+    salesStatementLoading.value = false
+  }
 }
 
 const loadDashboardFilterOptions = async () => {
@@ -896,6 +796,9 @@ const adjustmentStatusType = status => ({
 
 const handleExport = () => ElMessage.info('导出功能开发中')
 
+const formatStatementPercent = value => value === null || value === undefined ? '-' : `${Number(value || 0).toFixed(2)}%`
+const formatStatementProfit = value => salesCanViewProfit.value && value !== null && value !== undefined ? `¥${formatMoney(value)}` : '-'
+
 const formatMoney = (value) => Number(value || 0).toLocaleString('zh-CN', {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2
@@ -954,6 +857,31 @@ const initInventoryChart = () => {
 <style scoped>
 .module-tabs :deep(.el-tabs__header) {
   display: none;
+}
+
+.sales-statement-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.sales-statement-period {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.sales-statement-hint {
+  color: #748196;
+  font-size: 12px;
+}
+.sales-statement-table {
+  width: 100%;
+}
+.sales-statement-table :deep(.sales-statement-total-row td) {
+  background: #f0f6ff !important;
+  font-weight: 700;
 }
 
 .filter-bar {

@@ -28,6 +28,7 @@ const {
   getFinancialProfitOrders,
   exportFinancialProfitOrders
 } = require('./financialProfitController');
+const { getSalesStatement } = require('./salesStatementController');
 const { requireDistributorAccount } = require('../../middleware/permission');
 
 const router = new Router();
@@ -36,6 +37,7 @@ const upload = multer({
 });
 
 router.get('/sales', getSalesReport);
+router.get('/sales-statement', getSalesStatement);
 router.get('/customer-source-analysis', getCustomerSourceAnalysis);
 router.get('/inventory', getInventoryReport);
 router.get('/employee-performance', getEmployeePerformanceReport);

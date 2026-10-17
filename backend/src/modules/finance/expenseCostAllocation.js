@@ -58,6 +58,7 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
 
   const byType = new Map();
   const byStore = new Map();
+  const byStoreType = new Map();
   const countedExpenses = new Set();
   let total = 0;
 
@@ -101,6 +102,18 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
       storeSummary.amount += item.amount;
       storeSummary.expenseIds.add(String(row.expenseId));
       byStore.set(item.storeId, storeSummary);
+
+      const storeTypeKey = `${item.storeId}\u0000${row.expenseType || '其他'}`;
+      const storeTypeSummary = byStoreType.get(storeTypeKey) || {
+        storeId: item.storeId,
+        storeName: item.storeName || storeNameMap.get(item.storeId) || item.storeId,
+        expenseType: row.expenseType || '其他',
+        amount: 0,
+        expenseIds: new Set()
+      };
+      storeTypeSummary.amount += item.amount;
+      storeTypeSummary.expenseIds.add(String(row.expenseId));
+      byStoreType.set(storeTypeKey, storeTypeSummary);
     });
   });
 
@@ -108,7 +121,14 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
     amount: amount(total),
     expenseCount: countedExpenses.size,
     byType: [...byType.entries()].map(([expenseType, row]) => ({ expenseType, amount: amount(row.amount), expenseCount: row.expenseIds.size })).sort((a, b) => b.amount - a.amount),
-    byStore: [...byStore.values()].map(row => ({ storeId: row.storeId, storeName: row.storeName, amount: amount(row.amount), expenseCount: row.expenseIds.size })).sort((a, b) => b.amount - a.amount)
+    byStore: [...byStore.values()].map(row => ({ storeId: row.storeId, storeName: row.storeName, amount: amount(row.amount), expenseCount: row.expenseIds.size })).sort((a, b) => b.amount - a.amount),
+    byStoreType: [...byStoreType.values()].map(row => ({
+      storeId: row.storeId,
+      storeName: row.storeName,
+      expenseType: row.expenseType,
+      amount: amount(row.amount),
+      expenseCount: row.expenseIds.size
+    })).sort((a, b) => a.storeId.localeCompare(b.storeId) || a.expenseType.localeCompare(b.expenseType, 'zh-CN'))
   };
 }
 
