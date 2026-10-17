@@ -173,8 +173,8 @@ async function getSalesStatement(ctx) {
              AND (original_order.CREATE_STAFF_ID = :staffId
                OR JSON_SEARCH(original_order.AUXILIARY_SALES_LIST, 'one', :staffId, NULL, '$[*].staffId') IS NOT NULL
                OR JSON_SEARCH(original_order.AUXILIARY_SALES_LIST, 'one', :staffId, NULL, '$[*].staff_id') IS NOT NULL)
-        )
-      GROUP BY rs.STORE_ID, COALESCE(p.CATEGORY, '')`,
+         ))
+       GROUP BY rs.STORE_ID, COALESCE(p.CATEGORY, '')`,
     { replacements, type: QueryTypes.SELECT }
   );
   returnRows.forEach(row => {
