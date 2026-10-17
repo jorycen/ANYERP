@@ -428,14 +428,15 @@ async function getMonthlyTaskAchievement(ctx) {
     }), { regionId: region.region_id || '', regionCode: region.region_code || '', regionName: region.name || '' });
   });
   const allEmployeesResult = (dimension === 'store' ? [] : visibleTasks.filter(task => task.target_type === 'staff')).map(task => {
-    const staff = staffMap.get(String(task.target_id));
-    const allocationsForStaff = allocationMap.get(String(task.target_id)) || [];
+    const normalizedTask = taskMap.get(String(task.task_id)) || task;
+    const staff = staffMap.get(String(normalizedTask.targetId));
+    const allocationsForStaff = allocationMap.get(String(normalizedTask.targetId)) || [];
     const allocated = allocationsForStaff.reduce((sum, row) => sum + row.allocatedTarget, 0);
-    const grossTarget = number(task.gross_profit_target) > 0 ? task.gross_profit_target : allocated;
-    const actual = actuals.employeeActuals.get(employeeKey(task.target_id, staff?.name))
+    const grossTarget = number(normalizedTask.grossProfitTarget) > 0 ? normalizedTask.grossProfitTarget : allocated;
+    const actual = actuals.employeeActuals.get(employeeKey(normalizedTask.targetId, staff?.name))
       || actuals.employeeActuals.get(employeeKey('', staff?.name))
       || createActual();
-    return buildAchievement({ task, actual, grossProfitTarget: grossTarget, name: staff?.name || task.target_id, storeId: staff?.store_id || '', storeName: storeMap.get(String(staff?.store_id || ''))?.name || '', profitVisible });
+    return buildAchievement({ task: normalizedTask, actual, grossProfitTarget: grossTarget, name: staff?.name || normalizedTask.targetId, storeId: staff?.store_id || '', storeName: storeMap.get(String(staff?.store_id || ''))?.name || '', profitVisible });
   });
   if (companyWideRank) {
     const rankableRoleCodes = new Set(['staff', 'clerk', 'manager', 'store_manager', 'store_admin']);
