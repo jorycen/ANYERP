@@ -473,6 +473,7 @@ class DashboardService {
       profitVisible
     );
     let companyWideGrossProfitRank = null;
+    let companyWideGrossProfitTotal = null;
     if (String(query.companyWideRank || query.company_wide_rank || '') === '1' && profitVisible && user.staffId) {
       const companyStores = await this.dataSource.query(
         'SELECT STORE_ID AS storeId FROM T_STORE WHERE IS_DELETED = 0 AND STATUS = 1'
@@ -498,6 +499,13 @@ class DashboardService {
                LOWER(COALESCE(r.ROLE_CODE, '')) IN ('staff', 'clerk', 'manager', 'store_manager', 'store_admin')
                OR (sr.STAFF_ID IS NULL AND LOWER(COALESCE(s.ROLE_CODE, '')) IN ('staff', 'clerk', 'manager', 'store_manager', 'store_admin'))
              )
+             AND COALESCE(s.DISTRIBUTOR_ID, '') <> 'DIST003'
+             AND NOT EXISTS (
+               SELECT 1
+                 FROM T_STAFF_DISTRIBUTOR_PERMISSION sdp
+                WHERE sdp.STAFF_ID = s.STAFF_ID
+                  AND sdp.DISTRIBUTOR_ID = 'DIST003'
+             )
         `);
         const rankingByStaffId = new Map(companyRanking.map(row => [String(row.staffId || ''), row]));
         companyRoster.forEach(staff => {
@@ -521,6 +529,7 @@ class DashboardService {
             || String(a.employeeName || '').localeCompare(String(b.employeeName || ''), 'zh-CN'));
         const ownCompanyIndex = rankedCompanyEmployees.findIndex(row => String(row.staffId || '') === String(user.staffId));
         companyWideGrossProfitRank = ownCompanyIndex >= 0 ? ownCompanyIndex + 1 : 0;
+        companyWideGrossProfitTotal = rankedCompanyEmployees.length;
       }
     }
     const productAnalysis = mapProductRows(productRows, profitVisible);
@@ -557,6 +566,7 @@ class DashboardService {
         selfOnly,
         archiveScope: filters.archiveScope,
         companyWideGrossProfitRank,
+        companyWideGrossProfitTotal,
         allocationRule: '销售额平均拆分；毛利按辅助销售固定金额或比例分配，未设置时平均拆分',
         generatedAt: new Date().toISOString()
       },

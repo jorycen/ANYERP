@@ -662,16 +662,28 @@ async function getUserRegions(ctx) {
   await ensureManageableStaff(ctx, staff);
   const targetIsBoss = (staff.Roles || []).some(role => role.role_code === 'boss') || staff.role_code === 'boss';
   const targetDistributorIds = await getStaffDistributorIds(staffId);
-  const [regionPermissions, availableStores] = await Promise.all([
+  const [regionPermissions, availableStores, distributorRegions] = await Promise.all([
     RegionPermission.findAll({ where: { staff_id: staffId, can_view: 1 }, attributes: ['region_code'], raw: true }),
     Store.findAll({
       where: { distributor_id: { [Op.in]: targetDistributorIds.length ? targetDistributorIds : [staff.distributor_id] }, is_deleted: 0, status: 1 },
       attributes: ['store_id', 'name', 'region_id'],
       order: [['name', 'ASC']],
       raw: true
+    }),
+    Distributor.findAll({
+      where: {
+        distributor_id: { [Op.in]: targetDistributorIds.length ? targetDistributorIds : [staff.distributor_id].filter(Boolean) },
+        is_deleted: 0,
+        status: 1
+      },
+      attributes: ['region_id'],
+      raw: true
     })
   ]);
-  const availableRegionIds = [...new Set(availableStores.map(store => String(store.region_id || '')).filter(Boolean))];
+  const availableRegionIds = [...new Set([
+    ...availableStores.map(store => String(store.region_id || '')),
+    ...distributorRegions.map(distributor => String(distributor.region_id || ''))
+  ].filter(Boolean))];
   const availableRegions = await Region.findAll({
     where: { region_id: availableRegionIds, status: 1 },
     attributes: ['region_id', 'region_code', 'name'],
