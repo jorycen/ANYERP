@@ -625,6 +625,18 @@ function taskNo(row) { return row.isSalesApproval ? row.salesRow?.order_no || '-
 function taskCreateTime(row) { return row.isSalesApproval ? row.salesRow?.create_time || '-' : row.create_time || row.Instance?.create_time || '-' }
 function taskAmount(row) {
   if (row.isSalesApproval) return formatProfit(row.salesRow?.grossProfitSnapshot?.gross_profit_amount)
+  if (row.Instance?.business_type === 'payable_settlement') {
+    const candidates = [
+      row.Instance?.display?.amount,
+      row.settlement_detail?.total_amount,
+      row.moduleRow?.total_amount,
+      row.moduleRow?.totalAmount,
+      row.amountText !== '-' ? row.amountText : undefined
+    ]
+    const amount = candidates.find(value => value !== undefined && value !== null && value !== '')
+    if (typeof amount === 'string' && amount.startsWith('¥')) return amount
+    return amount === undefined ? '-' : moneyText(amount)
+  }
   return row.amountText || row.Instance?.display?.amount || '-'
 }
 function taskData(row) { return row.isSalesApproval ? row.salesRow || {} : (row.moduleRow || row.Instance?.display || {}) }
