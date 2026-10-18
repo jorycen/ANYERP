@@ -502,7 +502,7 @@ const salesPerformanceParams = reactive({
   employeeId: ''
 })
 const inventoryParams = reactive({ storeId: '' })
-const employeeParams = reactive({ dateRange: [], storeId: '', staffName: '', orderNo: '', page: 1, pageSize: 20 })
+const employeeParams = reactive({ dateRange: recentSevenDayRange(), storeId: '', staffName: '', orderNo: '', page: 1, pageSize: 20 })
 const adjustmentForm = reactive({ adjustmentType: 'increase', amount: 0.01, reason: '' })
 const adjustmentParams = reactive({ page: 1, pageSize: 20 })
 const currentRoles = String(getRoleCode() || '').split(',').map(role => role.trim())
@@ -828,6 +828,18 @@ function currentWeekRange() {
     String(date.getDate()).padStart(2, '0')
   ].join('-')
   return [format(monday), format(today)]
+}
+
+function recentSevenDayRange() {
+  const today = new Date()
+  const start = new Date(today)
+  start.setDate(today.getDate() - 7)
+  const format = date => [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0')
+  ].join('-')
+  return [format(start), format(today)]
 }
 
 const formatDateTime = (value) => {
