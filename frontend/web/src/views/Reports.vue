@@ -519,6 +519,7 @@ onMounted(() => {
   loadStores()
   loadDashboardFilterOptions()
   if (activeTab.value === 'sales') loadSalesReport()
+  if (activeTab.value === 'employee') loadEmployeePerformance()
 })
 
 watch(() => route.path, syncTabFromRoute)
