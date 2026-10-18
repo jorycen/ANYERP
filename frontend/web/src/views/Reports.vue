@@ -635,7 +635,8 @@ const loadEmployeePerformance = async () => {
       employeeTotal.value = res.data?.pagination?.total || 0
     }
   } catch (err) {
-    ElMessage.error('加载员工业绩失败')
+    console.error('加载员工业绩失败', err)
+    ElMessage.error(err?.response?.data?.message || err?.message || '加载员工业绩失败')
   } finally {
     employeeLoading.value = false
   }
