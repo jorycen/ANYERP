@@ -40,7 +40,7 @@ router.get('/sales', getSalesReport);
 router.get('/sales-statement', getSalesStatement);
 router.get('/customer-source-analysis', getCustomerSourceAnalysis);
 router.get('/inventory', getInventoryReport);
-router.get('/employee-performance', getEmployeePerformanceReport);
+router.get('/employee-performance', ctx => getEmployeePerformanceReport(ctx, false));
 router.get('/employee-performance/export', ctx => getEmployeePerformanceReport(ctx, true));
 router.get('/dashboard/filters', getDashboardFilters);
 router.get('/dashboard/overview', getDashboardOverview);
