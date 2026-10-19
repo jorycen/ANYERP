@@ -587,7 +587,7 @@
     <el-dialog v-model="adjustmentDialogVisible" title="采购退单 / 数量调整" width="1100px" @close="resetAdjustmentForm">
       <div v-if="adjustmentRequest" class="adjustment-summary">
         <el-alert
-          title="输入本次退库数量即可。未入库商品会取消待入库数量；已入库商品会同步扣减库存。SN商品必须选择对应的在库SN。原采购单、入库单和付款记录保留历史，系统新增负向应付款调整。"
+          title="填写本次退货数量。未入库商品取消待入库数量；已入库商品同步退库，SN商品须选择在库SN。原采购及付款记录保留，退货生成关联负向采购单；公司账期采购同时生成待退款或待抵扣的负向应付。"
           type="warning"
           :closable="false"
           show-icon

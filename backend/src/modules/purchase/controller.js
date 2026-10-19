@@ -465,7 +465,6 @@ function getPurchaseAdjustmentTotals(adjustments = []) {
   let rebateDelta = 0;
   for (const adjustment of adjustments || []) {
     for (const item of adjustment.items || []) {
-      if (String(item.remark || '').startsWith('stock_return')) continue;
       const quantityDelta = Number(item.quantity_delta || 0);
       const unitPrice = Number(item.unit_price || 0);
       const grossItemDelta = quantityDelta * unitPrice;
@@ -485,7 +484,6 @@ function getPurchaseAdjustmentItemDeltas(adjustments = []) {
   const result = new Map();
   for (const adjustment of adjustments || []) {
     for (const item of adjustment.items || []) {
-      if (String(item.remark || '').startsWith('stock_return')) continue;
       const key = String(item.request_item_id || '');
       if (!key) continue;
       const current = result.get(key) || { quantityDelta: 0, grossDelta: 0, actualDelta: 0, rebateDelta: 0 };
@@ -505,11 +503,10 @@ function getPurchaseAdjustmentItemDeltas(adjustments = []) {
 
 function buildNegativePurchaseOrders(adjustments = []) {
   return (adjustments || [])
-    .filter(adjustment => Number(adjustment.total_quantity_delta || 0) < 0
-      && (adjustment.items || []).some(item => !String(item.remark || '').startsWith('stock_return')))
+    .filter(adjustment => Number(adjustment.total_quantity_delta || 0) < 0)
     .map(adjustment => {
       const row = typeof adjustment.toJSON === 'function' ? adjustment.toJSON() : { ...adjustment };
-      const financialItems = (row.items || []).filter(item => !String(item.remark || '').startsWith('stock_return'));
+      const financialItems = row.items || [];
       const isSpecialWarehouseRepurchase = (row.items || []).some(item => String(item.remark || '').startsWith('special_warehouse_repurchase'));
       return {
         order_id: row.adjustment_id,
@@ -739,7 +736,7 @@ function buildPurchaseDocumentRelations(request, returnStocks = []) {
       document_no: adjustment.adjustment_no,
       upstream_no: request.request_no,
       business_action: (adjustment.items || []).length > 0 && (adjustment.items || []).every(item => String(item.remark || '').startsWith('stock_return'))
-        ? '实际退库（仅调整库存和数量）'
+        ? '采购退货（已完成退库）'
         : '采购数量取消/调整',
       product_summary: (adjustment.items || []).map(item => item.product_name || item.product_id).filter(Boolean).join('；'),
       quantity: Number(adjustment.total_quantity_delta || 0),
@@ -2780,7 +2777,7 @@ async function createPurchaseAdjustment(ctx) {
 
       totalQuantityDelta -= returnQuantity;
       totalAmountDelta = toSignedMoney(totalAmountDelta + amountDelta);
-      if (operationType === 'pending_cancel') payableAmountDelta = toSignedMoney(payableAmountDelta + amountDelta);
+      payableAmountDelta = toSignedMoney(payableAmountDelta + amountDelta);
       totalRebateDelta = toSignedMoney(totalRebateDelta + rebateDelta);
       changedItemCount += 1;
     }
@@ -2873,8 +2870,8 @@ async function createPurchaseAdjustment(ctx) {
 
     await transaction.commit();
     const adjustmentMessage = payableId
-      ? (payableAmountDelta < 0 ? '采购数量已取消，负向应付已保留在应付管理' : '采购数量调整完成，正向应付已生成')
-      : '采购退库完成，仅调整退库库存和数量；撤销采购时再生成负向应付';
+      ? (payableAmountDelta < 0 ? '采购退单完成，负向采购单及负向应付已生成' : '采购数量调整完成，正向应付已生成')
+      : '采购退单完成，负向采购单已生成；请核对个人垫付报销金额';
     ctx.body = {
       code: 0,
       message: adjustmentMessage,
@@ -2921,8 +2918,8 @@ async function revokeRequest(ctx) {
       });
       if (!canRevokeReturnedPurchase(lockedRequest.status, currentInbounds)) ctx.throw(409, '商品尚未全部退回，不能撤销采购申请');
 
-      // Physical stock returns affect inventory only. Their payable credit is created
-      // when the purchase itself is revoked, and remains open in Payable Management.
+      // Older physical returns may not yet have a credit. Preserve the existing
+      // backfill path for those records; new returns create the credit immediately.
       const completedAdjustments = await PurchaseAdjustment.findAll({
         where: { request_id: requestId, status: 'completed' },
         include: [{ model: PurchaseAdjustmentItem, as: 'items' }],
