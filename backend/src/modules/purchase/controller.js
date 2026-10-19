@@ -2324,13 +2324,30 @@ async function getAdjustmentPreview(ctx) {
     const key = String(item.inbound_item_id);
     returnedByInboundItem.set(key, (returnedByInboundItem.get(key) || 0) + Number(item.quantity || 0));
   });
+  const completedAdjustments = await PurchaseAdjustment.findAll({
+    where: { request_id: requestId, status: 'completed' }, attributes: ['adjustment_id']
+  });
+  const adjustmentIds = completedAdjustments.map(item => item.adjustment_id);
+  const adjustedItems = adjustmentIds.length ? await PurchaseAdjustmentItem.findAll({
+    where: { adjustment_id: { [Op.in]: adjustmentIds }, quantity_delta: { [Op.lt]: 0 } },
+    attributes: ['request_item_id', 'quantity_delta']
+  }) : [];
+  const returnedByRequestItem = new Map();
+  adjustedItems.forEach(item => {
+    const key = String(item.request_item_id);
+    returnedByRequestItem.set(key, (returnedByRequestItem.get(key) || 0) - Number(item.quantity_delta || 0));
+  });
+  const requestedQuantity = new Map((request.items || []).map(item => [String(item.item_id), Number(item.quantity || 0)]));
   const productMap = new Map((await Product.findAll({
     where: { product_id: { [Op.in]: [...new Set(rows.map(row => row.product_id).filter(Boolean))] } }
   })).map(product => [String(product.product_id), product]));
   for (const row of rows) {
     const alreadyReturned = returnedByInboundItem.get(String(row.inbound_item_id)) || 0;
     row.already_returned_quantity = alreadyReturned;
-    row.max_return_quantity = Math.max(0, Number(row.max_return_quantity || 0) - alreadyReturned);
+    const remainingRequestQuantity = Math.max(0, (requestedQuantity.get(String(row.request_item_id)) || 0)
+      - (returnedByRequestItem.get(String(row.request_item_id)) || 0));
+    row.max_return_quantity = Math.min(remainingRequestQuantity,
+      Math.max(0, Number(row.max_return_quantity || 0) - alreadyReturned));
     const product = productMap.get(String(row.product_id));
     row.need_sn = Number(product?.need_sn || 0);
     if (row.operation_type === 'stock_return' && row.need_sn === 1) {
@@ -2659,6 +2676,35 @@ async function createPurchaseAdjustment(ctx) {
       submitted.set(inboundItemId, { returnQuantity, snIds });
     }
     if (submitted.size === 0) ctx.throw(400, '没有有效的退单明细');
+
+    // A returned unit may have a replacement pending inbound. That placeholder is
+    // not another purchased unit and must not create a second negative payable.
+    const completedForRequest = await PurchaseAdjustment.findAll({
+      where: { request_id: requestId, status: 'completed' },
+      attributes: ['adjustment_id'], transaction, lock: transaction.LOCK.UPDATE
+    });
+    const completedIds = completedForRequest.map(row => row.adjustment_id);
+    const previousReturns = completedIds.length
+      ? await PurchaseAdjustmentItem.findAll({
+        where: { adjustment_id: { [Op.in]: completedIds }, quantity_delta: { [Op.lt]: 0 } },
+        attributes: ['request_item_id', 'quantity_delta'], transaction
+      }) : [];
+    const returnedByRequestItem = new Map();
+    previousReturns.forEach(row => {
+      const key = String(row.request_item_id);
+      returnedByRequestItem.set(key, (returnedByRequestItem.get(key) || 0) - Number(row.quantity_delta || 0));
+    });
+    for (const [inboundItemId, input] of submitted) {
+      const matched = inboundItemMap.get(inboundItemId);
+      if (!matched || input.returnQuantity <= 0) continue;
+      const key = String(matched.inboundItem.purchase_request_item_id || '');
+      const requestItem = requestItemMap.get(key);
+      const nextReturned = (returnedByRequestItem.get(key) || 0) + input.returnQuantity;
+      if (!requestItem || nextReturned > Number(requestItem.quantity || 0)) {
+        ctx.throw(409, '该采购明细已全部退单，不能再次生成负向采购单');
+      }
+      returnedByRequestItem.set(key, nextReturned);
+    }
 
     const receivedByRequestItem = new Map();
     for (const inbound of inbounds) {

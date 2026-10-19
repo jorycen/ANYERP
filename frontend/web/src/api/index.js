@@ -488,6 +488,7 @@ export default {
   submitSettlement: (data) => api.post('/finance/settlement/submit', data),
   revokeSettlement: (data) => api.post('/finance/settlement/revoke', data),
   confirmSettlement: (data) => api.post('/finance/settlement/confirm', data),
+  registerSupplierRefund: (data) => api.post('/finance/settlement/supplier-refund', data),
   rejectSettlement: (data) => api.post('/finance/settlement/reject', data),
   voidSettlement: (data) => api.post('/finance/settlement/void', data),
   getSettlementPaymentCandidates: (params) => api.get('/finance/settlement-payment/candidates', { params }),

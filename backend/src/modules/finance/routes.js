@@ -39,6 +39,7 @@ const {
   commitPaymentImport,
   createBatchPayment,
   createDirectPayment,
+  registerSupplierRefund,
   getPaymentBatches,
   getPaymentBatchDetail,
   voidPaymentBatch,
@@ -164,6 +165,7 @@ router.post('/settlement-payment/import/validate', validatePaymentImport);
 router.post('/settlement-payment/import/commit', commitPaymentImport);
 router.post('/settlement-payment/batch', createBatchPayment);
 router.post('/settlement-payment/direct', createDirectPayment);
+router.post('/settlement/supplier-refund', registerSupplierRefund);
 router.get('/settlement-payment/batches', getPaymentBatches);
 router.get('/settlement-payment/batch/:id', getPaymentBatchDetail);
 router.post('/settlement-payment/batch/void', voidPaymentBatch);

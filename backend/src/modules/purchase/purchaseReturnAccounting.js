@@ -1,7 +1,4 @@
 const {
-  Op
-} = require('sequelize');
-const {
   PurchaseAdjustment,
   PurchaseAdjustmentItem,
   PurchaseRequest,
@@ -17,9 +14,7 @@ const {
 } = require('../../models');
 const { generateUUID } = require('../../utils');
 const {
-  getAllocationSummary,
-  getPayableRemaining,
-  refreshPayableState
+  getAllocationSummary
 } = require('../finance/settlementAllocation');
 
 function money(value) {
@@ -97,13 +92,6 @@ function getReturnAdjustmentSummary(rows) {
     result.totalAmountDelta = money(result.totalAmountDelta + Number(row.amount_delta || 0));
     return result;
   }, { totalQuantityDelta: 0, totalAmountDelta: 0 });
-}
-
-function canOffsetOriginalPayable(originalPayable, allocationAmount) {
-  if (!originalPayable) return false;
-  if (Number(allocationAmount || 0) > 0.005) return false;
-  if (Number(originalPayable.paid_amount || 0) > 0.005) return false;
-  return originalPayable.status !== 'paid';
 }
 
 async function reduceInventoryCostForPurchaseReturn(returnItems, transaction) {
@@ -225,6 +213,7 @@ async function ensurePurchaseReturnAccounting({ returnStock, transaction, userNa
     transaction,
     lock: transaction.LOCK.UPDATE
   });
+  const existingPayable = Boolean(payable);
   const store = returnStock.store_id
     ? await Store.findByPk(returnStock.store_id, { attributes: ['region_id', 'distributor_id'], transaction })
     : null;
@@ -261,35 +250,12 @@ async function ensurePurchaseReturnAccounting({ returnStock, transaction, userNa
     await payable.update({
       ...payableValues,
       total_amount: summary.totalAmountDelta,
-      status: 'credit'
+      status: Math.abs(summary.totalAmountDelta) <= Number(payable.offset_amount || 0) + 0.005 ? 'offset' : 'credit'
     }, { transaction });
   }
 
-  const originalPayable = await Payable.findOne({
-    where: { request_id: request.request_id, source_type: 'purchase', total_amount: { [Op.gt]: 0 } },
-    order: [['create_time', 'ASC']],
-    transaction,
-    lock: transaction.LOCK.UPDATE
-  });
-  const allocation = originalPayable
-    ? ((await getAllocationSummary([originalPayable.payable_id], transaction)).get(String(originalPayable.payable_id)) || { amount: 0 })
-    : { amount: 0 };
-  let offsetAmount = Number(payable.offset_amount || 0);
-  if (canOffsetOriginalPayable(originalPayable, allocation.amount) && offsetAmount <= 0.005) {
-    const remaining = Math.max(0, getPayableRemaining(originalPayable.total_amount, allocation.amount, originalPayable.offset_amount));
-    offsetAmount = Math.min(Math.abs(summary.totalAmountDelta), remaining);
-    if (offsetAmount > 0) {
-      await originalPayable.update({
-        offset_amount: money(Number(originalPayable.offset_amount || 0) + offsetAmount)
-      }, { transaction });
-      await refreshPayableState(originalPayable.payable_id, transaction);
-    }
-  }
-  await payable.update({
-    offset_amount: money(offsetAmount),
-    offset_payable_id: offsetAmount > 0 && originalPayable ? originalPayable.payable_id : payable.offset_payable_id || null,
-    status: Math.abs(summary.totalAmountDelta) <= offsetAmount + 0.005 ? 'offset' : 'credit'
-  }, { transaction });
+  // Existing historical offsets remain intact; new return entries are never
+  // auto-offset against their positive purchase payable.
   await returnStock.update({
     purchase_request_id: request.request_id,
     supplier_id: request.supplier_id,
@@ -304,7 +270,7 @@ async function ensurePurchaseReturnAccounting({ returnStock, transaction, userNa
     payableId: payable.payable_id,
     totalQuantityDelta: summary.totalQuantityDelta,
     totalAmountDelta: summary.totalAmountDelta,
-    offsetAmount
+    offsetAmount: existingPayable ? Number(payable.offset_amount || 0) : 0
   };
 }
 
@@ -312,7 +278,6 @@ module.exports = {
   money,
   buildReturnAdjustmentItems,
   getReturnAdjustmentSummary,
-  canOffsetOriginalPayable,
   reduceInventoryCostForPurchaseReturn,
   ensurePurchaseReturnAccounting
 };

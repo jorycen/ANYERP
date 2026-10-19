@@ -789,27 +789,6 @@ async function createSettlement(ctx) {
 
   let supplierAccountSnapshot = null;
   let finalSupplierAccountId = null;
-  if (paymentAccountType === 'rebate') {
-    if (roundAmount(rebateDeduction) <= 0) ctx.throw(400, '请输入返款金额');
-  } else if (paymentAccountType === 'other') {
-    if (!String(otherPaymentRemark || '').trim()) ctx.throw(400, '请填写其他付款说明');
-    if (!otherPaymentImage) ctx.throw(400, '请上传其他付款凭证');
-  } else {
-    if (!supplierAccountId) ctx.throw(400, '请选择供应商付款账户');
-    const supplierAccount = await SupplierPaymentAccount.findOne({
-      where: { account_id: supplierAccountId, supplier_id: supplierId, status: 1, is_deleted: 0 }
-    });
-    if (!supplierAccount) ctx.throw(404, '供应商付款账户不可用');
-    finalSupplierAccountId = supplierAccount.account_id;
-    supplierAccountSnapshot = JSON.stringify({
-      accountId: supplierAccount.account_id,
-      companyName: supplierAccount.company_name || '',
-      taxNo: supplierAccount.tax_no || '',
-      bankName: supplierAccount.bank_name || '',
-      accountNumber: supplierAccount.account_number || '',
-      remark: supplierAccount.remark || ''
-    });
-  }
 
   let settlement;
   await sequelize.transaction(async transaction => {
@@ -960,6 +939,27 @@ async function createSettlement(ctx) {
     });
     const finalRows = rows;
     const totalAmount = roundAmount(finalRows.reduce((sum, row) => sum + row.amount, 0));
+    if (!finalRows.length) ctx.throw(400, '请选择有效的结算明细');
+    if (totalAmount > 0) {
+      if (paymentAccountType === 'rebate') {
+        if (requestedRebate <= 0) ctx.throw(400, '请输入返款金额');
+      } else if (paymentAccountType === 'other') {
+        if (!String(otherPaymentRemark || '').trim() || !otherPaymentImage) ctx.throw(400, '请填写其他付款说明并上传凭证');
+      } else {
+        if (!supplierAccountId) ctx.throw(400, '请选择供应商付款账户');
+        const supplierAccount = await SupplierPaymentAccount.findOne({
+          where: { account_id: supplierAccountId, supplier_id: supplierId, status: 1, is_deleted: 0 }, transaction
+        });
+        if (!supplierAccount) ctx.throw(404, '供应商付款账户不可用');
+        finalSupplierAccountId = supplierAccount.account_id;
+        supplierAccountSnapshot = JSON.stringify({
+          accountId: supplierAccount.account_id,
+          companyName: supplierAccount.company_name || '', taxNo: supplierAccount.tax_no || '',
+          bankName: supplierAccount.bank_name || '', accountNumber: supplierAccount.account_number || '',
+          remark: supplierAccount.remark || ''
+        });
+      }
+    }
     const taxStatus = combineTaxStatuses(finalRows.map(row => requestTaxMap.get(String(row.payable.request_id)) || 'UNKNOWN'));
     if (taxStatus === 'MIXED') ctx.throw(400, '含税与未税应付款不能在同一张结算单中同时发起');
     const regionIds = [...new Set(finalRows.map(row => row.payable.region_id).filter(Boolean).map(String))];
@@ -970,8 +970,8 @@ async function createSettlement(ctx) {
       supplier_name: supplier.name,
       supplier_account_id: finalSupplierAccountId,
       supplier_account_snapshot: supplierAccountSnapshot,
-      other_payment_remark: paymentAccountType === 'other' ? String(otherPaymentRemark).trim() : null,
-      other_payment_image: paymentAccountType === 'other' ? otherPaymentImage : null,
+      other_payment_remark: totalAmount > 0 && paymentAccountType === 'other' ? String(otherPaymentRemark).trim() : null,
+      other_payment_image: totalAmount > 0 && paymentAccountType === 'other' ? otherPaymentImage : null,
       rebate_deduction: requestedRebate,
       rebate_allocation_json: requestedRebate > 0
         ? JSON.stringify([...rebateAllocation.entries()].map(([payableId, amount]) => ({ payableId, amount })))
@@ -982,7 +982,7 @@ async function createSettlement(ctx) {
       tax_status: taxStatus,
       total_amount: totalAmount,
       status: 'draft',
-      payment_status: 'unpaid',
+      payment_status: totalAmount < 0 ? 'pending_refund' : totalAmount === 0 ? 'settled' : 'unpaid',
       remark: normalizeSettlementRemark(remark),
       create_user: user?.name || user?.phone || ''
     }, { transaction });
@@ -1308,7 +1308,9 @@ function normalizeSettlement(row) {
   const data = row.toJSON ? row.toJSON() : row;
   const supplierAccountSnapshot = parseJsonText(data.supplier_account_snapshot);
   const lifecycleStatus = data.status === 'confirmed'
-    ? (data.payment_status === 'paid' ? 'paid' : data.payment_status === 'partial_paid' ? 'partial_paid' : 'pending_payment')
+    ? (data.payment_status === 'paid' ? 'paid' : data.payment_status === 'partial_paid' ? 'partial_paid'
+      : data.payment_status === 'settled' ? 'settled' : data.payment_status === 'refunded' ? 'refunded'
+        : data.payment_status === 'pending_refund' ? 'pending_refund' : 'pending_payment')
     : data.status;
   return {
     ...data,
@@ -1500,7 +1502,10 @@ function buildSettlementListWhere(query, user) {
     const lifecycleStatusFilters = {
       pending_payment: ['confirmed', 'unpaid'],
       partial_paid: ['confirmed', 'partial_paid'],
-      paid: ['confirmed', 'paid']
+      paid: ['confirmed', 'paid'],
+      settled: ['confirmed', 'settled'],
+      pending_refund: ['confirmed', 'pending_refund'],
+      refunded: ['confirmed', 'refunded']
     };
     if (lifecycleStatusFilters[status]) {
       const [settlementStatus, paymentStatusValue] = lifecycleStatusFilters[status];
@@ -1528,7 +1533,7 @@ async function getSettlementList(ctx) {
     [
       sequelize.literal(
         "CASE WHEN `Settlement`.`status` IN ('draft', 'pending_approval') OR " +
-        "(`Settlement`.`status` = 'confirmed' AND `Settlement`.`payment_status` IN ('unpaid', 'partial_paid')) " +
+        "(`Settlement`.`status` = 'confirmed' AND `Settlement`.`payment_status` IN ('unpaid', 'partial_paid', 'pending_refund')) " +
         'THEN 0 ELSE 1 END'
       ),
       'ASC'
@@ -1557,7 +1562,7 @@ async function exportSettlementList(ctx) {
     order: [
       [sequelize.literal(
         "CASE WHEN `Settlement`.`status` IN ('draft', 'pending_approval') OR " +
-        "(`Settlement`.`status` = 'confirmed' AND `Settlement`.`payment_status` IN ('unpaid', 'partial_paid')) " +
+        "(`Settlement`.`status` = 'confirmed' AND `Settlement`.`payment_status` IN ('unpaid', 'partial_paid', 'pending_refund')) " +
         'THEN 0 ELSE 1 END'
       ), 'ASC'],
       [sequelize.literal('`Settlement`.`create_time`'), 'DESC'],
@@ -1615,7 +1620,13 @@ async function getSettlementDetail(ctx) {
   await enrichSettlementMetadata([settlement]);
   await enrichSettlementApprovalProgress([settlement]);
 
-  ctx.body = { code: 0, data: normalizeSettlement(settlement) };
+  const data = normalizeSettlement(settlement);
+  if (Number(settlement.total_amount || 0) < 0) {
+    data.refund_receipt = await SettlementAccountTransaction.findOne({
+      where: { related_ref: `SUPPLIER_REFUND:${settlement.settlement_id}`, type: 'income' }
+    });
+  }
+  ctx.body = { code: 0, data };
 }
 
 async function getSettlementById(settlementId, user = null) {
@@ -1795,7 +1806,7 @@ async function deleteSettlementDraft(ctx) {
     if (settlement.status !== 'draft' || settlement.submit_time) {
       ctx.throw(400, '只有从未提交过的结算单草稿可以删除');
     }
-    if (settlement.payment_status !== 'unpaid' || Number(settlement.paid_amount || 0) > 0) {
+    if (!['unpaid', 'settled', 'pending_refund'].includes(settlement.payment_status) || Number(settlement.paid_amount || 0) > 0) {
       ctx.throw(400, '已有付款记录的结算单不能删除');
     }
 
@@ -1979,7 +1990,7 @@ async function voidSettlement(ctx) {
       });
       if (!settlement || settlement.is_deleted) ctx.throw(404, '结算单不存在');
       if (settlement.status === 'voided') ctx.throw(400, '结算单已经作废');
-      if (settlement.payment_status !== 'unpaid') ctx.throw(400, '已付款结算单不能作废');
+      if (!['unpaid', 'settled', 'pending_refund'].includes(settlement.payment_status)) ctx.throw(400, '已发生收付款的结算单不能作废');
       await reverseSettlementRebate(settlement, ctx.state.user, transaction);
       await settlement.update({ status: 'voided', voided_time: new Date() }, { transaction });
       const approvalInstances = await ApprovalFlowInstance.findAll({
@@ -2049,6 +2060,43 @@ async function voidSettlementLegacy(ctx) {
  */
 async function confirmPayment(ctx) {
   ctx.throw(400, '应付结算暂不支持付款功能');
+}
+
+/** Register the supplier's incoming refund against an approved negative settlement. */
+async function registerSupplierRefund(ctx) {
+  const { settlementId, accountId, remark = '' } = ctx.request.body || {};
+  if (!settlementId || !accountId) ctx.throw(400, '请选择结算单和到账账户');
+  const user = ctx.state.user;
+  let result;
+  await sequelize.transaction(async transaction => {
+    const settlement = await Settlement.findByPk(settlementId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!settlement || settlement.is_deleted) ctx.throw(404, '结算单不存在');
+    if (!canAccessDistributor(user, settlement.distributor_id)) ctx.throw(403, '无权登记该经销商退款');
+    if (settlement.status !== 'confirmed' || Number(settlement.total_amount || 0) >= 0
+      || settlement.payment_status !== 'pending_refund') ctx.throw(400, '当前结算单不在待供应商退款状态');
+    const account = await SettlementAccount.findOne({
+      where: { account_id: accountId, account_type: 'FUND', status: 1 }, transaction, lock: transaction.LOCK.UPDATE
+    });
+    if (!canUsePaymentAccountForSettlement(user, account, settlement)) ctx.throw(400, '到账账户与结算单所属经销商不一致');
+    const amount = Math.abs(roundAmount(settlement.total_amount));
+    const balanceAfter = roundAmount(await getCurrentAccountBalance(accountId, transaction) + amount);
+    const receipt = await SettlementAccountTransaction.create({
+      transaction_id: generateUUID(), account_id: accountId, type: 'income', amount,
+      balance_after: balanceAfter,
+      description: `供应商退款：${settlement.settlement_no} ${settlement.supplier_name || ''} ${String(remark).trim()}`.slice(0, 512),
+      related_ref: `SUPPLIER_REFUND:${settlement.settlement_id}`,
+      create_user: user?.name || user?.phone || '', create_time: new Date()
+    }, { transaction });
+    await settlement.update({ payment_status: 'refunded', paid_time: new Date() }, { transaction });
+    await recordBusinessAction({
+      businessType: 'payable_settlement', businessId: settlement.settlement_id,
+      businessNo: settlement.settlement_no, action: 'supplier_refund_received',
+      fromStatus: 'pending_refund', toStatus: 'refunded', user,
+      detail: { accountId, amount, transactionId: receipt.transaction_id }, transaction
+    });
+    result = { settlementId, transactionId: receipt.transaction_id, amount };
+  });
+  ctx.body = { code: 0, message: '供应商退款到账已登记', data: result };
 }
 
 /**
@@ -2431,7 +2479,7 @@ async function revokeSettlement(ctx) {
         ctx.throw(403, '只有结算单发起人或经销商账号可以撤回');
       }
       if (settlement.status !== 'pending_approval') ctx.throw(400, '仅审批未完成的结算单可以撤回');
-      if (settlement.payment_status !== 'unpaid' || Number(settlement.paid_amount || 0) > 0) {
+      if (!['unpaid', 'settled', 'pending_refund'].includes(settlement.payment_status) || Number(settlement.paid_amount || 0) > 0) {
         ctx.throw(400, '已付款结算单不能撤回');
       }
 
@@ -2785,6 +2833,7 @@ module.exports = {
   commitPaymentImport,
   createBatchPayment,
   createDirectPayment,
+  registerSupplierRefund,
   getPaymentBatches,
   getPaymentBatchDetail,
   voidPaymentBatch,

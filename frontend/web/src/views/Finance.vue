@@ -1015,7 +1015,7 @@
             <el-option v-for="s in suppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="收款账户" required>
+        <el-form-item v-if="Number(settlementTotalAmount) > 0" label="收款账户" required>
           <el-select v-model="settlementForm.paymentAccountType" placeholder="请选择收款账户" style="width: 100%" @change="onPaymentAccountTypeChange">
             <el-option v-if="settlementRebateBalance > 0" label="返款" value="rebate" />
             <el-option
@@ -1103,6 +1103,8 @@
           结算总金额：<strong class="total-amount">¥{{ settlementTotalAmount }}</strong>
           <template v-if="settlementForm.paymentAccountType === 'rebate'">，返款后应付：<strong class="total-amount">¥{{ settlementCashAmount }}</strong></template>
         </div>
+        <el-alert v-if="Number(settlementTotalAmount) === 0 && selectedPayableIds.length" title="净额为 0：审批通过后记为已冲平，不产生收付款流水。" type="success" :closable="false" />
+        <el-alert v-if="Number(settlementTotalAmount) < 0" title="负额结算：审批通过后等待供应商退款，财务确认到账后登记收款。" type="warning" :closable="false" />
       </div>
       <div v-else>
         <el-empty :description="settlementForm.supplierId ? '该供应商没有待结算的应付款' : '暂无待结算应付款'" />
@@ -3790,8 +3792,9 @@ const handleSettlementSubmit = async () => {
       return
     }
     const paymentAccountType = settlementForm.paymentAccountType
-    const isRebatePayment = paymentAccountType === 'rebate'
-    const isOtherPaymentAccount = paymentAccountType === 'other'
+    const positiveSettlement = Number(settlementTotalAmount.value) > 0
+    const isRebatePayment = positiveSettlement && paymentAccountType === 'rebate'
+    const isOtherPaymentAccount = positiveSettlement && paymentAccountType === 'other'
     if (isRebatePayment) {
       const amount = Number(settlementForm.rebateDeduction || 0)
       if (amount <= 0 || amount > Number(settlementTotalAmount.value) + 0.005 || amount > settlementRebateBalance.value + 0.005) {
@@ -3803,7 +3806,7 @@ const handleSettlementSubmit = async () => {
       ElMessage.warning('其他账户必须填写说明并上传凭证')
       return
     }
-    if (!isOtherPaymentAccount && !isRebatePayment && !settlementForm.supplierAccountId) {
+    if (positiveSettlement && !isOtherPaymentAccount && !isRebatePayment && !settlementForm.supplierAccountId) {
       ElMessage.warning('请选择供应商付款账户')
       return
     }
