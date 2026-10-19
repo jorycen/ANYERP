@@ -628,13 +628,16 @@ const loadEmployeePerformance = async () => {
       params.endDate = employeeParams.dateRange[1]
     }
     const res = await api.getEmployeePerformanceReport(params)
-    console.info('[employee-performance] response shape', {
+    console.info('[employee-performance] response shape ' + JSON.stringify({
+      responseType: Array.isArray(res) ? 'array' : typeof res,
+      responseKeys: res && typeof res === 'object' ? Object.keys(res) : [],
       code: res?.code,
       dataType: Array.isArray(res?.data) ? 'array' : typeof res?.data,
       dataKeys: res?.data && typeof res.data === 'object' ? Object.keys(res.data) : [],
       listLength: Array.isArray(res?.data?.list) ? res.data.list.length : null,
-      total: res?.data?.pagination?.total ?? null
-    })
+      total: res?.data?.pagination?.total ?? null,
+      textPrefix: typeof res === 'string' ? res.slice(0, 80) : null
+    }))
     if (res.code === 0) {
       employeeData.value = res.data?.list || []
       employeeSummary.value = res.data?.summary || {}
