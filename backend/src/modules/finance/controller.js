@@ -821,7 +821,9 @@ async function createExpense(ctx) {
       ctx.throw(400, '只有草稿或已撤回的费用单可以编辑');
     }
     if (!canManageExpenseDraft(user, existingRecord)) ctx.throw(403, '只有费用单创建人、店长或管理员可以编辑');
-    if (String(existingRecord.store_id || '') !== String(targetStoreId || '')) ctx.throw(400, '费用单草稿不可更换门店');
+    if (existingRecord.status !== 'withdrawn' && String(existingRecord.store_id || '') !== String(targetStoreId || '')) {
+      ctx.throw(400, '费用单草稿不可更换门店');
+    }
   }
 
   const normalizedRebateSupplierId = rebateSupplierId || ctx.request.body.supplierId;

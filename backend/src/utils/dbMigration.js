@@ -4685,6 +4685,7 @@ async function seedPermissionData() {
       ['inventory_batch_maintenance', '批量维护', 'inventory', '/inventory/batch-maintenance', 3],
       ['inventory_inbound', '入库单管理', 'inventory', '/inventory/inbound', 4],
       ['inventory_sn_trace', 'SN追踪', 'inventory', '/inventory/sn-trace', 5],
+      ['inventory_product_flow', '商品流水记录', 'inventory', '/inventory/product-flow', 9],
       ['inventory_resource_rights', '库存资源权益', 'inventory', '/inventory/resource-rights', 6],
       ['inventory_transfer', '调拨管理', 'inventory', '/inventory/transfer', 7],
       ['inventory_conversion', '拆装管理', 'inventory', '/inventory/conversion', 8],
@@ -4758,7 +4759,7 @@ async function seedPermissionData() {
       manager: [
         'sales_order', 'sales_subsidy_photos', 'sales_monthly_tasks',
         'inventory_summary', 'inventory_sn_inventory', 'inventory_batch_maintenance', 'inventory_inbound',
-        'inventory_sn_trace', 'inventory_resource_rights', 'inventory_transfer', 'inventory_conversion',
+        'inventory_sn_trace', 'inventory_product_flow', 'inventory_resource_rights', 'inventory_transfer', 'inventory_conversion',
         'purchase_request',
         'product_product', 'product_category', 'product_price', 'product_approval',
         'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_care_credit', 'reports_achievement',
@@ -4767,7 +4768,7 @@ async function seedPermissionData() {
       store_manager: [
         'sales_order', 'sales_subsidy_photos', 'sales_monthly_tasks',
         'inventory_summary', 'inventory_sn_inventory', 'inventory_batch_maintenance', 'inventory_inbound',
-        'inventory_sn_trace', 'inventory_transfer', 'inventory_conversion',
+        'inventory_sn_trace', 'inventory_product_flow', 'inventory_transfer', 'inventory_conversion',
         'purchase_request',
         'product_product', 'product_category', 'product_price', 'product_approval',
         'reports_dashboard', 'reports_sales', 'reports_inventory', 'reports_employee', 'reports_care_credit', 'reports_achievement',
@@ -4776,7 +4777,7 @@ async function seedPermissionData() {
       mall_report_viewer: ['sales_mall_query'],
       clerk: [
         'sales_order', 'inventory_summary', 'inventory_sn_inventory', 'inventory_inbound',
-        'inventory_sn_trace', 'inventory_transfer', 'purchase_request', 'reports_dashboard', 'reports_sales',
+        'inventory_sn_trace', 'inventory_product_flow', 'inventory_transfer', 'purchase_request', 'reports_dashboard', 'reports_sales',
         'reports_inventory', 'reports_employee', 'reports_care_credit', 'reports_achievement', 'approval_tasks', 'approval_instances', 'approval_handled'
       ],
       staff: ['purchase_request', 'reports_care_credit', 'approval_tasks', 'approval_instances', 'approval_handled']

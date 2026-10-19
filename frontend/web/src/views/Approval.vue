@@ -79,6 +79,10 @@
             <el-table-column prop="title" label="审批主题" min-width="220" />
             <el-table-column label="业务类型" width="150"><template #default="{ row }">{{ businessTypeText(row.business_type) }}</template></el-table-column>
             <el-table-column prop="instance_no" label="申请编号" width="190" />
+            <el-table-column label="我的审批结果" width="130"><template #default="{ row }"><el-tag :type="statusType(row.my_review_status)">{{ taskStatusText(row.my_review_status) }}</el-tag></template></el-table-column>
+            <el-table-column prop="my_review_node_name" label="审批节点" width="150" />
+            <el-table-column prop="my_review_time" label="我的审批时间" width="180" />
+            <el-table-column label="我的审批意见" min-width="200"><template #default="{ row }">{{ row.my_review_comment || '-' }}</template></el-table-column>
             <el-table-column label="当前进度" min-width="210"><template #default="{ row }">{{ instanceProgressText(row) }}</template></el-table-column>
             <el-table-column prop="status" label="状态" width="100"><template #default="{ row }"><el-tag :type="statusType(row.status)">{{ statusText(row.status) }}</el-tag></template></el-table-column>
             <el-table-column prop="create_time" label="提交时间" width="180" />
@@ -694,7 +698,7 @@ const detailFieldLabels = {
   attachment_url: '附件地址', source_type: '来源类型', source_no: '来源单号'
 }
 Object.assign(detailFieldLabels, { expense_date: '\u8d39\u7528\u65e5\u671f', accounting_month: '\u6838\u7b97\u6708\u4efd', affects_store_profit: '\u8ba1\u5165\u95e8\u5e97\u5229\u6da6', has_invoice: '\u662f\u5426\u6709\u53d1\u7968', invoice_no: '\u53d1\u7968\u53f7', attribution_type: '\u8d39\u7528\u5f52\u5c5e', attribution_method: '\u5206\u644a\u65b9\u5f0f', related_order_no: '\u5173\u8054\u8ba2\u5355', target_type: '\u5f52\u5c5e\u7c7b\u578b', target_name: '\u5f52\u5c5e\u5bf9\u8c61', url: '\u9644\u4ef6' })
-const detailArrayLabels = { items: '商品明细', OrderItems: '订单商品明细', InboundItems: '入库商品明细', originalOrderItems: '原订单商品明细', attachments: '附件' }
+const detailArrayLabels = { items: '采购商品明细', OrderItems: '订单商品明细', InboundItems: '入库商品明细', originalOrderItems: '原订单商品明细', attachments: '附件' }
 Object.assign(detailArrayLabels, { attribution_details: '\u8d39\u7528\u5f52\u5c5e\u5206\u644a' })
 const detailArrayColumnLabels = {
   product_name: '商品名称', product_code: '商品编码', pn_code: 'PN', sn_code: 'SN', quantity: '数量',
@@ -813,7 +817,26 @@ async function loadModuleDetail(row) {
       })
     }
   }
-  if (row.moduleType === 'expense') return responseData(await api.getExpenseDetail(id))
+  if (row.moduleType === 'expense') {
+    const data = responseData(await api.getExpenseDetail(id)) || {}
+    const purchase = data.purchase_request || {}
+    if (data.source_type === 'purchase' || data.payment_method === 'PERSONAL_ADVANCE' && purchase.request_id) {
+      return {
+        ...data,
+        request_no: purchase.request_no || data.source_no || data.related_order_no || '',
+        supplier_name: purchase.Supplier?.name || data.expense_party || '',
+        items: (purchase.items || []).map(item => ({
+          product_name: item.product_name || '',
+          product_code: item.product_code || '',
+          pn_code: item.pn_code || '',
+          quantity: Number(item.quantity || 0),
+          unit_price: Number(item.unit_price || 0),
+          amount: Number(item.subtotal || 0)
+        }))
+      }
+    }
+    return data
+  }
   if (row.moduleType === 'product') {
     const data = responseData(await api.getProductApplicationDetail(id)) || source
     const payload = typeof data.payload_json === 'string' ? (() => { try { return JSON.parse(data.payload_json) } catch (error) { return null } })() : data.payload_json

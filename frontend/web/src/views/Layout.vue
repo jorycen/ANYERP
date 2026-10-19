@@ -193,6 +193,7 @@ const pageTitles = {
   '/inventory/batch-maintenance': '批量维护',
   '/inventory/inbound': '入库单管理',
   '/inventory/sn-trace': 'SN追踪',
+  '/inventory/product-flow': '商品流水记录',
   '/inventory/resource-rights': '库存资源权益',
   '/inventory/transfer': '调拨管理',
   '/inventory/conversion': '拆装管理',
@@ -313,6 +314,7 @@ function getManagerMirrorMenus() {
       { menuCode: 'inventory_batch_maintenance', name: '批量维护', path: '/inventory/batch-maintenance' },
       { menuCode: 'inventory_inbound', name: '入库单管理', path: '/inventory/inbound' },
       { menuCode: 'inventory_sn_trace', name: 'SN追踪', path: '/inventory/sn-trace' },
+      { menuCode: 'inventory_product_flow', name: '商品流水记录', path: '/inventory/product-flow' },
       { menuCode: 'inventory_resource_rights', name: '库存资源权益', path: '/inventory/resource-rights' },
       { menuCode: 'inventory_transfer', name: '调拨管理', path: '/inventory/transfer' },
       { menuCode: 'inventory_conversion', name: '拆装管理', path: '/inventory/conversion' }

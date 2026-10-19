@@ -87,6 +87,11 @@ const routes = [
         meta: { tab: 'sn-trace' }
       },
       {
+        path: 'inventory/product-flow',
+        name: 'InventoryProductFlow',
+        component: () => import('../views/ProductFlow.vue')
+      },
+      {
         path: 'inventory/resource-rights',
         name: 'InventoryResourceRights',
         component: () => import('../views/Inventory.vue'),
@@ -352,7 +357,7 @@ const router = createRouter({
 const queryMirrorPaths = new Set([
   '/', '/sales/order', '/sales/subsidy-photos', '/sales/monthly-tasks',
   '/inventory/summary', '/inventory/sn-inventory', '/inventory/batch-maintenance',
-  '/inventory/inbound', '/inventory/sn-trace', '/inventory/resource-rights',
+  '/inventory/inbound', '/inventory/sn-trace', '/inventory/product-flow', '/inventory/resource-rights',
   '/inventory/transfer', '/inventory/conversion',
   '/products/product', '/products/category', '/products/price', '/products/approval',
   '/stores', '/reports/dashboard', '/reports/sales', '/reports/inventory',

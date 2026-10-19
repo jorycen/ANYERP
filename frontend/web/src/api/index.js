@@ -311,6 +311,7 @@ export default {
   cancelSnSpecialPrice: (snId, data = {}) => api.delete(`/inventory/sn/${snId}/special-price`, { data }),
   getSnSpecialPriceHistory: (snId) => api.get(`/inventory/sn/${snId}/special-price-history`),
   getSnList: (params) => api.get('/inventory/sn-list', { params }),
+  getProductFlow: (params) => api.get('/inventory/product-flow', { params }),
   submitSnChangeApplication: (data) => api.post('/inventory/sn-change-applications', data),
   adjustSnLocation: (snId, data) => api.post(`/inventory/sn/${snId}/location-adjust`, data),
   adjustProductLocation: (productId, data) => api.post(`/inventory/product/${productId}/location-adjust`, data),

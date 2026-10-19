@@ -15,6 +15,7 @@ const { submitSnChangeApplication } = require('./snChangeApplication');
 const { enforceStoreOwnership, requireRole } = require('../../middleware/permission');
 const resourceRights = require('./resourceRights');
 const batchMaintenance = require('./batchMaintenance');
+const { listProductFlow } = require('./productFlow');
 
 const router = new Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -30,6 +31,7 @@ router.put('/sn/:snId/special-price', requireRole('admin'), setSnSpecialPrice);
 router.delete('/sn/:snId/special-price', requireRole('admin'), cancelSnSpecialPrice);
 router.get('/sn/:snId/special-price-history', requireRole('admin'), getSnSpecialPriceHistory);
 router.get('/sn-list', getSnList);
+router.get('/product-flow', listProductFlow);
 router.post('/sn-change-applications', submitSnChangeApplication);
 router.put('/sn/:snId', updateSn);
 router.post('/sn/:snId/location-adjust', adjustSnLocation);

@@ -1128,7 +1128,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="门店" required>
-          <el-select v-model="expenseForm.storeId" placeholder="请选择门店" style="width: 100%" :disabled="Boolean(expenseForm.expenseId)">
+          <el-select v-model="expenseForm.storeId" placeholder="请选择门店" style="width: 100%" :disabled="Boolean(expenseForm.expenseId) && expenseForm.status !== 'withdrawn'">
             <el-option v-for="s in stores" :key="s.store_id" :label="s.name" :value="s.store_id" />
           </el-select>
         </el-form-item>
