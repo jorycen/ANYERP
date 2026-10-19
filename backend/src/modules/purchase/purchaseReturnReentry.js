@@ -1,19 +1,15 @@
-const { Inbound, InboundItem, ReturnStockItem, ReturnStock, PurchaseRequest } = require('../../models');
+const { Inbound, InboundItem, ReturnStockItem, PurchaseRequest } = require('../../models');
 const { generateInboundNo, generateUUID } = require('../../utils');
 
-/** Create a new receiving cycle after the complete stock in an inbound has been returned. */
-async function createPurchaseReturnReentry({ inbound, userName, transaction }) {
+/** Return only the selected physical units to a new pending receiving cycle. */
+async function createPurchaseReturnReentry({ inbound, returnStock, userName, transaction }) {
   if (!inbound?.purchase_request_id) return null;
   const request = await PurchaseRequest.findByPk(inbound.purchase_request_id, { transaction });
   if (!request || request.status !== 'approved') return null;
 
+  if (!returnStock?.return_id) return null;
   const returnedItems = await ReturnStockItem.findAll({
-    include: [{
-      model: ReturnStock,
-      where: { inbound_id: inbound.inbound_id, status: 'completed' },
-      attributes: []
-    }],
-    transaction
+    where: { return_id: returnStock.return_id }, transaction
   });
   const quantityByInboundItem = new Map();
   returnedItems.forEach(item => {

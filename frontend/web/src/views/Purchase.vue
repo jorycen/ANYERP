@@ -87,8 +87,8 @@
                 <el-button link type="danger" @click="handleDeleteDraft(row)" v-if="row.status === 'draft' && !row.submit_time">删除</el-button>
                 <el-button link type="primary" @click="handleApprove(row)" v-if="row.status === 'pending'">审批</el-button>
                 <el-button link type="success" @click="goToInbound(row)" v-if="row.status === 'approved' && row.pending_inbounds?.length">去入库</el-button>
-                <el-button link type="warning" @click="handleRevoke(row)" v-if="row.can_revoke">{{ row.status === 'approved' ? '撤销采购单' : '撤回' }}</el-button>
-                <el-button link type="danger" @click="handleAdjustment(row)" v-if="row.status === 'approved' && canAdjustPurchase(row)">退单</el-button>
+                <el-button link type="warning" @click="handleRevoke(row)" v-if="row.can_revoke">撤回</el-button>
+                <el-button link type="danger" @click="handleAdjustment(row)" v-if="row.status === 'approved' && canAdjustPurchase(row)">撤单</el-button>
                 <el-button link type="primary" @click="handleView(row)">查看</el-button>
               </template>
             </el-table-column>
@@ -583,11 +583,11 @@
       </template>
     </el-dialog>
 
-    <!-- 采购退单/数量调整对话框 -->
-    <el-dialog v-model="adjustmentDialogVisible" title="采购退单 / 数量调整" width="1100px" @close="resetAdjustmentForm">
+    <!-- 采购申请按商品撤单 -->
+    <el-dialog v-model="adjustmentDialogVisible" title="采购申请撤单" width="1000px" @close="resetAdjustmentForm">
       <div v-if="adjustmentRequest" class="adjustment-summary">
         <el-alert
-          title="填写本次退货数量。未入库商品取消待入库数量；已入库商品同步退库，SN商品须选择在库SN。原采购及付款记录保留，退货生成关联负向采购单；公司账期采购同时生成待退款或待抵扣的负向应付。"
+          title="选择本次撤单的商品和数量。已入库商品请先到入库单管理退库，退回待入库后再撤单；撤单时生成独立负向应付。"
           type="warning"
           :closable="false"
           show-icon
@@ -597,8 +597,10 @@
           <el-descriptions-item label="供应商">{{ adjustmentRequest.supplier_name || '-' }}</el-descriptions-item>
           <el-descriptions-item label="付款方式">{{ getPaymentMethodText(adjustmentRequest.payment_method) }}</el-descriptions-item>
         </el-descriptions>
+        <el-alert v-if="adjustmentRequest.has_in_stock_items" title="已入库商品在下表标为待退库，需先在入库单管理退库，再返回此处撤单。" type="warning" :closable="false" style="margin-top: 12px" />
       </div>
 
+      <el-button style="margin-top: 12px" @click="selectAllAdjustmentRows">选择全部可撤商品</el-button>
       <el-table :data="adjustmentRows" stripe border size="small" style="margin-top: 16px;">
         <el-table-column prop="product_name" label="商品" min-width="180" show-overflow-tooltip />
         <el-table-column prop="store_name" label="门店" width="120" />
@@ -608,13 +610,11 @@
         </el-table-column>
         <el-table-column prop="original_quantity" label="原采购数量" width="105" align="right" />
         <el-table-column prop="received_quantity" label="已入库数量" width="105" align="right" />
-        <el-table-column label="处理类型" width="110">
-          <template #default="{ row }">{{ row.operation_type === 'stock_return' ? '已入库退库' : '取消待入库' }}</template>
-        </el-table-column>
+        <el-table-column label="处理类型" width="140"><template #default="{ row }">{{ row.operation_type === 'in_stock' ? '已入库，先退库' : '可撤单' }}</template></el-table-column>
         <el-table-column label="可处理数量" width="105" align="right">
           <template #default="{ row }">{{ row.max_return_quantity }}</template>
         </el-table-column>
-        <el-table-column label="本次退库数量" width="155" align="right">
+        <el-table-column label="本次撤单数量" width="155" align="right">
           <template #default="{ row }">
             <el-input-number
               v-if="row.editable"
@@ -627,23 +627,7 @@
               size="small"
               style="width: 130px"
             />
-          </template>
-        </el-table-column>
-        <el-table-column label="选择SN" min-width="210" v-if="adjustmentRows.some(row => row.need_sn && row.operation_type === 'stock_return')">
-          <template #default="{ row }">
-            <el-select
-              v-if="row.need_sn && row.operation_type === 'stock_return'"
-              v-model="row.sn_ids"
-              multiple
-              collapse-tags
-              filterable
-              placeholder="请选择SN"
-              size="small"
-              style="width: 195px"
-            >
-              <el-option v-for="sn in row.sn_options" :key="sn.sn_id" :label="sn.sn_code" :value="sn.sn_id" />
-            </el-select>
-            <span v-else style="color: #909399;">无需选择</span>
+            <span v-else>请先退库</span>
           </template>
         </el-table-column>
         <el-table-column label="应付调整" width="120" align="right">
@@ -1612,7 +1596,7 @@ const handleAdjustmentSubmit = async () => {
 
   try {
     await ElMessageBox.confirm(
-      `确认提交本次采购退单吗？退库数量 ${Math.abs(adjustmentTotalQuantityDelta.value)}，应付变化 ¥${adjustmentTotalAmountDelta.value.toFixed(2)}`,
+      `确认撤销所选商品吗？撤单数量 ${Math.abs(adjustmentTotalQuantityDelta.value)}，生成负向应付 ¥${Math.abs(adjustmentTotalAmountDelta.value).toFixed(2)}`,
       '确认采购退单',
       { type: 'warning', confirmButtonText: '确认提交', cancelButtonText: '取消' }
     )
@@ -1912,6 +1896,10 @@ const onProductChange = (index) => {
     requestForm.items[index].price = product.min_sale_price || 0
     requestForm.items[index].grossProfitCostMode = product.gross_profit_cost_mode || 'PURCHASE_PRICE'
   }
+}
+
+const selectAllAdjustmentRows = () => {
+  adjustmentRows.value.forEach(row => { row.return_quantity = row.editable ? Number(row.max_return_quantity || 0) : 0 })
 }
 
 const hasCompanyPrice = (item) => {

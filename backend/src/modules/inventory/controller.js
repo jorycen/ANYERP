@@ -37,8 +37,8 @@ const { createSalesReturnSettlement } = require('../sales/salesReturnSettlement'
 const { releaseDepositRedemptionForOrder } = require('../sales/controller');
 const { assertActiveProducts } = require('../../utils/activeProduct');
 const { syncSerializedInventoryBalance } = require('./serializedInventoryBalance');
-const { ensurePurchaseReturnAccounting } = require('../purchase/purchaseReturnAccounting');
 const { createPurchaseReturnReentry } = require('../purchase/purchaseReturnReentry');
+const { buildReturnAdjustmentItems, reduceInventoryCostForPurchaseReturn } = require('../purchase/purchaseReturnAccounting');
 const { advance: advanceApproval } = require('../approval/businessRuntime');
 const {
   VENDORS: SUPPLIER_INVENTORY_VENDORS,
@@ -3431,6 +3431,24 @@ async function getInboundDetailById(ctx, inboundId, { distributorTrace = false }
         };
       });
 
+      if (result.status === 'completed' && String(result.source_type || '').toLowerCase() === 'purchase') {
+        const returnedItems = await ReturnStockItem.findAll({
+          include: [{ model: ReturnStock, where: { inbound_id: inboundId, status: 'completed' }, attributes: [] }]
+        });
+        const returnedQuantity = new Map();
+        returnedItems.forEach(item => {
+          const id = String(item.inbound_item_id || '');
+          returnedQuantity.set(id, (returnedQuantity.get(id) || 0) + Number(item.quantity || 0));
+        });
+        for (const item of result.items) {
+          item.returnable_quantity = Math.max(0, Number(item.received_quantity || item.quantity || 0) - (returnedQuantity.get(String(item.item_id)) || 0));
+          item.return_sn_options = Number(item.need_sn) === 1
+            ? (await resolveInboundItemReturnSns({ inboundItem: item, storeId: inbound.store_id })).map(sn => ({ sn_id: sn.sn_id, sn_code: sn.sn_code }))
+            : [];
+          if (Number(item.need_sn) === 1) item.returnable_quantity = Math.min(item.returnable_quantity, item.return_sn_options.length);
+        }
+      }
+
       const pnRecords = await ProductPn.findAll({
         where: { product_id: { [Op.in]: productIds }, is_deleted: 0 }
       });
@@ -6282,10 +6300,10 @@ async function getReturnList(ctx) {
 async function requestReturn(ctx) {
   const t = await sequelize.transaction();
   try {
-    const { inboundId, reason } = ctx.request.body;
+    const { inboundId, reason, items: selectedItems } = ctx.request.body;
     const user = ctx.state.user;
 
-    const inbound = await Inbound.findByPk(inboundId, { transaction: t });
+    const inbound = await Inbound.findByPk(inboundId, { transaction: t, lock: t.LOCK.UPDATE });
     if (!inbound) ctx.throw(404, '入库单不存在');
     if (inbound.status !== 'completed') ctx.throw(400, '只有已完成的入库单才能发起退库申请');
 
@@ -6305,8 +6323,28 @@ async function requestReturn(ctx) {
       transaction: t
     });
     if (items.length === 0) ctx.throw(400, '该入库单没有商品明细');
+    if (!Array.isArray(selectedItems) || !selectedItems.length) ctx.throw(400, '请选择需要退库的商品');
+    const selections = new Map();
+    for (const selected of selectedItems) {
+      const itemId = String(selected.inboundItemId || selected.inbound_item_id || '');
+      const quantity = Number(selected.quantity || 0);
+      if (!itemId || selections.has(itemId) || !Number.isInteger(quantity) || quantity <= 0) ctx.throw(400, '退库商品或数量无效');
+      if (selected.snIds != null && !Array.isArray(selected.snIds)) ctx.throw(400, '退库SN格式无效');
+      if (selected.sn_ids != null && !Array.isArray(selected.sn_ids)) ctx.throw(400, '退库SN格式无效');
+      selections.set(itemId, { quantity, snIds: (selected.snIds || selected.sn_ids || []).map(String) });
+    }
+    if ([...selections.keys()].some(id => !items.some(item => String(item.item_id) === id))) ctx.throw(400, '退库商品不属于该入库单');
+    const previousReturns = await ReturnStockItem.findAll({
+      include: [{ model: ReturnStock, where: { inbound_id: inboundId, status: 'completed' }, attributes: [] }],
+      transaction: t
+    });
+    const returnedQuantity = new Map();
+    previousReturns.forEach(item => {
+      const id = String(item.inbound_item_id || '');
+      returnedQuantity.set(id, (returnedQuantity.get(id) || 0) + Number(item.quantity || 0));
+    });
 
-    const productIds = items.map(item => item.product_id);
+    const productIds = items.filter(item => selections.has(String(item.item_id))).map(item => item.product_id);
     await assertActiveProducts(Product, productIds, { transaction: t });
     const products = await Product.findAll({
       where: { product_id: { [Op.in]: productIds }, is_deleted: 0, status: 1 },
@@ -6352,8 +6390,12 @@ async function requestReturn(ctx) {
     }, { transaction: t });
 
     for (const item of items) {
+      const selection = selections.get(String(item.item_id));
+      if (!selection) continue;
       const product = productMap.get(item.product_id);
-      const quantity = item.quantity || 1;
+      const quantity = selection.quantity;
+      const remaining = Math.max(0, Number(item.received_quantity || item.quantity || 0) - (returnedQuantity.get(String(item.item_id)) || 0));
+      if (quantity > remaining) ctx.throw(400, `商品 ${item.product_name || item.product_id} 可退库数量不足，最多 ${remaining}`);
       const inventoryType = item.inventory_type || 'normal_qty';
       totalQuantity += quantity;
       totalAmount += (Number(item.unit_price) || 0) * quantity;
@@ -6364,11 +6406,12 @@ async function requestReturn(ctx) {
           storeId: inbound.store_id,
           transaction: t
         });
-        if (snRecords.length !== quantity) {
-          ctx.throw(400, `商品 ${item.product_name || item.product_id} 的原入库SN当前不完整在库，不能发起退库`);
+        const selectedSnIds = new Set(selection.snIds);
+        if (selectedSnIds.size !== quantity || snRecords.filter(sn => selectedSnIds.has(String(sn.sn_id))).length !== quantity) {
+          ctx.throw(400, `商品 ${item.product_name || item.product_id} 请选择 ${quantity} 个当前在库的原入库SN`);
         }
 
-        for (const snRecord of snRecords) {
+        for (const snRecord of snRecords.filter(sn => selectedSnIds.has(String(sn.sn_id)))) {
           await ReturnStockItem.create({
             return_id: returnId,
             inbound_item_id: item.item_id,
@@ -6386,6 +6429,9 @@ async function requestReturn(ctx) {
           }, { transaction: t });
         }
       } else {
+        if (selection.snIds.length) ctx.throw(400, '非SN商品不能选择SN');
+        const available = await getAvailableQty(item.product_id, inbound.store_id, inventoryType, item.location_id || '', t);
+        if (available < quantity) ctx.throw(400, `商品 ${item.product_name || item.product_id} 当前可退库存不足`);
         await ReturnStockItem.create({
           return_id: returnId,
           inbound_item_id: item.item_id,
@@ -6521,6 +6567,10 @@ async function executeReturn(ctx, parentTransaction = null) {
         }, { transaction: t });
       }
 
+      if (!item.sn_id) {
+        const available = await getAvailableQty(item.product_id, returnStock.store_id, inventoryType, locationId, t);
+        if (available < quantity) ctx.throw(409, `商品 ${item.product_name || item.product_id} 当前可退库存不足`);
+      }
       await updateInventory(item.product_id, returnStock.store_id, inventoryType, -quantity, t, locationId);
 
       if (inventoryType === 'normal_qty' && item.product_type) {
@@ -6531,17 +6581,32 @@ async function executeReturn(ctx, parentTransaction = null) {
       }
     }
 
-    const accounting = await ensurePurchaseReturnAccounting({
-      returnStock,
-      transaction: t,
-      userName: user.name || user.staffId || ''
-    });
+    if (inbound.purchase_request_id) {
+      const requestItems = await PurchaseRequestItem.findAll({
+        where: { request_id: inbound.purchase_request_id }, transaction: t
+      });
+      const costRows = buildReturnAdjustmentItems({
+        requestItems, inboundItems: inbound.items || [], returnItems: items, returnNo: returnStock.return_no
+      });
+      const requestItemMap = new Map(requestItems.map(item => [String(item.item_id), item]));
+      await reduceInventoryCostForPurchaseReturn(costRows.map(row => {
+        const requestItem = requestItemMap.get(String(row.request_item_id));
+        const rebatePerUnit = Number(row.original_quantity || 0) > 0
+          ? Number(requestItem?.rebate_deduction || 0) / Number(row.original_quantity)
+          : 0;
+        return {
+          product_id: row.product_id,
+          quantity: Math.abs(Number(row.quantity_delta || 0)),
+          unit_price: Math.max(0, Number(row.unit_price || 0) - rebatePerUnit)
+        };
+      }), t);
+    }
 
     await returnStock.update({
       status: 'completed',
       execute_user: user.name || user.staffId,
       execute_time: new Date(),
-      payable_id: accounting.payableId
+      payable_id: null
     }, { transaction: t });
 
     // 只有该入库单的全部数量都退完，原采购申请才显示“已退货”。
@@ -6568,25 +6633,17 @@ async function executeReturn(ctx, parentTransaction = null) {
       status: allInboundItemsReturned ? 'returned' : 'completed',
       update_time: new Date()
     }, { transaction: t });
-    if (allInboundItemsReturned) {
-      await createPurchaseReturnReentry({
-        inbound,
-        userName: user.name || user.staffId || '',
-        transaction: t
-      });
-    }
+    await createPurchaseReturnReentry({
+      inbound, returnStock,
+      userName: user.name || user.staffId || '',
+      transaction: t
+    });
 
     if (!parentTransaction) await t.commit();
     ctx.body = {
       code: 0,
       returnId,
-      payableId: accounting.payableId,
-      adjustmentId: accounting.adjustmentId,
-      adjustmentNo: accounting.adjustmentNo,
-      totalQuantityDelta: accounting.totalQuantityDelta,
-      totalAmountDelta: accounting.totalAmountDelta,
-      offsetAmount: accounting.offsetAmount,
-      message: '退库已执行，已生成负向采购调整和供应商待抵扣'
+      message: '退库已执行，所选商品已回到待入库；撤单需在采购申请中办理'
     };
   } catch (error) {
     if (!parentTransaction && !t.finished) await t.rollback();

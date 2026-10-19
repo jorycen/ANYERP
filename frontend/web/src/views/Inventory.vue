@@ -1007,13 +1007,30 @@
     </el-dialog>
 
     <!-- 发起退库申请对话框 -->
-    <el-dialog v-model="executeReturnVisible" title="发起退库申请" width="600px">
+    <el-dialog v-model="executeReturnVisible" title="发起退库申请" width="850px">
       <div v-if="currentInbound">
         <el-descriptions :column="1" border>
           <el-descriptions-item label="入库单号">{{ currentInbound.inbound_no }}</el-descriptions-item>
           <el-descriptions-item label="门店">{{ currentInbound.store_name }}</el-descriptions-item>
           <el-descriptions-item label="总数量">{{ currentInbound.total_quantity }}</el-descriptions-item>
         </el-descriptions>
+        <el-alert title="退库后所选商品回到待入库，可再次入库；需要取消采购时，请返回采购申请办理撤单。" type="info" :closable="false" style="margin-top: 12px" />
+        <el-button style="margin-top: 12px" @click="selectAllReturnItems">选择全部可退商品</el-button>
+        <el-table :data="returnItems" border style="margin-top: 12px">
+          <el-table-column prop="product_name" label="商品" min-width="180" />
+          <el-table-column prop="returnable_quantity" label="可退数量" width="95" />
+          <el-table-column label="本次退库" width="160">
+            <template #default="{ row }"><el-input-number v-model="row.return_quantity" :min="0" :max="row.returnable_quantity" :precision="0" size="small" /></template>
+          </el-table-column>
+          <el-table-column label="选择 SN" min-width="220">
+            <template #default="{ row }">
+              <el-select v-if="Number(row.need_sn) === 1" v-model="row.sn_ids" multiple filterable placeholder="请选择原入库 SN" style="width: 100%">
+                <el-option v-for="sn in row.return_sn_options" :key="sn.sn_id" :label="sn.sn_code" :value="sn.sn_id" />
+              </el-select>
+              <span v-else>无需选择</span>
+            </template>
+          </el-table-column>
+        </el-table>
 
         <el-form label-width="80px" class="mt-20">
           <el-form-item label="退库原因">
@@ -2156,6 +2173,7 @@ const INVENTORY_TYPES = [
 const executeReturnVisible = ref(false)
 const returnLoading = ref(false)
 const returnReason = ref('')
+const returnItems = ref([])
 
 // SN弹窗
 const snResourceDetailVisible = ref(false)
@@ -3499,18 +3517,40 @@ const handleExportSummarySimple = async () => {
   }
 }
 
-const openReturnRequestDialog = (row) => {
-  currentInbound.value = row
-  returnReason.value = ''
-  executeReturnVisible.value = true
+const openReturnRequestDialog = async (row) => {
+  try {
+    const res = await api.getInboundDetail(row.inbound_id)
+    if (res.code !== 0) throw new Error(res.message || '加载入库单失败')
+    currentInbound.value = res.data
+    returnItems.value = (res.data.items || []).map(item => ({ ...item, return_quantity: 0, sn_ids: [] }))
+    returnReason.value = ''
+    executeReturnVisible.value = true
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || err.message || '加载入库单失败')
+  }
+}
+
+const selectAllReturnItems = () => {
+  returnItems.value.forEach(item => {
+    item.return_quantity = Number(item.returnable_quantity || 0)
+    item.sn_ids = Number(item.need_sn) === 1
+      ? (item.return_sn_options || []).slice(0, item.return_quantity).map(sn => sn.sn_id)
+      : []
+  })
 }
 
 const submitReturn = async () => {
+  const selected = returnItems.value.filter(item => Number(item.return_quantity) > 0)
+  if (!selected.length) return ElMessage.warning('请选择需要退库的商品和数量')
+  if (selected.some(item => Number(item.need_sn) === 1 && item.sn_ids.length !== Number(item.return_quantity))) {
+    return ElMessage.warning('SN 商品请选择与退库数量一致的原入库 SN')
+  }
   returnLoading.value = true
   try {
     const res = await api.requestReturn({
       inboundId: currentInbound.value.inbound_id,
-      reason: returnReason.value
+      reason: returnReason.value,
+      items: selected.map(item => ({ inboundItemId: item.item_id, quantity: item.return_quantity, snIds: item.sn_ids }))
     })
 
     if (res.code === 0) {
@@ -3564,7 +3604,7 @@ const approveReturn = async (row, action) => {
 const executeApprovedReturn = async (row) => {
   try {
     await ElMessageBox.confirm(
-      `确认执行退库申请 ${row.return_no} 吗？执行后将扣减库存，并生成负向应付冲减供应商结算。`,
+      `确认执行退库申请 ${row.return_no} 吗？执行后将扣减库存，所选商品回到待入库；此时不生成负向应付。`,
       '执行退库',
       { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' }
     )

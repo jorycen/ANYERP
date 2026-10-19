@@ -16,7 +16,6 @@ const { isStoreScopedAccount } = require('../../utils/storePermissions');
 const { canAccessDistributor } = require('../../utils/distributorScope');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
 const { createProductRecord } = require('../product/controller');
-const { createPurchaseReturnReentry } = require('./purchaseReturnReentry');
 
 const VALID_PURCHASE_INVOICE_TYPES = new Set(['专票13%', '收据']);
 function validatePurchaseInvoiceType(ctx, value) {
@@ -831,13 +830,6 @@ function getPurchaseLifecycleStatus(requestStatus, inboundRows = []) {
   return requestStatus;
 }
 
-function canRevokeReturnedPurchase(requestStatus, inboundRows = []) {
-  return requestStatus === 'approved'
-    && inboundRows.some(item => item.status === 'returned')
-    && inboundRows.every(item => ['returned', 'cancelled', 'pending'].includes(item.status)
-      && (item.status !== 'pending' || (item.items || []).every(detail => Number(detail.received_quantity || 0) === 0)));
-}
-
 function canRevokePurchaseForUser(user, request) {
   const currentStaffId = user.staffId || user.id;
   const isApplicant = request.applicant_staff_id && currentStaffId
@@ -899,9 +891,9 @@ function buildAdjustmentRows(request, inbounds, stores) {
     for (const { inbound, inboundItem } of inboundItems) {
       const pendingQuantity = pendingQuantityOf(inbound, inboundItem);
       const receivedQuantity = receivedQuantityOf(inbound, inboundItem);
-      const editable = (inbound.status === 'pending' && pendingQuantity > 0)
-        || (inbound.status === 'completed' && receivedQuantity > 0);
-      if (editable) {
+      const editable = inbound.status === 'pending' && pendingQuantity > 0;
+      const inStock = inbound.status === 'completed' && receivedQuantity > 0;
+      if (editable || inStock) {
         const effectiveUnitPrice = unitPrice || Number(inboundItem.unit_price || 0);
         rows.push({
           request_item_id: requestItem.item_id,
@@ -918,11 +910,11 @@ function buildAdjustmentRows(request, inbounds, stores) {
           received_quantity: receivedQuantity,
           pending_quantity: pendingQuantity,
           return_quantity: 0,
-          max_return_quantity: inbound.status === 'pending' ? pendingQuantity : receivedQuantity,
-          operation_type: inbound.status === 'pending' ? 'pending_cancel' : 'stock_return',
+          max_return_quantity: editable ? pendingQuantity : 0,
+          operation_type: editable ? 'pending_cancel' : 'in_stock',
           need_sn: 0,
           sn_options: [],
-          editable: true
+          editable
         });
       }
     }
@@ -1159,10 +1151,9 @@ async function queryRequestList(ctx, { exportMode = false } = {}) {
         store_name: item.Store?.name || ''
       }));
     result.has_completed_inbound = inboundRows.some(item => item.status === 'completed');
-    // 待审批申请可撤回草稿；全部退货的已通过采购单可最终撤销。
+    // 已通过申请按商品撤单；待审批申请仍可直接撤回。
     result.can_revoke = canRevokePurchaseForUser(ctx.state.user, result)
-      && ((result.status === 'pending' && !result.has_completed_inbound)
-        || canRevokeReturnedPurchase(result.status, inboundRows));
+      && result.status === 'pending' && !result.has_completed_inbound;
     
     return result;
   });
@@ -2338,36 +2329,24 @@ async function getAdjustmentPreview(ctx) {
     returnedByRequestItem.set(key, (returnedByRequestItem.get(key) || 0) - Number(item.quantity_delta || 0));
   });
   const requestedQuantity = new Map((request.items || []).map(item => [String(item.item_id), Number(item.quantity || 0)]));
-  const productMap = new Map((await Product.findAll({
-    where: { product_id: { [Op.in]: [...new Set(rows.map(row => row.product_id).filter(Boolean))] } }
-  })).map(product => [String(product.product_id), product]));
   for (const row of rows) {
     const alreadyReturned = returnedByInboundItem.get(String(row.inbound_item_id)) || 0;
     row.already_returned_quantity = alreadyReturned;
+    row.in_stock_quantity = row.operation_type === 'in_stock'
+      ? Math.max(0, Number(row.received_quantity || 0) - alreadyReturned) : 0;
     const remainingRequestQuantity = Math.max(0, (requestedQuantity.get(String(row.request_item_id)) || 0)
       - (returnedByRequestItem.get(String(row.request_item_id)) || 0));
     row.max_return_quantity = Math.min(remainingRequestQuantity,
       Math.max(0, Number(row.max_return_quantity || 0) - alreadyReturned));
-    const product = productMap.get(String(row.product_id));
-    row.need_sn = Number(product?.need_sn || 0);
-    if (row.operation_type === 'stock_return' && row.need_sn === 1) {
-      const inboundItem = await InboundItem.findByPk(row.inbound_item_id);
-      const codes = [];
-      try {
-        const parsed = JSON.parse(inboundItem?.received_sn_codes || '[]');
-        if (Array.isArray(parsed)) codes.push(...parsed.map(String));
-      } catch (_) { /* ignore malformed historical JSON */ }
-      if (inboundItem?.sn_code) codes.push(String(inboundItem.sn_code));
-      const uniqueCodes = [...new Set(codes.filter(Boolean))];
-      const sns = uniqueCodes.length
-        ? await ProductSn.findAll({ where: { product_id: row.product_id, store_id: row.store_id, sn_code: { [Op.in]: uniqueCodes }, status: 'in_stock', is_deleted: 0 } })
-        : [];
-      row.sn_options = sns.map(sn => ({ sn_id: sn.sn_id, sn_code: sn.sn_code, location_id: sn.location_id || '', inventory_type: sn.inventory_type || 'normal_qty' }));
-      row.max_return_quantity = Math.min(row.max_return_quantity, row.sn_options.length);
-    }
   }
-  if (!rows.some(row => row.editable && row.max_return_quantity > 0)) {
-    ctx.throw(400, '该采购订单没有可退单或可退库商品');
+  const hasInStockItems = inbounds.some(inbound => inbound.status === 'completed'
+    && (inbound.items || []).some(item => Number(item.received_quantity || item.quantity || 0)
+      > (returnedByInboundItem.get(String(item.item_id)) || 0)));
+  const visibleRows = rows.filter(row => row.operation_type !== 'in_stock' || row.in_stock_quantity > 0);
+  if (!visibleRows.some(row => row.editable && row.max_return_quantity > 0) && !hasInStockItems) {
+    ctx.throw(400, hasInStockItems
+      ? '商品已入库，请先在入库单管理退库，再回到采购申请撤单'
+      : '该采购订单没有可撤单的待入库商品');
   }
 
   ctx.body = {
@@ -2380,7 +2359,8 @@ async function getAdjustmentPreview(ctx) {
       supplier_id: request.supplier_id,
       supplier_name: request.Supplier?.name || '',
       payment_method: request.payment_method,
-      rows
+      has_in_stock_items: hasInStockItems,
+      rows: visibleRows
     }
   };
 }
@@ -2644,17 +2624,6 @@ async function createPurchaseAdjustment(ctx) {
       transaction,
       lock: transaction.LOCK.UPDATE
     });
-    const historicalReturnItems = await ReturnStockItem.findAll({
-      include: [{ model: ReturnStock, where: { status: 'completed', inbound_id: { [Op.in]: inbounds.map(item => item.inbound_id) } }, attributes: [] }],
-      transaction,
-      lock: transaction.LOCK.UPDATE
-    });
-    const returnedByInboundItem = new Map();
-    historicalReturnItems.forEach(item => {
-      if (!item.inbound_item_id) return;
-      const key = String(item.inbound_item_id);
-      returnedByInboundItem.set(key, (returnedByInboundItem.get(key) || 0) + Number(item.quantity || 0));
-    });
     const requestItemMap = new Map((request.items || []).map(item => [String(item.item_id), item]));
     const inboundItemMap = new Map();
     for (const inbound of inbounds) {
@@ -2673,6 +2642,7 @@ async function createPurchaseAdjustment(ctx) {
         ctx.throw(400, '退库数量必须是大于等于0的整数');
       }
       const snIds = [...new Set((row.snIds || row.sn_ids || []).map(String).filter(Boolean))];
+      if (snIds.length) ctx.throw(400, '待入库商品撤单无需选择SN');
       submitted.set(inboundItemId, { returnQuantity, snIds });
     }
     if (submitted.size === 0) ctx.throw(400, '没有有效的退单明细');
@@ -2723,8 +2693,6 @@ async function createPurchaseAdjustment(ctx) {
     let changedItemCount = 0;
     let payableAmountDelta = 0;
 
-    const createdReturns = [];
-    const currentReturnByInboundItem = new Map();
     for (const [inboundItemId, input] of submitted.entries()) {
       const matched = inboundItemMap.get(inboundItemId);
       if (!matched) ctx.throw(400, '待入库明细不存在或不属于该采购订单');
@@ -2743,63 +2711,12 @@ async function createPurchaseAdjustment(ctx) {
       const amountDelta = toSignedMoney(-returnQuantity * (unitPrice - rebatePerUnit));
       const rebateDelta = toSignedMoney(-returnQuantity * rebatePerUnit);
       const receivedQuantity = receivedByRequestItem.get(String(requestItem.item_id)) || 0;
-      let operationType = 'pending_cancel';
-      let returnId = '';
-      let returnNo = '';
       if (inbound.status === 'pending') {
         const pendingQuantity = Math.max(Number(inboundItem.quantity || 0) - Number(inboundItem.received_quantity || 0), 0);
         if (returnQuantity > pendingQuantity) ctx.throw(400, `商品 ${inboundItem.product_name || inboundItem.product_id} 可取消待入库数量不足`);
-      await inboundItem.update({ quantity: Math.max(Number(inboundItem.quantity || 0) - returnQuantity, 0) }, { transaction });
+        await inboundItem.update({ quantity: Math.max(Number(inboundItem.quantity || 0) - returnQuantity, 0) }, { transaction });
       } else if (inbound.status === 'completed') {
-        operationType = 'stock_return';
-        const product = await Product.findByPk(requestItem.product_id, { transaction });
-        const inventoryType = inboundItem.inventory_type || 'normal_qty';
-        const locationId = inboundItem.location_id || '';
-        const alreadyReturned = returnedByInboundItem.get(String(inboundItem.item_id)) || 0;
-        const maxReturnQuantity = Math.max(0, Number(inboundItem.received_quantity || 0) - alreadyReturned);
-        if (returnQuantity > maxReturnQuantity) ctx.throw(400, `商品 ${inboundItem.product_name || inboundItem.product_id} 可退库数量不足，最多可退 ${maxReturnQuantity}`);
-        let returnItems = [];
-        if (Number(product?.need_sn) === 1) {
-          if (input.snIds.length !== returnQuantity) ctx.throw(400, `商品 ${inboundItem.product_name || inboundItem.product_id} 退库必须选择 ${returnQuantity} 个SN`);
-          const sns = await ProductSn.findAll({ where: { sn_id: { [Op.in]: input.snIds }, product_id: requestItem.product_id, store_id: inbound.store_id, status: 'in_stock', is_deleted: 0 }, transaction, lock: transaction.LOCK.UPDATE });
-          if (sns.length !== returnQuantity) ctx.throw(400, '选择的SN不存在、已退库或不属于当前门店');
-          const sourceSnCodes = new Set([
-            ...parseInboundSnCodes(inboundItem.received_sn_codes),
-            ...(inboundItem.sn_code ? [String(inboundItem.sn_code).trim()] : [])
-          ]);
-          if (sns.some(sn => !sourceSnCodes.has(String(sn.sn_code || '').trim()))) {
-            ctx.throw(400, '选择的SN不属于当前采购入库明细');
-          }
-          returnItems = sns.map(sn => ({ sn, quantity: 1, locationId: sn.location_id || locationId, inventoryType: sn.inventory_type || inventoryType }));
-        } else {
-          if (input.snIds.length) ctx.throw(400, '非SN商品不能选择SN');
-          const available = await getAvailableQty(requestItem.product_id, inbound.store_id, inventoryType, locationId, transaction);
-          if (available < returnQuantity) ctx.throw(400, `商品 ${inboundItem.product_name || inboundItem.product_id} 当前可退库存不足，最多可退 ${available}`);
-          returnItems = [{ sn: null, quantity: returnQuantity, locationId, inventoryType }];
-        }
-        returnId = generateUUID();
-        returnNo = generateId('RET');
-        await ReturnStock.create({ return_id: returnId, return_no: returnNo, inbound_id: inbound.inbound_id, inbound_no: inbound.inbound_no, store_id: inbound.store_id, purchase_request_id: request.request_id, distributor_id: request.distributor_id || inbound.Store?.distributor_id || null, supplier_id: request.supplier_id, supplier_name: request.Supplier?.name || '', total_quantity: returnQuantity, total_amount: toSignedMoney(returnQuantity * unitPrice), reason: reason || '', status: 'completed', execute_user: user.name || user.phone, execute_time: new Date(), create_user: request.apply_user || request.submit_user || request.create_user || user.name || user.phone, create_time: new Date() }, { transaction });
-        for (const returnItem of returnItems) {
-          const sn = returnItem.sn;
-          await ReturnStockItem.create({ return_id: returnId, inbound_item_id: inboundItem.item_id, product_id: requestItem.product_id, product_name: requestItem.product_name || inboundItem.product_name || '', pn_code: sn?.pn_code || inboundItem.pn_code || '', sn_code: sn?.sn_code || '', sn_id: sn?.sn_id || null, quantity: returnItem.quantity, unit_price: unitPrice, location_id: returnItem.locationId, inventory_type: returnItem.inventoryType, product_type: inboundItem.product_type || '', remark: reason || '' }, { transaction });
-          if (sn) {
-            await sn.update({ status: 'returned', remark: `${sn.remark || ''} [采购退库:${returnNo}]` }, { transaction });
-            await SnLog.create({ log_id: generateUUID(), sn_id: sn.sn_id, sn_code: sn.sn_code, product_id: sn.product_id, product_name: requestItem.product_name || inboundItem.product_name || '', store_id: inbound.store_id, action: 'return', remark: `采购退库：${returnNo}`, create_user: request.apply_user || request.submit_user || request.create_user || user.name || user.phone, create_time: new Date() }, { transaction });
-          }
-          await updateInventory(requestItem.product_id, inbound.store_id, returnItem.inventoryType, -returnItem.quantity, transaction, returnItem.locationId);
-          if (returnItem.inventoryType === 'normal_qty' && inboundItem.product_type) {
-            const typeField = { '正规货': 'regular_qty', '国补货': 'subsidy_qty', '纯二批': 'second_qty', regular: 'regular_qty', subsidy: 'subsidy_qty', second: 'second_qty' }[String(inboundItem.product_type).toLowerCase()];
-            if (typeField) await updateInventory(requestItem.product_id, inbound.store_id, typeField, -returnItem.quantity, transaction, returnItem.locationId);
-          }
-          await reduceInventoryCostForPurchaseReturn([{
-            product_id: requestItem.product_id,
-            quantity: returnItem.quantity,
-            unit_price: Math.max(0, unitPrice - rebatePerUnit)
-          }], transaction);
-        }
-      createdReturns.push({ returnId, returnNo });
-        currentReturnByInboundItem.set(String(inboundItem.item_id), (currentReturnByInboundItem.get(String(inboundItem.item_id)) || 0) + returnQuantity);
+        ctx.throw(409, '商品已入库，请先在入库单管理办理退库，再回到采购申请撤单');
       } else {
         ctx.throw(400, '当前入库单状态不允许退单');
       }
@@ -2818,7 +2735,7 @@ async function createPurchaseAdjustment(ctx) {
         target_quantity: inbound.status === 'pending' ? Math.max(Number(inboundItem.quantity || 0), 0) : 0,
         quantity_delta: -returnQuantity,
         amount_delta: amountDelta,
-        remark: `${operationType}${returnNo ? `:${returnNo}` : ''}${reason ? `；${reason}` : ''}`
+        remark: `pending_cancel${reason ? `；${reason}` : ''}`
       }, { transaction });
 
       totalQuantityDelta -= returnQuantity;
@@ -2832,21 +2749,6 @@ async function createPurchaseAdjustment(ctx) {
 
     for (const inbound of inbounds.filter(item => item.status === 'pending')) {
       await refreshPendingInboundSummary(inbound, transaction);
-    }
-    for (const inbound of inbounds.filter(item => item.status === 'completed')) {
-      const allItemsReturned = (inbound.items || []).every(item => {
-        const alreadyReturned = returnedByInboundItem.get(String(item.item_id)) || 0;
-        const currentReturned = currentReturnByInboundItem.get(String(item.item_id)) || 0;
-        return alreadyReturned + currentReturned >= Number(item.received_quantity || 0);
-      });
-      if (allItemsReturned && (inbound.items || []).length > 0) {
-        await inbound.update({ status: 'returned', update_time: new Date() }, { transaction });
-        await createPurchaseReturnReentry({
-          inbound,
-          userName: user.name || user.phone || '',
-          transaction
-        });
-      }
     }
 
     await PurchaseAdjustment.create({
@@ -2914,6 +2816,22 @@ async function createPurchaseAdjustment(ctx) {
       }, { transaction });
     }
 
+    const fullyCancelled = (request.items || []).length > 0
+      && (request.items || []).every(item => (returnedByRequestItem.get(String(item.item_id)) || 0) >= Number(item.quantity || 0));
+    if (fullyCancelled) {
+      await request.update({
+        status: 'revoked', revoke_user: user.name || user.phone || '', revoke_time: new Date(),
+        revoke_comment: reason || '', update_time: new Date()
+      }, { transaction });
+      await setFreightRecordStatus('purchase', request.request_id, 'cancelled', user, transaction);
+    }
+    await recordBusinessAction({
+      businessType: 'purchase_request', businessId: request.request_id, businessNo: request.request_no,
+      action: fullyCancelled ? 'revoked_by_adjustment' : 'partially_cancelled',
+      fromStatus: 'approved', toStatus: fullyCancelled ? 'revoked' : 'approved',
+      user, comment: `${adjustmentNo}${reason ? `；${reason}` : ''}`, transaction
+    });
+
     await transaction.commit();
     const adjustmentMessage = payableId
       ? (payableAmountDelta < 0 ? '采购退单完成，负向采购单及负向应付已生成' : '采购数量调整完成，正向应付已生成')
@@ -2921,7 +2839,7 @@ async function createPurchaseAdjustment(ctx) {
     ctx.body = {
       code: 0,
       message: adjustmentMessage,
-      data: { adjustmentId, adjustmentNo, payableId, totalQuantityDelta, totalAmountDelta, returns: createdReturns }
+      data: { adjustmentId, adjustmentNo, payableId, totalQuantityDelta, totalAmountDelta, returns: [] }
     };
   } catch (error) {
     await transaction.rollback();
@@ -2951,133 +2869,7 @@ async function revokeRequest(ctx) {
   if (!canRevokePurchaseForUser(user, request)) ctx.throw(403, '只有发起人或经销商账号可以撤销该采购申请');
 
   const inbounds = request.Inbounds || [];
-  if (canRevokeReturnedPurchase(request.status, inbounds)) {
-    const transaction = await sequelize.transaction();
-    try {
-      const lockedRequest = await PurchaseRequest.findByPk(requestId, { transaction, lock: transaction.LOCK.UPDATE });
-      if (lockedRequest?.status !== 'approved') ctx.throw(409, '采购申请状态已变化，请刷新后重试');
-      const currentInbounds = await Inbound.findAll({
-        where: { purchase_request_id: requestId },
-        include: [{ model: InboundItem, as: 'items', attributes: ['received_quantity'] }],
-        transaction,
-        lock: transaction.LOCK.UPDATE
-      });
-      if (!canRevokeReturnedPurchase(lockedRequest.status, currentInbounds)) ctx.throw(409, '商品尚未全部退回，不能撤销采购申请');
-
-      // Older physical returns may not yet have a credit. Preserve the existing
-      // backfill path for those records; new returns create the credit immediately.
-      const completedAdjustments = await PurchaseAdjustment.findAll({
-        where: { request_id: requestId, status: 'completed' },
-        include: [{ model: PurchaseAdjustmentItem, as: 'items' }],
-        transaction,
-        lock: transaction.LOCK.UPDATE
-      });
-      const purchaseStore = lockedRequest.store_id
-        ? await Store.findByPk(lockedRequest.store_id, { attributes: ['region_id', 'distributor_id'], transaction })
-        : null;
-      const originalPayables = await Payable.findAll({
-        where: { request_id: requestId, source_type: 'purchase', total_amount: { [Op.gt]: 0 } },
-        transaction,
-        lock: transaction.LOCK.UPDATE
-      });
-      const revokeOriginalAmount = toSignedMoney(originalPayables.reduce((sum, item) => sum + Number(item.total_amount || 0), 0));
-      const existingCredits = await Payable.findAll({
-        where: { request_id: requestId, total_amount: { [Op.lt]: 0 }, status: { [Op.ne]: 'cancelled' } },
-        transaction,
-        lock: transaction.LOCK.UPDATE
-      });
-      let remainingCreditAmount = Math.max(0, toSignedMoney(revokeOriginalAmount + existingCredits.reduce((sum, item) => sum + Number(item.total_amount || 0), 0)));
-      for (const adjustment of completedAdjustments) {
-        const returnAmount = toSignedMoney((adjustment.items || [])
-          .filter(item => String(item.remark || '').startsWith('stock_return'))
-          .reduce((sum, item) => sum + Number(item.amount_delta || 0), 0));
-        if (returnAmount >= 0 || remainingCreditAmount <= 0) continue;
-        const existing = await Payable.findOne({
-          where: { source_type: 'purchase_adjustment', source_id: adjustment.adjustment_id },
-          transaction,
-          lock: transaction.LOCK.UPDATE
-        });
-        const payableAmount = -Math.min(Math.abs(returnAmount), remainingCreditAmount);
-        if (existing) {
-          if (existing.status === 'cancelled') {
-            await existing.update({ total_amount: payableAmount, offset_amount: 0, offset_payable_id: null, status: 'credit' }, { transaction });
-            remainingCreditAmount = toSignedMoney(remainingCreditAmount + payableAmount);
-          }
-          continue;
-        }
-        await Payable.create({
-          payable_id: generateUUID(), supplier_id: lockedRequest.supplier_id,
-          supplier_name: request.Supplier?.name || '', request_id: requestId,
-          request_no: lockedRequest.request_no, payee_type: 'supplier',
-          payee_id: lockedRequest.supplier_id, payee_name: request.Supplier?.name || '',
-          source_type: 'purchase_adjustment', source_id: adjustment.adjustment_id,
-          source_no: adjustment.adjustment_no, region_id: purchaseStore?.region_id || null,
-          distributor_id: lockedRequest.distributor_id || purchaseStore?.distributor_id || null,
-          total_amount: payableAmount, offset_amount: 0, paid_amount: 0,
-          status: 'credit', create_time: new Date()
-        }, { transaction });
-        remainingCreditAmount = toSignedMoney(remainingCreditAmount + payableAmount);
-      }
-
-      const credits = await Payable.findAll({
-        where: { request_id: requestId, source_type: { [Op.in]: ['purchase_return', 'purchase_adjustment'] }, total_amount: { [Op.lt]: 0 }, status: { [Op.ne]: 'cancelled' } },
-        transaction,
-        lock: transaction.LOCK.UPDATE
-      });
-      if (!credits.length) ctx.throw(409, '退单尚未生成负向应付款，请先核对退库记录');
-      const originals = await Payable.findAll({
-        where: { request_id: requestId, source_type: 'purchase', total_amount: { [Op.gt]: 0 } },
-        transaction,
-        lock: transaction.LOCK.UPDATE
-      });
-      const originalAmount = toSignedMoney(originals.reduce((sum, item) => sum + Number(item.total_amount || 0), 0));
-      const creditAmount = toSignedMoney(credits.reduce((sum, item) => sum + Number(item.total_amount || 0), 0));
-      if (originalAmount <= 0 || creditAmount < -originalAmount - 0.005) {
-        ctx.throw(409, '退单负向金额超过原采购应付，请先核对重复退库或历史结算');
-      }
-      const allocated = await getAllocationSummary(credits.map(item => item.payable_id), transaction);
-      if (credits.some(item => Math.abs(Number(allocated.get(String(item.payable_id))?.amount || 0)) > 0.005)) {
-        ctx.throw(409, '退单负向应付款已参与结算，请先核对结算记录');
-      }
-
-      for (const credit of credits) {
-        const offsetAmount = Number(credit.offset_amount || 0);
-        if (offsetAmount > 0.005) {
-          if (!credit.offset_payable_id) ctx.throw(409, '退单应付缺少原单抵扣关联，请先核对结算记录');
-          const original = await Payable.findByPk(credit.offset_payable_id, { transaction, lock: transaction.LOCK.UPDATE });
-          if (!original || Number(original.offset_amount || 0) + 0.005 < offsetAmount) {
-            ctx.throw(409, '原采购应付抵扣金额不一致，请先核对结算记录');
-          }
-          await original.update({ offset_amount: Math.max(0, Number(original.offset_amount || 0) - offsetAmount) }, { transaction });
-          await refreshPayableState(original.payable_id, transaction);
-        }
-        await credit.update({ offset_amount: 0, offset_payable_id: null, status: 'credit' }, { transaction });
-      }
-
-      const totalAmount = toSignedMoney(credits.reduce((sum, item) => sum + Number(item.total_amount || 0), 0));
-      if (totalAmount >= 0) ctx.throw(409, '退单负向结算金额无效');
-      await Inbound.update({ status: 'cancelled', update_time: new Date() }, {
-        where: { purchase_request_id: requestId, status: 'pending' }, transaction
-      });
-      await lockedRequest.update({
-        status: 'revoked', revoke_user: operatorName, revoke_time: new Date(),
-        revoke_comment: String(comment || '').trim(), update_time: new Date()
-      }, { transaction });
-      await setFreightRecordStatus('purchase', requestId, 'cancelled', user, transaction);
-      await recordBusinessAction({
-        businessType: 'purchase_request', businessId: requestId, businessNo: request.request_no,
-        action: 'revoked_after_return', fromStatus: 'approved', toStatus: 'revoked',
-        user, comment: comment || '', transaction
-      });
-      await transaction.commit();
-      ctx.body = { code: 0, message: '采购申请已撤销，负向应付款已保留在应付管理', data: { payableIds: credits.map(item => item.payable_id) } };
-      return;
-    } catch (error) {
-      if (!transaction.finished) await transaction.rollback();
-      throw error;
-    }
-  }
-
+  if (request.status === 'approved') ctx.throw(400, '已通过的采购申请请使用“撤单”选择商品；已入库商品需先退库');
   if (request.status !== 'pending') {
     ctx.throw(400, '仅待审批申请或商品已全部退回的采购申请可以撤销');
   }
