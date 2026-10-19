@@ -22,9 +22,16 @@ const flowSql = `
   WHERE o.ORDER_STATUS IN ('已归档', 'completed', 'archived', 'return_pending', 'return_rejected', 'returned')
     AND o.IS_DELETED = 0 AND i.PRODUCT_ID IS NOT NULL AND i.QUANTITY > 0
   UNION ALL
-  SELECT CONCAT('return:', i.ITEM_ID), r.STORE_ID, i.PRODUCT_ID, i.PRODUCT_NAME, i.PN_CODE,
-    i.SN_CODE, 'out', '采购退库', i.QUANTITY, r.RETURN_NO,
-    COALESCE(r.EXECUTE_TIME, r.CREATE_TIME), COALESCE(r.EXECUTE_USER, r.CREATE_USER)
+  SELECT CONCAT('return:', i.ITEM_ID),
+    CONVERT(r.STORE_ID USING utf8mb4) COLLATE utf8mb4_0900_ai_ci,
+    CONVERT(i.PRODUCT_ID USING utf8mb4) COLLATE utf8mb4_0900_ai_ci,
+    CONVERT(i.PRODUCT_NAME USING utf8mb4) COLLATE utf8mb4_0900_ai_ci,
+    CONVERT(i.PN_CODE USING utf8mb4) COLLATE utf8mb4_0900_ai_ci,
+    CONVERT(i.SN_CODE USING utf8mb4) COLLATE utf8mb4_0900_ai_ci,
+    'out', '采购退库', i.QUANTITY,
+    CONVERT(r.RETURN_NO USING utf8mb4) COLLATE utf8mb4_0900_ai_ci,
+    COALESCE(r.EXECUTE_TIME, r.CREATE_TIME),
+    CONVERT(COALESCE(r.EXECUTE_USER, r.CREATE_USER) USING utf8mb4) COLLATE utf8mb4_0900_ai_ci
   FROM T_RETURN_STOCK_ITEM i JOIN T_RETURN_STOCK r ON r.RETURN_ID = i.RETURN_ID
   WHERE r.STATUS = 'completed' AND i.QUANTITY > 0
   UNION ALL
