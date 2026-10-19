@@ -628,11 +628,20 @@ const loadEmployeePerformance = async () => {
       params.endDate = employeeParams.dateRange[1]
     }
     const res = await api.getEmployeePerformanceReport(params)
+    console.info('[employee-performance] response shape', {
+      code: res?.code,
+      dataType: Array.isArray(res?.data) ? 'array' : typeof res?.data,
+      dataKeys: res?.data && typeof res.data === 'object' ? Object.keys(res.data) : [],
+      listLength: Array.isArray(res?.data?.list) ? res.data.list.length : null,
+      total: res?.data?.pagination?.total ?? null
+    })
     if (res.code === 0) {
       employeeData.value = res.data?.list || []
       employeeSummary.value = res.data?.summary || {}
       employeeOptions.value = res.data?.employees || []
       employeeTotal.value = res.data?.pagination?.total || 0
+    } else {
+      throw new Error(res?.message || `业绩接口返回异常（code: ${res?.code ?? '缺失'}）`)
     }
   } catch (err) {
     console.error('加载员工业绩失败', err)
