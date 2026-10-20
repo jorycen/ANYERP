@@ -287,6 +287,9 @@ async function ensureApprovalSchemaCompatibility() {
 }
 
 async function runSchemaMigrations() {
+  // Supplier queries select every model attribute; create these before API readiness.
+  await checkAndAddColumn('T_SUPPLIER', 'PURCHASE_COST_MODE_DEFAULT', 'VARCHAR(24) NULL COMMENT "采购申请毛利成本口径默认值"', 'GROSS_PROFIT_UPLIFT_AMOUNT');
+  await checkAndAddColumn('T_SUPPLIER', 'PURCHASE_COST_MODE_ALLOWED', 'VARCHAR(64) NOT NULL DEFAULT "COMPANY_PRICE,PURCHASE_PRICE" COMMENT "采购申请允许的毛利成本口径"', 'PURCHASE_COST_MODE_DEFAULT');
   await checkAndAddColumn('T_PRODUCT', 'GROSS_PROFIT_COST_MODE', 'VARCHAR(24) NOT NULL DEFAULT \'PURCHASE_PRICE\' COMMENT "销售毛利成本口径：COMPANY_PRICE公司定价，PURCHASE_PRICE采购价"');
   await checkAndAddColumn('T_PURCHASE_REQUEST_ITEM', 'GROSS_PROFIT_COST_MODE', 'VARCHAR(24) NULL COMMENT "采购选择的商品毛利成本口径"');
   await checkAndAddColumn('T_PURCHASE_REQUEST', 'GROSS_PROFIT_USE_STANDARD_PRICE', 'TINYINT(1) NULL COMMENT "采购毛利口径：1产品部定价，0采购价加200；NULL历史口径"');
