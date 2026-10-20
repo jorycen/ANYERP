@@ -595,7 +595,7 @@ async function resolveSnPriceScope(ctx, snId, { requireInStock = false } = {}) {
 async function getSnInventoryList(ctx) {
   const {
     keyword = '', storeId = '', locationId = '', status = '', resourceType = '', resourceStatus = '',
-    specialOnly = '', minAgeDays = '', maxAgeDays = '', productType = '', page = 1, pageSize = 20
+    specialOnly = '', minAgeDays = '', maxAgeDays = '', productType = '', sortBy = '', page = 1, pageSize = 20
   } = ctx.query;
   const user = ctx.state.user || {};
   const exportMode = Boolean(ctx.state.inventoryExportMode);
@@ -726,7 +726,8 @@ async function getSnInventoryList(ctx) {
        sn.INBOUND_PRICE AS purchase_cost,
        sn.SUPPLIER_NAME AS purchase_supplier_name` : ''}
      ${joins}${whereSql}
-      ORDER BY (COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME) IS NULL) ASC,
+      ORDER BY ${sortBy === 'specialRecent' && String(specialOnly) === '1' ? 'sp.UPDATE_TIME DESC, sn.SN_ID DESC,' : ''}
+               (COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME) IS NULL) ASC,
                TIMESTAMPDIFF(SECOND, COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME), NOW()) DESC,
                COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME) ASC,
                sn.SN_ID DESC${paginationSql}`,

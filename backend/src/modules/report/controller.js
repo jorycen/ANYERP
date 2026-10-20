@@ -857,7 +857,7 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
     let baseGrossProfit = 0;
     const itemCalculations = items.map(item => {
       const quantity = Number(item.quantity || 1);
-      const saleSubtotal = roundMoney(item.subtotal || (toNumber(item.sale_price) * quantity));
+      const saleSubtotal = roundMoney(toNumber(item.subtotal) || (toNumber(item.sale_price) * quantity));
       const allocatedRevenue = saleSubtotal;
       const baseCalculation = calculateItemBaseProfit(item, legacyCostMaps);
       const pricingDetail = pricingDetailByItem.get(String(item.item_id || ''));

@@ -827,6 +827,7 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
+import { mergePurchaseProductOptions } from '../utils/purchaseProducts'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 import { getUserInfo, hasRole, isStoreUser } from '../utils/user'
 
@@ -860,6 +861,10 @@ const operatorStaffList = ref([])
 const allStores = ref([])
 const allStoresLoaded = ref(false)
 const products = ref([])
+let productSearchRequestId = 0
+const updateProductOptions = rows => {
+  products.value = mergePurchaseProductOptions(products.value, rows, requestForm.items.map(item => item.productId))
+}
 const resourceOptions = ref([])
 const goodsTypeOptions = ref([])
 const productSearchKeyword = ref('')
@@ -1280,10 +1285,11 @@ const onRequestSupplierVisibleChange = async (visible) => {
 }
 
 const loadProducts = async () => {
+  const requestId = ++productSearchRequestId
   try {
     const res = await api.getProductList({ activeOnly: 1, page: 1, pageSize: 1000 })
-    if (res.code === 0) {
-      products.value = res.data?.list || []
+    if (res.code === 0 && requestId === productSearchRequestId) {
+      updateProductOptions(res.data?.list || [])
     }
   } catch (err) {
     console.error('Failed to load products')
@@ -1834,11 +1840,12 @@ const removeSupplierAccount = (index) => {
 }
 
 const searchProducts = async (keyword) => {
+  const requestId = ++productSearchRequestId
   productSearchKeyword.value = keyword
   try {
     const res = await api.getProductList({ activeOnly: 1, keyword, page: 1, pageSize: 50 })
-    if (res.code === 0) {
-      products.value = res.data?.list || []
+    if (res.code === 0 && requestId === productSearchRequestId) {
+      updateProductOptions(res.data?.list || [])
     }
   } catch (err) {
     console.error('Failed to search products')
