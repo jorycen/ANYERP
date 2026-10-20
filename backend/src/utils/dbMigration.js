@@ -1661,6 +1661,8 @@ async function runMigrations() {
     `);
     await checkAndAddColumn('T_SUPPLIER', 'IS_SERVICE_PROVIDER', 'TINYINT(1) NOT NULL DEFAULT 1 COMMENT "是否服务商"', 'ADDRESS');
     await checkAndAddColumn('T_SUPPLIER', 'GROSS_PROFIT_UPLIFT_AMOUNT', 'DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT "非服务商每件毛利上浮金额"', 'IS_SERVICE_PROVIDER');
+    await checkAndAddColumn('T_SUPPLIER', 'PURCHASE_COST_MODE_DEFAULT', 'VARCHAR(24) NULL COMMENT "采购申请毛利成本口径默认值"', 'GROSS_PROFIT_UPLIFT_AMOUNT');
+    await checkAndAddColumn('T_SUPPLIER', 'PURCHASE_COST_MODE_ALLOWED', 'VARCHAR(64) NOT NULL DEFAULT "COMPANY_PRICE,PURCHASE_PRICE" COMMENT "采购申请允许的毛利成本口径"', 'PURCHASE_COST_MODE_DEFAULT');
     await checkAndAddColumn('T_ORDER_ITEM', 'SUPPLIER_ID', 'VARCHAR(32) COMMENT "采购来源供应商ID快照"', 'SUBTOTAL');
     await checkAndAddColumn('T_ORDER_ITEM', 'SUPPLIER_NAME', 'VARCHAR(255) COMMENT "采购来源供应商名称快照"', 'SUPPLIER_ID');
     await checkAndAddColumn('T_TRANSFER', 'DISTRIBUTOR_ID', 'VARCHAR(32) COMMENT "调拨所属经销商"', 'TO_STORE_ID');

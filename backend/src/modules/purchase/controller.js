@@ -18,6 +18,31 @@ const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freigh
 const { createProductRecord } = require('../product/controller');
 
 const VALID_PURCHASE_INVOICE_TYPES = new Set(['专票13%', '收据']);
+const PURCHASE_COST_MODES = ['COMPANY_PRICE', 'PURCHASE_PRICE'];
+function parseSupplierCostModes(value) {
+  const modes = String(value || PURCHASE_COST_MODES.join(',')).split(',').map(mode => mode.trim()).filter(Boolean);
+  return modes;
+}
+function validateSupplierCostRule(ctx, defaultMode, allowedModes) {
+  const allowed = Array.isArray(allowedModes) ? allowedModes : parseSupplierCostModes(allowedModes);
+  if (!allowed.length || allowed.some(mode => !PURCHASE_COST_MODES.includes(mode)) || new Set(allowed).size !== allowed.length) {
+    ctx.throw(400, '请选择至少一种有效的采购毛利成本口径');
+  }
+  const normalizedDefault = defaultMode || (allowed.length === 1 ? allowed[0] : null);
+  if (normalizedDefault && !allowed.includes(normalizedDefault)) ctx.throw(400, '默认毛利成本口径必须在允许范围内');
+  return { defaultMode: normalizedDefault, allowedModes: allowed.join(',') };
+}
+async function assertSupplierCostModes(ctx, supplierId, items, transaction) {
+  if (!supplierId) return;
+  const supplier = await Supplier.findOne({ where: { supplier_id: supplierId, is_deleted: 0, status: 1 }, transaction });
+  if (!supplier) ctx.throw(400, '请选择有效供应商');
+  const allowed = parseSupplierCostModes(supplier.purchase_cost_mode_allowed);
+  for (const [index, item] of items.entries()) {
+    if (Number(item.isUsedProduct ?? item.is_used_product ?? 0) === 1) continue;
+    const mode = String(item.grossProfitCostMode || item.gross_profit_cost_mode || supplier.purchase_cost_mode_default || 'PURCHASE_PRICE').toUpperCase();
+    if (!allowed.includes(mode)) ctx.throw(400, `第${index + 1}个商品的毛利成本口径不在供应商允许范围内`);
+  }
+}
 function validatePurchaseInvoiceType(ctx, value) {
   const normalized = String(value || '').trim();
   if (!normalized) ctx.throw(400, '请选择采购凭证类型');
@@ -1466,6 +1491,10 @@ async function createRequest(ctx) {
     if (!isDraft) await assertNewPurchasePnsAvailable(items, transaction);
     await assertActivePurchaseProducts(items, transaction);
     const productSnapshots = await loadPurchaseProductSnapshots(items, transaction);
+    if (!isDraft) await assertSupplierCostModes(ctx, supplierId, items.map(item => ({
+      grossProfitCostMode: item.grossProfitCostMode || item.gross_profit_cost_mode || productSnapshots.get(String(item.productId || item.product_id || ''))?.gross_profit_cost_mode || 'PURCHASE_PRICE',
+      isUsedProduct: item.isUsedProduct || item.is_used_product
+    })), transaction);
     const purchaseItemModeByProduct = new Map();
     items.forEach((item, index) => {
       const productId = String(item.productId || item.product_id || '');
@@ -1669,6 +1698,15 @@ async function submitRequestDraft(ctx) {
   const usedDraftItems = (request.items || []).filter(item => Number(item.is_used_product) === 1 && !item.product_id);
   usedDraftItems.forEach(item => { item.product_id = '__USED_PRODUCT__'; });
   const goodsType = await validateDraftSubmission(request, ctx);
+  await assertSupplierCostModes(ctx, request.supplier_id, request.items || []);
+  const draftProductSnapshots = await loadPurchaseProductSnapshots(request.items || []);
+  for (const [index, item] of (request.items || []).entries()) {
+    if (Number(item.is_used_product) === 1 || item.gross_profit_cost_mode !== 'COMPANY_PRICE') continue;
+    const product = draftProductSnapshots.get(String(item.product_id || ''));
+    if (!product?.ProductPrice || Number(product.ProductPrice.standard_price || 0) <= 0) {
+      ctx.throw(400, `第${index + 1}个商品选择按公司定价，但商品未维护有效公司定价`);
+    }
+  }
   usedDraftItems.forEach(item => { item.product_id = null; });
   await assertNewPurchasePnsAvailable(request.items);
   await assertActivePurchaseProducts(request.items);
@@ -1801,6 +1839,10 @@ async function updateRequestDraft(ctx) {
   await sequelize.transaction(async transaction => {
     await assertActivePurchaseProducts(items, transaction);
     const productSnapshots = await loadPurchaseProductSnapshots(items, transaction);
+    if (supplierId) await assertSupplierCostModes(ctx, supplierId, items.map(item => ({
+      grossProfitCostMode: item.grossProfitCostMode || item.gross_profit_cost_mode || productSnapshots.get(String(item.productId || item.product_id || ''))?.gross_profit_cost_mode || 'PURCHASE_PRICE',
+      isUsedProduct: item.isUsedProduct || item.is_used_product
+    })), transaction);
     const purchaseItemModeByProduct = new Map();
     items.forEach((item, index) => {
       const productId = String(item.productId || item.product_id || '');
@@ -3014,7 +3056,8 @@ async function getAllSuppliers(ctx) {
 async function createSupplier(ctx) {
   const {
     name, contact, phone, address, invoiceType, remark, status = 1, paymentAccounts = [],
-    isServiceProvider = true, grossProfitUpliftAmount = 0
+    isServiceProvider = true, grossProfitUpliftAmount = 0,
+    purchaseCostModeDefault = null, purchaseCostModeAllowed = PURCHASE_COST_MODES
   } = ctx.request.body;
 
   if (!name) {
@@ -3022,6 +3065,7 @@ async function createSupplier(ctx) {
   }
   const normalizedUplift = normalizeGrossProfitUpliftAmount(grossProfitUpliftAmount);
   if (normalizedUplift === null) ctx.throw(400, '毛利上浮额度必须是大于或等于0的金额');
+  const costRule = validateSupplierCostRule(ctx, purchaseCostModeDefault, purchaseCostModeAllowed);
 
   const supplierId = generateId('SP');
 
@@ -3035,6 +3079,8 @@ async function createSupplier(ctx) {
       invoice_type: invoiceType || '',
       is_service_provider: isServiceProvider ? 1 : 0,
       gross_profit_uplift_amount: normalizedUplift,
+      purchase_cost_mode_default: costRule.defaultMode,
+      purchase_cost_mode_allowed: costRule.allowedModes,
       remark: remark || '',
       sort_order: await Supplier.count({ where: { is_deleted: 0 }, transaction }),
       status,
@@ -3055,7 +3101,7 @@ async function updateSupplier(ctx) {
   const { id } = ctx.params;
   const {
     name, contact, phone, address, invoiceType, remark, sortOrder, status, paymentAccounts,
-    isServiceProvider, grossProfitUpliftAmount
+    isServiceProvider, grossProfitUpliftAmount, purchaseCostModeDefault, purchaseCostModeAllowed
   } = ctx.request.body;
 
   const supplier = await Supplier.findOne({
@@ -3070,6 +3116,9 @@ async function updateSupplier(ctx) {
     supplier.gross_profit_uplift_amount
   );
   if (normalizedUplift === null) ctx.throw(400, '毛利上浮额度必须是大于或等于0的金额');
+  const costRule = validateSupplierCostRule(ctx,
+    purchaseCostModeDefault !== undefined ? purchaseCostModeDefault : supplier.purchase_cost_mode_default,
+    purchaseCostModeAllowed !== undefined ? purchaseCostModeAllowed : supplier.purchase_cost_mode_allowed);
 
   await sequelize.transaction(async (transaction) => {
     await supplier.update({
@@ -3082,6 +3131,8 @@ async function updateSupplier(ctx) {
         ? (isServiceProvider ? 1 : 0)
         : supplier.is_service_provider,
       gross_profit_uplift_amount: normalizedUplift,
+      purchase_cost_mode_default: costRule.defaultMode,
+      purchase_cost_mode_allowed: costRule.allowedModes,
       remark: remark !== undefined ? remark : supplier.remark,
       sort_order: sortOrder !== undefined ? sortOrder : supplier.sort_order,
       status: status !== undefined ? status : supplier.status,

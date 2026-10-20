@@ -240,11 +240,12 @@
               </el-table-column>
               <el-table-column label="毛利成本口径" width="190">
                 <template #default="{ row }">
-                  <el-select v-model="row.grossProfitCostMode" size="small" style="width: 100%" :disabled="row.isUsedProduct">
-                    <el-option label="按公司定价" value="COMPANY_PRICE" :disabled="row.isUsedProduct || !hasCompanyPrice(row)" />
-                    <el-option label="按采购价" value="PURCHASE_PRICE" />
+                  <el-select v-model="row.grossProfitCostMode" size="small" style="width: 100%" :disabled="row.isUsedProduct || (supplierCostModes.length === 1 && supplierCostModes.includes(row.grossProfitCostMode))">
+                    <el-option label="按公司定价" value="COMPANY_PRICE" :disabled="row.isUsedProduct || !hasCompanyPrice(row) || !supplierCostModes.includes('COMPANY_PRICE')" />
+                    <el-option label="按采购价" value="PURCHASE_PRICE" :disabled="!supplierCostModes.includes('PURCHASE_PRICE')" />
                   </el-select>
                   <div v-if="row.grossProfitCostMode === 'COMPANY_PRICE' && !hasCompanyPrice(row)" class="purchase-pricing-warning">商品未维护有效公司定价</div>
+                  <div v-if="!row.isUsedProduct && !supplierCostModes.includes(row.grossProfitCostMode)" class="purchase-pricing-warning">此供应商不允许该计价方式</div>
                 </template>
               </el-table-column>
               <el-table-column label="商品编码" width="140">
@@ -766,6 +767,20 @@
           />
           <span class="ml-10">元/件</span>
         </el-form-item>
+        <el-form-item label="允许的计价方式">
+          <el-checkbox-group v-model="supplierForm.purchaseCostModeAllowed">
+            <el-checkbox label="COMPANY_PRICE">按公司定价</el-checkbox>
+            <el-checkbox label="PURCHASE_PRICE">按采购价</el-checkbox>
+          </el-checkbox-group>
+        </el-form-item>
+        <el-form-item label="默认计价方式">
+          <el-select v-model="supplierForm.purchaseCostModeDefault" style="width: 220px">
+            <el-option label="沿用商品默认" value="" :disabled="supplierForm.purchaseCostModeAllowed.length === 1" />
+            <el-option label="按公司定价" value="COMPANY_PRICE" :disabled="!supplierForm.purchaseCostModeAllowed.includes('COMPANY_PRICE')" />
+            <el-option label="按采购价" value="PURCHASE_PRICE" :disabled="!supplierForm.purchaseCostModeAllowed.includes('PURCHASE_PRICE')" />
+          </el-select>
+          <div class="purchase-pricing-hint">新建采购申请选择该供应商时自动带入；只勾选一种即可锁定。二手商品仍按采购价处理。</div>
+        </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="supplierForm.remark" type="textarea" rows="2" placeholder="备注" />
         </el-form-item>
@@ -831,6 +846,9 @@ const SUPPLIER_DRAFT_KEY = 'supplier-create'
 const tableData = ref([])
 const supplierData = ref([])
 const allSuppliers = ref([])
+const selectedPurchaseSupplier = computed(() => [...allSuppliers.value, ...supplierData.value].find(row => row.supplier_id === requestForm.supplierId))
+const supplierCostModes = computed(() => (selectedPurchaseSupplier.value?.purchase_cost_mode_allowed || 'COMPANY_PRICE,PURCHASE_PRICE').split(','))
+const supplierDefaultCostMode = () => selectedPurchaseSupplier.value?.purchase_cost_mode_default || (supplierCostModes.value.length === 1 ? supplierCostModes.value[0] : '')
 const operatorStaffList = ref([])
 const allStores = ref([])
 const allStoresLoaded = ref(false)
@@ -953,6 +971,8 @@ const supplierForm = reactive({
   address: '',
   isServiceProvider: true,
   grossProfitUpliftAmount: 0,
+  purchaseCostModeAllowed: ['COMPANY_PRICE', 'PURCHASE_PRICE'],
+  purchaseCostModeDefault: '',
   remark: '',
   status: 1,
   paymentAccounts: []
@@ -1654,6 +1674,8 @@ const handleEditSupplier = (row) => {
   supplierForm.address = row.address || ''
   supplierForm.isServiceProvider = row.is_service_provider !== 0
   supplierForm.grossProfitUpliftAmount = Number(row.gross_profit_uplift_amount || 0)
+  supplierForm.purchaseCostModeAllowed = (row.purchase_cost_mode_allowed || 'COMPANY_PRICE,PURCHASE_PRICE').split(',')
+  supplierForm.purchaseCostModeDefault = row.purchase_cost_mode_default || ''
   supplierForm.remark = row.remark || ''
   supplierForm.status = row.status
   supplierForm.paymentAccounts = normalizeSupplierAccounts(row.paymentAccounts || row.SupplierPaymentAccounts || [])
@@ -1692,6 +1714,10 @@ const handleSupplierSubmit = async () => {
     ElMessage.warning('请输入供应商名称')
     return
   }
+  if (!supplierForm.purchaseCostModeAllowed.length || (supplierForm.purchaseCostModeDefault && !supplierForm.purchaseCostModeAllowed.includes(supplierForm.purchaseCostModeDefault))) {
+    ElMessage.warning('请检查供应商允许的计价方式和默认方式')
+    return
+  }
 
   supplierLoading.value = true
   try {
@@ -1702,6 +1728,8 @@ const handleSupplierSubmit = async () => {
       address: supplierForm.address,
       isServiceProvider: supplierForm.isServiceProvider,
       grossProfitUpliftAmount: Number(supplierForm.grossProfitUpliftAmount || 0),
+      purchaseCostModeAllowed: supplierForm.purchaseCostModeAllowed,
+      purchaseCostModeDefault: supplierForm.purchaseCostModeDefault || null,
       remark: supplierForm.remark,
       status: supplierForm.status,
       paymentAccounts: normalizeSupplierAccounts(supplierForm.paymentAccounts)
@@ -1746,6 +1774,8 @@ const resetSupplierForm = () => {
   supplierForm.address = ''
   supplierForm.isServiceProvider = true
   supplierForm.grossProfitUpliftAmount = 0
+  supplierForm.purchaseCostModeAllowed = ['COMPANY_PRICE', 'PURCHASE_PRICE']
+  supplierForm.purchaseCostModeDefault = ''
   supplierForm.remark = ''
   supplierForm.status = 1
   supplierForm.paymentAccounts = []
@@ -1822,6 +1852,10 @@ const onSupplierChange = async (supplierId) => {
   requestForm.rebateDeduction = 0
   requestForm.items.forEach(item => {
     item.rebateDeduction = 0
+    if (!item.isUsedProduct) {
+      const fallback = products.value.find(product => product.product_id === item.productId)?.gross_profit_cost_mode || 'PURCHASE_PRICE'
+      item.grossProfitCostMode = supplierDefaultCostMode() || (supplierCostModes.value.includes(fallback) ? fallback : supplierCostModes.value[0])
+    }
   })
   await loadRebateBalance(supplierId)
 }
@@ -1894,7 +1928,8 @@ const onProductChange = (index) => {
     requestForm.items[index].productCode = product.product_code || ''
     requestForm.items[index].manufacturerCode = product.manufacturer_code || ''
     requestForm.items[index].price = product.min_sale_price || 0
-    requestForm.items[index].grossProfitCostMode = product.gross_profit_cost_mode || 'PURCHASE_PRICE'
+    const fallback = product.gross_profit_cost_mode || 'PURCHASE_PRICE'
+    requestForm.items[index].grossProfitCostMode = supplierDefaultCostMode() || (supplierCostModes.value.includes(fallback) ? fallback : supplierCostModes.value[0])
   }
 }
 
@@ -1945,7 +1980,7 @@ const addRequestItem = () => {
   editingProductIndex.value = requestForm.items.length
   requestForm.items.push({
     productId: '', productName: '', productCode: '', manufacturerCode: '', price: 0, quantity: 1, rebateDeduction: 0, storeAllocations: [],
-    grossProfitCostMode: 'PURCHASE_PRICE',
+    grossProfitCostMode: supplierDefaultCostMode() || (supplierCostModes.value.includes('PURCHASE_PRICE') ? 'PURCHASE_PRICE' : supplierCostModes.value[0]),
     selectedResourceTypes: goodsTypeResourceCodes(requestForm.productType)
   })
   if (toNumber(requestForm.rebateDeduction) > 0) {

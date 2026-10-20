@@ -843,6 +843,8 @@ const Supplier = sequelize.define('Supplier', {
   invoice_type: { type: DataTypes.STRING(32) },
   is_service_provider: { type: DataTypes.TINYINT(1), defaultValue: 1, comment: '是否服务商；服务商毛利成本使用产品定价' },
   gross_profit_uplift_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0, comment: '非服务商每件毛利上浮金额' },
+  purchase_cost_mode_default: { type: DataTypes.STRING(24), allowNull: true, comment: '采购申请毛利成本口径默认值，空为商品默认值' },
+  purchase_cost_mode_allowed: { type: DataTypes.STRING(64), allowNull: false, defaultValue: 'COMPANY_PRICE,PURCHASE_PRICE', comment: '采购申请允许的毛利成本口径' },
   remark: { type: DataTypes.STRING(512) },
   sort_order: { type: DataTypes.INTEGER, defaultValue: 0 },
   status: { type: DataTypes.TINYINT, defaultValue: 1 },
