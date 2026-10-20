@@ -773,13 +773,20 @@
             <el-checkbox label="PURCHASE_PRICE">按采购价</el-checkbox>
           </el-checkbox-group>
         </el-form-item>
-        <el-form-item label="默认计价方式">
+        <el-form-item label="默认定价方式">
           <el-select v-model="supplierForm.purchaseCostModeDefault" style="width: 220px">
             <el-option label="沿用商品默认" value="" :disabled="supplierForm.purchaseCostModeAllowed.length === 1" />
             <el-option label="按公司定价" value="COMPANY_PRICE" :disabled="!supplierForm.purchaseCostModeAllowed.includes('COMPANY_PRICE')" />
             <el-option label="按采购价" value="PURCHASE_PRICE" :disabled="!supplierForm.purchaseCostModeAllowed.includes('PURCHASE_PRICE')" />
           </el-select>
           <div class="purchase-pricing-hint">新建采购申请选择该供应商时自动带入；只勾选一种即可锁定。二手商品仍按采购价处理。</div>
+        </el-form-item>
+        <el-form-item label="默认含税/未税">
+          <el-select v-model="supplierForm.invoiceType" placeholder="请选择" style="width: 220px">
+            <el-option label="不预设" value="" />
+            <el-option label="含税（专票13%）" value="专票13%" />
+            <el-option label="未税（收据）" value="收据" />
+          </el-select>
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="supplierForm.remark" type="textarea" rows="2" placeholder="备注" />
@@ -969,6 +976,7 @@ const supplierForm = reactive({
   contact: '',
   phone: '',
   address: '',
+  invoiceType: '',
   isServiceProvider: true,
   grossProfitUpliftAmount: 0,
   purchaseCostModeAllowed: ['COMPANY_PRICE', 'PURCHASE_PRICE'],
@@ -1672,6 +1680,7 @@ const handleEditSupplier = (row) => {
   supplierForm.contact = row.contact || ''
   supplierForm.phone = row.phone || ''
   supplierForm.address = row.address || ''
+  supplierForm.invoiceType = ['专票13%', '收据'].includes(row.invoice_type) ? row.invoice_type : ''
   supplierForm.isServiceProvider = row.is_service_provider !== 0
   supplierForm.grossProfitUpliftAmount = Number(row.gross_profit_uplift_amount || 0)
   supplierForm.purchaseCostModeAllowed = (row.purchase_cost_mode_allowed || 'COMPANY_PRICE,PURCHASE_PRICE').split(',')
@@ -1726,6 +1735,7 @@ const handleSupplierSubmit = async () => {
       contact: supplierForm.contact,
       phone: supplierForm.phone,
       address: supplierForm.address,
+      invoiceType: supplierForm.invoiceType,
       isServiceProvider: supplierForm.isServiceProvider,
       grossProfitUpliftAmount: Number(supplierForm.grossProfitUpliftAmount || 0),
       purchaseCostModeAllowed: supplierForm.purchaseCostModeAllowed,
@@ -1772,6 +1782,7 @@ const resetSupplierForm = () => {
   supplierForm.contact = ''
   supplierForm.phone = ''
   supplierForm.address = ''
+  supplierForm.invoiceType = ''
   supplierForm.isServiceProvider = true
   supplierForm.grossProfitUpliftAmount = 0
   supplierForm.purchaseCostModeAllowed = ['COMPANY_PRICE', 'PURCHASE_PRICE']
@@ -1848,7 +1859,8 @@ const loadRebateBalance = async (supplierId) => {
 }
 
 const onSupplierChange = async (supplierId) => {
-  requestForm.invoiceType = ''
+  requestForm.invoiceType = ['专票13%', '收据'].includes(selectedPurchaseSupplier.value?.invoice_type)
+    ? selectedPurchaseSupplier.value.invoice_type : ''
   requestForm.rebateDeduction = 0
   requestForm.items.forEach(item => {
     item.rebateDeduction = 0
