@@ -119,6 +119,9 @@
         <el-pagination v-model:current-page="changeQuery.page" v-model:page-size="changeQuery.pageSize" :total="changeTotal" layout="total, prev, pager, next" @current-change="loadChanges" />
       </el-tab-pane>
 
+      <el-tab-pane label="权益奖励规则" name="reward-rules">
+        <ResourceRewardRules v-if="tab === 'reward-rules'" />
+      </el-tab-pane>
       <el-tab-pane label="商品资源成本定义" name="costs">
         <div class="filter-bar">
           <el-select v-model="costForm.productId" filterable remote reserve-keyword placeholder="搜索商品" :remote-method="searchProducts" :loading="productLoading" style="width:300px">
@@ -272,7 +275,7 @@
     </el-dialog>
 
     <el-dialog v-model="educationSupplementDialog" title="教育优惠资源补录" width="560px">
-      <el-alert title="仅限已归档、且归档时未使用教育补贴的商品。确认后供应商待下账按资源回算金额全额增加，员工业绩毛利按学生优惠金额的80%增加。" type="info" :closable="false" style="margin-bottom:14px" />
+      <el-alert title="补录按权益配置金额提交截图，经店长→张欢→邓红梅全部审批通过后，员工计80%、产品端计20%、供应商全额待下账；提交时不增加毛利。历史已入账的不重复提交。" type="info" :closable="false" style="margin-bottom:14px" />
       <el-form label-width="110px">
         <el-form-item label="商品SN">{{ educationSupplementForm.snCode }}</el-form-item>
         <el-form-item label="销售单号" required><el-input v-model="educationSupplementForm.orderNo" placeholder="请输入已归档销售单号" maxlength="64" /></el-form-item>
@@ -360,6 +363,7 @@ import * as XLSX from 'xlsx'
 import api from '../api'
 import { hasRole } from '../utils/user'
 import SalesCashRebateManagement from './SalesCashRebateManagement.vue'
+import ResourceRewardRules from './ResourceRewardRules.vue'
 
 const props = defineProps({ financeOnly: { type: Boolean, default: false } })
 const tab = ref(props.financeOnly ? 'changes' : 'rights')
@@ -470,7 +474,7 @@ async function loadEducationPolicies(){
   finally{educationPolicyLoading.value=false}
 }
 async function loadLedger(){ try{const res=await api.getResourceCostAdjustments(ledgerQuery);ledger.value=payloadList(res);ledgerTotal.value=payloadTotal(res)}catch(e){ElMessage.error('加载成本流水失败')} }
-function loadActive(name){ if(name==='rights')loadRights(); else if(name==='education-policy')loadEducationPolicies(); else if(name==='changes')loadChanges(); else if(name==='cost-ledger')loadLedger(); else if(name==='nb-policy')loadNbPolicies(); else if(name==='sales-cash-rebate')return; else loadCosts() }
+function loadActive(name){ if(name==='rights')loadRights(); else if(name==='education-policy')loadEducationPolicies(); else if(name==='changes')loadChanges(); else if(name==='cost-ledger')loadLedger(); else if(name==='nb-policy')loadNbPolicies(); else if(['sales-cash-rebate','reward-rules'].includes(name))return; else loadCosts() }
 async function loadCategories(){
   categoryLoading.value=true
   try{

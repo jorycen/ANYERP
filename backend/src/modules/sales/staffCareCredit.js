@@ -4,6 +4,7 @@ const {
   StaffCareCreditTransaction, ResourceRightChangeOrder, PerformanceProfitAdjustment
 } = require('../../models');
 const { generateUUID } = require('../../utils');
+const { rewardAmount } = require('../inventory/rewardRules');
 const { distributorWhere, canAccessDistributor } = require('../../utils/distributorScope');
 
 const SALES_REPORT_CREDIT = 160;
@@ -119,13 +120,15 @@ async function creditSalesReport({ task, order, item, transaction }) {
     throw Object.assign(new Error('销售报号任务未关联具备资格的订单商品'), { status: 409 });
   }
   const staffId = Number(order.create_staff_id || 0);
+  const amount = rewardAmount(task.reward_snapshot_json, SALES_REPORT_CREDIT);
+  if (amount === 0) return null;
   if (!staffId) throw Object.assign(new Error('订单缺少销售员ID，无法发放奖励'), { status: 409 });
   const staff = await lockStaff(staffId, transaction);
   return createCreditEntry({
-    staffId, staffName: order.create_user || staff.name, type: 'income', amount: SALES_REPORT_CREDIT,
+    staffId, staffName: order.create_user || staff.name, type: 'income', amount,
     sourceType: SALE_REPORT_SOURCE, sourceId: task.change_id,
     order, item, resourceType: 'SALES_REPORT',
-    remark: `销售报号图片审核通过，奖励${SALES_REPORT_CREDIT}元`, transaction
+    remark: `销售报号图片审核通过，奖励${amount}元`, transaction
   });
 }
 
@@ -425,6 +428,7 @@ async function activateOrderCareCredit(order, transaction) {
 }
 
 async function reverseForSalesReturn({ request, order, requestItems, orderItemMap, transaction }) {
+  await require('../inventory/educationReward').reverseEducation({ request, order, requestItems, orderItemMap, transaction });
   const staffId = Number(order.create_staff_id || 0);
   if (!staffId) return;
   const staff = await lockStaff(staffId, transaction);

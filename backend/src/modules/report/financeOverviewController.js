@@ -512,7 +512,7 @@ async function exportProductSettlementOrders(ctx) {
   });
   if (data.total > 10000) ctx.throw(400, '导出结果超过10000条，请缩小筛选范围后再导出');
   const rows = data.items.map(row => ({
-    单据类型: row.entryType === 'return' ? '退货负向调整' : '销售结算',
+    单据类型: row.entryType === 'education' ? '教育补贴分配' : row.entryType === 'return' ? '退货负向调整' : '销售结算',
     产品端单号: row.entryNo,
     来源销售订单: row.sourceOrderNo,
     业务日期: row.businessDate,

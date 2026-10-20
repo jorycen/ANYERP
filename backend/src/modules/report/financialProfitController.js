@@ -201,6 +201,15 @@ async function queryFinancialProfit(filters) {
     grouped.set(String(row.orderId), list);
   });
   let items = [...grouped.values()].map(calculateOrder);
+  const education = await require('../inventory/educationReward').educationIncome({ orderIds: [...grouped.keys()] });
+  const educationByOrder = new Map();
+  for (const row of education) educationByOrder.set(String(row.orderId), money((educationByOrder.get(String(row.orderId)) || 0) + row.amount));
+  items = items.map(item => {
+    const educationIncomeAmount = educationByOrder.get(String(item.orderId)) || 0;
+    const grossProfit = item.grossProfit === null ? null : money(item.grossProfit + educationIncomeAmount);
+    return { ...item, educationIncomeAmount, grossProfit,
+      grossMargin: grossProfit === null || item.netRevenue <= 0 ? null : Number((grossProfit / item.netRevenue * 100).toFixed(2)) };
+  });
   if (filters.status) items = items.filter(item => item.status === filters.status);
 
   const expenseSummary = await summarizeAllocatedExpenses({
@@ -280,6 +289,7 @@ async function exportFinancialProfitOrders(ctx) {
     '可抵扣进项税': item.deductibleInputVat,
     '不含税存货成本': item.bookCost,
     '财务毛利': item.grossProfit ?? '',
+    '已确认教育补贴': item.educationIncomeAmount || 0,
     '毛利率': item.grossMargin === null ? '' : `${item.grossMargin}%`,
     '口径状态': item.status === 'cost_pending' ? '待补成本' : '暂估'
   }));

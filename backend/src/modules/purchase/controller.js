@@ -16,6 +16,8 @@ const { isStoreScopedAccount } = require('../../utils/storePermissions');
 const { canAccessDistributor } = require('../../utils/distributorScope');
 const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
 const { createProductRecord } = require('../product/controller');
+const { applyPurchaseApprovalEdits } = require('./approvalEdits');
+const { applyIncomingCostModes } = require('./costModeInput');
 
 const VALID_PURCHASE_INVOICE_TYPES = new Set(['专票13%', '收据']);
 const PURCHASE_COST_MODES = ['COMPANY_PRICE', 'PURCHASE_PRICE'];
@@ -40,7 +42,10 @@ async function assertSupplierCostModes(ctx, supplierId, items, transaction) {
   for (const [index, item] of items.entries()) {
     if (Number(item.isUsedProduct ?? item.is_used_product ?? 0) === 1) continue;
     const mode = String(item.grossProfitCostMode || item.gross_profit_cost_mode || supplier.purchase_cost_mode_default || 'PURCHASE_PRICE').toUpperCase();
-    if (!allowed.includes(mode)) ctx.throw(400, `第${index + 1}个商品的毛利成本口径不在供应商允许范围内`);
+    if (!allowed.includes(mode)) {
+      const label = value => value === 'COMPANY_PRICE' ? '公司定价' : value === 'PURCHASE_PRICE' ? '采购价' : value;
+      ctx.throw(400, `第${index + 1}个商品的毛利成本口径不在供应商允许范围内；本次口径：${label(mode)}，供应商允许：${allowed.map(label).join('、')}`);
+    }
   }
 }
 function validatePurchaseInvoiceType(ctx, value) {
@@ -1491,6 +1496,7 @@ async function createRequest(ctx) {
     if (!isDraft) await assertNewPurchasePnsAvailable(items, transaction);
     await assertActivePurchaseProducts(items, transaction);
     const productSnapshots = await loadPurchaseProductSnapshots(items, transaction);
+    applyIncomingCostModes(items, ctx.request.body, productSnapshots);
     if (!isDraft) await assertSupplierCostModes(ctx, supplierId, items.map(item => ({
       grossProfitCostMode: item.grossProfitCostMode || item.gross_profit_cost_mode || productSnapshots.get(String(item.productId || item.product_id || ''))?.gross_profit_cost_mode || 'PURCHASE_PRICE',
       isUsedProduct: item.isUsedProduct || item.is_used_product
@@ -1839,6 +1845,7 @@ async function updateRequestDraft(ctx) {
   await sequelize.transaction(async transaction => {
     await assertActivePurchaseProducts(items, transaction);
     const productSnapshots = await loadPurchaseProductSnapshots(items, transaction);
+    applyIncomingCostModes(items, ctx.request.body, productSnapshots);
     if (supplierId) await assertSupplierCostModes(ctx, supplierId, items.map(item => ({
       grossProfitCostMode: item.grossProfitCostMode || item.gross_profit_cost_mode || productSnapshots.get(String(item.productId || item.product_id || ''))?.gross_profit_cost_mode || 'PURCHASE_PRICE',
       isUsedProduct: item.isUsedProduct || item.is_used_product
@@ -2052,7 +2059,13 @@ async function approveRequest(ctx) {
     }
   }
 
-  if (!await advanceApproval(ctx, 'purchase_request', lockedRequest, transaction, status, comment)) {
+  const finalApprovalStep = await advanceApproval(ctx, 'purchase_request', lockedRequest, transaction, status, comment);
+  if (status === 'approved' && ctx.request.body.purchaseEdits !== undefined) {
+    request.set({ invoice_type: lockedRequest.invoice_type, payment_method: lockedRequest.payment_method });
+    request.items = await PurchaseRequestItem.findAll({ where: { request_id: requestId }, transaction, lock: transaction.LOCK.UPDATE });
+    await applyPurchaseApprovalEdits(ctx, request, transaction);
+  }
+  if (!finalApprovalStep) {
     await transaction.commit(); transactionCommitted = true; return;
   }
   const previousStatus = lockedRequest.status;
@@ -3233,6 +3246,7 @@ module.exports = {
   deleteSupplier,
   sortSuppliers,
   _test: {
+    assertSupplierCostModes,
     getSnPurchaseFields,
     flattenPurchaseAllocations,
     validatePurchaseAllocations,

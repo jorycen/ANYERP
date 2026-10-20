@@ -287,6 +287,9 @@ async function ensureApprovalSchemaCompatibility() {
 }
 
 async function runSchemaMigrations() {
+  await checkAndAddColumn('T_RESOURCE_RIGHT_CHANGE_ORDER', 'REWARD_SNAPSHOT_JSON', 'TEXT COMMENT "销售归档冻结的权益奖励规则及金额"');
+  // All change-order model reads include this column; fail readiness if DDL failed.
+  await sequelize.query('SELECT REWARD_SNAPSHOT_JSON FROM T_RESOURCE_RIGHT_CHANGE_ORDER LIMIT 0');
   // Supplier queries select every model attribute; create these before API readiness.
   await checkAndAddColumn('T_SUPPLIER', 'PURCHASE_COST_MODE_DEFAULT', 'VARCHAR(24) NULL COMMENT "采购申请毛利成本口径默认值"', 'GROSS_PROFIT_UPLIFT_AMOUNT');
   await checkAndAddColumn('T_SUPPLIER', 'PURCHASE_COST_MODE_ALLOWED', 'VARCHAR(64) NOT NULL DEFAULT "COMPANY_PRICE,PURCHASE_PRICE" COMMENT "采购申请允许的毛利成本口径"', 'PURCHASE_COST_MODE_DEFAULT');
@@ -1803,6 +1806,7 @@ async function runMigrations() {
     await checkAndAddIndex('T_RESOURCE_SETTLEMENT', 'idx_resource_settlement_sn', 'ALTER TABLE T_RESOURCE_SETTLEMENT ADD INDEX idx_resource_settlement_sn (SN_ID, RESOURCE_TYPE)');
     await checkAndAddIndex('T_RESOURCE_SETTLEMENT', 'idx_resource_settlement_counterparty', 'ALTER TABLE T_RESOURCE_SETTLEMENT ADD INDEX idx_resource_settlement_counterparty (COUNTERPARTY_ID, CREATE_TIME)');
     await checkAndAddColumn('T_ORDER_ITEM', 'SELECTED_RESOURCE_TYPES', 'TEXT COMMENT "动态选择的资源类别JSON"', 'USE_SALES_REPORT');
+    await checkAndAddColumn('T_RESOURCE_RIGHT_CHANGE_ORDER', 'REWARD_SNAPSHOT_JSON', 'TEXT COMMENT "销售归档冻结的权益奖励规则及金额"');
     await checkAndAddColumn('T_ORDER', 'CREATE_STAFF_ID', 'BIGINT COMMENT "销售人员ID"', 'STORE_ID');
     await checkAndAddColumn('T_ORDER', 'OPERATOR_STAFF_ID', 'BIGINT COMMENT "销售经手人员工ID"');
     await checkAndAddColumn('T_ORDER', 'OPERATOR_NAME', 'VARCHAR(64) COMMENT "销售经手人姓名快照"');

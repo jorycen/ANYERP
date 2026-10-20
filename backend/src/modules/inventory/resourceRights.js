@@ -1,5 +1,7 @@
 const { Op } = require('sequelize');
 const XLSX = require('xlsx');
+const { freezeSalesReportReward } = require('./rewardConfig');
+const { rewardAmount } = require('./rewardRules');
 const {
   sequelize, Product, ProductPn, ProductSn, OrderItem, InventoryResourceRight, ResourceRightChangeOrder,
   ProductResourceCostConfig, InventoryResourceCostAdjustment, ResourceCategory,
@@ -7,7 +9,8 @@ const {
   ResourceSettlement, RebatePostingOrder, RebateSettlementAllocation,
   SettlementAccount, SettlementAccountTransaction, SupplierRebate, RebateEstimate, Supplier,
   StaffCareCreditTransaction, PerformanceProfitAdjustment, Order, ManufacturerPriceHistory,
-  SalesCashRebatePolicy, SalesCashRebateClaim, SalesCashRebateClaimItem, SalesCashRebateReceipt
+  SalesCashRebatePolicy, SalesCashRebateClaim, SalesCashRebateClaimItem, SalesCashRebateReceipt,
+  ApprovalFlowInstance, ApprovalTask, ApprovalFlowDefinition
 } = require('../../models');
 const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 
@@ -106,7 +109,7 @@ function categoryMap(categories = []) {
 function normalizeRights(rows = [], categories = []) {
   const map = new Map(rows.map(row => [row.resource_type, row.toJSON ? row.toJSON() : row]));
   const configuredTypes = categories.map(category => category.category_code);
-  const types = [...new Set([...(configuredTypes.length ? configuredTypes : LEGACY_RESOURCE_TYPES), ...rows.map(row => row.resource_type)])];
+  const types = [...new Set([...(configuredTypes.length ? configuredTypes : LEGACY_RESOURCE_TYPES), ...rows.map(row => row.resource_type)])].filter(type => type !== 'MANUAL_REBATE');
   return types.map(resourceType => map.get(resourceType) || {
     resource_type: resourceType,
     current_status: 'NOT_APPLICABLE',
@@ -859,72 +862,8 @@ function policyForSaleDate(rule, saleDate) {
 }
 
 async function supplementEducationResource(ctx) {
-  requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager']);
-  const orderNo = String(ctx.request.body?.orderNo || '').trim();
-  const snId = String(ctx.request.body?.snId || '').trim();
-  const attachmentUrl = String(ctx.request.body?.attachmentUrl || '').trim();
-  if (!orderNo || !snId || !attachmentUrl) ctx.throw(400, '请填写销售单号并上传凭证图片');
-  const result = await sequelize.transaction(async transaction => {
-    const sn = await ProductSn.findByPk(snId, { transaction, lock: transaction.LOCK.UPDATE });
-    if (!sn || sn.is_deleted) ctx.throw(404, 'SN不存在');
-    const order = await Order.findOne({ where: { order_no: orderNo, is_deleted: 0 }, transaction, lock: transaction.LOCK.UPDATE });
-    if (!order || !['已归档', 'completed', 'archived'].includes(String(order.order_status || ''))) ctx.throw(409, '仅支持已归档的销售单');
-    const item = await OrderItem.findOne({ where: { order_id: order.order_id, sn_id: sn.sn_id }, transaction, lock: transaction.LOCK.UPDATE });
-    if (!item || String(item.product_id) !== String(sn.product_id)) ctx.throw(409, '销售单中没有对应的SN商品');
-    if (selectedResources(item).includes('EDU_SUBSIDY')) ctx.throw(409, '该销售商品归档时已使用教育补贴，无需补录');
-
-    const right = await InventoryResourceRight.findOne({ where: { sn_id: sn.sn_id, resource_type: 'EDU_SUBSIDY' }, transaction, lock: transaction.LOCK.UPDATE });
-    if (!right || right.current_status !== 'AVAILABLE') ctx.throw(409, '该商品教育补贴权益已使用或不可补录');
-    const existing = await ResourceRightChangeOrder.findOne({
-      where: { sn_id: sn.sn_id, related_sale_order_id: order.order_id, resource_type: 'EDU_SUBSIDY', change_reason: { [Op.in]: ['SALE_USED', 'SALE_TRIGGER', 'EDU_SUBSIDY_SUPPLEMENT'] } },
-      transaction,
-      lock: transaction.LOCK.UPDATE
-    });
-    if (existing) ctx.throw(409, '该销售商品已有教育补贴资源记录，不能重复补录');
-
-    const configs = await ProductResourceCostConfig.findAll({
-      where: { product_id: sn.product_id, resource_type: 'EDU_SUBSIDY', status: 1 }, transaction
-    });
-    const orderedConfigs = configs.sort((a, b) => (String(a.supplier_id || '') === String(sn.supplier_id || '') ? -1 : 0) - (String(b.supplier_id || '') === String(sn.supplier_id || '') ? -1 : 0));
-    let selected = null;
-    let rule = null;
-    for (const config of orderedConfigs) {
-      selected = policyForSaleDate(config, order.create_time);
-      if (selected) { rule = config; break; }
-    }
-    if (!rule) {
-      rule = await findResourceRule({ productId: sn.product_id, resourceType: 'EDU_SUBSIDY', supplierId: sn.supplier_id || '', saleDate: order.create_time, transaction });
-      selected = rule ? { studentDiscount: Number(rule.cost_amount || 0), resourceRecalculationAmount: Number(rule.cost_amount || 0) } : null;
-    }
-    if (!selected) ctx.throw(409, '没有找到该销售日期适用的教育优惠政策，请先导入教育优惠表');
-    const studentDiscount = money(selected.studentDiscount);
-    const fullAmount = money(selected.resourceRecalculationAmount ?? studentDiscount);
-    if (studentDiscount <= 0 || fullAmount <= 0) ctx.throw(409, '该政策教育优惠或资源回算金额为0，无法补录');
-    const supplierId = right.supplier_id || sn.supplier_id;
-    const supplierName = right.supplier_name || sn.supplier_name || '';
-    if (!supplierId) ctx.throw(409, '该SN缺少供应商归属，无法生成供应商返利待下账');
-
-    const change = await ResourceRightChangeOrder.create({
-      change_id: generateUUID(), change_order_no: businessNo('EDU'), sn_id: sn.sn_id, sn_code: sn.sn_code,
-      product_id: sn.product_id, resource_type: 'EDU_SUBSIDY', before_status: 'AVAILABLE', after_status: 'USED',
-      change_amount: fullAmount, change_reason: 'EDU_SUBSIDY_SUPPLEMENT', approval_status: 'approved',
-      related_sale_order_id: order.order_id, attachment_url: attachmentUrl,
-      applicant_staff_id: ctx.state.user.staffId || null, applicant_name: ctx.state.user.name || '',
-      reviewer_staff_id: ctx.state.user.staffId || null, reviewer_name: ctx.state.user.name || '', review_time: new Date(),
-      remark: `销售单 ${order.order_no} 归档后教育优惠资源补录；政策优惠 ¥${studentDiscount.toFixed(2)}，供应商回算 ¥${fullAmount.toFixed(2)}`
-    }, { transaction });
-    await right.update({ current_status: 'USED', amount: fullAmount, locked_source_type: null, locked_source_id: null, version: Number(right.version || 0) + 1, update_time: new Date() }, { transaction });
-    await createPendingSettlement({
-      sourceType: 'SALE_USE', sourceId: change.change_id,
-      sn: { sn_id: sn.sn_id, sn_code: sn.sn_code, product_id: sn.product_id },
-      resourceType: 'EDU_SUBSIDY', amount: fullAmount,
-      counterpartyId: supplierId, counterpartyName: supplierName, forceSettlement: true,
-      remark: `销售单 ${order.order_no} 教育优惠资源补录`, transaction
-    });
-    await createPerformanceProfitAdjustment({ order, item, resourceType: 'EDU_SUBSIDY', amount: studentDiscount, ratio: 80, transaction });
-    return { changeOrderNo: change.change_order_no, supplierRebateAmount: fullAmount, performanceProfitAmount: money(studentDiscount * 0.8) };
-  });
-  ctx.body = { code: 0, data: result, message: `教育优惠资源补录完成；供应商待下账 ¥${result.supplierRebateAmount.toFixed(2)}，员工业绩毛利增加 ¥${result.performanceProfitAmount.toFixed(2)}` };
+  requireAnyRole(ctx, ['boss', 'admin', 'finance', 'manager', 'store_manager', 'store_admin', 'clerk', 'staff']);
+  return require('./educationSupplement').submit(ctx);
 }
 
 async function batchRefreshRights(ctx) {
@@ -1327,13 +1266,17 @@ async function saveResourceCategory(ctx) {
     generates_staff_care_credit: body.generatesStaffCareCredit === true ? 1 : 0,
     affects_performance_profit: body.affectsPerformanceProfit === true ? 1 : 0,
     performance_profit_ratio: Number(body.performanceProfitRatio ?? 100),
-    rule_config_json: body.ruleConfigJson ? JSON.stringify(body.ruleConfigJson) : (body.ruleConfigText || body.rule_config_json || null),
     sort_order: Number(body.sortOrder || 0),
     status: body.status === 0 ? 0 : 1,
     remark: String(body.remark || '').trim(),
     update_time: new Date()
   };
   let record;
+  // Reward rules have a versioned, audited endpoint. Ordinary category edits must
+  // never erase or bypass them (including concurrent rule changes).
+  if (body.ruleConfigJson !== undefined || body.ruleConfigText !== undefined || body.rule_config_json !== undefined) {
+    ctx.throw(400, '请通过专用规则配置入口修改权益规则');
+  }
   if (body.categoryId) {
     record = await ResourceCategory.findByPk(body.categoryId);
     if (!record) ctx.throw(404, '资源类别不存在');
@@ -2442,6 +2385,7 @@ async function triggerSaleResourceBenefits(order, items, transaction) {
 
   for (const item of snItems) {
     for (const category of categories) {
+      if (category.category_code === 'EDU_SUBSIDY') continue; // Resource task approval owns education income.
       if (category.resource_kind === 'PO_REWARD') {
         const resourceRight = rightsBySnType.get(`${item.sn_id}:${category.category_code}`);
         if (resourceRight?.current_status === 'AVAILABLE' && resourceRight.supplier_id) {
@@ -2603,9 +2547,8 @@ async function triggerSaleResourceBenefits(order, items, transaction) {
           transaction
         });
       }
-      const affectsProfit = category.category_code === 'EDU_SUBSIDY'
-        || category.resource_kind === 'PO_REWARD'
-        || Number(rule?.affects_performance_profit ?? category.affects_performance_profit) === 1;
+      const affectsProfit = category.category_code !== 'EDU_SUBSIDY' && (category.resource_kind === 'PO_REWARD'
+        || Number(rule?.affects_performance_profit ?? category.affects_performance_profit) === 1);
       if (affectsProfit) {
         await createPerformanceProfitAdjustment({
           order,
@@ -2701,13 +2644,13 @@ async function alignOrderSubsidyRights(order, items, transaction) {
 
   // 销量报号是售出后完成的事项。SN具备有效资格时自动关联商品行，
   // 避免店员没有在下单页手工勾选就漏掉报号任务。
-  for (const item of snItems) {
-    if (selectedResources(item).includes('SALES_REPORT')) continue;
+  for (const item of snItems) for (const resourceType of ['SALES_REPORT', 'EDU_SUBSIDY']) {
+    if (selectedResources(item).includes(resourceType)) continue;
     const right = await InventoryResourceRight.findOne({
-      where: { sn_id: item.sn_id, resource_type: 'SALES_REPORT' }, transaction
+      where: { sn_id: item.sn_id, resource_type: resourceType }, transaction
     });
     if (right && effectiveRightStatus(right) === 'AVAILABLE') {
-      await updateItemResourceSelection(item, 'SALES_REPORT', true, transaction);
+      await updateItemResourceSelection(item, resourceType, true, transaction);
     }
   }
 }
@@ -2741,24 +2684,6 @@ async function lockSaleRights(order, items, transaction) {
 }
 
 async function finishSaleRights(order, items, transaction) {
-  const educationItems = items.filter(item => selectedResources(item).includes('EDU_SUBSIDY'));
-  const educationTotal = money(order.education_subsidy || 0);
-  const itemGross = item => Math.abs(Number(item.sale_price || 0) * Number(item.quantity || 0));
-  const educationGrossTotal = educationItems.reduce((sum, item) => sum + itemGross(item), 0);
-  const hasLineEducationAmounts = educationItems.some(item => Number(item.education_subsidy_amount || 0) > 0);
-  let allocatedEducation = 0;
-  const educationAmountByItem = new Map();
-  educationItems.forEach((item, index) => {
-    const amount = hasLineEducationAmounts
-      ? money(item.education_subsidy_amount || 0)
-      : index === educationItems.length - 1
-        ? money(educationTotal - allocatedEducation)
-        : educationGrossTotal > 0
-          ? money(educationTotal * itemGross(item) / educationGrossTotal)
-          : money(educationTotal / educationItems.length);
-    educationAmountByItem.set(String(item.item_id), amount);
-    allocatedEducation = money(allocatedEducation + amount);
-  });
   for (const item of items) for (const resourceType of selectedResources(item)) {
     if (!item.sn_id) {
       const productName = item.product_name || item.pn_code || '未命名商品';
@@ -2774,12 +2699,8 @@ async function finishSaleRights(order, items, transaction) {
       change_amount: 0, change_reason: 'SALE_USED', approval_status: 'approved', related_sale_order_id: order.order_id,
       applicant_name: order.create_user, remark: `销售订单 ${order.order_no} 归档核销`
     }, { transaction });
-    const settlementAmount = resourceType === 'EDU_SUBSIDY'
-      ? Number(educationAmountByItem.get(String(item.item_id)) || 0)
-      : Number(right.amount || 0);
-    if (resourceType === 'EDU_SUBSIDY' && settlementAmount > 0 && !right.supplier_id) {
-      throw Object.assign(new Error(`SN ${item.sn_code} 缺少供应商归属，无法生成教育补贴返利待下账`), { status: 409 });
-    }
+    if (resourceType === 'EDU_SUBSIDY') continue; // Confirm the full income only after all three approvals.
+    const settlementAmount = Number(right.amount || 0);
     const waitingManualManufacturerRebate = resourceType === 'MANUFACTURER_REBATE'
       ? await RebateEstimate.findOne({
         where: {
@@ -2797,13 +2718,8 @@ async function finishSaleRights(order, items, transaction) {
       resourceType, amount: settlementAmount,
       counterpartyId: right.supplier_id || null,
       counterpartyName: right.supplier_name || '',
-      forceSettlement: resourceType === 'EDU_SUBSIDY',
+      forceSettlement: false,
       remark: `销售订单 ${order.order_no} 使用权益`, transaction
-      });
-    }
-    if (resourceType === 'EDU_SUBSIDY' && settlementAmount > 0) {
-      await createPerformanceProfitAdjustment({
-        order, item, resourceType, amount: settlementAmount, ratio: 80, transaction
       });
     }
   }
@@ -2852,10 +2768,13 @@ async function createSaleResourceTasks(order, items, transaction) {
         transaction
       });
       if (existing) continue;
+      const rewardSnapshot = ['SALES_REPORT', 'EDU_SUBSIDY'].includes(resourceType)
+        ? await freezeSalesReportReward({ category, item, order, transaction }) : null;
       await ResourceRightChangeOrder.create({
         change_id: generateUUID(), change_order_no: businessNo('SRT'), sn_id: item.sn_id, sn_code: item.sn_code,
         product_id: item.product_id, resource_type: resourceType, before_status: 'USED', after_status: 'USED',
-        change_amount: 0, change_reason: 'SALE_RESOURCE_TASK', approval_status: 'pending_submit',
+        change_amount: rewardSnapshot ? rewardAmount(rewardSnapshot) : 0, change_reason: 'SALE_RESOURCE_TASK', approval_status: 'pending_submit',
+        reward_snapshot_json: rewardSnapshot,
         related_sale_order_id: order.order_id, applicant_staff_id: order.create_staff_id || null,
         applicant_name: order.create_user || '', remark: `销售订单 ${order.order_no} 的${category.name || resourceType}待完成`
       }, { transaction });
@@ -2877,10 +2796,28 @@ async function assertSaleResourceTaskReadable(ctx, task, { review = false } = {}
   const storeAllowed = stores.includes('*') || stores.includes(String(order.store_id));
   if (review) {
     if (!manager || !storeAllowed) ctx.throw(403, '仅订单所属门店店长可审核晒单');
-  } else if (Number(task.applicant_staff_id || order.create_staff_id || 0) !== actorId && !(manager && storeAllowed)) {
+  } else if (Number(task.applicant_staff_id || order.create_staff_id || 0) !== actorId && !(manager && storeAllowed) && !(storeAllowed && (await resourceReviewState(ctx, task)).can_review)) {
     ctx.throw(403, '无权操作该销售资源任务');
   }
   return order;
+}
+
+async function resourceReviewState(ctx, task) {
+  const type = ['SALES_REPORT', 'EDU_SUBSIDY'].includes(task.resource_type) ? 'sale_resource_reward' : 'sale_share';
+  const instance = await ApprovalFlowInstance.findOne({ where: { business_type: type, business_id: String(task.change_id), status: 'pending' }, order: [['create_time', 'DESC']] });
+  if (!instance) {
+    const flow = await ApprovalFlowDefinition.findOne({ where: { flow_code: type, status: 'published' }, order: [['version', 'DESC']] });
+    if (!flow || task.approval_status !== 'pending_manager_review') return { can_review: false, approval_node_name: '' };
+    const runtime = require('../approval/businessRuntime'), service = require('../approval/service');
+    const info = await runtime.context(type, task);
+    if (!runtime.visible(ctx.state.user, info)) return { can_review: false, approval_node_name: '' };
+    const node = service.normalizeFlowConfig(flow.config_json).nodes[0];
+    const ids = await service.resolveApprovers(node, info);
+    return { can_review: node.signMode === 'serial' ? ids[0] === Number(ctx.state.user.staffId) : ids.includes(Number(ctx.state.user.staffId)), approval_node_name: node.name };
+  }
+  const pendingTask = await ApprovalTask.findOne({ where: { instance_id: instance.instance_id, assignee_staff_id: ctx.state.user.staffId,
+    status: 'pending', node_index: instance.current_node_index, round_no: instance.resubmit_count } });
+  return { can_review: Boolean(pendingTask), approval_node_name: pendingTask?.node_name || parseJsonObject(instance.definition_snapshot_json).nodes?.[instance.current_node_index]?.name || '', approval_instance_id: instance.instance_id };
 }
 
 async function listSaleResourceTasks(ctx) {
@@ -2889,8 +2826,11 @@ async function listSaleResourceTasks(ctx) {
   const where = { change_reason: 'SALE_RESOURCE_TASK' };
   where.related_sale_order_id = orderId;
   const rows = await ResourceRightChangeOrder.findAll({ where, order: [['create_time', 'DESC']] });
-  if (rows.length) await assertSaleResourceTaskReadable(ctx, rows[0]);
-  ctx.body = rows.map(row => ({ ...row.toJSON(), resource_name: resourceTaskLabel(row.resource_type) }));
+  const result = await Promise.all(rows.map(async row => ({ ...row.toJSON(), resource_name: resourceTaskLabel(row.resource_type),
+    reward_amount: ['SALES_REPORT', 'EDU_SUBSIDY'].includes(row.resource_type) ? (row.reward_snapshot_json ? rewardAmount(row.reward_snapshot_json) : row.resource_type === 'SALES_REPORT' ? 160 : null) : null,
+    ...(await resourceReviewState(ctx, row)) })));
+  if (rows.length) await assertSaleResourceTaskReadable(ctx, rows[Math.max(0, result.findIndex(row => row.can_review))]);
+  ctx.body = result;
 }
 
 async function submitSaleResourceTask(ctx) {
@@ -2899,17 +2839,39 @@ async function submitSaleResourceTask(ctx) {
   if (!task || task.change_reason !== 'SALE_RESOURCE_TASK') ctx.throw(404, '销售资源任务不存在');
   await assertSaleResourceTaskReadable(ctx, task);
   if (!['pending_submit', 'rejected'].includes(task.approval_status)) ctx.throw(409, '该资源任务当前不能提交');
-  const needsImageReview = [SHARE_INCENTIVE_TYPE, 'SALES_REPORT'].includes(task.resource_type);
+  const needsImageReview = [SHARE_INCENTIVE_TYPE, 'SALES_REPORT', 'EDU_SUBSIDY'].includes(task.resource_type);
   if (needsImageReview && attachments.length === 0) ctx.throw(400, '请至少上传一张证明图片');
   const nextStatus = needsImageReview ? 'pending_manager_review' : 'completed';
   await sequelize.transaction(async transaction => {
   await task.reload({ transaction, lock: transaction.LOCK.UPDATE });
   if (!['pending_submit', 'rejected'].includes(task.approval_status)) ctx.throw(409, '资源任务状态已变化');
+  if (['EDU_SUBSIDY', 'SALES_REPORT'].includes(task.resource_type)) {
+    const order = await Order.findByPk(task.related_sale_order_id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!order || !['已归档', 'completed', 'archived'].includes(order.order_status)) ctx.throw(409, '订单未归档或正在退货，不能提交资源奖励');
+    const item = await OrderItem.findOne({ where: { order_id: order.order_id, sn_id: task.sn_id }, transaction });
+    if (!item) ctx.throw(409, '找不到关联订单商品');
+    if (!task.reward_snapshot_json) {
+      if (task.resource_type === 'SALES_REPORT') {
+        task.reward_snapshot_json = JSON.stringify({ version: 1, resourceType: 'SALES_REPORT', amount: 160, reason: 'legacy_fixed_reward' });
+      } else {
+        const category = await ResourceCategory.findOne({ where: { category_code: task.resource_type, status: 1 }, transaction });
+        if (!category) ctx.throw(409, '权益类别未启用');
+        task.reward_snapshot_json = await freezeSalesReportReward({ category, item, order, transaction });
+      }
+    }
+    if (task.resource_type === 'EDU_SUBSIDY') {
+      require('./educationReward').educationSnapshot(task);
+      const existing = await PerformanceProfitAdjustment.findOne({ where: { adjustment_no: `AUTO-${String(order.order_id).slice(0, 12)}-${item.item_id}-EDU_SUBSIDY` }, transaction });
+      if (existing) ctx.throw(409, '历史教育补贴已经计入毛利，请核对原记录，不重复提交奖励');
+    }
+  }
   if (task.resource_type === 'OTHER_POLICY') {
     const right = await InventoryResourceRight.findOne({ where: { sn_id: task.sn_id, resource_type: 'OTHER_POLICY' }, transaction, lock: transaction.LOCK.UPDATE });
     if (right) await right.update({ current_status: 'USED', update_time: new Date(), version: Number(right.version || 0) + 1 }, { transaction });
   }
   await task.update({
+    reward_snapshot_json: task.reward_snapshot_json,
+    change_amount: task.reward_snapshot_json ? rewardAmount(task.reward_snapshot_json) : task.change_amount,
     attachment_url: attachments.length ? JSON.stringify(attachments) : null,
     approval_status: nextStatus,
     applicant_staff_id: ctx.state.user.staffId || task.applicant_staff_id,
@@ -3258,22 +3220,36 @@ async function reviewSaleResourceTask(ctx) {
   const comment = String(ctx.request.body?.comment || '').trim();
   await sequelize.transaction(async transaction => {
     const task = await ResourceRightChangeOrder.findByPk(ctx.params.changeId, { transaction, lock: transaction.LOCK.UPDATE });
-    if (!task || task.change_reason !== 'SALE_RESOURCE_TASK' || ![SHARE_INCENTIVE_TYPE, 'SALES_REPORT'].includes(task.resource_type)) ctx.throw(404, '待审核资源任务不存在');
+    if (!task || task.change_reason !== 'SALE_RESOURCE_TASK' || ![SHARE_INCENTIVE_TYPE, 'SALES_REPORT', 'EDU_SUBSIDY'].includes(task.resource_type)) ctx.throw(404, '待审核资源任务不存在');
     if (task.approval_status !== 'pending_manager_review') ctx.throw(409, '资源任务状态已变化');
-    if (task.resource_type === 'SALES_REPORT') {
-      const order = await assertSaleResourceTaskReadable(ctx, task, { review: true });
+    if (['SALES_REPORT', 'EDU_SUBSIDY'].includes(task.resource_type)) {
+      const order = await Order.findByPk(task.related_sale_order_id, { transaction, lock: transaction.LOCK.UPDATE });
+      if (!order) ctx.throw(404, '销售订单不存在');
       if (!['已归档', 'completed', 'archived'].includes(String(order.order_status || ''))) ctx.throw(409, '订单未归档或正在退货，不能发放报号奖励');
       if (!parseJsonArray(task.attachment_url).length) ctx.throw(409, '报号任务缺少证明图片');
+      if (!await require('../approval/businessRuntime').advance(ctx, 'sale_resource_reward', task, transaction, approved ? 'approve' : 'reject', comment)) return;
       if (approved) {
         const item = await OrderItem.findOne({ where: { order_id: order.order_id, sn_id: task.sn_id }, transaction });
-        await require('../sales/staffCareCredit').creditSalesReport({ task, order, item, transaction });
+        if (!item) ctx.throw(409, '关联订单商品不存在');
+        if (task.resource_type === 'SALES_REPORT') await require('../sales/staffCareCredit').creditSalesReport({ task, order, item, transaction });
+        else {
+          const snapshot = await require('./educationReward').postEducation({ task, order, item, transaction });
+          const right = await InventoryResourceRight.findOne({ where: { sn_id: task.sn_id, resource_type: 'EDU_SUBSIDY' }, transaction });
+          if (!right?.supplier_id) ctx.throw(409, '教育补贴资源缺少供应商归属，不能确认待下账');
+          await createPendingSettlement({ sourceType: 'SALE_USE', sourceId: task.change_id,
+            sn: { sn_id: task.sn_id, sn_code: task.sn_code, product_id: task.product_id }, resourceType: 'EDU_SUBSIDY',
+            amount: snapshot.amount, counterpartyId: right.supplier_id, counterpartyName: right.supplier_name || '',
+            forceSettlement: true, remark: `教育补贴三级审批通过，全额${snapshot.amount}元；员工80%，产品端20%`, transaction });
+        }
       }
     } else if (!await require('../approval/businessRuntime').advance(ctx, 'sale_share', task, transaction, approved ? 'approve' : 'reject', comment)) return;
     await task.update({
       approval_status: approved ? 'completed' : 'rejected', reviewer_staff_id: ctx.state.user.staffId,
       reviewer_name: ctx.state.user.name || ctx.state.user.phone || '', review_comment: comment || null, review_time: new Date(),
       remark: approved
-        ? (task.resource_type === 'SALES_REPORT' ? '销售报号已审核完成；CARE可用金已入账' : '晒单已审核完成；礼品或红包通过体外流程发放')
+        ? (task.resource_type === 'SALES_REPORT'
+          ? (rewardAmount(task.reward_snapshot_json) > 0 ? `销售报号已审核完成；CARE可用金${rewardAmount(task.reward_snapshot_json)}元已入账` : '销售报号已审核完成；归档时未匹配奖励或奖励为0元，不发放可用金')
+          : task.resource_type === 'EDU_SUBSIDY' ? `教育补贴三级审批通过；${rewardAmount(task.reward_snapshot_json)}元按员工80%和产品端20%确认` : '晒单已审核完成；礼品或红包通过体外流程发放')
         : `${resourceTaskLabel(task.resource_type)}被拒绝：${comment}`
     }, { transaction });
   });

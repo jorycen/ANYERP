@@ -16,6 +16,7 @@ const {
 } = require('../../models');
 const { Op, QueryTypes } = require('sequelize');
 const { generateUUID } = require('../../utils');
+const { educationProductEntrySql } = require('./educationProductEntry');
 
 const PRODUCT_SETTLEMENT_FORMULA_VERSION = 'PRODUCT_GP_V1_20260831';
 const ARCHIVED_ORDER_STATUSES = new Set(['已归档', 'completed', 'archived']);
@@ -288,15 +289,18 @@ async function queryProductSettlementSummary({ startDate, endDate, storeIds = []
           ROUND(COALESCE(SUM(CASE WHEN STATUS = 'posted' THEN PRODUCT_PRICING_AMOUNT ELSE 0 END), 0), 2) AS productPricingAmount,
           ROUND(COALESCE(SUM(CASE WHEN STATUS = 'posted' THEN PURCHASE_COST_AMOUNT ELSE 0 END), 0), 2) AS purchaseCostAmount,
           ROUND(COALESCE(SUM(CASE WHEN STATUS = 'posted' THEN GROSS_PROFIT_AMOUNT ELSE 0 END), 0), 2) AS grossProfitAmount,
-          COUNT(CASE WHEN STATUS = 'posted' THEN 1 END) AS orderCount,
+          COUNT(CASE WHEN STATUS = 'posted' AND IS_POLICY_ENTRY = 0 THEN 1 END) AS orderCount,
           COUNT(CASE WHEN STATUS = 'cost_pending' THEN 1 END) AS costPendingOrderCount,
           ROUND(COALESCE(SUM(COST_PENDING_AMOUNT), 0), 2) AS costPendingAmount
        FROM (
-         SELECT STORE_ID, BUSINESS_DATE, STATUS, PRODUCT_PRICING_AMOUNT, PURCHASE_COST_AMOUNT, GROSS_PROFIT_AMOUNT, COST_PENDING_AMOUNT
+         SELECT STORE_ID, BUSINESS_DATE, STATUS, PRODUCT_PRICING_AMOUNT, PURCHASE_COST_AMOUNT, GROSS_PROFIT_AMOUNT, COST_PENDING_AMOUNT, 0 AS IS_POLICY_ENTRY
            FROM T_PRODUCT_SETTLEMENT_ORDER
           UNION ALL
-         SELECT STORE_ID, BUSINESS_DATE, STATUS, PRODUCT_PRICING_AMOUNT, PURCHASE_COST_AMOUNT, GROSS_PROFIT_AMOUNT, COST_PENDING_AMOUNT
+         SELECT STORE_ID, BUSINESS_DATE, STATUS, PRODUCT_PRICING_AMOUNT, PURCHASE_COST_AMOUNT, GROSS_PROFIT_AMOUNT, COST_PENDING_AMOUNT, 0 AS IS_POLICY_ENTRY
            FROM T_PRODUCT_SETTLEMENT_ADJUSTMENT
+          UNION ALL
+         SELECT STORE_ID, BUSINESS_DATE, STATUS, PRODUCT_PRICING_AMOUNT, PURCHASE_COST_AMOUNT, GROSS_PROFIT_AMOUNT, COST_PENDING_AMOUNT, 1 AS IS_POLICY_ENTRY
+           FROM (${educationProductEntrySql()}) education_entries
        ) entries
       WHERE STORE_ID IN (:storeIds)
         AND BUSINESS_DATE >= :startDate
@@ -371,7 +375,7 @@ function buildProductSettlementEntrySql({
     conditions.push('entries.STATUS = :status');
     replacements.status = status;
   }
-  if (entryType === 'sale' || entryType === 'return') {
+  if (['sale', 'return', 'education'].includes(entryType)) {
     conditions.push('entries.ENTRY_TYPE = :entryType');
     replacements.entryType = entryType;
   }
@@ -395,6 +399,12 @@ function buildProductSettlementEntrySql({
         SELECT 1 FROM T_PRODUCT_SETTLEMENT_ADJUSTMENT_ITEM item
          WHERE item.ADJUSTMENT_ID = entries.ENTRY_ID
            AND (item.PRODUCT_NAME LIKE :itemKeyword OR item.PN_CODE LIKE :itemKeyword OR item.SN_CODE LIKE :itemKeyword)
+      )
+      OR EXISTS (
+        SELECT 1 FROM T_RESOURCE_RIGHT_CHANGE_ORDER resource_entry
+        INNER JOIN T_ORDER_ITEM item ON item.ORDER_ID = resource_entry.RELATED_SALE_ORDER_ID AND item.SN_ID = resource_entry.SN_ID
+        WHERE resource_entry.CHANGE_ID = entries.ENTRY_ID
+          AND (item.PRODUCT_NAME LIKE :itemKeyword OR item.PN_CODE LIKE :itemKeyword OR item.SN_CODE LIKE :itemKeyword)
       )
     )`);
   }
@@ -435,6 +445,8 @@ function buildProductSettlementEntrySql({
                  STATUS,
                  FORMULA_VERSION
             FROM T_PRODUCT_SETTLEMENT_ADJUSTMENT
+          UNION ALL
+          ${educationProductEntrySql()}
         ) entries
         LEFT JOIN T_STORE store ON store.STORE_ID = entries.STORE_ID
        WHERE ${conditions.join(' AND ')}`,

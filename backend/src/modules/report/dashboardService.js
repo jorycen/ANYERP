@@ -227,16 +227,19 @@ function buildEmployeePerformance(orderRows, adjustmentRows, selectedEmployeeId,
       rank.baseGrossProfit += baseProfitShare;
       rank.approvedAdjustment += participantAdjustment;
       rank.grossProfit += participantGrossProfitShare;
-      rank.participatedOrderCount += 1;
+      rank.participatedOrderCount += order.entry_type?.startsWith('return') ? 0 : 1;
+      rank.returnCount = (rank.returnCount || 0) + (order.entry_type === 'return' ? 1 : 0);
 
       details.push({
+        entryType: order.entry_type?.startsWith('return') ? 'return' : 'sale',
+        sourceOrderNo: order.source_order_no || order.order_no,
         orderId: order.order_id,
         orderNo: order.order_no,
         orderTime: order.create_time,
         storeName: order.store_name,
         staffId: participant.staffId,
         employeeName: participant.name,
-        role: participant.role,
+        role: order.participant_role || participant.role,
         participantCount,
         orderSalesAmount: roundMoney(order.sales_amount),
         allocatedSalesAmount: salesShare,

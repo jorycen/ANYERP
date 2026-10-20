@@ -2,6 +2,7 @@
  * 财务管理路由
  */
 const Router = require('koa-router');
+const settlementDraft = require('./settlementDraft');
 const {
   getPlatforms,
   createPlatform,
@@ -152,6 +153,8 @@ router.post('/create-expense-settlement', createExpenseSettlement);
 router.get('/settlement-list', getSettlementList);
 router.get('/settlement-list/export', exportSettlementList);
 router.get('/settlement/:id', getSettlementDetail);
+router.get('/settlement/:id/edit', settlementDraft.getDraft);
+router.put('/settlement/:id/draft', settlementDraft.updateDraft);
 router.put('/settlement/:id/remark', updateSettlementRemark);
 router.delete('/settlement/:id', deleteSettlementDraft);
 router.post('/settlement/submit', submitSettlement);

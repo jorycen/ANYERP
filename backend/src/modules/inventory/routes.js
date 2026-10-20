@@ -14,6 +14,7 @@ const {
 const { submitSnChangeApplication } = require('./snChangeApplication');
 const { enforceStoreOwnership, requireRole } = require('../../middleware/permission');
 const resourceRights = require('./resourceRights');
+const rewardConfig = require('./rewardConfig');
 const batchMaintenance = require('./batchMaintenance');
 const { listProductFlow } = require('./productFlow');
 
@@ -45,6 +46,8 @@ router.get('/sale-resource-tasks', resourceRights.listSaleResourceTasks);
 router.post('/sale-resource-tasks/:changeId/submit', resourceRights.submitSaleResourceTask);
 router.post('/sale-resource-tasks/:changeId/review', resourceRights.reviewSaleResourceTask);
 router.get('/resource-rights/cost-configs', resourceRights.listCostConfigs);
+router.get('/resource-rights/reward-rules', rewardConfig.listRewardRules);
+router.post('/resource-rights/reward-rules', rewardConfig.saveRewardRules);
 router.get('/resource-rights/nb-policy', resourceRights.listNbPolicies);
 router.post('/resource-rights/nb-policy/import', resourceRights.importNbPolicy);
 router.get('/resource-rights/cost-adjustments', resourceRights.listCostAdjustments);

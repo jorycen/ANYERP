@@ -1,3 +1,4 @@
+const { PERFORMANCE_SALE_STATUSES } = require('./performanceEvents');
 const { QueryTypes } = require('sequelize');
 const { INTERNAL_TRANSFER_SOURCE, operatingSourceSql } = require('./operatingScope');
 const { sequelize } = require('../../models');
@@ -283,7 +284,7 @@ function buildSalesWhere(filters, range, options = {}) {
     replacements.voidedStatuses = VOIDED_STATUSES;
   } else {
     clauses.splice(1, 0, 'o.ORDER_STATUS IN (:archivedStatuses)');
-    replacements.archivedStatuses = ARCHIVED_STATUSES;
+    replacements.archivedStatuses = options.performance ? PERFORMANCE_SALE_STATUSES : ARCHIVED_STATUSES;
   }
 
   if (filters.storeId) {
@@ -665,8 +666,8 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
   }
 
   async getEmployeeOrderRows(filters, range) {
-    const where = buildSalesWhere(filters, range);
-    return this.query(
+    const where = buildSalesWhere(filters, range, { performance: true });
+    const sales = await this.query(
       `SELECT o.ORDER_ID AS order_id,
               o.ORDER_NO AS order_no,
               o.CREATE_TIME AS create_time,
@@ -680,14 +681,13 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
                   FROM T_ORDER_SUPPLEMENT os
                  WHERE os.ORDER_ID = o.ORDER_ID
                    AND os.IS_DELETED = 0
-              ), 0)) + COALESCE((
-                SELECT SUM(r.RETURNED_SALES_AMOUNT)
-                  FROM T_SALES_RETURN_GROSS_PROFIT r
-                 WHERE r.ORDER_ID = o.ORDER_ID
-              ), 0), 2) AS sales_amount,
-              ROUND(SUM(${grossProfitSql()}), 2) AS base_gross_profit
+              ), 0)), 2) AS sales_amount,
+              ROUND(SUM(CASE WHEN gp.ORDER_ID IS NOT NULL THEN gp.GROSS_PROFIT_AMOUNT
+                * CASE WHEN COALESCE(oit.ITEM_SUBTOTAL, 0) <> 0 THEN COALESCE(oi.SUBTOTAL, 0) / oit.ITEM_SUBTOTAL ELSE 1 / GREATEST(oit.ITEM_COUNT, 1) END
+                ELSE COALESCE(oi.SALES_GROSS_PROFIT, 0) END), 2) AS base_gross_profit
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+         ${orderItemTotalsJoin()}
          LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
          LEFT JOIN T_STORE s ON s.STORE_ID = o.STORE_ID
          LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
@@ -699,10 +699,43 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
         ORDER BY o.CREATE_TIME DESC`,
       where.replacements
     );
+    const returnWhere = where.sql.replaceAll('o.CREATE_TIME', 'rgp.CREATE_TIME')
+      .replace('o.ORDER_STATUS IN (:archivedStatuses)', '1 = 1');
+    const returns = await this.query(
+      `SELECT DISTINCT CONCAT('return:', rgp.LEDGER_ID) AS order_id,
+              rgp.RETURN_NO AS order_no, rgp.ORDER_NO AS source_order_no,
+              rgp.ORDER_ID AS source_order_id, 'return' AS entry_type,
+              rgp.CREATE_TIME AS create_time, rgp.STORE_ID AS store_id,
+              s.NAME AS store_name, rgp.STAFF_ID AS create_staff_id,
+              rgp.EMPLOYEE_NAME AS create_user, '[]' AS auxiliary_sales_list,
+              rgp.PARTICIPANT_ROLE AS participant_role,
+              rgp.RETURNED_SALES_AMOUNT AS sales_amount,
+              rgp.GROSS_PROFIT_AMOUNT AS base_gross_profit
+         FROM T_SALES_RETURN_GROSS_PROFIT rgp
+         INNER JOIN T_ORDER o ON o.ORDER_ID = rgp.ORDER_ID
+         INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+         LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
+         LEFT JOIN T_STORE s ON s.STORE_ID = rgp.STORE_ID
+        WHERE ${returnWhere}`, where.replacements);
+    const adjustmentWhere = returnWhere.replaceAll('rgp.CREATE_TIME', 'pa.CREATE_TIME');
+    const returnAdjustments = await this.query(
+      `SELECT DISTINCT CONCAT('return-adjustment:', pa.ADJUSTMENT_ID) AS order_id,
+        pa.ADJUSTMENT_NO AS order_no, pa.ORDER_NO AS source_order_no, 'return_adjustment' AS entry_type,
+        pa.CREATE_TIME AS create_time, o.STORE_ID AS store_id, s.NAME AS store_name,
+        o.CREATE_STAFF_ID AS create_staff_id, o.CREATE_USER AS create_user,
+        o.AUXILIARY_SALES_LIST AS auxiliary_sales_list, 0 AS sales_amount, 0 AS base_gross_profit
+        FROM T_PERFORMANCE_PROFIT_ADJUSTMENT pa
+        INNER JOIN T_ORDER o ON o.ORDER_ID = pa.ORDER_ID
+        INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+        LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
+        LEFT JOIN T_STORE s ON s.STORE_ID = o.STORE_ID
+        WHERE pa.STATUS = 'approved' AND (pa.ADJUSTMENT_NO LIKE 'AUTO-CARE-RET-%' OR pa.ADJUSTMENT_NO LIKE 'EDUR-%')
+          AND ${adjustmentWhere}`, where.replacements);
+    return [...sales, ...returns, ...returnAdjustments].sort((a, b) => new Date(b.create_time) - new Date(a.create_time));
   }
 
   async getApprovedAdjustments(filters, range) {
-    const where = buildSalesWhere(filters, range, { includeProduct: false });
+    const where = buildSalesWhere(filters, range, { includeProduct: false, performance: true });
     return this.query(
       `SELECT pa.ORDER_ID AS orderId,
               NULL AS participantKey,
@@ -712,18 +745,14 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
               pa.ADJUSTMENT_NO AS adjustmentNo
          FROM T_PERFORMANCE_PROFIT_ADJUSTMENT pa
          INNER JOIN T_ORDER o ON o.ORDER_ID = pa.ORDER_ID
-        WHERE pa.STATUS = 'approved'
+        WHERE pa.STATUS = 'approved' AND pa.ADJUSTMENT_NO NOT LIKE 'AUTO-CARE-RET-%' AND pa.ADJUSTMENT_NO NOT LIKE 'EDUR-%'
           AND ${where.sql}
         UNION ALL
-       SELECT rgp.ORDER_ID AS orderId,
-              rgp.PARTICIPANT_KEY AS participantKey,
-              rgp.GROSS_PROFIT_AMOUNT AS signedAmount,
-              rgp.REASON AS reason,
-              'return' AS adjustmentType,
-              rgp.RETURN_NO AS adjustmentNo
-         FROM T_SALES_RETURN_GROSS_PROFIT rgp
-         INNER JOIN T_ORDER o ON o.ORDER_ID = rgp.ORDER_ID
-        WHERE ${where.sql}
+        SELECT CONCAT('return-adjustment:', pa.ADJUSTMENT_ID), NULL, pa.SIGNED_AMOUNT,
+          pa.REASON, pa.ADJUSTMENT_TYPE, pa.ADJUSTMENT_NO
+        FROM T_PERFORMANCE_PROFIT_ADJUSTMENT pa INNER JOIN T_ORDER o ON o.ORDER_ID = pa.ORDER_ID
+        WHERE pa.STATUS = 'approved' AND (pa.ADJUSTMENT_NO LIKE 'AUTO-CARE-RET-%' OR pa.ADJUSTMENT_NO LIKE 'EDUR-%')
+          AND ${where.sql.replaceAll('o.CREATE_TIME', 'pa.CREATE_TIME').replace('o.ORDER_STATUS IN (:archivedStatuses)', '1 = 1')}
         ORDER BY orderId, adjustmentNo`,
       where.replacements
     );

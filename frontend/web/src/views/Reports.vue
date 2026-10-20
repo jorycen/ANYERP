@@ -132,6 +132,7 @@
 
           <div class="summary-row">
             <div class="summary-item">订单数：<strong>{{ employeeSummary.orderCount || 0 }}</strong></div>
+            <div class="summary-item">退单数：<strong>{{ employeeSummary.returnCount || 0 }}</strong></div>
             <div class="summary-item">销售额：<strong>¥{{ formatMoney(employeeSummary.totalAmount) }}</strong></div>
             <div class="summary-item">实收：<strong>¥{{ formatMoney(employeeSummary.actualPayment) }}</strong></div>
             <div class="summary-item">基础毛利：<strong>¥{{ formatMoney(employeeSummary.baseGrossProfit) }}</strong></div>
@@ -165,7 +166,7 @@
                 <div class="profit-process">
                   <div class="process-line">{{ row.calculation?.revenueNote }}</div>
                   <div class="process-line">整单毛利：{{ row.calculation?.orderFormula }}</div>
-                  <div v-if="row.careCostAmount || row.careCreditAdjustment" class="process-line">
+                  <div v-if="row.entryType !== 'return' && (row.careCostAmount || row.careCreditAdjustment)" class="process-line">
                     Care 商品成本 -¥{{ formatMoney(row.careCostAmount) }} 已计入基础毛利；
                     可用金抵扣 {{ row.careCreditAdjustment >= 0 ? '+' : '-' }}¥{{ formatMoney(Math.abs(row.careCreditAdjustment)) }}；
                     净计入员工成本 ¥{{ formatMoney(row.careCostAmount - row.careCreditAdjustment) }}
@@ -253,7 +254,7 @@
                         <template #default="{ row: participant }">{{ participant.role === 'primary' ? '主销售' : '辅助销售' }}</template>
                       </el-table-column>
                       <el-table-column label="分配依据" min-width="120">
-                        <template #default="{ row: participant }">{{ participant.role === 'primary' && row.customAllocation ? '剩余毛利' : Number(participant.fixedAmount) > 0 ? `固定 ¥${formatMoney(participant.fixedAmount)}` : Number(participant.ratio) > 0 ? `${participant.ratio}%` : '平均分配' }}</template>
+                        <template #default="{ row: participant }">{{ row.entryType === 'return' ? '按原销售记录冲回' : participant.role === 'primary' && row.customAllocation ? '剩余毛利' : Number(participant.fixedAmount) > 0 ? `固定 ¥${formatMoney(participant.fixedAmount)}` : Number(participant.ratio) > 0 ? `${participant.ratio}%` : '平均分配' }}</template>
                       </el-table-column>
                       <el-table-column label="基础毛利" width="115">
                         <template #default="{ row: participant }">¥{{ formatMoney(participant.baseGrossProfit) }}</template>
@@ -282,7 +283,11 @@
                 </div>
               </template>
             </el-table-column>
-            <el-table-column prop="orderNo" label="订单号" width="170" />
+            <el-table-column label="业务类型" width="100">
+              <template #default="{ row }"><el-tag :type="row.entryType === 'return' ? 'danger' : 'success'">{{ row.entryType === 'return' ? '退单冲回' : '销售' }}</el-tag></template>
+            </el-table-column>
+            <el-table-column prop="orderNo" label="销售/退单号" width="180" />
+            <el-table-column prop="sourceOrderNo" label="关联原销售单" width="180" />
             <el-table-column prop="orderTime" label="时间" width="160">
               <template #default="{ row }">{{ formatDateTime(row.orderTime) }}</template>
             </el-table-column>

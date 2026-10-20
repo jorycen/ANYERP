@@ -22,12 +22,16 @@ const registry = {
   inventory_transfer: { model: 'Transfer', id: 'transfer_id', no: 'transfer_no', states: ['pending'], store: 'from_store_id', manual: '/inventory/transfer', retired: true },
   inventory_transfer_receipt: { model: 'Transfer', id: 'transfer_id', no: 'transfer_no', states: ['out_confirmed'], store: 'to_store_id', manual: '/inventory/transfer', retired: true },
   inventory_batch: { model: 'InventoryBatchApplication', id: 'application_id', no: 'application_no', states: ['pending'], module: '../inventory/batchMaintenance', handler: 'reviewBatchApplication', param: 'applicationId' },
-  sale_share: { model: 'ResourceRightChangeOrder', id: 'change_id', no: 'change_order_no', status: 'approval_status', states: ['pending_manager_review'], extra: { change_reason: 'SALE_RESOURCE_TASK' }, module: '../inventory/resourceRights', handler: 'reviewSaleResourceTask', param: 'changeId' }
+  sale_resource_reward: { model: 'ResourceRightChangeOrder', id: 'change_id', no: 'change_order_no', status: 'approval_status', states: ['pending_manager_review'], extra: { change_reason: 'SALE_RESOURCE_TASK', resource_type: { [Op.in]: ['EDU_SUBSIDY', 'SALES_REPORT'] } }, module: '../inventory/resourceRights', handler: 'reviewSaleResourceTask', param: 'changeId' },
+  sale_share: { model: 'ResourceRightChangeOrder', id: 'change_id', no: 'change_order_no', status: 'approval_status', states: ['pending_manager_review'], extra: { change_reason: 'SALE_RESOURCE_TASK', resource_type: { [Op.notIn]: ['EDU_SUBSIDY', 'SALES_REPORT'] } }, module: '../inventory/resourceRights', handler: 'reviewSaleResourceTask', param: 'changeId' }
 };
 
 function pending(type, row) {
   const d = registry[type];
-  return d.states.includes(row[d.status || 'status']) && !row.is_deleted && !(type === 'purchase_expense' && row.source_type === 'expense');
+  return d.states.includes(row[d.status || 'status']) && !row.is_deleted
+    && !(type === 'sale_resource_reward' && !['EDU_SUBSIDY', 'SALES_REPORT'].includes(row.resource_type))
+    && !(type === 'sale_share' && ['EDU_SUBSIDY', 'SALES_REPORT'].includes(row.resource_type))
+    && !(type === 'purchase_expense' && row.source_type === 'expense');
 }
 function legacyIndex(type, row) {
   const d = registry[type];
@@ -40,7 +44,7 @@ async function context(type, row, transaction) {
   let staffId = row.applicant_staff_id || row.create_staff_id || row.applicant_id;
   if (type === 'deposit_refund') storeId = (await M.DepositOrder.findByPk(row.deposit_id, { transaction }))?.store_id;
   if (type === 'resource_claim') storeId = (await M.ProductSn.findByPk(row.sn_id, { transaction }))?.store_id;
-  if (type === 'sale_share') storeId = (await M.Order.findByPk(row.related_sale_order_id, { transaction }))?.store_id;
+  if (['sale_share', 'sale_resource_reward'].includes(type)) storeId = (await M.Order.findByPk(row.related_sale_order_id, { transaction }))?.store_id;
   if (type === 'subsidy_receivable_adjustment') {
     const detail = await M.DailyStatementDetail.findByPk(row.detail_id, { transaction });
     storeId = detail ? (await M.DailyStatement.findByPk(detail.statement_id, { transaction }))?.store_id : null;
@@ -79,7 +83,10 @@ async function begin(type, row, transaction, { historical = false } = {}) {
     subjectStaffId: info.subject_staff_id, storeId: info.store_id, distributorId: info.distributor_id,
     initialNodeIndex: historical ? legacyIndex(type, row) : 0,
     title: `${row[registry[type].no] || row[registry[type].id]}`, summary: row.reason || row.remark || '',
-    payload: { managedBusiness: true, businessNo: row[registry[type].no] || '', manualPath: registry[type].manual || null }
+    payload: { managedBusiness: true, businessNo: row[registry[type].no] || '', manualPath: registry[type].manual || null,
+      ...(type === 'sale_resource_reward' ? { resource_type: row.resource_type, sn_code: row.sn_code,
+        related_sale_order_id: row.related_sale_order_id, change_amount: row.change_amount,
+        reward_snapshot_json: row.reward_snapshot_json, attachment_url: row.attachment_url } : {}) }
   }, { staffId: employee.staff_id, name: employee.name, roles: [], accessibleStoreIds: info.store_id ? [info.store_id] : [], distributorId: info.distributor_id }, transaction);
   return instance;
 }

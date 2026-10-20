@@ -149,12 +149,12 @@ async function refreshExpenseState(expenseId, transaction = null) {
   return expense;
 }
 
-async function getAllocationSummary(payableIds, transaction = null) {
+async function getAllocationSummary(payableIds, transaction = null, { excludeSettlementId = null } = {}) {
   const ids = [...new Set((payableIds || []).filter(Boolean).map(String))];
   const result = new Map(ids.map(id => [id, { amount: 0, quantityByItem: new Map(), amountByItem: new Map() }]));
   if (!ids.length) return result;
   const items = await SettlementItem.findAll({
-    where: { payable_id: { [Op.in]: ids } },
+    where: { payable_id: { [Op.in]: ids }, ...(excludeSettlementId ? { settlement_id: { [Op.ne]: excludeSettlementId } } : {}) },
     transaction
   });
   const settlementIds = [...new Set(items.map(item => item.settlement_id))];

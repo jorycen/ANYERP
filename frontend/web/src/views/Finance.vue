@@ -116,6 +116,7 @@
               <el-option label="全部类型" value="" />
               <el-option label="销售结算" value="sale" />
               <el-option label="退货调整" value="return" />
+              <el-option label="教育补贴分配" value="education" />
             </el-select>
             <el-select v-model="productSettlementQuery.status" placeholder="结算状态" clearable style="width: 140px">
               <el-option label="全部状态" value="" />
@@ -129,7 +130,7 @@
           </div>
 
           <el-alert
-            title="产品端毛利仅统计产品端结算价与实际采购成本的提货差；运费已摊入商品，不重复计算，返利和价保沿独立政策链路管理。"
+            title="产品端毛利包含结算价与采购成本的提货差，以及三级审批确认的教育补贴20%分配；运费不重复计算，返利和价保沿独立政策链路管理。"
             type="info"
             :closable="false"
             show-icon
@@ -140,7 +141,7 @@
             <el-table-column label="单据类型" width="120">
               <template #default="{ row }">
                 <el-tag :type="row.entryType === 'return' ? 'warning' : 'primary'" size="small">
-                  {{ row.entryType === 'return' ? '退货调整' : '销售结算' }}
+                  {{ row.entryType === 'education' ? '教育补贴分配' : row.entryType === 'return' ? '退货调整' : '销售结算' }}
                 </el-tag>
               </template>
             </el-table-column>

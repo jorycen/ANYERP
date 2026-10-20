@@ -96,11 +96,12 @@
             <el-button link type="primary" @click="openRemarkEditor(row)">修改备注</el-button>
             <el-button v-if="row.status === 'pending_approval'" link type="success" @click="openApprovalCenter">审批中心</el-button>
             <el-button v-if="row.status === 'pending_approval'" link type="warning" @click="revokeSettlement(row)">撤回</el-button>
-            <el-button v-if="row.status === 'draft' && !row.submit_time" link type="warning" @click="submit(row)">提交</el-button>
+            <el-button v-if="row.status === 'draft'" link type="primary" @click="editDraft(row)">编辑</el-button>
+            <el-button v-if="row.status === 'draft'" link type="warning" @click="submit(row)">{{ row.submit_time ? '重新提交' : '提交' }}</el-button>
             <el-button v-if="row.status === 'draft' && !row.submit_time" link type="danger" @click="deleteDraft(row)">删除</el-button>
             <el-button v-if="row.status === 'confirmed' && remaining(row) > 0" link type="primary" @click="openPayment(row)">部分付款</el-button>
             <el-button v-if="row.status === 'confirmed' && row.payment_status === 'pending_refund'" link type="success" @click="openRefund(row)">登记退款到账</el-button>
-            <el-button v-if="row.status !== 'voided' && ['unpaid', 'settled', 'pending_refund'].includes(row.payment_status)" link type="danger" @click="voidSettlement(row)">作废</el-button>
+            <el-button v-if="!['voided', 'settled'].includes(row.status) && ['unpaid', 'pending_refund'].includes(row.payment_status)" link type="danger" @click="voidSettlement(row)">作废</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -219,6 +220,32 @@
       </div>
     </el-dialog>
 
+    <el-dialog v-model="draftVisible" title="编辑结算单草稿" width="900px" :close-on-click-modal="false">
+      <template v-if="draftForm">
+        <el-alert type="info" :closable="false" title="可调整原明细结算金额、移除明细及更换收款账户。保存后仍是草稿，重新提交从第一级审批开始；原审批记录保留。" />
+        <p>结算单：{{ draftForm.settlement_no }}　收款方：{{ draftForm.payee_name || draftForm.supplier_name }}</p>
+        <el-alert v-if="draftForm.approval_comment" type="warning" :closable="false" :title="'原审批意见：' + draftForm.approval_comment" />
+        <el-form label-width="110px" style="margin-top:16px">
+          <el-form-item label="当前收款信息">{{ counterpartySummary(draftForm) }}</el-form-item>
+          <el-form-item v-if="draftForm.paymentAccounts?.length" label="更换收款账户">
+            <el-select v-model="draftForm.newAccountId" clearable placeholder="留空保持原收款信息" style="width:100%">
+              <el-option v-for="account in draftForm.paymentAccounts" :key="account.account_id" :value="account.account_id" :label="[account.company_name,account.bank_name,account.account_number].filter(Boolean).join(' / ')" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="备注"><el-input v-model="draftForm.remark" type="textarea" maxlength="512" show-word-limit /></el-form-item>
+        </el-form>
+        <el-table :data="draftForm.items" border>
+          <el-table-column prop="request_no" label="来源单号" min-width="170" />
+          <el-table-column prop="product_name" label="商品" min-width="170" />
+          <el-table-column label="原结算金额" width="130"><template #default="{row}">¥{{ money(row.originalAmount) }}</template></el-table-column>
+          <el-table-column label="本次结算金额" width="195"><template #default="{row}"><el-input-number v-model="row.amount" :precision="2" controls-position="right" :min="row.originalAmount < 0 ? -Infinity : 0" :max="row.originalAmount < 0 ? 0 : Infinity" style="width:170px" /></template></el-table-column>
+          <el-table-column label="操作" width="75"><template #default="{row}"><el-button link type="danger" @click="draftForm.items = draftForm.items.filter(item => item.item_id !== row.item_id)">移除</el-button></template></el-table-column>
+        </el-table>
+        <p>结算合计：¥{{ money(draftTotal) }} <span v-if="Number(draftForm.rebate_deduction) > 0">（保留已分配返利 ¥{{ money(draftForm.rebate_deduction) }}）</span></p>
+      </template>
+      <template #footer><el-button @click="draftVisible=false">取消</el-button><el-button type="primary" :loading="draftSaving" :disabled="!draftForm?.items?.length" @click="saveDraft">保存草稿</el-button></template>
+    </el-dialog>
+
     <el-dialog v-model="remarkVisible" title="修改结算单备注" width="560px">
       <el-form label-width="90px">
         <el-form-item label="结算单号">
@@ -305,6 +332,27 @@ const sourceDetail = ref(null)
 const remarkVisible = ref(false)
 const remarkTarget = ref(null)
 const remarkSubmitting = ref(false)
+const draftVisible = ref(false), draftSaving = ref(false), draftForm = ref(null)
+const draftTotal = computed(() => (draftForm.value?.items || []).reduce((sum, item) => sum + Number(item.amount || 0), 0))
+async function editDraft(row) {
+  try {
+    const res = await api.getSettlementDraft(row.settlement_id)
+    draftForm.value = { ...res.data, newAccountId: '', items: (res.data.items || []).map(item => ({ ...item, originalAmount: Number(item.amount), amount: Number(item.amount) })) }
+    draftVisible.value = true
+  } catch (error) { ElMessage.error(error.response?.data?.message || '加载草稿失败') }
+}
+async function saveDraft() {
+  draftSaving.value = true
+  try {
+    const form = draftForm.value
+    const res = await api.updateSettlementDraft(form.settlement_id, { remark: form.remark,
+      items: form.items.map(item => ({ itemId: item.item_id, amount: item.amount })), ...(form.newAccountId ? { supplierAccountId: form.newAccountId } : {}) })
+    ElMessage.success(res.message || '草稿已保存'); draftVisible.value = false
+    if (detail.value?.settlement_id === form.settlement_id) detailVisible.value = false
+    await loadData()
+  } catch (error) { ElMessage.error(error.response?.data?.message || '保存草稿失败') }
+  finally { draftSaving.value = false }
+}
 const remarkForm = reactive({ remark: '' })
 const paymentVisible = ref(false)
 const paymentSettlement = ref(null)

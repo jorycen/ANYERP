@@ -658,7 +658,8 @@
     </el-dialog>
 
     <!-- 审批对话框 -->
-    <el-dialog v-model="approveDialogVisible" title="审批采购申请" width="500px">
+    <el-dialog v-model="approveDialogVisible" title="审批采购申请" width="760px">
+      <PurchaseApprovalEditor v-model="purchaseApprovalEdit" />
       <el-form :model="approveForm" label-width="100px">
         <el-form-item label="毛利成本口径">各商品按申请明细中选择的口径写入商品标签</el-form-item>
         <el-form-item label="审批结果">
@@ -828,6 +829,8 @@ import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import { mergePurchaseProductOptions } from '../utils/purchaseProducts'
+import PurchaseApprovalEditor from '../components/PurchaseApprovalEditor.vue'
+import { purchaseApprovalForm, purchaseApprovalPayload } from '../utils/purchaseApproval'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 import { getUserInfo, hasRole, isStoreUser } from '../utils/user'
 
@@ -890,6 +893,7 @@ const revokeLoading = ref(false)
 const adjustmentLoading = ref(false)
 const supplierLoading = ref(false)
 const currentRequest = ref(null)
+const purchaseApprovalEdit = ref(null)
 const currentInboundRequest = ref(null)
 const pendingInboundOptions = ref([])
 const adjustmentRequest = ref(null)
@@ -1544,8 +1548,17 @@ const formatDate = (dateStr) => {
   return `${year}-${month}-${day} ${hour}:${minute}:${second}`
 }
 
-const handleApprove = (row) => {
-  currentRequest.value = row
+const handleApprove = async (row) => {
+  purchaseApprovalEdit.value = null
+  try {
+    const res = await api.getPurchaseRequestDetail(row.request_id)
+    if (res.code !== 0 || !res.data) throw new Error(res.message || '采购详情加载失败')
+    currentRequest.value = res.data
+    purchaseApprovalEdit.value = purchaseApprovalForm(res.data)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || error.message || '采购详情加载失败')
+    return
+  }
   approveForm.action = 'approved'
   approveForm.comment = ''
   approveDialogVisible.value = true
@@ -1556,7 +1569,8 @@ const handleApproveSubmit = async () => {
   try {
     const res = await api.approvePurchaseRequest(currentRequest.value.request_id, {
       status: approveForm.action,
-      comment: approveForm.comment
+      comment: approveForm.comment,
+      ...(approveForm.action === 'approved' && purchaseApprovalEdit.value ? { purchaseEdits: purchaseApprovalPayload(purchaseApprovalEdit.value) } : {})
     })
     if (res.code === 0) {
       ElMessage.success('审批成功')
@@ -1566,7 +1580,7 @@ const handleApproveSubmit = async () => {
       ElMessage.error(res.message || '审批失败')
     }
   } catch (err) {
-    ElMessage.error('审批失败')
+    ElMessage.error(err.response?.data?.message || err.message || '审批失败')
   } finally {
     approveLoading.value = false
   }

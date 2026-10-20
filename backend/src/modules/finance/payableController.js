@@ -1862,6 +1862,7 @@ async function submitSettlement(ctx) {
       if (!settlement) ctx.throw(404, '结算单不存在');
       assertDistributorOperation(ctx, settlement.distributor_id);
       if (settlement.status !== 'draft') ctx.throw(400, '只有草稿状态的结算单可以提交');
+      await require('./settlementDraft').validateForSubmit(ctx, settlement, transaction);
 
       await ensurePayableSettlementApprovalFlow(transaction);
       approvalInstance = await startInstance({
@@ -1990,7 +1991,8 @@ async function voidSettlement(ctx) {
       });
       if (!settlement || settlement.is_deleted) ctx.throw(404, '结算单不存在');
       if (settlement.status === 'voided') ctx.throw(400, '结算单已经作废');
-      if (!['unpaid', 'settled', 'pending_refund'].includes(settlement.payment_status)) ctx.throw(400, '已发生收付款的结算单不能作废');
+      if (settlement.status === 'settled' || settlement.payment_status === 'settled') ctx.throw(400, '已冲平的结算单不能作废');
+      if (!['unpaid', 'pending_refund'].includes(settlement.payment_status)) ctx.throw(400, '已发生收付款的结算单不能作废');
       await reverseSettlementRebate(settlement, ctx.state.user, transaction);
       await settlement.update({ status: 'voided', voided_time: new Date() }, { transaction });
       const approvalInstances = await ApprovalFlowInstance.findAll({
@@ -2798,6 +2800,7 @@ async function voidPaymentBatch(ctx) {
 }
 
 module.exports = {
+  getPurchaseAdjustmentQuantityDeltasForDraft: getPurchaseAdjustmentQuantityDeltas,
   normalizeSettlementRemark,
   buildPayableSettlementResidual,
   PAYABLE_SETTLEMENT_APPROVAL_FLOW_CODE,

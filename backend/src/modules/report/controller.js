@@ -26,7 +26,7 @@ const { loadLegacyCostMaps, calculateItemBaseProfit } = require('./profitCalcula
 const { DashboardService, canViewProfit } = require('./dashboardService');
 const { normalizeParticipants } = require('./dashboardDataSource');
 const { allocateProfit } = require('./performanceAllocation');
-const { ARCHIVED_STATUSES: POSITIVE_SALES_ORDER_STATUSES } = require('./dashboardDataSource');
+const { PERFORMANCE_SALE_STATUSES: POSITIVE_SALES_ORDER_STATUSES, returnEvents, savedItemProfit } = require('./performanceEvents');
 const { buildDecisionInsights, buildAiAdvisor } = require('./decisionEngine');
 const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/storePermissions');
 const { appendOperatingSourceCondition, INTERNAL_TRANSFER_SOURCE } = require('./operatingScope');
@@ -38,6 +38,7 @@ const { sendExcel } = require('../../utils/excelExport');
 
 const dashboardService = new DashboardService();
 const EMPLOYEE_PROFIT_EXPORT_HEADERS = [
+  "\u4e1a\u52a1\u7c7b\u578b", "\u539f\u9500\u552e\u5355\u53f7",
   '订单号', '销售时间', '员工', '门店', '客户', '商品名称', 'PN', 'SN', '数量', '销售单价', '商品销售额',
   '商品定价单价', '商品定价金额', '商品分摊收入', '商品分摊基础毛利', '毛利计算口径', '订单组成-用户应收',
   '订单组成-商品定价', '订单组成-支付手续费', '订单组成-增值税', '订单组成-补录净额', '订单组成-运费',
@@ -164,6 +165,13 @@ async function queryProductSalesStats(where) {
   const settlementMap = new Map(settlementItems.map(item => [String(item.source_order_item_id), item]));
   const priceMap = new Map(prices.map(price => [String(price.product_id), price]));
   const categoryMap = new Map(categories.map(category => [String(category.category_id), category]));
+  const education = await require('../inventory/educationReward').educationIncome({ orderIds: [...new Set(items.map(item => String(item.order_id)))] });
+  const educationByItem = new Map();
+  for (const entry of education) {
+    const current = educationByItem.get(String(entry.itemId)) || { amount: 0, employeeAmount: 0, productAmount: 0 };
+    for (const key of ['amount', 'employeeAmount', 'productAmount']) current[key] = roundMoney(current[key] + entry[key]);
+    educationByItem.set(String(entry.itemId), current);
+  }
   const orderSubtotalMap = new Map();
   items.forEach(item => {
     const orderId = String(item.order_id || '');
@@ -186,6 +194,7 @@ async function queryProductSalesStats(where) {
     const deductible = Number(price.input_tax_deductible ?? 1) === 1;
     const grossCost = roundMoney(unitCost * quantity);
     const bookCost = deductible ? roundMoney(grossCost / (1 + taxRate(price.input_tax_rate))) : grossCost;
+    const educationIncome = educationByItem.get(String(item.item_id)) || { amount: 0, employeeAmount: 0, productAmount: 0 };
     return {
       category: product.category || '未分类',
       categoryPath: buildCategoryPath(product.category_id, categoryMap, product.category),
@@ -194,9 +203,9 @@ async function queryProductSalesStats(where) {
       model: product.model,
       quantity,
       salesAmount,
-      salesGrossProfit: baseProfit.grossProfit,
-      productGrossProfit: settlement && settlement.cost_status === 'ready' ? roundMoney(settlement.gross_profit_amount) : null,
-      financialGrossProfit: quantity > 0 && unitCost <= 0 ? null : roundMoney(netRevenue - bookCost)
+      salesGrossProfit: roundMoney(baseProfit.grossProfit + educationIncome.employeeAmount),
+      productGrossProfit: settlement && settlement.cost_status === 'ready' ? roundMoney(Number(settlement.gross_profit_amount) + educationIncome.productAmount) : null,
+      financialGrossProfit: quantity > 0 && unitCost <= 0 ? null : roundMoney(netRevenue - bookCost + educationIncome.amount)
     };
   });
   return aggregateProductSalesMetrics(rows);
@@ -777,8 +786,69 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
     raw: true
   });
 
-  const { count, rows: orders } = await Order.findAndCountAll({
-    where,
+  const returnOrderWhere = { ...where };
+  delete returnOrderWhere.create_time;
+  delete returnOrderWhere.order_status;
+  delete returnOrderWhere.order_no;
+  const returnWhere = {};
+  if (where.create_time) returnWhere.create_time = where.create_time;
+  if (orderNo) returnWhere[Op.or] = [
+    { return_no: { [Op.like]: '%' + String(orderNo).trim() + '%' } },
+    { order_no: { [Op.like]: '%' + String(orderNo).trim() + '%' } }
+  ];
+  const returnRows = await SalesReturnGrossProfitLedger.findAll({
+    where: returnWhere,
+    include: [{ model: Order, as: 'order', where: returnOrderWhere, required: true,
+      include: [{ model: Store, attributes: ['name'] }] }]
+  });
+  const reversals = returnEvents(returnRows.map(row => row.toJSON()));
+  const reversalAdjustmentCondition = { [Op.or]: [
+    { adjustment_no: { [Op.like]: 'AUTO-CARE-RET-%' } },
+    { adjustment_no: { [Op.like]: 'EDUR-%' } }
+  ] };
+  const originalAdjustmentCondition = { [Op.and]: [
+    { adjustment_no: { [Op.notLike]: 'AUTO-CARE-RET-%' } },
+    { adjustment_no: { [Op.notLike]: 'EDUR-%' } }
+  ] };
+  const reversalAdjustments = await PerformanceProfitAdjustment.findAll({
+    where: { status: 'approved', ...reversalAdjustmentCondition,
+      ...(where.create_time ? { create_time: where.create_time } : {}) },
+    include: [{ model: Order, where: returnOrderWhere, required: true, include: [{ model: Store }] }]
+  });
+  for (const model of reversalAdjustments) {
+    const row = model.toJSON();
+    if (orderNo && !String(row.reason || '').includes(String(orderNo).trim()) &&
+        !String(row.order_no || '').includes(String(orderNo).trim())) continue;
+    const order = row.Order || {};
+    const participants = normalizeParticipants(order);
+    const shares = allocateProfit(participants.map(p => ({ ...p, profitAmount: '', ratio: '' })), row.signed_amount);
+    reversals.push({ orderId: 'return-adjustment:' + row.adjustment_id, entryType: 'return',
+      isReturnAdjustment: true, orderNo: row.adjustment_no, sourceOrderNo: row.order_no,
+      sourceOrderId: row.order_id, orderTime: row.create_time, storeName: order.Store?.name || '',
+      employeeName: row.employee_name, totalAmount: 0, actualPayment: 0, totalCost: 0,
+      baseGrossProfit: 0, grossProfit: roundMoney(row.signed_amount),
+      approvedAdjustment: roundMoney(row.signed_amount),
+      careCreditAdjustment: row.adjustment_no.startsWith('AUTO-CARE-') ? roundMoney(row.signed_amount) : 0,
+      otherApprovedAdjustment: row.adjustment_no.startsWith('AUTO-CARE-') ? 0 : roundMoney(row.signed_amount),
+      participantAllocations: participants.map((p, index) => ({ staffId: p.staffId, employeeName: p.name,
+        role: p.role, baseGrossProfit: 0, approvedAdjustment: shares[index], grossProfit: shares[index] })),
+      grossProfitSource: 'return_adjustment',
+      calculation: { orderFormula: row.reason, revenueNote: row.reason, items: [] } });
+  }
+
+  const positiveKeys = await Order.findAll({ where, attributes: ['order_id', 'create_time'], raw: true });
+  const eventKeys = [
+    ...positiveKeys.map(row => ({ id: row.order_id, time: row.create_time, type: 'sale' })),
+    ...reversals.map(row => ({ id: row.orderId, time: row.orderTime, type: 'return' }))
+  ].sort((a, b) => new Date(b.time) - new Date(a.time) || String(a.id).localeCompare(String(b.id)));
+  const count = eventKeys.length;
+  const selectedKeys = exportMode ? eventKeys : eventKeys.slice(
+    (Math.max(Number(page) || 1, 1) - 1) * Math.max(Number(pageSize) || 20, 1),
+    Math.max(Number(page) || 1, 1) * Math.max(Number(pageSize) || 20, 1));
+  const selectedIds = selectedKeys.filter(row => row.type === 'sale').map(row => row.id);
+  const orders = await Order.findAll({
+
+    where: { ...where, order_id: { [Op.in]: selectedIds } },
     include: [
       { model: Store, attributes: ['store_id', 'name'] },
       { model: OrderItem },
@@ -789,28 +859,15 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
       }
     ],
     order: [['create_time', 'DESC']],
-    ...(exportMode ? {} : {
-      offset: (Math.max(Number(page) || 1, 1) - 1) * Math.max(Number(pageSize) || 20, 1),
-      limit: Math.max(Number(pageSize) || 20, 1)
-    }),
     distinct: true
   });
 
   const pageOrderIds = orders.map(order => order.order_id);
-  const [approvedPageAdjustments, returnGrossProfitAdjustments] = pageOrderIds.length
-    ? await Promise.all([
-        PerformanceProfitAdjustment.findAll({
-          where: { order_id: { [Op.in]: pageOrderIds }, status: 'approved' },
-          attributes: ['order_id', 'adjustment_no', 'signed_amount'],
-          raw: true
-        }),
-        SalesReturnGrossProfitLedger.findAll({
-          where: { order_id: { [Op.in]: pageOrderIds } },
-          attributes: ['order_id', 'participant_key', 'gross_profit_amount'],
-          raw: true
-        })
-      ])
-    : [[], []];
+  const approvedPageAdjustments = pageOrderIds.length
+    ? await PerformanceProfitAdjustment.findAll({
+        where: { order_id: { [Op.in]: pageOrderIds }, status: 'approved', ...originalAdjustmentCondition },
+        attributes: ['order_id', 'adjustment_no', 'signed_amount'], raw: true
+      }) : [];
   const adjustmentMap = new Map();
   const careCreditAdjustmentMap = new Map();
   const directAdjustmentMap = new Map();
@@ -824,15 +881,8 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
         roundMoney((careCreditAdjustmentMap.get(row.order_id) || 0) + toNumber(row.signed_amount)));
     }
   });
-  returnGrossProfitAdjustments.forEach(row => {
-    adjustmentMap.set(row.order_id,
-      roundMoney((adjustmentMap.get(row.order_id) || 0) + toNumber(row.gross_profit_amount)));
-    const key = `${row.order_id}:${row.participant_key}`;
-    directAdjustmentMap.set(key,
-      roundMoney((directAdjustmentMap.get(key) || 0) + toNumber(row.gross_profit_amount)));
-  });
   const pageItems = orders.flatMap(order => order.OrderItems || []);
-  const legacyCostMaps = await loadLegacyCostMaps(pageItems);
+
   const careCostMap = new Map(await Promise.all(orders
     .filter(order => careCreditAdjustmentMap.has(order.order_id) && order.grossProfitSnapshot)
     .map(async order => {
@@ -840,7 +890,7 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
       return [order.order_id, roundMoney(lines.reduce((sum, line) => sum + toNumber(line.pricingAmount), 0))];
     })));
 
-  const list = orders.map(order => {
+  const saleList = orders.map(order => {
     const orderJson = order.toJSON();
     const items = orderJson.OrderItems || [];
     const totalAmount = roundMoney(orderJson.total_amount);
@@ -859,7 +909,7 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
       const quantity = Number(item.quantity || 1);
       const saleSubtotal = roundMoney(toNumber(item.subtotal) || (toNumber(item.sale_price) * quantity));
       const allocatedRevenue = saleSubtotal;
-      const baseCalculation = calculateItemBaseProfit(item, legacyCostMaps);
+      const baseCalculation = savedItemProfit(item);
       const pricingDetail = pricingDetailByItem.get(String(item.item_id || ''));
       const unitCost = grossProfitSnapshot && pricingDetail
         ? roundMoney(pricingDetail.unitPricing)
@@ -923,12 +973,14 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
       ratio: participant.ratio,
       fixedAmount: participant.profitAmount,
       baseGrossProfit: allocatedBase[index],
-      approvedAdjustment: roundMoney(allocatedAdjustment[index] + (directAdjustmentMap.get(`${orderJson.order_id}:${participant.key}`) || 0)),
-      grossProfit: roundMoney(allocatedBase[index] + allocatedAdjustment[index] + (directAdjustmentMap.get(`${orderJson.order_id}:${participant.key}`) || 0))
+      approvedAdjustment: roundMoney(allocatedAdjustment[index]),
+      grossProfit: roundMoney(allocatedBase[index] + allocatedAdjustment[index])
     }));
     const usesNewSnapshot = !!grossProfitSnapshot;
     const usesLegacyFallback = !usesNewSnapshot && itemCalculations.some(item => item.source === 'legacy_fallback');
     return {
+      entryType: 'sale',
+      sourceOrderNo: orderJson.order_no,
       orderId: orderJson.order_id,
       orderNo: orderJson.order_no,
       orderTime: orderJson.create_time,
@@ -966,6 +1018,11 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
     };
   });
 
+  const allEventRows = new Map([...saleList, ...reversals].map(row => [row.orderId, row]));
+  const list = selectedKeys.map(row => allEventRows.get(row.id)).filter(Boolean);
+  const returnProfit = roundMoney(reversals.reduce((sum, row) => sum + row.baseGrossProfit, 0));
+  const returnSales = roundMoney(reversals.reduce((sum, row) => sum + row.totalAmount, 0));
+
   const summaryRows = await Order.findAll({
     where,
     attributes: [
@@ -988,16 +1045,11 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
     ...where,
     ...(snapshotOrderIds.length ? { order_id: { [Op.notIn]: snapshotOrderIds } } : {})
   };
-  const [approvedAdjustmentRows, returnGrossProfitRows, fallbackItems, careCreditRows] = await Promise.all([
+  const [approvedAdjustmentRows, fallbackItems, careCreditRows] = await Promise.all([
     PerformanceProfitAdjustment.findAll({
-      where: { status: 'approved' },
+      where: { status: 'approved', ...originalAdjustmentCondition },
       attributes: [[sequelize.fn('SUM', sequelize.col('PerformanceProfitAdjustment.signed_amount')), 'amount']],
       include: [{ model: Order, where, attributes: [], required: true }],
-      raw: true
-    }),
-    SalesReturnGrossProfitLedger.findAll({
-      attributes: [[sequelize.fn('SUM', sequelize.col('gross_profit_amount')), 'amount']],
-      include: [{ model: Order, as: 'order', where, attributes: [], required: true }],
       raw: true
     }),
     OrderItem.findAll({
@@ -1005,28 +1057,28 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
       raw: true
     }),
     PerformanceProfitAdjustment.findAll({
-      where: { status: 'approved', adjustment_no: { [Op.like]: 'AUTO-CARE-%' } },
+      where: { status: 'approved', ...originalAdjustmentCondition, adjustment_no: { [Op.like]: 'AUTO-CARE-%' } },
       attributes: [[sequelize.fn('SUM', sequelize.col('PerformanceProfitAdjustment.signed_amount')), 'amount']],
       include: [{ model: Order, where, attributes: [], required: true }],
       raw: true
     })
   ]);
   const approvedAdjustmentRow = approvedAdjustmentRows[0] || { amount: 0 };
-  const returnGrossProfitRow = returnGrossProfitRows[0] || { amount: 0 };
-  const summaryLegacyMaps = await loadLegacyCostMaps(fallbackItems);
+
+
   const fallbackGrossProfit = roundMoney(fallbackItems.reduce(
-    (sum, item) => sum + calculateItemBaseProfit(item, summaryLegacyMaps).grossProfit,
+    (sum, item) => sum + savedItemProfit(item).grossProfit,
     0
   ));
   const snapshotGrossProfit = roundMoney(snapshotRows.reduce(
     (sum, row) => sum + toNumber(row.gross_profit_amount),
     0
   ));
-  const totalBaseGrossProfit = roundMoney(snapshotGrossProfit + fallbackGrossProfit);
+  const totalBaseGrossProfit = roundMoney(snapshotGrossProfit + fallbackGrossProfit + returnProfit);
   const totalApprovedAdjustment = roundMoney(
-    toNumber(approvedAdjustmentRow?.amount) + toNumber(returnGrossProfitRow?.amount)
+    toNumber(approvedAdjustmentRow?.amount) + reversals.reduce((sum, row) => sum + row.approvedAdjustment, 0)
   );
-  const totalCareCreditAdjustment = roundMoney(careCreditRows[0]?.amount);
+  const totalCareCreditAdjustment = roundMoney(toNumber(careCreditRows[0]?.amount) + reversals.reduce((sum, row) => sum + row.careCreditAdjustment, 0));
 
   const expenseAllocationWhere = {
     store_id: { [Op.in]: storeIds },
@@ -1062,9 +1114,10 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
   );
 
   const summary = {
+    returnCount: reversals.filter(row => !row.isReturnAdjustment).length,
     orderCount: summaryRows.reduce((sum, row) => sum + Number(row.orderCount || 0), 0),
-    totalAmount: roundMoney(summaryRows.reduce((sum, row) => sum + toNumber(row.totalAmount), 0)),
-    actualPayment: roundMoney(summaryRows.reduce((sum, row) => sum + toNumber(row.actualPayment), 0)),
+    totalAmount: roundMoney(summaryRows.reduce((sum, row) => sum + toNumber(row.totalAmount), 0) + returnSales),
+    actualPayment: roundMoney(summaryRows.reduce((sum, row) => sum + toNumber(row.actualPayment), 0) + returnSales),
     baseGrossProfit: totalBaseGrossProfit,
     careCreditAdjustment: totalCareCreditAdjustment,
     otherApprovedAdjustment: roundMoney(totalApprovedAdjustment - totalCareCreditAdjustment),
@@ -1095,6 +1148,8 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
         `${item.sourceNo || item.platformName || item.sourceType || '运费'} ${item.snCode || item.sn || ''} ${toNumber(item.amount).toFixed(2)}`.trim()
       ).join('；');
       return (items.length ? items : [{}]).map(item => ({
+        "\u4e1a\u52a1\u7c7b\u578b": order.entryType === "return" ? "\u9000\u5355\u51b2\u56de" : "\u9500\u552e",
+        "\u539f\u9500\u552e\u5355\u53f7": order.sourceOrderNo || order.orderNo,
         订单号: order.orderNo,
         销售时间: order.orderTime,
         员工: order.employeeName,

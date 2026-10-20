@@ -40,7 +40,7 @@ test('经营看板默认日期使用中国时区本周并生成等长环比周�
 test('经营看板正向统计排除整单退货原订单并使用当前毛利公式', () => {
   assert.deepEqual(ARCHIVED_STATUSES, ['已归档', 'completed', 'archived']);
   assert.equal(ARCHIVED_STATUSES.includes('returned'), false);
-  assert.equal(GROSS_PROFIT_FORMULA_VERSION, 'ORDER_GP_V9_FREIGHT_SEPARATE');
+  assert.equal(GROSS_PROFIT_FORMULA_VERSION, require('../src/modules/sales/grossProfit').FORMULA_VERSION);
 });
 
 test('经营看板全部范围包含未归档订单且排除已作废订单', () => {

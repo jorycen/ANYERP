@@ -99,7 +99,9 @@ test('归档前校验通过后锁定国补资格，审批期间保持占用', as
   }
 });
 
-test('国补误挂在非SN商品时自动迁移到全单唯一有效SN商品', async () => {
+test('国补误挂在非SN商品时自动迁移到全单唯一有效SN商品', async (t) => {
+  // Alignment also inspects unselected sales-report eligibility on SN items.
+  t.mock.method(models.InventoryResourceRight, 'findOne', async () => null);
   const invalidItem = buildItem({
     item_id: 1,
     sn_id: null,

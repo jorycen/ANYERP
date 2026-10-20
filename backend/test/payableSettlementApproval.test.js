@@ -71,7 +71,9 @@ function context({ body = {}, user = {} } = {}) {
   };
 }
 
-test('结算单提交进入待审批状态', async () => {
+test('结算单提交进入待审批状态', async (t) => {
+  // Balance revalidation is covered by settlementDraft.test; this fixture tests approval dispatch.
+  t.mock.method(require('../src/modules/finance/settlementDraft'), 'validateForSubmit', async () => {});
   const originals = {
     settlementFindOne: models.Settlement.findOne,
     flowFindOne: models.ApprovalFlowDefinition.findOne,
@@ -190,6 +192,24 @@ test('待审批结算单退回草稿并保留退回原因', async () => {
   } finally {
     models.Settlement.findByPk = original;
     models.ApprovalFlowInstance.findOne = originalApprovalFindOne;
+  }
+});
+
+test('已冲平结算单不能作废，也不执行结算或审批写入', async () => {
+  const originalFind = models.Settlement.findByPk;
+  const originalTransaction = models.sequelize.transaction;
+  let updates = 0;
+  models.sequelize.transaction = async callback => callback({ LOCK: { UPDATE: 'UPDATE' } });
+  try {
+    for (const state of [{ status: 'confirmed', payment_status: 'settled' }, { status: 'settled', payment_status: 'unpaid' }]) {
+      models.Settlement.findByPk = async () => ({ ...state, items: [], update: async () => { updates++; } });
+      await assert.rejects(() => payableController.voidSettlement(context({ body: { settlementId: 'SETTLED_1' } })),
+        error => error.status === 400 && /已冲平/.test(error.message));
+    }
+    assert.equal(updates, 0);
+  } finally {
+    models.Settlement.findByPk = originalFind;
+    models.sequelize.transaction = originalTransaction;
   }
 });
 

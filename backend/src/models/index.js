@@ -286,6 +286,7 @@ const ResourceRightChangeOrder = sequelize.define('ResourceRightChangeOrder', {
   before_status: { type: DataTypes.STRING(32), allowNull: false },
   after_status: { type: DataTypes.STRING(32), allowNull: false },
   change_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  reward_snapshot_json: { type: DataTypes.TEXT, comment: '销售归档冻结的权益奖励规则及金额' },
   change_reason: { type: DataTypes.STRING(32), allowNull: false },
   approval_status: { type: DataTypes.STRING(32), defaultValue: 'approved' },
   related_order_id: { type: DataTypes.STRING(32) },

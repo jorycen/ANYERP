@@ -715,13 +715,11 @@ async function createSalesReturnGrossProfitLedger({ returnRequest, transaction =
   if (!returnItems.length) return [];
 
   let snapshot = await OrderGrossProfit.findOne({ where: { order_id: order.order_id }, transaction });
-  if (!snapshot || snapshot.formula_version !== FORMULA_VERSION) {
-    snapshot = await calculateAndSaveOrderGrossProfit(order.order_id, {
-      transaction,
-      calculatedBy: createdBy,
-      force: !snapshot,
-      final: true
-    });
+  if (!snapshot) {
+    // Historical returns must never reprice the original sale using today's costs.
+    const archivedItems = await OrderItem.findAll({ where: { order_id: order.order_id }, transaction });
+    snapshot = { gross_profit_amount: roundMoney(archivedItems.reduce(
+      (sum, item) => sum + toNumber(item.sales_gross_profit), 0)) };
   }
 
   const returnedSalesAmount = roundMoney(returnItems.reduce(

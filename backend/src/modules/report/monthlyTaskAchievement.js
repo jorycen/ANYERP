@@ -14,10 +14,7 @@ const {
 } = require('../../models');
 const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/storePermissions');
 const {
-  ARCHIVED_STATUSES,
-  GROSS_PROFIT_FORMULA_VERSION,
   normalizeParticipants,
-  grossProfitSql,
   orderItemSalesAmountSql,
   orderItemTotalsJoin
 } = require('./dashboardDataSource');
@@ -108,7 +105,7 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived') 
     storeIds,
     startAt,
     endAt,
-    archivedStatuses: ARCHIVED_STATUSES,
+    archivedStatuses: require('./performanceEvents').PERFORMANCE_SALE_STATUSES,
     voidedStatuses: require('./dashboardDataSource').VOIDED_STATUSES,
     internalTransferSource: `${INTERNAL_TRANSFER_SOURCE}%`
   };
@@ -125,15 +122,11 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived') 
            oi.PRODUCT_NAME AS productName,
            oi.QUANTITY AS quantity,
            (${orderItemSalesAmountSql()}) AS salesAmount,
-           (${grossProfitSql()}) AS itemGrossProfit
+           (CASE WHEN gp.ORDER_ID IS NOT NULL THEN gp.GROSS_PROFIT_AMOUNT * CASE WHEN COALESCE(oit.ITEM_SUBTOTAL, 0) <> 0 THEN COALESCE(oi.SUBTOTAL, 0) / oit.ITEM_SUBTOTAL ELSE 1 / GREATEST(oit.ITEM_COUNT, 1) END ELSE COALESCE(oi.SALES_GROSS_PROFIT, 0) END) AS itemGrossProfit
       FROM T_ORDER o
       INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
       ${orderItemTotalsJoin()}
       LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
-        AND (gp.FORMULA_VERSION = '${GROSS_PROFIT_FORMULA_VERSION}'
-          OR (o.CREATE_TIME >= '2026-10-01' AND o.CREATE_TIME < '2026-11-01'
-            AND gp.SNAPSHOT_STATUS = 'final'
-            AND gp.FORMULA_VERSION = 'ORDER_GP_V9_FREIGHT_SEPARATE'))
      WHERE o.IS_DELETED = 0
        AND COALESCE(TRIM(o.CUSTOMER_SOURCE), '') NOT LIKE :internalTransferSource
        AND ${orderStatusFilter}
@@ -166,7 +159,7 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived') 
   }
 
   const adjustmentRows = await sequelize.query(`
-    SELECT pa.ORDER_ID AS orderId, SUM(pa.SIGNED_AMOUNT) AS signedAmount, o.STORE_ID AS storeId
+    SELECT pa.ORDER_ID AS orderId, SUM(pa.SIGNED_AMOUNT) AS signedAmount, o.STORE_ID AS storeId, o.CREATE_STAFF_ID AS createStaffId, o.CREATE_USER AS createUser, o.AUXILIARY_SALES_LIST AS auxiliarySalesList
       FROM T_PERFORMANCE_PROFIT_ADJUSTMENT pa
       INNER JOIN T_ORDER o ON o.ORDER_ID = pa.ORDER_ID
      WHERE pa.STATUS = 'approved'
@@ -174,14 +167,14 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived') 
        AND COALESCE(TRIM(o.CUSTOMER_SOURCE), '') NOT LIKE :internalTransferSource
        AND ${orderStatusFilter}
        AND o.STORE_ID IN (:storeIds)
-       AND o.CREATE_TIME >= :startAt
-       AND o.CREATE_TIME < :endAt
-     GROUP BY pa.ORDER_ID, o.STORE_ID`, { replacements, type: QueryTypes.SELECT });
+       AND (CASE WHEN pa.ADJUSTMENT_NO LIKE 'AUTO-CARE-RET-%' OR pa.ADJUSTMENT_NO LIKE 'EDUR-%' THEN pa.CREATE_TIME ELSE o.CREATE_TIME END) >= :startAt
+       AND (CASE WHEN pa.ADJUSTMENT_NO LIKE 'AUTO-CARE-RET-%' OR pa.ADJUSTMENT_NO LIKE 'EDUR-%' THEN pa.CREATE_TIME ELSE o.CREATE_TIME END) < :endAt
+     GROUP BY pa.ORDER_ID, o.STORE_ID, o.CREATE_STAFF_ID, o.CREATE_USER, o.AUXILIARY_SALES_LIST`, { replacements, type: QueryTypes.SELECT });
   for (const row of adjustmentRows) {
     const storeActual = storeActuals.get(String(row.storeId)) || createActual();
     storeActual.grossProfit += number(row.signedAmount);
     storeActuals.set(String(row.storeId), storeActual);
-    const order = orders.get(String(row.orderId));
+    const order = orders.get(String(row.orderId)) || { create_staff_id: row.createStaffId, create_user: row.createUser, auxiliary_sales_list: row.auxiliarySalesList };
     const participants = order ? normalizeParticipants(order) : [];
     const count = participants.length || 1;
     participants.forEach(participant => {

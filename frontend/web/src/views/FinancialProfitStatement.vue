@@ -54,6 +54,7 @@
         <el-table-column label="可抵扣进项税" width="135" align="right"><template #default="{ row }">¥{{ formatMoney(row.deductibleInputVat) }}</template></el-table-column>
         <el-table-column label="不含税存货成本" width="150" align="right"><template #default="{ row }">¥{{ formatMoney(row.bookCost) }}</template></el-table-column>
         <el-table-column label="财务毛利" width="125" align="right"><template #default="{ row }">{{ row.grossProfit === null ? '-' : `¥${formatMoney(row.grossProfit)}` }}</template></el-table-column>
+        <el-table-column label="已确认教育补贴" width="145" align="right"><template #default="{ row }">¥{{ formatMoney(row.educationIncomeAmount) }}</template></el-table-column>
         <el-table-column label="毛利率" width="100" align="right"><template #default="{ row }">{{ row.grossMargin === null ? '-' : `${Number(row.grossMargin).toFixed(2)}%` }}</template></el-table-column>
         <el-table-column label="状态" width="105" fixed="right">
           <template #default="{ row }"><el-tag :type="row.status === 'cost_pending' ? 'danger' : 'warning'">{{ row.status === 'cost_pending' ? '待补成本' : '暂估' }}</el-tag></template>
