@@ -47,7 +47,10 @@ test('教育补贴依次经过三级，前两级不记账，末级按配置全�
   t.mock.method(M.OrderItem, 'findOne', async () => ({ item_id: 7, sn_id: 'SN', product_id: 'P' }));
   t.mock.method(M.PerformanceProfitAdjustment, 'findOne', async () => null);
   t.mock.method(M.PerformanceProfitAdjustment, 'create', async values => { profits.push(values); return values; });
-  t.mock.method(M.InventoryResourceRight, 'findOne', async () => ({ supplier_id: 'SUPPLIER' }));
+  const right = { supplier_id: 'SUPPLIER', current_status: 'LOCKED', locked_source_type: 'SALE_ORDER', locked_source_id: 'ORDER',
+    async update(patch) { Object.assign(this, patch); } };
+  t.mock.method(M.InventoryResourceRight, 'findOne', async () => right);
+  t.mock.method(M.ResourceRightChangeOrder, 'create', async values => values);
   t.mock.method(M.ResourceCategory, 'findOne', async () => ({ category_code: 'EDU_SUBSIDY' }));
   t.mock.method(M.ResourceSettlement, 'findOrCreate', async values => { settlements.push(values.defaults); return [values.defaults]; });
   const review = async id => {
@@ -58,8 +61,10 @@ test('教育补贴依次经过三级，前两级不记账，末级按配置全�
   assert.equal((await review(2)).state.businessApproval.status, 'pending');
   assert.equal((await review(3)).state.businessApproval.status, 'pending');
   assert.equal(profits.length, 0); assert.equal(settlements.length, 0); assert.equal(business.approval_status, 'pending_manager_review');
+  assert.equal(right.current_status, 'LOCKED');
   await review(4);
   assert.equal(business.approval_status, 'completed'); assert.equal(profits.length, 1);
+  assert.equal(right.current_status, 'USED');
   assert.equal(profits[0].signed_amount, 80.01); assert.equal(settlements[0].amount, 100.01);
   assert.equal(JSON.parse(business.reward_snapshot_json).productAmount + profits[0].signed_amount, 100.01);
   await assert.rejects(review(4), error => error.status === 409);

@@ -24,7 +24,7 @@
           <el-table-column label="PN" min-width="140"><template #default="{row}">{{ row.ProductSn?.pn_code || '-' }}</template></el-table-column>
           <el-table-column label="商品" min-width="180"><template #default="{row}">{{ row.Product?.name || row.product_id }}</template></el-table-column>
           <el-table-column label="权益" width="120"><template #default="{row}">{{ resourceText(row.resource_type) }}</template></el-table-column>
-          <el-table-column label="状态" width="110"><template #default="{row}"><el-tag :type="statusType(row.current_status)">{{ statusText(row.current_status) }}</el-tag></template></el-table-column>
+          <el-table-column label="状态" width="150"><template #default="{row}"><el-tag :type="statusType(row.current_status)">{{ row.resource_type === 'EDU_SUBSIDY' && row.current_status === 'LOCKED' ? '待办理／审批中' : statusText(row.current_status) }}</el-tag></template></el-table-column>
           <el-table-column prop="amount" label="确认金额" width="110"><template #default="{row}">¥{{ money(row.amount) }}</template></el-table-column>
           <el-table-column prop="update_time" label="更新时间" width="170" />
           <el-table-column label="操作" width="330" fixed="right"><template #default="{row}">

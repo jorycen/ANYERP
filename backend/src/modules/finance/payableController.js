@@ -2118,6 +2118,7 @@ function buildPaymentCandidateWhere(query = {}, user = null) {
   if (query.supplierId) candidateWhere.supplier_id = query.supplierId;
   if (query.distributorId) candidateWhere.distributor_id = query.distributorId;
   if (query.taxStatus) candidateWhere.tax_status = query.taxStatus;
+  if (query.settlementType) candidateWhere.settlement_type = String(query.settlementType).trim();
   if (query.paymentStatus) candidateWhere.payment_status = query.paymentStatus;
   if (query.settlementNo && String(query.settlementNo).trim()) {
     candidateWhere.settlement_no = { [Op.like]: `%${String(query.settlementNo).trim()}%` };

@@ -1,4 +1,4 @@
-const { sequelize, ResourceCategory, ProductCategory, Product } = require('../../models');
+const { sequelize, ResourceCategory, ProductCategory, Product, InventoryResourceRight, ProductResourceCostConfig } = require('../../models');
 const { recordBusinessAction } = require('../../utils/businessActionLog');
 const { configObject, configuredRules, validateRules, resolveCategoryId, matchRule } = require('./rewardRules');
 
@@ -52,11 +52,27 @@ async function freezeSalesReportReward({ category, item, order, transaction }) {
   const categoryId = resolveCategoryId(product, categories);
   const type = category.category_code || 'SALES_REPORT';
   const rule = matchRule(rulesFor(type, category.rule_config_json, categories), { pnCode: item.pn_code, categoryId, at }, categories);
-  const amount = rule ? Number(rule.amount) : 0;
+  let amount = rule ? Number(rule.amount) : 0;
+  let policy = null;
+  if (type === 'EDU_SUBSIDY' && !rule && item.sn_id) {
+    const right = await InventoryResourceRight.findOne({ where: { sn_id: item.sn_id, resource_type: type }, transaction });
+    if (right?.rule_config_id && right.source === 'EDUCATION_POLICY_IMPORT') {
+      const config = await ProductResourceCostConfig.findOne({ where: { config_id: right.rule_config_id,
+        product_id: item.product_id, resource_type: type, status: 1 }, transaction });
+      const instant = new Date(order.archive_time || new Date()).getTime();
+      if (config && (!right.effective_start || new Date(right.effective_start).getTime() <= instant)
+        && (!right.effective_end || new Date(right.effective_end).getTime() >= instant)
+        && Number(right.amount) > 0) {
+        amount = Number(right.amount);
+        policy = { configId: config.config_id, rightId: right.right_id, source: right.source };
+      }
+    }
+  }
+  if (type === 'EDU_SUBSIDY' && !(amount > 0)) throw Object.assign(new Error('教育补贴未配置有效金额，请维护权益规则或有效教育优惠政策，不能生成零金额待办'), { status: 409 });
   const employeeAmount = Math.round(amount * 80) / 100;
   return JSON.stringify({ version: 1, resourceType: type, amount,
     ...(type === 'EDU_SUBSIDY' ? { accountingVersion: 2, employeeAmount, productAmount: Math.round((amount - employeeAmount) * 100) / 100, orderItemId: item.item_id } : {}),
-    rule: rule || null, pnCode: item.pn_code, categoryId: categoryId || null, at,
-    reason: rule ? 'matched' : 'no_matching_rule' });
+    rule: rule || null, policy, pnCode: item.pn_code, categoryId: categoryId || null, at,
+    reason: rule ? 'matched' : policy ? 'education_policy_import' : 'no_matching_rule' });
 }
 module.exports = { listRewardRules, saveRewardRules, freezeSalesReportReward };

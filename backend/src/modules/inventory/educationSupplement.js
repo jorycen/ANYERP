@@ -26,12 +26,13 @@ async function submit(ctx) {
     const amount = educationSnapshot({ reward_snapshot_json: snapshot }).amount;
     const id = generateUUID();
     const task = await M.ResourceRightChangeOrder.create({ change_id: id, change_order_no: `EDU${id}`, sn_id: snId, sn_code: sn.sn_code,
-      product_id: sn.product_id, resource_type: 'EDU_SUBSIDY', before_status: 'AVAILABLE', after_status: 'USED', change_amount: amount,
+      product_id: sn.product_id, resource_type: 'EDU_SUBSIDY', before_status: 'AVAILABLE', after_status: 'LOCKED', change_amount: amount,
       change_reason: 'SALE_RESOURCE_TASK', approval_status: 'pending_manager_review', related_sale_order_id: order.order_id,
       attachment_url: JSON.stringify([attachmentUrl]), reward_snapshot_json: snapshot,
       applicant_staff_id: ctx.state.user.staffId, applicant_name: ctx.state.user.name || '',
       remark: `教育补贴补录申请，待店长→张欢→邓红梅审批；配置金额${amount}元，未增加毛利` }, { transaction });
-    await right.update({ current_status: 'USED', version: Number(right.version || 0) + 1, update_time: new Date() }, { transaction });
+    await right.update({ current_status: 'LOCKED', locked_source_type: 'SALE_ORDER', locked_source_id: order.order_id,
+      version: Number(right.version || 0) + 1, update_time: new Date() }, { transaction });
     ctx.body = { message: '教育补贴截图已提交三级审批，全部通过后确认毛利', data: { changeOrderNo: task.change_order_no, amount } };
   });
 }

@@ -16,6 +16,11 @@
               :value="acc.account_id"
             />
           </el-select>
+          <el-select v-model="paymentCandidateSourceFilter" placeholder="来源类型" clearable style="width: 150px" @change="searchPaymentCandidates">
+            <el-option label="采购结算" value="supplier" />
+            <el-option label="费用" value="expense" />
+            <el-option label="个人报销" value="reimbursement" />
+          </el-select>
           <el-select v-model="paymentCandidateStatusFilter" placeholder="付款状态" clearable style="width: 140px" @change="loadPaymentCandidates">
             <el-option label="全部" value="" />
             <el-option label="未付款" value="unpaid" />
@@ -477,6 +482,7 @@ const paymentCandidateData = ref([])
 const paymentCandidateTotal = ref(0)
 const paymentCandidatesLoading = ref(false)
 const paymentCandidateStatusFilter = ref('')
+const paymentCandidateSourceFilter = ref('')
 const paymentCandidateDistributorFilter = ref('')
 const paymentCandidateTaxFilter = ref('')
 const paymentCandidateNoFilter = ref('')
@@ -634,6 +640,7 @@ const loadPaymentCandidates = async () => {
   paymentCandidatesLoading.value = true
   try {
     const params = { ...paymentCandidateQuery }
+    if (paymentCandidateSourceFilter.value) params.settlementType = paymentCandidateSourceFilter.value
     if (paymentCandidateStatusFilter.value) params.paymentStatus = paymentCandidateStatusFilter.value
     if (paymentCandidateDistributorFilter.value) params.distributorId = paymentCandidateDistributorFilter.value
     if (paymentCandidateTaxFilter.value) params.taxStatus = paymentCandidateTaxFilter.value
@@ -847,6 +854,7 @@ const submitImmediatePayment = async () => {
 const handleExportPayments = async () => {
   try {
     const params = {}
+    if (paymentCandidateSourceFilter.value) params.settlementType = paymentCandidateSourceFilter.value
     if (paymentCandidateStatusFilter.value) params.paymentStatus = paymentCandidateStatusFilter.value
     if (paymentCandidateDistributorFilter.value) params.distributorId = paymentCandidateDistributorFilter.value
     if (paymentCandidateTaxFilter.value) params.taxStatus = paymentCandidateTaxFilter.value

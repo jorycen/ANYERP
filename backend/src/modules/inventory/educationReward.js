@@ -64,6 +64,13 @@ async function reverseEducation({ request, order, requestItems, orderItemMap, tr
       sn_id: item.sn_id, resource_type: { [Op.in]: ['EDU_SUBSIDY', 'SALES_REPORT'] }, change_reason: 'SALE_RESOURCE_TASK' }, transaction, lock: transaction.LOCK.UPDATE });
     for (const task of tasks) {
       if (['pending_submit', 'pending_manager_review', 'rejected'].includes(task.approval_status)) {
+        if (task.resource_type === 'EDU_SUBSIDY') {
+          const right = await M.InventoryResourceRight.findOne({ where: { sn_id: item.sn_id, resource_type: 'EDU_SUBSIDY' }, transaction, lock: transaction.LOCK.UPDATE });
+          if (right?.current_status === 'LOCKED' && right.locked_source_type === 'SALE_ORDER' && right.locked_source_id === order.order_id) {
+            await right.update({ current_status: 'AVAILABLE', locked_source_type: null, locked_source_id: null,
+              version: Number(right.version || 0) + 1, update_time: new Date() }, { transaction });
+          }
+        }
         await task.update({ approval_status: 'cancelled', remark: `退货单${request.return_no}取消权益审批` }, { transaction }); continue;
       }
       if (task.resource_type !== 'EDU_SUBSIDY' || task.approval_status !== 'completed' || !task.reward_snapshot_json) continue;
