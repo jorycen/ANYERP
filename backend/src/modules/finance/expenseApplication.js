@@ -7,10 +7,14 @@ function recipient(value, paymentMethod, applicantName, draft = false) {
     source: ['SUPPLIER', 'COUNTERPARTY', 'TEMPORARY'].includes(input.source) ? input.source : 'TEMPORARY',
     supplierId: String(input.supplierId || ''), accountId: String(input.accountId || ''),
     payeeName: String(input.payeeName || '').trim(), bankName: String(input.bankName || '').trim(),
-    accountNumber: String(input.accountNumber || '').trim(), remark: String(input.remark || '').trim() };
-  if (!draft && (!data.payeeName || !data.bankName || !data.accountNumber)) fail('请填写完整收款人、开户银行和银行账号');
+    accountNumber: String(input.accountNumber || '').trim(), remark: String(input.remark || '').trim(),
+    paymentText: String(input.paymentText || '').trim() };
+  if (!draft && !data.paymentText && (!data.payeeName || !data.bankName || !data.accountNumber)) fail('请填写付款账号信息');
+  if (data.paymentText.length > 2000) fail('付款账号信息不能超过2000字');
+  // Free-form payment instructions must survive downstream bank snapshot readers.
+  if (data.paymentText && !data.accountNumber) data.accountNumber = data.paymentText;
   if (!draft && data.source === 'SUPPLIER' && !data.supplierId) fail('请选择已有供应商，或切换为手工收款方');
-  if (data.payeeName.length > 255 || data.bankName.length > 128 || data.accountNumber.length > 128 || data.remark.length > 512) fail('收款信息超过长度限制');
+  if (data.payeeName.length > 255 || data.bankName.length > 128 || data.accountNumber.length > (data.paymentText ? 2000 : 128) || data.remark.length > 512) fail('收款信息超过长度限制');
   return data;
 }
 function attachments(values, draft = false) {

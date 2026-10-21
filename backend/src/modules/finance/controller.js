@@ -1212,13 +1212,17 @@ async function updateExpenseAttribution(ctx) {
     if (!locked || locked.status !== 'pending_approval') ctx.throw(409, '费用状态已变化，请刷新后重试');
     const currentTask = await ApprovalTask.findOne({ where: { instance_id: instance.instance_id, assignee_staff_id: staffId, status: 'pending' }, transaction, lock: transaction.LOCK.UPDATE });
     if (!currentTask) ctx.throw(409, '审批节点已变化，请刷新后重试');
-    await expenseApplication.validateTargets(attribution, locked.accounting_month, transaction);
+    const month = body.accountingMonth === undefined ? locked.accounting_month : resolveExpenseAccountingMonth(body.accountingMonth, locked.expense_date);
+    await assertPeriodOpen(locked.distributor_id, locked.accounting_month, transaction);
+    await assertPeriodOpen(locked.distributor_id, month, transaction);
+    await expenseApplication.validateTargets(attribution, month, transaction);
     const oldDetails = parseExpenseDetails(locked.attribution_details_json);
-    const oldType = locked.attribution_type, oldMethod = locked.attribution_method;
+    const oldType = locked.attribution_type, oldMethod = locked.attribution_method, oldMonth = locked.accounting_month;
     await locked.update({
       attribution_type: attribution.type,
       attribution_method: attribution.method,
       attribution_details_json: JSON.stringify(attribution.details),
+      accounting_month: month,
       update_time: new Date()
     }, { transaction });
     const latestPayload = {
@@ -1235,7 +1239,7 @@ async function updateExpenseAttribution(ctx) {
     await recordBusinessAction({
       businessType: 'expense', businessId: locked.expense_id, businessNo: locked.expense_no,
       action: 'update_attribution', fromStatus: locked.status, toStatus: locked.status, user,
-      detail: { before: oldDetails, after: attribution.details, beforeType: oldType, afterType: attribution.type, beforeMethod: oldMethod, afterMethod: attribution.method, node: task.node_name }, transaction
+      detail: { before: oldDetails, after: attribution.details, beforeType: oldType, afterType: attribution.type, beforeMethod: oldMethod, afterMethod: attribution.method, beforeMonth: oldMonth, afterMonth: month, node: task.node_name }, transaction
     });
   });
   ctx.body = { code: 0, message: '费用归属已调整', data: { attributionType: attribution.type, attributionMethod: attribution.method, allocationDetails: attribution.details } };

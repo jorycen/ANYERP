@@ -43,7 +43,7 @@
                 <template v-else>
                   <el-button link type="primary" @click="openInstance(row.instance_id, row)">审批详情</el-button>
                   <el-button v-if="canViewOriginal(row.Instance)" link @click="openOriginalFromRow(row)">原始单据</el-button>
-                  <el-button v-if="row.Instance?.business_type === 'expense'" link type="warning" @click="openAttributionEditor(row)">调整分摊</el-button>
+                  <el-button v-if="row.Instance?.business_type === 'expense'" link type="warning" @click="openAttributionEditor(row)">归属月份及门店</el-button>
                   <el-button link type="success" @click="review(row, 'approve')">通过</el-button>
                   <el-button link type="danger" @click="review(row, 'reject')">拒绝</el-button>
                 </template>
@@ -290,7 +290,8 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="attributionEditVisible" title="调整费用经营分摊" width="720px">
+    <el-dialog v-model="attributionEditVisible" title="调整费用归属月份及分摊门店" width="720px">
+      <el-form-item label="经营归属月份" required><el-date-picker v-model="attributionEditMonth" type="month" value-format="YYYY-MM" :clearable="false" /></el-form-item>
       <el-alert title="只影响经营核算，不自动扣减员工绩效。跨经销商分摊保留审计，付款来源不变。" type="info" :closable="false" />
       <el-select v-model="attributionEditType" style="margin:14px 0"><el-option label="门店承担" value="STORE" /><el-option label="产品端承担" value="PRODUCT_SIDE" /></el-select>
       <template v-if="attributionEditType === 'STORE'">
@@ -381,6 +382,7 @@ const attributionEditLoading = ref(false)
 const attributionEditExpenseId = ref('')
 const attributionEditAmount = ref(0)
 const attributionEditRows = ref([])
+const attributionEditMonth = ref('')
 const attributionEditType = ref('STORE'), attributionStores = ref([]), attributionSourceStoreId = ref('')
 const attributionEditMethod = ref('AVERAGE')
 function selectAttributionStores(ids) { attributionEditRows.value = ids.map(id => ({ target_id: id, target_name: attributionStores.value.find(row => row.store_id === id)?.name || id, amount: attributionEditRows.value.find(row => row.target_id === id)?.amount || 0 })) }
@@ -911,6 +913,7 @@ async function openAttributionEditor(row) {
     const options = await api.getExpenseFormOptions()
     attributionStores.value = options.data?.allocationStores || []
     attributionSourceStoreId.value = data.store_id
+    attributionEditMonth.value = data.accounting_month || data.expense_date?.slice(0, 7) || ''
     attributionEditType.value = data.attribution_type === 'PRODUCT_SIDE' ? 'PRODUCT_SIDE' : 'STORE'
     attributionEditMethod.value = data.attribution_method || 'AVERAGE'
     let details = data.attribution_details
@@ -934,6 +937,7 @@ async function saveAttributionEditor() {
   attributionEditLoading.value = true
   try {
     const response = await api.updateExpenseAttribution(attributionEditExpenseId.value, {
+      accountingMonth: attributionEditMonth.value,
       attributionType: attributionEditType.value,
       attributionMethod: attributionEditMethod.value,
       allocationDetails: attributionEditRows.value.map(item => ({

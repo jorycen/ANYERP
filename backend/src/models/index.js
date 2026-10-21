@@ -1820,7 +1820,7 @@ const Expense = sequelize.define('Expense', {
   recipient_snapshot_json: { type: DataTypes.TEXT('long'), comment: '费用申请收款方式及收款账户快照' },
   recipient_display: { type: DataTypes.VIRTUAL, get() {
     let data; try { data = JSON.parse(this.getDataValue('recipient_snapshot_json') || 'null'); } catch (_) { return ''; }
-    return data ? data.mode === 'EMPLOYEE' ? `支付至员工账户：${data.payeeName || ''}` : `${data.mode === 'UNIT' ? '单位账户' : '其他账户'}：${data.payeeName || ''}；${data.bankName || ''}；${data.accountNumber || ''}` : '';
+    return data ? data.mode === 'EMPLOYEE' ? `支付至员工账户：${data.payeeName || ''}` : (data.paymentText || `${data.mode === 'UNIT' ? '单位账户' : '其他账户'}：${data.payeeName || ''}；${data.bankName || ''}；${data.accountNumber || ''}`) : '';
   } },
   status: { type: DataTypes.STRING(32), defaultValue: 'pending_approval' },
   applicant_staff_id: { type: DataTypes.BIGINT(20) },
@@ -1842,7 +1842,7 @@ const Expense = sequelize.define('Expense', {
   settlement_account_id: { type: DataTypes.STRING(64) },
   settled_at: { type: DataTypes.DATE },
   related_order_no: { type: DataTypes.STRING(64) },
-  remark: { type: DataTypes.STRING(512) },
+  remark: { type: DataTypes.TEXT('long') },
   create_user: { type: DataTypes.STRING(64) },
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
   update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },

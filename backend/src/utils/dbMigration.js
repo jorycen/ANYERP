@@ -287,6 +287,7 @@ async function ensureApprovalSchemaCompatibility() {
 }
 
 async function runSchemaMigrations() {
+  await ensureExpenseRemarkSchema();
   await ensureExpenseRecipientSchema();
   await checkAndAddColumn('T_RESOURCE_RIGHT_CHANGE_ORDER', 'REWARD_SNAPSHOT_JSON', 'TEXT COMMENT "销售归档冻结的权益奖励规则及金额"');
   // All change-order model reads include this column; fail readiness if DDL failed.
@@ -1334,6 +1335,18 @@ async function ensureProductSettlementSchema() {
     await sequelize.query(statement);
   }
   console.log('[DB Migration] 产品端结算表结构检查完成');
+}
+
+async function ensureExpenseRemarkSchema() {
+  const [column] = await sequelize.query(
+    `SELECT DATA_TYPE AS dataType FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'T_EXPENSE' AND COLUMN_NAME = 'REMARK'`,
+    { type: sequelize.QueryTypes.SELECT }
+  );
+  if (!column) throw new Error('Missing T_EXPENSE.REMARK');
+  if (String(column.dataType).toLowerCase() !== 'longtext') {
+    await sequelize.query('ALTER TABLE T_EXPENSE MODIFY COLUMN REMARK LONGTEXT NULL');
+  }
 }
 
 async function ensureExpenseRecipientSchema() {
@@ -5032,6 +5045,7 @@ async function seedPermissionData() {
 }
 
 module.exports = {
+  ensureExpenseRemarkSchema,
   ensureExpenseRecipientSchema,
   runMigrations,
   runSchemaMigrations,

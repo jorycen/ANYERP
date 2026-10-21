@@ -1,3 +1,11 @@
+## 2026-10-21 - 修复采购入库生成垫付报销时备注过长
+
+- 采购说明自动复制到报销备注时，旧数据库的512字限制会使最终入库整体回滚。费用备注改为LONGTEXT，启动迁移同步扩容，完整保留采购说明，不截断历史或本次数据。Web和小程序共用接口同时受益。
+
+## 2026-10-21 - Expense supplier lookup and payment instructions
+
+- Add supplier search, automatic account selection and a single editable payment instructions field. New applications default allocation to the source store and expense month; review allocation remains available.
+
 ## 2026-10-21 - Expense recipient schema compatibility
 
 - Add the nullable recipient snapshot column during API startup and verify readability before readiness. Existing amounts and documents are unchanged.
@@ -2662,3 +2670,7 @@
 * 新增费用收款快照字段及兼容迁移；已选择的供应商账户验证归属，临时修改不写回供应商档案。
 * 审批支持切换本门店、产品端和跨经销商门店经营分摊，保留审计及当前节点校验；目标门店经营统计补齐跨经销商分摊金额，不自动扣减员工绩效。
 * 小程序独立费用报销入口、申请页面、附件预览及审批经营分摊页同步完成。小程序仅本地保存。
+
+## 2026-10-21 - Expense approval attribution month
+
+- Approvers can select accounting month together with allocation stores. Save validates period locks and updates approval snapshots and audit history.

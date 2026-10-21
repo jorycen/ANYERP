@@ -17,8 +17,21 @@ test('三类付款信息冻结在申请单；员工只显示员工账户，手�
   assert.equal(A.recipient(recipient, 'CORPORATE_OTHER', '员工').mode, 'OTHER');
   assert.equal(A.recipient(recipient, 'CORPORATE', '员工').accountNumber, '001234567890');
   assert.deepEqual(A.recipient(recipient, 'PERSONAL_ADVANCE', '员工'), { version: 1, mode: 'EMPLOYEE', payeeName: '员工', description: '支付至员工账户' });
-  assert.throws(() => A.recipient({}, 'CORPORATE', ''), /完整收款人/);
+  assert.throws(() => A.recipient({}, 'CORPORATE', ''), /付款账号/);
   assert.throws(() => A.recipient({ ...recipient, source: 'SUPPLIER' }, 'CORPORATE', ''), /请选择已有供应商/);
+});
+
+test('单一付款信息输入保留原文，审批和付款快照均可读取，不要求拆分字段', () => {
+  const text = '临时单位\n测试银行\n001234567890';
+  const value = A.recipient({ paymentText: text }, 'CORPORATE', '员工');
+  assert.equal(value.paymentText, text);
+  assert.equal(value.accountNumber, text);
+  const expense = M.Expense.build({ recipient_snapshot_json: JSON.stringify(value) });
+  assert.equal(expense.recipient_display, text);
+  assert.equal(A.recipient(value, 'CORPORATE', '员工').paymentText, text);
+  assert.throws(() => A.recipient({ paymentText: '  ' }, 'CORPORATE', ''), /付款账号/);
+  assert.throws(() => A.recipient({ paymentText: 'a'.repeat(2001) }, 'CORPORATE', ''), /2000/);
+  assert.equal(A.recipient({ paymentText: text }, 'PERSONAL_ADVANCE', '员工').paymentText, undefined);
 });
 
 test('提交必须有图片、PDF或Excel附件，草稿可不传，拒绝脚本等文件类型', () => {
@@ -103,11 +116,20 @@ test('当前审批人可切换产品端或跨经销商分摊，保存前重查�
   t.mock.method(M.ApprovalFlowInstance, 'findOne', async () => instance);
   t.mock.method(M.ApprovalTask, 'findOne', async () => ({ node_name: '最终审核' }));
   t.mock.method(M.BusinessActionLog, 'create', async values => { logs.push(values); });
-  const request = ctx({ attributionType: 'PRODUCT_SIDE', attributionMethod: 'AVERAGE' }); request.params.id = 'E';
+  const request = ctx({ attributionType: 'PRODUCT_SIDE', attributionMethod: 'AVERAGE', accountingMonth: '2026-11' }); request.params.id = 'E';
   await C.updateExpenseAttribution(request);
   assert.equal(expense.attribution_type, 'PRODUCT_SIDE');
+  assert.equal(expense.accounting_month, '2026-11');
+  assert.equal(JSON.parse(instance.payload_json).accountingMonth, '2026-11');
   assert.equal(JSON.parse(instance.payload_json).attachmentUrls[0].name, file.name);
   assert.equal(logs.length, 1);
+  request.request.body.accountingMonth = '2026-13';
+  await assert.rejects(C.updateExpenseAttribution(request), /YYYY-MM/);
+  assert.equal(expense.accounting_month, '2026-11');
+  request.request.body.accountingMonth = '2026-12';
+  t.mock.method(M.ExpenseAccountingPeriod, 'findOne', async () => ({ status: 'closed' }));
+  await assert.rejects(C.updateExpenseAttribution(request), /已锁定/);
+  assert.equal(expense.accounting_month, '2026-11');
   t.mock.method(M.ApprovalTask, 'findOne', async () => null);
   await assert.rejects(C.updateExpenseAttribution(request), error => error.status === 403);
 });
@@ -149,4 +171,10 @@ test('最终审批付款使用本单冻结账户，不使用当前供应商账�
   assert.equal(settlement.payee_name, '临时收款人');
   assert.equal(JSON.parse(settlement.supplier_account_snapshot).accountNumber, '001234567890');
   assert.equal(payable.payee_name, '临时收款人');
+  const manualText = '手工账户名称\n开户银行\n00199887766';
+  expense.status = 'pending_approval';
+  expense.recipient_snapshot_json = JSON.stringify(A.recipient({ paymentText: manualText }, 'CORPORATE', '员工'));
+  await Service.applyExpenseApproval({ business_id: 'E' }, tx, { staffId: 9, name: '最终审核人' }, 'approved');
+  assert.equal(JSON.parse(settlement.supplier_account_snapshot).accountNumber, manualText);
+  assert.equal(settlement.payee_name, '费用单位');
 });

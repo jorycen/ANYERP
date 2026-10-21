@@ -1137,11 +1137,12 @@
           <el-input v-model="expenseForm.amount" placeholder="金额" style="width: 100%" />
         </el-form-item>
         <el-form-item label="费用发生方" required>
-          <el-input v-model="expenseForm.expenseParty" placeholder="供应商、员工或外部单位" />
+          <el-input v-model="expenseForm.expenseParty" placeholder="供应商、员工或外部单位" @input="expenseForm.recipient.supplierId && (expenseForm.recipient = {})"><template #append><el-button @click="expensePaymentFields?.search(expenseForm.expenseParty)">查询</el-button></template></el-input>
         </el-form-item>
         <el-form-item label="费用日期">
           <el-date-picker v-model="expenseForm.expenseDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
         </el-form-item>
+        <template v-if="expenseAttributionOnly || expenseForm.expenseId">
         <el-form-item label="费用归属" required>
           <el-select v-model="expenseForm.attributionType" style="width: 100%" @change="handleAttributionTypeChange">
             <el-option label="归属门店" value="STORE" />
@@ -1196,6 +1197,7 @@
           <el-date-picker v-model="expenseForm.accountingMonth" type="month" value-format="YYYY-MM" style="width: 100%" />
           <div class="form-help">上月亏损本月体现时，可选择本月；付款日期不决定归属月份。</div>
         </el-form-item>
+        </template>
         <el-form-item label="计入门店经营利润">
           <el-switch v-model="expenseForm.affectsStoreProfit" />
         </el-form-item>
@@ -1220,7 +1222,7 @@
         <el-form-item label="备注">
           <el-input v-model="expenseForm.remark" type="textarea" rows="3" placeholder="支出备注" />
         </el-form-item>
-        <ExpensePaymentFields v-if="!expenseAttributionOnly" v-model:recipient="expenseForm.recipient" v-model:attachments="expenseForm.attachmentUrls" :payment-method="expenseForm.paymentMethod" />
+        <ExpensePaymentFields v-if="!expenseAttributionOnly" ref="expensePaymentFields" v-model:recipient="expenseForm.recipient" v-model:attachments="expenseForm.attachmentUrls" :payment-method="expenseForm.paymentMethod" @supplier-selected="expenseForm.expenseParty = $event" />
       </el-form>
       <template #footer>
         <el-button @click="expenseDialogVisible = false">取消</el-button>
@@ -4026,6 +4028,7 @@ const restoreSettlementDraft = () => {
   ElMessage.success('已恢复上次草稿')
 }
 
+const expensePaymentFields = ref(null)
 const handleAddExpense = () => {
   resetForm()
   expenseDialogVisible.value = true
@@ -4107,7 +4110,7 @@ const buildExpensePayload = () => ({
   amount: expenseForm.amount,
   expenseParty: expenseForm.expenseParty,
   expenseDate: expenseForm.expenseDate,
-  accountingMonth: expenseForm.accountingMonth,
+  accountingMonth: expenseForm.expenseId ? expenseForm.accountingMonth : expenseForm.expenseDate?.slice(0, 7),
   affectsStoreProfit: expenseForm.affectsStoreProfit,
   paymentMethod: expenseForm.paymentMethod,
   recipient: expenseForm.recipient,
