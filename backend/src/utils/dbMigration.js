@@ -287,6 +287,7 @@ async function ensureApprovalSchemaCompatibility() {
 }
 
 async function runSchemaMigrations() {
+  await ensureExpenseRecipientSchema();
   await checkAndAddColumn('T_RESOURCE_RIGHT_CHANGE_ORDER', 'REWARD_SNAPSHOT_JSON', 'TEXT COMMENT "销售归档冻结的权益奖励规则及金额"');
   // All change-order model reads include this column; fail readiness if DDL failed.
   await sequelize.query('SELECT REWARD_SNAPSHOT_JSON FROM T_RESOURCE_RIGHT_CHANGE_ORDER LIMIT 0');
@@ -1335,8 +1336,15 @@ async function ensureProductSettlementSchema() {
   console.log('[DB Migration] 产品端结算表结构检查完成');
 }
 
-async function ensureExpenseAccountingSchema() {
+async function ensureExpenseRecipientSchema() {
   await checkAndAddColumn('T_EXPENSE', 'RECIPIENT_SNAPSHOT_JSON', 'LONGTEXT NULL COMMENT "费用申请收款信息快照"');
+  // The shared Expense model is also queried by inbound pages. Do not mark
+  // the API ready if the compatibility column could not be created.
+  await sequelize.query('SELECT RECIPIENT_SNAPSHOT_JSON FROM T_EXPENSE LIMIT 0');
+}
+
+async function ensureExpenseAccountingSchema() {
+  await ensureExpenseRecipientSchema();
   await checkAndAddColumn(
     'T_EXPENSE',
     'ACCOUNTING_MONTH',
@@ -5024,6 +5032,7 @@ async function seedPermissionData() {
 }
 
 module.exports = {
+  ensureExpenseRecipientSchema,
   runMigrations,
   runSchemaMigrations,
   ensureResourceSettlementSchemaCompatibility,

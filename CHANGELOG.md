@@ -1,3 +1,7 @@
+## 2026-10-21 - Expense recipient schema compatibility
+
+- Add the nullable recipient snapshot column during API startup and verify readability before readiness. Existing amounts and documents are unchanged.
+
 ## 2026-10-20 - 修复小程序整单按采购价被商品主档口径覆盖
 
 - 新建及编辑采购草稿先统一解析计价方式，再进行供应商校验和明细落库。兼容小程序整单useProductStandardPrice显式false及旧草稿残留字段，不再误用商品主档COMPANY_PRICE覆盖用户选择。
