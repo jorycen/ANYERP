@@ -43,7 +43,7 @@ async function saveRewardRules(ctx) {
     ctx.body = { message: '奖励规则已保存，仅影响后续归档任务', revision: revision + 1 };
   });
 }
-async function freezeSalesReportReward({ category, item, order, transaction }) {
+async function freezeSalesReportReward({ category, item, order, transaction, allowMissingEducation = false }) {
   // finishSaleRights already validates and consumes the selected SN's locked eligibility.
   const [product, categories] = await Promise.all([
     Product.findByPk(item.product_id, { transaction }), ProductCategory.findAll({ raw: true, transaction })
@@ -68,7 +68,10 @@ async function freezeSalesReportReward({ category, item, order, transaction }) {
       }
     }
   }
-  if (type === 'EDU_SUBSIDY' && !(amount > 0)) throw Object.assign(new Error('教育补贴未配置有效金额，请维护权益规则或有效教育优惠政策，不能生成零金额待办'), { status: 409 });
+  if (type === 'EDU_SUBSIDY' && !(amount > 0)) {
+    if (allowMissingEducation) return null;
+    throw Object.assign(new Error('教育补贴未配置有效金额，请维护权益规则或有效教育优惠政策，不能生成零金额待办'), { status: 409 });
+  }
   const employeeAmount = Math.round(amount * 80) / 100;
   return JSON.stringify({ version: 1, resourceType: type, amount,
     ...(type === 'EDU_SUBSIDY' ? { accountingVersion: 2, employeeAmount, productAmount: Math.round((amount - employeeAmount) * 100) / 100, orderItemId: item.item_id } : {}),

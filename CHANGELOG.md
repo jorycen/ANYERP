@@ -1,3 +1,7 @@
+## 2026-10-21 - 普通销售归档跳过无有效金额的教育标签
+
+- 修复归档自动关联零金额教育权益后阻断普通销售的问题；未使用教育优惠的商品无有效政策时不创建待办，明确选择教育权益的金额校验保留。23项相关测试通过，未改历史订单或执行实际归档。
+
 ## 2026-10-21 - 修复采购入库生成垫付报销时备注过长
 
 - 采购说明自动复制到报销备注时，旧数据库的512字限制会使最终入库整体回滚。费用备注改为LONGTEXT，启动迁移同步扩容，完整保留采购说明，不截断历史或本次数据。Web和小程序共用接口同时受益。
@@ -2674,3 +2678,7 @@
 ## 2026-10-21 - Expense approval attribution month
 
 - Approvers can select accounting month together with allocation stores. Save validates period locks and updates approval snapshots and audit history.
+
+## 2026-10-21 - Complete finance inventory root categories
+
+- Finance inventory includes all root categories, descendant stock and an unclassified bucket, plus total quantity. Existing stock valuation and permission filters are preserved.

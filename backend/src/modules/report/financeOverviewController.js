@@ -392,7 +392,7 @@ async function getFinanceOverview(ctx) {
           costPendingOrderCount: 0,
           costPendingAmount: 0
         },
-        inventory: { totalAmount: 0, includeDemo, categories: [] },
+        inventory: { totalAmount: 0, totalQuantity: 0, includeDemo, categories: [] },
         accounts: { totalAmount: 0, byType: [], accounts: [] },
         rebate: { receivedAmount: 0, pendingAmount: 0, receivedList: [], pendingList: [] },
         payments: { all: 0, uncreated: 0, created: 0, paid: 0, purchase: 0, expense: 0, supplierTop: { all: [], uncreated: [], created: [] } }
@@ -406,7 +406,7 @@ async function getFinanceOverview(ctx) {
   const filters = { storeIds, storeId: storeId || '', employeeId: '', productLine: '', includeDemo };
   const [trendRows, inventory, accounts, payments, productSettlement, expenseSummary, rebate] = await Promise.all([
     dataSource.getTrend(filters, ranges.current, 'day'),
-    dataSource.getInventory(filters),
+    dataSource.getInventory({ ...filters, allRootCategories: true }),
     queryAccountSummary(regionId, accessibleRegionIds),
     queryPaymentSummary(regionId, accessibleRegionIds),
     queryProductSettlementSummary({
@@ -461,6 +461,7 @@ async function getFinanceOverview(ctx) {
         }
       },
       inventory: {
+        totalQuantity: profitVisible ? inventory.inventoryQuantity : null,
         totalAmount: profitVisible ? roundMoney(inventory.inventoryAmount) : null,
         includeDemo,
         categories: profitVisible ? inventory.categories : []

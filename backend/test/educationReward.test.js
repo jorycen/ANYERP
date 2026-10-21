@@ -56,6 +56,23 @@ test('education uses valid imported policy when no new rule matches; missing and
   input.category.rule_config_json = '{}';
   right = null;
   await assert.rejects(freeze(input), /未配置有效金额/);
+  assert.equal(await freeze({ ...input, allowMissingEducation: true }), null);
+});
+
+test('zero-value imported SN education labels do not enroll ordinary sales during archive', async t => {
+  t.mock.method(M.Product, 'findAll', async () => [{ product_id: 'P', category: '内存' }]);
+  t.mock.method(M.Product, 'findByPk', async () => ({ category_id: 'memory' }));
+  t.mock.method(M.ProductCategory, 'findAll', async () => []);
+  const right = { current_status: 'AVAILABLE', source: 'BATCH_INBOUND', amount: 0 };
+  t.mock.method(M.InventoryResourceRight, 'findOne', async options => options.where.resource_type === 'EDU_SUBSIDY' ? right : null);
+  t.mock.method(M.ResourceCategory, 'findOne', async () => ({ category_code: 'EDU_SUBSIDY', status: 1, rule_config_json: null }));
+  const item = { item_id: 1, product_id: 'P', sn_id: 'SN', pn_code: 'PN', use_edu_subsidy: 0, selected_resource_types: '[]', async update(values) { Object.assign(this, values); } };
+  await require('../src/modules/inventory/resourceRights').alignOrderSubsidyRights({ education_subsidy: 0, national_subsidy: 0 }, [item], {});
+  assert.equal(item.use_edu_subsidy, 0);
+  assert.equal(item.selected_resource_types, '[]');
+  assert.equal(right.current_status, 'AVAILABLE');
+  const explicit = { category: { category_code: 'EDU_SUBSIDY' }, item, order: {} };
+  await assert.rejects(require('../src/modules/inventory/rewardConfig').freezeSalesReportReward(explicit), /不能生成零金额待办/);
 });
 test('company full income and employee/product shares share one ledger and net to zero on return', async t => {
   t.mock.method(M.ResourceRightChangeOrder, 'findAll', async () => [

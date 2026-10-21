@@ -2650,6 +2650,10 @@ async function alignOrderSubsidyRights(order, items, transaction) {
       where: { sn_id: item.sn_id, resource_type: resourceType }, transaction
     });
     if (right && effectiveRightStatus(right) === 'AVAILABLE') {
+      if (resourceType === 'EDU_SUBSIDY') {
+        const category = await ResourceCategory.findOne({ where: { category_code: resourceType, status: 1 }, transaction });
+        if (!category || !await freezeSalesReportReward({ category, item, order, transaction, allowMissingEducation: true })) continue;
+      }
       await updateItemResourceSelection(item, resourceType, true, transaction);
     }
   }

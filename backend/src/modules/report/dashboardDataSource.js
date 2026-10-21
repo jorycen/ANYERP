@@ -91,6 +91,21 @@ function isCategoryDescendant(category, ancestorCategory, categoryIndex) {
   return false;
 }
 
+function findInventoryRootCategory(row, index) {
+  let category = index.byId.get(String(row.categoryId || ''));
+  const parts = normalizeCategoryPath(row.categoryPath).split('/').filter(Boolean);
+  for (let length = parts.length; !category && length > 0; length -= 1) {
+    category = index.byPath.get(parts.slice(0, length).join('/'));
+  }
+  const visited = new Set();
+  while (category?.parentId && index.byId.has(category.parentId)) {
+    if (visited.has(category.categoryId)) return null;
+    visited.add(category.categoryId);
+    category = index.byId.get(category.parentId);
+  }
+  return category || null;
+}
+
 function findFinanceClassification(row, parentCategory, categoryIndex) {
   const rowPath = normalizeCategoryPath(row.categoryPath);
   const exactPathCategory = categoryIndex.byPath.get(rowPath);
@@ -759,6 +774,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
   }
 
   async getInventory(filters) {
+    const allRootCategories = filters.allRootCategories === true;
     const includeDemo = filters.includeDemo !== false;
     const storeClause = filters.storeId ? 'AND i.STORE_ID = :storeId' : '';
     const snStoreClause = filters.storeId ? 'AND ps.STORE_ID = :storeId' : '';
@@ -868,7 +884,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
                 SORT_ORDER AS sortOrder,
                 SHOW_IN_FINANCE AS showInFinance
            FROM T_PRODUCT_CATEGORY
-          WHERE STATUS = 1
+          ${allRootCategories ? '' : 'WHERE STATUS = 1'}
           ORDER BY LEVEL ASC, SORT_ORDER ASC, NAME ASC`
       )
     ]);
@@ -886,13 +902,13 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
     const inventoryAmount = roundMoney(rows.reduce((sum, row) => sum + row.inventoryAmount, 0));
     const categoryIndex = buildFinanceCategoryIndex(categoryRows);
     const categoryMap = new Map(categoryIndex.nodes
-      .filter(category => category.showInFinance)
+      .filter(category => allRootCategories ? (!category.parentId || !categoryIndex.byId.has(category.parentId)) : category.showInFinance)
       .map(category => [category.categoryId, {
         key: category.categoryId,
         categoryId: category.categoryId,
         name: category.name,
         path: category.path,
-        level: category.level,
+        level: allRootCategories ? 1 : category.level,
         quantity: 0,
         amount: 0,
         overdueQuantity: 0,
@@ -900,7 +916,11 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
         children: []
       }]));
     rows.forEach(row => {
-      const category = findFinanceCategory(row.categoryPath, categoryIndex, row.categoryId);
+      let category = allRootCategories ? findInventoryRootCategory(row, categoryIndex) : findFinanceCategory(row.categoryPath, categoryIndex, row.categoryId);
+      if (!category && allRootCategories) {
+        category = { categoryId: '__UNCLASSIFIED__', name: '未分类', path: '未分类', level: 1, sortOrder: 999999 };
+        if (!categoryMap.has(category.categoryId)) categoryMap.set(category.categoryId, createFinanceCategoryNode(category));
+      }
       const target = category ? categoryMap.get(category.categoryId) : null;
       if (!target) return;
       target.quantity += row.quantity;
@@ -908,7 +928,8 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       target.overdueQuantity += row.overdueQuantity;
       target.overdueAmount += row.overdueAmount;
 
-      const classification = findFinanceClassification(row, category, categoryIndex)
+      const exactCategory = allRootCategories ? categoryIndex.byId.get(String(row.categoryId || '')) : null;
+      const classification = (exactCategory && isCategoryDescendant(exactCategory, category, categoryIndex) ? exactCategory : null) || findFinanceClassification(row, category, categoryIndex)
         || ensureFinanceClassification(row, category, categoryIndex);
       addFinanceClassificationAmount(target, category, classification, categoryIndex, row);
     });
