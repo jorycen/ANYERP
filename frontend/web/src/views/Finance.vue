@@ -1144,7 +1144,6 @@
         </el-form-item>
         <el-form-item label="费用归属" required>
           <el-select v-model="expenseForm.attributionType" style="width: 100%" @change="handleAttributionTypeChange">
-            <el-option label="归属个人（申请人）" value="PERSONAL" />
             <el-option label="归属门店" value="STORE" />
             <el-option label="归属产品端" value="PRODUCT_SIDE" />
             <el-option label="归属公司" value="COMPANY" />
@@ -1154,7 +1153,7 @@
         <template v-if="expenseForm.attributionType === 'STORE'">
           <el-form-item label="分摊门店">
             <el-select v-model="expenseForm.allocationStoreIds" multiple filterable collapse-tags placeholder="默认当前门店，可多选" style="width: 100%">
-              <el-option v-for="s in stores" :key="s.store_id" :label="s.name" :value="s.store_id" />
+              <el-option v-for="s in expenseAllocationStores" :key="s.store_id" :label="s.name" :value="s.store_id" />
             </el-select>
           </el-form-item>
           <el-form-item label="分摊方式">
@@ -1165,7 +1164,7 @@
           </el-form-item>
           <div v-if="expenseForm.attributionMethod === 'MANUAL' && expenseForm.allocationStoreIds.length" class="expense-allocation-inputs">
             <div v-for="storeId in expenseForm.allocationStoreIds" :key="storeId" class="expense-allocation-input-row">
-              <span>{{ stores.find(item => item.store_id === storeId)?.name || storeId }}</span>
+              <span>{{ expenseAllocationStores.find(item => item.store_id === storeId)?.name || storeId }}</span>
               <el-input-number v-model="expenseForm.allocationAmounts[storeId]" :min="0" :precision="2" controls-position="right" />
             </div>
           </div>
@@ -1202,8 +1201,9 @@
         </el-form-item>
         <el-form-item label="支付方式">
           <el-select v-model="expenseForm.paymentMethod" placeholder="请选择" style="width: 100%">
-            <el-option label="财务对公" value="CORPORATE" />
-            <el-option label="私人垫付" value="PERSONAL_ADVANCE" />
+            <el-option label="公司付款—单位账户" value="CORPORATE" />
+            <el-option label="公司付款—其他账户" value="CORPORATE_OTHER" />
+            <el-option label="员工垫付报销" value="PERSONAL_ADVANCE" />
           </el-select>
         </el-form-item>
         <el-form-item label="是否有发票">
@@ -1220,6 +1220,7 @@
         <el-form-item label="备注">
           <el-input v-model="expenseForm.remark" type="textarea" rows="3" placeholder="支出备注" />
         </el-form-item>
+        <ExpensePaymentFields v-if="!expenseAttributionOnly" v-model:recipient="expenseForm.recipient" v-model:attachments="expenseForm.attachmentUrls" :payment-method="expenseForm.paymentMethod" />
       </el-form>
       <template #footer>
         <el-button @click="expenseDialogVisible = false">取消</el-button>
@@ -1446,6 +1447,7 @@
           <el-descriptions-item label="费用日期">{{ payableExpenseDetail.expense_date || '-' }}</el-descriptions-item>
           <el-descriptions-item label="经营归属月">{{ payableExpenseDetail.accounting_month || '-' }}</el-descriptions-item>
           <el-descriptions-item label="支付方式">{{ expensePaymentMethodText(payableExpenseDetail.payment_method) }}</el-descriptions-item>
+          <el-descriptions-item label="收款信息" :span="2">{{ payableExpenseDetail.recipient_display || '-' }}</el-descriptions-item>
           <el-descriptions-item label="费用归属">{{ expenseAttributionText(payableExpenseDetail) }}</el-descriptions-item>
           <el-descriptions-item label="票据类型">{{ payableExpenseDetail.invoice_type || (payableExpenseDetail.has_invoice ? '待补充' : '无发票') }}</el-descriptions-item>
           <el-descriptions-item label="发票号码">{{ payableExpenseDetail.invoice_no || '-' }}</el-descriptions-item>
@@ -1474,7 +1476,7 @@
         <template v-if="expenseAttachmentUrls(payableExpenseDetail).length">
           <h4 style="margin: 18px 0 8px">附件</h4>
           <div class="expense-detail-attachments">
-            <el-link v-for="(url, index) in expenseAttachmentUrls(payableExpenseDetail)" :key="`${url}-${index}`" :href="url" target="_blank" type="primary">
+            <el-link v-for="(url, index) in expenseAttachmentUrls(payableExpenseDetail)" :key="`${url}-${index}`" type="primary" @click="openExpenseFile(url)">
               附件{{ index + 1 }}
             </el-link>
           </div>
@@ -1715,6 +1717,7 @@
 </template>
 
 <script setup>
+import ExpensePaymentFields from '../components/ExpensePaymentFields.vue'
 import { ref, reactive, computed, onMounted, nextTick, watch } from 'vue'
 import InventoryResourceRights from '../components/InventoryResourceRights.vue'
 import RebateSettlement from '../components/RebateSettlement.vue'
@@ -1737,6 +1740,7 @@ const FINANCE_EXPENSE_DRAFT_KEY = 'finance-expense-create'
 const FINANCE_SETTLEMENT_DRAFT_KEY = 'finance-settlement-create'
 const FINANCE_ACCOUNT_TXN_DRAFT_KEY = 'finance-account-transaction-create'
 const stores = ref([])
+const expenseAllocationStores = ref([])
 const dailyDetails = ref([])
 const dailyTotal = ref(0)
 const dailyTotalAmount = ref(0)
@@ -2167,6 +2171,7 @@ const expenseForm = reactive({
   accountingMonth: new Date().toISOString().slice(0, 7),
   affectsStoreProfit: true,
   paymentMethod: 'CORPORATE',
+  recipient: {}, attachmentUrls: [],
   attributionType: 'STORE',
   attributionMethod: 'AVERAGE',
   allocationStoreIds: [],
@@ -2309,6 +2314,7 @@ const resetPaymentAccountFields = () => {
 }
 
 onMounted(() => {
+  api.getExpenseFormOptions().then(response => { expenseAllocationStores.value = response.data?.allocationStores || [] }).catch(() => {})
   syncTabFromRoute()
   loadStores()
   loadPaymentMethods()
@@ -2810,7 +2816,9 @@ const handleEditExpense = (row) => {
   expenseForm.expenseDate = row.expense_date || new Date().toISOString().slice(0, 10)
   expenseForm.accountingMonth = row.accounting_month || expenseForm.expenseDate.slice(0, 7)
   expenseForm.affectsStoreProfit = Number(row.affects_store_profit ?? 1) === 1
-  expenseForm.paymentMethod = row.payment_method || 'CORPORATE'
+  expenseForm.recipient = (() => { try { return JSON.parse(row.recipient_snapshot_json || '{}') } catch (_) { return {} } })()
+  expenseForm.attachmentUrls = (() => { try { return typeof row.attachment_urls === 'string' ? JSON.parse(row.attachment_urls || '[]') : (row.attachment_urls || []) } catch (_) { return [] } })()
+  expenseForm.paymentMethod = expenseForm.recipient.mode === 'OTHER' ? 'CORPORATE_OTHER' : row.payment_method || 'CORPORATE'
   expenseForm.attributionType = row.attribution_type || 'STORE'
   expenseForm.attributionMethod = row.attribution_method || 'AVERAGE'
   const attributionDetails = Array.isArray(row.attribution_details)
@@ -3499,7 +3507,7 @@ const expenseAttributionDetails = expense => {
 }
 
 const expenseAttachmentUrls = expense => {
-  const safeUrls = values => values.map(item => String(item || '').trim()).filter(url => /^(https?:\/\/|\/)/i.test(url))
+  const safeUrls = values => values.map(item => String((typeof item === 'object' ? item?.url : item) || '').trim()).filter(url => /^(https?:\/\/|cloud:\/\/|\/)/i.test(url))
   if (Array.isArray(expense?.attachment_urls)) return safeUrls(expense.attachment_urls)
   const raw = String(expense?.attachment_urls || '').trim()
   if (!raw) return []
@@ -3511,10 +3519,17 @@ const expenseAttachmentUrls = expense => {
   }
   return safeUrls(raw.split(/[\n,]/))
 }
+const openExpenseFile = async value => {
+  try {
+    let url = value
+    if (url.startsWith('cloud://')) { const result = await api.resolveCloudFileUrls([url]); url = result.data?.items?.[0]?.url }
+    if (url) window.open(url, '_blank', 'noopener')
+  } catch (error) { ElMessage.error('附件打开失败') }
+}
 
 const expensePaymentMethodText = value => ({
-  CORPORATE: '财务对公',
-  PERSONAL_ADVANCE: '私人垫付'
+  CORPORATE: '公司付款',
+  PERSONAL_ADVANCE: '员工垫付报销'
 }[value] || value || '-')
 
 const expenseAttributionTargetTypeText = value => ({
@@ -4095,6 +4110,8 @@ const buildExpensePayload = () => ({
   accountingMonth: expenseForm.accountingMonth,
   affectsStoreProfit: expenseForm.affectsStoreProfit,
   paymentMethod: expenseForm.paymentMethod,
+  recipient: expenseForm.recipient,
+  attachmentUrls: expenseForm.attachmentUrls,
   ...buildAttributionPayload(),
   hasInvoice: expenseForm.hasInvoice,
   invoiceType: expenseForm.invoiceType,
@@ -4142,6 +4159,7 @@ const validateExpenseForm = () => {
 }
 
 const handleExpenseSubmit = async () => {
+  if (!expenseAttributionOnly.value && !expenseForm.attachmentUrls.length) return ElMessage.warning("\u8bf7\u4e0a\u4f20\u8d39\u7528\u51ed\u8bc1")
   if (!validateExpenseForm()) return
 
   submitLoading.value = true
@@ -4227,6 +4245,7 @@ const resetForm = () => {
   expenseForm.accountingMonth = new Date().toISOString().slice(0, 7)
   expenseForm.affectsStoreProfit = true
   expenseForm.paymentMethod = 'CORPORATE'
+  expenseForm.recipient = {}; expenseForm.attachmentUrls = []
   expenseForm.attributionType = 'STORE'
   expenseForm.attributionMethod = 'AVERAGE'
   expenseForm.allocationStoreIds = []

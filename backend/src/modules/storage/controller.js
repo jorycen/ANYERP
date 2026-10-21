@@ -1,14 +1,14 @@
 const { getCloudStorageConfig, getSignedCloudFileUrl, uploadCloudFile } = require('../../utils/cloudStorage');
 
 const MAX_FILE_IDS = 50;
-const ALLOWED_UPLOAD_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'application/pdf']);
+const ALLOWED_UPLOAD_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/heic', 'image/heif', 'application/pdf', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']);
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
 async function upload(ctx) {
   const file = ctx.request.file;
   if (!file) ctx.throw(400, '请选择要上传的文件');
   if (!ALLOWED_UPLOAD_MIME_TYPES.has(String(file.mimetype || '').toLowerCase())) {
-    ctx.throw(400, '仅支持 JPG、PNG、WEBP 或 PDF 文件');
+    ctx.throw(400, '仅支持图片、PDF 或 Excel 文件');
   }
   if (Number(file.size || file.buffer?.length || 0) > MAX_UPLOAD_BYTES) {
     ctx.throw(400, '单个文件不能超过 10MB');

@@ -1,8 +1,9 @@
+const expenseApplication = require('./expenseApplication');
 /**
  * 财务管理控制器
  */
 const {
-  sequelize, DailyStatement, DailyStatementDetail, Expense, ExpenseType, PurchaseRequest, PurchaseRequestItem, Store, Region, Order, OrderPayment, Supplier,
+  sequelize, DailyStatement, DailyStatementDetail, Expense, ExpenseType, PurchaseRequest, PurchaseRequestItem, Store, Region, Order, OrderPayment, Supplier, SupplierPaymentAccount,
   SettlementAccount, SettlementAccountTransaction, SubsidyAccountRoute, SubsidyReceipt, PaymentMethod, PaymentMethodStore, OrderItem,
   SubsidyReceiptAllocation, SubsidyReceivableAdjustment, ExpensePerformanceAllocation,
   ApprovalFlowInstance, ApprovalTask, ApprovalActionLog
@@ -487,6 +488,8 @@ async function submitExpense(ctx) {
           await record.update({ status: 'pending_approval', submit_user: user.name, update_time: new Date() }, { transaction });
         }
       } else {
+        expenseApplication.attachments(JSON.parse(record.attachment_urls || '[]'));
+        if (!record.recipient_snapshot_json) ctx.throw(400, '请先补齐费用收款信息');
         await record.update({ status: 'pending_approval', submit_user: user.name, update_time: new Date() }, { transaction });
         await startExpenseApproval(record, user, transaction);
       }
@@ -803,7 +806,15 @@ async function createExpense(ctx) {
   if (!expenseTypeId) ctx.throw(400, '请选择报销类型');
   if (!String(expenseParty || '').trim()) ctx.throw(400, '请填写费用发生方');
   if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) ctx.throw(400, '费用金额必须大于0');
-  if (!['CORPORATE', 'PERSONAL_ADVANCE'].includes(paymentMethod)) ctx.throw(400, '支付方式无效');
+  if (!['CORPORATE', 'CORPORATE_OTHER', 'PERSONAL_ADVANCE'].includes(paymentMethod)) ctx.throw(400, '支付方式无效');
+  const recipient = expenseApplication.recipient(ctx.request.body.recipient, paymentMethod, user.name || '', isDraft);
+  const files = expenseApplication.attachments(attachmentUrls || [], isDraft);
+  if (recipient.supplierId) {
+    const selectedSupplier = await Supplier.findOne({ where: { supplier_id: recipient.supplierId, status: 1, is_deleted: 0 } });
+    if (!selectedSupplier) ctx.throw(400, '所选供应商不存在或已停用');
+    recipient.supplierName = selectedSupplier.name;
+    if (recipient.accountId && !await SupplierPaymentAccount.findOne({ where: { account_id: recipient.accountId, supplier_id: recipient.supplierId, status: 1, is_deleted: 0 } })) ctx.throw(400, '所选收款账户不属于该供应商或已停用');
+  }
   const resolvedAccountingMonth = resolveExpenseAccountingMonth(accountingMonth, expenseDate);
 
   const [expenseType, store] = await Promise.all([
@@ -848,14 +859,7 @@ async function createExpense(ctx) {
     rebateSupplierId: normalizedRebateSupplierId,
     rebateSupplierName: resolvedRebateSupplierName
   });
-  if (attribution.type === 'STORE') {
-    const targetStoreIds = attribution.details.map(item => item.target_id);
-    const targetStores = await Store.findAll({ where: { store_id: targetStoreIds, status: 1, is_deleted: 0 } });
-    if (targetStores.length !== targetStoreIds.length) ctx.throw(400, '分摊门店不存在或已停用');
-    if (targetStores.some(item => String(item.distributor_id || '') !== String(store.distributor_id || ''))) {
-      ctx.throw(400, '分摊门店必须属于同一经销商');
-    }
-  }
+  if (attribution.type === 'PERSONAL') ctx.throw(400, '费用经营分摊不能自动扣减员工绩效，请选择门店或产品端');
   if (attribution.type === 'COMPANY' && attribution.details[0].target_type === 'distributor'
     && String(attribution.details[0].target_id) !== String(store.distributor_id || '')) {
     ctx.throw(400, '公司归属只能选择当前费用所属经销商');
@@ -872,6 +876,7 @@ async function createExpense(ctx) {
   let record;
   await sequelize.transaction(async transaction => {
     await assertPeriodOpen(store.distributor_id, resolvedAccountingMonth, transaction);
+    await expenseApplication.validateTargets(attribution, resolvedAccountingMonth, transaction);
     const expensePayload = {
       expense_id: currentExpenseId,
       expense_no: expenseNo,
@@ -883,14 +888,15 @@ async function createExpense(ctx) {
       expense_type: expenseType.name,
       expense_party: String(expenseParty).trim(),
       amount: Number(amount),
-      payment_method: paymentMethod,
+      payment_method: paymentMethod === 'CORPORATE_OTHER' ? 'CORPORATE' : paymentMethod,
+      recipient_snapshot_json: JSON.stringify({ ...recipient, ...(recipient.mode === 'EMPLOYEE' && existingRecord ? { payeeName: existingRecord.applicant_name || existingRecord.create_user } : {}) }),
       accounting_month: resolvedAccountingMonth,
       affects_store_profit: affectsStoreProfit ? 1 : 0,
       has_invoice: hasInvoice ? 1 : 0,
       invoice_type: hasInvoice ? String(invoiceType || '').trim() : '',
       invoice_no: hasInvoice ? String(invoiceNo || '').trim() : '',
       expense_date: expenseDate || new Date(),
-      attachment_urls: JSON.stringify(Array.isArray(attachmentUrls) ? attachmentUrls : []),
+      attachment_urls: JSON.stringify(files),
       status: isDraft ? 'draft' : 'pending_approval',
       applicant_staff_id: existingRecord?.applicant_staff_id || user.staffId || user.id || null,
       applicant_name: existingRecord?.applicant_name || user.name || user.phone || '',
@@ -1127,8 +1133,13 @@ async function getExpenseDetail(ctx) {
     || (!record.applicant_staff_id && [record.applicant_name, record.create_user].includes(user.name || user.phone));
   const roles = getUserRoles(user);
   const canViewAll = roles.some(role => ['finance', 'admin', 'boss'].includes(role));
-  if (!isApplicant && !canViewAll) ctx.throw(403, '无权查看该报销申请');
-  if (!user.accessibleStoreIds.includes('*') && !user.accessibleStoreIds.includes(record.store_id) && !canViewAll) {
+  let assignedReviewer = false;
+  if (!isApplicant && !canViewAll && record.source_type === 'expense') {
+    const instance = await ApprovalFlowInstance.findOne({ where: { business_type: 'expense', business_id: record.expense_id, status: 'pending' } });
+    assignedReviewer = Boolean(instance && await ApprovalTask.findOne({ where: { instance_id: instance.instance_id, assignee_staff_id: staffId, status: 'pending' } }));
+  }
+  if (!isApplicant && !canViewAll && !assignedReviewer) ctx.throw(403, '无权查看该报销申请');
+  if (!(user.accessibleStoreIds || []).includes('*') && !(user.accessibleStoreIds || []).includes(record.store_id) && !canViewAll && !assignedReviewer) {
     ctx.throw(403, '无权查看该门店的报销申请');
   }
 
@@ -1168,7 +1179,8 @@ async function updateExpenseAttribution(ctx) {
 
   const body = ctx.request.body || {};
   const currentDetails = parseExpenseDetails(record.attribution_details_json);
-  const type = record.attribution_type || 'STORE';
+  const type = body.attributionType || record.attribution_type || 'STORE';
+  if (!['STORE', 'PRODUCT_SIDE', 'COMPANY', 'REBATE'].includes(type)) ctx.throw(400, '费用分摊不能自动扣减员工绩效');
   const supplierId = body.rebateSupplierId || body.supplierId || currentDetails[0]?.target_id;
   let supplierName = currentDetails[0]?.target_name || '';
   if (type === 'REBATE') {
@@ -1190,23 +1202,27 @@ async function updateExpenseAttribution(ctx) {
     rebateSupplierId: supplierId,
     rebateSupplierName: supplierName
   });
-  if (attribution.type === 'STORE') {
-    const stores = await Store.findAll({ where: { store_id: attribution.details.map(item => item.target_id), status: 1, is_deleted: 0 } });
-    if (stores.length !== attribution.details.length || stores.some(item => String(item.distributor_id || '') !== String(record.distributor_id || ''))) {
-      ctx.throw(400, '分摊门店必须属于当前经销商');
-    }
+  if (attribution.type === 'COMPANY') {
+    const target = attribution.details[0];
+    if (target.target_type === 'distributor' && String(target.target_id) !== String(record.distributor_id)) ctx.throw(400, '公司归属只能选择原费用经销商，跨经销商请使用门店分摊');
+    if (target.target_type === 'store' && !await Store.findOne({ where: { store_id: target.target_id, distributor_id: record.distributor_id, status: 1, is_deleted: 0 } })) ctx.throw(400, '公司归属对象无效，跨经销商请使用门店分摊');
   }
-
   await sequelize.transaction(async transaction => {
     const locked = await Expense.findByPk(record.expense_id, { transaction, lock: transaction.LOCK.UPDATE });
     if (!locked || locked.status !== 'pending_approval') ctx.throw(409, '费用状态已变化，请刷新后重试');
+    const currentTask = await ApprovalTask.findOne({ where: { instance_id: instance.instance_id, assignee_staff_id: staffId, status: 'pending' }, transaction, lock: transaction.LOCK.UPDATE });
+    if (!currentTask) ctx.throw(409, '审批节点已变化，请刷新后重试');
+    await expenseApplication.validateTargets(attribution, locked.accounting_month, transaction);
     const oldDetails = parseExpenseDetails(locked.attribution_details_json);
+    const oldType = locked.attribution_type, oldMethod = locked.attribution_method;
     await locked.update({
+      attribution_type: attribution.type,
       attribution_method: attribution.method,
       attribution_details_json: JSON.stringify(attribution.details),
       update_time: new Date()
     }, { transaction });
     const latestPayload = {
+      ...(() => { try { return JSON.parse(instance.payload_json || '{}') } catch (_) { return {} } })(),
       expenseId: locked.expense_id,
       expenseNo: locked.expense_no,
       amount: Number(locked.amount || 0),
@@ -1219,7 +1235,7 @@ async function updateExpenseAttribution(ctx) {
     await recordBusinessAction({
       businessType: 'expense', businessId: locked.expense_id, businessNo: locked.expense_no,
       action: 'update_attribution', fromStatus: locked.status, toStatus: locked.status, user,
-      detail: { before: oldDetails, after: attribution.details, node: task.node_name }, transaction
+      detail: { before: oldDetails, after: attribution.details, beforeType: oldType, afterType: attribution.type, beforeMethod: oldMethod, afterMethod: attribution.method, node: task.node_name }, transaction
     });
   });
   ctx.body = { code: 0, message: '费用归属已调整', data: { attributionType: attribution.type, attributionMethod: attribution.method, allocationDetails: attribution.details } };

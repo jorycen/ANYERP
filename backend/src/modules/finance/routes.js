@@ -42,6 +42,7 @@ const {
   createDirectPayment,
   registerSupplierRefund,
   getPaymentBatches,
+  exportPaymentBatches,
   getPaymentBatchDetail,
   voidPaymentBatch,
   confirmPayment,
@@ -87,6 +88,7 @@ router.delete('/expense-draft/:id', deleteExpenseDraft);
 router.put('/expense-draft/:id/submit', submitExpense);
 router.get('/expense-list', getExpenseList);
 router.get('/expense-list/export', exportExpenseList);
+router.get('/expense/form-options', require('./expenseApplication').options);
 router.get('/expense/:id', getExpenseDetail);
 router.put('/expense/:id/attribution', updateExpenseAttribution);
 router.post('/expense/:id/review', reviewExpense);
@@ -170,6 +172,7 @@ router.post('/settlement-payment/batch', createBatchPayment);
 router.post('/settlement-payment/direct', createDirectPayment);
 router.post('/settlement/supplier-refund', registerSupplierRefund);
 router.get('/settlement-payment/batches', getPaymentBatches);
+router.get('/settlement-payment/batches/export', exportPaymentBatches);
 router.get('/settlement-payment/batch/:id', getPaymentBatchDetail);
 router.post('/settlement-payment/batch/void', voidPaymentBatch);
 router.post('/confirm-payment', confirmPayment);

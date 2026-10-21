@@ -1377,6 +1377,8 @@ function normalizePaymentBatch(row) {
   const data = row.toJSON ? row.toJSON() : row;
   return {
     ...data,
+    supplier_names: [...new Set((data.records || []).map(record =>
+      (record.Settlement || record.settlement)?.supplier_name || record.supplier_name || '').filter(Boolean))].join('、'),
     records: (data.records || []).map(record => {
       const settlement = record.Settlement || record.settlement || null;
       const counterpartyPaymentInfo = settlement
@@ -2669,13 +2671,27 @@ async function createDirectPayment(ctx) {
   };
 }
 
-async function getPaymentBatches(ctx) {
+async function getPaymentBatches(ctx, exportMode = false) {
+  exportMode = exportMode === true;
   const { page = 1, pageSize = 20, status } = ctx.query;
   const where = {};
   if (status) where.status = status;
+  if (String(ctx.query.batchNo || '').trim()) where.batch_no = { [Op.like]: `%${String(ctx.query.batchNo).trim()}%` };
+  if (ctx.query.distributorId) where.distributor_id = ctx.query.distributorId;
+  if (ctx.query.startDate || ctx.query.endDate) {
+    where.create_time = {};
+    if (ctx.query.startDate) where.create_time[Op.gte] = new Date(`${ctx.query.startDate}T00:00:00.000+08:00`);
+    if (ctx.query.endDate) where.create_time[Op.lte] = new Date(`${ctx.query.endDate}T23:59:59.999+08:00`);
+  }
+  if (String(ctx.query.supplierName || '').trim()) {
+    where[Op.and] = [sequelize.literal(`EXISTS (SELECT 1 FROM T_SETTLEMENT_PAYMENT_RECORD filter_payment
+      JOIN T_SETTLEMENT filter_settlement ON filter_settlement.SETTLEMENT_ID = filter_payment.SETTLEMENT_ID
+      WHERE filter_payment.BATCH_ID = SettlementPaymentBatch.BATCH_ID
+        AND filter_settlement.SUPPLIER_NAME LIKE ${sequelize.escape(`%${String(ctx.query.supplierName).trim()}%`)})`)];
+  }
   applyDistributorFilter(where, ctx.state.user);
 
-  const { count, rows } = await SettlementPaymentBatch.findAndCountAll({
+  const options = {
     where,
     include: [{
       model: SettlementPaymentRecord,
@@ -2693,8 +2709,11 @@ async function getPaymentBatches(ctx) {
     }],
     distinct: true,
     order: [['create_time', 'DESC'], ['batch_id', 'DESC']],
-    ...paginate({}, { page, pageSize })
-  });
+    ...(exportMode ? {} : paginate({}, { page, pageSize }))
+  };
+  const { count, rows } = exportMode
+    ? { rows: await SettlementPaymentBatch.findAll(options), count: 0 }
+    : await SettlementPaymentBatch.findAndCountAll(options);
 
   const batchSettlementRows = rows.flatMap(row => (row.records || []).map(record => record.Settlement || record.settlement).filter(Boolean));
   await enrichSettlementMetadata(batchSettlementRows);
@@ -2707,8 +2726,22 @@ async function getPaymentBatches(ctx) {
     setDataValue(row, 'distributor_name', batchDistributorMap.get(String(row.distributor_id || '')) || row.distributor_id || '未知经销商');
     setDataValue(row, 'tax_status', combineTaxStatuses((row.records || []).map(record => (record.Settlement || record.settlement)?.tax_status)));
   });
-  ctx.body = formatPaginatedResult(normalizePaymentBatches(rows), { page, pageSize, count });
+  const list = normalizePaymentBatches(rows);
+  if (exportMode) {
+    const data = list.map(row => ({
+      付款批次号: row.batch_no, 供应商: row.supplier_names, 经销商: row.distributor_name,
+      付款账户: row.account_name, 付款总额: Number(row.total_amount || 0), 笔数: Number(row.total_count || 0),
+      状态: row.status === 'active' ? '正常' : '已撤销', 操作人: row.create_user,
+      操作时间: row.create_time ? moment(row.create_time).utcOffset(480).format('YYYY-MM-DD HH:mm:ss') : '', 备注: row.remark || ''
+    }));
+    sendExcel(ctx, data, ['付款批次号', '供应商', '经销商', '付款账户', '付款总额', '笔数', '状态', '操作人', '操作时间', '备注'],
+      '付款批次.xlsx', '付款批次', { textHeaders: ['付款批次号'] });
+    return;
+  }
+  ctx.body = formatPaginatedResult(list, { page, pageSize, count });
 }
+
+async function exportPaymentBatches(ctx) { return getPaymentBatches(ctx, true); }
 
 async function getPaymentBatchDetail(ctx) {
   const { id } = ctx.params;
@@ -2839,6 +2872,7 @@ module.exports = {
   createDirectPayment,
   registerSupplierRefund,
   getPaymentBatches,
+  exportPaymentBatches,
   getPaymentBatchDetail,
   voidPaymentBatch,
   confirmPayment,

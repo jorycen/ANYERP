@@ -1817,6 +1817,11 @@ const Expense = sequelize.define('Expense', {
   attribution_details_json: { type: DataTypes.TEXT('long'), comment: '费用归属及分摊明细JSON' },
   rebate_settlement_id: { type: DataTypes.STRING(32), comment: '返利归属对应待核销单ID' },
   attachment_urls: { type: DataTypes.TEXT('long') },
+  recipient_snapshot_json: { type: DataTypes.TEXT('long'), comment: '费用申请收款方式及收款账户快照' },
+  recipient_display: { type: DataTypes.VIRTUAL, get() {
+    let data; try { data = JSON.parse(this.getDataValue('recipient_snapshot_json') || 'null'); } catch (_) { return ''; }
+    return data ? data.mode === 'EMPLOYEE' ? `支付至员工账户：${data.payeeName || ''}` : `${data.mode === 'UNIT' ? '单位账户' : '其他账户'}：${data.payeeName || ''}；${data.bankName || ''}；${data.accountNumber || ''}` : '';
+  } },
   status: { type: DataTypes.STRING(32), defaultValue: 'pending_approval' },
   applicant_staff_id: { type: DataTypes.BIGINT(20) },
   applicant_name: { type: DataTypes.STRING(64) },

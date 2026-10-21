@@ -528,6 +528,13 @@ export default {
   createBatchSettlementPayment: (data) => api.post('/finance/settlement-payment/batch', data),
   createDirectSettlementPayment: (data) => api.post('/finance/settlement-payment/direct', data),
   getSettlementPaymentBatches: (params) => api.get('/finance/settlement-payment/batches', { params }),
+  getExpenseFormOptions: () => api.get('/finance/expense/form-options'),
+  exportSettlementPaymentBatches: (params) => exportApi.get('/finance/settlement-payment/batches/export', { params, responseType: 'blob' }).then(response => {
+    const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
+    const link = document.createElement('a')
+    link.href = url; link.download = '付款批次.xlsx'
+    document.body.appendChild(link); link.click(); link.remove(); window.URL.revokeObjectURL(url)
+  }),
   getSettlementPaymentBatchDetail: (id) => api.get(`/finance/settlement-payment/batch/${id}`),
   voidSettlementPaymentBatch: (data) => api.post('/finance/settlement-payment/batch/void', data),
   confirmPayment: (data) => api.post('/finance/confirm-payment', data),

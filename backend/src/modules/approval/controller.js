@@ -255,7 +255,7 @@ async function listTasks(ctx) {
   const expenseIds = tasks.filter(task => ['expense', 'purchase_expense', 'expense_attribution'].includes(task.Instance?.business_type)).map(task => String(task.Instance.business_id || '')).filter(Boolean);
   const expenses = expenseIds.length ? await Expense.findAll({
     where: { expense_id: expenseIds, is_deleted: 0 },
-    attributes: ['expense_id', 'expense_no', 'expense_type', 'expense_party', 'amount', 'accounting_month', 'affects_store_profit', 'payment_method', 'has_invoice', 'invoice_type', 'invoice_no', 'expense_date', 'attribution_type', 'attribution_method', 'attribution_details_json', 'attachment_urls', 'applicant_staff_id', 'applicant_name', 'operator_name', 'submit_user', 'source_type', 'source_no', 'related_order_no', 'remark', 'create_time'],
+    attributes: ['expense_id', 'expense_no', 'expense_type', 'expense_party', 'amount', 'accounting_month', 'affects_store_profit', 'payment_method', 'has_invoice', 'invoice_type', 'invoice_no', 'expense_date', 'attribution_type', 'attribution_method', 'attribution_details_json', 'attachment_urls', 'recipient_snapshot_json', 'applicant_staff_id', 'applicant_name', 'operator_name', 'submit_user', 'source_type', 'source_no', 'related_order_no', 'remark', 'create_time'],
     include: [{ model: Store, attributes: ['store_id', 'name'], required: false }]
   }) : [];
   const expenseMap = new Map(expenses.map(row => [String(row.expense_id), row.toJSON()]));

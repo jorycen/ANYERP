@@ -50,6 +50,7 @@ function expenseTaxStatus(invoiceType) {
 }
 
 async function createDirectExpensePayment(expense, operator, transaction) {
+  const recipient = parseJson(expense.recipient_snapshot_json, {});
   const payable = await ensureExpensePayable(expense, { sourceType: 'expense', status: 'unpaid' }, transaction);
   const existing = await Settlement.findOne({
     where: { source_type: 'expense', source_id: expense.expense_id, is_deleted: 0, status: { [Op.ne]: 'voided' } },
@@ -65,12 +66,13 @@ async function createDirectExpensePayment(expense, operator, transaction) {
   const settlement = await Settlement.create({
     settlement_id: generateUUID(),
     settlement_no: `EX${moment().format('YYYYMMDDHHmmss')}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`,
-    supplier_id: null,
-    supplier_name: expense.expense_party || '费用收款方',
+    supplier_id: recipient.supplierId || null,
+    supplier_name: recipient.supplierName || expense.expense_party || '费用收款方',
     settlement_type: 'expense',
     payee_type: 'counterparty',
     payee_id: '',
-    payee_name: expense.expense_party || '费用收款方',
+    payee_name: recipient.payeeName || expense.expense_party || '费用收款方',
+    supplier_account_snapshot: expense.recipient_snapshot_json ? JSON.stringify({ companyName: recipient.payeeName || '', bankName: recipient.bankName || '', accountNumber: recipient.accountNumber || '', remark: recipient.remark || '' }) : null,
     source_type: 'expense',
     source_id: expense.expense_id,
     source_no: expense.expense_no,
@@ -120,6 +122,10 @@ function normalizeAttribution({
   const total = money(totalAmount);
   const method = String(attributionMethod || 'AVERAGE').trim().toUpperCase() === 'MANUAL' ? 'MANUAL' : 'AVERAGE';
   const input = Array.isArray(allocationDetails) ? allocationDetails : [];
+  if (input.some(item => item.amount !== '' && item.amount !== null && item.amount !== undefined &&
+    (!Number.isFinite(Number(item.amount)) || Number(item.amount) < 0 || Math.abs(Number(item.amount) * 100 - Math.round(Number(item.amount) * 100)) > 0.000001))) {
+    throw Object.assign(new Error('分摊金额必须是非负金额，最多两位小数'), { status: 400 });
+  }
   let details;
 
   if (type === 'PERSONAL') {
@@ -163,7 +169,7 @@ function normalizeAttribution({
   }
 
   const sum = money(details.reduce((result, item) => result + money(item.amount), 0));
-  if (sum <= 0 || Math.abs(sum - total) > 0.01) {
+  if (sum <= 0 || Math.round(sum * 100) !== Math.round(total * 100)) {
     throw new Error(`费用分摊金额必须等于费用总额 ¥${total.toFixed(2)}`);
   }
   return {
@@ -236,7 +242,8 @@ async function startExpenseApproval(expense, user, transaction) {
       accountingMonth: expense.accounting_month,
       attributionType: expense.attribution_type,
       attributionMethod: expense.attribution_method,
-      allocationDetails: parseJson(expense.attribution_details_json, [])
+      allocationDetails: parseJson(expense.attribution_details_json, []),
+      recipient: parseJson(expense.recipient_snapshot_json, null), attachmentUrls: parseJson(expense.attachment_urls, [])
     }
   }, user, transaction);
 }
@@ -260,6 +267,14 @@ async function applyExpenseApproval(instance, transaction, actor, action, commen
 
   const attribution = parseJson(expense.attribution_details_json, []);
   const attributionType = String(expense.attribution_type || 'STORE').toUpperCase();
+  if (expense.recipient_snapshot_json) {
+    const application = require('./expenseApplication');
+    application.attachments(parseJson(expense.attachment_urls, []));
+    application.recipient(parseJson(expense.recipient_snapshot_json, {}), expense.payment_method, expense.applicant_name);
+    if (attributionType === 'PERSONAL') throw Object.assign(new Error('费用经营分摊不能自动扣减员工绩效'), { status: 400 });
+    await require('./expenseAccountingController').assertPeriodOpen(expense.distributor_id, expense.accounting_month, transaction);
+    await application.validateTargets({ type: attributionType, details: attribution }, expense.accounting_month, transaction);
+  }
   const affectsStoreProfit = ['STORE', 'PRODUCT_SIDE', 'COMPANY'].includes(attributionType) ? 1 : 0;
   await expense.update({
     status: 'processing',
@@ -331,6 +346,7 @@ async function applyExpenseApproval(instance, transaction, actor, action, commen
 }
 
 async function ensureExpensePayable(expense, options = {}, transaction = null) {
+  const recipient = parseJson(expense.recipient_snapshot_json, {});
   const sourceType = options.sourceType || (expense.payment_method === 'PERSONAL_ADVANCE' ? 'reimbursement' : 'expense');
   let payable = await Payable.findOne({
     where: { source_type: sourceType, source_id: expense.expense_id },
@@ -339,11 +355,11 @@ async function ensureExpensePayable(expense, options = {}, transaction = null) {
   const payeeName = options.payeeName || (
     sourceType === 'reimbursement'
       ? (expense.applicant_name || expense.create_user || '垫付员工')
-      : expense.expense_party
+      : (recipient.payeeName || expense.expense_party)
   );
   const values = {
-    supplier_id: null,
-    supplier_name: payeeName,
+    supplier_id: sourceType === 'expense' ? (recipient.supplierId || null) : null,
+    supplier_name: sourceType === 'expense' ? (recipient.supplierName || payeeName) : payeeName,
     request_id: null,
     request_no: expense.expense_no,
     payee_type: sourceType === 'reimbursement' ? 'employee' : 'counterparty',

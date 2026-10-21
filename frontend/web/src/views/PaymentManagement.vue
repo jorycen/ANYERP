@@ -126,15 +126,27 @@
 
       <div class="section-header batch-header">
         <span>付款批次</span>
-        <el-select v-model="paymentBatchStatusFilter" placeholder="批次状态" clearable style="width: 140px" @change="loadPaymentBatches">
+        <div class="toolbar">
+        <el-input v-model="paymentBatchFilters.batchNo" placeholder="批次号" clearable style="width: 180px" @keyup.enter="searchPaymentBatches" @clear="searchPaymentBatches" />
+        <el-input v-model="paymentBatchFilters.supplierName" placeholder="供应商名称" clearable style="width: 190px" @keyup.enter="searchPaymentBatches" @clear="searchPaymentBatches" />
+        <el-select v-model="paymentBatchFilters.distributorId" placeholder="经销商" clearable style="width: 150px" @change="searchPaymentBatches">
+          <el-option v-for="item in distributorOptions" :key="item.distributor_id" :label="item.name" :value="item.distributor_id" />
+        </el-select>
+        <el-date-picker v-model="paymentBatchDates" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始时间" end-placeholder="结束时间" style="width: 260px" @change="searchPaymentBatches" />
+        <el-select v-model="paymentBatchStatusFilter" placeholder="批次状态" clearable style="width: 140px" @change="searchPaymentBatches">
           <el-option label="全部" value="" />
           <el-option label="正常" value="active" />
           <el-option label="已撤销" value="voided" />
         </el-select>
+        <el-button @click="searchPaymentBatches">查询</el-button>
+        <el-button @click="resetPaymentBatchFilters">重置</el-button>
+        <el-button type="primary" :loading="paymentBatchExporting" @click="exportPaymentBatches">导出批次</el-button>
+        </div>
       </div>
 
       <el-table v-loading="paymentBatchesLoading" :data="paymentBatchData" stripe border>
         <el-table-column prop="batch_no" label="付款批次号" width="190" />
+        <el-table-column prop="supplier_names" label="供应商" min-width="220" show-overflow-tooltip />
         <el-table-column prop="account_name" label="付款账户" width="180" />
         <el-table-column prop="distributor_name" label="经销商" width="130">
           <template #default="{ row }">{{ distributorText(row) }}</template>
@@ -494,6 +506,22 @@ const paymentBatchData = ref([])
 const paymentBatchTotal = ref(0)
 const paymentBatchesLoading = ref(false)
 const paymentBatchStatusFilter = ref('')
+const paymentBatchFilters = reactive({ batchNo: '', supplierName: '', distributorId: '' })
+const paymentBatchDates = ref([])
+const paymentBatchExporting = ref(false)
+const paymentBatchFilterParams = () => ({ ...paymentBatchFilters, status: paymentBatchStatusFilter.value,
+  startDate: paymentBatchDates.value?.[0] || '', endDate: paymentBatchDates.value?.[1] || '' })
+const searchPaymentBatches = () => { paymentBatchQuery.page = 1; loadPaymentBatches() }
+const resetPaymentBatchFilters = () => {
+  Object.assign(paymentBatchFilters, { batchNo: '', supplierName: '', distributorId: '' })
+  paymentBatchDates.value = []; paymentBatchStatusFilter.value = ''; searchPaymentBatches()
+}
+const exportPaymentBatches = async () => {
+  paymentBatchExporting.value = true
+  try { await api.exportSettlementPaymentBatches(paymentBatchFilterParams()) }
+  catch (error) { ElMessage.error('导出付款批次失败') }
+  finally { paymentBatchExporting.value = false }
+}
 const settlementDetailVisible = ref(false)
 const settlementDetail = ref(null)
 const remarkVisible = ref(false)
@@ -660,7 +688,7 @@ const loadPaymentCandidates = async () => {
 const loadPaymentBatches = async () => {
   paymentBatchesLoading.value = true
   try {
-    const params = { ...paymentBatchQuery }
+    const params = { ...paymentBatchQuery, ...paymentBatchFilterParams() }
     if (paymentBatchStatusFilter.value) params.status = paymentBatchStatusFilter.value
     const res = await api.getSettlementPaymentBatches(params)
     if (res.code === 0) {

@@ -173,7 +173,7 @@
               <el-table :data="section.rows" stripe border size="small">
                 <el-table-column v-for="column in section.columns" :key="column.key" :label="column.label" min-width="120">
                   <template #default="{ row }">
-                    <el-link v-if="column.key === 'url' && row[column.key]" :href="row[column.key]" target="_blank" type="primary">打开附件</el-link>
+                    <el-link v-if="column.key === 'url' && row[column.key]" type="primary" @click="openApprovalAttachment(row[column.key])">打开附件</el-link>
                     <span v-else>{{ formatDetailValue(row[column.key]) }}</span>
                   </template>
                 </el-table-column>
@@ -290,15 +290,23 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="attributionEditVisible" title="调整费用分摊金额" width="620px">
-      <el-alert title="只能调整当前审批节点的费用分摊金额，合计必须等于费用总额；调整会记录审计日志。" type="info" :closable="false" />
-      <el-table :data="attributionEditRows" border stripe style="margin-top: 14px">
+    <el-dialog v-model="attributionEditVisible" title="调整费用经营分摊" width="720px">
+      <el-alert title="只影响经营核算，不自动扣减员工绩效。跨经销商分摊保留审计，付款来源不变。" type="info" :closable="false" />
+      <el-select v-model="attributionEditType" style="margin:14px 0"><el-option label="门店承担" value="STORE" /><el-option label="产品端承担" value="PRODUCT_SIDE" /></el-select>
+      <template v-if="attributionEditType === 'STORE'">
+        <el-button @click="selectAttributionStores([attributionSourceStoreId])">本门店</el-button>
+        <el-button @click="selectAttributionStores(attributionStores.map(row => row.store_id))">所有门店</el-button>
+        <el-select :model-value="attributionEditRows.map(row => row.target_id)" multiple filterable collapse-tags placeholder="可跨经销商选择门店" @change="selectAttributionStores"><el-option v-for="row in attributionStores" :key="row.store_id" :value="row.store_id" :label="`${row.name}（${row.distributor_id}）`" /></el-select>
+        <el-button @click="averageAttribution">平均分摊</el-button>
+        <el-button @click="attributionEditMethod = 'MANUAL'">手工金额</el-button>
+      </template>
+      <el-table v-if="attributionEditType === 'STORE'" :data="attributionEditRows" border stripe style="margin-top: 14px">
         <el-table-column prop="target_name" label="归属对象" min-width="180" />
         <el-table-column label="分摊金额" width="220">
-          <template #default="{ row }"><el-input-number v-model="row.amount" :min="0" :precision="2" controls-position="right" /></template>
+          <template #default="{ row }"><el-input-number v-if="attributionEditMethod === 'MANUAL'" v-model="row.amount" :min="0" :precision="2" controls-position="right" /><span v-else>保存时由系统平均分摊</span></template>
         </el-table-column>
       </el-table>
-      <div class="attribution-total">合计：¥{{ attributionEditTotal.toFixed(2) }} / 费用总额：¥{{ attributionEditAmount.toFixed(2) }}</div>
+      <div class="attribution-total">费用总额：¥{{ attributionEditAmount.toFixed(2) }}<span v-if="attributionEditType === 'STORE' && attributionEditMethod === 'MANUAL'">；已分摊：¥{{ attributionEditTotal.toFixed(2) }}</span><span v-else-if="attributionEditType === 'STORE'">；保存时按所选门店平均分摊</span></div>
       <template #footer><el-button @click="attributionEditVisible = false">取消</el-button><el-button type="primary" :loading="attributionEditLoading" @click="saveAttributionEditor">保存调整</el-button></template>
     </el-dialog>
 
@@ -373,6 +381,12 @@ const attributionEditLoading = ref(false)
 const attributionEditExpenseId = ref('')
 const attributionEditAmount = ref(0)
 const attributionEditRows = ref([])
+const attributionEditType = ref('STORE'), attributionStores = ref([]), attributionSourceStoreId = ref('')
+const attributionEditMethod = ref('AVERAGE')
+function selectAttributionStores(ids) { attributionEditRows.value = ids.map(id => ({ target_id: id, target_name: attributionStores.value.find(row => row.store_id === id)?.name || id, amount: attributionEditRows.value.find(row => row.target_id === id)?.amount || 0 })) }
+function averageAttribution() {
+  attributionEditMethod.value = 'AVERAGE'
+}
 const attributionEditTotal = computed(() => attributionEditRows.value.reduce((sum, row) => sum + Number(row.amount || 0), 0))
 const assigneeOptions = reactive({ staff: [], roles: [], stores: [] })
 const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
@@ -687,7 +701,7 @@ function taskTaxStatus(row) {
   if (value.includes('未税') || value.includes('收据') || value.includes('普票')) return '未税'
   return '待补充'
 }
-const detailFieldLabels = {
+const detailFieldLabels = { recipient_display: '\u6536\u6b3e\u4fe1\u606f',
   sales_order_no: '销售订单号', sale_price: '销售价格', original_pickup_price: '提货价', settlement_price_at_sale: '当前结算价格', po_policy_at_sale: 'PO政策', so_policy_at_sale: 'SO政策', other_policy_at_sale: '其他政策', policy_remark: '备注', policy_name: '当前政策', policy_content: '政策内容', sn: 'SN',
   application_no: '申请单号', application_id: '申请ID', request_no: '采购申请单号', request_id: '采购申请ID',
   expense_no: '费用单号', expense_id: '费用ID', return_no: '退库单号', return_id: '退库申请ID',
@@ -722,17 +736,18 @@ const detailAllowedKeys = new Set([
   'application_no', 'request_no', 'expense_no', 'return_no', 'change_order_no', 'adjustment_no', 'order_no', 'settlement_no',
   'create_time', 'submit_time', 'applicant_name', 'submitter_name', 'submit_user', 'apply_user', 'applicant_store_name', 'store_name',
   'supplier_name', 'employee_name', 'salesperson_name', 'name', 'product_name', 'productName', 'product_code', 'productCode', 'pn_code', 'pnCode', 'sn_code', 'snCode',
-  'category_name', 'expense_type', 'expense_party', 'expense_date', 'accounting_month', 'affects_store_profit', 'payment_method', 'has_invoice', 'invoice_type', 'invoice_no', 'attribution_type', 'attribution_method', 'related_order_no', 'tax_status', 'tax_rate', 'product_type',
+  'category_name', 'expense_type', 'expense_party', 'expense_date', 'accounting_month', 'affects_store_profit', 'payment_method', 'has_invoice', 'invoice_type', 'invoice_no', 'recipient_display', 'attribution_type', 'attribution_method', 'related_order_no', 'tax_status', 'tax_rate', 'product_type',
   'reason', 'return_reason', 'remark', 'amount', 'total_amount', 'actual_total', 'current_actual_total', 'paid_amount', 'unpaid_amount',
   'refund_amount', 'change_amount', 'signed_amount', 'base_gross_profit', 'gross_profit_amount', 'sales_gross_profit', 'sales_amount', 'sales_settlement_cost',
   'adjustment_type', 'review_comment', 'reviewer_name', 'review_time', 'attachment_url', 'source_no', 'payee_name', 'payment_status'
 ])
-const hiddenDetailKeys = new Set(['Applicant', 'applicant', 'Store', 'Supplier', 'settlement', 'originalOrder', 'adjustments', 'action_logs', 'payload_json', 'definition_snapshot_json', 'category_id', 'categoryId', 'category_path_legacy', 'brand', 'model', 'series', 'category', 'business_id', 'request_id', 'application_id', 'expense_id', 'return_id', 'change_id', 'adjustment_id', 'order_id', 'settlement_id', 'applicant_staff_id', 'store_id', 'supplier_id', 'distributor_id', 'status', 'approval_status', 'approval_stage'])
+const hiddenDetailKeys = new Set(['recipient_snapshot_json', 'Applicant', 'applicant', 'Store', 'Supplier', 'settlement', 'originalOrder', 'adjustments', 'action_logs', 'payload_json', 'definition_snapshot_json', 'category_id', 'categoryId', 'category_path_legacy', 'brand', 'model', 'series', 'category', 'business_id', 'request_id', 'application_id', 'expense_id', 'return_id', 'change_id', 'adjustment_id', 'order_id', 'settlement_id', 'applicant_staff_id', 'store_id', 'supplier_id', 'distributor_id', 'status', 'approval_status', 'approval_stage'])
 function detailLabel(key) {
   if (detailFieldLabels[key]) return detailFieldLabels[key]
   return String(key).replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ')
 }
 function formatDetailValue(value) {
+  if (value === 'CORPORATE') return '公司付款'
   if (typeof value === 'string' && ({ COMPANY_CREDIT: '公司账期', PERSONAL_ADVANCE: '个人垫付', COMPANY_PRICE: '按公司定价', PURCHASE_PRICE: '按采购价' })[value]) return ({ COMPANY_CREDIT: '公司账期', PERSONAL_ADVANCE: '个人垫付', COMPANY_PRICE: '按公司定价', PURCHASE_PRICE: '按采购价' })[value]
   if (value === undefined || value === null || value === '') return '-'
   if (typeof value === 'boolean') return value ? '是' : '否'
@@ -893,6 +908,11 @@ async function openAttributionEditor(row) {
   try {
     const response = await api.getExpenseDetail(expenseId)
     const data = response?.data?.data || response?.data || response || {}
+    const options = await api.getExpenseFormOptions()
+    attributionStores.value = options.data?.allocationStores || []
+    attributionSourceStoreId.value = data.store_id
+    attributionEditType.value = data.attribution_type === 'PRODUCT_SIDE' ? 'PRODUCT_SIDE' : 'STORE'
+    attributionEditMethod.value = data.attribution_method || 'AVERAGE'
     let details = data.attribution_details
     if (!Array.isArray(details)) {
       try { details = JSON.parse(data.attribution_details_json || '[]') } catch (error) { details = [] }
@@ -907,18 +927,19 @@ async function openAttributionEditor(row) {
 }
 async function saveAttributionEditor() {
   if (!attributionEditExpenseId.value) return
-  if (Math.abs(attributionEditTotal.value - attributionEditAmount.value) > 0.01) {
+  if (attributionEditType.value === 'STORE' && attributionEditMethod.value === 'MANUAL' && Math.abs(attributionEditTotal.value - attributionEditAmount.value) > 0.01) {
     ElMessage.warning('分摊金额必须等于费用总额')
     return
   }
   attributionEditLoading.value = true
   try {
     const response = await api.updateExpenseAttribution(attributionEditExpenseId.value, {
-      attributionMethod: 'MANUAL',
+      attributionType: attributionEditType.value,
+      attributionMethod: attributionEditMethod.value,
       allocationDetails: attributionEditRows.value.map(item => ({
         targetId: item.target_id,
         targetName: item.target_name,
-        amount: Number(item.amount || 0)
+        amount: attributionEditMethod.value === 'MANUAL' ? Number(item.amount || 0) : null
       }))
     })
     if (response?.code === 0) {
@@ -931,6 +952,13 @@ async function saveAttributionEditor() {
   } finally {
     attributionEditLoading.value = false
   }
+}
+async function openApprovalAttachment(value) {
+  try {
+    let url = value
+    if (String(url).startsWith('cloud://')) { const result = await api.resolveCloudFileUrls([url]); url = result.data?.items?.[0]?.url }
+    if (url) window.open(url, '_blank', 'noopener')
+  } catch (error) { ElMessage.error('附件打开失败，请重试') }
 }
 async function openModule(row) {
   purchaseApprovalEdit.value = null

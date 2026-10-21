@@ -51,7 +51,10 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
       WHERE e.IS_DELETED = 0
         AND e.AFFECTS_STORE_PROFIT = 1
         AND e.STATUS NOT IN ('draft', 'pending_approval', 'rejected', 'cancelled')
-        AND (e.STORE_ID IN (:storeIds) OR e.DISTRIBUTOR_ID IN (:distributorIds))
+        AND (e.STORE_ID IN (:storeIds) OR e.DISTRIBUTOR_ID IN (:distributorIds)
+          OR (e.ATTRIBUTION_TYPE = 'STORE' AND JSON_VALID(e.ATTRIBUTION_DETAILS_JSON)
+            AND EXISTS (SELECT 1 FROM JSON_TABLE(CASE WHEN JSON_VALID(e.ATTRIBUTION_DETAILS_JSON) THEN e.ATTRIBUTION_DETAILS_JSON ELSE '[]' END, '$[*]' COLUMNS (target_id VARCHAR(64) PATH '$.target_id')) allocation_target
+              WHERE allocation_target.target_id IN (:storeIds))))
         ${dateClause}`,
     { replacements, type: QueryTypes.SELECT }
   );

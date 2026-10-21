@@ -1336,6 +1336,7 @@ async function ensureProductSettlementSchema() {
 }
 
 async function ensureExpenseAccountingSchema() {
+  await checkAndAddColumn('T_EXPENSE', 'RECIPIENT_SNAPSHOT_JSON', 'LONGTEXT NULL COMMENT "费用申请收款信息快照"');
   await checkAndAddColumn(
     'T_EXPENSE',
     'ACCOUNTING_MONTH',
