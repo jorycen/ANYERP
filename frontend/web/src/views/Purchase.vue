@@ -357,6 +357,8 @@
           <el-descriptions-item label="毛利成本口径">按每个采购商品明细的选择写入商品标签</el-descriptions-item>
           <el-descriptions-item label="付款方式">{{ getPaymentMethodText(currentRequest.payment_method) }}</el-descriptions-item>
           <el-descriptions-item label="采购凭证类型">{{ currentRequest.invoice_type || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="配送平台">{{ currentRequest.freight_platform_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="采购运费">¥{{ formatMoney(currentRequest.freight_amount || 0) }}</el-descriptions-item>
           <el-descriptions-item label="货型">{{ currentRequest.product_type || currentRequest.items?.[0]?.product_type || '-' }}</el-descriptions-item>
           <el-descriptions-item label="申请门店">{{ currentRequest.store_name }}</el-descriptions-item>
           <el-descriptions-item label="申请金额">¥{{ formatMoney(requestActualAmount(currentRequest)) }}</el-descriptions-item>

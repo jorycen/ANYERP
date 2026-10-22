@@ -782,6 +782,54 @@ async function createSalesReturnGrossProfitLedger({ returnRequest, transaction =
   return rows;
 }
 
+// Product identity alone never proves which purchase/transfer paid for a sold unit.
+function matchesFreightOrigin(item, value, origins = []) {
+  const productId = normalizeReferenceId(item.product_id);
+  if (normalizeReferenceId(value.product_id) !== productId) return false;
+  const snId = normalizeReferenceId(item.sn_id);
+  const snCode = normalizeReferenceId(item.sn_code);
+  const rowSnId = normalizeReferenceId(value.sn_id);
+  const rowSnCode = normalizeReferenceId(value.sn_code);
+  if (rowSnId || rowSnCode) {
+    // An explicit different SN must never fall back to a product/batch match.
+    return rowSnId && snId ? rowSnId === snId : !!snCode && rowSnCode === snCode;
+  }
+  const source = value.freightRecord || {};
+  return origins.some(origin =>
+    String(origin.source_type || '').toLowerCase() === String(source.source_type || '').toLowerCase() &&
+    ((source.source_id && origin.source_id && String(source.source_id) === String(origin.source_id)) ||
+      (source.source_no && origin.source_no && String(source.source_no) === String(origin.source_no)))
+  );
+}
+
+async function resolveFreightOrigins(item, transaction) {
+  if (!item.sn_id && (!item.sn_code || String(item.sn_code).trim() === '0')) return [];
+  // Immutable receipt links survive SN edits and sales returns. Legacy receipt fields
+  // are used only where no immutable link exists for that inbound item.
+  return sequelize.query(`
+    SELECT DISTINCT LOWER(i.SOURCE_TYPE) AS source_type,
+           i.PURCHASE_REQUEST_ID AS source_id, i.SOURCE_NO AS source_no
+      FROM T_INBOUND i
+      JOIN T_INBOUND_ITEM ii ON ii.INBOUND_ID = i.INBOUND_ID
+      LEFT JOIN T_INBOUND_ITEM_SN ins ON ins.INBOUND_ITEM_ID = ii.ITEM_ID
+     WHERE i.STATUS = 'completed' AND ii.PRODUCT_ID = :productId
+       AND (
+         (:snId <> '' AND ins.SN_ID = :snId)
+         OR (:snId = '' AND :snCode <> '' AND ins.SN_CODE = :snCode)
+         OR (ins.INBOUND_ITEM_SN_ID IS NULL AND (
+           (:snId <> '' AND ii.SN_ID = :snId)
+           OR ((ii.SN_ID IS NULL OR ii.SN_ID = '' OR :snId = '') AND :snCode <> '' AND (
+             ii.SN_CODE = :snCode
+             OR (JSON_VALID(ii.RECEIVED_SN_CODES) AND
+                 JSON_CONTAINS(IF(JSON_VALID(ii.RECEIVED_SN_CODES), ii.RECEIVED_SN_CODES, '[]'), JSON_QUOTE(:snCode)))
+           ))
+         ))
+       )`, {
+    replacements: { productId: item.product_id, snId: item.sn_id || '', snCode: item.sn_code || '' },
+    type: QueryTypes.SELECT, transaction
+  });
+}
+
 async function buildFreightCostDetails(order, transaction) {
   const orderId = order.order_id;
   const orderItems = await OrderItem.findAll({ where: { order_id: orderId }, transaction, raw: true });
@@ -791,6 +839,7 @@ async function buildFreightCostDetails(order, transaction) {
     const snId = String(item.sn_id || '').trim();
     const snCode = String(item.sn_code || '').trim();
     if (!productId && !snId && !snCode) continue;
+    const origins = await resolveFreightOrigins(item, transaction);
     const where = {
       [Op.or]: [
         ...(productId ? [{ product_id: productId }] : []),
@@ -805,7 +854,7 @@ async function buildFreightCostDetails(order, transaction) {
         required: true,
         where: { status: 'active' },
         attributes: [
-          'freight_id', 'source_type', 'source_no', 'platform_name',
+          'freight_id', 'source_type', 'source_id', 'source_no', 'platform_name',
           'store_id', 'to_store_id', 'create_time', 'update_time'
         ]
       }],
@@ -815,7 +864,7 @@ async function buildFreightCostDetails(order, transaction) {
     const applicableRows = rows.filter(row => {
       const value = row.toJSON();
       const source = value.freightRecord || {};
-      return isFreightRecordApplicableToOrder({
+      return matchesFreightOrigin(item, value, origins) && isFreightRecordApplicableToOrder({
         orderStoreId: order.store_id,
         orderCreatedAt: order.create_time,
         sourceType: source.source_type,
@@ -1017,6 +1066,9 @@ module.exports = {
   normalizeMethodName,
   isPolicySubsidyReceivable,
   calculateOrderReceivable,
+  matchesFreightOrigin,
+  resolveFreightOrigins,
+  buildFreightCostDetails,
   isFreightRecordApplicableToOrder,
   resolveUnitProductPricing,
   calculateGrossProfitValues,

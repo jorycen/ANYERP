@@ -2682,3 +2682,9 @@
 ## 2026-10-21 - Complete finance inventory root categories
 
 - Finance inventory includes all root categories, descendant stock and an unclassified bucket, plus total quantity. Existing stock valuation and permission filters are preserved.
+
+## 2026-10-22
+
+* 修复销售运费跨采购批次匹配，增加回归测试和默认只读的运费批次核查/指定草稿单修复工具。
+* Web采购详情与审批详情显示配送平台和采购运费，已更新backend/public构建文件。
+* ORD202610210705283617错误运费已备份移除，毛利恢复327.37元；保留其他财务字段及已归档历史快照。
