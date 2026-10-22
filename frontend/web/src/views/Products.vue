@@ -510,6 +510,17 @@
           <el-input v-model="productForm.name" placeholder="按二级、三级、四级分类及商品字段自动生成，可手工修改" @input="onProductNameInput" />
           <div class="text-muted" style="margin-top: 4px;">{{ productNameManual ? '已手工编辑商品名称' : `自动名称：${autoProductName || '（填写分类或商品字段后生成）'}` }}</div>
         </el-form-item>
+        <el-form-item v-if="productForm.productId" label="毛利计价方式">
+          <div>
+            <el-select v-model="productCostMode" style="width: 220px">
+              <el-option label="按采购价" value="PURCHASE_PRICE" :disabled="forceCompanyCostMode" />
+              <el-option label="按公司定价" value="COMPANY_PRICE" />
+            </el-select>
+            <div class="text-muted" style="margin-top: 6px;">这是商品默认的毛利成本口径；具体库存SN已单独设置时优先使用库存设置，已归档订单保持冻结。</div>
+            <div v-if="forceCompanyCostMode" class="text-muted" style="margin-top: 4px;">选件及Care服务的商品默认口径按现有规则使用公司定价；具体库存可在价格管理中单独调整。</div>
+            <div v-else class="text-muted" style="margin-top: 4px;">按公司定价时需有有效定价，0元定价有效；缺少必要价格时订单会提示成本待补。</div>
+          </div>
+        </el-form-item>
         <el-form-item label="厂商编码 / PN" required>
           <div class="text-muted" style="margin-bottom: 6px;">厂商编码就是PN，商品只在这里维护。69码属于独立条码；历史厂商编码仅用于清理，不再新增。</div>
           <el-alert
@@ -855,6 +866,7 @@ const productNameManual = ref(false)
 
 const productForm = reactive({
   productId: null,
+  grossProfitCostMode: 'PURCHASE_PRICE',
   name: '',
   productCode: '',
   pnCode: '',
@@ -881,6 +893,13 @@ const productForm = reactive({
   status: 1,
   barcodes: [],
   attributes: {}
+})
+
+const forceCompanyCostMode = computed(() => productForm.category === '选件' ||
+  (productForm.category === '售后' && productForm.brand === 'Care服务'))
+const productCostMode = computed({
+  get: () => forceCompanyCostMode.value ? 'COMPANY_PRICE' : productForm.grossProfitCostMode,
+  set: value => { productForm.grossProfitCostMode = value }
 })
 
 function findCategoryNode(tree, categoryId) {
@@ -1146,6 +1165,7 @@ const handleEdit = async (row) => {
   currentProduct.value = row
   productNameManual.value = true
   productForm.productId = row.product_id
+  productForm.grossProfitCostMode = row.gross_profit_cost_mode || 'PURCHASE_PRICE'
   pnLoadFailed.value = false
   productForm.name = row.name
   productForm.productCode = row.product_code
@@ -1300,6 +1320,7 @@ const updateFocusProduct = async (row, value) => {
 }
 
 const resetForm = () => {
+  productForm.grossProfitCostMode = 'PURCHASE_PRICE'
   pnLoadFailed.value = false
   productNameManual.value = false
   productForm.productId = null
@@ -1463,6 +1484,7 @@ const handleSubmit = async (forceUpdatePurchasePn = false) => {
     }
     let res
     if (productForm.productId) {
+      data.grossProfitCostMode = productCostMode.value
       res = await api.updateProduct(productForm.productId, data)
     } else {
       res = await api.createProduct(data)
