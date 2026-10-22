@@ -1016,9 +1016,9 @@
             <el-option v-for="s in suppliers" :key="s.supplier_id" :label="s.name" :value="s.supplier_id" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="Number(settlementTotalAmount) > 0" label="收款账户" required>
+        <el-form-item v-if="Number(settlementTotalAmount) !== 0" label="收款账户" required>
           <el-select v-model="settlementForm.paymentAccountType" placeholder="请选择收款账户" style="width: 100%" @change="onPaymentAccountTypeChange">
-            <el-option v-if="settlementRebateBalance > 0" label="返款" value="rebate" />
+            <el-option v-if="Number(settlementTotalAmount) > 0 && settlementRebateBalance > 0" label="返款" value="rebate" />
             <el-option
               v-for="account in currentSupplierPaymentAccounts"
               :key="account.accountId"
@@ -1028,7 +1028,7 @@
             <el-option label="其他" value="other" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="settlementForm.paymentAccountType === 'rebate'" label="返款金额" required>
+        <el-form-item v-if="Number(settlementTotalAmount) > 0 && settlementForm.paymentAccountType === 'rebate'" label="返款金额" required>
           <el-input-number v-model="settlementForm.rebateDeduction" :min="0.01" :max="Math.min(settlementRebateBalance, Number(settlementTotalAmount))" :precision="2" :step="100" style="width: 100%" />
           <div class="form-help">可用返款余额：¥{{ formatMoney(settlementRebateBalance) }}；本次结算金额：¥{{ settlementTotalAmount }}</div>
         </el-form-item>
@@ -3811,8 +3811,9 @@ const handleSettlementSubmit = async () => {
     }
     const paymentAccountType = settlementForm.paymentAccountType
     const positiveSettlement = Number(settlementTotalAmount.value) > 0
+    const requiresAccount = Number(settlementTotalAmount.value) !== 0
     const isRebatePayment = positiveSettlement && paymentAccountType === 'rebate'
-    const isOtherPaymentAccount = positiveSettlement && paymentAccountType === 'other'
+    const isOtherPaymentAccount = requiresAccount && paymentAccountType === 'other'
     if (isRebatePayment) {
       const amount = Number(settlementForm.rebateDeduction || 0)
       if (amount <= 0 || amount > Number(settlementTotalAmount.value) + 0.005 || amount > settlementRebateBalance.value + 0.005) {
@@ -3824,7 +3825,7 @@ const handleSettlementSubmit = async () => {
       ElMessage.warning('其他账户必须填写说明并上传凭证')
       return
     }
-    if (positiveSettlement && !isOtherPaymentAccount && !isRebatePayment && !settlementForm.supplierAccountId) {
+    if (requiresAccount && !isOtherPaymentAccount && !isRebatePayment && (!paymentAccountType?.startsWith('saved:') || !settlementForm.supplierAccountId)) {
       ElMessage.warning('请选择供应商付款账户')
       return
     }

@@ -940,8 +940,9 @@ async function createSettlement(ctx) {
     const finalRows = rows;
     const totalAmount = roundAmount(finalRows.reduce((sum, row) => sum + row.amount, 0));
     if (!finalRows.length) ctx.throw(400, '请选择有效的结算明细');
-    if (totalAmount > 0) {
+    if (totalAmount !== 0) {
       if (paymentAccountType === 'rebate') {
+        if (totalAmount < 0) ctx.throw(400, '负额结算不能使用返款抵扣，请选择收款账户');
         if (requestedRebate <= 0) ctx.throw(400, '请输入返款金额');
       } else if (paymentAccountType === 'other') {
         if (!String(otherPaymentRemark || '').trim() || !otherPaymentImage) ctx.throw(400, '请填写其他付款说明并上传凭证');
@@ -970,8 +971,8 @@ async function createSettlement(ctx) {
       supplier_name: supplier.name,
       supplier_account_id: finalSupplierAccountId,
       supplier_account_snapshot: supplierAccountSnapshot,
-      other_payment_remark: totalAmount > 0 && paymentAccountType === 'other' ? String(otherPaymentRemark).trim() : null,
-      other_payment_image: totalAmount > 0 && paymentAccountType === 'other' ? otherPaymentImage : null,
+      other_payment_remark: totalAmount !== 0 && paymentAccountType === 'other' ? String(otherPaymentRemark).trim() : null,
+      other_payment_image: totalAmount !== 0 && paymentAccountType === 'other' ? otherPaymentImage : null,
       rebate_deduction: requestedRebate,
       rebate_allocation_json: requestedRebate > 0
         ? JSON.stringify([...rebateAllocation.entries()].map(([payableId, amount]) => ({ payableId, amount })))
@@ -2773,8 +2774,7 @@ async function getPaymentBatchDetail(ctx) {
 }
 
 async function voidPaymentBatch(ctx) {
-  const { batchId, reason } = ctx.request.body;
-  const user = ctx.state.user;
+  const { batchId } = ctx.request.body;
   if (!batchId) ctx.throw(400, '付款批次ID不能为空');
 
   const batch = await SettlementPaymentBatch.findByPk(batchId, {
@@ -2783,54 +2783,7 @@ async function voidPaymentBatch(ctx) {
   if (!batch) ctx.throw(404, '付款批次不存在');
   assertDistributorOperation(ctx, batch.distributor_id);
   if (batch.status === 'voided') ctx.throw(400, '付款批次已撤销');
-
-  await sequelize.transaction(async (transaction) => {
-    await SettlementAccount.findByPk(batch.account_id, {
-      transaction,
-      lock: transaction.LOCK.UPDATE
-    });
-    let balance = await getCurrentAccountBalance(batch.account_id, transaction);
-    const records = batch.records || [];
-
-    for (const record of records) {
-      const voidTransactionId = generateUUID();
-      const amount = Number(record.amount || 0);
-      balance = roundAmount(balance + amount);
-
-      await SettlementAccountTransaction.create({
-        transaction_id: voidTransactionId,
-        account_id: batch.account_id,
-        type: 'income',
-        amount,
-        balance_after: balance,
-        description: `撤销应付付款：${record.settlement_no} 批次：${batch.batch_no}`,
-        related_ref: batch.batch_no,
-        create_user: user.name || user.staffId
-      }, { transaction });
-
-      await record.update({
-        status: 'voided',
-        void_transaction_id: voidTransactionId
-      }, { transaction });
-
-      const settlement = await Settlement.findByPk(record.settlement_id, {
-        transaction,
-        lock: transaction.LOCK.UPDATE
-      });
-      if (settlement) {
-        await refreshSettlementPaymentState(settlement, transaction);
-      }
-    }
-
-    await batch.update({
-      status: 'voided',
-      void_user: user.name || user.staffId,
-      void_time: new Date(),
-      void_reason: reason || ''
-    }, { transaction });
-  });
-
-  ctx.body = { code: 0, message: '付款批次已撤销' };
+  ctx.throw(400, '已支付的金额不能撤销');
 }
 
 module.exports = {

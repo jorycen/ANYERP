@@ -118,7 +118,7 @@
     <el-dialog v-model="detailVisible" title="审批详情" width="800px">
       <template v-if="currentInstance">
         <ResourceRewardProof :data="currentInstance.moduleData || currentInstance.originalData || currentInstance.payload || {}" />
-        <PurchaseApprovalEditor v-if="purchaseApprovalEdit" v-model="purchaseApprovalEdit" :disabled="!detailReviewRow" style="margin-bottom:18px" />
+        <PurchaseApprovalEditor v-if="purchaseApprovalEdit" :model-value="purchaseApprovalEdit" read-only style="margin-bottom:18px" />
         <el-descriptions :column="2" border>
           <el-descriptions-item label="主题">{{ currentInstance.title }}</el-descriptions-item>
           <el-descriptions-item label="申请编号">{{ currentInstance.instance_no }}</el-descriptions-item>
@@ -348,7 +348,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import PurchaseApprovalEditor from '../components/PurchaseApprovalEditor.vue'
 import ResourceRewardProof from '../components/ResourceRewardProof.vue'
-import { purchaseApprovalForm, purchaseApprovalPayload } from '../utils/purchaseApproval'
+import { purchaseApprovalForm } from '../utils/purchaseApproval'
 
 const activeTab = ref('tasks')
 const route = useRoute()
@@ -372,9 +372,6 @@ const detailVisible = ref(false)
 const currentInstance = ref(null)
 const detailReviewRow = ref(null)
 const purchaseApprovalEdit = ref(null)
-const purchaseApprovalEditId = ref('')
-const purchaseEditFor = id => purchaseApprovalEdit.value && String(id) === purchaseApprovalEditId.value
-  ? { purchaseEdits: purchaseApprovalPayload(purchaseApprovalEdit.value) } : {}
 let detailRequestSerial = 0
 const flowDialogVisible = ref(false)
 const attributionEditVisible = ref(false)
@@ -885,7 +882,7 @@ async function loadModuleDetail(row) {
 }
 async function openInstance(id, row = null) {
   purchaseApprovalEdit.value = null
-  purchaseApprovalEditId.value = ''
+
   const serial = ++detailRequestSerial
   currentInstance.value = null
   detailReviewRow.value = row
@@ -898,7 +895,7 @@ async function openInstance(id, row = null) {
         const data = responseData(await api.getPurchaseRequestDetail(instance.business_id))
         if (serial !== detailRequestSerial) return
         purchaseApprovalEdit.value = purchaseApprovalForm(data)
-        purchaseApprovalEditId.value = String(instance.business_id)
+
       }
     }
   } catch (error) {
@@ -968,7 +965,7 @@ async function openApprovalAttachment(value) {
 }
 async function openModule(row) {
   purchaseApprovalEdit.value = null
-  purchaseApprovalEditId.value = ''
+
   const serial = ++detailRequestSerial
   currentInstance.value = buildModuleInstance(row)
   detailReviewRow.value = row
@@ -981,7 +978,7 @@ async function openModule(row) {
     currentInstance.value = { ...buildModuleInstance(row, moduleData), Tasks: approval?.Tasks || [], detailLoading: false }
     if (['purchase', 'purchase_request'].includes(row.moduleType)) {
       purchaseApprovalEdit.value = purchaseApprovalForm(moduleData)
-      purchaseApprovalEditId.value = String(moduleData.request_id || row.businessId || row.id || '')
+
     }
     if (row.moduleType === 'product_application') await initializeProductApplicationEditor(moduleData)
     if (['purchase', 'purchase_request'].includes(row.moduleType) && purchaseItemsNeedingCategory.value.length) loadApprovalProductCategories()
@@ -1228,12 +1225,12 @@ async function reviewModule(row, action) {
     : []
   try {
     if (row.managedBusiness) {
-      const result = await api.actionBusinessApproval(row.moduleType, id, { action, comment, businessData: { newProductCategories, ...(action === 'approve' && isPurchaseRequest ? purchaseEditFor(id) : {}), ...(editedProductPayload ? { payload: editedProductPayload } : {}), ...(rebateAmount !== null ? { rebateAmount } : {}) } })
+      const result = await api.actionBusinessApproval(row.moduleType, id, { action, comment, businessData: { newProductCategories, ...(editedProductPayload ? { payload: editedProductPayload } : {}), ...(rebateAmount !== null ? { rebateAmount } : {}) } })
       ElMessage.success(result.message || '审批已记录')
       await reload()
       return
     }
-    if (isPurchaseRequest && !row.managedBusiness) await api.approvePurchaseRequest(id, { status: approved, comment, newProductCategories, ...(action === 'approve' ? purchaseEditFor(id) : {}) })
+    if (isPurchaseRequest && !row.managedBusiness) await api.approvePurchaseRequest(id, { status: approved, comment, newProductCategories })
     else if (row.moduleType === 'expense') await api.reviewExpense(id, { action: approved, comment })
     else if (row.moduleType === 'product') await api.reviewProductApplication(id, { action: approved, comment })
     else if (row.moduleType === 'return') await api.approveReturn({ returnId: id, storeId: moduleRow.store_id || moduleRow.storeId || '', action: approved, comment })
@@ -1264,7 +1261,7 @@ async function review(row, action) {
   if (action === 'reject') { const result = await ElMessageBox.prompt('请输入拒绝原因', '拒绝审批', { inputType: 'textarea' }).catch(() => null); if (!result) return; comment = result.value }
   else if (!(await ElMessageBox.confirm('确认通过该审批？', '审批确认', { type: 'warning' }).catch(() => false))) return
   try {
-    await api.actionApproval(row.instance_id, { action, comment, businessData: action === 'approve' && currentInstance.value?.instance_id === row.instance_id && currentInstance.value?.business_type === 'purchase_request' ? purchaseEditFor(currentInstance.value.business_id) : {} })
+    await api.actionApproval(row.instance_id, { action, comment, businessData: {} })
     ElMessage.success('审批处理完成')
     await reload()
   } catch (error) {

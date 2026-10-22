@@ -138,23 +138,43 @@ function isFreightRecordApplicableToOrder({
   return true;
 }
 
+function validPrice(value) {
+  if (value === null || value === undefined || typeof value === 'boolean' || String(value).trim() === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function pricingCompleteness(details) {
+  const missingCostItems = parseJsonArray(details).filter(item =>
+    String(item.source || '').startsWith('missing_') || validPrice(item.unitPricing) === null
+  );
+  return {
+    pricingComplete: missingCostItems.length === 0,
+    pricingStatus: missingCostItems.length ? 'pending' : 'complete',
+    pricingMessage: missingCostItems.length ? '成本待补，毛利预估不完整' : '',
+    missingCostItems: missingCostItems.map(item => ({ itemId: item.itemId, productName: item.productName, source: item.source }))
+  };
+}
+
 function resolveUnitProductPricing(
   productPrice = {},
   orderItem = {},
   supplier = null,
   { purchaseUpliftAmount = null, costMode = 'PURCHASE_PRICE' } = {}
 ) {
-  const configuredPricing = toNumber(productPrice.standard_price);
-  const specialPrice = toNumber(orderItem.specialPrice ?? orderItem.special_price);
-  const companyPricing = specialPrice > 0 ? specialPrice : configuredPricing;
+  const configuredPricing = productPrice.status !== undefined && Number(productPrice.status) !== 1
+    ? null : validPrice(productPrice.standard_price);
+  const specialPrice = validPrice(orderItem.specialPrice ?? orderItem.special_price);
+  const companyPricing = specialPrice ?? configuredPricing;
   const isCompanyPriced = String(costMode || '').toUpperCase() === 'COMPANY_PRICE';
   const grossProfitUpliftAmount = isCompanyPriced
     ? 0
     : Math.max(0, roundMoney(purchaseUpliftAmount ?? supplier?.gross_profit_uplift_amount ?? 0));
-  const sourcePurchasePrice = toNumber(orderItem.purchasePrice) ||
-    toNumber(orderItem.original_pickup_price) ||
-    toNumber(orderItem.original_inventory_cost);
-  const purchasePrice = sourcePurchasePrice || toNumber(productPrice.cost_price);
+  const purchasePrice = Object.prototype.hasOwnProperty.call(orderItem, 'purchasePrice')
+    ? validPrice(orderItem.purchasePrice)
+    : (validPrice(orderItem.original_pickup_price) ??
+      validPrice(orderItem.original_inventory_cost) ??
+      (productPrice.status !== undefined && Number(productPrice.status) !== 1 ? null : validPrice(productPrice.cost_price)));
   const result = (unitPricing, source) => ({
     unitPricing: roundMoney(unitPricing),
     source,
@@ -164,11 +184,11 @@ function resolveUnitProductPricing(
   });
 
   if (isCompanyPriced) {
-    return companyPricing > 0
-      ? result(companyPricing, specialPrice > 0 ? 'sn_special_price' : 'product_standard_price')
+    return companyPricing !== null
+      ? result(companyPricing, specialPrice !== null ? 'sn_special_price' : 'product_standard_price')
       : result(0, 'missing_company_price');
   }
-  if (purchasePrice > 0) return result(purchasePrice, 'purchase_price');
+  if (purchasePrice !== null) return result(purchasePrice, 'purchase_price');
   return result(0, 'missing_purchase_price');
 }
 
@@ -357,7 +377,9 @@ function snapshotToResponse(snapshot, order = null) {
     externalAdjustmentEligible,
     externalAdjustmentAmount,
     externalAdjustmentFee,
-    grossProfitAmount: roundMoney(row.gross_profit_amount),
+    grossProfitAmount: pricingCompleteness(productPricingDetails).pricingComplete || row.snapshot_status === 'final'
+      ? roundMoney(row.gross_profit_amount) : null,
+    ...pricingCompleteness(productPricingDetails),
     paymentDetails: parseJsonArray(row.payment_fee_details),
     productPricingDetails,
     supplementDetails: storedAdjustmentDetails.filter(item => item.source !== 'freight_cost'),
@@ -499,7 +521,7 @@ async function resolveSupplierContext(items, order, transaction) {
     : [];
   const latestInboundByProduct = new Map();
   latestInboundRows.forEach(row => {
-    if (!latestInboundByProduct.has(String(row.product_id)) && (row.supplier_id || toNumber(row.inbound_price) > 0)) {
+    if (!latestInboundByProduct.has(String(row.product_id)) && (row.supplier_id || validPrice(row.inbound_price) !== null)) {
       latestInboundByProduct.set(String(row.product_id), row);
     }
   });
@@ -563,8 +585,8 @@ async function buildProductPricingDetails(orderId, transaction) {
   const specialPriceBySnId = new Map();
   const specialPriceBySnCode = new Map();
   specialPrices.forEach(row => {
-    const price = toNumber(row.special_price);
-    if (price <= 0) return;
+    const price = validPrice(row.special_price);
+    if (price === null) return;
     if (row.sn_id) specialPriceBySnId.set(String(row.sn_id), price);
     if (row.sn_code) specialPriceBySnCode.set(String(row.sn_code).trim().toUpperCase(), price);
   });
@@ -576,14 +598,15 @@ async function buildProductPricingDetails(orderId, transaction) {
     const inboundSupplier = supplierContext.latestInboundByProduct.get(String(row.product_id || ''));
     const supplierId = row.supplier_id || snRow?.supplier_id || inboundSupplier?.supplier_id || '';
     const supplier = supplierId ? supplierContext.supplierMap.get(String(supplierId)) : null;
-    const purchasePrice = toNumber(row.original_inventory_cost)
-      || toNumber(row.original_pickup_price)
-      || toNumber(snRow?.inbound_price)
-      || toNumber(inboundSupplier?.inbound_price)
-      || toNumber(productPrice?.cost_price);
+    // Unarchived order-item zeroes are defaults, not evidence of actual cost.
+    const purchasePrice = (toNumber(row.original_inventory_cost) > 0 ? validPrice(row.original_inventory_cost) : null)
+      ?? (toNumber(row.original_pickup_price) > 0 ? validPrice(row.original_pickup_price) : null)
+      ?? validPrice(snRow?.inbound_price)
+      ?? validPrice(inboundSupplier?.inbound_price)
+      ?? (productPrice && Number(productPrice.status ?? 1) === 1 ? validPrice(productPrice.cost_price) : null);
     const specialPrice = specialPriceBySnId.get(String(snRow?.sn_id || row.sn_id || ''))
-      || specialPriceBySnCode.get(String(snRow?.sn_code || row.sn_code || '').trim().toUpperCase())
-      || 0;
+      ?? specialPriceBySnCode.get(String(snRow?.sn_code || row.sn_code || '').trim().toUpperCase())
+      ?? null;
     const pricing = resolveUnitProductPricing(
       productPrice,
       { ...row, purchasePrice, specialPrice },
@@ -594,7 +617,7 @@ async function buildProductPricingDetails(orderId, transaction) {
           ? new Date(order.create_time).getTime() >= Date.UTC(2026, 9, 1)
             ? 'COMPANY_PRICE' : 'PURCHASE_PRICE'
           : product.category === '选件' && Number(productPrice?.status) === 1 &&
-          toNumber(productPrice?.standard_price) > 0
+          validPrice(productPrice?.standard_price) !== null
           ? 'COMPANY_PRICE'
           : String(snRow?.gross_profit_use_standard_price) === '1'
             ? 'COMPANY_PRICE'
@@ -628,9 +651,10 @@ async function buildProductPricingDetails(orderId, transaction) {
       quantity,
       unitPricing: effectivePricing.unitPricing,
       pricingAmount: roundMoney(effectivePricing.unitPricing * quantity),
-      specialPrice: fixedCost === null && specialPrice > 0 ? roundMoney(specialPrice) : null,
-      isSpecialPrice: fixedCost === null && specialPrice > 0,
+      specialPrice: fixedCost === null && specialPrice !== null ? roundMoney(specialPrice) : null,
+      isSpecialPrice: fixedCost === null && specialPrice !== null,
       purchasePrice: effectivePricing.purchasePrice ?? roundMoney(purchasePrice),
+      purchasePriceKnown: purchasePrice !== null,
       grossProfitUpliftAmount: effectivePricing.grossProfitUpliftAmount ?? 0,
       supplierId: supplier?.supplier_id || supplierId,
       supplierName: supplier?.name || row.supplier_name || inboundSupplier?.supplier_name || '',
@@ -907,7 +931,9 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
   transaction = null,
   calculatedBy = 'system',
   force = false,
-  final = null
+  final = null,
+  persist = true,
+  requireComplete = false
 } = {}) {
   const order = await Order.findByPk(orderId, { transaction });
   if (!order) {
@@ -920,7 +946,7 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
   if (
     existing &&
     existing.snapshot_status === 'final' &&
-    existing.formula_version === FORMULA_VERSION &&
+    (existing.formula_version === FORMULA_VERSION || !persist) &&
     !force
   ) {
     return existing;
@@ -957,6 +983,13 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
   const archived = final === null
     ? ['已归档', 'completed', 'archived'].includes(String(order.order_status || ''))
     : !!final;
+  const completeness = pricingCompleteness(productPricingDetails);
+  if (!completeness.pricingComplete && (archived || requireComplete)) {
+    const error = new Error(`成本待补，不能归档：${completeness.missingCostItems.map(item => item.productName || item.itemId).join('、')}`);
+    error.status = 400;
+    error.code = 'ORDER_COST_PENDING';
+    throw error;
+  }
   const payload = {
     order_id: order.order_id,
     order_no: order.order_no,
@@ -970,7 +1003,8 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     vat_amount: values.vatAmount,
     supplement_amount: values.supplementAmount,
     freight_cost_amount: values.freightCostAmount,
-    gross_profit_amount: values.grossProfitAmount,
+    // Numeric placeholder only; public responses mask incomplete draft profit.
+    gross_profit_amount: completeness.pricingComplete ? values.grossProfitAmount : 0,
     payment_fee_details: values.paymentDetails,
     product_pricing_details: values.productPricingDetails,
     supplement_details: [...values.supplementDetails, ...values.freightCostDetails],
@@ -979,6 +1013,8 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     calculated_at: new Date(),
     update_time: new Date()
   };
+
+  if (!persist) return { gross_profit_id: existing?.gross_profit_id || null, ...payload };
 
   await OrderItem.update(
     { freight_cost: 0 },
@@ -1073,6 +1109,8 @@ module.exports = {
   resolveUnitProductPricing,
   calculateGrossProfitValues,
   calculateAndSaveOrderGrossProfit,
+  validPrice,
+  pricingCompleteness,
   createSalesReturnGrossProfitLedger,
   refreshOutdatedGrossProfitSnapshots,
   snapshotToResponse

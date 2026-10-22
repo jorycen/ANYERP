@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { calculateOrder } = require('../src/modules/report/financialProfitController');
+const { calculateOrder, resolveFinancialCost, summarize, queryFinancialProfit } = require('../src/modules/report/financialProfitController');
 const { ProductPrice } = require('../src/models');
 
 function baseRow(overrides = {}) {
@@ -48,6 +48,70 @@ test('缺少库存成本时标记待补成本且不输出虚假毛利', () => {
   assert.equal(result.status, 'cost_pending');
   assert.equal(result.grossProfit, null);
   assert.equal(result.grossMargin, null);
+});
+
+test('已确认0元采购成本保留0元，不回退到其他成本', () => {
+  const result = calculateOrder([baseRow({ purchaseUnitCost: '0.00', purchaseCostStatus: 'ready',
+    originalInventoryCost: 80, currentCostPrice: 90 })]);
+  assert.equal(result.status, 'estimated');
+  assert.equal(result.grossCost, 0);
+  assert.equal(result.bookCost, 0);
+  assert.equal(result.grossProfit, 100);
+});
+
+test('明确锁定的0元成本有效，默认零值和空值仍为待补', () => {
+  const locked = calculateOrder([baseRow({ purchaseUnitCost: 0, purchaseCostStatus: 'pending',
+    originalInventoryCost: 0, currentCostPrice: 0, costPriceLocked: 1, currentPriceStatus: 1 })]);
+  assert.equal(locked.status, 'estimated');
+  assert.equal(locked.grossProfit, 100);
+  for (const value of [null, undefined, '', ' ', -1, 'invalid', Infinity, true]) {
+    const pending = calculateOrder([baseRow({ productName: '待补商品', purchaseUnitCost: value,
+      originalInventoryCost: null, currentCostPrice: null })]);
+    assert.equal(pending.status, 'cost_pending');
+    assert.equal(pending.grossProfit, null);
+    assert.match(pending.pendingCostReason, /待补商品/);
+  }
+});
+
+test('冻结采购成本优先于当前成本，0元公司定价不作为0元实际采购证明', () => {
+  const row = { itemId: 1, purchaseUnitCost: 0, purchaseCostStatus: 'pending', originalInventoryCost: 0,
+    frozenPricingDetails: [{ itemId: 1, unitPricing: 0, purchasePrice: 1500, source: 'product_standard_price' }], currentCostPrice: 9999 };
+  assert.equal(resolveFinancialCost(row).unitCost, 1500);
+  const zero = resolveFinancialCost({ ...row, frozenPricingDetails: JSON.stringify([{ itemId: 1, purchasePrice: 0, purchasePriceKnown: true }]) });
+  assert.equal(zero.unitCost, 0);
+  const unknown = resolveFinancialCost({ ...row, currentCostPrice: 0,
+    frozenPricingDetails: [{ itemId: 1, unitPricing: 0, purchasePrice: 0 }] });
+  assert.equal(unknown.unitCost, null);
+});
+
+test('部分退货按有效0元成本冲减，整单退完不再因缺成本挂待补', () => {
+  const partial = calculateOrder([baseRow({ totalAmount: 226, subtotal: 226, quantity: 2,
+    purchaseUnitCost: 0, purchaseCostStatus: 'ready', returnedQuantity: -1, returnedReceivable: -113 })]);
+  assert.equal(partial.status, 'estimated');
+  assert.equal(partial.netRevenue, 100);
+  assert.equal(partial.grossProfit, 100);
+  const full = calculateOrder([baseRow({ purchaseUnitCost: null, returnedQuantity: -1, returnedReceivable: -113 })]);
+  assert.equal(full.status, 'estimated');
+  assert.equal(full.grossProfit, 0);
+});
+
+test('汇总将合法零成本纳入毛利、真实缺成本维持待补计数', () => {
+  const ready = calculateOrder([baseRow({ purchaseUnitCost: 0, purchaseCostStatus: 'ready' })]);
+  const pending = calculateOrder([baseRow({ purchaseUnitCost: null })]);
+  const result = summarize([ready, pending], 0);
+  assert.equal(result.pendingOrderCount, 1);
+  assert.equal(result.grossProfit, 100);
+});
+
+test('财务查询带出确认状态与冻结成本，且只读不写回历史订单', async t => {
+  const { sequelize } = require('../src/models');
+  const queries = [];
+  t.mock.method(sequelize, 'query', async sql => { queries.push(sql); return []; });
+  await queryFinancialProfit({ storeIds: ['store'], startDate: '2026-10-01', endDate: '2026-10-22' });
+  assert.match(queries[0], /COST_STATUS AS purchaseCostStatus/);
+  assert.match(queries[0], /PRODUCT_PRICING_DETAILS AS frozenPricingDetails/);
+  assert.match(queries[0], /COST_PRICE_LOCKED AS costPriceLocked/);
+  assert.ok(queries.every(sql => !/\b(?:UPDATE|INSERT|DELETE)\b/i.test(sql)));
 });
 
 test('已完成部分退单按负向收入和退回数量冲减原订单', () => {

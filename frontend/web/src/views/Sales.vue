@@ -423,6 +423,14 @@
         </el-timeline>
         <el-empty v-else description="暂无流程记录" :image-size="60" />
 
+        <template v-if="currentOrder.cost_preview">
+          <h4 class="mt-20">毛利预估（已保存订单）</h4>
+          <el-alert v-if="!currentOrder.cost_preview.pricingComplete" :title="currentOrder.cost_preview.pricingMessage" type="warning" :closable="false" />
+          <el-descriptions :column="2" border>
+            <el-descriptions-item label="预估商品成本">{{ currentOrder.cost_preview.pricingComplete ? `¥${Number(currentOrder.cost_preview.productPricingAmount).toFixed(2)}` : '成本待补' }}</el-descriptions-item>
+            <el-descriptions-item label="预估订单毛利">{{ currentOrder.cost_preview.grossProfitAmount === null ? '成本待补，暂不显示毛利' : `¥${Number(currentOrder.cost_preview.grossProfitAmount).toFixed(2)}` }}</el-descriptions-item>
+          </el-descriptions>
+        </template>
         <h4 class="mt-20">商品明细</h4>
         <el-table :data="currentOrder.OrderItems || []" border size="small">
           <el-table-column prop="product_name" label="商品名称" />
@@ -440,15 +448,15 @@
             <template #default="{ row }">¥{{ row.subtotal }}</template>
           </el-table-column>
           <el-table-column v-if="orderCanSeeOriginalCost" prop="original_inventory_cost" label="原始成本" width="100">
-            <template #default="{ row }">{{ row.original_inventory_cost === undefined ? '-' : `¥${row.original_inventory_cost || 0}` }}</template>
+            <template #default="{ row }">{{ row.original_inventory_cost === undefined || row.original_inventory_cost === null ? '-' : `¥${row.original_inventory_cost}` }}</template>
           </el-table-column>
-          <el-table-column v-if="orderHasSettlementCost" prop="cost_adjustment_amount" label="政策调整" width="100">
+          <el-table-column v-if="orderHasSettlementCost && !currentOrder.cost_preview" prop="cost_adjustment_amount" label="政策调整" width="100">
             <template #default="{ row }">{{ row.sales_settlement_cost === null || row.sales_settlement_cost === undefined ? '-' : `-¥${row.cost_adjustment_amount || 0}` }}</template>
           </el-table-column>
-          <el-table-column v-if="orderHasSettlementCost" prop="sales_settlement_cost" label="结算成本" width="100">
-            <template #default="{ row }">{{ row.sales_settlement_cost === null || row.sales_settlement_cost === undefined ? '-' : `¥${row.sales_settlement_cost || 0}` }}</template>
+          <el-table-column v-if="orderHasSettlementCost || currentOrder.cost_preview" prop="sales_settlement_cost" :label="currentOrder.cost_preview ? '预估计价成本' : '结算成本'" width="120">
+            <template #default="{ row }">{{ row.cost_status === 'pending' ? '成本待补' : row.sales_settlement_cost === null || row.sales_settlement_cost === undefined ? '-' : `¥${row.sales_settlement_cost}` }}</template>
           </el-table-column>
-          <el-table-column v-if="orderHasSettlementCost" prop="sales_gross_profit" label="销售毛利" width="100">
+          <el-table-column v-if="orderHasSettlementCost || currentOrder.cost_preview" prop="sales_gross_profit" :label="currentOrder.cost_preview ? '商品预估毛利' : '销售毛利'" width="120">
             <template #default="{ row }">{{ row.sales_gross_profit === null || row.sales_gross_profit === undefined ? '-' : `¥${row.sales_gross_profit || 0}` }}</template>
           </el-table-column>
         </el-table>

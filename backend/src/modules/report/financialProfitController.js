@@ -14,6 +14,43 @@ function money(value) {
   return Number(number(value).toFixed(2));
 }
 
+function validCost(value) {
+  if (value === null || value === undefined || typeof value === 'boolean' || String(value).trim() === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function snapshotPurchaseCost(row) {
+  let details = row.frozenPricingDetails;
+  if (typeof details === 'string') {
+    try { details = JSON.parse(details); } catch (_) { return null; }
+  }
+  const detail = Array.isArray(details) ? details.find(item => String(item.itemId ?? item.item_id) === String(row.itemId)) : null;
+  if (!detail) return null;
+  const cost = validCost(detail.purchasePrice);
+  return cost !== null && (cost > 0 || detail.purchasePriceKnown === true) ? cost : null;
+}
+
+function resolveFinancialCost(row) {
+  const settlement = validCost(row.purchaseUnitCost);
+  // Pending rows may contain default zeroes; confirmed zero costs are valid.
+  if (settlement !== null && (settlement > 0 || row.purchaseCostStatus === 'ready')) {
+    return { unitCost: settlement, source: 'product_settlement' };
+  }
+  const archived = validCost(row.originalInventoryCost);
+  if (archived !== null && (archived > 0 || row.archivedCostKnown === true)) {
+    return { unitCost: archived, source: 'archived_inventory_cost' };
+  }
+  const frozen = snapshotPurchaseCost(row);
+  if (frozen !== null) return { unitCost: frozen, source: 'frozen_purchase_cost' };
+  const current = validCost(row.currentCostPrice);
+  const active = row.currentPriceStatus === undefined || Number(row.currentPriceStatus) === 1;
+  if (active && current !== null && (current > 0 || Number(row.costPriceLocked) === 1)) {
+    return { unitCost: current, source: current === 0 ? 'explicit_locked_zero_cost' : 'estimated_inventory_cost' };
+  }
+  return { unitCost: null, source: 'missing_inventory_cost' };
+}
+
 function rate(value, fallback = 0.13) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : fallback;
@@ -83,6 +120,7 @@ function calculateOrder(rows) {
   let deductibleInputVat = 0;
   let bookCost = 0;
   let missingCost = false;
+  const missingCostItems = [];
 
   rows.forEach((row, index) => {
     const weight = itemSubtotal > 0
@@ -101,14 +139,18 @@ function calculateOrder(rows) {
     const itemNetRevenue = money(allocatedGrossRevenue / (1 + outputRate));
     const itemOutputVat = money(allocatedGrossRevenue - itemNetRevenue);
     const quantity = Math.max(0, Math.trunc(number(row.quantity) || 1) - Math.abs(Math.trunc(number(row.returnedQuantity))));
-    const unitCost = number(row.purchaseUnitCost) || number(row.originalInventoryCost) || number(row.currentCostPrice);
-    const itemGrossCost = money(unitCost * quantity);
+    const cost = resolveFinancialCost(row);
+    const itemGrossCost = money((cost.unitCost ?? 0) * quantity);
     const inputRate = rate(row.inputTaxRate);
     const deductible = Number(row.inputTaxDeductible ?? 1) === 1;
     const itemBookCost = deductible ? money(itemGrossCost / (1 + inputRate)) : itemGrossCost;
     const itemInputVat = deductible ? money(itemGrossCost - itemBookCost) : 0;
 
-    if (quantity > 0 && unitCost <= 0) missingCost = true;
+    if (quantity > 0 && cost.unitCost === null) {
+      missingCost = true;
+      missingCostItems.push({ itemId: row.itemId, productName: row.productName || '',
+        reason: '缺少可确认的采购或归档库存成本；公司定价不能替代实际库存成本' });
+    }
     netRevenue += itemNetRevenue;
     outputVat += itemOutputVat;
     grossCost += itemGrossCost;
@@ -138,6 +180,8 @@ function calculateOrder(rows) {
     grossProfit,
     grossMargin: grossProfit === null || netRevenue <= 0 ? null : Number((grossProfit / netRevenue * 100).toFixed(2)),
     status: missingCost ? 'cost_pending' : 'estimated',
+    missingCostItems,
+    pendingCostReason: missingCostItems.map(item => `${item.productName || item.itemId || '商品'}：${item.reason}`).join('；'),
     itemCount: rows.length
   };
 }
@@ -162,11 +206,16 @@ async function queryFinancialProfit(filters) {
             o.TOTAL_AMOUNT AS totalAmount,
             o.DISCOUNT_AMOUNT AS discountAmount,
             oi.ITEM_ID AS itemId,
+            oi.PRODUCT_NAME AS productName,
             oi.QUANTITY AS quantity,
             oi.SUBTOTAL AS subtotal,
             oi.ORIGINAL_INVENTORY_COST AS originalInventoryCost,
             psi.PURCHASE_UNIT_COST AS purchaseUnitCost,
+            psi.COST_STATUS AS purchaseCostStatus,
+            gp.PRODUCT_PRICING_DETAILS AS frozenPricingDetails,
             pp.COST_PRICE AS currentCostPrice,
+            pp.COST_PRICE_LOCKED AS costPriceLocked,
+            pp.STATUS AS currentPriceStatus,
             pp.OUTPUT_TAX_RATE AS outputTaxRate,
             pp.INPUT_TAX_RATE AS inputTaxRate,
             pp.INPUT_TAX_DEDUCTIBLE AS inputTaxDeductible,
@@ -176,6 +225,7 @@ async function queryFinancialProfit(filters) {
        INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
        LEFT JOIN T_STORE s ON s.STORE_ID = o.STORE_ID
        LEFT JOIN T_PRODUCT_SETTLEMENT_ITEM psi ON psi.SOURCE_ORDER_ITEM_ID = oi.ITEM_ID
+       LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.SNAPSHOT_STATUS = 'final'
        LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID
        LEFT JOIN (
          SELECT sri.ORDER_ITEM_ID,
@@ -269,7 +319,7 @@ async function getFinancialProfitOrders(ctx) {
       pagination: { page, pageSize, total: result.items.length },
       summary: summarize(result.items, result.operatingExpense),
       formulaVersion: 'FINANCIAL_GP_ESTIMATE_V1_20260919',
-      note: '当前为财务暂估口径：不含税销售额-不含税存货成本，已完成退单按负向业务事实冲减；最终结果需结合发票勾选和月末结转确认。'
+      note: '当前为财务暂估口径：不含税销售额-不含税存货成本，已完成退单按负向业务事实冲减；已确认0元库存成本正常计算，缺少成本依据的订单保留待补并列明原因。最终结果需结合发票勾选和月末结转确认。'
     }
   };
 }
@@ -291,12 +341,16 @@ async function exportFinancialProfitOrders(ctx) {
     '财务毛利': item.grossProfit ?? '',
     '已确认教育补贴': item.educationIncomeAmount || 0,
     '毛利率': item.grossMargin === null ? '' : `${item.grossMargin}%`,
-    '口径状态': item.status === 'cost_pending' ? '待补成本' : '暂估'
+    '口径状态': item.status === 'cost_pending' ? '待补成本' : '暂估',
+    '待补成本原因': item.pendingCostReason || ''
   }));
   sendExcel(ctx, rows, Object.keys(rows[0] || {}), `财务利润表_${filters.startDate}_${filters.endDate}.xlsx`, '逐单财务毛利');
 }
 
 module.exports = {
+  resolveFinancialCost,
+  queryFinancialProfit,
+  summarize,
   calculateOrder,
   getFinancialProfitOrders,
   exportFinancialProfitOrders

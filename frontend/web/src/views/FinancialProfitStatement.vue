@@ -59,6 +59,9 @@
         <el-table-column label="状态" width="105" fixed="right">
           <template #default="{ row }"><el-tag :type="row.status === 'cost_pending' ? 'danger' : 'warning'">{{ row.status === 'cost_pending' ? '待补成本' : '暂估' }}</el-tag></template>
         </el-table-column>
+        <el-table-column prop="pendingCostReason" label="待补成本原因" min-width="260">
+          <template #default="{ row }">{{ row.pendingCostReason || '-' }}</template>
+        </el-table-column>
       </el-table>
 
       <el-pagination v-model:current-page="params.page" v-model:page-size="params.pageSize" :total="total" :page-sizes="[20, 50, 100]" layout="total, sizes, prev, pager, next" @current-change="loadData" @size-change="loadData" />

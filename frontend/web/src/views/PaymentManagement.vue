@@ -174,7 +174,6 @@
         <el-table-column label="操作" width="160">
           <template #default="{ row }">
             <el-button link type="primary" @click="openPaymentBatchDetail(row)">查看</el-button>
-            <el-button v-if="row.status === 'active'" link type="danger" @click="handleVoidPaymentBatch(row)">撤销</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -973,28 +972,6 @@ const openPaymentBatchDetail = async (row) => {
   }
 }
 
-const handleVoidPaymentBatch = async (row) => {
-  try {
-    await ElMessageBox.confirm(
-      `确认撤销付款批次 ${row.batch_no || ''}？撤销后将生成反向流水并恢复账户余额。`,
-      '撤销付款批次',
-      { confirmButtonText: '确认撤销', cancelButtonText: '取消', type: 'warning' }
-    )
-    const res = await api.voidSettlementPaymentBatch({ batchId: row.batch_id })
-    if (res.code === 0) {
-      ElMessage.success(res.message || '付款批次已撤销')
-      loadPaymentCandidates()
-      loadPaymentBatches()
-      loadSettlementAccounts()
-    } else {
-      ElMessage.error(res.message || '撤销失败')
-    }
-  } catch (err) {
-    if (err !== 'cancel') {
-      ElMessage.error(err.response?.data?.message || '撤销失败')
-    }
-  }
-}
 </script>
 
 <style scoped>

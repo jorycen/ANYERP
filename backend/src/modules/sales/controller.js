@@ -91,8 +91,10 @@ const { getCloudStorageConfig, getSignedCloudFileUrl, parseCloudFileId } = requi
 const {
   calculateAndSaveOrderGrossProfit,
   snapshotToResponse,
+  pricingCompleteness,
   calculateNationalSubsidyCustomerReceiptAmount
 } = require('./grossProfit');
+const { applyCostPreview } = require('./costPreview');
 const { createProductSettlementOrder } = require('../report/productSettlement');
 const {
   isSubsidyEligibleItem,
@@ -354,9 +356,18 @@ function normalizeSalesOrderListRow(order) {
   const data = order && typeof order.toJSON === 'function' ? order.toJSON() : (order || {});
   const snapshot = data.grossProfitSnapshot || data.gross_profit_snapshot || null;
   const snapshotRow = snapshot && typeof snapshot.toJSON === 'function' ? snapshot.toJSON() : (snapshot || {});
-  const hasGrossProfit = snapshotRow.gross_profit_amount !== undefined && snapshotRow.gross_profit_amount !== null;
+  const pricing = pricingCompleteness(snapshotRow.product_pricing_details);
+  const hasGrossProfit = snapshotRow.gross_profit_amount !== undefined && snapshotRow.gross_profit_amount !== null &&
+    (snapshotRow.snapshot_status === 'final' || pricing.pricingComplete);
+  const publicSnapshot = { ...snapshotRow };
+  delete publicSnapshot.product_pricing_details;
+  if (!hasGrossProfit) publicSnapshot.gross_profit_amount = null;
   return {
     ...data,
+    ...(data.grossProfitSnapshot ? { grossProfitSnapshot: publicSnapshot } : {}),
+    ...(data.gross_profit_snapshot ? { gross_profit_snapshot: publicSnapshot } : {}),
+    pricing_status: pricing.pricingStatus,
+    pricing_message: pricing.pricingMessage,
     approval_stage: salesApprovalStageFromStatus(data.order_status),
     approval_stage_label: salesApprovalStageLabel(data.order_status),
     gross_profit_amount: hasGrossProfit ? Number(snapshotRow.gross_profit_amount || 0) : null,
@@ -576,7 +587,7 @@ async function list(ctx) {
       {
         model: OrderGrossProfit,
         as: 'grossProfitSnapshot',
-        attributes: ['gross_profit_amount', 'snapshot_status', 'calculated_at'],
+        attributes: ['gross_profit_amount', 'snapshot_status', 'calculated_at', 'product_pricing_details'],
         required: false
       }
     ],
@@ -2733,7 +2744,8 @@ async function create(ctx) {
 
   });
 
-  const grossProfitAmount = Number(grossProfitSnapshot?.gross_profit_amount || 0);
+  const pricing = pricingCompleteness(grossProfitSnapshot?.product_pricing_details);
+  const grossProfitAmount = grossProfitSnapshot && pricing.pricingComplete ? Number(grossProfitSnapshot.gross_profit_amount || 0) : null;
   const negativeGrossProfit = !isDraft && grossProfitAmount < 0;
 
   ctx.body = {
@@ -2742,6 +2754,8 @@ async function create(ctx) {
     needsApproval: false,
     negativeGrossProfit,
     grossProfitAmount,
+    pricingStatus: pricing.pricingStatus,
+    pricingMessage: pricing.pricingMessage,
     status: finalOrderStatus,
     message: isDraft
       ? '销售订单草稿已保存'
@@ -2900,7 +2914,7 @@ async function detail(ctx) {
     }
   }
 
-  const result = order.toJSON();
+  let result = order.toJSON();
   const grossProfitSnapshot = result.grossProfitSnapshot || {};
   let grossProfitDetails = grossProfitSnapshot.supplement_details;
   if (typeof grossProfitDetails === 'string') {
@@ -2968,6 +2982,10 @@ async function detail(ctx) {
         resource_summary: sn ? summaryMap.get(sn.sn_id) : null
       };
     });
+  }
+  if (canSeeCost(ctx.state.user) && ['draft', '未归档', 'pending_approval', 'pending_store_approval', 'pending_distributor_approval'].includes(String(order.order_status))) {
+    const preview = await calculateAndSaveOrderGrossProfit(order.order_id, { persist: false, final: false });
+    result = applyCostPreview(result, preview);
   }
   if (!canSeeCost(ctx.state.user)) {
     result.OrderItems = (result.OrderItems || items).map(item => {
@@ -3386,7 +3404,8 @@ async function update(ctx) {
         transaction,
         calculatedBy: ctx.state.user?.name || 'system',
         force: true,
-        final: false
+        final: false,
+        requireComplete: true
       });
       archiveGrossProfitAmount = Number(grossProfitSnapshot?.gross_profit_amount || 0);
 
@@ -3519,14 +3538,16 @@ async function getGrossProfit(ctx) {
   await assertSalesOrderVisible(order, ctx.state.user);
 
   const snapshot = await calculateAndSaveOrderGrossProfit(orderId, {
-    calculatedBy: ctx.state.user?.name || 'system'
+    calculatedBy: ctx.state.user?.name || 'system',
+    persist: false
   });
   const adjustments = await loadProfitAdjustments([orderId]);
   const careLines = await careCostDetails(snapshot);
   const careCostAmount = Number(careLines.reduce((sum, line) => sum + Number(line.pricingAmount || 0), 0).toFixed(2));
+  const previewResponse = snapshotToResponse(snapshot, order);
   ctx.body = { code: 0, data: {
-    ...snapshotToResponse(snapshot, order),
-    ...presentProfit(snapshot.gross_profit_amount, adjustments.get(orderId)),
+    ...previewResponse,
+    ...presentProfit(previewResponse.grossProfitAmount, adjustments.get(orderId)),
     careCostAmount
   } };
 }
@@ -6122,6 +6143,7 @@ module.exports = {
   downloadAllSubsidyPhotosArchive,
   createSubsidyPhotosDownloadTicket,
   _test: {
+    normalizeSalesOrderListRow,
     calculateSalesSettlementCosts,
     canQueryAllSalesOrders,
     canExportSalesOrders,
