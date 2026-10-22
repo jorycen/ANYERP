@@ -447,13 +447,13 @@
           <el-table-column prop="subtotal" label="小计" width="100">
             <template #default="{ row }">¥{{ row.subtotal }}</template>
           </el-table-column>
-          <el-table-column v-if="orderCanSeeOriginalCost" prop="original_inventory_cost" label="原始成本" width="100">
+          <el-table-column v-if="orderCanSeeOriginalCost" prop="original_inventory_cost" label="采购成本/件" width="110">
             <template #default="{ row }">{{ row.original_inventory_cost === undefined || row.original_inventory_cost === null ? '-' : `¥${row.original_inventory_cost}` }}</template>
           </el-table-column>
           <el-table-column v-if="orderHasSettlementCost && !currentOrder.cost_preview" prop="cost_adjustment_amount" label="政策调整" width="100">
             <template #default="{ row }">{{ row.sales_settlement_cost === null || row.sales_settlement_cost === undefined ? '-' : `-¥${row.cost_adjustment_amount || 0}` }}</template>
           </el-table-column>
-          <el-table-column v-if="orderHasSettlementCost || currentOrder.cost_preview" prop="sales_settlement_cost" :label="currentOrder.cost_preview ? '预估计价成本' : '结算成本'" width="120">
+          <el-table-column v-if="orderHasSettlementCost || currentOrder.cost_preview" prop="sales_settlement_cost" :label="currentOrder.cost_preview ? '预估计价成本/件' : '毛利计价成本/件'" width="140">
             <template #default="{ row }">{{ row.cost_status === 'pending' ? '成本待补' : row.sales_settlement_cost === null || row.sales_settlement_cost === undefined ? '-' : `¥${row.sales_settlement_cost}` }}</template>
           </el-table-column>
           <el-table-column v-if="orderHasSettlementCost || currentOrder.cost_preview" prop="sales_gross_profit" :label="currentOrder.cost_preview ? '商品预估毛利' : '销售毛利'" width="120">

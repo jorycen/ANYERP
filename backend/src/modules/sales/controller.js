@@ -94,7 +94,7 @@ const {
   pricingCompleteness,
   calculateNationalSubsidyCustomerReceiptAmount
 } = require('./grossProfit');
-const { applyCostPreview } = require('./costPreview');
+const { applyCostPreview, applyFrozenCostDisplay } = require('./costPreview');
 const { createProductSettlementOrder } = require('../report/productSettlement');
 const {
   isSubsidyEligibleItem,
@@ -2890,7 +2890,7 @@ async function detail(ctx) {
       {
         model: OrderGrossProfit,
         as: 'grossProfitSnapshot',
-        attributes: ['freight_cost_amount', 'supplement_details'],
+        attributes: ['freight_cost_amount', 'supplement_details', 'snapshot_status', 'product_pricing_details'],
         required: false
       },
       { model: DepositRedemption, as: 'depositRedemptions' },
@@ -2983,6 +2983,9 @@ async function detail(ctx) {
       };
     });
   }
+  result = applyFrozenCostDisplay(result, canSeeCost(ctx.state.user) ? grossProfitSnapshot : null);
+  // Pricing details are internal display inputs, not an additional cost API.
+  if (result.grossProfitSnapshot) delete result.grossProfitSnapshot.product_pricing_details;
   if (canSeeCost(ctx.state.user) && ['draft', '未归档', 'pending_approval', 'pending_store_approval', 'pending_distributor_approval'].includes(String(order.order_status))) {
     const preview = await calculateAndSaveOrderGrossProfit(order.order_id, { persist: false, final: false });
     result = applyCostPreview(result, preview);

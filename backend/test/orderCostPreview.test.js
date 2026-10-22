@@ -2,7 +2,28 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const M = require('../src/models');
 const { validPrice, resolveUnitProductPricing, calculateAndSaveOrderGrossProfit, snapshotToResponse } = require('../src/modules/sales/grossProfit');
-const { applyCostPreview } = require('../src/modules/sales/costPreview');
+const { applyCostPreview, applyFrozenCostDisplay } = require('../src/modules/sales/costPreview');
+
+test('archived detail repairs legacy zero subtotals and uses frozen purchase and pricing costs without mutation', () => {
+  const order = { OrderItems: [
+    { item_id: 1, sale_price: '2200', quantity: 1, subtotal: '0', original_inventory_cost: 900 },
+    { item_id: 2, sale_price: '0', quantity: 1, subtotal: '0', original_inventory_cost: 0 }
+  ] };
+  const snapshot = { snapshot_status: 'final', product_pricing_details: JSON.stringify([
+    { itemId: 1, purchasePrice: 900, unitPricing: 900, source: 'purchase_price' },
+    { itemId: 2, purchasePrice: 36, unitPricing: 38, source: 'product_standard_price' }
+  ]) };
+  const result = applyFrozenCostDisplay(order, snapshot);
+  assert.equal(result.OrderItems[0].subtotal, 2200);
+  assert.equal(result.OrderItems[0].sales_gross_profit, 1300);
+  assert.equal(result.OrderItems[1].original_inventory_cost, 36);
+  assert.equal(result.OrderItems[1].sales_settlement_cost, 38);
+  assert.equal(result.OrderItems[1].subtotal, '0');
+  assert.equal(order.OrderItems[0].subtotal, '0');
+  assert.equal(order.OrderItems[1].original_inventory_cost, 0);
+  assert.equal(applyFrozenCostDisplay(order, { ...snapshot, snapshot_status: 'draft' }).OrderItems[1].original_inventory_cost, 0);
+  assert.equal(applyFrozenCostDisplay({ OrderItems: [{ sale_price: 100, quantity: 2, subtotal: 180 }] }, null).OrderItems[0].subtotal, 180);
+});
 
 test('zero company price is valid; missing, invalid or inactive prices are not zero prices', () => {
   const company = { costMode: 'COMPANY_PRICE' };
