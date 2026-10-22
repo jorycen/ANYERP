@@ -477,6 +477,17 @@ async function buildPaymentDetails(order, existingSnapshot, transaction) {
   return details;
 }
 
+function resolveInventoryCostMode(product = {}, sn = {}, price = {}, orderTime = new Date()) {
+  // An explicit per-inventory instruction wins over all category defaults.
+  if (String(sn?.gross_profit_use_standard_price) === '1') return 'COMPANY_PRICE';
+  if (String(sn?.gross_profit_use_standard_price) === '0') return 'PURCHASE_PRICE';
+  if (product.category === '售后' && product.brand === 'Care服务') {
+    return new Date(orderTime).getTime() >= Date.UTC(2026, 9, 1) ? 'COMPANY_PRICE' : 'PURCHASE_PRICE';
+  }
+  if (product.category === '选件' && Number(price?.status) === 1 && validPrice(price?.standard_price) !== null) return 'COMPANY_PRICE';
+  return product.gross_profit_cost_mode === 'COMPANY_PRICE' ? 'COMPANY_PRICE' : 'PURCHASE_PRICE';
+}
+
 async function resolveSupplierContext(items, order, transaction) {
   const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean))];
   const itemSupplierIds = new Set(items.map(item => item.supplier_id).filter(Boolean).map(String));
@@ -617,16 +628,7 @@ async function buildProductPricingDetails(orderId, transaction) {
       supplier,
       {
         purchaseUpliftAmount: supplier?.gross_profit_uplift_amount ?? inboundSupplier?.supplier_gross_profit_uplift_amount,
-        costMode: product.category === '售后' && product.brand === 'Care服务'
-          ? new Date(order.create_time).getTime() >= Date.UTC(2026, 9, 1)
-            ? 'COMPANY_PRICE' : 'PURCHASE_PRICE'
-          : product.category === '选件' && Number(productPrice?.status) === 1 &&
-          validPrice(productPrice?.standard_price) !== null
-          ? 'COMPANY_PRICE'
-          : String(snRow?.gross_profit_use_standard_price) === '1'
-            ? 'COMPANY_PRICE'
-            : String(snRow?.gross_profit_use_standard_price) === '0'
-              ? 'PURCHASE_PRICE' : product.gross_profit_cost_mode
+        costMode: resolveInventoryCostMode(product, snRow, productPrice, order.create_time)
       }
     );
     const fixedCost = historicalPnCost(order, row.pn_code);
@@ -1111,6 +1113,7 @@ module.exports = {
   buildFreightCostDetails,
   isFreightRecordApplicableToOrder,
   resolveUnitProductPricing,
+  resolveInventoryCostMode,
   calculateGrossProfitValues,
   calculateAndSaveOrderGrossProfit,
   validPrice,

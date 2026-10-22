@@ -605,6 +605,10 @@ export default {
   getCategoryFieldConfig: (categoryId) => api.get('/product/category/field-config', { params: { categoryId } }),
   // 商品价格
   getPriceList: (params) => api.get('/product/price/list', { params }),
+  getInventoryPricing: (params) => api.get('/product/price/inventory-pricing', { params }),
+  getInventoryPricingHistory: (snId) => api.get(`/product/price/inventory-pricing/${encodeURIComponent(snId)}/history`),
+  previewInventoryPricing: (data) => api.post('/product/price/inventory-pricing/preview', data),
+  applyInventoryPricing: (data) => api.post('/product/price/inventory-pricing/apply', data),
   setPrice: (data) => api.post('/product/price/set', data),
   refreshCostPrice: (productId) => api.post(`/product/price/refresh-cost/${productId}`),
   batchRefreshCost: (data) => api.post('/product/price/batch-refresh-cost', data),

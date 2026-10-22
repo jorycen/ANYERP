@@ -16,6 +16,7 @@ const {
 const { requireRole } = require('../../middleware/permission');
 
 const router = new Router();
+const inventoryPricing = require('./inventoryPricing');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 // 商品基础管理
@@ -56,6 +57,10 @@ router.get('/category/field-config', getCategoryFieldConfig);
 
 // 商品价格
 router.get('/price/list', getPriceList);
+router.get('/price/inventory-pricing', inventoryPricing.list);
+router.get('/price/inventory-pricing/:snId/history', inventoryPricing.history);
+router.post('/price/inventory-pricing/preview', inventoryPricing.preview);
+router.post('/price/inventory-pricing/apply', inventoryPricing.apply);
 router.get('/price/export', exportCostPrices);
 router.post('/price/set', setPrice);
 router.post('/price/refresh-cost/:productId', refreshCostPrice);
