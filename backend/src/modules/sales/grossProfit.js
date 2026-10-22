@@ -516,7 +516,9 @@ async function resolveSupplierContext(items, order, transaction) {
             AND i.CREATE_TIME <= :orderTime
             AND ii.PRODUCT_ID IN (:productIds)
           ORDER BY i.CREATE_TIME DESC, i.INBOUND_ID DESC`,
-        { replacements: { storeId: order.store_id, orderTime: order.create_time, productIds }, type: QueryTypes.SELECT, transaction }
+        // Raw replacements format Date using the host timezone. MySQL business
+        // DATETIME values use +08:00, including when the container runs in UTC.
+        { replacements: { storeId: order.store_id, orderTime: new Date(new Date(order.create_time).getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 23).replace('T', ' '), productIds }, type: QueryTypes.SELECT, transaction }
       )
     : [];
   const latestInboundByProduct = new Map();
@@ -603,7 +605,9 @@ async function buildProductPricingDetails(orderId, transaction) {
       ?? (toNumber(row.original_pickup_price) > 0 ? validPrice(row.original_pickup_price) : null)
       ?? validPrice(snRow?.inbound_price)
       ?? validPrice(inboundSupplier?.inbound_price)
-      ?? (productPrice && Number(productPrice.status ?? 1) === 1 ? validPrice(productPrice.cost_price) : null);
+      ?? (productPrice && Number(productPrice.status ?? 1) === 1
+        && (Number(productPrice.cost_price) > 0 || Number(productPrice.cost_price_locked) === 1)
+        ? validPrice(productPrice.cost_price) : null);
     const specialPrice = specialPriceBySnId.get(String(snRow?.sn_id || row.sn_id || ''))
       ?? specialPriceBySnCode.get(String(snRow?.sn_code || row.sn_code || '').trim().toUpperCase())
       ?? null;

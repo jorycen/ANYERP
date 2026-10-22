@@ -48,6 +48,35 @@ function fixture(t, standardPrice) {
   return { order, item };
 }
 
+test('raw inbound cutoff uses Shanghai business time independently of container timezone', async t => {
+  const { order } = fixture(t, 1500);
+  order.create_time = new Date('2026-10-22T06:45:41.000Z');
+  let checked = false;
+  t.mock.method(M.sequelize, 'query', async (sql, options) => {
+    if (sql.includes('i.CREATE_TIME <= :orderTime')) {
+      assert.equal(options.replacements.orderTime, '2026-10-22 14:45:41.000');
+      checked = true;
+    }
+    return [];
+  });
+  await calculateAndSaveOrderGrossProfit('order', { persist: false, final: false });
+  assert.equal(checked, true);
+});
+
+test('unlocked default zero purchase cost is pending; explicitly locked zero is valid', async t => {
+  fixture(t, 16050);
+  t.mock.method(M.Product, 'findAll', async () => [{ product_id: 'product', category: '笔记本', gross_profit_cost_mode: 'PURCHASE_PRICE' }]);
+  let locked = 0;
+  t.mock.method(M.ProductPrice, 'findAll', async () => [{ product_id: 'product', standard_price: 16050, status: 1, cost_price: 0, cost_price_locked: locked }]);
+  let preview = snapshotToResponse(await calculateAndSaveOrderGrossProfit('order', { persist: false, final: false }), {});
+  assert.equal(preview.pricingComplete, false);
+  assert.equal(preview.grossProfitAmount, null);
+  locked = 1;
+  preview = snapshotToResponse(await calculateAndSaveOrderGrossProfit('order', { persist: false, final: false }), {});
+  assert.equal(preview.pricingComplete, true);
+  assert.equal(preview.productPricingAmount, 0);
+});
+
 test('unarchived preview reads 1500 cost, returns 294.60 profit and leaves stored item zeroes untouched', async t => {
   const { order, item } = fixture(t, 1500);
   const snapshot = await calculateAndSaveOrderGrossProfit('order', { persist: false, final: false });
