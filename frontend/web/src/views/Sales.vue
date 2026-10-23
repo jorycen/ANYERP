@@ -169,13 +169,23 @@
           </el-col>
           <el-col :span="8">
             <el-form-item label="发票类型">
-              <el-select v-model="orderForm.invoiceStatus" placeholder="请选择">
+              <el-select v-model="orderForm.invoiceStatus" placeholder="请选择" @change="markInvoiceManual">
                 <el-option label="不开票" value="不开票" />
                 <el-option label="普通发票" value="普通发票" />
                 <el-option label="增值税发票" value="增值税发票" />
+                <el-option label="开专票" value="开专票" />
               </el-select>
             </el-form-item>
           </el-col>
+        </el-row>
+
+        <el-row v-if="orderForm.invoiceStatus !== '不开票'" :gutter="20">
+          <el-col :span="8"><el-form-item label="开票金额">
+            <el-input v-model="orderForm.invoiceAmount" type="number" min="0" step="0.01" @input="markInvoiceManual" />
+          </el-form-item></el-col>
+          <el-col :span="16"><el-form-item label="开票信息">
+            <el-input v-model="orderForm.invoiceInfo" type="textarea" placeholder="单位名称、税号等" />
+          </el-form-item></el-col>
         </el-row>
 
         <!-- 商品明细 -->
@@ -766,6 +776,8 @@ const orderForm = reactive({
   customerSourceL1: '',
   customerSourceL2: '',
   invoiceStatus: '不开票',
+  invoiceAmount: '',
+  invoiceInfo: '',
   depositId: '',
   items: [],
   nationalSubsidy: 0,
@@ -863,6 +875,40 @@ const loadSaleResourceCategories = async () => {
 watch(() => route.query.orderId, () => {
   openRouteOrderDetail()
 })
+
+let invoiceDefaultRevision = 0
+let invoiceDefaultManual = false
+let corporateInvoiceAuto = false
+const markInvoiceManual = () => { invoiceDefaultManual = true; invoiceDefaultRevision += 1 }
+const syncCorporateInvoiceDefaults = async () => {
+  const revision = ++invoiceDefaultRevision
+  if (orderForm.orderId || invoiceDefaultManual || !dialogVisible.value) return true
+  if (!selectedPayments.value.includes('对公转账') && !corporateInvoiceAuto) return true
+  try {
+    const res = await api.getSalesInvoiceDefaults({
+      payments: selectedPayments.value.map(method => ({ method, amount: paymentAmounts[method] })),
+      nationalSubsidy: orderForm.nationalSubsidy
+    })
+    if (revision !== invoiceDefaultRevision || invoiceDefaultManual) return true
+    if (res.code !== 0) throw new Error(res.message || '获取开票默认信息失败')
+    if (res.data.applies) {
+      corporateInvoiceAuto = true
+      orderForm.invoiceStatus = res.data.invoiceStatus
+      orderForm.invoiceAmount = res.data.invoiceAmount
+    } else if (corporateInvoiceAuto) {
+      corporateInvoiceAuto = false
+      orderForm.invoiceStatus = '不开票'
+      orderForm.invoiceAmount = ''
+    }
+    return true
+  } catch (error) {
+    if (revision === invoiceDefaultRevision) ElMessage.error(error.message || '获取开票默认信息失败，请重试')
+    return false
+  }
+}
+watch(() => [selectedPayments.value.map(method => [method, paymentAmounts[method]]), orderForm.nationalSubsidy], () => {
+  if (dialogVisible.value && !orderForm.orderId && (selectedPayments.value.includes('对公转账') || corporateInvoiceAuto)) syncCorporateInvoiceDefaults()
+}, { deep: true })
 
 watch(selectedPayments, (payments) => {
   const hasDeposit = payments.some(isDepositPaymentName)
@@ -1426,7 +1472,12 @@ const resetForm = () => {
   orderForm.customerSource = ''
   orderForm.customerSourceL1 = ''
   orderForm.customerSourceL2 = ''
+  invoiceDefaultRevision += 1
+  invoiceDefaultManual = false
+  corporateInvoiceAuto = false
   orderForm.invoiceStatus = '不开票'
+  orderForm.invoiceAmount = ''
+  orderForm.invoiceInfo = ''
   orderForm.depositId = ''
   orderForm.items = []
   orderForm.nationalSubsidy = 0
@@ -1445,6 +1496,8 @@ const hydrateDraftForm = (order) => {
   orderForm.customerPhone = order.customer_phone || ''
   orderForm.customerSource = order.customer_source || ''
   orderForm.invoiceStatus = order.invoice_status || '不开票'
+  orderForm.invoiceAmount = order.invoice_amount || ''
+  orderForm.invoiceInfo = order.invoice_info || ''
   orderForm.depositId = ''
   orderForm.nationalSubsidy = Number(order.national_subsidy || 0)
   orderForm.educationSubsidy = Number(order.education_subsidy || 0)
@@ -1807,6 +1860,8 @@ const buildSalesOrderPayload = (untaxedInvoiceConfirmed = false) => ({
   customerPhone: orderForm.customerPhone,
   customerSource: orderForm.customerSource,
   invoiceStatus: orderForm.invoiceStatus,
+  invoiceAmount: orderForm.invoiceStatus === '不开票' ? 0 : orderForm.invoiceAmount,
+  invoiceInfo: orderForm.invoiceInfo,
   untaxedInvoiceConfirmed,
   items: orderForm.items.flatMap(item => {
     const baseItem = {
@@ -1853,6 +1908,7 @@ const buildSalesOrderPayload = (untaxedInvoiceConfirmed = false) => ({
 })
 
 const saveOrderDraft = async () => {
+  if (!await syncCorporateInvoiceDefaults()) return
   if (!orderForm.storeId) {
     ElMessage.warning('请选择门店后再保存草稿')
     return
@@ -1879,6 +1935,7 @@ const saveOrderDraft = async () => {
 }
 
 const handleSubmit = async () => {
+  if (!await syncCorporateInvoiceDefaults()) return
   if (!orderForm.storeId) {
     ElMessage.warning('请选择门店')
     return

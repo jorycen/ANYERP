@@ -104,6 +104,7 @@ async function storeAccessMiddleware(ctx, next) {
         path === '/api/v1/purchase/supplier-all'
       );
       const isOrderSubmit = ctx.method === 'POST' && (
+        path === '/api/v1/sales/invoice-defaults' ||
         path === '/api/v1/sales/create' ||
         path === '/api/v1/sales/draft' ||
         /^\/api\/v1\/sales\/draft\/[^/]+\/submit$/.test(path)

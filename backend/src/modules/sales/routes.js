@@ -68,6 +68,7 @@ function normalizeDepositId(ctx, next) {
   return next();
 }
 
+router.post('/invoice-defaults', require('./invoiceDefaults').invoiceDefaults);
 router.get('/list', list);
 router.get('/product-orders/:productId', listProductOrders);
 router.get('/export', exportOrders);
