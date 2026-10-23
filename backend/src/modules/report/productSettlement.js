@@ -16,7 +16,7 @@ const {
 } = require('../../models');
 const { Op, QueryTypes } = require('sequelize');
 const { generateUUID } = require('../../utils');
-const { educationProductEntrySql } = require('./educationProductEntry');
+const { externalIncomeSql, policyIncomeSql, pendingPolicySql } = require('./productIncomeSql');
 
 const PRODUCT_SETTLEMENT_FORMULA_VERSION = 'PRODUCT_GP_V1_20260831';
 const ARCHIVED_ORDER_STATUSES = new Set(['已归档', 'completed', 'archived']);
@@ -272,83 +272,9 @@ async function createProductSettlementReturnAdjustment({ returnRequest, transact
 }
 
 async function queryProductSettlementSummary({ startDate, endDate, storeIds = [] } = {}) {
-  if (!storeIds.length) return {
-    productPricingAmount: 0,
-    purchaseCostAmount: 0,
-    grossProfitAmount: 0,
-    orderCount: 0,
-    costPendingOrderCount: 0,
-    costPendingAmount: 0,
-    realizedPolicyIncomeAmount: 0,
-    estimatedPolicyIncomeAmount: 0,
-    realizedGrossProfitAmount: 0
-  };
-  try {
-    const [rows, policyRows] = await Promise.all([sequelize.query(
-      `SELECT
-          ROUND(COALESCE(SUM(CASE WHEN STATUS = 'posted' THEN PRODUCT_PRICING_AMOUNT ELSE 0 END), 0), 2) AS productPricingAmount,
-          ROUND(COALESCE(SUM(CASE WHEN STATUS = 'posted' THEN PURCHASE_COST_AMOUNT ELSE 0 END), 0), 2) AS purchaseCostAmount,
-          ROUND(COALESCE(SUM(CASE WHEN STATUS = 'posted' THEN GROSS_PROFIT_AMOUNT ELSE 0 END), 0), 2) AS grossProfitAmount,
-          COUNT(CASE WHEN STATUS = 'posted' AND IS_POLICY_ENTRY = 0 THEN 1 END) AS orderCount,
-          COUNT(CASE WHEN STATUS = 'cost_pending' THEN 1 END) AS costPendingOrderCount,
-          ROUND(COALESCE(SUM(COST_PENDING_AMOUNT), 0), 2) AS costPendingAmount
-       FROM (
-         SELECT STORE_ID, BUSINESS_DATE, STATUS, PRODUCT_PRICING_AMOUNT, PURCHASE_COST_AMOUNT, GROSS_PROFIT_AMOUNT, COST_PENDING_AMOUNT, 0 AS IS_POLICY_ENTRY
-           FROM T_PRODUCT_SETTLEMENT_ORDER
-          UNION ALL
-         SELECT STORE_ID, BUSINESS_DATE, STATUS, PRODUCT_PRICING_AMOUNT, PURCHASE_COST_AMOUNT, GROSS_PROFIT_AMOUNT, COST_PENDING_AMOUNT, 0 AS IS_POLICY_ENTRY
-           FROM T_PRODUCT_SETTLEMENT_ADJUSTMENT
-          UNION ALL
-         SELECT STORE_ID, BUSINESS_DATE, STATUS, PRODUCT_PRICING_AMOUNT, PURCHASE_COST_AMOUNT, GROSS_PROFIT_AMOUNT, COST_PENDING_AMOUNT, 1 AS IS_POLICY_ENTRY
-           FROM (${educationProductEntrySql()}) education_entries
-       ) entries
-      WHERE STORE_ID IN (:storeIds)
-        AND BUSINESS_DATE >= :startDate
-        AND BUSINESS_DATE < DATE_ADD(:endDate, INTERVAL 1 DAY)`,
-      { replacements: { storeIds, startDate, endDate }, type: QueryTypes.SELECT }
-    ), sequelize.query(
-      `SELECT
-          ROUND(COALESCE(SUM(CASE WHEN estimate.STATUS = 'received' THEN estimate.REBATE_ESTIMATE_AMOUNT ELSE 0 END), 0), 2) AS realizedPolicyIncomeAmount,
-          ROUND(COALESCE(SUM(CASE WHEN estimate.STATUS IN ('estimated', 'confirmed') THEN estimate.REBATE_ESTIMATE_AMOUNT ELSE 0 END), 0), 2) AS estimatedPolicyIncomeAmount
-       FROM T_REBATE_ESTIMATE estimate
-       INNER JOIN T_ORDER sale ON sale.ORDER_ID = estimate.SALES_ORDER_ID
-       WHERE sale.STORE_ID IN (:storeIds)
-         AND estimate.UPDATED_AT >= :startDate
-         AND estimate.UPDATED_AT < DATE_ADD(:endDate, INTERVAL 1 DAY)`,
-      { replacements: { storeIds, startDate, endDate }, type: QueryTypes.SELECT }
-    )]);
-    const row = rows[0] || {};
-    const policy = policyRows[0] || {};
-    const grossProfitAmount = money(row.grossProfitAmount);
-    const realizedPolicyIncomeAmount = money(policy.realizedPolicyIncomeAmount);
-    return {
-      productPricingAmount: money(row.productPricingAmount),
-      purchaseCostAmount: money(row.purchaseCostAmount),
-      grossProfitAmount,
-      orderCount: Number(row.orderCount || 0),
-      costPendingOrderCount: Number(row.costPendingOrderCount || 0),
-      costPendingAmount: money(row.costPendingAmount),
-      realizedPolicyIncomeAmount,
-      estimatedPolicyIncomeAmount: money(policy.estimatedPolicyIncomeAmount),
-      realizedGrossProfitAmount: money(grossProfitAmount + realizedPolicyIncomeAmount)
-    };
-  } catch (error) {
-    // 兼容尚未完成数据库迁移的旧实例，不能阻断原有财务总览。
-    if (/doesn't exist|不存在|unknown table|no such table/i.test(String(error.message || ''))) {
-      return {
-        productPricingAmount: 0,
-        purchaseCostAmount: 0,
-        grossProfitAmount: 0,
-        orderCount: 0,
-        costPendingOrderCount: 0,
-        costPendingAmount: 0,
-        realizedPolicyIncomeAmount: 0,
-        estimatedPolicyIncomeAmount: 0,
-        realizedGrossProfitAmount: 0
-      };
-    }
-    throw error;
-  }
+  const endExclusive = new Date(new Date(`${String(endDate).slice(0, 10)}T00:00:00+08:00`).getTime() + 86400000);
+  const data = await listProductSettlementOrders({ storeIds, startDate: new Date(`${String(startDate).slice(0, 10)}T00:00:00+08:00`), endDate: endExclusive, pageSize: 1 });
+  return { ...data.summary, orderCount: data.summary.orderCount, costPendingOrderCount: data.summary.costPendingOrderCount };
 }
 
 function buildProductSettlementEntrySql({
@@ -375,7 +301,7 @@ function buildProductSettlementEntrySql({
     conditions.push('entries.STATUS = :status');
     replacements.status = status;
   }
-  if (['sale', 'return', 'education'].includes(entryType)) {
+  if (['sale', 'return', 'education', 'manufacturer', 'external', 'external_return'].includes(entryType)) {
     conditions.push('entries.ENTRY_TYPE = :entryType');
     replacements.entryType = entryType;
   }
@@ -390,7 +316,9 @@ function buildProductSettlementEntrySql({
   if (keyword) {
     replacements.itemKeyword = `%${keyword}%`;
     conditions.push(`(
-      EXISTS (
+      EXISTS (SELECT 1 FROM T_ORDER_ITEM oi WHERE oi.ORDER_ID = entries.SOURCE_ORDER_ID
+        AND (oi.PRODUCT_NAME LIKE :itemKeyword OR oi.PN_CODE LIKE :itemKeyword OR oi.SN_CODE LIKE :itemKeyword))
+      OR EXISTS (
         SELECT 1 FROM T_PRODUCT_SETTLEMENT_ITEM item
          WHERE item.SETTLEMENT_ID = entries.ENTRY_ID
            AND (item.PRODUCT_NAME LIKE :itemKeyword OR item.PN_CODE LIKE :itemKeyword OR item.SN_CODE LIKE :itemKeyword)
@@ -446,11 +374,37 @@ function buildProductSettlementEntrySql({
                  FORMULA_VERSION
             FROM T_PRODUCT_SETTLEMENT_ADJUSTMENT
           UNION ALL
-          ${educationProductEntrySql()}
+          ${policyIncomeSql()}
+          UNION ALL
+          ${pendingPolicySql()}
+          UNION ALL
+          ${externalIncomeSql()}
         ) entries
         LEFT JOIN T_STORE store ON store.STORE_ID = entries.STORE_ID
        WHERE ${conditions.join(' AND ')}`,
     replacements
+  };
+}
+
+function explainSettlementItem(item) {
+  const pending = item.cost_status !== 'ready';
+  const reasons = [];
+  if (pending) {
+    if (toNumber(item.product_unit_price) <= 0) reasons.push('产品定价快照为零或缺失，需核对是否有效零元定价');
+    if (toNumber(item.purchase_unit_cost) <= 0 && item.cost_source !== 'manual_sold_cost') reasons.push('采购成本快照为零或缺失，需核对原采购入库/SN及零成本确认依据');
+    if (!reasons.length) reasons.push('历史结算仍为待补状态，需核对原始成本证据');
+  }
+  const sources = {
+    manual_sold_cost: '已售商品人工补录采购成本', locked_zero_inventory_cost: '人工锁定零成本', order_item_or_sn_inbound_cost: '订单或SN入库成本',
+    missing_sn_cost: '未取得SN成本', order_item_cost_snapshot: '订单成本快照',
+    product_price_cost_price: '商品库存成本', sn_special_price: 'SN特价', product_standard_price: '产品标准定价'
+  };
+  return { ...item,
+    canSupplementCost: item.cost_status !== 'ready' && toNumber(item.purchase_unit_cost) <= 0 && item.cost_source !== 'manual_sold_cost',
+    priceSourceLabel: sources[item.product_price_source] || item.product_price_source || '原销售结算定价',
+    costSourceLabel: sources[item.cost_source] || item.cost_source || '原销售结算成本',
+    pendingReason: reasons.join('；'),
+    calculation: pending ? '待核实，本项未确认毛利' : `（${money(item.product_unit_price)} - ${money(item.purchase_unit_cost)}） × ${toNumber(item.quantity)} = ${money(item.gross_profit_amount)}`
   };
 }
 
@@ -484,23 +438,15 @@ async function listProductSettlementOrders({
     `SELECT COUNT(*) AS total,
             ROUND(COALESCE(SUM(PRODUCT_PRICING_AMOUNT), 0), 2) AS productPricingAmount,
             ROUND(COALESCE(SUM(PURCHASE_COST_AMOUNT), 0), 2) AS purchaseCostAmount,
-            ROUND(COALESCE(SUM(GROSS_PROFIT_AMOUNT), 0), 2) AS grossProfitAmount,
+            ROUND(COALESCE(SUM(CASE WHEN STATUS = 'posted' AND ENTRY_TYPE IN ('sale','return') THEN GROSS_PROFIT_AMOUNT ELSE 0 END), 0), 2) AS grossProfitAmount,
+            ROUND(COALESCE(SUM(CASE WHEN STATUS = 'posted' AND ENTRY_TYPE IN ('external','external_return') THEN GROSS_PROFIT_AMOUNT ELSE 0 END), 0), 2) AS externalFeeAmount,
+            ROUND(COALESCE(SUM(CASE WHEN STATUS = 'posted' AND ENTRY_TYPE IN ('education','manufacturer') THEN GROSS_PROFIT_AMOUNT ELSE 0 END), 0), 2) AS realizedPolicyIncomeAmount,
+            ROUND(COALESCE(SUM(CASE WHEN STATUS = 'policy_pending' THEN GROSS_PROFIT_AMOUNT ELSE 0 END), 0), 2) AS estimatedPolicyIncomeAmount,
+            COUNT(CASE WHEN STATUS = 'posted' AND ENTRY_TYPE IN ('sale','return') THEN 1 END) AS orderCount,
+            COUNT(CASE WHEN STATUS = 'cost_pending' THEN 1 END) AS costPendingOrderCount,
             ROUND(COALESCE(SUM(COST_PENDING_AMOUNT), 0), 2) AS costPendingAmount
        FROM (${query.sql}) filtered_entries`,
     { replacements: query.replacements, type: QueryTypes.SELECT }
-  );
-  const policyConditions = ['sale.STORE_ID IN (:storeIds)'];
-  const policyReplacements = { storeIds: storeIds.length ? storeIds : ['__NO_STORE__'] };
-  if (startDate) { policyConditions.push('estimate.UPDATED_AT >= :startDate'); policyReplacements.startDate = startDate; }
-  if (endDate) { policyConditions.push('estimate.UPDATED_AT < DATE_ADD(:endDate, INTERVAL 1 DAY)'); policyReplacements.endDate = endDate; }
-  const policyRows = await sequelize.query(
-    `SELECT
-       ROUND(COALESCE(SUM(CASE WHEN estimate.STATUS = 'received' THEN estimate.REBATE_ESTIMATE_AMOUNT ELSE 0 END), 0), 2) AS realizedPolicyIncomeAmount,
-       ROUND(COALESCE(SUM(CASE WHEN estimate.STATUS IN ('estimated', 'confirmed') THEN estimate.REBATE_ESTIMATE_AMOUNT ELSE 0 END), 0), 2) AS estimatedPolicyIncomeAmount
-     FROM T_REBATE_ESTIMATE estimate
-     INNER JOIN T_ORDER sale ON sale.ORDER_ID = estimate.SALES_ORDER_ID
-     WHERE ${policyConditions.join(' AND ')}`,
-    { replacements: policyReplacements, type: QueryTypes.SELECT }
   );
   const rows = await sequelize.query(
     `${query.sql}
@@ -508,14 +454,38 @@ async function listProductSettlementOrders({
       LIMIT ${safePageSize} OFFSET ${(safePage - 1) * safePageSize}`,
     { replacements: query.replacements, type: QueryTypes.SELECT }
   );
+  const policyEntryIds = rows.filter(row => ['education','manufacturer'].includes(row.ENTRY_TYPE) && row.STATUS === 'posted').map(row => row.ENTRY_ID);
+  const policyEntries = policyEntryIds.length ? await require('../../models').ProductProfitIncome.findAll({ where: { entry_id: { [Op.in]: policyEntryIds } }, attributes: ['entry_id','settlement_id'], raw: true }) : [];
+  const policySettlementIds = new Map(policyEntries.map(row => [row.entry_id, row.settlement_id]));
+  const saleIds = rows.filter(row => row.ENTRY_TYPE === 'sale').map(row => row.ENTRY_ID);
+  const returnIds = rows.filter(row => row.ENTRY_TYPE === 'return').map(row => row.ENTRY_ID);
+  const [saleItems, returnItems] = await Promise.all([
+    saleIds.length ? ProductSettlementItem.findAll({ where: { settlement_id: { [Op.in]: saleIds } }, raw: true }) : [],
+    returnIds.length ? ProductSettlementAdjustmentItem.findAll({ where: { adjustment_id: { [Op.in]: returnIds } }, raw: true }) : []
+  ]);
+  const details = new Map();
+  for (const [type, items, key] of [['sale', saleItems, 'settlement_id'], ['return', returnItems, 'adjustment_id']]) {
+    for (const item of items) {
+      const id = `${type}:${item[key]}`;
+      if (!details.has(id)) details.set(id, []);
+      details.get(id).push(explainSettlementItem(item));
+    }
+  }
   const summary = summaryRows[0] || {};
-  const policy = policyRows[0] || {};
+  const policy = summary;
   const baseGrossProfitAmount = money(summary.grossProfitAmount);
   const realizedPolicyIncomeAmount = money(policy.realizedPolicyIncomeAmount);
   return {
     items: rows.map(row => ({
+      items: details.get(`${row.ENTRY_TYPE}:${row.ENTRY_ID}`) || [],
+      pendingCostReason: (details.get(`${row.ENTRY_TYPE}:${row.ENTRY_ID}`) || []).filter(item => item.pendingReason).map(item => `${item.product_name || item.pn_code || '商品'}：${item.pendingReason}`).join('；') || (row.STATUS === 'cost_pending' ? '缺少明细，请核查历史结算数据' : ''),
+      calculationNote: ['education', 'manufacturer'].includes(row.ENTRY_TYPE)
+        ? (row.STATUS === 'policy_pending' ? '返利池待整笔核销，暂不计入产品端毛利' : '返利整笔核销确认收益；撤销核销按原确认额负向冲回')
+        : ['external', 'external_return'].includes(row.ENTRY_TYPE) ? '原销售归档快照已扣外调费转入产品端；退单按原销售冲回比例扣回'
+        : row.STATUS === 'cost_pending' ? '存在待补商品，整单提货差暂不确认；待补金额为待补商品定价额' : '产品定价合计 − 实际采购成本合计；退货按原结算快照负向冲回',
       entryType: row.ENTRY_TYPE,
       entryId: row.ENTRY_ID,
+      policySettlementId: ['education','manufacturer'].includes(row.ENTRY_TYPE) ? (row.STATUS === 'policy_pending' ? row.ENTRY_ID : policySettlementIds.get(row.ENTRY_ID)) : null,
       entryNo: row.ENTRY_NO,
       settlementId: row.ENTRY_TYPE === 'sale' ? row.ENTRY_ID : null,
       settlementNo: row.ENTRY_TYPE === 'sale' ? row.ENTRY_NO : null,
@@ -528,7 +498,8 @@ async function listProductSettlementOrders({
       businessDate: row.BUSINESS_DATE,
       productPricingAmount: money(row.PRODUCT_PRICING_AMOUNT),
       purchaseCostAmount: money(row.PURCHASE_COST_AMOUNT),
-      grossProfitAmount: money(row.GROSS_PROFIT_AMOUNT),
+      grossProfitAmount: ['policy_pending', 'cost_pending'].includes(row.STATUS) ? null : money(row.GROSS_PROFIT_AMOUNT),
+      policyPendingAmount: row.STATUS === 'policy_pending' ? money(row.GROSS_PROFIT_AMOUNT) : 0,
       costPendingAmount: money(row.COST_PENDING_AMOUNT),
       status: row.STATUS,
       formulaVersion: row.FORMULA_VERSION
@@ -541,9 +512,12 @@ async function listProductSettlementOrders({
       purchaseCostAmount: money(summary.purchaseCostAmount),
       grossProfitAmount: baseGrossProfitAmount,
       costPendingAmount: money(summary.costPendingAmount),
+      externalFeeAmount: money(summary.externalFeeAmount),
+      orderCount: Number(summary.orderCount || 0),
+      costPendingOrderCount: Number(summary.costPendingOrderCount || 0),
       realizedPolicyIncomeAmount,
       estimatedPolicyIncomeAmount: money(policy.estimatedPolicyIncomeAmount),
-      realizedGrossProfitAmount: money(baseGrossProfitAmount + realizedPolicyIncomeAmount)
+      realizedGrossProfitAmount: money(baseGrossProfitAmount + money(summary.externalFeeAmount) + realizedPolicyIncomeAmount)
     }
   };
 }
@@ -555,6 +529,7 @@ module.exports = {
   queryProductSettlementSummary,
   listProductSettlementOrders,
   _test: {
+    explainSettlementItem,
     buildProductSettlementItem,
     summarizeProductSettlementItems,
     normalizePricingDetails,

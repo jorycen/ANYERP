@@ -368,7 +368,9 @@
             </el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="返利抵扣">-¥{{ formatMoney(currentRequest.current_rebate_deduction ?? currentRequest.rebate_deduction) }}</el-descriptions-item>
-          <el-descriptions-item label="实际应付">¥{{ formatMoney(requestActualAmount(currentRequest)) }}</el-descriptions-item>
+          <el-descriptions-item label="现金/其他应付">¥{{ formatMoney(requestActualAmount(currentRequest)) }}</el-descriptions-item>
+          <el-descriptions-item v-if="currentRequest.rebate_cost_breakdown" label="商品经营成本基数">¥{{ formatMoney(currentRequest.rebate_cost_breakdown.goodsCostBasis) }}</el-descriptions-item>
+          <el-descriptions-item v-if="currentRequest.rebate_cost_breakdown" label="返利抵扣说明" :span="2">{{ currentRequest.rebate_cost_breakdown.note }}</el-descriptions-item>
           <el-descriptions-item label="申请时间">{{ formatDate(currentRequest.create_time) }}</el-descriptions-item>
           <el-descriptions-item label="提交人">{{ currentRequest.submit_user || currentRequest.apply_user || '-' }}</el-descriptions-item>
           <el-descriptions-item label="提交时间">{{ formatDate(currentRequest.submit_time) }}</el-descriptions-item>

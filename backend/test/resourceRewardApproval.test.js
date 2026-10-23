@@ -33,7 +33,7 @@ function fixture(t, nodes) {
 }
 const node = (mode, ids, name = '审批节点') => ({ name, signMode: mode, approvers: ids.map(staffId => ({ type: 'fixed_user', staffId })) });
 
-test('教育补贴依次经过三级，前两级不记账，末级按配置全额确认且重复处理被拒绝', async t => {
+test('教育补贴依次经过三级，前两级不记账，末级员工80%确认且返利全额待核销，重复处理被拒绝', async t => {
   const { state, tx, business, ctx } = fixture(t, [node('or', [2], '店长'), node('serial', [3], '张欢'), node('serial', [4], '邓红梅')]);
   state.flow.flow_code = state.flow.business_type = 'sale_resource_reward';
   Object.assign(business, { change_id: 'TASK', change_order_no: 'SRT1', change_reason: 'SALE_RESOURCE_TASK', resource_type: 'EDU_SUBSIDY',
@@ -65,7 +65,7 @@ test('教育补贴依次经过三级，前两级不记账，末级按配置全�
   await review(4);
   assert.equal(business.approval_status, 'completed'); assert.equal(profits.length, 1);
   assert.equal(right.current_status, 'USED');
-  assert.equal(profits[0].signed_amount, 80.01); assert.equal(settlements[0].amount, 100.01);
+  assert.equal(profits[0].signed_amount, 80.01); assert.equal(settlements[0].amount, 100.01); assert.equal(settlements[0].source_type, 'EDU_PRODUCT_REBATE');
   assert.equal(JSON.parse(business.reward_snapshot_json).productAmount + profits[0].signed_amount, 100.01);
   await assert.rejects(review(4), error => error.status === 409);
   assert.equal(profits.length, 1);

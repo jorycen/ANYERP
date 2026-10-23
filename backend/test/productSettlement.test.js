@@ -81,3 +81,14 @@ test('产品端毛利清单查询同时覆盖销售结算和退货调整并支�
   assert.equal(query.replacements.storeIds[0], 'STORE1');
   assert.equal(query.replacements.itemKeyword, '%SN001%');
 });
+
+test('待补说明区分零定价与零成本，已确认零成本仍展示计算', () => {
+  const pending = _test.explainSettlementItem({ cost_status: 'pending', product_unit_price: 0, purchase_unit_cost: 0, quantity: 1 });
+  assert.match(pending.pendingReason, /零元定价/);
+  assert.match(pending.pendingReason, /采购成本/);
+  const ready = _test.explainSettlementItem({ cost_status: 'ready', product_unit_price: 100, purchase_unit_cost: 0, quantity: 2, gross_profit_amount: 200, cost_source: 'locked_zero_inventory_cost' });
+  assert.equal(ready.pendingReason, '');
+  assert.match(ready.calculation, /200/);
+  const returned = _test.explainSettlementItem({ cost_status: 'ready', product_unit_price: 100, purchase_unit_cost: 80, quantity: -2, gross_profit_amount: -40 });
+  assert.match(returned.calculation, /-40/);
+});

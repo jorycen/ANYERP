@@ -1360,6 +1360,21 @@ const OrderGrossProfit = sequelize.define('OrderGrossProfit', {
 
 // 产品端结算单。由已最终归档的销售订单一对一生成，不产生新的库存动作。
 // 产品端毛利只记录产品定价/结算价与实际采购成本的提货差；厂家返利、价保等政策仍走独立政策链路。
+const ProductProfitIncome = sequelize.define('ProductProfitIncome', {
+  entry_id: { type: DataTypes.STRING(32), primaryKey: true },
+  entry_key: { type: DataTypes.STRING(160), allowNull: false, unique: true },
+  entry_type: { type: DataTypes.STRING(32), allowNull: false },
+  settlement_id: { type: DataTypes.STRING(32), allowNull: false },
+  source_order_id: { type: DataTypes.STRING(32) },
+  source_order_no: { type: DataTypes.STRING(64) },
+  store_id: { type: DataTypes.STRING(32), allowNull: false },
+  amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
+  business_date: { type: DataTypes.DATE, allowNull: false },
+  reverses_entry_id: { type: DataTypes.STRING(32), unique: true },
+  detail_json: { type: DataTypes.JSON },
+  create_user: { type: DataTypes.STRING(64) }
+}, { tableName: 'T_PRODUCT_PROFIT_INCOME', timestamps: false });
+
 const ProductSettlementOrder = sequelize.define('ProductSettlementOrder', {
   settlement_id: { type: DataTypes.STRING(32), primaryKey: true },
   settlement_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
@@ -2837,6 +2852,7 @@ module.exports = {
   SalesReturnRedInvoice,
   OrderSupplement,
   OrderGrossProfit,
+  ProductProfitIncome,
   ProductSettlementOrder,
   ProductSettlementItem,
   ProductSettlementAdjustment,

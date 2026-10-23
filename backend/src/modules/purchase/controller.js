@@ -1330,6 +1330,7 @@ async function getRequestDetail(ctx) {
 
   result.action_logs = await listBusinessActions('purchase_request', request.request_id);
 
+  result.rebate_cost_breakdown = require('./rebateCostBasis').purchaseBreakdown(result);
   ctx.body = { code: 0, data: result };
 }
 

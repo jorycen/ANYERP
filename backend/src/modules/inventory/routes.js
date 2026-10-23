@@ -71,6 +71,10 @@ router.delete('/resource-categories/:categoryId', resourceRights.deleteResourceC
 router.get('/goods-types', resourceRights.listGoodsTypes);
 router.post('/goods-types', resourceRights.saveGoodsType);
 router.delete('/goods-types/:goodsTypeId', resourceRights.deleteGoodsType);
+const rebatePolicyDetail = require('./rebatePolicyDetail');
+router.get('/resource-settlements/:settlementId/policy-detail', rebatePolicyDetail.detail);
+router.get('/resource-settlements/:settlementId/credit-usage', rebatePolicyDetail.credit);
+router.post('/resource-settlements/:settlementId/tax-evidence', rebatePolicyDetail.saveTax);
 router.get('/resource-settlements', resourceRights.listResourceSettlements);
 router.post('/resource-settlements/manual-rebate', resourceRights.createManualRebateSettlement);
 router.post('/resource-settlements/batch-settle', resourceRights.batchSettleRebateResources);

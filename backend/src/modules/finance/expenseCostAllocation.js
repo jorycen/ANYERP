@@ -15,19 +15,19 @@ function parseDetails(value) {
   }
 }
 
-async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', startDate, endDate, monthKeys = [] } = {}) {
+async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', startDate, endDate, monthKeys = [], transaction = null } = {}) {
   const selectedStoreIds = [...new Set((storeIds || []).map(String).filter(Boolean))];
-  if (!selectedStoreIds.length) return { amount: 0, expenseCount: 0, byType: [], byStore: [] };
+  if (!selectedStoreIds.length) return { amount: 0, productAmount: 0, productExpenseCount: 0, expenseCount: 0, byType: [], byStore: [] };
 
   const selectedStores = await sequelize.query(
     'SELECT STORE_ID AS storeId, NAME AS storeName, DISTRIBUTOR_ID AS distributorId FROM T_STORE WHERE STORE_ID IN (:storeIds)',
-    { replacements: { storeIds: selectedStoreIds }, type: QueryTypes.SELECT }
+    { replacements: { storeIds: selectedStoreIds }, type: QueryTypes.SELECT, transaction }
   );
   const distributorIds = [...new Set(selectedStores.map(row => String(row.distributorId || '')).filter(Boolean))];
   const distributorStores = distributorIds.length
     ? await sequelize.query(
       'SELECT STORE_ID AS storeId, NAME AS storeName, DISTRIBUTOR_ID AS distributorId FROM T_STORE WHERE DISTRIBUTOR_ID IN (:distributorIds) AND STATUS = 1 AND IS_DELETED = 0',
-      { replacements: { distributorIds }, type: QueryTypes.SELECT }
+      { replacements: { distributorIds }, type: QueryTypes.SELECT, transaction }
     )
     : [];
   const storesByDistributor = new Map();
@@ -39,36 +39,50 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
   });
   const storeNameMap = new Map([...selectedStores, ...distributorStores].map(row => [String(row.storeId), row.storeName || String(row.storeId)]));
 
+  const businessDateSql = dateMode === 'financial_period' ? "CASE WHEN e.ACCOUNTING_MONTH REGEXP '^[0-9]{4}-(0[1-9]|1[0-2])$' THEN CONCAT(e.ACCOUNTING_MONTH, '-01') ELSE e.EXPENSE_DATE END" : 'e.EXPENSE_DATE';
   const dateClause = dateMode === 'accounting_month'
     ? 'AND e.ACCOUNTING_MONTH IN (:monthKeys)'
-    : 'AND e.EXPENSE_DATE BETWEEN :startDate AND :endDate';
+    : `AND ((${businessDateSql}) BETWEEN :startDate AND :endDate ${dateMode === 'financial_period' ? `OR (${businessDateSql}) IS NULL` : ''})`;
   const replacements = { storeIds: selectedStoreIds, distributorIds, startDate, endDate, monthKeys };
   const rows = await sequelize.query(
-    `SELECT e.EXPENSE_ID AS expenseId, e.EXPENSE_TYPE AS expenseType, e.AMOUNT AS amount,
+    `SELECT e.EXPENSE_ID AS expenseId, e.INVOICE_NO AS invoiceNo, e.HAS_INVOICE AS hasInvoice, e.EXPENSE_TYPE AS expenseType, e.AMOUNT AS amount,
             e.STORE_ID AS sourceStoreId, e.DISTRIBUTOR_ID AS distributorId,
-            e.ATTRIBUTION_TYPE AS attributionType, e.ATTRIBUTION_DETAILS_JSON AS attributionDetails
+            ${businessDateSql} AS businessDate, e.ATTRIBUTION_TYPE AS attributionType, e.ATTRIBUTION_DETAILS_JSON AS attributionDetails
        FROM T_EXPENSE e
       WHERE e.IS_DELETED = 0
-        AND e.AFFECTS_STORE_PROFIT = 1
-        AND e.STATUS NOT IN ('draft', 'pending_approval', 'rejected', 'cancelled')
+        ${dateMode === 'financial_period' ? '' : 'AND e.AFFECTS_STORE_PROFIT = 1'}
+        AND e.STATUS IN ('pending_payment', 'pending', 'processing', 'approved', 'paid')
         AND (e.STORE_ID IN (:storeIds) OR e.DISTRIBUTOR_ID IN (:distributorIds)
           OR (e.ATTRIBUTION_TYPE = 'STORE' AND JSON_VALID(e.ATTRIBUTION_DETAILS_JSON)
             AND EXISTS (SELECT 1 FROM JSON_TABLE(CASE WHEN JSON_VALID(e.ATTRIBUTION_DETAILS_JSON) THEN e.ATTRIBUTION_DETAILS_JSON ELSE '[]' END, '$[*]' COLUMNS (target_id VARCHAR(64) PATH '$.target_id')) allocation_target
               WHERE allocation_target.target_id IN (:storeIds))))
         ${dateClause}`,
-    { replacements, type: QueryTypes.SELECT }
+    { replacements, type: QueryTypes.SELECT, transaction }
   );
 
   const byType = new Map();
   const byStore = new Map();
   const byStoreType = new Map();
   const countedExpenses = new Set();
+  const entries = [];
   let total = 0;
+  let productAmount = 0;
+  let productExpenseCount = 0;
 
   rows.forEach(row => {
     const expenseAmount = amount(row.amount);
     const type = String(row.attributionType || 'STORE').toUpperCase();
     const details = parseDetails(row.attributionDetails);
+    if (type === 'PRODUCT_SIDE') {
+      // Source store scopes visibility only; it does not bear this department expense.
+      if (selectedStoreIds.includes(String(row.sourceStoreId || ''))) {
+        productAmount += expenseAmount;
+        productExpenseCount++;
+        entries.push({ expenseId: row.expenseId, invoiceEvidence: { invoiceNo: row.invoiceNo || '', hasInvoice: Number(row.hasInvoice || 0) }, storeId: String(row.sourceStoreId), businessDate: row.businessDate, category: 'product', expenseType: row.expenseType, amount: expenseAmount });
+      }
+      return;
+    }
+    if (['PERSONAL', 'REBATE'].includes(type)) return;
     let allocations = [];
     let distributorExpense = false;
 
@@ -84,7 +98,7 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
       distributorExpense = allStores.length > 0 && allStores.every(id => selectedStoreIds.includes(id));
       if (distributorExpense) allocations = [{ storeId: '', storeName: target.target_name || target.targetName || '公司费用', amount: expenseAmount }];
     } else if (row.sourceStoreId) {
-      // Product side costs have no store allocation target; preserve their established source-store reporting.
+      // Compatibility for historical store/company expenses without allocation targets.
       allocations = [{ storeId: String(row.sourceStoreId), storeName: storeNameMap.get(String(row.sourceStoreId)) || '', amount: expenseAmount }];
     }
 
@@ -92,6 +106,7 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
     if (!selectedAllocations.length) return;
     const allocatedTotal = amount(selectedAllocations.reduce((sum, item) => sum + item.amount, 0));
     if (allocatedTotal <= 0) return;
+    for (const item of selectedAllocations) entries.push({ expenseId: row.expenseId, invoiceEvidence: { invoiceNo: row.invoiceNo || '', hasInvoice: Number(row.hasInvoice || 0) }, storeId: item.storeId || null, scopeStoreIds: item.storeId ? null : [...(storesByDistributor.get(String(row.distributorId || '')) || [])].sort(), businessDate: row.businessDate, category: type === 'COMPANY' && !item.storeId ? 'company' : 'store', expenseType: row.expenseType, amount: item.amount });
     total += allocatedTotal;
     countedExpenses.add(String(row.expenseId));
 
@@ -121,7 +136,10 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
   });
 
   return {
+    entries,
     amount: amount(total),
+    productAmount: amount(productAmount),
+    productExpenseCount,
     expenseCount: countedExpenses.size,
     byType: [...byType.entries()].map(([expenseType, row]) => ({ expenseType, amount: amount(row.amount), expenseCount: row.expenseIds.size })).sort((a, b) => b.amount - a.amount),
     byStore: [...byStore.values()].map(row => ({ storeId: row.storeId, storeName: row.storeName, amount: amount(row.amount), expenseCount: row.expenseIds.size })).sort((a, b) => b.amount - a.amount),

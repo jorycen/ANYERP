@@ -1,9 +1,6 @@
 const { QueryTypes } = require('sequelize');
 const { sequelize } = require('../../models');
-const { summarizeAllocatedExpenses } = require('../finance/expenseCostAllocation');
-const { sendExcel } = require('../../utils/excelExport');
 
-const ARCHIVED_STATUSES = ['completed', 'archived', '已归档', 'returned', '已退单'];
 
 function number(value) {
   const parsed = Number(value || 0);
@@ -34,7 +31,7 @@ function snapshotPurchaseCost(row) {
 function resolveFinancialCost(row) {
   const settlement = validCost(row.purchaseUnitCost);
   // Pending rows may contain default zeroes; confirmed zero costs are valid.
-  if (settlement !== null && (settlement > 0 || row.purchaseCostStatus === 'ready')) {
+  if (settlement !== null && (settlement > 0 || row.purchaseCostStatus === 'ready' || row.purchaseCostSource === 'manual_sold_cost')) {
     return { unitCost: settlement, source: 'product_settlement' };
   }
   const archived = validCost(row.originalInventoryCost);
@@ -43,16 +40,11 @@ function resolveFinancialCost(row) {
   }
   const frozen = snapshotPurchaseCost(row);
   if (frozen !== null) return { unitCost: frozen, source: 'frozen_purchase_cost' };
-  const current = validCost(row.currentCostPrice);
-  const active = row.currentPriceStatus === undefined || Number(row.currentPriceStatus) === 1;
-  if (active && current !== null && (current > 0 || Number(row.costPriceLocked) === 1)) {
-    return { unitCost: current, source: current === 0 ? 'explicit_locked_zero_cost' : 'estimated_inventory_cost' };
-  }
   return { unitCost: null, source: 'missing_inventory_cost' };
 }
 
 function rate(value, fallback = 0.13) {
-  const parsed = Number(value);
+  const parsed = value === null || value === undefined || value === '' ? NaN : Number(value);
   return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : fallback;
 }
 
@@ -69,6 +61,8 @@ function resolveDates(query = {}) {
     error.status = 400;
     throw error;
   }
+  require('./financialProfitControl').validDate(startDate);
+  require('./financialProfitControl').validDate(endDate);
   if (startDate > endDate) {
     const error = new Error('开始日期不能晚于结束日期');
     error.status = 400;
@@ -81,7 +75,7 @@ async function resolveStoreIds(user, requestedStoreId, requestedRegionId) {
   let storeIds = Array.isArray(user?.accessibleStoreIds) ? user.accessibleStoreIds.map(String) : [];
   if (storeIds.includes('*')) {
     const stores = await sequelize.query(
-      'SELECT STORE_ID AS storeId FROM T_STORE WHERE IS_DELETED = 0 AND STATUS = 1',
+      'SELECT STORE_ID AS storeId FROM T_STORE',
       { type: QueryTypes.SELECT }
     );
     storeIds = stores.map(row => String(row.storeId));
@@ -98,8 +92,7 @@ async function resolveStoreIds(user, requestedStoreId, requestedRegionId) {
     const rows = await sequelize.query(
       `SELECT STORE_ID AS storeId
          FROM T_STORE
-        WHERE IS_DELETED = 0 AND STATUS = 1
-          AND REGION_ID = :regionId
+        WHERE REGION_ID = :regionId
           AND STORE_ID IN (:storeIds)`,
       { replacements: { regionId: String(requestedRegionId), storeIds: storeIds.length ? storeIds : ['__NO_STORE__'] }, type: QueryTypes.SELECT }
     );
@@ -121,6 +114,7 @@ function calculateOrder(rows) {
   let bookCost = 0;
   let missingCost = false;
   const missingCostItems = [];
+  const detailItems = [];
 
   rows.forEach((row, index) => {
     const weight = itemSubtotal > 0
@@ -151,6 +145,9 @@ function calculateOrder(rows) {
       missingCostItems.push({ itemId: row.itemId, productName: row.productName || '',
         reason: '缺少可确认的采购或归档库存成本；公司定价不能替代实际库存成本' });
     }
+    detailItems.push({ itemId: row.itemId, productName: row.productName, quantity, unitCost: cost.unitCost,
+      costSource: cost.source, grossRevenue: allocatedGrossRevenue, netRevenue: itemNetRevenue, outputVat: itemOutputVat,
+      grossCost: itemGrossCost, bookCost: itemBookCost, estimatedInputVat: itemInputVat, outputRate, inputRate });
     netRevenue += itemNetRevenue;
     outputVat += itemOutputVat;
     grossCost += itemGrossCost;
@@ -182,113 +179,17 @@ function calculateOrder(rows) {
     status: missingCost ? 'cost_pending' : 'estimated',
     missingCostItems,
     pendingCostReason: missingCostItems.map(item => `${item.productName || item.itemId || '商品'}：${item.reason}`).join('；'),
+    detailItems,
     itemCount: rows.length
   };
 }
 
 async function queryFinancialProfit(filters) {
-  if (!filters.storeIds.length) return { items: [], operatingExpense: 0 };
-  const replacements = {
-    storeIds: filters.storeIds,
-    startDate: filters.startDate,
-    endDate: filters.endDate,
-    statuses: ARCHIVED_STATUSES,
-    orderKeyword: `%${filters.orderNo || ''}%`
-  };
-  const orderFilter = filters.orderNo ? 'AND o.ORDER_NO LIKE :orderKeyword' : '';
-  const rows = await sequelize.query(
-    `SELECT o.ORDER_ID AS orderId,
-            o.ORDER_NO AS orderNo,
-            DATE(o.CREATE_TIME) AS businessDate,
-            o.STORE_ID AS storeId,
-            s.NAME AS storeName,
-            o.CUSTOMER_NAME AS customerName,
-            o.TOTAL_AMOUNT AS totalAmount,
-            o.DISCOUNT_AMOUNT AS discountAmount,
-            oi.ITEM_ID AS itemId,
-            oi.PRODUCT_NAME AS productName,
-            oi.QUANTITY AS quantity,
-            oi.SUBTOTAL AS subtotal,
-            oi.ORIGINAL_INVENTORY_COST AS originalInventoryCost,
-            psi.PURCHASE_UNIT_COST AS purchaseUnitCost,
-            psi.COST_STATUS AS purchaseCostStatus,
-            gp.PRODUCT_PRICING_DETAILS AS frozenPricingDetails,
-            pp.COST_PRICE AS currentCostPrice,
-            pp.COST_PRICE_LOCKED AS costPriceLocked,
-            pp.STATUS AS currentPriceStatus,
-            pp.OUTPUT_TAX_RATE AS outputTaxRate,
-            pp.INPUT_TAX_RATE AS inputTaxRate,
-            pp.INPUT_TAX_DEDUCTIBLE AS inputTaxDeductible,
-            COALESCE(ret.RETURNED_QUANTITY, 0) AS returnedQuantity,
-            COALESCE(ret.RETURNED_RECEIVABLE, 0) AS returnedReceivable
-       FROM T_ORDER o
-       INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
-       LEFT JOIN T_STORE s ON s.STORE_ID = o.STORE_ID
-       LEFT JOIN T_PRODUCT_SETTLEMENT_ITEM psi ON psi.SOURCE_ORDER_ITEM_ID = oi.ITEM_ID
-       LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.SNAPSHOT_STATUS = 'final'
-       LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID
-       LEFT JOIN (
-         SELECT sri.ORDER_ITEM_ID,
-                SUM(sri.QUANTITY) AS RETURNED_QUANTITY,
-                SUM(sri.USER_RECEIVABLE_AMOUNT) AS RETURNED_RECEIVABLE
-           FROM T_SALES_RETURN_SETTLEMENT_ITEM sri
-           INNER JOIN T_SALES_RETURN_SETTLEMENT sr ON sr.SETTLEMENT_ID = sri.SETTLEMENT_ID
-          WHERE sr.SETTLEMENT_STATUS <> 'cancelled'
-          GROUP BY sri.ORDER_ITEM_ID
-       ) ret ON ret.ORDER_ITEM_ID = oi.ITEM_ID
-      WHERE o.IS_DELETED = 0
-        AND o.ORDER_STATUS IN (:statuses)
-        AND o.STORE_ID IN (:storeIds)
-        AND DATE(o.CREATE_TIME) BETWEEN :startDate AND :endDate
-        ${orderFilter}
-      ORDER BY o.CREATE_TIME DESC, o.ORDER_ID, oi.ITEM_ID`,
-    { replacements, type: QueryTypes.SELECT }
-  );
-  const grouped = new Map();
-  rows.forEach(row => {
-    const list = grouped.get(String(row.orderId)) || [];
-    list.push(row);
-    grouped.set(String(row.orderId), list);
-  });
-  let items = [...grouped.values()].map(calculateOrder);
-  const education = await require('../inventory/educationReward').educationIncome({ orderIds: [...grouped.keys()] });
-  const educationByOrder = new Map();
-  for (const row of education) educationByOrder.set(String(row.orderId), money((educationByOrder.get(String(row.orderId)) || 0) + row.amount));
-  items = items.map(item => {
-    const educationIncomeAmount = educationByOrder.get(String(item.orderId)) || 0;
-    const grossProfit = item.grossProfit === null ? null : money(item.grossProfit + educationIncomeAmount);
-    return { ...item, educationIncomeAmount, grossProfit,
-      grossMargin: grossProfit === null || item.netRevenue <= 0 ? null : Number((grossProfit / item.netRevenue * 100).toFixed(2)) };
-  });
-  if (filters.status) items = items.filter(item => item.status === filters.status);
-
-  const expenseSummary = await summarizeAllocatedExpenses({
-    storeIds: filters.storeIds,
-    dateMode: 'date',
-    startDate: filters.startDate,
-    endDate: filters.endDate
-  });
-  return { items, operatingExpense: money(expenseSummary.amount) };
+  return require('./financialProfitEngine').query(filters, calculateOrder);
 }
 
 function summarize(items, operatingExpense) {
-  const ready = items.filter(item => item.grossProfit !== null);
-  const netRevenue = money(items.reduce((sum, item) => sum + item.netRevenue, 0));
-  const grossProfit = money(ready.reduce((sum, item) => sum + item.grossProfit, 0));
-  return {
-    orderCount: items.length,
-    pendingOrderCount: items.length - ready.length,
-    grossRevenue: money(items.reduce((sum, item) => sum + item.grossRevenue, 0)),
-    netRevenue,
-    outputVat: money(items.reduce((sum, item) => sum + item.outputVat, 0)),
-    grossCost: money(items.reduce((sum, item) => sum + item.grossCost, 0)),
-    deductibleInputVat: money(items.reduce((sum, item) => sum + item.deductibleInputVat, 0)),
-    bookCost: money(items.reduce((sum, item) => sum + item.bookCost, 0)),
-    grossProfit,
-    grossMargin: netRevenue > 0 ? Number((grossProfit / netRevenue * 100).toFixed(2)) : 0,
-    operatingExpense,
-    operatingProfit: money(grossProfit - operatingExpense)
-  };
+  return require('./financialProfitEngine').summarize(items, operatingExpense);
 }
 
 async function resolveFilters(ctx) {
@@ -317,9 +218,16 @@ async function getFinancialProfitOrders(ctx) {
       items: result.items.slice(offset, offset + pageSize),
       total: result.items.length,
       pagination: { page, pageSize, total: result.items.length },
-      summary: summarize(result.items, result.operatingExpense),
-      formulaVersion: 'FINANCIAL_GP_ESTIMATE_V1_20260919',
-      note: '当前为财务暂估口径：不含税销售额-不含税存货成本，已完成退单按负向业务事实冲减；已确认0元库存成本正常计算，缺少成本依据的订单保留待补并列明原因。最终结果需结合发票勾选和月末结转确认。'
+      summary: result.summary,
+      policyItems: result.policyItems,
+      issueItems: result.issueItems,
+      discrepancies: result.discrepancies,
+      expenseEntries: result.expenseEntries,
+      periods: result.periods,
+      canReview: ['boss','admin','finance'].some(role => require('../../middleware/permission').getUserRoles(ctx.state.user).includes(role)),
+      canClose: require('../../middleware/permission').getUserRoles(ctx.state.user).includes('boss') && (ctx.state.user.accessibleStoreIds || []).includes('*'),
+      formulaVersion: 'FINANCIAL_PROFIT_V2_20261023',
+      note: '销售按归档时间、退货按退货结算发生时间分开列示。成本仅读取原单及有审计的补录；商品税率仅为暂估，财务核实后冻结依据。政策不重复叠加内部80%/20%分配；月结结果使用已保存快照。'
     }
   };
 }
@@ -327,24 +235,31 @@ async function getFinancialProfitOrders(ctx) {
 async function exportFinancialProfitOrders(ctx) {
   const filters = await resolveFilters(ctx);
   const result = await queryFinancialProfit(filters);
-  const rows = result.items.map(item => ({
-    '业务日期': item.businessDate,
-    '销售单号': item.orderNo,
-    '门店': item.storeName,
-    '客户': item.customerName,
-    '含税销售额': item.grossRevenue,
-    '不含税销售额': item.netRevenue,
-    '销项税额': item.outputVat,
-    '含税成本': item.grossCost,
-    '可抵扣进项税': item.deductibleInputVat,
-    '不含税存货成本': item.bookCost,
-    '财务毛利': item.grossProfit ?? '',
-    '已确认教育补贴': item.educationIncomeAmount || 0,
-    '毛利率': item.grossMargin === null ? '' : `${item.grossMargin}%`,
-    '口径状态': item.status === 'cost_pending' ? '待补成本' : '暂估',
-    '待补成本原因': item.pendingCostReason || ''
-  }));
-  sendExcel(ctx, rows, Object.keys(rows[0] || {}), `财务利润表_${filters.startDate}_${filters.endDate}.xlsx`, '逐单财务毛利');
+  const XLSX = require('xlsx'), workbook = XLSX.utils.book_new();
+  const append = (name, rows) => XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), name);
+  const summaryLabels = { netRevenue:'全部不含税销售净额', completeRevenue:'成本完整范围销售净额', completeBookCost:'成本完整范围存货成本',
+    grossProfit:'成本完整范围商品毛利', grossMargin:'成本完整范围毛利率%', overallGrossMargin:'整体毛利率%', pendingOrderCount:'待补成本或依据变化笔数', pendingRevenue:'待核算销售净额', costCompleteness:'成本完整率%',
+    taxPendingCount:'税务待核实笔数', policyPendingCount:'政策待分类笔数', expenseTaxPendingCount:'费用待核实笔数', unperiodizedExpenseCount:'未设置期间费用笔数',
+    policyAdjustment:'本期政策调整净额', storeExpense:'门店费用', productExpense:'产品端费用', companyExpense:'公司费用', operatingExpense:'成本费用合计',
+    estimatedOperatingProfit:'已知毛利减费用暂估参考', operatingProfit:'依据核实后的经营收益', managementSalesGross:'销售经营毛利含考核调整', managementProductGross:'产品端经营毛利', managementCombinedGross:'经营口径毛利合计',
+    financialComparableGross:'财务商品及政策收益', managementDifference:'经营财务口径差额', expenseScopeNote:'费用范围说明' };
+  append('汇总及口径', Object.entries(summaryLabels).map(([key,label]) => ({ 指标: label, 值: result.summary[key] === null || result.summary[key] === undefined ? '未完整/不适用' : result.summary[key] })));
+  append('销售退货及调整', result.items.map(item => ({
+    业务日期: item.businessDate, 类型: item.entryType, 单号: item.entryNo, 原销售单: item.orderNo, 门店: item.storeName,
+    含税销售额: item.grossRevenue, 不含税销售额: item.netRevenue, 销项税额: item.outputVat,
+    含税成本: item.grossCost, 分摊进项税额: item.deductibleInputVat, 存货成本: item.bookCost,
+    商品毛利: item.grossProfit ?? '待补成本', 状态: item.status, 税务状态: item.taxStatus, 已关账: item.closed ? '是' : '否', 待核算原因: item.pendingCostReason || '', 核实依据: item.review?.evidence || ''
+  })));
+  append('政策调整', result.policyItems.map(item => ({ 日期: item.businessDate, 单号: item.entryNo, 原销售单: item.orderNo, 返利全额: item.policyAmount,
+    产品经营分配: item.productAllocation, 财务分类: item.review?.treatment || '待核实', 本期政策损益: item.policyImpact || 0,
+    税务影响: item.review?.taxImpact ?? '', 状态: item.status, 依据: item.review?.evidence || '' })));
+  append('费用', result.expenseEntries.map(item => ({ 日期: item.businessDate, 费用编号: item.expenseId, 费用类型: item.expenseType, 归属: item.category,
+    含税金额: item.grossCost, 分摊进项税: item.deductibleInputVat || 0, 成本费用: item.bookCost, 状态: item.status, 依据: item.review?.evidence || '' })));
+  append('关账后差异', result.discrepancies.map(item => ({ 日期: item.businessDate, 单号: item.entryNo, 原因: item.reason, 原事件: item.eventKey })));
+  append('口径说明', [{ 说明: '税额未经财务核实前均为暂估。商品毛利率以成本完整范围计算；内部前折、外调及80%/20%分配不重复计入公司利润。关账月份使用快照。费用按归属月份计入（月内日期按月初），未设置月份时按费用日期。' }]);
+  ctx.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  ctx.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`公司利润分析_${filters.startDate}_${filters.endDate}.xlsx`)}`);
+  ctx.body = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 }
 
 module.exports = {
@@ -353,5 +268,7 @@ module.exports = {
   summarize,
   calculateOrder,
   getFinancialProfitOrders,
-  exportFinancialProfitOrders
+  exportFinancialProfitOrders,
+  resolveFilters,
+  calculateOrder
 };

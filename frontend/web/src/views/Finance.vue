@@ -116,12 +116,16 @@
               <el-option label="全部类型" value="" />
               <el-option label="销售结算" value="sale" />
               <el-option label="退货调整" value="return" />
-              <el-option label="教育补贴分配" value="education" />
+              <el-option label="教育20%返利" value="education" />
+              <el-option label="厂家返利/价保" value="manufacturer" />
+              <el-option label="外调费收入" value="external" />
+              <el-option label="外调费退回" value="external_return" />
             </el-select>
             <el-select v-model="productSettlementQuery.status" placeholder="结算状态" clearable style="width: 140px">
               <el-option label="全部状态" value="" />
               <el-option label="已入账" value="posted" />
               <el-option label="待补成本" value="cost_pending" />
+              <el-option label="待核销返利" value="policy_pending" />
             </el-select>
             <el-input v-model="productSettlementQuery.keyword" placeholder="商品 / PN / SN" clearable style="width: 180px" />
             <el-input v-model="productSettlementQuery.sourceOrderNo" placeholder="来源销售订单号" clearable style="width: 180px" />
@@ -130,7 +134,7 @@
           </div>
 
           <el-alert
-            title="产品端毛利包含结算价与采购成本的提货差，以及三级审批确认的教育补贴20%分配；运费不重复计算，返利和价保沿独立政策链路管理。"
+            title="产品端毛利＝提货差＋原单外调费＋已整笔核销的厂家返利、价保及教育补贴20%。待核销返利暂不计入；产品端费用独立列示。待补成本可展开单据后手工补录。"
             type="info"
             :closable="false"
             show-icon
@@ -138,10 +142,36 @@
           />
 
           <el-table :data="productSettlementData" stripe border v-loading="productSettlementLoading">
+            <el-table-column type="expand" label="详情" width="65">
+              <template #default="{ row }">
+                <div style="padding: 16px 24px">
+                  <p>来源销售订单：{{ row.sourceOrderNo }} ｜ 门店：{{ row.storeName }} ｜ 公式版本：{{ row.formulaVersion }}</p>
+                  <p>{{ row.calculationNote }}</p>
+                  <el-button v-if="row.policySettlementId" type="primary" link @click="rebatePolicyDetail.open(row.policySettlementId)">查看政策、毛利分配及抵扣记录</el-button>
+                  <el-button v-if="canSupplementProductCost && row.entryType === 'sale'" type="primary" @click="productCostTool.open(row)">{{ row.items.some(item => item.canSupplementCost) ? '补录采购成本' : '查看成本补录记录' }}</el-button>
+                  <p v-if="row.status === 'cost_pending'" style="color: #b45309">{{ row.pendingCostReason }}</p>
+                  <p v-else-if="row.status === 'policy_pending'">待核销返利：¥{{ formatMoney(row.policyPendingAmount) }}，暂不计入毛利。</p>
+                  <p v-else>本单已确认产品端毛利：{{ row.status === 'policy_pending' ? '待核销' : row.status === 'cost_pending' ? '待补成本' : '¥' + formatMoney(row.grossProfitAmount) }}</p>
+                  <el-table v-if="row.items?.length" :data="row.items" border>
+                    <el-table-column prop="product_name" label="商品" min-width="160" />
+                    <el-table-column prop="pn_code" label="PN" min-width="130" />
+                    <el-table-column prop="sn_code" label="SN" min-width="140" />
+                    <el-table-column prop="quantity" label="数量" width="70" />
+                    <el-table-column label="结算单价" width="110"><template #default="{ row: item }">¥{{ formatMoney(item.product_unit_price) }}</template></el-table-column>
+                    <el-table-column label="采购单价" width="110"><template #default="{ row: item }">¥{{ formatMoney(item.purchase_unit_cost) }}</template></el-table-column>
+                    <el-table-column prop="priceSourceLabel" label="定价来源" min-width="150" />
+                    <el-table-column prop="costSourceLabel" label="成本来源" min-width="170" />
+                    <el-table-column prop="calculation" label="毛利计算（元）" min-width="230" />
+                    <el-table-column prop="pendingReason" label="待补原因 / 核对方向" min-width="280" />
+                  </el-table>
+                  <p v-else-if="['sale', 'return'].includes(row.entryType)">历史结算未保存商品明细，需核查原销售单及结算记录。</p>
+                </div>
+              </template>
+            </el-table-column>
             <el-table-column label="单据类型" width="120">
               <template #default="{ row }">
                 <el-tag :type="row.entryType === 'return' ? 'warning' : 'primary'" size="small">
-                  {{ row.entryType === 'education' ? '教育补贴分配' : row.entryType === 'return' ? '退货调整' : '销售结算' }}
+                  {{ productEntryText(row.entryType) }}
                 </el-tag>
               </template>
             </el-table-column>
@@ -160,17 +190,19 @@
             <el-table-column label="产品端毛利" width="130" align="right">
               <template #default="{ row }">
                 <span :class="Number(row.grossProfitAmount) < 0 ? 'negative-amount' : 'positive-amount'">
-                  ¥{{ formatMoney(row.grossProfitAmount) }}
+                  {{ row.status === 'policy_pending' ? '待核销' : row.status === 'cost_pending' ? '待补成本' : '¥' + formatMoney(row.grossProfitAmount) }}
                 </span>
               </template>
             </el-table-column>
-            <el-table-column label="待补成本" width="120" align="right">
+            <el-table-column label="待补商品定价额" width="145" align="right">
               <template #default="{ row }">¥{{ formatMoney(row.costPendingAmount) }}</template>
             </el-table-column>
+            <el-table-column label="待核销返利" width="130" align="right"><template #default="{ row }">{{ row.policyPendingAmount ? '¥' + formatMoney(row.policyPendingAmount) : '—' }}</template></el-table-column>
+            <el-table-column prop="pendingCostReason" label="待补原因" min-width="240" show-overflow-tooltip />
             <el-table-column label="状态" width="110">
               <template #default="{ row }">
                 <el-tag :type="row.status === 'cost_pending' ? 'warning' : 'success'" size="small">
-                  {{ row.status === 'cost_pending' ? '待补成本' : '已入账' }}
+                  {{ row.status === 'cost_pending' ? '待补成本' : row.status === 'policy_pending' ? '待核销' : '已入账' }}
                 </el-tag>
               </template>
             </el-table-column>
@@ -180,12 +212,16 @@
             <span>共计 <strong>{{ productSettlementTotal }}</strong> 笔</span>
             <span style="margin-left: 24px;">产品定价：<strong class="total-amount">¥{{ formatMoney(productSettlementSummary.productPricingAmount) }}</strong></span>
             <span style="margin-left: 24px;">采购成本：<strong>¥{{ formatMoney(productSettlementSummary.purchaseCostAmount) }}</strong></span>
-            <span style="margin-left: 24px;">基础产品端毛利：<strong>¥{{ formatMoney(productSettlementSummary.grossProfitAmount) }}</strong></span>
+            <span style="margin-left: 24px;">提货差毛利：<strong>¥{{ formatMoney(productSettlementSummary.grossProfitAmount) }}</strong></span>
+            <span style="margin-left:24px">外调费净额：<strong>¥{{ formatMoney(productSettlementSummary.externalFeeAmount) }}</strong></span>
             <span style="margin-left: 24px;">已实现政策收益：<strong>¥{{ formatMoney(productSettlementSummary.realizedPolicyIncomeAmount) }}</strong></span>
-            <span style="margin-left: 24px;">已实现产品端利润：<strong class="total-amount">¥{{ formatMoney(productSettlementSummary.realizedGrossProfitAmount) }}</strong></span>
-            <span style="margin-left: 24px;">预计政策收益：<strong>¥{{ formatMoney(productSettlementSummary.estimatedPolicyIncomeAmount) }}</strong></span>
+            <span style="margin-left: 24px;">产品端毛利合计：<strong class="total-amount">¥{{ formatMoney(productSettlementSummary.realizedGrossProfitAmount) }}</strong></span>
+            <span style="margin-left: 24px;">待核销返利：<strong>¥{{ formatMoney(productSettlementSummary.estimatedPolicyIncomeAmount) }}</strong></span>
           </div>
 
+          <p>产品端费用（所选门店及期间）：¥{{ formatMoney(productSettlementSummary.productExpenseAmount) }}；扣费用后：{{ productSettlementSummary.productOperatingProfit === null ? '请清除商品、单号、类型和状态筛选后查看' : `¥${formatMoney(productSettlementSummary.productOperatingProfit)}` }}。{{ productSettlementSummary.expenseScopeNote }}</p>
+          <RebatePolicyDetail ref="rebatePolicyDetail" />
+          <ProductCostSupplement ref="productCostTool" @saved="loadProductSettlementData" />
           <el-pagination
             v-model:current-page="productSettlementQuery.page"
             v-model:page-size="productSettlementQuery.pageSize"
@@ -1723,6 +1759,8 @@ import ExpensePaymentFields from '../components/ExpensePaymentFields.vue'
 import { ref, reactive, computed, onMounted, nextTick, watch } from 'vue'
 import InventoryResourceRights from '../components/InventoryResourceRights.vue'
 import RebateSettlement from '../components/RebateSettlement.vue'
+import ProductCostSupplement from '../components/ProductCostSupplement.vue'
+import RebatePolicyDetail from '../components/RebatePolicyDetail.vue'
 import RebatePostingOrders from '../components/RebatePostingOrders.vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -1746,6 +1784,10 @@ const expenseAllocationStores = ref([])
 const dailyDetails = ref([])
 const dailyTotal = ref(0)
 const dailyTotalAmount = ref(0)
+const productCostTool = ref(null)
+const canSupplementProductCost = ref(false)
+const rebatePolicyDetail = ref(null)
+const productEntryText = type => ({ sale: '销售结算', return: '退货调整', education: '教育20%返利', manufacturer: '厂家返利/价保', external: '外调费收入', external_return: '外调费退回' })[type] || type
 const productSettlementData = ref([])
 const productSettlementTotal = ref(0)
 const productSettlementLoading = ref(false)
@@ -2401,8 +2443,13 @@ const loadProductSettlementData = async () => {
     })
     if (res.code === 0) {
       productSettlementData.value = res.data?.items || res.data?.list || []
+      canSupplementProductCost.value = res.data?.canSupplementCost === true
       productSettlementTotal.value = Number(res.data?.total || res.data?.pagination?.total || 0)
       productSettlementSummary.value = {
+        externalFeeAmount: Number(res.data?.summary?.externalFeeAmount || 0),
+        productExpenseAmount: Number(res.data?.summary?.productExpenseAmount || 0),
+        productOperatingProfit: res.data?.summary?.productOperatingProfit ?? null,
+        expenseScopeNote: res.data?.summary?.expenseScopeNote || '',
         productPricingAmount: Number(res.data?.summary?.productPricingAmount || 0),
         purchaseCostAmount: Number(res.data?.summary?.purchaseCostAmount || 0),
         grossProfitAmount: Number(res.data?.summary?.grossProfitAmount || 0),

@@ -32,6 +32,8 @@ const { getSalesStatement } = require('./salesStatementController');
 const { requireDistributorAccount } = require('../../middleware/permission');
 
 const router = new Router();
+const productCostSupplement = require('./productCostSupplement');
+const financialProfitControl = require('./financialProfitControl');
 const upload = multer({
   limits: { files: 5, fileSize: 10 * 1024 * 1024 }
 });
@@ -47,8 +49,16 @@ router.get('/dashboard/overview', getDashboardOverview);
 router.get('/finance-overview', requireDistributorAccount(), getFinanceOverview);
 router.get('/product-settlement-orders/export', requireDistributorAccount(), exportProductSettlementOrders);
 router.get('/product-settlement-orders', requireDistributorAccount(), getProductSettlementOrders);
+router.post('/product-settlement-orders/:settlementId/cost-preview', requireDistributorAccount(), productCostSupplement.preview);
+router.post('/product-settlement-orders/:settlementId/cost-supplement', requireDistributorAccount(), productCostSupplement.apply);
+router.get('/product-settlement-orders/:settlementId/cost-history', requireDistributorAccount(), productCostSupplement.history);
 router.get('/financial-profit-orders/export', requireDistributorAccount(), exportFinancialProfitOrders);
 router.get('/financial-profit-orders', requireDistributorAccount(), getFinancialProfitOrders);
+router.get('/financial-profit-history', requireDistributorAccount(), financialProfitControl.history);
+router.post('/financial-profit-review', requireDistributorAccount(), financialProfitControl.review);
+router.post('/financial-profit-close-preview', requireDistributorAccount(), financialProfitControl.previewClose);
+router.post('/financial-profit-close', requireDistributorAccount(), financialProfitControl.close);
+router.post('/financial-profit-adjustments', requireDistributorAccount(), financialProfitControl.adjust);
 router.get('/monthly-task-achievement', getMonthlyTaskAchievement);
 router.get('/profit-adjustments', listProfitAdjustments);
 router.post('/profit-adjustments', upload.array('files', 5), createProfitAdjustment);

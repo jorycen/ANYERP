@@ -53,6 +53,10 @@ test('产品端政策收益关联实际销售订单表', () => {
     require('path').join(__dirname, '../src/modules/report/productSettlement.js'),
     'utf8'
   );
-  assert.match(source, /INNER JOIN T_ORDER sale ON sale\.ORDER_ID = estimate\.SALES_ORDER_ID/);
+  assert.match(query.sql, /FROM T_PRODUCT_PROFIT_INCOME e/);
+  assert.match(query.sql, /LEFT JOIN T_ORDER o ON o\.ORDER_ID = COALESCE\(estimate\.SALES_ORDER_ID/);
+  assert.match(runnerSource(), /20261023_product_profit_income\.sql/);
   assert.doesNotMatch(source, /T_SALES_ORDER/);
 });
+
+function runnerSource() { return fs.readFileSync(require('path').join(__dirname, '../src/utils/dbMigration.js'), 'utf8'); }

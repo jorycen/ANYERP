@@ -1,7 +1,7 @@
 <template>
   <div class="sales-cash-rebate-management">
     <el-alert
-      title="销售红包按每台已售 SN 计算。套回单经财务审批后进入待收款；财务登记到账账户和实际金额后，系统记账户流水并将到账金额计入对应商品毛利。"
+      title="销售现金红包由外部服务商直接发放到个人。本页仅展示红包政策及符合条件的销售商品，不计公司收入、销售毛利、产品端毛利或员工考核毛利。"
       type="info"
       :closable="false"
       show-icon
@@ -37,16 +37,13 @@
         />
       </el-tab-pane>
 
-      <el-tab-pane label="可套回销售明细" name="eligible">
+      <el-tab-pane label="个人红包销售明细" name="eligible">
         <div class="filter-bar">
           <el-input v-model="eligibleQuery.pn" placeholder="PN" clearable style="width: 160px" @keyup.enter="loadEligible" />
           <el-input v-model="eligibleQuery.snCode" placeholder="SN" clearable style="width: 180px" @keyup.enter="loadEligible" />
           <el-button type="primary" @click="loadEligible">查询</el-button>
-          <el-button type="success" :disabled="selectedEligible.length === 0" :loading="claimSubmitting" @click="submitClaim">批量申请套回</el-button>
-          <span class="selection-summary">已选 {{ selectedEligible.length }} 台，预计 ¥{{ money(selectedAmount) }}</span>
         </div>
-        <el-table :data="eligibleRows" border stripe v-loading="eligibleLoading" @selection-change="selection => selectedEligible = selection">
-          <el-table-column type="selection" width="48" />
+        <el-table :data="eligibleRows" border stripe v-loading="eligibleLoading">
           <el-table-column prop="archiveTime" label="销售归档时间" width="165"><template #default="{ row }">{{ dateTime(row.archiveTime) }}</template></el-table-column>
           <el-table-column prop="orderNo" label="销售订单" min-width="170" />
           <el-table-column prop="snCode" label="SN" min-width="140" />
@@ -54,12 +51,12 @@
           <el-table-column prop="productName" label="商品名称" min-width="180" />
           <el-table-column prop="supplierName" label="供应商" min-width="140" />
           <el-table-column prop="rebateType" label="红包类型" min-width="120" />
-          <el-table-column label="预计套回" width="120" align="right"><template #default="{ row }">¥{{ money(row.amount) }}</template></el-table-column>
+          <el-table-column label="个人红包金额" width="120" align="right"><template #default="{ row }">¥{{ money(row.amount) }}</template></el-table-column>
         </el-table>
         <el-pagination v-model:current-page="eligibleQuery.page" v-model:page-size="eligibleQuery.pageSize" :total="eligibleTotal" layout="total, sizes, prev, pager, next" @size-change="loadEligible" @current-change="loadEligible" />
       </el-tab-pane>
 
-      <el-tab-pane label="套回申请记录" name="claims">
+      <el-tab-pane label="历史申请记录" name="claims">
         <div class="filter-bar">
           <el-select v-model="claimQuery.status" placeholder="全部状态" clearable style="width: 150px" @change="loadClaims">
             <el-option label="待审批" value="pending_finance" />
@@ -126,13 +123,11 @@ const policies = ref([])
 const policyTotal = ref(0)
 const eligibleRows = ref([])
 const eligibleTotal = ref(0)
-const selectedEligible = ref([])
 const claims = ref([])
 const claimTotal = ref(0)
 const policyQuery = reactive({ pn: '', page: 1, pageSize: 20 })
 const eligibleQuery = reactive({ pn: '', snCode: '', page: 1, pageSize: 20 })
 const claimQuery = reactive({ status: '', page: 1, pageSize: 20 })
-const selectedAmount = computed(() => selectedEligible.value.reduce((sum, row) => sum + Number(row.amount || 0), 0))
 const money = value => Number(value || 0).toFixed(2)
 const dateText = value => value ? String(value).slice(0, 10) : '不限'
 const dateTime = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
@@ -152,12 +147,11 @@ async function loadPolicies() {
 
 async function loadEligible() {
   eligibleLoading.value = true
-  selectedEligible.value = []
   try {
     const data = unwrap(await api.getEligibleSalesCashRebateItems(eligibleQuery))
     eligibleRows.value = data?.list || []
     eligibleTotal.value = data?.total ?? 0
-  } catch (error) { ElMessage.error(error.response?.data?.message || error.message || '加载可套回销售明细失败') }
+  } catch (error) { ElMessage.error(error.response?.data?.message || error.message || '加载个人红包销售明细失败') }
   finally { eligibleLoading.value = false }
 }
 
@@ -208,23 +202,7 @@ async function importPolicies(event) {
   finally { importing.value = false }
 }
 
-async function submitClaim() {
-  if (!selectedEligible.value.length) return ElMessage.warning('请先选择可套回的商品')
-  const supplierIds = new Set(selectedEligible.value.map(row => String(row.supplierId || '')))
-  const rebateTypes = new Set(selectedEligible.value.map(row => String(row.rebateType || '')))
-  if (supplierIds.size !== 1 || rebateTypes.size !== 1) return ElMessage.warning('同一张套回单请只选择同一供应商、同一红包类型的商品')
-  const total = money(selectedAmount.value)
-  try {
-    await ElMessageBox.confirm(`将为 ${selectedEligible.value.length} 台商品提交销售红包套回，预计金额 ¥${total}，提交后进入审批。`, '确认批量套回', { type: 'warning' })
-    claimSubmitting.value = true
-    const result = unwrap(await api.createSalesCashRebateClaim({ items: selectedEligible.value.map(row => ({ orderItemId: row.orderItemId })) }))
-    ElMessage.success(result?.message || '套回申请已提交审批')
-    selectedEligible.value = []
-    await Promise.all([loadEligible(), loadClaims()])
-  } catch (error) {
-    if (error !== 'cancel' && error !== 'close') ElMessage.error(error.response?.data?.message || '提交套回申请失败')
-  } finally { claimSubmitting.value = false }
-}
+
 
 onMounted(() => loadPolicies())
 </script>

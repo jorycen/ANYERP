@@ -1320,6 +1320,11 @@ async function initializeCategorySortOrder() {
 }
 
 async function ensureProductSettlementSchema() {
+  const financialSql = fs.readFileSync(path.resolve(__dirname, '../../db_migrations/20261023_financial_profit_control.sql'), 'utf8');
+  for (const statement of financialSql.split(';').map(value => value.trim()).filter(Boolean)) await sequelize.query(statement);
+  const incomeSql = fs.readFileSync(path.resolve(__dirname, '../../db_migrations/20261023_product_profit_income.sql'), 'utf8');
+  for (const statement of incomeSql.split(';').map(value => value.trim()).filter(Boolean)) await sequelize.query(statement);
+
   const filePath = path.resolve(__dirname, '../../db_migrations/20260831_add_product_settlement.sql');
   if (!fs.existsSync(filePath)) {
     console.warn('[DB Migration] 产品端结算迁移文件不存在，跳过');
@@ -4653,12 +4658,12 @@ async function ensureFinancialProfitFeatureSchema() {
     menuId = require('crypto').randomUUID().replace(/-/g, '').substring(0, 32);
     await sequelize.query(
       `INSERT INTO T_MENU (MENU_ID, MENU_CODE, NAME, PARENT_ID, MENU_TYPE, PATH, ICON, SORT_ORDER, STATUS)
-       VALUES (?, 'finance_profit_statement', '财务利润表', ?, 'menu', '/finance/profit-statement', NULL, 3, 1)`,
+       VALUES (?, 'finance_profit_statement', '公司利润分析', ?, 'menu', '/finance/profit-statement', NULL, 3, 1)`,
       { replacements: [menuId, parents[0].MENU_ID] }
     );
   } else {
     await sequelize.query(
-      "UPDATE T_MENU SET NAME = '财务利润表', PATH = '/finance/profit-statement', STATUS = 1 WHERE MENU_ID = ?",
+      "UPDATE T_MENU SET NAME = '公司利润分析', PATH = '/finance/profit-statement', STATUS = 1 WHERE MENU_ID = ?",
       { replacements: [menuId] }
     );
   }
@@ -4724,7 +4729,7 @@ async function seedPermissionData() {
       ['purchase_supplier', '供应商管理', 'purchase', '/purchase/supplier', 2],
       ['finance_daily', '日结单', 'finance', '/finance/daily', 1],
       ['finance_product_settlement', '产品端毛利', 'finance', '/finance/product-settlement', 2],
-      ['finance_profit_statement', '财务利润表', 'finance', '/finance/profit-statement', 3],
+      ['finance_profit_statement', '公司利润分析', 'finance', '/finance/profit-statement', 3],
       ['finance_subsidy_receivable', '国补应收单', 'finance', '/finance/subsidy-receivable', 3],
       ['finance_rebate_settlement', '待下账返利池', 'finance', '/finance/rebate-settlement', 4],
       ['finance_expense', '费用/报销管理', 'finance', '/finance/expense', 5],

@@ -59,11 +59,11 @@ test('已确认0元采购成本保留0元，不回退到其他成本', () => {
   assert.equal(result.grossProfit, 100);
 });
 
-test('明确锁定的0元成本有效，默认零值和空值仍为待补', () => {
+test('当前档案锁定零元不能替代历史依据，默认零值和空值仍为待补', () => {
   const locked = calculateOrder([baseRow({ purchaseUnitCost: 0, purchaseCostStatus: 'pending',
     originalInventoryCost: 0, currentCostPrice: 0, costPriceLocked: 1, currentPriceStatus: 1 })]);
-  assert.equal(locked.status, 'estimated');
-  assert.equal(locked.grossProfit, 100);
+  assert.equal(locked.status, 'cost_pending');
+  assert.equal(locked.grossProfit, null);
   for (const value of [null, undefined, '', ' ', -1, 'invalid', Infinity, true]) {
     const pending = calculateOrder([baseRow({ productName: '待补商品', purchaseUnitCost: value,
       originalInventoryCost: null, currentCostPrice: null })]);
@@ -108,9 +108,10 @@ test('财务查询带出确认状态与冻结成本，且只读不写回历史�
   const queries = [];
   t.mock.method(sequelize, 'query', async sql => { queries.push(sql); return []; });
   await queryFinancialProfit({ storeIds: ['store'], startDate: '2026-10-01', endDate: '2026-10-22' });
-  assert.match(queries[0], /COST_STATUS AS purchaseCostStatus/);
-  assert.match(queries[0], /PRODUCT_PRICING_DETAILS AS frozenPricingDetails/);
-  assert.match(queries[0], /COST_PRICE_LOCKED AS costPriceLocked/);
+  const salesQuery = queries.find(sql => sql.includes('FROM T_ORDER o'));
+  assert.match(salesQuery, /COST_STATUS AS purchaseCostStatus/);
+  assert.match(salesQuery, /PRODUCT_PRICING_DETAILS AS frozenPricingDetails/);
+  assert.match(salesQuery, /COALESCE\(o.ARCHIVE_TIME,o.CREATE_TIME\)/);
   assert.ok(queries.every(sql => !/\b(?:UPDATE|INSERT|DELETE)\b/i.test(sql)));
 });
 
@@ -135,6 +136,7 @@ test('财务利润表的税务字段、迁移和导出路由均已注册', () =>
   const migration = fs.readFileSync(path.join(__dirname, '../src/utils/dbMigration.js'), 'utf8');
   const routes = fs.readFileSync(path.join(__dirname, '../src/modules/report/routes.js'), 'utf8');
   assert.match(migration, /OUTPUT_TAX_RATE/);
+  assert.match(migration, /20261023_financial_profit_control\.sql/);
   assert.match(migration, /finance_profit_statement/);
   assert.match(routes, /financial-profit-orders\/export/);
   assert.match(routes, /financial-profit-orders'/);

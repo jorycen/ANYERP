@@ -421,7 +421,7 @@ async function getFinanceOverview(ctx) {
   const profitVisible = canViewProfit(user);
   const productGrossProfit = profitVisible ? roundMoney(productSettlement.realizedGrossProfitAmount ?? productSettlement.grossProfitAmount) : null;
   const combinedGrossProfit = profitVisible && summary.salesAmount !== null
-    ? roundMoney(summary.grossProfit + productSettlement.grossProfitAmount)
+    ? roundMoney(summary.grossProfit + productGrossProfit)
     : null;
   const combinedGrossMargin = profitVisible && summary.salesAmount
     ? Number((combinedGrossProfit / summary.salesAmount * 100).toFixed(2))
@@ -442,12 +442,14 @@ async function getFinanceOverview(ctx) {
       salesGrossMargin: profitVisible && summary.salesAmount ? Number(((summary.grossProfit / summary.salesAmount) * 100).toFixed(2)) : null,
       productGrossProfit,
       productGrossMargin: profitVisible && productSettlement.productPricingAmount
-        ? Number(((productSettlement.grossProfitAmount / productSettlement.productPricingAmount) * 100).toFixed(2))
+        ? Number(((productGrossProfit / productSettlement.productPricingAmount) * 100).toFixed(2))
         : null,
       combinedGrossProfit,
       combinedGrossMargin,
       operatingExpense: profitVisible ? expenseSummary : null,
       storeOperatingProfit,
+      productOperatingExpense: profitVisible ? roundMoney(expenseSummary.productAmount) : null,
+      productOperatingProfit: profitVisible ? roundMoney(productGrossProfit - roundMoney(expenseSummary.productAmount)) : null,
       productSettlement: {
         productPricingAmount: productSettlement.productPricingAmount,
         purchaseCostAmount: productSettlement.purchaseCostAmount,
@@ -457,7 +459,7 @@ async function getFinanceOverview(ctx) {
         policyIncome: {
           recognizedAmount: profitVisible ? roundMoney(productSettlement.realizedPolicyIncomeAmount) : null,
           estimatedAmount: profitVisible ? roundMoney(productSettlement.estimatedPolicyIncomeAmount) : null,
-          note: '产品端主利润仅计入已到账且已核销的厂家政策收益；预计金额仅用于经营预判。'
+          note: '厂家返利、价保及教育补贴20%完成整笔返利核销后计入产品端毛利；待核销金额不计入。'
         }
       },
       inventory: {
@@ -500,6 +502,11 @@ async function getProductSettlementOrders(ctx) {
     page: ctx.query.page,
     pageSize: ctx.query.pageSize
   });
+  const expenses = await queryExpenseSummary(filters.period, filters.storeIds);
+  data.canSupplementCost = require('../../middleware/permission').getUserRoles(ctx.state.user).some(role => ['boss','admin','finance'].includes(role));
+  data.summary.productExpenseAmount = roundMoney(expenses.productAmount);
+  data.summary.productOperatingProfit = [filters.keyword, filters.entryType, filters.status, filters.settlementNo, filters.sourceOrderNo].some(Boolean) ? null : roundMoney(data.summary.realizedGrossProfitAmount - data.summary.productExpenseAmount);
+  data.summary.expenseScopeNote = '产品端费用按所选门店及期间汇总，不随商品或单据类型筛选变化';
   ctx.body = { code: 0, data };
 }
 
@@ -513,16 +520,19 @@ async function exportProductSettlementOrders(ctx) {
   });
   if (data.total > 10000) ctx.throw(400, '导出结果超过10000条，请缩小筛选范围后再导出');
   const rows = data.items.map(row => ({
-    单据类型: row.entryType === 'education' ? '教育补贴分配' : row.entryType === 'return' ? '退货负向调整' : '销售结算',
+    单据类型: ({ sale: '销售结算', return: '退货调整', education: '教育20%返利', manufacturer: '厂家返利/价保', external: '外调费收入', external_return: '外调费退回' })[row.entryType] || row.entryType,
     产品端单号: row.entryNo,
     来源销售订单: row.sourceOrderNo,
     业务日期: row.businessDate,
     门店: row.storeName,
     产品定价金额: row.productPricingAmount,
     实际采购成本: row.purchaseCostAmount,
-    产品端毛利: row.grossProfitAmount,
-    待补成本金额: row.costPendingAmount,
-    状态: row.status === 'cost_pending' ? '待补成本' : '已入账',
+    产品端毛利: row.grossProfitAmount ?? (row.status === 'cost_pending' ? '待补成本' : '待核销'),
+    待核销返利: row.policyPendingAmount,
+    待补商品定价额: row.costPendingAmount,
+    待补原因: row.pendingCostReason,
+    计算说明: row.calculationNote,
+    状态: row.status === 'cost_pending' ? '待补成本' : row.status === 'policy_pending' ? '待核销' : '已入账',
     公式版本: row.formulaVersion
   }));
   const worksheet = XLSX.utils.json_to_sheet(rows);

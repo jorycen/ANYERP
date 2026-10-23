@@ -81,6 +81,7 @@ test('company full income and employee/product shares share one ledger and net t
     { related_sale_order_id: 'ORDER', reward_snapshot_json: null, change_reason: 'SALE_RESOURCE_TASK' }
   ]);
   t.mock.method(M.Order, 'findAll', async () => [{ order_id: 'ORDER', store_id: 'STORE' }]);
+  t.mock.method(M.ProductProfitIncome, 'findAll', async () => []);
   const rows = await educationIncome({ orderIds: ['ORDER'] });
   assert.equal(rows.length, 2);
   for (const key of ['amount', 'employeeAmount', 'productAmount']) assert.equal(rows.reduce((sum, row) => sum + row[key], 0), 0);
