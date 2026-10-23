@@ -2626,8 +2626,12 @@ async function snTrace(ctx) {
        FROM T_INBOUND_ITEM ii
         JOIN T_INBOUND i ON BINARY ii.inbound_id = BINARY i.inbound_id
         LEFT JOIN T_STORE s ON BINARY i.store_id = BINARY s.store_id
-       WHERE ${snMatch('ii', 'sn_id', 'sn_code')}`,
-      { replacements, type: sequelize.QueryTypes.SELECT }
+       WHERE ${snMatch('ii', 'sn_id', 'sn_code')}
+          OR JSON_OVERLAPS(
+            CASE WHEN JSON_VALID(ii.received_sn_codes) THEN ii.received_sn_codes ELSE JSON_ARRAY() END,
+            CAST(:receivedSnCodesJson AS JSON)
+          )`,
+      { replacements: { ...replacements, receivedSnCodesJson: JSON.stringify(snCodes) }, type: sequelize.QueryTypes.SELECT }
     );
 
     const purchaseRequestIds = uniqueValues(inboundItems.map(row => row.purchase_request_id));
