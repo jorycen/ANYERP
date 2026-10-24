@@ -33,7 +33,8 @@ function buildFinanceCategoryIndex(rows) {
     path: '',
     level: toNumber(row.level),
     sortOrder: toNumber(row.sortOrder),
-    showInFinance: Number(row.showInFinance || 0) === 1
+    showInFinance: Number(row.showInFinance || 0) === 1,
+    status: row.status === undefined ? 1 : Number(row.status)
   }]));
   const resolving = new Set();
   const resolvePath = node => {
@@ -103,7 +104,13 @@ function findInventoryRootCategory(row, index) {
     visited.add(category.categoryId);
     category = index.byId.get(category.parentId);
   }
-  return category?.level === 1 ? category : null;
+  // 历史导入曾把“笔记本/联想/小新”等完整路径存成 LEVEL=1、无父级的名称。
+  // 按路径首段归回真实一级，不能仅相信 LEVEL 或把这些路径平铺成一级。
+  if (category?.name.includes('/')) {
+    const rootName = normalizeCategoryPath(category.name).split('/')[0];
+    category = index.byPath.get(rootName);
+  }
+  return category?.level === 1 && !category.parentId && !category.name.includes('/') ? category : null;
 }
 
 function findFinanceClassification(row, parentCategory, categoryIndex) {
@@ -885,7 +892,8 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
                 NAME AS name,
                 LEVEL AS level,
                 SORT_ORDER AS sortOrder,
-                SHOW_IN_FINANCE AS showInFinance
+                SHOW_IN_FINANCE AS showInFinance,
+                STATUS AS status
            FROM T_PRODUCT_CATEGORY
           ${allRootCategories ? '' : 'WHERE STATUS = 1'}
           ORDER BY LEVEL ASC, SORT_ORDER ASC, NAME ASC`
@@ -905,7 +913,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
     const inventoryAmount = roundMoney(rows.reduce((sum, row) => sum + row.inventoryAmount, 0));
     const categoryIndex = buildFinanceCategoryIndex(categoryRows);
     const categoryMap = new Map(categoryIndex.nodes
-      .filter(category => allRootCategories ? category.level === 1 : category.showInFinance)
+      .filter(category => allRootCategories ? category.level === 1 && !category.parentId && !category.name.includes('/') : category.showInFinance)
       .map(category => [category.categoryId, {
         key: category.categoryId,
         categoryId: category.categoryId,
@@ -953,6 +961,8 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       skuCount: new Set(rows.map(row => row.productId).filter(Boolean)).size,
       inventoryAmount,
       categories: [...categoryMap.values()]
+        .filter(category => !allRootCategories || categoryIndex.byId.get(category.categoryId)?.status !== 0
+          || category.quantity !== 0 || category.amount !== 0)
         .sort((left, right) => {
           const leftCategory = categoryIndex.byId.get(left.categoryId);
           const rightCategory = categoryIndex.byId.get(right.categoryId);
