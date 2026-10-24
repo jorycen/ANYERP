@@ -2,6 +2,7 @@ const crypto = require('node:crypto');
 const { QueryTypes } = require('sequelize');
 const M = require('../../models');
 const { summarizeAllocatedExpenses } = require('../finance/expenseCostAllocation');
+const { expenseEventKey } = require('../finance/expenseAmortization');
 const money = value => Math.round(Number(value || 0) * 100) / 100;
 const parse = value => typeof value === 'string' ? JSON.parse(value) : value;
 const date = value => value instanceof Date ? new Date(value.getTime() + 28800000).toISOString().slice(0, 10) : String(value || '').slice(0, 10);
@@ -127,7 +128,7 @@ async function loadFacts(filters, calculateOrder, transaction) {
       AND o.STORE_ID IN (:storeIds) AND (DATE(COALESCE(o.ARCHIVE_TIME,o.CREATE_TIME)) BETWEEN :start AND :end OR o.ORDER_ID IN (:returnOrders))`,
     { ...p, returnOrders: returnOrders.length ? returnOrders : ['__NO_ORDER__'] }, transaction);
   const expenseSummary = await summarizeAllocatedExpenses({ storeIds: filters.storeIds, startDate: filters.startDate, endDate: filters.endDate, dateMode: 'financial_period', transaction });
-  const reviewKeys = [...new Set([...rows.map(row => `sale:${row.orderId}`), ...returns.map(row => `return:${row.returnId}`), ...(expenseSummary.entries || []).map(row => `expense:${row.expenseId}:${row.storeId || 'company'}`)])];
+  const reviewKeys = [...new Set([...rows.map(row => `sale:${row.orderId}`), ...returns.map(row => `return:${row.returnId}`), ...(expenseSummary.entries || []).map(expenseEventKey)])];
   const reviews = await select(`SELECT * FROM T_FINANCIAL_PROFIT_REVIEW WHERE STORE_ID IN (:storeIds)
     AND (BUSINESS_DATE BETWEEN :start AND :end OR EVENT_KEY IN (:reviewKeys))`, { ...p, reviewKeys: reviewKeys.length ? reviewKeys : ['__NONE__'] }, transaction);
   const invoiceIds = [...new Set(reviews.map(row => parse(row.REVIEW_JSON).invoiceReference?.invoiceId).filter(Boolean))];
@@ -199,7 +200,7 @@ async function loadFacts(filters, calculateOrder, transaction) {
       SIGNED_AMOUNT amount FROM T_PERFORMANCE_PROFIT_ADJUSTMENT WHERE STATUS = 'approved' AND STORE_ID IN (:storeIds)
       AND DATE(COALESCE(ADMIN_REVIEW_TIME,UPDATE_TIME,CREATE_TIME)) BETWEEN :start AND :end`, p, transaction);
   const managementAdjustments = performance.map(row => ({ ...row, businessDate: date(row.businessDate), amount: money(row.amount) }));
-  return { items, policyItems, expenseEntries: (expenseSummary.entries || []).map(row => { const raw = finish({ ...row, eventKey: `expense:${row.expenseId}:${row.storeId || 'company'}`, entryNo: row.expenseId, entryType: 'expense', businessDate: date(row.businessDate), grossRevenue: 0, grossCost: row.amount, bookCost: row.amount, grossProfit: 0, status: 'estimated', policyImpact: 0 }); return applyReview(raw, reviewMap.get(raw.eventKey)); }).concat(expenseAdjustments), periods, adjustmentRows, managementAdjustments };
+  return { items, policyItems, expenseEntries: (expenseSummary.entries || []).map(row => { const raw = finish({ ...row, eventKey: expenseEventKey(row), entryNo: row.expenseId, entryType: 'expense', businessDate: date(row.businessDate), grossRevenue: 0, grossCost: row.amount, bookCost: row.amount, grossProfit: 0, status: 'estimated', policyImpact: 0 }); return applyReview(raw, reviewMap.get(raw.eventKey)); }).concat(expenseAdjustments), periods, adjustmentRows, managementAdjustments };
 }
 function overlayClosed(facts, filters) {
   const discrepancies = [];
@@ -242,18 +243,7 @@ function overlayClosed(facts, filters) {
   }
   return discrepancies;
 }
-async function query(filters, calculateOrder, { transaction, ignoreClosed = false } = {}) {
-  if (!filters.storeIds.length) return { items: [], policyItems: [], expenseEntries: [], periods: [], discrepancies: [], summary: summarize([], 0), operatingExpense: 0 };
-  const facts = await loadFacts(filters, calculateOrder, transaction);
-  const unperiodizedExpenses = facts.expenseEntries.filter(row => !row.businessDate).map(row => ({ ...row, status: 'period_pending', pendingCostReason: '请先在费用原单补齐归属月份或费用日期，不能自动归入所选期间' }));
-  facts.expenseEntries = expensesForScope(facts.expenseEntries, filters.storeIds, filters.startDate, filters.endDate);
-  const discrepancies = ignoreClosed ? [] : overlayClosed(facts, filters);
-  for (const difference of discrepancies) {
-    difference.adjustmentIds = (facts.adjustmentRows || []).filter(row => row.SOURCE_EVENT_KEY === difference.eventKey && parse(row.DETAIL_JSON).resolvedSourceHash === (difference.after?.sourceHash || 'deleted')).map(row => row.ADJUSTMENT_ID);
-    difference.resolved = difference.adjustmentIds.length > 0;
-  }
-  const matches = event => (!filters.orderNo || String(event.orderNo || '').includes(filters.orderNo)) && (!filters.status || event.status === filters.status);
-  const items = facts.items.filter(matches), policyItems = facts.policyItems.filter(matches);
+function summarizeScope(facts, filters, items, policyItems, unperiodizedExpenses) {
   const expenseSum = category => money(facts.expenseEntries.filter(row => row.category === category).reduce((n, row) => n + Number(row.bookCost ?? row.amount), 0));
   const expenseTotal = money(facts.expenseEntries.reduce((n, row) => n + Number(row.bookCost ?? row.amount), 0));
   const operatingExpense = filters.orderNo || filters.status ? null : expenseTotal;
@@ -276,8 +266,35 @@ async function query(filters, calculateOrder, { transaction, ignoreClosed = fals
   summary.managementIncomplete = items.some(row => row.managementPending) || summary.pendingOrderCount > 0 || !summary.taxComplete;
   if (filters.orderNo || filters.status) { summary.managementSalesGross = null; summary.managementProductGross = null; summary.managementCombinedGross = null; summary.managementDifference = null; summary.managementIncomplete = true; }
   summary.expenseScopeNote = operatingExpense === null ? '单号/状态筛选仅用于明细，扣期间费用后的收益暂停显示' : '按所选门店及期间统计；公司未分摊费用仅在覆盖其全部归属门店时计入';
+  return summary;
+}
+async function query(filters, calculateOrder, { transaction, ignoreClosed = false } = {}) {
+  if (!filters.storeIds.length) return { items: [], policyItems: [], expenseEntries: [], periods: [], discrepancies: [], summary: summarize([], 0), operatingExpense: 0 };
+  const facts = await loadFacts(filters, calculateOrder, transaction);
+  const unperiodizedExpenses = facts.expenseEntries.filter(row => !row.businessDate).map(row => ({ ...row, status: 'period_pending', pendingCostReason: '请先在费用原单补齐归属月份或费用日期，不能自动归入所选期间' }));
+  facts.expenseEntries = expensesForScope(facts.expenseEntries, filters.storeIds, filters.startDate, filters.endDate);
+  const discrepancies = ignoreClosed ? [] : overlayClosed(facts, filters);
+  for (const difference of discrepancies) {
+    difference.adjustmentIds = (facts.adjustmentRows || []).filter(row => row.SOURCE_EVENT_KEY === difference.eventKey && parse(row.DETAIL_JSON).resolvedSourceHash === (difference.after?.sourceHash || 'deleted')).map(row => row.ADJUSTMENT_ID);
+    difference.resolved = difference.adjustmentIds.length > 0;
+  }
+  const matches = event => (!filters.orderNo || String(event.orderNo || '').includes(filters.orderNo)) && (!filters.status || event.status === filters.status);
+  const items = facts.items.filter(matches), policyItems = facts.policyItems.filter(matches);
+  const summary = summarizeScope(facts, filters, items, policyItems, unperiodizedExpenses);
+  const operatingExpense = summary.operatingExpense;
+  const storeSummaries = [];
+  if (filters.includeStores) {
+    const stores = await select('SELECT STORE_ID AS storeId, NAME AS storeName FROM T_STORE WHERE STORE_ID IN (:storeIds)', { storeIds: filters.storeIds }, transaction);
+    const names = new Map(stores.map(row => [String(row.storeId), row.storeName]));
+    for (const storeId of filters.storeIds) {
+      const belongs = row => String(row.storeId || '') === String(storeId);
+      storeSummaries.push({ storeId, storeName: names.get(String(storeId)) || storeId,
+        summary: summarizeScope({ expenseEntries: facts.expenseEntries.filter(belongs), managementAdjustments: (facts.managementAdjustments || []).filter(belongs) },
+          { ...filters, storeIds: [storeId] }, items.filter(belongs), policyItems.filter(belongs), unperiodizedExpenses.filter(belongs)) });
+    }
+  }
   const issueItems = [...items,...policyItems.filter(row => row.entryType !== 'policy_pending'),...facts.expenseEntries,...unperiodizedExpenses].filter(row => !row.closed && row.status !== 'confirmed').map(row => ({ ...row }));
   return { items: items.sort((a,b) => b.businessDate.localeCompare(a.businessDate)), issueItems, unperiodizedExpenses, policyItems, expenseEntries: facts.expenseEntries, discrepancies,
-    managementAdjustments: facts.managementAdjustments, periods: facts.periods.filter(row => row.MONTH_KEY >= filters.startDate.slice(0,7) && row.MONTH_KEY <= filters.endDate.slice(0,7)).map(row => ({ month: row.MONTH_KEY, closedAt: row.CLOSED_AT, closedBy: row.CLOSED_BY, hash: row.SNAPSHOT_HASH })), summary, operatingExpense };
+    storeSummaries, managementAdjustments: facts.managementAdjustments, periods: facts.periods.filter(row => row.MONTH_KEY >= filters.startDate.slice(0,7) && row.MONTH_KEY <= filters.endDate.slice(0,7)).map(row => ({ month: row.MONTH_KEY, closedAt: row.CLOSED_AT, closedBy: row.CLOSED_BY, hash: row.SNAPSHOT_HASH })), summary, operatingExpense };
 }
-module.exports = { expensesForScope, query, select, parse, date, hash, money, sourceHash, applyReview, returnEvent, summarize, overlayClosed, amountFields };
+module.exports = { summarizeScope, expensesForScope, query, select, parse, date, hash, money, sourceHash, applyReview, returnEvent, summarize, overlayClosed, amountFields };

@@ -289,6 +289,7 @@ async function ensureApprovalSchemaCompatibility() {
 async function runSchemaMigrations() {
   await ensureExpenseRemarkSchema();
   await ensureExpenseRecipientSchema();
+  await ensureExpenseAmortizationSchema();
   await checkAndAddColumn('T_RESOURCE_RIGHT_CHANGE_ORDER', 'REWARD_SNAPSHOT_JSON', 'TEXT COMMENT "销售归档冻结的权益奖励规则及金额"');
   // All change-order model reads include this column; fail readiness if DDL failed.
   await sequelize.query('SELECT REWARD_SNAPSHOT_JSON FROM T_RESOURCE_RIGHT_CHANGE_ORDER LIMIT 0');
@@ -1354,6 +1355,12 @@ async function ensureExpenseRemarkSchema() {
   }
 }
 
+async function ensureExpenseAmortizationSchema() {
+  await checkAndAddColumn('T_EXPENSE', 'AMORTIZATION_START_MONTH', 'VARCHAR(7) NULL COMMENT "分月摊销开始月份"');
+  await checkAndAddColumn('T_EXPENSE', 'AMORTIZATION_END_MONTH', 'VARCHAR(7) NULL COMMENT "分月摊销结束月份"');
+  await sequelize.query('SELECT AMORTIZATION_START_MONTH, AMORTIZATION_END_MONTH FROM T_EXPENSE LIMIT 0');
+}
+
 async function ensureExpenseRecipientSchema() {
   await checkAndAddColumn('T_EXPENSE', 'RECIPIENT_SNAPSHOT_JSON', 'LONGTEXT NULL COMMENT "费用申请收款信息快照"');
   // The shared Expense model is also queried by inbound pages. Do not mark
@@ -1363,6 +1370,7 @@ async function ensureExpenseRecipientSchema() {
 
 async function ensureExpenseAccountingSchema() {
   await ensureExpenseRecipientSchema();
+  await ensureExpenseAmortizationSchema();
   await checkAndAddColumn(
     'T_EXPENSE',
     'ACCOUNTING_MONTH',
@@ -5050,6 +5058,7 @@ async function seedPermissionData() {
 }
 
 module.exports = {
+  ensureExpenseAmortizationSchema,
   ensureExpenseRemarkSchema,
   ensureExpenseRecipientSchema,
   runMigrations,

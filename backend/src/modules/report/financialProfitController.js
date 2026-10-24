@@ -198,6 +198,7 @@ async function resolveFilters(ctx) {
     : ctx.query);
   return {
     ...dates,
+    includeStores: String(ctx.query.mobile || '') === '1',
     storeIds: await resolveStoreIds(
       ctx.state.user,
       String(ctx.query.storeId || '').trim(),
@@ -245,9 +246,10 @@ async function getFinancialProfitOrders(ctx) {
     const issues = paginate(result.issueItems || [], ctx.query.issuePage);
     const fields = (row, names) => Object.fromEntries(names.map(name => [name, row[name]]));
     ctx.body.data = {
-      summary: data.summary, scopeLabel: data.scopeLabel, total: data.total, pagination: data.pagination,
+      summary: data.summary, storeSummaries: result.storeSummaries || [], canReview: data.canReview,
+      scopeLabel: '财务经营利润', total: data.total, pagination: data.pagination,
       items: data.items.map(row => fields(row, ['eventKey', 'orderId', 'orderNo', 'entryNo', 'storeName', 'businessDate', 'grossCost', 'grossProfit', 'status', 'taxStatus'])),
-      expenseEntries: expenses.rows.map(row => fields(row, ['eventKey', 'expenseType', 'storeId', 'storeName', 'category', 'businessDate', 'bookCost', 'amount', 'status'])),
+      expenseEntries: expenses.rows.map(row => fields(row, ['eventKey', 'expenseId', 'expenseType', 'storeId', 'storeName', 'category', 'businessDate', 'bookCost', 'amount', 'status', 'amortizationStartMonth', 'amortizationEndMonth'])),
       expensePagination: { page: expenses.page, total: expenses.total },
       issueItems: issues.rows.map(row => fields(row, ['eventKey', 'orderNo', 'entryNo', 'entryType', 'pendingCostReason'])),
       issuePagination: { page: issues.page, total: issues.total }

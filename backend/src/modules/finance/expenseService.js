@@ -1,4 +1,5 @@
 const {
+  sequelize,
   Expense,
   Payable,
   Settlement,
@@ -583,6 +584,11 @@ async function cancelExpenseRecord(expense, operator, transaction = null, reason
   if (!expense || expense.is_deleted) return null;
   if (expense.status === 'paid') {
     throw reversalError('该报销已进入付款或结算流程，无法撤销');
+  }
+  if (expense.amortization_start_month) {
+    if (!transaction) return sequelize.transaction(tx => cancelExpenseRecord(expense, operator, tx, reason));
+    const { assertScheduleOpen, monthsBetween } = require('./expenseAmortization');
+    await assertScheduleOpen(expense, monthsBetween(expense.amortization_start_month, expense.amortization_end_month), transaction);
   }
 
   const settlements = [];

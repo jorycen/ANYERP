@@ -1,5 +1,6 @@
 const { QueryTypes } = require('sequelize');
 const { sequelize } = require('../../models');
+const { expandExpenseRows } = require('./expenseAmortization');
 
 function amount(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
@@ -43,10 +44,12 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
   const dateClause = dateMode === 'accounting_month'
     ? 'AND e.ACCOUNTING_MONTH IN (:monthKeys)'
     : `AND ((${businessDateSql}) BETWEEN :startDate AND :endDate ${dateMode === 'financial_period' ? `OR (${businessDateSql}) IS NULL` : ''})`;
-  const replacements = { storeIds: selectedStoreIds, distributorIds, startDate, endDate, monthKeys };
+  const replacements = { storeIds: selectedStoreIds, distributorIds, startDate, endDate, monthKeys,
+    startMonth: String(startDate || monthKeys[0] || '').slice(0, 7), endMonth: String(endDate || monthKeys[monthKeys.length - 1] || '').slice(0, 7) };
   const rows = await sequelize.query(
     `SELECT e.EXPENSE_ID AS expenseId, e.INVOICE_NO AS invoiceNo, e.HAS_INVOICE AS hasInvoice, e.EXPENSE_TYPE AS expenseType, e.AMOUNT AS amount,
             e.STORE_ID AS sourceStoreId, e.DISTRIBUTOR_ID AS distributorId,
+            e.AMORTIZATION_START_MONTH AS amortizationStartMonth, e.AMORTIZATION_END_MONTH AS amortizationEndMonth,
             ${businessDateSql} AS businessDate, e.ATTRIBUTION_TYPE AS attributionType, e.ATTRIBUTION_DETAILS_JSON AS attributionDetails
        FROM T_EXPENSE e
       WHERE e.IS_DELETED = 0
@@ -56,7 +59,8 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
           OR (e.ATTRIBUTION_TYPE = 'STORE' AND JSON_VALID(e.ATTRIBUTION_DETAILS_JSON)
             AND EXISTS (SELECT 1 FROM JSON_TABLE(CASE WHEN JSON_VALID(e.ATTRIBUTION_DETAILS_JSON) THEN e.ATTRIBUTION_DETAILS_JSON ELSE '[]' END, '$[*]' COLUMNS (target_id VARCHAR(64) PATH '$.target_id')) allocation_target
               WHERE allocation_target.target_id IN (:storeIds))))
-        ${dateClause}`,
+        AND (${dateClause.replace(/^AND\s+/, '')}
+          OR (e.AMORTIZATION_START_MONTH <= :endMonth AND e.AMORTIZATION_END_MONTH >= :startMonth))`,
     { replacements, type: QueryTypes.SELECT, transaction }
   );
 
@@ -69,7 +73,7 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
   let productAmount = 0;
   let productExpenseCount = 0;
 
-  rows.forEach(row => {
+  expandExpenseRows(rows, { dateMode, startDate, endDate, monthKeys }).forEach(row => {
     const expenseAmount = amount(row.amount);
     const type = String(row.attributionType || 'STORE').toUpperCase();
     const details = parseDetails(row.attributionDetails);
@@ -78,7 +82,7 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
       if (selectedStoreIds.includes(String(row.sourceStoreId || ''))) {
         productAmount += expenseAmount;
         productExpenseCount++;
-        entries.push({ expenseId: row.expenseId, invoiceEvidence: { invoiceNo: row.invoiceNo || '', hasInvoice: Number(row.hasInvoice || 0) }, storeId: String(row.sourceStoreId), businessDate: row.businessDate, category: 'product', expenseType: row.expenseType, amount: expenseAmount });
+        entries.push({ expenseId: row.expenseId, amortizationMonth: row.amortizationMonth, amortizationStartMonth: row.amortizationStartMonth, amortizationEndMonth: row.amortizationEndMonth, invoiceEvidence: { invoiceNo: row.invoiceNo || '', hasInvoice: Number(row.hasInvoice || 0) }, storeId: String(row.sourceStoreId), businessDate: row.businessDate, category: 'product', expenseType: row.expenseType, amount: expenseAmount });
       }
       return;
     }
@@ -86,7 +90,7 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
     let allocations = [];
     let distributorExpense = false;
 
-    if (type === 'STORE' || (type === 'COMPANY' && details.some(item => String(item.target_type || item.targetType || '').toLowerCase() === 'store'))) {
+    if ((type === 'STORE' && details.length) || (type === 'COMPANY' && details.some(item => String(item.target_type || item.targetType || '').toLowerCase() === 'store'))) {
       allocations = details
         .filter(item => String(item.target_type || item.targetType || 'store').toLowerCase() === 'store')
         .map(item => ({ storeId: String(item.target_id || item.targetId || ''), storeName: item.target_name || item.targetName || '', amount: amount(item.amount) }))
@@ -106,7 +110,7 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
     if (!selectedAllocations.length) return;
     const allocatedTotal = amount(selectedAllocations.reduce((sum, item) => sum + item.amount, 0));
     if (allocatedTotal <= 0) return;
-    for (const item of selectedAllocations) entries.push({ expenseId: row.expenseId, invoiceEvidence: { invoiceNo: row.invoiceNo || '', hasInvoice: Number(row.hasInvoice || 0) }, storeId: item.storeId || null, scopeStoreIds: item.storeId ? null : [...(storesByDistributor.get(String(row.distributorId || '')) || [])].sort(), businessDate: row.businessDate, category: type === 'COMPANY' && !item.storeId ? 'company' : 'store', expenseType: row.expenseType, amount: item.amount });
+    for (const item of selectedAllocations) entries.push({ expenseId: row.expenseId, amortizationMonth: row.amortizationMonth, amortizationStartMonth: row.amortizationStartMonth, amortizationEndMonth: row.amortizationEndMonth, storeName: item.storeName || storeNameMap.get(item.storeId), invoiceEvidence: { invoiceNo: row.invoiceNo || '', hasInvoice: Number(row.hasInvoice || 0) }, storeId: item.storeId || null, scopeStoreIds: item.storeId ? null : [...(storesByDistributor.get(String(row.distributorId || '')) || [])].sort(), businessDate: row.businessDate, category: type === 'COMPANY' && !item.storeId ? 'company' : 'store', expenseType: row.expenseType, amount: item.amount });
     total += allocatedTotal;
     countedExpenses.add(String(row.expenseId));
 

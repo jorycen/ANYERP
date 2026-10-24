@@ -1821,6 +1821,8 @@ const Expense = sequelize.define('Expense', {
   amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
   settled_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   accounting_month: { type: DataTypes.STRING(7), comment: '费用经营归属月份，格式 YYYY-MM' },
+  amortization_start_month: { type: DataTypes.STRING(7), comment: '分月摊销开始月份' },
+  amortization_end_month: { type: DataTypes.STRING(7), comment: '分月摊销结束月份（含）' },
   affects_store_profit: { type: DataTypes.TINYINT(1), defaultValue: 1, comment: '是否计入门店经营费用' },
   payment_method: { type: DataTypes.STRING(64), comment: '支付方式' },
   has_invoice: { type: DataTypes.TINYINT(1), defaultValue: 0 },

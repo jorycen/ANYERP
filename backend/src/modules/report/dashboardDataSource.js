@@ -103,7 +103,7 @@ function findInventoryRootCategory(row, index) {
     visited.add(category.categoryId);
     category = index.byId.get(category.parentId);
   }
-  return category || null;
+  return category?.level === 1 ? category : null;
 }
 
 function findFinanceClassification(row, parentCategory, categoryIndex) {
@@ -818,6 +818,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
             AND ps.STORE_ID IN (:storeIds)
             ${snStoreClause}
             ${productLineClause}
+            AND NOT ((p.CATEGORY = '售后' OR p.CATEGORY LIKE '售后/%') AND LOWER(TRIM(COALESCE(p.BRAND, ''))) = 'care服务')
           GROUP BY ps.PRODUCT_ID`,
         replacements
       ),
@@ -850,6 +851,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
           WHERE i.STORE_ID IN (:storeIds)
             ${storeClause}
             ${productLineClause}
+            AND NOT ((p.CATEGORY = '售后' OR p.CATEGORY LIKE '售后/%') AND LOWER(TRIM(COALESCE(p.BRAND, ''))) = 'care服务')
           GROUP BY i.PRODUCT_ID`,
         replacements
       ),
@@ -873,6 +875,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
             AND ps.STORE_ID IN (:storeIds)
             ${snStoreClause}
             ${productLineClause}
+            AND NOT ((p.CATEGORY = '售后' OR p.CATEGORY LIKE '售后/%') AND LOWER(TRIM(COALESCE(p.BRAND, ''))) = 'care服务')
           GROUP BY ageBucket`,
         replacements
       ),
@@ -902,7 +905,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
     const inventoryAmount = roundMoney(rows.reduce((sum, row) => sum + row.inventoryAmount, 0));
     const categoryIndex = buildFinanceCategoryIndex(categoryRows);
     const categoryMap = new Map(categoryIndex.nodes
-      .filter(category => allRootCategories ? (!category.parentId || !categoryIndex.byId.has(category.parentId)) : category.showInFinance)
+      .filter(category => allRootCategories ? category.level === 1 : category.showInFinance)
       .map(category => [category.categoryId, {
         key: category.categoryId,
         categoryId: category.categoryId,

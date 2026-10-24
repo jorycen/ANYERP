@@ -91,6 +91,7 @@ router.get('/expense-list/export', exportExpenseList);
 router.get('/expense/form-options', require('./expenseApplication').options);
 router.get('/expense/:id', getExpenseDetail);
 router.put('/expense/:id/attribution', updateExpenseAttribution);
+router.put('/expense/:id/amortization', requireRole('finance'), require('./expenseAmortization').update);
 router.post('/expense/:id/review', reviewExpense);
 router.post('/expense/:id/cancel', cancelExpense);
 router.post('/expense/:id/withdraw', withdrawExpense);
