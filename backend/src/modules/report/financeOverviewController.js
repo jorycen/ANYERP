@@ -545,4 +545,4 @@ async function exportProductSettlementOrders(ctx) {
   ctx.body = buffer;
 }
 
-module.exports = { getFinanceOverview, getProductSettlementOrders, exportProductSettlementOrders };
+module.exports = { getFinanceOverview, getProductSettlementOrders, exportProductSettlementOrders, resolvePeriod };

@@ -368,7 +368,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
 
   async getFilters(filters) {
     const storeRows = await this.query(
-      `SELECT STORE_ID AS storeId, NAME AS name
+      `SELECT STORE_ID AS storeId, NAME AS name, REGION_ID AS regionId
          FROM T_STORE
         WHERE IS_DELETED = 0
           AND STATUS = 1

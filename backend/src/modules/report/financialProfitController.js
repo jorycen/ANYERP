@@ -193,7 +193,9 @@ function summarize(items, operatingExpense) {
 }
 
 async function resolveFilters(ctx) {
-  const dates = resolveDates(ctx.query);
+  const dates = resolveDates(ctx.query.periodType
+    ? require('./financeOverviewController').resolvePeriod(ctx.query)
+    : ctx.query);
   return {
     ...dates,
     storeIds: await resolveStoreIds(
@@ -219,6 +221,8 @@ async function getFinancialProfitOrders(ctx) {
       total: result.items.length,
       pagination: { page, pageSize, total: result.items.length },
       summary: result.summary,
+      scopeLabel: !ctx.query.storeId && !ctx.query.regionId && (ctx.state.user.accessibleStoreIds || []).includes('*')
+        ? '公司经营利润' : '所选范围财务经营利润',
       policyItems: result.policyItems,
       issueItems: result.issueItems,
       discrepancies: result.discrepancies,
@@ -230,6 +234,25 @@ async function getFinancialProfitOrders(ctx) {
       note: '销售按归档时间、退货按退货结算发生时间分开列示。成本仅读取原单及有审计的补录；商品税率仅为暂估，财务核实后冻结依据。政策不重复叠加内部80%/20%分配；月结结果使用已保存快照。'
     }
   };
+  // 小程序只返回当前页展示字段，年度公司范围不携带全部订单/费用的冻结凭据。
+  if (String(ctx.query.mobile || '') === '1') {
+    const data = ctx.body.data;
+    const paginate = (rows, requestedPage) => {
+      const current = Math.max(1, Math.floor(Number(requestedPage) || 1));
+      return { rows: rows.slice((current - 1) * pageSize, current * pageSize), page: current, total: rows.length };
+    };
+    const expenses = paginate(result.expenseEntries || [], ctx.query.expensePage);
+    const issues = paginate(result.issueItems || [], ctx.query.issuePage);
+    const fields = (row, names) => Object.fromEntries(names.map(name => [name, row[name]]));
+    ctx.body.data = {
+      summary: data.summary, scopeLabel: data.scopeLabel, total: data.total, pagination: data.pagination,
+      items: data.items.map(row => fields(row, ['eventKey', 'orderId', 'orderNo', 'entryNo', 'storeName', 'businessDate', 'grossCost', 'grossProfit', 'status', 'taxStatus'])),
+      expenseEntries: expenses.rows.map(row => fields(row, ['eventKey', 'expenseType', 'storeId', 'storeName', 'category', 'businessDate', 'bookCost', 'amount', 'status'])),
+      expensePagination: { page: expenses.page, total: expenses.total },
+      issueItems: issues.rows.map(row => fields(row, ['eventKey', 'orderNo', 'entryNo', 'entryType', 'pendingCostReason'])),
+      issuePagination: { page: issues.page, total: issues.total }
+    };
+  }
 }
 
 async function exportFinancialProfitOrders(ctx) {
