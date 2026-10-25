@@ -238,6 +238,19 @@ async function getFinancialProfitOrders(ctx) {
   // 小程序只返回当前页展示字段，年度公司范围不携带全部订单/费用的冻结凭据。
   if (String(ctx.query.mobile || '') === '1') {
     const data = ctx.body.data;
+    const range = require('./dashboardService').buildRanges(filters).current;
+    const operating = await require('./operatingProfit').queryOperatingProfit({ storeIds: filters.storeIds, archiveScope: 'archived' }, range);
+    const metrics = (row, summary) => {
+      const known = row && row.grossProfit !== null && row.grossProfit !== undefined;
+      const cost = summary.operatingExpense;
+      const value = known && cost !== null && cost !== undefined ? money(row.grossProfit - cost) : null;
+      return { source: operating.source, grossProfit: known ? row.grossProfit : null,
+        salesGrossProfit: known ? row.grossProfit : null, approvedAdjustment: row?.approvedAdjustment ?? null,
+        grossMargin: known && row.salesAmount ? money(row.grossProfit / row.salesAmount * 100) : null, salesAmount: row?.salesAmount ?? null,
+        cost, estimatedOperatingProfit: value,
+        operatingProfit: summary.taxComplete && !summary.pendingOrderCount ? value : null };
+    };
+    const operatingByStore = new Map((operating.rows || []).map(row => [String(row.storeId), row]));
     const paginate = (rows, requestedPage) => {
       const current = Math.max(1, Math.floor(Number(requestedPage) || 1));
       return { rows: rows.slice((current - 1) * pageSize, current * pageSize), page: current, total: rows.length };
@@ -246,7 +259,9 @@ async function getFinancialProfitOrders(ctx) {
     const issues = paginate(result.issueItems || [], ctx.query.issuePage);
     const fields = (row, names) => Object.fromEntries(names.map(name => [name, row[name]]));
     ctx.body.data = {
-      summary: data.summary, storeSummaries: result.storeSummaries || [], canReview: data.canReview,
+      summary: data.summary, operatingMetrics: metrics(operating.summary, data.summary),
+      period: { startDate: filters.startDate, endDate: filters.endDate },
+      storeSummaries: (result.storeSummaries || []).map(row => ({ ...row, operatingMetrics: metrics(operatingByStore.get(String(row.storeId)) || { salesAmount: 0, grossProfit: 0, approvedAdjustment: 0 }, row.summary) })), canReview: data.canReview,
       scopeLabel: '财务经营利润', total: data.total, pagination: data.pagination,
       items: data.items.map(row => fields(row, ['eventKey', 'orderId', 'orderNo', 'entryNo', 'storeName', 'businessDate', 'grossCost', 'grossProfit', 'status', 'taxStatus'])),
       expenseEntries: expenses.rows.map(row => fields(row, ['eventKey', 'expenseId', 'expenseType', 'storeId', 'storeName', 'category', 'businessDate', 'bookCost', 'amount', 'status', 'amortizationStartMonth', 'amortizationEndMonth'])),

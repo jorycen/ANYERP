@@ -8,6 +8,13 @@ const { FORMULA_VERSION: CURRENT_GROSS_PROFIT_FORMULA_VERSION } = require('../sa
 const ARCHIVED_STATUSES = ['已归档', 'completed', 'archived'];
 const VOIDED_STATUSES = ['已作废', 'voided', 'cancelled', 'canceled'];
 const GROSS_PROFIT_FORMULA_VERSION = CURRENT_GROSS_PROFIT_FORMULA_VERSION;
+// 服务额度不属于实物库存；兼容旧CARE卡品牌为空、被导入“其他服务/未归类”的档案。
+const CARE_INVENTORY_EXCLUSION_SQL = `AND NOT (
+  LOWER(TRIM(COALESCE(p.CATEGORY, ''))) = 'care服务'
+  OR ((COALESCE(p.CATEGORY, '') = '售后' OR p.CATEGORY LIKE '售后/%')
+    AND (LOWER(TRIM(COALESCE(p.BRAND, ''))) = 'care服务'
+      OR LOWER(COALESCE(p.NAME, '')) REGEXP 'care[[:space:]]*卡'))
+)`;
 
 function normalizeCategoryPath(value) {
   return String(value || '')
@@ -273,11 +280,11 @@ function grossProfitSql(itemAlias = 'oi', orderAlias = 'o', snapshotAlias = 'gp'
     WHEN ${snapshotAlias}.GROSS_PROFIT_ID IS NOT NULL
     THEN COALESCE(${snapshotAlias}.GROSS_PROFIT_AMOUNT, 0)
       * CASE
-          WHEN COALESCE(${orderAlias}.TOTAL_AMOUNT, 0) <> 0
-          THEN COALESCE(${itemAlias}.SUBTOTAL, 0) / ${orderAlias}.TOTAL_AMOUNT
-          ELSE 0
+          WHEN COALESCE(oit.ITEM_SUBTOTAL, 0) <> 0
+          THEN COALESCE(${itemAlias}.SUBTOTAL, 0) / oit.ITEM_SUBTOTAL
+          ELSE 1 / GREATEST(oit.ITEM_COUNT, 1)
         END
-    ELSE 0
+    ELSE COALESCE(${itemAlias}.SALES_GROSS_PROFIT, 0)
   END`;
 }
 
@@ -415,87 +422,26 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
   }
 
   async getTrend(filters, range, granularity) {
-    const where = buildSalesWhere(filters, range);
-    const factor = allocationSql(filters);
-    const bucket = bucketSql(granularity);
-    return this.query(
-      `SELECT ${bucket} AS bucket,
-              ROUND(SUM((${orderItemSalesAmountSql()}) * ${factor}), 2) AS salesAmount,
-              ROUND(SUM((${grossProfitSql()}) * ${factor}), 2) AS grossProfit,
-              COUNT(DISTINCT o.ORDER_ID) AS orderCount
-         FROM T_ORDER o
-         INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
-         ${orderItemTotalsJoin()}
-         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
-         LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
-         LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
-         LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
-        WHERE ${where.sql}
-        GROUP BY ${bucket}
-        ORDER BY ${bucket} ASC`,
-      where.replacements
-    );
+    const result = await require('./operatingProfit').queryOperatingProfit(filters, range, this);
+    const buckets = new Map();
+    for (const row of result.daily) {
+      let key = row.bucket;
+      if (granularity === 'month') key = key.slice(0, 7);
+      if (granularity === 'week') {
+        const day = new Date(`${key}T00:00:00Z`);
+        day.setUTCDate(day.getUTCDate() - ((day.getUTCDay() || 7) - 1));
+        key = day.toISOString().slice(0, 10);
+      }
+      if (!buckets.has(key)) buckets.set(key, { bucket: key, salesAmount: 0, grossProfit: 0, orderCount: 0 });
+      const target = buckets.get(key);
+      for (const field of ['salesAmount', 'grossProfit', 'orderCount']) target[field] = roundMoney(target[field] + row[field]);
+    }
+    return [...buckets.values()].sort((a, b) => a.bucket.localeCompare(b.bucket));
   }
 
   async getStoreRanking(filters, range) {
-    const where = buildSalesWhere(filters, range);
-    const factor = allocationSql(filters);
-    const rows = await this.query(
-      `SELECT o.STORE_ID AS storeId,
-              MAX(s.NAME) AS storeName,
-              ROUND(SUM((${orderItemSalesAmountSql()}) * ${factor}), 2) AS salesAmount,
-              ROUND(SUM((${grossProfitSql()}) * ${factor}), 2) AS grossProfit,
-              COUNT(DISTINCT o.ORDER_ID) AS orderCount
-         FROM T_ORDER o
-         INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
-         ${orderItemTotalsJoin()}
-         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
-         LEFT JOIN T_STORE s ON s.STORE_ID = o.STORE_ID
-         LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
-         LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
-         LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
-        WHERE ${where.sql}
-        GROUP BY o.STORE_ID
-        ORDER BY salesAmount DESC`,
-      where.replacements
-    );
-
-    // Store ranking uses the same final performance-gross-profit adjustments
-    // as monthly task achievement. Keep these additions outside the item join
-    // so an order-level adjustment is counted once per order, not once per item.
-    const adjustmentRows = await this.query(
-      `SELECT o.STORE_ID AS storeId, SUM(pa.SIGNED_AMOUNT) AS grossProfit
-         FROM T_PERFORMANCE_PROFIT_ADJUSTMENT pa
-         INNER JOIN T_ORDER o ON o.ORDER_ID = pa.ORDER_ID
-        WHERE pa.STATUS = 'approved'
-          AND ${where.sql}
-        GROUP BY o.STORE_ID`,
-      where.replacements
-    );
-    const returnRows = await this.query(
-      `SELECT r.STORE_ID AS storeId,
-              SUM(COALESCE(r.RETURNED_SALES_AMOUNT, 0)) AS returnedSales,
-              SUM(COALESCE(r.GROSS_PROFIT_AMOUNT, 0)) AS grossProfit
-         FROM T_SALES_RETURN_GROSS_PROFIT r
-        WHERE r.STORE_ID IN (:storeIds)
-          AND r.CREATE_TIME >= :startAt
-          AND r.CREATE_TIME <= :endAt
-        GROUP BY r.STORE_ID`,
-      { ...where.replacements, storeIds: filters.storeIds }
-    );
-    const adjustments = new Map(adjustmentRows.map(row => [String(row.storeId), Number(row.grossProfit || 0)]));
-    const returns = new Map(returnRows.map(row => [String(row.storeId), row]));
-    return rows
-      .map(row => {
-        const adjustment = adjustments.get(String(row.storeId)) || 0;
-        const returned = returns.get(String(row.storeId)) || {};
-        return {
-          ...row,
-          salesAmount: Number((Number(row.salesAmount || 0) + Number(returned.returnedSales || 0)).toFixed(2)),
-          grossProfit: Number((Number(row.grossProfit || 0) + adjustment + Number(returned.grossProfit || 0)).toFixed(2))
-        };
-      })
-      .sort((left, right) => Number(right.salesAmount || 0) - Number(left.salesAmount || 0));
+    const result = await require('./operatingProfit').queryOperatingProfit(filters, range, this);
+    return result.rows.sort((a, b) => b.salesAmount - a.salesAmount);
   }
 
   async getStoreProductTypeQuantities(filters, range) {
@@ -825,7 +771,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
             AND ps.STORE_ID IN (:storeIds)
             ${snStoreClause}
             ${productLineClause}
-            AND NOT ((p.CATEGORY = '售后' OR p.CATEGORY LIKE '售后/%') AND LOWER(TRIM(COALESCE(p.BRAND, ''))) = 'care服务')
+            ${CARE_INVENTORY_EXCLUSION_SQL}
           GROUP BY ps.PRODUCT_ID`,
         replacements
       ),
@@ -858,7 +804,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
           WHERE i.STORE_ID IN (:storeIds)
             ${storeClause}
             ${productLineClause}
-            AND NOT ((p.CATEGORY = '售后' OR p.CATEGORY LIKE '售后/%') AND LOWER(TRIM(COALESCE(p.BRAND, ''))) = 'care服务')
+            ${CARE_INVENTORY_EXCLUSION_SQL}
           GROUP BY i.PRODUCT_ID`,
         replacements
       ),
@@ -882,7 +828,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
             AND ps.STORE_ID IN (:storeIds)
             ${snStoreClause}
             ${productLineClause}
-            AND NOT ((p.CATEGORY = '售后' OR p.CATEGORY LIKE '售后/%') AND LOWER(TRIM(COALESCE(p.BRAND, ''))) = 'care服务')
+            ${CARE_INVENTORY_EXCLUSION_SQL}
           GROUP BY ageBucket`,
         replacements
       ),
@@ -961,6 +907,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       skuCount: new Set(rows.map(row => row.productId).filter(Boolean)).size,
       inventoryAmount,
       categories: [...categoryMap.values()]
+        .filter(category => normalizeCategoryName(category.name) !== 'care服务')
         .filter(category => !allRootCategories || categoryIndex.byId.get(category.categoryId)?.status !== 0
           || category.quantity !== 0 || category.amount !== 0)
         .sort((left, right) => {
@@ -1014,5 +961,5 @@ module.exports = {
   grossProfitSql,
   orderItemSalesAmountSql,
   orderItemTotalsJoin,
-  _test: { buildSalesWhere, orderItemSalesAmountSql, grossProfitSql, orderItemTotalsJoin }
+  _test: { CARE_INVENTORY_EXCLUSION_SQL, buildSalesWhere, orderItemSalesAmountSql, grossProfitSql, orderItemTotalsJoin }
 };

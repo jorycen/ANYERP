@@ -46,6 +46,7 @@ router.get('/employee-performance', ctx => getEmployeePerformanceReport(ctx, fal
 router.get('/employee-performance/export', ctx => getEmployeePerformanceReport(ctx, true));
 router.get('/dashboard/filters', getDashboardFilters);
 router.get('/dashboard/overview', getDashboardOverview);
+router.get('/operating-profit', require('./operatingProfit').getOperatingProfit);
 router.get('/finance-overview', requireDistributorAccount(), getFinanceOverview);
 router.get('/product-settlement-orders/export', requireDistributorAccount(), exportProductSettlementOrders);
 router.get('/product-settlement-orders', requireDistributorAccount(), getProductSettlementOrders);

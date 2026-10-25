@@ -74,6 +74,15 @@ test('员工报表同月、跨月、部分退货汇总与分页保持一致，�
   const snapshot = { order_id: 'O', gross_profit_amount: 100, product_pricing_amount: 900, product_pricing_details: '[]' };
   const order = { order_id: 'O', order_no: 'SO1', create_time: saleDate, order_status: 'returned', create_user: 'A', create_staff_id: 1, store_id: 'S', total_amount: 1000, actual_payment: 1000, Store: { name: 'S' }, OrderItems: [], grossProfitSnapshot: snapshot };
   const inRange = (date, range) => !range || date >= range[Op.gte] && date <= range[Op.lte];
+  const dataSource = require('../src/modules/report/dashboardDataSource').RealtimeSqlDashboardDataSource;
+  const inside = (date, range) => date >= new Date(`${range.startDate}T00:00:00+08:00`) && date <= new Date(`${range.endDate}T23:59:59.999+08:00`);
+  t.mock.method(dataSource.prototype, 'getEmployeeOrderRows', async (_, range) => [
+    ...(inside(saleDate, range) ? [{ ...order, sales_amount: 1000, base_gross_profit: 100 }] : []),
+    ...(inside(returnDate, range) ? [{ ...order, order_id: 'return:R', entry_type: 'return', create_time: returnDate, sales_amount: returnSales, base_gross_profit: returnProfit }] : []),
+    ...(reversalAdjustment && inside(returnDate, range) ? [{ ...order, order_id: 'return-adjustment:ADJ', entry_type: 'return_adjustment', create_time: returnDate, sales_amount: 0, base_gross_profit: 0 }] : [])
+  ]);
+  t.mock.method(dataSource.prototype, 'getApprovedAdjustments', async (_, range) => reversalAdjustment && inside(returnDate, range)
+    ? [{ orderId: 'return-adjustment:ADJ', signedAmount: reversalAdjustment }] : []);
   t.mock.method(M.Store, 'findAll', async () => [{ store_id: 'S' }]);
   t.mock.method(M.Order, 'findAll', async options => {
     const matched = inRange(saleDate, options.where.create_time);

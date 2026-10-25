@@ -765,8 +765,8 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
   if (orderNo) where.order_no = { [Op.like]: `%${String(orderNo).trim()}%` };
   if (startDate && endDate) {
     where.create_time = {
-      [Op.gte]: new Date(startDate),
-      [Op.lte]: new Date(`${endDate} 23:59:59`)
+      [Op.gte]: new Date(`${startDate}T00:00:00+08:00`),
+      [Op.lte]: new Date(`${endDate}T23:59:59.999+08:00`)
     };
   }
 
@@ -1133,6 +1133,17 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
     pageGrossProfit: roundMoney(list.reduce((sum, row) => sum + toNumber(row.grossProfit), 0)),
     legacyOrderCount: new Set(fallbackItems.map(item => item.order_id)).size
   };
+
+  if (startDate && endDate && !staffName && !orderNo) {
+    const range = require('./dashboardService').buildRanges({ startDate, endDate }).current;
+    const operating = await require('./operatingProfit').queryOperatingProfit({ storeIds, archiveScope: 'archived' }, range);
+    summary.baseGrossProfit = operating.summary.baseGrossProfit;
+    summary.approvedAdjustment = operating.summary.approvedAdjustment;
+    summary.otherApprovedAdjustment = roundMoney(summary.approvedAdjustment - summary.careCreditAdjustment);
+    summary.grossProfit = operating.summary.grossProfit;
+    summary.netGrossProfit = profitVisible ? roundMoney(summary.grossProfit - totalExpensePerformanceDeduction) : null;
+    summary.grossProfitSource = operating.source;
+  }
 
   if (exportMode) {
     const exportRows = list.flatMap(order => {

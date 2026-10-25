@@ -19,6 +19,7 @@
             <div class="sales-statement-period">
               <span>统计周期</span>
               <el-date-picker v-model="salesStatementPeriod" type="monthrange" value-format="YYYY-MM" format="YYYY年MM月" range-separator="至" start-placeholder="开始月份" end-placeholder="结束月份" unlink-panels />
+              <el-date-picker v-model="salesStatementDateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="指定开始日期（优先）" end-placeholder="指定结束日期" clearable />
               <el-button type="primary" :loading="salesStatementLoading" @click="loadSalesReport">查询</el-button>
               <el-button type="success" :loading="salesStatementExporting" :disabled="salesStatementLoading || !salesStatementRows.length" @click="exportSalesStatement">导出 Excel</el-button>
             </div>
@@ -44,12 +45,13 @@
           </el-table-column>
         </el-table-column>
         <el-table-column label="毛利构成" align="center">
-          <el-table-column label="合计" width="125" align="right"><template #default="{ row }">{{ formatStatementProfit(row.categoryGrossProfitTotal) }}</template></el-table-column>
+          <el-table-column label="合计" width="125" align="right"><template #default="{ row }">{{ formatStatementProfit(row.grossProfit) }}</template></el-table-column>
           <el-table-column v-for="item in statementCategories" :key="'profit-' + item.key" :label="item.label" align="center">
             <el-table-column label="毛利" width="125" align="right"><template #default="{ row }">{{ formatStatementProfit(row.categoryGrossProfit?.[item.key]) }}</template></el-table-column>
             <el-table-column label="占比" width="85" align="right"><template #default="{ row }">{{ formatStatementPercent(row.categoryGrossProfitShare?.[item.key]) }}</template></el-table-column>
           </el-table-column>
-          <el-table-column label="已确认返利" width="125" align="right"><template #default="{ row }">{{ formatStatementProfit(row.rebate) }}</template></el-table-column>
+          <el-table-column label="审批调整及口径差额" width="165" align="right"><template #default="{ row }">{{ formatStatementProfit(row.grossProfitAdjustment) }}</template></el-table-column>
+          <el-table-column label="已确认返利（单列）" width="165" align="right"><template #default="{ row }">{{ formatStatementProfit(row.rebate) }}</template></el-table-column>
         </el-table-column>
         <el-table-column label="费用构成" align="center">
           <el-table-column label="合计" width="125" align="right"><template #default="{ row }">{{ formatStatementProfit(row.expenseTotal) }}</template></el-table-column>
@@ -474,6 +476,7 @@ const statementMarginCategories = statementCategories.filter(item => item.key !=
 const currentDate = new Date()
 const currentMonth = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`
 const salesStatementPeriod = ref([currentMonth, currentMonth])
+const salesStatementDateRange = ref([])
 const salesCanViewProfit = ref(false)
 const inventoryData = ref([])
 const inventorySummary = ref({ totalCount: 0, totalCost: 0, staleCount: 0, staleRate: 0 })
@@ -550,13 +553,15 @@ const loadStores = async () => {
 }
 
 const loadSalesReport = async () => {
-  if (!salesStatementPeriod.value || salesStatementPeriod.value.length !== 2) {
+  if ((!salesStatementPeriod.value || salesStatementPeriod.value.length !== 2) && salesStatementDateRange.value?.length !== 2) {
     ElMessage.warning('请选择开始月份和结束月份')
     return
   }
   salesStatementLoading.value = true
   try {
-    const res = await api.getSalesStatement({ startMonth: salesStatementPeriod.value[0], endMonth: salesStatementPeriod.value[1] })
+    const res = await api.getSalesStatement(salesStatementDateRange.value?.length === 2
+      ? { startDate: salesStatementDateRange.value[0], endDate: salesStatementDateRange.value[1] }
+      : { startMonth: salesStatementPeriod.value[0], endMonth: salesStatementPeriod.value[1] })
     if (res.code === 0) {
       const data = res.data || {}
       salesCanViewProfit.value = Boolean(data.canViewProfit)
@@ -908,12 +913,13 @@ const exportSalesStatement = async () => {
       { label: '占比', getValue: row => percent(row.salesShare?.[category.key]), percentage: true }
     ]))
 
-    addColumn('毛利构成', '合计', row => moneyOrDash(row.categoryGrossProfitTotal), { vertical: true, money: true })
+    addColumn('毛利构成', '合计', row => moneyOrDash(row.grossProfit), { vertical: true, money: true })
     statementCategories.forEach(category => addCategory('毛利构成', category, [
       { label: '毛利', getValue: row => moneyOrDash(row.categoryGrossProfit?.[category.key]), money: true },
       { label: '占比', getValue: row => salesCanViewProfit.value ? percent(row.categoryGrossProfitShare?.[category.key]) : '-', percentage: true }
     ]))
-    addColumn('毛利构成', '已确认返利', row => moneyOrDash(row.rebate), { vertical: true, money: true })
+    addColumn('毛利构成', '审批调整及口径差额', row => moneyOrDash(row.grossProfitAdjustment), { vertical: true, money: true })
+    addColumn('毛利构成', '已确认返利（单列）', row => moneyOrDash(row.rebate), { vertical: true, money: true })
 
     addColumn('费用构成', '合计', row => Number(row.expenseTotal || 0), { vertical: true, money: true })
     addColumn('费用构成', '固定费用', row => Number(row.expenses?.fixed || 0), { vertical: true, money: true })

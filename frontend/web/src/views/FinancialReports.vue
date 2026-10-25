@@ -35,11 +35,11 @@
 
       <div class="metric-grid" v-loading="loading">
         <div class="metric-card revenue"><span>营业额</span><strong>¥{{ money(data.revenue) }}</strong><small>{{ periodLabel }}</small></div>
-        <div class="metric-card profit"><span>财务毛利</span><strong>¥{{ money(data.grossProfit) }}</strong><small>毛利率 {{ percent(data.grossMargin) }}</small></div>
+        <div class="metric-card profit"><span>经营毛利</span><strong>¥{{ money(data.grossProfit) }}</strong><small>毛利率 {{ percent(data.grossMargin) }}</small></div>
         <div class="metric-card"><span>销售毛利</span><strong>¥{{ money(data.salesGrossProfit) }}</strong><small>毛利率 {{ percent(data.salesGrossMargin) }}</small></div>
         <div class="metric-card"><span>产品端毛利</span><strong>¥{{ money(data.productGrossProfit) }}</strong><small>毛利率 {{ percent(data.productGrossMargin) }}</small></div>
         <div class="metric-card expense"><span>门店经营费用</span><strong>¥{{ money(data.operatingExpense?.amount) }}</strong><small>{{ Number(data.operatingExpense?.expenseCount || 0) }} 笔已确认费用</small></div>
-        <div class="metric-card operating"><span>门店经营利润</span><strong>¥{{ money(data.storeOperatingProfit) }}</strong><small>财务毛利减已确认经营费用</small></div>
+        <div class="metric-card operating"><span>门店经营利润</span><strong>¥{{ money(data.storeOperatingProfit) }}</strong><small>经营毛利减已确认经营费用</small></div>
       </div>
 
       <el-tabs v-model="activeTab" class="report-tabs" @tab-change="onTabChange">
@@ -97,7 +97,7 @@
             <el-table-column label="含税成本" width="130" align="right"><template #default="{ row }">¥{{ money(row.grossCost) }}</template></el-table-column>
             <el-table-column label="可抵扣进项税" width="135" align="right"><template #default="{ row }">¥{{ money(row.deductibleInputVat) }}</template></el-table-column>
             <el-table-column label="不含税成本" width="135" align="right"><template #default="{ row }">¥{{ money(row.bookCost) }}</template></el-table-column>
-            <el-table-column label="财务毛利" width="130" align="right"><template #default="{ row }">{{ row.grossProfit === null ? '—' : `¥${money(row.grossProfit)}` }}</template></el-table-column>
+            <el-table-column label="经营毛利" width="130" align="right"><template #default="{ row }">{{ row.grossProfit === null ? '—' : `¥${money(row.grossProfit)}` }}</template></el-table-column>
             <el-table-column label="毛利率" width="105" align="right"><template #default="{ row }">{{ percent(row.grossMargin) }}</template></el-table-column>
             <el-table-column label="状态" width="110"><template #default="{ row }"><el-tag :type="row.status === 'cost_pending' ? 'warning' : 'success'">{{ row.status === 'cost_pending' ? '待补成本' : '已估算' }}</el-tag></template></el-table-column>
           </el-table>
@@ -176,7 +176,7 @@
           </el-table>
         </el-tab-pane>
       </el-tabs>
-      <div class="report-footer">数据按当前账号授权的门店范围查询。财务毛利为系统财务报表口径；缺少成本的数据会标记为待补，不以估算值冒充实际值。</div>
+      <div class="report-footer">数据按当前账号授权的门店范围查询。经营毛利为系统财务报表口径；缺少成本的数据会标记为待补，不以估算值冒充实际值。</div>
     </el-card>
   </div>
 </template>

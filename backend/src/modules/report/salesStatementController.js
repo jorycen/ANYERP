@@ -4,9 +4,11 @@ const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/sto
 const { summarizeAllocatedExpenses } = require('../finance/expenseCostAllocation');
 const { INTERNAL_TRANSFER_SOURCE } = require('./operatingScope');
 const { canViewProfit } = require('./dashboardService');
+const { PERFORMANCE_SALE_STATUSES } = require('./performanceEvents');
+const { orderItemTotalsJoin } = require('./dashboardDataSource');
 
 const SALES_CATEGORIES = ['nb', 'dt', 'phone', 'tablet', 'service', 'option'];
-const ARCHIVED_STATUSES = ['已归档', 'completed', 'archived'];
+const ARCHIVED_STATUSES = PERFORMANCE_SALE_STATUSES;
 
 function money(value) {
   const number = Number(value || 0);
@@ -63,7 +65,7 @@ function emptyRow(store) {
 function finalizeRow(row, canSeeProfit) {
   const salesTotal = money(SALES_CATEGORIES.reduce((sum, key) => sum + row.sales[key], 0));
   const categoryGrossProfitTotal = money(SALES_CATEGORIES.reduce((sum, key) => sum + row.grossProfit[key], 0));
-  const grossProfit = money(categoryGrossProfitTotal + row.rebate);
+  const grossProfit = row.canonicalGross === undefined ? money(categoryGrossProfitTotal + row.rebate) : money(row.canonicalGross);
   const expenseTotal = money(Object.values(row.expenses).reduce((sum, value) => sum + value, 0));
   const netProfit = money(grossProfit - expenseTotal);
   const pct = (value, denominator) => denominator ? Number((value / denominator * 100).toFixed(2)) : 0;
@@ -86,12 +88,17 @@ function finalizeRow(row, canSeeProfit) {
     result.categoryGrossProfitRate = Object.fromEntries(SALES_CATEGORIES.map(key => [key, pct(row.grossProfit[key], row.sales[key])]));
     result.categoryGrossProfitShare = Object.fromEntries(SALES_CATEGORIES.map(key => [key, pct(row.grossProfit[key], categoryGrossProfitTotal)]));
     result.rebate = money(row.rebate);
+    result.grossProfitAdjustment = money(grossProfit - categoryGrossProfitTotal);
   }
   return result;
 }
 
 async function getSalesStatement(ctx) {
-  const period = monthRange(ctx.query.startMonth, ctx.query.endMonth);
+  const customRange = ctx.query.startDate && ctx.query.endDate
+    ? require('./dashboardService').buildRanges(ctx.query).current : null;
+  const period = customRange ? { start: customRange.startDate.slice(0, 7), end: customRange.endDate.slice(0, 7),
+    startDate: customRange.startDate, endDate: customRange.endDate, startAt: customRange.startAt, endAt: customRange.endAt }
+    : monthRange(ctx.query.startMonth, ctx.query.endMonth);
   const user = ctx.state.user;
   const readableStoreIds = (await resolveReportStoreIds(user)).map(String);
   let storeIds = readableStoreIds.includes('*')
@@ -187,19 +194,20 @@ async function getSalesStatement(ctx) {
     const grossProfitRows = await sequelize.query(
       `SELECT o.STORE_ID AS storeId, COALESCE(p.CATEGORY, '') AS categoryPath,
               SUM(CASE
-                WHEN gp.GROSS_PROFIT_ID IS NOT NULL AND COALESCE(o.TOTAL_AMOUNT, 0) <> 0
-                  THEN gp.GROSS_PROFIT_AMOUNT * COALESCE(oi.SUBTOTAL, 0) / o.TOTAL_AMOUNT
+                WHEN gp.GROSS_PROFIT_ID IS NOT NULL
+                  THEN gp.GROSS_PROFIT_AMOUNT * CASE WHEN COALESCE(oit.ITEM_SUBTOTAL, 0) <> 0
+                    THEN COALESCE(oi.SUBTOTAL, 0) / oit.ITEM_SUBTOTAL ELSE 1 / GREATEST(oit.ITEM_COUNT, 1) END
                 WHEN COALESCE(oi.ORIGINAL_INVENTORY_COST, 0) <> 0
                   OR COALESCE(oi.SALES_SETTLEMENT_COST, 0) <> 0
                   OR COALESCE(oi.SALES_GROSS_PROFIT, 0) <> 0
                   OR COALESCE(oi.COST_ADJUSTMENT_AMOUNT, 0) <> 0
                   OR COALESCE(oi.ORIGINAL_PICKUP_PRICE, 0) <> 0
                   THEN COALESCE(oi.SALES_GROSS_PROFIT, 0)
-                ELSE COALESCE(oi.SUBTOTAL, 0)
-                  - COALESCE(NULLIF(ps.INBOUND_PRICE, 0), NULLIF(pp.COST_PRICE, 0), 0) * COALESCE(oi.QUANTITY, 1)
+                ELSE COALESCE(oi.SALES_GROSS_PROFIT, 0)
               END) AS grossProfit
          FROM T_ORDER o
          INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+         ${orderItemTotalsJoin()}
          LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
          LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
          LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
@@ -284,9 +292,18 @@ async function getSalesStatement(ctx) {
     });
   }
 
+  let profitSource = '';
+  if (canProfit) {
+    const range = require('./dashboardService').buildRanges({ startDate: period.startAt.slice(0, 10), endDate: period.endAt.slice(0, 10) }).current;
+    const canonical = await require('./operatingProfit').queryOperatingProfit({ storeIds, employeeId: selfOnly ? staffId : '', archiveScope: 'archived' }, range);
+    const byStore = new Map(canonical.rows.map(row => [String(row.storeId), row]));
+    rowMap.forEach(row => { row.canonicalGross = byStore.get(String(row.storeId))?.grossProfit || 0; });
+    profitSource = canonical.source;
+  }
   let rows = [...rowMap.values()].map(row => finalizeRow(row, canProfit));
   if (selfOnly) rows = rows.filter(row => row.salesTotal !== 0);
   const summaryRow = emptyRow({ storeId: '', storeName: '合计' });
+  if (canProfit) summaryRow.canonicalGross = money(rows.reduce((sum, row) => sum + row.grossProfit, 0));
   rows.forEach(row => {
     SALES_CATEGORIES.forEach(key => {
       summaryRow.sales[key] += Number(row.sales[key] || 0);
@@ -298,7 +315,8 @@ async function getSalesStatement(ctx) {
     }
   });
   const summary = finalizeRow(summaryRow, canProfit);
-  ctx.body = { code: 0, data: { period, canViewProfit: canProfit, rows, summary } };
+  ctx.body = { code: 0, data: { period, canViewProfit: canProfit, rows, summary, grossProfitSource: profitSource,
+    grossProfitNote: '总毛利统一采用归档冻结毛利、审批调整及退货冲回；已确认厂家返利单列，不重复加进销售考核毛利。' } };
 }
 
 module.exports = { getSalesStatement, categoryKey, expenseBucket, monthRange };

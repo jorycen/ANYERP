@@ -10,6 +10,7 @@ test('finance inventory includes all root categories and unclassified stock exac
     { categoryId: 'used', name: '二手', parentId: 'computer', level: 2, showInFinance: 1 },
     { categoryId: 'accessory', name: '配件', level: 1, showInFinance: 0 },
     { categoryId: 'empty', name: '无库存分类', level: 1, showInFinance: 0 },
+    { categoryId: 'care', name: 'Care服务', level: 1, status: 1 },
     { categoryId: 'disabled', name: '选件周边', level: 1, status: 0 },
     { categoryId: 'disabled-stock', name: '停用但有库存', level: 1, status: 0 },
     { categoryId: 'orphan', name: '孤立三级', parentId: 'missing-parent', level: 3, showInFinance: 1 }
@@ -36,12 +37,15 @@ test('finance inventory includes all root categories and unclassified stock exac
   assert.equal(byName.get('未分类').quantity, 5);
   assert.equal(byName.get('无库存分类').quantity, 0);
   assert.equal(byName.has('选件周边'), false);
+  assert.equal(byName.has('Care服务'), false);
   assert.equal(byName.get('停用但有库存').amount, 10);
   assert.equal(result.categories.reduce((sum, row) => sum + row.quantity, 0), result.inventoryQuantity);
   assert.equal(result.categories.reduce((sum, row) => sum + row.amount, 0), result.inventoryAmount);
   assert.ok(result.categories.every(row => row.level === 1));
   assert.ok(!result.categories.some(row => row.name === '孤立三级'));
   assert.ok(sqls.filter(sql => sql.includes('FROM T_PRODUCT_SN') || sql.includes('FROM T_INVENTORY i')).every(sql => sql.includes("= 'care服务'")));
+  assert.ok(sqls.filter(sql => sql.includes('FROM T_PRODUCT_SN') || sql.includes('FROM T_INVENTORY i')).every(sql =>
+    sql.includes("LOWER(COALESCE(p.NAME, '')) REGEXP 'care[[:space:]]*卡'") && sql.includes("LOWER(TRIM(COALESCE(p.CATEGORY, ''))) = 'care服务'")));
   assert.ok(sqls.filter(sql => sql.includes('FROM T_PRODUCT_SN')).every(sql => sql.includes('ps.STORE_ID IN (:storeIds)') && sql.includes('NOT IN (\'demo_qty\', \'rental_demo_qty\')')));
   assert.ok(!sqls.find(sql => sql.includes('FROM T_PRODUCT_CATEGORY')).includes('WHERE STATUS = 1'));
 });

@@ -36,6 +36,10 @@ function chinaToday() {
 }
 
 function resolvePeriod(query = {}) {
+  if (query.startDate && query.endDate) {
+    const current = buildRanges(query).current;
+    return { periodType: 'range', date: current.endDate, startDate: current.startDate, endDate: current.endDate };
+  }
   const periodType = ['day', 'month', 'year'].includes(query.periodType) ? query.periodType : 'month';
   const date = String(query.date || query.endDate || chinaToday()).slice(0, 10);
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
@@ -436,8 +440,8 @@ async function getFinanceOverview(ctx) {
       period,
       regionId,
       revenue: roundMoney(summary.salesAmount),
-      grossProfit: combinedGrossProfit,
-      grossMargin: combinedGrossMargin,
+      grossProfit: profitVisible ? roundMoney(summary.grossProfit) : null,
+      grossMargin: profitVisible && summary.salesAmount ? Number((summary.grossProfit / summary.salesAmount * 100).toFixed(2)) : null,
       salesGrossProfit: profitVisible ? roundMoney(summary.grossProfit) : null,
       salesGrossMargin: profitVisible && summary.salesAmount ? Number(((summary.grossProfit / summary.salesAmount) * 100).toFixed(2)) : null,
       productGrossProfit,
@@ -445,6 +449,7 @@ async function getFinanceOverview(ctx) {
         ? Number(((productGrossProfit / productSettlement.productPricingAmount) * 100).toFixed(2))
         : null,
       combinedGrossProfit,
+      grossProfitSource: 'OPERATING_FROZEN_EVENTS_V1',
       combinedGrossMargin,
       operatingExpense: profitVisible ? expenseSummary : null,
       storeOperatingProfit,
