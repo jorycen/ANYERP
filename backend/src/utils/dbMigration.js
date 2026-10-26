@@ -1321,6 +1321,8 @@ async function initializeCategorySortOrder() {
 }
 
 async function ensureProductSettlementSchema() {
+  const receiptSql = fs.readFileSync(path.resolve(__dirname, '../../db_migrations/20261026_non_purchase_receipt.sql'), 'utf8');
+  await sequelize.query(receiptSql);
   const financialSql = fs.readFileSync(path.resolve(__dirname, '../../db_migrations/20261023_financial_profit_control.sql'), 'utf8');
   for (const statement of financialSql.split(';').map(value => value.trim()).filter(Boolean)) await sequelize.query(statement);
   const incomeSql = fs.readFileSync(path.resolve(__dirname, '../../db_migrations/20261023_product_profit_income.sql'), 'utf8');

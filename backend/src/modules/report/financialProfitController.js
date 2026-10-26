@@ -29,6 +29,8 @@ function snapshotPurchaseCost(row) {
 }
 
 function resolveFinancialCost(row) {
+  // 原整机已计入公司成本；回收审批确认的是内部经营价值，不能再当成一次外部采购成本扣除。
+  if (row.purchaseCostSource === 'sales_component_recovery_value') return { unitCost: null, source: 'recovery_financial_allocation_pending' };
   const settlement = validCost(row.purchaseUnitCost);
   // Pending rows may contain default zeroes; confirmed zero costs are valid.
   if (settlement !== null && (settlement > 0 || row.purchaseCostStatus === 'ready' || row.purchaseCostSource === 'manual_sold_cost')) {

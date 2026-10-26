@@ -8,6 +8,7 @@
       </template>
 
       <el-tabs v-model="mainTab" class="module-tabs" @tab-change="onTabChange">
+        <el-tab-pane label="获赠 / 拆机回收" name="non-purchase" lazy><NonPurchaseReceipts /></el-tab-pane>
         <!-- 库存汇总 -->
         <el-tab-pane label="库存汇总" name="summary">
           <div class="inventory-resource-legend">
@@ -1962,6 +1963,7 @@
 </template>
 
 <script setup>
+import NonPurchaseReceipts from '../components/NonPurchaseReceipts.vue'
 import { ref, reactive, onMounted, computed, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'

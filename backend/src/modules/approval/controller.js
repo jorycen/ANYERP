@@ -436,6 +436,12 @@ async function getInstance(ctx) {
   if (!row) ctx.throw(404, '审批实例不存在');
   if (!(await canReadInstance(ctx, row))) ctx.throw(403, '无权查看该审批实例');
   const data = toInstance(row);
+  if (['sales_component_recovery', 'gift_receipt'].includes(data.business_type)) {
+    const receipt = await require('../../models').NonPurchaseReceipt.findByPk(data.business_id);
+    if (receipt) {
+      data.moduleData = { ...receipt.toJSON(), items: JSON.parse(receipt.payload_json).items };
+    }
+  }
   if (data.business_type === 'payable_settlement') {
     const applicant = data.applicant_staff_id
       ? await Staff.findByPk(data.applicant_staff_id, { attributes: ['staff_id', 'name', 'phone'] })

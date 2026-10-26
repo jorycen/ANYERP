@@ -69,6 +69,26 @@ function fixture(t, standardPrice) {
   return { order, item };
 }
 
+test('非SN获赠与有价物料混库时冻结平均成本，不把最新获赠0元当作全库存成本',async t=>{
+  fixture(t,250);
+  t.mock.method(M.ProductPrice,'findAll',async()=>[{product_id:'product',standard_price:250,status:1,cost_price:100}]);
+  t.mock.method(M.sequelize,'query',async sql=>sql.includes('ii.PRODUCT_ID AS product_id')?[{product_id:'product',inbound_price:0,source_type:'GIFT'}]:[]);
+  const result=snapshotToResponse(await calculateAndSaveOrderGrossProfit('order',{persist:false,final:false}));
+  assert.equal(result.productPricingDetails[0].purchasePrice,100);
+  assert.equal(result.productPricingDetails[0].nonPurchaseSource,'GIFT');
+  assert.equal(result.productPricingDetails[0].unitPricing,250);
+});
+
+test('有SN回收配件按公司定价展示销售毛利，同时冻结逐件回收成本',async t=>{
+  const {item}=fixture(t,250);item.sn_id='SN';item.sn_code='RAM1';
+  t.mock.method(M.ProductSn,'findAll',async()=>[{sn_id:'SN',sn_code:'RAM1',inbound_price:200,source_type:'SALES_COMPONENT_RECOVERY',gross_profit_use_standard_price:1}]);
+  t.mock.method(M.Store,'findOne',async()=>null);
+  const result=snapshotToResponse(await calculateAndSaveOrderGrossProfit('order',{persist:false,final:false}));
+  assert.equal(result.productPricingDetails[0].purchasePrice,200);
+  assert.equal(result.productPricingDetails[0].unitPricing,250);
+  assert.equal(result.productPricingDetails[0].nonPurchaseSource,'SALES_COMPONENT_RECOVERY');
+});
+
 test('raw inbound cutoff uses Shanghai business time independently of container timezone', async t => {
   const { order } = fixture(t, 1500);
   order.create_time = new Date('2026-10-22T06:45:41.000Z');

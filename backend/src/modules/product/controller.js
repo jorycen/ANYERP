@@ -2271,7 +2271,7 @@ function getInventoryQty(inv) {
   ) + Number(inv.display_qty || 0) + Number(inv.demo_qty || 0) + Number(inv.unsellable_qty || 0);
 }
 
-function fifoRemainingAverageCost(layers, currentStockQty) {
+function fifoRemainingAverageCost(layers, currentStockQty, { requireComplete = false } = {}) {
   let remaining = Number(currentStockQty || 0);
   let totalCost = 0;
   let totalQty = 0;
@@ -2280,21 +2280,22 @@ function fifoRemainingAverageCost(layers, currentStockQty) {
     if (remaining <= 0) break;
     const price = Number(layer.unit_price || layer.UNIT_PRICE || 0);
     const qty = Number(layer.quantity || layer.QUANTITY || 0);
-    if (price <= 0 || qty <= 0) continue;
+    if ((price <= 0 && !(price === 0 && Number(layer.zero_cost_confirmed) === 1)) || qty <= 0) continue;
     const takeQty = Math.min(qty, remaining);
     totalCost += takeQty * price;
     totalQty += takeQty;
     remaining -= takeQty;
   }
 
+  if (requireComplete && remaining > 0) return null;
   if (totalQty <= 0) return 0;
   return parseFloat((totalCost / totalQty).toFixed(2));
 }
 
 // 计算当前库存平均成本。SN商品按在库SN个别成本平均；非SN商品按FIFO剩余成本层平均。
-async function calculateFifoCost(productId) {
+async function calculateFifoCost(productId, { transaction = null, requireComplete = false } = {}) {
   const { sequelize } = require('../../models');
-  const product = await Product.findOne({ where: { product_id: productId, is_deleted: 0 }, raw: true });
+  const product = await Product.findOne({ where: { product_id: productId, is_deleted: 0 }, raw: true, transaction });
   if (!product) return 0;
 
   if (Number(product.need_sn || 0) === 1) {
@@ -2303,13 +2304,13 @@ async function calculateFifoCost(productId) {
         product_id: productId,
         status: 'in_stock',
         is_deleted: 0,
-        inbound_price: { [Op.gt]: 0 }
+        [Op.or]: [{ inbound_price: { [Op.gt]: 0 } }, { inbound_price: 0, source_type: { [Op.in]: ['GIFT', 'SALES_COMPONENT_RECOVERY'] } }]
       },
       attributes: [
         [Sequelize.fn('SUM', Sequelize.col('inbound_price')), 'total_amount'],
         [Sequelize.fn('COUNT', Sequelize.col('sn_id')), 'total_qty']
       ],
-      raw: true
+      raw: true, transaction
     });
     const snQty = Number(snCost?.total_qty || 0);
     if (snQty <= 0) return 0;
@@ -2318,29 +2319,33 @@ async function calculateFifoCost(productId) {
 
   const inventoryRows = await Inventory.findAll({
     where: { product_id: productId },
-    raw: true
+    raw: true, transaction
   });
   const currentStockQty = inventoryRows.reduce((sum, inv) => sum + getInventoryQty(inv), 0);
   if (currentStockQty <= 0) return 0;
 
   const batches = await sequelize.query(`
-    SELECT unit_price, quantity, create_time FROM (
+    SELECT unit_price, quantity, create_time, zero_cost_confirmed FROM (
       SELECT 
         ii.UNIT_PRICE AS unit_price,
         ii.QUANTITY AS quantity,
-        i.CREATE_TIME AS create_time
+        COALESCE(i.RECEIVE_TIME, i.CREATE_TIME) AS create_time,
+        CASE WHEN ii.UNIT_PRICE = 0 AND i.SOURCE_TYPE IN ('GIFT','SALES_COMPONENT_RECOVERY')
+          AND EXISTS (SELECT 1 FROM T_NON_PURCHASE_RECEIPT npr WHERE npr.INBOUND_ID = i.INBOUND_ID AND npr.STATUS IN ('approved','received')) THEN 1 ELSE 0 END AS zero_cost_confirmed
       FROM T_INBOUND_ITEM ii
       JOIN T_INBOUND i ON ii.INBOUND_ID = i.INBOUND_ID
       WHERE ii.PRODUCT_ID = ?
         AND i.STATUS IN ('completed', 'executed')
         AND COALESCE(ii.SN_CODE, '') = ''
-        AND ii.UNIT_PRICE > 0
+        AND (ii.UNIT_PRICE > 0 OR (ii.UNIT_PRICE = 0 AND i.SOURCE_TYPE IN ('GIFT','SALES_COMPONENT_RECOVERY')
+          AND EXISTS (SELECT 1 FROM T_NON_PURCHASE_RECEIPT npr WHERE npr.INBOUND_ID = i.INBOUND_ID AND npr.STATUS IN ('approved','received'))))
         AND ii.QUANTITY > 0
       UNION ALL
       SELECT
         item.UNIT_PRICE AS unit_price,
         item.QUANTITY AS quantity,
-        COALESCE(app.EXECUTE_TIME, item.CREATE_TIME, app.CREATE_TIME) AS create_time
+        COALESCE(app.EXECUTE_TIME, item.CREATE_TIME, app.CREATE_TIME) AS create_time,
+        0 AS zero_cost_confirmed
       FROM T_INVENTORY_BATCH_APPLICATION_ITEM item
       JOIN T_INVENTORY_BATCH_APPLICATION app ON item.APPLICATION_ID = app.APPLICATION_ID
       WHERE item.PRODUCT_ID = ?
@@ -2353,10 +2358,10 @@ async function calculateFifoCost(productId) {
     ORDER BY create_time DESC
   `, {
     replacements: [productId, productId],
-    type: sequelize.QueryTypes.SELECT
+    type: sequelize.QueryTypes.SELECT, transaction
   });
 
-  return fifoRemainingAverageCost(batches || [], currentStockQty);
+  return fifoRemainingAverageCost(batches || [], currentStockQty, { requireComplete });
 }
 
 async function refreshCostPrice(ctx) {
@@ -3964,6 +3969,8 @@ async function exportProducts(ctx) {
 }
 
 module.exports = {
+  calculateFifoCost,
+  fifoRemainingAverageCost,
   getForcedPurchasePnSnapshot,
   syncPurchaseRequestPnSnapshots,
   createProductRecord,

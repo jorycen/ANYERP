@@ -3932,6 +3932,8 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
       fail(400, '该入库单已处理');
     }
 
+    await require('./nonPurchaseReceipt').validateInboundRequest(inbound, items, user, t);
+
     const isTransferInbound = isTransferInboundRecord(inbound);
     if (isTransferInbound) {
       fail(400, '调拨入库请在调拨管理中操作');
@@ -4190,6 +4192,7 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
           original_pickup_price: originalPickupPrice,
           supplier_id: supplier?.supplier_id || null,
           supplier_name: supplier?.name || null,
+          ...(['GIFT', 'SALES_COMPONENT_RECOVERY'].includes(inbound.source_type) ? { source_type: inbound.source_type, batch_no: inbound.source_no } : {}),
           gross_profit_use_standard_price: dbItem.gross_profit_use_standard_price,
           gross_profit_uplift_amount: dbItem.gross_profit_uplift_amount,
           remark: item.remark || '',
@@ -4220,7 +4223,7 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
           original_pickup_price: originalPickupPrice,
           inventory_type: inventoryType
         }, { transaction: t });
-        if (isPurchaseInbound) {
+        if (isPurchaseInbound || ['GIFT', 'SALES_COMPONENT_RECOVERY'].includes(inbound.source_type)) {
           await InboundItemSn.findOrCreate({
             where: { inbound_item_id: dbItem.item_id, sn_id: snRecord.sn_id },
             defaults: {
@@ -4318,6 +4321,8 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
     if (isPurchaseInbound && nextInboundStatus === 'completed' && purchaseRequest) {
       await createPurchaseReimbursementAfterInbound(purchaseRequest, user, t);
     }
+
+    await require('./nonPurchaseReceipt').completeInbound(inbound, user, t);
 
     if (isSalesReturnInbound) {
       const salesReturn = await SalesReturnRequest.findOne({
@@ -6705,6 +6710,7 @@ module.exports = {
   getInboundDetail,
   getSnTraceInboundDetail,
   executeInbound,
+  executeInboundInTransaction,
   completeApprovedSalesReturnInbound,
   updateInventory,
   moveSnInventoryAggregate,

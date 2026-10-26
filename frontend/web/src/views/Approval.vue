@@ -608,6 +608,8 @@ function businessTypeText(value) {
     purchase_expense: '采购垫付报销审批',
     inventory_transfer_receipt: '调拨入库确认',
     inventory_batch: '批量库存维护审批',
+    sales_component_recovery: '拆机回收审批',
+    gift_receipt: '获赠入库审批',
     sale_share: '销售晒单审核',
     sale_resource_reward: '教育补贴及销量报号审批',
     purchase_request: '采购申请审批',
@@ -725,6 +727,8 @@ Object.assign(detailFieldLabels, { expense_date: '\u8d39\u7528\u65e5\u671f', acc
 const detailArrayLabels = { items: '采购商品明细', OrderItems: '订单商品明细', InboundItems: '入库商品明细', originalOrderItems: '原订单商品明细', attachments: '附件' }
 Object.assign(detailArrayLabels, { attribution_details: '\u8d39\u7528\u5f52\u5c5e\u5206\u644a' })
 const detailArrayColumnLabels = {
+  productName: '入库商品', sourceProductName: '原销售商品', sourceSn: '原销售SN', snCode: '入库SN', pnCode: 'PN',
+  companyPrice: '公司定价', recoveryUnitCost: '确认回收单价', orderItemId: '原商品行', inboundItemId: '入库明细',
   gross_profit_cost_mode: '毛利计价方式',
   product_name: '商品名称', product_code: '商品编码', pn_code: 'PN', sn_code: 'SN', quantity: '数量',
   current_quantity: '当前数量', unit_price: '单价', amount: '金额', amount_delta: '金额变化',
@@ -821,6 +825,7 @@ async function loadModuleDetail(row) {
   const id = row.Instance?.business_id
   const source = row.moduleRow || {}
   if (!id) return source
+  if (['sales_component_recovery', 'gift_receipt'].includes(row.moduleType)) return { ...source, items: JSON.parse(source.payload_json || '{}').items || [] }
   if (row.moduleType === 'sales_order_negative_gross_profit') return responseData(await api.getSalesDetail(id))
   if (['inventory_transfer', 'inventory_transfer_receipt'].includes(row.moduleType)) return responseData(await api.getTransferDetail(id))
   if (row.moduleType === 'inventory_batch') return responseData(await api.getInventoryBatchApplicationDetail(id))
@@ -1188,6 +1193,19 @@ async function reviewModule(row, action) {
   if (row.manualPath) { await router.push(row.manualPath); return }
   const isPurchaseRequest = ['purchase', 'purchase_request'].includes(row.moduleType)
   let rebateAmount = null
+  let receiptCosts = null
+  if (action === 'approve' && row.moduleType === 'sales_component_recovery') {
+    const source = row.moduleRow || {}
+    const payload = typeof source.payload_json === 'string' ? JSON.parse(source.payload_json) : source.payload_json
+    receiptCosts = {}
+    for (const [index, item] of (payload?.items || []).entries()) {
+      const result = await ElMessageBox.prompt(`原商品：${item.sourceProductName} / ${item.sourceSn || '-'}；回收 ${item.productName} × ${item.quantity}，请确认回收单价。`, '拆机回收成本确认', {
+        inputValue: '', inputPattern: /^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/, inputErrorMessage: '请明确填写非负金额，最多两位小数'
+      }).catch(() => null)
+      if (!result) return
+      receiptCosts[index] = result.value
+    }
+  }
   if (action === 'approve' && row.moduleType === 'manufacturer_rebate_confirmation') {
     const result = await ElMessageBox.prompt('请填写该 SN 实际应得的厂商返利金额；不符合返利条件请填写 0。', '确认厂商返利金额', {
       inputType: 'number',
@@ -1225,7 +1243,7 @@ async function reviewModule(row, action) {
     : []
   try {
     if (row.managedBusiness) {
-      const result = await api.actionBusinessApproval(row.moduleType, id, { action, comment, businessData: { newProductCategories, ...(editedProductPayload ? { payload: editedProductPayload } : {}), ...(rebateAmount !== null ? { rebateAmount } : {}) } })
+      const result = await api.actionBusinessApproval(row.moduleType, id, { action, comment, businessData: { newProductCategories, ...(editedProductPayload ? { payload: editedProductPayload } : {}), ...(rebateAmount !== null ? { rebateAmount } : {}), ...(receiptCosts ? { costs: receiptCosts } : {}) } })
       ElMessage.success(result.message || '审批已记录')
       await reload()
       return

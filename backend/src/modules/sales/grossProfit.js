@@ -514,7 +514,11 @@ async function resolveSupplierContext(items, order, transaction) {
 
   const latestInboundRows = productIds.length
     ? await sequelize.query(
-        `SELECT ii.PRODUCT_ID AS product_id, ii.UNIT_PRICE AS inbound_price,
+        `SELECT ii.PRODUCT_ID AS product_id, ii.UNIT_PRICE AS inbound_price, i.SOURCE_TYPE AS source_type,
+                EXISTS (SELECT 1 FROM T_INBOUND_ITEM recovered_item
+                  INNER JOIN T_INBOUND recovered_inbound ON recovered_inbound.INBOUND_ID = recovered_item.INBOUND_ID
+                  WHERE recovered_item.PRODUCT_ID = ii.PRODUCT_ID AND recovered_inbound.SOURCE_TYPE = 'SALES_COMPONENT_RECOVERY'
+                    AND recovered_inbound.STATUS = 'completed' AND recovered_inbound.RECEIVE_TIME <= :orderTime) AS has_recovery_cost,
                 pr.SUPPLIER_ID AS supplier_id,
                 s.NAME AS supplier_name,
                 s.GROSS_PROFIT_UPLIFT_AMOUNT AS supplier_gross_profit_uplift_amount
@@ -525,6 +529,7 @@ async function resolveSupplierContext(items, order, transaction) {
           WHERE i.STORE_ID = :storeId
             AND i.STATUS = 'completed'
             AND i.CREATE_TIME <= :orderTime
+            AND (COALESCE(i.SOURCE_TYPE, '') NOT IN ('GIFT','SALES_COMPONENT_RECOVERY') OR i.RECEIVE_TIME <= :orderTime)
             AND ii.PRODUCT_ID IN (:productIds)
           ORDER BY i.CREATE_TIME DESC, i.INBOUND_ID DESC`,
         // Raw replacements format Date using the host timezone. MySQL business
@@ -609,10 +614,13 @@ async function buildProductPricingDetails(orderId, transaction) {
     const product = productById.get(String(row.product_id || '')) || {};
     const snRow = supplierContext.snMap.get(`id:${row.sn_id}`) || supplierContext.snMap.get(`code:${row.sn_code}`);
     const inboundSupplier = supplierContext.latestInboundByProduct.get(String(row.product_id || ''));
+    const receiptSource = snRow ? snRow.source_type : inboundSupplier?.source_type;
+    const isNonPurchase = ['GIFT', 'SALES_COMPONENT_RECOVERY'].includes(receiptSource);
+    const nonSnReceiptCost = !snRow && isNonPurchase ? validPrice(productPrice?.cost_price) : null;
     const supplierId = row.supplier_id || snRow?.supplier_id || inboundSupplier?.supplier_id || '';
     const supplier = supplierId ? supplierContext.supplierMap.get(String(supplierId)) : null;
     // Unarchived order-item zeroes are defaults, not evidence of actual cost.
-    const purchasePrice = (toNumber(row.original_inventory_cost) > 0 ? validPrice(row.original_inventory_cost) : null)
+    const purchasePrice = nonSnReceiptCost ?? (toNumber(row.original_inventory_cost) > 0 ? validPrice(row.original_inventory_cost) : null)
       ?? (toNumber(row.original_pickup_price) > 0 ? validPrice(row.original_pickup_price) : null)
       ?? validPrice(snRow?.inbound_price)
       ?? validPrice(inboundSupplier?.inbound_price)
@@ -628,7 +636,7 @@ async function buildProductPricingDetails(orderId, transaction) {
       supplier,
       {
         purchaseUpliftAmount: supplier?.gross_profit_uplift_amount ?? inboundSupplier?.supplier_gross_profit_uplift_amount,
-        costMode: resolveInventoryCostMode(product, snRow, productPrice, order.create_time)
+        costMode: isNonPurchase ? 'COMPANY_PRICE' : resolveInventoryCostMode(product, snRow, productPrice, order.create_time)
       }
     );
     const fixedCost = historicalPnCost(order, row.pn_code);
@@ -661,6 +669,8 @@ async function buildProductPricingDetails(orderId, transaction) {
       isSpecialPrice: fixedCost === null && specialPrice !== null,
       purchasePrice: effectivePricing.purchasePrice ?? roundMoney(purchasePrice),
       purchasePriceKnown: purchasePrice !== null,
+      nonPurchaseSource: isNonPurchase ? receiptSource : null,
+      recoveryFinancialAllocationPending: snRow ? receiptSource === 'SALES_COMPONENT_RECOVERY' : Number(inboundSupplier?.has_recovery_cost) === 1,
       grossProfitUpliftAmount: effectivePricing.grossProfitUpliftAmount ?? 0,
       supplierId: supplier?.supplier_id || supplierId,
       supplierName: supplier?.name || row.supplier_name || inboundSupplier?.supplier_name || '',

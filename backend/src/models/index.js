@@ -1558,6 +1558,29 @@ const OrderAttachment = sequelize.define('OrderAttachment', {
 // 库房操作模型
 // ----------------------------------------
 
+const NonPurchaseReceipt = sequelize.define('NonPurchaseReceipt', {
+  receipt_id: { type: DataTypes.STRING(32), primaryKey: true },
+  receipt_no: { type: DataTypes.STRING(64), allowNull: false, unique: true },
+  request_key: { type: DataTypes.STRING(64), allowNull: false, unique: true },
+  source_type: { type: DataTypes.STRING(32), allowNull: false },
+  order_id: { type: DataTypes.STRING(32) },
+  order_no: { type: DataTypes.STRING(64) },
+  store_id: { type: DataTypes.STRING(32), allowNull: false },
+  distributor_id: { type: DataTypes.STRING(32) },
+  applicant_staff_id: { type: DataTypes.BIGINT, allowNull: false },
+  applicant_name: { type: DataTypes.STRING(64), allowNull: false },
+  reason: { type: DataTypes.STRING(1000), allowNull: false },
+  payload_json: { type: DataTypes.TEXT('long'), allowNull: false },
+  status: { type: DataTypes.STRING(32), allowNull: false, defaultValue: 'pending' },
+  total_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+  inbound_id: { type: DataTypes.STRING(32) },
+  adjustment_id: { type: DataTypes.STRING(32) },
+  reviewer_name: { type: DataTypes.STRING(64) },
+  review_time: { type: DataTypes.DATE },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_NON_PURCHASE_RECEIPT', timestamps: false });
+
 // 入库单
 const Inbound = sequelize.define('Inbound', {
   inbound_id: { type: DataTypes.STRING(32), primaryKey: true },
@@ -2865,6 +2888,7 @@ module.exports = {
   DepositRedemption,
   OrderAttachment,
   Inbound,
+  NonPurchaseReceipt,
   InboundItem,
   InboundItemSn,
   Outbound,

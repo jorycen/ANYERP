@@ -34,6 +34,8 @@ function defaultCatalog(fixed = new Map()) {
     { flowCode: 'subsidy_receivable_adjustment', name: '\u56fd\u8865\u5dee\u989d\u5ba1\u6279', businessType: 'subsidy_receivable_adjustment', nodes: [or('\u8d22\u52a1\u5ba1\u6279\u90e8\u95e8', [role('finance'), role('admin'), role('boss')])] },
     { flowCode: 'expense_performance_allocation', name: '\u8d39\u7528\u7ee9\u6548\u5206\u914d\u5ba1\u6279', businessType: 'expense_performance_allocation', nodes: [or('\u8d22\u52a1\u5ba1\u6279\u90e8\u95e8', [role('finance'), role('admin'), role('boss')])] }
   ].concat([
+    { flowCode: 'sales_component_recovery', name: '拆机回收审批', businessType: 'sales_component_recovery', nodes: [or('拆件成本确认', [role('purchaser'), role('admin'), role('boss')])] },
+    { flowCode: 'gift_receipt', name: '获赠入库审批', businessType: 'gift_receipt', nodes: [or('获赠确认', [role('purchaser'), role('admin'), role('boss')])] },
     { flowCode: 'purchase_expense', name: '采购垫付报销审批', businessType: 'purchase_expense', nodes: [or('报销审批', [role('admin'), role('boss')])] },
     { flowCode: 'inventory_batch', name: '批量库存维护审批', businessType: 'inventory_batch', nodes: [or('库存维护审批', [role('admin'), role('boss')])] },
     { flowCode: 'sale_share', name: '销售晒单审核', businessType: 'sale_share', nodes: [or('店长审核', [{ type: 'store_manager' }])] }

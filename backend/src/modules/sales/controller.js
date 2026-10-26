@@ -4361,6 +4361,10 @@ async function requestSalesReturn(ctx) {
       lock: transaction.LOCK.UPDATE
     });
     if (activeRequest) ctx.throw(409, '该订单已有待处理的退单申请');
+    const recovery = await require('../../models').NonPurchaseReceipt.findOne({
+      where: { order_id: order.order_id, status: { [Op.in]: ['pending', 'approved', 'received'] } }, transaction
+    });
+    if (recovery) ctx.throw(409, '该订单存在拆机回收，请先取消未入库回收；已入库回收需核实配件和毛利后处理，不能直接退回完整原商品');
 
     const orderItems = order.OrderItems || [];
     if (orderItems.length === 0) ctx.throw(400, '订单没有商品明细，无法提交退单申请');

@@ -61,14 +61,18 @@ function buildProductSettlementItem({ item, product, productPrice, productPricin
   const isSn = Boolean(item.sn_id || item.sn_code || Number(product?.need_sn) === 1);
   const lockedZeroCost = Number(productPrice?.cost_price_locked || 0) === 1
     && money(productPrice?.cost_price) === 0;
-  const rawCost = lockedZeroCost ? 0 : isSn
+  const confirmedNonPurchaseCost = ['GIFT', 'SALES_COMPONENT_RECOVERY'].includes(productPricingDetail?.nonPurchaseSource)
+    && productPricingDetail?.purchasePriceKnown === true
+    && Number.isFinite(Number(productPricingDetail.purchasePrice)) && Number(productPricingDetail.purchasePrice) >= 0;
+  const rawCost = confirmedNonPurchaseCost ? Number(productPricingDetail.purchasePrice) : lockedZeroCost ? 0 : isSn
     ? toNumber(item.original_inventory_cost) || toNumber(item.original_pickup_price)
       || toNumber(sn?.inbound_price) || toNumber(sn?.original_pickup_price)
     : toNumber(item.original_inventory_cost) || toNumber(productPrice?.cost_price);
   const purchaseUnitCost = money(rawCost);
-  const costStatus = lockedZeroCost || (productUnitPrice > 0 && purchaseUnitCost > 0) ? 'ready' : 'pending';
+  const costStatus = confirmedNonPurchaseCost || lockedZeroCost || (productUnitPrice > 0 && purchaseUnitCost > 0) ? 'ready' : 'pending';
   const costMethod = lockedZeroCost ? 'manual_locked_cost' : isSn ? 'sn_actual_cost' : 'weighted_average';
-  const costSource = lockedZeroCost ? 'locked_zero_inventory_cost' : isSn
+  const costSource = productPricingDetail?.recoveryFinancialAllocationPending === true || productPricingDetail?.nonPurchaseSource === 'SALES_COMPONENT_RECOVERY'
+    ? 'sales_component_recovery_value' : confirmedNonPurchaseCost ? 'approved_non_purchase_receipt' : lockedZeroCost ? 'locked_zero_inventory_cost' : isSn
     ? (item.original_inventory_cost > 0 || item.original_pickup_price > 0 || sn?.inbound_price > 0
       ? 'order_item_or_sn_inbound_cost' : 'missing_sn_cost')
     : (item.original_inventory_cost > 0 ? 'order_item_cost_snapshot' : 'product_price_cost_price');
@@ -395,6 +399,8 @@ function explainSettlementItem(item) {
     if (!reasons.length) reasons.push('历史结算仍为待补状态，需核对原始成本证据');
   }
   const sources = {
+    approved_non_purchase_receipt: '已审批回收/获赠库存成本',
+    sales_component_recovery_value: '拆机回收经营确认价值（公司财务成本分摊待核实）',
     manual_sold_cost: '已售商品人工补录采购成本', locked_zero_inventory_cost: '人工锁定零成本', order_item_or_sn_inbound_cost: '订单或SN入库成本',
     missing_sn_cost: '未取得SN成本', order_item_cost_snapshot: '订单成本快照',
     product_price_cost_price: '商品库存成本', sn_special_price: 'SN特价', product_standard_price: '产品标准定价'

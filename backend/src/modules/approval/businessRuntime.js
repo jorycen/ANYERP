@@ -4,6 +4,8 @@ const S = require('./service');
 
 // Business modules own their effects; this layer owns snapshots, tasks and votes.
 const registry = {
+  sales_component_recovery: { model: 'NonPurchaseReceipt', id: 'receipt_id', no: 'receipt_no', states: ['pending'], extra: { source_type: 'SALES_COMPONENT_RECOVERY' }, module: '../inventory/nonPurchaseReceipt', handler: 'review', param: 'receiptId' },
+  gift_receipt: { model: 'NonPurchaseReceipt', id: 'receipt_id', no: 'receipt_no', states: ['pending'], extra: { source_type: 'GIFT' }, module: '../inventory/nonPurchaseReceipt', handler: 'review', param: 'receiptId' },
   purchase_request: { model: 'PurchaseRequest', id: 'request_id', no: 'request_no', states: ['pending'], module: '../purchase/controller', handler: 'approveRequest', param: 'requestId', actionKey: 'status', past: true },
   product_application: { model: 'ProductApplication', id: 'application_id', no: 'application_no', states: ['pending'], module: '../product/controller', handler: 'reviewProductApplication', param: 'applicationId', past: true },
   sales_return: { model: 'SalesReturnRequest', id: 'return_id', no: 'return_no', states: ['pending'], module: '../sales/controller', handler: 'reviewSalesReturn', param: 'returnId', past: true, stages: ['pending_store', 'pending_duan', 'pending_deng', 'pending_li'] },
@@ -28,6 +30,7 @@ const registry = {
 
 function pending(type, row) {
   const d = registry[type];
+  if (d.extra?.source_type && row.source_type !== d.extra.source_type) return false;
   return d.states.includes(row[d.status || 'status']) && !row.is_deleted
     && !(type === 'sale_resource_reward' && !['EDU_SUBSIDY', 'SALES_REPORT'].includes(row.resource_type))
     && !(type === 'sale_share' && ['EDU_SUBSIDY', 'SALES_REPORT'].includes(row.resource_type))
@@ -210,7 +213,7 @@ function installHooks() {
   hooksInstalled = true;
   for (const [type, d] of Object.entries(registry)) {
     const save = async (row, options) => {
-      if (!pending(type, row)) {
+      if (!pending(type, row) || (d.extra?.source_type && row.source_type !== d.extra.source_type)) {
         if (options.transaction && d.states.includes(row.previous(d.status || 'status'))) {
           const instance = await latest(type, row, options.transaction);
           if (instance?.status === 'pending') {
