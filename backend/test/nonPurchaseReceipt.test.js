@@ -24,6 +24,7 @@ function fixture(t) {
   mock(M.Product,'findOne',async()=>({product_id:'P1',name:'内存',need_sn:1,status:1}));
   mock(M.ProductPrice,'findOne',async()=>({standard_price:250}));
   mock(M.ProductSn,'findOne',async()=>null);
+  mock(M.ProductSn,'findAll',async()=>[]);
   mock(M.Inbound,'create',async values=>{Object.assign(inbound,values);return inbound;});
   mock(M.InboundItem,'create',async values=>{const item={...values,item_id:itemRows.length+1};itemRows.push(item);return item;});
   mock(M.InboundItem,'findAll',async()=>itemRows);
@@ -125,4 +126,37 @@ test('回收经营确认价值在公司财务中须等待原成本分摊，不�
   const {resolveFinancialCost}=require('../src/modules/report/financialProfitController');
   assert.equal(resolveFinancialCost({purchaseUnitCost:200,purchaseCostStatus:'ready',purchaseCostSource:'sales_component_recovery_value',originalInventoryCost:200}).unitCost,null);
   assert.equal(resolveFinancialCost({purchaseUnitCost:0,purchaseCostStatus:'ready',purchaseCostSource:'approved_non_purchase_receipt'}).unitCost,0);
+});
+
+for (const status of ['returned','sold','out_stock']) {
+  test(`拆机回收允许同门店同商品的${status}历史SN，保留原身份且审批前不改库存`,async t=>{
+    const f=fixture(t);
+    const historical={sn_id:'OLD_SN_ID',sn_code:'RAM1',product_id:'P1',store_id:'STORE',status,is_deleted:0};
+    t.mock.method(M.ProductSn,'findOne',async()=>historical);
+    const items=await service.validateItems([{productId:'P1',quantity:1,snCode:'RAM1',orderItemId:10}],[{item_id:10}],tx,'STORE');
+    assert.equal(items[0].existingSnId,'OLD_SN_ID');assert.equal(items[0].previousSnStatus,status);
+    assert.equal(historical.status,status);assert.equal(f.adjustment,undefined);
+    f.row.payload_json=JSON.stringify({items});
+    await service.review(ctx({action:'approve',costs:{0:200}}));
+    assert.equal(f.itemRows[0].sn_id,'OLD_SN_ID');assert.equal(historical.status,status);
+    historical.status='in_stock';
+    const saved=JSON.parse(f.row.payload_json).items[0];
+    await assert.rejects(service.validateInboundRequest(f.inbound,[{inboundItemId:saved.inboundItemId,productId:'P1',quantity:1,snCode:'RAM1'}],user,tx),/不能重复入库/);
+  });
+}
+test('历史SN在库、商品或门店不匹配、停用记录仍被拦截，获赠不能冒充回收',async t=>{
+  fixture(t);
+  let historical={sn_id:'OLD',sn_code:'RAM1',product_id:'P1',store_id:'STORE',status:'in_stock',is_deleted:0};
+  t.mock.method(M.ProductSn,'findOne',async()=>historical);
+  const rows=[{productId:'P1',quantity:1,snCode:'RAM1',orderItemId:10}];
+  const source=[{item_id:10}];
+  await assert.rejects(service.validateItems(rows,source,tx,'STORE'),/不能重复入库/);
+  historical={...historical,status:'sold',product_id:'OTHER'};
+  await assert.rejects(service.validateItems(rows,source,tx,'STORE'),/其他商品/);
+  historical={...historical,product_id:'P1',store_id:'OTHER_STORE'};
+  await assert.rejects(service.validateItems(rows,source,tx,'STORE'),/其他门店/);
+  historical={...historical,store_id:'STORE',is_deleted:1};
+  await assert.rejects(service.validateItems(rows,source,tx,'STORE'),/已停用/);
+  historical={...historical,is_deleted:0};
+  await assert.rejects(service.validateItems(rows,null,tx,'STORE'),/不能重复入库/);
 });

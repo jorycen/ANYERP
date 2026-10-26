@@ -27,7 +27,7 @@ async function sourceOrder(orderId, user, transaction) {
   if (returns) fail(409, '该订单存在退单记录，请先处理退单，不能拆机回收');
   return { order, store };
 }
-async function validateItems(rows, sourceItems, transaction) {
+async function validateItems(rows, sourceItems, transaction, storeId = null) {
   if (!Array.isArray(rows) || !rows.length || rows.length > 30) fail(400, '请填写1至30条入库明细');
   const seen = new Set();
   const result = [];
@@ -38,11 +38,21 @@ async function validateItems(rows, sourceItems, transaction) {
     if (sourceItems && !source) fail(400, '原商品行不属于当前销售订单');
     const quantity = Number(raw.quantity);
     if (!Number.isInteger(quantity) || quantity <= 0 || quantity > 10000) fail(400, '入库数量必须为1至10000的整数');
-    const snCode = String(raw.snCode || '').trim();
+    let snCode = String(raw.snCode || '').trim();
     if (Number(product.need_sn) === 1 && (quantity !== 1 || !snCode)) fail(400, 'SN商品请逐件填写配件SN或内部追溯码，数量为1');
     if (Number(product.need_sn) !== 1 && snCode) fail(400, '该商品不按SN管理，请留空SN；需要逐件追溯时请先使用SN管理的商品');
     if (snCode.length > 128) fail(400, 'SN最长128字符');
-    if (snCode && await M.ProductSn.findOne({ where: { sn_code: snCode }, transaction })) fail(409, `SN ${snCode} 已存在`);
+    const inventory = require('./controller');
+    const existingSn = snCode ? await inventory.findInboundSnByIdentity({ snCode, transaction }) : null;
+    if (raw.existingSnId && (!existingSn || String(existingSn.sn_id) !== String(raw.existingSnId))) fail(409, `SN ${snCode} 的历史记录已变化，请重新核对`);
+    if (existingSn) {
+      if (Number(existingSn.is_deleted) === 1) fail(409, `SN ${snCode} 的历史记录已停用，请先核对`);
+      if (String(existingSn.product_id) !== String(product.product_id)) fail(409, `SN ${snCode} 属于其他商品，不能作为当前配件入库`);
+      if (!sourceItems || !inventory.isReusableInboundSnStatus(existingSn.status)) fail(409, `SN ${snCode} 已存在，当前状态为 ${existingSn.status || '未知'}，不能重复入库`);
+      if (!storeId || String(existingSn.store_id) !== String(storeId)) fail(409, `SN ${snCode} 属于其他门店，请先核对原销售或退库记录`);
+      // 复用同一件实物的SN身份，入库执行仍重新校验并锁定状态，不创建第二条记录。
+      snCode = String(existingSn.sn_code).trim();
+    }
     // 无SN商品沿用商品级计价；不能偷偷修改其他库存的商品主档口径。
     if (Number(product.need_sn) !== 1 && product.gross_profit_cost_mode !== 'COMPANY_PRICE') fail(400, `请先在商品管理将 ${product.name} 设置为按公司定价核算`);
     const price = await M.ProductPrice.findOne({ where: { product_id: product.product_id, status: 1 }, order: [['effective_time', 'DESC']], transaction });
@@ -53,7 +63,8 @@ async function validateItems(rows, sourceItems, transaction) {
     result.push({ productId: product.product_id, productName: product.name, quantity, snCode,
       needSn: Number(product.need_sn) === 1, pnCode: String(raw.pnCode || product.manufacturer_code || '').split(/[,，;；\s]+/)[0],
       orderItemId: source?.item_id || null, sourceProductId: source?.product_id || null, sourceProductName: source?.product_name || '', sourcePn: source?.pn_code || '', sourceSn: source?.sn_code || '',
-      companyPrice: money(price.standard_price), recoveryUnitCost: null });
+      companyPrice: money(price.standard_price), recoveryUnitCost: null,
+      existingSnId: existingSn?.sn_id || null, previousSnStatus: existingSn?.status || null });
   }
   return result;
 }
@@ -88,11 +99,11 @@ async function create(ctx) {
     const existing = await M.NonPurchaseReceipt.findOne({ where: { request_key: body.requestKey }, transaction });
     if (existing) {
       if (String(existing.applicant_staff_id) !== String(user.staffId) || existing.source_type !== body.sourceType || String(existing.order_id || '') !== String(order?.order_id || '')) fail(409, '提交编号已被使用');
-      const signature = items => JSON.stringify((items || []).map(item => [String(item.productId), String(item.orderItemId || ''), Number(item.quantity), String(item.snCode || '').trim()]));
+      const signature = items => JSON.stringify((items || []).map(item => [String(item.productId), String(item.orderItemId || ''), Number(item.quantity), String(item.snCode || '').trim().toUpperCase()]));
       if (String(existing.store_id) !== String(store.store_id) || existing.reason !== String(body.reason).trim().slice(0,1000) || signature(parse(existing).items) !== signature(body.items)) fail(409, '该编号已提交过不同内容，请刷新记录后重新申请');
       receipt = existing; return;
     }
-    const items = await validateItems(body.items, sourceItems, transaction);
+    const items = await validateItems(body.items, sourceItems, transaction, store.store_id);
     if (order) {
       const previous = await M.NonPurchaseReceipt.findAll({ where: { order_id: order.order_id, status: { [Op.notIn]: ['rejected', 'cancelled'] } }, transaction });
       for (const previousRow of previous) {
@@ -122,7 +133,7 @@ async function review(ctx) {
         item.recoveryUnitCost = row.source_type === RECOVERY ? amount(costs?.[index], `${item.productName}回收单价`) : 0;
       }
       // 审批时重新核对商品、公司定价及SN；申请人传入的成本始终不采用。
-      await validateItems(data.items, row.source_type === RECOVERY ? await M.OrderItem.findAll({ where: { order_id: row.order_id }, transaction }) : null, transaction);
+      await validateItems(data.items, row.source_type === RECOVERY ? await M.OrderItem.findAll({ where: { order_id: row.order_id }, transaction }) : null, transaction, row.store_id);
       await row.update({ payload_json: JSON.stringify(data) }, { transaction });
     }
     const type = row.source_type === RECOVERY ? 'sales_component_recovery' : 'gift_receipt';
@@ -139,7 +150,7 @@ async function review(ctx) {
       total_quantity: data.items.reduce((sum, item) => sum + item.quantity, 0), status: 'pending', create_user: row.applicant_name }, { transaction });
     for (const item of data.items) {
       const saved = await M.InboundItem.create({ inbound_id: inboundId, product_id: item.productId, product_name: item.productName,
-        pn_code: item.pnCode, sn_code: item.snCode || null, quantity: item.quantity, unit_price: item.recoveryUnitCost,
+        pn_code: item.pnCode, sn_code: item.snCode || null, sn_id: item.existingSnId || null, quantity: item.quantity, unit_price: item.recoveryUnitCost,
         original_pickup_price: item.recoveryUnitCost, gross_profit_use_standard_price: 1, gross_profit_uplift_amount: 0,
         inventory_type: 'normal_qty', remark: `${row.source_type === RECOVERY ? '拆机回收' : '获赠'} ${row.order_no || ''}` }, { transaction });
       item.inboundItemId = saved.item_id;
@@ -183,7 +194,7 @@ async function validateInboundRequest(inbound, items, user, transaction) {
   visible(user, row.store_id, row.distributor_id);
   if (row.source_type === RECOVERY) await sourceOrder(row.order_id, user, transaction);
   const expected = parse(row).items;
-  await validateItems(expected, row.source_type === RECOVERY ? await M.OrderItem.findAll({ where: { order_id: row.order_id }, transaction }) : null, transaction);
+  await validateItems(expected, row.source_type === RECOVERY ? await M.OrderItem.findAll({ where: { order_id: row.order_id }, transaction }) : null, transaction, row.store_id);
   if (items.length !== expected.length) fail(400, '请整单验收回收/获赠明细');
   const seen = new Set();
   for (const item of items) {
