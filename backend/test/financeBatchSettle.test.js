@@ -13,6 +13,40 @@ function context(body) {
   };
 }
 
+test('未绑定账户返回选择数据，选定后入账，非法账户被拒绝', async () => {
+  const saved = [];
+  const mock = (object, key, value) => { saved.push(() => { object[key] = value.original; }); const original = object[key]; object[key] = value; value.original = original; };
+  const detail = { detail_id: 'D1', statement_id: 'S1', payment_method: '应收', amount: 50, settled: 0, settlement_account_id: null, update: async values => Object.assign(detail, values) };
+  let ledger;
+  mock(models.sequelize, 'transaction', async handler => handler({ LOCK: { UPDATE: 'UPDATE' } }));
+  mock(models.DailyStatementDetail, 'findAll', async () => [detail]);
+  mock(models.DailyStatement, 'findAll', async () => [{ statement_id: 'S1', store_id: 'STORE1' }]);
+  mock(models.PaymentMethod, 'findAll', async () => []);
+  mock(models.PaymentMethodStore, 'findAll', async () => []);
+  mock(models.SettlementAccount, 'findAll', async () => [{ account_id: 'A1', account_name: '银行账户' }]);
+  mock(models.DailyStatement, 'findByPk', async () => ({ total_settled: 0, total_revenue: 50, update: async () => {} }));
+  mock(models.SettlementAccount, 'findByPk', async () => ({ account_id: 'A1' }));
+  mock(models.SettlementAccountTransaction, 'sum', async () => 0);
+  mock(models.SettlementAccountTransaction, 'create', async values => { ledger = values; });
+  const ctxFor = accounts => { const ctx = context({ detailIds: ['D1'], settlementAccounts: accounts }); ctx.state.user.accessibleStoreIds = ['STORE1']; return ctx; };
+  try {
+    const first = ctxFor({});
+    await financeController.batchSettle(first);
+    assert.equal(first.body.data.requiresAccountSelection, true);
+    assert.equal(first.body.data.details[0].detail_id, 'D1');
+    assert.equal(ledger, undefined);
+    assert.equal(detail.settled, 0);
+    await assert.rejects(financeController.batchSettle(ctxFor({ D1: 'INVALID' })), /请选择有权限/);
+    const forbidden = ctxFor({ D1: 'A1' }); forbidden.state.user.accessibleStoreIds = [];
+    await assert.rejects(financeController.batchSettle(forbidden), /无权操作/);
+    await financeController.batchSettle(ctxFor({ D1: 'A1' }));
+    assert.equal(detail.settlement_account_id, 'A1');
+    assert.equal(detail.settled, 50);
+    assert.equal(ledger.account_id, 'A1');
+    assert.equal(ledger.amount, 50);
+  } finally { saved.reverse().forEach(restore => restore()); }
+});
+
 test('日结单批量下账超过3条时使用固定长度批次关联号并汇总金额', async () => {
   const originals = {
     transaction: models.sequelize.transaction,

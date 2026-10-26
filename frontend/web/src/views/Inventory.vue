@@ -373,6 +373,13 @@
               <el-form-item label="采购价" required>
                 <el-input-number v-model="snPurchaseForm.price" :min="0" :precision="2" :step="100" style="width:100%" />
               </el-form-item>
+              <el-form-item label="毛利计价方式" required>
+                <el-select v-model="snPurchaseForm.grossProfitCostMode" placeholder="请选择毛利成本口径" style="width:100%">
+                  <el-option label="按采购价" value="PURCHASE_PRICE" :disabled="!snPurchaseCostModes.includes('PURCHASE_PRICE')" />
+                  <el-option label="按公司定价" value="COMPANY_PRICE" :disabled="!snPurchaseCostModes.includes('COMPANY_PRICE')" />
+                </el-select>
+                <div style="color:#909399;font-size:12px">用于后续销售经营毛利核算，采购价仍按上方填写金额提交。</div>
+              </el-form-item>
               <el-form-item v-if="snPurchaseForm.supplierId && (snPurchaseRebateBalance > 0 || Number(snPurchaseForm.rebateDeduction || 0) > 0)" label="返利抵扣">
                 <div style="width:100%">
                   <div style="margin-bottom:6px;color:#909399;font-size:13px">供应商返利余额：¥{{ snPurchaseRebateBalance.toFixed(2) }}</div>
@@ -1482,10 +1489,13 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="conversionDialogVisible" :title="conversionForm.conversionType === 'assemble' ? '新建组装单' : '新建拆分单'" width="1100px" @close="resetConversionForm">
-      <el-form label-width="100px">
+    <el-dialog v-model="conversionDialogVisible" :title="conversionForm.conversionType === 'assemble' ? '新建组装单' : '新建拆分单'" width="1180px" class="conversion-dialog" @close="resetConversionForm">
+      <template #header>
+        <div class="conversion-heading"><span class="conversion-heading-icon">⇄</span><div><h2>{{ conversionForm.conversionType === 'assemble' ? '新建组装单' : '新建拆分单' }}</h2><p>选择来源商品与目标商品，完成后生成对应出入库记录。</p></div></div>
+      </template>
+      <el-form label-width="76px" class="conversion-meta">
         <el-form-item label="转换门店">
-          <el-select v-model="conversionForm.storeId" placeholder="请选择门店" style="width: 260px" :disabled="isStoreUser()" @change="onConversionStoreChange">
+          <el-select v-model="conversionForm.storeId" placeholder="请选择门店" style="width: 100%" :disabled="isStoreUser()" @change="onConversionStoreChange">
             <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
           </el-select>
         </el-form-item>
@@ -1493,13 +1503,14 @@
           <el-input-number v-model="conversionForm.serviceCost" :min="0" :precision="2" style="width: 180px" />
         </el-form-item>
         <el-form-item label="备注">
-          <el-input v-model="conversionForm.remark" type="textarea" :rows="2" placeholder="可填写拆分/组装原因" />
+          <el-input v-model="conversionForm.remark" type="textarea" :rows="2" placeholder="可填写拆分原因、组装原因等" />
         </el-form-item>
       </el-form>
 
       <div class="conversion-grid">
-        <div>
-          <div class="section-title">{{ conversionForm.conversionType === 'assemble' ? '组件商品' : '被拆商品' }}</div>
+        <section class="conversion-panel conversion-panel-source">
+          <div class="conversion-panel-header"><div class="conversion-panel-label"><span class="conversion-panel-icon">−</span><div><h3>{{ conversionForm.conversionType === 'assemble' ? '组件商品（来源商品）' : '被拆商品（来源商品）' }}</h3><p>选择需要转换的原始商品</p></div></div><el-button type="primary" plain size="small" :disabled="!conversionForm.storeId" @click="conversionPicker = 'source'">选择商品</el-button></div>
+          <el-dialog :model-value="conversionPicker === 'source'" @update:model-value="conversionPicker = ''" title="选择来源商品" width="640px" append-to-body>
           <div class="conversion-add-row">
             <el-select
               v-model="conversionSourceAdd.productId"
@@ -1527,31 +1538,31 @@
             <el-button type="primary" @click="addConversionSourceItem">添加</el-button>
           </div>
 
-          <el-table :data="conversionForm.sourceItems" stripe border size="small">
-            <el-table-column prop="productName" label="商品" min-width="150" />
-            <el-table-column prop="snCode" label="SN" width="150">
+          </el-dialog>
+          <el-table :data="conversionForm.sourceItems" stripe border size="small" empty-text="点击右上角选择商品，添加来源商品">
+            <el-table-column type="index" label="#" width="34" />
+            <el-table-column prop="productName" label="商品信息" min-width="140">
+              <template #default="{ row }"><div>{{ row.productName }}</div><div class="conversion-item-cost">单价 ¥{{ row.unitCost }} · 合计 ¥{{ row.totalCost }}</div></template>
+            </el-table-column>
+            <el-table-column prop="snCode" label="SN" min-width="85" show-overflow-tooltip>
               <template #default="{ row }">{{ row.snCode || '-' }}</template>
             </el-table-column>
-            <el-table-column prop="pnCode" label="PN" width="130">
+            <el-table-column prop="pnCode" label="PN" min-width="100" show-overflow-tooltip>
               <template #default="{ row }">{{ row.pnCode || '-' }}</template>
             </el-table-column>
-            <el-table-column prop="quantity" label="数量" width="70" />
-            <el-table-column prop="unitCost" label="单位成本" width="110">
-              <template #default="{ row }">¥{{ row.unitCost || 0 }}</template>
-            </el-table-column>
-            <el-table-column prop="totalCost" label="总成本" width="110">
-              <template #default="{ row }">¥{{ row.totalCost || 0 }}</template>
-            </el-table-column>
-            <el-table-column label="操作" width="70">
+            <el-table-column prop="quantity" label="数量" width="50" />
+            <el-table-column label="操作" width="56" fixed="right">
               <template #default="{ $index }">
                 <el-button link type="danger" @click="conversionForm.sourceItems.splice($index, 1)">移除</el-button>
               </template>
             </el-table-column>
           </el-table>
-        </div>
+        </section>
 
-        <div>
-          <div class="section-title">{{ conversionForm.conversionType === 'assemble' ? '组装成品' : '拆出商品' }}</div>
+        <div class="conversion-flow" aria-hidden="true">➜</div>
+        <section class="conversion-panel conversion-panel-target">
+          <div class="conversion-panel-header"><div class="conversion-panel-label"><span class="conversion-panel-icon">+</span><div><h3>{{ conversionForm.conversionType === 'assemble' ? '组装成品（目标商品）' : '拆出商品（目标商品）' }}</h3><p>设置转换后生成的商品</p></div></div><el-button type="primary" plain size="small" @click="conversionPicker = 'target'">选择商品</el-button></div>
+          <el-dialog :model-value="conversionPicker === 'target'" @update:model-value="conversionPicker = ''" title="选择目标商品" width="640px" append-to-body>
           <div class="conversion-add-row">
             <el-select
               v-model="conversionTargetAdd.productId"
@@ -1571,51 +1582,49 @@
             </el-select>
             <el-input-number v-if="selectedConversionTargetProduct?.need_sn !== 1" v-model="conversionTargetAdd.quantity" :min="1" :precision="0" style="width: 110px" />
             <el-input-number v-model="conversionTargetAdd.unitCost" :min="0" :precision="2" :controls="false" placeholder="请输入商品价格" style="width: 130px" />
-            <el-button @click="openConversionProductDialog">新建商品</el-button>
             <el-button type="primary" @click="addConversionTargetItem">添加</el-button>
           </div>
 
-          <el-table :data="conversionForm.targetItems" stripe border size="small">
-            <el-table-column prop="productName" label="商品" min-width="150" />
-            <el-table-column prop="snCode" label="SN" width="150">
+          </el-dialog>
+          <el-table :data="conversionForm.targetItems" stripe border size="small" empty-text="点击右上角选择商品，添加目标商品">
+            <el-table-column type="index" label="#" width="34" />
+            <el-table-column prop="productName" label="商品信息" min-width="140">
+              <template #default="{ row }"><div>{{ row.productName }}</div><div class="conversion-item-cost">单价 ¥{{ row.unitCost }} · 合计 ¥{{ row.totalCost }}</div></template>
+            </el-table-column>
+            <el-table-column prop="snCode" label="SN" min-width="85" show-overflow-tooltip>
               <template #default="{ row }">{{ row.snCode || '-' }}</template>
             </el-table-column>
-            <el-table-column prop="pnCode" label="PN" width="130">
+            <el-table-column prop="pnCode" label="PN" min-width="100" show-overflow-tooltip>
               <template #default="{ row }">{{ row.pnCode || '-' }}</template>
             </el-table-column>
-            <el-table-column prop="quantity" label="数量" width="70" />
-            <el-table-column prop="unitCost" label="单位成本" width="110">
-              <template #default="{ row }">¥{{ row.unitCost || 0 }}</template>
-            </el-table-column>
-            <el-table-column prop="totalCost" label="总成本" width="110">
-              <template #default="{ row }">¥{{ row.totalCost || 0 }}</template>
-            </el-table-column>
-            <el-table-column label="操作" width="70">
+            <el-table-column prop="quantity" label="数量" width="50" />
+            <el-table-column label="操作" width="56" fixed="right">
               <template #default="{ $index }">
                 <el-button link type="danger" @click="conversionForm.targetItems.splice($index, 1)">移除</el-button>
               </template>
             </el-table-column>
           </el-table>
-        </div>
+        </section>
       </div>
 
-      <div class="conversion-cost-check" :class="{ invalid: !conversionCostMatched }">
+      <div class="conversion-cost-check">
         <template v-if="conversionForm.conversionType === 'split'">
-          来源成本：¥{{ conversionSourceTotal }}　
-          拆出金额：¥{{ conversionTargetTotal }}　
-          拆分后原商品成本：¥{{ conversionSplitRemainingCost }}
+          <div class="conversion-metric"><span class="conversion-metric-icon">▤</span><div>来源成本<strong>¥{{ conversionSourceTotal }}</strong></div></div>
+          <div class="conversion-metric"><span class="conversion-metric-icon green">➜</span><div>拆出金额<strong>¥{{ conversionTargetTotal }}</strong></div></div>
+          <div class="conversion-metric"><span class="conversion-metric-icon amber">▣</span><div>拆分后原商品成本<strong>¥{{ conversionSplitRemainingCost }}</strong></div></div>
         </template>
         <template v-else>
-          来源成本：¥{{ conversionSourceTotal }}　
-          服务成本：¥{{ conversionServiceCost }}　
-          目标成本：¥{{ conversionTargetTotal }}　
-          应等于：¥{{ conversionExpectedTargetTotal }}
+          <div class="conversion-metric"><span class="conversion-metric-icon">▤</span><div>来源成本<strong>¥{{ conversionSourceTotal }}</strong></div></div>
+          <div class="conversion-metric"><span class="conversion-metric-icon green">➜</span><div>目标成本<strong>¥{{ conversionTargetTotal }}</strong></div></div>
+          <div class="conversion-metric"><span class="conversion-metric-icon amber">▣</span><div>来源与服务成本合计<strong>¥{{ conversionExpectedTargetTotal }}</strong><small>含服务成本 ¥{{ conversionServiceCost }}</small></div></div>
         </template>
       </div>
 
       <template #footer>
+        <div class="conversion-footer"><div class="conversion-notice">ⓘ 完成后自动生成出入库记录，请核对商品、SN、数量与成本。</div><div class="conversion-footer-actions">
         <el-button @click="conversionDialogVisible = false">取消</el-button>
         <el-button type="primary" :disabled="!conversionCostMatched" :loading="conversionSubmitLoading" @click="submitConversion">确认执行</el-button>
+        </div></div>
       </template>
     </el-dialog>
 
@@ -2040,9 +2049,14 @@ const snPurchaseGoodsTypes = ref([])
 const snPurchaseTargetLocations = ref([])
 const snPurchaseRebateBalance = ref(0)
 const snPurchaseForm = reactive({
+  grossProfitCostMode: '',
   snId: '', snCode: '', productId: '', productName: '', productCode: '', pnCode: '',
   storeId: '', storeName: '', sourceLocationName: '', supplierId: '', price: 0,
   goodsTypeId: '', paymentMethod: 'COMPANY_CREDIT', invoiceType: '', targetLocationId: '', remark: '', rebateDeduction: 0
+})
+const snPurchaseCostModes = computed(() => {
+  const supplier = snPurchaseSuppliers.value.find(item => item.supplier_id === snPurchaseForm.supplierId)
+  return String(supplier?.purchase_cost_mode_allowed || 'COMPANY_PRICE,PURCHASE_PRICE').split(',').map(mode => mode.trim())
 })
 const snPurchaseRebateCap = computed(() => Math.max(0, Math.min(
   Number(snPurchaseRebateBalance.value || 0),
@@ -2286,6 +2300,7 @@ const selectedTransferProduct = computed(() => {
 // 拆分/组装
 const conversionLoading = ref(false)
 const conversionSubmitLoading = ref(false)
+const conversionPicker = ref('')
 const conversionDialogVisible = ref(false)
 const conversionDetailVisible = ref(false)
 const conversionList = ref([])
@@ -2675,6 +2690,7 @@ const canStartSnPurchase = row => (
 
 const resetSnPurchaseForm = () => {
   Object.assign(snPurchaseForm, {
+    grossProfitCostMode: '',
     snId: '', snCode: '', productId: '', productName: '', productCode: '', pnCode: '',
     storeId: '', storeName: '', sourceLocationName: '', supplierId: '', price: 0,
     goodsTypeId: '', paymentMethod: 'COMPANY_CREDIT', invoiceType: '', targetLocationId: '', remark: '', rebateDeduction: 0
@@ -2691,6 +2707,8 @@ const normalizeSnPurchaseRebate = () => {
 }
 
 const onSnPurchaseSupplierChange = async supplierId => {
+  const supplier = snPurchaseSuppliers.value.find(item => item.supplier_id === supplierId)
+  snPurchaseForm.grossProfitCostMode = supplier?.purchase_cost_mode_default || (snPurchaseCostModes.value.length === 1 ? snPurchaseCostModes.value[0] : '')
   snPurchaseForm.rebateDeduction = 0
   snPurchaseRebateBalance.value = 0
   if (!supplierId) return
@@ -2734,6 +2752,7 @@ const openSnPurchase = async row => {
 
 const submitSnPurchase = async () => {
   if (!snPurchaseForm.supplierId) return ElMessage.warning('请选择供应商')
+  if (!snPurchaseCostModes.value.includes(snPurchaseForm.grossProfitCostMode)) return ElMessage.warning('请选择供应商允许的毛利计价方式')
   if (!['专票13%', '收据'].includes(snPurchaseForm.invoiceType)) return ElMessage.warning('请选择采购凭证类型')
   if (!snPurchaseForm.goodsTypeId) return ElMessage.warning('请选择货型')
   if (!snPurchaseForm.targetLocationId) return ElMessage.warning('请选择目标库位')
@@ -2765,6 +2784,7 @@ const submitSnPurchase = async () => {
         goodsTypeId: snPurchaseForm.goodsTypeId,
         productType: goodsType?.name || '',
         sourceSnId: snPurchaseForm.snId,
+        grossProfitCostMode: snPurchaseForm.grossProfitCostMode,
         targetLocationId: snPurchaseForm.targetLocationId,
         storeAllocations: [{
           storeId: snPurchaseForm.storeId,
@@ -4552,6 +4572,7 @@ const openConversionDialog = async (type) => {
 }
 
 const resetConversionForm = () => {
+  conversionPicker.value = ''
   conversionForm.conversionType = conversionForm.conversionType || 'split'
   conversionForm.storeId = isStoreUser() ? getStoreId() : ''
   conversionForm.serviceCost = 0
@@ -4897,6 +4918,7 @@ const addConversionSourceItem = () => {
     locationId: sn?.location_id || ''
   })
 
+  conversionPicker.value = ''
   conversionSourceAdd.productId = ''
   conversionSourceAdd.snId = ''
   conversionSourceAdd.quantity = 1
@@ -4938,6 +4960,7 @@ const addConversionTargetItem = () => {
     locationId: ''
   })
 
+  conversionPicker.value = ''
   conversionTargetAdd.productId = ''
   conversionTargetAdd.pnCode = ''
   conversionTargetAdd.snCode = ''
@@ -5165,30 +5188,58 @@ const getReturnStatusText = (status) => {
 .transfer-section {
   margin-bottom: 20px;
 }
+.conversion-heading { display: flex; align-items: center; gap: 14px; }
+.conversion-heading-icon { color: #4765ff; background: #eef2ff; border-radius: 12px; font-size: 30px; padding: 5px 12px; }
+.conversion-heading h2 { margin: 0 0 5px; font-size: 21px; color: #202940; }
+.conversion-heading p, .conversion-panel-header p { margin: 0; font-size: 12px; color: #8790a5; }
+.conversion-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; padding: 8px 4px; }
+.conversion-meta :deep(.el-form-item__label) { font-weight: 600; color: #38415a; }
 .conversion-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) 36px minmax(0, 1fr);
+  gap: 10px;
 }
+.conversion-panel { min-width: 0; min-height: 260px; padding: 18px 14px; border: 1px solid #e9ecf8; border-radius: 12px; background: linear-gradient(140deg, #f1f3ff, #fafbff); }
+.conversion-panel-target { background: linear-gradient(140deg, #f0faf2, #f8fcfa); border-color: #e5f0e8; }
+.conversion-item-cost { color: #8790a5; font-size: 11px; margin-top: 4px; }
+.conversion-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 20px; }
+.conversion-panel-label { display: flex; gap: 10px; align-items: center; }
+.conversion-panel-header h3 { margin: 0 0 6px; font-size: 14px; color: #273049; }
+.conversion-panel-icon { display: grid; place-items: center; width: 32px; height: 32px; flex-shrink: 0; background: #e0e7ff; color: #4b6aff; border-radius: 11px; font-size: 25px; font-weight: 700; }
+.conversion-panel-target .conversion-panel-icon { background: #d9f4dd; color: #4caf50; }
+.conversion-flow { align-self: center; border-radius: 50%; background: #eaf0ff; color: #4b6aff; text-align: center; line-height: 36px; font-size: 22px; }
+.conversion-panel :deep(.el-table) { --el-table-header-bg-color: #f8f9ff; --el-table-border-color: #e9edf6; border-radius: 6px; }
+.conversion-panel :deep(.el-table th.el-table__cell) { font-size: 12px; color: #636e86; }
 .conversion-add-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: 14px;
+  padding: 8px 0 18px;
 }
+.conversion-add-row > .el-select:first-child { flex-basis: 100% !important; }
 .conversion-cost-check {
-  margin-top: 16px;
-  padding: 10px 12px;
-  border: 1px solid #dcdfe6;
-  border-radius: 6px;
-  background: #f5f7fa;
-  color: #303133;
-  font-weight: 600;
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  margin-top: 18px; padding: 18px 0; border-radius: 10px; background: #f7f9ff;
 }
-.conversion-cost-check.invalid {
-  border-color: #f56c6c;
-  background: #fef0f0;
-  color: #c45656;
+.conversion-metric { display: flex; align-items: center; gap: 13px; padding: 0 20px; border-right: 1px solid #e9edf6; color: #4c566d; font-size: 12px; }
+.conversion-metric:last-child { border: 0; }
+.conversion-metric strong { display: block; color: #202940; font-size: 22px; margin-top: 5px; }
+.conversion-metric small { display: block; margin-top: 4px; color: #8790a5; }
+.conversion-metric-icon { display: grid; place-items: center; width: 44px; height: 44px; flex-shrink: 0; border-radius: 50%; background: #e7edff; color: #4b6aff; font-size: 24px; }
+.conversion-metric-icon.green { background: #e5f6e9; color: #50b452; }
+.conversion-metric-icon.amber { background: #fff1d5; color: #e7a300; }
+.conversion-footer { display: flex; align-items: center; justify-content: space-between; gap: 20px; border-top: 1px solid #f0f2f7; padding-top: 14px; }
+.conversion-notice { text-align: left; padding: 12px 16px; border-radius: 6px; background: #f3f8ff; color: #727e95; font-size: 12px; line-height: 1.7; }
+.conversion-footer-actions { display: flex; flex-shrink: 0; }
+.conversion-footer-actions .el-button { height: 40px; padding: 0 24px; border-radius: 8px; }
+@media (max-width: 900px) {
+  .conversion-grid { grid-template-columns: minmax(0, 1fr); }
+  .conversion-flow { justify-self: center; width: 36px; transform: rotate(90deg); }
+  .conversion-meta { grid-template-columns: 1fr; }
+  .conversion-cost-check { grid-template-columns: 1fr; gap: 18px; }
+  .conversion-metric { border: 0; }
+  .conversion-footer { flex-wrap: wrap; }
 }
 .section-title {
   font-size: 16px;

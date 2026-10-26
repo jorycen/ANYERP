@@ -590,8 +590,9 @@ async function getDailyStatementDetail(ctx) {
  * 按收款账户汇总和批量标记下账
  */
 async function settleStatementDetails(ctx, businessType) {
-  const { detailIds } = ctx.request.body;
+  const { detailIds, settlementAccounts = {} } = ctx.request.body;
   const user = ctx.state.user;
+  if (!settlementAccounts || typeof settlementAccounts !== 'object' || Array.isArray(settlementAccounts)) ctx.throw(400, '下账账户参数格式错误');
 
   if (!detailIds || !Array.isArray(detailIds) || detailIds.length === 0) {
     ctx.throw(400, '请选择要下账的记录');
@@ -612,6 +613,7 @@ async function settleStatementDetails(ctx, businessType) {
         payment_method: { [Op.notLike]: '国补%-政策补贴应收' }
       }
     ];
+  let accountSelection = null;
   let totalSettledAmount = 0;
   let settledCount = 0;
   // 明细ID按逗号拼接会随着批量数量增长超过账户流水 RELATED_REF 的 128 字符限制。
@@ -635,9 +637,37 @@ async function settleStatementDetails(ctx, businessType) {
     }
     await fillMissingDailySettlementAccounts(details, transaction);
     const unassignedDetails = details.filter(detail => !detail.settlement_account_id);
-    if (unassignedDetails.length > 0) {
-      const methods = [...new Set(unassignedDetails.map(detail => detail.payment_method).filter(Boolean))];
-      ctx.throw(400, `存在未配置下账账户的收款记录：${methods.join('、') || '未知收款方式'}；请先在收款方式管理中为该门店配置结算账号`);
+    if (unassignedDetails.length > 0 && businessType === 'daily') {
+      const scope = distributorWhere(user);
+      const shared = getUserRoles(user).some(role => ['admin', 'boss', 'finance'].includes(role));
+      const accountWhere = { status: 1, account_type: 'FUND' };
+      if (Object.keys(scope).length) {
+        if (shared) accountWhere[Op.or] = [scope, { distributor_id: null }];
+        else Object.assign(accountWhere, scope);
+      }
+      const accounts = await SettlementAccount.findAll({ where: accountWhere, transaction, lock: transaction.LOCK.UPDATE });
+      const accountMap = new Map(accounts.map(account => [account.account_id, account]));
+      const missing = unassignedDetails.filter(detail => !settlementAccounts[detail.detail_id]);
+      if (missing.length) {
+        accountSelection = {
+          requiresAccountSelection: true,
+          details: unassignedDetails.map(detail => ({ detail_id: detail.detail_id, order_no: detail.order_no, payment_method: detail.payment_method, amount: detail.amount })),
+          accounts: accounts.map(account => ({ account_id: account.account_id, account_name: account.account_name }))
+        };
+        return;
+      }
+      const statements = await DailyStatement.findAll({ where: { statement_id: [...new Set(unassignedDetails.map(detail => detail.statement_id))] }, transaction });
+      const statementMap = new Map(statements.map(statement => [statement.statement_id, statement]));
+      for (const detail of unassignedDetails) {
+        const statement = statementMap.get(detail.statement_id);
+        if (!statement || !(user.accessibleStoreIds || []).some(id => id === '*' || String(id) === String(statement.store_id))) ctx.throw(403, '无权操作该门店的日结单');
+        if (!accountMap.has(settlementAccounts[detail.detail_id])) ctx.throw(400, '请选择有权限且启用的资金账户');
+      }
+      for (const detail of unassignedDetails) {
+        await detail.update({ settlement_account_id: settlementAccounts[detail.detail_id] }, { transaction });
+      }
+    } else if (unassignedDetails.length > 0) {
+      ctx.throw(400, '请选择下账账户');
     }
 
     const now = new Date();
@@ -710,6 +740,10 @@ async function settleStatementDetails(ctx, businessType) {
     }
   });
 
+  if (accountSelection) {
+    ctx.body = { code: 0, data: accountSelection };
+    return;
+  }
   ctx.body = { code: 0, message: `下账成功，共 ${settledCount} 笔，金额: ¥${totalSettledAmount.toFixed(2)}` };
 }
 

@@ -1751,6 +1751,26 @@
         <el-button type="primary" @click="handleAccountTxnSubmit" :loading="accountTxnLoading">确认</el-button>
       </template>
     </el-dialog>
+    <el-dialog v-model="dailyAccountDialog" title="选择下账账户" width="760px" :close-on-click-modal="false" :before-close="done => { if (!dailyAccountSubmitting) done() }">
+      <el-alert title="以下收款记录尚未绑定账户，请选择本次下账账户。已有绑定的记录使用原账户。" type="info" :closable="false" />
+      <el-table :data="dailyAccountDetails" style="margin-top: 16px">
+        <el-table-column prop="order_no" label="业务单号" min-width="170" />
+        <el-table-column prop="payment_method" label="收款方式" width="110" />
+        <el-table-column prop="amount" label="金额" width="100" />
+        <el-table-column label="下账账户" min-width="200">
+          <template #default="{ row }">
+            <el-select v-model="dailyAccountChoices[row.detail_id]" placeholder="请选择账户" filterable :disabled="dailyAccountSubmitting">
+              <el-option v-for="account in dailyAccountOptions" :key="account.account_id" :label="account.account_name" :value="account.account_id" />
+            </el-select>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-if="!dailyAccountOptions.length" description="暂无有权限的可用资金账户，请先在结算账户管理中配置" />
+      <template #footer>
+        <el-button :disabled="dailyAccountSubmitting" @click="dailyAccountDialog = false">取消</el-button>
+        <el-button type="primary" :loading="dailyAccountSubmitting" :disabled="!dailyAccountOptions.length" @click="confirmDailyAccounts">确认下账</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -2714,6 +2734,42 @@ const reverseSubsidyAdjustment = async row => {
   }catch(err){if(err!=='cancel'&&err!=='close')ElMessage.error(err.response?.data?.message||'冲销失败')}
 }
 
+const dailyAccountDialog = ref(false)
+const dailyAccountSubmitting = ref(false)
+const dailyAccountRequest = ref([])
+const dailyAccountDetails = ref([])
+const dailyAccountOptions = ref([])
+const dailyAccountChoices = reactive({})
+const submitDailySettlement = async (detailIds, accounts = {}) => {
+  const res = await api.batchSettle({ detailIds, settlementAccounts: accounts })
+  if (res.code !== 0) throw new Error(res.message || '下账失败')
+  if (res.data?.requiresAccountSelection) {
+    dailyAccountRequest.value = [...detailIds]
+    dailyAccountDetails.value = res.data.details
+    dailyAccountOptions.value = res.data.accounts
+    Object.keys(dailyAccountChoices).forEach(key => delete dailyAccountChoices[key])
+    dailyAccountDialog.value = true
+    return
+  }
+  dailyAccountDialog.value = false
+  ElMessage.success(res.message || '下账成功')
+  await loadDailyData()
+}
+const confirmDailyAccounts = async () => {
+  if (dailyAccountDetails.value.some(row => !dailyAccountChoices[row.detail_id])) {
+    ElMessage.warning('请为每笔未绑定记录选择下账账户')
+    return
+  }
+  dailyAccountSubmitting.value = true
+  try {
+    await submitDailySettlement(dailyAccountRequest.value, { ...dailyAccountChoices })
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || err.message || '下账失败')
+  } finally {
+    dailyAccountSubmitting.value = false
+  }
+}
+
 const handleSettleDetail = async (row) => {
   try {
     await ElMessageBox.confirm(
@@ -2721,13 +2777,7 @@ const handleSettleDetail = async (row) => {
       '下账确认',
       { type: 'warning', confirmButtonText: '确认下账' }
     )
-    const res = await api.batchSettle({ detailIds: [row.detail_id] })
-    if (res.code === 0) {
-      ElMessage.success(res.message || '下账成功')
-      loadDailyData()
-    } else {
-      ElMessage.error(res.message || '下账失败')
-    }
+    await submitDailySettlement([row.detail_id])
   } catch (err) {
     if (err !== 'cancel') ElMessage.error(err.response?.data?.message || err.message || '下账失败')
   }
@@ -2746,13 +2796,7 @@ const openBatchSettleDialog = async () => {
       '批量下账确认',
       { type: 'warning', confirmButtonText: '确认下账' }
     )
-    const res = await api.batchSettle({ detailIds: selectedDetailIds.value })
-    if (res.code === 0) {
-      ElMessage.success(res.message || `下账成功，共 ${selectedCount} 笔，金额：¥${formatMoney(selectedTotalAmount)}`)
-      loadDailyData()
-    } else {
-      ElMessage.error(res.message || '批量下账失败')
-    }
+    await submitDailySettlement(selectedDetailIds.value)
   } catch (err) {
     if (err !== 'cancel') ElMessage.error(err.response?.data?.message || err.message || '批量下账失败')
   }
