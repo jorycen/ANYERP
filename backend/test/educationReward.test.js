@@ -59,6 +59,48 @@ test('education uses valid imported policy when no new rule matches; missing and
   assert.equal(await freeze({ ...input, allowMissingEducation: true }), null);
 });
 
+test('configured inbound education uses the SN frozen value and rejects missing, expired or untrusted policies', async t => {
+  t.mock.method(M.Product, 'findByPk', async () => ({ category_id: 'tablet' }));
+  t.mock.method(M.ProductCategory, 'findAll', async () => []);
+  let right = { right_id: 'RIGHT', rule_config_id: 'CONFIG', source: 'PURCHASE_INBOUND', amount: '200.00' };
+  let config = { config_id: 'CONFIG', cost_amount: 999, effective_start: '2026-10-01', effective_end: '2026-10-31T23:59:59+08:00' };
+  t.mock.method(M.InventoryResourceRight, 'findOne', async () => right);
+  t.mock.method(M.ProductResourceCostConfig, 'findOne', async options => {
+    assert.deepEqual(options.where, { config_id: 'CONFIG', product_id: 'P', resource_type: 'EDU_SUBSIDY', status: 1 });
+    return config;
+  });
+  const freeze = require('../src/modules/inventory/rewardConfig').freezeSalesReportReward;
+  const input = { category: { category_code: 'EDU_SUBSIDY' }, item: { sn_id: 'SN', product_id: 'P', item_id: 47312 },
+    order: { education_subsidy: 888, archive_time: '2026-10-26T13:38:47+08:00' } };
+  for (const source of ['PURCHASE_INBOUND', 'BATCH_INBOUND']) {
+    right.source = source;
+    const result = JSON.parse(await freeze(input));
+    assert.equal(result.amount, 200);
+    assert.equal(result.employeeAmount, 160);
+    assert.equal(result.productAmount, 40);
+    assert.equal(result.policy.source, source);
+    assert.equal(result.reason, 'education_inbound_config');
+  }
+  for (const source of ['EXCEL_IMPORT', 'BATCH_ADJUST', 'UNKNOWN']) {
+    right.source = source;
+    assert.equal(await freeze({ ...input, allowMissingEducation: true }), null);
+  }
+  right.source = 'PURCHASE_INBOUND';
+  const validConfig = config;
+  for (const invalid of [null, { ...validConfig, effective_end: '2026-10-25' }, { ...validConfig, effective_start: '2026-10-27' }]) {
+    config = invalid;
+    await assert.rejects(freeze(input), { status: 409 });
+  }
+  config = validConfig;
+  for (const amount of [0, -200, 'NaN', Infinity]) {
+    right.amount = amount;
+    await assert.rejects(freeze(input), { status: 409 });
+  }
+  right.amount = 200;
+  right.rule_config_id = null;
+  await assert.rejects(freeze(input), { status: 409 });
+});
+
 test('zero-value imported SN education labels do not enroll ordinary sales during archive', async t => {
   t.mock.method(M.Product, 'findAll', async () => [{ product_id: 'P', category: '内存' }]);
   t.mock.method(M.Product, 'findByPk', async () => ({ category_id: 'memory' }));

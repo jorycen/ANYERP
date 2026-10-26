@@ -644,12 +644,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
               o.CREATE_STAFF_ID AS create_staff_id,
               o.CREATE_USER AS create_user,
               o.AUXILIARY_SALES_LIST AS auxiliary_sales_list,
-              ROUND(MAX(COALESCE(o.TOTAL_AMOUNT, 0) - COALESCE((
-                SELECT SUM(CASE WHEN os.AMOUNT_TYPE = 'decrease' THEN -os.AMOUNT ELSE os.AMOUNT END)
-                  FROM T_ORDER_SUPPLEMENT os
-                 WHERE os.ORDER_ID = o.ORDER_ID
-                   AND os.IS_DELETED = 0
-              ), 0)), 2) AS sales_amount,
+              ROUND(MAX(COALESCE(o.TOTAL_AMOUNT, 0)), 2) AS sales_amount,
               ROUND(SUM(CASE WHEN gp.ORDER_ID IS NOT NULL THEN gp.GROSS_PROFIT_AMOUNT
                 * CASE WHEN COALESCE(oit.ITEM_SUBTOTAL, 0) <> 0 THEN COALESCE(oi.SUBTOTAL, 0) / oit.ITEM_SUBTOTAL ELSE 1 / GREATEST(oit.ITEM_COUNT, 1) END
                 ELSE COALESCE(oi.SALES_GROSS_PROFIT, 0) END), 2) AS base_gross_profit

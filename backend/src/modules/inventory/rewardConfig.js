@@ -56,13 +56,17 @@ async function freezeSalesReportReward({ category, item, order, transaction, all
   let policy = null;
   if (type === 'EDU_SUBSIDY' && !rule && item.sn_id) {
     const right = await InventoryResourceRight.findOne({ where: { sn_id: item.sn_id, resource_type: type }, transaction });
-    if (right?.rule_config_id && right.source === 'EDUCATION_POLICY_IMPORT') {
+    // Purchase inbound also freezes the amount against a product resource config.
+    // Manual/batch labels alone are not evidence of an education reward policy.
+    if (right?.rule_config_id && ['EDUCATION_POLICY_IMPORT', 'PURCHASE_INBOUND', 'BATCH_INBOUND'].includes(right.source)) {
       const config = await ProductResourceCostConfig.findOne({ where: { config_id: right.rule_config_id,
         product_id: item.product_id, resource_type: type, status: 1 }, transaction });
       const instant = new Date(order.archive_time || new Date()).getTime();
-      if (config && (!right.effective_start || new Date(right.effective_start).getTime() <= instant)
+      if (config && (!config.effective_start || new Date(config.effective_start).getTime() <= instant)
+        && (!config.effective_end || new Date(config.effective_end).getTime() >= instant)
+        && (!right.effective_start || new Date(right.effective_start).getTime() <= instant)
         && (!right.effective_end || new Date(right.effective_end).getTime() >= instant)
-        && Number(right.amount) > 0) {
+        && Number.isFinite(Number(right.amount)) && Number(right.amount) > 0) {
         amount = Number(right.amount);
         policy = { configId: config.config_id, rightId: right.right_id, source: right.source };
       }
@@ -76,6 +80,6 @@ async function freezeSalesReportReward({ category, item, order, transaction, all
   return JSON.stringify({ version: 1, resourceType: type, amount,
     ...(type === 'EDU_SUBSIDY' ? { accountingVersion: 2, employeeAmount, productAmount: Math.round((amount - employeeAmount) * 100) / 100, orderItemId: item.item_id } : {}),
     rule: rule || null, policy, pnCode: item.pn_code, categoryId: categoryId || null, at,
-    reason: rule ? 'matched' : policy ? 'education_policy_import' : 'no_matching_rule' });
+    reason: rule ? 'matched' : policy ? (policy.source === 'EDUCATION_POLICY_IMPORT' ? 'education_policy_import' : 'education_inbound_config') : 'no_matching_rule' });
 }
 module.exports = { listRewardRules, saveRewardRules, freezeSalesReportReward };

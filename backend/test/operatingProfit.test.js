@@ -7,6 +7,24 @@ const { buildRanges } = require('../src/modules/report/dashboardService');
 const order = overrides => ({ order_id: 'O', store_id: 'S', store_name: '门店', create_staff_id: 'A', create_user: '员工',
   create_time: '2026-10-01 00:01:32', sales_amount: 1000, base_gross_profit: 100, ...overrides });
 
+test('销售统计不从订单金额扣补录净额，15元费用不将1890变成1905', async () => {
+  const source = new RealtimeSqlDashboardDataSource();
+  let saleSql;
+  source.query = async sql => {
+    if (!sql.includes('ROUND(MAX(COALESCE(o.TOTAL_AMOUNT')) return [];
+    saleSql = sql;
+    return [order({ sales_amount: 1890, base_gross_profit: 616.33 }),
+      order({ order_id: 'O2', sales_amount: 129, base_gross_profit: 129 })];
+  };
+  const rows = await source.getEmployeeOrderRows({ storeIds: ['S'] },
+    buildRanges({ startDate: '2026-10-26', endDate: '2026-10-26' }).current);
+  assert.match(saleSql, /ROUND\(MAX\(COALESCE\(o\.TOTAL_AMOUNT, 0\)\), 2\) AS sales_amount/);
+  assert.doesNotMatch(saleSql, /T_ORDER_SUPPLEMENT/);
+  const result = aggregateOperatingProfit(rows, []);
+  assert.equal(result.summary.salesAmount, 2019);
+  assert.equal(result.summary.grossProfit, 745.33);
+});
+
 test('原销售保留后只冲回一次，审批及退回调整按独立事件各计一次', () => {
   const result = aggregateOperatingProfit([
     order(), order({ order_id: 'return:L', entry_type: 'return', sales_amount: -1000, base_gross_profit: -100 }),
