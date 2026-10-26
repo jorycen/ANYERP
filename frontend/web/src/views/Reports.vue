@@ -109,11 +109,11 @@
               end-placeholder="结束日期"
               value-format="YYYY-MM-DD"
             />
-            <el-select v-model="employeeParams.storeId" placeholder="选择门店" clearable style="width: 150px">
+            <el-select v-model="employeeParams.storeId" placeholder="输入关键词选择门店" filterable clearable style="width: 200px">
               <el-option label="全部门店" value="" />
               <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
             </el-select>
-            <el-select v-model="employeeParams.staffName" placeholder="选择员工" clearable style="width: 150px">
+            <el-select v-model="employeeParams.staffName" placeholder="输入关键词选择员工" filterable clearable style="width: 200px">
               <el-option label="全部员工" value="" />
               <el-option v-for="name in employeeOptions" :key="name" :label="name" :value="name" />
             </el-select>
