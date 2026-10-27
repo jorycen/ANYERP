@@ -287,6 +287,7 @@ async function ensureApprovalSchemaCompatibility() {
 }
 
 async function runSchemaMigrations() {
+  await ensureProfitAdjustmentCorrectionSchema();
   await ensureExpenseRemarkSchema();
   await ensureExpenseRecipientSchema();
   await ensureExpenseAmortizationSchema();
@@ -352,6 +353,12 @@ async function runSchemaMigrations() {
   await ensureFinancialProfitFeatureSchema();
   await ensureFinancialReportMenu();
   console.log('[DB Schema] startup schema compatibility check completed');
+}
+
+async function ensureProfitAdjustmentCorrectionSchema() {
+  await checkAndAddColumn('T_PERFORMANCE_PROFIT_ADJUSTMENT', 'CORRECTION_DATA', 'JSON NULL COMMENT "结算定价纠错依据及前后快照"', 'BASE_GROSS_PROFIT');
+  // The legacy helper logs DDL errors; this read must throw to block readiness.
+  await sequelize.query('SELECT CORRECTION_DATA FROM T_PERFORMANCE_PROFIT_ADJUSTMENT LIMIT 0');
 }
 
 async function ensureSalesCashRebateSchema() {
@@ -5061,6 +5068,7 @@ async function seedPermissionData() {
 }
 
 module.exports = {
+  ensureProfitAdjustmentCorrectionSchema,
   ensureExpenseAmortizationSchema,
   ensureExpenseRemarkSchema,
   ensureExpenseRecipientSchema,

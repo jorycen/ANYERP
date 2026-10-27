@@ -4,6 +4,7 @@
   "description": "ANY-ERP 后端服务",
   "main": "src/index.js",
   "scripts": {
+    "db:audit-schema": "node scripts/audit-schema-columns.js",
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "test": "node --test test/*.test.js",
