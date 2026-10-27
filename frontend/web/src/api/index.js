@@ -1,3 +1,12 @@
+const pendingSalesSaves = new Map()
+function saveSalesDraftOnce(id, data) {
+  const key = JSON.stringify({ id, ...data, requestId: undefined })
+  if (data.saveContract) {
+    if (pendingSalesSaves.has(key)) data.requestId = pendingSalesSaves.get(key)
+    else pendingSalesSaves.set(key, data.requestId)
+  }
+  return api.put(`/sales/draft/${id}`, data).then(result => { pendingSalesSaves.delete(key); return result })
+}
 import axios from 'axios'
 import router from '../router'
 
@@ -269,7 +278,7 @@ export default {
   }),
   createSales: (data) => api.post('/sales/create', data),
   saveSalesDraft: (data) => api.post('/sales/draft', data),
-  updateSalesDraft: (id, data) => api.put(`/sales/draft/${id}`, data),
+  updateSalesDraft: saveSalesDraftOnce,
   submitSalesDraft: (id) => api.post(`/sales/draft/${id}/submit`),
   deleteSalesDraft: (id) => api.delete(`/sales/draft/${id}`),
   getSalesDetail: (id, params) => api.get(`/sales/${id}`, { params }),

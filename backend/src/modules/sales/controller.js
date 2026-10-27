@@ -1,3 +1,5 @@
+const saveContract = require('./orderSaveContract');
+const saveModels = require('../../models');
 /**
  * 销售管理控制器
  */
@@ -2266,14 +2268,7 @@ function selectedResourcesFromJson(value) {
 }
 
 function normalizeOrderItemInput(item = {}) {
-  const rawSalePrice = firstNonEmpty(item, ['salePrice', 'sale_price', 'SALE_PRICE', 'unitPrice', 'unit_price', 'price'], null);
-  const rawQuantity = firstNonEmpty(item, ['quantity', 'QUANTITY'], null);
-  const rawSubtotal = firstNonEmpty(item, ['subtotal', 'SUBTOTAL'], null);
-  const salePrice = rawSalePrice === null ? undefined : Number(rawSalePrice);
-  const quantity = rawQuantity === null ? undefined : (Number(rawQuantity) || 1);
-  const subtotal = rawSubtotal === null
-    ? (salePrice !== undefined && quantity !== undefined ? salePrice * quantity : undefined)
-    : Number(rawSubtotal);
+  const { sale_price: salePrice, quantity, subtotal } = saveContract.lineAmounts(item);
   const snId = firstNonEmpty(item, ['snId', 'sn_id', 'SN_ID', 'inventoryId', 'inventory_id', 'INVENTORY_ID', 'inventorySnId', 'inventory_sn_id']);
   const snCode = firstNonEmpty(item, ['snCode', 'sn_code', 'SN_CODE', 'sn', 'SN', 'serialNo', 'serial_no', 'productSn', 'product_sn']);
   const rawResourceTypes = firstNonEmpty(item, ['selectedResourceTypes', 'selected_resource_types'], []);
@@ -2318,11 +2313,9 @@ function assertUniqueOrderSnItems(items = [], actionText = '订单') {
 }
 
 function applyOrderItemDefaults(item) {
-  const salePrice = Number(item.sale_price || 0);
-  const quantity = Number(item.quantity || 1) || 1;
-  const subtotal = item.subtotal === undefined || item.subtotal === null
-    ? salePrice * quantity
-    : Number(item.subtotal || 0);
+  const salePrice = saveContract.numberInput(item.sale_price, '销售单价');
+  const quantity = saveContract.numberInput(item.quantity === undefined ? 1 : item.quantity, '数量', true);
+  const subtotal = saveContract.subtotal(salePrice, quantity);
   return Object.assign({}, item, {
     sale_price: salePrice,
     quantity,
@@ -2381,7 +2374,18 @@ async function syncOrderItemsFromPayload(order, data = {}, transaction = null, o
   const results = [];
   let hasLockedResource = null;
 
-  const normalizedItems = rawItems.map(item => applyOrderItemDefaults(normalizeOrderItemInput(item)));
+  const normalizedItems = rawItems.map(item => {
+    const normalized = normalizeOrderItemInput(item);
+    if (!replaceAll && normalized.item_id) {
+      const prior = existingById.get(String(normalized.item_id));
+      if (prior) {
+        normalized.preserve_financial_fields = normalized.sale_price === undefined && normalized.quantity === undefined;
+        if (normalized.sale_price === undefined) normalized.sale_price = prior.sale_price;
+        if (normalized.quantity === undefined) normalized.quantity = prior.quantity;
+      }
+    }
+    return applyOrderItemDefaults(normalized);
+  });
   await resolveOrderEducationSubsidyAmounts(normalizedItems, transaction);
   assertUniqueOrderSnItems(normalizedItems, '订单');
   await assertActiveProducts(
@@ -2460,6 +2464,11 @@ async function syncOrderItemsFromPayload(order, data = {}, transaction = null, o
     };
 
     if (existing) {
+      if (normalized.preserve_financial_fields) {
+        delete updatePayload.sale_price;
+        delete updatePayload.quantity;
+        delete updatePayload.subtotal;
+      }
       await existing.update(updatePayload, { transaction });
       usedExistingIds.add(String(existing.item_id));
     } else {
@@ -2552,8 +2561,8 @@ async function create(ctx) {
     ? selectedEducationSubsidy
     : Number(requestedEducationSubsidy || 0);
   assertUniqueOrderSnItems(normalizedItems, isDraft ? '订单草稿' : '订单');
-  const totalAmount = normalizedItems.reduce((sum, item) => sum + Number(item.subtotal || 0), 0);
-  const payableBeforeDeposit = Math.max(0, money(totalAmount - Number(discountAmount) - Number(nationalSubsidy) - Number(educationSubsidy)));
+  const initialTotals = saveContract.orderTotals(normalizedItems, { discount: discountAmount, nationalSubsidy, educationSubsidy });
+  const { totalAmount, payableBeforeDeposit } = initialTotals;
   const depositDeductions = normalizeDepositDeductions(requestBody);
   if (!isDraft && depositDeductions.length > 1) {
     ctx.throw(400, '一张正式订单只能绑定一张定金单');
@@ -2567,8 +2576,9 @@ async function create(ctx) {
     ctx.throw(400, '定金抵扣金额不能超过订单应付金额');
   }
 
-  const actualPayment = Math.max(0, money(payableBeforeDeposit - depositDeductionTotal));
+  const { actualPayment } = saveContract.orderTotals(normalizedItems, { discount: discountAmount, nationalSubsidy, educationSubsidy, deposit: depositDeductionTotal });
   const orderPayments = payments.filter(payment => !isDepositPayment(payment));
+  for (const payment of orderPayments) saveContract.numberInput(payment.amount, '收款金额');
   const collectedPayments = orderPayments.filter(payment => !isPolicySubsidyReceivable(payment));
   if (!isDraft && actualPayment > 0 && collectedPayments.length === 0) {
     ctx.throw(400, '请填写收款方式');
@@ -2632,7 +2642,16 @@ async function create(ctx) {
   const auditTime = new Date();
 
   let grossProfitSnapshot = null;
+  let draftToken = null;
+  let savedDraft = null;
+  let draftReplayed = false;
   await sequelize.transaction(async (transaction) => {
+  if (existingOrder) {
+    await existingOrder.reload({ transaction, lock: transaction.LOCK.UPDATE });
+    draftToken = await saveContract.begin(saveModels, existingOrder, requestBody, user, transaction);
+    if (draftToken?.replay) { savedDraft = draftToken.replay; draftReplayed = true; return; }
+    if (existingOrder.order_status !== 'draft') ctx.throw(409, '订单已变化，请刷新后重试');
+  }
   let reservedDeposit = null;
   if (!isDraft && depositDeductions.length === 1) {
     reservedDeposit = await validateDepositReservation({
@@ -2742,13 +2761,18 @@ async function create(ctx) {
     });
   }
 
+  const persisted = existingOrder || await Order.findByPk(orderId, { transaction });
+  savedDraft = await saveContract.finish(saveModels, persisted, requestBody, user, transaction, draftToken,
+    { orderId, orderNo, status: finalOrderStatus, message: '订单已保存' });
   });
 
+  if (draftReplayed) { ctx.body = savedDraft; return; }
   const pricing = pricingCompleteness(grossProfitSnapshot?.product_pricing_details);
   const grossProfitAmount = grossProfitSnapshot && pricing.pricingComplete ? Number(grossProfitSnapshot.gross_profit_amount || 0) : null;
   const negativeGrossProfit = !isDraft && grossProfitAmount < 0;
 
   ctx.body = {
+    ...savedDraft,
     orderId, orderNo,
     // 保留旧字段兼容已有客户端，但不再返回低价审批结果。
     needsApproval: false,
@@ -2915,6 +2939,7 @@ async function detail(ctx) {
   }
 
   let result = order.toJSON();
+  result.saveRevision = saveContract.revision(order, order.OrderItems || [], order.OrderPayments || []);
   const grossProfitSnapshot = result.grossProfitSnapshot || {};
   let grossProfitDetails = grossProfitSnapshot.supplement_details;
   if (typeof grossProfitDetails === 'string') {
@@ -3348,7 +3373,7 @@ async function update(ctx) {
     return;
   }
   const previousRemark = order.remark || '';
-  if (isSalesApprovalPendingStatus(order.order_status)) {
+  if (data.saveContract !== 1 && isSalesApprovalPendingStatus(order.order_status)) {
     ctx.throw(400, '待审批订单不能直接修改或归档，请先审批或拒绝');
   }
   if (isSalesApprovalPendingStatus(data.order_status || data.status)) {
@@ -3368,12 +3393,18 @@ async function update(ctx) {
   if (isArchiveStatus(nextStatus) && isSalesReturnInProgressStatus(previousStatus)) {
     ctx.throw(400, `订单当前处于${getSalesReturnStatusLabel(previousStatus)}，不能再次归档`);
   }
+  let savedResponse = null;
+  let saveToken = null;
+  let replayed = false;
   let archivedNow = false;
   let archivePendingApproval = false;
   let archiveGrossProfitAmount = null;
   await sequelize.transaction(async (transaction) => {
     const hasItemsPayload = hasOrderItemsPayload(data);
     await order.reload({ transaction, lock: transaction.LOCK.UPDATE });
+    saveToken = await saveContract.begin(saveModels, order, ctx.request.body || {}, ctx.state.user, transaction);
+    if (saveToken?.replay) { savedResponse = saveToken.replay; replayed = true; return; }
+    if (isSalesApprovalPendingStatus(order.order_status)) ctx.throw(400, '待审批订单不能直接修改，请先审批或拒绝');
     if (order.order_status !== previousStatus) ctx.throw(409, '订单状态已变化，请刷新后重试');
     const releasedReservedOrderItems = hasItemsPayload && Number(order.inventory_reserved || 0) === 1;
 
@@ -3385,6 +3416,43 @@ async function update(ctx) {
       order.inventory_reserved = 0;
     }
     await syncOrderItemsFromPayload(order, data, transaction);
+    const hasDepositPayload = ['depositItems', 'deposit_items', 'deposits', 'deposit_deduction_total', 'depositDeductionTotal'].some(key => data[key] !== undefined)
+      || (Array.isArray(data.payments) && data.payments.some(isDepositPayment));
+    if (hasDepositPayload) {
+      const currentDeposits = normalizeDepositDeductions({ depositItems: selectedResourcesFromJson(order.deposit_items) });
+      const requestedDeposits = normalizeDepositDeductions(data);
+      const fingerprint = rows => JSON.stringify(rows.map(item => [String(item.depositId), money(item.amount)]).sort((a, b) => a[0].localeCompare(b[0])));
+      const requestedTotal = money(requestedDeposits.reduce((sum, item) => sum + item.amount, 0));
+      const declaredTotal = data.deposit_deduction_total ?? data.depositDeductionTotal ?? requestedTotal;
+      if (fingerprint(currentDeposits) !== fingerprint(requestedDeposits)
+          || requestedTotal !== money(order.deposit_deduction_total || 0)
+          || Number(declaredTotal) !== requestedTotal) {
+        ctx.throw(400, '定金抵扣已变化，请通过定金抵扣流程处理');
+      }
+    }
+    const hasMoneyPayload = hasItemsPayload || ['total_amount', 'totalAmount', 'actual_payment', 'actualPayment', 'discount_amount', 'national_subsidy', 'education_subsidy'].some(key => data[key] !== undefined);
+    if (hasMoneyPayload || Array.isArray(data.payments)) {
+      const lines = await OrderItem.findAll({ where: { order_id: orderId }, transaction });
+      const totals = saveContract.orderTotals(lines, {
+        discount: data.discount_amount ?? order.discount_amount ?? 0,
+        nationalSubsidy: data.national_subsidy ?? order.national_subsidy ?? 0,
+        educationSubsidy: data.education_subsidy ?? order.education_subsidy ?? 0,
+        deposit: order.deposit_deduction_total || 0
+      });
+      data.total_amount = totals.totalAmount;
+      data.actual_payment = totals.actualPayment;
+    }
+    if (Array.isArray(data.payments)) {
+      const payments = data.payments.filter(payment => !isDepositPayment(payment));
+      // Deposit reservation remains owned by its existing workflow.
+      const collected = money(payments.filter(payment => !isPolicySubsidyReceivable(payment)).reduce((sum, payment) => sum + Number(payment.amount || 0), 0));
+      if (Math.abs(collected - data.actual_payment) > 0.01) ctx.throw(400, '收款金额与订单实付金额不一致');
+      await OrderPayment.destroy({ where: { order_id: orderId }, transaction });
+      for (const payment of payments) {
+        await OrderPayment.create({ order_id: orderId, payment_method: payment.method || payment.payment_method,
+          amount: saveContract.numberInput(payment.amount, '收款金额') }, { transaction });
+      }
+    }
     if (releasedReservedOrderItems && !isArchiveStatus(nextStatus) && !isCancelStatus(nextStatus)) {
       await reserveInventoryForOrder(order, transaction);
       data.inventory_reserved = 1;
@@ -3515,11 +3583,16 @@ async function update(ctx) {
         });
       }
     }
+    savedResponse = await saveContract.finish(saveModels, order, ctx.request.body || {}, ctx.state.user, transaction, saveToken,
+      { status: order.order_status, pendingApproval: archivePendingApproval, negativeGrossProfit: archivePendingApproval,
+        grossProfitAmount: archiveGrossProfitAmount, message: '订单已保存' });
   });
+  if (replayed) { ctx.body = savedResponse; return; }
   if (archivedNow) {
     syncToDailyStatement(orderId, order.store_id).catch(err => console.error('[DailySync] archive error:', err.message));
   }
   ctx.body = {
+    ...savedResponse,
     status: order.order_status,
     approvalStage: salesApprovalStageFromStatus(order.order_status),
     pendingApproval: archivePendingApproval,
@@ -3688,6 +3761,7 @@ async function updateOrderItems(ctx) {
 
   let results = [];
   await sequelize.transaction(async (transaction) => {
+    await order.reload({ transaction, lock: transaction.LOCK.UPDATE });
     // 该接口也被历史 orderItemRepair 兼容调用用于单行库存 ID 修复，
     // 不能把单行请求误当成整个页面商品列表而删除其他明细。
     results = await syncOrderItemsFromPayload(order, data, transaction, { replaceAll: false });

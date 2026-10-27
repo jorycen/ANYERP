@@ -769,6 +769,7 @@ const depositForm = reactive({
 
 const orderForm = reactive({
   orderId: null,
+  saveRevision: null,
   storeId: '',
   customerName: '',
   customerPhone: '',
@@ -1491,6 +1492,7 @@ const resetForm = () => {
 
 const hydrateDraftForm = (order) => {
   orderForm.orderId = order.order_id
+  orderForm.saveRevision = order.saveRevision
   orderForm.storeId = order.store_id || ''
   orderForm.customerName = order.customer_name || ''
   orderForm.customerPhone = order.customer_phone || ''
@@ -1855,6 +1857,7 @@ const onPnBlur = async (index) => {
 }
 
 const buildSalesOrderPayload = (untaxedInvoiceConfirmed = false) => ({
+  ...(orderForm.orderId ? { saveContract: 1, expectedRevision: orderForm.saveRevision, requestId: crypto.randomUUID() } : {}),
   storeId: orderForm.storeId,
   customerName: orderForm.customerName,
   customerPhone: orderForm.customerPhone,
@@ -1870,9 +1873,8 @@ const buildSalesOrderPayload = (untaxedInvoiceConfirmed = false) => ({
       pnCode: item.pnCode,
       supplierId: item.supplierId || '',
       supplierName: item.supplierName || '',
-      salePrice: item.salePrice,
+      unitPrice: item.salePrice,
       quantity: item.quantity,
-      subtotal: item.salePrice * item.quantity,
       useGovSubsidy: item.useGovSubsidy,
       useEduSubsidy: item.useEduSubsidy,
       educationSubsidyAmount: getItemEducationSubsidyAmount(item),
@@ -1892,8 +1894,7 @@ const buildSalesOrderPayload = (untaxedInvoiceConfirmed = false) => ({
       snId: sn.sn_id || '',
       supplierId: sn.supplier_id || '',
       supplierName: sn.supplier_name || '',
-      quantity: 1,
-      subtotal: item.salePrice
+      quantity: 1
     }))
   }),
   payments: selectedPayments.value.map(pm => ({
