@@ -165,7 +165,13 @@
                 <el-form-item label="备注"><el-input v-model="productApplicationEdit.remark" type="textarea" :rows="2" /></el-form-item>
               </el-form>
             </div>
-            <el-descriptions v-if="detailScalarFields(currentInstance.moduleData).length" :column="2" border>
+            <template v-if="['price_correction', 'invoice_amount'].includes(currentInstance.moduleData.adjustment_type)">
+              <div v-for="section in correctionReviewSections(currentInstance.moduleData)" :key="section.title" class="detail-section">
+                <div class="detail-section-title">{{ section.title }}</div>
+                <el-descriptions :column="2" border><el-descriptions-item v-for="field in section.fields" :key="field.key" :label="field.label" :span="field.span">{{ field.value }}</el-descriptions-item></el-descriptions>
+              </div>
+            </template>
+            <el-descriptions v-else-if="detailScalarFields(currentInstance.moduleData).length" :column="2" border>
               <el-descriptions-item
                 v-for="field in detailScalarFields(currentInstance.moduleData)"
                 :key="field.key"
@@ -178,7 +184,8 @@
               <el-table :data="section.rows" stripe border size="small">
                 <el-table-column v-for="column in section.columns" :key="column.key" :label="column.label" min-width="120">
                   <template #default="{ row }">
-                    <el-link v-if="column.key === 'url' && row[column.key]" type="primary" @click="openApprovalAttachment(row[column.key])">打开附件</el-link>
+                    <el-link v-if="column.key === 'attachment_id' && row[column.key] && ['price_correction', 'invoice_amount'].includes(currentInstance.moduleData?.adjustment_type)" type="primary" @click="downloadCorrectionAttachment(row)">下载附件</el-link>
+                    <el-link v-else-if="column.key === 'url' && row[column.key]" type="primary" @click="openApprovalAttachment(row[column.key])">打开附件</el-link>
                     <span v-else>{{ formatDetailValue(row[column.key]) }}</span>
                   </template>
                 </el-table-column>
@@ -770,6 +777,13 @@ function detailLabel(key) {
   return String(key).replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ')
 }
 const correctionFieldLabels = {
+  correction_scope: '纠错范围', correction_snapshot_note: '数据依据与生效规则', correction_applied_at: '纠错生效时间',
+  correction_receivable_amount: '原订单用户应收', correction_payment_fee: '原支付手续费', correction_freight: '原运费扣减', correction_supplement: '原补录金额',
+  correction_invoice_type: '原开票类型', correction_invoice_amount: '原订单开票金额',
+  correction_pricing_before: '原整单结算定价合计', correction_pricing_after: '纠错后整单结算定价合计',
+  correction_taxable_before: '原计税基础', correction_taxable_after: '纠错后计税基础',
+  finance_reviewer_name: '财务审核人', finance_review_comment: '财务审核意见', finance_review_time: '财务审核时间',
+  admin_reviewer_name: '复审人', admin_review_comment: '复审意见', admin_review_time: '复审时间',
   correction_type_name: '纠错类型', correction_evidence: '纠错依据', correction_product: '纠错商品 / SN',
   correction_before_invoice_amount: '原开票金额', correction_after_invoice_amount: '正确开票金额',
   correction_vat_before: '原税费扣减', correction_vat_after: '纠错后税费扣减',
@@ -780,6 +794,9 @@ const correctionFieldLabels = {
 }
 Object.assign(detailFieldLabels, correctionFieldLabels)
 Object.keys(correctionFieldLabels).forEach(key => detailAllowedKeys.add(key))
+detailArrayLabels.correction_order_items = '原订单商品明细（申请时快照）'
+detailArrayColumnLabels.correction_target = '纠错范围'
+detailArrayColumnLabels.attachment_id = '附件'
 function formatDetailValue(value) {
   if (value === 'price_correction') return '结算定价纠错'
   if (value === 'invoice_amount') return '开票金额纠错'
@@ -797,13 +814,23 @@ function detailScalarFields(data = {}) {
   return Object.entries(data)
     .filter(([key]) => !['price_correction', 'invoice_amount'].includes(data.adjustment_type) || !['amount', 'signed_amount', 'base_gross_profit'].includes(key))
     .filter(([key, value]) => detailAllowedKeys.has(key) && !hiddenDetailKeys.has(key) && !Array.isArray(value) && (value === null || ['string', 'number', 'boolean'].includes(typeof value)))
-    .filter(([, value]) => value !== null && value !== '')
+    .filter(([key, value]) => key.startsWith('correction_') || (value !== null && value !== ''))
     .map(([key, value]) => ({ key, label: detailLabel(key), value: formatDetailValue(value), span: ['remark', 'reason', 'return_reason', 'review_comment', 'policy_content', 'po_policy_at_sale', 'so_policy_at_sale', 'other_policy_at_sale', 'policy_remark'].includes(key) ? 2 : 1 }))
     .concat(data.correction_product_profit_visible === false ? [{ key: 'correction_product_access', label: '产品端毛利', value: '当前账号无查看权限，由有权限的审核人核对', span: 2 }] : [])
 }
+function correctionReviewSections(data) {
+  const fields = detailScalarFields(data)
+  const isReview = key => /^(finance_|admin_)/.test(key) || key === 'correction_applied_at'
+  const isContext = key => ['adjustment_no', 'order_no', 'applicant_name', 'employee_name', 'store_name', 'create_time', 'reason', 'correction_scope', 'correction_type_name', 'correction_evidence', 'correction_snapshot_note'].includes(key)
+  return [
+    { title: '申请信息与纠错依据', fields: fields.filter(field => isContext(field.key)) },
+    { title: '纠错前后金额与毛利影响', fields: fields.filter(field => !isContext(field.key) && !isReview(field.key) && field.key !== 'adjustment_type') },
+    { title: '审核意见与生效记录', fields: fields.filter(field => isReview(field.key)) }
+  ].filter(section => section.fields.length)
+}
 function detailArraySections(data = {}) {
   return Object.entries(data)
-    .filter(([key, value]) => ['items', 'OrderItems', 'InboundItems', 'originalOrderItems', 'attribution_details', 'attachments'].includes(key) && Array.isArray(value) && value.length && !hiddenDetailKeys.has(key))
+    .filter(([key, value]) => ['items', 'OrderItems', 'InboundItems', 'originalOrderItems', 'correction_order_items', 'attribution_details', 'attachments'].includes(key) && Array.isArray(value) && value.length && !hiddenDetailKeys.has(key))
     .map(([key, rows]) => {
       const objectRows = rows.filter(row => row && typeof row === 'object' && !Array.isArray(row))
       if (!objectRows.length) return null
@@ -913,6 +940,7 @@ async function loadModuleDetail(row) {
     return { ...source, original_order_no: order?.order_no || source.order_no, original_order_customer_name: order?.customer_name || '', originalOrder: order, originalOrderItems: order?.OrderItems || order?.items || [] }
   }
   if (row.moduleType === 'profit' && source.order_id) {
+    if (['price_correction', 'invoice_amount'].includes(source.adjustment_type)) return source
     const order = responseData(await api.getSalesDetail(source.order_id))
     return { ...source, original_order_no: order?.order_no || source.order_no, original_order_customer_name: order?.customer_name || '', originalOrder: order, originalOrderItems: order?.OrderItems || order?.items || [] }
   }
@@ -1001,6 +1029,14 @@ async function openApprovalAttachment(value) {
     if (url) window.open(url, '_blank', 'noopener')
   } catch (error) { ElMessage.error('附件打开失败，请重试') }
 }
+async function downloadCorrectionAttachment(file) {
+  try {
+    const response = await api.downloadProfitAdjustmentAttachment(file.attachment_id)
+    const url = URL.createObjectURL(new Blob([response.data], { type: file.mime_type || 'application/octet-stream' }))
+    const link = document.createElement('a'); link.href = url; link.download = file.original_name || '附件'; link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch (error) { ElMessage.error(error.response?.status === 403 ? '当前账号无附件下载权限' : '附件下载失败，请重试') }
+}
 async function openModule(row) {
   purchaseApprovalEdit.value = null
 
@@ -1013,7 +1049,7 @@ async function openModule(row) {
     const moduleData = await loadModuleDetail(row)
     const approval = row.approvalInstanceId ? responseData(await api.getApprovalInstance(row.approvalInstanceId)) : null
     if (serial !== detailRequestSerial) return
-    currentInstance.value = { ...buildModuleInstance(row, moduleData), Tasks: approval?.Tasks || [], detailLoading: false }
+    currentInstance.value = { ...buildModuleInstance(row, { ...moduleData, ...(approval?.moduleData || {}) }), Tasks: approval?.Tasks || [], detailLoading: false }
     if (['purchase', 'purchase_request'].includes(row.moduleType)) {
       purchaseApprovalEdit.value = purchaseApprovalForm(moduleData)
 

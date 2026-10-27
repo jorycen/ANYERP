@@ -7,6 +7,49 @@ const C = require('../src/modules/report/settlementPriceCorrection');
 const controller = require('../src/modules/report/profitAdjustmentController');
 const runtime = require('../src/modules/approval/businessRuntime');
 const tx = { LOCK: { UPDATE: 'UPDATE' } };
+test('开票纠错下拉值与后台类型一致，切换后必须手填金额，空值不能预览或提交', async () => {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const view = fs.readFileSync(path.join(__dirname, '../../frontend/web/src/views/Reports.vue'), 'utf8');
+  const selectedType = view.match(/label="开票金额错误" value="([^"]+)"/)[1];
+  assert.equal(selectedType, C.INVOICE_TYPE);
+  assert.match(view, new RegExp(`v-if="adjustmentForm.adjustmentType === '${selectedType}'" label="正确开票金额" required`));
+  const warnings = [];
+  const ctx = { adjustmentForm: { adjustmentType: selectedType, invoiceAmount: 6000, confirmZero: true }, ElMessage: { warning(message) { warnings.push(message); } } };
+  const changeStart = view.indexOf('const onCorrectionTypeChange =');
+  vm.runInNewContext(view.slice(changeStart, view.indexOf('const previewCorrection', changeStart)) + '\nglobalThis.change = onCorrectionTypeChange;', ctx);
+  ctx.change();
+  assert.equal(ctx.adjustmentForm.invoiceAmount, undefined);
+  assert.equal(ctx.adjustmentForm.confirmZero, false);
+  const previewStart = view.indexOf('const previewCorrection =');
+  vm.runInNewContext(view.slice(previewStart, view.indexOf('const resetAdjustmentForm', previewStart)) + '\nglobalThis.preview = previewCorrection;', ctx);
+  const submitStart = view.indexOf('const submitAdjustment =');
+  // The empty-value guard must return before accessing any order, preview or API.
+  const submitGuard = view.slice(submitStart, view.indexOf("  if (!adjustmentOrder", submitStart));
+  vm.runInNewContext(submitGuard + '\n}\nglobalThis.submit = submitAdjustment;', ctx);
+  await ctx.preview(); await ctx.submit();
+  assert.equal(warnings.length, 2);
+  assert.ok(warnings.every(message => message.includes('开票金额')));
+});
+test('纠错审批补齐快照商品及金额依据，但不泄露采购成本和附件存储路径', () => {
+  const data = { adjustment_type: C.TYPE, store_id: 'S', attachments: [{ attachment_id: 'A', original_name: '凭据.pdf', file_path: '/private/file' }],
+    correction_data: { evidence: '依据001', result: { itemId: 'I', salesBefore: 100, salesAfter: 200, salesDelta: 100,
+      productBefore: 999, productAfter: 899, productDelta: -100,
+      before: { snapshot: { receivable_amount: 6000, invoice_amount: 0, product_pricing_amount: 5500, vat_amount: 0, purchase_cost: 9999 },
+        orderItems: [{ item_id: 'I', product_name: '电脑', pn_code: 'PN1', sn_code: 'SN1', quantity: 1, sale_price: 6000, subtotal: 6000, purchase_cost: 9999 }] },
+      after: { snapshot: { product_pricing_amount: 5400, vat_amount: 0 } } } } };
+  const shown = C.display(data, { roles: ['clerk'], accessibleStoreIds: ['S'] });
+  assert.equal(shown.correction_scope, '指定商品结算定价');
+  assert.equal(shown.correction_receivable_amount, 6000);
+  assert.equal(shown.correction_order_items[0].unit_price, 6000);
+  assert.equal(shown.correction_invoice_amount, 0);
+  assert.equal(shown.correction_taxable_before, null);
+  assert.equal(shown.correction_order_items[0].correction_target, '本次纠错商品');
+  assert.equal(shown.correction_order_items[0].pn_code, 'PN1');
+  assert.equal(shown.correction_product_before, null);
+  assert.equal(shown.correction_data, undefined);
+  assert.ok(!JSON.stringify(shown).includes('9999'));
+  assert.equal(shown.attachments[0].file_path, undefined);
+});
 function row(value) { return { ...value, toJSON() { return JSON.parse(JSON.stringify(Object.fromEntries(Object.entries(this).filter(([, value]) => typeof value !== 'function')))); }, async update(patch, options) { assert.equal(options.transaction, tx); Object.assign(this, patch); } }; }
 function context(body = {}) { return { state: { user: { staffId: 7, name: '审核人', roles: ['admin'], accessibleStoreIds: ['S'] } }, query: {}, params: {}, files: [], request: { body }, throw(status, message) { throw Object.assign(new Error(message), { status }); } }; }
 function fixture(t, extra = {}) {

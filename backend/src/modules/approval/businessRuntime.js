@@ -64,7 +64,7 @@ async function context(type, row, transaction) {
   if (!employee) throw Object.assign(new Error('审批申请人员工记录不存在'), { status: 409 });
   if (type === 'product_application' && !storeId) storeId = employee.store_id;
   const store = storeId ? await M.Store.findByPk(storeId, { transaction }) : null;
-  return { subject_staff_id: Number(staffId), store_id: storeId || null, distributor_id: store?.distributor_id || row.distributor_id || row.applicant_distributor_id || employee.distributor_id, employee };
+  return { subject_staff_id: Number(staffId), store_id: storeId || null, store_name: store?.name || '', distributor_id: store?.distributor_id || row.distributor_id || row.applicant_distributor_id || employee.distributor_id, employee };
 }
 function visible(user, info) {
   const { canAccessDistributor } = require('../../utils/distributorScope');
@@ -171,7 +171,8 @@ async function listBusinessTasks(ctx, onlyType = null) {
         where,
         include: type === 'sales_return'
           ? [{ model: M.SalesReturnRequestItem, as: 'items' }]
-          : type === 'deposit_refund' ? [{ model: M.DepositOrder, as: 'DepositOrder' }] : undefined,
+          : type === 'deposit_refund' ? [{ model: M.DepositOrder, as: 'DepositOrder' }]
+            : type === 'profit_adjustment' ? [{ model: M.PerformanceProfitAdjustmentAttachment, as: 'attachments', attributes: ['attachment_id', 'original_name', 'mime_type', 'file_size', 'create_time'] }] : undefined,
         order: [[d.id, 'ASC']],
         limit: 200,
         offset
@@ -197,7 +198,7 @@ async function listBusinessTasks(ctx, onlyType = null) {
             nodeName = node.name;
           }
           if (canReview) tasks.push({ business_type: type, business_id: String(row[d.id]), business_no: row[d.no] || row[d.id], node_name: nodeName, instance_id: instance?.instance_id, manual_path: d.manual || null,
-            row: type === 'profit_adjustment' ? require('../report/settlementPriceCorrection').display(row.toJSON(), ctx.state.user) : row.toJSON() });
+            row: type === 'profit_adjustment' ? require('../report/settlementPriceCorrection').display({ ...row.toJSON(), store_name: info.store_name }, ctx.state.user) : row.toJSON() });
         } catch (error) {
           if (ctx.state.user.roles?.some(role => ['admin', 'boss'].includes(role))) issues.push({ businessType: type, message: error.message });
         }

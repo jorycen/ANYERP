@@ -202,6 +202,10 @@ function display(row, user) {
   const output = { ...row };
   delete output.correction_data;
   if (!isCorrection(row.adjustment_type)) return output;
+  if (Array.isArray(output.attachments)) output.attachments = output.attachments.map(file => ({
+    attachment_id: file.attachment_id, original_name: file.original_name, mime_type: file.mime_type,
+    file_size: file.file_size, create_time: file.create_time
+  }));
   const r = saved.result;
   if (r) Object.assign(output, { correction_type_name: '结算定价错误', correction_evidence: saved.evidence,
     correction_product: `${r.productName || r.itemId}${r.snCode ? ' / ' + r.snCode : ''}`,
@@ -217,6 +221,31 @@ function display(row, user) {
     Object.assign(output, { correction_before_invoice_amount: r.beforeInvoiceAmount, correction_after_invoice_amount: r.afterInvoiceAmount,
       correction_vat_before: r.vatBefore, correction_vat_after: r.vatAfter,
       correction_product_note: '本次不调整产品端提货差毛利，原核算状态保持' });
+  }
+  if (r) {
+    const snapshot = r.before?.snapshot || {};
+    const after = r.after?.snapshot || {};
+    const amount = value => value === null || value === undefined || value === '' || !Number.isFinite(Number(value)) ? null : Number(value);
+    Object.assign(output, {
+      correction_scope: row.adjustment_type === INVOICE_TYPE ? '整单开票金额' : '指定商品结算定价',
+      correction_snapshot_note: '以下金额及商品为申请时的归档快照；最终审批重新校验原单，原单变化须重新预览申请。',
+      correction_applied_at: saved.appliedAt || null,
+      correction_receivable_amount: amount(snapshot.receivable_amount),
+      correction_payment_fee: amount(snapshot.payment_fee_amount), correction_freight: amount(snapshot.freight_cost_amount),
+      correction_supplement: amount(snapshot.supplement_amount),
+      correction_invoice_type: r.before?.order?.invoice_status || null,
+      correction_invoice_amount: amount(snapshot.invoice_amount ?? r.beforeInvoiceAmount),
+      correction_pricing_before: amount(snapshot.product_pricing_amount),
+      correction_pricing_after: amount(after.product_pricing_amount),
+      correction_taxable_before: amount(snapshot.vat_taxable_amount),
+      correction_taxable_after: amount(after.vat_taxable_amount),
+      correction_vat_before: amount(snapshot.vat_amount ?? r.vatBefore), correction_vat_after: amount(after.vat_amount ?? r.vatAfter),
+      correction_order_items: (Array.isArray(r.before?.orderItems) ? r.before.orderItems : []).map(item => ({
+        product_name: item.product_name || '未记录商品名称', pn_code: item.pn_code || '', sn_code: item.sn_code || '',
+        quantity: amount(item.quantity), unit_price: amount(item.sale_price ?? item.unit_price), amount: amount(item.subtotal),
+        correction_target: row.adjustment_type === INVOICE_TYPE ? '整单开票纠错' : String(item.item_id) === String(r.itemId) ? '本次纠错商品' : '不调整定价'
+      }))
+    });
   }
   const storeIds = (user?.accessibleStoreIds || []).map(String);
   output.correction_product_profit_visible = isDealerAccount(user) && (storeIds.includes('*') || storeIds.includes(String(row.store_id)));

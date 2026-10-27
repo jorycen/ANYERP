@@ -357,7 +357,7 @@
           <span>{{ adjustmentOrder?.orderNo }} / {{ adjustmentOrder?.employeeName }}</span>
         </el-form-item>
         <el-form-item label="基础毛利">¥{{ formatMoney(adjustmentOrder?.baseGrossProfit) }}</el-form-item>
-        <el-form-item label="纠错类型"><el-select v-model="adjustmentForm.adjustmentType" @change="onCorrectionTypeChange"><el-option label="结算定价错误" value="price_correction" /><el-option label="开票金额错误" value="invoice_correction" /></el-select></el-form-item>
+        <el-form-item label="纠错类型"><el-select v-model="adjustmentForm.adjustmentType" @change="onCorrectionTypeChange"><el-option label="结算定价错误" value="price_correction" /><el-option label="开票金额错误" value="invoice_amount" /></el-select></el-form-item>
         <el-alert v-if="correctionError" :title="correctionError" type="warning" :closable="false" />
         <el-alert v-if="adjustmentForm.adjustmentType === 'price_correction' && !correctionLoading && !correctionError && !correctionOptions.length" title="本订单无可纠错的公司结算定价商品；可按实际情况选择开票金额纠错。" type="warning" :closable="false" />
         <el-form-item v-if="adjustmentForm.adjustmentType === 'price_correction'" label="订单商品" required>
@@ -369,7 +369,7 @@
           <el-input-number v-model="adjustmentForm.unitPrice" :min="0" :max="999999999.99" :precision="2" controls-position="right" style="width: 220px" />
         </el-form-item>
         <el-form-item v-if="adjustmentForm.adjustmentType === 'invoice_amount'" label="原开票金额"><span v-if="correctionInvoiceAmount !== null">¥{{ formatMoney(correctionInvoiceAmount) }}</span><span v-else>待核实</span></el-form-item>
-        <el-form-item v-if="adjustmentForm.adjustmentType === 'invoice_amount'" label="正确开票金额" required><el-input-number v-model="adjustmentForm.invoiceAmount" :min="0" :max="999999999.99" :precision="2" controls-position="right" style="width:220px" /></el-form-item>
+        <el-form-item v-if="adjustmentForm.adjustmentType === 'invoice_amount'" label="正确开票金额" required><el-input-number v-model="adjustmentForm.invoiceAmount" :min="0" :max="999999999.99" :precision="2" placeholder="请输入新的开票金额" controls-position="right" style="width:220px" /></el-form-item>
         <el-form-item v-if="(adjustmentForm.adjustmentType === 'price_correction' && adjustmentForm.unitPrice === 0) || (adjustmentForm.adjustmentType === 'invoice_amount' && adjustmentForm.invoiceAmount === 0)" label="零元确认"><el-checkbox v-model="adjustmentForm.confirmZero">{{ adjustmentForm.adjustmentType === 'invoice_amount' ? '确认本订单开票金额为零元，开票类型保持不变' : '确认本商品结算定价为零元' }}</el-checkbox></el-form-item>
         <el-form-item :label="adjustmentForm.adjustmentType === 'invoice_amount' ? '开票依据' : '定价依据'" required>
           <el-input v-model="adjustmentForm.evidence" type="textarea" :rows="2" maxlength="2000" show-word-limit placeholder="填写发票、合同、已批准通知等凭据编号及内容" />
@@ -729,7 +729,6 @@ const openAdjustmentApply = async (row) => {
     if (optionsVersion !== correctionOptionsRequestVersion || adjustmentOrder.value?.orderId !== orderId || !adjustmentApplyVisible.value) return
     correctionOptions.value = res.data?.options || []
     correctionInvoiceAmount.value = res.data?.invoiceAmount == null ? null : Number(res.data.invoiceAmount)
-    if (adjustmentForm.adjustmentType === 'invoice_amount' && adjustmentForm.invoiceAmount == null) adjustmentForm.invoiceAmount = correctionInvoiceAmount.value ?? undefined
   } catch (error) {
     if (optionsVersion === correctionOptionsRequestVersion && adjustmentApplyVisible.value) correctionError.value = error?.response?.data?.message || '加载可纠错商品失败'
   } finally { if (optionsVersion === correctionOptionsRequestVersion) correctionLoading.value = false }
@@ -741,9 +740,10 @@ const onCorrectionItemChange = () => {
 }
 const onCorrectionTypeChange = () => {
   adjustmentForm.confirmZero = false
-  adjustmentForm.invoiceAmount = correctionInvoiceAmount.value ?? undefined
+  adjustmentForm.invoiceAmount = undefined
 }
 const previewCorrection = async () => {
+  if (adjustmentForm.adjustmentType === 'invoice_amount' && (adjustmentForm.invoiceAmount == null || adjustmentForm.invoiceAmount === '')) { ElMessage.warning('请输入正确开票金额'); return }
   const requestVersion = correctionRequestVersion
   correctionPreviewing.value = true
   try {
@@ -774,6 +774,7 @@ const handleAdjustmentFileChange = (file, uploadFiles) => {
 }
 
 const submitAdjustment = async () => {
+  if (adjustmentForm.adjustmentType === 'invoice_amount' && (adjustmentForm.invoiceAmount == null || adjustmentForm.invoiceAmount === '')) { ElMessage.warning('请输入正确开票金额'); return }
   if (!adjustmentOrder.value?.orderId) { ElMessage.warning('请选择订单'); return }
   if (!adjustmentForm.reason.trim()) { ElMessage.warning('请填写调整原因'); return }
   if (!adjustmentForm.evidence.trim()) { ElMessage.warning('请填写纠错依据'); return }
