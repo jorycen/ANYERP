@@ -1582,7 +1582,8 @@
               <el-option v-for="pn in (selectedConversionTargetProduct?.manufacturer_codes || [])" :key="pn" :label="pn" :value="pn" />
             </el-select>
             <el-input-number v-if="selectedConversionTargetProduct?.need_sn !== 1" v-model="conversionTargetAdd.quantity" :min="1" :precision="0" style="width: 110px" />
-            <el-input-number v-model="conversionTargetAdd.unitCost" :min="0" :precision="2" :controls="false" placeholder="请输入商品价格" style="width: 130px" />
+            <span v-if="conversionForm.conversionType === 'assemble' && conversionForm.targetItems.length === 0" class="conversion-item-cost">成品成本由后台自动承接</span>
+            <el-input-number v-else v-model="conversionTargetAdd.unitCost" :min="0" :precision="2" :controls="false" placeholder="请输入商品价格" style="width: 130px" />
             <el-button type="primary" @click="addConversionTargetItem">添加</el-button>
           </div>
 
@@ -1590,7 +1591,7 @@
           <el-table :data="conversionForm.targetItems" stripe border size="small" empty-text="点击右上角选择商品，添加目标商品">
             <el-table-column type="index" label="#" width="34" />
             <el-table-column prop="productName" label="商品信息" min-width="140">
-              <template #default="{ row }"><div>{{ row.productName }}</div><div class="conversion-item-cost">单价 ¥{{ row.unitCost }} · 合计 ¥{{ row.totalCost }}</div></template>
+              <template #default="{ row }"><div>{{ row.productName }}</div><div v-if="conversionAutomaticTarget && !conversionCostPreview" class="conversion-item-cost">{{ conversionPreviewLoading ? '成本核算中…' : '成本待核算' }}</div><div v-else class="conversion-item-cost">单价 ¥{{ row.unitCost }} · 合计 ¥{{ row.totalCost }}<span v-if="conversionAutomaticTarget">（自动承接）</span></div></template>
             </el-table-column>
             <el-table-column prop="snCode" label="SN" min-width="85" show-overflow-tooltip>
               <template #default="{ row }">{{ row.snCode || '-' }}</template>
@@ -1615,11 +1616,12 @@
           <div class="conversion-metric"><span class="conversion-metric-icon amber">▣</span><div>拆分后原商品成本<strong>¥{{ conversionSplitRemainingCost }}</strong></div></div>
         </template>
         <template v-else>
-          <div class="conversion-metric"><span class="conversion-metric-icon">▤</span><div>来源成本<strong>¥{{ conversionSourceTotal }}</strong></div></div>
-          <div class="conversion-metric"><span class="conversion-metric-icon green">➜</span><div>目标成本<strong>¥{{ conversionTargetTotal }}</strong></div></div>
-          <div class="conversion-metric"><span class="conversion-metric-icon amber">▣</span><div>来源与服务成本合计<strong>¥{{ conversionExpectedTargetTotal }}</strong><small>含服务成本 ¥{{ conversionServiceCost }}</small></div></div>
+          <div class="conversion-metric"><span class="conversion-metric-icon">▤</span><div>来源成本<strong>¥{{ conversionSourceTotal ?? '—' }}</strong></div></div>
+          <div class="conversion-metric"><span class="conversion-metric-icon green">➜</span><div>目标成本<strong>¥{{ conversionTargetTotal ?? '—' }}</strong></div></div>
+          <div class="conversion-metric"><span class="conversion-metric-icon amber">▣</span><div>来源与服务成本合计<strong>¥{{ conversionExpectedTargetTotal ?? '—' }}</strong><small>含服务成本 ¥{{ conversionServiceCost }}</small></div></div>
         </template>
       </div>
+      <div v-if="conversionAutomaticTarget && conversionPreviewError" role="alert" style="color: var(--el-color-danger); margin-top: 8px">{{ conversionPreviewError }} <el-button link type="primary" @click="conversionPreviewRefresh += 1">重新核算</el-button></div>
 
       <template #footer>
         <div class="conversion-footer"><div class="conversion-notice">ⓘ 完成后自动生成出入库记录，请核对商品、SN、数量与成本。</div><div class="conversion-footer-actions">
@@ -2375,10 +2377,16 @@ const selectedConversionSourceProduct = computed(() => {
 const selectedConversionTargetProduct = computed(() => {
   return conversionTargetOptions.value.find(item => item.product_id === conversionTargetAdd.productId) || null
 })
-const conversionSourceTotal = computed(() => roundMoney(conversionForm.sourceItems.reduce((sum, item) => sum + Number(item.totalCost || 0), 0)))
-const conversionTargetTotal = computed(() => roundMoney(conversionForm.targetItems.reduce((sum, item) => sum + Number(item.totalCost || 0), 0)))
+const conversionAutomaticTarget = computed(() => conversionForm.conversionType === 'assemble' && conversionForm.targetItems.length === 1)
+const conversionCostPreview = ref(null)
+const conversionPreviewLoading = ref(false)
+const conversionPreviewError = ref('')
+const conversionPreviewRefresh = ref(0)
+let conversionPreviewSequence = 0
+const conversionSourceTotal = computed(() => conversionAutomaticTarget.value ? conversionCostPreview.value?.sourceTotal : roundMoney(conversionForm.sourceItems.reduce((sum, item) => sum + Number(item.totalCost || 0), 0)))
+const conversionTargetTotal = computed(() => conversionAutomaticTarget.value ? conversionCostPreview.value?.targetTotal : roundMoney(conversionForm.targetItems.reduce((sum, item) => sum + Number(item.totalCost || 0), 0)))
 const conversionServiceCost = computed(() => conversionForm.conversionType === 'assemble' ? roundMoney(conversionForm.serviceCost || 0) : 0)
-const conversionExpectedTargetTotal = computed(() => roundMoney(conversionSourceTotal.value + conversionServiceCost.value))
+const conversionExpectedTargetTotal = computed(() => conversionAutomaticTarget.value ? conversionCostPreview.value?.expectedTargetTotal : roundMoney(conversionSourceTotal.value + conversionServiceCost.value))
 const conversionSplitRemainingCost = computed(() => roundMoney(conversionSourceTotal.value - conversionTargetTotal.value))
 const conversionProductStandardFields = ['brand', 'series', 'model', 'processor', 'memory', 'storage', 'color', 'gpu', 'accessory_type']
 const conversionProductExtraFields = computed(() => {
@@ -2399,6 +2407,7 @@ const conversionProductName = computed(() => {
 })
 const conversionCostMatched = computed(() => {
   if (conversionForm.sourceItems.length === 0 || conversionForm.targetItems.length === 0) return false
+  if (conversionAutomaticTarget.value) return Boolean(conversionCostPreview.value) && !conversionPreviewLoading.value && !conversionPreviewError.value
   if (conversionForm.conversionType === 'split') {
     return conversionForm.sourceItems.length === 1 &&
       conversionTargetTotal.value > 0 &&
@@ -2407,6 +2416,39 @@ const conversionCostMatched = computed(() => {
   }
   return Math.abs(conversionTargetTotal.value - conversionExpectedTargetTotal.value) <= 0.01
 })
+
+watch(() => JSON.stringify({
+  visible: conversionDialogVisible.value, storeId: conversionForm.storeId, type: conversionForm.conversionType,
+  refresh: conversionPreviewRefresh.value,
+  serviceCost: conversionForm.serviceCost,
+  source: conversionForm.sourceItems.map(({ productId, pnCode, snId, snCode, quantity, inventoryType, locationId }) => ({ productId, pnCode, snId, snCode, quantity, inventoryType, locationId })),
+  target: conversionForm.targetItems.map(({ productId, pnCode, snCode, quantity, inventoryType, locationId }) => ({ productId, pnCode, snCode, quantity, inventoryType, locationId }))
+}), async (_, __, onCleanup) => {
+  const sequence = ++conversionPreviewSequence
+  conversionCostPreview.value = null
+  conversionPreviewError.value = ''
+  conversionPreviewLoading.value = false
+  if (!conversionDialogVisible.value || !conversionAutomaticTarget.value || !conversionForm.storeId || !conversionForm.sourceItems.length) return
+  let cancelled = false
+  onCleanup(() => { cancelled = true })
+  conversionPreviewLoading.value = true
+  const payload = JSON.parse(JSON.stringify({
+    conversionType: 'assemble', storeId: conversionForm.storeId, serviceCost: conversionForm.serviceCost,
+    sourceItems: conversionForm.sourceItems, targetItems: conversionForm.targetItems
+  }))
+  try {
+    const res = await api.previewConversion(payload)
+    if (cancelled || sequence !== conversionPreviewSequence) return
+    if (res.code !== 0 || !res.data?.automaticTargetCost || !res.data?.targetItems?.length) throw new Error(res.message || '成本核算失败')
+    conversionCostPreview.value = res.data
+    res.data.sourceItems.forEach((cost, index) => Object.assign(conversionForm.sourceItems[index], cost))
+    res.data.targetItems.forEach((cost, index) => Object.assign(conversionForm.targetItems[index], cost))
+  } catch (err) {
+    if (!cancelled && sequence === conversionPreviewSequence) conversionPreviewError.value = err.response?.data?.message || err.message || '成本核算失败，请重试'
+  } finally {
+    if (!cancelled && sequence === conversionPreviewSequence) conversionPreviewLoading.value = false
+  }
+}, { flush: 'sync' })
 
 onMounted(async () => {
   mainTab.value = String(route.meta.tab || 'summary')
@@ -4943,7 +4985,7 @@ const addConversionTargetItem = () => {
   }
 
   const quantity = product.need_sn === 1 ? 1 : Number(conversionTargetAdd.quantity)
-  const unitCost = displayedConversionSourceCost(conversionTargetAdd.unitCost)
+  const unitCost = conversionForm.conversionType === 'assemble' && conversionForm.targetItems.length === 0 ? 0 : displayedConversionSourceCost(conversionTargetAdd.unitCost)
   if (!Number.isInteger(quantity) || quantity <= 0 || unitCost === undefined || (conversionForm.conversionType !== 'assemble' && unitCost <= 0)) {
     ElMessage.warning(conversionForm.conversionType === 'assemble' ? '数量必须大于0，成本须为非负金额' : '数量和成本必须大于0')
     return

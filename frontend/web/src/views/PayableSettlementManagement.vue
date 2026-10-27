@@ -93,7 +93,6 @@
         <el-table-column label="操作" min-width="330" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openDetail(row)">详情</el-button>
-            <el-button link type="primary" @click="openRemarkEditor(row)">修改备注</el-button>
             <el-button v-if="row.status === 'pending_approval'" link type="success" @click="openApprovalCenter">审批中心</el-button>
             <el-button v-if="row.status === 'pending_approval'" link type="warning" @click="revokeSettlement(row)">撤回</el-button>
             <el-button v-if="row.status === 'draft'" link type="primary" @click="editDraft(row)">编辑</el-button>
@@ -116,7 +115,7 @@
       />
     </el-card>
 
-    <el-dialog v-model="detailVisible" title="应付结算单详情" width="900px">
+    <el-dialog v-model="detailVisible" title="应付结算单详情" width="900px" destroy-on-close>
       <div v-if="detail">
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="结算单号">{{ detail.settlement_no || '-' }}</el-descriptions-item>
@@ -141,10 +140,7 @@
           <el-descriptions-item label="审批人">{{ detail.approval_user || '-' }}</el-descriptions-item>
           <el-descriptions-item label="审批时间">{{ dateTime(detail.approval_time) }}</el-descriptions-item>
           <el-descriptions-item label="备注" :span="2">
-            <div class="remark-cell">
-              <span>{{ detail.remark || '-' }}</span>
-              <el-button link type="primary" @click="openRemarkEditor(detail)">修改备注</el-button>
-            </div>
+            <DocumentRemarkEditor kind="settlement" :document-id="detail.settlement_id" :value="detail.remark ?? ''" @saved="syncSettlementRemark" />
           </el-descriptions-item>
           <el-descriptions-item label="当前审批环节">{{ detail.status === 'pending_approval' ? (detail.approval_progress_text || '审批流程处理中') : '-' }}</el-descriptions-item>
           <el-descriptions-item label="审批意见" :span="2">{{ detail.approval_comment || '-' }}</el-descriptions-item>
@@ -183,7 +179,7 @@
       </div>
     </el-dialog>
 
-    <el-dialog v-model="sourceDetailVisible" :title="sourceDetailType === 'expense' ? '报销单详情' : '采购单详情'" width="900px">
+    <el-dialog v-model="sourceDetailVisible" destroy-on-close :title="sourceDetailType === 'expense' ? '报销单详情' : '采购单详情'" width="900px">
       <div v-if="sourceDetailType === 'expense' && sourceDetail">
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="报销单号">{{ sourceDetail.expense_no || '-' }}</el-descriptions-item>
@@ -208,7 +204,7 @@
           <el-descriptions-item label="状态">{{ sourceDetail.status || '-' }}</el-descriptions-item>
           <el-descriptions-item label="供应商">{{ sourceDetail.Supplier?.name || sourceDetail.supplier_name || '-' }}</el-descriptions-item>
           <el-descriptions-item label="总金额">¥{{ money(sourceDetail.actual_total ?? sourceDetail.total_amount) }}</el-descriptions-item>
-          <el-descriptions-item label="申请原因" :span="2">{{ sourceDetail.reason || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="备注" :span="2"><DocumentRemarkEditor kind="purchase" :document-id="sourceDetail.request_id" :value="sourceDetail.remark ?? sourceDetail.reason ?? ''" @saved="value => Object.assign(sourceDetail, { remark: value, reason: value })" /></el-descriptions-item>
         </el-descriptions>
         <el-table :data="sourceDetail.items || []" stripe border class="detail-table">
           <el-table-column prop="product_name" label="商品" min-width="220" />
@@ -246,27 +242,7 @@
       <template #footer><el-button @click="draftVisible=false">取消</el-button><el-button type="primary" :loading="draftSaving" :disabled="!draftForm?.items?.length" @click="saveDraft">保存草稿</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="remarkVisible" title="修改结算单备注" width="560px">
-      <el-form label-width="90px">
-        <el-form-item label="结算单号">
-          <span>{{ remarkTarget?.settlement_no || '-' }}</span>
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input
-            v-model="remarkForm.remark"
-            type="textarea"
-            :rows="5"
-            maxlength="512"
-            show-word-limit
-            placeholder="请输入结算单备注，可留空"
-          />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="remarkVisible = false">取消</el-button>
-        <el-button type="primary" :loading="remarkSubmitting" @click="saveRemark">保存</el-button>
-      </template>
-    </el-dialog>
+
 
     <el-dialog v-model="paymentVisible" title="部分付款" width="560px">
       <el-descriptions v-if="paymentSettlement" :column="1" border size="small">
@@ -318,6 +294,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
+import DocumentRemarkEditor from '../components/DocumentRemarkEditor.vue'
 
 const router = useRouter()
 const data = ref([])
@@ -329,9 +306,6 @@ const detail = ref(null)
 const sourceDetailVisible = ref(false)
 const sourceDetailType = ref('expense')
 const sourceDetail = ref(null)
-const remarkVisible = ref(false)
-const remarkTarget = ref(null)
-const remarkSubmitting = ref(false)
 const draftVisible = ref(false), draftSaving = ref(false), draftForm = ref(null)
 const draftTotal = computed(() => (draftForm.value?.items || []).reduce((sum, item) => sum + Number(item.amount || 0), 0))
 async function editDraft(row) {
@@ -353,7 +327,6 @@ async function saveDraft() {
   } catch (error) { ElMessage.error(error.response?.data?.message || '保存草稿失败') }
   finally { draftSaving.value = false }
 }
-const remarkForm = reactive({ remark: '' })
 const paymentVisible = ref(false)
 const paymentSettlement = ref(null)
 const paymentSubmitting = ref(false)
@@ -502,32 +475,11 @@ const searchPayees = async keyword => {
   }
 }
 
-const openRemarkEditor = row => {
-  remarkTarget.value = row
-  remarkForm.remark = String(row?.remark || '')
-  remarkVisible.value = true
-}
-
-const saveRemark = async () => {
-  const row = remarkTarget.value
-  if (!row?.settlement_id) return ElMessage.warning('结算单信息不完整')
-  remarkSubmitting.value = true
-  try {
-    const res = await api.updateSettlementRemark(row.settlement_id, { remark: remarkForm.remark })
-    if (res.code === 0) {
-      const remark = res.data?.remark ?? (String(remarkForm.remark || '').trim() || null)
-      data.value = data.value.map(item => item.settlement_id === row.settlement_id ? { ...item, remark } : item)
-      if (detail.value?.settlement_id === row.settlement_id) detail.value = { ...detail.value, remark }
-      remarkVisible.value = false
-      ElMessage.success(res.message || '备注已更新')
-    } else {
-      ElMessage.error(res.message || '备注更新失败')
-    }
-  } catch (error) {
-    ElMessage.error(error.response?.data?.message || '备注更新失败')
-  } finally {
-    remarkSubmitting.value = false
-  }
+const syncSettlementRemark = remark => {
+  const id = detail.value?.settlement_id
+  if (!id) return
+  detail.value = { ...detail.value, remark }
+  data.value = data.value.map(item => item.settlement_id === id ? { ...item, remark } : item)
 }
 
 const submit = async row => {

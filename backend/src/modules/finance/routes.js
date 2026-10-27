@@ -67,7 +67,7 @@ const {
   getCostAdjustmentList
 } = require('./rebateController');
 const { requireRole } = require('../../middleware/permission');
-const { getInvoiceCandidates, exportInvoiceCandidates, listInvoices, exportInvoices, createInvoice, importInvoices } = require('./invoiceController');
+const { getInvoiceCandidates, exportInvoiceCandidates, listInvoices, exportInvoices, createInvoice, importInvoices, returnInvoice } = require('./invoiceController');
 const {
   listExpensePerformanceAllocations,
   listExpensePerformanceStaffOptions,
@@ -148,6 +148,7 @@ router.get('/purchase-invoices/export', exportInvoices);
 router.get('/purchase-invoices', listInvoices);
 router.post('/purchase-invoices', createInvoice);
 router.post('/purchase-invoices/import', importInvoices);
+router.post('/purchase-invoices/:invoiceId/return', returnInvoice);
 router.get('/payable-list/export', exportPayableList);
 router.get('/payable-settlement-items', getPayableSettlementItems);
 router.get('/unpaid-by-supplier', getUnpaidBySupplier);

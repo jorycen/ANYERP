@@ -362,6 +362,9 @@ async function actionInstance(instanceId, action, comment, actor, options = {}) 
       lock: transaction.LOCK.UPDATE
     });
     if (!task) throw new Error('当前账号没有该审批节点的待办任务');
+    if (options.batchExpected && options.batchExpected !== require('./batchApproval').instanceToken(instance, task)) {
+      throw new Error('审批状态已变化，请刷新后重新勾选');
+    }
     const now = new Date();
     await task.update({ status: action === 'approve' ? 'approved' : 'rejected', action, comment: comment || '', acted_time: now }, { transaction });
     await writeLog(instanceId, task.task_id, action, actor, comment, { nodeIndex: task.node_index, roundNo: instance.resubmit_count }, transaction);

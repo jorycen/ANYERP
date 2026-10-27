@@ -2205,7 +2205,7 @@ const SalesSettlementCostAdjustment = sequelize.define('SalesSettlementCostAdjus
   updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_SALES_SETTLEMENT_COST_ADJUSTMENT', timestamps: false });
 
-// 来源业绩调整及结算定价纠错；纠错单保存原始事实及前后快照。
+// 来源业绩调整及订单业务纠错；纠错单保存原始事实及前后快照。
 const PerformanceProfitAdjustment = sequelize.define('PerformanceProfitAdjustment', {
   adjustment_id: { type: DataTypes.STRING(32), primaryKey: true },
   adjustment_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
@@ -2810,6 +2810,8 @@ ApprovalFlowInstance.hasMany(ApprovalActionLog, { foreignKey: 'instance_id', sou
 ApprovalActionLog.belongsTo(ApprovalFlowInstance, { foreignKey: 'instance_id', targetKey: 'instance_id', as: 'Instance' });
   ApprovalTask.belongsTo(Staff, { foreignKey: 'assignee_staff_id', targetKey: 'staff_id', as: 'Assignee' });
   ApprovalActionLog.belongsTo(Staff, { foreignKey: 'actor_staff_id', targetKey: 'staff_id', as: 'Actor' });
+
+require('../utils/snCode').installSnModelNormalization(sequelize.models);
 
 module.exports = {
   sequelize,

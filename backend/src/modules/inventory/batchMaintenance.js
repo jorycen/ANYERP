@@ -1,3 +1,4 @@
+const { normalizeSnCode } = require('../../utils/snCode');
 const XLSX = require('xlsx');
 const { Op } = require('sequelize');
 const {
@@ -327,7 +328,7 @@ async function validateRows(ctx, rows, options, transaction) {
         : await resolveLocation(row, store.store_id, transaction, batchInventoryType))
       : null;
     locationCache.set(locationKey, location);
-    const snCode = normalizeText(getCell(row, ['SN', '机器号', '序列号', 'sn', 'snCode', 'sn_code']));
+    const snCode = normalizeSnCode(getCell(row, ['SN', '机器号', '序列号', 'sn', 'snCode', 'sn_code']));
     let pnCode = normalizeText(getCell(row, ['PN', 'pn', 'pnCode', 'pn_code']));
     const resourceTypes = batchResourceTypes.length > 0
       ? batchResourceTypes
@@ -379,7 +380,7 @@ async function validateRows(ctx, rows, options, transaction) {
       }
       if (operationType === 'ADJUST') rowErrors.push('SN商品不得通过数量调整维护，请使用SN清单入库或出库');
       if (!snCode) rowErrors.push('SN商品必须填写SN');
-      const snKey = normalizeSnIdentityValue(snCode);
+      const snKey = normalizeSnCode(snCode);
       if (snCode && seenSn.has(snKey)) rowErrors.push('导入文件中SN重复');
       if (snCode) seenSn.add(snKey);
 

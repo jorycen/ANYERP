@@ -1,3 +1,4 @@
+const { normalizeSnCode } = require('../../utils/snCode');
 /**
  * 库房管理控制器
  * 优化版：非SN商品直接操作聚合库存，SN商品同时维护SN记录和聚合库存
@@ -2378,7 +2379,7 @@ async function updateSn(ctx) {
     const { newSnCode } = ctx.request.body;
     const user = ctx.state?.staff || {};
 
-    if (!newSnCode || newSnCode.trim() === '') {
+    if (!newSnCode || normalizeSnCode(newSnCode) === '') {
       ctx.throw(400, '新SN码不能为空');
     }
 
@@ -2390,7 +2391,7 @@ async function updateSn(ctx) {
     const exists = await ProductSn.findOne({
       where: {
         pn_code: sn.pn_code || '',
-        sn_code: newSnCode.trim(),
+        sn_code: normalizeSnCode(newSnCode),
         is_deleted: 0
       }
     });
@@ -2403,17 +2404,17 @@ async function updateSn(ctx) {
     await SnLog.create({
       log_id: generateUUID(),
       sn_id: snId,
-      sn_code: newSnCode.trim(),
+      sn_code: normalizeSnCode(newSnCode),
       old_sn_code: oldSnCode,
       product_id: sn.product_id,
       product_name: sn.product_name || '',
       store_id: sn.store_id,
       action: 'modify_sn',
-      remark: `SN码由 ${oldSnCode} 修改为 ${newSnCode.trim()}`,
+      remark: `SN码由 ${oldSnCode} 修改为 ${normalizeSnCode(newSnCode)}`,
       create_user: user.name || user.phone || '-'
     });
 
-    await sn.update({ sn_code: newSnCode.trim() });
+    await sn.update({ sn_code: normalizeSnCode(newSnCode) });
 
     ctx.body = { code: 0, message: 'SN码修改成功' };
   } catch (err) {
@@ -2533,7 +2534,7 @@ async function adjustSnLocation(ctx) {
  */
 async function snTrace(ctx) {
   try {
-    const requestedSnCode = String(ctx.params.snCode || '').trim();
+    const requestedSnCode = normalizeSnCode(ctx.params.snCode || '');
     const requestedPnCode = String(ctx.query.pnCode || '').trim();
     if (!requestedSnCode) ctx.throw(400, 'SN码不能为空');
 
@@ -2546,11 +2547,12 @@ async function snTrace(ctx) {
       .filter(value => value !== null && value !== undefined && String(value).trim() !== '')
       .map(value => String(value).trim()))];
     const toHex = value => Buffer.from(String(value), 'utf8').toString('hex').toUpperCase();
+    const snCodeHex = value => toHex(String(value).trim().toUpperCase());
     const snMatch = (alias, snIdColumn, snCodeColumn) =>
-      `(BINARY HEX(CAST(${alias}.${snIdColumn} AS BINARY)) IN (:snIdsHex) OR BINARY HEX(CAST(TRIM(${alias}.${snCodeColumn}) AS BINARY)) IN (:snCodesHex))`;
+      `(BINARY HEX(CAST(${alias}.${snIdColumn} AS BINARY)) IN (:snIdsHex) OR BINARY HEX(CAST(UPPER(TRIM(${alias}.${snCodeColumn})) AS BINARY)) IN (:snCodesHex))`;
     const replacementsFor = (snIds, snCodes) => ({
       snIdsHex: (snIds.length ? snIds : [emptyFilterValue]).map(toHex),
-      snCodesHex: (snCodes.length ? snCodes : [requestedSnCode]).map(toHex)
+      snCodesHex: [...new Set((snCodes.length ? snCodes : [requestedSnCode]).map(snCodeHex))]
     });
 
     const appendReferenceEvent = (event, reference, options = {}) => {
@@ -2568,9 +2570,9 @@ async function snTrace(ctx) {
     const initialLogs = await sequelize.query(
       `SELECT sn_id, sn_code, old_sn_code
        FROM T_SN_LOG
-       WHERE BINARY HEX(CAST(TRIM(sn_code) AS BINARY)) = BINARY :snCodeHex
-          OR BINARY HEX(CAST(TRIM(old_sn_code) AS BINARY)) = BINARY :snCodeHex`,
-      { replacements: { snCodeHex: toHex(requestedSnCode) }, type: sequelize.QueryTypes.SELECT }
+       WHERE BINARY HEX(CAST(UPPER(TRIM(sn_code)) AS BINARY)) = BINARY :snCodeHex
+          OR BINARY HEX(CAST(UPPER(TRIM(old_sn_code)) AS BINARY)) = BINARY :snCodeHex`,
+      { replacements: { snCodeHex: snCodeHex(requestedSnCode) }, type: sequelize.QueryTypes.SELECT }
     );
     const initialSnIds = uniqueValues(initialLogs.map(row => row.sn_id));
     const initialSnCodes = uniqueValues([
@@ -2606,7 +2608,7 @@ async function snTrace(ctx) {
       `SELECT log_id, sn_id, sn_code, old_sn_code, action, remark, create_user, create_time
        FROM T_SN_LOG
        WHERE ${snMatch('T_SN_LOG', 'sn_id', 'sn_code')}
-          OR BINARY HEX(CAST(TRIM(old_sn_code) AS BINARY)) IN (:snCodesHex)
+          OR BINARY HEX(CAST(UPPER(TRIM(old_sn_code)) AS BINARY)) IN (:snCodesHex)
        ORDER BY create_time ASC`,
       { replacements, type: sequelize.QueryTypes.SELECT }
     );
@@ -2631,11 +2633,14 @@ async function snTrace(ctx) {
         JOIN T_INBOUND i ON BINARY ii.inbound_id = BINARY i.inbound_id
         LEFT JOIN T_STORE s ON BINARY i.store_id = BINARY s.store_id
        WHERE ${snMatch('ii', 'sn_id', 'sn_code')}
-          OR JSON_OVERLAPS(
-            CASE WHEN JSON_VALID(ii.received_sn_codes) THEN ii.received_sn_codes ELSE JSON_ARRAY() END,
-            CAST(:receivedSnCodesJson AS JSON)
+          OR EXISTS (
+            SELECT 1 FROM JSON_TABLE(
+              CASE WHEN JSON_VALID(ii.received_sn_codes) THEN ii.received_sn_codes ELSE JSON_ARRAY() END,
+              '$[*]' COLUMNS (sn_code VARCHAR(128) PATH '$')
+            ) AS received_sn
+            WHERE BINARY HEX(CAST(UPPER(TRIM(received_sn.sn_code)) AS BINARY)) IN (:snCodesHex)
           )`,
-      { replacements: { ...replacements, receivedSnCodesJson: JSON.stringify(snCodes) }, type: sequelize.QueryTypes.SELECT }
+      { replacements, type: sequelize.QueryTypes.SELECT }
     );
 
     const purchaseRequestIds = uniqueValues(inboundItems.map(row => row.purchase_request_id));
@@ -3887,7 +3892,7 @@ function resolveTransferInboundSnBinding(transferItem = {}, inboundItem = {}, re
   const transferSnCode = String(transferItem.sn_code || '').trim();
   const inboundSnCode = String(inboundItem.sn_code || '').trim();
   const requestedSnId = requested.snId || requested.sn_id || requested.inventoryId || requested.inventory_id || '';
-  const requestedSnCode = String(requested.snCode || requested.sn_code || '').trim();
+  const requestedSnCode = normalizeSnCode(requested.snCode || requested.sn_code || '');
 
   return {
     snId: transferSnId || inboundSnId || requestedSnId,
@@ -4028,7 +4033,7 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
       const originalPickupPrice = Number(item.originalPickupPrice || item.original_pickup_price || dbItem.original_pickup_price || dbItem.unit_price || 0);
 
       if (Number(product.need_sn) === 1) {
-        const submittedSnCode = String(item.snCode || item.sn_code || '').trim();
+        const submittedSnCode = normalizeSnCode(item.snCode || item.sn_code || '');
         const submittedImei1 = String(item.imei1 || item.imei_1 || '').trim();
         const submittedImei2 = String(item.imei2 || item.imei_2 || '').trim();
         const requiresImei = isPurchaseInbound && Number(product.need_imei) === 1;
@@ -5760,7 +5765,7 @@ async function buildConversionSourceRows(sourceItems, conversionType, storeId, t
       throw Object.assign(new Error(`来源商品 ${product.name} 的数量必须为大于0的整数`), { status: 400 });
     }
     let pnCode = normalizePnCode(raw.pnCode || raw.pn_code || '');
-    let snCode = String(raw.snCode || raw.sn_code || '').trim();
+    let snCode = normalizeSnCode(raw.snCode || raw.sn_code || '');
 
     if (Number(product.need_sn) === 1) {
       pnCode = await resolveSnProductPn(product, pnCode, transaction);
@@ -5875,7 +5880,7 @@ async function buildConversionTargetRows(targetItems, conversionType, storeId, s
     const pnCode = Number(product.need_sn) === 1
       ? await resolveSnProductPn(product, raw.pnCode || raw.pn_code || '', transaction)
       : normalizePnCode(raw.pnCode || raw.pn_code || splitCodes(product.manufacturer_code)[0] || '');
-    const snCode = String(raw.snCode || raw.sn_code || '').trim();
+    const snCode = normalizeSnCode(raw.snCode || raw.sn_code || '');
 
     if (conversionType === 'assemble' && (parseConversionCost(raw.unitCost ?? raw.unit_cost) === null
       || !Number.isFinite(totalCost) || totalCost < 0 || Math.abs(money(unitCost * quantity) - totalCost) > 0.01)) {
@@ -6010,31 +6015,39 @@ async function getConversionDetail(ctx) {
   };
 }
 
-async function createConversion(ctx) {
-  const t = await sequelize.transaction();
-  try {
+async function prepareConversion(ctx, t) {
     const body = ctx.request.body || {};
-    const user = ctx.state.user || {};
     const conversionType = normalizeConversionType(body.conversionType || body.conversion_type);
     const storeId = body.storeId || body.store_id;
     const serviceCost = conversionType === 'assemble' ? money(body.serviceCost ?? body.service_cost ?? 0) : 0;
 
     if (!storeId) ctx.throw(400, '请选择转换门店');
+    if (conversionType === 'assemble' && parseConversionCost(body.serviceCost ?? body.service_cost ?? 0) === null) {
+      ctx.throw(400, '组装服务成本必须为非负金额');
+    }
     if (serviceCost < 0) ctx.throw(400, '组装服务成本不能小于0');
 
     const store = await Store.findByPk(storeId, { transaction: t });
     if (!store) ctx.throw(400, '转换门店不存在');
 
     const sourceRows = await buildConversionSourceRows(body.sourceItems || body.source_items, conversionType, storeId, t);
-    const targetRows = await buildConversionTargetRows(body.targetItems || body.target_items, conversionType, storeId, sourceRows, t);
+    const rawTargets = body.targetItems || body.target_items;
+    const automaticTargetCost = conversionType === 'assemble' && Array.isArray(rawTargets) && rawTargets.length === 1;
+    const targetRows = await buildConversionTargetRows(automaticTargetCost
+      ? rawTargets.map(row => ({ ...row, unitCost: 0, unit_cost: 0, totalCost: 0, total_cost: 0 }))
+      : rawTargets, conversionType, storeId, sourceRows, t);
     await assertActiveProducts(Product, [
       ...sourceRows.map(item => item.product_id),
       ...targetRows.map(item => item.product_id)
     ], { transaction: t });
 
     const totalSourceCost = money(sourceRows.reduce((sum, item) => sum + Number(item.total_cost || 0), 0));
-    const totalTargetCost = money(targetRows.reduce((sum, item) => sum + Number(item.total_cost || 0), 0));
     const expectedTargetCost = money(totalSourceCost + serviceCost);
+    if (automaticTargetCost) {
+      targetRows[0].total_cost = expectedTargetCost;
+      targetRows[0].unit_cost = money(expectedTargetCost / targetRows[0].quantity);
+    }
+    const totalTargetCost = money(targetRows.reduce((sum, item) => sum + Number(item.total_cost || 0), 0));
     if (conversionType === 'split') {
       if (sourceRows.length !== 1 || Number(sourceRows[0].quantity || 1) !== 1) {
         ctx.throw(400, '拆分单一次只能选择一个被拆商品，且数量必须为1');
@@ -6048,6 +6061,30 @@ async function createConversion(ctx) {
     } else if (Math.abs(totalTargetCost - expectedTargetCost) > 0.01) {
       ctx.throw(400, `成本不守恒：目标成本 ${totalTargetCost} 必须等于来源成本 ${totalSourceCost}${serviceCost ? ` + 服务成本 ${serviceCost}` : ''}`);
     }
+
+    return { conversionType, storeId, serviceCost, sourceRows, targetRows, totalSourceCost, totalTargetCost, expectedTargetCost, automaticTargetCost };
+}
+
+async function previewConversion(ctx) {
+  const t = await sequelize.transaction();
+  try {
+    const plan = await prepareConversion(ctx, t);
+    ctx.body = { code: 0, data: {
+      sourceTotal: plan.totalSourceCost, targetTotal: plan.totalTargetCost,
+      serviceCost: plan.serviceCost, expectedTargetTotal: plan.expectedTargetCost,
+      automaticTargetCost: plan.automaticTargetCost,
+      sourceItems: plan.sourceRows.map(row => ({ unitCost: row.unit_cost, totalCost: row.total_cost })),
+      targetItems: plan.targetRows.map(row => ({ unitCost: row.unit_cost, totalCost: row.total_cost }))
+    } };
+  } finally { await t.rollback(); }
+}
+
+async function createConversion(ctx) {
+  const t = await sequelize.transaction();
+  try {
+    const body = ctx.request.body || {};
+    const user = ctx.state.user || {};
+    const { conversionType, storeId, serviceCost, sourceRows, targetRows, totalSourceCost, totalTargetCost } = await prepareConversion(ctx, t);
 
     const conversionId = generateUUID();
     const conversionNo = generateConversionNo(conversionType);
@@ -6764,6 +6801,7 @@ module.exports = {
   getConversionList,
   getConversionDetail,
   createConversion,
+  previewConversion,
   voidConversion,
   getLocationsByStore,
   updateSn,

@@ -1,3 +1,4 @@
+const { normalizeSnCode } = require('../../utils/snCode');
 const { Op } = require('sequelize');
 const {
   ProductSn,
@@ -46,7 +47,7 @@ function normalizeItems(items) {
   const seen = new Set();
   return items.map((item, index) => {
     const snId = normalizeText(item?.snId || item?.sn_id);
-    const newSnCode = normalizeText(item?.newSnCode || item?.new_sn_code || item?.newCode);
+    const newSnCode = normalizeSnCode(item?.newSnCode || item?.new_sn_code || item?.newCode);
     if (!snId) throw applicationError(400, `第${index + 1}条明细缺少SN记录ID`);
     if (!newSnCode) throw applicationError(400, `第${index + 1}条明细的新SN不能为空`);
     if (seen.has(snId)) throw applicationError(400, `SN记录${snId}重复提交`);
@@ -77,11 +78,11 @@ async function loadAndValidateItems(items, user, transaction) {
     if (row.status !== 'in_stock') {
       throw applicationError(409, `SN ${row.sn_code} 仅允许修改在库状态记录`);
     }
-    if (row.sn_code === item.newSnCode) {
+    if (normalizeSnCode(row.sn_code) === normalizeSnCode(item.newSnCode)) {
       throw applicationError(400, `SN ${row.sn_code} 未发生变化`);
     }
 
-    const pairKey = item.newSnCode.trim().toUpperCase();
+    const pairKey = normalizeSnCode(item.newSnCode);
     if (newCodePairs.has(pairKey)) {
       throw applicationError(400, `同一申请中存在重复的新SN：${item.newSnCode}`);
     }
@@ -181,7 +182,7 @@ async function applySnChangeApplication(instance, transaction, approver) {
   }
 
   const currentItems = await loadAndValidateItems(
-    items.map(item => ({ snId: item.snId, newSnCode: item.newSnCode })),
+    normalizeItems(items),
     {
       accessibleStoreIds: ['*']
     },
@@ -190,7 +191,7 @@ async function applySnChangeApplication(instance, transaction, approver) {
 
   for (const item of currentItems) {
     const submitted = items.find(row => String(row.snId) === String(item.snId));
-    if (String(submitted.oldSnCode || '') !== String(item.oldSnCode || '')) {
+    if (normalizeSnCode(submitted.oldSnCode || '') !== normalizeSnCode(item.oldSnCode || '')) {
       throw applicationError(409, `SN ${item.oldSnCode} 已发生变化，请重新发起申请`);
     }
   }

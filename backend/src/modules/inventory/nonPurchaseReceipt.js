@@ -1,3 +1,4 @@
+const { normalizeSnCode } = require('../../utils/snCode');
 const M = require('../../models');
 const { Op } = require('sequelize');
 const { generateUUID, generateInboundNo } = require('../../utils');
@@ -38,7 +39,7 @@ async function validateItems(rows, sourceItems, transaction, storeId = null) {
     if (sourceItems && !source) fail(400, '原商品行不属于当前销售订单');
     const quantity = Number(raw.quantity);
     if (!Number.isInteger(quantity) || quantity <= 0 || quantity > 10000) fail(400, '入库数量必须为1至10000的整数');
-    let snCode = String(raw.snCode || '').trim();
+    let snCode = normalizeSnCode(raw.snCode || '');
     if (Number(product.need_sn) === 1 && (quantity !== 1 || !snCode)) fail(400, 'SN商品请逐件填写配件SN或内部追溯码，数量为1');
     if (Number(product.need_sn) !== 1 && snCode) fail(400, '该商品不按SN管理，请留空SN；需要逐件追溯时请先使用SN管理的商品');
     if (snCode.length > 128) fail(400, 'SN最长128字符');
@@ -51,7 +52,7 @@ async function validateItems(rows, sourceItems, transaction, storeId = null) {
       if (!sourceItems || !inventory.isReusableInboundSnStatus(existingSn.status)) fail(409, `SN ${snCode} 已存在，当前状态为 ${existingSn.status || '未知'}，不能重复入库`);
       if (!storeId || String(existingSn.store_id) !== String(storeId)) fail(409, `SN ${snCode} 属于其他门店，请先核对原销售或退库记录`);
       // 复用同一件实物的SN身份，入库执行仍重新校验并锁定状态，不创建第二条记录。
-      snCode = String(existingSn.sn_code).trim();
+      snCode = normalizeSnCode(existingSn.sn_code);
     }
     // 无SN商品沿用商品级计价；不能偷偷修改其他库存的商品主档口径。
     if (Number(product.need_sn) !== 1 && product.gross_profit_cost_mode !== 'COMPANY_PRICE') fail(400, `请先在商品管理将 ${product.name} 设置为按公司定价核算`);

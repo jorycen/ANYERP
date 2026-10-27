@@ -3,6 +3,7 @@ const { Op } = require('sequelize');
 const { generateUUID } = require('../../utils');
 const { canAccessDistributor, distributorWhere } = require('../../utils/distributorScope');
 const { sendExcel } = require('../../utils/excelExport');
+const { recordBusinessAction } = require('../../utils/businessActionLog');
 
 const money = value => Math.round(Number(value || 0) * 100) / 100;
 const text = value => String(value || '').trim();
@@ -141,17 +142,56 @@ async function createInvoice(ctx) {
     for (const allocation of allocations) {
       const payment = await SettlementPaymentRecord.findOne({ where: { payment_id: allocation.paymentId, status: 'active' }, include: [{ model: Settlement, required: true, where: { tax_status: 'TAX_INCLUDED' } }], transaction, lock: transaction.LOCK.UPDATE });
       if (!payment || !canAccessDistributor(ctx.state.user, payment.distributor_id)) ctx.throw(400, '付款记录不存在、已冲销或无权限');
-      const used = money(await PurchaseInvoiceAllocation.sum('amount', { where: { payment_id: payment.payment_id }, transaction }) || 0);
+      const used = await activeInvoiceAmount(payment.payment_id, transaction);
       if (money(allocation.amount) <= 0 || money(used + Number(allocation.amount)) > money(payment.amount)) ctx.throw(400, `付款单 ${payment.settlement_no} 的可收票余额不足`);
       paymentRows.push(payment);
     }
     const first = paymentRows[0];
     if (paymentRows.some(payment => String(payment.distributor_id || '') !== String(first.distributor_id || ''))) ctx.throw(400, '一张发票不能关联不同经销商的付款');
     if (paymentRows.some(payment => String(payment.supplier_name || '') !== String(first.supplier_name || ''))) ctx.throw(400, '一张发票不能关联不同供应商的付款');
-    const invoice = await PurchaseInvoice.create({ invoice_id: generateUUID(), distributor_id: first.distributor_id, supplier_name: first.supplier_name, supplier_tax_no: supplierTaxNo, invoice_code: '', invoice_no: invoiceNo, invoice_date: body.invoiceDate, invoice_type: text(body.invoiceType), tax_rate: body.taxRate == null || body.taxRate === '' ? null : Number(body.taxRate), amount_without_tax: withoutTax, tax_amount: tax, total_amount: total, remark: text(body.remark), create_user: ctx.state.user.name || ctx.state.user.staffId }, { transaction });
+    const invoice = await saveInvoice(ctx, { invoice_id: generateUUID(), distributor_id: first.distributor_id, supplier_name: first.supplier_name, supplier_tax_no: supplierTaxNo, invoice_code: '', invoice_no: invoiceNo, invoice_date: body.invoiceDate, invoice_type: text(body.invoiceType), tax_rate: body.taxRate == null || body.taxRate === '' ? null : Number(body.taxRate), amount_without_tax: withoutTax, tax_amount: tax, total_amount: total, remark: text(body.remark), create_user: ctx.state.user.name || ctx.state.user.staffId }, transaction);
     for (const [index, allocation] of allocations.entries()) await PurchaseInvoiceAllocation.create({ allocation_id: generateUUID(), invoice_id: invoice.invoice_id, payment_id: allocation.paymentId, settlement_id: paymentRows[index].settlement_id, amount: money(allocation.amount) }, { transaction });
   });
   ctx.body = { code: 0, message: '发票已登记并计入已收票' };
+}
+
+async function activeInvoiceAmount(paymentId, transaction) {
+  return money(await PurchaseInvoiceAllocation.sum('amount', { where: { payment_id: paymentId },
+    include: [{ model: PurchaseInvoice, attributes: [], required: true, where: { status: 'active' } }], transaction }) || 0);
+}
+
+// Reuse the unique invoice identity after return; keep earlier facts in the audit log.
+async function saveInvoice(ctx, values, transaction) {
+  const previous = await PurchaseInvoice.findOne({ where: { supplier_tax_no: values.supplier_tax_no,
+    invoice_code: values.invoice_code, invoice_no: values.invoice_no }, transaction, lock: transaction.LOCK.UPDATE });
+  if (!previous) return PurchaseInvoice.create(values, { transaction });
+  if (previous.status !== 'returned') ctx.throw(409, `发票号码 ${values.invoice_no} 已登记，请勿重复登记`);
+  if (!canAccessDistributor(ctx.state.user, previous.distributor_id) || String(previous.distributor_id) !== String(values.distributor_id)) ctx.throw(403, '无权重新登记该经销商的发票');
+  const allocations = await PurchaseInvoiceAllocation.findAll({ where: { invoice_id: previous.invoice_id }, transaction });
+  await recordBusinessAction({ businessType: 'purchase_invoice', businessId: previous.invoice_id, businessNo: previous.invoice_no,
+    action: 'reregistered', user: ctx.state.user, fromStatus: 'returned', toStatus: 'active',
+    detail: { before: previous.toJSON(), allocations: allocations.map(row => row.toJSON()), after: { ...values, invoice_id: previous.invoice_id, status: 'active' } }, transaction });
+  await PurchaseInvoiceAllocation.destroy({ where: { invoice_id: previous.invoice_id }, transaction });
+  const { invoice_id, ...patch } = values;
+  await previous.update({ ...patch, status: 'active', create_time: new Date() }, { transaction });
+  return previous;
+}
+
+async function returnInvoice(ctx) {
+  const reason = text(ctx.request.body?.reason);
+  if (!reason || reason.length > 512) ctx.throw(400, '请填写退回原因，最多512字');
+  await sequelize.transaction(async transaction => {
+    const invoice = await PurchaseInvoice.findByPk(ctx.params.invoiceId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!invoice) ctx.throw(404, '发票登记不存在');
+    if (!canAccessDistributor(ctx.state.user, invoice.distributor_id)) ctx.throw(403, '无权退回该经销商的发票');
+    if (invoice.status !== 'active') ctx.throw(409, '该发票已退回或状态已变化，请刷新');
+    const allocations = await PurchaseInvoiceAllocation.findAll({ where: { invoice_id: invoice.invoice_id }, transaction });
+    await recordBusinessAction({ businessType: 'purchase_invoice', businessId: invoice.invoice_id, businessNo: invoice.invoice_no,
+      action: 'returned', fromStatus: 'active', toStatus: 'returned', user: ctx.state.user, comment: reason,
+      detail: { invoice: invoice.toJSON(), allocations: allocations.map(row => row.toJSON()) }, transaction });
+    await invoice.update({ status: 'returned' }, { transaction });
+  });
+  ctx.body = { code: 0, message: '整张发票已退回，关联有效付款已恢复待收票金额' };
 }
 
 function normalizeInvoiceImportRows(rows) {
@@ -190,14 +230,12 @@ async function importInvoices(ctx) {
   const result = await sequelize.transaction(async transaction => {
     let allocationCount = 0;
     for (const group of groups.values()) {
-      const duplicate = await PurchaseInvoice.findOne({ where: { supplier_tax_no: group.supplierTaxNo, invoice_no: group.invoiceNo }, transaction });
-      if (duplicate) ctx.throw(400, `发票号码 ${group.invoiceNo} 已登记，请勿重复导入`);
       const payments = [];
       const allocations = [];
       for (const source of group.rows) {
         const payment = await SettlementPaymentRecord.findOne({ where: { payment_id: source.paymentId, status: 'active' }, include: [{ model: Settlement, required: true, where: { tax_status: 'TAX_INCLUDED' } }], transaction, lock: transaction.LOCK.UPDATE });
         if (!payment || !canAccessDistributor(ctx.state.user, payment.distributor_id)) ctx.throw(400, `第${source.row}行付款记录不存在、已冲销或无权限`);
-        const used = money(await PurchaseInvoiceAllocation.sum('amount', { where: { payment_id: payment.payment_id }, transaction }) || 0);
+        const used = await activeInvoiceAmount(payment.payment_id, transaction);
         const remaining = money(Number(payment.amount || 0) - used);
         if (remaining <= 0) ctx.throw(400, `第${source.row}行结算单 ${payment.settlement_no} 已完成发票登记`);
         payments.push(payment);
@@ -208,13 +246,13 @@ async function importInvoices(ctx) {
       if (payments.some(payment => String(payment.supplier_name || '') !== String(first.supplier_name || ''))) ctx.throw(400, `发票 ${group.invoiceNo} 关联了不同供应商`);
       const total = money(allocations.reduce((sum, row) => sum + row.amount, 0));
       const withoutTax = money(total / 1.13);
-      const invoice = await PurchaseInvoice.create({
+      const invoice = await saveInvoice(ctx, {
         invoice_id: generateUUID(), distributor_id: first.distributor_id, supplier_name: first.supplier_name,
         supplier_tax_no: group.supplierTaxNo, invoice_code: '', invoice_no: group.invoiceNo,
         invoice_date: chinaDate(), invoice_type: '增值税专用发票', tax_rate: 0.13,
         amount_without_tax: withoutTax, tax_amount: money(total - withoutTax), total_amount: total,
         remark: 'Excel批量导入', create_user: ctx.state.user.name || ctx.state.user.staffId
-      }, { transaction });
+      }, transaction);
       for (const allocation of allocations) {
         await PurchaseInvoiceAllocation.create({ allocation_id: generateUUID(), invoice_id: invoice.invoice_id, payment_id: allocation.payment.payment_id, settlement_id: allocation.payment.settlement_id, amount: allocation.amount }, { transaction });
         allocationCount += 1;
@@ -225,4 +263,4 @@ async function importInvoices(ctx) {
   ctx.body = { code: 0, message: `成功登记 ${result.invoiceCount} 张发票，共关联 ${result.allocationCount} 笔付款`, data: result };
 }
 
-module.exports = { getInvoiceCandidates, exportInvoiceCandidates, listInvoices, exportInvoices, createInvoice, importInvoices, _test: { buildInvoiceSettlementLinks, invoiceExportRows, normalizeInvoiceImportRows } };
+module.exports = { getInvoiceCandidates, exportInvoiceCandidates, listInvoices, exportInvoices, createInvoice, importInvoices, returnInvoice, _test: { buildInvoiceSettlementLinks, invoiceExportRows, normalizeInvoiceImportRows, activeInvoiceAmount, saveInvoice } };

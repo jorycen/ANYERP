@@ -73,6 +73,7 @@
             </template>
           </el-table-column>
           <el-table-column prop="create_user" label="登记人" width="110" />
+          <el-table-column label="操作" width="90" fixed="right"><template #default="{ row }"><el-button link type="warning" :loading="returningInvoiceId === row.invoice_id" :disabled="!!returningInvoiceId" @click="returnReceivedInvoice(row)">退回</el-button></template></el-table-column>
         </el-table>
       </el-tab-pane>
     </el-tabs>
@@ -134,7 +135,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import * as XLSX from 'xlsx'
 import api from '../api'
 
@@ -144,6 +145,7 @@ const invoices = ref([])
 const summary = ref({})
 const visible = ref(false)
 const saving = ref(false)
+const returningInvoiceId = ref('')
 const exporting = ref(false)
 const candidateExporting = ref(false)
 const importing = ref(false)
@@ -187,6 +189,23 @@ const loadInvoices = async () => {
   invoices.value = response.data?.list || []
 }
 const load = async () => Promise.all([loadCandidates(), loadInvoices()])
+const returnReceivedInvoice = async row => {
+  if (returningInvoiceId.value) return
+  const result = await ElMessageBox.prompt(`整张退回发票 ${row.invoice_no}？本票全部关联付款分摊将恢复待收票，原付款日期保持。请填写退回原因。`, '退回已收发票', {
+    inputType: 'textarea', confirmButtonText: '整张退回', cancelButtonText: '取消',
+    inputValidator: value => !!String(value || '').trim() && String(value).trim().length <= 512 || '请填写退回原因，最多512字'
+  }).catch(() => null)
+  if (!result || returningInvoiceId.value) return
+  returningInvoiceId.value = row.invoice_id
+  try {
+    const response = await api.returnPurchaseInvoice(row.invoice_id, result.value)
+    if (response.code !== 0) throw new Error(response.message || '退回失败')
+    selected.value = []
+    await load()
+    ElMessage.success(response.message || '整张发票已退回')
+  } catch (error) { ElMessage.error(error.response?.data?.message || error.message || '退回失败') }
+  finally { returningInvoiceId.value = '' }
+}
 const resetFilter = () => Object.assign(filter, { supplier: '', dateRange: [], warning: '' })
 const resetInvoiceFilter = () => { Object.assign(invoiceFilter, { keyword: '', dateRange: [] }); loadInvoices() }
 

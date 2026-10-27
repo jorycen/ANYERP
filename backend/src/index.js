@@ -26,6 +26,7 @@ const { errorHandler } = require('./middleware/errorHandler');
 const { responseFormatter } = require('./middleware/responseFormatter');
 const { databaseRecoveryMiddleware, databaseHealth } = require('./middleware/databaseRecovery');
 const { authMiddleware, storeAccessMiddleware } = require('./middleware/auth');
+const { snNormalization } = require('./middleware/snNormalization');
 const { applyPendingProductPriceChanges, recoverProductImportTasks } = require('./modules/product/controller');
 const { startDatabaseHeartbeat } = require('./utils/databaseHeartbeat');
 const { recoverExecutingBatchApplications } = require('./modules/inventory/batchMaintenance');
@@ -62,6 +63,7 @@ apiRouter.use('/auth', authRouter.routes());
 
 apiRouter.use(authMiddleware);
 apiRouter.use(storeAccessMiddleware);
+apiRouter.use(snNormalization);
 apiRouter.use('/sales', salesRouter.routes());
 apiRouter.use('/inventory', inventoryRouter.routes());
 apiRouter.use('/purchase', purchaseRouter.routes());

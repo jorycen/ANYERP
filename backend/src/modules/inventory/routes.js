@@ -9,7 +9,7 @@ const {
   executeInbound, getReturnList, requestReturn, approveReturn, executeReturn,
   inbound, outbound, adjustProductLocation, transfer, getTransferList, confirmTransferOut, getTransferShippingPhoto,
   confirmTransferIn, returnTransfer, revokeTransfer, rejectTransfer, getTransferDetail, getConversionList, getConversionDetail, createConversion,
-  voidConversion, getLocationsByStore, updateSn, adjustSnLocation, snTrace, importSupplierInventory
+  voidConversion, previewConversion, getLocationsByStore, updateSn, adjustSnLocation, snTrace, importSupplierInventory
 } = require('./controller');
 const { submitSnChangeApplication } = require('./snChangeApplication');
 const { enforceStoreOwnership, requireRole } = require('../../middleware/permission');
@@ -119,6 +119,7 @@ router.post('/transfer/reject', enforceStoreOwnership, rejectTransfer);
 router.get('/conversion-list', getConversionList);
 router.get('/conversion/:conversionId', getConversionDetail);
 router.post('/conversion', enforceStoreOwnership, createConversion);
+router.post('/conversion/preview', enforceStoreOwnership, previewConversion);
 router.post('/conversion/:conversionId/void', enforceStoreOwnership, voidConversion);
 router.get('/locations/:storeId', getLocationsByStore);
 

@@ -1,3 +1,4 @@
+const { normalizeSnCode } = require('../../utils/snCode');
 /**
  * 采购管理控制器
  */
@@ -293,7 +294,7 @@ function assertUsedProductDirectInbound(ctx, item) {
   if (!isUsedProduct || !directInbound) return;
 
   const quantity = Number(item?.quantity || 0);
-  const snCode = String(item?.directInboundSnCode || item?.direct_inbound_sn_code || '').trim();
+  const snCode = normalizeSnCode(item?.directInboundSnCode || item?.direct_inbound_sn_code || '');
   const pnCode = String(item?.pnCode || item?.pn_code || '').trim();
   if (quantity !== 1 || !snCode) {
     ctx.throw(400, '二手商品勾选审批完成及入库时，数量必须为1且必须填写SN号');
@@ -1331,6 +1332,8 @@ async function getRequestDetail(ctx) {
   result.action_logs = await listBusinessActions('purchase_request', request.request_id);
 
   result.rebate_cost_breakdown = require('./rebateCostBasis').purchaseBreakdown(result);
+  // The persisted purchase remark is reason; expose the shared detail field too.
+  result.remark = result.reason || '';
   ctx.body = { code: 0, data: result };
 }
 
@@ -1588,7 +1591,7 @@ async function createRequest(ctx) {
         is_used_product: Boolean(item.isUsedProduct || item.is_used_product) ? 1 : 0,
         gross_profit_cost_mode: submittedCostMode,
         direct_inbound: Boolean(item.directInbound || item.direct_inbound) ? 1 : 0,
-        direct_inbound_sn_code: String(item.directInboundSnCode || item.direct_inbound_sn_code || '').trim() || null,
+        direct_inbound_sn_code: normalizeSnCode(item.directInboundSnCode || item.direct_inbound_sn_code || '') || null,
         source_sn_id: getSnPurchaseFields(item).sourceSnId || null,
         target_location_id: getSnPurchaseFields(item).targetLocationId || null,
         quantity: quantity,
@@ -1897,7 +1900,7 @@ async function updateRequestDraft(ctx) {
         is_used_product: isUsedProduct,
         gross_profit_cost_mode: submittedCostMode,
         direct_inbound: Number(item.directInbound || item.direct_inbound) ? 1 : 0,
-        direct_inbound_sn_code: String(item.directInboundSnCode || item.direct_inbound_sn_code || '').trim() || null,
+        direct_inbound_sn_code: normalizeSnCode(item.directInboundSnCode || item.direct_inbound_sn_code || '') || null,
         quantity: Number(item.quantity),
         unit_price: Number(item.price || 0),
         subtotal: Number(item.price || 0) * Number(item.quantity || 0),
@@ -2098,7 +2101,7 @@ async function approveRequest(ctx) {
     for (const item of request.items) {
       if (!Number(item.is_used_product) || item.product_id) continue;
       const directInbound = Number(item.direct_inbound) === 1;
-      const snCode = String(item.direct_inbound_sn_code || '').trim();
+      const snCode = normalizeSnCode(item.direct_inbound_sn_code || '');
       if (directInbound && (!snCode || Number(item.quantity || 0) !== 1)) {
         ctx.throw(400, '二手商品勾选审批完成及入库时，数量必须为1且必须填写SN号');
       }

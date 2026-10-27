@@ -99,6 +99,7 @@ async function advance(ctx, type, row, transaction, action, comment = '') {
   if (!transaction) throw new Error('审批必须与业务变更使用同一事务');
   if (!['approve', 'approved', 'reject', 'rejected'].includes(action)) ctx.throw(400, '审批动作无效');
   if (!pending(type, row)) ctx.throw(409, '单据已处理，请刷新后重试');
+  await require('./batchApproval').assertBusiness(ctx, type, row, transaction);
   const info = await context(type, row, transaction);
   if (!visible(ctx.state.user, info)) ctx.throw(403, '无权审批该门店或经销商的单据');
   let instance = await latest(type, row, transaction);

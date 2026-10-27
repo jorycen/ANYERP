@@ -1,7 +1,7 @@
 <template>
   <div class="approval-page">
     <el-card>
-      <div class="batch-approval-toolbar"><el-button type="success" :loading="batchApproving" :disabled="!mergedTasks.length" @click="approveAll">全部通过<span v-if="mergedTasks.length">（{{ mergedTasks.length }}）</span></el-button></div>
+      <div v-if="activeTab === 'tasks'" class="batch-approval-toolbar"><span>已选 {{ selectedBatchTasks.length }} 条（全选仅限当前筛选列表，每批最多100条）</span><el-button type="success" :loading="batchApproving" :disabled="loading || !selectedBatchTasks.length" @click="approveAll">批量通过</el-button></div>
       <template #header>
         <div class="page-header"><span>审批管理中心</span><el-button @click="reload">刷新</el-button></div>
       </template>
@@ -18,6 +18,10 @@
           </div>
           <el-alert v-for="issue in approvalIssues" :key="`${issue.businessType}:${issue.message}`" :title="`${businessTypeText(issue.businessType)}：${issue.message}`" type="warning" :closable="false" />
           <el-table :data="filteredMergedTasks" stripe border v-loading="loading">
+            <el-table-column width="60" fixed="left">
+              <template #header><el-checkbox :model-value="batchAllChecked" :indeterminate="selectedBatchTasks.length > 0 && !batchAllChecked" :disabled="loading || batchApproving" @change="selectBatchAll" aria-label="全选当前列表" /></template>
+              <template #default="{ row }"><span :title="batchMeta(row).reason || '选择审批单'"><el-checkbox :model-value="selectedBatchKeys.includes(batchRef(row).key)" :disabled="loading || batchApproving || !batchMeta(row).eligible" @change="value => selectBatchRow(row, value)" aria-label="选择审批单" /></span></template>
+            </el-table-column>
             <el-table-column label="业务类型" width="140"><template #default="{ row }">{{ taskBusinessType(row) }}</template></el-table-column>
             <el-table-column label="业务信息" min-width="210"><template #default="{ row }">{{ taskMainInfo(row) }}</template></el-table-column>
             <el-table-column label="金额/负毛利" width="130"><template #default="{ row }"><span :class="{ 'negative-profit': row.isSalesApproval }">{{ taskAmount(row) }}</span></template></el-table-column>
@@ -51,6 +55,7 @@
             </el-table-column>
           </el-table>
           <el-empty v-if="!loading && filteredMergedTasks.length === 0" description="暂无符合条件的待审批单据" :image-size="60" />
+          <el-alert v-for="item in batchResults" :key="item.key" :title="`${item.label}：${item.message}`" :type="item.success ? 'success' : 'error'" :closable="false" />
         </el-tab-pane>
 
         <el-tab-pane label="我的申请" name="instances">
@@ -526,7 +531,7 @@ async function loadOtherApprovalTasks() {
   }))
 }
 function businessAmountText(data = {}) {
-  if (data.adjustment_type === 'price_correction') return moneyText(data.correction_sales_delta)
+  if (['price_correction', 'invoice_amount'].includes(data.adjustment_type)) return moneyText(data.correction_sales_delta)
   const candidates = [data.actual_total, data.actualTotal, data.total_amount, data.totalAmount, data.refund_amount, data.refundAmount, data.amount, data.change_amount, data.signed_amount]
   const value = candidates.find(item => item !== undefined && item !== null && item !== '' && Number(item) !== 0)
     ?? candidates.find(item => item !== undefined && item !== null && item !== '')
@@ -552,44 +557,56 @@ async function loadHandledInstances() {
 function onHandledPageSizeChange() { handledPage.value = 1; loadHandledInstances() }
 async function loadFlows() { if (canConfigure.value) flows.value = (await api.getApprovalFlows()).data || [] }
 async function loadOptions() { if (canConfigure.value) Object.assign(assigneeOptions, (await api.getApprovalAssigneeOptions()).data || {}) }
-async function reload() { loading.value = true; try { await Promise.all([loadTasks(), loadOtherApprovalTasks(), loadInstances(), loadFlows(), loadOptions(), ...(activeTab.value === 'handled' ? [loadHandledInstances()] : [])]) } finally { loading.value = false } }
+async function reload() { loading.value = true; try { await Promise.all([loadTasks(), loadOtherApprovalTasks(), loadInstances(), loadFlows(), loadOptions(), ...(activeTab.value === 'handled' ? [loadHandledInstances()] : [])]); await refreshBatchOptions() } finally { loading.value = false } }
 
-async function approveTaskDirect(row) {
-  if (row.isSalesApproval) return api.approveOrder(row.salesRow.order_id)
-  if (row.isModuleApproval) {
-    if (row.manualPath) return { skipped: true }
-    if (['manufacturer_rebate_confirmation', 'product_application'].includes(row.moduleType)) return { skipped: true }
-    return api.actionBusinessApproval(row.moduleType, row.Instance?.business_id, { action: 'approve', comment: '' })
-  }
-  return api.actionApproval(row.instance_id, { action: 'approve', comment: '' })
+const batchOptions = ref({})
+const selectedBatchKeys = ref([])
+const batchResults = ref([])
+function batchRef(row) {
+  if (row.isSalesApproval) return { key: `sales:${row.salesRow.order_id}`, kind: 'sales', businessId: row.salesRow.order_id }
+  if (row.isModuleApproval) return { key: `business:${row.moduleType}:${row.Instance?.business_id}`, kind: 'business', businessType: row.moduleType, businessId: row.Instance?.business_id }
+  return { key: `instance:${row.instance_id}`, kind: 'instance', instanceId: row.instance_id }
 }
-
+function batchMeta(row) { return batchOptions.value[batchRef(row).key] || {} }
+const selectedBatchTasks = computed(() => filteredMergedTasks.value.filter(row => selectedBatchKeys.value.includes(batchRef(row).key) && batchMeta(row).eligible))
+const eligibleBatchTasks = computed(() => filteredMergedTasks.value.filter(row => batchMeta(row).eligible))
+const batchAllChecked = computed(() => eligibleBatchTasks.value.length > 0 && selectedBatchTasks.value.length === Math.min(100, eligibleBatchTasks.value.length))
+function selectBatchRow(row, value) {
+  const key = batchRef(row).key
+  if (!value) selectedBatchKeys.value = selectedBatchKeys.value.filter(item => item !== key)
+  else if (selectedBatchKeys.value.length < 100) selectedBatchKeys.value = [...new Set([...selectedBatchKeys.value, key])]
+}
+function selectBatchAll(value) { selectedBatchKeys.value = value ? eligibleBatchTasks.value.slice(0, 100).map(row => batchRef(row).key) : [] }
+watch(filteredMergedTasks, rows => { const visible = new Set(rows.map(row => batchRef(row).key)); selectedBatchKeys.value = selectedBatchKeys.value.filter(key => visible.has(key)) })
+async function refreshBatchOptions() {
+  const previous = batchOptions.value
+  batchOptions.value = {}
+  const rows = mergedTasks.value.map(batchRef)
+  try {
+    const options = []
+    for (let i = 0; i < rows.length; i += 100) options.push(...((await api.getBatchApprovalOptions(rows.slice(i, i + 100))).data || []))
+    batchOptions.value = Object.fromEntries(options.map(item => [item.key, item]))
+    selectedBatchKeys.value = selectedBatchKeys.value.filter(key => previous[key]?.token && previous[key].token === batchOptions.value[key]?.token && batchOptions.value[key]?.eligible)
+  } catch (error) { ElMessage.error(error.response?.data?.message || error.message) }
+}
 async function approveAll() {
-  if (batchApproving.value || !mergedTasks.value.length) return
-  const confirmed = await ElMessageBox.confirm(
-    `确认将当前 ${mergedTasks.value.length} 条待审批单据全部通过？`,
-    '一键审批',
-    { type: 'warning', confirmButtonText: '全部通过', cancelButtonText: '取消' }
-  ).catch(() => false)
+  if (loading.value || batchApproving.value || !selectedBatchTasks.value.length) return
+  const rows = selectedBatchTasks.value.slice()
+  const items = rows.map(row => ({ ...batchRef(row), token: batchMeta(row).token }))
+  const confirmed = await ElMessageBox.confirm(`确认通过已勾选的 ${rows.length} 条审批单？每张单独立校验，失败不影响其他单据。`, '批量审批', { type: 'warning', confirmButtonText: '批量通过', cancelButtonText: '取消' }).catch(() => false)
   if (!confirmed) return
   batchApproving.value = true
-  const failed = []
-  const total = mergedTasks.value.length
+  batchResults.value = []
   try {
-    for (const row of mergedTasks.value) {
-      try {
-        const result = await approveTaskDirect(row)
-        if (result?.skipped) failed.push(`${taskNo(row)}：需前往业务页面确认`)
-      } catch (error) {
-        failed.push(`${taskNo(row)}：${error.response?.data?.message || error.message || '审批失败'}`)
-      }
-    }
+    const result = await api.batchApprove(items)
+    const labels = Object.fromEntries(rows.map(row => [batchRef(row).key, taskNo(row)]))
+    const results = result.data?.results || []
+    batchResults.value = results.map(item => ({ ...item, label: labels[item.key] || item.key }))
+    const succeeded = new Set(results.filter(item => item.success).map(item => item.key))
+    selectedBatchKeys.value = selectedBatchKeys.value.filter(key => !succeeded.has(key))
     await reload()
-    if (failed.length) ElMessage.warning(`已处理 ${total - failed.length} 条，${failed.length} 条未通过：${failed.slice(0, 3).join('；')}`)
-    else ElMessage.success('全部待审批单据已通过')
-  } finally {
-    batchApproving.value = false
-  }
+  } catch (error) { ElMessage.error(error.response?.data?.message || error.message) }
+  finally { batchApproving.value = false }
 }
 
 function instanceProgressText(row) { return row.current_progress_text || statusText(row.status) }
@@ -753,7 +770,10 @@ function detailLabel(key) {
   return String(key).replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ')
 }
 const correctionFieldLabels = {
-  correction_type_name: '纠错类型', correction_evidence: '定价依据', correction_product: '纠错商品 / SN',
+  correction_type_name: '纠错类型', correction_evidence: '纠错依据', correction_product: '纠错商品 / SN',
+  correction_before_invoice_amount: '原开票金额', correction_after_invoice_amount: '正确开票金额',
+  correction_vat_before: '原税费扣减', correction_vat_after: '纠错后税费扣减',
+  correction_product_note: '产品端处理',
   correction_before_price: '原结算定价', correction_after_price: '正确定价',
   correction_sales_before: '销售端原毛利', correction_sales_after: '销售端纠错后毛利', correction_sales_delta: '销售端毛利变化',
   correction_product_before: '产品端原毛利', correction_product_after: '产品端纠错后毛利', correction_product_delta: '产品端毛利变化'
@@ -762,6 +782,7 @@ Object.assign(detailFieldLabels, correctionFieldLabels)
 Object.keys(correctionFieldLabels).forEach(key => detailAllowedKeys.add(key))
 function formatDetailValue(value) {
   if (value === 'price_correction') return '结算定价纠错'
+  if (value === 'invoice_amount') return '开票金额纠错'
   if (value === 'CORPORATE') return '公司付款'
   if (typeof value === 'string' && ({ COMPANY_CREDIT: '公司账期', PERSONAL_ADVANCE: '个人垫付', COMPANY_PRICE: '按公司定价', PURCHASE_PRICE: '按采购价' })[value]) return ({ COMPANY_CREDIT: '公司账期', PERSONAL_ADVANCE: '个人垫付', COMPANY_PRICE: '按公司定价', PURCHASE_PRICE: '按采购价' })[value]
   if (value === undefined || value === null || value === '') return '-'
@@ -774,7 +795,7 @@ function formatJson(value) {
 }
 function detailScalarFields(data = {}) {
   return Object.entries(data)
-    .filter(([key]) => data.adjustment_type !== 'price_correction' || !['amount', 'signed_amount', 'base_gross_profit'].includes(key))
+    .filter(([key]) => !['price_correction', 'invoice_amount'].includes(data.adjustment_type) || !['amount', 'signed_amount', 'base_gross_profit'].includes(key))
     .filter(([key, value]) => detailAllowedKeys.has(key) && !hiddenDetailKeys.has(key) && !Array.isArray(value) && (value === null || ['string', 'number', 'boolean'].includes(typeof value)))
     .filter(([, value]) => value !== null && value !== '')
     .map(([key, value]) => ({ key, label: detailLabel(key), value: formatDetailValue(value), span: ['remark', 'reason', 'return_reason', 'review_comment', 'policy_content', 'po_policy_at_sale', 'so_policy_at_sale', 'other_policy_at_sale', 'policy_remark'].includes(key) ? 2 : 1 }))

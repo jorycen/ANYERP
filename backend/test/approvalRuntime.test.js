@@ -33,6 +33,22 @@ function fixture(t, nodes) {
 }
 const node = (mode, ids, name = '审批节点') => ({ name, signMode: mode, approvers: ids.map(staffId => ({ type: 'fixed_user', staffId })) });
 
+test('批量勾选令牌只授权当前节点，同一审批人在下一节点仍需重新勾选', async t => {
+  const f = fixture(t, [node('serial', [2]), node('serial', [2])]);
+  t.mock.method(M.PurchaseRequest, 'findByPk', async () => f.business);
+  t.mock.method(M.PurchaseRequestItem, 'findAll', async () => []);
+  const batch = require('../src/modules/approval/batchApproval');
+  const ref = { kind: 'business', businessType: 'purchase_request', businessId: 'PR1' };
+  const ctx = f.ctx(2);
+  ctx.state.batchApprovalExpected = (await batch.resolve(ref, ctx.state.user)).token;
+  assert.equal(await R.advance(ctx, 'purchase_request', f.business, f.tx, 'approve'), false);
+  assert.equal(f.state.instances[0].current_node_index, 1);
+  await assert.rejects(R.advance(ctx, 'purchase_request', f.business, f.tx, 'approve'), /刷新/);
+  ctx.state.batchApprovalExpected = (await batch.resolve(ref, ctx.state.user)).token;
+  assert.equal(await R.advance(ctx, 'purchase_request', f.business, f.tx, 'approve'), true);
+  assert.equal(f.state.instances[0].status, 'approved');
+});
+
 test('配置人员即使没有旧采购角色也可审批，业务门店覆盖员工主门店', async t => {
   const { state, tx, business, ctx } = fixture(t, [node('or', [2])]);
   assert.equal(await R.advance(ctx(2), 'purchase_request', business, tx, 'approved'), true);
@@ -49,29 +65,29 @@ test('串行节点依次审批，第二节点完成前不得执行业务', async
   assert.equal(await R.advance(ctx(4), 'purchase_request', business, tx, 'approved'), true);
 });
 
-test('销售订单任一审批动作都会取消审批并退回发起草稿', async t => {
+test('销售订单通过仍沿配置节点推进，不提前结束审批', async t => {
   const { state, tx, business, ctx } = fixture(t, [node('serial', [2, 3]), node('or', [4])]);
   state.flow.flow_code = 'sales_order_negative_gross_profit';
   state.flow.business_type = 'sales_order_negative_gross_profit';
   business.order_id = 'ORDER-1';
   business.order_status = 'pending_store_approval';
-  assert.equal(await R.advance(ctx(2), 'sales_order_negative_gross_profit', business, tx, 'approved'), true);
-  assert.equal(state.instances[0].status, 'cancelled');
-  assert.equal(state.tasks[0].status, 'approved');
-  assert.equal(state.tasks[1].status, 'cancelled');
-});
-test('或签单人拒绝保持审批中，另一人通过后才最终通过', async t => {
-  const { state, tx, business, ctx } = fixture(t, [node('or', [2, 3])]);
-  assert.equal(await R.advance(ctx(2), 'purchase_request', business, tx, 'reject', '不同意'), false);
+  assert.equal(await R.advance(ctx(2), 'sales_order_negative_gross_profit', business, tx, 'approved'), false);
   assert.equal(state.instances[0].status, 'pending');
-  assert.equal(await R.advance(ctx(3), 'purchase_request', business, tx, 'approve'), true);
-  assert.equal(state.instances[0].status, 'approved');
+  assert.equal(state.tasks[0].status, 'approved');
+  assert.equal(state.tasks[1].status, 'pending');
 });
-test('或签全部拒绝才拒绝，串行拒绝取消后续任务', async t => {
+test('或签任一人拒绝即结束，其他待办取消', async t => {
   const { state, tx, business, ctx } = fixture(t, [node('or', [2, 3])]);
-  await R.advance(ctx(2), 'purchase_request', business, tx, 'reject', '不同意');
-  assert.equal(await R.advance(ctx(3), 'purchase_request', business, tx, 'reject', '不同意'), true);
+  assert.equal(await R.advance(ctx(2), 'purchase_request', business, tx, 'reject', '不同意'), true);
   assert.equal(state.instances[0].status, 'rejected');
+  assert.equal(state.tasks[1].status, 'cancelled');
+  await assert.rejects(R.advance(ctx(3), 'purchase_request', business, tx, 'approve'), /审批已处理/);
+});
+test('串行拒绝取消后续任务', async t => {
+  const { state, tx, business, ctx } = fixture(t, [node('serial', [2, 3])]);
+  await R.advance(ctx(2), 'purchase_request', business, tx, 'reject', '不同意');
+  assert.equal(state.instances[0].status, 'rejected');
+  assert.equal(state.tasks[1].status, 'cancelled');
 });
 test('新发布配置不覆盖在途快照，旧审批人可继续，新增审批人不能越级', async t => {
   const { state, tx, business, ctx } = fixture(t, [node('serial', [2, 3])]);
@@ -106,14 +122,14 @@ test('历史复审从已有阶段继续，缺少对应配置节点阻止审批',
   business.adjustment_id = 'A1'; business.status = 'pending_admin';
   await assert.rejects(R.begin('profit_adjustment', business, tx, { historical: true }), /历史审批阶段/);
 });
-test('补齐18类流程，缺失固定审批人保留草稿，不覆盖自定义或停用流程', async t => {
+test('补齐流程目录，缺失固定审批人保留草稿，不覆盖自定义或停用流程', async t => {
   const saved = [];
   t.mock.method(M.Staff, 'findAll', async () => []);
   t.mock.method(M.ApprovalFlowDefinition, 'findOne', async ({ where }) => where.flow_code === 'purchase_request' ? { status: 'disabled' } : null);
   t.mock.method(M.ApprovalFlowDefinition, 'create', async values => saved.push(values));
   await C.seedApprovalFlowCatalog();
-  assert.equal(C.defaultCatalog().length, 16);
-  assert.equal(saved.length, 15);
+  assert.equal(saved.length, C.defaultCatalog().length - 1);
+  assert.ok(C.defaultCatalog().some(row => row.flowCode === 'sales_component_recovery'));
   assert.equal(saved.find(row => row.flow_code === 'expense_attribution').status, 'draft');
   assert.equal(saved.find(row => row.flow_code === 'product_application').status, 'published');
   assert.equal(saved.some(row => row.flow_code === 'purchase_request'), false);
@@ -140,6 +156,7 @@ test('托管待办路由不把Koa next参数当作业务类型', async t => {
   }
   const route = require('../src/modules/approval/routes').stack.find(item => item.path === '/business-tasks');
   const request = ctx(2);
+  request.query = {};
   await route.stack[0](request, async () => {});
   assert.equal(request.body.data.length, 1);
 });

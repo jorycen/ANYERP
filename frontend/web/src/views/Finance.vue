@@ -1359,7 +1359,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="settlementDetailVisible" title="应付结算单详情" width="820px">
+    <el-dialog v-model="settlementDetailVisible" title="应付结算单详情" width="820px" destroy-on-close>
       <div v-if="settlementDetail">
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="结算单号">{{ settlementDetail.settlement_no || '-' }}</el-descriptions-item>
@@ -1386,6 +1386,7 @@
           <el-descriptions-item label="创建时间">{{ formatDateTime(settlementDetail.create_time) }}</el-descriptions-item>
           <el-descriptions-item label="提交时间">{{ formatDateTime(settlementDetail.confirmed_time) }}</el-descriptions-item>
           <el-descriptions-item label="作废时间">{{ formatDateTime(settlementDetail.voided_time) }}</el-descriptions-item>
+          <el-descriptions-item label="备注" :span="2"><DocumentRemarkEditor kind="settlement" :document-id="settlementDetail.settlement_id" :value="settlementDetail.remark ?? ''" @saved="value => settlementDetail.remark = value" /></el-descriptions-item>
         </el-descriptions>
 
         <el-table :data="settlementDetail.items || []" stripe border class="mt-20">
@@ -1410,7 +1411,7 @@
       </div>
     </el-dialog>
 
-    <el-dialog v-model="purchaseDetailVisible" title="采购申请详情" width="1100px">
+    <el-dialog v-model="purchaseDetailVisible" title="采购申请详情" width="1100px" destroy-on-close>
       <div v-if="purchaseDetail">
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="采购单号">{{ purchaseDetail.request_no || '-' }}</el-descriptions-item>
@@ -1426,7 +1427,7 @@
           <el-descriptions-item label="返利抵扣">-¥{{ formatMoney(purchaseDetail.current_rebate_deduction ?? purchaseDetail.rebate_deduction) }}</el-descriptions-item>
           <el-descriptions-item label="实际应付">¥{{ formatMoney(purchaseActualAmount(purchaseDetail)) }}</el-descriptions-item>
           <el-descriptions-item label="申请时间">{{ purchaseDetail.create_time ? formatDate(purchaseDetail.create_time) : '-' }}</el-descriptions-item>
-          <el-descriptions-item label="备注">{{ purchaseDetail.reason || purchaseDetail.remark || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="备注" :span="2"><DocumentRemarkEditor kind="purchase" :document-id="purchaseDetail.request_id" :value="purchaseDetail.remark ?? purchaseDetail.reason ?? ''" @saved="value => Object.assign(purchaseDetail, { remark: value, reason: value })" /></el-descriptions-item>
         </el-descriptions>
         <el-table :data="purchaseDetail.items || purchaseDetail.PurchaseRequestItems || []" stripe border size="small" style="margin-top: 14px;">
           <el-table-column prop="product_name" label="商品名称" min-width="180" />
@@ -1786,6 +1787,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as XLSX from 'xlsx'
 import api from '../api'
+import DocumentRemarkEditor from '../components/DocumentRemarkEditor.vue'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 import { getRoleCode } from '../utils/user'
 import PaymentManagement from './PaymentManagement.vue'

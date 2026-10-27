@@ -586,7 +586,7 @@ async function action(ctx) {
     return require('./businessRuntime').dispatch(ctx, instance.business_type, instance.business_id, ctx.request.body?.action, ctx.request.body?.comment || '');
   }
   try {
-    const row = await actionInstance(ctx.params.instanceId, ctx.request.body?.action, ctx.request.body?.comment, ctx.state.user);
+    const row = await actionInstance(ctx.params.instanceId, ctx.request.body?.action, ctx.request.body?.comment, ctx.state.user, { batchExpected: ctx.state.batchApprovalExpected });
     ctx.body = { code: 0, message: ctx.request.body?.action === 'approve' ? '审批已通过' : '审批已拒绝', data: toInstance(row) };
   } catch (error) { bodyError(ctx, error); }
 }

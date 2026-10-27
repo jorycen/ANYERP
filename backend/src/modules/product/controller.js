@@ -3021,7 +3021,12 @@ async function getPriceChangeHistory(ctx) {
 }
 
 async function getRecentPriceChanges(ctx) {
-  const rows = await sequelize.query(`
+  const paginated = ctx.query?.page !== undefined || ctx.query?.pageSize !== undefined;
+  const pageInput = Number(ctx.query?.page);
+  const sizeInput = Number(ctx.query?.pageSize);
+  const page = Number.isSafeInteger(pageInput) && pageInput > 0 ? Math.min(pageInput, 1000000000) : 1;
+  const pageSize = Number.isSafeInteger(sizeInput) && sizeInput > 0 ? Math.min(sizeInput, 100) : 10;
+  const recentQuery = `
     SELECT change_id AS changeId,
            product_id AS productId,
            product_code AS productCode,
@@ -3055,28 +3060,30 @@ async function getRecentPriceChanges(ctx) {
            AND p.IS_DELETED = 0
            AND p.STATUS = 1
       ) recent
-     WHERE product_rank = 1
+     ${paginated ? '' : 'WHERE product_rank = 1'}
+  `;
+  const rows = await sequelize.query(`${recentQuery}
      ORDER BY modifiedAt DESC, changeId DESC
-     LIMIT 3
-  `, { type: Sequelize.QueryTypes.SELECT });
+     LIMIT :limit OFFSET :offset
+  `, { type: Sequelize.QueryTypes.SELECT, replacements: { limit: paginated ? pageSize : 3, offset: paginated ? (page - 1) * pageSize : 0 } });
+  const list = rows.map(row => {
+    const oldPrice = moneyNumber(row.oldPrice);
+    const currentPrice = moneyNumber(row.currentPrice);
+    return {
+      changeId: row.changeId, productId: row.productId, productCode: row.productCode || '',
+      productName: row.productName || '', priceField: row.priceField, oldPrice, currentPrice,
+      adjustmentAmount: moneyNumber(currentPrice - oldPrice), modifiedAt: row.modifiedAt
+    };
+  });
+  if (paginated) {
+    const counts = await sequelize.query(`SELECT COUNT(*) AS total FROM (${recentQuery}) changes`, { type: Sequelize.QueryTypes.SELECT });
+    ctx.body = { code: 0, data: { list, total: Number(counts[0]?.total || 0), page, pageSize } };
+    return;
+  }
 
   ctx.body = {
     code: 0,
-    data: rows.map(row => {
-      const oldPrice = moneyNumber(row.oldPrice);
-      const currentPrice = moneyNumber(row.currentPrice);
-      return {
-        changeId: row.changeId,
-        productId: row.productId,
-        productCode: row.productCode || '',
-        productName: row.productName || '',
-        priceField: row.priceField,
-        oldPrice,
-        currentPrice,
-        adjustmentAmount: moneyNumber(currentPrice - oldPrice),
-        modifiedAt: row.modifiedAt
-      };
-    })
+    data: list
   };
 }
 

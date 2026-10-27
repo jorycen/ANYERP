@@ -3,6 +3,8 @@ const { requireRole } = require('../../middleware/permission');
 const controller = require('./controller');
 
 const router = new Router();
+router.post('/batch-options', ctx => require('./batchApproval').options(ctx));
+router.post('/batch-approve', ctx => require('./batchApproval').approve(ctx));
 
 router.get('/flows', controller.listFlows);
 router.post('/initialize', requireRole('admin', 'boss'), async ctx => {

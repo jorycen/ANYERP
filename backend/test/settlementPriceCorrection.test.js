@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { Op } = require('sequelize');
 const M = require('../src/models');
 const GP = require('../src/modules/sales/grossProfit');
 const C = require('../src/modules/report/settlementPriceCorrection');
@@ -31,7 +32,7 @@ function fixture(t, extra = {}) {
   t.mock.method(M.sequelize, 'query', async () => extra.closed ? [{ MONTH_KEY: '2026-10' }] : []);
   t.mock.method(M.BusinessActionLog, 'create', async (value, options) => { assert.equal(options.transaction, tx); logs.push(value); return value; });
   t.mock.method(M.sequelize, 'transaction', async fn => {
-    const tracked = [snapshot, settlement, item, original, ...(extra.tracked || [])];
+    const tracked = [order, snapshot, settlement, item, original, ...(extra.tracked || [])];
     const saved = tracked.map(value => value.toJSON());
     try { return await fn(tx); } catch (error) {
       tracked.forEach((value, index) => { for (const key of Object.keys(value)) if (typeof value[key] !== 'function') delete value[key]; Object.assign(value, saved[index]); });
@@ -173,4 +174,129 @@ test('reversal is another evidenced price correction; original approved facts re
   assert.equal(f.snapshot.gross_profit_amount, 500); assert.equal(f.settlement.gross_profit_amount, 500);
   assert.equal(a.correction_data.result.beforeUnitPrice, 5500); assert.equal(a.correction_data.result.afterUnitPrice, 5300);
   assert.equal(f.logs.length, 2);
+});
+
+function invoiceFixture(t, extra = {}) {
+  const f = fixture(t, extra);
+  Object.assign(f.order, { invoice_amount: 0, invoice_status: '专票13%', total_amount: 6000, actual_payment: 6000 });
+  return f;
+}
+async function invoiceAdjustment(ctx, amount = 6000) {
+  const input = C.validate({ adjustmentType: C.INVOICE_TYPE, invoiceAmount: amount, confirmZero: amount === 0 });
+  const selected = await C.select(ctx, 'O', input);
+  return row({ adjustment_id: 'IA', adjustment_no: 'PPA-INV', adjustment_type: C.INVOICE_TYPE, order_id: 'O', store_id: 'S',
+    status: 'pending_finance', signed_amount: 0, reason: '原开票金额录入错误', correction_data: { input, evidence: '发票001', previewHash: selected.previewHash, result: selected.result } });
+}
+
+test('开票金额格式、零元确认及存储长度明确校验', () => {
+  assert.ok(C.INVOICE_TYPE.length <= 16);
+  for (const invoiceAmount of [-1, true, '', null, '1.234', '1e3', Infinity, [6000], {}]) assert.throws(() => C.validate({adjustmentType:C.INVOICE_TYPE,invoiceAmount}), /开票金额/);
+  assert.throws(() => C.validate({ adjustmentType:C.INVOICE_TYPE, invoiceAmount:0 }), /须明确确认/);
+  assert.deepEqual(C.validate({ adjustmentType:C.INVOICE_TYPE, invoiceAmount:'0.00', confirmZero:'true' }), {type:C.INVOICE_TYPE,invoiceAmount:0});
+});
+
+test('开票预览按冻结金额重算税费及销售毛利，产品端、收款与定价保持', async t => {
+  const f=invoiceFixture(t), ctx=context();
+  const selected=await C.select(ctx,'O',{type:C.INVOICE_TYPE,invoiceAmount:6000});
+  assert.equal(selected.result.vatAfter,65);
+  assert.equal(selected.result.salesAfter,435);
+  assert.equal(selected.result.salesDelta,-65);
+  assert.equal(selected.result.productDelta,0);
+  assert.equal(f.order.invoice_amount,0); assert.equal(f.snapshot.gross_profit_amount,500); assert.equal(f.logs.length,0);
+  f.snapshot.product_pricing_details[0].isCompanyPriced=false;
+  assert.equal((await C.select(ctx,'O',{type:C.INVOICE_TYPE,invoiceAmount:6000})).result.salesAfter,435);
+});
+
+test('开票纠错不因产品端待核算而补算采购成本，未知毛利不冒充零', async t => {
+  const f=invoiceFixture(t),ctx=context();
+  f.settlement.status='cost_pending';f.item.cost_status='pending';f.item.purchase_unit_cost=null;
+  const selected=await C.select(ctx,'O',{type:C.INVOICE_TYPE,invoiceAmount:6000});
+  assert.equal(selected.result.salesAfter,435);assert.equal(selected.result.productBefore,null);assert.equal(selected.result.productAfter,null);
+  assert.equal(selected.result.productDelta,0);
+  const a=await invoiceAdjustment(ctx);await C.apply(ctx,a,tx);
+  assert.equal(f.item.purchase_unit_cost,null);assert.equal(f.settlement.status,'cost_pending');
+  t.mock.method(M.ProductSettlementOrder,'findOne',async()=>null);
+  const back=await C.select(ctx,'O',{type:C.INVOICE_TYPE,invoiceAmount:0});
+  assert.equal(back.result.productBefore,null);assert.equal(back.result.salesAfter,500);
+});
+
+test('开票最终审批事务更新订单与快照，不重复叠加调整，产品端保持', async t => {
+  const f=invoiceFixture(t),ctx=context(),a=await invoiceAdjustment(ctx);
+  const productBefore=JSON.stringify(f.settlement.toJSON()),itemBefore=JSON.stringify(f.item.toJSON()),orderItemBefore=JSON.stringify(f.original.toJSON());
+  t.mock.method(M.PerformanceProfitAdjustment,'findByPk',async()=>a);
+  t.mock.method(runtime,'advance',async()=>true);
+  ctx.params.adjustmentId='IA';await controller.approveProfitAdjustment(ctx);
+  assert.equal(f.order.invoice_amount,6000);assert.equal(f.snapshot.invoice_amount,6000);
+  assert.equal(f.snapshot.vat_amount,65);assert.equal(f.snapshot.gross_profit_amount,435);
+  assert.equal(a.status,'approved');assert.equal(a.signed_amount,0);
+  assert.equal(f.order.actual_payment,6000);assert.equal(f.order.invoice_status,'专票13%');
+  assert.equal(JSON.stringify(f.settlement.toJSON()),productBefore);assert.equal(JSON.stringify(f.item.toJSON()),itemBefore);assert.equal(JSON.stringify(f.original.toJSON()),orderItemBefore);
+  assert.equal(f.logs.length,1);assert.equal(a.correction_data.result.before.order.invoice_amount,0);
+  const view=C.display(a.toJSON(),ctx.state.user);
+  assert.equal(view.correction_type_name,'开票金额错误');assert.equal(view.correction_after_invoice_amount,6000);
+  assert.equal(view.correction_before_price,undefined);assert.equal(view.correction_data,undefined);
+});
+
+test('开票提交与中间审批不改业务，同订单两类待审批纠错相互排斥', async t => {
+  const f=invoiceFixture(t),ctx=context(),a=await invoiceAdjustment(ctx),saved=[];
+  t.mock.method(M.PerformanceProfitAdjustment,'findOne',async options=>{ assert.deepEqual(options.where.adjustment_type[Op.in],[C.TYPE,C.INVOICE_TYPE]);return null; });
+  t.mock.method(M.PerformanceProfitAdjustment,'create',async value=>{saved.push(value);return row(value);});
+  ctx.request.body={orderId:'O',adjustmentType:C.INVOICE_TYPE,invoiceAmount:6000,reason:'金额错误',evidence:'发票001',previewHash:a.correction_data.previewHash};
+  await controller.createProfitAdjustment(ctx);
+  assert.equal(saved[0].product_id,null);assert.equal(saved[0].signed_amount,0);assert.equal(saved[0].amount,65);
+  assert.equal(f.order.invoice_amount,0);assert.equal(f.snapshot.gross_profit_amount,500);
+  t.mock.method(M.PerformanceProfitAdjustment,'findOne',async()=>({adjustment_type:C.TYPE}));
+  await assert.rejects(controller.createProfitAdjustment(ctx),/已有待审批业务纠错/);
+  t.mock.method(M.PerformanceProfitAdjustment,'findByPk',async()=>a);t.mock.method(runtime,'advance',async()=>false);
+  ctx.params.adjustmentId='IA';await controller.approveProfitAdjustment(ctx);
+  assert.equal(f.order.invoice_amount,0);assert.equal(a.status,'pending_finance');
+});
+
+test('开票纠错拒绝关账、退货、缺失原金额、不开票、未变化及过期依据', async t => {
+  for(const extra of [{closed:true},{returns:[{return_id:'R'}]}])await t.test(JSON.stringify(extra),async sub=>{
+    invoiceFixture(sub,extra);await assert.rejects(C.select(context(),'O',{type:C.INVOICE_TYPE,invoiceAmount:6000}));
+  });
+  const f=invoiceFixture(t),ctx=context();
+  await assert.rejects(C.select(ctx,'O',{type:C.INVOICE_TYPE,invoiceAmount:0}),/相同/);
+  f.order.invoice_amount=null;await assert.rejects(C.select(ctx,'O',{type:C.INVOICE_TYPE,invoiceAmount:6000}),/不一致/);
+  f.order.invoice_amount=0;f.order.invoice_status='不开票';await assert.rejects(C.select(ctx,'O',{type:C.INVOICE_TYPE,invoiceAmount:6000}),/不开票/);
+  f.order.invoice_status='专票13%';const a=await invoiceAdjustment(ctx);f.order.actual_payment=5999;
+  await assert.rejects(C.apply(ctx,a,tx),/已变化/);assert.equal(f.order.invoice_amount,0);
+});
+
+test('开票纠错写快照失败时订单金额一并回滚，反向纠错可恢复零元', async t => {
+  await t.test('rollback',async sub=>{
+    const f=invoiceFixture(sub),ctx=context(),a=await invoiceAdjustment(ctx);
+    sub.mock.method(M.PerformanceProfitAdjustment,'findByPk',async()=>a);sub.mock.method(runtime,'advance',async()=>true);
+    sub.mock.method(f.snapshot,'update',async()=>{throw Error('snapshot failed');});
+    ctx.params.adjustmentId='IA';await assert.rejects(controller.approveProfitAdjustment(ctx),/snapshot failed/);
+    assert.equal(f.order.invoice_amount,0);assert.equal(f.snapshot.invoice_amount,0);assert.equal(a.status,'pending_finance');
+  });
+  await t.test('reversal',async sub=>{
+    const f=invoiceFixture(sub),ctx=context(),a=await invoiceAdjustment(ctx);
+    await C.apply(ctx,a,tx);const reverse=await invoiceAdjustment(ctx,0);await C.apply(ctx,reverse,tx);
+    assert.equal(f.order.invoice_amount,0);assert.equal(f.snapshot.gross_profit_amount,500);assert.equal(f.settlement.gross_profit_amount,500);
+  });
+});
+
+test('Web切换纠错类型或开票金额使旧预览失效，延迟响应不得覆盖新输入', async () => {
+  const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+  const view=fs.readFileSync(path.join(__dirname,'../../frontend/web/src/views/Reports.vue'),'utf8');
+  const start=view.indexOf('watch(() => [adjustmentForm.adjustmentType');
+  const watcher=view.slice(start,view.indexOf('const adjustmentParams',start));
+  const requests=[];let observed,changed;
+  const ctx={adjustmentForm:{adjustmentType:'price_correction',invoiceAmount:6000},correctionRequestVersion:0,
+    correctionPreview:{value:{previewHash:'OLD'}},correctionPreviewing:{value:false},adjustmentApplyVisible:{value:true},
+    adjustmentOrder:{value:{orderId:'O'}},watch:(source,callback)=>{observed=source;changed=callback;},
+    api:{previewProfitCorrection:()=>new Promise(resolve=>requests.push(resolve))},ElMessage:{error(){throw Error('unexpected error');}}};
+  vm.runInNewContext(watcher,ctx);
+  const fnStart=view.indexOf('const previewCorrection = async () =>');
+  const fn=view.slice(fnStart,view.indexOf('const resetAdjustmentForm',fnStart));
+  vm.runInNewContext(fn+'\nglobalThis.runPreview=previewCorrection;',ctx);
+  const pending=ctx.runPreview();
+  ctx.adjustmentForm.adjustmentType='invoice_amount';ctx.adjustmentForm.invoiceAmount=6100;
+  assert.ok(observed().includes('invoice_amount'));assert.ok(observed().includes(6100));
+  changed();assert.equal(ctx.correctionPreview.value,null);
+  requests[0]({data:{previewHash:'STALE'}});await pending;
+  assert.equal(ctx.correctionPreview.value,null);
 });

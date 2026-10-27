@@ -161,3 +161,76 @@ test('页面添加组装来源时使用API成本，零元可添加、缺失及�
     else assert.equal(messages.length, 1);
   }
 });
+
+test('单一组装成品自动承接100元主机与1元组件成本，忽略手工成品成本', async t => {
+  const f = fixture(t, { sourceSn: false, targetSn: false, sourceCost: 100 });
+  f.ctx.request.body.conversionType = 'assemble';
+  f.products.EXTRA = { product_id: 'EXTRA', name: '内存组件', need_sn: 0, status: 1 };
+  t.mock.method(M.ProductPrice, 'findOne', async options => ({ cost_price: options.where.product_id === 'EXTRA' ? 1 : 100 }));
+  f.ctx.request.body.sourceItems.push({ productId: 'EXTRA', quantity: 1 });
+  Object.assign(f.ctx.request.body.targetItems[0], { unitCost: 0, totalCost: 0 });
+  await f.controller.createConversion(f.ctx);
+  assert.equal(f.state.conversions[0].total_source_cost, 101);
+  assert.equal(f.state.conversions[0].total_target_cost, 101);
+  const target = f.state.items.find(row => row.line_role === 'target');
+  assert.equal(target.unit_cost, 101);
+  assert.equal(target.total_cost, 101);
+});
+
+test('预览无业务写入，正式提交重新读取当前成本并加上服务成本', async t => {
+  const f = fixture(t, { sourceCost: 100 });
+  f.ctx.request.body.conversionType = 'assemble';
+  f.ctx.request.body.serviceCost = 20;
+  Object.assign(f.ctx.request.body.targetItems[0], { unitCost: 9999, totalCost: 9999 });
+  await f.controller.previewConversion(f.ctx);
+  assert.equal(f.ctx.body.data.targetTotal, 120);
+  assert.equal(f.state.committed, false);
+  assert.equal(f.state.conversions.length, 0);
+  assert.equal(f.source.inbound_price, 100);
+  f.source.inbound_price = 105;
+  await f.controller.createConversion(f.ctx);
+  assert.equal(f.state.conversions[0].total_target_cost, 125);
+  assert.equal(f.state.newSns[0].inbound_price, 125);
+});
+
+test('单一非SN成品多件时保留合计并按数量换算单价，多成品仍须分配守恒', async t => {
+  const f = fixture(t, { sourceCost: 100, targetSn: false });
+  f.ctx.request.body.conversionType = 'assemble';
+  Object.assign(f.ctx.request.body.targetItems[0], { quantity: 3, unitCost: 0, totalCost: 0 });
+  await f.controller.createConversion(f.ctx);
+  const target = f.state.items.find(row=>row.line_role==='target');
+  assert.equal(target.unit_cost, 33.33);
+  assert.equal(target.total_cost, 100);
+  f.ctx.request.body.targetItems.push({ ...f.ctx.request.body.targetItems[0] });
+  await assert.rejects(f.controller.createConversion(f.ctx), /成本不守恒/);
+});
+
+test('页面成本核算忽略过期响应，失败明确阻止提交且可重新核算', async () => {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const view = fs.readFileSync(path.resolve(__dirname, '../../frontend/web/src/views/Inventory.vue'), 'utf8');
+  const start = view.indexOf('watch(() => JSON.stringify({');
+  const code = view.slice(start, view.indexOf('onMounted(async', start));
+  const requests = [];
+  let callback;
+  const ctx = { conversionDialogVisible: { value: true }, conversionAutomaticTarget: { value: true },
+    conversionPreviewRefresh: { value: 0 }, conversionForm: { storeId: 'STORE', serviceCost: 0, sourceItems: [{}], targetItems: [{}] },
+    conversionCostPreview: { value: null }, conversionPreviewError: { value: '' }, conversionPreviewLoading: { value: false },
+    conversionPreviewSequence: 0, watch: (_, cb) => { callback = cb; },
+    api: { previewConversion: () => new Promise((resolve, reject) => requests.push({resolve,reject})) } };
+  vm.runInNewContext(code, ctx);
+  let cleanup;
+  const first = callback('', '', fn=>{cleanup=fn;});
+  assert.equal(ctx.conversionPreviewLoading.value, true);
+  assert.equal(ctx.conversionCostPreview.value, null);
+  cleanup();
+  const second = callback('', '', () => {});
+  const result = cost => ({code:0,data:{automaticTargetCost:true,targetTotal:cost,sourceItems:[{unitCost:cost,totalCost:cost}],targetItems:[{unitCost:cost,totalCost:cost}]}});
+  requests[1].resolve(result(120)); await second;
+  requests[0].resolve(result(101)); await first;
+  assert.equal(ctx.conversionForm.targetItems[0].totalCost, 120);
+  const failed = callback('', '', () => {});
+  requests[2].reject(new Error('成本核算失败')); await failed;
+  assert.equal(ctx.conversionCostPreview.value, null);
+  assert.equal(ctx.conversionPreviewError.value, '成本核算失败');
+  assert.match(view, /conversionPreviewRefresh \+= 1/);
+});
