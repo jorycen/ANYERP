@@ -6025,7 +6025,7 @@ async function createConversion(ctx) {
 
     const conversionId = generateUUID();
     const conversionNo = generateConversionNo(conversionType);
-    await InventoryConversion.create({
+    const conversion = await InventoryConversion.create({
       conversion_id: conversionId,
       conversion_no: conversionNo,
       conversion_type: conversionType,

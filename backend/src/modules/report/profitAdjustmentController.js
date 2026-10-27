@@ -10,20 +10,11 @@ const {
 } = require('../../models');
 const { Op } = require('sequelize');
 const { generateUUID, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
-const { calculateAndSaveOrderGrossProfit } = require('../sales/grossProfit');
+const correction = require('./settlementPriceCorrection');
 
 const UPLOAD_DIR = path.resolve(__dirname, '../../../uploads/performance-profit-adjustments');
 const ALLOWED_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.pdf', '.xls', '.xlsx', '.doc', '.docx']);
 const ARCHIVED_STATUSES = ['已归档', 'completed', 'archived'];
-
-function toNumber(value) {
-  const number = Number(value || 0);
-  return Number.isFinite(number) ? number : 0;
-}
-
-function roundMoney(value) {
-  return Number(toNumber(value).toFixed(2));
-}
 
 function hasRole(user, role) {
   if (Array.isArray(user?.roles) && user.roles.length > 0) return user.roles.includes(role);
@@ -76,16 +67,18 @@ function validateFiles(files = []) {
 
 async function createProfitAdjustment(ctx) {
   const user = ctx.state.user;
-  const { orderId, adjustmentType, amount, reason } = ctx.request.body || {};
+  const body = ctx.request.body || {};
+  const { orderId, adjustmentType, reason } = body;
   const files = ctx.files || [];
   const type = String(adjustmentType || '').trim();
-  const numericAmount = roundMoney(amount);
   const trimmedReason = String(reason || '').trim();
 
   if (!orderId) ctx.throw(400, '请选择订单');
-  if (!['increase', 'decrease'].includes(type)) ctx.throw(400, '请选择增加或减少毛利');
-  if (numericAmount <= 0) ctx.throw(400, '调整金额必须大于0');
-  if (numericAmount > 9999999999.99) ctx.throw(400, '调整金额超出系统支持范围');
+  if (type !== correction.TYPE) ctx.throw(400, '不再支持手工增加或减少毛利，请选择结算定价纠错并填写正确定价');
+  const input = correction.validate(body);
+  const evidence = String(body.evidence || '').trim();
+  if (evidence.length < 2 || evidence.length > 2000) ctx.throw(400, '请填写2至2000字的定价依据或凭据编号');
+  if (!body.previewHash) ctx.throw(400, '请先预览本次纠错影响');
   if (!trimmedReason) ctx.throw(400, '请填写调整原因');
   if (trimmedReason.length > 1000) ctx.throw(400, '调整原因不能超过1000字');
   validateFiles(files);
@@ -96,12 +89,7 @@ async function createProfitAdjustment(ctx) {
     ctx.throw(400, '只有已归档订单可以申请毛利调整');
   }
 
-  const grossProfitSnapshot = await calculateAndSaveOrderGrossProfit(order.order_id, {
-    calculatedBy: user.name || 'system'
-  });
-  const baseGrossProfit = roundMoney(grossProfitSnapshot.gross_profit_amount);
   const adjustmentId = generateUUID();
-  const signedAmount = type === 'increase' ? numericAmount : -numericAmount;
   const storedFiles = [];
   await fs.promises.mkdir(UPLOAD_DIR, { recursive: true });
 
@@ -115,6 +103,11 @@ async function createProfitAdjustment(ctx) {
     }
 
     await sequelize.transaction(async transaction => {
+      const selected = await correction.select(ctx, order.order_id, input, transaction);
+      if (selected.previewHash !== body.previewHash) ctx.throw(409, '订单或结算数据已变化，请重新预览');
+      const pending = await PerformanceProfitAdjustment.findOne({ where: { order_id: order.order_id,
+        adjustment_type: correction.TYPE, status: { [Op.in]: ['pending_finance', 'pending_admin'] } }, transaction, lock: transaction.LOCK.UPDATE });
+      if (pending) ctx.throw(409, '本订单已有待审批定价纠错，请先处理原申请');
       await PerformanceProfitAdjustment.create({
         adjustment_id: adjustmentId,
         adjustment_no: createAdjustmentNo(),
@@ -123,9 +116,12 @@ async function createProfitAdjustment(ctx) {
         store_id: order.store_id,
         employee_name: order.create_user || '',
         adjustment_type: type,
-        amount: numericAmount,
-        signed_amount: signedAmount,
-        base_gross_profit: baseGrossProfit,
+        product_id: selected.originalItem.product_id,
+        amount: Math.abs(selected.result.salesDelta),
+        // Effective base profit is corrected atomically; never add the same delta again.
+        signed_amount: 0,
+        base_gross_profit: selected.result.salesBefore,
+        correction_data: { input, evidence, previewHash: selected.previewHash, result: selected.result },
         reason: trimmedReason,
         status: 'pending_finance',
         applicant_staff_id: user.staffId,
@@ -154,11 +150,25 @@ async function createProfitAdjustment(ctx) {
     throw error;
   }
 
-  ctx.body = { code: 0, message: '毛利调整申请已提交，待财务初审', data: { adjustmentId } };
+  ctx.body = { code: 0, message: '结算定价纠错申请已提交，审批通过后同步销售端和产品端毛利', data: { adjustmentId } };
+}
+
+async function getCorrectionOptions(ctx) {
+  ctx.body = { code: 0, data: await correction.select(ctx, ctx.query.orderId) };
+}
+async function previewCorrection(ctx) {
+  const body = ctx.request.body || {};
+  const selected = await correction.select(ctx, body.orderId, correction.validate(body));
+  const impact = correction.previewResponse(selected.result, ctx.state.user);
+  ctx.body = { code: 0, data: { ...impact, previewHash: selected.previewHash,
+    note: '按原归档税费及规则重算，销售与产品两端毛利之和不等同于公司财务利润；不改变客户成交价、采购成本或商品主档定价。' } };
 }
 
 async function listProfitAdjustments(ctx) {
-  if (await require('../approval/businessRuntime').reviewList(ctx, 'profit_adjustment')) return;
+  if (await require('../approval/businessRuntime').reviewList(ctx, 'profit_adjustment')) {
+    ctx.body.data.list = ctx.body.data.list.map(row => correction.display(row, ctx.state.user));
+    return;
+  }
   const user = ctx.state.user;
   const { scope = 'mine', orderId, status, page = 1, pageSize = 20 } = ctx.query;
   const storeIds = await getAccessibleStoreIds(user);
@@ -211,7 +221,7 @@ async function listProfitAdjustments(ctx) {
     distinct: true
   });
 
-  ctx.body = formatPaginatedResult(result.rows, {
+  ctx.body = formatPaginatedResult(result.rows.map(row => correction.display(row.toJSON(), ctx.state.user)), {
     page: currentPage,
     pageSize: currentPageSize,
     count: result.count
@@ -235,7 +245,9 @@ async function reviewProfitAdjustment(ctx, action) {
 
     const storeIds = await getAccessibleStoreIds(user);
     if (!storeIds.includes(adjustment.store_id)) ctx.throw(403, '无权审核该申请');
+    if (action === 'approve' && adjustment.adjustment_type !== correction.TYPE) ctx.throw(409, '历史手工增减申请不能继续批准，请拒绝后按实际业务来源重新申请');
     if (!await require('../approval/businessRuntime').advance(ctx, 'profit_adjustment', adjustment, transaction, action, comment)) { responseMessage = '本次审批已记录，等待下一审批人'; return; }
+    if (action === 'approve') await correction.apply(ctx, adjustment, transaction);
     await adjustment.update({ status: action === 'approve' ? 'approved' : 'rejected', admin_reviewer_id: user.staffId, admin_reviewer_name: user.name, admin_review_comment: comment, admin_review_time: new Date(), update_time: new Date() }, { transaction });
   });
 
@@ -279,6 +291,8 @@ async function downloadProfitAdjustmentAttachment(ctx) {
 }
 
 module.exports = {
+  getCorrectionOptions,
+  previewCorrection,
   createProfitAdjustment,
   listProfitAdjustments,
   approveProfitAdjustment,

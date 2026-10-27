@@ -139,6 +139,8 @@ async function close(ctx) {
   const body = ctx.request.body || {};
   const proof = evidence(body);
   await M.sequelize.transaction(async transaction => {
+    // Serialize month close with settlement price corrections before reading facts.
+    await M.sequelize.query('SELECT STORE_ID FROM T_STORE ORDER BY STORE_ID FOR UPDATE', { transaction });
     const filters = await monthFilters(ctx, transaction);
     if (await isClosed(body.month, transaction)) ctx.throw(409, '该月份已经关账');
     const report = await rawReport(filters, transaction, false);

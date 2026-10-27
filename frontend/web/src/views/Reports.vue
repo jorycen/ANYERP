@@ -332,7 +332,7 @@
             </el-table-column>
             <el-table-column label="操作" width="155" fixed="right">
               <template #default="{ row }">
-                <el-button link type="primary" @click="openAdjustmentApply(row)">申请调整</el-button>
+                <el-button link type="primary" @click="openAdjustmentApply(row)">申请业务纠错</el-button>
                 <el-button link @click="openOrderAdjustments(row)">记录</el-button>
               </template>
             </el-table-column>
@@ -351,24 +351,38 @@
       </el-tabs>
     </el-card>
 
-    <el-dialog v-model="adjustmentApplyVisible" title="申请订单毛利调整" width="620px" @closed="resetAdjustmentForm">
+    <el-dialog v-model="adjustmentApplyVisible" title="订单业务纠错申请" width="720px" @closed="resetAdjustmentForm">
       <el-form label-width="100px">
         <el-form-item label="订单">
           <span>{{ adjustmentOrder?.orderNo }} / {{ adjustmentOrder?.employeeName }}</span>
         </el-form-item>
         <el-form-item label="基础毛利">¥{{ formatMoney(adjustmentOrder?.baseGrossProfit) }}</el-form-item>
-        <el-form-item label="调整方向" required>
-          <el-radio-group v-model="adjustmentForm.adjustmentType">
-            <el-radio label="increase">增加毛利</el-radio>
-            <el-radio label="decrease">减少毛利</el-radio>
-          </el-radio-group>
+        <el-form-item label="纠错类型">结算定价错误</el-form-item>
+        <el-alert v-if="correctionError" :title="correctionError" type="warning" :closable="false" />
+        <el-form-item label="订单商品" required>
+          <el-select v-model="adjustmentForm.itemId" :loading="correctionLoading" placeholder="选择需纠错的商品 / SN" style="width:100%" @change="onCorrectionItemChange">
+            <el-option v-for="item in correctionOptions" :key="item.itemId" :label="item.label" :value="item.itemId" />
+          </el-select>
         </el-form-item>
-        <el-form-item label="调整金额" required>
-          <el-input-number v-model="adjustmentForm.amount" :min="0.01" :precision="2" :step="100" controls-position="right" style="width: 220px" />
+        <el-form-item label="正确定价" required>
+          <el-input-number v-model="adjustmentForm.unitPrice" :min="0" :max="999999999.99" :precision="2" controls-position="right" style="width: 220px" />
         </el-form-item>
-        <el-form-item label="调整原因" required>
+        <el-form-item v-if="adjustmentForm.unitPrice === 0" label="零元确认"><el-checkbox v-model="adjustmentForm.confirmZero">确认本商品结算定价为零元</el-checkbox></el-form-item>
+        <el-form-item label="定价依据" required>
+          <el-input v-model="adjustmentForm.evidence" type="textarea" :rows="2" maxlength="2000" show-word-limit placeholder="填写已批准定价通知、合同或其他凭据编号及内容" />
+        </el-form-item>
+        <el-form-item label="错误说明" required>
           <el-input v-model="adjustmentForm.reason" type="textarea" :rows="4" maxlength="1000" show-word-limit />
         </el-form-item>
+        <el-form-item label="影响预览">
+          <el-button :loading="correctionPreviewing" :disabled="!adjustmentForm.itemId || !!correctionError" @click="previewCorrection">预览纠错影响</el-button>
+        </el-form-item>
+        <el-descriptions v-if="correctionPreview" :column="1" border>
+          <el-descriptions-item label="结算定价">¥{{ formatMoney(correctionPreview.beforeUnitPrice) }} → ¥{{ formatMoney(correctionPreview.afterUnitPrice) }}</el-descriptions-item>
+          <el-descriptions-item label="销售端毛利">¥{{ formatMoney(correctionPreview.salesBefore) }} → ¥{{ formatMoney(correctionPreview.salesAfter) }}（变化 ¥{{ formatMoney(correctionPreview.salesDelta) }}）</el-descriptions-item>
+          <el-descriptions-item label="产品端毛利"><template v-if="correctionPreview.productProfitVisible">¥{{ formatMoney(correctionPreview.productBefore) }} → ¥{{ formatMoney(correctionPreview.productAfter) }}（变化 ¥{{ formatMoney(correctionPreview.productDelta) }}）</template><template v-else>当前账号无产品毛利查看权限，由有权限的审核人核对</template></el-descriptions-item>
+          <el-descriptions-item label="处理说明">{{ correctionPreview.note }}</el-descriptions-item>
+        </el-descriptions>
         <el-form-item label="证明附件">
           <el-upload
             v-model:file-list="adjustmentUploadFiles"
@@ -386,7 +400,7 @@
       </el-form>
       <template #footer>
         <el-button @click="adjustmentApplyVisible = false">取消</el-button>
-        <el-button type="primary" :loading="adjustmentSubmitting" @click="submitAdjustment">提交申请</el-button>
+        <el-button type="primary" :loading="adjustmentSubmitting" :disabled="!correctionPreview || !!correctionError || correctionPreviewing" @click="submitAdjustment">提交申请</el-button>
       </template>
     </el-dialog>
 
@@ -396,16 +410,24 @@
         <el-table-column prop="order_no" label="订单号" width="175" />
         <el-table-column prop="employee_name" label="业绩员工" width="100" />
         <el-table-column prop="applicant_name" label="申请人" width="90" />
-        <el-table-column label="调整金额" width="110">
+        <el-table-column label="纠错内容 / 历史调整" min-width="260">
           <template #default="{ row }">
-            <span :class="Number(row.signed_amount) >= 0 ? 'profit-positive' : 'profit-negative'">
+            <div v-if="row.adjustment_type === 'price_correction'">
+              <div>{{ row.correction_product }}</div>
+              <div>结算定价：¥{{ formatMoney(row.correction_before_price) }} → ¥{{ formatMoney(row.correction_after_price) }}</div>
+              <div>销售端毛利：¥{{ formatMoney(row.correction_sales_before) }} → ¥{{ formatMoney(row.correction_sales_after) }}</div>
+              <div v-if="row.correction_product_profit_visible">产品端毛利：¥{{ formatMoney(row.correction_product_before) }} → ¥{{ formatMoney(row.correction_product_after) }}</div>
+              <div v-else>产品端毛利：当前账号无查看权限</div>
+              <div>依据：{{ row.correction_evidence }}</div>
+            </div>
+            <span v-else :class="Number(row.signed_amount) >= 0 ? 'profit-positive' : 'profit-negative'">
               {{ Number(row.signed_amount) >= 0 ? '+' : '' }}¥{{ formatMoney(row.signed_amount) }}
             </span>
           </template>
         </el-table-column>
         <el-table-column prop="reason" label="原因" min-width="180" show-overflow-tooltip />
         <el-table-column label="状态" width="115">
-          <template #default="{ row }"><el-tag :type="adjustmentStatusType(row.status)">{{ adjustmentStatusText(row.status) }}</el-tag></template>
+          <template #default="{ row }"><el-tag :type="adjustmentStatusType(row.status)">{{ row.approval_node_name || adjustmentStatusText(row.status) }}</el-tag></template>
         </el-table-column>
         <el-table-column label="附件" min-width="140">
           <template #default="{ row }">
@@ -511,7 +533,18 @@ const salesPerformanceParams = reactive({
 })
 const inventoryParams = reactive({ storeId: '' })
 const employeeParams = reactive({ dateRange: recentSevenDayRange(), storeId: '', staffName: '', orderNo: '', page: 1, pageSize: 20 })
-const adjustmentForm = reactive({ adjustmentType: 'increase', amount: 0.01, reason: '' })
+const adjustmentForm = reactive({ adjustmentType: 'price_correction', itemId: '', unitPrice: undefined, confirmZero: false, evidence: '', reason: '' })
+const correctionOptions = ref([])
+const correctionLoading = ref(false)
+const correctionPreviewing = ref(false)
+const correctionPreview = ref(null)
+const correctionError = ref('')
+let correctionRequestVersion = 0
+let correctionOptionsRequestVersion = 0
+watch(() => [adjustmentForm.itemId, adjustmentForm.unitPrice, adjustmentForm.confirmZero], () => {
+  correctionRequestVersion += 1
+  correctionPreview.value = null
+}, { flush: 'sync' })
 const adjustmentParams = reactive({ page: 1, pageSize: 20 })
 const currentRoles = String(getRoleCode() || '').split(',').map(role => role.trim())
 const employeeCanViewProfit = computed(() => currentRoles.some(role => ['boss', 'admin', 'finance', 'manager', 'store_manager', 'store_admin'].includes(role)))
@@ -675,16 +708,47 @@ const exportEmployeeProfits = async () => {
   }
 }
 
-const openAdjustmentApply = (row) => {
+const openAdjustmentApply = async (row) => {
   adjustmentOrder.value = row
   resetAdjustmentForm()
   adjustmentApplyVisible.value = true
+  const orderId = row.orderId
+  const optionsVersion = ++correctionOptionsRequestVersion
+  correctionLoading.value = true
+  try {
+    const res = await api.getProfitCorrectionOptions(orderId)
+    if (optionsVersion !== correctionOptionsRequestVersion || adjustmentOrder.value?.orderId !== orderId || !adjustmentApplyVisible.value) return
+    correctionOptions.value = res.data?.options || []
+    if (!correctionOptions.value.length) correctionError.value = '本订单无可纠错的公司结算定价商品；采购价错误须核对原采购成本。'
+  } catch (error) {
+    if (optionsVersion === correctionOptionsRequestVersion && adjustmentApplyVisible.value) correctionError.value = error?.response?.data?.message || '加载可纠错商品失败'
+  } finally { if (optionsVersion === correctionOptionsRequestVersion) correctionLoading.value = false }
+}
+
+const onCorrectionItemChange = () => {
+  adjustmentForm.unitPrice = Number(correctionOptions.value.find(item => item.itemId === adjustmentForm.itemId)?.unitPrice)
+  adjustmentForm.confirmZero = false
+}
+const previewCorrection = async () => {
+  const requestVersion = correctionRequestVersion
+  correctionPreviewing.value = true
+  try {
+    const res = await api.previewProfitCorrection({ orderId: adjustmentOrder.value.orderId, ...adjustmentForm })
+    if (requestVersion !== correctionRequestVersion || !adjustmentApplyVisible.value) return
+    correctionPreview.value = res.data
+  } catch (error) {
+    correctionPreview.value = null
+    ElMessage.error(error?.response?.data?.message || '影响预览失败')
+  } finally { correctionPreviewing.value = false }
 }
 
 const resetAdjustmentForm = () => {
-  adjustmentForm.adjustmentType = 'increase'
-  adjustmentForm.amount = 0.01
-  adjustmentForm.reason = ''
+  correctionRequestVersion += 1
+  correctionOptionsRequestVersion += 1
+  Object.assign(adjustmentForm, { adjustmentType: 'price_correction', itemId: '', unitPrice: undefined, confirmZero: false, evidence: '', reason: '' })
+  correctionOptions.value = []
+  correctionPreview.value = null
+  correctionError.value = ''
   adjustmentFiles.value = []
   adjustmentUploadFiles.value = []
 }
@@ -696,13 +760,18 @@ const handleAdjustmentFileChange = (file, uploadFiles) => {
 const submitAdjustment = async () => {
   if (!adjustmentOrder.value?.orderId) { ElMessage.warning('请选择订单'); return }
   if (!adjustmentForm.reason.trim()) { ElMessage.warning('请填写调整原因'); return }
-  if (Number(adjustmentForm.amount || 0) <= 0) { ElMessage.warning('调整金额必须大于0'); return }
+  if (!adjustmentForm.evidence.trim()) { ElMessage.warning('请填写定价依据'); return }
+  if (!correctionPreview.value?.previewHash) { ElMessage.warning('请先预览纠错影响'); return }
   adjustmentSubmitting.value = true
   try {
     const formData = new FormData()
     formData.append('orderId', adjustmentOrder.value.orderId)
     formData.append('adjustmentType', adjustmentForm.adjustmentType)
-    formData.append('amount', String(adjustmentForm.amount))
+    formData.append('itemId', adjustmentForm.itemId)
+    formData.append('unitPrice', String(adjustmentForm.unitPrice))
+    formData.append('confirmZero', String(adjustmentForm.confirmZero))
+    formData.append('evidence', adjustmentForm.evidence.trim())
+    formData.append('previewHash', correctionPreview.value.previewHash)
     formData.append('reason', adjustmentForm.reason.trim())
     adjustmentFiles.value.forEach(file => formData.append('files', file))
     const res = await api.createProfitAdjustment(formData)

@@ -526,6 +526,7 @@ async function loadOtherApprovalTasks() {
   }))
 }
 function businessAmountText(data = {}) {
+  if (data.adjustment_type === 'price_correction') return moneyText(data.correction_sales_delta)
   const candidates = [data.actual_total, data.actualTotal, data.total_amount, data.totalAmount, data.refund_amount, data.refundAmount, data.amount, data.change_amount, data.signed_amount]
   const value = candidates.find(item => item !== undefined && item !== null && item !== '' && Number(item) !== 0)
     ?? candidates.find(item => item !== undefined && item !== null && item !== '')
@@ -751,7 +752,16 @@ function detailLabel(key) {
   if (detailFieldLabels[key]) return detailFieldLabels[key]
   return String(key).replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ')
 }
+const correctionFieldLabels = {
+  correction_type_name: '纠错类型', correction_evidence: '定价依据', correction_product: '纠错商品 / SN',
+  correction_before_price: '原结算定价', correction_after_price: '正确定价',
+  correction_sales_before: '销售端原毛利', correction_sales_after: '销售端纠错后毛利', correction_sales_delta: '销售端毛利变化',
+  correction_product_before: '产品端原毛利', correction_product_after: '产品端纠错后毛利', correction_product_delta: '产品端毛利变化'
+}
+Object.assign(detailFieldLabels, correctionFieldLabels)
+Object.keys(correctionFieldLabels).forEach(key => detailAllowedKeys.add(key))
 function formatDetailValue(value) {
+  if (value === 'price_correction') return '结算定价纠错'
   if (value === 'CORPORATE') return '公司付款'
   if (typeof value === 'string' && ({ COMPANY_CREDIT: '公司账期', PERSONAL_ADVANCE: '个人垫付', COMPANY_PRICE: '按公司定价', PURCHASE_PRICE: '按采购价' })[value]) return ({ COMPANY_CREDIT: '公司账期', PERSONAL_ADVANCE: '个人垫付', COMPANY_PRICE: '按公司定价', PURCHASE_PRICE: '按采购价' })[value]
   if (value === undefined || value === null || value === '') return '-'
@@ -764,9 +774,11 @@ function formatJson(value) {
 }
 function detailScalarFields(data = {}) {
   return Object.entries(data)
+    .filter(([key]) => data.adjustment_type !== 'price_correction' || !['amount', 'signed_amount', 'base_gross_profit'].includes(key))
     .filter(([key, value]) => detailAllowedKeys.has(key) && !hiddenDetailKeys.has(key) && !Array.isArray(value) && (value === null || ['string', 'number', 'boolean'].includes(typeof value)))
     .filter(([, value]) => value !== null && value !== '')
     .map(([key, value]) => ({ key, label: detailLabel(key), value: formatDetailValue(value), span: ['remark', 'reason', 'return_reason', 'review_comment', 'policy_content', 'po_policy_at_sale', 'so_policy_at_sale', 'other_policy_at_sale', 'policy_remark'].includes(key) ? 2 : 1 }))
+    .concat(data.correction_product_profit_visible === false ? [{ key: 'correction_product_access', label: '产品端毛利', value: '当前账号无查看权限，由有权限的审核人核对', span: 2 }] : [])
 }
 function detailArraySections(data = {}) {
   return Object.entries(data)

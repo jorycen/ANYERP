@@ -692,6 +692,8 @@ export default {
   updateMonthlyTask: (taskId, data) => api.put(`/sales/monthly-tasks/${taskId}`, data),
   disableMonthlyTask: (taskId) => api.post(`/sales/monthly-tasks/${taskId}/disable`),
   getProfitAdjustments: (params) => api.get('/report/profit-adjustments', { params }),
+  getProfitCorrectionOptions: (orderId) => api.get('/report/profit-adjustments/correction-options', { params: { orderId } }),
+  previewProfitCorrection: (data) => api.post('/report/profit-adjustments/price-preview', data),
   createProfitAdjustment: (data) => api.post('/report/profit-adjustments', data, {
     headers: { 'Content-Type': 'multipart/form-data' }
   }),

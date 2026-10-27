@@ -195,7 +195,8 @@ async function listBusinessTasks(ctx, onlyType = null) {
             canReview = node.signMode === 'serial' ? ids[0] === Number(ctx.state.user.staffId) : ids.includes(Number(ctx.state.user.staffId));
             nodeName = node.name;
           }
-          if (canReview) tasks.push({ business_type: type, business_id: String(row[d.id]), business_no: row[d.no] || row[d.id], node_name: nodeName, instance_id: instance?.instance_id, manual_path: d.manual || null, row: row.toJSON() });
+          if (canReview) tasks.push({ business_type: type, business_id: String(row[d.id]), business_no: row[d.no] || row[d.id], node_name: nodeName, instance_id: instance?.instance_id, manual_path: d.manual || null,
+            row: type === 'profit_adjustment' ? require('../report/settlementPriceCorrection').display(row.toJSON(), ctx.state.user) : row.toJSON() });
         } catch (error) {
           if (ctx.state.user.roles?.some(role => ['admin', 'boss'].includes(role))) issues.push({ businessType: type, message: error.message });
         }

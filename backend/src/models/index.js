@@ -2205,7 +2205,7 @@ const SalesSettlementCostAdjustment = sequelize.define('SalesSettlementCostAdjus
   updated_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_SALES_SETTLEMENT_COST_ADJUSTMENT', timestamps: false });
 
-// 员工业绩毛利调整申请，不改写订单原始毛利。
+// 来源业绩调整及结算定价纠错；纠错单保存原始事实及前后快照。
 const PerformanceProfitAdjustment = sequelize.define('PerformanceProfitAdjustment', {
   adjustment_id: { type: DataTypes.STRING(32), primaryKey: true },
   adjustment_no: { type: DataTypes.STRING(64), unique: true, allowNull: false },
@@ -2218,6 +2218,7 @@ const PerformanceProfitAdjustment = sequelize.define('PerformanceProfitAdjustmen
   amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
   signed_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
   base_gross_profit: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  correction_data: { type: DataTypes.JSON, allowNull: true },
   reason: { type: DataTypes.STRING(1000), allowNull: false },
   status: { type: DataTypes.STRING(32), defaultValue: 'pending_finance' },
   applicant_staff_id: { type: DataTypes.BIGINT(20), allowNull: false },

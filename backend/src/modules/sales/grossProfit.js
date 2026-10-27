@@ -974,6 +974,15 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     buildSupplementDetails(orderId, transaction),
     buildFreightCostDetails(order, transaction)
   ]);
+  // An authorized recalculation must retain approved order-specific price corrections.
+  for (const frozen of parseJsonArray(existing?.product_pricing_details)) {
+    if (!frozen.correctionId || frozen.source !== 'approved_settlement_price_correction') continue;
+    const current = productPricingDetails.find(line => String(line.itemId) === String(frozen.itemId));
+    if (current) Object.assign(current, { unitPricing: frozen.unitPricing,
+      pricingAmount: roundMoney(Number(frozen.unitPricing) * Number(current.quantity)),
+      source: frozen.source, correctionId: frozen.correctionId, isCompanyPriced: true,
+      grossProfitUpliftAmount: 0, externalAdjustmentEligible: false });
+  }
   if (existing?.snapshot_status === 'final' && existing.formula_version !== FORMULA_VERSION) {
     const previousLines = new Map(parseJsonArray(existing.product_pricing_details)
       .map(line => [String(line.itemId), line]));

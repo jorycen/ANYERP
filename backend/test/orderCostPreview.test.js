@@ -69,6 +69,18 @@ function fixture(t, standardPrice) {
   return { order, item };
 }
 
+test('授权强制重算保留本订单已批准纠错定价，不被当前主档价格覆盖', async t => {
+  fixture(t, 9900);
+  const frozen = { snapshot_status: 'final', formula_version: require('../src/modules/sales/grossProfit').FORMULA_VERSION,
+    product_pricing_details: [{ itemId: 1, quantity: 1, unitPricing: 5300, pricingAmount: 5300,
+      isCompanyPriced: true, source: 'approved_settlement_price_correction', correctionId: 'A' }], payment_fee_details: [] };
+  t.mock.method(M.OrderGrossProfit, 'findOne', async () => frozen);
+  const recalculated = await calculateAndSaveOrderGrossProfit('order', { persist: false, force: true, final: true });
+  assert.equal(recalculated.product_pricing_details[0].unitPricing, 5300);
+  assert.equal(recalculated.product_pricing_details[0].correctionId, 'A');
+  assert.equal(recalculated.product_pricing_amount, 5300);
+});
+
 test('非SN获赠与有价物料混库时冻结平均成本，不把最新获赠0元当作全库存成本',async t=>{
   fixture(t,250);
   t.mock.method(M.ProductPrice,'findAll',async()=>[{product_id:'product',standard_price:250,status:1,cost_price:100}]);

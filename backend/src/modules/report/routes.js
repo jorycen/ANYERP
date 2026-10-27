@@ -13,6 +13,8 @@ const {
 } = require('./controller');
 const {
   createProfitAdjustment,
+  getCorrectionOptions,
+  previewCorrection,
   listProfitAdjustments,
   approveProfitAdjustment,
   rejectProfitAdjustment,
@@ -62,6 +64,8 @@ router.post('/financial-profit-close', requireDistributorAccount(), financialPro
 router.post('/financial-profit-adjustments', requireDistributorAccount(), financialProfitControl.adjust);
 router.get('/monthly-task-achievement', getMonthlyTaskAchievement);
 router.get('/profit-adjustments', listProfitAdjustments);
+router.get('/profit-adjustments/correction-options', getCorrectionOptions);
+router.post('/profit-adjustments/price-preview', previewCorrection);
 router.post('/profit-adjustments', upload.array('files', 5), createProfitAdjustment);
 router.post('/profit-adjustments/:adjustmentId/approve', approveProfitAdjustment);
 router.post('/profit-adjustments/:adjustmentId/reject', rejectProfitAdjustment);
