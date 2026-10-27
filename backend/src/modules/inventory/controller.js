@@ -2084,6 +2084,7 @@ async function getList(ctx) {
         retail_price: p.ProductPrice ? p.ProductPrice.retail_price : 0,
         min_sale_price: p.ProductPrice ? p.ProductPrice.min_sale_price : 0,
         cost_price: p.ProductPrice ? p.ProductPrice.cost_price : 0,
+        conversion_source_unit_cost: parseConversionCost(p.ProductPrice?.cost_price),
         need_sn: p.need_sn || 0,
         normal_qty: getSummaryNormalQty(p, inv, stock),
         ...distributorInventory,
@@ -5650,6 +5651,12 @@ function normalizeConversionType(value) {
   return value === 'assemble' ? 'assemble' : 'split';
 }
 
+function parseConversionCost(value) {
+  if (value === null || value === undefined || typeof value === 'boolean' || String(value).trim() === '') return null;
+  const amount = Number(value);
+  return Number.isFinite(amount) && amount >= 0 ? money(amount) : null;
+}
+
 async function ensurePn(productId, pnCode, transaction) {
   const product = await Product.findOne({
     where: { product_id: productId, is_deleted: 0, status: 1 },
@@ -5749,6 +5756,9 @@ async function buildConversionSourceRows(sourceItems, conversionType, storeId, t
     let inventoryType = raw.inventoryType || raw.inventory_type || 'normal_qty';
     let locationId = raw.locationId || raw.location_id || '';
     let quantity = Math.max(1, parseInt(raw.quantity, 10) || 1);
+    if (conversionType === 'assemble' && (!Number.isInteger(Number(raw.quantity ?? 1)) || Number(raw.quantity ?? 1) <= 0)) {
+      throw Object.assign(new Error(`来源商品 ${product.name} 的数量必须为大于0的整数`), { status: 400 });
+    }
     let pnCode = normalizePnCode(raw.pnCode || raw.pn_code || '');
     let snCode = String(raw.snCode || raw.sn_code || '').trim();
 
@@ -5789,14 +5799,20 @@ async function buildConversionSourceRows(sourceItems, conversionType, storeId, t
     }
 
     let fallbackCost = 0;
+    let storedCost = null;
     if (Number(product.need_sn) !== 1) {
       const price = await ProductPrice.findOne({ where: { product_id: product.product_id }, transaction });
       fallbackCost = Number(price?.cost_price || 0);
+      storedCost = parseConversionCost(price?.cost_price);
     }
-    const unitCost = Number(product.need_sn) === 1
+    if (Number(product.need_sn) === 1) storedCost = parseConversionCost(snRecord?.inbound_price);
+    if (conversionType === 'assemble' && storedCost === null) {
+      throw Object.assign(new Error(`来源商品 ${product.name} 成本待补，不能以手工成本或0元替代`), { status: 400 });
+    }
+    const unitCost = conversionType === 'assemble' ? storedCost : Number(product.need_sn) === 1
       ? money(snRecord?.inbound_price ?? raw.unitCost ?? raw.unit_cost ?? 0)
       : money(conversionType === 'split' && fallbackCost > 0 ? fallbackCost : (raw.unitCost ?? raw.unit_cost ?? fallbackCost));
-    if (unitCost <= 0) {
+    if (conversionType !== 'assemble' && unitCost <= 0) {
       const err = new Error(`来源商品 ${product.name} 的单位成本必须大于0`);
       err.status = 400;
       throw err;
@@ -5847,6 +5863,9 @@ async function buildConversionTargetRows(targetItems, conversionType, storeId, s
     const inventoryType = raw.inventoryType || raw.inventory_type || 'normal_qty';
     const locationId = raw.locationId || raw.location_id || '';
     const quantity = Number(product.need_sn) === 1 ? 1 : Math.max(1, parseInt(raw.quantity, 10) || 1);
+    if (conversionType === 'assemble' && (!Number.isInteger(Number(raw.quantity ?? 1)) || Number(raw.quantity ?? 1) <= 0)) {
+      throw Object.assign(new Error(`目标商品 ${product.name} 的数量必须为大于0的整数`), { status: 400 });
+    }
     const unitCost = money(raw.unitCost ?? raw.unit_cost ?? 0);
     const totalCost = money(raw.totalCost ?? raw.total_cost ?? unitCost * quantity);
     const finalUnitCost = unitCost > 0 ? unitCost : money(totalCost / quantity);
@@ -5855,7 +5874,11 @@ async function buildConversionTargetRows(targetItems, conversionType, storeId, s
       : normalizePnCode(raw.pnCode || raw.pn_code || splitCodes(product.manufacturer_code)[0] || '');
     const snCode = String(raw.snCode || raw.sn_code || '').trim();
 
-    if (totalCost <= 0 || finalUnitCost <= 0) {
+    if (conversionType === 'assemble' && (parseConversionCost(raw.unitCost ?? raw.unit_cost) === null
+      || !Number.isFinite(totalCost) || totalCost < 0 || Math.abs(money(unitCost * quantity) - totalCost) > 0.01)) {
+      throw Object.assign(new Error(`目标商品 ${product.name} 的成本必须为非负金额，且单价与合计须一致`), { status: 400 });
+    }
+    if (conversionType !== 'assemble' && (totalCost <= 0 || finalUnitCost <= 0)) {
       const err = new Error(`目标商品 ${product.name} 的成本必须大于0`);
       err.status = 400;
       throw err;

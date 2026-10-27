@@ -1532,10 +1532,10 @@
               />
             </el-select>
             <el-select v-if="selectedConversionSourceProduct?.need_sn === 1" v-model="conversionSourceAdd.snId" placeholder="选择SN" filterable clearable style="width: 210px" @change="onConversionSourceSnChange">
-              <el-option v-for="sn in conversionSourceSnOptions" :key="sn.sn_id" :label="`${sn.sn_code}${sn.pn_code ? ' / PN:' + sn.pn_code : ''} / 成本:${sn.inbound_price || 0}`" :value="sn.sn_id" />
+              <el-option v-for="sn in conversionSourceSnOptions" :key="sn.sn_id" :label="`${sn.sn_code}${sn.pn_code ? ' / PN:' + sn.pn_code : ''} / 成本:${displayedConversionSourceCost(sn.inbound_price) ?? '待补'}`" :value="sn.sn_id" />
             </el-select>
             <el-input-number v-else v-model="conversionSourceAdd.quantity" :min="1" :precision="0" :disabled="conversionForm.conversionType === 'split'" style="width: 110px" />
-            <el-input-number v-model="conversionSourceAdd.unitCost" :min="0" :precision="2" :controls="false" placeholder="成本" style="width: 130px" />
+            <el-input-number v-model="conversionSourceAdd.unitCost" :min="0" :precision="2" :controls="false" :disabled="conversionForm.conversionType === 'assemble'" :placeholder="conversionForm.conversionType === 'assemble' ? '原商品成本待补' : '成本'" style="width: 130px" />
             <el-button type="primary" @click="addConversionSourceItem">添加</el-button>
           </div>
 
@@ -4849,14 +4849,16 @@ const onConversionSourceProductChange = async () => {
       ElMessage.error('加载来源SN失败')
     }
   } else if (product) {
-    conversionSourceAdd.unitCost = roundMoney(product.cost_price || 0)
+    conversionSourceAdd.unitCost = conversionForm.conversionType === 'assemble' ? displayedConversionSourceCost(product.conversion_source_unit_cost) : roundMoney(product.cost_price || 0)
   }
 }
 
 const onConversionSourceSnChange = () => {
   const sn = conversionSourceSnOptions.value.find(item => item.sn_id === conversionSourceAdd.snId)
-  conversionSourceAdd.unitCost = roundMoney(sn?.inbound_price || 0)
+  conversionSourceAdd.unitCost = conversionForm.conversionType === 'assemble' ? displayedConversionSourceCost(sn?.inbound_price) : roundMoney(sn?.inbound_price || 0)
 }
+
+const displayedConversionSourceCost = value => value !== null && value !== undefined && typeof value !== 'boolean' && String(value).trim() !== '' && Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : undefined
 
 const onConversionTargetProductChange = () => {
   const product = selectedConversionTargetProduct.value
@@ -4874,7 +4876,7 @@ const addConversionSourceItem = () => {
   }
 
   let sn = null
-  let quantity = Number(conversionSourceAdd.quantity || 1)
+  let quantity = Number(conversionSourceAdd.quantity)
   let unitCost = roundMoney(conversionSourceAdd.unitCost || 0)
   if (product.need_sn === 1) {
     sn = conversionSourceSnOptions.value.find(item => item.sn_id === conversionSourceAdd.snId)
@@ -4887,8 +4889,9 @@ const addConversionSourceItem = () => {
       return
     }
     quantity = 1
-    unitCost = unitCost > 0 ? unitCost : roundMoney(sn.inbound_price || 0)
+    unitCost = conversionForm.conversionType === 'assemble' ? displayedConversionSourceCost(sn.inbound_price) : (unitCost > 0 ? unitCost : roundMoney(sn.inbound_price || 0))
   }
+  if (conversionForm.conversionType === 'assemble' && !sn) unitCost = displayedConversionSourceCost(product.conversion_source_unit_cost)
 
   if (conversionForm.conversionType === 'split' && conversionForm.sourceItems.length > 0) {
     ElMessage.warning('拆分单一次只能选择一个被拆商品')
@@ -4898,8 +4901,12 @@ const addConversionSourceItem = () => {
     ElMessage.warning('拆分单被拆商品数量只能为1')
     return
   }
-  if (quantity <= 0 || unitCost <= 0) {
-    ElMessage.warning('数量和成本必须大于0')
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    ElMessage.warning('数量必须为大于0的整数')
+    return
+  }
+  if (unitCost === undefined || !Number.isFinite(unitCost) || unitCost < 0 || (conversionForm.conversionType !== 'assemble' && unitCost === 0)) {
+    ElMessage.warning(conversionForm.conversionType === 'assemble' ? '来源商品成本待补，请先核对原商品成本' : '成本必须大于0')
     return
   }
   if (product.need_sn !== 1 && quantity > Number(product.normal_qty || 0)) {
@@ -4935,10 +4942,10 @@ const addConversionTargetItem = () => {
     return
   }
 
-  const quantity = product.need_sn === 1 ? 1 : Number(conversionTargetAdd.quantity || 1)
-  const unitCost = roundMoney(conversionTargetAdd.unitCost || 0)
-  if (quantity <= 0 || unitCost <= 0) {
-    ElMessage.warning('数量和成本必须大于0')
+  const quantity = product.need_sn === 1 ? 1 : Number(conversionTargetAdd.quantity)
+  const unitCost = displayedConversionSourceCost(conversionTargetAdd.unitCost)
+  if (!Number.isInteger(quantity) || quantity <= 0 || unitCost === undefined || (conversionForm.conversionType !== 'assemble' && unitCost <= 0)) {
+    ElMessage.warning(conversionForm.conversionType === 'assemble' ? '数量必须大于0，成本须为非负金额' : '数量和成本必须大于0')
     return
   }
   if (product.need_sn === 1 && !conversionTargetAdd.snCode.trim()) {
