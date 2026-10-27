@@ -55,7 +55,37 @@ test('截图场景：SN整机成本1元拆出SN内存1元，原SN保持在库且
   assert.deepEqual(f.state.snLogs.map(row => row.action), ['inventory_split_source', 'inventory_split_target']);
   assert.ok(f.state.snLogs.every(row => row.create_user === '测试操作人'));
   assert.equal(f.state.newSns[0].inbound_price, 1);
+  assert.equal(f.state.newSns[0].location_id, 'NORMAL');
+  assert.equal(f.state.items.find(row => row.line_role === 'target').location_id, 'NORMAL');
   assert.equal(f.state.items.find(row => row.line_role === 'target').source_sn_id, 'SOURCE-SN');
+});
+
+test('目标未传库位时在创建SN前解析本店销售仓，无可用仓位时整单拒绝', async t => {
+  const f = fixture(t);
+  t.mock.method(M.Location, 'findOne', async options => {
+    assert.equal(options.where.store_id, 'STORE');
+    assert.equal(options.where.type, 'normal_qty');
+    assert.equal(options.where.status, 1);
+    return null;
+  });
+  await assert.rejects(f.controller.createConversion(f.ctx), /本门店的有效库位/);
+  assert.equal(f.state.newSns.length, 0);
+  assert.equal(f.state.conversions.length, 0);
+  assert.equal(f.state.rolledBack, true);
+});
+
+test('非SN目标也保存后台确认的库位，明确库位须按本店启用范围校验', async t => {
+  const f = fixture(t, { targetSn: false });
+  f.ctx.request.body.targetItems[0].locationId = 'EXPLICIT';
+  t.mock.method(M.Location, 'findOne', async options => {
+    assert.equal(options.where.store_id, 'STORE');
+    assert.equal(options.where.status, 1);
+    assert.equal(options.where.location_id, 'EXPLICIT');
+    return { location_id: 'EXPLICIT' };
+  });
+  await f.controller.createConversion(f.ctx);
+  assert.equal(f.state.items.find(row => row.line_role === 'target').location_id, 'EXPLICIT');
+  assert.equal(f.state.committed, true);
 });
 test('非SN来源组装为SN成品时也可记录目标操作人并提交', async t => {
   const f = fixture(t, { sourceSn: false }); f.ctx.request.body.conversionType = 'assemble';

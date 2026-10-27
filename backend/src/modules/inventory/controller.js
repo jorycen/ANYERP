@@ -5861,7 +5861,10 @@ async function buildConversionTargetRows(targetItems, conversionType, storeId, s
     }
 
     const inventoryType = raw.inventoryType || raw.inventory_type || 'normal_qty';
-    const locationId = raw.locationId || raw.location_id || '';
+    const locationId = await resolveInventoryWriteLocation(Location, {
+      storeId, field: inventoryType,
+      locationId: raw.locationId || raw.location_id || '', transaction
+    });
     const quantity = Number(product.need_sn) === 1 ? 1 : Math.max(1, parseInt(raw.quantity, 10) || 1);
     if (conversionType === 'assemble' && (!Number.isInteger(Number(raw.quantity ?? 1)) || Number(raw.quantity ?? 1) <= 0)) {
       throw Object.assign(new Error(`目标商品 ${product.name} 的数量必须为大于0的整数`), { status: 400 });
