@@ -7,6 +7,14 @@ const {
   storeGuard
 } = require('../src/middleware/permission');
 
+test('调拨入销售仓同步清除原租赁样机仓标记，不改采购时间和成本', () => {
+  const state = _test.buildTransferInboundSnState('DEST', { location_id: 'SALES', type: 'normal_qty' }, 'rental_demo_qty');
+  assert.deepEqual(state, { store_id: 'DEST', status: 'in_stock', location_id: 'SALES', inventory_type: 'normal_qty' });
+  assert.equal('inbound_price' in state, false);
+  assert.equal('original_inbound_time' in state, false);
+  assert.equal(_test.buildTransferInboundSnState('DEST', { location_id: 'RENTAL', type: 'rental_demo_qty' }, 'normal_qty').inventory_type, 'rental_demo_qty');
+});
+
 test('财务总览仅允许经销商级账号访问', async () => {
   const middleware = requireDistributorAccount();
   let nextCalled = false;

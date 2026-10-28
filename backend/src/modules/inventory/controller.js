@@ -4525,6 +4525,15 @@ function normalizeTransferRemark(value) {
   return String(value || '').trim().slice(0, 2000);
 }
 
+function buildTransferInboundSnState(storeId, targetLocation, fallbackInventoryType) {
+  return {
+    store_id: storeId,
+    status: 'in_stock',
+    location_id: targetLocation?.location_id || null,
+    inventory_type: normalizeInventoryQuantityField(targetLocation?.type || fallbackInventoryType)
+  };
+}
+
 function resolveTransferInboundLocationId({
   requestedLocationId = '',
   defaultLocationId = '',
@@ -5545,12 +5554,10 @@ async function confirmTransferIn(ctx) {
           currentLocationId: previousLocationId,
           destinationLocationIds
         });
-        await sn.update({
-          store_id: transfer.to_store_id,
-          status: 'in_stock',
-          location_id: targetLocationId || null
-          // 调拨到店不改变公司首次采购入库时间，库龄继续从原始入库计算。
-        }, { transaction: t });
+        const targetLocation = destinationLocations.find(location => String(location.location_id) === targetLocationId);
+        // 门店、库位和仓位类型须同时切换，不能沿用调出前的租赁/样机仓标记。
+        // 原始采购入库时间和成本保持不变。
+        await sn.update(buildTransferInboundSnState(transfer.to_store_id, targetLocation || { location_id: targetLocationId }, sn.inventory_type), { transaction: t });
 
         if (!alreadyInDestination) {
           await SnLog.create({
@@ -6844,6 +6851,7 @@ module.exports = {
     isDistributorAccount,
     isTransferApplicant,
     resolveTransferInboundLocationId,
+    buildTransferInboundSnState,
     transferQuantitySummary,
     visibleTransferItems,
     getPendingTransferItems,
