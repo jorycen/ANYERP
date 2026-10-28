@@ -7,7 +7,8 @@ const S = require('./security');
 const math = require('./math');
 const P = require('./rewardPolicy');
 const RS = require('./rewardStores');
-const txOptions = { retry: { max: 0 } };
+const F = require('./fulfillment');
+const txOptions = { isolationLevel: 'READ COMMITTED', retry: { max: 0 } };
 async function transaction(work) {
   for (let attempt = 0; ; attempt++) {
     try { return await sequelize.transaction(txOptions, work); }
@@ -183,11 +184,11 @@ async function reconcileOrder(order, t) {
     order_id: order.order_id, store_id: order.store_id, actor: 'system', reason: cancelled ? '订单作废冲回' : '订单计分金额调整', snapshot }, t);
   await binding.update({ awarded: String(target + BigInt(binding.reversed)), snapshot }, { transaction: t });
 }
-async function exchange(member, rewardId, key, quotedPoints, quotedCash) {
+async function exchange(member, rewardId, key, quotedPoints, quotedCash, storeId) {
   S.requestKey(key);
   return transaction(async t => {
     const previous = await M.Exchange.findOne({ where: { member_id: member.id, request_key: key }, transaction: t });
-    if (previous) { if (previous.reward_id !== rewardId) S.fail(409, '幂等键不能用于其他商品'); return previous; }
+    if (previous) { if (previous.reward_id !== rewardId || (storeId && previous.snapshot.pickup_store_id !== storeId)) S.fail(409, '幂等键不能用于其他商品'); return previous; }
     const item = await M.Reward.findByPk(rewardId, { transaction: t });
     if (!item) S.fail(404, '权益不存在');
     const balance = await account(member.id, item.distributor_id, t);
@@ -195,25 +196,29 @@ async function exchange(member, rewardId, key, quotedPoints, quotedCash) {
     if (quotedPoints !== undefined && String(quotedPoints) !== String(reward.points)) S.fail(409, '积分价格已更新，请刷新详情后兑换');
     if ((quotedCash === undefined && math.cents(reward.cash_required) > 0n) || (quotedCash !== undefined && P.money(quotedCash) !== P.money(reward.cash_required))) S.fail(409, '现金价格已更新，请刷新详情后兑换');
     if ((reward.valid_start_time && reward.valid_start_time > new Date()) || (reward.valid_end_time && reward.valid_end_time <= new Date())) S.fail(409, '不在权益兑换有效期内');
-    if (!reward.on_sale || (reward.stock !== null && reward.stock <= 0)) S.fail(409, '权益已下架或售罄');
+    if (!reward.on_sale || (!F.physical(reward) && reward.stock !== null && reward.stock <= 0)) S.fail(409, '权益已下架或售罄');
     if (BigInt(balance.balance) < BigInt(reward.points)) S.fail(409, '积分不足');
     if (reward.per_member_limit !== null && await M.Exchange.count({ where: { member_id: member.id, reward_id: rewardId }, transaction: t }) >= reward.per_member_limit) S.fail(409, '已达到兑换数量限制');
     const stores = await M.RewardStore.findAll({ where: { reward_id: rewardId }, transaction: t });
     const activeStores = await RS.activeStores(stores.map(s => s.store_id), t);
     if (!activeStores.length) S.fail(409, '权益当前没有可用门店');
+    if (F.physical(reward) && !storeId) S.fail(400, '请先选择领取门店');
+    if (storeId && !activeStores.some(s => s.store_id === storeId)) S.fail(400, '领取门店不适用此礼品');
+    const selectedStores = storeId ? activeStores.filter(s => s.store_id === storeId) : activeStores;
     const id = crypto.randomBytes(16).toString('hex');
     const code = S.token('redeem', id);
     const row = await M.Exchange.create({ id, member_id: member.id, account_id: balance.id, reward_id: rewardId,
       distributor_id: reward.distributor_id, points: String(reward.points), request_key: key,
       expires_at: new Date(Date.now() + reward.valid_days * 86400000), code_hash: S.hash(code),
-      snapshot: { name: reward.name, image: reward.image, kind: reward.kind, instructions: reward.instructions,
+      snapshot: { product_id: reward.product_id, units_per_reward: reward.units_per_reward, pickup_store_id: storeId || null, name: reward.name, image: reward.image, kind: reward.kind, instructions: reward.instructions,
         description: reward.description, cash_required: P.money(reward.cash_required), self_only: reward.self_only,
         coupon_value: P.money(reward.coupon_value), coupon_min_spend: P.money(reward.coupon_min_spend), coupon_scope: reward.coupon_scope,
-        stores: activeStores.map(s => ({ store_id: s.store_id, distributor_id: s.distributor_id, name: s.name, address: s.address })),
-        storeIds: activeStores.map(s => s.store_id) } }, { transaction: t });
+        stores: selectedStores.map(s => ({ store_id: s.store_id, distributor_id: s.distributor_id, name: s.name, address: s.address })),
+        storeIds: selectedStores.map(s => s.store_id) } }, { transaction: t });
+    await F.reserve(reward, row, storeId, t);
     await post(balance, -BigInt(reward.points), { type: 'exchange', exchange_id: id,
       business_key: `exchange:${id}`, actor: `member:${member.id}`, reason: `兑换${reward.name}` }, t);
-    await reward.update({ ...(reward.stock !== null ? { stock: reward.stock - 1 } : {}), revision: reward.revision + 1 }, { transaction: t });
+    await reward.update({ ...(!F.physical(reward) && reward.stock !== null ? { stock: reward.stock - 1 } : {}), revision: reward.revision + 1 }, { transaction: t });
     return row;
   });
 }
@@ -230,6 +235,9 @@ async function redeem(code, storeId, user, confirm, expectedId, evidence = {}) {
     const used = await M.Redemption.findOne({ where: { exchange_id: row.id }, transaction: t });
     const member = await M.Member.findByPk(row.member_id, { transaction: t });
     const result = { id: row.id, name: row.snapshot.name, points: String(row.points), expiresAt: row.expires_at,
+      paymentMethods: await F.paymentMethods(storeId, t), productId: row.snapshot.product_id, unitsPerReward: row.snapshot.units_per_reward,
+      needSn: row.snapshot.product_id ? Boolean((await require('../../models').Product.findByPk(row.snapshot.product_id, { transaction: t }))?.need_sn) : false,
+      requiresInventoryBinding: F.physical(row.snapshot) && !row.snapshot.product_id,
       cashRequired: P.money(row.snapshot.cash_required || '0'), selfOnly: row.snapshot.self_only !== false,
       kind: row.snapshot.kind, couponValue: row.snapshot.coupon_value || '0.00',
       couponMinSpend: row.snapshot.coupon_min_spend || '0.00', couponScope: row.snapshot.coupon_scope || '',
@@ -250,13 +258,16 @@ async function redeem(code, storeId, user, confirm, expectedId, evidence = {}) {
     const cash = P.money(row.snapshot.cash_required || '0');
     if (math.cents(cash) > 0n) {
       if (evidence.cash_confirmed !== true || P.money(evidence.cash_received || '0') !== cash) S.fail(409, '请核对并确认已收齐现金补差');
-      if (!String(evidence.receipt_reference || '').trim()) S.fail(400, '请填写收款流水或销售单号');
+      if (!evidence.payment_method_id) S.fail(400, '请选择收款方式');
     }
     if (String(evidence.receipt_reference || '').length > 128) S.fail(400, '凭据编号不能超过128字');
-    const redemption = await M.Redemption.create({ exchange_id: row.id, member_id: row.member_id,
+    const fulfillment = await F.fulfill(row, store, user, evidence, t);
+    const redemption = await M.Redemption.create({ ...fulfillment, exchange_id: row.id, member_id: row.member_id,
       distributor_id: row.distributor_id, store_id: storeId, staff_id: user.staffId,
       cash_received: cash, receipt_reference: String(evidence.receipt_reference || '').trim() || null, coupon_check }, { transaction: t });
     await row.update({ status: 'redeemed' }, { transaction: t });
+    await require('../../utils/businessActionLog').recordBusinessAction({ businessType: 'customer_redemption', businessId: row.id,
+      action: 'redeem', user, detail: { redemptionId: redemption.id, ...fulfillment }, transaction: t });
     return { ...result, status: 'redeemed', redemption };
   });
 }

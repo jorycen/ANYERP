@@ -694,7 +694,8 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
         LEFT JOIN T_STORE s ON s.STORE_ID = o.STORE_ID
         WHERE pa.STATUS = 'approved' AND (pa.ADJUSTMENT_NO LIKE 'AUTO-CARE-RET-%' OR pa.ADJUSTMENT_NO LIKE 'EDUR-%')
           AND ${adjustmentWhere}`, where.replacements);
-    return [...sales, ...returns, ...returnAdjustments].sort((a, b) => new Date(b.create_time) - new Date(a.create_time));
+    const rewards = await require('../customerOps/profitEvents').events(filters, range, this.query.bind(this));
+    return [...sales, ...returns, ...returnAdjustments, ...rewards].sort((a, b) => new Date(b.create_time) - new Date(a.create_time));
   }
 
   async getApprovedAdjustments(filters, range) {

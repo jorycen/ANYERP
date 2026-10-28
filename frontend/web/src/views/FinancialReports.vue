@@ -38,7 +38,7 @@
         <div class="metric-card profit"><span>经营毛利</span><strong>¥{{ money(data.grossProfit) }}</strong><small>毛利率 {{ percent(data.grossMargin) }}</small></div>
         <div class="metric-card"><span>销售毛利</span><strong>¥{{ money(data.salesGrossProfit) }}</strong><small>毛利率 {{ percent(data.salesGrossMargin) }}</small></div>
         <div class="metric-card"><span>产品端毛利</span><strong>¥{{ money(data.productGrossProfit) }}</strong><small>毛利率 {{ percent(data.productGrossMargin) }}</small></div>
-        <div class="metric-card expense"><span>门店经营费用</span><strong>¥{{ money(data.operatingExpense?.amount) }}</strong><small>{{ Number(data.operatingExpense?.expenseCount || 0) }} 笔已确认费用</small></div>
+        <div class="metric-card"><span>运营毛利</span><strong>¥{{ money(data.operationsGrossProfit) }}</strong><small>补差收入50%减礼品全部出库成本</small></div><div class="metric-card"><span>公司毛利合计</span><strong>¥{{ money(data.combinedGrossProfit) }}</strong><small>销售＋产品＋运营</small></div><div class="metric-card expense"><span>门店经营费用</span><strong>¥{{ money(data.operatingExpense?.amount) }}</strong><small>{{ Number(data.operatingExpense?.expenseCount || 0) }} 笔已确认费用</small></div>
         <div class="metric-card operating"><span>门店经营利润</span><strong>¥{{ money(data.storeOperatingProfit) }}</strong><small>经营毛利减已确认经营费用</small></div>
       </div>
 
@@ -46,7 +46,7 @@
         <el-tab-pane label="财务总览" name="overview">
           <div class="section-grid">
             <section class="report-section">
-              <div class="section-heading"><div><h2>利润构成</h2><p>区分销售端毛利与产品端已确认收益。</p></div></div>
+              <div class="section-heading"><div><h2>利润构成</h2><p>公司毛利由销售、产品和运营三部分组成。</p></div></div>
               <div ref="profitChartRef" class="chart-box"></div>
               <el-descriptions :column="2" border size="small" class="profit-descriptions">
                 <el-descriptions-item label="产品定价金额">¥{{ money(data.productSettlement?.productPricingAmount) }}</el-descriptions-item>
@@ -368,7 +368,8 @@ function renderVisibleCharts() {
   const palette = ['#4263eb', '#12b886', '#f59f00', '#e64980', '#7950f2', '#0ca678', '#e8590c']
   const profitParts = [
     { name: '销售毛利', value: Number(data.salesGrossProfit) || 0 },
-    { name: '产品端毛利', value: Number(data.productGrossProfit) || 0 }
+    { name: '产品端毛利', value: Number(data.productGrossProfit) || 0 },
+    { name: '运营毛利', value: Number(data.operationsGrossProfit) || 0 }
   ]
   setChart('profit', profitChartRef.value, {
     color: palette, tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },

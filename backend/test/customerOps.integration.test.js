@@ -14,7 +14,7 @@ test('customer operations on isolated MySQL: races, ownership, returns, rollback
   let sequelize, server, failure;
   try {
     await control.query(`CREATE DATABASE \`${name}\` CHARACTER SET utf8mb4`);
-    for (const table of ['T_ORDER', 'T_ORDER_ITEM', 'T_STORE', 'T_STAFF', 'T_DISTRIBUTOR', 'T_SALES_RETURN_REQUEST', 'T_SALES_RETURN_REQUEST_ITEM']) {
+    for (const table of ['T_ORDER', 'T_ORDER_ITEM', 'T_STORE', 'T_STAFF', 'T_DISTRIBUTOR', 'T_SALES_RETURN_REQUEST', 'T_SALES_RETURN_REQUEST_ITEM','T_DICT_PAYMENT_METHOD','T_DICT_PAYMENT_METHOD_STORE','T_SETTLEMENT_ACCOUNT','T_SETTLEMENT_ACCOUNT_TRANSACTION','T_PRODUCT']) {
       await control.query(`CREATE TABLE \`${name}\`.\`${table}\` LIKE \`${source}\`.\`${table}\``);
     }
     config.database.database = name;
@@ -29,6 +29,8 @@ test('customer operations on isolated MySQL: races, ownership, returns, rollback
     await Core.BusinessActionLog.sync();
     await Core.Distributor.create({distributor_id:'test_dist',name:'test distributor',status:1,is_deleted:0});
     await Core.Store.create({ store_id: 'test_store', distributor_id: 'test_dist', name: 'test', status: 1 });
+    await Core.SettlementAccount.create({account_id:'test_fund',account_name:'test fund',account_type:'FUND',status:1});
+    await Core.PaymentMethod.create({method_id:'test_cash',name:'cash',code:'CASH',settlement_account_id:'test_fund',status:1,is_global:1});
     const member = await M.Member.create({ phone: '13000000000', phone_verified_at: new Date() });
     const other = await M.Member.create({ phone: '13000000000', phone_verified_at: new Date() });
     const order = await Core.Order.create({ order_id: 'test_order', order_no: 'test_order', store_id: 'test_store',
@@ -186,7 +188,7 @@ test('customer operations on isolated MySQL: races, ownership, returns, rollback
       const reward = await M.Reward.create({distributor_id:'test_dist',name:'member center reward',kind:'service',points:'300',stock:5,valid_days:30,on_sale:true,...extra});
       await M.RewardStore.create({reward_id:reward.id,store_id:'test_store'});return reward;
     };
-    const mixed = await createReward({name:'mouse',kind:'gift',points:'800',cash_required:'39.00',per_member_limit:1});
+    const mixed = await createReward({name:'paid service',kind:'service',points:'800',cash_required:'39.00',per_member_limit:1});
     await assert.rejects(V.exchange(centerMember,mixed.id,'mixed_missing_cash','800'),/现金价格/);
     await assert.rejects(V.exchange(centerMember,mixed.id,'mixed_stale_cash','800','38'),/现金价格/);
     assert.equal(await M.Exchange.count({where:{member_id:centerMember.id}}),0);
@@ -199,7 +201,7 @@ test('customer operations on isolated MySQL: races, ownership, returns, rollback
     await assert.rejects(V.redeem(mixedCode,'test_store',employee,true,mixedExchange.id),/现金补差/);
     await assert.rejects(V.redeem(mixedCode,'test_store',employee,true,mixedExchange.id,{cash_confirmed:true,cash_received:'38',receipt_reference:'receipt'}),/现金补差/);
     await mixed.update({cash_required:'99.00'});
-    const received=await V.redeem(mixedCode,'test_store',employee,true,mixedExchange.id,{cash_confirmed:true,cash_received:'39',receipt_reference:'receipt-001'});
+    const received=await V.redeem(mixedCode,'test_store',employee,true,mixedExchange.id,{cash_confirmed:true,cash_received:'39',payment_method_id:'test_cash',receipt_reference:'receipt-001'});
     assert.equal(String(received.redemption.cash_received),'39.00');
     const coupon=await createReward({name:'配件券',kind:'coupon',points:'500',coupon_value:'50',coupon_min_spend:'299',coupon_scope:'指定配件'});
     const couponExchange=await V.exchange(centerMember,coupon.id,'coupon_exchange_01','500','0');
@@ -234,7 +236,7 @@ test('customer operations on isolated MySQL: races, ownership, returns, rollback
     const adminOptions=await (await fetch(staffUrl+'/options',{headers:{'X-Test-Role':'admin'}})).json();
     assert.equal(adminOptions.data.canChooseAllRewardStores,false);
     assert.ok(!adminOptions.data.stores.some(s=>s.store_id==='cq_store'));
-    const crossBody={distributor_id:'test_dist',name:'两地换购',kind:'gift',points:'300',cash_required:'39',stock:5,per_member_limit:null,valid_days:30,on_sale:true,store_ids:['test_store','cq_store']};
+    const crossBody={distributor_id:'test_dist',name:'两地换购',kind:'service',points:'300',cash_required:'39',stock:5,per_member_limit:null,valid_days:30,on_sale:true,store_ids:['test_store','cq_store']};
     const saveCross=(body,role='boss')=>fetch(staffUrl+'/rewards',{method:'POST',headers:{'Content-Type':'application/json','X-Test-Role':role},body:JSON.stringify(body)});
     assert.equal((await saveCross(crossBody,'admin')).status,403);
     assert.equal((await saveCross({...crossBody,store_ids:['missing_store']})).status,400);
@@ -250,7 +252,7 @@ test('customer operations on isolated MySQL: races, ownership, returns, rollback
     const crossCode=S.token('redeem',crossExchange.id);
     await assert.rejects(V.redeem(crossCode,'cq_other',cqStaff,true,crossExchange.id),/不适用于本店/);
     await assert.rejects(V.redeem(crossCode,'cq_store',employee,true,crossExchange.id),/无权/);
-    const crossRedeemed=await V.redeem(crossCode,'cq_store',cqStaff,true,crossExchange.id,{cash_confirmed:true,cash_received:'39',receipt_reference:'cq-sale-001'});
+    const crossRedeemed=await V.redeem(crossCode,'cq_store',cqStaff,true,crossExchange.id,{cash_confirmed:true,cash_received:'39',payment_method_id:'test_cash',receipt_reference:'cq-sale-001'});
     assert.equal(crossRedeemed.redemption.store_id,'cq_store');
     assert.equal(crossRedeemed.redemption.distributor_id,'test_dist');
     assert.equal((await M.Account.findOne({where:{member_id:crossMember.id,distributor_id:'test_dist'}})).balance,'700');

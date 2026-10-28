@@ -286,7 +286,7 @@
               </template>
             </el-table-column>
             <el-table-column label="业务类型" width="100">
-              <template #default="{ row }"><el-tag :type="row.entryType === 'return' ? 'danger' : 'success'">{{ row.entryType === 'return' ? '退单冲回' : '销售' }}</el-tag></template>
+              <template #default="{ row }"><el-tag :type="row.entryType === 'return' ? 'danger' : 'success'">{{ row.entryType === 'return' ? '退单冲回' : row.entryType === 'reward_redemption' ? '积分兑换核销' : '销售' }}</el-tag></template>
             </el-table-column>
             <el-table-column prop="orderNo" label="销售/退单号" width="180" />
             <el-table-column prop="sourceOrderNo" label="关联原销售单" width="180" />
@@ -332,8 +332,9 @@
             </el-table-column>
             <el-table-column label="操作" width="155" fixed="right">
               <template #default="{ row }">
-                <el-button link type="primary" @click="openAdjustmentApply(row)">申请业务纠错</el-button>
-                <el-button link @click="openOrderAdjustments(row)">记录</el-button>
+                <el-button v-if="row.entryType !== 'reward_redemption'" link type="primary" @click="openAdjustmentApply(row)">申请业务纠错</el-button>
+                <el-button v-if="row.entryType !== 'reward_redemption'" link @click="openOrderAdjustments(row)">记录</el-button>
+                <span v-if="row.entryType === 'reward_redemption'">核销时确认</span>
               </template>
             </el-table-column>
           </el-table>

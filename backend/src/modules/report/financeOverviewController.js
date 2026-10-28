@@ -424,8 +424,10 @@ async function getFinanceOverview(ctx) {
   const summary = summarizeTrend(trendRows);
   const profitVisible = canViewProfit(user);
   const productGrossProfit = profitVisible ? roundMoney(productSettlement.realizedGrossProfitAmount ?? productSettlement.grossProfitAmount) : null;
+  const rewardOperations = await require('../customerOps/profitEvents').operations(filters, ranges.current);
+  const operationsGrossProfit = profitVisible ? rewardOperations.operationsGrossProfit : null;
   const combinedGrossProfit = profitVisible && summary.salesAmount !== null
-    ? roundMoney(summary.grossProfit + productGrossProfit)
+    ? roundMoney(summary.grossProfit + productGrossProfit + operationsGrossProfit)
     : null;
   const combinedGrossMargin = profitVisible && summary.salesAmount
     ? Number((combinedGrossProfit / summary.salesAmount * 100).toFixed(2))
@@ -444,6 +446,8 @@ async function getFinanceOverview(ctx) {
       grossMargin: profitVisible && summary.salesAmount ? Number((summary.grossProfit / summary.salesAmount * 100).toFixed(2)) : null,
       salesGrossProfit: profitVisible ? roundMoney(summary.grossProfit) : null,
       salesGrossMargin: profitVisible && summary.salesAmount ? Number(((summary.grossProfit / summary.salesAmount) * 100).toFixed(2)) : null,
+      operationsGrossProfit,
+      companyGrossProfit: combinedGrossProfit,
       productGrossProfit,
       productGrossMargin: profitVisible && productSettlement.productPricingAmount
         ? Number(((productGrossProfit / productSettlement.productPricingAmount) * 100).toFixed(2))

@@ -6,6 +6,7 @@ const V = require('./service');
 const W = require('./wechat');
 const P = require('./rewardPolicy');
 const RS = require('./rewardStores');
+const F = require('./fulfillment');
 const { Store, Distributor, Product, Order } = require('../../models');
 const { recordBusinessAction } = require('../../utils/businessActionLog');
 const { getSignedCloudFileUrl, validateCloudFileId } = require('../../utils/cloudStorage');
@@ -76,7 +77,7 @@ customer.get('/stores', async ctx => {
   const dealers = await Distributor.findAll({ where: { distributor_id: [...new Set(rows.map(r => r.distributor_id))], status: 1 }, attributes: ['distributor_id', 'name'] });
   ctx.body = rows.filter(r => dealers.some(d => d.distributor_id === r.distributor_id)).map(r => ({ ...r.toJSON(), distributor_name: dealers.find(d => d.distributor_id === r.distributor_id).name }));
 });
-async function rewardStates(rows, memberId) {
+async function rewardStates(rows, memberId, storeId) {
   if (!rows.length) return [];
   const ids = rows.map(r => r.id);
   const [accounts, exchanges, links] = await Promise.all([
@@ -86,6 +87,12 @@ async function rewardStates(rows, memberId) {
   ]);
   const stores = await RS.activeStores(links.map(l => l.store_id));
   const balance = accounts.reduce((sum, account) => sum + BigInt(account.balance || 0), 0n);
+  const stock = await F.catalogueStock(rows, stores.map(s => s.store_id));
+  for (const row of rows) if (F.physical(row)) {
+    const itemStores = stores.filter(s => links.some(l => l.reward_id === row.id && l.store_id === s.store_id));
+    const counts = itemStores.filter(s => !storeId || s.store_id === storeId).map(s => stock.get(row.id)?.get(s.store_id) || 0);
+    row.stock = counts.reduce((sum, count) => sum + count, 0);
+  }
   const result = rows.map(row => P.dto(row, P.availability(row,
     String(balance),
     exchanges.filter(e => e.reward_id === row.id).length,
@@ -103,7 +110,7 @@ customer.get('/rewards', async ctx => {
     ...(type ? { kind: type === 'product' ? ['gift', 'product'] : type } : {}),
     ...(ctx.query.distributor_id ? { distributor_id: ctx.query.distributor_id } : {}) } });
   const keyword = String(ctx.query.keyword || '').trim().slice(0, 100).toLowerCase();
-  const sorted = (await rewardStates(rows, ctx.state.member.id)).filter(r => !keyword || `${r.name} ${r.description || ''}`.toLowerCase().includes(keyword)).sort(P.compare);
+  const sorted = (await rewardStates(rows, ctx.state.member.id, ctx.query.store_id)).filter(r => !keyword || `${r.name} ${r.description || ''}`.toLowerCase().includes(keyword)).sort(P.compare);
   const { limit, offset, page } = pagination(ctx);
   ctx.body = { list: sorted.slice(offset, offset + limit), total: sorted.length, page, pageSize: limit };
 });
@@ -111,8 +118,11 @@ customer.get('/rewards/:id', async ctx => {
   const item = await M.Reward.findOne({ where: { id: ctx.params.id, on_sale: true } });
   if (!item) S.fail(404, '权益不存在');
   const links = await M.RewardStore.findAll({ where: { reward_id: item.id } });
-  const stores = (await RS.activeStores(links.map(l => l.store_id))).map(s => ({ store_id: s.store_id, distributor_id: s.distributor_id, name: s.name, address: s.address }));
-  ctx.body = { ...(await rewardStates([item], ctx.state.member.id))[0], stores, applicable_store: stores };
+  const active = await RS.activeStores(links.map(l => l.store_id));
+  const stock = await F.catalogueStock([item], active.map(s => s.store_id));
+  const stores = active.map(s => ({ store_id: s.store_id, distributor_id: s.distributor_id, name: s.name, address: s.address,
+    available_quantity: F.physical(item) ? stock.get(item.id)?.get(s.store_id) || 0 : null }));
+  ctx.body = { ...(await rewardStates([item], ctx.state.member.id, ctx.query.store_id))[0], stores, applicable_store: stores };
 });
 function exchangeDto(row) {
   const { code_hash, request_key, ...data } = row.toJSON();
@@ -122,7 +132,7 @@ customer.post('/rewards/:id/exchange', async ctx => {
   const quote = ctx.request.body.expected_points;
   if (typeof quote !== 'string' || !/^[1-9]\d{0,11}$/.test(quote)) S.fail(400, '请先加载权益详情再兑换');
   // A client quote is only a precondition, never the amount charged.
-  ctx.body = exchangeDto(await V.exchange(ctx.state.member, ctx.params.id, ctx.get('Idempotency-Key'), quote, ctx.request.body.expected_cash));
+  ctx.body = exchangeDto(await V.exchange(ctx.state.member, ctx.params.id, ctx.get('Idempotency-Key'), quote, ctx.request.body.expected_cash, ctx.request.body.store_id));
 });
 customer.get('/member/exchanges', async ctx => {
   const where = { member_id: ctx.state.member.id };
@@ -141,7 +151,7 @@ customer.get('/member/coupons', async ctx => {
 });
 customer.get('/member/rules', async ctx => {
   ctx.body = { earning: '消费10元获得1积分，不足1积分向下取整', spending: '10积分可抵1元',
-    notes: ['积分按经销商分别使用。', '计分金额沿用订单优惠后客户负担金额，排除政策补贴，定金不重复计分。', '活动赠送积分单独记录，不改变基础消费积分比例。', '历史已领取订单保留原积分规则。', '抵扣请到店由工作人员办理；可用范围以门店规则为准。', '兑换权益过期不退积分、不自动补库存。'] };
+    notes: ['积分按经销商分别使用。', '计分金额沿用订单优惠后客户负担金额，排除政策补贴，定金不重复计分。', '活动赠送积分单独记录，不改变基础消费积分比例。', '历史已领取订单保留原积分规则。', '抵扣请到店由工作人员办理；可用范围以门店规则为准。', '兑换权益过期不退积分，实物库存预占自动释放。'] };
 });
 customer.get('/exchange/:id', async ctx => {
   const row = await M.Exchange.findOne({ where: { id: ctx.params.id, member_id: ctx.state.member.id } });
@@ -196,6 +206,29 @@ staff.use(async (ctx, next) => {
   }
   await next();
 });
+// Explicit admin review for pre-migration vouchers; never infer an inventory SKU by name.
+staff.post('/exchange/:id/bind-stock', async ctx => {
+  ctx.body = await V.transaction(async transaction => {
+    const row = await M.Exchange.findByPk(ctx.params.id, V.lock(transaction));
+    if (!row) S.fail(404, '兑换凭证不存在');
+    S.distributor(ctx.state.user, row.distributor_id);
+    const store = (await RS.activeStores([ctx.request.body.store_id], transaction))[0];
+    if (!store) S.fail(400, '领取门店不可用');
+    S.store(ctx.state.user, store);
+    if (!RS.accepts(row.snapshot, store, row.distributor_id)) S.fail(403, '该权益不适用于本店');
+    if (row.status !== 'pending' || row.expires_at <= new Date() || !F.physical(row.snapshot)) S.fail(409, '仅可处理有效的待核销实物凭证');
+    if (row.snapshot.product_id) S.fail(409, '此凭证已有库存关联，不允许覆盖');
+    const reward = await M.Reward.findByPk(row.reward_id, V.lock(transaction));
+    if (!reward?.product_id) S.fail(409, '请先在积分商品中核对并配置关联ERP商品');
+    const before = row.snapshot;
+    await row.update({ snapshot: { ...before, product_id: reward.product_id, units_per_reward: reward.units_per_reward,
+      pickup_store_id: store.store_id, storeIds: [store.store_id], stores: [store.toJSON()] } }, { transaction });
+    await F.reserve({ kind: before.kind, product_id: reward.product_id, units_per_reward: reward.units_per_reward }, row, store.store_id, transaction);
+    await recordBusinessAction({ businessType: 'customer_exchange', businessId: row.id, action: 'bind_inventory', user: ctx.state.user,
+      detail: { before, productId: reward.product_id, units: reward.units_per_reward, storeId: store.store_id }, transaction });
+    return { bound: true };
+  });
+});
 staff.get('/members', async ctx => {
   const distributor_id = S.distributor(ctx.state.user, ctx.query.distributor_id);
   const data = await list(M.Account, { distributor_id }, ctx);
@@ -237,6 +270,13 @@ async function saveReward(ctx) {
   const b = ctx.request.body, distributor_id = S.distributor(ctx.state.user, b.distributor_id);
   if (!b.name || String(b.name).length > 128 || !['gift', 'product', 'service', 'coupon'].includes(b.kind) || !/^[1-9]\d{0,11}$/.test(String(b.points))) S.fail(400, '名称、类型或所需积分无效');
   const extra = P.validate(b);
+  if (F.physical(b)) {
+    const product = await Product.findOne({ where: { product_id: String(b.product_id || ''), is_deleted: 0 } });
+    if (!product) S.fail(400, '实物礼品必须关联有效ERP商品');
+    if (!Number.isInteger(b.units_per_reward) || b.units_per_reward < 1 || b.units_per_reward > 1000) S.fail(400, '每份出库数量应为1至1000的整数');
+    Object.assign(extra, { product_id: product.product_id, units_per_reward: b.units_per_reward });
+    b.stock = null;
+  } else Object.assign(extra, { product_id: null, units_per_reward: 1 });
   if (!Number.isInteger(b.valid_days) || b.valid_days < 1 || b.valid_days > 3650) S.fail(400, '有效天数应为1到3650');
   for (const key of ['stock', 'per_member_limit']) if (b[key] !== null && (!Number.isInteger(b[key]) || b[key] < 0)) S.fail(400, '数量应为非负整数或留空');
   if (b.image) {

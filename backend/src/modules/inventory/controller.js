@@ -4715,6 +4715,25 @@ async function transfer(ctx) {
   }
 }
 
+function buildTransferProductKeywordCondition(value) {
+  const keyword = String(value || '').trim();
+  if (!keyword) return null;
+  const pattern = sequelize.escape(`%${keyword.replace(/[!%_]/g, '!$&')}%`);
+  return sequelize.literal(`EXISTS (
+    SELECT 1 FROM T_TRANSFER_ITEM search_item
+    LEFT JOIN T_PRODUCT search_product ON search_product.PRODUCT_ID = search_item.PRODUCT_ID
+    WHERE search_item.TRANSFER_ID = Transfer.TRANSFER_ID AND search_item.QUANTITY > 0
+      AND (search_product.NAME LIKE ${pattern} ESCAPE '!'
+        OR search_product.PRODUCT_CODE LIKE ${pattern} ESCAPE '!'
+        OR search_product.MANUFACTURER_CODE LIKE ${pattern} ESCAPE '!'
+        OR search_item.PN_CODE LIKE ${pattern} ESCAPE '!'
+        OR EXISTS (SELECT 1 FROM T_PRODUCT_PN search_pn
+          WHERE search_pn.PRODUCT_ID = search_item.PRODUCT_ID
+            AND search_pn.STATUS = 1 AND search_pn.IS_DELETED = 0
+            AND search_pn.PN_CODE LIKE ${pattern} ESCAPE '!'))
+  )`);
+}
+
 async function getTransferList(ctx) {
   try {
     const {
@@ -4722,6 +4741,7 @@ async function getTransferList(ctx) {
       fromStoreId,
       toStoreId,
       transferNo,
+      productKeyword,
       startDate,
       endDate,
       history,
@@ -4751,6 +4771,8 @@ async function getTransferList(ctx) {
     if (fromStoreId) where[Op.and].push({ from_store_id: fromStoreId });
     if (toStoreId) where[Op.and].push({ to_store_id: toStoreId });
     if (transferNo) where[Op.and].push({ transfer_no: { [Op.like]: `%${String(transferNo).trim()}%` } });
+    const productCondition = buildTransferProductKeywordCondition(productKeyword);
+    if (productCondition) where[Op.and].push(productCondition);
     if (startDate || endDate) {
       const createTime = {};
       if (startDate) createTime[Op.gte] = `${String(startDate).slice(0, 10)} 00:00:00`;
@@ -4760,6 +4782,7 @@ async function getTransferList(ctx) {
 
     const { count, rows } = await Transfer.findAndCountAll({
       where,
+      distinct: true,
       include: [
         { model: Store, as: 'FromStore', attributes: ['store_id', 'name'] },
         { model: Store, as: 'ToStore', attributes: ['store_id', 'name'] },
@@ -6809,6 +6832,7 @@ module.exports = {
   adjustProductLocation,
   snTrace,
   _test: {
+    buildTransferProductKeywordCondition,
     mergeSnSalesStockBreakdown,
     calculateStockAgeDays,
     resolveOriginalInboundTime,

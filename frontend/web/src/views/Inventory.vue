@@ -700,8 +700,11 @@
           <div class="transfer-section mt-30">
             <div class="section-title">历史调拨记录</div>
             <div class="filter-bar">
-              <el-input v-model="transferHistoryQuery.transferNo" placeholder="调拨单号" clearable style="width: 180px" @keyup.enter="loadTransferHistory" />
-              <el-select v-model="transferHistoryQuery.status" placeholder="全部状态" clearable style="width: 130px" @change="loadTransferHistory">
+              <el-input v-model="transferHistoryQuery.transferNo" placeholder="调拨单号" clearable style="width: 180px" @keyup.enter="searchTransferHistory" />
+              <el-select v-model="transferHistoryQuery.fromStoreId" placeholder="出库门店" filterable clearable style="width: 170px" @change="searchTransferHistory"><el-option v-for="s in transferStoreOptions" :key="s.store_id" :label="s.name" :value="s.store_id" /></el-select>
+              <el-select v-model="transferHistoryQuery.toStoreId" placeholder="接收门店" filterable clearable style="width: 170px" @change="searchTransferHistory"><el-option v-for="s in transferStoreOptions" :key="s.store_id" :label="s.name" :value="s.store_id" /></el-select>
+              <el-input v-model="transferHistoryQuery.productKeyword" placeholder="商品名称 / 编码 / 厂商编码" clearable style="width: 260px" @keyup.enter="searchTransferHistory" />
+              <el-select v-model="transferHistoryQuery.status" placeholder="全部状态" clearable style="width: 130px" @change="searchTransferHistory">
                 <el-option label="全部状态" value="" />
                 <el-option label="待出库" value="pending" />
                 <el-option label="发货中" value="shipping" />
@@ -713,7 +716,7 @@
               </el-select>
               <el-date-picker v-model="transferHistoryQuery.startDate" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" clearable style="width: 150px" />
               <el-date-picker v-model="transferHistoryQuery.endDate" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" clearable style="width: 150px" />
-              <el-button type="primary" @click="loadTransferHistory">查询</el-button>
+              <el-button type="primary" @click="searchTransferHistory">查询</el-button>
               <el-button @click="resetTransferHistoryQuery">重置</el-button>
             </div>
             <el-table :data="transferHistoryList" stripe border v-loading="transferHistoryLoading">
@@ -2254,6 +2257,9 @@ const transferHistoryQuery = reactive({
   page: 1,
   pageSize: 20,
   transferNo: '',
+  fromStoreId: '',
+  toStoreId: '',
+  productKeyword: '',
   status: '',
   startDate: '',
   endDate: ''
@@ -4276,6 +4282,11 @@ const loadTransferLists = async () => {
   }
 }
 
+const searchTransferHistory = () => {
+  transferHistoryQuery.page = 1
+  return loadTransferHistory()
+}
+
 const loadTransferHistory = async () => {
   transferHistoryLoading.value = true
   try {
@@ -4284,6 +4295,9 @@ const loadTransferHistory = async () => {
       page: transferHistoryQuery.page,
       pageSize: transferHistoryQuery.pageSize,
       transferNo: transferHistoryQuery.transferNo || undefined,
+      fromStoreId: transferHistoryQuery.fromStoreId || undefined,
+      toStoreId: transferHistoryQuery.toStoreId || undefined,
+      productKeyword: transferHistoryQuery.productKeyword.trim() || undefined,
       status: transferHistoryQuery.status || undefined,
       startDate: transferHistoryQuery.startDate || undefined,
       endDate: transferHistoryQuery.endDate || undefined
@@ -4304,6 +4318,9 @@ const resetTransferHistoryQuery = () => {
     page: 1,
     pageSize: 20,
     transferNo: '',
+    fromStoreId: '',
+    toStoreId: '',
+    productKeyword: '',
     status: '',
     startDate: '',
     endDate: ''

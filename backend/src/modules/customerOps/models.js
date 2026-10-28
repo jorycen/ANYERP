@@ -47,6 +47,7 @@ const Reward = define('T_REWARD_ITEM', {
   per_member_limit: { type: D.INTEGER, allowNull: true }, valid_days: { type: D.INTEGER, allowNull: false },
   instructions: D.TEXT, revision: { type: D.INTEGER, allowNull: false, defaultValue: 0 },
   on_sale: { type: D.BOOLEAN, defaultValue: false, allowNull: false },
+  product_id: text(32), units_per_reward: { type: D.INTEGER, allowNull: false, defaultValue: 1 },
   description: D.TEXT, original_price: { type: D.DECIMAL(12, 2), defaultValue: '0.00', allowNull: false },
   cash_required: { type: D.DECIMAL(12, 2), defaultValue: '0.00', allowNull: false },
   sort: { type: D.INTEGER, defaultValue: 0, allowNull: false },
@@ -68,7 +69,11 @@ const Redemption = define('T_REWARD_REDEMPTION', {
   exchange_id: ref(), member_id: ref(), distributor_id: ref(), store_id: ref(),
   staff_id: { type: D.BIGINT, allowNull: false },
   cash_received: { type: D.DECIMAL(12, 2), defaultValue: '0.00', allowNull: false },
-  receipt_reference: text(128), coupon_check: D.JSON
+  receipt_reference: text(128), coupon_check: D.JSON,
+  payment_method_id: text(64), account_id: text(64), fund_transaction_id: text(64), outbound_id: text(32),
+  cost_amount: { type: D.DECIMAL(12, 2), allowNull: true },
+  sales_profit: { type: D.DECIMAL(12, 2), allowNull: true },
+  operations_profit: { type: D.DECIMAL(12, 2), allowNull: true }
 }, [unique('exchange_id')]);
 const Claim = define('T_ORDER_MEMBER_CLAIM', {
   order_id: ref(), store_id: ref(), distributor_id: ref(),
@@ -80,4 +85,8 @@ const Binding = define('T_ORDER_MEMBER_BINDING', {
   order_id: ref(), member_id: ref(), account_id: ref(), awarded: integer(), reversed: integer(),
   snapshot: { type: D.JSON, allowNull: false }
 }, [unique('order_id')]);
-module.exports = { Member, Identity, Account, Ledger, Rule, Reward, RewardStore, Exchange, Redemption, Claim, Binding };
+const Reservation = define('T_REWARD_STOCK_RESERVATION', {
+  exchange_id: ref(), inventory_id: ref(), product_id: ref(), store_id: ref(), quantity: { type: D.INTEGER, allowNull: false },
+  expires_at: { type: D.DATE, allowNull: false }, status: { type: D.STRING(16), allowNull: false, defaultValue: 'reserved' }
+}, [unique('exchange_id', 'inventory_id'), { fields: ['inventory_id', 'status', 'expires_at'] }]);
+module.exports = { Reservation, Member, Identity, Account, Ledger, Rule, Reward, RewardStore, Exchange, Redemption, Claim, Binding };
