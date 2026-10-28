@@ -21,8 +21,10 @@ test('reward receipt, stock holds, profit, races, rollback and expiry', { skip: 
     const V = require('../src/modules/customerOps/service'), F = require('../src/modules/customerOps/fulfillment'), S = require('../src/modules/customerOps/security');
     for (const model of Object.values(M)) await model.sync();
     await DB.BusinessActionLog.sync();
-    await require('../scripts/migrate-reward-fulfillment').migrate(true);
-    await require('../scripts/migrate-reward-fulfillment').migrate(true);
+    // Simulate the previously deployed base schema missing the new profit column.
+    await sequelize.getQueryInterface().removeColumn(M.Redemption.tableName, 'sales_profit');
+    await require('../src/modules/customerOps/schema').ensureRewardFulfillmentSchema();
+    await require('../src/modules/customerOps/schema').ensureRewardFulfillmentSchema();
     await DB.Distributor.create({distributor_id:'d',name:'dealer',status:1,is_deleted:0});
     await DB.Store.bulkCreate([{store_id:'a',distributor_id:'d',name:'A',status:1,is_deleted:0},{store_id:'b',distributor_id:'d',name:'B',status:1,is_deleted:0}]);
     await DB.Staff.create({staff_id:1,distributor_id:'d',store_id:'a',name:'Redeemer',phone:'13000000001'});

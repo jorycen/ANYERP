@@ -287,6 +287,7 @@ async function ensureApprovalSchemaCompatibility() {
 }
 
 async function runSchemaMigrations() {
+  await require('../modules/customerOps/schema').ensureRewardFulfillmentSchema();
   await ensureProfitAdjustmentCorrectionSchema();
   await ensureExpenseRemarkSchema();
   await ensureExpenseRecipientSchema();
@@ -1486,6 +1487,7 @@ async function ensureExpenseAccountingSchema() {
 }
 
 async function runMigrations() {
+  await require('../modules/customerOps/schema').ensureRewardFulfillmentSchema();
   await ensureCriticalSchemaCompatibility();
   await ensureProductDimensionSchema();
   await ensureSerializedInventorySchema();
