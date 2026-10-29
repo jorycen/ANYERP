@@ -304,12 +304,27 @@
             <el-table-column prop="name" label="商品名称" min-width="150" />
             <el-table-column prop="category_name" label="分类" width="150" show-overflow-tooltip />
             <el-table-column prop="unit" label="单位" width="60" />
+            <el-table-column label="产品定价" width="140">
+              <template #default="{ row }">
+                <span v-if="!row._editing">¥{{ formatNum(row.standard_price) }}</span>
+                <el-input v-else v-model="row._stdPrice" size="small" style="width: 110px" />
+              </template>
+            </el-table-column>
             <el-table-column label="库存成本" width="130">
               <template #default="{ row }">
                 <span class="cost-price">¥{{ formatNum(row.cost_price) }}</span>
                 <el-tooltip content="基于入库先进先出加权平均计算，不可修改" placement="top">
                   <el-icon style="margin-left: 4px; color: #909399;"><InfoFilled /></el-icon>
                 </el-tooltip>
+              </template>
+            </el-table-column>
+            <el-table-column label="产品结算价" min-width="160">
+              <template #default="{ row }">
+                <span v-if="!row.policy_settlement_prices?.length">—</span>
+                <div v-for="policy in row.policy_settlement_prices || []" :key="policy.pn">
+                  <span v-if="row.policy_settlement_prices.length > 1">{{ policy.pn }}：</span>
+                  {{ policy.settlement_price == null ? '—' : `¥${formatNum(policy.settlement_price)}` }}
+                </div>
               </template>
             </el-table-column>
             <el-table-column label="锁定成本" width="105" align="center">
@@ -338,12 +353,6 @@
             <el-table-column label="不含税库存成本" width="155">
               <template #default="{ row }">
                 <span class="cost-price">¥{{ formatNum(row._inputTaxDeductible ? Number(row.cost_price || 0) / (1 + Number(row._inputTaxRate || 0) / 100) : row.cost_price) }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="产品定价" width="140">
-              <template #default="{ row }">
-                <span v-if="!row._editing">¥{{ formatNum(row.standard_price) }}</span>
-                <el-input v-else v-model="row._stdPrice" size="small" style="width: 110px" />
               </template>
             </el-table-column>
             <el-table-column label="零售价" width="140">

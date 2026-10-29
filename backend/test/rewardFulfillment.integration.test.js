@@ -10,7 +10,7 @@ test('reward receipt, stock holds, profit, races, rollback and expiry', { skip: 
   let sequelize;
   try {
     await control.query(`CREATE DATABASE \`${name}\` CHARACTER SET utf8mb4`);
-    for (const table of ['T_STORE','T_STAFF','T_DISTRIBUTOR','T_PRODUCT','T_PRODUCT_SN','T_INVENTORY','T_DICT_PAYMENT_METHOD','T_DICT_PAYMENT_METHOD_STORE','T_SETTLEMENT_ACCOUNT','T_SETTLEMENT_ACCOUNT_TRANSACTION','T_OUTBOUND','T_OUTBOUND_ITEM','T_INBOUND','T_INBOUND_ITEM','T_NON_PURCHASE_RECEIPT','T_INVENTORY_BATCH_APPLICATION','T_INVENTORY_BATCH_APPLICATION_ITEM']) {
+    for (const table of ['T_STORE','T_STAFF','T_DISTRIBUTOR','T_PRODUCT','T_PRODUCT_SN','T_LOCATION','T_SN_LOG','T_PURCHASE_REQUEST','T_PURCHASE_REQUEST_ITEM','T_INVENTORY','T_DICT_PAYMENT_METHOD','T_DICT_PAYMENT_METHOD_STORE','T_SETTLEMENT_ACCOUNT','T_SETTLEMENT_ACCOUNT_TRANSACTION','T_OUTBOUND','T_OUTBOUND_ITEM','T_INBOUND','T_INBOUND_ITEM','T_NON_PURCHASE_RECEIPT','T_INVENTORY_BATCH_APPLICATION','T_INVENTORY_BATCH_APPLICATION_ITEM']) {
       await control.query(`CREATE TABLE \`${name}\`.\`${table}\` LIKE \`${source}\`.\`${table}\``);
     }
     config.database.database = name;
@@ -95,8 +95,9 @@ test('reward receipt, stock holds, profit, races, rollback and expiry', { skip: 
     assert.equal((await M.Reservation.findOne({where:{exchange_id:unknown.id}})).status,'reserved');
     // Serialized gifts use the scanned unit's actual purchase cost and persist traceable SN issue lines.
     await DB.Product.create({product_id:'serial',product_code:'serial',name:'SN gift',need_sn:1,is_deleted:0});
-    await DB.Inventory.create({inventory_id:'serial-inv',product_id:'serial',store_id:'a',location_id:'',normal_qty:1});
-    await DB.ProductSn.create({sn_id:'sn',product_id:'serial',sn_code:'SN-GIFT-001',store_id:'a',location_id:'',inventory_type:'normal_qty',status:'in_stock',inbound_price:'10.00',is_deleted:0});
+    await DB.Location.create({location_id:'sales-a',store_id:'a',name:'Sales',type:'normal_qty',status:1});
+    await DB.Inventory.create({inventory_id:'serial-inv',product_id:'serial',store_id:'a',location_id:'sales-a',normal_qty:1});
+    await DB.ProductSn.create({sn_id:'sn',product_id:'serial',sn_code:'SN-GIFT-001',store_id:'a',location_id:'sales-a',inventory_type:'normal_qty',status:'in_stock',inbound_price:'10.00',is_deleted:0});
     await reward.update({product_id:'serial',cash_required:'0.01'});
     const serial=await V.exchange(member,reward.id,'serial_gift_key01','10','0.01','a');
     await assert.rejects(V.redeem(S.token('redeem',serial.id),'a',user,true,serial.id,{...evidence,cash_received:'0.01',sn_codes:['wrong']}), /SN/);

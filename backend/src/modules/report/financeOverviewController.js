@@ -423,17 +423,20 @@ async function getFinanceOverview(ctx) {
   ]);
   const summary = summarizeTrend(trendRows);
   const profitVisible = canViewProfit(user);
-  const productGrossProfit = profitVisible ? roundMoney(productSettlement.realizedGrossProfitAmount ?? productSettlement.grossProfitAmount) : null;
-  const rewardOperations = await require('../customerOps/profitEvents').operations(filters, ranges.current);
-  const operationsGrossProfit = profitVisible ? rewardOperations.operationsGrossProfit : null;
+  const companyReport = profitVisible ? await require('./financialProfitController').queryFinancialProfit({
+    storeIds, startDate: period.startDate, endDate: period.endDate
+  }) : null;
+  const company = companyReport?.summary;
+  const productGrossProfit = profitVisible ? company.productGrossProfit : null;
+  const operationsGrossProfit = profitVisible ? company.operationsGrossProfit : null;
   const combinedGrossProfit = profitVisible && summary.salesAmount !== null
-    ? roundMoney(summary.grossProfit + productGrossProfit + operationsGrossProfit)
+    ? company.companyGrossProfit
     : null;
-  const combinedGrossMargin = profitVisible && summary.salesAmount
+  const combinedGrossMargin = profitVisible && combinedGrossProfit !== null && summary.salesAmount
     ? Number((combinedGrossProfit / summary.salesAmount * 100).toFixed(2))
     : null;
-  const storeOperatingProfit = profitVisible && summary.salesAmount !== null
-    ? roundMoney(summary.grossProfit - expenseSummary.amount)
+  const storeOperatingProfit = profitVisible && company.salesGrossProfit !== null
+    ? roundMoney(company.salesGrossProfit - expenseSummary.amount)
     : null;
 
   ctx.body = {
@@ -442,23 +445,24 @@ async function getFinanceOverview(ctx) {
       period,
       regionId,
       revenue: roundMoney(summary.salesAmount),
-      grossProfit: profitVisible ? roundMoney(summary.grossProfit) : null,
-      grossMargin: profitVisible && summary.salesAmount ? Number((summary.grossProfit / summary.salesAmount * 100).toFixed(2)) : null,
-      salesGrossProfit: profitVisible ? roundMoney(summary.grossProfit) : null,
-      salesGrossMargin: profitVisible && summary.salesAmount ? Number(((summary.grossProfit / summary.salesAmount) * 100).toFixed(2)) : null,
+      grossProfit: profitVisible ? company.salesGrossProfit : null,
+      grossMargin: profitVisible && company.salesGrossProfit !== null && summary.salesAmount ? Number((company.salesGrossProfit / summary.salesAmount * 100).toFixed(2)) : null,
+      salesGrossProfit: profitVisible ? company.salesGrossProfit : null,
+      salesGrossMargin: profitVisible && company.salesGrossProfit !== null && summary.salesAmount ? Number(((company.salesGrossProfit / summary.salesAmount) * 100).toFixed(2)) : null,
+      companyProfitPendingCount: company?.profitPendingCount ?? null,
       operationsGrossProfit,
       companyGrossProfit: combinedGrossProfit,
       productGrossProfit,
-      productGrossMargin: profitVisible && productSettlement.productPricingAmount
+      productGrossMargin: profitVisible && productGrossProfit !== null && productSettlement.productPricingAmount
         ? Number(((productGrossProfit / productSettlement.productPricingAmount) * 100).toFixed(2))
         : null,
       combinedGrossProfit,
-      grossProfitSource: 'OPERATING_FROZEN_EVENTS_V1',
+      grossProfitSource: 'COMPANY_OPERATING_EVENTS_V1',
       combinedGrossMargin,
       operatingExpense: profitVisible ? expenseSummary : null,
       storeOperatingProfit,
       productOperatingExpense: profitVisible ? roundMoney(expenseSummary.productAmount) : null,
-      productOperatingProfit: profitVisible ? roundMoney(productGrossProfit - roundMoney(expenseSummary.productAmount)) : null,
+      productOperatingProfit: profitVisible && productGrossProfit !== null ? roundMoney(productGrossProfit - roundMoney(expenseSummary.productAmount)) : null,
       productSettlement: {
         productPricingAmount: productSettlement.productPricingAmount,
         purchaseCostAmount: productSettlement.purchaseCostAmount,

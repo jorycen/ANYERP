@@ -1,3 +1,4 @@
+const { assertSnEligible, inspectSnEligibility } = require('../../utils/snEligibility');
 // One transaction owns the receipt, stock issue, frozen cost and redemption.
 const { Op, QueryTypes } = require('sequelize');
 const crypto = require('crypto');
@@ -20,8 +21,12 @@ async function availability(item, storeId, transaction, locked = false) {
   let available = 0;
   for (const row of rows) {
     let total = qty(row);
-    if (product.need_sn) total = Math.min(total, await DB.ProductSn.count({ where: { product_id: item.product_id, store_id: storeId,
-      location_id: row.location_id, inventory_type: 'normal_qty', status: 'in_stock', is_deleted: 0 }, transaction }));
+    if (product.need_sn) {
+      const sns = await DB.ProductSn.findAll({ where: { product_id: item.product_id, store_id: storeId,
+        location_id: row.location_id, inventory_type: 'normal_qty', status: 'in_stock', is_deleted: 0 }, transaction });
+      const states = await inspectSnEligibility(sns, transaction);
+      total = Math.min(total, sns.filter(sn => { const state = states.get(String(sn.sn_id)); return state?.locationValid && state.location.type === 'normal_qty' && !state.restricted; }).length);
+    }
     available += Math.max(0, total - held.filter(h => h.inventory_id === row.inventory_id).reduce((s, h) => s + h.quantity, 0));
   }
   return Math.floor(available / item.units_per_reward);
@@ -39,14 +44,16 @@ async function catalogueStock(items, storeIds) {
   const serialIds = products.filter(p => p.need_sn).map(p => p.product_id);
   const [holds, serials] = await Promise.all([
     M.Reservation.findAll({ where: { inventory_id: inventory.map(i => i.inventory_id), status: 'reserved', expires_at: { [Op.gt]: new Date() } } }),
-    serialIds.length ? DB.ProductSn.findAll({ where: { product_id: serialIds, store_id: storeIds, status: 'in_stock', inventory_type: 'normal_qty', is_deleted: 0 }, attributes: ['product_id','store_id','location_id'] }) : []
+    serialIds.length ? DB.ProductSn.findAll({ where: { product_id: serialIds, store_id: storeIds, status: 'in_stock', inventory_type: 'normal_qty', is_deleted: 0 }, attributes: ['sn_id','sn_code','inventory_type','source_type','product_id','store_id','location_id'] }) : []
   ]);
+  const states = await inspectSnEligibility(serials);
+  const eligibleSerials = serials.filter(sn => { const state = states.get(String(sn.sn_id)); return state?.locationValid && state.location.type === 'normal_qty' && !state.restricted; });
   const balances = new Map();
   for (const row of inventory) {
     const product = products.find(p => p.product_id === row.product_id);
     if (!product) continue;
     let total = qty(row);
-    if (product.need_sn) total = Math.min(total, serials.filter(s => s.product_id === row.product_id && s.store_id === row.store_id && s.location_id === row.location_id).length);
+    if (product.need_sn) total = Math.min(total, eligibleSerials.filter(s => s.product_id === row.product_id && s.store_id === row.store_id && s.location_id === row.location_id).length);
     const held = holds.filter(h => h.inventory_id === row.inventory_id).reduce((n, h) => n + h.quantity, 0);
     const key = `${row.product_id}:${row.store_id}`;
     balances.set(key, (balances.get(key) || 0) + Math.max(0, total - held));
@@ -130,6 +137,8 @@ async function fulfill(row, store, user, evidence, transaction) {
           inventory_type: 'normal_qty', status: 'in_stock', is_deleted: 0, sn_code: codes }, transaction, lock: transaction.LOCK.UPDATE });
         if (serials.length !== reservation.quantity) S.fail(400, '请填写交付礼品全部SN，须为预占库位有效销售仓库存');
         for (const sn of serials) {
+          const eligibility = await assertSnEligible(sn, { transaction });
+          if (eligibility.location.type !== 'normal_qty') S.fail(409, '礼品SN必须位于有效销售仓');
           if (sn.inbound_price === null || Number(sn.inbound_price) <= 0) S.fail(409, '礼品SN采购成本待核实');
           cost += cents(sn.inbound_price);
           await sn.update({ status: 'sold', update_time: new Date() }, { transaction });

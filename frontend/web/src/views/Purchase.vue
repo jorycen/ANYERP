@@ -607,6 +607,9 @@
 
       <el-button style="margin-top: 12px" @click="selectAllAdjustmentRows">选择全部可撤商品</el-button>
       <el-table :data="adjustmentRows" stripe border size="small" style="margin-top: 16px;">
+        <el-table-column prop="pn_code" label="PN" min-width="150" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.pn_code || '—' }}</template>
+        </el-table-column>
         <el-table-column prop="product_name" label="商品" min-width="180" show-overflow-tooltip />
         <el-table-column prop="store_name" label="门店" width="120" />
         <el-table-column prop="inbound_no" label="入库单" width="170" />

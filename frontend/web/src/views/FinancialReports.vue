@@ -78,28 +78,40 @@
 
         <el-tab-pane label="利润明细" name="profit">
           <el-alert :title="profitNote" type="info" :closable="false" class="report-alert" />
-          <div class="profit-actions"><span>当前利润明细共 {{ profitTotal.toLocaleString('zh-CN') }} 笔</span><el-button type="success" plain :loading="exportingProfit" @click="exportProfitDetails">导出 Excel</el-button></div>
+          <div class="profit-actions"><span>当前利润明细共 {{ profitTotal.toLocaleString('zh-CN') }} 笔</span><el-button type="success" plain :loading="exportingProfit" @click="exportProfitDetails">导出利润明细 Excel</el-button></div>
           <div class="profit-summary">
+            <div><span>销售端毛利</span><strong>{{ money(profitSummary.salesGrossProfit) }}</strong></div>
+            <div><span>产品端毛利</span><strong>{{ money(profitSummary.productGrossProfit) }}</strong></div>
+            <div><span>运营毛利</span><strong>{{ money(profitSummary.operationsGrossProfit) }}</strong></div>
+            <div><span>公司经营毛利合计</span><strong>{{ money(profitSummary.companyGrossProfit) }}</strong></div>
+            <div><span>毛利待核算笔数</span><strong>{{ profitSummary.profitPendingCount ?? '—' }}</strong></div>
             <div><span>不含税销售收入</span><strong>¥{{ money(profitSummary.netRevenue) }}</strong></div>
-            <div><span>不含税存货成本</span><strong>¥{{ money(profitSummary.bookCost) }}</strong></div>
-            <div><span>财务毛利</span><strong>¥{{ money(profitSummary.grossProfit) }}</strong></div>
+            <div><span>成本完整范围存货成本</span><strong>¥{{ money(profitSummary.bookCost) }}</strong></div>
+            <div><span>成本完整范围财务商品毛利</span><strong>¥{{ money(profitSummary.grossProfit) }}</strong></div>
             <div><span>门店经营利润</span><strong>¥{{ money(profitSummary.operatingProfit) }}</strong></div>
             <div><span>待补成本单数</span><strong>{{ Number(profitSummary.pendingOrderCount || 0) }}</strong></div>
           </div>
           <el-table :data="profitRows" stripe border v-loading="profitLoading" empty-text="当前筛选范围暂无利润明细">
             <el-table-column prop="businessDate" label="日期" width="110" />
-            <el-table-column prop="orderNo" label="销售单号" min-width="175" />
+            <el-table-column prop="entryTypeLabel" label="类型" width="105" />
+            <el-table-column prop="entryNo" label="业务单号" min-width="175" />
             <el-table-column prop="storeName" label="门店" min-width="130" />
             <el-table-column prop="customerName" label="客户" min-width="110" />
+            <el-table-column label="销售端毛利" width="130" align="right"><template #default="{ row }">{{ money(row.salesGrossProfit) }}</template></el-table-column>
+            <el-table-column label="产品端毛利" width="130" align="right"><template #default="{ row }">{{ money(row.productGrossProfit) }}</template></el-table-column>
+            <el-table-column label="运营毛利" width="130" align="right"><template #default="{ row }">{{ money(row.operationsGrossProfit) }}</template></el-table-column>
+            <el-table-column label="公司经营毛利" width="140" align="right"><template #default="{ row }">{{ money(row.companyGrossProfit) }}</template></el-table-column>
             <el-table-column label="含税销售额" width="130" align="right"><template #default="{ row }">¥{{ money(row.grossRevenue) }}</template></el-table-column>
             <el-table-column label="不含税收入" width="135" align="right"><template #default="{ row }">¥{{ money(row.netRevenue) }}</template></el-table-column>
             <el-table-column label="销项税额" width="120" align="right"><template #default="{ row }">¥{{ money(row.outputVat) }}</template></el-table-column>
             <el-table-column label="含税成本" width="130" align="right"><template #default="{ row }">¥{{ money(row.grossCost) }}</template></el-table-column>
             <el-table-column label="可抵扣进项税" width="135" align="right"><template #default="{ row }">¥{{ money(row.deductibleInputVat) }}</template></el-table-column>
             <el-table-column label="不含税成本" width="135" align="right"><template #default="{ row }">¥{{ money(row.bookCost) }}</template></el-table-column>
-            <el-table-column label="经营毛利" width="130" align="right"><template #default="{ row }">{{ row.grossProfit === null ? '—' : `¥${money(row.grossProfit)}` }}</template></el-table-column>
+            <el-table-column label="财务商品毛利" width="140" align="right"><template #default="{ row }">{{ money(row.grossProfit) }}</template></el-table-column>
             <el-table-column label="毛利率" width="105" align="right"><template #default="{ row }">{{ percent(row.grossMargin) }}</template></el-table-column>
-            <el-table-column label="状态" width="110"><template #default="{ row }"><el-tag :type="row.status === 'cost_pending' ? 'warning' : 'success'">{{ row.status === 'cost_pending' ? '待补成本' : '已估算' }}</el-tag></template></el-table-column>
+            <el-table-column label="成本状态" width="140"><template #default="{ row }">{{ ({ confirmed_zero: '已确认零成本', known: '成本已知', pending: '待补成本', not_applicable: '不适用' })[row.costState] || '待核对' }}</template></el-table-column>
+            <el-table-column label="毛利状态" width="110"><template #default="{ row }"><el-tag :type="row.profitStatus === 'pending' ? 'warning' : 'success'">{{ row.profitStatus === 'pending' ? '待核算' : '已核算' }}</el-tag></template></el-table-column>
+            <el-table-column label="待核算原因" min-width="240" show-overflow-tooltip><template #default="{ row }">{{ row.profitPendingReason || row.pendingCostReason || '—' }}</template></el-table-column>
           </el-table>
           <el-pagination v-model:current-page="profitPage" v-model:page-size="profitPageSize" :total="profitTotal" :page-sizes="[20, 50, 100]" layout="total, sizes, prev, pager, next" @current-change="loadProfitDetails" @size-change="loadProfitDetails" />
         </el-tab-pane>
@@ -315,7 +327,7 @@ async function loadProfitDetails() {
   try {
     const result = await api.getFinancialProfitOrders({
       ...getPeriodRange(), regionId: regionId.value || '', storeId: storeId.value || '',
-      page: profitPage.value, pageSize: profitPageSize.value
+      page: profitPage.value, pageSize: profitPageSize.value, view: 'company'
     })
     profitRows.value = result.data?.items || []
     profitTotal.value = Number(result.data?.total || 0)
@@ -367,9 +379,9 @@ function setChart(key, element, option) {
 function renderVisibleCharts() {
   const palette = ['#4263eb', '#12b886', '#f59f00', '#e64980', '#7950f2', '#0ca678', '#e8590c']
   const profitParts = [
-    { name: '销售毛利', value: Number(data.salesGrossProfit) || 0 },
-    { name: '产品端毛利', value: Number(data.productGrossProfit) || 0 },
-    { name: '运营毛利', value: Number(data.operationsGrossProfit) || 0 }
+    { name: '销售毛利', value: data.salesGrossProfit == null ? null : Number(data.salesGrossProfit) },
+    { name: '产品端毛利', value: data.productGrossProfit == null ? null : Number(data.productGrossProfit) },
+    { name: '运营毛利', value: data.operationsGrossProfit == null ? null : Number(data.operationsGrossProfit) }
   ]
   setChart('profit', profitChartRef.value, {
     color: palette, tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },

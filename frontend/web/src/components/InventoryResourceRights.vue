@@ -317,7 +317,7 @@
     <el-dialog v-model="nbPolicyImportDialog" title="上传产品政策表" width="760px" destroy-on-close>
       <el-alert title="模板仅包含 PN、商品名称、结算价、SO政策、PO政策、其他政策、备注；上传后即时生效。" type="info" :closable="false" style="margin-bottom:14px" />
         <div class="filter-bar" style="margin-bottom:14px">
-          <el-button type="primary" plain @click="downloadNbPolicyTemplate">下载产品政策表模板</el-button>
+          <el-button type="primary" plain :loading="nbPolicyTemplateDownloading" @click="downloadNbPolicyTemplate">下载产品政策表模板</el-button>
           <span class="muted">字段：PN、商品名称、结算价、SO政策、PO政策、其他政策、备注。</span>
         </div>
       <input ref="nbPolicyFileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="onNbPolicyFileChange" />
@@ -729,13 +729,24 @@ async function loadNbPolicies(){
   finally{nbPolicyLoading.value=false}
 }
 function openNbPolicyImport(){nbPolicyFile.value=null;nbPolicyImportResult.value=null;nbPolicyImportDialog.value=true}
-function downloadNbPolicyTemplate(){
-  const link=document.createElement('a')
-  link.href=`${import.meta.env.BASE_URL}templates/产品政策导入模板.xlsx`
-  link.download='产品政策导入模板.xlsx'
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
+const nbPolicyTemplateDownloading=ref(false)
+async function downloadNbPolicyTemplate(){
+  if(nbPolicyTemplateDownloading.value)return
+  nbPolicyTemplateDownloading.value=true
+  try{
+    const response=await fetch(`${import.meta.env.BASE_URL}templates/产品政策导入模板.xlsx`)
+    if(!response.ok)throw new Error('模板下载失败，请稍后重试')
+    const data=await response.arrayBuffer()
+    const signature=new Uint8Array(data,0,Math.min(data.byteLength,2))
+    if(signature[0]!==0x50||signature[1]!==0x4b)throw new Error('模板文件不可用，请联系管理员')
+    const url=URL.createObjectURL(new Blob([data],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}))
+    const link=document.createElement('a')
+    link.href=url
+    link.download='产品政策导入模板.xlsx'
+    document.body.appendChild(link)
+    try{link.click()}finally{link.remove();setTimeout(()=>URL.revokeObjectURL(url),60000)}
+  }catch(error){ElMessage.error(error.message||'模板下载失败，请稍后重试')}
+  finally{nbPolicyTemplateDownloading.value=false}
 }
 function onNbPolicyFileChange(event){const file=event.target.files?.[0];event.target.value='';if(file){nbPolicyFile.value=file;nbPolicyImportResult.value=null}}
 function readNbPolicyRows(file){return new Promise((resolve,reject)=>{

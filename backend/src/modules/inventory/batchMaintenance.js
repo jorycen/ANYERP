@@ -1,3 +1,4 @@
+const { assertSnEligible } = require('../../utils/snEligibility');
 const { normalizeSnCode } = require('../../utils/snCode');
 const XLSX = require('xlsx');
 const { Op } = require('sequelize');
@@ -614,6 +615,11 @@ async function createSnInbound(item, application, transaction) {
       new Error(`第 ${item.row_no} 行SN ${item.sn_code} 当前状态为${existing.status || '未知'}，不允许重复入库`),
       { status: 409 }
     );
+  }
+  if (existing) {
+    const target = await Location.findByPk(item.location_id, { transaction });
+    if (!target || target.type !== item.inventory_type) throw Object.assign(new Error('批量入库目标库位与仓位类型不一致，请核对后重试'), { status: 409 });
+    await assertSnEligible(existing, { transaction, movement: true, reentry: true, targetLocation: target, targetStoreId: item.store_id });
   }
   const pnMaster = await ensureProductPnMaster({
     productId: item.product_id,

@@ -1,3 +1,4 @@
+const { inspectSnEligibility, assertSnEligible } = require('../../utils/snEligibility');
 const saveContract = require('./orderSaveContract');
 const saveModels = require('../../models');
 /**
@@ -81,10 +82,12 @@ async function isRentalDemoSn(sn, transaction = null) {
 async function isSalesWarehouseSn(sn, transaction = null) {
   if (!sn?.location_id || String(sn.inventory_type || 'normal_qty') !== 'normal_qty') return false;
   const location = await Location.findByPk(sn.location_id, {
-    attributes: ['type', 'status'],
+    attributes: ['type', 'status', 'store_id'],
     transaction
   });
-  return location?.type === 'normal_qty' && Number(location.status ?? 1) === 1;
+  if (location?.type !== 'normal_qty' || Number(location.status ?? 1) !== 1) return false;
+  await assertSnEligible(sn, { transaction });
+  return true;
 }
 const { issueDownloadTicket } = require('../../utils/downloadTicket');
 const { canViewSnTraceReference, isDealerTraceAccount } = require('../../utils/snTracePermission');
@@ -4201,12 +4204,14 @@ async function getProductSns(ctx) {
 
   const snRecords = await ProductSn.findAll({
     where,
-    attributes: ['sn_id', 'sn_code', 'pn_code', 'inventory_type', 'tax_type', 'supplier_id', 'supplier_name', 'location_id'],
+    attributes: ['sn_id', 'sn_code', 'pn_code', 'inventory_type', 'source_type', 'tax_type', 'supplier_id', 'supplier_name', 'location_id', 'store_id'],
     order: [['sn_code', 'ASC']]
   });
+  const eligibility = await inspectSnEligibility(snRecords);
   const saleableSnRecords = [];
   for (const sn of snRecords) {
-    if (await isSalesWarehouseSn(sn)) saleableSnRecords.push(sn);
+    const state = eligibility.get(String(sn.sn_id));
+    if (state?.locationValid && state.location.type === 'normal_qty' && !state.restricted) saleableSnRecords.push(sn);
   }
 
   const store = await Store.findOne({

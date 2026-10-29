@@ -712,6 +712,7 @@ async function getInventoryReport(ctx) {
       [sequelize.col('Product.series'), 'series'],
       [sequelize.col('Product.model'), 'model'],
       [sequelize.fn('COUNT', sequelize.col('sn_id')), 'totalCount'],
+      [sequelize.fn('JSON_ARRAYAGG', sequelize.col('ProductSn.store_id')), 'storeIds'],
       [sequelize.literal(`ROUND(SUM(${inventoryUnitCostSql}), 2)`), 'totalCost'],
       [sequelize.literal(staleCountSql), 'staleCount']
     ],
@@ -729,6 +730,14 @@ async function getInventoryReport(ctx) {
     ],
     raw: true
   });
+
+  const storeNames = new Map(stores.map(store => [String(store.store_id), store.name || String(store.store_id)]));
+  for (const row of categoryStats) {
+    const ids = Array.isArray(row.storeIds) ? row.storeIds : JSON.parse(row.storeIds || '[]');
+    row.storeNames = [...new Set(ids.map(id => storeNames.get(String(id))).filter(Boolean))]
+      .sort((left, right) => left.localeCompare(right, 'zh-CN')).join('、');
+    delete row.storeIds;
+  }
 
   const categoryRows = await ProductCategory.findAll({
     where: { status: 1 },

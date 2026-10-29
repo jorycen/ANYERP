@@ -575,6 +575,7 @@ async function buildProductPricingDetails(orderId, transaction) {
     : [];
   const productById = new Map(products.map(product => [String(product.product_id), product]));
   const supplierContext = await resolveSupplierContext(items.map(item => item.toJSON()), order || {}, transaction);
+  const confirmedZeroIds = await require('../../utils/costKnowledge').confirmedZeroSnIds([...supplierContext.snMap.values()], transaction);
   const snIds = [...new Set(items.map(item => item.sn_id).filter(Boolean))];
   const snCodes = [...new Set(items.map(item => item.sn_code).filter(Boolean))];
   const store = snIds.length || snCodes.length
@@ -622,9 +623,10 @@ async function buildProductPricingDetails(orderId, transaction) {
     // Unarchived order-item zeroes are defaults, not evidence of actual cost.
     const purchasePrice = nonSnReceiptCost ?? (toNumber(row.original_inventory_cost) > 0 ? validPrice(row.original_inventory_cost) : null)
       ?? (toNumber(row.original_pickup_price) > 0 ? validPrice(row.original_pickup_price) : null)
-      ?? validPrice(snRow?.inbound_price)
-      ?? validPrice(inboundSupplier?.inbound_price)
-      ?? (productPrice && Number(productPrice.status ?? 1) === 1
+      ?? require('../../utils/costKnowledge').knownCost(snRow?.inbound_price,
+        isNonPurchase || confirmedZeroIds.has(String(snRow?.sn_id)))
+      ?? (!snRow ? require('../../utils/costKnowledge').knownCost(inboundSupplier?.inbound_price, false) : null)
+      ?? (!snRow && productPrice && Number(productPrice.status ?? 1) === 1
         && (Number(productPrice.cost_price) > 0 || Number(productPrice.cost_price_locked) === 1)
         ? validPrice(productPrice.cost_price) : null);
     const specialPrice = specialPriceBySnId.get(String(snRow?.sn_id || row.sn_id || ''))

@@ -111,16 +111,9 @@ select { font: inherit; }
   box-shadow: none;
 }
 
-.el-button--primary:not(.is-link) {
-  border-color: var(--erp-primary);
-  background: var(--erp-primary);
-}
-
-.el-button--primary:not(.is-link):hover,
-.el-button--primary:not(.is-link):focus {
-  border-color: var(--erp-primary-hover);
-  background: var(--erp-primary-hover);
-}
+/* Element Plus owns solid/plain/text/link and disabled button palettes.
+   Primary colors are supplied through the theme tokens above; overriding
+   backgrounds here makes plain and text buttons blue on blue. */
 
 .el-button.is-link { min-height: auto; }
 

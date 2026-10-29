@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const { QueryTypes } = require('sequelize');
 const M = require('../../models');
+const companyProfit = require('./companyProfitDetails');
 const { summarizeAllocatedExpenses } = require('../finance/expenseCostAllocation');
 const { expenseEventKey } = require('../finance/expenseAmortization');
 const money = value => Math.round(Number(value || 0) * 100) / 100;
@@ -69,6 +70,7 @@ function returnEvent(rows, original, calculateOrder) {
     orderId: first.orderId, orderNo: first.orderNo, storeId: first.storeId, storeName: first.storeName, businessDate: first.returnDate,
     status: missing ? 'cost_pending' : 'estimated', detailItems, originalTaxBasis: original.review && original.status === 'confirmed' ? hash({ amounts: original.review.amounts, itemTaxes: original.review.itemTaxes }) : null,
     pendingCostReason: missing ? '原销售商品缺少可确认成本，无法确认退回成本' : '', itemCount: detailItems.length };
+  result.costState = missing ? 'pending' : detailItems.every(item => item.unitCost === 0) ? 'confirmed_zero' : 'known';
   for (const key of ['grossRevenue','netRevenue','outputVat','grossCost','bookCost']) result[key] = money(detailItems.reduce((n, item) => n + Number(item[key] || 0), 0));
   result.deductibleInputVat = money(detailItems.reduce((n, item) => n + item.estimatedInputVat, 0));
   result.grossProfit = missing ? null : money(result.netRevenue - result.bookCost);
@@ -152,7 +154,7 @@ async function loadFacts(filters, calculateOrder, transaction) {
   const returnedExternal = returnOrders.length ? await select(`SELECT ENTRY_ID,GROSS_PROFIT_AMOUNT FROM (${externalIncomeSql()}) ext WHERE ENTRY_TYPE = 'external_return' AND SOURCE_ORDER_ID IN (:ids)`, { ids: returnOrders }, transaction) : [];
 
   for (const [orderId, orderRows] of group(rows, 'orderId')) {
-    const raw = finish({ ...calculateOrder(orderRows.sort((a,b) => String(a.itemId).localeCompare(String(b.itemId)))), entryType: 'sale', eventKey: `sale:${orderId}`, entryNo: orderRows[0].orderNo, managementSalesGross: money(orderRows[0].managementSalesGross), managementProductGross: money((orderRows[0].managementProductStatus === 'posted' ? Number(orderRows[0].managementProductBase) : 0) + Number(orderRows[0].managementExternal || 0)), managementPending: orderRows[0].managementProductStatus !== 'posted' });
+    const raw = finish({ ...calculateOrder(orderRows.sort((a,b) => String(a.itemId).localeCompare(String(b.itemId)))), entryType: 'sale', eventKey: `sale:${orderId}`, entryNo: orderRows[0].orderNo, managementSalesGross: orderRows[0].managementSalesGross == null ? null : money(orderRows[0].managementSalesGross), managementProductGross: money((orderRows[0].managementProductStatus === 'posted' ? Number(orderRows[0].managementProductBase) : 0) + Number(orderRows[0].managementExternal || 0)), managementPending: orderRows[0].managementProductStatus !== 'posted' });
     const event = applyReview(raw, reviewMap.get(raw.eventKey));
     originals.set(orderId, frozenSales.get(raw.eventKey) || event);
     if (event.businessDate >= filters.startDate && event.businessDate <= filters.endDate) items.push(event);
@@ -162,7 +164,7 @@ async function loadFacts(filters, calculateOrder, transaction) {
     if (!original) throw Object.assign(new Error('退货无法追溯原销售，请核对原单状态及门店'), { status: 409 });
     const raw = returnEvent(returnRows.sort((a,b) => String(a.itemId).localeCompare(String(b.itemId))), original, calculateOrder);
     const returnId = returnRows[0].returnId, product = returnProducts.find(row => row.SOURCE_RETURN_ID === returnId);
-    raw.managementSalesGross = money(returnManagement.find(row => row.RETURN_ID === returnId)?.amount);
+    raw.managementSalesGross = returnManagement.some(row => row.RETURN_ID === returnId) ? money(returnManagement.find(row => row.RETURN_ID === returnId).amount) : null;
     raw.managementProductGross = money((product?.STATUS === 'posted' ? Number(product.GROSS_PROFIT_AMOUNT) : 0) + Number(returnedExternal.find(row => row.ENTRY_ID === `EXT-RET-${returnId}`)?.GROSS_PROFIT_AMOUNT || 0));
     raw.managementPending = product?.STATUS !== 'posted';
     items.push(applyReview(raw, reviewMap.get(raw.eventKey)));
@@ -200,7 +202,9 @@ async function loadFacts(filters, calculateOrder, transaction) {
       SIGNED_AMOUNT amount FROM T_PERFORMANCE_PROFIT_ADJUSTMENT WHERE STATUS = 'approved' AND STORE_ID IN (:storeIds)
       AND DATE(COALESCE(ADMIN_REVIEW_TIME,UPDATE_TIME,CREATE_TIME)) BETWEEN :start AND :end`, p, transaction);
   const managementAdjustments = performance.map(row => ({ ...row, businessDate: date(row.businessDate), amount: money(row.amount) }));
-  return { items, policyItems, expenseEntries: (expenseSummary.entries || []).map(row => { const raw = finish({ ...row, eventKey: expenseEventKey(row), entryNo: row.expenseId, entryType: 'expense', businessDate: date(row.businessDate), grossRevenue: 0, grossCost: row.amount, bookCost: row.amount, grossProfit: 0, status: 'estimated', policyImpact: 0 }); return applyReview(raw, reviewMap.get(raw.eventKey)); }).concat(expenseAdjustments), periods, adjustmentRows, managementAdjustments };
+  const rewardEvents = await require('../customerOps/profitEvents').events({ storeIds: filters.storeIds },
+    require('./dashboardService').buildRanges(filters).current, (sql, replacements) => select(sql, replacements, transaction));
+  return { items, policyItems, rewardEvents, expenseEntries: (expenseSummary.entries || []).map(row => { const raw = finish({ ...row, eventKey: expenseEventKey(row), entryNo: row.expenseId, entryType: 'expense', businessDate: date(row.businessDate), grossRevenue: 0, grossCost: row.amount, bookCost: row.amount, grossProfit: 0, status: 'estimated', policyImpact: 0 }); return applyReview(raw, reviewMap.get(raw.eventKey)); }).concat(expenseAdjustments), periods, adjustmentRows, managementAdjustments };
 }
 function overlayClosed(facts, filters) {
   const discrepancies = [];
@@ -269,18 +273,28 @@ function summarizeScope(facts, filters, items, policyItems, unperiodizedExpenses
   return summary;
 }
 async function query(filters, calculateOrder, { transaction, ignoreClosed = false } = {}) {
-  if (!filters.storeIds.length) return { items: [], policyItems: [], expenseEntries: [], periods: [], discrepancies: [], summary: summarize([], 0), operatingExpense: 0 };
+  if (!filters.storeIds.length) return { items: [], policyItems: [], expenseEntries: [], periods: [], discrepancies: [], summary: { ...summarize([], 0), ...companyProfit.summarize([]) }, profitDetails: [], managementEvents: [], operatingExpense: 0 };
   const facts = await loadFacts(filters, calculateOrder, transaction);
   const unperiodizedExpenses = facts.expenseEntries.filter(row => !row.businessDate).map(row => ({ ...row, status: 'period_pending', pendingCostReason: '请先在费用原单补齐归属月份或费用日期，不能自动归入所选期间' }));
   facts.expenseEntries = expensesForScope(facts.expenseEntries, filters.storeIds, filters.startDate, filters.endDate);
+  const liveManagementEvents = companyProfit.buildEvents(facts);
   const discrepancies = ignoreClosed ? [] : overlayClosed(facts, filters);
+  const managementEvents = ignoreClosed ? liveManagementEvents : companyProfit.overlayClosed(liveManagementEvents, facts.periods, filters, discrepancies);
   for (const difference of discrepancies) {
     difference.adjustmentIds = (facts.adjustmentRows || []).filter(row => row.SOURCE_EVENT_KEY === difference.eventKey && parse(row.DETAIL_JSON).resolvedSourceHash === (difference.after?.sourceHash || 'deleted')).map(row => row.ADJUSTMENT_ID);
     difference.resolved = difference.adjustmentIds.length > 0;
   }
-  const matches = event => (!filters.orderNo || String(event.orderNo || '').includes(filters.orderNo)) && (!filters.status || event.status === filters.status);
+  const matches = event => (!filters.orderNo || String(event.orderNo || event.entryNo || '').includes(filters.orderNo)) && (!filters.status || event.status === filters.status);
   const items = facts.items.filter(matches), policyItems = facts.policyItems.filter(matches);
   const summary = summarizeScope(facts, filters, items, policyItems, unperiodizedExpenses);
+  const profitDetails = managementEvents.filter(matches).sort((a,b) => b.businessDate.localeCompare(a.businessDate) || a.eventKey.localeCompare(b.eventKey));
+  Object.assign(summary, companyProfit.summarize(profitDetails));
+  summary.managementSalesGross = summary.salesGrossProfit;
+  summary.managementProductGross = summary.productGrossProfit;
+  summary.managementOperationsGross = summary.operationsGrossProfit;
+  summary.managementCombinedGross = summary.companyGrossProfit;
+  summary.managementIncomplete = summary.profitPendingCount > 0;
+  summary.managementDifference = summary.operationsGrossProfit === 0 && summary.companyGrossProfit !== null ? money(summary.financialComparableGross - summary.companyGrossProfit) : null;
   const operatingExpense = summary.operatingExpense;
   const storeSummaries = [];
   if (filters.includeStores) {
@@ -291,10 +305,17 @@ async function query(filters, calculateOrder, { transaction, ignoreClosed = fals
       storeSummaries.push({ storeId, storeName: names.get(String(storeId)) || storeId,
         summary: summarizeScope({ expenseEntries: facts.expenseEntries.filter(belongs), managementAdjustments: (facts.managementAdjustments || []).filter(belongs) },
           { ...filters, storeIds: [storeId] }, items.filter(belongs), policyItems.filter(belongs), unperiodizedExpenses.filter(belongs)) });
+      Object.assign(storeSummaries.at(-1).summary, companyProfit.summarize(profitDetails.filter(event => belongs(event) || event.entryType === 'management_pending')));
+      const storeSummary = storeSummaries.at(-1).summary;
+      Object.assign(storeSummary, { managementSalesGross: storeSummary.salesGrossProfit,
+        managementProductGross: storeSummary.productGrossProfit, managementOperationsGross: storeSummary.operationsGrossProfit,
+        managementCombinedGross: storeSummary.companyGrossProfit, managementIncomplete: storeSummary.profitPendingCount > 0,
+        managementDifference: storeSummary.operationsGrossProfit === 0 && storeSummary.companyGrossProfit !== null
+          ? money(storeSummary.financialComparableGross - storeSummary.companyGrossProfit) : null });
     }
   }
   const issueItems = [...items,...policyItems.filter(row => row.entryType !== 'policy_pending'),...facts.expenseEntries,...unperiodizedExpenses].filter(row => !row.closed && row.status !== 'confirmed').map(row => ({ ...row }));
-  return { items: items.sort((a,b) => b.businessDate.localeCompare(a.businessDate)), issueItems, unperiodizedExpenses, policyItems, expenseEntries: facts.expenseEntries, discrepancies,
+  return { profitDetails, managementEvents, items: items.sort((a,b) => b.businessDate.localeCompare(a.businessDate)), issueItems, unperiodizedExpenses, policyItems, expenseEntries: facts.expenseEntries, discrepancies,
     storeSummaries, managementAdjustments: facts.managementAdjustments, periods: facts.periods.filter(row => row.MONTH_KEY >= filters.startDate.slice(0,7) && row.MONTH_KEY <= filters.endDate.slice(0,7)).map(row => ({ month: row.MONTH_KEY, closedAt: row.CLOSED_AT, closedBy: row.CLOSED_BY, hash: row.SNAPSHOT_HASH })), summary, operatingExpense };
 }
 module.exports = { summarizeScope, expensesForScope, query, select, parse, date, hash, money, sourceHash, applyReview, returnEvent, summarize, overlayClosed, amountFields };

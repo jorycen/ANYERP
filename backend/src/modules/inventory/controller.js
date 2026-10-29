@@ -1,3 +1,4 @@
+const { assertSnEligible, isSpecialWarehouse } = require('../../utils/snEligibility');
 const { normalizeSnCode } = require('../../utils/snCode');
 /**
  * 库房管理控制器
@@ -170,6 +171,15 @@ async function assertTransferOperationStore(ctx, storeId) {
   }
   assertStoreVisible(ctx, storeId);
   return null;
+}
+
+async function assertTransferSnOutbound(sn, toStoreId, transaction) {
+  const state = await assertSnEligible(sn, { transaction, movement: true });
+  if (state.restricted && !await Location.findOne({ where: { store_id: toStoreId, status: 1,
+    type: { [Op.in]: ['display_qty', 'rental_demo_qty'] } }, transaction })) {
+    throw Object.assign(new Error('接收门店没有有效特殊仓，特殊仓SN不能发往其他仓位'), { status: 409 });
+  }
+  return state;
 }
 
 const CLERK_TRANSFER_ROLE_CODES = new Set(['clerk', 'staff']);
@@ -2434,8 +2444,9 @@ function validateSnLocationAdjustment({ sn, storeId, locationId, targetLocation,
   if (sn.status !== 'in_stock') {
     return { status: 409, message: '只有在库SN可以调整库位' };
   }
-  if (['display_qty', 'rental_demo_qty'].includes(String(oldLocation?.type || sn.inventory_type || ''))) {
-    return { status: 409, message: '铺货仓及租赁样机仓SN不能直接调整库位，请发起采购申请' };
+  if ((isSpecialWarehouse(oldLocation?.type) || isSpecialWarehouse(sn.inventory_type))
+    && !isSpecialWarehouse(targetLocation?.type)) {
+    return { status: 409, message: '特殊仓SN只能在特殊仓流转，进入其他仓请先完成采购转换' };
   }
   if (!targetLocation) {
     return { status: 400, message: '目标库位不存在、已停用或不属于当前门店' };
@@ -2487,6 +2498,7 @@ async function adjustSnLocation(ctx) {
     const validationError = validateSnLocationAdjustment({ sn, storeId, locationId, targetLocation, oldLocation });
     if (validationError) ctx.throw(validationError.status, validationError.message);
 
+    await assertSnEligible(sn, { transaction: t, movement: true, targetLocation, targetStoreId: storeId });
     const targetInventoryType = await moveSnInventoryAggregate({
       sn,
       storeId,
@@ -2496,6 +2508,11 @@ async function adjustSnLocation(ctx) {
       transaction: t
     });
     await sn.update({ location_id: locationId, inventory_type: targetInventoryType }, { transaction: t });
+    if (isSpecialWarehouse(targetInventoryType)) {
+      await SnLog.create({ log_id: generateUUID(), sn_id: sn.sn_id, sn_code: sn.sn_code,
+        product_id: sn.product_id, store_id: storeId, action: 'special_warehouse_flow',
+        remark: JSON.stringify({ toType: targetInventoryType, locationId }), create_user: user.name || user.staffId }, { transaction: t });
+    }
     await SnLog.create({
       log_id: generateUUID(),
       sn_id: sn.sn_id,
@@ -4134,6 +4151,9 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
             fail(400, `调拨SN ${transferSn.sn_code} 与PN ${transferPnCode} 不匹配`);
           }
 
+          const transferTarget = await Location.findByPk(locationId, { transaction: t });
+          await assertSnEligible(transferSn, { transaction: t, movement: true, targetLocation: transferTarget, targetStoreId: inbound.store_id });
+          if (!transferTarget || transferTarget.type !== inventoryType) fail(409, '调拨目标库位与仓位类型不一致，请刷新后重试');
           await transferSn.update({
             product_name: dbItem.product_name || transferSn.product_name || product.name,
             pn_code: transferPnCode,
@@ -4144,6 +4164,12 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
            location_id: locationId,
            // 调拨到店不改变公司首次采购入库时间，库龄继续从原始入库计算。
           }, { transaction: t });
+          if (isSpecialWarehouse(inventoryType)) {
+            await SnLog.create({ log_id: generateUUID(), sn_id: transferSn.sn_id, sn_code: transferSn.sn_code,
+              product_id: transferSn.product_id, store_id: inbound.store_id, action: 'special_warehouse_flow',
+              remark: JSON.stringify({ inboundNo: inbound.inbound_no, toType: inventoryType, locationId }),
+              create_user: inboundInitiator }, { transaction: t });
+          }
           await dbItem.update({
             sn_id: transferSn.sn_id,
             sn_code: requestedSnCode || transferSn.sn_code,
@@ -4176,6 +4202,11 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
         }
         if (existingSn && !isReusableInboundSnStatus(existingSn.status)) {
           fail(400, `SN码 [${snCode}] 当前状态为${existingSn.status || '未知'}，不允许重复入库`);
+        }
+        if (existingSn) {
+          const reentryTarget = await Location.findByPk(locationId, { transaction: t });
+          if (!reentryTarget || reentryTarget.type !== inventoryType) fail(409, '入库目标库位与仓位类型不一致，请刷新后重试');
+          await assertSnEligible(existingSn, { transaction: t, movement: true, reentry: true, targetLocation: reentryTarget, targetStoreId: inbound.store_id });
         }
         const reenteringReturnedSn = existingSn?.status === 'returned';
 
@@ -4222,6 +4253,13 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
           reenteringReturnedSn,
           transaction: t
         });
+
+        if (isSpecialWarehouse(inventoryType)) {
+          await SnLog.create({ log_id: generateUUID(), sn_id: snRecord.sn_id, sn_code: snRecord.sn_code,
+            product_id: snRecord.product_id, store_id: inbound.store_id, action: 'special_warehouse_flow',
+            remark: JSON.stringify({ inboundNo: inbound.inbound_no, toType: inventoryType, locationId }),
+            create_user: inboundInitiator }, { transaction: t });
+        }
 
         await dbItem.update({
           sn_id: snRecord.sn_id,
@@ -4621,6 +4659,7 @@ async function transfer(ctx) {
         if (!sn) {
           ctx.throw(400, `SN?[${item.snCode}]???????????`);
         }
+        await assertTransferSnOutbound(sn, toStoreId, t);
         normalizedItems.push({ ...item, quantity: 1, productName: product.name });
         continue;
       }
@@ -4690,7 +4729,7 @@ async function transfer(ctx) {
           store_id: fromStoreId,
           action: 'transfer_out',
           remark: `?????${fromStoreId} -> ${toStoreId}????${transferNo}`,
-          create_user: transfer.apply_user || user.name || user.staffId
+          create_user: user.name || user.staffId
         }, { transaction: t });
       }
     }
@@ -5027,6 +5066,7 @@ async function confirmTransferOutPartial(ctx) {
           ctx.throw(400, `SN ${sn.sn_code} 不能重复选择`);
         }
         selectedSnIds.add(String(sn.sn_id));
+        await assertTransferSnOutbound(sn, transfer.to_store_id, t);
         await sn.update({ status: 'transferring' }, { transaction: t });
         await requestItem.update({ pn_code: pnCode, quantity: 1 }, { transaction: t });
         await SnLog.create({
@@ -5039,7 +5079,7 @@ async function confirmTransferOutPartial(ctx) {
           remark: `调拨出库确认：${transfer.from_store_id} → ${transfer.to_store_id}，单号：${transfer.transfer_no}`,
           create_user: transfer.apply_user || user.name || user.staffId
         }, { transaction: t });
-        await updateInventory(requestItem.product_id, transfer.from_store_id, 'normal_qty', -1, t);
+        await syncSerializedInventoryBalance({ productId: requestItem.product_id, storeId: transfer.from_store_id, transaction: t });
         outboundQuantity += 1;
         continue;
       }
@@ -5075,6 +5115,7 @@ async function confirmTransferOutPartial(ctx) {
           });
           if (!sn) ctx.throw(400, `SN ${snCode} 不在调出门店可用库存中`);
           if (sn.pn_code && !samePnCode(sn.pn_code, pnCode)) ctx.throw(400, `SN ${snCode} 与PN ${pnCode} 不匹配`);
+          await assertTransferSnOutbound(sn, transfer.to_store_id, t);
           await sn.update({ status: 'transferring' }, { transaction: t });
           await TransferItem.create({
             transfer_id: transfer.transfer_id,
@@ -5096,7 +5137,7 @@ async function confirmTransferOutPartial(ctx) {
           }, { transaction: t });
           outboundQuantity += 1;
         }
-        await updateInventory(requestItem.product_id, transfer.from_store_id, 'normal_qty', -selected.length, t);
+        await syncSerializedInventoryBalance({ productId: requestItem.product_id, storeId: transfer.from_store_id, transaction: t });
         continue;
       }
 
@@ -5334,6 +5375,9 @@ async function confirmTransferOut(ctx) {
       }
 
       if (snId && snCode) {
+        const outboundSn = await ProductSn.findOne({ where: { sn_id: snId, sn_code: snCode, product_id: item.product_id, store_id: transfer.from_store_id, status: 'in_stock', is_deleted: 0 }, transaction: t, lock: t.LOCK.UPDATE });
+        if (!outboundSn) ctx.throw(409, '所选SN已不可用，请刷新库存后重试');
+        await assertTransferSnOutbound(outboundSn, transfer.to_store_id, t);
         const [updated] = await ProductSn.update(
           { status: 'transferring' },
           {
@@ -5363,7 +5407,8 @@ async function confirmTransferOut(ctx) {
         }, { transaction: t });
       }
 
-      await updateInventory(item.product_id, transfer.from_store_id, 'normal_qty', -quantity, t);
+      if (snId && Number(product?.need_sn) === 1) await syncSerializedInventoryBalance({ productId: item.product_id, storeId: transfer.from_store_id, transaction: t });
+      else await updateInventory(item.product_id, transfer.from_store_id, 'normal_qty', -quantity, t);
     }
 
     await transfer.update({
@@ -5466,7 +5511,7 @@ async function confirmTransferIn(ctx) {
     // 以便修复旧数据中 SN 仍指向调出门店仓位的情况。
     const destinationLocations = await Location.findAll({
       where: { store_id: transfer.to_store_id, status: 1 },
-      attributes: ['location_id', 'type'],
+      attributes: ['location_id', 'type', 'store_id', 'status'],
       transaction: t
     });
     const destinationLocationIds = new Set(
@@ -5546,18 +5591,30 @@ async function confirmTransferIn(ctx) {
           ctx.throw(400, `SN ${sn.sn_code} 不属于本次调拨的调出门店`);
         }
 
+        const sourceEligibility = await assertSnEligible(sn, { transaction: t, movement: true });
         const previousLocationId = String(sn.location_id || '').trim();
+        const matchingSpecialLocation = sourceEligibility.restricted
+          ? destinationLocations.find(location => location.type === sourceEligibility.location?.type)
+            || destinationLocations.find(location => isSpecialWarehouse(location.type))
+          : null;
         const targetLocationId = resolveTransferInboundLocationId({
           requestedLocationId,
-          defaultLocationId: defaultTransferLocation?.location_id || '',
+          defaultLocationId: (sourceEligibility.restricted ? matchingSpecialLocation : defaultTransferLocation)?.location_id || '',
           alreadyInDestination,
           currentLocationId: previousLocationId,
           destinationLocationIds
         });
         const targetLocation = destinationLocations.find(location => String(location.location_id) === targetLocationId);
-        // 门店、库位和仓位类型须同时切换，不能沿用调出前的租赁/样机仓标记。
-        // 原始采购入库时间和成本保持不变。
+        if (!targetLocation) ctx.throw(409, '接收门店缺少有效目标仓位，请先配置对应仓位');
+        await assertSnEligible(sn, { transaction: t, movement: true,
+          targetLocation: targetLocation.toJSON?.() || targetLocation, targetStoreId: transfer.to_store_id });
         await sn.update(buildTransferInboundSnState(transfer.to_store_id, targetLocation || { location_id: targetLocationId }, sn.inventory_type), { transaction: t });
+        if (!alreadyInDestination && isSpecialWarehouse(targetLocation.type)) {
+          await SnLog.create({ log_id: generateUUID(), sn_id: sn.sn_id, sn_code: sn.sn_code,
+            product_id: item.product_id, store_id: transfer.to_store_id, action: 'special_warehouse_flow',
+            remark: JSON.stringify({ transferNo: transfer.transfer_no, toType: targetLocation.type, locationId: targetLocationId }),
+            create_user: user.name || user.staffId }, { transaction: t });
+        }
 
         if (!alreadyInDestination) {
           await SnLog.create({
@@ -5598,7 +5655,9 @@ async function confirmTransferIn(ctx) {
         }
       }
 
-      if (!alreadyInDestination) {
+      if (snId && Number(product?.need_sn) === 1) {
+        await syncSerializedInventoryBalance({ productId: item.product_id, storeId: transfer.to_store_id, transaction: t });
+      } else if (!alreadyInDestination) {
         await updateInventory(item.product_id, transfer.to_store_id, 'normal_qty', quantity, t, locationId);
       }
     }
@@ -5813,12 +5872,13 @@ async function buildConversionSourceRows(sourceItems, conversionType, storeId, t
       if (raw.snId || raw.sn_id) snWhere.sn_id = raw.snId || raw.sn_id;
       if (snCode) snWhere.sn_code = snCode;
       if (pnCode) snWhere.pn_code = pnCode;
-      snRecord = await ProductSn.findOne({ where: snWhere, transaction });
+      snRecord = await ProductSn.findOne({ where: snWhere, transaction, lock: transaction?.LOCK?.UPDATE });
       if (!snRecord) {
         const err = new Error(`来源商品 ${product.name} 未找到可转换的在库SN`);
         err.status = 400;
         throw err;
       }
+      await assertSnEligible(snRecord, { transaction });
       quantity = 1;
       inventoryType = snRecord.inventory_type || inventoryType;
       locationId = snRecord.location_id || locationId || '';

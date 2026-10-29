@@ -150,6 +150,7 @@ test('zero company cost remains a complete preview instead of using 1500 purchas
 });
 
 test('zero actual SN cost and zero SN special price survive the full pricing lookup', async t => {
+  t.mock.method(require('../src/utils/costKnowledge'), 'confirmedZeroSnIds', async () => new Set(['sn']));
   const { item } = fixture(t, 1500);
   item.sn_id = 'sn';
   item.sn_code = 'SN';
@@ -165,6 +166,17 @@ test('zero actual SN cost and zero SN special price survive the full pricing loo
   assert.equal(response.productPricingDetails[0].source, 'purchase_price');
   assert.equal(response.productPricingAmount, 0);
   assert.equal(response.pricingComplete, true);
+});
+
+test('unconfirmed SN zero does not inherit a different unit cost', async t => {
+  const { item } = fixture(t, 1500);
+  item.sn_id = 'sn'; item.sn_code = 'SN';
+  t.mock.method(require('../src/utils/costKnowledge'), 'confirmedZeroSnIds', async () => new Set());
+  t.mock.method(M.ProductSn, 'findAll', async () => [{ sn_id: 'sn', sn_code: 'SN', inbound_price: 0 }]);
+  t.mock.method(M.Product, 'findAll', async () => [{ product_id: 'product', gross_profit_cost_mode: 'PURCHASE_PRICE' }]);
+  const response = snapshotToResponse(await calculateAndSaveOrderGrossProfit('order', { persist: false, final: false }));
+  assert.equal(response.pricingComplete, false);
+  assert.equal(response.productPricingDetails[0].purchasePriceKnown, false);
 });
 
 test('list suppresses invalid draft profit but preserves an explicit zero-priced item', () => {

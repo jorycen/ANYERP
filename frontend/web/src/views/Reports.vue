@@ -85,6 +85,9 @@
             <el-table-column prop="series" label="系列" width="120" />
             <el-table-column prop="model" label="型号" min-width="140" />
             <el-table-column prop="totalCount" label="在库数量" width="100" />
+            <el-table-column prop="storeNames" label="门店" min-width="180" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.storeNames || '—' }}</template>
+            </el-table-column>
             <el-table-column label="成本合计" width="130" align="right">
               <template #default="{ row }">¥{{ formatMoney(row.totalCost) }}</template>
             </el-table-column>

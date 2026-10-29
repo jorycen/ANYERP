@@ -935,6 +935,7 @@ function buildAdjustmentRows(request, inbounds, stores) {
           store_name: storeMap.get(String(inbound.store_id)) || inbound.store_id || '',
           product_id: requestItem.product_id,
           product_name: requestItem.product_name || inboundItem.product_name || requestItem.product_id,
+          pn_code: requestItem.pn_code || inboundItem.pn_code || '',
           unit_price: effectiveUnitPrice,
           actual_unit_price: toSignedMoney(effectiveUnitPrice - rebatePerUnit),
           original_quantity: Number(requestItem.quantity || 0),

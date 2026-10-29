@@ -2,6 +2,19 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { _test } = require('../src/modules/report/productSettlement');
 
+test('confirmed zero purchase snapshot survives positive fallback and missing pricing remains pending', () => {
+  const input = { item: { item_id: 1, quantity: 1, sn_id: 's', original_inventory_cost: 500 },
+    product: { need_sn: 1 }, productPrice: { standard_price: 100, cost_price: 500 },
+    productPricingDetail: { unitPricing: 100, purchasePrice: 0, purchasePriceKnown: true, source: 'purchase_price' } };
+  const ready = _test.buildProductSettlementItem(input);
+  assert.equal(ready.purchase_unit_cost, 0);
+  assert.equal(ready.cost_status, 'ready');
+  assert.equal(ready.gross_profit_amount, 100);
+  input.productPricingDetail.source = 'missing_company_price';
+  input.productPricingDetail.unitPricing = 0;
+  assert.equal(_test.buildProductSettlementItem(input).cost_status, 'pending');
+});
+
 test('SN 产品端结算使用订单产品定价和 SN 实际采购成本', () => {
   const item = _test.buildProductSettlementItem({
     item: {

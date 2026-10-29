@@ -2033,6 +2033,8 @@ async function getPriceList(ctx) {
     manufacturerCodeMap.set(row.product_id, list);
   }
 
+  const policySettlementPrices = await require('./policySettlementPrices').loadPolicySettlementPrices(rows, barcodeRows);
+
   const list = rows.map(p => ({
     product_id: p.product_id,
     product_code: p.product_code,
@@ -2044,6 +2046,7 @@ async function getPriceList(ctx) {
     category_name: p.category || '',
     price_id: p.ProductPrice ? p.ProductPrice.price_id : null,
     standard_price: p.ProductPrice ? p.ProductPrice.standard_price : 0,
+    policy_settlement_prices: policySettlementPrices.get(p.product_id) || [],
     retail_price: p.ProductPrice ? p.ProductPrice.retail_price : 0,
     min_sale_price: p.ProductPrice ? p.ProductPrice.min_sale_price : 0,
     cost_price: p.ProductPrice ? p.ProductPrice.cost_price : 0,

@@ -19,6 +19,14 @@ function fixture(t, { sourceSn = true, targetSn = true, failTarget = false, sour
     TARGET: { product_id: 'TARGET', name: 'DDR4内存', need_sn: targetSn ? 1 : 0, manufacturer_code: 'TARGET-PN', status: 1 }
   };
   t.mock.method(M.sequelize, 'transaction', async () => tx);
+  t.mock.method(M.sequelize, 'query', async (sql, options) => {
+    assert.equal(options.transaction, tx);
+    if (sql.includes('FROM T_PRODUCT_SN')) return [{ snId: source.sn_id,
+      location_id: 'SOURCE-LOCATION', store_id: 'STORE', type: 'normal_qty', status: 1 }];
+    if (sql.includes('FROM T_SN_LOG') || sql.includes('FROM T_INVENTORY_BATCH_APPLICATION_ITEM')
+      || sql.includes('FROM T_PURCHASE_REQUEST_ITEM')) return [];
+    throw new Error(`Unexpected query: ${sql}`);
+  });
   t.mock.method(M.Store, 'findByPk', async () => ({ store_id: 'STORE' }));
   t.mock.method(M.Product, 'findOne', async options => products[options.where.product_id]);
   t.mock.method(M.Product, 'findAll', async () => Object.values(products));
@@ -58,6 +66,17 @@ test('截图场景：SN整机成本1元拆出SN内存1元，原SN保持在库且
   assert.equal(f.state.newSns[0].location_id, 'NORMAL');
   assert.equal(f.state.items.find(row => row.line_role === 'target').location_id, 'NORMAL');
   assert.equal(f.state.items.find(row => row.line_role === 'target').source_sn_id, 'SOURCE-SN');
+});
+
+test('特殊仓来源不能通过拆分绕过采购，整单无副作用', async t => {
+  const f = fixture(t);
+  f.source.inventory_type = 'rental_demo_qty';
+  await assert.rejects(f.controller.createConversion(f.ctx), /须完成采购转换/);
+  assert.equal(f.state.committed, false);
+  assert.equal(f.state.rolledBack, true);
+  assert.equal(f.state.conversions.length, 0);
+  assert.equal(f.state.newSns.length, 0);
+  assert.equal(f.source.inbound_price, 1);
 });
 
 test('目标未传库位时在创建SN前解析本店销售仓，无可用仓位时整单拒绝', async t => {

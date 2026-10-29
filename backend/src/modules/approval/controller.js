@@ -436,6 +436,9 @@ async function getInstance(ctx) {
   if (!row) ctx.throw(404, '审批实例不存在');
   if (!(await canReadInstance(ctx, row))) ctx.throw(403, '无权查看该审批实例');
   const data = toInstance(row);
+  if (data.business_type === 'sale_resource_reward') {
+    data.moduleData = await require('./resourceRewardDetail').resourceRewardDetail(data.business_id);
+  }
   if (data.business_type === 'profit_adjustment') {
     const models = require('../../models');
     const adjustment = await models.PerformanceProfitAdjustment.findByPk(data.business_id, {

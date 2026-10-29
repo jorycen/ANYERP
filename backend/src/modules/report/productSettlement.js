@@ -60,19 +60,23 @@ function buildProductSettlementItem({ item, product, productPrice, productPricin
 
   const isSn = Boolean(item.sn_id || item.sn_code || Number(product?.need_sn) === 1);
   const lockedZeroCost = Number(productPrice?.cost_price_locked || 0) === 1
-    && money(productPrice?.cost_price) === 0;
+    && require('../../utils/costKnowledge').costAmount(productPrice?.cost_price) === 0;
   const confirmedNonPurchaseCost = ['GIFT', 'SALES_COMPONENT_RECOVERY'].includes(productPricingDetail?.nonPurchaseSource)
     && productPricingDetail?.purchasePriceKnown === true
-    && Number.isFinite(Number(productPricingDetail.purchasePrice)) && Number(productPricingDetail.purchasePrice) >= 0;
-  const rawCost = confirmedNonPurchaseCost ? Number(productPricingDetail.purchasePrice) : lockedZeroCost ? 0 : isSn
+    && require('../../utils/costKnowledge').costAmount(productPricingDetail.purchasePrice) !== null;
+  const frozenCost = require('../../utils/costKnowledge').knownCost(productPricingDetail?.purchasePrice,
+    productPricingDetail?.purchasePriceKnown === true);
+  const rawCost = frozenCost !== null ? frozenCost : confirmedNonPurchaseCost ? Number(productPricingDetail.purchasePrice) : lockedZeroCost ? 0 : isSn
     ? toNumber(item.original_inventory_cost) || toNumber(item.original_pickup_price)
       || toNumber(sn?.inbound_price) || toNumber(sn?.original_pickup_price)
     : toNumber(item.original_inventory_cost) || toNumber(productPrice?.cost_price);
   const purchaseUnitCost = money(rawCost);
-  const costStatus = confirmedNonPurchaseCost || lockedZeroCost || (productUnitPrice > 0 && purchaseUnitCost > 0) ? 'ready' : 'pending';
+  const pricingKnown = !productPriceSource.startsWith('missing_') && require('../../utils/costKnowledge').costAmount(productPricingDetail?.unitPricing
+    ?? productPricingDetail?.unit_pricing ?? productPrice?.standard_price) !== null;
+  const costStatus = pricingKnown && (frozenCost !== null || confirmedNonPurchaseCost || lockedZeroCost || purchaseUnitCost > 0) ? 'ready' : 'pending';
   const costMethod = lockedZeroCost ? 'manual_locked_cost' : isSn ? 'sn_actual_cost' : 'weighted_average';
   const costSource = productPricingDetail?.recoveryFinancialAllocationPending === true || productPricingDetail?.nonPurchaseSource === 'SALES_COMPONENT_RECOVERY'
-    ? 'sales_component_recovery_value' : confirmedNonPurchaseCost ? 'approved_non_purchase_receipt' : lockedZeroCost ? 'locked_zero_inventory_cost' : isSn
+    ? 'sales_component_recovery_value' : confirmedNonPurchaseCost ? 'approved_non_purchase_receipt' : frozenCost !== null ? 'frozen_purchase_cost' : lockedZeroCost ? 'locked_zero_inventory_cost' : isSn
     ? (item.original_inventory_cost > 0 || item.original_pickup_price > 0 || sn?.inbound_price > 0
       ? 'order_item_or_sn_inbound_cost' : 'missing_sn_cost')
     : (item.original_inventory_cost > 0 ? 'order_item_cost_snapshot' : 'product_price_cost_price');
@@ -400,6 +404,7 @@ function explainSettlementItem(item) {
   }
   const sources = {
     approved_non_purchase_receipt: '已审批回收/获赠库存成本',
+    frozen_purchase_cost: '已确认采购成本快照',
     sales_component_recovery_value: '拆机回收经营确认价值（公司财务成本分摊待核实）',
     manual_sold_cost: '已售商品人工补录采购成本', locked_zero_inventory_cost: '人工锁定零成本', order_item_or_sn_inbound_cost: '订单或SN入库成本',
     missing_sn_cost: '未取得SN成本', order_item_cost_snapshot: '订单成本快照',

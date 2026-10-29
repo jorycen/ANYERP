@@ -67,7 +67,7 @@ test('SN库位调整同步使用目标库位的库存类型', () => {
   assert.equal(_test.normalizeInventoryQuantityField('unknown'), 'normal_qty');
 });
 
-test('铺货仓和租赁样机仓SN禁止直接调整库位', () => {
+test('特殊仓SN禁止直接调整到普通库位', () => {
   for (const type of ['display_qty', 'rental_demo_qty']) {
     assert.deepEqual(
       _test.validateSnLocationAdjustment({
@@ -77,7 +77,17 @@ test('铺货仓和租赁样机仓SN禁止直接调整库位', () => {
         oldLocation: { location_id: 'LOC_1', type },
         targetLocation: baseLocation
       }),
-      { status: 409, message: '铺货仓及租赁样机仓SN不能直接调整库位，请发起采购申请' }
+      { status: 409, message: '特殊仓SN只能在特殊仓流转，进入其他仓请先完成采购转换' }
     );
+  }
+});
+
+test('两类特殊仓之间允许调整库位', () => {
+  for (const from of ['display_qty', 'rental_demo_qty']) {
+    for (const to of ['display_qty', 'rental_demo_qty']) {
+      assert.equal(_test.validateSnLocationAdjustment({ sn: { ...baseSn, inventory_type: from },
+        storeId: 'STORE_1', locationId: 'LOC_2', oldLocation: { type: from },
+        targetLocation: { ...baseLocation, type: to } }), null);
+    }
   }
 });

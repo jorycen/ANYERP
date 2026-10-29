@@ -7,7 +7,7 @@ const {
   storeGuard
 } = require('../src/middleware/permission');
 
-test('调拨入销售仓同步清除原租赁样机仓标记，不改采购时间和成本', () => {
+test('合法流转通过资格校验后同步目标仓类型，不改采购时间和成本', () => {
   const state = _test.buildTransferInboundSnState('DEST', { location_id: 'SALES', type: 'normal_qty' }, 'rental_demo_qty');
   assert.deepEqual(state, { store_id: 'DEST', status: 'in_stock', location_id: 'SALES', inventory_type: 'normal_qty' });
   assert.equal('inbound_price' in state, false);

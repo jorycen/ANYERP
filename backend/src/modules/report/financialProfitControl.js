@@ -112,12 +112,14 @@ function monthRange(month) {
   return { startDate, endDate };
 }
 function closeBlockers(report) {
-  const all = [...report.items, ...report.policyItems.filter(row => row.entryType === 'policy'), ...report.expenseEntries,...(report.unperiodizedExpenses || [])];
+  const all = [...report.items, ...report.policyItems.filter(row => row.entryType === 'policy'), ...report.expenseEntries,...(report.unperiodizedExpenses || []),
+    ...(report.profitDetails || []).filter(row => row.profitStatus === 'pending').map(row => ({ ...row, status: 'management_pending', pendingCostReason: row.profitPendingReason }))];
   return all.filter(row => row.status !== 'confirmed').map(row => ({ eventKey: row.eventKey, entryNo: row.entryNo, status: row.status, reason: row.pendingCostReason || '尚未核实税务及分类依据' })).concat((report.discrepancies || []).filter(row => !row.resolved).map(row => ({ eventKey: row.eventKey, entryNo: row.entryNo, status: 'closed_difference', reason: row.reason })));
 }
 function snapshot(report, month, storeIds) {
   const data = { month, storeIds: storeIds.map(String).sort(), items: [...report.items].sort((a,b) => a.eventKey.localeCompare(b.eventKey)), policyItems: [...report.policyItems].sort((a,b) => a.eventKey.localeCompare(b.eventKey)), expenseEntries: [...report.expenseEntries].sort((a,b) => a.eventKey.localeCompare(b.eventKey)),
     managementAdjustments: [...(report.managementAdjustments || [])].sort((a,b) => a.eventKey.localeCompare(b.eventKey)),
+    managementEvents: [...(report.managementEvents || [])].sort((a,b) => a.eventKey.localeCompare(b.eventKey)),
     formulaVersion: 'FINANCIAL_PROFIT_V2_20261023' };
   return { data, hash: E.hash(data) };
 }

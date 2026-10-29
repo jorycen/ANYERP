@@ -148,7 +148,7 @@ function calculateOrder(rows) {
         reason: '缺少可确认的采购或归档库存成本；公司定价不能替代实际库存成本' });
     }
     detailItems.push({ itemId: row.itemId, productName: row.productName, quantity, unitCost: cost.unitCost,
-      costSource: cost.source, grossRevenue: allocatedGrossRevenue, netRevenue: itemNetRevenue, outputVat: itemOutputVat,
+      costSource: cost.source, costState: require('../../utils/costKnowledge').costState(cost.unitCost), grossRevenue: allocatedGrossRevenue, netRevenue: itemNetRevenue, outputVat: itemOutputVat,
       grossCost: itemGrossCost, bookCost: itemBookCost, estimatedInputVat: itemInputVat, outputRate, inputRate });
     netRevenue += itemNetRevenue;
     outputVat += itemOutputVat;
@@ -179,6 +179,7 @@ function calculateOrder(rows) {
     grossProfit,
     grossMargin: grossProfit === null || netRevenue <= 0 ? null : Number((grossProfit / netRevenue * 100).toFixed(2)),
     status: missingCost ? 'cost_pending' : 'estimated',
+    costState: missingCost ? 'pending' : detailItems.every(item => item.quantity === 0) ? 'not_applicable' : grossCost === 0 ? 'confirmed_zero' : 'known',
     missingCostItems,
     pendingCostReason: missingCostItems.map(item => `${item.productName || item.itemId || '商品'}：${item.reason}`).join('；'),
     detailItems,
@@ -214,15 +215,16 @@ async function resolveFilters(ctx) {
 async function getFinancialProfitOrders(ctx) {
   const filters = await resolveFilters(ctx);
   const result = await queryFinancialProfit(filters);
+  const displayItems = ctx.query.view === 'company' ? result.profitDetails || [] : result.items;
   const page = Math.max(1, Number(ctx.query.page) || 1);
   const pageSize = Math.min(100, Math.max(1, Number(ctx.query.pageSize) || 20));
   const offset = (page - 1) * pageSize;
   ctx.body = {
     code: 0,
     data: {
-      items: result.items.slice(offset, offset + pageSize),
-      total: result.items.length,
-      pagination: { page, pageSize, total: result.items.length },
+      items: displayItems.slice(offset, offset + pageSize),
+      total: displayItems.length,
+      pagination: { page, pageSize, total: displayItems.length },
       summary: result.summary,
       scopeLabel: !ctx.query.storeId && !ctx.query.regionId && (ctx.state.user.accessibleStoreIds || []).includes('*')
         ? '公司经营利润' : '所选范围财务经营利润',
@@ -265,7 +267,7 @@ async function getFinancialProfitOrders(ctx) {
       period: { startDate: filters.startDate, endDate: filters.endDate },
       storeSummaries: (result.storeSummaries || []).map(row => ({ ...row, operatingMetrics: metrics(operatingByStore.get(String(row.storeId)) || { salesAmount: 0, grossProfit: 0, approvedAdjustment: 0 }, row.summary) })), canReview: data.canReview,
       scopeLabel: '财务经营利润', total: data.total, pagination: data.pagination,
-      items: data.items.map(row => fields(row, ['eventKey', 'orderId', 'orderNo', 'entryNo', 'storeName', 'businessDate', 'grossCost', 'grossProfit', 'status', 'taxStatus'])),
+      items: data.items.map(row => fields(row, ['eventKey', 'orderId', 'orderNo', 'entryNo', 'entryTypeLabel', 'storeName', 'businessDate', 'grossCost', 'grossProfit', 'status', 'taxStatus', 'costState', 'salesGrossProfit', 'productGrossProfit', 'operationsGrossProfit', 'companyGrossProfit', 'profitStatus', 'profitPendingReason'])),
       expenseEntries: expenses.rows.map(row => fields(row, ['eventKey', 'expenseId', 'expenseType', 'storeId', 'storeName', 'category', 'businessDate', 'bookCost', 'amount', 'status', 'amortizationStartMonth', 'amortizationEndMonth'])),
       expensePagination: { page: expenses.page, total: expenses.total },
       issueItems: issues.rows.map(row => fields(row, ['eventKey', 'orderNo', 'entryNo', 'entryType', 'pendingCostReason'])),
@@ -279,6 +281,21 @@ async function exportFinancialProfitOrders(ctx) {
   const result = await queryFinancialProfit(filters);
   const XLSX = require('xlsx'), workbook = XLSX.utils.book_new();
   const append = (name, rows) => XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), name);
+  const value = amount => amount === null || amount === undefined ? '待核算' : amount;
+  const costLabels = { known: '成本已知', confirmed_zero: '已确认零成本', pending: '待补成本', not_applicable: '不适用' };
+  const detailHeaders = ['业务日期','类型','单号','关联销售单','门店','销售端毛利','产品端毛利','运营毛利','公司经营毛利','含税成本','成本状态','财务商品毛利','毛利状态','待核算原因','成本来源'];
+  const profitSheet = XLSX.utils.json_to_sheet((result.profitDetails || []).map(item => ({
+    业务日期: item.businessDate, 类型: item.entryTypeLabel, 单号: item.entryNo, 关联销售单: item.orderNo || '', 门店: item.storeName,
+    销售端毛利: value(item.salesGrossProfit), 产品端毛利: value(item.productGrossProfit), 运营毛利: value(item.operationsGrossProfit),
+    公司经营毛利: value(item.companyGrossProfit), 含税成本: item.grossCost ?? (item.costState === 'pending' ? '待核算' : '不适用'), 成本状态: costLabels[item.costState] || '待核对',
+    财务商品毛利: item.grossProfit ?? (['sale','return','adjustment'].includes(item.entryType) ? '待核算' : '不适用'),
+    毛利状态: item.profitStatus === 'pending' ? '待核算' : '已核算', 待核算原因: item.profitPendingReason || item.pendingCostReason || '',
+    成本来源: (item.detailItems || []).map(row => `${row.productName || row.itemId}：${row.costSource || '待核对'}`).join('；')
+  })), { header: detailHeaders });
+  XLSX.utils.book_append_sheet(workbook, profitSheet, '利润明细');
+  append('毛利汇总', [['销售端毛利','salesGrossProfit'],['产品端毛利','productGrossProfit'],['运营毛利','operationsGrossProfit'],
+    ['公司经营毛利合计','companyGrossProfit'],['已核算事件毛利小计','knownCompanyGrossProfit'],['毛利待核算笔数','profitPendingCount']]
+    .map(([label,key]) => ({ 指标: label, 金额或笔数: value(result.summary[key]) })));
   const summaryLabels = { netRevenue:'全部不含税销售净额', completeRevenue:'成本完整范围销售净额', completeBookCost:'成本完整范围存货成本',
     grossProfit:'成本完整范围商品毛利', grossMargin:'成本完整范围毛利率%', overallGrossMargin:'整体毛利率%', pendingOrderCount:'待补成本或依据变化笔数', pendingRevenue:'待核算销售净额', costCompleteness:'成本完整率%',
     taxPendingCount:'税务待核实笔数', policyPendingCount:'政策待分类笔数', expenseTaxPendingCount:'费用待核实笔数', unperiodizedExpenseCount:'未设置期间费用笔数',
@@ -289,7 +306,7 @@ async function exportFinancialProfitOrders(ctx) {
   append('销售退货及调整', result.items.map(item => ({
     业务日期: item.businessDate, 类型: item.entryType, 单号: item.entryNo, 原销售单: item.orderNo, 门店: item.storeName,
     含税销售额: item.grossRevenue, 不含税销售额: item.netRevenue, 销项税额: item.outputVat,
-    含税成本: item.grossCost, 分摊进项税额: item.deductibleInputVat, 存货成本: item.bookCost,
+    含税成本: item.status === 'cost_pending' ? '待核算' : item.grossCost, 分摊进项税额: item.status === 'cost_pending' ? '待核算' : item.deductibleInputVat, 存货成本: item.status === 'cost_pending' ? '待核算' : item.bookCost,
     商品毛利: item.grossProfit ?? '待补成本', 状态: item.status, 税务状态: item.taxStatus, 已关账: item.closed ? '是' : '否', 待核算原因: item.pendingCostReason || '', 核实依据: item.review?.evidence || ''
   })));
   append('政策调整', result.policyItems.map(item => ({ 日期: item.businessDate, 单号: item.entryNo, 原销售单: item.orderNo, 返利全额: item.policyAmount,
