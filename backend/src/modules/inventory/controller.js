@@ -3996,7 +3996,10 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
     const supplier = purchaseRequest?.supplier_id
       ? await Supplier.findByPk(purchaseRequest.supplier_id, { transaction: t })
       : null;
-    const productIds = inboundItems.map(item => item.product_id);
+    // Cancelled or deferred lines do not participate in this receipt. Validate
+    // active status only for submitted products; item binding and remaining
+    // quantities below still prevent receiving cancelled lines.
+    const productIds = [...new Set(items.map(item => item.productId).filter(Boolean))];
     await assertActiveProducts(Product, productIds, { transaction: t });
     const products = await Product.findAll({ where: { product_id: { [Op.in]: productIds }, is_deleted: 0, status: 1 }, transaction: t });
     const productMap = new Map();
