@@ -1,3 +1,4 @@
+const productSearch = require('../../utils/productSearch');
 /**
  * 商品管理控制器
  * 基础信息 / 分类管理 / 条码管理 / 价格管理
@@ -820,71 +821,9 @@ async function getProductList(ctx) {
     }
   }
 
-  // 处理关键字查询：支持空格分隔多关键字 AND 查询，同时支持条码查询
-  if (keyword) {
-    const keywords = keyword.trim().split(/\s+/).filter(k => k);
-    
-    // 1. 先查找匹配条码的商品ID
-    const matchedProductIdsByBarcode = new Set();
-    const barcodeMatches = await ProductBarcode.findAll({
-      where: {
-        status: 1,
-        [Op.or]: keywords.map(k => ({
-          barcode_code: { [Op.like]: `%${k}%` }
-        }))
-      },
-      attributes: ['product_id'],
-      raw: true
-    });
-    barcodeMatches.forEach(b => matchedProductIdsByBarcode.add(b.product_id));
-
-    const pnMatches = await ProductPn.findAll({
-      where: {
-        status: 1,
-        is_deleted: 0,
-        [Op.or]: keywords.map(k => ({ pn_code: { [Op.like]: `%${k}%` } }))
-      },
-      attributes: ['product_id'],
-      raw: true
-    });
-    pnMatches.forEach(row => matchedProductIdsByBarcode.add(row.product_id));
-
-    // 2. 构建商品字段查询条件（每个关键字都要匹配）
-    const productFieldConditions = [];
-    for (const k of keywords) {
-      productFieldConditions.push({
-        [Op.or]: [
-          { name: { [Op.like]: `%${k}%` } },
-          { product_code: { [Op.like]: `%${k}%` } },
-          { config: { [Op.like]: `%${k}%` } },
-          { brand: { [Op.like]: `%${k}%` } },
-          { series: { [Op.like]: `%${k}%` } },
-          { model: { [Op.like]: `%${k}%` } },
-          { processor: { [Op.like]: `%${k}%` } },
-          { memory: { [Op.like]: `%${k}%` } },
-          { storage: { [Op.like]: `%${k}%` } },
-          { color: { [Op.like]: `%${k}%` } },
-          { gpu: { [Op.like]: `%${k}%` } },
-          { accessory_type: { [Op.like]: `%${k}%` } }
-        ]
-      });
-    }
-
-    // 3. 合并查询条件：商品字段匹配 OR 条码匹配
-    if (matchedProductIdsByBarcode.size > 0) {
-      if (productFieldConditions.length > 0) {
-        where[Op.or] = [
-          { product_id: { [Op.in]: Array.from(matchedProductIdsByBarcode) } },
-          { [Op.and]: productFieldConditions }
-        ];
-      } else {
-        where.product_id = { [Op.in]: Array.from(matchedProductIdsByBarcode) };
-      }
-    } else if (productFieldConditions.length > 0) {
-      where[Op.and] = [...(where[Op.and] || []), ...productFieldConditions];
-    }
-  }
-
+  const searchScope = ctx.state.user?.accessibleStoreIds || [];
+  const search = productSearch.expressions(sequelize, keyword, 'Product', searchScope);
+  if (productSearch.tokens(keyword).length) where[Op.and] = [...(where[Op.and] || []), sequelize.literal(search.where)];
   const { count, rows } = await Product.findAndCountAll({
     where,
     include: [
@@ -892,7 +831,7 @@ async function getProductList(ctx) {
       { model: ProductPn, attributes: ['pn_id', 'pn_code', 'is_primary'], where: { status: 1, is_deleted: 0 }, required: false },
       { model: ProductPrice, attributes: ['standard_price'], required: false }
     ],
-    order: [['create_time', 'DESC'], ['product_id', 'DESC']],
+    order: [[sequelize.literal(search.rank), 'ASC'], [sequelize.literal(productSearch.stock(sequelize, 'Product', searchScope)), 'DESC'], ['product_id', 'ASC']],
     ...paginate({}, { page: parseInt(page), pageSize: parseInt(pageSize) }),
     distinct: true
   });
@@ -1961,46 +1900,15 @@ async function applyPendingProductPriceChanges() {
   return applied;
 }
 
-async function buildPriceProductWhere(keyword) {
-  const productWhere = { is_deleted: 0 };
-  if (keyword) {
-    const keywordLike = `%${keyword}%`;
-    const matchedPnRows = await ProductPn.findAll({
-      where: {
-        is_deleted: 0,
-        pn_code: { [Op.like]: keywordLike }
-      },
-      attributes: ['product_id'],
-      raw: true
-    });
-    const matchedBarcodeRows = await ProductBarcode.findAll({
-      where: {
-        barcode_type: 'manufacturer',
-        barcode_code: { [Op.like]: keywordLike },
-        status: 1
-      },
-      attributes: ['product_id'],
-      raw: true
-    });
-    const matchedProductIds = [...new Set([
-      ...matchedPnRows.map(row => row.product_id),
-      ...matchedBarcodeRows.map(row => row.product_id)
-    ].filter(Boolean))];
-    productWhere[Op.or] = [
-      { name: { [Op.like]: keywordLike } },
-      { product_code: { [Op.like]: keywordLike } },
-      { manufacturer_code: { [Op.like]: keywordLike } },
-      ...(matchedProductIds.length > 0 ? [{ product_id: { [Op.in]: matchedProductIds } }] : [])
-    ];
-  }
-  return productWhere;
+async function buildPriceProductWhere(keyword, scope = []) {
+ return {is_deleted:0, [Op.and]:[sequelize.literal(productSearch.expressions(sequelize,keyword,'Product',scope).where)]};
 }
 
 async function getPriceList(ctx) {
   await applyPendingProductPriceChanges();
 
   const { keyword, page = 1, pageSize = 20 } = ctx.query;
-  const productWhere = await buildPriceProductWhere(keyword);
+  const productWhere = await buildPriceProductWhere(keyword, ctx.state.user?.accessibleStoreIds || []);
 
   const { count, rows } = await Product.findAndCountAll({
     where: productWhere,
@@ -2008,7 +1916,7 @@ async function getPriceList(ctx) {
     include: [
       { model: ProductPrice, attributes: ['price_id', 'standard_price', 'retail_price', 'min_sale_price', 'cost_price', 'cost_price_locked', 'output_tax_rate', 'input_tax_rate', 'input_tax_deductible'] }
     ],
-    order: [['product_code', 'DESC']],
+    order: [[sequelize.literal(productSearch.expressions(sequelize, ctx.query.keyword, 'Product', ctx.state.user?.accessibleStoreIds || []).rank), 'ASC'], [sequelize.literal(productSearch.stock(sequelize, 'Product', ctx.state.user?.accessibleStoreIds || [])), 'DESC'], ['product_id', 'ASC']],
     ...paginate({}, { page: parseInt(page), pageSize: parseInt(pageSize) }),
     distinct: true
   });
@@ -2063,14 +1971,14 @@ async function getPriceList(ctx) {
 async function exportCostPrices(ctx) {
   await applyPendingProductPriceChanges();
 
-  const productWhere = await buildPriceProductWhere(ctx.query.keyword);
+  const productWhere = await buildPriceProductWhere(ctx.query.keyword, ctx.state.user?.accessibleStoreIds || []);
   const products = await Product.findAll({
     where: productWhere,
     attributes: ['product_id', 'product_code', 'manufacturer_code', 'name', 'unit', 'category'],
     include: [
       { model: ProductPrice, attributes: ['standard_price', 'cost_price'] }
     ],
-    order: [['product_code', 'DESC']]
+    order: [[sequelize.literal(productSearch.expressions(sequelize, ctx.query.keyword, 'Product', ctx.state.user?.accessibleStoreIds || []).rank), 'ASC'], [sequelize.literal(productSearch.stock(sequelize, 'Product', ctx.state.user?.accessibleStoreIds || [])), 'DESC'], ['product_id', 'ASC']]
   });
 
   const productIds = products.map(product => product.product_id).filter(Boolean);
@@ -3278,41 +3186,9 @@ async function searchProduct(ctx) {
 
   const kw = keyword.trim();
 
-  const barcodeRecords = await ProductBarcode.findAll({
-    where: {
-      barcode_code: { [Op.like]: `%${kw}%` },
-      status: 1
-    },
-    attributes: ['product_id'],
-    raw: true
-  });
-
-  const productIdsFromBarcode = [...new Set(barcodeRecords.map(b => b.product_id))];
-
-  const pnMatches = await ProductPn.findAll({
-    where: {
-      pn_code: { [Op.like]: `%${kw}%` },
-      is_deleted: 0
-    },
-    attributes: ['product_id'],
-    raw: true
-  });
-  const productIdsFromPn = [...new Set(pnMatches.map(row => row.product_id))];
-
-  const snRecords = await ProductSn.findAll({
-    where: {
-      [Op.or]: [
-        { pn_code: { [Op.like]: `%${kw}%` } },
-        { sn_code: { [Op.like]: `%${kw}%` } }
-      ],
-      is_deleted: 0,
-      status: 'in_stock'
-    },
-    attributes: ['product_id', 'pn_code'],
-    raw: true
-  });
-
-  const productIdsFromSn = [...new Set(snRecords.map(s => s.product_id))];
+  const searchScope = ctx.state.user?.accessibleStoreIds || [];
+  const search = productSearch.expressions(sequelize, kw, 'Product', searchScope);
+  const snRecords = [];
   const snPnsByProduct = {};
   for (const s of snRecords) {
     if (!snPnsByProduct[s.product_id]) snPnsByProduct[s.product_id] = new Set();
@@ -3320,27 +3196,11 @@ async function searchProduct(ctx) {
   }
 
   const where = { is_deleted: 0, status: 1 };
-  const orConditions = [
-    { name: { [Op.like]: `%${kw}%` } },
-    { product_code: { [Op.like]: `%${kw}%` } },
-    { manufacturer_code: { [Op.like]: `%${kw}%` } }
-  ];
-
-  if (productIdsFromBarcode.length > 0) {
-    orConditions.push({ product_id: { [Op.in]: productIdsFromBarcode } });
-  }
-  if (productIdsFromPn.length > 0) {
-    orConditions.push({ product_id: { [Op.in]: productIdsFromPn } });
-  }
-  if (productIdsFromSn.length > 0) {
-    orConditions.push({ product_id: { [Op.in]: productIdsFromSn } });
-  }
-
-  where[Op.or] = orConditions;
+  where[Op.and] = [sequelize.literal(search.where)];
 
   const rows = await Product.findAll({
     where,
-    attributes: ['product_id', 'product_code', 'name', 'category', 'config', 'brand', 'series', 'model', 'manufacturer_code', 'need_sn', 'unit', 'status', 'is_deleted'],
+    attributes: [[sequelize.literal(search.rank), 'search_rank'], 'product_id', 'product_code', 'name', 'category', 'config', 'brand', 'series', 'model', 'manufacturer_code', 'need_sn', 'unit', 'status', 'is_deleted'],
     include: [
       { model: ProductPrice, attributes: ['standard_price', 'retail_price', 'min_sale_price'] }
     ],
@@ -3382,6 +3242,7 @@ async function searchProduct(ctx) {
       ];
       const uniquePnList = [...new Set(pnList)];
       return {
+        _search_rank: Number(p.get('search_rank')),
         product_id: p.product_id,
         product_code: p.product_code,
         name: p.name,
@@ -3413,16 +3274,8 @@ async function searchProduct(ctx) {
         pn_list: uniquePnList
       };
     })
-    .sort((a, b) => {
-      if (a.stock_rank !== b.stock_rank) return a.stock_rank - b.stock_rank;
-      if (a.stock_rank === 0 && b.current_store_stock_qty !== a.current_store_stock_qty) {
-        return b.current_store_stock_qty - a.current_store_stock_qty;
-      }
-      if (a.stock_rank === 1 && b.other_store_stock_qty !== a.other_store_stock_qty) {
-        return b.other_store_stock_qty - a.other_store_stock_qty;
-      }
-      return String(b.product_code || '').localeCompare(String(a.product_code || ''));
-    });
+    .sort((a,b)=>a._search_rank-b._search_rank || b.stock_qty-a.stock_qty || String(a.product_id).localeCompare(String(b.product_id)))
+    .map(({_search_rank,...row})=>row);
 
   const offset = (pageNum - 1) * sizeNum;
   const pagedList = list.slice(offset, offset + sizeNum);

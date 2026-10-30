@@ -1,3 +1,4 @@
+const productSearch = require('../../utils/productSearch');
 const { assertSnEligible, isSpecialWarehouse } = require('../../utils/snEligibility');
 const { normalizeSnCode } = require('../../utils/snCode');
 /**
@@ -650,10 +651,8 @@ async function getSnInventoryList(ctx) {
     where.push('sn.STATUS IN (:statusValues)');
     replacements.statusValues = statusValues;
   }
-  if (keyword) {
-    where.push('(sn.SN_CODE LIKE :keyword OR sn.PN_CODE LIKE :keyword OR p.NAME LIKE :keyword OR p.PRODUCT_CODE LIKE :keyword)');
-    replacements.keyword = `%${String(keyword).trim()}%`;
-  }
+  const snSearch = productSearch.expressions(sequelize, keyword, 'p', storeId ? [storeId] : allowedStoreIds, 'sn');
+  if (productSearch.tokens(keyword).length) where.push(snSearch.where);
   if (resourceType) {
     const statusSql = resourceStatus ? ' AND rr.CURRENT_STATUS = :resourceStatus' : '';
     where.push(`EXISTS (
@@ -740,7 +739,7 @@ async function getSnInventoryList(ctx) {
        sn.INBOUND_PRICE AS purchase_cost,
        sn.SUPPLIER_NAME AS purchase_supplier_name` : ''}
      ${joins}${whereSql}
-      ORDER BY ${sortBy === 'specialRecent' && String(specialOnly) === '1' ? 'sp.UPDATE_TIME DESC, sn.SN_ID DESC,' : ''}
+      ORDER BY ${productSearch.tokens(keyword).length ? snSearch.rank + ' ASC, ' + productSearch.stock(sequelize, 'p', storeId ? [storeId] : allowedStoreIds) + ' DESC, ' : ''}${sortBy === 'specialRecent' && String(specialOnly) === '1' ? 'sp.UPDATE_TIME DESC, sn.SN_ID DESC,' : ''}
                (COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME) IS NULL) ASC,
                TIMESTAMPDIFF(SECOND, COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME), NOW()) DESC,
                COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME) ASC,
@@ -1810,26 +1809,11 @@ async function getList(ctx) {
     const productWhere = { is_deleted: 0, status: 1 };
     let historicalSnProductIds = [];
     if (category) productWhere.category = category;
-    if (keyword) {
-      const historicalSnRows = storeIds.length > 0
-        ? await ProductSn.findAll({
-          where: {
-            pn_code: { [Op.like]: `%${String(keyword).trim()}%` },
-            status: 'in_stock',
-            is_deleted: 0,
-            store_id: { [Op.in]: storeIds }
-          },
-          attributes: ['product_id'],
-          group: ['product_id'],
-          raw: true
-        })
-        : [];
-      historicalSnProductIds = historicalSnRows.map(row => row.product_id).filter(Boolean);
-      productWhere[Op.or] = buildInventoryProductKeywordConditions(keyword, historicalSnProductIds);
-    }
-
+    const search = productSearch.expressions(sequelize, keyword, 'Product', storeIds);
+    if (productSearch.tokens(keyword).length) productWhere[Op.and] = [sequelize.literal(search.where)];
     const allProducts = await Product.findAll({
       where: productWhere,
+      attributes: {include:[[sequelize.literal(search.rank),'search_rank']]},
       include: [{ model: ProductPrice, attributes: ['standard_price', 'retail_price', 'min_sale_price', 'cost_price'] }],
       order: [['create_time', 'DESC']]
     });
@@ -2137,10 +2121,12 @@ async function getList(ctx) {
         },
         _category_order: getProductCategoryOrder(p, categoryOrderMap),
         _category_rank: getInventoryCategoryRank(p.category, p.accessory_type, p.name, p.config),
-        _keyword_relevance: getInventoryKeywordRelevance(p, keyword, historicalSnProductIds),
+        _keyword_relevance: -Number(p.get('search_rank') || 0),
         _create_time: p.create_time
       };
     }).sort((a, b) => {
+      if (productSearch.tokens(keyword).length) { const relevance = b._keyword_relevance-a._keyword_relevance; if (relevance) return relevance; }
+      if (productSearch.tokens(keyword).length) return Number(b.total_stock_qty || 0)-Number(a.total_stock_qty || 0) || String(a.product_id).localeCompare(String(b.product_id));
       const modelCompare = compareInventoryModelRows(a, b, modelFilter);
       if (modelCompare !== 0) return modelCompare;
       const salesStockCompare = Number(b.total_stock_qty || 0) - Number(a.total_stock_qty || 0);
