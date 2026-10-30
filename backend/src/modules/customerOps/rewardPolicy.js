@@ -33,7 +33,7 @@ function availability(item, balance, used = 0, hasStore = true, now = new Date()
   if (!item.on_sale) reason = '已下架';
   else if (item.valid_start_time && new Date(item.valid_start_time) > now) reason = '尚未开始';
   else if (item.valid_end_time && new Date(item.valid_end_time) <= now) reason = '兑换已结束';
-  else if (item.stock !== null && item.stock <= 0) reason = '已兑完';
+  else if (!['gift', 'product'].includes(item.kind) && item.stock !== null && item.stock <= 0) reason = '已兑完';
   else if (!hasStore) reason = '暂无适用门店';
   else if (item.per_member_limit !== null && used >= item.per_member_limit) reason = '已达限兑次数';
   const eligible = !reason;

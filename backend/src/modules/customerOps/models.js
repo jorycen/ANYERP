@@ -17,7 +17,7 @@ const text = (n = 255) => ({ type: D.STRING(n) });
 const integer = (value = '0') => ({ type: D.DECIMAL(30, 0), allowNull: false, defaultValue: value });
 const unique = (...fields) => ({ unique: true, fields });
 const Member = define('T_CUSTOMER_MEMBER', {
-  phone: text(32), phone_verified_at: D.DATE, source_store_id: text(32),
+  purchase_phone: text(32), phone: text(32), phone_verified_at: D.DATE, source_store_id: text(32),
   status: { type: D.STRING(16), defaultValue: 'active', allowNull: false }
 });
 const Identity = define('T_MEMBER_WECHAT_IDENTITY', {

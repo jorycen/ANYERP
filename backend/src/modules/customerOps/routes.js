@@ -38,20 +38,30 @@ customer.post('/auth/wechat', limit, async ctx => {
     return row;
   });
   if (member.status !== 'active') S.fail(403, '会员账号不可用');
-  ctx.body = { token: S.sign(member), memberId: member.id };
+  ctx.body = { token: S.sign(member), memberId: member.id, phoneAuthorized: Boolean(member.phone && member.phone_verified_at) };
 });
 customer.use(S.customerAuth);
 customer.use(limit);
 customer.post('/member/phone', async ctx => {
-  const phone = V.phoneInput(ctx.request.body.phone);
-  await ctx.state.member.update({ phone, phone_verified_at: null });
-  ctx.body = { saved: true, verified: false };
+  const phone = V.phoneInput(await W.phone(ctx.request.body.code));
+  await V.transaction(async transaction => {
+    const member = await M.Member.findByPk(ctx.state.member.id, V.lock(transaction));
+    if (member.phone && member.phone !== phone) S.fail(409, '授权号码与已登记号码不一致，请联系门店核验');
+    await member.update({ phone, phone_verified_at: new Date() }, { transaction });
+  });
+  ctx.body = { saved: true, verified: true, phoneAuthorized: true };
 });
 customer.get('/member/profile', async ctx => {
   const member = ctx.state.member;
   const accounts = await M.Account.findAll({ where: { member_id: member.id } });
-  ctx.body = { memberId: member.id, phone: member.phone ? member.phone.replace(/^(\d{3})\d+(\d{4})$/, '$1****$2') : null, accounts };
+  ctx.body = { memberId: member.id, phoneAuthorized: Boolean(member.phone && member.phone_verified_at), phone: member.phone ? member.phone.replace(/^(\d{3})\d+(\d{4})$/, '$1****$2') : null, accounts };
 });
+customer.post('/member/purchase-phone', async ctx => {
+ const phone=V.phoneInput(ctx.request.body.phone);
+ await ctx.state.member.update({purchase_phone:phone});
+ ctx.body={saved:true};
+});
+customer.get('/member/pending-points', async ctx => {ctx.body=await V.pendingClaims(ctx.state.member);});
 customer.post('/member/bind-order', async ctx => { ctx.body = await V.bind(ctx.state.member, ctx.request.body); });
 customer.post('/member/claim-orders', async ctx => { ctx.body = await V.claimByPhone(ctx.state.member, ctx.request.body); });
 customer.get('/member/points', async ctx => {

@@ -287,6 +287,14 @@ async function ensureApprovalSchemaCompatibility() {
 }
 
 async function runSchemaMigrations() {
+  const [memberTables] = await sequelize.query("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='T_CUSTOMER_MEMBER'");
+  if (memberTables.length) {
+    await checkAndAddColumn('T_CUSTOMER_MEMBER', 'purchase_phone', 'VARCHAR(32) NULL');
+    const [columns] = await sequelize.query("SHOW COLUMNS FROM T_CUSTOMER_MEMBER LIKE 'purchase_phone'");
+    if (!columns.length) throw new Error('会员购机手机号字段迁移失败');
+  }
+
+
   await require('../modules/customerOps/schema').ensureRewardFulfillmentSchema();
   await ensureProfitAdjustmentCorrectionSchema();
   await ensureExpenseRemarkSchema();

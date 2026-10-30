@@ -95,6 +95,10 @@ async function paymentMethods(storeId, transaction) {
     account_name: accounts.find(a => a.account_id === m.settlement_account_id).account_name }));
 }
 async function fulfill(row, store, user, evidence, transaction) {
+  if (physical(row.snapshot) && row.snapshot.inventory_policy === 'at_redemption') {
+    if (await availability(row.snapshot, store.store_id, transaction, true) < 1) S.fail(409, '核销失败：本门店商品可用库存不足');
+    await reserve(row.snapshot, row, store.store_id, transaction);
+  }
   const cash = cents(row.snapshot.cash_required || '0');
   const fields = {};
   if (cash) {
@@ -111,7 +115,7 @@ async function fulfill(row, store, user, evidence, transaction) {
   }
   let cost = 0n;
   if (physical(row.snapshot)) {
-    if (!row.snapshot.product_id || !row.snapshot.pickup_store_id) S.fail(409, '历史礼品凭证未关联商品及领取门店，请由管理员核对处理');
+    if (!row.snapshot.product_id || (!row.snapshot.pickup_store_id && row.snapshot.inventory_policy !== 'at_redemption')) S.fail(409, '历史礼品凭证未关联商品及领取门店，请由管理员核对处理');
     const reservations = await M.Reservation.findAll({ where: { exchange_id: row.id, status: 'reserved', expires_at: { [Op.gt]: new Date() } }, order: [['inventory_id', 'ASC']], transaction });
     if (reservations.reduce((s, r) => s + r.quantity, 0) !== row.snapshot.units_per_reward) S.fail(409, '库存预占不存在或已过期');
     const product = await DB.Product.findByPk(row.snapshot.product_id, { transaction });
