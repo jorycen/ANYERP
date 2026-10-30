@@ -389,7 +389,6 @@
           <el-descriptions-item v-else label="开票金额">¥{{ formatMoney(correctionPreview.beforeInvoiceAmount) }} → ¥{{ formatMoney(correctionPreview.afterInvoiceAmount) }}</el-descriptions-item>
           <el-descriptions-item v-if="adjustmentForm.adjustmentType === 'invoice_amount'" label="税费扣减">¥{{ formatMoney(correctionPreview.vatBefore) }} → ¥{{ formatMoney(correctionPreview.vatAfter) }}</el-descriptions-item>
           <el-descriptions-item label="销售端毛利">¥{{ formatMoney(correctionPreview.salesBefore) }} → ¥{{ formatMoney(correctionPreview.salesAfter) }}（变化 ¥{{ formatMoney(correctionPreview.salesDelta) }}）</el-descriptions-item>
-          <el-descriptions-item label="产品端毛利"><template v-if="adjustmentForm.adjustmentType === 'invoice_amount'">本次不调整产品端提货差毛利，原核算状态保持</template><template v-else-if="correctionPreview.productProfitVisible">¥{{ formatMoney(correctionPreview.productBefore) }} → ¥{{ formatMoney(correctionPreview.productAfter) }}（变化 ¥{{ formatMoney(correctionPreview.productDelta) }}）</template><template v-else>当前账号无产品毛利查看权限，由有权限的审核人核对</template></el-descriptions-item>
           <el-descriptions-item label="处理说明">{{ correctionPreview.note }}</el-descriptions-item>
         </el-descriptions>
         <el-form-item label="证明附件">
@@ -427,9 +426,6 @@
               <div v-if="row.adjustment_type === 'price_correction'">结算定价：¥{{ formatMoney(row.correction_before_price) }} → ¥{{ formatMoney(row.correction_after_price) }}</div>
               <template v-else><div>开票金额：¥{{ formatMoney(row.correction_before_invoice_amount) }} → ¥{{ formatMoney(row.correction_after_invoice_amount) }}</div><div>税费扣减：¥{{ formatMoney(row.correction_vat_before) }} → ¥{{ formatMoney(row.correction_vat_after) }}</div></template>
               <div>销售端毛利：¥{{ formatMoney(row.correction_sales_before) }} → ¥{{ formatMoney(row.correction_sales_after) }}</div>
-              <div v-if="row.adjustment_type === 'invoice_amount'">{{ row.correction_product_note }}</div>
-              <div v-else-if="row.correction_product_profit_visible">产品端毛利：¥{{ formatMoney(row.correction_product_before) }} → ¥{{ formatMoney(row.correction_product_after) }}</div>
-              <div v-else>产品端毛利：当前账号无查看权限</div>
               <div>依据：{{ row.correction_evidence }}</div>
             </div>
             <span v-else :class="Number(row.signed_amount) >= 0 ? 'profit-positive' : 'profit-negative'">
