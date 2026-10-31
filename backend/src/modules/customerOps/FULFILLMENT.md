@@ -31,3 +31,8 @@
 3. 更新后端及Web构建；分别在真实 `sdxcx`、`member` 项目编译联调，小程序不上传GitHub。2026-10-28排查扫码缺字段后已在实际数据库执行配套迁移；新增启动就绪检查复用同一迁移，字段及保护规则未就绪时不开放业务接口。
 4. 管理员先为实物礼品选择ERP商品和每份数量；历史凭证由管理员逐张核对补建预占。
 5. 自动验证覆盖并发抢兑、指定门店、库存保护、重复核销、收款及成本错误回滚、过期释放、纯积分负毛利、SN出库、分币尾差、统计权限和原会员回归。正式上线前仍需受控真机收款和跨端对账。
+
+
+## 2026-10-31 多商品备选交付
+
+新实物权益product_options为1至50个{product_id,units_per_reward,name}备选，领取时冻结，核销product_id必须单选其一。preview返回productOptions的needSn与本店available。核销仅对所选商品事务预占/出库和核算成本，补差与毛利比例不变；旧凭证fallback到原product_id。迁移由migrate-reward-fulfillment及启动schema检查增加Reward.product_options和Redemption.product_id/units_per_reward。上线前先迁移、部署API，再发布Web及编译sdxcx。

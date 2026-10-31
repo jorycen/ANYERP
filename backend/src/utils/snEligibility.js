@@ -4,8 +4,8 @@ const { sequelize } = require('../config/database');
 const isSpecialWarehouse = type => ['display_qty', 'rental_demo_qty'].includes(type);
 const fail = message => { throw Object.assign(new Error(message), { status: 409 }); };
 
-// Location is a physical fact. Only an approved, executed purchase can clear
-// special-warehouse lineage; prices and editable source labels are not proof.
+// A completed outbound followed by a new inbound starts a new stock cycle.
+// Historical evidence remains intact; prices/editable labels cannot reset it.
 function evaluateEvidence(sn, location, entries = [], purchases = []) {
   const uncertain = entries.some(entry => !Number(entry.epoch));
   const latest = Math.max(0, ...entries.map(entry => Number(entry.epoch) || 0));
@@ -39,7 +39,7 @@ async function inspectSnEligibility(sns, transaction = null) {
       AND i.OPERATION_TYPE='INBOUND' AND i.INVENTORY_TYPE IN ('display_qty','rental_demo_qty')`);
   const logs = await select(`SELECT SN_ID snId,ACTION action,REMARK remark,UNIX_TIMESTAMP(CREATE_TIME)*1000 epoch
     FROM T_SN_LOG WHERE SN_ID IN (:snIds)
-      AND ACTION IN ('batch_inbound','special_warehouse_purchase','special_warehouse_flow','location_adjust')`);
+      AND ACTION IN ('batch_inbound','special_warehouse_purchase','special_warehouse_flow','location_adjust','stock_cycle_reentry')`);
   const approvals = await select(`SELECT i.SOURCE_SN_ID snId,p.REQUEST_NO document FROM T_PURCHASE_REQUEST_ITEM i
     JOIN T_PURCHASE_REQUEST p ON p.REQUEST_ID=i.REQUEST_ID
     WHERE i.SOURCE_SN_ID IN (:snIds) AND p.STATUS='approved'`);
@@ -59,9 +59,11 @@ async function inspectSnEligibility(sns, transaction = null) {
     }));
     entries.push(...history.filter(log => log.action === 'special_warehouse_flow'
       || (log.action === 'location_adjust' && /[→>]\s*(?:租赁样机仓|铺货仓)/.test(log.remark || ''))));
+    const resetEpoch = Math.max(0,...history.filter(log=>log.action==='stock_cycle_reentry').map(log=>Number(log.epoch)||0));
+    const currentEntries = resetEpoch ? entries.filter(entry=>!Number(entry.epoch)||Number(entry.epoch)>=resetEpoch) : entries;
     const executed = history.filter(log => log.action === 'special_warehouse_purchase'
       && approvals.some(p => String(p.snId) === String(sn.sn_id) && String(log.remark || '').includes(p.document)));
-    result.set(String(sn.sn_id), evaluateEvidence(sn, locations.find(row => String(row.snId) === String(sn.sn_id)), entries, executed));
+    result.set(String(sn.sn_id), evaluateEvidence(resetEpoch ? {...sn, source_type:null, inventory_type:sn.inventory_type, store_id:sn.store_id} : sn, locations.find(row => String(row.snId) === String(sn.sn_id)), currentEntries, executed));
   }
   return result;
 }
@@ -73,7 +75,8 @@ async function assertSnEligible(sn, { transaction = null, targetLocation = null,
     && String(targetLocation.store_id) === String(targetStoreId || sn.store_id);
   // Retired rows may point at an old location, but their lineage still applies.
   if (!reentry && !state.locationValid) fail(`SN [${sn.sn_code}] 门店或库位信息不一致，请核对库存记录`);
-  if (state.restricted) {
+  const completedReentry = reentry && sn.status === 'out_stock' && targetValid;
+  if (state.restricted && !completedReentry) {
     if (!movement || (targetLocation && (!targetValid || !isSpecialWarehouse(targetLocation.type)))) {
       fail(`SN [${sn.sn_code}] 属于特殊仓来源，仅允许在特殊仓流转；进入其他仓或销售前须完成采购转换`);
     }
@@ -82,4 +85,13 @@ async function assertSnEligible(sn, { transaction = null, targetLocation = null,
   return state;
 }
 
-module.exports = { isSpecialWarehouse, evaluateEvidence, inspectSnEligibility, assertSnEligible };
+async function recordSnReentry(sn, previousStatus, {transaction, actor, document} = {}) {
+  if (previousStatus !== 'out_stock') return;
+  if (!transaction) throw new Error('SN重新入库记录必须与入库使用同一事务');
+  await require('../models').SnLog.create({
+    log_id:require('crypto').randomBytes(16).toString('hex'),sn_id:sn.sn_id,sn_code:sn.sn_code,
+    product_id:sn.product_id,store_id:sn.store_id,action:'stock_cycle_reentry',
+    remark:JSON.stringify({document,fromStatus:previousStatus,toType:sn.inventory_type,locationId:sn.location_id}),create_user:String(actor||'system')
+  },{transaction});
+}
+module.exports = { isSpecialWarehouse, evaluateEvidence, inspectSnEligibility, assertSnEligible, recordSnReentry };

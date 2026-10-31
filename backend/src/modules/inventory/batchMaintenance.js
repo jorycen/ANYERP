@@ -1,4 +1,4 @@
-const { assertSnEligible } = require('../../utils/snEligibility');
+const { assertSnEligible, recordSnReentry } = require('../../utils/snEligibility');
 const { normalizeSnCode } = require('../../utils/snCode');
 const XLSX = require('xlsx');
 const { Op } = require('sequelize');
@@ -626,6 +626,7 @@ async function createSnInbound(item, application, transaction) {
     pnCode: item.pn_code,
     transaction
   });
+  const previousSnStatus = existing?.status;
   const sn = existing || await ProductSn.create({
     sn_id: generateUUID(),
     product_id: item.product_id,
@@ -663,6 +664,8 @@ async function createSnInbound(item, application, transaction) {
       is_deleted: 0
     }, { transaction });
   }
+
+  await recordSnReentry(sn,previousSnStatus,{transaction,actor:application.applicant_name || application.reviewer_name,document:application.application_no});
 
   const resourceTypes = parseJsonArray(item.resource_types);
   for (const resourceType of resourceTypes) {

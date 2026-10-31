@@ -5,6 +5,25 @@ const { evaluateEvidence, assertSnEligible, inspectSnEligibility } = require('..
 const sn = { sn_id: 'S1', sn_code: 'SN1', store_id: 'A', inventory_type: 'normal_qty', inbound_price: 0 };
 const location = { location_id: 'L1', store_id: 'A', type: 'normal_qty', status: 1 };
 
+test('completed outbound permits reentry into a new valid warehouse, but not in-stock or reserved',async()=>{
+  for(const status of ['out_stock','in_stock','reserved']){
+    const current={...sn,status,inventory_type:'rental_demo_qty'};
+    await evidenceStub({current,source:{...location,type:'rental_demo_qty'}},async transaction=>{
+      const run=()=>assertSnEligible(current,{transaction,reentry:true,movement:true,targetLocation:location});
+      if(status==='out_stock')await run();else await assert.rejects(run(),/采购转换/);
+      await assert.rejects(assertSnEligible(current,{transaction,reentry:true,movement:true,targetLocation:{...location,status:0}}));
+    });
+  }
+});
+
+test('new stock cycle ignores old special history and preserves new special restrictions',async()=>{
+  const logs=[{snId:'S1',action:'location_adjust',remark:'销售仓 → 租赁样机仓',epoch:100},{snId:'S1',action:'stock_cycle_reentry',epoch:200}];
+  await evidenceStub({logs},async transaction=>{assert.equal((await inspectSnEligibility([sn],transaction)).get('S1').restricted,false);});
+  await evidenceStub({logs:[...logs,{snId:'S1',action:'location_adjust',remark:'样品仓 → 租赁样机仓',epoch:300}]},async transaction=>{
+    assert.equal((await inspectSnEligibility([sn],transaction)).get('S1').restricted,true);
+  });
+});
+
 function evidenceStub({ current = sn, source = location, entries = [], approvals = [], logs = [] }, run) {
   const original = sequelize.query;
   const transaction = { id: 'TEST_TRANSACTION' };

@@ -1,3 +1,4 @@
+const RP = require('./rewardProducts');
 const { Op } = require('sequelize');
 const crypto = require('crypto');
 const { sequelize } = require('../../config/database');
@@ -228,7 +229,7 @@ async function exchange(member, rewardId, key, quotedPoints, quotedCash, storeId
     const row = await M.Exchange.create({ id, member_id: member.id, account_id: balance.id, reward_id: rewardId,
       distributor_id: reward.distributor_id, points: String(reward.points), request_key: key,
       expires_at: new Date(Date.now() + reward.valid_days * 86400000), code_hash: S.hash(code),
-      snapshot: { product_id: reward.product_id, units_per_reward: reward.units_per_reward, inventory_policy: F.physical(reward) ? 'at_redemption' : null, pickup_store_id: null, name: reward.name, image: reward.image, kind: reward.kind, instructions: reward.instructions,
+      snapshot: { product_options: F.physical(reward) ? RP.options(reward) : null, product_id: reward.product_id, units_per_reward: reward.units_per_reward, inventory_policy: F.physical(reward) ? 'at_redemption' : null, pickup_store_id: null, name: reward.name, image: reward.image, kind: reward.kind, instructions: reward.instructions,
         description: reward.description, cash_required: P.money(reward.cash_required), self_only: reward.self_only,
         coupon_value: P.money(reward.coupon_value), coupon_min_spend: P.money(reward.coupon_min_spend), coupon_scope: reward.coupon_scope,
         stores: selectedStores.map(s => ({ store_id: s.store_id, distributor_id: s.distributor_id, name: s.name, address: s.address })),
@@ -252,7 +253,11 @@ async function redeem(code, storeId, user, confirm, expectedId, evidence = {}) {
     if (!RS.accepts(row.snapshot, store, row.distributor_id)) S.fail(403, '该权益不适用于本店');
     const used = await M.Redemption.findOne({ where: { exchange_id: row.id }, transaction: t });
     const member = await M.Member.findByPk(row.member_id, { transaction: t });
-    const result = { id: row.id, name: row.snapshot.name, points: String(row.points), expiresAt: row.expires_at,
+    const productOptions = F.physical(row.snapshot) ? await Promise.all(RP.options(row.snapshot).map(async choice=>{
+      const product=await require('../../models').Product.findByPk(choice.product_id,{transaction:t});
+      return {...choice,name:product?.name || choice.name || choice.product_id,needSn:Boolean(product?.need_sn),available:product&&!product.is_deleted?await F.availability({...row.snapshot,...choice},storeId,t):0};
+    })) : [];
+    const result = { productOptions, id: row.id, name: row.snapshot.name, points: String(row.points), expiresAt: row.expires_at,
       paymentMethods: await F.paymentMethods(storeId, t), productId: row.snapshot.product_id, unitsPerReward: row.snapshot.units_per_reward,
       needSn: row.snapshot.product_id ? Boolean((await require('../../models').Product.findByPk(row.snapshot.product_id, { transaction: t }))?.need_sn) : false,
       requiresInventoryBinding: F.physical(row.snapshot) && !row.snapshot.product_id,
@@ -279,7 +284,9 @@ async function redeem(code, storeId, user, confirm, expectedId, evidence = {}) {
       if (!evidence.payment_method_id) S.fail(400, '请选择收款方式');
     }
     if (String(evidence.receipt_reference || '').length > 128) S.fail(400, '凭据编号不能超过128字');
-    const fulfillment = await F.fulfill(row, store, user, evidence, t);
+    const selectedSnapshot = F.physical(row.snapshot) ? RP.select(row.snapshot,evidence.product_id) : row.snapshot;
+    const fulfillment = await F.fulfill({id:row.id,expires_at:row.expires_at,snapshot:selectedSnapshot}, store, user, evidence, t);
+    if(F.physical(selectedSnapshot)) Object.assign(fulfillment,{product_id:selectedSnapshot.product_id,units_per_reward:selectedSnapshot.units_per_reward});
     const redemption = await M.Redemption.create({ ...fulfillment, exchange_id: row.id, member_id: row.member_id,
       distributor_id: row.distributor_id, store_id: storeId, staff_id: user.staffId,
       cash_received: cash, receipt_reference: String(evidence.receipt_reference || '').trim() || null, coupon_check }, { transaction: t });

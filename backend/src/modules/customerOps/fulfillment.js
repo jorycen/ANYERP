@@ -32,7 +32,7 @@ async function availability(item, storeId, transaction, locked = false) {
   return Math.floor(available / item.units_per_reward);
 }
 // Public catalogue reads all store balances together; never one query per gift/store pair.
-async function catalogueStock(items, storeIds) {
+async function catalogueStockSingle(items, storeIds) {
   const physicalItems = items.filter(physical);
   const ids = [...new Set(physicalItems.map(i => i.product_id).filter(Boolean))];
   const result = new Map(physicalItems.map(i => [i.id, new Map(storeIds.map(id => [id, 0]))]));
@@ -60,6 +60,12 @@ async function catalogueStock(items, storeIds) {
   }
   for (const item of physicalItems) for (const storeId of storeIds) result.get(item.id).set(storeId, Math.floor((balances.get(`${item.product_id}:${storeId}`) || 0) / item.units_per_reward));
   return result;
+}
+async function catalogueStock(items, storeIds) {
+ const RP=require('./rewardProducts');
+ const choices=items.filter(physical).flatMap(item=>RP.options(item).map((choice,i)=>({...choice,kind:item.kind,id:item.id+':'+i})));
+ const stocks=await catalogueStockSingle(choices,storeIds);
+ return new Map(items.filter(physical).map(item=>[item.id,new Map(storeIds.map(storeId=>[storeId,RP.options(item).reduce((sum,choice,i)=>sum+(stocks.get(item.id+':'+i)?.get(storeId)||0),0)]))]));
 }
 async function reserve(item, exchange, storeId, transaction) {
   if (!physical(item)) return;

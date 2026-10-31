@@ -1029,15 +1029,9 @@ const onProductNameInput = () => {
   syncAutoProductName()
 }
 
-const productNameWatchSource = () => [
-  productForm.categoryId,
-  productForm.brand,
-  productForm.series,
-  productForm.model,
-  categoryFields.value.map(field => field.field_key).join('|'),
-  JSON.stringify(productForm.attributes || {})
-]
-watch(productNameWatchSource, syncAutoProductName)
+// Observe the resulting automatic name, including standard fields such as
+// memory/storage/color that are stored outside attributes.
+watch(autoProductName, syncAutoProductName)
 
 function findCategoryByPath(tree, path) {
   if (!path || !tree) return null

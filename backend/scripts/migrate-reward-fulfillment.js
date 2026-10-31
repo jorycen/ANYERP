@@ -1,7 +1,7 @@
 // Preview by default. No historical stock, money or points are rewritten.
 const { sequelize } = require('../src/config/database');
 const M = require('../src/modules/customerOps/models');
-const columns = { Reward: ['product_id', 'units_per_reward'], Redemption: ['payment_method_id', 'account_id', 'fund_transaction_id', 'outbound_id', 'cost_amount', 'sales_profit', 'operations_profit'] };
+const columns = { Reward: ['product_options', 'product_id', 'units_per_reward'], Redemption: ['product_id', 'units_per_reward', 'payment_method_id', 'account_id', 'fund_transaction_id', 'outbound_id', 'cost_amount', 'sales_profit', 'operations_profit'] };
 const triggerSql = `CREATE TRIGGER reward_stock_hold_update BEFORE UPDATE ON T_INVENTORY FOR EACH ROW
 BEGIN
   DECLARE held INT DEFAULT 0;

@@ -1,5 +1,5 @@
 const productSearch = require('../../utils/productSearch');
-const { assertSnEligible, isSpecialWarehouse } = require('../../utils/snEligibility');
+const { assertSnEligible, isSpecialWarehouse, recordSnReentry } = require('../../utils/snEligibility');
 const { normalizeSnCode } = require('../../utils/snCode');
 /**
  * 库房管理控制器
@@ -4197,6 +4197,7 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
           if (!reentryTarget || reentryTarget.type !== inventoryType) fail(409, '入库目标库位与仓位类型不一致，请刷新后重试');
           await assertSnEligible(existingSn, { transaction: t, movement: true, reentry: true, targetLocation: reentryTarget, targetStoreId: inbound.store_id });
         }
+        const previousSnStatus = existingSn?.status;
         const reenteringReturnedSn = existingSn?.status === 'returned';
 
         const pnMaster = await ensureProductPnMaster({
@@ -4233,6 +4234,8 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
               sn_id: generateUUID(),
               ...snData
             }, { transaction: t });
+
+        await recordSnReentry(snRecord,previousSnStatus,{transaction:t,actor:inboundInitiator,document:inbound.inbound_no});
 
         await initializeSnResourceRightsFromInbound({
           sn: snRecord,

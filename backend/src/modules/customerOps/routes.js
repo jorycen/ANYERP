@@ -1,3 +1,4 @@
+const RP = require('./rewardProducts');
 const Router = require('koa-router');
 const { Op } = require('sequelize');
 const M = require('./models');
@@ -281,12 +282,13 @@ async function saveReward(ctx) {
   if (!b.name || String(b.name).length > 128 || !['gift', 'product', 'service', 'coupon'].includes(b.kind) || !/^[1-9]\d{0,11}$/.test(String(b.points))) S.fail(400, '名称、类型或所需积分无效');
   const extra = P.validate(b);
   if (F.physical(b)) {
-    const product = await Product.findOne({ where: { product_id: String(b.product_id || ''), is_deleted: 0 } });
-    if (!product) S.fail(400, '实物礼品必须关联有效ERP商品');
-    if (!Number.isInteger(b.units_per_reward) || b.units_per_reward < 1 || b.units_per_reward > 1000) S.fail(400, '每份出库数量应为1至1000的整数');
-    Object.assign(extra, { product_id: product.product_id, units_per_reward: b.units_per_reward });
+    const choices=RP.validate(b);
+    const products=await Product.findAll({where:{product_id:choices.map(p=>p.product_id),is_deleted:0,status:1},attributes:['product_id','name']});
+    if(products.length!==choices.length) S.fail(400,'关联ERP商品不存在或已停用');
+    const product_options=choices.map(p=>({...p,name:products.find(row=>row.product_id===p.product_id).name}));
+    Object.assign(extra,{product_options,product_id:choices[0].product_id,units_per_reward:choices[0].units_per_reward});
     b.stock = null;
-  } else Object.assign(extra, { product_id: null, units_per_reward: 1 });
+  } else Object.assign(extra, { product_options: null, product_id: null, units_per_reward: 1 });
   if (!Number.isInteger(b.valid_days) || b.valid_days < 1 || b.valid_days > 3650) S.fail(400, '有效天数应为1到3650');
   for (const key of ['stock', 'per_member_limit']) if (b[key] !== null && (!Number.isInteger(b[key]) || b[key] < 0)) S.fail(400, '数量应为非负整数或留空');
   if (b.image) {
