@@ -1,3 +1,4 @@
+const { accountTypeWhere } = require('../../utils/staffAccount');
 const {
   MonthlyTask,
   MonthlyTaskProductBatch,
@@ -197,7 +198,7 @@ async function getMonthlyTaskOptions(ctx) {
     raw: true
   });
   const staffRows = await Staff.findAll({
-    where: { is_deleted: 0, status: 1 },
+    where: { ...accountTypeWhere('business'), is_deleted: 0, status: 1 },
     attributes: ['staff_id', 'name', 'store_id'],
     order: [['name', 'ASC']],
     raw: true

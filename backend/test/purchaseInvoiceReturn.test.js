@@ -15,6 +15,10 @@ function fixture(t) {
   });
   t.mock.method(M.PurchaseInvoice, 'findByPk', async (_, options) => { assert.equal(options.lock, tx.LOCK.UPDATE); return invoice; });
   t.mock.method(M.PurchaseInvoice, 'findOne', async () => invoice);
+  t.mock.method(M.PurchaseInvoice, 'findAll', async () => []);
+  t.mock.method(M.PurchaseInvoiceNumber, 'findAll', async () => []);
+  t.mock.method(M.PurchaseInvoiceNumber, 'destroy', async () => 0);
+  t.mock.method(M.PurchaseInvoiceNumber, 'bulkCreate', async () => []);
   t.mock.method(M.PurchaseInvoiceAllocation, 'findAll', async () => allocations);
   t.mock.method(M.BusinessActionLog, 'create', async values => { logs.push(values); });
   const ctx = { params: { invoiceId: 'I' }, request: { body: { reason: '登记错误' } },

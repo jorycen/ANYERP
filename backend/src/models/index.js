@@ -48,6 +48,7 @@ const Staff = sequelize.define('Staff', {
   distributor_id: { type: DataTypes.STRING(32), allowNull: false },
   store_id: { type: DataTypes.STRING(32) },
   supervisor_staff_id: { type: DataTypes.BIGINT(20), comment: '直属上级员工ID' },
+  is_backend_account: { type: DataTypes.TINYINT, allowNull: false, defaultValue: 0 },
   region_id: { type: DataTypes.STRING(32) },
   name: { type: DataTypes.STRING(64), allowNull: false },
   phone: { type: DataTypes.STRING(32), allowNull: false, unique: true },
@@ -2059,8 +2060,16 @@ const SettlementPaymentRecord = sequelize.define('SettlementPaymentRecord', {
 }, { tableName: 'T_SETTLEMENT_PAYMENT_RECORD', timestamps: false });
 
 const PurchaseInvoice = sequelize.define('PurchaseInvoice', {
-  invoice_id: { type: DataTypes.STRING(32), primaryKey: true }, distributor_id: { type: DataTypes.STRING(32), allowNull: false }, supplier_name: { type: DataTypes.STRING(255) }, supplier_tax_no: { type: DataTypes.STRING(64), allowNull: false }, invoice_code: { type: DataTypes.STRING(64), allowNull: false, defaultValue: '' }, invoice_no: { type: DataTypes.STRING(64), allowNull: false }, invoice_date: { type: DataTypes.DATEONLY, allowNull: false }, invoice_type: { type: DataTypes.STRING(64), allowNull: false }, tax_rate: { type: DataTypes.DECIMAL(6, 4) }, amount_without_tax: { type: DataTypes.DECIMAL(12, 2), allowNull: false }, tax_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false }, total_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false }, status: { type: DataTypes.STRING(32), defaultValue: 'active' }, remark: { type: DataTypes.STRING(512) }, create_user: { type: DataTypes.STRING(64) }, create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+  invoice_id: { type: DataTypes.STRING(32), primaryKey: true }, distributor_id: { type: DataTypes.STRING(32), allowNull: false }, supplier_name: { type: DataTypes.STRING(255) }, supplier_tax_no: { type: DataTypes.STRING(64), allowNull: true }, invoice_code: { type: DataTypes.STRING(64), allowNull: false, defaultValue: '' }, invoice_no: { type: DataTypes.STRING(64), allowNull: false }, invoice_date: { type: DataTypes.DATEONLY, allowNull: false }, invoice_type: { type: DataTypes.STRING(64), allowNull: false }, tax_rate: { type: DataTypes.DECIMAL(6, 4) }, amount_without_tax: { type: DataTypes.DECIMAL(12, 2), allowNull: false }, tax_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false }, total_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false }, status: { type: DataTypes.STRING(32), defaultValue: 'active' }, remark: { type: DataTypes.STRING(512) }, create_user: { type: DataTypes.STRING(64) }, create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_PURCHASE_INVOICE', timestamps: false });
+const PurchaseInvoiceNumber = sequelize.define('PurchaseInvoiceNumber', {
+  number_id: { type: DataTypes.STRING(32), primaryKey: true },
+  invoice_id: { type: DataTypes.STRING(32), allowNull: false },
+  distributor_id: { type: DataTypes.STRING(32), allowNull: false },
+  supplier_name: { type: DataTypes.STRING(255), allowNull: false },
+  supplier_tax_no: { type: DataTypes.STRING(64), allowNull: true },
+  invoice_no: { type: DataTypes.STRING(64), allowNull: false }
+}, { tableName: 'T_PURCHASE_INVOICE_NUMBER', timestamps: false });
 const PurchaseInvoiceAllocation = sequelize.define('PurchaseInvoiceAllocation', {
   allocation_id: { type: DataTypes.STRING(32), primaryKey: true }, invoice_id: { type: DataTypes.STRING(32), allowNull: false }, payment_id: { type: DataTypes.STRING(32), allowNull: false }, settlement_id: { type: DataTypes.STRING(32), allowNull: false }, amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false }, create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_PURCHASE_INVOICE_ALLOCATION', timestamps: false });
@@ -2930,6 +2939,7 @@ module.exports = {
   SettlementPaymentBatch,
   SettlementPaymentRecord,
   PurchaseInvoice,
+  PurchaseInvoiceNumber,
   PurchaseInvoiceAllocation,
   SupplierRebate,
   RebatePostingOrder,

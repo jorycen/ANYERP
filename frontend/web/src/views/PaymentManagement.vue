@@ -25,6 +25,7 @@
             <el-option label="全部" value="" />
             <el-option label="未付款" value="unpaid" />
             <el-option label="部分付款" value="partial_paid" />
+            <el-option label="待退款到账" value="pending_refund" />
           </el-select>
           <el-select v-model="paymentCandidateDistributorFilter" placeholder="经销商" clearable style="width: 150px" @change="loadPaymentCandidates">
             <el-option v-for="item in distributorOptions" :key="item.distributor_id" :label="item.name" :value="item.distributor_id" />
@@ -93,7 +94,8 @@
         <el-table-column prop="paid_amount" label="已付金额" width="120">
           <template #default="{ row }">¥{{ formatAmount(row.paid_amount) }}</template>
         </el-table-column>
-        <el-table-column prop="remaining_amount" label="剩余应付" width="120">
+        <el-table-column prop="fund_direction_label" label="资金方向" width="120" />
+        <el-table-column prop="remaining_amount" label="剩余应付/退款" width="140">
           <template #default="{ row }">¥{{ formatAmount(row.remaining_amount) }}</template>
         </el-table-column>
         <el-table-column prop="payment_status" label="付款状态" width="110">
@@ -110,6 +112,7 @@
         <el-table-column label="操作" width="210" fixed="right">
           <template #default="{ row }">
             <el-button v-if="Number(row.remaining_amount) > 0" link type="primary" @click="openImmediatePayment(row)">立即付款</el-button>
+            <el-button v-if="row.fund_direction === 'refund'" link type="success" @click="openSupplierRefund(row)">确认退款到账</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -158,6 +161,7 @@
         <el-table-column prop="total_amount" label="付款总额" width="120">
           <template #default="{ row }">¥{{ formatAmount(row.total_amount) }}</template>
         </el-table-column>
+        <el-table-column prop="fund_direction_label" label="资金方向" width="150" />
         <el-table-column prop="total_count" label="笔数" width="80" />
         <el-table-column prop="status" label="状态" width="90">
           <template #default="{ row }">
@@ -395,6 +399,19 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="supplierRefundVisible" title="确认供应商退款到账" width="560px">
+      <p>结算单：{{ supplierRefundSettlement?.settlement_no }}。负金额表示供应商应退回的款项。</p>
+      <el-form label-width="125px">
+        <el-form-item label="到账账户" required><el-select v-model="supplierRefundForm.accountId" filterable>
+          <el-option v-for="account in settlementAccounts" :key="account.account_id" :value="account.account_id" :label="account.account_name || account.name" />
+        </el-select></el-form-item>
+        <el-form-item label="本次实收金额" required><el-input-number v-model="supplierRefundForm.amount" :min="0.01" :precision="2" /></el-form-item>
+        <el-form-item label="到账凭证/流水号" required><el-input v-model="supplierRefundForm.evidence" maxlength="200" type="textarea" /></el-form-item>
+        <el-form-item label="备注"><el-input v-model="supplierRefundForm.remark" maxlength="150" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="supplierRefundVisible = false">取消</el-button><el-button type="primary" :loading="supplierRefundSubmitting" @click="submitSupplierRefund">确认已到账</el-button></template>
+    </el-dialog>
+
     <el-dialog v-model="paymentBatchDetailVisible" title="付款批次详情" width="860px">
       <div v-if="paymentBatchDetail">
         <el-descriptions :column="2" border size="small">
@@ -465,6 +482,30 @@ defineProps({
 })
 
 const settlementAccounts = ref([])
+const supplierRefundVisible = ref(false)
+const supplierRefundSubmitting = ref(false)
+const supplierRefundSettlement = ref(null)
+const supplierRefundForm = reactive({ accountId: '', amount: 0, evidence: '', remark: '', requestId: '' })
+const openSupplierRefund = row => {
+  supplierRefundSettlement.value = row
+  Object.assign(supplierRefundForm, { accountId: '', amount: row.refund_remaining_amount, evidence: '', remark: '',
+    requestId: globalThis.crypto?.randomUUID?.() || `refund_${Date.now()}_${Math.random().toString(36).slice(2)}` })
+  supplierRefundVisible.value = true
+}
+const submitSupplierRefund = async () => {
+  if (supplierRefundSubmitting.value) return
+  if (!supplierRefundForm.accountId || !supplierRefundForm.evidence.trim()) return ElMessage.warning('请选择到账账户并填写到账凭证或流水号')
+  supplierRefundSubmitting.value = true
+  try {
+    const result = await api.confirmSupplierRefund({ settlementId: supplierRefundSettlement.value.settlement_id, ...supplierRefundForm })
+    if (result.code !== 0) throw new Error(result.message || '确认退款失败')
+    supplierRefundVisible.value = false
+    ElMessage.success('供应商退款到账已确认')
+    await Promise.all([loadPaymentCandidates(), loadPaymentBatches(), loadSettlementAccounts()])
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || error.message || '确认退款失败')
+  } finally { supplierRefundSubmitting.value = false }
+}
 const paymentAccountId = ref('')
 const paymentCandidateData = ref([])
 const paymentCandidateTotal = ref(0)
@@ -592,6 +633,8 @@ const getPaymentStatusText = (status) => {
   const map = {
     unpaid: '未付款',
     partial_paid: '部分付款',
+    pending_refund: '待退款到账',
+    refunded: '退款已到账',
     paid: '已付款'
   }
   return map[status] || status || '未付款'

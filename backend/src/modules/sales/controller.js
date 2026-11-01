@@ -1,4 +1,5 @@
 const { inspectSnEligibility, assertSnEligible } = require('../../utils/snEligibility');
+const { accountTypeWhere } = require('../../utils/staffAccount');
 const saveContract = require('./orderSaveContract');
 const saveModels = require('../../models');
 /**
@@ -170,7 +171,7 @@ async function auxiliaryStaff(ctx) {
   }
 
   const rows = await Staff.findAll({
-    where: {
+    where: { ...accountTypeWhere('business'),
       [Op.or]: ownershipConditions,
       is_deleted: 0,
       status: 1

@@ -2450,3 +2450,29 @@ P差金额 = 库存原始提货价 - 销售时厂家当前提货价
 - 用户确认out_stock SN重新入库以目标仓位建立新库存周期，不再因上次特殊仓来源阻止入库；保留历史，以同事务stock_cycle_reentry日志分界，在库或预占状态不放宽。普通与批量入库共用校验。新周期进入特殊仓后仍受限制。
 - IBM20261031633AE38的4个SN只读验证新版校验通过，未重新执行、未改生产库存。WXML编译修复及小程序名称/单选交互仅保留本地，不上传小程序。
 - 32项针对性后台测试通过；Web发布资源按本次批准源码单独构建，不包含其他未提交页面。部署后需先确认增量迁移成功，再完成跨端真机及入库验收。GitHub上传不等于生产部署。
+
+
+## 2026-10-29 进项发票组登记
+
+* 一次登记可包含多个真实发票号码，只记一组价税合计和付款分摊，各号码不复制金额。组内日期、票种、税率共用，不同税率分组登记。
+* 价税合计默认本次关联付款的分摊总额，可调整；后台计算不含税金额＝合计/(1+税率)，四舍五入至分，税额＝合计减不含税金额。保存时复算并核对分摊，不在前端复制税额公式。
+* 销方税号不再手输，读取供应商已维护资料，缺失保留空值，不伪造税号。组内与已登记号码逐个查重，兼容旧单票，号码和金额主记录及审计同事务。
+* 组内任意号码可搜索，导出显示全部号码但不重复金额。退回按整组恢复付款可收票余额；原组重新登记保持号码集合，不根据缺失单票金额猜测部分退票。
+
+## 2026-10-29 供应商退款执行入口
+
+* 采购负结算确认后，付款管理待付款清单按负金额展示，标记供应商退款；不参与普通批量付款及扣款导入。
+* 付款管理选择有效资金账户、填写实际到账金额和凭证/银行流水号后执行，支持分次到账。账户流水为收入并增加余额，收付历史为负金额，结算单同步更新到账进度。
+* 同一请求重复确认不能重复入账，超额到账、账户跨经销商及无凭据均拒绝；资金、记录、结算及审计同事务。发生任意退款到账后不能撤销或作废原结算。
+* 原结算单不再独立登记退款到账；旧客户端调用旧接口明确拒绝。历史已到账数据不改写、不重复生成待处理任务；各端和导出复用后台同一查询及剩余金额口径。
+
+## 2026-10-28 后台账号显示规则
+
+* 后台账号标记与角色、启停状态独立，默认否，不根据岗位或姓名自动推断。仅原用户管理权限可修改，修改前后值留痕。
+* 日常业务人员选项由后台排除后台账号，包含辅助销售、门店负责人、月度任务选人和费用绩效分摊选人；筛选在查询和分页前执行，各端复用同一接口。
+* 用户管理可筛选全部、业务、后台；审批配置、权限维护和直属上级配置保留完整账号。登录认证、指定审批人解析、历史关联姓名和业务统计不使用该过滤条件。
+* 历史单据、业绩数据、排行榜和已有关联不因标记而删除或重算。小程序不得用缓存、门店负责人或管理列表补回后台已排除的人员；接口失败按错误处理，不伪装为完整可选名单。
+
+## 2026-11-01 Release audit: pending functional changes
+
+Publish previously uncommitted invoice groups, supplier refund receipts and backend-account selectors with their API documentation and tests. Includes staff-column and invoice-number startup migrations. Preserve existing business records and original document history. Targeted regression: 39 passed; Web build passed. Broad suite is not fully green: existing startup-schema, serialized inventory and mall-report query assertions fail; database integration tests were not enabled. Production deployment and migration verification remain pending.

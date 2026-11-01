@@ -38,9 +38,24 @@ test('reward receipt, stock holds, profit, races, rollback and expiry', { skip: 
     await M.Account.create({member_id:member.id,distributor_id:'d',balance:'10000'});
     const reward = await M.Reward.create({distributor_id:'d',name:'Gift',kind:'gift',product_id:'p',units_per_reward:1,points:'10',stock:null,cash_required:'39.00',valid_days:30,on_sale:true});
     await M.RewardStore.bulkCreate([{reward_id:reward.id,store_id:'a'},{reward_id:reward.id,store_id:'b'}]);
-    await assert.rejects(V.exchange(member,reward.id,'missing_store_key','10','39'), /领取门店/);
-    await assert.rejects(V.exchange(member,reward.id,'empty_store_key_1','10','39','b'), /库存不足/);
-    const attempts = await Promise.allSettled([1,2,3].map(n => V.exchange(member,reward.id,`concurrent_key_${n}`,'10','39','a')));
+    const modern = await V.exchange(member,reward.id,'modern_store_key','10','39');
+    assert.equal(modern.snapshot.inventory_policy,'at_redemption');
+    assert.equal(await M.Reservation.count(),0);
+    await assert.rejects(V.redeem(S.token('redeem',modern.id),'b',{staffId:1,roles:['staff'],accessibleStoreIds:['b'],accessibleDistributorIds:['d']},true,modern.id,{cash_confirmed:true,cash_received:'39',payment_method_id:'cash'}), /库存不足/);
+    assert.equal(await M.Redemption.count(),0);
+    await modern.destroy();
+    async function legacyExchange(member,rewardId,key,points,cash,store) {
+      if(!store) throw new Error('请选择领取门店');
+      return V.transaction(async t=>{
+        const row=await V.exchange(member,rewardId,key,points,cash);
+        await row.update({snapshot:{...row.snapshot,inventory_policy:null,pickup_store_id:store,storeIds:[store]}},{transaction:t});
+        await F.reserve(await M.Reward.findByPk(rewardId,{transaction:t}),row,store,t);
+        return row;
+      });
+    }
+    await assert.rejects(legacyExchange(member,reward.id,'missing_store_key','10','39'), /领取门店/);
+    await assert.rejects(legacyExchange(member,reward.id,'empty_store_key_1','10','39','b'), /库存不足/);
+    const attempts = await Promise.allSettled([1,2,3].map(n => legacyExchange(member,reward.id,`concurrent_key_${n}`,'10','39','a')));
     assert.equal(attempts.filter(r=>r.status==='fulfilled').length,2);
     const exchanges = await M.Exchange.findAll();
     assert.equal(await F.availability(reward,'a'),0);
@@ -76,7 +91,7 @@ test('reward receipt, stock holds, profit, races, rollback and expiry', { skip: 
     assert.equal((await F.catalogueStock([reward],['a','b'])).get(reward.id).get('a'),1);
     await assert.rejects(V.redeem(S.token('redeem',exchanges[1].id),'a',user,true,exchanges[1].id,evidence), /失效/);
     await reward.update({cash_required:'0.00'});
-    const free=await V.exchange(member,reward.id,'free_gift_key_001','10','0','a');
+    const free=await legacyExchange(member,reward.id,'free_gift_key_001','10','0','a');
     await V.redeem(S.token('redeem',free.id),'a',user,true,free.id,{});
     const freeReceipt=await M.Redemption.findOne({where:{exchange_id:free.id}});
     assert.equal(freeReceipt.sales_profit,'0.00');
@@ -87,7 +102,7 @@ test('reward receipt, stock holds, profit, races, rollback and expiry', { skip: 
     await DB.Product.create({product_id:'unknown',product_code:'unknown',name:'Unknown cost',need_sn:0,is_deleted:0});
     await DB.Inventory.create({inventory_id:'unknown-inv',product_id:'unknown',store_id:'a',location_id:'',normal_qty:1});
     await reward.update({product_id:'unknown',cash_required:'0.01'});
-    const unknown=await V.exchange(member,reward.id,'unknown_cost_key_1','10','0.01','a');
+    const unknown=await legacyExchange(member,reward.id,'unknown_cost_key_1','10','0.01','a');
     await assert.rejects(V.redeem(S.token('redeem',unknown.id),'a',user,true,unknown.id,{...evidence,cash_received:'0.01'}), /成本/);
     assert.equal(await DB.SettlementAccountTransaction.count(),1);
     assert.equal((await M.Exchange.findByPk(unknown.id)).status,'pending');
@@ -99,7 +114,7 @@ test('reward receipt, stock holds, profit, races, rollback and expiry', { skip: 
     await DB.Inventory.create({inventory_id:'serial-inv',product_id:'serial',store_id:'a',location_id:'sales-a',normal_qty:1});
     await DB.ProductSn.create({sn_id:'sn',product_id:'serial',sn_code:'SN-GIFT-001',store_id:'a',location_id:'sales-a',inventory_type:'normal_qty',status:'in_stock',inbound_price:'10.00',is_deleted:0});
     await reward.update({product_id:'serial',cash_required:'0.01'});
-    const serial=await V.exchange(member,reward.id,'serial_gift_key01','10','0.01','a');
+    const serial=await legacyExchange(member,reward.id,'serial_gift_key01','10','0.01','a');
     await assert.rejects(V.redeem(S.token('redeem',serial.id),'a',user,true,serial.id,{...evidence,cash_received:'0.01',sn_codes:['wrong']}), /SN/);
     await V.redeem(S.token('redeem',serial.id),'a',user,true,serial.id,{...evidence,cash_received:'0.01',sn_codes:['SN-GIFT-001']});
     const serialReceipt=await M.Redemption.findOne({where:{exchange_id:serial.id}});

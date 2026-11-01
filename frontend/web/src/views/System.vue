@@ -8,12 +8,18 @@
       <el-tabs v-model="activeTab" class="module-tabs" @tab-change="onSysTabChange">
         <el-tab-pane label="用户管理" name="users">
           <div class="filter-bar">
+            <el-select v-model="userAccountType" style="width: 160px" @change="loadUsers">
+              <el-option label="全部账号" value="all" />
+              <el-option label="业务账号" value="business" />
+              <el-option label="后台账号" value="backend" />
+            </el-select>
             <el-button type="primary" @click="handleAddUser">新增用户</el-button>
           </div>
 
           <el-table :data="userData" stripe border>
             <el-table-column prop="staff_id" label="ID" width="80" />
             <el-table-column prop="name" label="姓名" width="120" />
+            <el-table-column label="后台账号" width="100"><template #default="{ row }"><el-tag :type="Number(row.is_backend_account) === 1 ? 'warning' : 'info'">{{ Number(row.is_backend_account) === 1 ? '是' : '否' }}</el-tag></template></el-table-column>
             <el-table-column prop="phone" label="手机号" width="130" />
             <el-table-column label="角色" min-width="160">
               <template #default="{ row }">
@@ -444,6 +450,10 @@
         <el-form-item v-if="!userForm.staffId" label="初始密码" required>
           <el-input v-model="userForm.password" type="password" placeholder="请输入初始密码" />
         </el-form-item>
+        <el-form-item label="后台账号">
+          <el-switch v-model="userForm.isBackendAccount" :active-value="1" :inactive-value="0" />
+          <div class="form-tip">开启后不出现在业务人员查询和选择中，登录权限、审批配置及历史单据保留。</div>
+        </el-form-item>
         <el-form-item label="角色" required>
           <el-select v-model="userForm.roleIds" placeholder="请选择岗位角色" style="width: 100%">
             <el-option v-for="r in roleData" :key="r.role_id" :label="r.name" :value="r.role_id" />
@@ -451,7 +461,7 @@
         </el-form-item>
         <el-form-item label="直属上级">
           <el-select v-model="userForm.supervisorStaffId" clearable filterable placeholder="可选，审批流程可引用" style="width: 100%">
-            <el-option v-for="u in userData.filter(item => String(item.staff_id) !== String(userForm.staffId))" :key="u.staff_id" :label="`${u.name}（${u.staff_id}）`" :value="u.staff_id" />
+            <el-option v-for="u in supervisorUserOptions.filter(item => String(item.staff_id) !== String(userForm.staffId))" :key="u.staff_id" :label="`${u.name}（${u.staff_id}）`" :value="u.staff_id" />
           </el-select>
         </el-form-item>
         <el-form-item label="所属经销商" required>
@@ -1014,7 +1024,10 @@ const restoreSystemDraft = (key, target) => {
 
 const clearSystemDraft = (key) => clearDraft(`system:${key}`)
 
+const userAccountType = ref('all')
+const supervisorUserOptions = ref([])
 const userForm = reactive({
+  isBackendAccount: 0,
   staffId: null,
   name: '',
   phone: '',
@@ -1185,7 +1198,7 @@ const onSysTabChange = (tabName) => {
 
 const loadUsers = async () => {
   try {
-    const res = await api.getUsers({ page: 1, pageSize: 100 })
+    const res = await api.getUsers({ accountType: userAccountType.value, page: 1, pageSize: 100 })
     if (res.code === 0) userData.value = res.data?.list || []
   } catch (err) { ElMessage.error('加载用户失败') }
 }
@@ -1454,7 +1467,14 @@ const resetLocationForm = () => {
   locationForm.status = 1
 }
 
-const handleAddUser = () => {
+const loadSupervisorUserOptions = async () => {
+  const res = await api.getUsers({ accountType: 'all', page: 1, pageSize: 500 })
+  if (res.code !== 0) throw new Error(res.message || '加载账号失败')
+  supervisorUserOptions.value = res.data?.list || []
+}
+
+const handleAddUser = async () => {
+  try { await loadSupervisorUserOptions() } catch (error) { ElMessage.error(error.message || '加载账号失败'); return }
   dialogTitle.value = '新增用户'
   resetUserForm()
   restoreSystemDraft('user-create', userForm)
@@ -1462,6 +1482,7 @@ const handleAddUser = () => {
 }
 
 const handleEditUser = async (row) => {
+  try { await loadSupervisorUserOptions() } catch (error) { ElMessage.error(error.message || '加载账号失败'); return }
   dialogTitle.value = '编辑用户'
   currentUser.value = row
   userForm.staffId = row.staff_id
@@ -1471,6 +1492,7 @@ const handleEditUser = async (row) => {
   userForm.roleIds = (row.role_ids || [])[0] || ''
   userForm.distributorIds = (row.distributor_ids || (row.distributor_id ? [row.distributor_id] : [])).map(String)
   userForm.supervisorStaffId = row.supervisor_staff_id || null
+  userForm.isBackendAccount = Number(row.is_backend_account || 0)
   userForm.status = row.status
 
   userDialogVisible.value = true
@@ -1542,6 +1564,7 @@ const handleUserSubmit = async () => {
   submitLoading.value = true
   try {
     const data = {
+      isBackendAccount: userForm.isBackendAccount,
       name: userForm.name,
       phone: userForm.phone,
       roleIds: [userForm.roleIds],
@@ -1675,6 +1698,7 @@ const handleMenuSubmit = async () => {
 }
 
 const resetUserForm = () => {
+  userForm.isBackendAccount = 0
   userForm.staffId = null
   userForm.name = ''
   userForm.phone = ''

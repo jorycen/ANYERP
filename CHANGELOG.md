@@ -3113,3 +3113,29 @@
 - 用户确认out_stock SN重新入库以目标仓位建立新库存周期，不再因上次特殊仓来源阻止入库；保留历史，以同事务stock_cycle_reentry日志分界，在库或预占状态不放宽。普通与批量入库共用校验。新周期进入特殊仓后仍受限制。
 - IBM20261031633AE38的4个SN只读验证新版校验通过，未重新执行、未改生产库存。WXML编译修复及小程序名称/单选交互仅保留本地，不上传小程序。
 - 32项针对性后台测试通过；Web发布资源按本次批准源码单独构建，不包含其他未提交页面。部署后需先确认增量迁移成功，再完成跨端真机及入库验收。GitHub上传不等于生产部署。
+
+
+## 2026-10-29 - 进项发票支持一组金额多个号码
+
+- 取消登记销方税号输入，新增动态添加发票号；组内共用金额，默认取本次付款分摊，后台测算不含税金额和税额，保存复算。
+- 新增无金额的号码明细及逐号查重，扩展列表、任意号码搜索、导出、整组退票和重新登记；缺少税号保留NULL，兼容旧单票与原Excel导入。
+- 增加启动迁移和完成检查；未执行生产迁移或变更真实发票、付款。本地完成，需配套部署API与Web。
+- 23项相关测试及1项MySQL会话临时表集成验证通过，Web部署文件已构建；临时表验证后清理，未上传GitHub或部署。
+
+## 2026-10-29 - 供应商退款进入付款管理
+
+- 待付款清单兼容显示待收供应商退款负金额，增加资金方向及确认退款到账操作，支持分次收款、凭证、幂等和账户入账。
+- 退款复用付款批次及明细历史，正收入流水增加余额、负收付记录回写结算单；导出退款单独表单，不混入普通付款扣款导入。
+- 移除结算单独立退款操作并禁用旧写接口，详情显示累计到账及原凭证；已有到账不能作废，不回写历史数据。规则、决策与API契约已更新，本地实施，未部署。
+
+## 2026-10-28 后台账号开关及业务选项过滤
+
+* 用户管理新增后台账号开关、列表标记和三类筛选；直属上级选项单独读取完整管理账号，避免受当前列表筛选影响。
+* 后台增加统一业务人员条件，接入辅助销售、月度任务人员、费用绩效人员及门店负责人选择。保留登录、审批配置、历史姓名及业绩统计。
+* 新增幂等字段迁移及独立脚本backend/scripts/migrate-staff-backend-account.js，接入启动就绪路径并验证字段可读取；实际数据库已补字段，74个账号均保持默认否。新建及修改标记在原事务审计。
+* 小程序人员工具只采用后台业务选项，移除缓存、管理员名单和门店负责人补入。27项相关测试、实际三类列表只读查询及Web构建通过，部署静态文件已同步；未上传GitHub或部署，小程序未发布。
+# 2026-10-28 特殊仓流转及采购防绕过（本地）
+
+## 2026-11-01 Release audit: pending functional changes
+
+Publish previously uncommitted invoice groups, supplier refund receipts and backend-account selectors with their API documentation and tests. Includes staff-column and invoice-number startup migrations. Preserve existing business records and original document history. Targeted regression: 39 passed; Web build passed. Broad suite is not fully green: existing startup-schema, serialized inventory and mall-report query assertions fail; database integration tests were not enabled. Production deployment and migration verification remain pending.

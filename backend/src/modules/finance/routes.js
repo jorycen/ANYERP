@@ -41,6 +41,7 @@ const {
   createBatchPayment,
   createDirectPayment,
   registerSupplierRefund,
+  confirmSupplierRefund,
   getPaymentBatches,
   exportPaymentBatches,
   getPaymentBatchDetail,
@@ -67,7 +68,7 @@ const {
   getCostAdjustmentList
 } = require('./rebateController');
 const { requireRole } = require('../../middleware/permission');
-const { getInvoiceCandidates, exportInvoiceCandidates, listInvoices, exportInvoices, createInvoice, importInvoices, returnInvoice } = require('./invoiceController');
+const { getInvoiceCandidates, exportInvoiceCandidates, listInvoices, exportInvoices, previewInvoice, createInvoice, importInvoices, returnInvoice } = require('./invoiceController');
 const {
   listExpensePerformanceAllocations,
   listExpensePerformanceStaffOptions,
@@ -147,6 +148,7 @@ router.get('/purchase-invoices/candidates/export', exportInvoiceCandidates);
 router.get('/purchase-invoices/export', exportInvoices);
 router.get('/purchase-invoices', listInvoices);
 router.post('/purchase-invoices', createInvoice);
+router.post('/purchase-invoices/preview', previewInvoice);
 router.post('/purchase-invoices/import', importInvoices);
 router.post('/purchase-invoices/:invoiceId/return', returnInvoice);
 router.get('/payable-list/export', exportPayableList);
@@ -173,6 +175,7 @@ router.post('/settlement-payment/import/commit', commitPaymentImport);
 router.post('/settlement-payment/batch', createBatchPayment);
 router.post('/settlement-payment/direct', createDirectPayment);
 router.post('/settlement/supplier-refund', registerSupplierRefund);
+router.post('/settlement-payment/supplier-refund', confirmSupplierRefund);
 router.get('/settlement-payment/batches', getPaymentBatches);
 router.get('/settlement-payment/batches/export', exportPaymentBatches);
 router.get('/settlement-payment/batch/:id', getPaymentBatchDetail);

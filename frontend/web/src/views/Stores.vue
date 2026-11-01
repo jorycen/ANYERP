@@ -116,7 +116,7 @@ const loadManagerOptions = async () => {
   const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
   if (!(userInfo.roles || []).some(role => ['admin', 'boss'].includes(role))) return
   try {
-    const res = await api.getUsers({ page: 1, pageSize: 500 })
+    const res = await api.getUsers({ accountType: 'business', page: 1, pageSize: 500 })
     managerOptions.value = res.data?.list || res.list || []
   } catch (err) { managerOptions.value = [] }
 }

@@ -294,8 +294,8 @@ async function runSchemaMigrations() {
     if (!columns.length) throw new Error('会员购机手机号字段迁移失败');
   }
 
-
   await require('../modules/customerOps/schema').ensureRewardFulfillmentSchema();
+  await require('./staffAccount').ensureStaffAccountSchema(sequelize);
   await ensureProfitAdjustmentCorrectionSchema();
   await ensureExpenseRemarkSchema();
   await ensureExpenseRecipientSchema();
@@ -866,8 +866,14 @@ async function ensureProductSettlementFeatureSchema() {
 }
 
 async function ensurePurchaseInvoiceSchema() {
+  // Existing invoice headers and allocations remain intact; numbers carry no amounts.
   await checkAndCreateTable('T_PURCHASE_INVOICE', `CREATE TABLE T_PURCHASE_INVOICE (INVOICE_ID VARCHAR(32) NOT NULL PRIMARY KEY, DISTRIBUTOR_ID VARCHAR(32) NOT NULL, SUPPLIER_NAME VARCHAR(255), SUPPLIER_TAX_NO VARCHAR(64) NOT NULL, INVOICE_CODE VARCHAR(64) NOT NULL DEFAULT '', INVOICE_NO VARCHAR(64) NOT NULL, INVOICE_DATE DATE NOT NULL, INVOICE_TYPE VARCHAR(64) NOT NULL, TAX_RATE DECIMAL(6,4), AMOUNT_WITHOUT_TAX DECIMAL(12,2) NOT NULL, TAX_AMOUNT DECIMAL(12,2) NOT NULL, TOTAL_AMOUNT DECIMAL(12,2) NOT NULL, STATUS VARCHAR(32) NOT NULL DEFAULT 'active', REMARK VARCHAR(512), CREATE_USER VARCHAR(64), CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE KEY uk_purchase_invoice_no (SUPPLIER_TAX_NO, INVOICE_CODE, INVOICE_NO), KEY idx_purchase_invoice_distributor (DISTRIBUTOR_ID, INVOICE_DATE)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='采购进项发票台账'`);
   await checkAndCreateTable('T_PURCHASE_INVOICE_ALLOCATION', `CREATE TABLE T_PURCHASE_INVOICE_ALLOCATION (ALLOCATION_ID VARCHAR(32) NOT NULL PRIMARY KEY, INVOICE_ID VARCHAR(32) NOT NULL, PAYMENT_ID VARCHAR(32) NOT NULL, SETTLEMENT_ID VARCHAR(32) NOT NULL, AMOUNT DECIMAL(12,2) NOT NULL, CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP, KEY idx_invoice_allocation_invoice (INVOICE_ID), KEY idx_invoice_allocation_payment (PAYMENT_ID)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='采购进项发票付款分摊'`);
+  await checkAndMakeColumnNullable('T_PURCHASE_INVOICE', 'SUPPLIER_TAX_NO', 'VARCHAR(64)');
+  await checkAndCreateTable('T_PURCHASE_INVOICE_NUMBER', `CREATE TABLE T_PURCHASE_INVOICE_NUMBER (NUMBER_ID VARCHAR(32) NOT NULL PRIMARY KEY, INVOICE_ID VARCHAR(32) NOT NULL, DISTRIBUTOR_ID VARCHAR(32) NOT NULL, SUPPLIER_NAME VARCHAR(255) NOT NULL, SUPPLIER_TAX_NO VARCHAR(64) NULL, INVOICE_NO VARCHAR(64) NOT NULL, UNIQUE KEY uk_invoice_number_tax (SUPPLIER_TAX_NO,INVOICE_NO), UNIQUE KEY uk_invoice_number_supplier (DISTRIBUTOR_ID,SUPPLIER_NAME,INVOICE_NO), KEY idx_invoice_number_header (INVOICE_ID)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='进项发票登记号码，金额仅在登记主记录保存'`);
+  const [invoiceTaxColumn] = await sequelize.query("SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='T_PURCHASE_INVOICE' AND COLUMN_NAME='SUPPLIER_TAX_NO'", { type: sequelize.QueryTypes.SELECT });
+  if (invoiceTaxColumn?.IS_NULLABLE !== 'YES') throw new Error('进项发票税号可空升级未完成，不能启动新版发票登记');
+  await sequelize.query('SELECT NUMBER_ID,INVOICE_ID,INVOICE_NO,SUPPLIER_TAX_NO FROM T_PURCHASE_INVOICE_NUMBER LIMIT 0');
   const menuId = 'finance_purchase_invoice';
   await sequelize.query(`INSERT IGNORE INTO T_MENU (MENU_ID, MENU_CODE, NAME, PARENT_ID, MENU_TYPE, PATH, ICON, SORT_ORDER, STATUS) VALUES (?, ?, '发票管理', (SELECT MENU_ID FROM (SELECT MENU_ID FROM T_MENU WHERE MENU_CODE = 'finance' LIMIT 1) parent_menu), 'menu', '/finance/purchase-invoice', 'Money', 7, 1)`, { replacements: [menuId, menuId] });
   await sequelize.query(`INSERT IGNORE INTO T_ROLE_MENU (ROLE_ID, MENU_ID) SELECT r.ROLE_ID, m.MENU_ID FROM T_ROLE r JOIN T_MENU m ON m.MENU_CODE = 'finance_purchase_invoice' WHERE r.ROLE_CODE IN ('boss', 'admin', 'finance') AND r.STATUS = 1`);
@@ -1496,6 +1502,7 @@ async function ensureExpenseAccountingSchema() {
 
 async function runMigrations() {
   await require('../modules/customerOps/schema').ensureRewardFulfillmentSchema();
+  await require('./staffAccount').ensureStaffAccountSchema(sequelize);
   await ensureCriticalSchemaCompatibility();
   await ensureProductDimensionSchema();
   await ensureSerializedInventorySchema();

@@ -1,3 +1,4 @@
+const { accountTypeWhere } = require('../../utils/staffAccount');
 const { Op } = require('sequelize');
 const {
   Expense,
@@ -140,7 +141,7 @@ async function listExpensePerformanceStaffOptions(ctx) {
   const user = ctx.state.user;
   const expense = await getAccessibleExpense(ctx.params.id, user);
   const staffRows = await Staff.findAll({
-    where: {
+    where: { ...accountTypeWhere('business'),
       distributor_id: expense.distributor_id,
       status: 1,
       is_deleted: 0

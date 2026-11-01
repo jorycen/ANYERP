@@ -2,6 +2,8 @@
  * 系统管理控制器
  */
 const bcrypt = require('bcryptjs');
+const { parseBackendAccount, accountTypeWhere } = require('../../utils/staffAccount');
+const { recordBusinessAction } = require('../../utils/businessActionLog');
 const { sequelize, Menu, Role, RoleMenu, Staff, StaffRole, StaffStorePermission, StaffDistributorPermission, RegionPermission, Region, Store, Location, Inventory, ProductSn, Distributor } = require('../../models');
 const { Op } = require('sequelize');
 const { generateUUID } = require('../../utils');
@@ -373,7 +375,7 @@ async function assignMenus(ctx) {
 async function getUsers(ctx) {
   const { keyword, storeId, regionCode, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
-  const where = { is_deleted: 0 };
+  const where = { is_deleted: 0, ...accountTypeWhere(ctx.query.accountType || 'all') };
 
   const visibleDistributorIds = accessibleDistributorIds(user);
   if (!visibleDistributorIds.includes('*')) {
@@ -521,10 +523,13 @@ async function createUser(ctx) {
       password_hash: hash,
       role_code: roles[0].role_code,
       supervisor_staff_id: supervisor?.staff_id || null,
+      is_backend_account: ctx.request.body.isBackendAccount === undefined ? 0 : parseBackendAccount(ctx.request.body.isBackendAccount),
       status: normalizeStaffStatus(ctx, status, 1)
     }, { transaction });
     await StaffRole.bulkCreate(uniqueRoleIds.map(roleId => ({ staff_id: staff.staff_id, role_id: roleId })), { transaction });
     await replaceStaffDistributorPermissions(staff, requestedDistributorIds, transaction);
+    await recordBusinessAction({ businessType: 'staff', businessId: staff.staff_id, action: 'created',
+      user: ctx.state.user, detail: { isBackendAccount: Number(staff.is_backend_account || 0) }, transaction });
     await transaction.commit();
   } catch (error) {
     await transaction.rollback();
@@ -573,6 +578,7 @@ async function updateUser(ctx) {
   }
 
   const updateData = {};
+  if (ctx.request.body.isBackendAccount !== undefined) updateData.is_backend_account = parseBackendAccount(ctx.request.body.isBackendAccount);
   if (name) updateData.name = name;
   if (phone) updateData.phone = phone;
   if (requestedDistributorIds[0] !== String(staff.distributor_id || '')) updateData.distributor_id = requestedDistributorIds[0];
@@ -607,6 +613,7 @@ async function updateUser(ctx) {
     ctx.throw(403, '无权分配其他经销商范围');
   }
   const distributorChanged = requestedDistributorIds[0] !== String(staff.distributor_id || '');
+  const previousBackendAccount = Number(staff.is_backend_account || 0);
   await sequelize.transaction(async transaction => {
     if (nextRoleIds) {
       await StaffRole.destroy({ where: { staff_id: staffId }, transaction });
@@ -614,6 +621,10 @@ async function updateUser(ctx) {
     }
     await replaceStaffDistributorPermissions(staff, requestedDistributorIds, transaction);
     await staff.update({ ...updateData, distributor_id: requestedDistributorIds[0] }, { transaction });
+    if (updateData.is_backend_account !== undefined && updateData.is_backend_account !== previousBackendAccount) {
+      await recordBusinessAction({ businessType: 'staff', businessId: staffId, action: 'backend_account_changed',
+        user: ctx.state.user, detail: { before: previousBackendAccount, after: updateData.is_backend_account }, transaction });
+    }
   });
   if (storeIds !== undefined || distributorChanged) {
     staff.setDataValue('distributor_id', requestedDistributorIds[0]);

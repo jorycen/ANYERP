@@ -58,7 +58,7 @@
         </div>
         <el-table :data="invoices" border stripe>
           <el-table-column prop="supplier_name" label="供应商" min-width="150" />
-          <el-table-column prop="invoice_no" label="发票号码" min-width="150" />
+          <el-table-column prop="invoice_numbers_text" label="发票号码" min-width="200" />
           <el-table-column prop="invoice_date" label="开票日期" width="120" />
           <el-table-column prop="invoice_type" label="票种" min-width="150" />
           <el-table-column label="税率" width="90"><template #default="{ row }">{{ taxRateText(row.tax_rate) }}</template></el-table-column>
@@ -81,28 +81,36 @@
     <el-dialog v-model="visible" title="登记进项发票" width="860px">
       <el-form :model="form" label-width="100px">
         <el-row :gutter="12">
-          <el-col :span="12"><el-form-item label="销方税号" required><el-input v-model="form.supplierTaxNo" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="发票号码" required><el-input v-model="form.invoiceNo" /></el-form-item></el-col>
+          <el-col :span="24"><el-form-item label="发票号码" required>
+            <div style="width:100%">
+              <div v-for="(_, index) in form.invoiceNumbers" :key="index" style="display:flex;gap:8px;margin-bottom:8px">
+                <el-input v-model="form.invoiceNumbers[index]" maxlength="64" placeholder="每行填写一个发票号码，无需单独填写金额" />
+                <el-button v-if="form.invoiceNumbers.length > 1" @click="form.invoiceNumbers.splice(index, 1)">删除</el-button>
+              </div>
+              <el-button :disabled="form.invoiceNumbers.length >= 100" @click="form.invoiceNumbers.push('')">添加发票号</el-button>
+            </div>
+          </el-form-item></el-col>
           <el-col :span="12"><el-form-item label="开票日期" required><el-date-picker v-model="form.invoiceDate" value-format="YYYY-MM-DD" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="票种" required><el-input v-model="form.invoiceType" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="税率"><el-input-number v-model="form.taxRate" :min="0" :max="1" :step="0.01" /></el-form-item></el-col>
-          <el-col :span="8"><el-form-item label="不含税金额"><el-input-number v-model="form.amountWithoutTax" :min="0" :precision="2" /></el-form-item></el-col>
-          <el-col :span="8"><el-form-item label="税额"><el-input-number v-model="form.taxAmount" :min="0" :precision="2" /></el-form-item></el-col>
-          <el-col :span="8"><el-form-item label="价税合计"><el-input-number v-model="form.totalAmount" :min="0" :precision="2" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="税率"><el-input-number v-model="form.taxRate" :min="0" :max="1" :step="0.01" @change="previewAmounts(false)" /></el-form-item></el-col>
+          <el-col :span="8"><el-form-item label="价税合计"><el-input-number v-model="form.totalAmount" :min="0" :precision="2" @change="previewAmounts(false)" /></el-form-item></el-col>
+          <el-col :span="8"><el-form-item label="不含税金额">{{ form.amountWithoutTax == null ? '待测算' : money(form.amountWithoutTax) }}</el-form-item></el-col>
+          <el-col :span="8"><el-form-item label="税额">{{ form.taxAmount == null ? '待测算' : money(form.taxAmount) }}</el-form-item></el-col>
         </el-row>
-        <el-divider>本票关联付款</el-divider>
+        <el-alert title="本组只登记一次金额；多个号码无需分别填写金额。税率不同请分组登记，退回按整组处理。" type="info" :closable="false" />
+        <el-divider>本组关联付款</el-divider>
         <el-table :data="dialogRows" border>
           <el-table-column prop="supplier_name" label="供应商" min-width="150" />
           <el-table-column label="结算单" min-width="180">
             <template #default="{ row }"><el-button link type="primary" @click="openSettlementDetail(row)">{{ row.settlement_no || '-' }}</el-button></template>
           </el-table-column>
           <el-table-column label="可分摊" width="120"><template #default="{ row }">¥{{ money(row.remaining_amount) }}</template></el-table-column>
-          <el-table-column label="本票分摊" width="180"><template #default="{ row }"><el-input-number v-model="amounts[row.payment_id]" :min="0" :max="Number(row.remaining_amount)" :precision="2" /></template></el-table-column>
+          <el-table-column label="本组分摊" width="180"><template #default="{ row }"><el-input-number v-model="amounts[row.payment_id]" :min="0" :max="Number(row.remaining_amount)" :precision="2" @change="previewAmounts(true)" /></template></el-table-column>
         </el-table>
       </el-form>
       <template #footer>
         <el-button @click="visible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="save">保存并计入已收票</el-button>
+        <el-button type="primary" :loading="saving" :disabled="previewLoading || form.taxAmount == null" @click="save">保存并计入已收票</el-button>
       </template>
     </el-dialog>
 
@@ -158,8 +166,26 @@ const settlementDetailLoading = ref(false)
 const settlementDetail = ref(null)
 const filter = reactive({ supplier: '', dateRange: [], warning: '' })
 const invoiceFilter = reactive({ keyword: '', dateRange: [] })
-const blank = () => ({ supplierTaxNo: '', invoiceNo: '', invoiceDate: '', invoiceType: '增值税专用发票', taxRate: 0.13, amountWithoutTax: 0, taxAmount: 0, totalAmount: 0 })
+const blank = () => ({ invoiceNumbers: [''], invoiceDate: '', invoiceType: '增值税专用发票', taxRate: 0.13, amountWithoutTax: null, taxAmount: null, totalAmount: 0 })
 const form = ref(blank())
+const previewLoading = ref(false)
+let previewSequence = 0
+const currentAllocations = () => dialogRows.value.map(row => ({ paymentId: row.payment_id, amount: amounts.value[row.payment_id] || 0 }))
+const previewAmounts = async (useAllocations = false) => {
+  const sequence = ++previewSequence
+  previewLoading.value = true
+  try {
+    const response = await api.previewPurchaseInvoice({ taxRate: form.value.taxRate,
+      ...(useAllocations ? { allocations: currentAllocations() } : { totalAmount: form.value.totalAmount }) })
+    if (sequence !== previewSequence) return
+    if (response.code !== 0) throw new Error(response.message || '金额测算失败')
+    Object.assign(form.value, response.data)
+  } catch (error) {
+    if (sequence !== previewSequence) return
+    form.value.amountWithoutTax = null; form.value.taxAmount = null
+    ElMessage.error(error.response?.data?.message || error.message || '金额测算失败')
+  } finally { if (sequence === previewSequence) previewLoading.value = false }
+}
 
 const money = value => Number(value || 0).toFixed(2)
 const quantity = value => Number.isFinite(Number(value)) ? String(Number(value)) : '-'
@@ -191,7 +217,7 @@ const loadInvoices = async () => {
 const load = async () => Promise.all([loadCandidates(), loadInvoices()])
 const returnReceivedInvoice = async row => {
   if (returningInvoiceId.value) return
-  const result = await ElMessageBox.prompt(`整张退回发票 ${row.invoice_no}？本票全部关联付款分摊将恢复待收票，原付款日期保持。请填写退回原因。`, '退回已收发票', {
+  const result = await ElMessageBox.prompt(`整组退回发票 ${row.invoice_numbers_text || row.invoice_no}？本组全部关联付款分摊将恢复待收票，原付款日期保持。请填写退回原因。`, '退回已收发票', {
     inputType: 'textarea', confirmButtonText: '整张退回', cancelButtonText: '取消',
     inputValidator: value => !!String(value || '').trim() && String(value).trim().length <= 512 || '请填写退回原因，最多512字'
   }).catch(() => null)
@@ -220,12 +246,14 @@ const openCreate = rows => {
   dialogRows.value = rows
   amounts.value = Object.fromEntries(rows.map(row => [row.payment_id, Number(row.remaining_amount || 0)]))
   visible.value = true
+  previewAmounts(true)
 }
 
 const save = async () => {
   saving.value = true
   try {
-    await api.createPurchaseInvoice({ ...form.value, allocations: dialogRows.value.map(row => ({ paymentId: row.payment_id, amount: amounts.value[row.payment_id] || 0 })) })
+    const response = await api.createPurchaseInvoice({ ...form.value, allocations: currentAllocations() })
+    if (response.code !== 0) throw new Error(response.message || '登记失败')
     ElMessage.success('发票已登记')
     visible.value = false
     selected.value = []

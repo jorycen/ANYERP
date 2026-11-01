@@ -1,4 +1,5 @@
-const { PurchaseInvoice, PurchaseInvoiceAllocation, SettlementPaymentRecord, Settlement, sequelize } = require('../../models');
+const { PurchaseInvoice, PurchaseInvoiceNumber, PurchaseInvoiceAllocation, SettlementPaymentRecord, Settlement, Supplier, sequelize } = require('../../models');
+const { invoiceAmounts, invoiceNumbers } = require('./invoiceAmounts');
 const { Op } = require('sequelize');
 const { generateUUID } = require('../../utils');
 const { canAccessDistributor, distributorWhere } = require('../../utils/distributorScope');
@@ -16,7 +17,8 @@ function chinaDate() {
 
 function buildInvoiceWhere(query, user) {
   const where = scope({ status: 'active' }, user);
-  if (query.keyword) where[Op.or] = ['invoice_no', 'supplier_name'].map(key => ({ [key]: { [Op.like]: `%${text(query.keyword)}%` } }));
+  if (query.keyword) where[Op.or] = [...['invoice_no', 'supplier_name'].map(key => ({ [key]: { [Op.like]: `%${text(query.keyword)}%` } })),
+    sequelize.literal(`EXISTS (SELECT 1 FROM T_PURCHASE_INVOICE_NUMBER n WHERE n.INVOICE_ID=PurchaseInvoice.INVOICE_ID AND n.INVOICE_NO LIKE ${sequelize.escape(`%${text(query.keyword)}%`)})`)];
   if (query.startDate || query.endDate) {
     where.invoice_date = {};
     if (query.startDate) where.invoice_date[Op.gte] = query.startDate;
@@ -27,12 +29,16 @@ function buildInvoiceWhere(query, user) {
 
 async function queryInvoices(where) {
   const list = await PurchaseInvoice.findAll({ where, include: [{ model: PurchaseInvoiceAllocation, as: 'allocations' }], order: [['invoice_date', 'DESC'], ['create_time', 'DESC']] });
+  const numberRows = list.length ? await PurchaseInvoiceNumber.findAll({ where: { invoice_id: { [Op.in]: list.map(row => row.invoice_id) } }, raw: true }) : [];
   const settlementIds = [...new Set(list.flatMap(row => (row.allocations || []).map(item => item.settlement_id).filter(Boolean).map(String)))];
   const settlements = settlementIds.length
     ? await Settlement.findAll({ where: { settlement_id: { [Op.in]: settlementIds }, is_deleted: 0 }, attributes: ['settlement_id', 'settlement_no', 'supplier_name', 'total_amount', 'status', 'payment_status'] })
     : [];
   const settlementMap = new Map(settlements.map(row => [String(row.settlement_id), row]));
   list.forEach(invoice => {
+    const numbers = numberRows.filter(row => row.invoice_id === invoice.invoice_id).map(row => row.invoice_no);
+    invoice.setDataValue('invoice_numbers', numbers.length ? numbers : [invoice.invoice_no]);
+    invoice.setDataValue('invoice_numbers_text', (numbers.length ? numbers : [invoice.invoice_no]).join('、'));
     const links = buildInvoiceSettlementLinks(invoice.allocations, settlementMap);
     invoice.setDataValue('settlement_links', links);
   });
@@ -68,7 +74,7 @@ function invoiceExportRows(list) {
     const links = data.settlement_links?.length ? data.settlement_links : [{}];
     return links.map(link => ({
       供应商: data.supplier_name || '', 销方税号: data.supplier_tax_no || '',
-      发票号码: data.invoice_no || '', 开票日期: data.invoice_date || '', 票种: data.invoice_type || '',
+      发票号码: data.invoice_numbers_text || data.invoice_no || '', 开票日期: data.invoice_date || '', 票种: data.invoice_type || '',
       税率: data.tax_rate === null || data.tax_rate === undefined ? '' : `${money(Number(data.tax_rate) * 100)}%`,
       不含税金额: money(data.amount_without_tax), 税额: money(data.tax_amount), 价税合计: money(data.total_amount),
       关联结算单: link.settlement_no || '', 本票分摊金额: link.allocation_amount === undefined ? '' : money(link.allocation_amount),
@@ -87,7 +93,7 @@ async function findInvoiceCandidates(query, user) {
     INNER JOIN T_SETTLEMENT s ON s.SETTLEMENT_ID = p.SETTLEMENT_ID
     LEFT JOIN T_PURCHASE_INVOICE_ALLOCATION a ON a.PAYMENT_ID = p.PAYMENT_ID
     LEFT JOIN T_PURCHASE_INVOICE i ON i.INVOICE_ID = a.INVOICE_ID AND i.STATUS = 'active'
-    WHERE p.STATUS = 'active' AND s.TAX_STATUS = 'TAX_INCLUDED'
+    WHERE p.STATUS = 'active' AND p.AMOUNT > 0 AND s.TAX_STATUS = 'TAX_INCLUDED'
       AND (:supplierName = '' OR p.SUPPLIER_NAME LIKE CONCAT('%', :supplierName, '%'))
     GROUP BY p.PAYMENT_ID
     HAVING (:status <> 'open' OR p.AMOUNT - COALESCE(SUM(CASE WHEN i.INVOICE_ID IS NULL THEN 0 ELSE a.AMOUNT END), 0) > 0.005)
@@ -129,17 +135,27 @@ async function exportInvoices(ctx) {
   ], `采购进项发票_${new Date().toISOString().slice(0, 10)}.xlsx`, '采购进项发票');
 }
 
+async function previewInvoice(ctx) {
+  const body = ctx.request.body || {};
+  const allocations = Array.isArray(body.allocations) ? body.allocations : [];
+  if (body.totalAmount === undefined) allocations.forEach(row => invoiceAmounts(row.amount, body.taxRate));
+  const total = body.totalAmount === undefined ? money(allocations.reduce((sum, row) => sum + Number(row.amount), 0)) : body.totalAmount;
+  ctx.body = { code: 0, data: invoiceAmounts(total, body.taxRate) };
+}
+
 async function createInvoice(ctx) {
   const body = ctx.request.body || {}; const allocations = Array.isArray(body.allocations) ? body.allocations : [];
-  const supplierTaxNo = text(body.supplierTaxNo), invoiceNo = text(body.invoiceNo);
-  const total = money(body.totalAmount), withoutTax = money(body.amountWithoutTax), tax = money(body.taxAmount);
-  if (!supplierTaxNo || !invoiceNo || !body.invoiceDate || !text(body.invoiceType)) ctx.throw(400, '请完整填写发票信息');
+  const numbers = invoiceNumbers(body.invoiceNumbers || [body.invoiceNo]);
+  const invoiceNo = numbers[0];
+  const calculated = invoiceAmounts(body.totalAmount, body.taxRate);
+  const total = calculated.totalAmount, withoutTax = calculated.amountWithoutTax, tax = calculated.taxAmount;
+  if (!body.invoiceDate || !text(body.invoiceType)) ctx.throw(400, '请完整填写发票信息');
   if (total <= 0 || withoutTax < 0 || tax < 0 || money(withoutTax + tax) !== total) ctx.throw(400, '发票金额或税额不正确');
   if (!allocations.length || money(allocations.reduce((s, row) => s + Number(row.amount || 0), 0)) !== total) ctx.throw(400, '发票总额必须与付款分摊金额一致');
   if (new Set(allocations.map(row => String(row.paymentId || ''))).size !== allocations.length) ctx.throw(400, '同一付款流水不能重复分摊');
   await sequelize.transaction(async transaction => {
     const paymentRows = [];
-    for (const allocation of allocations) {
+    for (const allocation of [...allocations].sort((a,b) => String(a.paymentId).localeCompare(String(b.paymentId)))) {
       const payment = await SettlementPaymentRecord.findOne({ where: { payment_id: allocation.paymentId, status: 'active' }, include: [{ model: Settlement, required: true, where: { tax_status: 'TAX_INCLUDED' } }], transaction, lock: transaction.LOCK.UPDATE });
       if (!payment || !canAccessDistributor(ctx.state.user, payment.distributor_id)) ctx.throw(400, '付款记录不存在、已冲销或无权限');
       const used = await activeInvoiceAmount(payment.payment_id, transaction);
@@ -149,8 +165,12 @@ async function createInvoice(ctx) {
     const first = paymentRows[0];
     if (paymentRows.some(payment => String(payment.distributor_id || '') !== String(first.distributor_id || ''))) ctx.throw(400, '一张发票不能关联不同经销商的付款');
     if (paymentRows.some(payment => String(payment.supplier_name || '') !== String(first.supplier_name || ''))) ctx.throw(400, '一张发票不能关联不同供应商的付款');
-    const invoice = await saveInvoice(ctx, { invoice_id: generateUUID(), distributor_id: first.distributor_id, supplier_name: first.supplier_name, supplier_tax_no: supplierTaxNo, invoice_code: '', invoice_no: invoiceNo, invoice_date: body.invoiceDate, invoice_type: text(body.invoiceType), tax_rate: body.taxRate == null || body.taxRate === '' ? null : Number(body.taxRate), amount_without_tax: withoutTax, tax_amount: tax, total_amount: total, remark: text(body.remark), create_user: ctx.state.user.name || ctx.state.user.staffId }, transaction);
-    for (const [index, allocation] of allocations.entries()) await PurchaseInvoiceAllocation.create({ allocation_id: generateUUID(), invoice_id: invoice.invoice_id, payment_id: allocation.paymentId, settlement_id: paymentRows[index].settlement_id, amount: money(allocation.amount) }, { transaction });
+    const supplierId = first.Settlement?.supplier_id;
+    const supplier = supplierId ? await Supplier.findByPk(supplierId, { transaction }) : null;
+    const supplierTaxNo = text(supplier?.tax_no) || null;
+    const invoice = await saveInvoice(ctx, { invoice_id: generateUUID(), distributor_id: first.distributor_id, supplier_name: first.supplier_name, supplier_tax_no: supplierTaxNo, invoice_code: '', invoice_no: invoiceNo, invoice_numbers: numbers, invoice_date: body.invoiceDate, invoice_type: text(body.invoiceType), tax_rate: calculated.taxRate, amount_without_tax: withoutTax, tax_amount: tax, total_amount: total, remark: text(body.remark), create_user: ctx.state.user.name || ctx.state.user.staffId }, transaction);
+    const paymentMap = new Map(paymentRows.map(row => [String(row.payment_id), row]));
+    for (const allocation of allocations) await PurchaseInvoiceAllocation.create({ allocation_id: generateUUID(), invoice_id: invoice.invoice_id, payment_id: allocation.paymentId, settlement_id: paymentMap.get(String(allocation.paymentId)).settlement_id, amount: money(allocation.amount) }, { transaction });
   });
   ctx.body = { code: 0, message: '发票已登记并计入已收票' };
 }
@@ -162,6 +182,39 @@ async function activeInvoiceAmount(paymentId, transaction) {
 
 // Reuse the unique invoice identity after return; keep earlier facts in the audit log.
 async function saveInvoice(ctx, values, transaction) {
+  const numbers = invoiceNumbers(values.invoice_numbers || [values.invoice_no]);
+  const scopeWhere = { distributor_id: values.distributor_id, supplier_name: values.supplier_name || '' };
+  const identities = [scopeWhere, ...(values.supplier_tax_no ? [{ supplier_tax_no: values.supplier_tax_no }] : [])];
+  const numberRows = await PurchaseInvoiceNumber.findAll({ where: { [Op.or]: identities, invoice_no: { [Op.in]: numbers } }, transaction, lock: transaction.LOCK.UPDATE });
+  // Legacy single invoices have no child rows. Keep them in duplicate checks.
+  const collisions = await PurchaseInvoice.findAll({ where: { [Op.or]: [
+    { ...scopeWhere, invoice_no: { [Op.in]: numbers } },
+    ...(values.supplier_tax_no ? [{ supplier_tax_no: values.supplier_tax_no, invoice_no: { [Op.in]: numbers } }] : []),
+    ...(numberRows.length ? [{ invoice_id: { [Op.in]: numberRows.map(row => row.invoice_id) } }] : [])
+  ] }, transaction, lock: transaction.LOCK.UPDATE });
+  if (collisions.some(row => row.status !== 'returned')) ctx.throw(409, '组内有发票号码已登记，请勿重复登记');
+  if (collisions.length > 1) ctx.throw(409, '已退回的不同登记组不能合并，请分别重新登记');
+  if (collisions.length === 1) {
+    const previousNumbers = await PurchaseInvoiceNumber.findAll({ where: { invoice_id: collisions[0].invoice_id }, transaction });
+    const original = previousNumbers.length ? previousNumbers.map(row => row.invoice_no.toUpperCase()).sort() : [collisions[0].invoice_no.toUpperCase()];
+    if (JSON.stringify(original) !== JSON.stringify(numbers.map(number => number.toUpperCase()).sort())) ctx.throw(409, '已退回的登记须保留原整组发票号码重新登记');
+    values = { ...values, invoice_no: collisions[0].invoice_no, supplier_tax_no: collisions[0].supplier_tax_no };
+  }
+  const { invoice_numbers, ...header } = values;
+  let invoice;
+  try { invoice = await saveInvoiceHeader(ctx, header, transaction); }
+  catch (error) { if (error.name === 'SequelizeUniqueConstraintError') ctx.throw(409, '发票号码已登记，请刷新核对'); throw error; }
+  await PurchaseInvoiceNumber.destroy({ where: { invoice_id: invoice.invoice_id }, transaction });
+  try {
+    await PurchaseInvoiceNumber.bulkCreate(numbers.map(number => ({ number_id: generateUUID(), invoice_id: invoice.invoice_id,
+      ...scopeWhere, supplier_tax_no: values.supplier_tax_no || null, invoice_no: number })), { transaction });
+  } catch (error) { if (error.name === 'SequelizeUniqueConstraintError') ctx.throw(409, '发票号码已登记，请刷新核对'); throw error; }
+  await recordBusinessAction({ businessType: 'purchase_invoice', businessId: invoice.invoice_id, businessNo: invoice.invoice_no,
+    action: 'numbers_registered', user: ctx.state.user, detail: { invoiceNumbers: numbers, totalAmount: values.total_amount }, transaction });
+  return invoice;
+}
+
+async function saveInvoiceHeader(ctx, values, transaction) {
   const previous = await PurchaseInvoice.findOne({ where: { supplier_tax_no: values.supplier_tax_no,
     invoice_code: values.invoice_code, invoice_no: values.invoice_no }, transaction, lock: transaction.LOCK.UPDATE });
   if (!previous) return PurchaseInvoice.create(values, { transaction });
@@ -186,9 +239,10 @@ async function returnInvoice(ctx) {
     if (!canAccessDistributor(ctx.state.user, invoice.distributor_id)) ctx.throw(403, '无权退回该经销商的发票');
     if (invoice.status !== 'active') ctx.throw(409, '该发票已退回或状态已变化，请刷新');
     const allocations = await PurchaseInvoiceAllocation.findAll({ where: { invoice_id: invoice.invoice_id }, transaction });
+    const numbers = await PurchaseInvoiceNumber.findAll({ where: { invoice_id: invoice.invoice_id }, transaction });
     await recordBusinessAction({ businessType: 'purchase_invoice', businessId: invoice.invoice_id, businessNo: invoice.invoice_no,
       action: 'returned', fromStatus: 'active', toStatus: 'returned', user: ctx.state.user, comment: reason,
-      detail: { invoice: invoice.toJSON(), allocations: allocations.map(row => row.toJSON()) }, transaction });
+      detail: { invoice: invoice.toJSON(), invoiceNumbers: numbers.map(row => row.invoice_no), allocations: allocations.map(row => row.toJSON()) }, transaction });
     await invoice.update({ status: 'returned' }, { transaction });
   });
   ctx.body = { code: 0, message: '整张发票已退回，关联有效付款已恢复待收票金额' };
@@ -263,4 +317,4 @@ async function importInvoices(ctx) {
   ctx.body = { code: 0, message: `成功登记 ${result.invoiceCount} 张发票，共关联 ${result.allocationCount} 笔付款`, data: result };
 }
 
-module.exports = { getInvoiceCandidates, exportInvoiceCandidates, listInvoices, exportInvoices, createInvoice, importInvoices, returnInvoice, _test: { buildInvoiceSettlementLinks, invoiceExportRows, normalizeInvoiceImportRows, activeInvoiceAmount, saveInvoice } };
+module.exports = { getInvoiceCandidates, exportInvoiceCandidates, listInvoices, exportInvoices, previewInvoice, createInvoice, importInvoices, returnInvoice, _test: { buildInvoiceSettlementLinks, invoiceExportRows, normalizeInvoiceImportRows, activeInvoiceAmount, saveInvoice } };

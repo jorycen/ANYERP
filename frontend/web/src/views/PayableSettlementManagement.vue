@@ -99,7 +99,7 @@
             <el-button v-if="row.status === 'draft'" link type="warning" @click="submit(row)">{{ row.submit_time ? '重新提交' : '提交' }}</el-button>
             <el-button v-if="row.status === 'draft' && !row.submit_time" link type="danger" @click="deleteDraft(row)">删除</el-button>
             <el-button v-if="row.status === 'confirmed' && remaining(row) > 0" link type="primary" @click="openPayment(row)">部分付款</el-button>
-            <el-button v-if="row.status === 'confirmed' && row.payment_status === 'pending_refund'" link type="success" @click="openRefund(row)">登记退款到账</el-button>
+            <span v-if="row.status === 'confirmed' && row.payment_status === 'pending_refund'">请到付款管理确认退款到账</span>
             <el-button v-if="!['voided', 'settled'].includes(row.status) && ['unpaid', 'pending_refund'].includes(row.payment_status)" link type="danger" @click="voidSettlement(row)">作废</el-button>
           </template>
         </el-table-column>
@@ -129,8 +129,8 @@
           <el-descriptions-item label="收款备注" :span="2">{{ counterpartyRemark(detail) }}</el-descriptions-item>
           <el-descriptions-item label="结算金额">¥{{ money(detail.total_amount) }}</el-descriptions-item>
           <el-descriptions-item label="返款抵扣">-¥{{ money(detail.rebate_deduction) }}</el-descriptions-item>
-          <el-descriptions-item :label="Number(detail.total_amount) < 0 ? '供应商已退款' : '已付金额'">¥{{ Number(detail.total_amount) < 0 ? (detail.payment_status === 'refunded' ? money(-detail.total_amount) : money(0)) : money(detail.paid_amount) }}</el-descriptions-item>
-          <el-descriptions-item v-if="detail.refund_receipt" label="供应商退款到账">¥{{ money(detail.refund_receipt.amount) }}，{{ dateTime(detail.refund_receipt.create_time) }}</el-descriptions-item>
+          <el-descriptions-item :label="Number(detail.total_amount) < 0 ? '供应商已退款' : '已付金额'">¥{{ money(Number(detail.total_amount) < 0 ? detail.refund_received_amount : detail.paid_amount) }}</el-descriptions-item>
+          <el-descriptions-item v-if="detail.refund_receipt" label="供应商退款累计到账">¥{{ money(detail.refund_received_amount) }}；最近到账 {{ dateTime(detail.refund_receipt.create_time) }}</el-descriptions-item>
           <el-descriptions-item label="状态">
             <el-tag :type="statusType(detail.lifecycle_status || lifecycleStatus(detail))">{{ statusText(detail.lifecycle_status || lifecycleStatus(detail)) }}</el-tag>
           </el-descriptions-item>
@@ -268,24 +268,6 @@
         <el-button type="primary" :loading="paymentSubmitting" @click="submitPayment">确认付款</el-button>
       </template>
     </el-dialog>
-    <el-dialog v-model="refundVisible" title="登记供应商退款到账" width="560px">
-      <el-descriptions v-if="refundSettlement" :column="1" border size="small">
-        <el-descriptions-item label="结算单号">{{ refundSettlement.settlement_no }}</el-descriptions-item>
-        <el-descriptions-item label="应收供应商退款">¥{{ money(-refundSettlement.total_amount) }}</el-descriptions-item>
-      </el-descriptions>
-      <el-form label-width="100px" class="payment-form">
-        <el-form-item label="到账账户" required>
-          <el-select v-model="refundForm.accountId" placeholder="请选择到账账户" filterable style="width: 100%">
-            <el-option v-for="account in refundAccounts" :key="account.account_id" :label="accountLabel(account)" :value="account.account_id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="到账备注"><el-input v-model="refundForm.remark" maxlength="200" /></el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="refundVisible = false">取消</el-button>
-        <el-button type="primary" :loading="refundSubmitting" @click="submitRefund">确认已到账</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -331,10 +313,6 @@ const paymentVisible = ref(false)
 const paymentSettlement = ref(null)
 const paymentSubmitting = ref(false)
 const paymentForm = reactive({ accountId: '', amount: 0 })
-const refundVisible = ref(false)
-const refundSettlement = ref(null)
-const refundSubmitting = ref(false)
-const refundForm = reactive({ accountId: '', remark: '' })
 const distributorOptions = ref([
   { distributor_id: 'DIST001', name: '艾诺云' },
   { distributor_id: 'DIST002', name: '艾诺志兴' }
@@ -344,9 +322,6 @@ const payeeOptions = ref([])
 const payeeLoading = ref(false)
 
 const paymentRemaining = computed(() => Math.max(0, remaining(paymentSettlement.value)))
-const refundAccounts = computed(() => accounts.value.filter(account =>
-  String(account.account_type || '').toUpperCase() === 'FUND'
-  && (!account.distributor_id || String(account.distributor_id) === String(refundSettlement.value?.distributor_id || ''))))
 
 const money = value => Number(value || 0).toFixed(2)
 const quantity = value => {
@@ -579,31 +554,6 @@ const loadDistributorOptions = async () => {
   }
 }
 
-const openRefund = row => {
-  refundSettlement.value = row
-  refundForm.accountId = ''
-  refundForm.remark = ''
-  refundVisible.value = true
-}
-
-const submitRefund = async () => {
-  if (!refundForm.accountId) return ElMessage.warning('请选择到账账户')
-  refundSubmitting.value = true
-  try {
-    const res = await api.registerSupplierRefund({
-      settlementId: refundSettlement.value.settlement_id,
-      accountId: refundForm.accountId, remark: refundForm.remark
-    })
-    if (res.code !== 0) return ElMessage.error(res.message || '登记失败')
-    refundVisible.value = false
-    ElMessage.success(res.message || '退款到账已登记')
-    await Promise.all([loadData(), loadAccounts()])
-  } catch (error) {
-    ElMessage.error(error.response?.data?.message || '登记失败')
-  } finally {
-    refundSubmitting.value = false
-  }
-}
 </script>
 
 <style scoped>
