@@ -84,7 +84,7 @@
         <el-form-item label="兑换结束"><el-date-picker v-model="reward.valid_end_time" type="datetime" placeholder="不限" /></el-form-item>
         <el-form-item label="限本人使用"><el-switch v-model="reward.self_only" /></el-form-item>
         <template v-if="reward.kind==='coupon'"><el-form-item label="券面金额（元）"><el-input v-model="reward.coupon_value" /><span>免费服务券填0，在说明中写明服务内容</span></el-form-item><el-form-item label="使用门槛（元）"><el-input v-model="reward.coupon_min_spend" /></el-form-item><el-form-item label="优惠券范围"><el-input v-model="reward.coupon_scope" placeholder="例如：指定配件；到店由员工核对范围" /></el-form-item></template>
-        <template v-if="reward.kind==='gift'"><el-form-item label="关联ERP商品"><el-select v-model="selectedRewardProductIds" multiple filterable remote :remote-method="searchInventoryProducts" placeholder="搜索并选择多个备选商品" style="width:100%"><el-option v-for="p in inventoryProducts" :key="p.product_id" :value="p.product_id" :label="p.product_code+' '+p.name" /></el-select></el-form-item><el-form-item v-for="p in reward.product_options" :key="p.product_id" :label="p.name || p.product_id"><el-input-number v-model="p.units_per_reward" :min="1" :max="1000" /><span>每份出库数量</span></el-form-item><p>核销时单选其中一个商品，按核销门店库存交付；领券不预占库存。</p></template><el-form-item v-else label="兑换名额"><el-input-number v-model="reward.stock" :min="0" /><span>留空不限</span></el-form-item>
+        <template v-if="reward.kind==='gift'"><el-form-item label="关联ERP商品"><el-select v-model="selectedRewardProductIds" multiple filterable remote :remote-method="searchInventoryProducts" :loading="inventoryProductsLoading" placeholder="搜索并选择多个备选商品" style="width:100%"><el-option v-for="p in inventoryProducts" :key="p.product_id" :value="p.product_id" :label="p.product_code+' '+p.name" /></el-select></el-form-item><el-form-item v-for="p in reward.product_options" :key="p.product_id" :label="p.name || p.product_id"><el-input-number v-model="p.units_per_reward" :min="1" :max="1000" /><span>每份出库数量</span></el-form-item><p>核销时单选其中一个商品，按核销门店库存交付；领券不预占库存。</p></template><el-form-item v-else label="兑换名额"><el-input-number v-model="reward.stock" :min="0" /><span>留空不限</span></el-form-item>
         <el-form-item label="每人限兑"><el-input-number v-model="reward.per_member_limit" :min="0" /><span>留空不限</span></el-form-item>
         <el-form-item label="有效天数"><el-input-number v-model="reward.valid_days" :min="1" :max="3650" /></el-form-item>
         <el-form-item label="适用门店"><el-select v-model="reward.store_ids" multiple filterable style="width:100%" placeholder="选择可使用的门店"><el-option-group v-for="g in rewardStoreGroups" :key="g.id" :label="g.name"><el-option v-for="s in g.stores" :key="s.store_id" :label="s.name" :value="s.store_id" /></el-option-group></el-select><div class="form-help"><el-button link type="primary" @click="reward.store_ids=rewardStores.map(s=>s.store_id)">全选可选门店</el-button><el-button link @click="reward.store_ids=[]">清空</el-button><div>{{options.canChooseAllRewardStores?'boss可同时选择成都、重庆等经销商下的门店；只在所选门店使用。':'仅可选择当前积分归属经销商内的授权门店。'}}</div></div></el-form-item>
@@ -138,7 +138,24 @@ function confirmRedemption(){return action(async()=>{await ElMessageBox.confirm(
 async function loadRules(){try{rules.value=(await request('get','/point-rules',{distributor_id:dealer.value})).list}catch(e){ElMessage.error(e.message)}}
 function publishRule(){return action(async()=>{await ElMessageBox.confirm('新版本将用于后续首次领取积分的订单，是否发布？','发布积分规则');await request('post','/point-rules',{...rule.value,distributor_id:dealer.value,product_ids:rule.value.products.split(/[,，\s]+/).filter(Boolean)});await loadRules()})}
 const inventoryProducts=ref([])
-async function searchInventoryProducts(keyword){const response=await api.getProductList({keyword,page:1,pageSize:50,activeOnly:1});if(response.code!==0)throw new Error(response.message||'商品查询失败');const result=response.data?.list||[];inventoryProducts.value=[...new Map([...(reward.value.product_options||[]).map(p=>({...p,product_code:p.product_id})),...inventoryProducts.value,...result].map(p=>[p.product_id,p])).values()]}
+const inventoryProductsLoading=ref(false)
+let inventorySearchSequence=0
+async function searchInventoryProducts(keyword){
+  const sequence=++inventorySearchSequence
+  inventoryProductsLoading.value=true
+  inventoryProducts.value=[]
+  try{
+    const response=await api.getProductList({keyword,page:1,pageSize:50,activeOnly:1})
+    if(sequence!==inventorySearchSequence)return
+    if(response.code!==0)throw new Error(response.message||'\u5546\u54c1\u67e5\u8be2\u5931\u8d25')
+    inventoryProducts.value=response.data?.list||[]
+  }catch(e){
+    if(sequence===inventorySearchSequence)ElMessage.error(e.message||'\u5546\u54c1\u67e5\u8be2\u5931\u8d25')
+  }finally{
+    if(sequence===inventorySearchSequence)inventoryProductsLoading.value=false
+  }
+}
+
 let adjustKey=''
 function bindLegacyStock(){return action(async()=>{await ElMessageBox.confirm('确认该历史凭证的实物与积分商品所关联的ERP商品及数量一致，并固定到当前核销门店领取？本操作不改变原积分和补差价格。','核对历史礼品');await request('post',`/exchange/${redemptionPreview.value.id}/bind-stock`,{store_id:redeemForm.value.store_id});await previewRedemption()})}
 watch(adjust,()=>{adjustKey=''}, {deep:true})
