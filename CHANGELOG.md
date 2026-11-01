@@ -3139,3 +3139,8 @@
 ## 2026-11-01 Release audit: pending functional changes
 
 Publish previously uncommitted invoice groups, supplier refund receipts and backend-account selectors with their API documentation and tests. Includes staff-column and invoice-number startup migrations. Preserve existing business records and original document history. Targeted regression: 39 passed; Web build passed. Broad suite is not fully green: existing startup-schema, serialized inventory and mall-report query assertions fail; database integration tests were not enabled. Production deployment and migration verification remain pending.
+
+
+### 2026-11-01 Final release regression comparison
+
+Current full suite: 773 tests, 742 passed, 26 failed, 5 skipped. All 26 failing test names also fail when the pre-release source is restored; no additional failing test names were observed for this release. The baseline source is incompatible with newly added feature tests, so its larger failure count is not a regression metric. Targeted 39 tests and production Web build passed. Database integration switches were not enabled; production deployment and startup migration verification remain pending.
