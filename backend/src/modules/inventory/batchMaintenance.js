@@ -1,3 +1,4 @@
+const { requireInboundPn } = require('../../utils/inboundPn');
 const { assertSnEligible, recordSnReentry } = require('../../utils/snEligibility');
 const { normalizeSnCode } = require('../../utils/snCode');
 const XLSX = require('xlsx');
@@ -358,6 +359,11 @@ async function validateRows(ctx, rows, options, transaction) {
       rowErrors.push('入库必须填写资源权益');
     }
     if (!location) rowErrors.push(batchInventoryType ? '所选仓位在该门店不存在或已停用' : '库位不存在或不属于该门店');
+
+    if (product && (operationType === 'INBOUND' || (operationType === 'ADJUST' && quantity > 0))) {
+      try { pnCode = await requireInboundPn(product, pnCode, transaction); }
+      catch (error) { rowErrors.push(error.message); }
+    }
 
     let sn = null;
     if (product && Number(product.need_sn || 0) === 1) {
@@ -755,6 +761,10 @@ async function createNonSnBatchRights(item, application, transaction) {
 }
 
 async function executeApplicationItem(item, application, transaction) {
+  if (item.operation_type === 'INBOUND' || (item.operation_type === 'ADJUST' && Number(item.quantity) > 0)) {
+    const pnCode = await requireInboundPn(item.product_id, item.pn_code || '', transaction);
+    await item.update({ pn_code: pnCode }, { transaction });
+  }
   let inventoryResult;
   let snId = item.sn_id || null;
 
@@ -1086,6 +1096,7 @@ module.exports = {
   reviewBatchApplication,
   recoverExecutingBatchApplications,
   _test: {
+    executeApplicationItem,
     parseWorkbook,
     normalizeResourceTypes,
     normalizeOperationResources,

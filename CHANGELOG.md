@@ -3144,3 +3144,16 @@ Publish previously uncommitted invoice groups, supplier refund receipts and back
 ### 2026-11-01 Final release regression comparison
 
 Current full suite: 773 tests, 742 passed, 26 failed, 5 skipped. All 26 failing test names also fail when the pre-release source is restored; no additional failing test names were observed for this release. The baseline source is incompatible with newly added feature tests, so its larger failure count is not a regression metric. Targeted 39 tests and production Web build passed. Database integration switches were not enabled; production deployment and startup migration verification remain pending.
+
+
+## 2026-11-01 所有商品入库强制有效PN
+
+新增后台公共入库PN校验，接入普通/采购/审批直接入库/销售退货/重新入库、批量及正向调整、调拨、拆装产出和组装冲销恢复库存。无有效归属PN拒绝，多PN必须明确选择；不再允许只传未登记PN绕过主数据。增加拒绝及事务回滚测试并补全拆装测试的有效PN夹具。69项相关测试通过；SP05187只读验证返回“未维护有效PN”。本地实施，未部署、未改历史库存；无数据库迁移。规则和决策记录已同步。
+
+## 2026-11-01 原采购流程增加零成本提醒
+
+Web及ERP小程序提交、单笔审批和批量审批增加零成本提醒，API统一返回提示和具体商品行。原终审及入库事务留存零成本依据，SN毛利与非SN成本层认可，不自动确认历史零值。兼容新建二手商品在生成正式商品ID后记录依据。修复小程序审批编辑字段未完整透传问题。后台64项相关回归、小程序9项审批回归及Web构建通过，MySQL成本层查询只读验证通过。无需迁移，尚未部署；小程序仅本地修改，不上传GitHub。历史订单、库存、资金未改。
+
+### 2026-11-01 GitHub release: PN receipt checks and zero-cost purchase notices
+
+Includes approved PN receipt validation and zero-cost notices within the original purchase workflow, explicit approval/receipt audit evidence, and Web deployment assets. Combined targeted regression: 79 passed. Web build and 9 local mini-app approval tests passed. Mini-app code remains local and requires separate WeChat release. No production data changes, no schema migration, deployment pending. Historical default-zero receipts are not automatically confirmed.

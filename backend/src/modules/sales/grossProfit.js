@@ -515,6 +515,7 @@ async function resolveSupplierContext(items, order, transaction) {
   const latestInboundRows = productIds.length
     ? await sequelize.query(
         `SELECT ii.PRODUCT_ID AS product_id, ii.UNIT_PRICE AS inbound_price, i.SOURCE_TYPE AS source_type,
+                EXISTS (SELECT 1 FROM T_BUSINESS_ACTION_LOG za WHERE za.BUSINESS_TYPE='inbound_item' AND za.BUSINESS_ID COLLATE utf8mb4_unicode_ci=CAST(ii.ITEM_ID AS CHAR) COLLATE utf8mb4_unicode_ci AND za.ACTION='zero_cost_purchase_received') AS zero_cost_confirmed,
                 EXISTS (SELECT 1 FROM T_INBOUND_ITEM recovered_item
                   INNER JOIN T_INBOUND recovered_inbound ON recovered_inbound.INBOUND_ID = recovered_item.INBOUND_ID
                   WHERE recovered_item.PRODUCT_ID = ii.PRODUCT_ID AND recovered_inbound.SOURCE_TYPE = 'SALES_COMPONENT_RECOVERY'
@@ -625,7 +626,7 @@ async function buildProductPricingDetails(orderId, transaction) {
       ?? (toNumber(row.original_pickup_price) > 0 ? validPrice(row.original_pickup_price) : null)
       ?? require('../../utils/costKnowledge').knownCost(snRow?.inbound_price,
         isNonPurchase || confirmedZeroIds.has(String(snRow?.sn_id)))
-      ?? (!snRow ? require('../../utils/costKnowledge').knownCost(inboundSupplier?.inbound_price, false) : null)
+      ?? (!snRow ? require('../../utils/costKnowledge').knownCost(inboundSupplier?.inbound_price, Number(inboundSupplier?.zero_cost_confirmed) === 1) : null)
       ?? (!snRow && productPrice && Number(productPrice.status ?? 1) === 1
         && (Number(productPrice.cost_price) > 0 || Number(productPrice.cost_price_locked) === 1)
         ? validPrice(productPrice.cost_price) : null);

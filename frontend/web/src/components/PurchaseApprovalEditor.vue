@@ -1,5 +1,6 @@
 <template>
   <div v-if="modelValue" class="purchase-approval-editor">
+    <el-alert v-if="modelValue.zeroCostNotice?.hasZeroCost" :title="modelValue.zeroCostNotice.message" type="warning" :closable="false" show-icon style="margin-bottom:12px" />
     <el-descriptions :column="2" border style="margin-bottom:12px">
       <el-descriptions-item label="供应商">{{ modelValue.supplierName || '-' }}</el-descriptions-item>
       <el-descriptions-item label="申请门店">{{ modelValue.storeName || '-' }}</el-descriptions-item>

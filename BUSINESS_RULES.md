@@ -2476,3 +2476,16 @@ P差金额 = 库存原始提货价 - 销售时厂家当前提货价
 ## 2026-11-01 Release audit: pending functional changes
 
 Publish previously uncommitted invoice groups, supplier refund receipts and backend-account selectors with their API documentation and tests. Includes staff-column and invoice-number startup migrations. Preserve existing business records and original document history. Targeted regression: 39 passed; Web build passed. Broad suite is not fully green: existing startup-schema, serialized inventory and mall-report query assertions fail; database integration tests were not enabled. Production deployment and migration verification remain pending.
+
+
+## 2026-11-01 入库有效PN统一限制
+
+所有商品实际入库必须有本商品有效PN，不区分二手、配件、礼品、SN或非SN。PN为空、占位值、无归属或已停用/删除时拒绝入库；唯一有效PN可由后台采用，多个PN必须明确本次选择。历史厂商编码仅作为兼容来源，不得绕过已停用/删除PN。覆盖采购（含审批直接入库）、销售退货、重新入库、批量入库、调拨入库、拆装目标产出；正向批量调整和组装冲销恢复库存也校验。历史待入库单执行时重新校验；不因申请或审批已通过而放行。按现有单据事务和批量逐行事务执行，失败操作不保留部分库存、SN或账务变更，不撤销其他已成功批量行。不自动编造PN，不回写历史已完成库存。
+
+## 2026-11-01 零成本采购提醒和依据
+
+零成本采购不另设流程。明确0元采购商品的申请提交与原流程审批均须提醒，混合单同样适用；运费不作为商品成本、也不因商品0成本免除。后台按商品行统一提供提示。终审通过在原事务记录零成本商品明细及审批人，入库继承至该次SN/非SN明细；销售归档认可该依据，不扩大到同商品其他库存。默认零值、历史已审批但没有明确依据的零价单不自动认定；SN后续重新入库或成本变更使旧依据失效。保留原权限与节点，不新增独立采购流程，不通过改1元绕过。
+
+### 2026-11-01 GitHub release: PN receipt checks and zero-cost purchase notices
+
+Includes approved PN receipt validation and zero-cost notices within the original purchase workflow, explicit approval/receipt audit evidence, and Web deployment assets. Combined targeted regression: 79 passed. Web build and 9 local mini-app approval tests passed. Mini-app code remains local and requires separate WeChat release. No production data changes, no schema migration, deployment pending. Historical default-zero receipts are not automatically confirmed.

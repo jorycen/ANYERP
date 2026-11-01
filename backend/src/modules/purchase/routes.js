@@ -9,6 +9,7 @@ const router = new Router();
 const requirePurchaser = requireRole('purchaser');
 
 // 采购申请和供应商基础资料允许全员读取；所有已登录且具备门店范围的用户均可提交申请。
+router.post('/zero-cost-notice', ctx => { ctx.body = { code: 0, data: require('./zeroCost').zeroCostNotice(ctx.request.body?.items || []) }; });
 router.get('/supplier-list', getSupplierList);
 router.get('/supplier-all', getAllSuppliers);
 router.get('/request-list', getRequestList);

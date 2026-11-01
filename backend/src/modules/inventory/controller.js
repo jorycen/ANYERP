@@ -1,3 +1,4 @@
+const { requireInboundPn } = require('../../utils/inboundPn');
 const productSearch = require('../../utils/productSearch');
 const { assertSnEligible, isSpecialWarehouse, recordSnReentry } = require('../../utils/snEligibility');
 const { normalizeSnCode } = require('../../utils/snCode');
@@ -4022,6 +4023,7 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
       if (dbItem.location_id && item.locationId && String(dbItem.location_id) !== String(item.locationId)) {
         fail(400, `商品 ${dbItem.product_name || product.name} 的入库库位与入库明细不一致`);
       }
+      item.pnCode = await requireInboundPn(product, item.pnCode || item.pn_code || dbItem.pn_code || '', t);
       const locationId = item.locationId || dbItem.location_id || defaultTransferLocation?.location_id || null;
       if (!locationId) {
         fail(400, `商品 ${dbItem.product_name || product.name} 请选择入库库位`);
@@ -4277,7 +4279,7 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
         }
         }
       } else {
-        const pnCode = normalizePnCode(item.pnCode || dbItem.pn_code || splitCodes(product.manufacturer_code)[0] || '');
+        const pnCode = item.pnCode;
 
         await dbItem.update({
           pn_code: pnCode,
@@ -4296,6 +4298,7 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
       await updateInventory(item.productId, inbound.store_id, inventoryType, quantity, t, locationId);
       await ensureDefaultProductPricing(product, dbItem.unit_price, user, t);
 
+      await require('../purchase/zeroCost').recordReceipt(inbound, dbItem, dbItem.sn_id ? { sn_id: dbItem.sn_id } : null, user, t);
       if (inventoryType === 'normal_qty' && dbItem.product_type) {
         const typeField = PRODUCT_TYPE_TO_FIELD[dbItem.product_type];
         if (typeField) {
@@ -5539,6 +5542,8 @@ async function confirmTransferIn(ctx) {
       const requested = requestedByItemId.get(String(item.item_id)) || requestedItems[index] || {};
       const product = productMap.get(String(item.product_id));
       const inboundItem = transferInboundItems[index];
+      const receiptPn = await requireInboundPn(product || item.product_id, requested.pnCode || requested.pn_code || item.pn_code || inboundItem?.pn_code || '', t);
+      if (inboundItem) await inboundItem.update({ pn_code: receiptPn }, { transaction: t });
       const snBinding = resolveTransferInboundSnBinding(item, inboundItem, requested);
       if (isTransferInbound && product && Number(product.need_sn) === 1) {
         if (snBinding.sourceSnIdMismatch || snBinding.sourceSnCodeMismatch) {
@@ -5568,6 +5573,7 @@ async function confirmTransferIn(ctx) {
         if (!sn) {
           ctx.throw(400, `SN ${expectedSnCode || snId} 不存在或与商品不匹配`);
         }
+        await requireInboundPn(product || item.product_id, sn.pn_code || receiptPn, t);
         if (expectedSnCode && String(sn.sn_code) !== expectedSnCode) {
           ctx.throw(400, `SN ${expectedSnCode} 与库存记录不匹配`);
         }
@@ -5959,9 +5965,7 @@ async function buildConversionTargetRows(targetItems, conversionType, storeId, s
     const unitCost = money(raw.unitCost ?? raw.unit_cost ?? 0);
     const totalCost = money(raw.totalCost ?? raw.total_cost ?? unitCost * quantity);
     const finalUnitCost = unitCost > 0 ? unitCost : money(totalCost / quantity);
-    const pnCode = Number(product.need_sn) === 1
-      ? await resolveSnProductPn(product, raw.pnCode || raw.pn_code || '', transaction)
-      : normalizePnCode(raw.pnCode || raw.pn_code || splitCodes(product.manufacturer_code)[0] || '');
+    const pnCode = await requireInboundPn(product, raw.pnCode || raw.pn_code || '', transaction);
     const snCode = normalizeSnCode(raw.snCode || raw.sn_code || '');
 
     if (conversionType === 'assemble' && (parseConversionCost(raw.unitCost ?? raw.unit_cost) === null
@@ -6300,6 +6304,9 @@ async function voidConversion(ctx) {
     const items = conversion.items || [];
     const targetItems = items.filter(item => item.line_role === 'target');
     const sourceItems = items.filter(item => item.line_role === 'source');
+    if (conversion.conversion_type !== 'split') {
+      for (const item of sourceItems) await requireInboundPn(item.product_id, item.pn_code || '', t);
+    }
 
     for (const item of targetItems) {
       if (item.sn_id) {

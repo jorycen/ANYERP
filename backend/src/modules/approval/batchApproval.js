@@ -73,16 +73,18 @@ async function resolve(item, user) {
   const row = await M[d.model].findByPk(id);
   if (!row || !runtime.pending(type, row)) throw new Error('单据已处理或不存在，请刷新');
   if (!runtime.visible(user, await runtime.context(type, row))) throw new Error('无权审批该门店或经销商的单据');
+  let zeroCostNotice;
   if (type === 'purchase_request') {
     const items = await M.PurchaseRequestItem.findAll({ where: { request_id: id } });
+    zeroCostNotice = require('../purchase/zeroCost').zeroCostNotice(items);
     if (items.some(item => Number(item.is_used_product) === 1 && !item.product_id)) throw new Error('请进入详情确认新建商品类别');
   }
-  return { canonical: `business:${type}:${id}`, businessType: type, businessId: id, token: await businessToken(type, row, user) };
+  return { canonical: `business:${type}:${id}`, businessType: type, businessId: id, zeroCostNotice, token: await businessToken(type, row, user) };
 }
 async function options(ctx) {
   const result = [];
   for (const item of input(ctx)) {
-    try { const resolved = await resolve(item, ctx.state.user); result.push({ key: item.key, eligible: true, token: resolved.token }); }
+    try { const resolved = await resolve(item, ctx.state.user); result.push({ key: item.key, eligible: true, token: resolved.token, ...(resolved.zeroCostNotice ? { zeroCostNotice: resolved.zeroCostNotice } : {}) }); }
     catch (error) { result.push({ key: item?.key, eligible: false, reason: error.message }); }
   }
   ctx.body = { code: 0, data: result };

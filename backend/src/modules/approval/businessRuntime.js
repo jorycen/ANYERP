@@ -169,7 +169,7 @@ async function listBusinessTasks(ctx, onlyType = null) {
     while (true) {
       const rows = await model.findAll({
         where,
-        include: type === 'sales_return'
+        include: type === 'purchase_request' ? [{ model: M.PurchaseRequestItem, as: 'items' }] : type === 'sales_return'
           ? [{ model: M.SalesReturnRequestItem, as: 'items' }]
           : type === 'deposit_refund' ? [{ model: M.DepositOrder, as: 'DepositOrder' }]
             : type === 'profit_adjustment' ? [{ model: M.PerformanceProfitAdjustmentAttachment, as: 'attachments', attributes: ['attachment_id', 'original_name', 'mime_type', 'file_size', 'create_time'] }] : undefined,
@@ -179,6 +179,7 @@ async function listBusinessTasks(ctx, onlyType = null) {
       });
       for (const row of rows) {
         try {
+          if (type === 'purchase_request') row.setDataValue('zero_cost_notice', require('../purchase/zeroCost').zeroCostNotice(row.items || []));
           const info = await context(type, row);
           if (!visible(ctx.state.user, info)) continue;
           const instance = await latest(type, row);

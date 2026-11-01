@@ -5555,3 +5555,26 @@ Status: confirmed
 ## 2026-11-01 Release audit: pending functional changes
 
 Publish previously uncommitted invoice groups, supplier refund receipts and backend-account selectors with their API documentation and tests. Includes staff-column and invoice-number startup migrations. Preserve existing business records and original document history. Targeted regression: 39 passed; Web build passed. Broad suite is not fully green: existing startup-schema, serialized inventory and mall-report query assertions fail; database integration tests were not enabled. Production deployment and migration verification remain pending.
+
+
+## 2026-11-01 所有商品入库必须有有效PN（用户确认）
+
+- 决策时间：2026-11-01。
+- 决策内容：用户确认所有商品（含二手、配件及礼品）实际入库前必须具有归属本商品的有效PN。普通采购、审批直接入库、退货、重新入库、批量、调拨、拆装产出复用后台校验；批量正向调整及组装冲销恢复库存同样校验。
+- 原因：SP05187通过二手采购审批生成无PN且不管理SN的商品并完成入库，原入口校验不一致。
+- 备选方案：仅前端必填、仅限制SN商品、自动使用商品编号代替PN；均不采用。
+- 最终选择：后台统一查询PN主数据；兼容历史厂商编码，但不得恢复已停用或删除的PN。唯一PN可自动采用，多个PN须明确选择。原单据按现有事务边界回滚，批量仍按行执行，不回滚其他已成功行。
+- 状态：本地实施；69项相关测试通过，SP05187只读验证被拒绝。未修改历史库存、未部署；不涉及新增数据库结构。
+
+## 2026-11-01 零成本采购沿用原审批流程（用户确认）
+
+- 决策时间：2026-11-01。
+- 内容：用户明确不为零成本单另建采购流程；提交时提示“此单含0成本采购商品”，审批时提示核实零成本并注意审批。混合采购单按商品行判断，不以整单金额判断。
+- 原因：真实零成本采购应可销售归档，同时避免默认0被当成已确认成本。
+- 备选：独立零成本审批流程、将0改为1、改整个商品主档为0；均不采用。
+- 选择：后台生成统一提示，Web与ERP小程序提交/审批及批量审批复用；原终审事务记录具体零成本明细，本次入库继承依据并绑定SN或非SN入库行，后续毛利及成本层识别为真实零成本。新建二手商品须先建立商品ID再记录依据。维持原权限、节点、价格、运费及事务。
+- 状态：本地完成，后台64项相关回归、小程序9项审批回归及Web构建通过；MySQL成本层SQL只读验证通过。无新表或迁移，未部署或微信发布，未自动确认历史零价采购或修改生产数据。
+
+### 2026-11-01 GitHub release: PN receipt checks and zero-cost purchase notices
+
+Includes approved PN receipt validation and zero-cost notices within the original purchase workflow, explicit approval/receipt audit evidence, and Web deployment assets. Combined targeted regression: 79 passed. Web build and 9 local mini-app approval tests passed. Mini-app code remains local and requires separate WeChat release. No production data changes, no schema migration, deployment pending. Historical default-zero receipts are not automatically confirmed.

@@ -26,15 +26,17 @@ const remainingCostLayersSql = `
         ii.UNIT_PRICE AS unit_price,
         ii.QUANTITY AS quantity,
         COALESCE(i.RECEIVE_TIME, i.CREATE_TIME) AS create_time,
-        CASE WHEN ii.UNIT_PRICE = 0 AND i.SOURCE_TYPE IN ('GIFT','SALES_COMPONENT_RECOVERY')
-          AND EXISTS (SELECT 1 FROM T_NON_PURCHASE_RECEIPT npr WHERE npr.INBOUND_ID = i.INBOUND_ID AND npr.STATUS IN ('approved','received')) THEN 1 ELSE 0 END AS zero_cost_confirmed
+        CASE WHEN ii.UNIT_PRICE = 0 AND ((i.SOURCE_TYPE IN ('GIFT','SALES_COMPONENT_RECOVERY')
+          AND EXISTS (SELECT 1 FROM T_NON_PURCHASE_RECEIPT npr WHERE npr.INBOUND_ID = i.INBOUND_ID AND npr.STATUS IN ('approved','received')))
+          OR EXISTS (SELECT 1 FROM T_BUSINESS_ACTION_LOG za WHERE za.BUSINESS_TYPE='inbound_item' AND za.BUSINESS_ID COLLATE utf8mb4_unicode_ci=CAST(ii.ITEM_ID AS CHAR) COLLATE utf8mb4_unicode_ci AND za.ACTION='zero_cost_purchase_received')) THEN 1 ELSE 0 END AS zero_cost_confirmed
       FROM T_INBOUND_ITEM ii
       JOIN T_INBOUND i ON ii.INBOUND_ID = i.INBOUND_ID
       WHERE ii.PRODUCT_ID = ?
         AND i.STATUS IN ('completed', 'executed')
         AND COALESCE(ii.SN_CODE, '') = ''
-        AND (ii.UNIT_PRICE > 0 OR (ii.UNIT_PRICE = 0 AND i.SOURCE_TYPE IN ('GIFT','SALES_COMPONENT_RECOVERY')
-          AND EXISTS (SELECT 1 FROM T_NON_PURCHASE_RECEIPT npr WHERE npr.INBOUND_ID = i.INBOUND_ID AND npr.STATUS IN ('approved','received'))))
+        AND (ii.UNIT_PRICE > 0 OR (ii.UNIT_PRICE = 0 AND ((i.SOURCE_TYPE IN ('GIFT','SALES_COMPONENT_RECOVERY')
+          AND EXISTS (SELECT 1 FROM T_NON_PURCHASE_RECEIPT npr WHERE npr.INBOUND_ID = i.INBOUND_ID AND npr.STATUS IN ('approved','received')))
+          OR EXISTS (SELECT 1 FROM T_BUSINESS_ACTION_LOG za WHERE za.BUSINESS_TYPE='inbound_item' AND za.BUSINESS_ID COLLATE utf8mb4_unicode_ci=CAST(ii.ITEM_ID AS CHAR) COLLATE utf8mb4_unicode_ci AND za.ACTION='zero_cost_purchase_received'))))
         AND ii.QUANTITY > 0
       UNION ALL
       SELECT

@@ -4,6 +4,18 @@ const M = require('../src/models');
 const pnMaster = require('../src/utils/productPnMaster');
 const balance = require('../src/modules/inventory/serializedInventoryBalance');
 
+test('无PN目标商品不能通过拆装入库，整笔事务回滚且来源不变', async t => {
+  const f = fixture(t);
+  f.products.TARGET.manufacturer_code = '';
+  t.mock.method(M.ProductPn, 'findAll', async () => []);
+  await assert.rejects(f.controller.createConversion(f.ctx), /未维护有效PN/);
+  assert.equal(f.state.rolledBack, true);
+  assert.equal(f.state.committed, false);
+  assert.equal(f.state.conversions.length, 0);
+  assert.equal(f.state.newSns.length, 0);
+  assert.equal(f.source.inbound_price, 1);
+});
+
 function fixture(t, { sourceSn = true, targetSn = true, failTarget = false, sourceCost = 1 } = {}) {
   const state = { committed: false, rolledBack: false, conversions: [], items: [], snLogs: [], newSns: [], inventory: [] };
   const tx = { LOCK: { UPDATE: 'UPDATE' }, async commit() { state.committed = true; }, async rollback() {
@@ -30,7 +42,7 @@ function fixture(t, { sourceSn = true, targetSn = true, failTarget = false, sour
   t.mock.method(M.Store, 'findByPk', async () => ({ store_id: 'STORE' }));
   t.mock.method(M.Product, 'findOne', async options => products[options.where.product_id]);
   t.mock.method(M.Product, 'findAll', async () => Object.values(products));
-  t.mock.method(M.ProductPn, 'findAll', async options => [{ pn_code: products[options.where.product_id]?.manufacturer_code }]);
+  t.mock.method(M.ProductPn, 'findAll', async options => [{ pn_code: products[options.where.product_id]?.manufacturer_code, status: 1, is_deleted: 0 }]);
   t.mock.method(M.ProductPrice, 'findOne', async () => ({ cost_price: sourceCost }));
   t.mock.method(M.ProductSn, 'findOne', async options => options.where.product_id === 'SOURCE' ? source : null);
   t.mock.method(M.ProductSn, 'create', async (value, options) => { assert.equal(options.transaction, tx); state.newSns.push(value); return value; });

@@ -600,7 +600,7 @@ async function approveAll() {
   if (loading.value || batchApproving.value || !selectedBatchTasks.value.length) return
   const rows = selectedBatchTasks.value.slice()
   const items = rows.map(row => ({ ...batchRef(row), token: batchMeta(row).token }))
-  const confirmed = await ElMessageBox.confirm(`确认通过已勾选的 ${rows.length} 条审批单？每张单独立校验，失败不影响其他单据。`, '批量审批', { type: 'warning', confirmButtonText: '批量通过', cancelButtonText: '取消' }).catch(() => false)
+  const confirmed = await ElMessageBox.confirm(`确认通过已勾选的 ${rows.length} 条审批单？每张单独立校验，失败不影响其他单据。${rows.some(row => batchMeta(row).zeroCostNotice?.hasZeroCost) ? '\n注意：所选采购单含0成本商品，请核实后审批。' : ''}`, '批量审批', { type: 'warning', confirmButtonText: '批量通过', cancelButtonText: '取消' }).catch(() => false)
   if (!confirmed) return
   batchApproving.value = true
   batchResults.value = []
@@ -1302,7 +1302,7 @@ async function reviewModule(row, action) {
     const result = await ElMessageBox.prompt('请输入拒绝原因', '拒绝审批', { inputType: 'textarea' }).catch(() => null)
     if (!result) return
     comment = result.value
-  } else if (!(await ElMessageBox.confirm('确认通过该审批？', '审批确认', { type: 'warning' }).catch(() => false))) return
+  } else if (!(await ElMessageBox.confirm(purchaseApprovalEdit.value?.zeroCostNotice?.hasZeroCost ? purchaseApprovalEdit.value.zeroCostNotice.message + '\n确认通过该审批？' : '确认通过该审批？', '审批确认', { type: 'warning' }).catch(() => false))) return
 
   const moduleRow = row.moduleRow || {}
   const approved = action === 'approve' ? 'approved' : 'rejected'

@@ -1445,6 +1445,7 @@ const handleSubmitDraft = async (row) => {
     const detailResponse = await api.getPurchaseRequestDetail(row.request_id)
     const detail = detailResponse.data?.data || detailResponse.data || {}
     const draftItems = detail.items || detail.PurchaseRequestItems || []
+    if (detail.zero_cost_notice?.hasZeroCost) await ElMessageBox.confirm(detail.zero_cost_notice.message, '零成本采购提示', { type: 'warning' })
     await confirmPurchaseSoPolicies(draftItems)
     await ElMessageBox.confirm('提交后将进入采购审批流程，是否继续？', '提交采购申请', {
       confirmButtonText: '确认提交',
@@ -1565,6 +1566,7 @@ const handleApprove = async (row) => {
 const handleApproveSubmit = async () => {
   approveLoading.value = true
   try {
+    if (approveForm.action === 'approved' && currentRequest.value.zero_cost_notice?.hasZeroCost) await ElMessageBox.confirm(currentRequest.value.zero_cost_notice.message, '零成本采购审批提醒', { type: 'warning' })
     const res = await api.approvePurchaseRequest(currentRequest.value.request_id, {
       status: approveForm.action,
       comment: approveForm.comment,
@@ -2166,6 +2168,9 @@ const handleSubmit = async () => {
   submitLoading.value = true
   try {
     const data = buildPurchaseRequestPayload()
+    const notice = await api.getPurchaseZeroCostNotice({ items: data.items })
+    if (notice.code !== 0) throw new Error(notice.message || '零成本提示查询失败')
+    if (notice.data?.hasZeroCost) await ElMessageBox.confirm(notice.data.message, '零成本采购提示', { type: 'warning' })
     let res
     if (editingRequestId.value) {
       res = await api.updatePurchaseRequestDraft(editingRequestId.value, data)

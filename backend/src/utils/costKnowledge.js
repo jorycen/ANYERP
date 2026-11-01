@@ -21,7 +21,7 @@ async function confirmedZeroSnIds(sns, transaction) {
   const { QueryTypes } = require('sequelize');
   const rows = await sequelize.query(`SELECT evidence.snId FROM (
     SELECT a.BUSINESS_ID snId,a.CREATE_TIME evidenceTime
-    FROM T_BUSINESS_ACTION_LOG a WHERE a.BUSINESS_ID IN (:ids) AND a.ACTION='sn_purchase_cost_corrected'
+    FROM T_BUSINESS_ACTION_LOG a WHERE a.BUSINESS_ID IN (:ids) AND a.ACTION IN ('sn_purchase_cost_corrected','zero_cost_purchase_received')
       AND JSON_VALID(a.DETAIL_JSON) AND JSON_EXTRACT(a.DETAIL_JSON,'$.after.inbound_price') IS NOT NULL
       AND CAST(JSON_UNQUOTE(JSON_EXTRACT(a.DETAIL_JSON,'$.after.inbound_price')) AS DECIMAL(12,2))=0
     UNION ALL

@@ -1,5 +1,5 @@
 export function purchaseApprovalForm(data = {}) {
-  return { supplierName: data.supplier_name || data.Supplier?.name || '', storeName: data.store_name || data.Store?.name || '',
+  return { zeroCostNotice: data.zero_cost_notice, supplierName: data.supplier_name || data.Supplier?.name || '', storeName: data.store_name || data.Store?.name || '',
     purchaseAmount: Number(data.total_amount ?? data.totalAmount ?? 0).toFixed(2),
     freightAmount: Number(data.freight_amount ?? data.freightAmount ?? 0).toFixed(2),
     freightPlatformName: data.freight_platform_name || data.freightPlatformName || '-',

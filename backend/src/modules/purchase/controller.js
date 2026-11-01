@@ -1197,6 +1197,7 @@ async function getRequestList(ctx) {
   if (await require('../approval/businessRuntime').reviewList(ctx, 'purchase_request')) return;
   const { page = 1, pageSize = 20 } = ctx.query;
   const { rows, count } = await queryRequestList(ctx);
+  rows.forEach(row => { if (row.setDataValue) row.setDataValue('zero_cost_notice', require('./zeroCost').zeroCostNotice(row.items || [])); });
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
 }
 
@@ -1332,6 +1333,7 @@ async function getRequestDetail(ctx) {
 
   result.action_logs = await listBusinessActions('purchase_request', request.request_id);
 
+  result.zero_cost_notice = require('./zeroCost').zeroCostNotice(result.items || []);
   result.rebate_cost_breakdown = require('./rebateCostBasis').purchaseBreakdown(result);
   // The persisted purchase remark is reason; expose the shared detail field too.
   result.remark = result.reason || '';
@@ -2124,6 +2126,7 @@ async function approveRequest(ctx) {
       }, transaction);
       await item.update({ product_id: created.productId, product_name: created.productName, pn_code: item.pn_code || null }, { transaction });
     }
+    await require('./zeroCost').recordApproval(request, request.items, user, transaction);
     for (const item of request.items) {
       if (!item.product_id || !item.gross_profit_cost_mode) continue;
       await Product.update(
