@@ -140,6 +140,7 @@ function initializeDatabaseInBackground(retryDelayMs = Number(process.env.DB_STA
       // Historical repairs remain explicit operator actions; never rewrite
       // business documents, balances, permissions or existing configurations.
       await runSchemaMigrations();
+      await require('./utils/focusCategoryMigration').ensureFocusCategoryColumn(require('./models').sequelize);
       // Add missing approval definitions only; never rewrite existing flows or documents.
       await require('./modules/approval/catalog').seedApprovalFlowCatalog();
       await ensureDatabaseReady('post-migration database activation', { force: true });

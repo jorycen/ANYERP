@@ -1695,7 +1695,8 @@ function buildCategoryTree(list, parentId = null) {
 }
 
 async function createCategory(ctx) {
-  const { parentId, name, sortOrder = 0 } = ctx.request.body;
+  const { parentId, name, sortOrder = 0, isFocusCategory = false } = ctx.request.body;
+  if (typeof isFocusCategory !== 'boolean') ctx.throw(400, '重点分类必须为布尔值');
 
   if (!name) {
     ctx.throw(400, '分类名称不能为空');
@@ -1725,7 +1726,8 @@ async function createCategory(ctx) {
     parent_id: parentId || null,
     name: normalizedName,
     level,
-    sort_order: sortOrder
+    sort_order: sortOrder,
+    is_focus_category: isFocusCategory ? 1 : 0
   });
 
   ctx.body = { code: 0, categoryId, message: '分类创建成功' };
@@ -1734,6 +1736,8 @@ async function createCategory(ctx) {
 async function updateCategory(ctx) {
   const { categoryId } = ctx.params;
   const { name, sortOrder, status, showInFinance, show_in_finance } = ctx.request.body;
+  const { isFocusCategory } = ctx.request.body;
+  if (isFocusCategory !== undefined && typeof isFocusCategory !== 'boolean') ctx.throw(400, '重点分类必须为布尔值');
 
   const category = await ProductCategory.findByPk(categoryId);
   if (!category) {
@@ -1748,6 +1752,7 @@ async function updateCategory(ctx) {
 
   const financeValue = showInFinance !== undefined ? showInFinance : show_in_finance;
   await category.update({
+    ...(isFocusCategory === undefined ? {} : { is_focus_category: isFocusCategory ? 1 : 0 }),
     name: nextName,
     sort_order: sortOrder !== undefined ? sortOrder : category.sort_order,
     status: status !== undefined ? status : category.status,

@@ -262,15 +262,10 @@
         />
       </DashboardPanel>
       <DashboardPanel title="重点分类销售情况">
-        <el-select v-model="focusCategoryPaths" multiple filterable clearable collapse-tags placeholder="选择重点分类，例如拯救者" style="width:100%" @change="loadOverview">
-          <el-option v-for="item in filterOptions.focusCategoryOptions || []" :key="item.path" :label="item.path" :value="item.path" />
-        </el-select>
-        <div class="panel-note">包含下级分类，沿用当前日期、门店、员工及销售/退货口径。重叠分类独立展示，不相加。</div>
-        <el-table v-if="dashboard.productAnalysis.focusCategoryMode === 'category'" :data="dashboard.productAnalysis.focusCategories || []" empty-text="请选择重点分类">
-          <el-table-column prop="categoryPath" label="分类" min-width="190" />
-          <el-table-column label="销量" width="110"><template #default="{row}">{{ row.quantity }} {{ row.unit }}</template></el-table-column>
-          <el-table-column label="销售金额" width="150"><template #default="{row}">¥{{ Number(row.salesAmount).toFixed(2) }}</template></el-table-column>
-        </el-table>
+        <div class="panel-note">由商品分类管理统一设置，包含下级分类；重叠分类独立展示。</div>
+        <ProductTable v-if="dashboard.productAnalysis.focusCategoryMode === 'category'"
+          :rows="dashboard.productAnalysis.focusCategories || []" value-key="salesAmount"
+          value-label="销售额" variant="focus" :can-view-profit="dashboard.meta.canViewProfit" />
         <el-alert v-else title="分类统计接口尚未升级，请部署后台后查看" type="info" :closable="false" />
       </DashboardPanel>
     </section>
@@ -393,25 +388,25 @@ const ProductTable = defineComponent({
       }, [
         h('div', { class: 'product-table-head' }, [
           h('span', '排名'),
-          h('span', props.variant === 'focus' ? '重点产品' : '产品名称'),
+          h('span', props.variant === 'focus' ? '重点分类' : '产品名称'),
           ...(showQuantity ? [h('span', '销量')] : []),
           h('span', props.valueLabel),
-          ...(showGrossProfit ? [h('span', '毛利额')] : [])
+          ...(showGrossProfit ? [h('span', props.variant === 'focus' ? '销售端毛利' : '毛利额')] : [])
         ]),
-        ...(props.rows.length ? props.rows.slice(0, 10).map((row, index) => h(
+        ...(props.rows.length ? (props.variant === 'focus' ? props.rows : props.rows.slice(0, 10)).map((row, index) => h(
           'div',
           { class: 'product-table-row', key: row.productId || index },
           [
             h('b', { class: index < 3 ? `rank rank-${index + 1}` : 'rank' }, String(index + 1)),
-            h('div', { class: 'product-name-cell', title: row.productName }, [
+            h('div', { class: 'product-name-cell', title: row.categoryPath || row.productName }, [
               h('span', row.productName),
               row.manufacturerCode ? h('small', row.manufacturerCode) : null
             ]),
-            ...(showQuantity ? [h('span', { class: 'product-quantity' }, formatNumber(row.quantity))] : []),
+            ...(showQuantity ? [h('span', { class: 'product-quantity' }, `${formatNumber(row.quantity)}${row.unit ? ' ' + row.unit : ''}`)] : []),
             h('strong', format(row[props.valueKey])),
             ...(showGrossProfit ? [h('strong', { class: 'gross-profit-value' }, formatCurrency(row.grossProfit))] : [])
           ]
-        )) : [h('div', { class: 'empty-row' }, '暂无数据')])
+        )) : [h('div', { class: 'empty-row' }, props.variant === 'focus' ? '尚未设置重点分类，请在商品分类管理中设置' : '暂无数据')])
       ])
     }
   }
@@ -445,7 +440,6 @@ const dimensionTabs = [
 
 const filterOptions = reactive({ stores: [], employees: [], productLines: [], regions: [] })
 const filters = reactive({ regionId: '', storeId: '', employeeId: '', productLine: '', granularity: 'day' })
-const focusCategoryPaths = ref([])
 let focusOverviewSequence = 0
 const dateRange = ref(currentWeekRange())
 const dashboard = reactive(emptyDashboard())
@@ -637,7 +631,6 @@ async function loadOverview() {
       employeeId: filters.employeeId || undefined,
       productLine: filters.productLine || undefined,
       granularity: filters.granularity,
-      focusCategoryPaths: JSON.stringify(focusCategoryPaths.value)
     })
     if(sequence!==focusOverviewSequence)return
     if (res.code === 0) {

@@ -399,7 +399,6 @@ class DashboardService {
   }
 
   async buildOverview(user, query = {}) {
-    const focusPaths=require('./focusCategorySales').selectedPaths(query.focusCategoryPaths);
     const selfOnly = isSelfOnlyReportUser(user);
     const ranges = buildRanges(query);
     const granularity = ['day', 'week', 'month'].includes(query.granularity)
@@ -540,7 +539,18 @@ class DashboardService {
       }
     }
     const productAnalysis = mapProductRows(productRows, profitVisible);
-    productAnalysis.focusCategories=require('./focusCategorySales').aggregateFocusCategories(productCategoryRows,focusPaths);
+    const focusCategoryRows = await this.dataSource.query(`SELECT CATEGORY_ID AS categoryId,
+      PARENT_ID AS parentId, NAME AS name, LEVEL AS level, SORT_ORDER AS sortOrder,
+      IS_FOCUS_CATEGORY AS isFocusCategory FROM T_PRODUCT_CATEGORY WHERE STATUS=1`);
+    const categoryIndex = require('./dashboardDataSource').buildFinanceCategoryIndex(focusCategoryRows);
+    const focusPaths = require('./focusCategorySales').configuredFocusCategories(focusCategoryRows).map(node => node.path);
+    const focusSourceRows = productRows.map(row => ({ ...row,
+      categoryPath: categoryIndex.byId.get(String(row.categoryId || ''))?.path || row.categoryPath
+    }));
+    productAnalysis.focusCategories=require('./focusCategorySales').aggregateFocusCategories(focusSourceRows,focusPaths,profitVisible)
+      .sort((a,b)=>b.salesAmount-a.salesAmount || a.categoryPath.localeCompare(b.categoryPath,'zh-CN'));
+    const maxFocusSales = Math.max(0, ...productAnalysis.focusCategories.map(row => row.salesAmount));
+    productAnalysis.focusCategories.forEach(row => { row.barWidth = maxFocusSales > 0 ? `${Math.max(0, row.salesAmount / maxFocusSales * 100).toFixed(2)}%` : '0%'; });
     productAnalysis.focusCategoryMode='category';
     const previousStoreMap = new Map((previousStoreRanking || []).map(row => [String(row.storeId), row]));
     const storeProductTypeMap = new Map((storeProductTypeQuantities || []).map(row => [String(row.storeId), row]));

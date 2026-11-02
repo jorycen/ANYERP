@@ -41,6 +41,7 @@ function buildFinanceCategoryIndex(rows) {
     level: toNumber(row.level),
     sortOrder: toNumber(row.sortOrder),
     showInFinance: Number(row.showInFinance || 0) === 1,
+    isFocusCategory: Number(row.isFocusCategory || 0) === 1,
     status: row.status === undefined ? 1 : Number(row.status)
   }]));
   const resolving = new Set();
@@ -522,6 +523,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
     const factor = allocationSql(filters);
     return this.query(
       `SELECT oi.PRODUCT_ID AS productId,
+              MAX(p.CATEGORY_ID) AS categoryId,
               MAX(COALESCE(p.NAME, oi.PRODUCT_NAME)) AS productName,
               MAX(COALESCE(p.MANUFACTURER_CODE, '')) AS manufacturerCode,
               MAX(COALESCE(p.CATEGORY, '')) AS categoryPath,

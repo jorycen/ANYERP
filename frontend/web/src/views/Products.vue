@@ -161,6 +161,7 @@
                   <span v-else class="category-expand-placeholder" />
                   <el-icon><Folder /></el-icon>
                   <span class="cat-name">{{ level1.name }}</span>
+                  <el-tag v-if="Number(level1.is_focus_category) === 1" size="small" type="warning">重点分类</el-tag>
                   <span class="cat-level">一级</span>
                   <div class="cat-actions">
                     <el-button link type="primary" size="small" :disabled="level1Index === 0" @click="handleMoveCategory(level1, categoryTree, level1Index, -1)">上移</el-button>
@@ -194,6 +195,7 @@
                       <span v-else class="category-expand-placeholder" />
                       <el-icon><Folder /></el-icon>
                       <span class="cat-name">{{ level2.name }}</span>
+                  <el-tag v-if="Number(level2.is_focus_category) === 1" size="small" type="warning">重点分类</el-tag>
                       <span class="cat-level">二级</span>
                       <div class="cat-actions">
                         <el-button link type="primary" size="small" :disabled="level2Index === 0" @click="handleMoveCategory(level2, level1.children, level2Index, -1)">上移</el-button>
@@ -226,6 +228,7 @@
                         <span v-else class="category-expand-placeholder" />
                         <el-icon><Folder /></el-icon>
                         <span class="cat-name">{{ level3.name }}</span>
+                  <el-tag v-if="Number(level3.is_focus_category) === 1" size="small" type="warning">重点分类</el-tag>
                         <span class="cat-level">三级</span>
                         <div class="cat-actions">
                           <el-button link type="primary" size="small" :disabled="level3Index === 0" @click="handleMoveCategory(level3, level2.children, level3Index, -1)">上移</el-button>
@@ -247,6 +250,7 @@
                             <span class="category-expand-placeholder" />
                             <el-icon><Folder /></el-icon>
                             <span class="cat-name">{{ level4.name }}</span>
+                  <el-tag v-if="Number(level4.is_focus_category) === 1" size="small" type="warning">重点分类</el-tag>
                             <span class="cat-level">四级</span>
                             <div class="cat-actions">
                               <el-button link type="primary" size="small" :disabled="level4Index === 0" @click="handleMoveCategory(level4, level3.children, level4Index, -1)">上移</el-button>
@@ -591,7 +595,7 @@
         </el-row>
         <el-form-item label="重点产品">
           <el-switch v-model="productForm.isFocusProduct" />
-          <span class="text-muted" style="margin-left: 10px;">勾选后进入经营看板重点产品模块</span>
+          <span class="text-muted" style="margin-left: 10px;">旧版重点产品标记；报表重点分类请在分类管理中设置</span>
         </el-form-item>
         <el-form-item label="详细配置">
           <el-input v-model="productForm.remark" type="textarea" rows="2" placeholder="详细配置信息" />
@@ -642,6 +646,7 @@
         <el-form-item label="父级分类">
           <el-input :model-value="categoryParentName" disabled />
         </el-form-item>
+        <el-form-item label="重点分类"><el-switch v-model="categoryForm.isFocusCategory" /><span style="margin-left:8px;color:#909399">报表自动统计本分类及下级分类</span></el-form-item>
         <el-form-item label="分类名称" required>
           <el-input v-model="categoryForm.name" placeholder="请输入分类名称" />
         </el-form-item>
@@ -1519,7 +1524,7 @@ const categoryExpanded = ref({})
 const categoryParentName = ref('无（一级分类）')
 const editingCategory = ref(null)
 const parentCategory = ref(null)
-const categoryForm = reactive({ name: '', sortOrder: 0 })
+const categoryForm = reactive({ name: '', sortOrder: 0, isFocusCategory: false })
 
 const categoryCount = computed(() => {
   const countNodes = (nodes = []) => nodes.reduce((sum, node) => sum + 1 + countNodes(node.children || []), 0)
@@ -1558,14 +1563,14 @@ const handleAddCategory = (parent) => {
   }
   editingCategory.value = null; parentCategory.value = parent
   const siblingCount = parent ? (parent.children?.length || 0) : categoryTree.value.length
-  categoryForm.name = ''; categoryForm.sortOrder = siblingCount
+  categoryForm.name = ''; categoryForm.sortOrder = siblingCount; categoryForm.isFocusCategory = false
   categoryParentName.value = parent ? parent.name : '无（一级分类）'
   categoryDialogTitle.value = parent ? `添加子分类 - ${parent.name}` : '新增一级分类'
   categoryDialogVisible.value = true
 }
 const handleEditCategory = (row) => {
   editingCategory.value = row; parentCategory.value = null
-  categoryForm.name = row.name; categoryForm.sortOrder = row.sort_order || 0
+  categoryForm.name = row.name; categoryForm.sortOrder = row.sort_order || 0; categoryForm.isFocusCategory = Number(row.is_focus_category) === 1
   categoryParentName.value = row.parent_id ? '（已有父级）' : '无（一级分类）'
   categoryDialogTitle.value = `编辑分类 - ${row.name}`
   categoryDialogVisible.value = true
@@ -1601,18 +1606,18 @@ const handleSaveCategory = async () => {
   categorySaveLoading.value = true
   try {
     if (editingCategory.value) {
-      const res = await api.updateCategory(editingCategory.value.category_id, { name: categoryForm.name, sortOrder: categoryForm.sortOrder })
+      const res = await api.updateCategory(editingCategory.value.category_id, { name: categoryForm.name, sortOrder: categoryForm.sortOrder, isFocusCategory: categoryForm.isFocusCategory })
       if (res.code === 0) { ElMessage.success('更新成功'); categoryDialogVisible.value = false; loadCategoryTree() }
       else ElMessage.error(res.message || '更新失败')
     } else {
-      const res = await api.createCategory({ parentId: parentCategory.value?.category_id || null, name: categoryForm.name, sortOrder: categoryForm.sortOrder })
+      const res = await api.createCategory({ parentId: parentCategory.value?.category_id || null, name: categoryForm.name, sortOrder: categoryForm.sortOrder, isFocusCategory: categoryForm.isFocusCategory })
       if (res.code === 0) { ElMessage.success('创建成功'); categoryDialogVisible.value = false; loadCategoryTree() }
       else ElMessage.error(res.message || '创建失败')
     }
   } catch (err) { ElMessage.error(err?.response?.data?.message || '保存失败') }
   finally { categorySaveLoading.value = false }
 }
-const resetCategoryForm = () => { categoryForm.name = ''; categoryForm.sortOrder = 0; editingCategory.value = null; parentCategory.value = null }
+const resetCategoryForm = () => { categoryForm.name = ''; categoryForm.sortOrder = 0; categoryForm.isFocusCategory = false; editingCategory.value = null; parentCategory.value = null }
 
 const handleMoveCategory = async (row, siblings, index, direction) => {
   const targetIndex = index + direction
