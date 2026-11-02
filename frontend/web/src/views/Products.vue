@@ -176,6 +176,12 @@
                         @change="value => toggleCategoryFinance(level1, value)"
                       />
                     </span>
+                    <span class="finance-category-toggle">
+                      <span>重点分类</span>
+                      <el-switch :model-value="Number(level1.is_focus_category) === 1"
+                        :loading="Boolean(categoryFocusLoading[level1.category_id])"
+                        @change="value => toggleCategoryFocus(level1, value)" />
+                    </span>
                     <el-button link type="danger" size="small" @click="handleDeleteCategory(level1)">删除</el-button>
                   </div>
                 </div>
@@ -210,6 +216,12 @@
                             @change="value => toggleCategoryFinance(level2, value)"
                           />
                         </span>
+                    <span class="finance-category-toggle">
+                      <span>重点分类</span>
+                      <el-switch :model-value="Number(level2.is_focus_category) === 1"
+                        :loading="Boolean(categoryFocusLoading[level2.category_id])"
+                        @change="value => toggleCategoryFocus(level2, value)" />
+                    </span>
                         <el-button link type="danger" size="small" @click="handleDeleteCategory(level2)">删除</el-button>
                       </div>
                     </div>
@@ -243,6 +255,12 @@
                               @change="value => toggleCategoryFinance(level3, value)"
                             />
                           </span>
+                    <span class="finance-category-toggle">
+                      <span>重点分类</span>
+                      <el-switch :model-value="Number(level3.is_focus_category) === 1"
+                        :loading="Boolean(categoryFocusLoading[level3.category_id])"
+                        @change="value => toggleCategoryFocus(level3, value)" />
+                    </span>
                           <el-button link type="danger" size="small" @click="handleDeleteCategory(level3)">删除</el-button>
                         </div>
                         <div v-if="level3.children && level3.children.length && isCategoryExpanded(level3)" class="sub-categories">
@@ -264,6 +282,12 @@
                                   @change="value => toggleCategoryFinance(level4, value)"
                                 />
                               </span>
+                    <span class="finance-category-toggle">
+                      <span>重点分类</span>
+                      <el-switch :model-value="Number(level4.is_focus_category) === 1"
+                        :loading="Boolean(categoryFocusLoading[level4.category_id])"
+                        @change="value => toggleCategoryFocus(level4, value)" />
+                    </span>
                               <el-button link type="danger" size="small" @click="handleDeleteCategory(level4)">删除</el-button>
                             </div>
                           </div>
@@ -646,7 +670,6 @@
         <el-form-item label="父级分类">
           <el-input :model-value="categoryParentName" disabled />
         </el-form-item>
-        <el-form-item label="重点分类"><el-switch v-model="categoryForm.isFocusCategory" /><span style="margin-left:8px;color:#909399">报表自动统计本分类及下级分类</span></el-form-item>
         <el-form-item label="分类名称" required>
           <el-input v-model="categoryForm.name" placeholder="请输入分类名称" />
         </el-form-item>
@@ -1524,7 +1547,7 @@ const categoryExpanded = ref({})
 const categoryParentName = ref('无（一级分类）')
 const editingCategory = ref(null)
 const parentCategory = ref(null)
-const categoryForm = reactive({ name: '', sortOrder: 0, isFocusCategory: false })
+const categoryForm = reactive({ name: '', sortOrder: 0 })
 
 const categoryCount = computed(() => {
   const countNodes = (nodes = []) => nodes.reduce((sum, node) => sum + 1 + countNodes(node.children || []), 0)
@@ -1563,17 +1586,32 @@ const handleAddCategory = (parent) => {
   }
   editingCategory.value = null; parentCategory.value = parent
   const siblingCount = parent ? (parent.children?.length || 0) : categoryTree.value.length
-  categoryForm.name = ''; categoryForm.sortOrder = siblingCount; categoryForm.isFocusCategory = false
+  categoryForm.name = ''; categoryForm.sortOrder = siblingCount
   categoryParentName.value = parent ? parent.name : '无（一级分类）'
   categoryDialogTitle.value = parent ? `添加子分类 - ${parent.name}` : '新增一级分类'
   categoryDialogVisible.value = true
 }
 const handleEditCategory = (row) => {
   editingCategory.value = row; parentCategory.value = null
-  categoryForm.name = row.name; categoryForm.sortOrder = row.sort_order || 0; categoryForm.isFocusCategory = Number(row.is_focus_category) === 1
+  categoryForm.name = row.name; categoryForm.sortOrder = row.sort_order || 0
   categoryParentName.value = row.parent_id ? '（已有父级）' : '无（一级分类）'
   categoryDialogTitle.value = `编辑分类 - ${row.name}`
   categoryDialogVisible.value = true
+}
+const categoryFocusLoading = reactive({})
+const toggleCategoryFocus = async (row, value) => {
+  if (categoryFocusLoading[row.category_id]) return
+  categoryFocusLoading[row.category_id] = true
+  try {
+    const res = await api.updateCategory(row.category_id, { isFocusCategory: Boolean(value) })
+    if (res.code !== 0) throw new Error(res.message || '保存失败')
+    row.is_focus_category = value ? 1 : 0
+    ElMessage.success(value ? '已设为重点分类' : '已取消重点分类')
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || err?.message || '重点分类设置保存失败')
+  } finally {
+    delete categoryFocusLoading[row.category_id]
+  }
 }
 const toggleCategoryFinance = async (row, value) => {
   const previousValue = Number(row.show_in_finance || 0)
@@ -1606,18 +1644,18 @@ const handleSaveCategory = async () => {
   categorySaveLoading.value = true
   try {
     if (editingCategory.value) {
-      const res = await api.updateCategory(editingCategory.value.category_id, { name: categoryForm.name, sortOrder: categoryForm.sortOrder, isFocusCategory: categoryForm.isFocusCategory })
+      const res = await api.updateCategory(editingCategory.value.category_id, { name: categoryForm.name, sortOrder: categoryForm.sortOrder })
       if (res.code === 0) { ElMessage.success('更新成功'); categoryDialogVisible.value = false; loadCategoryTree() }
       else ElMessage.error(res.message || '更新失败')
     } else {
-      const res = await api.createCategory({ parentId: parentCategory.value?.category_id || null, name: categoryForm.name, sortOrder: categoryForm.sortOrder, isFocusCategory: categoryForm.isFocusCategory })
+      const res = await api.createCategory({ parentId: parentCategory.value?.category_id || null, name: categoryForm.name, sortOrder: categoryForm.sortOrder })
       if (res.code === 0) { ElMessage.success('创建成功'); categoryDialogVisible.value = false; loadCategoryTree() }
       else ElMessage.error(res.message || '创建失败')
     }
   } catch (err) { ElMessage.error(err?.response?.data?.message || '保存失败') }
   finally { categorySaveLoading.value = false }
 }
-const resetCategoryForm = () => { categoryForm.name = ''; categoryForm.sortOrder = 0; categoryForm.isFocusCategory = false; editingCategory.value = null; parentCategory.value = null }
+const resetCategoryForm = () => { categoryForm.name = ''; categoryForm.sortOrder = 0; editingCategory.value = null; parentCategory.value = null }
 
 const handleMoveCategory = async (row, siblings, index, direction) => {
   const targetIndex = index + direction

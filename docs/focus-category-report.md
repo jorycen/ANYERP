@@ -2,7 +2,7 @@
 
 ## 配置与接口
 
-- Web：商品管理 → 分类管理 → 新增/编辑分类 → 重点分类。各级分类均可独立开启，默认关闭；未选择时报告显示配置提示。
+- Web：商品管理 → 分类管理 → 分类层级行内“重点分类”开关（与财务展示并列）。各级分类均可独立开启，默认关闭；未选择时报告显示配置提示。
 - 复用 `POST /api/product/category`、`PUT /api/product/category/:categoryId`，新增可选布尔参数 `isFocusCategory`；创建默认 false，更新省略保留旧值，非布尔值返回 400。沿用分类维护接口原有鉴权及权限。
 - 复用 `GET /api/product/category/tree`，节点新增 `is_focus_category`（0/1）。其他分类、排序及财务展示配置不变。
 - 兼容扩展 `GET /api/report/dashboard/overview`，`productAnalysis.focusCategories` 自动读取有效分类配置，原 `focusCategoryPaths` 参数不再决定结果；`focusCategoryMode` 继续返回 `category`。旧产品重点标记与 `focusProducts` 返回字段保留兼容。
