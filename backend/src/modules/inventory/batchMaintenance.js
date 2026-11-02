@@ -632,6 +632,8 @@ async function createSnInbound(item, application, transaction) {
     pnCode: item.pn_code,
     transaction
   });
+  const receiptProduct = await Product.findByPk(item.product_id, { transaction });
+  const pricingMode = receiptProduct?.gross_profit_cost_mode === 'COMPANY_PRICE' ? 1 : 0;
   const previousSnStatus = existing?.status;
   const sn = existing || await ProductSn.create({
     sn_id: generateUUID(),
@@ -647,6 +649,8 @@ async function createSnInbound(item, application, transaction) {
      original_inbound_time: new Date(),
      inbound_price: item.unit_price || 0,
     original_pickup_price: item.original_pickup_price || item.unit_price || 0,
+    gross_profit_use_standard_price: pricingMode,
+    gross_profit_uplift_amount: 0,
     batch_no: application.application_no,
     remark: `批量入库 ${application.application_no}`,
     is_deleted: 0
@@ -654,6 +658,8 @@ async function createSnInbound(item, application, transaction) {
 
   if (existing) {
     await sn.update({
+      gross_profit_use_standard_price: pricingMode,
+      gross_profit_uplift_amount: 0,
       product_id: item.product_id,
       pn_id: pnMaster.pn_id,
       pn_code: item.pn_code,
@@ -761,9 +767,12 @@ async function createNonSnBatchRights(item, application, transaction) {
 }
 
 async function executeApplicationItem(item, application, transaction) {
+  let pricingSnapshot;
   if (item.operation_type === 'INBOUND' || (item.operation_type === 'ADJUST' && Number(item.quantity) > 0)) {
     const pnCode = await requireInboundPn(item.product_id, item.pn_code || '', transaction);
     await item.update({ pn_code: pnCode }, { transaction });
+    const product = await Product.findByPk(item.product_id, { transaction });
+    pricingSnapshot = { costMode: product?.gross_profit_cost_mode === 'COMPANY_PRICE' ? 'COMPANY_PRICE' : 'PURCHASE_PRICE', uplift: 0 };
   }
   let inventoryResult;
   let snId = item.sn_id || null;
@@ -861,7 +870,7 @@ async function executeApplicationItem(item, application, transaction) {
     execute_status: 'success',
     execute_error: null,
     execute_time: new Date(),
-    result_json: JSON.stringify({ status: 'success', snId })
+    result_json: JSON.stringify({ status: 'success', snId, pricingSnapshot })
   }, { transaction });
 }
 

@@ -101,13 +101,14 @@ test('有SN回收配件按公司定价展示销售毛利，同时冻结逐件回
   assert.equal(result.productPricingDetails[0].nonPurchaseSource,'SALES_COMPONENT_RECOVERY');
 });
 
-test('raw inbound cutoff uses Shanghai business time independently of container timezone', async t => {
+test('raw inbound cutoff uses archive time in Shanghai independently of container timezone', async t => {
   const { order } = fixture(t, 1500);
   order.create_time = new Date('2026-10-22T06:45:41.000Z');
+  order.archive_time = new Date('2026-10-22T10:50:27.000Z');
   let checked = false;
   t.mock.method(M.sequelize, 'query', async (sql, options) => {
     if (sql.includes('i.CREATE_TIME <= :orderTime')) {
-      assert.equal(options.replacements.orderTime, '2026-10-22 14:45:41.000');
+      assert.equal(options.replacements.orderTime, '2026-10-22 18:50:27.000');
       checked = true;
     }
     return [];

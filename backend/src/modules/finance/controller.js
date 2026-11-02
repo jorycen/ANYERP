@@ -3,7 +3,7 @@ const expenseApplication = require('./expenseApplication');
  * 财务管理控制器
  */
 const {
-  sequelize, DailyStatement, DailyStatementDetail, Expense, ExpenseType, PurchaseRequest, PurchaseRequestItem, Store, Region, Order, OrderPayment, Supplier, SupplierPaymentAccount,
+  sequelize, DailyStatement, DailyStatementDetail, Expense, ExpenseType, PurchaseRequest, PurchaseRequestItem, Store, Region, Order, OrderPayment, Supplier, SupplierPaymentAccount, Distributor,
   SettlementAccount, SettlementAccountTransaction, SubsidyAccountRoute, SubsidyReceipt, PaymentMethod, PaymentMethodStore, OrderItem,
   SubsidyReceiptAllocation, SubsidyReceivableAdjustment, ExpensePerformanceAllocation,
   ApprovalFlowInstance, ApprovalTask, ApprovalActionLog
@@ -471,14 +471,18 @@ async function getDailyStatement(ctx) {
  * 提交报销申请（发起人报销）
  */
 async function submitExpense(ctx) {
+  return sequelize.transaction(transaction => submitExpenseLocked(ctx, transaction));
+}
+async function submitExpenseLocked(ctx, transaction) {
   const user = ctx.state.user;
   const { id } = ctx.params;
 
-  const record = await Expense.findByPk(id);
+  const record = await Expense.findByPk(id, {transaction,lock:transaction.LOCK.UPDATE});
   if (!record || record.is_deleted) ctx.throw(404, '支出记录不存在');
+  if (!canAccessDistributor(user,record.distributor_id)) ctx.throw(403,'无权提交该经销商费用');
   if (record.status === 'draft') {
     if (!canManageExpenseDraft(user, record)) ctx.throw(403, '只有费用单创建人、店长或管理员可以提交');
-    await sequelize.transaction(async transaction => {
+    {
       await assertPeriodOpen(record.distributor_id, record.accounting_month || resolveExpenseAccountingMonth(null, record.expense_date), transaction);
       if (record.source_type === 'purchase') {
         if (record.payment_method === 'CORPORATE') {
@@ -493,7 +497,7 @@ async function submitExpense(ctx) {
         await record.update({ status: 'pending_approval', submit_user: user.name, update_time: new Date() }, { transaction });
         await startExpenseApproval(record, user, transaction);
       }
-    });
+    }
     ctx.body = { code: 0, message: '费用单已提交', status: record.status };
     return;
   }
@@ -502,7 +506,7 @@ async function submitExpense(ctx) {
   await record.update({
     status: 'processing',
     submit_user: user.name
-  });
+  }, {transaction});
 
   ctx.body = { code: 0, message: '报销申请已提交' };
 }
@@ -1048,6 +1052,10 @@ async function getExpenseList(ctx) {
   const exportMode = Boolean(ctx.state.exportMode);
 
   const where = { is_deleted: 0 };
+  Object.assign(where, distributorWhere(user));
+  if(ctx.query.distributorId)where[Op.and]=[{distributor_id:String(ctx.query.distributorId)}];
+  if(ctx.query.creator)where.create_user={[Op.like]:`%${String(ctx.query.creator).trim()}%`};
+  if(ctx.query.ids)where.expense_id={[Op.in]:require('./batchSubmission').ids(ctx.query.ids)};
   const whereStore = {};
 
   if (scope === 'review' && !getUserRoles(user).some(role => ['admin', 'boss'].includes(role))) {
@@ -1075,11 +1083,10 @@ async function getExpenseList(ctx) {
     const statuses = status.split(',').map(s => s.trim());
     where.status = statuses.length > 1 ? { [Op.in]: statuses } : statuses[0];
   }
-  if (startDate && endDate) {
-    where.create_time = {
-      [Op.gte]: new Date(startDate),
-      [Op.lte]: new Date(endDate + ' 23:59:59')
-    };
+  if (startDate || endDate) {
+    where.create_time = {};
+    if(startDate)where.create_time[Op.gte]=new Date(startDate+'T00:00:00+08:00');
+    if(endDate)where.create_time[Op.lt]=new Date(new Date(endDate+'T00:00:00+08:00').getTime()+86400000);
   }
   if (accountingMonth) {
     where.accounting_month = resolveExpenseAccountingMonth(accountingMonth, accountingMonth + '-01');
@@ -1103,7 +1110,10 @@ async function getExpenseList(ctx) {
     : await Expense.findAndCountAll({ ...expenseQuery, ...paginate({}, { page, pageSize }) });
   const { count, rows } = result;
   const expenseIds = rows.map(row => row.expense_id).filter(Boolean);
+  const dealers=rows.length?await Distributor.findAll({where:distributorWhere(user),attributes:['distributor_id','name'],raw:true}):[];
   rows.forEach(row => {
+    row.setDataValue('distributor_name',dealers.find(d=>String(d.distributor_id)===String(row.distributor_id))?.name||'归属待核对');
+    row.setDataValue('can_submit',(row.status==='draft'&&canManageExpenseDraft(user,row))||row.status==='pending');
     const userId = user.staffId || user.id;
     const isApplicant = Number(row.applicant_staff_id) === Number(userId)
       || (!row.applicant_staff_id && [row.applicant_name, row.create_user].includes(user.name || user.phone));
@@ -1136,6 +1146,7 @@ async function exportExpenseList(ctx) {
     const item = row.toJSON ? row.toJSON() : row;
     return {
       费用单号: item.expense_no || '',
+      经销商: item.distributor_name || '',
       时间: item.create_time || '',
       费用日期: item.expense_date || '',
       经营归属月份: item.accounting_month || '',
@@ -1151,11 +1162,22 @@ async function exportExpenseList(ctx) {
       备注: item.remark || ''
     };
   });
+  data.push({费用单号:`合计（${data.length}单）`,金额:require('./batchSubmission').totals(rows.map(row=>row.toJSON?row.toJSON():row),'amount').totalAmount});
   sendExcel(ctx, data, [
-    '费用单号', '时间', '费用日期', '经营归属月份', '费用类型', '费用发生方', '金额', '已结算金额',
+    '费用单号', '经销商', '时间', '费用日期', '经营归属月份', '费用类型', '费用发生方', '金额', '已结算金额',
     '门店', '制单人', '发起人', '状态', '付款方式', '备注'
   ], `费用报销管理_${new Date().toISOString().slice(0, 10)}.xlsx`, '费用报销管理');
 }
+
+async function previewExpenseSelection(ctx) {
+ const selected=require('./batchSubmission').ids(ctx.request.body.ids);
+ const child={state:{...ctx.state,exportMode:true},query:{ids:selected.join(',')},throw:ctx.throw.bind(ctx)};
+ await getExpenseList(child);
+ const rows=child.body?.list||[];
+ if(rows.length!==selected.length)ctx.throw(400,'勾选单据已变化或无权限，请刷新后重新勾选');
+ ctx.body={code:0,data:require('./batchSubmission').totals(rows,'amount')};
+}
+async function batchSubmitExpenses(ctx){return require('./batchSubmission').submit(ctx,submitExpense);}
 
 async function getExpenseDetail(ctx) {
   const user = ctx.state.user;
@@ -1952,6 +1974,7 @@ async function getPayableList(ctx) {
 }
 
 module.exports = {
+  previewExpenseSelection, batchSubmitExpenses,
   buildDailyPaymentMethodWhere,
   getDailyDetails,
   getNationalSubsidyReceivables,

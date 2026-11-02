@@ -1,0 +1,44 @@
+const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
+const M=require('../src/models'),GP=require('../src/modules/sales/grossProfit');
+const {recordBusinessAction}=require('../src/utils/businessActionLog');
+const no='ORD202610190158486358',batch='FREIGHT36-20261102-'+no;
+const parse=v=>typeof v==='string'?JSON.parse(v):v||[];
+async function run(){
+ const dir=path.resolve(__dirname,'../backup/freight-corrections',batch);fs.mkdirSync(dir,{recursive:true});
+ const result=await M.sequelize.transaction(async transaction=>{
+  const order=await M.Order.findOne({where:{order_no:no},transaction,lock:transaction.LOCK.UPDATE});
+  assert(order&&order.order_status==='已归档');
+  const store=await M.Store.findByPk(order.store_id,{transaction});
+  const period=await M.ExpenseAccountingPeriod.findOne({where:{distributor_id:store.distributor_id,month_key:'2026-10'},transaction,lock:transaction.LOCK.UPDATE});assert(!period||period.status==='open');
+  for(const model of [M.SalesReturnRequest,M.SalesReturnGrossProfitLedger,M.PerformanceProfitAdjustment])assert.equal(await model.count({where:{order_id:order.order_id},transaction}),0);
+  const snapshot=await M.OrderGrossProfit.findOne({where:{order_id:order.order_id},transaction,lock:transaction.LOCK.UPDATE});
+  assert.equal(snapshot.snapshot_status,'final');assert.equal(Number(snapshot.freight_cost_amount),377);assert.equal(Number(snapshot.gross_profit_amount),-28.40);
+  const supplement=await M.OrderSupplement.findOne({where:{order_id:order.order_id,supplement_id:'6a7228b41f604a918bd41fd2e2df9f72',is_deleted:0},transaction,lock:transaction.LOCK.UPDATE});assert(supplement);assert.equal(Number(supplement.amount),38);assert.equal(supplement.amount_type,'decrease');
+  const items=await M.OrderItem.findAll({where:{order_id:order.order_id},transaction,lock:transaction.LOCK.UPDATE});
+  const before=snapshot.toJSON(),details=parse(before.supplement_details);
+  const source=details.find(row=>row.source==='freight_cost'&&Number(row.amount)===17);
+  const wrong=details.find(row=>row.source==='freight_cost'&&row.freightId==='85c5b89fea314246801d117415eb75ed');assert(source&&wrong&&Number(wrong.amount)===360);
+  const manual=details.filter(row=>row.source!=='freight_cost');assert.equal(manual.length,1);assert.equal(manual[0].supplementId,supplement.supplement_id);
+  const nextManual=manual.map(row=>({...row,amount:19,signedAmount:-19,content:'用户确认：本单实际运费合计36元（来源运费17元＋返程运费19元）；本项仅补计返程19元',correctionId:batch}));
+  const freight=[source];
+  const calculate=(sup,fr)=>GP.calculateGrossProfitValues({receivableAmount:before.receivable_amount,productPricingDetails:parse(before.product_pricing_details),paymentDetails:parse(before.payment_fee_details),supplementDetails:sup,freightCostDetails:fr,invoiceAmount:before.invoice_amount,invoiceStatus:order.invoice_status});
+  assert.equal(calculate(manual,details.filter(row=>row.source==='freight_cost')).grossProfitAmount,-28.40);
+  const after=calculate(nextManual,freight);assert.equal(after.grossProfitAmount,350.60);assert.equal(after.freightCostAmount-after.supplementAmount,36);
+  const shared=await M.FreightRecord.findByPk(wrong.freightId,{transaction,raw:true});
+  const backup={batch,order:order.toJSON(),before,supplement:supplement.toJSON(),items:items.map(row=>row.toJSON()),sharedFreight:shared,after};
+  fs.writeFileSync(path.join(dir,'before-after.json'),JSON.stringify(backup,null,2),{flag:'wx'});
+  await supplement.update({amount:19,content:nextManual[0].content,update_time:new Date()},{transaction});
+  await snapshot.update({freight_cost_amount:17,supplement_amount:-19,supplement_details:[...nextManual,...freight],gross_profit_amount:after.grossProfitAmount,calculated_by:batch,calculated_at:new Date(),update_time:new Date()},{transaction});
+  for(const item of items)await item.update({freight_cost:String(item.item_id)===String(source.itemId)?17:0},{transaction});
+  await recordBusinessAction({businessType:'sales_order',businessId:order.order_id,businessNo:no,action:'correct_freight',user:{name:'User confirmation via Codex chat'},comment:batch,transaction,detail:{confirmedTotal:36,components:[19,17],beforeTotal:415,beforeProfit:-28.40,afterProfit:350.60,removedAutomaticFreight:360,manualBefore:38,manualAfter:19,sharedSourceUnchanged:true}});
+  return {orderId:order.order_id,totalFreight:36,automaticFreight:17,returnFreight:19,beforeProfit:-28.40,afterProfit:350.60};
+ });
+ const backup=JSON.parse(fs.readFileSync(path.join(dir,'before-after.json'),'utf8'));
+ const snapshot=await M.OrderGrossProfit.findOne({where:{order_id:result.orderId},raw:true});assert.equal(Number(snapshot.gross_profit_amount),350.60);assert.equal(Number(snapshot.freight_cost_amount),17);assert.equal(Number(snapshot.supplement_amount),-19);
+ assert.deepEqual(snapshot.product_pricing_details,backup.before.product_pricing_details);
+ const forced=await GP.calculateAndSaveOrderGrossProfit(result.orderId,{force:true,persist:false});assert.equal(forced.gross_profit_amount,350.60);
+ const shared=await M.FreightRecord.findByPk(backup.sharedFreight.freight_id,{raw:true});assert.deepEqual(JSON.parse(JSON.stringify(shared)),backup.sharedFreight);
+ const order=await M.Order.findByPk(result.orderId,{raw:true});assert.deepEqual(JSON.parse(JSON.stringify(order)),backup.order);
+ fs.writeFileSync(path.join(dir,'result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));
+}
+run().catch(e=>{console.error(e.stack);process.exitCode=1;}).finally(()=>M.sequelize.close());

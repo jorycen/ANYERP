@@ -499,6 +499,7 @@
             <el-select v-model="inboundQuery.status" placeholder="状态" clearable style="width: 120px" @change="loadInboundList">
               <el-option label="全部" value="" />
               <el-option label="待入库" value="pending" />
+              <el-option label="部分入库" value="partially_received" />
               <el-option label="已完成" value="completed" />
               <el-option label="已取消" value="cancelled" />
               <el-option label="已退库" value="returned" />
@@ -518,9 +519,11 @@
             <el-table-column prop="counterparty_name" label="往来单位" width="160" show-overflow-tooltip />
             <el-table-column prop="items_summary" label="商品摘要" min-width="200" show-overflow-tooltip />
             <el-table-column prop="total_quantity" label="总数量" width="100" />
+            <el-table-column prop="receivedQuantity" label="已入库" width="90" />
+            <el-table-column prop="remainingQuantity" label="待入库" width="90" />
             <el-table-column prop="status" label="状态" width="100">
               <template #default="{ row }">
-                <el-tag :type="getInboundStatusType(row.status)">{{ getInboundStatusText(row.status) }}</el-tag>
+                <el-tag :type="getInboundStatusType(row.status)">{{ row.statusLabel || getInboundStatusText(row.status) }}</el-tag>
               </template>
             </el-table-column>
             <el-table-column prop="create_time" label="创建时间" width="160">
@@ -529,8 +532,8 @@
             <el-table-column label="操作" width="240">
               <template #default="{ row }">
                 <el-button link type="primary" @click="viewInboundDetail(row)">查看</el-button>
-                <el-button link type="success" @click="openExecuteDialog(row)" v-if="row.status === 'pending' && !isTransferInboundRow(row)">入库</el-button>
-                <el-button link type="danger" @click="openReturnRequestDialog(row)" v-if="row.status === 'completed'">申请退库</el-button>
+                <el-button link type="success" @click="openExecuteDialog(row)" v-if="row.status === 'pending' && !isTransferInboundRow(row)">{{ row.progressStatus === 'partially_received' ? '继续入库' : '入库' }}</el-button>
+                <el-button link type="danger" @click="openReturnRequestDialog(row)" v-if="row.can_request_return === true">申请退供应商</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -835,21 +838,24 @@
     <!-- 入库单详情对话框 -->
     <el-dialog v-model="inboundDetailVisible" title="入库单详情" width="800px">
       <div v-if="currentInbound">
+        <el-alert v-if="currentInbound.supplier_return_reason" :title="currentInbound.supplier_return_reason" type="info" :closable="false" />
         <el-descriptions :column="2" border>
           <el-descriptions-item label="入库单号">{{ currentInbound.inbound_no }}</el-descriptions-item>
           <el-descriptions-item label="状态">
-            <el-tag :type="getInboundStatusType(currentInbound.status)">{{ getInboundStatusText(currentInbound.status) }}</el-tag>
+            <el-tag :type="getInboundStatusType(currentInbound.status)">{{ currentInbound.statusLabel || getInboundStatusText(currentInbound.status) }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="门店">{{ currentInbound.store_name }}</el-descriptions-item>
           <el-descriptions-item label="来源单号">{{ currentInbound.source_no || '-' }}</el-descriptions-item>
           <el-descriptions-item label="采购申请单号">{{ currentInbound.purchase_source?.request_no || '-' }}</el-descriptions-item>
           <el-descriptions-item label="供应商">{{ currentInbound.purchase_source?.supplier_name || '-' }}</el-descriptions-item>
           <el-descriptions-item label="总数量">{{ currentInbound.total_quantity }}</el-descriptions-item>
+          <el-descriptions-item label="已入库 / 待入库">{{ currentInbound.receivedQuantity }} / {{ currentInbound.remainingQuantity }}</el-descriptions-item>
           <el-descriptions-item label="创建时间">{{ formatDate(currentInbound.create_time) }}</el-descriptions-item>
           <el-descriptions-item label="创建人">{{ currentInbound.create_user }}</el-descriptions-item>
           <el-descriptions-item label="入库人员">{{ currentInbound.receive_user || '-' }}</el-descriptions-item>
         </el-descriptions>
 
+        <el-button v-if="currentInbound.receiptHistory?.length" @click="receiptHistoryVisible = true">查看分批收货记录</el-button>
         <h4 class="mt-20">商品明细</h4>
         <el-table :data="currentInbound.items || []" stripe border size="small">
           <el-table-column label="商品名称" min-width="140">
@@ -863,7 +869,9 @@
               {{ (row.sn_codes || (row.sn_code ? [row.sn_code] : [])).join('、') || '-' }}
             </template>
           </el-table-column>
-          <el-table-column prop="quantity" label="数量" width="80" />
+          <el-table-column prop="quantity" label="应入库" width="80" />
+          <el-table-column prop="received_quantity" label="已入库" width="80" />
+          <el-table-column prop="remaining_quantity" label="待入库" width="80" />
           <el-table-column label="入库人员" width="120">
             <template #default="{ row }">{{ row.receive_user || currentInbound.receive_user || '-' }}</template>
           </el-table-column>
@@ -878,12 +886,21 @@
       </div>
     </el-dialog>
 
+    <el-dialog v-model="receiptHistoryVisible" title="分批收货记录" width="750px">
+      <el-table :data="currentInbound?.receiptHistory || []" border>
+        <el-table-column prop="create_time" label="时间" width="170" />
+        <el-table-column prop="actor_name" label="操作人" width="100" />
+        <el-table-column label="累计已收 / 待收"><template #default="{ row }">{{ row.detail?.response?.data?.receivedQuantity }} / {{ row.detail?.response?.data?.remainingQuantity }}</template></el-table-column>
+        <el-table-column label="本次明细"><template #default="{ row }">{{ (row.detail?.items || []).map(item => `${item.snCode || item.productId} ×${item.quantity}`).join('、') }}</template></el-table-column>
+      </el-table>
+    </el-dialog>
     <!-- 执行入库对话框 -->
     <el-dialog v-model="executeInboundVisible" title="执行入库" width="900px" @close="resetInboundForm">
       <div v-if="currentInbound">
         <el-descriptions :column="2" border>
           <el-descriptions-item label="入库单号">{{ currentInbound.inbound_no }}</el-descriptions-item>
           <el-descriptions-item label="门店">{{ currentInbound.store_name }}</el-descriptions-item>
+          <el-descriptions-item label="应收 / 已收 / 待收">{{ currentInbound.expectedQuantity }} / {{ currentInbound.receivedQuantity }} / {{ currentInbound.remainingQuantity }}</el-descriptions-item>
         </el-descriptions>
 
         <div v-for="(item, idx) in executeProducts" :key="idx" class="execute-item-section">
@@ -2173,11 +2190,14 @@ const returnQuery = reactive({
 
 // 入库单详情
 const inboundDetailVisible = ref(false)
+const receiptHistoryVisible = ref(false)
 const currentInbound = ref(null)
 
 // 执行入库
 const executeInboundVisible = ref(false)
 const inboundLoading = ref(false)
+let inboundReceiptRequest = ''
+let inboundReceiptPayload = ''
 const executeProducts = ref([])
 const inboundLocations = ref([])
 
@@ -3487,14 +3507,20 @@ const submitInbound = async () => {
 
   inboundLoading.value = true
   try {
+    const signature = JSON.stringify({ inboundId: currentInbound.value.inbound_id, items })
+    if (signature !== inboundReceiptPayload) {
+      inboundReceiptPayload = signature
+      inboundReceiptRequest = `receipt-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    }
     const res = await api.executeInbound({
       inboundId: currentInbound.value.inbound_id,
+      requestId: inboundReceiptRequest,
       items,
       deferredItemIds: [...new Set(deferredItemIds.filter(Boolean))]
     })
 
     if (res.code === 0) {
-      ElMessage.success(deferredItemIds.length ? '已入库到货商品，暂缓商品仍保留待入库' : '入库完成')
+      ElMessage.success(res.message || '入库提交成功')
       clearDraft(inboundDraftKey())
       executeInboundVisible.value = false
       loadInboundList()
@@ -3591,6 +3617,7 @@ const openReturnRequestDialog = async (row) => {
   try {
     const res = await api.getInboundDetail(row.inbound_id)
     if (res.code !== 0) throw new Error(res.message || '加载入库单失败')
+    if (res.data.can_request_return !== true) throw new Error(res.data.supplier_return_reason || '该入库单当前不能申请退供应商')
     currentInbound.value = res.data
     returnItems.value = (res.data.items || []).map(item => ({ ...item, return_quantity: 0, sn_ids: [] }))
     returnReason.value = ''

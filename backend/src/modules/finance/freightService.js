@@ -5,6 +5,7 @@ const {
   FreightRecordItem,
   Order,
   OrderItem,
+  OrderGrossProfit,
   Store,
   sequelize
 } = require('../../models');
@@ -163,28 +164,6 @@ function buildFreightWhere({ startDate, endDate, storeId, platformId, sourceType
   return where;
 }
 
-function freightMatchesOrderItem(record, freightItem, order, orderItem) {
-  if (!record || record.status !== 'active' || !order || !orderItem) return false;
-  const orderStoreId = String(order.store_id || '').trim();
-  const recordStoreId = String(record.store_id || '').trim();
-  const destinationStoreId = String(record.to_store_id || '').trim();
-  const applicableStoreId = String(record.source_type || '').toLowerCase() === 'transfer'
-    ? (destinationStoreId || recordStoreId)
-    : recordStoreId;
-  if (!orderStoreId || applicableStoreId !== orderStoreId) return false;
-
-  const sourceTime = new Date(record.update_time || record.create_time).getTime();
-  const orderTime = new Date(order.create_time).getTime();
-  if (Number.isFinite(sourceTime) && Number.isFinite(orderTime) && sourceTime > orderTime) return false;
-
-  const productId = String(orderItem.product_id || '').trim();
-  const snId = String(orderItem.sn_id || '').trim();
-  const snCode = String(orderItem.sn_code || '').trim();
-  return (productId && productId === String(freightItem.product_id || '').trim())
-    || (snId && snId === String(freightItem.sn_id || '').trim())
-    || (snCode && snCode === String(freightItem.sn_code || '').trim());
-}
-
 async function attachRelatedSalesOrders(rows) {
   if (!rows.length) return rows;
   const freightRows = rows.map(row => row.toJSON ? row.toJSON() : row);
@@ -199,27 +178,41 @@ async function attachRelatedSalesOrders(rows) {
         { product_id: value }, { sn_id: value }, { sn_code: value }
       ])
     },
-    include: [{ model: Order, attributes: ['order_id', 'order_no', 'store_id', 'create_time'], where: { is_deleted: 0 }, required: true }],
+    include: [{ model: Order, attributes: ['order_id', 'order_no', 'store_id', 'create_time', 'archive_time', 'order_status'], where: { is_deleted: 0 }, required: true }],
     attributes: ['item_id', 'order_id', 'product_id', 'sn_id', 'sn_code'],
     raw: true,
     nest: true
   });
 
   const candidatesByOrderItem = new Map();
+  const orderIds = [...new Set(orderItems.map(item => String(item.order_id)))];
+  const snapshots = orderIds.length ? await OrderGrossProfit.findAll({
+    where: { order_id: { [Op.in]: orderIds }, snapshot_status: 'final' },
+    attributes: ['order_id', 'supplement_details'], raw: true
+  }) : [];
+  const snapshotByOrder = new Map(snapshots.map(row => [String(row.order_id), row]));
+  const freightIds = new Set(freightRows.map(row => String(row.freight_id)));
+  const calculated = new Map();
   for (const item of orderItems) {
     const order = item.Order || item.OrderItem?.Order;
     if (!order) continue;
-    const key = String(item.item_id);
-    const candidates = [];
-    for (const record of freightRows) {
-      for (const freightItem of record.items || []) {
-        if (freightMatchesOrderItem(record, freightItem, order, item)) {
-          candidates.push({ record, time: new Date(record.update_time || record.create_time).getTime() || 0 });
-        }
+    const id = String(item.order_id);
+    if (!calculated.has(id)) {
+      const frozen = snapshotByOrder.get(id);
+      let details = [];
+      if (frozen) {
+        try { details = typeof frozen.supplement_details === 'string' ? JSON.parse(frozen.supplement_details) : frozen.supplement_details || []; }
+        catch (_) { details = []; }
+        details = details.filter(line => line.source === 'freight_cost');
+      } else if (!order.archive_time) {
+        const GP = require('../sales/grossProfit');
+        const pricing = await GP.buildProductPricingDetails(id);
+        details = await GP.buildFreightCostDetails(order, null, pricing);
       }
+      calculated.set(id, details);
     }
-    candidates.sort((a, b) => b.time - a.time);
-    if (candidates[0]) candidatesByOrderItem.set(key, candidates[0].record.freight_id);
+    const matched = calculated.get(id).find(line => String(line.itemId) === String(item.item_id) && freightIds.has(String(line.freightId)));
+    if (matched) candidatesByOrderItem.set(String(item.item_id), matched.freightId);
   }
 
   const orderNosByFreight = new Map();

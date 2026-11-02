@@ -179,7 +179,11 @@ async function listBusinessTasks(ctx, onlyType = null) {
       });
       for (const row of rows) {
         try {
-          if (type === 'purchase_request') row.setDataValue('zero_cost_notice', require('../purchase/zeroCost').zeroCostNotice(row.items || []));
+          if (type === 'purchase_request') {
+            const notice = require('../purchase/zeroCost').zeroCostNotice(row.items || []);
+            if (row.setDataValue) row.setDataValue('zero_cost_notice', notice);
+            else row.zero_cost_notice = notice;
+          }
           const info = await context(type, row);
           if (!visible(ctx.state.user, info)) continue;
           const instance = await latest(type, row);

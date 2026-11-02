@@ -368,7 +368,7 @@ class DashboardService {
     this.dataSource = dataSource;
   }
 
-  async buildFilters(user) {
+  async buildFilters(user, query = {}) {
     const selfOnly = isSelfOnlyReportUser(user);
     let storeIds = await resolveReportStoreIds(user);
     if (storeIds.includes('*')) {
@@ -392,10 +392,14 @@ class DashboardService {
         ORDER BY sortOrder ASC, regionId ASC`,
       { storeIds }
     );
+    const categories=await this.dataSource.query('SELECT CATEGORY_ID AS categoryId, PARENT_ID AS parentId, NAME AS name, LEVEL AS level, SORT_ORDER AS sortOrder FROM T_PRODUCT_CATEGORY WHERE STATUS=1');
+    filters.focusCategoryOptions=require('./dashboardDataSource').buildFinanceCategoryIndex(categories).nodes
+      .filter(node=>node.path&&(!query.focusCategoryKeyword||node.path.toLowerCase().includes(String(query.focusCategoryKeyword).trim().toLowerCase()))).sort((a,b)=>a.path.localeCompare(b.path,'zh-CN')).map(node=>({path:node.path,name:node.name,level:node.level}));
     return filters;
   }
 
   async buildOverview(user, query = {}) {
+    const focusPaths=require('./focusCategorySales').selectedPaths(query.focusCategoryPaths);
     const selfOnly = isSelfOnlyReportUser(user);
     const ranges = buildRanges(query);
     const granularity = ['day', 'week', 'month'].includes(query.granularity)
@@ -536,6 +540,8 @@ class DashboardService {
       }
     }
     const productAnalysis = mapProductRows(productRows, profitVisible);
+    productAnalysis.focusCategories=require('./focusCategorySales').aggregateFocusCategories(productCategoryRows,focusPaths);
+    productAnalysis.focusCategoryMode='category';
     const previousStoreMap = new Map((previousStoreRanking || []).map(row => [String(row.storeId), row]));
     const storeProductTypeMap = new Map((storeProductTypeQuantities || []).map(row => [String(row.storeId), row]));
     const productQuantities = [...storeProductTypeMap.values()].reduce((totals, row) => ({

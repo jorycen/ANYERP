@@ -1,5 +1,7 @@
 const { requireInboundPn } = require('../../utils/inboundPn');
 const productSearch = require('../../utils/productSearch');
+const receiptProgress = require('./receiptProgress');
+const {supplierReturnEligibility}=require('./supplierReturnEligibility');
 const { assertSnEligible, isSpecialWarehouse, recordSnReentry } = require('../../utils/snEligibility');
 const { normalizeSnCode } = require('../../utils/snCode');
 /**
@@ -1190,41 +1192,9 @@ async function moveSnInventoryAggregate({ sn, storeId, oldLocationId, oldLocatio
  * 这里按仓位类型归类，并兼容将 normal_qty 写错到非销售仓的旧记录。
  */
 function getInventoryQuantitySnapshot(inv, locationType = '') {
-  const normalQty = Number(inv.normal_qty || 0);
-  const regularQty = Number(inv.regular_qty || 0);
-  const subsidyQty = Number(inv.subsidy_qty || 0);
-  const secondQty = Number(inv.second_qty || 0);
-  const effectiveNormal = normalQty > 0 ? normalQty : regularQty + subsidyQty + secondQty;
-  const snapshot = {
-    normal_qty: effectiveNormal,
-    regular_qty: regularQty,
-    subsidy_qty: subsidyQty,
-    second_qty: secondQty,
-    display_qty: Number(inv.display_qty || 0),
-    demo_qty: Number(inv.demo_qty || 0),
-    unsellable_qty: Number(inv.unsellable_qty || 0),
-    pending_qty: Number(inv.pending_qty || 0),
-    rental_demo_qty: Number(inv.rental_demo_qty || 0)
-  };
-
-  const normalizedLocationType = String(locationType || '').trim();
-  if (INVENTORY_QUANTITY_FIELDS.includes(normalizedLocationType) && normalizedLocationType !== 'normal_qty') {
-    snapshot[normalizedLocationType] = Math.max(snapshot[normalizedLocationType], effectiveNormal);
-    for (const field of INVENTORY_QUANTITY_FIELDS) {
-      if (field !== normalizedLocationType) snapshot[field] = 0;
-    }
-    snapshot.regular_qty = 0;
-    snapshot.subsidy_qty = 0;
-    snapshot.second_qty = 0;
-  }
-
-  return snapshot;
+  return require('../../utils/inventoryQuantities').getInventoryQuantitySnapshot(inv, locationType);
 }
 
-/**
- * 将销售仓库存拆分为页面需要的三类资源数量。
- * 旧数据可能只有 normal_qty，没有资源明细，此时按全资源货兼容展示，确保分项之和不小于销售仓总量。
- */
 function getSalesResourceQuantitySnapshot(inv, locationType = '') {
   const snapshot = getInventoryQuantitySnapshot(inv, locationType);
   const normalQty = Number(snapshot.normal_qty || 0);
@@ -3115,17 +3085,15 @@ function parseInboundSnCodes(value) {
   }
 }
 
-function enrichInboundItemProgress(item, inboundStatus) {
+function enrichInboundItemProgress(item, inboundStatus, isPurchase = true) {
   const data = item?.dataValues || item || {};
   const totalQuantity = Math.max(Number(data.quantity || 0), 0);
   const storedReceived = Math.max(Number(data.received_quantity || 0), 0);
-  const receivedQuantity = inboundStatus === 'completed'
-    ? Math.max(totalQuantity, storedReceived)
-    : Math.min(totalQuantity, storedReceived);
+  const receivedQuantity = !isPurchase && inboundStatus === 'completed' ? Math.max(totalQuantity, storedReceived) : Math.min(totalQuantity, storedReceived);
   const snCodes = parseInboundSnCodes(data.received_sn_codes);
   if (snCodes.length === 0 && data.sn_code) snCodes.push(String(data.sn_code).trim());
   data.received_quantity = receivedQuantity;
-  data.remaining_quantity = inboundStatus === 'pending'
+  data.remaining_quantity = ['pending', 'completed'].includes(inboundStatus)
     ? Math.max(totalQuantity - receivedQuantity, 0)
     : 0;
   data.sn_codes = snCodes;
@@ -3150,7 +3118,10 @@ async function getInboundList(ctx) {
       }
       where.store_id = storeId;
     } else if (!ctx.state.user.accessibleStoreIds.includes('*')) where.store_id = ctx.state.user.accessibleStoreIds;
-    if (status) where.status = status;
+    if (status === 'partially_received' || status === 'partial') {
+      where.status = 'pending';
+      where[Op.and].push(Sequelize.literal('EXISTS (SELECT 1 FROM T_INBOUND_ITEM progress_item WHERE progress_item.INBOUND_ID = Inbound.INBOUND_ID AND progress_item.RECEIVED_QUANTITY > 0)'));
+    } else if (status) where.status = status;
     if (inboundNo) where.inbound_no = { [Op.like]: `%${String(inboundNo).trim()}%` };
     if (sourceNo) where.source_no = { [Op.like]: `%${String(sourceNo).trim()}%` };
     if (counterpartyName) {
@@ -3172,7 +3143,7 @@ async function getInboundList(ctx) {
     for (const inbound of rows) {
       const items = await InboundItem.findAll({ where: { inbound_id: inbound.inbound_id } });
       const store = await Store.findByPk(inbound.store_id);
-      items.forEach(item => enrichInboundItemProgress(item, inbound.status));
+      items.forEach(item => enrichInboundItemProgress(item, inbound.status, String(inbound.source_type || '').toLowerCase() === 'purchase' || Boolean(inbound.purchase_request_id)));
       inbound.dataValues.items = items;
       inbound.dataValues.Store = store;
     }
@@ -3227,7 +3198,8 @@ async function getInboundList(ctx) {
       } else {
         result.items_summary = '';
       }
-      return result;
+      Object.assign(result,supplierReturnEligibility(result));
+      return receiptProgress.attach(result);
     });
 
     ctx.body = formatPaginatedResult(formattedRows, { page, pageSize, count });
@@ -3362,7 +3334,7 @@ async function getInboundDetailById(ctx, inboundId, { distributorTrace = false }
 
     const items = await InboundItem.findAll({ where: { inbound_id: inboundId } });
     const store = await Store.findByPk(inbound.store_id);
-    items.forEach(item => enrichInboundItemProgress(item, inbound.status));
+    items.forEach(item => enrichInboundItemProgress(item, inbound.status, String(inbound.source_type || '').toLowerCase() === 'purchase' || Boolean(inbound.purchase_request_id)));
     const locationIds = items.map(item => item.location_id).filter(Boolean);
     const locations = locationIds.length
       ? await Location.findAll({ where: { location_id: { [Op.in]: locationIds } }, attributes: ['location_id', 'name'] })
@@ -3529,6 +3501,11 @@ async function getInboundDetailById(ctx, inboundId, { distributorTrace = false }
       result.product_pns = pnMap;
     }
 
+    Object.assign(result,supplierReturnEligibility(result));
+    if (String(result.source_type || '').toLowerCase() === 'purchase' || result.purchase_request_id) {
+      receiptProgress.attach(result);
+      result.receiptHistory = (await listBusinessActions('inbound', inboundId)).filter(row => row.action === 'receipt_batch');
+    }
     ctx.body = { code: 0, data: result };
   } catch (error) {
     console.error('Error in getInboundDetail:', error);
@@ -3642,7 +3619,7 @@ function isPurchaseInboundItemProgressComplete(item, product, progress = {}) {
   const snCodes = parseInboundSnCodes(item?.received_sn_codes);
   if (snCodes.length === 0 && item?.sn_code) snCodes.push(String(item.sn_code).trim());
   snCodes.push(...(progress?.snCodes || []));
-  return snCodes.length >= totalQuantity;
+  return new Set(snCodes.map(normalizeSnCode)).size >= totalQuantity;
 }
 
 async function adjustProductLocation(ctx) {
@@ -3850,6 +3827,24 @@ function buildPreselectedTransferSelection(item) {
   };
 }
 
+async function readTransferPricing(item, sourceStoreId, transaction) {
+    const sourceSn = item.sn_id ? await ProductSn.findByPk(item.sn_id, { transaction }) : null;
+    const sourceReceipt = !sourceSn ? await InboundItem.findOne({
+      where: { product_id: item.product_id },
+      include: [{ model: Inbound, required: true, where: { store_id: sourceStoreId, status: 'completed' } }],
+      order: [['receive_time', 'DESC'], ['item_id', 'DESC']], transaction
+    }) : null;
+    const originalPurchase = sourceReceipt?.purchase_request_item_id
+      ? await PurchaseRequestItem.findByPk(sourceReceipt.purchase_request_item_id, { transaction }) : null;
+    const sourceProduct = await Product.findByPk(item.product_id, { transaction });
+    const mode = sourceSn?.gross_profit_use_standard_price
+      ?? sourceReceipt?.gross_profit_use_standard_price
+      ?? ((originalPurchase?.gross_profit_cost_mode || sourceProduct?.gross_profit_cost_mode) === 'COMPANY_PRICE' ? 1 : 0);
+    const uplift = sourceSn?.gross_profit_uplift_amount ?? sourceReceipt?.gross_profit_uplift_amount ?? null;
+    const unitPrice = sourceSn?.inbound_price ?? sourceReceipt?.unit_price ?? 0;
+    return { gross_profit_use_standard_price: mode, gross_profit_uplift_amount: uplift, unit_price: unitPrice };
+}
+
 async function ensureTransferInbound(transfer, items, transaction) {
   const existing = await Inbound.findOne({
     where: { source_type: 'TRANSFER', source_no: transfer.transfer_no },
@@ -3870,6 +3865,8 @@ async function ensureTransferInbound(transfer, items, transaction) {
     quantity: Math.max(Number(item.quantity || 1), 1),
     inventory_type: 'normal_qty'
   }));
+
+  for (const item of normalizedItems) Object.assign(item, await readTransferPricing(item, transfer.from_store_id, transaction));
 
   await Inbound.create({
     inbound_id: inboundId,
@@ -3911,7 +3908,7 @@ function resolveTransferInboundSnBinding(transferItem = {}, inboundItem = {}, re
 /**
  * 执行入库
  */
-async function executeInboundInTransaction({ inboundId, items = [], user, fail, deferInbound = false, defer_inbound = false, deferredItemIds = [], deferred_item_ids = [], action = '' }, t) {
+async function executeInboundInTransaction({ inboundId, items = [], user, fail, deferInbound = false, defer_inbound = false, deferredItemIds = [], deferred_item_ids = [], action = '', requestId = '' }, t) {
   const VALID_INVENTORY_TYPES = ['normal_qty', 'display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty', 'rental_demo_qty'];
   const PRODUCT_TYPE_TO_FIELD = {
     '服务商全资源': 'regular_qty',
@@ -3927,6 +3924,18 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
     if (!Array.isArray(items) || items.length === 0) fail(400, '请至少提交一条入库明细');
 
     const inbound = await Inbound.findByPk(inboundId, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!inbound) fail(404, '入库单不存在');
+    if (Array.isArray(user.accessibleStoreIds) && !user.accessibleStoreIds.map(String).some(id => id === '*' || id === String(inbound.store_id))) fail(403, '无权操作该门店入库单');
+    const requestHash = require('crypto').createHash('sha256').update(JSON.stringify(items)).digest('hex');
+    if (requestId) {
+      if (String(requestId).length > 100) fail(400, '入库请求标识过长');
+      const prior = await require('../../models').BusinessActionLog.findOne({where:{business_type:'inbound',business_id:String(inboundId),action:'receipt_batch',comment:String(requestId)},transaction:t});
+      if (prior) {
+        const detail = JSON.parse(prior.detail_json);
+        if (detail.requestHash !== requestHash) fail(409, '请求已提交，请刷新入库单后重试');
+        return detail.response;
+      }
+    }
     // 兼容历史数据：部分采购入库曾被错误写成 completed，但明细实际尚未收齐。
     // 恢复为 pending 后允许继续入库，避免被错误状态锁死。
     const earlyIsPurchaseInbound = String(inbound?.source_type || '').toLowerCase() === 'purchase' || Boolean(inbound?.purchase_request_id);
@@ -3936,7 +3945,7 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
         Math.max(Number(item.received_quantity || 0), 0) < Math.max(Number(item.quantity || 0), 0)
       ));
       if (hasUnreceivedItem) {
-        await inbound.update({ status: 'pending', update_time: new Date() }, { transaction: t });
+        fail(409, '历史入库单完成状态与数量不一致，请核对入库流水并恢复剩余待收后继续');
       }
     }
     if (!inbound) fail(404, '入库单不存在');
@@ -3953,7 +3962,8 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
     }
     const isSalesReturnInbound = String(inbound.source_type || '').toUpperCase() === 'SALES_RETURN';
     const isPurchaseInbound = String(inbound.source_type || '').toLowerCase() === 'purchase' || Boolean(inbound.purchase_request_id);
-    const inboundItems = await InboundItem.findAll({ where: { inbound_id: inboundId }, transaction: t });
+    const inboundItems = await InboundItem.findAll({ where: { inbound_id: inboundId }, transaction: t, lock: t.LOCK.UPDATE });
+    const beforeReceipt = inboundItems.map(item => ({itemId:item.item_id,receivedQuantity:Number(item.received_quantity || 0)}));
     const requestedDeferredItemIds = [...new Set(
       [...(Array.isArray(deferredItemIds) ? deferredItemIds : []), ...(Array.isArray(deferred_item_ids) ? deferred_item_ids : [])]
         .filter(Boolean)
@@ -4024,6 +4034,12 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
         fail(400, `商品 ${dbItem.product_name || product.name} 的入库库位与入库明细不一致`);
       }
       item.pnCode = await requireInboundPn(product, item.pnCode || item.pn_code || dbItem.pn_code || '', t);
+      if (dbItem.gross_profit_use_standard_price === null || dbItem.gross_profit_use_standard_price === undefined) {
+        const receiptPurchaseItem = dbItem.purchase_request_item_id
+          ? await PurchaseRequestItem.findByPk(dbItem.purchase_request_item_id, { transaction: t }) : null;
+        const receiptMode = receiptPurchaseItem?.gross_profit_cost_mode || product.gross_profit_cost_mode;
+        await dbItem.update({ gross_profit_use_standard_price: receiptMode === 'COMPANY_PRICE' ? 1 : 0 }, { transaction: t });
+      }
       const locationId = item.locationId || dbItem.location_id || defaultTransferLocation?.location_id || null;
       if (!locationId) {
         fail(400, `商品 ${dbItem.product_name || product.name} 请选择入库库位`);
@@ -4325,8 +4341,7 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
     }
 
     const allPurchaseItemsReceived = inboundItems.every(item => {
-      const progress = progressByItem.get(String(item.item_id));
-      const receivedQuantity = Math.max(Number(item.received_quantity || 0), 0) + Number(progress?.quantity || 0);
+      const receivedQuantity = Math.max(Number(item.received_quantity || 0), 0);
       return receivedQuantity >= Math.max(Number(item.quantity || 0), 0);
     });
     if (isPurchaseInbound && allPurchaseItemsReceived) {
@@ -4334,8 +4349,7 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
         Number(productMap.get(item.product_id)?.need_sn) === 1 &&
         !isPurchaseInboundItemProgressComplete(
           item,
-          productMap.get(item.product_id),
-          progressByItem.get(String(item.item_id))
+          productMap.get(item.product_id)
         )
       ));
       if (incompleteSnItem) {
@@ -4346,10 +4360,7 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
     if (shouldDeferInbound && !isPurchaseInbound) {
       fail(400, '只有采购入库支持暂缓入库');
     }
-    if (shouldDeferInbound && allPurchaseItemsReceived) {
-      fail(400, '暂缓入库不能提交全部数量，请减少本次入库数量后再暂缓');
-    }
-    const nextInboundStatus = isPurchaseInbound && (shouldDeferInbound || !allPurchaseItemsReceived)
+    const nextInboundStatus = isPurchaseInbound && !allPurchaseItemsReceived
       ? 'pending'
       : 'completed';
     const receiveTime = new Date();
@@ -4454,14 +4465,19 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
       }
     }
 
-    return {
+    const response = {
       code: 0,
       message: nextInboundStatus === 'pending' ? '已入库到货商品，未到商品继续保留待入库' : '入库完成',
       data: {
         inboundStatus: nextInboundStatus,
+        ...receiptProgress.summarize(inboundItems, nextInboundStatus),
         deferredItemIds: requestedDeferredItemIds
       }
     };
+    if (isPurchaseInbound) await recordBusinessAction({businessType:'inbound',businessId:inboundId,businessNo:inbound.inbound_no,
+      action:'receipt_batch',toStatus:nextInboundStatus,user,comment:String(requestId || ''),transaction:t,
+      detail:{requestHash,before:beforeReceipt,items:items.map(item=>({...item})),response}});
+    return response;
 }
 
 async function executeInbound(ctx) {
@@ -5542,6 +5558,9 @@ async function confirmTransferIn(ctx) {
       const requested = requestedByItemId.get(String(item.item_id)) || requestedItems[index] || {};
       const product = productMap.get(String(item.product_id));
       const inboundItem = transferInboundItems[index];
+      if (inboundItem && (inboundItem.gross_profit_use_standard_price === null || inboundItem.gross_profit_use_standard_price === undefined)) {
+        await inboundItem.update(await readTransferPricing(item, transfer.from_store_id, t), { transaction: t });
+      }
       const receiptPn = await requireInboundPn(product || item.product_id, requested.pnCode || requested.pn_code || item.pn_code || inboundItem?.pn_code || '', t);
       if (inboundItem) await inboundItem.update({ pn_code: receiptPn }, { transaction: t });
       const snBinding = resolveTransferInboundSnBinding(item, inboundItem, requested);
@@ -6471,6 +6490,8 @@ async function requestReturn(ctx) {
     const inbound = await Inbound.findByPk(inboundId, { transaction: t, lock: t.LOCK.UPDATE });
     if (!inbound) ctx.throw(404, '入库单不存在');
     if (inbound.status !== 'completed') ctx.throw(400, '只有已完成的入库单才能发起退库申请');
+    const eligibility=supplierReturnEligibility(inbound);
+    if(!eligibility.can_request_return)ctx.throw(400,eligibility.supplier_return_reason);
 
     const activeReturn = await ReturnStock.findOne({
       where: {
@@ -6898,6 +6919,7 @@ module.exports = {
   adjustProductLocation,
   snTrace,
   _test: {
+    readTransferPricing,
     buildTransferProductKeywordCondition,
     mergeSnSalesStockBreakdown,
     calculateStockAgeDays,

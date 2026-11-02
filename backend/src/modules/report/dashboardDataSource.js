@@ -945,6 +945,7 @@ class DailyKpiDashboardDataSource extends DashboardDataSource {
 }
 
 module.exports = {
+  buildFinanceCategoryIndex,
   ARCHIVED_STATUSES,
   VOIDED_STATUSES,
   GROSS_PROFIT_FORMULA_VERSION,

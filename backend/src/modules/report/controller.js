@@ -650,104 +650,17 @@ function sortInventoryCategoryStats(rows = [], categories = []) {
 }
 
 async function getInventoryReport(ctx) {
-  const { storeId, regionId, category } = ctx.query;
-  const user = ctx.state.user;
-
-  const whereStore = {};
-  const reportStoreIds = await resolveReportStoreIds(user);
-  if (!reportStoreIds.includes('*')) whereStore.store_id = reportStoreIds;
-  if (storeId && !reportStoreIds.includes('*') && !reportStoreIds.map(String).includes(String(storeId))) {
-    ctx.throw(403, '无权访问该门店库存报表');
+  const result = await require('./inventoryReport').load(ctx.query, ctx.state.user);
+  const size = Math.min(200, Math.max(1, Number(ctx.query.pageSize) || 50));
+  const page = Math.max(1, Number(ctx.query.page) || 1);
+  const { details, ...response } = result;
+  if (ctx.query.detailKey) {
+    const dims = result.meta.dimensions;
+    const selected = details.filter(d => JSON.stringify(dims.map(k => k === 'product' ? d.productId : k === 'store' ? d.storeId : d.category)) === ctx.query.detailKey);
+    ctx.body = { details: selected.slice((page-1)*size,page*size), pagination: {total:selected.length,page,pageSize:size}, meta: result.meta };
+    return;
   }
-  if (storeId) whereStore.store_id = storeId;
-  if (regionId) whereStore.region_id = regionId;
-
-  const stores = await Store.findAll({ where: whereStore });
-  const storeIds = stores.map(s => s.store_id);
-
-  const whereSn = { is_deleted: 0, status: 'in_stock', store_id: { [Op.in]: storeIds } };
-  if (storeId) whereSn.store_id = storeId;
-  const productWhere = { is_deleted: 0 };
-  if (category) productWhere.category = category;
-  const inventoryUnitCostSql = `COALESCE(
-    NULLIF(\`ProductSn\`.\`inbound_price\`, 0),
-    NULLIF(\`ProductSn\`.\`original_pickup_price\`, 0),
-    (SELECT NULLIF(pp.COST_PRICE, 0)
-       FROM T_PRODUCT_PRICE pp
-      WHERE pp.PRODUCT_ID = \`ProductSn\`.\`product_id\` AND pp.STATUS = 1
-      ORDER BY pp.EFFECTIVE_TIME DESC, pp.PRICE_ID DESC
-      LIMIT 1),
-    0
-  )`;
-  const staleCountSql = `SUM(CASE
-    WHEN COALESCE(\`ProductSn\`.\`original_inbound_time\`, \`ProductSn\`.\`inbound_time\`) IS NOT NULL
-     AND TIMESTAMPDIFF(DAY, COALESCE(\`ProductSn\`.\`original_inbound_time\`, \`ProductSn\`.\`inbound_time\`), NOW()) > 30
-    THEN 1 ELSE 0 END)`;
-
-  // 在库统计
-  const inStockStats = await ProductSn.findAll({
-    where: whereSn,
-    attributes: [
-      'product_id',
-      [sequelize.fn('COUNT', sequelize.col('sn_id')), 'inStockCount'],
-      [sequelize.literal(`ROUND(SUM(${inventoryUnitCostSql}), 2)`), 'totalCost'],
-      [sequelize.literal(staleCountSql), 'staleCount']
-    ],
-    include: [{
-      model: Product,
-      attributes: ['name', 'category', 'brand', 'series', 'model'],
-      where: productWhere,
-      required: true
-    }],
-    group: ['product_id'],
-    raw: true
-  });
-
-  // 按类别汇总
-  const categoryStats = await ProductSn.findAll({
-    where: whereSn,
-    attributes: [
-      [sequelize.col('Product.category'), 'category'],
-      [sequelize.col('Product.brand'), 'brand'],
-      [sequelize.col('Product.series'), 'series'],
-      [sequelize.col('Product.model'), 'model'],
-      [sequelize.fn('COUNT', sequelize.col('sn_id')), 'totalCount'],
-      [sequelize.fn('JSON_ARRAYAGG', sequelize.col('ProductSn.store_id')), 'storeIds'],
-      [sequelize.literal(`ROUND(SUM(${inventoryUnitCostSql}), 2)`), 'totalCost'],
-      [sequelize.literal(staleCountSql), 'staleCount']
-    ],
-    include: [{
-      model: Product,
-      attributes: [],
-      where: productWhere,
-      required: true
-    }],
-    group: [
-      sequelize.col('Product.category'),
-      sequelize.col('Product.brand'),
-      sequelize.col('Product.series'),
-      sequelize.col('Product.model')
-    ],
-    raw: true
-  });
-
-  const storeNames = new Map(stores.map(store => [String(store.store_id), store.name || String(store.store_id)]));
-  for (const row of categoryStats) {
-    const ids = Array.isArray(row.storeIds) ? row.storeIds : JSON.parse(row.storeIds || '[]');
-    row.storeNames = [...new Set(ids.map(id => storeNames.get(String(id))).filter(Boolean))]
-      .sort((left, right) => left.localeCompare(right, 'zh-CN')).join('、');
-    delete row.storeIds;
-  }
-
-  const categoryRows = await ProductCategory.findAll({
-    where: { status: 1 },
-    attributes: ['category_id', 'parent_id', 'name', 'level', 'sort_order', 'status'],
-    raw: true
-  });
-  const { rows: normalizedCategoryStats, summary } = buildInventoryReportMetrics(categoryStats);
-  const sortedCategoryStats = sortInventoryCategoryStats(normalizedCategoryStats, categoryRows);
-
-  ctx.body = { inStockStats, categoryStats: sortedCategoryStats, summary };
+  ctx.body = {...response, rows:result.rows.slice((page-1)*size,page*size), pagination:{total:result.rows.length,page,pageSize:size}};
 }
 
 async function getEmployeePerformanceReport(ctx, exportMode = false) {
@@ -1223,7 +1136,7 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
 }
 
 async function getDashboardFilters(ctx) {
-  ctx.body = await dashboardService.buildFilters(ctx.state.user);
+  ctx.body = await dashboardService.buildFilters(ctx.state.user, ctx.query);
 }
 
 async function getDashboardOverview(ctx) {

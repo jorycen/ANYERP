@@ -1,4 +1,4 @@
-const { PurchaseInvoice, PurchaseInvoiceNumber, PurchaseInvoiceAllocation, SettlementPaymentRecord, Settlement, Supplier, sequelize } = require('../../models');
+const { PurchaseInvoice, PurchaseInvoiceNumber, PurchaseInvoiceAllocation, SettlementPaymentRecord, Settlement, Supplier, Distributor, sequelize } = require('../../models');
 const { invoiceAmounts, invoiceNumbers } = require('./invoiceAmounts');
 const { Op } = require('sequelize');
 const { generateUUID } = require('../../utils');
@@ -11,12 +11,14 @@ const text = value => String(value || '').trim();
 
 function scope(where, user) { Object.assign(where, distributorWhere(user)); return where; }
 
-function chinaDate() {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+function chinaDate(value = new Date()) {
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}( |$)/.test(value)) return value.slice(0,10);
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value));
 }
 
 function buildInvoiceWhere(query, user) {
   const where = scope({ status: 'active' }, user);
+  if (query.distributorId) where[Op.and] = [{ distributor_id: String(query.distributorId) }];
   if (query.keyword) where[Op.or] = [...['invoice_no', 'supplier_name'].map(key => ({ [key]: { [Op.like]: `%${text(query.keyword)}%` } })),
     sequelize.literal(`EXISTS (SELECT 1 FROM T_PURCHASE_INVOICE_NUMBER n WHERE n.INVOICE_ID=PurchaseInvoice.INVOICE_ID AND n.INVOICE_NO LIKE ${sequelize.escape(`%${text(query.keyword)}%`)})`)];
   if (query.startDate || query.endDate) {
@@ -29,6 +31,7 @@ function buildInvoiceWhere(query, user) {
 
 async function queryInvoices(where) {
   const list = await PurchaseInvoice.findAll({ where, include: [{ model: PurchaseInvoiceAllocation, as: 'allocations' }], order: [['invoice_date', 'DESC'], ['create_time', 'DESC']] });
+  const distributors = list.length ? await Distributor.findAll({where:{distributor_id:{[Op.in]:[...new Set(list.map(row=>row.distributor_id).filter(Boolean))]}},attributes:['distributor_id','name'],raw:true}) : [];
   const numberRows = list.length ? await PurchaseInvoiceNumber.findAll({ where: { invoice_id: { [Op.in]: list.map(row => row.invoice_id) } }, raw: true }) : [];
   const settlementIds = [...new Set(list.flatMap(row => (row.allocations || []).map(item => item.settlement_id).filter(Boolean).map(String)))];
   const settlements = settlementIds.length
@@ -36,6 +39,7 @@ async function queryInvoices(where) {
     : [];
   const settlementMap = new Map(settlements.map(row => [String(row.settlement_id), row]));
   list.forEach(invoice => {
+    invoice.setDataValue('distributor_name', distributors.find(row=>String(row.distributor_id)===String(invoice.distributor_id))?.name || '归属待核对');
     const numbers = numberRows.filter(row => row.invoice_id === invoice.invoice_id).map(row => row.invoice_no);
     invoice.setDataValue('invoice_numbers', numbers.length ? numbers : [invoice.invoice_no]);
     invoice.setDataValue('invoice_numbers_text', (numbers.length ? numbers : [invoice.invoice_no]).join('、'));
@@ -73,7 +77,7 @@ function invoiceExportRows(list) {
     const data = invoice.toJSON ? invoice.toJSON() : invoice;
     const links = data.settlement_links?.length ? data.settlement_links : [{}];
     return links.map(link => ({
-      供应商: data.supplier_name || '', 销方税号: data.supplier_tax_no || '',
+      经销商: data.distributor_name || '', 供应商: data.supplier_name || '', 销方税号: data.supplier_tax_no || '',
       发票号码: data.invoice_numbers_text || data.invoice_no || '', 开票日期: data.invoice_date || '', 票种: data.invoice_type || '',
       税率: data.tax_rate === null || data.tax_rate === undefined ? '' : `${money(Number(data.tax_rate) * 100)}%`,
       不含税金额: money(data.amount_without_tax), 税额: money(data.tax_amount), 价税合计: money(data.total_amount),
@@ -98,18 +102,23 @@ async function findInvoiceCandidates(query, user) {
     GROUP BY p.PAYMENT_ID
     HAVING (:status <> 'open' OR p.AMOUNT - COALESCE(SUM(CASE WHEN i.INVOICE_ID IS NULL THEN 0 ELSE a.AMOUNT END), 0) > 0.005)
     ORDER BY p.PAYMENT_TIME ASC`, { replacements: { supplierName: text(supplierName), status }, type: sequelize.QueryTypes.SELECT });
-  return rows.filter(row => canAccessDistributor(user, row.distributor_id)).map(row => ({ ...row, remaining_amount: money(row.paid_amount - row.invoiced_amount), due_date: new Date(new Date(row.payment_time).getTime() + 30 * 86400000), warning_status: new Date() > new Date(new Date(row.payment_time).getTime() + 30 * 86400000) ? 'overdue' : new Date() > new Date(new Date(row.payment_time).getTime() + 20 * 86400000) ? 'near_due' : 'normal' }));
+  const distributors = await Distributor.findAll({where:distributorWhere(user),attributes:['distributor_id','name'],raw:true});
+  return rows.filter(row => canAccessDistributor(user, row.distributor_id) && (!query.distributorId || String(row.distributor_id)===String(query.distributorId)))
+    .map(row => ({ ...row, distributor_name: distributors.find(d=>String(d.distributor_id)===String(row.distributor_id))?.name || '归属待核对', remaining_amount: money(row.paid_amount - row.invoiced_amount), due_date: new Date(new Date(row.payment_time).getTime() + 30 * 86400000), warning_status: new Date() > new Date(new Date(row.payment_time).getTime() + 30 * 86400000) ? 'overdue' : new Date() > new Date(new Date(row.payment_time).getTime() + 20 * 86400000) ? 'near_due' : 'normal' }))
+    .filter(row=>(!query.warning || row.warning_status===query.warning) && (!query.startDate || chinaDate(row.payment_time)>=query.startDate) && (!query.endDate || chinaDate(row.payment_time)<=query.endDate));
 }
 
 async function getInvoiceCandidates(ctx) {
   const visible = await findInvoiceCandidates(ctx.query, ctx.state.user);
   ctx.body = { code: 0, data: { list: visible, summary: { receivable_amount: money(visible.reduce((s, r) => s + Number(r.paid_amount), 0)), unreceived_amount: money(visible.reduce((s, r) => s + r.remaining_amount, 0)), overdue_amount: money(visible.filter(r => r.warning_status === 'overdue').reduce((s, r) => s + r.remaining_amount, 0)) } } };
+  ctx.body.data.distributors = await Distributor.findAll({where:distributorWhere(ctx.state.user),attributes:['distributor_id','name'],raw:true});
 }
 
 async function exportInvoiceCandidates(ctx) {
   const list = await findInvoiceCandidates({ ...ctx.query, status: 'open' }, ctx.state.user);
   const rows = list.map(row => ({
     付款流水ID: row.payment_id,
+    经销商: row.distributor_name || '',
     供应商: row.supplier_name || '',
     结算单号: row.settlement_no || '',
     付款时间: row.payment_time || '',
@@ -119,7 +128,7 @@ async function exportInvoiceCandidates(ctx) {
     税号: '',
     发票号码: ''
   }));
-  sendExcel(ctx, rows, ['付款流水ID', '供应商', '结算单号', '付款时间', '付款金额', '已登记金额', '未登记金额', '税号', '发票号码'], `未登记发票清单_${chinaDate()}.xlsx`, '未登记发票清单', { textHeaders: ['付款流水ID', '结算单号', '税号', '发票号码'] });
+  sendExcel(ctx, rows, ['付款流水ID', '经销商', '供应商', '结算单号', '付款时间', '付款金额', '已登记金额', '未登记金额', '税号', '发票号码'], `未登记发票清单_${chinaDate()}.xlsx`, '未登记发票清单', { textHeaders: ['付款流水ID', '结算单号', '税号', '发票号码'] });
 }
 
 async function listInvoices(ctx) {
@@ -130,13 +139,21 @@ async function listInvoices(ctx) {
 async function exportInvoices(ctx) {
   const list = await queryInvoices(buildInvoiceWhere(ctx.query, ctx.state.user));
   sendExcel(ctx, invoiceExportRows(list), [
-    '供应商', '销方税号', '发票号码', '开票日期', '票种', '税率',
+    '经销商', '供应商', '销方税号', '发票号码', '开票日期', '票种', '税率',
     '不含税金额', '税额', '价税合计', '关联结算单', '本票分摊金额', '登记人', '登记时间', '备注'
   ], `采购进项发票_${new Date().toISOString().slice(0, 10)}.xlsx`, '采购进项发票');
 }
 
 async function previewInvoice(ctx) {
   const body = ctx.request.body || {};
+  if (body.paymentIds !== undefined) {
+    if (!Array.isArray(body.paymentIds) || body.paymentIds.length > 1000) ctx.throw(400, '每次最多统计1000笔付款');
+    const ids = [...new Set(body.paymentIds.map(String))];
+    const rows = ids.length ? (await findInvoiceCandidates({status:'open'},ctx.state.user)).filter(row=>ids.includes(String(row.payment_id))) : [];
+    if (rows.length !== ids.length) ctx.throw(400, '勾选付款已变化或无权限，请刷新后重新勾选');
+    ctx.body = {code:0,data:{selectedCount:rows.length,selectedRemainingAmount:money(rows.reduce((sum,row)=>sum+row.remaining_amount,0))}};
+    return;
+  }
   const allocations = Array.isArray(body.allocations) ? body.allocations : [];
   if (body.totalAmount === undefined) allocations.forEach(row => invoiceAmounts(row.amount, body.taxRate));
   const total = body.totalAmount === undefined ? money(allocations.reduce((sum, row) => sum + Number(row.amount), 0)) : body.totalAmount;

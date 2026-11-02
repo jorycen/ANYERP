@@ -279,7 +279,7 @@ async function enrichSettlementMetadata(rows, transaction = null) {
       ? Expense.findAll({
           where: { expense_id: { [Op.in]: expenseIds } },
           attributes: [
-            'expense_id', 'expense_no', 'expense_type', 'expense_party', 'amount', 'status',
+            'expense_id', 'expense_no', 'expense_type', 'expense_party', 'amount', 'status', 'store_id',
             'expense_date', 'payment_method', 'invoice_type', 'invoice_no', 'applicant_name',
             'source_type', 'source_id', 'source_no', 'related_order_no', 'remark', 'create_time'
           ],
@@ -307,6 +307,8 @@ async function enrichSettlementMetadata(rows, transaction = null) {
   }
   const requestMap = new Map(requests.map(row => [String(row.request_id), row]));
   const expenseMap = new Map(expenses.map(row => [String(row.expense_id), row]));
+  const expenseStoreIds=[...new Set(expenses.map(row=>row.store_id).filter(Boolean))];
+  const expenseStores=expenseStoreIds.length?await Store.findAll({where:{store_id:{[Op.in]:expenseStoreIds}},attributes:['store_id','name'],transaction}):[];
   const payableMap = new Map(payables.map(row => [String(row.payable_id), row]));
   const distributorIds = [...new Set(list.map(row => row.distributor_id).filter(Boolean).map(String))];
   const distributors = distributorIds.length
@@ -324,6 +326,10 @@ async function enrichSettlementMetadata(rows, transaction = null) {
       setDataValue(row, 'tax_status', combineTaxStatuses(taxStatuses));
     }
     setDataValue(row, 'distributor_name', distributorMap.get(String(row.distributor_id || '')) || row.distributor_id || '未知经销商');
+    const linkedExpenses=(row.items||[]).map(item=>payableMap.get(String(item.payable_id))).filter(p=>p&&['expense','reimbursement'].includes(p.source_type)).map(p=>expenseMap.get(String(p.source_id))).filter(Boolean);
+    setDataValue(row,'expense_types',[...new Set(linkedExpenses.map(e=>e.expense_type).filter(Boolean))].join('、'));
+    setDataValue(row,'store_names',[...new Set(linkedExpenses.map(e=>expenseStores.find(s=>String(s.store_id)===String(e.store_id))?.name).filter(Boolean))].join('、'));
+    setDataValue(row,'can_submit',row.status==='draft');
     (row.items || []).forEach(item => {
       const payable = payableMap.get(String(item.payable_id));
       if (!payable) return;
@@ -1493,6 +1499,15 @@ async function refreshSettlementPaymentState(settlement, transaction = null) {
 function buildSettlementListWhere(query, user) {
   const { supplierId, regionId, distributorId, taxStatus, settlementType, status, paymentStatus, settlementNo, payeeName } = query;
   const where = { is_deleted: 0 };
+  if(query.ids)where.settlement_id={[Op.in]:require('./batchSubmission').ids(query.ids)};
+  if(query.creator)where.create_user={[Op.like]:`%${String(query.creator).trim()}%`};
+  if(query.startDate||query.endDate){where.create_time={};if(query.startDate)where.create_time[Op.gte]=new Date(query.startDate+'T00:00:00+08:00');if(query.endDate)where.create_time[Op.lt]=new Date(new Date(query.endDate+'T00:00:00+08:00').getTime()+86400000);}
+  if(query.storeId||query.expenseType){
+    const clauses=["p.SOURCE_TYPE IN ('expense','reimbursement')"];
+    if(query.storeId)clauses.push(`e.STORE_ID=${sequelize.escape(String(query.storeId))}`);
+    if(query.expenseType)clauses.push(`e.EXPENSE_TYPE=${sequelize.escape(String(query.expenseType))}`);
+    where[Op.and]=[sequelize.literal(`EXISTS (SELECT 1 FROM T_SETTLEMENT_ITEM si JOIN T_PAYABLE p ON p.PAYABLE_ID=si.PAYABLE_ID JOIN T_EXPENSE e ON e.EXPENSE_ID=p.SOURCE_ID WHERE si.SETTLEMENT_ID=Settlement.SETTLEMENT_ID AND ${clauses.join(' AND ')})`)];
+  }
 
   if (supplierId) where.supplier_id = supplierId;
   if (regionId) where.region_id = regionId;
@@ -1548,6 +1563,7 @@ async function getSettlementList(ctx) {
 
   const { count, rows } = await Settlement.findAndCountAll({
     where,
+    distinct: true,
     include: [{ model: SettlementItem, as: 'items' }],
     order,
     ...paginate({}, { page, pageSize })
@@ -1586,6 +1602,8 @@ async function exportSettlementList(ctx) {
     来源单号: row.source_no || '',
     结算类型: row.settlement_type || '',
     经销商: row.distributor_name || row.distributor_id || '',
+    门店: row.store_names || '',
+    费用类别: row.expense_types || '',
     税务属性: row.tax_status || 'UNKNOWN',
     结算金额: Number(row.total_amount || 0),
     已付金额: Number(row.paid_amount || 0),
@@ -1598,9 +1616,10 @@ async function exportSettlementList(ctx) {
     创建时间: row.create_time || '',
     确认时间: row.confirmed_time || ''
   }));
+  data.push({结算单号:`合计（${data.length}单）`,结算金额:require('./batchSubmission').totals(rows,'total_amount').totalAmount});
   sendExcel(ctx, data, [
     '结算单号', '收款方', '收款单位', '收款开户行', '收款账号', '收款方税号', '收款备注',
-    '来源单号', '结算类型', '经销商', '税务属性', '结算金额', '已付金额',
+    '来源单号', '结算类型', '经销商', '门店', '费用类别', '税务属性', '结算金额', '已付金额',
     '状态', '当前审批环节', '付款状态', '经手人', '制单人', '备注', '创建时间', '确认时间'
   ], `应付结算单_${new Date().toISOString().slice(0, 10)}.xlsx`, '应付结算单');
 }
@@ -1853,6 +1872,13 @@ function throwStatusError(ctx, error) {
 /**
  * 草稿提交后进入审批，审批通过后进入付款管理待处理。
  */
+async function previewSettlementSelection(ctx){
+ const selected=require('./batchSubmission').ids(ctx.request.body.ids);
+ const rows=await Settlement.findAll({where:buildSettlementListWhere({ids:selected.join(',')},ctx.state.user)});
+ if(rows.length!==selected.length)ctx.throw(400,'勾选单据已变化或无权限，请刷新后重新勾选');
+ ctx.body={code:0,data:require('./batchSubmission').totals(rows,'total_amount')};
+}
+async function batchSubmitSettlements(ctx){return require('./batchSubmission').submit(ctx,submitSettlement);}
 async function submitSettlement(ctx) {
   try {
     const { settlementId } = ctx.request.body;
@@ -2831,6 +2857,7 @@ async function voidPaymentBatch(ctx) {
 }
 
 module.exports = {
+  previewSettlementSelection,batchSubmitSettlements,
   getPurchaseAdjustmentQuantityDeltasForDraft: getPurchaseAdjustmentQuantityDeltas,
   normalizeSettlementRemark,
   buildPayableSettlementResidual,

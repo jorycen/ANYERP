@@ -404,7 +404,19 @@
             <div class="expense-overview-item">费用单数：<strong>{{ expenseOverview.operatingExpense?.expenseCount || 0 }}</strong></div>
           </div>
 
-          <el-table :data="expenseData" stripe border>
+          <div class="filter-bar">
+            <el-select v-model="expenseQuery.distributorId" clearable filterable placeholder="经销商" style="width:180px"><el-option v-for="item in distributorOptions" :key="item.distributor_id" :label="item.name" :value="item.distributor_id" /></el-select>
+            <el-input v-model="expenseQuery.creator" clearable placeholder="制单人" style="width:140px" />
+            <el-select v-model="expenseQuery.storeId" clearable filterable placeholder="门店" style="width:160px"><el-option v-for="item in stores" :key="item.store_id" :label="item.name" :value="item.store_id" /></el-select>
+            <el-date-picker v-model="expenseFilterDates" type="daterange" value-format="YYYY-MM-DD" start-placeholder="制单开始日期" end-placeholder="制单结束日期" />
+            <el-select v-model="expenseQuery.expenseType" clearable filterable placeholder="费用类别" style="width:160px"><el-option v-for="item in expenseTypeOptions" :key="item.type_id" :label="item.name" :value="item.name" /></el-select>
+            <el-button type="primary" @click="searchExpenseFilters">筛选</el-button>
+            <el-button @click="resetExpenseFilters">重置</el-button>
+          </div>
+          <FinanceBatchBar kind="expense" :rows="expenseSelected" :query="expenseQuery" @submitted="loadExpenseData" />
+          <el-table :data="expenseData" stripe border @selection-change="rows => expenseSelected = rows">
+            <el-table-column type="selection" :selectable="row => row.can_submit === true" width="45" />
+            <el-table-column prop="distributor_name" label="经销商" min-width="160" />
             <el-table-column prop="expense_no" label="费用单号" width="160" />
             <el-table-column prop="create_time" label="时间" width="160"><template #default="{ row }">{{ formatDateTime(row.create_time) }}</template></el-table-column>
             <el-table-column prop="expense_type" label="费用类型" width="100" />
@@ -1788,6 +1800,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import * as XLSX from 'xlsx'
 import api from '../api'
 import DocumentRemarkEditor from '../components/DocumentRemarkEditor.vue'
+import FinanceBatchBar from '../components/FinanceBatchBar.vue'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 import { getRoleCode } from '../utils/user'
 import PaymentManagement from './PaymentManagement.vue'
@@ -2161,6 +2174,18 @@ const expenseQuery = reactive({
   pageSize: 20,
   accountingMonth: expenseAccountingMonth.value
 })
+const expenseSelected = ref([])
+const expenseFilterDates = ref([])
+const searchExpenseFilters = () => {
+  expenseQuery.page=1
+  expenseQuery.startDate=expenseFilterDates.value?.[0] || ''
+  expenseQuery.endDate=expenseFilterDates.value?.[1] || ''
+  loadExpenseData()
+}
+const resetExpenseFilters = () => {
+  Object.assign(expenseQuery,{distributorId:'',creator:'',storeId:'',expenseType:'',startDate:'',endDate:''})
+  expenseFilterDates.value=[];searchExpenseFilters()
+}
 
 const runListExport = async (key, label, exporter, params) => {
   exportingList.value = key
@@ -2817,8 +2842,10 @@ const formatDateTime = (time) => {
 }
 
 const loadExpenseData = async () => {
+  expenseSelected.value=[]
   try {
-    expenseQuery.accountingMonth = expenseAccountingMonth.value
+    expenseQuery.accountingMonth = expenseQuery.startDate || expenseQuery.endDate ? '' : expenseAccountingMonth.value
+    if(!expenseTypeOptions.value.length) await loadExpenseTypes()
     const params = { ...expenseQuery, status: 'draft,withdrawn,pending_payment,pending_approval,pending,approved,paid,processing' }
     const res = await api.getExpenseList(params)
     if (res.code === 0) {

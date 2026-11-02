@@ -44,9 +44,19 @@
           <el-option label="已作废" value="voided" />
         </el-select>
         <el-button type="primary" @click="loadData">查询</el-button>
+        <el-input v-model="query.creator" clearable placeholder="制单人" style="width:140px" />
+        <el-select v-model="query.storeId" clearable filterable placeholder="门店" style="width:160px"><el-option v-for="item in filterStores" :key="item.store_id" :label="item.name" :value="item.store_id" /></el-select>
+        <el-date-picker v-model="filterDates" type="daterange" value-format="YYYY-MM-DD" start-placeholder="制单开始日期" end-placeholder="制单结束日期" @change="applyDates" />
+        <el-select v-model="query.expenseType" clearable filterable placeholder="费用类别" style="width:160px"><el-option v-for="item in filterTypes" :key="item.type_id" :label="item.name" :value="item.name" /></el-select>
+        <el-button type="success" @click="exportFiltered">导出筛选结果</el-button>
       </div>
 
-      <el-table v-loading="loading" :data="data" stripe border>
+      <FinanceBatchBar kind="settlement" :rows="selectedRows" :query="query" @submitted="loadData" />
+      <el-table v-loading="loading" :data="data" stripe border @selection-change="rows => selectedRows = rows">
+        <el-table-column type="selection" :selectable="row => row.can_submit === true" width="45" />
+        <el-table-column prop="create_user" label="制单人" width="100" />
+        <el-table-column prop="store_names" label="门店" min-width="140" />
+        <el-table-column prop="expense_types" label="费用类别" min-width="140" />
         <el-table-column prop="settlement_no" label="结算单号" width="190" />
         <el-table-column label="报销/采购单号" width="190">
           <template #default="{ row }">
@@ -277,9 +287,16 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import DocumentRemarkEditor from '../components/DocumentRemarkEditor.vue'
+import FinanceBatchBar from '../components/FinanceBatchBar.vue'
 
 const router = useRouter()
 const data = ref([])
+const selectedRows = ref([])
+const filterDates = ref([])
+const filterStores = ref([])
+const filterTypes = ref([])
+const applyDates = () => { query.startDate=filterDates.value?.[0]||'';query.endDate=filterDates.value?.[1]||'';reload() }
+const exportFiltered = async () => { try{await api.exportSettlementList(query)}catch(error){ElMessage.error(error.response?.data?.message||'导出失败')} }
 const total = ref(0)
 const loading = ref(false)
 const accounts = ref([])
@@ -372,6 +389,7 @@ const reload = () => {
 }
 
 const loadData = async () => {
+  selectedRows.value=[]
   loading.value = true
   try {
     const res = await api.getSettlementList(query)
@@ -540,6 +558,8 @@ const voidSettlement = async row => {
 }
 
 onMounted(() => {
+  api.getStoreList({page:1,pageSize:1000}).then(res=>{filterStores.value=res.data?.list||res.data||[]}).catch(()=>ElMessage.error('门店筛选加载失败'))
+  api.getExpenseTypes().then(res=>{filterTypes.value=res.data||[]}).catch(()=>ElMessage.error('费用类别加载失败'))
   loadDistributorOptions()
   loadData()
   loadAccounts()

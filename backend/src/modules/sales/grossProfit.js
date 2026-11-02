@@ -63,7 +63,7 @@ function isExternalAdjustmentEligibleProduct(item = {}) {
   const { category = '', productName = '', accessoryType = '' } = item;
   const text = `${category} ${productName} ${accessoryType}`.toLowerCase();
   if (/配件|维修|服务|安装|保养|耗材/.test(text)) return false;
-  return /电脑|笔记本|台式机|一体机|主机|平板|ipad|手机|iphone/.test(text);
+  return /电脑|笔记本|台式机|台机|一体机|主机|平板|ipad|手机|iphone/.test(text);
 }
 
 function calculateNationalSubsidyCustomerReceiptAmount({
@@ -110,6 +110,7 @@ function normalizeReferenceId(value) {
 function isFreightRecordApplicableToOrder({
   orderStoreId,
   orderCreatedAt,
+  orderArchiveAt,
   sourceType,
   storeId,
   toStoreId,
@@ -128,8 +129,9 @@ function isFreightRecordApplicableToOrder({
   if (!applicableStore || applicableStore !== orderStore) return false;
 
   const sourceEffectiveAt = sourceUpdatedAt || sourceCreatedAt;
-  if (orderCreatedAt && sourceEffectiveAt) {
-    const orderTime = new Date(orderCreatedAt).getTime();
+  const cutoff = orderArchiveAt || orderCreatedAt;
+  if (cutoff && sourceEffectiveAt) {
+    const orderTime = new Date(cutoff).getTime();
     const sourceTime = new Date(sourceEffectiveAt).getTime();
     if (Number.isFinite(orderTime) && Number.isFinite(sourceTime) && sourceTime > orderTime) {
       return false;
@@ -514,7 +516,10 @@ async function resolveSupplierContext(items, order, transaction) {
 
   const latestInboundRows = productIds.length
     ? await sequelize.query(
-        `SELECT ii.PRODUCT_ID AS product_id, ii.UNIT_PRICE AS inbound_price, i.SOURCE_TYPE AS source_type,
+        `SELECT receipt_sources.* FROM (SELECT ii.PRODUCT_ID AS product_id, ii.UNIT_PRICE AS inbound_price, i.SOURCE_TYPE AS source_type,
+                ii.GROSS_PROFIT_USE_STANDARD_PRICE AS pricing_mode_snapshot,
+                ii.GROSS_PROFIT_UPLIFT_AMOUNT AS uplift_snapshot, ii.ITEM_ID AS receipt_item_id,
+                i.PURCHASE_REQUEST_ID AS purchase_request_id, i.SOURCE_NO AS receipt_source_no,
                 EXISTS (SELECT 1 FROM T_BUSINESS_ACTION_LOG za WHERE za.BUSINESS_TYPE='inbound_item' AND za.BUSINESS_ID COLLATE utf8mb4_unicode_ci=CAST(ii.ITEM_ID AS CHAR) COLLATE utf8mb4_unicode_ci AND za.ACTION='zero_cost_purchase_received') AS zero_cost_confirmed,
                 EXISTS (SELECT 1 FROM T_INBOUND_ITEM recovered_item
                   INNER JOIN T_INBOUND recovered_inbound ON recovered_inbound.INBOUND_ID = recovered_item.INBOUND_ID
@@ -522,20 +527,33 @@ async function resolveSupplierContext(items, order, transaction) {
                     AND recovered_inbound.STATUS = 'completed' AND recovered_inbound.RECEIVE_TIME <= :orderTime) AS has_recovery_cost,
                 pr.SUPPLIER_ID AS supplier_id,
                 s.NAME AS supplier_name,
-                s.GROSS_PROFIT_UPLIFT_AMOUNT AS supplier_gross_profit_uplift_amount
+                s.GROSS_PROFIT_UPLIFT_AMOUNT AS supplier_gross_profit_uplift_amount,
+                COALESCE(ii.RECEIVE_TIME, i.RECEIVE_TIME, i.CREATE_TIME) AS receipt_time
            FROM T_INBOUND_ITEM ii
            INNER JOIN T_INBOUND i ON i.INBOUND_ID = ii.INBOUND_ID
            LEFT JOIN T_PURCHASE_REQUEST pr ON pr.REQUEST_ID = i.PURCHASE_REQUEST_ID
            LEFT JOIN T_SUPPLIER s ON s.SUPPLIER_ID = pr.SUPPLIER_ID AND s.IS_DELETED = 0
           WHERE i.STORE_ID = :storeId
-            AND i.STATUS = 'completed'
+            AND (i.STATUS = 'completed' OR (i.STATUS = 'pending' AND ii.RECEIVED_QUANTITY > 0))
             AND i.CREATE_TIME <= :orderTime
             AND (COALESCE(i.SOURCE_TYPE, '') NOT IN ('GIFT','SALES_COMPONENT_RECOVERY') OR i.RECEIVE_TIME <= :orderTime)
             AND ii.PRODUCT_ID IN (:productIds)
-          ORDER BY i.CREATE_TIME DESC, i.INBOUND_ID DESC`,
+          UNION ALL
+          SELECT bi.PRODUCT_ID, bi.UNIT_PRICE, 'batch_inbound',
+                 CASE JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(bi.RESULT_JSON),bi.RESULT_JSON,'{}'),'$.pricingSnapshot.costMode'))
+                   WHEN 'COMPANY_PRICE' THEN 1 WHEN 'PURCHASE_PRICE' THEN 0 ELSE NULL END,
+                 0, bi.ITEM_ID, ba.APPLICATION_ID, ba.APPLICATION_NO, 0, 0, NULL, NULL, NULL,
+                 COALESCE(bi.EXECUTE_TIME, ba.EXECUTE_TIME, bi.CREATE_TIME)
+            FROM T_INVENTORY_BATCH_APPLICATION_ITEM bi
+            JOIN T_INVENTORY_BATCH_APPLICATION ba ON ba.APPLICATION_ID=bi.APPLICATION_ID
+           WHERE bi.STORE_ID=:storeId AND bi.PRODUCT_ID IN (:productIds)
+             AND bi.OPERATION_TYPE='INBOUND' AND bi.EXECUTE_STATUS='success'
+             AND ba.STATUS IN ('executed','executing','partially_executed')
+             AND COALESCE(bi.EXECUTE_TIME, ba.EXECUTE_TIME, bi.CREATE_TIME)<=:orderTime
+          ) receipt_sources ORDER BY receipt_time DESC, receipt_item_id DESC`,
         // Raw replacements format Date using the host timezone. MySQL business
         // DATETIME values use +08:00, including when the container runs in UTC.
-        { replacements: { storeId: order.store_id, orderTime: new Date(new Date(order.create_time).getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 23).replace('T', ' '), productIds }, type: QueryTypes.SELECT, transaction }
+        { replacements: { storeId: order.store_id, orderTime: new Date(new Date(order.archive_time || new Date()).getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 23).replace('T', ' '), productIds }, type: QueryTypes.SELECT, transaction }
       )
     : [];
   const latestInboundByProduct = new Map();
@@ -638,8 +656,8 @@ async function buildProductPricingDetails(orderId, transaction) {
       { ...row, purchasePrice, specialPrice },
       supplier,
       {
-        purchaseUpliftAmount: supplier?.gross_profit_uplift_amount ?? inboundSupplier?.supplier_gross_profit_uplift_amount,
-        costMode: isNonPurchase ? 'COMPANY_PRICE' : resolveInventoryCostMode(product, snRow, productPrice, order.create_time)
+        purchaseUpliftAmount: snRow?.gross_profit_uplift_amount ?? inboundSupplier?.uplift_snapshot ?? supplier?.gross_profit_uplift_amount ?? inboundSupplier?.supplier_gross_profit_uplift_amount,
+        costMode: isNonPurchase ? 'COMPANY_PRICE' : resolveInventoryCostMode(product, snRow || { gross_profit_use_standard_price: inboundSupplier?.pricing_mode_snapshot }, productPrice, order.create_time)
       }
     );
     const fixedCost = historicalPnCost(order, row.pn_code);
@@ -679,7 +697,9 @@ async function buildProductPricingDetails(orderId, transaction) {
       supplierName: supplier?.name || row.supplier_name || inboundSupplier?.supplier_name || '',
       isCompanyPriced: effectivePricing.isCompanyPriced,
       externalAdjustmentEligible,
-      externalAdjustmentRuleVersion: 'SUPPLIER_UPLIFT_V2',
+      externalAdjustmentRuleVersion: 'SUPPLIER_UPLIFT_V3',
+      costModeSnapshot: effectivePricing.isCompanyPriced ? 'COMPANY_PRICE' : 'PURCHASE_PRICE',
+      pricingOrigin: snRow ? { snId: snRow.sn_id } : inboundSupplier ? { sourceType: String(inboundSupplier.source_type || '').toLowerCase(), sourceId: inboundSupplier.purchase_request_id || '', sourceNo: inboundSupplier.receipt_source_no || '', receiptItemId: inboundSupplier.receipt_item_id } : null,
       source: effectivePricing.source
     };
   });
@@ -855,7 +875,7 @@ async function resolveFreightOrigins(item, transaction) {
       FROM T_INBOUND i
       JOIN T_INBOUND_ITEM ii ON ii.INBOUND_ID = i.INBOUND_ID
       LEFT JOIN T_INBOUND_ITEM_SN ins ON ins.INBOUND_ITEM_ID = ii.ITEM_ID
-     WHERE i.STATUS = 'completed' AND ii.PRODUCT_ID = :productId
+     WHERE (i.STATUS = 'completed' OR (i.STATUS = 'pending' AND ii.RECEIVED_QUANTITY > 0)) AND ii.PRODUCT_ID = :productId
        AND (
          (:snId <> '' AND ins.SN_ID = :snId)
          OR (:snId = '' AND :snCode <> '' AND ins.SN_CODE = :snCode)
@@ -873,7 +893,7 @@ async function resolveFreightOrigins(item, transaction) {
   });
 }
 
-async function buildFreightCostDetails(order, transaction) {
+async function buildFreightCostDetails(order, transaction, pricingDetails = []) {
   const orderId = order.order_id;
   const orderItems = await OrderItem.findAll({ where: { order_id: orderId }, transaction, raw: true });
   const details = [];
@@ -882,7 +902,11 @@ async function buildFreightCostDetails(order, transaction) {
     const snId = String(item.sn_id || '').trim();
     const snCode = String(item.sn_code || '').trim();
     if (!productId && !snId && !snCode) continue;
-    const origins = await resolveFreightOrigins(item, transaction);
+    const priced = pricingDetails.find(line => String(line.itemId) === String(item.item_id));
+    const receiptOrigin = priced?.pricingOrigin;
+    const origins = !snId && !snCode && receiptOrigin?.sourceNo
+      ? [{ source_type: receiptOrigin.sourceType, source_id: receiptOrigin.sourceId, source_no: receiptOrigin.sourceNo }]
+      : await resolveFreightOrigins(item, transaction);
     const where = {
       [Op.or]: [
         ...(productId ? [{ product_id: productId }] : []),
@@ -910,6 +934,7 @@ async function buildFreightCostDetails(order, transaction) {
       return matchesFreightOrigin(item, value, origins) && isFreightRecordApplicableToOrder({
         orderStoreId: order.store_id,
         orderCreatedAt: order.create_time,
+        orderArchiveAt: order.archive_time || new Date(),
         sourceType: source.source_type,
         storeId: source.store_id,
         toStoreId: source.to_store_id,
@@ -940,6 +965,8 @@ async function buildFreightCostDetails(order, transaction) {
       sourceType: source.source_type || '',
       sourceNo: source.source_no || '',
       platformName: source.platform_name || '',
+      sourceEffectiveAt: source.update_time || source.create_time,
+      cutoffAt: order.archive_time || new Date(),
       freightId: source.freight_id || ''
     });
   }
@@ -971,12 +998,15 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     return existing;
   }
 
-  const [paymentDetails, productPricingDetails, supplementDetails, freightCostDetails] = await Promise.all([
+  const frozenInputs = existing?.snapshot_status === 'final';
+  const [paymentDetails, productPricingDetails, supplementDetails] = await Promise.all([
     buildPaymentDetails(order, existing, transaction),
-    buildProductPricingDetails(orderId, transaction),
-    buildSupplementDetails(orderId, transaction),
-    buildFreightCostDetails(order, transaction)
+    frozenInputs ? Promise.resolve(parseJsonArray(existing.product_pricing_details)) : buildProductPricingDetails(orderId, transaction),
+    buildSupplementDetails(orderId, transaction)
   ]);
+  const freightCostDetails = frozenInputs
+    ? parseJsonArray(existing.supplement_details).filter(line => line.source === 'freight_cost')
+    : await buildFreightCostDetails(order, transaction, productPricingDetails);
   // An authorized recalculation must retain approved order-specific price corrections.
   for (const frozen of parseJsonArray(existing?.product_pricing_details)) {
     if (!frozen.correctionId || frozen.source !== 'approved_settlement_price_correction') continue;
@@ -1008,9 +1038,9 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     invoiceStatus: order.invoice_status,
     externalAdjustmentEligible: productPricingDetails.some(item => item.externalAdjustmentEligible)
   });
-  const archived = final === null
+  const archived = frozenInputs || (final === null
     ? ['已归档', 'completed', 'archived'].includes(String(order.order_status || ''))
-    : !!final;
+    : !!final);
   const completeness = pricingCompleteness(productPricingDetails);
   if (!completeness.pricingComplete && (archived || requireComplete)) {
     const error = new Error(`成本待补，不能归档：${completeness.missingCostItems.map(item => item.productName || item.itemId).join('、')}`);
@@ -1133,6 +1163,7 @@ module.exports = {
   matchesFreightOrigin,
   resolveFreightOrigins,
   buildFreightCostDetails,
+  buildProductPricingDetails,
   isFreightRecordApplicableToOrder,
   resolveUnitProductPricing,
   resolveInventoryCostMode,

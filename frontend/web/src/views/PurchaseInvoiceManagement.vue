@@ -20,6 +20,7 @@
     <el-tabs v-model="activeTab">
       <el-tab-pane label="待收票" name="pending">
         <el-form inline class="filters">
+          <el-form-item label="经销商"><el-select v-model="filter.distributorId" clearable filterable style="width:200px"><el-option v-for="item in distributors" :key="item.distributor_id" :label="item.name" :value="item.distributor_id" /></el-select></el-form-item>
           <el-form-item label="供应商"><el-input v-model="filter.supplier" clearable /></el-form-item>
           <el-form-item label="付款日期"><el-date-picker v-model="filter.dateRange" type="daterange" value-format="YYYY-MM-DD" /></el-form-item>
           <el-form-item label="预警状态">
@@ -29,11 +30,14 @@
               <el-option label="逾期" value="overdue" />
             </el-select>
           </el-form-item>
+          <el-button type="primary" @click="loadCandidates">筛选</el-button>
           <el-button @click="resetFilter">重置</el-button>
           <el-button type="primary" :disabled="!selected.length" @click="openCreate(selected)">统一登记（{{ selected.length }}）</el-button>
+          <span style="margin-left:12px">已勾选 {{ selected.length }} 笔，未收票合计：{{ selectionLoading ? '统计中…' : selectedAmount == null ? '不可用' : `¥${money(selectedAmount)}` }}</span>
         </el-form>
-        <el-table :data="filteredRows" border stripe @selection-change="rows => selected = rows">
+        <el-table :data="candidates" border stripe @selection-change="selectionChanged">
           <el-table-column type="selection" width="45" />
+          <el-table-column prop="distributor_name" label="经销商" min-width="160" />
           <el-table-column prop="supplier_name" label="供应商" min-width="150" />
           <el-table-column label="结算单号" min-width="180">
             <template #default="{ row }"><el-button link type="primary" @click="openSettlementDetail(row)">{{ row.settlement_no || '-' }}</el-button></template>
@@ -50,6 +54,7 @@
 
       <el-tab-pane label="已收发票" name="received">
         <div class="received-filters">
+          <el-select v-model="invoiceFilter.distributorId" clearable filterable placeholder="全部经销商" style="width:200px"><el-option v-for="item in distributors" :key="item.distributor_id" :label="item.name" :value="item.distributor_id" /></el-select>
           <el-input v-model="invoiceFilter.keyword" clearable placeholder="供应商或发票号码" style="width:220px" @keyup.enter="loadInvoices" />
           <el-date-picker v-model="invoiceFilter.dateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开票开始日期" end-placeholder="开票结束日期" />
           <el-button type="primary" @click="loadInvoices">查询</el-button>
@@ -57,6 +62,7 @@
           <el-button type="success" :loading="exporting" @click="exportInvoices">导出</el-button>
         </div>
         <el-table :data="invoices" border stripe>
+          <el-table-column prop="distributor_name" label="经销商" min-width="160" />
           <el-table-column prop="supplier_name" label="供应商" min-width="150" />
           <el-table-column prop="invoice_numbers_text" label="发票号码" min-width="200" />
           <el-table-column prop="invoice_date" label="开票日期" width="120" />
@@ -80,6 +86,7 @@
 
     <el-dialog v-model="visible" title="登记进项发票" width="860px">
       <el-form :model="form" label-width="100px">
+        <el-form-item label="经销商">{{ dialogRows[0]?.distributor_name || '归属待核对' }}</el-form-item>
         <el-row :gutter="12">
           <el-col :span="24"><el-form-item label="发票号码" required>
             <div style="width:100%">
@@ -100,6 +107,7 @@
         <el-alert title="本组只登记一次金额；多个号码无需分别填写金额。税率不同请分组登记，退回按整组处理。" type="info" :closable="false" />
         <el-divider>本组关联付款</el-divider>
         <el-table :data="dialogRows" border>
+          <el-table-column prop="distributor_name" label="经销商" min-width="160" />
           <el-table-column prop="supplier_name" label="供应商" min-width="150" />
           <el-table-column label="结算单" min-width="180">
             <template #default="{ row }"><el-button link type="primary" @click="openSettlementDetail(row)">{{ row.settlement_no || '-' }}</el-button></template>
@@ -142,7 +150,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as XLSX from 'xlsx'
 import api from '../api'
@@ -159,13 +167,32 @@ const candidateExporting = ref(false)
 const importing = ref(false)
 const invoiceFileInput = ref(null)
 const selected = ref([])
+const distributors = ref([])
+const selectedAmount = ref(0)
+const selectionLoading = ref(false)
+let selectionSequence = 0
+const selectionChanged = async rows => {
+  selected.value = rows
+  const sequence = ++selectionSequence
+  selectedAmount.value = null
+  if (!rows.length) { selectedAmount.value = 0; selectionLoading.value = false; return }
+  selectionLoading.value = true
+  try {
+    const response = await api.previewPurchaseInvoice({ paymentIds: rows.map(row => row.payment_id) })
+    if (sequence !== selectionSequence) return
+    if (response.code !== 0) throw new Error(response.message || '勾选金额统计失败')
+    selectedAmount.value = response.data.selectedRemainingAmount
+  } catch (error) {
+    if (sequence === selectionSequence) ElMessage.error(error.response?.data?.message || error.message || '勾选金额统计失败')
+  } finally { if (sequence === selectionSequence) selectionLoading.value = false }
+}
 const dialogRows = ref([])
 const amounts = ref({})
 const settlementDetailVisible = ref(false)
 const settlementDetailLoading = ref(false)
 const settlementDetail = ref(null)
-const filter = reactive({ supplier: '', dateRange: [], warning: '' })
-const invoiceFilter = reactive({ keyword: '', dateRange: [] })
+const filter = reactive({ supplier: '', dateRange: [], warning: '', distributorId: '' })
+const invoiceFilter = reactive({ keyword: '', dateRange: [], distributorId: '' })
 const blank = () => ({ invoiceNumbers: [''], invoiceDate: '', invoiceType: '增值税专用发票', taxRate: 0.13, amountWithoutTax: null, taxAmount: null, totalAmount: 0 })
 const form = ref(blank())
 const previewLoading = ref(false)
@@ -194,21 +221,21 @@ const warningText = value => ({ normal: '正常', near_due: '临期', overdue: '
 const settlementStatusText = value => ({ draft: '草稿', pending_approval: '待审批', confirmed: '待付款', voided: '已作废' }[value] || value || '-')
 const paymentStatusText = value => ({ unpaid: '未付款', partial_paid: '部分付款', paid: '已付款' }[value] || value || '-')
 
-const filteredRows = computed(() => candidates.value.filter(row => (
-  (!filter.supplier || String(row.supplier_name || '').includes(filter.supplier))
-  && (!filter.warning || row.warning_status === filter.warning)
-  && (!filter.dateRange.length || (String(row.payment_time).slice(0, 10) >= filter.dateRange[0] && String(row.payment_time).slice(0, 10) <= filter.dateRange[1]))
-)))
+const candidateParams = () => ({status:'open', supplierName:filter.supplier, distributorId:filter.distributorId, warning:filter.warning,
+  ...(filter.dateRange?.length === 2 ? {startDate:filter.dateRange[0],endDate:filter.dateRange[1]} : {})})
 
 const invoiceParams = () => ({
+  ...(invoiceFilter.distributorId ? {distributorId:invoiceFilter.distributorId} : {}),
   ...(invoiceFilter.keyword ? { keyword: invoiceFilter.keyword } : {}),
   ...(invoiceFilter.dateRange?.length === 2 ? { startDate: invoiceFilter.dateRange[0], endDate: invoiceFilter.dateRange[1] } : {})
 })
 
 const loadCandidates = async () => {
-  const response = await api.getPurchaseInvoiceCandidates({ status: 'open' })
+  selectionChanged([])
+  const response = await api.getPurchaseInvoiceCandidates(candidateParams())
   candidates.value = response.data?.list || []
   summary.value = response.data?.summary || {}
+  distributors.value = response.data?.distributors || []
 }
 const loadInvoices = async () => {
   const response = await api.getPurchaseInvoices(invoiceParams())
@@ -232,8 +259,8 @@ const returnReceivedInvoice = async row => {
   } catch (error) { ElMessage.error(error.response?.data?.message || error.message || '退回失败') }
   finally { returningInvoiceId.value = '' }
 }
-const resetFilter = () => Object.assign(filter, { supplier: '', dateRange: [], warning: '' })
-const resetInvoiceFilter = () => { Object.assign(invoiceFilter, { keyword: '', dateRange: [] }); loadInvoices() }
+const resetFilter = () => { Object.assign(filter, { supplier: '', dateRange: [], warning: '', distributorId:'' }); loadCandidates() }
+const resetInvoiceFilter = () => { Object.assign(invoiceFilter, { keyword: '', dateRange: [], distributorId:'' }); loadInvoices() }
 
 const openCreate = rows => {
   if (!rows.length) return
@@ -297,7 +324,7 @@ const exportInvoices = async () => {
 const exportCandidates = async () => {
   candidateExporting.value = true
   try {
-    await api.exportPurchaseInvoiceCandidates()
+    await api.exportPurchaseInvoiceCandidates(candidateParams())
     ElMessage.success('未登记发票清单导出成功')
   } catch (error) {
     ElMessage.error(error.response?.data?.message || '未登记发票清单导出失败')

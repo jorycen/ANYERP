@@ -2127,13 +2127,6 @@ async function approveRequest(ctx) {
       await item.update({ product_id: created.productId, product_name: created.productName, pn_code: item.pn_code || null }, { transaction });
     }
     await require('./zeroCost').recordApproval(request, request.items, user, transaction);
-    for (const item of request.items) {
-      if (!item.product_id || !item.gross_profit_cost_mode) continue;
-      await Product.update(
-        { gross_profit_cost_mode: item.gross_profit_cost_mode },
-        { where: { product_id: item.product_id, category: { [Op.ne]: '选件' } }, transaction }
-      );
-    }
     await assertActiveProducts(Product, request.items.map(item => item.product_id).filter(Boolean), { transaction });
     const productIds = request.items.map(item => item.product_id).filter(Boolean);
     const products = productIds.length ? await Product.findAll({
@@ -2179,7 +2172,7 @@ async function approveRequest(ctx) {
         inbound_price: conversion.item.unit_price,
         supplier_id: request.supplier_id,
         supplier_name: conversionSupplier?.name || conversion.sn.supplier_name || '',
-        gross_profit_use_standard_price: null,
+        gross_profit_use_standard_price: conversion.item.gross_profit_cost_mode === 'COMPANY_PRICE' ? 1 : 0,
         gross_profit_uplift_amount: purchaseUpliftFor(conversion.item),
         source_type: 'PURCHASED_FROM_SPECIAL_WAREHOUSE',
         update_time: new Date()
@@ -2290,7 +2283,7 @@ async function approveRequest(ctx) {
           pn_code: item.pn_code,
           sn_code: Number(item.direct_inbound) === 1 ? item.direct_inbound_sn_code : null,
           unit_price: item.unit_price,
-          gross_profit_use_standard_price: null,
+          gross_profit_use_standard_price: item.gross_profit_cost_mode === 'COMPANY_PRICE' ? 1 : 0,
           gross_profit_uplift_amount: purchaseUpliftFor(item),
           quantity: item.allocatedQuantity || item.quantity,
           product_type: item.product_type || '',
@@ -2655,14 +2648,16 @@ async function adjustOriginalPurchaseForSpecialSn({ conversion, newRequest, user
  * 创建采购退单/采购数量调整单。
  * 只调整待入库明细；已完成入库的明细仅用于校验和追溯。
  */
-async function createPurchaseAdjustment(ctx) {
+async function createPurchaseAdjustment(ctx, parentTransaction = null) {
+  // Koa supplies `next` as argument two; only an explicit Sequelize transaction is reusable.
+  if (typeof parentTransaction === 'function') parentTransaction = null;
   const { requestId, reason = '', items = [] } = ctx.request.body || {};
   const user = ctx.state.user;
 
   if (!requestId) ctx.throw(400, '缺少采购订单ID');
   if (!Array.isArray(items) || items.length === 0) ctx.throw(400, '请填写需要调整的商品数量');
 
-  const transaction = await sequelize.transaction();
+  const transaction = parentTransaction || await sequelize.transaction();
   try {
     const request = await PurchaseRequest.findByPk(requestId, {
       include: [
@@ -2820,6 +2815,7 @@ async function createPurchaseAdjustment(ctx) {
       request_id: request.request_id,
       request_no: request.request_no,
       store_id: request.store_id,
+      distributor_id: request.distributor_id || null,
       supplier_id: request.supplier_id,
       supplier_name: request.Supplier?.name || '',
       total_quantity_delta: totalQuantityDelta,
@@ -2895,7 +2891,7 @@ async function createPurchaseAdjustment(ctx) {
       user, comment: `${adjustmentNo}${reason ? `；${reason}` : ''}`, transaction
     });
 
-    await transaction.commit();
+    if (!parentTransaction) await transaction.commit();
     const adjustmentMessage = payableId
       ? (payableAmountDelta < 0 ? '采购退单完成，负向采购单及负向应付已生成' : '采购数量调整完成，正向应付已生成')
       : '采购退单完成，负向采购单已生成；请核对个人垫付报销金额';
@@ -2905,7 +2901,7 @@ async function createPurchaseAdjustment(ctx) {
       data: { adjustmentId, adjustmentNo, payableId, totalQuantityDelta, totalAmountDelta, returns: [] }
     };
   } catch (error) {
-    await transaction.rollback();
+    if (!parentTransaction && !transaction.finished) await transaction.rollback();
     throw error;
   }
 }

@@ -350,7 +350,8 @@ test('83VX0025CD鹏瑞利销售2台样品1台，单店筛选合计3台', () => {
   assert.equal(row.other_store_stock_qty, 0);
 });
 
-test('inventory summary uses serialized stock projection for SN products', () => {
+test('inventory summary uses current sales-warehouse projection for SN and non-SN products', () => {
   assert.equal(_test.getSummaryNormalQty({ need_sn: 1 }, { normal_qty: 10 }, { total: 7 }), 7);
-  assert.equal(_test.getSummaryNormalQty({ need_sn: 0 }, { normal_qty: 10 }, { total: 7 }), 10);
+  // Non-SN products must also use the actual warehouse projection, not the legacy aggregate.
+  assert.equal(_test.getSummaryNormalQty({ need_sn: 0 }, { normal_qty: 10 }, { total: 7 }), 7);
 });

@@ -70,32 +70,59 @@
               <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
             </el-select>
             <el-button type="primary" @click="loadInventoryReport">查询</el-button>
+            <el-input v-model="inventoryParams.keyword" clearable placeholder="商品编码 / 商品 / PN / SN" style="width:240px" />
+            <el-select v-model="inventoryParams.category" clearable filterable placeholder="分类（包含下级）" style="width:240px"><el-option v-for="item in inventoryMeta.categoryOptions || []" :key="item" :label="item" :value="item" /></el-select>
+            <el-select v-model="inventoryParams.inventoryType" clearable placeholder="库存状态" style="width:150px"><el-option v-for="item in inventoryTypes" :key="item.value" :value="item.value" :label="item.label" /></el-select>
+            <el-checkbox-group v-model="inventoryDimensions"><el-checkbox value="category">分类</el-checkbox><el-checkbox value="store">门店</el-checkbox><el-checkbox value="product">产品</el-checkbox></el-checkbox-group>
+            <el-button type="success" :disabled="!inventoryMeta.asOf" :loading="inventoryExporting" @click="exportInventory">导出全部结果</el-button>
           </div>
+          <el-alert :title="inventoryMeta.costBasis || '正在读取当前库存口径'" type="info" :closable="false" />
+          <el-alert v-if="inventoryMeta.taxBasis" :title="inventoryMeta.taxBasis" type="warning" :closable="false" />
+          <div>统计时点：{{ inventoryMeta.asOf ? formatDateTime(inventoryMeta.asOf) : '—' }}；明确服务/虚拟项已单列 {{ inventoryMeta.excludedQuantity ?? '—' }} 件；仍保留的实物属性待核对项 {{ inventoryMeta.scopePendingQuantity ?? '—' }} 件。</div>
+          <el-button v-if="inventoryExcluded.length" link @click="inventoryExcludedVisible=true">查看单列服务/虚拟项</el-button>
+          <el-dialog v-model="inventoryExcludedVisible" title="单列服务/虚拟项（不计入实物汇总）" width="850px"><el-table :data="inventoryExcluded" border><el-table-column prop="storeName" label="门店" width="140" /><el-table-column prop="productName" label="商品" min-width="230" /><el-table-column prop="quantity" label="数量" width="90" /><el-table-column prop="reason" label="单列原因" min-width="180" /></el-table></el-dialog>
 
           <div class="summary-row">
-            <div class="summary-item">在库数量：<strong>{{ inventorySummary.totalCount || 0 }}</strong></div>
-            <div class="summary-item">成本合计：<strong>¥{{ formatMoney(inventorySummary.totalCost) }}</strong></div>
-            <div class="summary-item">滞销数量（库龄＞30天）：<strong>{{ inventorySummary.staleCount || 0 }}</strong></div>
-            <div class="summary-item">滞销率：<strong>{{ formatPercent(inventorySummary.staleRate) }}</strong></div>
+            <div class="summary-item">在库数量（含范围待核对项）：<strong>{{ inventorySummary.totalCount ?? '—' }}</strong></div>
+            <div class="summary-item">采购库存估值：<strong>{{ inventoryAmount(inventorySummary.totalCost) }}</strong></div>
+            <div class="summary-item">已知成本：<strong>{{ inventoryAmount(inventorySummary.knownCostAmount) }}</strong></div>
+            <div class="summary-item">估算成本：<strong>{{ inventoryAmount(inventorySummary.estimatedCostAmount) }}</strong></div>
+            <div class="summary-item">成本待补：<strong>{{ inventorySummary.missingCostCount ?? '—' }} 件</strong></div>
+            <div class="summary-item">已确认零成本：<strong>{{ inventorySummary.confirmedZeroCount ?? '—' }} 件</strong></div>
+            <div class="summary-item">预计扣税后金额：<strong>{{ inventoryAmount(inventorySummary.netAmount) }}</strong></div>
+            <div class="summary-item">税务依据待补：<strong>{{ inventorySummary.taxPendingCount ?? '—' }} 件</strong></div>
           </div>
 
-          <el-table :data="inventoryData" stripe border>
-            <el-table-column prop="category" label="商品分类" width="110" />
-            <el-table-column prop="brand" label="品牌" width="100" />
-            <el-table-column prop="series" label="系列" width="120" />
-            <el-table-column prop="model" label="型号" min-width="140" />
+          <el-table :data="inventoryData" stripe border v-loading="inventoryLoading">
+            <el-table-column v-if="inventoryMeta.dimensions?.includes('category')" prop="category" label="商品分类" min-width="220" />
+            <el-table-column v-if="inventoryMeta.dimensions?.includes('store')" prop="storeName" label="门店" width="150" />
+            <el-table-column v-if="inventoryMeta.dimensions?.includes('product')" prop="productCode" label="商品编码" width="120" />
+            <el-table-column v-if="inventoryMeta.dimensions?.includes('product')" prop="productName" label="商品" min-width="240" />
             <el-table-column prop="totalCount" label="在库数量" width="100" />
-            <el-table-column prop="storeNames" label="门店" min-width="180" show-overflow-tooltip>
-              <template #default="{ row }">{{ row.storeNames || '—' }}</template>
-            </el-table-column>
-            <el-table-column label="成本合计" width="130" align="right">
-              <template #default="{ row }">¥{{ formatMoney(row.totalCost) }}</template>
-            </el-table-column>
-            <el-table-column prop="staleCount" label="滞销数量" width="105" align="right" />
-            <el-table-column label="滞销率（库龄＞30天）" width="170" align="right">
-              <template #default="{ row }">{{ formatPercent(row.staleRate) }}</template>
-            </el-table-column>
+            <el-table-column v-for="item in inventoryTypes" :key="item.value" :prop="item.value" :label="item.label" width="85" />
+            <el-table-column label="采购估值" width="140"><template #default="{row}">{{ inventoryAmount(row.totalCost) }}<div>{{ row.costStatus }}</div></template></el-table-column>
+            <el-table-column label="已覆盖估值" width="140"><template #default="{row}">{{ inventoryAmount(row.coveredCostAmount) }}</template></el-table-column>
+            <el-table-column prop="missingCostCount" label="成本待补" width="100" />
+            <el-table-column label="预计扣税后" width="140"><template #default="{row}">{{ inventoryAmount(row.netAmount) }}</template></el-table-column>
+            <el-table-column label="已覆盖扣税后测算" width="160"><template #default="{row}">{{ inventoryAmount(row.netEstimateAmount) }}</template></el-table-column>
+            <el-table-column prop="taxPendingCount" label="税务依据待补" width="120" />
+            <el-table-column v-for="item in inventoryAgeBuckets" :key="item.key" :label="item.label" width="170"><template #default="{row}">{{ row[item.key] }} 件 / {{ inventoryAmount(row.ageAmounts[item.key]) }}<div v-if="row.ageMissing[item.key]">其中 {{ row.ageMissing[item.key] }} 件成本待补</div></template></el-table-column>
+            <el-table-column label="操作" width="100" fixed="right"><template #default="{row}"><el-button link type="primary" @click="openInventoryDetails(row)">查看明细</el-button></template></el-table-column>
           </el-table>
+          <el-pagination :current-page="inventoryPage" :page-size="50" :total="inventoryTotal" layout="total, prev, pager, next" @current-change="changeInventoryPage" />
+          <el-dialog v-model="inventoryDetailVisible" title="库存来源明细" width="1100px">
+            <el-table :data="inventoryDetails" border v-loading="inventoryDetailLoading">
+              <el-table-column prop="storeName" label="门店" width="130" /><el-table-column prop="productName" label="商品" min-width="220" />
+              <el-table-column prop="pn" label="PN" width="150" /><el-table-column prop="sn" label="SN" width="160" /><el-table-column prop="location" label="库位" width="120" />
+              <el-table-column prop="typeName" label="状态" width="90" /><el-table-column prop="quantity" label="数量" width="80" />
+              <el-table-column label="采购金额" width="120"><template #default="{row}">{{ inventoryAmount(row.costAmount) }}</template></el-table-column>
+              <el-table-column prop="costSource" label="成本来源" min-width="200" />
+              <el-table-column prop="invoiceType" label="采购凭证" width="120" />
+              <el-table-column prop="scopeWarning" label="实物范围提示" min-width="170" />
+              <el-table-column label="首次入库时间" width="170"><template #default="{row}">{{ row.inboundTime ? formatDateTime(row.inboundTime) : '未知' }}</template></el-table-column>
+            </el-table>
+            <el-pagination :current-page="inventoryDetailPage" :page-size="50" :total="inventoryDetailTotal" layout="total, prev, pager, next" @current-change="loadInventoryDetails" />
+          </el-dialog>
 
           <div class="chart-container">
             <div ref="inventoryChartRef" class="chart"></div>
@@ -509,7 +536,23 @@ const salesStatementPeriod = ref([currentMonth, currentMonth])
 const salesStatementDateRange = ref([])
 const salesCanViewProfit = ref(false)
 const inventoryData = ref([])
-const inventorySummary = ref({ totalCount: 0, totalCost: 0, staleCount: 0, staleRate: 0 })
+const inventoryLoading = ref(false)
+const inventoryExporting = ref(false)
+const inventoryMeta = ref({})
+const inventoryExcluded = ref([])
+const inventoryExcludedVisible = ref(false)
+const inventoryDimensions = ref(['category'])
+const inventoryPage = ref(1)
+const inventoryTotal = ref(0)
+const appliedInventoryParams = ref({})
+const inventoryTypes = [{value:'normal_qty',label:'可售'},{value:'pending_qty',label:'占用'},{value:'display_qty',label:'展示'},{value:'demo_qty',label:'样机'},{value:'rental_demo_qty',label:'租赁样机'},{value:'unsellable_qty',label:'残次'}]
+const inventoryAgeBuckets = [{key:'d0_30',label:'0–30天'},{key:'d31_60',label:'31–60天'},{key:'d61_90',label:'61–90天'},{key:'d90_plus',label:'90天以上'},{key:'unknown',label:'库龄未知'}]
+const inventoryAmount = value => value === null || value === undefined ? '待补/待核实' : `¥${formatMoney(value)}`
+const inventoryDetailVisible=ref(false),inventoryDetailLoading=ref(false),inventoryDetails=ref([]),inventoryDetailPage=ref(1),inventoryDetailTotal=ref(0)
+let inventoryDetailKey=''
+let inventoryDetailSequence=0
+let inventorySequence=0
+const inventorySummary = ref({})
 const employeeData = ref([])
 const employeeOptions = ref([])
 const employeeSummary = ref({})
@@ -655,14 +698,38 @@ const loadSalesPerformanceDetails = async () => {
 }
 
 const loadInventoryReport = async () => {
+  if(!inventoryDimensions.value.length)return ElMessage.warning('请至少选择一个统计维度')
+  return fetchInventory({...inventoryParams,dimensions:inventoryDimensions.value.join(','),page:1,pageSize:50})
+}
+const fetchInventory = async params => {
+  const sequence=++inventorySequence
+  inventoryLoading.value=true
   try {
-    const res = await api.getInventoryReport(inventoryParams)
+    const res = await api.getInventoryReport(params)
+    if(sequence!==inventorySequence)return
     if (res.code === 0) {
-      inventoryData.value = res.data?.categoryStats || []
-      inventorySummary.value = res.data?.summary || { totalCount: 0, totalCost: 0, staleCount: 0, staleRate: 0 }
+      if(res.data?.meta?.version!==2)throw Error('库存报表API尚未升级，请先部署后台')
+      inventoryData.value = res.data.rows
+      inventorySummary.value = res.data.summary
+      inventoryMeta.value=res.data.meta
+      inventoryExcluded.value=res.data.excluded || []
+      inventoryPage.value=res.data.pagination.page
+      inventoryTotal.value=res.data.pagination.total
+      appliedInventoryParams.value={...params}
       initInventoryChart()
-    }
-  } catch (err) { ElMessage.error('加载失败') }
+    }else throw Error(res.message||'加载库存失败')
+  } catch (err) { if(sequence===inventorySequence){inventoryData.value=[];inventorySummary.value={};inventoryMeta.value={};inventoryExcluded.value=[];inventoryTotal.value=0;if(inventoryChartRef.value)echarts.getInstanceByDom(inventoryChartRef.value)?.clear();ElMessage.error(err.response?.data?.message||err.message||'加载失败')} }
+  finally {if(sequence===inventorySequence)inventoryLoading.value=false}
+}
+const changeInventoryPage=page=>fetchInventory({...appliedInventoryParams.value,page})
+const exportInventory=async()=>{inventoryExporting.value=true;try{await api.exportInventoryReport(appliedInventoryParams.value)}catch(error){ElMessage.error(error.response?.data?.message||'导出失败')}finally{inventoryExporting.value=false}}
+const openInventoryDetails=row=>{inventoryDetailKey=row.key;inventoryDetailVisible.value=true;loadInventoryDetails(1)}
+const loadInventoryDetails=async(page=1)=>{
+ const sequence=++inventoryDetailSequence
+ inventoryDetailLoading.value=true
+ try{const response=await api.getInventoryReport({...appliedInventoryParams.value,detailKey:inventoryDetailKey,page,pageSize:50});if(sequence!==inventoryDetailSequence)return;if(response.code!==0)throw Error(response.message);inventoryDetails.value=response.data.details;inventoryDetailPage.value=page;inventoryDetailTotal.value=response.data.pagination.total}
+ catch(error){if(sequence===inventoryDetailSequence){inventoryDetails.value=[];inventoryDetailTotal.value=0;ElMessage.error(error.response?.data?.message||'明细读取失败')}}
+ finally{if(sequence===inventoryDetailSequence)inventoryDetailLoading.value=false}
 }
 
 const loadEmployeePerformance = async () => {
@@ -959,14 +1026,10 @@ const initSalesChart = () => {
 
 const initInventoryChart = () => {
   if (!inventoryChartRef.value) return
-  const chart = echarts.init(inventoryChartRef.value)
+  const chart = echarts.getInstanceByDom(inventoryChartRef.value) || echarts.init(inventoryChartRef.value)
   chart.setOption({
     tooltip: { trigger: 'item' },
-    series: [{ type: 'pie', radius: '60%', data: [
-      { value: 35, name: '正常' },
-      { value: 25, name: '库存不足' },
-      { value: 15, name: '积压' }
-    ]}]
+    series: [{ type: 'pie', radius: '60%', data: inventoryAgeBuckets.map(item=>({value:inventorySummary.value[item.key]||0,name:item.label})) }]
   })
 }
 const exportSalesStatement = async () => {
