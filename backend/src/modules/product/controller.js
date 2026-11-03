@@ -26,6 +26,7 @@ const { Op, Sequelize } = require('sequelize');
 const { sequelize } = require('../../config/database');
 const { generateProductCode, generateUUID, generateId, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
 const {
+  productPnCodes,
   normalizePnCode,
   splitPnCodes,
   isUsablePnCode,
@@ -859,7 +860,7 @@ async function getProductList(ctx) {
       gpu: getProductAttributeValue(p, 'gpu', mappedExtras),
       accessory_type: getProductAttributeValue(p, 'accessory_type', mappedExtras),
       extras,
-      manufacturer_codes: require('../../utils/productPn').productPnCodes(p, p.ProductPns || [], allBarcodes),
+      manufacturer_codes: productPnCodes(p, p.ProductPns || [], allBarcodes),
       barcodes: allBarcodes,
       need_sn: Number(p.need_sn || 0),
       need_imei: Number(p.need_imei || 0),
@@ -1977,6 +1978,7 @@ async function exportCostPrices(ctx) {
     where: productWhere,
     attributes: ['product_id', 'product_code', 'manufacturer_code', 'name', 'unit', 'category'],
     include: [
+      { model: ProductPn, attributes: ['pn_id', 'pn_code', 'is_primary'], where: { status: 1, is_deleted: 0 }, required: false },
       { model: ProductPrice, attributes: ['standard_price', 'cost_price'] }
     ],
     order: [[sequelize.literal(productSearch.expressions(sequelize, ctx.query.keyword, 'Product', ctx.state.user?.accessibleStoreIds || []).rank), 'ASC'], [sequelize.literal(productSearch.stock(sequelize, 'Product', ctx.state.user?.accessibleStoreIds || [])), 'DESC'], ['product_id', 'ASC']]
@@ -2004,9 +2006,7 @@ async function exportCostPrices(ctx) {
 
   const rows = products.map(product => ({
     '商品编码': product.product_code,
-    '厂商编码': splitPnCodes(product.manufacturer_code).length > 0
-      ? splitPnCodes(product.manufacturer_code).join(', ')
-      : (manufacturerCodeMap.get(product.product_id) || []).join(', '),
+    '厂商编码': productPnCodes(product, product.ProductPns || [], (manufacturerCodeMap.get(product.product_id) || []).map(code => ({type:'manufacturer',code}))).join(', '),
     '商品名称': product.name,
     '分类': product.category || '',
     '单位': product.unit || '',
@@ -3626,70 +3626,21 @@ async function exportProducts(ctx) {
       where[Op.and] = [{
         [Op.or]: [
           { category_id: { [Op.in]: categoryIds } },
-          ...(categoryPath ? [{ category: { [Op.like]: `${categoryPath}%` } }] : [])
+          ...(categoryPath ? [{ category_path_legacy: { [Op.like]: `${categoryPath}%` } }, { category: { [Op.like]: `${categoryPath}%` } }] : [])
         ]
       }];
     }
   }
 
-  if (keyword) {
-    const keywords = keyword.trim().split(/\s+/).filter(k => k);
-    
-    // 1. 先查找匹配条码的商品ID
-    const matchedProductIdsByBarcode = new Set();
-    const barcodeMatches = await ProductBarcode.findAll({
-      where: {
-        status: 1,
-        [Op.or]: keywords.map(k => ({
-          barcode_code: { [Op.like]: `%${k}%` }
-        }))
-      },
-      attributes: ['product_id'],
-      raw: true
-    });
-    barcodeMatches.forEach(b => matchedProductIdsByBarcode.add(b.product_id));
-
-    // 2. 构建商品字段查询条件（每个关键字都要匹配）
-    const productFieldConditions = [];
-    for (const k of keywords) {
-      productFieldConditions.push({
-        [Op.or]: [
-          { name: { [Op.like]: `%${k}%` } },
-          { product_code: { [Op.like]: `%${k}%` } },
-          { config: { [Op.like]: `%${k}%` } },
-          { brand: { [Op.like]: `%${k}%` } },
-          { series: { [Op.like]: `%${k}%` } },
-          { model: { [Op.like]: `%${k}%` } },
-          { processor: { [Op.like]: `%${k}%` } },
-          { memory: { [Op.like]: `%${k}%` } },
-          { storage: { [Op.like]: `%${k}%` } },
-          { color: { [Op.like]: `%${k}%` } },
-          { gpu: { [Op.like]: `%${k}%` } },
-          { accessory_type: { [Op.like]: `%${k}%` } }
-        ]
-      });
-    }
-
-    // 3. 合并查询条件：商品字段匹配 OR 条码匹配
-    if (matchedProductIdsByBarcode.size > 0) {
-      if (productFieldConditions.length > 0) {
-        where[Op.or] = [
-          { product_id: { [Op.in]: Array.from(matchedProductIdsByBarcode) } },
-          { [Op.and]: productFieldConditions }
-        ];
-      } else {
-        where.product_id = { [Op.in]: Array.from(matchedProductIdsByBarcode) };
-      }
-    } else if (productFieldConditions.length > 0) {
-      where[Op.and] = productFieldConditions;
-    }
-  }
+  const search = productSearch.expressions(sequelize, keyword, 'Product', ctx.state.user?.accessibleStoreIds || []);
+  if (productSearch.tokens(keyword).length) where[Op.and] = [...(where[Op.and] || []), sequelize.literal(search.where)];
 
   // 查询所有匹配的商品（不分页）
   const products = await Product.findAll({
     where,
     include: [
       { model: ProductBarcode, attributes: ['barcode_id', 'barcode_type', 'barcode_code'], where: { status: 1 }, required: false },
+      { model: ProductPn, attributes: ['pn_id', 'pn_code', 'is_primary'], where: { status: 1, is_deleted: 0 }, required: false },
       ...(isPriceExport ? [{ model: ProductPrice, attributes: ['standard_price', 'cost_price'] }] : [])
     ],
     order: [['create_time', 'DESC']]
@@ -3697,15 +3648,11 @@ async function exportProducts(ctx) {
 
   if (isPriceExport) {
     const exportData = products.map(p => {
-      const manufacturerCodes = (p.ProductBarcodes || [])
-        .filter(b => b.barcode_type === 'manufacturer')
-        .map(b => b.barcode_code)
-        .filter(Boolean);
-      const legacyManufacturerCodes = splitPnCodes(p.manufacturer_code);
+      const manufacturerCodes = productPnCodes(p, p.ProductPns || [], p.ProductBarcodes || []);
 
       return {
         '商品编码': p.product_code,
-        '厂商编码': (legacyManufacturerCodes.length > 0 ? legacyManufacturerCodes : manufacturerCodes).join(', '),
+        '厂商编码': manufacturerCodes.join(', '),
         '商品名称': p.name,
         '分类': p.category || '',
         '单位': p.unit || '',
@@ -3732,7 +3679,7 @@ async function exportProducts(ctx) {
   // 构建导出数据
   const exportData = products.map(p => {
     const allBarcodes = (p.ProductBarcodes || []);
-    const manufacturerCodes = allBarcodes.filter(b => b.barcode_type === 'manufacturer').map(b => b.barcode_code).join(',');
+    const manufacturerCodes = productPnCodes(p, p.ProductPns || [], allBarcodes).join(',');
     const barcode69List = allBarcodes.filter(b => b.barcode_type === 'barcode69').map(b => b.barcode_code).join(',');
     const { cols: mappedExtras } = splitAttributes(parseProductExtras(p.extras));
 
