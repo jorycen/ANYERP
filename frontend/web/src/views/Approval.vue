@@ -80,6 +80,18 @@
         </el-tab-pane>
 
         <el-tab-pane label="我的审批" name="handled">
+          <el-form inline class="handled-filters" @submit.prevent="searchHandled">
+            <el-form-item label="审批主题"><el-input v-model="handledFilters.title" clearable placeholder="主题关键词" @keyup.enter="searchHandled" /></el-form-item>
+            <el-form-item label="业务类型"><el-select v-model="handledFilters.businessType" filterable clearable placeholder="全部类型" style="width:210px"><el-option v-for="item in handledBusinessTypes" :key="item.value" :value="item.value" :label="item.label" /></el-select></el-form-item>
+            <el-form-item label="申请编号"><el-input v-model="handledFilters.instanceNo" clearable placeholder="申请编号关键词" @keyup.enter="searchHandled" /></el-form-item>
+            <el-form-item label="时间"><el-select v-model="handledFilters.dateType" style="width:145px"><el-option label="我的审批时间" value="reviewed" /><el-option label="提交时间" value="submitted" /></el-select><el-date-picker v-model="handledDateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始日期" end-placeholder="结束日期" style="width:250px;margin-left:8px" /></el-form-item>
+            <el-form-item label="PN"><el-input v-model="handledFilters.pn" clearable maxlength="128" placeholder="PN关键词" @keyup.enter="searchHandled" /></el-form-item>
+            <el-form-item label="SN"><el-input v-model="handledFilters.sn" clearable maxlength="128" placeholder="SN关键词" @keyup.enter="searchHandled" /></el-form-item>
+            <el-form-item label="我的审批结果"><el-select v-model="handledFilters.reviewStatus" clearable placeholder="全部" style="width:130px"><el-option label="已通过" value="approved" /><el-option label="已拒绝" value="rejected" /></el-select></el-form-item>
+            <el-form-item label="单据状态"><el-select v-model="handledFilters.status" clearable placeholder="全部" style="width:130px"><el-option label="审批中" value="pending" /><el-option label="已通过" value="approved" /><el-option label="已拒绝" value="rejected" /><el-option label="已取消" value="cancelled" /></el-select></el-form-item>
+            <el-form-item><el-button type="primary" @click="searchHandled">查询</el-button><el-button @click="resetHandledFilters">重置</el-button></el-form-item>
+          </el-form>
+
           <el-table :data="handledInstances" stripe border v-loading="handledLoading">
             <el-table-column prop="title" label="审批主题" min-width="220" />
             <el-table-column label="业务类型" width="150"><template #default="{ row }">{{ businessTypeText(row.business_type) }}</template></el-table-column>
@@ -374,6 +386,20 @@ const tasks = ref([])
 const salesTasks = ref([])
 const moduleTasks = ref([])
 const instances = ref([])
+const handledFilters = reactive({ title:'', businessType:'', instanceNo:'', dateType:'reviewed', pn:'', sn:'', reviewStatus:'', status:'' })
+const handledDateRange = ref([])
+const appliedHandledFilters = ref({})
+const handledBusinessTypes = ref([])
+function searchHandled() {
+  appliedHandledFilters.value = { ...handledFilters, startDate:handledDateRange.value?.[0] || '', endDate:handledDateRange.value?.[1] || '' }
+  handledPage.value = 1
+  loadHandledInstances()
+}
+function resetHandledFilters() {
+  Object.assign(handledFilters,{title:'',businessType:'',instanceNo:'',dateType:'reviewed',pn:'',sn:'',reviewStatus:'',status:''})
+  handledDateRange.value = []
+  searchHandled()
+}
 const handledInstances = ref([])
 const handledLoading = ref(false)
 const handledPage = ref(1)
@@ -550,16 +576,22 @@ async function initializeFlows() {
   await loadFlows()
 }
 async function loadInstances() { instances.value = (await api.getApprovalInstances({ scope: 'mine' })).data || [] }
+let handledRequestId = 0
 async function loadHandledInstances() {
+  const requestId = ++handledRequestId
   handledLoading.value = true
   try {
-    const response = await api.getApprovalInstances({ scope: 'handled', page: handledPage.value, pageSize: handledPageSize.value })
+    const response = await api.getApprovalInstances({ scope: 'handled', ...appliedHandledFilters.value, page: handledPage.value, pageSize: handledPageSize.value })
+    if (requestId !== handledRequestId) return
     const payload = response?.data || {}
     handledInstances.value = payload.list || []
+    handledBusinessTypes.value = (payload.businessTypes || []).map(value => ({value,label:businessTypeText(value)}))
     handledTotal.value = Number(payload.total || 0)
   } catch (error) {
+    if (requestId !== handledRequestId) return
+    handledInstances.value = []; handledTotal.value = 0
     ElMessage.error(error.response?.data?.message || error.message || '查询我的审批失败')
-  } finally { handledLoading.value = false }
+  } finally { if (requestId === handledRequestId) handledLoading.value = false }
 }
 function onHandledPageSizeChange() { handledPage.value = 1; loadHandledInstances() }
 async function loadFlows() { if (canConfigure.value) flows.value = (await api.getApprovalFlows()).data || [] }

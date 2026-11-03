@@ -347,6 +347,21 @@ async function listInstances(ctx) {
   // changing stores. Other scopes still use the current store visibility.
   const storeWhere = ['mine', 'handled'].includes(scope) ? null : approvalInstanceVisibilityWhere(ctx.state.user);
   if (storeWhere) where[Op.and] = [...(where[Op.and] || []), storeWhere];
+  const handledFilters = require('./handledFilters');
+  let range;
+  if (scope === 'handled') {
+    try {
+      range = handledFilters.dateRange(ctx.query);
+      if (ctx.query.title) where.title = { [Op.substring]: String(ctx.query.title).trim() };
+      if (ctx.query.businessType) where.business_type = String(ctx.query.businessType);
+      if (ctx.query.instanceNo) where.instance_no = { [Op.substring]: String(ctx.query.instanceNo).trim() };
+      for (const kind of ['pn','sn']) {
+        const condition = handledFilters.productFilter(require('../../models'), require('./businessRuntime').registry, kind, ctx.query[kind]);
+        if (condition) where[Op.and] = [...(where[Op.and] || []), condition];
+      }
+      if (range && ctx.query.dateType === 'submitted') where.create_time = range;
+    } catch (error) { ctx.throw(400, error.message); }
+  }
   let handledTasks = [];
   if (scope === 'todo' || scope === 'handled') {
     const taskInclude = {
@@ -359,6 +374,7 @@ async function listInstances(ctx) {
     const taskRows = await ApprovalTask.findAll({
       where: {
         assignee_staff_id: ctx.state.user.staffId,
+        ...(scope === 'handled' && range && ctx.query.dateType !== 'submitted' ? { acted_time: range } : {}),
         ...(scope === 'handled' ? { status: ctx.query.reviewStatus && ['approved', 'rejected'].includes(ctx.query.reviewStatus) ? ctx.query.reviewStatus : { [Op.in]: ['approved', 'rejected'] } } : { status: 'pending' })
       },
       include: [taskInclude],
@@ -380,6 +396,12 @@ async function listInstances(ctx) {
   const result = paginated
     ? await ApprovalFlowInstance.findAndCountAll(queryOptions)
     : { rows: await ApprovalFlowInstance.findAll(queryOptions) };
+  const businessTypes = scope === 'handled' ? (await ApprovalFlowInstance.findAll({
+    attributes: ['business_type'],
+    include: [{ model: ApprovalTask, as: 'Tasks', attributes: [], required: true,
+      where: { assignee_staff_id: ctx.state.user.staffId, status: { [Op.in]: ['approved','rejected'] } } }],
+    group: ['ApprovalFlowInstance.business_type'], raw: true
+  })).map(row => row.business_type) : [];
   const rows = result.rows;
   await enrichInstanceProgress(rows);
   const applicantIds = [...new Set(rows.map(row => row.applicant_staff_id).filter(Boolean))];
@@ -407,7 +429,7 @@ async function listInstances(ctx) {
     return data;
   });
   ctx.body = paginated
-    ? { list, total: result.count, page, pageSize, totalPages: Math.ceil(result.count / pageSize) }
+    ? { list, total: result.count, page, pageSize, totalPages: Math.ceil(result.count / pageSize), ...(scope === 'handled' ? { businessTypes } : {}) }
     : list;
 }
 
