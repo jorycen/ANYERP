@@ -557,9 +557,9 @@
         <el-form-item label="收款核算类型">
           <el-select v-model="pmForm.couponKind"><el-option label="普通收款" value="" /><el-option label="商场优惠券" value="mall" /><el-option label="抖音优惠券" value="douyin" /></el-select>
         </el-form-item>
-        <el-form-item label="默认税率" required>
-          <el-input-number :disabled="Boolean(pmForm.couponKind)" v-model="pmForm.defaultTaxRate" :min="0" :max="100" :precision="4" :step="0.1" />
-          <span style="margin-left:8px;color:#909399">%（例如 0.6 表示应收分配额的 0.6%）</span>
+        <el-form-item :label="pmForm.couponKind ? '商场返还默认税点' : '默认税率'" required>
+          <el-input-number v-model="pmForm.defaultTaxRate" :min="0" :max="100" :precision="4" :step="0.1" />
+          <span style="margin-left:8px;color:#909399">{{pmForm.couponKind ? '%（商场实际返还金额×税点，仅扣个人毛利）' : '%（例如0.6表示应收分配额的0.6%）'}}</span>
         </el-form-item>
         <el-form-item label="配置范围">
           <el-radio-group v-model="pmForm.isGlobal" @change="onPmIsGlobalChange">
@@ -600,9 +600,9 @@
                 <el-table-column label="门店" width="160">
                   <template #default="{ row }">{{ row.name }}</template>
                 </el-table-column>
-                <el-table-column label="门店税率" width="180">
+                <el-table-column :label="pmForm.couponKind ? '商场返还税点' : '门店税率'" width="180">
                   <template #default="{ row }">
-                    <el-input v-model="row.taxRateOverride" placeholder="留空用默认税率" clearable size="small" :disabled="!row.checked">
+                    <el-input v-model="row.taxRateOverride" placeholder="留空用默认税点" clearable size="small" :disabled="!row.checked">
                       <template #append>%</template>
                     </el-input>
                   </template>
@@ -2051,7 +2051,7 @@ const handlePmSubmit = async () => {
     const data = {
       name: pmForm.name,
       couponRule: pmForm.couponKind ? {version:2,kind:pmForm.couponKind,global:pmForm.isGlobal?pmGlobalCouponPlans.value:[],stores:pmForm.isGlobal?{}:Object.fromEntries(checkedRows.map(row=>[row.store_id,pmStoreCouponPlans[row.store_id]||[]]))} : null,
-      defaultTaxRate: pmForm.couponKind ? 0 : Number(pmForm.defaultTaxRate || 0),
+      defaultTaxRate: Number(pmForm.defaultTaxRate || 0),
       isGlobal: pmForm.isGlobal,
       settlementAccountId: pmForm.isGlobal ? pmForm.settlementAccountId : null,
       receivableSettlementAccountId: pmForm.isGlobal && isGuobuPaymentMethod(pmForm.name)

@@ -534,7 +534,7 @@
         <h4 class="mt-20" v-if="currentOrder.OrderPayments?.length">支付记录</h4>
         <el-table :data="currentOrder.OrderPayments || []" border size="small">
           <el-table-column prop="payment_method" label="支付方式" />
-          <el-table-column label="优惠券分担" min-width="230"><template #default="{ row }"><span v-if="row.coupon_snapshot">商场承担¥{{ row.coupon_snapshot.mallAmount }}；门店承担¥{{ row.coupon_snapshot.companyAmount }}；平台手续费¥{{ row.coupon_snapshot.platformFee }}；应结算¥{{ row.coupon_snapshot.settlementAmount }}</span><span v-else>—</span></template></el-table-column>
+          <el-table-column label="优惠券分担" min-width="230"><template #default="{ row }"><span v-if="row.coupon_snapshot">商场承担¥{{ row.coupon_snapshot.mallAmount }}；门店承担¥{{ row.coupon_snapshot.companyAmount }}；平台手续费¥{{ row.coupon_snapshot.platformFee }}；商场返还税点¥{{ row.coupon_snapshot.mallReturnTaxAmount ?? 0 }}；应结算¥{{ row.coupon_snapshot.settlementAmount }}</span><span v-else>—</span></template></el-table-column>
           <el-table-column label="绑定定金单" width="190">
             <template #default="{ row }">{{ row.DepositOrder?.deposit_no || '-' }}</template>
           </el-table-column>
@@ -697,7 +697,7 @@ const previewCouponBreakdown = async () => {
     const res = await api.previewCoupons({ storeId: orderForm.storeId, orderId: orderForm.orderId || undefined,
       payments: selectedPayments.value.map(method => ({ method, amount: paymentAmounts[method] })) })
     if (seq !== couponPreviewSequence) return
-    couponPreviewMessage.value = (res.data || []).map(r => `${r.method}：抵扣¥${r.faceAmount}；购券净返¥${r.platformNet}；商场承担¥${r.mallAmount}；门店承担¥${r.companyAmount}；平台手续费¥${r.platformFee}；应结算¥${r.settlementAmount}`).join('；') || '当前没有配置分担规则的优惠券'
+    couponPreviewMessage.value = (res.data || []).map(r => `${r.method}：抵扣¥${r.faceAmount}；购券净返¥${r.platformNet}；商场承担¥${r.mallAmount}；门店承担¥${r.companyAmount}；平台手续费¥${r.platformFee}；商场返还税点¥${r.mallReturnTaxAmount}；应结算¥${r.settlementAmount}`).join('；') || '当前没有配置分担规则的优惠券'
   } catch (err) { if (seq === couponPreviewSequence) couponPreviewMessage.value = err?.response?.data?.message || err.message || '优惠券测算失败' }
 }
 

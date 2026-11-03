@@ -20,6 +20,8 @@ function normalizeRule(value) {
   if (rule.kind === 'douyin' && (face <= 0 || purchase <= 0 || purchase > face)) fail('抖音购券金额必须大于0且不超过抵扣面额');
   const mallRate = rate(rule.mallRate, '商场承担比例');
   const platformRate = rule.kind === 'douyin' ? rate(rule.platformRate, '平台手续费率') : 0;
+  const mallReturnTaxRate = Number(rule.mallReturnTaxRate ?? 0);
+  if (!Number.isFinite(mallReturnTaxRate) || mallReturnTaxRate < 0 || mallReturnTaxRate > 100 || Math.abs(mallReturnTaxRate * 10000 - Math.round(mallReturnTaxRate * 10000)) > 0.00001) fail('商场返还税点必须为0至100，最多四位小数');
   const mallAccountId = String(rule.mallAccountId || '');
   const platformAccountId = String(rule.platformAccountId || '');
   const date = value => {
@@ -32,7 +34,7 @@ function normalizeRule(value) {
   if (mallRate > 0 && !mallAccountId) fail('请选择商场返款结算账户');
   if (purchase > 0 && platformRate < 100 && !platformAccountId) fail('请选择购券返款结算账户');
   return { version: 1, kind: rule.kind, faceAmount: face / 100, purchaseAmount: purchase / 100,
-    mallRate, platformRate, mallAccountId, platformAccountId, validFrom, validTo };
+    mallRate, platformRate, mallReturnTaxRate, mallAccountId, platformAccountId, validFrom, validTo };
 }
 function calculateCoupon(ruleValue, amount) {
   const rule = normalizeRule(ruleValue);
@@ -47,9 +49,10 @@ function calculateCoupon(ruleValue, amount) {
   // Round each voucher separately. Company bears the remaining cent.
   const mall = single > 0 ? Math.round((single - cents(rule.purchaseAmount)) * rule.mallRate / 100) * count : Math.round(difference * rule.mallRate / 100);
   const company = difference - mall, platformNet = purchase - fee;
+  const mallReturnTax = Math.round(mall * rule.mallReturnTaxRate / 100);
   return { ...rule, rule, count, faceAmount: face / 100, purchaseAmount: purchase / 100,
-    platformFee: fee / 100, platformNet: platformNet / 100, mallAmount: mall / 100,
-    companyAmount: company / 100, totalCost: (company + fee) / 100,
+    platformFee: fee / 100, platformNet: platformNet / 100, mallAmount: mall / 100, mallReturnTaxAmount: mallReturnTax / 100,
+    companyAmount: company / 100, totalCost: (company + fee + mallReturnTax) / 100,
     settlementAmount: (platformNet + mall) / 100 };
 }
 function settlementLines(payment) {
@@ -112,11 +115,12 @@ async function paymentSnapshot(payment, storeId, transaction, previous = []) {
   if (!method?.coupon_rule && ['商场优惠券', '抖音减满券', '抖音优惠券'].includes(String(method?.name || name))) fail('请先在收款方式中配置优惠券分担方案，再用于新订单');
   if (!method?.coupon_rule) return null;
   if (Number(method.status) !== 1) fail('优惠券方案已停用');
+  let scope = null;
   if (!Number(method.is_global)) {
-    const scope = await PaymentMethodStore.findOne({ where: { method_id: method.parent_method_id || method.method_id, store_id: storeId }, transaction });
+    scope = await PaymentMethodStore.findOne({ where: { method_id: method.parent_method_id || method.method_id, store_id: storeId }, transaction });
     if (!scope) fail('该优惠券方案不适用当前门店');
   }
-  const rule = normalizeRule(method.coupon_rule);
+  const rule = normalizeRule({ ...parse(method.coupon_rule), mallReturnTaxRate: scope?.tax_rate_override ?? method.default_tax_rate ?? 0 });
   if (!isActiveToday(rule)) fail('优惠券方案不在有效期内');
   const ids = [...new Set([rule.mallAccountId, rule.platformAccountId].filter(Boolean))];
   const accounts = await SettlementAccount.findAll({ where: { account_id: { [Op.in]: ids }, status: 1 }, transaction });

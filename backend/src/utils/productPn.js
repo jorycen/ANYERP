@@ -76,7 +76,28 @@ function assertSingleSnProductPn({ needSn, productCode = '', configuredCodes = [
   return configured[0] || requested || '';
 }
 
+
+// Shared display source: effective PN master, legacy manufacturer code, then manufacturer barcode.
+function productPnCodes(product, pns = [], barcodes = []) {
+  const active = pns.filter(row => Number(row.status ?? 1) === 1 && Number(row.is_deleted || 0) === 0)
+    .sort((a,b) => Number(b.is_primary || 0) - Number(a.is_primary || 0) || String(a.pn_code).localeCompare(String(b.pn_code)))
+    .map(row => row.pn_code);
+  const codes = uniquePnCodes(active);
+  return codes.length ? codes : uniquePnCodes(product?.manufacturer_code).length ? uniquePnCodes(product.manufacturer_code)
+    : uniquePnCodes(barcodes.filter(row => Number(row.status ?? 1) === 1 && (row.barcode_type || row.type) === 'manufacturer').map(row => row.barcode_code || row.code));
+}
+function inventoryPnCode(product, pns = [], sn = null, barcodes = []) {
+  if (sn && isUsablePnCode(sn.pn_code)) return cleanPnCode(sn.pn_code);
+  const bound = sn?.pn_id && pns.find(row => row.pn_id === sn.pn_id && Number(row.status ?? 1) === 1 && Number(row.is_deleted || 0) === 0 && isUsablePnCode(row.pn_code));
+  if (bound) return cleanPnCode(bound.pn_code);
+  const codes = productPnCodes(product,pns,barcodes);
+  // Never infer a specific serial's identity from multiple product PN candidates.
+  return sn && codes.length !== 1 ? '' : codes.join('、');
+}
+
 module.exports = {
+  productPnCodes,
+  inventoryPnCode,
   cleanPnCode,
   normalizePnCode,
   isUsablePnCode,

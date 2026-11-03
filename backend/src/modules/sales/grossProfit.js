@@ -229,9 +229,9 @@ function calculateGrossProfitValues({
     return {
       ...item,
       receivableAmount: allocation,
-      fee: item.couponSnapshot ? roundMoney(item.couponSnapshot.platformFee) : roundMoney(allocation * item.taxRate / 100),
+      fee: item.couponSnapshot ? roundMoney(toNumber(item.couponSnapshot.platformFee) + toNumber(item.couponSnapshot.mallReturnTaxAmount)) : roundMoney(allocation * item.taxRate / 100),
       ...(item.couponSnapshot ? { couponCompanyAmount: item.couponSnapshot.companyAmount,
-        couponPlatformFee: item.couponSnapshot.platformFee, couponSettlementAmount: item.couponSnapshot.settlementAmount } : {})
+        couponPlatformFee: item.couponSnapshot.platformFee, couponMallReturnTaxAmount: toNumber(item.couponSnapshot.mallReturnTaxAmount), couponSettlementAmount: item.couponSnapshot.settlementAmount } : {})
     };
   });
   const normalizedProductPricing = productPricingDetails.map(item => ({

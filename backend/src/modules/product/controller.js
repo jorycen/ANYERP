@@ -838,10 +838,6 @@ async function getProductList(ctx) {
 
   const list = rows.map(p => {
     const allBarcodes = (p.ProductBarcodes || []).map(b => ({ barcode_id: b.barcode_id, type: b.barcode_type, code: b.barcode_code }));
-    const activePns = (p.ProductPns || [])
-      .filter(pn => pn.pn_code)
-      .sort((a, b) => Number(b.is_primary || 0) - Number(a.is_primary || 0))
-      .map(pn => pn.pn_code);
     const extras = parseProductExtras(p.extras);
     const { cols: mappedExtras } = splitAttributes(extras);
     return {
@@ -863,7 +859,7 @@ async function getProductList(ctx) {
       gpu: getProductAttributeValue(p, 'gpu', mappedExtras),
       accessory_type: getProductAttributeValue(p, 'accessory_type', mappedExtras),
       extras,
-      manufacturer_codes: activePns.length > 0 ? activePns : (splitPnCodes(p.manufacturer_code).length > 0 ? splitPnCodes(p.manufacturer_code) : allBarcodes.filter(b => b.type === 'manufacturer').map(b => b.code)),
+      manufacturer_codes: require('../../utils/productPn').productPnCodes(p, p.ProductPns || [], allBarcodes),
       barcodes: allBarcodes,
       need_sn: Number(p.need_sn || 0),
       need_imei: Number(p.need_imei || 0),

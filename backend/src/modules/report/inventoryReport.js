@@ -3,6 +3,7 @@ const {Op,QueryTypes}=require('sequelize');
 const {resolveReportStoreIds}=require('../../utils/storePermissions');
 const {knownCost,confirmedZeroSnIds}=require('../../utils/costKnowledge');
 const {FIELDS,getInventoryQuantitySnapshot}=require('../../utils/inventoryQuantities');
+const {inventoryPnCode,uniquePnCodes}=require('../../utils/productPn');
 const round=v=>Math.round((Number(v)+Number.EPSILON)*100)/100;
 const TYPES={normal_qty:'可售',pending_qty:'占用',display_qty:'展示',demo_qty:'样机',rental_demo_qty:'租赁样机',unsellable_qty:'残次'};
 const allowed=['category','store','product'];
@@ -50,9 +51,9 @@ function aggregate(details,dims){
  for(const d of details){
   const key=JSON.stringify(dims.map(k=>k==='product'?d.productId:k==='store'?d.storeId:d.category));
   if(!groups.has(key))groups.set(key,{key,category:dims.includes('category')?d.category:'',storeName:dims.includes('store')?d.storeName:'',productId:dims.includes('product')?d.productId:'',productCode:dims.includes('product')?d.productCode:'',productName:dims.includes('product')?d.productName:'',
-   totalCount:0,knownCostAmount:0,estimatedCostAmount:0,knownCostCount:0,estimatedCostCount:0,missingCostCount:0,confirmedZeroCount:0,taxPendingCount:0,taxEstimateCoveredCount:0,netEstimateAmount:0,estimatedTaxAmount:0,
+   pn:'',totalCount:0,knownCostAmount:0,estimatedCostAmount:0,knownCostCount:0,estimatedCostCount:0,missingCostCount:0,confirmedZeroCount:0,taxPendingCount:0,taxEstimateCoveredCount:0,netEstimateAmount:0,estimatedTaxAmount:0,
    d0_30:0,d31_60:0,d61_90:0,d90_plus:0,unknown:0,ageAmounts:{d0_30:0,d31_60:0,d61_90:0,d90_plus:0,unknown:0},ageMissing:{d0_30:0,d31_60:0,d61_90:0,d90_plus:0,unknown:0},...Object.fromEntries(FIELDS.map(k=>[k,0]))});
-  const r=groups.get(key);r.totalCount+=d.quantity;r[d.type]+=d.quantity;r[d.ageBucket]+=d.quantity;
+  const r=groups.get(key);if(dims.includes('product'))r.pn=uniquePnCodes([r.pn,d.pn]).join('、');r.totalCount+=d.quantity;r[d.type]+=d.quantity;r[d.ageBucket]+=d.quantity;
   if(d.costAmount===null){r.missingCostCount+=d.quantity;r.ageMissing[d.ageBucket]+=d.quantity;}
   else{r[d.estimated?'estimatedCostAmount':'knownCostAmount']+=d.costAmount;r[d.estimated?'estimatedCostCount':'knownCostCount']+=d.quantity;r.ageAmounts[d.ageBucket]+=d.costAmount;if(d.unitCost===0)r.confirmedZeroCount+=d.quantity;}
   if(d.netEstimate===null)r.taxPendingCount+=d.quantity;
@@ -85,28 +86,39 @@ async function load(query,user){
   const categoryRows=await M.ProductCategory.findAll({where:{status:1},attributes:['category_id','parent_id','name','sort_order'],raw:true,transaction});
   const categories=categoryPaths(categoryRows);
   const prices=ids.length?await M.ProductPrice.findAll({where:{product_id:{[Op.in]:ids},status:1,[Op.or]:[{effective_time:{[Op.lte]:at}},{effective_time:null}]},order:[['effective_time','DESC'],['price_id','DESC']],raw:true,transaction}):[];
+  const [productPns,productBarcodes]=ids.length?await Promise.all([
+   M.ProductPn.findAll({where:{product_id:{[Op.in]:ids},status:1,is_deleted:0},raw:true,transaction}),
+   M.ProductBarcode.findAll({where:{product_id:{[Op.in]:ids},status:1,barcode_type:'manufacturer'},raw:true,transaction})
+  ]):[[],[]];
+  const pnsByProduct=new Map(),barcodesByProduct=new Map();
+  for(const [items,map]of [[productPns,pnsByProduct],[productBarcodes,barcodesByProduct]])for(const item of items){if(!map.has(item.product_id))map.set(item.product_id,[]);map.get(item.product_id).push(item);}
+  const pnFor=(p,sn)=>inventoryPnCode(p,pnsByProduct.get(p.product_id)||[],sn,barcodesByProduct.get(p.product_id)||[]);
   const zero=await confirmedZeroSnIds(sns,transaction);
+  const reviewService=require('./inventoryReview');
+  const reviews=await reviewService.load(transaction);
   const evidenceService=require('./inventoryEvidence');
   const evidence=await evidenceService.loadEvidence(M.sequelize,ids,transaction,at);
   const pmap=new Map(products.map(p=>[p.product_id,p])),smap=new Map(stores.map(s=>[s.store_id,s])),lmap=new Map(locations.map(l=>[l.location_id,l]));
   const details=[],excluded=[];
   const add=(p,storeId,locationId,type,quantity,unitCost,estimated,costSource,sn,time,invoice,source={})=>{
    if(!(quantity>0))return;
+   const pn=pnFor(p,sn);
    const category=categories.paths.get(String(p.category_id))||[p.category,p.brand,p.series,p.model].filter(Boolean).join('/');
    if(query.category&&category!==query.category&&!category.startsWith(query.category+'/'))return;
-   if(query.keyword&&!`${p.name||''} ${p.product_code||''} ${sn?.sn_code||''} ${sn?.pn_code||''}`.toLowerCase().includes(String(query.keyword).toLowerCase()))return;
+   if(query.keyword&&!`${p.name||''} ${p.product_code||''} ${sn?.sn_code||''} ${pn}`.toLowerCase().includes(String(query.keyword).toLowerCase()))return;
    if(query.inventoryType&&type!==query.inventoryType)return;
-   const reason=nonPhysicalReason(p);
+   const scopeReview=reviews.get('scope:'+p.product_id);
+   const reason=scopeReview&&['服务','虚拟'].includes(scopeReview.scope)?'人工确认'+scopeReview.scope:scopeReview?.scope==='实物'?'':nonPhysicalReason(p);
    if(reason){excluded.push({productCode:p.product_code,productName:p.name,category,storeName:smap.get(storeId)?.name||storeId,quantity,reason});return;}
    const costAmount=unitCost===null?null:round(unitCost*quantity),tax=taxEstimate(costAmount,invoice);
    details.push({productId:p.product_id,productCode:p.product_code||'',productName:p.name||'未命名商品',category:category||'未分类',storeId,storeName:smap.get(storeId)?.name||storeId,location:lmap.get(locationId)?.name||locationId||'未指定库位',type,typeName:TYPES[type]||type,
-    quantity,unitCost,costAmount,estimated,costSource,sn:sn?.sn_code||'',pn:sn?.pn_code||'',inboundTime:time||null,ageBucket:bucket(time,at),netEstimate:tax.net,estimatedTax:tax.tax,invoiceType:invoice||'待核实',evidenceStatus:source.status||'unlinked',evidenceStatusLabel:({linked:'已关联',unlinked:'未关联',conflict:'来源冲突',owner_pending:'经销商归属待确认',invoice_pending:'票种税率待确认',invoice_conflict:'发票口径冲突',batch_pending:'采购批次待对应'})[source.status]||'未关联',evidenceReason:source.reason||'',purchaseRequestNo:source.requestNo||'',sourceInboundNo:source.inboundNo||'',invoiceNos:source.invoiceNos||'',invoiceSource:source.evidenceSource==='registered_invoice'?'已登记采购发票':source.evidenceSource==='purchase_request'?'采购申请约定':'待关联',sourceCandidateCount:source.candidateCount||0,sourceCandidates:source.candidates||[],scopeWarning:Number(p.need_sn)!==1&&p.category==='售后'?'售后非SN项目，实物属性待核对':''});
+    quantity,unitCost,costAmount,estimated,costSource,sn:sn?.sn_code||'',pn,inboundTime:time||null,ageBucket:bucket(time,at),netEstimate:tax.net,estimatedTax:tax.tax,invoiceType:invoice||'待核实',evidenceStatus:source.status||'unlinked',evidenceStatusLabel:({manual_confirmed:'人工确认（预计测算）',linked:'已关联',unlinked:'未关联',conflict:'来源冲突',owner_pending:'经销商归属待确认',invoice_pending:'票种税率待确认',invoice_conflict:'发票口径冲突',batch_pending:'采购批次待对应'})[source.status]||'未关联',evidenceReason:source.reason||'',purchaseRequestNo:source.requestNo||'',sourceInboundNo:source.inboundNo||'',invoiceNos:source.invoiceNos||'',invoiceSource:source.evidenceSource==='manual_review'?'人工回填确认（非发票认证）':source.evidenceSource==='registered_invoice'?'已登记采购发票':source.evidenceSource==='purchase_request'?'采购申请约定':'待关联',sourceCandidateCount:source.candidateCount||0,sourceCandidates:source.candidates||[],scopeWarning:!scopeReview&&Number(p.need_sn)!==1&&p.category==='售后'?'售后非SN项目，实物属性待核对':''});
   };
   for(const sn of sns){
    const p=pmap.get(sn.product_id);if(!p||Number(p.need_sn)!==1)continue;
-   const source=evidenceService.resolveSnEvidence(sn,evidence.receipts,smap.get(sn.store_id)?.distributor_id,evidence.invoices,at);
+   const source=reviewService.taxOverride(reviews,'sn:'+sn.sn_id,reviewService.snState(sn))||evidenceService.resolveSnEvidence(sn,evidence.receipts,smap.get(sn.store_id)?.distributor_id,evidence.invoices,at);
    const cost=knownCost(sn.inbound_price,zero.has(String(sn.sn_id)));
-   add(p,sn.store_id,sn.location_id,FIELDS.includes(sn.inventory_type)?sn.inventory_type:'normal_qty',1,cost,false,cost===null?'成本待补':'SN实际入库成本',sn,sn.original_inbound_time||sn.inbound_time,source.status==='linked'?source.invoiceType:null,source);
+   add(p,sn.store_id,sn.location_id,FIELDS.includes(sn.inventory_type)?sn.inventory_type:'normal_qty',1,cost,false,cost===null?'成本待补':'SN实际入库成本',sn,sn.original_inbound_time||sn.inbound_time,['linked','manual_confirmed'].includes(source.status)?source.invoiceType:null,source);
   }
   for(const inv of stock){
    const p=pmap.get(inv.product_id);if(!p||Number(p.need_sn)===1)continue;
@@ -115,7 +127,7 @@ async function load(query,user){
    const qty=getInventoryQuantitySnapshot(inv,lmap.get(inv.location_id)?.type);
    const candidates=evidenceService.nonSnCandidates(p.product_id,inv.store_id,smap.get(inv.store_id)?.distributor_id,evidence.receipts,at);
    const source={status:candidates.length?'batch_pending':'unlinked',candidateCount:candidates.length,candidates,reason:candidates.length?'已找到同店采购资料，库存未记录采购批次，不能确定当前库存对应票据':'尚无可确认的同店采购来源，需核对原始入库或调拨来源'};
-   for(const field of FIELDS)add(p,inv.store_id,inv.location_id,field,qty[field],cost,Number(price?.cost_price_locked)!==1,'非SN商品成本档案（未锁定时为估算）',null,null,null,source);
+   for(const field of FIELDS){const reviewed=reviewService.taxOverride(reviews,'inventory:'+inv.inventory_id+':'+field,reviewService.inventoryState(inv))||source;add(p,inv.store_id,inv.location_id,field,qty[field],cost,Number(price?.cost_price_locked)!==1,'非SN商品成本档案（未锁定时为估算）',null,null,reviewed.invoiceType||null,reviewed);}
   }
   const summary=aggregate(details,[])[0]||aggregate([{quantity:0,type:'normal_qty',ageBucket:'unknown',costAmount:null,netEstimate:null}],[])[0];
   const rows=aggregate(details,dims);
@@ -126,7 +138,7 @@ async function load(query,user){
    categoryOptions:[...categories.order.keys()],
    excludedQuantity:excluded.reduce((sum,row)=>sum+row.quantity,0),scopePendingQuantity:details.filter(row=>row.scopeWarning).reduce((sum,row)=>sum+row.quantity,0),
    costBasis:'SN按实际入库成本；非SN按成本档案估值并标记估算；缺失成本不按零替代。',
-   taxBasis:'扣税后金额及税额按关联采购凭证测算，并非已核实抵扣或正式账面价值；SN优先关联完整覆盖且口径一致的已登记发票，其次采购申请约定票种；非SN采购候选不作为批次证明。无依据显示待核实。',
+   taxBasis:'扣税后金额及税额按关联采购凭证测算，并非已核实抵扣或正式账面价值；SN优先关联完整覆盖且口径一致的已登记发票，其次采购申请约定票种；非SN采购候选不作为批次证明。人工回填确认单列为预计测算依据，不等同发票认证；库存变化后自动失效。无依据显示待核实。',
    quantityBasis:'SN与非SN分别取数不叠加；明确服务/虚拟项目单列排除；疑似售后实物属性待核对的项目仍保留；在途及待入库不计入。',
    agingBasis:'SN按首次采购入库时间；非SN无法逐件追溯库龄时列未知，不以最后调拨时间代替。'}};
  });
@@ -134,7 +146,7 @@ async function load(query,user){
 async function exportReport(ctx){
  const report=await load(ctx.query,ctx.state.user),XLSX=require('xlsx');
  const amount=v=>v===null?'待补/待核实':v;
- const group=r=>({分类:r.category,门店:r.storeName,商品编码:r.productCode,商品:r.productName,数量:r.totalCount,
+ const group=r=>({分类:r.category,门店:r.storeName,商品编码:r.productCode,商品:r.productName,PN:r.pn||'',数量:r.totalCount,
   可售:r.normal_qty,占用:r.pending_qty,展示:r.display_qty,样机:r.demo_qty,租赁样机:r.rental_demo_qty,残次:r.unsellable_qty,
   采购估值:amount(r.totalCost),已知成本:r.knownCostAmount,估算成本:r.estimatedCostAmount,成本待补数量:r.missingCostCount,确认零成本数量:r.confirmedZeroCount,
   预计扣税后金额:amount(r.netAmount),已覆盖扣税后测算金额:r.netEstimateAmount,预计税额:r.estimatedTaxAmount,税务依据待补数量:r.taxPendingCount,
