@@ -54,6 +54,8 @@ const {
 } = require('./monthlyTaskController');
 
 const router = new Router();
+router.post('/coupon-preview', require('./controller').previewCouponPayments);
+router.post('/coupon-return-preview', require('./controller').previewCouponReturn);
 const subsidyPhotoUpload = multer({
   limits: { files: 20, fileSize: 10 * 1024 * 1024 }
 });

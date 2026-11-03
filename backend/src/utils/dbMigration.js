@@ -4088,6 +4088,7 @@ async function runMigrations() {
     `);
     await checkAndAddColumn('T_PRODUCT_CATEGORY', 'SHOW_IN_FINANCE', 'TINYINT DEFAULT 0 COMMENT \'是否展示在财务页面\'', 'SORT_ORDER');
     await require('./focusCategoryMigration').ensureFocusCategoryColumn(sequelize);
+    await require('./couponMigration').ensureCouponColumns(sequelize);
     await initializeCategorySortOrder();
 
     await checkAndCreateTable('T_PRODUCT_PRICE', `

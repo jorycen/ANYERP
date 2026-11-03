@@ -229,7 +229,9 @@ function calculateGrossProfitValues({
     return {
       ...item,
       receivableAmount: allocation,
-      fee: roundMoney(allocation * item.taxRate / 100)
+      fee: item.couponSnapshot ? roundMoney(item.couponSnapshot.platformFee) : roundMoney(allocation * item.taxRate / 100),
+      ...(item.couponSnapshot ? { couponCompanyAmount: item.couponSnapshot.companyAmount,
+        couponPlatformFee: item.couponSnapshot.platformFee, couponSettlementAmount: item.couponSnapshot.settlementAmount } : {})
     };
   });
   const normalizedProductPricing = productPricingDetails.map(item => ({
@@ -238,7 +240,12 @@ function calculateGrossProfitValues({
     unitPricing: roundMoney(item.unitPricing),
     pricingAmount: roundMoney(item.pricingAmount)
   }));
-  const normalizedSupplements = supplementDetails.map(item => {
+  // Derived coupon sharing is rebuilt once from the frozen payment snapshot;
+  // it must never become an editable manual supplement or be counted twice.
+  const couponShares = normalizedPayments.filter(item => item.couponSnapshot && item.couponSnapshot.companyAmount > 0)
+    .map(item => ({ source: 'coupon_company_share', itemName: '优惠券门店承担',
+      content: item.method, paymentId: item.paymentId, amount: item.couponSnapshot.companyAmount, amountType: 'decrease' }));
+  const normalizedSupplements = [...supplementDetails.filter(item => item.source !== 'coupon_company_share'), ...couponShares].map(item => {
     const amount = roundMoney(Math.abs(toNumber(item.amount)));
     const amountType = normalizeAmountType(item.amountType);
     return {
@@ -454,6 +461,7 @@ async function buildPaymentDetails(order, existingSnapshot, transaction) {
     .map(payment => ({
       source: 'order_payment',
       paymentId: payment.payment_id,
+      couponSnapshot: payment.coupon_snapshot ? (typeof payment.coupon_snapshot === 'string' ? JSON.parse(payment.coupon_snapshot) : payment.coupon_snapshot) : null,
       method: payment.payment_method,
       amount: roundMoney(payment.amount),
       taxRate: resolveTaxRate(payment.payment_method, order.store_id)

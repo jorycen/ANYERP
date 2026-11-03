@@ -239,6 +239,16 @@
     </el-dialog>
 
     <el-dialog v-model="immediatePaymentVisible" title="付款登记" width="560px">
+      <section v-loading="immediatePaymentLoading" style="min-height:50px;margin-bottom:16px">
+        <h4>申请附件</h4>
+        <el-alert v-if="immediatePaymentAttachmentError" :title="immediatePaymentAttachmentError" type="warning" :closable="false" />
+        <el-button v-if="immediatePaymentAttachmentError" link type="primary" @click="openImmediatePayment(immediatePaymentSettlement)">重新加载附件</el-button>
+        <div v-for="(file, index) in immediatePaymentAttachments" :key="file.url" style="display:flex;align-items:center;gap:12px;margin:8px 0">
+          <el-image v-if="isPaymentImage(file) && file.displayUrl" :src="file.displayUrl" :preview-src-list="[file.displayUrl]" preview-teleported fit="cover" style="width:72px;height:72px"><template #error>图片加载失败</template></el-image>
+          <div><div>{{ file.sourceNo }} · {{ file.name || `申请附件${index + 1}` }}</div><el-button link type="primary" :disabled="!file.displayUrl" @click="openPaymentAttachment(file)">打开附件</el-button><span v-if="!file.displayUrl">附件暂不可用</span></div>
+        </div>
+        <el-text v-if="!immediatePaymentLoading && !immediatePaymentAttachmentError && !immediatePaymentAttachments.length" type="info">申请时未提交附件</el-text>
+      </section>
       <el-descriptions v-if="immediatePaymentSettlement" :column="1" border size="small">
         <el-descriptions-item label="结算单号">{{ immediatePaymentSettlement.settlement_no || '-' }}</el-descriptions-item>
         <el-descriptions-item label="供应商">{{ immediatePaymentSettlement.supplier_name || '-' }}</el-descriptions-item>
@@ -285,7 +295,7 @@
 
       <template #footer>
         <el-button @click="immediatePaymentVisible = false">取消</el-button>
-        <el-button type="primary" :loading="immediatePaymentSubmitting" @click="submitImmediatePayment">
+        <el-button type="primary" :loading="immediatePaymentSubmitting" :disabled="immediatePaymentLoading" @click="submitImmediatePayment">
           确定付款
         </el-button>
       </template>
@@ -747,11 +757,44 @@ const syncSettlementRemark = remark => {
   }
 }
 
-const openImmediatePayment = (row) => {
+const immediatePaymentAttachments = ref([])
+const immediatePaymentLoading = ref(false)
+const immediatePaymentAttachmentError = ref('')
+let immediatePaymentLoadSequence = 0
+const isPaymentImage = file => /\.(png|jpe?g|gif|webp|bmp)(?:[?#]|$)/i.test(file.displayUrl || file.url || '')
+const openPaymentAttachment = file => {
+  if (/^(https?:\/\/|\/(?!\/))/i.test(file.displayUrl || '')) window.open(file.displayUrl, '_blank', 'noopener,noreferrer')
+}
+const openImmediatePayment = async (row) => {
+  const seq = ++immediatePaymentLoadSequence
   immediatePaymentSettlement.value = row
   immediatePaymentForm.accountId = paymentAccountId.value || ''
   immediatePaymentForm.amount = Number(row.remaining_amount || 0)
+  immediatePaymentAttachments.value = []
+  immediatePaymentAttachmentError.value = ''
+  immediatePaymentLoading.value = true
   immediatePaymentVisible.value = true
+  try {
+    const res = await api.getSettlementDetail(row.settlement_id)
+    if (seq !== immediatePaymentLoadSequence || !immediatePaymentVisible.value) return
+    if (res.code !== 0 || !res.data) throw new Error(res.message || '申请资料加载失败')
+    if (!Array.isArray(res.data.application_attachments)) throw new Error('附件数据暂不可用，请确认后台已更新')
+    immediatePaymentSettlement.value = { ...row, ...res.data }
+    const files = (res.data.application_attachments || []).map(file => ({ ...file, displayUrl: file.url.startsWith('cloud://') ? '' : file.url }))
+    immediatePaymentAttachments.value = files
+    const cloudFiles = files.filter(file => file.url.startsWith('cloud://'))
+    for (let i = 0; i < cloudFiles.length; i += 20) {
+      const resolved = await api.resolveCloudFileUrls(cloudFiles.slice(i, i + 20).map(file => file.url))
+      if (seq !== immediatePaymentLoadSequence || !immediatePaymentVisible.value) return
+      for (const file of cloudFiles.slice(i, i + 20)) file.displayUrl = resolved.data?.items?.find(item => item.fileId === file.url)?.url || ''
+    }
+    immediatePaymentAttachments.value = files
+    if (files.some(file => !file.displayUrl)) immediatePaymentAttachmentError.value = '部分附件地址解析失败，可重新加载或核对原申请'
+  } catch (err) {
+    if (seq === immediatePaymentLoadSequence) immediatePaymentAttachmentError.value = err?.response?.data?.message || err.message || '申请附件加载失败，请重试'
+  } finally {
+    if (seq === immediatePaymentLoadSequence) immediatePaymentLoading.value = false
+  }
 }
 
 const handlePaymentSelectionChange = rows => {

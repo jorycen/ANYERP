@@ -2519,6 +2519,48 @@ async function syncOrderItemsFromPayload(order, data = {}, transaction = null, o
 /**
  * 创建销售订单
  */
+async function previewCouponPayments(ctx) {
+  const { storeId, payments = [], orderId } = ctx.request.body || {};
+  await assertOrderStoreVisible(storeId, ctx.state.user, '无权查看该门店优惠券');
+  if (!Array.isArray(payments) || payments.length > 50) ctx.throw(400, '最多测算50项收款');
+  let previous = [];
+  if (orderId) {
+    const order = await Order.findByPk(orderId);
+    if (!order || order.store_id !== storeId) ctx.throw(400, '订单门店不匹配');
+    await assertSalesOrderVisible(order, ctx.state.user);
+    previous = await OrderPayment.findAll({ where: { order_id: orderId }, raw: true });
+  }
+  const list = [];
+  for (const payment of payments) {
+    const snapshot = await require('./couponPricing').paymentSnapshot(payment, storeId, null, previous);
+    if (snapshot) list.push({ method: payment.method || payment.payment_method, ...snapshot });
+  }
+  ctx.body = { code: 0, data: list };
+}
+async function previewCouponReturn(ctx) {
+  const { orderId, items = [], returnGovSubsidy = false } = ctx.request.body || {};
+  const order = await Order.findByPk(orderId);
+  if (!order) ctx.throw(404, '订单不存在');
+  await assertSalesOrderVisible(order, ctx.state.user);
+  if (!Array.isArray(items) || items.length > 100) ctx.throw(400, '退单明细格式不正确');
+  const originals = await OrderItem.findAll({ where: { order_id: orderId }, raw: true });
+  const seen = new Set();
+  const selected = items.map(item => {
+    const id = String(item.itemId || item.item_id || '');
+    const source = originals.find(row => String(row.item_id) === id);
+    const quantity = Number(item.quantity);
+    if (!source || seen.has(id) || !Number.isInteger(quantity) || quantity <= 0 || quantity > Number(source.quantity)) ctx.throw(400, '退单商品或数量不正确');
+    seen.add(id);
+    return { ...source, unit_price: source.sale_price, quantity };
+  });
+  const receipt = await getOrderDailyReceiptTotals(orderId);
+  const result = require('./salesReturnSettlement').calculateReturnSettlementAmounts({ order, orderItems: originals, requestItems: selected,
+    customerReceiptAmount: receipt.hasCoupon || receipt.customerDetails.length ? receipt.customerReceiptAmount : Number(order.actual_payment || 0),
+    policySubsidyAmount: receipt.policyDetails.length ? receipt.policySubsidyAmount : Number(order.national_subsidy || 0) });
+  ctx.body = { code: 0, data: { grossAmount: result.returnGross, customerAmount: result.customerRefundAmount,
+    policySubsidyAmount: returnGovSubsidy ? result.policyAmount : 0, nationalSubsidyAmount: returnGovSubsidy ? result.policyAmount : 0,
+    notice: '优惠券由原平台退回；门店只退其他实收款，正式金额以提交校验为准' } };
+}
 async function create(ctx) {
   const user = ctx.state.user;
   const requestBody = ctx.request.body || {};
@@ -2694,6 +2736,7 @@ async function create(ctx) {
     orderPayload.submit_user = user.name || user.phone || String(user.staffId || '');
     orderPayload.submit_time = auditTime;
   }
+  const previousDraftCouponPayments = existingOrder ? await OrderPayment.findAll({ where: { order_id: orderId }, transaction, raw: true }) : [];
   if (existingOrder) {
     await existingOrder.update(orderPayload, { transaction });
     await OrderItem.destroy({ where: { order_id: orderId }, transaction });
@@ -2737,7 +2780,9 @@ async function create(ctx) {
   }
 
   for (const payment of orderPayments) {
+    const couponSnapshot = await require('./couponPricing').paymentSnapshot(payment, actualStoreId, transaction, previousDraftCouponPayments);
     await OrderPayment.create({
+      coupon_snapshot: couponSnapshot,
       order_id: orderId,
       payment_method: payment.method,
       deposit_id: payment.depositId || payment.deposit_id || null,
@@ -2961,6 +3006,8 @@ async function detail(ctx) {
   result.direct_receipt_amount = dailyReceipts.customerReceiptAmount;
   result.policy_subsidy_receivable_amount = dailyReceipts.policySubsidyAmount;
   result.daily_receipt_details = dailyReceipts.customerDetails;
+  result.coupon_refund_notice = dailyReceipts.hasCoupon ? '优惠券由原平台退回，门店只退其他实收款' : '';
+  result.coupon_receivable_details = dailyReceipts.couponDetails;
   result.approval_stage = salesApprovalStageFromStatus(result.order_status);
   result.approval_stage_label = salesApprovalStageLabel(result.order_status);
   const supplements = Array.isArray(result.supplements) ? result.supplements : [];
@@ -3451,9 +3498,11 @@ async function update(ctx) {
       // Deposit reservation remains owned by its existing workflow.
       const collected = money(payments.filter(payment => !isPolicySubsidyReceivable(payment)).reduce((sum, payment) => sum + Number(payment.amount || 0), 0));
       if (Math.abs(collected - data.actual_payment) > 0.01) ctx.throw(400, '收款金额与订单实付金额不一致');
+      const previousCouponPayments = await OrderPayment.findAll({ where: { order_id: orderId }, transaction, raw: true });
       await OrderPayment.destroy({ where: { order_id: orderId }, transaction });
       for (const payment of payments) {
         await OrderPayment.create({ order_id: orderId, payment_method: payment.method || payment.payment_method,
+          coupon_snapshot: await require('./couponPricing').paymentSnapshot(payment, order.store_id, transaction, previousCouponPayments),
           amount: saveContract.numberInput(payment.amount, '收款金额') }, { transaction });
       }
     }
@@ -4497,7 +4546,7 @@ async function requestSalesReturn(ctx) {
     const orderGross = orderItems.reduce((sum, item) => sum + money(Number(item.sale_price || 0) * Number(item.quantity || 0)), 0);
     const selectedGross = uniqueSelectedItems.reduce((sum, row) => sum + money(Number(row.sourceItem.sale_price || 0) * Number(row.quantity || 0)), 0);
     const dailyReceipts = await getOrderDailyReceiptTotals(order.order_id, transaction);
-    const sourceCustomerReceipt = dailyReceipts.customerReceiptAmount > 0
+    const sourceCustomerReceipt = dailyReceipts.hasCoupon || dailyReceipts.customerReceiptAmount > 0
       ? dailyReceipts.customerReceiptAmount
       : Number(order.actual_payment || 0);
     const refundAmount = orderGross > 0
@@ -4551,7 +4600,7 @@ async function requestSalesReturn(ctx) {
           : 0,
         refundHandling: normalizedRefundHandling,
         refundRemark: normalizedRefundRemark,
-        refundAmountSource: dailyReceipts.customerReceiptAmount > 0
+        refundAmountSource: dailyReceipts.hasCoupon ? 'other_receipts_excluding_coupon' : dailyReceipts.customerReceiptAmount > 0
           ? 'daily_statement_actual_receipt'
           : 'order_actual_payment_fallback',
         originalDirectReceiptAmount: dailyReceipts.customerReceiptAmount,
@@ -6188,6 +6237,8 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
 }
 
 module.exports = {
+  previewCouponReturn,
+  previewCouponPayments,
   list,
   listProductOrders,
   exportOrders,
@@ -6447,10 +6498,10 @@ async function syncToDailyStatement(orderId, storeId) {
       .filter(isPolicySubsidyReceivable)
       .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
 
-    for (const payment of order.OrderPayments || []) {
-      const settleAccountId = await resolveSettlementAccount(storeId, payment.payment_method);
+    for (const payment of require('./couponPricing').expandSettlementPayments((order.OrderPayments || []).map(p => p.toJSON ? p.toJSON() : p))) {
+      const settleAccountId = payment.coupon_account_id || await resolveSettlementAccount(storeId, payment.payment_method);
       const paymentMethodName = paymentMethodMap[payment.payment_method] || payment.payment_method;
-      const businessType = isPolicySubsidyReceivable({ method: paymentMethodName })
+      const businessType = payment.coupon_settlement ? 'coupon_receivable' : isPolicySubsidyReceivable({ method: paymentMethodName })
         ? 'national_subsidy_receivable'
         : 'sales_receipt';
       const statementAmount = isNationalSubsidyCustomerReceipt({ method: paymentMethodName })

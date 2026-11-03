@@ -118,6 +118,12 @@
               <el-table-column label="采购金额" width="120"><template #default="{row}">{{ inventoryAmount(row.costAmount) }}</template></el-table-column>
               <el-table-column prop="costSource" label="成本来源" min-width="200" />
               <el-table-column prop="invoiceType" label="采购凭证" width="120" />
+              <el-table-column prop="purchaseRequestNo" label="关联采购单" min-width="180" />
+              <el-table-column prop="sourceInboundNo" label="关联入库单" min-width="180" />
+              <el-table-column prop="invoiceSource" label="票据依据" min-width="140" />
+              <el-table-column prop="invoiceNos" label="关联发票号码" min-width="170" />
+              <el-table-column prop="evidenceReason" label="关联说明/待核实原因" min-width="260" />
+              <el-table-column label="已有采购候选" min-width="220"><template #default="{row}">{{ row.sourceCandidates?.map(item => item.requestNo).join('、') || '—' }}</template></el-table-column>
               <el-table-column prop="scopeWarning" label="实物范围提示" min-width="170" />
               <el-table-column label="首次入库时间" width="170"><template #default="{row}">{{ row.inboundTime ? formatDateTime(row.inboundTime) : '未知' }}</template></el-table-column>
             </el-table>

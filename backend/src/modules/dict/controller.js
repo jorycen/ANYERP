@@ -312,7 +312,7 @@ async function getPaymentMethodsByStore(ctx) {
       {
         model: PaymentMethod,
         where: { status: 1 },
-        attributes: ['method_id', 'name', 'code', 'icon', 'default_tax_rate', 'sort_order']
+        attributes: ['method_id', 'name', 'code', 'icon', 'default_tax_rate', 'sort_order', 'coupon_rule']
       },
       { model: SettlementAccount, attributes: ['account_id', 'account_name', 'bank_name', 'account_number'] },
       {
@@ -356,6 +356,7 @@ async function getPaymentMethodsByStore(ctx) {
       result.push({
         method_id: cfg.PaymentMethod.method_id,
         name: cfg.PaymentMethod.name,
+        coupon_rule: cfg.PaymentMethod.coupon_rule,
         code: cfg.PaymentMethod.code,
         icon: cfg.PaymentMethod.icon,
         default_tax_rate: cfg.PaymentMethod.default_tax_rate,
@@ -431,7 +432,26 @@ function validateStoreTaxRates(ctx, storeConfigs) {
   }
 }
 
+async function validateCouponRule(ctx) {
+  if (ctx.request.body.couponRule === undefined) return undefined;
+  const rule = require('../sales/couponPricing').normalizeRule(ctx.request.body.couponRule);
+  if (!rule) return null;
+  const existing = ctx.params?.id ? await PaymentMethod.findByPk(ctx.params.id) : null;
+  const name = String(ctx.request.body.name ?? existing?.name ?? '').trim();
+  const code = String(ctx.request.body.code ?? ctx.request.body.name ?? existing?.code ?? name).trim();
+  if (!name || name.length > 50 || !code || code.length > 50) ctx.throw(400, '优惠券方案名称及编码必须为1至50字');
+  const duplicates = await PaymentMethod.findAll({ where: {
+    status: 1, [Op.or]: [{ name }, { code }, { name: code }, { code: name }],
+    ...(ctx.params?.id ? { method_id: { [Op.ne]: ctx.params.id } } : {})
+  } });
+  if (duplicates.length) ctx.throw(400, '优惠券方案名称或编码已存在，请编辑原方案或使用不同名称');
+  const ids = [...new Set([rule.mallAccountId, rule.platformAccountId].filter(Boolean))];
+  const accounts = await SettlementAccount.findAll({ where: applySettlementAccountScope(ctx, { account_id: { [Op.in]: ids }, status: 1 }) });
+  if (accounts.length !== ids.length || accounts.some(a => a.account_type !== 'FUND')) ctx.throw(400, '优惠券返款必须绑定启用的资金下账账户');
+  return rule;
+}
 async function createPaymentMethod(ctx) {
+  const couponRule = await validateCouponRule(ctx);
   const {
     name, code, icon, isGlobal, storeConfigs, sortOrder,
     settlementAccountId, receivableSettlementAccountId, defaultTaxRate = 0
@@ -451,6 +471,7 @@ async function createPaymentMethod(ctx) {
   const t = await (require('../../models').sequelize).transaction();
   try {
     const method = await PaymentMethod.create({
+      coupon_rule: couponRule || null,
       method_id: generateUUID(),
       name,
       code: code || name,
@@ -477,6 +498,7 @@ async function createPaymentMethod(ctx) {
       }
     }
 
+    if (couponRule) await require('../../utils/businessActionLog').recordBusinessAction({ businessType: 'coupon_scheme', businessId: method.method_id, businessNo: name, action: 'created', user: ctx.state.user, detail: couponRule, transaction: t });
     await t.commit();
     ctx.body = { code: 0, message: '创建成功' };
   } catch (error) {
@@ -487,6 +509,7 @@ async function createPaymentMethod(ctx) {
 }
 
 async function updatePaymentMethod(ctx) {
+  const couponRule = await validateCouponRule(ctx);
   const { id } = ctx.params;
   const {
     name, code, icon, isGlobal, storeConfigs, sortOrder, status,
@@ -526,7 +549,10 @@ async function updatePaymentMethod(ctx) {
       updates.default_tax_rate = numericTaxRate;
     }
 
+    if (couponRule !== undefined) updates.coupon_rule = couponRule;
+    const previousCouponRule = record.coupon_rule;
     await record.update(updates, { transaction: t });
+    if (couponRule !== undefined) await require('../../utils/businessActionLog').recordBusinessAction({ businessType: 'coupon_scheme', businessId: id, businessNo: record.name, action: 'updated', user: ctx.state.user, detail: { before: previousCouponRule, after: couponRule }, transaction: t });
 
     if (storeConfigs !== undefined) {
       await PaymentMethodStore.destroy({ where: { method_id: id }, transaction: t });

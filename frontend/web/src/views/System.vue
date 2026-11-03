@@ -554,8 +554,25 @@
         <el-form-item label="名称" required>
           <el-input v-model="pmForm.name" placeholder="请输入收款方式名称" />
         </el-form-item>
+        <el-form-item label="优惠券核算">
+          <el-select v-model="pmForm.couponKind"><el-option label="普通收款" value="" /><el-option label="商场优惠券" value="mall" /><el-option label="抖音购券抵扣" value="douyin" /></el-select>
+        </el-form-item>
+        <template v-if="pmForm.couponKind">
+          <el-alert title="每种券方案单独建收款选项，并设置适用门店。销售录入券抵扣面额，后台自动保存分担快照；不再按普通费率扣费。" type="info" :closable="false" />
+          <el-form-item v-if="pmForm.couponKind === 'douyin'" label="常用方案">
+            <el-button @click="Object.assign(pmForm, { couponFace: 300, couponPurchase: 99, couponMallRate: 50, couponPlatformRate: 3 })">99抵300</el-button>
+            <el-button @click="Object.assign(pmForm, { couponFace: 500, couponPurchase: 199, couponMallRate: 50, couponPlatformRate: 3 })">199抵500</el-button>
+          </el-form-item>
+          <el-form-item label="券面额"><el-input-number v-model="pmForm.couponFace" :min="0" :precision="2" /><span>商场券填0可按实际抵扣金额计算</span></el-form-item>
+          <el-form-item v-if="pmForm.couponKind === 'douyin'" label="顾客购券金额"><el-input-number v-model="pmForm.couponPurchase" :min="0.01" :precision="2" /></el-form-item>
+          <el-form-item label="商场承担比例"><el-input-number v-model="pmForm.couponMallRate" :min="0" :max="100" :precision="2" /><span>%；门店承担优惠差额的剩余部分</span></el-form-item>
+          <el-form-item v-if="pmForm.couponKind === 'douyin'" label="购券款手续费"><el-input-number v-model="pmForm.couponPlatformRate" :min="0" :max="100" :precision="2" /><span>%；仅以购券金额为基数</span></el-form-item>
+          <el-form-item label="有效期"><el-date-picker v-model="pmForm.couponValidFrom" type="date" value-format="YYYY-MM-DD" placeholder="开始日期（可选）" /><el-date-picker v-model="pmForm.couponValidTo" type="date" value-format="YYYY-MM-DD" placeholder="结束日期（可选）" /></el-form-item>
+          <el-form-item label="商场返款账户"><el-select v-model="pmForm.couponMallAccount" filterable><el-option v-for="a in couponAccounts" :key="a.account_id" :label="a.account_name" :value="a.account_id" /></el-select></el-form-item>
+          <el-form-item v-if="pmForm.couponKind === 'douyin'" label="购券返款账户"><el-select v-model="pmForm.couponPlatformAccount" filterable><el-option v-for="a in couponAccounts" :key="a.account_id" :label="a.account_name" :value="a.account_id" /></el-select></el-form-item>
+        </template>
         <el-form-item label="默认税率" required>
-          <el-input-number v-model="pmForm.defaultTaxRate" :min="0" :max="100" :precision="4" :step="0.1" />
+          <el-input-number :disabled="Boolean(pmForm.couponKind)" v-model="pmForm.defaultTaxRate" :min="0" :max="100" :precision="4" :step="0.1" />
           <span style="margin-left:8px;color:#909399">%（例如 0.6 表示应收分配额的 0.6%）</span>
         </el-form-item>
         <el-form-item label="配置范围">
@@ -1856,7 +1873,8 @@ const paymentMethodData = ref([])
 const paymentMethodDialogVisible = ref(false)
 const pmDialogTitle = ref('新增收款方式')
 const editingPmId = ref(null)
-const pmForm = reactive({ name: '', defaultTaxRate: 0, settlementAccountId: '', receivableSettlementAccountId: '', isGlobal: true, sortOrder: 0 })
+const pmForm = reactive({ name: '', defaultTaxRate: 0, settlementAccountId: '', receivableSettlementAccountId: '', isGlobal: true, sortOrder: 0, couponKind: '', couponFace: 0, couponPurchase: 99, couponMallRate: null, couponPlatformRate: 3, couponMallAccount: '', couponPlatformAccount: '', couponValidFrom: '', couponValidTo: '' })
+const couponAccounts = computed(() => settlementAccounts.value.filter(a => a.account_type === 'FUND'))
 const pmStoreConfigRows = ref([])
 const settlementAccounts = ref([])
 const policyReceivableAccounts = computed(() => settlementAccounts.value.filter(a => a.account_type === 'POLICY_RECEIVABLE'))
@@ -1912,6 +1930,10 @@ const openPaymentMethodDialog = (row) => {
   if (row) {
     pmDialogTitle.value = '编辑收款方式'
     editingPmId.value = row.method_id
+    const coupon = typeof row.coupon_rule === 'string' ? JSON.parse(row.coupon_rule) : row.coupon_rule || {}
+    Object.assign(pmForm, { couponKind: coupon.kind || '', couponFace: coupon.faceAmount || 0,
+      couponPurchase: coupon.purchaseAmount || 99, couponMallRate: coupon.mallRate ?? null,
+      couponPlatformRate: coupon.platformRate ?? 3, couponMallAccount: coupon.mallAccountId || '', couponPlatformAccount: coupon.platformAccountId || '', couponValidFrom: coupon.validFrom || '', couponValidTo: coupon.validTo || '' })
     pmForm.name = row.name
     pmForm.defaultTaxRate = Number(row.default_tax_rate || 0)
     pmForm.settlementAccountId = row.settlement_account_id || ''
@@ -1940,6 +1962,7 @@ const openPaymentMethodDialog = (row) => {
   } else {
     pmDialogTitle.value = '新增收款方式'
     editingPmId.value = null
+    Object.assign(pmForm, { couponKind: '', couponFace: 0, couponPurchase: 99, couponMallRate: null, couponPlatformRate: 3, couponMallAccount: '', couponPlatformAccount: '', couponValidFrom: '', couponValidTo: '' })
     pmForm.name = ''
     pmForm.defaultTaxRate = 0
     pmForm.settlementAccountId = ''
@@ -1999,6 +2022,7 @@ const handlePmSubmit = async () => {
     }))
     const data = {
       name: pmForm.name,
+      couponRule: pmForm.couponKind ? { kind: pmForm.couponKind, faceAmount: pmForm.couponFace, purchaseAmount: pmForm.couponPurchase, mallRate: pmForm.couponMallRate, platformRate: pmForm.couponPlatformRate, mallAccountId: pmForm.couponMallAccount, platformAccountId: pmForm.couponPlatformAccount, validFrom: pmForm.couponValidFrom, validTo: pmForm.couponValidTo } : null,
       defaultTaxRate: Number(pmForm.defaultTaxRate || 0),
       isGlobal: pmForm.isGlobal,
       settlementAccountId: pmForm.isGlobal ? pmForm.settlementAccountId : null,
@@ -2059,6 +2083,7 @@ const savePmSort = async () => {
 }
 
 const resetPmForm = () => {
+  pmForm.couponKind = ''
   pmForm.name = ''
   pmForm.defaultTaxRate = 0
   pmForm.settlementAccountId = ''

@@ -84,10 +84,14 @@ async function getOrderDailyReceiptTotals(orderId, transaction = null) {
     transaction,
     raw: true
   });
-  const customerDetails = details.filter(item => String(item.business_type || '') !== 'national_subsidy_receivable');
+  const customerDetails = details.filter(item => String(item.business_type || '') !== 'national_subsidy_receivable' && !String(item.business_type || '').startsWith('coupon_'));
+  const sourcePayments = await OrderPayment.findAll({ where: { order_id: orderId }, transaction, raw: true });
+  const hasCoupon = sourcePayments.some(p => p.coupon_snapshot);
   const policyDetails = details.filter(item => String(item.business_type || '') === 'national_subsidy_receivable');
   return {
-    customerReceiptAmount: money(customerDetails.reduce((sum, item) => sum + Number(item.amount || 0), 0)),
+    hasCoupon,
+    couponDetails: details.filter(item => String(item.business_type || '').startsWith('coupon_')),
+    customerReceiptAmount: hasCoupon && !customerDetails.length ? money(sourcePayments.filter(p => !p.coupon_snapshot && !String(p.payment_method).includes('政策补贴应收')).reduce((sum,p)=>sum+Number(p.amount||0),0)) : money(customerDetails.reduce((sum, item) => sum + Number(item.amount || 0), 0)),
     policySubsidyAmount: money(policyDetails.reduce((sum, item) => sum + Number(item.amount || 0), 0)),
     customerDetails,
     policyDetails
@@ -198,7 +202,7 @@ async function createCustomerNegativeDetails({ order, returnRequest, customerRef
   const names = new Map(methods.map(row => [row.code, row.name]));
   const customerPayments = payments.filter(row => {
     const name = names.get(row.payment_method) || row.payment_method || '';
-    return !String(name).includes('政策补贴应收') && String(name) !== '定金' && String(name) !== '定金抵扣';
+    return !row.coupon_snapshot && !String(name).includes('政策补贴应收') && String(name) !== '定金' && String(name) !== '定金抵扣';
   });
   const sourceTotal = customerPayments.reduce((sum, row) => sum + Math.max(0, Number(row.amount || 0)), 0);
   const statement = await getOrCreateDailyStatement(order.store_id, transaction);
@@ -294,7 +298,7 @@ async function createSalesReturnSettlement({ returnRequest, order, requestItems,
     order,
     orderItems,
     requestItems: resolvedRequestItems,
-    customerReceiptAmount: dailyReceipts.customerDetails.length
+    customerReceiptAmount: dailyReceipts.hasCoupon || dailyReceipts.customerDetails.length
       ? dailyReceipts.customerReceiptAmount
       : Number(order.actual_payment || 0),
     policySubsidyAmount: dailyReceipts.policyDetails.length
@@ -328,7 +332,8 @@ async function createSalesReturnSettlement({ returnRequest, order, requestItems,
       educationAmount,
       customerRefundAmount,
       dailyCustomerReceiptAmount: dailyReceipts.customerReceiptAmount,
-      amountSource: dailyReceipts.customerReceiptAmount > 0 ? 'daily_statement_actual_receipt' : 'order_actual_payment_fallback'
+      couponRefundPolicy: dailyReceipts.hasCoupon ? 'platform_original_refund_no_store_cash' : null,
+      amountSource: dailyReceipts.hasCoupon ? 'other_receipts_excluding_coupon' : dailyReceipts.customerReceiptAmount > 0 ? 'daily_statement_actual_receipt' : 'order_actual_payment_fallback'
     }),
     create_user: user?.name || user?.staffId || 'system',
     create_time: new Date(),
@@ -384,6 +389,21 @@ async function createSalesReturnSettlement({ returnRequest, order, requestItems,
     dailyReceiptDetails: dailyReceipts.customerDetails,
     transaction
   });
+  if (dailyReceipts.hasCoupon) {
+    const payments = await OrderPayment.findAll({ where: { order_id: order.order_id }, transaction, raw: true });
+    const previous = await SalesReturnSettlement.findAll({ where: { order_id: order.order_id, return_id: { [Op.ne]: returnRequest.return_id } }, transaction, raw: true });
+    const priorGross = previous.reduce((sum, row) => {
+      const snap = typeof row.snapshot_json === 'string' ? JSON.parse(row.snapshot_json) : row.snapshot_json || {};
+      return sum + Number(snap.returnGross || 0);
+    }, 0);
+    const lines = require('./couponPricing').reversalLines(payments, priorGross, returnGross, orderGross);
+    const statement = await getOrCreateDailyStatement(order.store_id, transaction);
+    for (const line of lines) await addDailyDetail({ statement, order, returnRequest,
+      paymentMethod: line.payment_method, paymentCode: line.payment_method,
+      businessType: 'coupon_receivable_reversal', amount: line.amount,
+      settlementAccountId: line.coupon_account_id, transaction });
+    await refreshDailyStatementTotals(statement, transaction);
+  }
   await ensurePolicyNegativeDetail({ order, returnRequest, policyAmount, transaction });
   if (educationAmount > 0) {
     const statement = await getOrCreateDailyStatement(order.store_id, transaction);
@@ -418,6 +438,7 @@ async function createSalesReturnSettlement({ returnRequest, order, requestItems,
 }
 
 module.exports = {
+  calculateReturnSettlementAmounts,
   createSalesReturnSettlement,
   isSubsidyEligibleItem,
   orderReceivable,

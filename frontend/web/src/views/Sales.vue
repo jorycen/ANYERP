@@ -333,6 +333,8 @@
                 {{ pm.name }}
               </el-checkbox>
             </el-checkbox-group>
+            <el-button link type="primary" @click="previewCouponBreakdown">测算优惠券分担</el-button><span class="text-muted">优惠券按抵扣面额录入，99/199元购券款不重复录入收款。</span>
+            <el-alert v-if="couponPreviewMessage" :title="couponPreviewMessage" type="info" :closable="false" />
             <div class="payment-amounts mt-10">
               <template v-for="pm in selectedPayments" :key="pm">
                 <div v-if="isDepositPaymentName(pm)" class="deposit-payment-row">
@@ -532,6 +534,7 @@
         <h4 class="mt-20" v-if="currentOrder.OrderPayments?.length">支付记录</h4>
         <el-table :data="currentOrder.OrderPayments || []" border size="small">
           <el-table-column prop="payment_method" label="支付方式" />
+          <el-table-column label="优惠券分担" min-width="230"><template #default="{ row }"><span v-if="row.coupon_snapshot">商场承担¥{{ row.coupon_snapshot.mallAmount }}；门店承担¥{{ row.coupon_snapshot.companyAmount }}；平台手续费¥{{ row.coupon_snapshot.platformFee }}；应结算¥{{ row.coupon_snapshot.settlementAmount }}</span><span v-else>—</span></template></el-table-column>
           <el-table-column label="绑定定金单" width="190">
             <template #default="{ row }">{{ row.DepositOrder?.deposit_no || '-' }}</template>
           </el-table-column>
@@ -685,6 +688,20 @@ const stores = ref([])
 const storesLoaded = ref(false)
 const storesLoading = ref(false)
 const paymentMethods = ref([])
+const couponPreviewMessage = ref('')
+let couponPreviewSequence = 0
+const previewCouponBreakdown = async () => {
+  const seq = ++couponPreviewSequence
+  couponPreviewMessage.value = ''
+  try {
+    const res = await api.previewCoupons({ storeId: orderForm.storeId, orderId: orderForm.orderId || undefined,
+      payments: selectedPayments.value.map(method => ({ method, amount: paymentAmounts[method] })) })
+    if (seq !== couponPreviewSequence) return
+    couponPreviewMessage.value = (res.data || []).map(r => `${r.method}：抵扣¥${r.faceAmount}；购券净返¥${r.platformNet}；商场承担¥${r.mallAmount}；门店承担¥${r.companyAmount}；平台手续费¥${r.platformFee}；应结算¥${r.settlementAmount}`).join('；') || '当前没有配置分担规则的优惠券'
+  } catch (err) { if (seq === couponPreviewSequence) couponPreviewMessage.value = err?.response?.data?.message || err.message || '优惠券测算失败' }
+}
+
+
 const tableData = ref([])
 const total = ref(0)
 const loading = ref(false)
@@ -907,6 +924,7 @@ const syncCorporateInvoiceDefaults = async () => {
     return false
   }
 }
+watch(() => [orderForm.storeId, ...selectedPayments.value.map(method => `${method}:${paymentAmounts[method]}`)], () => { couponPreviewSequence++; couponPreviewMessage.value = '' })
 watch(() => [selectedPayments.value.map(method => [method, paymentAmounts[method]]), orderForm.nationalSubsidy], () => {
   if (dialogVisible.value && !orderForm.orderId && (selectedPayments.value.includes('对公转账') || corporateInvoiceAuto)) syncCorporateInvoiceDefaults()
 }, { deep: true })

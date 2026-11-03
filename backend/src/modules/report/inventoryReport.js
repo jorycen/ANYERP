@@ -86,15 +86,11 @@ async function load(query,user){
   const categories=categoryPaths(categoryRows);
   const prices=ids.length?await M.ProductPrice.findAll({where:{product_id:{[Op.in]:ids},status:1,[Op.or]:[{effective_time:{[Op.lte]:at}},{effective_time:null}]},order:[['effective_time','DESC'],['price_id','DESC']],raw:true,transaction}):[];
   const zero=await confirmedZeroSnIds(sns,transaction);
-  const receipts=sns.length?await M.sequelize.query(`SELECT COALESCE(ins.SN_ID,ii.SN_ID) sn_id,ii.UNIT_PRICE unit_price,pr.INVOICE_TYPE invoice_type,ii.RECEIVE_TIME received_at,i.RECEIVE_TIME header_time
-    FROM T_INBOUND_ITEM ii JOIN T_INBOUND i ON i.INBOUND_ID=ii.INBOUND_ID
-    LEFT JOIN T_INBOUND_ITEM_SN ins ON ins.INBOUND_ITEM_ID=ii.ITEM_ID
-    JOIN T_PURCHASE_REQUEST pr ON pr.REQUEST_ID=i.PURCHASE_REQUEST_ID
-    WHERE COALESCE(ins.SN_ID,ii.SN_ID) IN (:ids) AND i.STATUS IN ('completed','pending')
-    ORDER BY COALESCE(ii.RECEIVE_TIME,i.RECEIVE_TIME,i.CREATE_TIME) DESC,ii.ITEM_ID DESC`,{replacements:{ids:sns.map(r=>r.sn_id)},type:QueryTypes.SELECT,transaction}):[];
+  const evidenceService=require('./inventoryEvidence');
+  const evidence=await evidenceService.loadEvidence(M.sequelize,ids,transaction,at);
   const pmap=new Map(products.map(p=>[p.product_id,p])),smap=new Map(stores.map(s=>[s.store_id,s])),lmap=new Map(locations.map(l=>[l.location_id,l]));
   const details=[],excluded=[];
-  const add=(p,storeId,locationId,type,quantity,unitCost,estimated,costSource,sn,time,invoice)=>{
+  const add=(p,storeId,locationId,type,quantity,unitCost,estimated,costSource,sn,time,invoice,source={})=>{
    if(!(quantity>0))return;
    const category=categories.paths.get(String(p.category_id))||[p.category,p.brand,p.series,p.model].filter(Boolean).join('/');
    if(query.category&&category!==query.category&&!category.startsWith(query.category+'/'))return;
@@ -104,29 +100,33 @@ async function load(query,user){
    if(reason){excluded.push({productCode:p.product_code,productName:p.name,category,storeName:smap.get(storeId)?.name||storeId,quantity,reason});return;}
    const costAmount=unitCost===null?null:round(unitCost*quantity),tax=taxEstimate(costAmount,invoice);
    details.push({productId:p.product_id,productCode:p.product_code||'',productName:p.name||'未命名商品',category:category||'未分类',storeId,storeName:smap.get(storeId)?.name||storeId,location:lmap.get(locationId)?.name||locationId||'未指定库位',type,typeName:TYPES[type]||type,
-    quantity,unitCost,costAmount,estimated,costSource,sn:sn?.sn_code||'',pn:sn?.pn_code||'',inboundTime:time||null,ageBucket:bucket(time,at),netEstimate:tax.net,estimatedTax:tax.tax,invoiceType:invoice||'待核实',scopeWarning:Number(p.need_sn)!==1&&p.category==='售后'?'售后非SN项目，实物属性待核对':''});
+    quantity,unitCost,costAmount,estimated,costSource,sn:sn?.sn_code||'',pn:sn?.pn_code||'',inboundTime:time||null,ageBucket:bucket(time,at),netEstimate:tax.net,estimatedTax:tax.tax,invoiceType:invoice||'待核实',evidenceStatus:source.status||'unlinked',evidenceStatusLabel:({linked:'已关联',unlinked:'未关联',conflict:'来源冲突',owner_pending:'经销商归属待确认',invoice_pending:'票种税率待确认',invoice_conflict:'发票口径冲突',batch_pending:'采购批次待对应'})[source.status]||'未关联',evidenceReason:source.reason||'',purchaseRequestNo:source.requestNo||'',sourceInboundNo:source.inboundNo||'',invoiceNos:source.invoiceNos||'',invoiceSource:source.evidenceSource==='registered_invoice'?'已登记采购发票':source.evidenceSource==='purchase_request'?'采购申请约定':'待关联',sourceCandidateCount:source.candidateCount||0,sourceCandidates:source.candidates||[],scopeWarning:Number(p.need_sn)!==1&&p.category==='售后'?'售后非SN项目，实物属性待核对':''});
   };
   for(const sn of sns){
    const p=pmap.get(sn.product_id);if(!p||Number(p.need_sn)!==1)continue;
-   const receipt=receipts.find(r=>r.sn_id===sn.sn_id&&Number(r.unit_price)===Number(sn.inbound_price)&&(r.received_at||r.header_time)&&new Date(r.received_at||r.header_time)<=new Date(sn.inbound_time||at));
+   const source=evidenceService.resolveSnEvidence(sn,evidence.receipts,smap.get(sn.store_id)?.distributor_id,evidence.invoices,at);
    const cost=knownCost(sn.inbound_price,zero.has(String(sn.sn_id)));
-   add(p,sn.store_id,sn.location_id,FIELDS.includes(sn.inventory_type)?sn.inventory_type:'normal_qty',1,cost,false,cost===null?'成本待补':'SN实际入库成本',sn,sn.original_inbound_time||sn.inbound_time,receipt?.invoice_type);
+   add(p,sn.store_id,sn.location_id,FIELDS.includes(sn.inventory_type)?sn.inventory_type:'normal_qty',1,cost,false,cost===null?'成本待补':'SN实际入库成本',sn,sn.original_inbound_time||sn.inbound_time,source.status==='linked'?source.invoiceType:null,source);
   }
   for(const inv of stock){
    const p=pmap.get(inv.product_id);if(!p||Number(p.need_sn)===1)continue;
    const price=prices.find(r=>r.product_id===p.product_id);
    const cost=knownCost(price?.cost_price,Number(price?.cost_price_locked)===1);
    const qty=getInventoryQuantitySnapshot(inv,lmap.get(inv.location_id)?.type);
-   for(const field of FIELDS)add(p,inv.store_id,inv.location_id,field,qty[field],cost,Number(price?.cost_price_locked)!==1,'非SN商品成本档案（未锁定时为估算）',null,null,null);
+   const candidates=evidenceService.nonSnCandidates(p.product_id,inv.store_id,smap.get(inv.store_id)?.distributor_id,evidence.receipts,at);
+   const source={status:candidates.length?'batch_pending':'unlinked',candidateCount:candidates.length,candidates,reason:candidates.length?'已找到同店采购资料，库存未记录采购批次，不能确定当前库存对应票据':'尚无可确认的同店采购来源，需核对原始入库或调拨来源'};
+   for(const field of FIELDS)add(p,inv.store_id,inv.location_id,field,qty[field],cost,Number(price?.cost_price_locked)!==1,'非SN商品成本档案（未锁定时为估算）',null,null,null,source);
   }
   const summary=aggregate(details,[])[0]||aggregate([{quantity:0,type:'normal_qty',ageBucket:'unknown',costAmount:null,netEstimate:null}],[])[0];
   const rows=aggregate(details,dims);
   if(dims.includes('category'))rows.sort((a,b)=>(categories.order.get(a.category)??Number.MAX_SAFE_INTEGER)-(categories.order.get(b.category)??Number.MAX_SAFE_INTEGER)||a.category.localeCompare(b.category,'zh-CN')||a.key.localeCompare(b.key));
-  return {rows,categoryStats:rows,inStockStats:[],summary,details,excluded,meta:{asOf:at.toISOString(),dimensions:dims,version:2,
+  return {rows,categoryStats:rows,inStockStats:[],summary,details,excluded,meta:{asOf:at.toISOString(),dimensions:dims,version:3,
+   evidenceLinkedQuantity:details.filter(r=>r.evidenceStatus==='linked').reduce((n,r)=>n+r.quantity,0),
+   evidenceCandidateQuantity:details.filter(r=>r.evidenceStatus==='batch_pending').reduce((n,r)=>n+r.quantity,0),
    categoryOptions:[...categories.order.keys()],
    excludedQuantity:excluded.reduce((sum,row)=>sum+row.quantity,0),scopePendingQuantity:details.filter(row=>row.scopeWarning).reduce((sum,row)=>sum+row.quantity,0),
    costBasis:'SN按实际入库成本；非SN按成本档案估值并标记估算；缺失成本不按零替代。',
-   taxBasis:'扣税后金额及税额按关联采购凭证测算，并非已核实抵扣或正式账面价值；无依据显示待核实。',
+   taxBasis:'扣税后金额及税额按关联采购凭证测算，并非已核实抵扣或正式账面价值；SN优先关联完整覆盖且口径一致的已登记发票，其次采购申请约定票种；非SN采购候选不作为批次证明。无依据显示待核实。',
    quantityBasis:'SN与非SN分别取数不叠加；明确服务/虚拟项目单列排除；疑似售后实物属性待核对的项目仍保留；在途及待入库不计入。',
    agingBasis:'SN按首次采购入库时间；非SN无法逐件追溯库龄时列未知，不以最后调拨时间代替。'}};
  });
@@ -144,7 +144,7 @@ async function exportReport(ctx){
  const rows=report.rows.map(group);rows.push({...group(report.summary),分类:'合计'});
  const detail=report.details.map(d=>({门店:d.storeName,库位:d.location,分类:d.category,商品编码:d.productCode,商品:d.productName,PN:d.pn,SN:d.sn,库存状态:d.typeName,
   数量:d.quantity,采购单价:amount(d.unitCost),采购金额:amount(d.costAmount),成本来源:d.costSource,是否估算:d.estimated?'是':'否',首次入库时间:d.inboundTime,实物范围提示:d.scopeWarning,
-  库龄分段:d.ageBucket,采购凭证:d.invoiceType,预计扣税后金额:amount(d.netEstimate),预计税额:amount(d.estimatedTax)}));
+  库龄分段:d.ageBucket,采购凭证:d.invoiceType,采购单号:d.purchaseRequestNo,入库单号:d.sourceInboundNo,发票号码:d.invoiceNos,票据依据来源:d.invoiceSource,关联状态:d.evidenceStatusLabel,待核实原因:d.evidenceReason,采购候选数量:d.sourceCandidateCount,采购候选单号:d.sourceCandidates.map(r=>r.requestNo).join('、'),预计扣税后金额:amount(d.netEstimate),预计税额:amount(d.estimatedTax)}));
  const productRows=aggregate(report.details,['store','product']).map(group);
  const wb=XLSX.utils.book_new();
  for(const [name,data]of [['当前维度汇总',rows],['门店产品明细',productRows],['库存来源明细',detail],['服务虚拟项单列',report.excluded.map(r=>({商品编码:r.productCode,商品:r.productName,分类:r.category,门店:r.storeName,数量:r.quantity,原因:r.reason}))],['统计口径',Object.entries(report.meta).map(([key,value])=>({项目:key,内容:Array.isArray(value)?value.join('、'):String(value)}))]]){

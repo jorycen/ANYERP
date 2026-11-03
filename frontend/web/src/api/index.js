@@ -233,6 +233,7 @@ function exportExcel(url, params, fallbackFileName) {
 }
 
 export default {
+  previewCoupons: data => api.post('/sales/coupon-preview', data),
   // Auth
   login: (data) => api.post('/auth/login', data),
   getUserInfo: () => api.get('/auth/userinfo'),

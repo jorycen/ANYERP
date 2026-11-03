@@ -281,7 +281,7 @@ async function enrichSettlementMetadata(rows, transaction = null) {
           attributes: [
             'expense_id', 'expense_no', 'expense_type', 'expense_party', 'amount', 'status', 'store_id',
             'expense_date', 'payment_method', 'invoice_type', 'invoice_no', 'applicant_name',
-            'source_type', 'source_id', 'source_no', 'related_order_no', 'remark', 'create_time'
+            'source_type', 'source_id', 'source_no', 'related_order_no', 'remark', 'create_time', 'attachment_urls'
           ],
           transaction
         })
@@ -1323,7 +1323,8 @@ function normalizeSettlement(row) {
     ...data,
     lifecycle_status: lifecycleStatus,
     supplier_account_snapshot_parsed: supplierAccountSnapshot,
-    counterparty_payment_info: buildCounterpartyPaymentInfo(data)
+    counterparty_payment_info: buildCounterpartyPaymentInfo(data),
+    application_attachments: require('./settlementAttachments').collectSettlementAttachments(data)
   };
 }
 

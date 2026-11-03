@@ -1195,6 +1195,7 @@ const OrderItem = sequelize.define('OrderItem', {
 
 // 订单支付记录
 const OrderPayment = sequelize.define('OrderPayment', {
+  coupon_snapshot: { type: DataTypes.JSON, allowNull: true },
   payment_id: { type: DataTypes.BIGINT(20), primaryKey: true, autoIncrement: true },
   order_id: { type: DataTypes.STRING(32), allowNull: false },
   payment_method: { type: DataTypes.STRING(64), allowNull: false },
@@ -2325,6 +2326,7 @@ const CustomerSource = sequelize.define('CustomerSource', {
 
 // 支付方式
 const PaymentMethod = sequelize.define('PaymentMethod', {
+  coupon_rule: { type: DataTypes.JSON, allowNull: true },
   method_id: { type: DataTypes.STRING(64), primaryKey: true },
   name: { type: DataTypes.STRING(128), allowNull: false },
   code: { type: DataTypes.STRING(64) },
