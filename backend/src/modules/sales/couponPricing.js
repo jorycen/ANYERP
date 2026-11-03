@@ -101,8 +101,7 @@ async function paymentSnapshot(payment, storeId, transaction, previous = []) {
     if (!scope) fail('该优惠券方案不适用当前门店');
   }
   const rule = normalizeRule(method.coupon_rule);
-  const today = new Date(Date.now() + 8*3600000).toISOString().slice(0,10);
-  if ((rule.validFrom && today < rule.validFrom) || (rule.validTo && today > rule.validTo)) fail('优惠券方案不在有效期内');
+  if (!isActiveToday(rule)) fail('优惠券方案不在有效期内');
   const ids = [...new Set([rule.mallAccountId, rule.platformAccountId].filter(Boolean))];
   const accounts = await SettlementAccount.findAll({ where: { account_id: { [Op.in]: ids }, status: 1 }, transaction });
   const store = await Store.findByPk(storeId, { transaction });
@@ -112,4 +111,10 @@ async function paymentSnapshot(payment, storeId, transaction, previous = []) {
   if (name.length > 50 || String(method.name || name).length > 50) fail('优惠券方案名称或编码最多50字');
   return calculateCoupon(rule, payment.amount);
 }
-module.exports = { normalizeRule, calculateCoupon, settlementLines, reversalLines, expandSettlementPayments, paymentSnapshot };
+function isActiveToday(value) {
+  if (!value) return true;
+  const rule=normalizeRule(value);
+  const today=new Date(Date.now()+8*3600000).toISOString().slice(0,10);
+  return (!rule.validFrom || today>=rule.validFrom) && (!rule.validTo || today<=rule.validTo);
+}
+module.exports = { isActiveToday, normalizeRule, calculateCoupon, settlementLines, reversalLines, expandSettlementPayments, paymentSnapshot };

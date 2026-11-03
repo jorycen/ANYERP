@@ -11,6 +11,11 @@ const {
 } = require('./controller');
 
 const router = new Router();
+const couponSchemes = require('./couponSchemes');
+router.get('/coupon-schemes', couponSchemes.list);
+router.post('/coupon-schemes', couponSchemes.save);
+router.put('/coupon-schemes/:id', couponSchemes.save);
+router.delete('/coupon-schemes/:id', couponSchemes.remove);
 
 // 客户来源
 router.get('/customer-source/list', getCustomerSourceList);

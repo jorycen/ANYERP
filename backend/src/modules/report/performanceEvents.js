@@ -36,4 +36,14 @@ function returnEvents(rows) {
   return [...events.values()];
 }
 
-module.exports = { PERFORMANCE_SALE_STATUSES, returnEvents, savedItemProfit };
+// Return ledgers are order-level events, not fabricated product allocations.
+function profitExportItems(order) {
+  const items = order.calculation?.items || [];
+  if (items.length) return items;
+  if (order.entryType === 'return' && !order.isReturnAdjustment) {
+    return [{ saleSubtotal: order.totalAmount ?? null, formula: order.calculation?.orderFormula || '' }];
+  }
+  return [{}];
+}
+
+module.exports = { PERFORMANCE_SALE_STATUSES, returnEvents, savedItemProfit, profitExportItems };

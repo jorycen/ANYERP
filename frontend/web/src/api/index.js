@@ -233,6 +233,9 @@ function exportExcel(url, params, fallbackFileName) {
 }
 
 export default {
+  getCouponSchemes: storeId => api.get('/dict/coupon-schemes', {params:{storeId}}),
+  saveCouponScheme: (id,data) => id ? api.put(`/dict/coupon-schemes/${id}`,data) : api.post('/dict/coupon-schemes',data),
+  deleteCouponScheme: (id,storeId) => api.delete(`/dict/coupon-schemes/${id}`,{params:{storeId}}),
   previewCoupons: data => api.post('/sales/coupon-preview', data),
   // Auth
   login: (data) => api.post('/auth/login', data),
@@ -292,7 +295,7 @@ export default {
   approveOrder: (id) => api.post(`/sales/${id}/approve`),
   rejectOrder: (id, data) => api.post(`/sales/${id}/reject`, data),
   recalculateSalesSettlementCost: (id) => api.post(`/sales/${id}/recalculate-settlement-cost`),
-  getPaymentMethods: () => api.get('/sales/payment-methods'),
+  getPaymentMethods: storeId => api.get('/sales/payment-methods', {params:{storeId}}),
   getDepositList: (params) => api.get('/sales/deposits', { params }),
   createDeposit: (data) => api.post('/sales/deposits', data),
   archiveDeposit: (id) => api.post(`/sales/deposits/${id}/archive`),

@@ -138,3 +138,27 @@ test('员工报表同月、跨月、部分退货汇总与分页保持一致，�
   assert.equal(withRewardReturn.summary.approvedAdjustment, -20);
   assert.equal(withRewardReturn.list.length, 2);
 });
+
+test('return export uses recorded negative sales once without inventing product detail', () => {
+  const { profitExportItems } = require('../src/modules/report/performanceEvents');
+  const order = { entryType:'return', totalAmount:-79.90, calculation:{items:[]} };
+  assert.deepEqual(profitExportItems(order),[{saleSubtotal:-79.90,formula:''}]);
+  assert.deepEqual(profitExportItems({...order,isReturnAdjustment:true}),[{}]);
+  assert.deepEqual(profitExportItems({...order,totalAmount:0}),[{saleSubtotal:0,formula:''}]);
+  const items=[{saleSubtotal:100}];
+  assert.equal(profitExportItems({calculation:{items}}),items);
+});
+
+test('multiple staff ledger rows export once per return and preserve negative sales and profit totals', () => {
+  const {returnEvents,profitExportItems}=require('../src/modules/report/performanceEvents');
+  const events=returnEvents([
+    {return_id:'R1',returned_sales_amount:-50,gross_profit_amount:-5,staff_id:1},
+    {return_id:'R1',returned_sales_amount:-50,gross_profit_amount:-5,staff_id:2},
+    {return_id:'R2',returned_sales_amount:-79.9,gross_profit_amount:-79.66,staff_id:1}
+  ]);
+  assert.equal(events.length,2);
+  const exported=events.flatMap(profitExportItems);
+  assert.equal(exported.length,2);
+  assert.equal(Number(exported.reduce((sum,item)=>sum+item.saleSubtotal,0).toFixed(2)),-179.9);
+  assert.equal(Number(events.reduce((sum,item)=>sum+item.grossProfit,0).toFixed(2)),-89.66);
+});

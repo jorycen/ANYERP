@@ -119,7 +119,7 @@
         <el-row :gutter="20">
           <el-col :span="8">
             <el-form-item label="门店">
-              <el-select v-model="orderForm.storeId" placeholder="选择门店" v-loading="storesLoading">
+              <el-select v-model="orderForm.storeId" @change="onSalesStoreChange" placeholder="选择门店" v-loading="storesLoading">
                 <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
               </el-select>
             </el-form-item>
@@ -941,6 +941,11 @@ watch(selectedPayments, (payments) => {
   }
 })
 
+function onSalesStoreChange() {
+  selectedPayments.value=[]
+  Object.keys(paymentAmounts).forEach(key=>delete paymentAmounts[key])
+}
+watch(() => orderForm.storeId, () => loadPaymentMethods())
 watch(() => [orderForm.customerPhone, orderForm.storeId], () => {
   if (selectedPayments.value.some(isDepositPaymentName)) {
     orderForm.depositId = ''
@@ -1035,14 +1040,18 @@ const loadStores = async () => {
   }
 }
 
+let paymentMethodsRequestId=0
 const loadPaymentMethods = async () => {
+  const requestId=++paymentMethodsRequestId
   try {
-    const res = await api.getPaymentMethods()
+    const res = await api.getPaymentMethods(orderForm.storeId || undefined)
+    if(requestId!==paymentMethodsRequestId)return
     if (res.code === 0) {
       paymentMethods.value = res.data || []
       ensureDepositPaymentMethod()
     }
   } catch (err) {
+    if(requestId!==paymentMethodsRequestId)return
     paymentMethods.value = [
       { method_id: '1', code: 'cash', name: '现金' },
       { method_id: '2', code: 'wechat', name: '微信支付' },

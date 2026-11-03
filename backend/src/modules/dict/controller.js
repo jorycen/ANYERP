@@ -233,7 +233,7 @@ async function getPaymentMethodList(ctx) {
 
 async function getAllPaymentMethods(ctx) {
   const { storeId } = ctx.query;
-  const where = { status: 1 };
+  const where = { status: 1, ...(ctx.query.excludeCoupons === 'true' ? { coupon_rule: { [Op.is]: null } } : {}) };
 
   const include = [{
     model: SettlementAccount,
@@ -292,6 +292,10 @@ async function getAllPaymentMethods(ctx) {
 async function getPaymentMethodsByStore(ctx) {
   const { storeId } = ctx.query;
   if (!storeId) ctx.throw(400, '门店ID不能为空');
+  const user = ctx.state.user;
+  const allowed = user.accessibleStoreIds || [];
+  if (!allowed.includes('*') && !allowed.map(String).includes(String(storeId))) ctx.throw(403,'无权访问该门店收款方式');
+
 
   const globalMethods = await PaymentMethod.findAll({
     where: { status: 1, is_global: 1 },
@@ -383,7 +387,7 @@ async function getPaymentMethodsByStore(ctx) {
     return String(a.method_id || '').localeCompare(String(b.method_id || ''));
   });
 
-  ctx.body = { code: 0, data: result };
+  ctx.body = { code: 0, data: result.filter(method => require('../sales/couponPricing').isActiveToday(method.coupon_rule)) };
 }
 
 async function validatePaymentMethodAccounts(ctx, {
@@ -437,11 +441,19 @@ async function validateCouponRule(ctx) {
   const rule = require('../sales/couponPricing').normalizeRule(ctx.request.body.couponRule);
   if (!rule) return null;
   const existing = ctx.params?.id ? await PaymentMethod.findByPk(ctx.params.id) : null;
+  if (!ctx.state.user.roles?.some(role=>['admin','boss'].includes(role))) ctx.throw(403,'仅配置管理员可管理优惠券方案');
+  if (!existing) {
+    const configs=ctx.request.body.storeConfigs;
+    if (ctx.request.body.isGlobal || !Array.isArray(configs) || configs.length!==1 || !configs[0].storeId) ctx.throw(400,'新优惠券方案必须先选择单个门店');
+    const store=await Store.findByPk(configs[0].storeId);
+    if (!store || !canAccessDistributor(ctx.state.user,store.distributor_id)) ctx.throw(403,'无权管理该门店优惠券');
+  }
+
   const name = String(ctx.request.body.name ?? existing?.name ?? '').trim();
   const code = String(ctx.request.body.code ?? ctx.request.body.name ?? existing?.code ?? name).trim();
   if (!name || name.length > 50 || !code || code.length > 50) ctx.throw(400, '优惠券方案名称及编码必须为1至50字');
   const duplicates = await PaymentMethod.findAll({ where: {
-    status: 1, [Op.or]: [{ name }, { code }, { name: code }, { code: name }],
+    [Op.or]: [{ name }, { code }, { name: code }, { code: name }],
     ...(ctx.params?.id ? { method_id: { [Op.ne]: ctx.params.id } } : {})
   } });
   if (duplicates.length) ctx.throw(400, '优惠券方案名称或编码已存在，请编辑原方案或使用不同名称');
@@ -481,7 +493,7 @@ async function createPaymentMethod(ctx) {
       receivable_settlement_account_id: receivableSettlementAccountId || null,
       default_tax_rate: numericTaxRate,
       sort_order: sortOrder || 0,
-      status: 1
+      status: couponRule && ctx.request.body.status === 0 ? 0 : 1
     }, { transaction: t });
 
     if (!isGlobal && Array.isArray(storeConfigs) && storeConfigs.length > 0) {
@@ -518,6 +530,11 @@ async function updatePaymentMethod(ctx) {
 
   const record = await PaymentMethod.findByPk(id);
   if (!record) ctx.throw(404, '记录不存在');
+  if (record.coupon_rule) {
+    const used = await require('../../models').OrderPayment.count({ where:{ payment_method:{[Op.in]:[record.name,record.code]} } });
+    if (used && ((name !== undefined && name !== record.name) || (code !== undefined && code !== record.code) || couponRule === null)) ctx.throw(400,'已使用的优惠券不能改名或改为普通收款，请新增方案');
+  }
+
   let numericTaxRate;
   if (defaultTaxRate !== undefined) {
     numericTaxRate = Number(defaultTaxRate);
@@ -585,6 +602,11 @@ async function deletePaymentMethod(ctx) {
   const record = await PaymentMethod.findByPk(id);
   if (!record) ctx.throw(404, '记录不存在');
 
+
+  if (record.coupon_rule) {
+    const used = await require('../../models').OrderPayment.count({where:{payment_method:{[Op.in]:[record.name,record.code]}}});
+    if (used) ctx.throw(400,'该方案已被订单使用，只能停用，不能删除');
+  }
   const t = await (require('../../models').sequelize).transaction();
   try {
     await PaymentMethodStore.destroy({ where: { method_id: id }, transaction: t });

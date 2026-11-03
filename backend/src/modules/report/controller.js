@@ -26,7 +26,7 @@ const { loadLegacyCostMaps, calculateItemBaseProfit } = require('./profitCalcula
 const { DashboardService, canViewProfit } = require('./dashboardService');
 const { normalizeParticipants } = require('./dashboardDataSource');
 const { allocateProfit } = require('./performanceAllocation');
-const { PERFORMANCE_SALE_STATUSES: POSITIVE_SALES_ORDER_STATUSES, returnEvents, savedItemProfit } = require('./performanceEvents');
+const { PERFORMANCE_SALE_STATUSES: POSITIVE_SALES_ORDER_STATUSES, returnEvents, savedItemProfit, profitExportItems } = require('./performanceEvents');
 const { buildDecisionInsights, buildAiAdvisor } = require('./decisionEngine');
 const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/storePermissions');
 const { appendOperatingSourceCondition, INTERNAL_TRANSFER_SOURCE } = require('./operatingScope');
@@ -1080,7 +1080,7 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
       const freightDetails = (snapshot.freightCostDetails || []).map(item =>
         `${item.sourceNo || item.platformName || item.sourceType || '运费'} ${item.snCode || item.sn || ''} ${toNumber(item.amount).toFixed(2)}`.trim()
       ).join('；');
-      return (items.length ? items : [{}]).map(item => ({
+      return profitExportItems(order).map(item => ({
         "\u4e1a\u52a1\u7c7b\u578b": order.entryType === "return" ? "\u9000\u5355\u51b2\u56de" : "\u9500\u552e",
         "\u539f\u9500\u552e\u5355\u53f7": order.sourceOrderNo || order.orderNo,
         订单号: order.orderNo,

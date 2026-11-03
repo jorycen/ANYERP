@@ -3885,11 +3885,12 @@ async function stats(ctx) {
  * 获取支付方式列表
  */
 async function paymentMethods(ctx) {
+  if (ctx.query.storeId) return require('../dict/controller').getPaymentMethodsByStore(ctx);
   const methods = await PaymentMethod.findAll({
     where: { status: 1 },
     order: [['sort_order', 'ASC']]
   });
-  ctx.body = { code: 0, data: methods, message: '成功' };
+  ctx.body = { code: 0, data: methods.filter(method => !method.coupon_rule), message: '成功' };
 }
 
 function buildDepositListOrder() {
