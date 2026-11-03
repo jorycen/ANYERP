@@ -361,6 +361,7 @@ async function runSchemaMigrations() {
   await ensureProductPnEffectiveUniqueIndex();
   await ensureFinancialProfitFeatureSchema();
   await ensureFinancialReportMenu();
+  await ensureApprovalHandledMenu();
   console.log('[DB Schema] startup schema compatibility check completed');
 }
 
@@ -4715,6 +4716,10 @@ async function ensureFinancialProfitFeatureSchema() {
 // 财务报表页面属于报表统计子菜单。旧环境未执行完整权限种子时，
 // 页面和路由虽然已经存在，但登录返回的菜单树不会包含该入口。
 // 启动时只补齐这一项缺失的菜单及角色关联，不覆盖管理员已有的菜单配置。
+async function ensureApprovalHandledMenu() {
+  return require('./approvalHandledMenu').ensureApprovalHandledMenu(sequelize);
+}
+
 async function ensureFinancialReportMenu() {
   const [parents] = await sequelize.query(
     "SELECT MENU_ID FROM T_MENU WHERE MENU_CODE = 'reports' AND STATUS = 1 LIMIT 1"
@@ -5103,5 +5108,6 @@ module.exports = {
   ensureSerializedInventorySchema,
   ensureProductPnEffectiveUniqueIndex,
   ensureFinancialProfitFeatureSchema,
-  ensureFinancialReportMenu
+  ensureFinancialReportMenu,
+  ensureApprovalHandledMenu
 };
