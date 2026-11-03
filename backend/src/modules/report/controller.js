@@ -1002,33 +1002,8 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
   );
   const totalCareCreditAdjustment = roundMoney(toNumber(careCreditRows[0]?.amount) + reversals.reduce((sum, row) => sum + row.careCreditAdjustment, 0));
 
-  const expenseAllocationWhere = {
-    store_id: { [Op.in]: storeIds },
-    status: 'approved'
-  };
-  if (staffName) expenseAllocationWhere.staff_name = staffName;
-  if (startDate && endDate) {
-    const start = new Date(`${startDate}T00:00:00Z`);
-    const end = new Date(`${endDate}T00:00:00Z`);
-    const months = [];
-    const cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1));
-    while (cursor <= end) {
-      months.push(`${cursor.getUTCFullYear()}-${String(cursor.getUTCMonth() + 1).padStart(2, '0')}`);
-      cursor.setUTCMonth(cursor.getUTCMonth() + 1);
-    }
-    expenseAllocationWhere.performance_month = { [Op.in]: months };
-  }
-  const expenseAllocationRows = await ExpensePerformanceAllocation.findAll({
-    where: expenseAllocationWhere,
-    attributes: [
-      'staff_id',
-      'staff_name',
-      [sequelize.fn('SUM', sequelize.col('amount')), 'amount']
-    ],
-    group: ['staff_id', 'staff_name'],
-    order: [[sequelize.literal('amount'), 'DESC'], ['staff_name', 'ASC']],
-    raw: true
-  });
+  const deductionService=require('../finance/expenseProfitDeduction');
+  const expenseAllocationRows=(await deductionService.loadMonthly({storeIds,user,startDate,endDate,staffName,orderNo})).map(row=>({staff_id:row.staffId,staff_name:row.staffName,amount:row.amount}));
   const profitVisible = canViewProfit(user);
   const visibleExpenseAllocationRows = profitVisible ? expenseAllocationRows : [];
   const totalExpensePerformanceDeduction = roundMoney(
@@ -1046,7 +1021,7 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
     approvedAdjustment: totalApprovedAdjustment,
     grossProfit: roundMoney(totalBaseGrossProfit + totalApprovedAdjustment),
     expensePerformanceDeduction: profitVisible ? totalExpensePerformanceDeduction : null,
-    netGrossProfit: profitVisible ? roundMoney(totalBaseGrossProfit + totalApprovedAdjustment - totalExpensePerformanceDeduction) : null,
+    netGrossProfit: profitVisible ? deductionService.netProfit(totalBaseGrossProfit + totalApprovedAdjustment, totalExpensePerformanceDeduction) : null,
     expenseDeductions: visibleExpenseAllocationRows.map(row => ({
       staffId: row.staff_id,
       staffName: row.staff_name || '-',
@@ -1063,7 +1038,7 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
     summary.approvedAdjustment = operating.summary.approvedAdjustment;
     summary.otherApprovedAdjustment = roundMoney(summary.approvedAdjustment - summary.careCreditAdjustment);
     summary.grossProfit = operating.summary.grossProfit;
-    summary.netGrossProfit = profitVisible ? roundMoney(summary.grossProfit - totalExpensePerformanceDeduction) : null;
+    summary.netGrossProfit = profitVisible ? deductionService.netProfit(summary.grossProfit, totalExpensePerformanceDeduction) : null;
     summary.grossProfitSource = operating.source;
   }
 
@@ -1118,7 +1093,10 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
         毛利来源: order.grossProfitSource
       }));
     });
-    sendExcel(ctx, exportRows, EMPLOYEE_PROFIT_EXPORT_HEADERS, `个人毛利明细_${startDate || '全部'}_${endDate || '全部'}.xlsx`, '销售商品毛利', { textHeaders: ['订单号', 'PN', 'SN'] });
+    sendExcel(ctx, exportRows, EMPLOYEE_PROFIT_EXPORT_HEADERS, `个人毛利明细_${startDate || '全部'}_${endDate || '全部'}.xlsx`, '销售商品毛利', { textHeaders: ['订单号', 'PN', 'SN'], sheets: [
+      {name:'费用绩效扣减',rows:visibleExpenseAllocationRows.map(row=>({员工:row.staff_name,费用扣减:Number(row.amount),口径:'指定月份已审批费用分摊，不改销售订单毛利'}))},
+      {name:'个人毛利汇总',rows:[{业绩毛利:summary.grossProfit,费用扣减:summary.expensePerformanceDeduction,扣减后毛利:summary.netGrossProfit}]}
+    ] });
     return;
   }
 

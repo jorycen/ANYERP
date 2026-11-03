@@ -15,6 +15,9 @@ function sendExcel(ctx, rows, headers, fileName, sheetName = '数据', options =
   });
   XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
 
+  for (const extra of options.sheets || []) {
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(extra.rows || []), extra.name);
+  }
   const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
   const encodedFileName = encodeURIComponent(fileName);
 

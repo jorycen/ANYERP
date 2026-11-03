@@ -1863,6 +1863,7 @@ const Expense = sequelize.define('Expense', {
   recipient_snapshot_json: { type: DataTypes.TEXT('long'), comment: '费用申请收款方式及收款账户快照' },
   recipient_display: { type: DataTypes.VIRTUAL, get() {
     let data; try { data = JSON.parse(this.getDataValue('recipient_snapshot_json') || 'null'); } catch (_) { return ''; }
+    if (data?.mode === 'PROFIT_DEDUCTION') return `抵扣毛利：${data.performanceMonth}；${(data.allocations||[]).map(row=>`${row.staffName} ¥${row.amount}`).join('；')}`;
     return data ? data.mode === 'EMPLOYEE' ? `支付至员工账户：${data.payeeName || ''}` : (data.paymentText || `${data.mode === 'UNIT' ? '单位账户' : '其他账户'}：${data.payeeName || ''}；${data.bankName || ''}；${data.accountNumber || ''}`) : '';
   } },
   status: { type: DataTypes.STRING(32), defaultValue: 'pending_approval' },

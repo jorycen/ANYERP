@@ -134,6 +134,7 @@
 
     <el-dialog v-model="detailVisible" title="审批详情" width="800px">
       <template v-if="currentInstance">
+        <section v-if="expenseDeductionDetail" style="margin-bottom:16px"><el-alert :closable="false" type="warning" :title="`抵扣毛利：${expenseDeductionDetail.performanceMonth}，审批全部通过后生效，无现金付款`" /><el-table :data="expenseDeductionDetail.allocations" border><el-table-column prop="staffName" label="抵扣人员" /><el-table-column prop="amount" label="分摊抵扣金额" /></el-table></section>
         <ResourceRewardProof :data="currentInstance.moduleData || currentInstance.originalData || currentInstance.payload || {}" />
         <PurchaseApprovalEditor v-if="purchaseApprovalEdit" :model-value="purchaseApprovalEdit" read-only style="margin-bottom:18px" />
         <el-descriptions :column="2" border>
@@ -408,6 +409,7 @@ const handledTotal = ref(0)
 const flows = ref([])
 const detailVisible = ref(false)
 const currentInstance = ref(null)
+const expenseDeductionDetail = computed(()=>currentInstance.value?.moduleData?.profit_deduction || currentInstance.value?.payload?.profitDeduction || null)
 const detailReviewRow = ref(null)
 const purchaseApprovalEdit = ref(null)
 let detailRequestSerial = 0

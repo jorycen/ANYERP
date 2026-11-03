@@ -568,8 +568,9 @@
           </el-radio-group>
         </el-form-item>
 
+        <el-alert v-if="couponAccountError" :title="couponAccountError" type="error" :closable="false" /><el-button v-if="couponAccountError" link type="primary" @click="loadCouponAccountOptions">重新加载返款账户</el-button>
         <el-form-item v-if="pmForm.couponKind && pmForm.isGlobal" label="全局优惠券方案">
-          <CouponPlansEditor v-model="pmGlobalCouponPlans" :kind="pmForm.couponKind" :accounts="couponAccounts" />
+          <CouponPlansEditor v-model="pmGlobalCouponPlans" :kind="pmForm.couponKind" :accounts="couponAccounts" :accounts-loading="couponAccountLoading" />
         </el-form-item>
         <template v-if="pmForm.isGlobal">
           <el-form-item :label="isGuobuPaymentMethod(pmForm.name) ? '客户实收账户' : '默认结算账户'">
@@ -628,7 +629,7 @@
         <el-form-item v-if="pmForm.couponKind && !pmForm.isGlobal" label="门店优惠券方案">
           <div style="width:100%">
             <el-select v-model="pmCouponStoreId" filterable placeholder="选择已勾选的门店" style="width:260px"><el-option v-for="store in pmStoreConfigRows.filter(s=>s.checked)" :key="store.store_id" :value="store.store_id" :label="store.name" /></el-select>
-            <CouponPlansEditor v-if="pmCouponStoreId && pmStoreConfigRows.some(s=>s.checked && s.store_id===pmCouponStoreId)" v-model="pmStoreCouponPlans[pmCouponStoreId]" :kind="pmForm.couponKind" :accounts="pmCouponAccounts" />
+            <CouponPlansEditor v-if="pmCouponStoreId && pmStoreConfigRows.some(s=>s.checked && s.store_id===pmCouponStoreId)" v-model="pmStoreCouponPlans[pmCouponStoreId]" :kind="pmForm.couponKind" :accounts="pmCouponAccounts" :accounts-loading="couponAccountLoading" />
           </div>
         </el-form-item>
         <el-form-item label="排序">
@@ -1870,7 +1871,7 @@ const paymentMethodDialogVisible = ref(false)
 const pmDialogTitle = ref('新增收款方式')
 const editingPmId = ref(null)
 const pmForm = reactive({ name: '', defaultTaxRate: 0, settlementAccountId: '', receivableSettlementAccountId: '', isGlobal: true, sortOrder: 0, couponKind: '', couponFace: 0, couponPurchase: 99, couponMallRate: null, couponPlatformRate: 3, couponMallAccount: '', couponPlatformAccount: '', couponValidFrom: '', couponValidTo: '' })
-const couponAccounts = computed(() => settlementAccounts.value.filter(a => a.account_type === 'FUND'))
+const couponAccounts = ref([]),couponAccountLoading=ref(false),couponAccountError=ref('')
 const pmStoreConfigRows = ref([])
 const settlementAccounts = ref([])
 const policyReceivableAccounts = computed(() => settlementAccounts.value.filter(a => a.account_type === 'POLICY_RECEIVABLE'))
@@ -1899,9 +1900,20 @@ const saveSubsidyAccountRoute = async row => {
 }
 
 const pmGlobalCouponPlans=ref([]),pmStoreCouponPlans=reactive({}),pmCouponStoreId=ref('')
-const pmCouponAccounts=computed(()=>{
-  const store=stores.value.find(s=>s.store_id===pmCouponStoreId.value)
-  return couponAccounts.value.filter(a=>!a.distributor_id || String(a.distributor_id)===String(store?.distributor_id))
+const pmCouponAccounts=ref([])
+let couponAccountRequest=0
+async function loadCouponAccountOptions(){
+  const request=++couponAccountRequest
+  couponAccountError.value='';couponAccountLoading.value=true
+  const storeId=pmForm.isGlobal?undefined:pmCouponStoreId.value
+  if(!pmForm.isGlobal&&!storeId){pmCouponAccounts.value=[];couponAccountLoading.value=false;return}
+  if(storeId)pmCouponAccounts.value=[];else couponAccounts.value=[]
+  try{const response=await api.getAllSettlementAccounts({purpose:'coupon',storeId});if(request!==couponAccountRequest)return;if(storeId)pmCouponAccounts.value=response.data||[];else couponAccounts.value=response.data||[]}
+  catch(error){if(request===couponAccountRequest)couponAccountError.value=error.response?.data?.message || error.message || '返款账户加载失败'}
+  finally{if(request===couponAccountRequest)couponAccountLoading.value=false}
+}
+watch(()=>[pmForm.isGlobal,pmCouponStoreId.value,pmForm.couponKind,paymentMethodDialogVisible.value],()=>{
+  if(paymentMethodDialogVisible.value&&pmForm.couponKind)loadCouponAccountOptions();else {couponAccountRequest++;couponAccountLoading.value=false}
 })
 const loadPaymentMethods = async () => {
   try {

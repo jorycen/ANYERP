@@ -233,6 +233,8 @@
           <el-table-column v-if="dashboard.meta.canViewProfit" label="业绩毛利" min-width="110" align="right">
             <template #default="{ row }">{{ formatCurrency(row.grossProfit) }}</template>
           </el-table-column>
+          <el-table-column v-if="dashboard.meta.canViewProfit" label="整月费用扣减" min-width="120"><template #default="{row}">{{row.expensePerformanceDeduction==null?'不可用':formatCurrency(row.expensePerformanceDeduction)}}</template></el-table-column>
+          <el-table-column v-if="dashboard.meta.canViewProfit" label="扣减后毛利" min-width="120"><template #default="{row}">{{row.netGrossProfit==null?'不可用':formatCurrency(row.netGrossProfit)}}</template></el-table-column>
         </el-table>
       </DashboardPanel>
 

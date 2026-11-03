@@ -233,6 +233,8 @@ function exportExcel(url, params, fallbackFileName) {
 }
 
 export default {
+  getExpenseDeductionOptions: storeId => api.get('/finance/expense/profit-deduction-options',{params:{storeId}}),
+  previewExpenseDeduction: data => api.post('/finance/expense/profit-deduction-preview',data),
   getCouponSchemes: storeId => api.get('/dict/coupon-schemes', {params:{storeId}}),
   saveCouponScheme: (id,data) => id ? api.put(`/dict/coupon-schemes/${id}`,data) : api.post('/dict/coupon-schemes',data),
   deleteCouponScheme: (id,storeId) => api.delete(`/dict/coupon-schemes/${id}`,{params:{storeId}}),
@@ -478,6 +480,7 @@ export default {
   updateExpenseDraft: (id, data) => api.put(`/finance/expense-draft/${id}`, data),
   deleteExpenseDraft: (id) => api.delete(`/finance/expense-draft/${id}`),
   submitExpenseDraft: (id) => api.put(`/finance/expense-draft/${id}/submit`),
+  cancelExpense: (id,data) => api.post(`/finance/expense/${id}/cancel`,data),
   withdrawExpense: (id, data = {}) => api.post(`/finance/expense/${id}/withdraw`, data),
   getExpenseList: (params) => api.get('/finance/expense-list', { params }),
   exportExpenseList: (params) => exportExcel('/finance/expense-list/export', params, `费用报销管理_${new Date().toISOString().slice(0, 10)}.xlsx`),
@@ -787,7 +790,7 @@ export default {
 
   // Dict - Settlement Account
   getSettlementAccountList: (params) => api.get('/dict/settlement-account/list', { params }),
-  getAllSettlementAccounts: () => api.get('/dict/settlement-account/all'),
+  getAllSettlementAccounts: params => api.get('/dict/settlement-account/all',{params}),
   createSettlementAccount: (data) => api.post('/dict/settlement-account/create', data),
   updateSettlementAccount: (id, data) => api.put(`/dict/settlement-account/update/${id}`, data),
   deleteSettlementAccount: (id) => api.delete(`/dict/settlement-account/delete/${id}`),

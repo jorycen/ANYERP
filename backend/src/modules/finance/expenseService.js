@@ -244,6 +244,8 @@ async function startExpenseApproval(expense, user, transaction) {
       attributionType: expense.attribution_type,
       attributionMethod: expense.attribution_method,
       allocationDetails: parseJson(expense.attribution_details_json, []),
+      paymentMethod: expense.payment_method,
+      profitDeduction: expense.payment_method === 'PROFIT_DEDUCTION' ? parseJson(expense.recipient_snapshot_json,null) : null,
       recipient: parseJson(expense.recipient_snapshot_json, null), attachmentUrls: parseJson(expense.attachment_urls, [])
     }
   }, user, transaction);
@@ -266,6 +268,15 @@ async function applyExpenseApproval(instance, transaction, actor, action, commen
     return expense;
   }
 
+  if (expense.payment_method === 'PROFIT_DEDUCTION') {
+    const deduction=require('./expenseProfitDeduction');
+    require('./expenseApplication').attachments(parseJson(expense.attachment_urls,[]));
+    const details=parseJson(expense.attribution_details_json,[]);
+    await require('./expenseApplication').validateTargets({type:expense.attribution_type,details},expense.accounting_month,transaction);
+    await deduction.apply(expense,actor,transaction);
+    await expense.update({status:'approved',review_staff_id:actor?.staffId,review_user_name:actor?.name||'',review_comment:comment,review_time:new Date(),update_time:new Date()},{transaction});
+    return expense;
+  }
   const attribution = parseJson(expense.attribution_details_json, []);
   const attributionType = String(expense.attribution_type || 'STORE').toUpperCase();
   if (expense.recipient_snapshot_json) {
@@ -347,6 +358,7 @@ async function applyExpenseApproval(instance, transaction, actor, action, commen
 }
 
 async function ensureExpensePayable(expense, options = {}, transaction = null) {
+  if (expense.payment_method === 'PROFIT_DEDUCTION') throw Object.assign(new Error('抵扣毛利费用不生成应付或付款'),{status:400});
   const recipient = parseJson(expense.recipient_snapshot_json, {});
   const sourceType = options.sourceType || (expense.payment_method === 'PERSONAL_ADVANCE' ? 'reimbursement' : 'expense');
   let payable = await Payable.findOne({
@@ -584,6 +596,12 @@ async function cancelExpenseRecord(expense, operator, transaction = null, reason
   if (!expense || expense.is_deleted) return null;
   if (expense.status === 'paid') {
     throw reversalError('该报销已进入付款或结算流程，无法撤销');
+  }
+  if (expense.payment_method === 'PROFIT_DEDUCTION') {
+    if(!transaction) return sequelize.transaction(tx=>cancelExpenseRecord(expense,operator,tx,reason));
+    await require('./expenseProfitDeduction').reverse(expense,operator,transaction,reason);
+    await expense.update({status:'cancelled',review_comment:reason,update_time:new Date()},{transaction});
+    return expense;
   }
   if (expense.amortization_start_month) {
     if (!transaction) return sequelize.transaction(tx => cancelExpenseRecord(expense, operator, tx, reason));

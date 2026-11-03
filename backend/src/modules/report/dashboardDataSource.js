@@ -377,6 +377,10 @@ class DashboardDataSource {
 }
 
 class RealtimeSqlDashboardDataSource extends DashboardDataSource {
+  async getExpenseDeductions(filters,range,user) {
+    return require('../finance/expenseProfitDeduction').loadMonthly({storeIds:filters.storeId?[filters.storeId]:filters.storeIds,user,startDate:range.startDate,endDate:range.endDate,staffId:filters.employeeId});
+  }
+
   async query(sql, replacements = {}) {
     return sequelize.query(sql, { replacements, type: QueryTypes.SELECT });
   }

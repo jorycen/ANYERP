@@ -472,6 +472,8 @@ class DashboardService {
     const current = summarizeTrend(currentTrend);
     const yoy = summarizeTrend(yoyTrend);
     const previous = summarizeTrend(previousTrend);
+    const monthlyDeductions=profitVisible && typeof this.dataSource.getExpenseDeductions==='function'
+      ? await this.dataSource.getExpenseDeductions(filters,ranges.current,user) : null;
     const employeePerformance = buildEmployeePerformance(
       employeeOrderRows,
       approvedAdjustments,
@@ -586,6 +588,7 @@ class DashboardService {
         archiveScope: filters.archiveScope,
         companyWideGrossProfitRank,
         companyWideGrossProfitTotal,
+        expenseDeductionNote:'费用绩效扣减按所选日期覆盖的自然月统计；不改变销售毛利，按产品线筛选时不计算扣减后毛利',
         allocationRule: '销售额平均拆分；毛利按辅助销售固定金额或比例分配，未设置时平均拆分',
         generatedAt: new Date().toISOString()
       },
@@ -603,7 +606,7 @@ class DashboardService {
         categoryBreakdown: storeProductTypeMap.get(String(row.storeId))?.categoryBreakdown || {},
         periodCompare: comparisonRate(row.salesAmount, previousStoreMap.get(String(row.storeId))?.salesAmount)
       })),
-      employeeRanking: employeePerformance.ranking,
+      employeeRanking: require('../finance/expenseProfitDeduction').attachMonthly(employeePerformance.ranking,monthlyDeductions,!filters.productLine),
       employeePerformanceDetails: employeePerformance.details,
       productLineAnalysis: productLineRows.map(row => ({
         productLine: row.productLine,

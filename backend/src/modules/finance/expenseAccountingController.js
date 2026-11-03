@@ -173,6 +173,7 @@ async function createExpensePerformanceAllocations(ctx) {
   }
   if (!Number(expense.affects_store_profit ?? 1)) ctx.throw(400, '该费用未计入门店经营费用，不允许作为绩效扣减来源');
 
+  if (expense.payment_method === 'PROFIT_DEDUCTION') ctx.throw(400,'该费用在原审批通过后自动抵扣，不允许再次分摊');
   const body = ctx.request.body || {};
   const performanceMonth = normalizeMonth(body.performanceMonth || expense.accounting_month, '绩效月份');
   const rows = Array.isArray(body.allocations) ? body.allocations : [];
@@ -319,5 +320,6 @@ module.exports = {
   closeExpenseAccountingPeriod: ctx => changeExpenseAccountingPeriod(ctx, 'close'),
   reopenExpenseAccountingPeriod: ctx => changeExpenseAccountingPeriod(ctx, 'reopen'),
   assertPeriodOpen,
+  normalizeMonth,
   RECOGNIZED_EXPENSE_STATUSES
 };

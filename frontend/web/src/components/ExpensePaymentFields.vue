@@ -1,6 +1,6 @@
 <template>
   <el-form-item v-if="paymentMethod === 'PERSONAL_ADVANCE'" label="收款信息"><el-tag>支付至员工账户</el-tag></el-form-item>
-  <template v-else>
+  <template v-else-if="paymentMethod !== 'PROFIT_DEDUCTION'">
     <el-form-item v-if="accounts.length > 1" label="收款账户"><el-select :model-value="recipient.accountId" @change="chooseAccount"><el-option v-for="row in accounts" :key="row.account_id" :value="row.account_id" :label="accountText(row)" /></el-select></el-form-item>
     <el-form-item label="付款账号" required><el-input :model-value="paymentText" type="textarea" :rows="4" maxlength="2000" placeholder="填写收款账户名称、开户银行、账号等付款信息" @update:model-value="manualAccount" /></el-form-item>
   </template>

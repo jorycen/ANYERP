@@ -426,6 +426,7 @@
             <el-table-column prop="expense_date" label="发生日期" width="110" />
             <el-table-column prop="accounting_month" label="经营归属月" width="110" />
             <el-table-column prop="store_name" label="门店" width="120" />
+            <el-table-column label="支付／毛利抵扣" min-width="220"><template #default="{row}"><template v-if="row.profit_deduction">抵扣毛利 · {{row.profit_deduction.performanceMonth}}<div>{{row.profit_deduction.allocationText}}</div><el-tag size="small">{{row.status==='approved'?'已生效':row.status==='cancelled'?'已撤销':row.status==='rejected'?'已拒绝':'待审批生效'}}</el-tag></template><span v-else>{{row.payment_method}}</span></template></el-table-column>
             <el-table-column label="费用归属" width="180">
               <template #default="{ row }">
                 {{ expenseAttributionText(row) }}
@@ -438,7 +439,7 @@
           <el-table-column label="状态" width="100">
             <template #default="{ row }">
                 <el-tag :type="getExpenseStatusType(row.status)" size="small">
-                  {{ getExpenseStatusText(row.status) }}
+                  {{row.payment_method==='PROFIT_DEDUCTION' && row.status==='approved'?'已抵扣毛利':getExpenseStatusText(row.status)}}
                 </el-tag>
             </template>
           </el-table-column>
@@ -449,6 +450,7 @@
                 <el-button v-if="row.can_edit_withdrawn" link type="primary" @click="handleEditExpense(row)">编辑</el-button>
                 <el-button v-if="row.status === 'draft'" link type="success" @click="handleSubmitExpenseDraft(row)">提交</el-button>
                 <el-button v-if="row.status === 'draft'" link type="danger" @click="handleDeleteExpenseDraft(row)">删除</el-button>
+                <el-button v-if="row.can_cancel_profit_deduction" link type="danger" @click="handleCancelProfitDeduction(row)">撤销毛利抵扣</el-button>
                 <el-button v-if="row.can_withdraw" link type="warning" @click="handleWithdrawExpense(row)">撤回</el-button>
                 <el-button v-if="row.status === 'pending'" link type="primary" @click="handleSubmitExpense(row)">
                   报销
@@ -456,7 +458,7 @@
                 <el-button v-if="row.status === 'pending_approval' && row.source_type === 'expense'" link type="warning" @click="handleEditExpenseAttribution(row)">
                   调整归属
                 </el-button>
-                <el-button v-if="canManageExpenseAccounting(row) && !['PERSONAL', 'REBATE'].includes(row.attribution_type)" link type="warning" @click="openExpenseAllocation(row)">绩效分摊</el-button>
+                <el-button v-if="canManageExpenseAccounting(row) && row.payment_method !== 'PROFIT_DEDUCTION' && !['PERSONAL', 'REBATE'].includes(row.attribution_type)" link type="warning" @click="openExpenseAllocation(row)">绩效分摊</el-button>
               <span v-else-if="row.status === 'processing'" style="color: #e6a23c; font-size: 12px;">
                   {{ row.payable_id ? '待付款（付款管理）' : '支付中 · ' + (row.submit_user || '-') }}
                 </span>
@@ -1254,8 +1256,10 @@
             <el-option label="公司付款—单位账户" value="CORPORATE" />
             <el-option label="公司付款—其他账户" value="CORPORATE_OTHER" />
             <el-option label="员工垫付报销" value="PERSONAL_ADVANCE" />
+            <el-option label="抵扣毛利" value="PROFIT_DEDUCTION" />
           </el-select>
         </el-form-item>
+        <ExpenseProfitDeductionFields v-if="expenseForm.paymentMethod === 'PROFIT_DEDUCTION' && !expenseAttributionOnly" v-model="expenseForm.profitDeduction" :store-id="expenseForm.storeId" :amount="expenseForm.amount" />
         <el-form-item label="是否有发票">
           <el-switch v-model="expenseForm.hasInvoice" />
         </el-form-item>
@@ -1788,6 +1792,7 @@
 </template>
 
 <script setup>
+import ExpenseProfitDeductionFields from '../components/ExpenseProfitDeductionFields.vue'
 import ExpensePaymentFields from '../components/ExpensePaymentFields.vue'
 import { ref, reactive, computed, onMounted, nextTick, watch } from 'vue'
 import InventoryResourceRights from '../components/InventoryResourceRights.vue'
@@ -2262,6 +2267,7 @@ const expenseForm = reactive({
   accountingMonth: new Date().toISOString().slice(0, 7),
   affectsStoreProfit: true,
   paymentMethod: 'CORPORATE',
+  profitDeduction: {performanceMonth:'',method:'MANUAL',allocations:[]},
   recipient: {}, attachmentUrls: [],
   attributionType: 'STORE',
   attributionMethod: 'AVERAGE',
@@ -2939,6 +2945,7 @@ const handleEditExpense = (row) => {
   expenseForm.accountingMonth = row.accounting_month || expenseForm.expenseDate.slice(0, 7)
   expenseForm.affectsStoreProfit = Number(row.affects_store_profit ?? 1) === 1
   expenseForm.recipient = (() => { try { return JSON.parse(row.recipient_snapshot_json || '{}') } catch (_) { return {} } })()
+  expenseForm.profitDeduction = row.profit_deduction || (row.payment_method === 'PROFIT_DEDUCTION' ? {...expenseForm.recipient} : {performanceMonth:'',method:'MANUAL',allocations:[]})
   expenseForm.attachmentUrls = (() => { try { return typeof row.attachment_urls === 'string' ? JSON.parse(row.attachment_urls || '[]') : (row.attachment_urls || []) } catch (_) { return [] } })()
   expenseForm.paymentMethod = expenseForm.recipient.mode === 'OTHER' ? 'CORPORATE_OTHER' : row.payment_method || 'CORPORATE'
   expenseForm.attributionType = row.attribution_type || 'STORE'
@@ -4150,6 +4157,10 @@ const restoreSettlementDraft = () => {
 }
 
 const expensePaymentFields = ref(null)
+const handleCancelProfitDeduction = async row => {
+  try {const {value}=await ElMessageBox.prompt('撤销后恢复原抵扣月份个人毛利，已关账月份不能撤销。请填写原因。','撤销毛利抵扣',{inputValidator:value=>!!String(value||'').trim()||'请填写撤销原因'});await api.cancelExpense(row.expense_id,{reason:value});ElMessage.success('毛利抵扣已撤销');await loadExpenseData()}
+  catch(e){if(e!=='cancel'&&e!=='close')ElMessage.error(e.response?.data?.message||e.message)}
+}
 const handleAddExpense = () => {
   resetForm()
   expenseDialogVisible.value = true
@@ -4234,6 +4245,7 @@ const buildExpensePayload = () => ({
   accountingMonth: expenseForm.expenseId ? expenseForm.accountingMonth : expenseForm.expenseDate?.slice(0, 7),
   affectsStoreProfit: expenseForm.affectsStoreProfit,
   paymentMethod: expenseForm.paymentMethod,
+  profitDeduction: expenseForm.profitDeduction,
   recipient: expenseForm.recipient,
   attachmentUrls: expenseForm.attachmentUrls,
   ...buildAttributionPayload(),
@@ -4368,6 +4380,7 @@ const resetForm = () => {
   expenseForm.expenseDate = new Date().toISOString().slice(0, 10)
   expenseForm.accountingMonth = new Date().toISOString().slice(0, 7)
   expenseForm.affectsStoreProfit = true
+  expenseForm.profitDeduction = {performanceMonth:'',method:'MANUAL',allocations:[]}
   expenseForm.paymentMethod = 'CORPORATE'
   expenseForm.recipient = {}; expenseForm.attachmentUrls = []
   expenseForm.attributionType = 'STORE'

@@ -677,6 +677,16 @@ async function getAllSettlementAccounts(ctx) {
   const where = { status: 1 };
   applySettlementAccountScope(ctx, where);
   if (regionId) where.region_id = regionId;
+  if (ctx.query.purpose === 'coupon') {
+    where.account_type = 'FUND';
+    if (ctx.query.storeId) {
+      const store=await Store.findByPk(ctx.query.storeId);
+      const user=ctx.state.user,allowed=(user.accessibleStoreIds||[]).map(String);
+      if(!store || (!allowed.includes('*')&&!allowed.includes(String(store.store_id))) || !canAccessDistributor(user,store.distributor_id)) ctx.throw(403,'无权查询该门店返款账户');
+      where[Op.and]=[{[Op.or]:[{distributor_id:store.distributor_id},{distributor_id:null}]}];
+    }
+  }
+
   const rows = await SettlementAccount.findAll({
     where,
     include: [{ model: Region, attributes: ['region_id', 'region_code', 'name'] }],

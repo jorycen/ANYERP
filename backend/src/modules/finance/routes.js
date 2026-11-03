@@ -92,6 +92,8 @@ router.get('/expense-list/export', exportExpenseList);
 router.post('/expense/selection-summary', require('./controller').previewExpenseSelection);
 router.post('/expense/batch-submit', require('./controller').batchSubmitExpenses);
 router.get('/expense/form-options', require('./expenseApplication').options);
+router.get('/expense/profit-deduction-options', require('./expenseProfitDeduction').options);
+router.post('/expense/profit-deduction-preview', require('./expenseProfitDeduction').preview);
 router.get('/expense/:id', getExpenseDetail);
 router.put('/expense/:id/attribution', updateExpenseAttribution);
 router.put('/expense/:id/amortization', requireRole('finance'), require('./expenseAmortization').update);

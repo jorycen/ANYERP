@@ -581,6 +581,7 @@ async function getInstance(ctx) {
     const expense = await Expense.findOne({ where: { expense_id: data.business_id, is_deleted: 0 }, include: [{ model: Store, attributes: ['store_id', 'name'], required: false }] });
     if (expense) {
       data.moduleData = expense.toJSON();
+      data.moduleData.profit_deduction = require('../finance/expenseProfitDeduction').display(expense);
       data.moduleData.store_name = data.moduleData.Store?.name || '';
       data.moduleData.attribution_details = parseJson(data.moduleData.attribution_details_json, []);
       let attachmentUrls = parseJson(data.moduleData.attachment_urls, []);

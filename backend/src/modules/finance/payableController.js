@@ -1186,8 +1186,9 @@ async function createExpenseSettlement(ctx) {
       : roundAmount(requestedAmount);
     if (amount <= 0 || amount > remaining + 0.005) ctx.throw(400, '报销金额超过剩余可结算金额');
     const expense = payable.source_id
-      ? await Expense.findByPk(payable.source_id, { attributes: ['invoice_type'], transaction })
+      ? await Expense.findByPk(payable.source_id, { attributes: ['invoice_type','payment_method'], transaction })
       : null;
+    if (expense?.payment_method === 'PROFIT_DEDUCTION') ctx.throw(400,'抵扣毛利费用不产生应付结算');
     settlement = await Settlement.create({
       settlement_id: generateUUID(),
       settlement_no: `EXS${moment().format('YYYYMMDDHHmmss')}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`,

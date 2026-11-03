@@ -494,6 +494,12 @@ async function submitExpenseLocked(ctx, transaction) {
       } else {
         expenseApplication.attachments(JSON.parse(record.attachment_urls || '[]'));
         if (!record.recipient_snapshot_json) ctx.throw(400, '请先补齐费用收款信息');
+        if (record.payment_method === 'PROFIT_DEDUCTION') {
+          const deduction = require('./expenseProfitDeduction');
+          const store = await deduction.storeContext(record.store_id, user, transaction);
+          await deduction.normalize(deduction.read(record), {amount:record.amount,store,user,transaction});
+        }
+
         await record.update({ status: 'pending_approval', submit_user: user.name, update_time: new Date() }, { transaction });
         await startExpenseApproval(record, user, transaction);
       }
@@ -522,6 +528,7 @@ async function payExpense(ctx) {
   await sequelize.transaction(async transaction => {
     const record = await Expense.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
     if (!record) ctx.throw(404, '支出记录不存在');
+    if (record.payment_method === 'PROFIT_DEDUCTION') ctx.throw(400,'抵扣毛利费用不产生现金付款');
     if (record.payable_id) ctx.throw(400, '该费用已进入付款管理，请在付款管理中登记实际付款');
     if (record.status !== 'processing') ctx.throw(400, '当前状态不可付款');
 
@@ -844,8 +851,8 @@ async function createExpense(ctx) {
   if (!expenseTypeId) ctx.throw(400, '请选择报销类型');
   if (!String(expenseParty || '').trim()) ctx.throw(400, '请填写费用发生方');
   if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) ctx.throw(400, '费用金额必须大于0');
-  if (!['CORPORATE', 'CORPORATE_OTHER', 'PERSONAL_ADVANCE'].includes(paymentMethod)) ctx.throw(400, '支付方式无效');
-  const recipient = expenseApplication.recipient(ctx.request.body.recipient, paymentMethod, user.name || '', isDraft);
+  if (!['CORPORATE', 'CORPORATE_OTHER', 'PERSONAL_ADVANCE', 'PROFIT_DEDUCTION'].includes(paymentMethod)) ctx.throw(400, '支付方式无效');
+  let recipient = paymentMethod === 'PROFIT_DEDUCTION' ? {} : expenseApplication.recipient(ctx.request.body.recipient, paymentMethod, user.name || '', isDraft);
   const files = expenseApplication.attachments(attachmentUrls || [], isDraft);
   if (recipient.supplierId) {
     const selectedSupplier = await Supplier.findOne({ where: { supplier_id: recipient.supplierId, status: 1, is_deleted: 0 } });
@@ -913,8 +920,10 @@ async function createExpense(ctx) {
   const currentExpenseId = existingRecord?.expense_id || expenseId || generateUUID();
   let record;
   await sequelize.transaction(async transaction => {
+    if(existingRecord){await existingRecord.reload({transaction,lock:transaction.LOCK.UPDATE});if(!['draft','withdrawn'].includes(existingRecord.status))ctx.throw(409,'费用状态已变化，请刷新后重试');}
     await assertPeriodOpen(store.distributor_id, resolvedAccountingMonth, transaction);
     await expenseApplication.validateTargets(attribution, resolvedAccountingMonth, transaction);
+    if (paymentMethod === 'PROFIT_DEDUCTION') recipient = await require('./expenseProfitDeduction').normalize(ctx.request.body.profitDeduction, {amount,store,user,transaction,draft:isDraft});
     const expensePayload = {
       expense_id: currentExpenseId,
       expense_no: expenseNo,
@@ -1113,10 +1122,12 @@ async function getExpenseList(ctx) {
   const dealers=rows.length?await Distributor.findAll({where:distributorWhere(user),attributes:['distributor_id','name'],raw:true}):[];
   rows.forEach(row => {
     row.setDataValue('distributor_name',dealers.find(d=>String(d.distributor_id)===String(row.distributor_id))?.name||'归属待核对');
+    row.setDataValue('profit_deduction', require('./expenseProfitDeduction').display(row));
     row.setDataValue('can_submit',(row.status==='draft'&&canManageExpenseDraft(user,row))||row.status==='pending');
     const userId = user.staffId || user.id;
     const isApplicant = Number(row.applicant_staff_id) === Number(userId)
       || (!row.applicant_staff_id && [row.applicant_name, row.create_user].includes(user.name || user.phone));
+    row.setDataValue('can_cancel_profit_deduction', row.payment_method === 'PROFIT_DEDUCTION' && row.status === 'approved' && isApplicant);
     row.setDataValue('can_withdraw', row.status === 'pending_approval' && row.source_type === 'expense' && isApplicant);
     row.setDataValue('can_edit_withdrawn', row.status === 'withdrawn' && row.source_type === 'expense' && canManageExpenseDraft(user, row));
   });
@@ -1150,6 +1161,8 @@ async function exportExpenseList(ctx) {
       时间: item.create_time || '',
       费用日期: item.expense_date || '',
       经营归属月份: item.accounting_month || '',
+      抵扣月份: item.profit_deduction?.performanceMonth || '',
+      抵扣人员及分摊: item.profit_deduction?.allocationText || '',
       费用类型: item.expense_type || '',
       费用发生方: item.expense_party || '',
       金额: Number(item.amount || 0),
@@ -1158,13 +1171,13 @@ async function exportExpenseList(ctx) {
       制单人: item.create_user || item.applicant_name || '',
       发起人: item.submit_user || '',
       状态: item.status || '',
-      付款方式: item.payment_method || '',
+      付款方式: item.payment_method === 'PROFIT_DEDUCTION' ? '抵扣毛利' : (item.payment_method || ''),
       备注: item.remark || ''
     };
   });
   data.push({费用单号:`合计（${data.length}单）`,金额:require('./batchSubmission').totals(rows.map(row=>row.toJSON?row.toJSON():row),'amount').totalAmount});
   sendExcel(ctx, data, [
-    '费用单号', '经销商', '时间', '费用日期', '经营归属月份', '费用类型', '费用发生方', '金额', '已结算金额',
+    '费用单号', '经销商', '时间', '费用日期', '经营归属月份', '抵扣月份', '抵扣人员及分摊', '费用类型', '费用发生方', '金额', '已结算金额',
     '门店', '制单人', '发起人', '状态', '付款方式', '备注'
   ], `费用报销管理_${new Date().toISOString().slice(0, 10)}.xlsx`, '费用报销管理');
 }
@@ -1201,6 +1214,7 @@ async function getExpenseDetail(ctx) {
 
   const data = record.toJSON();
   data.attribution_details = parseExpenseDetails(data.attribution_details_json);
+  data.profit_deduction = require('./expenseProfitDeduction').display(record);
   if (record.source_type === 'purchase' && record.source_id) {
     const request = await PurchaseRequest.findOne({
       where: { request_id: record.source_id },
