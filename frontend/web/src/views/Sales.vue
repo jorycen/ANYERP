@@ -333,7 +333,7 @@
                 {{ pm.name }}
               </el-checkbox>
             </el-checkbox-group>
-            <el-button link type="primary" @click="previewCouponBreakdown">测算优惠券分担</el-button><span class="text-muted">优惠券按抵扣面额录入，99/199元购券款不重复录入收款。</span>
+            <el-button link type="primary" @click="previewCouponBreakdown">测算优惠券分担</el-button><span class="text-muted">优惠券按抵扣面额录入，顾客购券款不重复录入收款。</span>
             <el-alert v-if="couponPreviewMessage" :title="couponPreviewMessage" type="info" :closable="false" />
             <div class="payment-amounts mt-10">
               <template v-for="pm in selectedPayments" :key="pm">

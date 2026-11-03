@@ -257,21 +257,6 @@
             <el-table-column prop="update_user" label="更新人" width="120" />
             <el-table-column prop="update_time" label="更新时间" width="180" />
           </el-table>
-          <el-card style="margin-bottom:20px">
-            <template #header>门店优惠券方案</template>
-            <el-select v-model="couponStoreId" filterable clearable placeholder="先选择门店" style="width:260px" @change="loadCouponSchemes"><el-option v-for="store in stores" :key="store.store_id" :value="store.store_id" :label="store.name" /></el-select>
-            <el-button type="primary" :disabled="!couponStoreId" style="margin-left:12px" @click="openCouponScheme()">新增券方案</el-button>
-            <el-table :data="couponSchemes" v-loading="couponLoading" stripe border style="margin-top:14px">
-              <el-table-column prop="display_name" label="方案名称" min-width="180" />
-              <el-table-column label="类型" width="100"><template #default="{row}">{{row.coupon_rule.kind==='douyin'?'抖音券':'商场券'}}</template></el-table-column>
-              <el-table-column label="抵扣面额 / 购券额" min-width="160"><template #default="{row}">{{row.coupon_rule.faceAmount || '按实际抵扣'}} / {{row.coupon_rule.purchaseAmount}}</template></el-table-column>
-              <el-table-column label="商场承担 / 平台费率" min-width="160"><template #default="{row}">{{row.coupon_rule.mallRate}}% / {{row.coupon_rule.platformRate}}%</template></el-table-column>
-              <el-table-column label="有效期" min-width="190"><template #default="{row}">{{row.coupon_rule.validFrom || '不限'}} 至 {{row.coupon_rule.validTo || '不限'}}</template></el-table-column>
-              <el-table-column label="状态" width="160"><template #default="{row}">{{row.status===1?'启用':'停用'}}{{row.shared?'（历史共享）':''}}</template></el-table-column>
-              <el-table-column label="操作" width="260"><template #default="{row}"><el-button link type="primary" @click="openCouponScheme(row)">{{row.shared?'复制为本店方案':'编辑'}}</el-button><el-button v-if="!row.shared" link @click="toggleCouponScheme(row)">{{row.status===1?'停用':'启用'}}</el-button><el-button v-if="!row.shared" link type="danger" @click="deleteCouponScheme(row)">删除</el-button></template></el-table-column>
-            </el-table>
-            <el-text type="info">先选择门店，再维护该店的多个券方案。已使用的方案只能停用；历史共享方案请复制后配置。</el-text>
-          </el-card>
           <div class="filter-bar">
             <el-button type="primary" @click="openPaymentMethodDialog()">新增收款方式</el-button>
           </div>
@@ -564,41 +549,14 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="couponDialogVisible" title="门店优惠券方案" width="650px" :close-on-click-modal="false">
-      <el-form label-width="140px">
-        <el-form-item label="门店">{{couponEditingStoreName}}</el-form-item>
-        <el-form-item label="方案名称" required><el-input v-model="couponForm.name" :disabled="!!couponEditingId" maxlength="35" placeholder="自定义名称，例如59抵100" /></el-form-item>
-        <el-form-item label="券类型"><el-select v-model="couponForm.kind"><el-option label="商场优惠券" value="mall" /><el-option label="抖音优惠券" value="douyin" /></el-select></el-form-item>
-        <el-form-item label="抵扣面额"><el-input-number v-model="couponForm.faceAmount" :min="0" :precision="2" /><span>商场券0表示按实际抵扣</span></el-form-item>
-        <el-form-item v-if="couponForm.kind==='douyin'" label="顾客购券金额"><el-input-number v-model="couponForm.purchaseAmount" :min="0.01" :precision="2" /></el-form-item>
-        <el-form-item label="商场承担优惠比例"><el-input-number v-model="couponForm.mallRate" :min="0" :max="100" :precision="2" />%</el-form-item>
-        <el-form-item v-if="couponForm.kind==='douyin'" label="购券款平台费率"><el-input-number v-model="couponForm.platformRate" :min="0" :max="100" :precision="2" />%</el-form-item>
-        <el-form-item label="商场返款账户"><el-select v-model="couponForm.mallAccountId" clearable filterable><el-option v-for="a in couponStoreAccounts" :key="a.account_id" :value="a.account_id" :label="a.account_name" /></el-select></el-form-item>
-        <el-form-item v-if="couponForm.kind==='douyin'" label="购券返款账户"><el-select v-model="couponForm.platformAccountId" clearable filterable><el-option v-for="a in couponStoreAccounts" :key="a.account_id" :value="a.account_id" :label="a.account_name" /></el-select></el-form-item>
-        <el-form-item label="有效期"><el-date-picker v-model="couponForm.validFrom" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" /><el-date-picker v-model="couponForm.validTo" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" /></el-form-item>
-        <el-form-item label="状态"><el-switch v-model="couponForm.status" :active-value="1" :inactive-value="0" /></el-form-item>
-      </el-form>
-      <template #footer><el-button @click="couponDialogVisible=false">取消</el-button><el-button type="primary" :loading="couponSaving" @click="saveCouponScheme">保存</el-button></template>
-    </el-dialog>
-
     <el-dialog v-model="paymentMethodDialogVisible" :title="pmDialogTitle" width="900px" @close="resetPmForm">
       <el-form :model="pmForm" label-width="130px">
         <el-form-item label="名称" required>
-          <el-input v-model="pmForm.name" placeholder="普通收款名称；优惠券请在门店方案中新增" />
+          <el-input v-model="pmForm.name" placeholder="收款方式名称，例如抖音优惠券" />
         </el-form-item>
-        <el-form-item v-if="pmForm.couponKind" label="优惠券核算">
-          <el-select v-model="pmForm.couponKind" disabled><el-option label="普通收款" value="" /><el-option label="商场优惠券" value="mall" /><el-option label="抖音购券抵扣" value="douyin" /></el-select>
+        <el-form-item label="收款核算类型">
+          <el-select v-model="pmForm.couponKind"><el-option label="普通收款" value="" /><el-option label="商场优惠券" value="mall" /><el-option label="抖音优惠券" value="douyin" /></el-select>
         </el-form-item>
-        <template v-if="pmForm.couponKind">
-          <el-alert title="每种券方案单独建收款选项，并设置适用门店。销售录入券抵扣面额，后台自动保存分担快照；不再按普通费率扣费。" type="info" :closable="false" />
-          <el-form-item label="券面额"><el-input-number v-model="pmForm.couponFace" :min="0" :precision="2" /><span>商场券填0可按实际抵扣金额计算</span></el-form-item>
-          <el-form-item v-if="pmForm.couponKind === 'douyin'" label="顾客购券金额"><el-input-number v-model="pmForm.couponPurchase" :min="0.01" :precision="2" /></el-form-item>
-          <el-form-item label="商场承担比例"><el-input-number v-model="pmForm.couponMallRate" :min="0" :max="100" :precision="2" /><span>%；门店承担优惠差额的剩余部分</span></el-form-item>
-          <el-form-item v-if="pmForm.couponKind === 'douyin'" label="购券款手续费"><el-input-number v-model="pmForm.couponPlatformRate" :min="0" :max="100" :precision="2" /><span>%；仅以购券金额为基数</span></el-form-item>
-          <el-form-item label="有效期"><el-date-picker v-model="pmForm.couponValidFrom" type="date" value-format="YYYY-MM-DD" placeholder="开始日期（可选）" /><el-date-picker v-model="pmForm.couponValidTo" type="date" value-format="YYYY-MM-DD" placeholder="结束日期（可选）" /></el-form-item>
-          <el-form-item label="商场返款账户"><el-select v-model="pmForm.couponMallAccount" filterable><el-option v-for="a in couponAccounts" :key="a.account_id" :label="a.account_name" :value="a.account_id" /></el-select></el-form-item>
-          <el-form-item v-if="pmForm.couponKind === 'douyin'" label="购券返款账户"><el-select v-model="pmForm.couponPlatformAccount" filterable><el-option v-for="a in couponAccounts" :key="a.account_id" :label="a.account_name" :value="a.account_id" /></el-select></el-form-item>
-        </template>
         <el-form-item label="默认税率" required>
           <el-input-number :disabled="Boolean(pmForm.couponKind)" v-model="pmForm.defaultTaxRate" :min="0" :max="100" :precision="4" :step="0.1" />
           <span style="margin-left:8px;color:#909399">%（例如 0.6 表示应收分配额的 0.6%）</span>
@@ -610,6 +568,9 @@
           </el-radio-group>
         </el-form-item>
 
+        <el-form-item v-if="pmForm.couponKind && pmForm.isGlobal" label="全局优惠券方案">
+          <CouponPlansEditor v-model="pmGlobalCouponPlans" :kind="pmForm.couponKind" :accounts="couponAccounts" />
+        </el-form-item>
         <template v-if="pmForm.isGlobal">
           <el-form-item :label="isGuobuPaymentMethod(pmForm.name) ? '客户实收账户' : '默认结算账户'">
             <div style="display: flex; align-items: center; gap: 8px; width: 100%">
@@ -664,6 +625,12 @@
           </el-form-item>
         </template>
 
+        <el-form-item v-if="pmForm.couponKind && !pmForm.isGlobal" label="门店优惠券方案">
+          <div style="width:100%">
+            <el-select v-model="pmCouponStoreId" filterable placeholder="选择已勾选的门店" style="width:260px"><el-option v-for="store in pmStoreConfigRows.filter(s=>s.checked)" :key="store.store_id" :value="store.store_id" :label="store.name" /></el-select>
+            <CouponPlansEditor v-if="pmCouponStoreId && pmStoreConfigRows.some(s=>s.checked && s.store_id===pmCouponStoreId)" v-model="pmStoreCouponPlans[pmCouponStoreId]" :kind="pmForm.couponKind" :accounts="pmCouponAccounts" />
+          </div>
+        </el-form-item>
         <el-form-item label="排序">
           <el-input v-model="pmForm.sortOrder" />
         </el-form-item>
@@ -966,6 +933,7 @@
 </template>
 
 <script setup>
+import CouponPlansEditor from '../components/CouponPlansEditor.vue'
 import { ref, reactive, computed, onMounted, nextTick, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -1930,54 +1898,14 @@ const saveSubsidyAccountRoute = async row => {
   }
 }
 
-const couponStoreId = ref(''), couponSchemes = ref([]), couponLoading = ref(false), couponSaving = ref(false), couponDialogVisible = ref(false), couponEditingId = ref(''), couponEditingStoreId = ref('')
-const couponForm = reactive({})
-const couponEditingStoreName = computed(() => stores.value.find(s=>s.store_id===couponEditingStoreId.value)?.name || '')
-const couponStoreAccounts = computed(() => {
-  const store=stores.value.find(s=>s.store_id===couponEditingStoreId.value)
+const pmGlobalCouponPlans=ref([]),pmStoreCouponPlans=reactive({}),pmCouponStoreId=ref('')
+const pmCouponAccounts=computed(()=>{
+  const store=stores.value.find(s=>s.store_id===pmCouponStoreId.value)
   return couponAccounts.value.filter(a=>!a.distributor_id || String(a.distributor_id)===String(store?.distributor_id))
 })
-let couponRequestId=0
-async function loadCouponSchemes() {
-  const request=++couponRequestId
-  couponSchemes.value=[]
-  if (!couponStoreId.value) {couponLoading.value=false;return}
-  couponLoading.value=true
-  try { const res=await api.getCouponSchemes(couponStoreId.value);if(request===couponRequestId)couponSchemes.value=res.data || [] }
-  catch(e){if(request===couponRequestId)ElMessage.error(e.response?.data?.message || e.message)}
-  finally {if(request===couponRequestId)couponLoading.value=false}
-}
-function openCouponScheme(row) {
-  couponEditingId.value=row&&!row.shared?row.method_id:''
-  couponEditingStoreId.value=couponStoreId.value
-  Object.assign(couponForm,{name:row?.display_name || '',kind:'mall',faceAmount:0,purchaseAmount:0,mallRate:null,platformRate:0,mallAccountId:'',platformAccountId:'',validFrom:'',validTo:'',...(row?.coupon_rule || {}),status:row?.status ?? 1})
-  loadSettlementAccounts()
-  couponDialogVisible.value=true
-}
-function couponPayload(row) {
-  return {storeId:couponStoreId.value,name:row.display_name,couponRule:row.coupon_rule,status:row.status}
-}
-async function saveCouponScheme() {
-  couponSaving.value=true
-  try {
-    const rule={...couponForm}
-    if(rule.kind==='mall'){rule.purchaseAmount=0;rule.platformRate=0;rule.platformAccountId=''}
-    await api.saveCouponScheme(couponEditingId.value,{storeId:couponEditingStoreId.value,name:couponForm.name,couponRule:rule,status:couponForm.status})
-    ElMessage.success('方案已保存');couponDialogVisible.value=false;await loadCouponSchemes();await loadPaymentMethods()
-  }catch(e){ElMessage.error(e.response?.data?.message || e.message)}finally{couponSaving.value=false}
-}
-async function toggleCouponScheme(row) {
-  try {await ElMessageBox.confirm(`确认${row.status===1?'停用':'启用'}该方案？历史订单不受影响。`,'确认');await api.saveCouponScheme(row.method_id,{...couponPayload(row),status:row.status===1?0:1});await loadCouponSchemes();await loadPaymentMethods()}
-  catch(e){if(e!=='cancel'&&e!=='close')ElMessage.error(e.response?.data?.message || e.message)}
-}
-async function deleteCouponScheme(row) {
-  try {await ElMessageBox.confirm('未使用的方案可以删除；已使用方案只能停用。确认删除？','确认');await api.deleteCouponScheme(row.method_id,couponStoreId.value);await loadCouponSchemes();await loadPaymentMethods()}
-  catch(e){if(e!=='cancel'&&e!=='close')ElMessage.error(e.response?.data?.message || e.message)}
-}
-
 const loadPaymentMethods = async () => {
   try {
-    const res = await api.getAllPaymentMethods({ excludeCoupons: true })
+    const res = await api.getAllPaymentMethods()
     if (res.code === 0) paymentMethodData.value = res.data || []
   } catch (err) { ElMessage.error('加载收款方式失败') }
 }
@@ -1990,6 +1918,16 @@ const loadSettlementAccounts = async () => {
 }
 
 const openPaymentMethodDialog = (row) => {
+  pmGlobalCouponPlans.value=[];Object.keys(pmStoreCouponPlans).forEach(k=>delete pmStoreCouponPlans[k]);pmCouponStoreId.value=''
+  if(row?.coupon_rule){
+    const config=typeof row.coupon_rule==='string'?JSON.parse(row.coupon_rule):row.coupon_rule
+    if(config.version===2){pmGlobalCouponPlans.value=cloneDraft(config.global||[]);Object.assign(pmStoreCouponPlans,cloneDraft(config.stores||{}))}
+    else {
+      const plans=[{id:'legacy',name:'原方案',status:1,rule:config}]
+      if(row.is_global)pmGlobalCouponPlans.value=cloneDraft(plans)
+      else for(const store of row.Stores||[])pmStoreCouponPlans[store.store_id]=cloneDraft(plans)
+    }
+  }
   loadSettlementAccounts()
   pmStoreConfigRows.value = (stores.value || []).map(s => ({
     store_id: s.store_id,
@@ -2048,12 +1986,14 @@ const openPaymentMethodDialog = (row) => {
 }
 
 const onPmIsGlobalChange = () => {
-  if (pmForm.isGlobal) {
-    pmStoreConfigRows.value.forEach(r => { r.checked = false; r.accountId = ''; r.receivableAccountId = ''; r.taxRateOverride = null })
-  }
+  // Keep both drafts in the dialog; only the selected scope is submitted.
 }
 
 const onPmStoreChecked = (row) => {
+  if(row.checked){
+    if(!pmStoreCouponPlans[row.store_id])pmStoreCouponPlans[row.store_id]=[]
+    pmCouponStoreId.value=row.store_id
+  }
   if (!row.checked) {
     row.accountId = ''
     row.receivableAccountId = ''
@@ -2064,6 +2004,7 @@ const onPmStoreChecked = (row) => {
 const savePaymentMethodDraft = () => {
   saveDraft('system:payment-method-create', {
     pmForm: cloneDraft(pmForm),
+    globalCouponPlans:cloneDraft(pmGlobalCouponPlans.value),storeCouponPlans:cloneDraft(pmStoreCouponPlans),
     pmStoreConfigRows: cloneDraft(pmStoreConfigRows.value)
   })
   ElMessage.success('草稿已保存')
@@ -2073,6 +2014,8 @@ const restorePaymentMethodDraft = () => {
   const draft = loadDraft('system:payment-method-create')
   if (!draft) return
   Object.assign(pmForm, draft.pmForm || {})
+  pmGlobalCouponPlans.value=draft.globalCouponPlans || []
+  Object.assign(pmStoreCouponPlans,draft.storeCouponPlans || {})
   if (Array.isArray(draft.pmStoreConfigRows)) {
     pmStoreConfigRows.value = draft.pmStoreConfigRows
   }
@@ -2095,8 +2038,8 @@ const handlePmSubmit = async () => {
     }))
     const data = {
       name: pmForm.name,
-      couponRule: pmForm.couponKind ? { kind: pmForm.couponKind, faceAmount: pmForm.couponFace, purchaseAmount: pmForm.couponPurchase, mallRate: pmForm.couponMallRate, platformRate: pmForm.couponPlatformRate, mallAccountId: pmForm.couponMallAccount, platformAccountId: pmForm.couponPlatformAccount, validFrom: pmForm.couponValidFrom, validTo: pmForm.couponValidTo } : null,
-      defaultTaxRate: Number(pmForm.defaultTaxRate || 0),
+      couponRule: pmForm.couponKind ? {version:2,kind:pmForm.couponKind,global:pmForm.isGlobal?pmGlobalCouponPlans.value:[],stores:pmForm.isGlobal?{}:Object.fromEntries(checkedRows.map(row=>[row.store_id,pmStoreCouponPlans[row.store_id]||[]]))} : null,
+      defaultTaxRate: pmForm.couponKind ? 0 : Number(pmForm.defaultTaxRate || 0),
       isGlobal: pmForm.isGlobal,
       settlementAccountId: pmForm.isGlobal ? pmForm.settlementAccountId : null,
       receivableSettlementAccountId: pmForm.isGlobal && isGuobuPaymentMethod(pmForm.name)

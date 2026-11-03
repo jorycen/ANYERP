@@ -92,12 +92,28 @@ async function paymentSnapshot(payment, storeId, transaction, previous = []) {
   if (previousRow && !previousRow.coupon_snapshot) return null;
   const old = previousRow;
   if (old) return calculateCoupon(parse(old.coupon_snapshot).rule, payment.amount);
-  const method = await PaymentMethod.findOne({ where: { [Op.or]: [{ name }, { code: name }] }, transaction });
+  let method = await PaymentMethod.findOne({ where: { [Op.or]: [{ name }, { code: name }] }, transaction, ...(transaction?{lock:transaction.LOCK.SHARE}:{}) });
+  const configuration=require('./couponConfiguration');
+  if(!method && name.includes('｜')) {
+    const parents=await PaymentMethod.findAll({where:{name:{[Op.in]:name.split('｜').slice(0,-1).map((_,i)=>name.split('｜').slice(0,i+1).join('｜'))}},transaction,...(transaction?{lock:transaction.LOCK.SHARE}:{})});
+    for(const parent of parents) {
+      if(!configuration.bundle(parent.coupon_rule))continue;
+      const option=configuration.options(parent.toJSON?parent.toJSON():parent,storeId,{includeInactive:true}).find(p=>p.name===name);
+      if(option){if(option.status!==1)fail('优惠券方案已停用');method=option;break;}
+
+    }
+    if(!method)fail('优惠券方案已删除或不适用当前门店');
+  }
+  if(method && configuration.bundle(method.coupon_rule)) {
+    const parent=method;
+    method=configuration.options(parent.toJSON?parent.toJSON():parent,storeId,{includeInactive:true}).find(p=>p.name===name);
+    if(!method)fail('请选择当前门店的具体优惠券方案');
+  }
   if (!method?.coupon_rule && ['商场优惠券', '抖音减满券', '抖音优惠券'].includes(String(method?.name || name))) fail('请先在收款方式中配置优惠券分担方案，再用于新订单');
   if (!method?.coupon_rule) return null;
   if (Number(method.status) !== 1) fail('优惠券方案已停用');
   if (!Number(method.is_global)) {
-    const scope = await PaymentMethodStore.findOne({ where: { method_id: method.method_id, store_id: storeId }, transaction });
+    const scope = await PaymentMethodStore.findOne({ where: { method_id: method.parent_method_id || method.method_id, store_id: storeId }, transaction });
     if (!scope) fail('该优惠券方案不适用当前门店');
   }
   const rule = normalizeRule(method.coupon_rule);

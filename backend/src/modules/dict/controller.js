@@ -387,7 +387,7 @@ async function getPaymentMethodsByStore(ctx) {
     return String(a.method_id || '').localeCompare(String(b.method_id || ''));
   });
 
-  ctx.body = { code: 0, data: result.filter(method => require('../sales/couponPricing').isActiveToday(method.coupon_rule)) };
+  ctx.body = { code: 0, data: result.flatMap(method => require('../sales/couponConfiguration').options(method, storeId)).filter(method => require('../sales/couponPricing').isActiveToday(method.coupon_rule)) };
 }
 
 async function validatePaymentMethodAccounts(ctx, {
@@ -438,6 +438,14 @@ function validateStoreTaxRates(ctx, storeConfigs) {
 
 async function validateCouponRule(ctx) {
   if (ctx.request.body.couponRule === undefined) return undefined;
+  const config = require('../sales/couponConfiguration');
+  if (config.bundle(ctx.request.body.couponRule)) {
+    const existing=ctx.params?.id?await PaymentMethod.findByPk(ctx.params.id):null;
+    const name=String(ctx.request.body.name??existing?.name??'').trim();
+    const duplicate=await PaymentMethod.findOne({where:{name,...(existing?{method_id:{[Op.ne]:existing.method_id}}:{})}});
+    if(duplicate)ctx.throw(400,'收款方式名称已存在');
+    return config.normalize(ctx,existing);
+  }
   const rule = require('../sales/couponPricing').normalizeRule(ctx.request.body.couponRule);
   if (!rule) return null;
   const existing = ctx.params?.id ? await PaymentMethod.findByPk(ctx.params.id) : null;
@@ -531,7 +539,7 @@ async function updatePaymentMethod(ctx) {
   const record = await PaymentMethod.findByPk(id);
   if (!record) ctx.throw(404, '记录不存在');
   if (record.coupon_rule) {
-    const used = await require('../../models').OrderPayment.count({ where:{ payment_method:{[Op.in]:[record.name,record.code]} } });
+    const used = await require('../../models').OrderPayment.count({ where:{ [Op.or]:[{payment_method:{[Op.in]:[record.name,record.code]}},{payment_method:{[Op.like]:record.name+'｜%'}}] } });
     if (used && ((name !== undefined && name !== record.name) || (code !== undefined && code !== record.code) || couponRule === null)) ctx.throw(400,'已使用的优惠券不能改名或改为普通收款，请新增方案');
   }
 
@@ -551,6 +559,10 @@ async function updatePaymentMethod(ctx) {
 
   const t = await (require('../../models').sequelize).transaction();
   try {
+    if (require('../sales/couponConfiguration').bundle(couponRule)) {
+      const lockedRecord = await PaymentMethod.findByPk(id, {transaction:t,lock:t.LOCK.UPDATE});
+      await require('../sales/couponConfiguration').normalize(ctx, lockedRecord, {transaction:t});
+    }
     const updates = {};
     if (name !== undefined) { updates.name = name; updates.code = name; }
     if (code !== undefined) updates.code = code;
@@ -604,7 +616,7 @@ async function deletePaymentMethod(ctx) {
 
 
   if (record.coupon_rule) {
-    const used = await require('../../models').OrderPayment.count({where:{payment_method:{[Op.in]:[record.name,record.code]}}});
+    const used = await require('../../models').OrderPayment.count({where:{[Op.or]:[{payment_method:{[Op.in]:[record.name,record.code]}},{payment_method:{[Op.like]:record.name+'｜%'}}]}});
     if (used) ctx.throw(400,'该方案已被订单使用，只能停用，不能删除');
   }
   const t = await (require('../../models').sequelize).transaction();

@@ -20,7 +20,7 @@ async function owned(ctx, store) {
 async function list(ctx) {
   const store=await storeContext(ctx);
   const rows=await M.PaymentMethod.findAll({where:{coupon_rule:{[Op.ne]:null}},include:[{model:M.PaymentMethodStore}],order:[['sort_order','ASC']]});
-  const list=rows.filter(r=>Number(r.is_global)||(r.PaymentMethodStores||[]).some(c=>String(c.store_id)===String(store.store_id))).map(r=>{
+  const list=rows.filter(r=>!require('../sales/couponConfiguration').bundle(r.coupon_rule)).filter(r=>Number(r.is_global)||(r.PaymentMethodStores||[]).some(c=>String(c.store_id)===String(store.store_id))).map(r=>{
     const data=r.toJSON(),rule=pricing.normalizeRule(data.coupon_rule);
     const shared=Number(r.is_global)===1 || r.PaymentMethodStores.length!==1;
     return {...data,coupon_rule:rule,shared,display_name:data.name.startsWith(store.name+'｜')?data.name.slice(store.name.length+1):data.name};
