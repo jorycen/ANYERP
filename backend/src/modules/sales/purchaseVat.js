@@ -8,15 +8,21 @@ function normalizeInvoiceType(value) {
 }
 function isService(line) {
   const name = String(line.productName || '');
-  return /清灰|装系统|系统安装|系统重装|CARE/i.test(name) || /^联想\s*服务\s/.test(name) || /^检测[－-]专业检测$/.test(name);
+  return /^ANY-CARE-/i.test(String(line.pnCode||'')) || ['Care服务','服务'].includes(line.category) || /清灰|装系统|系统安装|系统重装|CARE/i.test(name) || /^联想\s*服务\s/.test(name) || /^检测[－-]专业检测$/.test(name)
+    || /^(服务|延保)[－-]/.test(name) || /^电脑检测维修$/.test(name);
 }
-function taxError(message) {
-  return Object.assign(new Error(message), { status: 409, code: 'ORDER_PURCHASE_TAX_PENDING' });
+function taxError(message, pendingItems = []) {
+  return Object.assign(new Error(message), { status: 409, code: 'ORDER_PURCHASE_TAX_PENDING', pendingItems });
 }
 function calculateVat(lines, invoiceAmount, invoiceStatus) {
   if (String(invoiceStatus).trim() === '不开票' || Number(invoiceAmount) === 0) return { taxableAmount: 0, amount: 0 };
   const bases = lines.map(x => x.purchaseTaxBasis);
-  if (bases.some(x => !x || ![VERSION, LEGACY_VERSION].includes(x.version) || x.status !== 'confirmed')) throw taxError('采购票税依据待核实，不能计算税费');
+  const pending = lines.filter(x => !x.purchaseTaxBasis || ![VERSION,LEGACY_VERSION].includes(x.purchaseTaxBasis.version) || x.purchaseTaxBasis.status !== 'confirmed');
+  if (pending.length) {
+    const items=pending.map(x=>({itemId:x.itemId,productName:x.productName||'',pnCode:x.pnCode||'',reason:x.purchaseTaxBasis?.reason||'采购票税依据缺失'}));
+    const names=items.map(x=>(x.productName||x.pnCode||'商品')+(x.pnCode?'（'+x.pnCode+'）':''));
+    throw taxError('采购票税依据待核实：'+names.slice(0,3).join('、')+(items.length>3?'等'+items.length+'项':''),items);
+  }
   if (new Set(bases.map(x => x.version)).size > 1) throw taxError('税费规则版本不一致');
   if (bases.some(x => !Number.isFinite(Number(x.purchaseAmount)) || Number(x.purchaseAmount) < 0 ||
     (x.service ? Number(x.purchaseAmount) !== 0 : !['收据', '专票13%'].includes(x.invoiceType)))) {
@@ -51,6 +57,7 @@ async function resolveDocumentTaxBasis(order, lines, transaction, originIndex = 
       const key = line.pricingOrigin.sourceNo + ':' + line.productId;
       if (visited.has(key)) { result.push({...line,purchaseTaxBasis:{version:VERSION,status:'pending',reason:'退货来源循环，需核实原单'}}); continue; }
       const nextVisited = new Set(visited); nextVisited.add(key);
+      let traceReason='退货原单缺少可核对的销售明细';
       const returned = await M.SalesReturnRequest.findOne({where:{return_no:line.pricingOrigin.sourceNo,status:'completed'},raw:true,transaction});
       const matches = returned ? await M.SalesReturnRequestItem.findAll({where:{return_id:returned.return_id,product_id:line.productId},raw:true,transaction}) : [];
       const originalItem = matches.length === 1 && matches[0].order_item_id ? await M.OrderItem.findByPk(matches[0].order_item_id,{raw:true,transaction}) : null;
@@ -59,11 +66,15 @@ async function resolveDocumentTaxBasis(order, lines, transaction, originIndex = 
       const snapshot = originalOrder ? await M.OrderGrossProfit.findOne({where:{order_id:originalOrder.order_id},raw:true,transaction}) : null;
       const originalLines = typeof snapshot?.product_pricing_details === 'string' ? JSON.parse(snapshot.product_pricing_details) : snapshot?.product_pricing_details || [];
       const originals = originalLines.filter(x=>String(x.itemId)===String(originalItem?.item_id)&&x.productId===line.productId);
+      if(matches.length>1 || originals.length>1)traceReason='退货商品身份不唯一，须核实原销售明细';
       if (originalOrder && originals.length === 1) {
         const original = {...originals[0],quantity:line.quantity};
         // October category assumptions cannot become November purchase facts.
         if (original.purchaseTaxBasis?.source === 'user_october_category_confirmation') delete original.purchaseTaxBasis;
         const foundation = (await require('../inventory/foundation').salesBasis(originalOrder,[original],transaction))[0]?.inventoryFoundation;
+        if(foundation?.status==='conflict') {
+          result.push({...line,purchaseTaxBasis:{version:VERSION,status:'pending',service:false,reason:'退货原单基础档案冲突：'+foundation.reason}}); continue;
+        }
         if (foundation?.source?.taxScope) delete original.purchaseTaxBasis;
         if (foundation?.status === 'confirmed' && !foundation.source?.taxScope && foundation.invoiceType) {
           result.push({...line,purchaseTaxBasis:{version:VERSION,status:'confirmed',service:false,invoiceType:foundation.invoiceType,
@@ -72,13 +83,14 @@ async function resolveDocumentTaxBasis(order, lines, transaction, originIndex = 
           continue;
         }
         const traced = (await resolveDocumentTaxBasis(originalOrder,[original],transaction,null,nextVisited))[0].purchaseTaxBasis;
+        traceReason=traced.reason || '退货原采购票税尚未确认';
         if (traced.status === 'confirmed') {
           result.push({...line,purchaseTaxBasis:{...traced,purchaseAmount:money(Number(line.purchasePrice)*Number(line.quantity)),
             source:'sales_return_original_purchase',originalOrderId:originalOrder.order_id,originalItemId:original.itemId,returnNo:line.pricingOrigin.sourceNo}});
           continue;
         }
       }
-      result.push({...line,purchaseTaxBasis:{version:VERSION,status:'pending',service:false,reason:'退货原单采购票税无法唯一确认'}});
+      result.push({...line,purchaseTaxBasis:{version:VERSION,status:'pending',service:false,reason:traceReason}});
       continue;
     }
     if (line.purchaseTaxBasis?.version === VERSION && line.purchaseTaxBasis.status === 'confirmed') { result.push(line); continue; }
@@ -126,6 +138,9 @@ async function resolveDocumentTaxBasis(order, lines, transaction, originIndex = 
           reason: visited.size > 0 ? '退货原销售门店及供应商的全部候选采购票税一致，不指定具体批次' : '冻结成本匹配的所有候选采购票据口径一致，不指定具体批次'
         }; else basis.reason = '采购候选票据口径不唯一或不明确';
       }
+    }
+    if(!originIndex && visited.size===0 && basis.status==='pending' && basis.reason==='缺少可追溯采购来源') {
+      basis=await require('../inventory/foundation').inventoryTaxConsensus(order,line,transaction)||basis;
     }
     result.push({ ...line, purchaseTaxBasis: basis });
   }

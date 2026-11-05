@@ -15,9 +15,9 @@ function view(row) {
   if (!row) return { basisId: null, status: 'pending', invoiceType: null, invoiceTypeLabel: '待确认', purchaseCost: null, costMode: null, companyPrice: null, reason: '基础档案尚未建立或关联' };
   // Old imports compared historical prices with today's catalog. Only real
   // acquisition/tax disagreements can make the acquisition facts conflict.
-  if (row.status === 'conflict' && /^基础资料冲突：(company_price|cost_mode)(、(company_price|cost_mode))*$/.test(row.reason || '')) {
+  if (row.status === 'conflict' && /^基础资料冲突：/.test(row.reason || '')) {
     const source = json(row.source_data || {});
-    if (!source.identityConflict) {
+    if (!source.identityConflict && source.observations?.length) {
       const observations = (source.observations || []).filter(x => !x.taxScope || x.taxScope === source.taxScope);
       const facts = mergeCandidates(observations);
       row = { ...row, ...facts, purchase_cost: facts.purchase_cost ?? row.purchase_cost };
@@ -70,6 +70,23 @@ async function salesBasis(order, lines, transaction) {
   // supplier-default inference may silently link an imported historical sale.
   return lines.map(line => {const basis=saved.get(`order_item:${line.itemId}`);return { ...line, inventoryFoundation: matchesLine(basis,line)?basis:view(null) };});
 }
+async function inventoryTaxConsensus(order,line,transaction) {
+  if(money(line.purchasePrice)===null || !Number.isFinite(Number(line.quantity)) || Number(line.quantity)<=0)return null;
+  if(line.snCode || !['未归档','draft','草稿','pending_store_approval','pending_distributor_approval','pending_approval'].includes(order.order_status))return null;
+  const links=(await M.InventoryFoundationRef.findAll({where:{store_id:order.store_id,reference_key:{[Op.like]:'inventory:%'}},raw:true,transaction}))
+    .filter(x=>String(x.reference_key||'').startsWith('inventory:'));
+  if(!links.length)return null;
+  const inventory=await M.Inventory.findAll({where:{inventory_id:{[Op.in]:links.map(x=>x.reference_key.split(':')[1])},store_id:order.store_id,product_id:line.productId},raw:true,transaction});
+  const active=links.filter(link=>{const [,key,field]=link.reference_key.split(':');return inventory.some(row=>String(row.inventory_id)===key&&Number(row[field])>0);});
+  if(!active.length)return null;
+  const facts=await M.InventoryFoundation.findAll({where:{basis_id:{[Op.in]:active.map(x=>x.basis_id)},product_id:line.productId},raw:true,transaction});
+  if(new Set(active.map(x=>x.basis_id)).size!==facts.length)return null;
+  const bases=facts.map(view);
+  if(bases.some(x=>x.status!=='confirmed'||x.source?.taxScope||!x.invoiceType)||new Set(bases.map(x=>x.invoiceType)).size!==1)return null;
+  return {version:require('../sales/purchaseVat').VERSION,status:'confirmed',service:false,invoiceType:bases[0].invoiceType,
+    purchaseAmount:money(line.purchasePrice)===null?null:Math.round(Number(line.purchasePrice)*Number(line.quantity)*100)/100,
+    source:'confirmed_current_inventory_tax',basisIds:bases.map(x=>x.basisId),reason:'本店当前实存批次的已确认票税全部一致，不指定或合并采购批次'};
+}
 function matchesLine(basis,line){
   if(!basis)return false;
   if(line.productId&&basis.productId!==line.productId)return false;
@@ -93,8 +110,8 @@ async function applySalesTaxBasis(order, lines, transaction) {
   if (!unresolved.length) return result;
   const documented = await require('../sales/purchaseVat').resolveDocumentTaxBasis(order, unresolved, transaction);
   const byItem = new Map(documented.map(line => [String(line.itemId),line.purchaseTaxBasis]));
-  return result.map(line => byItem.get(String(line.itemId))?.status === 'confirmed'
-    ? {...line,purchaseTaxBasis:byItem.get(String(line.itemId))} : line);
+  return result.map(line => byItem.has(String(line.itemId))
+    ? {...line,purchaseTaxBasis:{...line.purchaseTaxBasis,...byItem.get(String(line.itemId))}} : line);
 }
 async function applySalesPricing(order, lines, transaction) {
   return (await salesBasis(order,lines,transaction)).map(line=>{
@@ -111,6 +128,17 @@ async function applySalesPricing(order, lines, transaction) {
 async function ensureSalesReferences(order,lines,transaction){
   if(!transaction)return M.sequelize.transaction(tx=>ensureSalesReferences(order,lines,tx));
   const present=await load(lines.map(l=>'order_item:'+l.itemId),transaction);
+  // Existing draft references also need to retain newly traced purchase facts.
+  // Previously only missing references were initialized, so a resolved return
+  // kept an empty foundation and repeated the same lookup on every save.
+  for (const line of lines) {
+    const basis=present.get('order_item:'+line.itemId),tax=line.purchaseTaxBasis;
+    if (!matchesLine(basis,line) || basis.status !== 'pending' || tax?.status !== 'confirmed' || tax.source === 'inventory_foundation') continue;
+    const row=await M.InventoryFoundation.findByPk(basis.basisId,{transaction,lock:transaction.LOCK.UPDATE});
+    if (row?.status === 'pending' && ['system','migration'].includes(row.updated_by)) {
+      await confirmTaxEvidence(row,tax,{name:'system'},'补齐已追溯的采购票税依据',transaction);
+    }
+  }
   const missing=lines.filter(l=>!matchesLine(present.get('order_item:'+l.itemId),l));
   if(!missing.length)return;
   const documented=await require('../sales/purchaseVat').resolveDocumentTaxBasis(order,missing,transaction);
@@ -150,6 +178,18 @@ async function ensureSalesReferences(order,lines,transaction){
     await bind('order_item:'+item.item_id,row.basis_id,order.store_id,transaction);
   }
 }
+async function confirmTaxEvidence(row,tax,user,reason,transaction) {
+  const source=json(row.source_data||{});
+  if (source.identityConflict || view(row.toJSON()).status === 'conflict') fail('基础资料存在冲突，不能自动确认票税');
+  if (tax.status !== 'confirmed' || (!tax.service && !['收据','专票13%'].includes(tax.invoiceType))) fail('缺少明确票税依据');
+  if (row.invoice_type && row.invoice_type !== tax.invoiceType) fail('原票种与确认依据不同，不能自动覆盖');
+  const before=row.toJSON();
+  await row.update({invoice_type:tax.invoiceType||null,status:'confirmed',reason,
+    source_data:{...source,taxScope:null,purchaseBasis:tax},revision:Number(row.revision)+1,
+    updated_by:user.name,update_time:new Date()},{transaction});
+  await recordBusinessAction({businessType:'inventory_foundation',businessId:row.basis_id,action:'confirm_purchase_tax',user,
+    comment:reason,detail:{before,after:row.toJSON(),note:'只确认采购票税，不修改采购成本、定价或归档金额'},transaction});
+}
 async function clearScopedTax(row,transaction){
   const source=json(row.source_data||{});if(!source.taxScope)return;
   await row.update({invoice_type:null,status:'pending',reason:'十月临时分类依据不能推广到当前库存或其他月份',
@@ -184,4 +224,4 @@ async function update(basisId, body, user, transaction) {
     comment:body.reason,detail:{before,after:row.toJSON(),note:'归档金额不自动重写，需通过原有纠错流程预览审批'},transaction });
   return (await currentCatalog([row.toJSON()],transaction))[0];
 }
-module.exports = { id, money, snKey, view, mergeCandidates, currentCatalog, matchesLine, load, salesBasis, applySalesTaxBasis, applySalesPricing, ensureSalesReferences, clearScopedTax, bind, update };
+module.exports = { id, money, snKey, view, mergeCandidates, currentCatalog, matchesLine, load, salesBasis, inventoryTaxConsensus, applySalesTaxBasis, applySalesPricing, ensureSalesReferences, confirmTaxEvidence, clearScopedTax, bind, update };
