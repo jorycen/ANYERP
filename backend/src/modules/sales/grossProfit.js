@@ -327,6 +327,13 @@ function parseJsonArray(value) {
 
 function snapshotToResponse(snapshot, order = null) {
   const row = snapshot && typeof snapshot.toJSON === 'function' ? snapshot.toJSON() : (snapshot || {});
+  if (row.tax_calculation_status === 'pending') return {
+    ...pricingCompleteness(row.product_pricing_details), status:'pending', taxCalculationStatus:'pending',
+    reason:row.tax_calculation_reason, pricingStatus:'pending', pricingMessage:'',
+    grossProfitAmount:null, vatAmount:null, vatTaxableAmount:null, productPricingAmount:null,
+    paymentFeeAmount:null, freightCostAmount:null, supplementAmount:null,
+    productPricingDetails:parseJsonArray(row.product_pricing_details)
+  };
   const orderRow = order && typeof order.toJSON === 'function' ? order.toJSON() : order;
   const receivableAmount = roundMoney(
     row.receivable_amount !== undefined ? row.receivable_amount : row.received_amount
@@ -1053,7 +1060,11 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
       throw new Error('商品缺少可用的定价或采购价，保留原归档毛利快照，待补价后重算');
     }
   }
-  const values = calculateGrossProfitValues({
+  const archived = frozenInputs || (final === null
+    ? ['已归档', 'completed', 'archived'].includes(String(order.order_status || ''))
+    : !!final);
+  let values;
+  try { values = calculateGrossProfitValues({
     receivableAmount: calculateOrderReceivable(order),
     paymentDetails,
     productPricingDetails,
@@ -1062,10 +1073,16 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     invoiceAmount: order.invoice_amount,
     invoiceStatus: order.invoice_status,
     externalAdjustmentEligible: productPricingDetails.some(item => item.externalAdjustmentEligible)
-  });
-  const archived = frozenInputs || (final === null
-    ? ['已归档', 'completed', 'archived'].includes(String(order.order_status || ''))
-    : !!final);
+  }); } catch (error) {
+    // A non-final estimate is not a prerequisite for saving or printing the
+    // actual order. Never weaken final accounting, or disguise unknown VAT as 0.
+    if (error.code !== 'ORDER_PURCHASE_TAX_PENDING' || archived || requireComplete) throw error;
+    if (persist) await OrderGrossProfit.destroy({where:{order_id:order.order_id,snapshot_status:'draft'},transaction});
+    return {order_id:order.order_id,order_no:order.order_no,snapshot_status:'draft',
+      tax_calculation_status:'pending',tax_calculation_reason:error.message,
+      gross_profit_amount:null,vat_amount:null,vat_taxable_amount:null,
+      product_pricing_details:productPricingDetails};
+  }
   const completeness = pricingCompleteness(productPricingDetails);
   if (!completeness.pricingComplete && (archived || requireComplete)) {
     const error = new Error(`成本待补，不能归档：${completeness.missingCostItems.map(item => item.productName || item.itemId).join('、')}`);

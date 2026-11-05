@@ -53,11 +53,13 @@ function applyFrozenCostDisplay(orderData, snapshot) {
   }) };
 }
 
-// Reading an order must not require confirmed tax evidence. Write/approval paths
-// continue calling the calculator directly and retain its strict validation.
+// Reading or saving a non-final order must not require a successful tax
+// estimate. Final accounting and explicit complete validation remain strict.
 async function readCostSnapshot(orderId, options = {}) {
   try {
-    return { snapshot: await require('./grossProfit').calculateAndSaveOrderGrossProfit(orderId, { ...options, persist: false }), pending: null };
+    const snapshot=await require('./grossProfit').calculateAndSaveOrderGrossProfit(orderId, { ...options, persist: false });
+    if(snapshot?.tax_calculation_status==='pending')return {snapshot:null,pending:{status:'pending',reason:snapshot.tax_calculation_reason,grossProfitAmount:null,vatAmount:null}};
+    return { snapshot, pending: null };
   } catch (error) {
     if (error.code !== 'ORDER_PURCHASE_TAX_PENDING') throw error;
     return { snapshot: null, pending: { status: 'pending', reason: error.message,

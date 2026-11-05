@@ -2817,7 +2817,8 @@ async function create(ctx) {
 
   if (draftReplayed) { ctx.body = savedDraft; return; }
   const pricing = pricingCompleteness(grossProfitSnapshot?.product_pricing_details);
-  const grossProfitAmount = grossProfitSnapshot && pricing.pricingComplete ? Number(grossProfitSnapshot.gross_profit_amount || 0) : null;
+  const taxPending = grossProfitSnapshot?.tax_calculation_status === 'pending';
+  const grossProfitAmount = grossProfitSnapshot && !taxPending && pricing.pricingComplete ? Number(grossProfitSnapshot.gross_profit_amount || 0) : null;
   const negativeGrossProfit = !isDraft && grossProfitAmount < 0;
 
   ctx.body = {
@@ -2827,8 +2828,8 @@ async function create(ctx) {
     needsApproval: false,
     negativeGrossProfit,
     grossProfitAmount,
-    pricingStatus: pricing.pricingStatus,
-    pricingMessage: pricing.pricingMessage,
+    pricingStatus: taxPending ? 'pending' : pricing.pricingStatus,
+    pricingMessage: taxPending ? '' : pricing.pricingMessage,
     status: finalOrderStatus,
     message: isDraft
       ? '销售订单草稿已保存'
@@ -3465,6 +3466,8 @@ async function update(ctx) {
     if (saveToken?.replay) { savedResponse = saveToken.replay; replayed = true; return; }
     if (isSalesApprovalPendingStatus(order.order_status)) ctx.throw(400, '待审批订单不能直接修改，请先审批或拒绝');
     if (order.order_status !== previousStatus) ctx.throw(409, '订单状态已变化，请刷新后重试');
+    const profitInputs=require('./grossProfitInputs');
+    const previousProfitInputs=profitInputs.hasPayload(data,hasItemsPayload)?await profitInputs.capture(order,transaction):null;
     const releasedReservedOrderItems = hasItemsPayload && Number(order.inventory_reserved || 0) === 1;
 
     // 商品列表是当前状态的权威来源。只要本次带了商品列表，先释放旧占用，
@@ -3624,11 +3627,7 @@ async function update(ctx) {
         createdBy: ctx.state.user?.name || ctx.state.user?.phone || 'system'
       });
     } else {
-      const affectsGrossProfit = [
-        'invoice_amount', 'invoiceAmount', 'order_status', 'status',
-        'total_amount', 'totalAmount', 'discount_amount', 'discount',
-        'national_subsidy', 'nationalSubsidy', 'education_subsidy', 'educationSubsidy'
-      ].some(key => data[key] !== undefined) || hasItemsPayload;
+      const affectsGrossProfit = previousProfitInputs!==null&&(!isArchiveStatus(order.order_status)||previousProfitInputs!==await profitInputs.capture(order,transaction));
       const existingGrossProfit = affectsGrossProfit
         ? await OrderGrossProfit.findOne({
             where: { order_id: order.order_id },

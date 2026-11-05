@@ -437,10 +437,10 @@
 
         <template v-if="currentOrder.cost_preview">
           <h4 class="mt-20">毛利预估（已保存订单）</h4>
-          <el-alert v-if="!currentOrder.cost_preview.pricingComplete" :title="currentOrder.cost_preview.pricingMessage" type="warning" :closable="false" />
+          <el-alert v-if="currentOrder.cost_preview.pricingMessage" :title="currentOrder.cost_preview.pricingMessage" type="warning" :closable="false" />
           <el-descriptions :column="2" border>
-            <el-descriptions-item label="预估商品成本">{{ currentOrder.cost_preview.pricingComplete ? `¥${Number(currentOrder.cost_preview.productPricingAmount).toFixed(2)}` : '成本待补' }}</el-descriptions-item>
-            <el-descriptions-item label="预估订单毛利">{{ currentOrder.cost_preview.grossProfitAmount === null ? '成本待补，暂不显示毛利' : `¥${Number(currentOrder.cost_preview.grossProfitAmount).toFixed(2)}` }}</el-descriptions-item>
+            <el-descriptions-item label="预估商品成本">{{ currentOrder.cost_preview.productPricingAmount == null ? '—' : `¥${Number(currentOrder.cost_preview.productPricingAmount).toFixed(2)}` }}</el-descriptions-item>
+            <el-descriptions-item label="预估订单毛利">{{ currentOrder.cost_preview.grossProfitAmount == null ? '—' : `¥${Number(currentOrder.cost_preview.grossProfitAmount).toFixed(2)}` }}</el-descriptions-item>
           </el-descriptions>
         </template>
         <h4 class="mt-20">商品明细</h4>

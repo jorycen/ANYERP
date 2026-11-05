@@ -69,6 +69,24 @@ function fixture(t, standardPrice) {
   return { order, item };
 }
 
+test('开票订单保存时票税预估未知不抛错，清理旧草稿毛利缓存且不伪造零税额',async t=>{
+  const {order}=fixture(t,1500);order.invoice_status='普通发票';order.invoice_amount=1800;
+  const tx={LOCK:{UPDATE:'UPDATE'}};let invalidated=false;
+  t.mock.method(require('../src/modules/inventory/foundation'),'ensureSalesReferences',async()=>{});
+  t.mock.method(M.OrderGrossProfit,'destroy',async options=>{assert.equal(options.transaction,tx);assert.equal(options.where.order_id,'order');assert.equal(options.where.snapshot_status,'draft');invalidated=true;});
+  const result=await calculateAndSaveOrderGrossProfit('order',{persist:true,final:false,transaction:tx});
+  assert.equal(result.tax_calculation_status,'pending');assert.equal(result.gross_profit_amount,null);assert.equal(result.vat_amount,null);assert.equal(invalidated,true);
+  const shown=snapshotToResponse(result,order);assert.equal(shown.grossProfitAmount,null);assert.equal(shown.vatAmount,null);
+});
+
+test('未归档只读预览未知票税不写库，正式归档或严格核算仍拒绝未知依据',async t=>{
+  const {order}=fixture(t,1500);order.invoice_status='普通发票';order.invoice_amount=1800;
+  t.mock.method(M.OrderGrossProfit,'destroy',()=>assert.fail('只读预览不能清理缓存'));
+  const result=await calculateAndSaveOrderGrossProfit('order',{persist:false,final:false});assert.equal(result.tax_calculation_status,'pending');
+  await assert.rejects(()=>calculateAndSaveOrderGrossProfit('order',{persist:false,final:true}),/采购票税/);
+  await assert.rejects(()=>calculateAndSaveOrderGrossProfit('order',{persist:false,final:false,requireComplete:true}),/采购票税/);
+});
+
 test('授权强制重算保留本订单已批准纠错定价，不被当前主档价格覆盖', async t => {
   fixture(t, 9900);
   const frozen = { snapshot_status: 'final', formula_version: require('../src/modules/sales/grossProfit').FORMULA_VERSION,

@@ -88,12 +88,15 @@ async function ensureSalesReferences(order,lines,transaction){
   const items=await M.OrderItem.findAll({where:{item_id:{[Op.in]:missing.map(l=>l.itemId)}},raw:true,transaction});
   for(const line of documented){
     const item=items.find(x=>String(x.item_id)===String(line.itemId));if(!item||item.product_id!==line.productId)fail('商品基础身份不一致');
+    // Creation deliberately leaves the stock FK unset until archive. The
+    // backend pricing lookup has already resolved an existing SN by its code.
+    const resolvedSnId=item.sn_id||line.pricingOrigin?.snId||null;
     const previous=await M.InventoryFoundationRef.findByPk('order_item:'+item.item_id,{transaction,lock:transaction.LOCK.UPDATE});
     if(previous){
       if(!['draft','未归档','pending_approval','pending_store_approval','pending_distributor_approval'].includes(order.order_status))fail('历史商品基础关联变化，需先核实原单');
       await previous.destroy({transaction});
     }
-    const current=item.sn_id?await M.InventoryFoundationRef.findByPk('sn_current:'+item.sn_id,{transaction,lock:transaction.LOCK.UPDATE}):null;
+    const current=resolvedSnId?await M.InventoryFoundationRef.findByPk('sn_current:'+resolvedSnId,{transaction,lock:transaction.LOCK.UPDATE}):null;
     let row=current?await M.InventoryFoundation.findByPk(current.basis_id,{transaction,lock:transaction.LOCK.UPDATE}):null;
     if(row&&row.product_id!==item.product_id)fail('SN关联商品基础档案不一致');
     if(row){const scope=json(row.source_data||{}).taxScope,month=new Date(new Date(order.create_time).getTime()+8*3600000).toISOString().slice(0,7);
@@ -103,17 +106,17 @@ async function ensureSalesReferences(order,lines,transaction){
         source_data:{...json(row.source_data||{}),purchaseBasis:line.purchaseTaxBasis},update_time:new Date()}, {transaction});
     }
     if(!row){
-      const cycles=item.sn_id?await M.SnLog.findAll({where:{sn_id:item.sn_id,action:'stock_cycle_reentry'},raw:true,transaction}):[];
-      const key=item.sn_id?snKey(item.sn_id,cycles):'import_sale:'+item.item_id;
+      const cycles=resolvedSnId?await M.SnLog.findAll({where:{sn_id:resolvedSnId,action:'stock_cycle_reentry'},raw:true,transaction}):[];
+      const key=resolvedSnId?snKey(resolvedSnId,cycles):'import_sale:'+item.item_id;
       const b=line.purchaseTaxBasis||{};
       row=await M.InventoryFoundation.findByPk(id(key),{transaction,lock:transaction.LOCK.UPDATE});
       if(!row)row=await M.InventoryFoundation.create({basis_id:id(key),identity_key:key,product_id:item.product_id,
-        product_name:line.productName,entity_type:item.sn_id?'sn_cycle':'import_sale',sn_code:line.snCode||'',
+        product_name:line.productName,entity_type:resolvedSnId?'sn_cycle':'import_sale',sn_code:line.snCode||'',
         invoice_type:b.status==='confirmed'?b.invoiceType:null,status:b.status==='confirmed'?'confirmed':'pending',
         purchase_cost:line.purchasePriceKnown===false?null:money(line.purchasePrice),
         cost_mode:line.isCompanyPriced?'COMPANY_PRICE':'PURCHASE_PRICE',company_price:line.isCompanyPriced?money(line.unitPricing):null,
         source_data:{source:'order_intake',purchaseBasis:b},revision:1,updated_by:'system'}, {transaction});
-      if(item.sn_id)await bind('sn_current:'+item.sn_id,row.basis_id,order.store_id,transaction);
+      if(resolvedSnId)await bind('sn_current:'+resolvedSnId,row.basis_id,order.store_id,transaction);
     }
     await bind('order_item:'+item.item_id,row.basis_id,order.store_id,transaction);
   }

@@ -46,3 +46,15 @@ test('草稿换商品或换SN时不得沿用旧档案，SN改编码仍按内部�
   a.equal(F.matchesLine(b,{productId:'P',snId:'S',snCode:'RENAMED'}),true);
   a.equal(F.matchesLine(b,{productId:'P',snCode:''}),false);
 });
+test('新建订单库存外键暂未写入时按后台已解析SN复用现有档案，不另建销售票税来源',async t=>{
+  const tx={LOCK:{UPDATE:'UPDATE'}},refs=new Map([['sn_current:S',{basis_id:'B'}]]);
+  t.mock.method(M.InventoryFoundationRef,'findAll',async()=>[]);
+  t.mock.method(M.InventoryFoundationRef,'findByPk',async key=>refs.get(key)||null);
+  t.mock.method(M.InventoryFoundationRef,'create',async value=>{refs.set(value.reference_key,value);return value;});
+  t.mock.method(M.InventoryFoundation,'findByPk',async()=>({basis_id:'B',product_id:'P',status:'confirmed',source_data:{}}));
+  t.mock.method(M.InventoryFoundation,'create',async()=>a.fail('不能重复新建另一份基础属性'));
+  t.mock.method(M.OrderItem,'findAll',async()=>[{item_id:1,product_id:'P',sn_id:null}]);
+  t.mock.method(require('../src/modules/sales/purchaseVat'),'resolveDocumentTaxBasis',async(o,lines)=>lines);
+  await F.ensureSalesReferences({order_status:'未归档',store_id:'STORE',create_time:'2026-11-05T00:00:00+08:00'},[{itemId:1,productId:'P',snCode:'SN',pricingOrigin:{snId:'S'}}],tx);
+  a.equal(refs.get('order_item:1').basis_id,'B');
+});
