@@ -266,10 +266,13 @@ function calculateGrossProfitValues({
   const paymentFeeAmount = roundMoney(normalizedPayments.reduce((sum, item) => sum + item.fee, 0));
   const invoiceNotRequired = String(invoiceStatus || '').trim() === '不开票';
   const normalizedInvoiceAmount = invoiceNotRequired ? 0 : roundMoney(invoiceAmount);
-  const vatTaxableAmount = invoiceNotRequired
+  const hasPurchaseTaxBasis = normalizedProductPricing.some(line => line.purchaseTaxBasis);
+  const purchaseVat = hasPurchaseTaxBasis
+    ? require('./purchaseVat').calculateVat(normalizedProductPricing, normalizedInvoiceAmount, invoiceStatus) : null;
+  const vatTaxableAmount = purchaseVat ? purchaseVat.taxableAmount : invoiceNotRequired
     ? 0
     : roundMoney(Math.max(0, normalizedInvoiceAmount - productPricingAmount));
-  const vatAmount = roundMoney(vatTaxableAmount * VAT_RATE);
+  const vatAmount = purchaseVat ? purchaseVat.amount : roundMoney(vatTaxableAmount * VAT_RATE);
   const supplementAmount = roundMoney(normalizedSupplements.reduce((sum, item) => sum + item.signedAmount, 0));
   const freightCostAmount = roundMoney(normalizedFreightCosts.reduce((sum, item) => sum + item.amount, 0));
   const grossProfitBeforeExternalAdjustment = roundMoney(
@@ -487,7 +490,7 @@ async function buildPaymentDetails(order, existingSnapshot, transaction) {
   return details;
 }
 
-function resolveInventoryCostMode(product = {}, sn = {}, price = {}, orderTime = new Date()) {
+function resolveInventoryCostMode(product = {}, sn = {}, price = {}, orderTime = new Date(), supplier = null) {
   // An explicit per-inventory instruction wins over all category defaults.
   if (String(sn?.gross_profit_use_standard_price) === '1') return 'COMPANY_PRICE';
   if (String(sn?.gross_profit_use_standard_price) === '0') return 'PURCHASE_PRICE';
@@ -495,6 +498,8 @@ function resolveInventoryCostMode(product = {}, sn = {}, price = {}, orderTime =
     return new Date(orderTime).getTime() >= Date.UTC(2026, 9, 1) ? 'COMPANY_PRICE' : 'PURCHASE_PRICE';
   }
   if (product.category === '选件' && Number(price?.status) === 1 && validPrice(price?.standard_price) !== null) return 'COMPANY_PRICE';
+  // Legacy fallback: an unambiguous purchase-only supplier precedes the mutable product default.
+  if (supplier?.purchase_cost_mode_allowed === 'PURCHASE_PRICE') return 'PURCHASE_PRICE';
   return product.gross_profit_cost_mode === 'COMPANY_PRICE' ? 'COMPANY_PRICE' : 'PURCHASE_PRICE';
 }
 
@@ -636,7 +641,7 @@ async function buildProductPricingDetails(orderId, transaction) {
     if (row.sn_id) specialPriceBySnId.set(String(row.sn_id), price);
     if (row.sn_code) specialPriceBySnCode.set(String(row.sn_code).trim().toUpperCase(), price);
   });
-  return items.map(item => {
+  const pricingLines = items.map(item => {
     const row = item.toJSON();
     const productPrice = priceByProduct.get(String(row.product_id || ''));
     const product = productById.get(String(row.product_id || '')) || {};
@@ -664,8 +669,8 @@ async function buildProductPricingDetails(orderId, transaction) {
       { ...row, purchasePrice, specialPrice },
       supplier,
       {
-        purchaseUpliftAmount: snRow?.gross_profit_uplift_amount ?? inboundSupplier?.uplift_snapshot ?? supplier?.gross_profit_uplift_amount ?? inboundSupplier?.supplier_gross_profit_uplift_amount,
-        costMode: isNonPurchase ? 'COMPANY_PRICE' : resolveInventoryCostMode(product, snRow || { gross_profit_use_standard_price: inboundSupplier?.pricing_mode_snapshot }, productPrice, order.create_time)
+        purchaseUpliftAmount: snRow ? (snRow.gross_profit_uplift_amount ?? supplier?.gross_profit_uplift_amount) : (inboundSupplier?.uplift_snapshot ?? supplier?.gross_profit_uplift_amount ?? inboundSupplier?.supplier_gross_profit_uplift_amount),
+        costMode: isNonPurchase ? 'COMPANY_PRICE' : resolveInventoryCostMode(product, snRow || { gross_profit_use_standard_price: inboundSupplier?.pricing_mode_snapshot }, productPrice, order.create_time, supplier)
       }
     );
     const fixedCost = historicalPnCost(order, row.pn_code);
@@ -711,6 +716,7 @@ async function buildProductPricingDetails(orderId, transaction) {
       source: effectivePricing.source
     };
   });
+  return require('./purchaseVat').attachPurchaseTaxBasis(order, pricingLines, transaction);
 }
 
 async function buildSupplementDetails(orderId, transaction) {

@@ -10,7 +10,7 @@ const tx = { LOCK: { UPDATE: 'UPDATE' } };
 test('开票纠错下拉值与后台类型一致，切换后必须手填金额，空值不能预览或提交', async () => {
   const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
   const view = fs.readFileSync(path.join(__dirname, '../../frontend/web/src/views/Reports.vue'), 'utf8');
-  const selectedType = view.match(/label="开票金额错误" value="([^"]+)"/)[1];
+  const selectedType = view.match(/label="补开票／开票金额调整" value="([^"]+)"/)[1];
   assert.equal(selectedType, C.INVOICE_TYPE);
   assert.match(view, new RegExp(`v-if="adjustmentForm.adjustmentType === '${selectedType}'" label="正确开票金额" required`));
   const warnings = [];
@@ -224,6 +224,74 @@ function invoiceFixture(t, extra = {}) {
   Object.assign(f.order, { invoice_amount: 0, invoice_status: '专票13%', total_amount: 6000, actual_payment: 6000 });
   return f;
 }
+
+test('补开票沿用原成本和定价，禁止已开票改回不开票，当前月差额与原月抵回相等', async t => {
+  const f = invoiceFixture(t);
+  f.order.invoice_status = '不开票';
+  f.order.invoice_amount = 6000;
+  f.snapshot.invoice_amount = 6000;
+  t.mock.method(M.ExpenseAccountingPeriod, 'findOne', async () => null);
+  const events = [];
+  t.mock.method(M.PerformanceProfitAdjustment, 'create', async (value, options) => { assert.equal(options.transaction, tx); events.push(value); return value; });
+  const input = C.validate({adjustmentType:C.INVOICE_TYPE,invoiceAmount:6000,invoiceStatus:'普通发票',periodMode:'current'});
+  const ctx = context();
+  const preview = await C.select(ctx,'O',input);
+  assert.equal(preview.result.beforeInvoiceStatus,'不开票');
+  assert.equal(preview.result.afterInvoiceStatus,'普通发票');
+  assert.equal(preview.result.vatAfter,65);
+  assert.equal(preview.result.salesDelta,-65);
+  const adjustment = row({adjustment_id:'SUPPLEMENT',adjustment_no:'PPA-SUPPLEMENT',order_id:'O',adjustment_type:C.INVOICE_TYPE,
+    applicant_staff_id:1,applicant_name:'申请人',reason:'补开发票',signed_amount:0,
+    correction_data:{input,previewHash:preview.previewHash,result:preview.result}});
+  await C.apply(ctx,adjustment,tx);
+  assert.equal(f.order.invoice_status,'普通发票');
+  assert.equal(f.snapshot.gross_profit_amount,435);
+  assert.equal(f.snapshot.product_pricing_amount,5500);
+  assert.equal(f.settlement.gross_profit_amount,500);
+  if(preview.result.targetMonth !== preview.result.originalMonth){
+    assert.equal(events.length,1);
+    assert.equal(adjustment.signed_amount,65);
+    assert.equal(events[0].signed_amount,-65);
+    assert.equal(f.snapshot.gross_profit_amount+adjustment.signed_amount,500);
+    assert.equal(events[0].adjustment_no,'INVOICE-PERIOD-SUPPLEMENT');
+  }
+  assert.throws(()=>C.validate({adjustmentType:C.INVOICE_TYPE,invoiceAmount:6000,invoiceStatus:'不开票'}),/不能改为不开票/);
+});
+
+test('补开票选择发生月直接重算，跨月审批须重新预览，锁期阻止', async t => {
+  const f=invoiceFixture(t); f.order.invoice_status='不开票';
+  t.mock.method(M.ExpenseAccountingPeriod,'findOne',async()=>null);
+  const ctx=context(),input=C.validate({adjustmentType:C.INVOICE_TYPE,invoiceAmount:6000,invoiceStatus:'普通发票',periodMode:'original'});
+  const selected=await C.select(ctx,'O',input);
+  assert.equal(selected.result.targetMonth,'2026-10');
+  const adjustment=row({adjustment_id:'ORIGINAL',adjustment_type:C.INVOICE_TYPE,order_id:'O',signed_amount:0,
+    correction_data:{input,previewHash:selected.previewHash,result:{...selected.result,targetMonth:'2000-01'}}});
+  await assert.rejects(()=>C.apply(ctx,adjustment,tx),/跨月/);
+  adjustment.correction_data.result=selected.result;
+  await C.apply(ctx,adjustment,tx);
+  assert.equal(adjustment.signed_amount,0);
+  assert.equal(f.snapshot.gross_profit_amount,435);
+  t.mock.method(M.ExpenseAccountingPeriod,'findOne',async()=>({status:'closed'}));
+  await assert.rejects(()=>C.select(ctx,'O',{...input,invoiceAmount:5900}),/锁定/);
+});
+
+test('补开跨月记录写入失败时开票类型与原快照一起回滚，采购依据未知禁止预览', async t => {
+  const f=invoiceFixture(t);f.order.invoice_status='不开票';
+  t.mock.method(M.ExpenseAccountingPeriod,'findOne',async()=>null);
+  const ctx=context(),input=C.validate({adjustmentType:C.INVOICE_TYPE,invoiceAmount:6000,invoiceStatus:'普通发票'});
+  assert.equal(input.periodMode,'current');
+  const selected=await C.select(ctx,'O',input);
+  if(selected.result.targetMonth!==selected.result.originalMonth){
+    t.mock.method(M.PerformanceProfitAdjustment,'create',async()=>{throw Error('period insert failed');});
+    const adjustment=row({adjustment_id:'ROLLBACK',adjustment_no:'PPA-R',adjustment_type:C.INVOICE_TYPE,order_id:'O',signed_amount:0,
+      correction_data:{input,previewHash:selected.previewHash,result:selected.result}});
+    await assert.rejects(()=>M.sequelize.transaction(tx=>C.apply(ctx,adjustment,tx)),/period insert failed/);
+    assert.equal(f.order.invoice_status,'不开票');
+    assert.equal(f.snapshot.gross_profit_amount,500);
+  }
+  f.snapshot.product_pricing_details[0].purchaseTaxBasis={version:require('../src/modules/sales/purchaseVat').VERSION,status:'pending'};
+  await assert.rejects(()=>C.select(ctx,'O',input),/采购票税依据/);
+});
 async function invoiceAdjustment(ctx, amount = 6000) {
   const input = C.validate({ adjustmentType: C.INVOICE_TYPE, invoiceAmount: amount, confirmZero: amount === 0 });
   const selected = await C.select(ctx, 'O', input);
@@ -276,7 +344,7 @@ test('开票最终审批事务更新订单与快照，不重复叠加调整，�
   assert.equal(JSON.stringify(f.settlement.toJSON()),productBefore);assert.equal(JSON.stringify(f.item.toJSON()),itemBefore);assert.equal(JSON.stringify(f.original.toJSON()),orderItemBefore);
   assert.equal(f.logs.length,1);assert.equal(a.correction_data.result.before.order.invoice_amount,0);
   const view=C.display(a.toJSON(),ctx.state.user);
-  assert.equal(view.correction_type_name,'开票金额错误');assert.equal(view.correction_after_invoice_amount,6000);
+  assert.equal(view.correction_type_name,'补开票／开票金额调整');assert.equal(view.correction_after_invoice_amount,6000);
   assert.equal(view.correction_before_price,undefined);assert.equal(view.correction_data,undefined);
 });
 

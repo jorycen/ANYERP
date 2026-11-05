@@ -726,11 +726,11 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
   const reversals = returnEvents(returnRows.map(row => row.toJSON()));
   const reversalAdjustmentCondition = { [Op.or]: [
     { adjustment_no: { [Op.like]: 'AUTO-CARE-RET-%' } },
-    { adjustment_no: { [Op.like]: 'EDUR-%' } }
+    { adjustment_no: { [Op.like]: 'EDUR-%' } }, { adjustment_no: { [Op.like]: 'INVOICE-PERIOD-%' } }
   ] };
   const originalAdjustmentCondition = { [Op.and]: [
     { adjustment_no: { [Op.notLike]: 'AUTO-CARE-RET-%' } },
-    { adjustment_no: { [Op.notLike]: 'EDUR-%' } }
+    { adjustment_no: { [Op.notLike]: 'EDUR-%' } }, { adjustment_no: { [Op.notLike]: 'INVOICE-PERIOD-%' } }
   ] };
   const reversalAdjustments = await PerformanceProfitAdjustment.findAll({
     where: { status: 'approved', ...reversalAdjustmentCondition,
@@ -744,7 +744,7 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
     const order = row.Order || {};
     const participants = normalizeParticipants(order);
     const shares = allocateProfit(participants.map(p => ({ ...p, profitAmount: '', ratio: '' })), row.signed_amount);
-    reversals.push({ orderId: 'return-adjustment:' + row.adjustment_id, entryType: 'return',
+    reversals.push({ orderId: 'return-adjustment:' + row.adjustment_id, entryType: row.adjustment_no.startsWith('INVOICE-PERIOD-') ? 'invoice_adjustment' : 'return',
       isReturnAdjustment: true, orderNo: row.adjustment_no, sourceOrderNo: row.order_no,
       sourceOrderId: row.order_id, orderTime: row.create_time, storeName: order.Store?.name || '',
       employeeName: row.employee_name, totalAmount: 0, actualPayment: 0, totalCost: 0,

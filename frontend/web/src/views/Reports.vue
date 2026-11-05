@@ -322,7 +322,7 @@
               </template>
             </el-table-column>
             <el-table-column label="业务类型" width="100">
-              <template #default="{ row }"><el-tag :type="row.entryType === 'return' ? 'danger' : 'success'">{{ row.entryType === 'return' ? '退单冲回' : row.entryType === 'reward_redemption' ? '积分兑换核销' : '销售' }}</el-tag></template>
+              <template #default="{ row }"><el-tag :type="row.entryType === 'return' ? 'danger' : 'success'">{{ row.entryType === 'return' ? '退单冲回' : row.entryType === 'invoice_adjustment' ? '\u5f00\u7968\u6bdb\u5229\u8c03\u6574' : row.entryType === 'reward_redemption' ? '积分兑换核销' : '销售' }}</el-tag></template>
             </el-table-column>
             <el-table-column prop="orderNo" label="销售/退单号" width="180" />
             <el-table-column prop="sourceOrderNo" label="关联原销售单" width="180" />
@@ -368,8 +368,8 @@
             </el-table-column>
             <el-table-column label="操作" width="155" fixed="right">
               <template #default="{ row }">
-                <el-button v-if="row.entryType !== 'reward_redemption'" link type="primary" @click="openAdjustmentApply(row)">申请业务纠错</el-button>
-                <el-button v-if="row.entryType !== 'reward_redemption'" link @click="openOrderAdjustments(row)">记录</el-button>
+                <el-button v-if="!['reward_redemption','invoice_adjustment'].includes(row.entryType)" link type="primary" @click="openAdjustmentApply(row)">申请业务纠错</el-button>
+                <el-button v-if="!['reward_redemption','invoice_adjustment'].includes(row.entryType)" link @click="openOrderAdjustments(row)">记录</el-button>
                 <span v-if="row.entryType === 'reward_redemption'">核销时确认</span>
               </template>
             </el-table-column>
@@ -394,7 +394,7 @@
           <span>{{ adjustmentOrder?.orderNo }} / {{ adjustmentOrder?.employeeName }}</span>
         </el-form-item>
         <el-form-item label="基础毛利">¥{{ formatMoney(adjustmentOrder?.baseGrossProfit) }}</el-form-item>
-        <el-form-item label="纠错类型"><el-select v-model="adjustmentForm.adjustmentType" @change="onCorrectionTypeChange"><el-option label="结算定价错误" value="price_correction" /><el-option label="开票金额错误" value="invoice_amount" /></el-select></el-form-item>
+        <el-form-item label="纠错类型"><el-select v-model="adjustmentForm.adjustmentType" @change="onCorrectionTypeChange"><el-option label="结算定价错误" value="price_correction" /><el-option label="补开票／开票金额调整" value="invoice_amount" /></el-select></el-form-item>
         <el-alert v-if="correctionError" :title="correctionError" type="warning" :closable="false" />
         <el-alert v-if="adjustmentForm.adjustmentType === 'price_correction' && !correctionLoading && !correctionError && !correctionOptions.length" title="本订单无可纠错的公司结算定价商品；可按实际情况选择开票金额纠错。" type="warning" :closable="false" />
         <el-form-item v-if="adjustmentForm.adjustmentType === 'price_correction'" label="订单商品" required>
@@ -405,6 +405,8 @@
         <el-form-item v-if="adjustmentForm.adjustmentType === 'price_correction'" label="正确定价" required>
           <el-input-number v-model="adjustmentForm.unitPrice" :min="0" :max="999999999.99" :precision="2" controls-position="right" style="width: 220px" />
         </el-form-item>
+        <el-form-item v-if="adjustmentForm.adjustmentType === 'invoice_amount'" label="开票类型" required><el-select v-model="adjustmentForm.invoiceStatus" :disabled="correctionInvoiceStatus !== '不开票'"><el-option v-for="type in ['普通发票','增值税发票','开专票']" :key="type" :label="type" :value="type" /></el-select><span style="margin-left:12px">原类型：{{ correctionInvoiceStatus || '待核实' }}</span></el-form-item>
+        <el-form-item v-if="adjustmentForm.adjustmentType === 'invoice_amount'" label="差额归属" required><el-radio-group v-model="adjustmentForm.periodMode"><el-radio label="current">当月（默认）</el-radio><el-radio label="original">原订单发生月</el-radio></el-radio-group></el-form-item>
         <el-form-item v-if="adjustmentForm.adjustmentType === 'invoice_amount'" label="原开票金额"><span v-if="correctionInvoiceAmount !== null">¥{{ formatMoney(correctionInvoiceAmount) }}</span><span v-else>待核实</span></el-form-item>
         <el-form-item v-if="adjustmentForm.adjustmentType === 'invoice_amount'" label="正确开票金额" required><el-input-number v-model="adjustmentForm.invoiceAmount" :min="0" :max="999999999.99" :precision="2" placeholder="请输入新的开票金额" controls-position="right" style="width:220px" /></el-form-item>
         <el-form-item v-if="(adjustmentForm.adjustmentType === 'price_correction' && adjustmentForm.unitPrice === 0) || (adjustmentForm.adjustmentType === 'invoice_amount' && adjustmentForm.invoiceAmount === 0)" label="零元确认"><el-checkbox v-model="adjustmentForm.confirmZero">{{ adjustmentForm.adjustmentType === 'invoice_amount' ? '确认本订单开票金额为零元，开票类型保持不变' : '确认本商品结算定价为零元' }}</el-checkbox></el-form-item>
@@ -420,6 +422,8 @@
         <el-descriptions v-if="correctionPreview" :column="1" border>
           <el-descriptions-item v-if="adjustmentForm.adjustmentType === 'price_correction'" label="结算定价">¥{{ formatMoney(correctionPreview.beforeUnitPrice) }} → ¥{{ formatMoney(correctionPreview.afterUnitPrice) }}</el-descriptions-item>
           <el-descriptions-item v-else label="开票金额">¥{{ formatMoney(correctionPreview.beforeInvoiceAmount) }} → ¥{{ formatMoney(correctionPreview.afterInvoiceAmount) }}</el-descriptions-item>
+          <el-descriptions-item v-if="adjustmentForm.adjustmentType === 'invoice_amount'" label="开票类型">{{ correctionPreview.beforeInvoiceStatus }} → {{ correctionPreview.afterInvoiceStatus }}</el-descriptions-item>
+          <el-descriptions-item v-if="adjustmentForm.adjustmentType === 'invoice_amount'" label="差额归属月份">{{ correctionPreview.targetMonth }}</el-descriptions-item>
           <el-descriptions-item v-if="adjustmentForm.adjustmentType === 'invoice_amount'" label="税费扣减">¥{{ formatMoney(correctionPreview.vatBefore) }} → ¥{{ formatMoney(correctionPreview.vatAfter) }}</el-descriptions-item>
           <el-descriptions-item label="销售端毛利">¥{{ formatMoney(correctionPreview.salesBefore) }} → ¥{{ formatMoney(correctionPreview.salesAfter) }}（变化 ¥{{ formatMoney(correctionPreview.salesDelta) }}）</el-descriptions-item>
           <el-descriptions-item label="处理说明">{{ correctionPreview.note }}</el-descriptions-item>
@@ -457,7 +461,7 @@
               <div>{{ row.correction_type_name }}</div>
               <div>{{ row.correction_product }}</div>
               <div v-if="row.adjustment_type === 'price_correction'">结算定价：¥{{ formatMoney(row.correction_before_price) }} → ¥{{ formatMoney(row.correction_after_price) }}</div>
-              <template v-else><div>开票金额：¥{{ formatMoney(row.correction_before_invoice_amount) }} → ¥{{ formatMoney(row.correction_after_invoice_amount) }}</div><div>税费扣减：¥{{ formatMoney(row.correction_vat_before) }} → ¥{{ formatMoney(row.correction_vat_after) }}</div></template>
+              <template v-else><div v-if="row.correction_after_invoice_status">开票类型：{{ row.correction_before_invoice_status }} → {{ row.correction_after_invoice_status }}；差额归属：{{ row.correction_target_month }}</div><div>开票金额：¥{{ formatMoney(row.correction_before_invoice_amount) }} → ¥{{ formatMoney(row.correction_after_invoice_amount) }}</div><div>税费扣减：¥{{ formatMoney(row.correction_vat_before) }} → ¥{{ formatMoney(row.correction_vat_after) }}</div></template>
               <div>销售端毛利：¥{{ formatMoney(row.correction_sales_before) }} → ¥{{ formatMoney(row.correction_sales_after) }}</div>
               <div>依据：{{ row.correction_evidence }}</div>
             </div>
@@ -590,8 +594,9 @@ const salesPerformanceParams = reactive({
 })
 const inventoryParams = reactive({ storeId: '' })
 const employeeParams = reactive({ dateRange: recentSevenDayRange(), storeId: '', staffName: '', orderNo: '', page: 1, pageSize: 20 })
-const adjustmentForm = reactive({ adjustmentType: 'price_correction', itemId: '', unitPrice: undefined, invoiceAmount: undefined, confirmZero: false, evidence: '', reason: '' })
+const adjustmentForm = reactive({ adjustmentType: 'price_correction', itemId: '', unitPrice: undefined, invoiceAmount: undefined, invoiceStatus: '', periodMode: 'current', confirmZero: false, evidence: '', reason: '' })
 const correctionInvoiceAmount = ref(null)
+const correctionInvoiceStatus = ref('')
 const correctionOptions = ref([])
 const correctionLoading = ref(false)
 const correctionPreviewing = ref(false)
@@ -599,7 +604,7 @@ const correctionPreview = ref(null)
 const correctionError = ref('')
 let correctionRequestVersion = 0
 let correctionOptionsRequestVersion = 0
-watch(() => [adjustmentForm.adjustmentType, adjustmentForm.itemId, adjustmentForm.unitPrice, adjustmentForm.invoiceAmount, adjustmentForm.confirmZero], () => {
+watch(() => [adjustmentForm.adjustmentType, adjustmentForm.itemId, adjustmentForm.unitPrice, adjustmentForm.invoiceAmount, adjustmentForm.invoiceStatus, adjustmentForm.periodMode, adjustmentForm.confirmZero], () => {
   correctionRequestVersion += 1
   correctionPreview.value = null
 }, { flush: 'sync' })
@@ -714,7 +719,7 @@ const fetchInventory = async params => {
     const res = await api.getInventoryReport(params)
     if(sequence!==inventorySequence)return
     if (res.code === 0) {
-      if(res.data?.meta?.version!==2)throw Error('库存报表API尚未升级，请先部署后台')
+      if(![2,3].includes(res.data?.meta?.version))throw Error('库存报表API尚未升级，请先部署后台')
       inventoryData.value = res.data.rows
       inventorySummary.value = res.data.summary
       inventoryMeta.value=res.data.meta
@@ -801,6 +806,8 @@ const openAdjustmentApply = async (row) => {
     const res = await api.getProfitCorrectionOptions(orderId)
     if (optionsVersion !== correctionOptionsRequestVersion || adjustmentOrder.value?.orderId !== orderId || !adjustmentApplyVisible.value) return
     correctionOptions.value = res.data?.options || []
+    correctionInvoiceStatus.value = res.data?.invoiceStatus || ''
+    adjustmentForm.invoiceStatus = correctionInvoiceStatus.value === '不开票' ? '普通发票' : correctionInvoiceStatus.value
     correctionInvoiceAmount.value = res.data?.invoiceAmount == null ? null : Number(res.data.invoiceAmount)
   } catch (error) {
     if (optionsVersion === correctionOptionsRequestVersion && adjustmentApplyVisible.value) correctionError.value = error?.response?.data?.message || '加载可纠错商品失败'
@@ -833,7 +840,7 @@ const previewCorrection = async () => {
 const resetAdjustmentForm = () => {
   correctionRequestVersion += 1
   correctionOptionsRequestVersion += 1
-  Object.assign(adjustmentForm, { adjustmentType: 'price_correction', itemId: '', unitPrice: undefined, invoiceAmount: undefined, confirmZero: false, evidence: '', reason: '' })
+  Object.assign(adjustmentForm, { adjustmentType: 'price_correction', itemId: '', unitPrice: undefined, invoiceAmount: undefined, invoiceStatus: '', periodMode: 'current', confirmZero: false, evidence: '', reason: '' })
   correctionInvoiceAmount.value = null
   correctionOptions.value = []
   correctionPreview.value = null
@@ -859,7 +866,7 @@ const submitAdjustment = async () => {
     formData.append('adjustmentType', adjustmentForm.adjustmentType)
     formData.append('itemId', adjustmentForm.itemId)
     formData.append('unitPrice', String(adjustmentForm.unitPrice))
-    if (adjustmentForm.adjustmentType === 'invoice_amount') formData.append('invoiceAmount', String(adjustmentForm.invoiceAmount))
+    if (adjustmentForm.adjustmentType === 'invoice_amount') { formData.append('invoiceAmount', String(adjustmentForm.invoiceAmount)); formData.append('invoiceStatus', adjustmentForm.invoiceStatus); formData.append('periodMode', adjustmentForm.periodMode) }
     formData.append('confirmZero', String(adjustmentForm.confirmZero))
     formData.append('evidence', adjustmentForm.evidence.trim())
     formData.append('previewHash', correctionPreview.value.previewHash)

@@ -698,7 +698,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
         INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
         LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
         LEFT JOIN T_STORE s ON s.STORE_ID = o.STORE_ID
-        WHERE pa.STATUS = 'approved' AND (pa.ADJUSTMENT_NO LIKE 'AUTO-CARE-RET-%' OR pa.ADJUSTMENT_NO LIKE 'EDUR-%')
+        WHERE pa.STATUS = 'approved' AND (pa.ADJUSTMENT_NO LIKE 'AUTO-CARE-RET-%' OR pa.ADJUSTMENT_NO LIKE 'EDUR-%' OR pa.ADJUSTMENT_NO LIKE 'INVOICE-PERIOD-%')
           AND ${adjustmentWhere}`, where.replacements);
     const rewards = await require('../customerOps/profitEvents').events(filters, range, this.query.bind(this));
     return [...sales, ...returns, ...returnAdjustments, ...rewards].sort((a, b) => new Date(b.create_time) - new Date(a.create_time));
@@ -715,13 +715,13 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
               pa.ADJUSTMENT_NO AS adjustmentNo
          FROM T_PERFORMANCE_PROFIT_ADJUSTMENT pa
          INNER JOIN T_ORDER o ON o.ORDER_ID = pa.ORDER_ID
-        WHERE pa.STATUS = 'approved' AND pa.ADJUSTMENT_NO NOT LIKE 'AUTO-CARE-RET-%' AND pa.ADJUSTMENT_NO NOT LIKE 'EDUR-%'
+        WHERE pa.STATUS = 'approved' AND pa.ADJUSTMENT_NO NOT LIKE 'AUTO-CARE-RET-%' AND pa.ADJUSTMENT_NO NOT LIKE 'EDUR-%' AND pa.ADJUSTMENT_NO NOT LIKE 'INVOICE-PERIOD-%'
           AND ${where.sql}
         UNION ALL
         SELECT CONCAT('return-adjustment:', pa.ADJUSTMENT_ID), NULL, pa.SIGNED_AMOUNT,
           pa.REASON, pa.ADJUSTMENT_TYPE, pa.ADJUSTMENT_NO
         FROM T_PERFORMANCE_PROFIT_ADJUSTMENT pa INNER JOIN T_ORDER o ON o.ORDER_ID = pa.ORDER_ID
-        WHERE pa.STATUS = 'approved' AND (pa.ADJUSTMENT_NO LIKE 'AUTO-CARE-RET-%' OR pa.ADJUSTMENT_NO LIKE 'EDUR-%')
+        WHERE pa.STATUS = 'approved' AND (pa.ADJUSTMENT_NO LIKE 'AUTO-CARE-RET-%' OR pa.ADJUSTMENT_NO LIKE 'EDUR-%' OR pa.ADJUSTMENT_NO LIKE 'INVOICE-PERIOD-%')
           AND ${where.sql.replaceAll('o.CREATE_TIME', 'pa.CREATE_TIME').replace('o.ORDER_STATUS IN (:archivedStatuses)', '1 = 1')}
         ORDER BY orderId, adjustmentNo`,
       where.replacements

@@ -161,7 +161,7 @@ async function previewCorrection(ctx) {
   const selected = await correction.select(ctx, body.orderId, correction.validate(body));
   const impact = correction.previewResponse(selected.result, ctx.state.user);
   ctx.body = { code: 0, data: { ...impact, previewHash: selected.previewHash,
-    note: body.adjustmentType === correction.INVOICE_TYPE ? '按原归档依据重算税费及销售毛利；产品端提货差毛利保持。仅修正业务记录，不执行实际开票、红冲或改变收款和开票类型。' : '按原归档税费及规则重算，销售与产品两端毛利之和不等同于公司财务利润；不改变客户成交价、采购成本或商品主档定价。' } };
+    note: body.adjustmentType === correction.INVOICE_TYPE ? '审批后同步开票类型与金额，按归档依据重算税费和销售毛利，差额计入所选月份；产品端提货差毛利保持。此操作只更新业务记录，实际发票另行开具。' : '按原归档税费及规则重算，销售与产品两端毛利之和不等同于公司财务利润；不改变客户成交价、采购成本或商品主档定价。' } };
 }
 
 async function listProfitAdjustments(ctx) {

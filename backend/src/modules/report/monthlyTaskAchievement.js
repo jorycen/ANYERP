@@ -167,8 +167,8 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived') 
        AND COALESCE(TRIM(o.CUSTOMER_SOURCE), '') NOT LIKE :internalTransferSource
        AND ${orderStatusFilter}
        AND o.STORE_ID IN (:storeIds)
-       AND (CASE WHEN pa.ADJUSTMENT_NO LIKE 'AUTO-CARE-RET-%' OR pa.ADJUSTMENT_NO LIKE 'EDUR-%' THEN pa.CREATE_TIME ELSE o.CREATE_TIME END) >= :startAt
-       AND (CASE WHEN pa.ADJUSTMENT_NO LIKE 'AUTO-CARE-RET-%' OR pa.ADJUSTMENT_NO LIKE 'EDUR-%' THEN pa.CREATE_TIME ELSE o.CREATE_TIME END) < :endAt
+       AND (CASE WHEN pa.ADJUSTMENT_NO LIKE 'AUTO-CARE-RET-%' OR pa.ADJUSTMENT_NO LIKE 'EDUR-%' OR pa.ADJUSTMENT_NO LIKE 'INVOICE-PERIOD-%' THEN pa.CREATE_TIME ELSE o.CREATE_TIME END) >= :startAt
+       AND (CASE WHEN pa.ADJUSTMENT_NO LIKE 'AUTO-CARE-RET-%' OR pa.ADJUSTMENT_NO LIKE 'EDUR-%' OR pa.ADJUSTMENT_NO LIKE 'INVOICE-PERIOD-%' THEN pa.CREATE_TIME ELSE o.CREATE_TIME END) < :endAt
      GROUP BY pa.ORDER_ID, o.STORE_ID, o.CREATE_STAFF_ID, o.CREATE_USER, o.AUXILIARY_SALES_LIST`, { replacements, type: QueryTypes.SELECT });
   for (const row of adjustmentRows) {
     const storeActual = storeActuals.get(String(row.storeId)) || createActual();

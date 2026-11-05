@@ -820,6 +820,8 @@ const correctionFieldLabels = {
   admin_reviewer_name: '复审人', admin_review_comment: '复审意见', admin_review_time: '复审时间',
   correction_type_name: '纠错类型', correction_evidence: '纠错依据', correction_product: '纠错商品 / SN',
   correction_before_invoice_amount: '原开票金额', correction_after_invoice_amount: '正确开票金额',
+  correction_before_invoice_status: '原开票类型', correction_after_invoice_status: '调整后开票类型',
+  correction_target_month: '差额归属月份', correction_original_month: '原订单发生月',
   correction_vat_before: '原税费扣减', correction_vat_after: '纠错后税费扣减',
   correction_product_note: '产品端处理',
   correction_before_price: '原结算定价', correction_after_price: '正确定价',

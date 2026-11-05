@@ -198,9 +198,13 @@ async function loadFacts(filters, calculateOrder, transaction) {
     else if (saved.category === 'expense') expenseAdjustments.push({ ...event, entryType: 'expense', storeId: saved.original.storeId || null, scopeStoreIds: saved.original.scopeStoreIds, category: saved.original.category || 'store', amount: event.grossCost });
     else items.push(event);
   }
-  const performance = await select(`SELECT ADJUSTMENT_ID eventKey, STORE_ID storeId, DATE(COALESCE(ADMIN_REVIEW_TIME,UPDATE_TIME,CREATE_TIME)) businessDate,
+  const performanceDate = `CASE WHEN ADJUSTMENT_NO LIKE 'INVOICE-PERIOD-%' THEN CREATE_TIME
+    WHEN ADJUSTMENT_TYPE = 'invoice_amount' AND SIGNED_AMOUNT <> 0 THEN
+      STR_TO_DATE(CONCAT(JSON_UNQUOTE(JSON_EXTRACT(CORRECTION_DATA,'$.result.originalMonth')),'-01'),'%Y-%m-%d')
+    ELSE COALESCE(ADMIN_REVIEW_TIME,UPDATE_TIME,CREATE_TIME) END`;
+  const performance = await select(`SELECT ADJUSTMENT_ID eventKey, STORE_ID storeId, DATE(${performanceDate}) businessDate,
       SIGNED_AMOUNT amount FROM T_PERFORMANCE_PROFIT_ADJUSTMENT WHERE STATUS = 'approved' AND STORE_ID IN (:storeIds)
-      AND DATE(COALESCE(ADMIN_REVIEW_TIME,UPDATE_TIME,CREATE_TIME)) BETWEEN :start AND :end`, p, transaction);
+      AND DATE(${performanceDate}) BETWEEN :start AND :end`, p, transaction);
   const managementAdjustments = performance.map(row => ({ ...row, businessDate: date(row.businessDate), amount: money(row.amount) }));
   const rewardEvents = await require('../customerOps/profitEvents').events({ storeIds: filters.storeIds },
     require('./dashboardService').buildRanges(filters).current, (sql, replacements) => select(sql, replacements, transaction));

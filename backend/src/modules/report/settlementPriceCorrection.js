@@ -21,19 +21,25 @@ function validate(body) {
   if (body.adjustmentType === INVOICE_TYPE) {
     if (!['number', 'string'].includes(typeof body.invoiceAmount) || !/^\d{1,9}(\.\d{1,2})?$/.test(String(body.invoiceAmount ?? ''))) fail('开票金额须为非负金额，最多两位小数', 400);
     if (Number(body.invoiceAmount) === 0 && body.confirmZero !== true && body.confirmZero !== 'true') fail('零元开票金额须明确确认', 400);
-    return { type: INVOICE_TYPE, invoiceAmount: money(body.invoiceAmount) };
+    if (body.invoiceStatus !== undefined && !['普通发票', '增值税发票', '开专票', '专票13%'].includes(body.invoiceStatus)) fail('请选择有效开票类型，已开票不能改为不开票', 400);
+    if (body.periodMode !== undefined && !['current', 'original'].includes(body.periodMode)) fail('调整归属月份无效', 400);
+    return { type: INVOICE_TYPE, invoiceAmount: money(body.invoiceAmount), ...(body.invoiceStatus !== undefined ? { invoiceStatus: body.invoiceStatus } : {}), ...((body.periodMode !== undefined || body.invoiceStatus !== undefined) ? { periodMode: body.periodMode || 'current' } : {}) };
   }
   const itemId = String(body.itemId || '').trim();
   if (!itemId || !/^\d{1,9}(\.\d{1,2})?$/.test(String(body.unitPrice ?? '')) || typeof body.unitPrice === 'boolean') fail('请选择商品，结算定价须为非负金额，最多两位小数', 400);
   if (Number(body.unitPrice) === 0 && body.confirmZero !== true && body.confirmZero !== 'true') fail('零元结算定价须明确确认', 400);
   return { itemId, unitPrice: money(body.unitPrice) };
 }
-function snapshotPatch(snapshot, itemId, unitPrice, adjustmentId = null, invoiceInput = null) {
+function snapshotPatch(snapshot, itemId, unitPrice, adjustmentId = null, invoiceInput = null, originalInvoiceStatus = undefined) {
   const amountKeys = ['receivable_amount', 'product_pricing_amount', 'payment_fee_amount', 'invoice_amount',
     'vat_taxable_amount', 'vat_amount', 'supplement_amount', 'freight_cost_amount', 'gross_profit_amount'];
   if (amountKeys.some(key => snapshot[key] === null || snapshot[key] === undefined || typeof snapshot[key] === 'boolean' || String(snapshot[key]).trim() === '' || !Number.isFinite(Number(snapshot[key])))
     || !Array.isArray(json(snapshot.payment_fee_details, null)) || !Array.isArray(json(snapshot.supplement_details, null))) fail('原归档金额或计算明细不完整，请先核实，不能以零值替代');
   const lines = json(snapshot.product_pricing_details, []);
+  if (String(snapshot.order_no || '') >= 'ORD202610010000000000' &&
+    lines.some(line => !line.purchaseTaxBasis)) {
+    fail('该订单采购票税依据尚未核实，请先完成税费口径更新再发起业务纠错');
+  }
   if (!Array.isArray(lines) || lines.some(line => !Number.isFinite(Number(line.quantity)) || Number(line.quantity) <= 0
     || GP.validPrice(line.unitPricing) === null || GP.validPrice(line.pricingAmount) === null
     || money(Number(line.unitPricing) * Number(line.quantity)) !== money(line.pricingAmount))) fail('原归档商品定价明细不完整或数量金额不一致，请先核实');
@@ -50,10 +56,14 @@ function snapshotPatch(snapshot, itemId, unitPrice, adjustmentId = null, invoice
       paymentDetails: json(snapshot.payment_fee_details, []), productPricingDetails,
       supplementDetails: supplements.filter(item => item.source !== 'freight_cost'),
       freightCostDetails: supplements.filter(item => item.source === 'freight_cost'),
-      invoiceAmount, ...(invoiceInput ? { invoiceStatus: invoiceInput.invoiceStatus } : {}) });
+      invoiceAmount, ...((invoiceInput || originalInvoiceStatus !== undefined) ? { invoiceStatus: invoiceInput ? invoiceInput.invoiceStatus : originalInvoiceStatus } : {}) });
   };
   if (snapshot.formula_version !== GP.FORMULA_VERSION || snapshot.snapshot_status !== 'final' || !GP.pricingCompleteness(lines).pricingComplete) fail('原订单须有完整的现行归档毛利快照，请先核实历史口径');
-  const original = calculate(lines);
+  const original = invoiceInput ? GP.calculateGrossProfitValues({receivableAmount:snapshot.receivable_amount,
+    paymentDetails:json(snapshot.payment_fee_details,[]),productPricingDetails:lines,
+    supplementDetails:json(snapshot.supplement_details,[]).filter(x=>x.source!=='freight_cost'),
+    freightCostDetails:json(snapshot.supplement_details,[]).filter(x=>x.source==='freight_cost'),
+    invoiceAmount:snapshot.invoice_amount,invoiceStatus:originalInvoiceStatus ?? invoiceInput.invoiceStatus}) : calculate(lines);
   // A correction cannot silently upgrade formulas, tax rates or other archived inputs.
   const comparisons = { gross_profit_amount: 'grossProfitAmount', payment_fee_amount: 'paymentFeeAmount',
     product_pricing_amount: 'productPricingAmount', vat_amount: 'vatAmount', vat_taxable_amount: 'vatTaxableAmount',
@@ -122,19 +132,30 @@ async function select(ctx, orderId, input = null, transaction = null, includeInv
   if (input.type === INVOICE_TYPE) {
     if (GP.validPrice(input.invoiceAmount) === null) fail('开票金额必须为非负有限金额', 400);
     if (GP.validPrice(order.invoice_amount) === null || money(order.invoice_amount) !== money(snapshot.invoice_amount)) fail('订单开票金额与归档快照不一致，请先核实原单');
-    if (!String(order.invoice_status || '').trim() || String(order.invoice_status).trim() === '不开票') fail('当前订单为不开票或开票类型缺失，不能仅修改金额，请先核实开票类型');
-    if (money(input.invoiceAmount) === money(snapshot.invoice_amount)) fail('申请开票金额与当前生效金额相同', 400);
-    const patch = snapshotPatch(plain(snapshot), null, null, null, { invoiceAmount: input.invoiceAmount, invoiceStatus: order.invoice_status });
+    const invoiceStatus = input.invoiceStatus || order.invoice_status;
+    if (!['普通发票', '增值税发票', '开专票', '专票13%'].includes(invoiceStatus)) fail('请选择补开后的开票类型；已开票不能改为不开票', 400);
+    if (order.invoice_status !== '不开票' && invoiceStatus !== order.invoice_status) fail('已开票订单仅支持金额调整，开票类型保持不变', 400);
+    const originalMonth = month;
+    const targetMonth = input.periodMode === 'current' ? new Date(Date.now()+8*3600000).toISOString().slice(0,7) : month;
+    const targetClosed = await M.sequelize.query('SELECT MONTH_KEY FROM T_FINANCIAL_PROFIT_PERIOD WHERE MONTH_KEY = :month'+(transaction?' FOR UPDATE':''), {replacements:{month:targetMonth},type:QueryTypes.SELECT,transaction});
+    if (targetClosed.length) fail('调整归属月份已锁定');
+    if (input.periodMode) {
+      const store = await M.Store.findByPk(order.store_id,options);
+      const period = await M.ExpenseAccountingPeriod.findOne({where:{distributor_id:store.distributor_id,month_key:targetMonth},...options});
+      if (period && period.status !== 'open') fail('调整归属月份费用期间已锁定');
+    }
+    if (invoiceStatus === order.invoice_status && money(input.invoiceAmount) === money(snapshot.invoice_amount)) fail('申请开票金额与当前生效金额相同', 400);
+    const patch = snapshotPatch(plain(snapshot), null, null, null, { invoiceAmount: input.invoiceAmount, invoiceStatus }, order.invoice_status);
     if (Object.values(patch).some(value => !Number.isFinite(value) || Math.abs(value) > 9999999999.99)) fail('本次纠错结果超出系统金额范围', 400);
     const productProfit = settlement?.status === 'posted' && settlement.gross_profit_amount !== null && Number.isFinite(Number(settlement.gross_profit_amount)) ? Number(settlement.gross_profit_amount) : null;
     const before = { snapshot: plain(snapshot), settlement: settlement ? plain(settlement) : null, items: items.map(plain), orderItems: orderItems.map(plain),
       order: { invoice_amount: order.invoice_amount, invoice_status: order.invoice_status } };
-    const result = { correctionType: INVOICE_TYPE, beforeInvoiceAmount: Number(snapshot.invoice_amount), afterInvoiceAmount: patch.invoice_amount,
+    const result = { correctionType: INVOICE_TYPE, beforeInvoiceStatus: order.invoice_status, afterInvoiceStatus: invoiceStatus, originalMonth, targetMonth, periodMode:input.periodMode || 'original', beforeInvoiceAmount: Number(snapshot.invoice_amount), afterInvoiceAmount: patch.invoice_amount,
       vatBefore: Number(snapshot.vat_amount), vatAfter: patch.vat_amount,
       salesBefore: Number(snapshot.gross_profit_amount), salesAfter: patch.gross_profit_amount,
       salesDelta: money(patch.gross_profit_amount - Number(snapshot.gross_profit_amount)),
       productBefore: productProfit, productAfter: productProfit, productDelta: 0,
-      before, after: { snapshot: patch, order: { invoice_amount: patch.invoice_amount } } };
+      before, after: { snapshot: patch, order: { invoice_amount: patch.invoice_amount, invoice_status: invoiceStatus } } };
     const previewHash = crypto.createHash('sha256').update(JSON.stringify({ input, before, order: plain(order) })).digest('hex');
     return { order, snapshot, settlement, items, result, previewHash };
   }
@@ -143,7 +164,7 @@ async function select(ctx, orderId, input = null, transaction = null, includeInv
   const line = lines.find(item => String(item.itemId) === input.itemId);
   if (!line || !Number.isFinite(Number(line.quantity)) || Number(line.quantity) <= 0) fail('商品归档数量无效，请先核实原单');
   if (chosen.length !== 1 || !originalItem || !line || Number(chosen[0].quantity) !== Number(line.quantity) || Number(originalItem.quantity) !== Number(line.quantity) || Number(chosen[0].product_unit_price) !== Number(line.unitPricing)) fail('商品行、毛利快照与产品结算数据不一致，请先核实');
-  const afterSnapshot = snapshotPatch(plain(snapshot), input.itemId, input.unitPrice);
+  const afterSnapshot = snapshotPatch(plain(snapshot), input.itemId, input.unitPrice, null, null, order.invoice_status);
   const product = productPatch(items.map(plain), input.itemId, input.unitPrice);
   if ([afterSnapshot.product_pricing_amount, afterSnapshot.vat_taxable_amount, afterSnapshot.vat_amount, afterSnapshot.gross_profit_amount,
     product.summary.product_pricing_amount, product.summary.gross_profit_amount].some(value => !Number.isFinite(value) || Math.abs(value) > 9999999999.99)) fail('本次纠错结果超出系统金额范围', 400);
@@ -157,7 +178,7 @@ async function select(ctx, orderId, input = null, transaction = null, includeInv
     before, after: { snapshot: afterSnapshot, settlement: product.summary, items: product.items } };
   // These management measures include sales tax/uplift rules; do not label their sum company accounting profit.
   const previewHash = crypto.createHash('sha256').update(JSON.stringify({ input, before, order: plain(order) })).digest('hex');
-  return { snapshot, settlement, items, originalItem, result, previewHash };
+  return { order, snapshot, settlement, items, originalItem, result, previewHash };
 }
 async function apply(ctx, adjustment, transaction) {
   if (!transaction) fail('纠错必须与最终审批使用同一事务');
@@ -167,8 +188,23 @@ async function apply(ctx, adjustment, transaction) {
   if (selected.previewHash !== saved.previewHash) fail('订单、毛利或结算数据已变化，请拒绝本申请并重新预览提交');
   if (adjustment.adjustment_type === INVOICE_TYPE) {
     if (saved.input.type !== INVOICE_TYPE) fail('开票金额纠错类型与申请依据不一致');
+    if (saved.result?.targetMonth && saved.result.targetMonth !== selected.result.targetMonth) fail('已跨月，请重新预览并提交调整归属月份');
     const patch = selected.result.after.snapshot;
-    await selected.order.update({ invoice_amount: patch.invoice_amount }, { transaction });
+    await selected.order.update(selected.result.after.order, { transaction });
+    const {originalMonth,targetMonth,salesDelta}=selected.result;
+    if(targetMonth !== originalMonth && salesDelta !== 0){
+      await adjustment.update({signed_amount:-salesDelta},{transaction});
+      await M.PerformanceProfitAdjustment.create({adjustment_id:crypto.randomUUID().replaceAll('-',''),
+        adjustment_no:'INVOICE-PERIOD-'+adjustment.adjustment_id,order_id:adjustment.order_id,order_no:selected.order.order_no,
+        store_id:selected.order.store_id,employee_name:selected.order.create_user || '',adjustment_type:'invoice_period',
+        amount:Math.abs(salesDelta),signed_amount:salesDelta,base_gross_profit:0,status:'approved',
+        applicant_staff_id:adjustment.applicant_staff_id,applicant_name:adjustment.applicant_name,
+        reason:'补开票毛利差额归属 '+targetMonth+'；来源 '+adjustment.adjustment_no,
+        correction_data:{parentAdjustmentId:adjustment.adjustment_id,targetMonth,originalMonth},
+        create_time:new Date(targetMonth+'-01T00:00:00+08:00'),update_time:new Date(),
+        admin_reviewer_id:ctx.state.user.staffId,admin_reviewer_name:ctx.state.user.name,admin_review_time:new Date()
+      },{transaction});
+    }
     await selected.snapshot.update({ ...patch, calculated_by: ctx.state.user.name, calculated_at: new Date(), update_time: new Date() }, { transaction });
     await adjustment.update({ correction_data: { ...saved, appliedAt: new Date().toISOString(), result: selected.result } }, { transaction });
     await recordBusinessAction({ businessType: 'invoice_amount_correction', businessId: adjustment.order_id,
@@ -177,7 +213,7 @@ async function apply(ctx, adjustment, transaction) {
     return;
   }
   if (saved.input.type === INVOICE_TYPE) fail('纠错类型与申请依据不一致');
-  const patch = snapshotPatch(selected.result.before.snapshot, saved.input.itemId, saved.input.unitPrice, adjustment.adjustment_id);
+  const patch = snapshotPatch(selected.result.before.snapshot, saved.input.itemId, saved.input.unitPrice, adjustment.adjustment_id, null, selected.order.invoice_status);
   await selected.snapshot.update({ ...patch, calculated_by: ctx.state.user.name, calculated_at: new Date(), update_time: new Date() }, { transaction });
   await selected.settlement.update({ ...selected.result.after.settlement, update_time: new Date() }, { transaction });
   const changed = selected.items.find(item => String(item.source_order_item_id) === saved.input.itemId);
@@ -214,12 +250,12 @@ function display(row, user) {
     correction_sales_delta: r.salesDelta, correction_product_before: r.productBefore,
     correction_product_after: r.productAfter, correction_product_delta: r.productDelta });
   if (r && row.adjustment_type === INVOICE_TYPE) {
-    output.correction_type_name = '开票金额错误';
+    output.correction_type_name = '补开票／开票金额调整';
     delete output.correction_product;
     delete output.correction_before_price;
     delete output.correction_after_price;
     Object.assign(output, { correction_before_invoice_amount: r.beforeInvoiceAmount, correction_after_invoice_amount: r.afterInvoiceAmount,
-      correction_vat_before: r.vatBefore, correction_vat_after: r.vatAfter,
+      correction_vat_before: r.vatBefore, correction_vat_after: r.vatAfter, correction_before_invoice_status:r.beforeInvoiceStatus, correction_after_invoice_status:r.afterInvoiceStatus, correction_target_month:r.targetMonth, correction_original_month:r.originalMonth,
       correction_product_note: '本次不调整产品端提货差毛利，原核算状态保持' });
   }
   if (r) {
