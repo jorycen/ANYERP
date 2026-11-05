@@ -2826,7 +2826,37 @@ ApprovalActionLog.belongsTo(ApprovalFlowInstance, { foreignKey: 'instance_id', t
 
 require('../utils/snCode').installSnModelNormalization(sequelize.models);
 
+const InventoryFoundation = sequelize.define('InventoryFoundation', {
+  basis_id: { type: DataTypes.STRING(32), primaryKey: true },
+  identity_key: { type: DataTypes.STRING(191), allowNull: false, unique: true },
+  product_id: { type: DataTypes.STRING(32), allowNull: false },
+  product_name: { type: DataTypes.STRING(255) },
+  entity_type: { type: DataTypes.STRING(24), allowNull: false },
+  sn_code: { type: DataTypes.STRING(128) },
+  batch_no: { type: DataTypes.STRING(128) },
+  purchase_cost: { type: DataTypes.DECIMAL(14,2), allowNull: true },
+  cost_mode: { type: DataTypes.STRING(24), allowNull: true },
+  company_price: { type: DataTypes.DECIMAL(14,2), allowNull: true },
+  invoice_type: { type: DataTypes.STRING(24), allowNull: true },
+  status: { type: DataTypes.STRING(24), allowNull: false, defaultValue: 'pending' },
+  reason: { type: DataTypes.STRING(1000) },
+  source_data: { type: DataTypes.JSON },
+  revision: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+  updated_by: { type: DataTypes.STRING(64) },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  update_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_INVENTORY_FOUNDATION', timestamps: false });
+const InventoryFoundationRef = sequelize.define('InventoryFoundationRef', {
+  reference_key: { type: DataTypes.STRING(191), primaryKey: true },
+  basis_id: { type: DataTypes.STRING(32), allowNull: false },
+  store_id: { type: DataTypes.STRING(32), allowNull: false },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_INVENTORY_FOUNDATION_REF', timestamps: false,
+  indexes: [{ fields: ['basis_id'] }, { fields: ['store_id'] }] });
+
 module.exports = {
+  InventoryFoundation,
+  InventoryFoundationRef,
   sequelize,
   Region,
   Distributor,
@@ -2958,3 +2988,5 @@ module.exports = {
   MonthlyTaskGrossProfitAllocation,
   Inventory
 };
+
+require('../modules/inventory/foundationIntake').install(module.exports);

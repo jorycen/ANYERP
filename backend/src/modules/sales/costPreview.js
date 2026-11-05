@@ -53,4 +53,21 @@ function applyFrozenCostDisplay(orderData, snapshot) {
   }) };
 }
 
-module.exports = { applyCostPreview, applyFrozenCostDisplay };
+// Reading an order must not require confirmed tax evidence. Write/approval paths
+// continue calling the calculator directly and retain its strict validation.
+async function readCostSnapshot(orderId, options = {}) {
+  try {
+    return { snapshot: await require('./grossProfit').calculateAndSaveOrderGrossProfit(orderId, { ...options, persist: false }), pending: null };
+  } catch (error) {
+    if (error.code !== 'ORDER_PURCHASE_TAX_PENDING') throw error;
+    return { snapshot: null, pending: { status: 'pending', reason: error.message,
+      grossProfitAmount: null, vatAmount: null } };
+  }
+}
+function applyPendingCost(orderData, pending) {
+  return { ...orderData, cost_preview: pending, tax_calculation_status: pending.status,
+    tax_calculation_reason: pending.reason,
+    OrderItems: (orderData.OrderItems || []).map(item => ({ ...item,
+      cost_is_preview: true, cost_status: 'pending', sales_gross_profit: null })) };
+}
+module.exports = { applyCostPreview, applyFrozenCostDisplay, readCostSnapshot, applyPendingCost };

@@ -448,6 +448,8 @@
           <el-table-column prop="product_name" label="商品名称" />
           <el-table-column prop="pn_code" label="PN码" width="120" />
           <el-table-column prop="sn_code" label="SN码" width="150" />
+          <el-table-column label="采购含税属性" width="120"><template #default="{row}">{{ row.inventory_foundation?.invoiceTypeLabel || '待确认' }}</template></el-table-column>
+          <el-table-column v-if="orderCanSeeOriginalCost" label="基础采购成本/件" width="145"><template #default="{row}">{{ row.inventory_foundation?.purchaseCost == null ? '待确认' : `¥${Number(row.inventory_foundation.purchaseCost).toFixed(2)}` }}</template></el-table-column>
           <el-table-column label="货品销售标签" min-width="190"><template #default="{row}">
             <el-tag v-if="row.resource_summary">{{ row.resource_summary.sales_resource_label }}</el-tag>
             <span v-else>-</span>
@@ -459,7 +461,7 @@
           <el-table-column prop="subtotal" label="小计" width="100">
             <template #default="{ row }">¥{{ row.subtotal }}</template>
           </el-table-column>
-          <el-table-column v-if="orderCanSeeOriginalCost" prop="original_inventory_cost" label="采购成本/件" width="110">
+          <el-table-column v-if="orderCanSeeOriginalCost" prop="original_inventory_cost" :label="currentOrder.cost_preview ? '预估采购成本/件' : '归档采购成本/件'" width="140">
             <template #default="{ row }">{{ row.original_inventory_cost === undefined || row.original_inventory_cost === null ? '-' : `¥${row.original_inventory_cost}` }}</template>
           </el-table-column>
           <el-table-column v-if="orderHasSettlementCost && !currentOrder.cost_preview" prop="cost_adjustment_amount" label="政策调整" width="100">

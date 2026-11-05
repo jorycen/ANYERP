@@ -38,7 +38,7 @@ function calculateVat(lines, invoiceAmount, invoiceStatus) {
   const taxableAmount = money(Math.max(0, Number(invoiceAmount) - cost));
   return { taxableAmount, amount: money(taxableAmount * 0.13) };
 }
-async function attachPurchaseTaxBasis(order, lines, transaction, originIndex = null) {
+async function resolveDocumentTaxBasis(order, lines, transaction, originIndex = null) {
   const M = require('../../models');
   const { QueryTypes } = require('sequelize');
   const cutoff = new Date(new Date(order.archive_time || new Date()).getTime() + 8 * 3600000).toISOString().slice(0, 23).replace('T', ' ');
@@ -91,4 +91,10 @@ async function attachPurchaseTaxBasis(order, lines, transaction, originIndex = n
   }
   return result;
 }
-module.exports = { VERSION, LEGACY_VERSION, normalizeInvoiceType, isService, calculateVat, attachPurchaseTaxBasis };
+// Historical migration audit may inspect old documents, but production readers
+// all resolve editable facts through the same inventory foundation.
+async function attachPurchaseTaxBasis(order, lines, transaction, originIndex = null) {
+  if(originIndex)return resolveDocumentTaxBasis(order,lines,transaction,originIndex);
+  return require('../inventory/foundation').applySalesTaxBasis(order,lines,transaction);
+}
+module.exports = { VERSION, LEGACY_VERSION, normalizeInvoiceType, isService, calculateVat, attachPurchaseTaxBasis, resolveDocumentTaxBasis };

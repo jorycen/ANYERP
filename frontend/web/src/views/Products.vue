@@ -319,7 +319,7 @@
             <el-button type="success" plain @click="handleCostImport">批量导入商品成本</el-button>
             <el-button type="success" plain @click="handleCostExport" :loading="costExportLoading">成本导出</el-button>
             <el-button type="warning" @click="handlePriceImport">批量导入定价</el-button>
-            <el-button type="primary" plain @click="inventoryPricingVisible = true">库存计价方式调整</el-button>
+            <el-button type="primary" @click="inventoryFoundationVisible = true">库存基础资料（含已售）</el-button>
             <span class="muted">库存成本进入价格管理、搜索或翻页时自动同步</span>
           </div>
 
@@ -844,6 +844,7 @@
 
   </div>
   <InventoryPricingManager v-model="inventoryPricingVisible" />
+  <InventoryFoundationManager v-model="inventoryFoundationVisible" />
 </template>
 
 <script setup>
@@ -854,10 +855,12 @@ import { ArrowDown, ArrowRight, Folder, Plus, Upload } from '@element-plus/icons
 import * as XLSX from 'xlsx'
 import api from '../api'
 import InventoryPricingManager from '../components/InventoryPricingManager.vue'
+import InventoryFoundationManager from '../components/InventoryFoundationManager.vue'
 import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 
 const currentUserInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
 const inventoryPricingVisible = ref(false)
+const inventoryFoundationVisible = ref(false)
 const route = useRoute()
 const currentRoleCode = currentUserInfo.roleCode || ''
 const currentRoleCodes = Array.isArray(currentUserInfo.roles) && currentUserInfo.roles.length

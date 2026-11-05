@@ -641,8 +641,11 @@ async function buildProductPricingDetails(orderId, transaction) {
     if (row.sn_id) specialPriceBySnId.set(String(row.sn_id), price);
     if (row.sn_code) specialPriceBySnCode.set(String(row.sn_code).trim().toUpperCase(), price);
   });
+  const foundationByItem = await require('../inventory/foundation').load(items.map(item => 'order_item:'+item.item_id), transaction);
   const pricingLines = items.map(item => {
     const row = item.toJSON();
+    const rawInventoryBasis = foundationByItem.get('order_item:'+row.item_id);
+    const inventoryBasis = require('../inventory/foundation').matchesLine(rawInventoryBasis,{productId:row.product_id,snId:row.sn_id,snCode:row.sn_code}) ? rawInventoryBasis : null;
     const productPrice = priceByProduct.get(String(row.product_id || ''));
     const product = productById.get(String(row.product_id || '')) || {};
     const snRow = supplierContext.snMap.get(`id:${row.sn_id}`) || supplierContext.snMap.get(`code:${row.sn_code}`);
@@ -653,7 +656,7 @@ async function buildProductPricingDetails(orderId, transaction) {
     const supplierId = row.supplier_id || snRow?.supplier_id || inboundSupplier?.supplier_id || '';
     const supplier = supplierId ? supplierContext.supplierMap.get(String(supplierId)) : null;
     // Unarchived order-item zeroes are defaults, not evidence of actual cost.
-    const purchasePrice = nonSnReceiptCost ?? (toNumber(row.original_inventory_cost) > 0 ? validPrice(row.original_inventory_cost) : null)
+    const purchasePrice = inventoryBasis?.basisId ? inventoryBasis.purchaseCost : nonSnReceiptCost ?? (toNumber(row.original_inventory_cost) > 0 ? validPrice(row.original_inventory_cost) : null)
       ?? (toNumber(row.original_pickup_price) > 0 ? validPrice(row.original_pickup_price) : null)
       ?? require('../../utils/costKnowledge').knownCost(snRow?.inbound_price,
         isNonPurchase || confirmedZeroIds.has(String(snRow?.sn_id)))
@@ -670,7 +673,7 @@ async function buildProductPricingDetails(orderId, transaction) {
       supplier,
       {
         purchaseUpliftAmount: snRow ? (snRow.gross_profit_uplift_amount ?? supplier?.gross_profit_uplift_amount) : (inboundSupplier?.uplift_snapshot ?? supplier?.gross_profit_uplift_amount ?? inboundSupplier?.supplier_gross_profit_uplift_amount),
-        costMode: isNonPurchase ? 'COMPANY_PRICE' : resolveInventoryCostMode(product, snRow || { gross_profit_use_standard_price: inboundSupplier?.pricing_mode_snapshot }, productPrice, order.create_time, supplier)
+        costMode: inventoryBasis?.costMode || (isNonPurchase ? 'COMPANY_PRICE' : resolveInventoryCostMode(product, snRow || { gross_profit_use_standard_price: inboundSupplier?.pricing_mode_snapshot }, productPrice, order.create_time, supplier))
       }
     );
     const fixedCost = historicalPnCost(order, row.pn_code);
@@ -716,7 +719,8 @@ async function buildProductPricingDetails(orderId, transaction) {
       source: effectivePricing.source
     };
   });
-  return require('./purchaseVat').attachPurchaseTaxBasis(order, pricingLines, transaction);
+  const foundationLines = await require('../inventory/foundation').applySalesPricing(order, pricingLines, transaction);
+  return require('./purchaseVat').attachPurchaseTaxBasis(order, foundationLines, transaction);
 }
 
 async function buildSupplementDetails(orderId, transaction) {
@@ -1018,6 +1022,13 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     frozenInputs ? Promise.resolve(parseJsonArray(existing.product_pricing_details)) : buildProductPricingDetails(orderId, transaction),
     buildSupplementDetails(orderId, transaction)
   ]);
+  if (persist && !frozenInputs) {
+    const foundation = require('../inventory/foundation');
+    await foundation.ensureSalesReferences(order, productPricingDetails, transaction);
+    const priced = await foundation.applySalesPricing(order, productPricingDetails, transaction);
+    const based = await foundation.applySalesTaxBasis(order, priced, transaction);
+    productPricingDetails.splice(0, productPricingDetails.length, ...based);
+  }
   const freightCostDetails = frozenInputs
     ? parseJsonArray(existing.supplement_details).filter(line => line.source === 'freight_cost')
     : await buildFreightCostDetails(order, transaction, productPricingDetails);

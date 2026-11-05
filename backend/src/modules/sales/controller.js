@@ -100,7 +100,7 @@ const {
   pricingCompleteness,
   calculateNationalSubsidyCustomerReceiptAmount
 } = require('./grossProfit');
-const { applyCostPreview, applyFrozenCostDisplay } = require('./costPreview');
+const { applyCostPreview, applyFrozenCostDisplay, readCostSnapshot, applyPendingCost } = require('./costPreview');
 const { createProductSettlementOrder } = require('../report/productSettlement');
 const {
   isSubsidyEligibleItem,
@@ -3060,11 +3060,19 @@ async function detail(ctx) {
     });
   }
   result = applyFrozenCostDisplay(result, canSeeCost(ctx.state.user) ? grossProfitSnapshot : null);
+  const foundationRows = await require('../inventory/foundation').salesBasis(order,
+    (result.OrderItems || items).map(item => ({ itemId: item.item_id, productId:item.product_id, snId:item.sn_id, snCode:item.sn_code })), null);
+  const foundationByItem = new Map(foundationRows.map(line => [String(line.itemId), line.inventoryFoundation]));
+  result.OrderItems = (result.OrderItems || items).map(item => {
+    const basis = { ...foundationByItem.get(String(item.item_id)) };
+    if (!canSeeCost(ctx.state.user)) { delete basis.purchaseCost; delete basis.companyPrice; delete basis.source; }
+    return { ...item, inventory_foundation: basis };
+  });
   // Pricing details are internal display inputs, not an additional cost API.
   if (result.grossProfitSnapshot) delete result.grossProfitSnapshot.product_pricing_details;
   if (canSeeCost(ctx.state.user) && ['draft', '未归档', 'pending_approval', 'pending_store_approval', 'pending_distributor_approval'].includes(String(order.order_status))) {
-    const preview = await calculateAndSaveOrderGrossProfit(order.order_id, { persist: false, final: false });
-    result = applyCostPreview(result, preview);
+    const { snapshot: preview, pending } = await readCostSnapshot(order.order_id, { final: false });
+    result = pending ? applyPendingCost(result, pending) : applyCostPreview(result, preview);
   }
   if (!canSeeCost(ctx.state.user)) {
     result.OrderItems = (result.OrderItems || items).map(item => {
@@ -3666,10 +3674,14 @@ async function getGrossProfit(ctx) {
   if (!order) ctx.throw(404, '订单不存在');
   await assertSalesOrderVisible(order, ctx.state.user);
 
-  const snapshot = await calculateAndSaveOrderGrossProfit(orderId, {
+  const { snapshot, pending } = await readCostSnapshot(orderId, {
     calculatedBy: ctx.state.user?.name || 'system',
     persist: false
   });
+  if (pending) {
+    ctx.body = { code: 0, data: pending };
+    return;
+  }
   const adjustments = await loadProfitAdjustments([orderId]);
   const careLines = await careCostDetails(snapshot);
   const careCostAmount = Number(careLines.reduce((sum, line) => sum + Number(line.pricingAmount || 0), 0).toFixed(2));

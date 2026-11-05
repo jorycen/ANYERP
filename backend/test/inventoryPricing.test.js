@@ -22,6 +22,11 @@ function fixture(t) {
   t.mock.method(M.ProductPrice, 'findAll', async () => price.status === 1 ? [price] : []);
   t.mock.method(M.OrderItem, 'findAll', async () => occupied ? [{ product_id: 'P', sn_code: 'CODE' }] : []);
   t.mock.method(M.BusinessActionLog, 'create', async values => { logs.push(values); });
+  const basis={basis_id:'B',status:'confirmed',invoice_type:'收据',purchase_cost:1000,cost_mode:'PURCHASE_PRICE',company_price:2900,revision:1,
+    toJSON(){return {...this};},async update(values){writes.push(values);Object.assign(this,values);}};
+  t.mock.method(M.InventoryFoundationRef,'findAll',async()=>[{reference_key:'sn_current:SN1',basis_id:'B'}]);
+  t.mock.method(M.InventoryFoundation,'findAll',async()=>[{...basis,company_price:price.status===1?price.standard_price:null}]);
+  t.mock.method(M.InventoryFoundation,'findByPk',async()=>basis);
   return { row, product, price, writes, logs, occupy() { occupied = true; } };
 }
 async function preview(body) { const c = ctx(body); await C.preview(c); return c.body.data; }
@@ -42,9 +47,10 @@ test('preview writes nothing; apply changes only selected stock and records audi
   t.mock.method(M.Product, 'update', async () => assert.fail('Do not change global defaults'));
   t.mock.method(M.OrderGrossProfit, 'update', async () => assert.fail('Do not change archived profits'));
   await C.apply(ctx({ ...body, previewHash: p.previewHash }));
-  assert.equal(f.writes.length, 1); assert.equal(f.writes[0].gross_profit_use_standard_price, 1);
-  assert.equal(f.logs[0].from_status, 'PURCHASE_PRICE'); assert.equal(f.logs[0].to_status, 'COMPANY_PRICE');
-  assert.equal(JSON.parse(f.logs[0].detail_json).purchasePrice, 1000);
+  assert.equal(f.writes.length, 1); assert.equal(f.writes[0].cost_mode, 'COMPANY_PRICE');
+  const log=f.logs.find(x=>x.action==='change_cost_mode');
+  assert.equal(log.from_status, 'PURCHASE_PRICE'); assert.equal(log.to_status, 'COMPANY_PRICE');
+  assert.equal(JSON.parse(log.detail_json).purchasePrice, 1000);
   assert.equal(f.row.inbound_price, '1000');
 });
 test('changed company price invalidates preview before any update', async t => {

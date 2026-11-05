@@ -39,19 +39,21 @@ async function describe(rows, transaction) {
   ]);
   const pm = new Map(products.map(r => [r.product_id, r]));
   const pp = new Map(prices.map(r => [r.product_id, r]));
+  const foundations = await require('../inventory/foundation').load(rows.map(r => 'sn_current:'+r.sn_id), transaction);
   return rows.map(sn => {
     const product = pm.get(sn.product_id) || {};
     const price = pp.get(sn.product_id);
+    const basis = foundations.get('sn_current:'+sn.sn_id);
     const occupied = orders.some(item => item.product_id === sn.product_id &&
       (item.sn_id === sn.sn_id || item.sn_code === sn.sn_code));
     return {
       snId: sn.sn_id, snCode: sn.sn_code, productId: sn.product_id, productName: product.name || '', category: product.category || '',
       pnCode: sn.pn_code, storeId: sn.store_id, batchNo: sn.batch_no || '',
       inboundTime: sn.original_inbound_time || sn.inbound_time, ageDays: stockAge(sn),
-      purchasePrice: validPrice(sn.inbound_price), standardPrice: price ? validPrice(price.standard_price) : null,
-      mode: originalMode(sn, product, price), status: sn.status, occupied,
-      blocked: !product.product_id ? '商品已停用或不存在' : sn.status !== 'in_stock' ? '库存已非可售在库' : occupied ? '已关联未归档销售单' : '',
-      version: [sn.update_time, sn.gross_profit_use_standard_price, product.gross_profit_cost_mode, price?.price_id, price?.effective_time].map(v => v ?? null)
+      purchasePrice: basis?.purchaseCost ?? null, standardPrice: basis?.companyPrice ?? null,
+      mode: basis?.costMode || null, status: sn.status, occupied, basis,
+      blocked: !basis?.basisId ? '基础档案尚未关联' : !product.product_id ? '商品已停用或不存在' : sn.status !== 'in_stock' ? '库存已非可售在库' : occupied ? '已关联未归档销售单' : '',
+      version: [sn.update_time, sn.gross_profit_use_standard_price, product.gross_profit_cost_mode, price?.price_id, price?.effective_time,basis?.revision].map(v => v ?? null)
     };
   });
 }
@@ -115,8 +117,10 @@ async function apply(ctx) {
     for (const row of result.rows) {
       const before = result.details.find(r => r.snId === row.sn_id);
       const flag = body.mode === 'COMPANY_PRICE' ? 1 : 0;
-      if (String(row.gross_profit_use_standard_price) === String(flag)) continue;
-      await row.update({ gross_profit_use_standard_price: flag, update_time: new Date() }, { transaction });
+      if (before.mode === body.mode) continue;
+      const b=before.basis;
+      await require('../inventory/foundation').update(b.basisId,{revision:b.revision,invoiceType:b.invoiceType,purchaseCost:b.purchaseCost,
+        costMode:body.mode,companyPrice:b.companyPrice,confirmZero:b.purchaseCost===0,confirmBelowCost:body.confirmBelowCost,reason},ctx.state.user,transaction);
       await recordBusinessAction({ businessType: 'inventory_pricing', businessId: row.sn_id, businessNo: row.sn_code, action: 'change_cost_mode', fromStatus: before.mode, toStatus: body.mode, user: ctx.state.user, comment: reason,
         detail: { productId: row.product_id, storeId: row.store_id, batchNo: row.batch_no, beforeFlag: before.version[1], afterFlag: flag, purchasePrice: before.purchasePrice, standardPrice: before.standardPrice, warning: before.warning }, transaction });
       changed++;

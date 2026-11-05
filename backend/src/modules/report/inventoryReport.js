@@ -1,7 +1,7 @@
 const M=require('../../models');
 const {Op,QueryTypes}=require('sequelize');
 const {resolveReportStoreIds}=require('../../utils/storePermissions');
-const {knownCost,confirmedZeroSnIds}=require('../../utils/costKnowledge');
+
 const {FIELDS,getInventoryQuantitySnapshot}=require('../../utils/inventoryQuantities');
 const {inventoryPnCode,uniquePnCodes}=require('../../utils/productPn');
 const round=v=>Math.round((Number(v)+Number.EPSILON)*100)/100;
@@ -85,7 +85,6 @@ async function load(query,user){
   const products=ids.length?await M.Product.findAll({where:{product_id:{[Op.in]:ids}},raw:true,transaction}):[];
   const categoryRows=await M.ProductCategory.findAll({where:{status:1},attributes:['category_id','parent_id','name','sort_order'],raw:true,transaction});
   const categories=categoryPaths(categoryRows);
-  const prices=ids.length?await M.ProductPrice.findAll({where:{product_id:{[Op.in]:ids},status:1,[Op.or]:[{effective_time:{[Op.lte]:at}},{effective_time:null}]},order:[['effective_time','DESC'],['price_id','DESC']],raw:true,transaction}):[];
   const [productPns,productBarcodes]=ids.length?await Promise.all([
    M.ProductPn.findAll({where:{product_id:{[Op.in]:ids},status:1,is_deleted:0},raw:true,transaction}),
    M.ProductBarcode.findAll({where:{product_id:{[Op.in]:ids},status:1,barcode_type:'manufacturer'},raw:true,transaction})
@@ -93,11 +92,14 @@ async function load(query,user){
   const pnsByProduct=new Map(),barcodesByProduct=new Map();
   for(const [items,map]of [[productPns,pnsByProduct],[productBarcodes,barcodesByProduct]])for(const item of items){if(!map.has(item.product_id))map.set(item.product_id,[]);map.get(item.product_id).push(item);}
   const pnFor=(p,sn)=>inventoryPnCode(p,pnsByProduct.get(p.product_id)||[],sn,barcodesByProduct.get(p.product_id)||[]);
-  const zero=await confirmedZeroSnIds(sns,transaction);
+
   const reviewService=require('./inventoryReview');
   const reviews=await reviewService.load(transaction);
-  const evidenceService=require('./inventoryEvidence');
-  const evidence=await evidenceService.loadEvidence(M.sequelize,ids,transaction,at);
+  const foundation=require('../inventory/foundation');
+  const baseMap=await foundation.load([...sns.map(sn=>'sn_current:'+sn.sn_id),...stock.flatMap(inv=>FIELDS.map(field=>'inventory:'+inv.inventory_id+':'+field))],transaction);
+  const baseSource=b=>({status:b?.status==='confirmed'?'linked':b?.status==='conflict'?'conflict':'unlinked',
+    invoiceType:b?.invoiceType||null,evidenceSource:'inventory_foundation',reason:b?.reason||'统一基础档案尚未关联',basisId:b?.basisId||null,
+    basisRevision:b?.revision||null,costEstimated:!!b?.costEstimated,purchaseCost:b?.purchaseCost??null,costMode:b?.costMode||null,companyPrice:b?.companyPrice??null});
   const pmap=new Map(products.map(p=>[p.product_id,p])),smap=new Map(stores.map(s=>[s.store_id,s])),lmap=new Map(locations.map(l=>[l.location_id,l]));
   const details=[],excluded=[];
   const add=(p,storeId,locationId,type,quantity,unitCost,estimated,costSource,sn,time,invoice,source={})=>{
@@ -112,22 +114,20 @@ async function load(query,user){
    if(reason){excluded.push({productCode:p.product_code,productName:p.name,category,storeName:smap.get(storeId)?.name||storeId,quantity,reason});return;}
    const costAmount=unitCost===null?null:round(unitCost*quantity),tax=taxEstimate(costAmount,invoice);
    details.push({productId:p.product_id,productCode:p.product_code||'',productName:p.name||'未命名商品',category:category||'未分类',storeId,storeName:smap.get(storeId)?.name||storeId,location:lmap.get(locationId)?.name||locationId||'未指定库位',type,typeName:TYPES[type]||type,
-    quantity,unitCost,costAmount,estimated,costSource,sn:sn?.sn_code||'',pn,inboundTime:time||null,ageBucket:bucket(time,at),netEstimate:tax.net,estimatedTax:tax.tax,invoiceType:invoice||'待核实',evidenceStatus:source.status||'unlinked',evidenceStatusLabel:({manual_confirmed:'人工确认（预计测算）',linked:'已关联',unlinked:'未关联',conflict:'来源冲突',owner_pending:'经销商归属待确认',invoice_pending:'票种税率待确认',invoice_conflict:'发票口径冲突',batch_pending:'采购批次待对应'})[source.status]||'未关联',evidenceReason:source.reason||'',purchaseRequestNo:source.requestNo||'',sourceInboundNo:source.inboundNo||'',invoiceNos:source.invoiceNos||'',invoiceSource:source.evidenceSource==='manual_review'?'人工回填确认（非发票认证）':source.evidenceSource==='registered_invoice'?'已登记采购发票':source.evidenceSource==='purchase_request'?'采购申请约定':'待关联',sourceCandidateCount:source.candidateCount||0,sourceCandidates:source.candidates||[],scopeWarning:!scopeReview&&Number(p.need_sn)!==1&&p.category==='售后'?'售后非SN项目，实物属性待核对':''});
+    quantity,unitCost,costAmount,estimated,costSource,sn:sn?.sn_code||'',pn,inboundTime:time||null,ageBucket:bucket(time,at),netEstimate:tax.net,estimatedTax:tax.tax,invoiceType:invoice||'待核实',evidenceStatus:source.status||'unlinked',evidenceStatusLabel:({manual_confirmed:'人工确认（预计测算）',linked:'已关联',unlinked:'未关联',conflict:'来源冲突',owner_pending:'经销商归属待确认',invoice_pending:'票种税率待确认',invoice_conflict:'发票口径冲突',batch_pending:'采购批次待对应'})[source.status]||'未关联',evidenceReason:source.reason||'',purchaseRequestNo:source.requestNo||'',sourceInboundNo:source.inboundNo||'',invoiceNos:source.invoiceNos||'',basisId:source.basisId||null,basisRevision:source.basisRevision||null,costMode:source.costMode||null,companyPrice:source.companyPrice??null,invoiceSource:source.evidenceSource==='inventory_foundation'?'统一库存基础资料':source.evidenceSource==='manual_review'?'人工回填确认（非发票认证）':source.evidenceSource==='registered_invoice'?'已登记采购发票':source.evidenceSource==='purchase_request'?'采购申请约定':'待关联',sourceCandidateCount:source.candidateCount||0,sourceCandidates:source.candidates||[],scopeWarning:!scopeReview&&Number(p.need_sn)!==1&&p.category==='售后'?'售后非SN项目，实物属性待核对':''});
   };
   for(const sn of sns){
    const p=pmap.get(sn.product_id);if(!p||Number(p.need_sn)!==1)continue;
-   const source=reviewService.taxOverride(reviews,'sn:'+sn.sn_id,reviewService.snState(sn))||evidenceService.resolveSnEvidence(sn,evidence.receipts,smap.get(sn.store_id)?.distributor_id,evidence.invoices,at);
-   const cost=knownCost(sn.inbound_price,zero.has(String(sn.sn_id)));
-   add(p,sn.store_id,sn.location_id,FIELDS.includes(sn.inventory_type)?sn.inventory_type:'normal_qty',1,cost,false,cost===null?'成本待补':'SN实际入库成本',sn,sn.original_inbound_time||sn.inbound_time,['linked','manual_confirmed'].includes(source.status)?source.invoiceType:null,source);
+   const basis=baseMap.get('sn_current:'+sn.sn_id);
+   const source=baseSource(basis?.productId===sn.product_id?basis:null);
+   const cost=source.purchaseCost;
+   add(p,sn.store_id,sn.location_id,FIELDS.includes(sn.inventory_type)?sn.inventory_type:'normal_qty',1,cost,source.costEstimated,cost===null?'成本待补':'统一库存基础档案',sn,sn.original_inbound_time||sn.inbound_time,['linked','manual_confirmed'].includes(source.status)?source.invoiceType:null,source);
   }
   for(const inv of stock){
    const p=pmap.get(inv.product_id);if(!p||Number(p.need_sn)===1)continue;
-   const price=prices.find(r=>r.product_id===p.product_id);
-   const cost=knownCost(price?.cost_price,Number(price?.cost_price_locked)===1);
+
    const qty=getInventoryQuantitySnapshot(inv,lmap.get(inv.location_id)?.type);
-   const candidates=evidenceService.nonSnCandidates(p.product_id,inv.store_id,smap.get(inv.store_id)?.distributor_id,evidence.receipts,at);
-   const source={status:candidates.length?'batch_pending':'unlinked',candidateCount:candidates.length,candidates,reason:candidates.length?'已找到同店采购资料，库存未记录采购批次，不能确定当前库存对应票据':'尚无可确认的同店采购来源，需核对原始入库或调拨来源'};
-   for(const field of FIELDS){const reviewed=reviewService.taxOverride(reviews,'inventory:'+inv.inventory_id+':'+field,reviewService.inventoryState(inv))||source;add(p,inv.store_id,inv.location_id,field,qty[field],cost,Number(price?.cost_price_locked)!==1,'非SN商品成本档案（未锁定时为估算）',null,null,reviewed.invoiceType||null,reviewed);}
+   for(const field of FIELDS){const basis=baseMap.get('inventory:'+inv.inventory_id+':'+field);const source=baseSource(basis?.productId===inv.product_id?basis:null);add(p,inv.store_id,inv.location_id,field,qty[field],source.purchaseCost,source.costEstimated,'统一库存基础档案',null,null,source.invoiceType,source);}
   }
   const summary=aggregate(details,[])[0]||aggregate([{quantity:0,type:'normal_qty',ageBucket:'unknown',costAmount:null,netEstimate:null}],[])[0];
   const rows=aggregate(details,dims);

@@ -637,6 +637,10 @@ export default {
   // 商品价格
   getPriceList: (params) => api.get('/product/price/list', { params }),
   getInventoryPricing: (params) => api.get('/product/price/inventory-pricing', { params }),
+  getInventoryFoundation: (params) => api.get('/product/price/inventory-foundation', { params }),
+  updateInventoryFoundation: (id, data) => api.put(`/product/price/inventory-foundation/${encodeURIComponent(id)}`, data),
+  getInventoryFoundationHistory: (id) => api.get(`/product/price/inventory-foundation/${encodeURIComponent(id)}/history`),
+  linkInventoryFoundation: (data) => api.post('/product/price/inventory-foundation/link', data),
   getInventoryPricingHistory: (snId) => api.get(`/product/price/inventory-pricing/${encodeURIComponent(snId)}/history`),
   previewInventoryPricing: (data) => api.post('/product/price/inventory-pricing/preview', data),
   applyInventoryPricing: (data) => api.post('/product/price/inventory-pricing/apply', data),

@@ -297,6 +297,7 @@ async function runSchemaMigrations() {
   await require('../modules/customerOps/schema').ensureRewardFulfillmentSchema();
   await require('./staffAccount').ensureStaffAccountSchema(sequelize);
   await ensureProfitAdjustmentCorrectionSchema();
+  await ensureInventoryFoundationSchema();
   await ensureExpenseRemarkSchema();
   await ensureExpenseRecipientSchema();
   await ensureExpenseAmortizationSchema();
@@ -369,6 +370,18 @@ async function ensureProfitAdjustmentCorrectionSchema() {
   await checkAndAddColumn('T_PERFORMANCE_PROFIT_ADJUSTMENT', 'CORRECTION_DATA', 'JSON NULL COMMENT "结算定价纠错依据及前后快照"', 'BASE_GROSS_PROFIT');
   // The legacy helper logs DDL errors; this read must throw to block readiness.
   await sequelize.query('SELECT CORRECTION_DATA FROM T_PERFORMANCE_PROFIT_ADJUSTMENT LIMIT 0');
+}
+
+async function ensureInventoryFoundationSchema({skipBootstrap=false}={}) {
+  const M = require('../models');
+  await M.InventoryFoundation.sync();
+  await M.InventoryFoundationRef.sync();
+  await sequelize.query('SELECT BASIS_ID, REVISION, INVOICE_TYPE FROM T_INVENTORY_FOUNDATION LIMIT 0');
+  await sequelize.query('SELECT REFERENCE_KEY, BASIS_ID, STORE_ID FROM T_INVENTORY_FOUNDATION_REF LIMIT 0');
+  await M.InventoryFoundation.findAll({limit:0,raw:true});
+  await M.InventoryFoundationRef.findAll({limit:0,raw:true});
+  if(!skipBootstrap)await require('../modules/inventory/foundationBootstrap').bootstrap();
+  require('../modules/inventory/foundationIntake').enable();
 }
 
 async function ensureSalesCashRebateSchema() {
@@ -5092,6 +5105,7 @@ async function seedPermissionData() {
 }
 
 module.exports = {
+  ensureInventoryFoundationSchema,
   ensureProfitAdjustmentCorrectionSchema,
   ensureExpenseAmortizationSchema,
   ensureExpenseRemarkSchema,
