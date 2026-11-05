@@ -24,8 +24,8 @@ function plan(data){
     const key=F.snKey(sn.sn_id,cycles);
     add(key,{product_id:sn.product_id,product_name:p.name||'',entity_type:'sn_cycle',sn_code:sn.sn_code,batch_no:sn.batch_no},
       {purchase_cost:F.money(sn.inbound_price)>0||data.zeroSnIds?.has(String(sn.sn_id))?F.money(sn.inbound_price):null,
-        cost_mode:String(sn.gross_profit_use_standard_price)==='1'?'COMPANY_PRICE':String(sn.gross_profit_use_standard_price)==='0'?'PURCHASE_PRICE':p.gross_profit_cost_mode||null,
-        company_price:F.money(sn.original_pickup_price)>0?F.money(sn.original_pickup_price):F.money(price.standard_price),
+        cost_mode:p.gross_profit_cost_mode||null,
+        company_price:F.money(price.standard_price),
         invoice_type:V.normalizeInvoiceType(type),source:'current_sn',reference:sn.sn_id,reviewBatch:old?.reviewBatch||null},
       'sn_current:'+sn.sn_id,sn.store_id);
   }
@@ -52,8 +52,7 @@ function plan(data){
       add(key,{product_id:l.productId,product_name:l.productName,entity_type:sn?'sn_cycle':'import_sale',sn_code:l.snCode||'',batch_no:sn?.batch_no||'销售导入明细 '+item.item_id},
         {invoice_type:b.status==='confirmed'?V.normalizeInvoiceType(b.invoiceType):null,identityConflict,
           purchase_cost:l.purchasePriceKnown===false?null:F.money(l.purchasePrice)??(Number(item.original_inventory_cost)>0?F.money(item.original_inventory_cost):null),
-          cost_mode:l.isCompanyPriced===true?'COMPANY_PRICE':l.isCompanyPriced===false?'PURCHASE_PRICE':l.costModeSnapshot||null,
-          company_price:l.isCompanyPriced===true?F.money(l.unitPricing):null,source:'sales_snapshot',reference:o.order_no,
+          source:'sales_snapshot',reference:o.order_no,
           correctionId:l.correctionId||null,confirmationBatch:b.confirmationBatch||b.reviewBatch||null,
           taxScope:b.source==='user_october_category_confirmation'?'2026-10':null,
           missingBatch:!sn,reason:!sn?'历史非SN无明确批次，保留独立档案，禁止按商品强行合并':null},

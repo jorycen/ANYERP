@@ -387,7 +387,7 @@ async function getPaymentMethodsByStore(ctx) {
     return String(a.method_id || '').localeCompare(String(b.method_id || ''));
   });
 
-  ctx.body = { code: 0, data: result.flatMap(method => require('../sales/couponConfiguration').options(method, storeId)).filter(method => require('../sales/couponPricing').isActiveToday(method.coupon_rule)) };
+  ctx.body = { code: 0, data: result.flatMap(method => require('../sales/couponConfiguration').options(method, storeId)).filter(method => require('../sales/couponPricing').isActiveToday(method.coupon_rule)).map(require('../sales/couponConfiguration').entry) };
 }
 
 async function validatePaymentMethodAccounts(ctx, {

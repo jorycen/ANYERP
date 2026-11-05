@@ -11,6 +11,16 @@ function options(method,storeId,{includeInactive=false}={}) {
   const plans=Number(method.is_global)?config.global:config.stores?.[String(storeId)];
   return (plans||[]).filter(p=>includeInactive||p.status===1).map(plan=>({...method,method_id:`${method.method_id}:${plan.id}`,status:Number(method.status)===1?plan.status:0,name:paymentName(method,plan),code:paymentName(method,plan),coupon_rule:plan.rule,scheme_id:plan.id,parent_method_id:method.method_id}));
 }
+function entry(method) {
+  const rule = require('./couponPricing').normalizeRule(method.coupon_rule);
+  if (!rule) {
+    const group = ['商场优惠券','抖音减满券','抖音优惠券'].includes(method.name) ? (method.name === '抖音优惠券' ? '抖音减满券' : method.name) : null;
+    return {...method,coupon_entry:group ? {group,label:'未配置方案',amount:null,available:false,reason:'请先配置优惠券方案'} : null};
+  }
+  return {...method,coupon_entry:{group:rule.kind==='douyin'?'抖音减满券':'商场优惠券',
+    label:method.scheme_label || method.name,amount:rule.faceAmount > 0 ? rule.faceAmount : null,
+    available:rule.faceAmount > 0,reason:rule.faceAmount > 0 ? '' : '此方案未配置固定抵扣面额，请先完善方案配置'}};
+}
 async function normalize(ctx,existing, {transaction} = {}) {
   const M=require('../../models'),{Op}=require('sequelize'),pricing=require('./couponPricing');
   const {canAccessDistributor}=require('../../utils/distributorScope');
@@ -65,4 +75,4 @@ async function normalize(ctx,existing, {transaction} = {}) {
   }
   return result;
 }
-module.exports={bundle,options,allPlans,paymentName,normalize};
+module.exports={bundle,options,entry,allPlans,paymentName,normalize};

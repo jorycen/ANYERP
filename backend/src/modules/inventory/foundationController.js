@@ -29,7 +29,8 @@ async function list(ctx){const stores=await scope(ctx),q=ctx.query,page=Math.max
   const items=saleIds.length?await M.OrderItem.findAll({where:{item_id:saleIds},attributes:['item_id','order_id'],raw:true}):[];
   const orders=items.length?await M.Order.findAll({where:{order_id:items.map(x=>x.order_id)},attributes:['order_id','order_no'],raw:true}):[];
   const orderNames=new Map(orders.map(x=>[x.order_id,x.order_no])),names=new Map(items.map(x=>['order_item:'+x.item_id,'订单 '+orderNames.get(x.order_id)]));
-  ctx.body={code:0,data:{list:result.rows.map(r=>({...F.view(r),productName:r.product_name,entityType:r.entity_type,
+  const current = new Map((await F.currentCatalog(result.rows)).map(x=>[x.basisId,x]));
+  ctx.body={code:0,data:{list:result.rows.map(r=>({...current.get(r.basis_id),productName:r.product_name,entityType:r.entity_type,
     references:pageRefs.filter(x=>x.basis_id===r.basis_id).map(x=>({referenceKey:x.reference_key,storeId:x.store_id,
       label:names.get(x.reference_key)||(x.reference_key.startsWith('sn_current:')?'当前SN库存':'导入库存批次')}))})),total:result.count,page,pageSize:size}};
 }

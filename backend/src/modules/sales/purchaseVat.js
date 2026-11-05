@@ -38,12 +38,49 @@ function calculateVat(lines, invoiceAmount, invoiceStatus) {
   const taxableAmount = money(Math.max(0, Number(invoiceAmount) - cost));
   return { taxableAmount, amount: money(taxableAmount * 0.13) };
 }
-async function resolveDocumentTaxBasis(order, lines, transaction, originIndex = null) {
+async function resolveDocumentTaxBasis(order, lines, transaction, originIndex = null, visited = new Set()) {
   const M = require('../../models');
   const { QueryTypes } = require('sequelize');
   const cutoff = new Date(new Date(order.archive_time || new Date()).getTime() + 8 * 3600000).toISOString().slice(0, 23).replace('T', ' ');
   const result = [];
   for (const line of lines) {
+    if (line.pricingOrigin?.sourceType === 'sales_return' && !isService(line)) {
+      if (line.purchasePrice === null || line.purchasePrice === undefined || !Number.isFinite(Number(line.purchasePrice))) {
+        result.push({...line,purchaseTaxBasis:{version:VERSION,status:'pending',service:false,reason:'退货商品实际采购成本尚未确认'}}); continue;
+      }
+      const key = line.pricingOrigin.sourceNo + ':' + line.productId;
+      if (visited.has(key)) { result.push({...line,purchaseTaxBasis:{version:VERSION,status:'pending',reason:'退货来源循环，需核实原单'}}); continue; }
+      const nextVisited = new Set(visited); nextVisited.add(key);
+      const returned = await M.SalesReturnRequest.findOne({where:{return_no:line.pricingOrigin.sourceNo,status:'completed'},raw:true,transaction});
+      const matches = returned ? await M.SalesReturnRequestItem.findAll({where:{return_id:returned.return_id,product_id:line.productId},raw:true,transaction}) : [];
+      const originalItem = matches.length === 1 && matches[0].order_item_id ? await M.OrderItem.findByPk(matches[0].order_item_id,{raw:true,transaction}) : null;
+      const originalOrder = originalItem && returned && originalItem.order_id === returned.order_id && originalItem.product_id === line.productId
+        ? await M.Order.findByPk(returned.order_id,{raw:true,transaction}) : null;
+      const snapshot = originalOrder ? await M.OrderGrossProfit.findOne({where:{order_id:originalOrder.order_id},raw:true,transaction}) : null;
+      const originalLines = typeof snapshot?.product_pricing_details === 'string' ? JSON.parse(snapshot.product_pricing_details) : snapshot?.product_pricing_details || [];
+      const originals = originalLines.filter(x=>String(x.itemId)===String(originalItem?.item_id)&&x.productId===line.productId);
+      if (originalOrder && originals.length === 1) {
+        const original = {...originals[0],quantity:line.quantity};
+        // October category assumptions cannot become November purchase facts.
+        if (original.purchaseTaxBasis?.source === 'user_october_category_confirmation') delete original.purchaseTaxBasis;
+        const foundation = (await require('../inventory/foundation').salesBasis(originalOrder,[original],transaction))[0]?.inventoryFoundation;
+        if (foundation?.source?.taxScope) delete original.purchaseTaxBasis;
+        if (foundation?.status === 'confirmed' && !foundation.source?.taxScope && foundation.invoiceType) {
+          result.push({...line,purchaseTaxBasis:{version:VERSION,status:'confirmed',service:false,invoiceType:foundation.invoiceType,
+            purchaseAmount:money(Number(line.purchasePrice)*Number(line.quantity)),source:'sales_return_original_foundation',basisId:foundation.basisId,
+            originalOrderId:originalOrder.order_id,originalItemId:original.itemId,returnNo:line.pricingOrigin.sourceNo}});
+          continue;
+        }
+        const traced = (await resolveDocumentTaxBasis(originalOrder,[original],transaction,null,nextVisited))[0].purchaseTaxBasis;
+        if (traced.status === 'confirmed') {
+          result.push({...line,purchaseTaxBasis:{...traced,purchaseAmount:money(Number(line.purchasePrice)*Number(line.quantity)),
+            source:'sales_return_original_purchase',originalOrderId:originalOrder.order_id,originalItemId:original.itemId,returnNo:line.pricingOrigin.sourceNo}});
+          continue;
+        }
+      }
+      result.push({...line,purchaseTaxBasis:{version:VERSION,status:'pending',service:false,reason:'退货原单采购票税无法唯一确认'}});
+      continue;
+    }
     if (line.purchaseTaxBasis?.version === VERSION && line.purchaseTaxBasis.status === 'confirmed') { result.push(line); continue; }
     if (line.purchaseTaxBasis?.version === LEGACY_VERSION && line.purchaseTaxBasis.status === 'confirmed') {
       result.push({ ...line, purchaseTaxBasis: { ...line.purchaseTaxBasis, version: VERSION } }); continue;
@@ -68,8 +105,11 @@ async function resolveDocumentTaxBasis(order, lines, transaction, originIndex = 
         FROM T_INBOUND_ITEM ii JOIN T_INBOUND i ON i.INBOUND_ID=ii.INBOUND_ID JOIN T_PURCHASE_REQUEST pr ON pr.REQUEST_ID=i.PURCHASE_REQUEST_ID
         WHERE ii.PRODUCT_ID=:product AND i.STORE_ID=:store AND COALESCE(ii.RECEIVE_TIME,i.RECEIVE_TIME,i.CREATE_TIME)<=:cutoff`,
         { replacements: { product: line.productId, store: order.store_id, cutoff }, type: QueryTypes.SELECT, transaction });
-      // Match frozen actual cost, never current company pricing or supplier defaults.
-      const candidates = rows.filter(x => line.snCode || receiptId || (x.storeId === order.store_id && (!line.supplierId || x.supplierId === line.supplierId))).filter(x => x.productId === undefined || x.productId === line.productId).filter(x => !x.receiptTime || new Date(x.receiptTime) <= new Date(order.archive_time || Date.now())).filter(x => x.unitCost !== null && x.unitCost !== undefined && line.purchasePrice !== null && line.purchasePrice !== undefined && money(x.unitCost) === money(line.purchasePrice));
+      // Exact receipts/SNs prove tax provenance even when freight changes cost.
+      // Without an exact receipt, return tracing requires all original-store /
+      // supplier candidates to agree; never select an arbitrary recent purchase.
+      const candidates = rows.filter(x => line.snCode || receiptId || (x.storeId === order.store_id && (!line.supplierId || x.supplierId === line.supplierId))).filter(x => x.productId === undefined || x.productId === line.productId).filter(x => !x.receiptTime || new Date(x.receiptTime) <= new Date(order.archive_time || Date.now())).filter(x => x.unitCost !== null && x.unitCost !== undefined && line.purchasePrice !== null && line.purchasePrice !== undefined &&
+        (receiptId || line.snCode || visited.size > 0 || money(x.unitCost) === money(line.purchasePrice)));
       const unique = new Map(candidates.map(x => [x.purchaseId + ':' + x.unitCost + ':' + x.invoiceType, x]));
       if (unique.size === 1) {
         const row = [...unique.values()][0];
@@ -83,7 +123,7 @@ async function resolveDocumentTaxBasis(order, lines, transaction, originIndex = 
           purchaseAmount: money(Number(line.purchasePrice) * Number(line.quantity)),
           source: 'all_matching_purchase_candidates_agree',
           candidatePurchaseIds: [...new Set([...unique.values()].map(x => x.purchaseId))],
-          reason: '冻结成本匹配的所有候选采购票据口径一致，不指定具体批次'
+          reason: visited.size > 0 ? '退货原销售门店及供应商的全部候选采购票税一致，不指定具体批次' : '冻结成本匹配的所有候选采购票据口径一致，不指定具体批次'
         }; else basis.reason = '采购候选票据口径不唯一或不明确';
       }
     }

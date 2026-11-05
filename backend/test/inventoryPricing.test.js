@@ -22,7 +22,7 @@ function fixture(t) {
   t.mock.method(M.ProductPrice, 'findAll', async () => price.status === 1 ? [price] : []);
   t.mock.method(M.OrderItem, 'findAll', async () => occupied ? [{ product_id: 'P', sn_code: 'CODE' }] : []);
   t.mock.method(M.BusinessActionLog, 'create', async values => { logs.push(values); });
-  const basis={basis_id:'B',status:'confirmed',invoice_type:'收据',purchase_cost:1000,cost_mode:'PURCHASE_PRICE',company_price:2900,revision:1,
+  const basis={basis_id:'B',product_id:'P',status:'confirmed',invoice_type:'收据',purchase_cost:1000,cost_mode:'PURCHASE_PRICE',company_price:2900,revision:1,
     toJSON(){return {...this};},async update(values){writes.push(values);Object.assign(this,values);}};
   t.mock.method(M.InventoryFoundationRef,'findAll',async()=>[{reference_key:'sn_current:SN1',basis_id:'B'}]);
   t.mock.method(M.InventoryFoundation,'findAll',async()=>[{...basis,company_price:price.status===1?price.standard_price:null}]);
@@ -31,11 +31,11 @@ function fixture(t) {
 }
 async function preview(body) { const c = ctx(body); await C.preview(c); return c.body.data; }
 
-test('explicit inventory mode wins for every category, including accessory and Care defaults', () => {
+test('current product mode wins over historical SN flags for every category', () => {
   for (const category of ['电脑配件', '选件', '二手', '手机', '平板', '笔记本', '售后']) {
     const p = { category, brand: 'Care服务', gross_profit_cost_mode: 'COMPANY_PRICE' };
-    assert.equal(resolveInventoryCostMode(p, { gross_profit_use_standard_price: 0 }, { status: 1, standard_price: 2900 }), 'PURCHASE_PRICE');
-    assert.equal(resolveInventoryCostMode({ ...p, gross_profit_cost_mode: 'PURCHASE_PRICE' }, { gross_profit_use_standard_price: 1 }), 'COMPANY_PRICE');
+    assert.equal(resolveInventoryCostMode(p, { gross_profit_use_standard_price: 0 }, { status: 1, standard_price: 2900 }), 'COMPANY_PRICE');
+    assert.equal(resolveInventoryCostMode({ ...p, gross_profit_cost_mode: 'PURCHASE_PRICE' }, { gross_profit_use_standard_price: 1 }), 'PURCHASE_PRICE');
   }
 });
 test('preview writes nothing; apply changes only selected stock and records audited before/after', async t => {
@@ -46,11 +46,8 @@ test('preview writes nothing; apply changes only selected stock and records audi
   assert.equal(f.writes.length, 0);
   t.mock.method(M.Product, 'update', async () => assert.fail('Do not change global defaults'));
   t.mock.method(M.OrderGrossProfit, 'update', async () => assert.fail('Do not change archived profits'));
-  await C.apply(ctx({ ...body, previewHash: p.previewHash }));
-  assert.equal(f.writes.length, 1); assert.equal(f.writes[0].cost_mode, 'COMPANY_PRICE');
-  const log=f.logs.find(x=>x.action==='change_cost_mode');
-  assert.equal(log.from_status, 'PURCHASE_PRICE'); assert.equal(log.to_status, 'COMPANY_PRICE');
-  assert.equal(JSON.parse(log.detail_json).purchasePrice, 1000);
+  await assert.rejects(C.apply(ctx({ ...body, previewHash: p.previewHash })), /\u5546\u54c1\u4ef7\u683c\u7ba1\u7406/);
+  assert.equal(f.writes.length, 0);
   assert.equal(f.row.inbound_price, '1000');
 });
 test('changed company price invalidates preview before any update', async t => {
@@ -74,8 +71,8 @@ test('missing company price blocks, valid zero is accepted with below-cost ackno
   f.price.status = 1; f.price.standard_price = 0; p = await preview(body);
   assert.equal(p.list[0].blocked, ''); assert.match(p.list[0].warning, /低于/);
   await assert.rejects(C.apply(ctx({ ...body, previewHash: p.previewHash })), /确认风险/);
-  await C.apply(ctx({ ...body, previewHash: p.previewHash, confirmBelowCost: true }));
-  assert.equal(f.writes.length, 1);
+  await assert.rejects(C.apply(ctx({ ...body, previewHash: p.previewHash, confirmBelowCost: true })));
+  assert.equal(f.writes.length, 0);
 });
 test('rejects absent inventory, missing reasons and users without price-management permission', async t => {
   fixture(t);

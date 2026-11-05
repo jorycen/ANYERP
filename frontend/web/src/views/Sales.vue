@@ -328,16 +328,21 @@
         <!-- 支付方式 -->
         <el-form-item label="支付方式">
           <div class="payment-methods">
-            <el-checkbox-group v-model="selectedPayments">
-              <el-checkbox v-for="pm in paymentMethods" :key="pm.method_id" :label="pm.name">
-                {{ pm.name }}
+            <el-checkbox-group v-model="selectedPaymentDisplays">
+              <el-checkbox v-for="name in paymentDisplayOptions" :key="name" :label="name">
+                {{ name }}
               </el-checkbox>
             </el-checkbox-group>
-            <el-button link type="primary" @click="previewCouponBreakdown">测算优惠券分担</el-button><span class="text-muted">优惠券按抵扣面额录入，顾客购券款不重复录入收款。</span>
-            <el-alert v-if="couponPreviewMessage" :title="couponPreviewMessage" type="info" :closable="false" />
             <div class="payment-amounts mt-10">
               <template v-for="pm in selectedPayments" :key="pm">
-                <div v-if="isDepositPaymentName(pm)" class="deposit-payment-row">
+                <div v-if="couponGroup(pm)" class="deposit-payment-row">
+                  <span>{{ couponGroup(pm) }}</span>
+                  <el-select :model-value="couponMethod(pm)?.name || ''" placeholder="选择配置方案" style="width: 260px" @change="name => selectCouponPlan(pm, name)">
+                    <el-option v-for="scheme in couponSchemes(pm)" :key="scheme.method_id" :label="scheme.coupon_entry.label" :value="scheme.name" :disabled="!scheme.coupon_entry.available" />
+                  </el-select>
+                  <span v-if="couponMethod(pm)">抵扣金额：¥{{ paymentAmounts[pm] }}</span>
+                </div>
+                <div v-else-if="isDepositPaymentName(pm)" class="deposit-payment-row">
                   <el-select
                     v-model="orderForm.depositId"
                     placeholder="选择待核销定金单"
@@ -690,19 +695,24 @@ const stores = ref([])
 const storesLoaded = ref(false)
 const storesLoading = ref(false)
 const paymentMethods = ref([])
-const couponPreviewMessage = ref('')
-let couponPreviewSequence = 0
-const previewCouponBreakdown = async () => {
-  const seq = ++couponPreviewSequence
-  couponPreviewMessage.value = ''
-  try {
-    const res = await api.previewCoupons({ storeId: orderForm.storeId, orderId: orderForm.orderId || undefined,
-      payments: selectedPayments.value.map(method => ({ method, amount: paymentAmounts[method] })) })
-    if (seq !== couponPreviewSequence) return
-    couponPreviewMessage.value = (res.data || []).map(r => `${r.method}：抵扣¥${r.faceAmount}；购券净返¥${r.platformNet}；商场承担¥${r.mallAmount}；门店承担¥${r.companyAmount}；平台手续费¥${r.platformFee}；商场返还税点¥${r.mallReturnTaxAmount}；应结算¥${r.settlementAmount}`).join('；') || '当前没有配置分担规则的优惠券'
-  } catch (err) { if (seq === couponPreviewSequence) couponPreviewMessage.value = err?.response?.data?.message || err.message || '优惠券测算失败' }
+const couponMethod = name => paymentMethods.value.find(p => p.name === name && p.coupon_entry)
+const couponGroup = name => couponMethod(name)?.coupon_entry.group || (paymentMethods.value.some(p => p.coupon_entry?.group === name) ? name : '')
+const couponSchemes = name => paymentMethods.value.filter(p => p.coupon_entry?.group === couponGroup(name))
+const paymentDisplayOptions = computed(() => [...new Set(paymentMethods.value.map(p => p.coupon_entry?.group || p.name))])
+const selectedPaymentDisplays = computed({
+  get: () => [...new Set(selectedPayments.value.map(name => couponGroup(name) || name))],
+  set: names => { selectedPayments.value = names.flatMap(name => {
+    const previous = selectedPayments.value.filter(p => (couponGroup(p) || p) === name)
+    return previous.length ? previous : [name]
+  }) }
+})
+const selectCouponPlan = (previous, name) => {
+  const method = couponMethod(name)
+  if (!method?.coupon_entry.available) return
+  selectedPayments.value = selectedPayments.value.map(p => p === previous ? name : p)
+  if (previous !== name) delete paymentAmounts[previous]
+  paymentAmounts[name] = method.coupon_entry.amount
 }
-
 
 const tableData = ref([])
 const total = ref(0)
@@ -926,7 +936,6 @@ const syncCorporateInvoiceDefaults = async () => {
     return false
   }
 }
-watch(() => [orderForm.storeId, ...selectedPayments.value.map(method => `${method}:${paymentAmounts[method]}`)], () => { couponPreviewSequence++; couponPreviewMessage.value = '' })
 watch(() => [selectedPayments.value.map(method => [method, paymentAmounts[method]]), orderForm.nationalSubsidy], () => {
   if (dialogVisible.value && !orderForm.orderId && (selectedPayments.value.includes('对公转账') || corporateInvoiceAuto)) syncCorporateInvoiceDefaults()
 }, { deep: true })
@@ -1988,6 +1997,10 @@ const handleSubmit = async () => {
   }
 
   const paymentTotal = selectedPayments.value.reduce((sum, pm) => sum + (Number(paymentAmounts[pm]) || 0), 0)
+  if (selectedPayments.value.some(pm => couponGroup(pm) && !couponMethod(pm))) {
+    ElMessage.warning('请选择优惠券方案')
+    return
+  }
   if (Math.abs(paymentTotal - actualPayment.value) > 0.01) {
     ElMessage.warning('支付金额与实付金额不匹配')
     return

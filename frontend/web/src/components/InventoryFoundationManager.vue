@@ -19,8 +19,8 @@
       <el-form label-width="130px"><el-form-item label="采购含税属性"><el-select v-model="form.invoiceType" clearable><el-option label="含税（专票13%）" value="专票13%" /><el-option label="未税（收据）" value="收据" /></el-select></el-form-item>
         <el-form-item label="实际采购成本"><el-input-number v-model="form.purchaseCost" :min="0" :precision="2" /></el-form-item>
         <el-form-item v-if="form.purchaseCost === 0" label="零成本确认"><el-checkbox v-model="form.confirmZero">确认真实采购成本为零</el-checkbox></el-form-item>
-        <el-form-item label="毛利计价方式"><el-select v-model="form.costMode" clearable><el-option label="公司定价" value="COMPANY_PRICE" /><el-option label="实际采购价" value="PURCHASE_PRICE" /></el-select></el-form-item>
-        <el-form-item label="公司定价"><el-input-number v-model="form.companyPrice" :min="0" :precision="2" /></el-form-item>
+        <el-form-item label="毛利计价方式">{{ mode(form.costMode) }}</el-form-item>
+        <el-form-item label="当前公司定价">{{ money(form.companyPrice) }}（在商品价格管理中维护）</el-form-item>
         <el-form-item v-if="form.costMode === 'COMPANY_PRICE' && form.companyPrice != null && form.purchaseCost != null && form.companyPrice < form.purchaseCost" label="低于成本确认"><el-checkbox v-model="form.confirmBelowCost">确认公司定价低于采购成本</el-checkbox></el-form-item>
         <el-form-item label="修改依据" required><el-input v-model="form.reason" type="textarea" maxlength="1000" /></el-form-item></el-form>
       <p class="muted">所有关联记录共用本档案。已归档金额保留，历史重算范围需单独核实。</p>

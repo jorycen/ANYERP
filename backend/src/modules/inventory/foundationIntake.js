@@ -18,16 +18,14 @@ async function captureSn(value,options={}){
     const docs=await V.resolveDocumentTaxBasis({store_id:sn.store_id},[line],transaction),tax=docs[0].purchaseTaxBasis;
     basis=await M.InventoryFoundation.create({basis_id:basisId,identity_key:key,product_id:sn.product_id,product_name:product?.name||'',entity_type:'sn_cycle',sn_code:sn.sn_code,batch_no:sn.batch_no,
       purchase_cost:Number(sn.inbound_price)>0||zeroConfirmed?F.money(sn.inbound_price):null,
-      cost_mode:String(sn.gross_profit_use_standard_price)==='1'?'COMPANY_PRICE':String(sn.gross_profit_use_standard_price)==='0'?'PURCHASE_PRICE':product?.gross_profit_cost_mode||null,
-      company_price:F.money(sn.original_pickup_price)>0?F.money(sn.original_pickup_price):F.money(price?.standard_price),
+      cost_mode:product?.gross_profit_cost_mode||null,
+      company_price:F.money(price?.standard_price),
       invoice_type:tax.status==='confirmed'?tax.invoiceType:null,status:tax.status==='confirmed'?'confirmed':'pending',
       source_data:{source:'sn_intake',purchaseBasis:tax},revision:1,updated_by:'system'}, {transaction});
   }
   if(!newlyCreated&&previous&&previous.status!=='out_stock'&&basis.product_id===sn.product_id){
     const patch={};
     if(String(previous.inbound_price)!==String(sn.inbound_price))patch.purchase_cost=Number(sn.inbound_price)>0||zeroConfirmed?F.money(sn.inbound_price):null;
-    if(String(previous.original_pickup_price)!==String(sn.original_pickup_price))patch.company_price=F.money(sn.original_pickup_price);
-    if(String(previous.gross_profit_use_standard_price)!==String(sn.gross_profit_use_standard_price))patch.cost_mode=String(sn.gross_profit_use_standard_price)==='1'?'COMPANY_PRICE':String(sn.gross_profit_use_standard_price)==='0'?'PURCHASE_PRICE':null;
     if(Object.keys(patch).length){const before=basis.toJSON();await basis.update({...patch,revision:Number(basis.revision)+1,updated_by:'system',update_time:new Date()},{transaction});
       await require('../../utils/businessActionLog').recordBusinessAction({businessType:'inventory_foundation',businessId:basisId,action:'sync_inventory_fact',user:{name:'system'},comment:'原库存业务确认的同周期基础信息变更',detail:{before,after:basis.toJSON(),snId:sn.sn_id},transaction});}
   }

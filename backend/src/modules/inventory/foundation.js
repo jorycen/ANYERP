@@ -13,6 +13,16 @@ function snKey(snId, cycles = [], at = new Date()) {
 }
 function view(row) {
   if (!row) return { basisId: null, status: 'pending', invoiceType: null, invoiceTypeLabel: '待确认', purchaseCost: null, costMode: null, companyPrice: null, reason: '基础档案尚未建立或关联' };
+  // Old imports compared historical prices with today's catalog. Only real
+  // acquisition/tax disagreements can make the acquisition facts conflict.
+  if (row.status === 'conflict' && /^基础资料冲突：(company_price|cost_mode)(、(company_price|cost_mode))*$/.test(row.reason || '')) {
+    const source = json(row.source_data || {});
+    if (!source.identityConflict) {
+      const observations = (source.observations || []).filter(x => !x.taxScope || x.taxScope === source.taxScope);
+      const facts = mergeCandidates(observations);
+      row = { ...row, ...facts, purchase_cost: facts.purchase_cost ?? row.purchase_cost };
+    }
+  }
   return { basisId: row.basis_id, identityKey: row.identity_key, productId: row.product_id,
     status: row.status, invoiceType: row.status === 'confirmed' ? row.invoice_type : null,
     invoiceTypeLabel: row.status !== 'confirmed' ? '待确认' : row.invoice_type === '专票13%' ? '含税' : row.invoice_type === '收据' ? '未税' : '待确认',
@@ -21,7 +31,7 @@ function view(row) {
     source: json(row.source_data || {}), snCode: row.sn_code || '', batchNo: row.batch_no || '' };
 }
 function mergeCandidates(candidates) {
-  const fields = ['invoice_type','purchase_cost','cost_mode','company_price'];
+  const fields = ['invoice_type','purchase_cost'];
   const result = {}, conflicts = [];
   for (const key of fields) {
     const values = [...new Set(candidates.map(x => x[key]).filter(x => x !== null && x !== undefined && x !== '')
@@ -29,7 +39,8 @@ function mergeCandidates(candidates) {
     if (values.length > 1) conflicts.push(key);
     result[key] = values.length === 1 ? values[0] : null;
   }
-  return { ...result, status: conflicts.length ? 'conflict' : result.invoice_type ? 'confirmed' : 'pending',
+  const current = candidates.find(x => x.source === 'current_sn' || x.source === 'import_inventory') || {};
+  return { ...result, cost_mode: current.cost_mode || null, company_price: money(current.company_price), status: conflicts.length ? 'conflict' : result.invoice_type ? 'confirmed' : 'pending',
     reason: conflicts.length ? `基础资料冲突：${conflicts.join('、')}` : result.invoice_type ? '' : '含税属性尚未确认' };
 }
 async function load(referenceKeys, transaction) {
@@ -37,8 +48,20 @@ async function load(referenceKeys, transaction) {
   const links = await M.InventoryFoundationRef.findAll({ where: { reference_key: { [Op.in]: [...new Set(referenceKeys)] } }, raw: true, transaction });
   if (!links.length) return new Map();
   const rows = await M.InventoryFoundation.findAll({ where: { basis_id: { [Op.in]: [...new Set(links.map(x => x.basis_id))] } }, raw: true, transaction });
-  const byId = new Map(rows.map(x => [x.basis_id,x]));
-  return new Map(links.map(x => [x.reference_key, view(byId.get(x.basis_id))]));
+  const byId = new Map((await currentCatalog(rows, transaction)).map(x => [x.basisId,x]));
+  return new Map(links.map(x => [x.reference_key, byId.get(x.basis_id) || view(null)]));
+}
+async function currentCatalog(rows, transaction) {
+  const ids = [...new Set(rows.map(x => x.product_id).filter(Boolean))];
+  const [products, prices] = ids.length ? await Promise.all([
+    M.Product.findAll({where:{product_id:ids},attributes:['product_id','gross_profit_cost_mode'],raw:true,transaction}),
+    M.ProductPrice.findAll({where:{product_id:ids,status:1},order:[['effective_time','DESC'],['price_id','DESC']],raw:true,transaction})
+  ]) : [[],[]];
+  const productMap = new Map(products.map(x => [x.product_id,x]));
+  const priceMap = new Map();
+  for (const price of prices) if (!priceMap.has(price.product_id)) priceMap.set(price.product_id,price);
+  return rows.map(row => ({...view(row),costMode:productMap.get(row.product_id)?.gross_profit_cost_mode || null,
+    companyPrice:money(priceMap.get(row.product_id)?.standard_price)}));
 }
 async function salesBasis(order, lines, transaction) {
   const refs = lines.map(x => `order_item:${x.itemId}`);
@@ -57,7 +80,7 @@ function matchesLine(basis,line){
 }
 async function applySalesTaxBasis(order, lines, transaction) {
   const attached = await salesBasis(order, lines, transaction);
-  return attached.map(line => {
+  const result = attached.map(line => {
     const b = line.inventoryFoundation;
     const service = require('../sales/purchaseVat').isService(line);
     const purchaseAmount = service ? 0 : b.purchaseCost === null ? null : Math.round(b.purchaseCost * Number(line.quantity) * 100) / 100;
@@ -66,6 +89,12 @@ async function applySalesTaxBasis(order, lines, transaction) {
       service, purchaseAmount, invoiceType: b.invoiceType, basisId: b.basisId, basisRevision: b.revision,
       source: 'inventory_foundation', reason: b.reason || (purchaseAmount === null ? '采购成本尚未确认' : '') } };
   });
+  const unresolved = result.filter(line => line.purchaseTaxBasis.status !== 'confirmed' && line.inventoryFoundation.status !== 'conflict');
+  if (!unresolved.length) return result;
+  const documented = await require('../sales/purchaseVat').resolveDocumentTaxBasis(order, unresolved, transaction);
+  const byItem = new Map(documented.map(line => [String(line.itemId),line.purchaseTaxBasis]));
+  return result.map(line => byItem.get(String(line.itemId))?.status === 'confirmed'
+    ? {...line,purchaseTaxBasis:byItem.get(String(line.itemId))} : line);
 }
 async function applySalesPricing(order, lines, transaction) {
   return (await salesBasis(order,lines,transaction)).map(line=>{
@@ -145,12 +174,14 @@ async function update(basisId, body, user, transaction) {
   if (![null,'COMPANY_PRICE','PURCHASE_PRICE'].includes(body.costMode)) fail('计价方式无效',400);
   if(body.costMode==='COMPANY_PRICE'&&body.companyPrice!==null&&body.purchaseCost!==null&&Number(body.companyPrice)<Number(body.purchaseCost)&&body.confirmBelowCost!==true)fail('公司定价低于采购成本，请明确确认',400);
   const before = row.toJSON();
-  await row.update({ invoice_type: body.invoiceType, purchase_cost: body.purchaseCost, cost_mode: body.costMode,
-    company_price: body.companyPrice, status: body.invoiceType ? 'confirmed' : 'pending', reason: body.reason,
+  const current = (await currentCatalog([before],transaction))[0];
+  if (body.costMode !== current.costMode || money(body.companyPrice) !== current.companyPrice) fail('计价方式和当前公司定价请在商品价格管理中修改',400);
+  await row.update({ invoice_type: body.invoiceType, purchase_cost: body.purchaseCost,
+    status: body.invoiceType ? 'confirmed' : 'pending', reason: body.reason,
     source_data:{...json(row.source_data||{}),taxScope:null,costEstimated:false},
     revision: Number(row.revision)+1, updated_by: user.name, update_time: new Date() }, { transaction });
   await recordBusinessAction({ businessType:'inventory_foundation',businessId:basisId,action:'update_foundation',user,
     comment:body.reason,detail:{before,after:row.toJSON(),note:'归档金额不自动重写，需通过原有纠错流程预览审批'},transaction });
-  return view(row.toJSON());
+  return (await currentCatalog([row.toJSON()],transaction))[0];
 }
-module.exports = { id, money, snKey, view, mergeCandidates, matchesLine, load, salesBasis, applySalesTaxBasis, applySalesPricing, ensureSalesReferences, clearScopedTax, bind, update };
+module.exports = { id, money, snKey, view, mergeCandidates, currentCatalog, matchesLine, load, salesBasis, applySalesTaxBasis, applySalesPricing, ensureSalesReferences, clearScopedTax, bind, update };

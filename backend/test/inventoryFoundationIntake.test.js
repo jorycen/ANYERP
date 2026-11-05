@@ -29,5 +29,5 @@ test('原业务确认的同周期成本和计价变更同步统一档案，票�
   const logs=[];t.mock.method(M.BusinessActionLog,'create',async value=>logs.push(value));
   await I.captureSn({sn_id:'S',sn_code:'SN',product_id:'P',store_id:'A',status:'in_stock',inbound_price:2000,original_pickup_price:3000,gross_profit_use_standard_price:1},
     {transaction:tx,previousSn:{status:'in_stock',inbound_price:1000,original_pickup_price:2500,gross_profit_use_standard_price:0}});
-  a.equal(basis.purchase_cost,2000);a.equal(basis.company_price,3000);a.equal(basis.cost_mode,'COMPANY_PRICE');a.equal(basis.invoice_type,'收据');a.equal(basis.revision,2);a.equal(logs[0].action,'sync_inventory_fact');
+  a.equal(basis.purchase_cost,2000);a.equal(basis.company_price,2500);a.equal(basis.cost_mode,'PURCHASE_PRICE');a.equal(basis.invoice_type,'收据');a.equal(basis.revision,2);a.equal(logs[0].action,'sync_inventory_fact');
 });

@@ -26,24 +26,6 @@ const FORMULA_VERSION = 'ORDER_GP_V11_PRODUCT_COST_MODE';
 const { allocateProfit } = require('../report/performanceAllocation');
 const VAT_RATE = 0.13;
 const NATIONAL_SUBSIDY_RECEIPT_TAX_RATE = 0.006;
-// Approved historical cost basis for sales made on October 1–7, 2026 (China time).
-// Keep this in the calculation path so a forced refresh cannot undo the snapshots.
-const EARLY_OCTOBER_2026_PN_COST = new Map([
-  ['ZAJA0009CN', 5400],
-  ['ZAJA0007CN', 4500],
-  ['ZAJA0001CN', 5400],
-  ['ZAJA0002CN', 4500],
-  ['ZAJA0012CN', 4500]
-]);
-const EARLY_OCTOBER_START = Date.parse('2026-10-01T00:00:00+08:00');
-const EARLY_OCTOBER_END = Date.parse('2026-10-08T00:00:00+08:00');
-
-function historicalPnCost(order, pnCode) {
-  const soldAt = new Date(order?.create_time).getTime();
-  if (!(soldAt >= EARLY_OCTOBER_START && soldAt < EARLY_OCTOBER_END)) return null;
-  return EARLY_OCTOBER_2026_PN_COST.get(String(pnCode || '').trim().toUpperCase()) ?? null;
-}
-
 function toNumber(value) {
   const number = Number(value || 0);
   return Number.isFinite(number) ? number : 0;
@@ -497,17 +479,8 @@ async function buildPaymentDetails(order, existingSnapshot, transaction) {
   return details;
 }
 
-function resolveInventoryCostMode(product = {}, sn = {}, price = {}, orderTime = new Date(), supplier = null) {
-  // An explicit per-inventory instruction wins over all category defaults.
-  if (String(sn?.gross_profit_use_standard_price) === '1') return 'COMPANY_PRICE';
-  if (String(sn?.gross_profit_use_standard_price) === '0') return 'PURCHASE_PRICE';
-  if (product.category === '售后' && product.brand === 'Care服务') {
-    return new Date(orderTime).getTime() >= Date.UTC(2026, 9, 1) ? 'COMPANY_PRICE' : 'PURCHASE_PRICE';
-  }
-  if (product.category === '选件' && Number(price?.status) === 1 && validPrice(price?.standard_price) !== null) return 'COMPANY_PRICE';
-  // Legacy fallback: an unambiguous purchase-only supplier precedes the mutable product default.
-  if (supplier?.purchase_cost_mode_allowed === 'PURCHASE_PRICE') return 'PURCHASE_PRICE';
-  return product.gross_profit_cost_mode === 'COMPANY_PRICE' ? 'COMPANY_PRICE' : 'PURCHASE_PRICE';
+function resolveInventoryCostMode(product = {}) {
+  return ['COMPANY_PRICE','PURCHASE_PRICE'].includes(product.gross_profit_cost_mode) ? product.gross_profit_cost_mode : null;
 }
 
 async function resolveSupplierContext(items, order, transaction) {
@@ -598,12 +571,14 @@ async function buildProductPricingDetails(orderId, transaction) {
   const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean))];
   const prices = productIds.length
     ? await ProductPrice.findAll({
-        where: { product_id: productIds },
+        where: { product_id: productIds, status: 1 },
+        order: [['effective_time','DESC'],['price_id','DESC']],
         transaction,
         raw: true
       })
     : [];
-  const priceByProduct = new Map(prices.map(price => [String(price.product_id), price]));
+  const priceByProduct = new Map();
+  for (const price of prices) if (!priceByProduct.has(String(price.product_id))) priceByProduct.set(String(price.product_id),price);
   const products = productIds.length
     ? await Product.findAll({
         where: { product_id: productIds },
@@ -664,7 +639,6 @@ async function buildProductPricingDetails(orderId, transaction) {
     const supplier = supplierId ? supplierContext.supplierMap.get(String(supplierId)) : null;
     // Unarchived order-item zeroes are defaults, not evidence of actual cost.
     const purchasePrice = inventoryBasis?.basisId ? inventoryBasis.purchaseCost : nonSnReceiptCost ?? (toNumber(row.original_inventory_cost) > 0 ? validPrice(row.original_inventory_cost) : null)
-      ?? (toNumber(row.original_pickup_price) > 0 ? validPrice(row.original_pickup_price) : null)
       ?? require('../../utils/costKnowledge').knownCost(snRow?.inbound_price,
         isNonPurchase || confirmedZeroIds.has(String(snRow?.sn_id)))
       ?? (!snRow ? require('../../utils/costKnowledge').knownCost(inboundSupplier?.inbound_price, Number(inboundSupplier?.zero_cost_confirmed) === 1) : null)
@@ -672,24 +646,15 @@ async function buildProductPricingDetails(orderId, transaction) {
         && (Number(productPrice.cost_price) > 0 || Number(productPrice.cost_price_locked) === 1)
         ? validPrice(productPrice.cost_price) : null);
     const specialPrice = specialPriceBySnId.get(String(snRow?.sn_id || row.sn_id || ''))
-      ?? specialPriceBySnCode.get(String(snRow?.sn_code || row.sn_code || '').trim().toUpperCase())
-      ?? null;
-    const pricing = resolveUnitProductPricing(
-      productPrice,
-      { ...row, purchasePrice, specialPrice },
-      supplier,
-      {
-        purchaseUpliftAmount: snRow ? (snRow.gross_profit_uplift_amount ?? supplier?.gross_profit_uplift_amount) : (inboundSupplier?.uplift_snapshot ?? supplier?.gross_profit_uplift_amount ?? inboundSupplier?.supplier_gross_profit_uplift_amount),
-        costMode: inventoryBasis?.costMode || (isNonPurchase ? 'COMPANY_PRICE' : resolveInventoryCostMode(product, snRow || { gross_profit_use_standard_price: inboundSupplier?.pricing_mode_snapshot }, productPrice, order.create_time, supplier))
-      }
-    );
-    const fixedCost = historicalPnCost(order, row.pn_code);
-    const effectivePricing = fixedCost === null ? pricing : {
-      ...pricing,
-      unitPricing: fixedCost,
-      source: 'historical_pn_cost_override',
-      grossProfitUpliftAmount: 0,
-      isCompanyPriced: true
+      ?? specialPriceBySnCode.get(String(snRow?.sn_code || row.sn_code || '').trim().toUpperCase()) ?? null;
+    const mode = product.gross_profit_cost_mode;
+    const unitPricing = mode === 'COMPANY_PRICE' ? (specialPrice ?? (Number(productPrice?.status ?? 1) === 1 ? validPrice(productPrice?.standard_price) : null))
+      : mode === 'PURCHASE_PRICE' ? purchasePrice : null;
+    const effectivePricing = {
+      unitPricing, isCompanyPriced: mode === 'COMPANY_PRICE',
+      grossProfitUpliftAmount: mode === 'PURCHASE_PRICE' ? toNumber(snRow ? (snRow.gross_profit_uplift_amount ?? supplier?.gross_profit_uplift_amount) : (inboundSupplier?.uplift_snapshot ?? supplier?.gross_profit_uplift_amount ?? inboundSupplier?.supplier_gross_profit_uplift_amount)) : 0,
+      specialPrice, isSpecialPrice: mode === 'COMPANY_PRICE' && specialPrice !== null,
+      source: unitPricing === null ? 'missing_product_price' : mode === 'COMPANY_PRICE' ? (specialPrice !== null ? 'sn_special_price' : 'product_standard_price') : 'purchase_price'
     };
     const quantity = Number(row.quantity || 1);
     const externalAdjustmentEligible = !effectivePricing.isCompanyPriced && effectivePricing.grossProfitUpliftAmount > 0 &&
@@ -708,9 +673,9 @@ async function buildProductPricingDetails(orderId, transaction) {
       snCode: row.sn_code || '',
       quantity,
       unitPricing: effectivePricing.unitPricing,
-      pricingAmount: roundMoney(effectivePricing.unitPricing * quantity),
-      specialPrice: fixedCost === null && specialPrice !== null ? roundMoney(specialPrice) : null,
-      isSpecialPrice: fixedCost === null && specialPrice !== null,
+      pricingAmount: effectivePricing.unitPricing === null ? null : roundMoney(effectivePricing.unitPricing * quantity),
+      specialPrice: effectivePricing.specialPrice,
+      isSpecialPrice: effectivePricing.isSpecialPrice,
       purchasePrice: effectivePricing.purchasePrice ?? roundMoney(purchasePrice),
       purchasePriceKnown: purchasePrice !== null,
       nonPurchaseSource: isNonPurchase ? receiptSource : null,
