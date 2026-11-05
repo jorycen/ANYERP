@@ -23,10 +23,10 @@ function calculateVat(lines, invoiceAmount, invoiceStatus) {
     throw taxError('采购票税金额或凭证类型无效');
   }
   const modes = new Set(bases.filter(x => !x.service).map(x => x.invoiceType));
-  if (modes.size > 1) throw taxError('采购票税类型不一致，须核实历史数据');
-  const receipt = modes.has('收据');
+  if (modes.size > 1 && bases.some(x => x.version === LEGACY_VERSION)) throw taxError('采购票税类型不一致，须核实历史数据');
+  const receipt = modes.size === 1 && modes.has('收据');
   const cost = receipt ? 0 : money(bases.reduce((s, x, index) => {
-    if (x.service) return s;
+    if (x.service || x.invoiceType === '收据') return s;
     const line = lines[index];
     if (x.version === VERSION && (line.isCompanyPriced === true || line.costModeSnapshot === 'COMPANY_PRICE' ||
       (line.isCompanyPriced === undefined && ['product_standard_price', 'sn_special_price', 'approved_settlement_price_correction', 'historical_pn_cost_override'].includes(line.source)))) {
