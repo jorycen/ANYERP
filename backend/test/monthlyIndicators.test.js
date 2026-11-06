@@ -4,6 +4,14 @@ const M = require('../src/models');
 const indicators = require('../src/modules/sales/monthlyIndicators');
 const { indicatorActual } = require('../src/modules/report/monthlyTaskAchievement');
 
+test('monthly indicator indexes fit the MySQL identifier limit', () => {
+  for (const model of [M.MonthlyIndicator, M.MonthlyIndicatorAssignment, M.MonthlyIndicatorEvidence]) {
+    for (const index of model.options.indexes) {
+      assert(index.name && index.name.length <= 64, index.name);
+    }
+  }
+});
+
 const monthKey = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 7);
 const store = { store_id: 'A', distributor_id: 'D', manager_staff_id: 2, name: 'A' };
 const user = (staffId, role) => ({ staffId, roles: [role], distributorId: 'D' });

@@ -2868,7 +2868,7 @@ const MonthlyIndicator = sequelize.define('MonthlyIndicator', {
   requirements: { type: DataTypes.STRING(1000), allowNull: false },
   status: { type: DataTypes.TINYINT, defaultValue: 1 },
   created_by: { type: DataTypes.BIGINT, allowNull: false }
-}, { tableName: 'T_MONTHLY_INDICATOR', timestamps: false, indexes: [{ fields: ['month_key', 'store_id'] }] });
+}, { tableName: 'T_MONTHLY_INDICATOR', timestamps: false, indexes: [{ name: 'idx_mi_month_store', fields: ['month_key', 'store_id'] }] });
 
 const MonthlyIndicatorAssignment = sequelize.define('MonthlyIndicatorAssignment', {
   assignment_id: { type: DataTypes.STRING(36), primaryKey: true },
@@ -2876,7 +2876,10 @@ const MonthlyIndicatorAssignment = sequelize.define('MonthlyIndicatorAssignment'
   staff_id: { type: DataTypes.BIGINT, allowNull: false },
   target: { type: DataTypes.DECIMAL(16, 2), allowNull: false }
 }, { tableName: 'T_MONTHLY_INDICATOR_ASSIGNMENT', timestamps: false,
-  indexes: [{ unique: true, fields: ['indicator_id', 'staff_id'] }, { fields: ['staff_id'] }] });
+  indexes: [
+    { name: 'uk_mia_indicator_staff', unique: true, fields: ['indicator_id', 'staff_id'] },
+    { name: 'idx_mia_staff', fields: ['staff_id'] }
+  ] });
 
 const MonthlyIndicatorEvidence = sequelize.define('MonthlyIndicatorEvidence', {
   evidence_id: { type: DataTypes.STRING(36), primaryKey: true },
@@ -2889,7 +2892,10 @@ const MonthlyIndicatorEvidence = sequelize.define('MonthlyIndicatorEvidence', {
   attachment: { type: DataTypes.BLOB('medium'), allowNull: false },
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_MONTHLY_INDICATOR_EVIDENCE', timestamps: false,
-  indexes: [{ fields: ['assignment_id'] }, { unique: true, fields: ['instance_id'] }] });
+  indexes: [
+    { name: 'idx_mie_assignment', fields: ['assignment_id'] },
+    { name: 'uk_mie_instance', unique: true, fields: ['instance_id'] }
+  ] });
 
 module.exports = {
   MonthlyIndicator, MonthlyIndicatorAssignment, MonthlyIndicatorEvidence,
