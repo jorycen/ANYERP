@@ -1,3 +1,4 @@
+const { splitInstantRetail } = require('./performanceAllocation');
 const crypto = require('node:crypto');
 const money = value => Math.round(Number(value) * 100) / 100;
 const amount = value => value === null || value === undefined || value === '' || !Number.isFinite(Number(value)) ? null : money(value);
@@ -21,10 +22,13 @@ function row(event, sales, product, operations, reason = '') {
   return result;
 }
 function buildEvents(facts) {
-  const events = (facts.items || []).map(event => event.entryType === 'adjustment'
-    ? row(event, 0, 0, 0)
-    : row(event, event.managementSalesGross, event.managementPending ? null : event.managementProductGross, 0,
-      '销售冻结快照或产品端结算尚未完整，待核算'));
+  const events = (facts.items || []).map(event => {
+    if (event.entryType === 'adjustment') return row(event, 0, 0, 0);
+    const split = event.instantRetail ? splitInstantRetail(event.managementSalesGross) : null;
+    return row(event, split ? split.sales : event.managementSalesGross,
+      event.managementPending ? null : event.managementProductGross, split ? split.operations : 0,
+      '销售冻结快照或产品端结算尚未完整，待核算');
+  });
   for (const event of facts.policyItems || []) {
     if (event.entryType !== 'policy') continue;
     events.push(row(event, 0, event.productAllocation, 0));

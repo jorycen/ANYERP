@@ -1,5 +1,6 @@
 // 经营毛利唯一来源：原销售冻结毛利 + 审批调整 + 按发生期入账的退货/调整冲回。
 // 不把实采/税务财务核算结果、产品端收益或厂家返利再叠加到销售考核毛利。
+const { isInstantRetail, splitInstantRetail } = require('./performanceAllocation');
 const money = value => Math.round(Number(value || 0) * 100) / 100;
 
 function aggregateOperatingProfit(orders, adjustments, filters = {}) {
@@ -10,11 +11,28 @@ function aggregateOperatingProfit(orders, adjustments, filters = {}) {
     if (!stores.has(key)) stores.set(key, { storeId: key, storeName: name || key, salesAmount: 0, baseGrossProfit: 0, approvedAdjustment: 0, grossProfit: 0, orderCount: 0 });
     return stores.get(key);
   };
+  const retailReturns = new Map();
   for (const order of orders) {
+    if (!filters.employeeId && order.entry_type === 'return' &&
+        isInstantRetail({ ...order, create_time: order.source_create_time })) {
+      const key = order.return_id;
+      const group = retailReturns.get(key) || { order, amount: 0 };
+      group.amount += Number(order.base_gross_profit || 0);
+      retailReturns.set(key, group);
+    }
     const store = get(order.store_id, order.store_name);
     store.salesAmount += Number(order.sales_amount || 0);
     store.baseGrossProfit += Number(order.base_gross_profit || 0);
-    if (!order.entry_type) store.orderCount++;
+    if (!order.entry_type) {
+      store.orderCount++;
+      if (!filters.employeeId && isInstantRetail(order)) {
+        store.retailOperationsGrossProfit = (store.retailOperationsGrossProfit || 0) + splitInstantRetail(order.base_gross_profit).operations;
+      }
+    }
+  }
+  for (const { order, amount } of retailReturns.values()) {
+    const store = get(order.store_id, order.store_name);
+    store.retailOperationsGrossProfit = (store.retailOperationsGrossProfit || 0) + splitInstantRetail(amount).operations;
   }
   for (const adjustment of adjustments) {
     const order = orderMap.get(String(adjustment.orderId));
@@ -38,6 +56,7 @@ function aggregateOperatingProfit(orders, adjustments, filters = {}) {
     for (const key of ['salesAmount', 'baseGrossProfit', 'approvedAdjustment', 'grossProfit', 'orderCount']) sum[key] = money(sum[key] + row[key]);
     return sum;
   }, { salesAmount: 0, baseGrossProfit: 0, approvedAdjustment: 0, grossProfit: 0, orderCount: 0 });
+  summary.retailOperationsGrossProfit = money(rows.reduce((sum, row) => sum + Number(row.retailOperationsGrossProfit || 0), 0));
   return { rows, summary, source: 'OPERATING_FROZEN_EVENTS_V1' };
 }
 
@@ -73,8 +92,8 @@ async function getOperatingProfit(ctx) {
   const result = await queryOperatingProfit(scoped, buildRanges(filters).current);
   const visible = canViewProfit(ctx.state.user);
   ctx.body = { code: 0, data: { source: result.source, startDate: filters.startDate, endDate: filters.endDate,
-    rows: result.rows.map(row => visible ? row : { ...row, grossProfit: null, baseGrossProfit: null, approvedAdjustment: null }),
-    summary: visible ? result.summary : { ...result.summary, grossProfit: null, baseGrossProfit: null, approvedAdjustment: null } } };
+    rows: result.rows.map(row => visible ? row : { ...row, grossProfit: null, baseGrossProfit: null, approvedAdjustment: null, retailOperationsGrossProfit: null }),
+    summary: visible ? result.summary : { ...result.summary, grossProfit: null, baseGrossProfit: null, approvedAdjustment: null, retailOperationsGrossProfit: null } } };
 }
 
 module.exports = { getOperatingProfit, aggregateOperatingProfit, queryOperatingProfit };

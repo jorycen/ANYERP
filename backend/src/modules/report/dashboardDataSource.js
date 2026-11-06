@@ -650,6 +650,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
               o.CREATE_STAFF_ID AS create_staff_id,
               o.CREATE_USER AS create_user,
               o.AUXILIARY_SALES_LIST AS auxiliary_sales_list,
+              o.CUSTOMER_SOURCE AS customer_source,
               ROUND(MAX(COALESCE(o.TOTAL_AMOUNT, 0)), 2) AS sales_amount,
               ROUND(SUM(CASE WHEN gp.ORDER_ID IS NOT NULL THEN gp.GROSS_PROFIT_AMOUNT
                 * CASE WHEN COALESCE(oit.ITEM_SUBTOTAL, 0) <> 0 THEN COALESCE(oi.SUBTOTAL, 0) / oit.ITEM_SUBTOTAL ELSE 1 / GREATEST(oit.ITEM_COUNT, 1) END
@@ -664,7 +665,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
          LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
         WHERE ${where.sql}
         GROUP BY o.ORDER_ID, o.ORDER_NO, o.CREATE_TIME, o.STORE_ID,
-                 o.CREATE_STAFF_ID, o.CREATE_USER, o.AUXILIARY_SALES_LIST
+                 o.CREATE_STAFF_ID, o.CREATE_USER, o.AUXILIARY_SALES_LIST, o.CUSTOMER_SOURCE
         ORDER BY o.CREATE_TIME DESC`,
       where.replacements
     );
@@ -673,7 +674,8 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
     const returns = await this.query(
       `SELECT DISTINCT CONCAT('return:', rgp.LEDGER_ID) AS order_id,
               rgp.RETURN_NO AS order_no, rgp.ORDER_NO AS source_order_no,
-              rgp.ORDER_ID AS source_order_id, 'return' AS entry_type,
+              rgp.ORDER_ID AS source_order_id, rgp.RETURN_ID AS return_id, 'return' AS entry_type,
+              o.CUSTOMER_SOURCE AS customer_source, o.CREATE_TIME AS source_create_time,
               rgp.CREATE_TIME AS create_time, rgp.STORE_ID AS store_id,
               s.NAME AS store_name, rgp.STAFF_ID AS create_staff_id,
               rgp.EMPLOYEE_NAME AS create_user, '[]' AS auxiliary_sales_list,

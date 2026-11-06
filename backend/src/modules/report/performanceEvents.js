@@ -1,3 +1,4 @@
+const { instantRetailReturnShares, splitInstantRetail } = require('./performanceAllocation');
 const money = value => Number(Number(value || 0).toFixed(2));
 
 // These orders earned performance before a return was requested/completed.
@@ -11,6 +12,7 @@ function savedItemProfit(item) {
 
 function returnEvents(rows) {
   const events = new Map();
+  const shares = instantRetailReturnShares(rows, row => row.return_id, row => row.order || {}, row => row.gross_profit_amount);
   for (const row of rows) {
     const id = String(row.return_id);
     if (!events.has(id)) events.set(id, {
@@ -28,10 +30,18 @@ function returnEvents(rows) {
     event.actualPayment = event.totalAmount;
     event.baseGrossProfit = money(event.baseGrossProfit + Number(row.gross_profit_amount || 0));
     event.grossProfit = event.baseGrossProfit;
+    const staffProfit = shares.get(row) ?? money(row.gross_profit_amount);
     event.participantAllocations.push({ staffId: row.staff_id, employeeName: row.employee_name,
-      role: row.participant_role, baseGrossProfit: money(row.gross_profit_amount),
-      approvedAdjustment: 0, grossProfit: money(row.gross_profit_amount) });
+      role: row.participant_role, baseGrossProfit: staffProfit,
+      approvedAdjustment: 0, grossProfit: staffProfit });
     event.employeeName = event.participantAllocations.map(p => p.employeeName).join('、');
+  }
+  const affected = new Set(rows.filter(row => shares.has(row)).map(row => String(row.return_id)));
+  for (const id of affected) {
+    const event = events.get(id);
+    const split = splitInstantRetail(event.baseGrossProfit);
+    event.operationsGrossProfit = split.operations;
+    event.baseGrossProfit = event.grossProfit = split.sales;
   }
   return [...events.values()];
 }

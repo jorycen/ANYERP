@@ -38,4 +38,52 @@ function allocateProfit(participants, grossProfit) {
   return shares;
 }
 
-module.exports = { allocateProfit, money };
+function isInstantRetail(order) {
+  const created = order.create_time;
+  const day = created instanceof Date
+    ? new Date(created.getTime() + 8 * 3600000).toISOString().slice(0, 10)
+    : String(created || '').slice(0, 10);
+  return String(order.customer_source || '').trim() === '即时零售' && day >= '2026-10-01';
+}
+
+function splitInstantRetail(total, participantCount = 0) {
+  if (total == null) return { sales: null, operations: null, shares: [] };
+  const cents = Math.round(money(total) * 100);
+  const operations = Math.sign(cents) * Math.ceil(Math.abs(cents) / 2);
+  const sales = cents - operations;
+  if (!participantCount) return { sales: sales / 100, operations: operations / 100, shares: [] };
+  const each = Math.trunc(sales / participantCount);
+  const remainder = sales % participantCount;
+  const shares = Array.from({ length: participantCount }, (_, index) =>
+    (each + (index < Math.abs(remainder) ? Math.sign(remainder) : 0)) / 100);
+  return { sales: sales / 100, operations: operations / 100, shares };
+}
+
+function instantRetailStaffShares(total, participants) {
+  const ordered = participants.map((participant, index) => ({ index, staffId: String(participant.staffId ?? '') }))
+    .sort((a, b) => a.staffId.localeCompare(b.staffId));
+  const { shares } = splitInstantRetail(total, ordered.length);
+  const byParticipant = [];
+  ordered.forEach(({ index }, position) => { byParticipant[index] = shares[position]; });
+  return byParticipant;
+}
+
+// Return ledgers contain the original full sales margin, one row per participant.
+function instantRetailReturnShares(rows, groupKey, orderOf, amountOf) {
+  const groups = new Map();
+  for (const row of rows) {
+    if (!isInstantRetail(orderOf(row))) continue;
+    const key = groupKey(row);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  }
+  const shares = new Map();
+  for (const group of groups.values()) {
+    group.sort((a, b) => String(a.staff_id ?? a.create_staff_id ?? '').localeCompare(String(b.staff_id ?? b.create_staff_id ?? '')));
+    const split = splitInstantRetail(group.reduce((sum, row) => sum + Number(amountOf(row)), 0), group.length);
+    group.forEach((row, index) => shares.set(row, split.shares[index]));
+  }
+  return shares;
+}
+
+module.exports = { allocateProfit, money, isInstantRetail, splitInstantRetail, instantRetailStaffShares, instantRetailReturnShares };

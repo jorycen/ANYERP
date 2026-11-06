@@ -1,3 +1,4 @@
+const { isInstantRetail } = require('./performanceAllocation');
 const crypto = require('node:crypto');
 const { QueryTypes } = require('sequelize');
 const M = require('../../models');
@@ -114,6 +115,7 @@ async function loadFacts(filters, calculateOrder, transaction) {
     WHERE returnDate BETWEEN :start AND :end`, p, transaction);
   const returnOrders = [...new Set(returns.map(row => row.orderId))];
   const rows = await select(`SELECT o.ORDER_ID orderId, o.ORDER_NO orderNo, DATE(COALESCE(o.ARCHIVE_TIME,o.CREATE_TIME)) businessDate,
+      o.CREATE_TIME create_time, o.CUSTOMER_SOURCE customer_source,
       o.STORE_ID storeId, s.NAME storeName, o.CUSTOMER_NAME customerName, o.TOTAL_AMOUNT totalAmount, o.DISCOUNT_AMOUNT discountAmount,
       oi.ITEM_ID itemId, oi.PRODUCT_NAME productName, oi.QUANTITY quantity, oi.SUBTOTAL subtotal, oi.ORIGINAL_INVENTORY_COST originalInventoryCost,
       psi.PURCHASE_UNIT_COST AS purchaseUnitCost, psi.COST_STATUS AS purchaseCostStatus, psi.COST_SOURCE AS purchaseCostSource, gp.PRODUCT_PRICING_DETAILS AS frozenPricingDetails,
@@ -153,8 +155,9 @@ async function loadFacts(filters, calculateOrder, transaction) {
   const { externalIncomeSql } = require('./productIncomeSql');
   const returnedExternal = returnOrders.length ? await select(`SELECT ENTRY_ID,GROSS_PROFIT_AMOUNT FROM (${externalIncomeSql()}) ext WHERE ENTRY_TYPE = 'external_return' AND SOURCE_ORDER_ID IN (:ids)`, { ids: returnOrders }, transaction) : [];
 
-  for (const [orderId, orderRows] of group(rows, 'orderId')) {
-    const raw = finish({ ...calculateOrder(orderRows.sort((a,b) => String(a.itemId).localeCompare(String(b.itemId)))), entryType: 'sale', eventKey: `sale:${orderId}`, entryNo: orderRows[0].orderNo, managementSalesGross: orderRows[0].managementSalesGross == null ? null : money(orderRows[0].managementSalesGross), managementProductGross: money((orderRows[0].managementProductStatus === 'posted' ? Number(orderRows[0].managementProductBase) : 0) + Number(orderRows[0].managementExternal || 0)), managementPending: orderRows[0].managementProductStatus !== 'posted' });
+  const orderMap = group(rows, 'orderId');
+  for (const [orderId, orderRows] of orderMap) {
+    const raw = finish({ ...calculateOrder(orderRows.sort((a,b) => String(a.itemId).localeCompare(String(b.itemId)))), instantRetail: isInstantRetail(orderRows[0]), entryType: 'sale', eventKey: `sale:${orderId}`, entryNo: orderRows[0].orderNo, managementSalesGross: orderRows[0].managementSalesGross == null ? null : money(orderRows[0].managementSalesGross), managementProductGross: money((orderRows[0].managementProductStatus === 'posted' ? Number(orderRows[0].managementProductBase) : 0) + Number(orderRows[0].managementExternal || 0)), managementPending: orderRows[0].managementProductStatus !== 'posted' });
     const event = applyReview(raw, reviewMap.get(raw.eventKey));
     originals.set(orderId, frozenSales.get(raw.eventKey) || event);
     if (event.businessDate >= filters.startDate && event.businessDate <= filters.endDate) items.push(event);
@@ -164,6 +167,7 @@ async function loadFacts(filters, calculateOrder, transaction) {
     if (!original) throw Object.assign(new Error('退货无法追溯原销售，请核对原单状态及门店'), { status: 409 });
     const raw = returnEvent(returnRows.sort((a,b) => String(a.itemId).localeCompare(String(b.itemId))), original, calculateOrder);
     const returnId = returnRows[0].returnId, product = returnProducts.find(row => row.SOURCE_RETURN_ID === returnId);
+    raw.instantRetail = isInstantRetail(orderMap.get(String(raw.orderId))?.[0] || {});
     raw.managementSalesGross = returnManagement.some(row => row.RETURN_ID === returnId) ? money(returnManagement.find(row => row.RETURN_ID === returnId).amount) : null;
     raw.managementProductGross = money((product?.STATUS === 'posted' ? Number(product.GROSS_PROFIT_AMOUNT) : 0) + Number(returnedExternal.find(row => row.ENTRY_ID === `EXT-RET-${returnId}`)?.GROSS_PROFIT_AMOUNT || 0));
     raw.managementPending = product?.STATUS !== 'posted';

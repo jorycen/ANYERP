@@ -162,3 +162,19 @@ test('multiple staff ledger rows export once per return and preserve negative sa
   assert.equal(Number(exported.reduce((sum,item)=>sum+item.saleSubtotal,0).toFixed(2)),-179.9);
   assert.equal(Number(events.reduce((sum,item)=>sum+item.grossProfit,0).toFixed(2)),-89.66);
 });
+
+test('retail allocation preserves cents and reverses a full refund for each employee', () => {
+  const { isInstantRetail, splitInstantRetail, instantRetailStaffShares } = require('../src/modules/report/performanceAllocation');
+  const order = { customer_source: '\u5373\u65f6\u96f6\u552e', create_time: new Date('2026-09-30T16:00:00Z') };
+  assert.equal(isInstantRetail(order), true);
+  assert.equal(isInstantRetail({ ...order, create_time: new Date('2026-09-30T15:59:59Z') }), false);
+  const participants = [{ staffId: 'c' }, { staffId: 'a' }, { staffId: 'b' }];
+  assert.deepEqual(splitInstantRetail(10.01), { sales: 5, operations: 5.01, shares: [] });
+  assert.deepEqual(instantRetailStaffShares(10.01, participants), [1.66, 1.67, 1.67]);
+  const event = returnEvents(participants.map(({ staffId }, index) => ({
+    order, staff_id: staffId, return_id: 'R1', gross_profit_amount: [-7, -2, -1.01][index]
+  })))[0];
+  assert.equal(event.baseGrossProfit, -5);
+  assert.equal(event.operationsGrossProfit, -5.01);
+  assert.deepEqual(event.participantAllocations.map(p => p.grossProfit), [-1.66, -1.67, -1.67]);
+});

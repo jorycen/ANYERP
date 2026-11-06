@@ -5,7 +5,7 @@ const {
   toNumber
 } = require('./dashboardDataSource');
 const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/storePermissions');
-const { allocateProfit } = require('./performanceAllocation');
+const { allocateProfit, isInstantRetail, instantRetailStaffShares, instantRetailReturnShares } = require('./performanceAllocation');
 
 const PROFIT_ROLES = new Set(['boss', 'admin', 'finance', 'manager']);
 const AGE_BUCKET_ORDER = ['0-7天', '8-15天', '16-30天', '31-60天', '60天以上'];
@@ -184,6 +184,8 @@ function buildEmployeePerformance(orderRows, adjustmentRows, selectedEmployeeId,
 
   const rankMap = new Map();
   const details = [];
+  const returnShares = instantRetailReturnShares(orderRows.filter(row => row.entry_type === 'return'),
+    row => row.return_id, row => ({ ...row, create_time: row.source_create_time }), row => row.base_gross_profit);
   orderRows.forEach(order => {
     const participants = normalizeParticipants(order);
     if (!participants.length) return;
@@ -192,10 +194,14 @@ function buildEmployeePerformance(orderRows, adjustmentRows, selectedEmployeeId,
     const sharedAdjustments = adjustments.filter(row => !row.participantKey);
     const totalAdjustment = roundMoney(sharedAdjustments.reduce((sum, row) => sum + row.signedAmount, 0));
     const salesShare = roundMoney(toNumber(order.sales_amount) / participantCount);
-    const baseProfitShares = allocateProfit(participants, order.base_gross_profit);
+    const instantRetail = !order.entry_type && isInstantRetail(order);
+    const originalShares = allocateProfit(participants, order.base_gross_profit);
+    const baseProfitShares = instantRetail
+      ? instantRetailStaffShares(order.base_gross_profit, participants)
+      : returnShares.has(order) ? [returnShares.get(order)] : originalShares;
     const sharedAdjustmentShares = toNumber(order.base_gross_profit)
-      ? baseProfitShares.map((share, index) => index === participants.length - 1
-        ? roundMoney(totalAdjustment - baseProfitShares.slice(0, -1).reduce((sum, value) =>
+      ? originalShares.map((share, index) => index === participants.length - 1
+        ? roundMoney(totalAdjustment - originalShares.slice(0, -1).reduce((sum, value) =>
           sum + roundMoney(totalAdjustment * value / toNumber(order.base_gross_profit)), 0))
         : roundMoney(totalAdjustment * share / toNumber(order.base_gross_profit)))
       : allocateProfit(participants.map(item => ({ ...item, profitAmount: '', ratio: '' })), totalAdjustment);

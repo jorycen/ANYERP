@@ -25,7 +25,7 @@ const { Op } = require('sequelize');
 const { loadLegacyCostMaps, calculateItemBaseProfit } = require('./profitCalculation');
 const { DashboardService, canViewProfit } = require('./dashboardService');
 const { normalizeParticipants } = require('./dashboardDataSource');
-const { allocateProfit } = require('./performanceAllocation');
+const { allocateProfit, isInstantRetail, splitInstantRetail, instantRetailStaffShares } = require('./performanceAllocation');
 const { PERFORMANCE_SALE_STATUSES: POSITIVE_SALES_ORDER_STATUSES, returnEvents, savedItemProfit, profitExportItems } = require('./performanceEvents');
 const { buildDecisionInsights, buildAiAdvisor } = require('./decisionEngine');
 const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/storePermissions');
@@ -877,14 +877,17 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
     const careCostAmount = careCostMap.get(orderJson.order_id) || 0;
     const grossProfit = roundMoney(baseGrossProfit + approvedAdjustment);
     const participants = normalizeParticipants(orderJson);
-    const customAllocation = participants.some(item => Number(item.profitAmount) > 0 || Number(item.ratio) > 0);
-    const allocatedBase = allocateProfit(participants, baseGrossProfit);
+    const instantRetail = isInstantRetail(orderJson);
+    const customAllocation = !instantRetail && participants.some(item => Number(item.profitAmount) > 0 || Number(item.ratio) > 0);
+    const originalShares = allocateProfit(participants, baseGrossProfit);
+    const split = instantRetail ? splitInstantRetail(baseGrossProfit) : null;
+    const allocatedBase = instantRetail ? instantRetailStaffShares(baseGrossProfit, participants) : originalShares;
     const sharedAdjustment = roundMoney(approvedPageAdjustments
       .filter(item => item.order_id === orderJson.order_id)
       .reduce((sum, item) => sum + toNumber(item.signed_amount), 0));
     const allocatedAdjustment = toNumber(baseGrossProfit)
-      ? allocatedBase.map((share, index) => index === participants.length - 1
-        ? roundMoney(sharedAdjustment - allocatedBase.slice(0, -1).reduce((sum, value) =>
+      ? originalShares.map((share, index) => index === participants.length - 1
+        ? roundMoney(sharedAdjustment - originalShares.slice(0, -1).reduce((sum, value) =>
           sum + roundMoney(sharedAdjustment * value / baseGrossProfit), 0))
         : roundMoney(sharedAdjustment * share / baseGrossProfit))
       : allocateProfit(participants.map(item => ({ ...item, profitAmount: '', ratio: '' })), sharedAdjustment);
@@ -915,18 +918,19 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
       educationSubsidy: roundMoney(orderJson.education_subsidy),
       actualPayment,
       totalCost,
-      baseGrossProfit,
+      baseGrossProfit: split?.sales ?? baseGrossProfit,
       careCostAmount,
       careCreditAdjustment,
       otherApprovedAdjustment,
       approvedAdjustment,
-      grossProfit,
+      grossProfit: roundMoney(grossProfit - (split?.operations ?? 0)),
       customAllocation,
+      operationsGrossProfit: split?.operations ?? 0,
       participantAllocations,
       grossProfitSource: usesNewSnapshot
         ? 'order_gross_profit_snapshot'
         : (usesLegacyFallback ? 'legacy_fallback' : 'archived'),
-      grossRate: calcRate(grossProfit, totalAmount),
+      grossRate: calcRate(grossProfit - (split?.operations ?? 0), totalAmount),
       calculation: {
         orderFormula: `${baseGrossProfit.toFixed(2)} + Care可用金抵扣 ${careCreditAdjustment.toFixed(2)} + 其他调整 ${otherApprovedAdjustment.toFixed(2)} = ${grossProfit.toFixed(2)}`,
         revenueNote: usesNewSnapshot
@@ -959,7 +963,7 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
 
   const snapshotRows = await OrderGrossProfit.findAll({
     attributes: ['order_id', 'gross_profit_amount'],
-    include: [{ model: Order, where, attributes: [], required: true }],
+    include: [{ model: Order, where, attributes: ['customer_source', 'create_time'], required: true }],
     raw: true
   });
   const snapshotOrderIds = snapshotRows.map(row => row.order_id);
@@ -975,7 +979,7 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
       raw: true
     }),
     OrderItem.findAll({
-      include: [{ model: Order, where: fallbackOrderWhere, attributes: [], required: true }],
+      include: [{ model: Order, where: fallbackOrderWhere, attributes: ['customer_source', 'create_time'], required: true }],
       raw: true
     }),
     PerformanceProfitAdjustment.findAll({
@@ -988,12 +992,19 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
   const approvedAdjustmentRow = approvedAdjustmentRows[0] || { amount: 0 };
 
 
-  const fallbackGrossProfit = roundMoney(fallbackItems.reduce(
-    (sum, item) => sum + savedItemProfit(item).grossProfit,
-    0
-  ));
+  const fallbackByOrder = new Map();
+  for (const item of fallbackItems) {
+    const order = fallbackByOrder.get(item.order_id) || { amount: 0, instantRetail: isInstantRetail({
+      customer_source: item['Order.customer_source'], create_time: item['Order.create_time']
+    }) };
+    order.amount += savedItemProfit(item).grossProfit;
+    fallbackByOrder.set(item.order_id, order);
+  }
+  const fallbackGrossProfit = roundMoney([...fallbackByOrder.values()].reduce((sum, order) =>
+    sum + (order.instantRetail ? splitInstantRetail(order.amount).sales : order.amount), 0));
   const snapshotGrossProfit = roundMoney(snapshotRows.reduce(
-    (sum, row) => sum + toNumber(row.gross_profit_amount),
+    (sum, row) => sum + (isInstantRetail({ customer_source: row['Order.customer_source'], create_time: row['Order.create_time'] })
+      ? splitInstantRetail(row.gross_profit_amount).sales : toNumber(row.gross_profit_amount)),
     0
   ));
   const totalBaseGrossProfit = roundMoney(snapshotGrossProfit + fallbackGrossProfit + returnProfit);
@@ -1034,10 +1045,10 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
   if (startDate && endDate && !staffName && !orderNo) {
     const range = require('./dashboardService').buildRanges({ startDate, endDate }).current;
     const operating = await require('./operatingProfit').queryOperatingProfit({ storeIds, archiveScope: 'archived' }, range);
-    summary.baseGrossProfit = operating.summary.baseGrossProfit;
+    summary.baseGrossProfit = roundMoney(operating.summary.baseGrossProfit - operating.summary.retailOperationsGrossProfit);
     summary.approvedAdjustment = operating.summary.approvedAdjustment;
     summary.otherApprovedAdjustment = roundMoney(summary.approvedAdjustment - summary.careCreditAdjustment);
-    summary.grossProfit = operating.summary.grossProfit;
+    summary.grossProfit = roundMoney(summary.baseGrossProfit + summary.approvedAdjustment);
     summary.netGrossProfit = profitVisible ? deductionService.netProfit(summary.grossProfit, totalExpensePerformanceDeduction) : null;
     summary.grossProfitSource = operating.source;
   }
