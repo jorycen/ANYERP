@@ -137,16 +137,18 @@ test('proof uses the direct supervisor and an authenticated attachment endpoint'
   t.mock.method(M.MonthlyIndicator, 'findByPk', async () => indicator);
   t.mock.method(M.Staff, 'findByPk', async id => ({ staff_id: id, supervisor_staff_id: 2, distributor_id: 'D', status: 1 }));
   const approval = require('../src/modules/approval/service');
+  let started = 0;
   t.mock.method(approval, 'startInstance', async (input, actor, transaction) => {
     assert.equal(input.subjectStaffId, 3);
     assert.equal(actor.staffId, 3);
     assert.equal(transaction, tx);
+    started++;
     return { instance_id: 'A1' };
   });
   t.mock.method(M.ApprovalTask, 'findAll', async () => [{ assignee_staff_id: 2 }]);
   let stored;
   t.mock.method(M.MonthlyIndicatorEvidence, 'create', async row => { stored = row; });
-  t.mock.method(M.MonthlyIndicatorEvidence, 'findByPk', async () => stored);
+  t.mock.method(M.MonthlyIndicatorEvidence, 'findByPk', async id => !id || stored?.evidence_id === id ? stored : null);
   const ctx = context(user(3, 'staff'));
   ctx.params.assignmentId = 'E';
   ctx.file = { mimetype: 'application/pdf', originalname: 'proof.pdf', buffer: Buffer.from('%PDF-1.4') };
@@ -165,4 +167,16 @@ test('proof uses the direct supervisor and an authenticated attachment endpoint'
   await indicators.submit(ctx);
   assert.equal(stored.result_text, '已完成检查');
   await assert.rejects(() => indicators.download(supervisor), { status: 404 });
+  indicator.check_method = 'photo';
+  const photo = Buffer.from('89504e470d0a1a0a', 'hex').toString('base64');
+  ctx.request.body = { photoBase64: photo, submissionKey: 'same-photo-123' };
+  await indicators.submit(ctx);
+  const evidenceId = ctx.body.data.evidenceId;
+  await indicators.submit(ctx);
+  assert.equal(ctx.body.data.evidenceId, evidenceId);
+  assert.equal(started, 3);
+  supervisor.params.evidenceId = evidenceId;
+  supervisor.query.format = 'base64';
+  await indicators.download(supervisor);
+  assert.deepEqual(supervisor.body.data, { photoBase64: photo, mimeType: 'image/png' });
 });

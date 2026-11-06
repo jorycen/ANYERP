@@ -1,5 +1,5 @@
 
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const { Op } = require('sequelize');
 const M = require('../../models');
 const { getUserRoles, isDealerAccount } = require('../../middleware/permission');
@@ -151,13 +151,32 @@ async function update(ctx) {
 
 async function submit(ctx) {
   const user = ctx.state.user;
-  const file = ctx.file;
-  const resultText = key(ctx.request.body?.resultText).trim();
+  const body = ctx.request.body || {};
+  let file = ctx.file;
+  if (body.photoBase64 !== undefined) {
+    const encoded = body.photoBase64;
+    if (file || typeof encoded !== 'string' || !encoded.length || encoded.length % 4 ||
+        encoded.length > Math.ceil(2 * 1024 * 1024 / 3) * 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+      ctx.throw(400, '照片格式无效或超过 2 MB，请重新选择');
+    }
+    const buffer = Buffer.from(encoded, 'base64');
+    if (buffer.length > 2 * 1024 * 1024) ctx.throw(400, '照片超过 2 MB，请重新选择');
+    const header = buffer.subarray(0, 8).toString('hex');
+    const png = header === '89504e470d0a1a0a';
+    if (!png && !header.startsWith('ffd8ff')) ctx.throw(400, '请上传有效的 JPG 或 PNG 照片');
+    file = { buffer, mimetype: png ? 'image/png' : 'image/jpeg', originalname: png ? '检查照片.png' : '检查照片.jpg' };
+  }
+  const resultText = key(body.resultText).trim();
+  const submissionKey = key(body.submissionKey);
+  if (submissionKey && !/^[a-z0-9-]{12,64}$/.test(submissionKey)) ctx.throw(400, '提交标识无效，请重新选择照片');
+  const id = submissionKey
+    ? createHash('sha256').update(`${ctx.params.assignmentId}:${submissionKey}`).digest('hex').slice(0, 32) : randomUUID();
   await M.sequelize.transaction(async transaction => {
     const assignment = await M.MonthlyIndicatorAssignment.findByPk(ctx.params.assignmentId, { transaction });
     if (!assignment || key(assignment.staff_id) !== key(user.staffId)) ctx.throw(403, '只能提交自己的任务');
     const indicator = await M.MonthlyIndicator.findByPk(assignment.indicator_id, { transaction, lock: transaction.LOCK.UPDATE });
     if (!indicator?.status || indicator.metric !== 'management' || indicator.month_key !== nowMonth()) ctx.throw(409, '该任务当前不可提交');
+    if (submissionKey && await M.MonthlyIndicatorEvidence.findByPk(id, { attributes: ['evidence_id'], transaction, lock: transaction.LOCK.UPDATE })) return;
     const textMode = indicator.check_method === 'text';
     if (textMode) {
       if (!resultText || resultText.length > 1000 || file) ctx.throw(400, '请填写 1 至 1000 字的检查结果');
@@ -172,7 +191,6 @@ async function submit(ctx) {
     const staff = await M.Staff.findByPk(user.staffId, { transaction, lock: transaction.LOCK.SHARE });
     const supervisor = staff?.supervisor_staff_id && await M.Staff.findByPk(staff.supervisor_staff_id, { transaction });
     if (!supervisor?.status || supervisor.is_deleted || key(supervisor.staff_id) === key(staff.staff_id)) ctx.throw(409, '请检查直属上级配置');
-    const id = randomUUID();
     const instance = await approval.startInstance({
       flowCode: 'monthly_indicator_evidence', businessType: 'monthly_indicator_evidence', businessId: id,
       subjectStaffId: staff.staff_id, storeId: null, distributorId: staff.distributor_id,
@@ -187,13 +205,16 @@ async function submit(ctx) {
       original_name: textMode ? '' : key(file.originalname).slice(0, 255), mime_type: textMode ? '' : file.mimetype,
       attachment: textMode ? Buffer.alloc(0) : file.buffer, result_text: textMode ? resultText : null }, { transaction });
   });
-  result(ctx, {});
+  result(ctx, { evidenceId: id });
 }
 
 async function download(ctx) {
   const row = await M.MonthlyIndicatorEvidence.findByPk(ctx.params.evidenceId);
   const id = key(ctx.state.user.staffId);
   if (!row || row.result_text || ![key(row.applicant_staff_id), key(row.supervisor_staff_id)].includes(id)) ctx.throw(404, '证明文件不存在');
+  if (ctx.query?.format === 'base64' && /^image\/(jpeg|png)$/.test(row.mime_type)) {
+    return result(ctx, { photoBase64: row.attachment.toString('base64'), mimeType: row.mime_type });
+  }
   ctx.attachment(row.original_name);
   ctx.set('X-Content-Type-Options', 'nosniff');
   ctx.type = row.mime_type;
@@ -239,7 +260,8 @@ async function report(ctx) {
   const visibleIds = new Set(visible.map(row => row.indicator_id));
   const related = assignments.filter(row => visibleIds.has(row.indicator_id));
   const evidence = await M.MonthlyIndicatorEvidence.findAll({ where: { assignment_id: related.map(row => row.assignment_id) },
-    attributes: ['assignment_id', 'instance_id', 'evidence_id', 'original_name', 'result_text', 'create_time'], raw: true });
+    attributes: ['assignment_id', 'instance_id', 'evidence_id', 'original_name', 'mime_type', 'result_text', 'create_time'],
+    order: [['create_time', 'ASC'], ['evidence_id', 'ASC']], raw: true });
   const instances = await M.ApprovalFlowInstance.findAll({ where: { instance_id: evidence.map(row => row.instance_id) }, attributes: ['instance_id', 'status'], raw: true });
   const statusById = new Map(instances.map(row => [row.instance_id, row.status]));
   const staff = await M.Staff.findAll({ where: { staff_id: related.map(row => row.staff_id) }, attributes: ['staff_id', 'name'], raw: true });
@@ -284,7 +306,7 @@ async function report(ctx) {
           pendingCount: submissions.filter(ev => statusById.get(ev.instance_id) === 'pending').length,
           active: !!row.status, canSubmit: !!mine && !!row.status && row.metric === 'management' && monthKey === nowMonth(),
           submissions: item && own ? submissions.map(ev => ({
-            id: ev.evidence_id, name: ev.original_name, resultText: ev.result_text,
+            id: ev.evidence_id, name: ev.original_name, mimeType: ev.mime_type, resultText: ev.result_text,
             status: statusById.get(ev.instance_id), createdAt: ev.create_time
           })) : [] };
       };
