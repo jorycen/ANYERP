@@ -2862,9 +2862,12 @@ const MonthlyIndicator = sequelize.define('MonthlyIndicator', {
   source: { type: DataTypes.STRING(16), allowNull: false },
   name: { type: DataTypes.STRING(128), allowNull: false },
   role_code: { type: DataTypes.STRING(32), allowNull: false },
+  role_codes: { type: DataTypes.JSON },
   metric: { type: DataTypes.STRING(16), allowNull: false },
   target: { type: DataTypes.DECIMAL(16, 2), allowNull: false },
   product_ids: { type: DataTypes.JSON, allowNull: false },
+  category_ids: { type: DataTypes.JSON },
+  check_method: { type: DataTypes.STRING(16) },
   requirements: { type: DataTypes.STRING(1000), allowNull: false },
   status: { type: DataTypes.TINYINT, defaultValue: 1 },
   created_by: { type: DataTypes.BIGINT, allowNull: false }
@@ -2890,6 +2893,7 @@ const MonthlyIndicatorEvidence = sequelize.define('MonthlyIndicatorEvidence', {
   original_name: { type: DataTypes.STRING(255), allowNull: false },
   mime_type: { type: DataTypes.STRING(120), allowNull: false },
   attachment: { type: DataTypes.BLOB('medium'), allowNull: false },
+  result_text: { type: DataTypes.TEXT },
   create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
 }, { tableName: 'T_MONTHLY_INDICATOR_EVIDENCE', timestamps: false,
   indexes: [

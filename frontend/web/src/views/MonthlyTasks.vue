@@ -37,7 +37,7 @@
       </el-table>
     </el-card>
 
-    <MonthlyIndicatorConfig v-model="indicatorConfig" :month-key="monthKey" :current-month="currentMonthKey" :products="options.products" />
+    <MonthlyIndicatorConfig v-model="indicatorConfig" :month-key="monthKey" :current-month="currentMonthKey" />
 
     <el-dialog v-model="dialogVisible" :title="editing ? '编辑月度任务' : '新增月度任务'" width="920px">
       <el-form label-width="110px">

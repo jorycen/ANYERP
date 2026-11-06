@@ -37,6 +37,51 @@ test('formal store manager can allocate above the company target; other staff ca
   assert.equal(indicator.target, 10);
 });
 
+test('one configuration publishes multiple roles and independent store metric targets', async t => {
+  t.mock.method(M.Store, 'findAll', async () => [store, { ...store, store_id: 'B' }]);
+  t.mock.method(M.Role, 'count', async () => 2);
+  t.mock.method(M.ProductCategory, 'count', async () => 2);
+  t.mock.method(M.sequelize, 'transaction', async callback => callback({}));
+  let rows;
+  t.mock.method(M.MonthlyIndicator, 'bulkCreate', async values => { rows = values; });
+  await indicators.create(context(user(1, 'distributor'), {}, {
+    monthKey, name: '手机指标', source: 'company', kind: 'operating',
+    roleCodes: ['staff', 'manager'], categoryIds: ['root', 'child'],
+    storeTargets: [{ storeId: 'A', sales: 2000, quantity: 2 }, { storeId: 'B', profit: 300 }]
+  }));
+  assert.deepEqual(rows.map(row => [row.store_id, row.metric, row.target]),
+    [['A', 'sales', 2000], ['A', 'quantity', 2], ['B', 'profit', 300]]);
+  assert(rows.every(row => row.role_codes.length === 2 && row.category_ids.length === 2));
+});
+
+test('category indicators include newly classified products and deduplicate parent and child selections', async t => {
+  t.mock.method(M.Store, 'findAll', async () => [store]);
+  t.mock.method(M.MonthlyIndicator, 'findAll', async () => [{
+    indicator_id: 'I', store_id: 'A', source: 'company', metric: 'quantity', status: 1, target: 5,
+    category_ids: ['root', 'child'], product_ids: []
+  }]);
+  t.mock.method(M.MonthlyIndicatorAssignment, 'findAll', async () => []);
+  t.mock.method(M.MonthlyIndicatorEvidence, 'findAll', async () => []);
+  t.mock.method(M.ApprovalFlowInstance, 'findAll', async () => []);
+  t.mock.method(M.Staff, 'findAll', async () => []);
+  t.mock.method(M.ProductCategory, 'findAll', async () => [
+    { category_id: 'root', parent_id: null }, { category_id: 'child', parent_id: 'root' },
+    { category_id: 'leaf', parent_id: 'child' }
+  ]);
+  const products = [{ product_id: 'P1', category_id: 'child' }];
+  t.mock.method(M.Product, 'findAll', async () => products);
+  const performance = require('../src/modules/report/monthlyTaskAchievement');
+  t.mock.method(performance, 'loadActuals', async () => ({
+    storeActuals: new Map([['A', { productQuantities: new Map([['P1', 2], ['P2', 3], ['OTHER', 8]]) }]])
+  }));
+  const ctx = context(user(1, 'distributor'), { monthKey });
+  await indicators.report(ctx);
+  assert.equal(ctx.body.data.rows[0].actual, 2);
+  products.push({ product_id: 'P2', category_id: 'leaf' });
+  await indicators.report(ctx);
+  assert.equal(ctx.body.data.rows[0].actual, 5);
+});
+
 test('business achievement counts approved evidence once, preserves original target and scopes employee rows', async t => {
   t.mock.method(M.Store, 'findAll', async () => [store]);
   t.mock.method(M.MonthlyIndicator, 'findAll', async () => [
@@ -80,7 +125,8 @@ test('proof uses the direct supervisor and an authenticated attachment endpoint'
   const tx = { LOCK: { UPDATE: 'UPDATE', SHARE: 'SHARE' } };
   t.mock.method(M.sequelize, 'transaction', async callback => callback(tx));
   t.mock.method(M.MonthlyIndicatorAssignment, 'findByPk', async () => ({ assignment_id: 'E', indicator_id: 'I', staff_id: 3 }));
-  t.mock.method(M.MonthlyIndicator, 'findByPk', async () => ({ name: 'Inspection', month_key: monthKey, metric: 'management', status: 1 }));
+  const indicator = { name: 'Inspection', month_key: monthKey, metric: 'management', status: 1 };
+  t.mock.method(M.MonthlyIndicator, 'findByPk', async () => indicator);
   t.mock.method(M.Staff, 'findByPk', async id => ({ staff_id: id, supervisor_staff_id: 2, distributor_id: 'D', status: 1 }));
   const approval = require('../src/modules/approval/service');
   t.mock.method(approval, 'startInstance', async (input, actor, transaction) => {
@@ -105,4 +151,10 @@ test('proof uses the direct supervisor and an authenticated attachment endpoint'
   supervisor.set = () => {};
   await indicators.download(supervisor);
   assert.deepEqual(supervisor.body, ctx.file.buffer);
+  indicator.check_method = 'text';
+  delete ctx.file;
+  ctx.request.body.resultText = '  已完成检查  ';
+  await indicators.submit(ctx);
+  assert.equal(stored.result_text, '已完成检查');
+  await assert.rejects(() => indicators.download(supervisor), { status: 404 });
 });

@@ -222,7 +222,10 @@
           </template>
         </template>
         <template v-else-if="currentInstance.business_type === 'monthly_indicator_evidence'">
-          <el-link type="primary" @click="downloadIndicatorEvidence(currentInstance.payload)">查看证明附件</el-link>
+          <el-descriptions v-if="currentInstance.payload?.resultText" border :column="1">
+            <el-descriptions-item label="检查结果">{{ currentInstance.payload.resultText }}</el-descriptions-item>
+          </el-descriptions>
+          <el-link v-else-if="currentInstance.payload?.indicatorEvidenceId" type="primary" @click="downloadIndicatorEvidence(currentInstance.payload)">查看证明附件</el-link>
         </template>
         <template v-else-if="currentInstance.payload !== undefined && currentInstance.payload !== null">
           <el-divider>发起信息</el-divider>
