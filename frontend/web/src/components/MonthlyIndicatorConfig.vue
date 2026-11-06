@@ -19,26 +19,26 @@
 
     <el-dialog v-model="creating" title="新增月度指标" width="760px" append-to-body>
       <el-form label-width="100px">
-        <el-form-item label="来源">
+        <el-form-item label="来源" :error="errors.source">
           <el-select v-model="form.source" @change="form.storeIds = []; syncStores([])">
             <el-option v-if="data.stores.some(s => s.company)" label="公司下发" value="company" />
             <el-option v-if="data.stores.some(s => s.manager)" label="门店自建" value="store" />
           </el-select>
         </el-form-item>
-        <el-form-item :label="form.kind === 'management' ? '管理指标名称' : '指标名称'"><el-input v-model.trim="form.name" maxlength="128" /></el-form-item>
-        <el-form-item label="适用岗位"><el-select v-model="form.roleCodes" multiple filterable placeholder="选择一个或多个岗位">
+        <el-form-item :label="form.kind === 'management' ? '管理指标名称' : '指标名称'" :error="errors.name"><el-input v-model.trim="form.name" maxlength="128" /></el-form-item>
+        <el-form-item label="适用岗位" :error="errors.roleCodes || roleIssue"><el-select v-model="form.roleCodes" multiple filterable placeholder="选择一个或多个岗位" :no-data-text="roleIssue || '暂无岗位'">
           <el-option v-for="role in data.roles" :key="role.role_code" :label="role.name" :value="role.role_code" />
         </el-select></el-form-item>
-        <el-form-item label="指标类型"><el-select v-model="form.kind">
+        <el-form-item label="指标类型" :error="errors.kind"><el-select v-model="form.kind">
           <el-option label="经营指标" value="operating" /><el-option label="管理指标" value="management" />
         </el-select></el-form-item>
-        <el-form-item v-if="form.kind === 'operating'" label="商品分类">
+        <el-form-item v-if="form.kind === 'operating'" label="商品分类" :error="errors.categoryIds">
           <el-cascader v-model="form.categoryIds" :options="categories" :props="categoryProps" filterable clearable collapse-tags collapse-tags-tooltip placeholder="可多选任意层级分类" style="width: 100%" />
         </el-form-item>
-        <el-form-item label="门店"><el-select v-model="form.storeIds" multiple filterable placeholder="选择一个或多个门店" @change="syncStores">
+        <el-form-item label="门店" :error="errors.storeIds"><el-select v-model="form.storeIds" multiple filterable placeholder="选择一个或多个门店" @change="syncStores">
           <el-option v-for="s in data.stores.filter(s => s[form.source === 'company' ? 'company' : 'manager'])" :key="s.store_id" :label="s.name" :value="s.store_id" />
         </el-select></el-form-item>
-        <el-form-item v-if="form.storeTargets.length" label="门店目标">
+        <el-form-item v-if="form.storeTargets.length" label="门店目标" :error="errors.storeTargets">
           <el-button v-if="form.storeTargets.length > 1" link type="primary" @click="copyFirstTarget">将首行目标应用到全部门店</el-button>
           <el-table :data="form.storeTargets" row-key="storeId" border size="small">
             <el-table-column label="门店" min-width="130"><template #default="{ row }">{{ store(row.storeId)?.name }}</template></el-table-column>
@@ -56,7 +56,7 @@
           </el-table>
         </el-form-item>
         <template v-if="form.kind === 'management'">
-          <el-form-item label="检查方式"><el-select v-model="form.checkMethod">
+          <el-form-item label="检查方式" :error="errors.checkMethod"><el-select v-model="form.checkMethod">
             <el-option label="上传照片" value="photo" /><el-option label="手工填写结果" value="text" />
           </el-select></el-form-item>
           <el-form-item label="检查要求"><el-input v-model="form.requirements" type="textarea" maxlength="1000" /></el-form-item>
@@ -81,7 +81,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 const props = defineProps({ monthKey: String, currentMonth: String })
@@ -93,6 +93,12 @@ const categoryProps = { value: 'category_id', label: 'name', multiple: true, che
 const data = ref({ stores: [], staff: [], roles: [], indicators: [], assignments: [] })
 const loading = ref(false), saving = ref(false), creating = ref(false), assigning = ref(false)
 const current = ref(null), assignments = ref([]), form = ref({})
+const errors = ref({})
+watch(form, () => { errors.value = {} }, { deep: true })
+const roleIssue = computed(() => {
+  if (!Array.isArray(data.value.roles)) return '后台未返回岗位选项，请确认已部署与页面配套的后台版本'
+  return data.value.roles.length ? '' : '没有可选岗位，请检查岗位是否已启用'
+})
 const store = id => data.value.stores.find(s => s.store_id === id)
 const editable = row => row.status && props.monthKey >= props.currentMonth
 const eligible = computed(() => {
@@ -134,7 +140,33 @@ function copyFirstTarget() {
   const keys = form.value.kind === 'management' ? ['management'] : operatingMetrics
   for (const row of rest) for (const metric of keys) row[metric] = first[metric]
 }
-function save() { return apply(() => api.createMonthlyIndicator({ ...form.value, monthKey: props.monthKey }), creating) }
+function validate() {
+  const values = form.value
+  if (roleIssue.value) return ['roleCodes', roleIssue.value]
+  if (!values.source) return ['source', '请选择指标来源']
+  if (!values.name?.trim()) return ['name', '请填写指标名称']
+  if (!values.roleCodes.length) return ['roleCodes', '请选择至少一个适用岗位']
+  if (!values.kind) return ['kind', '请选择指标类型']
+  if (values.kind === 'operating' && !values.categoryIds.length) return ['categoryIds', '请选择至少一个商品分类']
+  if (!values.storeTargets.length) return ['storeIds', '请选择至少一家门店']
+  if (values.kind === 'management' && !values.checkMethod) return ['checkMethod', '请选择检查方式']
+  const metrics = values.kind === 'management' ? ['management'] : operatingMetrics
+  for (const row of values.storeTargets) {
+    if (!metrics.some(metric => Number(row[metric]) > 0)) {
+      const name = store(row.storeId)?.name || row.storeId
+      return ['storeTargets', `请填写「${name}」的${values.kind === 'management' ? '目标次数' : '至少一项门店目标'}`]
+    }
+  }
+}
+function save() {
+  const error = validate()
+  if (error) {
+    errors.value = { [error[0]]: error[1] }
+    ElMessage.warning(error[1])
+    return
+  }
+  return apply(() => api.createMonthlyIndicator({ ...form.value, monthKey: props.monthKey }), creating)
+}
 function startAssign(row) {
   current.value = row
   assignments.value = data.value.assignments.filter(item => item.indicator_id === row.indicator_id)

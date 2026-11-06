@@ -17,11 +17,13 @@ function month(ctx, value = nowMonth()) {
   return value;
 }
 
-function target(ctx, value, metric) {
+function target(ctx, value, metric, label = '目标值') {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0 || number > 1e12 ||
       (['quantity', 'management'].includes(metric) ? !Number.isInteger(number) :
-        Math.abs(number * 100 - Math.round(number * 100)) > 0.001)) ctx.throw(400, '目标值格式不正确');
+        Math.abs(number * 100 - Math.round(number * 100)) > 0.001)) {
+    ctx.throw(400, `${label}须为${['quantity', 'management'].includes(metric) ? '正整数' : '大于 0 且最多两位小数的金额'}，且不能超过 1 万亿`);
+  }
   return number;
 }
 
@@ -70,10 +72,16 @@ async function create(ctx) {
   const allowedMetrics = bundled
     ? body.kind === 'operating' ? metrics.slice(0, 3) : body.kind === 'management' ? ['management'] : []
     : metrics.includes(body.metric) ? [body.metric] : [];
-  if (monthKey < nowMonth() || !name || name.length > 128 || requirements.length > 1000 ||
-      !allowedMetrics.length || !['company', 'store'].includes(body.source) ||
-      !roleCodes.length || roleCodes.some(code => code.length > 32) || !ids.length ||
-      ids.length !== plans.length || ids.length !== stores.length) ctx.throw(400, '指标配置不完整');
+  if (monthKey < nowMonth()) ctx.throw(400, '历史月份不能新增指标，请选择当前月或之后的月份');
+  if (!['company', 'store'].includes(body.source)) ctx.throw(400, '请选择指标来源');
+  if (!name || name.length > 128) ctx.throw(400, '请填写指标名称，最多 128 字');
+  if (!roleCodes.length) ctx.throw(400, '请选择至少一个适用岗位');
+  if (roleCodes.some(code => code.length > 32)) ctx.throw(400, '适用岗位无效，请重新选择');
+  if (!allowedMetrics.length) ctx.throw(400, '请选择指标类型');
+  if (!ids.length) ctx.throw(400, '请选择至少一家门店');
+  if (ids.length !== plans.length) ctx.throw(400, '门店目标存在重复或空白门店，请重新选择');
+  if (ids.length !== stores.length) ctx.throw(400, '部分门店已停用或超出授权范围，请重新选择');
+  if (requirements.length > 1000) ctx.throw(400, '检查要求不能超过 1000 字');
   if (stores.some(store => !permissions(user, store)[body.source === 'company' ? 'company' : 'manager'])) ctx.throw(403, '无权在所选门店配置此指标');
   if (bundled && await M.Role.count({ where: { role_code: roleCodes, status: 1 } }) !== roleCodes.length) ctx.throw(400, '适用岗位无效');
   if (categoryIds && (!categoryIds.length || await M.ProductCategory.count({ where: { category_id: categoryIds, status: 1 } }) !== categoryIds.length)) {
@@ -83,12 +91,15 @@ async function create(ctx) {
   const productIds = bundled || body.metric === 'management' ? [] : idsFrom(body.productIds);
   if (productIds.length && await M.Product.count({ where: { product_id: productIds } }) !== productIds.length) ctx.throw(400, '商品范围无效');
   const rows = plans.flatMap(plan => {
+    const storeId = key(plan.storeId).trim();
+    const storeName = stores.find(store => key(store.store_id) === storeId).name;
     const selected = allowedMetrics.filter(metric => plan[metric] !== null && plan[metric] !== undefined && plan[metric] !== '');
-    if (!selected.length) ctx.throw(400, '每个门店至少填写一项目标');
+    if (!selected.length) ctx.throw(400, `请填写「${storeName}」的${body.kind === 'management' ? '目标次数' : '至少一项门店目标'}`);
+    const labels = { sales: '销售额目标', profit: '毛利目标', quantity: '数量目标', management: '目标次数' };
     return selected.map(metric => ({
-      indicator_id: randomUUID(), month_key: monthKey, store_id: key(plan.storeId).trim(), source: body.source,
+      indicator_id: randomUUID(), month_key: monthKey, store_id: storeId, source: body.source,
       name, role_code: roleCodes[0], role_codes: bundled ? roleCodes : null, metric,
-      target: target(ctx, plan[metric], metric), product_ids: productIds, category_ids: categoryIds,
+      target: target(ctx, plan[metric], metric, `「${storeName}」的${labels[metric]}`), product_ids: productIds, category_ids: categoryIds,
       check_method: checkMethod, requirements, created_by: user.staffId
     }));
   });

@@ -52,6 +52,14 @@ test('one configuration publishes multiple roles and independent store metric ta
   assert.deepEqual(rows.map(row => [row.store_id, row.metric, row.target]),
     [['A', 'sales', 2000], ['A', 'quantity', 2], ['B', 'profit', 300]]);
   assert(rows.every(row => row.role_codes.length === 2 && row.category_ids.length === 2));
+  const incomplete = {
+    monthKey, name: '手机指标', source: 'company', kind: 'operating', categoryIds: ['root', 'child'],
+    storeTargets: [{ storeId: 'A' }]
+  };
+  await assert.rejects(() => indicators.create(context(user(1, 'distributor'), {}, incomplete)), /适用岗位/);
+  await assert.rejects(() => indicators.create(context(user(1, 'distributor'), {}, {
+    ...incomplete, roleCodes: ['staff', 'manager']
+  })), /「A」.*门店目标/);
 });
 
 test('category indicators include newly classified products and deduplicate parent and child selections', async t => {
