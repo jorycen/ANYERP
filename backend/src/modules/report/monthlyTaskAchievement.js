@@ -78,7 +78,7 @@ async function resolveStores(user, requestedStoreId) {
 }
 
 function createActual() {
-  return { salesAmount: 0, grossProfit: 0, productQuantities: new Map() };
+  return { salesAmount: 0, grossProfit: 0, productQuantities: new Map(), productValues: new Map(), unallocatedProfit: false };
 }
 
 function addProductQuantity(actual, productId, quantity) {
@@ -90,14 +90,22 @@ function addActual(actual, salesAmount, grossProfit, productId, quantity) {
   actual.salesAmount += number(salesAmount);
   actual.grossProfit += number(grossProfit);
   addProductQuantity(actual, productId, quantity);
+  if (productId) {
+    const values = actual.productValues.get(String(productId)) || { sales: 0, profit: 0 };
+    values.sales += number(salesAmount);
+    values.profit += number(grossProfit);
+    actual.productValues.set(String(productId), values);
+  }
 }
 
 function employeeKey(staffId, name) {
   return staffId ? `id:${staffId}` : `name:${String(name || '').trim()}`;
 }
 
-async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived') {
+async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', staffByStore = false) {
   if (!storeIds.length) return { storeActuals: new Map(), employeeActuals: new Map() };
+  const staffKey = (storeId, staffId, name) => staffByStore
+    ? `${storeId}:${employeeKey(staffId, name)}` : employeeKey(staffId, name);
   const orderStatusFilter = archiveScope === 'all'
     ? '(o.ORDER_STATUS IS NULL OR o.ORDER_STATUS NOT IN (:voidedStatuses))'
     : 'o.ORDER_STATUS IN (:archivedStatuses)';
@@ -150,7 +158,7 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived') 
     order.items.forEach(item => addActual(storeActual, item.salesAmount, item.itemGrossProfit, item.productId, item.quantity));
     storeActuals.set(String(order.storeId), storeActual);
     participants.forEach(participant => {
-      const key = employeeKey(participant.staffId, participant.name);
+      const key = staffKey(order.storeId, participant.staffId, participant.name);
       const actual = employeeActuals.get(key) || { ...createActual(), staffId: participant.staffId, employeeName: participant.name, storeIds: new Set() };
       actual.storeIds.add(String(order.storeId));
       order.items.forEach(item => addActual(actual, number(item.salesAmount) / participantCount, number(item.itemGrossProfit) / participantCount, item.productId, number(item.quantity) / participantCount));
@@ -173,14 +181,16 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived') 
   for (const row of adjustmentRows) {
     const storeActual = storeActuals.get(String(row.storeId)) || createActual();
     storeActual.grossProfit += number(row.signedAmount);
+    storeActual.unallocatedProfit ||= !!number(row.signedAmount);
     storeActuals.set(String(row.storeId), storeActual);
     const order = orders.get(String(row.orderId)) || { create_staff_id: row.createStaffId, create_user: row.createUser, auxiliary_sales_list: row.auxiliarySalesList };
     const participants = order ? normalizeParticipants(order) : [];
     const count = participants.length || 1;
     participants.forEach(participant => {
-      const key = employeeKey(participant.staffId, participant.name);
+      const key = staffKey(row.storeId, participant.staffId, participant.name);
       const actual = employeeActuals.get(key) || { ...createActual(), staffId: participant.staffId, employeeName: participant.name, storeIds: new Set() };
       actual.grossProfit += number(row.signedAmount) / count;
+      actual.unallocatedProfit ||= !!number(row.signedAmount);
       employeeActuals.set(key, actual);
     });
   }
@@ -206,6 +216,7 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived') 
     // Dashboard sales ranking takes returned sales from the return GP ledger;
     // settlement items remain the source for returned product quantities only.
     addActual(storeActual, 0, 0, row.productId, row.quantity);
+    addProductReturnSales(storeActual, row.productId, row.salesAmount);
     storeActuals.set(String(row.storeId), storeActual);
     const order = orders.get(String(row.orderId)) || {
       create_staff_id: row.createStaffId,
@@ -215,10 +226,11 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived') 
     const participants = order ? normalizeParticipants(order) : [];
     const count = participants.length || 1;
     participants.forEach(participant => {
-      const key = employeeKey(participant.staffId, participant.name);
+      const key = staffKey(row.storeId, participant.staffId, participant.name);
       const actual = employeeActuals.get(key) || { ...createActual(), staffId: participant.staffId, employeeName: participant.name, storeIds: new Set() };
       actual.storeIds.add(String(row.storeId));
       addProductQuantity(actual, row.productId, number(row.quantity) / count);
+      addProductReturnSales(actual, row.productId, number(row.salesAmount) / count);
       employeeActuals.set(key, actual);
     });
   }
@@ -236,15 +248,17 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived') 
        AND return_gp.CREATE_TIME >= :startAt
        AND return_gp.CREATE_TIME < :endAt`, { replacements, type: QueryTypes.SELECT });
   for (const row of returnLedgerRows) {
-    const key = employeeKey(row.staffId, row.employeeName);
+    const key = staffKey(row.storeId, row.staffId, row.employeeName);
     const actual = employeeActuals.get(key) || { ...createActual(), staffId: row.staffId ? String(row.staffId) : null, employeeName: row.employeeName || '', storeIds: new Set() };
     actual.storeIds.add(String(row.storeId));
     actual.salesAmount += number(row.salesAmount);
     actual.grossProfit += number(row.grossProfitAmount);
+    actual.unallocatedProfit ||= !!number(row.grossProfitAmount);
     employeeActuals.set(key, actual);
     const storeActual = storeActuals.get(String(row.storeId)) || createActual();
     storeActual.salesAmount += number(row.salesAmount);
     storeActual.grossProfit += number(row.grossProfitAmount);
+    storeActual.unallocatedProfit ||= !!number(row.grossProfitAmount);
     storeActuals.set(String(row.storeId), storeActual);
   }
   return { storeActuals, employeeActuals };
@@ -507,4 +521,26 @@ async function getMonthlyTaskAchievement(ctx) {
   };
 }
 
-module.exports = { getMonthlyTaskAchievement };
+function addProductReturnSales(actual, productId, salesAmount) {
+  if (!productId) return;
+  const values = actual.productValues.get(String(productId)) || { sales: 0, profit: 0 };
+  values.sales -= Math.abs(number(salesAmount));
+  actual.productValues.set(String(productId), values);
+}
+
+function indicatorActual(actual, metric, productIds = []) {
+  if (!actual) return 0;
+  let value;
+  if (metric === 'quantity') {
+    const ids = productIds.length ? productIds : [...actual.productQuantities.keys()];
+    value = ids.reduce((sum, id) => sum + number(actual.productQuantities.get(id)), 0);
+  } else if (!productIds.length) {
+    value = metric === 'sales' ? actual.salesAmount : actual.grossProfit;
+  } else {
+    if (metric === 'profit' && actual.unallocatedProfit) return null;
+    value = productIds.reduce((sum, id) => sum + number(actual.productValues.get(id)?.[metric]), 0);
+  }
+  return Number(value.toFixed(2));
+}
+
+module.exports = { getMonthlyTaskAchievement, loadActuals, indicatorActual };

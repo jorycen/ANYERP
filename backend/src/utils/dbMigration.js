@@ -298,6 +298,10 @@ async function runSchemaMigrations() {
   await require('./staffAccount').ensureStaffAccountSchema(sequelize);
   await ensureProfitAdjustmentCorrectionSchema();
   await ensureInventoryFoundationSchema();
+  const indicatorModels = require('../models');
+  await indicatorModels.MonthlyIndicator.sync();
+  await indicatorModels.MonthlyIndicatorAssignment.sync();
+  await indicatorModels.MonthlyIndicatorEvidence.sync();
   await ensureExpenseRemarkSchema();
   await ensureExpenseRecipientSchema();
   await ensureExpenseAmortizationSchema();

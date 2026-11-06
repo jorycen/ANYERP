@@ -2854,7 +2854,45 @@ const InventoryFoundationRef = sequelize.define('InventoryFoundationRef', {
 }, { tableName: 'T_INVENTORY_FOUNDATION_REF', timestamps: false,
   indexes: [{ fields: ['basis_id'] }, { fields: ['store_id'] }] });
 
+
+const MonthlyIndicator = sequelize.define('MonthlyIndicator', {
+  indicator_id: { type: DataTypes.STRING(36), primaryKey: true },
+  month_key: { type: DataTypes.STRING(7), allowNull: false },
+  store_id: { type: DataTypes.STRING(32), allowNull: false },
+  source: { type: DataTypes.STRING(16), allowNull: false },
+  name: { type: DataTypes.STRING(128), allowNull: false },
+  role_code: { type: DataTypes.STRING(32), allowNull: false },
+  metric: { type: DataTypes.STRING(16), allowNull: false },
+  target: { type: DataTypes.DECIMAL(16, 2), allowNull: false },
+  product_ids: { type: DataTypes.JSON, allowNull: false },
+  requirements: { type: DataTypes.STRING(1000), allowNull: false },
+  status: { type: DataTypes.TINYINT, defaultValue: 1 },
+  created_by: { type: DataTypes.BIGINT, allowNull: false }
+}, { tableName: 'T_MONTHLY_INDICATOR', timestamps: false, indexes: [{ fields: ['month_key', 'store_id'] }] });
+
+const MonthlyIndicatorAssignment = sequelize.define('MonthlyIndicatorAssignment', {
+  assignment_id: { type: DataTypes.STRING(36), primaryKey: true },
+  indicator_id: { type: DataTypes.STRING(36), allowNull: false },
+  staff_id: { type: DataTypes.BIGINT, allowNull: false },
+  target: { type: DataTypes.DECIMAL(16, 2), allowNull: false }
+}, { tableName: 'T_MONTHLY_INDICATOR_ASSIGNMENT', timestamps: false,
+  indexes: [{ unique: true, fields: ['indicator_id', 'staff_id'] }, { fields: ['staff_id'] }] });
+
+const MonthlyIndicatorEvidence = sequelize.define('MonthlyIndicatorEvidence', {
+  evidence_id: { type: DataTypes.STRING(36), primaryKey: true },
+  assignment_id: { type: DataTypes.STRING(36), allowNull: false },
+  instance_id: { type: DataTypes.STRING(36) },
+  applicant_staff_id: { type: DataTypes.BIGINT, allowNull: false },
+  supervisor_staff_id: { type: DataTypes.BIGINT, allowNull: false },
+  original_name: { type: DataTypes.STRING(255), allowNull: false },
+  mime_type: { type: DataTypes.STRING(120), allowNull: false },
+  attachment: { type: DataTypes.BLOB('medium'), allowNull: false },
+  create_time: { type: DataTypes.DATE, defaultValue: DataTypes.NOW }
+}, { tableName: 'T_MONTHLY_INDICATOR_EVIDENCE', timestamps: false,
+  indexes: [{ fields: ['assignment_id'] }, { unique: true, fields: ['instance_id'] }] });
+
 module.exports = {
+  MonthlyIndicator, MonthlyIndicatorAssignment, MonthlyIndicatorEvidence,
   InventoryFoundation,
   InventoryFoundationRef,
   sequelize,

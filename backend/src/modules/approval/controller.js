@@ -599,6 +599,7 @@ async function submitInstance(ctx) {
   if (['storeId', 'distributorId', 'initialNodeIndex'].some(key => input[key] !== undefined)) ctx.throw(400, '审批归属和起始节点由业务单据确定，不可手动指定');
   if (input.payload?.managedBusiness || require('./businessRuntime').registry[input.businessType]) ctx.throw(400, '请从原业务单据提交审批');
   const selectedFlow = await ApprovalFlowDefinition.findOne({ where: input.flowId ? { definition_id: input.flowId } : { flow_code: input.flowCode || '' }, order: [['version', 'DESC']] });
+  if (selectedFlow?.business_type === 'monthly_indicator_evidence') ctx.throw(400, '请从日常工作台提交证明');
   if (selectedFlow && require('./businessRuntime').registry[selectedFlow.business_type]) ctx.throw(400, '请从原业务单据提交审批');
   try {
     const row = await createInstance(ctx.request.body || {}, ctx.state.user);

@@ -412,6 +412,7 @@ async function resubmitInstance(instanceId, input, actor) {
   return sequelize.transaction(async transaction => {
     const instance = await ApprovalFlowInstance.findByPk(instanceId, { transaction, lock: transaction.LOCK.UPDATE });
     if (!instance) throw new Error('审批实例不存在');
+    if (instance.business_type === 'monthly_indicator_evidence') throw new Error('请从日常工作台重新上传证明');
     if (parseJson(instance.payload_json, {}).managedBusiness) throw new Error('请从原业务单据修改并重新提交');
     if (!canReadApprovalStore(actor, instance.store_id, instance.business_type, instance.distributor_id)) throw new Error('无权访问该门店的审批记录');
     if (Number(instance.applicant_staff_id) !== Number(actor.staffId)) throw new Error('只有申请人可以重新提交');

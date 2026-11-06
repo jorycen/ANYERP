@@ -4,7 +4,7 @@
       <template #header>
         <div class="page-header">
           <span>月度任务</span>
-          <el-button type="primary" @click="openCreate">新增任务</el-button>
+          <div><el-button @click="indicatorConfig = true">指标配置</el-button><el-button type="primary" @click="openCreate">新增任务</el-button></div>
         </div>
       </template>
 
@@ -36,6 +36,8 @@
         </el-table-column>
       </el-table>
     </el-card>
+
+    <MonthlyIndicatorConfig v-model="indicatorConfig" :month-key="monthKey" :current-month="currentMonthKey" :products="options.products" />
 
     <el-dialog v-model="dialogVisible" :title="editing ? '编辑月度任务' : '新增月度任务'" width="920px">
       <el-form label-width="110px">
@@ -93,6 +95,8 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
+import MonthlyIndicatorConfig from '../components/MonthlyIndicatorConfig.vue'
+const indicatorConfig = ref(false)
 
 const monthKey = ref(new Date().toISOString().slice(0, 7))
 const currentMonthKey = new Date().toISOString().slice(0, 7)

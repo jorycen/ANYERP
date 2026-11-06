@@ -94,6 +94,14 @@ router.get('/orders/:orderId/care-credit', staffCareCredit.getOrderCareCredit);
 router.post('/orders/:orderId/care-credit', staffCareCredit.reserveOrderCareCredit);
 router.post('/orders/:orderId/care-credit/cancel', staffCareCredit.cancelOrderCareCredit);
 router.get('/auxiliary-staff', auxiliaryStaff);
+const indicators = require('./monthlyIndicators');
+const indicatorUpload = require('@koa/multer')({ limits: { files: 1, fileSize: 5 * 1024 * 1024 } });
+router.get('/monthly-indicators', indicators.setup);
+router.post('/monthly-indicators', indicators.create);
+router.put('/monthly-indicators/:indicatorId', indicators.update);
+router.post('/monthly-indicator-assignments/:assignmentId/evidence', indicatorUpload.single('file'), indicators.submit);
+router.get('/monthly-indicator-evidence/:evidenceId', indicators.download);
+
 router.get('/monthly-tasks/options', getMonthlyTaskOptions);
 router.get('/monthly-tasks', listMonthlyTasks);
 router.post('/monthly-tasks', requireRole('admin', 'boss', 'manager', 'store_manager', 'store_admin'), saveMonthlyTask);

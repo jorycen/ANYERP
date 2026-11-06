@@ -17,6 +17,7 @@ function role(roleCode, scope = 'subject_distributor') { return { type: 'role', 
 function defaultCatalog(fixed = new Map()) {
   const fixedRule = name => ({ type: 'fixed_user', staffId: Number(fixed.get(name) || 0) });
   return [
+    { flowCode: 'monthly_indicator_evidence', name: '管理指标证明审批', businessType: 'monthly_indicator_evidence', nodes: [or('直属上级审批', [{ type: 'direct_supervisor' }])] },
     { flowCode: 'sale_resource_reward', name: '教育补贴及销量报号审批', businessType: 'sale_resource_reward', nodes: [or('店长审批', [{ type: 'store_manager', scope: 'subject_store' }]), serial('张欢审批', [fixedRule('张欢')]), serial('邓红梅审批', [fixedRule('邓红梅')])] },
     { flowCode: 'sn_change', name: '\u0053\u004e\u4fee\u6539\u5ba1\u6279', businessType: 'sn_change', nodes: [or('\u7ecf\u9500\u5546\u603b\u8d26\u53f7\u5ba1\u6279', [role('admin'), role('boss')])] },
     { flowCode: 'expense_attribution', name: '\u62a5\u9500\u5ba1\u6279\u6d41\u7a0b', businessType: 'expense', nodes: [serial('\u5e97\u957f\u5ba1\u6279', [{ type: 'store_manager', scope: 'subject_store' }]), ...FIXED_APPROVERS.map(item => serial(`${item.name}\u5ba1\u6279`, [fixedRule(item.name)]))] },

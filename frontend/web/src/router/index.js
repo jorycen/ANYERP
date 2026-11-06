@@ -54,7 +54,7 @@ const routes = [
         path: 'sales/monthly-tasks',
         name: 'MonthlyTasks',
         component: () => import('../views/MonthlyTasks.vue'),
-        meta: { roles: ['manager', 'store_manager', 'admin', 'boss'], tab: 'monthly-tasks' }
+        meta: { roles: ['manager', 'store_manager', 'store_admin', 'distributor', 'admin', 'boss'], tab: 'monthly-tasks' }
       },
       {
         path: 'inventory/summary',

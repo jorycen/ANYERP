@@ -73,7 +73,7 @@
             <el-table-column label="操作" width="150">
               <template #default="{ row }">
                 <el-button link type="primary" @click="openInstance(row.instance_id)">详情</el-button>
-                <el-button v-if="row.status === 'rejected' && !row.payload?.managedBusiness" link type="warning" @click="resubmit(row)">重新提交</el-button>
+                <el-button v-if="row.status === 'rejected' && !row.payload?.managedBusiness && row.business_type !== 'monthly_indicator_evidence'" link type="warning" @click="resubmit(row)">重新提交</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -220,6 +220,9 @@
               </el-table>
             </div>
           </template>
+        </template>
+        <template v-else-if="currentInstance.business_type === 'monthly_indicator_evidence'">
+          <el-link type="primary" @click="downloadIndicatorEvidence(currentInstance.payload)">查看证明附件</el-link>
         </template>
         <template v-else-if="currentInstance.payload !== undefined && currentInstance.payload !== null">
           <el-divider>发起信息</el-divider>
@@ -654,6 +657,7 @@ function instanceProgressText(row) { return row.current_progress_text || statusT
 function statusText(value) { return ({ pending: '审批中', approved: '已通过', rejected: '已拒绝', cancelled: '已撤销' }[value] || value || '-') }
 function businessTypeText(value) {
   return ({
+    monthly_indicator_evidence: '管理指标证明审批',
     sn_change: 'SN修改申请',
     sales_negative_gross_profit: '销售负毛利',
     purchase: '采购审批',
@@ -1064,6 +1068,17 @@ async function openApprovalAttachment(value) {
     if (String(url).startsWith('cloud://')) { const result = await api.resolveCloudFileUrls([url]); url = result.data?.items?.[0]?.url }
     if (url) window.open(url, '_blank', 'noopener')
   } catch (error) { ElMessage.error('附件打开失败，请重试') }
+}
+async function downloadIndicatorEvidence(file) {
+  try {
+    const response = await api.downloadMonthlyIndicatorEvidence(file.indicatorEvidenceId)
+    const url = URL.createObjectURL(new Blob([response.data], { type: file.mime_type }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = file.original_name || '证明附件'
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch { ElMessage.error('附件下载失败，请重试') }
 }
 async function downloadCorrectionAttachment(file) {
   try {

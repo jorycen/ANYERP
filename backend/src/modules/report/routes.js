@@ -64,6 +64,7 @@ router.post('/financial-profit-close-preview', requireDistributorAccount(), fina
 router.post('/financial-profit-close', requireDistributorAccount(), financialProfitControl.close);
 router.post('/financial-profit-adjustments', requireDistributorAccount(), financialProfitControl.adjust);
 router.get('/monthly-task-achievement', getMonthlyTaskAchievement);
+router.get('/monthly-indicator-achievement', require('../sales/monthlyIndicators').report);
 router.get('/profit-adjustments', listProfitAdjustments);
 router.get('/profit-adjustments/correction-options', getCorrectionOptions);
 router.post('/profit-adjustments/price-preview', previewCorrection);
