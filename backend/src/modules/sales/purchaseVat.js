@@ -74,7 +74,9 @@ async function resolveDocumentTaxBasis(order, lines, transaction, originIndex = 
       const nextVisited = new Set(visited); nextVisited.add(key);
       let traceReason='退货原单缺少可核对的销售明细';
       const returned = await M.SalesReturnRequest.findOne({where:{return_no:line.pricingOrigin.sourceNo,status:'completed'},raw:true,transaction});
-      const matches = returned ? await M.SalesReturnRequestItem.findAll({where:{return_id:returned.return_id,product_id:line.productId},raw:true,transaction}) : [];
+      let matches = returned ? await M.SalesReturnRequestItem.findAll({where:{return_id:returned.return_id,product_id:line.productId},raw:true,transaction}) : [];
+      if (line.pricingOrigin.returnItemId) matches=matches.filter(x=>String(x.item_id)===String(line.pricingOrigin.returnItemId));
+      else if (line.snCode) matches=matches.filter(x=>String(x.sn_code||'').trim().toUpperCase()===String(line.snCode).trim().toUpperCase());
       const originalItem = matches.length === 1 && matches[0].order_item_id ? await M.OrderItem.findByPk(matches[0].order_item_id,{raw:true,transaction}) : null;
       const originalOrder = originalItem && returned && originalItem.order_id === returned.order_id && originalItem.product_id === line.productId
         ? await M.Order.findByPk(returned.order_id,{raw:true,transaction}) : null;
@@ -82,8 +84,14 @@ async function resolveDocumentTaxBasis(order, lines, transaction, originIndex = 
       const originalLines = typeof snapshot?.product_pricing_details === 'string' ? JSON.parse(snapshot.product_pricing_details) : snapshot?.product_pricing_details || [];
       const originals = originalLines.filter(x=>String(x.itemId)===String(originalItem?.item_id)&&x.productId===line.productId);
       if(matches.length>1 || originals.length>1)traceReason='退货商品身份不唯一，须核实原销售明细';
-      if (originalOrder && originals.length === 1) {
-        const original = {...originals[0],quantity:line.quantity};
+      if (originalOrder && originals.length <= 1) {
+        // Imported sales may have a valid exact item/foundation but no pricing
+        // snapshot. A missing snapshot must not prevent tracing that item.
+        const original = originals.length === 1 ? {...originals[0],quantity:line.quantity} : {
+          itemId:originalItem.item_id,productId:originalItem.product_id,productName:originalItem.product_name,
+          pnCode:originalItem.pn_code,snCode:originalItem.sn_code||'',snId:originalItem.sn_id||null,
+          quantity:line.quantity,purchasePrice:line.purchasePrice,supplierId:originalItem.supplier_id||''
+        };
         // October category assumptions cannot become November purchase facts.
         if (original.purchaseTaxBasis?.source === 'user_october_category_confirmation') delete original.purchaseTaxBasis;
         const foundation = (await require('../inventory/foundation').salesBasis(originalOrder,[original],transaction))[0]?.inventoryFoundation;
@@ -102,6 +110,19 @@ async function resolveDocumentTaxBasis(order, lines, transaction, originIndex = 
         if (traced.status === 'confirmed') {
           result.push({...line,purchaseTaxBasis:{...traced,purchaseAmount:money(Number(line.purchasePrice)*Number(line.quantity)),
             source:'sales_return_original_purchase',originalOrderId:originalOrder.order_id,originalItemId:original.itemId,returnNo:line.pricingOrigin.sourceNo}});
+          continue;
+        }
+      }
+      // A non-SN latest inbound is a supplier/pricing hint, not an allocation
+      // proving that this sale came from that particular returned unit. When
+      // legacy return provenance is missing, the existing unanimous live-stock
+      // rule may still prove tax for an editable sale. Never use it for archived
+      // sales, SNs, ambiguous identities, or an explicit original conflict.
+      if (!line.snCode && !/冲突|不唯一|循环/.test(traceReason)) {
+        const consensus = await require('../inventory/foundation').inventoryTaxConsensus(order,line,transaction);
+        if (consensus?.status === 'confirmed') {
+          result.push({...line,purchaseTaxBasis:{...consensus,
+            ignoredReturnHint:line.pricingOrigin.sourceNo,returnTraceReason:traceReason}});
           continue;
         }
       }
