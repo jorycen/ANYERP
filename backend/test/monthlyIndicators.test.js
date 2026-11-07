@@ -63,6 +63,10 @@ test('one configuration publishes multiple roles and independent store metric ta
 });
 
 test('published targets use the stored definition and share a store overview release', async t => {
+  t.mock.method(M.MonthlyIndicatorPlan,'findOne',async()=>null);
+  t.mock.method(M.MonthlyIndicatorPlan,'create',async()=>({}));
+  t.mock.method(M.MonthlyIndicatorPlan,'findAll',async()=>[]);
+  t.mock.method(M.CustomerSource,'findAll',async()=>[]);
   t.mock.method(M.Store, 'findAll', async () => [store, { ...store, store_id: 'B', distributor_id: 'OTHER' }]);
   t.mock.method(M.Role, 'count', async () => 1);
   t.mock.method(M.Role, 'findAll', async () => []);

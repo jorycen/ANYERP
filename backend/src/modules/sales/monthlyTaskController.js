@@ -350,6 +350,7 @@ async function saveMonthlyTask(ctx) {
   const targetType = String(body.targetType || body.target_type || '').trim();
   const targetId = String(body.targetId || body.target_id || '').trim();
   if (!validMonth(monthKey)) ctx.throw(400, '月份格式不正确');
+  if(monthKey>='2026-11')ctx.throw(409,'本月及以后毛利目标请在新版月度指标维护，旧版任务只读');
   if (monthKey < currentMonthKey()) ctx.throw(400, '历史月份任务只读，不能修改');
   if (!targetId) ctx.throw(400, '请选择任务对象');
   const parentStoreId = String(body.parentStoreId || body.parent_store_id || '').trim();
@@ -417,6 +418,7 @@ async function listMonthlyTasks(ctx) {
 async function disableMonthlyTask(ctx) {
   const task = await MonthlyTask.findOne({ where: { task_id: ctx.params.taskId, status: 1 } });
   if (!task) ctx.throw(404, '月度任务不存在');
+  if(task.month_key>='2026-11')ctx.throw(409,'本月及以后目标请在新版月度指标删除，旧版任务只读');
   if (!canAccessDistributor(ctx.state.user, task.distributor_id)) ctx.throw(403, '无权停用该经销商任务');
   if (task.month_key < currentMonthKey()) ctx.throw(400, '历史月份任务只读，不能停用');
   await assertTargetScope(ctx.state.user, task.target_type, task.target_id);

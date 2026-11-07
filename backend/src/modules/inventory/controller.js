@@ -677,8 +677,9 @@ async function getSnInventoryList(ctx) {
     replacements.productType = String(productType);
   }
 
-  const minAge = Number(minAgeDays);
-  if (minAgeDays !== '' && Number.isFinite(minAge) && minAge >= 0) {
+  const overdueOnly=String(ctx.query.overdueOnly||'')==='1';
+  const minAge = overdueOnly?require('../../utils/inventoryAgePolicy').OVERDUE_MIN_DAYS:Number(minAgeDays);
+  if ((overdueOnly||minAgeDays !== '') && Number.isFinite(minAge) && minAge >= 0) {
     where.push('COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME) IS NOT NULL AND TIMESTAMPDIFF(DAY, COALESCE(sn.ORIGINAL_INBOUND_TIME, sn.INBOUND_TIME), NOW()) >= :minAgeDays');
     replacements.minAgeDays = Math.floor(minAge);
   }

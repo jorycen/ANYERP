@@ -11,6 +11,7 @@ const key = value => String(value ?? '');
 const idsFrom = values => [...new Set(Array.isArray(values) ? values.map(value => key(value).trim()).filter(Boolean) : [])];
 const nowMonth = () => new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 7);
 const result = (ctx, data) => { ctx.body = { code: 0, data }; };
+const {groupedOverview,groupKey}=require('./monthlyIndicatorOverview');
 
 function month(ctx, value = nowMonth()) {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(value)) ctx.throw(400, '请选择有效月份');
@@ -66,20 +67,25 @@ async function saveDefinition(ctx) {
     const categoryIds = idsFrom(body.categoryIds);
     const requirements = key(body.requirements).trim();
     const kind = body.kind;
+    if(current?.config?.legacyGrossProfit&&(kind!=='operating'||categoryIds.length||idsFrom(body.metrics).join(',')!=='profit'))ctx.throw(400,'迁移的主毛利指标保持全商品毛利口径，请另建其他范围指标');
     if (!name || name.length > 128) ctx.throw(400, '请填写指标名称，最多 128 字');
     if (!roleCodes.length || roleCodes.some(code => code.length > 32) ||
         await M.Role.count({ where: { role_code: roleCodes, status: 1 }, transaction }) !== roleCodes.length) ctx.throw(400, '请选择有效的适用岗位');
     const allowed = idsFrom(body.metrics);
-    if (kind === 'operating') {
+    if (['operating','ability'].includes(kind)) {
       if (!allowed.length || allowed.some(metric => !metrics.slice(0, 3).includes(metric))) ctx.throw(400, '请选择至少一个经营考核项');
-      if (!categoryIds.length || await M.ProductCategory.count({ where: { category_id: categoryIds, status: 1 }, transaction }) !== categoryIds.length) {
+      if (kind==='operating' && !current?.config?.allProducts && (!categoryIds.length || await M.ProductCategory.count({ where: { category_id: categoryIds, status: 1 }, transaction }) !== categoryIds.length)) {
         ctx.throw(400, '请选择有效的商品分类');
       }
     } else if (kind !== 'management' || !['photo', 'text'].includes(body.checkMethod) || requirements.length > 1000) {
       ctx.throw(400, '请选择管理指标检查方式，检查要求最多 1000 字');
     }
-    const config = { kind, roleCodes, categoryIds: kind === 'operating' ? categoryIds : [],
-      metrics: kind === 'operating' ? allowed : ['management'],
+    if(kind==='ability'&&(!['overdue','special','source'].includes(body.abilityType)||
+      (body.abilityType==='source'&&!idsFrom(body.customerSources).length)))ctx.throw(400,'请选择销售能力范围及客户来源');
+    if(kind==='ability'&&body.abilityType==='source'&&await M.CustomerSource.count({where:{status:1,level:1,name:idsFrom(body.customerSources)},transaction})!==idsFrom(body.customerSources).length)ctx.throw(400,'客户来源无效，请重新选择');
+    const config = { kind, roleCodes, categoryIds: kind === 'operating' ? categoryIds : [],allProducts:!!current?.config?.allProducts,legacyGrossProfit:!!current?.config?.legacyGrossProfit,
+      abilityType:kind==='ability'?body.abilityType:null,customerSources:kind==='ability'?idsFrom(body.customerSources):[],
+      metrics: kind !== 'management' ? allowed : ['management'],
       checkMethod: kind === 'management' ? body.checkMethod : null, requirements: kind === 'management' ? requirements : '' };
     if (current) await current.update({ name, config, status: 1 }, { transaction });
     else await M.MonthlyIndicatorDefinition.create({ ...scope, definition_id: randomUUID(), name, config }, { transaction });
@@ -96,10 +102,11 @@ function indicatorOverview(indicators, assignments, stores, query) {
   const groups = new Map();
   const storesById = new Map(stores.map(store => [store.store_id, store]));
   for (const row of indicators) {
-    const kind = row.metric === 'management' ? 'management' : 'operating';
+    const kind = row.scope_config?.kind || (row.metric === 'management' ? 'management' : 'operating');
     if ((query.storeId && row.store_id !== query.storeId) || (query.source && row.source !== query.source) ||
         (query.kind && kind !== query.kind)) continue;
-    const id = row.release_id ? `${row.release_id}:${row.store_id}` : row.indicator_id;
+    if(row.status<0)continue;
+    const id = `${groupKey(row)}:${row.store_id}`;
     const store = storesById.get(row.store_id);
     const group = groups.get(id) || { id, releaseId: row.release_id, indicatorId: row.indicator_id,
       name: row.name, source: row.source, kind, storeId: row.store_id, storeName: store?.name,
@@ -132,13 +139,18 @@ async function setup(ctx) {
       attributes: ['staff_id', 'store_id', 'name', 'role_code'], raw: true }),
     ids.length ? M.Role.findAll({ where: { status: 1 }, attributes: ['role_code', 'name'], order: [['name', 'ASC']], raw: true }) : []
   ]);
-  const assignments = await M.MonthlyIndicatorAssignment.findAll({ where: { indicator_id: indicators.map(row => row.indicator_id) }, raw: true });
+  const assignments = await M.MonthlyIndicatorAssignment.findAll({ where: { indicator_id: indicators.filter(r=>r.status>=0).map(row => row.indicator_id) }, raw: true });
   const definitions = ids.length ? await M.MonthlyIndicatorDefinition.findAll({
     where: { distributor_id: [...new Set(stores.map(store => store.distributor_id))] }, order: [['name', 'ASC']], raw: true
   }) : [];
   const distributors = ids.length ? await M.Distributor.findAll({ where: { distributor_id: [...new Set(stores.map(store => store.distributor_id))] },
     attributes: ['distributor_id', 'name'], raw: true }) : [];
-  result(ctx, { stores, staff, roles, indicators, assignments, distributors, overview: indicatorOverview(indicators, assignments, stores, ctx.query),
+  const plans=await M.MonthlyIndicatorPlan.findAll({where:{month_key:monthKey},raw:true});
+  const customerSources=await M.CustomerSource.findAll({where:{status:1,level:1},attributes:['source_id','name'],raw:true});
+  const overview=indicatorOverview(indicators, assignments, stores, ctx.query);
+  let grouped=groupedOverview(overview,plans,stores,definitions,indicators);
+  grouped=grouped.filter(g=>(!ctx.query.source||g.source===ctx.query.source)&&(!ctx.query.kind||g.kind===ctx.query.kind)&&(!ctx.query.storeId||g.stores.some(s=>s.storeId===ctx.query.storeId))&&(!ctx.query.allocationStatus||g.stores.length));
+  result(ctx, { stores, staff, roles, indicators:indicators.filter(r=>r.status>=0), assignments, distributors,customerSources,plans:plans.filter(p=>definitions.some(d=>d.definition_id===p.definition_id&&definitionStores(d,stores).length)),overview,groupedOverview:grouped,
     definitions: definitions.map(definition => ({
       ...definition, publishStoreIds: definitionStores(definition, stores).map(store => store.store_id)
     })).filter(definition => definition.publishStoreIds.length) });
@@ -158,6 +170,23 @@ async function create(ctx) {
     const duplicate = await M.MonthlyIndicator.findOne({ where: { month_key: monthKey, definition_id: definition.definition_id,
       store_id: storeTargets.map(row => row.storeId), status: 1 }, transaction });
     if (duplicate) ctx.throw(409, '所选门店本月已有此指标，请在总览查看');
+    const published=await M.MonthlyIndicator.findAll({where:{month_key:monthKey,definition_id:definition.definition_id,status:1},transaction});
+    const sorted=values=>JSON.stringify([...(values||[])].sort());
+    if(published.some(r=>sorted(r.category_ids)!==sorted(definition.config.categoryIds)||
+      sorted(r.role_codes||[r.role_code])!==sorted(definition.config.roleCodes)||
+      (r.scope_config?.kind||(r.metric==='management'?'management':'operating'))!==definition.config.kind||
+      (r.scope_config?.abilityType||null)!==(definition.config.abilityType||null)||
+      sorted(r.scope_config?.customerSources)!==sorted(definition.config.customerSources)))ctx.throw(409,'本月指标口径已冻结，新增门店须沿用原口径，或新建指标定义');
+    const plan=await M.MonthlyIndicatorPlan.findOne({where:{definition_id:definition.definition_id,month_key:monthKey},transaction,lock:transaction.LOCK.UPDATE});
+    if(!plan||!plan.status){
+      const companyTargets={};
+      for(const metric of definition.config.metrics){
+        const fallback=storeTargets.reduce((n,p)=>n+Number(p[metric]||0),0);
+        if(body.companyTargets?.[metric]!==undefined||fallback>0)companyTargets[metric]=target(ctx,body.companyTargets?.[metric]??fallback,metric,'公司总目标');
+      }
+      if(plan)await plan.update({company_targets:companyTargets,status:1},{transaction});
+      else await M.MonthlyIndicatorPlan.create({plan_id:randomUUID(),month_key:monthKey,definition_id:definition.definition_id,company_targets:companyTargets},{transaction});
+    }
     await createTargets(ctx, { ...definition.config, monthKey, storeTargets, source: definition.source,
       name: definition.name, definitionId: definition.definition_id }, transaction, stores);
   });
@@ -176,7 +205,7 @@ async function createTargets(ctx, body, transaction, availableStores) {
   const categoryIds = bundled && body.kind === 'operating' ? idsFrom(body.categoryIds) : null;
   const checkMethod = bundled && body.kind === 'management' ? body.checkMethod : null;
   const allowedMetrics = body.definitionId ? body.metrics : bundled
-    ? body.kind === 'operating' ? metrics.slice(0, 3) : body.kind === 'management' ? ['management'] : []
+    ? ['operating','ability'].includes(body.kind) ? metrics.slice(0, 3) : body.kind === 'management' ? ['management'] : []
     : metrics.includes(body.metric) ? [body.metric] : [];
   if (monthKey < nowMonth()) ctx.throw(400, '历史月份不能新增指标，请选择当前月或之后的月份');
   if (!['company', 'store'].includes(body.source)) ctx.throw(400, '请选择指标来源');
@@ -184,13 +213,18 @@ async function createTargets(ctx, body, transaction, availableStores) {
   if (!roleCodes.length) ctx.throw(400, '请选择至少一个适用岗位');
   if (roleCodes.some(code => code.length > 32)) ctx.throw(400, '适用岗位无效，请重新选择');
   if (!allowedMetrics.length) ctx.throw(400, '请选择指标类型');
+  if(body.kind==='ability'&&!['overdue','special','source'].includes(body.abilityType))ctx.throw(400,'请选择销售能力范围');
+  if(body.kind==='ability'&&body.abilityType==='source'){
+    const selected=idsFrom(body.customerSources);
+    if(!selected.length||await M.CustomerSource.count({where:{status:1,level:1,name:selected},transaction})!==selected.length)ctx.throw(400,'请选择有效客户来源');
+  }
   if (!ids.length) ctx.throw(400, '请选择至少一家门店');
   if (ids.length !== plans.length) ctx.throw(400, '门店目标存在重复或空白门店，请重新选择');
   if (ids.length !== stores.length) ctx.throw(400, '部分门店已停用或超出授权范围，请重新选择');
   if (requirements.length > 1000) ctx.throw(400, '检查要求不能超过 1000 字');
   if (stores.some(store => !permissions(user, store)[body.source === 'company' ? 'company' : 'manager'])) ctx.throw(403, '无权在所选门店配置此指标');
   if (bundled && await M.Role.count({ where: { role_code: roleCodes, status: 1 } }) !== roleCodes.length) ctx.throw(400, '适用岗位无效');
-  if (categoryIds && (!categoryIds.length || await M.ProductCategory.count({ where: { category_id: categoryIds, status: 1 } }) !== categoryIds.length)) {
+  if (categoryIds && !body.allProducts && (!categoryIds.length || await M.ProductCategory.count({ where: { category_id: categoryIds, status: 1 } }) !== categoryIds.length)) {
     ctx.throw(400, '请选择有效的商品分类');
   }
   if (bundled && body.kind === 'management' && !['photo', 'text'].includes(checkMethod)) ctx.throw(400, '请选择检查方式');
@@ -208,6 +242,7 @@ async function createTargets(ctx, body, transaction, availableStores) {
       definition_id: body.definitionId || null, release_id: releaseId,
       name, role_code: roleCodes[0], role_codes: bundled ? roleCodes : null, metric,
       target: target(ctx, plan[metric], metric, `「${storeName}」的${labels[metric]}`), product_ids: productIds, category_ids: categoryIds,
+      scope_config:{kind:body.kind|| (metric==='management'?'management':'operating'),abilityType:body.abilityType||null,customerSources:idsFrom(body.customerSources)},
       check_method: checkMethod, requirements, created_by: user.staffId
     }));
   });
@@ -221,10 +256,43 @@ async function update(ctx) {
   const body = ctx.request.body || {};
   await M.sequelize.transaction(async transaction => {
     const row = await M.MonthlyIndicator.findByPk(ctx.params.indicatorId, { transaction, lock: transaction.LOCK.UPDATE });
-    if (!row || row.month_key < nowMonth() || !row.status) ctx.throw(409, '指标不存在或已停用');
+    if (!row || row.month_key < nowMonth() || (row.status<0&&body.deleteScope!=='indicator'&&!body.companyTargets)) ctx.throw(409, '指标不存在或已删除');
+    if(row.status<0&&!await M.MonthlyIndicatorPlan.findOne({where:{definition_id:row.definition_id,month_key:row.month_key,status:1},transaction}))ctx.throw(409,'指标已删除');
     const store = await M.Store.findByPk(row.store_id, { transaction });
     if (!store || !canAccessDistributor(user, store.distributor_id)) ctx.throw(403, '无权操作该门店');
     const access = permissions(user, store);
+    if(body.companyTargets){
+      if(!row.definition_id||!access[row.source==='company'?'company':'manager'])ctx.throw(403,'无权调整总目标');
+      const definition=await M.MonthlyIndicatorDefinition.findByPk(row.definition_id,{transaction});
+      const companyTargets={};
+      for(const metric of definition.config.metrics)if(body.companyTargets[metric]!==undefined)companyTargets[metric]=target(ctx,body.companyTargets[metric],metric,'总目标');
+      if(!Object.keys(companyTargets).length)ctx.throw(400,'请填写总目标');
+      const plan=await M.MonthlyIndicatorPlan.findOne({where:{definition_id:row.definition_id,month_key:row.month_key},transaction,lock:transaction.LOCK.UPDATE});
+      if(plan)await plan.update({company_targets:{...plan.company_targets,...companyTargets}},{transaction});
+      else await M.MonthlyIndicatorPlan.create({plan_id:randomUUID(),definition_id:row.definition_id,month_key:row.month_key,company_targets:companyTargets},{transaction});
+      return;
+    }
+    if(body.target!==undefined){
+      if(!access[row.source==='company'?'company':'manager'])ctx.throw(403,'无权调整门店目标');
+      await row.update({target:target(ctx,body.target,row.metric,'门店目标')},{transaction});return;
+    }
+    if(body.deleteScope){
+      if(!['indicator','store','metric'].includes(body.deleteScope))ctx.throw(400,'删除范围无效');
+      const required=body.deleteScope==='indicator'&&row.source==='company'?'company':row.source==='store'?'manager':null;
+      if(required?!access[required]:!access.company&&!access.manager)ctx.throw(403,'无权删除此范围');
+      const candidates=await M.MonthlyIndicator.findAll({where:{month_key:row.month_key,source:row.source,status:{[Op.gte]:0}},transaction,lock:transaction.LOCK.UPDATE});
+      const allowedStores=await storesFor(user);
+      const selected=candidates.filter(r=>groupKey(r)===groupKey(row)&&
+        (row.source!=='store'||r.store_id===row.store_id)&&
+        (body.deleteScope==='indicator'||r.store_id===row.store_id)&&
+        (body.deleteScope!=='metric'||r.metric===row.metric)&&
+        allowedStores.some(s=>s.store_id===r.store_id&&s.distributor_id===store.distributor_id));
+      for(const item of selected)await item.update({status:-1},{transaction});
+      if(body.deleteScope==='indicator'&&row.definition_id)await M.MonthlyIndicatorPlan.update({status:0},{where:{definition_id:row.definition_id,month_key:row.month_key},transaction});
+      await require('../../utils/businessActionLog').recordBusinessAction({businessType:'monthly_indicator',businessId:row.indicator_id,action:'delete_'+body.deleteScope,user,detail:{ids:selected.map(r=>r.indicator_id),preserveEvidence:true},transaction});
+      return;
+    }
+    if(row.status!==1)ctx.throw(409,'指标已停用');
     if (body.disable === true) {
       if (!access[row.source === 'company' ? 'company' : 'manager']) ctx.throw(403, '无权停用此指标');
       await row.update({ status: 0 }, { transaction });
@@ -282,7 +350,7 @@ async function submit(ctx) {
     const assignment = await M.MonthlyIndicatorAssignment.findByPk(ctx.params.assignmentId, { transaction });
     if (!assignment || key(assignment.staff_id) !== key(user.staffId)) ctx.throw(403, '只能提交自己的任务');
     const indicator = await M.MonthlyIndicator.findByPk(assignment.indicator_id, { transaction, lock: transaction.LOCK.UPDATE });
-    if (!indicator?.status || indicator.metric !== 'management' || indicator.month_key !== nowMonth()) ctx.throw(409, '该任务当前不可提交');
+    if (indicator?.status!==1 || indicator.metric !== 'management' || indicator.month_key !== nowMonth()) ctx.throw(409, '该任务当前不可提交');
     if (submissionKey && await M.MonthlyIndicatorEvidence.findByPk(id, { attributes: ['evidence_id'], transaction, lock: transaction.LOCK.UPDATE })) return;
     const textMode = indicator.check_method === 'text';
     if (textMode) {
@@ -382,7 +450,8 @@ async function report(ctx) {
       }));
     }
   }
-  const indicators = await M.MonthlyIndicator.findAll({ where: { month_key: monthKey, store_id: stores.map(store => store.store_id),
+  const indicators = await M.MonthlyIndicator.findAll({ where: { month_key: monthKey, store_id: stores.map(store => store.store_id),status:{[Op.gte]:0},
+    ...(ctx.query.definitionId?{definition_id:ctx.query.definitionId}:{}),
     ...(managed ? { metric: 'management' } : {}),
     ...(ctx.query.releaseId ? { release_id: ctx.query.releaseId } : ctx.query.indicatorId ? { indicator_id: ctx.query.indicatorId } : {}),
     ...(['company', 'store'].includes(ctx.query.source) ? { source: ctx.query.source } : {}) }, raw: true });
@@ -407,6 +476,11 @@ async function report(ctx) {
     performance.loadActuals(operatingStoreIds, start, endAt, 'archived', true),
     categoryProductScopes(own ? [] : visible)
   ]);
+  const scopedActuals=new Map();
+  for(const row of visible.filter(r=>!own&&r.scope_config?.kind==='ability')){
+    const scopeKey=JSON.stringify(row.scope_config);
+    if(!scopedActuals.has(scopeKey))scopedActuals.set(scopeKey,await performance.loadActuals(operatingStoreIds,start,endAt,'archived',true,row.scope_config));
+  }
   const rows = [];
   for (const store of stores) {
     const indicators = visible.filter(row => row.store_id === store.store_id && (!own || row.metric === 'management'));
@@ -418,7 +492,8 @@ async function report(ctx) {
         if (row.metric === 'management') return evidence.filter(ev => (item ? ev.assignment_id === item.assignment_id :
           people.some(person => person.assignment_id === ev.assignment_id)) && statusById.get(ev.instance_id) === 'approved').length;
         if (row.metric === 'profit' && !canProfit) return null;
-        const actual = item ? actuals.employeeActuals.get(`${store.store_id}:id:${item.staff_id}`) : actuals.storeActuals.get(key(store.store_id));
+        const selectedActuals=row.scope_config?.kind==='ability'?scopedActuals.get(JSON.stringify(row.scope_config)):actuals;
+        const actual = item ? selectedActuals.employeeActuals.get(`${store.store_id}:id:${item.staff_id}`) : selectedActuals.storeActuals.get(key(store.store_id));
         const categoryProducts = categoryScopes.get(row.indicator_id);
         if (categoryProducts && !categoryProducts.length) return 0;
         return performance.indicatorActual(actual, row.metric, categoryProducts ?? row.product_ids);
@@ -429,7 +504,8 @@ async function report(ctx) {
         const mine = item && key(item.staff_id) === key(user.staffId);
         const submissions = item ? evidence.filter(ev => ev.assignment_id === item.assignment_id) :
           evidence.filter(ev => people.some(person => person.assignment_id === ev.assignment_id));
-        return { id: item?.assignment_id || row.indicator_id, name: row.name, metric: row.metric, source: row.source,
+        const scopeLabel=row.scope_config?.abilityType==='overdue'?`超龄库存（至少${require('../../utils/inventoryAgePolicy').OVERDUE_MIN_DAYS}天）`:row.scope_config?.abilityType==='special'?'销售时采用SN特价':row.scope_config?.abilityType==='source'?(row.scope_config.customerSources||[]).join('、'):row.category_ids?.length?'指定商品分类及下级':'全部商品';
+        return { id: item?.assignment_id || row.indicator_id, name: row.name, metric: row.metric, source: row.source,kind:row.scope_config?.kind||(row.metric==='management'?'management':'operating'),scopeLabel:row.metric==='management'?'管理次数':scopeLabel,
           store: store.name, employee: item ? staffNames.get(key(item.staff_id)) : '', requirements: row.requirements,
           checkMethod: row.check_method || 'attachment',
           target: showGoal ? Number(goal) : null, actual, rate: actual === null ? null : Number((actual / Number(goal) * 100).toFixed(2)),
@@ -452,9 +528,10 @@ async function report(ctx) {
   if (ctx.query.format === 'xlsx') {
     const { sendExcel } = require('../../utils/excelExport');
     const labels = { sales: '销售额', profit: '销售毛利', quantity: '销售数量', management: '管理次数' };
-    const headers = ['门店', '员工', '指标', '来源', '类型', '目标', '已分解', '实际', '达成率百分比', '待审次数'];
+    const headers = ['门店', '员工', '指标', '来源', '指标类型', '考核范围', '类型', '目标', '已分解', '实际', '达成率百分比', '待审次数'];
     return sendExcel(ctx, rows.map(row => ({
       门店: row.store, 员工: row.employee, 指标: row.name, 来源: row.source === 'company' ? '公司下发' : '门店自建',
+      指标类型:row.kind==='ability'?'销售能力指标':row.kind==='management'?'管理指标':'经营指标',考核范围:row.scopeLabel,
       类型: labels[row.metric], 目标: row.target, 已分解: row.allocated,
       实际: row.actualStatus === 'pending' ? '待核算' : row.actual, 达成率百分比: row.rate,
       待审次数: row.metric === 'management' ? row.pendingCount : null

@@ -2880,11 +2880,21 @@ const MonthlyIndicator = sequelize.define('MonthlyIndicator', {
   target: { type: DataTypes.DECIMAL(16, 2), allowNull: false },
   product_ids: { type: DataTypes.JSON, allowNull: false },
   category_ids: { type: DataTypes.JSON },
+  scope_config: { type: DataTypes.JSON },
   check_method: { type: DataTypes.STRING(16) },
   requirements: { type: DataTypes.STRING(1000), allowNull: false },
   status: { type: DataTypes.TINYINT, defaultValue: 1 },
   created_by: { type: DataTypes.BIGINT, allowNull: false }
 }, { tableName: 'T_MONTHLY_INDICATOR', timestamps: false, indexes: [{ name: 'idx_mi_month_store', fields: ['month_key', 'store_id'] }] });
+
+const MonthlyIndicatorPlan = sequelize.define('MonthlyIndicatorPlan', {
+  plan_id: { type: DataTypes.STRING(36), primaryKey: true },
+  month_key: { type: DataTypes.STRING(7), allowNull: false },
+  definition_id: { type: DataTypes.STRING(36), allowNull: false },
+  company_targets: { type: DataTypes.JSON, allowNull: false },
+  status: { type: DataTypes.TINYINT, defaultValue: 1 }
+}, { tableName: 'T_MONTHLY_INDICATOR_PLAN', timestamps: false,
+  indexes: [{ name: 'idx_mip_month_definition', unique: true, fields: ['month_key', 'definition_id'] }] });
 
 const MonthlyIndicatorAssignment = sequelize.define('MonthlyIndicatorAssignment', {
   assignment_id: { type: DataTypes.STRING(36), primaryKey: true },
@@ -2915,7 +2925,7 @@ const MonthlyIndicatorEvidence = sequelize.define('MonthlyIndicatorEvidence', {
   ] });
 
 module.exports = {
-  MonthlyIndicatorDefinition, MonthlyIndicator, MonthlyIndicatorAssignment, MonthlyIndicatorEvidence,
+  MonthlyIndicatorPlan, MonthlyIndicatorDefinition, MonthlyIndicator, MonthlyIndicatorAssignment, MonthlyIndicatorEvidence,
   InventoryFoundation,
   InventoryFoundationRef,
   sequelize,

@@ -102,7 +102,8 @@ function employeeKey(staffId, name) {
   return staffId ? `id:${staffId}` : `name:${String(name || '').trim()}`;
 }
 
-async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', staffByStore = false) {
+async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', staffByStore = false, abilityScope = null) {
+  const partialScope=!!abilityScope&&abilityScope.abilityType!=='source';
   if (!storeIds.length) return { storeActuals: new Map(), employeeActuals: new Map() };
   const staffKey = (storeId, staffId, name) => staffByStore
     ? `${storeId}:${employeeKey(staffId, name)}` : employeeKey(staffId, name);
@@ -127,12 +128,16 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', 
            o.AUXILIARY_SALES_LIST AS auxiliarySalesList,
            o.TOTAL_AMOUNT AS orderTotalAmount,
            oi.PRODUCT_ID AS productId,
+           oi.ITEM_ID AS itemId, oi.SN_CODE AS snCode, o.CUSTOMER_SOURCE AS customerSource,
+           TIMESTAMPDIFF(DAY,COALESCE(ps.ORIGINAL_INBOUND_TIME,ps.INBOUND_TIME),o.CREATE_TIME) AS saleAgeDays,
+           gp.PRODUCT_PRICING_DETAILS AS pricingDetails,
            oi.PRODUCT_NAME AS productName,
            oi.QUANTITY AS quantity,
            (${orderItemSalesAmountSql()}) AS salesAmount,
            (CASE WHEN gp.ORDER_ID IS NOT NULL THEN gp.GROSS_PROFIT_AMOUNT * CASE WHEN COALESCE(oit.ITEM_SUBTOTAL, 0) <> 0 THEN COALESCE(oi.SUBTOTAL, 0) / oit.ITEM_SUBTOTAL ELSE 1 / GREATEST(oit.ITEM_COUNT, 1) END ELSE COALESCE(oi.SALES_GROSS_PROFIT, 0) END) AS itemGrossProfit
       FROM T_ORDER o
       INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+      LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID=oi.SN_ID
       ${orderItemTotalsJoin()}
       LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
      WHERE o.IS_DELETED = 0
@@ -146,7 +151,26 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', 
   const storeActuals = new Map();
   const employeeActuals = new Map();
   const orders = new Map();
+  const matches=row=>require('./monthlyIndicatorScope').matchesAbilityRow(row,abilityScope);
+  const orderScopeCache=new Map();
+  const remember=rows=>{for(const row of rows){const id=String(row.orderId);orderScopeCache.set(id,(orderScopeCache.get(id)||false)||matches(row)!==false);}};
+  if(abilityScope)remember(orderRows);
+  const primeOrderScopes=async rows=>{
+    if(!abilityScope)return;
+    const orderIds=[...new Set(rows.map(r=>String(r.orderId)).filter(id=>!orderScopeCache.has(id)))];
+    if(!orderIds.length)return;
+    const originals=await sequelize.query(`SELECT o.ORDER_ID AS orderId, o.CUSTOMER_SOURCE AS customerSource,
+      oi.ITEM_ID AS itemId,oi.SN_CODE AS snCode,gp.PRODUCT_PRICING_DETAILS AS pricingDetails,
+      TIMESTAMPDIFF(DAY,COALESCE(ps.ORIGINAL_INBOUND_TIME,ps.INBOUND_TIME),o.CREATE_TIME) AS saleAgeDays
+      FROM T_ORDER o JOIN T_ORDER_ITEM oi ON oi.ORDER_ID=o.ORDER_ID
+      LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID=oi.SN_ID
+      LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID=o.ORDER_ID
+      WHERE o.ORDER_ID IN (:orderIds)`,{replacements:{orderIds},type:QueryTypes.SELECT});
+    remember(originals);
+  };
   for (const row of orderRows) {
+    const match=matches(row);if(match===false)continue;
+    if(match===null){row.scopeUnknown=true;row.salesAmount=0;row.itemGrossProfit=0;row.quantity=0;}
     const order = orders.get(String(row.orderId)) || { ...row, create_staff_id: row.createStaffId, create_user: row.createUser, auxiliary_sales_list: row.auxiliarySalesList, items: [] };
     order.items.push(row);
     orders.set(String(row.orderId), order);
@@ -155,11 +179,13 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', 
     const participants = normalizeParticipants(order);
     const participantCount = participants.length || 1;
     const storeActual = storeActuals.get(String(order.storeId)) || createActual();
+    storeActual.scopeUnknown ||= order.items.some(x=>x.scopeUnknown);
     order.items.forEach(item => addActual(storeActual, item.salesAmount, item.itemGrossProfit, item.productId, item.quantity));
     storeActuals.set(String(order.storeId), storeActual);
     participants.forEach(participant => {
       const key = staffKey(order.storeId, participant.staffId, participant.name);
       const actual = employeeActuals.get(key) || { ...createActual(), staffId: participant.staffId, employeeName: participant.name, storeIds: new Set() };
+      actual.scopeUnknown ||= order.items.some(x=>x.scopeUnknown);
       actual.storeIds.add(String(order.storeId));
       order.items.forEach(item => addActual(actual, number(item.salesAmount) / participantCount, number(item.itemGrossProfit) / participantCount, item.productId, number(item.quantity) / participantCount));
       employeeActuals.set(key, actual);
@@ -178,7 +204,9 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', 
        AND (CASE WHEN pa.ADJUSTMENT_NO LIKE 'AUTO-CARE-RET-%' OR pa.ADJUSTMENT_NO LIKE 'EDUR-%' OR pa.ADJUSTMENT_NO LIKE 'INVOICE-PERIOD-%' THEN pa.CREATE_TIME ELSE o.CREATE_TIME END) >= :startAt
        AND (CASE WHEN pa.ADJUSTMENT_NO LIKE 'AUTO-CARE-RET-%' OR pa.ADJUSTMENT_NO LIKE 'EDUR-%' OR pa.ADJUSTMENT_NO LIKE 'INVOICE-PERIOD-%' THEN pa.CREATE_TIME ELSE o.CREATE_TIME END) < :endAt
      GROUP BY pa.ORDER_ID, o.STORE_ID, o.CREATE_STAFF_ID, o.CREATE_USER, o.AUXILIARY_SALES_LIST`, { replacements, type: QueryTypes.SELECT });
+  await primeOrderScopes(adjustmentRows);
   for (const row of adjustmentRows) {
+    if(abilityScope&&orderScopeCache.get(String(row.orderId))===false)continue;
     const storeActual = storeActuals.get(String(row.storeId)) || createActual();
     storeActual.grossProfit += number(row.signedAmount);
     storeActual.unallocatedProfit ||= !!number(row.signedAmount);
@@ -202,21 +230,32 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', 
            o.CREATE_USER AS createUser,
            o.AUXILIARY_SALES_LIST AS auxiliarySalesList,
            sri.PRODUCT_ID AS productId,
+           oi.ITEM_ID AS itemId, oi.SN_CODE AS snCode, o.CUSTOMER_SOURCE AS customerSource,
+           CASE WHEN oi.ITEM_ID IS NULL THEN 1 ELSE 0 END AS scopeIdentityMissing,
+           TIMESTAMPDIFF(DAY,COALESCE(ps.ORIGINAL_INBOUND_TIME,ps.INBOUND_TIME),o.CREATE_TIME) AS saleAgeDays,
+           gp.PRODUCT_PRICING_DETAILS AS pricingDetails,
            sri.QUANTITY AS quantity,
            sri.USER_RECEIVABLE_AMOUNT AS salesAmount
       FROM T_SALES_RETURN_SETTLEMENT srs
       INNER JOIN T_SALES_RETURN_SETTLEMENT_ITEM sri ON sri.SETTLEMENT_ID = srs.SETTLEMENT_ID
       LEFT JOIN T_ORDER o ON o.ORDER_ID = srs.ORDER_ID
+      LEFT JOIN T_ORDER_ITEM oi ON oi.ITEM_ID=sri.ORDER_ITEM_ID AND oi.ORDER_ID=o.ORDER_ID
+      LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID=oi.SN_ID
+      LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID=o.ORDER_ID
      WHERE srs.STORE_ID IN (:storeIds)
        AND COALESCE(TRIM(o.CUSTOMER_SOURCE), '') NOT LIKE :internalTransferSource
        AND srs.CREATE_TIME >= :startAt
        AND srs.CREATE_TIME < :endAt`, { replacements, type: QueryTypes.SELECT });
   for (const row of returnItems) {
+    if(abilityScope&&matches(row)===false)continue;
     const storeActual = storeActuals.get(String(row.storeId)) || createActual();
+    storeActual.scopeUnknown ||= !!abilityScope&&matches(row)===null;
+    storeActual.unallocatedProfit ||= partialScope&&!!number(row.salesAmount);
     // Dashboard sales ranking takes returned sales from the return GP ledger;
     // settlement items remain the source for returned product quantities only.
     addActual(storeActual, 0, 0, row.productId, row.quantity);
     addProductReturnSales(storeActual, row.productId, row.salesAmount);
+    if(partialScope)storeActual.salesAmount-=Math.abs(number(row.salesAmount));
     storeActuals.set(String(row.storeId), storeActual);
     const order = orders.get(String(row.orderId)) || {
       create_staff_id: row.createStaffId,
@@ -228,15 +267,18 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', 
     participants.forEach(participant => {
       const key = staffKey(row.storeId, participant.staffId, participant.name);
       const actual = employeeActuals.get(key) || { ...createActual(), staffId: participant.staffId, employeeName: participant.name, storeIds: new Set() };
+      actual.scopeUnknown ||= !!abilityScope&&matches(row)===null;
+      actual.unallocatedProfit ||= partialScope&&!!number(row.salesAmount);
       actual.storeIds.add(String(row.storeId));
       addProductQuantity(actual, row.productId, number(row.quantity) / count);
       addProductReturnSales(actual, row.productId, number(row.salesAmount) / count);
+      if(partialScope)actual.salesAmount-=Math.abs(number(row.salesAmount))/count;
       employeeActuals.set(key, actual);
     });
   }
 
   const returnLedgerRows = await sequelize.query(`
-    SELECT return_gp.STORE_ID AS storeId,
+    SELECT return_gp.ORDER_ID AS orderId, return_gp.STORE_ID AS storeId,
            return_gp.STAFF_ID AS staffId,
            return_gp.EMPLOYEE_NAME AS employeeName,
            return_gp.RETURNED_SALES_AMOUNT AS salesAmount,
@@ -247,20 +289,23 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', 
        AND COALESCE(TRIM(o.CUSTOMER_SOURCE), '') NOT LIKE :internalTransferSource
        AND return_gp.CREATE_TIME >= :startAt
        AND return_gp.CREATE_TIME < :endAt`, { replacements, type: QueryTypes.SELECT });
+  await primeOrderScopes(returnLedgerRows);
   for (const row of returnLedgerRows) {
+    if(abilityScope&&orderScopeCache.get(String(row.orderId))===false)continue;
     const key = staffKey(row.storeId, row.staffId, row.employeeName);
     const actual = employeeActuals.get(key) || { ...createActual(), staffId: row.staffId ? String(row.staffId) : null, employeeName: row.employeeName || '', storeIds: new Set() };
     actual.storeIds.add(String(row.storeId));
-    actual.salesAmount += number(row.salesAmount);
+    if(!partialScope)actual.salesAmount += number(row.salesAmount);
     actual.grossProfit += number(row.grossProfitAmount);
     actual.unallocatedProfit ||= !!number(row.grossProfitAmount);
     employeeActuals.set(key, actual);
     const storeActual = storeActuals.get(String(row.storeId)) || createActual();
-    storeActual.salesAmount += number(row.salesAmount);
+    if(!partialScope)storeActual.salesAmount += number(row.salesAmount);
     storeActual.grossProfit += number(row.grossProfitAmount);
     storeActual.unallocatedProfit ||= !!number(row.grossProfitAmount);
     storeActuals.set(String(row.storeId), storeActual);
   }
+  if(abilityScope)for(const actual of [...storeActuals.values(),...employeeActuals.values()])actual.abilityScoped=partialScope;
   return { storeActuals, employeeActuals };
 }
 
@@ -374,6 +419,7 @@ async function getMonthlyTaskAchievement(ctx) {
       ? StaffDistributorPermission.findAll({ where: { distributor_id: 'DIST003' }, attributes: ['staff_id'], raw: true })
       : Promise.resolve([])
   ]);
+  await require('../sales/monthlyProfitTargets').overlayMigratedProfit(tasks,allocations,monthKey,storeIds);
   const storeMap = new Map(stores.map(row => [String(row.store_id), row]));
   const regionIds = [...new Set(stores.map(row => String(row.region_id || '')).filter(Boolean))];
   const regions = regionIds.length
@@ -424,7 +470,7 @@ async function getMonthlyTaskAchievement(ctx) {
     const store = storeMap.get(String(task.target_id)) || {};
     const region = regionMap.get(String(store.region_id || '')) || {};
     return Object.assign(buildAchievement({
-    task,
+    task: taskMap.get(String(task.task_id)),
     actual: actuals.storeActuals.get(String(task.target_id)) || createActual(),
     grossProfitTarget: task.gross_profit_target,
     name: store.name || task.target_id,
@@ -529,6 +575,8 @@ function addProductReturnSales(actual, productId, salesAmount) {
 }
 
 function indicatorActual(actual, metric, productIds = []) {
+  if(actual?.scopeUnknown)return null;
+  if(actual?.abilityScoped&&metric==='profit'&&actual.unallocatedProfit)return null;
   if (!actual) return 0;
   let value;
   if (metric === 'quantity') {
