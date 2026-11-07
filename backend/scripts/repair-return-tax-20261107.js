@@ -11,7 +11,7 @@ async function main(){
    const order=await M.Order.findByPk(old.order_id,{transaction:tx,lock:tx.LOCK.UPDATE});
    assert.equal(order.order_status,'未归档');
    const snapshot=await M.OrderGrossProfit.findOne({where:{order_id:order.order_id},transaction:tx,lock:tx.LOCK.UPDATE});
-   if(snapshot?.snapshot_status==='final'){await tx.rollback();continue;}
+   if(!snapshot||snapshot.snapshot_status==='final'){await tx.rollback();continue;}
    const lines=await G.buildProductPricingDetails(order.order_id,tx);
    const targets=lines.filter(l=>l.pnCode==='ANY-LX-QJTZ'&&l.inventoryFoundation?.basisId&&l.inventoryFoundation.status==='pending');
    if(!targets.length&&!lines.some(l=>l.pricingOrigin?.sourceType==='sales_return'&&l.purchaseTaxBasis?.status!=='confirmed')){await tx.rollback();continue;}
