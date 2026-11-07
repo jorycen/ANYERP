@@ -140,13 +140,15 @@ function buildChinaDateRange(startDate, endDate) {
 async function auxiliaryStaff(ctx) {
   const user = ctx.state.user || {};
   const distributorId = user.distributorId;
-  if (!distributorId) ctx.throw(403, '当前账号未绑定经销商');
+  const allowedDistributorIds = require('../../utils/distributorScope').accessibleDistributorIds(user);
+  const globalScope = allowedDistributorIds.includes('*');
+  if (!globalScope && !allowedDistributorIds.length) ctx.throw(403, '当前账号未绑定经销商');
 
   // 历史人员可能仍保留 DEFAULT 经销商，但其主门店/授权门店已经属于当前经销商。
   // 辅助销售人应按实际门店归属纳入，不能只依赖 T_STAFF.distributor_id。
   const distributorStores = await Store.findAll({
     where: {
-      distributor_id: distributorId,
+      ...(!globalScope ? { distributor_id: { [Op.in]: allowedDistributorIds } } : {}),
       is_deleted: 0,
       status: 1
     },
@@ -162,7 +164,7 @@ async function auxiliaryStaff(ctx) {
     })
     : [];
   const assignedStaffIds = [...new Set(assignedStaffRows.map(row => row.staff_id).filter(Boolean))];
-  const ownershipConditions = [{ distributor_id: distributorId }];
+  const ownershipConditions = [{ distributor_id: { [Op.in]: allowedDistributorIds } }];
   if (distributorStoreIds.length) {
     ownershipConditions.push({ store_id: { [Op.in]: distributorStoreIds } });
   }
@@ -172,7 +174,7 @@ async function auxiliaryStaff(ctx) {
 
   const rows = await Staff.findAll({
     where: { ...accountTypeWhere('business'),
-      [Op.or]: ownershipConditions,
+      ...(!globalScope ? { [Op.or]: ownershipConditions } : {}),
       is_deleted: 0,
       status: 1
     },
