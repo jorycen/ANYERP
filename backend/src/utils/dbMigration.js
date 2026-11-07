@@ -299,14 +299,17 @@ async function runSchemaMigrations() {
   await ensureProfitAdjustmentCorrectionSchema();
   await ensureInventoryFoundationSchema();
   const indicatorModels = require('../models');
+  await indicatorModels.MonthlyIndicatorDefinition.sync();
   await indicatorModels.MonthlyIndicator.sync();
   await indicatorModels.MonthlyIndicatorAssignment.sync();
   await indicatorModels.MonthlyIndicatorEvidence.sync();
   await checkAndAddColumn('T_MONTHLY_INDICATOR', 'role_codes', 'JSON NULL');
   await checkAndAddColumn('T_MONTHLY_INDICATOR', 'category_ids', 'JSON NULL');
   await checkAndAddColumn('T_MONTHLY_INDICATOR', 'check_method', 'VARCHAR(16) NULL');
+  await checkAndAddColumn('T_MONTHLY_INDICATOR', 'definition_id', 'VARCHAR(36) NULL');
+  await checkAndAddColumn('T_MONTHLY_INDICATOR', 'release_id', 'VARCHAR(36) NULL');
   await checkAndAddColumn('T_MONTHLY_INDICATOR_EVIDENCE', 'result_text', 'TEXT NULL');
-  await sequelize.query('SELECT role_codes, category_ids, check_method FROM T_MONTHLY_INDICATOR LIMIT 0');
+  await sequelize.query('SELECT role_codes, category_ids, check_method, definition_id, release_id FROM T_MONTHLY_INDICATOR LIMIT 0');
   await sequelize.query('SELECT result_text FROM T_MONTHLY_INDICATOR_EVIDENCE LIMIT 0');
   await ensureExpenseRemarkSchema();
   await ensureExpenseRecipientSchema();

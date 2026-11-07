@@ -40,6 +40,85 @@ function permissions(user, store) {
     manager: !!user.staffId && key(store.manager_staff_id) === key(user.staffId) };
 }
 
+function definitionStores(definition, stores) {
+  return stores.filter(store => key(store.distributor_id) === key(definition.distributor_id) &&
+    (definition.source === 'company' ? store.company : store.manager && key(store.store_id) === key(definition.store_id)));
+}
+
+async function saveDefinition(ctx) {
+  const user = ctx.state.user;
+  const body = ctx.request.body || {};
+  const stores = (await storesFor(user)).map(store => ({ ...store, ...permissions(user, store) }));
+  const id = ctx.params?.definitionId;
+  await M.sequelize.transaction(async transaction => {
+    const current = id ? await M.MonthlyIndicatorDefinition.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE }) : null;
+    if (id && !current) ctx.throw(404, '指标定义不存在');
+    const scope = current || { source: body.source, distributor_id: key(body.distributorId),
+      store_id: body.source === 'store' ? key(body.storeId) : null };
+    if (!['company', 'store'].includes(scope.source) || !definitionStores(scope, stores).length) ctx.throw(403, '无权维护该范围的指标定义');
+    if (body.disable === true) {
+      if (!current) ctx.throw(400, '请先保存指标定义');
+      await current.update({ status: 0 }, { transaction });
+      return;
+    }
+    const name = key(body.name).trim();
+    const roleCodes = idsFrom(body.roleCodes);
+    const categoryIds = idsFrom(body.categoryIds);
+    const requirements = key(body.requirements).trim();
+    const kind = body.kind;
+    if (!name || name.length > 128) ctx.throw(400, '请填写指标名称，最多 128 字');
+    if (!roleCodes.length || roleCodes.some(code => code.length > 32) ||
+        await M.Role.count({ where: { role_code: roleCodes, status: 1 }, transaction }) !== roleCodes.length) ctx.throw(400, '请选择有效的适用岗位');
+    const allowed = idsFrom(body.metrics);
+    if (kind === 'operating') {
+      if (!allowed.length || allowed.some(metric => !metrics.slice(0, 3).includes(metric))) ctx.throw(400, '请选择至少一个经营考核项');
+      if (!categoryIds.length || await M.ProductCategory.count({ where: { category_id: categoryIds, status: 1 }, transaction }) !== categoryIds.length) {
+        ctx.throw(400, '请选择有效的商品分类');
+      }
+    } else if (kind !== 'management' || !['photo', 'text'].includes(body.checkMethod) || requirements.length > 1000) {
+      ctx.throw(400, '请选择管理指标检查方式，检查要求最多 1000 字');
+    }
+    const config = { kind, roleCodes, categoryIds: kind === 'operating' ? categoryIds : [],
+      metrics: kind === 'operating' ? allowed : ['management'],
+      checkMethod: kind === 'management' ? body.checkMethod : null, requirements: kind === 'management' ? requirements : '' };
+    if (current) await current.update({ name, config, status: 1 }, { transaction });
+    else await M.MonthlyIndicatorDefinition.create({ ...scope, definition_id: randomUUID(), name, config }, { transaction });
+  });
+  result(ctx, {});
+}
+
+function indicatorOverview(indicators, assignments, stores, query) {
+  const byIndicator = new Map();
+  for (const assignment of assignments) {
+    if (!byIndicator.has(assignment.indicator_id)) byIndicator.set(assignment.indicator_id, []);
+    byIndicator.get(assignment.indicator_id).push(assignment);
+  }
+  const groups = new Map();
+  const storesById = new Map(stores.map(store => [store.store_id, store]));
+  for (const row of indicators) {
+    const kind = row.metric === 'management' ? 'management' : 'operating';
+    if ((query.storeId && row.store_id !== query.storeId) || (query.source && row.source !== query.source) ||
+        (query.kind && kind !== query.kind)) continue;
+    const id = row.release_id ? `${row.release_id}:${row.store_id}` : row.indicator_id;
+    const store = storesById.get(row.store_id);
+    const group = groups.get(id) || { id, releaseId: row.release_id, indicatorId: row.indicator_id,
+      name: row.name, source: row.source, kind, storeId: row.store_id, storeName: store?.name,
+      metrics: [], people: new Set(), active: false };
+    const people = byIndicator.get(row.indicator_id) || [];
+    for (const person of people) group.people.add(key(person.staff_id));
+    group.active ||= !!row.status;
+    group.metrics.push({ ...row, allocated: people.reduce((sum, person) => sum + Math.round(Number(person.target) * 100), 0) / 100,
+      assignedCount: people.length });
+    groups.set(id, group);
+  }
+  return [...groups.values()].map(({ people, ...group }) => {
+    const activeMetrics = group.metrics.filter(metric => metric.status);
+    const allocationStatus = !activeMetrics.length ? 'disabled' : activeMetrics.every(metric => metric.allocated >= Number(metric.target))
+      ? 'assigned' : activeMetrics.some(metric => metric.assignedCount) ? 'partial' : 'unassigned';
+    return { ...group, assignedPeople: people.size, allocationStatus };
+  }).filter(row => !query.allocationStatus || row.allocationStatus === query.allocationStatus);
+}
+
 async function setup(ctx) {
   const user = ctx.state.user;
   const monthKey = month(ctx, ctx.query.monthKey);
@@ -47,29 +126,56 @@ async function setup(ctx) {
     .filter(store => store.company || store.manager);
   const ids = stores.map(store => store.store_id);
   const [indicators, staff, roles] = await Promise.all([
-    M.MonthlyIndicator.findAll({ where: { month_key: monthKey, store_id: ids }, raw: true }),
+    M.MonthlyIndicator.findAll({ where: { month_key: monthKey, store_id: ids },
+      order: [['name', 'ASC'], ['store_id', 'ASC'], ['metric', 'ASC']], raw: true }),
     M.Staff.findAll({ where: { ...active, [Op.or]: [{ store_id: ids }, { staff_id: stores.map(store => store.manager_staff_id).filter(Boolean) }] },
       attributes: ['staff_id', 'store_id', 'name', 'role_code'], raw: true }),
     ids.length ? M.Role.findAll({ where: { status: 1 }, attributes: ['role_code', 'name'], order: [['name', 'ASC']], raw: true }) : []
   ]);
   const assignments = await M.MonthlyIndicatorAssignment.findAll({ where: { indicator_id: indicators.map(row => row.indicator_id) }, raw: true });
-  result(ctx, { stores, staff, roles, indicators, assignments });
+  const definitions = ids.length ? await M.MonthlyIndicatorDefinition.findAll({
+    where: { distributor_id: [...new Set(stores.map(store => store.distributor_id))] }, order: [['name', 'ASC']], raw: true
+  }) : [];
+  const distributors = ids.length ? await M.Distributor.findAll({ where: { distributor_id: [...new Set(stores.map(store => store.distributor_id))] },
+    attributes: ['distributor_id', 'name'], raw: true }) : [];
+  result(ctx, { stores, staff, roles, indicators, assignments, distributors, overview: indicatorOverview(indicators, assignments, stores, ctx.query),
+    definitions: definitions.map(definition => ({
+      ...definition, publishStoreIds: definitionStores(definition, stores).map(store => store.store_id)
+    })).filter(definition => definition.publishStoreIds.length) });
 }
 
 async function create(ctx) {
-  const user = ctx.state.user;
   const body = ctx.request.body || {};
+  if (!body.definitionId) return createTargets(ctx, body);
+  await M.sequelize.transaction(async transaction => {
+    const definition = await M.MonthlyIndicatorDefinition.findByPk(body.definitionId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!definition?.status) ctx.throw(404, '指标定义不存在或已停用');
+    const stores = (await storesFor(ctx.state.user)).map(store => ({ ...store, ...permissions(ctx.state.user, store) }));
+    const allowedStores = new Set(definitionStores(definition, stores).map(store => key(store.store_id)));
+    const storeTargets = Array.isArray(body.storeTargets) ? body.storeTargets : [];
+    if (!storeTargets.length || storeTargets.some(row => !allowedStores.has(key(row?.storeId)))) ctx.throw(403, '请选择指标允许下发的门店');
+    const monthKey = month(ctx, body.monthKey);
+    const duplicate = await M.MonthlyIndicator.findOne({ where: { month_key: monthKey, definition_id: definition.definition_id,
+      store_id: storeTargets.map(row => row.storeId), status: 1 }, transaction });
+    if (duplicate) ctx.throw(409, '所选门店本月已有此指标，请在总览查看');
+    await createTargets(ctx, { ...definition.config, monthKey, storeTargets, source: definition.source,
+      name: definition.name, definitionId: definition.definition_id }, transaction, stores);
+  });
+}
+
+async function createTargets(ctx, body, transaction, availableStores) {
+  const user = ctx.state.user;
   const monthKey = month(ctx, body.monthKey);
   const bundled = Array.isArray(body.storeTargets);
   const plans = bundled ? body.storeTargets : idsFrom(body.storeIds).map(storeId => ({ storeId, [body.metric]: body.target }));
   const ids = idsFrom(plans.map(plan => plan?.storeId));
-  const stores = (await storesFor(user)).filter(store => ids.includes(key(store.store_id)));
+  const stores = (availableStores || await storesFor(user)).filter(store => ids.includes(key(store.store_id)));
   const name = key(body.name).trim();
   const requirements = key(body.requirements).trim();
   const roleCodes = idsFrom(bundled ? body.roleCodes : [body.roleCode]);
   const categoryIds = bundled && body.kind === 'operating' ? idsFrom(body.categoryIds) : null;
   const checkMethod = bundled && body.kind === 'management' ? body.checkMethod : null;
-  const allowedMetrics = bundled
+  const allowedMetrics = body.definitionId ? body.metrics : bundled
     ? body.kind === 'operating' ? metrics.slice(0, 3) : body.kind === 'management' ? ['management'] : []
     : metrics.includes(body.metric) ? [body.metric] : [];
   if (monthKey < nowMonth()) ctx.throw(400, '历史月份不能新增指标，请选择当前月或之后的月份');
@@ -90,6 +196,7 @@ async function create(ctx) {
   if (bundled && body.kind === 'management' && !['photo', 'text'].includes(checkMethod)) ctx.throw(400, '请选择检查方式');
   const productIds = bundled || body.metric === 'management' ? [] : idsFrom(body.productIds);
   if (productIds.length && await M.Product.count({ where: { product_id: productIds } }) !== productIds.length) ctx.throw(400, '商品范围无效');
+  const releaseId = body.definitionId ? randomUUID() : null;
   const rows = plans.flatMap(plan => {
     const storeId = key(plan.storeId).trim();
     const storeName = stores.find(store => key(store.store_id) === storeId).name;
@@ -98,14 +205,14 @@ async function create(ctx) {
     const labels = { sales: '销售额目标', profit: '毛利目标', quantity: '数量目标', management: '目标次数' };
     return selected.map(metric => ({
       indicator_id: randomUUID(), month_key: monthKey, store_id: storeId, source: body.source,
+      definition_id: body.definitionId || null, release_id: releaseId,
       name, role_code: roleCodes[0], role_codes: bundled ? roleCodes : null, metric,
       target: target(ctx, plan[metric], metric, `「${storeName}」的${labels[metric]}`), product_ids: productIds, category_ids: categoryIds,
       check_method: checkMethod, requirements, created_by: user.staffId
     }));
   });
-  await M.sequelize.transaction(async transaction => {
-    await M.MonthlyIndicator.bulkCreate(rows, { transaction });
-  });
+  if (transaction) await M.MonthlyIndicator.bulkCreate(rows, { transaction });
+  else await M.sequelize.transaction(tx => M.MonthlyIndicator.bulkCreate(rows, { transaction: tx }));
   result(ctx, {});
 }
 
@@ -251,8 +358,33 @@ async function report(ctx) {
   const user = ctx.state.user;
   const monthKey = month(ctx, ctx.query.monthKey);
   const own = ctx.query.view === 'mine';
-  const stores = (await storesFor(user)).filter(store => !ctx.query.storeId || key(store.store_id) === key(ctx.query.storeId));
+  const managed = ctx.query.view === 'managed';
+  const stores = (await storesFor(user)).filter(store =>
+    (!ctx.query.storeId || key(store.store_id) === key(ctx.query.storeId)) && (!managed || permissions(user, store).manager));
+  if (managed) {
+    if (!ctx.query.storeId || !ctx.query.staffId) ctx.throw(400, '请选择门店和员工');
+    if (!stores.length) ctx.throw(403, '仅正式店长可以查看所负责门店的员工达成');
+    const member = await M.Staff.findOne({ where: { ...active, staff_id: ctx.query.staffId, store_id: stores[0].store_id,
+      distributor_id: stores[0].distributor_id }, attributes: ['staff_id'], raw: true });
+    if (!member) ctx.throw(403, '只能查看本店在职员工');
+  }
+  let team = [];
+  if (own && ctx.query.includeTeam === '1') {
+    const managedStores = stores.filter(store => permissions(user, store).manager);
+    if (managedStores.length) {
+      const staff = await M.Staff.findAll({ where: { ...active, store_id: managedStores.map(store => store.store_id),
+        staff_id: { [Op.ne]: user.staffId } }, attributes: ['staff_id', 'store_id', 'distributor_id', 'name'],
+      order: [['name', 'ASC'], ['staff_id', 'ASC']], raw: true });
+      team = managedStores.map(store => ({
+        id: store.store_id, name: store.name,
+        employees: staff.filter(person => key(person.store_id) === key(store.store_id) && key(person.distributor_id) === key(store.distributor_id))
+          .map(person => ({ id: key(person.staff_id), name: person.name }))
+      }));
+    }
+  }
   const indicators = await M.MonthlyIndicator.findAll({ where: { month_key: monthKey, store_id: stores.map(store => store.store_id),
+    ...(managed ? { metric: 'management' } : {}),
+    ...(ctx.query.releaseId ? { release_id: ctx.query.releaseId } : ctx.query.indicatorId ? { indicator_id: ctx.query.indicatorId } : {}),
     ...(['company', 'store'].includes(ctx.query.source) ? { source: ctx.query.source } : {}) }, raw: true });
   const assignments = await M.MonthlyIndicatorAssignment.findAll({ where: { indicator_id: indicators.map(row => row.indicator_id) }, raw: true });
   const visible = indicators.filter(row => assignments.some(item => item.indicator_id === row.indicator_id && key(item.staff_id) === key(user.staffId)) ||
@@ -304,7 +436,7 @@ async function report(ctx) {
           actualStatus: !showGoal ? 'hidden' : actual === null ? 'pending' : 'available',
           allocated: item || !showGoal ? null : people.reduce((sum, person) => sum + Number(person.target), 0),
           pendingCount: submissions.filter(ev => statusById.get(ev.instance_id) === 'pending').length,
-          active: !!row.status, canSubmit: !!mine && !!row.status && row.metric === 'management' && monthKey === nowMonth(),
+          active: !!row.status, canSubmit: !managed && !!mine && !!row.status && row.metric === 'management' && monthKey === nowMonth(),
           submissions: item && own ? submissions.map(ev => ({
             id: ev.evidence_id, name: ev.original_name, mimeType: ev.mime_type, resultText: ev.result_text,
             status: statusById.get(ev.instance_id), createdAt: ev.create_time
@@ -328,7 +460,7 @@ async function report(ctx) {
       待审次数: row.metric === 'management' ? row.pendingCount : null
     })), headers, `月度指标达成_${monthKey}.xlsx`, '业务达成');
   }
-  result(ctx, { rows });
+  result(ctx, own && ctx.query.includeTeam === '1' ? { rows, team } : { rows });
 }
 
-module.exports = { setup, create, update, report, submit, download };
+module.exports = { setup, create, saveDefinition, update, report, submit, download };

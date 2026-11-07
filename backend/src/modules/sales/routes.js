@@ -98,6 +98,8 @@ const indicators = require('./monthlyIndicators');
 const indicatorUpload = require('@koa/multer')({ limits: { files: 1, fileSize: 5 * 1024 * 1024 } });
 router.get('/monthly-indicators', indicators.setup);
 router.post('/monthly-indicators', indicators.create);
+router.post('/monthly-indicator-definitions', indicators.saveDefinition);
+router.put('/monthly-indicator-definitions/:definitionId', indicators.saveDefinition);
 router.put('/monthly-indicators/:indicatorId', indicators.update);
 router.post('/monthly-indicator-assignments/:assignmentId/evidence', indicatorUpload.single('file'), indicators.submit);
 router.get('/monthly-indicator-evidence/:evidenceId', indicators.download);

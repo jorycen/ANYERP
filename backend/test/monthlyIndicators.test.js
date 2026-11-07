@@ -5,7 +5,7 @@ const indicators = require('../src/modules/sales/monthlyIndicators');
 const { indicatorActual } = require('../src/modules/report/monthlyTaskAchievement');
 
 test('monthly indicator indexes fit the MySQL identifier limit', () => {
-  for (const model of [M.MonthlyIndicator, M.MonthlyIndicatorAssignment, M.MonthlyIndicatorEvidence]) {
+  for (const model of [M.MonthlyIndicatorDefinition, M.MonthlyIndicator, M.MonthlyIndicatorAssignment, M.MonthlyIndicatorEvidence]) {
     for (const index of model.options.indexes) {
       assert(index.name && index.name.length <= 64, index.name);
     }
@@ -62,6 +62,41 @@ test('one configuration publishes multiple roles and independent store metric ta
   })), /「A」.*门店目标/);
 });
 
+test('published targets use the stored definition and share a store overview release', async t => {
+  t.mock.method(M.Store, 'findAll', async () => [store, { ...store, store_id: 'B', distributor_id: 'OTHER' }]);
+  t.mock.method(M.Role, 'count', async () => 1);
+  t.mock.method(M.Role, 'findAll', async () => []);
+  t.mock.method(M.ProductCategory, 'count', async () => 1);
+  t.mock.method(M.Distributor, 'findAll', async () => []);
+  t.mock.method(M.Staff, 'findAll', async () => []);
+  t.mock.method(M.sequelize, 'transaction', async callback => callback({ LOCK: { UPDATE: 'UPDATE' } }));
+  const definition = { definition_id: 'D1', distributor_id: 'D', source: 'company', name: '手机指标', status: 1,
+    config: { kind: 'operating', roleCodes: ['staff'], categoryIds: ['root'], metrics: ['sales', 'quantity'] } };
+  t.mock.method(M.MonthlyIndicatorDefinition, 'findByPk', async () => definition);
+  t.mock.method(M.MonthlyIndicatorDefinition, 'findAll', async () => [definition]);
+  let rows = [];
+  t.mock.method(M.MonthlyIndicator, 'findOne', async () => rows[0] || null);
+  t.mock.method(M.MonthlyIndicator, 'findAll', async () => rows);
+  t.mock.method(M.MonthlyIndicator, 'bulkCreate', async values => { rows = values.map(row => ({ ...row, status: 1 })); });
+  const actor = user(1, 'distributor');
+  const body = { monthKey, definitionId: 'D1', name: 'Ignored', storeTargets: [{ storeId: 'A', sales: 2000, quantity: 2 }] };
+  await assert.rejects(() => indicators.create(context(actor, {}, { ...body, storeTargets: [{ storeId: 'B', sales: 2000 }] })), { status: 403 });
+  await indicators.create(context(actor, {}, body));
+  assert.equal(rows[0].name, definition.name);
+  assert.equal(rows[0].release_id, rows[1].release_id);
+  assert.equal(rows[1].definition_id, 'D1');
+  await assert.rejects(() => indicators.create(context(actor, {}, body)), { status: 409 });
+  t.mock.method(M.MonthlyIndicatorAssignment, 'findAll', async () => [
+    { indicator_id: rows[0].indicator_id, staff_id: 3, target: 2100 },
+    { indicator_id: rows[1].indicator_id, staff_id: 3, target: 1 }
+  ]);
+  const ctx = context(actor, { monthKey, allocationStatus: 'partial' });
+  await indicators.setup(ctx);
+  assert.equal(ctx.body.data.overview.length, 1);
+  assert.deepEqual(ctx.body.data.overview[0].metrics.map(metric => metric.allocated), [2100, 1]);
+  assert.equal(ctx.body.data.overview[0].assignedPeople, 1);
+});
+
 test('category indicators include newly classified products and deduplicate parent and child selections', async t => {
   t.mock.method(M.Store, 'findAll', async () => [store]);
   t.mock.method(M.MonthlyIndicator, 'findAll', async () => [{
@@ -109,7 +144,9 @@ test('business achievement counts approved evidence once, preserves original tar
     { instance_id: 'A1', status: 'approved' }, { instance_id: 'A2', status: 'pending' },
     { instance_id: 'A3', status: 'approved' }, { instance_id: 'A4', status: 'rejected' }
   ]);
-  t.mock.method(M.Staff, 'findAll', async () => [{ staff_id: 3, name: 'Three' }, { staff_id: 4, name: 'Four' }]);
+  t.mock.method(M.Staff, 'findAll', async () => [{ staff_id: 3, name: 'Three', store_id: 'A', distributor_id: 'D' },
+    { staff_id: 4, name: 'Four', store_id: 'A', distributor_id: 'D' }]);
+  t.mock.method(M.Staff, 'findOne', async ({ where }) => where.staff_id === '4' ? { staff_id: 4 } : null);
   const employee = context(user(3, 'staff'), { monthKey });
   await indicators.report(employee);
   assert.deepEqual(employee.body.data.rows.map(row => [row.id, row.actual, row.pendingCount]), [['E', 1, 1]]);
@@ -118,6 +155,16 @@ test('business achievement counts approved evidence once, preserves original tar
   const [total, ...people] = dealer.body.data.rows;
   assert.deepEqual([total.target, total.allocated, total.actual, total.rate], [1, 4, 2, 200]);
   assert(people.some(row => row.source === 'store'));
+  const workbench = context(user(2, 'manager'), { monthKey, view: 'mine', includeTeam: '1' });
+  await indicators.report(workbench);
+  assert.deepEqual(workbench.body.data.team, [{ id: 'A', name: 'A', employees: [{ id: '3', name: 'Three' }, { id: '4', name: 'Four' }] }]);
+  const query = { monthKey, view: 'managed', storeId: 'A', staffId: '4' };
+  const teamDetail = context(user(2, 'manager'), query);
+  await indicators.report(teamDetail);
+  assert.deepEqual(teamDetail.body.data.rows.map(row => [row.id, row.actual, row.canSubmit, row.submissions]),
+    [['F', 1, false, []], ['G', 0, false, []]]);
+  await assert.rejects(() => indicators.report(context(user(3, 'manager'), query)), { status: 403 });
+  await assert.rejects(() => indicators.report(context(user(2, 'manager'), { ...query, staffId: '9' })), { status: 403 });
 });
 
 test('product indicators use selected amounts and leave unallocated product profit unknown', () => {

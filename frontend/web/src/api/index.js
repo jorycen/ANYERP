@@ -715,6 +715,8 @@ export default {
   adjustStaffCareCredit: (staffId, data) => api.post(`/sales/care-credit/staff/${encodeURIComponent(staffId)}/adjust`, data),
   setStaffCareCreditBalance: (staffId, data) => api.post(`/sales/care-credit/staff/${encodeURIComponent(staffId)}/set-balance`, data),
   getMonthlyIndicators: params => api.get('/sales/monthly-indicators', { params }),
+  createMonthlyIndicatorDefinition: data => api.post('/sales/monthly-indicator-definitions', data),
+  updateMonthlyIndicatorDefinition: (id, data) => api.put('/sales/monthly-indicator-definitions/' + id, data),
   createMonthlyIndicator: data => api.post('/sales/monthly-indicators', data),
   updateMonthlyIndicator: (id, data) => api.put('/sales/monthly-indicators/' + id, data),
   getMonthlyIndicatorAchievement: params => api.get('/report/monthly-indicator-achievement', { params }),
@@ -738,7 +740,7 @@ export default {
   }),
 
   // System
-  getMenus: () => api.get('/system/menus'),
+  getMenus: (params) => api.get('/system/menus', { params }),
   reorderMenus: (data) => api.post('/system/menus/reorder', data),
   getRoles: () => api.get('/system/roles'),
   getUserDistributors: () => api.get('/system/user-distributors'),
