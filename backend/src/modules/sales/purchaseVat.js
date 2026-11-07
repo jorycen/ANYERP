@@ -50,6 +50,21 @@ async function resolveDocumentTaxBasis(order, lines, transaction, originIndex = 
   const cutoff = new Date(new Date(order.archive_time || new Date()).getTime() + 8 * 3600000).toISOString().slice(0, 23).replace('T', ' ');
   const result = [];
   for (const line of lines) {
+    // An exact, confirmed acquisition foundation outranks a heuristic latest
+    // inbound source. Do not discard it merely because that source is a return.
+    const attached = line.inventoryFoundation;
+    if (!isService(line) && attached?.basisId && attached.status === 'confirmed' &&
+        !attached.source?.taxScope && attached.productId === line.productId &&
+        normalizeInvoiceType(attached.invoiceType) &&
+        require('../inventory/foundation').matchesLine(attached, line) &&
+        line.purchasePrice !== null && line.purchasePrice !== undefined &&
+        Number.isFinite(Number(line.purchasePrice)) && Number(line.purchasePrice) >= 0) {
+      result.push({ ...line, purchaseTaxBasis: { version: VERSION, status: 'confirmed', service: false,
+        invoiceType: normalizeInvoiceType(attached.invoiceType),
+        purchaseAmount: money(Number(line.purchasePrice) * Number(line.quantity)),
+        source: 'inventory_foundation', basisId: attached.basisId, basisRevision: attached.revision } });
+      continue;
+    }
     if (line.pricingOrigin?.sourceType === 'sales_return' && !isService(line)) {
       if (line.purchasePrice === null || line.purchasePrice === undefined || !Number.isFinite(Number(line.purchasePrice))) {
         result.push({...line,purchaseTaxBasis:{version:VERSION,status:'pending',service:false,reason:'退货商品实际采购成本尚未确认'}}); continue;
