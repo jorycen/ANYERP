@@ -27,7 +27,7 @@ function view(row) {
     status: row.status, invoiceType: row.status === 'confirmed' ? row.invoice_type : null,
     invoiceTypeLabel: row.status !== 'confirmed' ? '待确认' : row.invoice_type === '专票13%' ? '含税' : row.invoice_type === '收据' ? '未税' : '待确认',
     purchaseCost: money(row.purchase_cost), costEstimated:!!json(row.source_data||{}).costEstimated, costMode: row.cost_mode || null,
-    companyPrice: money(row.company_price), revision: Number(row.revision), reason: row.reason || '',
+    companyPrice: null, revision: Number(row.revision), reason: row.reason || '',
     source: json(row.source_data || {}), snCode: row.sn_code || '', batchNo: row.batch_no || '' };
 }
 function mergeCandidates(candidates) {
@@ -35,12 +35,12 @@ function mergeCandidates(candidates) {
   const result = {}, conflicts = [];
   for (const key of fields) {
     const values = [...new Set(candidates.map(x => x[key]).filter(x => x !== null && x !== undefined && x !== '')
-      .map(x => ['purchase_cost','company_price'].includes(key) ? money(x) : x))];
+      .map(x => key === 'purchase_cost' ? money(x) : x))];
     if (values.length > 1) conflicts.push(key);
     result[key] = values.length === 1 ? values[0] : null;
   }
   const current = candidates.find(x => x.source === 'current_sn' || x.source === 'import_inventory') || {};
-  return { ...result, cost_mode: current.cost_mode || null, company_price: money(current.company_price), status: conflicts.length ? 'conflict' : result.invoice_type ? 'confirmed' : 'pending',
+  return { ...result, cost_mode: current.cost_mode || null, status: conflicts.length ? 'conflict' : result.invoice_type ? 'confirmed' : 'pending',
     reason: conflicts.length ? `基础资料冲突：${conflicts.join('、')}` : result.invoice_type ? '' : '含税属性尚未确认' };
 }
 async function load(referenceKeys, transaction) {
@@ -113,6 +113,29 @@ async function applySalesTaxBasis(order, lines, transaction) {
   return result.map(line => byItem.has(String(line.itemId))
     ? {...line,purchaseTaxBasis:{...line.purchaseTaxBasis,...byItem.get(String(line.itemId))}} : line);
 }
+
+// Reconcile only from the canonical inventory foundation. This deliberately
+// does not infer a receipt, supplier or tax type again. It is used when an
+// existing order snapshot needs its embedded tax basis brought back in sync
+// with a foundation confirmation.
+async function syncStoredSalesTaxBasis(order, lines, transaction) {
+  const attached = await salesBasis(order, lines, transaction);
+  return attached.map(line => {
+    const b = line.inventoryFoundation;
+    const current = line.purchaseTaxBasis || {};
+    const service = require('../sales/purchaseVat').isService(line);
+    if (service) return { ...line, purchaseTaxBasis: { version: require('../sales/purchaseVat').VERSION, status: 'confirmed', service: true, purchaseAmount: 0, invoiceType: null, source: 'service_zero_purchase' } };
+    const purchaseAmount = b?.purchaseCost === null || b?.purchaseCost === undefined ? null : Math.round(Number(b.purchaseCost) * Number(line.quantity) * 100) / 100;
+    if (b?.status === 'confirmed' && purchaseAmount !== null && b.invoiceType) {
+      return { ...line, purchaseTaxBasis: { version: require('../sales/purchaseVat').VERSION, status: 'confirmed', service: false,
+        invoiceType: b.invoiceType, purchaseAmount, basisId: b.basisId, basisRevision: b.revision,
+        source: 'inventory_foundation' } };
+    }
+    return { ...line, purchaseTaxBasis: { ...current, version: require('../sales/purchaseVat').VERSION,
+      status: 'pending', service: false, purchaseAmount, basisId: b?.basisId, basisRevision: b?.revision,
+      reason: b?.reason || current.reason || '采购票税依据尚未确认' } };
+  });
+}
 async function applySalesPricing(order, lines, transaction) {
   return (await salesBasis(order,lines,transaction)).map(line=>{
     const b=line.inventoryFoundation;
@@ -155,7 +178,7 @@ async function ensureSalesReferences(order,lines,transaction){
     }
     const current=resolvedSnId?await M.InventoryFoundationRef.findByPk('sn_current:'+resolvedSnId,{transaction,lock:transaction.LOCK.UPDATE}):null;
     let row=current?await M.InventoryFoundation.findByPk(current.basis_id,{transaction,lock:transaction.LOCK.UPDATE}):null;
-    if(row&&row.product_id!==item.product_id)fail('SN关联商品基础档案不一致');
+    if(row&&row.product_id!==item.product_id)fail(`SN关联商品基础档案不一致：商品行${item.item_id}「${item.product_name||line.productName||''}」，SN ${item.sn_code||line.snCode||resolvedSnId}，订单商品ID ${item.product_id}，档案商品ID ${row.product_id}，档案ID ${row.basis_id}`);
     if(row){const scope=json(row.source_data||{}).taxScope,month=new Date(new Date(order.create_time).getTime()+8*3600000).toISOString().slice(0,7);
       if(scope&&scope!==month)await clearScopedTax(row,transaction);}
     if(row&&row.status==='pending'&&!row.invoice_type&&['system','migration'].includes(row.updated_by)&&line.purchaseTaxBasis?.status==='confirmed'){
@@ -171,7 +194,7 @@ async function ensureSalesReferences(order,lines,transaction){
         product_name:line.productName,entity_type:resolvedSnId?'sn_cycle':'import_sale',sn_code:line.snCode||'',
         invoice_type:b.status==='confirmed'?b.invoiceType:null,status:b.status==='confirmed'?'confirmed':'pending',
         purchase_cost:line.purchasePriceKnown===false?null:money(line.purchasePrice),
-        cost_mode:line.isCompanyPriced?'COMPANY_PRICE':'PURCHASE_PRICE',company_price:line.isCompanyPriced?money(line.unitPricing):null,
+        cost_mode:line.isCompanyPriced?'COMPANY_PRICE':'PURCHASE_PRICE',
         source_data:{source:'order_intake',purchaseBasis:b},revision:1,updated_by:'system'}, {transaction});
       if(resolvedSnId)await bind('sn_current:'+resolvedSnId,row.basis_id,order.store_id,transaction);
     }
@@ -224,4 +247,4 @@ async function update(basisId, body, user, transaction) {
     comment:body.reason,detail:{before,after:row.toJSON(),note:'归档金额不自动重写，需通过原有纠错流程预览审批'},transaction });
   return (await currentCatalog([row.toJSON()],transaction))[0];
 }
-module.exports = { id, money, snKey, view, mergeCandidates, currentCatalog, matchesLine, load, salesBasis, inventoryTaxConsensus, applySalesTaxBasis, applySalesPricing, ensureSalesReferences, confirmTaxEvidence, clearScopedTax, bind, update };
+module.exports = { id, money, snKey, view, mergeCandidates, currentCatalog, matchesLine, load, salesBasis, inventoryTaxConsensus, applySalesTaxBasis, syncStoredSalesTaxBasis, applySalesPricing, ensureSalesReferences, confirmTaxEvidence, clearScopedTax, bind, update };

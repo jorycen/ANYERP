@@ -994,6 +994,14 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     frozenInputs ? Promise.resolve(parseJsonArray(existing.product_pricing_details)) : buildProductPricingDetails(orderId, transaction),
     buildSupplementDetails(orderId, transaction)
   ]);
+  // Final snapshots keep commercial inputs frozen, but their embedded tax
+  // basis must stay synchronized with the canonical inventory foundation.
+  // Never re-infer purchase documents during this reconciliation.
+  if (persist && frozenInputs && force) {
+    const foundation = require('../inventory/foundation');
+    const synced = await foundation.syncStoredSalesTaxBasis(order, productPricingDetails, transaction);
+    productPricingDetails.splice(0, productPricingDetails.length, ...synced);
+  }
   if (persist && !frozenInputs) {
     const foundation = require('../inventory/foundation');
     await foundation.ensureSalesReferences(order, productPricingDetails, transaction);

@@ -103,7 +103,16 @@ async function select(ctx, orderId, input = null, transaction = null, includeInv
   if (closed.length) fail('原订单所属月份已锁定，请由财务通过期间调整流程处理');
   const returns = await M.SalesReturnRequest.findAll({ where: { order_id: orderId, status: { [Op.notIn]: ['rejected', 'cancelled', 'canceled', 'voided'] } }, ...options });
   if (returns.length) fail('订单存在退货或退货处理中记录，本期暂不支持，请先联系财务核对关联退货');
-  const snapshot = await M.OrderGrossProfit.findOne({ where: { order_id: orderId }, ...options });
+  let snapshot = await M.OrderGrossProfit.findOne({ where: { order_id: orderId }, ...options });
+  // Reconcile the embedded basis from the canonical inventory foundation
+  // before validating a correction. This is synchronization only; the forced
+  // path never infers a new receipt or invoice type.
+  if (snapshot?.snapshot_status === 'final') {
+    const { calculateAndSaveOrderGrossProfit } = require('../sales/grossProfit');
+    snapshot = await calculateAndSaveOrderGrossProfit(orderId, {
+      transaction, force: true, calculatedBy: 'tax-basis-sync', requireComplete: false
+    });
+  }
   const settlement = await M.ProductSettlementOrder.findOne({ where: { source_order_id: orderId }, ...options });
   if (!snapshot || (!settlement && !invoiceOrOptions)) fail('缺少原归档毛利或产品端结算记录，请先核实原单');
   if (!invoiceOrOptions && settlement.status !== 'posted') fail('产品端成本未完整确认，暂不能纠正结算定价');
