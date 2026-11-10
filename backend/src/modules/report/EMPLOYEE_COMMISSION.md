@@ -37,3 +37,13 @@
 `node --test test/managerCommissionTimeline.test.js test/employeeCommission.test.js test/employeeProfitSummary.test.js test/dashboardService.test.js test/performanceEvents.test.js`
 
 `node scripts/verify-manager-commission-stages.js` 为只读10月核查，并在 outputs 输出验证结果；不保存配置或修改订单。
+
+## 待核算清单（2026-11-11）
+
+复用 `/employee-profit-summary/export`，增加 `review=1` 下载待核算清单。
+可选 `reviewRowKey` 仅限定原报表授权结果中的一行；不能替代员工/角色/门店权限校验。
+报表行新增 `issues` 全部阻断原因及 `reviewKey`；顶部批量和行下载均使用已经查询的筛选条件。
+产品/运营仅提成待定不生成问题；毛利本身依据缺失时列入问题。
+Excel含原因、建议、原单关联商品和SN、定位编号、数据核对指纹、确认填写栏及填写说明。
+关联原单商品用于核对，不表示每个商品都有错；SN、编号等按文本导出以保留前导零。
+填写后上传本聊天核实，先核对现状并预览处理；当前下载接口无任何回写，不自动导入。

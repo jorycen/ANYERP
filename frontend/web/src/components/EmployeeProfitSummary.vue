@@ -7,6 +7,7 @@
       <el-select v-if="!['product','operations'].includes(reportRole)" v-model="employeeId" filterable clearable placeholder="选择员工" style="width:160px"><el-option v-for="s in filters.employees" :key="s.staffId" :label="s.employeeName || s.name" :value="String(s.staffId)" /></el-select>
       <el-button type="primary" @click="load">查询</el-button>
       <el-button type="success" :disabled="!applied || loading" :loading="exporting" @click="exportFile">导出员工汇总</el-button>
+      <el-button :disabled="!applied || loading || exporting || !data.rows?.some(r => r.issues?.length)" @click="downloadReview()">下载待核算清单</el-button>
       <el-button v-if="data.canConfigure" @click="openConfig">提成参数配置</el-button>
     </div>
     <el-row :gutter="16" class="panels">
@@ -23,7 +24,8 @@
         </el-table>
         <p class="detail-note">费用扣减按两个阶段个人毛利占比分摊，见汇总列；退货冲回原单阶段。</p>
       </template></el-table-column>
-      <el-table-column v-for="c in data.columns || []" :key="c.key" :label="c.label" :min-width="c.key === 'remark' ? 300 : 125"><template #default="{ row }">{{ typeof row.cells?.[c.key] === 'number' ? money(row.cells[c.key]) : row.cells?.[c.key] }}</template></el-table-column>
+      <el-table-column v-for="c in data.columns || []" :key="c.key" :label="c.label" :min-width="c.key === 'remark' ? 300 : 125"><template #header><span :style="c.bold ? {fontWeight:700} : {}">{{ c.label }}</span></template><template #default="{ row }"><span :style="c.bold ? {fontWeight:700} : {}">{{ typeof row.cells?.[c.key] === 'number' ? money(row.cells[c.key]) : row.cells?.[c.key] }}</span></template></el-table-column>
+      <el-table-column label="操作" fixed="right" width="170"><template #default="{row}"><el-button v-if="row.issues?.length" link type="primary" :disabled="loading || exporting" @click="downloadReview(row)">下载待核算清单</el-button></template></el-table-column>
     </el-table>
     <el-dialog v-model="configOpen" title="月度提成参数配置" width="900px" destroy-on-close>
       <div class="toolbar"><el-date-picker v-model="month" type="month" value-format="YYYY-MM" :clearable="false" @change="loadConfig" /><span>按月独立保存，0 表示明确零基数</span></div>
@@ -60,6 +62,7 @@ async function load() {
   try { const r = await api.getEmployeeProfitSummary(params); data.value = r.data; applied.value = {...params} } catch(e) { data.value = {}; applied.value = null; error(e) } finally { loading.value = false }
 }
 async function exportFile() { exporting.value = true; try { await api.exportEmployeeProfitSummary(applied.value) } catch(e) { error(e) } finally { exporting.value = false } }
+async function downloadReview(row) { if(!applied.value)return;exporting.value=true;try{await api.exportEmployeeProfitReview({...applied.value,...(row?{reviewRowKey:row.reviewKey}:{})})}catch(e){error(e)}finally{exporting.value=false} }
 async function loadConfig() { configLoading.value = true; try { const r = await api.getCommissionConfig({month:month.value,storeId:storeId.value}); config.value = r.data; config.value.employees.forEach(e => {e.storeName = config.value.stores.find(s => s.storeId === e.storeId)?.storeName || ''}) } catch(e) { config.value = {employees:[],stores:[]}; error(e) } finally { configLoading.value = false } }
 async function openConfig() { month.value = dates.value?.[0]?.slice(0,7) || local.slice(0,7); configOpen.value = true; await loadConfig() }
 async function save(type,row) {

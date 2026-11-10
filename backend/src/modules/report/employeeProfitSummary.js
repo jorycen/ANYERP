@@ -54,6 +54,9 @@ async function load(user, query) {
         const gross=summary?.[key==='product'?'productGrossProfit':'operationsGrossProfit'];
         const id=`${key}:${store.store_id}`,previous=sideRows.get(id);
         sideRows.set(id,{employeeName:'',storeId:store.store_id,storeName:store.name,role:key==='product'?'产品':'运营',sideName:key==='product'?'产品端':'运营端',grossProfit:previous ? previous.grossProfit==null||gross==null?null:money(previous.grossProfit+Number(gross)) : gross??null,commission:null,performanceEstimate:null,status:'pending',remark:'暂不归属具体负责人；提成待定'});
+        const side=sideRows.get(id),field=key==='product'?'productGrossProfit':'operationsGrossProfit';
+        side.issues=[...(previous?.issues||[]),...(financial.profitDetails||[]).filter(e=>String(e.storeId)===String(store.store_id)&&e[field]===null).map(e=>({month:period.month,reason:e.profitPendingReason||`${side.sideName}依据待核实`,orderId:e.orderId,orderNo:e.entryNo,sourceOrderId:e.orderId,sourceOrderNo:e.orderNo}))];
+        if(gross==null&&!side.issues.length)side.issues.push({month:period.month,reason:`${side.sideName}依据待核实`});
       }
     }
     for (const row of ranks) {
@@ -72,16 +75,25 @@ async function load(user, query) {
         stages=timeline.netStages(grossStages,row.grossProfit,row.expensePerformanceDeduction??0,'proportional');
       }
       const estimate = employeeEstimate({ ...row, isManager }, row.netGrossProfit, storeGross, { commissionBase: option?.commissionBase, breakEvenLine: sc?.breakEvenLine,stages });
+      const issues=[...(stages?.issues||[])];
+      const addReason=reason=>{if(reason&&!issues.some(i=>i.reason===reason))issues.push({reason,month:period.month});};
+      if(estimate.status!=='estimated')addReason(estimate.reason);
+      if(estimate.rule==='manager'&&storeGross==null){
+        for(const event of financial.profitDetails||[])if(String(event.storeId)===String(store?.store_id)&&event.salesGrossProfit===null)issues.push({month:period.month,reason:'门店销售端毛利待核算，影响门店提成及跨线判断',orderId:event.orderId,orderNo:event.entryNo,sourceOrderId:event.orderId,sourceOrderNo:event.orderNo});
+        addReason('门店销售端毛利待核算');
+      }
+      if(!store)addReason('员工当前门店未匹配');
       if (!store) Object.assign(estimate, { salesCommission: null, storeCommission: null, performanceEstimate: null, status: 'unconfigured', reason: '员工当前门店未匹配' });
       const key = String(row.staffId || row.employeeName), previous = combined.get(key);
       const current = { ...row, reportRole:isManager?'manager':roles.some(r=>['clerk','staff','salesperson'].includes(r))?'staff':'other',sideName:'销售端',storeId: store?.store_id || '', storeName: store?.name || '未匹配当前门店', role: option?.roleNames || roles.join(' / '),
         commissionBase: estimate.rule === 'staff' ? option?.commissionBase ?? null : null,
         breakEvenLine: estimate.rule === 'manager' ? sc?.breakEvenLine ?? null : null,
-        storeGrossProfit: estimate.rule === 'manager' ? storeGross ?? null : null, ...estimate,
+        storeGrossProfit: estimate.rule === 'manager' ? storeGross ?? null : null, ...estimate,issues,
         remark: `${period.month}：${estimate.reason || '已计算'}；店长按全店销售端流水累计跨线，个人毛利分15%/25%两阶段，退货冲回原单阶段；产品/运营提成待定；按月计算，区间内不折算基数` };
       if (previous) {
         for (const field of ['grossProfit','expensePerformanceDeduction','netGrossProfit','salesCommission','storeCommission','performanceEstimate','storeGrossProfit','lowGrossProfit','highGrossProfit','lowDeduction','highDeduction','lowNetGrossProfit','highNetGrossProfit','lowCommission','highCommission']) current[field] = previous[field] == null || current[field] == null ? null : money(previous[field] + Number(current[field]));
         current.commissionDetails=[...(previous.commissionDetails||[]),...(current.commissionDetails||[])];
+        current.issues=[...(previous.issues||[]),...current.issues];
         current.status = [previous.status, current.status].includes('unconfigured') ? 'unconfigured' : current.performanceEstimate == null ? 'pending' : 'estimated';
         current.personalRate = null;
         current.remark = previous.remark + '；' + current.remark;
@@ -97,8 +109,7 @@ async function load(user, query) {
   if (reportRole==='all' && query.reportRole) rows.push(...sideRows.values());
   if (['product','operations'].includes(reportRole)) rows=[...sideRows.entries()].filter(([id])=>id.startsWith(reportRole+':')).map(([,row])=>row);
   const fields=presentation.columns(reportRole).filter(c=>reportRole!=='manager'||c.key!=='commissionBase');
-  if(reportRole==='manager'&&rows.some(r=>r.rule==='staff'))fields.splice(6,0,{key:'commissionBase',label:'提成基数',format:'money'});
-  for(const row of rows)row.cells=Object.fromEntries(fields.map(c=>[c.key,presentation.display(row,c)]));
+  for(const row of rows){row.cells=Object.fromEntries(fields.map(c=>[c.key,presentation.display(row,c)]));row.reviewKey=row.staffId?`staff:${row.staffId}`:`${row.sideName}:${row.storeId}`;}
   return { rows, panels, columns:fields,reportRole,canConfigure: C.canConfigure(user), note: '店长按当月全店销售端经营流水累计：跨线前个人毛利15%，跨线后25%，跨线订单拆分；退货冲回原单阶段，个人经营调整沿原单阶段；费用按两阶段个人毛利占比分摊。门店额外3%/5%提成不变。产品、运营暂按门店汇总，负责人留空。' };
 }
 async function report(ctx) { ctx.body = { code: 0, data: await load(ctx.state.user, ctx.query) }; }
@@ -111,6 +122,7 @@ function exportRows(rows) { return rows.map(r => { const missing = r.status === 
   销售端提成: r.salesCommission ?? missing, 店长门店提成: r.storeCommission ?? missing, 产品端提成: '待定', 运营端提成: '待定', 绩效预估: r.performanceEstimate ?? missing, 备注: r.remark }); }); }
 async function exportReport(ctx) {
   const data = await load(ctx.state.user, ctx.query);
+  if(String(ctx.query.review)==='1'){return require('./employeeProfitReview').exportReview(ctx,data);}
   if(!ctx.query.reportRole){const legacy=exportRows(data.rows);sendExcel(ctx,legacy,legacy.length?Object.keys(legacy[0]):['员工','门店','角色','毛利','绩效预估'],'员工毛利汇总.xlsx');return;}
   const rows=data.rows.map(row=>Object.fromEntries(data.columns.map(c=>[c.label,presentation.display(row,c)])));
   sendExcel(ctx, rows, data.columns.map(c=>c.label), '员工毛利汇总.xlsx');

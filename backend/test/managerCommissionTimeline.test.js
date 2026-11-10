@@ -75,3 +75,13 @@ test('uncapped backend performance details include every transaction while dashb
  a.equal(buildEmployeePerformance(orders,[],'',true).details.length,100);
  a.equal(buildEmployeePerformance(orders,[],'',true,{allDetails:true}).details.length,120);
 });
+
+test('loader collects all cross-store blockers instead of only the first',async t=>{
+ const M=require('../src/models'),F=require('../src/modules/report/financialProfitController'),C=require('../src/modules/report/commissionConfig');
+ t.mock.method(C,'options',async()=>({stores:[{storeId:'S',breakEvenLine:100}]}));
+ t.mock.method(F,'queryFinancialProfit',async()=>({profitDetails:[]}));
+ t.mock.method(M.Order,'findByPk',async id=>({order_id:id,store_id:'OTHER',create_time:'2026-10-01'}));
+ const loader=createLoader({user:{staffId:9},stores:[{store_id:'S'}]});
+ const r=await loader.forStaff({period:{month:'2026-10',startDate:'2026-10-01',endDate:'2026-10-31'},storeId:'S',staffId:'M',performanceDetails:['A','B'].map(id=>({staffId:'M',orderId:id,sourceOrderId:id,orderNo:id,sourceEntryType:'sale',allocatedGrossProfit:1}))});
+ a.equal(r.issues.length,2);a.deepEqual(r.issues.map(i=>i.orderNo),['A','B']);a.equal(r.lowGrossProfit,null);
+});

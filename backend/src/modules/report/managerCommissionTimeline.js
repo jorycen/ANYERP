@@ -109,11 +109,12 @@ function createLoader({user,stores}){
   }
   async function forStaff({period,storeId,staffId,configs,performanceDetails=[]}){
     const context=(await month(period.month,configs)).get(String(storeId));
-    if(context?.reason)return {lowGrossProfit:null,highGrossProfit:null,reason:context.reason,details:[]};
-    let low=0,high=0,reason='';const details=[];
+    if(context?.reason)return {lowGrossProfit:null,highGrossProfit:null,reason:context.reason,details:[],issues:[{reason:context.reason,month:period.month}]};
+    let low=0,high=0,reason='';const details=[],issues=[];
+    const addIssue=(message,share,extra={})=>{reason=reason||message;issues.push({reason:message,month:period.month,orderId:share?.orderId,orderNo:share?.orderNo,sourceOrderId:share?.sourceOrderId,sourceOrderNo:share?.sourceOrderNo,returnId:share?.returnId,...extra});};
     for(const share of performanceDetails.filter(row=>String(row.staffId)===String(staffId))){
       const gross=share.allocatedGrossProfit;
-      if(!known(gross)){reason=reason||'个人冻结毛利不完整';continue;}
+      if(!known(gross)){addIssue('个人冻结毛利不完整',share);continue;}
       let event;
       if(share.sourceEntryType==='return')event=context?.entries.find(e=>e.eventKey===`return:${share.returnId}`);
       else if(share.sourceEntryType==='reward_redemption')event=context?.entries.find(e=>e.eventKey===share.orderId);
@@ -124,7 +125,7 @@ function createLoader({user,stores}){
       let stage=event?{fraction:event.fraction}:context?.saleStages.get(originalId);
       if(!stage&&Number(gross)!==0){
         const original=await M.Order.findByPk(originalId,{raw:true});
-        if(original&&String(original.store_id)!==String(storeId)){reason=reason||`${share.orderNo}：原销售门店与员工当前门店不一致，历史阶段归属待核实`;continue;}
+        if(original&&String(original.store_id)!==String(storeId)){addIssue(`${share.orderNo}：原销售门店与员工当前门店不一致，历史阶段归属待核实`,share,{originalStoreId:original.store_id,originalMonth:day(original.archive_time||original.create_time).slice(0,7)});continue;}
         const originalMonth=original?day(original.archive_time||original.create_time).slice(0,7):null;
         if(originalMonth){
           try{
@@ -132,17 +133,21 @@ function createLoader({user,stores}){
             stage=originalContext?.saleStages.get(originalId);
             if(!stage&&originalContext?.reason)stage={fraction:null,reason:originalContext.reason};
             event=originalContext?.entries.find(e=>e.entryType==='sale'&&String(e.orderId)===originalId);
-          }catch(error){if(error.status!==409)throw error;reason=reason||`${share.orderNo}：原销售月份依据待核实：${error.message}`;}
+          }catch(error){if(error.status!==409)throw error;addIssue(`${share.orderNo}：原销售月份依据待核实：${error.message}`,share,{originalMonth});}
         }
       }
       const fraction=Number(gross)===0?0:stage?.fraction;
-      if(!known(fraction)){reason=reason||`${share.orderNo}：${event?.reason||stage?.reason||'原订单提成阶段未能追溯'}`;continue;}
+      if(!known(fraction)){
+        addIssue(`${share.orderNo}：${event?.reason||stage?.reason||'原订单提成阶段未能追溯'}`,share,{originalMonth:event?.originalMonth});
+        for(const prior of context?.entries||[])if(prior.amount===null&&(!event||prior.time<=event.time))addIssue(`${prior.entryNo||prior.eventKey}：门店销售端毛利待核算，影响后续跨线判断`,null,{orderId:prior.orderId,orderNo:prior.entryNo,sourceOrderId:prior.orderId,sourceOrderNo:prior.orderNo});
+        continue;
+      }
       const upper=money(Number(gross)*fraction),lower=money(Number(gross)-upper);
       low=money(low+lower);high=money(high+upper);
       details.push({eventKey:share.orderId,orderNo:share.orderNo,sourceOrderNo:share.sourceOrderNo,businessDate:day(share.orderTime),time:share.orderTime,
         storeGrossBefore:event?.before??null,storeGrossAfter:event?.after??null,grossProfit:gross,lowGrossProfit:lower,highGrossProfit:upper});
     }
-    return {lowGrossProfit:reason?null:low,highGrossProfit:reason?null:high,reason,details};
+    return {lowGrossProfit:reason?null:low,highGrossProfit:reason?null:high,reason,details,issues};
   }
   return {forStaff,seed:(monthKey,financial)=>snapshots.set(monthKey,financial)};
 }

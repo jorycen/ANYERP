@@ -3,6 +3,8 @@ const XLSX = require('xlsx');
 function sendExcel(ctx, rows, headers, fileName, sheetName = '数据', options = {}) {
   const workbook = XLSX.utils.book_new();
   const worksheet = XLSX.utils.json_to_sheet(rows, { header: headers });
+  if (options.columnWidths) worksheet['!cols'] = headers.map(header => ({ wch: options.columnWidths[header] || 20 }));
+  if (options.autoFilter && worksheet['!ref']) worksheet['!autofilter'] = { ref: worksheet['!ref'] };
   const textColumns = new Set(options.textHeaders || []);
   headers.forEach((header, columnIndex) => {
     if (!textColumns.has(header)) return;
@@ -16,7 +18,9 @@ function sendExcel(ctx, rows, headers, fileName, sheetName = '数据', options =
   XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
 
   for (const extra of options.sheets || []) {
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(extra.rows || []), extra.name);
+    const sheet = XLSX.utils.json_to_sheet(extra.rows || []);
+    if (extra.columnWidths) sheet['!cols'] = extra.columnWidths.map(wch => ({ wch }));
+    XLSX.utils.book_append_sheet(workbook, sheet, extra.name);
   }
   const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
   const encodedFileName = encodeURIComponent(fileName);

@@ -109,7 +109,8 @@ test('manager identity preserves employee-rule exception without irrelevant plac
  t.mock.method(C,'options',async()=>({stores:[{storeId:'S',breakEvenLine:1000}],employees:[{staffId:'2',employeeName:'葛宇',roles:'manager',commissionBase:1000}]}));
  t.mock.method(D.prototype,'getEmployeeOrderRows',async()=>[{order_id:'2',create_staff_id:2,create_user:'葛宇',base_gross_profit:3000,sales_amount:5000,auxiliary_sales_list:'[]'}]);
  const r=await R.load({staffId:9,roles:['boss']},{startDate:'2026-11-01',endDate:'2026-11-30',reportRole:'manager'});
- a.equal(r.rows.length,1);a.equal(r.rows[0].rule,'staff');a.equal(r.rows[0].cells.commissionBase,1000);a.equal(r.rows[0].cells.breakEvenLine,'');a.equal(r.rows[0].cells.storeCommission,'');
+ a.equal(r.rows.length,1);a.equal(r.rows[0].rule,'staff');a.equal(r.rows[0].cells.commissionBase,undefined);a.equal(r.rows[0].cells.breakEvenLine,'');a.equal(r.rows[0].cells.storeCommission,'');
+ a.deepEqual(r.columns.slice(3,6).map(c=>c.key),['performanceEstimate','salesCommission','storeCommission']);a.ok(r.columns.slice(3,6).every(c=>c.bold));
 });
 
 test('side totals accumulate monthly values and reject invalid classification',async t=>{
