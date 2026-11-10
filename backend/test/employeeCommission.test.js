@@ -5,11 +5,22 @@ test('missing personal configuration stays unknown', () => {
   assert.equal(C.estimateStaffCommission(10000, null), null);
   assert.equal(C.estimateStaffCommission(10000, ''), null);
 });
-test('staff tiers retain the explicitly confirmed formula', () => {
+test('staff commission increases on profit above the personal base', () => {
   assert.equal(C.estimateStaffCommission(1000, 1000), 0);
-  assert.equal(C.estimateStaffCommission(1200, 1000), 60);
-  assert.equal(C.estimateStaffCommission(1500, 1000), 0);
+  assert.equal(C.estimateStaffCommission(1200, 1000), 40);
+  assert.equal(C.estimateStaffCommission(1500, 1000), 100);
   assert.equal(C.estimateStaffCommission(2000, 1000), 250);
+});
+test('Heshenghui staff examples and tier boundary remain continuous', () => {
+  assert.equal(C.estimateStaffCommission(12893.39, 9000), 778.68);
+  assert.equal(C.estimateStaffCommission(9447.82, 9000), 89.56);
+  assert.equal(C.estimateStaffCommission(8999.99, 9000), 0);
+  assert.equal(C.estimateStaffCommission(9000, 9000), 0);
+  assert.equal(C.estimateStaffCommission(13499.99, 9000), 900);
+  assert.equal(C.estimateStaffCommission(13500, 9000), 900);
+  assert.equal(C.estimateStaffCommission(13501, 9000), 900.3);
+  assert.equal(C.estimateStaffCommission(0, 0), 0);
+  assert.equal(C.estimateStaffCommission(100, 0), 30);
 });
 test('manager exceptions and special store rates', () => {
   const config = { commissionBase: 1000, breakEvenLine: 1000 };

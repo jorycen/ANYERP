@@ -10,7 +10,7 @@ function estimateStaffCommission(grossProfit, commissionBase) {
   const base = Math.max(0, Number(commissionBase || 0));
   const tier = base * 1.5;
   if (gross <= base) return 0;
-  if (gross <= tier) return money((tier - gross) * 0.2);
+  if (gross <= tier) return money((gross - base) * 0.2);
   return money((tier - base) * 0.2 + (gross - tier) * 0.3);
 }
 

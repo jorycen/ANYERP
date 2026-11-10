@@ -54,6 +54,17 @@ test('Excel output matches the same employee records',async t=>{
   const X=require('xlsx'),wb=X.read(ctx.body,{type:'buffer'}),rows=X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
   a.equal(rows.length,r.rows.length);a.equal(rows[0].毛利,r.rows[0].grossProfit);a.equal(rows[0].绩效预估,r.rows[0].performanceEstimate);
 });
+test('corrected first tier is shared by employee report, total and Excel',async t=>{
+  fixture(t);
+  t.mock.method(C,'options',async()=>({stores:[{storeId:'S'}],employees:[{staffId:'1',employeeName:'张翔',storeId:'S',roles:'staff',commissionBase:9000}]}));
+  t.mock.method(D.prototype,'getEmployeeOrderRows',async()=>[{order_id:'sale',create_staff_id:1,create_user:'张翔',base_gross_profit:12893.39,sales_amount:20000,auxiliary_sales_list:'[]'}]);
+  const query={startDate:'2026-10-01',endDate:'2026-10-31',employeeId:'1'},user={staffId:9,roles:['boss']};
+  const result=await R.load(user,query);
+  a.equal(result.rows[0].salesCommission,778.68);a.equal(result.panels.sales.commission,778.68);
+  const ctx={state:{user},query,set(){}};await R.exportReport(ctx);
+  const X=require('xlsx'),wb=X.read(ctx.body,{type:'buffer'}),rows=X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+  a.equal(rows[0].销售端提成,778.68);a.equal(rows[0].绩效预估,778.68);
+});
 test('self-only account cannot select another person',async t=>{
   fixture(t);
   const r=await R.load({staffId:1,roles:['staff']},{startDate:'2026-11-01',endDate:'2026-11-30',employeeId:'2'});
