@@ -25,6 +25,19 @@ test('生成退单流水沿用旧版本毛利快照，亏损反冲正确且重�
   assert.equal(saved[0].returned_sales_amount, -1000);
 });
 
+test('零元赠品退货也冻结零冲减流水，重试不重复且不重新定价', async t => {
+  const saved=[];
+  t.mock.method(M.SalesReturnGrossProfitLedger,'findAll',async()=>saved);
+  t.mock.method(M.SalesReturnGrossProfitLedger,'create',async row=>{saved.push(row);return row;});
+  t.mock.method(M.Order,'findByPk',async()=>({order_id:'O',order_no:'SO',total_amount:6499,store_id:'S',create_staff_id:43,create_user:'A'}));
+  t.mock.method(M.SalesReturnRequestItem,'findAll',async()=>[{unit_price:0,quantity:2,subtotal:0}]);
+  t.mock.method(M.OrderGrossProfit,'findOne',async()=>({gross_profit_amount:785.69}));
+  t.mock.method(M.ProductPrice,'findAll',async()=>{throw Error('must not reprice');});
+  const input={returnRequest:{return_id:'R',return_no:'RET',order_id:'O'}};
+  await createSalesReturnGrossProfitLedger(input);await createSalesReturnGrossProfitLedger(input);
+  assert.equal(saved.length,1);assert.equal(Number(saved[0].gross_profit_amount),0);assert.equal(Number(saved[0].returned_sales_amount),0);
+});
+
 test('退单保留冻结人员金额、原单关联和完成时间，原亏损订单冲回正毛利', () => {
   const rows = [
     { return_id: 'R', return_no: 'RET1', order_id: 'O', order_no: 'SO1', create_time: '2026-11-01', staff_id: 1, employee_name: 'A', returned_sales_amount: -50, gross_profit_amount: 6.67 },

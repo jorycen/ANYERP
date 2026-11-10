@@ -779,11 +779,13 @@ async function createSalesReturnGrossProfitLedger({ returnRequest, transaction =
     (sum, item) => sum + toNumber(item.unit_price) * Math.max(0, toNumber(item.quantity)),
     0
   ));
-  if (returnedSalesAmount <= 0) return [];
+  // A zero-price return is a known zero reversal, not missing accounting.
+  // Persist it so all reports can distinguish zero from an absent ledger.
+  if (returnedSalesAmount < 0) throw new Error('退货销售金额不能为负数');
 
   const orderTotalAmount = toNumber(order.total_amount);
   const snapshotGrossProfit = toNumber(snapshot?.gross_profit_amount);
-  const reversedGrossProfit = roundMoney(orderTotalAmount > 0
+  const reversedGrossProfit = returnedSalesAmount === 0 ? 0 : roundMoney(orderTotalAmount > 0
     ? snapshotGrossProfit * returnedSalesAmount / orderTotalAmount
     : returnItems.reduce((sum, item) => sum + toNumber(item.subtotal), 0));
   const negativeSalesAmount = -returnedSalesAmount;
