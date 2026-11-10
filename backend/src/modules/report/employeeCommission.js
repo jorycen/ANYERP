@@ -19,8 +19,9 @@ function estimateManagerCommission(grossProfit, breakEvenLine, storeGrossProfit,
   const gross = Number(grossProfit || 0);
   const line = Math.max(0, Number(breakEvenLine || 0));
   const storeGross = Number(storeGrossProfit || 0);
-  const personal = money(Math.min(gross, line) * 0.15 + Math.max(0, gross - line) * 0.25);
-  return { personal, store: money(storeGross * Number(storeRate || 0)), total: money(personal + storeGross * Number(storeRate || 0)) };
+  const personalRate = storeGross > line ? 0.25 : 0.15;
+  const personal = money(gross * personalRate);
+  return { personal, personalRate, store: money(storeGross * Number(storeRate || 0)), total: money(personal + storeGross * Number(storeRate || 0)) };
 }
 
 function employeeEstimate(employee, grossProfit, storeGrossProfit, config = {}) {
@@ -28,13 +29,16 @@ function employeeEstimate(employee, grossProfit, storeGrossProfit, config = {}) 
   if (staffRule) {
     const salesCommission = estimateStaffCommission(grossProfit, config.commissionBase);
     return { rule: 'staff', salesCommission, storeCommission: 0, productCommission: null, operationsCommission: null,
-      performanceEstimate: salesCommission, status: salesCommission === null ? 'unconfigured' : 'estimated' };
+      performanceEstimate: salesCommission, status: salesCommission === null ? (configured(config.commissionBase) ? 'pending' : 'unconfigured') : 'estimated',
+      reason: !configured(config.commissionBase) ? '个人提成基数未配置' : salesCommission === null ? '个人销售毛利待核算' : '' };
   }
   const rate = ['石高铭', '唐陈'].includes(employee.employeeName) ? 0.05 : 0.03;
   const result = estimateManagerCommission(grossProfit, config.breakEvenLine, storeGrossProfit, rate);
   return { rule: 'manager', salesCommission: result?.personal ?? null, storeCommission: result?.store ?? null,
     productCommission: null, operationsCommission: null, performanceEstimate: result?.total ?? null,
-    storeRate: rate, status: result ? 'estimated' : 'unconfigured' };
+    storeRate: rate, personalRate: result?.personalRate ?? null,
+    status: result ? 'estimated' : !configured(config.breakEvenLine) ? 'unconfigured' : 'pending',
+    reason: !configured(config.breakEvenLine) ? '门店盈亏平衡线未配置' : storeGrossProfit == null || !Number.isFinite(Number(storeGrossProfit)) ? '门店综合毛利待核算' : !result ? '个人销售毛利待核算' : '' };
 }
 
 module.exports = { money, estimateStaffCommission, estimateManagerCommission, employeeEstimate };

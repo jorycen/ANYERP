@@ -39,6 +39,13 @@ test('cross-month estimates add each month without reapplying tiers to a combine
   const r=await R.load({staffId:9,roles:['boss']},{startDate:'2026-10-01',endDate:'2026-11-30',employeeId:'1'});
   a.equal(r.rows[0].grossProfit,4000);a.equal(r.rows[0].salesCommission,500);
 });
+test('manager with configured line shows pending store accounting in report and export',async t=>{
+  fixture(t);
+  t.mock.method(F,'queryFinancialProfit',async()=>({summary:{productGrossProfit:null,operationsGrossProfit:0},storeSummaries:[{storeId:'S',summary:{companyGrossProfit:null,profitPendingCount:45}}]}));
+  const r=await R.load({staffId:9,roles:['boss']},{startDate:'2026-11-01',endDate:'2026-11-30',employeeId:'2'});
+  a.equal(r.rows[0].breakEvenLine,1000);a.equal(r.rows[0].status,'pending');a.match(r.rows[0].remark,/45笔/);
+  a.equal(R.exportRows(r.rows)[0].绩效预估,'待核算');
+});
 test('Excel output matches the same employee records',async t=>{
   fixture(t);
   const query={startDate:'2026-11-01',endDate:'2026-11-30'},user={staffId:9,roles:['boss']};

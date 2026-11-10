@@ -10,7 +10,7 @@ const R = require('../src/modules/report/employeeProfitSummary');
   assert.equal(result.rows.length, exported.length);
   result.rows.forEach((r,i) => {
     assert.equal(exported[i].毛利, r.grossProfit);
-    assert.equal(exported[i].绩效预估, r.performanceEstimate ?? '待配置');
+    assert.equal(exported[i].绩效预估, r.performanceEstimate ?? (r.status === 'pending' ? '待核算' : '待配置'));
   });
   if (result.rows.length) {
     const person = result.rows[0];
