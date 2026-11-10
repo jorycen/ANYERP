@@ -5,7 +5,7 @@ const money = value => Math.round(Number(value || 0) * 100) / 100;
 const configured = value => value !== null && value !== undefined && String(value).trim() !== '' && Number.isFinite(Number(value)) && Number(value) >= 0;
 
 function estimateStaffCommission(grossProfit, commissionBase) {
-  if (!configured(commissionBase) || !Number.isFinite(Number(grossProfit))) return null;
+  if (!configured(commissionBase) || grossProfit == null || !Number.isFinite(Number(grossProfit))) return null;
   const gross = Number(grossProfit || 0);
   const base = Math.max(0, Number(commissionBase || 0));
   const tier = base * 1.5;
@@ -15,7 +15,7 @@ function estimateStaffCommission(grossProfit, commissionBase) {
 }
 
 function estimateManagerCommission(grossProfit, breakEvenLine, storeGrossProfit, storeRate = 0.03) {
-  if (!configured(breakEvenLine) || !Number.isFinite(Number(grossProfit)) || !Number.isFinite(Number(storeGrossProfit))) return null;
+  if (!configured(breakEvenLine) || grossProfit == null || storeGrossProfit == null || !Number.isFinite(Number(grossProfit)) || !Number.isFinite(Number(storeGrossProfit))) return null;
   const gross = Number(grossProfit || 0);
   const line = Math.max(0, Number(breakEvenLine || 0));
   const storeGross = Number(storeGrossProfit || 0);

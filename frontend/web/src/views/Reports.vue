@@ -6,6 +6,7 @@
       </template>
 
       <el-tabs v-model="activeTab" class="module-tabs" @tab-change="onTabChange">
+        <el-tab-pane label="员工毛利汇总" name="employee-profit-summary" lazy><EmployeeProfitSummary /></el-tab-pane>
         <el-tab-pane label="业务达成" name="achievement" lazy><MonthlyIndicatorReport /></el-tab-pane>
         <el-tab-pane label="经营数据看板" name="dashboard" lazy>
           <BusinessDashboard />
@@ -521,6 +522,7 @@ import api from '../api'
 import MonthlyIndicatorReport from '../components/MonthlyIndicatorReport.vue'
 import { getRoleCode } from '../utils/user'
 import BusinessDashboard from '../components/BusinessDashboard.vue'
+import EmployeeProfitSummary from '../components/EmployeeProfitSummary.vue'
 import CareCreditReport from '../components/CareCreditReport.vue'
 
 const route = useRoute()

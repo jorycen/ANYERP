@@ -287,6 +287,7 @@ async function ensureApprovalSchemaCompatibility() {
 }
 
 async function runSchemaMigrations() {
+  await require('../modules/report/commissionConfig').Config.sync();
   const [memberTables] = await sequelize.query("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='T_CUSTOMER_MEMBER'");
   if (memberTables.length) {
     await checkAndAddColumn('T_CUSTOMER_MEMBER', 'purchase_phone', 'VARCHAR(32) NULL');
