@@ -14,6 +14,15 @@
     </el-row>
     <el-alert v-if="data.note" :title="data.note" type="info" :closable="false" class="note" />
     <el-table :data="data.rows || []" border stripe>
+      <el-table-column v-if="data.reportRole === 'manager'" type="expand"><template #default="{row}">
+        <el-table :data="row.commissionDetails || []" border size="small" style="margin:12px;width:calc(100% - 24px)">
+          <el-table-column prop="businessDate" label="业绩日期" width="120" />
+          <el-table-column prop="orderNo" label="业务单号" min-width="220" />
+          <el-table-column prop="sourceOrderNo" label="原销售单号" min-width="220" />
+          <el-table-column v-for="f in stageDetailColumns" :key="f.key" :label="f.label" min-width="150"><template #default="{row:detail}">{{ money(detail[f.key]) }}</template></el-table-column>
+        </el-table>
+        <p class="detail-note">费用扣减按两个阶段个人毛利占比分摊，见汇总列；退货冲回原单阶段。</p>
+      </template></el-table-column>
       <el-table-column v-for="c in data.columns || []" :key="c.key" :label="c.label" :min-width="c.key === 'remark' ? 300 : 125"><template #default="{ row }">{{ typeof row.cells?.[c.key] === 'number' ? money(row.cells[c.key]) : row.cells?.[c.key] }}</template></el-table-column>
     </el-table>
     <el-dialog v-model="configOpen" title="月度提成参数配置" width="900px" destroy-on-close>
@@ -21,7 +30,7 @@
       <div v-loading="configLoading">
         <h4>个人提成基数</h4>
         <el-table :data="config.employees" max-height="320" border><el-table-column prop="employeeName" label="员工" /><el-table-column prop="storeName" label="门店" /><el-table-column label="提成基数"><template #default="{ row }"><el-input v-model="row.commissionBase" placeholder="待配置" /></template></el-table-column><el-table-column label="操作" width="90"><template #default="{ row }"><el-button link type="primary" :disabled="saving" @click="save('staff', row)">保存</el-button></template></el-table-column></el-table>
-        <h4>门店盈亏平衡线（全店销售端毛利未超过：个人15%；超过：个人25%）</h4>
+        <h4>门店盈亏平衡线（按当月全店销售端流水累计；跨线前个人毛利15%，跨线后个人毛利25%）</h4>
         <el-table :data="config.stores" max-height="260" border><el-table-column prop="storeName" label="门店" /><el-table-column label="盈亏平衡线"><template #default="{ row }"><el-input v-model="row.breakEvenLine" placeholder="待配置" /></template></el-table-column><el-table-column label="操作" width="90"><template #default="{ row }"><el-button link type="primary" :disabled="saving" @click="save('store', row)">保存</el-button></template></el-table-column></el-table>
       </div>
       <template #footer><el-button @click="configOpen = false">关闭</el-button></template>
@@ -39,6 +48,7 @@ const configOpen = ref(false), configLoading = ref(false), saving = ref(false), 
 const panels = [{ key: 'sales', name: '销售端' }, { key: 'product', name: '产品端' }, { key: 'operations', name: '运营端' }]
 const reportRole=ref('all')
 const reportRoles=[{value:'all',label:'全部'},{value:'staff',label:'店员'},{value:'manager',label:'店长'},{value:'product',label:'产品'},{value:'operations',label:'运营'}]
+const stageDetailColumns=[{key:'storeGrossBefore',label:'门店累计毛利（前）'},{key:'storeGrossAfter',label:'门店累计毛利（后）'},{key:'grossProfit',label:'个人毛利'},{key:'lowGrossProfit',label:'15%阶段个人毛利'},{key:'highGrossProfit',label:'25%阶段个人毛利'}]
 const visiblePanels=computed(()=>panels.filter(p=>!data.value.reportRole||data.value.reportRole==='all'||p.key===(['staff','manager'].includes(data.value.reportRole)?'sales':data.value.reportRole)))
 async function changeRole(){if(['product','operations'].includes(reportRole.value))employeeId.value='';await load()}
 const money = (v, empty = '待核算') => v == null || v === '' ? empty : '¥' + Number(v).toLocaleString('zh-CN', {minimumFractionDigits:2,maximumFractionDigits:2})

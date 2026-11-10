@@ -23,21 +23,26 @@ test('Heshenghui staff examples and tier boundary remain continuous', () => {
   assert.equal(C.estimateStaffCommission(100, 0), 30);
 });
 test('manager exceptions and special store rates', () => {
-  const config = { commissionBase: 1000, breakEvenLine: 1000 };
+  const config = { commissionBase: 1000, breakEvenLine: 1000,stages:{lowNetGrossProfit:2000,highNetGrossProfit:0} };
   assert.equal(C.employeeEstimate({ employeeName: '卢珏', isManager: true }, 2000, 10000, config).rule, 'staff');
   assert.equal(C.employeeEstimate({ employeeName: '石高铭', isManager: true }, 2000, 10000, config).storeCommission, 500);
-  assert.equal(C.employeeEstimate({ employeeName: '其他', isManager: true }, 2000, 10000, config).performanceEstimate, 800);
+  assert.equal(C.employeeEstimate({ employeeName: '其他', isManager: true }, 2000, 10000, config).performanceEstimate, 600);
 });
-test('store total selects one rate for the entire manager personal profit', () => {
-  assert.equal(C.estimateManagerCommission(2000, 10000, 9999).personal, 300);
-  assert.equal(C.estimateManagerCommission(2000, 10000, 10000).personal, 300);
-  assert.equal(C.estimateManagerCommission(2000, 10000, 10001).personal, 500);
-  // Personal profit exceeding the store line does not select the 25% rate.
-  assert.equal(C.estimateManagerCommission(12000, 10000, 9999).personal, 1800);
+test('manager commission sums chronological stages without repricing earlier personal profit', () => {
+  assert.equal(C.estimateManagerCommission(2000,10000,20000,.03,{lowNetGrossProfit:2000,highNetGrossProfit:0}).personal,300);
+  assert.equal(C.estimateManagerCommission(2000,10000,20000,.03,{lowNetGrossProfit:1000,highNetGrossProfit:1000}).personal,400);
+  assert.equal(C.estimateManagerCommission(2000,10000,20000,.03,{lowNetGrossProfit:0,highNetGrossProfit:2000}).personal,500);
+  assert.equal(C.estimateManagerCommission(2000,10000,20000),null);
+  assert.equal(C.estimateManagerCommission(2000,10000,20000,.03,{lowNetGrossProfit:1000,highNetGrossProfit:999}),null);
 });
 test('configured line with pending store total is pending accounting, not missing configuration', () => {
   const r = C.employeeEstimate({ employeeName: '石高铭', isManager: true }, 31858.29, null, {breakEvenLine:100000});
   assert.equal(r.status, 'pending'); assert.equal(r.reason, '门店销售端毛利待核算'); assert.equal(r.performanceEstimate, null);
   const missing = C.employeeEstimate({ employeeName: '石高铭', isManager: true }, 100, 1000, {});
   assert.equal(missing.status, 'unconfigured'); assert.equal(missing.reason, '门店盈亏平衡线未配置');
+});
+
+test('known store commission remains available when personal original tiers are pending',()=>{
+ const r=C.employeeEstimate({employeeName:'石高铭',isManager:true},1000,10000,{breakEvenLine:1000,stages:{reason:'原单阶段待核实'}});
+ assert.equal(r.storeCommission,500);assert.equal(r.salesCommission,null);assert.equal(r.performanceEstimate,null);assert.equal(r.status,'pending');
 });

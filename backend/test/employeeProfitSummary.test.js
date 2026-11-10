@@ -6,7 +6,9 @@ const R = require('../src/modules/report/employeeProfitSummary');
 const D = require('../src/modules/report/dashboardDataSource').RealtimeSqlDashboardDataSource;
 const F = require('../src/modules/report/financialProfitController');
 const E = require('../src/modules/finance/expenseProfitDeduction');
+const T = require('../src/modules/report/managerCommissionTimeline');
 function fixture(t) {
+  t.mock.method(T,'createLoader',()=>({forStaff:async()=>({lowGrossProfit:0,highGrossProfit:3000,reason:'',details:[]})}));
   t.mock.method(C, 'scope', async()=>[{store_id:'S',name:'门店',manager_staff_id:2}]);
   t.mock.method(C, 'options', async()=>({ stores:[{storeId:'S',breakEvenLine:1000}],employees:[
     {staffId:'1',employeeName:'店员',storeId:'S',commissionBase:1000,roles:'staff'},
@@ -116,6 +118,18 @@ test('side totals accumulate monthly values and reject invalid classification',a
  const user={staffId:9,roles:['boss']},query={startDate:'2026-10-01',endDate:'2026-11-30',reportRole:'operations'};
  const r=await R.load(user,query);a.equal(r.rows[0].grossProfit,400);a.equal(r.panels.operations.grossProfit,400);
  await a.rejects(R.load(user,{...query,reportRole:'invalid'}),{status:400});
+});
+
+test('manager stage expenses and Excel share backend stage totals',async t=>{
+ fixture(t);
+ t.mock.method(T,'createLoader',()=>({forStaff:async()=>({lowGrossProfit:1000,highGrossProfit:2000,reason:'',details:[]})}));
+ t.mock.method(E,'loadMonthly',async()=>[{staffId:'2',staffName:'石高铭',amount:300}]);
+ const user={staffId:9,roles:['boss']},query={startDate:'2026-11-01',endDate:'2026-11-30',reportRole:'manager'};
+ const result=await R.load(user,query),row=result.rows[0];
+ a.equal(row.lowDeduction,100);a.equal(row.highDeduction,200);a.equal(row.lowCommission,135);a.equal(row.highCommission,450);a.equal(row.salesCommission,585);a.equal(row.performanceEstimate,1085);
+ const ctx={state:{user},query,set(){}};await R.exportReport(ctx);
+ const X=require('xlsx'),wb=X.read(ctx.body,{type:'buffer'}),rows=X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+ a.equal(rows[0]['15%阶段提成'],135);a.equal(rows[0]['25%阶段提成'],450);a.equal(rows[0].绩效合计,row.performanceEstimate);
 });
 test('store staff cannot save commission configuration',async()=>{
   await a.rejects(C.save({state:{user:{staffId:1,roles:['staff']}},request:{body:{}}}),{status:403});

@@ -691,7 +691,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
     const adjustmentWhere = returnWhere.replaceAll('rgp.CREATE_TIME', 'pa.CREATE_TIME');
     const returnAdjustments = await this.query(
       `SELECT DISTINCT CONCAT('return-adjustment:', pa.ADJUSTMENT_ID) AS order_id,
-        pa.ADJUSTMENT_NO AS order_no, pa.ORDER_NO AS source_order_no, 'return_adjustment' AS entry_type,
+        pa.ADJUSTMENT_NO AS order_no, pa.ORDER_NO AS source_order_no, o.ORDER_ID AS source_order_id, 'return_adjustment' AS entry_type,
         pa.CREATE_TIME AS create_time, o.STORE_ID AS store_id, s.NAME AS store_name,
         o.CREATE_STAFF_ID AS create_staff_id, o.CREATE_USER AS create_user,
         o.AUXILIARY_SALES_LIST AS auxiliary_sales_list, 0 AS sales_amount, 0 AS base_gross_profit

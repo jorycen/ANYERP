@@ -168,7 +168,7 @@ function alignTrend(currentRows, yoyRows, previousRows, canViewProfit) {
   });
 }
 
-function buildEmployeePerformance(orderRows, adjustmentRows, selectedEmployeeId, canViewProfit) {
+function buildEmployeePerformance(orderRows, adjustmentRows, selectedEmployeeId, canViewProfit, options = {}) {
   const adjustmentMap = new Map();
   adjustmentRows.forEach(row => {
     const orderId = String(row.orderId);
@@ -242,6 +242,10 @@ function buildEmployeePerformance(orderRows, adjustmentRows, selectedEmployeeId,
         orderId: order.order_id,
         orderNo: order.order_no,
         orderTime: order.create_time,
+          storeId: order.store_id,
+          sourceOrderId: order.source_order_id || order.order_id,
+          returnId: order.return_id,
+          sourceEntryType: order.entry_type || 'sale',
         storeName: order.store_name,
         staffId: participant.staffId,
         employeeName: participant.name,
@@ -273,7 +277,7 @@ function buildEmployeePerformance(orderRows, adjustmentRows, selectedEmployeeId,
 
   return {
     ranking,
-    details: details.slice(0, 100)
+    details: options.allDetails ? details : details.slice(0, 100)
   };
 }
 
