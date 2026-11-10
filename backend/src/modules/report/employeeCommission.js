@@ -38,7 +38,7 @@ function employeeEstimate(employee, grossProfit, storeGrossProfit, config = {}) 
     productCommission: null, operationsCommission: null, performanceEstimate: result?.total ?? null,
     storeRate: rate, personalRate: result?.personalRate ?? null,
     status: result ? 'estimated' : !configured(config.breakEvenLine) ? 'unconfigured' : 'pending',
-    reason: !configured(config.breakEvenLine) ? '门店盈亏平衡线未配置' : storeGrossProfit == null || !Number.isFinite(Number(storeGrossProfit)) ? '门店综合毛利待核算' : !result ? '个人销售毛利待核算' : '' };
+    reason: !configured(config.breakEvenLine) ? '门店盈亏平衡线未配置' : storeGrossProfit == null || !Number.isFinite(Number(storeGrossProfit)) ? '门店销售端毛利待核算' : !result ? '个人销售毛利待核算' : '' };
 }
 
 module.exports = { money, estimateStaffCommission, estimateManagerCommission, employeeEstimate };

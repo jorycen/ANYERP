@@ -24,7 +24,7 @@
       <div v-loading="configLoading">
         <h4>个人提成基数</h4>
         <el-table :data="config.employees" max-height="320" border><el-table-column prop="employeeName" label="员工" /><el-table-column prop="storeName" label="门店" /><el-table-column label="提成基数"><template #default="{ row }"><el-input v-model="row.commissionBase" placeholder="待配置" /></template></el-table-column><el-table-column label="操作" width="90"><template #default="{ row }"><el-button link type="primary" :disabled="saving" @click="save('staff', row)">保存</el-button></template></el-table-column></el-table>
-        <h4>门店盈亏平衡线（门店综合毛利未超过：个人15%；超过：个人25%）</h4>
+        <h4>门店盈亏平衡线（全店销售端毛利未超过：个人15%；超过：个人25%）</h4>
         <el-table :data="config.stores" max-height="260" border><el-table-column prop="storeName" label="门店" /><el-table-column label="盈亏平衡线"><template #default="{ row }"><el-input v-model="row.breakEvenLine" placeholder="待配置" /></template></el-table-column><el-table-column label="操作" width="90"><template #default="{ row }"><el-button link type="primary" :disabled="saving" @click="save('store', row)">保存</el-button></template></el-table-column></el-table>
       </div>
       <template #footer><el-button @click="configOpen = false">关闭</el-button></template>
@@ -40,7 +40,7 @@ const dates = ref([local.slice(0,7) + '-01', local]), storeId = ref(''), employe
 const filters = ref({ stores: [], employees: [] }), data = ref({}), applied = ref(null), loading = ref(false), exporting = ref(false)
 const configOpen = ref(false), configLoading = ref(false), saving = ref(false), month = ref(local.slice(0,7)), config = ref({ employees: [], stores: [] })
 const panels = [{ key: 'sales', name: '销售端' }, { key: 'product', name: '产品端' }, { key: 'operations', name: '运营端' }]
-const columns = [{ key:'grossProfit',label:'业绩毛利' }, {key:'expensePerformanceDeduction',label:'费用扣减'}, {key:'netGrossProfit',label:'扣减后毛利'}, {key:'commissionBase',label:'提成基数'}, {key:'breakEvenLine',label:'盈亏平衡线'}, {key:'storeGrossProfit',label:'门店综合毛利',empty:'待核算'}, {key:'personalRate',label:'店长个人提成比例'}, {key:'salesCommission',label:'销售端提成'}, {key:'storeCommission',label:'店长门店提成'}, {key:'productCommission',label:'产品端提成',empty:'待定'}, {key:'operationsCommission',label:'运营端提成',empty:'待定'}, {key:'performanceEstimate',label:'绩效预估'}]
+const columns = [{ key:'grossProfit',label:'业绩毛利' }, {key:'expensePerformanceDeduction',label:'费用扣减'}, {key:'netGrossProfit',label:'扣减后毛利'}, {key:'commissionBase',label:'提成基数'}, {key:'breakEvenLine',label:'盈亏平衡线'}, {key:'storeGrossProfit',label:'门店销售端毛利',empty:'待核算'}, {key:'personalRate',label:'店长个人提成比例'}, {key:'salesCommission',label:'销售端提成'}, {key:'storeCommission',label:'店长门店提成'}, {key:'productCommission',label:'产品端提成',empty:'待定'}, {key:'operationsCommission',label:'运营端提成',empty:'待定'}, {key:'performanceEstimate',label:'绩效预估'}]
 const money = (v, empty = '待核算') => v == null || v === '' ? empty : '¥' + Number(v).toLocaleString('zh-CN', {minimumFractionDigits:2,maximumFractionDigits:2})
 const cellValue = (row, c) => {
   if ((c.key === 'commissionBase' && row.rule === 'manager') || (['breakEvenLine','personalRate','storeGrossProfit'].includes(c.key) && row.rule === 'staff')) return '不适用'

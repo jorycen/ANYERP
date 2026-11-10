@@ -37,7 +37,7 @@ test('store total selects one rate for the entire manager personal profit', () =
 });
 test('configured line with pending store total is pending accounting, not missing configuration', () => {
   const r = C.employeeEstimate({ employeeName: '石高铭', isManager: true }, 31858.29, null, {breakEvenLine:100000});
-  assert.equal(r.status, 'pending'); assert.equal(r.reason, '门店综合毛利待核算'); assert.equal(r.performanceEstimate, null);
+  assert.equal(r.status, 'pending'); assert.equal(r.reason, '门店销售端毛利待核算'); assert.equal(r.performanceEstimate, null);
   const missing = C.employeeEstimate({ employeeName: '石高铭', isManager: true }, 100, 1000, {});
   assert.equal(missing.status, 'unconfigured'); assert.equal(missing.reason, '门店盈亏平衡线未配置');
 });
