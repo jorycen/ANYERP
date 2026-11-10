@@ -9,6 +9,7 @@ const { sendExcel } = require('../../utils/excelExport');
 const { isSelfOnlyReportUser } = require('../../utils/storePermissions');
 const presentation = require('./employeeProfitColumns');
 const timeline = require('./managerCommissionTimeline');
+const storeAllocationService=require('./storeCommissionAllocation');
 function periods(query) {
   const start = String(query.startDate || ''), end = String(query.endDate || '');
   const valid = s => /^\d{4}-\d{2}-\d{2}$/.test(s) && Number.isFinite(Date.parse(s)) && new Date(s).toISOString().slice(0,10) === s;
@@ -44,6 +45,10 @@ async function load(user, query) {
     for (const staff of configs.employees) if (!ranks.some(r => String(r.staffId) === staff.staffId)) ranks.push({ staffId: staff.staffId, employeeName: staff.employeeName, grossProfit: 0, netGrossProfit: 0, expensePerformanceDeduction: 0 });
     const people = ranks.length ? await M.Staff.findAll({ where: { staff_id: { [Op.in]: ranks.map(x => x.staffId).filter(Boolean) } }, raw: true }) : [];
     const financial = storeIds.length ? await require('./financialProfitController').queryFinancialProfit({ storeIds, ...period, includeStores: true }) : { summary: {}, storeSummaries: [] };
+    const allocations=storeIds.length?await storeAllocationService.load(financial,stores,period):{owners:new Map(),missing:[],people:[]};
+    for(const person of allocations.people){if(!people.some(p=>String(p.staff_id)===String(person.staff_id)))people.push(person);if(!ranks.some(r=>String(r.staffId)===String(person.staff_id)))ranks.push({staffId:String(person.staff_id),employeeName:person.name,grossProfit:0,netGrossProfit:0,expensePerformanceDeduction:0});}
+    for(const [staffId]of allocations.owners)if(!ranks.some(r=>String(r.staffId)===staffId))ranks.push({staffId,employeeName:`历史店长#${staffId}`,grossProfit:0,netGrossProfit:0,expensePerformanceDeduction:0});
+    const personalConfigs=await C.staffConfigs(period.month,ranks.map(r=>r.staffId));
     const monthEnd=new Date(Date.UTC(Number(period.month.slice(0,4)),Number(period.month.slice(5)),0)).toISOString().slice(0,10);
     if(period.startDate===`${period.month}-01`&&period.endDate===monthEnd)managerTimeline.seed?.(period.month,financial);
     for (const key of ['product', 'operations']) {
@@ -62,11 +67,15 @@ async function load(user, query) {
     for (const row of ranks) {
       if (selected && String(row.staffId) !== selected) continue;
       const person = people.find(p => String(p.staff_id) === String(row.staffId));
-      const store = stores.find(s => String(s.store_id) === String(person?.store_id));
+      const allocation=allocations.owners.get(String(row.staffId))||{commission:0,grossProfit:0,storeIds:[],issues:[]};
+      const origin=performance.details.find(d=>String(d.staffId)===String(row.staffId));
+      const store = stores.find(s => String(s.store_id) === String(person?.store_id))||stores.find(s=>String(s.store_id)===String(allocation.storeIds[0]||origin?.storeId));
       const option = configs.employees.find(s => s.staffId === String(row.staffId));
+      const personalBase=personalConfigs.find(c=>String(c.entity_id)===String(row.staffId))?.amount??option?.commissionBase;
       const sc = configs.stores.find(s => s.storeId === store?.store_id);
       const roles = String(option?.roles || person?.role_code || '').split(',');
       const isManager = roles.some(r => ['manager','store_manager','store_admin'].includes(r)) || String(store?.manager_staff_id) === String(row.staffId);
+      const reportManager=isManager||allocations.owners.has(String(row.staffId));
       const storeSummary = financial.storeSummaries?.find(s => String(s.storeId) === String(store?.store_id))?.summary;
       const storeGross = storeSummary?.salesGrossProfit;
       let stages;
@@ -74,8 +83,11 @@ async function load(user, query) {
         const grossStages=await managerTimeline.forStaff({period,storeId:store.store_id,staffId:row.staffId,configs,performanceDetails:performance.details});
         stages=timeline.netStages(grossStages,row.grossProfit,row.expensePerformanceDeduction??0,'proportional');
       }
-      const estimate = employeeEstimate({ ...row, isManager }, row.netGrossProfit, storeGross, { commissionBase: option?.commissionBase, breakEvenLine: sc?.breakEvenLine,stages });
-      const issues=[...(stages?.issues||[])];
+      const estimate = employeeEstimate({ ...row, isManager }, row.netGrossProfit, storeGross, { commissionBase: personalBase, breakEvenLine: sc?.breakEvenLine,stages,originalStoreBasis:true,storeAllocation:allocation,includeHistoricalStoreCommission:allocations.owners.has(String(row.staffId)) });
+      if(!person&&allocations.owners.has(String(row.staffId)))Object.assign(estimate,{salesCommission:null,performanceEstimate:null,status:'pending',reason:'历史店长员工档案未能定位'});
+      const ownershipPending=estimate.rule==='manager'||estimate.historicalStoreOwner?allocations.missing.filter(m=>m.storeId===String(store?.store_id)||allocation.storeIds.includes(m.storeId)):[];
+      if(ownershipPending.length)Object.assign(estimate,{storeCommission:null,performanceEstimate:null,status:'pending',reason:estimate.reason||'业务发生时的店长任职依据未确认'});
+      const issues=[...(stages?.issues||[]),...allocation.issues,...ownershipPending.map(m=>({...m,originalStoreId:m.storeId}))];
       const addReason=reason=>{if(reason&&!issues.some(i=>i.reason===reason))issues.push({reason,month:period.month});};
       if(estimate.status!=='estimated')addReason(estimate.reason);
       if(estimate.rule==='manager'&&storeGross==null){
@@ -85,21 +97,28 @@ async function load(user, query) {
       if(!store)addReason('员工当前门店未匹配');
       if (!store) Object.assign(estimate, { salesCommission: null, storeCommission: null, performanceEstimate: null, status: 'unconfigured', reason: '员工当前门店未匹配' });
       const key = String(row.staffId || row.employeeName), previous = combined.get(key);
-      const current = { ...row, reportRole:isManager?'manager':roles.some(r=>['clerk','staff','salesperson'].includes(r))?'staff':'other',sideName:'销售端',storeId: store?.store_id || '', storeName: store?.name || '未匹配当前门店', role: option?.roleNames || roles.join(' / '),
-        commissionBase: estimate.rule === 'staff' ? option?.commissionBase ?? null : null,
+      const current = { ...row, reportRole:reportManager?'manager':roles.some(r=>['clerk','staff','salesperson'].includes(r))?'staff':'other',sideName:'销售端',storeId: store?.store_id || '', storeName: store?.name || '未匹配当前门店', role: (option?.roleNames || roles.join(' / '))+(estimate.historicalStoreOwner?'（含历史门店提成）':''),
+        commissionBase: estimate.rule === 'staff' ? personalBase ?? null : null,
         breakEvenLine: estimate.rule === 'manager' ? sc?.breakEvenLine ?? null : null,
-        storeGrossProfit: estimate.rule === 'manager' ? storeGross ?? null : null, ...estimate,issues,
+        storeGrossProfit: (estimate.rule === 'manager'||estimate.historicalStoreOwner)&&!ownershipPending.length ? allocation.grossProfit : null,commissionStoreNames:allocation.storeIds.map(id=>stores.find(s=>String(s.store_id)===String(id))?.name||id).join('、'), ...estimate,issues,
         remark: `${period.month}：${estimate.reason || '已计算'}；店长按全店销售端流水累计跨线，个人毛利分15%/25%两阶段，退货冲回原单阶段；产品/运营提成待定；按月计算，区间内不折算基数` };
       if (previous) {
         for (const field of ['grossProfit','expensePerformanceDeduction','netGrossProfit','salesCommission','storeCommission','performanceEstimate','storeGrossProfit','lowGrossProfit','highGrossProfit','lowDeduction','highDeduction','lowNetGrossProfit','highNetGrossProfit','lowCommission','highCommission']) current[field] = previous[field] == null || current[field] == null ? null : money(previous[field] + Number(current[field]));
         current.commissionDetails=[...(previous.commissionDetails||[]),...(current.commissionDetails||[])];
         current.issues=[...(previous.issues||[]),...current.issues];
+        current.commissionStoreNames=[...new Set([previous.commissionStoreNames,current.commissionStoreNames].filter(Boolean))].join('、');
         current.status = [previous.status, current.status].includes('unconfigured') ? 'unconfigured' : current.performanceEstimate == null ? 'pending' : 'estimated';
         current.personalRate = null;
         current.remark = previous.remark + '；' + current.remark;
         current.commissionBase = null; current.breakEvenLine = null; current.remark += '；跨月参数按各月配置';
       }
       combined.set(key, current);
+    }
+    if(!selected)for(const missing of allocations.missing){
+      const store=stores.find(s=>String(s.store_id)===missing.storeId),key=`history:${missing.storeId}:${missing.originalMonth}`;
+      const issue={...missing,originalStoreId:missing.storeId,reason:missing.reason};
+      const previous=combined.get(key);
+      combined.set(key,{employeeName:'店长归属待确认',storeId:missing.storeId,storeName:store?.name||missing.storeId,role:'历史店长待确认',reportRole:'manager',rule:'manager',sideName:'销售端',grossProfit:0,expensePerformanceDeduction:0,netGrossProfit:0,storeCommission:null,salesCommission:0,performanceEstimate:null,status:'pending',reason:missing.reason,issues:[...(previous?.issues||[]),issue],remark:'请填写原业务月份的店长及任职有效期；不使用当前店长代替',reviewIdentity:key});
     }
   }
   let rows = [...combined.values()].filter(r=>!['staff','manager'].includes(reportRole)||r.reportRole===reportRole).sort((a,b) => Number(b.netGrossProfit) - Number(a.netGrossProfit));
@@ -109,7 +128,7 @@ async function load(user, query) {
   if (reportRole==='all' && query.reportRole) rows.push(...sideRows.values());
   if (['product','operations'].includes(reportRole)) rows=[...sideRows.entries()].filter(([id])=>id.startsWith(reportRole+':')).map(([,row])=>row);
   const fields=presentation.columns(reportRole).filter(c=>reportRole!=='manager'||c.key!=='commissionBase');
-  for(const row of rows){row.cells=Object.fromEntries(fields.map(c=>[c.key,presentation.display(row,c)]));row.reviewKey=row.staffId?`staff:${row.staffId}`:`${row.sideName}:${row.storeId}`;}
+  for(const row of rows){row.cells=Object.fromEntries(fields.map(c=>[c.key,presentation.display(row,c)]));row.reviewKey=row.reviewIdentity||(row.staffId?`staff:${row.staffId}`:`${row.sideName}:${row.storeId}`);}
   return { rows, panels, columns:fields,reportRole,canConfigure: C.canConfigure(user), note: '店长按当月全店销售端经营流水累计：跨线前个人毛利15%，跨线后25%，跨线订单拆分；退货冲回原单阶段，个人经营调整沿原单阶段；费用按两阶段个人毛利占比分摊。门店额外3%/5%提成不变。产品、运营暂按门店汇总，负责人留空。' };
 }
 async function report(ctx) { ctx.body = { code: 0, data: await load(ctx.state.user, ctx.query) }; }

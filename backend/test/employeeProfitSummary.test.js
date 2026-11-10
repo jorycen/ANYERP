@@ -7,7 +7,10 @@ const D = require('../src/modules/report/dashboardDataSource').RealtimeSqlDashbo
 const F = require('../src/modules/report/financialProfitController');
 const E = require('../src/modules/finance/expenseProfitDeduction');
 const T = require('../src/modules/report/managerCommissionTimeline');
+const A=require('../src/modules/report/storeCommissionAllocation');
 function fixture(t) {
+  t.mock.method(C,'staffConfigs',async()=>[]);
+  t.mock.method(A,'load',async()=>({owners:new Map([['2',{commission:500,grossProfit:10000,storeIds:['S'],issues:[]}]]),missing:[],people:[]}));
   t.mock.method(T,'createLoader',()=>({forStaff:async()=>({lowGrossProfit:0,highGrossProfit:3000,reason:'',details:[]})}));
   t.mock.method(C, 'scope', async()=>[{store_id:'S',name:'门店',manager_staff_id:2}]);
   t.mock.method(C, 'options', async()=>({ stores:[{storeId:'S',breakEvenLine:1000}],employees:[
@@ -47,9 +50,10 @@ test('cross-month estimates add each month without reapplying tiers to a combine
 });
 test('manager with configured line shows pending store accounting in report and export',async t=>{
   fixture(t);
+  t.mock.method(A,'load',async()=>({owners:new Map([['2',{commission:null,grossProfit:null,storeIds:['S'],issues:[{month:'2026-11',reason:'门店销售端毛利待核算'}]}]]),missing:[],people:[]}));
   t.mock.method(F,'queryFinancialProfit',async()=>({summary:{productGrossProfit:null,operationsGrossProfit:0},storeSummaries:[{storeId:'S',summary:{companyGrossProfit:null,salesGrossProfit:null,profitPendingCount:45}}]}));
   const r=await R.load({staffId:9,roles:['boss']},{startDate:'2026-11-01',endDate:'2026-11-30',employeeId:'2'});
-  a.equal(r.rows[0].breakEvenLine,1000);a.equal(r.rows[0].status,'pending');a.match(r.rows[0].remark,/门店销售端毛利待核算/);
+  a.equal(r.rows[0].breakEvenLine,1000);a.equal(r.rows[0].status,'pending');a.ok(r.rows[0].issues.some(i=>i.reason.includes('门店销售端毛利待核算')));
   a.equal(R.exportRows(r.rows)[0].绩效预估,'待核算');
 });
 test('Excel output matches the same employee records',async t=>{
@@ -85,7 +89,7 @@ test('role views select employees, retain full-store commission and export match
   a.ok(!staff.columns.some(c=>c.key==='breakEvenLine'));a.equal(manager.rows.length,1);a.equal(manager.rows[0].storeCommission,500);
   const ctx={state:{user},query:{...base,reportRole:'manager'},set(){}};await R.exportReport(ctx);
   const X=require('xlsx'),wb=X.read(ctx.body,{type:'buffer'}),rows=X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
-  a.equal(rows[0].门店销售端毛利,10000);a.equal(rows[0].门店提成,500);a.ok(!('提成基数' in rows[0]));
+  a.equal(rows[0].门店提成归属毛利,10000);a.equal(rows[0].门店提成,500);a.ok(!('提成基数' in rows[0]));
 });
 
 test('product and operations group by store with empty owner and retain unknown values',async t=>{
@@ -109,7 +113,7 @@ test('manager identity preserves employee-rule exception without irrelevant plac
  t.mock.method(C,'options',async()=>({stores:[{storeId:'S',breakEvenLine:1000}],employees:[{staffId:'2',employeeName:'葛宇',roles:'manager',commissionBase:1000}]}));
  t.mock.method(D.prototype,'getEmployeeOrderRows',async()=>[{order_id:'2',create_staff_id:2,create_user:'葛宇',base_gross_profit:3000,sales_amount:5000,auxiliary_sales_list:'[]'}]);
  const r=await R.load({staffId:9,roles:['boss']},{startDate:'2026-11-01',endDate:'2026-11-30',reportRole:'manager'});
- a.equal(r.rows.length,1);a.equal(r.rows[0].rule,'staff');a.equal(r.rows[0].cells.commissionBase,undefined);a.equal(r.rows[0].cells.breakEvenLine,'');a.equal(r.rows[0].cells.storeCommission,'');
+ a.equal(r.rows.length,1);a.equal(r.rows[0].rule,'staff');a.equal(r.rows[0].cells.commissionBase,undefined);a.equal(r.rows[0].cells.breakEvenLine,undefined);a.equal(r.rows[0].cells.storeCommission,'');
  a.deepEqual(r.columns.slice(3,6).map(c=>c.key),['performanceEstimate','salesCommission','storeCommission']);a.ok(r.columns.slice(3,6).every(c=>c.bold));
 });
 
@@ -131,6 +135,27 @@ test('manager stage expenses and Excel share backend stage totals',async t=>{
  const ctx={state:{user},query,set(){}};await R.exportReport(ctx);
  const X=require('xlsx'),wb=X.read(ctx.body,{type:'buffer'}),rows=X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
  a.equal(rows[0]['15%阶段提成'],135);a.equal(rows[0]['25%阶段提成'],450);a.equal(rows[0].绩效合计,row.performanceEstimate);
+});
+
+test('historical owner remains individually calculated as clerk and receives original store entitlement',async t=>{
+ fixture(t);
+ t.mock.method(A,'load',async()=>({owners:new Map([['1',{commission:300,grossProfit:10000,storeIds:['S'],issues:[]}]]),missing:[],people:[]}));
+ const r=await R.load({staffId:9,roles:['boss']},{startDate:'2026-11-01',endDate:'2026-11-30',reportRole:'manager',employeeId:'1'});
+ a.equal(r.rows.length,1);a.equal(r.rows[0].salesCommission,250);a.equal(r.rows[0].storeCommission,300);a.equal(r.rows[0].performanceEstimate,550);a.equal(r.rows[0].cells.storeCommission,300);
+});
+
+test('unconfirmed history remains visibly pending rather than silently assigning current manager',async t=>{
+ fixture(t);
+ t.mock.method(A,'load',async()=>({owners:new Map(),people:[],missing:[{storeId:'S',month:'2026-11',originalMonth:'2026-11',reason:'业务发生时的店长任职依据未确认',from:'2026-11-01',to:'2026-12-01'}]}));
+ const r=await R.load({staffId:9,roles:['boss']},{startDate:'2026-11-01',endDate:'2026-11-30',reportRole:'manager'});
+ const person=r.rows.find(x=>String(x.staffId)==='2');a.equal(person.salesCommission,750);a.equal(person.storeCommission,null);a.equal(person.performanceEstimate,null);
+ a.ok(r.rows.some(x=>x.employeeName==='店长归属待确认'));a.equal(r.panels.sales.commission,null);
+});
+
+test('personal base follows the authorized employee even if not in the filtered current-store roster',async t=>{
+ fixture(t);t.mock.method(C,'staffConfigs',async()=>[{entity_id:'1',amount:1500}]);
+ const r=await R.load({staffId:9,roles:['boss']},{startDate:'2026-11-01',endDate:'2026-11-30',reportRole:'staff',employeeId:'1'});
+ a.equal(r.rows[0].commissionBase,1500);a.equal(r.rows[0].salesCommission,100);
 });
 test('store staff cannot save commission configuration',async()=>{
   await a.rejects(C.save({state:{user:{staffId:1,roles:['staff']}},request:{body:{}}}),{status:403});

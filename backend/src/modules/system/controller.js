@@ -899,9 +899,9 @@ async function setStoreManager(ctx) {
     const staff = await Staff.findOne({ where: { staff_id: staffId, status: 1, is_deleted: 0 } });
     if (!staff) ctx.throw(400, '店长不存在或已停用');
     if (String(staff.distributor_id) !== String(store.distributor_id)) ctx.throw(403, '店长必须属于该门店所属经销商');
-    await store.update({ manager_staff_id: staff.staff_id });
+    await require('../report/storeManagerHistory').updateStore(store,{manager_staff_id:staff.staff_id},ctx.state.user);
   } else {
-    await store.update({ manager_staff_id: null });
+    await require('../report/storeManagerHistory').updateStore(store,{manager_staff_id:null},ctx.state.user);
   }
   ctx.body = { code: 0, message: '门店店长已更新', data: { storeId, managerStaffId: store.manager_staff_id } };
 }

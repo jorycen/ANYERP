@@ -710,6 +710,8 @@ export default {
   getEmployeeProfitSummary: params => api.get('/report/employee-profit-summary', { params }),
   exportEmployeeProfitSummary: params => exportExcel('/report/employee-profit-summary/export', params, '员工毛利汇总.xlsx'),
   exportEmployeeProfitReview: params => exportExcel('/report/employee-profit-summary/export', {...params,review:'1'}, '毛利待核算需补资料清单.xlsx'),
+  previewEmployeeProfitReview: form => api.post('/report/employee-profit-summary/review-preview', form, {timeout:180000}),
+  applyEmployeeProfitReview: form => api.post('/report/employee-profit-summary/review-apply', form, {timeout:180000}),
   getCommissionConfig: params => api.get('/report/employee-profit-summary/config', { params }),
   saveCommissionConfig: data => api.put('/report/employee-profit-summary/config', data),
   exportEmployeePerformanceReport: (params) => exportExcel('/report/employee-performance/export', params, `个人毛利明细_${new Date().toISOString().slice(0, 10)}.xlsx`),

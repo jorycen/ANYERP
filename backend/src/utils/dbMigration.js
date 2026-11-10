@@ -335,6 +335,7 @@ async function runSchemaMigrations() {
   await checkAndAddColumn('T_RETURN_STOCK', 'APPLICANT_STAFF_ID', 'BIGINT NULL');
   await checkAndAddColumn('T_TRANSFER', 'APPLICANT_STAFF_ID', 'BIGINT NULL');
   await ensureCriticalSchemaCompatibility();
+  await require('../modules/report/storeManagerHistory').initialize();
   await ensureFinanceSchemaCompatibility();
   await ensureResourceSettlementSchemaCompatibility();
   await ensureProductSettlementFeatureSchema();

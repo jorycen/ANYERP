@@ -21,6 +21,10 @@ function sendExcel(ctx, rows, headers, fileName, sheetName = '数据', options =
     const sheet = XLSX.utils.json_to_sheet(extra.rows || []);
     if (extra.columnWidths) sheet['!cols'] = extra.columnWidths.map(wch => ({ wch }));
     XLSX.utils.book_append_sheet(workbook, sheet, extra.name);
+    if (extra.hidden) {
+      workbook.Workbook = workbook.Workbook || {};
+      workbook.Workbook.Sheets = workbook.SheetNames.map((name,index)=>({name,Hidden:index===workbook.SheetNames.length-1?1:workbook.Workbook.Sheets?.[index]?.Hidden||0}));
+    }
   }
   const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
   const encodedFileName = encodeURIComponent(fileName);

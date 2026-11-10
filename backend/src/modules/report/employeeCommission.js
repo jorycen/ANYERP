@@ -30,23 +30,25 @@ function employeeEstimate(employee, grossProfit, storeGrossProfit, config = {}) 
   const staffRule = ['卢珏', '葛宇'].includes(employee.employeeName) || !employee.isManager;
   if (staffRule) {
     const salesCommission = estimateStaffCommission(grossProfit, config.commissionBase);
-    return { rule: 'staff', salesCommission, storeCommission: 0, productCommission: null, operationsCommission: null,
-      performanceEstimate: salesCommission, status: salesCommission === null ? (configured(config.commissionBase) ? 'pending' : 'unconfigured') : 'estimated',
-      reason: !configured(config.commissionBase) ? '个人提成基数未配置' : salesCommission === null ? '个人销售毛利待核算' : '' };
+    const historicalStoreOwner=config.includeHistoricalStoreCommission&&!['卢珏','葛宇'].includes(employee.employeeName);
+    const storeCommission=historicalStoreOwner?config.storeAllocation.commission:0;
+    return { rule: 'staff',historicalStoreOwner, salesCommission, storeCommission, productCommission: null, operationsCommission: null,
+      performanceEstimate: salesCommission===null||storeCommission===null?null:money(salesCommission+storeCommission), status: salesCommission === null ? (configured(config.commissionBase) ? 'pending' : 'unconfigured') : storeCommission===null?'pending':'estimated',
+      reason: !configured(config.commissionBase) ? '个人提成基数未配置' : salesCommission === null ? '个人销售毛利待核算' : storeCommission===null?'历史门店提成依据待核实':'' };
   }
   const rate = ['石高铭', '唐陈'].includes(employee.employeeName) ? 0.05 : 0.03;
-  const result = estimateManagerCommission(grossProfit, config.breakEvenLine, storeGrossProfit, rate, config.stages);
-  const storeCommission=storeGrossProfit==null||!Number.isFinite(Number(storeGrossProfit))?null:money(Number(storeGrossProfit)*rate);
+  const result = estimateManagerCommission(grossProfit, config.originalStoreBasis?0:config.breakEvenLine, config.storeAllocation?0:storeGrossProfit, rate, config.stages);
+  const storeCommission=config.storeAllocation?config.storeAllocation.commission:storeGrossProfit==null||!Number.isFinite(Number(storeGrossProfit))?null:money(Number(storeGrossProfit)*rate);
   return { rule: 'manager', salesCommission: result?.personal ?? null, storeCommission,
-    productCommission: null, operationsCommission: null, performanceEstimate: result?.total ?? null,
+    productCommission: null, operationsCommission: null, performanceEstimate: result&&storeCommission!==null?money(result.personal+storeCommission):null,
     storeRate: rate, personalRate: result?.personalRate ?? null,
     lowGrossProfit:config.stages?.lowGrossProfit??null,highGrossProfit:config.stages?.highGrossProfit??null,
     lowDeduction:config.stages?.lowDeduction??null,highDeduction:config.stages?.highDeduction??null,
     lowNetGrossProfit:config.stages?.lowNetGrossProfit??null,highNetGrossProfit:config.stages?.highNetGrossProfit??null,
     lowCommission:result?.lowCommission??null,highCommission:result?.highCommission??null,
     commissionDetails:config.stages?.details||[],
-    status: result ? 'estimated' : !configured(config.breakEvenLine) ? 'unconfigured' : 'pending',
-    reason: !configured(config.breakEvenLine) ? '门店盈亏平衡线未配置' : storeGrossProfit == null || !Number.isFinite(Number(storeGrossProfit)) ? '门店销售端毛利待核算' : !result ? config.stages?.reason||'个人分阶段毛利待核算' : '' };
+    status: result&&storeCommission!==null ? 'estimated' : !config.originalStoreBasis&&!configured(config.breakEvenLine) ? 'unconfigured' : 'pending',
+    reason: !config.originalStoreBasis&&!configured(config.breakEvenLine) ? '门店盈亏平衡线未配置' : !config.storeAllocation&&storeGrossProfit==null?'门店销售端毛利待核算':!result ? config.stages?.reason||'个人分阶段毛利待核算' : storeCommission===null?'历史店长门店提成依据待核实':'' };
 }
 
 module.exports = { money, estimateStaffCommission, estimateManagerCommission, employeeEstimate };

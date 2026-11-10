@@ -164,11 +164,18 @@ async function loadFacts(filters, calculateOrder, transaction) {
   }
   for (const returnRows of group(returns, 'returnId').values()) {
     const original = originals.get(String(returnRows[0].orderId)) || frozenSales.get(`sale:${returnRows[0].orderId}`);
-    if (!original) throw Object.assign(new Error('退货无法追溯原销售，请核对原单状态及门店'), { status: 409 });
-    const raw = returnEvent(returnRows.sort((a,b) => String(a.itemId).localeCompare(String(b.itemId))), original, calculateOrder);
+    if (!original && !filters.salesStageOnly) throw Object.assign(new Error('退货无法追溯原销售，请核对原单状态及门店'), { status: 409 });
+    // Internal commission chronology only needs the frozen sales ledger below.
+    // An unrelated return's missing financial cost must not hide known sales facts.
+    const raw = original ? returnEvent(returnRows.sort((a,b) => String(a.itemId).localeCompare(String(b.itemId))), original, calculateOrder)
+      : finish({entryType:'return',eventKey:`return:${returnRows[0].returnId}`,entryNo:returnRows[0].returnNo,orderId:returnRows[0].orderId,orderNo:returnRows[0].orderNo,storeId:returnRows[0].storeId,storeName:returnRows[0].storeName,businessDate:returnRows[0].returnDate,detailItems:[],grossProfit:null,grossCost:null,bookCost:null,deductibleInputVat:null,costState:'pending',status:'cost_pending',pendingCostReason:'原销售财务成本未能追溯，销售端仅使用已冻结退货流水'});
     const returnId = returnRows[0].returnId, product = returnProducts.find(row => row.SOURCE_RETURN_ID === returnId);
     raw.instantRetail = isInstantRetail(orderMap.get(String(raw.orderId))?.[0] || {});
     raw.managementSalesGross = returnManagement.some(row => row.RETURN_ID === returnId) ? money(returnManagement.find(row => row.RETURN_ID === returnId).amount) : null;
+    if(!original&&filters.salesStageOnly){
+      const header=await M.Order.findByPk(raw.orderId,{attributes:['order_id','create_time','customer_source'],raw:true,transaction});
+      if(header)raw.instantRetail=isInstantRetail(header);else raw.managementSalesGross=null;
+    }
     raw.managementProductGross = money((product?.STATUS === 'posted' ? Number(product.GROSS_PROFIT_AMOUNT) : 0) + Number(returnedExternal.find(row => row.ENTRY_ID === `EXT-RET-${returnId}`)?.GROSS_PROFIT_AMOUNT || 0));
     raw.managementPending = product?.STATUS !== 'posted';
     items.push(applyReview(raw, reviewMap.get(raw.eventKey)));

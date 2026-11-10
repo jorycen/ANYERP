@@ -51,6 +51,8 @@ router.get('/employee-profit-summary', require('./employeeProfitSummary').report
 router.get('/employee-profit-summary/export', require('./employeeProfitSummary').exportReport);
 router.get('/employee-profit-summary/config', require('./employeeProfitSummary').config);
 router.put('/employee-profit-summary/config', require('./commissionConfig').save);
+router.post('/employee-profit-summary/review-preview', upload.single('file'), require('./employeeProfitImport').preview);
+router.post('/employee-profit-summary/review-apply', upload.single('file'), require('./employeeProfitImport').apply);
 router.get('/dashboard/filters', getDashboardFilters);
 router.get('/dashboard/overview', getDashboardOverview);
 router.get('/operating-profit', require('./operatingProfit').getOperatingProfit);

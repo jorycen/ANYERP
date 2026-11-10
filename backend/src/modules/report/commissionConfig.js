@@ -48,7 +48,7 @@ async function options(user, monthKey, storeId = '') {
     employees: staff.map(s => ({ ...s, staffId: String(s.staffId),
       commissionBase: find('staff', s.staffId)?.amount ?? null, revision: find('staff', s.staffId)?.revision ?? 0 })) };
 }
-async function save(ctx) {
+async function save(ctx, externalTransaction = null) {
   const user = ctx.state.user, body = ctx.request.body;
   if (!canConfigure(user)) fail('仅系统管理员或经销商管理员可设置提成参数', 403);
   const data = await options(user, month(body.month));
@@ -56,7 +56,7 @@ async function save(ctx) {
   if (!['staff', 'store'].includes(type) || !(type === 'staff' ? data.employees.some(x => x.staffId === id) : data.stores.some(x => x.storeId === id))) fail('配置对象不在授权范围', 403);
   if (!/^\d{1,10}(\.\d{1,2})?$/.test(String(body.amount ?? ''))) fail('请输入非负金额，最多两位小数');
   const key = `${body.month}:${type}:${id}`;
-  await M.sequelize.transaction(async transaction => {
+  const run=async transaction => {
     const old = await Config.findByPk(key, { transaction, lock: transaction.LOCK.UPDATE });
     if (Number(body.revision) !== Number(old?.revision || 0)) fail('配置已更新，请刷新后重试', 409);
     const before = old?.toJSON() || null;
@@ -65,7 +65,9 @@ async function save(ctx) {
     if (old) await old.update(payload, { transaction }); else await Config.create(payload, { transaction });
     await recordBusinessAction({ businessType: 'employee_commission_config', businessId: key, action: 'save', user,
       detail: { before, after: payload }, transaction });
-  });
+  };
+  if(externalTransaction&&typeof externalTransaction==='object')await run(externalTransaction);else await M.sequelize.transaction(run);
   ctx.body = { code: 0, message: '提成参数已保存' };
 }
-module.exports = { Config, month, scope, options, save, canConfigure };
+async function staffConfigs(monthKey,staffIds){month(monthKey);const ids=[...new Set(staffIds.filter(Boolean).map(String))];return ids.length?Config.findAll({where:{month_key:monthKey,entity_type:'staff',entity_id:{[Op.in]:ids}},raw:true}):[];}
+module.exports = { Config, month, scope, options, save, canConfigure,staffConfigs };

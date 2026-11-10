@@ -85,3 +85,13 @@ test('loader collects all cross-store blockers instead of only the first',async 
  const r=await loader.forStaff({period:{month:'2026-10',startDate:'2026-10-01',endDate:'2026-10-31'},storeId:'S',staffId:'M',performanceDetails:['A','B'].map(id=>({staffId:'M',orderId:id,sourceOrderId:id,orderNo:id,sourceEntryType:'sale',allocatedGrossProfit:1}))});
  a.equal(r.issues.length,2);a.deepEqual(r.issues.map(i=>i.orderNo),['A','B']);a.equal(r.lowGrossProfit,null);
 });
+
+test('personal cross-store profit uses original store threshold, not current store threshold',async t=>{
+ const M=require('../src/models'),F=require('../src/modules/report/financialProfitController'),C=require('../src/modules/report/commissionConfig');
+ t.mock.method(C,'options',async()=>({stores:[{storeId:'S',breakEvenLine:100000},{storeId:'T',breakEvenLine:1}]}));
+ t.mock.method(F,'queryFinancialProfit',async()=>({profitDetails:[{eventKey:'sale:A',entryType:'sale',orderId:'A',storeId:'S',businessDate:'2026-10-01',salesGrossProfit:99900},{eventKey:'sale:O',entryType:'sale',orderId:'O',storeId:'S',businessDate:'2026-10-02',salesGrossProfit:1000}]}));
+ t.mock.method(M.Order,'findAll',async()=>[{order_id:'A',store_id:'S',create_time:'2026-10-01 10:00:00'},{order_id:'O',store_id:'S',create_time:'2026-10-02 10:00:00'}]);
+ const loader=createLoader({user:{staffId:9},stores:[{store_id:'S'},{store_id:'T'}]});
+ const r=await loader.forStaff({period:{month:'2026-10',startDate:'2026-10-01',endDate:'2026-10-31'},storeId:'T',staffId:'M',performanceDetails:[{staffId:'M',storeId:'S',sourceEntryType:'sale',orderId:'O',sourceOrderId:'O',allocatedGrossProfit:1000,orderTime:'2026-10-02'}]});
+ a.equal(r.lowGrossProfit,100);a.equal(r.highGrossProfit,900);a.equal(r.reason,'');a.equal(r.details[0].storeId,'S');
+});

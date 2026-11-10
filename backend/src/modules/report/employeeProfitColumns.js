@@ -4,13 +4,14 @@ const gross=[c('grossProfit','毛利'),c('expensePerformanceDeduction','费用�
 function columns(role){
  if(['product','operations'].includes(role))return [...identity,c('grossProfit',role==='product'?'产品端毛利':'运营端毛利'),c('commission','提成','pending'),c('remark','备注','text')];
  if(role==='staff')return [...identity,...gross,c('commissionBase','提成基数'),c('salesCommission','销售端提成'),c('remark','备注','text')];
- if(role==='manager')return [...identity,...['performanceEstimate','salesCommission','storeCommission'].map((key,i)=>({...c(key,['绩效合计','个人销售提成','门店提成'][i]),bold:true})),...gross,c('storeGrossProfit','门店销售端毛利'),c('breakEvenLine','盈亏平衡线'),
+ if(role==='manager')return [...identity,...['performanceEstimate','salesCommission','storeCommission'].map((key,i)=>({...c(key,['绩效合计','个人销售提成','门店提成'][i]),bold:true})),...gross,c('commissionStoreNames','门店提成归属门店','text'),c('storeGrossProfit','门店提成归属毛利'),
    c('lowGrossProfit','15%阶段个人毛利'),c('lowDeduction','15%阶段费用扣减'),c('lowNetGrossProfit','15%阶段扣减后毛利'),c('lowCommission','15%阶段提成'),
    c('highGrossProfit','25%阶段个人毛利'),c('highDeduction','25%阶段费用扣减'),c('highNetGrossProfit','25%阶段扣减后毛利'),c('highCommission','25%阶段提成'),
    c('remark','备注','text')];
  return [...identity,c('sideName','所属端','text'),...gross,c('performanceEstimate','绩效预估'),c('remark','备注','text')];
 }
 function display(row,column){
+ if(row.historicalStoreOwner&&['storeGrossProfit','storeCommission'].includes(column.key))return row[column.key]??'待核算';
  if(row.rule==='staff'&&['storeGrossProfit','breakEvenLine','personalRate','storeCommission','lowGrossProfit','highGrossProfit','lowDeduction','highDeduction','lowNetGrossProfit','highNetGrossProfit','lowCommission','highCommission'].includes(column.key))return '';
  if(row.rule==='manager'&&column.key==='commissionBase')return '';
  const value=row[column.key];

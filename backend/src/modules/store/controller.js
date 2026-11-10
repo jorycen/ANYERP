@@ -342,7 +342,7 @@ async function createStore(ctx) {
     ? await resolveManagerStaff(ctx, normalizedManagerStaffId, distributorId)
     : undefined;
 
-  const store = await Store.create({
+  const store = await require('../report/storeManagerHistory').createStore({
     store_id: storeId,
     distributor_id: distributorId,
     region_id: regionId,
@@ -399,14 +399,14 @@ async function updateStore(ctx) {
     ? await resolveManagerStaff(ctx, normalizedManagerStaffId, store.distributor_id)
     : undefined;
 
-  await store.update({
+  await require('../report/storeManagerHistory').updateStore(store,{
     name: name || store.name,
     region_id: regionId,
     phone: phone !== undefined ? phone : store.phone,
     address: address !== undefined ? address : store.address,
     status: status !== undefined ? status : store.status,
     ...(hasManagerField ? { manager_staff_id: resolvedManagerStaffId } : {})
-  });
+  },user);
 
   ctx.body = { code: 0, message: '更新成功' };
 }

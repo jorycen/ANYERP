@@ -46,3 +46,9 @@ test('known store commission remains available when personal original tiers are 
  const r=C.employeeEstimate({employeeName:'石高铭',isManager:true},1000,10000,{breakEvenLine:1000,stages:{reason:'原单阶段待核实'}});
  assert.equal(r.storeCommission,500);assert.equal(r.salesCommission,null);assert.equal(r.performanceEstimate,null);assert.equal(r.status,'pending');
 });
+
+test('historical store entitlement does not turn a current clerk personal commission into manager tiers',()=>{
+ const r=C.employeeEstimate({employeeName:'曾任店长',isManager:false},2000,10000,{commissionBase:1000,includeHistoricalStoreCommission:true,storeAllocation:{commission:-30}});
+ assert.equal(r.rule,'staff');assert.equal(r.salesCommission,250);assert.equal(r.storeCommission,-30);assert.equal(r.performanceEstimate,220);
+ const special=C.employeeEstimate({employeeName:'卢珏',isManager:true},2000,10000,{commissionBase:1000,includeHistoricalStoreCommission:true,storeAllocation:{commission:500}});assert.equal(special.storeCommission,0);
+});

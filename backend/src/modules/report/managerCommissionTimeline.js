@@ -35,8 +35,8 @@ function buildTimeline(events,line,originalStages=new Map()){
     });
     if(amount===null)cumulative=null;
     else if(cumulative!==null)cumulative=money(cumulative+amount);
-    if(event.entryType==='sale')saleStages.set(String(event.orderId),{fraction:reason?null:fraction,eventKey:event.eventKey,reason});
-    entries.push({...event,reason,fraction:reason?null:fraction,before,after:cumulative,allocations});
+    if(event.entryType==='sale')saleStages.set(String(event.orderId),{fraction:reason?null:fraction,eventKey:event.eventKey,reason,line});
+    entries.push({...event,reason,fraction:reason?null:fraction,line,before,after:cumulative,allocations});
   }
   return {entries,saleStages,cumulative};
 }
@@ -66,7 +66,8 @@ async function eventFacts(events,storeIds){
       const reward=rewards.find(r=>String(r.id)===id);timestamp=reward?.created_at;
     }
     if(Number(event.salesGrossProfit)!==0&&!timestamp)reason=reason||'销售流水发生时间缺失';
-    return {...event,amount:event.salesGrossProfit,time:timeKey(event,timestamp),reason,originalDate:order?day(order.archive_time||order.create_time):null,originalMonth:order?day(order.archive_time||order.create_time).slice(0,7):null};
+    const adjustment=adjustments.find(a=>String(a.adjustment_id)===id),origin=order||orderMap.get(String(adjustment?.order_id));
+    return {...event,amount:event.salesGrossProfit,time:timeKey(event,timestamp),reason,ownershipTime:origin?.create_time||timestamp,ownershipStoreId:origin?.store_id||event.storeId,sourceOrderId:origin?.order_id||event.orderId,originalDate:order?day(order.archive_time||order.create_time):null,originalMonth:order?day(order.archive_time||order.create_time).slice(0,7):null};
   });
   return normalized;
 }
@@ -83,7 +84,7 @@ function createLoader({user,stores}){
       const usable=scope.filter(s=>validLine(lineFor(s))),ids=usable.map(s=>String(s.store_id));
       if(!ids.length)return result;
       const endDate=throughDate||new Date(Date.UTC(Number(monthKey.slice(0,4)),Number(monthKey.slice(5)),0)).toISOString().slice(0,10);
-      const financial=(!throughDate&&snapshots.get(monthKey))||await require('./financialProfitController').queryFinancialProfit({storeIds:ids,startDate:`${monthKey}-01`,endDate,includeStores:true});
+      const financial=(!throughDate&&snapshots.get(monthKey))||await require('./financialProfitController').queryFinancialProfit({storeIds:ids,startDate:`${monthKey}-01`,endDate,includeStores:true,salesStageOnly:true});
       const events=await eventFacts((financial.profitDetails||[]).filter(e=>ids.includes(String(e.storeId))),ids);
       for(const store of usable){
         const selected=events.filter(e=>String(e.storeId)===String(store.store_id)),originalStages=new Map();
@@ -109,27 +110,28 @@ function createLoader({user,stores}){
   }
   async function forStaff({period,storeId,staffId,configs,performanceDetails=[]}){
     const context=(await month(period.month,configs)).get(String(storeId));
-    if(context?.reason)return {lowGrossProfit:null,highGrossProfit:null,reason:context.reason,details:[],issues:[{reason:context.reason,month:period.month}]};
     let low=0,high=0,reason='';const details=[],issues=[];
     const addIssue=(message,share,extra={})=>{reason=reason||message;issues.push({reason:message,month:period.month,orderId:share?.orderId,orderNo:share?.orderNo,sourceOrderId:share?.sourceOrderId,sourceOrderNo:share?.sourceOrderNo,returnId:share?.returnId,...extra});};
     for(const share of performanceDetails.filter(row=>String(row.staffId)===String(staffId))){
+      const actualStoreId=String(share.storeId||storeId);
+      const actualContext=actualStoreId===String(storeId)?context:(await month(period.month,configs,actualStoreId)).get(actualStoreId);
       const gross=share.allocatedGrossProfit;
       if(!known(gross)){addIssue('个人冻结毛利不完整',share);continue;}
       let event;
-      if(share.sourceEntryType==='return')event=context?.entries.find(e=>e.eventKey===`return:${share.returnId}`);
-      else if(share.sourceEntryType==='reward_redemption')event=context?.entries.find(e=>e.eventKey===share.orderId);
-      else if(share.sourceEntryType==='sale')event=context?.entries.find(e=>e.entryType==='sale'&&String(e.orderId)===String(share.orderId));
+      if(share.sourceEntryType==='return')event=actualContext?.entries.find(e=>e.eventKey===`return:${share.returnId}`);
+      else if(share.sourceEntryType==='reward_redemption')event=actualContext?.entries.find(e=>e.eventKey===share.orderId);
+      else if(share.sourceEntryType==='sale')event=actualContext?.entries.find(e=>e.entryType==='sale'&&String(e.orderId)===String(share.orderId));
       // Personal performance adjustments stay attached to their original sale;
       // return ledgers reverse that sale's stages, even in a later month.
       const originalId=String(share.sourceOrderId||share.orderId);
-      let stage=event?{fraction:event.fraction}:context?.saleStages.get(originalId);
+      let stage=event?{fraction:event.fraction}:actualContext?.saleStages.get(originalId);
       if(!stage&&Number(gross)!==0){
         const original=await M.Order.findByPk(originalId,{raw:true});
-        if(original&&String(original.store_id)!==String(storeId)){addIssue(`${share.orderNo}：原销售门店与员工当前门店不一致，历史阶段归属待核实`,share,{originalStoreId:original.store_id,originalMonth:day(original.archive_time||original.create_time).slice(0,7)});continue;}
+        const originStoreId=String(original?.store_id||actualStoreId);
         const originalMonth=original?day(original.archive_time||original.create_time).slice(0,7):null;
         if(originalMonth){
           try{
-            const originalContext=(await month(originalMonth,undefined,storeId,day(original.archive_time||original.create_time))).get(String(storeId));
+            const originalContext=(await month(originalMonth,undefined,originStoreId,day(original.archive_time||original.create_time))).get(originStoreId);
             stage=originalContext?.saleStages.get(originalId);
             if(!stage&&originalContext?.reason)stage={fraction:null,reason:originalContext.reason};
             event=originalContext?.entries.find(e=>e.entryType==='sale'&&String(e.orderId)===originalId);
@@ -138,14 +140,14 @@ function createLoader({user,stores}){
       }
       const fraction=Number(gross)===0?0:stage?.fraction;
       if(!known(fraction)){
-        addIssue(`${share.orderNo}：${event?.reason||stage?.reason||'原订单提成阶段未能追溯'}`,share,{originalMonth:event?.originalMonth});
-        for(const prior of context?.entries||[])if(prior.amount===null&&(!event||prior.time<=event.time))addIssue(`${prior.entryNo||prior.eventKey}：门店销售端毛利待核算，影响后续跨线判断`,null,{orderId:prior.orderId,orderNo:prior.entryNo,sourceOrderId:prior.orderId,sourceOrderNo:prior.orderNo});
+        addIssue(`${share.orderNo}：${event?.reason||stage?.reason||actualContext?.reason||'原订单提成阶段未能追溯'}`,share,{originalMonth:event?.originalMonth,originalStoreId:actualStoreId});
+        for(const prior of actualContext?.entries||[])if(prior.amount===null&&(!event||prior.time<=event.time))addIssue(`${prior.entryNo||prior.eventKey}：门店销售端毛利待核算，影响后续跨线判断`,null,{orderId:prior.orderId,orderNo:prior.entryNo,sourceOrderId:prior.orderId,sourceOrderNo:prior.orderNo,originalStoreId:actualStoreId});
         continue;
       }
       const upper=money(Number(gross)*fraction),lower=money(Number(gross)-upper);
       low=money(low+lower);high=money(high+upper);
-      details.push({eventKey:share.orderId,orderNo:share.orderNo,sourceOrderNo:share.sourceOrderNo,businessDate:day(share.orderTime),time:share.orderTime,
-        storeGrossBefore:event?.before??null,storeGrossAfter:event?.after??null,grossProfit:gross,lowGrossProfit:lower,highGrossProfit:upper});
+      details.push({eventKey:share.orderId,orderNo:share.orderNo,sourceOrderNo:share.sourceOrderNo,storeId:actualStoreId,businessDate:day(share.orderTime),time:share.orderTime,
+        breakEvenLine:event?.line??stage?.line??null,storeGrossBefore:event?.before??null,storeGrossAfter:event?.after??null,grossProfit:gross,lowGrossProfit:lower,highGrossProfit:upper});
     }
     return {lowGrossProfit:reason?null:low,highGrossProfit:reason?null:high,reason,details,issues};
   }
