@@ -220,6 +220,7 @@ const pageTitles = {
   '/reports/sales': '销售报表',
   '/reports/inventory': '库存报表',
   '/reports/employee': '员工业绩统计',
+  '/reports/employee-profit-summary': '员工毛利汇总',
   '/reports/care-credit': 'CARE卡可用金',
   '/reports/achievement': '业务达成',
   '/reports/finance': '财务报表',

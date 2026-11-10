@@ -379,6 +379,7 @@ async function runSchemaMigrations() {
   await ensureFinancialProfitFeatureSchema();
   await ensureFinancialReportMenu();
   await ensureApprovalHandledMenu();
+  await require('./employeeProfitMenu').ensureEmployeeProfitMenu(sequelize);
   console.log('[DB Schema] startup schema compatibility check completed');
 }
 

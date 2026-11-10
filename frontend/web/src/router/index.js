@@ -271,6 +271,12 @@ const routes = [
         meta: { tab: 'care-credit' }
       },
       {
+        path: 'reports/employee-profit-summary',
+        name: 'ReportsEmployeeProfitSummary',
+        component: () => import('../views/Reports.vue'),
+        meta: { tab: 'employee-profit-summary' }
+      },
+      {
         path: 'finance/purchase-invoice',
         name: 'PurchaseInvoiceManagement',
         component: () => import('../views/PurchaseInvoiceManagement.vue'),
