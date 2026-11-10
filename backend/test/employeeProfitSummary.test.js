@@ -74,9 +74,48 @@ test('self-only account cannot select another person',async t=>{
   const r=await R.load({staffId:1,roles:['staff']},{startDate:'2026-11-01',endDate:'2026-11-30',employeeId:'2'});
   a.equal(r.rows.length,1);a.equal(String(r.rows[0].staffId),'1');
 });
+
+test('role views select employees, retain full-store commission and export matching fields',async t=>{
+  fixture(t);
+  const user={staffId:9,roles:['boss']},base={startDate:'2026-11-01',endDate:'2026-11-30'};
+  const staff=await R.load(user,{...base,reportRole:'staff'}),manager=await R.load(user,{...base,reportRole:'manager'});
+  a.equal(staff.rows.length,1);a.equal(String(staff.rows[0].staffId),'1');a.equal(staff.panels.sales.grossProfit,2000);
+  a.ok(!staff.columns.some(c=>c.key==='breakEvenLine'));a.equal(manager.rows.length,1);a.equal(manager.rows[0].storeCommission,500);
+  const ctx={state:{user},query:{...base,reportRole:'manager'},set(){}};await R.exportReport(ctx);
+  const X=require('xlsx'),wb=X.read(ctx.body,{type:'buffer'}),rows=X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+  a.equal(rows[0].门店销售端毛利,10000);a.equal(rows[0].门店提成,500);a.ok(!('提成基数' in rows[0]));
+});
+
+test('product and operations group by store with empty owner and retain unknown values',async t=>{
+  fixture(t);
+  t.mock.method(F,'queryFinancialProfit',async()=>({summary:{productGrossProfit:null,operationsGrossProfit:200},storeSummaries:[{storeId:'S',summary:{salesGrossProfit:10000,productGrossProfit:null,operationsGrossProfit:200}}]}));
+  const user={staffId:9,roles:['boss']},base={startDate:'2026-11-01',endDate:'2026-11-30'};
+  const all=await R.load(user,{...base,reportRole:'all'}),product=await R.load(user,{...base,reportRole:'product'}),ops=await R.load(user,{...base,reportRole:'operations'});
+  a.equal(all.rows.length,4);a.equal(product.rows.length,1);a.equal(product.rows[0].employeeName,'');a.equal(product.rows[0].grossProfit,null);
+  a.equal(ops.rows[0].grossProfit,200);a.equal(ops.rows[0].cells.commission,'待定');
+  a.ok(!product.columns.some(c=>c.key==='commissionBase'));a.ok(!JSON.stringify(all.rows.map(r=>r.cells)).includes('不适用'));
+  const own=await R.load({staffId:1,roles:['staff']},{...base,reportRole:'product'});a.equal(own.rows.length,0);
+  const selected=await R.load(user,{...base,reportRole:'product',employeeId:'2'});a.equal(selected.rows.length,0);
+});
 test('invalid dates rejected and month ranges split once',()=>{
   a.throws(()=>R.periods({startDate:'2026-02-30',endDate:'2026-03-01'}));
   a.equal(R.periods({startDate:'2026-10-31',endDate:'2026-11-01'}).length,2);
+});
+
+test('manager identity preserves employee-rule exception without irrelevant placeholders',async t=>{
+ fixture(t);
+ t.mock.method(C,'options',async()=>({stores:[{storeId:'S',breakEvenLine:1000}],employees:[{staffId:'2',employeeName:'葛宇',roles:'manager',commissionBase:1000}]}));
+ t.mock.method(D.prototype,'getEmployeeOrderRows',async()=>[{order_id:'2',create_staff_id:2,create_user:'葛宇',base_gross_profit:3000,sales_amount:5000,auxiliary_sales_list:'[]'}]);
+ const r=await R.load({staffId:9,roles:['boss']},{startDate:'2026-11-01',endDate:'2026-11-30',reportRole:'manager'});
+ a.equal(r.rows.length,1);a.equal(r.rows[0].rule,'staff');a.equal(r.rows[0].cells.commissionBase,1000);a.equal(r.rows[0].cells.breakEvenLine,'');a.equal(r.rows[0].cells.storeCommission,'');
+});
+
+test('side totals accumulate monthly values and reject invalid classification',async t=>{
+ fixture(t);
+ t.mock.method(F,'queryFinancialProfit',async()=>({summary:{operationsGrossProfit:200},storeSummaries:[{storeId:'S',summary:{operationsGrossProfit:200}}]}));
+ const user={staffId:9,roles:['boss']},query={startDate:'2026-10-01',endDate:'2026-11-30',reportRole:'operations'};
+ const r=await R.load(user,query);a.equal(r.rows[0].grossProfit,400);a.equal(r.panels.operations.grossProfit,400);
+ await a.rejects(R.load(user,{...query,reportRole:'invalid'}),{status:400});
 });
 test('store staff cannot save commission configuration',async()=>{
   await a.rejects(C.save({state:{user:{staffId:1,roles:['staff']}},request:{body:{}}}),{status:403});
