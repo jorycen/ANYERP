@@ -10,6 +10,7 @@ const { isSelfOnlyReportUser } = require('../../utils/storePermissions');
 const presentation = require('./employeeProfitColumns');
 const timeline = require('./managerCommissionTimeline');
 const storeAllocationService=require('./storeCommissionAllocation');
+const {isProductWarehouse}=require('./profitAttribution');
 function periods(query) {
   const start = String(query.startDate || ''), end = String(query.endDate || '');
   const valid = s => /^\d{4}-\d{2}-\d{2}$/.test(s) && Number.isFinite(Date.parse(s)) && new Date(s).toISOString().slice(0,10) === s;
@@ -29,20 +30,21 @@ async function load(user, query) {
   if (!['all','staff','manager','product','operations'].includes(reportRole)) throw Object.assign(new Error('报表分类无效'), {status:400});
   if (!canViewProfit(user)) throw Object.assign(new Error('无权查看员工毛利汇总'), { status: 403 });
   const chunks = periods(query), stores = await C.scope(user, query.storeId), storeIds = stores.map(s => String(s.store_id));
+  const salesStoreIds=storeIds.filter(id=>!isProductWarehouse(id));
   const selected = isSelfOnlyReportUser(user) ? String(user.staffId) : String(query.employeeId || '');
   const managerTimeline=timeline.createLoader({user,stores});
   const source = new RealtimeSqlDashboardDataSource(), combined = new Map(), sideRows = new Map();
   const panels = { sales: { grossProfit: 0, commission: 0 }, product: { grossProfit: 0, commission: null }, operations: { grossProfit: 0, commission: null } };
   for (const period of chunks) {
-    const range = buildRanges(period).current, filters = { storeIds, storeId: query.storeId || '', archiveScope: 'archived' };
+    const range = buildRanges(period).current, filters = { storeIds:salesStoreIds, storeId: query.storeId || '', archiveScope: 'archived' };
     const [orders, adjustments, configs, expenses] = await Promise.all([
-      storeIds.length ? source.getEmployeeOrderRows(filters, range) : [],
-      storeIds.length ? source.getApprovedAdjustments(filters, range) : [], C.options(user, period.month, query.storeId),
-      deduction.loadMonthly({ storeIds, user, startDate: period.startDate, endDate: period.endDate })
+      salesStoreIds.length ? source.getEmployeeOrderRows(filters, range) : [],
+      salesStoreIds.length ? source.getApprovedAdjustments(filters, range) : [], C.options(user, period.month, query.storeId),
+      salesStoreIds.length ? deduction.loadMonthly({ storeIds:salesStoreIds, user, startDate: period.startDate, endDate: period.endDate }) : []
     ]);
     const performance=buildEmployeePerformance(orders,adjustments,'',true,{allDetails:true});
     const ranks = deduction.attachMonthly(performance.ranking, expenses);
-    for (const staff of configs.employees) if (!ranks.some(r => String(r.staffId) === staff.staffId)) ranks.push({ staffId: staff.staffId, employeeName: staff.employeeName, grossProfit: 0, netGrossProfit: 0, expensePerformanceDeduction: 0 });
+    for (const staff of configs.employees) if (!isProductWarehouse(staff.storeId)&&!ranks.some(r => String(r.staffId) === staff.staffId)) ranks.push({ staffId: staff.staffId, employeeName: staff.employeeName, grossProfit: 0, netGrossProfit: 0, expensePerformanceDeduction: 0 });
     const people = ranks.length ? await M.Staff.findAll({ where: { staff_id: { [Op.in]: ranks.map(x => x.staffId).filter(Boolean) } }, raw: true }) : [];
     const financial = storeIds.length ? await require('./financialProfitController').queryFinancialProfit({ storeIds, ...period, includeStores: true }) : { summary: {}, storeSummaries: [] };
     const allocations=storeIds.length?await storeAllocationService.load(financial,stores,period):{owners:new Map(),missing:[],people:[]};

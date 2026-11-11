@@ -2,6 +2,26 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const P = require('../src/modules/report/companyProfitDetails');
 const base = { eventKey: 'sale:1', entryType: 'sale', storeId: 's', businessDate: '2026-09-10', grossProfit: 80, grossCost: 0, managementSalesGross: 30, managementProductGross: 20 };
+test('both self-operated warehouses attribute all sides to product, preserving company totals and unknowns', () => {
+  for (const storeId of ['D028000','D023000']) {
+    for (const gross of [30,0,-30]) {
+      const [r]=P.buildEvents({items:[{...base,storeId,instantRetail:true,managementSalesGross:gross,managementProductGross:20}]});
+      assert.equal(r.salesGrossProfit,0);assert.equal(r.operationsGrossProfit,0);
+      assert.equal(r.productGrossProfit,gross+20);assert.equal(r.companyGrossProfit,gross+20);
+    }
+    const [r]=P.buildEvents({items:[{...base,storeId,managementPending:true}]});
+    assert.equal(r.productGrossProfit,null);assert.equal(r.companyGrossProfit,null);
+    assert.equal(r.salesGrossProfit,0);assert.equal(r.profitStatus,'pending');assert.ok(r.profitPendingReason);
+  }
+});
+test('closed warehouse snapshots reclassify without rewriting facts or inventing discrepancies',()=>{
+  const old=P.buildEvents({items:[base]})[0],saved={...old,storeId:'D028000'};
+  const live=P.buildEvents({items:[{...base,storeId:'D028000'}]});
+  const differences=[],periods=[{MONTH_KEY:'2026-09',SNAPSHOT_JSON:{managementEvents:[saved]}}];
+  const result=P.overlayClosed(live,periods,{storeIds:['D028000'],startDate:'2026-09-01',endDate:'2026-09-30'},differences);
+  assert.equal(result[0].productGrossProfit,50);assert.equal(result[0].companyGrossProfit,50);
+  assert.equal(result[0].salesGrossProfit,0);assert.equal(saved.salesGrossProfit,30);assert.equal(differences.length,0);
+});
 test('company allocation adds three components once and reverses returns', () => {
   const rows = P.buildEvents({ items: [base, { ...base, eventKey: 'return:1', entryType: 'return', managementSalesGross: -10, managementProductGross: -5 }],
     rewardEvents: [{ id: 'r', store_id: 's', created_at: '2026-09-10', cash_received: 40, cost_amount: 12, sales_profit: 20, operations_profit: 8 }],

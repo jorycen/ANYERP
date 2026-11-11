@@ -1,5 +1,6 @@
 const { splitInstantRetail } = require('./performanceAllocation');
 const crypto = require('node:crypto');
+const { attribute } = require('./profitAttribution');
 const money = value => Math.round(Number(value) * 100) / 100;
 const amount = value => value === null || value === undefined || value === '' || !Number.isFinite(Number(value)) ? null : money(value);
 const date = value => value instanceof Date ? new Date(value.getTime() + 28800000).toISOString().slice(0, 10) : String(value || '').slice(0, 10);
@@ -19,7 +20,7 @@ function row(event, sales, product, operations, reason = '') {
   }
   result.managementSourceHash = crypto.createHash('sha256').update(JSON.stringify({ key: event.eventKey, date: event.businessDate,
     store: event.storeId, values, costState: result.costState })).digest('hex');
-  return result;
+  return attribute(result);
 }
 function buildEvents(facts) {
   const events = (facts.items || []).map(event => {
@@ -66,7 +67,7 @@ function overlayClosed(events, periods, filters, discrepancies = []) {
       }, 0, 0, null, '旧关账快照未冻结运营分配，保持原快照，待有依据的开放月份调整'));
       continue;
     }
-    const frozen = saved.managementEvents.filter(event => inScope(event, filters));
+    const frozen = saved.managementEvents.filter(event => inScope(event, filters)).map(attribute);
     const old = new Map(frozen.map(event => [event.eventKey,event]));
     const liveKeys = new Set(live.map(event => event.eventKey));
     for (const event of live) if (!old.has(event.eventKey) || old.get(event.eventKey).managementSourceHash !== event.managementSourceHash) {

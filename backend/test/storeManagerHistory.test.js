@@ -1,5 +1,10 @@
 const {test}=require('node:test'),a=require('node:assert/strict');
 const H=require('../src/modules/report/storeManagerHistory'),A=require('../src/modules/report/storeCommissionAllocation'),M=require('../src/models');
+test('self-operated warehouses never generate manager commissions or historical ownership suspense',()=>{
+ const events=['D028000','D023000'].flatMap(storeId=>[{storeId,amount:100},{storeId,amount:null},{storeId,amount:-10,ownershipTime:'2026-09-10'}]);
+ const result=A.allocate(events,[],[],{month:'2026-10'});
+ a.equal(result.owners.size,0);a.deepEqual(result.missing,[]);
+});
 test('manager history index has an explicit MySQL-safe name',()=>{
  a.equal(H.Assignment.options.indexes[0].name,'idx_store_manager_effective');
  a.ok(H.Assignment.options.indexes.every(i=>i.name.length<=64));

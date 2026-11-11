@@ -24,6 +24,29 @@ function fixture(t) {
   t.mock.method(E,'loadMonthly',async()=>[]);
   t.mock.method(F,'queryFinancialProfit',async()=>({summary:{productGrossProfit:null,operationsGrossProfit:200},storeSummaries:[{storeId:'S',summary:{companyGrossProfit:null,salesGrossProfit:10000,profitPendingCount:45}}]}));
 }
+test('warehouse-only scope uses product totals without querying or estimating personal sales',async t=>{
+ fixture(t);
+ t.mock.method(C,'scope',async()=>[{store_id:'D028000',name:'成都自营仓',manager_staff_id:3}]);
+ t.mock.method(C,'options',async()=>({stores:[],employees:[{staffId:'3',employeeName:'仓库',storeId:'D028000',roles:'manager'}]}));
+ t.mock.method(A,'load',async()=>({owners:new Map(),missing:[],people:[]}));
+ for(const method of ['getEmployeeOrderRows','getApprovedAdjustments'])t.mock.method(D.prototype,method,async()=>{throw Error('warehouse sales must not be queried')});
+ t.mock.method(E,'loadMonthly',async()=>{throw Error('warehouse personal deductions must not be queried')});
+ t.mock.method(F,'queryFinancialProfit',async()=>({summary:{productGrossProfit:123,operationsGrossProfit:0},storeSummaries:[{storeId:'D028000',summary:{productGrossProfit:123,operationsGrossProfit:0}}]}));
+ const r=await R.load({staffId:9,roles:['boss']},{startDate:'2026-11-01',endDate:'2026-11-30',reportRole:'all',storeId:'D028000'});
+ a.equal(r.rows.filter(x=>x.sideName==='销售端').length,0);a.equal(r.panels.sales.grossProfit,0);
+ a.equal(r.panels.product.grossProfit,123);a.equal(r.rows.find(x=>x.sideName==='产品端').grossProfit,123);
+});
+test('mixed store scope excludes only warehouse sales while retaining warehouse product reporting',async t=>{
+ fixture(t);
+ t.mock.method(C,'scope',async()=>[{store_id:'S',name:'门店',manager_staff_id:2},{store_id:'D023000',name:'重庆自营仓'}]);
+ const getOrders=D.prototype.getEmployeeOrderRows.bind(D.prototype);
+ t.mock.method(D.prototype,'getEmployeeOrderRows',async(filters,range)=>{a.deepEqual(filters.storeIds,['S']);return getOrders(filters,range)});
+ t.mock.method(D.prototype,'getApprovedAdjustments',async filters=>{a.deepEqual(filters.storeIds,['S']);return []});
+ t.mock.method(E,'loadMonthly',async filters=>{a.deepEqual(filters.storeIds,['S']);return []});
+ const r=await R.load({staffId:9,roles:['boss']},{startDate:'2026-11-01',endDate:'2026-11-30',reportRole:'all'});
+ a.equal(r.rows.filter(x=>x.sideName==='销售端').length,2);
+ a.ok(r.rows.some(x=>x.sideName==='产品端'&&x.storeId==='D023000'));
+});
 test('shared rows and export retain zero versus unconfigured values',async t=>{
   fixture(t);
   const result=await R.load({staffId:9,roles:['boss']},{startDate:'2026-11-01',endDate:'2026-11-30'});
