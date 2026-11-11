@@ -5,7 +5,7 @@ const {
   toNumber
 } = require('./dashboardDataSource');
 const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/storePermissions');
-const { allocateProfit, isInstantRetail, instantRetailStaffShares, instantRetailReturnShares } = require('./performanceAllocation');
+const { allocateProfit, allocateAdjustment, isInstantRetail, instantRetailStaffShares, instantRetailReturnShares } = require('./performanceAllocation');
 
 const PROFIT_ROLES = new Set(['boss', 'admin', 'finance', 'manager']);
 const AGE_BUCKET_ORDER = ['0-7天', '8-15天', '16-30天', '31-60天', '60天以上'];
@@ -194,17 +194,14 @@ function buildEmployeePerformance(orderRows, adjustmentRows, selectedEmployeeId,
     const sharedAdjustments = adjustments.filter(row => !row.participantKey);
     const totalAdjustment = roundMoney(sharedAdjustments.reduce((sum, row) => sum + row.signedAmount, 0));
     const salesShare = roundMoney(toNumber(order.sales_amount) / participantCount);
-    const instantRetail = !order.entry_type && isInstantRetail(order);
-    const originalShares = allocateProfit(participants, order.base_gross_profit);
-    const baseProfitShares = instantRetail
+    const instantRetail = !order.entry_type && isInstantRetail({...order,create_time:order.source_create_time||order.create_time});
+    const adjustmentOnly=order.entry_type==='return_adjustment';
+    const allocationBase=adjustmentOnly?order.allocation_gross_profit:order.base_gross_profit;
+    const originalShares = allocateProfit(participants, allocationBase);
+    const baseProfitShares = adjustmentOnly?participants.map(()=>0):instantRetail
       ? instantRetailStaffShares(order.base_gross_profit, participants)
       : returnShares.has(order) ? [returnShares.get(order)] : originalShares;
-    const sharedAdjustmentShares = toNumber(order.base_gross_profit)
-      ? originalShares.map((share, index) => index === participants.length - 1
-        ? roundMoney(totalAdjustment - originalShares.slice(0, -1).reduce((sum, value) =>
-          sum + roundMoney(totalAdjustment * value / toNumber(order.base_gross_profit)), 0))
-        : roundMoney(totalAdjustment * share / toNumber(order.base_gross_profit)))
-      : allocateProfit(participants.map(item => ({ ...item, profitAmount: '', ratio: '' })), totalAdjustment);
+    const sharedAdjustmentShares = allocateAdjustment(participants,allocationBase,totalAdjustment);
 
     participants.forEach((participant, index) => {
       if (selectedEmployeeId && String(participant.staffId || '') !== String(selectedEmployeeId)) return;

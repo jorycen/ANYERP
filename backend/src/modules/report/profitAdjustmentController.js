@@ -118,7 +118,7 @@ async function createProfitAdjustment(ctx) {
         adjustment_type: type,
         product_id: selected.originalItem?.product_id || null,
         amount: Math.abs(selected.result.salesDelta),
-        // Effective base profit is corrected atomically; never add the same delta again.
+        // Pending differences are not posted until final approval.
         signed_amount: 0,
         base_gross_profit: selected.result.salesBefore,
         correction_data: { input, evidence, previewHash: selected.previewHash, result: selected.result },
@@ -161,7 +161,7 @@ async function previewCorrection(ctx) {
   const selected = await correction.select(ctx, body.orderId, correction.validate(body));
   const impact = correction.previewResponse(selected.result, ctx.state.user);
   ctx.body = { code: 0, data: { ...impact, previewHash: selected.previewHash,
-    note: body.adjustmentType === correction.INVOICE_TYPE ? '审批后同步开票类型与金额，按归档依据重算税费和销售毛利，差额计入所选月份；产品端提货差毛利保持。此操作只更新业务记录，实际发票另行开具。' : '按原归档税费及规则重算，销售与产品两端毛利之和不等同于公司财务利润；不改变客户成交价、采购成本或商品主档定价。' } };
+    note: '差额在最终审批通过月份单独入账，原订单归档毛利及产品结算快照保持；后续预览沿已批准调整继续计算。补开票同步实际开票信息，实际发票另行开具。' } };
 }
 
 async function listProfitAdjustments(ctx) {

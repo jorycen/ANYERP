@@ -105,7 +105,7 @@ test('personal cross-store profit uses original store threshold, not current sto
  const M=require('../src/models'),F=require('../src/modules/report/financialProfitController'),C=require('../src/modules/report/commissionConfig');
  t.mock.method(C,'options',async()=>({stores:[{storeId:'S',breakEvenLine:100000},{storeId:'T',breakEvenLine:1}]}));
  t.mock.method(F,'queryFinancialProfit',async()=>({profitDetails:[{eventKey:'sale:A',entryType:'sale',orderId:'A',storeId:'S',businessDate:'2026-10-01',salesGrossProfit:99900},{eventKey:'sale:O',entryType:'sale',orderId:'O',storeId:'S',businessDate:'2026-10-02',salesGrossProfit:1000}]}));
- t.mock.method(M.Order,'findAll',async()=>[{order_id:'A',store_id:'S',create_time:'2026-10-01 10:00:00'},{order_id:'O',store_id:'S',create_time:'2026-10-02 10:00:00'}]);
+ t.mock.method(M.Order,'findAll',async()=>[{order_id:'A',store_id:'S',create_time:'2026-09-01 10:00:00',archive_time:'2026-10-01 10:00:00'},{order_id:'O',store_id:'S',create_time:'2026-09-02 10:00:00',archive_time:'2026-10-02 10:00:00'}]);
  const loader=createLoader({user:{staffId:9},stores:[{store_id:'S'},{store_id:'T'}]});
  const r=await loader.forStaff({period:{month:'2026-10',startDate:'2026-10-01',endDate:'2026-10-31'},storeId:'T',staffId:'M',performanceDetails:[{staffId:'M',storeId:'S',sourceEntryType:'sale',orderId:'O',sourceOrderId:'O',allocatedGrossProfit:1000,orderTime:'2026-10-02'}]});
  a.equal(r.lowGrossProfit,100);a.equal(r.highGrossProfit,900);a.equal(r.reason,'');a.equal(r.details[0].storeId,'S');
@@ -115,8 +115,8 @@ test('return-related adjustment follows current-month downward crossing without 
  const M=require('../src/models'),F=require('../src/modules/report/financialProfitController'),C=require('../src/modules/report/commissionConfig'),calls=[];
  t.mock.method(C,'options',async(u,month)=>{a.equal(month,'2026-11');return {stores:[{storeId:'S',breakEvenLine:400}]}});
  t.mock.method(F,'queryFinancialProfit',async q=>{calls.push(q);return {profitDetails:[{eventKey:'sale:A',entryType:'sale',orderId:'A',storeId:'S',businessDate:'2026-11-01',salesGrossProfit:500},{eventKey:'performance:ADJ',entryType:'performance_adjustment',storeId:'S',businessDate:'2026-11-02',salesGrossProfit:-200}]}});
- t.mock.method(M.Order,'findAll',async()=>[{order_id:'A',store_id:'S',create_time:'2026-11-01 10:00:00'},{order_id:'O',store_id:'S',create_time:'2026-09-01 10:00:00'}]);
- t.mock.method(M.PerformanceProfitAdjustment,'findAll',async()=>[{adjustment_id:'ADJ',order_id:'O',create_time:'2026-11-02 10:00:00'}]);
+ t.mock.method(M.Order,'findAll',async()=>[{order_id:'A',store_id:'S',create_time:'2026-10-01 10:00:00',archive_time:'2026-11-01 10:00:00'},{order_id:'O',store_id:'S',create_time:'2026-09-01 10:00:00'}]);
+ t.mock.method(M.PerformanceProfitAdjustment,'findAll',async()=>[{adjustment_id:'ADJ',order_id:'O',create_time:'2026-10-02 10:00:00',admin_review_time:'2026-11-02 10:00:00'}]);
  t.mock.method(M.Order,'findByPk',async()=>{throw Error('must not query old personal stage')});
  const r=await createLoader({user:{staffId:9},stores:[{store_id:'S'}]}).forStaff({period:{month:'2026-11',startDate:'2026-11-01',endDate:'2026-11-30'},storeId:'S',staffId:'M',performanceDetails:[{staffId:'M',storeId:'S',orderId:'return-adjustment:ADJ',sourceOrderId:'O',orderNo:'AUTO-CARE-RET-R',sourceEntryType:'return_adjustment',allocatedGrossProfit:-200,orderTime:'2026-11-02'}]});
  a.equal(r.lowGrossProfit,-100);a.equal(r.highGrossProfit,-100);a.equal(r.reason,'');a.ok(calls.every(q=>q.startDate==='2026-11-01'));
@@ -124,14 +124,14 @@ test('return-related adjustment follows current-month downward crossing without 
 
 test('return sequencing uses its frozen posting time while store-owner reference remains original sale time',async t=>{
  const M=require('../src/models'),original=new Date('2026-09-01T02:00:00Z');
- t.mock.method(M.Order,'findAll',async()=>[{order_id:'O',store_id:'S',create_time:original}]);
+ t.mock.method(M.Order,'findAll',async()=>[{order_id:'O',store_id:'S',create_time:new Date('2026-08-01T02:00:00Z'),archive_time:original}]);
  t.mock.method(M.SalesReturnGrossProfitLedger,'findAll',async()=>[{return_id:'R',create_time:new Date('2026-11-02T08:00:00Z')}]);
  t.mock.method(M.SalesReturnRequest,'findAll',async()=>{throw Error('request time must not replace posting time')});
  const r=await eventFacts([{eventKey:'return:R',entryType:'return',orderId:'O',storeId:'S',businessDate:'2026-11-02',salesGrossProfit:-100}],['S']);
  a.equal(r[0].time,'2026-11-02 16:00:00.000');a.equal(r[0].ownershipTime,original);
  t.mock.method(M.Order,'findAll',async()=>[]);
  const missing=await eventFacts([{eventKey:'return:R',entryType:'return',orderId:'O',storeId:'S',businessDate:'2026-11-02',salesGrossProfit:-100}],['S']);
- a.equal(missing[0].ownershipTime,undefined);
+ a.equal(missing[0].ownershipTime,null);
  const allocation=require('../src/modules/report/storeCommissionAllocation').allocate(missing,[{store_id:'S',staff_id:1,effective_from:'2026-11-01'}],[{staff_id:1,name:'当前店长'}],{month:'2026-11'});
  a.equal(allocation.owners.size,0);a.match(allocation.missing[0].reason,/原业务发生时间/);
 });

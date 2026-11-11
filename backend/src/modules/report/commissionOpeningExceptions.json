@@ -1,0 +1,230 @@
+{
+  "batch": "COMMISSION-OPENING-20261111",
+  "reason": "用户确认首次测算：本清单9月创建10月归档订单归2026年9月，不修改实际时间及原单毛利",
+  "orders": [
+    {
+      "orderId": "053eb62689e643f1816a58ed0866f205",
+      "orderNo": "ORD202609301409096348",
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "createdAt": "2026-09-30T14:09:09.000Z",
+      "archivedAt": "2026-10-01T11:51:37.000Z"
+    },
+    {
+      "orderId": "1156efbb9949445ea53cf04d2d7fd47c",
+      "orderNo": "ORD202609280725454666",
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "createdAt": "2026-09-28T07:25:46.000Z",
+      "archivedAt": "2026-10-01T11:51:29.000Z"
+    },
+    {
+      "orderId": "117f65cb498443eca51681cbf7e94272",
+      "orderNo": "ORD202609211715563959",
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "createdAt": "2026-09-21T17:15:57.000Z",
+      "archivedAt": "2026-10-01T11:50:29.000Z"
+    },
+    {
+      "orderId": "12f1f32986be4f61968b0aa97f3f2d02",
+      "orderNo": "ORD202609290959112191",
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "createdAt": "2026-09-29T09:59:11.000Z",
+      "archivedAt": "2026-10-01T11:51:30.000Z"
+    },
+    {
+      "orderId": "22435dc335834537a49b34dca614bfcf",
+      "orderNo": "ORD202609230735251448",
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "createdAt": "2026-09-23T07:35:25.000Z",
+      "archivedAt": "2026-10-01T11:50:32.000Z"
+    },
+    {
+      "orderId": "2315a611f9b4488bbd8a0977fc235d48",
+      "orderNo": "ORD202609291133248921",
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "createdAt": "2026-09-29T11:33:24.000Z",
+      "archivedAt": "2026-10-01T11:51:33.000Z"
+    },
+    {
+      "orderId": "2ed1f7f3d6534c87ac445f364f338701",
+      "orderNo": "ORD202609291006080757",
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "createdAt": "2026-09-29T10:06:08.000Z",
+      "archivedAt": "2026-10-01T11:51:32.000Z"
+    },
+    {
+      "orderId": "2feeac0b45624b12bac240455c52d914",
+      "orderNo": "ORD202609270552125787",
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "createdAt": "2026-09-27T05:52:12.000Z",
+      "archivedAt": "2026-10-01T11:50:45.000Z"
+    },
+    {
+      "orderId": "334c0a3c5c07418087aee21367b96951",
+      "orderNo": "ORD202609250552150337",
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "createdAt": "2026-09-25T05:52:15.000Z",
+      "archivedAt": "2026-10-01T11:50:39.000Z"
+    },
+    {
+      "orderId": "36411e319641462a901c98133a098722",
+      "orderNo": "ORD202609301322295619",
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "createdAt": "2026-09-30T13:22:29.000Z",
+      "archivedAt": "2026-10-01T11:51:35.000Z"
+    },
+    {
+      "orderId": "370eed7998bc4fa08a4546d2a4841c16",
+      "orderNo": "ORD202609281409042416",
+      "storeId": "D0218911",
+      "storeName": "重庆光环",
+      "createdAt": "2026-09-28T14:09:04.000Z",
+      "archivedAt": "2026-10-05T05:48:46.000Z"
+    },
+    {
+      "orderId": "41fd2cc9b8654e9980c021afb69de136",
+      "orderNo": "ORD202609301526186157",
+      "storeId": "D0215790",
+      "storeName": "万象城",
+      "createdAt": "2026-09-30T15:26:18.000Z",
+      "archivedAt": "2026-09-30T16:05:13.000Z"
+    },
+    {
+      "orderId": "4e428f2a7b4c4c6bbe05d7e9cb055bec",
+      "orderNo": "ORD202609240813582353",
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "createdAt": "2026-09-24T08:13:58.000Z",
+      "archivedAt": "2026-10-01T11:50:36.000Z"
+    },
+    {
+      "orderId": "58df9137b37846ac9be459bdc2811739",
+      "orderNo": "ORD202609271125240175",
+      "storeId": "D0214832",
+      "storeName": "爱琴海",
+      "createdAt": "2026-09-27T11:25:24.000Z",
+      "archivedAt": "2026-10-02T05:34:27.000Z"
+    },
+    {
+      "orderId": "5a6a436fbca64bbead7a3d8a7c5c05ee",
+      "orderNo": "ORD202609271120403853",
+      "storeId": "D0214832",
+      "storeName": "爱琴海",
+      "createdAt": "2026-09-27T11:20:40.000Z",
+      "archivedAt": "2026-10-02T05:34:40.000Z"
+    },
+    {
+      "orderId": "724e91d1a1484e9fb18ee04e62e2ecfe",
+      "orderNo": "ORD202609260700252013",
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "createdAt": "2026-09-26T07:00:25.000Z",
+      "archivedAt": "2026-10-01T11:50:41.000Z"
+    },
+    {
+      "orderId": "7b8f53d9246b4ca69cd286a8a7ab4799",
+      "orderNo": "ORD202609231126174397",
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "createdAt": "2026-09-23T11:26:17.000Z",
+      "archivedAt": "2026-10-01T11:50:34.000Z"
+    },
+    {
+      "orderId": "891c6d4ae09d4aca9faf9a200b508ce2",
+      "orderNo": "ORD202609241105040360",
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "createdAt": "2026-09-24T11:05:04.000Z",
+      "archivedAt": "2026-10-01T11:50:38.000Z"
+    },
+    {
+      "orderId": "a62ee22b3c6a4b27af399e8c53e426b4",
+      "orderNo": "ORD202609271126211127",
+      "storeId": "D0214832",
+      "storeName": "爱琴海",
+      "createdAt": "2026-09-27T11:26:21.000Z",
+      "archivedAt": "2026-10-02T05:34:25.000Z"
+    },
+    {
+      "orderId": "a71dcfb987dc4a08b8ec75eab4d3d09c",
+      "orderNo": "ORD202609261103349082",
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "createdAt": "2026-09-26T11:03:34.000Z",
+      "archivedAt": "2026-10-01T11:50:42.000Z"
+    },
+    {
+      "orderId": "bdca79c4ccde44639d4b28d56eeb68df",
+      "orderNo": "ORD202609271124578916",
+      "storeId": "D0214832",
+      "storeName": "爱琴海",
+      "createdAt": "2026-09-27T11:24:57.000Z",
+      "archivedAt": "2026-10-02T05:34:32.000Z"
+    },
+    {
+      "orderId": "d1825f4ee4944ba6bf6a604f216bfb45",
+      "orderNo": "ORD202609270738504652",
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "createdAt": "2026-09-27T07:38:50.000Z",
+      "archivedAt": "2026-10-01T11:50:47.000Z"
+    },
+    {
+      "orderId": "e4a3990a95a8456bbc5cf3c5e4f3e160",
+      "orderNo": "ORD202609261232453005",
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "createdAt": "2026-09-26T12:32:45.000Z",
+      "archivedAt": "2026-10-01T11:50:44.000Z"
+    },
+    {
+      "orderId": "e6d73c99a4f74ea385ee7d30f8dc2dac",
+      "orderNo": "ORD202609280613493389",
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "createdAt": "2026-09-28T06:13:49.000Z",
+      "archivedAt": "2026-10-01T11:51:27.000Z"
+    },
+    {
+      "orderId": "e8a7857c6e8e43d9b22f1fb470add8e1",
+      "orderNo": "ORD202609270904383575",
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "createdAt": "2026-09-27T09:04:38.000Z",
+      "archivedAt": "2026-10-01T11:51:25.000Z"
+    },
+    {
+      "orderId": "ef29b187828a43759c11819ab2c90354",
+      "orderNo": "ORD202609281006545107",
+      "storeId": "D0214832",
+      "storeName": "爱琴海",
+      "createdAt": "2026-09-28T10:06:54.000Z",
+      "archivedAt": "2026-10-02T05:33:52.000Z"
+    },
+    {
+      "orderId": "f4e6c9e1957f4a46a47e9c2907266f22",
+      "orderNo": "ORD202609281309323211",
+      "storeId": "D0214832",
+      "storeName": "爱琴海",
+      "createdAt": "2026-09-28T13:09:32.000Z",
+      "archivedAt": "2026-10-02T05:33:44.000Z"
+    },
+    {
+      "orderId": "fb6eb52784694e6e9ba5ede7b4f57cfa",
+      "orderNo": "ORD202609290459238352",
+      "storeId": "D0214832",
+      "storeName": "爱琴海",
+      "createdAt": "2026-09-29T04:59:23.000Z",
+      "archivedAt": "2026-10-02T05:33:27.000Z"
+    }
+  ]
+}

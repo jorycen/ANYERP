@@ -25,7 +25,7 @@ function aggregateOperatingProfit(orders, adjustments, filters = {}) {
     store.baseGrossProfit += Number(order.base_gross_profit || 0);
     if (!order.entry_type) {
       store.orderCount++;
-      if (!filters.employeeId && isInstantRetail(order)) {
+      if (!filters.employeeId && isInstantRetail({...order,create_time:order.source_create_time||order.create_time})) {
         store.retailOperationsGrossProfit = (store.retailOperationsGrossProfit || 0) + splitInstantRetail(order.base_gross_profit).operations;
       }
     }

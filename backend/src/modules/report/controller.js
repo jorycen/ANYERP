@@ -25,7 +25,7 @@ const { Op } = require('sequelize');
 const { loadLegacyCostMaps, calculateItemBaseProfit } = require('./profitCalculation');
 const { DashboardService, canViewProfit } = require('./dashboardService');
 const { normalizeParticipants } = require('./dashboardDataSource');
-const { allocateProfit, isInstantRetail, splitInstantRetail, instantRetailStaffShares } = require('./performanceAllocation');
+const { allocateProfit, allocateAdjustment, isInstantRetail, splitInstantRetail, instantRetailStaffShares } = require('./performanceAllocation');
 const { PERFORMANCE_SALE_STATUSES: POSITIVE_SALES_ORDER_STATUSES, returnEvents, savedItemProfit, profitExportItems } = require('./performanceEvents');
 const { buildDecisionInsights, buildAiAdvisor } = require('./decisionEngine');
 const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/storePermissions');
@@ -35,6 +35,7 @@ const {
 } = require('../sales/grossProfit');
 const { careCostDetails } = require('../sales/staffCareCredit');
 const { sendExcel } = require('../../utils/excelExport');
+const commissionDates = require('./commissionDates');
 
 const dashboardService = new DashboardService();
 const EMPLOYEE_PROFIT_EXPORT_HEADERS = [
@@ -685,11 +686,14 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
   appendOperatingSourceCondition(where);
   if (staffName) where.create_user = staffName;
   if (orderNo) where.order_no = { [Op.like]: `%${String(orderNo).trim()}%` };
+  let commissionDateCondition,dateRange;
   if (startDate && endDate) {
-    where.create_time = {
+    dateRange = {
       [Op.gte]: new Date(`${startDate}T00:00:00+08:00`),
       [Op.lte]: new Date(`${endDate}T23:59:59.999+08:00`)
     };
+    commissionDateCondition=sequelize.where(sequelize.literal(commissionDates.saleSql('Order')),dateRange);
+    where[Op.and]=[...(where[Op.and]||[]),commissionDateCondition];
   }
 
   const employees = await Order.findAll({
@@ -709,11 +713,12 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
   });
 
   const returnOrderWhere = { ...where };
+  if(commissionDateCondition)returnOrderWhere[Op.and]=(returnOrderWhere[Op.and]||[]).filter(condition=>condition!==commissionDateCondition);
   delete returnOrderWhere.create_time;
   delete returnOrderWhere.order_status;
   delete returnOrderWhere.order_no;
   const returnWhere = {};
-  if (where.create_time) returnWhere.create_time = where.create_time;
+  if (dateRange) returnWhere.create_time = dateRange;
   if (orderNo) returnWhere[Op.or] = [
     { return_no: { [Op.like]: '%' + String(orderNo).trim() + '%' } },
     { order_no: { [Op.like]: '%' + String(orderNo).trim() + '%' } }
@@ -724,18 +729,9 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
       include: [{ model: Store, attributes: ['name'] }] }]
   });
   const reversals = returnEvents(returnRows.map(row => row.toJSON()));
-  const reversalAdjustmentCondition = { [Op.or]: [
-    { adjustment_no: { [Op.like]: 'AUTO-CARE-RET-%' } },
-    { adjustment_no: { [Op.like]: 'EDUR-%' } }, { adjustment_no: { [Op.like]: 'INVOICE-PERIOD-%' } }
-  ] };
-  const originalAdjustmentCondition = { [Op.and]: [
-    { adjustment_no: { [Op.notLike]: 'AUTO-CARE-RET-%' } },
-    { adjustment_no: { [Op.notLike]: 'EDUR-%' } }, { adjustment_no: { [Op.notLike]: 'INVOICE-PERIOD-%' } }
-  ] };
   const reversalAdjustments = await PerformanceProfitAdjustment.findAll({
-    where: { status: 'approved', ...reversalAdjustmentCondition,
-      ...(where.create_time ? { create_time: where.create_time } : {}) },
-    include: [{ model: Order, where: returnOrderWhere, required: true, include: [{ model: Store }] }]
+    where: { status: 'approved',...(dateRange ? { admin_review_time: dateRange } : {}) },
+    include: [{ model: Order, where: returnOrderWhere, required: true, include: [{ model: Store },{model:OrderGrossProfit,as:'grossProfitSnapshot'}] }]
   });
   for (const model of reversalAdjustments) {
     const row = model.toJSON();
@@ -743,10 +739,10 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
         !String(row.order_no || '').includes(String(orderNo).trim())) continue;
     const order = row.Order || {};
     const participants = normalizeParticipants(order);
-    const shares = allocateProfit(participants.map(p => ({ ...p, profitAmount: '', ratio: '' })), row.signed_amount);
-    reversals.push({ orderId: 'return-adjustment:' + row.adjustment_id, entryType: row.adjustment_no.startsWith('INVOICE-PERIOD-') ? 'invoice_adjustment' : 'return',
+    const shares = allocateAdjustment(participants,order.grossProfitSnapshot?.gross_profit_amount,row.signed_amount);
+    reversals.push({ orderId: 'return-adjustment:' + row.adjustment_id, entryType: 'performance_adjustment',
       isReturnAdjustment: true, orderNo: row.adjustment_no, sourceOrderNo: row.order_no,
-      sourceOrderId: row.order_id, orderTime: row.create_time, storeName: order.Store?.name || '',
+      sourceOrderId: row.order_id, orderTime: commissionDates.adjustmentTime(row), storeName: order.Store?.name || '',
       employeeName: row.employee_name, totalAmount: 0, actualPayment: 0, totalCost: 0,
       baseGrossProfit: 0, grossProfit: roundMoney(row.signed_amount),
       approvedAdjustment: roundMoney(row.signed_amount),
@@ -758,9 +754,9 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
       calculation: { orderFormula: row.reason, revenueNote: row.reason, items: [] } });
   }
 
-  const positiveKeys = await Order.findAll({ where, attributes: ['order_id', 'create_time'], raw: true });
+  const positiveKeys = await Order.findAll({ where, attributes: ['order_id', 'create_time','archive_time'], raw: true });
   const eventKeys = [
-    ...positiveKeys.map(row => ({ id: row.order_id, time: row.create_time, type: 'sale' })),
+    ...positiveKeys.map(row => ({ id: row.order_id, time: commissionDates.saleTime(row), type: 'sale' })),
     ...reversals.map(row => ({ id: row.orderId, time: row.orderTime, type: 'return' }))
   ].sort((a, b) => new Date(b.time) - new Date(a.time) || String(a.id).localeCompare(String(b.id)));
   const count = eventKeys.length;
@@ -785,11 +781,8 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
   });
 
   const pageOrderIds = orders.map(order => order.order_id);
-  const approvedPageAdjustments = pageOrderIds.length
-    ? await PerformanceProfitAdjustment.findAll({
-        where: { order_id: { [Op.in]: pageOrderIds }, status: 'approved', ...originalAdjustmentCondition },
-        attributes: ['order_id', 'adjustment_no', 'signed_amount'], raw: true
-      }) : [];
+  // Approved differences are independent events above; never fold them into a sale.
+  const approvedPageAdjustments = [];
   const adjustmentMap = new Map();
   const careCreditAdjustmentMap = new Map();
   const directAdjustmentMap = new Map();
@@ -908,7 +901,7 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
       sourceOrderNo: orderJson.order_no,
       orderId: orderJson.order_id,
       orderNo: orderJson.order_no,
-      orderTime: orderJson.create_time,
+      orderTime: commissionDates.saleTime(orderJson),
       employeeName: orderJson.create_user || '-',
       storeName: orderJson.Store?.name || '',
       customerName: orderJson.customer_name || '',
@@ -972,22 +965,12 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
     ...(snapshotOrderIds.length ? { order_id: { [Op.notIn]: snapshotOrderIds } } : {})
   };
   const [approvedAdjustmentRows, fallbackItems, careCreditRows] = await Promise.all([
-    PerformanceProfitAdjustment.findAll({
-      where: { status: 'approved', ...originalAdjustmentCondition },
-      attributes: [[sequelize.fn('SUM', sequelize.col('PerformanceProfitAdjustment.signed_amount')), 'amount']],
-      include: [{ model: Order, where, attributes: [], required: true }],
-      raw: true
-    }),
+    [],
     OrderItem.findAll({
       include: [{ model: Order, where: fallbackOrderWhere, attributes: ['customer_source', 'create_time'], required: true }],
       raw: true
     }),
-    PerformanceProfitAdjustment.findAll({
-      where: { status: 'approved', ...originalAdjustmentCondition, adjustment_no: { [Op.like]: 'AUTO-CARE-%' } },
-      attributes: [[sequelize.fn('SUM', sequelize.col('PerformanceProfitAdjustment.signed_amount')), 'amount']],
-      include: [{ model: Order, where, attributes: [], required: true }],
-      raw: true
-    })
+    []
   ]);
   const approvedAdjustmentRow = approvedAdjustmentRows[0] || { amount: 0 };
 
@@ -1067,7 +1050,7 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
         `${item.sourceNo || item.platformName || item.sourceType || '运费'} ${item.snCode || item.sn || ''} ${toNumber(item.amount).toFixed(2)}`.trim()
       ).join('；');
       return profitExportItems(order).map(item => ({
-        "\u4e1a\u52a1\u7c7b\u578b": order.entryType === "return" ? "\u9000\u5355\u51b2\u56de" : "\u9500\u552e",
+        "\u4e1a\u52a1\u7c7b\u578b": order.entryType === "return" ? "\u9000\u5355\u51b2\u56de" : order.entryType === 'performance_adjustment' ? '审批调整' : "\u9500\u552e",
         "\u539f\u9500\u552e\u5355\u53f7": order.sourceOrderNo || order.orderNo,
         订单号: order.orderNo,
         销售时间: order.orderTime,

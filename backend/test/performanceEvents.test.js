@@ -68,7 +68,7 @@ test('看板按退单日期独立查询，不向原单重复并入流水；保�
   calls.length = 0;
   await source.getApprovedAdjustments(filters, range);
   assert.doesNotMatch(calls[0].sql, /T_SALES_RETURN_GROSS_PROFIT/);
-  assert.match(calls[0].sql, /pa\.CREATE_TIME >=/);
+  assert.match(calls[0].sql, /pa\.ADMIN_REVIEW_TIME >=/);
   const result = buildEmployeePerformance([
     { order_id: 'O', order_no: 'SO1', create_staff_id: 1, create_user: 'A', sales_amount: 100, base_gross_profit: 10 },
     { order_id: 'return:R', order_no: 'RET1', source_order_no: 'SO1', entry_type: 'return', create_staff_id: 1, create_user: 'A', sales_amount: -100, base_gross_profit: -10 }
@@ -85,7 +85,7 @@ test('员工报表同月、跨月、部分退货汇总与分页保持一致，�
   let returnSales = -1000;
   let reversalAdjustment = 0;
   const snapshot = { order_id: 'O', gross_profit_amount: 100, product_pricing_amount: 900, product_pricing_details: '[]' };
-  const order = { order_id: 'O', order_no: 'SO1', create_time: saleDate, order_status: 'returned', create_user: 'A', create_staff_id: 1, store_id: 'S', total_amount: 1000, actual_payment: 1000, Store: { name: 'S' }, OrderItems: [], grossProfitSnapshot: snapshot };
+  const order = { order_id: 'O', order_no: 'SO1', create_time: saleDate,archive_time:saleDate, order_status: 'returned', create_user: 'A', create_staff_id: 1, store_id: 'S', total_amount: 1000, actual_payment: 1000, Store: { name: 'S' }, OrderItems: [], grossProfitSnapshot: snapshot };
   const inRange = (date, range) => !range || date >= range[Op.gte] && date <= range[Op.lte];
   const dataSource = require('../src/modules/report/dashboardDataSource').RealtimeSqlDashboardDataSource;
   const inside = (date, range) => date >= new Date(`${range.startDate}T00:00:00+08:00`) && date <= new Date(`${range.endDate}T23:59:59.999+08:00`);
@@ -98,19 +98,19 @@ test('员工报表同月、跨月、部分退货汇总与分页保持一致，�
     ? [{ orderId: 'return-adjustment:ADJ', signedAmount: reversalAdjustment }] : []);
   t.mock.method(M.Store, 'findAll', async () => [{ store_id: 'S' }]);
   t.mock.method(M.Order, 'findAll', async options => {
-    const matched = inRange(saleDate, options.where.create_time);
+    const matched = inRange(saleDate, options.where[Op.and]?.find(c=>c.logic)?.logic);
     if (options.group) return matched ? [{ orderCount: 1, totalAmount: 1000, actualPayment: 1000 }] : [];
     if (options.include) return matched && options.where.order_id[Op.in].includes('O') ? [{ ...order, toJSON: () => order }] : [];
-    if (options.attributes[0] === 'order_id') return matched ? [{ order_id: 'O', create_time: saleDate }] : [];
+    if (options.attributes[0] === 'order_id') return matched ? [{ order_id: 'O', create_time: saleDate,archive_time:saleDate }] : [];
     return [{ name: 'A' }];
   });
-  t.mock.method(M.OrderGrossProfit, 'findAll', async options => inRange(saleDate, options.include[0].where.create_time) ? [snapshot] : []);
+  t.mock.method(M.OrderGrossProfit, 'findAll', async options => inRange(saleDate, options.include[0].where[Op.and]?.find(c=>c.logic)?.logic) ? [snapshot] : []);
   t.mock.method(M.OrderItem, 'findAll', async () => []);
   t.mock.method(M.ExpensePerformanceAllocation, 'findAll', async () => []);
   t.mock.method(M.PerformanceProfitAdjustment, 'findAll', async options => options.attributes ? [{ amount: 0 }] :
-    reversalAdjustment && inRange(returnDate, options.where.create_time) ? [{ toJSON: () => ({
+    reversalAdjustment && inRange(returnDate, options.where.admin_review_time) ? [{ toJSON: () => ({
       adjustment_id: 'ADJ', adjustment_no: 'EDUR-TEST', order_id: 'O', order_no: 'SO1',
-      create_time: returnDate, signed_amount: reversalAdjustment, employee_name: 'A', Order: order
+      create_time: returnDate,admin_review_time:returnDate, signed_amount: reversalAdjustment, employee_name: 'A', Order: order
     }) }] : []);
   t.mock.method(M.ProductPrice, 'findAll', async () => { throw Error('must not reprice'); });
   t.mock.method(M.SalesReturnGrossProfitLedger, 'findAll', async options => {

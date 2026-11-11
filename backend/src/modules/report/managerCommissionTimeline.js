@@ -4,6 +4,7 @@ const {Op}=require('sequelize');
 const M=require('../../models');
 const C=require('./commissionConfig');
 const {money}=require('./employeeCommission');
+const commissionDates=require('./commissionDates');
 const day=value=>value instanceof Date?new Date(value.getTime()+28800000).toISOString().slice(0,10):String(value||'').slice(0,10);
 const known=value=>value!==null&&value!==undefined&&Number.isFinite(Number(value));
 const validLine=value=>known(value)&&String(value).trim()!==''&&Number(value)>=0;
@@ -52,18 +53,19 @@ async function eventFacts(events,storeIds){
     const order=orderMap.get(String(event.orderId)),id=event.eventKey.split(':').at(-1);
     let timestamp,reason='';
     if(event.entryType==='sale'){
-      timestamp=order?.create_time;
+      timestamp=order?commissionDates.saleTime(order):null;
     }else if(event.entryType==='return'){
       timestamp=returnLedgers.filter(r=>String(r.return_id)===id&&r.create_time&&Number.isFinite(new Date(r.create_time).getTime())).sort((a,b)=>new Date(a.create_time)-new Date(b.create_time))[0]?.create_time;
     }else if(event.entryType==='performance_adjustment'){
       const adjustment=adjustments.find(a=>String(a.adjustment_id)===id);
-      timestamp=adjustment?.admin_review_time||adjustment?.update_time||adjustment?.create_time;
+      timestamp=adjustment?commissionDates.adjustmentTime(adjustment):null;
     }else if(event.entryType==='reward_redemption'){
       const reward=rewards.find(r=>String(r.id)===id);timestamp=reward?.created_at;
     }
     if(Number(event.salesGrossProfit)!==0&&!timestamp)reason=reason||'销售流水发生时间缺失';
     const adjustment=adjustments.find(a=>String(a.adjustment_id)===id),origin=order||orderMap.get(String(adjustment?.order_id));
-    return {...event,amount:event.salesGrossProfit,time:timeKey(event,timestamp),reason,ownershipTime:['return','performance_adjustment'].includes(event.entryType)?origin?.create_time:origin?.create_time||timestamp,ownershipStoreId:origin?.store_id||event.storeId,sourceOrderId:origin?.order_id||event.orderId,originalDate:order?day(order.archive_time||order.create_time):null,originalMonth:order?day(order.archive_time||order.create_time).slice(0,7):null};
+    const originalTime=origin?commissionDates.saleTime(origin):null;
+    return {...event,amount:event.salesGrossProfit,time:timeKey(event,timestamp),reason,ownershipTime:origin?originalTime:['return','performance_adjustment'].includes(event.entryType)?null:timestamp,ownershipStoreId:origin?.store_id||event.storeId,sourceOrderId:origin?.order_id||event.orderId,originalDate:originalTime?day(originalTime):null,originalMonth:originalTime?day(originalTime).slice(0,7):null};
   });
   return normalized;
 }
@@ -101,22 +103,22 @@ function createLoader({user,stores}){
       const gross=share.allocatedGrossProfit;
       if(!known(gross)){addIssue('个人冻结毛利不完整',share);continue;}
       let event;
-      const currentReturn=share.sourceEntryType==='return'||(share.sourceEntryType==='return_adjustment'&&/^(AUTO-CARE-RET-|EDUR-)/.test(String(share.orderNo||'')));
+      const currentReturn=share.sourceEntryType==='return'||share.sourceEntryType==='return_adjustment';
       if(share.sourceEntryType==='return')event=actualContext?.entries.find(e=>e.eventKey===`return:${share.returnId}`);
       else if(currentReturn&&share.sourceEntryType==='return_adjustment')event=actualContext?.entries.find(e=>e.eventKey===`performance:${String(share.orderId).replace(/^return-adjustment:/,'')}`);
       else if(share.sourceEntryType==='reward_redemption')event=actualContext?.entries.find(e=>e.eventKey===share.orderId);
       else if(share.sourceEntryType==='sale')event=actualContext?.entries.find(e=>e.entryType==='sale'&&String(e.orderId)===String(share.orderId));
-      // Ordinary personal adjustments retain their sale stage. Returns and
-      // return-adjustment entries use only the current month's event stage.
+      // All approved differences use the approval month's stage, not the source sale's.
       const originalId=String(share.sourceOrderId||share.orderId);
       let stage=event?{fraction:event.fraction}:currentReturn?null:actualContext?.saleStages.get(originalId);
       if(!stage&&Number(gross)!==0&&!currentReturn){
         const original=await M.Order.findByPk(originalId,{raw:true});
         const originStoreId=String(original?.store_id||actualStoreId);
-        const originalMonth=original?day(original.archive_time||original.create_time).slice(0,7):null;
+        const originalTime=original?commissionDates.saleTime(original):null;
+        const originalMonth=originalTime?day(originalTime).slice(0,7):null;
         if(originalMonth){
           try{
-            const originalContext=(await month(originalMonth,undefined,originStoreId,day(original.archive_time||original.create_time))).get(originStoreId);
+            const originalContext=(await month(originalMonth,undefined,originStoreId,day(originalTime))).get(originStoreId);
             stage=originalContext?.saleStages.get(originalId);
             if(!stage&&originalContext?.reason)stage={fraction:null,reason:originalContext.reason};
             event=originalContext?.entries.find(e=>e.entryType==='sale'&&String(e.orderId)===originalId);

@@ -324,7 +324,7 @@
               </template>
             </el-table-column>
             <el-table-column label="业务类型" width="100">
-              <template #default="{ row }"><el-tag :type="row.entryType === 'return' ? 'danger' : 'success'">{{ row.entryType === 'return' ? '退单冲回' : row.entryType === 'invoice_adjustment' ? '\u5f00\u7968\u6bdb\u5229\u8c03\u6574' : row.entryType === 'reward_redemption' ? '积分兑换核销' : '销售' }}</el-tag></template>
+              <template #default="{ row }"><el-tag :type="row.entryType === 'return' ? 'danger' : 'success'">{{ row.entryType === 'return' ? '退单冲回' : row.entryType === 'performance_adjustment' ? '审批调整' : row.entryType === 'invoice_adjustment' ? '\u5f00\u7968\u6bdb\u5229\u8c03\u6574' : row.entryType === 'reward_redemption' ? '积分兑换核销' : '销售' }}</el-tag></template>
             </el-table-column>
             <el-table-column prop="orderNo" label="销售/退单号" width="180" />
             <el-table-column prop="sourceOrderNo" label="关联原销售单" width="180" />
@@ -370,8 +370,8 @@
             </el-table-column>
             <el-table-column label="操作" width="155" fixed="right">
               <template #default="{ row }">
-                <el-button v-if="!['reward_redemption','invoice_adjustment'].includes(row.entryType)" link type="primary" @click="openAdjustmentApply(row)">申请业务纠错</el-button>
-                <el-button v-if="!['reward_redemption','invoice_adjustment'].includes(row.entryType)" link @click="openOrderAdjustments(row)">记录</el-button>
+                <el-button v-if="!['reward_redemption','invoice_adjustment','performance_adjustment'].includes(row.entryType)" link type="primary" @click="openAdjustmentApply(row)">申请业务纠错</el-button>
+                <el-button v-if="!['reward_redemption','invoice_adjustment','performance_adjustment'].includes(row.entryType)" link @click="openOrderAdjustments(row)">记录</el-button>
                 <span v-if="row.entryType === 'reward_redemption'">核销时确认</span>
               </template>
             </el-table-column>
@@ -408,7 +408,7 @@
           <el-input-number v-model="adjustmentForm.unitPrice" :min="0" :max="999999999.99" :precision="2" controls-position="right" style="width: 220px" />
         </el-form-item>
         <el-form-item v-if="adjustmentForm.adjustmentType === 'invoice_amount'" label="开票类型" required><el-select v-model="adjustmentForm.invoiceStatus" :disabled="correctionInvoiceStatus !== '不开票'"><el-option v-for="type in ['普通发票','增值税发票','开专票']" :key="type" :label="type" :value="type" /></el-select><span style="margin-left:12px">原类型：{{ correctionInvoiceStatus || '待核实' }}</span></el-form-item>
-        <el-form-item v-if="adjustmentForm.adjustmentType === 'invoice_amount'" label="差额归属" required><el-radio-group v-model="adjustmentForm.periodMode"><el-radio label="current">当月（默认）</el-radio><el-radio label="original">原订单发生月</el-radio></el-radio-group></el-form-item>
+        <el-form-item label="差额归属">审批通过当月单独计入，保留原归档毛利</el-form-item>
         <el-form-item v-if="adjustmentForm.adjustmentType === 'invoice_amount'" label="原开票金额"><span v-if="correctionInvoiceAmount !== null">¥{{ formatMoney(correctionInvoiceAmount) }}</span><span v-else>待核实</span></el-form-item>
         <el-form-item v-if="adjustmentForm.adjustmentType === 'invoice_amount'" label="正确开票金额" required><el-input-number v-model="adjustmentForm.invoiceAmount" :min="0" :max="999999999.99" :precision="2" placeholder="请输入新的开票金额" controls-position="right" style="width:220px" /></el-form-item>
         <el-form-item v-if="(adjustmentForm.adjustmentType === 'price_correction' && adjustmentForm.unitPrice === 0) || (adjustmentForm.adjustmentType === 'invoice_amount' && adjustmentForm.invoiceAmount === 0)" label="零元确认"><el-checkbox v-model="adjustmentForm.confirmZero">{{ adjustmentForm.adjustmentType === 'invoice_amount' ? '确认本订单开票金额为零元，开票类型保持不变' : '确认本商品结算定价为零元' }}</el-checkbox></el-form-item>
@@ -425,7 +425,7 @@
           <el-descriptions-item v-if="adjustmentForm.adjustmentType === 'price_correction'" label="结算定价">¥{{ formatMoney(correctionPreview.beforeUnitPrice) }} → ¥{{ formatMoney(correctionPreview.afterUnitPrice) }}</el-descriptions-item>
           <el-descriptions-item v-else label="开票金额">¥{{ formatMoney(correctionPreview.beforeInvoiceAmount) }} → ¥{{ formatMoney(correctionPreview.afterInvoiceAmount) }}</el-descriptions-item>
           <el-descriptions-item v-if="adjustmentForm.adjustmentType === 'invoice_amount'" label="开票类型">{{ correctionPreview.beforeInvoiceStatus }} → {{ correctionPreview.afterInvoiceStatus }}</el-descriptions-item>
-          <el-descriptions-item v-if="adjustmentForm.adjustmentType === 'invoice_amount'" label="差额归属月份">{{ correctionPreview.targetMonth }}</el-descriptions-item>
+          <el-descriptions-item label="差额归属月份">以最终审批通过月份为准</el-descriptions-item>
           <el-descriptions-item v-if="adjustmentForm.adjustmentType === 'invoice_amount'" label="税费扣减">¥{{ formatMoney(correctionPreview.vatBefore) }} → ¥{{ formatMoney(correctionPreview.vatAfter) }}</el-descriptions-item>
           <el-descriptions-item label="销售端毛利">¥{{ formatMoney(correctionPreview.salesBefore) }} → ¥{{ formatMoney(correctionPreview.salesAfter) }}（变化 ¥{{ formatMoney(correctionPreview.salesDelta) }}）</el-descriptions-item>
           <el-descriptions-item label="处理说明">{{ correctionPreview.note }}</el-descriptions-item>

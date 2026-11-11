@@ -38,6 +38,12 @@ function allocateProfit(participants, grossProfit) {
   return shares;
 }
 
+function allocateAdjustment(participants,baseProfit,delta){
+  const total=money(delta),base=Number(baseProfit||0),shares=allocateProfit(participants,base);
+  if(!base)return allocateProfit(participants.map(p=>({...p,profitAmount:'',ratio:''})),total);
+  let assigned=0;
+  return shares.map((share,index)=>{const amount=index===shares.length-1?money(total-assigned):money(total*share/base);assigned=money(assigned+amount);return amount;});
+}
 function isInstantRetail(order) {
   const created = order.create_time;
   const day = created instanceof Date
@@ -86,4 +92,4 @@ function instantRetailReturnShares(rows, groupKey, orderOf, amountOf) {
   return shares;
 }
 
-module.exports = { allocateProfit, money, isInstantRetail, splitInstantRetail, instantRetailStaffShares, instantRetailReturnShares };
+module.exports = { allocateProfit, allocateAdjustment, money, isInstantRetail, splitInstantRetail, instantRetailStaffShares, instantRetailReturnShares };

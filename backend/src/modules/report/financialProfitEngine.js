@@ -3,6 +3,7 @@ const crypto = require('node:crypto');
 const { QueryTypes } = require('sequelize');
 const M = require('../../models');
 const companyProfit = require('./companyProfitDetails');
+const commissionDates = require('./commissionDates');
 const { summarizeAllocatedExpenses } = require('../finance/expenseCostAllocation');
 const { expenseEventKey } = require('../finance/expenseAmortization');
 const money = value => Math.round(Number(value || 0) * 100) / 100;
@@ -114,7 +115,7 @@ async function loadFacts(filters, calculateOrder, transaction) {
     WHERE sr.STORE_ID IN (:storeIds) AND sr.SETTLEMENT_STATUS <> 'cancelled' AND rr.STATUS IN ('approved','completed')) return_facts
     WHERE returnDate BETWEEN :start AND :end`, p, transaction);
   const returnOrders = [...new Set(returns.map(row => row.orderId))];
-  const rows = await select(`SELECT o.ORDER_ID orderId, o.ORDER_NO orderNo, DATE(COALESCE(o.ARCHIVE_TIME,o.CREATE_TIME)) businessDate,
+  const rows = await select(`SELECT o.ORDER_ID orderId, o.ORDER_NO orderNo, DATE(${commissionDates.saleSql()}) businessDate,
       o.CREATE_TIME create_time, o.CUSTOMER_SOURCE customer_source,
       o.STORE_ID storeId, s.NAME storeName, o.CUSTOMER_NAME customerName, o.TOTAL_AMOUNT totalAmount, o.DISCOUNT_AMOUNT discountAmount,
       oi.ITEM_ID itemId, oi.PRODUCT_NAME productName, oi.QUANTITY quantity, oi.SUBTOTAL subtotal, oi.ORIGINAL_INVENTORY_COST originalInventoryCost,
@@ -129,7 +130,7 @@ async function loadFacts(filters, calculateOrder, transaction) {
     LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.SNAPSHOT_STATUS = 'final'
     LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID
     WHERE o.IS_DELETED = 0 AND o.ORDER_STATUS IN ('completed','archived','已归档','returned','已退单','return_pending')
-      AND o.STORE_ID IN (:storeIds) AND (DATE(COALESCE(o.ARCHIVE_TIME,o.CREATE_TIME)) BETWEEN :start AND :end OR o.ORDER_ID IN (:returnOrders))`,
+      AND o.STORE_ID IN (:storeIds) AND (DATE(${commissionDates.saleSql()}) BETWEEN :start AND :end OR o.ORDER_ID IN (:returnOrders))`,
     { ...p, returnOrders: returnOrders.length ? returnOrders : ['__NO_ORDER__'] }, transaction);
   const expenseSummary = await summarizeAllocatedExpenses({ storeIds: filters.storeIds, startDate: filters.startDate, endDate: filters.endDate, dateMode: 'financial_period', transaction });
   const reviewKeys = [...new Set([...rows.map(row => `sale:${row.orderId}`), ...returns.map(row => `return:${row.returnId}`), ...(expenseSummary.entries || []).map(expenseEventKey)])];
@@ -209,14 +210,12 @@ async function loadFacts(filters, calculateOrder, transaction) {
     else if (saved.category === 'expense') expenseAdjustments.push({ ...event, entryType: 'expense', storeId: saved.original.storeId || null, scopeStoreIds: saved.original.scopeStoreIds, category: saved.original.category || 'store', amount: event.grossCost });
     else items.push(event);
   }
-  const performanceDate = `CASE WHEN ADJUSTMENT_NO LIKE 'INVOICE-PERIOD-%' THEN CREATE_TIME
-    WHEN ADJUSTMENT_TYPE = 'invoice_amount' AND SIGNED_AMOUNT <> 0 THEN
-      STR_TO_DATE(CONCAT(JSON_UNQUOTE(JSON_EXTRACT(CORRECTION_DATA,'$.result.originalMonth')),'-01'),'%Y-%m-%d')
-    ELSE COALESCE(ADMIN_REVIEW_TIME,UPDATE_TIME,CREATE_TIME) END`;
-  const performance = await select(`SELECT ADJUSTMENT_ID eventKey, STORE_ID storeId, DATE(${performanceDate}) businessDate,
-      SIGNED_AMOUNT amount FROM T_PERFORMANCE_PROFIT_ADJUSTMENT WHERE STATUS = 'approved' AND STORE_ID IN (:storeIds)
+  const performanceDate = commissionDates.adjustmentSql('pa');
+  const performance = await select(`SELECT ADJUSTMENT_ID eventKey, STORE_ID storeId, ORDER_ID orderId, ORDER_NO orderNo, ADJUSTMENT_NO entryNo, DATE(${performanceDate}) businessDate,
+      SIGNED_AMOUNT amount, CORRECTION_DATA correctionData FROM T_PERFORMANCE_PROFIT_ADJUSTMENT pa WHERE STATUS = 'approved' AND STORE_ID IN (:storeIds)
       AND DATE(${performanceDate}) BETWEEN :start AND :end`, p, transaction);
-  const managementAdjustments = performance.map(row => ({ ...row, businessDate: date(row.businessDate), amount: money(row.amount) }));
+  const managementAdjustments = performance.map(({correctionData,...row}) => ({ ...row, businessDate: date(row.businessDate), amount: money(row.amount),
+    productAmount: parse(correctionData || '{}').postingVersion === 'APPROVED_DIFFERENCE_V2' ? money(parse(correctionData).result?.productDelta || 0) : 0 }));
   const rewardEvents = await require('../customerOps/profitEvents').events({ storeIds: filters.storeIds },
     require('./dashboardService').buildRanges(filters).current, (sql, replacements) => select(sql, replacements, transaction));
   return { items, policyItems, rewardEvents, expenseEntries: (expenseSummary.entries || []).map(row => { const raw = finish({ ...row, eventKey: expenseEventKey(row), entryNo: row.expenseId, entryType: 'expense', businessDate: date(row.businessDate), grossRevenue: 0, grossCost: row.amount, bookCost: row.amount, grossProfit: 0, status: 'estimated', policyImpact: 0 }); return applyReview(raw, reviewMap.get(raw.eventKey)); }).concat(expenseAdjustments), periods, adjustmentRows, managementAdjustments };

@@ -64,6 +64,9 @@ function fixture(t, extra = {}) {
   const item = row({ settlement_item_id: 1, source_order_item_id: 9, quantity: 1, product_unit_price: 5500, purchase_unit_cost: 5000, purchase_cost_amount: 5000, gross_profit_amount: 500, cost_status: 'ready' });
   const original = row({ item_id: 9, product_id: 'P', product_name: '笔记本', sn_code: 'SN1', quantity: 1, subtotal: 6000, sales_settlement_cost: 5500, sales_gross_profit: 500 });
   const logs = [];
+  const approved=[];
+  t.mock.method(M.PerformanceProfitAdjustment,'findAll',async()=>approved);
+  t.mock.method(M.ExpenseAccountingPeriod,'findOne',async()=>null);
   t.mock.method(M.Order, 'findByPk', async () => order);
   t.mock.method(M.Order, 'findOne', async () => order);
   t.mock.method(M.Store, 'findByPk', async () => row({ store_id: 'S' }));
@@ -83,7 +86,7 @@ function fixture(t, extra = {}) {
       throw error;
     }
   });
-  return { snapshot, order, settlement, item, original, logs };
+  return { snapshot, order, settlement, item, original, logs,approved };
 }
 async function adjustmentFor(ctx) {
   const input = C.validate({ itemId: 9, unitPrice: 5300 });
@@ -136,17 +139,17 @@ test('unknown cost, purchase-price mode, closed period, returns and forbidden st
   await t.test('unknown cost', async sub => { const f = fixture(sub); f.item.cost_status = 'pending'; await assert.rejects(C.select(context(), 'O'), /未完整确认/); });
   await t.test('purchase price', async sub => { const f = fixture(sub); f.snapshot.product_pricing_details[0].isCompanyPriced = false; await assert.rejects(C.select(context(), 'O', { itemId: '9', unitPrice: 5300 }), /采购价口径/); });
 });
-test('final approval updates both profit sources atomically, records original facts and never stacks a signed adjustment', async t => {
+test('final approval posts signed differences and preserves archived sales and product facts', async t => {
   const f = fixture(t), ctx = context(), a = await adjustmentFor(ctx);
   t.mock.method(M.PerformanceProfitAdjustment, 'findByPk', async () => a);
   t.mock.method(runtime, 'advance', async () => true);
   ctx.params.adjustmentId = a.adjustment_id;
   await controller.approveProfitAdjustment(ctx);
-  assert.equal(a.status, 'approved'); assert.equal(a.signed_amount, 0);
-  assert.equal(f.snapshot.gross_profit_amount, 700); assert.equal(f.settlement.gross_profit_amount, 300);
-  assert.equal(f.original.sales_settlement_cost, 5300); assert.equal(f.item.product_unit_price, 5300);
+  assert.equal(a.status, 'approved'); assert.equal(a.signed_amount, 200);
+  assert.equal(f.snapshot.gross_profit_amount, 500); assert.equal(f.settlement.gross_profit_amount, 500);
+  assert.equal(f.original.sales_settlement_cost, 5500); assert.equal(f.item.product_unit_price, 5500);
   assert.equal(f.item.purchase_unit_cost, 5000); assert.equal(a.correction_data.result.before.snapshot.gross_profit_amount, 500);
-  assert.equal(f.snapshot.product_pricing_details[0].correctionId, 'A'); assert.equal(f.logs.length, 1);
+  assert.equal(a.correction_data.result.after.snapshot.product_pricing_details[0].correctionId, 'A'); assert.equal(f.logs.length, 1);
   const displayed = C.display(a.toJSON(), ctx.state.user); assert.equal(displayed.correction_sales_delta, 200); assert.equal(displayed.correction_product_delta, -200);
   assert.equal(displayed.correction_data, undefined);
   const restricted = C.display(a.toJSON(), { roles: ['clerk'] });
@@ -176,7 +179,7 @@ test('stale prices or failed product update roll back final approval effects', a
     const f = fixture(sub), ctx = context(), a = await adjustmentFor(ctx);
     sub.mock.method(M.PerformanceProfitAdjustment, 'findByPk', async () => a);
     sub.mock.method(runtime, 'advance', async () => true);
-    sub.mock.method(f.item, 'update', async () => { throw new Error('write failed'); });
+    sub.mock.method(a, 'update', async () => { throw new Error('write failed'); });
     ctx.params.adjustmentId = 'A'; await assert.rejects(controller.approveProfitAdjustment(ctx), /write failed/);
     assert.equal(f.snapshot.gross_profit_amount, 500); assert.equal(f.settlement.gross_profit_amount, 500); assert.equal(a.status, 'pending_finance');
   });
@@ -209,6 +212,7 @@ test('submission uses server preview, requires evidence, rejects stale or duplic
 test('reversal is another evidenced price correction; original approved facts remain traceable', async t => {
   const f = fixture(t), ctx = context(), a = await adjustmentFor(ctx);
   await C.apply(ctx, a, tx);
+  f.approved.push(a);
   const selected = await C.select(ctx, 'O', { itemId: '9', unitPrice: 5500 });
   const reversal = row({ ...a.toJSON(), adjustment_id: 'B', adjustment_no: 'PPA2', correction_data: {
     input: { itemId: '9', unitPrice: 5500 }, evidence: '原定价通知重新核实', previewHash: selected.previewHash, result: selected.result
@@ -225,7 +229,7 @@ function invoiceFixture(t, extra = {}) {
   return f;
 }
 
-test('补开票沿用原成本和定价，禁止已开票改回不开票，当前月差额与原月抵回相等', async t => {
+test('补开票保留原归档毛利，仅在审批月记录一次税费差额', async t => {
   const f = invoiceFixture(t);
   f.order.invoice_status = '不开票';
   f.order.invoice_amount = 6000;
@@ -245,32 +249,29 @@ test('补开票沿用原成本和定价，禁止已开票改回不开票，当�
     correction_data:{input,previewHash:preview.previewHash,result:preview.result}});
   await C.apply(ctx,adjustment,tx);
   assert.equal(f.order.invoice_status,'普通发票');
-  assert.equal(f.snapshot.gross_profit_amount,435);
+  assert.equal(f.snapshot.gross_profit_amount,500);
   assert.equal(f.snapshot.product_pricing_amount,5500);
   assert.equal(f.settlement.gross_profit_amount,500);
   if(preview.result.targetMonth !== preview.result.originalMonth){
-    assert.equal(events.length,1);
-    assert.equal(adjustment.signed_amount,65);
-    assert.equal(events[0].signed_amount,-65);
-    assert.equal(f.snapshot.gross_profit_amount+adjustment.signed_amount,500);
-    assert.equal(events[0].adjustment_no,'INVOICE-PERIOD-SUPPLEMENT');
+    assert.equal(events.length,0);
+    assert.equal(adjustment.signed_amount,-65);
+    assert.equal(f.snapshot.gross_profit_amount+adjustment.signed_amount,435);
   }
   assert.throws(()=>C.validate({adjustmentType:C.INVOICE_TYPE,invoiceAmount:6000,invoiceStatus:'不开票'}),/不能改为不开票/);
 });
 
-test('补开票选择发生月直接重算，跨月审批须重新预览，锁期阻止', async t => {
+test('旧客户端指定原月也统一使用审批月，审批月锁定阻止写入', async t => {
   const f=invoiceFixture(t); f.order.invoice_status='不开票';
   t.mock.method(M.ExpenseAccountingPeriod,'findOne',async()=>null);
   const ctx=context(),input=C.validate({adjustmentType:C.INVOICE_TYPE,invoiceAmount:6000,invoiceStatus:'普通发票',periodMode:'original'});
   const selected=await C.select(ctx,'O',input);
-  assert.equal(selected.result.targetMonth,'2026-10');
+  assert.equal(selected.result.targetMonth,new Date(Date.now()+28800000).toISOString().slice(0,7));
   const adjustment=row({adjustment_id:'ORIGINAL',adjustment_type:C.INVOICE_TYPE,order_id:'O',signed_amount:0,
     correction_data:{input,previewHash:selected.previewHash,result:{...selected.result,targetMonth:'2000-01'}}});
-  await assert.rejects(()=>C.apply(ctx,adjustment,tx),/跨月/);
-  adjustment.correction_data.result=selected.result;
   await C.apply(ctx,adjustment,tx);
-  assert.equal(adjustment.signed_amount,0);
-  assert.equal(f.snapshot.gross_profit_amount,435);
+  assert.equal(adjustment.signed_amount,-65);
+  assert.equal(f.snapshot.gross_profit_amount,500);
+  f.approved.push(adjustment);
   t.mock.method(M.ExpenseAccountingPeriod,'findOne',async()=>({status:'closed'}));
   await assert.rejects(()=>C.select(ctx,'O',{...input,invoiceAmount:5900}),/锁定/);
 });
@@ -282,9 +283,9 @@ test('补开跨月记录写入失败时开票类型与原快照一起回滚，�
   assert.equal(input.periodMode,'current');
   const selected=await C.select(ctx,'O',input);
   if(selected.result.targetMonth!==selected.result.originalMonth){
-    t.mock.method(M.PerformanceProfitAdjustment,'create',async()=>{throw Error('period insert failed');});
     const adjustment=row({adjustment_id:'ROLLBACK',adjustment_no:'PPA-R',adjustment_type:C.INVOICE_TYPE,order_id:'O',signed_amount:0,
       correction_data:{input,previewHash:selected.previewHash,result:selected.result}});
+    t.mock.method(adjustment,'update',async()=>{throw Error('period insert failed');});
     await assert.rejects(()=>M.sequelize.transaction(tx=>C.apply(ctx,adjustment,tx)),/period insert failed/);
     assert.equal(f.order.invoice_status,'不开票');
     assert.equal(f.snapshot.gross_profit_amount,500);
@@ -325,21 +326,22 @@ test('开票纠错不因产品端待核算而补算采购成本，未知毛利�
   assert.equal(selected.result.salesAfter,435);assert.equal(selected.result.productBefore,null);assert.equal(selected.result.productAfter,null);
   assert.equal(selected.result.productDelta,0);
   const a=await invoiceAdjustment(ctx);await C.apply(ctx,a,tx);
+  f.approved.push(a);
   assert.equal(f.item.purchase_unit_cost,null);assert.equal(f.settlement.status,'cost_pending');
   t.mock.method(M.ProductSettlementOrder,'findOne',async()=>null);
   const back=await C.select(ctx,'O',{type:C.INVOICE_TYPE,invoiceAmount:0});
   assert.equal(back.result.productBefore,null);assert.equal(back.result.salesAfter,500);
 });
 
-test('开票最终审批事务更新订单与快照，不重复叠加调整，产品端保持', async t => {
+test('开票最终审批更新实际开票信息，原快照不变，差额单独入账', async t => {
   const f=invoiceFixture(t),ctx=context(),a=await invoiceAdjustment(ctx);
   const productBefore=JSON.stringify(f.settlement.toJSON()),itemBefore=JSON.stringify(f.item.toJSON()),orderItemBefore=JSON.stringify(f.original.toJSON());
   t.mock.method(M.PerformanceProfitAdjustment,'findByPk',async()=>a);
   t.mock.method(runtime,'advance',async()=>true);
   ctx.params.adjustmentId='IA';await controller.approveProfitAdjustment(ctx);
-  assert.equal(f.order.invoice_amount,6000);assert.equal(f.snapshot.invoice_amount,6000);
-  assert.equal(f.snapshot.vat_amount,65);assert.equal(f.snapshot.gross_profit_amount,435);
-  assert.equal(a.status,'approved');assert.equal(a.signed_amount,0);
+  assert.equal(f.order.invoice_amount,6000);assert.equal(f.snapshot.invoice_amount,0);
+  assert.equal(f.snapshot.vat_amount,0);assert.equal(f.snapshot.gross_profit_amount,500);
+  assert.equal(a.status,'approved');assert.equal(a.signed_amount,-65);
   assert.equal(f.order.actual_payment,6000);assert.equal(f.order.invoice_status,'专票13%');
   assert.equal(JSON.stringify(f.settlement.toJSON()),productBefore);assert.equal(JSON.stringify(f.item.toJSON()),itemBefore);assert.equal(JSON.stringify(f.original.toJSON()),orderItemBefore);
   assert.equal(f.logs.length,1);assert.equal(a.correction_data.result.before.order.invoice_amount,0);
@@ -379,13 +381,13 @@ test('开票纠错写快照失败时订单金额一并回滚，反向纠错可�
   await t.test('rollback',async sub=>{
     const f=invoiceFixture(sub),ctx=context(),a=await invoiceAdjustment(ctx);
     sub.mock.method(M.PerformanceProfitAdjustment,'findByPk',async()=>a);sub.mock.method(runtime,'advance',async()=>true);
-    sub.mock.method(f.snapshot,'update',async()=>{throw Error('snapshot failed');});
+    sub.mock.method(a,'update',async()=>{throw Error('snapshot failed');});
     ctx.params.adjustmentId='IA';await assert.rejects(controller.approveProfitAdjustment(ctx),/snapshot failed/);
     assert.equal(f.order.invoice_amount,0);assert.equal(f.snapshot.invoice_amount,0);assert.equal(a.status,'pending_finance');
   });
   await t.test('reversal',async sub=>{
     const f=invoiceFixture(sub),ctx=context(),a=await invoiceAdjustment(ctx);
-    await C.apply(ctx,a,tx);const reverse=await invoiceAdjustment(ctx,0);await C.apply(ctx,reverse,tx);
+    await C.apply(ctx,a,tx);f.approved.push(a);const reverse=await invoiceAdjustment(ctx,0);await C.apply(ctx,reverse,tx);
     assert.equal(f.order.invoice_amount,0);assert.equal(f.snapshot.gross_profit_amount,500);assert.equal(f.settlement.gross_profit_amount,500);
   });
 });

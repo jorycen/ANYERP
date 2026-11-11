@@ -104,16 +104,8 @@ async function select(ctx, orderId, input = null, transaction = null, includeInv
   const returns = await M.SalesReturnRequest.findAll({ where: { order_id: orderId, status: { [Op.notIn]: ['rejected', 'cancelled', 'canceled', 'voided'] } }, ...options });
   if (returns.length) fail('订单存在退货或退货处理中记录，本期暂不支持，请先联系财务核对关联退货');
   let snapshot = await M.OrderGrossProfit.findOne({ where: { order_id: orderId }, ...options });
-  // Reconcile the embedded basis from the canonical inventory foundation
-  // before validating a correction. This is synchronization only; the forced
-  // path never infers a new receipt or invoice type.
-  if (snapshot?.snapshot_status === 'final') {
-    const { calculateAndSaveOrderGrossProfit } = require('../sales/grossProfit');
-    snapshot = await calculateAndSaveOrderGrossProfit(orderId, {
-      transaction, force: true, calculatedBy: 'tax-basis-sync', requireComplete: false
-    });
-  }
-  const settlement = await M.ProductSettlementOrder.findOne({ where: { source_order_id: orderId }, ...options });
+  // Never refresh an archived amount as a side effect of preview/approval.
+  let settlement = await M.ProductSettlementOrder.findOne({ where: { source_order_id: orderId }, ...options });
   if (!snapshot || (!settlement && !invoiceOrOptions)) fail('缺少原归档毛利或产品端结算记录，请先核实原单');
   if (!invoiceOrOptions && settlement.status !== 'posted') fail('产品端成本未完整确认，暂不能纠正结算定价');
   const settlementMonth = settlement ? new Date(new Date(settlement.business_date).getTime() + 8 * 3600000).toISOString().slice(0, 7) : null;
@@ -121,7 +113,9 @@ async function select(ctx, orderId, input = null, transaction = null, includeInv
     const closedSettlement = await M.sequelize.query('SELECT MONTH_KEY FROM T_FINANCIAL_PROFIT_PERIOD WHERE MONTH_KEY = :month' + (transaction ? ' FOR UPDATE' : ''), { replacements: { month: settlementMonth }, type: QueryTypes.SELECT, transaction });
     if (closedSettlement.length) fail('产品端结算所属月份已锁定，请先联系财务核对');
   }
-  const items = settlement ? await M.ProductSettlementItem.findAll({ where: { settlement_id: settlement.settlement_id }, order: [['settlement_item_id', 'ASC']], ...options }) : [];
+  let items = settlement ? await M.ProductSettlementItem.findAll({ where: { settlement_id: settlement.settlement_id }, order: [['settlement_item_id', 'ASC']], ...options }) : [];
+  const approved = await M.PerformanceProfitAdjustment.findAll({where:{order_id:orderId,status:'approved'},order:[['admin_review_time','ASC'],['create_time','ASC'],['adjustment_id','ASC']],...options});
+  ({snapshot,settlement,items}=require('./correctionProjection').project({snapshot,settlement,items},approved));
   if (!invoiceOrOptions && (!items.length || items.some(item => item.cost_status !== 'ready' || GP.validPrice(item.purchase_unit_cost) === null
     || GP.validPrice(item.product_unit_price) === null || GP.validPrice(item.purchase_cost_amount) === null))) fail('产品端明细成本未完整确认，请先核对');
   const originalSummary = summarizeProductSettlementItems(items.map(plain));
@@ -145,7 +139,7 @@ async function select(ctx, orderId, input = null, transaction = null, includeInv
     if (!['普通发票', '增值税发票', '开专票', '专票13%'].includes(invoiceStatus)) fail('请选择补开后的开票类型；已开票不能改为不开票', 400);
     if (order.invoice_status !== '不开票' && invoiceStatus !== order.invoice_status) fail('已开票订单仅支持金额调整，开票类型保持不变', 400);
     const originalMonth = month;
-    const targetMonth = input.periodMode === 'current' ? new Date(Date.now()+8*3600000).toISOString().slice(0,7) : month;
+    const targetMonth = new Date(Date.now()+8*3600000).toISOString().slice(0,7);
     const targetClosed = await M.sequelize.query('SELECT MONTH_KEY FROM T_FINANCIAL_PROFIT_PERIOD WHERE MONTH_KEY = :month'+(transaction?' FOR UPDATE':''), {replacements:{month:targetMonth},type:QueryTypes.SELECT,transaction});
     if (targetClosed.length) fail('调整归属月份已锁定');
     if (input.periodMode) {
@@ -159,7 +153,7 @@ async function select(ctx, orderId, input = null, transaction = null, includeInv
     const productProfit = settlement?.status === 'posted' && settlement.gross_profit_amount !== null && Number.isFinite(Number(settlement.gross_profit_amount)) ? Number(settlement.gross_profit_amount) : null;
     const before = { snapshot: plain(snapshot), settlement: settlement ? plain(settlement) : null, items: items.map(plain), orderItems: orderItems.map(plain),
       order: { invoice_amount: order.invoice_amount, invoice_status: order.invoice_status } };
-    const result = { correctionType: INVOICE_TYPE, beforeInvoiceStatus: order.invoice_status, afterInvoiceStatus: invoiceStatus, originalMonth, targetMonth, periodMode:input.periodMode || 'original', beforeInvoiceAmount: Number(snapshot.invoice_amount), afterInvoiceAmount: patch.invoice_amount,
+    const result = { correctionType: INVOICE_TYPE, beforeInvoiceStatus: order.invoice_status, afterInvoiceStatus: invoiceStatus, originalMonth, targetMonth, periodMode:'current', beforeInvoiceAmount: Number(snapshot.invoice_amount), afterInvoiceAmount: patch.invoice_amount,
       vatBefore: Number(snapshot.vat_amount), vatAfter: patch.vat_amount,
       salesBefore: Number(snapshot.gross_profit_amount), salesAfter: patch.gross_profit_amount,
       salesDelta: money(patch.gross_profit_amount - Number(snapshot.gross_profit_amount)),
@@ -197,25 +191,8 @@ async function apply(ctx, adjustment, transaction) {
   if (selected.previewHash !== saved.previewHash) fail('订单、毛利或结算数据已变化，请拒绝本申请并重新预览提交');
   if (adjustment.adjustment_type === INVOICE_TYPE) {
     if (saved.input.type !== INVOICE_TYPE) fail('开票金额纠错类型与申请依据不一致');
-    if (saved.result?.targetMonth && saved.result.targetMonth !== selected.result.targetMonth) fail('已跨月，请重新预览并提交调整归属月份');
-    const patch = selected.result.after.snapshot;
     await selected.order.update(selected.result.after.order, { transaction });
-    const {originalMonth,targetMonth,salesDelta}=selected.result;
-    if(targetMonth !== originalMonth && salesDelta !== 0){
-      await adjustment.update({signed_amount:-salesDelta},{transaction});
-      await M.PerformanceProfitAdjustment.create({adjustment_id:crypto.randomUUID().replaceAll('-',''),
-        adjustment_no:'INVOICE-PERIOD-'+adjustment.adjustment_id,order_id:adjustment.order_id,order_no:selected.order.order_no,
-        store_id:selected.order.store_id,employee_name:selected.order.create_user || '',adjustment_type:'invoice_period',
-        amount:Math.abs(salesDelta),signed_amount:salesDelta,base_gross_profit:0,status:'approved',
-        applicant_staff_id:adjustment.applicant_staff_id,applicant_name:adjustment.applicant_name,
-        reason:'补开票毛利差额归属 '+targetMonth+'；来源 '+adjustment.adjustment_no,
-        correction_data:{parentAdjustmentId:adjustment.adjustment_id,targetMonth,originalMonth},
-        create_time:new Date(targetMonth+'-01T00:00:00+08:00'),update_time:new Date(),
-        admin_reviewer_id:ctx.state.user.staffId,admin_reviewer_name:ctx.state.user.name,admin_review_time:new Date()
-      },{transaction});
-    }
-    await selected.snapshot.update({ ...patch, calculated_by: ctx.state.user.name, calculated_at: new Date(), update_time: new Date() }, { transaction });
-    await adjustment.update({ correction_data: { ...saved, appliedAt: new Date().toISOString(), result: selected.result } }, { transaction });
+    await adjustment.update({signed_amount:selected.result.salesDelta,correction_data: { ...saved, postingVersion:'APPROVED_DIFFERENCE_V2',appliedAt: new Date().toISOString(), result: selected.result } }, { transaction });
     await recordBusinessAction({ businessType: 'invoice_amount_correction', businessId: adjustment.order_id,
       businessNo: adjustment.adjustment_no, action: 'correct_invoice_amount', user: ctx.state.user,
       comment: adjustment.reason, detail: { adjustmentId: adjustment.adjustment_id, evidence: saved.evidence, ...selected.result }, transaction });
@@ -223,14 +200,7 @@ async function apply(ctx, adjustment, transaction) {
   }
   if (saved.input.type === INVOICE_TYPE) fail('纠错类型与申请依据不一致');
   const patch = snapshotPatch(selected.result.before.snapshot, saved.input.itemId, saved.input.unitPrice, adjustment.adjustment_id, null, selected.order.invoice_status);
-  await selected.snapshot.update({ ...patch, calculated_by: ctx.state.user.name, calculated_at: new Date(), update_time: new Date() }, { transaction });
-  await selected.settlement.update({ ...selected.result.after.settlement, update_time: new Date() }, { transaction });
-  const changed = selected.items.find(item => String(item.source_order_item_id) === saved.input.itemId);
-  const afterItem = selected.result.after.items.find(item => String(item.source_order_item_id) === saved.input.itemId);
-  await changed.update({ product_unit_price: afterItem.product_unit_price, product_price_source: afterItem.product_price_source, gross_profit_amount: afterItem.gross_profit_amount }, { transaction });
-  await selected.originalItem.update({ sales_settlement_cost: saved.input.unitPrice,
-    sales_gross_profit: money(Number(selected.originalItem.subtotal) - saved.input.unitPrice * Number(selected.originalItem.quantity)) }, { transaction });
-  await adjustment.update({ correction_data: { ...saved, appliedAt: new Date().toISOString(), result: { ...selected.result, after: { ...selected.result.after, snapshot: patch } } } }, { transaction });
+  await adjustment.update({signed_amount:selected.result.salesDelta,correction_data: { ...saved, postingVersion:'APPROVED_DIFFERENCE_V2',appliedAt: new Date().toISOString(), result: { ...selected.result, after: { ...selected.result.after, snapshot: patch } } } }, { transaction });
   await recordBusinessAction({ businessType: 'settlement_price_correction', businessId: adjustment.order_id,
     businessNo: adjustment.adjustment_no, action: 'correct_settlement_price', user: ctx.state.user,
     comment: adjustment.reason, detail: { adjustmentId: adjustment.adjustment_id, evidence: saved.evidence, ...selected.result }, transaction });

@@ -34,9 +34,9 @@ function buildEvents(facts) {
     if (event.entryType !== 'policy') continue;
     events.push(row(event, 0, event.productAllocation, 0));
   }
-  for (const event of (facts.managementAdjustments || []).filter(event => Number(event.amount) !== 0)) events.push(row({ ...event,
+  for (const event of (facts.managementAdjustments || []).filter(event => Number(event.amount) !== 0 || Number(event.productAmount||0)!==0)) events.push(row({ ...event,
     eventKey: `performance:${event.eventKey}`, entryNo: event.entryNo || String(event.eventKey), entryType: 'performance_adjustment',
-    status: 'realized', grossProfit: null, grossCost: null, costState: 'not_applicable' }, event.amount, 0, 0));
+    status: 'realized', grossProfit: null, grossCost: null, costState: 'not_applicable' }, event.amount, event.productAmount||0, 0));
   for (const event of facts.rewardEvents || []) events.push(row({
     eventKey: `reward:${event.id}`, entryType: 'reward_redemption', entryNo: event.order_no,
     orderNo: '', storeId: event.store_id, storeName: event.store_name, businessDate: date(event.created_at),
