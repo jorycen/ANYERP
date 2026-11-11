@@ -124,11 +124,15 @@ test('return-related adjustment follows current-month downward crossing without 
 
 test('return sequencing uses its frozen posting time while store-owner reference remains original sale time',async t=>{
  const M=require('../src/models'),original=new Date('2026-09-01T02:00:00Z');
- t.mock.method(M.Order,'findAll',async()=>[{order_id:'O',store_id:'S',create_time:new Date('2026-08-01T02:00:00Z'),archive_time:original}]);
+ t.mock.method(M.Order,'findAll',async()=>[{order_id:'O',store_id:'S',create_time:original,archive_time:new Date('2026-10-01T02:00:00Z')}]);
  t.mock.method(M.SalesReturnGrossProfitLedger,'findAll',async()=>[{return_id:'R',create_time:new Date('2026-11-02T08:00:00Z')}]);
  t.mock.method(M.SalesReturnRequest,'findAll',async()=>{throw Error('request time must not replace posting time')});
  const r=await eventFacts([{eventKey:'return:R',entryType:'return',orderId:'O',storeId:'S',businessDate:'2026-11-02',salesGrossProfit:-100}],['S']);
  a.equal(r[0].time,'2026-11-02 16:00:00.000');a.equal(r[0].ownershipTime,original);
+ t.mock.method(M.Order,'findAll',async()=>[{order_id:'O',store_id:'S',create_time:original,archive_time:null}]);
+ const legacy=await eventFacts([{eventKey:'return:R',entryType:'return',orderId:'O',storeId:'S',businessDate:'2026-11-02',salesGrossProfit:-100}],['S']);
+ const known=require('../src/modules/report/storeCommissionAllocation').allocate(legacy,[{store_id:'S',staff_id:1,effective_from:'2026-09-01',effective_to:null}],[{staff_id:1,name:'已确认历史店长'}],{month:'2026-11'});
+ a.equal(known.missing.length,0);a.equal(known.owners.get('1').commission,-3);
  t.mock.method(M.Order,'findAll',async()=>[]);
  const missing=await eventFacts([{eventKey:'return:R',entryType:'return',orderId:'O',storeId:'S',businessDate:'2026-11-02',salesGrossProfit:-100}],['S']);
  a.equal(missing[0].ownershipTime,null);

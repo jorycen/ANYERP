@@ -65,7 +65,10 @@ async function eventFacts(events,storeIds){
     if(Number(event.salesGrossProfit)!==0&&!timestamp)reason=reason||'销售流水发生时间缺失';
     const adjustment=adjustments.find(a=>String(a.adjustment_id)===id),origin=order||orderMap.get(String(adjustment?.order_id));
     const originalTime=origin?commissionDates.saleTime(origin):null;
-    return {...event,amount:event.salesGrossProfit,time:timeKey(event,timestamp),reason,ownershipTime:origin?originalTime:['return','performance_adjustment'].includes(event.entryType)?null:timestamp,ownershipStoreId:origin?.store_id||event.storeId,sourceOrderId:origin?.order_id||event.orderId,originalDate:originalTime?day(originalTime):null,originalMonth:originalTime?day(originalTime).slice(0,7):null};
+    // Posting date determines the commission month/stage. Store entitlement
+    // retains the original business-time owner, including legacy returned
+    // orders whose archive field was not retained. Never substitute a current owner.
+    return {...event,amount:event.salesGrossProfit,time:timeKey(event,timestamp),reason,ownershipTime:origin?.create_time||(['return','performance_adjustment'].includes(event.entryType)?null:timestamp),ownershipStoreId:origin?.store_id||event.storeId,sourceOrderId:origin?.order_id||event.orderId,originalDate:originalTime?day(originalTime):null,originalMonth:originalTime?day(originalTime).slice(0,7):null};
   });
   return normalized;
 }

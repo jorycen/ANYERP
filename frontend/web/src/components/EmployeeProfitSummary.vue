@@ -31,7 +31,8 @@
     </el-table>
     <el-dialog v-model="reviewOpen" title="核算资料上传预览" width="1000px" :close-on-click-modal="false">
       <el-alert title="仅明确的基数与历史任期会保存；单据及价格问题只记录待人工核实，不自动修改历史单据。" type="info" :closable="false" />
-      <el-table :data="reviewData.rows || []" border max-height="450"><el-table-column prop="row" label="Excel行" width="90"/><el-table-column prop="employee" label="员工"/><el-table-column prop="store" label="门店"/><el-table-column prop="month" label="月份"/><el-table-column prop="before" label="修改前"/><el-table-column prop="after" label="确认内容"/><el-table-column prop="from" label="生效开始" min-width="120"/><el-table-column prop="to" label="生效结束（不含）" min-width="140"/><el-table-column prop="evidence" label="依据" min-width="180"/><el-table-column prop="message" label="校验结果" min-width="240"/></el-table>
+      <el-alert v-if="!reviewData.valid" title="暂不能提交：存在未通过校验的行，或没有可提交内容。请查看左侧“校验结果”；历史任期需填写店长、生效开始、生效结束和依据说明。" type="warning" :closable="false" class="note" />
+      <el-table :data="reviewData.rows || []" border max-height="450"><el-table-column prop="row" label="Excel行" width="90" fixed="left"/><el-table-column prop="message" label="校验结果" min-width="240" fixed="left"/><el-table-column prop="employee" label="员工"/><el-table-column prop="store" label="门店"/><el-table-column prop="month" label="月份"/><el-table-column prop="before" label="修改前"/><el-table-column prop="after" label="确认内容"/><el-table-column prop="from" label="生效开始" min-width="120"/><el-table-column prop="to" label="生效结束（不含）" min-width="140"/><el-table-column prop="evidence" label="依据" min-width="180"/></el-table>
       <template #footer><el-button @click="reviewOpen=false" :disabled="reviewLoading">取消</el-button><el-button type="primary" :disabled="!reviewData.valid" :loading="reviewLoading" @click="applyReview">确认提交</el-button></template>
     </el-dialog>
     <el-dialog v-model="configOpen" title="月度提成参数配置" width="900px" destroy-on-close>
