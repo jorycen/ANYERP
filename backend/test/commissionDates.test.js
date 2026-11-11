@@ -30,7 +30,25 @@ test('employee source uses archive dates, independent approval events and ledger
  a.match(ret.sql,/rgp.CREATE_TIME >= :startAt/);a.doesNotMatch(ret.sql,/ELSE o.ARCHIVE_TIME END/);
  const approvals=seen.filter(x=>x.sql.includes('FROM T_PERFORMANCE_PROFIT_ADJUSTMENT'));
  a.equal(approvals.length,2);
- for(const q of approvals){a.match(q.sql,/pa.ADMIN_REVIEW_TIME >= :startAt/);a.doesNotMatch(q.sql,/o.ORDER_STATUS IN/);a.doesNotMatch(q.sql,/ADJUSTMENT_NO (?:NOT )?LIKE/)}
+ for(const q of approvals){a.match(q.sql,/ELSE pa.ADMIN_REVIEW_TIME END\) >= :startAt/);a.doesNotMatch(q.sql,/o.ORDER_STATUS IN/);a.doesNotMatch(q.sql,/ADJUSTMENT_NO (?:NOT )?LIKE/)}
+});
+test('October override is restricted to 3 sales and exactly 62 approved corrections with frozen business timestamps',()=>{
+ a.equal(dates.periodExceptions.sales.length,3);a.equal(dates.periodExceptions.adjustments.length,62);
+ const local=value=>new Date(new Date(value).getTime()+28800000).toISOString().slice(0,19).replace('T',' ');
+ for(const row of dates.periodExceptions.sales){
+  const order={order_id:row.orderId,create_time:'2026-10-31',archive_time:row.originalArchiveTime};
+  a.equal(dates.saleTime(order).toISOString(),row.postingTime);
+  a.ok(dates.saleSql('o').includes(`WHEN '${row.orderId}' THEN CAST('${local(row.postingTime)}' AS DATETIME)`));
+ }
+ for(const row of dates.periodExceptions.adjustments){
+  const approval={adjustment_id:row.adjustmentId,admin_review_time:row.originalApprovalTime};
+  a.equal(dates.adjustmentTime(approval).toISOString(),row.postingTime);
+  a.equal(local(dates.adjustmentTime(approval)).slice(0,7),'2026-10');
+  a.ok(dates.adjustmentSql('pa').includes(`WHEN '${row.adjustmentId}' THEN CAST('${local(row.postingTime)}' AS DATETIME)`));
+ }
+ a.equal(dates.adjustmentTime({adjustment_id:'UNLISTED',admin_review_time:'2026-11-12'}),'2026-11-12');
+ a.equal(dates.saleTime({order_id:'UNLISTED',create_time:'2026-10-31',archive_time:'2026-11-01'}),'2026-11-01');
+ a.throws(()=>dates.adjustmentSql('pa;DELETE FROM t'));
 });
 test('independent adjustments preserve saved participant proportions without phantom base profit or order counts',()=>{
  const order={order_id:'return-adjustment:A',source_order_id:'OLD',order_no:'ADJ',create_staff_id:1,create_user:'主销',

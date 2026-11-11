@@ -236,7 +236,7 @@ async function getFinancialProfitOrders(ctx) {
       canReview: ['boss','admin','finance'].some(role => require('../../middleware/permission').getUserRoles(ctx.state.user).includes(role)),
       canClose: require('../../middleware/permission').getUserRoles(ctx.state.user).includes('boss') && (ctx.state.user.accessibleStoreIds || []).includes('*'),
       formulaVersion: 'FINANCIAL_PROFIT_V2_20261023',
-      note: '销售按归档时间、退货按退货结算发生时间分开列示。成本仅读取原单及有审计的补录；商品税率仅为暂估，财务核实后冻结依据。政策不重复叠加内部80%/20%分配；月结结果使用已保存快照。'
+      note: '销售按归档时间、退货按退货结算发生时间分开列示；首次测算固定清单按已确认计提日期归属，包含28单归9月、62笔历史校正及3张跨月销售归10月，真实业务日期保留。成本仅读取原单及有审计的补录；商品税率仅为暂估，财务核实后冻结依据。政策不重复叠加内部80%/20%分配；月结结果使用已保存快照。'
     }
   };
   // 小程序只返回当前页展示字段，年度公司范围不携带全部订单/费用的冻结凭据。

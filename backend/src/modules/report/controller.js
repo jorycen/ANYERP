@@ -730,7 +730,7 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
   });
   const reversals = returnEvents(returnRows.map(row => row.toJSON()));
   const reversalAdjustments = await PerformanceProfitAdjustment.findAll({
-    where: { status: 'approved',...(dateRange ? { admin_review_time: dateRange } : {}) },
+    where: { status: 'approved',...(dateRange ? { [Op.and]:[sequelize.where(sequelize.literal(commissionDates.adjustmentSql('PerformanceProfitAdjustment')),dateRange)] } : {}) },
     include: [{ model: Order, where: returnOrderWhere, required: true, include: [{ model: Store },{model:OrderGrossProfit,as:'grossProfitSnapshot'}] }]
   });
   for (const model of reversalAdjustments) {

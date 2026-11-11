@@ -131,7 +131,7 @@ async function load(user, query) {
   if (['product','operations'].includes(reportRole)) rows=[...sideRows.entries()].filter(([id])=>id.startsWith(reportRole+':')).map(([,row])=>row);
   const fields=presentation.columns(reportRole).filter(c=>reportRole!=='manager'||c.key!=='commissionBase');
   for(const row of rows){row.cells=Object.fromEntries(fields.map(c=>[c.key,presentation.display(row,c)]));row.reviewKey=row.reviewIdentity||(row.staffId?`staff:${row.staffId}`:`${row.sideName}:${row.storeId}`);}
-  return { rows, panels, columns:fields,reportRole,canConfigure: C.canConfigure(user), note: '销售按归档时间、调整差额按审批通过时间计提，原归档毛利不回写。首次测算固定清单内9月创建10月归档订单归9月，10月不重复计算。店长个人按当月全店销售端毛利15%/25%分段，退货与调整在当月分段。费用按两阶段个人毛利占比分摊。门店额外3%/5%仍按原业务店长归属。产品、运营暂按门店汇总，负责人留空。' };
+  return { rows, panels, columns:fields,reportRole,canConfigure: C.canConfigure(user), note: '销售按归档时间、调整差额按审批通过时间计提，原归档毛利不回写。首次测算固定28单归9月；另有62笔历史校正及3张跨月销售一次性归10月，真实日期保留。店长个人按当月全店销售端毛利15%/25%分段，历史校正跟随原销售计提日期参与跨线。费用按两阶段个人毛利占比分摊。门店额外3%/5%仍按原业务店长归属。产品、运营暂按门店汇总，负责人留空。' };
 }
 async function report(ctx) { ctx.body = { code: 0, data: await load(ctx.state.user, ctx.query) }; }
 async function config(ctx) { if (!C.canConfigure(ctx.state.user)) ctx.throw(403, '无权配置提成参数'); ctx.body = { code: 0, data: await C.options(ctx.state.user, ctx.query.month, ctx.query.storeId) }; }
