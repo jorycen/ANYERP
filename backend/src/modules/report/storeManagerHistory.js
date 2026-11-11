@@ -6,7 +6,7 @@ const Assignment=M.sequelize.define('StoreManagerAssignment',{
  id:{type:DataTypes.STRING(32),primaryKey:true},store_id:{type:DataTypes.STRING(32),allowNull:false},
  staff_id:{type:DataTypes.BIGINT,allowNull:true},effective_from:{type:DataTypes.DATE,allowNull:false},effective_to:{type:DataTypes.DATE,allowNull:true},
  evidence:{type:DataTypes.TEXT,allowNull:false},created_at:{type:DataTypes.DATE,allowNull:false,defaultValue:DataTypes.NOW}
-},{tableName:'T_STORE_MANAGER_ASSIGNMENT',timestamps:false,indexes:[{fields:['store_id','effective_from']}]});
+},{tableName:'T_STORE_MANAGER_ASSIGNMENT',timestamps:false,indexes:[{name:'idx_store_manager_effective',fields:['store_id','effective_from']}]});
 const ms=value=>new Date(value).getTime();
 function resolve(rows,storeId,time){
  if(!time||!Number.isFinite(ms(time)))return null;

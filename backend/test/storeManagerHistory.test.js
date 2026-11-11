@@ -1,5 +1,9 @@
 const {test}=require('node:test'),a=require('node:assert/strict');
 const H=require('../src/modules/report/storeManagerHistory'),A=require('../src/modules/report/storeCommissionAllocation'),M=require('../src/models');
+test('manager history index has an explicit MySQL-safe name',()=>{
+ a.equal(H.Assignment.options.indexes[0].name,'idx_store_manager_effective');
+ a.ok(H.Assignment.options.indexes.every(i=>i.name.length<=64));
+});
 test('history uses effective intervals, never current manager or ambiguous overlaps',()=>{
  const rows=[{store_id:'S',staff_id:1,effective_from:'2026-10-01',effective_to:'2026-10-15'},{store_id:'S',staff_id:2,effective_from:'2026-10-15',effective_to:null}];
  a.equal(H.resolve(rows,'S','2026-10-14').staff_id,1);a.equal(H.resolve(rows,'S','2026-10-15').staff_id,2);a.equal(H.resolve(rows,'S','2026-09-30'),null);
