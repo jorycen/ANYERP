@@ -1,10 +1,10 @@
-const crypto = require('node:crypto');
 const { Op, QueryTypes } = require('sequelize');
 const M = require('../../models');
 const GP = require('../sales/grossProfit');
 const { summarizeProductSettlementItems } = require('./productSettlement')._test;
 const { recordBusinessAction } = require('../../utils/businessActionLog');
 const { isDealerAccount } = require('../../middleware/permission');
+const {fingerprint}=require('./correctionFingerprint');
 
 const TYPE = 'price_correction';
 const INVOICE_TYPE = 'invoice_amount';
@@ -116,6 +116,15 @@ async function select(ctx, orderId, input = null, transaction = null, includeInv
   let items = settlement ? await M.ProductSettlementItem.findAll({ where: { settlement_id: settlement.settlement_id }, order: [['settlement_item_id', 'ASC']], ...options }) : [];
   const approved = await M.PerformanceProfitAdjustment.findAll({where:{order_id:orderId,status:'approved'},order:[['admin_review_time','ASC'],['create_time','ASC'],['adjustment_id','ASC']],...options});
   ({snapshot,settlement,items}=require('./correctionProjection').project({snapshot,settlement,items},approved));
+  // Old snapshots may lack the embedded copy of an already confirmed basis.
+  // Read only the canonical foundation, retaining frozen pricing and amounts.
+  const frozenLines=json(snapshot.product_pricing_details,[]);
+  if(/^ORD\d{18}$/.test(order.order_no)&&order.order_no>='ORD202610010000000000'&&frozenLines.some(line=>!line.purchaseTaxBasis)){
+    const attached=await require('../inventory/foundation').syncStoredSalesTaxBasis(order,frozenLines,transaction);
+    const byId=new Map(attached.map(line=>[String(line.itemId),line.purchaseTaxBasis]));
+    const data={...plain(snapshot),product_pricing_details:frozenLines.map(line=>line.purchaseTaxBasis?line:{...line,purchaseTaxBasis:byId.get(String(line.itemId))})};
+    snapshot={...data,toJSON:()=>data};
+  }
   if (!invoiceOrOptions && (!items.length || items.some(item => item.cost_status !== 'ready' || GP.validPrice(item.purchase_unit_cost) === null
     || GP.validPrice(item.product_unit_price) === null || GP.validPrice(item.purchase_cost_amount) === null))) fail('产品端明细成本未完整确认，请先核对');
   const originalSummary = summarizeProductSettlementItems(items.map(plain));
@@ -159,7 +168,7 @@ async function select(ctx, orderId, input = null, transaction = null, includeInv
       salesDelta: money(patch.gross_profit_amount - Number(snapshot.gross_profit_amount)),
       productBefore: productProfit, productAfter: productProfit, productDelta: 0,
       before, after: { snapshot: patch, order: { invoice_amount: patch.invoice_amount, invoice_status: invoiceStatus } } };
-    const previewHash = crypto.createHash('sha256').update(JSON.stringify({ input, before, order: plain(order) })).digest('hex');
+    const previewHash = fingerprint(input,before,plain(order));
     return { order, snapshot, settlement, items, result, previewHash };
   }
   const chosen = items.filter(item => String(item.source_order_item_id) === input.itemId);
@@ -180,7 +189,7 @@ async function select(ctx, orderId, input = null, transaction = null, includeInv
     productDelta: money(product.summary.gross_profit_amount - Number(settlement.gross_profit_amount)),
     before, after: { snapshot: afterSnapshot, settlement: product.summary, items: product.items } };
   // These management measures include sales tax/uplift rules; do not label their sum company accounting profit.
-  const previewHash = crypto.createHash('sha256').update(JSON.stringify({ input, before, order: plain(order) })).digest('hex');
+  const previewHash = fingerprint(input,before,plain(order));
   return { order, snapshot, settlement, items, originalItem, result, previewHash };
 }
 async function apply(ctx, adjustment, transaction) {

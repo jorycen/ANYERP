@@ -96,6 +96,22 @@ async function adjustmentFor(ctx) {
     correction_data: { input, evidence: '定价通知001', previewHash: selected.previewHash, result: selected.result } });
 }
 
+test('legacy missing embedded basis reads confirmed foundation without rewriting original amounts or timestamps',async t=>{
+ const f=fixture(t),ctx=context();f.order.order_no='ORD202611040615237456';f.snapshot.order_no=f.order.order_no;
+ const before=JSON.stringify(f.snapshot.toJSON()),basis={version:require('../src/modules/sales/purchaseVat').VERSION,status:'confirmed',invoiceType:'收据',purchaseAmount:5000,basisId:'B',basisRevision:2};
+ let calls=0;
+ t.mock.method(require('../src/modules/inventory/foundation'),'syncStoredSalesTaxBasis',async(order,lines)=>{calls++;return lines.map(l=>({...l,purchaseTaxBasis:basis}));});
+ t.mock.method(f.snapshot,'update',async()=>{throw Error('preview must not write')});
+ const first=await C.select(ctx,'O',{itemId:'9',unitPrice:5300});
+ assert.equal(JSON.stringify(f.snapshot.toJSON()),before);
+ f.snapshot.update_time='new maintenance time';f.snapshot.calculated_at='new calculation time';f.order.update_time='new maintenance time';
+ const next=await C.select(ctx,'O',{itemId:'9',unitPrice:5300},tx);
+ assert.equal(first.previewHash,next.previewHash);assert.equal(calls,2);assert.equal(f.snapshot.gross_profit_amount,500);
+ assert.equal(next.result.before.snapshot.product_pricing_details[0].purchaseTaxBasis.basisId,'B');
+ basis.basisRevision=3;
+ assert.notEqual((await C.select(ctx,'O',{itemId:'9',unitPrice:5300})).previewHash,first.previewHash);
+});
+
 test('price validation rejects missing, signed, excess precision, exponent and unconfirmed zero', () => {
   for (const unitPrice of [undefined, null, '', true, -1, '1.001', '1e3']) assert.throws(() => C.validate({ itemId: 9, unitPrice }));
   assert.throws(() => C.validate({ itemId: 9, unitPrice: 0 }), /零元/);
@@ -172,7 +188,7 @@ test('intermediate approval and rejection do not change either profit source', a
 test('stale prices or failed product update roll back final approval effects', async t => {
   await t.test('stale', async sub => {
     const f = fixture(sub), ctx = context(), a = await adjustmentFor(ctx);
-    f.snapshot.update_time = 'changed';
+    f.order.total_amount = 6001;
     await assert.rejects(C.apply(ctx, a, tx), /已变化/); assert.equal(f.snapshot.gross_profit_amount, 500);
   });
   await t.test('rollback', async sub => {
