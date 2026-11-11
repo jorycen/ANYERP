@@ -11,7 +11,7 @@ function timeKey(event,value){
   const text=value instanceof Date?new Date(value.getTime()+28800000).toISOString():String(value||'');
   return `${event.businessDate} ${text.slice(11,23)||'00:00:00'}`;
 }
-function buildTimeline(events,line,originalStages=new Map()){
+function buildTimeline(events,line){
   let cumulative=0;
   const entries=[],saleStages=new Map();
   for(const event of [...events].sort((a,b)=>String(a.time).localeCompare(String(b.time))||
@@ -21,11 +21,7 @@ function buildTimeline(events,line,originalStages=new Map()){
     if(!validLine(line))reason='门店盈亏平衡线未配置';
     else if(amount===null)reason='门店销售端毛利待核算';
     else if(amount===0)fraction=0;
-    else if(event.entryType==='return'){
-      const original=saleStages.get(String(event.orderId))||originalStages.get(String(event.orderId));
-      if(original&&known(original.fraction))fraction=original.fraction;
-      else reason=original?.reason||'退货原订单提成阶段未能追溯';
-    }else if(before!==null){
+    else if(before!==null){
       const after=money(before+amount),upper=money(Math.max(0,after-Number(line))-Math.max(0,before-Number(line)));
       fraction=upper/amount;
     }else reason='此前门店销售端毛利待核算，无法确定提成阶段';
@@ -33,7 +29,7 @@ function buildTimeline(events,line,originalStages=new Map()){
       const high=fraction===null||reason?null:money(Number(row.grossProfit)*fraction);
       return {...row,low:high===null?null:money(Number(row.grossProfit)-high),high};
     });
-    if(amount===null)cumulative=null;
+    if(amount===null||event.reason==='销售流水发生时间缺失')cumulative=null;
     else if(cumulative!==null)cumulative=money(cumulative+amount);
     if(event.entryType==='sale')saleStages.set(String(event.orderId),{fraction:reason?null:fraction,eventKey:event.eventKey,reason,line});
     entries.push({...event,reason,fraction:reason?null:fraction,line,before,after:cumulative,allocations});
@@ -44,8 +40,8 @@ async function eventFacts(events,storeIds){
   const returnIds=events.filter(e=>e.entryType==='return').map(e=>e.eventKey.slice('return:'.length));
   const adjustmentIds=events.filter(e=>e.entryType==='performance_adjustment').map(e=>e.eventKey.slice('performance:'.length));
   const rewardIds=events.filter(e=>e.entryType==='reward_redemption').map(e=>e.eventKey.slice('reward:'.length));
-  const [requests,adjustments,rewards]=await Promise.all([
-    returnIds.length?M.SalesReturnRequest.findAll({where:{return_id:{[Op.in]:returnIds}},raw:true}):[],
+  const [returnLedgers,adjustments,rewards]=await Promise.all([
+    returnIds.length?M.SalesReturnGrossProfitLedger.findAll({where:{return_id:{[Op.in]:returnIds}},attributes:['return_id','create_time'],raw:true}):[],
     adjustmentIds.length?M.PerformanceProfitAdjustment.findAll({where:{adjustment_id:{[Op.in]:adjustmentIds}},raw:true}):[],
     rewardIds.length?M.sequelize.query('SELECT id,staff_id,created_at FROM T_REWARD_REDEMPTION WHERE id IN (:ids) AND store_id IN (:storeIds)',{replacements:{ids:rewardIds,storeIds},type:M.sequelize.QueryTypes.SELECT}):[]
   ]);
@@ -58,7 +54,7 @@ async function eventFacts(events,storeIds){
     if(event.entryType==='sale'){
       timestamp=order?.create_time;
     }else if(event.entryType==='return'){
-      timestamp=requests.find(r=>String(r.return_id)===id)?.create_time;
+      timestamp=returnLedgers.filter(r=>String(r.return_id)===id&&r.create_time&&Number.isFinite(new Date(r.create_time).getTime())).sort((a,b)=>new Date(a.create_time)-new Date(b.create_time))[0]?.create_time;
     }else if(event.entryType==='performance_adjustment'){
       const adjustment=adjustments.find(a=>String(a.adjustment_id)===id);
       timestamp=adjustment?.admin_review_time||adjustment?.update_time||adjustment?.create_time;
@@ -67,7 +63,7 @@ async function eventFacts(events,storeIds){
     }
     if(Number(event.salesGrossProfit)!==0&&!timestamp)reason=reason||'销售流水发生时间缺失';
     const adjustment=adjustments.find(a=>String(a.adjustment_id)===id),origin=order||orderMap.get(String(adjustment?.order_id));
-    return {...event,amount:event.salesGrossProfit,time:timeKey(event,timestamp),reason,ownershipTime:origin?.create_time||timestamp,ownershipStoreId:origin?.store_id||event.storeId,sourceOrderId:origin?.order_id||event.orderId,originalDate:order?day(order.archive_time||order.create_time):null,originalMonth:order?day(order.archive_time||order.create_time).slice(0,7):null};
+    return {...event,amount:event.salesGrossProfit,time:timeKey(event,timestamp),reason,ownershipTime:['return','performance_adjustment'].includes(event.entryType)?origin?.create_time:origin?.create_time||timestamp,ownershipStoreId:origin?.store_id||event.storeId,sourceOrderId:origin?.order_id||event.orderId,originalDate:order?day(order.archive_time||order.create_time):null,originalMonth:order?day(order.archive_time||order.create_time).slice(0,7):null};
   });
   return normalized;
 }
@@ -87,22 +83,9 @@ function createLoader({user,stores}){
       const financial=(!throughDate&&snapshots.get(monthKey))||await require('./financialProfitController').queryFinancialProfit({storeIds:ids,startDate:`${monthKey}-01`,endDate,includeStores:true,salesStageOnly:true});
       const events=await eventFacts((financial.profitDetails||[]).filter(e=>ids.includes(String(e.storeId))),ids);
       for(const store of usable){
-        const selected=events.filter(e=>String(e.storeId)===String(store.store_id)),originalStages=new Map();
-        for(const event of selected.filter(e=>e.entryType==='return'&&e.amount!==0)){
-          if(event.originalMonth&&event.originalMonth<monthKey){
-            try{
-              const prior=await month(event.originalMonth,undefined,store.store_id,event.originalDate);
-              const original=prior.get(String(store.store_id))?.saleStages.get(String(event.orderId));
-              if(original)originalStages.set(String(event.orderId),{...original,reason:original.reason?`原销售月份${event.originalMonth}：${original.reason}`:''});
-              else if(prior.get(String(store.store_id))?.reason)originalStages.set(String(event.orderId),{fraction:null,reason:`原销售月份：${prior.get(String(store.store_id)).reason}`});
-            }catch(error){
-              if(error.status!==409)throw error;
-              originalStages.set(String(event.orderId),{fraction:null,reason:`原销售月份依据待核实：${error.message}`});
-            }
-          }
-        }
+        const selected=events.filter(e=>String(e.storeId)===String(store.store_id));
         const line=configs.stores.find(s=>String(s.storeId)===String(store.store_id))?.breakEvenLine;
-        result.set(String(store.store_id),buildTimeline(selected,line,originalStages));
+        result.set(String(store.store_id),buildTimeline(selected,line));
       }
       return result;
     })();
@@ -118,14 +101,16 @@ function createLoader({user,stores}){
       const gross=share.allocatedGrossProfit;
       if(!known(gross)){addIssue('个人冻结毛利不完整',share);continue;}
       let event;
+      const currentReturn=share.sourceEntryType==='return'||(share.sourceEntryType==='return_adjustment'&&/^(AUTO-CARE-RET-|EDUR-)/.test(String(share.orderNo||'')));
       if(share.sourceEntryType==='return')event=actualContext?.entries.find(e=>e.eventKey===`return:${share.returnId}`);
+      else if(currentReturn&&share.sourceEntryType==='return_adjustment')event=actualContext?.entries.find(e=>e.eventKey===`performance:${String(share.orderId).replace(/^return-adjustment:/,'')}`);
       else if(share.sourceEntryType==='reward_redemption')event=actualContext?.entries.find(e=>e.eventKey===share.orderId);
       else if(share.sourceEntryType==='sale')event=actualContext?.entries.find(e=>e.entryType==='sale'&&String(e.orderId)===String(share.orderId));
-      // Personal performance adjustments stay attached to their original sale;
-      // return ledgers reverse that sale's stages, even in a later month.
+      // Ordinary personal adjustments retain their sale stage. Returns and
+      // return-adjustment entries use only the current month's event stage.
       const originalId=String(share.sourceOrderId||share.orderId);
-      let stage=event?{fraction:event.fraction}:actualContext?.saleStages.get(originalId);
-      if(!stage&&Number(gross)!==0){
+      let stage=event?{fraction:event.fraction}:currentReturn?null:actualContext?.saleStages.get(originalId);
+      if(!stage&&Number(gross)!==0&&!currentReturn){
         const original=await M.Order.findByPk(originalId,{raw:true});
         const originStoreId=String(original?.store_id||actualStoreId);
         const originalMonth=original?day(original.archive_time||original.create_time).slice(0,7):null;
@@ -140,7 +125,7 @@ function createLoader({user,stores}){
       }
       const fraction=Number(gross)===0?0:stage?.fraction;
       if(!known(fraction)){
-        addIssue(`${share.orderNo}：${event?.reason||stage?.reason||actualContext?.reason||'原订单提成阶段未能追溯'}`,share,{originalMonth:event?.originalMonth,originalStoreId:actualStoreId});
+        addIssue(`${share.orderNo}：${event?.reason||stage?.reason||actualContext?.reason||(currentReturn?'退货当月毛利流水或阶段依据不完整':'原订单提成阶段未能追溯')}`,share,{basisMonth:currentReturn?period.month:undefined,originalMonth:event?.originalMonth,originalStoreId:actualStoreId});
         for(const prior of actualContext?.entries||[])if(prior.amount===null&&(!event||prior.time<=event.time))addIssue(`${prior.entryNo||prior.eventKey}：门店销售端毛利待核算，影响后续跨线判断`,null,{orderId:prior.orderId,orderNo:prior.entryNo,sourceOrderId:prior.orderId,sourceOrderNo:prior.orderNo,originalStoreId:actualStoreId});
         continue;
       }

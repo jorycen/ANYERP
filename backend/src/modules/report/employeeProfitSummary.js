@@ -101,7 +101,7 @@ async function load(user, query) {
         commissionBase: estimate.rule === 'staff' ? personalBase ?? null : null,
         breakEvenLine: estimate.rule === 'manager' ? sc?.breakEvenLine ?? null : null,
         storeGrossProfit: (estimate.rule === 'manager'||estimate.historicalStoreOwner)&&!ownershipPending.length ? allocation.grossProfit : null,commissionStoreNames:allocation.storeIds.map(id=>stores.find(s=>String(s.store_id)===String(id))?.name||id).join('、'), ...estimate,issues,
-        remark: `${period.month}：${estimate.reason || '已计算'}；店长按全店销售端流水累计跨线，个人毛利分15%/25%两阶段，退货冲回原单阶段；产品/运营提成待定；按月计算，区间内不折算基数` };
+        remark: `${period.month}：${estimate.reason || '已计算'}；店长个人退货按退货当月累计毛利分15%/25%两阶段，向下跨线拆分；门店提成按原业务店长冲回；产品/运营提成待定；按月计算，区间内不折算基数` };
       if (previous) {
         for (const field of ['grossProfit','expensePerformanceDeduction','netGrossProfit','salesCommission','storeCommission','performanceEstimate','storeGrossProfit','lowGrossProfit','highGrossProfit','lowDeduction','highDeduction','lowNetGrossProfit','highNetGrossProfit','lowCommission','highCommission']) current[field] = previous[field] == null || current[field] == null ? null : money(previous[field] + Number(current[field]));
         current.commissionDetails=[...(previous.commissionDetails||[]),...(current.commissionDetails||[])];
@@ -129,7 +129,7 @@ async function load(user, query) {
   if (['product','operations'].includes(reportRole)) rows=[...sideRows.entries()].filter(([id])=>id.startsWith(reportRole+':')).map(([,row])=>row);
   const fields=presentation.columns(reportRole).filter(c=>reportRole!=='manager'||c.key!=='commissionBase');
   for(const row of rows){row.cells=Object.fromEntries(fields.map(c=>[c.key,presentation.display(row,c)]));row.reviewKey=row.reviewIdentity||(row.staffId?`staff:${row.staffId}`:`${row.sideName}:${row.storeId}`);}
-  return { rows, panels, columns:fields,reportRole,canConfigure: C.canConfigure(user), note: '店长按当月全店销售端经营流水累计：跨线前个人毛利15%，跨线后25%，跨线订单拆分；退货冲回原单阶段，个人经营调整沿原单阶段；费用按两阶段个人毛利占比分摊。门店额外3%/5%提成不变。产品、运营暂按门店汇总，负责人留空。' };
+  return { rows, panels, columns:fields,reportRole,canConfigure: C.canConfigure(user), note: '店长按当月全店销售端经营流水累计：个人毛利15%/25%分段，退货负毛利计入退货当月，向下跨线拆分，不追溯原销售阶段；普通个人经营调整沿原单阶段。费用按两阶段个人毛利占比分摊。门店额外3%/5%仍按原业务店长归属冲回。产品、运营暂按门店汇总，负责人留空。' };
 }
 async function report(ctx) { ctx.body = { code: 0, data: await load(ctx.state.user, ctx.query) }; }
 async function config(ctx) { if (!C.canConfigure(ctx.state.user)) ctx.throw(403, '无权配置提成参数'); ctx.body = { code: 0, data: await C.options(ctx.state.user, ctx.query.month, ctx.query.storeId) }; }

@@ -28,3 +28,8 @@ test('download keeps only key fields and stores record identities in a hidden va
  const rows=X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);a.equal(rows.find(r=>r.问题.includes('产品端')).SN,'00123456789012345678');a.equal(rows[0].SN,'');a.equal(rows.length,4);
  a.ok(!('问题编号' in rows[0]));a.ok('确认值' in rows[0]);a.equal(wb.Workbook.Sheets[2].Hidden,1);
 });
+
+test('return personal missing line requests return-month basis while retaining true original sale month',()=>{
+ const groups=Review.compact([{'具体原因':'11月门店盈亏平衡线未配置','问题月份':'2026-11','原销售月份':'2026-09','核算依据月份':'2026-11','原销售门店编号':'S','员工编号':'1','问题编号':'I','数据核对指纹':'F'}]);
+ a.equal(groups[0].target.month,'2026-11');a.equal(groups[0].row.月份,'2026-11');
+});

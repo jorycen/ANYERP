@@ -24,7 +24,7 @@
           <el-table-column prop="storeId" label="原门店编号" min-width="130" />
           <el-table-column v-for="f in stageDetailColumns" :key="f.key" :label="f.label" min-width="150"><template #default="{row:detail}">{{ money(detail[f.key]) }}</template></el-table-column>
         </el-table>
-        <p class="detail-note">费用扣减按两个阶段个人毛利占比分摊，见汇总列；退货冲回原单阶段。</p>
+        <p class="detail-note">费用扣减按两个阶段个人毛利占比分摊，见汇总列；个人退货按退货当月阶段扣减，向下跨线拆分15%/25%。门店提成仍按原业务店长归属冲回。</p>
       </template></el-table-column>
       <el-table-column v-for="c in data.columns || []" :key="c.key" :label="c.label" :min-width="c.key === 'remark' ? 300 : 125"><template #header><span :style="c.bold ? {fontWeight:700} : {}">{{ c.label }}</span></template><template #default="{ row }"><span :style="c.bold ? {fontWeight:700} : {}">{{ typeof row.cells?.[c.key] === 'number' ? money(row.cells[c.key]) : row.cells?.[c.key] }}</span></template></el-table-column>
       <el-table-column label="操作" fixed="right" width="170"><template #default="{row}"><el-button v-if="row.issues?.length" link type="primary" :disabled="loading || exporting" @click="downloadReview(row)">下载待核算清单</el-button></template></el-table-column>
@@ -66,7 +66,7 @@ async function applyReview(){
  try{const form=new FormData();form.append('file',reviewFile.value);form.append('token',reviewData.value.token);const r=await api.applyEmployeeProfitReview(form);ElMessage.success(r.message||'已提交');reviewData.value.valid=false;reviewOpen.value=false;await load()}catch(e){reviewData.value.valid=false;error(e)}finally{reviewLoading.value=false}
 }
 const reportRoles=[{value:'all',label:'全部'},{value:'staff',label:'店员'},{value:'manager',label:'店长'},{value:'product',label:'产品'},{value:'operations',label:'运营'}]
-const stageDetailColumns=[{key:'breakEvenLine',label:'原门店阶段盈亏线'},{key:'storeGrossBefore',label:'门店累计毛利（前）'},{key:'storeGrossAfter',label:'门店累计毛利（后）'},{key:'grossProfit',label:'个人毛利'},{key:'lowGrossProfit',label:'15%阶段个人毛利'},{key:'highGrossProfit',label:'25%阶段个人毛利'}]
+const stageDetailColumns=[{key:'breakEvenLine',label:'原门店当月盈亏线'},{key:'storeGrossBefore',label:'门店累计毛利（前）'},{key:'storeGrossAfter',label:'门店累计毛利（后）'},{key:'grossProfit',label:'个人毛利'},{key:'lowGrossProfit',label:'15%阶段个人毛利'},{key:'highGrossProfit',label:'25%阶段个人毛利'}]
 const visiblePanels=computed(()=>panels.filter(p=>!data.value.reportRole||data.value.reportRole==='all'||p.key===(['staff','manager'].includes(data.value.reportRole)?'sales':data.value.reportRole)))
 async function changeRole(){if(['product','operations'].includes(reportRole.value))employeeId.value='';await load()}
 const money = (v, empty = '待核算') => v == null || v === '' ? empty : '¥' + Number(v).toLocaleString('zh-CN', {minimumFractionDigits:2,maximumFractionDigits:2})

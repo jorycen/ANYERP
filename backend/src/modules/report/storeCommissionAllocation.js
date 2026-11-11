@@ -7,6 +7,9 @@ function allocate(events,history,people,period){
  const byStore=new Map();for(const row of history){const key=String(row.store_id);if(!byStore.has(key))byStore.set(key,[]);byStore.get(key).push(row);}
  for(const event of events){
   if(event.amount===0)continue;
+  if(!event.ownershipTime||!Number.isFinite(new Date(event.ownershipTime).getTime())){
+   missing.set(`time:${event.eventKey}`,{storeId:String(event.ownershipStoreId||event.storeId),month:period.month,reason:'原业务发生时间未能追溯，历史店长归属待核实',orderNo:event.entryNo,sourceOrderNo:event.orderNo,sourceOrderId:event.sourceOrderId||event.orderId});continue;
+  }
   const storeId=String(event.ownershipStoreId||event.storeId),storeHistory=byStore.get(storeId)||[],assignment=H.resolve(storeHistory,storeId,event.ownershipTime);
   if(assignment&&!assignment.staff_id)continue;
   if(!assignment?.staff_id){

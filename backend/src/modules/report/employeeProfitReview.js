@@ -25,12 +25,12 @@ async function buildRows(user,query,data){
   const sourceId=String(issue.sourceOrderId||issue.orderId||''),order=orders.find(o=>String(o.order_id)===sourceId);
   const lines=items.filter(i=>String(i.order_id)===sourceId);
   for(const item of lines.length?lines:[{}]){
-   const identity={version:3,staffId:String(row.staffId||''),side:row.sideName,storeId:row.storeId,month:issue.month,originalMonth:issue.originalMonth,originalStoreId:issue.originalStoreId,from:issue.from,to:issue.to,reason:issue.reason,sourceId,orderNo:issue.orderNo||'',returnId:issue.returnId||'',itemId:item.item_id||''};
+   const identity={version:3,staffId:String(row.staffId||''),side:row.sideName,storeId:row.storeId,month:issue.month,basisMonth:issue.basisMonth,originalMonth:issue.originalMonth,originalStoreId:issue.originalStoreId,from:issue.from,to:issue.to,reason:issue.reason,sourceId,orderNo:issue.orderNo||'',returnId:issue.returnId||'',itemId:item.item_id||''};
    const key=crypto.createHash('sha256').update(JSON.stringify(identity)).digest('hex');if(seen.has(key))continue;seen.add(key);
    const fingerprint=crypto.createHash('sha256').update(JSON.stringify({identity,order,item,deduction:issue.reason.includes('费用')?row.expensePerformanceDeduction:undefined})).digest('hex');
    const [affected,suggestion]=advice(issue.reason);
    out.push({'问题编号':key,'数据核对指纹':fingerprint,'开始日期':query.startDate,'结束日期':query.endDate,'报表分类':data.reportRole,'员工编号':String(row.staffId||''),'员工':row.employeeName,'当前门店编号':row.storeId,'当前门店':row.storeName,'角色':row.role,'问题月份':issue.month||'','原销售月份':issue.originalMonth||String(order?.archive_time||order?.create_time||'').slice(0,7),'业务单号':issue.orderNo||'','原销售单号':issue.sourceOrderNo||order?.order_no||'','原销售门店编号':issue.originalStoreId||order?.store_id||'','原销售门店':names.get(String(issue.originalStoreId||order?.store_id||''))||'','商品':item.product_name||'','PN':item.pn_code||'','SN':item.sn_code||'','原商品行编号':String(item.item_id||''),'原销售记录编号':sourceId,'退单记录编号':issue.returnId||'','具体原因':issue.reason,'影响字段':affected,'建议处理方式':suggestion,'请填确认归属门店':'','请填确认月份':'','请填盈亏平衡线或提成基数':'','请填补充数据及依据说明':'','请填确认处理意见':''});
-   Object.assign(out.at(-1),{'任期开始':issue.from||'','任期结束':issue.to||''});
+   Object.assign(out.at(-1),{'任期开始':issue.from||'','任期结束':issue.to||'','核算依据月份':issue.basisMonth||''});
   }
  }
  return out;
@@ -51,7 +51,7 @@ function typeOf(reason){return reason.includes('店长任职')?'managerHistory':
 function compact(rows){
  const groups=new Map();
  for(const source of rows){
-  const type=typeOf(source.具体原因),month=type==='staffBase'?source.问题月份:source.原销售月份||source.问题月份;
+  const type=typeOf(source.具体原因),month=type==='staffBase'?source.问题月份:source.核算依据月份||source.原销售月份||source.问题月份;
   const storeId=source.原销售门店编号||source.当前门店编号;
   const productIssue=/产品|商品|成本|票税|SN|定价/.test(source.具体原因);
   const identity={type,month,storeId,staffId:type==='staffBase'?source.员工编号:'',from:type==='managerHistory'?source.任期开始:'',to:type==='managerHistory'?source.任期结束:'',manual:type==='manual'?(productIssue?source.问题编号:[source.具体原因,source.原销售记录编号,source.业务单号].join('|')):''};
