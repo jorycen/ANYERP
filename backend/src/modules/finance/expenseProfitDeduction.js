@@ -99,4 +99,17 @@ function attachMonthly(ranking,rows,canCalculate=true){
  for(const item of rows){let target=output.find(r=>String(r.staffId)===item.staffId);if(!target){target={staffId:item.staffId,employeeName:item.staffName,salesAmount:0,grossProfit:0,participatedOrderCount:0};output.push(target)}target.expensePerformanceDeduction=Number(((target.expensePerformanceDeduction||0)+item.amount).toFixed(2));}
  return output.map(row=>({...row,expensePerformanceDeduction:row.expensePerformanceDeduction||0,netGrossProfit:canCalculate&&row.grossProfit!==null?netProfit(row.grossProfit,row.expensePerformanceDeduction||0):null}));
 }
-module.exports={METHOD,currentMonth,storeContext,staffWhere,assertOpen,normalize,options,preview,read,display,apply,reverse,loadMonthly,netProfit,attachMonthly};
+// Same approved allocation facts used by employee deductions. Grouping by expense
+// and store counts a split expense once, without charging its full amount per staff.
+async function storeCommissionEvents({storeIds,month}){
+ if(!storeIds?.length)return [];
+ const rows=await M.sequelize.query(`SELECT a.EXPENSE_ID expenseId,a.EXPENSE_NO expenseNo,a.STORE_ID storeId,
+ SUM(a.AMOUNT) amount,e.EXPENSE_DATE expenseDate
+ FROM T_EXPENSE_PERFORMANCE_ALLOCATION a JOIN T_EXPENSE e ON e.EXPENSE_ID=a.EXPENSE_ID
+ WHERE a.STATUS='approved' AND e.STATUS='approved' AND e.IS_DELETED=0 AND e.AFFECTS_STORE_PROFIT=1
+ AND a.PERFORMANCE_MONTH=:month AND a.STORE_ID IN (:storeIds)
+ GROUP BY a.EXPENSE_ID,a.EXPENSE_NO,a.STORE_ID,e.EXPENSE_DATE`,{replacements:{storeIds,month},type:M.sequelize.QueryTypes.SELECT});
+ return rows.map(r=>({eventKey:`expense-deduction:${r.expenseId}:${r.storeId}`,entryType:'expense_deduction',entryNo:r.expenseNo,storeId:r.storeId,ownershipStoreId:r.storeId,
+ ownershipTime:r.expenseDate?`${String(r.expenseDate).slice(0,10)}T00:00:00+08:00`:null,amount:-Number(r.amount),businessDate:month+'-01'}));
+}
+module.exports={METHOD,currentMonth,storeContext,staffWhere,assertOpen,normalize,options,preview,read,display,apply,reverse,loadMonthly,netProfit,attachMonthly,storeCommissionEvents};

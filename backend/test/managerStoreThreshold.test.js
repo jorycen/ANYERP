@@ -14,6 +14,7 @@ test('completed returns and approved adjustments can reverse eligibility; select
  a.equal(calc(99000,100000,'蒋君杰',[events[0]]).commission,0);
 });
 test('partial range queries the entire calendar month for eligibility, while commission keeps selected event amounts',async t=>{
+ t.mock.method(require('../src/modules/finance/expenseProfitDeduction'),'storeCommissionEvents',async()=>[]);
  const M=require('../src/models'),H=require('../src/modules/report/storeManagerHistory'),F=require('../src/modules/report/financialProfitController');
  t.mock.method(M.Order,'findAll',async()=>[{order_id:'O',store_id:'S',create_time:'2026-10-05',archive_time:'2026-10-05'}]);
  t.mock.method(H.Assignment,'findAll',async()=>history);

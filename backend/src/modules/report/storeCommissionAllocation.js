@@ -53,6 +53,11 @@ async function load(financial,stores,period,configs){
  const monthly=(period.startDate||startDate)===startDate&&(period.endDate||endDate)===endDate?financial:await require('./financialProfitController').queryFinancialProfit({storeIds:stores.map(s=>String(s.store_id)),startDate,endDate,includeStores:true,salesStageOnly:true});
  const basis=new Map(stores.map(s=>[String(s.store_id),{grossProfit:monthly.storeSummaries?.find(r=>String(r.storeId)===String(s.store_id))?.summary?.salesGrossProfit,breakEvenLine:configs?.stores?.find(r=>String(r.storeId)===String(s.store_id))?.breakEvenLine}]));
  const events=await eventFacts(financial.profitDetails||[],stores.map(s=>String(s.store_id)));
+ const deductions=await require('../finance/expenseProfitDeduction').storeCommissionEvents({storeIds:stores.map(s=>String(s.store_id)),month});
+ // Monthly allocations follow the existing employee monthly deduction contract.
+ // Do not inject them into financial gross profit or personal chronological stages.
+ for(const event of deductions){const b=basis.get(String(event.storeId));if(b?.grossProfit!=null)b.grossProfit=money(Number(b.grossProfit)+event.amount);}
+ events.push(...deductions);
  const history=await H.Assignment.findAll({where:{store_id:{[Op.in]:stores.map(s=>s.store_id)}},raw:true});
  const staffIds=[...new Set(history.map(h=>h.staff_id).filter(Boolean))];
  const people=staffIds.length?await M.Staff.findAll({where:{staff_id:{[Op.in]:staffIds}},raw:true}):[];

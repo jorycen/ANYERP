@@ -65,5 +65,6 @@ test('manager changes close and start tenure in the same store transaction',asyn
 test('historical staff without business in this period are not inserted as report employees',async t=>{
  t.mock.method(H.Assignment,'findAll',async()=>[{store_id:'S',staff_id:1,effective_from:'2020-01-01',effective_to:'2020-02-01'}]);
  t.mock.method(M.Staff,'findAll',async()=>[{staff_id:1,name:'旧店长'}]);
+ t.mock.method(require('../src/modules/finance/expenseProfitDeduction'),'storeCommissionEvents',async()=>[]);
  const r=await A.load({profitDetails:[]},[{store_id:'S'}],{month:'2026-10'});a.equal(r.people.length,0);a.equal(r.owners.size,0);
 });
