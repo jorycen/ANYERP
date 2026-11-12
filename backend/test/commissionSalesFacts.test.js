@@ -6,7 +6,12 @@ test('internal stage query reads frozen return sales without requiring unrelated
  delete require.cache[require.resolve('../src/modules/report/financialProfitEngine')];
  const engine=require('../src/modules/report/financialProfitEngine');
  t.mock.method(M.sequelize,'query',async sql=>{
-  if(sql.includes('FROM T_SALES_RETURN_SETTLEMENT sr JOIN'))return [{returnId:'R',returnNo:'RET',orderId:'O',orderNo:'ORD',storeId:'S',returnDate:'2026-10-02',itemId:1,returnedQuantity:1,returnedReceivable:0}];
+  if(sql.includes('FROM T_SALES_RETURN_SETTLEMENT sr JOIN')){
+   a.match(sql,/MIN\(CREATE_TIME\) POSTING_TIME FROM T_SALES_RETURN_GROSS_PROFIT/);
+   a.match(sql,/DATE\(posting.POSTING_TIME\) returnDate/);
+   a.doesNotMatch(sql,/DATE\((?:rr|sr)\.CREATE_TIME\) returnDate/);
+   return [{returnId:'R',returnNo:'RET',orderId:'O',orderNo:'ORD',storeId:'S',returnDate:'2026-10-02',itemId:1,returnedQuantity:1,returnedReceivable:0}];
+  }
   if(sql.includes('SELECT RETURN_ID, SUM(GROSS_PROFIT_AMOUNT)'))return [{RETURN_ID:'R',amount:-50}];
   if(sql.includes('SELECT SOURCE_RETURN_ID, GROSS_PROFIT_AMOUNT, STATUS'))return [{SOURCE_RETURN_ID:'R',GROSS_PROFIT_AMOUNT:0,STATUS:'posted'}];
   return [];

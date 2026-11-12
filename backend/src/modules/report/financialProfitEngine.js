@@ -106,12 +106,16 @@ async function loadFacts(filters, calculateOrder, transaction) {
   const ids = filters.storeIds.length ? filters.storeIds : ['__NO_STORE__'];
   const p = { storeIds: ids, start: filters.startDate, end: filters.endDate };
   const returns = await select(`SELECT * FROM (SELECT sr.RETURN_ID returnId, sr.RETURN_NO returnNo, sr.ORDER_ID orderId, sr.ORDER_NO orderNo,
-      sr.STORE_ID storeId, s.NAME storeName, DATE(sr.CREATE_TIME) returnDate, sri.ORDER_ITEM_ID itemId, sri.PRODUCT_NAME productName,
+      sr.STORE_ID storeId, s.NAME storeName,
+      /* Use the same frozen completion posting event as employee reports.
+         Request/settlement creation does not establish a completed return. */
+      DATE(posting.POSTING_TIME) returnDate, sri.ORDER_ITEM_ID itemId, sri.PRODUCT_NAME productName,
       sri.QUANTITY returnedQuantity, sri.USER_RECEIVABLE_AMOUNT returnedReceivable,
-      SUM(ABS(sri.QUANTITY)) OVER (PARTITION BY sri.ORDER_ITEM_ID ORDER BY sr.CREATE_TIME,sr.RETURN_ID ROWS UNBOUNDED PRECEDING) cumulativeQuantity,
-      SUM(ABS(sri.USER_RECEIVABLE_AMOUNT)) OVER (PARTITION BY sri.ORDER_ITEM_ID ORDER BY sr.CREATE_TIME,sr.RETURN_ID ROWS UNBOUNDED PRECEDING) cumulativeRevenue
+      SUM(ABS(sri.QUANTITY)) OVER (PARTITION BY sri.ORDER_ITEM_ID ORDER BY posting.POSTING_TIME,sr.RETURN_ID ROWS UNBOUNDED PRECEDING) cumulativeQuantity,
+      SUM(ABS(sri.USER_RECEIVABLE_AMOUNT)) OVER (PARTITION BY sri.ORDER_ITEM_ID ORDER BY posting.POSTING_TIME,sr.RETURN_ID ROWS UNBOUNDED PRECEDING) cumulativeRevenue
     FROM T_SALES_RETURN_SETTLEMENT sr JOIN T_SALES_RETURN_SETTLEMENT_ITEM sri ON sri.SETTLEMENT_ID = sr.SETTLEMENT_ID
     JOIN T_STORE s ON s.STORE_ID = sr.STORE_ID JOIN T_SALES_RETURN_REQUEST rr ON rr.RETURN_ID = sr.RETURN_ID
+    JOIN (SELECT RETURN_ID, MIN(CREATE_TIME) POSTING_TIME FROM T_SALES_RETURN_GROSS_PROFIT GROUP BY RETURN_ID) posting ON posting.RETURN_ID = sr.RETURN_ID
     WHERE sr.STORE_ID IN (:storeIds) AND sr.SETTLEMENT_STATUS <> 'cancelled' AND rr.STATUS IN ('approved','completed')) return_facts
     WHERE returnDate BETWEEN :start AND :end`, p, transaction);
   const returnOrders = [...new Set(returns.map(row => row.orderId))];
