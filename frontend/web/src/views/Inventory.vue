@@ -1293,6 +1293,16 @@
     </el-dialog>
 
     <!-- SN追踪对话框 -->
+    <el-dialog v-model="traceCandidateVisible" title="请选择要追踪的SN记录" width="720px">
+      <el-alert title="同一SN编码命中了多条商品/库存记录，请选择具体记录后查看完整轨迹。" type="warning" :closable="false" />
+      <el-table :data="traceCandidates" border stripe style="margin-top:12px" @row-click="selectTraceCandidate">
+        <el-table-column prop="snCode" label="SN" width="150" />
+        <el-table-column prop="productName" label="商品名称" min-width="220" />
+        <el-table-column prop="pnCode" label="PN" width="140" />
+        <el-table-column prop="storeName" label="门店" width="120" />
+        <el-table-column label="状态" width="100"><template #default="{ row }">{{ getStatusText(row.status) }}</template></el-table-column>
+      </el-table>
+    </el-dialog>
     <el-dialog v-model="traceDialogVisible" :title="'SN追踪 - ' + traceSnCode" width="700px">
       <div v-if="traceLoading" v-loading="traceLoading" style="min-height:200px" />
       <div v-else>
@@ -2267,6 +2277,8 @@ const traceDialogVisible = ref(false)
 const traceSnCode = ref('')
 const traceLoading = ref(false)
 const traceTimeline = ref([])
+const traceCandidateVisible = ref(false)
+const traceCandidates = ref([])
 const traceCurrentStatus = ref('')
 const traceProductName = ref('')
 
@@ -3934,14 +3946,20 @@ const finishBatchImport = () => {
   loadBatchApplications()
 }
 
-const openSnTrace = async (row) => {
+const loadSnTrace = async (row, snId = '') => {
   traceSnCode.value = row.sn_code
   traceDialogVisible.value = true
   traceLoading.value = true
   traceTimeline.value = []
   try {
-    const res = await api.snTrace(row.sn_code, { pnCode: row.pn_code || '' })
+    const res = await api.snTrace(row.sn_code, { pnCode: row.pn_code || '', ...(snId ? { snId } : {}) })
     if (res.code === 0) {
+      if (!snId && (res.data?.candidates || []).length > 1) {
+        traceDialogVisible.value = false
+        traceCandidates.value = res.data.candidates
+        traceCandidateVisible.value = true
+        return
+      }
       traceTimeline.value = res.data?.timeline || []
       traceCurrentStatus.value = res.data?.currentStatus || ''
       traceProductName.value = res.data?.productName || row.product_name || row.product_id || '-'
@@ -3951,6 +3969,12 @@ const openSnTrace = async (row) => {
   } finally {
     traceLoading.value = false
   }
+}
+
+const openSnTrace = row => loadSnTrace(row)
+const selectTraceCandidate = row => {
+  traceCandidateVisible.value = false
+  loadSnTrace({ ...row, sn_code: row.snCode, pn_code: row.pnCode, product_name: row.productName, product_id: row.productId }, row.snId)
 }
 
 const goToOrder = async (row) => {

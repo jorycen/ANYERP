@@ -2511,6 +2511,7 @@ async function snTrace(ctx) {
   try {
     const requestedSnCode = normalizeSnCode(ctx.params.snCode || '');
     const requestedPnCode = String(ctx.query.pnCode || '').trim();
+    const requestedSnId = String(ctx.query.snId || '').trim();
     if (!requestedSnCode) ctx.throw(400, 'SN码不能为空');
 
     const timeline = [];
@@ -2523,11 +2524,13 @@ async function snTrace(ctx) {
       .map(value => String(value).trim()))];
     const toHex = value => Buffer.from(String(value), 'utf8').toString('hex').toUpperCase();
     const snCodeHex = value => toHex(String(value).trim().toUpperCase());
-    const snMatch = (alias, snIdColumn, snCodeColumn) =>
-      `(BINARY HEX(CAST(${alias}.${snIdColumn} AS BINARY)) IN (:snIdsHex) OR BINARY HEX(CAST(UPPER(TRIM(${alias}.${snCodeColumn})) AS BINARY)) IN (:snCodesHex))`;
+    const snMatch = (alias, snIdColumn, snCodeColumn) => requestedSnId
+      ? `BINARY ${alias}.${snIdColumn} = BINARY :requestedSnId`
+      : `(BINARY HEX(CAST(${alias}.${snIdColumn} AS BINARY)) IN (:snIdsHex) OR BINARY HEX(CAST(UPPER(TRIM(${alias}.${snCodeColumn})) AS BINARY)) IN (:snCodesHex))`;
     const replacementsFor = (snIds, snCodes) => ({
       snIdsHex: (snIds.length ? snIds : [emptyFilterValue]).map(toHex),
-      snCodesHex: [...new Set((snCodes.length ? snCodes : [requestedSnCode]).map(snCodeHex))]
+      snCodesHex: [...new Set((snCodes.length ? snCodes : [requestedSnCode]).map(snCodeHex))],
+      requestedSnId
     });
 
     const appendReferenceEvent = (event, reference, options = {}) => {
@@ -2549,7 +2552,7 @@ async function snTrace(ctx) {
           OR BINARY HEX(CAST(UPPER(TRIM(old_sn_code)) AS BINARY)) = BINARY :snCodeHex`,
       { replacements: { snCodeHex: snCodeHex(requestedSnCode) }, type: sequelize.QueryTypes.SELECT }
     );
-    const initialSnIds = uniqueValues(initialLogs.map(row => row.sn_id));
+    const initialSnIds = requestedSnId ? [requestedSnId] : uniqueValues(initialLogs.map(row => row.sn_id));
     const initialSnCodes = uniqueValues([
       requestedSnCode,
       ...initialLogs.flatMap(row => [row.sn_code, row.old_sn_code])
@@ -2564,16 +2567,29 @@ async function snTrace(ctx) {
        LEFT JOIN T_STORE st ON st.STORE_ID = sn.STORE_ID
        WHERE sn.IS_DELETED = 0
          AND ${snMatch('sn', 'SN_ID', 'SN_CODE')}
+         ${requestedSnId ? 'AND sn.SN_ID = :requestedSnId' : ''}
+         ${!requestedSnId ? 'AND UPPER(TRIM(sn.SN_CODE)) LIKE CONCAT(:requestedSnCode, \'%\')' : ''}
          ${requestedPnCode ? 'AND TRIM(sn.PN_CODE) = :pnCode' : ''}
        ORDER BY (sn.STATUS = 'in_stock') DESC, sn.INBOUND_TIME DESC, sn.SN_ID DESC`,
       {
         replacements: {
           ...replacementsFor(initialSnIds, initialSnCodes),
+          requestedSnId,
+          requestedSnCode,
           ...(requestedPnCode ? { pnCode: requestedPnCode } : {})
         },
         type: sequelize.QueryTypes.SELECT
       }
     );
+
+    const candidates = [...new Map(snRows.map(row => [String(row.sn_id), {
+      snId: row.sn_id, snCode: row.sn_code, pnCode: row.pn_code || '', productId: row.product_id,
+      productName: row.product_name || '', status: row.status, storeName: row.store_name || '', inboundTime: row.inbound_time
+    }])).values()];
+    if (!requestedSnId && candidates.length > 1) {
+      ctx.body = { code: 0, data: { snCode: requestedSnCode, candidates } };
+      return;
+    }
 
     const snIds = uniqueValues([...initialSnIds, ...snRows.map(row => row.sn_id)]);
     const snCodes = uniqueValues([...initialSnCodes, ...snRows.map(row => row.sn_code)]);
