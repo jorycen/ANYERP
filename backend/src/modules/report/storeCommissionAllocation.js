@@ -1,9 +1,9 @@
 const {Op}=require('sequelize');
 const M=require('../../models'),H=require('./storeManagerHistory');
 const {eventFacts}=require('./managerCommissionTimeline');
-const {money}=require('./employeeCommission');
+const {money,managerStoreRate}=require('./employeeCommission');
 const {isProductWarehouse}=require('./profitAttribution');
-function allocate(events,history,people,period){
+function allocate(events,history,people,period,monthlyBasis){
  const owners=new Map(),missing=new Map();
  const byStore=new Map();for(const row of history){const key=String(row.store_id);if(!byStore.has(key))byStore.set(key,[]);byStore.get(key).push(row);}
  for(const event of events){
@@ -36,18 +36,27 @@ function allocate(events,history,people,period){
   if(!person)owner.commission=null;
   for(const [storeId,pool]of owner.pools){
    if(pool.pending){owner.commission=null;owner.grossProfit=null;owner.issues.push({month:period.month,originalStoreId:storeId,reason:'原门店销售端毛利依据待核实'});}
-   else {if(owner.grossProfit!==null)owner.grossProfit=money(owner.grossProfit+pool.gross);if(owner.commission!==null)owner.commission=money(owner.commission+(staffRule?0:money(pool.gross*(['石高铭','唐陈'].includes(person?.name)?.05:.03))));}
+   else {
+    if(owner.grossProfit!==null)owner.grossProfit=money(owner.grossProfit+pool.gross);
+    const basis=monthlyBasis?.get(storeId),line=basis?.breakEvenLine,gross=basis?.grossProfit;
+    if(!staffRule&&(line==null||gross==null||!Number.isFinite(Number(line))||!Number.isFinite(Number(gross)))){
+     owner.commission=null;owner.issues.push({month:period.month,originalStoreId:storeId,reason:line==null?'门店月度盈亏平衡线未配置':'门店整月销售端毛利待核算'});
+    }else if(owner.commission!==null)owner.commission=money(owner.commission+(staffRule||Number(gross)<=Number(line)?0:money(pool.gross*managerStoreRate(person?.name))));
+   }
   }
   delete owner.pools;
  }
  return {owners,missing:[...missing.values()]};
 }
-async function load(financial,stores,period){
+async function load(financial,stores,period,configs){
+ const month=period.month||period.startDate.slice(0,7),startDate=month+'-01',endDate=new Date(Date.UTC(Number(month.slice(0,4)),Number(month.slice(5)),0)).toISOString().slice(0,10);
+ const monthly=(period.startDate||startDate)===startDate&&(period.endDate||endDate)===endDate?financial:await require('./financialProfitController').queryFinancialProfit({storeIds:stores.map(s=>String(s.store_id)),startDate,endDate,includeStores:true,salesStageOnly:true});
+ const basis=new Map(stores.map(s=>[String(s.store_id),{grossProfit:monthly.storeSummaries?.find(r=>String(r.storeId)===String(s.store_id))?.summary?.salesGrossProfit,breakEvenLine:configs?.stores?.find(r=>String(r.storeId)===String(s.store_id))?.breakEvenLine}]));
  const events=await eventFacts(financial.profitDetails||[],stores.map(s=>String(s.store_id)));
  const history=await H.Assignment.findAll({where:{store_id:{[Op.in]:stores.map(s=>s.store_id)}},raw:true});
  const staffIds=[...new Set(history.map(h=>h.staff_id).filter(Boolean))];
  const people=staffIds.length?await M.Staff.findAll({where:{staff_id:{[Op.in]:staffIds}},raw:true}):[];
- const result=allocate(events,history,people,period);
+ const result=allocate(events,history,people,period,basis);
  return {...result,people:people.filter(p=>result.owners.has(String(p.staff_id)))};
 }
 module.exports={allocate,load};

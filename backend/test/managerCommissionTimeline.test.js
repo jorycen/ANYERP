@@ -131,7 +131,7 @@ test('return sequencing uses its frozen posting time while store-owner reference
  a.equal(r[0].time,'2026-11-02 16:00:00.000');a.equal(r[0].ownershipTime,original);
  t.mock.method(M.Order,'findAll',async()=>[{order_id:'O',store_id:'S',create_time:original,archive_time:null}]);
  const legacy=await eventFacts([{eventKey:'return:R',entryType:'return',orderId:'O',storeId:'S',businessDate:'2026-11-02',salesGrossProfit:-100}],['S']);
- const known=require('../src/modules/report/storeCommissionAllocation').allocate(legacy,[{store_id:'S',staff_id:1,effective_from:'2026-09-01',effective_to:null}],[{staff_id:1,name:'已确认历史店长'}],{month:'2026-11'});
+ const known=require('../src/modules/report/storeCommissionAllocation').allocate(legacy,[{store_id:'S',staff_id:1,effective_from:'2026-09-01',effective_to:null}],[{staff_id:1,name:'已确认历史店长'}],{month:'2026-11'},new Map([['S',{grossProfit:200,breakEvenLine:100}]]));
  a.equal(known.missing.length,0);a.equal(known.owners.get('1').commission,-3);
  t.mock.method(M.Order,'findAll',async()=>[]);
  const missing=await eventFacts([{eventKey:'return:R',entryType:'return',orderId:'O',storeId:'S',businessDate:'2026-11-02',salesGrossProfit:-100}],['S']);

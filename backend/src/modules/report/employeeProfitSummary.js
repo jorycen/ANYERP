@@ -47,7 +47,7 @@ async function load(user, query) {
     for (const staff of configs.employees) if (!isProductWarehouse(staff.storeId)&&!ranks.some(r => String(r.staffId) === staff.staffId)) ranks.push({ staffId: staff.staffId, employeeName: staff.employeeName, grossProfit: 0, netGrossProfit: 0, expensePerformanceDeduction: 0 });
     const people = ranks.length ? await M.Staff.findAll({ where: { staff_id: { [Op.in]: ranks.map(x => x.staffId).filter(Boolean) } }, raw: true }) : [];
     const financial = storeIds.length ? await require('./financialProfitController').queryFinancialProfit({ storeIds, ...period, includeStores: true }) : { summary: {}, storeSummaries: [] };
-    const allocations=storeIds.length?await storeAllocationService.load(financial,stores,period):{owners:new Map(),missing:[],people:[]};
+    const allocations=storeIds.length?await storeAllocationService.load(financial,stores,period,configs):{owners:new Map(),missing:[],people:[]};
     for(const person of allocations.people){if(!people.some(p=>String(p.staff_id)===String(person.staff_id)))people.push(person);if(!ranks.some(r=>String(r.staffId)===String(person.staff_id)))ranks.push({staffId:String(person.staff_id),employeeName:person.name,grossProfit:0,netGrossProfit:0,expensePerformanceDeduction:0});}
     for(const [staffId]of allocations.owners)if(!ranks.some(r=>String(r.staffId)===staffId))ranks.push({staffId,employeeName:`历史店长#${staffId}`,grossProfit:0,netGrossProfit:0,expensePerformanceDeduction:0});
     const personalConfigs=await C.staffConfigs(period.month,ranks.map(r=>r.staffId));
@@ -103,7 +103,7 @@ async function load(user, query) {
         commissionBase: estimate.rule === 'staff' ? personalBase ?? null : null,
         breakEvenLine: estimate.rule === 'manager' ? sc?.breakEvenLine ?? null : null,
         storeGrossProfit: (estimate.rule === 'manager'||estimate.historicalStoreOwner)&&!ownershipPending.length ? allocation.grossProfit : null,commissionStoreNames:allocation.storeIds.map(id=>stores.find(s=>String(s.store_id)===String(id))?.name||id).join('、'), ...estimate,issues,
-        remark: `${period.month}：${estimate.reason || '已计算'}；销售按归档期、调整按审批期计提；首次测算固定清单归9月；退货当月15%/25%分段；门店提成按原业务店长归属；产品/运营提成待定；按月计算，区间内不折算基数` };
+        remark: `${period.month}：${estimate.reason || '已计算'}；销售按归档期、调整按审批期计提；首次测算固定清单归9月；退货当月15%/25%分段；门店整月销售端毛利严格超过盈亏线才按全额计提门店提成，按原业务店长归属；产品/运营提成待定；按月计算，区间内不折算基数` };
       if (previous) {
         for (const field of ['grossProfit','expensePerformanceDeduction','netGrossProfit','salesCommission','storeCommission','performanceEstimate','storeGrossProfit','lowGrossProfit','highGrossProfit','lowDeduction','highDeduction','lowNetGrossProfit','highNetGrossProfit','lowCommission','highCommission']) current[field] = previous[field] == null || current[field] == null ? null : money(previous[field] + Number(current[field]));
         current.commissionDetails=[...(previous.commissionDetails||[]),...(current.commissionDetails||[])];
@@ -131,7 +131,7 @@ async function load(user, query) {
   if (['product','operations'].includes(reportRole)) rows=[...sideRows.entries()].filter(([id])=>id.startsWith(reportRole+':')).map(([,row])=>row);
   const fields=presentation.columns(reportRole).filter(c=>reportRole!=='manager'||c.key!=='commissionBase');
   for(const row of rows){row.cells=Object.fromEntries(fields.map(c=>[c.key,presentation.display(row,c)]));row.reviewKey=row.reviewIdentity||(row.staffId?`staff:${row.staffId}`:`${row.sideName}:${row.storeId}`);}
-  return { rows, panels, columns:fields,reportRole,canConfigure: C.canConfigure(user), note: '销售按归档时间、调整差额按审批通过时间计提，原归档毛利不回写。首次测算固定28单归9月；另有62笔历史校正及3张跨月销售一次性归10月，真实日期保留。店长个人按当月全店销售端毛利15%/25%分段，历史校正跟随原销售计提日期参与跨线。费用按两阶段个人毛利占比分摊。门店额外3%/5%仍按原业务店长归属。产品、运营暂按门店汇总，负责人留空。' };
+  return { rows, panels, columns:fields,reportRole,canConfigure: C.canConfigure(user), note: '销售按归档时间、调整差额按审批通过时间计提，原归档毛利不回写。首次测算固定28单归9月；另有62笔历史校正及3张跨月销售一次性归10月，真实日期保留。店长个人按当月全店销售端毛利15%/25%分段，历史校正跟随原销售计提日期参与跨线。费用按两阶段个人毛利占比分摊。门店整月销售端毛利严格超过盈亏线后按全额计提门店提成，石高铭、唐陈、蒋君杰5%，其他店长3%，按原业务店长归属。产品、运营暂按门店汇总，负责人留空。' };
 }
 async function report(ctx) { ctx.body = { code: 0, data: await load(ctx.state.user, ctx.query) }; }
 async function config(ctx) { if (!C.canConfigure(ctx.state.user)) ctx.throw(403, '无权配置提成参数'); ctx.body = { code: 0, data: await C.options(ctx.state.user, ctx.query.month, ctx.query.storeId) }; }

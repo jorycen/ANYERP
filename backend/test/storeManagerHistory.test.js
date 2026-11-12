@@ -17,7 +17,7 @@ test('history uses effective intervals, never current manager or ambiguous overl
 test('store profit belongs to original business-time manager; return reverses that original manager',()=>{
  const history=[{store_id:'S',staff_id:1,effective_from:'2026-10-01',effective_to:'2026-10-15'},{store_id:'S',staff_id:2,effective_from:'2026-10-15',effective_to:null},{store_id:'T',staff_id:3,effective_from:'2026-10-01',effective_to:null}];
  const events=[{amount:100,storeId:'S',ownershipTime:'2026-10-10'},{amount:200,storeId:'S',ownershipTime:'2026-10-20'},{amount:-50,storeId:'S',ownershipTime:'2026-10-10'},{amount:300,storeId:'T',ownershipTime:'2026-10-20'}];
- const r=A.allocate(events,history,[{staff_id:1,name:'旧店长'},{staff_id:2,name:'唐陈'},{staff_id:3,name:'其他店长'}],{month:'2026-10'});
+ const r=A.allocate(events,history,[{staff_id:1,name:'旧店长'},{staff_id:2,name:'唐陈'},{staff_id:3,name:'其他店长'}],{month:'2026-10'},new Map([['S',{grossProfit:250,breakEvenLine:200}],['T',{grossProfit:300,breakEvenLine:200}]]));
  a.equal(r.owners.get('1').commission,1.5);a.equal(r.owners.get('2').commission,10);a.equal(r.owners.get('3').commission,9);a.equal(r.missing.length,0);
 });
 test('unknown history stays unassigned; confirmed absence and staff exceptions do not invent commissions',()=>{
