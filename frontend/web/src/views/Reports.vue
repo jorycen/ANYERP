@@ -184,7 +184,7 @@
           </div>
 
           <el-table
-            v-if="employeeCanViewProfit && (employeeSummary.expenseDeductions || []).length"
+            v-if="employeeCanViewProfit && !employeeLoading && appliedEmployeeName && appliedEmployeeName === employeeParams.staffName && (employeeSummary.expenseDeductions || []).length"
             :data="employeeSummary.expenseDeductions"
             stripe
             border
@@ -194,9 +194,6 @@
             <el-table-column prop="staffName" label="员工" width="130" />
             <el-table-column prop="amount" label="费用扣减毛利" width="150">
               <template #default="{ row }"><span class="profit-negative">-¥{{ formatMoney(row.amount) }}</span></template>
-            </el-table-column>
-            <el-table-column label="说明" min-width="220">
-              <template #default>费用分摊审批通过后计入员工绩效毛利，不修改订单原始毛利。</template>
             </el-table-column>
           </el-table>
 
@@ -570,6 +567,7 @@ const inventorySummary = ref({})
 const employeeData = ref([])
 const employeeOptions = ref([])
 const employeeSummary = ref({})
+const appliedEmployeeName = ref('')
 const employeeTotal = ref(0)
 const employeeLoading = ref(false)
 const employeeExporting = ref(false)
@@ -765,6 +763,7 @@ const loadEmployeePerformance = async () => {
     if (res.code === 0) {
       employeeData.value = res.data?.list || []
       employeeSummary.value = res.data?.summary || {}
+      appliedEmployeeName.value = params.staffName
       employeeOptions.value = res.data?.employees || []
       employeeTotal.value = res.data?.pagination?.total || 0
     } else {

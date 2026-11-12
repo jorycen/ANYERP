@@ -376,6 +376,7 @@ export default {
   saveGoodsType: (data) => api.post('/inventory/goods-types', data),
   deleteGoodsType: (goodsTypeId) => api.delete(`/inventory/goods-types/${goodsTypeId}`),
   getResourceSettlements: (params) => api.get('/inventory/resource-settlements', { params }),
+  exportResourceSettlements: (params) => exportExcel('/inventory/resource-settlements/export', params, `待下账返利池_${new Date().toISOString().slice(0, 10)}.xlsx`),
   getRebatePolicyDetail: id => api.get(`/inventory/resource-settlements/${id}/policy-detail`),
   getRebateCreditUsage: id => api.get(`/inventory/resource-settlements/${id}/credit-usage`),
   saveRebateTaxEvidence: (id, data) => api.post(`/inventory/resource-settlements/${id}/tax-evidence`, data),

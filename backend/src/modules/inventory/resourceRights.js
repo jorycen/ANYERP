@@ -7,12 +7,13 @@ const {
   ProductResourceCostConfig, InventoryResourceCostAdjustment, ResourceCategory,
   GoodsType, GoodsTypeResource,
   ResourceSettlement, RebatePostingOrder, RebateSettlementAllocation,
-  SettlementAccount, SettlementAccountTransaction, SupplierRebate, RebateEstimate, Supplier,
+  SettlementAccount, SettlementAccountTransaction, SupplierRebate, RebateEstimate, Supplier, Distributor,
   StaffCareCreditTransaction, PerformanceProfitAdjustment, Order, ManufacturerPriceHistory,
   SalesCashRebatePolicy, SalesCashRebateClaim, SalesCashRebateClaimItem, SalesCashRebateReceipt,
   ApprovalFlowInstance, ApprovalTask, ApprovalFlowDefinition
 } = require('../../models');
 const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
+const { canAccessDistributor, distributorWhere } = require('../../utils/distributorScope');
 
 const LEGACY_RESOURCE_TYPES = ['GOV_SUBSIDY', 'EDU_SUBSIDY', 'SALES_REPORT'];
 const SOURCE_TYPES = ['REGULAR_TAX', 'UNTAXED', 'CHANNEL_RESOURCE', 'PROMOTION_RESOURCE', 'SPECIAL_PRICE', 'OTHER'];
@@ -1605,7 +1606,7 @@ async function initializeSnResourceRightsFromInbound({ sn, inbound, inboundItem,
 async function listResourceSettlements(ctx) {
   requireAnyRole(ctx, ['boss', 'admin', 'finance']);
   const {
-    status, resourceType, sourceType, snCode, remark, supplierId,
+    status, resourceType, sourceType, snCode, remark, supplierId, distributorId,
     startDate, endDate, page = 1, pageSize = 20
   } = ctx.query;
   const where = { [Op.and]: [{ resource_type: { [Op.ne]: 'SALES_CASH_REBATE' } }, { source_type: { [Op.ne]: 'CASH_RED_PACKET' } }] };
@@ -1619,6 +1620,9 @@ async function listResourceSettlements(ctx) {
   if (snCode) where.sn_code = { [Op.like]: `%${snCode}%` };
   if (remark) where.remark = { [Op.like]: `%${remark}%` };
   if (supplierId) where.counterparty_id = supplierId;
+  const requestedDistributorId = String(distributorId || '').trim();
+  if (requestedDistributorId && !canAccessDistributor(ctx.state.user, requestedDistributorId)) ctx.throw(403, '无权查看该经销商的返利记录');
+  Object.assign(where, requestedDistributorId ? { distributor_id: requestedDistributorId } : distributorWhere(ctx.state.user));
   const start = chinaDateBoundary(startDate, false);
   const end = chinaDateBoundary(endDate, true);
   if (start || end) {
@@ -1629,6 +1633,9 @@ async function listResourceSettlements(ctx) {
   const { count, rows } = await ResourceSettlement.findAndCountAll({
     where,
     include: [
+      { model: Distributor, as: 'Distributor', attributes: ['name'], required: false },
+      { model: Product, attributes: ['name'], required: false },
+      { model: ProductSn, attributes: ['pn_code'], required: false },
       { model: ResourceCategory, as: 'ResourceCategory', required: false, include: [{ model: SettlementAccount, as: 'DefaultAccount', required: false }] },
       { model: SettlementAccount, as: 'TargetAccount', required: false },
       {
@@ -1651,12 +1658,70 @@ async function listResourceSettlements(ctx) {
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
 }
 
+async function exportResourceSettlements(ctx) {
+  requireAnyRole(ctx, ['boss', 'admin', 'finance']);
+  const { status, resourceType, sourceType, snCode, remark, supplierId, distributorId, startDate, endDate } = ctx.query;
+  const where = { [Op.and]: [{ resource_type: { [Op.ne]: 'SALES_CASH_REBATE' } }, { source_type: { [Op.ne]: 'CASH_RED_PACKET' } }] };
+  if (status) where.status = status;
+  if (resourceType) where.resource_type = resourceType;
+  if (sourceType) where.source_type = sourceType;
+  if (snCode) where.sn_code = { [Op.like]: `%${snCode}%` };
+  if (remark) where.remark = { [Op.like]: `%${remark}%` };
+  if (supplierId) where.counterparty_id = supplierId;
+  const requestedDistributorId = String(distributorId || '').trim();
+  if (requestedDistributorId && !canAccessDistributor(ctx.state.user, requestedDistributorId)) ctx.throw(403, '无权导出该经销商的返利记录');
+  Object.assign(where, requestedDistributorId ? { distributor_id: requestedDistributorId } : distributorWhere(ctx.state.user));
+  const start = chinaDateBoundary(startDate, false);
+  const end = chinaDateBoundary(endDate, true);
+  if (start || end) {
+    where.create_time = {};
+    if (start) where.create_time[Op.gte] = start;
+    if (end) where.create_time[Op.lte] = end;
+  }
+  const rows = await ResourceSettlement.findAll({
+    where,
+    include: [
+      { model: Distributor, as: 'Distributor', attributes: ['name'], required: false },
+      { model: Product, attributes: ['name'], required: false },
+      { model: ProductSn, attributes: ['pn_code'], required: false },
+      { model: ResourceCategory, as: 'ResourceCategory', required: false },
+      { model: RebateSettlementAllocation, as: 'Allocations', required: false, where: { status: 'ACTIVE' }, include: [{ model: RebatePostingOrder, as: 'PostingOrder', required: false }] }
+    ],
+    order: buildPendingFirstOrder(sequelize, { statusColumn: 'ResourceSettlement.status', pendingStatuses: ['PENDING', 'PARTIALLY_SETTLED'], dateColumns: ['ResourceSettlement.create_time'], idColumn: 'ResourceSettlement.settlement_id' })
+  });
+  const exportRows = rows.map(row => ({
+    待下账返利单号: row.settlement_no,
+    创建时间: row.create_time || '',
+    经销商: row.Distributor?.name || row.distributor_id || '',
+    商品名称: row.Product?.name || '',
+    PN: row.ProductSn?.pn_code || '',
+    SN: row.sn_code || '',
+    类型: row.ResourceCategory?.name || row.resource_type,
+    来源: row.source_type,
+    供应商: row.counterparty_name || '',
+    金额: Number(row.amount || 0),
+    已关联金额: Number(row.matched_amount || 0),
+    剩余待关联: Math.max(0, Number(row.amount || 0) - Number(row.matched_amount || 0)),
+    备注: row.remark || '',
+    状态: row.status,
+    创建人: row.create_user || '',
+    关联人: row.settled_by_name || ''
+  }));
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(exportRows), '待下账返利池');
+  ctx.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  ctx.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent('待下账返利池.xlsx')}`);
+  ctx.body = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+}
+
 async function createManualRebateSettlement(ctx) {
   requireAnyRole(ctx, ['boss', 'admin', 'finance']);
-  const { supplierId, amount, remark } = ctx.request.body || {};
+  const { distributorId, supplierId, amount, remark } = ctx.request.body || {};
   const numericAmount = money(amount);
   const normalizedRemark = String(remark || '').trim();
   if (!supplierId) ctx.throw(400, '请选择供应商');
+  if (!distributorId) ctx.throw(400, '请选择经销商');
+  if (!canAccessDistributor(ctx.state.user, distributorId)) ctx.throw(403, '无权操作该经销商的返利');
   if (!Number.isFinite(numericAmount) || numericAmount === 0) ctx.throw(400, '返利金额不能为0');
   if (!normalizedRemark) ctx.throw(400, '手工返利必须填写备注');
 
@@ -1664,6 +1729,8 @@ async function createManualRebateSettlement(ctx) {
     where: { supplier_id: supplierId, status: 1, is_deleted: 0 }
   });
   if (!supplier) ctx.throw(404, '供应商不存在');
+  const distributor = await Distributor.findOne({ where: { distributor_id: distributorId, status: 1, is_deleted: 0 } });
+  if (!distributor) ctx.throw(404, '经销商不存在或已停用');
   const category = await ResourceCategory.findOne({
     where: { category_code: 'MANUAL_REBATE', status: 1 }
   });
@@ -1675,6 +1742,7 @@ async function createManualRebateSettlement(ctx) {
     settlement_no: businessNo('RST'),
     source_type: 'MANUAL_REBATE',
     source_id: sourceId,
+    distributor_id: distributor.distributor_id,
     sn_id: null,
     sn_code: null,
     product_id: null,
@@ -3189,7 +3257,7 @@ module.exports = {
   listResourceCategories, saveResourceCategory, deleteResourceCategory,
   listGoodsTypes, saveGoodsType, deleteGoodsType,
   listNbPolicies, importNbPolicy,
-  listResourceSettlements, createManualRebateSettlement, settleResource, batchSettleRebateResources, linkRebateSettlement,
+  listResourceSettlements, exportResourceSettlements, createManualRebateSettlement, settleResource, batchSettleRebateResources, linkRebateSettlement,
   cancelResourceSettlement, reverseResourceSettlement, createPendingSettlement,
   findResourceRule, calculatePreSaleRuleAmount,
   initializeSnResourceRightsFromInbound, triggerSaleResourceBenefits, createSaleResourceTasks,

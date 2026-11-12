@@ -60,7 +60,10 @@ async function currentCatalog(rows, transaction) {
   const productMap = new Map(products.map(x => [x.product_id,x]));
   const priceMap = new Map();
   for (const price of prices) if (!priceMap.has(price.product_id)) priceMap.set(price.product_id,price);
-  return rows.map(row => ({...view(row),costMode:json(row.source_data||{}).pricingModeOverride ? row.cost_mode : productMap.get(row.product_id)?.gross_profit_cost_mode || null,
+  // An existing inventory foundation is the frozen source of truth for the
+  // acquisition pricing mode. The product master is only a default for new
+  // intake; it must never rewrite an existing SN/batch mode on sales reads.
+  return rows.map(row => ({...view(row),costMode:json(row.source_data||{}).pricingModeOverride ? row.cost_mode : row.cost_mode || null,
     companyPrice:money(priceMap.get(row.product_id)?.standard_price)}));
 }
 async function salesBasis(order, lines, transaction) {
@@ -173,6 +176,9 @@ async function ensureSalesReferences(order,lines,transaction){
     const resolvedSnId=item.sn_id||line.pricingOrigin?.snId||null;
     const previous=await M.InventoryFoundationRef.findByPk('order_item:'+item.item_id,{transaction,lock:transaction.LOCK.UPDATE});
     if(previous){
+      const previousRow=await M.InventoryFoundation.findByPk(previous.basis_id,{transaction,lock:transaction.LOCK.UPDATE});
+      if(previousRow && String(previousRow.product_id)!==String(item.product_id))
+        fail(`订单商品与已关联基础档案不一致，请先核实原单：订单商品ID ${item.product_id}，档案商品ID ${previousRow.product_id}，档案ID ${previousRow.basis_id}`);
       if(!['draft','未归档','pending_approval','pending_store_approval','pending_distributor_approval'].includes(order.order_status))fail('历史商品基础关联变化，需先核实原单');
       await previous.destroy({transaction});
     }
@@ -190,6 +196,8 @@ async function ensureSalesReferences(order,lines,transaction){
       const key=resolvedSnId?snKey(resolvedSnId,cycles):'import_sale:'+item.item_id;
       const b=line.purchaseTaxBasis||{};
       row=await M.InventoryFoundation.findByPk(id(key),{transaction,lock:transaction.LOCK.UPDATE});
+      if(row && String(row.product_id)!==String(item.product_id))
+        fail(`订单商品与基础档案不一致，请先核实原单：订单商品ID ${item.product_id}，档案商品ID ${row.product_id}，档案ID ${row.basis_id}`);
       if(!row)row=await M.InventoryFoundation.create({basis_id:id(key),identity_key:key,product_id:item.product_id,
         product_name:line.productName,entity_type:resolvedSnId?'sn_cycle':'import_sale',sn_code:line.snCode||'',
         invoice_type:b.status==='confirmed'?b.invoiceType:null,status:b.status==='confirmed'?'confirmed':'pending',

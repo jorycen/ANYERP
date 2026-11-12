@@ -14,7 +14,7 @@ const router = new Router();
 router.get('/menus', getMenus);
 router.post('/menus/reorder', requireRole('admin', 'boss'), reorderMenus);
 router.get('/roles', getRoles);
-router.get('/user-distributors', requireRole('admin', 'boss'), getUserDistributors);
+router.get('/user-distributors', requireRole('admin', 'boss', 'finance'), getUserDistributors);
 router.post('/role', requireRole('admin', 'boss'), createRole);
 router.put('/role/:roleId', requireRole('admin', 'boss'), updateRole);
 router.delete('/role/:roleId', requireRole('admin', 'boss'), deleteRole);

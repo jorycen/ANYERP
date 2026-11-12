@@ -77,6 +77,7 @@ router.get('/resource-settlements/:settlementId/policy-detail', rebatePolicyDeta
 router.get('/resource-settlements/:settlementId/credit-usage', rebatePolicyDetail.credit);
 router.post('/resource-settlements/:settlementId/tax-evidence', rebatePolicyDetail.saveTax);
 router.get('/resource-settlements', resourceRights.listResourceSettlements);
+router.get('/resource-settlements/export', resourceRights.exportResourceSettlements);
 router.post('/resource-settlements/manual-rebate', resourceRights.createManualRebateSettlement);
 router.post('/resource-settlements/batch-settle', resourceRights.batchSettleRebateResources);
 router.post('/resource-settlements/:settlementId/link', resourceRights.linkRebateSettlement);

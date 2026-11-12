@@ -5,7 +5,7 @@ const F = require('../src/modules/inventory/foundation');
 const V = require('../src/modules/sales/purchaseVat');
 test.after(() => M.sequelize.close());
 
-test('current product mode/price ignore historical SN pricing; valid special remains first', async t => {
+test('frozen inventory foundation mode wins over mutable product mode', async t => {
   const product = {product_id:'P',gross_profit_cost_mode:'COMPANY_PRICE'};
   const price = {product_id:'P',standard_price:15400};
   const row = {basis_id:'B',product_id:'P',identity_key:'sn:S:original',status:'conflict',reason:'基础资料冲突：company_price',
@@ -18,12 +18,12 @@ test('current product mode/price ignore historical SN pricing; valid special rem
   t.mock.method(M.ProductPrice,'findAll',async()=>[price]);
   const line={itemId:1,productId:'P',snId:'S',quantity:2,isSpecialPrice:false};
   let result=(await F.applySalesPricing({},[line]))[0];
-  a.equal(result.unitPricing,15400);a.equal(result.pricingAmount,30800);
+  a.equal(result.unitPricing,15071);a.equal(result.pricingAmount,30142);
   a.equal(result.inventoryFoundation.status,'confirmed');a.equal(result.inventoryFoundation.invoiceType,'专票13%');
   price.standard_price=15999;
-  a.equal((await F.applySalesPricing({},[line]))[0].unitPricing,15999);
-  a.equal((await F.applySalesPricing({},[{...line,isSpecialPrice:true,specialPrice:0}]))[0].unitPricing,0);
-  product.gross_profit_cost_mode='PURCHASE_PRICE';
+  a.equal((await F.applySalesPricing({},[line]))[0].unitPricing,15071);
+  a.equal((await F.applySalesPricing({},[{...line,isSpecialPrice:true,specialPrice:123}]))[0].unitPricing,15071);
+  product.gross_profit_cost_mode='COMPANY_PRICE';
   a.equal((await F.applySalesPricing({},[{...line,isSpecialPrice:true,specialPrice:123}]))[0].unitPricing,15071);
   row.source_data.observations[1].invoice_type='收据';
   a.equal((await F.load(['order_item:1'])).get('order_item:1').status,'conflict');

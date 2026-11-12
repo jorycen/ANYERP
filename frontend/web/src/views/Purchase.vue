@@ -177,12 +177,6 @@
             <el-option label="收据" value="收据" />
           </el-select>
         </el-form-item>
-        <el-form-item label="毛利成本口径">
-          <div class="purchase-pricing-tip">请逐个商品选择成本口径；审批通过后会写入商品标签。公司定价口径必须先维护公司定价。库存批次口径后续再确定。</div>
-        </el-form-item>
-        <el-form-item label="快递单号">
-          <el-input v-model="requestForm.expressNo" placeholder="请输入快递单号（选填）" />
-        </el-form-item>
         <el-form-item label="付款方式" required>
           <el-select v-model="requestForm.paymentMethod" placeholder="请选择付款方式" style="width: 100%">
             <el-option label="公司账期" value="COMPANY_CREDIT" />
@@ -193,9 +187,6 @@
           <el-select v-model="requestForm.productType" placeholder="请选择货型" style="width: 100%" @change="onGoodsTypeChange">
             <el-option v-for="item in goodsTypeOptions" :key="item.goods_type_id" :label="item.name" :value="item.name" />
           </el-select>
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input v-model="requestForm.remark" type="textarea" rows="2" placeholder="采购备注" />
         </el-form-item>
 
         <el-form-item label="返利抵扣" v-if="requestForm.supplierId && (rebateBalance > 0 || toNumber(requestForm.rebateDeduction) > 0)">
@@ -324,8 +315,14 @@
             <el-option v-for="platform in freightPlatforms" :key="platform.platform_id" :label="platform.platform_name" :value="platform.platform_id" />
           </el-select>
         </el-form-item>
+        <el-form-item label="快递单号">
+          <el-input v-model="requestForm.expressNo" placeholder="请输入快递单号（选填）" />
+        </el-form-item>
         <el-form-item label="运费金额">
           <el-input-number v-model="requestForm.freightAmount" :min="0" :precision="2" :step="1" controls-position="right" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="requestForm.remark" type="textarea" rows="2" placeholder="采购备注" />
         </el-form-item>
 
         <div class="order-summary">

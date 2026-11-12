@@ -16,7 +16,9 @@ async function run(options={}){const apply=options.apply??process.argv.includes(
   return P.plan({products,prices,sns,inventory,cycles,orders,items,snapshots,reviews,zeroSnIds,snEvidence,locations});
   });
   if(!options.startup)fs.writeFileSync(path.join(dir,'migration-preview.json'),JSON.stringify(plan,null,2));
-  if(!options.startup){const w=X.utils.book_new();for(const[name,rows]of [['汇总',[plan.counts]],['待核对',plan.conflicts],['基础档案',plan.rows.map(x=>({基础标识:x.basis_id,商品:x.product_name,SN:x.sn_code||'',批次:x.batch_no||'',状态:x.status,采购凭证类型:x.invoice_type||'',实际采购成本:x.purchase_cost,计价方式:x.cost_mode,公司定价:x.company_price,关联数:x.references.length,原因:x.reason}))]])X.utils.book_append_sheet(w,X.utils.json_to_sheet(rows),name);
+  if(!options.startup){
+    const catalog=new Map((await F.currentCatalog(plan.rows)).map(row=>[row.basisId,row]));
+    const w=X.utils.book_new();for(const[name,rows]of [['汇总',[plan.counts]],['待核对',plan.conflicts],['基础档案',plan.rows.map(x=>({基础标识:x.basis_id,商品:x.product_name,SN:x.sn_code||'',批次:x.batch_no||'',状态:x.status,采购凭证类型:x.invoice_type||'',实际采购成本:x.purchase_cost,当前计价方式:catalog.get(x.basis_id)?.costMode,当前公司定价:catalog.get(x.basis_id)?.companyPrice,关联数:x.references.length,原因:x.reason}))]])X.utils.book_append_sheet(w,X.utils.json_to_sheet(rows),name);
     X.writeFile(w,path.join(dir,'统一库存基础资料迁移预览.xlsx'));}
   if(apply){if(!options.schemaReady)await require('../../utils/dbMigration').ensureInventoryFoundationSchema({skipBootstrap:true});let created=0,existing=0;
     for(let offset=0;offset<plan.rows.length;offset+=200)await M.sequelize.transaction(async transaction=>{

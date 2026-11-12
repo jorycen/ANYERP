@@ -66,6 +66,7 @@
           <el-table-column prop="supplier_name" label="供应商" min-width="150" />
           <el-table-column prop="invoice_numbers_text" label="发票号码" min-width="200" />
           <el-table-column prop="invoice_date" label="开票日期" width="120" />
+          <el-table-column label="登记日期" width="120"><template #default="{ row }">{{ registerDate(row.create_time) }}</template></el-table-column>
           <el-table-column prop="invoice_type" label="票种" min-width="150" />
           <el-table-column label="税率" width="90"><template #default="{ row }">{{ taxRateText(row.tax_rate) }}</template></el-table-column>
           <el-table-column label="价税合计" width="120"><template #default="{ row }">¥{{ money(row.total_amount) }}</template></el-table-column>
@@ -215,6 +216,7 @@ const previewAmounts = async (useAllocations = false) => {
 }
 
 const money = value => Number(value || 0).toFixed(2)
+const registerDate = value => value ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value)) : '-'
 const quantity = value => Number.isFinite(Number(value)) ? String(Number(value)) : '-'
 const taxRateText = value => value === null || value === undefined || value === '' ? '-' : `${Number(value) * 100}%`
 const warningText = value => ({ normal: '正常', near_due: '临期', overdue: '逾期' }[value] || '正常')

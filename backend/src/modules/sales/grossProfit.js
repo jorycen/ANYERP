@@ -48,6 +48,17 @@ function isExternalAdjustmentEligibleProduct(item = {}) {
   return /电脑|笔记本|台式机|台机|一体机|主机|平板|ipad|手机|iphone/.test(text);
 }
 
+function isPurchasePricedLine(item = {}) {
+  return item.isCompanyPriced === false ||
+    String(item.costModeSnapshot || item.cost_mode_snapshot || '').toUpperCase() === 'PURCHASE_PRICE';
+}
+
+function isExternalAdjustmentEligibleLine(item = {}) {
+  if (!isPurchasePricedLine(item)) return false;
+  return item.externalAdjustmentEligible === true || item.external_adjustment_eligible === true ||
+    toNumber(item.grossProfitUpliftAmount ?? item.gross_profit_uplift_amount) > 0;
+}
+
 function calculateNationalSubsidyCustomerReceiptAmount({
   nationalAmount = 0,
   subsidyAmount = 0,
@@ -261,18 +272,19 @@ function calculateGrossProfitValues({
     normalizedReceivableAmount - productPricingAmount - paymentFeeAmount - vatAmount + supplementAmount - freightCostAmount
   );
   const externalAdjustmentAmount = roundMoney(normalizedProductPricing.reduce((sum, item) => {
-    const eligible = item.externalAdjustmentEligible === true || item.external_adjustment_eligible === true ||
-      isExternalAdjustmentEligibleProduct(item);
-    if (!eligible) return sum;
+    if (!isExternalAdjustmentEligibleLine(item)) return sum;
     return sum + roundMoney(item.grossProfitUpliftAmount ?? item.gross_profit_uplift_amount) * item.quantity;
   }, 0));
   const hasEligibleExternalAdjustmentProduct = externalAdjustmentEligible || normalizedProductPricing.some(item =>
-    item.externalAdjustmentEligible === true || item.external_adjustment_eligible === true ||
-    isExternalAdjustmentEligibleProduct(item)
+    isExternalAdjustmentEligibleLine(item)
   );
-  const externalAdjustmentFee = hasEligibleExternalAdjustmentProduct && grossProfitBeforeExternalAdjustment > 500
-    ? externalAdjustmentAmount
-    : 0;
+  const externalAdjustmentFee = !hasEligibleExternalAdjustmentProduct || externalAdjustmentAmount <= 0
+    ? 0
+    : grossProfitBeforeExternalAdjustment < 300
+      ? 0
+      : grossProfitBeforeExternalAdjustment <= 500
+        ? roundMoney(externalAdjustmentAmount / 2)
+        : externalAdjustmentAmount;
   const grossProfitAmount = roundMoney(grossProfitBeforeExternalAdjustment - externalAdjustmentFee);
 
   return {
@@ -335,23 +347,19 @@ function snapshotToResponse(snapshot, order = null) {
   const productPricingDetails = parseJsonArray(
     row.product_pricing_details || row.settlement_cost_details
   );
-  const externalAdjustmentEligible = productPricingDetails.some(item =>
-    item.externalAdjustmentEligible === true || item.external_adjustment_eligible === true ||
-    isExternalAdjustmentEligibleProduct(item)
-  );
+  const externalAdjustmentEligible = productPricingDetails.some(isExternalAdjustmentEligibleLine);
   const externalAdjustmentAmount = roundMoney(productPricingDetails.reduce((sum, item) => {
-    const eligible = item.externalAdjustmentEligible === true || item.external_adjustment_eligible === true ||
-      isExternalAdjustmentEligibleProduct(item);
-    if (!eligible) return sum;
+    if (!isExternalAdjustmentEligibleLine(item)) return sum;
     return sum + roundMoney(item.grossProfitUpliftAmount ?? item.gross_profit_uplift_amount) *
       toNumber(item.quantity || 1);
   }, 0));
-  const usesSupplierUpliftRule = productPricingDetails.some(item =>
-    String(item.externalAdjustmentRuleVersion || '').startsWith('SUPPLIER_UPLIFT_')
-  );
-  const externalAdjustmentFee = externalAdjustmentEligible && grossProfitBeforeExternalAdjustment > 500
-    ? (usesSupplierUpliftRule ? externalAdjustmentAmount : 200)
-    : 0;
+  const externalAdjustmentFee = !externalAdjustmentEligible || externalAdjustmentAmount <= 0
+    ? 0
+    : grossProfitBeforeExternalAdjustment < 300
+      ? 0
+      : grossProfitBeforeExternalAdjustment <= 500
+        ? roundMoney(externalAdjustmentAmount / 2)
+        : externalAdjustmentAmount;
   const storedAdjustmentDetails = parseJsonArray(row.supplement_details);
   return {
     grossProfitId: row.gross_profit_id,
@@ -647,7 +655,9 @@ async function buildProductPricingDetails(orderId, transaction) {
         ? validPrice(productPrice.cost_price) : null);
     const specialPrice = specialPriceBySnId.get(String(snRow?.sn_id || row.sn_id || ''))
       ?? specialPriceBySnCode.get(String(snRow?.sn_code || row.sn_code || '').trim().toUpperCase()) ?? null;
-    const mode = product.gross_profit_cost_mode;
+    // Once an inventory foundation is linked, its frozen mode wins. Only an
+    // order without a foundation may use the product master default.
+    const mode = inventoryBasis?.basisId ? inventoryBasis.costMode : product.gross_profit_cost_mode;
     const unitPricing = mode === 'COMPANY_PRICE' ? (specialPrice ?? (Number(productPrice?.status ?? 1) === 1 ? validPrice(productPrice?.standard_price) : null))
       : mode === 'PURCHASE_PRICE' ? purchasePrice : null;
     const effectivePricing = {

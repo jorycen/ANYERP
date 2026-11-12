@@ -5535,14 +5535,23 @@ async function createEstimateAndAdjustment({
   transaction
 }) {
   const estimateId = createEstimate ? generateUUID() : null;
+  const snSupplier = (item.sn_id || item.sn_code)
+    ? await ProductSn.findOne({
+      where: item.sn_id ? { sn_id: item.sn_id } : { sn_code: item.sn_code },
+      attributes: ['supplier_id', 'supplier_name'],
+      transaction
+    })
+    : null;
+  const supplierId = priceHistory?.supplier_id || policy?.supplier_id || snSupplier?.supplier_id || '';
+  const supplierName = priceHistory?.supplier_name || policy?.supplier_name || snSupplier?.supplier_name || '';
   if (createEstimate) await RebateEstimate.create({
     estimate_id: estimateId,
     distributor_id: distributorId,
     sales_order_id: order.order_id,
     sales_order_no: order.order_no,
     sales_order_item_id: item.item_id,
-    supplier_id: priceHistory?.supplier_id || policy?.supplier_id || '',
-    supplier_name: priceHistory?.supplier_name || policy?.supplier_name || '',
+    supplier_id: supplierId,
+    supplier_name: supplierName,
     product_id: item.product_id,
     product_name: item.product_name,
     pn: item.pn_code,
@@ -5564,8 +5573,8 @@ async function createEstimateAndAdjustment({
     sourceType: 'MANUFACTURER_REBATE', sourceId: estimateId,
     sn: { sn_id: item.sn_id || `NO_SN_${item.item_id}`, sn_code: item.sn_code || '', product_id: item.product_id },
     resourceType: 'MANUFACTURER_REBATE', amount: rebateAmount,
-    counterpartyId: priceHistory?.supplier_id || policy?.supplier_id || null,
-    counterpartyName: priceHistory?.supplier_name || policy?.supplier_name || '',
+    counterpartyId: supplierId || null,
+    counterpartyName: supplierName,
     distributorId,
     remark: `销售订单 ${order.order_no} 厂商返利预估到账确认`, transaction
   });

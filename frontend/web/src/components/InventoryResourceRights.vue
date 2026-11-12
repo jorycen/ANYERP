@@ -77,6 +77,11 @@
         <el-table-column prop="so_policy" label="SO政策" min-width="180" show-overflow-tooltip />
         <el-table-column prop="po_policy" label="PO政策" min-width="180" show-overflow-tooltip />
         <el-table-column prop="other_policy" label="其他政策" min-width="180" show-overflow-tooltip />
+        <el-table-column label="有效期" min-width="215">
+          <template #default="{ row }">
+            {{ nbPolicyDateText(row.effective_date) }} 至 {{ row.expire_date ? nbPolicyDateText(row.expire_date) : '未设置截止日' }}
+          </template>
+        </el-table-column>
         <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
         </el-table>
         <el-pagination v-model:current-page="nbPolicyQuery.page" v-model:page-size="nbPolicyQuery.pageSize" :total="nbPolicyTotal" layout="total, prev, pager, next" @current-change="loadNbPolicies" />
@@ -416,6 +421,12 @@ const payloadList = res => res.data?.list || res.data || []
 const payloadTotal = res => res.data?.pagination?.total || res.data?.total || 0
 const money = value => Number(value || 0).toFixed(2)
 const dateText = value => value ? String(value).slice(0, 10) : '—'
+const nbPolicyDateFormatter = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' })
+function nbPolicyDateText(value) {
+  if (!value) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '—' : nbPolicyDateFormatter.format(date)
+}
 const resourceText = value => value === 'OTHER_POLICY' ? '其他政策待获取' : (resourceOptions.value.find(item => item.value === value)?.label || value)
 const categoryKindText = value => categoryKindOptions.find(item => item.value === value)?.label || value || '其他'
 const categoryScenarioText = row => [Number(row.supports_purchase_select) === 1 ? '采购选择' : '', Number(row.supports_sale_use) === 1 ? '销售使用' : '', Number(row.trigger_on_sale) === 1 ? '销售归档触发' : '', Number(row.generates_settlement) === 1 ? '生成待下账' : ''].filter(Boolean).join('、') || '未配置'

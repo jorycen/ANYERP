@@ -911,15 +911,16 @@
     </el-dialog>
 
     <!-- 角色菜单权限对话框 -->
-    <el-dialog v-model="menuDialogVisible" title="菜单权限" width="400px" @opened="applyRoleMenuChecks">
+    <el-dialog v-model="menuDialogVisible" title="菜单权限" width="400px">
       <el-form label-width="100px">
         <el-form-item label="角色">{{ currentRole?.name }}</el-form-item>
         <el-form-item label="菜单权限">
           <el-tree
             ref="menuTreeRef"
-            :data="menuData"
+            :data="roleMenuData"
             :props="{ label: 'name', children: 'children' }"
             show-checkbox
+            check-strictly
             node-key="menuId"
             default-expand-all
           />
@@ -927,7 +928,7 @@
       </el-form>
       <template #footer>
         <el-button @click="menuDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleMenuSubmit" :loading="submitLoading || roleMenuLoading">确定</el-button>
+        <el-button type="primary" @click="handleMenuSubmit" :loading="submitLoading || roleMenuLoading" :disabled="!roleMenuReady">确定</el-button>
       </template>
     </el-dialog>
   </div>
@@ -1000,7 +1001,9 @@ const canManageUserDistributors = computed(() => {
 })
 const currentRole = ref(null)
 const roleMenuLoading = ref(false)
-const pendingRoleMenuIds = ref([])
+const roleMenuReady = ref(false)
+const roleMenuData = ref([])
+let roleMenuRequest = 0
 const dialogStoreIds = ref([])
 const dialogRegionIds = ref([])
 const dialogScopeType = ref('combined')
@@ -1537,29 +1540,31 @@ const handleAssignScope = async (row) => {
 }
 
 const handleRoleMenus = async (row) => {
+  const request = ++roleMenuRequest
   currentRole.value = row
-  pendingRoleMenuIds.value = []
+  roleMenuData.value = []
+  roleMenuReady.value = false
   roleMenuLoading.value = true
   menuDialogVisible.value = true
   try {
-    if (menuData.value.length === 0) await loadMenus()
-    const res = await api.getRoleMenus(row.role_id)
-    pendingRoleMenuIds.value = (Array.isArray(res)
-      ? res
-      : (Array.isArray(res?.data) ? res.data : [])).map(menuId => String(menuId))
-    await applyRoleMenuChecks()
+    const [menus, res] = await Promise.all([api.getMenus({ status: 1 }), api.getRoleMenus(row.role_id)])
+    if (request !== roleMenuRequest || !menuDialogVisible.value) return
+    const tree = Array.isArray(menus) ? menus : menus?.data
+    const keys = Array.isArray(res) ? res : res?.data
+    if (!Array.isArray(tree) || !Array.isArray(keys)) throw new Error('角色权限数据格式异常')
+    roleMenuData.value = tree
+    await nextTick()
+    if (request !== roleMenuRequest || !menuDialogVisible.value) return
+    if (!menuTreeRef.value) throw new Error('菜单权限树未加载，请重新打开')
+    menuTreeRef.value.setCheckedKeys(keys.map(String))
+    roleMenuReady.value = true
   } catch (err) {
-    ElMessage.error(err.response?.data?.message || '加载角色权限失败')
+    if (request === roleMenuRequest && menuDialogVisible.value) {
+      ElMessage.error(err.response?.data?.message || err.message || '加载角色权限失败')
+    }
   } finally {
-    roleMenuLoading.value = false
+    if (request === roleMenuRequest) roleMenuLoading.value = false
   }
-}
-
-const applyRoleMenuChecks = async () => {
-  await nextTick()
-  menuTreeRef.value?.setCheckedKeys([])
-  await nextTick()
-  menuTreeRef.value?.setCheckedKeys(pendingRoleMenuIds.value)
 }
 
 const loadSuppliers = async () => {
@@ -1683,24 +1688,25 @@ const handleScopeDialogSubmit = async () => {
 }
 
 const handleMenuSubmit = async () => {
-  const checkedKeys = [...new Set([
-    ...(menuTreeRef.value?.getCheckedKeys(false) || []),
-    ...(menuTreeRef.value?.getHalfCheckedKeys() || [])
-  ].map(menuId => String(menuId)))]
+  if (!roleMenuReady.value || roleMenuLoading.value || submitLoading.value || !menuTreeRef.value) return
+  const roleId = currentRole.value.role_id
+  const request = roleMenuRequest
+  const checkedKeys = [...new Set(menuTreeRef.value.getCheckedKeys(false).map(String))]
   submitLoading.value = true
   try {
-    const res = await api.assignMenus(currentRole.value.role_id, {
+    const res = await api.assignMenus(roleId, {
       menuIds: checkedKeys
     })
     if (res.code === 0) {
-      const verify = await api.getRoleMenus(currentRole.value.role_id)
+      const verify = await api.getRoleMenus(roleId)
       const savedKeys = new Set((Array.isArray(verify) ? verify : verify?.data || []).map(menuId => String(menuId)))
       const unsavedKeys = checkedKeys.filter(menuId => !savedKeys.has(menuId))
       if (unsavedKeys.length > 0 || savedKeys.size !== checkedKeys.length) {
         throw new Error('权限保存后校验不一致，请刷新后重试')
       }
       ElMessage.success('分配成功')
-      menuDialogVisible.value = false
+      if (request === roleMenuRequest) menuDialogVisible.value = false
+      window.dispatchEvent(new Event('role-menu-permissions-saved'))
     } else {
       ElMessage.error(res.message || '分配失败')
     }

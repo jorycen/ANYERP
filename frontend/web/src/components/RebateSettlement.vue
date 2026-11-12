@@ -3,6 +3,10 @@
     <div class="filter-bar">
       <el-button type="primary" @click="openCreateDialog">新增手工返利入池</el-button>
       <el-button type="success" :disabled="selectedRows.length === 0" @click="openBatchReconcile">批量关联已上账返利</el-button>
+      <el-button type="success" :loading="exporting" @click="exportList">导出</el-button>
+      <el-select v-model="query.distributorId" placeholder="经销商" clearable filterable style="width: 170px">
+        <el-option v-for="item in distributors" :key="item.distributor_id" :label="item.name" :value="item.distributor_id" />
+      </el-select>
       <el-date-picker
         v-model="query.dateRange"
         type="daterange"
@@ -45,11 +49,18 @@
         :selectable="isBatchSelectable"
       />
       <el-table-column prop="settlement_no" label="待下账返利单号" min-width="185" fixed />
+      <el-table-column label="经销商" min-width="150"><template #default="{ row }">{{ row.Distributor?.name || row.distributor_id || '-' }}</template></el-table-column>
       <el-table-column label="创建时间" width="165">
         <template #default="{ row }">{{ formatDateTime(row.create_time) }}</template>
       </el-table-column>
       <el-table-column label="SN" min-width="145">
         <template #default="{ row }">{{ row.sn_code || '-' }}</template>
+      </el-table-column>
+      <el-table-column label="商品名称" min-width="180">
+        <template #default="{ row }">{{ row.Product?.name || '-' }}</template>
+      </el-table-column>
+      <el-table-column label="PN" min-width="145">
+        <template #default="{ row }">{{ row.ProductSn?.pn_code || '-' }}</template>
       </el-table-column>
       <el-table-column label="类型" width="130">
         <template #default="{ row }">{{ row.ResourceCategory?.name || resourceText(row.resource_type) }}</template>
@@ -133,6 +144,11 @@
       <el-form label-width="90px">
         <el-form-item label="来源类型">
           <el-input model-value="厂商承诺手工返利" disabled />
+        </el-form-item>
+        <el-form-item label="经销商" required>
+          <el-select v-model="form.distributorId" filterable placeholder="请选择返利所属经销商" style="width: 100%">
+            <el-option v-for="item in distributors" :key="item.distributor_id" :label="item.name" :value="item.distributor_id" />
+          </el-select>
         </el-form-item>
         <el-form-item label="供应商" required>
           <el-select v-model="form.supplierId" filterable placeholder="请选择承诺返利的供应商" style="width: 100%">
@@ -238,6 +254,7 @@ import api from '../api'
 const policyDetail = ref(null)
 const emit = defineEmits(['changed'])
 const loading = ref(false)
+const exporting = ref(false)
 const saving = ref(false)
 const reconciling = ref(false)
 const postingLoading = ref(false)
@@ -282,9 +299,11 @@ const query = reactive({
   resourceType: '',
   sourceType: '',
   status: '',
-  supplierId: ''
+  supplierId: '',
+  distributorId: ''
 })
-const form = reactive({ supplierId: '', amount: 0, remark: '' })
+const form = reactive({ distributorId: '', supplierId: '', amount: 0, remark: '' })
+const distributors = ref([])
 
 const money = value => Number(value || 0).toFixed(2)
 const remainingAmount = row => Math.max(0, Number(row?.amount || 0) - Number(row?.matched_amount || 0))
@@ -322,10 +341,11 @@ const isBatchSelectable = row => Number(row.amount || 0) > 0
 
 async function loadAuxiliary() {
   try {
-    const [supplierRes, categoryRes, accountRes] = await Promise.all([
+    const [supplierRes, categoryRes, accountRes, distributorRes] = await Promise.all([
       api.getSupplierList({ page: 1, pageSize: 500 }),
       api.getResourceCategories({ activeOnly: 1 }),
-      api.getAllSettlementAccounts()
+      api.getAllSettlementAccounts(),
+      api.getUserDistributors()
     ])
     suppliers.value = supplierRes.data?.list || supplierRes.data || []
     resourceOptions.value = [{ label: '费用归属返利', value: 'EXPENSE_REBATE' }, ...(categoryRes.data || []).map(item => ({
@@ -333,6 +353,7 @@ async function loadAuxiliary() {
       value: item.category_code
     }))]
     fundAccounts.value = (accountRes.data || []).filter(item => item.account_type === 'FUND')
+    distributors.value = distributorRes.data || []
   } catch (error) {
     ElMessage.error('加载返利基础资料失败')
   }
@@ -349,7 +370,8 @@ async function load() {
       resourceType: query.resourceType,
       sourceType: query.sourceType,
       status: query.status,
-      supplierId: query.supplierId
+      supplierId: query.supplierId,
+      distributorId: query.distributorId
     }
     if (query.dateRange?.length === 2) {
       params.startDate = query.dateRange[0]
@@ -363,6 +385,18 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+async function exportList() {
+  exporting.value = true
+  try {
+    const params = { snCode: query.snCode, remark: query.remark, resourceType: query.resourceType, sourceType: query.sourceType, status: query.status, supplierId: query.supplierId, distributorId: query.distributorId }
+    if (query.dateRange?.length === 2) { params.startDate = query.dateRange[0]; params.endDate = query.dateRange[1] }
+    await api.exportResourceSettlements(params)
+    ElMessage.success('导出成功')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '导出待下账返利池失败')
+  } finally { exporting.value = false }
 }
 
 function search() {
@@ -379,13 +413,14 @@ function resetQuery() {
     resourceType: '',
     sourceType: '',
     status: '',
-    supplierId: ''
+    supplierId: '',
+    distributorId: ''
   })
   load()
 }
 
 function resetForm() {
-  Object.assign(form, { supplierId: '', amount: 0, remark: '' })
+  Object.assign(form, { distributorId: '', supplierId: '', amount: 0, remark: '' })
 }
 
 function handleSelectionChange(selection) {
@@ -398,6 +433,7 @@ function openCreateDialog() {
 }
 
 async function createManualRebate() {
+  if (!form.distributorId) return ElMessage.warning('请选择经销商')
   if (!form.supplierId) return ElMessage.warning('请选择供应商')
   if (Number(form.amount || 0) === 0) return ElMessage.warning('返利金额不能为0')
   if (!String(form.remark || '').trim()) return ElMessage.warning('手工返利必须填写备注')

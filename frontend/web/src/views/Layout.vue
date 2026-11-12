@@ -119,7 +119,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
@@ -245,7 +245,7 @@ const pageTitle = computed(() => pageTitles[route.path] || '')
 const sidebarWidth = computed(() => sidebarCollapsed.value ? '72px' : '224px')
 const userInitial = computed(() => String(userName.value || 'A').trim().slice(0, 1).toUpperCase())
 
-onMounted(async () => {
+async function refreshUserMenus() {
   let userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
 
   // 菜单权限在登录响应中会缓存；菜单结构发生迁移后，进入布局时主动刷新一次，
@@ -281,7 +281,13 @@ onMounted(async () => {
     ? getManagerMirrorMenus()
     : buildMenuTree(menus)
   ensureCareCreditMenu(userInfo, menuTree.value)
+}
+
+onMounted(() => {
+  window.addEventListener('role-menu-permissions-saved', refreshUserMenus)
+  refreshUserMenus()
 })
+onUnmounted(() => window.removeEventListener('role-menu-permissions-saved', refreshUserMenus))
 
 function ensureCareCreditMenu(userInfo, menuTree) {
   const roles = Array.isArray(userInfo.roles) && userInfo.roles.length

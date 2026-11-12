@@ -2551,6 +2551,9 @@ ResourceCategory.belongsToMany(GoodsType, { through: GoodsTypeResource, foreignK
 GoodsTypeResource.belongsTo(GoodsType, { foreignKey: 'goods_type_id', targetKey: 'goods_type_id' });
 GoodsTypeResource.belongsTo(ResourceCategory, { foreignKey: 'category_id', targetKey: 'category_id' });
 ResourceSettlement.belongsTo(ResourceCategory, { foreignKey: 'resource_type', targetKey: 'category_code', as: 'ResourceCategory' });
+ResourceSettlement.belongsTo(Product, { foreignKey: 'product_id', targetKey: 'product_id' });
+ResourceSettlement.belongsTo(ProductSn, { foreignKey: 'sn_id', targetKey: 'sn_id' });
+ResourceSettlement.belongsTo(Distributor, { foreignKey: 'distributor_id', targetKey: 'distributor_id', as: 'Distributor' });
 ResourceSettlement.belongsTo(SettlementAccount, { foreignKey: 'target_account_id', targetKey: 'account_id', as: 'TargetAccount' });
 ResourceSettlement.hasMany(RebateSettlementAllocation, { foreignKey: 'settlement_id', sourceKey: 'settlement_id', as: 'Allocations' });
 RebateSettlementAllocation.belongsTo(ResourceSettlement, { foreignKey: 'settlement_id', targetKey: 'settlement_id', as: 'Settlement' });

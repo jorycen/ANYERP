@@ -13,13 +13,12 @@ async function captureSn(value,options={}){
   const newlyCreated=!basis;
   const zeroConfirmed=Number(sn.inbound_price)===0&&(['GIFT','SALES_COMPONENT_RECOVERY'].includes(String(sn.source_type||'').toUpperCase())||
     (await require('../../utils/costKnowledge').confirmedZeroSnIds([sn],transaction)).has(String(sn.sn_id)));
-  if(!basis){const product=await M.Product.findByPk(sn.product_id,{raw:true,transaction}),price=await M.ProductPrice.findOne({where:{product_id:sn.product_id,status:1},raw:true,transaction});
+  if(!basis){const product=await M.Product.findByPk(sn.product_id,{raw:true,transaction});
     const line={productId:sn.product_id,snCode:sn.sn_code,productName:product?.name||'',quantity:1,purchasePrice:F.money(sn.inbound_price)};
     const docs=await V.resolveDocumentTaxBasis({store_id:sn.store_id},[line],transaction),tax=docs[0].purchaseTaxBasis;
     basis=await M.InventoryFoundation.create({basis_id:basisId,identity_key:key,product_id:sn.product_id,product_name:product?.name||'',entity_type:'sn_cycle',sn_code:sn.sn_code,batch_no:sn.batch_no,
       purchase_cost:Number(sn.inbound_price)>0||zeroConfirmed?F.money(sn.inbound_price):null,
       cost_mode:product?.gross_profit_cost_mode||null,
-      company_price:F.money(price?.standard_price),
       invoice_type:tax.status==='confirmed'?tax.invoiceType:null,status:tax.status==='confirmed'?'confirmed':'pending',
       source_data:{source:'sn_intake',purchaseBasis:tax},revision:1,updated_by:'system'}, {transaction});
   }
@@ -50,7 +49,7 @@ async function captureInventory(value,options={}){
     const key='import_inventory:'+inv.inventory_id+':'+field+(increased?':event:'+require('node:crypto').randomUUID():''),basisId=increased?F.id(key):ref?.basis_id||F.id(key),existing=await M.InventoryFoundation.findByPk(basisId,{transaction,lock:transaction.LOCK.UPDATE});
     if(!existing)await M.InventoryFoundation.create({basis_id:basisId,identity_key:key,product_id:inv.product_id,product_name:product.name,entity_type:'import_inventory',batch_no:key,
       purchase_cost:increased?null:Number(price?.cost_price)>0||Number(price?.cost_price_locked)===1?F.money(price?.cost_price):null,
-      company_price:F.money(price?.standard_price),cost_mode:increased?null:product.gross_profit_cost_mode||null,invoice_type:null,status:'pending',
+      cost_mode:increased?null:product.gross_profit_cost_mode||null,invoice_type:null,status:'pending',
       reason:increased?'非SN聚合库存增加，不能沿用旧批次含税属性，需核实本次批次':'聚合非SN库存没有明确批次，需在统一基础资料确认',source_data:{source:'inventory_intake',inventoryId:inv.inventory_id,previousBasisId:ref?.basis_id||null},revision:1,updated_by:'system'}, {transaction});
     if(ref&&ref.basis_id!==basisId)await ref.update({basis_id:basisId,store_id:inv.store_id},{transaction});
     else await F.bind(referenceKey,basisId,inv.store_id,transaction);

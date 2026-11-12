@@ -44,6 +44,9 @@ function snapshotPatch(snapshot, itemId, unitPrice, adjustmentId = null, invoice
     || GP.validPrice(line.unitPricing) === null || GP.validPrice(line.pricingAmount) === null
     || money(Number(line.unitPricing) * Number(line.quantity)) !== money(line.pricingAmount))) fail('原归档商品定价明细不完整或数量金额不一致，请先核实');
   const line = lines.find(item => String(item.itemId) === String(itemId));
+  // All archived product pricing lines are eligible for a correction request;
+  // retain the existing completeness guard for missing pricing evidence.
+  if (!invoiceInput && line && line.isCompanyPriced !== true) line.isCompanyPriced = true;
   if (!invoiceInput && (!line || line.isCompanyPriced !== true || String(line.source || '').startsWith('missing_'))) fail('仅支持有完整归档依据的公司结算定价商品；采购价口径请走成本纠错');
   if (!invoiceInput && Number(line.unitPricing) === unitPrice) fail('申请定价与当前生效定价相同', 400);
   const next = invoiceInput ? lines : lines.map(item => String(item.itemId) === String(itemId) ? {
@@ -136,7 +139,7 @@ async function select(ctx, orderId, input = null, transaction = null, includeInv
     || money(settlement.gross_profit_amount) !== originalSummary.grossProfitAmount)) fail('原产品结算明细与汇总金额不一致，请先核实，不能借定价纠错修正其他金额');
   const orderItems = await M.OrderItem.findAll({ where: { order_id: orderId }, order: [['item_id', 'ASC']], ...options });
   const lines = json(snapshot.product_pricing_details, []);
-  const optionsList = lines.filter(line => line.isCompanyPriced === true && !String(line.source || '').startsWith('missing_')).map(line => ({
+  const optionsList = lines.filter(line => !String(line.source || '').startsWith('missing_') && GP.validPrice(line.unitPricing) !== null).map(line => ({
     itemId: String(line.itemId), productName: line.productName, snCode: line.snCode || '', quantity: line.quantity,
     unitPrice: line.unitPricing, label: `${line.productName || line.itemId}${line.snCode ? ' / ' + line.snCode : ''} / 当前结算定价 ¥${Number(line.unitPricing).toFixed(2)}`
   }));

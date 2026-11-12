@@ -17,7 +17,7 @@ function plan(data){
   const sns=new Map(data.sns.map(x=>[x.sn_id,x])),byCode=new Map(),locations=new Map((data.locations||[]).map(x=>[x.location_id,x]));for(const sn of data.sns){if(!byCode.has(sn.sn_code))byCode.set(sn.sn_code,[]);byCode.get(sn.sn_code).push(sn);}
   const cycles=data.cycles||[],reviews=data.reviews||new Map(),review=require('../report/inventoryReview');
   for(const sn of data.sns.filter(x=>['in_stock','reserved','occupied'].includes(x.status)&&!Number(x.is_deleted))){
-    const p=products.get(sn.product_id)||{},price=prices.get(sn.product_id)||{};
+    const p=products.get(sn.product_id)||{};
     const old=review.taxOverride(reviews,'sn:'+sn.sn_id,review.snState(sn));
     const evidence=data.snEvidence?.get(sn.sn_id);
     const type=old?.invoiceType||evidence?.invoiceType||V.normalizeInvoiceType(sn.tax_type);
@@ -25,7 +25,6 @@ function plan(data){
     add(key,{product_id:sn.product_id,product_name:p.name||'',entity_type:'sn_cycle',sn_code:sn.sn_code,batch_no:sn.batch_no},
       {purchase_cost:F.money(sn.inbound_price)>0||data.zeroSnIds?.has(String(sn.sn_id))?F.money(sn.inbound_price):null,
         cost_mode:p.gross_profit_cost_mode||null,
-        company_price:F.money(price.standard_price),
         invoice_type:V.normalizeInvoiceType(type),source:'current_sn',reference:sn.sn_id,reviewBatch:old?.reviewBatch||null},
       'sn_current:'+sn.sn_id,sn.store_id);
   }
@@ -36,7 +35,7 @@ function plan(data){
       const key='import_inventory:'+inv.inventory_id+':'+field;
       add(key,{product_id:inv.product_id,product_name:p.name||'',entity_type:'import_inventory',batch_no:key},
         {purchase_cost:Number(price.cost_price)>0||Number(price.cost_price_locked)===1?F.money(price.cost_price):null,
-          company_price:F.money(price.standard_price),cost_mode:p.gross_profit_cost_mode||null,
+          cost_mode:p.gross_profit_cost_mode||null,
           invoice_type:V.normalizeInvoiceType(old?.invoiceType),cost_estimated:Number(price.cost_price_locked)!==1,source:'import_inventory',reference:inv.inventory_id,reviewBatch:old?.reviewBatch||null},
         'inventory:'+inv.inventory_id+':'+field,inv.store_id);
     }

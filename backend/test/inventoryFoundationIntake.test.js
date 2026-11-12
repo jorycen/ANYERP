@@ -11,6 +11,7 @@ test('SN重新入库建立新周期基础档案，旧销售所用档案保持',a
   t.mock.method(V,'resolveDocumentTaxBasis',async(o,ls)=>ls.map(l=>({...l,purchaseTaxBasis:{status:'confirmed',invoiceType:'专票13%'}})));
   await I.captureSn({sn_id:'S',sn_code:'SN',product_id:'P',store_id:'A',status:'in_stock',inbound_price:2000},{transaction:tx});
   a.equal(old.purchase_cost,1000);a.equal(ref.basis_id,F.id('sn:S:REENTRY'));a.equal(records.get(ref.basis_id).purchase_cost,2000);
+  a.equal(Object.hasOwn(records.get(ref.basis_id), 'company_price'), false);
 });
 test('非SN库存增加不继承旧批次票种和成本；旧销售基础档案不被改写',async t=>{
   I.enable();const old={basis_id:'OLD',invoice_type:'收据',purchase_cost:20},ref={basis_id:'OLD',async update(x){Object.assign(this,x);}},created=[];
@@ -20,6 +21,7 @@ test('非SN库存增加不继承旧批次票种和成本；旧销售基础档案
   await I.captureInventory({inventory_id:1,product_id:'P',store_id:'A',location_id:'L',normal_qty:3},
     {transaction:tx,previousInventory:{normal_qty:1}});
   a.equal(created.length,1);a.equal(created[0].invoice_type,null);a.equal(created[0].purchase_cost,null);a.equal(created[0].status,'pending');a.notEqual(ref.basis_id,'OLD');a.equal(old.invoice_type,'收据');a.equal(old.purchase_cost,20);
+  a.equal(Object.hasOwn(created[0], 'company_price'), false);
 });
 test('原业务确认的同周期成本和计价变更同步统一档案，票种不被数量或价格变动覆盖',async t=>{
   I.enable();const basis={basis_id:F.id('sn:S:original'),product_id:'P',invoice_type:'收据',status:'confirmed',purchase_cost:1000,company_price:2500,cost_mode:'PURCHASE_PRICE',revision:1,source_data:{},

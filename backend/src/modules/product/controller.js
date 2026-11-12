@@ -1089,9 +1089,7 @@ async function createProductRecord(body, transaction = null) {
         unit: unit || '台',
         remark: remark || '',
         is_used_product: isUsedProduct === true || is_used_product === true || Number(isUsedProduct ?? is_used_product) === 1 ? 1 : 0,
-        gross_profit_cost_mode: dimensions.category === '选件' ||
-          (dimensions.category === '售后' && dimensions.brand === 'Care服务')
-          ? 'COMPANY_PRICE' : costMode,
+        gross_profit_cost_mode: costMode,
         is_focus_product: isFocusProduct === true || is_focus_product === true || Number(isFocusProduct ?? is_focus_product) === 1 ? 1 : 0,
         create_time: new Date(),
         status
@@ -2103,10 +2101,6 @@ async function setPrice(ctx) {
       }, { transaction });
     }
 
-    if (product.category === '选件' && nextStandardPrice > 0) {
-      await product.update({ gross_profit_cost_mode: 'COMPANY_PRICE' }, { transaction });
-    }
-
     const logBase = {
       batch_id: null,
       batch_no: null,
@@ -2785,15 +2779,6 @@ async function executePriceImportRows(rows, sourceFileName, userName) {
         updateOnDuplicate: ['standard_price', 'retail_price', 'min_sale_price', 'effective_time', 'create_user'],
         transaction
       });
-      const pricedAccessoryIds = targetRows
-        .filter(item => item.effectiveTime.getTime() <= now.getTime() &&
-          item.product.category === '选件' && item.standardPrice > 0)
-        .map(item => item.product.product_id);
-      if (pricedAccessoryIds.length) {
-        await Product.update({ gross_profit_cost_mode: 'COMPANY_PRICE' }, {
-          where: { product_id: { [Op.in]: pricedAccessoryIds } }, transaction
-        });
-      }
     }
     for (let i = 0; i < changeLogs.length; i += 1000) {
       await ProductPriceChangeLog.bulkCreate(changeLogs.slice(i, i + 1000), { transaction });
