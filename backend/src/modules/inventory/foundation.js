@@ -60,7 +60,7 @@ async function currentCatalog(rows, transaction) {
   const productMap = new Map(products.map(x => [x.product_id,x]));
   const priceMap = new Map();
   for (const price of prices) if (!priceMap.has(price.product_id)) priceMap.set(price.product_id,price);
-  return rows.map(row => ({...view(row),costMode:productMap.get(row.product_id)?.gross_profit_cost_mode || null,
+  return rows.map(row => ({...view(row),costMode:json(row.source_data||{}).pricingModeOverride ? row.cost_mode : productMap.get(row.product_id)?.gross_profit_cost_mode || null,
     companyPrice:money(priceMap.get(row.product_id)?.standard_price)}));
 }
 async function salesBasis(order, lines, transaction) {

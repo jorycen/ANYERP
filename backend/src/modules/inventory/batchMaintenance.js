@@ -18,7 +18,7 @@ const {
 } = require('./resourceRights');
 const { syncSerializedInventoryBalance } = require('./serializedInventoryBalance');
 
-const VALID_OPERATION_TYPES = new Set(['INBOUND', 'OUTBOUND', 'ADJUST']);
+const VALID_OPERATION_TYPES = new Set(['INBOUND', 'OUTBOUND', 'ADJUST', 'COST_MODE']);
 const VALID_INVENTORY_TYPES = new Set([
   'normal_qty',
   'display_qty',
@@ -27,7 +27,7 @@ const VALID_INVENTORY_TYPES = new Set([
   'pending_qty',
   'rental_demo_qty'
 ]);
-const OPERATION_LABELS = { INBOUND: '批量入库', OUTBOUND: '批量出库', ADJUST: '数量调整' };
+const OPERATION_LABELS = { INBOUND: '批量入库', OUTBOUND: '批量出库', ADJUST: '数量调整', COST_MODE: 'SN计价方式调整' };
 const REUSABLE_INBOUND_SN_STATUSES = new Set(['out_stock', 'sold', 'returned']);
 const scheduledExecutionIds = new Set();
 
@@ -288,6 +288,7 @@ async function updateInventoryQty(productId, storeId, inventoryType, delta, tran
 }
 
 async function validateRows(ctx, rows, options, transaction) {
+  if(options?.operationType==='COST_MODE')return require('./snCostModeMaintenance').validate(ctx,rows,transaction,assertStoreVisible);
   if (typeof options === 'string') {
     options = { operationType: options, triggerResourceRights: arguments[3] };
     transaction = arguments[4];
@@ -512,7 +513,7 @@ async function createBatchApplication(ctx) {
         transaction
       );
       const delta = row.operationType === 'OUTBOUND' ? -row.quantity : row.quantity;
-      const afterQty = row.product.need_sn ? (row.operationType === 'INBOUND' ? 1 : 0) : beforeQty + delta;
+      const afterQty = row.operationType === 'COST_MODE' ? beforeQty : row.product.need_sn ? (row.operationType === 'INBOUND' ? 1 : 0) : beforeQty + delta;
       await InventoryBatchApplicationItem.create({
         application_id: applicationId,
         row_no: row.rowNo,
@@ -595,7 +596,7 @@ async function getBatchApplicationDetail(ctx) {
   }
   const items = await InventoryBatchApplicationItem.findAll({
     where: { application_id: app.application_id },
-    attributes: { exclude: ['raw_json'] },
+    attributes: app.operation_type === 'COST_MODE' ? undefined : { exclude: ['raw_json'] },
     include: [{ model: Store, attributes: ['store_id', 'name'] }],
     order: [['row_no', 'ASC']]
   });
@@ -767,6 +768,7 @@ async function createNonSnBatchRights(item, application, transaction) {
 }
 
 async function executeApplicationItem(item, application, transaction) {
+  if(item.operation_type==='COST_MODE')return require('./snCostModeMaintenance').execute(item,application,transaction);
   let pricingSnapshot;
   if (item.operation_type === 'INBOUND' || (item.operation_type === 'ADJUST' && Number(item.quantity) > 0)) {
     const pnCode = await requireInboundPn(item.product_id, item.pn_code || '', transaction);

@@ -443,6 +443,7 @@
                 <el-option label="批量入库" value="INBOUND" />
                 <el-option label="批量出库" value="OUTBOUND" />
                 <el-option label="数量调整" value="ADJUST" />
+                <el-option label="SN计价方式调整" value="COST_MODE" />
               </el-select>
               <el-button type="primary" @click="loadBatchApplications">查询</el-button>
             </div>
@@ -1829,6 +1830,7 @@
           <el-descriptions-item label="创建时间">{{ formatDate(currentConversion.create_time) }}</el-descriptions-item>
         </el-descriptions>
         <h4 class="mt-20">明细</h4>
+
         <el-table :data="currentConversion.items || []" stripe border size="small">
           <el-table-column label="行类型" width="90">
             <template #default="{ row }">{{ getConversionLineRoleText(row.line_role) }}</template>
@@ -1857,18 +1859,19 @@
                 <el-option label="批量入库" value="INBOUND" />
                 <el-option label="批量出库" value="OUTBOUND" />
                 <el-option label="数量调整" value="ADJUST" />
+                <el-option label="SN计价方式调整" value="COST_MODE" />
               </el-select>
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="导入类型" required>
+            <el-form-item v-if="batchForm.operationType !== 'COST_MODE'" label="导入类型" required>
               <el-radio-group v-model="batchForm.importMode">
                 <el-radio-button v-for="item in batchImportModeOptions" :key="item.value" :label="item.value">{{ item.label }}</el-radio-button>
               </el-radio-group>
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="统一仓位" required>
+            <el-form-item v-if="batchForm.operationType !== 'COST_MODE'" label="统一仓位" required>
               <el-select v-model="batchForm.inventoryType" style="width: 100%">
                 <el-option v-for="item in INVENTORY_TYPES" :key="item.value" :label="item.label" :value="item.value" />
               </el-select>
@@ -1954,12 +1957,16 @@
           <el-descriptions-item v-if="currentBatchApplication.execute_error" label="执行失败原因" :span="3">{{ currentBatchApplication.execute_error }}</el-descriptions-item>
         </el-descriptions>
         <h4 class="mt-20">明细</h4>
+                <el-alert v-if="currentBatchApplication?.operation_type === 'COST_MODE'" title="仅审批通过后调整在库SN计价方式，不修改采购成本及已归档订单。" type="info" :closable="false" />
         <el-table :data="currentBatchApplication.items || []" stripe border size="small" max-height="420">
           <el-table-column prop="row_no" label="行号" width="70" />
           <el-table-column prop="product_code" label="商品编码" width="110" />
           <el-table-column prop="product_name" label="商品" min-width="160" show-overflow-tooltip />
           <el-table-column prop="pn_code" label="PN" width="120" />
           <el-table-column prop="sn_code" label="SN" width="150" show-overflow-tooltip />
+          <el-table-column v-if="currentBatchApplication.operation_type === 'COST_MODE'" label="计价方式调整" min-width="180">
+            <template #default="{ row }">{{ batchCostModeText(row) }}</template>
+          </el-table-column>
           <el-table-column prop="store_id" label="门店ID" width="110" />
           <el-table-column prop="location_id" label="库位ID" width="110" />
           <el-table-column prop="quantity" label="数量" width="80" />
@@ -2930,10 +2937,16 @@ const handleExportSnInventory = async () => {
   }
 }
 
+const batchCostModeText = row => {
+  try { const data = typeof row.raw_json === 'string' ? JSON.parse(row.raw_json) : row.raw_json
+    const label = mode => ({ COMPANY_PRICE: '按公司定价', PURCHASE_PRICE: '按采购价' }[mode] || '未设置')
+    return label(data?._costMode?.before) + ' → ' + label(data?._costMode?.target)
+  } catch { return '数据不可用' }
+}
 const batchOperationText = (type) => ({
   INBOUND: '批量入库',
   OUTBOUND: '批量出库',
-  ADJUST: '数量调整'
+  ADJUST: '数量调整', COST_MODE: 'SN计价方式调整'
 })[type] || type || '-'
 
 const batchStatusText = (status) => ({
@@ -3004,6 +3017,12 @@ const openBatchImportDialog = async () => {
 }
 
 const downloadBatchTemplate = () => {
+  if (batchForm.operationType === 'COST_MODE') {
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{ SN: '', 计价方式: '按公司定价', 调整原因: '' }]), 'SN计价方式调整')
+    XLSX.writeFile(wb, 'SN计价方式调整模板.xlsx')
+    return
+  }
   const isSn = batchForm.importMode === 'SN'
   const baseHeaders = isSn
     ? ['门店ID', '商品编码', 'PN', 'SN', '提货价', '备注']
@@ -3043,8 +3062,8 @@ const clearBatchImportFile = () => {
 
 const validateBatchImportForm = () => {
   if (!batchForm.operationType) return '请选择操作类型'
-  if (!batchForm.importMode) return '请选择导入类型'
-  if (!batchForm.inventoryType) return '请选择统一仓位'
+  if (batchForm.operationType !== 'COST_MODE' && !batchForm.importMode) return '请选择导入类型'
+  if (batchForm.operationType !== 'COST_MODE' && !batchForm.inventoryType) return '请选择统一仓位'
   if (batchForm.operationType === 'INBOUND' && batchForm.resourceTypes.length === 0) {
     return '请选择资源权益'
   }
@@ -3062,8 +3081,8 @@ const submitBatchImport = async () => {
   try {
     const res = await api.importInventoryBatchApplication(batchImportFile.value, {
       operationType: batchForm.operationType,
-      importMode: batchForm.importMode,
-      inventoryType: batchForm.inventoryType,
+      importMode: batchForm.operationType === 'COST_MODE' ? 'SN' : batchForm.importMode,
+      inventoryType: batchForm.operationType === 'COST_MODE' ? '' : batchForm.inventoryType,
       resourceTypes: batchForm.operationType === 'INBOUND' ? batchForm.resourceTypes.join(',') : '',
       triggerResourceRights: 0,
       remark: batchForm.remark || ''
