@@ -177,9 +177,10 @@ async function ensureSalesReferences(order,lines,transaction){
     const previous=await M.InventoryFoundationRef.findByPk('order_item:'+item.item_id,{transaction,lock:transaction.LOCK.UPDATE});
     if(previous){
       const previousRow=await M.InventoryFoundation.findByPk(previous.basis_id,{transaction,lock:transaction.LOCK.UPDATE});
-      if(previousRow && String(previousRow.product_id)!==String(item.product_id))
+      const editable = ['draft','未归档','pending_approval','pending_store_approval','pending_distributor_approval'].includes(order.order_status);
+      if(!editable && previousRow && String(previousRow.product_id)!==String(item.product_id))
         fail(`订单商品与已关联基础档案不一致，请先核实原单：订单商品ID ${item.product_id}，档案商品ID ${previousRow.product_id}，档案ID ${previousRow.basis_id}`);
-      if(!['draft','未归档','pending_approval','pending_store_approval','pending_distributor_approval'].includes(order.order_status))fail('历史商品基础关联变化，需先核实原单');
+      if(!editable)fail('历史商品基础关联变化，需先核实原单');
       await previous.destroy({transaction});
     }
     const current=resolvedSnId?await M.InventoryFoundationRef.findByPk('sn_current:'+resolvedSnId,{transaction,lock:transaction.LOCK.UPDATE}):null;
@@ -193,9 +194,15 @@ async function ensureSalesReferences(order,lines,transaction){
     }
     if(!row){
       const cycles=resolvedSnId?await M.SnLog.findAll({where:{sn_id:resolvedSnId,action:'stock_cycle_reentry'},raw:true,transaction}):[];
-      const key=resolvedSnId?snKey(resolvedSnId,cycles):'import_sale:'+item.item_id;
+      let key=resolvedSnId?snKey(resolvedSnId,cycles):'import_sale:'+item.item_id;
       const b=line.purchaseTaxBasis||{};
       row=await M.InventoryFoundation.findByPk(id(key),{transaction,lock:transaction.LOCK.UPDATE});
+      // 未归档更换商品时保留旧档案，新商品使用独立身份，不能沿用旧成本/票税。
+      if (!resolvedSnId && row && String(row.product_id)!==String(item.product_id)
+        && ['draft','未归档','pending_approval','pending_store_approval','pending_distributor_approval'].includes(order.order_status)) {
+        key += ':product:' + item.product_id;
+        row=await M.InventoryFoundation.findByPk(id(key),{transaction,lock:transaction.LOCK.UPDATE});
+      }
       if(row && String(row.product_id)!==String(item.product_id))
         fail(`订单商品与基础档案不一致，请先核实原单：订单商品ID ${item.product_id}，档案商品ID ${row.product_id}，档案ID ${row.basis_id}`);
       if(!row)row=await M.InventoryFoundation.create({basis_id:id(key),identity_key:key,product_id:item.product_id,

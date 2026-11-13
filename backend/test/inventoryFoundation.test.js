@@ -1,4 +1,22 @@
 const test=require('node:test'),a=require('node:assert/strict'),M=require('../src/models'),F=require('../src/modules/inventory/foundation'),P=require('../src/modules/inventory/foundationMigration');
+test('未归档换商品重建独立档案，已归档仍拦截跨商品关联', async t=>{
+  const tx={LOCK:{UPDATE:'UPDATE'}};let removed=false,created=null,bound=null;
+  const old={basis_id:F.id('import_sale:1'),product_id:'OLD',status:'pending'};
+  t.mock.method(M.InventoryFoundationRef,'findAll',async()=>[]);
+  t.mock.method(M.InventoryFoundationRef,'findByPk',async key=>key==='order_item:1'&&!removed?{basis_id:old.basis_id,destroy:async()=>{removed=true;}}:null);
+  t.mock.method(M.InventoryFoundationRef,'create',async row=>{bound=row;return row;});
+  t.mock.method(M.InventoryFoundation,'findByPk',async key=>key===old.basis_id?old:null);
+  t.mock.method(M.InventoryFoundation,'create',async row=>{created=row;return row;});
+  t.mock.method(M.OrderItem,'findAll',async()=>[{item_id:1,product_id:'NEW',sn_id:null}]);
+  t.mock.method(require('../src/modules/sales/purchaseVat'),'resolveDocumentTaxBasis',async(o,lines)=>lines);
+  const lines=[{itemId:1,productId:'NEW',purchasePriceKnown:false,isCompanyPriced:true}];
+  await a.rejects(()=>F.ensureSalesReferences({order_status:'已归档'},lines,tx),/不一致/);
+  a.equal(removed,false);
+  await F.ensureSalesReferences({order_status:'未归档',store_id:'STORE'},lines,tx);
+  a.equal(created.product_id,'NEW');a.equal(created.purchase_cost,null);
+  a.equal(created.identity_key,'import_sale:1:product:NEW');
+  a.equal(bound.basis_id,created.basis_id);a.equal(old.product_id,'OLD');
+});
 test('同一SN库存周期共用基础身份，重入库前后历史不串周期',()=>{
   const cycles=[{sn_id:'S',log_id:'new',create_time:'2026-11-01T00:00:00Z'}];
   a.equal(F.snKey('S',cycles,'2026-10-01'),'sn:S:original');a.equal(F.snKey('S',cycles,'2026-11-02'),'sn:S:new');
