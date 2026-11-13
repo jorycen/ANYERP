@@ -18,11 +18,14 @@ const nonPurchase = require('./nonPurchaseReceipt');
 const rewardConfig = require('./rewardConfig');
 const batchMaintenance = require('./batchMaintenance');
 const { listProductFlow } = require('./productFlow');
+const thresholdConfig = require('./thresholdConfig');
 
 const router = new Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 router.get('/list', getList);
+router.get('/threshold-config', thresholdConfig.list);
+router.post('/threshold-config', requireRole('admin', 'boss'), thresholdConfig.save);
 router.get('/list/export', exportList);
 router.get('/summary-export-ticket', createSummaryExportTicket);
 router.get('/summary-export', exportSummaryList);

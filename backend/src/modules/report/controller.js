@@ -21,7 +21,7 @@ const {
   ExpensePerformanceAllocation,
   sequelize
 } = require('../../models');
-const { Op } = require('sequelize');
+const { Op, QueryTypes } = require('sequelize');
 const { loadLegacyCostMaps, calculateItemBaseProfit } = require('./profitCalculation');
 const { DashboardService, canViewProfit } = require('./dashboardService');
 const { normalizeParticipants } = require('./dashboardDataSource');
@@ -596,6 +596,75 @@ async function getCustomerSourceAnalysis(ctx) {
   };
 }
 
+async function getCustomerSourceDetail(ctx) {
+  const { startDate, endDate, regionId = '', dimension = 'company', dimensionId = '', customerSource = '', page = 1, pageSize = 20 } = ctx.query;
+  const user = ctx.state.user;
+  const allowedStores = await resolveReportStoreIds(user);
+  if (!allowedStores.length) { ctx.body = { rows: [], pagination: { total: 0, page: 1, pageSize: Number(pageSize) } }; return; }
+  const storeClause = allowedStores.includes('*') ? '1=1' : 'o.STORE_ID IN (:storeIds)';
+  const conditions = [`o.IS_DELETED = 0`, storeClause, `o.ORDER_STATUS IN (:statuses)`];
+  const replacements = { storeIds: allowedStores, statuses: POSITIVE_SALES_ORDER_STATUSES };
+  if (startDate && endDate) { conditions.push('o.CREATE_TIME >= :startAt AND o.CREATE_TIME <= :endAt'); replacements.startAt = `${startDate} 00:00:00`; replacements.endAt = `${endDate} 23:59:59`; }
+  if (customerSource) { conditions.push('COALESCE(NULLIF(TRIM(o.CUSTOMER_SOURCE), \'\'), \'未填写来源\') = :customerSource'); replacements.customerSource = customerSource; }
+  if (regionId) { conditions.push('s.REGION_ID = :regionId'); replacements.regionId = String(regionId); }
+  if (isSelfOnlyReportUser(user)) { conditions.push(`(o.CREATE_STAFF_ID = :staffId OR JSON_SEARCH(o.AUXILIARY_SALES_LIST, 'one', :staffId, NULL, '$[*].staffId') IS NOT NULL OR JSON_SEARCH(o.AUXILIARY_SALES_LIST, 'one', :staffId, NULL, '$[*].staff_id') IS NOT NULL)`); replacements.staffId = String(user.staffId); }
+  const dimensionSql = dimension === 'store' ? 'o.STORE_ID' : dimension === 'employee' ? 'COALESCE(o.OPERATOR_STAFF_ID, o.CREATE_STAFF_ID)' : 'COALESCE(s.DISTRIBUTOR_ID, \'\')';
+  if (dimensionId) { conditions.push(`${dimensionSql} = :dimensionId`); replacements.dimensionId = String(dimensionId); }
+  const where = conditions.join(' AND ');
+  const rows = await sequelize.query(`
+    SELECT o.ORDER_ID AS orderId, o.ORDER_NO AS orderNo, o.CREATE_TIME AS saleTime,
+           o.CUSTOMER_SOURCE AS customerSource, o.CUSTOMER_SOURCE_DETAIL AS sourceDetail,
+           o.STORE_ID AS storeId, s.NAME AS storeName,
+           oi.ITEM_ID AS itemId, oi.PRODUCT_ID AS productId, oi.PRODUCT_NAME AS productName,
+           oi.PN_CODE AS pn, oi.SN_CODE AS sn, oi.QUANTITY AS quantity,
+           oi.PRODUCT_UNIT_PRICE AS unitPrice, oi.SUBTOTAL AS salesAmount,
+           CASE WHEN gp.ORDER_ID IS NULL THEN NULL ELSE gp.GROSS_PROFIT_AMOUNT *
+             CASE WHEN COALESCE(ot.ITEM_SUBTOTAL, 0) <> 0 THEN COALESCE(oi.SUBTOTAL, 0) / ot.ITEM_SUBTOTAL ELSE 1 / GREATEST(ot.ITEM_COUNT, 1) END END AS grossProfit
+      FROM T_ORDER o
+      INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+      LEFT JOIN T_STORE s ON s.STORE_ID = o.STORE_ID
+      LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.SNAPSHOT_STATUS = 'final'
+      LEFT JOIN (SELECT ORDER_ID, SUM(COALESCE(SUBTOTAL,0)) ITEM_SUBTOTAL, COUNT(*) ITEM_COUNT FROM T_ORDER_ITEM GROUP BY ORDER_ID) ot ON ot.ORDER_ID = o.ORDER_ID
+     WHERE ${where}
+    ORDER BY o.CREATE_TIME DESC, oi.ITEM_ID DESC`, { replacements, type: QueryTypes.SELECT });
+  const canProfit = canViewProfit(user);
+  const mapped = rows.map(row => ({ ...row, salesAmount: roundMoney(row.salesAmount), grossProfit: canProfit && row.grossProfit != null ? roundMoney(row.grossProfit) : null }));
+  const offset = Math.max(0, Number(page) - 1) * Math.min(200, Math.max(1, Number(pageSize) || 20));
+  const size = Math.min(200, Math.max(1, Number(pageSize) || 20));
+  ctx.body = { rows: mapped.slice(offset, offset + size), canViewProfit: canProfit, pagination: { total: mapped.length, page: Math.max(1, Number(page) || 1), pageSize: size, totalPages: Math.ceil(mapped.length / size) } };
+}
+
+async function getProductAnalysisDetail(ctx) {
+  const { productId = '', keyword = '', startDate, endDate, storeId = '', page = 1, pageSize = 20 } = ctx.query;
+  const user = ctx.state.user;
+  const allowedStores = await resolveReportStoreIds(user);
+  if (!allowedStores.length) { ctx.body = { rows: [], pagination: { total: 0, page: 1, pageSize: Number(pageSize) } }; return; }
+  const conditions = ['o.IS_DELETED = 0', 'o.ORDER_STATUS IN (:statuses)', allowedStores.includes('*') ? '1=1' : 'o.STORE_ID IN (:storeIds)'];
+  const replacements = { statuses: POSITIVE_SALES_ORDER_STATUSES, storeIds: allowedStores };
+  if (productId) { conditions.push('oi.PRODUCT_ID = :productId'); replacements.productId = String(productId); }
+  if (keyword) { conditions.push('(oi.PRODUCT_NAME LIKE :keyword OR oi.PN_CODE LIKE :keyword OR oi.SN_CODE LIKE :keyword)'); replacements.keyword = `%${String(keyword).trim()}%`; }
+  if (storeId) { if (!allowedStores.includes('*') && !allowedStores.includes(String(storeId))) { ctx.throw(403, '无权访问该门店'); } conditions.push('o.STORE_ID = :storeId'); replacements.storeId = String(storeId); }
+  if (startDate && endDate) { conditions.push('o.CREATE_TIME >= :startAt AND o.CREATE_TIME <= :endAt'); replacements.startAt = `${startDate} 00:00:00`; replacements.endAt = `${endDate} 23:59:59`; }
+  if (isSelfOnlyReportUser(user)) { conditions.push(`(o.CREATE_STAFF_ID = :staffId OR JSON_SEARCH(o.AUXILIARY_SALES_LIST, 'one', :staffId, NULL, '$[*].staffId') IS NOT NULL OR JSON_SEARCH(o.AUXILIARY_SALES_LIST, 'one', :staffId, NULL, '$[*].staff_id') IS NOT NULL)`); replacements.staffId = String(user.staffId); }
+  const rows = await sequelize.query(`
+    SELECT o.ORDER_ID AS orderId, o.ORDER_NO AS orderNo, o.CREATE_TIME AS saleTime, o.STORE_ID AS storeId,
+           s.NAME AS storeName, oi.ITEM_ID AS itemId, oi.PRODUCT_ID AS productId, oi.PRODUCT_NAME AS productName,
+           oi.PN_CODE AS pn, oi.SN_CODE AS sn, oi.QUANTITY AS quantity, oi.PRODUCT_UNIT_PRICE AS unitPrice,
+           oi.SUBTOTAL AS salesAmount,
+           CASE WHEN gp.ORDER_ID IS NULL THEN NULL ELSE gp.GROSS_PROFIT_AMOUNT *
+             CASE WHEN COALESCE(ot.ITEM_SUBTOTAL, 0) <> 0 THEN COALESCE(oi.SUBTOTAL, 0) / ot.ITEM_SUBTOTAL ELSE 1 / GREATEST(ot.ITEM_COUNT, 1) END END AS grossProfit,
+           o.CUSTOMER_SOURCE AS customerSource
+      FROM T_ORDER o INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+      LEFT JOIN T_STORE s ON s.STORE_ID = o.STORE_ID
+      LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.SNAPSHOT_STATUS = 'final'
+      LEFT JOIN (SELECT ORDER_ID, SUM(COALESCE(SUBTOTAL,0)) ITEM_SUBTOTAL, COUNT(*) ITEM_COUNT FROM T_ORDER_ITEM GROUP BY ORDER_ID) ot ON ot.ORDER_ID = o.ORDER_ID
+     WHERE ${conditions.join(' AND ')} ORDER BY o.CREATE_TIME DESC, oi.ITEM_ID DESC`, { replacements, type: QueryTypes.SELECT });
+  const canProfit = canViewProfit(user);
+  const mapped = rows.map(row => ({ ...row, salesAmount: roundMoney(row.salesAmount), grossProfit: canProfit && row.grossProfit != null ? roundMoney(row.grossProfit) : null }));
+  const size = Math.min(200, Math.max(1, Number(pageSize) || 20)); const currentPage = Math.max(1, Number(page) || 1); const offset = (currentPage - 1) * size;
+  ctx.body = { rows: mapped.slice(offset, offset + size), canViewProfit: canProfit, pagination: { total: mapped.length, page: currentPage, pageSize: size, totalPages: Math.ceil(mapped.length / size) } };
+}
+
 function buildInventoryCategoryOrderMap(categories = []) {
   const childrenByParent = new Map();
   const rows = categories
@@ -1121,6 +1190,8 @@ async function getDashboardOverview(ctx) {
 module.exports = {
   getSalesReport,
   getCustomerSourceAnalysis,
+  getCustomerSourceDetail,
+  getProductAnalysisDetail,
   getInventoryReport,
   getEmployeePerformanceReport,
   getDashboardFilters,

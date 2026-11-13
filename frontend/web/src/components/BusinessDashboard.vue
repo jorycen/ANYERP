@@ -1,5 +1,5 @@
 <template>
-  <div class="bi-dashboard" v-loading="loading">
+  <div class="bi-dashboard" :class="`dimension-${activeDimension}`" v-loading="loading">
     <div class="page-heading">
       <div>
         <div class="breadcrumb">ERP&nbsp;&nbsp;/&nbsp;&nbsp;数据看板</div>
@@ -134,26 +134,6 @@
       </DashboardPanel>
     </section>
 
-    <section v-if="dashboard.decisionInsights?.length && activeDimension !== 'customerSource'" class="decision-panel">
-      <div class="decision-panel-heading">
-        <div>
-          <h2>经营预警与建议</h2>
-          <p>{{ dashboard.aiAdvisor?.notice || '由经营规则自动生成，可追溯到当前看板指标。' }}</p>
-        </div>
-        <el-tag type="info" effect="plain">规则引擎</el-tag>
-      </div>
-      <div class="decision-grid">
-        <article v-for="insight in dashboard.decisionInsights" :key="insight.code" class="decision-card">
-          <div class="decision-card-head">
-            <strong>{{ insight.title }}</strong>
-            <el-tag :type="insightTagType(insight.level)" size="small">{{ insightLevelText(insight.level) }}</el-tag>
-          </div>
-          <p>{{ insight.message }}</p>
-          <span class="decision-action">建议：{{ insight.action }}</span>
-        </article>
-      </div>
-    </section>
-
     <section v-if="dashboard.kpis && activeDimension !== 'customerSource'" class="kpi-grid">
       <article v-for="card in kpiCards" :key="card.key" class="kpi-card">
         <div class="kpi-icon" :class="card.color">
@@ -175,7 +155,7 @@
       </article>
     </section>
 
-    <section v-show="showSection('trend')" class="chart-grid">
+    <section v-show="showSection('trend')" class="chart-grid trend-section">
       <DashboardPanel title="销售额趋势（按日/周/月）">
         <template #actions>
           <el-radio-group v-model="filters.granularity" size="small" @change="loadOverview">
@@ -194,7 +174,7 @@
       </DashboardPanel>
     </section>
 
-    <section v-show="showSection('store') || showSection('employee') || showSection('productLine')" class="analysis-grid">
+    <section v-show="showSection('store') || showSection('employee') || showSection('productLine')" class="analysis-grid ranking-section">
       <DashboardPanel v-show="showSection('store')" title="门店销售 / 毛利排名">
         <el-table :data="dashboard.storeRanking" class="store-ranking-table" size="small" height="260" table-layout="fixed" empty-text="暂无门店销售数据">
           <el-table-column type="index" label="排名" width="42" />
@@ -243,7 +223,7 @@
       </DashboardPanel>
     </section>
 
-    <section v-show="showSection('product')" class="product-grid">
+    <section v-show="showSection('product')" class="product-grid product-section">
       <DashboardPanel title="产品销售额 Top10">
         <ProductTable
           :rows="dashboard.productAnalysis.salesTop10"
@@ -896,8 +876,9 @@ onBeforeUnmount(() => {
   --text: #172033;
   --muted: #758298;
   --border: #e6ebf2;
-  min-width: 1060px;
+  min-width: 0;
   color: var(--text);
+  padding: 2px 2px 18px;
 }
 
 .page-heading {
@@ -939,7 +920,11 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 10px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #f8fbff;
+  box-shadow: 0 2px 8px rgba(35, 59, 96, 0.035);
   flex-wrap: wrap;
 }
 
@@ -968,7 +953,8 @@ onBeforeUnmount(() => {
 
 .dimension-tabs {
   display: flex;
-  gap: 24px;
+  gap: 4px;
+  padding: 0 6px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 12px;
 }
@@ -980,7 +966,7 @@ onBeforeUnmount(() => {
   position: relative;
   border: 0;
   background: transparent;
-  padding: 10px 12px;
+  padding: 12px 14px;
   color: #344156;
   cursor: pointer;
 }
@@ -992,6 +978,11 @@ onBeforeUnmount(() => {
 .dimension-tabs button.active {
   color: var(--primary);
   font-weight: 600;
+}
+
+.dimension-tabs button:hover {
+  color: var(--primary);
+  background: #f3f7ff;
 }
 
 .dimension-tabs button.active::after {
@@ -1098,6 +1089,9 @@ onBeforeUnmount(() => {
   margin-bottom: 10px;
 }
 
+.trend-section .dashboard-panel:first-child { grid-column: span 7; }
+.trend-section .dashboard-panel:last-child { grid-column: span 5; }
+
 .analysis-grid,
 .product-grid,
 .inventory-grid {
@@ -1106,6 +1100,21 @@ onBeforeUnmount(() => {
   gap: 10px;
   margin-bottom: 10px;
 }
+
+.ranking-section .dashboard-panel:first-child { grid-column: span 7; }
+.ranking-section .dashboard-panel:nth-child(2) { grid-column: span 5; }
+.ranking-section .dashboard-panel:nth-child(3) { grid-column: 1 / -1; }
+.product-section .dashboard-panel { grid-column: span 4; }
+
+.customer-source-section {
+  display: grid;
+  gap: 10px;
+}
+
+.customer-source-section .customer-source-kpi-grid { margin-bottom: 0; }
+.customer-source-section .customer-source-kpi-grid .kpi-card { min-height: 96px; }
+.customer-source-section .dashboard-panel { box-shadow: 0 4px 16px rgba(35, 59, 96, 0.06); }
+.customer-source-section .el-table { margin-top: 10px; }
 
 .dashboard-panel {
   min-width: 0;
@@ -1418,6 +1427,86 @@ onBeforeUnmount(() => {
 @media (max-width: 1300px) {
   .kpi-grid {
     grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 980px) {
+  .page-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .filter-panel :deep(.el-select),
+  .date-filter {
+    width: 180px !important;
+  }
+
+  .chart-grid,
+  .analysis-grid,
+  .product-grid,
+  .inventory-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .trend-section .dashboard-panel,
+  .ranking-section .dashboard-panel,
+  .product-section .dashboard-panel {
+    grid-column: auto;
+  }
+
+  .large-chart,
+  .medium-chart {
+    height: 280px;
+  }
+}
+
+@media (max-width: 680px) {
+  .kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dimension-tabs {
+    gap: 4px;
+    overflow-x: auto;
+  }
+
+  .dimension-tabs button {
+    flex: 0 0 auto;
+    padding-inline: 8px;
+  }
+
+  .filter-panel {
+    align-items: stretch;
+  }
+
+  .filter-panel :deep(.el-select),
+  .date-filter {
+    width: 100% !important;
+  }
+
+  .quick-actions {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .quick-actions .el-button {
+    flex: 1;
+  }
+
+  .kpi-card {
+    padding: 12px 10px;
+  }
+
+  .kpi-icon {
+    width: 34px;
+    height: 34px;
+    flex-basis: 34px;
+    font-size: 17px;
+  }
+
+  .kpi-value {
+    font-size: 17px;
   }
 }
 </style>

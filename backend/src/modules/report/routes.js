@@ -43,6 +43,8 @@ const upload = multer({
 router.get('/sales', getSalesReport);
 router.get('/sales-statement', getSalesStatement);
 router.get('/customer-source-analysis', getCustomerSourceAnalysis);
+router.get('/customer-source-analysis/detail', require('./controller').getCustomerSourceDetail);
+router.get('/product-analysis/detail', require('./controller').getProductAnalysisDetail);
 router.get('/inventory', getInventoryReport);
 router.get('/inventory/export', require('./inventoryReport').exportReport);
 router.get('/employee-performance', ctx => getEmployeePerformanceReport(ctx, false));

@@ -63,6 +63,12 @@ const routes = [
         meta: { tab: 'summary' }
       },
       {
+        path: 'inventory/thresholds',
+        name: 'InventoryThresholds',
+        component: () => import('../views/InventoryThresholds.vue'),
+        meta: { roles: ['admin', 'boss'] }
+      },
+      {
         path: 'inventory/sn-inventory',
         name: 'InventorySnInventory',
         component: () => import('../views/Inventory.vue'),
