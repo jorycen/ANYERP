@@ -455,9 +455,16 @@
           <div class="form-tip">开启后不出现在业务人员查询和选择中，登录权限、审批配置及历史单据保留。</div>
         </el-form-item>
         <el-form-item label="角色" required>
-          <el-select v-model="userForm.roleIds" placeholder="请选择岗位角色" style="width: 100%">
+          <el-select v-model="userForm.roleIds" multiple placeholder="请选择岗位角色" style="width: 100%">
             <el-option v-for="r in roleData" :key="r.role_id" :label="r.name" :value="r.role_id" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="业绩身份">
+          <el-select v-model="userForm.performanceIdentity" clearable placeholder="待配置" style="width: 100%">
+            <el-option label="销售" value="sales" /><el-option label="产品" value="product" />
+            <el-option label="运营" value="operations" /><el-option label="后台" value="backend" />
+          </el-select>
+          <div class="form-tip">业绩身份仅作基础配置，历史业绩和现有计算暂不变。</div>
         </el-form-item>
         <el-form-item label="直属上级">
           <el-select v-model="userForm.supervisorStaffId" clearable filterable placeholder="可选，审批流程可引用" style="width: 100%">
@@ -1045,11 +1052,12 @@ const userAccountType = ref('all')
 const supervisorUserOptions = ref([])
 const userForm = reactive({
   isBackendAccount: 0,
+  performanceIdentity: null,
   staffId: null,
   name: '',
   phone: '',
   password: '',
-  roleIds: '',
+  roleIds: [],
   distributorIds: [],
   supervisorStaffId: null,
   status: 1
@@ -1495,6 +1503,7 @@ const handleAddUser = async () => {
   dialogTitle.value = '新增用户'
   resetUserForm()
   restoreSystemDraft('user-create', userForm)
+  userForm.roleIds = Array.isArray(userForm.roleIds) ? userForm.roleIds : [userForm.roleIds].filter(Boolean)
   userDialogVisible.value = true
 }
 
@@ -1506,10 +1515,11 @@ const handleEditUser = async (row) => {
   userForm.name = row.name
   userForm.phone = row.phone
   userForm.password = ''
-  userForm.roleIds = (row.role_ids || [])[0] || ''
+  userForm.roleIds = [...(row.role_ids || [])]
   userForm.distributorIds = (row.distributor_ids || (row.distributor_id ? [row.distributor_id] : [])).map(String)
   userForm.supervisorStaffId = row.supervisor_staff_id || null
   userForm.isBackendAccount = Number(row.is_backend_account || 0)
+  userForm.performanceIdentity = row.performance_identity || null
   userForm.status = row.status
 
   userDialogVisible.value = true
@@ -1578,15 +1588,16 @@ const handleUserSubmit = async () => {
   if (!userForm.name) { ElMessage.warning('请输入姓名'); return }
   if (!userForm.phone) { ElMessage.warning('请输入手机号'); return }
   if (!userForm.staffId && !userForm.password) { ElMessage.warning('请输入初始密码'); return }
-  if (!userForm.roleIds) { ElMessage.warning('请选择岗位角色'); return }
+  if (!Array.isArray(userForm.roleIds) || !userForm.roleIds.length) { ElMessage.warning('请选择岗位角色'); return }
 
   submitLoading.value = true
   try {
     const data = {
       isBackendAccount: userForm.isBackendAccount,
+      performanceIdentity: userForm.performanceIdentity || null,
       name: userForm.name,
       phone: userForm.phone,
-      roleIds: [userForm.roleIds],
+      roleIds: userForm.roleIds,
       distributorIds: userForm.distributorIds,
       supervisorStaffId: userForm.supervisorStaffId || null,
       status: userForm.status
@@ -1719,11 +1730,12 @@ const handleMenuSubmit = async () => {
 
 const resetUserForm = () => {
   userForm.isBackendAccount = 0
+  userForm.performanceIdentity = null
   userForm.staffId = null
   userForm.name = ''
   userForm.phone = ''
   userForm.password = ''
-  userForm.roleIds = ''
+  userForm.roleIds = []
   userForm.distributorIds = operatorUser.distributorIds || operatorUser.accessibleDistributorIds || (operatorUser.distributorId ? [operatorUser.distributorId] : [distributorOptions.value[0]?.distributor_id].filter(Boolean))
   userForm.supervisorStaffId = null
   userForm.status = 1

@@ -49,6 +49,7 @@ const Staff = sequelize.define('Staff', {
   store_id: { type: DataTypes.STRING(32) },
   supervisor_staff_id: { type: DataTypes.BIGINT(20), comment: '直属上级员工ID' },
   is_backend_account: { type: DataTypes.TINYINT, allowNull: false, defaultValue: 0 },
+  performance_identity: { type: DataTypes.STRING(16), allowNull: true },
   region_id: { type: DataTypes.STRING(32) },
   name: { type: DataTypes.STRING(64), allowNull: false },
   phone: { type: DataTypes.STRING(32), allowNull: false, unique: true },

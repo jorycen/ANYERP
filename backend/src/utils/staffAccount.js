@@ -24,8 +24,17 @@ async function ensureStaffAccountSchema(db) {
       if (error.original?.code !== 'ER_DUP_FIELDNAME') throw error;
     }
   }
+  if (!Object.keys(columns).some(key => key.toLowerCase() === 'performance_identity')) {
+    try {
+      await query.addColumn('T_STAFF', 'PERFORMANCE_IDENTITY', {
+        type: DataTypes.STRING(16), allowNull: true, comment: '员工业绩身份；空为待配置'
+      });
+    } catch (error) {
+      if (error.original?.code !== 'ER_DUP_FIELDNAME') throw error;
+    }
+  }
   // Fail startup readiness when the column cannot actually be read.
-  await db.query('SELECT IS_BACKEND_ACCOUNT FROM T_STAFF LIMIT 0');
+  await db.query('SELECT IS_BACKEND_ACCOUNT, PERFORMANCE_IDENTITY FROM T_STAFF LIMIT 0');
 }
 
 module.exports = { parseBackendAccount, accountTypeWhere, ensureStaffAccountSchema };

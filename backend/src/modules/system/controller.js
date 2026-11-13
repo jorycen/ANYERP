@@ -456,9 +456,7 @@ async function getUsers(ctx) {
       data.region_names = regionNames;
       data.region_name = isBoss ? '全部区域' : (regionNames.join('、') || '暂无区域');
       // 历史上只有区域权限的账号没有精确门店记录；列表展示和登录权限继续兼容为该区域全部有效门店。
-      const effectiveStores = !isBoss && regionScoped && assignedStores.length === 0
-        ? allActiveStores.filter(store => directRegionNames.includes(store.Region?.name))
-        : assignedStores;
+      const effectiveStores = assignedStores;
       const effectiveStoreNames = effectiveStores.map(store => store.name).filter(Boolean);
       const storeName = isBoss ? '全部门店' : (effectiveStoreNames.join('、') || '暂无门店');
       return { ...data, role_ids: roleIds, role_codes: roleCodes, role_names: roleNames, supervisor_name: data.Supervisor?.name || '', supervisor_staff_id: data.supervisor_staff_id || null, store_names: effectiveStoreNames, store_name: storeName, is_boss: isBoss, region_scoped: regionScoped };
@@ -477,10 +475,12 @@ async function getUsers(ctx) {
  */
 async function createUser(ctx) {
   const { name, phone, password, roleIds, status, supervisorStaffId } = ctx.request.body;
+  const performanceIdentity = ctx.request.body.performanceIdentity || null;
+  if (performanceIdentity !== null && !['sales', 'product', 'operations', 'backend'].includes(performanceIdentity)) ctx.throw(400, '业绩身份无效');
 
   if (!name) ctx.throw(400, '请输入姓名');
   if (!phone) ctx.throw(400, '请输入手机号');
-  if (!Array.isArray(roleIds) || roleIds.length !== 1) ctx.throw(400, '每个账号只能选择一个岗位角色');
+  if (!Array.isArray(roleIds) || roleIds.length < 1) ctx.throw(400, '请至少选择一个岗位角色');
   if (!password) ctx.throw(400, '请输入初始密码');
 
   const exist = await Staff.findOne({ where: { phone, is_deleted: 0 } });
@@ -524,12 +524,13 @@ async function createUser(ctx) {
       role_code: roles[0].role_code,
       supervisor_staff_id: supervisor?.staff_id || null,
       is_backend_account: ctx.request.body.isBackendAccount === undefined ? 0 : parseBackendAccount(ctx.request.body.isBackendAccount),
+      performance_identity: performanceIdentity,
       status: normalizeStaffStatus(ctx, status, 1)
     }, { transaction });
     await StaffRole.bulkCreate(uniqueRoleIds.map(roleId => ({ staff_id: staff.staff_id, role_id: roleId })), { transaction });
     await replaceStaffDistributorPermissions(staff, requestedDistributorIds, transaction);
     await recordBusinessAction({ businessType: 'staff', businessId: staff.staff_id, action: 'created',
-      user: ctx.state.user, detail: { isBackendAccount: Number(staff.is_backend_account || 0) }, transaction });
+      user: ctx.state.user, detail: { isBackendAccount: Number(staff.is_backend_account || 0), performanceIdentity }, transaction });
     await transaction.commit();
   } catch (error) {
     await transaction.rollback();
@@ -578,6 +579,11 @@ async function updateUser(ctx) {
   }
 
   const updateData = {};
+  if (ctx.request.body.performanceIdentity !== undefined) {
+    const identity = ctx.request.body.performanceIdentity || null;
+    if (identity !== null && !['sales', 'product', 'operations', 'backend'].includes(identity)) ctx.throw(400, '业绩身份无效');
+    updateData.performance_identity = identity;
+  }
   if (ctx.request.body.isBackendAccount !== undefined) updateData.is_backend_account = parseBackendAccount(ctx.request.body.isBackendAccount);
   if (name) updateData.name = name;
   if (phone) updateData.phone = phone;
@@ -597,7 +603,7 @@ async function updateUser(ctx) {
   let nextRoleCodes = (staff.Roles || []).map(role => String(role.role_code || '').toLowerCase());
   let nextRoleIds = null;
   if (roleIds !== undefined) {
-    if (!Array.isArray(roleIds) || roleIds.length !== 1) ctx.throw(400, '每个账号只能选择一个岗位角色');
+    if (!Array.isArray(roleIds) || roleIds.length < 1) ctx.throw(400, '请至少选择一个岗位角色');
     nextRoleIds = [...new Set(roleIds.map(String))];
     const roles = await Role.findAll({ where: { role_id: nextRoleIds, status: 1 } });
     if (roles.length !== nextRoleIds.length) ctx.throw(400, '选择的角色不存在或已停用');
@@ -614,6 +620,7 @@ async function updateUser(ctx) {
   }
   const distributorChanged = requestedDistributorIds[0] !== String(staff.distributor_id || '');
   const previousBackendAccount = Number(staff.is_backend_account || 0);
+  const previousPerformanceIdentity = staff.performance_identity || null;
   await sequelize.transaction(async transaction => {
     if (nextRoleIds) {
       await StaffRole.destroy({ where: { staff_id: staffId }, transaction });
@@ -621,6 +628,10 @@ async function updateUser(ctx) {
     }
     await replaceStaffDistributorPermissions(staff, requestedDistributorIds, transaction);
     await staff.update({ ...updateData, distributor_id: requestedDistributorIds[0] }, { transaction });
+    if (updateData.performance_identity !== undefined && updateData.performance_identity !== previousPerformanceIdentity) {
+      await recordBusinessAction({ businessType: 'staff', businessId: staffId, action: 'performance_identity_changed',
+        user: ctx.state.user, detail: { before: previousPerformanceIdentity, after: updateData.performance_identity }, transaction });
+    }
     if (updateData.is_backend_account !== undefined && updateData.is_backend_account !== previousBackendAccount) {
       await recordBusinessAction({ businessType: 'staff', businessId: staffId, action: 'backend_account_changed',
         user: ctx.state.user, detail: { before: previousBackendAccount, after: updateData.is_backend_account }, transaction });
@@ -710,12 +721,9 @@ async function getUserRegions(ctx) {
     : await StaffStorePermission.findAll({ where: { staff_id: staffId }, attributes: ['store_id'], raw: true });
   const availableStoreIds = new Set(availableStores.map(store => String(store.store_id)));
   const explicitStoreIds = storePermissions.map(permission => String(permission.store_id)).filter(storeId => availableStoreIds.has(storeId));
-  const selectedRegionIds = new Set(configuredRegionIds);
   const storeIds = targetIsBoss
     ? [...availableStoreIds]
-    : explicitStoreIds.length > 0
-      ? explicitStoreIds
-      : availableStores.filter(store => selectedRegionIds.has(String(store.region_id || ''))).map(store => String(store.store_id));
+    : explicitStoreIds;
   const regionIds = configuredRegionIds.length > 0
     ? [...new Set(configuredRegionIds)]
     : [...new Set(availableStores.filter(store => storeIds.includes(String(store.store_id))).map(store => String(store.region_id || '')).filter(Boolean))];
