@@ -22,8 +22,26 @@ function fixture(t) {
     {order_id:'2',create_staff_id:2,create_user:'石高铭',base_gross_profit:3000,sales_amount:5000,auxiliary_sales_list:'[]'}]);
   t.mock.method(D.prototype, 'getApprovedAdjustments', async()=>[]);
   t.mock.method(E,'loadMonthly',async()=>[]);
-  t.mock.method(F,'queryFinancialProfit',async()=>({summary:{productGrossProfit:null,operationsGrossProfit:200},storeSummaries:[{storeId:'S',summary:{companyGrossProfit:null,salesGrossProfit:10000,profitPendingCount:45}}]}));
+  t.mock.method(F,'queryFinancialProfit',async()=>({profitDetails:[],summary:{productGrossProfit:null,operationsGrossProfit:200},storeSummaries:[{storeId:'S',summary:{companyGrossProfit:null,salesGrossProfit:10000,profitPendingCount:45}}]}));
 }
+test('产品运营按业绩身份归属个人毛利，经营明细排除返利且不重复计入销售', async t=>{
+ fixture(t);
+ t.mock.method(M.Staff,'findAll',async()=>[{staff_id:1,store_id:'S',performance_identity:'product',role_code:'admin'},{staff_id:2,store_id:'S',performance_identity:'operations',role_code:'purchaser'}]);
+ t.mock.method(F,'queryFinancialProfit',async()=>({summary:{},storeSummaries:[],profitDetails:[
+  {eventKey:'sale:A',entryType:'sale',storeId:'S',orderNo:'A',productGrossProfit:100,operationsGrossProfit:50},
+  {eventKey:'policy:P',entryType:'policy',storeId:'S',productGrossProfit:999,operationsGrossProfit:0}
+ ]}));
+ const query={startDate:'2026-11-01',endDate:'2026-11-30',reportRole:'all'};
+ const r=await R.load({staffId:9,roles:['boss']},query);
+ a.equal(r.panels.sales.grossProfit,0);a.equal(r.panels.product.grossProfit,2100);a.equal(r.panels.operations.grossProfit,3050);
+ a.equal(r.rows.filter(x=>x.sourceLabel==='人员业绩').length,2);
+ a.equal(r.rows.some(x=>x.grossProfit===999),false);
+ const selected=await R.load({staffId:9,roles:['boss']},{...query,reportRole:'product',employeeId:'1'});
+ a.equal(selected.rows.length,1);a.equal(selected.rows[0].grossProfit,2000);
+ const ctx={state:{user:{staffId:9,roles:['boss']}},query:{...query,reportRole:'product'},set(){}};
+ await R.exportReport(ctx);const X=require('xlsx'),wb=X.read(ctx.body,{type:'buffer'}),rows=X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+ a.equal(rows.reduce((s,x)=>s+Number(x.产品端毛利),0),2100);a.ok(rows.some(x=>x.订单号==='A'));
+});
 test('warehouse-only scope uses product totals without querying or estimating personal sales',async t=>{
  fixture(t);
  t.mock.method(C,'scope',async()=>[{store_id:'D028000',name:'成都自营仓',manager_staff_id:3}]);
@@ -31,7 +49,7 @@ test('warehouse-only scope uses product totals without querying or estimating pe
  t.mock.method(A,'load',async()=>({owners:new Map(),missing:[],people:[]}));
  for(const method of ['getEmployeeOrderRows','getApprovedAdjustments'])t.mock.method(D.prototype,method,async()=>{throw Error('warehouse sales must not be queried')});
  t.mock.method(E,'loadMonthly',async()=>{throw Error('warehouse personal deductions must not be queried')});
- t.mock.method(F,'queryFinancialProfit',async()=>({summary:{productGrossProfit:123,operationsGrossProfit:0},storeSummaries:[{storeId:'D028000',summary:{productGrossProfit:123,operationsGrossProfit:0}}]}));
+ t.mock.method(F,'queryFinancialProfit',async()=>({profitDetails:[{eventKey:'sale:W',entryType:'sale',storeId:'D028000',productGrossProfit:123,operationsGrossProfit:0}],summary:{},storeSummaries:[]}));
  const r=await R.load({staffId:9,roles:['boss']},{startDate:'2026-11-01',endDate:'2026-11-30',reportRole:'all',storeId:'D028000'});
  a.equal(r.rows.filter(x=>x.sideName==='销售端').length,0);a.equal(r.panels.sales.grossProfit,0);
  a.equal(r.panels.product.grossProfit,123);a.equal(r.rows.find(x=>x.sideName==='产品端').grossProfit,123);
@@ -45,7 +63,7 @@ test('mixed store scope excludes only warehouse sales while retaining warehouse 
  t.mock.method(E,'loadMonthly',async filters=>{a.deepEqual(filters.storeIds,['S']);return []});
  const r=await R.load({staffId:9,roles:['boss']},{startDate:'2026-11-01',endDate:'2026-11-30',reportRole:'all'});
  a.equal(r.rows.filter(x=>x.sideName==='销售端').length,2);
- a.ok(r.rows.some(x=>x.sideName==='产品端'&&x.storeId==='D023000'));
+ a.ok(!r.rows.some(x=>x.sideName==='产品端'&&x.storeId==='D023000')); // 无经营明细不得由汇总虚构清单
 });
 test('shared rows and export retain zero versus unconfigured values',async t=>{
   fixture(t);
@@ -64,7 +82,7 @@ test('shared rows and export retain zero versus unconfigured values',async t=>{
 test('employee selection never shrinks the manager store commission',async t=>{
   fixture(t);
   const r=await R.load({staffId:9,roles:['boss']},{startDate:'2026-11-01',endDate:'2026-11-30',employeeId:'2'});
-  a.equal(r.rows.length,1);a.equal(r.rows[0].storeCommission,500);a.equal(r.panels.product.grossProfit,null);
+  a.equal(r.rows.length,1);a.equal(r.rows[0].storeCommission,500);a.equal(r.panels.product.grossProfit,0);
 });
 test('cross-month estimates add each month without reapplying tiers to a combined total',async t=>{
   fixture(t);
@@ -117,7 +135,7 @@ test('role views select employees, retain full-store commission and export match
 
 test('product and operations group by store with empty owner and retain unknown values',async t=>{
   fixture(t);
-  t.mock.method(F,'queryFinancialProfit',async()=>({summary:{productGrossProfit:null,operationsGrossProfit:200},storeSummaries:[{storeId:'S',summary:{salesGrossProfit:10000,productGrossProfit:null,operationsGrossProfit:200}}]}));
+  t.mock.method(F,'queryFinancialProfit',async()=>({profitDetails:[{eventKey:'sale:X',entryType:'sale',storeId:'S',productGrossProfit:null,operationsGrossProfit:200}],summary:{},storeSummaries:[]}));
   const user={staffId:9,roles:['boss']},base={startDate:'2026-11-01',endDate:'2026-11-30'};
   const all=await R.load(user,{...base,reportRole:'all'}),product=await R.load(user,{...base,reportRole:'product'}),ops=await R.load(user,{...base,reportRole:'operations'});
   a.equal(all.rows.length,4);a.equal(product.rows.length,1);a.equal(product.rows[0].employeeName,'');a.equal(product.rows[0].grossProfit,null);
@@ -142,9 +160,9 @@ test('manager identity preserves employee-rule exception without irrelevant plac
 
 test('side totals accumulate monthly values and reject invalid classification',async t=>{
  fixture(t);
- t.mock.method(F,'queryFinancialProfit',async()=>({summary:{operationsGrossProfit:200},storeSummaries:[{storeId:'S',summary:{operationsGrossProfit:200}}]}));
+ t.mock.method(F,'queryFinancialProfit',async q=>({profitDetails:[{eventKey:'sale:'+q.startDate,entryType:'sale',storeId:'S',productGrossProfit:0,operationsGrossProfit:200}],summary:{},storeSummaries:[]}));
  const user={staffId:9,roles:['boss']},query={startDate:'2026-10-01',endDate:'2026-11-30',reportRole:'operations'};
- const r=await R.load(user,query);a.equal(r.rows[0].grossProfit,400);a.equal(r.panels.operations.grossProfit,400);
+ const r=await R.load(user,query);a.equal(r.rows.length,2);a.equal(r.panels.operations.grossProfit,400);
  await a.rejects(R.load(user,{...query,reportRole:'invalid'}),{status:400});
 });
 

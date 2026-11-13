@@ -2,7 +2,7 @@ const c=(key,label,format='money')=>({key,label,format});
 const identity=[c('employeeName','员工 / 负责人','text'),c('storeName','门店','text'),c('role','角色','text')];
 const gross=[c('grossProfit','毛利'),c('expensePerformanceDeduction','费用扣减'),c('netGrossProfit','扣减后毛利')];
 function columns(role){
- if(['product','operations'].includes(role))return [...identity,c('grossProfit',role==='product'?'产品端毛利':'运营端毛利'),c('commission','提成','pending'),c('remark','备注','text')];
+ if(['product','operations'].includes(role))return [...identity,c('sourceLabel','来源','text'),c('orderNo','订单号','text'),c('businessDate','业务日期','text'),c('grossProfit',role==='product'?'产品端毛利':'运营端毛利'),c('commission','提成','pending'),c('remark','备注','text')];
  if(role==='staff')return [...identity,...gross,c('commissionBase','提成基数'),c('salesCommission','销售端提成'),c('remark','备注','text')];
  if(role==='manager')return [...identity,...['performanceEstimate','salesCommission','storeCommission'].map((key,i)=>({...c(key,['绩效合计','个人销售提成','门店提成'][i]),bold:true})),...gross,c('commissionStoreNames','门店提成归属门店','text'),c('storeGrossProfit','门店提成归属毛利'),
    c('lowGrossProfit','15%阶段个人毛利'),c('lowDeduction','15%阶段费用扣减'),c('lowNetGrossProfit','15%阶段扣减后毛利'),c('lowCommission','15%阶段提成'),

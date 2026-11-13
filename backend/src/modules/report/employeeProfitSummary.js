@@ -54,21 +54,35 @@ async function load(user, query) {
     const monthEnd=new Date(Date.UTC(Number(period.month.slice(0,4)),Number(period.month.slice(5)),0)).toISOString().slice(0,10);
     if(period.startDate===`${period.month}-01`&&period.endDate===monthEnd)managerTimeline.seed?.(period.month,financial);
     for (const key of ['product', 'operations']) {
-      const value = financial.summary[key === 'product' ? 'productGrossProfit' : 'operationsGrossProfit'];
-      panels[key].grossProfit = selected || value == null || panels[key].grossProfit === null ? null : money(panels[key].grossProfit + value);
-      if (!selected) for (const store of stores) {
-        const summary=financial.storeSummaries?.find(s=>String(s.storeId)===String(store.store_id))?.summary;
-        const gross=summary?.[key==='product'?'productGrossProfit':'operationsGrossProfit'];
-        const id=`${key}:${store.store_id}`,previous=sideRows.get(id);
-        sideRows.set(id,{employeeName:'',storeId:store.store_id,storeName:store.name,role:key==='product'?'产品':'运营',sideName:key==='product'?'产品端':'运营端',grossProfit:previous ? previous.grossProfit==null||gross==null?null:money(previous.grossProfit+Number(gross)) : gross??null,commission:null,performanceEstimate:null,status:'pending',remark:'暂不归属具体负责人；提成待定'});
-        const side=sideRows.get(id),field=key==='product'?'productGrossProfit':'operationsGrossProfit';
-        side.issues=[...(previous?.issues||[]),...(financial.profitDetails||[]).filter(e=>String(e.storeId)===String(store.store_id)&&e[field]===null).map(e=>({month:period.month,reason:e.profitPendingReason||`${side.sideName}依据待核实`,orderId:e.orderId,orderNo:e.entryNo,sourceOrderId:e.orderId,sourceOrderNo:e.orderNo}))];
-        if(gross==null&&!side.issues.length)side.issues.push({month:period.month,reason:`${side.sideName}依据待核实`});
+      if (!selected) for (const event of financial.profitDetails || []) {
+        if (['policy','policy_pending','policy_adjustment','adjustment','expense'].includes(event.entryType)) continue;
+        const field=key==='product'?'productGrossProfit':'operationsGrossProfit';
+        const gross=event[field];
+        if (gross === 0) continue;
+        const id=`${key}:event:${event.eventKey}`;
+        sideRows.set(id,{employeeName:'',storeId:event.storeId,storeName:event.storeName||stores.find(s=>String(s.store_id)===String(event.storeId))?.name||'',
+          reportRole:key,role:key==='product'?'产品':'运营',sideName:key==='product'?'产品端':'运营端',
+          orderNo:event.orderNo||event.entryNo||'',businessDate:event.businessDate,
+          sourceLabel:key==='product'?'订单产品端毛利':'门店运营分利',grossProfit:gross??null,netGrossProfit:null,
+          commission:null,performanceEstimate:null,status:'pending',remark:event.profitPendingReason||event.entryTypeLabel||'',
+          issues:gross==null?[{month:period.month,reason:event.profitPendingReason||'经营毛利待核算',orderId:event.orderId,orderNo:event.orderNo||event.entryNo}]:[]});
       }
     }
     for (const row of ranks) {
       if (selected && String(row.staffId) !== selected) continue;
       const person = people.find(p => String(p.staff_id) === String(row.staffId));
+      const identity = person?.performance_identity;
+      if (['product','operations'].includes(identity)) {
+        const key = `${identity}:employee:${row.staffId}`, previous = sideRows.get(key);
+        const gross = row.netGrossProfit ?? row.grossProfit;
+        sideRows.set(key, { ...row, employeeName: row.employeeName, staffId: row.staffId,
+          storeId: person.store_id || '', storeName: stores.find(s=>String(s.store_id)===String(person.store_id))?.name || '',
+          reportRole: identity, sideName: identity==='product'?'产品端':'运营端', role: identity==='product'?'产品':'运营',
+          grossProfit: previous ? previous.grossProfit==null||gross==null?null:money(previous.grossProfit+gross) : gross,
+          netGrossProfit: null, commission:null, performanceEstimate:null, status:'pending',
+          sourceLabel:'人员业绩', remark:'按当前员工业绩身份归属；提成待定' });
+        continue;
+      }
       const allocation=allocations.owners.get(String(row.staffId))||{commission:0,grossProfit:0,storeIds:[],issues:[]};
       const origin=performance.details.find(d=>String(d.staffId)===String(row.staffId));
       const store = stores.find(s => String(s.store_id) === String(person?.store_id))||stores.find(s=>String(s.store_id)===String(allocation.storeIds[0]||origin?.storeId));
@@ -127,13 +141,21 @@ async function load(user, query) {
   panels.sales.grossProfit = rows.some(r => r.netGrossProfit == null) ? null : money(rows.reduce((s,r) => s + Number(r.netGrossProfit),0));
   panels.sales.commission = rows.some(r => r.performanceEstimate == null) ? null : money(rows.reduce((s,r) => s + Number(r.performanceEstimate),0));
   panels.sales.status = rows.some(r => r.status === 'unconfigured') ? 'unconfigured' : panels.sales.commission == null ? 'pending' : 'estimated';
-  if (reportRole==='all' && query.reportRole) rows.push(...sideRows.values());
+  for (const key of ['product','operations']) {
+    const side = [...sideRows.entries()].filter(([id])=>id.startsWith(key+':')).map(([,r])=>r);
+    panels[key].grossProfit = side.some(r=>r.grossProfit==null)?null:money(side.reduce((sum,r)=>sum+Number(r.grossProfit),0));
+  }
+  if (reportRole==='all') rows.push(...sideRows.values());
   if (['product','operations'].includes(reportRole)) rows=[...sideRows.entries()].filter(([id])=>id.startsWith(reportRole+':')).map(([,row])=>row);
   const fields=presentation.columns(reportRole).filter(c=>reportRole!=='manager'||c.key!=='commissionBase');
   for(const row of rows){row.cells=Object.fromEntries(fields.map(c=>[c.key,presentation.display(row,c)]));row.reviewKey=row.reviewIdentity||(row.staffId?`staff:${row.staffId}`:`${row.sideName}:${row.storeId}`);}
   return { rows, panels, columns:fields,reportRole,canConfigure: C.canConfigure(user), note: '销售按归档时间、调整差额按审批通过时间计提，原归档毛利不回写。首次测算固定28单归9月；另有62笔历史校正及3张跨月销售一次性归10月，真实日期保留。店长个人按当月全店销售端毛利15%/25%分段，历史校正跟随原销售计提日期参与跨线。费用按两阶段个人毛利占比分摊。门店整月销售端毛利严格超过盈亏线后按全额计提门店提成，石高铭、唐陈、蒋君杰5%，其他店长3%，按原业务店长归属。产品、运营暂按门店汇总，负责人留空。' };
 }
-async function report(ctx) { ctx.body = { code: 0, data: await load(ctx.state.user, ctx.query) }; }
+async function report(ctx) {
+  const data = await load(ctx.state.user, ctx.query);
+  data.note = data.note.replace('产品、运营暂按门店汇总，负责人留空。', '产品为订单产品端毛利加产品身份人员净毛利；运营为门店运营分利加运营身份人员净毛利。分项清单展示，不含后台返利，个人毛利从本页销售端移出。人员按当前业绩身份归类，提成待定。');
+  ctx.body = { code: 0, data };
+}
 async function config(ctx) { if (!C.canConfigure(ctx.state.user)) ctx.throw(403, '无权配置提成参数'); ctx.body = { code: 0, data: await C.options(ctx.state.user, ctx.query.month, ctx.query.storeId) }; }
 function exportRows(rows) { return rows.map(r => { const missing = r.status === 'pending' ? '待核算' : '待配置'; return ({ 员工: r.employeeName, 门店: r.storeName, 角色: r.role, 毛利: r.grossProfit,
   费用扣减: r.expensePerformanceDeduction, 扣减后毛利: r.netGrossProfit, 提成基数: r.commissionBase ?? '未配置/跨月', 盈亏平衡线: r.breakEvenLine ?? '未配置/跨月',
