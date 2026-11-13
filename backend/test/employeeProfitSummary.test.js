@@ -9,6 +9,7 @@ const E = require('../src/modules/finance/expenseProfitDeduction');
 const T = require('../src/modules/report/managerCommissionTimeline');
 const A=require('../src/modules/report/storeCommissionAllocation');
 function fixture(t) {
+  t.mock.method(M.ResourceSettlement,'findAll',async()=>[]);
   t.mock.method(C,'staffConfigs',async()=>[]);
   t.mock.method(A,'load',async()=>({owners:new Map([['2',{commission:500,grossProfit:10000,storeIds:['S'],issues:[]}]]),missing:[],people:[]}));
   t.mock.method(T,'createLoader',()=>({forStaff:async()=>({lowGrossProfit:0,highGrossProfit:3000,reason:'',details:[]})}));
@@ -40,7 +41,7 @@ test('产品运营按业绩身份归属个人毛利，经营明细排除返利�
  a.equal(selected.rows.length,1);a.equal(selected.rows[0].grossProfit,2000);
  const ctx={state:{user:{staffId:9,roles:['boss']}},query:{...query,reportRole:'product'},set(){}};
  await R.exportReport(ctx);const X=require('xlsx'),wb=X.read(ctx.body,{type:'buffer'}),rows=X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
- a.equal(rows.reduce((s,x)=>s+Number(x.产品端毛利),0),2100);a.ok(rows.some(x=>x.订单号==='A'));
+ a.equal(rows.reduce((s,x)=>s+Number(x.经营毛利),0),2100);a.ok(rows.some(x=>x.单号==='A'));
 });
 test('warehouse-only scope uses product totals without querying or estimating personal sales',async t=>{
  fixture(t);

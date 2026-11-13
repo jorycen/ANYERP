@@ -4,7 +4,7 @@
       <el-date-picker v-model="dates" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始日期" end-placeholder="结束日期" />
       <el-radio-group v-model="reportRole" @change="changeRole"><el-radio-button v-for="r in reportRoles" :key="r.value" :label="r.value">{{ r.label }}</el-radio-button></el-radio-group>
       <el-select v-model="storeId" filterable clearable placeholder="选择门店" style="width:180px"><el-option v-for="s in filters.stores" :key="s.storeId" :label="s.storeName || s.name" :value="String(s.storeId)" /></el-select>
-      <el-select v-if="!['product','operations'].includes(reportRole)" v-model="employeeId" filterable clearable placeholder="选择员工" style="width:160px"><el-option v-for="s in filters.employees" :key="s.staffId" :label="s.employeeName || s.name" :value="String(s.staffId)" /></el-select>
+      <el-select v-model="employeeId" filterable clearable placeholder="选择员工" style="width:160px"><el-option v-for="s in filters.employees" :key="s.staffId" :label="s.employeeName || s.name" :value="String(s.staffId)" /></el-select>
       <el-button type="primary" @click="load">查询</el-button>
       <el-button type="success" :disabled="!applied || loading" :loading="exporting" @click="exportFile">导出员工汇总</el-button>
       <el-button :disabled="!applied || loading || exporting || !data.rows?.some(r => r.issues?.length)" @click="downloadReview()">下载待核算清单</el-button>
@@ -15,7 +15,35 @@
       <el-col v-for="p in visiblePanels" :key="p.key" :span="visiblePanels.length === 1 ? 24 : 8"><el-card shadow="never"><div>{{ p.name }}毛利 / 提成</div><strong>{{ money(data.panels?.[p.key]?.grossProfit) }} / {{ money(data.panels?.[p.key]?.commission, p.key === 'sales' ? (data.panels?.sales?.status === 'pending' ? '待核算' : '待配置') : '待定') }}</strong></el-card></el-col>
     </el-row>
     <el-alert v-if="data.note" :title="data.note" type="info" :closable="false" class="note" />
-    <el-table :data="data.rows || []" border stripe>
+    <template v-if="data.sections">
+      <section v-for="part in ['people','system']" :key="part" class="profit-section">
+        <h3>{{ part === 'people' ? '人员经营毛利' : '系统生成明细' }}</h3>
+        <div class="toolbar">
+          <span>经营毛利：{{ money(data.sections[part].grossProfit) }}</span>
+          <template v-if="part === 'system'">
+            <el-select v-model="category" clearable placeholder="全部分类" @change="filterSystem"><el-option v-for="option in data.categoryOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select>
+            <el-select v-model="state" clearable placeholder="全部状态" @change="filterSystem"><el-option label="经营分配" value="operating"/><el-option label="待下账" value="PENDING"/><el-option label="部分核销" value="PARTIALLY_SETTLED"/><el-option label="已核销" value="SETTLED"/></el-select>
+            <span v-if="data.rebateAccess">待确认返利：{{ money(data.pendingAmount) }}；已核销返利：{{ money(data.confirmedAmount) }}（独立列示）</span>
+          </template>
+        </div>
+        <el-table :data="data.sections[part].rows" border stripe empty-text="当前条件下暂无记录">
+          <el-table-column v-if="part === 'people'" prop="employeeName" label="员工" min-width="120"/>
+          <el-table-column prop="storeName" label="门店" min-width="130"/>
+          <el-table-column label="分类 / 来源" min-width="150"><template #default="{row}">{{ row.resourceName || row.sourceLabel }}</template></el-table-column>
+          <el-table-column v-if="part === 'system'" prop="orderNo" label="来源单号" min-width="210"/>
+          <el-table-column v-if="part === 'system'" prop="businessDate" label="业务日期" min-width="150"/>
+          <el-table-column v-if="part === 'system'" prop="snCode" label="SN" min-width="130"/>
+          <el-table-column v-if="part === 'system'" prop="pnCode" label="PN" min-width="130"/>
+          <el-table-column v-if="part === 'system'" label="状态" min-width="110"><template #default="{row}">{{ {operating:'经营分配',PENDING:'待下账',PARTIALLY_SETTLED:'部分核销',SETTLED:'已核销'}[row.state] || '—' }}</template></el-table-column>
+          <el-table-column label="经营毛利" min-width="120"><template #default="{row}">{{ row.category && row.category !== 'operating' ? '—' : money(row.grossProfit) }}</template></el-table-column>
+          <el-table-column v-if="part === 'system'" label="待确认返利" min-width="130"><template #default="{row}">{{ row.pendingAmount == null ? '—' : money(row.pendingAmount) }}</template></el-table-column>
+          <el-table-column v-if="part === 'system'" label="已核销返利" min-width="130"><template #default="{row}">{{ row.confirmedAmount == null ? '—' : money(row.confirmedAmount) }}</template></el-table-column>
+          <el-table-column prop="remark" label="说明" min-width="220"/>
+        </el-table>
+        <el-pagination :current-page="data.sections[part].page" :page-size="data.sections[part].pageSize" :total="data.sections[part].total" :page-sizes="[20,50,100]" layout="total, sizes, prev, pager, next" @current-change="value=>pageSection(part,value)" @size-change="value=>sizeSection(part,value)"/>
+      </section>
+    </template>
+    <el-table v-else :data="data.rows || []" border stripe>
       <el-table-column v-if="data.reportRole === 'manager'" type="expand"><template #default="{row}">
         <el-table :data="row.commissionDetails || []" border size="small" style="margin:12px;width:calc(100% - 24px)">
           <el-table-column prop="businessDate" label="业绩日期" width="120" />
@@ -57,6 +85,10 @@ const filters = ref({ stores: [], employees: [] }), data = ref({}), applied = re
 const configOpen = ref(false), configLoading = ref(false), saving = ref(false), month = ref(local.slice(0,7)), config = ref({ employees: [], stores: [] })
 const panels = [{ key: 'sales', name: '销售端' }, { key: 'product', name: '产品端' }, { key: 'operations', name: '运营端' }]
 const reportRole=ref('all')
+const category=ref(''),state=ref(''),sectionPages=ref({people:1,system:1}),sectionSizes=ref({people:20,system:20})
+function filterSystem(){sectionPages.value.system=1;load(true)}
+function pageSection(part,value){sectionPages.value[part]=value;load(true)}
+function sizeSection(part,value){sectionSizes.value[part]=value;sectionPages.value[part]=1;load(true)}
 const reviewOpen=ref(false),reviewLoading=ref(false),reviewData=ref({}),reviewFile=ref(null)
 async function previewReview(file){
   reviewFile.value=file.raw;reviewData.value={};reviewLoading.value=true
@@ -72,10 +104,11 @@ const visiblePanels=computed(()=>panels.filter(p=>!data.value.reportRole||data.v
 async function changeRole(){if(['product','operations'].includes(reportRole.value))employeeId.value='';await load()}
 const money = (v, empty = '待核算') => v == null || v === '' ? empty : '¥' + Number(v).toLocaleString('zh-CN', {minimumFractionDigits:2,maximumFractionDigits:2})
 const error = e => ElMessage.error(e.response?.data?.message || e.message || '操作失败')
-async function load() {
+async function load(keepPages = false) {
+  if(keepPages !== true)sectionPages.value={people:1,system:1}
   if (!dates.value?.[0] || !dates.value?.[1]) return ElMessage.warning('请选择日期范围')
   loading.value = true
-  const params = {startDate:dates.value[0],endDate:dates.value[1],storeId:storeId.value,employeeId:employeeId.value,reportRole:reportRole.value}
+  const params = {...(keepPages === true ? applied.value : {startDate:dates.value[0],endDate:dates.value[1],storeId:storeId.value,employeeId:employeeId.value,reportRole:reportRole.value}),category:category.value,state:state.value,peoplePage:sectionPages.value.people,systemPage:sectionPages.value.system,peoplePageSize:sectionSizes.value.people,systemPageSize:sectionSizes.value.system}
   try { const r = await api.getEmployeeProfitSummary(params); data.value = r.data; applied.value = {...params} } catch(e) { data.value = {}; applied.value = null; error(e) } finally { loading.value = false }
 }
 async function exportFile() { exporting.value = true; try { await api.exportEmployeeProfitSummary(applied.value) } catch(e) { error(e) } finally { exporting.value = false } }

@@ -154,7 +154,10 @@ async function load(user, query) {
 async function report(ctx) {
   const data = await load(ctx.state.user, ctx.query);
   data.note = data.note.replace('产品、运营暂按门店汇总，负责人留空。', '产品为订单产品端毛利加产品身份人员净毛利；运营为门店运营分利加运营身份人员净毛利。分项清单展示，不含后台返利，个人毛利从本页销售端移出。人员按当前业绩身份归类，提成待定。');
-  ctx.body = { code: 0, data };
+  const prepared = await require('./employeeProfitSections').prepare(ctx.state.user,ctx.query,data);
+  delete prepared.exportSections;
+  if(prepared.sections)prepared.rows=[];
+  ctx.body = { code: 0, data:prepared };
 }
 async function config(ctx) { if (!C.canConfigure(ctx.state.user)) ctx.throw(403, '无权配置提成参数'); ctx.body = { code: 0, data: await C.options(ctx.state.user, ctx.query.month, ctx.query.storeId) }; }
 function exportRows(rows) { return rows.map(r => { const missing = r.status === 'pending' ? '待核算' : '待配置'; return ({ 员工: r.employeeName, 门店: r.storeName, 角色: r.role, 毛利: r.grossProfit,
@@ -165,6 +168,11 @@ function exportRows(rows) { return rows.map(r => { const missing = r.status === 
   销售端提成: r.salesCommission ?? missing, 店长门店提成: r.storeCommission ?? missing, 产品端提成: '待定', 运营端提成: '待定', 绩效预估: r.performanceEstimate ?? missing, 备注: r.remark }); }); }
 async function exportReport(ctx) {
   const data = await load(ctx.state.user, ctx.query);
+  if (['product','operations'].includes(data.reportRole)) {
+    const prepared=await require('./employeeProfitSections').prepare(ctx.state.user,ctx.query,data);
+    const rows=Object.entries(prepared.exportSections).flatMap(([key,list])=>list.map(r=>({分区:key==='people'?'人员经营毛利':'系统生成明细',人员:r.employeeName||'',门店:r.storeName||'',来源:r.resourceName||r.sourceLabel,单号:r.orderNo||'',日期:r.businessDate||'',SN:r.snCode||'',PN:r.pnCode||'',经营毛利:r.category&&r.category!=='operating'?'':r.grossProfit??'待核算',待确认返利:r.pendingAmount??'',已核销返利:r.confirmedAmount??'',状态:r.state||'',备注:r.remark||''})));
+    return sendExcel(ctx,rows,['分区','人员','门店','来源','单号','日期','SN','PN','经营毛利','待确认返利','已核销返利','状态','备注'],'员工毛利明细.xlsx');
+  }
   if(String(ctx.query.review)==='1'){return require('./employeeProfitReview').exportReview(ctx,data);}
   if(!ctx.query.reportRole){const legacy=exportRows(data.rows);sendExcel(ctx,legacy,legacy.length?Object.keys(legacy[0]):['员工','门店','角色','毛利','绩效预估'],'员工毛利汇总.xlsx');return;}
   const rows=data.rows.map(row=>Object.fromEntries(data.columns.map(c=>[c.label,presentation.display(row,c)])));
