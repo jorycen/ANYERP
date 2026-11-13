@@ -4051,11 +4051,25 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
         fail(400, `商品 ${dbItem.product_name || product.name} 的入库库位与入库明细不一致`);
       }
       item.pnCode = await requireInboundPn(product, item.pnCode || item.pn_code || dbItem.pn_code || '', t);
+      const receiptPurchaseItem = dbItem.purchase_request_item_id
+        ? await PurchaseRequestItem.findByPk(dbItem.purchase_request_item_id, { transaction: t }) : null;
+      const requestedCostMode = receiptPurchaseItem?.gross_profit_cost_mode
+        ? String(receiptPurchaseItem.gross_profit_cost_mode).toUpperCase()
+        : null;
+      const receiptCostMode = ['COMPANY_PRICE', 'PURCHASE_PRICE'].includes(requestedCostMode)
+        ? requestedCostMode
+        : (product.gross_profit_cost_mode === 'COMPANY_PRICE' ? 'COMPANY_PRICE' : 'PURCHASE_PRICE');
+      const expectedPricingFlag = receiptCostMode === 'COMPANY_PRICE' ? 1 : 0;
+      // 采购申请决定计价方式；入库只继承，不能通过入库请求改写采购事实。
+      if (isPurchaseInbound && receiptPurchaseItem && !requestedCostMode) {
+        fail(409, `采购明细 ${receiptPurchaseItem.item_id} 缺少有效计价方式，请先修正采购申请`);
+      }
+      if (isPurchaseInbound && receiptPurchaseItem && dbItem.gross_profit_use_standard_price != null
+        && Number(dbItem.gross_profit_use_standard_price) !== expectedPricingFlag) {
+        fail(409, `商品 ${dbItem.product_name || product.name} 的入库计价方式与采购申请不一致，请重新生成入库单`);
+      }
       if (dbItem.gross_profit_use_standard_price === null || dbItem.gross_profit_use_standard_price === undefined) {
-        const receiptPurchaseItem = dbItem.purchase_request_item_id
-          ? await PurchaseRequestItem.findByPk(dbItem.purchase_request_item_id, { transaction: t }) : null;
-        const receiptMode = receiptPurchaseItem?.gross_profit_cost_mode || product.gross_profit_cost_mode;
-        await dbItem.update({ gross_profit_use_standard_price: receiptMode === 'COMPANY_PRICE' ? 1 : 0 }, { transaction: t });
+        await dbItem.update({ gross_profit_use_standard_price: expectedPricingFlag }, { transaction: t });
       }
       const locationId = item.locationId || dbItem.location_id || defaultTransferLocation?.location_id || null;
       if (!locationId) {
