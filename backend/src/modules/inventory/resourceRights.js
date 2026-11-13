@@ -594,14 +594,15 @@ async function clearExpiredEducationRights({ productId, now, user = {}, transact
   });
   for (const right of rights) {
     const amount = money(right.amount);
+    const beforeStatus = right.current_status;
     await right.update({
-      current_status: 'NOT_APPLICABLE',
+      current_status: 'AVAILABLE',
       amount: 0,
       rule_config_id: null,
       effective_start: null,
       effective_end: null,
       source: 'EDUCATION_POLICY_EXPIRED',
-      remark: '教育优惠政策已过期，导入时自动清理可用权益',
+      remark: '教育优惠活动已过期，金额清零并保留可用资格',
       version: Number(right.version || 0) + 1,
       update_time: now
     }, { transaction });
@@ -612,8 +613,8 @@ async function clearExpiredEducationRights({ productId, now, user = {}, transact
       sn_code: right.sn_code,
       product_id: right.product_id,
       resource_type: 'EDU_SUBSIDY',
-      before_status: right.current_status,
-      after_status: 'NOT_APPLICABLE',
+      before_status: beforeStatus,
+      after_status: 'AVAILABLE',
       change_amount: amount,
       change_reason: 'EDU_POLICY_EXPIRED',
       approval_status: 'approved',
@@ -622,7 +623,7 @@ async function clearExpiredEducationRights({ productId, now, user = {}, transact
       reviewer_staff_id: user.staffId || null,
       reviewer_name: user.name || '',
       review_time: now,
-      remark: '教育优惠政策到期，自动清理未使用权益'
+      remark: '教育优惠活动到期，清零活动金额并保留未使用资格'
     }, { transaction });
   }
   return rights.length;
@@ -1528,6 +1529,11 @@ async function createPerformanceProfitAdjustment({ order, item, resourceType, am
 async function initializeSnResourceRightsFromInbound({ sn, inbound, inboundItem, supplier = null,
   reenteringReturnedSn = false, transaction }) {
   const resourceTypes = parseJsonArray(inboundItem.selected_resource_types);
+  // 全资源采购确定长期资格；当前有无活动仅影响金额。
+  if (inboundItem.goods_type_id === 'GT_SERVICE_FULL_RESOURCE'
+    || inboundItem.product_type === '服务商全资源货') {
+    resourceTypes.push('EDU_SUBSIDY', 'SALES_BONUS', 'MANUFACTURER_REBATE', 'SALES_REPORT');
+  }
   if (!sn || resourceTypes.length === 0) return [];
   const categories = await getPurchaseSelectableResourceCategories({ transaction });
   const validTypes = new Set(categories.map(row => row.category_code));
@@ -2469,6 +2475,7 @@ async function triggerSaleResourceBenefits(order, items, transaction) {
       const requiresRule = ['PO_REWARD', 'CARE_CREDIT', 'REBATE'].includes(category.resource_kind);
       const eligible = (!requiresRule || Boolean(rule)) && ruleTriggerMatches({ rule, right, saleDate: new Date() });
       if (!eligible) {
+        const retainEligibility = !rule && ['EDU_SUBSIDY', 'SALES_BONUS', 'MANUFACTURER_REBATE', 'SALES_REPORT'].includes(category.category_code);
         await ResourceRightChangeOrder.create({
           change_id: generateUUID(),
           change_order_no: businessNo(),
@@ -2477,7 +2484,7 @@ async function triggerSaleResourceBenefits(order, items, transaction) {
           product_id: item.product_id,
           resource_type: category.category_code,
           before_status: 'AVAILABLE',
-          after_status: 'NOT_APPLICABLE',
+          after_status: retainEligibility ? 'AVAILABLE' : 'NOT_APPLICABLE',
           change_amount: 0,
           change_reason: 'SALE_TRIGGER_NOT_ELIGIBLE',
           approval_status: 'approved',
@@ -2485,10 +2492,11 @@ async function triggerSaleResourceBenefits(order, items, transaction) {
           applicant_name: order.create_user,
           reviewer_name: 'system',
           review_time: new Date(),
-          remark: `销售订单 ${order.order_no} 未满足${category.name}条件`
+          remark: retainEligibility ? `销售订单 ${order.order_no} 无当前活动，保留${category.name}资格` : `销售订单 ${order.order_no} 未满足${category.name}条件`
         }, { transaction });
         await right.update({
-          current_status: 'NOT_APPLICABLE',
+          current_status: retainEligibility ? 'AVAILABLE' : 'NOT_APPLICABLE',
+          ...(retainEligibility ? { amount: 0 } : {}),
           locked_source_type: null,
           locked_source_id: null,
           version: Number(right.version || 0) + 1

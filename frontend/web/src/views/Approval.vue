@@ -769,6 +769,7 @@ function taskTaxStatus(row) {
   return '待补充'
 }
 const detailFieldLabels = { recipient_display: '\u6536\u6b3e\u4fe1\u606f',
+  resource_name: '套回资源',
   sales_order_no: '销售订单号', sale_price: '销售价格', original_pickup_price: '提货价', settlement_price_at_sale: '当前结算价格', po_policy_at_sale: 'PO政策', so_policy_at_sale: 'SO政策', other_policy_at_sale: '其他政策', policy_remark: '备注', policy_name: '当前政策', policy_content: '政策内容', sn: 'SN',
   application_no: '申请单号', application_id: '申请ID', request_no: '采购申请单号', request_id: '采购申请ID',
   expense_no: '费用单号', expense_id: '费用ID', return_no: '退库单号', return_id: '退库申请ID',
@@ -802,6 +803,7 @@ const detailArrayColumnLabels = {
 }
 Object.assign(detailArrayColumnLabels, { target_type: '\u5f52\u5c5e\u7c7b\u578b', target_name: '\u5f52\u5c5e\u5bf9\u8c61', url: '\u9644\u4ef6' })
 const detailAllowedKeys = new Set([
+  'resource_name',
   'sales_order_no', 'sale_price', 'original_pickup_price', 'settlement_price_at_sale', 'po_policy_at_sale', 'so_policy_at_sale', 'other_policy_at_sale', 'policy_remark', 'policy_name', 'policy_content', 'sn',
   'application_no', 'request_no', 'expense_no', 'return_no', 'change_order_no', 'adjustment_no', 'order_no', 'settlement_no',
   'create_time', 'submit_time', 'applicant_name', 'submitter_name', 'submit_user', 'apply_user', 'applicant_store_name', 'store_name',
