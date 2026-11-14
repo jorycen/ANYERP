@@ -96,6 +96,19 @@ async function adjustmentFor(ctx) {
     correction_data: { input, evidence: '定价通知001', previewHash: selected.previewHash, result: selected.result } });
 }
 
+test('旧申请依据相同可兼容，商场上报不阻塞，真实定价变化仍拦截', async t => {
+ const f=fixture(t),ctx=context(),a=await adjustmentFor(ctx);
+ const saved=a.correction_data;
+ delete saved.result.orderBasis;
+ saved.previewHash='123c249bb51eaf4cd3cc86b9b1698a1b3b51d6f835e63081e4aa2e4f91c7ee5a';
+ f.order.mall_report_status='reported'; f.order.mall_report_staff_id=24;
+ const selected=await C.select(ctx,'O',saved.input);
+ const F=require('../src/modules/report/correctionFingerprint');
+ assert.equal(F.matchesSavedBasis(saved,selected,a),true);
+ saved.result.before.snapshot.product_pricing_amount=5499;
+ assert.equal(F.matchesSavedBasis(saved,selected,a),false);
+});
+
 test('legacy missing embedded basis reads confirmed foundation without rewriting original amounts or timestamps',async t=>{
  const f=fixture(t),ctx=context();f.order.order_no='ORD202611040615237456';f.snapshot.order_no=f.order.order_no;
  const before=JSON.stringify(f.snapshot.toJSON()),basis={version:require('../src/modules/sales/purchaseVat').VERSION,status:'confirmed',invoiceType:'收据',purchaseAmount:5000,basisId:'B',basisRevision:2};
@@ -153,7 +166,7 @@ test('unknown cost, purchase-price mode, closed period, returns and forbidden st
   });
   await t.test('scope', async sub => { fixture(sub); const ctx = context(); ctx.state.user.accessibleStoreIds = ['OTHER']; await assert.rejects(C.select(ctx, 'O'), /无权/); });
   await t.test('unknown cost', async sub => { const f = fixture(sub); f.item.cost_status = 'pending'; await assert.rejects(C.select(context(), 'O'), /未完整确认/); });
-  await t.test('purchase price', async sub => { const f = fixture(sub); f.snapshot.product_pricing_details[0].isCompanyPriced = false; await assert.rejects(C.select(context(), 'O', { itemId: '9', unitPrice: 5300 }), /采购价口径/); });
+  await t.test('purchase price remains eligible', async sub => { const f = fixture(sub); f.snapshot.product_pricing_details[0].isCompanyPriced = false; const selected = await C.select(context(), 'O', { itemId: '9', unitPrice: 5300 }); assert.equal(selected.result.salesDelta, 200); });
 });
 test('final approval posts signed differences and preserves archived sales and product facts', async t => {
   const f = fixture(t), ctx = context(), a = await adjustmentFor(ctx);

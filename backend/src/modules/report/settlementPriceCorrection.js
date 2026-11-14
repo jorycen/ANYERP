@@ -44,10 +44,10 @@ function snapshotPatch(snapshot, itemId, unitPrice, adjustmentId = null, invoice
     || GP.validPrice(line.unitPricing) === null || GP.validPrice(line.pricingAmount) === null
     || money(Number(line.unitPricing) * Number(line.quantity)) !== money(line.pricingAmount))) fail('原归档商品定价明细不完整或数量金额不一致，请先核实');
   const line = lines.find(item => String(item.itemId) === String(itemId));
-  // All archived product pricing lines are eligible for a correction request;
-  // retain the existing completeness guard for missing pricing evidence.
-  if (!invoiceInput && line && line.isCompanyPriced !== true) line.isCompanyPriced = true;
-  if (!invoiceInput && (!line || line.isCompanyPriced !== true || String(line.source || '').startsWith('missing_'))) fail('仅支持有完整归档依据的公司结算定价商品；采购价口径请走成本纠错');
+  // Both company-priced and purchase-priced archived lines are eligible.
+  // Only missing pricing evidence is blocked; pricing mode is a frozen fact,
+  // not a reason to hide the line from business correction.
+  if (!invoiceInput && (!line || String(line.source || '').startsWith('missing_'))) fail('仅支持有完整归档依据的商品，请先核实原订单定价依据');
   if (!invoiceInput && Number(line.unitPricing) === unitPrice) fail('申请定价与当前生效定价相同', 400);
   const next = invoiceInput ? lines : lines.map(item => String(item.itemId) === String(itemId) ? {
     ...item, unitPricing: unitPrice, pricingAmount: money(unitPrice * Number(item.quantity)),
@@ -171,6 +171,7 @@ async function select(ctx, orderId, input = null, transaction = null, includeInv
       salesDelta: money(patch.gross_profit_amount - Number(snapshot.gross_profit_amount)),
       productBefore: productProfit, productAfter: productProfit, productDelta: 0,
       before, after: { snapshot: patch, order: { invoice_amount: patch.invoice_amount, invoice_status: invoiceStatus } } };
+    result.orderBasis = require('./correctionFingerprint').businessOrder(plain(order));
     const previewHash = fingerprint(input,before,plain(order));
     return { order, snapshot, settlement, items, result, previewHash };
   }
@@ -192,6 +193,7 @@ async function select(ctx, orderId, input = null, transaction = null, includeInv
     productDelta: money(product.summary.gross_profit_amount - Number(settlement.gross_profit_amount)),
     before, after: { snapshot: afterSnapshot, settlement: product.summary, items: product.items } };
   // These management measures include sales tax/uplift rules; do not label their sum company accounting profit.
+  result.orderBasis = require('./correctionFingerprint').businessOrder(plain(order));
   const previewHash = fingerprint(input,before,plain(order));
   return { order, snapshot, settlement, items, originalItem, result, previewHash };
 }
@@ -200,7 +202,7 @@ async function apply(ctx, adjustment, transaction) {
   const saved = json(adjustment.correction_data);
   if (!saved.input || !saved.previewHash) fail('纠错申请缺少原始依据，请重新提交');
   const selected = await select(ctx, adjustment.order_id, saved.input, transaction);
-  if (selected.previewHash !== saved.previewHash) fail('订单、毛利或结算数据已变化，请拒绝本申请并重新预览提交');
+  if (selected.previewHash !== saved.previewHash && !require('./correctionFingerprint').matchesSavedBasis(saved, selected, adjustment)) fail('纠错商品、毛利或结算依据已变化，请重新核对业务依据');
   if (adjustment.adjustment_type === INVOICE_TYPE) {
     if (saved.input.type !== INVOICE_TYPE) fail('开票金额纠错类型与申请依据不一致');
     await selected.order.update(selected.result.after.order, { transaction });
