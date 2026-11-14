@@ -67,6 +67,50 @@ test('explicit store permission remains valid across distributor ownership', asy
   assert.deepEqual(ids, [47]);
 });
 
+test('店长审批严格使用门店配置的店长，不按经销商角色猜测', async t => {
+  const subject = {
+    staff_id: 14,
+    status: 1,
+    is_deleted: 0,
+    store_id: 'D023000',
+    distributor_id: 'DIST002',
+    toJSON() { return { ...this }; }
+  };
+  t.mock.method(M.Staff, 'findByPk', async () => subject);
+  t.mock.method(M.Store, 'findByPk', async () => ({ manager_staff_id: 3 }));
+  t.mock.method(M.Staff, 'findAll', async () => [{
+    staff_id: 3,
+    status: 1,
+    is_deleted: 0,
+    distributor_id: 'DIST001',
+    role_code: 'boss',
+    Roles: []
+  }]);
+
+  const ids = await resolveApprovers({
+    name: '店长审批',
+    signMode: 'or',
+    approvers: [{ type: 'store_manager', scope: 'subject_store' }]
+  }, {
+    subject_staff_id: 14,
+    store_id: 'D023000',
+    distributor_id: 'DIST002'
+  });
+
+  assert.deepEqual(ids, [3]);
+});
+
+test('门店未配置店长时不回退到其他门店的经理', async t => {
+  const subject = { status: 1, is_deleted: 0, store_id: 'D023000', distributor_id: 'DIST002', toJSON() { return { ...this }; } };
+  t.mock.method(M.Staff, 'findByPk', async () => subject);
+  t.mock.method(M.Store, 'findByPk', async () => ({ manager_staff_id: null }));
+  await assert.rejects(resolveApprovers({ name: '店长审批', signMode: 'or', approvers: [{ type: 'store_manager' }] }, {
+    subject_staff_id: 14,
+    store_id: 'D023000',
+    distributor_id: 'DIST002'
+  }), /未解析到可用审批人/);
+});
+
 test('distributor-scoped role remains limited to its distributor', async t => {
   const subject = {
     staff_id: 14,

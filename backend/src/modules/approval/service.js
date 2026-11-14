@@ -2,6 +2,7 @@ const { Op } = require('sequelize');
 const {
   sequelize,
   Staff,
+  Store,
   Role,
   StaffStorePermission,
   ApprovalFlowDefinition,
@@ -109,35 +110,14 @@ async function resolveRule(rule, subject, transaction) {
   }
   if (type === 'store_manager') {
     if (!subject.store_id) return [];
-    const managerRoles = ['manager', 'store_manager', 'store_admin'];
-    const managerCandidates = await Staff.findAll({
-      where: {
-        status: 1,
-        is_deleted: 0,
-        ...(subject.distributor_id ? { distributor_id: subject.distributor_id } : {})
-      },
-      include: [{
-        model: Role,
-        as: 'Roles',
-        attributes: ['role_code'],
-        through: { attributes: [] },
-        required: false
-      }],
-      attributes: ['staff_id', 'role_code'],
+    // 门店设置的店长是审批责任人的唯一来源。不能在同一经销商下
+    // 按 manager 角色或门店权限猜测，否则会把订单分配给其他门店店长。
+    const store = await Store.findByPk(subject.store_id, {
+      attributes: ['manager_staff_id'],
       transaction
     });
-    const managerIds = managerCandidates
-      .filter(staff => managerRoles.includes(String(staff.role_code || '').trim().toLowerCase())
-        || (staff.Roles || []).some(role => managerRoles.includes(String(role.role_code || '').trim().toLowerCase())))
-      .map(staff => Number(staff.staff_id))
-      .filter(Boolean);
-    if (!managerIds.length) return [];
-    const permissions = await StaffStorePermission.findAll({
-      where: { staff_id: { [Op.in]: managerIds }, store_id: subject.store_id },
-      attributes: ['staff_id'],
-      transaction
-    });
-    return [...new Set(permissions.map(row => Number(row.staff_id)).filter(Boolean))];
+    const managerStaffId = Number(store?.manager_staff_id || 0);
+    return managerStaffId > 0 ? [managerStaffId] : [];
   }
   if (type === 'direct_supervisor') return subject.supervisor_staff_id ? [Number(subject.supervisor_staff_id)] : [];
   if (type === 'fixed_user') return rule.staffId ? [Number(rule.staffId)] : [];
