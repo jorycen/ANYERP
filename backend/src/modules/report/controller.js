@@ -469,7 +469,7 @@ function buildInventoryReportMetrics(categoryStats = []) {
 }
 
 async function getCustomerSourceAnalysis(ctx) {
-  const { startDate, endDate, dimension = 'company' } = ctx.query;
+  const { startDate, endDate, dimension = 'company', storeId = '', employeeId = '', regionId = '', productLine = '' } = ctx.query;
   const user = ctx.state.user;
   const groupBy = ['company', 'store', 'employee'].includes(dimension) ? dimension : 'company';
   const storeIds = await resolveReportStoreIds(user);
@@ -479,6 +479,11 @@ async function getCustomerSourceAnalysis(ctx) {
     order_status: { [Op.in]: POSITIVE_SALES_ORDER_STATUSES }
   };
   appendOperatingSourceCondition(where);
+  if (storeId) {
+    if (!storeIds.includes('*') && !storeIds.map(String).includes(String(storeId))) ctx.throw(403, '无权查看该门店');
+    where.store_id = String(storeId);
+  }
+  if (employeeId) where[Op.and] = [...(where[Op.and] || []), buildEmployeeParticipationCondition(employeeId)];
   if (startDate && endDate) {
     where.create_time = { [Op.gte]: new Date(startDate), [Op.lte]: new Date(`${endDate} 23:59:59`) };
   }
@@ -495,7 +500,7 @@ async function getCustomerSourceAnalysis(ctx) {
         'customer_source', 'customer_source_detail', 'total_amount', 'create_time'
       ],
       include: [
-        { model: Store, attributes: ['store_id', 'name', 'distributor_id'], include: [{ model: Distributor, attributes: ['distributor_id', 'name'], required: false }] },
+        { model: Store, attributes: ['store_id', 'name', 'distributor_id'], ...(regionId ? { where: { region_id: regionId }, required: true } : {}), include: [{ model: Distributor, attributes: ['distributor_id', 'name'], required: false }] },
         { model: Staff, as: 'Applicant', attributes: ['staff_id', 'name'], required: false },
         { model: OrderGrossProfit, as: 'grossProfitSnapshot', attributes: ['gross_profit_amount'], required: false },
         { model: OrderItem, include: [{ model: Product, as: 'Product', attributes: ['category_id', 'category'], required: false }] }
@@ -545,6 +550,8 @@ async function getCustomerSourceAnalysis(ctx) {
     return `${name}销售`;
   };
 
+  const trendGroups = new Map();
+  const sourceGroups = new Map();
   orders.forEach(order => {
     const store = order.Store || {};
     const distributor = store.Distributor || {};
@@ -563,6 +570,11 @@ async function getCustomerSourceAnalysis(ctx) {
     }
     const sourceName = String(order.customer_source || '').trim() || '未填写来源';
     const sourceDetail = String(order.customer_source_detail || '').trim() || '-';
+    const bucket = new Date(new Date(order.create_time).getTime() + 28800000).toISOString().slice(0, 10);
+    const trend = trendGroups.get(bucket) || { bucket, salesAmount: 0, orderCount: 0 };
+    trend.salesAmount += toNumber(order.total_amount); trend.orderCount += 1; trendGroups.set(bucket, trend);
+    const source = sourceGroups.get(sourceName) || { customerSource: sourceName, salesAmount: 0, grossProfit: 0, orderCount: 0 };
+    source.salesAmount += toNumber(order.total_amount); source.grossProfit += toNumber(order.grossProfitSnapshot?.gross_profit_amount); source.orderCount += 1; sourceGroups.set(sourceName, source);
     const key = JSON.stringify([dimensionId, sourceName, sourceDetail]);
     const group = groups.get(key) || {
       dimensionId: String(dimensionId || ''), dimensionName, customerSource: sourceName, sourceDetail,
@@ -591,7 +603,12 @@ async function getCustomerSourceAnalysis(ctx) {
       salesAmount: roundMoney(orders.reduce((sum, order) => sum + toNumber(order.total_amount), 0)),
       grossProfit: canViewProfit(user) ? roundMoney(orders.reduce((sum, order) => sum + toNumber(order.grossProfitSnapshot?.gross_profit_amount), 0)) : null,
       afterSalesOrderCount: [...afterSalesOrderIds].filter(id => orderIdSet.has(id)).length
+      ,storeCount: new Set(orders.map(order => String(order.store_id))).size
+      ,averageOrderValue: roundMoney(orders.reduce((sum, order) => sum + toNumber(order.total_amount), 0) / orders.length)
+      ,grossMargin: canViewProfit(user) ? calcRate(orders.reduce((sum, order) => sum + toNumber(order.grossProfitSnapshot?.gross_profit_amount), 0), orders.reduce((sum, order) => sum + toNumber(order.total_amount), 0)) : null
     },
+    trend: [...trendGroups.values()].sort((a, b) => a.bucket.localeCompare(b.bucket)).map(row => ({ ...row, salesAmount: roundMoney(row.salesAmount) })),
+    sourceDistribution: [...sourceGroups.values()].map(row => ({ ...row, salesAmount: roundMoney(row.salesAmount), grossProfit: canViewProfit(user) ? roundMoney(row.grossProfit) : null })),
     rows
   };
 }

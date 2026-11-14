@@ -103,7 +103,12 @@
           </div>
         </article>
       </div>
-      <DashboardPanel title="客户来源分析">
+      <div class="source-overview-grid">
+        <DashboardPanel title="客户来源销售占比"><div ref="sourceSalesRef" class="medium-chart"></div></DashboardPanel>
+        <DashboardPanel title="客户来源毛利贡献"><div ref="sourceProfitRef" class="medium-chart"></div></DashboardPanel>
+        <DashboardPanel title="渠道销售趋势（按日）"><div ref="sourceTrendRef" class="medium-chart"></div></DashboardPanel>
+      </div>
+      <DashboardPanel :title="customerSourceDimension === 'employee' ? '个人客户来源分析' : '门店渠道销售对比（全部门店）'">
         <template #actions>
           <el-select v-model="customerSourceDimension" style="width: 150px" @change="loadCustomerSourceAnalysis">
             <el-option label="按公司" value="company" />
@@ -120,7 +125,7 @@
             <el-radio-button v-if="customerSourceCanViewProfit" label="grossProfit">毛利</el-radio-button>
           </el-radio-group>
         </div>
-        <div ref="customerSourceChartRef" class="customer-source-chart"></div>
+        <div ref="customerSourceChartRef" class="customer-source-chart" :style="{ height: `${Math.max(300, customerSourceChartData.rows.length * 42 + 100)}px` }"></div>
         <el-table :data="customerSourceRows" stripe v-loading="customerSourceLoading" empty-text="暂无客户来源数据">
           <el-table-column prop="dimensionName" :label="customerSourceDimensionLabel" min-width="130" />
           <el-table-column prop="customerSource" label="客户来源" min-width="130" />
@@ -423,10 +428,15 @@ const filters = reactive({ regionId: '', storeId: '', employeeId: '', productLin
 let focusOverviewSequence = 0
 const dateRange = ref(currentWeekRange())
 const dashboard = reactive(emptyDashboard())
-const customerSourceDimension = ref('company')
+const customerSourceDimension = ref('store')
 const customerSourceDimensionLabel = computed(() => ({ company: '公司', store: '门店', employee: '员工' }[customerSourceDimension.value] || '公司'))
 const customerSourceMetric = ref('salesAmount')
 const customerSourceChartRef = ref(null)
+const sourceSalesRef = ref(null)
+const sourceProfitRef = ref(null)
+const sourceTrendRef = ref(null)
+const sourceDistribution = ref([])
+const sourceTrend = ref([])
 const customerSourceRows = ref([])
 const customerSourceSummary = ref({})
 const customerSourceCanViewProfit = ref(false)
@@ -435,7 +445,9 @@ const customerSourceKpiCards = computed(() => [
   { key: 'orders', label: '销售单数', value: formatNumber(customerSourceSummary.value.orderCount), icon: Document, color: 'blue' },
   { key: 'sales', label: '销售额', value: formatCurrency(customerSourceSummary.value.salesAmount), icon: Money, color: 'green' },
   ...(customerSourceCanViewProfit.value ? [{ key: 'profit', label: '毛利额', value: formatCurrency(customerSourceSummary.value.grossProfit), icon: DataAnalysis, color: 'orange' }] : []),
-  { key: 'aftersales', label: '涉及售后单数', value: formatNumber(customerSourceSummary.value.afterSalesOrderCount), icon: UserFilled, color: 'purple' }
+  ...(customerSourceCanViewProfit.value ? [{ key: 'margin', label: '毛利率', value: customerSourceSummary.value.grossMargin == null ? '不可用' : `${customerSourceSummary.value.grossMargin}%`, icon: Coin, color: 'purple' }] : []),
+  { key: 'average', label: '客单价', value: customerSourceSummary.value.averageOrderValue == null ? '不可用' : formatCurrency(customerSourceSummary.value.averageOrderValue), icon: UserFilled, color: 'cyan' },
+  { key: 'stores', label: '涉及门店数', value: customerSourceSummary.value.storeCount == null ? '不可用' : formatNumber(customerSourceSummary.value.storeCount), icon: Shop, color: 'orange' }
 ])
 const customerSourceChartData = computed(() => {
   const entities = new Map()
@@ -562,10 +574,12 @@ async function loadCustomerSourceAnalysis() {
   if (!Array.isArray(dateRange.value) || dateRange.value.length !== 2) return
   customerSourceLoading.value = true
   try {
-    const res = await api.getCustomerSourceAnalysis({ startDate: dateRange.value[0], endDate: dateRange.value[1], dimension: customerSourceDimension.value })
+    const res = await api.getCustomerSourceAnalysis({ startDate: dateRange.value[0], endDate: dateRange.value[1], dimension: customerSourceDimension.value, regionId: filters.regionId || undefined, storeId: filters.storeId || undefined, employeeId: filters.employeeId || undefined, productLine: filters.productLine || undefined })
     if (res.code === 0) {
       customerSourceRows.value = res.data?.rows || []
       customerSourceSummary.value = res.data?.summary || {}
+      sourceDistribution.value = res.data?.sourceDistribution || []
+      sourceTrend.value = res.data?.trend || []
       customerSourceCanViewProfit.value = Boolean(res.data?.canViewProfit)
       if (!customerSourceCanViewProfit.value && customerSourceMetric.value === 'grossProfit') customerSourceMetric.value = 'salesAmount'
       await nextTick()
@@ -637,39 +651,26 @@ function getChart(element, key) {
 }
 
 function renderCustomerSourceChart() {
+  for (const [element, key, field] of [[sourceSalesRef.value, 'sourceSales', 'salesAmount'], [sourceProfitRef.value, 'sourceProfit', 'grossProfit']]) {
+    const chart = getChart(element, key)
+    if (!chart) continue
+    const available = field !== 'grossProfit' || customerSourceCanViewProfit.value
+    chart.setOption({ color: ['#3084ff', '#66c587', '#ffd43b', '#ff766c', '#60cddd', '#9c80ed', '#a5adba'], tooltip: { trigger: 'item' }, legend: { type: 'scroll', orient: 'vertical', right: 0, top: 'middle' }, series: [{ type: 'pie', radius: ['48%', '73%'], center: ['32%', '50%'], label: { show: false }, data: available ? sourceDistribution.value.filter(row => row[field] != null).map(row => ({ name: row.customerSource, value: row[field] })) : [] }], title: available ? undefined : { text: '无毛利查看权限', left: 'center', top: 'middle', textStyle: { fontSize: 13 } } }, true)
+  }
+  const trendChart = getChart(sourceTrendRef.value, 'sourceTrend')
+  if (trendChart) trendChart.setOption({ tooltip: { trigger: 'axis' }, legend: { data: ['销售额', '销售单数'] }, grid: { left: 55, right: 45, top: 40, bottom: 30 }, xAxis: { type: 'category', data: sourceTrend.value.map(row => row.bucket) }, yAxis: [{ type: 'value' }, { type: 'value', minInterval: 1 }], series: [{ name: '销售额', type: 'bar', itemStyle: { color: '#68a9ff' }, data: sourceTrend.value.map(row => row.salesAmount) }, { name: '销售单数', type: 'line', yAxisIndex: 1, smooth: true, itemStyle: { color: '#165dff' }, data: sourceTrend.value.map(row => row.orderCount) }] }, true)
   const { rows, sources } = customerSourceChartData.value
   const valueKey = customerSourceMetric.value
   const valueLabel = { salesAmount: '销售额', orderCount: '订单数', grossProfit: '毛利' }[valueKey] || '销售额'
   const formatValue = value => valueKey === 'orderCount' ? `${formatNumber(value)} 单` : formatCurrency(value)
   const chart = getChart(customerSourceChartRef.value, 'customerSource')
   if (!chart) return
+  chart.resize()
   if (!rows.length) {
     chart.clear()
     return
   }
-  const visibleRows = 8
-  const dataZoom = rows.length > visibleRows ? [
-    {
-      type: 'slider',
-      yAxisIndex: 0,
-      right: 2,
-      top: 52,
-      bottom: 30,
-      width: 10,
-      startValue: 0,
-      endValue: visibleRows - 1,
-      showDetail: false
-    },
-    {
-      type: 'inside',
-      yAxisIndex: 0,
-      startValue: 0,
-      endValue: visibleRows - 1,
-      zoomOnMouseWheel: false,
-      moveOnMouseWheel: true,
-      moveOnMouseMove: true
-    }
-  ] : []
+  const dataZoom = []
   chart.setOption({
     color: ['#3978d4', '#27a875', '#f2a93b', '#e56c72', '#36a8bd', '#8965ca', '#ee8152', '#70849d', '#bd6caa', '#6b9f48'],
     tooltip: {
@@ -692,7 +693,7 @@ function renderCustomerSourceChart() {
       textStyle: { color: '#53627a', fontSize: 12 },
       data: sources
     },
-    grid: { left: 130, right: rows.length > visibleRows ? 24 : 18, top: 48, bottom: 30, containLabel: false },
+    grid: { left: 130, right: 24, top: 48, bottom: 30, containLabel: false },
     xAxis: {
       type: 'value',
       axisLabel: { color: '#7a8799', formatter: value => valueKey === 'orderCount' ? formatNumber(value) : `¥${compactNumber(value)}` },
@@ -1110,6 +1111,8 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 10px;
 }
+.source-overview-grid { display: grid; grid-template-columns: 1fr 1fr 1.5fr; gap: 14px; }
+@media (max-width: 980px) { .source-overview-grid { grid-template-columns: 1fr; } }
 
 .customer-source-section .customer-source-kpi-grid { margin-bottom: 0; }
 .customer-source-section .customer-source-kpi-grid .kpi-card { min-height: 96px; }
