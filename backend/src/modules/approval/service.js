@@ -5,6 +5,7 @@ const {
   Store,
   Role,
   StaffStorePermission,
+  StaffDistributorPermission,
   ApprovalFlowDefinition,
   ApprovalFlowInstance,
   ApprovalTask,
@@ -123,11 +124,14 @@ async function resolveRule(rule, subject, transaction) {
   if (type === 'fixed_user') return rule.staffId ? [Number(rule.staffId)] : [];
 
   const roleCode = String(rule.roleCode || '').trim();
+  const scope = rule.scope || 'subject_store';
   const roleUsers = await Staff.findAll({
     where: {
       status: 1,
       is_deleted: 0,
-      ...(subject.distributor_id && roleCode !== 'boss' ? { distributor_id: subject.distributor_id } : {})
+      ...(subject.distributor_id && roleCode !== 'boss' && scope !== 'subject_distributor'
+        ? { distributor_id: subject.distributor_id }
+        : {})
     },
     include: [{ model: Role, as: 'Roles', where: { role_code: roleCode, status: 1 }, attributes: ['role_code'], through: { attributes: [] }, required: false }],
     attributes: ['staff_id', 'role_code'],
@@ -135,11 +139,19 @@ async function resolveRule(rule, subject, transaction) {
     transaction
   });
   let ids = roleUsers.filter(row => row.role_code === roleCode || (row.Roles || []).some(role => role.role_code === roleCode)).map(row => Number(row.staff_id));
-  const scope = rule.scope || 'subject_store';
   if (scope === 'subject_store') {
     if (!subject.store_id) return [];
     const permissions = await StaffStorePermission.findAll({
       where: { staff_id: ids.length ? { [Op.in]: ids } : [], store_id: subject.store_id },
+      attributes: ['staff_id'],
+      transaction
+    });
+    ids = permissions.map(row => Number(row.staff_id));
+  } else if (scope === 'subject_distributor') {
+    if (!subject.distributor_id) return [];
+    if (roleCode === 'boss') return ids;
+    const permissions = await StaffDistributorPermission.findAll({
+      where: { staff_id: ids.length ? { [Op.in]: ids } : [], distributor_id: subject.distributor_id },
       attributes: ['staff_id'],
       transaction
     });
@@ -160,7 +172,7 @@ async function resolveApprovers(node, instance, transaction) {
     if (rule.type === 'fixed_user' && rule.staffId) fixedUserIds.add(Number(rule.staffId));
     const resolvedIds = await resolveRule(rule, subject, transaction);
     const usesExplicitStorePermission = ['store_staff', 'store_manager'].includes(rule.type)
-      || (rule.type === 'role' && (rule.scope || 'subject_store') === 'subject_store');
+      || (rule.type === 'role' && ['subject_store', 'subject_distributor'].includes(rule.scope || 'subject_store'));
     if (usesExplicitStorePermission) {
       resolvedIds.forEach(id => explicitlyAuthorizedStoreIds.add(Number(id)));
     }
