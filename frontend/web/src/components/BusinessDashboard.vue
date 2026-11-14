@@ -3,7 +3,7 @@
     <div class="page-heading">
       <div>
         <div class="breadcrumb">ERP&nbsp;&nbsp;/&nbsp;&nbsp;数据看板</div>
-        <h1>经营数据看板 <span>（结果层）</span></h1>
+        <h1>经营数据看板 <span>（{{ dimensionTabs.find(tab => tab.value === activeDimension)?.label }}）</span></h1>
       </div>
       <div class="scope-note">
         <el-icon><InfoFilled /></el-icon>
@@ -175,7 +175,7 @@
     </section>
 
     <section v-show="showSection('store') || showSection('employee') || showSection('productLine')" class="analysis-grid ranking-section">
-      <DashboardPanel v-show="showSection('store')" title="门店销售 / 毛利排名">
+      <DashboardPanel v-show="showSection('store')" title="门店经营排名">
         <el-table :data="dashboard.storeRanking" class="store-ranking-table" size="small" height="260" table-layout="fixed" empty-text="暂无门店销售数据">
           <el-table-column type="index" label="排名" width="42" />
           <el-table-column label="门店" width="90" show-overflow-tooltip>
@@ -183,8 +183,8 @@
               <span>{{ row.storeName }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="销售额" width="95" align="right"><template #default="{ row }">{{ formatCurrency(row.salesAmount) }}</template></el-table-column>
-          <el-table-column v-if="dashboard.meta.canViewProfit" label="毛利" width="82" align="right"><template #default="{ row }">{{ formatCurrency(row.grossProfit) }}</template></el-table-column>
+          <el-table-column prop="salesAmount" sortable label="销售额" min-width="130" align="right"><template #default="{ row }">{{ formatCurrency(row.salesAmount) }}</template></el-table-column>
+          <el-table-column v-if="dashboard.meta.canViewProfit" prop="grossProfit" sortable label="销售毛利" min-width="130" align="right"><template #default="{ row }">{{ formatCurrency(row.grossProfit) }}</template></el-table-column>
           <el-table-column v-for="device in storeDeviceColumns" :key="device.key" :label="device.label" :width="device.width" align="right">
             <template #default="{ row }">
               <el-tooltip placement="top" effect="light" :show-after="250">
@@ -213,8 +213,6 @@
           <el-table-column v-if="dashboard.meta.canViewProfit" label="业绩毛利" min-width="110" align="right">
             <template #default="{ row }">{{ formatCurrency(row.grossProfit) }}</template>
           </el-table-column>
-          <el-table-column v-if="dashboard.meta.canViewProfit" label="整月费用扣减" min-width="120"><template #default="{row}">{{row.expensePerformanceDeduction==null?'不可用':formatCurrency(row.expensePerformanceDeduction)}}</template></el-table-column>
-          <el-table-column v-if="dashboard.meta.canViewProfit" label="扣减后毛利" min-width="120"><template #default="{row}">{{row.netGrossProfit==null?'不可用':formatCurrency(row.netGrossProfit)}}</template></el-table-column>
         </el-table>
       </DashboardPanel>
 
@@ -581,9 +579,9 @@ async function loadCustomerSourceAnalysis() {
 }
 
 function showSection(section) {
-  if (activeDimension.value === 'overall') return true
+  if (activeDimension.value === 'overall') return ['trend', 'store'].includes(section)
   if (activeDimension.value === 'customerSource') return false
-  if (section === 'trend') return ['store'].includes(activeDimension.value)
+  if (section === 'trend') return ['store', 'employee', 'productLine', 'product'].includes(activeDimension.value)
   return activeDimension.value === section
 }
 
@@ -1089,6 +1087,7 @@ onBeforeUnmount(() => {
   margin-bottom: 10px;
 }
 
+.trend-section { grid-template-columns: repeat(12, minmax(0, 1fr)); }
 .trend-section .dashboard-panel:first-child { grid-column: span 7; }
 .trend-section .dashboard-panel:last-child { grid-column: span 5; }
 
@@ -1101,6 +1100,7 @@ onBeforeUnmount(() => {
   margin-bottom: 10px;
 }
 
+.ranking-section, .product-section { grid-template-columns: repeat(12, minmax(0, 1fr)); }
 .ranking-section .dashboard-panel:first-child { grid-column: span 7; }
 .ranking-section .dashboard-panel:nth-child(2) { grid-column: span 5; }
 .ranking-section .dashboard-panel:nth-child(3) { grid-column: 1 / -1; }
@@ -1424,7 +1424,28 @@ onBeforeUnmount(() => {
   height: 180px;
 }
 
-@media (max-width: 1300px) {
+/* Compact desktop proportions follow the six-column reference dashboard. */
+.bi-dashboard { --primary: #165dff; --text: #101b38; --border: #dfe6f3; }
+.filter-panel { background: #fff; border: 0; box-shadow: none; padding: 10px 0 14px; gap: 8px; }
+.filter-panel :deep(.el-select) { width: 132px; }
+.date-filter { width: 270px !important; flex-grow: 1; max-width: 420px; }
+.quick-actions { margin-left: auto; }
+.dimension-tabs { margin-bottom: 14px; }
+.dimension-tabs button { font-size: 14px; padding: 12px 20px; }
+.kpi-grid { gap: 12px; margin-bottom: 14px; }
+.kpi-card { min-height: 108px; padding: 16px 12px; gap: 10px; box-sizing: border-box; }
+.kpi-value { font-variant-numeric: tabular-nums; font-size: clamp(18px, 1.45vw, 25px); letter-spacing: -.5px; }
+.chart-grid, .analysis-grid, .product-grid, .inventory-grid { gap: 14px; margin-bottom: 14px; }
+.dashboard-panel :deep(.panel-header h3) { font-size: 16px; color: #101b38; }
+.dashboard-panel :deep(.el-table th.el-table__cell) { background: #f2f6fc; color: #172647; font-weight: 600; }
+.dashboard-panel :deep(.el-table .cell) { font-variant-numeric: tabular-nums; }
+.large-chart, .medium-chart { height: 245px; }
+.dimension-store .ranking-section .dashboard-panel:first-child,
+.dimension-overall .ranking-section .dashboard-panel:first-child,
+.dimension-productLine .ranking-section .dashboard-panel:nth-child(3),
+.dimension-employee .ranking-section .dashboard-panel:nth-child(2) { grid-column: 1 / -1; }
+
+@media (max-width: 1150px) {
   .kpi-grid {
     grid-template-columns: repeat(3, 1fr);
   }
