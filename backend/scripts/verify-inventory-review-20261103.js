@@ -1,0 +1,19 @@
+const fs=require('fs'),path=require('path'),X=require('xlsx'),assert=require('node:assert/strict');
+const M=require('../src/models'),R=require('../src/modules/report/inventoryReport'),V=require('../src/modules/report/inventoryReview');
+const root=path.resolve(__dirname,'../backup/inventory-report-review/INV-REVIEW-20261103-068e94'),dir=path.join(root,'applied');
+async function run(){
+ const execution=JSON.parse(fs.readFileSync(path.join(dir,'execution.json'),'utf8')),manifest=JSON.parse(fs.readFileSync(path.join(root,'manifest.json'),'utf8'));
+ const reviews=await V.load(),report=await R.load({dimensions:'product'},{roles:['boss'],accessibleStoreIds:['*'],accessibleDistributorIds:['*']});
+ const before=JSON.parse(fs.readFileSync(path.join(dir,'report-before.json'),'utf8'));
+ const logs=await M.BusinessActionLog.count({where:{action:'batch_completed',business_type:'inventory_review_batch',business_id:execution.batch}});assert.equal(logs,1);
+ const costs=[];for(const r of execution.applied.filter(r=>r.kind==='sn_cost'||r.kind==='product_cost')){const o=manifest.rows[r.key];if(r.kind==='sn_cost'){const s=await M.ProductSn.findByPk(o.sn.sn_id);const original=execution.before.find(x=>x.key===r.key).sn;costs.push({row:r.key,product:o.detail.productCode,sn:s.sn_code,before:Number(original.inbound_price),after:Number(s.inbound_price)});const input=X.readFile(path.join(dir,'用户原始回填.xlsx'));const expected=X.utils.sheet_to_json(input.Sheets['SN成本']).find(x=>x['行标识']===r.key);assert.equal(Number(s.inbound_price),Number(expected['确认采购单价']));assert.equal(s.store_id,original.store_id);assert.equal(s.location_id,original.location_id);}else{const costLog=await M.BusinessActionLog.findOne({where:{business_type:'inventory_review',business_id:'cost:'+o.product.product_id,action:'cost_confirmed'},order:[['create_time','DESC']]});const d=JSON.parse(costLog.detail_json);const ps=await M.ProductPrice.findAll({where:{product_id:o.product.product_id,status:1}});assert.equal(ps.length,1);assert.equal(Number(ps[0].cost_price),d.after.cost_price);costs.push({row:r.key,product:o.product.product_code,after:Number(ps[0].cost_price)});}}
+ const total=r=>r.summary.totalCount+r.meta.excludedQuantity;assert.equal(total(report),total(before));
+ const groups=R.aggregate(report.details,['store']);assert.equal(groups.reduce((s,r)=>s+r.totalCount,0),report.summary.totalCount);assert.equal(Math.round(groups.reduce((s,r)=>s+r.coveredCostAmount,0)*100),Math.round(report.summary.coveredCostAmount*100));
+ const result={batch:execution.batch,checkedCosts:costs.length,manualTaxRows:report.details.filter(d=>d.evidenceStatus==='manual_confirmed').length,before:before.summary,after:report.summary,totalPhysicalAndExcluded:total(report),skipped:execution.skipped.length};
+ fs.writeFileSync(path.join(dir,'verification.json'),JSON.stringify(result,null,2));fs.writeFileSync(path.join(dir,'report-after.json'),JSON.stringify(report));
+ const w=X.utils.book_new();const add=(name,rows)=>X.utils.book_append_sheet(w,X.utils.json_to_sheet(rows),name);
+ add('处理结果',execution.applied.map(r=>{const o=manifest.rows[r.key],p=o.product||o.detail;return {行标识:r.key,商品编码:p.product_code||p.productCode,商品:p.name||p.productName,门店:o.detail?.storeName||'',SN:o.sn?.sn_code||'',处理类型:r.kind,票据测算依据:r.invoiceType||'',状态:'已处理'};}));
+ add('跳过待核对',execution.skipped.map(r=>{const o=manifest.rows[r.key];return {行标识:r.key,商品编码:o.detail.productCode,商品:o.detail.productName,门店:o.detail.storeName,SN:o.sn?.sn_code||'',原因:r.reason};}));
+ add('成本核验',costs);add('汇总',[{项目:'原成本待补数量',值:before.summary.missingCostCount},{项目:'处理后成本待补数量',值:report.summary.missingCostCount},{项目:'原税务依据待补数量',值:before.summary.taxPendingCount},{项目:'处理后税务依据待补数量',值:report.summary.taxPendingCount},{项目:'说明',值:'人工确认按预计测算；不代替真实发票认证。报表新逻辑需部署生效。'}]);
+ X.writeFile(w,path.join(dir,'库存回填处理核验结果.xlsx'));console.log(JSON.stringify(result));
+}run().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>M.sequelize.close());

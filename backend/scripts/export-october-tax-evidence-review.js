@@ -1,0 +1,14 @@
+const M=require('../src/models'),{Op}=require('sequelize'),X=require('xlsx'),fs=require('fs'),path=require('path');
+(async()=>{
+const orders=await M.Order.findAll({where:{is_deleted:0,create_time:{[Op.gte]:new Date('2026-10-01T00:00:00+08:00'),[Op.lt]:new Date('2026-11-01T00:00:00+08:00')}},raw:true});
+const snapshots=await M.OrderGrossProfit.findAll({where:{order_id:{[Op.in]:orders.map(x=>x.order_id)}},raw:true});
+const stores=await M.Store.findAll({raw:true}),sm=new Map(stores.map(x=>[x.store_id,x.name])),om=new Map(orders.map(x=>[x.order_id,x]));
+const rows=[],manifest=[];
+for(const s of snapshots){const o=om.get(s.order_id),lines=typeof s.product_pricing_details==='string'?JSON.parse(s.product_pricing_details):s.product_pricing_details||[];
+for(const l of lines){const b=l.purchaseTaxBasis;if(b?.status==='confirmed')continue;
+rows.push({'订单号':o.order_no,'订单状态':o.order_status,'门店':sm.get(o.store_id)||o.store_id,'销售开票类型':o.invoice_status,'商品':l.productName,'PN':l.pnCode,'SN':l.snCode,'数量':l.quantity,'冻结实际采购单价':l.purchasePrice??'','毛利计价方式':l.isCompanyPriced?'公司定价':'采购价','原采购单号':b?.purchaseNo||'','原采购票据文字':b?.originalInvoiceType||'','待核实原因':b?.reason||'历史快照未保存采购票税依据','填写：确认采购凭证类型（收据/专票13%）':'','填写：实际采购单号或凭据编号':'','填写：确认人':'','填写：依据说明':'','填写：无法确认原因':'','定位订单ID':o.order_id,'定位明细ID':String(l.itemId||''),'定位商品ID':l.productId});
+manifest.push({orderId:o.order_id,itemId:l.itemId,snapshotId:s.gross_profit_id,snapshot:s});}}
+const wb=X.utils.book_new();const instructions=[['项目','说明'],['范围','2026年10月创建的未删除订单中，已有毛利快照且采购票税未确认的商品行。非全历史，未保存快照订单不含；仅导出，不写数据库。'],['判断来源','以原采购申请、入库/SN接收记录及合同/凭据为依据；供应商当前默认配置和是否已收票不能代替原采购属性。'],['填写方式','仅填写标题以“填写：”开头的列，其他列及定位ID保持不变；无法确认留空并填写原因。'],['采购凭证类型','仅填写收据或专票13%；其他税率、混合或不明类型填写无法确认原因，不强行归类。'],['谁核实','建议原采购经办人补原始资料、财务复核；用户可汇总填写后返回。'],['回填原则','返回后先重查来源和原值变化，明确匹配且确认的行才更新；不改实际成本、数量、收款或虚构采购批次。'],['特殊情况','退货、作废、锁期、待审纠错单单独复核，不自动重算。'],['数据含义','此表来自当前已保存快照的未确认项；不代表全部需要手填，应先自动复查已存在的明确来源。']];
+X.utils.book_append_sheet(wb,X.utils.aoa_to_sheet(instructions),'填写说明');const sheet=X.utils.json_to_sheet(rows);sheet['!cols']=Object.keys(rows[0]||{}).map(k=>({wch:k.includes('原因')||k.includes('说明')?38:k==='商品'?45:25}));sheet['!autofilter']={ref:sheet['!ref']||'A1:A1'};X.utils.book_append_sheet(wb,sheet,'十月待核实明细');
+const dir=path.resolve(__dirname,'../backup/tax-evidence-review-20261105');fs.mkdirSync(dir,{recursive:true});const file=path.join(dir,'10月采购票税依据核实表.xlsx');X.writeFile(wb,file);fs.writeFileSync(path.join(dir,'manifest.json'),JSON.stringify(manifest));const read=X.readFile(file);if(X.utils.sheet_to_json(read.Sheets['十月待核实明细']).length!==rows.length)throw Error('回读行数不一致');console.log(JSON.stringify({file,orders:new Set(rows.map(x=>x['订单号'])).size,lines:rows.length,verified:true}));
+})().catch(e=>{console.error(e);process.exitCode=1}).finally(()=>M.sequelize.close());

@@ -1,0 +1,8 @@
+﻿{
+  "status": "template_only_not_executable",
+  "tools_enabled": false,
+  "approved_endpoints": [],
+  "base_url": "【待确认】管理员配置HTTPS域名",
+  "credential": "由受控服务单独保管，不在资料包填写",
+  "employee_binding": "【待确认】逐员工关联ERP身份"
+}

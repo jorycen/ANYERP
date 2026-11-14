@@ -1,0 +1,11 @@
+const M=require('../src/models');
+(async()=>{
+ const q=sql=>M.sequelize.query(sql,{type:M.sequelize.QueryTypes.SELECT});
+ const expenses=await q(`SELECT a.EXPENSE_NO no,a.PERFORMANCE_MONTH month,a.STORE_ID allocationStore,e.STORE_ID expenseStore,a.AMOUNT amount,e.AFFECTS_STORE_PROFIT affects,e.STATUS expenseStatus,e.IS_DELETED deleted,e.EXPENSE_DATE expenseDate FROM T_EXPENSE_PERFORMANCE_ALLOCATION a JOIN T_EXPENSE e ON e.EXPENSE_ID=a.EXPENSE_ID WHERE a.STATUS='approved'`);
+ console.log(JSON.stringify({expenseCount:expenses.length,crossStore:expenses.filter(r=>r.allocationStore!==r.expenseStore),employeeOnly:expenses.filter(r=>!Number(r.affects)||r.expenseStatus!=='approved'||Number(r.deleted)),missingDate:expenses.filter(r=>!r.expenseDate)}));
+ console.log(JSON.stringify({periods:await q('SELECT MONTH_KEY month FROM T_FINANCIAL_PROFIT_PERIOD')}));
+ const invalid=await q(`SELECT o.ORDER_NO no,o.ORDER_STATUS status FROM T_ORDER o JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID=o.ORDER_ID WHERE o.ARCHIVE_TIME IS NULL AND o.ORDER_STATUS IN ('returned','已归档') AND o.CREATE_TIME >= '2026-09-01'`);console.log(JSON.stringify({missingArchiveCount:invalid.length,examples:invalid.slice(0,10)}));
+ console.log(JSON.stringify({missingArchiveMonths:await q(`SELECT DATE_FORMAT(o.CREATE_TIME,'%Y-%m') month,COUNT(*) count,SUM(gp.GROSS_PROFIT_AMOUNT) snapshotGross FROM T_ORDER o JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID=o.ORDER_ID WHERE o.ARCHIVE_TIME IS NULL AND o.ORDER_STATUS IN ('returned','已归档') AND o.CREATE_TIME >= '2026-09-01' GROUP BY month`)}));
+ console.log(JSON.stringify({completedWithoutLedger:await q(`SELECT rr.RETURN_NO no,rr.ORDER_NO orderNo FROM T_SALES_RETURN_REQUEST rr LEFT JOIN T_SALES_RETURN_GROSS_PROFIT rgp ON rgp.RETURN_ID=rr.RETURN_ID WHERE rr.STATUS='completed' AND rr.CREATE_TIME >= '2026-09-01' AND rgp.RETURN_ID IS NULL`)}));
+ console.log(JSON.stringify({octoberMissing:await q(`SELECT o.ORDER_NO no,gp.GROSS_PROFIT_AMOUNT gross,(SELECT COUNT(*) FROM T_BUSINESS_ACTION_LOG l WHERE l.BUSINESS_ID=o.ORDER_ID AND l.ACTION='archived') archiveLogs FROM T_ORDER o JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID=o.ORDER_ID WHERE o.ARCHIVE_TIME IS NULL AND o.ORDER_STATUS IN ('returned','已归档') AND o.CREATE_TIME >= '2026-10-01'`)}));
+})().catch(e=>{console.error(e.message);process.exitCode=1}).finally(()=>M.sequelize.close());

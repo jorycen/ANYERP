@@ -1,0 +1,11 @@
+const fs=require('fs'),cp=require('child_process'),path=require('path');
+const dir=path.resolve(__dirname,'../backup/manager-threshold-20261112'),b=require(path.join(dir,'before.json')),n=require(path.join(dir,'after.json'));
+const sections={
+'DECISIONS.md':'## 2026-11-12 店长门店提成增加整月达标条件（用户确认）\n\n- 决策：整月门店销售端毛利严格超过月度盈亏平衡线才计门店提成；达标按全额归属毛利计提，非仅超额部分。石高铭、唐陈、蒋君杰5%，其他店长3%。\n- 原因：门店未达盈亏线不产生门店提成，退单及已批准调整参与整月达标判断。保留原业务发生时店长归属和个人销售15%/25%规则。\n- 最终选择：兼容扩展现有后台门店提成分配服务，复用原报表API和整月财务销售端事件；不新增数据库结构、不修改原单金额。部分日期仅筛事件金额，达标以完整自然月判断。\n- 备选：仅超出部分计提、不达标仍按比例计提，均不采用。\n- 验证：10月门店提成28197.27降至23339.47，差额-4857.80；7家未达标，其他不变。当前后台166条批准调整均覆盖，原始毛利不改。状态：本地完成，待CloudBase发布。\n\n',
+'BUSINESS_RULES.md':'## 2026-11-12 门店提成月末达标门槛\n\n- 月度门店销售端毛利包含原销售、退货完成入账及当期已批准经营调整。严格大于月度门店盈亏平衡线，才按全额归属毛利计门店提成；低于或等于为0。\n- 门店提成比例：石高铭、唐陈、蒋君杰5%，其他店长3%；卢珏、葛宇沿用员工规则。\n- 达标判断按完整自然月门店总销售端毛利，与人员或部分日期筛选无关；所选期间及各历史店长的提成金额按原业务归属分配。平衡线或整月毛利未知则待核算。\n- 店长个人销售15%/25%分阶段规则、退货月份、调整月份及已批准历史例外保持。\n\n',
+'CHANGELOG.md':'## 2026-11-12 店长门店提成达标判断及蒋君杰5%\n\n- 复用员工毛利汇总及导出后台服务，门店整月销售端毛利严格超过盈亏线后才产生门店提成，达标按全额计提；蒋君杰加入5%名单。\n- 部分日期使用完整自然月毛利判定，不以所选区间或个人归属毛利代替。\n- 10月只读对账：门店提成减少4857.80，个人销售提成及销售端毛利不变；166条已批准调整逐笔核对无遗漏。\n\n'};
+for(const [file,section]of Object.entries(sections)){const current=fs.readFileSync(file,'utf8');if(!current.startsWith(section))fs.writeFileSync(file,section+current);const head=cp.execFileSync('git',['show','HEAD:'+file],{encoding:'utf8'});const hash=cp.execFileSync('git',['hash-object','-w','--stdin'],{input:(section+head).replace(/\r\n/g,'\n'),encoding:'utf8'}).trim();cp.execFileSync('git',['update-index','--cacheinfo','100644',hash,file]);}
+let report='# 2026年10月店长门店提成规则调整对比\n\n同一数据时点，修改前后毛利及个人销售提成保持；门店提成由28197.27元调整为23339.47元，减少4857.80元。\n\n|店长|门店|门店销售端毛利|盈亏线|原门店提成|新门店提成|差额|\n|---|---|---:|---:|---:|---:|---:|\n';
+for(const r of n.rows){const old=b.rows.find(x=>x.staffId===r.staffId);report+=`|${r.name}|${r.store}|${r.storeGross.toFixed(2)}|${Number(r.line).toFixed(2)}|${old.storeCommission.toFixed(2)}|${r.storeCommission.toFixed(2)}|${(r.storeCommission-old.storeCommission).toFixed(2)}|\n`;}
+report+='\n蒋君杰比例已改5%，但10月门店未达标，门店提成为0。当前后台166条已批准调整逐笔核对均在门店明细；无依据将财务成本调整额直接当销售端毛利。以上为本地新代码直连数据库只读测算，发布前线上仍可能展示旧规则。\n';
+const output=path.resolve(__dirname,'../../outputs/manager-threshold-20261112');fs.mkdirSync(output,{recursive:true});fs.writeFileSync(path.join(output,'10月店长门店提成调整对比.md'),report);

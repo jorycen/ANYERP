@@ -1,0 +1,54 @@
+﻿{
+  "verified_date": "2026-11-05",
+  "verification": "local_source_only_no_live_api_test",
+  "source_files": [
+    {
+      "path": "backend/src/index.js",
+      "sha256": "71e13e644bf98b9b7cb99ecef2fd99a8b92ce9857925b3ba2db6e2d6e3165ba8"
+    },
+    {
+      "path": "backend/src/modules/product/routes.js",
+      "sha256": "f7758e4407cecc32d099920703b2c10948bb90c085de6845c19cf0203bf12d0f"
+    },
+    {
+      "path": "backend/src/modules/product/controller.js",
+      "sha256": "4310bdcfe76a726d223dc95d92aafba152725718c6edc3b886f5b21c8ead9b38"
+    },
+    {
+      "path": "backend/src/modules/inventory/routes.js",
+      "sha256": "5cdcbf7723eda0ec7ad132dd6a474c455b19f8801523e1fc4640b9ddfe9d7872"
+    },
+    {
+      "path": "backend/src/modules/inventory/controller.js",
+      "sha256": "ba2a181927c1231d2518a5ca5f8012a2c635e7e6a1adb5e7e9ad3917f144ceba"
+    },
+    {
+      "path": "backend/src/modules/inventory/productFlow.js",
+      "sha256": "fc13bf1ebebe16955eb89a778ab13039ac99262bb1cf2a65a0de26601d2424e5"
+    },
+    {
+      "path": "backend/src/modules/sales/routes.js",
+      "sha256": "8a1bf9665eb9df0101223d0806ef2e511037514e3aa87e56584d7644c4b3a842"
+    },
+    {
+      "path": "backend/src/modules/sales/controller.js",
+      "sha256": "91a76df3a3736a8099e30a1d4548b5170d9bc6027e6c1e4705fb6e0553458f7e"
+    },
+    {
+      "path": "backend/src/utils/businessActionLog.js",
+      "sha256": "5c98db8ae44a1c78281c038733537a61552f1267033143a0702548e8962bbd7e"
+    },
+    {
+      "path": "backend/src/middleware/auth.js",
+      "sha256": "782d47255f97828955ea578ee43f1901c45c1985e91dfc0f4ccd13425a1d8b56"
+    },
+    {
+      "path": "backend/src/middleware/responseFormatter.js",
+      "sha256": "e89990a6cd3f38d797d922c068624313f4fe5ca0cd639a2a274fd88f37212748"
+    },
+    {
+      "path": "backend/src/utils/index.js",
+      "sha256": "26765daa08e8ac1043932bf602b394c9abc1bfb6196e6d9b3fc778c0b0d8e343"
+    }
+  ]
+}

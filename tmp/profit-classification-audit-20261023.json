@@ -1,0 +1,276 @@
+{
+  "capturedAt": "2026-10-22T16:09:49.269Z",
+  "scope": "all database records, no period or store filters",
+  "results": {
+    "salesSnapshots": [
+      {
+        "formula": "ORDER_GP_V9_FREIGHT_SEPARATE",
+        "count": 35901,
+        "receivable": "69841038.01",
+        "pricing": "64213331.32",
+        "paymentFee": "39355.13",
+        "managementTax": "81924.90",
+        "supplement": "2004.24",
+        "freight": "33016.11",
+        "profit": "5294414.79"
+      },
+      {
+        "formula": "ORDER_GP_V11_PRODUCT_COST_MODE",
+        "count": 1061,
+        "receivable": "5464505.69",
+        "pricing": "4769626.15",
+        "paymentFee": "26159.26",
+        "managementTax": "62454.96",
+        "supplement": "8483.35",
+        "freight": "9821.17",
+        "profit": "590527.50"
+      }
+    ],
+    "expenseRisk": [
+      {
+        "attribution": "PRODUCT_SIDE",
+        "status": "withdrawn",
+        "count": 1,
+        "amount": "100096.09",
+        "earliest": "2026-10-22",
+        "latest": "2026-10-22",
+        "withSourceStore": "1"
+      },
+      {
+        "attribution": "PRODUCT_SIDE",
+        "status": "processing",
+        "count": 2,
+        "amount": "795.00",
+        "earliest": "2026-10-12",
+        "latest": "2026-10-12",
+        "withSourceStore": "2"
+      }
+    ],
+    "productSettlements": [
+      {
+        "status": "cost_pending",
+        "count": 2113,
+        "pricing": "9072233.05",
+        "cost": "8555158.64",
+        "profit": "0.00",
+        "pending": "246626.95"
+      },
+      {
+        "status": "posted",
+        "count": 473,
+        "pricing": "2350558.01",
+        "cost": "2287476.16",
+        "profit": "63081.85",
+        "pending": "0.00"
+      }
+    ],
+    "productReturns": [
+      {
+        "status": "posted",
+        "count": 23,
+        "profit": "-7756.50"
+      },
+      {
+        "status": "cost_pending",
+        "count": 39,
+        "profit": "0.00"
+      }
+    ],
+    "manufacturerPolicies": [
+      {
+        "status": "estimated",
+        "source": "manufacturer_policy",
+        "policy": "p0_difference",
+        "count": 13,
+        "amount": "3539.00"
+      },
+      {
+        "status": "confirmed",
+        "source": "manufacturer_rebate_confirmation",
+        "policy": "manual_confirmation",
+        "count": 5,
+        "amount": "1800.00"
+      }
+    ],
+    "resourceSettlements": [
+      {
+        "resource": "EDU_SUBSIDY",
+        "source": "SALE_USE",
+        "status": "PENDING",
+        "count": 20,
+        "amount": "14400.00",
+        "matched": "0.00"
+      },
+      {
+        "resource": "SALES_CASH_REBATE",
+        "source": "SALE_TRIGGER",
+        "status": "PENDING",
+        "count": 22,
+        "amount": "2230.00",
+        "matched": "0.00"
+      },
+      {
+        "resource": "MANUFACTURER_REBATE",
+        "source": "MANUFACTURER_REBATE",
+        "status": "PENDING",
+        "count": 17,
+        "amount": "5339.00",
+        "matched": "0.00"
+      },
+      {
+        "resource": "MANUAL_REBATE",
+        "source": "MANUAL_REBATE",
+        "status": "SETTLED",
+        "count": 5,
+        "amount": "-17534.85",
+        "matched": "0.00"
+      },
+      {
+        "resource": "EDU_SUBSIDY",
+        "source": "COMPANY_CLAIM",
+        "status": "PENDING",
+        "count": 3,
+        "amount": "600.00",
+        "matched": "0.00"
+      },
+      {
+        "resource": "GOV_SUBSIDY",
+        "source": "SALE_USE",
+        "status": "PENDING",
+        "count": 2,
+        "amount": "3000.00",
+        "matched": "0.00"
+      },
+      {
+        "resource": "MANUAL_REBATE",
+        "source": "MANUAL_REBATE",
+        "status": "CANCELLED",
+        "count": 1,
+        "amount": "-4049.00",
+        "matched": "0.00"
+      }
+    ],
+    "expenses": [
+      {
+        "attribution": "STORE",
+        "status": "approved",
+        "affectsProfit": 1,
+        "count": 98,
+        "amount": "498886.08"
+      },
+      {
+        "attribution": "STORE",
+        "status": "processing",
+        "affectsProfit": 1,
+        "count": 2,
+        "amount": "435.00"
+      },
+      {
+        "attribution": "STORE",
+        "status": "paid",
+        "affectsProfit": 1,
+        "count": 9,
+        "amount": "166383.06"
+      },
+      {
+        "attribution": "STORE",
+        "status": "pending_approval",
+        "affectsProfit": 1,
+        "count": 6,
+        "amount": "167136.07"
+      },
+      {
+        "attribution": "PERSONAL",
+        "status": "pending_approval",
+        "affectsProfit": 1,
+        "count": 2,
+        "amount": "2999.00"
+      },
+      {
+        "attribution": "STORE",
+        "status": "cancelled",
+        "affectsProfit": 1,
+        "count": 11,
+        "amount": "2780.00"
+      },
+      {
+        "attribution": "PRODUCT_SIDE",
+        "status": "withdrawn",
+        "affectsProfit": 1,
+        "count": 1,
+        "amount": "100096.09"
+      },
+      {
+        "attribution": "PRODUCT_SIDE",
+        "status": "processing",
+        "affectsProfit": 1,
+        "count": 2,
+        "amount": "795.00"
+      },
+      {
+        "attribution": "STORE",
+        "status": "rejected",
+        "affectsProfit": 1,
+        "count": 4,
+        "amount": "58036.00"
+      },
+      {
+        "attribution": "STORE",
+        "status": "pending_payment",
+        "affectsProfit": 1,
+        "count": 1,
+        "amount": "239.66"
+      }
+    ],
+    "education": [
+      {
+        "reason": "SALE_RESOURCE_TASK",
+        "status": "pending_submit",
+        "count": 1,
+        "amount": "200.00",
+        "employee": "160.00",
+        "product": "40.00"
+      },
+      {
+        "reason": "SALE_RESOURCE_TASK",
+        "status": "cancelled",
+        "count": 1,
+        "amount": "200.00",
+        "employee": "160.00",
+        "product": "40.00"
+      }
+    ],
+    "performance": [
+      {
+        "source": "education",
+        "status": "approved",
+        "count": 18,
+        "amount": "9920.00"
+      },
+      {
+        "source": "CARE",
+        "status": "approved",
+        "count": 66,
+        "amount": "14755.00"
+      },
+      {
+        "source": "other",
+        "status": "approved",
+        "count": 9,
+        "amount": "3148.90"
+      },
+      {
+        "source": "CARE",
+        "status": "cancelled",
+        "count": 10,
+        "amount": "1310.00"
+      },
+      {
+        "source": "other",
+        "status": "pending_finance",
+        "count": 1,
+        "amount": "268.00"
+      }
+    ]
+  }
+}

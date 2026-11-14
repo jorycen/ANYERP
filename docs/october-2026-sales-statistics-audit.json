@@ -1,0 +1,172 @@
+{
+  "generatedAt": "2026-10-26T15:06:20.087Z",
+  "range": {
+    "startDate": "2026-10-01",
+    "endDate": "2026-10-31",
+    "timeZone": "Asia/Shanghai"
+  },
+  "mode": "read_only_realtime_requery",
+  "persistedRowsChanged": 0,
+  "positiveOrdersChecked": 1152,
+  "ordersWithSalesCorrection": 88,
+  "previousPositiveSales": 5768776.99,
+  "correctedPositiveSales": 5777172.08,
+  "previousSummary": {
+    "salesAmount": 5442416.09,
+    "baseGrossProfit": 588402.46,
+    "approvedAdjustment": 29650.62,
+    "grossProfit": 618053.08,
+    "orderCount": 1152
+  },
+  "correctedSummary": {
+    "salesAmount": 5450811.18,
+    "baseGrossProfit": 588402.46,
+    "approvedAdjustment": 29650.62,
+    "grossProfit": 618053.08,
+    "orderCount": 1152
+  },
+  "salesDifference": 8395.09,
+  "stores": [
+    {
+      "storeId": "D0218262",
+      "storeName": "青羊鹏瑞利",
+      "salesAmount": 68635,
+      "baseGrossProfit": 10741.43,
+      "approvedAdjustment": 1324,
+      "grossProfit": 12065.43,
+      "orderCount": 54
+    },
+    {
+      "storeId": "D0221254",
+      "storeName": "武侯大悦城",
+      "salesAmount": 385272.85,
+      "baseGrossProfit": 40074.35,
+      "approvedAdjustment": 3439,
+      "grossProfit": 43513.35,
+      "orderCount": 74
+    },
+    {
+      "storeId": "D0214832",
+      "storeName": "爱琴海",
+      "salesAmount": 254155.07,
+      "baseGrossProfit": 27247.36,
+      "approvedAdjustment": 1644,
+      "grossProfit": 28891.36,
+      "orderCount": 95
+    },
+    {
+      "storeId": "D0218603",
+      "storeName": "龙泉吾悦",
+      "salesAmount": 327869.76,
+      "baseGrossProfit": 42821.68,
+      "approvedAdjustment": 287,
+      "grossProfit": 43108.68,
+      "orderCount": 95
+    },
+    {
+      "storeId": "D0214268",
+      "storeName": "财大",
+      "salesAmount": 6435,
+      "baseGrossProfit": 4513.73,
+      "approvedAdjustment": 0,
+      "grossProfit": 4513.73,
+      "orderCount": 31
+    },
+    {
+      "storeId": "D0216646",
+      "storeName": "温江合生汇",
+      "salesAmount": 645020.61,
+      "baseGrossProfit": 63226.33,
+      "approvedAdjustment": 3487,
+      "grossProfit": 66713.33,
+      "orderCount": 142
+    },
+    {
+      "storeId": "D0215790",
+      "storeName": "万象城",
+      "salesAmount": 1936858.23,
+      "baseGrossProfit": 252553.79,
+      "approvedAdjustment": 2320,
+      "grossProfit": 254873.79,
+      "orderCount": 254
+    },
+    {
+      "storeId": "D028000",
+      "storeName": "成都自营仓",
+      "salesAmount": 167928,
+      "baseGrossProfit": -19200.14,
+      "approvedAdjustment": 0,
+      "grossProfit": -19200.14,
+      "orderCount": 12
+    },
+    {
+      "storeId": "D0218191",
+      "storeName": "天府大悦城",
+      "salesAmount": 311700.76,
+      "baseGrossProfit": 41443.72,
+      "approvedAdjustment": 1496,
+      "grossProfit": 42939.72,
+      "orderCount": 96
+    },
+    {
+      "storeId": "D0218911",
+      "storeName": "重庆光环",
+      "salesAmount": 405452.01,
+      "baseGrossProfit": 39240.49,
+      "approvedAdjustment": 6060,
+      "grossProfit": 45300.49,
+      "orderCount": 69
+    },
+    {
+      "storeId": "D0220705",
+      "storeName": "重庆龙兴天街",
+      "salesAmount": 87417.99,
+      "baseGrossProfit": 14717.3,
+      "approvedAdjustment": 976,
+      "grossProfit": 15693.3,
+      "orderCount": 66
+    },
+    {
+      "storeId": "D0215327",
+      "storeName": "重庆礼嘉天街",
+      "salesAmount": 236729.28,
+      "baseGrossProfit": 27981.15,
+      "approvedAdjustment": 2954,
+      "grossProfit": 30935.15,
+      "orderCount": 60
+    },
+    {
+      "storeId": "D0215385",
+      "storeName": "北城天街",
+      "salesAmount": 352378.82,
+      "baseGrossProfit": 41431.17,
+      "approvedAdjustment": 844,
+      "grossProfit": 42275.17,
+      "orderCount": 69
+    },
+    {
+      "storeId": "D0213432",
+      "storeName": "西单商场",
+      "salesAmount": 64846.8,
+      "baseGrossProfit": 9287.1,
+      "approvedAdjustment": 19.62,
+      "grossProfit": 9306.72,
+      "orderCount": 30
+    },
+    {
+      "storeId": "D023000",
+      "storeName": "重庆自营仓",
+      "salesAmount": 200111,
+      "baseGrossProfit": -7677,
+      "approvedAdjustment": 4800,
+      "grossProfit": -2877,
+      "orderCount": 5
+    }
+  ],
+  "employee17Today": {
+    "previousSalesAmount": 2034,
+    "correctedSalesAmount": 2019,
+    "orderCount": 2,
+    "grossProfit": 745.33
+  }
+}
