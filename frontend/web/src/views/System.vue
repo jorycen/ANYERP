@@ -43,7 +43,7 @@
             <el-table-column label="操作" width="310">
               <template #default="{ row }">
                 <el-button link type="primary" @click="handleEditUser(row)">编辑</el-button>
-                <el-button v-if="!row.is_boss && !row.region_scoped" link type="primary" @click="handleAssignScope(row)">分配区域及门店</el-button>
+                <el-button v-if="!row.is_boss" link type="primary" @click="handleAssignScope(row)">分配区域及门店</el-button>
                 <el-button link type="warning" @click="handleResetPassword(row)">重置密码</el-button>
                 <el-button
                   link
