@@ -74,7 +74,7 @@ module.exports = {
   // JWT配置
   jwt: {
     secret: process.env.JWT_SECRET || 'change-me-in-env',
-    expiresIn: '7d' // 7天过期
+    expiresIn: '90d' // 90天过期
   },
 
   cloudStorage: {
