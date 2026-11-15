@@ -13,6 +13,18 @@ test('SN重新入库建立新周期基础档案，旧销售所用档案保持',a
   a.equal(old.purchase_cost,1000);a.equal(ref.basis_id,F.id('sn:S:REENTRY'));a.equal(records.get(ref.basis_id).purchase_cost,2000);
   a.equal(Object.hasOwn(records.get(ref.basis_id), 'company_price'), false);
 });
+test('采购入库SN的计价快照优先于商品主数据默认值',async t=>{
+  I.enable();const records=new Map(),ref={basis_id:null,async update(x){Object.assign(this,x);}};
+  t.mock.method(M.SnLog,'findAll',async()=>[]);
+  t.mock.method(M.InventoryFoundation,'findByPk',async key=>records.get(key));
+  t.mock.method(M.InventoryFoundation,'create',async value=>{records.set(value.basis_id,value);return value;});
+  t.mock.method(M.InventoryFoundationRef,'findByPk',async()=>ref);
+  t.mock.method(M.Product,'findByPk',async()=>({name:'笔记本',gross_profit_cost_mode:'COMPANY_PRICE'}));
+  t.mock.method(V,'resolveDocumentTaxBasis',async(o,ls)=>ls.map(l=>({...l,purchaseTaxBasis:{status:'confirmed',invoiceType:'专票13%'}})));
+  await I.captureSn({sn_id:'PURCHASE-SN',sn_code:'SN',product_id:'P',store_id:'A',status:'in_stock',inbound_price:5450,gross_profit_use_standard_price:0},{transaction:tx});
+  const basis=records.get(ref.basis_id);
+  a.equal(basis.cost_mode,'PURCHASE_PRICE');
+});
 test('非SN库存增加不继承旧批次票种和成本；旧销售基础档案不被改写',async t=>{
   I.enable();const old={basis_id:'OLD',invoice_type:'收据',purchase_cost:20},ref={basis_id:'OLD',async update(x){Object.assign(this,x);}},created=[];
   t.mock.method(M.Product,'findByPk',async()=>({name:'配件',need_sn:0}));t.mock.method(M.ProductPrice,'findOne',async()=>({cost_price:50,standard_price:100}));t.mock.method(M.Location,'findByPk',async()=>({type:'normal_qty'}));

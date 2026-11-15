@@ -18,7 +18,14 @@ async function captureSn(value,options={}){
     const docs=await V.resolveDocumentTaxBasis({store_id:sn.store_id},[line],transaction),tax=docs[0].purchaseTaxBasis;
     basis=await M.InventoryFoundation.create({basis_id:basisId,identity_key:key,product_id:sn.product_id,product_name:product?.name||'',entity_type:'sn_cycle',sn_code:sn.sn_code,batch_no:sn.batch_no,
       purchase_cost:Number(sn.inbound_price)>0||zeroConfirmed?F.money(sn.inbound_price):null,
-      cost_mode:product?.gross_profit_cost_mode||null,
+      // The SN's intake snapshot is authoritative when present. The product
+      // master is only a default for legacy/non-purchase intake and must not
+      // overwrite a purchase request's selected cost mode.
+      cost_mode:sn.gross_profit_use_standard_price === 1
+        ? 'COMPANY_PRICE'
+        : sn.gross_profit_use_standard_price === 0
+          ? 'PURCHASE_PRICE'
+          : product?.gross_profit_cost_mode||null,
       invoice_type:tax.status==='confirmed'?tax.invoiceType:null,status:tax.status==='confirmed'?'confirmed':'pending',
       source_data:{source:'sn_intake',purchaseBasis:tax},revision:1,updated_by:'system'}, {transaction});
   }

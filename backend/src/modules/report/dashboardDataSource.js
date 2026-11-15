@@ -613,7 +613,9 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
         `SELECT p.CATEGORY_ID AS categoryId,
                 MAX(p.CATEGORY) AS categoryPath,
                 ROUND(SUM((${orderItemSalesAmountSql()}) * ${factor}), 2) AS salesAmount,
-                ROUND(SUM(oi.QUANTITY * ${factor}), 2) AS quantity
+                ROUND(SUM(oi.QUANTITY * ${factor}), 2) AS quantity,
+                COUNT(DISTINCT o.ORDER_ID) AS orderCount,
+                ROUND(SUM((${grossProfitSql()}) * ${factor}), 2) AS grossProfit
            FROM T_ORDER o
            INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
            ${orderItemTotalsJoin()}
@@ -636,7 +638,9 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
     const categoryIndex = buildFinanceCategoryIndex(categoryRows);
     return rows.map(row => ({
       ...row,
-      categoryPath: categoryIndex.byId.get(String(row.categoryId || ''))?.path || row.categoryPath
+      categoryPath: categoryIndex.byId.get(String(row.categoryId || ''))?.path || row.categoryPath,
+      orderCount: Number(row.orderCount || 0),
+      grossProfit: Number(row.grossProfit || 0)
     }));
   }
 

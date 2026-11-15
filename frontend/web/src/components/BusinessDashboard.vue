@@ -160,7 +160,7 @@
       </article>
     </section>
 
-    <section v-show="showSection('trend')" class="chart-grid trend-section">
+    <section v-show="showSection('trend') && activeDimension !== 'employee'" class="chart-grid trend-section">
       <DashboardPanel title="销售额趋势（按日/周/月）">
         <template #actions>
           <el-radio-group v-model="filters.granularity" size="small" @change="loadOverview">
@@ -179,7 +179,33 @@
       </DashboardPanel>
     </section>
 
-    <section v-show="showSection('store') || showSection('employee') || showSection('productLine')" class="analysis-grid ranking-section">
+    <section v-if="activeDimension === 'employee'" class="employee-analysis-layout">
+      <DashboardPanel title="员工销售业绩排名（按经营毛利排序）">
+        <el-table :data="dashboard.employeeRanking" size="small" height="420" empty-text="暂无员工经营数据">
+          <el-table-column type="index" label="排名" width="56" />
+          <el-table-column prop="employeeName" label="员工" min-width="100" />
+          <el-table-column label="销售额" min-width="120" align="right"><template #default="{ row }">{{ formatCurrency(row.salesAmount) }}</template></el-table-column>
+          <el-table-column label="毛利额" min-width="120" align="right"><template #default="{ row }">{{ dashboard.meta.canViewProfit ? formatCurrency(row.grossProfit) : '不可用' }}</template></el-table-column>
+          <el-table-column label="毛利率" width="90" align="right"><template #default="{ row }">{{ employeeMargin(row) }}</template></el-table-column>
+          <el-table-column prop="participatedOrderCount" label="成交单量" width="90" align="right" />
+          <el-table-column label="每单毛利" width="105" align="right"><template #default="{ row }">{{ employeeAverageProfit(row) }}</template></el-table-column>
+          <el-table-column label="任务完成率" width="105" align="right"><template #default>不可用</template></el-table-column>
+          <el-table-column label="操作" width="68"><template #default="{ row }"><el-button link type="primary" @click="focusEmployee(row)">查看</el-button></template></el-table-column>
+        </el-table>
+      </DashboardPanel>
+      <div class="employee-analysis-side">
+        <DashboardPanel title="个人业绩趋势（销售额 / 毛利额）">
+          <template #actions><el-select v-model="filters.employeeId" clearable filterable placeholder="选择员工" style="width: 150px" @change="loadOverview"><el-option label="全部员工" value="" /><el-option v-for="employee in filterOptions.employees" :key="employee.staffId" :label="employee.name" :value="String(employee.staffId)" /></el-select></template>
+          <div ref="employeeTrendRef" class="employee-trend-chart"></div>
+        </DashboardPanel>
+        <div class="employee-bottom-grid">
+          <DashboardPanel title="毛利贡献占比（Top5 员工）"><div ref="employeeContributionRef" class="employee-donut-chart"></div></DashboardPanel>
+          <DashboardPanel title="员工分析说明"><div class="employee-note"><strong>统计口径</strong><p>销售额、毛利额和成交单量沿用经营看板 API；多人参与订单按后台分配结果展示。</p><p>任务完成率当前接口未返回，显示为不可用，待后台提供统一任务指标后接入。</p></div></DashboardPanel>
+        </div>
+      </div>
+    </section>
+
+    <section v-show="activeDimension !== 'employee' && (showSection('store') || showSection('employee') || showSection('productLine'))" class="analysis-grid ranking-section">
       <DashboardPanel v-show="showSection('store')" title="门店经营排名">
         <el-table :data="dashboard.storeRanking" class="store-ranking-table" size="small" height="260" table-layout="fixed" empty-text="暂无门店销售数据">
           <el-table-column type="index" label="排名" width="42" />
@@ -221,8 +247,25 @@
         </el-table>
       </DashboardPanel>
 
-      <DashboardPanel v-show="showSection('productLine')" title="产品线销售占比">
-        <div ref="productLineRef" class="medium-chart"></div>
+      <DashboardPanel v-show="showSection('productLine')" title="产品线经营分析">
+        <template #actions><el-button v-if="filters.productLine" link type="primary" @click="resetProductCategory">返回一级分类</el-button></template>
+        <div class="category-breadcrumb">
+          <button class="category-crumb" :class="{ active: !filters.productLine }" @click="resetProductCategory">全部产品线</button>
+          <template v-for="(part, index) in productCategoryPath" :key="part.path"><span class="category-separator">/</span><button class="category-crumb" :class="{ active: index === productCategoryPath.length - 1 }" @click="selectProductCategory(part.path)">{{ part.name }}</button></template>
+          <span class="category-hint">点击分类进入下一级</span>
+        </div>
+        <div class="category-analysis-grid">
+          <div ref="productLineRef" class="medium-chart category-chart"></div>
+          <el-table :data="currentProductCategories" size="small" class="category-table" empty-text="当前范围暂无分类数据">
+            <el-table-column type="index" label="排名" width="56" />
+            <el-table-column label="分类" min-width="140"><template #default="{ row }"><el-button v-if="row.children?.length" link type="primary" @click="selectProductCategory(row.path)">{{ row.name }}</el-button><span v-else>{{ row.name }}</span></template></el-table-column>
+            <el-table-column label="销售额" width="130" align="right"><template #default="{ row }">{{ formatCurrency(row.salesAmount) }}</template></el-table-column>
+            <el-table-column label="销售占比" width="100" align="right"><template #default="{ row }">{{ categoryShare(row) }}%</template></el-table-column>
+            <el-table-column label="毛利额" width="120" align="right"><template #default="{ row }">{{ dashboard.meta.canViewProfit ? formatCurrency(row.grossProfit) : '不可用' }}</template></el-table-column>
+            <el-table-column label="毛利率" width="95" align="right"><template #default="{ row }">{{ dashboard.meta.canViewProfit && row.grossMargin != null ? `${row.grossMargin}%` : '不可用' }}</template></el-table-column>
+            <el-table-column prop="orderCount" label="成交单量" width="90" align="right" />
+          </el-table>
+        </div>
       </DashboardPanel>
     </section>
 
@@ -403,6 +446,8 @@ const datePickerRef = ref(null)
 const salesTrendRef = ref(null)
 const profitTrendRef = ref(null)
 const productLineRef = ref(null)
+const employeeTrendRef = ref(null)
+const employeeContributionRef = ref(null)
 const inventoryAgeRef = ref(null)
 const quickRange = ref('week')
 const storeDeviceColumns = [
@@ -441,6 +486,19 @@ const customerSourceRows = ref([])
 const customerSourceSummary = ref({})
 const customerSourceCanViewProfit = ref(false)
 const customerSourceLoading = ref(false)
+const productCategoryPath = computed(() => String(filters.productLine || '').split('/').filter(Boolean).map((name, index, parts) => ({ name, path: parts.slice(0, index + 1).join('/') })))
+function findCategoryNode(nodes, path) {
+  for (const node of nodes || []) {
+    if (node.path === path) return node
+    const found = findCategoryNode(node.children, path)
+    if (found) return found
+  }
+  return null
+}
+const currentProductCategories = computed(() => {
+  const tree = dashboard.productCategoryAnalysis || []
+  return filters.productLine ? (findCategoryNode(tree, filters.productLine)?.children || []) : tree
+})
 const customerSourceKpiCards = computed(() => [
   { key: 'orders', label: '销售单数', value: formatNumber(customerSourceSummary.value.orderCount), icon: Document, color: 'blue' },
   { key: 'sales', label: '销售额', value: formatCurrency(customerSourceSummary.value.salesAmount), icon: Money, color: 'green' },
@@ -484,6 +542,7 @@ function emptyDashboard() {
     employeeRanking: [],
     employeePerformanceDetails: [],
     productLineAnalysis: [],
+    productCategoryAnalysis: [],
     productAnalysis: {
       salesTop10: [],
       grossProfitTop10: [],
@@ -568,6 +627,36 @@ async function selectDimension(value) {
     await nextTick()
     await loadCustomerSourceAnalysis()
   }
+}
+
+function selectProductCategory(path) {
+  filters.productLine = path
+  loadOverview()
+}
+
+function resetProductCategory() {
+  filters.productLine = ''
+  loadOverview()
+}
+
+function categoryShare(row) {
+  const total = currentProductCategories.value.reduce((sum, item) => sum + Number(item.salesAmount || 0), 0)
+  return total ? ((Number(row.salesAmount || 0) / total) * 100).toFixed(2) : '0.00'
+}
+
+function employeeMargin(row) {
+  if (!dashboard.meta.canViewProfit || row.grossProfit == null || !Number(row.salesAmount)) return '不可用'
+  return `${(Number(row.grossProfit) / Number(row.salesAmount) * 100).toFixed(2)}%`
+}
+
+function employeeAverageProfit(row) {
+  if (!dashboard.meta.canViewProfit || row.grossProfit == null || !Number(row.participatedOrderCount)) return '不可用'
+  return formatCurrency(Number(row.grossProfit) / Number(row.participatedOrderCount))
+}
+
+function focusEmployee(row) {
+  filters.employeeId = String(row.staffId || '')
+  loadOverview()
 }
 
 async function loadCustomerSourceAnalysis() {
@@ -793,16 +882,30 @@ function renderCharts() {
   }
 
   getChart(productLineRef.value, 'productLine')?.setOption({
-    tooltip: { trigger: 'item', formatter: '{b}<br/>销售额：{c}<br/>占比：{d}%' },
-    legend: { orient: 'vertical', right: 8, top: 'center' },
-    series: [{
-      name: '销售占比',
-      type: 'pie',
-      radius: ['45%', '70%'],
-      center: ['36%', '52%'],
-      label: { show: false },
-      data: dashboard.productLineAnalysis.map(row => ({ name: row.productLine, value: row.salesAmount }))
-    }]
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: params => `${params[0]?.name}<br/>销售额：${formatCurrency(params[0]?.value)}` },
+    grid: { left: 12, right: 24, top: 16, bottom: 36, containLabel: true },
+    xAxis: { type: 'category', data: currentProductCategories.value.map(row => row.name), axisLabel: { color: '#53627a', interval: 0, rotate: currentProductCategories.value.length > 6 ? 25 : 0 } },
+    yAxis: { type: 'value', axisLabel: { color: '#7a8799', formatter: value => compactNumber(value) }, splitLine: { lineStyle: { type: 'dashed', color: '#e8edf4' } } },
+    series: [{ type: 'bar', barMaxWidth: 28, itemStyle: { color: '#4d8df7', borderRadius: [4, 4, 0, 0] }, data: currentProductCategories.value.map(row => row.salesAmount) }]
+  }, true)
+
+  getChart(employeeTrendRef.value, 'employeeTrend')?.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { top: 0, data: ['销售额（元）', '毛利额（元）'] },
+    grid: { left: 52, right: 18, top: 34, bottom: 30 },
+    xAxis: { type: 'category', data: dashboard.trend.map(row => row.bucket), axisLabel: { color: '#67758a' } },
+    yAxis: { type: 'value', axisLabel: { color: '#67758a', formatter: value => compactNumber(value) }, splitLine: { lineStyle: { type: 'dashed', color: '#e8edf4' } } },
+    series: [
+      { name: '销售额（元）', type: 'bar', barMaxWidth: 24, itemStyle: { color: '#4d8df7', borderRadius: [4, 4, 0, 0] }, data: dashboard.trend.map(row => row.salesAmount) },
+      { name: '毛利额（元）', type: 'bar', barMaxWidth: 24, itemStyle: { color: '#54b879', borderRadius: [4, 4, 0, 0] }, data: dashboard.trend.map(row => row.grossProfit) }
+    ]
+  }, true)
+
+  const topEmployees = (dashboard.employeeRanking || []).slice(0, 5)
+  getChart(employeeContributionRef.value, 'employeeContribution')?.setOption({
+    tooltip: { trigger: 'item', formatter: params => `${params.name}<br/>毛利额：${formatCurrency(params.value)}<br/>占比：${params.percent}%` },
+    legend: { orient: 'vertical', right: 0, top: 'center', type: 'scroll' },
+    series: [{ type: 'pie', radius: ['45%', '72%'], center: ['34%', '52%'], label: { show: false }, data: dashboard.meta.canViewProfit ? topEmployees.map(row => ({ name: row.employeeName, value: row.grossProfit })) : [] }]
   }, true)
 
   getChart(inventoryAgeRef.value, 'inventoryAge')?.setOption({
@@ -1442,6 +1545,23 @@ onBeforeUnmount(() => {
 .dashboard-panel :deep(.panel-header h3) { font-size: 16px; color: #101b38; }
 .dashboard-panel :deep(.el-table th.el-table__cell) { background: #f2f6fc; color: #172647; font-weight: 600; }
 .dashboard-panel :deep(.el-table .cell) { font-variant-numeric: tabular-nums; }
+.category-breadcrumb { display: flex; align-items: center; gap: 8px; min-height: 34px; margin: -4px 0 10px; color: #7a8799; font-size: 12px; }
+.category-crumb { padding: 0; border: 0; color: #53627a; background: transparent; cursor: pointer; font: inherit; }
+.category-crumb:hover, .category-crumb.active { color: #165dff; font-weight: 600; }
+.category-separator { color: #c1cad8; }
+.category-hint { margin-left: auto; color: #98a2b3; }
+.category-analysis-grid { display: grid; grid-template-columns: minmax(320px, 0.85fr) minmax(520px, 1.5fr); gap: 18px; align-items: stretch; }
+.category-chart { min-height: 300px; }
+.category-table { min-width: 0; }
+.employee-analysis-layout { display: grid; grid-template-columns: minmax(560px, 1.05fr) minmax(520px, 1fr); gap: 10px; margin-bottom: 10px; }
+.employee-analysis-layout > .dashboard-panel { min-width: 0; }
+.employee-analysis-side { display: grid; gap: 10px; min-width: 0; }
+.employee-trend-chart { height: 330px; }
+.employee-bottom-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; min-width: 0; }
+.employee-donut-chart { height: 260px; }
+.employee-note { min-height: 260px; padding: 18px; color: #53627a; font-size: 13px; line-height: 1.7; }
+.employee-note strong { color: #172647; font-size: 14px; }
+.employee-note p { margin: 12px 0 0; }
 .large-chart, .medium-chart { height: 245px; }
 .dimension-store .ranking-section .dashboard-panel:first-child,
 .dimension-overall .ranking-section .dashboard-panel:first-child,

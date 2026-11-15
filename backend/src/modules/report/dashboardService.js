@@ -334,13 +334,15 @@ function buildProductCategoryTree(rows) {
       const path = parts.slice(0, index + 1).join('/');
       let node = nodes.get(path);
       if (!node) {
-        node = { categoryId: path, name, path, level: index + 1, salesAmount: 0, quantity: 0, children: [] };
+        node = { categoryId: path, name, path, level: index + 1, salesAmount: 0, quantity: 0, orderCount: 0, grossProfit: 0, children: [] };
         nodes.set(path, node);
         if (parent) parent.children.push(node);
         else roots.push(node);
       }
       node.salesAmount = roundMoney(node.salesAmount + salesAmount);
       node.quantity += quantity;
+      node.orderCount += Number(row.orderCount || 0);
+      node.grossProfit = roundMoney(node.grossProfit + Number(row.grossProfit || 0));
       parent = node;
     });
   });
@@ -350,6 +352,9 @@ function buildProductCategoryTree(rows) {
     .map(node => ({
       ...node,
       quantity: Number(node.quantity.toFixed(2)),
+      orderCount: Number(node.orderCount || 0),
+      grossProfit: roundMoney(node.grossProfit),
+      grossMargin: node.salesAmount ? Number((node.grossProfit / node.salesAmount * 100).toFixed(2)) : null,
       children: sortNodes(node.children)
     }));
   return sortNodes(roots);
