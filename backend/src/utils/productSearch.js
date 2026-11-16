@@ -26,4 +26,15 @@ function stock(db, alias = 'Product', storeIds = []) {
   const ordinary = `(SELECT COALESCE(SUM(GREATEST(COALESCE(si.NORMAL_QTY,0),COALESCE(si.REGULAR_QTY,0)+COALESCE(si.SUBSIDY_QTY,0)+COALESCE(si.SECOND_QTY,0))),0) FROM T_INVENTORY si WHERE si.PRODUCT_ID=${alias}.PRODUCT_ID${scope})`;
   return `(CASE WHEN ${alias}.NEED_SN=1 THEN ${serial} ELSE ${ordinary} END)`;
 }
-module.exports = { tokens, expressions, stock };
+function fieldExpressions(db, query, alias = 'Product', storeIds = null, snAlias = null) {
+  if (![alias,...(snAlias?[snAlias]:[])].every(value=>/^[A-Za-z][A-Za-z0-9_]*$/.test(value))) throw new Error('Invalid product alias');
+  const clauses = [];
+  const like = (column, value) => `${column} LIKE ${db.escape('%'+value.replace(/[!%_]/g,'!$&')+'%')} ESCAPE '!'`;
+  for (const token of tokens(query.productName)) clauses.push(like(`${alias}.NAME`,token));
+  for (const token of tokens(query.manufacturerConfig)) clauses.push(like(`${alias}.CONFIG`,token));
+  for (const token of tokens(query.manufacturerCode)) clauses.push(`(${like(`${alias}.MANUFACTURER_CODE`,token)} OR EXISTS (SELECT 1 FROM T_PRODUCT_PN field_pn WHERE field_pn.PRODUCT_ID=${alias}.PRODUCT_ID AND field_pn.IS_DELETED=0 AND field_pn.STATUS=1 AND ${like('field_pn.PN_CODE',token)}))`);
+  const scope = storeIds === null || storeIds.includes('*') ? '' : storeIds.length ? ` AND field_sn.STORE_ID IN (${storeIds.map(id=>db.escape(String(id))).join(',')})` : ' AND 1=0';
+  for (const token of tokens(query.snCode)) clauses.push(snAlias ? like(`${snAlias}.SN_CODE`,token) : `EXISTS (SELECT 1 FROM T_PRODUCT_SN field_sn WHERE field_sn.PRODUCT_ID=${alias}.PRODUCT_ID AND field_sn.IS_DELETED=0${scope} AND ${like('field_sn.SN_CODE',token)})`);
+  return clauses.join(' AND ');
+}
+module.exports = { tokens, expressions, stock, fieldExpressions };

@@ -18,7 +18,7 @@
             <span class="legend-item"><i class="legend-dot no-subsidy-resource" />无法国补</span>
           </div>
           <div class="filter-bar erp-query-grid">
-            <div class="erp-query-field"><span class="erp-query-label">商品名称 / 编码 / 厂商编码</span><el-input v-model="summaryQuery.keyword" placeholder="搜索商品名称/编码/厂商编码" clearable style="width: 240px" @keyup.enter="loadSummary" /></div>
+            <div v-for="field in inventorySearchFields" :key="field.key" class="erp-query-field"><span class="erp-query-label">{{field.label}}</span><el-input v-model="summaryQuery[field.key]" :placeholder="field.label" clearable style="width:200px" @keyup.enter="summaryQuery.page=1;loadSummary()" /></div>
             <div class="erp-query-field"><span class="erp-query-label">商品类别</span><el-select v-model="summaryQuery.category" placeholder="商品类别" clearable style="width: 150px" @change="loadSummary">
               <el-option v-for="cat in categories" :key="cat" :label="cat" :value="cat" />
             </el-select></div>
@@ -233,9 +233,10 @@
         <!-- SN库存清单 -->
         <el-tab-pane label="SN库存清单" name="sn-inventory">
           <div class="filter-bar erp-query-grid">
-            <div class="erp-query-field"><span class="erp-query-label">SN / PN / 商品名称 / 编码</span><el-input
-              v-model="snInventoryQuery.keyword"
-              placeholder="搜索SN/PN/商品名称/编码"
+            <div v-for="field in inventorySearchFields" :key="field.key" class="erp-query-field"><span class="erp-query-label">{{field.label}}</span><el-input v-model="snInventoryQuery[field.key]" :placeholder="field.label" clearable style="width:200px" @keyup.enter="querySnInventory" /></div>
+            <div class="erp-query-field"><span class="erp-query-label">SN码</span><el-input
+              v-model="snInventoryQuery.snCode"
+              placeholder="SN码"
               clearable
               style="width: 230px"
               @keyup.enter="querySnInventory"
@@ -707,7 +708,7 @@
               <el-input v-model="transferHistoryQuery.transferNo" placeholder="调拨单号" clearable style="width: 180px" @keyup.enter="searchTransferHistory" />
               <el-select v-model="transferHistoryQuery.fromStoreId" placeholder="出库门店" filterable clearable style="width: 170px" @change="searchTransferHistory"><el-option v-for="s in transferStoreOptions" :key="s.store_id" :label="s.name" :value="s.store_id" /></el-select>
               <el-select v-model="transferHistoryQuery.toStoreId" placeholder="接收门店" filterable clearable style="width: 170px" @change="searchTransferHistory"><el-option v-for="s in transferStoreOptions" :key="s.store_id" :label="s.name" :value="s.store_id" /></el-select>
-              <el-input v-model="transferHistoryQuery.productKeyword" placeholder="商品名称 / 编码 / 厂商编码" clearable style="width: 260px" @keyup.enter="searchTransferHistory" />
+              <el-input v-for="field in inventorySearchFields" :key="field.key" v-model="transferHistoryQuery[field.key]" :placeholder="field.label" clearable style="width:200px" @keyup.enter="searchTransferHistory" />
               <el-select v-model="transferHistoryQuery.status" placeholder="全部状态" clearable style="width: 130px" @change="searchTransferHistory">
                 <el-option label="全部状态" value="" />
                 <el-option label="待出库" value="pending" />
@@ -2060,10 +2061,12 @@ const inventoryModelFilterOptions = [
   { label: '热卖机型（近7天）', value: 'hot7' },
   { label: '高毛利机型（近7天）', value: 'highMargin7' }
 ]
+const inventorySearchFields = [{key:'productName',label:'商品名称'},{key:'manufacturerCode',label:'厂商编码'},{key:'manufacturerConfig',label:'厂商配置信息'}]
 const summaryQuery = reactive({
   page: 1,
   pageSize: 20,
   keyword: '',
+  productName:'',manufacturerCode:'',manufacturerConfig:'',
   category: '',
   storeId: '',
   productType: '',
@@ -2121,6 +2124,7 @@ const snInventoryQuery = reactive({
   page: 1,
   pageSize: 20,
   keyword: '',
+  productName:'',manufacturerCode:'',manufacturerConfig:'',snCode:'',
   storeId: '',
   locationId: '',
   status: '',
@@ -2299,6 +2303,7 @@ const transferHistoryQuery = reactive({
   fromStoreId: '',
   toStoreId: '',
   productKeyword: '',
+  productName:'',manufacturerCode:'',manufacturerConfig:'',
   status: '',
   startDate: '',
   endDate: ''
@@ -3191,6 +3196,7 @@ const resetSnInventoryQuery = async () => {
   Object.assign(snInventoryQuery, {
     page: 1,
     keyword: '',
+    productName:'',manufacturerCode:'',manufacturerConfig:'',snCode:'',
     storeId: '',
     locationId: '',
     status: '',
@@ -4367,7 +4373,9 @@ const loadTransferHistory = async () => {
       transferNo: transferHistoryQuery.transferNo || undefined,
       fromStoreId: transferHistoryQuery.fromStoreId || undefined,
       toStoreId: transferHistoryQuery.toStoreId || undefined,
-      productKeyword: transferHistoryQuery.productKeyword.trim() || undefined,
+      productName: transferHistoryQuery.productName.trim() || undefined,
+      manufacturerCode: transferHistoryQuery.manufacturerCode.trim() || undefined,
+      manufacturerConfig: transferHistoryQuery.manufacturerConfig.trim() || undefined,
       status: transferHistoryQuery.status || undefined,
       startDate: transferHistoryQuery.startDate || undefined,
       endDate: transferHistoryQuery.endDate || undefined
@@ -4391,6 +4399,7 @@ const resetTransferHistoryQuery = () => {
     fromStoreId: '',
     toStoreId: '',
     productKeyword: '',
+    productName:'',manufacturerCode:'',manufacturerConfig:'',
     status: '',
     startDate: '',
     endDate: ''

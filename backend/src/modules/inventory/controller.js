@@ -656,6 +656,8 @@ async function getSnInventoryList(ctx) {
     replacements.statusValues = statusValues;
   }
   const snSearch = productSearch.expressions(sequelize, keyword, 'p', storeId ? [storeId] : allowedStoreIds, 'sn');
+  const fieldSearch = productSearch.fieldExpressions(sequelize, ctx.query, 'p', storeId ? [storeId] : allowedStoreIds, 'sn');
+  if (fieldSearch) where.push(fieldSearch);
   if (productSearch.tokens(keyword).length) where.push(snSearch.where);
   if (resourceType) {
     const statusSql = resourceStatus ? ' AND rr.CURRENT_STATUS = :resourceStatus' : '';
@@ -1784,6 +1786,8 @@ async function getList(ctx) {
     if (category) productWhere.category = category;
     const search = productSearch.expressions(sequelize, keyword, 'Product', storeIds);
     if (productSearch.tokens(keyword).length) productWhere[Op.and] = [sequelize.literal(search.where)];
+    const fieldSearch = productSearch.fieldExpressions(sequelize, ctx.query, 'Product', storeIds);
+    if (fieldSearch) productWhere[Op.and] = [...(productWhere[Op.and] || []), sequelize.literal(fieldSearch)];
     const allProducts = await Product.findAll({
       where: productWhere,
       attributes: {include:[[sequelize.literal(search.rank),'search_rank']]},
@@ -4877,6 +4881,8 @@ async function getTransferList(ctx) {
     if (transferNo) where[Op.and].push({ transfer_no: { [Op.like]: `%${String(transferNo).trim()}%` } });
     const productCondition = buildTransferProductKeywordCondition(productKeyword);
     if (productCondition) where[Op.and].push(productCondition);
+    const fieldSearch = productSearch.fieldExpressions(sequelize, ctx.query, 'field_product');
+    if (fieldSearch) where[Op.and].push(sequelize.literal(`EXISTS (SELECT 1 FROM T_TRANSFER_ITEM field_item JOIN T_PRODUCT field_product ON field_product.PRODUCT_ID=field_item.PRODUCT_ID WHERE field_item.TRANSFER_ID=Transfer.TRANSFER_ID AND field_item.QUANTITY>0 AND ${fieldSearch})`));
     if (startDate || endDate) {
       const createTime = {};
       if (startDate) createTime[Op.gte] = `${String(startDate).slice(0, 10)} 00:00:00`;
