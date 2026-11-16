@@ -93,6 +93,11 @@ router.post('/expense/selection-summary', require('./controller').previewExpense
 router.post('/expense/batch-submit', require('./controller').batchSubmitExpenses);
 router.get('/expense/form-options', require('./expenseApplication').options);
 router.get('/expense/profit-deduction-options', require('./expenseProfitDeduction').options);
+// Read-only form preview shares the exact normalizer used when creating expenses.
+router.post('/expense/items-preview', async ctx => {
+  const { normalizedItems, normalizedAmount } = require('./expenseItems').normalizeInput(ctx, ctx.request.body);
+  ctx.body = { code: 0, data: { expenseItems: normalizedItems, amount: normalizedAmount } };
+});
 router.post('/expense/profit-deduction-preview', require('./expenseProfitDeduction').preview);
 router.get('/expense/:id', getExpenseDetail);
 router.put('/expense/:id/attribution', updateExpenseAttribution);

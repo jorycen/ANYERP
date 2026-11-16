@@ -1171,34 +1171,47 @@
     </el-dialog>
 
     <!-- 添加支出对话框-->
-    <el-dialog v-model="expenseDialogVisible" :title="expenseAttributionOnly ? '调整费用归属' : (expenseForm.status === 'withdrawn' ? '编辑并重新提交费用单' : (expenseForm.expenseId ? '编辑费用单草稿' : '新建费用单'))" width="620px" @close="handleDialogClose">
+    <el-dialog v-model="expenseDialogVisible" :title="expenseAttributionOnly ? '调整费用归属' : (expenseForm.status === 'withdrawn' ? '编辑并重新提交费用单' : (expenseForm.expenseId ? '编辑费用单草稿' : '新建费用单'))" width="min(760px, 94vw)" @close="handleDialogClose">
       <el-form :model="expenseForm" label-width="100px">
-        <el-form-item v-if="!expenseAttributionOnly" label="费用明细" required>
-          <div class="expense-item-editor">
-            <div v-for="(item, index) in expenseForm.expenseItems" :key="index" class="expense-item-row">
-              <el-select v-model="item.expenseTypeId" placeholder="报销类型" style="flex:1"><el-option v-for="type in expenseTypeOptions" :key="type.type_id" :label="type.name" :value="type.type_id" /></el-select>
-              <el-input-number v-model="item.amount" :min="0" :precision="2" controls-position="right" style="width:150px" />
-              <el-input v-model="item.remark" placeholder="明细说明" maxlength="1000" style="width:160px" />
-              <el-button v-if="expenseForm.expenseItems.length > 1" link type="danger" @click="expenseForm.expenseItems.splice(index, 1)">删除</el-button>
-            </div>
-            <el-button link type="primary" @click="expenseForm.expenseItems.push({ expenseTypeId: '', amount: 0, remark: '' })">增加报销类型</el-button>
-            <div class="form-help">费用总额：¥{{ expenseItemsTotal.toFixed(2) }}</div>
-          </div>
-        </el-form-item>
+        <div class="expense-form-pair">
         <el-form-item label="门店" required>
           <el-select v-model="expenseForm.storeId" placeholder="请选择门店" style="width: 100%" :disabled="Boolean(expenseForm.expenseId) && expenseForm.status !== 'withdrawn'">
             <el-option v-for="s in stores" :key="s.store_id" :label="s.name" :value="s.store_id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="整单金额">
-          <span>¥{{ formatMoney(expenseAttributionOnly ? expenseForm.amount : expenseItemsTotal) }}</span>
-        </el-form-item>
+        <el-form-item label="区域"><el-input :model-value="expenseRegionName" readonly placeholder="随门店自动带入" /></el-form-item>
+        </div>
         <el-form-item label="费用发生方" required>
           <el-input v-model="expenseForm.expenseParty" placeholder="供应商、员工或外部单位" @input="expenseForm.recipient.supplierId && (expenseForm.recipient = {})"><template #append><el-button @click="expensePaymentFields?.search(expenseForm.expenseParty)">查询</el-button></template></el-input>
         </el-form-item>
-        <el-form-item label="费用日期">
+        <div class="expense-form-pair">
+        <el-form-item label="支付方式">
+          <el-select v-model="expenseForm.paymentMethod" placeholder="请选择" style="width: 100%">
+            <el-option label="公司付款—单位账户" value="CORPORATE" />
+            <el-option label="公司付款—其他账户" value="CORPORATE_OTHER" />
+            <el-option label="员工垫付报销" value="PERSONAL_ADVANCE" />
+            <el-option label="抵扣毛利" value="PROFIT_DEDUCTION" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="费用时间">
           <el-date-picker v-model="expenseForm.expenseDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
         </el-form-item>
+        </div>
+        <el-form-item v-if="!expenseAttributionOnly" label="报销明细" required>
+          <div class="expense-item-editor">
+            <div v-for="(item, index) in expenseForm.expenseItems" :key="index" class="expense-item-row">
+              <el-select v-model="item.expenseTypeId" placeholder="选择报销类型" aria-label="报销类型" style="flex:1"><el-option v-for="type in expenseTypeOptions" :key="type.type_id" :label="type.name" :value="type.type_id" /></el-select>
+              <el-input-number v-model="item.amount" :min="0" :precision="2" controls-position="right" style="width:150px" aria-label="费用金额（元）" />
+              <el-button v-if="expenseForm.expenseItems.length > 1" link type="danger" @click="expenseForm.expenseItems.splice(index, 1)">删除</el-button>
+              <el-input v-model="item.remark" placeholder="明细说明" maxlength="1000" class="expense-line-remark" />
+            </div>
+            <el-button link type="primary" @click="expenseForm.expenseItems.push({ expenseTypeId: '', amount: 0, remark: '' })">增加报销类型</el-button>
+          </div>
+        </el-form-item>
+        <div class="expense-form-pair expense-total-row">
+          <el-form-item label="汇总金额"><strong class="expense-total">{{ expenseAttributionOnly ? '¥' + formatMoney(expenseForm.amount) : expenseTotalLabel }}</strong></el-form-item>
+          <el-form-item label="是否有发票"><el-switch v-model="expenseForm.hasInvoice" /></el-form-item>
+        </div>
         <template v-if="expenseAttributionOnly || expenseForm.expenseId">
         <el-form-item label="费用归属" required>
           <el-select v-model="expenseForm.attributionType" style="width: 100%" @change="handleAttributionTypeChange">
@@ -1258,18 +1271,9 @@
         <el-form-item label="计入门店经营利润">
           <el-switch v-model="expenseForm.affectsStoreProfit" />
         </el-form-item>
-        <el-form-item label="支付方式">
-          <el-select v-model="expenseForm.paymentMethod" placeholder="请选择" style="width: 100%">
-            <el-option label="公司付款—单位账户" value="CORPORATE" />
-            <el-option label="公司付款—其他账户" value="CORPORATE_OTHER" />
-            <el-option label="员工垫付报销" value="PERSONAL_ADVANCE" />
-            <el-option label="抵扣毛利" value="PROFIT_DEDUCTION" />
-          </el-select>
-        </el-form-item>
+
         <ExpenseProfitDeductionFields v-if="expenseForm.paymentMethod === 'PROFIT_DEDUCTION' && !expenseAttributionOnly" v-model="expenseForm.profitDeduction" :store-id="expenseForm.storeId" :amount="expenseItemsTotal" />
-        <el-form-item label="是否有发票">
-          <el-switch v-model="expenseForm.hasInvoice" />
-        </el-form-item>
+
         <template v-if="expenseForm.hasInvoice">
           <el-form-item label="发票类型">
             <el-input v-model="expenseForm.invoiceType" placeholder="如：普票、专票" />
@@ -2299,7 +2303,31 @@ const currentDistributorName = computed(() => {
 })
 
 const expenseTypeOptions = ref([])
-const expenseItemsTotal = computed(() => expenseForm.expenseItems.reduce((sum, item) => sum + Number(item.amount || 0), 0))
+const expenseItemsTotal = ref(null)
+const expenseTotalLabel = ref('请填写费用明细')
+const expenseRegionName = computed(() => {
+  const store = stores.value.find(item => String(item.store_id) === String(expenseForm.storeId))
+  return store?.region_name || store?.regionName || store?.Region?.name || ''
+})
+let expensePreviewSequence = 0
+watch(() => expenseForm.expenseItems.map(item => [item.expenseTypeId, item.amount]), async () => {
+  const sequence = ++expensePreviewSequence
+  expenseItemsTotal.value = null
+  if (!expenseForm.expenseItems.length || expenseForm.expenseItems.some(item => !item.expenseTypeId || !(Number(item.amount) > 0))) {
+    expenseTotalLabel.value = '请填写费用明细'
+    return
+  }
+  expenseTotalLabel.value = '汇总中…'
+  try {
+    const result = await api.previewExpenseItems({ expenseItems: expenseForm.expenseItems })
+    if (sequence !== expensePreviewSequence) return
+    if (result.code !== 0 || !Number.isFinite(Number(result.data?.amount))) throw new Error(result.message || '汇总失败')
+    expenseItemsTotal.value = Number(result.data.amount)
+    expenseTotalLabel.value = '¥' + formatMoney(result.data.amount)
+  } catch (error) {
+    if (sequence === expensePreviewSequence) expenseTotalLabel.value = error.message || '汇总不可用，请重试'
+  }
+}, { deep: true })
 
 const selectedPayableIds = computed(() => [...new Set(selectedPayables.value.map(p => p.payable_id))])
 
@@ -4280,6 +4308,7 @@ const validateExpenseForm = () => {
     ElMessage.warning('请选择门店')
     return false
   }
+  if (expenseItemsTotal.value === null) { ElMessage.warning('请完成费用明细并等待汇总成功'); return false }
   if (expenseForm.expenseItems.some(item=>!Number.isFinite(Number(item.amount))||Number(item.amount)<=0)) {
     ElMessage.warning('请输入正确的金额')
     return false
@@ -4756,4 +4785,11 @@ const restoreAccountTxnDraft = () => {
 .expense-item-editor { width:100%; }
 .expense-item-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid #edf1f7; }
 .expense-item-row :deep(.el-select) { min-width:145px; }
+.expense-form-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
+.expense-form-pair > * { min-width: 0; }
+.expense-total-row { padding: 16px 0 0; margin-bottom: 20px; background: var(--el-fill-color-light); border-radius: 6px; }
+.expense-total { color: var(--el-color-primary); font-size: 18px; font-variant-numeric: tabular-nums; }
+.expense-item-row { display: grid; grid-template-columns: minmax(145px, 1fr) 150px 32px; }
+.expense-line-remark { grid-column: 1 / -1; }
+@media (max-width: 600px) { .expense-form-pair { grid-template-columns: minmax(0, 1fr); gap: 0; } }
 </style>

@@ -1,5 +1,15 @@
 const {test}=require('node:test'),a=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const I=require('../src/modules/finance/expenseItems'),A=require('../src/modules/finance/expenseAmortization');
+test('表单汇总和创建共用明细校验，金额精确到分且旧单类型仍兼容',()=>{
+ const ctx={throw(status,message){throw Object.assign(new Error(message),{status});}};
+ const result=I.normalizeInput(ctx,{expenseItems:[{expenseTypeId:'A',amount:'0.10'},{expenseTypeId:'B',amount:'0.20'}]});
+ a.equal(result.normalizedAmount,0.3);
+ a.equal(result.normalizedItems.length,2);
+ a.equal(I.normalizeInput(ctx,{expenseTypeId:'OLD',amount:'15.30'}).normalizedAmount,15.3);
+ for(const expenseItems of [[],[{amount:1}],[{expenseTypeId:'A',amount:0}],[{expenseTypeId:'A',amount:'abc'}],[{expenseTypeId:'A',amount:1.001}],Array(101).fill({expenseTypeId:'A',amount:1}),[{expenseTypeId:'A',amount:10000000000}]]){
+   a.throws(()=>I.normalizeInput(ctx,{expenseItems}),error=>error.status===400);
+ }
+});
 test('当前启动迁移补明细字段并验证可查询，失败不能跳过',async()=>{
  const s=fs.readFileSync(require.resolve('../src/utils/dbMigration'),'utf8');
  a.match(s.slice(s.indexOf('async function runSchemaMigrations()'),s.indexOf('async function ensureProfitAdjustmentCorrectionSchema()')),/await ensureExpenseItemsSchema\(\)/);

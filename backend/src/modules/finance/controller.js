@@ -848,22 +848,7 @@ async function createExpense(ctx) {
   if (!targetStoreId) ctx.throw(400, '请选择门店');
   const allowed = user.accessibleStoreIds || [];
   if (!allowed.includes('*') && !allowed.map(String).includes(String(targetStoreId))) ctx.throw(403, '无权操作该门店');
-  if (expenseItems !== undefined && (!Array.isArray(expenseItems) || !expenseItems.length || expenseItems.length>100)) ctx.throw(400,'费用明细须为1至100行');
-  const requestedItems = Array.isArray(expenseItems) && expenseItems.length
-    ? expenseItems
-    : (expenseTypeId ? [{ expenseTypeId, amount }] : []);
-  if (!requestedItems.length) ctx.throw(400, '请至少添加一条报销类型');
-  const normalizedItems = [];
-  for (const item of requestedItems) {
-    if(!item || typeof item!=='object')ctx.throw(400,'费用明细格式无效');
-    const itemTypeId = String(item.expenseTypeId || item.typeId || '').trim();
-    const itemAmount = Number(item.amount);
-    if (!itemTypeId) ctx.throw(400, '每条费用明细都必须选择报销类型');
-    if (!Number.isFinite(itemAmount) || itemAmount <= 0) ctx.throw(400, '每条费用明细金额必须大于0');
-    if (Math.abs(itemAmount * 100 - Math.round(itemAmount * 100)) > 0.000001) ctx.throw(400, '费用明细金额最多两位小数');
-    normalizedItems.push({ expenseTypeId: itemTypeId, amount: Math.round(itemAmount * 100) / 100, remark: String(item.remark || '').trim() });
-  }
-  const normalizedAmount = Math.round(normalizedItems.reduce((sum, item) => sum + item.amount, 0) * 100) / 100;
+  const { normalizedItems, normalizedAmount } = require('./expenseItems').normalizeInput(ctx, { expenseItems, expenseTypeId, amount });
   const primaryExpenseTypeId = normalizedItems[0].expenseTypeId;
   if (!String(expenseParty || '').trim()) ctx.throw(400, '请填写费用发生方');
   if (!Number.isSafeInteger(Math.round(normalizedAmount*100)) || normalizedAmount>9999999999.99)ctx.throw(400,'费用总额超出有效范围');

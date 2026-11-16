@@ -234,6 +234,7 @@ function exportExcel(url, params, fallbackFileName) {
 
 export default {
   getExpenseDeductionOptions: storeId => api.get('/finance/expense/profit-deduction-options',{params:{storeId}}),
+  previewExpenseItems: data => api.post('/finance/expense/items-preview', data),
   previewExpenseDeduction: data => api.post('/finance/expense/profit-deduction-preview',data),
   getCouponSchemes: storeId => api.get('/dict/coupon-schemes', {params:{storeId}}),
   saveCouponScheme: (id,data) => id ? api.put(`/dict/coupon-schemes/${id}`,data) : api.post('/dict/coupon-schemes',data),
