@@ -336,6 +336,7 @@ async function runSchemaMigrations() {
   await ensureExpenseRemarkSchema();
   await ensureExpenseRecipientSchema();
   await ensureExpenseAmortizationSchema();
+  await ensureExpenseItemsSchema();
   await checkAndAddColumn('T_RESOURCE_RIGHT_CHANGE_ORDER', 'REWARD_SNAPSHOT_JSON', 'TEXT COMMENT "销售归档冻结的权益奖励规则及金额"');
   // All change-order model reads include this column; fail readiness if DDL failed.
   await sequelize.query('SELECT REWARD_SNAPSHOT_JSON FROM T_RESOURCE_RIGHT_CHANGE_ORDER LIMIT 0');
@@ -1441,6 +1442,11 @@ async function ensureExpenseRecipientSchema() {
   // The shared Expense model is also queried by inbound pages. Do not mark
   // the API ready if the compatibility column could not be created.
   await sequelize.query('SELECT RECIPIENT_SNAPSHOT_JSON FROM T_EXPENSE LIMIT 0');
+}
+
+async function ensureExpenseItemsSchema() {
+  await checkAndAddColumn('T_EXPENSE','EXPENSE_ITEMS_JSON','LONGTEXT NULL COMMENT "费用单报销类型及金额明细JSON"');
+  await sequelize.query('SELECT EXPENSE_ITEMS_JSON FROM T_EXPENSE LIMIT 0');
 }
 
 async function ensureExpenseAccountingSchema() {
@@ -5143,6 +5149,7 @@ async function seedPermissionData() {
 }
 
 module.exports = {
+  ensureExpenseItemsSchema,
   ensureInventoryFoundationSchema,
   ensureProfitAdjustmentCorrectionSchema,
   ensureExpenseAmortizationSchema,

@@ -54,7 +54,7 @@ function expandExpenseRows(rows, { dateMode, startDate, endDate, monthKeys = [] 
 }
 
 function expenseEventKey(row) {
-  return `expense:${row.expenseId}:${row.storeId || 'company'}${row.amortizationMonth ? `:${row.amortizationMonth}` : ''}`;
+  return `expense:${row.expenseId}:${row.storeId || 'company'}${row.amortizationMonth ? `:${row.amortizationMonth}` : ''}${row.expenseTypeKey ? ':type:'+row.expenseTypeKey : ''}`;
 }
 
 async function assertScheduleOpen(expense, months, transaction) {

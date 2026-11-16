@@ -792,6 +792,7 @@ const detailFieldLabels = { recipient_display: '\u6536\u6b3e\u4fe1\u606f',
 }
 Object.assign(detailFieldLabels, { expense_date: '\u8d39\u7528\u65e5\u671f', accounting_month: '\u6838\u7b97\u6708\u4efd', affects_store_profit: '\u8ba1\u5165\u95e8\u5e97\u5229\u6da6', has_invoice: '\u662f\u5426\u6709\u53d1\u7968', invoice_no: '\u53d1\u7968\u53f7', attribution_type: '\u8d39\u7528\u5f52\u5c5e', attribution_method: '\u5206\u644a\u65b9\u5f0f', related_order_no: '\u5173\u8054\u8ba2\u5355', target_type: '\u5f52\u5c5e\u7c7b\u578b', target_name: '\u5f52\u5c5e\u5bf9\u8c61', url: '\u9644\u4ef6' })
 const detailArrayLabels = { items: '采购商品明细', OrderItems: '订单商品明细', InboundItems: '入库商品明细', originalOrderItems: '原订单商品明细', attachments: '附件' }
+detailArrayLabels.expense_items = '费用明细'
 Object.assign(detailArrayLabels, { attribution_details: '\u8d39\u7528\u5f52\u5c5e\u5206\u644a' })
 const detailArrayColumnLabels = {
   productName: '入库商品', sourceProductName: '原销售商品', sourceSn: '原销售SN', snCode: '入库SN', pnCode: 'PN',
@@ -802,6 +803,7 @@ const detailArrayColumnLabels = {
   store_name: '门店', storeName: '门店', reason: '原因', original_name: '附件名称', mime_type: '文件类型', file_size: '文件大小'
 }
 Object.assign(detailArrayColumnLabels, { target_type: '\u5f52\u5c5e\u7c7b\u578b', target_name: '\u5f52\u5c5e\u5bf9\u8c61', url: '\u9644\u4ef6' })
+Object.assign(detailArrayColumnLabels,{expenseType:'报销类型',remark:'明细说明'})
 const detailAllowedKeys = new Set([
   'resource_name',
   'sales_order_no', 'sale_price', 'original_pickup_price', 'settlement_price_at_sale', 'po_policy_at_sale', 'so_policy_at_sale', 'other_policy_at_sale', 'policy_remark', 'policy_name', 'policy_content', 'sn',
@@ -819,6 +821,7 @@ function detailLabel(key) {
   if (detailFieldLabels[key]) return detailFieldLabels[key]
   return String(key).replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ')
 }
+hiddenDetailKeys.add('expenseTypeId')
 const correctionFieldLabels = {
   correction_scope: '纠错范围', correction_snapshot_note: '数据依据与生效规则', correction_applied_at: '纠错生效时间',
   correction_receivable_amount: '原订单用户应收', correction_payment_fee: '原支付手续费', correction_freight: '原运费扣减', correction_supplement: '原补录金额',
@@ -875,13 +878,13 @@ function correctionReviewSections(data) {
 }
 function detailArraySections(data = {}) {
   return Object.entries(data)
-    .filter(([key, value]) => ['items', 'OrderItems', 'InboundItems', 'originalOrderItems', 'correction_order_items', 'attribution_details', 'attachments'].includes(key) && Array.isArray(value) && value.length && !hiddenDetailKeys.has(key))
+    .filter(([key, value]) => ['expense_items', 'items', 'OrderItems', 'InboundItems', 'originalOrderItems', 'correction_order_items', 'attribution_details', 'attachments'].includes(key) && Array.isArray(value) && value.length && !hiddenDetailKeys.has(key))
     .map(([key, rows]) => {
       const objectRows = rows.filter(row => row && typeof row === 'object' && !Array.isArray(row))
       if (!objectRows.length) return null
       const keys = [...new Set(objectRows.flatMap(row => Object.keys(row)))]
         .filter(columnKey => !hiddenDetailKeys.has(columnKey) && objectRows.some(row => row[columnKey] !== undefined && row[columnKey] !== null && row[columnKey] !== '' && typeof row[columnKey] !== 'object'))
-      const preferred = key === 'attribution_details' ? ['target_type', 'target_name', 'amount', 'reason'] : ['product_name', 'gross_profit_cost_mode', 'product_code', 'pn_code', 'sn_code', 'quantity', 'current_quantity', 'unit_price', 'amount', 'amount_delta', 'original_name', 'url', 'mime_type', 'file_size']
+      const preferred = key === 'expense_items' ? ['expenseType','amount','remark'] : key === 'attribution_details' ? ['target_type', 'target_name', 'amount', 'reason'] : ['product_name', 'gross_profit_cost_mode', 'product_code', 'pn_code', 'sn_code', 'quantity', 'current_quantity', 'unit_price', 'amount', 'amount_delta', 'original_name', 'url', 'mime_type', 'file_size']
       const orderedKeys = [...preferred.filter(columnKey => keys.includes(columnKey)), ...keys.filter(columnKey => !preferred.includes(columnKey))].slice(0, 8)
       return {
         key,

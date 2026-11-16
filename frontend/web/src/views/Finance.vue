@@ -387,7 +387,7 @@
         <el-tab-pane label="费用/报销管理" name="expense">
           <div class="filter-bar">
             <span style="font-weight: bold; line-height: 32px;">费用清单</span>
-            <el-button type="primary" @click="handleAddExpense">添加费用</el-button>
+            <el-button type="primary" @click="handleAddExpense">新建费用单</el-button>
             <el-button type="success" :loading="exportingList === 'expense'" @click="handleExportExpense">导出</el-button>
             <el-date-picker v-model="expenseAccountingMonth" type="month" value-format="YYYY-MM" placeholder="费用经营月份" style="width: 150px" @change="handleExpenseMonthChange" />
             <el-tag v-if="expensePeriod" :type="expensePeriod.status === 'closed' ? 'danger' : 'success'" effect="plain">
@@ -1173,11 +1173,12 @@
     <!-- 添加支出对话框-->
     <el-dialog v-model="expenseDialogVisible" :title="expenseAttributionOnly ? '调整费用归属' : (expenseForm.status === 'withdrawn' ? '编辑并重新提交费用单' : (expenseForm.expenseId ? '编辑费用单草稿' : '新建费用单'))" width="620px" @close="handleDialogClose">
       <el-form :model="expenseForm" label-width="100px">
-        <el-form-item label="费用明细" required>
+        <el-form-item v-if="!expenseAttributionOnly" label="费用明细" required>
           <div class="expense-item-editor">
             <div v-for="(item, index) in expenseForm.expenseItems" :key="index" class="expense-item-row">
               <el-select v-model="item.expenseTypeId" placeholder="报销类型" style="flex:1"><el-option v-for="type in expenseTypeOptions" :key="type.type_id" :label="type.name" :value="type.type_id" /></el-select>
               <el-input-number v-model="item.amount" :min="0" :precision="2" controls-position="right" style="width:150px" />
+              <el-input v-model="item.remark" placeholder="明细说明" maxlength="1000" style="width:160px" />
               <el-button v-if="expenseForm.expenseItems.length > 1" link type="danger" @click="expenseForm.expenseItems.splice(index, 1)">删除</el-button>
             </div>
             <el-button link type="primary" @click="expenseForm.expenseItems.push({ expenseTypeId: '', amount: 0, remark: '' })">增加报销类型</el-button>
@@ -1189,8 +1190,8 @@
             <el-option v-for="s in stores" :key="s.store_id" :label="s.name" :value="s.store_id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="金额" required>
-          <el-input v-model="expenseForm.amount" placeholder="金额" style="width: 100%" />
+        <el-form-item label="整单金额">
+          <span>¥{{ formatMoney(expenseAttributionOnly ? expenseForm.amount : expenseItemsTotal) }}</span>
         </el-form-item>
         <el-form-item label="费用发生方" required>
           <el-input v-model="expenseForm.expenseParty" placeholder="供应商、员工或外部单位" @input="expenseForm.recipient.supplierId && (expenseForm.recipient = {})"><template #append><el-button @click="expensePaymentFields?.search(expenseForm.expenseParty)">查询</el-button></template></el-input>
@@ -1265,7 +1266,7 @@
             <el-option label="抵扣毛利" value="PROFIT_DEDUCTION" />
           </el-select>
         </el-form-item>
-        <ExpenseProfitDeductionFields v-if="expenseForm.paymentMethod === 'PROFIT_DEDUCTION' && !expenseAttributionOnly" v-model="expenseForm.profitDeduction" :store-id="expenseForm.storeId" :amount="expenseForm.amount" />
+        <ExpenseProfitDeductionFields v-if="expenseForm.paymentMethod === 'PROFIT_DEDUCTION' && !expenseAttributionOnly" v-model="expenseForm.profitDeduction" :store-id="expenseForm.storeId" :amount="expenseItemsTotal" />
         <el-form-item label="是否有发票">
           <el-switch v-model="expenseForm.hasInvoice" />
         </el-form-item>
@@ -1525,6 +1526,7 @@
           <el-descriptions-item label="备注" :span="2">{{ payableExpenseDetail.remark || '-' }}</el-descriptions-item>
         </el-descriptions>
 
+        <el-table :data="payableExpenseDetail.expense_items || []" stripe border size="small" style="margin-top:16px"><el-table-column prop="expenseType" label="报销类型" /><el-table-column prop="amount" label="金额" /><el-table-column prop="remark" label="明细说明" /></el-table>
         <template v-if="expenseAttributionDetails(payableExpenseDetail).length">
           <h4 style="margin: 18px 0 8px">归属与分摊明细</h4>
           <el-table :data="expenseAttributionDetails(payableExpenseDetail)" stripe border size="small">
@@ -4249,7 +4251,7 @@ const buildExpensePayload = () => ({
   expenseTypeId: expenseForm.expenseItems[0]?.expenseTypeId || expenseForm.expenseTypeId,
   expenseItems: expenseForm.expenseItems.map(item => ({ expenseTypeId: item.expenseTypeId, amount: Number(item.amount || 0), remark: item.remark || '' })),
   storeId: expenseForm.storeId,
-  amount: expenseForm.amount,
+  ...(expenseAttributionOnly.value ? {amount:expenseForm.amount} : {}),
   expenseParty: expenseForm.expenseParty,
   expenseDate: expenseForm.expenseDate,
   accountingMonth: expenseForm.expenseId ? expenseForm.accountingMonth : expenseForm.expenseDate?.slice(0, 7),
@@ -4266,6 +4268,10 @@ const buildExpensePayload = () => ({
 })
 
 const validateExpenseForm = () => {
+  if(expenseAttributionOnly.value){
+    if(expenseForm.attributionType==='STORE'&&expenseForm.attributionMethod==='MANUAL'&&Math.abs(expenseForm.allocationStoreIds.reduce((s,id)=>s+Number(expenseForm.allocationAmounts[id]||0),0)-Number(expenseForm.amount))>0.000001){ElMessage.warning('门店分摊金额必须等于费用总额');return false}
+    return true
+  }
   if (!expenseForm.expenseItems.length || expenseForm.expenseItems.some(item => !item.expenseTypeId)) {
     ElMessage.warning('请完善每条报销类型')
     return false
@@ -4274,7 +4280,7 @@ const validateExpenseForm = () => {
     ElMessage.warning('请选择门店')
     return false
   }
-  if (expenseItemsTotal.value <= 0) {
+  if (expenseForm.expenseItems.some(item=>!Number.isFinite(Number(item.amount))||Number(item.amount)<=0)) {
     ElMessage.warning('请输入正确的金额')
     return false
   }
@@ -4294,7 +4300,6 @@ const validateExpenseForm = () => {
     ElMessage.warning('请选择返利供应商')
     return false
   }
-  expenseForm.amount = Number(expenseItemsTotal.value.toFixed(2))
   if (expenseForm.attributionType === 'STORE' && expenseForm.attributionMethod === 'MANUAL') {
     const total = expenseForm.allocationStoreIds.reduce((sum, storeId) => sum + Number(expenseForm.allocationAmounts[storeId] || 0), 0)
     if (Math.abs(total - expenseItemsTotal.value) > 0.01) {
@@ -4748,4 +4753,7 @@ const restoreAccountTxnDraft = () => {
   flex-wrap: wrap;
   gap: 12px;
 }
+.expense-item-editor { width:100%; }
+.expense-item-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid #edf1f7; }
+.expense-item-row :deep(.el-select) { min-width:145px; }
 </style>

@@ -240,6 +240,7 @@ async function startExpenseApproval(expense, user, transaction) {
       expenseId: expense.expense_id,
       expenseNo: expense.expense_no,
       amount: money(expense.amount),
+      expenseItems: require('./expenseItems').display(expense),
       accountingMonth: expense.accounting_month,
       attributionType: expense.attribution_type,
       attributionMethod: expense.attribution_method,

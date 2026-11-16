@@ -72,8 +72,9 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
   let total = 0;
   let productAmount = 0;
   let productExpenseCount = 0;
+  const productExpenseIds = new Set();
 
-  expandExpenseRows(rows, { dateMode, startDate, endDate, monthKeys }).forEach(row => {
+  require('./expenseItems').expand(rows, { dateMode, startDate, endDate, monthKeys }).forEach(row => {
     const expenseAmount = amount(row.amount);
     const expenseItems = parseDetails(row.expenseItemsJson).filter(item => Number(item.amount) > 0);
     const type = String(row.attributionType || 'STORE').toUpperCase();
@@ -82,8 +83,8 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
       // Source store scopes visibility only; it does not bear this department expense.
       if (selectedStoreIds.includes(String(row.sourceStoreId || ''))) {
         productAmount += expenseAmount;
-        productExpenseCount++;
-        entries.push({ expenseId: row.expenseId, amortizationMonth: row.amortizationMonth, amortizationStartMonth: row.amortizationStartMonth, amortizationEndMonth: row.amortizationEndMonth, invoiceEvidence: { invoiceNo: row.invoiceNo || '', hasInvoice: Number(row.hasInvoice || 0) }, storeId: String(row.sourceStoreId), businessDate: row.businessDate, category: 'product', expenseType: row.expenseType, amount: expenseAmount });
+        productExpenseIds.add(String(row.expenseId));productExpenseCount=productExpenseIds.size;
+        entries.push({ expenseId: row.expenseId, expenseTypeKey: row.expenseTypeKey, amortizationMonth: row.amortizationMonth, amortizationStartMonth: row.amortizationStartMonth, amortizationEndMonth: row.amortizationEndMonth, invoiceEvidence: { invoiceNo: row.invoiceNo || '', hasInvoice: Number(row.hasInvoice || 0) }, storeId: String(row.sourceStoreId), businessDate: row.businessDate, category: 'product', expenseType: row.expenseType, amount: expenseAmount });
       }
       return;
     }
@@ -111,7 +112,7 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
     if (!selectedAllocations.length) return;
     const allocatedTotal = amount(selectedAllocations.reduce((sum, item) => sum + item.amount, 0));
     if (allocatedTotal <= 0) return;
-    for (const item of selectedAllocations) entries.push({ expenseId: row.expenseId, amortizationMonth: row.amortizationMonth, amortizationStartMonth: row.amortizationStartMonth, amortizationEndMonth: row.amortizationEndMonth, storeName: item.storeName || storeNameMap.get(item.storeId), invoiceEvidence: { invoiceNo: row.invoiceNo || '', hasInvoice: Number(row.hasInvoice || 0) }, storeId: item.storeId || null, scopeStoreIds: item.storeId ? null : [...(storesByDistributor.get(String(row.distributorId || '')) || [])].sort(), businessDate: row.businessDate, category: type === 'COMPANY' && !item.storeId ? 'company' : 'store', expenseType: row.expenseType, amount: item.amount });
+    for (const item of selectedAllocations) entries.push({ expenseId: row.expenseId, expenseTypeKey: row.expenseTypeKey, amortizationMonth: row.amortizationMonth, amortizationStartMonth: row.amortizationStartMonth, amortizationEndMonth: row.amortizationEndMonth, storeName: item.storeName || storeNameMap.get(item.storeId), invoiceEvidence: { invoiceNo: row.invoiceNo || '', hasInvoice: Number(row.hasInvoice || 0) }, storeId: item.storeId || null, scopeStoreIds: item.storeId ? null : [...(storesByDistributor.get(String(row.distributorId || '')) || [])].sort(), businessDate: row.businessDate, category: type === 'COMPANY' && !item.storeId ? 'company' : 'store', expenseType: row.expenseType, amount: item.amount });
     total += allocatedTotal;
     countedExpenses.add(String(row.expenseId));
 

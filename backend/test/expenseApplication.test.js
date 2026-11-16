@@ -77,6 +77,19 @@ function fixtures(t) {
   return { periods, created, instances };
 }
 
+test('多类型费用由后台合计，仅创建一份整单审批并冻结所有类型',async t=>{
+ const f=fixtures(t);
+ t.mock.method(M.ExpenseType,'findAll',async()=>[{type_id:'TYPE',name:'交通'},{type_id:'TYPE2',name:'住宿'}]);
+ const body={storeId:'S1',expenseParty:'费用单位',expenseItems:[{expenseTypeId:'TYPE',amount:10.01},{expenseTypeId:'TYPE2',amount:20.02}],paymentMethod:'PERSONAL_ADVANCE',expenseDate:'2026-11-16',attachmentUrls:[file],attributionType:'STORE'};
+ await C.createExpense(ctx(body));
+ assert.equal(f.created.length,1);assert.equal(f.created[0].amount,30.03);assert.equal(f.instances.length,1);
+ assert.equal(f.instances[0].payload.expenseItems.length,2);
+ assert.equal(JSON.parse(f.created[0].expense_items_json)[1].expenseType,'住宿');
+ await assert.rejects(C.createExpense(ctx({...body,amount:30.02})),/总额/);
+ await assert.rejects(C.createExpense(ctx({...body,expenseItems:[]})),/明细/);
+ assert.equal(f.created.length,1);
+});
+
 test('员工垫付和经营承担方相互独立；跨经销商平均分摊校验两边月份且不扩大付款来源', async t => {
   const fixture = fixtures(t);
   t.mock.method(M.ExpensePerformanceAllocation, 'create', async () => { throw Error('Must not deduct employee performance'); });

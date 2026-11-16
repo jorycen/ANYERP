@@ -848,12 +848,14 @@ async function createExpense(ctx) {
   if (!targetStoreId) ctx.throw(400, '请选择门店');
   const allowed = user.accessibleStoreIds || [];
   if (!allowed.includes('*') && !allowed.map(String).includes(String(targetStoreId))) ctx.throw(403, '无权操作该门店');
+  if (expenseItems !== undefined && (!Array.isArray(expenseItems) || !expenseItems.length || expenseItems.length>100)) ctx.throw(400,'费用明细须为1至100行');
   const requestedItems = Array.isArray(expenseItems) && expenseItems.length
     ? expenseItems
     : (expenseTypeId ? [{ expenseTypeId, amount }] : []);
   if (!requestedItems.length) ctx.throw(400, '请至少添加一条报销类型');
   const normalizedItems = [];
   for (const item of requestedItems) {
+    if(!item || typeof item!=='object')ctx.throw(400,'费用明细格式无效');
     const itemTypeId = String(item.expenseTypeId || item.typeId || '').trim();
     const itemAmount = Number(item.amount);
     if (!itemTypeId) ctx.throw(400, '每条费用明细都必须选择报销类型');
@@ -864,7 +866,8 @@ async function createExpense(ctx) {
   const normalizedAmount = Math.round(normalizedItems.reduce((sum, item) => sum + item.amount, 0) * 100) / 100;
   const primaryExpenseTypeId = normalizedItems[0].expenseTypeId;
   if (!String(expenseParty || '').trim()) ctx.throw(400, '请填写费用发生方');
-  if (amount !== undefined && amount !== null && amount !== '' && Math.abs(Number(amount) - normalizedAmount) > 0.01) ctx.throw(400, '费用总额必须等于各报销类型明细金额合计');
+  if (!Number.isSafeInteger(Math.round(normalizedAmount*100)) || normalizedAmount>9999999999.99)ctx.throw(400,'费用总额超出有效范围');
+  if (amount !== undefined && amount !== null && amount !== '' && (!Number.isFinite(Number(amount)) || Math.abs(Number(amount) - normalizedAmount) > 0.000001)) ctx.throw(400, '费用总额必须等于各报销类型明细金额合计');
   if (!['CORPORATE', 'CORPORATE_OTHER', 'PERSONAL_ADVANCE', 'PROFIT_DEDUCTION'].includes(paymentMethod)) ctx.throw(400, '支付方式无效');
   let recipient = paymentMethod === 'PROFIT_DEDUCTION' ? {} : expenseApplication.recipient(ctx.request.body.recipient, paymentMethod, user.name || '', isDraft);
   const files = expenseApplication.attachments(attachmentUrls || [], isDraft);
@@ -1103,7 +1106,7 @@ async function getExpenseList(ctx) {
   const storeIds = stores.map(s => s.store_id);
   where.store_id = storeIds;
 
-  if (expenseType) where.expense_type = expenseType;
+  if (expenseType) where[Op.and]=[...(where[Op.and]||[]),sequelize.literal(`(Expense.EXPENSE_TYPE=${sequelize.escape(String(expenseType))} OR EXISTS (SELECT 1 FROM JSON_TABLE(CASE WHEN JSON_VALID(Expense.EXPENSE_ITEMS_JSON) THEN Expense.EXPENSE_ITEMS_JSON ELSE '[]' END, '$[*]' COLUMNS (type_name VARCHAR(128) PATH '$.expenseType')) expense_types WHERE expense_types.type_name=${sequelize.escape(String(expenseType))}))`)];
   if (scope === 'my') where.applicant_staff_id = user.staffId || user.id || -1;
   if (status) {
     const statuses = status.split(',').map(s => s.trim());
@@ -1140,7 +1143,7 @@ async function getExpenseList(ctx) {
   rows.forEach(row => {
     row.setDataValue('distributor_name',dealers.find(d=>String(d.distributor_id)===String(row.distributor_id))?.name||'归属待核对');
     row.setDataValue('profit_deduction', require('./expenseProfitDeduction').display(row));
-    try { row.setDataValue('expense_items', JSON.parse(row.expense_items_json || '[]')); } catch (_) { row.setDataValue('expense_items', []); }
+    row.setDataValue('expense_items', require('./expenseItems').display(row));
     row.setDataValue('can_submit',(row.status==='draft'&&canManageExpenseDraft(user,row))||row.status==='pending');
     const userId = user.staffId || user.id;
     const isApplicant = Number(row.applicant_staff_id) === Number(userId)
@@ -1181,7 +1184,7 @@ async function exportExpenseList(ctx) {
       经营归属月份: item.accounting_month || '',
       抵扣月份: item.profit_deduction?.performanceMonth || '',
       抵扣人员及分摊: item.profit_deduction?.allocationText || '',
-      费用类型: item.expense_type || '',
+      费用类型: require('./expenseItems').display(item).map(line=>`${line.expenseType}：${Number(line.amount).toFixed(2)}`).join('；'),
       费用发生方: item.expense_party || '',
       金额: Number(item.amount || 0),
       已结算金额: Number(item.settled_amount || 0),
@@ -1197,7 +1200,7 @@ async function exportExpenseList(ctx) {
   sendExcel(ctx, data, [
     '费用单号', '经销商', '时间', '费用日期', '经营归属月份', '抵扣月份', '抵扣人员及分摊', '费用类型', '费用发生方', '金额', '已结算金额',
     '门店', '制单人', '发起人', '状态', '付款方式', '备注'
-  ], `费用报销管理_${new Date().toISOString().slice(0, 10)}.xlsx`, '费用报销管理');
+  ], `费用报销管理_${new Date().toISOString().slice(0, 10)}.xlsx`, '费用报销管理', {sheets:[{name:'报销类型明细',rows:rows.flatMap(row=>{const item=row.toJSON?row.toJSON():row;return require('./expenseItems').display(item).map(line=>({费用单号:item.expense_no,报销类型:line.expenseType,金额:Number(line.amount),明细说明:line.remark||'',状态:item.status}));})}]});
 }
 
 async function previewExpenseSelection(ctx) {
@@ -1231,7 +1234,7 @@ async function getExpenseDetail(ctx) {
   }
 
   const data = record.toJSON();
-  try { data.expense_items = JSON.parse(record.expense_items_json || '[]'); } catch (_) { data.expense_items = []; }
+  data.expense_items = require('./expenseItems').display(record);
   data.attribution_details = parseExpenseDetails(data.attribution_details_json);
   data.profit_deduction = require('./expenseProfitDeduction').display(record);
   if (record.source_type === 'purchase' && record.source_id) {
